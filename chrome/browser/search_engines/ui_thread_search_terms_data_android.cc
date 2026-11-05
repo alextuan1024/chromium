@@ -21,29 +21,23 @@ std::string& SearchTermsDataAndroid::GetSearchClient() {
   return *search_client;
 }
 
-// static
-std::optional<std::string>& SearchTermsDataAndroid::GetCustomTabSearchClient() {
-  static base::NoDestructor<std::optional<std::string>>
-      custom_tab_search_client;
-  return *custom_tab_search_client;
-}
-
 std::u16string UIThreadSearchTermsData::GetRlzParameterValue(
     bool from_app_list) const {
-  DCHECK(!content::BrowserThread::IsThreadInitialized(
-             content::BrowserThread::UI) ||
-         content::BrowserThread::CurrentlyOn(content::BrowserThread::UI));
+  CHECK(!content::BrowserThread::IsThreadInitialized(
+            content::BrowserThread::UI) ||
+            content::BrowserThread::CurrentlyOn(content::BrowserThread::UI),
+        base::NotFatalUntil::M163);
   // Android doesn't use the rlz library.  Instead, it manages the rlz string
   // on its own.
   return SearchTermsDataAndroid::GetRlzParameterValue();
 }
 
 std::string UIThreadSearchTermsData::GetSearchClient() const {
-  DCHECK(!content::BrowserThread::IsThreadInitialized(
-             content::BrowserThread::UI) ||
-         content::BrowserThread::CurrentlyOn(content::BrowserThread::UI));
-  return SearchTermsDataAndroid::GetCustomTabSearchClient().value_or(
-      SearchTermsDataAndroid::GetSearchClient());
+  CHECK(!content::BrowserThread::IsThreadInitialized(
+            content::BrowserThread::UI) ||
+            content::BrowserThread::CurrentlyOn(content::BrowserThread::UI),
+        base::NotFatalUntil::M163);
+  return SearchTermsDataAndroid::GetSearchClient();
 }
 
 std::string UIThreadSearchTermsData::GetYandexReferralID() const {

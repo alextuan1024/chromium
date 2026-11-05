@@ -16,6 +16,7 @@
 #include "chrome/app/chrome_command_ids.h"
 #include "chrome/browser/actor/actor_keyed_service.h"
 #include "chrome/browser/actor/actor_test_util.h"
+#include "chrome/browser/after_startup_task_utils.h"
 #include "chrome/browser/history/history_service_factory.h"
 #include "chrome/browser/history/history_tab_helper.h"
 #include "chrome/browser/history/history_test_utils.h"
@@ -24,6 +25,7 @@
 #include "chrome/browser/search_engines/template_url_service_factory.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface_iterator.h"
 #include "chrome/browser/ui/navigator/browser_navigator_params.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/common/webui_url_constants.h"
@@ -32,6 +34,8 @@
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/search_test_utils.h"
 #include "chrome/test/base/ui_test_utils.h"
+#include "components/download/public/common/download_features.h"
+#include "components/history/core/browser/features.h"
 #include "components/history/core/browser/history_backend.h"
 #include "components/history/core/browser/history_database.h"
 #include "components/history/core/browser/history_db_task.h"
@@ -50,17 +54,20 @@
 #include "content/public/common/referrer.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
-#include "content/public/test/fenced_frame_test_util.h"
 #include "content/public/test/prerender_test_util.h"
 #include "content/public/test/test_frame_navigation_observer.h"
 #include "net/dns/mock_host_resolver.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "third_party/blink/public/common/features.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "ui/base/page_transition_types.h"
-#include "ui/base/window_open_disposition.h"
 #include "ui/webui/untrusted_web_ui_browsertest_util.h"
 #include "url/gurl.h"
 #include "url/origin.h"
+
+#if !BUILDFLAG(IS_ANDROID)
+#include "chrome/browser/actor/ui/actor_task_unload_handler.h"
+#endif
 
 using content::BrowserThread;
 using ::testing::_;
@@ -591,10 +598,10 @@ IN_PROC_BROWSER_TEST_F(HistoryBrowserTest, MultiTabsWindowsHistory) {
   BrowserWindowInterface* browser2 = CreateBrowser(browser()->GetProfile());
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser2, url2));
   ui_test_utils::NavigateToURLWithDisposition(
-      browser2, url3, WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      browser2, url3, ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
   ui_test_utils::NavigateToURLWithDisposition(
-      browser2, url4, WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      browser2, url4, ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
 
   std::vector<GURL> urls(GetHistoryContents());
@@ -785,7 +792,7 @@ IN_PROC_BROWSER_TEST_F(HistoryBrowserTest, ReloadBringPageToTop) {
 
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), url1));
   ui_test_utils::NavigateToURLWithDisposition(
-      browser(), url2, WindowOpenDisposition::NEW_BACKGROUND_TAB,
+      browser(), url2, ui::mojom::WindowOpenDisposition::kNewBackgroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
 
   std::vector<GURL> urls(GetHistoryContents());
@@ -815,7 +822,7 @@ IN_PROC_BROWSER_TEST_F(HistoryBrowserTest, BackForwardBringPageToTop) {
 
   content::WebContents* tab =
       browser()->tab_strip_model()->GetActiveWebContents();
-  chrome::GoBack(browser(), WindowOpenDisposition::CURRENT_TAB);
+  chrome::GoBack(browser(), ui::mojom::WindowOpenDisposition::kCurrentTab);
   EXPECT_TRUE(content::WaitForLoadStop(tab));
 
   std::vector<GURL> urls(GetHistoryContents());
@@ -823,7 +830,7 @@ IN_PROC_BROWSER_TEST_F(HistoryBrowserTest, BackForwardBringPageToTop) {
   ASSERT_EQ(url1, urls[0]);
   ASSERT_EQ(url2, urls[1]);
 
-  chrome::GoForward(browser(), WindowOpenDisposition::CURRENT_TAB);
+  chrome::GoForward(browser(), ui::mojom::WindowOpenDisposition::kCurrentTab);
   EXPECT_TRUE(content::WaitForLoadStop(tab));
   urls = GetHistoryContents();
   ASSERT_EQ(2u, urls.size());
@@ -959,7 +966,7 @@ IN_PROC_BROWSER_TEST_F(HistoryBrowserTest, OneHistoryTabPerWindow) {
 
   ui_test_utils::NavigateToURLWithDisposition(
       browser(), GURL(url::kAboutBlankURL),
-      WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
   chrome::ExecuteCommand(browser(), IDC_SHOW_HISTORY);
 
@@ -1182,6 +1189,31 @@ class HistoryTaskTagBrowserTest : public HistoryBrowserTest {
   actor::ActorKeyedService* actor_service() {
     return actor::ActorKeyedService::Get(profile());
   }
+
+  void SetUpOnMainThread() override {
+    HistoryBrowserTest::SetUpOnMainThread();
+#if !BUILDFLAG(IS_ANDROID)
+    // These tests navigate via browser initiated navigations while an Actor
+    // task is active to verify history tagging. Suppress the leave site dialog
+    // so the test scaffolding is not intercepted, and restore at teardown.
+    previous_suppress_confirm_dialog_ =
+        actor::ActorTaskTabCloseConfirmDialog::ShouldSuppressForTesting();
+    actor::ActorTaskTabCloseConfirmDialog::SetSuppressForTesting(true);
+#endif
+  }
+
+  void TearDownOnMainThread() override {
+#if !BUILDFLAG(IS_ANDROID)
+    actor::ActorTaskTabCloseConfirmDialog::SetSuppressForTesting(
+        previous_suppress_confirm_dialog_);
+#endif
+    HistoryBrowserTest::TearDownOnMainThread();
+  }
+
+ private:
+#if !BUILDFLAG(IS_ANDROID)
+  bool previous_suppress_confirm_dialog_ = false;
+#endif
 };
 
 // Test that history entry is correctly tagged when actor is active.
@@ -1274,7 +1306,7 @@ IN_PROC_BROWSER_TEST_F(HistoryTaskTagBrowserTest, TwoTabs) {
   // Open a new tab and navigate on it so it becomes active.
   ASSERT_TRUE(ui_test_utils::NavigateToURLWithDisposition(
       browser(), GetActorInitialUrl(),
-      WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP));
 
   // Set up the test observer for this new tab.
@@ -1548,61 +1580,6 @@ IN_PROC_BROWSER_TEST_F(HistoryPrerenderBrowserTest,
               testing::ElementsAre(kRedirectedUrl, kInitialUrl));
 }
 
-// For tests which use fenced frame.
-class HistoryFencedFrameBrowserTest : public HistoryMPArchBrowserTest {
- public:
-  HistoryFencedFrameBrowserTest() = default;
-  ~HistoryFencedFrameBrowserTest() override = default;
-  HistoryFencedFrameBrowserTest(const HistoryFencedFrameBrowserTest&) = delete;
-
-  HistoryFencedFrameBrowserTest& operator=(
-      const HistoryFencedFrameBrowserTest&) = delete;
-
-  content::test::FencedFrameTestHelper& fenced_frame_test_helper() {
-    return fenced_frame_helper_;
-  }
-
-  content::WebContents* web_contents() {
-    return browser()->tab_strip_model()->GetActiveWebContents();
-  }
-
- private:
-  content::test::FencedFrameTestHelper fenced_frame_helper_;
-};
-
-IN_PROC_BROWSER_TEST_F(HistoryFencedFrameBrowserTest,
-                       FencedFrameDoesNotAffectLoadingState) {
-  HistoryTabHelper* history_tab_helper =
-      HistoryTabHelper::FromWebContents(web_contents());
-  ASSERT_TRUE(history_tab_helper);
-  base::TimeTicks last_load_completion_before_navigation =
-      history_tab_helper->last_load_completion_;
-
-  auto initial_url = embedded_https_test_server().GetURL("/empty.html");
-  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), initial_url));
-  // |last_load_completion_| should be updated after finishing the normal
-  // navigation.
-  EXPECT_NE(last_load_completion_before_navigation,
-            history_tab_helper->last_load_completion_);
-
-  // Create a fenced frame.
-  GURL fenced_frame_url =
-      embedded_https_test_server().GetURL("/fenced_frames/title1.html");
-  content::RenderFrameHost* fenced_frame_host =
-      fenced_frame_test_helper().CreateFencedFrame(
-          web_contents()->GetPrimaryMainFrame(), fenced_frame_url);
-
-  // Navigate the fenced frame.
-  last_load_completion_before_navigation =
-      history_tab_helper->last_load_completion_;
-  fenced_frame_test_helper().NavigateFrameInFencedFrameTree(fenced_frame_host,
-                                                            fenced_frame_url);
-  // |last_load_completion_| should not be updated after finishing the
-  // navigation of the fenced frame.
-  EXPECT_EQ(last_load_completion_before_navigation,
-            history_tab_helper->last_load_completion_);
-}
-
 // For tests which enable :visited links partitioning.
 class HistoryVisitedLinksBrowserTest : public HistoryBrowserTest {
  public:
@@ -1709,4 +1686,80 @@ IN_PROC_BROWSER_TEST_F(HistoryVisitedLinksBrowserTest,
   ASSERT_TRUE(observer2.GetVisitedLinkSalt().has_value());
   EXPECT_NE(observer.GetVisitedLinkSalt().value(),
             observer2.GetVisitedLinkSalt().value());
+}
+
+class HistoryDeferredBackendInitBrowserTest : public InProcessBrowserTest {
+ public:
+  HistoryDeferredBackendInitBrowserTest() {
+    // Launch with the default New Tab Page instead of about:blank.
+    set_open_about_blank_on_browser_launch(false);
+    // Explicitly disable kDeferredDownloadHistoryLoading so
+    // DownloadHistory::QueryDownloads() runs during startup.
+    scoped_feature_list_.InitWithFeatures(
+        /*enabled_features=*/{history::kDeferHistoryBackendInit},
+        /*disabled_features=*/{
+            download::features::kDeferredDownloadHistoryLoading});
+  }
+
+  void PreRunTestOnMainThread() override {
+    // Hold a StartupInProgressRef while waiting for the initial NTP navigation
+    // and DownloadManager initialization so AfterStartupTaskUtils does not
+    // mark startup complete prematurely.
+    auto startup_ref = AfterStartupTaskUtils::RegisterStartupInProgressRef(
+        StartupIsCompleteReason::kFailsafeTimeout);
+
+    std::vector<BrowserWindowInterface*> browsers =
+        GetAllBrowserWindowInterfaces();
+    ASSERT_FALSE(browsers.empty());
+    BrowserWindowInterface* const browser_window = browsers.front();
+    Profile* const profile = browser_window->GetProfile();
+    ASSERT_TRUE(profile);
+
+    // Ensure DownloadManager (and DownloadCoreServiceImpl / DownloadHistory)
+    // is initialized during startup while kDeferredDownloadHistoryLoading is
+    // disabled, exercising both GetNextDownloadId() and QueryDownloads().
+    ASSERT_TRUE(profile->GetDownloadManager());
+
+    content::WebContents* const active_contents =
+        browser_window->GetTabStripModel()->GetActiveWebContents();
+    ASSERT_TRUE(active_contents);
+    EXPECT_TRUE(content::WaitForLoadStop(active_contents));
+    EXPECT_EQ(GURL(chrome::kChromeUINewTabURL),
+              active_contents->GetLastCommittedURL());
+
+    history::HistoryService* const history_service =
+        HistoryServiceFactory::GetForProfile(
+            profile, ServiceAccessType::EXPLICIT_ACCESS);
+    ASSERT_TRUE(history_service);
+
+    // Before startup completes, HistoryBackend initialization must not be
+    // scheduled even after NTP load and DownloadHistory startup queries.
+    EXPECT_FALSE(AfterStartupTaskUtils::IsBrowserStartupComplete());
+    EXPECT_FALSE(history_service->is_backend_init_scheduled_for_testing());
+    EXPECT_FALSE(history_service->BackendLoaded());
+
+    startup_ref.reset();
+
+    // InProcessBrowserTest::PreRunTestOnMainThread() calls
+    // AfterStartupTaskUtils::SetBrowserStartupIsCompleteForTesting().
+    InProcessBrowserTest::PreRunTestOnMainThread();
+  }
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_;
+};
+
+IN_PROC_BROWSER_TEST_F(HistoryDeferredBackendInitBrowserTest,
+                       DeferredDuringNtpStartupThenLoadsAfterStartup) {
+  history::HistoryService* const history_service =
+      HistoryServiceFactory::GetForProfile(browser()->GetProfile(),
+                                           ServiceAccessType::EXPLICIT_ACCESS);
+  ASSERT_TRUE(history_service);
+
+  // Now that PreRunTestOnMainThread() has marked browser startup complete,
+  // HistoryBackend initialization should be scheduled and complete cleanly.
+  EXPECT_TRUE(AfterStartupTaskUtils::IsBrowserStartupComplete());
+  EXPECT_TRUE(history_service->is_backend_init_scheduled_for_testing());
+  ui_test_utils::WaitForHistoryToLoad(history_service);
+  EXPECT_TRUE(history_service->BackendLoaded());
 }

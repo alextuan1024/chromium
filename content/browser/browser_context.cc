@@ -36,13 +36,13 @@
 #include "content/browser/browser_context_impl.h"
 #include "content/browser/browsing_data/browsing_data_remover_impl.h"
 #include "content/browser/child_process_host_impl.h"
-#include "content/browser/in_memory_federated_permission_context.h"
 #include "content/browser/preloading/prefetch/prefetch_request.h"
 #include "content/browser/preloading/prefetch/prefetch_service.h"
 #include "content/browser/preloading/prefetch/prefetch_type.h"
 #include "content/browser/push_messaging/push_messaging_router.h"
 #include "content/browser/site_info.h"
 #include "content/browser/storage_partition_impl_map.h"
+#include "content/browser/webid/in_memory_federated_permission_context.h"
 #include "content/public/browser/blob_handle.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
@@ -110,7 +110,9 @@ BrowserContext::~BrowserContext() {
 }
 
 DownloadManager* BrowserContext::GetDownloadManager() {
-  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M159);
+  // TODO(crbug.com/584097080): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
+  DCHECK_CURRENTLY_ON(BrowserThread::UI);
   return impl()->GetDownloadManager();
 }
 
@@ -425,6 +427,15 @@ void BrowserContext::WriteIntoTrace(
 
 base::WeakPtr<BrowserContext> BrowserContext::GetWeakPtr() {
   return weak_factory_.GetWeakPtr();
+}
+
+void BrowserContext::SetSitesForEmbedderShard(
+    const base::flat_set<net::SchemefulSite>& sites) {
+  impl()->SetSitesForEmbedderShard(sites);
+}
+
+bool BrowserContext::CanSetSitesForEmbedderShard() const {
+  return impl()->CanSetSitesForEmbedderShard();
 }
 
 //////////////////////////////////////////////////////////////////////////////

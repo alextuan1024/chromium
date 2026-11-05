@@ -23,9 +23,10 @@
 #import "base/strings/utf_string_conversions.h"
 #import "base/task/sequenced_task_runner.h"
 #import "base/time/time.h"
-#import "components/autofill/core/browser/data_manager/autofill_ai/entity_suppression_manager.h"
+#import "components/autofill/core/browser/data_manager/autofill_ai/personal_context_entity_metadata_manager.h"
 #import "components/autofill/core/browser/data_manager/personal_data_manager.h"
 #import "components/autofill/core/browser/data_model/autofill_ai/entity_instance.h"
+#import "components/autofill/core/browser/integrators/autofill_ai/metrics/personal_context_metrics.h"
 #import "components/autofill/core/browser/payments/payments_service_url.h"
 #import "components/autofill/core/common/autofill_features.h"
 #import "components/autofill/ios/browser/form_suggestion.h"
@@ -38,12 +39,10 @@
 #import "components/password_manager/core/common/password_manager_features.h"
 #import "components/password_manager/ios/password_generation_provider.h"
 #import "components/strings/grit/components_strings.h"
-#import "ios/chrome/browser/autofill/atmemory/coordinator/at_memory_coordinator.h"
-#import "ios/chrome/browser/autofill/atmemory/public/at_memory_commands.h"
-#import "ios/chrome/browser/autofill/atmemory/utils/atmemory_ui_util.h"
 #import "ios/chrome/browser/autofill/autofill_ai/ui/autofill_ai_source_item.h"
 #import "ios/chrome/browser/autofill/autofill_ai/ui/autofill_ai_sources_util.h"
 #import "ios/chrome/browser/autofill/autofill_ai/ui/autofill_ai_sources_view_controller.h"
+#import "ios/chrome/browser/autofill/branding/coordinator/branding_coordinator.h"
 #import "ios/chrome/browser/autofill/form_input_accessory/coordinator/form_input_accessory_mediator.h"
 #import "ios/chrome/browser/autofill/form_input_accessory/coordinator/form_input_accessory_mediator_handler.h"
 #import "ios/chrome/browser/autofill/form_input_accessory/public/autofill_suggestion_context_menu_handler.h"
@@ -62,9 +61,9 @@
 #import "ios/chrome/browser/autofill/model/autofill_tab_helper.h"
 #import "ios/chrome/browser/autofill/model/bottom_sheet/autofill_bottom_sheet_tab_helper.h"
 #import "ios/chrome/browser/autofill/model/features.h"
-#import "ios/chrome/browser/autofill/model/ios_autofill_entity_suppression_manager_factory.h"
+#import "ios/chrome/browser/autofill/model/ios_autofill_entity_data_manager_factory.h"
+#import "ios/chrome/browser/autofill/model/ios_autofill_personal_context_entity_metadata_manager_factory.h"
 #import "ios/chrome/browser/autofill/model/personal_data_manager_factory.h"
-#import "ios/chrome/browser/autofill/ui_bundled/branding/branding_coordinator.h"
 #import "ios/chrome/browser/autofill/ui_bundled/util/autofill_credit_card_util.h"
 #import "ios/chrome/browser/bubble/ui_bundled/bubble_constants.h"
 #import "ios/chrome/browser/bubble/ui_bundled/bubble_view_controller_presenter.h"
@@ -85,25 +84,23 @@
 #import "ios/chrome/browser/shared/model/web_state_list/web_state_list.h"
 #import "ios/chrome/browser/shared/public/commands/browser_coordinator_commands.h"
 #import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
+#import "ios/chrome/browser/shared/public/commands/form_input_accessory_commands.h"
 #import "ios/chrome/browser/shared/public/commands/open_new_tab_command.h"
 #import "ios/chrome/browser/shared/public/commands/scene_commands.h"
 #import "ios/chrome/browser/shared/public/commands/security_alert_commands.h"
 #import "ios/chrome/browser/shared/public/commands/settings_commands.h"
 #import "ios/chrome/browser/shared/public/commands/snackbar_commands.h"
-#import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/shared/public/snackbar/snackbar_message.h"
 #import "ios/chrome/browser/shared/public/snackbar/snackbar_message_action.h"
 #import "ios/chrome/browser/shared/ui/util/layout_guide_names.h"
 #import "ios/chrome/browser/shared/ui/util/uikit_ui_util.h"
 #import "ios/chrome/browser/shared/ui/util/util_swift.h"
-#import "ios/chrome/common/ui/reauthentication/reauthentication_module.h"
+#import "ios/chrome/common/ui/reauthentication/reauthentication_protocol.h"
 #import "ios/chrome/grit/ios_branded_strings.h"
 #import "ios/chrome/grit/ios_strings.h"
 #import "ios/web/public/web_state.h"
 #import "ui/base/l10n/l10n_util_mac.h"
 #import "url/gurl.h"
-
-using autofill::FieldGlobalId;
 
 namespace {
 // Delay between the time the view is shown, and the time the suggestion label
@@ -118,10 +115,6 @@ constexpr base::TimeDelta kAutofillSuggestionTipDelay = base::Seconds(0.5);
 // Autofill strip at the top of the keyboard.
 const CGFloat kIPHVerticalOffset = -5;
 
-// The histogram recording why the AtMemory UI failed to open on button tap.
-constexpr std::string_view kAtMemoryFailedToOpenReasonHistogram =
-    "Autofill.AtMemory.IOS.FailedToOpenReason";
-
 // Return the feature corresponding to the `feature_for_iph` enum.
 const base::Feature* FetchIPHFeatureFromEnum(
     SuggestionFeatureForIPH feature_for_iph) {
@@ -133,6 +126,8 @@ const base::Feature* FetchIPHFeatureFromEnum(
       return &feature_engagement::kIPHAutofillHomeWorkProfileSuggestionFeature;
     case SuggestionFeatureForIPH::kAccountNameEmailSuggestion:
       return &feature_engagement::kIPHAutofillAccountNameEmailSuggestionFeature;
+    case SuggestionFeatureForIPH::kAutofillAmbientAutofillSpiiDisclaimer:
+      return &feature_engagement::kIPH_AutofillAmbientAutofillSpiiDisclaimer;
     case SuggestionFeatureForIPH::kUnknown:
       NOTREACHED();
   }
@@ -152,10 +147,6 @@ AutofillSettingsPage SuggestionToAutofillSettingsPage(
     case autofill::SuggestionType::kAddressEntry:
       return AutofillSettingsPage::kAddresses;
     case autofill::SuggestionType::kFillAutofillAi: {
-      if (!IsYourSavedInfoSettingsPageIosEnabled()) {
-        // If "Your Saved Info" is not enabled, go to "Addresses and More"
-        return AutofillSettingsPage::kAddresses;
-      }
       CHECK(profile);
       base::optional_ref<const autofill::EntityInstance> entity =
           autofill::GetEntityInstance(profile, suggestion.payload);
@@ -167,22 +158,23 @@ AutofillSettingsPage SuggestionToAutofillSettingsPage(
   }
 }
 
-// Returns the EntitySuppressionManager for `profile`, or nullptr if
+// Returns the PersonalContextEntityMetadataManager for `profile`, or nullptr if
 // unavailable.
-autofill::EntitySuppressionManager* GetEntitySuppressionManager(
-    ProfileIOS* profile) {
-  return profile ? IOSAutofillEntitySuppressionManagerFactory::GetForProfile(
-                       profile)
+autofill::PersonalContextEntityMetadataManager*
+GetPersonalContextEntityMetadataManager(ProfileIOS* profile) {
+  return profile ? IOSAutofillPersonalContextEntityMetadataManagerFactory::
+                       GetForProfile(profile)
                  : nullptr;
 }
 
-// Unsuppresses `entity` for `profile`.
-void UnsuppressEntity(base::WeakPtr<ProfileIOS> profile,
-                      const autofill::EntityInstance& entity) {
-  autofill::EntitySuppressionManager* suppressionManager =
-      GetEntitySuppressionManager(profile.get());
-  if (suppressionManager) {
-    suppressionManager->UnsuppressEntity(entity);
+// Unsuppresses `entity_id` for `profile`.
+void UndoInSessionSuppressedEntity(
+    base::WeakPtr<ProfileIOS> profile,
+    const autofill::EntityInstance::EntityId& entity_id) {
+  autofill::PersonalContextEntityMetadataManager* entityMetadataManager =
+      GetPersonalContextEntityMetadataManager(profile.get());
+  if (entityMetadataManager) {
+    entityMetadataManager->UndoInSessionSuppressedEntity(entity_id);
   }
 }
 
@@ -190,11 +182,11 @@ void UnsuppressEntity(base::WeakPtr<ProfileIOS> profile,
 
 @interface FormInputAccessoryCoordinator () <
     AddressCoordinatorDelegate,
-    AtMemoryCommands,
     AutofillAiSourcesViewControllerDelegate,
     AutofillSuggestionContextMenuHandler,
     CardCoordinatorDelegate,
     ExpandedManualFillCoordinatorDelegate,
+    FormInputAccessoryCommands,
     FormInputAccessoryMediatorHandler,
     FormInputAccessoryViewControllerDelegate,
     ManualFillAllPasswordCoordinatorDelegate,
@@ -238,9 +230,6 @@ void UnsuppressEntity(base::WeakPtr<ProfileIOS> profile,
   // Modal alert.
   AlertCoordinator* _alertCoordinator;
 
-  // The coordinator for the AtMemory Autofill feature.
-  AtMemoryCoordinator* _atMemoryCoordinator;
-
   // The navigation controller presenting the Autofill AI sources bottom sheet.
   UINavigationController* _sourcesNavigationController;
 }
@@ -253,7 +242,7 @@ void UnsuppressEntity(base::WeakPtr<ProfileIOS> profile,
     [dispatcher startDispatchingToTarget:self
                              forProtocol:@protocol(SecurityAlertCommands)];
     [dispatcher startDispatchingToTarget:self
-                             forProtocol:@protocol(AtMemoryCommands)];
+                             forProtocol:@protocol(FormInputAccessoryCommands)];
 
     _brandingCoordinator =
         [[BrandingCoordinator alloc] initWithBaseViewController:viewController
@@ -373,12 +362,10 @@ void UnsuppressEntity(base::WeakPtr<ProfileIOS> profile,
   [self stopManualFillAllPasswordCoordinator];
 
   [self dismissAlertCoordinator];
-  [self dismissAtMemory];
   [self dismissSourcesSheetAnimated:NO];
 }
 
 - (void)stopChildren {
-  [self dismissAtMemory];
   _formInputAccessoryMediator.formInputInteractionDelegate = nil;
   for (ChromeCoordinator* coordinator in self.childCoordinators) {
     [coordinator stop];
@@ -386,45 +373,25 @@ void UnsuppressEntity(base::WeakPtr<ProfileIOS> profile,
   [self.childCoordinators removeAllObjects];
 }
 
-// Returns the reason why the AtMemory UI can't be opened for `fieldId`, or
-// `AtMemoryFailedToOpenReason::kNone` if it can be opened.
-- (AtMemoryFailedToOpenReason)atMemoryFailedToOpenReasonForField:
-    (FieldGlobalId)fieldId {
-  if (!fieldId.renderer_id) {
-    return AtMemoryFailedToOpenReason::kNoFocusedField;
-  }
-  if (_atMemoryCoordinator) {
-    return AtMemoryFailedToOpenReason::kAlreadyOpen;
-  }
-  return GetAtMemoryFailedToOpenReason(self.browser);
-}
-
 // Starts the expanded manual fill coordinator and displays its view controller.
 - (void)startManualFillFromButton:(UIButton*)button
                       forDataType:(manual_fill::ManualFillDataType)dataType
          invokedOnObfuscatedField:(BOOL)invokedOnObfuscatedField {
+  // `ManualFillDataType::kAtMemory` is unused while AtMemory is being removed
+  // and is not supported by `ExpandedManualFillCoordinator`.
   if (dataType == manual_fill::ManualFillDataType::kAtMemory) {
-    std::optional<FieldGlobalId> fieldId =
-        [_formInputAccessoryMediator lastFocusedFieldGlobalId];
-    // `showAtMemoryForField:` records the outcome for all entry points,
-    // including the `kNoFocusedField` reason for a default empty field.
-    [self showAtMemoryForField:fieldId.value_or(FieldGlobalId{})];
     return;
   }
 
   manual_fill::ManualFillDataType focusedFieldDataType = [ManualFillUtil
       manualFillDataTypeFromFillingProduct:
           [_formInputAccessoryMediator currentProviderMainFillingProduct]];
-  id<ReauthenticationProtocol> reauthModule =
-      ReauthenticationServiceFactory::GetForProfile(self.profile)
-          ->GetReauthModule();
   ExpandedManualFillCoordinator* expandedManualFillCoordinator =
       [[ExpandedManualFillCoordinator alloc]
           initWithBaseViewController:self.baseViewController
                              browser:self.browser
                          forDataType:dataType
-                focusedFieldDataType:focusedFieldDataType
-              reauthenticationModule:reauthModule];
+                focusedFieldDataType:focusedFieldDataType];
 
   expandedManualFillCoordinator.injectionHandler = self.injectionHandler;
   expandedManualFillCoordinator.invokedOnObfuscatedField =
@@ -434,7 +401,7 @@ void UnsuppressEntity(base::WeakPtr<ProfileIOS> profile,
       expandedManualFillCoordinator;
   [expandedManualFillCoordinator start];
 
-  if ([ManualFillUtil shouldUsePopover]) {
+  if ([ManualFillUtil shouldUsePopover:_formInputAccessoryViewController]) {
     [expandedManualFillCoordinator presentFromButton:button];
   } else {
     self.formInputViewController = expandedManualFillCoordinator.viewController;
@@ -451,7 +418,7 @@ void UnsuppressEntity(base::WeakPtr<ProfileIOS> profile,
 }
 
 - (void)dismissPopover {
-  if ([ManualFillUtil shouldUsePopover]) {
+  if ([ManualFillUtil shouldUsePopover:_formInputAccessoryViewController]) {
     // Close the popover view.
     [self stopChildren];
   }
@@ -476,6 +443,9 @@ void UnsuppressEntity(base::WeakPtr<ProfileIOS> profile,
       case SuggestionFeatureForIPH::kAccountNameEmailSuggestion:
         tracker->NotifyEvent(
             "account_name_email_create_suggestion_feature_used");
+        break;
+      case SuggestionFeatureForIPH::kAutofillAmbientAutofillSpiiDisclaimer:
+        tracker->NotifyEvent("autofill_ai_spii_disclaimer_used");
         break;
       case SuggestionFeatureForIPH::kUnknown:
         NOTREACHED();
@@ -567,7 +537,7 @@ void UnsuppressEntity(base::WeakPtr<ProfileIOS> profile,
   BOOL invokedOnObfuscatedField =
       [_formInputAccessoryMediator lastFocusedFieldWasObfuscated];
 
-  if (![ManualFillUtil shouldUsePopover]) {
+  if (![ManualFillUtil shouldUsePopover:formInputAccessoryViewController]) {
     [self stopChildren];
   }
 
@@ -586,6 +556,20 @@ void UnsuppressEntity(base::WeakPtr<ProfileIOS> profile,
 - (void)formInputAccessoryViewControllerReset:
     (FormInputAccessoryViewController*)formInputAccessoryViewController {
   CHECK_EQ(_formInputAccessoryViewController, formInputAccessoryViewController);
+  // If an expanded manual fill view is open when the size class transitions
+  // between compact (`_formInputViewController != nil`) and popover
+  // (`_formInputViewController == nil`) presentation modes, stop the manual
+  // fill coordinator and reload the first responder's input views. Otherwise
+  // (e.g., during `viewDidDisappear:`), only reset the input views.
+  BOOL isManualFillOpen =
+      _formInputAccessoryMediator.formInputInteractionDelegate != nil;
+  BOOL isPopoverMode =
+      [ManualFillUtil shouldUsePopover:formInputAccessoryViewController];
+  if (isManualFillOpen &&
+      ((_formInputViewController == nil) != isPopoverMode)) {
+    [self reset];
+    return;
+  }
   [self resetInputViews];
 }
 
@@ -671,11 +655,10 @@ void UnsuppressEntity(base::WeakPtr<ProfileIOS> profile,
   UISheetPresentationController* sheetPresentationController =
       _sourcesNavigationController.sheetPresentationController;
   if (sheetPresentationController) {
-    sheetPresentationController.detents = @[
-      [UISheetPresentationControllerDetent mediumDetent],
-      [UISheetPresentationControllerDetent largeDetent],
-    ];
+    sheetPresentationController.detents =
+        @[ [sourcesViewController preferredHeightDetent] ];
     sheetPresentationController.prefersGrabberVisible = YES;
+    sheetPresentationController.prefersEdgeAttachedInCompactHeight = YES;
   }
 
   UIViewController* presenter = self.baseViewController;
@@ -696,10 +679,6 @@ void UnsuppressEntity(base::WeakPtr<ProfileIOS> profile,
   if (!activeWebState) {
     return NO;
   }
-  if (!base::FeatureList::IsEnabled(
-          autofill::features::kAutofillAmbientAutofillSourceAttribution)) {
-    return NO;
-  }
 
   base::optional_ref<const autofill::EntityInstance> entity =
       autofill::GetEntityInstance(
@@ -717,7 +696,7 @@ void UnsuppressEntity(base::WeakPtr<ProfileIOS> profile,
     return NO;
   }
   return base::FeatureList::IsEnabled(
-      autofill::features::kAutofillAmbientAutofillSuppressionUI);
+      autofill::features::kAutofillAmbientAutofillSuppression);
 }
 
 - (BOOL)isPersonalContextSuggestion:(FormSuggestion*)suggestion {
@@ -909,52 +888,15 @@ void UnsuppressEntity(base::WeakPtr<ProfileIOS> profile,
 // Called when the user has taken action to dismiss a popover.
 - (void)expandedManualFillCoordinatorDidDismissPopover:
     (ExpandedManualFillCoordinator*)coordinator {
+  // If a new coordinator has already been started before the previous popover
+  // finished its dismissal animation, only stop and remove the dismissed
+  // coordinator rather than resetting the newly started one.
+  if (self.childCoordinators.lastObject != coordinator) {
+    [coordinator stop];
+    [self.childCoordinators removeObject:coordinator];
+    return;
+  }
   [self reset];
-}
-
-#pragma mark - AtMemoryCommands
-
-- (void)showAtMemoryForField:(FieldGlobalId)fieldId {
-  AtMemoryFailedToOpenReason reason =
-      [self atMemoryFailedToOpenReasonForField:fieldId];
-  base::UmaHistogramEnumeration(kAtMemoryFailedToOpenReasonHistogram, reason);
-  if (reason != AtMemoryFailedToOpenReason::kNone) {
-    return;
-  }
-  _atMemoryCoordinator = [[AtMemoryCoordinator alloc]
-      initWithBaseViewController:self.baseViewController
-                         browser:self.browser
-                 contentInjector:self.injectionHandler
-                         fieldId:fieldId];
-
-  [self.childCoordinators addObject:_atMemoryCoordinator];
-
-  [_atMemoryCoordinator start];
-}
-
-- (void)dismissAtMemory {
-  if (!_atMemoryCoordinator) {
-    return;
-  }
-  AtMemoryCoordinator* coordinator = _atMemoryCoordinator;
-  _atMemoryCoordinator = nil;
-  [coordinator stop];
-  [self.childCoordinators removeObject:coordinator];
-}
-
-- (void)openAutofillSettings {
-  __weak __typeof(self) weakSelf = self;
-  id<SettingsCommands> settingsHandler = HandlerForProtocol(
-      self.browser->GetCommandDispatcher(), SettingsCommands);
-  [settingsHandler showEnhancedAutofillSettingsWithCompletion:^{
-    [weakSelf onAutofillSettingsDismissed];
-  }];
-}
-
-- (void)openManageEnhancedAutofillDetails {
-  id<SettingsCommands> settingsHandler = HandlerForProtocol(
-      self.browser->GetCommandDispatcher(), SettingsCommands);
-  [settingsHandler showSuggestionsFromGeminiHelpImprove];
 }
 
 #pragma mark - SecurityAlertCommands
@@ -981,11 +923,18 @@ void UnsuppressEntity(base::WeakPtr<ProfileIOS> profile,
   [presenter presentViewController:alert animated:YES completion:nil];
 }
 
+#pragma mark - FormInputAccessoryCommands
+
+- (void)resetAutofillSuggestionsLoadingStates {
+  [self resetLoadingStates];
+}
+
 #pragma mark - CRWResponderInputView
 
 - (UIView*)inputView {
-  return [ManualFillUtil shouldUsePopover] ? nil
-                                           : self.formInputViewController.view;
+  return [ManualFillUtil shouldUsePopover:_formInputAccessoryViewController]
+             ? nil
+             : self.formInputViewController.view;
 }
 
 - (UIView*)inputAccessoryView {
@@ -1064,22 +1013,27 @@ void UnsuppressEntity(base::WeakPtr<ProfileIOS> profile,
 
   __weak __typeof__(self) weakSelf = self;
 
-  [_alertCoordinator addItemWithTitle:l10n_util::GetNSString(IDS_CANCEL)
-                               action:^{
-                                 [weakSelf dismissAlertCoordinator];
-                               }
-                                style:UIAlertActionStyleCancel];
+  [_alertCoordinator
+      addItemWithTitle:l10n_util::GetNSString(IDS_CANCEL)
+                action:^{
+                  autofill::LogEntitySuppressionConfirmationDialogResult(
+                      /*accepted=*/false);
+                  [weakSelf dismissAlertCoordinator];
+                }
+                 style:UIAlertActionStyleCancel];
 
   NSString* removeActionTitle =
       l10n_util::GetNSString(IDS_IOS_AUTOFILL_AI_REMOVE_ACTION);
   [_alertCoordinator
       addItemWithTitle:removeActionTitle
                 action:^{
+                  autofill::LogEntitySuppressionConfirmationDialogResult(
+                      /*accepted=*/true);
                   [weakSelf suppressEntityForSuggestion:suggestion];
                   [weakSelf dismissAlertCoordinator];
                 }
-                 style:UIAlertActionStyleDestructive
-             preferred:NO
+                 style:UIAlertActionStyleDefault
+             preferred:YES
                enabled:YES];
 
   [_alertCoordinator start];
@@ -1087,9 +1041,9 @@ void UnsuppressEntity(base::WeakPtr<ProfileIOS> profile,
 
 // Suppresses the entity for `suggestion` and refreshes keyboard suggestions.
 - (void)suppressEntityForSuggestion:(FormSuggestion*)suggestion {
-  autofill::EntitySuppressionManager* suppressionManager =
-      GetEntitySuppressionManager(self.profile);
-  if (!suppressionManager) {
+  autofill::PersonalContextEntityMetadataManager* entityMetadataManager =
+      GetPersonalContextEntityMetadataManager(self.profile);
+  if (!entityMetadataManager) {
     return;
   }
   base::optional_ref<const autofill::EntityInstance> entity =
@@ -1097,9 +1051,19 @@ void UnsuppressEntity(base::WeakPtr<ProfileIOS> profile,
   if (!entity.has_value()) {
     return;
   }
-  suppressionManager->SuppressEntity(*entity);
+  // Copy the entity because suppressing it evicts it from the
+  // `EntityDataManager`, which owns `*entity`.
+  const autofill::EntityInstance entityCopy = *entity;
+  const bool suppressed = entityMetadataManager->SuppressEntity(entityCopy);
   [self resetSuggestions];
-  [self showUndoSnackbarForEntity:*entity];
+  // Only offer an undo if this call suppressed the entity, like on the other
+  // platforms.
+  if (suppressed) {
+    autofill::LogEntitySuppressedWithSavedEntityPresent(
+        entityCopy.type(),
+        IOSAutofillEntityDataManagerFactory::GetForProfile(self.profile));
+    [self showUndoSnackbarForEntity:entityCopy];
+  }
 }
 
 // Shows a snackbar allowing the user to undo removing `entity`.
@@ -1115,20 +1079,22 @@ void UnsuppressEntity(base::WeakPtr<ProfileIOS> profile,
   __weak __typeof(self) weakSelf = self;
   base::WeakPtr<ProfileIOS> weakProfile =
       self.profile ? self.profile->AsWeakPtr() : nullptr;
-  autofill::EntityInstance capturedEntity = entity;
+  autofill::EntityInstance::EntityId entityId = entity.guid();
   action.handler = ^{
-    UnsuppressEntity(weakProfile, capturedEntity);
+    base::UmaHistogramBoolean(
+        "Autofill.Snackbar.AutofillAiSuppressionUndo.ActionClicked", true);
+    UndoInSessionSuppressedEntity(weakProfile, entityId);
     [weakSelf resetSuggestions];
   };
 
   SnackbarMessage* message = [[SnackbarMessage alloc]
       initWithTitle:l10n_util::GetNSString(
                         IDS_IOS_AUTOFILL_AI_REMOVE_SNACKBAR_TITLE)];
-  message.subtitle =
-      l10n_util::GetNSString(IDS_IOS_AUTOFILL_AI_REMOVE_SNACKBAR_SUBTITLE);
   message.action = action;
 
-  [snackbarHandler showSnackbarMessage:message];
+  [snackbarHandler showSnackbarMessageAfterDismissingKeyboard:message];
+  base::UmaHistogramBoolean("Autofill.Snackbar.AutofillAiSuppressionUndo.Shown",
+                            true);
 }
 
 // Resets suggestions in the form input accessory mediator.
@@ -1214,6 +1180,12 @@ void UnsuppressEntity(base::WeakPtr<ProfileIOS> profile,
           IDS_AUTOFILL_IPH_ACCOUNT_NAME_EMAIL_SUGGESTION);
       voiceOverText = l10n_util::GetNSString(
           IDS_AUTOFILL_IPH_ACCOUNT_NAME_EMAIL_SUGGESTION_SCREENREADER);
+      break;
+    case SuggestionFeatureForIPH::kAutofillAmbientAutofillSpiiDisclaimer:
+      text = l10n_util::GetNSString(
+          IDS_AUTOFILL_IPH_AMBIENT_AUTOFILL_SPII_DISCLAIMER);
+      voiceOverText = l10n_util::GetNSString(
+          IDS_AUTOFILL_IPH_AMBIENT_AUTOFILL_SPII_DISCLAIMER_SCREENREADER);
       break;
     case SuggestionFeatureForIPH::kUnknown:
       NOTREACHED();
@@ -1333,7 +1305,7 @@ void UnsuppressEntity(base::WeakPtr<ProfileIOS> profile,
 - (void)cardCoordinatorDidCompleteManualFill:(CardCoordinator*)cardCoordinator {
   // This is re-triggered automatically only when it is an input view (as
   // opposed to a popover anchored to a button).
-  if ([ManualFillUtil shouldUsePopover]) {
+  if ([ManualFillUtil shouldUsePopover:_formInputAccessoryViewController]) {
     return;
   }
 
@@ -1349,16 +1321,6 @@ void UnsuppressEntity(base::WeakPtr<ProfileIOS> profile,
 
   // Ensure the keyboard accessory knows we are now in manual filling mode.
   [self updateKeyboardAccessoryForManualFilling];
-}
-
-// Handles dismissal of the Autofill settings page opened from AtMemory notice.
-- (void)onAutofillSettingsDismissed {
-  if (!self.browser) {
-    return;
-  }
-  if (!autofill::IsEnhancedAutofillEnabled(self.browser->GetProfile())) {
-    [self dismissAtMemory];
-  }
 }
 
 @end

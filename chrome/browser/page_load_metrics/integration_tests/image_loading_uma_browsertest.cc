@@ -2,6 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "base/command_line.h"
 #include "base/files/file_util.h"
 #include "base/path_service.h"
 #include "base/strings/stringprintf.h"
@@ -17,17 +18,29 @@
 #include "content/public/test/browser_test_utils.h"
 #include "net/test/embedded_test_server/controllable_http_response.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "ui/base/page_transition_types.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/display/display_switches.h"
 
 class ImageLoadingUMATest : public InProcessBrowserTest {
  public:
-  ImageLoadingUMATest() = default;
+  explicit ImageLoadingUMATest(double device_scale_factor = 1.0)
+      : device_scale_factor_(device_scale_factor) {}
   ImageLoadingUMATest(const ImageLoadingUMATest&) = delete;
   ImageLoadingUMATest& operator=(const ImageLoadingUMATest&) = delete;
   ~ImageLoadingUMATest() override = default;
 
  protected:
+  void SetUpCommandLine(base::CommandLine* command_line) override {
+    InProcessBrowserTest::SetUpCommandLine(command_line);
+    // blink::ReportImagePixelInaccuracy() scales CSS layout dimensions by the
+    // document's device pixel ratio. Pin the scale so histogram expectations
+    // don't depend on the host display's scale factor.
+    command_line->AppendSwitchASCII(
+        switches::kForceDeviceScaleFactor,
+        base::StringPrintf("%f", device_scale_factor_));
+  }
+
   void PreRunTestOnMainThread() override {
     InProcessBrowserTest::PreRunTestOnMainThread();
 
@@ -76,7 +89,8 @@ class ImageLoadingUMATest : public InProcessBrowserTest {
     content::WebContents* contents = browser()->OpenURL(
         content::OpenURLParams::CreateBrowserInitiated(
             embedded_test_server()->GetURL("/mock_page.html"),
-            WindowOpenDisposition::CURRENT_TAB, ui::PAGE_TRANSITION_TYPED),
+            ui::mojom::WindowOpenDisposition::kCurrentTab,
+            ui::PAGE_TRANSITION_TYPED),
         /*navigation_handle_callback=*/{});
     auto waiter =
         std::make_unique<page_load_metrics::PageLoadMetricsTestWaiter>(
@@ -120,6 +134,9 @@ class ImageLoadingUMATest : public InProcessBrowserTest {
   }
 
   std::unique_ptr<base::HistogramTester> histogram_tester_;
+
+ private:
+  const double device_scale_factor_;
 };
 
 IN_PROC_BROWSER_TEST_F(ImageLoadingUMATest, NoAttributeImage) {
@@ -269,16 +286,8 @@ IN_PROC_BROWSER_TEST_F(ImageLoadingUMATest, ImageWithIncorrectSizesAttribute) {
                                         true, 1);
 }
 
-// TODO(crbug.com/40916617): Fix this test on Mac.
-#if BUILDFLAG(IS_MAC)
-#define MAYBE_PictureWithIncorrectSizesAttribute \
-  DISABLED_PictureWithIncorrectSizesAttribute
-#else
-#define MAYBE_PictureWithIncorrectSizesAttribute \
-  PictureWithIncorrectSizesAttribute
-#endif
 IN_PROC_BROWSER_TEST_F(ImageLoadingUMATest,
-                       MAYBE_PictureWithIncorrectSizesAttribute) {
+                       PictureWithIncorrectSizesAttribute) {
   run_test(R"HTML(
     <!doctype html>
     <html>
@@ -319,17 +328,7 @@ IN_PROC_BROWSER_TEST_F(ImageLoadingUMATest,
 
 class ImageLoadingUMAHighDPITest : public ImageLoadingUMATest {
  public:
-  const double kDeviceScaleFactor = 2.1;
-
-  ImageLoadingUMAHighDPITest() = default;
-
- protected:
-  void SetUpCommandLine(base::CommandLine* command_line) override {
-    ImageLoadingUMATest::SetUpCommandLine(command_line);
-    command_line->AppendSwitchASCII(
-        switches::kForceDeviceScaleFactor,
-        base::StringPrintf("%f", kDeviceScaleFactor));
-  }
+  ImageLoadingUMAHighDPITest() : ImageLoadingUMATest(2.1) {}
 };
 
 IN_PROC_BROWSER_TEST_F(ImageLoadingUMAHighDPITest,

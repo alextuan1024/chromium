@@ -19,7 +19,6 @@
 #include "build/build_config.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/search_engines/template_url_service_factory.h"
-#include "chrome/browser/ui/browser_command_controller.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/common/chrome_render_frame.mojom.h"
 #include "chrome/common/chrome_switches.h"
@@ -33,6 +32,7 @@
 #include "components/search_engines/template_url.h"
 #include "components/search_engines/template_url_service.h"
 #include "components/strings/grit/components_strings.h"
+#include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_entry.h"
@@ -47,14 +47,15 @@
 #include "skia/ext/image_operations.h"
 #include "third_party/blink/public/common/associated_interfaces/associated_interface_provider.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/base/page_transition_types.h"
-#include "ui/base/window_open_disposition.h"
 #include "ui/gfx/codec/jpeg_codec.h"
 #include "ui/gfx/codec/webp_codec.h"
 #include "ui/gfx/image/image_util.h"
 
 #if !BUILDFLAG(IS_ANDROID)
 #include "base/time/time.h"
+#include "chrome/browser/ui/browser_command_controller.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"  // nogncheck crbug.com/40147906
 #include "chrome/browser/ui/browser_window/public/browser_window_interface_iterator.h"  // nogncheck crbug.com/40147906
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"  // nogncheck crbug.com/40147906
@@ -85,11 +86,26 @@ gfx::Image DownscaleImage(const gfx::Image& image) {
 
 }  // namespace
 
-CoreTabHelper::CoreTabHelper(WebContents* web_contents)
+DEFINE_USER_DATA(CoreTabHelper);
+
+CoreTabHelper::CoreTabHelper(tabs::TabInterface& tab, WebContents* web_contents)
     : content::WebContentsObserver(web_contents),
-      content::WebContentsUserData<CoreTabHelper>(*web_contents) {}
+      scoped_unowned_user_data_(tab.GetUnownedUserDataHost(), *this) {}
 
 CoreTabHelper::~CoreTabHelper() = default;
+
+// static
+CoreTabHelper* CoreTabHelper::From(tabs::TabInterface* tab) {
+  return tab ? Get(tab->GetUnownedUserDataHost()) : nullptr;
+}
+
+// static
+CoreTabHelper* CoreTabHelper::FromWebContents(WebContents* web_contents) {
+  if (!web_contents) {
+    return nullptr;
+  }
+  return From(tabs::TabInterface::MaybeGetFromContents(web_contents));
+}
 
 // static
 std::u16string CoreTabHelper::GetDefaultTitle() {
@@ -286,7 +302,7 @@ void CoreTabHelper::SearchByImageImpl(
   TemplateURLService* template_url_service = GetTemplateURLService();
   const TemplateURL* const default_provider =
       template_url_service->GetDefaultSearchProvider();
-  DCHECK(default_provider);
+  CHECK(default_provider, base::NotFatalUntil::M162);
   TemplateURLRef::SearchTermsArgs search_args =
       TemplateURLRef::SearchTermsArgs(std::u16string());
 
@@ -296,8 +312,6 @@ void CoreTabHelper::SearchByImageImpl(
       /*encoded_size_bytes=*/0));
 
   size_t encoded_size_bytes;
-  std::string content_type;
-  std::vector<unsigned char> encoded_image_bytes;
   lens::mojom::ImageFormat image_format;
   image_format =
       EncodeImageIntoSearchArgs(image, encoded_size_bytes, search_args);
@@ -509,7 +523,7 @@ void CoreTabHelper::DoSearchByImage(
   TemplateURLService* template_url_service = GetTemplateURLService();
   const TemplateURL* const default_provider =
       template_url_service->GetDefaultSearchProvider();
-  DCHECK(default_provider);
+  CHECK(default_provider, base::NotFatalUntil::M162);
 
   std::string additional_query_params_modified = additional_query_params;
   if (base::FeatureList::IsEnabled(lens::features::kLensStandalone) &&
@@ -543,10 +557,10 @@ void CoreTabHelper::DoSearchByImage(
 TemplateURLService* CoreTabHelper::GetTemplateURLService() {
   Profile* profile =
       Profile::FromBrowserContext(web_contents()->GetBrowserContext());
-  DCHECK(profile);
+  CHECK(profile, base::NotFatalUntil::M162);
   TemplateURLService* template_url_service =
       TemplateURLServiceFactory::GetForProfile(profile);
-  DCHECK(template_url_service);
+  CHECK(template_url_service, base::NotFatalUntil::M162);
   return template_url_service;
 }
 
@@ -557,12 +571,12 @@ void CoreTabHelper::PostContentToURL(TemplateURLRef::PostContent post_content,
   }
   content::OpenURLParams open_url_params =
       content::OpenURLParams::CreateBrowserInitiated(
-          url, WindowOpenDisposition::NEW_FOREGROUND_TAB,
+          url, ui::mojom::WindowOpenDisposition::kNewForegroundTab,
           ui::PAGE_TRANSITION_LINK);
   const std::string& content_type = post_content.first;
   const std::string& post_data = post_content.second;
   if (!post_data.empty()) {
-    DCHECK(!content_type.empty());
+    CHECK(!content_type.empty(), base::NotFatalUntil::M162);
     open_url_params.post_data =
         network::ResourceRequestBody::CreateFromCopyOfBytes(
             base::as_byte_span(post_data));
@@ -573,5 +587,3 @@ void CoreTabHelper::PostContentToURL(TemplateURLRef::PostContent post_content,
 
   web_contents()->OpenURL(open_url_params, /*navigation_handle_callback=*/{});
 }
-
-WEB_CONTENTS_USER_DATA_KEY_IMPL(CoreTabHelper);

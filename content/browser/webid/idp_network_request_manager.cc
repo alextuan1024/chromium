@@ -30,6 +30,7 @@
 #include "content/browser/webid/mappers.h"
 #include "content/browser/webid/metrics.h"
 #include "content/browser/webid/network_request_manager.h"
+#include "content/browser/webid/url_computations.h"
 #include "content/browser/webid/webid_utils.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/content_browser_client.h"
@@ -60,7 +61,6 @@
 #include "services/network/public/cpp/url_loader_completion_status.h"
 #include "services/network/public/mojom/client_security_state.mojom.h"
 #include "services/network/public/mojom/url_response_head.mojom.h"
-#include "third_party/blink/public/common/manifest/manifest_icon_selector.h"
 #include "third_party/blink/public/mojom/webid/federated_request.mojom.h"
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "ui/gfx/color_utils.h"
@@ -90,6 +90,11 @@ constexpr char kWellKnownPath[] = "/.well-known/web-identity";
 
 // Well-known file JSON keys
 constexpr char kProviderUrlListKey[] = "provider_urls";
+// The identity provider's links, which aren't part of the FedCM spec's
+// IdentityProviderWellKnown dictionary.
+constexpr char kIdpAccountManagementUrlKey[] = "account_management_url";
+constexpr char kIdpPrivacyPolicyKey[] = "privacy_policy_url";
+constexpr char kIdpTermsOfServiceKey[] = "terms_of_service_url";
 
 // fedcm.json configuration keys.
 constexpr char kIdpBrandingKey[] = "branding";
@@ -119,11 +124,9 @@ constexpr char kTermsOfServiceKey[] = "terms_of_service_url";
 constexpr char kClientIsThirdPartyToTopFrameOriginKey[] =
     "client_is_third_party_to_top_frame_origin";
 
-// Keys in 'branding' 'icons' dictionary in config for the IDP icon and client
-// metadata endpoint for the RP icon.
+// Key of the icons list in the config's 'branding' dictionary for the IDP icon,
+// and in the client metadata endpoint response for the RP icon.
 constexpr char kBrandingIconsKey[] = "icons";
-constexpr char kBrandingIconUrl[] = "url";
-constexpr char kBrandingIconSize[] = "size";
 
 // The id assertion endpoint contains a token result.
 constexpr char kTokenKey[] = "token";
@@ -194,52 +197,6 @@ std::optional<SkColor> ParseCssColor(const std::string* value) {
   return SkColorSetA(color, 0xff);
 }
 
-GURL FindBestMatchingIconUrl(const base::ListValue* icons_value,
-                             int brand_icon_ideal_size,
-                             int brand_icon_minimum_size,
-                             const GURL& config_url) {
-  std::vector<blink::Manifest::ImageResource> icons;
-  for (const base::Value& icon_value : *icons_value) {
-    const base::DictValue* icon_value_dict = icon_value.GetIfDict();
-    if (!icon_value_dict) {
-      continue;
-    }
-
-    const std::string* icon_src = icon_value_dict->FindString(kBrandingIconUrl);
-    if (!icon_src) {
-      continue;
-    }
-
-    blink::Manifest::ImageResource icon;
-
-    if (!config_url.is_empty()) {
-      icon.src = config_url.Resolve(*icon_src);
-    } else {
-      icon.src = GURL(*icon_src);
-    }
-
-    if (!icon.src.is_valid() || !icon.src.SchemeIsHTTPOrHTTPS()) {
-      continue;
-    }
-
-    icon.purpose = {blink::mojom::ManifestImageResource_Purpose::MASKABLE};
-
-    std::optional<int> icon_size = icon_value_dict->FindInt(kBrandingIconSize);
-    int icon_size_int = icon_size.value_or(0);
-    icon.sizes.emplace_back(icon_size_int, icon_size_int);
-
-    icons.push_back(icon);
-  }
-
-  blink::ManifestIconSelectorParams params;
-  params.ideal_icon_size_in_px = brand_icon_ideal_size;
-  params.minimum_icon_size_in_px = brand_icon_minimum_size;
-  params.purpose = blink::mojom::ManifestImageResource_Purpose::MASKABLE;
-  auto result =
-      blink::ManifestIconSelector::FindBestMatchingIcon(icons, params);
-  return result ? result->icon_url : GURL();
-}
-
 // Parse IdentityProviderMetadata from given value. Overwrites |idp_metadata|
 // with the parsed value.
 void ParseIdentityProviderMetadata(const base::DictValue& idp_metadata_value,
@@ -280,6 +237,11 @@ void OnWellKnownParsed(
   well_known.accounts =
       ExtractEndpoint(well_known_url, *result, kAccountsEndpointKey);
   well_known.login_url = ExtractEndpoint(well_known_url, *result, kLoginUrlKey);
+  well_known.account_management_url =
+      ExtractString(*result, kIdpAccountManagementUrlKey);
+  well_known.privacy_policy_url = ExtractString(*result, kIdpPrivacyPolicyKey);
+  well_known.terms_of_service_url =
+      ExtractString(*result, kIdpTermsOfServiceKey);
   if (!well_known.accounts.is_empty() && !well_known.login_url.is_empty() &&
       !result->Find(kProviderUrlListKey)) {
     std::move(callback).Run(fetch_status, std::move(well_known));
@@ -485,31 +447,6 @@ void OnAccountsRequestParsed(
 
   std::move(callback).Run({ParseStatus::kSuccess, fetch_status.response_code},
                           std::move(response));
-}
-
-std::pair<GURL, std::optional<ErrorUrlType>> GetErrorUrlAndType(
-    const std::string* url,
-    const GURL& idp_url) {
-  if (!url || url->empty()) {
-    return std::make_pair(GURL(), std::nullopt);
-  }
-
-  GURL error_url = idp_url.Resolve(*url);
-  if (!error_url.is_valid()) {
-    return std::make_pair(GURL(), std::nullopt);
-  }
-
-  url::Origin error_origin = url::Origin::Create(error_url);
-  url::Origin idp_origin = url::Origin::Create(idp_url);
-  if (error_origin == idp_origin) {
-    return std::make_pair(error_url, ErrorUrlType::kSameOrigin);
-  }
-
-  if (!net::SchemefulSite::IsSameSite(error_origin, idp_origin)) {
-    return std::make_pair(GURL(), ErrorUrlType::kCrossSite);
-  }
-
-  return std::make_pair(error_url, ErrorUrlType::kCrossOriginSameSite);
 }
 
 ErrorDialogType GetErrorDialogType(const std::string& code, const GURL& url) {

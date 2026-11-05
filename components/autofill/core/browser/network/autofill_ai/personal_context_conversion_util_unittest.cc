@@ -5,10 +5,14 @@
 #include "components/autofill/core/browser/network/autofill_ai/personal_context_conversion_util.h"
 
 #include <optional>
+#include <string_view>
+#include <utility>
+#include <variant>
 
 #include "base/strings/utf_string_conversions.h"
 #include "base/time/time.h"
 #include "base/uuid.h"
+#include "build/build_config.h"
 #include "components/autofill/core/browser/data_model/autofill_ai/entity_instance.h"
 #include "components/autofill/core/browser/data_model/autofill_ai/entity_instance_test_api.h"
 #include "components/autofill/core/browser/data_model/autofill_ai/entity_type.h"
@@ -16,12 +20,18 @@
 #include "components/personal_context/proto/features/common_data.pb.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "url/gurl.h"
 
 namespace autofill {
 
 namespace {
 
+using ::testing::IsEmpty;
 using enum AttributeTypeName;
+using GmailSourceMetadata =
+    EntityInstance::PersonalContextRecordTypePayload::GmailSourceMetadata;
+using PhotosSourceMetadata =
+    EntityInstance::PersonalContextRecordTypePayload::PhotosSourceMetadata;
 using Source = EntityInstance::PersonalContextRecordTypePayload::Source;
 
 // Helper to check the string value of an attribute.
@@ -45,6 +55,81 @@ void ExpectMaskedAttributeValue(const EntityInstance& entity,
       << "Missing attribute " << static_cast<int>(attribute_name);
   EXPECT_EQ(attr->GetCompleteRawInfo(), expected_value);
   EXPECT_TRUE(attr->masked());
+}
+
+personal_context::proto::DateTime CreateDateTimeProto(int year,
+                                                      int month,
+                                                      int day,
+                                                      int hours = 0,
+                                                      int minutes = 0) {
+  personal_context::proto::DateTime datetime;
+  datetime.set_year(year);
+  datetime.set_month(month);
+  datetime.set_day(day);
+  datetime.set_hours(hours);
+  datetime.set_minutes(minutes);
+  return datetime;
+}
+
+personal_context::proto::SourceReference CreateGmailSource(
+    std::optional<std::string_view> subject,
+    std::optional<personal_context::proto::DateTime> timestamp,
+    std::string_view desktop_url = "https://mail.google.com/mail/#inbox/123",
+    std::string_view mobile_url =
+        "https://mail.google.com/mail/mu/mp/#cv/Inbox/123") {
+  personal_context::proto::SourceReference source;
+  personal_context::proto::GmailReference* gmail = source.mutable_gmail();
+  gmail->mutable_message_urls()->set_desktop_web_url(desktop_url);
+  gmail->mutable_message_urls()->set_mobile_web_url(mobile_url);
+  if (subject.has_value()) {
+    gmail->set_subject(*subject);
+  }
+  if (timestamp.has_value()) {
+    *gmail->mutable_timestamp() = *std::move(timestamp);
+  }
+  return source;
+}
+
+personal_context::proto::SourceReference CreatePhotosSource(
+    std::optional<personal_context::proto::DateTime> timestamp,
+    std::string_view url = "https://photos.google.com/photo/abc") {
+  personal_context::proto::SourceReference source;
+  personal_context::proto::PhotosReference* photos = source.mutable_photos();
+  photos->set_photos_url(url);
+  if (timestamp.has_value()) {
+    *photos->mutable_timestamp() = *std::move(timestamp);
+  }
+  return source;
+}
+
+personal_context::proto::Entity CreateOrderWithMultipleSources() {
+  personal_context::proto::Entity entity;
+  entity.mutable_order()->set_order_id("ORD-001");
+
+  *entity.add_source_references() =
+      CreateGmailSource("Order Confirmation", /*timestamp=*/std::nullopt);
+  *entity.add_source_references() = CreateGmailSource(
+      /*subject=*/std::nullopt, CreateDateTimeProto(2025, 10, 14, 9, 15),
+      "https://mail.google.com/mail/#inbox/124",
+      "https://mail.google.com/mail/mu/mp/#cv/Inbox/124");
+  *entity.add_source_references() =
+      CreatePhotosSource(CreateDateTimeProto(2025, 10, 15, 14, 30));
+  // Gmail source without subject or timestamp.
+  *entity.add_source_references() = CreateGmailSource(
+      /*subject=*/std::nullopt, /*timestamp=*/std::nullopt,
+      "https://mail.google.com/mail/#inbox/456",
+      "https://mail.google.com/mail/mu/mp/#cv/Inbox/456");
+  // Photos source without timestamp.
+  *entity.add_source_references() = CreatePhotosSource(
+      /*timestamp=*/std::nullopt, "https://photos.google.com/photo/def");
+  // Source with invalid URL.
+  *entity.add_source_references() =
+      CreateGmailSource("Subject", /*timestamp=*/std::nullopt,
+                        "not-a-valid-url", "not-a-valid-url");
+  // Empty source.
+  entity.add_source_references();
+
+  return entity;
 }
 
 TEST(AutofillAiPersonalContextConverters, ConvertPassport) {
@@ -210,10 +295,7 @@ TEST(AutofillAiPersonalContextConverters, ConvertFlightReservation) {
   flight.set_passenger_name("Bob Dylan");
   flight.set_departure_airport("FRA");
   flight.set_arrival_airport("JFK");
-  flight.mutable_departure_time()->set_year(2026);
-  flight.mutable_departure_time()->set_month(5);
-  flight.mutable_departure_time()->set_day(28);
-  flight.mutable_departure_time()->set_hours(12);
+  *flight.mutable_departure_time() = CreateDateTimeProto(2026, 5, 28, 12, 0);
 
   personal_context::proto::Entity entity;
   *entity.mutable_flight_reservation() = flight;
@@ -242,10 +324,7 @@ TEST(AutofillAiPersonalContextConverters, ConvertFlightReservationWithOffset) {
   flight.set_departure_airport("FRA");
   flight.set_arrival_airport("JFK");
   // 2026-05-28 12:00:00.
-  flight.mutable_departure_time()->set_year(2026);
-  flight.mutable_departure_time()->set_month(5);
-  flight.mutable_departure_time()->set_day(28);
-  flight.mutable_departure_time()->set_hours(12);
+  *flight.mutable_departure_time() = CreateDateTimeProto(2026, 5, 28, 12, 0);
   // UTC-4 (offset -14400s). Absolute time is 16:00:00 UTC.
   flight.mutable_departure_time()->mutable_utc_offset()->set_seconds(-14400);
 
@@ -397,89 +476,288 @@ TEST(AutofillAiPersonalContextConverters, ConvertKnownTravelerNumber_Unmasked) {
 }
 
 TEST(AutofillAiPersonalContextConverters, ConvertEntityWithGmailSource) {
-  personal_context::proto::Passport passport;
-  passport.set_name("Jane Doe");
-
   personal_context::proto::Entity entity;
-  *entity.mutable_passport() = passport;
-  personal_context::proto::SourceReference* source =
-      entity.add_source_references();
-  source->mutable_gmail()->set_message_url(
-      "https://mail.google.com/mail/u/0/#inbox/123");
-  source->mutable_gmail()->set_subject("Passport Information");
+  entity.mutable_passport()->set_name("Jane Doe");
+  *entity.add_source_references() = CreateGmailSource(
+      "Passport Information", CreateDateTimeProto(2025, 10, 15, 14, 30));
 
   std::optional<EntityInstance> opt_result =
       PersonalContextEntityToEntityInstance(entity);
 
   ASSERT_TRUE(opt_result.has_value());
   const EntityInstance& result = opt_result.value();
+  base::Time expected_timestamp;
+  ASSERT_TRUE(
+      base::Time::FromUTCString("2025-10-15 14:30:00", &expected_timestamp));
+  EntityInstance::PersonalContextRecordTypePayload payload{
+      .sources = {Source{
+          .url = GetGmailSourceUrl(entity.source_references(0).gmail()),
+          .metadata = GmailSourceMetadata{.title = "Passport Information",
+                                          .timestamp = expected_timestamp}}}};
+  EXPECT_EQ(std::get<EntityInstance::PersonalContextRecordTypePayload>(
+                result.record_type_data()),
+            payload);
+}
+
+TEST(AutofillAiPersonalContextConverters,
+     ConvertEntityWithGmailSource_EmptySubjectWithTimestamp) {
+  personal_context::proto::Entity entity;
+  entity.mutable_passport()->set_name("Jane Doe");
+  *entity.add_source_references() = CreateGmailSource(
+      /*subject=*/std::nullopt, CreateDateTimeProto(2025, 10, 15, 14, 30));
+
+  std::optional<EntityInstance> opt_result =
+      PersonalContextEntityToEntityInstance(entity);
+
+  ASSERT_TRUE(opt_result.has_value());
+  const EntityInstance& result = opt_result.value();
+  base::Time expected_timestamp;
+  ASSERT_TRUE(
+      base::Time::FromUTCString("2025-10-15 14:30:00", &expected_timestamp));
   EntityInstance::PersonalContextRecordTypePayload payload{
       .sources = {
-          Source{.type = Source::Type::kGmail,
-                 .url = "https://mail.google.com/mail/u/0/#inbox/123"}}};
+          Source{.url = GetGmailSourceUrl(entity.source_references(0).gmail()),
+                 .metadata = GmailSourceMetadata{
+                     .title = "", .timestamp = expected_timestamp}}}};
   EXPECT_EQ(std::get<EntityInstance::PersonalContextRecordTypePayload>(
                 result.record_type_data()),
             payload);
 }
 
 TEST(AutofillAiPersonalContextConverters, ConvertEntityWithPhotosSource) {
-  personal_context::proto::DriversLicense dl;
-  dl.set_name("John Smith");
-
   personal_context::proto::Entity entity;
-  *entity.mutable_drivers_license() = dl;
-  personal_context::proto::SourceReference* source =
-      entity.add_source_references();
-  source->mutable_photos()->set_photos_url(
-      "https://photos.google.com/photo/abc");
+  entity.mutable_drivers_license()->set_name("John Smith");
+  *entity.add_source_references() =
+      CreatePhotosSource(CreateDateTimeProto(2025, 10, 15, 14, 30));
 
   std::optional<EntityInstance> opt_result =
       PersonalContextEntityToEntityInstance(entity);
 
   ASSERT_TRUE(opt_result.has_value());
   const EntityInstance& result = opt_result.value();
+  base::Time expected_timestamp;
+  ASSERT_TRUE(
+      base::Time::FromUTCString("2025-10-15 14:30:00", &expected_timestamp));
   EntityInstance::PersonalContextRecordTypePayload payload{
-      .sources = {Source{.type = Source::Type::kPhotos,
-                         .url = "https://photos.google.com/photo/abc"}}};
+      .sources = {Source{
+          .url = GURL("https://photos.google.com/photo/abc"),
+          .metadata = PhotosSourceMetadata{.timestamp = expected_timestamp}}}};
   EXPECT_EQ(std::get<EntityInstance::PersonalContextRecordTypePayload>(
                 result.record_type_data()),
+            payload);
+}
+
+#if BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_IOS)
+TEST(AutofillAiPersonalContextConverters,
+     ConvertEntityWithGmailSource_EmptySubjectAndTimestamp) {
+  personal_context::proto::Entity entity;
+  entity.mutable_passport()->set_name("Jane Doe");
+  *entity.add_source_references() =
+      CreateGmailSource(/*subject=*/std::nullopt, /*timestamp=*/std::nullopt);
+
+  std::optional<EntityInstance> opt_result =
+      PersonalContextEntityToEntityInstance(entity);
+
+  ASSERT_TRUE(opt_result.has_value());
+  EXPECT_THAT(std::get<EntityInstance::PersonalContextRecordTypePayload>(
+                  opt_result->record_type_data())
+                  .sources,
+              IsEmpty());
+}
+
+TEST(AutofillAiPersonalContextConverters,
+     ConvertEntityWithGmailSource_EmptySubjectAndInvalidTimestamp) {
+  personal_context::proto::Entity entity;
+  entity.mutable_passport()->set_name("Jane Doe");
+  *entity.add_source_references() = CreateGmailSource(
+      /*subject=*/std::nullopt, CreateDateTimeProto(2025, 13, 45));
+
+  std::optional<EntityInstance> opt_result =
+      PersonalContextEntityToEntityInstance(entity);
+
+  ASSERT_TRUE(opt_result.has_value());
+  EXPECT_THAT(std::get<EntityInstance::PersonalContextRecordTypePayload>(
+                  opt_result->record_type_data())
+                  .sources,
+              IsEmpty());
+}
+
+TEST(AutofillAiPersonalContextConverters,
+     ConvertEntityWithPhotosSource_EmptyTimestamp) {
+  personal_context::proto::Entity entity;
+  entity.mutable_drivers_license()->set_name("John Smith");
+  *entity.add_source_references() =
+      CreatePhotosSource(/*timestamp=*/std::nullopt);
+
+  std::optional<EntityInstance> opt_result =
+      PersonalContextEntityToEntityInstance(entity);
+
+  ASSERT_TRUE(opt_result.has_value());
+  EXPECT_THAT(std::get<EntityInstance::PersonalContextRecordTypePayload>(
+                  opt_result->record_type_data())
+                  .sources,
+              IsEmpty());
+}
+
+TEST(AutofillAiPersonalContextConverters,
+     ConvertEntityWithPhotosSource_InvalidTimestamp) {
+  personal_context::proto::Entity entity;
+  entity.mutable_drivers_license()->set_name("John Smith");
+  *entity.add_source_references() =
+      CreatePhotosSource(CreateDateTimeProto(2025, 13, 45));
+
+  std::optional<EntityInstance> opt_result =
+      PersonalContextEntityToEntityInstance(entity);
+
+  ASSERT_TRUE(opt_result.has_value());
+  EXPECT_THAT(std::get<EntityInstance::PersonalContextRecordTypePayload>(
+                  opt_result->record_type_data())
+                  .sources,
+              IsEmpty());
+}
+
+TEST(AutofillAiPersonalContextConverters, ConvertEntityWithMultipleSources) {
+  personal_context::proto::Entity entity = CreateOrderWithMultipleSources();
+
+  std::optional<EntityInstance> opt_result =
+      PersonalContextEntityToEntityInstance(entity);
+
+  ASSERT_TRUE(opt_result.has_value());
+  base::Time expected_gmail_timestamp;
+  ASSERT_TRUE(base::Time::FromUTCString("2025-10-14 09:15:00",
+                                        &expected_gmail_timestamp));
+  base::Time expected_photos_timestamp;
+  ASSERT_TRUE(base::Time::FromUTCString("2025-10-15 14:30:00",
+                                        &expected_photos_timestamp));
+  EntityInstance::PersonalContextRecordTypePayload payload{
+      .sources = {
+          Source{
+              .url = GetGmailSourceUrl(entity.source_references(0).gmail()),
+              .metadata = GmailSourceMetadata{.title = "Order Confirmation"}},
+          Source{.url = GetGmailSourceUrl(entity.source_references(1).gmail()),
+                 .metadata = GmailSourceMetadata{.timestamp =
+                                                     expected_gmail_timestamp}},
+          Source{
+              .url = GURL("https://photos.google.com/photo/abc"),
+              .metadata =
+                  PhotosSourceMetadata{.timestamp = expected_photos_timestamp}},
+      }};
+  EXPECT_EQ(std::get<EntityInstance::PersonalContextRecordTypePayload>(
+                opt_result->record_type_data()),
+            payload);
+}
+#else
+TEST(AutofillAiPersonalContextConverters,
+     ConvertEntityWithGmailSource_EmptySubjectAndTimestamp) {
+  personal_context::proto::Entity entity;
+  entity.mutable_passport()->set_name("Jane Doe");
+  *entity.add_source_references() =
+      CreateGmailSource(/*subject=*/std::nullopt, /*timestamp=*/std::nullopt);
+
+  std::optional<EntityInstance> opt_result =
+      PersonalContextEntityToEntityInstance(entity);
+
+  ASSERT_TRUE(opt_result.has_value());
+  EntityInstance::PersonalContextRecordTypePayload payload{
+      .sources = {Source{.url = GURL("https://mail.google.com/mail/#inbox/123"),
+                         .metadata = GmailSourceMetadata{.title = ""}}}};
+  EXPECT_EQ(std::get<EntityInstance::PersonalContextRecordTypePayload>(
+                opt_result->record_type_data()),
+            payload);
+}
+
+TEST(AutofillAiPersonalContextConverters,
+     ConvertEntityWithGmailSource_EmptySubjectAndInvalidTimestamp) {
+  personal_context::proto::Entity entity;
+  entity.mutable_passport()->set_name("Jane Doe");
+  *entity.add_source_references() = CreateGmailSource(
+      /*subject=*/std::nullopt, CreateDateTimeProto(2025, 13, 45));
+
+  std::optional<EntityInstance> opt_result =
+      PersonalContextEntityToEntityInstance(entity);
+
+  ASSERT_TRUE(opt_result.has_value());
+  EntityInstance::PersonalContextRecordTypePayload payload{
+      .sources = {Source{.url = GURL("https://mail.google.com/mail/#inbox/123"),
+                         .metadata = GmailSourceMetadata{.title = ""}}}};
+  EXPECT_EQ(std::get<EntityInstance::PersonalContextRecordTypePayload>(
+                opt_result->record_type_data()),
+            payload);
+}
+
+TEST(AutofillAiPersonalContextConverters,
+     ConvertEntityWithPhotosSource_EmptyTimestamp) {
+  personal_context::proto::Entity entity;
+  entity.mutable_drivers_license()->set_name("John Smith");
+  *entity.add_source_references() =
+      CreatePhotosSource(/*timestamp=*/std::nullopt);
+
+  std::optional<EntityInstance> opt_result =
+      PersonalContextEntityToEntityInstance(entity);
+
+  ASSERT_TRUE(opt_result.has_value());
+  EntityInstance::PersonalContextRecordTypePayload payload{
+      .sources = {Source{.url = GURL("https://photos.google.com/photo/abc"),
+                         .metadata = PhotosSourceMetadata{}}}};
+  EXPECT_EQ(std::get<EntityInstance::PersonalContextRecordTypePayload>(
+                opt_result->record_type_data()),
+            payload);
+}
+
+TEST(AutofillAiPersonalContextConverters,
+     ConvertEntityWithPhotosSource_InvalidTimestamp) {
+  personal_context::proto::Entity entity;
+  entity.mutable_drivers_license()->set_name("John Smith");
+  *entity.add_source_references() =
+      CreatePhotosSource(CreateDateTimeProto(2025, 13, 45));
+
+  std::optional<EntityInstance> opt_result =
+      PersonalContextEntityToEntityInstance(entity);
+
+  ASSERT_TRUE(opt_result.has_value());
+  EntityInstance::PersonalContextRecordTypePayload payload{
+      .sources = {Source{.url = GURL("https://photos.google.com/photo/abc"),
+                         .metadata = PhotosSourceMetadata{}}}};
+  EXPECT_EQ(std::get<EntityInstance::PersonalContextRecordTypePayload>(
+                opt_result->record_type_data()),
             payload);
 }
 
 TEST(AutofillAiPersonalContextConverters, ConvertEntityWithMultipleSources) {
-  personal_context::proto::Order order;
-  order.set_order_id("ORD-001");
-
-  personal_context::proto::Entity entity;
-  *entity.mutable_order() = order;
-
-  personal_context::proto::SourceReference* gmail_source =
-      entity.add_source_references();
-  gmail_source->mutable_gmail()->set_message_url(
-      "https://mail.google.com/mail/u/0/#inbox/123");
-
-  personal_context::proto::SourceReference* photos_source =
-      entity.add_source_references();
-  photos_source->mutable_photos()->set_photos_url(
-      "https://photos.google.com/photo/abc");
-
-  // Add empty source.
-  entity.add_source_references();
+  personal_context::proto::Entity entity = CreateOrderWithMultipleSources();
 
   std::optional<EntityInstance> opt_result =
       PersonalContextEntityToEntityInstance(entity);
 
   ASSERT_TRUE(opt_result.has_value());
-  const EntityInstance& result = opt_result.value();
+  base::Time expected_gmail_timestamp;
+  ASSERT_TRUE(base::Time::FromUTCString("2025-10-14 09:15:00",
+                                        &expected_gmail_timestamp));
+  base::Time expected_photos_timestamp;
+  ASSERT_TRUE(base::Time::FromUTCString("2025-10-15 14:30:00",
+                                        &expected_photos_timestamp));
   EntityInstance::PersonalContextRecordTypePayload payload{
-      .sources = {Source{.type = Source::Type::kGmail,
-                         .url = "https://mail.google.com/mail/u/0/#inbox/123"},
-                  Source{.type = Source::Type::kPhotos,
-                         .url = "https://photos.google.com/photo/abc"}}};
+      .sources = {
+          Source{
+              .url = GetGmailSourceUrl(entity.source_references(0).gmail()),
+              .metadata = GmailSourceMetadata{.title = "Order Confirmation"}},
+          Source{.url = GetGmailSourceUrl(entity.source_references(1).gmail()),
+                 .metadata = GmailSourceMetadata{.timestamp =
+                                                     expected_gmail_timestamp}},
+          Source{
+              .url = GURL("https://photos.google.com/photo/abc"),
+              .metadata =
+                  PhotosSourceMetadata{.timestamp = expected_photos_timestamp}},
+          Source{.url = GURL("https://mail.google.com/mail/#inbox/456"),
+                 .metadata = GmailSourceMetadata{.title = ""}},
+          Source{.url = GURL("https://photos.google.com/photo/def"),
+                 .metadata = PhotosSourceMetadata{}},
+      }};
   EXPECT_EQ(std::get<EntityInstance::PersonalContextRecordTypePayload>(
-                result.record_type_data()),
+                opt_result->record_type_data()),
             payload);
 }
+#endif
 
 TEST(AutofillAiPersonalContextConverters,
      AutofillEntityTypeToPersonalContextEntityType) {

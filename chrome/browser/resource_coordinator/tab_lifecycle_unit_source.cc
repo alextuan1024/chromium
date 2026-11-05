@@ -31,6 +31,7 @@
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_user_data.h"
+#include "ui/base/base_window.h"
 
 namespace resource_coordinator {
 
@@ -86,7 +87,7 @@ class TabLifecycleStateObserver : public performance_manager::PageNodeObserver,
   static void OnLifecycleStateChangedImpl(
       base::WeakPtr<content::WebContents> contents,
       performance_manager::mojom::LifecycleState state) {
-    DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+    CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M163);
     // If the web contents is still alive then dispatch to the actual
     // implementation in TabLifecycleUnitSource.
     if (contents) {
@@ -191,8 +192,9 @@ TabStripModel* TabLifecycleUnitSource::GetFocusedTabStripModel() const {
     return focused_tab_strip_model_for_testing_;
   }
   BrowserWindowInterface* const focused_browser =
-      GlobalBrowserCollection::GetInstance()->GetActiveBrowser();
-  if (!focused_browser) {
+      GlobalBrowserCollection::GetInstance()->GetLastActiveBrowser();
+  if (!focused_browser || (!focused_browser->IsActive() &&
+                           !focused_browser->GetWindow()->IsActive())) {
     return nullptr;
   }
   return focused_browser->GetTabStripModel();
@@ -277,7 +279,7 @@ void TabLifecycleUnitSource::OnTabInserted(TabStripModel* tab_strip_model,
 
 void TabLifecycleUnitSource::OnTabDetached(content::WebContents* contents) {
   TabLifecycleUnit* lifecycle_unit = GetTabLifecycleUnit(contents);
-  DCHECK(lifecycle_unit);
+  CHECK(lifecycle_unit, base::NotFatalUntil::M163);
   if (focused_lifecycle_unit_ == lifecycle_unit) {
     UpdateFocusedTabTo(nullptr, nullptr);
   }
@@ -288,13 +290,13 @@ void TabLifecycleUnitSource::OnTabReplaced(content::WebContents* old_contents,
                                            content::WebContents* new_contents) {
   auto* old_contents_holder =
       TabLifecycleUnitHolder::FromWebContents(old_contents);
-  DCHECK(old_contents_holder);
-  DCHECK(old_contents_holder->lifecycle_unit());
+  CHECK(old_contents_holder, base::NotFatalUntil::M163);
+  CHECK(old_contents_holder->lifecycle_unit(), base::NotFatalUntil::M163);
   TabLifecycleUnitHolder::CreateForWebContents(new_contents);
   auto* new_contents_holder =
       TabLifecycleUnitHolder::FromWebContents(new_contents);
-  DCHECK(new_contents_holder);
-  DCHECK(!new_contents_holder->lifecycle_unit());
+  CHECK(new_contents_holder, base::NotFatalUntil::M163);
+  CHECK(!new_contents_holder->lifecycle_unit(), base::NotFatalUntil::M163);
   new_contents_holder->set_lifecycle_unit(
       old_contents_holder->TakeTabLifecycleUnit());
   new_contents_holder->lifecycle_unit()->SetWebContents(new_contents);

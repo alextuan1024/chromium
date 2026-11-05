@@ -13,13 +13,11 @@ import hashlib
 import importlib
 import json
 import os
-import pprint
 import re
 import struct
 import sys
 
 # Disable lint check for finding modules:
-# pylint: disable=F0401
 
 
 def _GetDirAbove(dirname):
@@ -40,12 +38,9 @@ sys.path.insert(
   ),
 )
 
-from mojom.error import Error
-import mojom.fileutil as fileutil
-from mojom.generate.module import Module
-from mojom.generate import template_expander
-from mojom.generate import translate
-from mojom.generate.generator import WriteFile
+import mojom.fileutil as fileutil  # noqa: E402
+from mojom.generate.module import Module  # noqa: E402
+from mojom.generate import template_expander  # noqa: E402
 
 
 _BUILTIN_GENERATORS = {
@@ -53,6 +48,7 @@ _BUILTIN_GENERATORS = {
   "fuzzilli": "mojom_fuzzilli_generator",
   "javascript": "mojom_js_generator",
   "java": "mojom_java_generator",
+  "jni": "mojom_jni_generator",
   "mojolpm": "mojom_mojolpm_generator",
   "typescript": "mojom_ts_generator",
   "rust": "mojom_rust_generator",
@@ -134,6 +130,8 @@ def _GetModulePath(path, output_dir):
 
 
 def ScrambleMethodOrdinals(interfaces, salt):
+  if not salt or not salt.strip():
+    raise ValueError('Mojo message ID scrambling salt must not be empty.')
   already_generated = set()
   for interface in interfaces:
     i = 0
@@ -203,6 +201,7 @@ def LoadTypemaps(typemaps, langs):
             language_map[mojom_type] = {
               'typename': rust_type,
               'traits_file': traits_file,
+              'derivable_traits': type_mapping.get('derivable_traits', []),
             }
         loaded_typemap["rust"] = language_map
       else:
@@ -219,13 +218,14 @@ def LoadTypemaps(typemaps, langs):
       if '_metadata' in typemaps:
         for lang, names in typemaps['_metadata']['module_typemaps'].items():
           if lang in langs:
-            if not lang in declared:
+            if lang not in declared:
               declared[lang] = []
             declared[lang] += names
 
   if 'c++' in loaded_typemap:
-    # The fuzzer also uses C++ typemappings.
+    # The fuzzer and JNI generator also use C++ typemappings.
     loaded_typemap['mojolpm'] = loaded_typemap['c++']
+    loaded_typemap['jni'] = loaded_typemap['c++']
 
   return loaded_typemap, declared
 
@@ -268,9 +268,13 @@ class MojomProcessor:
     with open(module_path, 'rb') as f:
       module = Module.Load(f)
 
-    if args.scrambled_message_id_salt_paths:
+    if args.scrambled_message_id_salts or args.scrambled_message_id_salt_paths:
       salt = b''.join(
-        map(ReadFileContents, args.scrambled_message_id_salt_paths)
+        [s.encode('utf-8') for s in (args.scrambled_message_id_salts or [])]
+        + [
+          ReadFileContents(p)
+          for p in (args.scrambled_message_id_salt_paths or [])
+        ]
       )
       ScrambleMethodOrdinals(module.interfaces, salt)
 
@@ -415,7 +419,7 @@ def _Precompile(args, _):
   return 0
 
 
-def main():
+def _CreateArgumentParser():
   parser = argparse.ArgumentParser(
     description="Generate bindings from mojom files."
   )
@@ -528,12 +532,22 @@ def main():
     help="Generate code that is shared by different variants.",
   )
   generate_parser.add_argument(
+    "--scrambled_message_id_salt",
+    dest="scrambled_message_id_salts",
+    help="If non-empty, a literal string to be used as a salt for generating "
+    "scrambled message IDs. If this switch is specified more than once or "
+    "combined with --scrambled_message_id_salt_path, all salt values are "
+    "concatenated to form the salt value.",
+    default=[],
+    action="append",
+  )
+  generate_parser.add_argument(
     "--scrambled_message_id_salt_path",
     dest="scrambled_message_id_salt_paths",
-    help="If non-empty, the path to a file whose contents should be used as"
-    "a salt for generating scrambled message IDs. If this switch is specified"
-    "more than once, the contents of all salt files are concatenated to form"
-    "the salt value.",
+    help="If non-empty, the path to a file whose contents should be used as "
+    "a salt for generating scrambled message IDs. If this switch is specified "
+    "more than once or combined with --scrambled_message_id_salt, all salt "
+    "values are concatenated to form the salt value.",
     default=[],
     action="append",
   )
@@ -598,8 +612,12 @@ def main():
     help="comma-separated list of generators",
   )
   precompile_parser.set_defaults(func=_Precompile)
+  return parser
 
-  args, remaining_args = parser.parse_known_args()
+
+def main(argv=None):
+  parser = _CreateArgumentParser()
+  args, remaining_args = parser.parse_known_args(argv)
   return args.func(args, remaining_args)
 
 

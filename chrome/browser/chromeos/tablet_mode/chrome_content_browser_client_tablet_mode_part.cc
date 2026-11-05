@@ -6,10 +6,10 @@
 
 #include <string_view>
 
+#include "ash/constants/webui_url_constants.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/search/search.h"
 #include "chrome/browser/ui/webui/ash/system_web_dialog/system_web_dialog_delegate.h"
-#include "chrome/common/webui_url_constants.h"
 #include "chromeos/ash/components/browser_delegate/browser_controller.h"
 #include "chromeos/ash/components/browser_delegate/browser_delegate.h"
 #include "chromeos/ash/components/browser_delegate/browser_type.h"
@@ -34,7 +34,7 @@ GURL GetURL(content::WebContents* contents) {
 // Returns true if |contents| is of an internal pages (such as
 // chrome://settings, chrome://extensions, ... etc).
 bool IsInternalPage(content::WebContents* contents) {
-  DCHECK(contents);
+  CHECK(contents, base::NotFatalUntil::M161);
 
   GURL url = GetURL(contents);
   if (url.is_empty()) {
@@ -88,7 +88,7 @@ bool UseDefaultFontSize(const GURL& url) {
     return true;
 
   if (url.SchemeIs(content::kChromeUIScheme))
-    return chrome::IsSystemWebUIHost(url.host());
+    return ash::IsSystemWebUIHost(url.host());
 
   if (url.SchemeIs(extensions::kExtensionScheme)) {
     std::string_view extension_id = url.host();
@@ -99,7 +99,7 @@ bool UseDefaultFontSize(const GURL& url) {
 
 void OverrideFontSize(content::WebContents* contents,
                       blink::web_pref::WebPreferences* web_prefs) {
-  DCHECK(contents);
+  CHECK(contents, base::NotFatalUntil::M161);
   // Check the URL because |contents| may not yet be associated with a window,
   // SettingsWindowManager, etc.
   GURL url = GetURL(contents);

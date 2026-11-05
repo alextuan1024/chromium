@@ -332,6 +332,7 @@ class PdfViewWebPlugin final : public PDFiumEngineClient,
   bool ShouldDispatchImeEventsToPlugin() override;
   blink::WebTextInputType GetPluginTextInputType() override;
   gfx::Rect GetPluginCaretBounds() override;
+  gfx::Rect GetPluginSelectionBounds() override;
   void ImeSetCompositionForPlugin(
       const blink::WebString& text,
       const std::vector<ui::ImeTextSpan>& ime_text_spans,
@@ -405,7 +406,9 @@ class PdfViewWebPlugin final : public PDFiumEngineClient,
   void FormFieldFocusChange(PDFiumEngineClient::FocusFieldType type) override;
   bool IsPrintPreview() const override;
   SkColor GetBackgroundColor() const override;
-  void SelectionChanged(const gfx::Rect& left, const gfx::Rect& right) override;
+  void SelectionChanged(const gfx::Rect& left,
+                        const gfx::Rect& right,
+                        const gfx::Rect& bounding_box) override;
   void CaretChanged(const gfx::Rect& caret_rect) override;
   void EnteredEditMode() override;
   void DocumentFocusChanged(bool document_has_focus) override;
@@ -640,6 +643,7 @@ class PdfViewWebPlugin final : public PDFiumEngineClient,
   void HandleGetSelectedTextMessage(const base::DictValue& message);
   void HandleGetSuggestedFileName(const base::DictValue& message);
   void HandleGetThumbnailMessage(const base::DictValue& message);
+  void HandleHighlightSearchTermsMessage(const base::DictValue& message);
   void HandleHighlightTextFragmentsMessage(const base::DictValue& message);
   void HandlePrintMessage(const base::DictValue& /*message*/);
   void HandleReleaseSaveInBlockBuffers(const base::DictValue& /*message*/);
@@ -865,6 +869,9 @@ class PdfViewWebPlugin final : public PDFiumEngineClient,
       blink::WebTextInputType::kWebTextInputTypeNone;
 
   gfx::Rect caret_rect_;
+  // The selection bounding box in pixels, with a top-left origin relative to
+  // the plugin.
+  gfx::Rect selection_bounding_box_;
 
   blink::WebString composition_text_;
 

@@ -4,7 +4,7 @@
 
 import("//remoting/build/config/remoting_build.gni")
 
-source_set("input_monitor") {
+static_library("input_monitor") {
   public = [
     "local_hotkey_input_monitor.h",
     "local_input_monitor.h",
@@ -41,6 +41,7 @@ source_set("input_monitor") {
   }
 
   if (is_mac) {
+    public += [ "local_keyboard_input_monitor_mac.h" ]
     sources += [
       "local_hotkey_input_monitor_mac.mm",
       "local_keyboard_input_monitor_mac.mm",

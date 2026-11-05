@@ -12,7 +12,6 @@
 #include "base/test/values_test_util.h"
 #include "base/values.h"
 #include "build/branding_buildflags.h"
-#include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/ui/autofill/chrome_autofill_client.h"
 #include "chrome/browser/ui/autofill/payments/virtual_card_enroll_bubble_controller_impl.h"
 #include "chrome/browser/ui/autofill/payments/virtual_card_enroll_bubble_controller_impl_test_api.h"
@@ -39,23 +38,24 @@
 
 #if BUILDFLAG(IS_ANDROID)
 #include "base/functional/callback.h"
+#include "base/test/gmock_callback_support.h"
+#include "base/test/gmock_move_support.h"
 #include "chrome/browser/feature_engagement/tracker_factory.h"
 #include "chrome/browser/keyboard_accessory/android/payment_method_accessory_controller.h"
 #include "chrome/browser/keyboard_accessory/test_utils/android/mock_payment_method_accessory_controller.h"
 #include "chrome/browser/touch_to_fill/autofill/android/mock_touch_to_fill_payment_method_controller.h"
+#include "chrome/browser/ui/android/autofill/autofill_message_controller.h"
 #include "chrome/browser/ui/android/autofill/autofill_save_card_bottom_sheet_bridge.h"
 #include "chrome/browser/ui/android/autofill/autofill_save_card_delegate_android.h"
 #include "chrome/browser/ui/android/autofill/autofill_save_iban_bottom_sheet_bridge.h"
+#include "chrome/browser/ui/android/autofill/autofill_snackbar_controller_impl.h"
+#include "chrome/browser/ui/android/autofill/mock_autofill_message_controller.h"
 #include "chrome/browser/ui/android/tab_model/tab_model_list.h"
 #include "chrome/browser/ui/android/tab_model/tab_model_test_helper.h"
-#include "chrome/browser/ui/autofill/autofill_message_controller.h"
-#include "chrome/browser/ui/autofill/autofill_snackbar_controller_impl.h"
-#include "chrome/browser/ui/autofill/mock_autofill_message_controller.h"
 #include "components/autofill/core/browser/data_model/payments/bnpl_issuer.h"
 #include "components/autofill/core/browser/payments/android_bnpl_strategy.h"
 #include "components/autofill/core/browser/payments/autofill_save_card_ui_info.h"
 #include "components/autofill/core/browser/payments/bnpl_util.h"
-#include "components/autofill/core/browser/test_utils/autofill_test_util.h"
 #include "components/feature_engagement/public/feature_constants.h"
 #include "components/feature_engagement/test/mock_tracker.h"
 #include "ui/android/window_android.h"
@@ -611,6 +611,36 @@ TEST_F(ChromePaymentsAutofillClientTest,
   chrome_payments_client()->OnCardDataAvailable(options, url::Origin());
 }
 
+TEST_F(ChromePaymentsAutofillClientTest,
+       ShowMandatoryReauthOptInConfirmation_CallsSnackbarController) {
+  MockAutofillSnackbarControllerImpl* snackbar_controller =
+      InjectMockAutofillSnackbarControllerImpl();
+
+  EXPECT_CALL(*snackbar_controller,
+              Show(AutofillSnackbarType::kMandatoryReauth, _))
+      .WillOnce(base::test::RunOnceClosure<1>());
+
+  chrome_payments_client()->ShowMandatoryReauthOptInConfirmation();
+}
+
+TEST_F(
+    ChromePaymentsAutofillClientTest,
+    ShowMandatoryReauthOptInConfirmation_WebContentsDestroyedBeforeActionClicked) {
+  MockAutofillSnackbarControllerImpl* snackbar_controller =
+      InjectMockAutofillSnackbarControllerImpl();
+
+  base::OnceClosure action_callback;
+  EXPECT_CALL(*snackbar_controller,
+              Show(AutofillSnackbarType::kMandatoryReauth, _))
+      .WillOnce(MoveArg<1>(&action_callback));
+
+  chrome_payments_client()->ShowMandatoryReauthOptInConfirmation();
+  ASSERT_TRUE(action_callback);
+
+  DeleteContents();
+  std::move(action_callback).Run();
+}
+
 // Test that calling `ShowAffiliatedLoyaltyCards` passes the correct lists of
 // loyalty cards.
 TEST_F(ChromePaymentsAutofillClientTest, ShowTouchToFillAffiliatedLoyaltyCard) {
@@ -852,18 +882,6 @@ TEST_F(ChromePaymentsAutofillClientTest, GetBnplUiDelegate) {
 
   // Test that the same instance is returned on subsequent calls.
   EXPECT_EQ(ui_delegate, chrome_payments_client()->GetBnplUiDelegate());
-}
-
-// Test that Wallet Reminder Notice UI delegate is created and returned
-// correctly.
-TEST_F(ChromePaymentsAutofillClientTest, GetWalletReminderNoticeUiDelegate) {
-  payments::WalletReminderNoticeUiDelegate* ui_delegate =
-      chrome_payments_client()->GetWalletReminderNoticeUiDelegate();
-  ASSERT_NE(ui_delegate, nullptr);
-
-  // Test that the same instance is returned on subsequent calls.
-  EXPECT_EQ(ui_delegate,
-            chrome_payments_client()->GetWalletReminderNoticeUiDelegate());
 }
 
 // Test that Wallet Reminder Notice manager is created and returned correctly.

@@ -239,6 +239,11 @@ void WindowEventFilterLinux::MaybeDispatchHostWindowDragMovement(
   // breaking gestures including tapping, double tapping, show press and
   // long press.
   if (event->IsMouseEvent()) {
+    // The window manager now owns the pointer and may consume the terminating
+    // button release (e.g. X11 _NET_WM_MOVERESIZE), which would otherwise
+    // leave aura::Env reporting the button as held indefinitely. Wayland
+    // already synthesizes a release, in which case this is a no-op.
+    aura::Env::GetInstance()->set_mouse_button_flags(0);
     event->StopPropagation();
   }
 }

@@ -7,6 +7,7 @@
 #include "base/check_deref.h"
 #include "chrome/browser/feature_engagement/tracker_factory.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/ui/actions/chrome_action_id.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/interaction/browser_elements.h"
@@ -15,7 +16,7 @@
 #include "chrome/browser/ui/views/frame/toolbar_button_provider.h"
 #include "chrome/browser/ui/views/toolbar/app_menu_control.h"
 #include "chrome/browser/ui/views/toolbar/avatar_toolbar_button_interface.h"
-#include "chrome/browser/ui/views/toolbar/toolbar_button.h"
+#include "chrome/browser/ui/views/toolbar/pinned_toolbar_actions.h"
 #include "chrome/browser/user_education/user_education_service.h"
 #include "chrome/browser/user_education/user_education_service_factory.h"
 #include "components/feature_engagement/public/event_constants.h"
@@ -23,6 +24,8 @@
 #include "components/user_education/common/help_bubble/help_bubble_factory_registry.h"
 #include "components/user_education/views/help_bubble_view.h"
 #include "ui/views/accessible_pane_view.h"
+#include "ui/views/bubble/bubble_anchor.h"
+#include "ui/views/bubble/bubble_dialog_delegate_view.h"
 #include "ui/views/controls/button/md_text_button.h"
 #include "ui/views/interaction/element_tracker_views.h"
 #include "ui/views/view.h"
@@ -79,6 +82,12 @@ bool BrowserFocusControllerViews::
   // TODO: this fixes https://crbug.com/40668249 and https://crbug.com/40674460,
   // but a more general solution should be desirable to find any bubbles
   // anchored in the views hierarchy.
+  // TODO(crbug.com/585053540): This misses bubbles whose anchor isn't one of
+  // those checked below, e.g. the permission prompt anchored to the permission
+  // chip, with both the Views and the WebUI location bar. For anchors that
+  // aren't Views, consider looking the bubbles up through
+  // ui::AnchoredDialogRegistry, which already knows about them for Tab
+  // traversal.
   views::DialogDelegate* bubble = nullptr;
   if (auto* control = toolbar_button_provider_->GetAppMenuControl()) {
     auto* dialog = control->GetDialogDelegate();
@@ -97,18 +106,31 @@ bool BrowserFocusControllerViews::
     }
     auto* multi_contents_view = views::AsViewClass<MultiContentsView>(
         GetViewForId(kMultiContentsViewElementId));
-    for (auto* view : std::initializer_list<views::View*>{
-             GetViewForId(kLocationBarElementId),
-             toolbar_button_provider_->GetDownloadButton(),
-             GetViewForId(kTopContainerElementId),
-             multi_contents_view->GetActiveContentsContainerView()
-                 ->GetToastAnchorView()}) {
-      if (view) {
-        if (auto* dialog = view->GetProperty(views::kAnchoredDialogKey);
-            dialog && !user_education::HelpBubbleView::IsHelpBubble(dialog)) {
-          bubble = dialog;
-          break;
-        }
+    // Query the download bubble anchor through PinnedToolbarActions, which
+    // covers the Views, WebUI and web app toolbars. The WebUI implementation
+    // anchors the bubble to a TrackedElement rather than a View.
+    // ToolbarButtonProvider::GetBubbleAnchor() isn't used here because the web
+    // app frame toolbar ignores the action ID and returns the app menu anchor.
+    views::BubbleAnchor download_anchor;
+    if (auto* pinned_toolbar_actions =
+            toolbar_button_provider_->GetPinnedToolbarActions()) {
+      download_anchor =
+          pinned_toolbar_actions->GetBubbleAnchor(kActionShowDownloads);
+    }
+    for (const views::BubbleAnchor& anchor : std::to_array<views::BubbleAnchor>(
+             {views::BubbleAnchor(
+                  browser_elements_->GetElement(kLocationBarElementId)),
+              download_anchor,
+              views::BubbleAnchor(GetViewForId(kTopContainerElementId)),
+              views::BubbleAnchor(
+                  multi_contents_view
+                      ? multi_contents_view->GetActiveContentsContainerView()
+                            ->GetToastAnchorView()
+                      : nullptr)})) {
+      if (auto* dialog = views::BubbleDialogDelegate::GetAnchoredDialog(anchor);
+          dialog && !user_education::HelpBubbleView::IsHelpBubble(dialog)) {
+        bubble = dialog;
+        break;
       }
     }
   }

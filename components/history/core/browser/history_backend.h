@@ -86,11 +86,6 @@ class URLDatabase;
 // username/password, and any trivial subdomains (e.g., "www.", "m.") removed.
 std::u16string FormatUrlForRedirectComparison(const GURL& url);
 
-// Advances (if `day` >= 0) or backtracks (if `day` < 0) from `time` by
-// abs(`day`) calendar days in local timezone and returns the midnight of the
-// resulting day.
-base::Time MidnightNDaysLater(base::Time time, int days);
-
 // Keeps track of a queued HistoryDBTask. This class lives solely on the
 // DB thread.
 class QueuedHistoryDBTask {
@@ -785,6 +780,18 @@ class HistoryBackend : public base::RefCountedThreadSafe<HistoryBackend>,
   std::vector<journeys::Journey> GetAllJourneysWithVisits() override;
   bool DeleteAllJourneys() override;
 
+  // Returns the journey identified by `journey_id` with its visits resolved,
+  // or `std::nullopt` if it doesn't exist or can't be fully resolved.
+  std::optional<journeys::Journey> GetJourneyWithVisits(
+      const std::string& journey_id);
+
+  // Returns the count of stored journeys that cannot be resolved due to at
+  // least one missing visit on this device. Temporary for Topics fishfood
+  // evaluation; will not stay in production code.
+  // TODO(crbug.com/568422896): Remove once Topics fishfood evaluation is
+  // complete.
+  size_t GetUnresolvableJourneysCountForFishfood();
+
   // Deleting ------------------------------------------------------------------
 
   void DeleteURLs(const std::vector<GURL>& urls);
@@ -860,8 +867,6 @@ class HistoryBackend : public base::RefCountedThreadSafe<HistoryBackend>,
   // Returns true if the passed visit time is already expired (used by the sync
   // code to avoid syncing visits that would immediately be expired).
   bool IsExpiredVisitTime(const base::Time& time) const override;
-
-  base::Time GetFirstRecordedTimeForTest() { return first_recorded_time_; }
 
   static int GetForeignVisitsToDeletePerBatchForTest();
 
@@ -969,6 +974,11 @@ class HistoryBackend : public base::RefCountedThreadSafe<HistoryBackend>,
   // search for results which match the given text query.
   // Both functions assume QueryHistory already checked the DB for validity.
   void QueryHistoryBasic(const QueryOptions& options, QueryResults* result);
+  std::vector<URLResult> QueryHistoryBasicBatched(
+      const VisitVector& visits,
+      const VisitSourceMap& sources);
+  std::vector<URLResult> QueryHistoryBasicLegacy(const VisitVector& visits,
+                                                 const VisitSourceMap& sources);
   void QueryHistoryText(const std::u16string& text_query,
                         const QueryOptions& options,
                         QueryResults* result);
@@ -1147,9 +1157,6 @@ class HistoryBackend : public base::RefCountedThreadSafe<HistoryBackend>,
   // destination of the redirect (i.e., the key into recent_redirects_);
   typedef base::LRUCache<GURL, RedirectList> RedirectCache;
   RedirectCache recent_redirects_;
-
-  // Timestamp of the first entry in our database.
-  base::Time first_recorded_time_;
 
   // When set, this is the task that should be invoked on destruction.
   scoped_refptr<base::SingleThreadTaskRunner> backend_destroy_task_runner_;

@@ -6,15 +6,16 @@
 
 #include <algorithm>
 
+#include "base/feature_list.h"
 #include "base/notreached.h"
 #include "build/build_config.h"
 #include "chrome/browser/content_settings/cookie_settings_factory.h"
+#include "chrome/browser/prefs/incognito_mode_prefs.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/signin/account_consistency_mode_manager.h"
 #include "chrome/browser/signin/chrome_signin_helper.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/signin/signin_util.h"
-#include "chrome/browser/sync/sync_service_factory.h"
 #include "components/policy/core/common/policy_pref_names.h"
 #include "components/prefs/pref_service.h"
 #include "components/signin/public/base/signin_pref_names.h"
@@ -22,9 +23,6 @@
 #include "components/signin/public/identity_manager/account_info.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/signin/public/identity_manager/tribool.h"
-#include "components/sync/base/features.h"
-#include "components/sync/base/pref_names.h"
-#include "components/sync/service/sync_service.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/security_principal.h"
@@ -34,13 +32,14 @@
 #include "net/base/schemeful_site.h"
 #include "net/base/url_util.h"
 
+#if BUILDFLAG(ENABLE_DICE_SUPPORT)
+#include "chrome/browser/sync/sync_service_factory.h"
+#include "components/sync/service/sync_service.h"
+#endif
+
 #if BUILDFLAG(ENABLE_EXTENSIONS)
 #include "content/public/browser/site_instance.h"
 #include "extensions/browser/guest_view/web_view/web_view_renderer_state.h"
-#endif
-
-#if BUILDFLAG(IS_CHROMEOS)
-#include "components/account_manager_core/pref_names.h"
 #endif
 
 #if BUILDFLAG(ENABLE_BOUND_SESSION_CREDENTIALS)
@@ -56,8 +55,8 @@
 
 namespace signin {
 
-#if BUILDFLAG(ENABLE_BOUND_SESSION_CREDENTIALS)
 namespace {
+#if BUILDFLAG(ENABLE_BOUND_SESSION_CREDENTIALS)
 bool IsFirstPartyRequest(ResponseAdapter* response_adapter) {
   const url::Origin* top_frame_origin =
       response_adapter->GetRequestTopFrameOrigin();
@@ -122,9 +121,23 @@ void ProcessBoundSessionResponseHeaders(
         std::move(param));
   }
 }
-
-}  // namespace
 #endif  // BUILDFLAG(ENABLE_BOUND_SESSION_CREDENTIALS)
+
+#if BUILDFLAG(ENABLE_MIRROR)
+// Returns false if adding secondary Google accounts is disallowed by the
+// SecondaryGoogleAccountSigninAllowed policy.
+bool IsSecondaryAccountAdditionAllowed(const PrefService& prefs) {
+#if BUILDFLAG(IS_ANDROID)
+  if (!base::FeatureList::IsEnabled(
+          switches::kSecondaryGoogleAccountsSigninAllowedOnAndroid)) {
+    return true;
+  }
+#endif  // BUILDFLAG(IS_ANDROID)
+  return prefs.GetBoolean(
+      policy::policy_prefs::kSecondaryGoogleAccountSigninAllowed);
+}
+#endif  // BUILDFLAG(ENABLE_MIRROR)
+}  // namespace
 
 #if BUILDFLAG(IS_ANDROID)
 HeaderModificationDelegateImpl::HeaderModificationDelegateImpl(
@@ -165,7 +178,7 @@ bool HeaderModificationDelegateImpl::ShouldInterceptNavigation(
 void HeaderModificationDelegateImpl::ProcessRequest(
     ChromeRequestAdapter* request_adapter,
     const GURL& redirect_url) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
   if (profile_->IsOffTheRecord()) {
     // We expect seeing traffic from OTR profiles only if
     // `BoundSessionCookieRefreshService` exists.
@@ -177,42 +190,22 @@ void HeaderModificationDelegateImpl::ProcessRequest(
 #endif
   }
 
-  const PrefService* prefs = profile_->GetPrefs();
-  syncer::SyncService* sync_service =
-      SyncServiceFactory::GetForProfile(profile_);
-
-#if BUILDFLAG(IS_CHROMEOS)
-  bool is_secondary_account_addition_allowed = true;
-  if (!prefs->GetBoolean(
-          ::account_manager::prefs::kSecondaryGoogleAccountSigninAllowed)) {
-    is_secondary_account_addition_allowed = false;
-  }
-#endif
-
-  ConsentLevel consent_level = ConsentLevel::kSignin;
-#if !BUILDFLAG(IS_ANDROID)
-  if (!syncer::IsReplaceSyncPromosWithSignInPromosEnabled()) {
-    consent_level = ConsentLevel::kSync;
-  }
+#if BUILDFLAG(ENABLE_MIRROR)
+  bool is_secondary_account_addition_allowed =
+      IsSecondaryAccountAdditionAllowed(*profile_->GetPrefs());
 #endif
 
   IdentityManager* identity_manager =
       IdentityManagerFactory::GetForProfile(profile_);
-  CoreAccountInfo account =
-      identity_manager->GetPrimaryAccountInfo(consent_level);
-  signin::Tribool is_child_account =
-      // Defaults to kUnknown if the account is not found.
-      identity_manager->FindExtendedAccountInfo(account).IsChildAccount();
-
-  // The primary account info at kSignin consent level is obtained to get the
-  // sign-in Gaia ID. This is passed to FixAccountConsistencyRequestHeader
-  // to decouple the sign-in account from the sync status (which is handled
-  // internally inside the function for Mirror and DICE).
   CoreAccountInfo primary_account =
       identity_manager->GetPrimaryAccountInfo(ConsentLevel::kSignin);
+  signin::Tribool is_child_account =
+      // Defaults to kUnknown if the account is not found.
+      identity_manager->FindExtendedAccountInfo(primary_account)
+          .IsChildAccount();
 
   int incognito_mode_availability =
-      prefs->GetInteger(policy::policy_prefs::kIncognitoModeAvailability);
+      static_cast<int>(IncognitoModePrefs::GetAvailability(profile_));
 #if BUILDFLAG(IS_ANDROID)
   incognito_mode_availability =
       incognito_enabled_
@@ -220,6 +213,9 @@ void HeaderModificationDelegateImpl::ProcessRequest(
           : static_cast<int>(policy::IncognitoModeAvailability::kDisabled);
 #endif
 
+#if BUILDFLAG(ENABLE_DICE_SUPPORT)
+  syncer::SyncService* sync_service =
+      SyncServiceFactory::GetForProfile(profile_);
   // SyncService and IdentityManager updates are not atomic. There are edge
   // cases where SyncService thinks sync is enabled but IdentityManager has
   // already cleared the primary account (e.g. if another identity observer
@@ -229,18 +225,20 @@ void HeaderModificationDelegateImpl::ProcessRequest(
   bool is_sync_feature_enabled = sync_service &&
                                  sync_service->IsSyncFeatureEnabled() &&
                                  !primary_account.gaia.empty();
+#endif
 
   FixAccountConsistencyRequestHeader(
       request_adapter, redirect_url, profile_->IsOffTheRecord(),
       incognito_mode_availability,
       AccountConsistencyModeManager::GetMethodForProfile(profile_),
-      primary_account.gaia, consent_level, is_child_account,
-#if BUILDFLAG(IS_CHROMEOS)
+      primary_account.gaia, is_child_account,
+#if BUILDFLAG(ENABLE_MIRROR)
       is_secondary_account_addition_allowed,
 #endif
-      is_sync_feature_enabled,
 #if BUILDFLAG(ENABLE_DICE_SUPPORT)
-      prefs->GetString(prefs::kGoogleServicesSigninScopedDeviceId),
+      is_sync_feature_enabled,
+      profile_->GetPrefs()->GetString(
+          prefs::kGoogleServicesSigninScopedDeviceId),
 #endif
       cookie_settings_.get());
 }
@@ -248,7 +246,7 @@ void HeaderModificationDelegateImpl::ProcessRequest(
 void HeaderModificationDelegateImpl::ProcessResponse(
     ResponseAdapter* response_adapter,
     const GURL& redirect_url) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
 
 #if BUILDFLAG(ENABLE_BOUND_SESSION_CREDENTIALS)
   if (gaia::HasGaiaSchemeHostPort(response_adapter->GetUrl()) &&

@@ -18,7 +18,7 @@ from util import md5_check
 from util import resource_utils
 import bundletool
 
-# "system_apks" is "default", but with locale list and compressed dex.
+# "system_apks" is "default", but with locale list and no language splits.
 _SYSTEM_MODES = ('system', 'system_apks')
 BUILD_APKS_MODES = _SYSTEM_MODES + ('default', 'universal')
 OPTIMIZE_FOR_OPTIONS = (
@@ -55,18 +55,19 @@ def _CreateDeviceSpec(bundle_path, sdk_version, locales):
 
 def _FixBundleDexCompressionGlob(src_bundle, dst_bundle):
     # Modifies the BundleConfig.pb of the given .aab to add "classes*.dex" to the
-    # "uncompressedGlob" list.
-    with (
-        zipfile.ZipFile(src_bundle) as src,
-        zipfile.ZipFile(dst_bundle, 'w') as dst,
-    ):
-        for info in src.infolist():
-            data = src.read(info)
-            if info.filename == 'BundleConfig.pb':
-                # A classesX.dex entry is added by create_app_bundle.py so that we can
-                # modify it here in order to have it take effect. b/176198991
-                data = data.replace(b'classesX.dex', b'classes*.dex')
-            dst.writestr(info, data)
+    # "uncompressedGlob" list. Returns the bundle path to pass to bundletool.
+    with zipfile.ZipFile(src_bundle) as src:
+        if b'classesX.dex' not in src.read('BundleConfig.pb'):
+            return src_bundle
+        with zipfile.ZipFile(dst_bundle, 'w') as dst:
+            for info in src.infolist():
+                data = src.read(info)
+                if info.filename == 'BundleConfig.pb':
+                    # Rewrite the placeholder added by create_app_bundle.py so
+                    # that --mode=universal leaves dex files uncompressed.
+                    data = data.replace(b'classesX.dex', b'classes*.dex')
+                dst.writestr(info, data)
+    return dst_bundle
 
 
 def GenerateBundleApks(
@@ -124,7 +125,7 @@ def GenerateBundleApks(
         # form of "<lang>-r<region>", so just provide the language code instead.
         locales = [
             resource_utils.ToAndroidLocaleName(l).split('-')[0]
-            for l in system_image_locales
+            for l in system_image_locales  # noqa: E741
         ]
         device_spec = _CreateDeviceSpec(
             bundle_path, minimal_sdk_version, locales
@@ -144,14 +145,12 @@ def GenerateBundleApks(
                 '--overwrite',
             ]
             input_bundle_path = bundle_path
-            # Work around bundletool not respecting uncompressDexFiles setting.
-            # b/176198991
-            if (
-                mode not in _SYSTEM_MODES
-                and _BundleMinSdkVersion(bundle_path) >= 27
-            ):
-                input_bundle_path = os.path.join(tmp_dir, 'system.aab')
-                _FixBundleDexCompressionGlob(bundle_path, input_bundle_path)
+            # Bundletool honors BundleConfig's uncompressDexFiles setting for
+            # split APKs, but ignores it when --mode=universal is used.
+            if mode == 'universal':
+                input_bundle_path = _FixBundleDexCompressionGlob(
+                    bundle_path, os.path.join(tmp_dir, 'universal.aab')
+                )
 
             cmd_args += ['--bundle=%s' % input_bundle_path]
 
@@ -166,6 +165,14 @@ def GenerateBundleApks(
                     )
                 if mode != 'system_apks':
                     cmd_args += ['--mode=' + mode]
+                    if mode == 'system':
+                        # --mode=system ignores BundleConfig's
+                        # uncompressNativeLibraries; compression is controlled
+                        # solely by this flag. Compressed .so files are invalid
+                        # in system images.
+                        cmd_args += [
+                            '--system-apk-options=UNCOMPRESSED_NATIVE_LIBRARIES'
+                        ]
                 else:
                     # Specify --optimize-for to prevent language splits being created.
                     cmd_args += ['--optimize-for=device_tier']
@@ -209,7 +216,7 @@ def GenerateBundleApks(
 
         # Avoid rebuilding (saves ~20s) when the input files have not changed. This
         # is essential when calling the apk_operations.py script multiple times with
-        # the same bundle (e.g. out/Debug/bin/monochrome_public_bundle run).
+        # the same bundle (e.g. out/Debug/bin/chrome_public_bundle run).
         md5_check.CallAndRecordIfStale(
             rebuild,
             input_paths=input_paths,

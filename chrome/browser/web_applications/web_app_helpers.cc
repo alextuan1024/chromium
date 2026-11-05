@@ -14,7 +14,6 @@
 #include "components/crx_file/id_util.h"
 #include "components/webapps/common/web_app_id.h"
 #include "crypto/sha2.h"
-#include "third_party/blink/public/mojom/manifest/manifest.mojom.h"
 #include "url/gurl.h"
 #include "url/origin.h"
 
@@ -50,9 +49,13 @@ webapps::AppId GenerateAppId(const std::optional<std::string>& manifest_id_path,
   return internal::GenerateAppId(manifest_id_path, start_url);
 }
 
-webapps::AppId GenerateAppIdFromManifest(
-    const blink::mojom::Manifest& manifest) {
+webapps::AppId GenerateAppIdFromManifest(const blink::Manifest& manifest) {
   return internal::GenerateAppIdFromManifest(manifest);
+}
+
+webapps::ManifestId GenerateManifestIdFromManifest(
+    const blink::Manifest& manifest) {
+  return internal::GenerateManifestIdFromManifest(manifest);
 }
 
 webapps::AppId GenerateAppIdFromManifestId(
@@ -89,10 +92,10 @@ std::optional<webapps::AppId> FindInstalledAppWithUrlInScope(Profile* profile,
 
 bool IsNonLocallyInstalledAppWithUrlInScope(Profile* profile, const GURL& url) {
   if (auto* provider = WebAppProvider::GetForWebApps(profile)) {
-    FindBestAppInScopeOptions options(WebAppFilter::IsSuggestedApp());
-    options.eligibility_filter = WebAppFilter::IsAppSurfaceableToUser();
     return provider->registrar_unsafe()
-        .FindBestAppWithUrlInScope(url, options)
+        .FindBestAppWithUrlInScope(
+            url, WebAppFilter::IsSuggestedApp(),
+            {.eligibility_filter = WebAppFilter::IsAppSurfaceableToUser()})
         .has_value();
   }
   return false;

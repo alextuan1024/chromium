@@ -9,6 +9,7 @@
 
 #include "base/check.h"
 #include "base/check_is_test.h"
+#include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/notreached.h"
 #include "components/metrics/dwa/dwa_recorder.h"
@@ -18,7 +19,6 @@
 #include "components/metrics/metrics_service_client.h"
 #include "components/metrics/metrics_state_manager.h"
 #include "components/metrics/metrics_switches.h"
-#include "components/metrics/private_metrics/puma_service.h"
 #include "components/metrics/reporting_service.h"
 #include "components/metrics/structured/structured_metrics_service.h"  // nogncheck
 #include "components/metrics_services_manager/metrics_services_manager_client.h"
@@ -28,6 +28,13 @@
 #include "services/network/public/cpp/shared_url_loader_factory.h"
 
 namespace metrics_services_manager {
+
+// When enabled, MetricsServicesManager::UpdateRunningServices() skips redundant
+// calls to MetricsServicesManagerClient::UpdateRunningServices(), and on
+// Windows, ChromeMetricsServicesManagerClient::UpdateRunningServices() offloads
+// Crashpad settings writes to CollectStatsConsentTaskRunner().
+BASE_FEATURE(kOffloadUpdateRunningServicesWin,
+             base::FEATURE_DISABLED_BY_DEFAULT);
 
 MetricsServicesManager::MetricsServicesManager(
     std::unique_ptr<MetricsServicesManagerClient> client)
@@ -72,12 +79,6 @@ metrics::dwa::DwaService* MetricsServicesManager::GetDwaService() {
   return GetMetricsServiceClient()->GetDwaService();
 }
 
-metrics::private_metrics::PumaService*
-MetricsServicesManager::GetPumaService() {
-  DCHECK(thread_checker_.CalledOnValidThread());
-  return GetMetricsServiceClient()->GetPumaService();
-}
-
 metrics::ReportingService* MetricsServicesManager::GetReportingService(
     metrics::MetricsLogUploader::MetricServiceType service_type) {
   switch (service_type) {
@@ -93,10 +94,8 @@ metrics::ReportingService* MetricsServicesManager::GetReportingService(
       auto* service = GetDwaService();
       return service ? service->reporting_service() : nullptr;
     }
-    case metrics::MetricsLogUploader::MetricServiceType::PRIVATE_METRICS: {
-      auto* service = GetPumaService();
-      return service ? service->reporting_service() : nullptr;
-    }
+    case metrics::MetricsLogUploader::MetricServiceType::PRIVATE_METRICS:
+      return nullptr;
     case metrics::MetricsLogUploader::MetricServiceType::STRUCTURED_METRICS: {
       auto* service = GetStructuredMetricsService();
       return service ? service->reporting_service() : nullptr;
@@ -160,7 +159,8 @@ MetricsServicesManager::GetMetricsServiceClient() {
     // base::Unretained is safe since |this| owns the metrics_service_client_.
     metrics_service_client_->SetUpdateRunningServicesCallback(
         base::BindRepeating(&MetricsServicesManager::UpdateRunningServices,
-                            base::Unretained(this)));
+                            base::Unretained(this),
+                            /*may_record_and_upload_changed=*/false));
   }
   return metrics_service_client_.get();
 }
@@ -230,10 +230,14 @@ void MetricsServicesManager::UpdatePermissions(bool current_may_record,
 
   // Stash the current permissions so that we can update the services correctly
   // when preferences change.
+  const bool may_record_and_upload_changed =
+      !std::exchange(permissions_initialized_, true) ||
+      (may_record_ && may_upload_) !=
+          (current_may_record && current_may_upload);
   may_record_ = current_may_record;
   consent_given_ = current_consent_given;
   may_upload_ = current_may_upload;
-  UpdateRunningServices();
+  UpdateRunningServices(may_record_and_upload_changed);
 }
 
 void MetricsServicesManager::LoadingStateChanged(bool is_loading) {
@@ -250,7 +254,8 @@ void MetricsServicesManager::OnRendererUnresponsive() {
   GetMetricsService()->OnApplicationNotIdle();
 }
 
-void MetricsServicesManager::UpdateRunningServices() {
+void MetricsServicesManager::UpdateRunningServices(
+    bool may_record_and_upload_changed) {
   DCHECK(thread_checker_.CalledOnValidThread());
   metrics::MetricsService* metrics = GetMetricsService();
 
@@ -259,7 +264,10 @@ void MetricsServicesManager::UpdateRunningServices() {
     return;
   }
 
-  client_->UpdateRunningServices(may_record_, may_upload_);
+  if (may_record_and_upload_changed ||
+      !base::FeatureList::IsEnabled(kOffloadUpdateRunningServicesWin)) {
+    client_->UpdateRunningServices(may_record_ && may_upload_);
+  }
 
   if (may_record_) {
     if (!metrics->recording_active())
@@ -275,7 +283,6 @@ void MetricsServicesManager::UpdateRunningServices() {
   UpdateUkmService();
   UpdateStructuredMetricsService();
   UpdateDwaService();
-  UpdatePumaService();
 }
 
 void MetricsServicesManager::UpdateUkmService() {
@@ -351,20 +358,6 @@ void MetricsServicesManager::UpdateDwaService() {
     if (is_incognito) {
       metrics::dwa::DwaRecorder::Get()->Purge();
     }
-  }
-}
-
-void MetricsServicesManager::UpdatePumaService() {
-  metrics::private_metrics::PumaService* puma_service = GetPumaService();
-  if (!puma_service) {
-    return;
-  }
-
-  // PUMA is currently affected by the UMA setting.
-  if (may_record_ && may_upload_ && consent_given_) {
-    puma_service->EnableReporting();
-  } else {
-    puma_service->DisableReporting();
   }
 }
 

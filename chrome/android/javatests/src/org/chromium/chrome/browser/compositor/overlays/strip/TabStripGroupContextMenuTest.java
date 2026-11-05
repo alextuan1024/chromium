@@ -11,6 +11,7 @@ import static androidx.test.espresso.action.ViewActions.pressKey;
 import static androidx.test.espresso.action.ViewActions.replaceText;
 import static androidx.test.espresso.assertion.ViewAssertions.doesNotExist;
 import static androidx.test.espresso.assertion.ViewAssertions.matches;
+import static androidx.test.espresso.matcher.RootMatchers.isDialog;
 import static androidx.test.espresso.matcher.ViewMatchers.isAssignableFrom;
 import static androidx.test.espresso.matcher.ViewMatchers.isDisplayed;
 import static androidx.test.espresso.matcher.ViewMatchers.isFocused;
@@ -27,10 +28,10 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
+import static org.chromium.base.test.transit.ViewFinder.waitForView;
 import static org.chromium.chrome.test.util.ChromeTabUtils.getTabCountOnUiThread;
 import static org.chromium.ui.test.util.ViewUtils.onViewWaiting;
 
-import android.app.Activity;
 import android.view.KeyEvent;
 import android.view.View;
 import android.widget.ListView;
@@ -48,21 +49,19 @@ import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
-import org.chromium.base.ApplicationStatus;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.Token;
 import org.chromium.base.test.util.Batch;
-import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.Criteria;
 import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.base.test.util.DisableIf;
 import org.chromium.base.test.util.Feature;
 import org.chromium.base.test.util.Features.DisableFeatures;
+import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.base.test.util.Restriction;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.ChromeTabbedActivity;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
-import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.browser.tasks.tab_management.color_picker.TabGroupColorPickerContainer;
@@ -70,12 +69,11 @@ import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.chrome.test.transit.AutoResetCtaTransitTestRule;
 import org.chromium.chrome.test.transit.ChromeTransitTestRules;
 import org.chromium.chrome.test.transit.page.CtaPageStation;
-import org.chromium.chrome.test.util.TabStripUtils;
+import org.chromium.components.browser_ui.modaldialog.ModalDialogView;
 import org.chromium.components.tab_groups.TabGroupColorId;
 import org.chromium.components.tab_groups.TabGroupsFeatureMap;
 import org.chromium.ui.KeyboardVisibilityDelegate;
 import org.chromium.ui.base.DeviceFormFactor;
-import org.chromium.ui.base.WindowAndroid;
 import org.chromium.ui.hierarchicalmenu.HierarchicalMenuController;
 import org.chromium.ui.modaldialog.DialogDismissalCause;
 import org.chromium.ui.modaldialog.ModalDialogManager;
@@ -83,16 +81,12 @@ import org.chromium.ui.modaldialog.ModalDialogManager;
 /** Instrumentation tests for tab strip group title long-press menu popup */
 @RunWith(ChromeJUnit4ClassRunner.class)
 @Batch(Batch.PER_CLASS)
-// TODO(crbug.com/419289558): Re-enable color surface feature flags
 @DisableFeatures({
-    ChromeFeatureList.ANDROID_SURFACE_COLOR_UPDATE,
-    ChromeFeatureList.GRID_TAB_SWITCHER_SURFACE_COLOR_UPDATE,
     ChromeFeatureList.ANDROID_THEME_MODULE,
-    TabGroupsFeatureMap.UPDATE_TAB_GROUP_COLORS,
-    ChromeFeatureList.USE_WEB_UI_NTP_ANDROID
+    TabGroupsFeatureMap.UPDATE_TAB_GROUP_COLORS
 })
-@CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
 @Restriction(DeviceFormFactor.TABLET_OR_DESKTOP)
+@DisableIf.Device(DeviceFormFactor.AUTOMOTIVE) // crbug.com/462592111
 public class TabStripGroupContextMenuTest {
     @Rule
     public AutoResetCtaTransitTestRule mActivityTestRule =
@@ -106,108 +100,25 @@ public class TabStripGroupContextMenuTest {
 
     @Before
     public void setUp() throws Exception {
+        ModalDialogView.disableButtonTapProtectionForTesting();
         mPage = mActivityTestRule.startOnBlankPage();
-        mInitialRegularActivity = mPage.getActivity();
+        mInitialRegularActivity = (ChromeTabbedActivity) mPage.getActivity();
         mStripLayoutHelper =
                 TabStripTestUtils.getActiveStripLayoutHelper(mActivityTestRule.getActivity());
         mModalDialogManager = mActivityTestRule.getActivity().getModalDialogManager();
-
-        // Closing the extra windows a previous batched test left behind also happens
-        // asynchronously, so the Activity we are about to drive may not own the window focus yet.
-        waitForSettledWindowState(mInitialRegularActivity);
     }
 
     @After
     public void tearDown() {
-        // Dismiss any context menu, modal dialogs, and soft keyboard across all running
-        // ChromeTabbedActivity instances, since tests opening an incognito or secondary window
-        // may leave dialogs, menus, or keyboard on an activity other than mInitialRegularActivity.
+        // Dismiss any remaining context menu and visible dialogs (crbug.com/394606261), then wait
+        // for the window to regain focus before resetting to the initial activity.
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
-                    for (Activity runningActivity : ApplicationStatus.getRunningActivities()) {
-                        if (runningActivity instanceof ChromeTabbedActivity cta) {
-                            StripLayoutHelper helper =
-                                    TabStripTestUtils.getActiveStripLayoutHelper(cta);
-                            if (helper != null) {
-                                helper.dismissContextMenu();
-                            }
-                            ModalDialogManager mdm = cta.getModalDialogManager();
-                            if (mdm != null) {
-                                mdm.dismissAllDialogs(DialogDismissalCause.UNKNOWN);
-                            }
-                            WindowAndroid windowAndroid = cta.getWindowAndroid();
-                            View contentView = cta.getCompositorViewHolderForTesting();
-                            if (windowAndroid != null && contentView != null) {
-                                windowAndroid.getKeyboardDelegate().hideKeyboard(contentView);
-                            }
-                        }
-                    }
+                    mStripLayoutHelper.dismissContextMenu();
+                    mModalDialogManager.dismissAllDialogs(DialogDismissalCause.UNKNOWN);
                 });
-
-        // Settle the window state of the active/focused activity.
-        Activity focusedActivity = ApplicationStatus.getLastTrackedFocusedActivity();
-        ChromeTabbedActivity pageActivity = mPage != null ? mPage.getActivity() : null;
-        ChromeTabbedActivity activityToSettle =
-                (focusedActivity instanceof ChromeTabbedActivity cta
-                                && !cta.isFinishing()
-                                && !cta.isDestroyed())
-                        ? cta
-                        : (pageActivity != null
-                                        && !pageActivity.isFinishing()
-                                        && !pageActivity.isDestroyed())
-                                ? pageActivity
-                                : mActivityTestRule.getActivity();
-        waitForSettledWindowState(activityToSettle);
-
+        CriteriaHelper.pollUiThread(() -> mActivityTestRule.getActivity().hasWindowFocus());
         mActivityTestRule.getActivityTestRule().setActivity(mInitialRegularActivity);
-    }
-
-    /**
-     * Waits until {@code activity} owns the window focus again and no context menu, modal dialog or
-     * soft keyboard is left showing.
-     */
-    private void waitForSettledWindowState(ChromeTabbedActivity activity) {
-        CriteriaHelper.pollUiThreadLongTimeout(
-                "Waiting for a settled window state",
-                () -> {
-                    StripLayoutHelper stripLayoutHelper =
-                            TabStripTestUtils.getActiveStripLayoutHelper(activity);
-                    if (stripLayoutHelper != null) {
-                        Criteria.checkThat(
-                                "Context menu is still showing",
-                                stripLayoutHelper.isViewContextMenuShowing(),
-                                Matchers.is(false));
-                        stripLayoutHelper.finishAnimations();
-                        Criteria.checkThat(
-                                "Strip is still animating",
-                                stripLayoutHelper.isAnimatingForTesting(),
-                                Matchers.is(false));
-                    }
-
-                    ModalDialogManager modalDialogManager = activity.getModalDialogManager();
-                    if (modalDialogManager != null) {
-                        Criteria.checkThat(
-                                "Modal dialog is still showing",
-                                modalDialogManager.isShowing(),
-                                Matchers.is(false));
-                    }
-
-                    WindowAndroid windowAndroid = activity.getWindowAndroid();
-                    View contentView = activity.getCompositorViewHolderForTesting();
-                    if (windowAndroid != null && contentView != null) {
-                        KeyboardVisibilityDelegate keyboardDelegate =
-                                windowAndroid.getKeyboardDelegate();
-                        Criteria.checkThat(
-                                "Soft keyboard is still showing",
-                                keyboardDelegate.isKeyboardShowing(contentView),
-                                Matchers.is(false));
-                    }
-
-                    Criteria.checkThat(
-                            "Activity does not own the window focus",
-                            activity.hasWindowFocus(),
-                            Matchers.is(true));
-                });
     }
 
     @Test
@@ -258,7 +169,7 @@ public class TabStripGroupContextMenuTest {
         // Verify confirmation dialog is showing and tab group is ungrouped after confirming the
         // action.
         verifyModalDialog(/* shouldShow= */ true);
-        onView(withText(R.string.ungroup_tab_group_action)).perform(click());
+        onView(withText(R.string.ungroup_tab_group_action)).inRoot(isDialog()).perform(click());
         int finalTabCount =
                 ThreadUtils.runOnUiThreadBlocking(() -> tabModel.getTabCountForGroup(mTabGroupId));
         assertEquals("Tab group should be ungrouped", 0, finalTabCount);
@@ -341,7 +252,7 @@ public class TabStripGroupContextMenuTest {
         // Assert tab group is closed and undo option showed.
         assertFalse(
                 "Tab group should be closed",
-                ThreadUtils.runOnUiThreadBlocking(() -> tabModel.tabGroupExists(mTabGroupId)));
+                ThreadUtils.runOnUiThreadBlocking(() -> tabModel.containsTabGroup(mTabGroupId)));
         assertEquals("Expected only one tab to be present", 1, getTabCountOnUiThread(tabModel));
         Tab firstTab = ThreadUtils.runOnUiThreadBlocking(() -> tabModel.getTabAt(0));
         assertEquals(
@@ -383,7 +294,7 @@ public class TabStripGroupContextMenuTest {
         // Assert tab group is closed and undo option not showed.
         assertFalse(
                 "Tab group should be closed",
-                ThreadUtils.runOnUiThreadBlocking(() -> tabModel.tabGroupExists(mTabGroupId)));
+                ThreadUtils.runOnUiThreadBlocking(() -> tabModel.containsTabGroup(mTabGroupId)));
         assertEquals("Expected only one tab to be present", 1, getTabCountOnUiThread(tabModel));
         Tab firstTab = ThreadUtils.runOnUiThreadBlocking(() -> tabModel.getTabAt(0));
         assertEquals(
@@ -422,10 +333,10 @@ public class TabStripGroupContextMenuTest {
         // Verify confirmation dialog is showing and tab group is deleted after confirming the
         // action.
         verifyModalDialog(/* shouldShow= */ true);
-        onView(withText(R.string.delete_tab_group_action)).perform(click());
+        onView(withText(R.string.delete_tab_group_action)).inRoot(isDialog()).perform(click());
         assertFalse(
                 "Tab group should be deleted",
-                ThreadUtils.runOnUiThreadBlocking(() -> tabModel.tabGroupExists(mTabGroupId)));
+                ThreadUtils.runOnUiThreadBlocking(() -> tabModel.containsTabGroup(mTabGroupId)));
         assertEquals("Expected only one tab to be present", 1, getTabCountOnUiThread(tabModel));
         Tab firstTab = ThreadUtils.runOnUiThreadBlocking(() -> tabModel.getTabAt(0));
         assertEquals(
@@ -436,7 +347,6 @@ public class TabStripGroupContextMenuTest {
 
     @Test
     @SmallTest
-    @DisableIf.Device(DeviceFormFactor.DESKTOP) // crbug.com/511288697
     public void testUpdateAndDeleteGroupTitle() {
         // Prepare standard state and show menu.
         prepareStandardState();
@@ -461,7 +371,51 @@ public class TabStripGroupContextMenuTest {
 
     @Test
     @SmallTest
-    @DisableIf.Device(DeviceFormFactor.DESKTOP) // https://crbug.com/562154475
+    @EnableFeatures(ChromeFeatureList.TAB_GROUP_CONTEXT_MENU_LIVE_TITLE_UPDATE)
+    public void testLiveUpdateGroupTitle() {
+        // Prepare standard state and show menu.
+        prepareStandardState();
+        showMenu();
+
+        // Verify default group title in the menu.
+        onView(withText("2 tabs")).check(matches(isDisplayed()));
+
+        // Focus title edit box and replace text with rapid typing to verify debouncing.
+        onView(withId(R.id.tab_group_title)).perform(click());
+        onViewWaiting(allOf(withId(R.id.tab_group_title), isFocused()));
+        onView(withId(R.id.tab_group_title)).perform(replaceText("live"));
+        onView(withId(R.id.tab_group_title)).perform(replaceText("liveTitle"));
+
+        // While the menu is STILL SHOWING (no enter pressed, no dismissal), verify the TabModel
+        // updates live after the debounce period.
+        TabModel tabModel =
+                TabStripTestUtils.getTabModel(
+                        mActivityTestRule.getActivity(), /* isIncognito= */ false);
+        CriteriaHelper.pollUiThread(
+                () -> "liveTitle".equals(tabModel.getTabGroupTitle(mTabGroupId)),
+                "Tab group title should be updated live while menu is open");
+
+        // Verify the menu is still open and displaying the new title.
+        onView(allOf(withId(R.id.tab_group_title), withText("liveTitle")))
+                .check(matches(isDisplayed()));
+
+        // Clear the title in the edit box.
+        onView(withId(R.id.tab_group_title)).perform(replaceText(""));
+
+        // While still showing, verify that deleting the text clears the title in TabModel.
+        CriteriaHelper.pollUiThread(
+                () -> {
+                    String currentTitle = tabModel.getTabGroupTitle(mTabGroupId);
+                    return currentTitle == null || currentTitle.isEmpty();
+                },
+                "Tab group title in TabModel should be cleared while edit text is empty");
+
+        // Verify that the EditText itself remains empty while the user is actively typing.
+        onView(allOf(withId(R.id.tab_group_title), withText(""))).check(matches(isDisplayed()));
+    }
+
+    @Test
+    @SmallTest
     public void testUpdateGroupColor() {
         // Prepare standard state and show menu.
         prepareStandardState();
@@ -496,7 +450,6 @@ public class TabStripGroupContextMenuTest {
     @Test
     @SmallTest
     @Feature("KeyboardA11y")
-    @DisableIf.Device(DeviceFormFactor.DESKTOP) // crbug.com/511288697
     public void testKeyboardFocusAndActivation() {
         // Prepare standard state and show menu.
         prepareStandardState();
@@ -506,6 +459,7 @@ public class TabStripGroupContextMenuTest {
 
         // Start with the edit text box. Click to focus, then hit down arrow.
         onView(withId(R.id.tab_group_title)).perform(click());
+        onViewWaiting(allOf(withId(R.id.tab_group_title), isFocused()));
         onView(withId(R.id.tab_group_title)).perform(pressKey(KeyEvent.KEYCODE_DPAD_DOWN));
 
         // One of the color picker circles should be focused in the first row.
@@ -674,14 +628,14 @@ public class TabStripGroupContextMenuTest {
                                 R.plurals.move_group_to_another_window_context_menu_item, 2);
 
         // Click on "Move tab to other window" to open a submenu.
-        onView(withText(moveToAnotherWindow)).perform(click());
+        waitForView(withText(moveToAnotherWindow)).click();
 
         // Sub-menu should be scrollable and should not have excess space.
         onView(withId(R.id.tab_group_action_menu_list)).check(matches(isScrollContainerMatcher));
         onView(withId(R.id.tab_group_action_menu_list)).check(matches(layoutParamsMatcher));
 
         // Go back to the main menu.
-        onView(withText(moveToAnotherWindow)).perform(click());
+        waitForView(withText(moveToAnotherWindow)).click();
 
         // Main menu should not be scrollable again.
         onView(withId(R.id.tab_group_action_menu_list))
@@ -693,7 +647,7 @@ public class TabStripGroupContextMenuTest {
         mPage = mPage.openNewTabFast().loadAboutBlank();
         mPage = mPage.openNewTabFast().loadAboutBlank();
 
-        ChromeTabbedActivity activity = mPage.getActivity();
+        ChromeTabbedActivity activity = (ChromeTabbedActivity) mPage.getActivity();
         // Wait for the activity to be fully initialized before accessing TabModelSelector.
         CriteriaHelper.pollUiThread(
                 () -> {
@@ -709,7 +663,6 @@ public class TabStripGroupContextMenuTest {
 
         // Re-initialize helper and manager for the current activity.
         mStripLayoutHelper = TabStripTestUtils.getActiveStripLayoutHelper(activity);
-        TabStripUtils.settleDownCompositor(mStripLayoutHelper);
         mModalDialogManager = activity.getModalDialogManager();
     }
 
@@ -719,7 +672,7 @@ public class TabStripGroupContextMenuTest {
         mPage = mPage.openNewIncognitoTabFast();
         mPage = mPage.openNewIncognitoTabFast();
 
-        ChromeTabbedActivity activity = mPage.getActivity();
+        ChromeTabbedActivity activity = (ChromeTabbedActivity) mPage.getActivity();
         // If we opened a new window, ensure the rule tracks it for cleanup.
         mActivityTestRule.getActivityTestRule().setActivity(activity);
 
@@ -727,7 +680,6 @@ public class TabStripGroupContextMenuTest {
                 activity, /* isIncognito= */ true, /* firstIndex= */ 0, /* secondIndex= */ 1);
 
         mStripLayoutHelper = TabStripTestUtils.getActiveStripLayoutHelper(activity);
-        TabStripUtils.settleDownCompositor(mStripLayoutHelper);
         mModalDialogManager = activity.getModalDialogManager();
     }
 
@@ -741,23 +693,13 @@ public class TabStripGroupContextMenuTest {
     private void showMenu() {
         mStripLayoutHelper =
                 TabStripTestUtils.getActiveStripLayoutHelper(mActivityTestRule.getActivity());
-        ThreadUtils.runOnUiThreadBlocking(() -> mStripLayoutHelper.finishAnimations());
-        TabStripUtils.settleDownCompositor(mStripLayoutHelper);
-
-        CriteriaHelper.pollUiThread(
-                () -> {
-                    StripLayoutView[] views = mStripLayoutHelper.getStripLayoutViewsForTesting();
-                    return views.length > 0
-                            && views[0] instanceof StripLayoutGroupTitle
-                            && views[0].isVisible()
-                            && views[0].getWidth() > 0;
-                },
-                "Group title is not visible or has zero width");
-
         final StripLayoutHelperManager manager =
                 mActivityTestRule.getActivity().getLayoutManager().getStripLayoutHelperManager();
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
+                    mStripLayoutHelper.updateLayout(0);
+                    mStripLayoutHelper.finishAnimations();
+                    mStripLayoutHelper.updateLayout(0);
                     StripLayoutView[] views = mStripLayoutHelper.getStripLayoutViewsForTesting();
                     assertTrue(
                             "First view should be a group title.",
@@ -774,35 +716,28 @@ public class TabStripGroupContextMenuTest {
                     manager.simulateLongPress(x, y);
                 });
         onViewWaiting(allOf(withId(R.id.tab_group_action_menu_list), isDisplayed()));
-        onViewWaiting(allOf(withId(R.id.tab_group_title), isDisplayed()));
     }
 
     private void updateGroupTitle(String title) {
         KeyboardVisibilityDelegate delegate =
                 mActivityTestRule.getActivity().getWindowAndroid().getKeyboardDelegate();
 
-        // Click group title text box to display keyboard for editing.
+        // Click group title text box to focus it for editing.
         onView(withId(R.id.tab_group_title)).perform(click());
+        onViewWaiting(allOf(withId(R.id.tab_group_title), isFocused()));
 
-        // Verify keyboard is displayed.
-        CriteriaHelper.pollUiThread(
-                () ->
-                        delegate.isKeyboardShowing(
-                                mActivityTestRule
-                                        .getActivity()
-                                        .getCompositorViewHolderForTesting()));
-
-        // Enter new title in text box and press "enter" to dismiss keyboard to update group title.
+        // Enter new title in text box and press "enter" to dismiss menu and update group title.
         onView(withId(R.id.tab_group_title))
                 .perform(replaceText(title))
                 .perform(pressImeActionButton());
 
-        // Verify keyboard is dismissed.
+        // Verify keyboard and context menu are dismissed.
         CriteriaHelper.pollUiThread(
                 () ->
-                        !delegate.isKeyboardShowing(
-                                mActivityTestRule
-                                        .getActivity()
-                                        .getCompositorViewHolderForTesting()));
+                        mActivityTestRule.getActivity().hasWindowFocus()
+                                && !delegate.isKeyboardObscuring(
+                                        mActivityTestRule
+                                                .getActivity()
+                                                .getCompositorViewHolderForTesting()));
     }
 }

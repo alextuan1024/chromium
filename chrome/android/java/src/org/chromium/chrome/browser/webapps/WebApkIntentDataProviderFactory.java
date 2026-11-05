@@ -171,9 +171,7 @@ public class WebApkIntentDataProviderFactory {
                 : WebApkDistributor.OTHER;
     }
 
-    /**
-     * @return A list of shortcut items derived from the parser.
-     */
+    /** Returns a list of shortcut items derived from the parser. */
     // looking up resources from other apps requires the use of getIdentifier()
     @SuppressWarnings("DiscouragedApi")
     private static List<ShortcutItem> parseShortcutItems(String webApkPackageName, Resources res) {
@@ -377,7 +375,7 @@ public class WebApkIntentDataProviderFactory {
             }
         }
 
-        Pair<String, WebApkShareTarget> shareTargetActivityNameAndData =
+        Pair<@Nullable String, @Nullable WebApkShareTarget> shareTargetActivityNameAndData =
                 extractFirstShareTarget(webApkPackageName);
         WebApkShareTarget shareTarget = shareTargetActivityNameAndData.second;
         if (shareDataActivityClassName != null
@@ -438,6 +436,7 @@ public class WebApkIntentDataProviderFactory {
      * @param splashIcon Splash icon to use for the splash screen.
      * @param name Name of the WebAPK.
      * @param shortName The short name of the WebAPK.
+     * @param hasCustomName Whether the WebAPK has a user-customized name.
      * @param displayMode Display mode of the WebAPK.
      * @param orientation Orientation of the WebAPK.
      * @param source Source that the WebAPK was launched from.
@@ -507,7 +506,7 @@ public class WebApkIntentDataProviderFactory {
             int webApkVersionCode,
             long lastUpdateTime) {
         if (manifestStartUrl == null || webApkPackageName == null) {
-            Log.e(TAG, "Incomplete data provided: " + manifestStartUrl + ", " + webApkPackageName);
+            Log.e(TAG, "Incomplete data provided: %s, %s", manifestStartUrl, webApkPackageName);
             return null;
         }
 
@@ -717,7 +716,7 @@ public class WebApkIntentDataProviderFactory {
      * Returns the name of activity or activity alias in WebAPK which handles share intents, and the
      * data about the handler.
      */
-    private static Pair<String, WebApkShareTarget> extractFirstShareTarget(
+    private static Pair<@Nullable String, @Nullable WebApkShareTarget> extractFirstShareTarget(
             String webApkPackageName) {
         Intent shareIntent = new Intent();
         shareIntent.setAction(Intent.ACTION_SEND);

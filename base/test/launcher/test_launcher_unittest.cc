@@ -22,6 +22,7 @@
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
 #include "base/strings/to_string.h"
+#include "base/test/bind.h"
 #include "base/test/gtest_xml_util.h"
 #include "base/test/launcher/test_launcher_test_utils.h"
 #include "base/test/launcher/unit_test_launcher.h"
@@ -41,7 +42,6 @@ namespace {
 using ::testing::_;
 using ::testing::DoAll;
 using ::testing::Invoke;
-using ::testing::InvokeWithoutArgs;
 using ::testing::Return;
 using ::testing::ReturnPointee;
 
@@ -170,6 +170,36 @@ class TestLauncherTest : public testing::Test {
         .WillRepeatedly(testing::Return(batch_size));
   }
 
+  void SetUpSimulatedTimeouts(size_t total_tests, size_t max_timeouts) {
+    std::vector<std::string> test_names;
+    test_names.reserve(total_tests);
+    for (size_t i = 0; i < total_tests; ++i) {
+      test_names.push_back(base::StrCat({"Test", base::ToString(i)}));
+    }
+    AddMockedTests("Test", test_names);
+    SetUpExpectCalls();
+    command_line->AppendSwitchASCII("test-launcher-retry-limit", "0");
+
+    EXPECT_CALL(test_launcher, LaunchChildGTestProcess(_, _, _, _))
+        .WillRepeatedly([this, max_timeouts](
+                            scoped_refptr<TaskRunner> task_runner,
+                            const std::vector<std::string>& batch_test_names,
+                            const FilePath& task_temp_dir,
+                            const FilePath& child_temp_dir) {
+          for (const std::string& test_name : batch_test_names) {
+            task_runner->PostTask(
+                FROM_HERE,
+                BindLambdaForTesting([this, max_timeouts, test_name] {
+                  TestResult::Status status = (++timeout_count_ <= max_timeouts)
+                                                  ? TestResult::TEST_TIMEOUT
+                                                  : TestResult::TEST_SUCCESS;
+                  test_launcher.OnTestFinished(
+                      GenerateTestResult(test_name, status));
+                }));
+          }
+        });
+  }
+
   std::unique_ptr<CommandLine> command_line;
   MockTestLauncher test_launcher;
   MockTestLauncherDelegate delegate;
@@ -185,6 +215,7 @@ class TestLauncherTest : public testing::Test {
 
  private:
   std::vector<TestIdentifier> tests_;
+  size_t timeout_count_ = 0;
 };
 
 class ResultWatcherTest : public testing::Test {
@@ -407,10 +438,6 @@ TEST_F(TestLauncherTest, RetryPreTests) {
   AddMockedTests("Test", {"firstTest", "PRE_PRE_firstTest", "PRE_firstTest"});
   SetUpExpectCalls();
   command_line->AppendSwitchASCII("test-launcher-retry-limit", "2");
-  std::vector<TestResult> results = {
-      GenerateTestResult("Test.PRE_PRE_firstTest", TestResult::TEST_SUCCESS),
-      GenerateTestResult("Test.PRE_firstTest", TestResult::TEST_FAILURE),
-      GenerateTestResult("Test.firstTest", TestResult::TEST_SUCCESS)};
   EXPECT_CALL(test_launcher, LaunchChildGTestProcess(_, _, _, _))
       .WillOnce(::testing::DoAll(
           OnTestResult(&test_launcher, "Test.PRE_PRE_firstTest",
@@ -450,9 +477,6 @@ TEST_F(TestLauncherTest, RetryPreTests) {
 TEST_F(TestLauncherTest, PreTestFailure) {
   AddMockedTests("Test", {"FirstTest", "PRE_FirstTest"});
   SetUpExpectCalls();
-  std::vector<TestResult> results = {
-      GenerateTestResult("Test.PRE_FirstTest", TestResult::TEST_FAILURE),
-      GenerateTestResult("Test.FirstTest", TestResult::TEST_SUCCESS)};
   EXPECT_CALL(test_launcher, LaunchChildGTestProcess(_, _, _, _))
       .WillOnce(
           ::testing::DoAll(OnTestResult(&test_launcher, "Test.PRE_FirstTest",
@@ -911,6 +935,36 @@ TEST_F(TestLauncherTest, TestChildTempDir) {
   EXPECT_FALSE(DirectoryExists(task_temp));
 }
 
+// Verify that when 300 tests are scheduled in a shard (broken_threshold = 30),
+// 20 timeouts do not trigger an early exit.
+TEST_F(TestLauncherTest, BrokenThresholdScalesWithScheduledTests) {
+  SetUpSimulatedTimeouts(/*total_tests=*/600, /*max_timeouts=*/20);
+  command_line->AppendSwitchASCII("test-launcher-total-shards", "2");
+  command_line->AppendSwitchASCII("test-launcher-shard-index", "0");
+
+  EXPECT_FALSE(test_launcher.Run(command_line.get()));
+}
+
+#if GTEST_HAS_DEATH_TEST && !BUILDFLAG(IS_ANDROID)
+// Verify that broken_threshold_ is computed from the number of tests scheduled
+// to run in the shard (test_names.size() / 10, floored at 20) rather than all
+// tests compiled into the binary (tests_.size() / 10).
+TEST_F(TestLauncherTest, BrokenThresholdBasedOnScheduledTests) {
+  EXPECT_EXIT(
+      {
+        testing::Mock::AllowLeak(&delegate);
+        testing::Mock::AllowLeak(&test_launcher);
+
+        SetUpSimulatedTimeouts(/*total_tests=*/300, /*max_timeouts=*/20);
+        command_line->AppendSwitchASCII("test-launcher-total-shards", "10");
+        command_line->AppendSwitchASCII("test-launcher-shard-index", "0");
+
+        std::ignore = test_launcher.Run(command_line.get());
+      },
+      ::testing::ExitedWithCode(1), "");
+}
+#endif  // GTEST_HAS_DEATH_TEST && !BUILDFLAG(IS_ANDROID)
+
 #if BUILDFLAG(IS_FUCHSIA)
 // Verifies that test processes have /data, /cache and /tmp available.
 TEST_F(TestLauncherTest, ProvidesDataCacheAndTmpDirs) {
@@ -991,10 +1045,9 @@ TEST_F(ResultWatcherTest, PollCompletesQuickly) {
 
   MockResultWatcher result_watcher(result_file, 2);
   EXPECT_CALL(result_watcher, WaitWithTimeout(_))
-      .WillOnce(DoAll(InvokeWithoutArgs([&] {
-                        task_environment.AdvanceClock(Milliseconds(1500));
-                      }),
-                      Return(true)));
+      .WillOnce(
+          DoAll([&] { task_environment.AdvanceClock(Milliseconds(1500)); },
+                Return(true)));
 
   Time start = Time::Now();
   ASSERT_TRUE(result_watcher.PollUntilDone(Seconds(45)));

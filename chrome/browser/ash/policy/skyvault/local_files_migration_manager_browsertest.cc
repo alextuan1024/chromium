@@ -32,13 +32,12 @@
 #include "chrome/browser/ash/policy/skyvault/migration_notification_manager.h"
 #include "chrome/browser/ash/policy/skyvault/policy_utils.h"
 #include "chrome/browser/ash/policy/skyvault/test/skyvault_test_utils.h"
-#include "chrome/browser/browser_process.h"
 #include "chrome/browser/chromeos/extensions/login_screen/login/cleanup/files_cleanup_handler.h"
 #include "chrome/browser/download/download_dir_util.h"
 #include "chrome/browser/policy/policy_test_utils.h"
 #include "chrome/browser/policy/profile_policy_connector.h"
-#include "chrome/browser/profiles/profile.h"
 #include "chrome/test/base/in_process_browser_test.h"
+#include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
 #include "chromeos/ash/components/dbus/userdataauth/fake_userdataauth_client.h"
 #include "chromeos/ash/components/dbus/userdataauth/mock_userdataauth_client.h"
 #include "chromeos/ash/components/system/fake_statistics_provider.h"
@@ -173,7 +172,9 @@ class LocalFilesMigrationManagerTest : public policy::PolicyTest {
 
   // Creates mount point for My files and registers local filesystem.
   void SetUpMyFiles() {
-    my_files_dir_ = GetMyFilesPath(browser()->GetProfile());
+    my_files_dir_ = file_manager::util::GetMyFilesFolder(
+        *ash::BrowserContextHelper::Get()->GetUserByBrowserContext(
+            browser()->GetProfile()));
     {
       base::ScopedAllowBlockingForTesting allow_blocking;
       ASSERT_TRUE(base::CreateDirectory(my_files_dir_));

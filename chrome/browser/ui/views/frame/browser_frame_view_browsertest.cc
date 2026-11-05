@@ -16,9 +16,13 @@
 #include "chrome/browser/ui/layout_constants.h"
 #include "chrome/browser/ui/page_action/page_action_icon_type.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
+#include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
+#include "chrome/browser/ui/views/frame/tab_strip_region_view.h"
+#include "chrome/browser/ui/views/frame/toolbar_button_provider.h"
 #include "chrome/browser/ui/views/location_bar/custom_tab_bar_view.h"
-#include "chrome/browser/ui/views/page_action/page_action_view_interface.h"
+#include "chrome/browser/ui/views/page_action/page_action_view.h"
+#include "chrome/browser/ui/views/page_action/test_support/page_action_test_accessor.h"
 #include "chrome/browser/ui/views/tabs/tab_strip.h"
 #include "chrome/browser/ui/views/toolbar/toolbar_view.h"
 #include "chrome/browser/ui/web_applications/test/web_app_browsertest_util.h"
@@ -88,12 +92,13 @@ class BrowserFrameViewBrowserTest : public extensions::ExtensionBrowserTest {
   // TODO: Add tests for non-bookmark hosted apps, as bookmark apps will no
   // longer be hosted apps when BMO ships.
   void InstallAndLaunchBookmarkApp(std::optional<GURL> app_url = std::nullopt) {
-    blink::mojom::Manifest manifest;
-    manifest.manifest_url = embedded_test_server()->GetURL("/manifest");
-    manifest.start_url = app_url.value_or(GetAppURL());
-    manifest.id = app_url.value_or(GetAppURL());
-    manifest.scope = manifest.start_url.GetWithoutFilename();
-    manifest.theme_color = app_theme_color_;
+    const GURL start_url = app_url.value_or(GetAppURL());
+    blink::Manifest manifest =
+        blink::Manifest::Builder(start_url, start_url.GetWithoutRef(),
+                                 start_url.GetWithoutFilename())
+            .SetManifestUrl(embedded_test_server()->GetURL("/manifest"))
+            .SetThemeColor(app_theme_color_)
+            .BuildChecked();
 
     std::unique_ptr<web_app::WebAppInstallInfo> web_app_info =
         web_app::test::GetInstallInfoForCurrentManifest(
@@ -106,7 +111,7 @@ class BrowserFrameViewBrowserTest : public extensions::ExtensionBrowserTest {
     web_contents_ = app_browser_->GetTabStripModel()->GetActiveWebContents();
     // Ensure the main page has loaded and is ready for ExecJs DOM
     // manipulation.
-    ASSERT_TRUE(content::NavigateToURL(web_contents_, manifest.start_url));
+    ASSERT_TRUE(content::NavigateToURL(web_contents_, manifest.start_url()));
 
     app_browser_view_ = BrowserView::GetBrowserViewForBrowser(app_browser_);
   }
@@ -431,14 +436,18 @@ IN_PROC_BROWSER_TEST_F(BrowserFrameViewBrowserTest, DISABLED_SaveCardIcon) {
   nav_observer.Wait();
   offer_observer.Wait();
 
-  page_actions::PageActionViewInterface* page_action_interface =
-      app_browser_view_->toolbar_button_provider()->GetPageActionViewInterface(
-          kActionShowPaymentsBubbleOrPage);
-  ASSERT_TRUE(page_action_interface);
-  views::View* icon =
-      page_action_interface->GetIconLabelBubbleViewNotMigrated();
-  EXPECT_TRUE(GetAppFrameView()->Contains(icon));
-  EXPECT_TRUE(icon->GetVisible());
+  page_actions::PageActionTestAccessor page_action_accessor(
+      app_browser_view_->browser(), kActionShowPaymentsBubbleOrPage);
+  // TODO(crbug.com/562475756): In WebUI, the page action is rendered in the
+  // WebUI DOM rather than as a views::View descendant of BrowserFrameView.
+  if (!features::IsWebUILocationBarEnabled()) {
+    auto* icon = static_cast<page_actions::PageActionView*>(
+        app_browser_view_->toolbar_button_provider()
+            ->GetPageActionViewInterface(kActionShowPaymentsBubbleOrPage));
+    ASSERT_TRUE(icon);
+    EXPECT_TRUE(GetAppFrameView()->Contains(icon));
+  }
+  EXPECT_TRUE(page_action_accessor.GetVisible());
 }
 
 #if BUILDFLAG(IS_CHROMEOS)
@@ -496,11 +505,11 @@ IN_PROC_BROWSER_TEST_F(BrowserFrameViewTabbedTest, MAYBE_HitTestTabstrip) {
 
   const gfx::Rect frame_bounds = frame_view->bounds();
 
-  gfx::RectF tabstrip_bounds_in_frame_coords(
-      browser_view->horizontal_tab_strip_for_testing()->GetLocalBounds());
-  views::View::ConvertRectToTarget(
-      browser_view->horizontal_tab_strip_for_testing(), frame_view,
-      &tabstrip_bounds_in_frame_coords);
+  views::View* const tabstrip_view =
+      browser_view->tab_strip_view()->GetTabStripView();
+  gfx::RectF tabstrip_bounds_in_frame_coords(tabstrip_view->GetLocalBounds());
+  views::View::ConvertRectToTarget(tabstrip_view, frame_view,
+                                   &tabstrip_bounds_in_frame_coords);
   const gfx::Rect tabstrip_bounds =
       gfx::ToEnclosingRect(tabstrip_bounds_in_frame_coords);
   EXPECT_FALSE(tabstrip_bounds.IsEmpty());

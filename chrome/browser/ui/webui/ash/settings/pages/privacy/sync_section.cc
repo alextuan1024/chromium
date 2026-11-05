@@ -9,7 +9,6 @@
 #include "ash/constants/chrome_url_constants.h"
 #include "base/check_deref.h"
 #include "base/containers/span.h"
-#include "base/feature_list.h"
 #include "base/strings/utf_string_conversions.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/webui/ash/settings/os_settings_features_util.h"
@@ -21,10 +20,10 @@
 #include "chromeos/ash/components/browser_context_helper/annotated_account_id.h"
 #include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
 #include "chromeos/ash/components/signin/identity_manager_provider.h"
+#include "chromeos/ash/experiences/settings_ui/resources/grit/ash_settings_strings.h"
 #include "components/application_locale_storage/application_locale_storage.h"
 #include "components/google/core/common/google_util.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
-#include "components/sync/base/features.h"
 #include "content/public/browser/web_ui.h"
 #include "content/public/browser/web_ui_data_source.h"
 #include "ui/base/l10n/l10n_util.h"
@@ -79,8 +78,7 @@ void AddSyncControlsStrings(content::WebUIDataSource* html_source,
   html_source->AddLocalizedString(
       "osSyncFeatureLabel",
       (identity_manager &&
-       identity_manager->HasPrimaryAccount(signin::ConsentLevel::kSignin) &&
-       syncer::IsReplaceSyncPromosWithSignInPromosEnabled())
+       identity_manager->HasPrimaryAccount(signin::ConsentLevel::kSignin))
           ? IDS_OS_SETTINGS_SYNC_FEATURE_LABEL_2
           : IDS_OS_SETTINGS_SYNC_FEATURE_LABEL);
 }
@@ -122,9 +120,6 @@ SyncSection::SyncSection(
 SyncSection::~SyncSection() = default;
 
 void SyncSection::AddLoadTimeData(content::WebUIDataSource* html_source) {
-  html_source->AddBoolean("replaceSyncPromosWithSignInPromos",
-                          syncer::IsReplaceSyncPromosWithSignInPromosEnabled());
-
   html_source->AddLocalizedString(
       "syncAndNonPersonalizedServices",
       IDS_SETTINGS_SYNC_SYNC_AND_NON_PERSONALIZED_SERVICES);
@@ -138,11 +133,8 @@ void SyncSection::AddLoadTimeData(content::WebUIDataSource* html_source) {
 
   std::string sync_dashboard_url =
       google_util::AppendGoogleLocaleParam(
-          GURL(base::FeatureList::IsEnabled(
-                   syncer::kSyncEnableNewSyncDashboardUrl)
-                   ? ash::chrome_external_urls::kNewSyncGoogleDashboardURL
-                   : ash::chrome_external_urls::kLegacySyncGoogleDashboardURL),
-          application_locale_storage_->Get())
+          GURL(ash::chrome_external_urls::kSyncGoogleDashboardURL),
+          std::string(application_locale_storage_->GetTag().tag_string()))
           .spec();
 
   html_source->AddString(

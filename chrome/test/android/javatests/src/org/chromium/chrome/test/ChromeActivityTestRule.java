@@ -19,13 +19,17 @@ import org.hamcrest.Matchers;
 import org.junit.runner.Description;
 import org.junit.runners.model.Statement;
 
+import org.chromium.base.ActivityState;
+import org.chromium.base.ApiCompatibilityUtils;
 import org.chromium.base.ApplicationStatus;
 import org.chromium.base.CommandLine;
+import org.chromium.base.DeviceInfo;
 import org.chromium.base.Holder;
 import org.chromium.base.Log;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.BaseActivityTestRule;
 import org.chromium.base.test.util.CallbackHelper;
+import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.Criteria;
 import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.base.test.util.ScalableTimeout;
@@ -35,6 +39,7 @@ import org.chromium.chrome.browser.WarmupManager;
 import org.chromium.chrome.browser.app.ChromeActivity;
 import org.chromium.chrome.browser.document.ChromeLauncherActivity;
 import org.chromium.chrome.browser.feature_engagement.TrackerFactory;
+import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.init.ChromeBrowserInitializer;
 import org.chromium.chrome.browser.prefetch.settings.PreloadPagesSettingsBridge;
 import org.chromium.chrome.browser.prefetch.settings.PreloadPagesState;
@@ -47,7 +52,6 @@ import org.chromium.chrome.browser.tab.TabLaunchType;
 import org.chromium.chrome.browser.ui.appmenu.AppMenuCoordinator;
 import org.chromium.chrome.test.util.ChromeApplicationTestUtils;
 import org.chromium.chrome.test.util.ChromeTabUtils;
-import org.chromium.chrome.test.util.NewTabPageTestUtils;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetControllerProvider;
 import org.chromium.components.browser_ui.bottomsheet.ManagedBottomSheetController;
@@ -67,6 +71,7 @@ import org.chromium.ui.base.PageTransition;
 import org.chromium.ui.base.WindowAndroid;
 import org.chromium.url.GURL;
 
+import java.util.Arrays;
 import java.util.concurrent.Callable;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicReference;
@@ -80,6 +85,8 @@ import java.util.concurrent.atomic.AtomicReference;
  *   <li>Sets up an {@link EmbeddedTestServer}.
  *   <li>Disables the offline indicator.
  *   <li>Disables IPH (In-Product Help).
+ *   <li>Disables startup promos, unless the test method is annotated with
+ *       {@code @CommandLineFlags.Remove(ChromeSwitches.DISABLE_STARTUP_PROMOS)}.
  *   <li>Slows down PulseDrawable animations.
  * </ul>
  *
@@ -88,10 +95,16 @@ import java.util.concurrent.atomic.AtomicReference;
 public class ChromeActivityTestRule<T extends ChromeActivity> extends BaseActivityTestRule<T> {
     // The number of ms to wait for the rendering activity to be started.
     private static final int ACTIVITY_START_TIMEOUT_MS = 1000;
+    private static final long DEFERRED_STARTUP_TIMEOUT_MS = 20000L;
     private static final String TAG = "TestRule";
     private static final Tracker sDisabledTracker = new TestTracker();
 
     private final EmbeddedTestServerRule mTestServerRule = new EmbeddedTestServerRule();
+
+    // Whether the test method opted out of disabling startup promos.
+    private boolean mKeepStartupPromosEnabled;
+    // Whether this rule appended DISABLE_STARTUP_PROMOS and needs to remove it in after().
+    private boolean mAddedDisableStartupPromosSwitch;
 
     protected ChromeActivityTestRule(Class<T> activityClass) {
         super(activityClass);
@@ -99,6 +112,16 @@ public class ChromeActivityTestRule<T extends ChromeActivity> extends BaseActivi
 
     @Override
     public Statement apply(final Statement base, Description description) {
+        // Besides cancelling annotation-added flags, @CommandLineFlags.Remove of
+        // DISABLE_STARTUP_PROMOS on the test method opts out of the default added by this rule.
+        // @CommandLineFlags.Remove only applies to methods, so this has no effect when the rule is
+        // used as a @ClassRule.
+        CommandLineFlags.Remove removeFlags =
+                description.getAnnotation(CommandLineFlags.Remove.class);
+        mKeepStartupPromosEnabled =
+                removeFlags != null
+                        && Arrays.asList(removeFlags.value())
+                                .contains(ChromeSwitches.DISABLE_STARTUP_PROMOS);
         Statement testServerStatement = mTestServerRule.apply(base, description);
         return super.apply(testServerStatement, description);
     }
@@ -109,6 +132,7 @@ public class ChromeActivityTestRule<T extends ChromeActivity> extends BaseActivi
 
         disableOfflineIndicator();
         disableIph();
+        disableStartupPromos();
         slowDownPulseDrawableAnimations();
     }
 
@@ -131,6 +155,20 @@ public class ChromeActivityTestRule<T extends ChromeActivity> extends BaseActivi
         TrackerFactory.setTrackerForTests(sDisabledTracker);
     }
 
+    private void disableStartupPromos() {
+        // Startup promos (e.g. sign-in, default browser, Glic, enterprise disclaimer) can show on
+        // top of the UI under test and cause flakiness. Tests that need them can opt out with
+        // @CommandLineFlags.Remove(ChromeSwitches.DISABLE_STARTUP_PROMOS).
+        //
+        // When the Activity is reused across batched tests, the switch is absent between after()
+        // and the next before(), so promos evaluated in that window are not suppressed.
+        if (mKeepStartupPromosEnabled) return;
+        CommandLine commandLine = CommandLine.getInstance();
+        if (commandLine.hasSwitch(ChromeSwitches.DISABLE_STARTUP_PROMOS)) return;
+        commandLine.appendSwitch(ChromeSwitches.DISABLE_STARTUP_PROMOS);
+        mAddedDisableStartupPromosSwitch = true;
+    }
+
     private void slowDownPulseDrawableAnimations() {
         // Reduce PulseDrawable frame rate to keep UI Thread MessageQueue from being busy most of
         // the time, which causes Espresso's ViewInteraction#check() and #perform() to fail with
@@ -150,6 +188,26 @@ public class ChromeActivityTestRule<T extends ChromeActivity> extends BaseActivi
 
     @Override
     protected void after() {
+        try {
+            hideBottomSheets();
+            super.after();
+            // Activity is finish()'ed in super.after(), and CCT activities sometimes trigger
+            // creation of spare tabs in their onDestroy() (https://crrev.com/c/5597549).
+            ThreadUtils.runOnUiThreadBlocking(
+                    () -> {
+                        WarmupManager.getInstance().destroySpareTab();
+                    });
+        } finally {
+            // Switches appended directly (not via annotations) are not reset by CommandLineFlags
+            // between tests, so remove it here to not leak into later tests in the same process.
+            if (mAddedDisableStartupPromosSwitch) {
+                CommandLine.getInstance().removeSwitch(ChromeSwitches.DISABLE_STARTUP_PROMOS);
+                mAddedDisableStartupPromosSwitch = false;
+            }
+        }
+    }
+
+    private void hideBottomSheets() {
         // Hide any open bottom sheet (and clear queued ones) so their observers fire and tear
         // down attached mediators (e.g. AccountPickerBottomSheetCoordinator). Otherwise those
         // observers stay registered with process-wide singletons (e.g. AccountManagerFacade) and
@@ -168,13 +226,6 @@ public class ChromeActivityTestRule<T extends ChromeActivity> extends BaseActivi
                         });
             }
         }
-        super.after();
-        // Activity is finish()'ed in super.after(), and CCT activities sometimes trigger creation
-        // of spare tabs in their onDestroy() (https://crrev.com/c/5597549).
-        ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    WarmupManager.getInstance().destroySpareTab();
-                });
     }
 
     /** Return the timeout limit for Chrome activty start in tests */
@@ -255,10 +306,10 @@ public class ChromeActivityTestRule<T extends ChromeActivity> extends BaseActivi
         if (tab != null
                 && UrlUtilities.isNtpUrl(ChromeTabUtils.getUrlStringOnUiThread(tab))
                 && !activity.isInOverviewMode()) {
-            NewTabPageTestUtils.waitForNtpLoaded(tab);
+            ChromeTabUtils.waitForNtpLoaded(tab);
         }
 
-        assertTrue(waitForDeferredStartup(activity));
+        assertTrue("Deferred startup never completed", waitForDeferredStartup(activity));
 
         assertNotNull(tab);
         assertNotNull(tab.getView());
@@ -268,13 +319,36 @@ public class ChromeActivityTestRule<T extends ChromeActivity> extends BaseActivi
         return waitForDeferredStartup(getActivity());
     }
 
+    /**
+     * On Android Desktop emulators, the ChromeLauncherActivity trampoline task's
+     * DesktopTasksTransitionHandler transition can abort after ChromeLauncherActivity finishes,
+     * returning focus to QuickstepLauncher and stopping ChromeTabbedActivity. Moves the task back
+     * to the front if it is not resumed.
+     *
+     * @return true if the activity is currently RESUMED, false otherwise.
+     */
+    private static boolean ensureActivityResumedOnDesktop(@Nullable ChromeActivity activity) {
+        if (!DeviceInfo.isDesktop() || activity == null) return true;
+        if (activity.isFinishing() || activity.isDestroyed()) return false;
+        @ActivityState int state = ApplicationStatus.getStateForActivity(activity);
+        if (state != ActivityState.RESUMED) {
+            ApiCompatibilityUtils.moveTaskToFront(activity, activity.getTaskId(), /* flags= */ 0);
+            return false;
+        }
+        return true;
+    }
+
     public static boolean waitForDeferredStartup(ChromeActivity activity) {
         CriteriaHelper.pollUiThread(
-                activity::deferredStartupPostedForTesting,
-                20000L,
+                () ->
+                        ensureActivityResumedOnDesktop(activity)
+                                && activity.deferredStartupPostedForTesting(),
+                DEFERRED_STARTUP_TIMEOUT_MS,
                 CriteriaHelper.DEFAULT_POLLING_INTERVAL);
+        // CriteriaHelper scales timeouts internally; waitForDeferredStartupCompleteForTesting does
+        // not.
         return DeferredStartupHandler.waitForDeferredStartupCompleteForTesting(
-                ScalableTimeout.scaleTimeout(CriteriaHelper.DEFAULT_MAX_TIME_TO_POLL));
+                ScalableTimeout.scaleTimeout(DEFERRED_STARTUP_TIMEOUT_MS));
     }
 
     @Override
@@ -566,6 +640,14 @@ public class ChromeActivityTestRule<T extends ChromeActivity> extends BaseActivi
     protected void waitForFirstFrame() {
         final Coordinates coord = Coordinates.createFor(getWebContents());
         CriteriaHelper.pollUiThread(
-                coord::frameInfoUpdated, "FrameInfo has not been updated in time.");
+                () -> {
+                    if (!ensureActivityResumedOnDesktop(getActivity())) {
+                        return false;
+                    }
+                    return coord.frameInfoUpdated();
+                },
+                "FrameInfo has not been updated in time.",
+                10000L,
+                CriteriaHelper.DEFAULT_POLLING_INTERVAL);
     }
 }

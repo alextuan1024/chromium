@@ -97,6 +97,7 @@
 #include "third_party/blink/renderer/platform/graphics/static_bitmap_image.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/instrumentation/use_counter.h"
+#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/wtf/std_lib_extras.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_builder.h"
 #include "third_party/blink/renderer/platform/wtf/text/unicode.h"
@@ -978,7 +979,7 @@ TextDirection DirectionOfEnclosingBlockOfAlgorithm(
   if (!enclosing_block_element)
     return TextDirection::kLtr;
   LayoutObject* layout_object = enclosing_block_element->GetLayoutObject();
-  return layout_object ? layout_object->StyleRef().Direction()
+  return layout_object ? layout_object->Style().Direction()
                        : TextDirection::kLtr;
 }
 
@@ -995,7 +996,7 @@ TextDirection PrimaryDirectionOf(const Node& node) {
   TextDirection primary_direction = TextDirection::kLtr;
   for (const LayoutObject* r = node.GetLayoutObject(); r; r = r->Parent()) {
     if (r->IsLayoutBlockFlow()) {
-      primary_direction = r->StyleRef().Direction();
+      primary_direction = r->Style().Direction();
       break;
     }
   }
@@ -1010,7 +1011,7 @@ const ComputedStyle* GetComputedStyleForElementOrLayoutObject(
   }
   // Text nodes and Document.
   if (const LayoutObject* layout_object = node.GetLayoutObject()) {
-    return &layout_object->StyleRef();
+    return &layout_object->Style();
   }
   return nullptr;
 }
@@ -1385,7 +1386,7 @@ static bool HaveSameOutOfFlowAncestor(const Node& anchor_node,
       if (ancestor->IsOutOfFlowPositioned()) {
         return ancestor;
       }
-      ancestor = ancestor->ContainingBlock();
+      ancestor = ancestor->ContainingBox();
     }
     return static_cast<LayoutObject*>(nullptr);
   };
@@ -1907,6 +1908,18 @@ bool EditingIgnoresContent(const Node& node) {
          IsEmptyNonEditableNodeInEditable(node);
 }
 
+TextControlElement* EnclosingCaretNavigableTextControl(
+    const Position& position) {
+  if (!RuntimeEnabledFeatures::ReadOnlyTextControlSelectionEnabled()) {
+    return nullptr;
+  }
+  TextControlElement* text_control = EnclosingTextControl(position);
+  if (!text_control || text_control->IsDisabledFormControl()) {
+    return nullptr;
+  }
+  return text_control;
+}
+
 ContainerNode* RootEditableElementOrTreeScopeRootNodeOf(
     const Position& position) {
   Element* const selection_root = RootEditableElementOf(position);
@@ -1927,8 +1940,11 @@ static scoped_refptr<Image> ImageFromNode(const Node& node) {
     return nullptr;
 
   if (layout_object->IsCanvas()) {
-    return To<HTMLCanvasElement>(const_cast<Node&>(node))
-        .Snapshot(kFrontBuffer);
+    const auto& canvas = To<HTMLCanvasElement>(node);
+    if (!canvas.OriginClean()) {
+      return nullptr;
+    }
+    return canvas.Snapshot(kFrontBuffer);
   }
 
   if (!layout_object->IsImage())
@@ -1994,6 +2010,31 @@ HTMLImageElement* ImageElementFromImageDocument(const Document* document) {
     return nullptr;
 
   return DynamicTo<HTMLImageElement>(body->firstChild());
+}
+
+Element* StandaloneSVGRootForImageActions(const HitTestResult& result) {
+  if (!RuntimeEnabledFeatures::StandaloneSVGImageActionsEnabled()) {
+    return nullptr;
+  }
+  LocalFrame* frame = result.InnerNodeFrame();
+  if (!frame) {
+    return nullptr;
+  }
+  if (!frame->GetDocument()->IsSVGDocument() || result.IsContentEditable()) {
+    return nullptr;
+  }
+  Element* root = frame->GetDocument()->documentElement();
+  if (!root) {
+    return nullptr;
+  }
+  const LayoutObject* layout = root->GetLayoutObject();
+  if (!layout) {
+    return nullptr;
+  }
+  DCHECK(!frame->GetDocument()->NeedsLayoutTreeUpdate());
+  const gfx::Point point =
+      frame->View()->FrameToDocument(result.RoundedPointInInnerNodeFrame());
+  return layout->AbsoluteBoundingBoxRect().Contains(point) ? root : nullptr;
 }
 
 }  // namespace blink

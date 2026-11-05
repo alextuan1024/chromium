@@ -32,6 +32,7 @@
 #include "chrome/browser/ui/actions/chrome_action_id.h"
 #include "chrome/browser/ui/browser_actions.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/color/chrome_color_id.h"
 #include "chrome/browser/ui/layout_constants.h"
 #include "chrome/browser/ui/profiles/profile_colors_util.h"
 #include "chrome/browser/ui/profiles/profile_view_utils.h"
@@ -44,12 +45,12 @@
 #include "components/signin/public/base/signin_metrics.h"
 #include "components/signin/public/base/signin_switches.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
+#include "components/subscription_eligibility/ai_subscription_tier_names.h"
 #include "components/sync/base/features.h"
 #include "components/sync/service/sync_service.h"
 #include "components/sync/service/sync_user_settings.h"
 #include "components/vector_icons/vector_icons.h"
 #include "ui/actions/actions.h"
-#include "ui/base/accelerators/menu_label_accelerator_util.h"
 #include "ui/base/base_window.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/models/image_model.h"
@@ -59,7 +60,6 @@
 #include "ui/color/color_provider_manager.h"
 #include "ui/gfx/image/image_skia.h"
 #include "ui/gfx/native_ui_types.h"
-#include "ui/gfx/text_elider.h"
 #include "ui/menus/simple_menu_model.h"
 #include "ui/native_theme/native_theme.h"
 #include "ui/views/widget/widget.h"
@@ -104,6 +104,77 @@ ProfileDynamicMenu::ProfileDynamicMenu(BrowserWindowInterface* browser)
 }
 
 ProfileDynamicMenu::~ProfileDynamicMenu() = default;
+
+std::optional<ui::ImageModel> ProfileDynamicMenu::GetProfileAvatarIcon() const {
+  if (!browser_window_interface_) {
+    return std::nullopt;
+  }
+  Profile* profile = browser_window_interface_->GetProfile();
+  if (!profile) {
+    return std::nullopt;
+  }
+
+  const int avatar_icon_size =
+      GetLayoutConstant(LayoutConstant::kAppMenuProfileRowAvatarIconSize);
+  ui::ImageModel avatar_image_model = ui::ImageModel::FromVectorIcon(
+      features::IsRoundedIconsEnabled() ? kAccountCircleIcon
+                                        : kAccountCircleChromeRefreshOldIcon,
+      ui::kColorMenuIcon, avatar_icon_size);
+
+  if (profile->IsIncognitoProfile()) {
+    return ui::ImageModel::FromVectorIcon(
+        features::IsRoundedIconsEnabled() ? kIncognitoCircleFilledIcon
+                                          : kIncognitoOldIcon,
+        ui::kColorAvatarIconIncognito, avatar_icon_size);
+  }
+  if (profile->IsGuestSession()) {
+    return avatar_image_model;
+  }
+
+  ProfileAttributesEntry* profile_attributes =
+      (g_browser_process && g_browser_process->profile_manager())
+          ? GetProfileAttributesFromProfile(profile)
+          : nullptr;
+  const ui::ColorProvider* color_provider = GetColorProvider();
+  if (profile_attributes && color_provider) {
+    AccountInfo account_info = GetAccountInfoFromProfile(profile);
+    auto [avatar_image, icon_type] =
+        account_info.IsEmpty()
+            ? profile_attributes->GetAvatarIconWithType(
+                  avatar_icon_size, /*use_high_res_file=*/true,
+                  GetPlaceholderAvatarIconParamsVisibleAgainstColor(
+                      color_provider->GetColor(ui::kColorMenuBackground)))
+            : std::make_pair(
+                  account_info.GetAvatarImage().value_or(gfx::Image()),
+                  AvatarIconType::kNonPlaceholder);
+    if (!avatar_image.IsEmpty() && icon_type != AvatarIconType::kPlaceholder) {
+      ui::ImageModel avatar_model =
+          ui::ImageModel::FromImage(profiles::GetSizedAvatarIcon(
+              avatar_image, avatar_icon_size, avatar_icon_size,
+              profiles::SHAPE_CIRCLE));
+      syncer::SyncService* service = SyncServiceFactory::GetForProfile(profile);
+      const bool has_actionable_error =
+          service &&
+          service->GetUserActionableError() !=
+              syncer::SyncService::UserActionableError::kNone &&
+          service->GetUserActionableError() !=
+              syncer::SyncService::UserActionableError::kBookmarksLimitExceeded;
+      if (has_actionable_error) {
+        avatar_image_model =
+            ui::ImageModel::FromImageSkia(profiles::GetAvatarWithDottedRing(
+                avatar_model, avatar_icon_size, /*has_padding=*/false,
+                /*has_background=*/false, *color_provider));
+      } else if (GetAvatarAiDecoration(profile).show_decoration) {
+        avatar_image_model =
+            ui::ImageModel::FromImageSkia(AddLinearGradientRingToAvatar(
+                avatar_model, *color_provider, avatar_icon_size));
+      } else {
+        avatar_image_model = avatar_model;
+      }
+    }
+  }
+  return avatar_image_model;
+}
 
 // Populates the sync/sign-in section of the profile submenu.
 void ProfileDynamicMenu::BuildSyncSection(actions::BaseAction* parent_item) {
@@ -225,6 +296,10 @@ bool ProfileDynamicMenu::BuildSyncSectionImpl(actions::BaseAction* parent_item,
           break;
         case syncer::SyncService::UserActionableError::kBookmarksLimitExceeded:
           return true;
+        case syncer::SyncService::UserActionableError::kPasskeysLocked:
+          // TODO(crbug.com/470338958): Show passkey unlock error UI in the app
+          // menu.
+          return true;
       }
       CHECK_NE(action_id, 0);
       CHECK(icon);
@@ -319,12 +394,6 @@ void ProfileDynamicMenu::BuildOtherProfilesSection(
       // callback.
       for (ProfileAttributesEntry* profile_entry : profile_entries) {
         std::u16string display_name = GetProfileMenuDisplayName(profile_entry);
-        std::u16string truncated_name =
-            ui::EscapeMenuLabelAmpersands(gfx::TruncateString(
-                display_name,
-                GetLayoutConstant(
-                    LayoutConstant::kAppMenuMaximumCharacterLength),
-                gfx::CHARACTER_BREAK));
 
         // Circular profile avatar icon.
         ui::ImageModel avatar_model =
@@ -335,9 +404,9 @@ void ProfileDynamicMenu::BuildOtherProfilesSection(
 
         // Optional AI gradient ring around avatar if eligible.
         bool has_ai_ring = false;
-        if (base::FeatureList::IsEnabled(
-                switches::kEnableAiSubscriptionAvatarRing) &&
-            profile_entry->GetAiSubscriptionTier() > 0 && color_provider) {
+        if (GetAvatarAiDecorationForTier(profile_entry->GetAiSubscriptionTier())
+                .show_decoration &&
+            color_provider) {
           has_ai_ring = true;
           avatar_model =
               ui::ImageModel::FromImageSkia(AddLinearGradientRingToAvatar(
@@ -345,7 +414,7 @@ void ProfileDynamicMenu::BuildOtherProfilesSection(
         }
 
         auto builder = actions::ActionItem::Builder();
-        builder.SetText(truncated_name)
+        builder.SetText(display_name)
             .SetImage(avatar_model)
             .SetInvokeActionCallback(base::BindRepeating(
                 [](base::FilePath profile_path, actions::ActionItem* item,

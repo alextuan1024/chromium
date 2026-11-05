@@ -20,6 +20,7 @@
 #include "ash/strings/grit/ash_strings.h"
 #include "ash/style/ash_color_id.h"
 #include "ash/style/style_util.h"
+#include "ash/style/system_decoration.h"
 #include "ash/style/typography.h"
 #include "ash/wm/desks/desk.h"
 #include "ash/wm/desks/desk_action_button.h"
@@ -68,7 +69,6 @@
 #include "ui/gfx/text_elider.h"
 #include "ui/views/background.h"
 #include "ui/views/event_monitor.h"
-#include "ui/views/highlight_border.h"
 #include "ui/views/view_class_properties.h"
 #include "ui/wm/core/window_animations.h"
 
@@ -100,49 +100,6 @@ void InitScrollContentsAnimationSettings(
 gfx::Rect GetGestureEventScreenRect(const ui::Event& event) {
   CHECK(event.IsGestureEvent());
   return event.AsGestureEvent()->details().bounding_box();
-}
-
-// Sets up background for the desk bar. There could be 3 cases:
-//   1) desk button bar
-//      A separate view will be used as background for animation purpose.
-//   2) overview bar with forest
-//      No background.
-//   3) overview bar without forest
-//      The bar itself serves as the background.
-void MaybeSetupBackgroundView(DeskBarViewBase* bar_view) {
-  const bool type_is_desk_button =
-      bar_view->type() == DeskBarViewBase::Type::kDeskButton;
-
-  auto* view = type_is_desk_button ? bar_view->background_view() : bar_view;
-  view->SetPaintToLayer();
-
-  auto* layer = view->layer();
-  layer->SetFillsBoundsOpaquely(false);
-  layer->SetName("DeskBarViewBase:Background");
-
-  if (!type_is_desk_button) {
-    // Forest feature needs a transparent desks bar background. Still needs the
-    // view layer to perform animations.
-    return;
-  }
-
-  if (chromeos::features::IsSystemBlurEnabled()) {
-    layer->SetBackgroundBlur(StyleUtil::kBackgroundBlurSigma);
-    layer->SetBackdropFilterQuality(StyleUtil::kBackgroundBlurQuality);
-  }
-
-  const int corner_radius = type_is_desk_button
-                                ? kDeskBarCornerRadiusOverviewDeskButton
-                                : kDeskBarCornerRadiusOverview;
-  view->SetBorder(std::make_unique<views::HighlightBorder>(
-      corner_radius, views::HighlightBorder::Type::kHighlightBorderNoShadow));
-  layer->SetRoundedCornerRadius(gfx::RoundedCornersF(corner_radius));
-
-  const ui::ColorId background_color_id =
-      chromeos::features::IsSystemBlurEnabled()
-          ? static_cast<ui::ColorId>(kColorAshShieldAndBase80)
-          : cros_tokens::kCrosSysSystemOnBaseOpaque;
-  view->SetBackground(views::CreateSolidBackground(background_color_id));
 }
 
 }  // namespace
@@ -540,9 +497,10 @@ class DeskBarViewBase::PostLayoutOperation {
 class DeskBarViewBase::AddDeskAnimation
     : public DeskBarViewBase::PostLayoutOperation {
  public:
-  AddDeskAnimation(DeskBarViewBase* bar_view,
-                   const gfx::Rect& old_bar_bounds,
-                   std::vector<DeskMiniView*> new_mini_views)
+  AddDeskAnimation(
+      DeskBarViewBase* bar_view,
+      const gfx::Rect& old_bar_bounds,
+      std::vector<raw_ptr<DeskMiniView, DanglingUntriaged>> new_mini_views)
       : PostLayoutOperation(bar_view),
         old_bar_bounds_(old_bar_bounds),
         new_mini_views_(std::move(new_mini_views)) {}
@@ -575,7 +533,7 @@ class DeskBarViewBase::AddDeskAnimation
 
  private:
   const gfx::Rect old_bar_bounds_;
-  std::vector<DeskMiniView*> new_mini_views_;
+  std::vector<raw_ptr<DeskMiniView, DanglingUntriaged>> new_mini_views_;
   base::flat_map<views::View*, int> views_previous_x_map_;
 };
 
@@ -767,7 +725,7 @@ DeskBarViewBase::DeskBarViewBase(
     background_view_ = AddChildView(std::make_unique<views::View>());
   }
 
-  MaybeSetupBackgroundView(this);
+  MaybeSetupBackgroundView();
 
   contents_view_ = AddChildView(std::make_unique<views::View>());
 
@@ -802,6 +760,48 @@ DeskBarViewBase::~DeskBarViewBase() {
   if (drag_view_) {
     EndDragDesk(drag_view_, /*end_by_user=*/false);
   }
+}
+
+void DeskBarViewBase::MaybeSetupBackgroundView() {
+  const bool type_is_desk_button = type_ == Type::kDeskButton;
+
+  if (!type_is_desk_button) {
+    SetPaintToLayer();
+    auto* bar_layer = layer();
+    bar_layer->SetFillsBoundsOpaquely(false);
+    bar_layer->SetName("DeskBarViewBase:Background");
+    // Forest feature needs a transparent desks bar background. Still needs the
+    // view layer to perform animations.
+    return;
+  }
+
+  background_view_->SetPaintToLayer(ui::LAYER_SOLID_COLOR);
+
+  auto* background_layer = background_view_->layer();
+  background_layer->SetName("DeskBarViewBase:Background");
+
+  if (chromeos::features::IsSystemBlurEnabled()) {
+    background_layer->SetBackgroundBlur(StyleUtil::kBackgroundBlurSigma);
+    background_layer->SetBackdropFilterQuality(
+        StyleUtil::kBackgroundBlurQuality);
+  }
+
+  const gfx::RoundedCornersF rounded_corners(
+      kDeskBarCornerRadiusOverviewDeskButton);
+  const ui::ColorId background_color_id =
+      chromeos::features::IsSystemBlurEnabled()
+          ? static_cast<ui::ColorId>(kColorAshShieldAndBase80)
+          : cros_tokens::kCrosSysSystemOnBaseOpaque;
+  background_view_->SetBackground(views::CreateLayerBasedRoundedBackground(
+      background_color_id, rounded_corners));
+
+  // Parent the decoration directly under `background_layer` so it inherits
+  // scale transform animations applied during desk creation and removal.
+  decoration_ = SystemDecoration::CreateForView(
+      background_view_, SystemDecoration::ShadowType::kNone,
+      SystemDecoration::HighlightBorderMode::kHighlightBorder,
+      SystemDecoration::LayerParent::kViewLayer);
+  decoration_->SetRoundedCorners(rounded_corners);
 }
 
 // static
@@ -866,7 +866,7 @@ std::unique_ptr<views::Widget> DeskBarViewBase::CreateDeskWidget(
 
   std::unique_ptr<views::Widget> widget = std::make_unique<views::Widget>();
   views::Widget::InitParams params(
-      views::Widget::InitParams::WIDGET_OWNS_NATIVE_WIDGET,
+      views::Widget::InitParams::CLIENT_OWNS_WIDGET,
       views::Widget::InitParams::TYPE_WINDOW_FRAMELESS);
   params.activatable = views::Widget::InitParams::Activatable::kYes;
   params.accept_events = true;
@@ -878,6 +878,10 @@ std::unique_ptr<views::Widget> DeskBarViewBase::CreateDeskWidget(
   params.layer_type = ui::LAYER_NOT_DRAWN;
 
   if (type == Type::kOverview) {
+    // On overview exit, the overview desk bar is handed to a
+    // `CleanupAnimationObserver`, which requires the widget to own its native
+    // widget.
+    params.ownership = views::Widget::InitParams::WIDGET_OWNS_NATIVE_WIDGET;
     // Overview desk bar should live under the currently-active desk container
     // on `root`.
     params.context = root;
@@ -1599,7 +1603,7 @@ void DeskBarViewBase::UpdateNewMiniViews(bool initializing_bar_view,
   // insert new mini views in a position in `mini_views_` that corresponds to
   // their index in the `DeskController`'s list of desks.
   int mini_view_index = 0;
-  std::vector<DeskMiniView*> new_mini_views;
+  std::vector<raw_ptr<DeskMiniView, DanglingUntriaged>> new_mini_views;
   for (const auto& desk : desks) {
     if (!FindMiniViewForDesk(desk.get())) {
       DeskMiniView* mini_view = contents_view_->AddChildViewAt(

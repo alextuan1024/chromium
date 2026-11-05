@@ -3,7 +3,6 @@
 // found in the LICENSE file.
 
 #include "chrome/browser/actor/android/ui/actor_ui_tab_controller_android.h"
-#include "url/android/gurl_android.h"
 
 #include "base/android/callback_android.h"
 #include "base/android/jni_android.h"
@@ -12,28 +11,34 @@
 #include "base/check_deref.h"
 #include "chrome/browser/actor/actor_keyed_service.h"
 #include "chrome/browser/actor/actor_task.h"
-#include "chrome/browser/actor/android/jni_headers/ActorUiTabController_jni.h"
 #include "chrome/browser/android/tab_android.h"
+#include "chrome/browser/glic/public/glic_enabling.h"
 #include "chrome/browser/profiles/profile.h"
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/web_contents.h"
+#include "url/android/gurl_android.h"
+
+// Must come after all headers that specialize FromJniType() / ToJniType().
+#include "chrome/browser/actor/android/jni_headers/ActorUiTabController_jni.h"
 
 namespace actor::ui {
 
-DEFINE_USER_DATA(ActorUiTabControllerAndroid);
+namespace {
+bool g_suppress_navigation_dialogs_for_testing = false;
+}  // namespace
+
+// static
+bool ActorUiTabControllerAndroid::ShouldCreateForProfile(Profile* profile) {
+  return glic::GlicEnabling::IsProfileEligible(profile) &&
+         actor::ActorKeyedService::Get(profile);
+}
 
 ActorUiTabControllerAndroid::ActorUiTabControllerAndroid(
-    tabs::TabInterface& tab,
-    ActorKeyedService* actor_keyed_service)
+    tabs::TabInterface& tab)
     : ActorUiTabControllerInterface(tab),
       tab_(tab),
-      actor_keyed_service_(actor_keyed_service),
-      task_runner_(base::SingleThreadTaskRunner::GetCurrentDefault()),
-      scoped_unowned_user_data_(tab.GetUnownedUserDataHost(), *this) {
-  if (auto* task = actor_keyed_service_->GetTaskFromTab(*tab_)) {
-    task->SetNavigationDelegate(weak_factory_.GetWeakPtr());
-  }
-}
+      actor_keyed_service_(ActorKeyedService::Get(tab.GetProfile())),
+      task_runner_(base::SingleThreadTaskRunner::GetCurrentDefault()) {}
 
 ActorUiTabControllerAndroid::~ActorUiTabControllerAndroid() = default;
 
@@ -59,7 +64,7 @@ void ActorUiTabControllerAndroid::OnUiTabStateChange(
     NotifyActorTabIndicatorStateChanged(ui_tab_state.tab_indicator);
   }
 
-  DCHECK(tab_->GetContents());
+  CHECK(tab_->GetContents(), base::NotFatalUntil::M161);
   TabAndroid* tab_android = TabAndroid::FromWebContents(tab_->GetContents());
   bool success = false;
   if (tab_android) {
@@ -80,8 +85,7 @@ void ActorUiTabControllerAndroid::OnUiTabStateChange(
 
 void ActorUiTabControllerAndroid::SetActorTaskPaused() {
   if (auto* task = actor_keyed_service_->GetTaskFromTab(*tab_)) {
-    // This call originates from the Android UI, so it represents an
-    // intentional user pause task. Therefore, `from_actor` is false.
+    // Callers pause on behalf of the user, so `from_actor` is false.
     task->Pause(/*from_actor=*/false);
   }
 }
@@ -93,9 +97,16 @@ void ActorUiTabControllerAndroid::SetActorTaskResume() {
 }
 
 bool ActorUiTabControllerAndroid::MaybeDeferNavigation(
+    tabs::TabInterface* tab,
     const GURL& url,
     NavigationConfirmedCallback callback) {
-  DCHECK(tab_->GetContents());
+  if (tab && tab != &*tab_) {
+    return false;
+  }
+  if (g_suppress_navigation_dialogs_for_testing) {
+    return false;
+  }
+  CHECK(tab_->GetContents(), base::NotFatalUntil::M161);
   TabAndroid* tab_android = TabAndroid::FromWebContents(tab_->GetContents());
   if (!tab_android) {
     return false;
@@ -107,6 +118,17 @@ bool ActorUiTabControllerAndroid::MaybeDeferNavigation(
       base::android::ToJniCallback(env, std::move(callback)));
 }
 
+// static
+void ActorUiTabControllerAndroid::SetSuppressNavigationDialogsForTesting(
+    bool suppress) {
+  g_suppress_navigation_dialogs_for_testing = suppress;
+}
+
+// static
+bool ActorUiTabControllerAndroid::ShouldSuppressNavigationDialogsForTesting() {
+  return g_suppress_navigation_dialogs_for_testing;
+}
+
 base::WeakPtr<ActorUiTabControllerInterface>
 ActorUiTabControllerAndroid::GetWeakPtr() {
   return weak_factory_.GetWeakPtr();
@@ -116,28 +138,9 @@ UiTabState ActorUiTabControllerAndroid::GetCurrentUiTabState() const {
   return current_ui_tab_state_;
 }
 
-static void JNI_ActorUiTabController_SetActorTaskPaused(
-    JNIEnv* env,
-    const jni_zero::JavaRef<jobject>& jtab) {
-  TabAndroid* tab_android = TabAndroid::GetNativeTab(env, jtab);
-  if (tab_android && tab_android->web_contents()) {
-    auto* controller = ActorUiTabControllerAndroid::From(tab_android);
-    if (controller) {
-      controller->SetActorTaskPaused();
-    }
-  }
-}
-
-static void JNI_ActorUiTabController_SetActorTaskResume(
-    JNIEnv* env,
-    const jni_zero::JavaRef<jobject>& jtab) {
-  TabAndroid* tab_android = TabAndroid::GetNativeTab(env, jtab);
-  if (tab_android && tab_android->web_contents()) {
-    auto* controller = ActorUiTabControllerAndroid::From(tab_android);
-    if (controller) {
-      controller->SetActorTaskResume();
-    }
-  }
+static jboolean JNI_ActorUiTabController_IsActorUiSupported(JNIEnv* env,
+                                                            Profile* profile) {
+  return ActorUiTabControllerAndroid::ShouldCreateForProfile(profile);
 }
 
 }  // namespace actor::ui

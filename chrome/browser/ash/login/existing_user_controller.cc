@@ -39,7 +39,6 @@
 #include "base/timer/elapsed_timer.h"
 #include "base/values.h"
 #include "base/version.h"
-#include "chrome/app/vector_icons/vector_icons.h"
 #include "chrome/browser/ash/app_mode/kiosk_app_launch_error.h"
 #include "chrome/browser/ash/app_mode/kiosk_app_types.h"
 #include "chrome/browser/ash/arc/arc_util.h"
@@ -66,10 +65,8 @@
 #include "chrome/browser/ash/policy/handlers/minimum_version_policy_handler.h"
 #include "chrome/browser/ash/system/device_disabling_manager.h"
 #include "chrome/browser/enterprise/browser_management/management_identity.h"
-#include "chrome/browser/net/system_network_context_manager.h"
 #include "chrome/browser/policy/profile_policy_connector.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/signin/chrome_device_id_helper.h"
 #include "chrome/browser/ui/ash/login/login_display_host.h"
 #include "chrome/browser/ui/ash/login/login_display_host_mojo.h"
 #include "chrome/browser/ui/ash/login/signin_ui.h"
@@ -110,6 +107,7 @@
 #include "components/policy/proto/cloud_policy.pb.h"
 #include "components/prefs/pref_service.h"
 #include "components/session_manager/core/session_manager.h"
+#include "components/signin/public/base/device_id_helper.h"
 #include "components/user_manager/known_user.h"
 #include "components/user_manager/user_manager.h"
 #include "components/user_manager/user_names.h"
@@ -1588,7 +1586,7 @@ void ExistingUserController::SetPublicSessionKeyboardLayoutAndLogin(
       break;
     }
   }
-  CHECK(!keyboard_layout.empty(), base::NotFatalUntil::M160);
+  CHECK(!keyboard_layout.empty());
   SYSLOG(INFO) << "MGS: Setting keyboard layout '" << keyboard_layout << "'";
   new_user_context.SetPublicSessionInputMethod(keyboard_layout);
 
@@ -1746,7 +1744,7 @@ void ExistingUserController::DoCompleteLogin(
       const bool is_ephemeral =
           user_manager::UserManager::Get()->IsEphemeralAccountId(
               user_context.GetAccountId());
-      device_id = GenerateSigninScopedDeviceId(is_ephemeral);
+      device_id = signin::GenerateSigninScopedDeviceId(is_ephemeral);
     }
     user_context.SetDeviceId(device_id);
   }
@@ -1787,7 +1785,8 @@ void ExistingUserController::DoLogin(const UserContext& user_context,
       guest_mode_url_ = GURL(specifics.guest_mode_url);
       if (specifics.guest_mode_url_append_locale) {
         guest_mode_url_ = google_util::AppendGoogleLocaleParam(
-            guest_mode_url_, application_locale_storage_->Get());
+            guest_mode_url_,
+            std::string(application_locale_storage_->GetTag().tag_string()));
       }
     }
     LoginAsGuest();

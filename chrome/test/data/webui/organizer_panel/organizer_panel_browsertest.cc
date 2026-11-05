@@ -2,11 +2,17 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "base/test/scoped_feature_list.h"
+#include "chrome/browser/ui/tabs/organizer/organizer_panel_utils.h"
 #include "chrome/common/webui_url_constants.h"
 #include "chrome/test/base/web_ui_mocha_browser_test.h"
 #include "content/public/test/browser_test.h"
 
-using OrganizerPanelTest = WebUIMochaBrowserTest;
+class OrganizerPanelTest : public WebUIMochaBrowserTest {
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_{
+      organizer_panel::kOrganizerPanel};
+};
 
 IN_PROC_BROWSER_TEST_F(OrganizerPanelTest, App) {
   set_test_loader_host(chrome::kChromeUIOrganizerPanelHost);
@@ -30,6 +36,12 @@ IN_PROC_BROWSER_TEST_F(OrganizerPanelTest, ListSectionItemTitle) {
           "mocha.run()");
 }
 
+IN_PROC_BROWSER_TEST_F(OrganizerPanelTest, ListSectionHeader) {
+  set_test_loader_host(chrome::kChromeUIOrganizerPanelHost);
+  RunTest("organizer_panel/organizer_list_section_header_test.js",
+          "mocha.run()");
+}
+
 IN_PROC_BROWSER_TEST_F(OrganizerPanelTest, ListSection) {
   set_test_loader_host(chrome::kChromeUIOrganizerPanelHost);
   RunTest("organizer_panel/organizer_list_section_test.js", "mocha.run()");
@@ -38,6 +50,17 @@ IN_PROC_BROWSER_TEST_F(OrganizerPanelTest, ListSection) {
 IN_PROC_BROWSER_TEST_F(OrganizerPanelTest, List) {
   set_test_loader_host(chrome::kChromeUIOrganizerPanelHost);
   RunTest("organizer_panel/organizer_list_test.js", "mocha.run()");
+}
+
+IN_PROC_BROWSER_TEST_F(OrganizerPanelTest, ForeignTabsDelegate) {
+  set_test_loader_host(chrome::kChromeUIOrganizerPanelHost);
+  RunTest("organizer_panel/foreign_tabs_delegate_test.js", "mocha.run()");
+}
+
+IN_PROC_BROWSER_TEST_F(OrganizerPanelTest, KeyArrowNavigationService) {
+  set_test_loader_host(chrome::kChromeUIOrganizerPanelHost);
+  RunTest("organizer_panel/keyboard_arrow_navigation_service_test.js",
+          "mocha.run()");
 }
 
 IN_PROC_BROWSER_TEST_F(OrganizerPanelTest, OpenTabsDelegate) {
@@ -60,7 +83,7 @@ IN_PROC_BROWSER_TEST_F(OrganizerPanelTest, SearchUtils) {
   RunTest("organizer_panel/search_utils_test.js", "mocha.run()");
 }
 
-IN_PROC_BROWSER_TEST_F(OrganizerPanelTest, StackedFavicons) {
+IN_PROC_BROWSER_TEST_F(OrganizerPanelTest, Favicon) {
   set_test_loader_host(chrome::kChromeUIOrganizerPanelHost);
-  RunTest("organizer_panel/stacked_favicons_test.js", "mocha.run()");
+  RunTest("organizer_panel/organizer_favicon_test.js", "mocha.run()");
 }

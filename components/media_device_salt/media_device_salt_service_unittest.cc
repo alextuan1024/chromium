@@ -11,7 +11,6 @@
 #include "base/system/system_monitor.h"
 #include "base/test/bind.h"
 #include "base/test/mock_devices_changed_observer.h"
-#include "base/test/scoped_feature_list.h"
 #include "base/test/test_future.h"
 #include "base/time/time.h"
 #include "components/keyed_service/content/browser_context_dependency_manager.h"
@@ -50,7 +49,6 @@ blink::StorageKey StorageKey3() {
 class MediaDeviceSaltServiceTest : public testing::Test {
  public:
   void SetUp() override {
-    feature_list_.InitWithFeatures({kMediaDeviceIdPartitioning}, {});
     BrowserContextDependencyManager::GetInstance()->MarkBrowserContextLive(
         &browser_context_);
 
@@ -75,7 +73,6 @@ class MediaDeviceSaltServiceTest : public testing::Test {
   content::BrowserTaskEnvironment& task_environment() {
     return task_environment_;
   }
-  base::test::ScopedFeatureList& feature_list() { return feature_list_; }
   const sync_preferences::TestingPrefServiceSyncable& pref_service() const {
     return pref_service_;
   }
@@ -130,15 +127,12 @@ class MediaDeviceSaltServiceTest : public testing::Test {
 
  private:
   content::BrowserTaskEnvironment task_environment_;
-  base::test::ScopedFeatureList feature_list_;
   content::TestBrowserContext browser_context_;
   sync_preferences::TestingPrefServiceSyncable pref_service_;
   std::unique_ptr<MediaDeviceSaltService> service_;
 };
 
-TEST_F(MediaDeviceSaltServiceTest, ResetGlobalSaltFiresDeviceChange) {
-  feature_list().Reset();
-  feature_list().InitAndDisableFeature(kMediaDeviceIdPartitioning);
+TEST_F(MediaDeviceSaltServiceTest, ResetAllSaltsFiresDeviceChange) {
   base::SystemMonitor monitor;
   ASSERT_EQ(base::SystemMonitor::Get(), &monitor);
   testing::StrictMock<base::MockDevicesChangedObserver> observer;
@@ -263,9 +257,9 @@ TEST_F(MediaDeviceSaltServiceTest, DeleteSaltsInTimeRange) {
 
 TEST_F(MediaDeviceSaltServiceTest, GetAllStorageKeys) {
   // Deletion of individual salts is not supported when using the global salt.
-  std::string salt1 = GetSalt(StorageKey1());
-  std::string salt2 = GetSalt(StorageKey2());
-  std::string salt3 = GetSalt(StorageKey3());
+  GetSalt(StorageKey1());
+  GetSalt(StorageKey2());
+  GetSalt(StorageKey3());
   EXPECT_THAT(
       GetAllStorageKeys(),
       UnorderedElementsAre(StorageKey1(), StorageKey2(), StorageKey3()));

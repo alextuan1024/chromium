@@ -5,6 +5,7 @@
 #ifndef CHROME_BROWSER_ASH_ARC_INPUT_OVERLAY_CONSTANTS_H_
 #define CHROME_BROWSER_ASH_ARC_INPUT_OVERLAY_CONSTANTS_H_
 
+#include <array>
 #include <cstddef>
 
 namespace arc::input_overlay {
@@ -31,11 +32,12 @@ inline constexpr size_t kMaxActionCount = 50;
 
 inline constexpr char16_t kUnknownBind[] = u"?";
 
-// Directions from up, left, down, right.
-inline constexpr int kDirection[kActionMoveKeysSize][kAxisSize] = {{0, -1},
-                                                                   {-1, 0},
-                                                                   {0, 1},
-                                                                   {1, 0}};
+inline constexpr auto kDirection = std::to_array<std::array<int, kAxisSize>>({
+    {{0, -1}},
+    {{-1, 0}},
+    {{0, 1}},
+    {{1, 0}},
+});
 
 // From ActionTap AlphaV2 design. There is the label offset to touch point in
 // the edit mode.
@@ -57,8 +59,8 @@ inline constexpr int kEditingListWidth = 296;
 // Width of `ButtonOptionsMenu` minus the triangle height.
 inline constexpr int kButtonOptionsMenuWidth = 296;
 
-// Horizontal order inset for `ArrowContainer` and its children.
-inline constexpr int kArrowContainerHorizontalBorderInset = 16;
+// Horizontal border inset for `ButtonOptionsMenu` and its children.
+inline constexpr int kButtonOptionsMenuHorizontalBorderInset = 16;
 
 // Arrow key move distance per key press event.
 inline constexpr int kArrowKeyMoveDistance = 2;

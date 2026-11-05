@@ -958,7 +958,7 @@ interface CSSPositionValue : CSSStyleValue
     method constructor
     setter x
     setter y
-interface CSSPrivateRule : CSSRule
+interface CSSPrivateRule : CSSStyleRule
     attribute @@toStringTag
     method constructor
 interface CSSPropertyRule : CSSRule
@@ -972,12 +972,16 @@ interface CSSPseudoElement
     attribute @@toStringTag
     getter element
     getter parent
+    getter selectorText
     getter type
     method constructor
     method convertPointFromNode
     method convertQuadFromNode
     method convertRectFromNode
+    method focus
     method getBoxQuads
+    method nextFocusable
+    method previousFocusable
     method pseudo
 interface CSSRGB : CSSColorValue
     attribute @@toStringTag
@@ -990,9 +994,6 @@ interface CSSRGB : CSSColorValue
     setter b
     setter g
     setter r
-interface CSSResultRule : CSSGroupingRule
-    attribute @@toStringTag
-    method constructor
 interface CSSRotate : CSSTransformComponent
     attribute @@toStringTag
     getter angle
@@ -1205,6 +1206,10 @@ interface CanvasGradient
     setter colorInterpolationMethod
     setter hueInterpolationMethod
     setter premultipliedAlpha
+interface CanvasPaintEvent : Event
+    attribute @@toStringTag
+    getter changedElements
+    method constructor
 interface CanvasPattern
     attribute @@toStringTag
     method constructor
@@ -1264,6 +1269,8 @@ interface CanvasRenderingContext2D
     method ellipse
     method endLayer
     method fill
+    method fillGlyphRun
+    method fillGlyphRuns
     method fillRect
     method fillText
     method fillTextCluster
@@ -1289,7 +1296,10 @@ interface CanvasRenderingContext2D
     method scale
     method setLineDash
     method setTransform
+    method shapeText
     method stroke
+    method strokeGlyphRun
+    method strokeGlyphRuns
     method strokeRect
     method strokeText
     method strokeTextCluster
@@ -1853,6 +1863,11 @@ interface DelegatedInkTrailPresenter
     getter presentationArea
     method constructor
     method updateInkTrailStartPoint
+interface DeviceBoundSessionRegistrationObserver
+    attribute @@toStringTag
+    method constructor
+    method disconnect
+    method observe
 interface DeviceMotionEvent : Event
     static method requestPermission
     attribute @@toStringTag
@@ -1903,6 +1918,7 @@ interface Document : Node
     attribute @@unscopables
     getter URL
     getter activeElement
+    getter activeFocusable
     getter activeViewTransition
     getter adoptedStyleSheets
     getter alinkColor
@@ -1990,6 +2006,7 @@ interface Document : Node
     getter onended
     getter onerror
     getter onfocus
+    getter onfocusreset
     getter onformdata
     getter onfreeze
     getter onfullscreenchange
@@ -2224,6 +2241,7 @@ interface Document : Node
     setter onended
     setter onerror
     setter onfocus
+    setter onfocusreset
     setter onformdata
     setter onfreeze
     setter onfullscreenchange
@@ -2337,22 +2355,10 @@ interface DocumentType : Node
     getter publicId
     getter systemId
     method after
-    method afterHTML
-    method afterHTMLUnsafe
     method before
-    method beforeHTML
-    method beforeHTMLUnsafe
     method constructor
     method remove
     method replaceWith
-    method replaceWithHTML
-    method replaceWithHTMLUnsafe
-    method streamAfterHTML
-    method streamAfterHTMLUnsafe
-    method streamBeforeHTML
-    method streamBeforeHTMLUnsafe
-    method streamReplaceWithHTML
-    method streamReplaceWithHTMLUnsafe
 interface DragEvent : MouseEvent
     attribute @@toStringTag
     getter dataTransfer
@@ -2457,8 +2463,6 @@ interface Element : Node
     getter clientWidth
     getter computedName
     getter computedRole
-    getter containerTiming
-    getter containerTimingIgnore
     getter currentCSSZoom
     getter customElementRegistry
     getter elementTiming
@@ -2533,9 +2537,11 @@ interface Element : Node
     method matchContainer
     method matches
     method moveBefore
+    method nextFocusable
     method prepend
     method prependHTML
     method prependHTMLUnsafe
+    method previousFocusable
     method pseudo
     method querySelector
     method querySelectorAll
@@ -2632,8 +2638,6 @@ interface Element : Node
     setter ariaValueText
     setter classList
     setter className
-    setter containerTiming
-    setter containerTimingIgnore
     setter elementTiming
     setter headingOffset
     setter headingReset
@@ -2662,8 +2666,6 @@ interface ElementGeometryUpdateEvent : Event
     method constructor
 interface ElementImage
     attribute @@toStringTag
-    getter height
-    getter width
     method close
     method constructor
 interface ElementInternals
@@ -2880,6 +2882,10 @@ interface External
     method AddSearchProvider
     method IsSearchProviderInstalled
     method constructor
+interface EyeDropper
+    attribute @@toStringTag
+    method constructor
+    method open
 interface FaceDetector
     attribute @@toStringTag
     method constructor
@@ -2992,6 +2998,15 @@ interface FocusEvent : UIEvent
     attribute @@toStringTag
     getter relatedTarget
     method constructor
+interface Focusable
+    attribute @@toStringTag
+    getter pseudoElement
+    getter shadowHostChain
+    getter target
+    method constructor
+    method focus
+    method nextFocusable
+    method previousFocusable
 interface FontFace
     attribute @@toStringTag
     getter ascentOverride
@@ -3260,7 +3275,6 @@ interface GPUQueue
     attribute @@toStringTag
     getter label
     method constructor
-    method copyElementImageToTexture
     method copyExternalImageToTexture
     method drawElementImageToTexture
     method onSubmittedWorkDone
@@ -3511,6 +3525,15 @@ interface GeolocationPositionError
     getter code
     getter message
     method constructor
+interface GlyphRun
+    attribute @@toStringTag
+    getter end
+    getter start
+    getter width
+    getter x
+    getter y
+    method constructor
+    method textMetrics
 interface GravitySensor : Accelerometer
     attribute @@toStringTag
     method constructor
@@ -3555,6 +3578,7 @@ interface HTMLAnchorElement : HTMLElement
     getter text
     getter type
     getter username
+    getter windowFeatures
     method constructor
     method toString
     setter charset
@@ -3582,6 +3606,7 @@ interface HTMLAnchorElement : HTMLElement
     setter text
     setter type
     setter username
+    setter windowFeatures
 interface HTMLAreaElement : HTMLElement
     attribute @@toStringTag
     getter alt
@@ -3608,6 +3633,7 @@ interface HTMLAreaElement : HTMLElement
     getter target
     getter type
     getter username
+    getter windowFeatures
     method constructor
     method toString
     setter alt
@@ -3633,6 +3659,7 @@ interface HTMLAreaElement : HTMLElement
     setter target
     setter type
     setter username
+    setter windowFeatures
 interface HTMLAudioElement : HTMLMediaElement
     attribute @@toStringTag
     method constructor
@@ -3762,7 +3789,6 @@ interface HTMLCanvasElement : HTMLElement
     attribute @@toStringTag
     getter content
     getter height
-    getter layoutSubtree
     getter onelementgeometryupdate
     getter onpaint
     getter width
@@ -3772,6 +3798,7 @@ interface HTMLCanvasElement : HTMLElement
     method configureHighDynamicRange
     method constructor
     method getContext
+    method getElementImageDefaultSize
     method getElementTransform
     method requestPaint
     method toBlob
@@ -3780,7 +3807,6 @@ interface HTMLCanvasElement : HTMLElement
     method updateElementGeometry
     setter content
     setter height
-    setter layoutSubtree
     setter onelementgeometryupdate
     setter onpaint
     setter width
@@ -3846,6 +3872,8 @@ interface HTMLElement : Element
     getter autocapitalize
     getter autocorrect
     getter autofocus
+    getter containerTiming
+    getter containerTimingIgnore
     getter contentEditable
     getter dataset
     getter dir
@@ -4001,6 +4029,8 @@ interface HTMLElement : Element
     setter autocapitalize
     setter autocorrect
     setter autofocus
+    setter containerTiming
+    setter containerTimingIgnore
     setter contentEditable
     setter dir
     setter draggable
@@ -4167,7 +4197,6 @@ interface HTMLFencedFrameElement : HTMLElement
     setter width
 interface HTMLFieldSetElement : HTMLElement
     attribute @@toStringTag
-    getter checkable
     getter disabled
     getter elements
     getter form
@@ -4180,7 +4209,6 @@ interface HTMLFieldSetElement : HTMLElement
     method constructor
     method reportValidity
     method setCustomValidity
-    setter checkable
     setter disabled
     setter name
 interface HTMLFontElement : HTMLElement
@@ -4212,6 +4240,7 @@ interface HTMLFormElement : HTMLElement
     getter rel
     getter relList
     getter target
+    getter windowFeatures
     method @@iterator
     method checkValidity
     method constructor
@@ -4230,6 +4259,7 @@ interface HTMLFormElement : HTMLElement
     setter rel
     setter relList
     setter target
+    setter windowFeatures
 interface HTMLFrameElement : HTMLElement
     attribute @@toStringTag
     getter contentDocument
@@ -4342,7 +4372,6 @@ interface HTMLHtmlElement : HTMLElement
     setter version
 interface HTMLIFrameElement : HTMLElement
     attribute @@toStringTag
-    getter adAuctionHeaders
     getter align
     getter allow
     getter allowFullscreen
@@ -4371,7 +4400,6 @@ interface HTMLIFrameElement : HTMLElement
     getter width
     method constructor
     method getSVGDocument
-    setter adAuctionHeaders
     setter align
     setter allow
     setter allowFullscreen
@@ -4734,18 +4762,36 @@ interface HTMLMenuElement : HTMLElement
     getter compact
     method constructor
     setter compact
-interface HTMLMenuItemElement : HTMLElement
+interface HTMLMenuItemCheckboxElement : HTMLElement
     attribute @@toStringTag
     getter checked
-    getter command
-    getter commandForElement
     getter defaultChecked
     getter disabled
     getter interestForElement
     method constructor
     setter checked
+    setter defaultChecked
+    setter disabled
+    setter interestForElement
+interface HTMLMenuItemElement : HTMLElement
+    attribute @@toStringTag
+    getter command
+    getter commandForElement
+    getter disabled
+    getter interestForElement
+    method constructor
     setter command
     setter commandForElement
+    setter disabled
+    setter interestForElement
+interface HTMLMenuItemRadioElement : HTMLElement
+    attribute @@toStringTag
+    getter checked
+    getter defaultChecked
+    getter disabled
+    getter interestForElement
+    method constructor
+    setter checked
     setter defaultChecked
     setter disabled
     setter interestForElement
@@ -5207,7 +5253,6 @@ interface HTMLTableSectionElement : HTMLElement
     setter vAlign
 interface HTMLTemplateElement : HTMLElement
     attribute @@toStringTag
-    getter buffer
     getter content
     getter crossOrigin
     getter htmlFor
@@ -5224,7 +5269,6 @@ interface HTMLTemplateElement : HTMLElement
     getter shadowRootSlotAssignment
     getter src
     method constructor
-    setter buffer
     setter crossOrigin
     setter htmlFor
     setter integrity
@@ -5803,16 +5847,6 @@ interface KeyframeEffect : AnimationEffect
     setter iterationComposite
     setter pseudoElement
     setter target
-interface LanguageDetector
-    static method availability
-    static method create
-    attribute @@toStringTag
-    getter expectedInputLanguages
-    getter inputQuota
-    method constructor
-    method destroy
-    method detect
-    method measureInputUsage
 interface LargestContentfulPaint : PerformanceEntry
     attribute @@toStringTag
     getter element
@@ -6470,12 +6504,22 @@ interface MimeTypeArray
     method namedItem
 interface ModelContext : EventTarget
     attribute @@toStringTag
+    getter ontoolactivated
+    getter ontoolcancel
     getter ontoolchange
     method constructor
     method executeTool
     method getTools
     method registerTool
+    method resumeTool
+    method waitForToolsUntil
+    setter ontoolactivated
+    setter ontoolcancel
     setter ontoolchange
+interface ModelContextToolInvocation
+    attribute @@toStringTag
+    method constructor
+    method requestToken
 interface Mojo
     static method bindInterface
     static method createDataPipe
@@ -6936,6 +6980,7 @@ interface OfflineAudioContext : BaseAudioContext
     attribute @@toStringTag
     getter length
     getter oncomplete
+    method close
     method constructor
     method resume
     method startRendering
@@ -6951,7 +6996,7 @@ interface OffscreenCanvas : EventTarget
     method constructor
     method convertToBlob
     method getContext
-    method getElementTransform
+    method getElementImageDefaultSize
     method transferToImageBitmap
     method updateElementGeometry
     setter height
@@ -7012,6 +7057,8 @@ interface OffscreenCanvasRenderingContext2D
     method ellipse
     method endLayer
     method fill
+    method fillGlyphRun
+    method fillGlyphRuns
     method fillRect
     method fillText
     method fillTextCluster
@@ -7037,7 +7084,10 @@ interface OffscreenCanvasRenderingContext2D
     method scale
     method setLineDash
     method setTransform
+    method shapeText
     method stroke
+    method strokeGlyphRun
+    method strokeGlyphRuns
     method strokeRect
     method strokeText
     method strokeTextCluster
@@ -7337,6 +7387,7 @@ interface PerformanceMark : PerformanceEntry
     method constructor
 interface PerformanceMarkConditional : PerformanceEntry
     attribute @@toStringTag
+    getter window
     method constructor
 interface PerformanceMeasure : PerformanceEntry
     attribute @@toStringTag
@@ -7344,6 +7395,7 @@ interface PerformanceMeasure : PerformanceEntry
     method constructor
 interface PerformanceMeasureConditional : PerformanceEntry
     attribute @@toStringTag
+    getter window
     method constructor
 interface PerformanceNavigation
     attribute @@toStringTag
@@ -7420,7 +7472,9 @@ interface PerformanceResourceTiming : PerformanceEntry
     getter serverTiming
     getter transferSize
     getter workerCacheLookupStart
+    getter workerFinalRouterSource
     getter workerFinalSourceType
+    getter workerMatchedRouterSource
     getter workerMatchedSourceType
     getter workerRouterEvaluationStart
     getter workerStart
@@ -7578,12 +7632,6 @@ interface PopStateEvent : Event
     getter hasUAVisualTransition
     getter state
     method constructor
-interface PreconnectData
-    attribute @@toStringTag
-    getter crossorigin
-    getter earlyhint
-    getter origin
-    method constructor
 interface PreferenceManager
     attribute @@toStringTag
     getter colorScheme
@@ -7602,14 +7650,6 @@ interface PreferenceObject : EventTarget
     method constructor
     method requestOverride
     setter onchange
-interface PreloadData
-    attribute @@toStringTag
-    getter as
-    getter crossorigin
-    getter earlyhint
-    getter url
-    getter used
-    method constructor
 interface ProcessingInstruction : CharacterData
     attribute @@toStringTag
     getter sheet
@@ -7639,10 +7679,6 @@ interface PromiseRejectionEvent : Event
     getter promise
     getter reason
     method constructor
-interface ProtectedAudience
-    attribute @@toStringTag
-    method constructor
-    method queryFeatureSupport
 interface QuotaExceededError : DOMException
     attribute @@toStringTag
     getter quota
@@ -8156,24 +8192,43 @@ interface RtcTransportIceEvent : Event
 interface SVGAElement : SVGGraphicsElement
     attribute @@toStringTag
     getter download
+    getter hash
+    getter host
+    getter hostname
     getter href
     getter hreflang
     getter interestForElement
+    getter origin
+    getter password
+    getter pathname
     getter ping
+    getter port
+    getter protocol
     getter referrerPolicy
     getter rel
     getter relList
+    getter search
     getter target
     getter type
+    getter username
     method constructor
     setter download
+    setter hash
+    setter host
+    setter hostname
     setter hreflang
     setter interestForElement
+    setter password
+    setter pathname
     setter ping
+    setter port
+    setter protocol
     setter referrerPolicy
     setter rel
     setter relList
+    setter search
     setter type
+    setter username
 interface SVGAngle
     attribute @@toStringTag
     attribute SVG_ANGLETYPE_DEG
@@ -9057,6 +9112,7 @@ interface SVGPathElement : SVGGeometryElement
     attribute @@toStringTag
     method constructor
     method getPathData
+    method getPathSegmentAtLength
     method setPathData
 interface SVGPatternElement : SVGElement
     attribute @@toStringTag
@@ -9365,6 +9421,7 @@ interface Sanitizer
     method replaceElementWithChildren
     method setComments
     method setDataAttributes
+    method setJavascriptURLs
 interface Scheduler
     attribute @@toStringTag
     method constructor
@@ -9496,13 +9553,6 @@ interface SelectorDirective : Directive
     attribute @@toStringTag
     method constructor
     method getMatchingRange
-interface SemanticEmbedder
-    static method availability
-    static method create
-    attribute @@toStringTag
-    method constructor
-    method destroy
-    method embed
 interface Sensor : EventTarget
     attribute @@toStringTag
     getter activated
@@ -9565,6 +9615,7 @@ interface ServiceWorkerRegistration : EventTarget
 interface ShadowRoot : DocumentFragment
     attribute @@toStringTag
     getter activeElement
+    getter activeFocusable
     getter adoptedStyleSheets
     getter clonable
     getter customElementRegistry
@@ -9603,6 +9654,16 @@ interface ShadowRoot : DocumentFragment
     setter innerHTML
     setter onslotchange
     setter referenceTarget
+interface ShapedText
+    attribute @@toStringTag
+    getter width
+    method actualBoundingBox
+    method advanceToPosition
+    method constructor
+    method glyphClusters
+    method glyphRuns
+    method positionToAdvance
+    method selectionRects
 interface SnapEvent : Event
     attribute @@toStringTag
     getter snapTargetBlock
@@ -9649,20 +9710,6 @@ interface SourceBufferList : EventTarget
     method constructor
     setter onaddsourcebuffer
     setter onremovesourcebuffer
-interface SpeculationData
-    attribute @@toStringTag
-    getter navigationDestinationURL
-    getter navigations
-    getter preconnects
-    getter preloads
-    method constructor
-interface SpeculationNavigationData
-    attribute @@toStringTag
-    getter eagerness
-    getter tags
-    getter type
-    getter url
-    method constructor
 interface SpeechGrammar
     attribute @@toStringTag
     getter src
@@ -9928,6 +9975,7 @@ interface TextDecoderStream
     getter writable
     method constructor
 interface TextDetector
+    static method create
     attribute @@toStringTag
     method constructor
     method detect
@@ -10079,6 +10127,25 @@ interface ToggleEvent : Event
     getter newState
     getter oldState
     getter source
+    method constructor
+interface Tool
+    attribute @@toStringTag
+    getter annotations
+    getter description
+    getter inputSchema
+    getter name
+    getter origin
+    getter outputSchema
+    getter title
+    getter window
+    method constructor
+interface ToolActivatedEvent : Event
+    attribute @@toStringTag
+    getter toolName
+    method constructor
+interface ToolCancelEvent : Event
+    attribute @@toStringTag
+    getter toolName
     method constructor
 interface Touch
     attribute @@toStringTag
@@ -11258,7 +11325,6 @@ interface WebGL2RenderingContext
     method stencilMaskSeparate
     method stencilOp
     method stencilOpSeparate
-    method texElementImage2D
     method texElementSubImage2D
     method texImage2D
     method texImage3D
@@ -11762,7 +11828,6 @@ interface WebGLRenderingContext
     method stencilMaskSeparate
     method stencilOp
     method stencilOpSeparate
-    method texElementImage2D
     method texElementSubImage2D
     method texImage2D
     method texParameterf
@@ -11893,10 +11958,6 @@ interface WebKitMutationObserver
     method disconnect
     method observe
     method takeRecords
-interface WebMCPEvent : Event
-    attribute @@toStringTag
-    getter toolName
-    method constructor
 interface WebSocket : EventTarget
     attribute @@toStringTag
     attribute CLOSED
@@ -11953,6 +12014,7 @@ interface WebTransport
     method createBidirectionalStream
     method createSendGroup
     method createUnidirectionalStream
+    method exportKeyingMaterial
     method getStats
     setter anticipatedConcurrentIncomingBidirectionalStreams
     setter anticipatedConcurrentIncomingUnidirectionalStreams
@@ -12532,7 +12594,7 @@ namespace console
     attribute awConsole
     attribute globalThis
     attribute propertyNamesInGlobal
-    getter alwaysOnTop
+    getter alwaysOnTopPopup
     getter caches
     getter clientInformation
     getter closed

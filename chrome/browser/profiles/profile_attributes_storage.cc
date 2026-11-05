@@ -93,6 +93,7 @@ enum class MultiProfileUserType {
 };
 
 const char kProfileCountLastUpdatePref[] = "profile.profile_counts_reported";
+constexpr char kProfilesOrderMigrated[] = "profile.profiles_order_migrated";
 #if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_CHROMEOS)
 const char kLegacyProfileNameMigrated[] = "legacy.profile.name.migrated";
 bool g_migration_enabled_for_testing = false;
@@ -191,7 +192,7 @@ class ProfileAttributesSortComparator {
 
 MultiProfileUserType GetMultiProfileUserType(
     const std::vector<ProfileAttributesEntry*>& entries) {
-  DCHECK_GT(entries.size(), 0u);
+  CHECK_GT(entries.size(), 0u, base::NotFatalUntil::M162);
   if (entries.size() == 1u)
     return MultiProfileUserType::kSingleProfile;
 
@@ -273,7 +274,7 @@ ProfileAttributesStorage::ProfileAttributesStorage(
   ScopedDictPrefUpdate update(prefs_, prefs::kProfileAttributes);
   base::DictValue& attributes = update.Get();
   for (auto kv : attributes) {
-    DCHECK(kv.second.is_dict());
+    CHECK(kv.second.is_dict(), base::NotFatalUntil::M162);
     base::DictValue& info = kv.second.GetDict();
     std::string* name = info.FindString(ProfileAttributesEntry::kNameKey);
 
@@ -342,6 +343,7 @@ ProfileAttributesStorage::~ProfileAttributesStorage() = default;
 void ProfileAttributesStorage::RegisterPrefs(PrefRegistrySimple* registry) {
   registry->RegisterDictionaryPref(prefs::kProfileAttributes);
   registry->RegisterListPref(prefs::kProfilesOrder);
+  registry->RegisterBooleanPref(kProfilesOrderMigrated, false);
   registry->RegisterTimePref(kProfileCountLastUpdatePref, base::Time());
 #if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_CHROMEOS)
   registry->RegisterBooleanPref(kLegacyProfileNameMigrated, false);
@@ -368,8 +370,9 @@ void ProfileAttributesStorage::AddProfile(ProfileAttributesInitParams params) {
   ScopedDictPrefUpdate update(prefs_, prefs::kProfileAttributes);
   base::DictValue& attributes = update.Get();
 
-  DCHECK(!params.is_consented_primary_account || !params.gaia_id.empty() ||
-         !params.user_name.empty());
+  CHECK(!params.is_consented_primary_account || !params.gaia_id.empty() ||
+            !params.user_name.empty(),
+        base::NotFatalUntil::M162);
 
   base::DictValue info =
       base::DictValue()
@@ -480,7 +483,7 @@ ProfileAttributesStorage::GetAllProfilesAttributes() const {
   std::vector<ProfileAttributesEntry*> ret;
   for (auto& path_and_entry : profile_attributes_entries_) {
     ProfileAttributesEntry* entry = path_and_entry.second.get();
-    DCHECK(entry);
+    CHECK(entry, base::NotFatalUntil::M162);
     ret.push_back(entry);
   }
   return ret;
@@ -499,7 +502,7 @@ ProfileAttributesStorage::GetAllProfilesAttributesSorted(
   // set by the time this constructor is called.
   std::unique_ptr<icu::Collator> collator(
       icu::Collator::createInstance(error_code));
-  DCHECK(U_SUCCESS(error_code));
+  CHECK(U_SUCCESS(error_code), base::NotFatalUntil::M162);
 
   std::sort(
       ret.begin(), ret.end(),
@@ -544,12 +547,23 @@ bool ProfileAttributesStorage::IsProfilesOrderPrefValid() const {
 }
 
 void ProfileAttributesStorage::EnsureProfilesOrderPrefIsInitialized() {
+  const bool reordering_enabled =
+      base::FeatureList::IsEnabled(switches::kProfilesReordering);
+  if (!reordering_enabled) {
+    prefs_->ClearPref(kProfilesOrderMigrated);
+  }
+
+  const bool should_migrate =
+      reordering_enabled && !prefs_->GetBoolean(kProfilesOrderMigrated);
+
   ScopedListPrefUpdate update(prefs_, prefs::kProfilesOrder);
   base::ListValue& profile_keys_order = update.Get();
 
-  // If the saved order pref is not valid, we recover by reseting the whole list
-  // and re-populate it with the profiles ordered by local profile name.
-  if (!IsProfilesOrderPrefValid()) {
+  // If the saved order pref is not valid, or if `kProfilesReordering` is newly
+  // enabled (migrating existing profiles that were previously displayed
+  // alphabetically), reset the whole list and populate it with the profiles
+  // ordered by local profile name.
+  if (should_migrate || !IsProfilesOrderPrefValid()) {
     profile_keys_order.clear();
 
     std::vector<ProfileAttributesEntry*> entries =
@@ -559,24 +573,37 @@ void ProfileAttributesStorage::EnsureProfilesOrderPrefIsInitialized() {
     }
   }
 
-  DCHECK_EQ(profile_keys_order.size(), GetNumberOfProfiles());
+  if (should_migrate) {
+    prefs_->SetBoolean(kProfilesOrderMigrated, true);
+  }
+
+  CHECK_EQ(profile_keys_order.size(), GetNumberOfProfiles(),
+           base::NotFatalUntil::M162);
 }
 
-void ProfileAttributesStorage::UpdateProfilesOrderPref(size_t from_index,
-                                                       size_t to_index) {
+void ProfileAttributesStorage::UpdateProfilesOrderPref(
+    size_t from_index,
+    size_t to_index,
+    ProfileOrderUpdateType update_type) {
   if (from_index == to_index) {
     return;
   }
 
-  ScopedListPrefUpdate update(prefs_, prefs::kProfilesOrder);
-  base::ListValue& profile_keys_order = update.Get();
+  {
+    ScopedListPrefUpdate update(prefs_, prefs::kProfilesOrder);
+    base::ListValue& profile_keys_order = update.Get();
 
-  // Apply the shift by rotating the element based on the indices.
-  // Element at `from_index` will be placed at `to_index` and the rest will
-  // shift left or right based on the index comparison.
-  Rotate(profile_keys_order, from_index, to_index);
+    // Apply the shift by rotating the element based on the indices.
+    // Element at `from_index` will be placed at `to_index` and the rest will
+    // shift left or right based on the index comparison.
+    Rotate(profile_keys_order, from_index, to_index);
+  }
 
-  base::UmaHistogramBoolean("Profile.ProfilesOrderChanged", true);
+  for (auto& observer : observer_list_) {
+    observer.OnProfilesOrderChanged();
+  }
+
+  base::UmaHistogramEnumeration("Profile.ProfilesOrderChanged", update_type);
 }
 
 base::flat_map<std::string, ProfileAttributesEntry*>
@@ -594,13 +621,14 @@ ProfileAttributesStorage::GetAllProfilesAttributesSortedForDisplay() const {
   std::vector<ProfileAttributesEntry*> ret_ordered_entries;
 
   const base::ListValue& ordered_keys = prefs_->GetList(prefs::kProfilesOrder);
-  DCHECK_EQ(ordered_keys.size(), GetNumberOfProfiles());
+  CHECK_EQ(ordered_keys.size(), GetNumberOfProfiles(),
+           base::NotFatalUntil::M162);
 
   base::flat_map<std::string, ProfileAttributesEntry*> key_entry_map =
       GetStorageKeyEntryMap();
   for (const base::Value& key : ordered_keys) {
     ProfileAttributesEntry* entry = key_entry_map[key.GetString()];
-    DCHECK(entry);
+    CHECK(entry, base::NotFatalUntil::M162);
     ret_ordered_entries.emplace_back(entry);
   }
 
@@ -783,7 +811,7 @@ void ProfileAttributesStorage::DeleteGAIAImageAtPath(
   file_task_runner_->PostTask(FROM_HERE,
                               base::BindOnce(&DeleteBitmap, image_path));
   ProfileAttributesEntry* entry = GetProfileAttributesWithPath(profile_path);
-  DCHECK(entry);
+  CHECK(entry, base::NotFatalUntil::M162);
   entry->SetLastDownloadedGAIAPictureUrlWithSize(std::string());
 }
 
@@ -798,7 +826,7 @@ void ProfileAttributesStorage::RemoveObserver(Observer* obs) {
 #if !BUILDFLAG(IS_ANDROID)
 void ProfileAttributesStorage::RecordDeletedProfileState(
     ProfileAttributesEntry* entry) {
-  DCHECK(entry);
+  CHECK(entry, base::NotFatalUntil::M162);
   RecordProfileState(entry, profile_metrics::StateSuffix::kUponDeletion);
   bool is_last_profile = GetNumberOfProfiles() <= 1u;
   // If the profile has windows opened, they are still open at this moment.
@@ -964,7 +992,7 @@ void ProfileAttributesStorage::NotifyProfileAiSubscriptionTierUpdated(
 
 std::string ProfileAttributesStorage::StorageKeyFromProfilePath(
     const base::FilePath& profile_path) const {
-  DCHECK_EQ(user_data_dir_, profile_path.DirName());
+  CHECK_EQ(user_data_dir_, profile_path.DirName(), base::NotFatalUntil::M162);
   return profile_path.BaseName().AsUTF8Unsafe();
 }
 
@@ -980,7 +1008,7 @@ void ProfileAttributesStorage::DownloadHighResAvatarIfNeeded(
 #if BUILDFLAG(IS_ANDROID)
   return;
 #endif
-  DCHECK(!disable_avatar_download_for_testing_);
+  CHECK(!disable_avatar_download_for_testing_, base::NotFatalUntil::M162);
 
   // If this is the placeholder avatar, it is already included in the
   // resources, so it doesn't need to be downloaded (and it will never be
@@ -1004,7 +1032,7 @@ void ProfileAttributesStorage::DownloadHighResAvatar(
 #if !BUILDFLAG(IS_ANDROID)
   const char* file_name =
       profiles::GetDefaultAvatarIconFileNameAtIndex(icon_index);
-  DCHECK(file_name);
+  CHECK(file_name, base::NotFatalUntil::M162);
   // If the file is already being downloaded, don't start another download.
   if (avatar_images_downloads_in_progress_.contains(file_name)) {
     return;
@@ -1064,7 +1092,8 @@ ProfileAttributesEntry* ProfileAttributesStorage::InitEntryWithKey(
   base::FilePath path =
       user_data_dir_.Append(base::FilePath::FromUTF8Unsafe(key));
 
-  DCHECK(!profile_attributes_entries_.contains(path.value()));
+  CHECK(!profile_attributes_entries_.contains(path.value()),
+        base::NotFatalUntil::M162);
   ProfileAttributesEntry* new_entry =
       profile_attributes_entries_
           .emplace(path.value(), std::make_unique<ProfileAttributesEntry>())
@@ -1140,7 +1169,7 @@ void ProfileAttributesStorage::OnAvatarPictureLoaded(
     const base::FilePath& profile_path,
     const std::string& key,
     gfx::Image image) const {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
   cached_avatar_images_loading_[key] = false;
   if (auto it = cached_avatar_images_.find(key);
       it != cached_avatar_images_.end()) {
@@ -1166,7 +1195,7 @@ void ProfileAttributesStorage::OnAvatarPictureSaved(
     const base::FilePath& profile_path,
     base::OnceClosure callback,
     bool success) const {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
   if (!success)
     return;
 

@@ -28,7 +28,7 @@
 #include "chrome/browser/permissions/permission_decision_auto_blocker_factory.h"
 #include "chrome/browser/policy/policy_util.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/web_applications/isolated_web_apps/isolated_web_app_metrics_helper.h"
+#include "chrome/browser/web_applications/sub_apps/metrics_helper.h"
 #include "chrome/browser/web_applications/web_app.h"
 #include "chrome/browser/web_applications/web_app_command_scheduler.h"
 #include "chrome/browser/web_applications/web_app_filter.h"
@@ -87,8 +87,6 @@ BASE_FEATURE(kSubAppsPerPromptLimit, base::FEATURE_ENABLED_BY_DEFAULT);
 const base::FeatureParam<int> kSubAppsPerPromptLimitParam{
     &kSubAppsPerPromptLimit, "limit", 20};
 
-namespace {
-
 SubAppInstallResult::SubAppInstallResult(
     GURL install_url,
     webapps::ManifestId manifest_id,
@@ -103,6 +101,8 @@ SubAppInstallResult& SubAppInstallResult::operator=(
 SubAppInstallResult::SubAppInstallResult(SubAppInstallResult&&) = default;
 SubAppInstallResult& SubAppInstallResult::operator=(SubAppInstallResult&&) =
     default;
+
+namespace {
 
 constexpr char kSubAppsUninstallNotifierId[] = "sub_apps_service";
 
@@ -311,8 +311,9 @@ IsolatedWebAppMetricsHelper::LogSubAppInstallResult MapAddCallErrorCodeToMetric(
 
 SubAppsServiceImpl::SubAppsServiceImpl(
     content::RenderFrameHost& render_frame_host,
-    mojo::PendingReceiver<SubAppsService> receiver)
-    : DocumentService(render_frame_host, std::move(receiver)) {}
+    mojo::PendingReceiver<SubAppsService> receiver,
+    base::SelfDeletingPassKey key)
+    : DocumentService(render_frame_host, std::move(receiver), key) {}
 
 SubAppsServiceImpl::~SubAppsServiceImpl() = default;
 
@@ -343,7 +344,8 @@ void SubAppsServiceImpl::CreateIfAllowed(
 
   // The object is bound to the lifetime of `render_frame_host` and the mojo
   // connection. See DocumentService for details.
-  new SubAppsServiceImpl(*render_frame_host, std::move(receiver));
+  base::MakeSelfDeleting<SubAppsServiceImpl>(*render_frame_host,
+                                             std::move(receiver));
 }
 
 void SubAppsServiceImpl::Add(const std::vector<std::string>& install_paths,

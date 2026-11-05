@@ -9,8 +9,6 @@
 
 #include "base/check.h"
 #include "base/command_line.h"
-#include "base/containers/span.h"
-#include "base/containers/to_vector.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/memory/ptr_util.h"
@@ -19,6 +17,7 @@
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/bind.h"
 #include "base/test/gtest_util.h"
+#include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/test_future.h"
 #include "base/time/time.h"
@@ -47,6 +46,7 @@
 #include "content/public/browser/javascript_dialog_manager.h"
 #include "content/public/browser/navigation_details.h"
 #include "content/public/browser/render_widget_host_view.h"
+#include "content/public/browser/renderer_preferences_util.h"
 #include "content/public/browser/security_principal.h"
 #include "content/public/browser/ssl_host_state_delegate.h"
 #include "content/public/browser/storage_partition.h"
@@ -87,6 +87,7 @@
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/common/chrome_debug_urls.h"
+#include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/common/input/synthetic_web_input_event_builders.h"
 #include "third_party/blink/public/common/input/web_input_event.h"
 #include "third_party/blink/public/common/scheme_registry.h"
@@ -96,7 +97,10 @@
 #include "third_party/blink/public/mojom/mediastream/media_stream.mojom.h"
 #include "third_party/blink/public/mojom/page/page_visibility_state.mojom.h"
 #include "third_party/skia/include/core/SkColor.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/base/ui_base_features.h"
+#include "ui/display/screen.h"
+#include "ui/gfx/font_render_params.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/size.h"
 #include "ui/gfx/geometry/skia_conversions.h"
@@ -406,6 +410,10 @@ class TestColorProviderSource : public ui::ColorProviderSource {
   // Swaps the light and dark maps.
   void SwapMaps();
 
+  void SetColorMode(ui::ColorProviderKey::ColorMode color_mode) {
+    key_.color_mode = color_mode;
+  }
+
  private:
   ui::ColorProvider provider_;
   ui::ColorProviderKey key_;
@@ -455,6 +463,37 @@ class MockNetworkContext : public network::TestNetworkContext {
 };
 
 }  // namespace
+
+namespace {
+
+// Returns an off-the-record BrowserContext as the user BrowserContext of any
+// frame.
+class LearningTestUserContentBrowserClient : public TestContentBrowserClient {
+ public:
+  LearningTestUserContentBrowserClient() {
+    browser_context_.set_is_off_the_record(true);
+  }
+
+  // ContentBrowserClient:
+  BrowserContext* GetUserBrowserContext(WebContents& web_contents) override {
+    return &browser_context_;
+  }
+
+ private:
+  TestBrowserContext browser_context_;
+};
+
+}  // namespace
+
+// Tests that IME learning uses the off-the-record state of the user
+// BrowserContext, instead of that of the WebContents.
+TEST_F(WebContentsImplTest, ShouldDoLearningUsesUserBrowserContext) {
+  EXPECT_TRUE(contents()->ShouldDoLearning());
+
+  LearningTestUserContentBrowserClient browser_client;
+  ScopedContentBrowserClientSetting browser_client_setting(&browser_client);
+  EXPECT_FALSE(contents()->ShouldDoLearning());
+}
 
 TEST_F(WebContentsImplTest, SetMainFrameMimeType) {
   ASSERT_TRUE(controller().IsInitialNavigation());
@@ -2190,7 +2229,7 @@ TEST_F(WebContentsImplTest, CreateNewWindowBlockedBySystem) {
   contents()->SetDelegate(&delegate);
 
   mojom::CreateNewWindowParams params;
-  params.disposition = WindowOpenDisposition::NEW_PICTURE_IN_PICTURE;
+  params.disposition = ui::mojom::WindowOpenDisposition::kNewPictureInPicture;
 
   FrameTree* result =
       static_cast<WebContentsImpl*>(contents())
@@ -3982,6 +4021,128 @@ TEST_F(WebContentsImplTest, ColorRelatedStateChangesCoalesced) {
   ::testing::Mock::VerifyAndClearExpectations(&mock_page_broadcast);
 }
 
+namespace {
+
+class ColorSchemeTestContentBrowserClient : public TestContentBrowserClient {
+ public:
+  static blink::mojom::PreferredColorScheme GetPreferredColorScheme(
+      WebContents* web_contents) {
+    if (WebContents* outer = web_contents->GetOuterWebContents()) {
+      return outer->GetOrCreateWebPreferences().preferred_color_scheme;
+    }
+    return web_contents->GetColorMode() ==
+                   ui::ColorProviderKey::ColorMode::kDark
+               ? blink::mojom::PreferredColorScheme::kDark
+               : blink::mojom::PreferredColorScheme::kLight;
+  }
+
+  void OverrideWebPreferences(
+      WebContents* web_contents,
+      SiteInstance& main_frame_site,
+      blink::web_pref::WebPreferences* web_prefs) override {
+    web_prefs->preferred_color_scheme = GetPreferredColorScheme(web_contents);
+  }
+
+  bool WebPreferencesNeedUpdateForColorRelatedStateChanges(
+      WebContents& web_contents,
+      const SiteInstance& main_frame_site) const override {
+    return GetPreferredColorScheme(&web_contents) !=
+           web_contents.GetOrCreateWebPreferences().preferred_color_scheme;
+  }
+};
+
+}  // namespace
+
+TEST_F(WebContentsImplTest,
+       InitialColorProviderChangeUpdatesSynchronouslyThenDefers) {
+  ui::NativeTheme::SetPreferredColorSchemeOverride(
+      ui::NativeTheme::PreferredColorScheme::kLight);
+  base::ScopedClosureRunner reset_color_scheme(base::BindOnce(
+      &ui::NativeTheme::SetPreferredColorSchemeOverride, std::nullopt));
+
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeature(features::kThemeChangeOptimization);
+
+  ColorSchemeTestContentBrowserClient browser_client;
+  ScopedContentBrowserClientSetting setting(&browser_client);
+
+  NavigationSimulator::NavigateAndCommitFromBrowser(
+      contents(), GURL("https://example.com/outer"));
+  TestRenderFrameHost* child_frame = main_test_rfh()->AppendChild("child");
+  EXPECT_EQ(contents()->GetOrCreateWebPreferences().preferred_color_scheme,
+            blink::mojom::PreferredColorScheme::kLight);
+
+  std::unique_ptr<WebContents> inner_contents =
+      WebContentsTester::CreateTestWebContents(browser_context(), nullptr);
+  WebContents* inner_contents_ptr = inner_contents.get();
+  contents()->AttachInnerWebContents(std::move(inner_contents), child_frame,
+                                     /*is_full_page=*/false);
+  EXPECT_EQ(
+      inner_contents_ptr->GetOrCreateWebPreferences().preferred_color_scheme,
+      blink::mojom::PreferredColorScheme::kLight);
+
+  // A `NativeTheme` update while `contents()` is still observing
+  // `DefaultColorProviderSource` must be deferred and must not prevent the
+  // subsequent initial `SetColorProviderSource()` attachment from updating
+  // `WebPreferences` synchronously.
+  ui::NativeTheme::SetPreferredColorSchemeOverride(
+      ui::NativeTheme::PreferredColorScheme::kDark);
+  EXPECT_EQ(contents()->GetOrCreateWebPreferences().preferred_color_scheme,
+            blink::mojom::PreferredColorScheme::kLight);
+  EXPECT_EQ(
+      inner_contents_ptr->GetOrCreateWebPreferences().preferred_color_scheme,
+      blink::mojom::PreferredColorScheme::kLight);
+
+  EXPECT_TRUE(base::test::RunUntil([&]() {
+    return contents()->GetOrCreateWebPreferences().preferred_color_scheme ==
+               blink::mojom::PreferredColorScheme::kDark &&
+           inner_contents_ptr->GetOrCreateWebPreferences()
+                   .preferred_color_scheme ==
+               blink::mojom::PreferredColorScheme::kDark;
+  }));
+
+  // Restore the default `NativeTheme` color scheme.
+  ui::NativeTheme::SetPreferredColorSchemeOverride(
+      ui::NativeTheme::PreferredColorScheme::kLight);
+  EXPECT_TRUE(base::test::RunUntil([&]() {
+    return contents()->GetOrCreateWebPreferences().preferred_color_scheme ==
+               blink::mojom::PreferredColorScheme::kLight &&
+           inner_contents_ptr->GetOrCreateWebPreferences()
+                   .preferred_color_scheme ==
+               blink::mojom::PreferredColorScheme::kLight;
+  }));
+
+  // Initial attachment to a `ColorProviderSource` must synchronously update
+  // `WebPreferences` on both the outer and attached inner `WebContents` without
+  // waiting for a posted task.
+  TestColorProviderSource color_provider_source;
+  color_provider_source.SetColorMode(ui::ColorProviderKey::ColorMode::kDark);
+  contents()->SetColorProviderSource(&color_provider_source);
+  EXPECT_EQ(contents()->GetOrCreateWebPreferences().preferred_color_scheme,
+            blink::mojom::PreferredColorScheme::kDark);
+  EXPECT_EQ(
+      inner_contents_ptr->GetOrCreateWebPreferences().preferred_color_scheme,
+      blink::mojom::PreferredColorScheme::kDark);
+
+  // Subsequent color provider notifications are deferred until the scheduled
+  // task runs.
+  color_provider_source.SetColorMode(ui::ColorProviderKey::ColorMode::kLight);
+  color_provider_source.NotifyColorProviderChanged();
+  EXPECT_EQ(contents()->GetOrCreateWebPreferences().preferred_color_scheme,
+            blink::mojom::PreferredColorScheme::kDark);
+  EXPECT_EQ(
+      inner_contents_ptr->GetOrCreateWebPreferences().preferred_color_scheme,
+      blink::mojom::PreferredColorScheme::kDark);
+
+  EXPECT_TRUE(base::test::RunUntil([&]() {
+    return contents()->GetOrCreateWebPreferences().preferred_color_scheme ==
+               blink::mojom::PreferredColorScheme::kLight &&
+           inner_contents_ptr->GetOrCreateWebPreferences()
+                   .preferred_color_scheme ==
+               blink::mojom::PreferredColorScheme::kLight;
+  }));
+}
+
 // Regression test: a re-entrant OnColorProviderChanged() during teardown must
 // not re-attach to the default source and recurse into
 // HandleColorRelatedStateChanges(), which would dereference the partially-freed
@@ -4364,85 +4525,72 @@ TEST_F(WebContentsImplTest, SetIgnoreZoomGestures) {
   EXPECT_FALSE(contents()->PreHandleGestureEvent(scroll_event));
 }
 
-TEST_F(WebContentsImplTest, DragProvenanceLifecycle) {
-  DropData drop_data;
-  drop_data.file_contents =
-      base::ToVector(base::byte_span_from_cstring("test content"));
-  drop_data.file_contents_filename_extension = FILE_PATH_LITERAL("txt");
-  drop_data.file_contents_source_url = GURL("https://example.com/file.txt");
+namespace {
+
+// Records what observers see when a drag starts.
+class DragStartObserver : public WebContentsObserver {
+ public:
+  explicit DragStartObserver(WebContents* web_contents)
+      : WebContentsObserver(web_contents) {}
+
+  void DidStartDrag(RenderFrameHost* source_rfh,
+                    const DropData& drop_data) override {
+    ++call_count_;
+    observed_drag_id_ = drop_data.drag_id;
+    observed_rfh_token_ = source_rfh->GetGlobalFrameToken();
+  }
+
+  int call_count() const { return call_count_; }
+  const std::optional<base::UnguessableToken>& observed_drag_id() const {
+    return observed_drag_id_;
+  }
+  const GlobalRenderFrameHostToken& observed_rfh_token() const {
+    return observed_rfh_token_;
+  }
+
+ private:
+  int call_count_ = 0;
+  std::optional<base::UnguessableToken> observed_drag_id_;
+  GlobalRenderFrameHostToken observed_rfh_token_;
+};
+
+}  // namespace
+
+TEST_F(WebContentsImplTest, ObserverNotifiedOnDragStartWithDragId) {
+  DragStartObserver observer(contents());
 
   GlobalRenderFrameHostToken source_rfh_token =
       main_test_rfh()->GetGlobalFrameToken();
 
-  // 1. Verify stashing on drag start.
-  GURL page_url("https://example.com/page.html");
-  NavigationSimulator::NavigateAndCommitFromBrowser(contents(), page_url);
-  const std::u16string page_title = u"Test Page";
-  contents()->UpdateTitleForEntry(
-      contents()->GetController().GetLastCommittedEntry(), page_title);
-
+  DropData drop_data;
   contents()->OnStartDragging(&drop_data, source_rfh_token);
 
-  auto it = drop_data.custom_data.find(u"chromium/x-drag-id");
-  ASSERT_NE(it, drop_data.custom_data.end())
-      << "drag_id should be added to custom_data when file_contents is "
-         "present.";
+  // Observers key drag-start state on `drag_id`, so it must already be
+  // assigned by the time the notification fires.
+  EXPECT_EQ(observer.call_count(), 1);
+  ASSERT_TRUE(drop_data.drag_id.has_value());
+  EXPECT_FALSE(drop_data.drag_id->is_empty());
+  EXPECT_TRUE(drop_data.custom_data.empty())
+      << "custom_data must remain untouched so internal drag tokens never leak "
+         "to web renderers via DataTransfer.";
+  EXPECT_EQ(observer.observed_drag_id(), drop_data.drag_id);
+  EXPECT_EQ(observer.observed_rfh_token(), source_rfh_token);
 
-  std::string drag_id_str = base::UTF16ToASCII(it->second);
-  std::optional<base::UnguessableToken> drag_id =
-      base::UnguessableToken::DeserializeFromString(drag_id_str);
-  ASSERT_TRUE(drag_id.has_value());
-
-  // 2. Verify global lookup works.
-  EXPECT_EQ(WebContents::FromDragId(contents()->GetBrowserContext(),
-                                    WebContents::DragId(*drag_id)),
-            contents());
-
-  // 3. Verify drag id is NOT cleaned up on drag end (due to async race
-  // conditions, especially on Mac).
-  contents()->OnDragSourceEnded();
-  EXPECT_EQ(WebContents::FromDragId(contents()->GetBrowserContext(),
-                                    WebContents::DragId(*drag_id)),
-            contents());
+  DropData second_drop_data;
+  contents()->OnStartDragging(&second_drop_data, source_rfh_token);
+  ASSERT_TRUE(second_drop_data.drag_id.has_value());
+  EXPECT_NE(*drop_data.drag_id, *second_drop_data.drag_id);
 }
 
-TEST_F(WebContentsImplTest, NoStashIfNoFileContents) {
-  DropData drop_data;
-  // Intentionally leaving file_contents empty.
+TEST_F(WebContentsImplTest, ObserverNotNotifiedIfInvalidSourceFrame) {
+  DragStartObserver observer(contents());
 
+  DropData drop_data;
   contents()->OnStartDragging(&drop_data, GlobalRenderFrameHostToken());
 
-  EXPECT_EQ(drop_data.custom_data.find(u"chromium/x-drag-id"),
-            drop_data.custom_data.end())
-      << "No drag_id should be created if file_contents is empty.";
-}
-
-TEST_F(WebContentsImplTest, MultipleDragProvenancesAreIsolated) {
-  // Simulate two separate drags (though only one is typically active).
-  GlobalRenderFrameHostToken source_rfh_token =
-      main_test_rfh()->GetGlobalFrameToken();
-
-  DropData data1;
-  data1.file_contents =
-      base::ToVector(base::byte_span_from_cstring("content 1"));
-  contents()->OnStartDragging(&data1, source_rfh_token);
-  base::UnguessableToken id1 = *base::UnguessableToken::DeserializeFromString(
-      base::UTF16ToASCII(data1.custom_data[u"chromium/x-drag-id"]));
-
-  DropData data2;
-  data2.file_contents =
-      base::ToVector(base::byte_span_from_cstring("content 2"));
-  contents()->OnStartDragging(&data2, source_rfh_token);
-  base::UnguessableToken id2 = *base::UnguessableToken::DeserializeFromString(
-      base::UTF16ToASCII(data2.custom_data[u"chromium/x-drag-id"]));
-
-  EXPECT_NE(id1, id2);
-  EXPECT_EQ(WebContents::FromDragId(contents()->GetBrowserContext(),
-                                    WebContents::DragId(id1)),
-            contents());
-  EXPECT_EQ(WebContents::FromDragId(contents()->GetBrowserContext(),
-                                    WebContents::DragId(id2)),
-            contents());
+  EXPECT_EQ(observer.call_count(), 0);
+  EXPECT_FALSE(drop_data.drag_id.has_value());
+  EXPECT_TRUE(drop_data.custom_data.empty());
 }
 
 TEST_F(WebContentsImplTest, ConstrainPopupBounds) {
@@ -4456,6 +4604,17 @@ TEST_F(WebContentsImplTest, ConstrainPopupBounds) {
   gfx::Rect above_line_of_death(100, 50, 200, 100);
   EXPECT_EQ(contents()->ConstrainPopupBounds(above_line_of_death),
             gfx::Rect(100, kLineOfDeath, 200, 100));
+
+  // If moving the popup down to the line of death would push its bottom past
+  // the display's work area, its height is reduced to fit within the work area.
+  const gfx::Rect work_area =
+      display::Screen::Get()->GetPrimaryDisplay().work_area();
+  ASSERT_GT(work_area.bottom(), kLineOfDeath);
+  const int kTallHeight = work_area.bottom() - 50;
+  gfx::Rect tall_popup_above_line_of_death(100, 50, 200, kTallHeight);
+  EXPECT_EQ(
+      contents()->ConstrainPopupBounds(tall_popup_above_line_of_death),
+      gfx::Rect(100, kLineOfDeath, 200, work_area.bottom() - kLineOfDeath));
 
   // A popup whose top is exactly at the line of death is unchanged.
   gfx::Rect at_line_of_death(100, kLineOfDeath, 200, 100);
@@ -4476,9 +4635,80 @@ TEST_F(WebContentsImplTest, ConstrainPopupBounds) {
   // When the feature is disabled, popups above the line of death are not
   // clamped.
   base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndDisableFeature(features::kLimitPopupWidgetHostPosition);
+  feature_list.InitAndDisableFeature(
+      blink::features::kLimitPopupWidgetHostPosition);
   EXPECT_EQ(contents()->ConstrainPopupBounds(above_line_of_death),
             above_line_of_death);
+}
+
+TEST_F(WebContentsImplTest, DestroyWebContentsWithFrameSinkIdOwnerView) {
+  std::unique_ptr<WebContents> web_contents = CreateTestWebContents();
+  auto* web_contents_impl = static_cast<WebContentsImpl*>(web_contents.get());
+  RenderWidgetHostImpl* rwh =
+      web_contents_impl->GetPrimaryMainFrame()->GetRenderWidgetHost();
+  ASSERT_TRUE(rwh);
+  EXPECT_EQ(rwh->delegate(), web_contents_impl);
+
+  RenderWidgetHostViewBase* view = rwh->GetView();
+  ASSERT_TRUE(view);
+  view->SetIsFrameSinkIdOwner(true);
+
+  // Destroy WebContents. Its destructor must detach the delegate from
+  // the main frame widget so that subsequent FrameTree destruction does
+  // not dereference a dead delegate in DestroyOrDefer().
+  web_contents.reset();
+}
+
+TEST_F(WebContentsImplTest,
+       InitializesFontRendererPreferencesFromSystemSettings) {
+  blink::RendererPreferences expected_prefs;
+  UpdateFontRendererPreferencesFromSystemSettings(&expected_prefs);
+
+  const blink::RendererPreferences* actual_prefs =
+      contents()->GetMutableRendererPrefs();
+  EXPECT_EQ(actual_prefs->should_antialias_text,
+            expected_prefs.should_antialias_text);
+  EXPECT_EQ(actual_prefs->use_subpixel_positioning,
+            expected_prefs.use_subpixel_positioning);
+  EXPECT_EQ(actual_prefs->hinting, expected_prefs.hinting);
+  EXPECT_EQ(actual_prefs->use_autohinter, expected_prefs.use_autohinter);
+  EXPECT_EQ(actual_prefs->use_bitmaps, expected_prefs.use_bitmaps);
+  EXPECT_EQ(actual_prefs->subpixel_rendering,
+            expected_prefs.subpixel_rendering);
+  EXPECT_EQ(actual_prefs->text_contrast, expected_prefs.text_contrast);
+  EXPECT_EQ(actual_prefs->text_gamma, expected_prefs.text_gamma);
+
+#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
+  const float original_dsf = gfx::GetFontRenderParamsDeviceScaleFactor();
+  gfx::SetFontRenderParamsDeviceScaleFactor(1.25f);
+
+  blink::RendererPreferences updated_prefs;
+  UpdateFontRendererPreferencesFromSystemSettings(&updated_prefs);
+  EXPECT_TRUE(updated_prefs.use_subpixel_positioning);
+
+  // Check that we don't update the preferences when the content client says we
+  // shouldn't.
+  class SkipFontPrefsBrowserClient : public TestContentBrowserClient {
+   public:
+    bool ShouldUpdateFontRendererPreferencesFromSystemSettings()
+        const override {
+      return false;
+    }
+  };
+  SkipFontPrefsBrowserClient test_client;
+  ContentBrowserClient* old_client = SetBrowserClientForTesting(&test_client);
+
+  std::unique_ptr<WebContents> skipped_contents = CreateTestWebContents();
+  const blink::RendererPreferences* skipped_prefs =
+      skipped_contents->GetMutableRendererPrefs();
+  blink::RendererPreferences default_prefs;
+  EXPECT_FALSE(skipped_prefs->use_subpixel_positioning);
+  EXPECT_EQ(skipped_prefs->use_subpixel_positioning,
+            default_prefs.use_subpixel_positioning);
+
+  SetBrowserClientForTesting(old_client);
+  gfx::SetFontRenderParamsDeviceScaleFactor(original_dsf);
+#endif
 }
 
 }  // namespace content

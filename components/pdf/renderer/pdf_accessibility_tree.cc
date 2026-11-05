@@ -5,10 +5,12 @@
 #include "components/pdf/renderer/pdf_accessibility_tree.h"
 
 #include <algorithm>
+#include <cmath>
 #include <iterator>
+#include <map>
 #include <optional>
-#include <ranges>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -22,8 +24,11 @@
 #include "base/memory/raw_ref.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/notreached.h"
+#include "base/strings/string_util.h"
+#include "base/strings/utf_string_conversion_utils.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/time/time.h"
+#include "components/pdf/renderer/pdf_accessibility_metrics.h"
 #include "components/pdf/renderer/pdf_accessibility_tree_builder.h"
 #include "components/pdf/renderer/pdf_ax_action_target.h"
 #include "components/strings/grit/components_strings.h"
@@ -35,6 +40,8 @@
 #include "third_party/blink/public/web/web_element.h"
 #include "third_party/blink/public/web/web_local_frame.h"
 #include "third_party/blink/public/web/web_plugin_container.h"
+#include "third_party/icu/source/common/unicode/uchar.h"
+#include "ui/accessibility/accessibility_features.h"
 #include "ui/accessibility/ax_action_data.h"
 #include "ui/accessibility/ax_enums.mojom.h"
 #include "ui/accessibility/ax_mode.h"
@@ -45,6 +52,7 @@
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/gfx/geometry/point_f.h"
 #include "ui/gfx/geometry/rect_conversions.h"
+#include "ui/gfx/geometry/rect_f.h"
 #include "ui/gfx/geometry/transform.h"
 
 #if BUILDFLAG(ENABLE_SCREEN_AI_SERVICE)
@@ -52,8 +60,6 @@
 #endif  // BUILDFLAG(ENABLE_SCREEN_AI_SERVICE)
 
 namespace pdf {
-
-namespace ranges = std::ranges;
 
 namespace {
 
@@ -205,6 +211,110 @@ std::unique_ptr<ui::AXNodeData> CreateBannerNode(ui::AXNodeID id,
   return banner_node;
 }
 
+// Replaces each contiguous run of Unicode digits in `text` with '#' (e.g.
+// "Page 12 of 30" -> "Page # of #").
+std::u16string NormalizeDigits(std::u16string_view text) {
+  std::u16string result;
+  result.reserve(text.size());
+  bool prev_was_digit = false;
+  for (size_t i = 0; i < text.size(); ++i) {
+    base_icu::UChar32 code_point;
+    if (!base::ReadUnicodeCharacter(text, &i, &code_point)) {
+      continue;
+    }
+    if (u_isdigit(code_point)) {
+      if (!prev_was_digit) {
+        result.push_back(u'#');
+        prev_was_digit = true;
+      }
+    } else {
+      base::WriteUnicodeCharacter(code_point, &result);
+      prev_was_digit = false;
+    }
+  }
+  return result;
+}
+
+// Returns the whitespace-collapsed text of each page's direct children that
+// have `role` and non-empty text, in page order.
+std::vector<std::u16string> GetPageChildTextsWithRole(const ui::AXNode& root,
+                                                      ax::mojom::Role role) {
+  std::vector<std::u16string> texts;
+  for (const ui::AXNode* page : root.children()) {
+    if (page->GetRole() != ax::mojom::Role::kRegion) {
+      continue;
+    }
+    for (const ui::AXNode* node : page->children()) {
+      if (node->GetRole() != role) {
+        continue;
+      }
+      std::u16string text =
+          base::CollapseWhitespace(node->GetTextContentUTF16(),
+                                   /*trim_sequences_with_line_breaks=*/false);
+      if (!text.empty()) {
+        texts.push_back(std::move(text));
+      }
+    }
+  }
+  return texts;
+}
+
+// Returns whether another text matches a text exactly (kRepeating), only after
+// digits are normalized (kIncremental), or not at all (kUnique), given the
+// number of occurrences of the text and of its digit-normalized form.
+HeaderFooterRepetition GetRepetition(int exact_count, int normalized_count) {
+  if (exact_count > 1) {
+    return HeaderFooterRepetition::kRepeating;
+  }
+  if (normalized_count > 1) {
+    return HeaderFooterRepetition::kIncremental;
+  }
+  return HeaderFooterRepetition::kUnique;
+}
+
+// Records to `histogram_name` how each of `texts` repeats within `texts`.
+void RecordRepetition(std::string_view histogram_name,
+                      const std::vector<std::u16string>& texts) {
+  // std::map references stay valid across insertions, so each text can keep a
+  // pointer to its final counts.
+  std::map<std::u16string, int> exact_counts;
+  std::map<std::u16string, int> normalized_counts;
+  std::vector<const int*> exact_count_ptrs;
+  std::vector<const int*> normalized_count_ptrs;
+  exact_count_ptrs.reserve(texts.size());
+  normalized_count_ptrs.reserve(texts.size());
+  for (const std::u16string& text : texts) {
+    int& exact_count = exact_counts[text];
+    int& normalized_count = normalized_counts[NormalizeDigits(text)];
+    ++exact_count;
+    ++normalized_count;
+    exact_count_ptrs.push_back(&exact_count);
+    normalized_count_ptrs.push_back(&normalized_count);
+  }
+
+  for (size_t i = 0; i < texts.size(); ++i) {
+    base::UmaHistogramEnumeration(
+        histogram_name,
+        GetRepetition(*exact_count_ptrs[i], *normalized_count_ptrs[i]));
+  }
+}
+
+// Records how the text of each heuristically detected header and footer
+// repeats across the pages of the PDF.
+void RecordHeaderFooterRepetitionMetrics(const ui::AXNode* root) {
+  if (!root) {
+    return;
+  }
+
+  CHECK(features::IsPdfAccessibilityHeuristicEnhancementsEnabled());
+  RecordRepetition(
+      "Accessibility.PdfHeuristics.HeaderRepetition",
+      GetPageChildTextsWithRole(*root, ax::mojom::Role::kSectionHeader));
+  RecordRepetition(
+      "Accessibility.PdfHeuristics.FooterRepetition",
+      GetPageChildTextsWithRole(*root, ax::mojom::Role::kSectionFooter));
+}
+
 }  // namespace
 
 PdfAccessibilityTree::PdfAccessibilityTree(
@@ -212,6 +322,7 @@ PdfAccessibilityTree::PdfAccessibilityTree(
     chrome_pdf::PdfAccessibilityActionHandler* action_handler,
     blink::WebPluginContainer* plugin_container)
     : content::RenderFrameObserver(render_frame),
+      blink::WebLocalFrameObserver(render_frame->GetWebFrame()),
       action_handler_(action_handler),
       plugin_container_(plugin_container) {
   DCHECK(render_frame);
@@ -291,6 +402,45 @@ bool PdfAccessibilityTree::IsDataFromPluginValid(
     }
   }
 
+  // Graphics span text runs like links and highlights, but each graphic must
+  // contain at least one text run to be considered a form graphic.
+  if (features::IsPdfAccessibilityHeuristicEnhancementsEnabled()) {
+    const std::vector<chrome_pdf::AccessibilityFormGraphicInfo>& graphics =
+        page_objects.graphics;
+    if (!std::ranges::is_sorted(
+            graphics, CompareTextRunsWithRange<
+                          chrome_pdf::AccessibilityFormGraphicInfo>)) {
+      return false;
+    }
+
+    for (const auto& graphic : graphics) {
+      base::CheckedNumeric<size_t> index = graphic.text_range.index;
+      index += graphic.text_range.count;
+      if (graphic.text_range.count == 0 || !index.IsValid() ||
+          index.ValueOrDie() > text_runs.size()) {
+        return false;
+      }
+    }
+
+    for (const chrome_pdf::AccessibilityLineSegment& segment :
+         page_objects.line_segments) {
+      if (!std::isfinite(segment.start.x()) ||
+          !std::isfinite(segment.start.y()) ||
+          !std::isfinite(segment.end.x()) || !std::isfinite(segment.end.y()) ||
+          segment.start == segment.end) {
+        return false;
+      }
+    }
+
+    for (const gfx::RectF& rect : page_objects.filled_rects) {
+      if (!std::isfinite(rect.x()) || !std::isfinite(rect.y()) ||
+          !std::isfinite(rect.width()) || !std::isfinite(rect.height()) ||
+          rect.IsEmpty()) {
+        return false;
+      }
+    }
+  }
+
   return true;
 }
 
@@ -312,7 +462,6 @@ void PdfAccessibilityTree::DoSetAccessibilityViewportInfo(
   CHECK_GT(scale_, 0);
   scroll_ = gfx::PointF(viewport_info.scroll).OffsetFromOrigin();
   offset_ = gfx::PointF(viewport_info.offset).OffsetFromOrigin();
-  orientation_ = viewport_info.orientation;
   selection_ = viewport_info.selection;
 
   auto obj = GetPluginContainerAXObject();
@@ -357,7 +506,15 @@ void PdfAccessibilityTree::DoSetAccessibilityDocInfo(
   doc_node_->AddStringAttribute(ax::mojom::StringAttribute::kName,
                                 l10n_util::GetPluralStringFUTF8(
                                     IDS_PDF_DOCUMENT_PAGE_COUNT, page_count_));
-  if (doc_structure_tree_root_ && !doc_structure_tree_root_->language.empty()) {
+  // Prefer the validated language tag from the document metadata, which is
+  // available for both tagged and untagged PDFs. Fall back to the structure
+  // tree root's /Lang entry, which only exists for tagged PDFs.
+  if (features::IsPdfAccessibilityHeuristicEnhancementsEnabled() &&
+      !doc_info->language.empty()) {
+    doc_node_->AddStringAttribute(ax::mojom::StringAttribute::kLanguage,
+                                  doc_info->language);
+  } else if (doc_structure_tree_root_ &&
+             !doc_structure_tree_root_->language.empty()) {
     doc_node_->AddStringAttribute(ax::mojom::StringAttribute::kLanguage,
                                   doc_structure_tree_root_->language);
   }
@@ -510,6 +667,11 @@ void PdfAccessibilityTree::DoSetAccessibilityPageInfo(
   }
 
   UnserializeNodes();
+
+  if (features::IsPdfAccessibilityHeuristicEnhancementsEnabled() &&
+      !is_tagged_ && page_count_ > 1 && page_index == page_count_ - 1) {
+    RecordHeaderFooterRepetitionMetrics(tree_.root());
+  }
 }
 
 void PdfAccessibilityTree::SetFinalStatusMessage() {
@@ -576,6 +738,7 @@ void PdfAccessibilityTree::UnserializeNodes() {
 
   ui::AXTreeUpdate update;
   update.root_id = doc_node_->id;
+  update.nodes.reserve(nodes_.size() + 3);
   update.nodes.push_back(*doc_node_);
   update.nodes.push_back(*status_node_);
   update.nodes.push_back(*status_node_text_);
@@ -628,8 +791,7 @@ void PdfAccessibilityTree::ResetStatusNodeAttributes() {
   update.root_id = doc_node_->id;
   // `status_node_` has been either cleared out or set with a new message, so
   // add it to `ui::AXTreeUpdate`.
-  update.nodes.push_back(*status_node_);
-  update.nodes.push_back(*status_node_text_);
+  update.nodes = {*status_node_, *status_node_text_};
   if (!tree_.Unserialize(update)) {
     LOG(FATAL) << tree_.error();
   }
@@ -867,6 +1029,10 @@ bool PdfAccessibilityTree::GetTreeData(ui::AXTreeData* tree_data) const {
   }
 
   tree_data->tree_id = render_frame()->GetWebFrame()->GetAXTreeID();
+  // The PDF's content is loaded once all of its pages are in the tree. This is
+  // always set, since otherwise the embedding document's tree data, which is
+  // loaded before the PDF, could be used.
+  tree_data->loaded = next_page_index_ == page_count_;
   tree_data->focus_id = tree_data_.focus_id;
   tree_data->sel_is_backward = tree_data_.sel_is_backward;
   tree_data->sel_anchor_object_id = tree_data_.sel_anchor_object_id;

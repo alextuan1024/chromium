@@ -2,14 +2,20 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "chrome/test/chromedriver/window_commands.h"
+
 #include <memory>
+#include <numbers>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include "base/test/values_test_util.h"
 #include "base/types/optional_util.h"
 #include "base/values.h"
+#include "chrome/test/chromedriver/chrome/chrome_impl.h"
 #include "chrome/test/chromedriver/chrome/mobile_emulation_override_manager.h"
+#include "chrome/test/chromedriver/chrome/page_load_strategy.h"
 #include "chrome/test/chromedriver/chrome/status.h"
 #include "chrome/test/chromedriver/chrome/stub_chrome.h"
 #include "chrome/test/chromedriver/chrome/stub_devtools_client.h"
@@ -18,7 +24,6 @@
 #include "chrome/test/chromedriver/net/timeout.h"
 #include "chrome/test/chromedriver/session.h"
 #include "chrome/test/chromedriver/util.h"
-#include "chrome/test/chromedriver/window_commands.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace {
@@ -40,6 +45,28 @@ class MockChrome : public StubChrome {
   // Using a StubWebView does not allow testing the functionality end-to-end,
   // more details in crbug.com/40579857
   StubWebView web_view_;
+};
+
+class WindowRectChrome : public StubChrome {
+ public:
+  Status SetWindowRect(const std::string& target_id,
+                       const base::DictValue& params) override {
+    EXPECT_EQ("target", target_id);
+    requests.push_back(params.Clone());
+    return Status(set_status);
+  }
+
+  Status GetWindowRect(const std::string& target_id,
+                       WindowRect* rect) override {
+    EXPECT_EQ("target", target_id);
+    ++get_count;
+    *rect = {10, 20, 800, 600};
+    return Status(kOk);
+  }
+
+  std::vector<base::DictValue> requests;
+  StatusCode set_status = kOk;
+  int get_count = 0;
 };
 
 typedef Status (*Command)(Session* session,
@@ -87,6 +114,100 @@ TEST(WindowCommandsTest, ExecuteFreeze) {
 TEST(WindowCommandsTest, ExecuteResume) {
   Status status = CallWindowCommand(ExecuteResume);
   ASSERT_EQ(kOk, status.code());
+}
+
+TEST(WindowCommandsTest, SetWindowRectForwardsIndependentComponents) {
+  const char* cases[][2] = {
+      {R"({"x": 10})", R"({"x": 10})"},
+      {R"({"y": 20})", R"({"y": 20})"},
+      {R"({"width": 700})", R"({"width": 700})"},
+      {R"({"height": 500})", R"({"height": 500})"},
+      {R"({"x": 10, "width": 700})", R"({"x": 10, "width": 700})"},
+      {R"({"y": 20, "width": 700})", R"({"y": 20, "width": 700})"},
+      {R"({"x": 10, "height": 500})", R"({"x": 10, "height": 500})"},
+      {R"({"y": 20, "height": 500})", R"({"y": 20, "height": 500})"},
+      {R"({"x": 10, "y": 20, "width": 700, "height": 500})",
+       R"({"x": 10, "y": 20, "width": 700, "height": 500})"},
+      {R"({"x": null, "y": 20, "width": 700, "height": null})",
+       R"({"y": 20, "width": 700})"},
+      {R"({"x": null, "y": null, "width": null, "height": null})", R"({})"},
+      {R"({})", R"({})"},
+      {R"({"x": 0, "y": 0, "width": 0, "height": 0})",
+       R"({"x": 0, "y": 0, "width": 0, "height": 0})"},
+      {R"({"x": -10.9, "y": 20.9, "width": 700.9, "height": 500.9})",
+       R"({"x": -10, "y": 20, "width": 700, "height": 500})"},
+      {R"({"x": -2147483648, "y": 2147483647,
+            "width": 2147483647, "height": 2147483647})",
+       R"({"x": -2147483648, "y": 2147483647,
+            "width": 2147483647, "height": 2147483647})"},
+  };
+  for (const auto& test : cases) {
+    SCOPED_TRACE(test[0]);
+    auto chrome = std::make_unique<WindowRectChrome>();
+    auto* chrome_ptr = chrome.get();
+    Session session("id", std::move(chrome));
+    session.window = "target";
+    std::unique_ptr<base::Value> value;
+    Timeout timeout;
+    ASSERT_EQ(kOk, ExecuteSetWindowRect(&session, nullptr,
+                                        base::test::ParseJsonDict(test[0]),
+                                        &value, &timeout)
+                       .code());
+    ASSERT_EQ(1u, chrome_ptr->requests.size());
+    EXPECT_EQ(base::test::ParseJsonDict(test[1]), chrome_ptr->requests[0]);
+    EXPECT_EQ(1, chrome_ptr->get_count);
+    ASSERT_TRUE(value);
+    // Return observed geometry, including any platform adjustment.
+    EXPECT_EQ(base::test::ParseJsonDict(
+                  R"({"x": 10, "y": 20, "width": 800, "height": 600})"),
+              value->GetDict());
+  }
+}
+
+TEST(WindowCommandsTest, SetWindowRectValidatesBeforeMutation) {
+  const char* invalid_values[] = {"true",       R"("10")",     "[]", "{}",
+                                  "2147483648", "-2147483649", "-1"};
+  for (const char* component : {"x", "y", "width", "height"}) {
+    for (const char* invalid_value : invalid_values) {
+      if (std::string(invalid_value) == "-1" &&
+          (std::string(component) == "x" || std::string(component) == "y")) {
+        continue;
+      }
+      SCOPED_TRACE(component);
+      SCOPED_TRACE(invalid_value);
+      auto chrome = std::make_unique<WindowRectChrome>();
+      auto* chrome_ptr = chrome.get();
+      Session session("id", std::move(chrome));
+      session.window = "target";
+      auto params = base::test::ParseJsonDict(
+          R"({"x": 10, "y": 20, "width": 700, "height": 500})");
+      params.Set(component, base::test::ParseJson(invalid_value));
+      std::unique_ptr<base::Value> value;
+      Timeout timeout;
+      EXPECT_EQ(kInvalidArgument, ExecuteSetWindowRect(&session, nullptr,
+                                                       params, &value, &timeout)
+                                      .code());
+      EXPECT_TRUE(chrome_ptr->requests.empty());
+      EXPECT_EQ(0, chrome_ptr->get_count);
+    }
+  }
+}
+
+TEST(WindowCommandsTest, SetWindowRectPropagatesMutationFailure) {
+  auto chrome = std::make_unique<WindowRectChrome>();
+  auto* chrome_ptr = chrome.get();
+  chrome_ptr->set_status = kUnsupportedOperation;
+  Session session("id", std::move(chrome));
+  session.window = "target";
+  std::unique_ptr<base::Value> value;
+  Timeout timeout;
+  EXPECT_EQ(kUnsupportedOperation,
+            ExecuteSetWindowRect(&session, nullptr,
+                                 base::DictValue().Set("width", 700), &value,
+                                 &timeout)
+                .code());
+  ASSERT_EQ(1u, chrome_ptr->requests.size());
+  EXPECT_EQ(0, chrome_ptr->get_count);
 }
 
 TEST(WindowCommandsTest, ExecuteSendCommandAndGetResult_NoCmd) {
@@ -166,6 +287,387 @@ TEST(WindowCommandsTest, ProcessInputActionSequencePointerMouse) {
   ASSERT_EQ("pointer1", base::OptionalFromPtr(action3.FindString("id")));
   ASSERT_EQ("pointerUp", base::OptionalFromPtr(action3.FindString("subtype")));
   ASSERT_EQ("left", base::OptionalFromPtr(action3.FindString("button")));
+}
+
+// Builds a pointer source with one pointerDown action and the supplied common
+// properties for validation tests.
+static base::DictValue MakePointerDownSequence(base::DictValue pointer_down) {
+  base::DictValue action_sequence;
+  base::DictValue parameters;
+  parameters.Set("pointerType", "mouse");
+  action_sequence.Set("parameters", std::move(parameters));
+  action_sequence.Set("type", "pointer");
+  action_sequence.Set("id", "pointer1");
+  base::ListValue actions;
+  pointer_down.Set("type", "pointerDown");
+  pointer_down.Set("button", 0);
+  actions.Append(std::move(pointer_down));
+  action_sequence.Set("actions", std::move(actions));
+  return action_sequence;
+}
+
+TEST(WindowCommandsTest,
+     ProcessInputActionSequencePointerParametersInvalidType) {
+  std::vector<base::Value> invalid_values;
+  invalid_values.emplace_back();
+  invalid_values.emplace_back("foo");
+  invalid_values.emplace_back(true);
+  invalid_values.emplace_back(42);
+  invalid_values.emplace_back(base::Value::Type::LIST);
+  for (base::Value& invalid_value : invalid_values) {
+    SCOPED_TRACE(static_cast<int>(invalid_value.type()));
+    Session session("1");
+    std::vector<base::DictValue> action_list;
+    base::DictValue action_sequence;
+    action_sequence.Set("type", "pointer");
+    action_sequence.Set("id", "pointer1");
+    action_sequence.Set("parameters", std::move(invalid_value));
+    action_sequence.Set("actions", base::ListValue());
+    Status status =
+        ProcessInputActionSequence(&session, action_sequence, &action_list);
+    EXPECT_EQ(kInvalidArgument, status.code());
+  }
+}
+
+TEST(WindowCommandsTest, ProcessInputActionSequencePointerParametersMissing) {
+  Session session("1");
+  std::vector<base::DictValue> action_list;
+  base::DictValue action_sequence = MakePointerDownSequence(base::DictValue());
+  action_sequence.Remove("parameters");
+  Status status =
+      ProcessInputActionSequence(&session, action_sequence, &action_list);
+  ASSERT_TRUE(status.IsOk());
+  ASSERT_EQ(1U, action_list.size());
+  ASSERT_EQ("mouse",
+            base::OptionalFromPtr(action_list[0].FindString("pointerType")));
+}
+
+TEST(WindowCommandsTest, ProcessInputActionSequencePointerParametersEmpty) {
+  Session session("1");
+  std::vector<base::DictValue> action_list;
+  base::DictValue action_sequence = MakePointerDownSequence(base::DictValue());
+  action_sequence.Set("parameters", base::DictValue());
+  Status status =
+      ProcessInputActionSequence(&session, action_sequence, &action_list);
+  ASSERT_TRUE(status.IsOk()) << status.message();
+  ASSERT_EQ(1U, action_list.size());
+  EXPECT_EQ("mouse",
+            base::OptionalFromPtr(action_list[0].FindString("pointerType")));
+}
+
+TEST(WindowCommandsTest,
+     ProcessInputActionSequencePointerParametersUnknownKey) {
+  Session session("1");
+  std::vector<base::DictValue> action_list;
+  base::DictValue action_sequence = MakePointerDownSequence(base::DictValue());
+  base::DictValue parameters;
+  parameters.Set("unknown", "ignored");
+  action_sequence.Set("parameters", std::move(parameters));
+  Status status =
+      ProcessInputActionSequence(&session, action_sequence, &action_list);
+  ASSERT_TRUE(status.IsOk()) << status.message();
+  ASSERT_EQ(1U, action_list.size());
+  EXPECT_EQ("mouse",
+            base::OptionalFromPtr(action_list[0].FindString("pointerType")));
+}
+
+TEST(WindowCommandsTest,
+     ProcessInputActionSequencePointerParametersValidPointerTypes) {
+  for (const char* pointer_type : {"mouse", "pen", "touch"}) {
+    SCOPED_TRACE(pointer_type);
+    Session session("1");
+    std::vector<base::DictValue> action_list;
+    base::DictValue action_sequence =
+        MakePointerDownSequence(base::DictValue());
+    action_sequence.FindDict("parameters")->Set("pointerType", pointer_type);
+    Status status =
+        ProcessInputActionSequence(&session, action_sequence, &action_list);
+    ASSERT_TRUE(status.IsOk()) << status.message();
+    ASSERT_EQ(1U, action_list.size());
+    EXPECT_EQ(pointer_type,
+              base::OptionalFromPtr(action_list[0].FindString("pointerType")));
+  }
+}
+
+TEST(WindowCommandsTest,
+     ProcessInputActionSequencePointerParametersNullPointerType) {
+  Session session("1");
+  std::vector<base::DictValue> action_list;
+  base::DictValue action_sequence = MakePointerDownSequence(base::DictValue());
+  action_sequence.FindDict("parameters")->Set("pointerType", base::Value());
+  Status status =
+      ProcessInputActionSequence(&session, action_sequence, &action_list);
+  EXPECT_EQ(kInvalidArgument, status.code());
+}
+
+TEST(WindowCommandsTest,
+     ProcessInputActionSequencePointerFractionalDimensions) {
+  Session session("1");
+  std::vector<base::DictValue> action_list;
+  base::DictValue action;
+  action.Set("width", 0.1);
+  action.Set("height", 2.5);
+  base::DictValue action_sequence = MakePointerDownSequence(std::move(action));
+  Status status =
+      ProcessInputActionSequence(&session, action_sequence, &action_list);
+  ASSERT_TRUE(status.IsOk());
+  ASSERT_EQ(1U, action_list.size());
+  ASSERT_EQ(0.1, action_list[0].FindDouble("width"));
+  ASSERT_EQ(2.5, action_list[0].FindDouble("height"));
+}
+
+TEST(WindowCommandsTest,
+     ProcessInputActionSequencePointerDimensionsAboveMaxSafeInteger) {
+  Session session("1");
+  std::vector<base::DictValue> action_list;
+  base::DictValue action;
+  constexpr double kAboveMaxSafeInteger = 9007199254740992.0;
+  action.Set("width", kAboveMaxSafeInteger);
+  action.Set("height", kAboveMaxSafeInteger);
+  base::DictValue action_sequence = MakePointerDownSequence(std::move(action));
+  Status status =
+      ProcessInputActionSequence(&session, action_sequence, &action_list);
+  ASSERT_TRUE(status.IsOk());
+  ASSERT_EQ(1U, action_list.size());
+  ASSERT_EQ(kAboveMaxSafeInteger, action_list[0].FindDouble("width"));
+  ASSERT_EQ(kAboveMaxSafeInteger, action_list[0].FindDouble("height"));
+}
+
+TEST(WindowCommandsTest,
+     ProcessInputActionSequencePointerAltitudeAngleInvalidType) {
+  Session session("1");
+  std::vector<base::DictValue> action_list;
+  base::DictValue action;
+  action.Set("altitudeAngle", "foo");
+  base::DictValue action_sequence = MakePointerDownSequence(std::move(action));
+  Status status =
+      ProcessInputActionSequence(&session, action_sequence, &action_list);
+  ASSERT_EQ(kInvalidArgument, status.code());
+}
+
+TEST(WindowCommandsTest,
+     ProcessInputActionSequencePointerAzimuthAngleInvalidType) {
+  Session session("1");
+  std::vector<base::DictValue> action_list;
+  base::DictValue action;
+  action.Set("azimuthAngle", base::Value());
+  base::DictValue action_sequence = MakePointerDownSequence(std::move(action));
+  Status status =
+      ProcessInputActionSequence(&session, action_sequence, &action_list);
+  ASSERT_EQ(kInvalidArgument, status.code());
+}
+
+TEST(WindowCommandsTest,
+     ProcessInputActionSequencePointerAltitudeAngleNegative) {
+  Session session("1");
+  std::vector<base::DictValue> action_list;
+  base::DictValue action;
+  action.Set("altitudeAngle", -0.1);
+  base::DictValue action_sequence = MakePointerDownSequence(std::move(action));
+  Status status =
+      ProcessInputActionSequence(&session, action_sequence, &action_list);
+  ASSERT_EQ(kInvalidArgument, status.code());
+}
+
+TEST(WindowCommandsTest,
+     ProcessInputActionSequencePointerAltitudeAngleOutOfRange) {
+  Session session("1");
+  std::vector<base::DictValue> action_list;
+  base::DictValue action;
+  action.Set("altitudeAngle", 2.0);  // Greater than pi/2.
+  base::DictValue action_sequence = MakePointerDownSequence(std::move(action));
+  Status status =
+      ProcessInputActionSequence(&session, action_sequence, &action_list);
+  ASSERT_EQ(kInvalidArgument, status.code());
+}
+
+TEST(WindowCommandsTest,
+     ProcessInputActionSequencePointerAzimuthAngleNegative) {
+  Session session("1");
+  std::vector<base::DictValue> action_list;
+  base::DictValue action;
+  action.Set("azimuthAngle", -0.1);
+  base::DictValue action_sequence = MakePointerDownSequence(std::move(action));
+  Status status =
+      ProcessInputActionSequence(&session, action_sequence, &action_list);
+  ASSERT_EQ(kInvalidArgument, status.code());
+}
+
+TEST(WindowCommandsTest,
+     ProcessInputActionSequencePointerAzimuthAngleOutOfRange) {
+  Session session("1");
+  std::vector<base::DictValue> action_list;
+  base::DictValue action;
+  action.Set("azimuthAngle", 7.0);  // Greater than 2*pi.
+  base::DictValue action_sequence = MakePointerDownSequence(std::move(action));
+  Status status =
+      ProcessInputActionSequence(&session, action_sequence, &action_list);
+  ASSERT_EQ(kInvalidArgument, status.code());
+}
+
+TEST(WindowCommandsTest,
+     ProcessInputActionSequencePointerAngleUpperBoundsValid) {
+  Session session("1");
+  std::vector<base::DictValue> action_list;
+  base::DictValue action;
+  action.Set("altitudeAngle", std::numbers::pi_v<double> / 2);
+  action.Set("azimuthAngle", 2 * std::numbers::pi_v<double>);
+  base::DictValue action_sequence = MakePointerDownSequence(std::move(action));
+  Status status =
+      ProcessInputActionSequence(&session, action_sequence, &action_list);
+  ASSERT_TRUE(status.IsOk());
+  ASSERT_EQ(1U, action_list.size());
+  ASSERT_EQ(std::numbers::pi_v<double> / 2,
+            action_list[0].FindDouble("altitudeAngle"));
+  ASSERT_EQ(2 * std::numbers::pi_v<double>,
+            action_list[0].FindDouble("azimuthAngle"));
+}
+
+TEST(WindowCommandsTest,
+     ProcessInputActionSequencePointerAngleLowerBoundsValid) {
+  Session session("1");
+  std::vector<base::DictValue> action_list;
+  base::DictValue action;
+  action.Set("altitudeAngle", 0.0);
+  action.Set("azimuthAngle", 0.0);
+  base::DictValue action_sequence = MakePointerDownSequence(std::move(action));
+  Status status =
+      ProcessInputActionSequence(&session, action_sequence, &action_list);
+  ASSERT_TRUE(status.IsOk());
+  ASSERT_EQ(1U, action_list.size());
+  ASSERT_EQ(0.0, action_list[0].FindDouble("altitudeAngle"));
+  ASSERT_EQ(0.0, action_list[0].FindDouble("azimuthAngle"));
+}
+
+TEST(WindowCommandsTest, ProcessInputActionSequencePointerAnglesMissing) {
+  for (const char* action_type : {"pointerDown", "pointerMove", "pointerUp"}) {
+    SCOPED_TRACE(action_type);
+    Session session("1");
+    std::vector<base::DictValue> action_list;
+    base::DictValue action_sequence =
+        MakePointerDownSequence(base::DictValue());
+    base::DictValue& action =
+        (*action_sequence.FindList("actions"))[0].GetDict();
+    action.Set("type", action_type);
+    if (std::string(action_type) == "pointerMove") {
+      action.Set("x", 0);
+      action.Set("y", 0);
+    }
+
+    Status status =
+        ProcessInputActionSequence(&session, action_sequence, &action_list);
+    ASSERT_TRUE(status.IsOk()) << status.message();
+    ASSERT_EQ(1U, action_list.size());
+    EXPECT_FALSE(action_list[0].Find("altitudeAngle"));
+    EXPECT_FALSE(action_list[0].Find("azimuthAngle"));
+  }
+}
+
+TEST(WindowCommandsTest, ProcessInputActionSequencePointerAnglesIndependent) {
+  for (const char* action_type : {"pointerDown", "pointerMove", "pointerUp"}) {
+    for (bool is_altitude : {true, false}) {
+      for (bool is_integer : {true, false}) {
+        SCOPED_TRACE(action_type);
+        SCOPED_TRACE(is_altitude);
+        SCOPED_TRACE(is_integer);
+        Session session("1");
+        std::vector<base::DictValue> action_list;
+        const char* angle = is_altitude ? "altitudeAngle" : "azimuthAngle";
+        const char* other_angle =
+            is_altitude ? "azimuthAngle" : "altitudeAngle";
+        base::DictValue action_sequence =
+            MakePointerDownSequence(base::DictValue());
+        base::DictValue& action =
+            (*action_sequence.FindList("actions"))[0].GetDict();
+        action.Set("type", action_type);
+        action.Set(angle, is_integer ? base::Value(0) : base::Value(0.5));
+        if (std::string(action_type) == "pointerMove") {
+          action.Set("x", 0);
+          action.Set("y", 0);
+        }
+
+        Status status =
+            ProcessInputActionSequence(&session, action_sequence, &action_list);
+        ASSERT_TRUE(status.IsOk()) << status.message();
+        ASSERT_EQ(1U, action_list.size());
+        EXPECT_EQ(is_integer ? 0.0 : 0.5, action_list[0].FindDouble(angle));
+        EXPECT_FALSE(action_list[0].Find(other_angle));
+      }
+    }
+  }
+}
+
+TEST(WindowCommandsTest,
+     ProcessInputActionSequencePointerMoveAndUpAnglesInvalidType) {
+  for (bool is_move : {true, false}) {
+    for (bool is_altitude : {true, false}) {
+      Session session("1");
+      std::vector<base::DictValue> action_list;
+      base::DictValue action;
+      action.Set(is_altitude ? "altitudeAngle" : "azimuthAngle",
+                 "not a number");
+      base::DictValue action_sequence =
+          MakePointerDownSequence(std::move(action));
+      base::DictValue& pointer_action =
+          (*action_sequence.FindList("actions"))[0].GetDict();
+      pointer_action.Set("type", is_move ? "pointerMove" : "pointerUp");
+      if (is_move) {
+        pointer_action.Set("x", 0);
+        pointer_action.Set("y", 0);
+      }
+
+      SCOPED_TRACE(is_move ? "pointerMove" : "pointerUp");
+      SCOPED_TRACE(is_altitude ? "altitudeAngle" : "azimuthAngle");
+      Status status =
+          ProcessInputActionSequence(&session, action_sequence, &action_list);
+      EXPECT_EQ(kInvalidArgument, status.code());
+    }
+  }
+}
+
+TEST(WindowCommandsTest,
+     ProcessInputActionSequencePointerMoveAndUpAnglesValid) {
+  for (bool is_move : {true, false}) {
+    Session session("1");
+    std::vector<base::DictValue> action_list;
+    base::DictValue action;
+    action.Set("altitudeAngle", std::numbers::pi_v<double> / 2);
+    action.Set("azimuthAngle", 2 * std::numbers::pi_v<double>);
+    base::DictValue action_sequence =
+        MakePointerDownSequence(std::move(action));
+    base::DictValue& pointer_action =
+        (*action_sequence.FindList("actions"))[0].GetDict();
+    pointer_action.Set("type", is_move ? "pointerMove" : "pointerUp");
+    if (is_move) {
+      pointer_action.Set("x", 0);
+      pointer_action.Set("y", 0);
+    }
+
+    SCOPED_TRACE(is_move ? "pointerMove" : "pointerUp");
+    Status status =
+        ProcessInputActionSequence(&session, action_sequence, &action_list);
+    ASSERT_TRUE(status.IsOk()) << status.message();
+    ASSERT_EQ(1U, action_list.size());
+    EXPECT_EQ(std::numbers::pi_v<double> / 2,
+              action_list[0].FindDouble("altitudeAngle"));
+    EXPECT_EQ(2 * std::numbers::pi_v<double>,
+              action_list[0].FindDouble("azimuthAngle"));
+  }
+}
+
+TEST(WindowCommandsTest, ProcessInputActionSequencePointerPauseIgnoresAngles) {
+  Session session("1");
+  std::vector<base::DictValue> action_list;
+  base::DictValue action_sequence = MakePointerDownSequence(base::DictValue());
+  base::ListValue* actions = action_sequence.FindList("actions");
+  ASSERT_TRUE(actions);
+  (*actions)[0].GetDict().Set("type", "pause");
+  (*actions)[0].GetDict().Set("altitudeAngle", "not a number");
+  (*actions)[0].GetDict().Set("azimuthAngle", -1);
+  Status status =
+      ProcessInputActionSequence(&session, action_sequence, &action_list);
+  ASSERT_TRUE(status.IsOk());
+  ASSERT_EQ(1U, action_list.size());
 }
 
 TEST(WindowCommandsTest, ProcessInputActionSequencePointerTouch) {
@@ -265,6 +767,31 @@ TEST(WindowCommandsTest, ProcessInputActionSequenceWheelScrollOriginViewport) {
   ASSERT_EQ(1U, action_list.size());
   ASSERT_EQ("viewport",
             base::OptionalFromPtr(action_list[0].FindString("origin")));
+}
+
+TEST(WindowCommandsTest, ProcessInputActionSequenceWheelIgnoresPointerAngles) {
+  Session session("1");
+  std::vector<base::DictValue> action_list;
+  base::DictValue action_sequence = MakeWheelScrollSequence("viewport");
+  base::ListValue* actions = action_sequence.FindList("actions");
+  ASSERT_TRUE(actions);
+  (*actions)[0].GetDict().Set("altitudeAngle", "not a number");
+  (*actions)[0].GetDict().Set("azimuthAngle", -1);
+  Status status =
+      ProcessInputActionSequence(&session, action_sequence, &action_list);
+  ASSERT_TRUE(status.IsOk());
+  ASSERT_EQ(1U, action_list.size());
+}
+
+TEST(WindowCommandsTest, ProcessInputActionSequenceWheelIgnoresParameters) {
+  Session session("1");
+  std::vector<base::DictValue> action_list;
+  base::DictValue action_sequence = MakeWheelScrollSequence("viewport");
+  action_sequence.Set("parameters", 42);
+  Status status =
+      ProcessInputActionSequence(&session, action_sequence, &action_list);
+  ASSERT_TRUE(status.IsOk()) << status.message();
+  ASSERT_EQ(1U, action_list.size());
 }
 
 TEST(WindowCommandsTest, ExecuteSetRPHRegistrationMode_NoParams) {
@@ -1181,6 +1708,36 @@ TEST(WindowCommandsTest, ExecuteAsyncScript_ArgsNotAList) {
       << status.message();
 }
 
+namespace {
+
+class AsyncTimeoutWebView : public StubWebView {
+ public:
+  AsyncTimeoutWebView() : StubWebView("1") {}
+  ~AsyncTimeoutWebView() override = default;
+
+  Status CallUserAsyncFunction(const std::string& frame,
+                               const std::string& function,
+                               const base::ListValue& args,
+                               const base::TimeDelta& timeout,
+                               std::unique_ptr<base::Value>* result) override {
+    // Simulate a driver-level timeout for async script execution.
+    return Status(kTimeout);
+  }
+};
+
+}  // namespace
+
+TEST(WindowCommandsTest, ExecuteAsyncScript_TimeoutMapsToScriptTimeout) {
+  AsyncTimeoutWebView webview;
+  base::DictValue params;
+  params.Set("script", "irrelevant");
+  params.Set("args", base::ListValue());
+  std::unique_ptr<base::Value> result;
+  Status status =
+      CallWindowCommand(ExecuteExecuteAsyncScript, &webview, params, &result);
+  ASSERT_EQ(kScriptTimeout, status.code()) << status.message();
+}
+
 TEST(WindowCommandsTest, SendKeysToActiveElement_NoValue) {
   base::DictValue params;
   Status status = CallWindowCommand(ExecuteSendKeysToActiveElement, params);
@@ -1246,4 +1803,108 @@ TEST(WindowCommandsTest, ExecutePerformActions_ActionsInSequenceNotAList) {
   ASSERT_NE(status.message().find("'actions' in the sequence must be a list"),
             std::string::npos)
       << status.message();
+}
+
+namespace {
+
+class WindowBoundsDevToolsClient : public StubDevToolsClient {
+ public:
+  explicit WindowBoundsDevToolsClient(int get_bounds_before_normal)
+      : get_bounds_before_normal_(get_bounds_before_normal) {}
+  ~WindowBoundsDevToolsClient() override = default;
+
+  Status SendCommand(const std::string& method,
+                     const base::DictValue& params) override {
+    if (method == "Browser.setWindowBounds") {
+      const std::string* state =
+          params.FindStringByDottedPath("bounds.windowState");
+      if (state && *state == "normal") {
+        ++set_normal_count_;
+      }
+      if (std::optional<int> width =
+              params.FindIntByDottedPath("bounds.width")) {
+        width_ = *width;
+      }
+      if (std::optional<int> height =
+              params.FindIntByDottedPath("bounds.height")) {
+        height_ = *height;
+      }
+    }
+    return Status(kOk);
+  }
+
+  Status SendCommandAndGetResult(const std::string& method,
+                                 const base::DictValue& params,
+                                 base::DictValue* result) override {
+    if (method == "Browser.getWindowBounds") {
+      ++get_bounds_count_;
+      if (get_bounds_count_ >= get_bounds_before_normal_) {
+        window_state_ = "normal";
+      }
+      base::DictValue bounds;
+      bounds.Set("windowState", window_state_);
+      bounds.Set("left", 0);
+      bounds.Set("top", 0);
+      bounds.Set("width", width_);
+      bounds.Set("height", height_);
+      result->Set("bounds", std::move(bounds));
+    }
+    return Status(kOk);
+  }
+
+  int set_normal_count() const { return set_normal_count_; }
+
+ private:
+  int get_bounds_before_normal_;
+  int get_bounds_count_ = 0;
+  int set_normal_count_ = 0;
+  std::string window_state_ = "maximized";
+  int width_ = 1200;
+  int height_ = 900;
+};
+
+class WindowBoundsTestChrome : public ChromeImpl {
+ public:
+  explicit WindowBoundsTestChrome(std::unique_ptr<DevToolsClient> client)
+      : ChromeImpl(BrowserInfo(),
+                   {},
+                   std::move(client),
+                   {},
+                   std::nullopt,
+                   PageLoadStrategy::kNormal,
+                   false,
+                   false) {}
+  ~WindowBoundsTestChrome() override = default;
+
+  std::string GetOperatingSystemName() override { return "LINUX"; }
+  Status QuitImpl() override { return Status(kOk); }
+
+  Status GetWindow(const std::string& tab_target_id,
+                   internal::Window& window) override {
+    window.id = 1;
+    window.state = "maximized";
+    window.left = 0;
+    window.top = 0;
+    window.width = 1200;
+    window.height = 900;
+    return Status(kOk);
+  }
+};
+
+}  // namespace
+
+TEST(WindowCommandsTest, SetWindowRectRetriesTransitionToNormal) {
+  // The initial check plus up to 5 exponential-backoff polls (6 calls total)
+  // see "maximized"; the 7th call (first retry in the 1s retry loop) sees
+  // "normal".
+  auto client = std::make_unique<WindowBoundsDevToolsClient>(7);
+  WindowBoundsDevToolsClient* client_ptr = client.get();
+  WindowBoundsTestChrome chrome(std::move(client));
+
+  base::DictValue params;
+  params.Set("width", 800);
+  params.Set("height", 600);
+  Status status = chrome.SetWindowRect("1", params);
+  ASSERT_TRUE(status.IsOk()) << status.message();
+  EXPECT_GE(client_ptr->set_normal_count(), 2);
 }

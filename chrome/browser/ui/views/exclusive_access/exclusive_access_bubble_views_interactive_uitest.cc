@@ -12,12 +12,14 @@
 #include "build/build_config.h"
 #include "chrome/browser/ui/exclusive_access/exclusive_access_context.h"
 #include "chrome/browser/ui/exclusive_access/exclusive_access_test.h"
+#include "chrome/browser/ui/exclusive_access/pointer_lock_controller.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/test/base/interactive_test_utils.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
+#include "third_party/abseil-cpp/absl/cleanup/cleanup.h"
 #include "ui/base/ozone_buildflags.h"
 #include "ui/base/test/ui_controls.h"
 #include "ui/gfx/animation/animation_test_api.h"
@@ -270,8 +272,11 @@ IN_PROC_BROWSER_TEST_F(ExclusiveAccessBubbleViewsTest,
   EXPECT_TRUE(GetExclusiveAccessBubbleView());
   EXPECT_TRUE(IsFullscreenForBrowser() || IsWindowFullscreenForTabOrPending());
 
-  // Wait for the watchdog to fire (timeout is 1.5s).
-  Wait(base::Milliseconds(2000));
+  // Wait for the watchdog to fire (timeout is 1.5s after the browser window is
+  // presented).
+  EXPECT_TRUE(base::test::RunUntil([&]() {
+    return !IsFullscreenForBrowser() && !IsWindowFullscreenForTabOrPending();
+  }));
 
   // The watchdog should have fired, and we should have exited fullscreen.
   EXPECT_FALSE(IsFullscreenForBrowser() || IsWindowFullscreenForTabOrPending());
@@ -281,10 +286,51 @@ IN_PROC_BROWSER_TEST_F(ExclusiveAccessBubbleViewsTest,
   ExclusiveAccessBubbleViews::set_simulate_gpu_hang_for_testing(false);
 }
 
+// TODO(crbug.com/528276492): Reenable on Mac.
+#if BUILDFLAG(IS_MAC)
+#define MAYBE_PresentationWatchdogWaitsForBrowserWindow \
+  DISABLED_PresentationWatchdogWaitsForBrowserWindow
+#else
+#define MAYBE_PresentationWatchdogWaitsForBrowserWindow \
+  PresentationWatchdogWaitsForBrowserWindow
+#endif
+// The watchdog must not exit fullscreen while the browser window itself isn't
+// being presented, e.g. because the system compositor considers it hidden. In
+// that case the fullscreen contents aren't visible either. See
+// crbug.com/541504510.
+IN_PROC_BROWSER_TEST_F(ExclusiveAccessBubbleViewsTest,
+                       MAYBE_PresentationWatchdogWaitsForBrowserWindow) {
+  ExclusiveAccessBubbleViews::set_simulate_gpu_hang_for_testing(true);
+  ExclusiveAccessBubbleViews::
+      set_simulate_unpresented_browser_window_for_testing(true);
+  absl::Cleanup reset_test_hooks = [] {
+    ExclusiveAccessBubbleViews::
+        set_simulate_unpresented_browser_window_for_testing(false);
+    ExclusiveAccessBubbleViews::set_simulate_gpu_hang_for_testing(false);
+  };
+
+  EnterActiveTabFullscreen();
+  ASSERT_TRUE(GetExclusiveAccessBubbleView());
+  EXPECT_TRUE(IsFullscreenForBrowser() || IsWindowFullscreenForTabOrPending());
+
+  // Wait longer than the watchdog timeout. Fullscreen should be retained since
+  // the browser window was never presented.
+  Wait(base::Milliseconds(2000));
+  EXPECT_TRUE(IsFullscreenForBrowser() || IsWindowFullscreenForTabOrPending());
+  ASSERT_TRUE(GetExclusiveAccessBubbleView());
+
+  // Once the browser window is presented without the bubble, the watchdog
+  // should exit fullscreen.
+  GetExclusiveAccessBubbleView()->SimulateBrowserWindowPresentedForTesting();
+  EXPECT_TRUE(base::test::RunUntil([&]() {
+    return !IsFullscreenForBrowser() && !IsWindowFullscreenForTabOrPending();
+  }));
+  EXPECT_FALSE(GetExclusiveAccessBubbleView());
+}
+
 // This test is Windows-only because it tests Win32-specific pointer-lock
-// behavior (unadjusted movement drifting cursor to screen boundaries causing
-// DWM caption click interception) and utilizes Win32-specific APIs
-// (GetCursorPos).
+// behavior (unadjusted movement drifting the cursor to the fullscreen window's
+// top boundary, where resize-border hit testing can intercept clicks).
 #if BUILDFLAG(IS_WIN)
 IN_PROC_BROWSER_TEST_F(ExclusiveAccessBubbleViewsTest,
                        PointerLockUnadjustedMovementFullscreenClickAtTop) {
@@ -292,14 +338,17 @@ IN_PROC_BROWSER_TEST_F(ExclusiveAccessBubbleViewsTest,
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GURL("about:blank")));
 
   // Focus the tab content.
-  ui_test_utils::ClickOnView(browser(), VIEW_ID_TAB_CONTAINER);
+  ui_test_utils::FocusView(browser(), VIEW_ID_TAB_CONTAINER);
+  ui_test_utils::WaitForViewFocus(browser(), VIEW_ID_TAB_CONTAINER,
+                                  /*focused=*/true);
 
   // Enter tab fullscreen.
-  EnterActiveTabFullscreen();
-  ASSERT_TRUE(IsWindowFullscreenForTabOrPending());
-
   content::WebContents* web_contents =
       browser()->GetTabStripModel()->GetActiveWebContents();
+  ASSERT_TRUE(content::ExecJs(web_contents,
+                              "document.documentElement.requestFullscreen()"));
+  ASSERT_EQ(true,
+            content::EvalJs(web_contents, "!!document.fullscreenElement"));
 
   // Set up listeners for lock and mouse events.
   ASSERT_TRUE(content::ExecJs(web_contents, R"(
@@ -316,10 +365,10 @@ IN_PROC_BROWSER_TEST_F(ExclusiveAccessBubbleViewsTest,
   )"));
 
   // Send a click in the center of the window to trigger pointer lock.
-  gfx::Rect window_bounds =
-      BrowserView::GetBrowserViewForBrowser(browser())->GetBoundsInScreen();
-  gfx::Point center_point = window_bounds.CenterPoint();
-  ASSERT_TRUE(ui_test_utils::SendMouseMoveSync(center_point));
+  views::Widget* widget =
+      BrowserView::GetBrowserViewForBrowser(browser())->GetWidget();
+  const gfx::Point center = widget->GetWindowBoundsInScreen().CenterPoint();
+  ASSERT_TRUE(ui_test_utils::SendMouseMoveSync(center));
   ASSERT_TRUE(ui_test_utils::SendMouseEventsSync(
       ui_controls::LEFT, ui_controls::DOWN | ui_controls::UP));
 
@@ -329,33 +378,49 @@ IN_PROC_BROWSER_TEST_F(ExclusiveAccessBubbleViewsTest,
                 .ExtractString()
                 .empty();
   }));
-  EXPECT_EQ(content::EvalJs(web_contents, "window.lockStatus").ExtractString(),
+  ASSERT_EQ(content::EvalJs(web_contents, "window.lockStatus").ExtractString(),
             "success");
+  ASSERT_EQ(
+      1, content::EvalJs(web_contents, "window.mousedownCount").ExtractInt());
+  ASSERT_EQ(1,
+            content::EvalJs(web_contents, "window.mouseupCount").ExtractInt());
 
-  // Move the mouse to the top edge of the screen (y = bounds.y()).
-  gfx::Point top_point(window_bounds.CenterPoint().x(), window_bounds.y());
-  ASSERT_TRUE(ui_test_utils::SendMouseMoveSync(top_point));
+  // Verify capture is not held. Otherwise, the click could be delivered to the
+  // page regardless of the hit-test result.
+  ASSERT_EQ(nullptr, ::GetCapture());
 
-  // Check the physical cursor position.
-  // The cursor should have drifted to the top and been clipped by ClipCursor
-  // (which insets by 5 pixels).
-  POINT cursor_pos;
-  ASSERT_TRUE(::GetCursorPos(&cursor_pos));
-  EXPECT_LE(cursor_pos.y, 5);
+  // Move the mouse to the top of the pointer-lock clipping region.
+  RECT clip;
+  ASSERT_TRUE(::GetClipCursor(&clip));
+  INPUT move = {};
+  move.type = INPUT_MOUSE;
+  move.mi.dy = -10000;
+  move.mi.dwFlags = MOUSEEVENTF_MOVE;
+  ASSERT_EQ(1u, ::SendInput(1, &move, sizeof(move)));
+  ASSERT_TRUE(base::test::RunUntil([&] {
+    POINT position;
+    return ::GetCursorPos(&position) && position.y == clip.top;
+  }));
 
   // Click at the top edge.
-  ASSERT_TRUE(ui_test_utils::SendMouseEventsSync(
+  ASSERT_TRUE(ui_controls::SendMouseEvents(
       ui_controls::LEFT, ui_controls::DOWN | ui_controls::UP));
 
+  // Wait for the top-edge mouse down and up events to reach the page.
+  EXPECT_TRUE(base::test::RunUntil([&] {
+    return content::EvalJs(
+               web_contents,
+               "window.mousedownCount >= 2 && window.mouseupCount >= 2")
+        .ExtractBool();
+  }));
+
   // Check if mouse down and up events were registered on the page.
-  // With the OnNCHitTest fix, the click should be routed to the client area
-  // and reach the page.
   EXPECT_EQ(
       2, content::EvalJs(web_contents, "window.mousedownCount").ExtractInt());
   EXPECT_EQ(2,
             content::EvalJs(web_contents, "window.mouseupCount").ExtractInt());
 }
-#endif
+#endif  // BUILDFLAG(IS_WIN)
 
 // Menus are excluded on Mac because `MenuRunner` runs a blocking native menu
 // there, and because the fullscreen transition only cancels menus once the
@@ -434,6 +499,83 @@ IN_PROC_BROWSER_TEST_F(ExclusiveAccessBubbleViewsTest,
   ASSERT_FALSE(views::MenuController::GetActiveInstance());
 
   EXPECT_FALSE(MustShowOnNextInteraction());
+}
+
+// Browser-initiated fullscreen is user-initiated, and the user commonly opens
+// the app menu while the bubble is still showing. That must not arm a re-show,
+// or the exit instruction unexpectedly reappears on the next interaction. See
+// crbug.com/574452272.
+//
+// Excluded on ChromeOS because browser fullscreen uses immersive mode there and
+// suppresses the exit instruction bubble (see
+// `ShouldUseImmersiveFullscreenForUrl()` in `browser_view.cc`).
+#if !BUILDFLAG(IS_CHROMEOS)
+IN_PROC_BROWSER_TEST_F(ExclusiveAccessBubbleViewsTest,
+                       MenuDuringBrowserFullscreenDoesNotReshowBubble) {
+  GetFullscreenController()->ToggleBrowserFullscreenMode(
+      /*user_initiated=*/true);
+  WaitAndVerifyFullscreenState(/*browser_fullscreen=*/true,
+                               /*tab_fullscreen=*/false);
+  ASSERT_TRUE(GetExclusiveAccessBubbleView());
+
+  ClearMustShowOnNextInteraction();
+  ASSERT_FALSE(MustShowOnNextInteraction());
+
+  OpenMenu();
+  ASSERT_TRUE(views::MenuController::GetActiveInstance());
+
+  // Let the show time elapse, so the bubble hides while the menu is still open.
+  Wait(ExclusiveAccessBubble::kShowTime * 2);
+  ASSERT_TRUE(GetExclusiveAccessBubbleView());
+  ASSERT_TRUE(views::MenuController::GetActiveInstance());
+
+  EXPECT_FALSE(MustShowOnNextInteraction());
+}
+#endif  // !BUILDFLAG(IS_CHROMEOS)
+
+// When a menu is open while the pointer lock exit instruction bubble times out,
+// the show may have been covered by the menu. That timeout must be reported as
+// `kInterrupted` rather than `kTimeout`, so that `PointerLockController` does
+// not grant silent pointer lock permission and suppress the exit instruction on
+// a subsequent target-initiated relock. See crbug.com/583171525.
+IN_PROC_BROWSER_TEST_F(ExclusiveAccessBubbleViewsTest,
+                       ObscuredPointerLockBubbleDoesNotGrantSilentLock) {
+  pointer_lock_bubble_hide_reason_recorder_.clear();
+  RequestToLockPointer(/*user_gesture=*/true,
+                       /*last_unlocked_by_target=*/false);
+  ASSERT_TRUE(GetExclusiveAccessManager()
+                  ->pointer_lock_controller()
+                  ->IsPointerLocked());
+  ASSERT_TRUE(GetExclusiveAccessBubbleView());
+  EXPECT_EQ(EXCLUSIVE_ACCESS_BUBBLE_TYPE_POINTERLOCK_EXIT_INSTRUCTION,
+            GetExclusiveAccessBubbleType());
+
+  OpenMenu();
+  ASSERT_TRUE(views::MenuController::GetActiveInstance());
+
+  // Let the show time elapse while the menu is still open.
+  Wait(ExclusiveAccessBubble::kShowTime * 2);
+  ASSERT_TRUE(views::MenuController::GetActiveInstance());
+
+  ASSERT_EQ(1ul, pointer_lock_bubble_hide_reason_recorder_.size());
+  EXPECT_EQ(ExclusiveAccessBubbleHideReason::kInterrupted,
+            pointer_lock_bubble_hide_reason_recorder_[0]);
+
+  // A subsequent target-initiated unlock + relock must not be silent and must
+  // display the exit instruction bubble.
+  LostPointerLock();
+  RequestToLockPointer(/*user_gesture=*/false,
+                       /*last_unlocked_by_target=*/true);
+
+  EXPECT_TRUE(GetExclusiveAccessManager()
+                  ->pointer_lock_controller()
+                  ->IsPointerLocked());
+  EXPECT_FALSE(GetExclusiveAccessManager()
+                   ->pointer_lock_controller()
+                   ->IsPointerLockedSilently());
+  EXPECT_EQ(EXCLUSIVE_ACCESS_BUBBLE_TYPE_POINTERLOCK_EXIT_INSTRUCTION,
+            GetExclusiveAccessBubbleType());
+  EXPECT_TRUE(IsExclusiveAccessBubbleDisplayed());
 }
 
 #endif  // !BUILDFLAG(IS_MAC)

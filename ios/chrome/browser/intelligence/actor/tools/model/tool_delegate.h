@@ -5,20 +5,22 @@
 #ifndef IOS_CHROME_BROWSER_INTELLIGENCE_ACTOR_TOOLS_MODEL_TOOL_DELEGATE_H_
 #define IOS_CHROME_BROWSER_INTELLIGENCE_ACTOR_TOOLS_MODEL_TOOL_DELEGATE_H_
 
+#import <memory>
+
 #import "ios/chrome/browser/intelligence/actor/public/actor_types.h"
+#import "ios/chrome/browser/intelligence/actor/tools/public/actor_tool_types.h"
 #import "ios/web/public/navigation/navigation_manager.h"
+
+class GURL;
 
 namespace web {
 class WebState;
 }  // namespace web
 
-namespace origin_gating {
-class OriginGatingChecker;
-}  // namespace origin_gating
-
 namespace actor {
-class ActorToolFactory;
 class ActorTaskFormFillingHandler;
+class ActorToolFactory;
+class ActorToolRequest;
 class AggregatedJournal;
 
 // Provides the tools layer with access to objects owned by the orchestration
@@ -62,10 +64,15 @@ class ToolDelegate {
       const web::NavigationManager::WebLoadParams& load_params,
       bool in_background) = 0;
 
-  // Returns the origin gating checker used for evaluating navigation and
-  // actuation policies, or nullptr if unavailable.
-  virtual origin_gating::OriginGatingChecker* GetOriginGatingChecker()
-      const = 0;
+  // Invokes `callback` with `ToolExecutionResult::Ok()` if the tool may
+  // navigate to `url`, or an error result otherwise.
+  virtual void IsAcceptableNavigationDestination(
+      const GURL& url,
+      ToolExecutionCallback callback) = 0;
+
+  // Enqueues an action to be performed as a follow-up to the current action.
+  virtual void EnqueueFollowupAction(
+      std::unique_ptr<ActorToolRequest> action) = 0;
 };
 
 }  // namespace actor

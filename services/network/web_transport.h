@@ -7,6 +7,7 @@
 
 #include <map>
 #include <memory>
+#include <optional>
 #include <string_view>
 #include <vector>
 
@@ -73,6 +74,7 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) WebTransport final
           anticipated_concurrent_incoming_bidirectional_streams,
       std::vector<net::HttpRequestHeaders::HeaderKeyValuePair>
           additional_headers,
+      const std::optional<base::UnguessableToken>& throttling_profile_id,
       NetworkContext* context,
       mojo::PendingRemote<mojom::WebTransportHandshakeClient> handshake_client,
       mojo::PendingRemote<mojom::URLLoaderNetworkServiceObserver>
@@ -86,6 +88,8 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) WebTransport final
   void CreateDatagramWritable(
       mojo::PendingReceiver<mojom::WebTransportDatagramWritable> writable,
       mojom::WebTransportStreamPriorityPtr priority) override;
+  void ExportKeyingMaterial(const WebTransportKeyingMaterialParams& params,
+                            ExportKeyingMaterialCallback callback) override;
   void CreateStream(mojo::ScopedDataPipeConsumerHandle readable,
                     mojo::ScopedDataPipeProducerHandle writable,
                     mojom::WebTransportStreamPriorityPtr priority,
@@ -95,8 +99,10 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) WebTransport final
   void AcceptUnidirectionalStream(
       UnidirectionalStreamAcceptanceCallback callback) override;
   void SendFin(uint32_t stream_id) override;
-  void AbortStream(uint32_t stream_id, uint8_t code) override;
-  void StopSending(uint32_t stream_id, uint8_t code) override;
+  void AbortStream(uint32_t stream_id,
+                   uint32_t code,
+                   AbortStreamCallback callback) override;
+  void StopSending(uint32_t stream_id, uint32_t code) override;
   void SetStreamPriority(
       uint32_t stream_id,
       mojom::WebTransportStreamPriorityPtr priority) override;
@@ -104,6 +110,8 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) WebTransport final
   void GetStats(GetStatsCallback callback) override;
   void GetReceiveStreamStats(uint32_t stream_id,
                              GetReceiveStreamStatsCallback callback) override;
+  void GetSendStreamStats(const std::vector<uint32_t>& stream_ids,
+                          GetSendStreamStatsCallback callback) override;
   void Close(mojom::WebTransportCloseInfoPtr close_info) override;
 
   // WebTransportClientVisitor implementation:
@@ -130,6 +138,12 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) WebTransport final
     return final_receive_stream_stats_.Peek(stream_id) !=
            final_receive_stream_stats_.end();
   }
+
+  // Currently handles offline conditions only. Other emulated network
+  // conditions do not yet throttle an existing WebTransport connection.
+  // TODO(crbug.com/570122801): Apply the other network conditions here.
+  void NetworkConditionsUpdated(
+      const base::UnguessableToken& throttling_profile_id);
 
  private:
   friend class WebTransportTestPeer;
@@ -169,12 +183,17 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) WebTransport final
   void MovePendingDatagramToInFlightForTesting(size_t index);
   void ExpireNextDatagramForTesting(size_t index);
 
+  void RegisterSendStream(uint32_t stream_id);
+  std::optional<net::WebTransportSendStreamStats> TakeSendStreamStats(
+      uint32_t stream_id);
+
   void TearDown();
   void Dispose();
 
   const std::unique_ptr<net::WebTransportClient> transport_;
   const GURL url_;
   const url::Origin origin_;
+  const std::optional<base::UnguessableToken> throttling_profile_id_;
   const raw_ptr<NetworkContext> context_;  // outlives |this|.
 
   bool closing_ = false;

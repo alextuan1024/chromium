@@ -191,12 +191,15 @@ void TestPaymentsAutofillClient::ShowAutofillProgressDialog(
     AutofillProgressUiType autofill_progress_dialog_type,
     base::OnceClosure cancel_callback) {
   autofill_progress_dialog_shown_ = true;
+  autofill_progress_dialog_closed_ = false;
   autofill_progress_dialog_type_ = autofill_progress_dialog_type;
+  autofill_progress_dialog_cancel_callback_ = std::move(cancel_callback);
 }
 
 void TestPaymentsAutofillClient::CloseAutofillProgressDialog(
     bool show_confirmation_before_closing,
     base::OnceClosure no_user_perceived_authentication_callback) {
+  autofill_progress_dialog_closed_ = true;
   if (no_user_perceived_authentication_callback) {
     std::move(no_user_perceived_authentication_callback).Run();
   }
@@ -353,13 +356,9 @@ MockMerchantPromoCodeManager*
 TestPaymentsAutofillClient::GetMerchantPromoCodeManager() {
   if (!mock_merchant_promo_code_manager_) {
     mock_merchant_promo_code_manager_ =
-        std::make_unique<testing::NiceMock<MockMerchantPromoCodeManager>>(
-            &client_.get());
+        std::make_unique<testing::NiceMock<MockMerchantPromoCodeManager>>();
   }
   return mock_merchant_promo_code_manager_.get();
-}
-
-void TestPaymentsAutofillClient::OpenPromoCodeOfferDetailsURL(const GURL& url) {
 }
 
 AutofillOfferManager* TestPaymentsAutofillClient::GetAutofillOfferManager() {
@@ -491,11 +490,6 @@ BnplStrategy* TestPaymentsAutofillClient::GetBnplStrategy() {
 
 BnplUiDelegate* TestPaymentsAutofillClient::GetBnplUiDelegate() {
   return bnpl_ui_delegate_.get();
-}
-
-WalletReminderNoticeUiDelegate*
-TestPaymentsAutofillClient::GetWalletReminderNoticeUiDelegate() {
-  return wallet_reminder_notice_ui_delegate_.get();
 }
 
 WalletReminderNoticeManager*

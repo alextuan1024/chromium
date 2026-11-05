@@ -2,13 +2,14 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-
 #include "third_party/blink/renderer/platform/media/resource_multi_buffer_data_provider.h"
 
 #include <stddef.h>
 
+#include <algorithm>
 #include <utility>
 
+#include "base/feature_list.h"
 #include "base/location.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/metrics/histogram_macros.h"
@@ -18,6 +19,8 @@
 #include "base/strings/string_util.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/time/time.h"
+#include "media/base/media_switches.h"
+#include "net/base/net_errors.h"
 #include "net/http/http_byte_range.h"
 #include "net/http/http_request_headers.h"
 #include "services/network/public/cpp/cors/cors.h"
@@ -36,6 +39,20 @@
 #include "third_party/blink/renderer/platform/wtf/functional.h"
 
 namespace blink {
+
+namespace {
+
+ResourceMultiBufferDataProvider::RedirectState GetInitialRedirectState(
+    const UrlData& url_data) {
+  return {
+      .max_origin_relation =
+          net::GetOriginRelation(GURL(url_data.request_url()),
+                                 url_data.security_origin()->ToUrlOrigin()),
+      .service_worker_mode = url_data.service_worker_mode(),
+  };
+}
+
+}  // namespace
 
 // Defers Accept-Encoding injection to the network layer for media range
 // requests so service workers run before the user-agent header is added.
@@ -70,7 +87,7 @@ ResourceMultiBufferDataProvider::ResourceMultiBufferDataProvider(
       url_data_(url_data),
       retries_(0),
       cors_mode_(url_data->cors_mode()),
-      original_url_(url_data->url()),
+      redirect_state_(GetInitialRedirectState(*url_data)),
       is_client_audio_element_(is_client_audio_element),
       task_runner_(std::move(task_runner)) {
   DCHECK(url_data_) << " pos = " << pos;
@@ -85,6 +102,8 @@ ResourceMultiBufferDataProvider::~ResourceMultiBufferDataProvider() {
 
 void ResourceMultiBufferDataProvider::Start() {
   DVLOG(1) << __func__ << " @ " << byte_pos();
+  redirect_state_ = GetInitialRedirectState(*url_data_);
+  received_data_ = false;
 
   if (url_data_->length() > 0 && byte_pos() >= url_data_->length()) {
     task_runner_->PostTask(
@@ -94,7 +113,10 @@ void ResourceMultiBufferDataProvider::Start() {
   }
 
   // Prepare the request.
-  WebURLRequest request(url_data_->url());
+  WebURLRequest request(url_data_->request_url());
+  if (url_data_->service_worker_mode() == UrlData::ServiceWorkerMode::kSkip) {
+    request.SetSkipServiceWorker(true);
+  }
   request.SetRequestContext(is_client_audio_element_
                                 ? mojom::blink::RequestContextType::AUDIO
                                 : mojom::blink::RequestContextType::VIDEO);
@@ -144,12 +166,15 @@ void ResourceMultiBufferDataProvider::Start() {
     }
   }
 
-  if (auto url_index = url_data_->url_index()) {
-    active_loader_ = url_index->fetch_context()->CreateUrlLoader(options);
-    active_loader_->LoadAsynchronously(request, this);
-  } else {
-    url_data_->Fail();
+  if (url_data_->HasFailed()) {
+    task_runner_->PostTask(FROM_HERE,
+                           blink::BindOnce(&UrlData::Fail, url_data_));
+    return;
   }
+
+  active_loader_ =
+      url_data_->url_index()->fetch_context()->CreateUrlLoader(options);
+  active_loader_->LoadAsynchronously(request, this);
 }
 
 /////////////////////////////////////////////////////////////////////////////
@@ -200,25 +225,47 @@ bool ResourceMultiBufferDataProvider::WillFollowRedirect(
     const WebURL& new_url,
     const WebURLResponse& redirect_response) {
   DVLOG(1) << "willFollowRedirect";
-  redirects_to_ = new_url;
-  url_data_->set_valid_until(base::Time::Now() +
-                             GetCacheValidUntil(redirect_response));
-
-  // This test is vital for security!
-  if (cors_mode_ == UrlData::CORS_UNSPECIFIED) {
-    // We allow the redirect if the origin is the same.
-    if (!SecurityOrigin::AreSameOrigin(original_url_, redirects_to_) ||
-        !SecurityOrigin::AreSameOrigin(url_data_->url(), redirects_to_)) {
-      // We also allow the redirect if we don't have any data in the
-      // cache, as that means that no dangerous data mixing can occur.
-      if (url_data_->multibuffer()->map().empty() && fifo_.empty())
-        return true;
-
+  if (url_data_->HasFailed()) {
+    FailForInvalidResponse(/*cross_origin_failure=*/false);
+    return false;  // "this" may be deleted now.
+  }
+  const KURL& previous_url = redirect_state_.redirects_to.IsEmpty()
+                                 ? url_data_->request_url()
+                                 : redirect_state_.redirects_to;
+  if (!SecurityOrigin::AreSameOrigin(previous_url, new_url)) {
+    // This test is vital for security! In no-cors mode, if `url_data_` did not
+    // follow a cross-origin redirect on its initial response and already has a
+    // pinned `data_origin()` or buffered data, reject any subsequent
+    // cross-origin redirect immediately before following it or updating
+    // `valid_until_`.
+    if (cors_mode_ == UrlData::CORS_UNSPECIFIED &&
+        !url_data_->has_cross_origin_redirect() &&
+        (url_data_->data_origin().has_value() || HasBufferedData())) {
       active_loader_.reset();
       url_data_->Fail();
       return false;  // "this" may be deleted now.
     }
+    redirect_state_.has_cross_origin_redirect = true;
   }
+
+  redirect_state_.redirects_to = new_url;
+  redirect_state_.max_origin_relation = std::max(
+      redirect_state_.max_origin_relation,
+      net::GetOriginRelation(GURL(redirect_state_.redirects_to),
+                             url_data_->security_origin()->ToUrlOrigin()));
+  // Matching `ResourceLoader::WillFollowRedirect`, bypass Service Workers on
+  // retargeted follow-up range requests once any redirect hop was not
+  // generated by a Service Worker, while still allowing Service Workers to
+  // intercept synthetic offline redirects (`Response.redirect(...)`). Gated on
+  // `kDisallowMixedOpaqueMediaResponses` so Finch can roll back Service Worker
+  // range-request changes together if needed.
+  if (!redirect_response.WasFetchedViaServiceWorker() &&
+      base::FeatureList::IsEnabled(media::kDisallowMixedOpaqueMediaResponses)) {
+    redirect_state_.service_worker_mode = UrlData::ServiceWorkerMode::kSkip;
+  }
+
+  url_data_->set_valid_until(base::Time::Now() +
+                             GetCacheValidUntil(redirect_response));
   return true;
 }
 
@@ -254,17 +301,206 @@ void ResourceMultiBufferDataProvider::DidReceiveResponse(
 #endif
   DCHECK(active_loader_);
 
-  if (!url_data_->url_index()) {
-    url_data_->Fail();
+  if (url_data_->HasFailed()) {
+    FailForInvalidResponse(/*cross_origin_failure=*/false);
     return;  // "this" may be deleted now.
   }
 
+  // Keep a reference to `url_data_` across `GetByUrl()` and `TryInsert()`. If
+  // `UrlIndex` holds the sole reference to `url_data_` and `TryInsert()`
+  // replaces it with a new `UrlData` for the same key, `url_data_` (which owns
+  // `this` via `multibuffer()`) would otherwise be destroyed before ownership
+  // of `this` is transferred below.
+  scoped_refptr<UrlData> old_url_data(url_data_.get());
   scoped_refptr<UrlData> destination_url_data(url_data_.get());
 
-  if (!redirects_to_.IsEmpty()) {
-    destination_url_data = url_data_->url_index()->GetByUrl(
-        redirects_to_, cors_mode_, url_data_->cache_lookup_mode());
-    redirects_to_ = KURL();
+  // Get the response URL and opacity before selecting `destination_url_data`
+  // since a service worker redirect (`Response.redirect(...)`) whose final
+  // response is an opaque service worker response must stay unindexed rather
+  // than looking up or mutating a shared `UrlIndex` entry. Normally we would
+  // just use ResponseUrl(), but ResourceMultiBufferDataProvider disallows
+  // mixing constructed responses (new Response()) and native server responses,
+  // even if they have the same response URL.
+  const bool was_fetched_via_service_worker =
+      response.WasFetchedViaServiceWorker();
+  KURL response_url;
+  if (was_fetched_via_service_worker) {
+    was_fetched_via_service_worker_ = true;
+    if (response.HasUrlListViaServiceWorker()) {
+      response_url = response.ResponseUrl();
+    }
+  } else {
+    response_url = response.ResponseUrl();
+  }
+  const bool is_opaque_response =
+      network::cors::IsCorsCrossOriginResponseType(response.GetType());
+
+  if (!redirect_state_.redirects_to.IsEmpty()) {
+    const KURL redirects_to = std::move(redirect_state_.redirects_to);
+    redirect_state_.redirects_to = KURL();
+    const net::OriginRelation final_relation = net::GetOriginRelation(
+        GURL(redirects_to), url_data_->security_origin()->ToUrlOrigin());
+    const bool is_opaque_service_worker_redirect =
+        was_fetched_via_service_worker &&
+        (is_opaque_response || (cors_mode_ == UrlData::CORS_UNSPECIFIED &&
+                                redirect_state_.has_cross_origin_redirect));
+    // Matching `services/network/sec_header_helpers.cc`,
+    // `net/cookies/cookie_util.cc`, and
+    // `CorsURLLoader::CalculateResponseTainting`, a redirect chain that bounces
+    // back closer to `security_origin()`
+    // (`final_relation < max_origin_relation`, e.g. `cross-site ->
+    // same-origin`, `cross-site -> same-site`, or `same-site -> same-origin`),
+    // a no-cors cross-origin redirect to a target where `security_origin()` has
+    // direct read access (e.g. `GrantUniversalAccess()` or extension host
+    // permissions, where `CorsURLLoader` marks the redirected response
+    // `kOpaque` via `tainted_origin` while a direct follow-up request would be
+    // `kBasic`), or a redirect involving an opaque service worker response must
+    // stay unindexed and replay `old_url_data->request_url()` on follow-up
+    // range requests, while retargeting all normal forward redirects onto
+    // `UrlIndex`.
+    const bool must_use_original_url =
+        final_relation < redirect_state_.max_origin_relation ||
+        old_url_data->has_original_request_url() ||
+        old_url_data->HasOpaqueServiceWorkerResponse() ||
+        is_opaque_service_worker_redirect ||
+        (cors_mode_ == UrlData::CORS_UNSPECIFIED &&
+         redirect_state_.has_cross_origin_redirect &&
+         url_data_->security_origin()->CanReadContent(redirects_to));
+    if (must_use_original_url) {
+      if (!old_url_data->has_original_request_url() ||
+          redirects_to != old_url_data->url()) {
+        destination_url_data = url_data_->url_index()->NewUnindexedUrlData(
+            redirects_to, cors_mode_, url_data_->cache_lookup_mode(),
+            url_data_->security_origin(), url_data_->encoding_mode(),
+            old_url_data->service_worker_mode(), old_url_data->request_url());
+      }
+    } else {
+      destination_url_data = url_data_->url_index()->GetByUrl(
+          redirects_to, cors_mode_, url_data_->cache_lookup_mode(),
+          url_data_->security_origin(), url_data_->encoding_mode(),
+          redirect_state_.service_worker_mode);
+    }
+  }
+
+  // This test is vital for security! Ensure that both the original UrlData and
+  // any redirect destination UrlData (including flags propagated from
+  // `old_url_data` in `RedirectTo()`) are compatible with the response's
+  // origin, opacity, redirect state, service worker provenance, and HTTP
+  // status/length before mutating metadata on `destination_url_data`, inserting
+  // into `UrlIndex`, or migrating onto a shared `destination_url_data`.
+  // Mid-stream cross-origin redirects on `old_url_data` are rejected earlier in
+  // `WillFollowRedirect()`. We get the response type above because aborting the
+  // loader may change it.
+  const bool migrating_url_data = destination_url_data != old_url_data;
+  const bool request_has_unindexed_cross_origin_redirect =
+      destination_url_data->has_original_request_url() &&
+      redirect_state_.has_cross_origin_redirect;
+  const bool is_cors_cross_origin =
+      is_opaque_response || (cors_mode_ == UrlData::CORS_UNSPECIFIED &&
+                             request_has_unindexed_cross_origin_redirect);
+  const bool destination_has_cross_origin_redirect =
+      request_has_unindexed_cross_origin_redirect ||
+      (migrating_url_data && old_url_data->has_cross_origin_redirect());
+  const bool destination_is_cors_cross_origin =
+      is_cors_cross_origin ||
+      (migrating_url_data && old_url_data->is_cors_cross_origin());
+  const bool destination_was_fetched_via_service_worker =
+      was_fetched_via_service_worker ||
+      (migrating_url_data && old_url_data->HasOpaqueServiceWorkerResponse());
+  const bool cross_origin_failure = destination_is_cors_cross_origin ||
+                                    (cors_mode_ == UrlData::CORS_UNSPECIFIED &&
+                                     redirect_state_.has_cross_origin_redirect);
+
+  if (!old_url_data->CanAcceptDataFrom(
+          response_url, is_cors_cross_origin,
+          redirect_state_.has_cross_origin_redirect,
+          was_fetched_via_service_worker) ||
+      !destination_url_data->CanAcceptDataFrom(
+          response_url, destination_is_cors_cross_origin,
+          destination_has_cross_origin_redirect,
+          destination_was_fetched_via_service_worker)) {
+    FailForInvalidResponse(cross_origin_failure);
+    return;  // "this" may be deleted now.
+  }
+
+  // Expected content length can be |kPositionNotSpecified|, in that case
+  // |content_length_| is not specified and this is a streaming response.
+  int64_t content_length = response.ExpectedContentLength();
+  int64_t resolved_length = kPositionNotSpecified;
+  uint64_t bytes_to_discard = 0;
+  bool end_of_file = false;
+  bool range_supported = false;
+
+  // We make a strong assumption that when we reach here we have either
+  // received a response from HTTP/HTTPS protocol or the request was
+  // successful (in particular range request). So we only verify the partial
+  // response for HTTP and HTTPS protocol.
+  if (destination_url_data->url().ProtocolIsInHttpFamily()) {
+    // Check to see whether the server supports byte ranges.
+    std::string accept_ranges =
+        response.HttpHeaderField("Accept-Ranges").Utf8();
+    range_supported = accept_ranges.contains("bytes");
+
+    switch (response.HttpStatusCode()) {
+      case kHttpPartialContent:
+        if (!VerifyPartialResponse(response, *destination_url_data,
+                                   &resolved_length, &bytes_to_discard)) {
+          FailForInvalidResponse(cross_origin_failure);
+          return;  // "this" may be deleted now.
+        }
+        // A valid 206 Partial Content response demonstrates range support even
+        // if the server omitted "Accept-Ranges: bytes".
+        range_supported = true;
+        break;
+      case kHttpOK:
+        if (!VerifyOkResponse(*destination_url_data, content_length,
+                              destination_is_cors_cross_origin,
+                              destination_was_fetched_via_service_worker)) {
+          FailForInvalidResponse(cross_origin_failure);
+          return;  // "this" may be deleted now.
+        }
+        resolved_length = content_length;
+        bytes_to_discard = byte_pos();
+        break;
+      case kHttpRangeNotSatisfiable:
+        if (!VerifyRangeNotSatisfiableResponse(
+                *destination_url_data, destination_is_cors_cross_origin)) {
+          FailForInvalidResponse(cross_origin_failure);
+          return;  // "this" may be deleted now.
+        }
+        // Note: we can't call OnDataProviderEvent() until `url_data_` has been
+        // updated to `destination_url_data` below. Any length already known on
+        // `old_url_data` is propagated to `destination_url_data` in
+        // `RedirectTo()`.
+        end_of_file = true;
+        break;
+      default:
+        FailForInvalidResponse(cross_origin_failure);
+        return;  // "this" may be deleted now.
+    }
+  } else {
+    if (content_length != kPositionNotSpecified) {
+      resolved_length = content_length + byte_pos();
+      if (!HasCompatibleLengths(*destination_url_data, resolved_length)) {
+        FailForInvalidResponse(cross_origin_failure);
+        return;  // "this" may be deleted now.
+      }
+    } else if (url_data_->length() != kPositionNotSpecified &&
+               !HasCompatibleLengths(*destination_url_data,
+                                     url_data_->length())) {
+      FailForInvalidResponse(cross_origin_failure);
+      return;  // "this" may be deleted now.
+    }
+  }
+
+  bytes_to_discard_ = bytes_to_discard;
+  destination_url_data->set_length(resolved_length);
+  destination_url_data->SetDataOrigin(
+      response_url, destination_is_cors_cross_origin,
+      destination_has_cross_origin_redirect,
+      destination_was_fetched_via_service_worker);
+  if (range_supported) {
+    destination_url_data->set_range_supported();
   }
 
   base::Time last_modified;
@@ -283,69 +519,14 @@ void ResourceMultiBufferDataProvider::DidReceiveResponse(
   bool cacheable = GetReasonsForUncacheability(response) == 0;
   destination_url_data->set_cacheable(cacheable);
 
-  // Expected content length can be |kPositionNotSpecified|, in that case
-  // |content_length_| is not specified and this is a streaming response.
-  int64_t content_length = response.ExpectedContentLength();
-  bool end_of_file = false;
-  bool do_fail = false;
-  // We get the response type here because aborting the loader may change it.
-  const auto response_type = response.GetType();
-  bytes_to_discard_ = 0;
-
-  // We make a strong assumption that when we reach here we have either
-  // received a response from HTTP/HTTPS protocol or the request was
-  // successful (in particular range request). So we only verify the partial
-  // response for HTTP and HTTPS protocol.
-  if (destination_url_data->url().ProtocolIsInHttpFamily()) {
-    bool partial_response = (response.HttpStatusCode() == kHttpPartialContent);
-    bool ok_response = (response.HttpStatusCode() == kHttpOK);
-
-    // Check to see whether the server supports byte ranges.
-    std::string accept_ranges =
-        response.HttpHeaderField("Accept-Ranges").Utf8();
-    if (accept_ranges.contains("bytes")) {
-      destination_url_data->set_range_supported();
-    }
-
-    // If we have verified the partial response and it is correct.
-    // It's also possible for a server to support range requests
-    // without advertising "Accept-Ranges: bytes".
-    if (partial_response &&
-        VerifyPartialResponse(response, destination_url_data)) {
-      destination_url_data->set_range_supported();
-    } else if (ok_response) {
-      // We accept a 200 response for a Range:0- request, trusting the
-      // Accept-Ranges header, because Apache thinks that's a reasonable thing
-      // to return.
-      destination_url_data->set_length(content_length);
-      bytes_to_discard_ = byte_pos();
-    } else if (response.HttpStatusCode() == kHttpRangeNotSatisfiable) {
-      // Unsatisfiable range
-      // Really, we should never request a range that doesn't exist, but
-      // if we do, let's handle it in a sane way.
-      // Note, we can't just call OnDataProviderEvent() here, because
-      // url_data_ hasn't been updated to the final destination yet.
-      end_of_file = true;
-    } else {
-      active_loader_.reset();
-      // Can't call fail until readers have been migrated to the new
-      // url data below.
-      do_fail = true;
-    }
-  } else {
-    if (content_length != kPositionNotSpecified) {
-      destination_url_data->set_length(content_length + byte_pos());
-    }
-  }
-
-  if (!do_fail) {
-    destination_url_data =
-        url_data_->url_index()->TryInsert(destination_url_data);
-  }
-
-  // This is vital for security!
-  destination_url_data->set_is_cors_cross_origin(
-      network::cors::IsCorsCrossOriginResponseType(response_type));
+  destination_url_data->set_passed_timing_allow_origin_check(
+      response.TimingAllowPassed());
+  destination_url_data =
+      url_data_->url_index()->TryInsert(destination_url_data);
+  CHECK(destination_url_data->CanAcceptDataFrom(
+      response_url, destination_is_cors_cross_origin,
+      destination_has_cross_origin_redirect,
+      destination_was_fetched_via_service_worker));
 
   // Only used for metrics.
   {
@@ -361,15 +542,9 @@ void ResourceMultiBufferDataProvider::DidReceiveResponse(
     destination_url_data->set_mime_type(response.MimeType().Utf8());
   }
 
-  destination_url_data->set_passed_timing_allow_origin_check(
-      response.TimingAllowPassed());
-
   if (destination_url_data != url_data_.get()) {
     // At this point, we've encountered a redirect, or found a better url data
     // instance for the data that we're about to download.
-
-    // First, let's take a ref on the current url data.
-    scoped_refptr<UrlData> old_url_data(url_data_.get());
     destination_url_data->Use();
 
     // Take ownership of ourselves. (From the multibuffer)
@@ -382,30 +557,15 @@ void ResourceMultiBufferDataProvider::DidReceiveResponse(
     // Call callback to let upstream users know about the transfer.
     // This will merge the data from the two multibuffers and
     // cause clients to start using the new UrlData.
+    auto weak_this = weak_factory_.GetWeakPtr();
     old_url_data->RedirectTo(destination_url_data);
-  }
-
-  if (do_fail) {
-    destination_url_data->Fail();
-    return;  // "this" may be deleted now.
-  }
-
-  // Get the response URL since it can differ from the request URL when a
-  // service worker provided the response. Normally we would just use
-  // ResponseUrl(), but ResourceMultiBufferDataProvider disallows mixing
-  // constructed responses (new Response()) and native server responses, even if
-  // they have the same response URL.
-  KURL response_url;
-  if (!response.WasFetchedViaServiceWorker() ||
-      response.HasUrlListViaServiceWorker()) {
-    response_url = response.ResponseUrl();
-  }
-
-  // This test is vital for security!
-  if (!url_data_->ValidateDataOrigin(response_url)) {
-    active_loader_.reset();
-    url_data_->Fail();
-    return;  // "this" may be deleted now.
+    if (!weak_this) {
+      return;  // "this" may be deleted now.
+    }
+    CHECK(destination_url_data->CanAcceptDataFrom(
+        response_url, destination_is_cors_cross_origin,
+        destination_has_cross_origin_redirect,
+        destination_was_fetched_via_service_worker));
   }
 
   if (end_of_file) {
@@ -421,6 +581,11 @@ void ResourceMultiBufferDataProvider::DidReceiveData(
   DCHECK(active_loader_);
   DCHECK_GT(data.size(), 0u);
 
+  if (url_data_->HasFailed()) {
+    FailForInvalidResponse(/*cross_origin_failure=*/false);
+    return;  // "this" may be deleted now.
+  }
+
   total_bytes_received_ += data.size();
 
   auto bytes_data = base::as_bytes(data);
@@ -435,6 +600,7 @@ void ResourceMultiBufferDataProvider::DidReceiveData(
   }
 
   // When we receive data, we allow more retries.
+  received_data_ = true;
   retries_ = 0;
 
   while (!bytes_data.empty()) {
@@ -457,7 +623,7 @@ void ResourceMultiBufferDataProvider::DidReceiveData(
   // Beware, this object might be deleted here.
 }
 
-void ResourceMultiBufferDataProvider::DidDownloadData(uint64_t dataLength) {
+void ResourceMultiBufferDataProvider::DidDownloadData(uint64_t data_length) {
   NOTIMPLEMENTED();
 }
 
@@ -466,8 +632,8 @@ void ResourceMultiBufferDataProvider::DidFinishLoading() {
   DCHECK(active_loader_.get());
   DCHECK(!Available());
 
-  if (!url_data_->url_index()) {
-    url_data_->Fail();
+  if (url_data_->HasFailed()) {
+    FailForInvalidResponse(/*cross_origin_failure=*/false);
     return;  // "this" may be deleted now.
   }
 
@@ -481,7 +647,19 @@ void ResourceMultiBufferDataProvider::DidFinishLoading() {
   // Maybe it's transient error?
   if (url_data_->length() != kPositionNotSpecified &&
       size < url_data_->length()) {
-    if (retries_ < kMaxRetries) {
+    // Service worker responses are only retried on early EOF when they are
+    // non-opaque and support byte ranges (e.g. a synthetic 206 Partial Content
+    // stream delivering chunks smaller than a MultiBuffer block). Opaque
+    // service worker responses must not be retried because their decoded body
+    // can be shorter than the raw Content-Length header, and retrying from
+    // `size` would leak the decoded byte length to the service worker via the
+    // follow-up Range request header. Non-range (e.g. 200 OK) service worker
+    // responses cannot be resumed with a range request.
+    const bool can_retry_service_worker =
+        url_data_->range_supported() && !url_data_->is_cors_cross_origin();
+    if (received_data_ &&
+        (!was_fetched_via_service_worker_ || can_retry_service_worker) &&
+        retries_ < kMaxRetries) {
       DVLOG(1) << " Partial data received.... @ pos = " << size;
       retries_++;
       task_runner_->PostDelayedTask(
@@ -491,6 +669,11 @@ void ResourceMultiBufferDataProvider::DidFinishLoading() {
           base::Milliseconds(kLoaderPartialRetryDelayMs));
       return;
     } else {
+      // The response ended before `url_data_->length()` bytes were received and
+      // cannot be retried (either the current request received no payload
+      // bytes, the response came from an opaque or non-range-supporting service
+      // worker, or we exhausted `kMaxRetries`). Fail `url_data_` rather than
+      // falling through and truncating its pinned length to `size`.
       url_data_->Fail();
       return;  // "this" may be deleted now.
     }
@@ -511,7 +694,34 @@ void ResourceMultiBufferDataProvider::DidFail(const WebURLError& error) {
   DCHECK(active_loader_.get());
   active_loader_.reset();
 
-  if (url_data_->url_index() && retries_ < kMaxRetries && pos_ != 0) {
+  // ORB, Cross-Origin-Resource-Policy / COEP / DIP enforcement
+  // (ERR_BLOCKED_BY_RESPONSE), and web security violations (CORS, LNA, CSP,
+  // etc.) block cross-origin responses. Record this so that the failure is not
+  // distinguishable from other opaque failures (e.g. via error messages exposed
+  // by the media element). These blocks (as well as request-blocked and
+  // certificate errors) are deterministic for a given request, so fail
+  // immediately rather than retrying: a retry can never succeed, and the retry
+  // cadence is observable (e.g. by a service worker counting fetch events),
+  // which would leak whether the cross-origin server answered 206 or 416.
+  if (error.reason() == net::ERR_BLOCKED_BY_ORB ||
+      error.reason() == net::ERR_BLOCKED_BY_RESPONSE ||
+      error.is_web_security_violation()) {
+    url_data_->CrossOriginFail();
+    return;  // "this" may be deleted now.
+  }
+
+  // Service worker responses are not retried on failure, as they are
+  // synthesized or proxied by script and retrying exposes internal buffer
+  // positions via follow-up Range headers.
+  if (was_fetched_via_service_worker_ ||
+      net::IsRequestBlockedError(error.reason()) ||
+      net::IsCertificateError(error.reason()) ||
+      net::IsClientCertificateError(error.reason())) {
+    url_data_->Fail();
+    return;  // "this" may be deleted now.
+  }
+
+  if (!url_data_->HasFailed() && retries_ < kMaxRetries && pos_ != 0) {
     retries_++;
     task_runner_->PostDelayedTask(
         FROM_HERE,
@@ -589,18 +799,30 @@ int64_t ResourceMultiBufferDataProvider::block_size() const {
   return ret << url_data_->multibuffer()->block_size_shift();
 }
 
+bool ResourceMultiBufferDataProvider::HasBufferedData() const {
+  return !url_data_->multibuffer()->map().empty() || !fifo_.empty();
+}
+
+void ResourceMultiBufferDataProvider::FailForInvalidResponse(
+    bool cross_origin_failure) {
+  active_loader_.reset();
+  if (cross_origin_failure) {
+    url_data_->CrossOriginFail();
+  } else {
+    url_data_->Fail();
+  }
+}
+
 bool ResourceMultiBufferDataProvider::VerifyPartialResponse(
     const WebURLResponse& response,
-    const scoped_refptr<UrlData>& url_data) {
-  int64_t first_byte_position, last_byte_position, instance_size;
+    const UrlData& destination_url_data,
+    int64_t* instance_size,
+    uint64_t* bytes_to_discard) const {
+  int64_t first_byte_position, last_byte_position;
   if (!ParseContentRange(response.HttpHeaderField("Content-Range").Utf8(),
                          &first_byte_position, &last_byte_position,
-                         &instance_size)) {
+                         instance_size)) {
     return false;
-  }
-
-  if (url_data->length() == kPositionNotSpecified) {
-    url_data->set_length(instance_size);
   }
 
   if (first_byte_position > byte_pos()) {
@@ -609,9 +831,71 @@ bool ResourceMultiBufferDataProvider::VerifyPartialResponse(
   if (last_byte_position + 1 < byte_pos()) {
     return false;
   }
-  bytes_to_discard_ = byte_pos() - first_byte_position;
+
+  if (!HasCompatibleLengths(destination_url_data, *instance_size)) {
+    return false;
+  }
+
+  *bytes_to_discard = byte_pos() - first_byte_position;
 
   return true;
+}
+
+bool ResourceMultiBufferDataProvider::VerifyOkResponse(
+    const UrlData& destination_url_data,
+    int64_t content_length,
+    bool is_cors_cross_origin,
+    bool was_fetched_via_service_worker) const {
+  // Opaque service worker responses at non-zero offsets must be 206 Partial
+  // Content rather than 200 OK, so a service worker cannot strip the Range
+  // header on a follow-up request to probe resource lengths.
+  if (is_cors_cross_origin && was_fetched_via_service_worker &&
+      byte_pos() > 0) {
+    return false;
+  }
+
+  // We accept a 200 response for a Range:0- request, trusting the
+  // Accept-Ranges header, because Apache thinks that's a reasonable thing to
+  // return.
+  return HasCompatibleLengths(destination_url_data, content_length);
+}
+
+bool ResourceMultiBufferDataProvider::VerifyRangeNotSatisfiableResponse(
+    const UrlData& destination_url_data,
+    bool is_cors_cross_origin) const {
+  // Reject opaque 416 responses so cross-origin error statuses cannot be used
+  // to infer resource lengths.
+  if (is_cors_cross_origin) {
+    return false;
+  }
+
+  // If `url_data_` already has a known length, it must be compatible with
+  // `destination_url_data`.
+  if (url_data_->length() != kPositionNotSpecified &&
+      !HasCompatibleLengths(destination_url_data, url_data_->length())) {
+    return false;
+  }
+
+  // A 416 response is only valid at or past the known end of the resource.
+  // Mid-resource 416 responses are rejected so a redirected or replayed 416
+  // cannot truncate or unpin an already-known resource length.
+  const int64_t known_length = url_data_->length() != kPositionNotSpecified
+                                   ? url_data_->length()
+                                   : destination_url_data.length();
+  return known_length == kPositionNotSpecified || byte_pos() >= known_length;
+}
+
+bool ResourceMultiBufferDataProvider::HasCompatibleLengths(
+    const UrlData& destination_url_data,
+    int64_t length) const {
+  // If a previous response already established the resource length on either
+  // the original or destination UrlData, subsequent responses must report the
+  // same total length. Otherwise a service worker could splice a smaller
+  // cross-origin response onto a UrlData whose length was pinned by a larger
+  // resource, causing DidFinishLoading() to retry at the smaller response's
+  // EOF and disclose its size via the follow-up Range header.
+  return url_data_->HasCompatibleLength(length) &&
+         destination_url_data.HasCompatibleLength(length);
 }
 
 }  // namespace blink

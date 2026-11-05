@@ -22,7 +22,7 @@ struct SessionWindow;
 
 namespace sync_sessions {
 
-struct SyncedSession;
+class SyncedSession;
 
 class MockOpenTabsUIDelegate : public OpenTabsUIDelegate {
  public:
@@ -35,6 +35,12 @@ class MockOpenTabsUIDelegate : public OpenTabsUIDelegate {
 
   MOCK_METHOD(bool,
               GetAllForeignSessions,
+              ((std::vector<raw_ptr<const SyncedSession, VectorExperimental>> *
+                sessions),
+               ForeignSessionFilter filter),
+              (override));
+  MOCK_METHOD(bool,
+              GetAllRawForeignSessions,
               ((std::vector<raw_ptr<const SyncedSession, VectorExperimental>> *
                 sessions)),
               (override));

@@ -9,6 +9,7 @@
 
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/test/gmock_expected_support.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/task_environment.h"
 #include "base/uuid.h"
@@ -34,8 +35,10 @@ namespace autofill {
 
 namespace {
 
+using base::test::HasValue;
 using i18n_model_definition::kLegacyHierarchyCountryCode;
 using ::testing::IsEmpty;
+using ::testing::Not;
 
 const char kLocale[] = "en-US";
 
@@ -461,22 +464,27 @@ TEST_F(AutofillProfileComparatorTest, MergeComponents) {
   EXPECT_TRUE(comparator_.MergeCompanyNames(p, p).has_value());
   EXPECT_TRUE(comparator_.MergePhoneNumbers(p, p).has_value());
   EXPECT_TRUE(comparator_.MergeAddresses(p, p).has_value());
-  EXPECT_TRUE(
-      NameInfo::AreNamesMergeable(p.GetNameInfo(), p.GetAddressCountryCode(),
-                                  p.GetNameInfo(), p.GetAddressCountryCode()));
+  EXPECT_THAT(NameInfo::MergeNames(p.GetNameInfo(), p.GetAddressCountryCode(),
+                                   p.GetNameInfo(), p.GetAddressCountryCode(),
+                                   /*newer_was_more_recently_used=*/true),
+              HasValue());
 
   EXPECT_TRUE(comparator_.MergeEmailAddresses(p, mergeable).has_value());
   EXPECT_TRUE(comparator_.MergeCompanyNames(p, mergeable).has_value());
   EXPECT_TRUE(comparator_.MergePhoneNumbers(p, mergeable).has_value());
   EXPECT_TRUE(comparator_.MergeAddresses(p, mergeable).has_value());
-  EXPECT_TRUE(NameInfo::AreNamesMergeable(
-      p.GetNameInfo(), p.GetAddressCountryCode(), mergeable.GetNameInfo(),
-      mergeable.GetAddressCountryCode()));
+  EXPECT_THAT(NameInfo::MergeNames(p.GetNameInfo(), p.GetAddressCountryCode(),
+                                   mergeable.GetNameInfo(),
+                                   mergeable.GetAddressCountryCode(),
+                                   /*newer_was_more_recently_used=*/true),
+              HasValue());
 
-  EXPECT_FALSE(NameInfo::AreNamesMergeable(
-      p.GetNameInfo(), p.GetAddressCountryCode(),
-      not_mergeable_by_name.GetNameInfo(),
-      not_mergeable_by_name.GetAddressCountryCode()));
+  EXPECT_THAT(
+      NameInfo::MergeNames(p.GetNameInfo(), p.GetAddressCountryCode(),
+                           not_mergeable_by_name.GetNameInfo(),
+                           not_mergeable_by_name.GetAddressCountryCode(),
+                           /*newer_was_more_recently_used=*/true),
+      Not(HasValue()));
   EXPECT_FALSE(
       comparator_.MergeEmailAddresses(p, not_mergeable_by_email_address)
           .has_value());
@@ -965,6 +973,82 @@ TEST_F(AutofillProfileComparatorTest,
           existing_profile, new_profile, kLocale));
 }
 
+// Tests that settings-visible differences are detected when both profiles have
+// non-empty, differing countries.
+TEST_F(AutofillProfileComparatorTest,
+       ProfilesHaveDifferentSettingsVisibleValues_DifferentNonEmptyCountries) {
+  AutofillProfile at_profile(AddressCountryCode("AT"));
+  test::SetProfileInfo(&at_profile, test::SetProfileInfoOptionsBuilder()
+                                        .with_first_name("Max")
+                                        .with_last_name("Mustermann")
+                                        .with_address1("Hauptstrasse 5")
+                                        .with_zipcode("1010")
+                                        .with_city("Wien")
+                                        .with_country("AT")
+                                        .Build());
+
+  AutofillProfile gb_profile = at_profile;
+  gb_profile.SetRawInfo(ADDRESS_HOME_COUNTRY, u"GB");
+  EXPECT_TRUE(
+      AutofillProfileComparator::ProfilesHaveDifferentSettingsVisibleValues(
+          at_profile, gb_profile, kLocale));
+}
+
+// Tests that settings-visible differences are detected when profiles have
+// different countries with differing visible-type sets (e.g. empty country vs.
+// AT).
+TEST_F(AutofillProfileComparatorTest,
+       ProfilesHaveDifferentSettingsVisibleValues_DifferentVisibleTypeSets) {
+  AutofillProfile countryless_profile(kLegacyHierarchyCountryCode);
+  test::SetProfileInfo(&countryless_profile,
+                       test::SetProfileInfoOptionsBuilder()
+                           .with_first_name("Max")
+                           .with_last_name("Mustermann")
+                           .with_address1("Hauptstrasse 5")
+                           .with_zipcode("1010")
+                           .with_city("Wien")
+                           .Build());
+
+  AutofillProfile at_profile = countryless_profile;
+  at_profile.SetRawInfo(ADDRESS_HOME_COUNTRY, u"AT");
+  ASSERT_NE(countryless_profile.GetUserVisibleTypes(),
+            at_profile.GetUserVisibleTypes());
+  EXPECT_TRUE(
+      AutofillProfileComparator::ProfilesHaveDifferentSettingsVisibleValues(
+          countryless_profile, at_profile, kLocale));
+
+  at_profile.SetRawInfo(EMAIL_ADDRESS, u"user@example.com");
+  at_profile.SetRawInfo(PHONE_HOME_WHOLE_NUMBER, u"+43 660 1234567");
+  at_profile.SetRawInfo(COMPANY_NAME, u"Example GmbH");
+  EXPECT_TRUE(
+      AutofillProfileComparator::ProfilesHaveDifferentSettingsVisibleValues(
+          countryless_profile, at_profile, kLocale));
+}
+
+// Tests that settings-visible differences are detected when profiles have
+// different countries with matching visible-type sets (e.g. empty country vs.
+// GB).
+TEST_F(AutofillProfileComparatorTest,
+       ProfilesHaveDifferentSettingsVisibleValues_MatchingVisibleTypeSets) {
+  AutofillProfile countryless_profile(kLegacyHierarchyCountryCode);
+  test::SetProfileInfo(&countryless_profile,
+                       test::SetProfileInfoOptionsBuilder()
+                           .with_first_name("Max")
+                           .with_last_name("Mustermann")
+                           .with_address1("Hauptstrasse 5")
+                           .with_zipcode("1010")
+                           .with_city("Wien")
+                           .Build());
+
+  AutofillProfile gb_profile = countryless_profile;
+  gb_profile.SetRawInfo(ADDRESS_HOME_COUNTRY, u"GB");
+  ASSERT_EQ(countryless_profile.GetUserVisibleTypes(),
+            gb_profile.GetUserVisibleTypes());
+  EXPECT_TRUE(
+      AutofillProfileComparator::ProfilesHaveDifferentSettingsVisibleValues(
+          countryless_profile, gb_profile, kLocale));
+}
+
 TEST_F(AutofillProfileComparatorTest, GetProfileDifference) {
   AutofillProfile existing_profile(AddressCountryCode("US"));
   test::SetProfileInfo(&existing_profile, test::SetProfileInfoOptionsBuilder()
@@ -1171,6 +1255,12 @@ TEST_P(NonMergeableSettingVisibleTypesTest, DifferingTypesLegacy) {
   }
   // Initialize all other setting-visible types with the same value.
   for (FieldType t : a.GetUserVisibleTypes()) {
+    // `ADDRESS_HOME_COUNTRY` is already initialized to `country_code` above;
+    // overwriting it with `"same"` would replace custom country hierarchies
+    // (such as JP) with the legacy hierarchy.
+    if (t == ADDRESS_HOME_COUNTRY) {
+      continue;
+    }
     // If a type of the same `FieldTypeGroup` was already set, ignore it, to
     // avoid constructing conflicting substructures.
     if (!std::ranges::contains(type_differences.differing_types,

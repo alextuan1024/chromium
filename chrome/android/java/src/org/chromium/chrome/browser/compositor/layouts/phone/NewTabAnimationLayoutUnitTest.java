@@ -8,13 +8,16 @@ import static com.google.common.truth.Truth.assertThat;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.times;
@@ -26,7 +29,6 @@ import static org.chromium.ui.test.util.MockitoHelper.doCallback;
 import android.app.Activity;
 import android.graphics.Point;
 import android.graphics.Rect;
-import android.graphics.RectF;
 import android.os.Build;
 import android.view.View;
 import android.widget.FrameLayout;
@@ -48,6 +50,7 @@ import org.chromium.base.MathUtils;
 import org.chromium.base.UserDataHost;
 import org.chromium.base.supplier.NonNullObservableSupplier;
 import org.chromium.base.supplier.ObservableSuppliers;
+import org.chromium.base.supplier.SettableMonotonicObservableSupplier;
 import org.chromium.base.supplier.SettableNonNullObservableSupplier;
 import org.chromium.base.supplier.SettableNullableObservableSupplier;
 import org.chromium.base.test.BaseRobolectricTestRunner;
@@ -72,6 +75,8 @@ import org.chromium.chrome.browser.layouts.LayoutType;
 import org.chromium.chrome.browser.layouts.scene_layer.SceneLayer;
 import org.chromium.chrome.browser.layouts.scene_layer.SceneLayerJni;
 import org.chromium.chrome.browser.ntp.NewTabPage;
+import org.chromium.chrome.browser.preferences.ChromePreferenceKeys;
+import org.chromium.chrome.browser.preferences.ChromeSharedPreferences;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabId;
 import org.chromium.chrome.browser.tab.TabLaunchType;
@@ -82,17 +87,16 @@ import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
 import org.chromium.chrome.browser.toolbar.ToolbarManager;
 import org.chromium.chrome.browser.toolbar.ToolbarPositionController;
-import org.chromium.chrome.browser.toolbar.top.ToggleTabStackButton;
+import org.chromium.chrome.browser.toolbar.ToolbarPositionController.ToolbarPositionAndSource;
 import org.chromium.chrome.browser.ui.bottombar.BottomBarUtils;
 import org.chromium.chrome.browser.ui.edge_to_edge.EdgeToEdgeController;
 import org.chromium.chrome.browser.ui.edge_to_edge.TopInsetProvider;
 import org.chromium.chrome.browser.ui.edge_to_edge.TransitiveTopInsetProvider;
 import org.chromium.ui.base.TestActivity;
+import org.chromium.ui.edge_to_edge.EdgeToEdgeSupplier;
 import org.chromium.url.GURL;
 
-import java.lang.reflect.Field;
 import java.util.List;
-import java.util.function.Supplier;
 
 /** Unit tests for {@link NewTabAnimationLayout}. */
 @RunWith(BaseRobolectricTestRunner.class)
@@ -102,6 +106,29 @@ import java.util.function.Supplier;
     ChromeFeatureList.SENSITIVE_CONTENT_WHILE_SWITCHING_TABS
 })
 public class NewTabAnimationLayoutUnitTest {
+    private static class FakeBrowserStateBrowserControlsVisibilityDelegate
+            extends BrowserStateBrowserControlsVisibilityDelegate {
+        public int showControlsPersistentCallCount;
+        public int releasePersistentShowingTokenCallCount;
+
+        public FakeBrowserStateBrowserControlsVisibilityDelegate(
+                NonNullObservableSupplier<Boolean> persistentFullscreenMode) {
+            super(persistentFullscreenMode);
+        }
+
+        @Override
+        public int showControlsPersistent() {
+            showControlsPersistentCallCount++;
+            return super.showControlsPersistent();
+        }
+
+        @Override
+        public void releasePersistentShowingToken(int token) {
+            releasePersistentShowingTokenCallCount++;
+            super.releasePersistentShowingToken(token);
+        }
+    }
+
     private static final long FAKE_TIME = 0;
     private static final @TabId int CURRENT_TAB_ID = 321;
     private static final @TabId int NEW_TAB_ID = 123;
@@ -115,7 +142,6 @@ public class NewTabAnimationLayoutUnitTest {
     public ActivityScenarioRule<TestActivity> mActivityScenarioRule =
             new ActivityScenarioRule<>(TestActivity.class);
 
-    @Mock private CompositorViewHolder mCompositorViewHolder;
     @Mock private ToolbarManager mToolbarManager;
     @Mock private OverridableTabCount mOverridableTabCount;
     @Mock private BrowserControlsManager mBrowserControlsManager;
@@ -129,13 +155,9 @@ public class NewTabAnimationLayoutUnitTest {
     @Mock private TabModel mTabModel;
     @Mock private Tab mCurrentTab;
     @Mock private Tab mNewTab;
-    @Mock private ToggleTabStackButton mTabSwitcherButton;
-    @Mock private View mToolbar;
     @Mock private NewTabPage mNtp;
     @Mock private TopInsetProvider mTopInsetProvider;
     @Mock private EdgeToEdgeController mEdgeToEdgeController;
-    @Mock private View mBottomBar;
-    @Mock private View mBottomBarTabSwitcherButton;
     private SceneLayer mSceneLayer;
 
     private final SettableNullableObservableSupplier<Tab> mCurrentTabSupplier =
@@ -144,14 +166,18 @@ public class NewTabAnimationLayoutUnitTest {
             ObservableSuppliers.createNonNull(false);
     private final TransitiveTopInsetProvider mTransitiveTopInsetProvider =
             new TransitiveTopInsetProvider();
+    private final SettableMonotonicObservableSupplier<EdgeToEdgeController>
+            mEdgeToEdgeControllerSupplier = ObservableSuppliers.createMonotonic();
     private final SettableNonNullObservableSupplier<Float>
             mNtpSearchBoxTransitionPercentageSupplier = ObservableSuppliers.createNonNull(0f);
     private final FakeBrowserStateBrowserControlsVisibilityDelegate mBrowserVisibilityDelegate =
             new FakeBrowserStateBrowserControlsVisibilityDelegate(
                     ObservableSuppliers.alwaysFalse());
+    private Activity mActivity;
     private NewTabAnimationLayout mNewTabAnimationLayout;
     private FrameLayout mContentContainer;
     private FrameLayout mAnimationHostView;
+    private CompositorViewHolder mCompositorViewHolder;
     private UserDataHost mUserDataHost;
 
     @Before
@@ -199,6 +225,8 @@ public class NewTabAnimationLayoutUnitTest {
         when(mToolbarManager.getNtpSearchBoxTransitionPercentageSupplier())
                 .thenReturn(mNtpSearchBoxTransitionPercentageSupplier);
         mTransitiveTopInsetProvider.set(mTopInsetProvider);
+        when(mEdgeToEdgeController.getSystemTopInsetPx()).thenReturn(100);
+        mEdgeToEdgeControllerSupplier.set(mEdgeToEdgeController);
         mScrimVisibilitySupplier.set(false);
         doAnswer(
                         invocation -> {
@@ -222,9 +250,26 @@ public class NewTabAnimationLayoutUnitTest {
     }
 
     public void onActivity(Activity activity) {
+        mActivity = activity;
         mContentContainer = new FrameLayout(activity);
-        mAnimationHostView = spy(new FrameLayout(activity));
-        activity.setContentView(mAnimationHostView);
+        mAnimationHostView = new FrameLayout(activity);
+        mCompositorViewHolder = new CompositorViewHolder(activity, /* attrs= */ null);
+        FrameLayout toolbar = new FrameLayout(activity);
+        toolbar.setId(R.id.toolbar);
+        View tabSwitcherButton = new View(activity);
+        tabSwitcherButton.setId(R.id.tab_switcher_button);
+        toolbar.addView(tabSwitcherButton);
+        FrameLayout bottomBar = new FrameLayout(activity);
+        bottomBar.setId(org.chromium.chrome.browser.ui.bottombar.R.id.bottom_bar_container);
+        View bottomBarTabSwitcherButton = new View(activity);
+        bottomBarTabSwitcherButton.setId(R.id.tab_switcher_button);
+        bottomBar.addView(bottomBarTabSwitcherButton);
+        mAnimationHostView.addView(toolbar);
+        mAnimationHostView.addView(bottomBar);
+        mAnimationHostView.measure(
+                View.MeasureSpec.makeMeasureSpec(1080, View.MeasureSpec.EXACTLY),
+                View.MeasureSpec.makeMeasureSpec(1920, View.MeasureSpec.EXACTLY));
+        mAnimationHostView.layout(0, 0, 1080, 1920);
         mNewTabAnimationLayout =
                 spy(
                         new NewTabAnimationLayout(
@@ -238,39 +283,19 @@ public class NewTabAnimationLayoutUnitTest {
                                 mToolbarManager,
                                 mBrowserControlsManager,
                                 mScrimVisibilitySupplier,
-                                mTransitiveTopInsetProvider));
+                                mTransitiveTopInsetProvider,
+                                mEdgeToEdgeControllerSupplier));
         mNewTabAnimationLayout.setTabModelSelector(mTabModelSelector);
         mNewTabAnimationLayout.setTabContentManager(mTabContentManager);
-        when(mAnimationHostView.findViewById(R.id.toolbar)).thenReturn(mToolbar);
-        when(mToolbar.findViewById(R.id.tab_switcher_button)).thenReturn(mTabSwitcherButton);
-        when(mAnimationHostView.findViewById(
-                        org.chromium.chrome.browser.ui.bottombar.R.id.bottom_bar_container))
-                .thenReturn(mBottomBar);
-        when(mBottomBar.findViewById(R.id.tab_switcher_button))
-                .thenReturn(mBottomBarTabSwitcherButton);
-        when(mAnimationHostView.getWidth()).thenReturn(40);
-        when(mAnimationHostView.getHeight()).thenReturn(40);
-        doAnswer(
-                        invocation -> {
-                            Rect rect = invocation.getArgument(0);
-                            rect.set(0, 0, 1080, 1920);
-                            return true;
-                        })
-                .when(mAnimationHostView)
-                .getGlobalVisibleRect(any(Rect.class));
-        Supplier<EdgeToEdgeController> edgeToEdgeControllerSupplier = () -> mEdgeToEdgeController;
-        when(mToolbarManager.getEdgeToEdgeControllerSupplier())
-                .thenReturn(edgeToEdgeControllerSupplier);
         mNewTabAnimationLayout.onFinishNativeInitialization();
         mNewTabAnimationLayout.setRunOnNextLayoutImmediatelyForTesting(true);
     }
 
     @After
-    public void tearDown() throws Exception {
+    public void tearDown() {
         mNewTabAnimationLayout.destroy();
-        Field field = ToolbarPositionController.class.getDeclaredField("sToolbarShouldShowOnTop");
-        field.setAccessible(true);
-        field.set(null, null);
+        ChromeSharedPreferences.getInstance().removeKey(ChromePreferenceKeys.TOOLBAR_TOP_ANCHORED);
+        ToolbarPositionController.resetCachedToolbarConfigurationForTesting();
     }
 
     @Test
@@ -368,7 +393,7 @@ public class NewTabAnimationLayoutUnitTest {
     public void testOnTabCreated_tabCreatedInForeground() {
         LayoutTab[] layoutTabs = mNewTabAnimationLayout.getLayoutTabsToRender();
         assertNull(layoutTabs);
-        verify(mAnimationHostView, never()).addView(any());
+        assertNull(findChildView(NewForegroundTabAnimationHostView.class));
 
         mNewTabAnimationLayout.onTabCreated(
                 FAKE_TIME,
@@ -386,13 +411,12 @@ public class NewTabAnimationLayoutUnitTest {
         assertEquals(NEW_TAB_ID, layoutTabs[1].getId());
         verify(mNewTabAnimationLayout, times(1)).forceAnimationToFinish();
         assertTrue(mNewTabAnimationLayout.isRunningAnimations());
-        verify(mAnimationHostView, times(1)).addView(any(NewForegroundTabAnimationHostView.class));
+        assertNotNull(findChildView(NewForegroundTabAnimationHostView.class));
 
         RobolectricUtil.runAllBackgroundAndUi();
 
         assertFalse(mNewTabAnimationLayout.isRunningAnimations());
-        verify(mAnimationHostView, times(1))
-                .removeView(any(NewForegroundTabAnimationHostView.class));
+        assertNull(findChildView(NewForegroundTabAnimationHostView.class));
         verify(mTabModelSelector).selectModel(false);
         assertTrue(mNewTabAnimationLayout.isStartingToHide());
     }
@@ -429,7 +453,7 @@ public class NewTabAnimationLayoutUnitTest {
     public void testOnTabCreated_tabCreatedInForeground_bottomBarEnabled() {
         LayoutTab[] layoutTabs = mNewTabAnimationLayout.getLayoutTabsToRender();
         assertNull(layoutTabs);
-        verify(mAnimationHostView, never()).addView(any());
+        assertNull(findChildView(NewForegroundTabAnimationHostView.class));
 
         mNewTabAnimationLayout.onTabCreated(
                 FAKE_TIME,
@@ -447,196 +471,21 @@ public class NewTabAnimationLayoutUnitTest {
         assertEquals(NEW_TAB_ID, layoutTabs[1].getId());
         verify(mNewTabAnimationLayout, times(1)).forceAnimationToFinish();
         assertTrue(mNewTabAnimationLayout.isRunningAnimations());
-        verify(mAnimationHostView, times(1)).addView(any(NewForegroundTabAnimationHostView.class));
+        assertNotNull(findChildView(NewForegroundTabAnimationHostView.class));
 
         RobolectricUtil.runAllBackgroundAndUi();
 
         assertFalse(mNewTabAnimationLayout.isRunningAnimations());
-        verify(mAnimationHostView, times(1))
-                .removeView(any(NewForegroundTabAnimationHostView.class));
+        assertNull(findChildView(NewForegroundTabAnimationHostView.class));
         verify(mTabModelSelector).selectModel(false);
         assertTrue(mNewTabAnimationLayout.isStartingToHide());
     }
 
     @Test
-    @EnableFeatures({
-        ChromeFeatureList.ANDROID_BOTTOM_BAR,
-        ChromeFeatureList.ANDROID_BOTTOM_BAR + ":disable_on_ntp/true"
-    })
-    public void testOnTabCreated_NtpToWebPage_bottomBarCoordination() throws Exception {
-        // Transition: NTP (no bottom bar) -> Web (has bottom bar)
-        // Setup old tab as regular NTP (no bottom bar)
-        when(mCurrentTab.getUrl()).thenReturn(new GURL("chrome://newtab"));
-        when(mCurrentTab.isIncognitoBranded()).thenReturn(false);
-
-        // Setup new tab as regular web page (has bottom bar)
-        when(mNewTab.getUrl()).thenReturn(new GURL("https://google.com"));
-        when(mNewTab.isIncognitoBranded()).thenReturn(false);
-
-        // Viewport of NTP is full screen
-        Rect compositorRect = new Rect(0, 0, 1080, 1920);
-        RectF compositorRectF = new RectF(compositorRect);
-        doAnswer(
-                        invocation -> {
-                            RectF rectF = invocation.getArgument(0);
-                            rectF.set(compositorRectF);
-                            return null;
-                        })
-                .when(mCompositorViewHolder)
-                .getVisibleViewport(any(RectF.class));
-
-        mNewTabAnimationLayout.onTabCreated(
-                FAKE_TIME,
-                NEW_TAB_ID,
-                /* index= */ 1,
-                CURRENT_TAB_ID,
-                /* newIsIncognito= */ false,
-                /* background= */ false,
-                /* originX= */ 0f,
-                /* originY= */ 0f);
-
-        // Capture NewForegroundTabAnimationHostView
-        ArgumentCaptor<NewForegroundTabAnimationHostView> viewCaptor =
-                ArgumentCaptor.forClass(NewForegroundTabAnimationHostView.class);
-        verify(mAnimationHostView).addView(viewCaptor.capture());
-        NewForegroundTabAnimationHostView hostView = viewCaptor.getValue();
-
-        // Use reflection to access private mInitialRect
-        Field initialRectField =
-                NewForegroundTabAnimationHostView.class.getDeclaredField("mInitialRect");
-        initialRectField.setAccessible(true);
-        Rect initialRect = (Rect) initialRectField.get(hostView);
-
-        // Symmetrical centering checks (539 due to -1px LTR left adjustment)
-        assertEquals(539, initialRect.centerX());
-        // Bottom of initialRect should start at the absolute bottom edge of the screen (1920 + 1
-        // overlap)
-        assertEquals(1921, initialRect.bottom);
-    }
-
-    @Test
-    @EnableFeatures({
-        ChromeFeatureList.ANDROID_BOTTOM_BAR,
-        ChromeFeatureList.ANDROID_BOTTOM_BAR + ":disable_on_ntp/true"
-    })
-    public void testOnTabCreated_WebPageToNtp_bottomBarCoordination() throws Exception {
-        // Transition: Web (has bottom bar) -> NTP (no bottom bar)
-        // Setup old tab as regular web page (has bottom bar)
-        when(mCurrentTab.getUrl()).thenReturn(new GURL("https://google.com"));
-        when(mCurrentTab.isIncognitoBranded()).thenReturn(false);
-
-        // Setup new tab as regular NTP (no bottom bar)
-        when(mNewTab.getUrl()).thenReturn(new GURL("chrome://newtab"));
-        when(mNewTab.isIncognitoBranded()).thenReturn(false);
-
-        int bottomBarHeight =
-                BottomBarUtils.getBottomBarHeight(mNewTabAnimationLayout.getContext());
-
-        // Viewport of Web page excludes bottom controls
-        Rect compositorRect = new Rect(0, 0, 1080, 1920 - bottomBarHeight);
-        RectF compositorRectF = new RectF(compositorRect);
-        doAnswer(
-                        invocation -> {
-                            RectF rectF = invocation.getArgument(0);
-                            rectF.set(compositorRectF);
-                            return null;
-                        })
-                .when(mCompositorViewHolder)
-                .getVisibleViewport(any(RectF.class));
-
-        mNewTabAnimationLayout.onTabCreated(
-                FAKE_TIME,
-                NEW_TAB_ID,
-                /* index= */ 1,
-                CURRENT_TAB_ID,
-                /* newIsIncognito= */ false,
-                /* background= */ false,
-                /* originX= */ 0f,
-                /* originY= */ 0f);
-
-        // Capture NewForegroundTabAnimationHostView
-        ArgumentCaptor<NewForegroundTabAnimationHostView> viewCaptor =
-                ArgumentCaptor.forClass(NewForegroundTabAnimationHostView.class);
-        verify(mAnimationHostView).addView(viewCaptor.capture());
-        NewForegroundTabAnimationHostView hostView = viewCaptor.getValue();
-
-        // Use reflection to access private mInitialRect
-        Field initialRectField =
-                NewForegroundTabAnimationHostView.class.getDeclaredField("mInitialRect");
-        initialRectField.setAccessible(true);
-        Rect initialRect = (Rect) initialRectField.get(hostView);
-
-        // Symmetrical centering checks (539 due to -1px LTR left adjustment)
-        assertEquals(539, initialRect.centerX());
-        // Bottom of initialRect should start sitting on top of the bottom bar (1920 -
-        // bottomBarHeight + 1 overlap)
-        assertEquals(1921 - bottomBarHeight, initialRect.bottom);
-    }
-
-    @Test
-    @EnableFeatures({
-        ChromeFeatureList.ANDROID_BOTTOM_BAR,
-        ChromeFeatureList.ANDROID_BOTTOM_BAR + ":disable_on_ntp/true"
-    })
-    public void testOnTabCreated_NtpToNtp_noBottomBarCoordination() throws Exception {
-        // Transition: NTP (no bottom bar) -> NTP (no bottom bar)
-        // Setup old tab as regular NTP (no bottom bar)
-        when(mCurrentTab.getUrl()).thenReturn(new GURL("chrome://newtab"));
-        when(mCurrentTab.isIncognitoBranded()).thenReturn(false);
-
-        // Setup new tab as regular NTP (no bottom bar)
-        when(mNewTab.getUrl()).thenReturn(new GURL("chrome://newtab"));
-        when(mNewTab.isIncognitoBranded()).thenReturn(false);
-
-        // Viewport of NTP is full screen
-        Rect compositorRect = new Rect(0, 0, 1080, 1920);
-        RectF compositorRectF = new RectF(compositorRect);
-        doAnswer(
-                        invocation -> {
-                            RectF rectF = invocation.getArgument(0);
-                            rectF.set(compositorRectF);
-                            return null;
-                        })
-                .when(mCompositorViewHolder)
-                .getVisibleViewport(any(RectF.class));
-
-        mNewTabAnimationLayout.onTabCreated(
-                FAKE_TIME,
-                NEW_TAB_ID,
-                /* index= */ 1,
-                CURRENT_TAB_ID,
-                /* newIsIncognito= */ false,
-                /* background= */ false,
-                /* originX= */ 0f,
-                /* originY= */ 0f);
-
-        // Capture NewForegroundTabAnimationHostView
-        ArgumentCaptor<NewForegroundTabAnimationHostView> viewCaptor =
-                ArgumentCaptor.forClass(NewForegroundTabAnimationHostView.class);
-        verify(mAnimationHostView).addView(viewCaptor.capture());
-        NewForegroundTabAnimationHostView hostView = viewCaptor.getValue();
-
-        // Use reflection to access private mInitialRect
-        Field initialRectField =
-                NewForegroundTabAnimationHostView.class.getDeclaredField("mInitialRect");
-        initialRectField.setAccessible(true);
-        Rect initialRect = (Rect) initialRectField.get(hostView);
-
-        // Symmetrical centering checks (539 due to -1px LTR left adjustment)
-        assertEquals(539, initialRect.centerX());
-        // Bottom of initialRect should start at the absolute bottom edge of the screen (1920 + 1
-        // overlap)
-        // since both pages have the bottom bar disabled (no viewport mismatch)
-        assertEquals(1921, initialRect.bottom);
-    }
-
-    @Test
     @DisableFeatures(ChromeFeatureList.ANDROID_BOTTOM_BAR)
-    public void testOnTabCreated_NtpToWebPage_bottomToolbarCoordination() throws Exception {
+    public void testOnTabCreated_NtpToWebPage_bottomToolbarCoordination() {
         // Configure bottom toolbar preference
-        Field field = ToolbarPositionController.class.getDeclaredField("sToolbarShouldShowOnTop");
-        field.setAccessible(true);
-        field.set(null, false); // Set static field to false (bottom toolbar)
+        setToolbarPosition(/* onTop= */ false);
 
         // Transition: NTP (no bottom controls) -> Web (has bottom toolbar)
         // Setup old tab as regular NTP (toolbar is top)
@@ -648,16 +497,7 @@ public class NewTabAnimationLayoutUnitTest {
         when(mNewTab.isIncognitoBranded()).thenReturn(false);
 
         // Viewport of NTP is full screen
-        Rect compositorRect = new Rect(0, 0, 1080, 1920);
-        RectF compositorRectF = new RectF(compositorRect);
-        doAnswer(
-                        invocation -> {
-                            RectF rectF = invocation.getArgument(0);
-                            rectF.set(compositorRectF);
-                            return null;
-                        })
-                .when(mCompositorViewHolder)
-                .getVisibleViewport(any(RectF.class));
+        mCompositorViewHolder.layout(0, 0, 1080, 1920);
 
         mNewTabAnimationLayout.onTabCreated(
                 FAKE_TIME,
@@ -669,17 +509,11 @@ public class NewTabAnimationLayoutUnitTest {
                 /* originX= */ 0f,
                 /* originY= */ 0f);
 
-        // Capture NewForegroundTabAnimationHostView
-        ArgumentCaptor<NewForegroundTabAnimationHostView> viewCaptor =
-                ArgumentCaptor.forClass(NewForegroundTabAnimationHostView.class);
-        verify(mAnimationHostView).addView(viewCaptor.capture());
-        NewForegroundTabAnimationHostView hostView = viewCaptor.getValue();
+        NewForegroundTabAnimationHostView hostView =
+                findChildView(NewForegroundTabAnimationHostView.class);
+        assertNotNull(hostView);
 
-        // Use reflection to access private mInitialRect
-        Field initialRectField =
-                NewForegroundTabAnimationHostView.class.getDeclaredField("mInitialRect");
-        initialRectField.setAccessible(true);
-        Rect initialRect = (Rect) initialRectField.get(hostView);
+        Rect initialRect = hostView.getInitialRectForTesting();
 
         // Corner-anchored checks (107 due to left=-1, width=216 in test config)
         assertEquals(107, initialRect.centerX());
@@ -689,11 +523,9 @@ public class NewTabAnimationLayoutUnitTest {
 
     @Test
     @DisableFeatures(ChromeFeatureList.ANDROID_BOTTOM_BAR)
-    public void testOnTabCreated_WebPageToNtp_bottomToolbarCoordination() throws Exception {
+    public void testOnTabCreated_WebPageToNtp_bottomToolbarCoordination() {
         // Configure bottom toolbar preference
-        Field field = ToolbarPositionController.class.getDeclaredField("sToolbarShouldShowOnTop");
-        field.setAccessible(true);
-        field.set(null, false); // Set static field to false (bottom toolbar)
+        setToolbarPosition(/* onTop= */ false);
 
         // Transition: Web (has bottom toolbar) -> NTP (no bottom controls)
         // Setup old tab as regular web page (has bottom toolbar)
@@ -711,16 +543,7 @@ public class NewTabAnimationLayoutUnitTest {
                         .getDimensionPixelSize(R.dimen.control_container_height);
 
         // Viewport of Web page excludes bottom controls
-        Rect compositorRect = new Rect(0, 0, 1080, 1920 - controlContainerHeight);
-        RectF compositorRectF = new RectF(compositorRect);
-        doAnswer(
-                        invocation -> {
-                            RectF rectF = invocation.getArgument(0);
-                            rectF.set(compositorRectF);
-                            return null;
-                        })
-                .when(mCompositorViewHolder)
-                .getVisibleViewport(any(RectF.class));
+        mCompositorViewHolder.layout(0, 0, 1080, 1920 - controlContainerHeight);
 
         mNewTabAnimationLayout.onTabCreated(
                 FAKE_TIME,
@@ -732,17 +555,11 @@ public class NewTabAnimationLayoutUnitTest {
                 /* originX= */ 0f,
                 /* originY= */ 0f);
 
-        // Capture NewForegroundTabAnimationHostView
-        ArgumentCaptor<NewForegroundTabAnimationHostView> viewCaptor =
-                ArgumentCaptor.forClass(NewForegroundTabAnimationHostView.class);
-        verify(mAnimationHostView).addView(viewCaptor.capture());
-        NewForegroundTabAnimationHostView hostView = viewCaptor.getValue();
+        NewForegroundTabAnimationHostView hostView =
+                findChildView(NewForegroundTabAnimationHostView.class);
+        assertNotNull(hostView);
 
-        // Use reflection to access private mInitialRect
-        Field initialRectField =
-                NewForegroundTabAnimationHostView.class.getDeclaredField("mInitialRect");
-        initialRectField.setAccessible(true);
-        Rect initialRect = (Rect) initialRectField.get(hostView);
+        Rect initialRect = hostView.getInitialRectForTesting();
 
         // Corner-anchored checks (107 due to left=-1, width=216 in test config)
         assertEquals(107, initialRect.centerX());
@@ -752,173 +569,32 @@ public class NewTabAnimationLayoutUnitTest {
     }
 
     @Test
-    @EnableFeatures({
-        ChromeFeatureList.ANDROID_BOTTOM_BAR,
-        ChromeFeatureList.ANDROID_BOTTOM_BAR + ":disable_on_ntp/false"
-    })
+    @EnableFeatures(ChromeFeatureList.ANDROID_BOTTOM_BAR)
     public void testOnTabCreated_WebPageToNtp_bottomBarEnabledOnNtp_noViewportMismatch()
             throws Exception {
-        // Transition: Web (has bottom bar) -> NTP (has bottom bar because disable_on_ntp is false)
-        // Setup old tab as regular web page (has bottom bar)
-        when(mCurrentTab.getUrl()).thenReturn(new GURL("https://google.com"));
-        when(mCurrentTab.isIncognitoBranded()).thenReturn(false);
-
-        // Setup new tab as regular NTP (also has bottom bar)
-        when(mNewTab.getUrl()).thenReturn(new GURL("chrome://newtab"));
-        when(mNewTab.isIncognitoBranded()).thenReturn(false);
-
-        int bottomBarHeight =
-                BottomBarUtils.getBottomBarHeight(mNewTabAnimationLayout.getContext());
-
-        // Viewport of Web page excludes bottom controls
-        Rect compositorRect = new Rect(0, 0, 1080, 1920 - bottomBarHeight);
-        RectF compositorRectF = new RectF(compositorRect);
-        doAnswer(
-                        invocation -> {
-                            RectF rectF = invocation.getArgument(0);
-                            rectF.set(compositorRectF);
-                            return null;
-                        })
-                .when(mCompositorViewHolder)
-                .getVisibleViewport(any(RectF.class));
-
-        mNewTabAnimationLayout.onTabCreated(
-                FAKE_TIME,
-                NEW_TAB_ID,
-                /* index= */ 1,
-                CURRENT_TAB_ID,
-                /* newIsIncognito= */ false,
-                /* background= */ false,
-                /* originX= */ 0f,
-                /* originY= */ 0f);
-
-        // Capture NewForegroundTabAnimationHostView
-        ArgumentCaptor<NewForegroundTabAnimationHostView> viewCaptor =
-                ArgumentCaptor.forClass(NewForegroundTabAnimationHostView.class);
-        verify(mAnimationHostView).addView(viewCaptor.capture());
-        NewForegroundTabAnimationHostView hostView = viewCaptor.getValue();
-
-        // Use reflection to access private mInitialRect
-        Field initialRectField =
-                NewForegroundTabAnimationHostView.class.getDeclaredField("mInitialRect");
-        initialRectField.setAccessible(true);
-        Rect initialRect = (Rect) initialRectField.get(hostView);
-
-        // Symmetrical centering checks (539 due to -1px LTR left adjustment)
-        assertEquals(539, initialRect.centerX());
-        // Bottom of initialRect should start sitting on top of the bottom bar (1920 -
-        // bottomBarHeight + 1 overlap)
-        // Since both old and new tabs have bottom bar, no coordinate shifts are applied (Diff = 0)
-        assertEquals(1921 - bottomBarHeight, initialRect.bottom);
-    }
-
-    @Test
-    @EnableFeatures({
-        ChromeFeatureList.ANDROID_BOTTOM_BAR,
-        ChromeFeatureList.ANDROID_BOTTOM_BAR + ":disable_on_ntp/true"
-    })
-    public void testOnTabCreated_NtpToWebPage_bottomChinCoordination() throws Exception {
-        // Transition: NTP (no bottom controls, chin hidden) -> Web (has bottom bar + chin)
-        // Setup old tab as regular NTP (no bottom bar, supports E2E)
-        when(mCurrentTab.getUrl()).thenReturn(new GURL("chrome://newtab"));
-        when(mCurrentTab.isIncognitoBranded()).thenReturn(false);
-        when(mCurrentTab.isNativePage()).thenReturn(true);
-        when(mCurrentTab.getNativePage()).thenReturn(mNtp);
-        when(mNtp.supportsEdgeToEdge()).thenReturn(true);
-
-        // Setup new tab as regular web page (has bottom bar, does NOT support E2E)
-        when(mNewTab.getUrl()).thenReturn(new GURL("https://google.com"));
-        when(mNewTab.isIncognitoBranded()).thenReturn(false);
-        when(mNewTab.isNativePage()).thenReturn(false);
-
-        // Mock E2E gesture nav bottom chin is active
-        when(mEdgeToEdgeController.isDrawingToEdge()).thenReturn(true);
-        int bottomChinHeight = 60;
-        when(mEdgeToEdgeController.getSystemBottomInsetPx()).thenReturn(bottomChinHeight);
-
-        int bottomBarHeight =
-                BottomBarUtils.getBottomBarHeight(mNewTabAnimationLayout.getContext());
-
-        // Viewport of NTP is full screen
-        Rect compositorRect = new Rect(0, 0, 1080, 1920);
-        RectF compositorRectF = new RectF(compositorRect);
-        doAnswer(
-                        invocation -> {
-                            RectF rectF = invocation.getArgument(0);
-                            rectF.set(compositorRectF);
-                            return null;
-                        })
-                .when(mCompositorViewHolder)
-                .getVisibleViewport(any(RectF.class));
-
-        mNewTabAnimationLayout.onTabCreated(
-                FAKE_TIME,
-                NEW_TAB_ID,
-                /* index= */ 1,
-                CURRENT_TAB_ID,
-                /* newIsIncognito= */ false,
-                /* background= */ false,
-                /* originX= */ 0f,
-                /* originY= */ 0f);
-
-        // Capture NewForegroundTabAnimationHostView
-        ArgumentCaptor<NewForegroundTabAnimationHostView> viewCaptor =
-                ArgumentCaptor.forClass(NewForegroundTabAnimationHostView.class);
-        verify(mAnimationHostView).addView(viewCaptor.capture());
-        NewForegroundTabAnimationHostView hostView = viewCaptor.getValue();
-
-        // Use reflection to access private mInitialRect
-        Field initialRectField =
-                NewForegroundTabAnimationHostView.class.getDeclaredField("mInitialRect");
-        initialRectField.setAccessible(true);
-        Rect initialRect = (Rect) initialRectField.get(hostView);
-
-        // Symmetrical centering checks (539 due to -1px LTR left adjustment)
-        assertEquals(539, initialRect.centerX());
-        // Bottom of initialRect should start at the absolute bottom edge of the screen (1920 + 1
-        // overlap)
-        // since the NTP had no bottom controls or bottom chin visible.
-        assertEquals(1921, initialRect.bottom);
-    }
-
-    @Test
-    @EnableFeatures({
-        ChromeFeatureList.ANDROID_BOTTOM_BAR,
-        ChromeFeatureList.ANDROID_BOTTOM_BAR + ":disable_on_ntp/true"
-    })
-    public void testOnTabCreated_WebPageToNtp_bottomChinCoordination() throws Exception {
-        // Transition: Web (has bottom bar + chin) -> NTP (no bottom controls, chin hidden)
+        // Transition: Web (has bottom bar + chin) -> NTP (has bottom bar + chin)
         // Setup old tab as regular web page (has bottom bar, does NOT support E2E)
         when(mCurrentTab.getUrl()).thenReturn(new GURL("https://google.com"));
         when(mCurrentTab.isIncognitoBranded()).thenReturn(false);
         when(mCurrentTab.isNativePage()).thenReturn(false);
 
-        // Setup new tab as regular NTP (no bottom bar, supports E2E)
+        // Setup new tab as regular NTP (also has bottom bar, supports E2E)
         when(mNewTab.getUrl()).thenReturn(new GURL("chrome://newtab"));
         when(mNewTab.isIncognitoBranded()).thenReturn(false);
         when(mNewTab.isNativePage()).thenReturn(true);
         when(mNewTab.getNativePage()).thenReturn(mNtp);
-        when(mNtp.supportsEdgeToEdge()).thenReturn(true);
+        when(mNtp.supportsEdgeToEdgeOnBottom()).thenReturn(true);
 
-        // Mock E2E gesture nav bottom chin is active
         when(mEdgeToEdgeController.isDrawingToEdge()).thenReturn(true);
         int bottomChinHeight = 60;
         when(mEdgeToEdgeController.getSystemBottomInsetPx()).thenReturn(bottomChinHeight);
 
         int bottomBarHeight =
-                BottomBarUtils.getBottomBarHeight(mNewTabAnimationLayout.getContext());
+                BottomBarUtils.getBottomBarHeight(
+                        mNewTabAnimationLayout.getContext(), /* isBottomOmniboxPresent= */ false);
 
-        // Viewport of starting Web page excludes bottom controls & bottom chin
-        Rect compositorRect = new Rect(0, 0, 1080, 1920 - bottomBarHeight - bottomChinHeight);
-        RectF compositorRectF = new RectF(compositorRect);
-        doAnswer(
-                        invocation -> {
-                            RectF rectF = invocation.getArgument(0);
-                            rectF.set(compositorRectF);
-                            return null;
-                        })
-                .when(mCompositorViewHolder)
-                .getVisibleViewport(any(RectF.class));
+        // Viewport of Web page excludes bottom controls and bottom chin
+        mCompositorViewHolder.layout(0, 0, 1080, 1920 - bottomBarHeight - bottomChinHeight);
 
         mNewTabAnimationLayout.onTabCreated(
                 FAKE_TIME,
@@ -930,114 +606,69 @@ public class NewTabAnimationLayoutUnitTest {
                 /* originX= */ 0f,
                 /* originY= */ 0f);
 
-        // Capture NewForegroundTabAnimationHostView
-        ArgumentCaptor<NewForegroundTabAnimationHostView> viewCaptor =
-                ArgumentCaptor.forClass(NewForegroundTabAnimationHostView.class);
-        verify(mAnimationHostView).addView(viewCaptor.capture());
-        NewForegroundTabAnimationHostView hostView = viewCaptor.getValue();
+        NewForegroundTabAnimationHostView hostView =
+                findChildView(NewForegroundTabAnimationHostView.class);
+        assertNotNull(hostView);
 
-        // Use reflection to access private mInitialRect
-        Field initialRectField =
-                NewForegroundTabAnimationHostView.class.getDeclaredField("mInitialRect");
-        initialRectField.setAccessible(true);
-        Rect initialRect = (Rect) initialRectField.get(hostView);
+        Rect initialRect = hostView.getInitialRectForTesting();
 
         // Symmetrical centering checks (539 due to -1px LTR left adjustment)
         assertEquals(539, initialRect.centerX());
-        // Bottom of initialRect should start sitting on top of the bottom bar & bottom chin (1920 -
-        // bottomBarHeight - bottomChinHeight + 1 overlap)
+        // Since both old and new tabs have bottom bar and bottom chin, no coordinate shifts are
+        // applied (Diff = 0)
         assertEquals(1921 - bottomBarHeight - bottomChinHeight, initialRect.bottom);
     }
 
     @Test
-    @EnableFeatures({
-        ChromeFeatureList.ANDROID_BOTTOM_BAR,
-        ChromeFeatureList.ANDROID_BOTTOM_BAR + ":disable_on_ntp/true"
-    })
-    public void testOnTabCreated_NtpToIncognitoNtp_bottomChinCoordination() throws Exception {
-        // Transition: Regular NTP (no bottom controls, chin hidden) -> Incognito NTP (has bottom
-        // controls, chin visible)
-        // Setup old tab as regular NTP (no bottom bar, supports E2E)
-        when(mCurrentTab.getUrl()).thenReturn(new GURL("chrome://newtab"));
+    @EnableFeatures(ChromeFeatureList.ANDROID_BOTTOM_BAR)
+    public void testOnTabCreated_WebPageToNtp_bottomBarAndBottomToolbar() {
+        // Configure bottom toolbar preference
+        setToolbarPosition(/* onTop= */ false);
+
+        // Transition: Web (has bottom bar with top padding removed + bottom toolbar) -> NTP (has
+        // bottom bar with top padding restored, no bottom toolbar)
+        when(mCurrentTab.getUrl()).thenReturn(new GURL("https://google.com"));
         when(mCurrentTab.isIncognitoBranded()).thenReturn(false);
-        when(mCurrentTab.isNativePage()).thenReturn(true);
-        when(mCurrentTab.getNativePage()).thenReturn(mNtp);
-        when(mNtp.supportsEdgeToEdge()).thenReturn(true);
 
-        // Setup new tab as Incognito NTP (has bottom bar, supports E2E, but has other controls
-        // visible)
         when(mNewTab.getUrl()).thenReturn(new GURL("chrome://newtab"));
-        when(mNewTab.isIncognitoBranded()).thenReturn(true);
-        when(mNewTab.isNativePage()).thenReturn(true);
-        when(mNewTab.getNativePage()).thenReturn(mNtp);
-        when(mNtp.supportsEdgeToEdge()).thenReturn(true);
+        when(mNewTab.isIncognitoBranded()).thenReturn(false);
 
-        // Configure bottom toolbar preference (remains on bottom on Incognito NTP)
-        Field prefField =
-                ToolbarPositionController.class.getDeclaredField("sToolbarShouldShowOnTop");
-        prefField.setAccessible(true);
-        prefField.set(null, false); // Bottom toolbar
-
-        // Mock E2E gesture nav bottom chin is active
-        when(mEdgeToEdgeController.isDrawingToEdge()).thenReturn(true);
-        int bottomChinHeight = 60;
-        when(mEdgeToEdgeController.getSystemBottomInsetPx()).thenReturn(bottomChinHeight);
-
-        int bottomBarHeight =
-                BottomBarUtils.getBottomBarHeight(mNewTabAnimationLayout.getContext());
+        int bottomBarHeightWithBottomOmnibox =
+                BottomBarUtils.getBottomBarHeight(
+                        mNewTabAnimationLayout.getContext(), /* isBottomOmniboxPresent= */ true);
         int controlContainerHeight =
                 mNewTabAnimationLayout
                         .getContext()
                         .getResources()
                         .getDimensionPixelSize(R.dimen.control_container_height);
+        int totalBottomControlsHeight = bottomBarHeightWithBottomOmnibox + controlContainerHeight;
 
-        // Viewport of Regular NTP is full screen
-        Rect compositorRect = new Rect(0, 0, 1080, 1920);
-        RectF compositorRectF = new RectF(compositorRect);
-        doAnswer(
-                        invocation -> {
-                            RectF rectF = invocation.getArgument(0);
-                            rectF.set(compositorRectF);
-                            return null;
-                        })
-                .when(mCompositorViewHolder)
-                .getVisibleViewport(any(RectF.class));
+        mCompositorViewHolder.layout(0, 0, 1080, 1920 - totalBottomControlsHeight);
 
         mNewTabAnimationLayout.onTabCreated(
                 FAKE_TIME,
                 NEW_TAB_ID,
                 /* index= */ 1,
                 CURRENT_TAB_ID,
-                /* newIsIncognito= */ true,
+                /* newIsIncognito= */ false,
                 /* background= */ false,
                 /* originX= */ 0f,
                 /* originY= */ 0f);
 
-        // Capture NewForegroundTabAnimationHostView
-        ArgumentCaptor<NewForegroundTabAnimationHostView> viewCaptor =
-                ArgumentCaptor.forClass(NewForegroundTabAnimationHostView.class);
-        verify(mAnimationHostView).addView(viewCaptor.capture());
-        NewForegroundTabAnimationHostView hostView = viewCaptor.getValue();
+        NewForegroundTabAnimationHostView hostView =
+                findChildView(NewForegroundTabAnimationHostView.class);
+        assertNotNull(hostView);
 
-        // Use reflection to access private mInitialRect
-        Field initialRectField =
-                NewForegroundTabAnimationHostView.class.getDeclaredField("mInitialRect");
-        initialRectField.setAccessible(true);
-        Rect initialRect = (Rect) initialRectField.get(hostView);
+        Rect initialRect = hostView.getInitialRectForTesting();
 
-        // Symmetrical centering checks (539 due to -1px LTR left adjustment)
-        assertEquals(539, initialRect.centerX());
-        // Bottom of initialRect should start at the absolute bottom edge of the screen (1920 + 1
-        // overlap)
-        // since the Regular NTP had no bottom controls or bottom chin visible.
-        assertEquals(1921, initialRect.bottom);
+        assertEquals(1921 - totalBottomControlsHeight, initialRect.bottom);
     }
 
     @Test
     public void testOnTabCreated_tabCreatedInBackground() {
         LayoutTab[] layoutTabs = mNewTabAnimationLayout.getLayoutTabsToRender();
         assertNull(layoutTabs);
-        verify(mAnimationHostView, never()).addView(any());
+        assertNull(findChildView(NewBackgroundTabAnimationHostView.class));
 
         mNewTabAnimationLayout.onTabCreated(
                 FAKE_TIME,
@@ -1056,12 +687,11 @@ public class NewTabAnimationLayoutUnitTest {
         assertTrue(mNewTabAnimationLayout.isStartingToHide());
         assertEquals(1, mBrowserVisibilityDelegate.showControlsPersistentCallCount);
         assertThat(mBrowserVisibilityDelegate.get()).isEqualTo(BrowserControlsState.SHOWN);
-        verify(mAnimationHostView, times(1)).addView(any(NewBackgroundTabAnimationHostView.class));
+        assertNotNull(findChildView(NewBackgroundTabAnimationHostView.class));
 
         RobolectricUtil.runAllBackgroundAndUi();
 
-        verify(mAnimationHostView, times(1))
-                .removeView(any(NewBackgroundTabAnimationHostView.class));
+        assertNull(findChildView(NewBackgroundTabAnimationHostView.class));
         verify(mTabModelSelector, never()).selectModel(false);
         assertEquals(1, mBrowserVisibilityDelegate.releasePersistentShowingTokenCallCount);
         assertThat(mBrowserVisibilityDelegate.get()).isEqualTo(BrowserControlsState.BOTH);
@@ -1098,6 +728,7 @@ public class NewTabAnimationLayoutUnitTest {
     }
 
     @Test
+    @DisableFeatures(ChromeFeatureList.ANDROID_BOTTOM_BAR)
     public void testOnTabCreated_tabCreatedInBackground_ntpToken() {
         setNtp();
         mNewTabAnimationLayout.onTabCreated(
@@ -1118,7 +749,7 @@ public class NewTabAnimationLayoutUnitTest {
     }
 
     @Test
-    @EnableFeatures(ChromeFeatureList.ANDROID_BOTTOM_BAR + ":disable_on_ntp/false")
+    @EnableFeatures(ChromeFeatureList.ANDROID_BOTTOM_BAR)
     public void testOnTabCreated_tabCreatedInBackground_ntp_bottomBarEnabled() {
         setNtp();
         when(mNtp.supportsEdgeToEdgeOnTop()).thenReturn(true);
@@ -1174,31 +805,272 @@ public class NewTabAnimationLayoutUnitTest {
         assertThat(mBrowserVisibilityDelegate.get()).isEqualTo(BrowserControlsState.BOTH);
     }
 
-    private static class FakeBrowserStateBrowserControlsVisibilityDelegate
-            extends BrowserStateBrowserControlsVisibilityDelegate {
-        public int showControlsPersistentCallCount;
-        public int releasePersistentShowingTokenCallCount;
+    @Test
+    @EnableFeatures(ChromeFeatureList.EDGE_TO_EDGE_TOP_INSET)
+    public void testTopInsetObserverRegistrationAndDestroy() {
+        createUnspiedLayout();
+        verify(mTopInsetProvider, never()).addObserver(any());
+        ArgumentCaptor<EdgeToEdgeSupplier.ChangeObserver> captor =
+                ArgumentCaptor.forClass(EdgeToEdgeSupplier.ChangeObserver.class);
+        verify(mEdgeToEdgeController).registerObserver(captor.capture());
+        assertTrue(mEdgeToEdgeControllerSupplier.hasObservers());
 
-        public FakeBrowserStateBrowserControlsVisibilityDelegate(
-                NonNullObservableSupplier<Boolean> persistentFullscreenMode) {
-            super(persistentFullscreenMode);
-        }
+        EdgeToEdgeController newController = mock(EdgeToEdgeController.class);
+        when(newController.getSystemTopInsetPx()).thenReturn(120);
+        mEdgeToEdgeControllerSupplier.set(newController);
 
-        @Override
-        public int showControlsPersistent() {
-            showControlsPersistentCallCount++;
-            return super.showControlsPersistent();
-        }
+        verify(mEdgeToEdgeController).unregisterObserver(captor.getValue());
+        verify(newController).registerObserver(captor.getValue());
+        verify(newController).getSystemTopInsetPx();
 
-        @Override
-        public void releasePersistentShowingToken(int token) {
-            releasePersistentShowingTokenCallCount++;
-            super.releasePersistentShowingToken(token);
+        mNewTabAnimationLayout.destroy();
+
+        verify(newController).unregisterObserver(captor.getValue());
+        assertFalse(mEdgeToEdgeControllerSupplier.hasObservers());
+    }
+
+    @Test
+    @DisableFeatures(ChromeFeatureList.EDGE_TO_EDGE_TOP_INSET)
+    public void testTopInsetObserverRegistrationAndDestroy_refactorDisabled() {
+        verify(mEdgeToEdgeController, never()).registerObserver(any());
+        assertFalse(mEdgeToEdgeControllerSupplier.hasObservers());
+        ArgumentCaptor<TopInsetProvider.Observer> captor =
+                ArgumentCaptor.forClass(TopInsetProvider.Observer.class);
+        verify(mTopInsetProvider).addObserver(captor.capture());
+
+        mNewTabAnimationLayout.destroy();
+
+        verify(mTopInsetProvider).removeObserver(captor.getValue());
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.EDGE_TO_EDGE_TOP_INSET)
+    public void testOnTabCreated_tabCreatedInForeground_dynamicTopInsetUpdate() {
+        NewTabAnimationLayout layout = createUnspiedLayout();
+        when(mNewTab.isNativePage()).thenReturn(true);
+        when(mNewTab.getNativePage()).thenReturn(mNtp);
+        when(mNtp.supportsEdgeToEdgeOnTop()).thenReturn(true);
+        when(mBrowserControlsManager.getContentOffset()).thenReturn(50);
+
+        notifyTopInsetChange(/* newInset= */ 64, /* isDrawingToEdge= */ false);
+
+        layout.onTabCreated(
+                FAKE_TIME,
+                NEW_TAB_ID,
+                /* index= */ 1,
+                CURRENT_TAB_ID,
+                /* newIsIncognito= */ false,
+                /* background= */ false,
+                /* originX= */ 0f,
+                /* originY= */ 0f);
+        layout.updateSceneLayer(null, null, null, null, mBrowserControlsManager);
+
+        LayoutTab layoutTab = layout.getLayoutTabsToRender()[0];
+        assertEquals(
+                "Updated top inset (64) should be added to content offset (50).",
+                114,
+                layoutTab.get(LayoutTab.CONTENT_OFFSET_Y),
+                MathUtils.EPSILON);
+
+        RobolectricUtil.runAllBackgroundAndUi();
+
+        notifyTopInsetChange(/* newInset= */ 0, /* isDrawingToEdge= */ false);
+
+        layout.onTabCreated(
+                FAKE_TIME,
+                NEW_TAB_ID,
+                /* index= */ 1,
+                CURRENT_TAB_ID,
+                /* newIsIncognito= */ false,
+                /* background= */ false,
+                /* originX= */ 0f,
+                /* originY= */ 0f);
+        layout.updateSceneLayer(null, null, null, null, mBrowserControlsManager);
+
+        layoutTab = layout.getLayoutTabsToRender()[0];
+        assertEquals(
+                "Zero top inset should leave content offset unchanged.",
+                50,
+                layoutTab.get(LayoutTab.CONTENT_OFFSET_Y),
+                MathUtils.EPSILON);
+
+        RobolectricUtil.runAllBackgroundAndUi();
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.EDGE_TO_EDGE_TOP_INSET)
+    @DisableFeatures(ChromeFeatureList.ANDROID_BOTTOM_BAR)
+    public void testOnTabCreated_tabCreatedInForeground_e2eToNonE2eAdjustsFinalRectBottom() {
+        setToolbarPosition(/* onTop= */ true);
+        NewTabAnimationLayout layout = createUnspiedLayout();
+
+        // Setup old tab as customized E2E NTP.
+        when(mCurrentTab.getUrl()).thenReturn(new GURL("chrome://newtab"));
+        when(mCurrentTab.isIncognitoBranded()).thenReturn(false);
+        when(mCurrentTab.isNativePage()).thenReturn(true);
+        when(mCurrentTab.getNativePage()).thenReturn(mNtp);
+        when(mNtp.supportsEdgeToEdgeOnTop()).thenReturn(true);
+
+        // Setup new tab as a regular non-E2E web page.
+        when(mNewTab.getUrl()).thenReturn(new GURL("https://google.com"));
+        when(mNewTab.isIncognitoBranded()).thenReturn(false);
+        when(mNewTab.isNativePage()).thenReturn(false);
+
+        // Even when not actively drawing/consuming top edge, updated raw systemTopInset (80) must
+        // be retained for E2E -> non-E2E rect calculations.
+        notifyTopInsetChange(/* newInset= */ 80, /* isDrawingToEdge= */ false);
+
+        mCompositorViewHolder.layout(0, 0, 1080, 1920);
+
+        layout.onTabCreated(
+                FAKE_TIME,
+                NEW_TAB_ID,
+                /* index= */ 1,
+                CURRENT_TAB_ID,
+                /* newIsIncognito= */ false,
+                /* background= */ false,
+                /* originX= */ 0f,
+                /* originY= */ 0f);
+
+        NewForegroundTabAnimationHostView hostView =
+                findChildView(NewForegroundTabAnimationHostView.class);
+        assertNotNull(hostView);
+
+        Rect initialRect = hostView.getInitialRectForTesting();
+        assertEquals(-1, initialRect.top);
+        // finalRect starts as (-1, -1, 1080, 1920); E2E -> non-E2E subtracts mSystemTopInset (80)
+        // from finalRect.bottom -> (-1, -1, 1080, 1840), giving height = 1841 and initialHeight =
+        // Math.round(1841 * 0.2f) = 368 (vs 364 for initial 100, or 384 if unadjusted).
+        assertEquals(368, initialRect.height());
+        assertEquals(367, initialRect.bottom);
+
+        RobolectricUtil.runAllBackgroundAndUi();
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.EDGE_TO_EDGE_TOP_INSET)
+    public void testOnTabCreated_noTopInsetProviderOrController_noAdjustmentUntilSupplied() {
+        TransitiveTopInsetProvider lateTopInsetProvider = new TransitiveTopInsetProvider();
+        SettableMonotonicObservableSupplier<EdgeToEdgeController> lateControllerSupplier =
+                ObservableSuppliers.createMonotonic();
+        NewTabAnimationLayout layout =
+                createUnspiedLayout(lateTopInsetProvider, lateControllerSupplier);
+
+        when(mNewTab.isNativePage()).thenReturn(true);
+        when(mNewTab.getNativePage()).thenReturn(mNtp);
+        when(mNtp.supportsEdgeToEdgeOnTop()).thenReturn(true);
+        when(mBrowserControlsManager.getContentOffset()).thenReturn(50);
+
+        layout.onTabCreated(
+                FAKE_TIME,
+                NEW_TAB_ID,
+                /* index= */ 1,
+                CURRENT_TAB_ID,
+                /* newIsIncognito= */ false,
+                /* background= */ false,
+                /* originX= */ 0f,
+                /* originY= */ 0f);
+        layout.updateSceneLayer(null, null, null, null, mBrowserControlsManager);
+
+        LayoutTab layoutTab = layout.getLayoutTabsToRender()[0];
+        assertEquals(
+                "No top padding should be applied before provider/controller is available.",
+                50,
+                layoutTab.get(LayoutTab.CONTENT_OFFSET_Y),
+                MathUtils.EPSILON);
+
+        RobolectricUtil.runAllBackgroundAndUi();
+
+        // Supply the controller asynchronously and verify initial top inset syncs.
+        lateControllerSupplier.set(mEdgeToEdgeController);
+
+        layout.onTabCreated(
+                FAKE_TIME,
+                NEW_TAB_ID,
+                /* index= */ 1,
+                CURRENT_TAB_ID,
+                /* newIsIncognito= */ false,
+                /* background= */ false,
+                /* originX= */ 0f,
+                /* originY= */ 0f);
+        layout.updateSceneLayer(null, null, null, null, mBrowserControlsManager);
+
+        layoutTab = layout.getLayoutTabsToRender()[0];
+        assertEquals(
+                "Initial system top inset (100) should sync once supplier/provider is populated.",
+                150,
+                layoutTab.get(LayoutTab.CONTENT_OFFSET_Y),
+                MathUtils.EPSILON);
+
+        RobolectricUtil.runAllBackgroundAndUi();
+    }
+
+    // Constructor-registered observer lambdas capture the pre-spy() instance, so dynamic observer
+    // updates would mutate the original instance rather than the Mockito.spy shallow copy created
+    // in onActivity(). Tests that dynamically update top-inset/controller observers need an
+    // unspied layout.
+    private NewTabAnimationLayout createUnspiedLayout() {
+        return createUnspiedLayout(mTransitiveTopInsetProvider, mEdgeToEdgeControllerSupplier);
+    }
+
+    private NewTabAnimationLayout createUnspiedLayout(
+            TopInsetProvider topInsetProvider,
+            SettableMonotonicObservableSupplier<EdgeToEdgeController> controllerSupplier) {
+        mNewTabAnimationLayout.destroy();
+        clearInvocations(mTopInsetProvider, mEdgeToEdgeController);
+        mNewTabAnimationLayout =
+                new NewTabAnimationLayout(
+                        mActivity,
+                        mUpdateHost,
+                        mRenderHost,
+                        mLayoutStateProvider,
+                        mContentContainer,
+                        mCompositorViewHolder,
+                        mAnimationHostView,
+                        mToolbarManager,
+                        mBrowserControlsManager,
+                        mScrimVisibilitySupplier,
+                        topInsetProvider,
+                        controllerSupplier);
+        mNewTabAnimationLayout.setTabModelSelector(mTabModelSelector);
+        mNewTabAnimationLayout.setTabContentManager(mTabContentManager);
+        mNewTabAnimationLayout.onFinishNativeInitialization();
+        mNewTabAnimationLayout.setRunOnNextLayoutImmediatelyForTesting(true);
+        return mNewTabAnimationLayout;
+    }
+
+    private void notifyTopInsetChange(int newInset, boolean isDrawingToEdge) {
+        ArgumentCaptor<EdgeToEdgeSupplier.ChangeObserver> captor =
+                ArgumentCaptor.forClass(EdgeToEdgeSupplier.ChangeObserver.class);
+        verify(mEdgeToEdgeController).registerObserver(captor.capture());
+        when(mEdgeToEdgeController.getSystemTopInsetPx()).thenReturn(newInset);
+        captor.getValue()
+                .onToEdgeChange(
+                        /* bottomInset= */ 0, isDrawingToEdge, /* isPageOptInToEdge= */ false);
+    }
+
+    private <T extends View> T findChildView(Class<T> clazz) {
+        for (int i = 0; i < mAnimationHostView.getChildCount(); i++) {
+            View child = mAnimationHostView.getChildAt(i);
+            if (clazz.isInstance(child)) {
+                return clazz.cast(child);
+            }
         }
+        return null;
     }
 
     private void setNtp() {
         when(mCurrentTab.getUrl()).thenReturn(new GURL("chrome://newtab"));
         when(mCurrentTab.getNativePage()).thenReturn(mNtp);
+    }
+
+    private void setToolbarPosition(boolean onTop) {
+        ChromeSharedPreferences.getInstance()
+                .writeInt(
+                        ChromePreferenceKeys.TOOLBAR_TOP_ANCHORED,
+                        onTop
+                                ? ToolbarPositionAndSource.TOP_SETTINGS
+                                : ToolbarPositionAndSource.BOTTOM_SETTINGS);
+        ToolbarPositionController.resetCachedToolbarConfigurationForTesting();
     }
 }

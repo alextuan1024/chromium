@@ -7,6 +7,7 @@
 
 #include <variant>
 
+#include "base/auto_reset.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/time/time.h"
@@ -27,6 +28,7 @@
 
 class BrowserWindowInterface;
 class OmniboxController;
+class OmniboxPopupPresenterBase;
 class OmniboxPopupView;
 class OmniboxPopupViewWebUI;
 class PermissionDashboardController;
@@ -41,6 +43,10 @@ struct ContextMenuParams;
 namespace gfx {
 class Point;
 }  // namespace gfx
+
+namespace views {
+class FocusManager;
+}  // namespace views
 
 // A LocationBar implementation using WebUI.
 class WebUILocationBar : public LocationBar,
@@ -62,12 +68,14 @@ class WebUILocationBar : public LocationBar,
   void PropagateFocusRequest(
       toolbar_ui_api::mojom::FocusRequestTarget target) override;
   void OpenOmniboxIfFullPopup(bool query_zps) override;
+  void OnOmniboxFocusChanged(bool focused) override;
 
   // Called from WebUIToolbarWebView:
   void OnThemeChanged();
   base::expected<std::monostate, mojo_base::mojom::ErrorPtr> OnOmniboxAction(
       toolbar_ui_api::mojom::OmniboxActionPtr action);
   void SetFocusWithin(bool focused);
+  void OnToolbarFocused();
   void OnBlur();
 
   void HandleContextMenu(views::Widget* widget,
@@ -100,6 +108,7 @@ class WebUILocationBar : public LocationBar,
   std::optional<bubble_anchor_util::AnchorConfiguration> GetChipAnchor()
       override;
   ui::TrackedElement* GetAnchorOrNull() override;
+  ui::ElementContext GetElementContext() const override;
   bool in_popup_state_transition() const override;
   BrowserWindowInterface* GetBrowser() override;
   Profile* GetProfile() override;
@@ -168,8 +177,22 @@ class WebUILocationBar : public LocationBar,
   OmniboxPopupFileSelector* GetOmniboxPopupFileSelector() const override;
   OmniboxPopupAimPresenter* GetOmniboxPopupAimPresenter() const override;
   views::View* GetLocationBarFocusRestoreView() override;
+  bool is_full_webui_omnibox() const override;
+  void SetRestoreFocusOnWindowReactivation(bool restore) override;
 
   void SetSuppressionThresholdForTesting(base::TimeDelta threshold);
+
+  // Returns the presenter that shows the omnibox popup's WebUI in a widget, or
+  // null before the popup view is created.
+  // TODO(crbug.com/585197660): Remove; tests should use the popup host.
+  OmniboxPopupPresenterBase* GetOmniboxPopupPresenterForTesting() {
+    return omnibox_popup_presenter_;
+  }
+
+  // Overrides how long popup focus requests are debounced after a popup state
+  // change (see `OpenOmniboxIfFullPopup()`).
+  [[nodiscard]] static base::AutoReset<base::TimeDelta>
+  SetPopupStateTransitionDurationForTesting(base::TimeDelta duration);
 
  private:
   void OnMiddleClickPaste(base::TimeTicks event_timestamp, std::u16string text);
@@ -185,7 +208,15 @@ class WebUILocationBar : public LocationBar,
   void OnMovedOrShown(ui::TrackedElement* element);
   void OnPopupStateChanged(OmniboxPopupState old_state,
                            OmniboxPopupState new_state);
+  void NotifyPopupControlsChanged();
   void ClearInPopupStateTransition();
+
+  // Creates `omnibox_popup_aim_presenter_` if it doesn't exist yet and the
+  // profile is eligible for the AI Mode popup. Returns whether it exists.
+  bool CreateOmniboxPopupAimPresenterIfEligible();
+
+  // Retries creating the AI Mode popup presenter until it succeeds.
+  void OnAimEligibilityChanged();
 
   void UpdateLocationBarFlagsState();
   void UpdateSelectedKeywordState();
@@ -215,7 +246,10 @@ class WebUILocationBar : public LocationBar,
                               bool reload_prompt);
 
   void HandleFocusRequestForFullPopup(
-      toolbar_ui_api::mojom::FocusRequestTarget target);
+      toolbar_ui_api::mojom::FocusRequestTarget target,
+      bool was_focused);
+
+  views::FocusManager* GetFocusManager();
 
   raw_ptr<BrowserWindowInterface> browser_ = nullptr;
   raw_ptr<LocationBarView::Delegate> delegate_ = nullptr;
@@ -238,9 +272,18 @@ class WebUILocationBar : public LocationBar,
   std::unique_ptr<OmniboxController> omnibox_controller_;
   std::unique_ptr<WebUIReadOnlyOmnibox> omnibox_view_;
   std::unique_ptr<OmniboxPopupViewWebUI> omnibox_popup_view_;
+  // Non-owning pointer to the presenter owned by `omnibox_popup_view_`.
+  // Declared after `omnibox_popup_view_` so it is destroyed first in reverse
+  // member order.
+  // TODO(crbug.com/585197660): Remove, going through `omnibox_popup_view_`'s
+  // popup host instead.
+  raw_ptr<OmniboxPopupPresenterBase> omnibox_popup_presenter_ = nullptr;
   const bool using_full_popup_;
-  // The presenter controlling the showing of the AI mode popup.
+  // The presenter controlling the showing of the AI mode popup. Null until the
+  // profile is eligible for it.
   std::unique_ptr<OmniboxPopupAimPresenter> omnibox_popup_aim_presenter_;
+  // Set while waiting for the profile to become eligible for the AI mode popup.
+  base::CallbackListSubscription aim_eligibility_subscription_;
   std::unique_ptr<OmniboxPopupFileSelector> omnibox_popup_file_selector_;
   base::CallbackListSubscription popup_state_changed_subscription_;
 
@@ -250,6 +293,8 @@ class WebUILocationBar : public LocationBar,
   // Updated by SetFocusWithin, which is ultimately called via mojo from
   // the HTML side.
   bool focus_within_ = false;
+
+  bool restore_focus_on_window_reactivation_ = false;
 
   // Whether to paint AIM button as focused (with focus still on omnibox).
   bool force_aim_button_focus_ring_ = false;
@@ -266,6 +311,7 @@ class WebUILocationBar : public LocationBar,
   std::optional<bool> last_is_keyword_selected_;
   toolbar_ui_api::IconHandle keyword_icon_;
 
+  base::WeakPtrFactory<WebUILocationBar> focus_request_weak_ptr_factory_{this};
   base::WeakPtrFactory<WebUILocationBar> weak_ptr_factory_{this};
 };
 

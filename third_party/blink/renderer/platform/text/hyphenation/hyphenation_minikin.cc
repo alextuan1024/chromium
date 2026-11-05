@@ -12,6 +12,7 @@
 #include "base/files/memory_mapped_file.h"
 #include "base/logging.h"
 #include "base/memory/ptr_util.h"
+#include "base/no_destructor.h"
 #include "mojo/public/cpp/bindings/remote.h"
 #include "third_party/blink/public/common/thread_safe_browser_interface_broker_proxy.h"
 #include "third_party/blink/public/mojom/hyphenation/hyphenation.mojom-blink.h"
@@ -27,8 +28,9 @@ namespace blink {
 namespace {
 
 inline bool ShouldSkipLeadingChar(UChar32 c) {
-  if (Character::TreatAsSpace(c))
+  if (unicode::TreatAsSpace(c)) {
     return true;
+  }
   // Strip leading punctuation, defined as OP and QU line breaking classes,
   // see UAX #14.
   const int32_t lb = u_getIntPropertyValue(c, UCHAR_LINE_BREAK);
@@ -55,9 +57,9 @@ static mojo::Remote<mojom::blink::Hyphenation> ConnectToRemoteService() {
 }
 
 static mojom::blink::Hyphenation* GetService() {
-  DEFINE_STATIC_LOCAL(mojo::Remote<mojom::blink::Hyphenation>, service,
-                      (ConnectToRemoteService()));
-  return service.get();
+  static base::NoDestructor<mojo::Remote<mojom::blink::Hyphenation>> service(
+      ConnectToRemoteService());
+  return service->get();
 }
 
 bool HyphenationMinikin::OpenDictionary(const AtomicString& locale) {
@@ -83,7 +85,7 @@ bool HyphenationMinikin::OpenDictionary(base::File file) {
 
 StringView HyphenationMinikin::WordToHyphenate(
     const StringView& text,
-    unsigned* num_leading_chars_out) {
+    wtf_size_t* num_leading_chars_out) {
   if (text.Is8Bit()) {
     wtf_size_t begin = 0u;
     wtf_size_t end = text.length();
@@ -139,7 +141,7 @@ Vector<uint8_t> HyphenationMinikin::Hyphenate(const StringView& text) const {
 wtf_size_t HyphenationMinikin::LastHyphenLocation(
     const StringView& text,
     wtf_size_t before_index) const {
-  unsigned num_leading_chars;
+  wtf_size_t num_leading_chars;
   const StringView word = WordToHyphenate(text, &num_leading_chars);
   if (before_index <= num_leading_chars || !ShouldHyphenateWord(word))
     return 0;
@@ -165,7 +167,7 @@ wtf_size_t HyphenationMinikin::LastHyphenLocation(
 
 Vector<wtf_size_t, 8> HyphenationMinikin::HyphenLocations(
     const StringView& text) const {
-  unsigned num_leading_chars;
+  wtf_size_t num_leading_chars;
   StringView word = WordToHyphenate(text, &num_leading_chars);
 
   Vector<wtf_size_t, 8> hyphen_locations;
@@ -266,10 +268,11 @@ static LocaleMap CreateLocaleFallbackMap() {
 
 // static
 AtomicString HyphenationMinikin::MapLocale(const AtomicString& locale) {
-  DEFINE_STATIC_LOCAL(LocaleMap, locale_fallback, (CreateLocaleFallbackMap()));
+  static base::NoDestructor<LocaleMap> locale_fallback(
+      CreateLocaleFallbackMap());
   for (AtomicString mapped_locale = locale;;) {
-    const auto& it = locale_fallback.find(mapped_locale);
-    if (it != locale_fallback.end()) {
+    const auto& it = locale_fallback->find(mapped_locale);
+    if (it != locale_fallback->end()) {
       if (it->value->locale_for_exact_match && locale == mapped_locale)
         return AtomicString(it->value->locale_for_exact_match);
       return AtomicString(it->value->locale);

@@ -7,18 +7,18 @@
 
 #import "base/strings/sys_string_conversions.h"
 #import "base/test/ios/wait_util.h"
-#import "components/autofill/core/common/autofill_payments_features.h"
 #import "components/strings/grit/components_strings.h"
+#import "ios/chrome/browser/authentication/test/signin_earl_grey.h"
 #import "ios/chrome/browser/autofill/authentication/public/card_unmask_authentication_selection_constants.h"
 #import "ios/chrome/browser/autofill/authentication/test/authentication_egtest_util.h"
 #import "ios/chrome/browser/autofill/ui_bundled/autofill_app_interface.h"
+#import "ios/chrome/browser/signin/model/fake_system_identity.h"
 #import "ios/chrome/grit/ios_strings.h"
 #import "ios/chrome/test/earl_grey/chrome_actions.h"
 #import "ios/chrome/test/earl_grey/chrome_earl_grey.h"
 #import "ios/chrome/test/earl_grey/chrome_matchers.h"
 #import "ios/chrome/test/earl_grey/chrome_test_case.h"
 #import "ios/testing/earl_grey/earl_grey_test.h"
-#import "ios/testing/earl_grey/matchers.h"
 #import "net/test/embedded_test_server/default_handlers.h"
 #import "ui/base/l10n/l10n_util.h"
 #import "ui/base/l10n/l10n_util_mac.h"
@@ -86,6 +86,8 @@ id<GREYMatcher> ActivityIndicatorMatcher() {
 
 - (void)setUp {
   [super setUp];
+  [SigninEarlGrey
+      signinWithFakeIdentity:[FakeSystemIdentity fakeIdentityWithMissingNames]];
   [AutofillAppInterface setUpFakeCreditCardServer];
   _enrolledCardNameAndLastFour =
       [AutofillAppInterface saveMaskedCreditCardEnrolledInVirtualCard];
@@ -103,6 +105,8 @@ id<GREYMatcher> ActivityIndicatorMatcher() {
   [ChromeEarlGrey waitForWebStateContainingText:kAutofillTestString];
 
   [AutofillAppInterface considerCreditCardFormSecureForTesting];
+  GREYAssertTrue([AutofillAppInterface waitForFormToBeCachedInMainFrame],
+                 @"Forms were not parsed and cached.");
 }
 
 - (void)tearDownHelper {
@@ -198,8 +202,7 @@ id<GREYMatcher> ActivityIndicatorMatcher() {
       assertWithMatcher:grey_sufficientlyVisible()];
 }
 
-// TODO(crbug.com/444060942): Test is flaky.
-- (void)DISABLED_testCardUnmaskAuthenticationSelectionCancel {
+- (void)testCardUnmaskAuthenticationSelectionCancel {
   [self showAuthenticationSelection];
 
   // Tap the cancel button.
@@ -212,9 +215,7 @@ id<GREYMatcher> ActivityIndicatorMatcher() {
                       CardUnmaskPromptNavigationBarTitle()];
 }
 
-// TODO(crbug.com/415865471): Fix test and re-enable.
-- (void)
-    DISABLED_testCardUnmaskAuthenticationSelectionAcceptanceButtonIsSetInitially {
+- (void)testCardUnmaskAuthenticationSelectionAcceptanceButtonIsSetInitially {
   [self showAuthenticationSelection];
 
   // Ensure the "Send" button is present (since the first option, OTP, is pre
@@ -225,8 +226,7 @@ id<GREYMatcher> ActivityIndicatorMatcher() {
                                    nil)];
 }
 
-// TODO(crbug.com/415865471): Fix test and re-enable.
-- (void)DISABLED_testCardUnmaskAuthenticationSelectionAcceptanceButtonLabel {
+- (void)testCardUnmaskAuthenticationSelectionAcceptanceButtonLabel {
   [self showAuthenticationSelection];
 
   // Verify selecting text message sets the acceptance button label to "Send".

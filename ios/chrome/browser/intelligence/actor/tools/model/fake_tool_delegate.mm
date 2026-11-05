@@ -78,16 +78,27 @@ void FakeToolDelegate::InterruptFromTool() {}
 
 void FakeToolDelegate::UninterruptFromTool() {}
 
-origin_gating::OriginGatingChecker* FakeToolDelegate::GetOriginGatingChecker()
-    const {
-  return gating_checker_;
-}
-
 void FakeToolDelegate::SetWebStateListForWindowId(
     int32_t window_id,
     WebStateList* web_state_list) {
   web_state_lists_[window_id] =
       web_state_list ? web_state_list->AsWeakPtr() : nullptr;
+}
+
+void FakeToolDelegate::IsAcceptableNavigationDestination(
+    const GURL& url,
+    ToolExecutionCallback callback) {
+  if (!navigation_destination_allowed_) {
+    std::move(callback).Run(ToolExecutionResult(
+        mojom::ActionResultCode::kTriggeredNavigationBlocked));
+    return;
+  }
+  std::move(callback).Run(ToolExecutionResult::Ok());
+}
+
+void FakeToolDelegate::EnqueueFollowupAction(
+    std::unique_ptr<ActorToolRequest> action) {
+  enqueued_followup_actions_.push_back(std::move(action));
 }
 
 }  // namespace actor

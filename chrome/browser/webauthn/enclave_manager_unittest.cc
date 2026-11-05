@@ -46,10 +46,12 @@
 #include "chrome/browser/webauthn/fake_magic_arch.h"
 #include "chrome/browser/webauthn/fake_recovery_key_store.h"
 #include "chrome/browser/webauthn/fake_security_domain_service.h"
+#include "chrome/browser/webauthn/gpm_pin_crypto.h"
 #include "chrome/browser/webauthn/proto/enclave_local_state.pb.h"
 #include "chrome/browser/webauthn/test_util.h"
 #include "chrome/browser/webauthn/unexportable_key_utils.h"
 #include "chrome/browser/webauthn/webauthn_metrics_util.h"
+#include "chrome/browser/webauthn/webauthn_scoped_fake_unexportable_key_provider.h"
 #include "components/cbor/reader.h"
 #include "components/cbor/writer.h"
 #include "components/signin/public/base/consent_level.h"
@@ -91,9 +93,12 @@
 #include "services/network/test/test_url_loader_factory.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "url/gurl.h"
 
 #if BUILDFLAG(IS_MAC)
+#include "chrome/browser/webauthn/icloud_recovery.h"
 #include "components/trusted_vault/icloud_recovery_key_mac.h"
+#include "components/trusted_vault/trusted_vault_server_constants.h"
 #include "crypto/apple/scoped_fake_keychain_v2.h"
 #include "device/fido/mac/scoped_touch_id_test_environment.h"
 #include "third_party/boringssl/src/include/openssl/hmac.h"
@@ -281,6 +286,11 @@ class EnclaveManagerTest : public testing::Test, EnclaveManager::Observer {
         [sds_callback = std::move(security_domain_service_callback),
          rks_callback = std::move(recovery_key_store_callback),
          this](const network::ResourceRequest& request) {
+          // Each download of the security domain state lists its members.
+          if (request.url.host() == "securitydomain-pa.googleapis.com" &&
+              request.url.path().starts_with("/v1/users/me/members")) {
+            account_state_download_count_++;
+          }
           std::optional<std::pair<net::HttpStatusCode, std::string>> response =
               sds_callback.Run(request);
           if (!response) {
@@ -318,7 +328,9 @@ class EnclaveManagerTest : public testing::Test, EnclaveManager::Observer {
   }
   void OnStateUpdated() override { notified_about_state_update_count_++; }
   void OnOutOfContextRecoveryCompletion(
-      EnclaveManager::OutOfContextRecoveryOutcome outcome) override {}
+      EnclaveManager::OutOfContextRecoveryOutcome outcome) override {
+    last_out_of_context_recovery_outcome_ = outcome;
+  }
 
   void DoCreate(
       std::unique_ptr<enclave::ClaimedPIN> claimed_pin,
@@ -525,6 +537,10 @@ class EnclaveManagerTest : public testing::Test, EnclaveManager::Observer {
   unsigned stored_count_ = 0;
   GaiaId last_stored_gaia_id_;
   unsigned notified_about_state_update_count_ = 0;
+  // The number of times the security domain state has been downloaded.
+  unsigned account_state_download_count_ = 0;
+  std::optional<EnclaveManager::OutOfContextRecoveryOutcome>
+      last_out_of_context_recovery_outcome_;
   const TempDir temp_dir_;
   const std::pair<base::Process, uint16_t> process_and_port_;
   const enclave::ScopedEnclaveOverride enclave_override_;
@@ -774,6 +790,59 @@ TEST_F(EnclaveManagerTest, GetAccessTokenErrorMetric_Failure) {
   histogram_tester.ExpectUniqueSample(
       "WebAuthentication.Enclave.GetAccessTokenError",
       GoogleServiceAuthError::State::INVALID_GAIA_CREDENTIALS, 1);
+}
+
+TEST_F(EnclaveManagerTest, IsRegisteredForAccount) {
+  auto is_registered_for_account = [this](const GaiaId& gaia_id) {
+    BoolFuture future;
+    manager_.IsRegisteredForAccount(gaia_id, future.GetCallback());
+    return future.Get();
+  };
+
+  const GaiaId gaia1 =
+      identity_test_env_.identity_manager()
+          ->GetPrimaryAccountInfo(signin::ConsentLevel::kSignin)
+          .gaia;
+  EXPECT_FALSE(is_registered_for_account(gaia1));
+
+  ASSERT_TRUE(Register());
+  EXPECT_TRUE(manager_.IsRegistered());
+  EXPECT_TRUE(is_registered_for_account(gaia1));
+
+  // After switching to a different, unregistered primary account, the
+  // registration of the first account is still reported.
+  identity_test_env_.MakePrimaryAccountAvailable("test2@gmail.com",
+                                                 signin::ConsentLevel::kSignin);
+  const GaiaId gaia2 =
+      identity_test_env_.identity_manager()
+          ->GetPrimaryAccountInfo(signin::ConsentLevel::kSignin)
+          .gaia;
+  EXPECT_FALSE(manager_.IsRegistered());
+  EXPECT_TRUE(is_registered_for_account(gaia1));
+  EXPECT_FALSE(is_registered_for_account(gaia2));
+
+  NoArgFuture write_future;
+  if (manager_.RunWhenStoppedForTesting(write_future.GetCallback())) {
+    EXPECT_TRUE(write_future.Wait());
+  }
+  manager_.ResetForTesting();
+  ASSERT_FALSE(manager_.IsLoaded());
+  EXPECT_TRUE(is_registered_for_account(gaia1));
+  EXPECT_TRUE(manager_.IsLoaded());
+}
+
+TEST_F(EnclaveManagerTest, HasStoreKeysLock) {
+  EXPECT_FALSE(manager_.has_store_keys_lock());
+  {
+    auto lock1 = manager_.GetStoreKeysLock();
+    EXPECT_TRUE(manager_.has_store_keys_lock());
+    {
+      auto lock2 = manager_.GetStoreKeysLock();
+      EXPECT_TRUE(manager_.has_store_keys_lock());
+    }
+    EXPECT_TRUE(manager_.has_store_keys_lock());
+  }
+  EXPECT_FALSE(manager_.has_store_keys_lock());
 }
 
 TEST_F(EnclaveManagerTest, PrimaryUserChange) {
@@ -1516,9 +1585,9 @@ TEST_F(EnclaveManagerTest, RenewPINAddsCohortDetails) {
         const_cast<cbor::Value::MapValue&>(cbor->GetMap());
     wrapped_pin_cbor.erase(wrapped_pin_cbor.find(cbor::Value(6)));
     wrapped_pin_cbor.erase(wrapped_pin_cbor.find(cbor::Value(7)));
-    std::vector<uint8_t> encrypted_pin = EnclaveManager::EncryptWrappedPIN(
+    std::vector<uint8_t> encrypted_pin = webauthn::EncryptWrappedPIN(
         security_domain_secret,
-        *cbor::Writer::Write(cbor::Value(wrapped_pin_cbor)));
+        *cbor::Writer::Write(cbor::Value(std::move(wrapped_pin_cbor))));
     wrapped_pin_proto->set_wrapped_pin(
         std::string(base::as_string_view(encrypted_pin)));
     security_domain_service_->SetPinMemberWrappedPin(
@@ -2036,6 +2105,578 @@ TEST_F(EnclaveManagerTest, AddICloudRecoveryKey) {
       "WebAuthentication.Enclave.ActionOutcome.AddICloudRecoveryKey",
       EnclaveManager::ActionOutcome::kSuccess, 1);
 }
+
+enum class SeededAccountState {
+  kNone,
+  kAfterLoad,
+  kBeforeLoad,
+};
+
+// Runs each iCloud Keychain recovery test with no caller-supplied security
+// domain state, with a state passed on an idle loaded manager, and with a state
+// passed before `EnclaveManager` has loaded from disk (both used without
+// downloading again).
+class EnclaveManagerICloudRecoveryTest
+    : public EnclaveManagerTest,
+      public testing::WithParamInterface<SeededAccountState> {
+ protected:
+  void SetUp() override {
+    NoArgFuture loaded_future;
+    manager_.Load(loaded_future.GetCallback());
+    ASSERT_TRUE(loaded_future.Wait());
+  }
+
+  bool account_state_used() const {
+    switch (GetParam()) {
+      case SeededAccountState::kNone:
+        return false;
+      case SeededAccountState::kAfterLoad:
+      case SeededAccountState::kBeforeLoad:
+        return true;
+    }
+  }
+
+  EnclaveManager::ICloudRecoveryAccountStateUsage expected_account_state_usage()
+      const {
+    return account_state_used()
+               ? EnclaveManager::ICloudRecoveryAccountStateUsage::
+                     kProvidedAndUsed
+               : EnclaveManager::ICloudRecoveryAccountStateUsage::kNotProvided;
+  }
+
+  // Returns the state to pass to `RecoverWithICloudKeychain()` according to
+  // `GetParam()`.
+  std::optional<
+      trusted_vault::DownloadAuthenticationFactorsRegistrationStateResult>
+  AccountStateToPassIn() {
+    switch (GetParam()) {
+      case SeededAccountState::kNone:
+        return std::nullopt;
+      case SeededAccountState::kAfterLoad:
+      case SeededAccountState::kBeforeLoad: {
+        base::test::TestFuture<
+            trusted_vault::DownloadAuthenticationFactorsRegistrationStateResult,
+            GaiaId>
+            future;
+        std::unique_ptr<trusted_vault::TrustedVaultConnection::Request>
+            request = manager_.DownloadAccountState(future.GetCallback());
+        auto [state, gaia_id] = future.Take();
+        EXPECT_EQ(gaia_id, gaia_id_);
+        return std::move(state);
+      }
+    }
+  }
+
+  // Runs `RecoverWithICloudKeychain()` with `AccountStateToPassIn()` and
+  // returns whether it succeeded. Afterwards, `account_state_download_count_`
+  // only counts the downloads made by the recovery.
+  bool RecoverWithICloudKeychain() {
+    const bool key_already_ready = manager_.IsReady();
+    std::optional<
+        trusted_vault::DownloadAuthenticationFactorsRegistrationStateResult>
+        account_state = AccountStateToPassIn();
+    std::optional<GaiaId> account_state_gaia_id;
+    if (account_state.has_value()) {
+      account_state_gaia_id =
+          identity_test_env_.identity_manager()
+              ->GetPrimaryAccountInfo(signin::ConsentLevel::kSignin)
+              .gaia;
+    }
+    if (GetParam() == SeededAccountState::kBeforeLoad) {
+      NoArgFuture write_future;
+      if (manager_.RunWhenStoppedForTesting(write_future.GetCallback())) {
+        EXPECT_TRUE(write_future.Wait());
+      }
+      manager_.ResetForTesting();
+      EXPECT_FALSE(manager_.IsLoaded());
+    }
+    account_state_download_count_ = 0;
+    base::HistogramTester histogram_tester;
+    BoolFuture recovery_future;
+    manager_.RecoverWithICloudKeychain(std::move(account_state),
+                                       std::move(account_state_gaia_id),
+                                       recovery_future.GetCallback());
+    EXPECT_TRUE(recovery_future.Wait());
+    if (key_already_ready) {
+      histogram_tester.ExpectTotalCount(
+          "WebAuthentication.Enclave.ICloudRecoveryAccountStateUsage", 0);
+    } else {
+      histogram_tester.ExpectUniqueSample(
+          "WebAuthentication.Enclave.ICloudRecoveryAccountStateUsage",
+          expected_account_state_usage(), 1);
+    }
+    return recovery_future.Get();
+  }
+};
+
+INSTANTIATE_TEST_SUITE_P(
+    All,
+    EnclaveManagerICloudRecoveryTest,
+    testing::Values(SeededAccountState::kNone,
+                    SeededAccountState::kAfterLoad,
+                    SeededAccountState::kBeforeLoad),
+    [](const testing::TestParamInfo<SeededAccountState>& info) {
+      switch (info.param) {
+        case SeededAccountState::kNone:
+          return "AccountStateDownloaded";
+        case SeededAccountState::kAfterLoad:
+          return "AccountStatePassedIn";
+        case SeededAccountState::kBeforeLoad:
+          return "AccountStatePassedInBeforeLoad";
+      }
+    });
+
+TEST_P(EnclaveManagerICloudRecoveryTest, RecoverWithICloudKeychainSuccess) {
+  crypto::ScopedFakeUserVerifyingKeyProvider scoped_uv;
+  crypto::apple::ScopedFakeKeychainV2 scoped_fake_keychain{
+      webauthn::kICloudKeychainRecoveryKeyAccessGroup};
+
+  ASSERT_TRUE(Register());
+
+  BoolFuture setup_future;
+  manager_.SetupWithPIN("123456", setup_future.GetCallback());
+  EXPECT_TRUE(setup_future.Wait());
+  ASSERT_TRUE(manager_.IsReady());
+
+  base::test::TestFuture<std::unique_ptr<trusted_vault::ICloudRecoveryKey>>
+      create_key_future;
+  trusted_vault::ICloudRecoveryKey::Create(
+      create_key_future.GetCallback(),
+      trusted_vault::SecurityDomainId::kPasskeys,
+      webauthn::kICloudKeychainRecoveryKeyAccessGroup);
+  std::unique_ptr<trusted_vault::ICloudRecoveryKey> icloud_key =
+      create_key_future.Take();
+  ASSERT_TRUE(icloud_key);
+
+  BoolFuture add_icloud_future;
+  manager_.AddICloudRecoveryKey(std::move(icloud_key),
+                                add_icloud_future.GetCallback());
+  ASSERT_TRUE(add_icloud_future.Wait());
+  ASSERT_TRUE(add_icloud_future.Get());
+  std::optional<std::pair<int32_t, std::vector<uint8_t>>> expected_secret =
+      manager_.TakeSecret();
+  ASSERT_TRUE(expected_secret.has_value());
+
+  // Simulate another device (or a cleared local registration) recovering from
+  // iCloud Keychain.
+  manager_.ClearRegistrationForTesting();
+  manager_.ClearCachedKeysForTesting();
+  ASSERT_FALSE(manager_.IsRegistered());
+  ASSERT_FALSE(manager_.IsReady());
+
+  base::HistogramTester histogram_tester;
+  EXPECT_TRUE(RecoverWithICloudKeychain());
+  // Recovery and storing the recovered key share one download of the security
+  // domain state, which isn't needed if the caller passed a state for the
+  // current primary account.
+  EXPECT_EQ(account_state_download_count_, account_state_used() ? 0u : 1u);
+  ASSERT_TRUE(manager_.IsReady());
+  EXPECT_TRUE(manager_.is_idle());
+  // The wrapped PIN comes from the GPM PIN metadata of that same state.
+  EXPECT_TRUE(manager_.has_wrapped_pin());
+  EXPECT_EQ(manager_.TakeSecret(), expected_secret);
+  histogram_tester.ExpectUniqueSample(
+      "WebAuthentication.Enclave.ActionOutcome.RecoverWithICloudKeychain",
+      EnclaveManager::ActionOutcome::kSuccess, 1);
+}
+
+TEST_P(EnclaveManagerICloudRecoveryTest,
+       RecoverWithICloudKeychainKeyAlreadyReady) {
+  crypto::ScopedFakeUserVerifyingKeyProvider scoped_uv;
+  crypto::apple::ScopedFakeKeychainV2 scoped_fake_keychain{
+      webauthn::kICloudKeychainRecoveryKeyAccessGroup};
+
+  ASSERT_TRUE(Register());
+
+  BoolFuture setup_future;
+  manager_.SetupWithPIN("123456", setup_future.GetCallback());
+  EXPECT_TRUE(setup_future.Wait());
+  ASSERT_TRUE(manager_.IsReady());
+
+  base::test::TestFuture<std::unique_ptr<trusted_vault::ICloudRecoveryKey>>
+      create_key_future;
+  trusted_vault::ICloudRecoveryKey::Create(
+      create_key_future.GetCallback(),
+      trusted_vault::SecurityDomainId::kPasskeys,
+      webauthn::kICloudKeychainRecoveryKeyAccessGroup);
+  std::unique_ptr<trusted_vault::ICloudRecoveryKey> icloud_key =
+      create_key_future.Take();
+  ASSERT_TRUE(icloud_key);
+
+  BoolFuture add_icloud_future;
+  manager_.AddICloudRecoveryKey(std::move(icloud_key),
+                                add_icloud_future.GetCallback());
+  ASSERT_TRUE(add_icloud_future.Wait());
+  ASSERT_TRUE(add_icloud_future.Get());
+  ASSERT_TRUE(manager_.IsReady());
+
+  base::HistogramTester histogram_tester;
+  EXPECT_FALSE(RecoverWithICloudKeychain());
+  // The key is found to be ready before the security domain state is needed.
+  EXPECT_EQ(account_state_download_count_, 0u);
+  EXPECT_TRUE(manager_.IsReady());
+  histogram_tester.ExpectUniqueSample(
+      "WebAuthentication.Enclave.ActionOutcome.RecoverWithICloudKeychain",
+      EnclaveManager::ActionOutcome::
+          kDoNextActionFailedICloudKeychainKeyAlreadyReady,
+      1);
+}
+
+TEST_P(EnclaveManagerICloudRecoveryTest,
+       RecoverWithICloudKeychainDownloadAccountStateFailed) {
+  security_domain_service_->fail_all_requests();
+
+  base::HistogramTester histogram_tester;
+  EXPECT_FALSE(RecoverWithICloudKeychain());
+  EXPECT_EQ(account_state_download_count_, account_state_used() ? 0u : 1u);
+  EXPECT_FALSE(manager_.IsReady());
+  histogram_tester.ExpectUniqueSample(
+      "WebAuthentication.Enclave.ActionOutcome.RecoverWithICloudKeychain",
+      EnclaveManager::ActionOutcome::
+          kStartICloudKeychainRecoveryFailedTrustedVaultErrorResponse,
+      1);
+}
+
+TEST_P(EnclaveManagerICloudRecoveryTest,
+       RecoverWithICloudKeychainNoICloudKeysInAccount) {
+  base::HistogramTester histogram_tester;
+  EXPECT_FALSE(RecoverWithICloudKeychain());
+  EXPECT_EQ(account_state_download_count_, account_state_used() ? 0u : 1u);
+  EXPECT_FALSE(manager_.IsReady());
+  histogram_tester.ExpectUniqueSample(
+      "WebAuthentication.Enclave.ActionOutcome.RecoverWithICloudKeychain",
+      EnclaveManager::ActionOutcome::
+          kStartICloudKeychainRecoveryFailedNoICloudKeysInAccount,
+      1);
+}
+
+TEST_P(EnclaveManagerICloudRecoveryTest,
+       RecoverWithICloudKeychainNoMatchingLocalICloudKey) {
+  crypto::ScopedFakeUserVerifyingKeyProvider scoped_uv;
+  crypto::apple::ScopedFakeKeychainV2 scoped_fake_keychain{
+      webauthn::kICloudKeychainRecoveryKeyAccessGroup};
+
+  ASSERT_TRUE(Register());
+
+  BoolFuture setup_future;
+  manager_.SetupWithPIN("123456", setup_future.GetCallback());
+  EXPECT_TRUE(setup_future.Wait());
+  ASSERT_TRUE(manager_.IsReady());
+
+  // Add an iCloud recovery key to the account that is not stored in the local
+  // keychain.
+  std::unique_ptr<trusted_vault::ICloudRecoveryKey> icloud_key =
+      trusted_vault::ICloudRecoveryKey::CreateForTest();
+  BoolFuture add_icloud_future;
+  manager_.AddICloudRecoveryKey(std::move(icloud_key),
+                                add_icloud_future.GetCallback());
+  ASSERT_TRUE(add_icloud_future.Wait());
+  ASSERT_TRUE(add_icloud_future.Get());
+
+  manager_.ClearRegistrationForTesting();
+  manager_.ClearCachedKeysForTesting();
+  ASSERT_FALSE(manager_.IsReady());
+
+  base::HistogramTester histogram_tester;
+  EXPECT_FALSE(RecoverWithICloudKeychain());
+  EXPECT_EQ(account_state_download_count_, account_state_used() ? 0u : 1u);
+  EXPECT_FALSE(manager_.IsReady());
+  histogram_tester.ExpectUniqueSample(
+      "WebAuthentication.Enclave.ActionOutcome.RecoverWithICloudKeychain",
+      EnclaveManager::ActionOutcome::
+          kDoRecoveringWithICloudKeychainFailedNoMatchingLocalICloudKey,
+      1);
+}
+
+TEST_P(EnclaveManagerICloudRecoveryTest,
+       RecoverWithICloudKeychainDecryptionFailed) {
+  crypto::ScopedFakeUserVerifyingKeyProvider scoped_uv;
+  crypto::apple::ScopedFakeKeychainV2 scoped_fake_keychain{
+      webauthn::kICloudKeychainRecoveryKeyAccessGroup};
+
+  ASSERT_TRUE(Register());
+
+  BoolFuture setup_future;
+  manager_.SetupWithPIN("123456", setup_future.GetCallback());
+  EXPECT_TRUE(setup_future.Wait());
+  ASSERT_TRUE(manager_.IsReady());
+
+  base::test::TestFuture<std::unique_ptr<trusted_vault::ICloudRecoveryKey>>
+      create_key_future;
+  trusted_vault::ICloudRecoveryKey::Create(
+      create_key_future.GetCallback(),
+      trusted_vault::SecurityDomainId::kPasskeys,
+      webauthn::kICloudKeychainRecoveryKeyAccessGroup);
+  std::unique_ptr<trusted_vault::ICloudRecoveryKey> icloud_key =
+      create_key_future.Take();
+  ASSERT_TRUE(icloud_key);
+
+  BoolFuture add_icloud_future;
+  manager_.AddICloudRecoveryKey(std::move(icloud_key),
+                                add_icloud_future.GetCallback());
+  ASSERT_TRUE(add_icloud_future.Wait());
+  ASSERT_TRUE(add_icloud_future.Get());
+
+  manager_.ClearRegistrationForTesting();
+  manager_.ClearCachedKeysForTesting();
+  ASSERT_FALSE(manager_.IsReady());
+
+  security_domain_service_->CorruptICloudKeychainMemberKeys();
+
+  base::HistogramTester histogram_tester;
+  EXPECT_FALSE(RecoverWithICloudKeychain());
+  EXPECT_EQ(account_state_download_count_, account_state_used() ? 0u : 1u);
+  EXPECT_FALSE(manager_.IsReady());
+  histogram_tester.ExpectUniqueSample(
+      "WebAuthentication.Enclave.ActionOutcome.RecoverWithICloudKeychain",
+      EnclaveManager::ActionOutcome::
+          kDoRecoveringWithICloudKeychainFailedDecryptionFailed,
+      1);
+}
+
+TEST_P(EnclaveManagerICloudRecoveryTest,
+       RecoverWithICloudKeychainStoreKeysFailed) {
+  crypto::ScopedFakeUserVerifyingKeyProvider scoped_uv;
+  crypto::apple::ScopedFakeKeychainV2 scoped_fake_keychain{
+      webauthn::kICloudKeychainRecoveryKeyAccessGroup};
+
+  ASSERT_TRUE(Register());
+
+  BoolFuture setup_future;
+  manager_.SetupWithPIN("123456", setup_future.GetCallback());
+  EXPECT_TRUE(setup_future.Wait());
+  ASSERT_TRUE(manager_.IsReady());
+
+  base::test::TestFuture<std::unique_ptr<trusted_vault::ICloudRecoveryKey>>
+      create_key_future;
+  trusted_vault::ICloudRecoveryKey::Create(
+      create_key_future.GetCallback(),
+      trusted_vault::SecurityDomainId::kPasskeys,
+      webauthn::kICloudKeychainRecoveryKeyAccessGroup);
+  std::unique_ptr<trusted_vault::ICloudRecoveryKey> icloud_key =
+      create_key_future.Take();
+  ASSERT_TRUE(icloud_key);
+
+  BoolFuture add_icloud_future;
+  manager_.AddICloudRecoveryKey(std::move(icloud_key),
+                                add_icloud_future.GetCallback());
+  ASSERT_TRUE(add_icloud_future.Wait());
+  ASSERT_TRUE(add_icloud_future.Get());
+
+  manager_.ClearRegistrationForTesting();
+  manager_.ClearCachedKeysForTesting();
+  ASSERT_FALSE(manager_.IsReady());
+
+  security_domain_service_->fail_join_requests_matching(base::BindRepeating(
+      [](const trusted_vault_pb::JoinSecurityDomainsRequest&) {
+        return true;
+      }));
+
+  base::HistogramTester histogram_tester;
+  EXPECT_FALSE(RecoverWithICloudKeychain());
+  EXPECT_EQ(account_state_download_count_, account_state_used() ? 0u : 1u);
+  EXPECT_FALSE(manager_.IsReady());
+  histogram_tester.ExpectUniqueSample(
+      "WebAuthentication.Enclave.ActionOutcome.RecoverWithICloudKeychain",
+      EnclaveManager::ActionOutcome::
+          kDoJoiningDomainFailedTrustedVaultRegistrationError,
+      1);
+}
+
+TEST_P(EnclaveManagerICloudRecoveryTest,
+       RecoverWithICloudKeychainPrimaryAccountChangedCancelsRecovery) {
+  crypto::ScopedFakeUserVerifyingKeyProvider scoped_uv;
+  crypto::apple::ScopedFakeKeychainV2 scoped_fake_keychain{
+      webauthn::kICloudKeychainRecoveryKeyAccessGroup};
+
+  ASSERT_TRUE(Register());
+
+  BoolFuture setup_future;
+  manager_.SetupWithPIN("123456", setup_future.GetCallback());
+  EXPECT_TRUE(setup_future.Wait());
+  ASSERT_TRUE(manager_.IsReady());
+
+  base::test::TestFuture<std::unique_ptr<trusted_vault::ICloudRecoveryKey>>
+      create_key_future;
+  trusted_vault::ICloudRecoveryKey::Create(
+      create_key_future.GetCallback(),
+      trusted_vault::SecurityDomainId::kPasskeys,
+      webauthn::kICloudKeychainRecoveryKeyAccessGroup);
+  std::unique_ptr<trusted_vault::ICloudRecoveryKey> icloud_key =
+      create_key_future.Take();
+  ASSERT_TRUE(icloud_key);
+
+  BoolFuture add_icloud_future;
+  manager_.AddICloudRecoveryKey(std::move(icloud_key),
+                                add_icloud_future.GetCallback());
+  ASSERT_TRUE(add_icloud_future.Wait());
+  ASSERT_TRUE(add_icloud_future.Get());
+
+  manager_.ClearRegistrationForTesting();
+  manager_.ClearCachedKeysForTesting();
+  ASSERT_FALSE(manager_.IsReady());
+
+  std::optional<
+      trusted_vault::DownloadAuthenticationFactorsRegistrationStateResult>
+      account_state = AccountStateToPassIn();
+  std::optional<GaiaId> account_state_gaia_id;
+  if (account_state.has_value()) {
+    account_state_gaia_id =
+        identity_test_env_.identity_manager()
+            ->GetPrimaryAccountInfo(signin::ConsentLevel::kSignin)
+            .gaia;
+  }
+  base::HistogramTester histogram_tester;
+  BoolFuture recovery_future;
+  manager_.RecoverWithICloudKeychain(std::move(account_state),
+                                     std::move(account_state_gaia_id),
+                                     recovery_future.GetCallback());
+  identity_test_env_.MakePrimaryAccountAvailable("other@gmail.com",
+                                                 signin::ConsentLevel::kSignin);
+  ASSERT_TRUE(recovery_future.Wait());
+  EXPECT_FALSE(recovery_future.Get());
+  EXPECT_FALSE(manager_.IsReady());
+  // The state machine is destroyed before `DoNextAction()` runs.
+  histogram_tester.ExpectTotalCount(
+      "WebAuthentication.Enclave.ICloudRecoveryAccountStateUsage", 0);
+  histogram_tester.ExpectUniqueSample(
+      "WebAuthentication.Enclave.ActionOutcome.RecoverWithICloudKeychain",
+      EnclaveManager::ActionOutcome::kStateMachineHasBeenDestroyed, 1);
+}
+
+TEST_F(EnclaveManagerTest,
+       RecoverWithICloudKeychainUsesAccountStateWhileActionRunning) {
+  crypto::ScopedFakeUserVerifyingKeyProvider scoped_uv;
+  crypto::apple::ScopedFakeKeychainV2 scoped_fake_keychain{
+      webauthn::kICloudKeychainRecoveryKeyAccessGroup};
+
+  ASSERT_TRUE(Register());
+
+  BoolFuture setup_future;
+  manager_.SetupWithPIN("123456", setup_future.GetCallback());
+  EXPECT_TRUE(setup_future.Wait());
+  ASSERT_TRUE(manager_.IsReady());
+
+  base::test::TestFuture<std::unique_ptr<trusted_vault::ICloudRecoveryKey>>
+      create_key_future;
+  trusted_vault::ICloudRecoveryKey::Create(
+      create_key_future.GetCallback(),
+      trusted_vault::SecurityDomainId::kPasskeys,
+      webauthn::kICloudKeychainRecoveryKeyAccessGroup);
+  std::unique_ptr<trusted_vault::ICloudRecoveryKey> icloud_key =
+      create_key_future.Take();
+  ASSERT_TRUE(icloud_key);
+
+  BoolFuture add_icloud_future;
+  manager_.AddICloudRecoveryKey(std::move(icloud_key),
+                                add_icloud_future.GetCallback());
+  ASSERT_TRUE(add_icloud_future.Wait());
+  ASSERT_TRUE(add_icloud_future.Get());
+
+  manager_.ClearRegistrationForTesting();
+  manager_.ClearCachedKeysForTesting();
+  ASSERT_FALSE(manager_.IsReady());
+
+  base::test::TestFuture<
+      trusted_vault::DownloadAuthenticationFactorsRegistrationStateResult,
+      GaiaId>
+      download_future;
+  std::unique_ptr<trusted_vault::TrustedVaultConnection::Request> request =
+      manager_.DownloadAccountState(download_future.GetCallback());
+  auto [account_state, account_state_gaia_id] = download_future.Take();
+
+  BoolFuture register_future;
+  manager_.RegisterIfNeeded(register_future.GetCallback());
+  ASSERT_FALSE(manager_.is_idle());
+
+  account_state_download_count_ = 0;
+  base::HistogramTester histogram_tester;
+  BoolFuture recovery_future;
+  manager_.RecoverWithICloudKeychain(std::move(account_state),
+                                     std::move(account_state_gaia_id),
+                                     recovery_future.GetCallback());
+  ASSERT_TRUE(register_future.Wait());
+  EXPECT_TRUE(register_future.Get());
+  ASSERT_TRUE(recovery_future.Wait());
+  EXPECT_TRUE(recovery_future.Get());
+  EXPECT_EQ(account_state_download_count_, 0u);
+  EXPECT_TRUE(manager_.IsReady());
+  EXPECT_TRUE(manager_.has_wrapped_pin());
+  histogram_tester.ExpectUniqueSample(
+      "WebAuthentication.Enclave.ICloudRecoveryAccountStateUsage",
+      EnclaveManager::ICloudRecoveryAccountStateUsage::kProvidedAndUsed, 1);
+  histogram_tester.ExpectUniqueSample(
+      "WebAuthentication.Enclave.ActionOutcome.RecoverWithICloudKeychain",
+      EnclaveManager::ActionOutcome::kSuccess, 1);
+}
+
+TEST_F(EnclaveManagerTest,
+       RecoverWithICloudKeychainDiscardsAccountStateWhenPrimaryAccountChanged) {
+  crypto::ScopedFakeUserVerifyingKeyProvider scoped_uv;
+  crypto::apple::ScopedFakeKeychainV2 scoped_fake_keychain{
+      webauthn::kICloudKeychainRecoveryKeyAccessGroup};
+
+  ASSERT_TRUE(Register());
+
+  BoolFuture setup_future;
+  manager_.SetupWithPIN("123456", setup_future.GetCallback());
+  EXPECT_TRUE(setup_future.Wait());
+  ASSERT_TRUE(manager_.IsReady());
+
+  base::test::TestFuture<std::unique_ptr<trusted_vault::ICloudRecoveryKey>>
+      create_key_future;
+  trusted_vault::ICloudRecoveryKey::Create(
+      create_key_future.GetCallback(),
+      trusted_vault::SecurityDomainId::kPasskeys,
+      webauthn::kICloudKeychainRecoveryKeyAccessGroup);
+  std::unique_ptr<trusted_vault::ICloudRecoveryKey> icloud_key =
+      create_key_future.Take();
+  ASSERT_TRUE(icloud_key);
+
+  BoolFuture add_icloud_future;
+  manager_.AddICloudRecoveryKey(std::move(icloud_key),
+                                add_icloud_future.GetCallback());
+  ASSERT_TRUE(add_icloud_future.Wait());
+  ASSERT_TRUE(add_icloud_future.Get());
+
+  manager_.ClearRegistrationForTesting();
+  manager_.ClearCachedKeysForTesting();
+  ASSERT_FALSE(manager_.IsReady());
+
+  NoArgFuture write_future;
+  if (manager_.RunWhenStoppedForTesting(write_future.GetCallback())) {
+    ASSERT_TRUE(write_future.Wait());
+  }
+  manager_.ResetForTesting();
+  ASSERT_FALSE(manager_.IsLoaded());
+
+  // Default-constructed state has `State::kError` and no iCloud keys, so using
+  // it instead of discarding it and downloading a fresh state would fail
+  // recovery.
+  account_state_download_count_ = 0;
+  base::HistogramTester histogram_tester;
+  BoolFuture recovery_future;
+  manager_.RecoverWithICloudKeychain(
+      trusted_vault::DownloadAuthenticationFactorsRegistrationStateResult(),
+      gaia_id_, recovery_future.GetCallback());
+  // Changing the primary account while `EnclaveManager` is still loading from
+  // disk does not cancel queued actions, so the state machine runs with the new
+  // primary account and must discard the state passed for `gaia_id_`.
+  identity_test_env_.MakePrimaryAccountAvailable("other@gmail.com",
+                                                 signin::ConsentLevel::kSignin);
+  ASSERT_TRUE(recovery_future.Wait());
+  EXPECT_TRUE(recovery_future.Get());
+  EXPECT_EQ(account_state_download_count_, 1u);
+  EXPECT_TRUE(manager_.IsReady());
+  EXPECT_TRUE(manager_.has_wrapped_pin());
+  histogram_tester.ExpectUniqueSample(
+      "WebAuthentication.Enclave.ICloudRecoveryAccountStateUsage",
+      EnclaveManager::ICloudRecoveryAccountStateUsage::kProvidedAndDiscarded,
+      1);
+  histogram_tester.ExpectUniqueSample(
+      "WebAuthentication.Enclave.ActionOutcome.RecoverWithICloudKeychain",
+      EnclaveManager::ActionOutcome::kSuccess, 1);
+}
 #endif  // BUILDFLAG(IS_MAC)
 
 TEST_F(EnclaveManagerTest, Unenroll) {
@@ -2055,6 +2696,23 @@ TEST_F(EnclaveManagerTest, Unenroll) {
   // Things should be in a good state such that we can register again.
   ASSERT_TRUE(Register());
   ASSERT_TRUE(manager_.IsRegistered());
+}
+
+TEST_F(EnclaveManagerTest, UnenrollBeforeLoad) {
+  ASSERT_TRUE(Register());
+  NoArgFuture write_future;
+  if (manager_.RunWhenStoppedForTesting(write_future.GetCallback())) {
+    EXPECT_TRUE(write_future.Wait());
+  }
+  manager_.ResetForTesting();
+  ASSERT_FALSE(manager_.IsLoaded());
+
+  BoolFuture unenroll_future;
+  manager_.Unenroll(unenroll_future.GetCallback());
+  EXPECT_TRUE(unenroll_future.Wait());
+  EXPECT_TRUE(unenroll_future.Get());
+  EXPECT_TRUE(manager_.IsLoaded());
+  EXPECT_FALSE(manager_.IsRegistered());
 }
 
 TEST_F(EnclaveManagerTest, UnenrollRace) {
@@ -2133,16 +2791,16 @@ TEST_F(EnclaveManagerTest, LockPINThenChange) {
               GetAssertionResponseExpectation());
 }
 
-// Tests that rely on `ScopedFakeUnexportableKeyProvider` only work on
-// platforms where EnclaveManager uses `GetUnexportableKeyProvider`, as opposed
-// to `GetSoftwareUnsecureUnexportableKeyProvider`.
-#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
-#define MAYBE_HardwareKeyLost HardwareKeyLost
-#else
-#define MAYBE_HardwareKeyLost DISABLED_HardwareKeyLost
-#endif
-TEST_F(EnclaveManagerTest, MAYBE_HardwareKeyLost) {
+TEST_F(EnclaveManagerTest, HardwareKeyLost) {
   crypto::ScopedFakeUserVerifyingKeyProvider scoped_uv_key_provider;
+#if BUILDFLAG(IS_CHROMEOS)
+  OverrideWebAuthnChromeosUserVerifyingKeyProviderForTesting([]() {
+    return crypto::GetUserVerifyingKeyProvider(
+        crypto::UserVerifyingKeyProvider::Config());
+  });
+  base::ScopedClosureRunner reset_uv_override(base::BindOnce(
+      &OverrideWebAuthnChromeosUserVerifyingKeyProviderForTesting, nullptr));
+#endif
   security_domain_service_->pretend_there_are_members();
   NoArgFuture loaded_future;
   manager_.Load(loaded_future.GetCallback());
@@ -2206,7 +2864,7 @@ TEST_F(EnclaveManagerTest, MAYBE_HardwareKeyLost) {
   EXPECT_TRUE(key_future_present.Wait());
   EXPECT_TRUE(key_future_present.Get().has_value());
 
-  crypto::ScopedNullUnexportableKeyProvider null_hw_provider;
+  WebAuthnScopedNullUnexportableKeyProvider null_hw_provider;
   auto signing_callback = manager_.IdentityKeySigningCallback();
   quit_closure = task_env_.QuitClosure();
   std::move(signing_callback)
@@ -2229,6 +2887,10 @@ TEST_F(EnclaveManagerTest, MAYBE_HardwareKeyLost) {
                                               key_future_deleted.GetCallback());
   EXPECT_TRUE(key_future_deleted.Wait());
   EXPECT_FALSE(key_future_deleted.Get().has_value());
+
+  // Wait for the background task posted by `ClearRegistration()` to finish
+  // before `null_hw_provider` is destroyed.
+  task_env_.RunUntilIdle();
 }
 
 // Tests that Chrome resets the local state if joining the physical device to
@@ -2361,11 +3023,15 @@ TEST_F(EnclaveManagerTest, CheckGpmPinAvailabilityWhenPinIsAvailable) {
   ASSERT_TRUE(manager_.IsReady());
   ASSERT_TRUE(manager_.has_wrapped_pin());
 
-  base::test::TestFuture<EnclaveManager::GpmPinAvailability> future;
-  auto request = manager_.CheckGpmPinAvailability(future.GetCallback());
+  base::test::TestFuture<
+      trusted_vault::DownloadAuthenticationFactorsRegistrationStateResult,
+      GaiaId>
+      future;
+  auto request = manager_.DownloadAccountState(future.GetCallback());
   EXPECT_TRUE(future.Wait());
-  EXPECT_EQ(future.Get(),
+  EXPECT_EQ(manager_.CheckGpmPinAvailability(future.Get<0>()),
             EnclaveManager::GpmPinAvailability::kGpmPinSetAndUsable);
+  EXPECT_EQ(future.Get<1>(), gaia_id_);
 }
 
 TEST_F(EnclaveManagerTest, CheckGpmPinAvailabilityWhenPinIsUnusable) {
@@ -2379,11 +3045,15 @@ TEST_F(EnclaveManagerTest, CheckGpmPinAvailabilityWhenPinIsUnusable) {
   ASSERT_TRUE(manager_.has_wrapped_pin());
   security_domain_service_->MakePinMemberUnusable();
 
-  base::test::TestFuture<EnclaveManager::GpmPinAvailability> future;
-  auto request = manager_.CheckGpmPinAvailability(future.GetCallback());
+  base::test::TestFuture<
+      trusted_vault::DownloadAuthenticationFactorsRegistrationStateResult,
+      GaiaId>
+      future;
+  auto request = manager_.DownloadAccountState(future.GetCallback());
   EXPECT_TRUE(future.Wait());
-  EXPECT_EQ(future.Get(),
+  EXPECT_EQ(manager_.CheckGpmPinAvailability(future.Get<0>()),
             EnclaveManager::GpmPinAvailability::kGpmPinSetButNotUsable);
+  EXPECT_EQ(future.Get<1>(), gaia_id_);
 }
 
 TEST_F(EnclaveManagerTest, CheckGpmPinAvailabilityWhenWrappedPinIsInvalid) {
@@ -2397,33 +3067,50 @@ TEST_F(EnclaveManagerTest, CheckGpmPinAvailabilityWhenWrappedPinIsInvalid) {
   ASSERT_TRUE(manager_.has_wrapped_pin());
   security_domain_service_->SetPinMemberWrappedPin("invalid wrapped pin");
 
-  base::test::TestFuture<EnclaveManager::GpmPinAvailability> future;
-  auto request = manager_.CheckGpmPinAvailability(future.GetCallback());
+  base::test::TestFuture<
+      trusted_vault::DownloadAuthenticationFactorsRegistrationStateResult,
+      GaiaId>
+      future;
+  auto request = manager_.DownloadAccountState(future.GetCallback());
   EXPECT_TRUE(future.Wait());
-  EXPECT_EQ(future.Get(),
+  EXPECT_EQ(manager_.CheckGpmPinAvailability(future.Get<0>()),
             EnclaveManager::GpmPinAvailability::kGpmPinSetButNotUsable);
+  EXPECT_EQ(future.Get<1>(), gaia_id_);
 }
 
 TEST_F(EnclaveManagerTest, CheckGpmPinAvailabilityWhenPinIsNotAvailable) {
   ASSERT_TRUE(Register());
 
-  base::test::TestFuture<EnclaveManager::GpmPinAvailability> future;
-  auto request = manager_.CheckGpmPinAvailability(future.GetCallback());
+  base::test::TestFuture<
+      trusted_vault::DownloadAuthenticationFactorsRegistrationStateResult,
+      GaiaId>
+      future;
+  auto request = manager_.DownloadAccountState(future.GetCallback());
   EXPECT_TRUE(future.Wait());
-  EXPECT_EQ(future.Get(), EnclaveManager::GpmPinAvailability::kGpmPinUnset);
+  EXPECT_EQ(manager_.CheckGpmPinAvailability(future.Get<0>()),
+            EnclaveManager::GpmPinAvailability::kGpmPinUnset);
+  EXPECT_EQ(future.Get<1>(), gaia_id_);
+}
+
+TEST_F(EnclaveManagerTest,
+       DownloadAccountStateReportsGaiaIdOfRequestedAccount) {
+  ASSERT_TRUE(Register());
+  base::test::TestFuture<
+      trusted_vault::DownloadAuthenticationFactorsRegistrationStateResult,
+      GaiaId>
+      future;
+  auto request = manager_.DownloadAccountState(future.GetCallback());
+  identity_test_env_.MakePrimaryAccountAvailable("other@example.com",
+                                                 signin::ConsentLevel::kSignin);
+  ASSERT_TRUE(future.Wait());
+  EXPECT_EQ(future.Get<1>(), gaia_id_);
+  // Don't check the state: it may be an error after the account switch.
 }
 
 class OpportunisticKeyRetrievalEnclaveManagerTest : public EnclaveManagerTest {
- public:
-  OpportunisticKeyRetrievalEnclaveManagerTest() {
-    scoped_feature_list_.InitWithFeatures(
-        {device::kWebAuthnOpportunisticRetrieval,
-         device::kWebAuthnDoNotAlwaysTerminateStateMachineDuringIdentityChange},
-        {});
-  }
-
  private:
-  base::test::ScopedFeatureList scoped_feature_list_;
+  base::test::ScopedFeatureList scoped_feature_list_{
+      device::kWebAuthnDoNotAlwaysTerminateStateMachineDuringIdentityChange};
 };
 
 #if !BUILDFLAG(IS_CHROMEOS)
@@ -2548,16 +3235,9 @@ class EnclaveManagerMockTimeTest : public EnclaveManagerTest {
 
 class OpportunisticKeyRetrievalEnclaveManagerMockTimeTest
     : public EnclaveManagerMockTimeTest {
- public:
-  OpportunisticKeyRetrievalEnclaveManagerMockTimeTest() {
-    scoped_feature_list_.InitWithFeatures(
-        {device::kWebAuthnOpportunisticRetrieval,
-         device::kWebAuthnDoNotAlwaysTerminateStateMachineDuringIdentityChange},
-        {});
-  }
-
  private:
-  base::test::ScopedFeatureList scoped_feature_list_;
+  base::test::ScopedFeatureList scoped_feature_list_{
+      device::kWebAuthnDoNotAlwaysTerminateStateMachineDuringIdentityChange};
 };
 
 #if !BUILDFLAG(IS_CHROMEOS)
@@ -2579,12 +3259,10 @@ TEST_F(OpportunisticKeyRetrievalEnclaveManagerMockTimeTest,
           kStoreKeysFromOpportunisticFlowCachedKeysBecauseAccountDoesNotMatch,
       1);
 
-  int ttl_seconds =
-      device::kWebAuthnOpportunisticRetrievalTimeToKeepCachedKeySeconds.Get();
-
   // Move to the point in time before the timeout. The cached key should not be
   // discarded before the timeout.
-  task_env_.FastForwardBy(base::Seconds(ttl_seconds - 1));
+  task_env_.FastForwardBy(EnclaveManager::kOpportunisticRetrievalKeyTTL -
+                          base::Seconds(1));
   histogram_tester.ExpectBucketCount(
       "WebAuthentication.GPM.CachedOpportunisticallyRetrievedKeyEvent",
       webauthn::metrics::
@@ -2619,12 +3297,10 @@ TEST_F(OpportunisticKeyRetrievalEnclaveManagerMockTimeTest,
           kStoreKeysFromOpportunisticFlowCachedKeysBecauseAccountDoesNotMatch,
       1);
 
-  int ttl_seconds =
-      device::kWebAuthnOpportunisticRetrievalTimeToKeepCachedKeySeconds.Get();
-
   // Move to the point in time before the timeout, and overwrite the cached key
   // with another opportunistically retrieved key.
-  task_env_.FastForwardBy(base::Seconds(ttl_seconds - 1));
+  task_env_.FastForwardBy(EnclaveManager::kOpportunisticRetrievalKeyTTL -
+                          base::Seconds(1));
   std::vector<uint8_t> key_2(kTestKey.begin(), kTestKey.end());
   manager_.StoreKeys(GaiaId("some_other_account_id_2"),
                      {trusted_vault::TrustedVaultKeyAndVersion(std::move(key_2),
@@ -2646,7 +3322,8 @@ TEST_F(OpportunisticKeyRetrievalEnclaveManagerMockTimeTest,
 
   // Move to the point in time before the timeout of the newly cached key. This
   // key should not be discarded before its TTL timeout.
-  task_env_.FastForwardBy(base::Seconds(ttl_seconds - 1));
+  task_env_.FastForwardBy(EnclaveManager::kOpportunisticRetrievalKeyTTL -
+                          base::Seconds(1));
   histogram_tester.ExpectBucketCount(
       "WebAuthentication.GPM.CachedOpportunisticallyRetrievedKeyEvent",
       webauthn::metrics::
@@ -2944,16 +3621,9 @@ TEST_F(EnclaveUVTest, UserVerifyingKeyUseExisting) {
 }
 
 class OpportunisticKeyRetrievalEnclaveUVTest : public EnclaveUVTest {
- public:
-  OpportunisticKeyRetrievalEnclaveUVTest() {
-    scoped_feature_list_.InitWithFeatures(
-        {device::kWebAuthnOpportunisticRetrieval,
-         device::kWebAuthnDoNotAlwaysTerminateStateMachineDuringIdentityChange},
-        {});
-  }
-
  private:
-  base::test::ScopedFeatureList scoped_feature_list_;
+  base::test::ScopedFeatureList scoped_feature_list_{
+      device::kWebAuthnDoNotAlwaysTerminateStateMachineDuringIdentityChange};
 };
 
 TEST_F(OpportunisticKeyRetrievalEnclaveUVTest, OpportunisticStoreKeys) {
@@ -3034,43 +3704,6 @@ TEST_F(OpportunisticKeyRetrievalEnclaveUVTest,
       1);
 }
 
-class NoOpportunisticKeyRetrievalEnclaveUVTest : public EnclaveUVTest {
- public:
-  NoOpportunisticKeyRetrievalEnclaveUVTest() {
-    scoped_feature_list_.InitAndDisableFeature(
-        device::kWebAuthnOpportunisticRetrieval);
-  }
-
- private:
-  base::test::ScopedFeatureList scoped_feature_list_;
-};
-
-TEST_F(NoOpportunisticKeyRetrievalEnclaveUVTest,
-       OpportunisticStoreKeysAreIgnoredWhenFeatureIsDisabled) {
-  security_domain_service_->pretend_there_are_members();
-  ASSERT_FALSE(manager_.IsRegistered());
-  EXPECT_EQ(manager_.store_keys_count(), 0u);
-
-  std::vector<uint8_t> key(kTestKey.begin(), kTestKey.end());
-  base::HistogramTester histogram_tester;
-  manager_.StoreKeys(gaia_id_,
-                     {trusted_vault::TrustedVaultKeyAndVersion(std::move(key),
-                                                               kSecretVersion)},
-                     /*user_action_trigger=*/std::nullopt);
-  histogram_tester.ExpectBucketCount(
-      "WebAuthentication.GPM.RecoveryEvent",
-      webauthn::metrics::WebAuthenticationGPMRecoveryEvent::
-          kStoreKeysFromOpportunisticFlowStarted,
-      0);
-  histogram_tester.ExpectBucketCount(
-      "WebAuthentication.GPM.RecoveryEvent",
-      webauthn::metrics::WebAuthenticationGPMRecoveryEvent::
-          kStoreKeysFromOpportunisticFlowSucceeded,
-      0);
-  EXPECT_EQ(manager_.store_keys_count(), 1u);
-  EXPECT_FALSE(manager_.IsRegistered());
-}
-
 TEST_F(OpportunisticKeyRetrievalEnclaveUVTest,
        OpportunisticStoreKeysRedundant) {
   ASSERT_FALSE(manager_.IsRegistered());
@@ -3108,6 +3741,56 @@ TEST_F(OpportunisticKeyRetrievalEnclaveUVTest,
   // several things will go wrong. If nothing else, `pretend_there_are_members`
   // isn't called so the fake security domain service will CHECK since the
   // version is non-zero.
+}
+
+// Regression test for https://crbug.com/573735417.
+// Ensure redundant keys from opportunistic retrieval before enclave load are
+// ignored.
+TEST_F(OpportunisticKeyRetrievalEnclaveUVTest,
+       OpportunisticStoreKeysRedundantBeforeLoad) {
+  security_domain_service_->pretend_there_are_members();
+  {
+    EnclaveKeysWaiter enclave_keys_waiter(&manager_);
+    manager_.StoreKeys(
+        gaia_id_,
+        {trusted_vault::TrustedVaultKeyAndVersion(
+            std::vector<uint8_t>(kTestKey.begin(), kTestKey.end()),
+            kSecretVersion)},
+        trusted_vault::TrustedVaultUserActionTriggerForUMA::
+            kPasskeyUnlockProfileMenu);
+    ASSERT_EQ(enclave_keys_waiter.Wait(),
+              EnclaveManager::OutOfContextRecoveryOutcome::
+                  kStoreKeysFromOpportunisticFlowSucceeded);
+  }
+  ASSERT_TRUE(manager_.IsReady());
+
+  NoArgFuture write_future;
+  if (manager_.RunWhenStoppedForTesting(write_future.GetCallback())) {
+    EXPECT_TRUE(write_future.Wait());
+  }
+  manager_.ResetForTesting();
+  ASSERT_FALSE(manager_.IsLoaded());
+
+  base::HistogramTester histogram_tester;
+  EnclaveKeysWaiter enclave_keys_waiter(&manager_);
+  manager_.StoreKeys(gaia_id_,
+                     {trusted_vault::TrustedVaultKeyAndVersion(
+                         std::vector<uint8_t>(kTestKey.begin(), kTestKey.end()),
+                         kSecretVersion)},
+                     trusted_vault::TrustedVaultUserActionTriggerForUMA::
+                         kPasskeyUnlockProfileMenu);
+  EXPECT_EQ(enclave_keys_waiter.Wait(),
+            EnclaveManager::OutOfContextRecoveryOutcome::
+                kStoreKeysFromOpportunisticFlowIgnoredRedundant);
+
+  EXPECT_TRUE(manager_.IsLoaded());
+  EXPECT_TRUE(manager_.is_idle());
+  EXPECT_EQ(manager_.store_keys_count(), 0u);
+  histogram_tester.ExpectBucketCount(
+      "WebAuthentication.GPM.RecoveryEvent",
+      webauthn::metrics::WebAuthenticationGPMRecoveryEvent::
+          kStoreKeysFromOpportunisticFlowIgnoredRedundant,
+      1);
 }
 
 #if !BUILDFLAG(IS_CHROMEOS)

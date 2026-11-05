@@ -807,13 +807,6 @@ class InsecureDelegate : public CookieAccessDelegate {
       const url::Origin& top_level_origin) const override {
     return true;
   }
-  [[nodiscard]]
-  std::pair<FirstPartySetMetadata, FirstPartySetsCacheFilter::MatchInfo>
-  ComputeFirstPartySetMetadata(
-      const net::SchemefulSite& site,
-      const net::SchemefulSite* top_frame_site) const override {
-    return {};
-  }
 };
 
 class SameSiteBypassNetworkDelegate : public TestNetworkDelegate {
@@ -1383,6 +1376,40 @@ TEST_F(SessionTest,
 
   base::TimeDelta lifetime = session->MinimumBoundCookieLifetime(cookies);
   EXPECT_NEAR(lifetime.InSecondsF(), 400.0, 5.0);
+}
+
+// accounts.example.test is outside the session's scope, so Create() drops the
+// refresh URL exclude rule for it. Hosting the refresh URL doesn't make the
+// origin visible.
+TEST_F(SessionTest, IsVisibleToOriginRefreshUrlOutsideScope) {
+  SessionParams params = CreateValidParams();
+  params.refresh_url = "https://accounts.example.test/refresh";
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<Session> session,
+                       Session::CreateIfValid(params));
+  ASSERT_TRUE(session);
+
+  EXPECT_FALSE(session->IsVisibleToOrigin(
+      url::Origin::Create(GURL("https://accounts.example.test"))));
+  EXPECT_FALSE(session->IncludesUrl(GURL("https://accounts.example.test/")));
+  EXPECT_FALSE(
+      session->IncludesUrl(GURL("https://accounts.example.test/refresh")));
+
+  EXPECT_FALSE(session->IsVisibleToOrigin(
+      url::Origin::Create(GURL("https://other.example.test"))));
+}
+
+// Excluding only the refresh endpoint leaves the rest of the origin in scope.
+TEST_F(SessionTest, IsVisibleToOriginRefreshEndpointExcludeOnly) {
+  SessionParams params = CreateValidParams();
+  params.refresh_url = "/refresh";
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<Session> session,
+                       Session::CreateIfValid(params));
+  ASSERT_TRUE(session);
+
+  EXPECT_TRUE(session->IsVisibleToOrigin(
+      url::Origin::Create(GURL("https://example.test"))));
+  EXPECT_FALSE(session->IncludesUrl(GURL("https://example.test/refresh")));
+  EXPECT_TRUE(session->IncludesUrl(GURL("https://example.test/")));
 }
 
 }  // namespace

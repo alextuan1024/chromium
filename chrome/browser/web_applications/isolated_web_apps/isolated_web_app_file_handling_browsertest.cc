@@ -16,6 +16,7 @@
 #include "chrome/browser/web_applications/isolated_web_apps/test/isolated_web_app_builder.h"
 #include "chrome/browser/web_applications/isolated_web_apps/test/isolated_web_app_test_update_server.h"
 #include "chrome/browser/web_applications/isolated_web_apps/test/policy_test_utils.h"
+#include "chrome/browser/web_applications/isolated_web_apps/update/isolated_web_app_update_manager.h"
 #include "chrome/browser/web_applications/test/web_app_icon_test_utils.h"
 #include "chrome/browser/web_applications/test/web_app_test_observers.h"
 #include "chrome/browser/web_applications/web_app_command_scheduler.h"
@@ -33,7 +34,7 @@
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/test_launcher.h"
 #include "third_party/blink/public/common/features.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 
 #if BUILDFLAG(IS_CHROMEOS)
 #include "chrome/browser/ash/file_manager/file_manager_test_util.h"
@@ -65,9 +66,10 @@ class IsolatedWebAppFileHandlingBrowserTest
   content::WebContents* LaunchWithFiles(
       const webapps::AppId& app_id,
       const std::vector<base::FilePath>& files) {
-    apps::AppLaunchParams params(
-        app_id, apps::LaunchContainer::kLaunchContainerWindow,
-        WindowOpenDisposition::NEW_WINDOW, apps::LaunchSource::kFromTest);
+    apps::AppLaunchParams params(app_id,
+                                 apps::LaunchContainer::kLaunchContainerWindow,
+                                 ui::mojom::WindowOpenDisposition::kNewWindow,
+                                 apps::LaunchSource::kFromTest);
 
     auto launch_infos =
         file_handler_manager().GetMatchingFileHandlerUrls(app_id, files);
@@ -222,8 +224,7 @@ class IsolatedWebAppFileHandlingApprovalBrowserTest
         &provider().install_manager());
     manifest_updated_observer.BeginListening({url_info.app_id()});
 
-    EXPECT_THAT(provider()
-                    .isolated_web_app_update_manager()
+    EXPECT_THAT(IsolatedWebAppUpdateManager::From(provider())
                     .DiscoverAndPrepareUpdatesNow(),
                 testing::Eq(1ul));
 

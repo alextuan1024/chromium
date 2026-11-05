@@ -11,7 +11,6 @@ import org.chromium.chrome.browser.tab.TabLaunchType;
 import org.chromium.chrome.browser.tab.TabState;
 import org.chromium.content_public.browser.LoadUrlParams;
 import org.chromium.content_public.browser.WebContents;
-import org.chromium.url.GURL;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -95,8 +94,6 @@ public class AccumulatingTabCreator implements TabCreator {
     public @Nullable Tab createFrozenTab(TabState state, int id, int index) {
         if (mIsRecording) {
             createFrozenTabArgumentsList.add(new CreateFrozenTabArguments(state, id, index));
-        } else if (state.contentsState != null) {
-            state.contentsState.destroy();
         }
         return null;
     }
@@ -114,7 +111,6 @@ public class AccumulatingTabCreator implements TabCreator {
             boolean shouldPin,
             WebContents webContents,
             @TabLaunchType int type,
-            GURL url,
             int index,
             CompletableFuture<Boolean> addTabToModel) {
         // Should never be called.

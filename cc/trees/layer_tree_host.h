@@ -13,14 +13,13 @@
 #include <optional>
 #include <set>
 #include <string>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
 #include "base/auto_reset.h"
 #include "base/cancelable_callback.h"
 #include "base/containers/flat_map.h"
-#include "base/functional/callback_forward.h"
+#include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/read_only_shared_memory_region.h"
 #include "base/memory/scoped_refptr.h"
@@ -46,6 +45,7 @@
 #include "cc/metrics/begin_main_frame_metrics.h"
 #include "cc/metrics/events_metrics_manager.h"
 #include "cc/metrics/frame_sequence_tracker.h"
+#include "cc/paint/element_id.h"
 #include "cc/paint/node_id.h"
 #include "cc/resources/ui_resource_request.h"
 #include "cc/trees/browser_controls_params.h"
@@ -65,6 +65,7 @@
 #include "cc/trees/viewport_layers.h"
 #include "cc/trees/viewport_property_ids.h"
 #include "components/viz/common/surfaces/local_surface_id.h"
+#include "third_party/abseil-cpp/absl/container/flat_hash_map.h"
 #include "ui/gfx/delegated_ink_metadata.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/overlay_transform.h"
@@ -85,6 +86,7 @@ class PaintWorkletLayerPainter;
 class RasterDarkModeFilter;
 class RenderFrameMetadataObserver;
 class RenderingStatsInstrumentation;
+class ScrollTimingBufferConsumer;
 class TaskGraphRunner;
 class UIResourceManager;
 
@@ -261,6 +263,18 @@ class CC_EXPORT LayerTreeHost : public MutatorHostDelegate {
       EventsMetricsManager::ScopedMonitor::DoneCallback done_callback);
   void ClearEventsMetrics();
 
+  // Called by the proxy during startup.
+  void InitializeScrollTimingBufferConsumer(
+      base::ReadOnlySharedMemoryRegion region);
+
+  // Owned by this host until destruction; main-thread only. Null when Scroll
+  // Timing is disabled, unsupported, or shared-memory setup fails. It has one
+  // read position, so only one client should call ReadRecords().
+  ScrollTimingBufferConsumer* scroll_timing_buffer_consumer() {
+    DCHECK(IsMainThread());
+    return scroll_timing_buffer_consumer_.get();
+  }
+
   size_t saved_events_metrics_count_for_testing() const {
     DCHECK(IsMainThread());
     return events_metrics_manager_.saved_events_metrics_count_for_testing();
@@ -316,6 +330,15 @@ class CC_EXPORT LayerTreeHost : public MutatorHostDelegate {
 
   // Calls SetNeedsAnimate() if there is no main frame already in progress.
   void SetNeedsAnimateIfNotInsideMainFrame();
+
+  // Notifies that we received a frame that did not go through the main thread
+  // commit, such as from an offscreen canvas. This is used to make sure we do
+  // not throttle such frames.
+  void NotifyOutOfBandFrame();
+
+  bool TakeHasOutOfBandFrameForTesting() {
+    return std::exchange(has_out_of_band_frame_for_testing_, false);
+  }
 
   // Requests a main frame update and also ensure that the host pulls layer
   // updates from the client, even if no content might have changed, without
@@ -560,6 +583,11 @@ class CC_EXPORT LayerTreeHost : public MutatorHostDelegate {
   // because each compositor doesn't know its position relative to other
   // compositors. This is specified in device viewport coordinate space.
   void SetVisualDeviceViewportSize(const gfx::Size&);
+  void SetMemoryPolicy(const ManagedMemoryPolicy& policy);
+  const ManagedMemoryPolicy& memory_policy() const {
+    DCHECK(IsMainThread());
+    return memory_policy_;
+  }
 
   void SetMaxSafeAreaInsets(const gfx::InsetsF& max_safe_area_insets);
   gfx::Rect device_viewport_rect() const {
@@ -677,6 +705,9 @@ class CC_EXPORT LayerTreeHost : public MutatorHostDelegate {
   // calculations.
   void SetExternalPageScaleFactor(float page_scale_factor,
                                   bool is_external_pinch_gesture_active);
+  float external_page_scale_factor() const {
+    return pending_commit_state()->external_page_scale_factor;
+  }
   bool is_external_pinch_gesture_active_for_testing() {
     return pending_commit_state()->is_external_pinch_gesture_active;
   }
@@ -716,6 +747,8 @@ class CC_EXPORT LayerTreeHost : public MutatorHostDelegate {
   }
 
   bool in_will_commit() const { return inside_will_commit_; }
+
+  void ScheduleLayerForPostCommitDisposal(scoped_refptr<Layer> layer);
 
   bool in_commit() const {
     return commit_completion_event_ && !commit_completion_event_->IsSignaled();
@@ -1064,6 +1097,7 @@ class CC_EXPORT LayerTreeHost : public MutatorHostDelegate {
   bool DoUpdateLayers();
   std::unique_ptr<CommitState> ActivateCommitState();
   void WaitForCommitCompletion(bool for_protected_sequence) const;
+  void DisposeLayersAfterCommit();
 
   void UpdateDeferMainFrameUpdateInternal();
   void UpdatePauseRenderingInternal();
@@ -1105,6 +1139,7 @@ class CC_EXPORT LayerTreeHost : public MutatorHostDelegate {
   std::unique_ptr<LayerTreeFrameSink> current_layer_tree_frame_sink_;
 
   const LayerTreeSettings settings_;
+  ManagedMemoryPolicy memory_policy_;
 
   bool visible_ = false;
   bool should_warm_up_ = false;
@@ -1121,6 +1156,10 @@ class CC_EXPORT LayerTreeHost : public MutatorHostDelegate {
   // Track when we're inside `WillCommit` to ensure commit state is not
   // modified.
   bool inside_will_commit_ = false;
+
+  // Layers queued during `WillCommit` to be detached and cleaned up once the
+  // commit completes.
+  LayerList layers_to_dispose_;
 
   // Set to force a commit during BeginMainFrame even if there are no actual
   // rendering changes, to ensure the bits in CommitState are propagated.
@@ -1140,10 +1179,7 @@ class CC_EXPORT LayerTreeHost : public MutatorHostDelegate {
 
   scoped_refptr<HeadsUpDisplayLayer> hud_layer_;
 
-  // Layer id to Layer map.
-  std::unordered_map<int, raw_ptr<Layer, CtnExperimental>> layer_id_map_;
-
-  std::unordered_map<ElementId, raw_ptr<Layer, CtnExperimental>, ElementIdHash>
+  absl::flat_hash_map<ElementId, raw_ptr<Layer, CtnExperimental>>
       element_layers_map_;
 
   bool in_paint_layer_contents_ = false;
@@ -1157,7 +1193,7 @@ class CC_EXPORT LayerTreeHost : public MutatorHostDelegate {
 
   raw_ptr<RasterDarkModeFilter> dark_mode_filter_;
 
-  std::unordered_map<int, std::pair<base::OnceCallback<void(bool)>, bool>>
+  absl::flat_hash_map<int, base::OnceCallback<void(bool)>>
       pending_image_decodes_;
 
   struct ScrollAnimationState {
@@ -1174,6 +1210,7 @@ class CC_EXPORT LayerTreeHost : public MutatorHostDelegate {
   mutable std::unique_ptr<CompletionEvent> commit_completion_event_;
 
   EventsMetricsManager events_metrics_manager_;
+  std::unique_ptr<ScrollTimingBufferConsumer> scroll_timing_buffer_consumer_;
 
   // A map from ViewTransition tokens to whether a new LocalSurfaceId is
   // needed for this ViewTransitionRequest.
@@ -1190,6 +1227,7 @@ class CC_EXPORT LayerTreeHost : public MutatorHostDelegate {
   bool in_composite_for_test_ = false;
 
   bool syncing_deltas_for_test_ = false;
+  bool has_out_of_band_frame_for_testing_ = false;
 
   std::unique_ptr<PropertyTreeDelegate> owned_property_tree_delegate_;
   raw_ptr<PropertyTreeDelegate> property_tree_delegate_;

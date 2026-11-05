@@ -7,18 +7,32 @@
 
 #import <Foundation/Foundation.h>
 
+// Filter options for the session journal in the TTC prototype UI.
+enum class TTCJournalFilter {
+  kAll = 0,
+  kSession,
+  kConversation,
+  kBackend,
+  kAudio,
+  kActuation,
+};
+
 // Protocol for mutating model and hardware state based on user interactions
-// in the TalkToChrome prototype UI.
+// in the TTC prototype UI.
 @protocol TTCMutator <NSObject>
-
-// Starts an end-to-end voice session.
-- (void)startSession;
-
-// Gracefully terminates the active voice session.
-- (void)stopSession;
 
 // Notifies the mutator that the UI has appeared, triggering state hydration.
 - (void)viewWillAppear;
+
+// Clears all entries in the session journal.
+- (void)clearJournal;
+
+// Filters the session journal by `filter`.
+- (void)setJournalComponentFilter:(TTCJournalFilter)filter;
+
+// Toggles between the simplified human-readable journal view (`NO`, default)
+// and the detailed telemetry journal view (`YES`).
+- (void)setJournalDetailedMode:(BOOL)detailed;
 
 @end
 

@@ -30,8 +30,6 @@ dtapuska@chromium.org
 # flackr reviews animation, input-related and scrolling-related changes.
 flackr@chromium.org
 fmalita@chromium.org
-# foolip reviews <video>, <track>, WebVTT and Fullscreen.
-foolip@chromium.org
 fs@opera.com
 fserb@chromium.org
 futhark@chromium.org
@@ -44,6 +42,7 @@ japhet@chromium.org
 jarhar@chromium.org
 jbroman@chromium.org
 jfernandez@igalia.com
+# junov reviews canvas-related changes.
 junov@chromium.org
 kbr@chromium.org
 keishi@chromium.org
@@ -79,3 +78,6 @@ vollick@chromium.org
 wangxianzhu@chromium.org
 yoavweiss@chromium.org
 yyanagisawa@chromium.org
+
+# For Fuchsia-specific changes:
+per-file ...fuchsia...=file://build/fuchsia/OWNERS

@@ -15,6 +15,7 @@
 #include "third_party/blink/renderer/core/layout/physical_box_fragment.h"
 #include "third_party/blink/renderer/core/layout/positioned_float.h"
 #include "third_party/blink/renderer/platform/geometry/layout_unit.h"
+#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/wtf/size_assertions.h"
 
 namespace blink {
@@ -28,7 +29,7 @@ struct SameSizeAsLayoutResult
   Member<void*> rare_data_;
   union {
     BfcOffset bfc_offset;
-    BoxStrut oof_insets_for_get_computed_style;
+    LogicalOffset oof_positioned_offset;
   };
   LayoutUnit intrinsic_block_size;
   unsigned bitfields[1];
@@ -47,10 +48,12 @@ const LayoutResult* LayoutResult::Clone(const LayoutResult& other) {
 
 // static
 const LayoutResult* LayoutResult::CloneWithPostLayoutFragments(
-    const LayoutResult& other) {
+    const LayoutResult& other,
+    const std::optional<PhysicalRect> new_scrollable_overflow) {
   return MakeGarbageCollected<LayoutResult>(
       other, PhysicalBoxFragment::CloneWithPostLayoutFragments(
-                 To<PhysicalBoxFragment>(other.GetPhysicalFragment())));
+                 To<PhysicalBoxFragment>(other.GetPhysicalFragment()),
+                 new_scrollable_overflow));
 }
 
 LayoutResult::LayoutResult(BoxFragmentBuilderPassKey passkey,
@@ -161,16 +164,9 @@ LayoutResult::LayoutResult(const LayoutResult& other,
                      : nullptr),
       intrinsic_block_size_(other.intrinsic_block_size_),
       bitfields_(other.bitfields_) {
-  if (!bitfields_.has_oof_insets_for_get_computed_style) {
-    bfc_offset_.line_offset = bfc_line_offset;
-    bfc_offset_.block_offset = bfc_block_offset.value_or(LayoutUnit());
-    bitfields_.is_bfc_block_offset_nullopt = !bfc_block_offset.has_value();
-  } else {
-    DCHECK(physical_fragment_->IsOutOfFlowPositioned());
-    DCHECK_EQ(bfc_line_offset, LayoutUnit());
-    DCHECK(bfc_block_offset && bfc_block_offset.value() == LayoutUnit());
-    oof_insets_for_get_computed_style_ = BoxStrut();
-  }
+  bfc_offset_.line_offset = bfc_line_offset;
+  bfc_offset_.block_offset = bfc_block_offset.value_or(LayoutUnit());
+  bitfields_.is_bfc_block_offset_nullopt = !bfc_block_offset.has_value();
 
   ExclusionSpace new_exclusion_space = MergeExclusionSpaces(
       other, space_.GetExclusionSpace(), bfc_line_offset, block_offset_delta);
@@ -194,16 +190,9 @@ LayoutResult::LayoutResult(const LayoutResult& other,
       rare_data_(other.rare_data_
                      ? MakeGarbageCollected<RareData>(*other.rare_data_)
                      : nullptr),
+      bfc_offset_(other.bfc_offset_),
       intrinsic_block_size_(other.intrinsic_block_size_),
       bitfields_(other.bitfields_) {
-  if (!bitfields_.has_oof_insets_for_get_computed_style) {
-    bfc_offset_ = other.bfc_offset_;
-  } else {
-    DCHECK(physical_fragment_->IsOutOfFlowPositioned());
-    oof_insets_for_get_computed_style_ =
-        other.oof_insets_for_get_computed_style_;
-  }
-
   DCHECK_EQ(physical_fragment_->Size(), other.physical_fragment_->Size());
 }
 
@@ -311,16 +300,19 @@ LayoutResult::RareData* LayoutResult::EnsureRareData() {
   return rare_data_.Get();
 }
 
-void LayoutResult::CopyMutableOutOfFlowData(const LayoutResult& other) const {
-  if (bitfields_.has_oof_insets_for_get_computed_style) {
-    return;
+void LayoutResult::CopyMutableData(const LayoutResult& other) const {
+  const PhysicalBoxFragment& fragment =
+      To<PhysicalBoxFragment>(GetPhysicalFragment());
+  const PhysicalBoxFragment& other_fragment =
+      To<PhysicalBoxFragment>(other.GetPhysicalFragment());
+
+  fragment.GetMutableForContainerLayout().SetMargins(other_fragment.Margins());
+  fragment.GetMutableForPositioned().SetUsedPositionInsets(
+      other_fragment.UsedPositionInsets());
+
+  if (std::optional<PhysicalRect> imcb = other.InsetModifiedContainingBlock()) {
+    GetMutableForOutOfFlow().SetInsetModifiedContainingBlock(*imcb);
   }
-  GetMutableForOutOfFlow().SetOutOfFlowInsetsForGetComputedStyle(
-      other.OutOfFlowInsetsForGetComputedStyle());
-  GetMutableForOutOfFlow().SetOutOfFlowPositionedOffset(
-      other.OutOfFlowPositionedOffset());
-  GetMutableForOutOfFlow().SetInsetModifiedContainingBlock(
-      other.InsetModifiedContainingBlock());
 }
 
 void LayoutResult::MutableForOutOfFlow::SetAccessibilityAnchor(

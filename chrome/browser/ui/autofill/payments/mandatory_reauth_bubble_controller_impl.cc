@@ -5,22 +5,21 @@
 #include "chrome/browser/ui/autofill/payments/mandatory_reauth_bubble_controller_impl.h"
 
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/ui/actions/chrome_action_id.h"
 #include "chrome/browser/ui/autofill/autofill_bubble_base.h"
 #include "chrome/browser/ui/autofill/autofill_bubble_handler.h"
 #include "chrome/browser/ui/chrome_pages.h"
-#include "chrome/browser/ui/page_action/page_action_icon_type.h"
 #include "components/autofill/core/browser/metrics/payments/mandatory_reauth_metrics.h"
 #include "components/strings/grit/components_strings.h"
 #include "ui/base/l10n/l10n_util.h"
 
 #if BUILDFLAG(IS_ANDROID)
 #include "base/android/jni_android.h"
+#include "third_party/jni_zero/jni_zero.h"
+
+// Must come after all headers that specialize `FromJniType()` / `ToJniType()`.
 #include "chrome/browser/mandatory_reauth/android/internal/jni/MandatoryReauthOptInBottomSheetControllerBridge_jni.h"
 #else
-#include "chrome/browser/ui/actions/chrome_action_id.h"
-#include "chrome/browser/ui/browser_window.h"
-#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
-#include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/page_action/page_action_controller.h"
 #include "chrome/browser/ui/tabs/public/tab_features.h"
 #include "components/tabs/public/tab_interface.h"
@@ -30,7 +29,11 @@ namespace autofill {
 
 MandatoryReauthBubbleControllerImpl::MandatoryReauthBubbleControllerImpl(
     content::WebContents* web_contents)
-    : AutofillBubbleControllerBase(web_contents),
+    : AutofillBubbleControllerBase(
+          web_contents,
+          PageActionConfig{.action_id = kActionAutofillMandatoryReauth,
+                           .should_manage_visibility = true,
+                           .should_sync_bubble_showing_state = true}),
       content::WebContentsUserData<MandatoryReauthBubbleControllerImpl>(
           *web_contents) {}
 
@@ -51,6 +54,13 @@ void MandatoryReauthBubbleControllerImpl::SetupAndShowBubble(
   if (bubble_view() || !MaySetUpBubble()) {
     return;
   }
+#if !BUILDFLAG(IS_ANDROID)
+  // Desktop bubbles require a browser tab window to anchor to; skip non-tab
+  // WebContents such as extension popups or side panels.
+  if (!tabs::TabInterface::MaybeGetFromContents(web_contents())) {
+    return;
+  }
+#endif
 
   SetupBubble(std::move(accept_mandatory_reauth_callback),
               std::move(cancel_mandatory_reauth_callback),
@@ -261,11 +271,6 @@ MandatoryReauthBubbleControllerImpl::GetMandatoryReauthBubbleType() const {
 }
 
 #if !BUILDFLAG(IS_ANDROID)
-std::optional<actions::ActionId>
-MandatoryReauthBubbleControllerImpl::GetActionIdForPageAction() {
-  return kActionAutofillMandatoryReauth;
-}
-
 bool MandatoryReauthBubbleControllerImpl::ShouldShowPageAction() {
   return IsIconVisible();
 }
@@ -279,17 +284,15 @@ void MandatoryReauthBubbleControllerImpl::DoShowBubble() {
   view_android_ =
       MandatoryReauthOptInViewAndroid::CreateAndShow(web_contents(), this);
   if (!view_android_) {
-    java_controller_bridge_.Reset();
+    // Keep `java_controller_bridge_` alive when `CreateAndShow()` returns null
+    // (for example, when `BottomSheetController` queues the sheet behind
+    // another closing sheet) so `~MandatoryReauthBubbleControllerImpl()` still
+    // calls `destroy()` to clear its native pointer on `WebContents` teardown.
     return;
   }
   SetBubbleView(*view_android_.get());
 #else
-  BrowserWindowInterface* browser =
-      GlobalBrowserCollection::GetInstance()->FindBrowserWithTab(
-          web_contents());
-  AutofillBubbleHandler* autofill_bubble_handler =
-      BrowserWindow::FromBrowser(browser)->GetAutofillBubbleHandler();
-  SetBubbleView(*autofill_bubble_handler->ShowMandatoryReauthBubble(
+  SetBubbleView(*GetAutofillBubbleHandler()->ShowMandatoryReauthBubble(
       web_contents(), this, /*is_user_gesture=*/false, current_bubble_type_));
 #endif  // BUILDFLAG(IS_ANDROID)
 }
@@ -313,8 +316,7 @@ MandatoryReauthBubbleControllerImpl::GetJavaControllerBridge() {
   if (!java_controller_bridge_) {
     java_controller_bridge_ =
         Java_MandatoryReauthOptInBottomSheetControllerBridge_create(
-            base::android::AttachCurrentThread(),
-            reinterpret_cast<intptr_t>(this));
+            base::android::AttachCurrentThread(), jni_zero::MakeRaw(this));
   }
   return base::android::ScopedJavaLocalRef<jobject>(java_controller_bridge_);
 }

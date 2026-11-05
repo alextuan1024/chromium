@@ -23,6 +23,7 @@
 #include "base/compiler_specific.h"
 #include "base/containers/span.h"
 #include "base/environment.h"
+#include "base/feature_list.h"
 #include "base/features.h"
 #include "base/files/file.h"
 #include "base/files/file_enumerator.h"
@@ -31,6 +32,7 @@
 #include "base/files/scoped_file.h"
 #include "base/files/scoped_temp_dir.h"
 #include "base/functional/bind.h"
+#include "base/functional/callback_helpers.h"
 #include "base/logging.h"
 #include "base/path_service.h"
 #include "base/rand_util.h"
@@ -129,7 +131,7 @@ FilePath MakeShortFilePath(const FilePath& input) {
 }
 #endif  // BUILDFLAG(IS_WIN)
 
-#if BUILDFLAG(IS_MAC)
+#if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
 // Provide a simple way to change the permissions bits on |path| in tests.
 // ASSERT failures will return, but not stop the test.  Caller should wrap
 // calls to this function in ASSERT_NO_FATAL_FAILURE().
@@ -145,7 +147,7 @@ void ChangePosixFilePermissions(const FilePath& path,
   mode &= ~mode_bits_to_clear;
   ASSERT_TRUE(SetPosixFilePermissions(path, mode));
 }
-#endif  // BUILDFLAG(IS_MAC)
+#endif  // BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
 
 // Fuchsia doesn't support file permissions.
 #if !BUILDFLAG(IS_FUCHSIA)
@@ -1909,7 +1911,7 @@ TEST_F(FileUtilTest, ContentUriGetInfo) {
   EXPECT_EQ(12u, content_uri_document_info.size);
   EXPECT_EQ(info.last_modified, content_uri_info.last_modified);
   // Java InMemory provider sets last-modified to unix epoch.
-  EXPECT_EQ(content_uri_in_memory_info.last_modified, Time::FromTimeT(0));
+  EXPECT_EQ(content_uri_in_memory_info.last_modified, Time::UnixEpoch());
   // Java DocumentProvider only does resolution to seconds.
   EXPECT_EQ(info.last_modified.ToTimeT(),
             content_uri_document_info.last_modified.ToTimeT());
@@ -2331,6 +2333,51 @@ TEST_F(FileUtilTest,
   EXPECT_FALSE(PathExists(deletion_dir));
   EXPECT_TRUE(PathExists(target_dir));
   EXPECT_FALSE(PathExists(target_file));
+}
+
+TEST_F(FileUtilTest, DeletePathRecursively_WithoutFeatureList) {
+  std::unique_ptr<FeatureList> original_feature_list =
+      FeatureList::ClearInstanceForTesting();
+  FeatureList::FailOnFeatureAccessWithoutFeatureList();
+
+  base::ScopedClosureRunner restore_feature_list(base::BindOnce(
+      [](std::unique_ptr<FeatureList> feature_list) {
+        FeatureList::ClearInstanceForTesting();
+        if (feature_list) {
+          FeatureList::RestoreInstanceForTesting(std::move(feature_list));
+        }
+      },
+      std::move(original_feature_list)));
+
+  // Create a target directory with a file.
+  FilePath target_dir = temp_dir_.GetPath().Append(FPL("target_dir"));
+  ASSERT_TRUE(CreateDirectory(target_dir));
+  FilePath target_file = target_dir.Append(FPL("target_file.txt"));
+  CreateTextFile(target_file, bogus_content);
+  ASSERT_TRUE(PathExists(target_file));
+
+  // Also create a junction inside the directory to verify reparse point
+  // traversal behavior without FeatureList.
+  FilePath junction_target = temp_dir_.GetPath().Append(FPL("junction_target"));
+  ASSERT_TRUE(CreateDirectory(junction_target));
+  FilePath junction_file = junction_target.Append(FPL("junction_file.txt"));
+  CreateTextFile(junction_file, bogus_content);
+  ASSERT_TRUE(PathExists(junction_file));
+
+  FilePath junction_path = target_dir.Append(FPL("junction"));
+  ASSERT_TRUE(CreateDirectory(junction_path));
+  std::optional<test::FilePathReparsePoint> reparse_point =
+      test::FilePathReparsePoint::Create(junction_path, junction_target);
+  ASSERT_TRUE(reparse_point.has_value());
+  ASSERT_TRUE(PathExists(junction_path.Append(FPL("junction_file.txt"))));
+
+  // Should succeed without crashing even when FeatureList is uninitialized.
+  EXPECT_TRUE(DeletePathRecursively(target_dir));
+  EXPECT_FALSE(PathExists(target_dir));
+  // Reparse point traversal prevention must remain enabled by default,
+  // ensuring the junction target contents were not deleted.
+  EXPECT_TRUE(PathExists(junction_target));
+  EXPECT_TRUE(PathExists(junction_file));
 }
 
 TEST_F(FileUtilTest, IsLink) {
@@ -3493,13 +3540,6 @@ TEST_F(FileUtilTest, CreateNewTempDirectoryPrefixTest) {
       CreateNewTempDirectory(FILE_PATH_LITERAL("test_dir_prefix"), &temp_dir));
   EXPECT_TRUE(PathExists(temp_dir));
 
-  const FilePath::StringType matcher =
-#if BUILDFLAG(IS_WIN)
-      FILE_PATH_LITERAL("test_dir_prefix*");
-#else   // BUILDFLAG(IS_WIN)
-      FILE_PATH_LITERAL("*.test_dir_prefix.*");
-#endif  // BUILDFLAG(IS_WIN)
-
   EXPECT_THAT(temp_dir.value(),
               ::testing::HasSubstr(FILE_PATH_LITERAL("test_dir_prefix")));
   EXPECT_TRUE(DeleteFile(temp_dir));
@@ -3921,27 +3961,49 @@ TEST_F(FileUtilTest, ReadFileToBytes) {
   const std::vector<uint8_t> kTestData = {'0', '1', '2', '3'};
 
   FilePath file_path =
-      temp_dir_.GetPath().Append(FILE_PATH_LITERAL("ReadFileToStringTest"));
+      temp_dir_.GetPath().Append(FILE_PATH_LITERAL("ReadFileToBytesTest"));
   FilePath file_path_dangerous =
       temp_dir_.GetPath()
           .Append(FILE_PATH_LITERAL(".."))
           .Append(temp_dir_.GetPath().BaseName())
-          .Append(FILE_PATH_LITERAL("ReadFileToStringTest"));
+          .Append(FILE_PATH_LITERAL("ReadFileToBytesTest"));
 
   // Create test file.
   ASSERT_TRUE(WriteFile(file_path, kTestData));
 
   std::optional<std::vector<uint8_t>> bytes = ReadFileToBytes(file_path);
   ASSERT_TRUE(bytes.has_value());
-  EXPECT_EQ(kTestData, bytes);
+  EXPECT_EQ(kTestData, bytes.value());
+
+  EXPECT_FALSE(ReadFileToBytesWithMaxSize(file_path, 0).has_value());
+  EXPECT_FALSE(ReadFileToBytesWithMaxSize(file_path, 2).has_value());
+  EXPECT_FALSE(ReadFileToBytesWithMaxSize(file_path, 3).has_value());
+
+  bytes = ReadFileToBytesWithMaxSize(file_path, 4);
+  ASSERT_TRUE(bytes.has_value());
+  EXPECT_EQ(kTestData, bytes.value());
+
+  bytes = ReadFileToBytesWithMaxSize(file_path, 6);
+  ASSERT_TRUE(bytes.has_value());
+  EXPECT_EQ(kTestData, bytes.value());
 
   // Write empty file.
   ASSERT_TRUE(WriteFile(file_path, ""));
   bytes = ReadFileToBytes(file_path);
   ASSERT_TRUE(bytes.has_value());
-  EXPECT_TRUE(bytes->empty());
+  EXPECT_TRUE(bytes.value().empty());
 
-  ASSERT_FALSE(ReadFileToBytes(file_path_dangerous));
+  bytes = ReadFileToBytesWithMaxSize(file_path, 0);
+  ASSERT_TRUE(bytes.has_value());
+  EXPECT_TRUE(bytes.value().empty());
+
+  EXPECT_FALSE(ReadFileToBytes(file_path_dangerous).has_value());
+  EXPECT_FALSE(ReadFileToBytesWithMaxSize(file_path_dangerous, 6).has_value());
+
+  // Delete test file.
+  EXPECT_TRUE(DeleteFile(file_path));
+  EXPECT_FALSE(ReadFileToBytes(file_path).has_value());
+  EXPECT_FALSE(ReadFileToBytesWithMaxSize(file_path, 6).has_value());
 }
 
 TEST_F(FileUtilTest, ReadFileToString) {
@@ -4591,7 +4653,7 @@ TEST_F(FileUtilTest, SetCloseOnExec) {
 
 #endif
 
-#if BUILDFLAG(IS_MAC)
+#if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
 
 // Testing VerifyPathControlledByAdmin() is hard, because there is no
 // way a test can make a file owned by root, or change file paths
@@ -4859,7 +4921,7 @@ TEST_F(VerifyPathControlledByUserTest, WriteBitChecks) {
   EXPECT_TRUE(VerifyPathControlledByUser(sub_dir_, text_file_, uid_, ok_gids_));
 }
 
-#endif  // BUILDFLAG(IS_MAC)
+#endif  // BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
 
 #if BUILDFLAG(IS_ANDROID)
 TEST_F(FileUtilTest, ValidContentUriTest) {
@@ -5402,6 +5464,110 @@ TEST_F(FileUtilTest, IsReservedNameOnWindows) {
     EXPECT_TRUE(IsReservedNameOnWindows(basename)) << basename;
   }
 }
+
+#if BUILDFLAG(IS_POSIX)
+
+TEST_F(FileUtilTest, CopyDirectoryNoFollowSuccess) {
+  FilePath dir_name_from =
+      temp_dir_.GetPath().Append(FILE_PATH_LITERAL("Copy_From_Subdir"));
+  ASSERT_TRUE(CreateDirectory(dir_name_from));
+
+  FilePath file_name_from =
+      dir_name_from.Append(FILE_PATH_LITERAL("Copy_Test_File.txt"));
+  CreateTextFile(file_name_from, L"Gooooooooooooooooooooogle");
+
+  FilePath subdir_name_from = dir_name_from.Append(FILE_PATH_LITERAL("Subdir"));
+  ASSERT_TRUE(CreateDirectory(subdir_name_from));
+  FilePath subfile_name_from =
+      subdir_name_from.Append(FILE_PATH_LITERAL("Sub_File.txt"));
+  CreateTextFile(subfile_name_from, L"Subdir content");
+
+  FilePath dir_name_to =
+      temp_dir_.GetPath().Append(FILE_PATH_LITERAL("Copy_To_Subdir"));
+
+  EXPECT_TRUE(
+      CopyDirectoryNoFollow(dir_name_from, dir_name_to, /*recursive=*/true));
+
+  EXPECT_TRUE(
+      PathExists(dir_name_to.Append(FILE_PATH_LITERAL("Copy_Test_File.txt"))));
+  EXPECT_TRUE(PathExists(dir_name_to.Append(FILE_PATH_LITERAL("Subdir"))
+                             .Append(FILE_PATH_LITERAL("Sub_File.txt"))));
+
+  // Copy a directory into an already-existing destination directory,
+  // which copies `dir_name_from` as a subdirectory.
+  FilePath dir_name_to_existing =
+      temp_dir_.GetPath().Append(FILE_PATH_LITERAL("Copy_To_Existing_Dir"));
+  ASSERT_TRUE(CreateDirectory(dir_name_to_existing));
+  EXPECT_TRUE(CopyDirectoryNoFollow(dir_name_from, dir_name_to_existing,
+                                    /*recursive=*/true));
+  EXPECT_TRUE(PathExists(
+      dir_name_to_existing.Append(FILE_PATH_LITERAL("Copy_From_Subdir"))
+          .Append(FILE_PATH_LITERAL("Copy_Test_File.txt"))));
+
+  // Copy a single regular file into an existing directory.
+  FilePath existing_dir_to =
+      temp_dir_.GetPath().Append(FILE_PATH_LITERAL("Copy_File_To_Dir"));
+  ASSERT_TRUE(CreateDirectory(existing_dir_to));
+  EXPECT_TRUE(CopyDirectoryNoFollow(file_name_from, existing_dir_to,
+                                    /*recursive=*/true));
+  EXPECT_TRUE(PathExists(
+      existing_dir_to.Append(FILE_PATH_LITERAL("Copy_Test_File.txt"))));
+
+  // Copy a single regular file to a new destination file path.
+  FilePath file_name_to =
+      temp_dir_.GetPath().Append(FILE_PATH_LITERAL("Copied_Single_File.txt"));
+  EXPECT_TRUE(
+      CopyDirectoryNoFollow(file_name_from, file_name_to, /*recursive=*/true));
+  EXPECT_TRUE(PathExists(file_name_to));
+}
+
+TEST_F(FileUtilTest, CopyDirectoryNoFollowRejectsSymlinksAndFifos) {
+  FilePath dir_name_from =
+      temp_dir_.GetPath().Append(FILE_PATH_LITERAL("Copy_From_Subdir"));
+  ASSERT_TRUE(CreateDirectory(dir_name_from));
+
+  FilePath file_name_from =
+      dir_name_from.Append(FILE_PATH_LITERAL("Copy_Test_File.txt"));
+  CreateTextFile(file_name_from, L"Gooooooooooooooooooooogle");
+
+  // 1. Reject symlink as source root.
+  FilePath symlink_root =
+      temp_dir_.GetPath().Append(FILE_PATH_LITERAL("Symlink_Root"));
+  ASSERT_TRUE(CreateSymbolicLink(dir_name_from, symlink_root));
+  FilePath dir_name_to1 =
+      temp_dir_.GetPath().Append(FILE_PATH_LITERAL("Copy_To_1"));
+  EXPECT_FALSE(
+      CopyDirectoryNoFollow(symlink_root, dir_name_to1, /*recursive=*/true));
+
+  // 2. Reject symlink as destination root.
+  FilePath real_dst = temp_dir_.GetPath().Append(FILE_PATH_LITERAL("Real_Dst"));
+  ASSERT_TRUE(CreateDirectory(real_dst));
+  FilePath symlink_dst =
+      temp_dir_.GetPath().Append(FILE_PATH_LITERAL("Symlink_Dst"));
+  ASSERT_TRUE(CreateSymbolicLink(real_dst, symlink_dst));
+  EXPECT_FALSE(
+      CopyDirectoryNoFollow(dir_name_from, symlink_dst, /*recursive=*/true));
+
+  // 3. Reject symlink inside source directory.
+  FilePath symlink_inside =
+      dir_name_from.Append(FILE_PATH_LITERAL("Symlink_Inside"));
+  ASSERT_TRUE(CreateSymbolicLink(file_name_from, symlink_inside));
+  FilePath dir_name_to3 =
+      temp_dir_.GetPath().Append(FILE_PATH_LITERAL("Copy_To_3"));
+  EXPECT_FALSE(
+      CopyDirectoryNoFollow(dir_name_from, dir_name_to3, /*recursive=*/true));
+  ASSERT_TRUE(DeleteFile(symlink_inside));
+
+  // 4. Reject non-regular file (FIFO) inside source directory.
+  FilePath fifo_inside = dir_name_from.Append(FILE_PATH_LITERAL("Fifo"));
+  ASSERT_EQ(0, mkfifo(fifo_inside.value().c_str(), 0644));
+  FilePath dir_name_to4 =
+      temp_dir_.GetPath().Append(FILE_PATH_LITERAL("Copy_To_4"));
+  EXPECT_FALSE(
+      CopyDirectoryNoFollow(dir_name_from, dir_name_to4, /*recursive=*/true));
+}
+
+#endif  // BUILDFLAG(IS_POSIX)
 
 }  // namespace
 

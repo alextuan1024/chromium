@@ -7,16 +7,19 @@
 #include <memory>
 #include <set>
 #include <string>
+#include <string_view>
 
 #include "base/command_line.h"
 #include "base/containers/flat_map.h"
 #include "base/files/file_path.h"
 #include "base/strings/string_util.h"
 #include "base/values.h"
+#include "build/build_config.h"
 #include "chrome/common/chrome_resource_request_blocked_reason.h"
 #include "chrome/common/chrome_switches.h"
 #include "chrome/common/extensions/chrome_extensions_api_provider.h"
 #include "chrome/common/extensions/manifest_handlers/theme_handler.h"
+#include "chrome/common/extensions/webui_origin_access.h"
 #include "chrome/common/url_constants.h"
 #include "chrome/common/webui_url_constants.h"
 #include "chrome/grit/branded_strings.h"
@@ -28,7 +31,6 @@
 #include "extensions/common/extension_api.h"
 #include "extensions/common/extension_urls.h"
 #include "extensions/common/icons/extension_icon_set.h"
-#include "extensions/common/manifest.h"
 #include "extensions/common/manifest_constants.h"
 #include "extensions/common/manifest_handlers/icons_handler.h"
 #include "extensions/common/permissions/api_permission_set.h"
@@ -40,6 +42,10 @@
 #include "ui/base/l10n/l10n_util.h"
 #include "url/gurl.h"
 
+#if BUILDFLAG(IS_CHROMEOS)
+#include "ash/webui/os_feedback_ui/url_constants.h"
+#endif
+
 namespace extensions {
 
 namespace {
@@ -49,6 +55,18 @@ const char kExtensionBlocklistUrlPrefix[] =
     "http://www.gstatic.com/chrome/extensions/blocklist";
 const char kExtensionBlocklistHttpsUrlPrefix[] =
     "https://www.gstatic.com/chrome/extensions/blocklist";
+
+// Returns a CORS origin pattern for `scheme://host` with any port and no
+// subdomains.
+network::mojom::CorsOriginPatternPtr CreateCorsOriginPattern(
+    std::string_view scheme,
+    std::string_view host,
+    network::mojom::CorsOriginAccessMatchPriority priority) {
+  return network::mojom::CorsOriginPattern::New(
+      std::string(scheme), std::string(host), /*port=*/0,
+      network::mojom::CorsDomainMatchMode::kDisallowSubdomains,
+      network::mojom::CorsPortMatchMode::kAllowAnyPort, priority);
+}
 
 }  // namespace
 
@@ -159,6 +177,25 @@ bool ChromeExtensionsClient::IsScriptableURL(const GURL& url,
   return true;
 }
 
+bool ChromeExtensionsClient::IsCapturableURL(const GURL& url,
+                                             std::string* error) const {
+  // Feedback is more of a native surface that shouldn't be accessible to (or
+  // triggerable by) extensions.
+  // See also https://crbug.com/477664550.
+  if (url.SchemeIs(content::kChromeUIScheme) &&
+      (url.host() == chrome::kChromeUIFeedbackHost
+#if BUILDFLAG(IS_CHROMEOS)
+       || url.host() == ash::kChromeUIOSFeedbackHost
+#endif
+       )) {
+    if (error) {
+      *error = manifest_errors::kCannotAccessChromeUrl;
+    }
+    return false;
+  }
+  return true;
+}
+
 const GURL& ChromeExtensionsClient::GetWebstoreBaseURL() const {
   return webstore_base_url_;
 }
@@ -211,7 +248,8 @@ void ChromeExtensionsClient::AddOriginAccessPermissions(
     const Extension& extension,
     bool is_extension_active,
     std::vector<network::mojom::CorsOriginPatternPtr>* origin_patterns) const {
-  // Allow component extensions to access chrome://theme/.
+  // Allow component extensions to access the WebUI origins in
+  // GetAllowedWebUIOrigins().
   //
   // We don't want to grant these permissions to inactive component extensions,
   // to avoid granting them in "unprivileged" (non-extension) processes.  If a
@@ -220,13 +258,13 @@ void ChromeExtensionsClient::AddOriginAccessPermissions(
   // conservative. Components shouldn't be subject to enterprise policy controls
   // or blocking access to the webstore so they get the highest priority
   // allowlist entry.
-  if (extensions::Manifest::IsComponentLocation(extension.location()) &&
-      is_extension_active) {
-    origin_patterns->push_back(network::mojom::CorsOriginPattern::New(
-        content::kChromeUIScheme, chrome::kChromeUIThemeHost, /*port=*/0,
-        network::mojom::CorsDomainMatchMode::kDisallowSubdomains,
-        network::mojom::CorsPortMatchMode::kAllowAnyPort,
-        network::mojom::CorsOriginAccessMatchPriority::kMaxPriority));
+  if (is_extension_active) {
+    for (const url::Origin& origin :
+         GetAllowedWebUIOrigins(extension, WebUIOriginUse::kCorsAccess)) {
+      origin_patterns->push_back(CreateCorsOriginPattern(
+          origin.scheme(), origin.host(),
+          network::mojom::CorsOriginAccessMatchPriority::kMaxPriority));
+    }
   }
 
   // TODO(jstritar): We should try to remove this special case. Also, these
@@ -234,10 +272,8 @@ void ChromeExtensionsClient::AddOriginAccessPermissions(
   // changes.
   if (is_extension_active && extension.permissions_data()->HasAPIPermission(
                                  mojom::APIPermissionID::kManagement)) {
-    origin_patterns->push_back(network::mojom::CorsOriginPattern::New(
+    origin_patterns->push_back(CreateCorsOriginPattern(
         content::kChromeUIScheme, chrome::kChromeUIExtensionIconHost,
-        /*port=*/0, network::mojom::CorsDomainMatchMode::kDisallowSubdomains,
-        network::mojom::CorsPortMatchMode::kAllowAnyPort,
         network::mojom::CorsOriginAccessMatchPriority::kDefaultPriority));
   }
 }

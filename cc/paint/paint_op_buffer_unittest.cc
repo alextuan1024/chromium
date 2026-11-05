@@ -41,6 +41,7 @@
 #include "cc/test/test_paint_worklet_input.h"
 #include "cc/test/test_skcanvas.h"
 #include "cc/test/transfer_cache_test_helper.h"
+#include "gpu/command_buffer/common/mailbox.h"
 #include "skia/buildflags.h"
 #include "skia/ext/font_utils.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -140,6 +141,15 @@ class PaintOpSerializationTestUtils {
   static void ResetShaderType(PaintShader* shader, PaintShader::Type type) {
     shader->shader_type_ = type;
   }
+
+  static void SetRecordShaderId(PaintShader* shader,
+                                PaintShader::RecordShaderId id) {
+    shader->id_ = id;
+  }
+
+  static sk_sp<SkPicture> GetCachedPicture(const PaintShader* shader) {
+    return shader->sk_cached_picture_;
+  }
 };
 
 TEST(PaintOpBufferTest, Empty) {
@@ -188,7 +198,6 @@ class PaintOpAppendTest : public ::testing::Test {
 
   void CheckInitialState(PaintOpBuffer* buffer, bool expect_empty_buffer) {
     EXPECT_FALSE(buffer->has_draw_ops());
-    EXPECT_FALSE(buffer->has_save_layer_ops());
     EXPECT_EQ(0u, buffer->size());
     EXPECT_EQ(0u, buffer->total_op_count());
     EXPECT_EQ(0u, buffer->next_op_offset());
@@ -570,6 +579,457 @@ TEST(PaintOpBufferTest, DiscardableImagesTracking_OpWithFlags) {
                                          SkTileMode::kClamp, nullptr));
   buffer.push<DrawRectOp>(SkRect::MakeWH(100, 100), flags);
   EXPECT_TRUE(buffer.has_discardable_images());
+}
+
+TEST(PaintOpBufferTest, ReadBackDisallowedContentTracking) {
+  PaintImage allowed_image = CreateDiscardablePaintImage(gfx::Size(100, 100));
+  PaintImage disallowed_image = PaintImageBuilder::WithCopy(allowed_image)
+                                    .set_is_read_back_disallowed(true)
+                                    .TakePaintImage();
+
+  // Empty buffer and non-image ops do not set the bit.
+  {
+    PaintOpBuffer buffer;
+    EXPECT_FALSE(buffer.has_read_back_disallowed_content());
+    buffer.push<DrawRectOp>(SkRect::MakeWH(100, 100), PaintFlags());
+    buffer.push<DrawImageOp>(allowed_image, 0.f, 0.f);
+    EXPECT_FALSE(buffer.has_read_back_disallowed_content());
+  }
+
+  // DrawImageOp and DrawImageRectOp set the bit when disallowed.
+  {
+    PaintOpBuffer buffer;
+    buffer.push<DrawImageOp>(disallowed_image, 0.f, 0.f);
+    EXPECT_TRUE(buffer.has_read_back_disallowed_content());
+    buffer.Reset();
+    EXPECT_FALSE(buffer.has_read_back_disallowed_content());
+
+    buffer.push<DrawImageRectOp>(disallowed_image, SkRect::MakeWH(100, 100),
+                                 SkRect::MakeWH(100, 100),
+                                 SkCanvas::kFast_SrcRectConstraint);
+    EXPECT_TRUE(buffer.has_read_back_disallowed_content());
+  }
+
+  // Image and PaintRecord shaders in PaintFlags propagate the bit.
+  {
+    PaintOpBuffer buffer;
+    PaintFlags flags;
+    flags.setShader(PaintShader::MakeImage(disallowed_image, SkTileMode::kClamp,
+                                           SkTileMode::kClamp, nullptr));
+    buffer.push<DrawRectOp>(SkRect::MakeWH(100, 100), flags);
+    PaintRecord record = buffer.ReleaseAsRecord();
+    EXPECT_TRUE(record.has_read_back_disallowed_content());
+
+    PaintOpBuffer outer;
+    PaintFlags record_shader_flags;
+    record_shader_flags.setShader(PaintShader::MakePaintRecord(
+        record, SkRect::MakeWH(100, 100), SkTileMode::kClamp,
+        SkTileMode::kClamp, nullptr));
+    outer.push<DrawRectOp>(SkRect::MakeWH(100, 100), record_shader_flags);
+    EXPECT_TRUE(outer.has_read_back_disallowed_content());
+  }
+
+  // Filters in PaintFlags and SaveLayerFiltersOp propagate the bit.
+  {
+    auto filter = sk_make_sp<ImagePaintFilter>(
+        disallowed_image, SkRect::MakeWH(100, 100), SkRect::MakeWH(100, 100),
+        PaintFlags::FilterQuality::kNone);
+    PaintOpBuffer buffer;
+    PaintFlags flags;
+    flags.setImageFilter(filter);
+    buffer.push<SaveLayerOp>(SkRect::MakeWH(100, 100), flags);
+    EXPECT_TRUE(buffer.has_read_back_disallowed_content());
+
+    PaintOpBuffer layer_filters_buffer;
+    sk_sp<PaintFilter> filters[] = {filter};
+    layer_filters_buffer.push<SaveLayerFiltersOp>(filters, nullptr,
+                                                  PaintFlags());
+    EXPECT_TRUE(layer_filters_buffer.has_read_back_disallowed_content());
+  }
+
+  // PaintRecord::SetIsReadBackDisallowed(), DrawRecordOp,
+  // DeepCopyAsRecord(), and ReplaceCustomData() preserve the bit without
+  // mutating the shared empty PaintRecord singleton.
+  {
+    PaintRecord empty_record;
+    empty_record.SetIsReadBackDisallowed();
+    EXPECT_TRUE(empty_record.has_read_back_disallowed_content());
+    EXPECT_FALSE(PaintRecord().has_read_back_disallowed_content());
+
+    PaintOpBuffer vector_only;
+    vector_only.push<DrawRectOp>(SkRect::MakeWH(10, 10), PaintFlags());
+    PaintRecord disallowed_vector_record = vector_only.ReleaseAsRecord();
+    disallowed_vector_record.SetIsReadBackDisallowed();
+    PaintRecord copied_vector_record =
+        disallowed_vector_record.buffer().DeepCopyAsRecord();
+    EXPECT_TRUE(copied_vector_record.is_read_back_disallowed());
+    EXPECT_TRUE(copied_vector_record.has_read_back_disallowed_content());
+
+    PaintOpBuffer placeholder_buffer;
+    placeholder_buffer.push<CustomDataOp>(42u);
+    PaintRecord placeholder_record = placeholder_buffer.ReleaseAsRecord();
+    EXPECT_FALSE(placeholder_record.has_read_back_disallowed_content());
+
+    base::flat_map<uint32_t, PaintRecord> replacements;
+    replacements[42u] = disallowed_vector_record;
+    PaintRecord replaced = placeholder_record.ReplaceCustomData(replacements);
+    EXPECT_TRUE(replaced.has_read_back_disallowed_content());
+
+    // PaintImageBuilder::set_paint_record propagates the bit from PaintRecord
+    // and PaintImageBuilder::WithProperties preserves it.
+    PaintImage record_image =
+        PaintImageBuilder::WithDefault()
+            .set_id(PaintImage::GetNextId())
+            .set_paint_record(disallowed_vector_record, gfx::Rect(10, 10),
+                              PaintImage::GetNextContentId())
+            .TakePaintImage();
+    EXPECT_TRUE(record_image.is_read_back_disallowed());
+
+    SkBitmap bitmap;
+    bitmap.allocN32Pixels(10, 10);
+    PaintImage derived_image =
+        PaintImageBuilder::WithProperties(std::move(record_image))
+            .set_image(SkImages::RasterFromBitmap(bitmap),
+                       PaintImage::GetNextContentId())
+            .TakePaintImage();
+    EXPECT_TRUE(derived_image.is_read_back_disallowed());
+  }
+}
+
+TEST(PaintOpBufferTest, DeepCopyAsRecordStripReadBackDisallowedOps) {
+  auto make_solid_image = [](SkColor color, bool disallow_read_back) {
+    SkBitmap bitmap;
+    bitmap.allocN32Pixels(10, 10);
+    bitmap.eraseColor(color);
+    return PaintImageBuilder::WithDefault()
+        .set_id(PaintImage::GetNextId())
+        .set_image(SkImages::RasterFromBitmap(bitmap),
+                   PaintImage::GetNextContentId())
+        .set_is_read_back_disallowed(disallow_read_back)
+        .TakePaintImage();
+  };
+
+  PaintImage allowed_blue = make_solid_image(SK_ColorBLUE, false);
+  PaintImage disallowed_red = make_solid_image(SK_ColorRED, true);
+
+  // 1. Leaf draw ops and shaders: allowed ops are preserved, disallowed ops are
+  // omitted.
+  {
+    PaintOpBuffer buffer;
+    PaintFlags green_flags;
+    green_flags.setColor(SK_ColorGREEN);
+    buffer.push<DrawRectOp>(SkRect::MakeXYWH(0, 0, 10, 10), green_flags);
+    buffer.push<DrawImageOp>(disallowed_red, 0.f, 0.f);
+    buffer.push<DrawImageRectOp>(
+        disallowed_red, SkRect::MakeWH(10, 10), SkRect::MakeXYWH(0, 0, 10, 10),
+        SkSamplingOptions(), nullptr, SkCanvas::kFast_SrcRectConstraint);
+
+    PaintFlags disallowed_shader_flags;
+    disallowed_shader_flags.setShader(PaintShader::MakeImage(
+        disallowed_red, SkTileMode::kClamp, SkTileMode::kClamp, nullptr));
+    buffer.push<DrawRectOp>(SkRect::MakeXYWH(0, 0, 10, 10),
+                            disallowed_shader_flags);
+
+    buffer.push<DrawImageOp>(allowed_blue, 10.f, 0.f);
+
+    EXPECT_TRUE(buffer.has_read_back_disallowed_content());
+    EXPECT_TRUE(buffer.DeepCopyAsRecord().has_read_back_disallowed_content());
+
+    PaintRecord filtered =
+        buffer.DeepCopyAsRecord(/*strip_read_back_disallowed_ops=*/true);
+    EXPECT_FALSE(filtered.has_read_back_disallowed_content());
+    EXPECT_EQ(filtered.size(), 2u);
+
+    SkBitmap out;
+    out.allocN32Pixels(20, 10);
+    out.eraseColor(SK_ColorTRANSPARENT);
+    SkCanvas canvas(out);
+    filtered.Playback(&canvas);
+    EXPECT_EQ(out.getColor(5, 5), SK_ColorGREEN);
+    EXPECT_EQ(out.getColor(15, 5), SK_ColorBLUE);
+  }
+
+  // 2. Nested DrawRecordOp: mixed records keep allowed ops and omit disallowed
+  // ops, whereas records explicitly marked via SetIsReadBackDisallowed
+  // (even if they already had a disallowed child op) are omitted as a unit.
+  {
+    PaintOpBuffer mixed_sub;
+    PaintFlags green_flags;
+    green_flags.setColor(SK_ColorGREEN);
+    mixed_sub.push<DrawRectOp>(SkRect::MakeXYWH(0, 0, 10, 10), green_flags);
+    mixed_sub.push<DrawImageOp>(disallowed_red, 0.f, 0.f);
+
+    PaintOpBuffer vector_disallowed_sub;
+    PaintFlags red_flags;
+    red_flags.setColor(SK_ColorRED);
+    vector_disallowed_sub.push<DrawRectOp>(SkRect::MakeXYWH(0, 0, 10, 10),
+                                           red_flags);
+    PaintRecord vector_disallowed_record =
+        vector_disallowed_sub.ReleaseAsRecord();
+    vector_disallowed_record.SetIsReadBackDisallowed();
+
+    PaintOpBuffer mixed_then_disallowed_sub;
+    mixed_then_disallowed_sub.push<DrawImageOp>(disallowed_red, 0.f, 0.f);
+    mixed_then_disallowed_sub.push<DrawRectOp>(SkRect::MakeXYWH(0, 0, 10, 10),
+                                               red_flags);
+    PaintRecord mixed_then_disallowed_record =
+        mixed_then_disallowed_sub.ReleaseAsRecord();
+    ASSERT_TRUE(
+        mixed_then_disallowed_record.has_read_back_disallowed_content());
+    mixed_then_disallowed_record.SetIsReadBackDisallowed();
+
+    PaintOpBuffer outer;
+    outer.push<DrawRecordOp>(mixed_sub.ReleaseAsRecord());
+    outer.push<DrawRecordOp>(std::move(vector_disallowed_record));
+    outer.push<DrawRecordOp>(std::move(mixed_then_disallowed_record));
+
+    PaintRecord filtered =
+        outer.DeepCopyAsRecord(/*strip_read_back_disallowed_ops=*/true);
+    EXPECT_FALSE(filtered.has_read_back_disallowed_content());
+    EXPECT_EQ(filtered.size(), 1u);
+
+    SkBitmap out;
+    out.allocN32Pixels(10, 10);
+    out.eraseColor(SK_ColorTRANSPARENT);
+    SkCanvas canvas(out);
+    filtered.Playback(&canvas);
+    EXPECT_EQ(out.getColor(5, 5), SK_ColorGREEN);
+  }
+
+  // 3. Disallowed SaveLayerOp and SaveLayerFiltersOp omit their balanced
+  // SaveLayer..Restore scope (including nested Save..Restore pairs) without
+  // corrupting the outer save stack or dropping sibling ops.
+  {
+    auto disallowed_filter = sk_make_sp<ImagePaintFilter>(
+        disallowed_red, SkRect::MakeWH(10, 10), SkRect::MakeWH(10, 10),
+        PaintFlags::FilterQuality::kNone);
+
+    PaintOpBuffer buffer;
+    buffer.push<SaveOp>();
+
+    PaintFlags filter_flags;
+    filter_flags.setImageFilter(disallowed_filter);
+    buffer.push<SaveLayerOp>(SkRect::MakeWH(10, 10), filter_flags);
+    buffer.push<SaveOp>();
+    PaintFlags red_flags;
+    red_flags.setColor(SK_ColorRED);
+    buffer.push<DrawRectOp>(SkRect::MakeWH(10, 10), red_flags);
+    buffer.push<RestoreOp>();
+    buffer.push<RestoreOp>();
+
+    sk_sp<PaintFilter> filters[] = {disallowed_filter};
+    buffer.push<SaveLayerFiltersOp>(filters, /*backdrop_filter=*/nullptr,
+                                    PaintFlags());
+    buffer.push<DrawColorOp>(SkColors::kTransparent, SkBlendMode::kSrc);
+    buffer.push<RestoreOp>();
+
+    PaintFlags green_flags;
+    green_flags.setColor(SK_ColorGREEN);
+    buffer.push<DrawRectOp>(SkRect::MakeXYWH(0, 0, 10, 10), green_flags);
+    buffer.push<RestoreOp>();
+
+    PaintRecord filtered =
+        buffer.DeepCopyAsRecord(/*strip_read_back_disallowed_ops=*/true);
+    EXPECT_FALSE(filtered.has_read_back_disallowed_content());
+    EXPECT_EQ(filtered.size(), 3u);  // SaveOp, DrawRectOp(green), RestoreOp
+
+    SkBitmap out;
+    out.allocN32Pixels(10, 10);
+    out.eraseColor(SK_ColorBLUE);
+    SkCanvas canvas(out);
+    EXPECT_EQ(canvas.getSaveCount(), 1);
+    filtered.Playback(&canvas);
+    EXPECT_EQ(canvas.getSaveCount(), 1);
+    EXPECT_EQ(out.getColor(5, 5), SK_ColorGREEN);
+  }
+
+  // 4. ReplaceCustomData with strip_read_back_disallowed_ops=true filters
+  // replacement records as well.
+  {
+    PaintOpBuffer placeholder_buffer;
+    placeholder_buffer.push<CustomDataOp>(1u);
+    placeholder_buffer.push<CustomDataOp>(2u);
+    PaintRecord placeholder_record = placeholder_buffer.ReleaseAsRecord();
+
+    PaintOpBuffer replacement1;
+    PaintFlags green_flags;
+    green_flags.setColor(SK_ColorGREEN);
+    replacement1.push<DrawRectOp>(SkRect::MakeWH(10, 10), green_flags);
+    replacement1.push<DrawImageOp>(disallowed_red, 0.f, 0.f);
+
+    PaintOpBuffer replacement2;
+    PaintFlags red_flags;
+    red_flags.setColor(SK_ColorRED);
+    replacement2.push<DrawRectOp>(SkRect::MakeWH(10, 10), red_flags);
+    PaintRecord disallowed_replacement2 = replacement2.ReleaseAsRecord();
+    disallowed_replacement2.SetIsReadBackDisallowed();
+
+    base::flat_map<uint32_t, PaintRecord> replacements;
+    replacements[1u] = replacement1.ReleaseAsRecord();
+    replacements[2u] = std::move(disallowed_replacement2);
+
+    PaintRecord replaced = placeholder_record.ReplaceCustomData(
+        replacements, /*strip_read_back_disallowed_ops=*/true);
+    EXPECT_FALSE(replaced.has_read_back_disallowed_content());
+    EXPECT_EQ(replaced.size(), 1u);
+
+    SkBitmap out;
+    out.allocN32Pixels(10, 10);
+    out.eraseColor(SK_ColorTRANSPARENT);
+    SkCanvas canvas(out);
+    replaced.Playback(&canvas);
+    EXPECT_EQ(out.getColor(5, 5), SK_ColorGREEN);
+  }
+
+  // 5. DeepCopyAsRecord(false) and ReplaceCustomData(..., false) preserve
+  // whole-record read-back disallowed state so a subsequent strip omits the
+  // entire record; and embedding a whole-record-disallowed PaintRecord in
+  // another PaintOpBuffer (including when that outer buffer is appended via
+  // operator+=) does not mark unrelated ops in the destination buffer as
+  // disallowed.
+  {
+    PaintOpBuffer disallowed_sub;
+    PaintFlags red_flags;
+    red_flags.setColor(SK_ColorRED);
+    disallowed_sub.push<DrawRectOp>(SkRect::MakeXYWH(10, 0, 10, 10), red_flags);
+    PaintRecord disallowed_record = disallowed_sub.ReleaseAsRecord();
+    disallowed_record.SetIsReadBackDisallowed();
+
+    PaintRecord unstripped_copy = disallowed_record.buffer().DeepCopyAsRecord(
+        /*strip_read_back_disallowed_ops=*/false);
+    EXPECT_TRUE(unstripped_copy.is_read_back_disallowed());
+    EXPECT_TRUE(unstripped_copy.buffer()
+                    .DeepCopyAsRecord(/*strip_read_back_disallowed_ops=*/true)
+                    .empty());
+
+    PaintOpBuffer allowed_sub;
+    allowed_sub.push<DrawImageOp>(allowed_blue, 0.f, 0.f);
+    base::flat_map<uint32_t, PaintRecord> replacements;
+    replacements[99u] = allowed_sub.ReleaseAsRecord();
+
+    PaintOpBuffer disallowed_with_custom_data_buffer;
+    disallowed_with_custom_data_buffer.push<CustomDataOp>(99u);
+    disallowed_with_custom_data_buffer.push<DrawRectOp>(
+        SkRect::MakeXYWH(10, 0, 10, 10), red_flags);
+    PaintRecord disallowed_with_custom_data =
+        disallowed_with_custom_data_buffer.ReleaseAsRecord();
+    disallowed_with_custom_data.SetIsReadBackDisallowed();
+    PaintRecord unstripped_replaced =
+        disallowed_with_custom_data.ReplaceCustomData(
+            replacements, /*strip_read_back_disallowed_ops=*/false);
+    EXPECT_TRUE(unstripped_replaced.is_read_back_disallowed());
+    EXPECT_TRUE(disallowed_with_custom_data
+                    .ReplaceCustomData(replacements,
+                                       /*strip_read_back_disallowed_ops=*/true)
+                    .empty());
+    EXPECT_TRUE(unstripped_replaced.buffer()
+                    .DeepCopyAsRecord(/*strip_read_back_disallowed_ops=*/true)
+                    .empty());
+
+    PaintOpBuffer sub_layer_buffer;
+    sub_layer_buffer.push<DrawRecordOp>(disallowed_record);
+    sub_layer_buffer.push<DrawImageOp>(allowed_blue, 20.f, 0.f);
+    EXPECT_TRUE(sub_layer_buffer.has_read_back_disallowed_content());
+
+    PaintOpBuffer buffer;
+    PaintFlags green_flags;
+    green_flags.setColor(SK_ColorGREEN);
+    buffer.push<DrawRectOp>(SkRect::MakeXYWH(0, 0, 10, 10), green_flags);
+    buffer += sub_layer_buffer;
+
+    EXPECT_TRUE(buffer.has_read_back_disallowed_content());
+
+    SkBitmap unstripped_out;
+    unstripped_out.allocN32Pixels(30, 10);
+    unstripped_out.eraseColor(SK_ColorTRANSPARENT);
+    SkCanvas unstripped_canvas(unstripped_out);
+    buffer.Playback(&unstripped_canvas);
+    EXPECT_EQ(unstripped_out.getColor(5, 5), SK_ColorGREEN);
+    EXPECT_EQ(unstripped_out.getColor(15, 5), SK_ColorRED);
+    EXPECT_EQ(unstripped_out.getColor(25, 5), SK_ColorBLUE);
+
+    PaintRecord filtered =
+        buffer.DeepCopyAsRecord(/*strip_read_back_disallowed_ops=*/true);
+    EXPECT_FALSE(filtered.is_read_back_disallowed());
+    EXPECT_FALSE(filtered.has_read_back_disallowed_content());
+    EXPECT_EQ(filtered.size(), 2u);
+
+    SkBitmap stripped_out;
+    stripped_out.allocN32Pixels(30, 10);
+    stripped_out.eraseColor(SK_ColorTRANSPARENT);
+    SkCanvas stripped_canvas(stripped_out);
+    filtered.Playback(&stripped_canvas);
+    EXPECT_EQ(stripped_out.getColor(5, 5), SK_ColorGREEN);
+    EXPECT_EQ(stripped_out.getColor(15, 5), SK_ColorTRANSPARENT);
+    EXPECT_EQ(stripped_out.getColor(25, 5), SK_ColorBLUE);
+  }
+
+  // 6. DrawScrollingContentsOp strips disallowed ops inside its DisplayItemList
+  // (omitting the DrawScrollingContentsOp entirely if nothing remains) and
+  // replaces CustomDataOp placeholders inside scrolling contents.
+  {
+    PaintFlags green_flags;
+    green_flags.setColor(SK_ColorGREEN);
+    PaintFlags red_flags;
+    red_flags.setColor(SK_ColorRED);
+
+    auto mixed_list = base::MakeRefCounted<DisplayItemList>();
+    mixed_list->StartPaint();
+    mixed_list->push<DrawRectOp>(SkRect::MakeXYWH(0, 0, 10, 10), green_flags);
+    mixed_list->push<DrawImageOp>(disallowed_red, 0.f, 0.f);
+    mixed_list->push<CustomDataOp>(7u);
+    mixed_list->EndPaintOfUnpaired(gfx::Rect(0, 0, 20, 10));
+    mixed_list->Finalize();
+    EXPECT_TRUE(mixed_list->has_read_back_disallowed_content());
+
+    auto all_disallowed_list = base::MakeRefCounted<DisplayItemList>();
+    all_disallowed_list->StartPaint();
+    all_disallowed_list->push<DrawImageOp>(disallowed_red, 0.f, 0.f);
+    all_disallowed_list->EndPaintOfUnpaired(gfx::Rect(0, 0, 10, 10));
+    all_disallowed_list->Finalize();
+    EXPECT_TRUE(all_disallowed_list->has_read_back_disallowed_content());
+
+    PaintOpBuffer outer;
+    outer.push<DrawScrollingContentsOp>(ElementId(10), mixed_list);
+    outer.push<DrawScrollingContentsOp>(ElementId(20), all_disallowed_list);
+    EXPECT_TRUE(outer.has_read_back_disallowed_content());
+
+    PaintRecord stripped =
+        outer.DeepCopyAsRecord(/*strip_read_back_disallowed_ops=*/true);
+    EXPECT_FALSE(stripped.has_read_back_disallowed_content());
+    EXPECT_EQ(stripped.size(), 1u);
+
+    PaintOpBuffer allowed_blue_replacement;
+    PaintFlags blue_flags;
+    blue_flags.setColor(SK_ColorBLUE);
+    allowed_blue_replacement.push<DrawRectOp>(SkRect::MakeXYWH(10, 0, 10, 10),
+                                              blue_flags);
+    allowed_blue_replacement.push<DrawImageOp>(disallowed_red, 10.f, 0.f);
+
+    PaintRecord outer_record = outer.ReleaseAsRecord();
+    base::flat_map<uint32_t, PaintRecord> replacements;
+    replacements[7u] = allowed_blue_replacement.ReleaseAsRecord();
+
+    PaintRecord replaced = outer_record.ReplaceCustomData(
+        replacements, /*strip_read_back_disallowed_ops=*/true);
+    EXPECT_FALSE(replaced.has_read_back_disallowed_content());
+    ASSERT_EQ(replaced.size(), 1u);
+    ASSERT_EQ(replaced.GetFirstOp().GetType(),
+              PaintOpType::kDrawScrollingContents);
+    const auto& scrolling_op =
+        static_cast<const DrawScrollingContentsOp&>(replaced.GetFirstOp());
+    EXPECT_EQ(scrolling_op.scroll_element_id, ElementId(10));
+    EXPECT_FALSE(
+        scrolling_op.display_item_list->has_read_back_disallowed_content());
+
+    SkBitmap out;
+    out.allocN32Pixels(20, 10);
+    out.eraseColor(SK_ColorTRANSPARENT);
+    SkCanvas canvas(out);
+    scrolling_op.display_item_list->Raster(&canvas);
+    EXPECT_EQ(out.getColor(5, 5), SK_ColorGREEN);
+    EXPECT_EQ(out.getColor(15, 5), SK_ColorBLUE);
+  }
 }
 
 TEST(PaintOpBufferTest, SlowPaths) {
@@ -2421,6 +2881,59 @@ TEST(PaintOpSerializationTest,
   EXPECT_EQ(buffer.size(), i);
 }
 
+TEST(PaintOpSerializationTest, DrawSlugDeserializationUsesScratchBuffer) {
+  PaintOpBuffer buffer;
+  SkFont font;
+  font.setTypeface(skia::DefaultTypeface());
+  SkTextBlobBuilder builder;
+  constexpr size_t kGlyphCount = 5u;
+  const auto& run = builder.allocRun(font, kGlyphCount, 1.2f, 2.3f);
+  // allocRun() allocates only the glyph buffer.
+  // SAFETY: SkTextBlobBuilder::allocRun allocates a glyph buffer of size
+  // kGlyphCount.
+  std::ranges::fill(UNSAFE_BUFFERS(base::span(run.glyphs, kGlyphCount)), 0);
+  buffer.push<DrawTextBlobOp>(builder.make(), 0.f, 0.f, PaintFlags());
+
+  size_t output_size = kSerializedBytesPerOp * buffer.size();
+  auto output = AllocateSerializedBuffer(output_size);
+  base::span<uint8_t> output_span = output.as_span();
+  TestOptionsProvider options_provider;
+  SimpleBufferSerializer serializer(output_span,
+                                    options_provider.serialize_options());
+  serializer.Serialize(buffer);
+
+  std::vector<uint8_t> strike_data;
+  options_provider.strike_server()->writeStrikeData(&strike_data);
+  if (!strike_data.empty()) {
+    options_provider.strike_client()->readStrikeData(strike_data.data(),
+                                                     strike_data.size());
+  }
+
+  // Deserialize with a caller-owned scratch buffer. Serialized slug data must
+  // be staged into the scratch buffer and parsed from there, like other
+  // externally-defined complex types (e.g. SkPath, SkColorSpace), rather than
+  // being parsed in place from the input buffer, whose backing memory may
+  // change while it is being parsed.
+  std::vector<uint8_t> scratch_buffer;
+  PaintOp::DeserializeOptions options{
+      .transfer_cache = options_provider.transfer_cache_helper(),
+      .paint_cache = options_provider.service_paint_cache(),
+      .strike_client = options_provider.strike_client(),
+      .scratch_buffer = scratch_buffer,
+      .is_privileged = true};
+
+  size_t deserialized_count = 0;
+  for (const PaintOp& base_written :
+       DeserializerIterator(output_span.first(serializer.written()), options)) {
+    ASSERT_EQ(PaintOpType::kDrawSlug, base_written.GetType());
+    EXPECT_TRUE(static_cast<const DrawSlugOp&>(base_written).slug);
+    ++deserialized_count;
+  }
+
+  EXPECT_EQ(buffer.size(), deserialized_count);
+  EXPECT_FALSE(scratch_buffer.empty());
+}
+
 TEST(PaintOpSerializationTest, SerializesNestedRecords) {
   PaintOpBuffer sub_buffer;
   sub_buffer.push<ScaleOp>(0.5f, 0.75f);
@@ -2573,6 +3086,17 @@ TEST(PaintOpBufferTest, PaintOpDeserialize) {
   EXPECT_FALSE(PaintOp::Deserialize(input_span.first(bytes_written), output,
                                     &bytes_read,
                                     options_provider.deserialize_options()));
+
+  // Types which are never serialized fail to deserialize, rather than reaching
+  // their NOTREACHED() Deserialize() functions.
+  for (PaintOpType type :
+       {PaintOpType::kDrawTextBlob, PaintOpType::kDrawTextSlugs}) {
+    PaintOpWriter::WriteHeaderForTesting(input, static_cast<uint8_t>(type),
+                                         serialized_size);
+    EXPECT_FALSE(PaintOp::Deserialize(input_span.first(bytes_written), output,
+                                      &bytes_read,
+                                      options_provider.deserialize_options()));
+  }
 }
 
 // Test that deserializing invalid paint ops fails silently. Skia release
@@ -4072,6 +4596,421 @@ TEST(PaintOpBufferTest, RecordShadersCachedSize) {
   EXPECT_GT(shader_size, estimated_image_size);
 }
 
+namespace {
+
+// Serializes every image as a SharedImage mailbox, like PlaybackImageProvider
+// does for texture-backed images.
+class MailboxImageProvider : public ImageProvider {
+ public:
+  explicit MailboxImageProvider(const gpu::Mailbox& mailbox)
+      : mailbox_(mailbox) {}
+
+  ScopedResult GetRasterContent(const DrawImage& draw_image) override {
+    return ScopedResult(
+        DecodedDrawImage(mailbox_, PaintFlags::FilterQuality::kNone));
+  }
+
+ private:
+  const gpu::Mailbox mailbox_;
+};
+
+class CountingSharedImageProvider : public SharedImageProvider {
+ public:
+  sk_sp<SkImage> OpenSharedImageForRead(const gpu::Mailbox& mailbox,
+                                        Error& error) override {
+    ++open_count_;
+    error = Error::kNoError;
+    SkBitmap bitmap;
+    bitmap.allocN32Pixels(10, 10);
+    bitmap.eraseColor(SK_ColorGREEN);
+    return SkImages::RasterFromBitmap(bitmap);
+  }
+
+  int open_count() const { return open_count_; }
+
+ private:
+  int open_count_ = 0;
+};
+
+sk_sp<PaintShader> MakeImageRecordShader() {
+  PaintOpBuffer shader_buffer;
+  shader_buffer.push<DrawImageOp>(CreateBitmapImage(gfx::Size(10, 10)), 0.f,
+                                  0.f);
+  auto shader = PaintShader::MakePaintRecord(
+      shader_buffer.ReleaseAsRecord(), SkRect::MakeWH(10.f, 10.f),
+      SkTileMode::kRepeat, SkTileMode::kRepeat, nullptr);
+  shader->set_has_animated_images(false);
+  return shader;
+}
+
+size_t SerializeDrawRectWithShader(sk_sp<PaintShader> shader,
+                                   const PaintOp::SerializeOptions& options,
+                                   base::span<uint8_t> memory) {
+  PaintOpBuffer buffer;
+  PaintFlags flags;
+  flags.setShader(std::move(shader));
+  buffer.push<DrawRectOp>(SkRect::MakeWH(10.f, 10.f), flags);
+  SimpleBufferSerializer serializer(memory, options);
+  serializer.Serialize(buffer);
+  return serializer.written();
+}
+
+const PaintShader* GetDrawRectShader(const PaintOpBuffer& buffer) {
+  for (const PaintOp& op : buffer) {
+    if (op.GetType() == PaintOpType::kDrawRect) {
+      return static_cast<const DrawRectOp&>(op).flags.getShader();
+    }
+  }
+  return nullptr;
+}
+
+}  // namespace
+
+// SkImages opened through the SharedImageProvider are only valid during the
+// current deserialization's raster pass. A record shader that opens one must
+// not be stored in the transfer cache, where it would outlive the pass.
+TEST(PaintOpBufferTest, RecordShadersWithSharedImagesNotCached) {
+  auto shader = MakeImageRecordShader();
+  auto shader_id = shader->paint_record_shader_id();
+
+  TestOptionsProvider options_provider;
+  MailboxImageProvider image_provider(gpu::Mailbox::Generate());
+  options_provider.mutable_serialize_options().image_provider = &image_provider;
+  auto memory = AllocateSerializedBuffer();
+  size_t written = SerializeDrawRectWithShader(
+      shader, options_provider.serialize_options(), memory.as_span());
+
+  auto* transfer_cache = options_provider.transfer_cache_helper();
+  CountingSharedImageProvider shared_image_provider;
+  std::vector<uint8_t> scratch_buffer;
+  PaintOp::DeserializeOptions deserialize_options{
+      .transfer_cache = transfer_cache,
+      .paint_cache = options_provider.service_paint_cache(),
+      .strike_client = options_provider.strike_client(),
+      .scratch_buffer = scratch_buffer,
+      .shared_image_provider = &shared_image_provider};
+
+  // Every deserialization opens the SharedImage again and resolves a new
+  // picture, instead of reusing a cached one.
+  std::array<sk_sp<PaintOpBuffer>, 2> buffers;
+  for (size_t i = 0; i < buffers.size(); ++i) {
+    buffers[i] = PaintOpBuffer::MakeFromMemory(memory.as_span().first(written),
+                                               deserialize_options);
+    ASSERT_TRUE(buffers[i]);
+    EXPECT_EQ(shared_image_provider.open_count(), static_cast<int>(i + 1));
+    EXPECT_FALSE(
+        transfer_cache->GetEntryAs<ServiceShaderTransferCacheEntry>(shader_id));
+    const PaintShader* deserialized_shader = GetDrawRectShader(*buffers[i]);
+    ASSERT_TRUE(deserialized_shader);
+    EXPECT_TRUE(
+        PaintOpSerializationTestUtils::GetCachedPicture(deserialized_shader));
+  }
+  EXPECT_NE(PaintOpSerializationTestUtils::GetCachedPicture(
+                GetDrawRectShader(*buffers[0])),
+            PaintOpSerializationTestUtils::GetCachedPicture(
+                GetDrawRectShader(*buffers[1])));
+}
+
+// A cached entry for a record shader must not replace a record that opens a
+// SharedImage, even if the shader id and tile match.
+TEST(PaintOpBufferTest, RecordShadersWithSharedImagesIgnoreCachedEntry) {
+  auto shader = MakeImageRecordShader();
+  auto shader_id = shader->paint_record_shader_id();
+
+  // Serialize the shader once with the image in the transfer cache, which is
+  // cached, and once with the image as a SharedImage.
+  TestOptionsProvider options_provider;
+  auto cached_memory = AllocateSerializedBuffer();
+  size_t cached_written = SerializeDrawRectWithShader(
+      shader, options_provider.serialize_options(), cached_memory.as_span());
+  MailboxImageProvider image_provider(gpu::Mailbox::Generate());
+  PaintOp::SerializeOptions mailbox_options =
+      options_provider.serialize_options();
+  mailbox_options.image_provider = &image_provider;
+  auto mailbox_memory = AllocateSerializedBuffer();
+  size_t mailbox_written = SerializeDrawRectWithShader(
+      shader, mailbox_options, mailbox_memory.as_span());
+
+  auto* transfer_cache = options_provider.transfer_cache_helper();
+  CountingSharedImageProvider shared_image_provider;
+  std::vector<uint8_t> scratch_buffer;
+  PaintOp::DeserializeOptions deserialize_options{
+      .transfer_cache = transfer_cache,
+      .paint_cache = options_provider.service_paint_cache(),
+      .strike_client = options_provider.strike_client(),
+      .scratch_buffer = scratch_buffer,
+      .shared_image_provider = &shared_image_provider};
+
+  auto cached_buffer = PaintOpBuffer::MakeFromMemory(
+      cached_memory.as_span().first(cached_written), deserialize_options);
+  ASSERT_TRUE(cached_buffer);
+  auto* entry =
+      transfer_cache->GetEntryAs<ServiceShaderTransferCacheEntry>(shader_id);
+  ASSERT_TRUE(entry);
+  EXPECT_EQ(shared_image_provider.open_count(), 0);
+
+  auto mailbox_buffer = PaintOpBuffer::MakeFromMemory(
+      mailbox_memory.as_span().first(mailbox_written), deserialize_options);
+  ASSERT_TRUE(mailbox_buffer);
+  EXPECT_EQ(shared_image_provider.open_count(), 1);
+  const PaintShader* deserialized_shader = GetDrawRectShader(*mailbox_buffer);
+  ASSERT_TRUE(deserialized_shader);
+  EXPECT_TRUE(
+      PaintOpSerializationTestUtils::GetCachedPicture(deserialized_shader));
+  EXPECT_NE(
+      PaintOpSerializationTestUtils::GetCachedPicture(deserialized_shader),
+      PaintOpSerializationTestUtils::GetCachedPicture(entry->shader().get()));
+}
+
+// SharedImages opened by a nested record shader also keep the enclosing record
+// shader out of the transfer cache.
+TEST(PaintOpBufferTest, NestedRecordShadersWithSharedImagesNotCached) {
+  auto inner_shader = MakeImageRecordShader();
+  auto inner_shader_id = inner_shader->paint_record_shader_id();
+  PaintOpBuffer outer_buffer;
+  PaintFlags inner_flags;
+  inner_flags.setShader(inner_shader);
+  outer_buffer.push<DrawRectOp>(SkRect::MakeWH(10.f, 10.f), inner_flags);
+  auto outer_shader = PaintShader::MakePaintRecord(
+      outer_buffer.ReleaseAsRecord(), SkRect::MakeWH(10.f, 10.f),
+      SkTileMode::kRepeat, SkTileMode::kRepeat, nullptr);
+  outer_shader->set_has_animated_images(false);
+  auto outer_shader_id = outer_shader->paint_record_shader_id();
+
+  TestOptionsProvider options_provider;
+  MailboxImageProvider image_provider(gpu::Mailbox::Generate());
+  options_provider.mutable_serialize_options().image_provider = &image_provider;
+  auto memory = AllocateSerializedBuffer();
+  size_t written = SerializeDrawRectWithShader(
+      outer_shader, options_provider.serialize_options(), memory.as_span());
+
+  auto* transfer_cache = options_provider.transfer_cache_helper();
+  CountingSharedImageProvider shared_image_provider;
+  std::vector<uint8_t> scratch_buffer;
+  PaintOp::DeserializeOptions deserialize_options{
+      .transfer_cache = transfer_cache,
+      .paint_cache = options_provider.service_paint_cache(),
+      .strike_client = options_provider.strike_client(),
+      .scratch_buffer = scratch_buffer,
+      .shared_image_provider = &shared_image_provider};
+
+  auto buffer = PaintOpBuffer::MakeFromMemory(memory.as_span().first(written),
+                                              deserialize_options);
+  ASSERT_TRUE(buffer);
+  EXPECT_EQ(shared_image_provider.open_count(), 1);
+  EXPECT_FALSE(transfer_cache->GetEntryAs<ServiceShaderTransferCacheEntry>(
+      inner_shader_id));
+  EXPECT_FALSE(transfer_cache->GetEntryAs<ServiceShaderTransferCacheEntry>(
+      outer_shader_id));
+}
+
+// Only SharedImages opened by the shader's own record matter. One opened by an
+// image filter on the same flags doesn't keep the record shader out of the
+// transfer cache.
+TEST(PaintOpBufferTest, RecordShaderCachedWithSharedImageInImageFilter) {
+  PaintOpBuffer shader_buffer;
+  PaintFlags shader_record_flags;
+  shader_record_flags.setColor(SkColors::kBlue);
+  shader_buffer.push<DrawRectOp>(SkRect::MakeWH(10.f, 10.f),
+                                 shader_record_flags);
+  auto shader = PaintShader::MakePaintRecord(
+      shader_buffer.ReleaseAsRecord(), SkRect::MakeWH(10.f, 10.f),
+      SkTileMode::kClamp, SkTileMode::kClamp, nullptr);
+  shader->set_has_animated_images(false);
+  auto shader_id = shader->paint_record_shader_id();
+
+  PaintOpBuffer buffer;
+  PaintFlags flags;
+  flags.setImageFilter(sk_make_sp<ImagePaintFilter>(
+      CreateBitmapImage(gfx::Size(10, 10)), SkRect::MakeWH(10, 10),
+      SkRect::MakeWH(10, 10), PaintFlags::FilterQuality::kNone));
+  flags.setShader(std::move(shader));
+  buffer.push<DrawRectOp>(SkRect::MakeWH(10.f, 10.f), flags);
+
+  TestOptionsProvider options_provider;
+  MailboxImageProvider image_provider(gpu::Mailbox::Generate());
+  options_provider.mutable_serialize_options().image_provider = &image_provider;
+  auto memory = AllocateSerializedBuffer();
+  SimpleBufferSerializer serializer(memory.as_span(),
+                                    options_provider.serialize_options());
+  serializer.Serialize(buffer);
+  ASSERT_TRUE(serializer.valid());
+
+  auto* transfer_cache = options_provider.transfer_cache_helper();
+  CountingSharedImageProvider shared_image_provider;
+  std::vector<uint8_t> scratch_buffer;
+  PaintOp::DeserializeOptions deserialize_options{
+      .transfer_cache = transfer_cache,
+      .paint_cache = options_provider.service_paint_cache(),
+      .strike_client = options_provider.strike_client(),
+      .scratch_buffer = scratch_buffer,
+      .shared_image_provider = &shared_image_provider};
+
+  auto deserialized = PaintOpBuffer::MakeFromMemory(
+      memory.as_span().first(serializer.written()), deserialize_options);
+  ASSERT_TRUE(deserialized);
+  EXPECT_EQ(shared_image_provider.open_count(), 1);
+  EXPECT_TRUE(
+      transfer_cache->GetEntryAs<ServiceShaderTransferCacheEntry>(shader_id));
+}
+
+// Clients only serialize an image for image shaders, so an image on any other
+// shader type is rejected.
+TEST(PaintOpBufferTest, NonImageShaderWithImageRejected) {
+  auto shader =
+      PaintShader::MakeImage(CreateBitmapImage(gfx::Size(10, 10)),
+                             SkTileMode::kClamp, SkTileMode::kClamp, nullptr);
+  PaintOpSerializationTestUtils::ResetShaderType(shader.get(),
+                                                 PaintShader::Type::kColor);
+
+  // Security constrained serialization inlines the image, so it doesn't need
+  // an image provider.
+  constexpr bool kEnableSecurityConstraints = true;
+  auto memory = AllocateSerializedBuffer();
+  TestOptionsProvider options_provider;
+  PaintOpWriter writer(memory.first(kDefaultSerializedBufferSize),
+                       options_provider.serialize_options(),
+                       kEnableSecurityConstraints);
+  writer.Write(shader.get(), PaintFlags::FilterQuality::kLow, SkM44());
+  ASSERT_GT(writer.size(), 0u);
+
+  sk_sp<PaintShader> deserialized_shader;
+  PaintOpReader reader(memory.as_span().first(writer.size()),
+                       options_provider.deserialize_options(),
+                       kEnableSecurityConstraints);
+  reader.Read(&deserialized_shader);
+  EXPECT_FALSE(reader.valid());
+}
+
+TEST(PaintOpBufferTest, RecordShaderIdSerialization) {
+  PaintOpBuffer shader_buffer;
+  shader_buffer.push<DrawRectOp>(SkRect::MakeWH(10.f, 10.f), PaintFlags());
+  auto shader = PaintShader::MakePaintRecord(
+      shader_buffer.ReleaseAsRecord(), SkRect::MakeWH(10.f, 10.f),
+      SkTileMode::kClamp, SkTileMode::kClamp, nullptr);
+  // Record shader ids are minted by a 64-bit counter, so ids wider than 32
+  // bits must round-trip through serialization at full width.
+  const uint64_t shader_id =
+      uint64_t{shader->paint_record_shader_id()} + (uint64_t{1} << 32);
+  PaintOpSerializationTestUtils::SetRecordShaderId(shader.get(), shader_id);
+
+  PaintOpBuffer buffer;
+  PaintFlags flags;
+  flags.setShader(shader);
+  buffer.push<DrawRectOp>(SkRect::MakeWH(10.f, 10.f), flags);
+
+  auto deserialized = SerializeAndDeserialize(buffer);
+  ASSERT_TRUE(deserialized);
+  bool found_draw_rect = false;
+  for (const PaintOp& base_op : *deserialized) {
+    if (base_op.GetType() != PaintOpType::kDrawRect) {
+      continue;
+    }
+    found_draw_rect = true;
+    const auto& op = static_cast<const DrawRectOp&>(base_op);
+    ASSERT_TRUE(op.flags.getShader());
+    EXPECT_EQ(shader_id, op.flags.getShader()->paint_record_shader_id());
+  }
+  EXPECT_TRUE(found_draw_rect);
+}
+
+TEST(PaintOpBufferTest, RecordShadersWithDistinctIdsCachedSeparately) {
+  auto make_solid_color_record_shader = [](SkColor4f color) {
+    PaintOpBuffer shader_buffer;
+    PaintFlags record_flags;
+    record_flags.setColor(color);
+    shader_buffer.push<DrawRectOp>(SkRect::MakeWH(10.f, 10.f), record_flags);
+    return PaintShader::MakePaintRecord(
+        shader_buffer.ReleaseAsRecord(), SkRect::MakeWH(10.f, 10.f),
+        SkTileMode::kClamp, SkTileMode::kClamp, nullptr);
+  };
+
+  auto shader1 = make_solid_color_record_shader(SkColors::kRed);
+  auto shader2 = make_solid_color_record_shader(SkColors::kBlue);
+  const uint64_t shader1_id = shader1->paint_record_shader_id();
+  // Give the second shader an id that matches the first shader's id in the
+  // low 32 bits. The shaders have different contents, so they must not share
+  // cached pictures.
+  const uint64_t shader2_id = shader1_id + (uint64_t{1} << 32);
+  PaintOpSerializationTestUtils::SetRecordShaderId(shader2.get(), shader2_id);
+
+  TestOptionsProvider options_provider;
+  auto* transfer_cache = options_provider.transfer_cache_helper();
+
+  auto serialize_draw_rect_with_shader = [&](sk_sp<PaintShader> shader) {
+    PaintOpBuffer buffer;
+    PaintFlags flags;
+    flags.setShader(std::move(shader));
+    buffer.push<DrawRectOp>(SkRect::MakeWH(10.f, 10.f), flags);
+    auto memory = AllocateSerializedBuffer();
+    SimpleBufferSerializer serializer(memory.as_span(),
+                                      options_provider.serialize_options());
+    serializer.Serialize(buffer);
+    CHECK(serializer.valid());
+    CHECK_GT(serializer.written(), 0u);
+    return std::make_pair(std::move(memory), serializer.written());
+  };
+
+  auto [memory1, written1] = serialize_draw_rect_with_shader(shader1);
+  auto [memory2, written2] = serialize_draw_rect_with_shader(shader2);
+
+  auto deserialized1 =
+      PaintOpBuffer::MakeFromMemory(memory1.as_span().first(written1),
+                                    options_provider.deserialize_options());
+  auto deserialized2 =
+      PaintOpBuffer::MakeFromMemory(memory2.as_span().first(written2),
+                                    options_provider.deserialize_options());
+  ASSERT_TRUE(deserialized1);
+  ASSERT_TRUE(deserialized2);
+
+  auto find_draw_rect_shader =
+      [](const PaintOpBuffer& buffer) -> const PaintShader* {
+    for (const PaintOp& base_op : buffer) {
+      if (base_op.GetType() != PaintOpType::kDrawRect) {
+        continue;
+      }
+      return static_cast<const DrawRectOp&>(base_op).flags.getShader();
+    }
+    return nullptr;
+  };
+
+  const PaintShader* deserialized_shader1 =
+      find_draw_rect_shader(*deserialized1);
+  const PaintShader* deserialized_shader2 =
+      find_draw_rect_shader(*deserialized2);
+  ASSERT_TRUE(deserialized_shader1);
+  ASSERT_TRUE(deserialized_shader2);
+
+  // Each shader gets its own transfer cache entry.
+  auto* entry1 =
+      transfer_cache->GetEntryAs<ServiceShaderTransferCacheEntry>(shader1_id);
+  auto* entry2 =
+      transfer_cache->GetEntryAs<ServiceShaderTransferCacheEntry>(shader2_id);
+  ASSERT_TRUE(entry1);
+  ASSERT_TRUE(entry2);
+  EXPECT_NE(entry1, entry2);
+
+  sk_sp<SkPicture> picture1 =
+      PaintOpSerializationTestUtils::GetCachedPicture(deserialized_shader1);
+  sk_sp<SkPicture> picture2 =
+      PaintOpSerializationTestUtils::GetCachedPicture(deserialized_shader2);
+  ASSERT_TRUE(picture1);
+  ASSERT_TRUE(picture2);
+  EXPECT_NE(picture1.get(), picture2.get());
+
+  // Each deserialized shader draws its own contents.
+  auto center_pixel_color = [](const sk_sp<SkPicture>& picture) {
+    SkBitmap bitmap;
+    bitmap.allocN32Pixels(10, 10);
+    bitmap.eraseColor(SK_ColorTRANSPARENT);
+    SkCanvas canvas(bitmap);
+    canvas.drawPicture(picture);
+    return bitmap.getColor(5, 5);
+  };
+  EXPECT_EQ(SK_ColorRED, center_pixel_color(picture1));
+  EXPECT_EQ(SK_ColorBLUE, center_pixel_color(picture2));
+}
+
 TEST(PaintOpBufferTest, RecordFilterSerializeScaledImages) {
   PaintOpBuffer filter_buffer;
   filter_buffer.push<DrawImageOp>(
@@ -4686,14 +5625,16 @@ TEST(IteratorTest, PlaybackFoldingIteratorEmptyDrawRecordInSaveLayerAlpha) {
 
 TEST(PaintOpBufferTest, ContentColorUsageFromImages) {
   PaintOpBuffer buffer;
-  EXPECT_EQ(gfx::ContentColorUsage::kSRGB, buffer.content_color_usage());
+  EXPECT_FALSE(buffer.content_color_volume().is_wide_color_gamut);
+  EXPECT_EQ(0.f, buffer.content_color_volume().hdr_headroom);
 
   // Adding a SRGB image should remain SRGB.
   PaintImage srgb = CreateDiscardablePaintImage(
       gfx::Size(1, 1), gfx::ColorSpace::CreateSRGB().ToSkColorSpace());
   ASSERT_EQ(gfx::ContentColorUsage::kSRGB, srgb.GetContentColorUsage());
   buffer.push<DrawImageOp>(srgb, 0.f, 0.f);
-  EXPECT_EQ(gfx::ContentColorUsage::kSRGB, buffer.content_color_usage());
+  EXPECT_FALSE(buffer.content_color_volume().is_wide_color_gamut);
+  EXPECT_EQ(0.f, buffer.content_color_volume().hdr_headroom);
 
   // Adding a WCG image should switch to WCG.
   PaintImage wcg = CreateDiscardablePaintImage(
@@ -4701,8 +5642,8 @@ TEST(PaintOpBufferTest, ContentColorUsageFromImages) {
   ASSERT_EQ(gfx::ContentColorUsage::kWideColorGamut,
             wcg.GetContentColorUsage());
   buffer.push<DrawImageOp>(wcg, 0.f, 0.f);
-  EXPECT_EQ(gfx::ContentColorUsage::kWideColorGamut,
-            buffer.content_color_usage());
+  EXPECT_TRUE(buffer.content_color_volume().is_wide_color_gamut);
+  EXPECT_EQ(0.f, buffer.content_color_volume().hdr_headroom);
 
   // Adding a HDR image should switch to HDR.
   PaintOpBuffer sub_buffer;
@@ -4712,9 +5653,11 @@ TEST(PaintOpBufferTest, ContentColorUsageFromImages) {
   sub_buffer.push<DrawImageRectOp>(hdr, SkRect::MakeWH(10, 10),
                                    SkRect::MakeWH(20, 20),
                                    SkCanvas::kStrict_SrcRectConstraint);
-  EXPECT_EQ(gfx::ContentColorUsage::kHDR, sub_buffer.content_color_usage());
+  EXPECT_TRUE(sub_buffer.content_color_volume().is_wide_color_gamut);
+  EXPECT_GT(sub_buffer.content_color_volume().hdr_headroom, 0.f);
   buffer.push<DrawRecordOp>(sub_buffer.ReleaseAsRecord());
-  EXPECT_EQ(gfx::ContentColorUsage::kHDR, buffer.content_color_usage());
+  EXPECT_TRUE(buffer.content_color_volume().is_wide_color_gamut);
+  EXPECT_GT(buffer.content_color_volume().hdr_headroom, 0.f);
 }
 
 TEST(PaintOpBufferTest, ContentColorUsageFromShader) {
@@ -4728,8 +5671,8 @@ TEST(PaintOpBufferTest, ContentColorUsageFromShader) {
                                         SkTileMode::kClamp, nullptr);
   flags1.setShader(std::move(shader1));
   buffer1.push<DrawRectOp>(SkRect::MakeWH(10, 20), flags1);
-  EXPECT_EQ(gfx::ContentColorUsage::kWideColorGamut,
-            buffer1.content_color_usage());
+  EXPECT_TRUE(buffer1.content_color_volume().is_wide_color_gamut);
+  EXPECT_EQ(0.f, buffer1.content_color_volume().hdr_headroom);
 
   PaintOpBuffer buffer2;
   PaintFlags flags2;
@@ -4738,8 +5681,8 @@ TEST(PaintOpBufferTest, ContentColorUsageFromShader) {
       SkTileMode::kClamp, nullptr);
   flags2.setShader(std::move(shader2));
   buffer2.push<DrawRectOp>(SkRect::MakeWH(10, 20), flags2);
-  EXPECT_EQ(gfx::ContentColorUsage::kWideColorGamut,
-            buffer2.content_color_usage());
+  EXPECT_TRUE(buffer2.content_color_volume().is_wide_color_gamut);
+  EXPECT_EQ(0.f, buffer2.content_color_volume().hdr_headroom);
 }
 
 TEST(PaintOpBufferTest, ContentColorUsageFromFilter) {
@@ -4754,8 +5697,8 @@ TEST(PaintOpBufferTest, ContentColorUsageFromFilter) {
                                               PaintFlags::FilterQuality::kNone);
   flags1.setImageFilter(std::move(filter1));
   buffer1.push<DrawRectOp>(SkRect::MakeWH(10, 20), flags1);
-  EXPECT_EQ(gfx::ContentColorUsage::kWideColorGamut,
-            buffer1.content_color_usage());
+  EXPECT_TRUE(buffer1.content_color_volume().is_wide_color_gamut);
+  EXPECT_EQ(0.f, buffer1.content_color_volume().hdr_headroom);
 
   PaintOpBuffer buffer2;
   PaintFlags flags2;
@@ -4765,8 +5708,8 @@ TEST(PaintOpBufferTest, ContentColorUsageFromFilter) {
                                     SkRect::MakeWH(5, 5)));
   flags2.setImageFilter(std::move(filter2));
   buffer2.push<DrawRectOp>(SkRect::MakeWH(10, 20), flags2);
-  EXPECT_EQ(gfx::ContentColorUsage::kWideColorGamut,
-            buffer2.content_color_usage());
+  EXPECT_TRUE(buffer2.content_color_volume().is_wide_color_gamut);
+  EXPECT_EQ(0.f, buffer2.content_color_volume().hdr_headroom);
 }
 
 TEST(PaintOpBufferTest, SkSLShaderPrivilegeEnforcement) {

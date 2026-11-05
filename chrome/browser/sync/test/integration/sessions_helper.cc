@@ -41,8 +41,8 @@
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/test_navigation_observer.h"
 #include "content/public/test/test_utils.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/base/page_transition_types.h"
-#include "ui/base/window_open_disposition.h"
 #include "url/gurl.h"
 
 using sync_datatype_helper::test;
@@ -129,7 +129,7 @@ std::vector<sync_pb::SessionSpecifics> SyncEntitiesToSessionSpecifics(
     std::vector<sync_pb::SyncEntity> entities) {
   std::vector<sync_pb::SessionSpecifics> sessions;
   for (sync_pb::SyncEntity& entity : entities) {
-    DCHECK(entity.specifics().has_session());
+    CHECK(entity.specifics().has_session(), base::NotFatalUntil::M163);
     sessions.push_back(std::move(entity.specifics().session()));
   }
   return sessions;
@@ -221,7 +221,7 @@ void NavigateTab(int profile_index, const GURL& url) {
 void NavigateTabInWindow(int profile_index, int window_index, const GURL& url) {
   NavigateParams params(GetBrowserOrDie(profile_index, window_index), url,
                         ui::PAGE_TRANSITION_LINK);
-  params.disposition = WindowOpenDisposition::CURRENT_TAB;
+  params.disposition = ui::mojom::WindowOpenDisposition::kCurrentTab;
   ui_test_utils::NavigateToURL(&params);
 }
 
@@ -334,7 +334,9 @@ int GetNumForeignSessions(int profile_index) {
   if (!SessionSyncServiceFactory::GetInstance()
            ->GetForProfile(GetProfileOrDie(profile_index))
            ->GetOpenTabsUIDelegate()
-           ->GetAllForeignSessions(&sessions)) {
+           ->GetAllForeignSessions(&sessions,
+                                   sync_sessions::OpenTabsUIDelegate::
+                                       ForeignSessionFilter::kPresentable)) {
     return 0;
   }
   return sessions.size();
@@ -344,7 +346,9 @@ bool GetSessionData(int profile_index, SyncedSessionVector* sessions) {
   if (!SessionSyncServiceFactory::GetInstance()
            ->GetForProfile(GetProfileOrDie(profile_index))
            ->GetOpenTabsUIDelegate()
-           ->GetAllForeignSessions(sessions)) {
+           ->GetAllForeignSessions(sessions,
+                                   sync_sessions::OpenTabsUIDelegate::
+                                       ForeignSessionFilter::kPresentable)) {
     return false;
   }
   SortSyncedSessions(sessions);
@@ -471,6 +475,7 @@ SessionEntitiesChecker::SessionEntitiesChecker(const Matcher& matcher)
 SessionEntitiesChecker::~SessionEntitiesChecker() = default;
 
 bool SessionEntitiesChecker::IsExitConditionSatisfied(std::ostream* os) {
+  *os << "Waiting for server session entities to match: ";
   std::vector<sync_pb::SessionSpecifics> entities =
       SyncEntitiesToSessionSpecifics(
           fake_server()->GetSyncEntitiesByDataType(syncer::SESSIONS));

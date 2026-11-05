@@ -13,7 +13,6 @@
 #include "base/check.h"
 #include "base/functional/bind.h"
 #include "base/hash/hash.h"
-#include "base/no_destructor.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
@@ -29,7 +28,6 @@
 #include "components/signin/public/identity_manager/account_info.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/sync/base/data_type.h"
-#include "components/sync/base/features.h"
 #include "components/sync/base/user_selectable_type.h"
 #include "components/sync/service/sync_service.h"
 #include "components/sync/service/sync_user_settings.h"
@@ -52,10 +50,9 @@ bool AutofillProfileMatchesAccountInfo(const AutofillProfile& profile,
 }
 
 void RemoveNickname(std::string& name) {
-  static const base::NoDestructor<RE2> nickname_pattern(
-      R"(\s+\([^)]*\)|\s+\"[^\"]*\")");
+  static constexpr re2::LazyRE2 nickname_pattern = {
+      R"(\s+\([^)]*\)|\s+\"[^\"]*\")"};
   RE2::GlobalReplace(&name, *nickname_pattern, "");
-
   name = base::UTF16ToUTF8(base::TrimWhitespace(base::UTF8ToUTF16(name),
                                                 base::TrimPositions::TRIM_ALL));
 }
@@ -324,11 +321,6 @@ AccountNameEmailStore::GetBlockAccountNameEmailUpdateReason() {
   if (sync_service_observer_.GetSource()->GetTransportState() ==
       syncer::SyncService::TransportState::DISABLED) {
     return ProfileUpdateBlockReason::kUserSignedOut;
-  }
-
-  if (!syncer::IsReplaceSyncPromosWithSignInPromosEnabled() &&
-      !sync_service_observer_.GetSource()->IsSyncFeatureEnabled()) {
-    return ProfileUpdateBlockReason::kSyncDisabled;
   }
 
   if (!sync_service_observer_.GetSource()

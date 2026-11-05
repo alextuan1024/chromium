@@ -96,6 +96,20 @@ void OnDidPresentForceDrawFrame(
   std::move(callback).Run();
 }
 
+bool ShouldUpdateCompositorMemoryPolicyOnScreenChange(
+    const display::ScreenInfo& previous,
+    const display::ScreenInfo& current) {
+#if BUILDFLAG(IS_ANDROID)
+  if (Platform::Current()->IsSynchronousCompositingEnabledForAndroidWebView()) {
+    return false;
+  }
+#endif
+  return (previous.rect.size() != current.rect.size() ||
+          previous.device_scale_factor != current.device_scale_factor) &&
+         base::FeatureList::IsEnabled(
+             features::kUpdateCompositorMemoryPolicyOnScreenChange);
+}
+
 bool IsDateTimeInput(ui::TextInputType type) {
   return type == ui::TEXT_INPUT_TYPE_DATE ||
          type == ui::TEXT_INPUT_TYPE_DATE_TIME ||
@@ -222,6 +236,15 @@ void WidgetBase::InitializeCompositing(
     CHECK(!settings);
     AssertAreCompatible(*this, *previous_widget);
 
+    // Preserve `previous_widget`'s `screen_infos_` until `UpdateScreenInfo`
+    // below so that any screen change since `previous_widget` was last updated
+    // is detected.
+    screen_infos_ =
+        ShouldUpdateCompositorMemoryPolicyOnScreenChange(
+            previous_widget->screen_infos_.current(), screen_infos.current())
+            ? previous_widget->screen_infos_
+            : screen_infos;
+
     // `screen_infos` is applied to this LayerTreeView below.
     previous_widget->DisconnectLayerTreeView(this, /*delay_release=*/false);
     CHECK(layer_tree_view_);
@@ -243,9 +266,9 @@ void WidgetBase::InitializeCompositing(
             : nullptr,
         cc::CategorizedWorkerPool::GetOrCreate(
             &BlinkCategorizedWorkerPoolDelegate::Get()));
+    screen_infos_ = screen_infos;
   }
 
-  screen_infos_ = screen_infos;
   max_render_buffer_bounds_sw_ =
       LayerTreeHost()->GetSettings().max_render_buffer_bounds_for_sw;
   FrameWidget* frame_widget = client_->FrameWidget();
@@ -343,9 +366,23 @@ void WidgetBase::Shutdown(bool delay_release) {
             [](scoped_refptr<scheduler::WidgetScheduler> scheduler,
                scoped_refptr<WidgetInputHandlerManager> manager,
                std::unique_ptr<LayerTreeView> view) {
+              const bool released_view = !!view;
               view.reset();
               manager.reset();
               scheduler->Shutdown();
+              if (released_view &&
+                  base::FeatureList::IsEnabled(
+                      features::kFlushGpuChannelOnLayerTreeViewRelease)) {
+                // Releasing the LayerTreeView destroyed its SharedImages (e.g.
+                // all of its tile resources). Their destruction requests are
+                // deferred GPU channel messages, which are only sent with the
+                // next flush, or after GpuChannelHost::kDelayForEnsuringFlush.
+                // On an idle page the next flush is often the next
+                // navigation's first raster, and the GPU service then has to
+                // destroy the whole backlog before it can create that
+                // navigation's SharedImages. Send them right away instead.
+                Platform::Current()->FlushGpuChannelIfEstablished();
+              }
             },
             std::move(widget_scheduler_),
             std::move(widget_input_handler_manager_),
@@ -772,7 +809,8 @@ void WidgetBase::RequestNewLayerTreeFrameSink(
         main_thread_compositor_task_runner_;
   }
 
-  if (!for_web_tests && params.embedder_params->compositor_task_runner) {
+  if (!for_web_tests && params.embedder_params->compositor_task_runner &&
+      mojo::IsDirectReceiverSupported()) {
     params.embedder_params->use_direct_client_receiver = true;
   }
 
@@ -1655,7 +1693,7 @@ void WidgetBase::CursorVisibilityChange(bool is_visible) {
   client_->SetCursorVisibilityState(is_visible);
 }
 
-void WidgetBase::ImeSetComposition(
+gfx::Range WidgetBase::ImeSetComposition(
     const String& text,
     const Vector<ui::ImeTextSpan>& ime_text_spans,
     const gfx::Range& replacement_range,
@@ -1666,25 +1704,27 @@ void WidgetBase::ImeSetComposition(
   // If the browser is setting a targeted composition, ignore normal IME focus
   // requirements.
   if (target_dom_node_id.is_null() && !ShouldHandleImeEvents()) {
-    return;
+    return gfx::Range::InvalidRange();
   }
 
   FrameWidget* frame_widget = client_->FrameWidget();
-  if (!frame_widget)
-    return;
+  if (!frame_widget) {
+    return gfx::Range::InvalidRange();
+  }
   if (frame_widget->ShouldDispatchImeEventsToPlugin()) {
     frame_widget->ImeSetCompositionForPlugin(text, ime_text_spans,
                                              replacement_range, selection_start,
                                              selection_end);
-    return;
+    return gfx::Range::InvalidRange();
   }
 
   ImeEventGuard guard(weak_ptr_factory_.GetWeakPtr());
+  gfx::Range composition_range = gfx::Range::InvalidRange();
   bool success = frame_widget->SetComposition(
       text, ime_text_spans, replacement_range, selection_start, selection_end,
-      ime_state, target_dom_node_id);
+      ime_state, target_dom_node_id, composition_range);
   if (!guard.IsValid()) {
-    return;
+    return gfx::Range::InvalidRange();
   }
   if (!success) {
     // If we failed to set the composition text, then we need to let the browser
@@ -1696,6 +1736,7 @@ void WidgetBase::ImeSetComposition(
     }
   }
   UpdateCompositionInfo(false /* not an immediate request */);
+  return composition_range;
 }
 
 void WidgetBase::ImeCommitText(const String& text,
@@ -1891,7 +1932,9 @@ void WidgetBase::UpdateSurfaceAndScreenInfo(
 
   // RenderWidgetHostImpl::SynchronizeVisualProperties uses similar logic to
   // detect orientation changes on the display currently showing the widget.
-  const display::ScreenInfo& previous_screen_info = screen_infos_.current();
+  const display::ScreenInfos previous_effective_screen_infos = screen_infos_;
+  const display::ScreenInfo& previous_screen_info =
+      previous_effective_screen_infos.current();
   bool orientation_changed =
       previous_screen_info.orientation_angle !=
           new_screen_info.orientation_angle ||
@@ -1901,6 +1944,17 @@ void WidgetBase::UpdateSurfaceAndScreenInfo(
 
   local_surface_id_from_parent_ = new_local_surface_id;
   screen_infos_ = new_screen_infos;
+
+  const display::ScreenInfo& previous_original_screen_info =
+      previous_original_screen_infos.current();
+  const display::ScreenInfo& new_original_screen_info =
+      client_->GetOriginalScreenInfos().current();
+  if (ShouldUpdateCompositorMemoryPolicyOnScreenChange(
+          previous_original_screen_info, new_original_screen_info)) {
+    LayerTreeHost()->SetMemoryPolicy(GetGpuMemoryPolicy(
+        LayerTreeHost()->memory_policy(), new_original_screen_info.rect.size(),
+        new_original_screen_info.device_scale_factor));
+  }
 
   // Note carefully that the DSF specified in |new_screen_info| is not the
   // DSF used by the compositor during device emulation!
@@ -1927,7 +1981,8 @@ void WidgetBase::UpdateSurfaceAndScreenInfo(
     }
   }
 
-  client_->DidUpdateSurfaceAndScreen(previous_original_screen_infos);
+  client_->DidUpdateSurfaceAndScreen(previous_original_screen_infos,
+                                     previous_effective_screen_infos);
 }
 
 void WidgetBase::UpdateScreenInfo(

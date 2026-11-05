@@ -4,6 +4,9 @@
 
 #include "chrome/browser/ui/webui/ash/settings/services/settings_manager/os_settings_manager.h"
 
+#include <memory>
+#include <optional>
+
 #include "ash/constants/ash_features.h"
 #include "ash/webui/settings/public/constants/routes.mojom.h"
 #include "base/command_line.h"
@@ -14,14 +17,15 @@
 #include "chrome/browser/ash/arc/arc_util.h"
 #include "chrome/browser/ash/eche_app/eche_app_manager_factory.h"
 #include "chrome/browser/ash/kerberos/kerberos_credentials_manager_factory.h"
-#include "chrome/browser/ash/login/users/fake_chrome_user_manager.h"
-#include "chrome/browser/ash/login/users/scoped_account_id_annotator.h"
+#include "chrome/browser/ash/login/test/chrome_user_session_test_environment_delegate.h"
 #include "chrome/browser/ash/multidevice_setup/multidevice_setup_client_factory.h"
 #include "chrome/browser/ash/phonehub/phone_hub_manager_factory.h"
 #include "chrome/browser/ash/printing/cups_printers_manager_factory.h"
+#include "chrome/browser/ash/system/timezone_resolver_manager.h"
 #include "chrome/browser/browser_process_platform_part.h"
 #include "chrome/browser/global_features.h"
 #include "chrome/browser/nearby_sharing/nearby_sharing_service_factory.h"
+#include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/ui/ash/graduation/graduation_manager_impl.h"
 #include "chrome/browser/ui/webui/ash/settings/constants/constants_util.h"
@@ -29,8 +33,9 @@
 #include "chrome/browser/ui/webui/ash/settings/search/hierarchy.h"
 #include "chrome/browser/ui/webui/ash/settings/services/settings_manager/os_settings_manager_factory.h"
 #include "chrome/test/base/testing_browser_process.h"
-#include "chrome/test/base/testing_profile_manager.h"
+#include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
 #include "chromeos/ash/components/dbus/userdataauth/userdataauth_client.h"
+#include "chromeos/ash/components/geolocation/system_location_provider.h"
 #include "chromeos/ash/components/local_search_service/public/cpp/local_search_service_proxy.h"
 #include "chromeos/ash/components/local_search_service/public/cpp/local_search_service_proxy_factory.h"
 #include "chromeos/ash/components/local_search_service/search_metrics_reporter.h"
@@ -39,14 +44,17 @@
 #include "chromeos/ash/experiences/arc/arc_features.h"
 #include "chromeos/ash/experiences/arc/test/arc_util_test_support.h"
 #include "components/account_id/account_id.h"
+#include "components/account_id/account_id_literal.h"
 #include "components/prefs/testing_pref_service.h"
-#include "components/user_manager/scoped_user_manager.h"
-#include "components/user_manager/user_manager.h"
-#include "components/user_manager/user_names.h"
+#include "components/session_manager/core/session_manager.h"
+#include "components/session_manager/test/user_session_test_environment.h"
 #include "content/public/test/browser_task_environment.h"
 #include "google_apis/gaia/gaia_id.h"
+#include "services/network/public/cpp/weak_wrapper_shared_url_loader_factory.h"
+#include "services/network/test/test_url_loader_factory.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/ime/ash/mock_input_method_manager.h"
+#include "ui/base/ime/ash/scoped_input_method_manager_for_testing.h"
 
 namespace ash::settings {
 
@@ -55,13 +63,19 @@ using ::chromeos::settings::mojom::Section;
 using ::chromeos::settings::mojom::Subpage;
 }  // namespace mojom
 
+namespace {
+
+constexpr auto kAccountId =
+    AccountId::Literal::FromUserEmailGaiaId("test@example.com",
+                                            GaiaId::Literal("1234"));
+
+}  // namespace
+
 // Verifies the OsSettingsManager initialization flow. Behavioral functionality
 // is tested via unit tests on the sub-elements owned by OsSettingsManager.
 class OsSettingsManagerTest : public testing::Test {
  protected:
-  OsSettingsManagerTest()
-      : fake_user_manager_(std::make_unique<ash::FakeChromeUserManager>()),
-        profile_manager_(TestingBrowserProcess::GetGlobal()) {}
+  OsSettingsManagerTest() = default;
   ~OsSettingsManagerTest() override = default;
 
   // testing::Test:
@@ -71,17 +85,32 @@ class OsSettingsManagerTest : public testing::Test {
         base::CommandLine::ForCurrentProcess());
 
     scoped_feature_list_.InitWithFeatures({arc::kPerAppLanguage}, {});
-    ASSERT_TRUE(profile_manager_.SetUp());
+    TestingBrowserProcess::GetGlobal()->SetSharedURLLoaderFactory(
+        test_url_loader_factory_.GetSafeWeakWrapper());
 
     // Log in user to ensure ARC PlayStore can be enabled.
-    const AccountId account_id(AccountId::FromUserEmailGaiaId(
-        TestingProfile::kDefaultProfileUserName, GaiaId("1234")));
-    fake_user_manager_->AddUser(account_id);
-    fake_user_manager_->LoginUser(account_id);
-    ScopedAccountIdAnnotator annotator(profile_manager_.profile_manager(),
-                                       account_id);
-    Profile* profile = profile_manager_.CreateTestingProfile(
-        TestingProfile::kDefaultProfileUserName);
+    auto* browser_process = TestingBrowserProcess::GetGlobal();
+    user_session_test_environment_ =
+        std::make_unique<test::UserSessionTestEnvironment>(
+            browser_process->local_state(),
+            std::make_unique<test::ChromeUserSessionTestEnvironmentDelegate>(
+                browser_process));
+
+    // TODO(crbug.com/489930598): Define a TestLocationProvider and pass it
+    // here instead of nullptr.
+    SystemLocationProvider::Initialize(nullptr);
+    timezone_resolver_manager_ =
+        std::make_unique<system::TimeZoneResolverManager>(
+            browser_process->local_state(),
+            browser_process->shared_url_loader_factory(),
+            SystemLocationProvider::GetInstance(),
+            session_manager::SessionManager::Get());
+
+    ASSERT_TRUE(user_session_test_environment_->AddRegularUser(kAccountId));
+    user_session_test_environment_->LogIn(kAccountId);
+    Profile* profile = Profile::FromBrowserContext(
+        BrowserContextHelper::Get()->GetBrowserContextByAccountId(kAccountId));
+    ASSERT_TRUE(profile);
     arc::SetArcPlayStoreEnabledForProfile(profile, true);
 
     NearbySharingServiceFactory::
@@ -90,8 +119,7 @@ class OsSettingsManagerTest : public testing::Test {
         pref_service_.registry());
     local_search_service::LocalSearchServiceProxyFactory::GetInstance()
         ->SetLocalState(&pref_service_);
-    input_method::MockInputMethodManager::Initialize(
-        new input_method::MockInputMethodManager);
+    input_method_manager_.emplace();
     statistics_provider_.SetMachineStatistic(ash::system::kRegionKey, "us");
     graduation_manager_ =
         std::make_unique<ash::graduation::GraduationManagerImpl>(
@@ -109,6 +137,8 @@ class OsSettingsManagerTest : public testing::Test {
         TestingBrowserProcess::GetGlobal()
             ->platform_part()
             ->browser_policy_connector_ash(),
+        timezone_resolver_manager_.get(),
+        TestingBrowserProcess::GetGlobal()->shared_url_loader_factory(),
         profile, local_search_service_proxy_.get(),
         multidevice_setup::MultiDeviceSetupClientFactory::GetForProfile(
             profile),
@@ -121,11 +151,29 @@ class OsSettingsManagerTest : public testing::Test {
         eche_app::EcheAppManagerFactory::GetForProfile(profile));
   }
 
-  user_manager::TypedScopedUserManager<ash::FakeChromeUserManager>
-      fake_user_manager_;
+  void TearDown() override {
+    manager_.reset();
+    graduation_manager_.reset();
+    // `timezone_resolver_manager_` observes the SessionManager owned by
+    // `user_session_test_environment_` and the global SystemLocationProvider,
+    // so it must be destroyed before both.
+    timezone_resolver_manager_.reset();
+    SystemLocationProvider::DestroyForTesting();
+    user_session_test_environment_.reset();
+    TestingBrowserProcess::GetGlobal()->SetSharedURLLoaderFactory(nullptr);
+  }
+
   content::BrowserTaskEnvironment task_environment_;
+  network::TestURLLoaderFactory test_url_loader_factory_;
   TestingPrefServiceSimple pref_service_;
-  TestingProfileManager profile_manager_;
+  // Declared before `user_session_test_environment_` so that it outlives the
+  // profiles and their keyed services.
+  std::optional<input_method::ScopedInputMethodManagerForTesting<
+      input_method::MockInputMethodManager>>
+      input_method_manager_;
+  std::unique_ptr<test::UserSessionTestEnvironment>
+      user_session_test_environment_;
+  std::unique_ptr<system::TimeZoneResolverManager> timezone_resolver_manager_;
   std::unique_ptr<local_search_service::LocalSearchServiceProxy>
       local_search_service_proxy_ =
           std::make_unique<local_search_service::LocalSearchServiceProxy>(

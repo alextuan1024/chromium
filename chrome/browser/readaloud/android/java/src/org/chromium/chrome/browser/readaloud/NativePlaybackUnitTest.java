@@ -5,10 +5,16 @@
 package org.chromium.chrome.browser.readaloud;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertSame;
+import static org.junit.Assert.assertTrue;
 import static org.mockito.Mockito.any;
+import static org.mockito.Mockito.anyInt;
+import static org.mockito.Mockito.anyLong;
 import static org.mockito.Mockito.eq;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.reset;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -47,6 +53,7 @@ public class NativePlaybackUnitTest {
     @Mock private PlaybackListener mListener;
     @Mock private SendFeedbackCallback mFeedbackCallback;
     @Captor private ArgumentCaptor<PlaybackListener.PlaybackData> mDataCaptor;
+    @Captor private ArgumentCaptor<PlaybackListener.PhraseTiming> mPhraseTimingCaptor;
 
     private NativePlayback mPlayback;
 
@@ -64,7 +71,7 @@ public class NativePlaybackUnitTest {
         assertEquals(LANGUAGE, mPlayback.getMetadata().languageCode());
         assertEquals(CANONICAL_URL, mPlayback.getMetadata().canonicalUrl());
         assertEquals(PlaybackMode.CLASSIC, mPlayback.getMetadata().playbackMode());
-        assertEquals(PlaybackListener.State.BUFFERING, mPlayback.getState());
+        assertEquals(PlaybackListener.State.PLAYBACK_CREATION, mPlayback.getState());
         verify(mBridgeMock).setPlaybackMode(PlaybackMode.CLASSIC.getValue());
         mPlayback.initializeSession();
         verify(mBridgeMock).initializeSession(mWebContents);
@@ -84,7 +91,7 @@ public class NativePlaybackUnitTest {
         mPlayback.addListener(mListener);
         verify(mListener).onPlaybackDataChanged(mDataCaptor.capture());
         verify(mListener).onMetadataChanged(eq(mPlayback.getMetadata()));
-        assertEquals(PlaybackListener.State.BUFFERING, mDataCaptor.getValue().state());
+        assertEquals(PlaybackListener.State.PLAYBACK_CREATION, mDataCaptor.getValue().state());
     }
 
     @Test
@@ -113,6 +120,137 @@ public class NativePlaybackUnitTest {
         assertEquals(1000L, updatedData.positionInParagraphNanos());
         assertEquals(5000L, updatedData.totalDurationNanos());
         assertEquals(5000L, updatedData.paragraphDurationNanos());
+    }
+
+    @Test
+    public void testNotifyWordHighlightUpdated_notifiesListenersWithOffsets() {
+        mPlayback.addListener(mListener);
+
+        mPlayback.notifyWordHighlightUpdated(
+                /* absoluteStartIndex= */ 12, /* absoluteEndIndex= */ 17);
+
+        verify(mListener).onPhraseChanged(mPhraseTimingCaptor.capture());
+        assertEquals(12, mPhraseTimingCaptor.getValue().absoluteStartIndex());
+        assertEquals(17, mPhraseTimingCaptor.getValue().absoluteEndIndex());
+    }
+
+    @Test
+    public void testNotifyWordHighlightUpdated_reusesPhraseTiming() {
+        mPlayback.addListener(mListener);
+        mPlayback.notifyWordHighlightUpdated(
+                /* absoluteStartIndex= */ 12, /* absoluteEndIndex= */ 17);
+        verify(mListener).onPhraseChanged(mPhraseTimingCaptor.capture());
+        PlaybackListener.PhraseTiming initialPhraseTiming = mPhraseTimingCaptor.getValue();
+
+        mPlayback.notifyWordHighlightUpdated(
+                /* absoluteStartIndex= */ 18, /* absoluteEndIndex= */ 25);
+
+        verify(mListener, times(2)).onPhraseChanged(mPhraseTimingCaptor.capture());
+        PlaybackListener.PhraseTiming updatedPhraseTiming = mPhraseTimingCaptor.getValue();
+        assertSame(initialPhraseTiming, updatedPhraseTiming);
+        assertEquals(18, updatedPhraseTiming.absoluteStartIndex());
+        assertEquals(25, updatedPhraseTiming.absoluteEndIndex());
+    }
+
+    @Test
+    public void testIsHighlightingSupported_defaultsToTrue() {
+        assertTrue(mPlayback.isHighlightingSupported());
+    }
+
+    @Test
+    public void testSetHighlightingSupported_updatesState() {
+        mPlayback.setHighlightingSupported(false);
+
+        assertFalse(mPlayback.isHighlightingSupported());
+    }
+
+    @Test
+    public void testNotifyWordHighlightUpdated_highlightingNotSupported_dropsUpdate() {
+        mPlayback.addListener(mListener);
+        mPlayback.setHighlightingSupported(false);
+
+        mPlayback.notifyWordHighlightUpdated(
+                /* absoluteStartIndex= */ 12, /* absoluteEndIndex= */ 17);
+
+        verify(mListener, never()).onPhraseChanged(any(PlaybackListener.PhraseTiming.class));
+    }
+
+    @Test
+    public void testGetCurrentWordPosition_nullBeforeAnyHighlight() {
+        mPlayback.onTextChunked(new String[] {"Hello world", "Foo bar"});
+
+        assertNull(mPlayback.getCurrentWordPosition());
+    }
+
+    @Test
+    public void testGetCurrentWordPosition_mapsAbsoluteOffsetToChunk() {
+        // Full text: "Hello world Foo bar". "Foo bar" starts at offset 12.
+        mPlayback.onTextChunked(new String[] {"Hello world", "Foo bar"});
+
+        mPlayback.notifyWordHighlightUpdated(
+                /* absoluteStartIndex= */ 6, /* absoluteEndIndex= */ 11);
+        NativePlayback.WordPosition first = mPlayback.getCurrentWordPosition();
+        assertNotNull(first);
+        assertEquals(0, first.chunkIndex);
+        assertEquals(6, first.charOffset);
+
+        mPlayback.notifyWordHighlightUpdated(
+                /* absoluteStartIndex= */ 16, /* absoluteEndIndex= */ 19);
+        NativePlayback.WordPosition second = mPlayback.getCurrentWordPosition();
+        assertNotNull(second);
+        assertEquals(1, second.chunkIndex);
+        assertEquals(4, second.charOffset);
+    }
+
+    @Test
+    public void testGetCurrentWordPosition_skipsEmptyChunks() {
+        // Full text: "Hello world Foo bar". The empty chunk 1 has length 0 at offset 11 and must
+        // never be picked; "Foo bar" (chunk 2) starts at offset 12.
+        mPlayback.onTextChunked(new String[] {"Hello world", "", "Foo bar"});
+
+        mPlayback.notifyWordHighlightUpdated(
+                /* absoluteStartIndex= */ 16, /* absoluteEndIndex= */ 19);
+        NativePlayback.WordPosition inLastChunk = mPlayback.getCurrentWordPosition();
+        assertNotNull(inLastChunk);
+        assertEquals(2, inLastChunk.chunkIndex);
+        assertEquals(4, inLastChunk.charOffset);
+
+        mPlayback.notifyWordHighlightUpdated(
+                /* absoluteStartIndex= */ 6, /* absoluteEndIndex= */ 11);
+        NativePlayback.WordPosition inFirstChunk = mPlayback.getCurrentWordPosition();
+        assertNotNull(inFirstChunk);
+        assertEquals(0, inFirstChunk.chunkIndex);
+        assertEquals(6, inFirstChunk.charOffset);
+    }
+
+    @Test
+    public void testGetCurrentWordPosition_highlightingNotSupported_returnsNull() {
+        mPlayback.onTextChunked(new String[] {"Hello world"});
+        mPlayback.setHighlightingSupported(false);
+
+        mPlayback.notifyWordHighlightUpdated(
+                /* absoluteStartIndex= */ 6, /* absoluteEndIndex= */ 11);
+
+        assertNull(mPlayback.getCurrentWordPosition());
+    }
+
+    @Test
+    public void testGetCurrentWordPosition_resetByNewTextContent() {
+        mPlayback.onTextChunked(new String[] {"Hello world"});
+        mPlayback.notifyWordHighlightUpdated(
+                /* absoluteStartIndex= */ 6, /* absoluteEndIndex= */ 11);
+
+        mPlayback.onTextChunked(new String[] {"Replacement text"});
+
+        assertNull(mPlayback.getCurrentWordPosition());
+    }
+
+    @Test
+    public void testSeekToParagraph_isNoOp() {
+        mPlayback.seekToParagraph(/* paragraphIndex= */ 0, /* offsetNanos= */ 5000L);
+
+        verify(mBridgeMock, never()).seek(anyLong());
+        verify(mBridgeMock, never()).seekToWord(anyInt(), anyInt());
     }
 
     @Test
@@ -166,6 +304,9 @@ public class NativePlaybackUnitTest {
 
         mPlayback.seekRelative(50L);
         verify(mBridgeMock).seekRelative(50L);
+
+        mPlayback.seekToWord(2, 15);
+        verify(mBridgeMock).seekToWord(2, 15);
 
         mPlayback.setRate(1.5f);
         verify(mBridgeMock).setPlaybackRate(1.5f);

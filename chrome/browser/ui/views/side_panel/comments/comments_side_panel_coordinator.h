@@ -14,7 +14,6 @@
 
 class BrowserWindowInterface;
 class SidePanelEntryScope;
-class SidePanelRegistry;
 
 class TabStripModel;
 class TabStripModelChange;
@@ -51,8 +50,7 @@ class CommentsSidePanelCoordinator
   void TabGroupedStateChanged(TabStripModel* tab_strip_model,
                               std::optional<tab_groups::TabGroupId> old_group,
                               std::optional<tab_groups::TabGroupId> new_group,
-                              tabs::TabInterface* tab,
-                              int index) override;
+                              tabs::TabHandle tab) override;
 
   // TabGroupSyncService::Observer
   void OnTabGroupUpdated(const tab_groups::SavedTabGroup& group,
@@ -62,9 +60,6 @@ class CommentsSidePanelCoordinator
   // If this returns false, it should not be registered with the side
   // panel registry.
   static bool IsSupported();
-
-  // Creates and registers the comments side panel entry in the global registry.
-  void CreateAndRegisterEntry(SidePanelRegistry* global_registry);
 
  private:
   // Creates the comments web view that will be used as the content of the

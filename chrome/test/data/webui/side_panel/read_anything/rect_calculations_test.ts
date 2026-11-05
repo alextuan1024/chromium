@@ -2,22 +2,17 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import {calculateTextBounds, ContentBrowserProxyImpl, getLineForRect, getMostCommonPitch, getRectIndexAtY, isRectMostlyVisible, isRectVisible, MOSTLY_VISIBLE_PERCENT, VisualBrowserProxyImpl} from 'chrome-untrusted://read-anything-side-panel.top-chrome/read_anything.js';
+import {calculateTextBounds, getLineForRect, getMostCommonPitch, getRectIndexAtY, isRectMostlyVisible, isRectVisible, MOSTLY_VISIBLE_PERCENT} from 'chrome-untrusted://read-anything-side-panel.top-chrome/read_anything.js';
 import {assertEquals, assertFalse, assertNull, assertTrue} from 'chrome-untrusted://webui-test/chai_assert.js';
 
-import {setWindowSize} from './common.js';
-import {TestContentBrowserProxy} from './test_content_browser_proxy.js';
-import {TestVisualBrowserProxy} from './test_visual_browser_proxy.js';
+import {setupTestEnvironment, setWindowSize} from './common.js';
+import type {TestVisualBrowserProxy} from './test_visual_browser_proxy.js';
 
 suite('RectCalculations', () => {
   let visualBrowserProxy: TestVisualBrowserProxy;
 
   setup(() => {
-    document.body.innerHTML = window.trustedTypes!.emptyHTML;
-    window.scrollTo(0, 0);
-    visualBrowserProxy = new TestVisualBrowserProxy();
-    VisualBrowserProxyImpl.setInstance(visualBrowserProxy);
-    ContentBrowserProxyImpl.setInstance(new TestContentBrowserProxy());
+    visualBrowserProxy = setupTestEnvironment().visualBrowserProxy;
   });
 
   suite('isRectVisible', () => {
@@ -145,76 +140,6 @@ suite('RectCalculations', () => {
   suite('calculateTextBounds', () => {
     let container: HTMLDivElement;
 
-    // TODO(crbug.com/502069860): Remove this once flakiness is confirmed to be
-    // gone.
-    function getVisualLines(container: HTMLElement): string[] {
-      const walker = document.createTreeWalker(
-          container,
-          NodeFilter.SHOW_TEXT,
-          null,
-      );
-      const range = document.createRange();
-      const lines: string[] = [];
-      let currentLine = '';
-      let lastTop: number|null = null;
-
-      let node = walker.nextNode();
-      while (node) {
-        const text = node.textContent || '';
-        for (let i = 0; i < text.length; i++) {
-          range.setStart(node, i);
-          range.setEnd(node, i + 1);
-          const rect = range.getBoundingClientRect();
-          if (rect.width === 0 && rect.height === 0) {
-            continue;
-          }
-          if (lastTop === null) {
-            lastTop = rect.top;
-          } else if (Math.abs(rect.top - lastTop) > 2) {
-            lines.push(currentLine);
-            currentLine = '';
-            lastTop = rect.top;
-          }
-          currentLine += text[i];
-        }
-        node = walker.nextNode();
-      }
-      if (currentLine) {
-        lines.push(currentLine);
-      }
-      return lines;
-    }
-
-    // TODO(crbug.com/502069860): Remove this once flakiness is confirmed to be
-    // gone.
-    function logBoundsFailure(
-        testName: string, container: HTMLElement, expectedLength: number,
-        bounds: DOMRect[]) {
-      const rect = container.getBoundingClientRect();
-      const visualLines = getVisualLines(container);
-      console.error(
-          `[${testName}] text bounds length is ${bounds.length}, expected ${
-              expectedLength}.\n` +
-          `Container: width=${container.offsetWidth}px, height=${
-              container.offsetHeight}px, ` +
-          `rect=[left:${rect.left}, top:${rect.top}, width:${
-              rect.width}, height:${rect.height}], ` +
-          `computedStyle.whiteSpace="${
-              window.getComputedStyle(container).whiteSpace}"\n` +
-          `Window: innerWidth=${window.innerWidth}px, body.clientWidth=${
-              document.body.clientWidth}px\n` +
-          `Visual lines (${visualLines.length}):\n` +
-          visualLines.map((line, i) => `  [${i}]: "${line}"`).join('\n') +
-          '\n' +
-          `HTML: ${container.outerHTML}\n` +
-          `Bounds: ${JSON.stringify(bounds.map(b => ({
-                                                 top: b.top,
-                                                 bottom: b.bottom,
-                                                 left: b.left,
-                                                 right: b.right,
-                                               })))}`);
-    }
-
     setup(() => {
       container = document.createElement('div');
       container.style.whiteSpace = 'pre';
@@ -264,13 +189,6 @@ suite('RectCalculations', () => {
 
       const result = calculateTextBounds(container, 500);
 
-      // TODO(crbug.com/502069860): Remove this once flakiness is confirmed to
-      // be gone.
-      if (result.bounds.length !== 2) {
-        logBoundsFailure(
-            'moderate overlap does not merge with large font size', container,
-            2, result.bounds);
-      }
       assertEquals(2, result.bounds.length);
     });
 
@@ -322,13 +240,6 @@ suite('RectCalculations', () => {
 
       const result = calculateTextBounds(container, 500);
 
-      // TODO(crbug.com/502069860): Remove this once flakiness is confirmed to
-      // be gone.
-      if (result.bounds.length !== 2) {
-        logBoundsFailure(
-            'small line height prevents merging for moderate overlap',
-            container, 2, result.bounds);
-      }
       assertEquals(2, result.bounds.length);
     });
 
@@ -392,8 +303,8 @@ suite('RectCalculations', () => {
   });
 
   suite('getRectIndexAtY', () => {
-    const rect1 = {bottom: 30} as DOMRect;
-    const rect2 = {bottom: 60} as DOMRect;
+    const rect1 = new DOMRect(0, 10, 100, 20);  // top: 10, bottom: 30
+    const rect2 = new DOMRect(0, 40, 100, 20);  // top: 40, bottom: 60
     const rects = [rect1, rect2];
 
     test('Y matches first rect returns 0', () => {

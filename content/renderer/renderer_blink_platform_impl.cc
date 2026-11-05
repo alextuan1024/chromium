@@ -5,6 +5,8 @@
 #include "content/renderer/renderer_blink_platform_impl.h"
 
 #include <algorithm>
+#include <cstdint>
+#include <limits>
 #include <memory>
 #include <string_view>
 #include <utility>
@@ -99,6 +101,7 @@
 #include "third_party/blink/public/platform/modules/video_capture/web_video_capture_impl_manager.h"
 #include "third_party/blink/public/platform/scheduler/web_thread_scheduler.h"
 #include "third_party/blink/public/platform/url_conversion.h"
+#include "third_party/blink/public/platform/web_audio_bus.h"
 #include "third_party/blink/public/platform/web_audio_latency_hint.h"
 #include "third_party/blink/public/platform/web_audio_sink_descriptor.h"
 #include "third_party/blink/public/platform/web_security_origin.h"
@@ -396,6 +399,13 @@ bool RendererBlinkPlatformImpl::ShouldUseCodeCacheWithHashing(
       request_url);
 }
 
+bool RendererBlinkPlatformImpl::ShouldUsePerBrowsingInstanceWindowAgent(
+    const blink::WebSecurityOrigin& origin) {
+  return GetContentClient()
+      ->renderer()
+      ->ShouldUsePerBrowsingInstanceWindowAgent(origin);
+}
+
 bool RendererBlinkPlatformImpl::IsolateStartsInBackground() {
   if (auto* renderer = GetContentClient()->renderer()) {
     // Isolates start in the background if we do not handle hidden/visibility
@@ -533,7 +543,7 @@ std::unique_ptr<WebAudioDevice> RendererBlinkPlatformImpl::CreateAudioDevice(
       context_sample_rate, callback);
 }
 
-std::unique_ptr<blink::Platform::DecodedAudioFile>
+std::unique_ptr<blink::WebAudioBus>
 RendererBlinkPlatformImpl::DecodeAudioFileData(
     base::span<const char> audio_file_data) {
   return content::DecodeAudioFileData(audio_file_data);
@@ -579,6 +589,18 @@ RendererBlinkPlatformImpl::EstablishGpuChannelSync() {
 void RendererBlinkPlatformImpl::EstablishGpuChannel(
     EstablishGpuChannelCallback callback) {
   RenderThreadImpl::current()->EstablishGpuChannel(std::move(callback));
+}
+
+void RendererBlinkPlatformImpl::FlushGpuChannelIfEstablished() {
+  RenderThreadImpl* render_thread = RenderThreadImpl::current();
+  if (!render_thread) {
+    return;
+  }
+  // GetGpuChannel() never establishes a channel. It returns null if there is no
+  // channel or if it was lost.
+  if (gpu::GpuChannelHost* gpu_channel = render_thread->GetGpuChannel()) {
+    gpu_channel->EnsureFlush(std::numeric_limits<uint32_t>::max());
+  }
 }
 
 bool RendererBlinkPlatformImpl::RTCSmoothnessAlgorithmEnabled() {

@@ -424,7 +424,7 @@ bool TestRenderViewHost::CreateRenderView(
   RenderFrameHostImpl* main_frame = nullptr;
   RenderFrameProxyHost* proxy_host = nullptr;
   if (main_frame_routing_id_ != IPC::mojom::kRoutingIdNone) {
-    main_frame = RenderFrameHostImpl::FromID(GetProcess()->GetDeprecatedID(),
+    main_frame = RenderFrameHostImpl::FromID(GetProcess()->GetID(),
                                              main_frame_routing_id_);
   } else {
     proxy_host = RenderFrameProxyHost::FromID(GetProcess()->GetDeprecatedID(),
@@ -485,11 +485,11 @@ MockRenderProcessHost* TestRenderViewHost::GetProcess() const {
 }
 
 void TestRenderViewHost::SimulateWasHidden() {
-  GetWidget()->WasHidden();
+  GetWidget()->GetView()->Hide();
 }
 
 void TestRenderViewHost::SimulateWasShown() {
-  GetWidget()->WasShown({} /* record_tab_switch_time_request */);
+  GetWidget()->GetView()->ShowWithVisibility(PageVisibilityState::kVisible);
 }
 
 blink::web_pref::WebPreferences

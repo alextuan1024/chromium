@@ -52,6 +52,7 @@ import org.chromium.base.ResettersForTesting;
 import org.chromium.base.ServiceLoaderUtil;
 import org.chromium.base.SysUtils;
 import org.chromium.base.ThreadUtils;
+import org.chromium.base.TimeUtils;
 import org.chromium.base.TraceEvent;
 import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.base.task.ChainedTasks;
@@ -69,7 +70,6 @@ import org.chromium.chrome.browser.browserservices.SessionDataHolder;
 import org.chromium.chrome.browser.browserservices.SessionHandler;
 import org.chromium.chrome.browser.browserservices.intents.BrowserCallbackWrapper;
 import org.chromium.chrome.browser.browserservices.intents.BrowserServicesIntentDataProvider;
-import org.chromium.chrome.browser.browserservices.intents.BrowserServicesIntentDataProvider.TitleVisibility;
 import org.chromium.chrome.browser.browserservices.intents.SessionHolder;
 import org.chromium.chrome.browser.content.WebContentsFactory;
 import org.chromium.chrome.browser.customtabs.ClientManager.CalledWarmup;
@@ -113,8 +113,6 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.function.Consumer;
-import java.util.function.Function;
 import java.util.function.Supplier;
 
 /**
@@ -400,8 +398,8 @@ public class CustomTabsConnection {
         PostMessageServiceConnection serviceConnection = null;
         PostMessageHandler postMessageHandler = null;
         EngagementSignalsHandler engagementSignalsHandler = null;
-        if (session.isCustomTab()) {
-            var customTabSession = session.getSessionAsCustomTab();
+        if (session instanceof SessionHolder.CustomTab customTab) {
+            var customTabSession = customTab.getToken();
             // TODO(peconn): Make this not an anonymous class once PostMessageServiceConnection is
             // made
             // non-abstract in AndroidX.
@@ -422,11 +420,9 @@ public class CustomTabsConnection {
             String packageName = getClientPackageNameForSession(session);
             Log.i(
                     TAG,
-                    "New Custom Tab session created by package: "
-                            + packageName
-                            + " (UID: "
-                            + Binder.getCallingUid()
-                            + ")");
+                    "New Custom Tab session created by package: %s (UID: %d)",
+                    packageName,
+                    Binder.getCallingUid());
         }
         return success;
     }
@@ -1055,7 +1051,8 @@ public class CustomTabsConnection {
     }
 
     /** See {@link ClientManager#resetPostMessageHandlerForSession(SessionHolder, WebContents)}. */
-    public void resetPostMessageHandlerForSession(SessionHolder session, WebContents webContents) {
+    public void resetPostMessageHandlerForSession(
+            @Nullable SessionHolder session, @Nullable WebContents webContents) {
         mClientManager.resetPostMessageHandlerForSession(session, webContents);
     }
 
@@ -1174,7 +1171,7 @@ public class CustomTabsConnection {
                 ParallelRequestStatus.NUM_ENTRIES);
 
         if (mLogRequests) {
-            Log.w(TAG, "handleParallelRequest() = " + PARALLEL_REQUEST_MESSAGES[status]);
+            Log.w(TAG, "handleParallelRequest() = %s", PARALLEL_REQUEST_MESSAGES[status]);
         }
 
         // Success is already reported per URL, report any failures here.
@@ -1236,9 +1233,10 @@ public class CustomTabsConnection {
         }
 
         Uri referrer = IntentUtils.safeGetParcelableExtra(intent, PARALLEL_REQUEST_REFERRER_KEY);
-        int policy =
-                intent.getIntExtra(PARALLEL_REQUEST_REFERRER_POLICY_KEY, ReferrerPolicy.DEFAULT);
         if (referrer == null) return ParallelRequestStatus.FAILURE_INVALID_REFERRER;
+        int policy =
+                IntentUtils.safeGetIntExtra(
+                        intent, PARALLEL_REQUEST_REFERRER_POLICY_KEY, ReferrerPolicy.DEFAULT);
         if (policy < ReferrerPolicy.MIN_VALUE || policy > ReferrerPolicy.MAX_VALUE) {
             policy = ReferrerPolicy.DEFAULT;
         }
@@ -1306,12 +1304,14 @@ public class CustomTabsConnection {
             return 0;
         }
 
-        List<Uri> resourceList = intent.getParcelableArrayListExtra(RESOURCE_PREFETCH_URL_LIST_KEY);
+        List<Uri> resourceList =
+                IntentUtils.getParcelableArrayListExtra(intent, RESOURCE_PREFETCH_URL_LIST_KEY);
         Uri referrer = IntentUtils.safeGetParcelableExtra(intent, PARALLEL_REQUEST_REFERRER_KEY);
-        int policy =
-                intent.getIntExtra(PARALLEL_REQUEST_REFERRER_POLICY_KEY, ReferrerPolicy.DEFAULT);
-
         if (resourceList == null || referrer == null) return 0;
+
+        int policy =
+                IntentUtils.safeGetIntExtra(
+                        intent, PARALLEL_REQUEST_REFERRER_POLICY_KEY, ReferrerPolicy.DEFAULT);
         if (policy < 0 || policy > ReferrerPolicy.MAX_VALUE) policy = ReferrerPolicy.DEFAULT;
         Origin origin = Origin.create(referrer);
         if (origin == null) return 0;
@@ -1683,7 +1683,7 @@ public class CustomTabsConnection {
     }
 
     /**
-     * @see {@link notifyNavigationEvent(SessionHolder, int, int)}
+     * @see #notifyNavigationEvent(SessionHolder, int, Integer)
      */
     public boolean notifyNavigationEvent(@Nullable SessionHolder session, int navigationEvent) {
         return notifyNavigationEvent(session, navigationEvent, /* errorCode= */ null);
@@ -1707,6 +1707,13 @@ public class CustomTabsConnection {
         try {
             Bundle extra = getExtrasBundleForNavigationEventForSession(session);
             if (errorCode != null) extra.putInt("navigationEventErrorCode", errorCode);
+            if (ChromeFeatureList.sCctCloseLogging.isEnabled()
+                    && navigationEvent == CustomTabsCallback.TAB_HIDDEN) {
+                Log.i(
+                        TAG,
+                        "CustomTabsCallback notified of CCT closing (TAB_HIDDEN) at %d",
+                        TimeUtils.uptimeMillis());
+            }
             callback.onNavigationEvent(navigationEvent, extra);
         } catch (Exception e) {
             // Catching all exceptions is really bad, but we need it here,
@@ -1825,13 +1832,13 @@ public class CustomTabsConnection {
      * @return true if application was successfully notified. To protect Chrome exceptions in the
      *     client application are swallowed and false is returned.
      */
-    public boolean notifyOpenInBrowser(SessionHolder session, Tab tab) {
+    public boolean notifyOpenInBrowser(@Nullable SessionHolder session, Tab tab) {
         EngagementSignalsHandler engagementSignalsHandler = getEngagementSignalsHandler(session);
-        if (tab != null && engagementSignalsHandler != null) {
+        if (engagementSignalsHandler != null) {
             engagementSignalsHandler.notifyOpenInBrowser(tab);
         }
         // Reset the client data header for the WebContents since it's not a CCT tab anymore.
-        if (tab != null && tab.getWebContents() != null) {
+        if (tab.getWebContents() != null) {
             CustomTabsConnectionJni.get().setClientDataHeader(tab.getWebContents(), "");
         }
         return safeExtraCallback(
@@ -1861,7 +1868,7 @@ public class CustomTabsConnection {
     }
 
     /**
-     * Calls {@link CustomTabsCallback#extraCallbackWithResult)}. Wraps calling
+     * Calls {@link CustomTabsCallback#extraCallbackWithResult}. Wraps calling
      * sendExtraCallbackWithResult in a try/catch so that exceptions thrown by the host app don't
      * crash Chrome.
      */
@@ -2178,11 +2185,6 @@ public class CustomTabsConnection {
                 .processFile(session, uri, purpose, extras);
     }
 
-    public void setCustomTabIsInForeground(
-            @Nullable SessionHolder session, boolean isInForeground) {
-        mClientManager.setCustomTabIsInForeground(session, isInForeground);
-    }
-
     public boolean isEngagementSignalsApiAvailable(
             CustomTabsSessionToken sessionToken, Bundle extras) {
         return isEngagementSignalsApiAvailableInternal(SessionHolder.of(sessionToken));
@@ -2215,42 +2217,6 @@ public class CustomTabsConnection {
 
     public boolean hasEngagementSignalsCallback(SessionHolder session) {
         return mClientManager.getEngagementSignalsCallbackForSession(session) != null;
-    }
-
-    /** Whether a CustomTabs instance should include interactive Omnibox. */
-    public boolean shouldEnableOmniboxForIntent(BrowserServicesIntentDataProvider intentData) {
-        return false;
-    }
-
-    /**
-     * Returns an alternate handler for taps on the Custom Tabs Omnibox, or null if the default
-     * handler should be used.
-     */
-    // TODO(crbug.com/422969546): Remove this method once the new method is used.
-
-    public @Nullable Consumer<Tab> getAlternateOmniboxTapHandler(
-            BrowserServicesIntentDataProvider intentData) {
-        return null;
-    }
-
-    /**
-     * Returns an alternate handler for taps on the Custom Tabs Omnibox. The function returns true
-     * if the tap was handled, false otherwise.
-     */
-    // TODO(crbug.com/422969546): Rename to getAlternateOmniboxTapHandler once the old method is
-    // removed.
-    public Function<Tab, Boolean> getAlternateOmniboxTapHandlerWithVerification(
-            BrowserServicesIntentDataProvider intentData) {
-        return (tab) -> false;
-    }
-
-    /** Specifies what content should be presented by the CustomTabs instance in location bar. */
-    public @TitleVisibility int getTitleVisibilityState(
-            BrowserServicesIntentDataProvider intentData) {
-        if (shouldEnableOmniboxForIntent(intentData)) {
-            return CustomTabIntentDataProvider.TitleVisibility.HIDDEN;
-        }
-        return intentData.getTitleVisibilityState();
     }
 
     /**

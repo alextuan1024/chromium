@@ -4,6 +4,8 @@
 
 package org.chromium.chrome.browser.searchwidget;
 
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.Mockito.any;
 import static org.mockito.Mockito.anyBoolean;
@@ -30,7 +32,6 @@ import androidx.test.platform.app.InstrumentationRegistry;
 
 import org.hamcrest.Matchers;
 import org.junit.After;
-import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
@@ -50,14 +51,12 @@ import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.base.test.util.DisableIf;
 import org.chromium.base.test.util.DisabledTest;
 import org.chromium.base.test.util.DoNotBatch;
-import org.chromium.base.test.util.Features;
 import org.chromium.base.test.util.Restriction;
 import org.chromium.base.test.util.ScalableTimeout;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.ChromeTabbedActivity;
 import org.chromium.chrome.browser.app.metrics.LaunchCauseMetrics;
 import org.chromium.chrome.browser.customtabs.CustomTabActivityTestRule;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.locale.LocaleManager;
 import org.chromium.chrome.browser.locale.LocaleManagerDelegate;
@@ -89,6 +88,7 @@ import org.chromium.components.omnibox.AutocompleteMatchBuilder;
 import org.chromium.components.omnibox.OmniboxSuggestionType;
 import org.chromium.components.search_engines.TemplateUrl;
 import org.chromium.content_public.common.ContentUrlConstants;
+import org.chromium.ui.edge_to_edge.EdgeToEdgeManager;
 import org.chromium.ui.edge_to_edge.EdgeToEdgeSystemBarColorHelper;
 import org.chromium.ui.test.util.DeviceRestriction;
 import org.chromium.url.GURL;
@@ -96,6 +96,7 @@ import org.chromium.url.GURL;
 import java.util.List;
 import java.util.concurrent.Callable;
 import java.util.concurrent.TimeUnit;
+import java.util.function.IntSupplier;
 
 /**
  * Tests the {@link SearchActivity}.
@@ -110,11 +111,6 @@ import java.util.concurrent.TimeUnit;
 @Restriction({DeviceRestriction.RESTRICTION_TYPE_NON_AUTO}) // Search widget not supported on auto.
 @RunWith(ChromeJUnit4ClassRunner.class)
 @CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
-// TODO(crbug.com/419289558): Re-enable color surface feature flags
-@Features.DisableFeatures({
-    ChromeFeatureList.ANDROID_SURFACE_COLOR_UPDATE,
-    ChromeFeatureList.GRID_TAB_SWITCHER_SURFACE_COLOR_UPDATE,
-})
 @DisableIf.Build(sdk_equals = Build.VERSION_CODES.UPSIDE_DOWN_CAKE, message = "crbug.com/350393662")
 @DoNotBatch(reason = "Test start up behaviors.")
 public class SearchActivityTest {
@@ -225,8 +221,6 @@ public class SearchActivityTest {
     @After
     public void tearDown() {
         AutocompleteControllerJni.setInstanceForTesting(null);
-        ThreadUtils.runOnUiThreadBlocking(
-                ChromeNightModeTestUtils::tearDownNightModeAfterChromeActivityDestroyed);
     }
 
     private AutocompleteMatch buildSimpleAutocompleteMatch(String url) {
@@ -301,15 +295,14 @@ public class SearchActivityTest {
 
         mTestDelegate.shouldDelayNativeInitializationCallback.waitForCallback(
                 0, 1, ScalableTimeout.scaleTimeout(30), TimeUnit.SECONDS);
-        Assert.assertEquals(0, mTestDelegate.showSearchEngineDialogIfNeededCallback.getCallCount());
-        Assert.assertEquals(0, mTestDelegate.onFinishDeferredInitializationCallback.getCallCount());
+        assertEquals(0, mTestDelegate.showSearchEngineDialogIfNeededCallback.getCallCount());
+        assertEquals(0, mTestDelegate.onFinishDeferredInitializationCallback.getCallCount());
 
         // Start loading native, then let the activity finish initialization.
         ThreadUtils.runOnUiThreadBlocking(
                 () -> searchActivity.startDelayedNativeInitializationForTests());
 
-        Assert.assertEquals(
-                1, mTestDelegate.shouldDelayNativeInitializationCallback.getCallCount());
+        assertEquals(1, mTestDelegate.shouldDelayNativeInitializationCallback.getCallCount());
         mTestDelegate.showSearchEngineDialogIfNeededCallback.waitForCallback(
                 0, 1, ScalableTimeout.scaleTimeout(30), TimeUnit.SECONDS);
         mTestDelegate.onFinishDeferredInitializationCallback.waitForCallback(
@@ -331,8 +324,8 @@ public class SearchActivityTest {
                 0, 1, ScalableTimeout.scaleTimeout(30), TimeUnit.SECONDS);
         mTestDelegate.showSearchEngineDialogIfNeededCallback.waitForCallback(
                 0, 1, ScalableTimeout.scaleTimeout(30), TimeUnit.SECONDS);
-        Assert.assertNotNull(mTestDelegate.onSearchEngineFinalizedCallback);
-        Assert.assertEquals(0, mTestDelegate.onFinishDeferredInitializationCallback.getCallCount());
+        assertNotNull(mTestDelegate.onSearchEngineFinalizedCallback);
+        assertEquals(0, mTestDelegate.onFinishDeferredInitializationCallback.getCallCount());
         // Native initialization is finished, but we don't have a DSE elected yet.
         verify(mAutocompleteController).addOnSuggestionsReceivedListener(any());
 
@@ -346,17 +339,16 @@ public class SearchActivityTest {
         ThreadUtils.runOnUiThreadBlocking(mTestDelegate.onSearchEngineFinalizedCallback.bind(true));
 
         // Let the initialization finish completely.
-        Assert.assertEquals(
-                1, mTestDelegate.shouldDelayNativeInitializationCallback.getCallCount());
-        Assert.assertEquals(1, mTestDelegate.showSearchEngineDialogIfNeededCallback.getCallCount());
+        assertEquals(1, mTestDelegate.shouldDelayNativeInitializationCallback.getCallCount());
+        assertEquals(1, mTestDelegate.showSearchEngineDialogIfNeededCallback.getCallCount());
         mTestDelegate.onFinishDeferredInitializationCallback.waitForCallback(
                 0, 1, ScalableTimeout.scaleTimeout(30), TimeUnit.SECONDS);
 
         // Omnibox suggestions should be requested now.
         var captor = ArgumentCaptor.forClass(AutocompleteInput.class);
         verify(mAutocompleteController).startZeroSuggest(any(), captor.capture());
-        Assert.assertEquals("", captor.getValue().getUserText());
-        Assert.assertEquals(
+        assertEquals("", captor.getValue().getUserText());
+        assertEquals(
                 PageClassification.ANDROID_SEARCH_WIDGET,
                 captor.getValue().getPageClassification());
     }
@@ -420,7 +412,7 @@ public class SearchActivityTest {
                 () -> ChromeNightModeTestUtils.setUpNightModeForChromeActivity(false));
         SearchActivity searchActivity = startSearchActivity();
         assertStatusAndNavigationBarColors(
-                searchActivity, getExpectedOmniboxBackgroundColor(searchActivity));
+                searchActivity, () -> getExpectedOmniboxBackgroundColor(searchActivity));
     }
 
     @Test
@@ -430,7 +422,7 @@ public class SearchActivityTest {
                 () -> ChromeNightModeTestUtils.setUpNightModeForChromeActivity(true));
         SearchActivity searchActivity = startSearchActivity();
         assertStatusAndNavigationBarColors(
-                searchActivity, getExpectedOmniboxBackgroundColor(searchActivity));
+                searchActivity, () -> getExpectedOmniboxBackgroundColor(searchActivity));
     }
 
     @Test
@@ -453,23 +445,30 @@ public class SearchActivityTest {
                                             .build());
                         });
         assertStatusAndNavigationBarColors(
-                searchActivity, searchActivity.getColor(R.color.omnibox_dropdown_bg_incognito));
+                searchActivity,
+                () -> searchActivity.getColor(R.color.omnibox_dropdown_bg_incognito));
     }
 
     private void assertStatusAndNavigationBarColors(
-            SearchActivity searchActivity, int expectedColor) {
-        EdgeToEdgeSystemBarColorHelper edgeToEdgeSystemBarColorHelper =
-                searchActivity.getEdgeToEdgeManager().getEdgeToEdgeSystemBarColorHelper();
+            SearchActivity searchActivity, IntSupplier expectedColorSupplier) {
+        CriteriaHelper.pollUiThread(
+                () -> {
+                    EdgeToEdgeManager edgeToEdgeManager = searchActivity.getEdgeToEdgeManager();
+                    Criteria.checkThat(edgeToEdgeManager, Matchers.notNullValue());
+                    EdgeToEdgeSystemBarColorHelper edgeToEdgeSystemBarColorHelper =
+                            edgeToEdgeManager.getEdgeToEdgeSystemBarColorHelper();
+                    Criteria.checkThat(edgeToEdgeSystemBarColorHelper, Matchers.notNullValue());
 
-        // Assert status bar color.
-        if (EdgeToEdgeUtils.isEdgeToEdgeEverywhereEnabled()) {
-            assertColorsEqual(expectedColor, edgeToEdgeSystemBarColorHelper.getStatusBarColor());
-        } else {
-            assertColorsEqual(expectedColor, searchActivity.getWindow().getStatusBarColor());
-        }
-
-        // Assert navigation bar color.
-        assertColorsEqual(expectedColor, edgeToEdgeSystemBarColorHelper.getNavigationBarColor());
+                    int expectedColor = expectedColorSupplier.getAsInt();
+                    int statusBarColor =
+                            EdgeToEdgeUtils.isEdgeToEdgeEverywhereEnabled()
+                                    ? edgeToEdgeSystemBarColorHelper.getStatusBarColor()
+                                    : searchActivity.getWindow().getStatusBarColor();
+                    Criteria.checkThat(statusBarColor, Matchers.is(expectedColor));
+                    Criteria.checkThat(
+                            edgeToEdgeSystemBarColorHelper.getNavigationBarColor(),
+                            Matchers.is(expectedColor));
+                });
     }
 
     /**
@@ -480,16 +479,6 @@ public class SearchActivityTest {
      */
     private int getExpectedOmniboxBackgroundColor(SearchActivity searchActivity) {
         return ContextCompat.getColor(searchActivity, R.color.omnibox_suggestion_dropdown_bg);
-    }
-
-    private void assertColorsEqual(int expected, int actual) {
-        String message =
-                String.format("Expected %s but got %s", intToHex(expected), intToHex(actual));
-        Assert.assertEquals(message, expected, actual);
-    }
-
-    private String intToHex(int color) {
-        return String.format("#%06X", (0xFFFFFF & color));
     }
 
     private SearchActivity startSearchActivity() {
@@ -503,13 +492,13 @@ public class SearchActivityTest {
         instrumentation.addMonitor(searchMonitor);
 
         // The SearchActivity shouldn't have started yet.
-        Assert.assertEquals(
+        assertEquals(
                 expectedCallCount,
                 mTestDelegate.shouldDelayNativeInitializationCallback.getCallCount());
-        Assert.assertEquals(
+        assertEquals(
                 expectedCallCount,
                 mTestDelegate.showSearchEngineDialogIfNeededCallback.getCallCount());
-        Assert.assertEquals(
+        assertEquals(
                 expectedCallCount,
                 mTestDelegate.onFinishDeferredInitializationCallback.getCallCount());
 
@@ -522,7 +511,7 @@ public class SearchActivityTest {
         Activity searchActivity =
                 instrumentation.waitForMonitorWithTimeout(
                         searchMonitor, CriteriaHelper.DEFAULT_MAX_TIME_TO_POLL);
-        Assert.assertNotNull("Activity didn't start", searchActivity);
+        assertNotNull("Activity didn't start", searchActivity);
         assertTrue("Wrong activity started", searchActivity instanceof SearchActivity);
         instrumentation.removeMonitor(searchMonitor);
         mOmnibox = new OmniboxTestUtils(searchActivity);

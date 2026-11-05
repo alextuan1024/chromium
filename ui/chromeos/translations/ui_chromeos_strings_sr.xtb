@@ -519,10 +519,10 @@
 <translation id="5045550434625856497">Неисправна лозинка</translation>
 <translation id="5059127710849015030">непалски, транслитерација</translation>
 <translation id="5068919226082848014">Пица</translation>
+<translation id="5075336522277785691">Додатак <ph name="EXTENSION_NAME" /> је подесио правила за замену проксија</translation>
 <translation id="5081517858322016911"><ph name="TOTAL_FILE_SIZE" /> датотека ће се избрисати</translation>
 <translation id="508423945471810158">Ставке (<ph name="NUMBER_OF_ITEMS" />) се премештају у фолдер <ph name="FOLDER_NAME" /></translation>
 <translation id="509429900233858213">Дошло је до грешке.</translation>
-<translation id="5102922915594634436">Управљајте синхронизованим фолдерима</translation>
 <translation id="5109254780565519649">Дошло је до грешке. Неке ставке можда нису враћене.</translation>
 <translation id="5110329002213341433">енглески (Канада)</translation>
 <translation id="5119780910075847424">Синхронизација је паузирана</translation>
@@ -558,7 +558,6 @@
 <translation id="5305688511332277257">Ништа није инсталирано</translation>
 <translation id="5317780077021120954">Сачувај</translation>
 <translation id="5318819489018851358">Дели са Linux-ом</translation>
-<translation id="5330145655348521461">Ове датотеке су отворене на другом профилу. Пређите на <ph name="USER_NAME" /> (<ph name="MAIL_ADDRESS" />) да бисте их погледали.</translation>
 <translation id="5330512191124428349">Преузми податке</translation>
 <translation id="535792325654997756">Особа са мачкама</translation>
 <translation id="5358764674931277">Брзина кадрова</translation>
@@ -699,7 +698,6 @@
 <translation id="636254897931573416">Неважећа вредност подударања суфикса домена</translation>
 <translation id="6364301859968397756">Меморијски простор организације је попуњен</translation>
 <translation id="6367976544441405720">Комби</translation>
-<translation id="637062427944097960">Ова датотека је отворена на другом профилу. Пређите на <ph name="USER_NAME" /> (<ph name="MAIL_ADDRESS" />) да бисте је погледали.</translation>
 <translation id="6394388407447716302">Само за читање</translation>
 <translation id="6395575651121294044">Ставки: <ph name="NUMBER_OF_FILES" /></translation>
 <translation id="6407769893376380348">Премештање фајла <ph name="FILE_NAME" /> није успело зато што је шифрован.</translation>

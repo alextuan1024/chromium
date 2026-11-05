@@ -17,11 +17,12 @@ static_library("smb_shares") {
   ]
 
   public_deps = [
-    "//chrome/browser:browser_public_dependencies",
+    "//ash/constants",
     "//chrome/browser/ui/webui/ash/system_web_dialog",
   ]
 
   deps = [
+    "//ash/strings",
     "//ash/webui/common:trusted_types_util",
     "//chrome/app:generated_resources",
     "//chrome/browser:resources",
@@ -36,6 +37,7 @@ static_library("smb_shares") {
     "//components/user_manager",
     "//content/public/browser",
     "//content/public/common",
+    "//dbus",
     "//ui/base",
     "//ui/web_dialogs",
     "//ui/webui",
@@ -55,7 +57,7 @@ source_set("browser_tests") {
     ":smb_shares",
     "//base",
     "//base/test:test_support",
-    "//chrome/test:test_support_ui",
+    "//chrome/test/base:in_process_browser_test",
     "//content/test:test_support",
   ]
 }

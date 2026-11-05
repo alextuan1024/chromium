@@ -18,8 +18,11 @@
 #include "chromeos/ash/components/browser_delegate/browser_type.h"
 #include "components/apps/link_capturing/intent_picker_info.h"
 #include "components/webapps/common/web_app_id.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/views/controls/webview/simple_web_view.h"
 #include "url/gurl.h"
+#include "url/origin.h"
 
 class AccountId;
 class BrowserWindowInterface;
@@ -32,10 +35,6 @@ namespace content {
 class WebContents;
 }  // namespace content
 
-namespace url {
-class Origin;
-}  // namespace url
-
 namespace views {
 class SimpleWebViewDialogDelegate;
 }  // namespace views
@@ -45,7 +44,7 @@ namespace ash {
 class BrowserDelegate;
 
 // BrowserController is a singleton created by
-// ChromeBrowserMainPartsAsh::PostProfileInit. See also README.md.
+// ChromeBrowserMainPartsAsh::PreProfileInit. See also README.md.
 class BrowserController {
  public:
   // See AddObserver below.
@@ -117,16 +116,67 @@ class BrowserController {
                                             content::WebContents* old_contents,
                                             content::WebContents* new_contents,
                                             bool selection_only) {}
+
+    // Called when the tab's loading state, as reported by
+    // content::WebContents::IsLoading() and ShouldShowLoadingUI(), may have
+    // changed: whenever the tab starts or stops loading, but also on other
+    // occasions such as navigation commits.
+    // `browser` and `contents` are never nullptr.
+    virtual void OnTabLoadingStateChanged(BrowserDelegate* browser,
+                                          content::WebContents* contents) {}
   };
 
   // See CreateWebApp below.
   struct CreateParams {
-    bool allow_resize;
-    bool allow_maximize;
-    bool allow_fullscreen;
+    bool allow_resize = true;
+    bool allow_maximize = true;
+    bool allow_fullscreen = true;
     // TODO(crbug.com/369689187): Figure out if the restore_id field makes
     // sense, and if so, add a description.
-    int32_t restore_id;
+    int32_t restore_id = 0;
+  };
+
+  // See OpenUrl below.
+  struct OpenUrlParams {
+    // Where to open the URL, e.g. in a new foreground tab (default), in a new
+    // window (`kNewWindow`), or in an incognito window (`kOffTheRecord`).
+    ui::mojom::WindowOpenDisposition disposition =
+        ui::mojom::WindowOpenDisposition::kNewForegroundTab;
+    // The page transition type. Web apps can capture navigations whose
+    // transition is `PAGE_TRANSITION_LINK` (the default) without qualifiers;
+    // add a qualifier such as `PAGE_TRANSITION_FROM_API` to prevent that.
+    ui::PageTransition transition = ui::PAGE_TRANSITION_LINK;
+    // Whether the call is a direct result of a user action, such as a click.
+    // If true, the opened page is treated in some respects as if the user had
+    // interacted with it. For example, it may autoplay media.
+    bool user_activation = false;
+    // If set, the navigation is treated as renderer-initiated, with this
+    // origin as its initiator. Otherwise, it is browser-initiated.
+    std::optional<url::Origin> initiating_origin;
+    // Whether the created popup window (`BrowserType::kPopup`) is for a
+    // trusted UI surface rather than an untrusted web popup. When true, the
+    // popup hides the location bar, title bar, and window icon, uses
+    // app-style header rendering, and uses saved or default window bounds
+    // instead of inheriting bounds from the last active browser.
+    // Only allowed when `disposition` is `kNewPopup`.
+    bool popup_has_trusted_source = false;
+    // Whether existing-tab matching should ignore the URL path and query (in
+    // addition to the ref) and navigate the matched tab to `url` if its current
+    // URL differs.
+    // Only allowed when `disposition` is `kSingletonTab` or `kSwitchToTab`.
+    bool ignore_path_for_tab_reuse = false;
+  };
+
+  // See OpenCaptivePortalSignin below.
+  enum class CaptivePortalWindowMode {
+    // Opens the URL in a new off-the-record popup window isolated from
+    // regular and incognito browsing (with proxies and secure DNS disabled,
+    // and navigation/window commands restricted).
+    kPopup,
+    // Opens the URL in a new foreground tab in the user's most recently
+    // active non-incognito tabbed browser on the current workspace, or in a
+    // new non-incognito tabbed browser if none exists.
+    kTab,
   };
 
   // See ForEachBrowser below.
@@ -154,14 +204,21 @@ class BrowserController {
 
   // Returns (the delegate for) the most recently used browser that still
   // exists. Returns nullptr if there's none.
+  // For convenience only: equivalent to the first browser visited by
+  // ForEachBrowser(kAscendingActivationTime, ...).
   virtual BrowserDelegate* GetLastUsedBrowser() = 0;
 
   // Returns (the delegate for) the most recently used browser that is
   // currently visible. Returns nullptr if there's none.
+  // For convenience only: equivalent to the first browser visited by
+  // ForEachBrowser(kAscendingActivationTime, ...) that IsVisible().
   virtual BrowserDelegate* GetLastUsedVisibleBrowser() = 0;
 
   // Returns (the delegate for) the most recently used browser that is
   // currently visible and on-the-record. Returns nullptr if there's none.
+  // For convenience only: equivalent to the first browser visited by
+  // ForEachBrowser(kAscendingActivationTime, ...) that IsVisible() and not
+  // IsOffTheRecord().
   virtual BrowserDelegate* GetLastUsedVisibleOnTheRecordBrowser() = 0;
 
   // Iterates over (the delegates for) the currently existing browsers in the
@@ -171,8 +228,10 @@ class BrowserController {
       BrowserOrder order,
       base::FunctionRef<IterationDirective(BrowserDelegate&)> callback) = 0;
 
-  // Returns (the delegate for) the browser associated with the given native
-  // window, if any. This can be nullptr when the browser is shutting down.
+  // Returns (the delegate for) the browser whose top-level native window (see
+  // BrowserDelegate::GetNativeWindow) is `window`, if any. Other windows, such
+  // as descendants of a browser window, yield nullptr. The result can also be
+  // nullptr when the browser is shutting down.
   virtual BrowserDelegate* GetBrowserForWindow(aura::Window* window) = 0;
 
   // Returns (the delegate for) the browser associated with the given tab, if
@@ -189,6 +248,26 @@ class BrowserController {
                                       webapps::AppId app_id,
                                       BrowserType browser_type,
                                       const GURL& url = GURL()) = 0;
+
+  // Opens `url` in a browser of the user identified by `account_id` according
+  // to `params`, creating or reusing a browser window as appropriate and
+  // showing it.
+  // Returns the WebContents that `url` was opened in, or nullptr if there is
+  // none, e.g. because no browser window could be created or because `url` is
+  // handled by a system web app, which is launched asynchronously.
+  virtual content::WebContents* OpenUrl(const AccountId& account_id,
+                                        const GURL& url,
+                                        const OpenUrlParams& params) = 0;
+
+  // Opens `url` in a new browser window or tab configured for captive portal
+  // sign-in (e.g. with HTTPS upgrades disabled) for the user identified by
+  // `account_id` according to `mode`, and shows the window.
+  // Returns the WebContents that `url` was opened in, or nullptr if none could
+  // be created.
+  virtual content::WebContents* OpenCaptivePortalSignin(
+      const AccountId& account_id,
+      const GURL& url,
+      CaptivePortalWindowMode mode) = 0;
 
   // Makes a POST request in a new tab in the last active tabbed browser. If no
   // such browser exists, a new one is created. Returns nullptr if the creation
@@ -209,6 +288,12 @@ class BrowserController {
                                         webapps::AppId app_id,
                                         BrowserType browser_type,
                                         const CreateParams& params) = 0;
+
+  // Restores the most recently closed tab (or window) for `account_id`'s
+  // profile -- the action behind the "reopen closed tab" accelerator. Loads the
+  // tab restore service first if it isn't ready yet. No-op if the account has
+  // no profile or the profile is off the record.
+  virtual void RestoreTab(const AccountId& account_id) = 0;
 
   // Closes all browsers. It may fail.
   // Note: conceptually this should be equivalent to

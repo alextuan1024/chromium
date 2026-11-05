@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <limits>
 #include <memory>
+#include <string_view>
 #include <utility>
 
 #include "base/auto_reset.h"
@@ -14,6 +15,7 @@
 #include "base/feature_list.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/metrics/histogram_macros.h"
+#include "base/strings/strcat.h"
 #include "base/time/time.h"
 #include "third_party/blink/public/common/input/web_input_event.h"
 #include "third_party/blink/public/web/web_performance_metrics_for_reporting.h"
@@ -27,13 +29,11 @@
 #include "third_party/blink/renderer/core/loader/progress_tracker.h"
 #include "third_party/blink/renderer/core/page/chrome_client.h"
 #include "third_party/blink/renderer/core/page/page.h"
-#include "third_party/blink/renderer/core/paint/timing/element_timing_info.h"
-#include "third_party/blink/renderer/core/paint/timing/image_element_timing.h"
+#include "third_party/blink/renderer/core/paint/timing/element_timing.h"
 #include "third_party/blink/renderer/core/paint/timing/image_paint_timing_detector.h"
 #include "third_party/blink/renderer/core/paint/timing/largest_contentful_paint_manager.h"
 #include "third_party/blink/renderer/core/paint/timing/paint_timing_client.h"
 #include "third_party/blink/renderer/core/paint/timing/paint_timing_utils.h"
-#include "third_party/blink/renderer/core/paint/timing/text_element_timing.h"
 #include "third_party/blink/renderer/core/paint/timing/text_paint_timing_detector.h"
 #include "third_party/blink/renderer/core/probe/core_probes.h"
 #include "third_party/blink/renderer/core/timing/animation_frame_timing_info.h"
@@ -158,7 +158,7 @@ void PaintTiming::MarkFirstPaint() {
   }
   DCHECK_EQ(IgnorePaintTimingScope::IgnoreDepth(), 0);
   SetFirstPaint(base::TimeTicks::Now());
-  pending_paint_events_.insert(PaintEvent::kFirstPaint);
+  pending_paint_events_.Put(PaintEvent::kFirstPaint);
 }
 
 void PaintTiming::MarkFirstContentfulPaint() {
@@ -170,8 +170,9 @@ void PaintTiming::MarkFirstContentfulPaint() {
   if (!relevant_paint_details.first_contentful_paint_.is_null()) {
     return;
   }
-  if (IgnorePaintTimingScope::IgnoreDepth() > 0)
+  if (IgnorePaintTimingScope::IgnoreDepth() > 0) {
     return;
+  }
   SetFirstContentfulPaint(base::TimeTicks::Now());
 }
 
@@ -187,8 +188,9 @@ void PaintTiming::MarkFirstImagePaint() {
 }
 
 void PaintTiming::MarkFirstEligibleToPaint() {
-  if (!first_eligible_to_paint_.is_null())
+  if (!first_eligible_to_paint_.is_null()) {
     return;
+  }
 
   first_eligible_to_paint_ = base::TimeTicks::Now();
   NotifyPaintTimingChanged();
@@ -210,8 +212,9 @@ void PaintTiming::MarkIneligibleToPaint() {
 }
 
 void PaintTiming::SetFirstMeaningfulPaintCandidate(base::TimeTicks timestamp) {
-  if (!first_meaningful_paint_candidate_.is_null())
+  if (!first_meaningful_paint_candidate_.is_null()) {
     return;
+  }
   first_meaningful_paint_candidate_ = timestamp;
   if (GetFrame() && GetFrame()->View() && !GetFrame()->View()->IsAttached()) {
     GetFrame()->GetFrameScheduler()->OnFirstMeaningfulPaint();
@@ -240,19 +243,24 @@ void PaintTiming::SetFirstMeaningfulPaint(
 void PaintTiming::NotifyPaint(bool is_first_paint,
                               bool text_painted,
                               bool image_painted) {
-  if (IgnorePaintTimingScope::IgnoreDepth() > 0)
+  if (IgnorePaintTimingScope::IgnoreDepth() > 0) {
     return;
+  }
 
-  if (is_first_paint)
+  if (is_first_paint) {
     MarkFirstPaint();
-  if (text_painted)
+  }
+  if (text_painted) {
     MarkFirstContentfulPaint();
-  if (image_painted)
+  }
+  if (image_painted) {
     MarkFirstImagePaint();
+  }
   fmp_detector_->NotifyPaint();
 
-  if (is_first_paint)
+  if (is_first_paint) {
     GetFrame()->OnFirstPaint(text_painted, image_painted);
+  }
 }
 
 // https://w3c.github.io/paint-timing/#mark-paint-timing
@@ -260,9 +268,12 @@ void PaintTiming::MarkPaintTiming() {
   // 2. Let paintTimingInfo be a new paint timing info, whose rendering update
   // end time is the current high resolution time given document’s relevant
   // global object.
+  //
+  // The spec algorithm continues in MarkPaintTimingInternal(), once we've
+  // received the paint callbacks.
   last_rendering_update_end_time_ = base::TimeTicks::Now();
-  // This continues in MarkPaintTimingInternal(), once we've received the paint
-  // callbacks.
+
+  paint_timing_detector_->NotifyWillPaint();
 }
 
 void PaintTiming::MarkPaintTimingInternal() {
@@ -270,32 +281,58 @@ void PaintTiming::MarkPaintTimingInternal() {
   HeapVector<Member<ImageRecord>> image_records =
       paint_timing_detector_->GetImagePaintTimingDetector()
           .TakeImageRecordsOnPaintFinished();
-  CHECK(image_element_timing_);
-  HeapVector<Member<ElementTimingInfo>> image_element_timings =
-      image_element_timing_->TakeElementTimingsOnPaintFinished();
-
   // Non-specced behavior: take the list of animated images that are ready for
   // the first animated frame timestamp. LCP uses this timestamp for metrics.
-  HeapVector<Member<ImageRecord>> animated_images =
+  HeapVector<Member<HeapTimeTicks>> pending_timestamps =
       paint_timing_detector_->GetImagePaintTimingDetector()
-          .TakeAnimatedImageRecordsOnPaintFinished();
+          .TakePendingPresentationTimestamps();
 
   // 4. Let paintedTextNodes be a new ordered set
   HeapVector<Member<TextRecord>> text_records =
       paint_timing_detector_->GetTextPaintTimingDetector()
           .TakeTextRecordsOnPaintFinished();
 
+  const bool has_new_contentful_paint =
+      !image_records.empty() || !text_records.empty();
+
+  // Notify clients of all image and text elements painted in this frame and
+  // filter the records lists down to just those needed by clients.
+  //
+  // TODO(crbug.com/454082773): Currently, clients set the relevant flag/state
+  // for their use case and we filter records based on that, passing the
+  // filtered lists to the presentation callback. Instead, clients should return
+  // a PaintTimingCallback that they can use to assign the timestamps to
+  // performance entries or pending metrics entries.
+  Vector<PaintTimingCallback> client_callbacks;
+  ForEachClient([&](PaintTimingClient* client) {
+    if (OptionalPaintTimingCallback callback =
+            client->OnPaintFinished(image_records, text_records)) {
+      client_callbacks.push_back(std::move(*callback));
+    }
+  });
+  EraseIf(image_records,
+          [](const auto& record) { return !record->IsNeededForPaintTiming(); });
+  EraseIf(text_records,
+          [](const auto& record) { return !record->IsNeededForPaintTiming(); });
+
   // 7. Let reportedPaints be the document’s set of previously reported paints.
   PendingPaintTimingRecord paint_timing_record{
       .paint_events = pending_paint_events_,
       .rendering_update_end_time = last_rendering_update_end_time_};
-  pending_paint_events_.clear();
+  pending_paint_events_.Clear();
 
   FrameWidget* widget = GetFrame()->GetWidgetForLocalRoot();
   // Unit tests with a `callback_manager_` don't have a `widget`, but they rely
   // on getting presentation time feedback.
   if (!widget && !callback_manager_) {
     return;
+  }
+
+  // Count unique paints that produced any new image or text paint timing
+  // records (including text repaints after user interaction for soft
+  // navigations and re-added elements).
+  if (has_new_contentful_paint) {
+    ++contentful_paint_count_;
   }
 
   // 8. Let frameTimingInfo be document’s current frame timing info.
@@ -309,8 +346,8 @@ void PaintTiming::MarkPaintTimingInternal() {
           : nullptr;
 
   bool has_paint_timing_records =
-      !image_element_timings.empty() || !image_records.empty() ||
-      !animated_images.empty() || !text_records.empty();
+      !client_callbacks.empty() || !image_records.empty() ||
+      !pending_timestamps.empty() || !text_records.empty();
 
   if (paint_timing_record.paint_events.empty() && !frame_timing_info &&
       !has_paint_timing_records) {
@@ -328,9 +365,15 @@ void PaintTiming::MarkPaintTimingInternal() {
     auto* data = MakeGarbageCollected<PresentationCallbackData>(
         callback_data_id, paint_timing_record, frame_timing_info,
         std::move(text_records), std::move(image_records),
-        std::move(image_element_timings), std::move(animated_images));
+        std::move(client_callbacks), std::move(pending_timestamps));
     pending_presentation_data_.push_back(data);
   }
+
+  // Capture the navigation ID now so that entries created due to this paint are
+  // attributed to the correct navigation.
+  uint64_t navigation_id = CHECK_DEREF(GetPerformanceInstance(GetFrame()))
+                               .NavigationId()
+                               .web_exposed_id;
 
   // 10. Let flushPaintTimings be the following steps:
   PaintTimingCallback flush_paint_timings =
@@ -352,7 +395,7 @@ void PaintTiming::MarkPaintTimingInternal() {
   //    been presented to the user.
   RegisterNotifyPresentationTime(blink::BindOnce(
       [](PaintTiming* self, PaintTimingCallback flush_paint_timings,
-         const PendingPaintTimingRecord& record,
+         const PendingPaintTimingRecord& record, uint64_t navigation_id,
          const viz::FrameTimingDetails& frame_timing_details) {
         if (!self) {
           return;
@@ -399,7 +442,7 @@ void PaintTiming::MarkPaintTimingInternal() {
         auto flush = blink::BindOnce(
             std::move(flush_paint_timings),
             frame_timing_details.presentation_feedback.timestamp,
-            paint_timing_info);
+            paint_timing_info, navigation_id);
 
         if (coarsen) {
           // 12.3.2 Wait until the current high resolution time is
@@ -427,7 +470,7 @@ void PaintTiming::MarkPaintTimingInternal() {
         }
       },
       WrapWeakPersistent(this), std::move(flush_paint_timings),
-      paint_timing_record));
+      paint_timing_record, navigation_id));
 }
 
 // https://w3c.github.io/paint-timing/#mark-paint-timing
@@ -438,7 +481,8 @@ void PaintTiming::FlushPaintTimingsOnFramePresentedCallback(
     const PendingPaintTimingRecord& record,
     AnimationFrameTimingInfo* frame_timing_info,
     const base::TimeTicks& raw_presentation_timestamp,
-    const DOMPaintTimingInfo& paint_timing_info) {
+    const DOMPaintTimingInfo& paint_timing_info,
+    uint64_t navigation_id) {
   // If the frame was detached between scheduling the coarsening task and
   // running it, do nothing. This matches the non-coarsening case, which already
   // checks detach via `GetPerformanceInstance()`.
@@ -449,13 +493,13 @@ void PaintTiming::FlushPaintTimingsOnFramePresentedCallback(
 
   // 10.1. If document should report first paint, then: Report paint timing
   // given document, "first-paint", and paintTimingInfo.
-  if (record.paint_events.Contains(PaintEvent::kFirstPaint)) {
+  if (record.paint_events.Has(PaintEvent::kFirstPaint)) {
     performance->AddFirstPaintTiming(paint_timing_info);
   }
 
   // 10.2. If document should report first contentful paint, then: Report paint
   // timing given document, "first-contentful-paint", and paintTimingInfo.
-  if (record.paint_events.Contains(PaintEvent::kFirstContentfulPaint)) {
+  if (record.paint_events.Has(PaintEvent::kFirstContentfulPaint)) {
     performance->AddFirstContentfulPaintTiming(paint_timing_info);
   }
 
@@ -475,10 +519,13 @@ void PaintTiming::FlushPaintTimingsOnFramePresentedCallback(
     }
     SetPaintTimingInfoForPaintTimingRecords(*data, paint_timing_info,
                                             raw_presentation_timestamp);
+    for (auto& callback : data->client_callbacks) {
+      std::move(callback).Run(raw_presentation_timestamp, paint_timing_info,
+                              navigation_id);
+    }
     if (data->ShouldNotifyClientsOnFramePresented()) {
       ForEachClient([&](PaintTimingClient* client) {
         client->OnFramePresented(data->image_records, data->text_records,
-                                 data->image_element_timings,
                                  paint_timing_info);
       });
     }
@@ -496,7 +543,8 @@ void PaintTiming::FlushPaintTimingsOnFramePresentedCallback(
 void PaintTiming::SetPresentationTimeAndMaybeFlushPaintTimingsOnFramePresented(
     uint32_t id,
     const base::TimeTicks& raw_presentation_timestamp,
-    const DOMPaintTimingInfo& paint_timing_info) {
+    const DOMPaintTimingInfo& paint_timing_info,
+    uint64_t navigation_id) {
   // If the frame was detached between scheduling the coarsening task and
   // running it, do nothing. This matches the non-coarsening case, which already
   // checks detach via `GetPerformanceInstance()`.
@@ -531,6 +579,7 @@ void PaintTiming::SetPresentationTimeAndMaybeFlushPaintTimingsOnFramePresented(
     if (data->id == id) {
       data->raw_presentation_timestamp = raw_presentation_timestamp;
       data->paint_timing_info = paint_timing_info;
+      data->navigation_id = navigation_id;
       found = true;
       break;
     }
@@ -566,13 +615,13 @@ void PaintTiming::FlushPaintTimingsOnFramePresented(
 
   // 10.1. If document should report first paint, then: Report paint timing
   // given document, "first-paint", and paintTimingInfo.
-  if (data.paint_timing_record.paint_events.Contains(PaintEvent::kFirstPaint)) {
+  if (data.paint_timing_record.paint_events.Has(PaintEvent::kFirstPaint)) {
     performance->AddFirstPaintTiming(*data.paint_timing_info);
   }
 
   // 10.2. If document should report first contentful paint, then: Report paint
   // timing given document, "first-contentful-paint", and paintTimingInfo.
-  if (data.paint_timing_record.paint_events.Contains(
+  if (data.paint_timing_record.paint_events.Has(
           PaintEvent::kFirstContentfulPaint)) {
     performance->AddFirstContentfulPaintTiming(*data.paint_timing_info);
   }
@@ -588,10 +637,13 @@ void PaintTiming::FlushPaintTimingsOnFramePresented(
   //
   SetPaintTimingInfoForPaintTimingRecords(data, *data.paint_timing_info,
                                           data.raw_presentation_timestamp);
+  for (auto& callback : data.client_callbacks) {
+    std::move(callback).Run(data.raw_presentation_timestamp,
+                            *data.paint_timing_info, data.navigation_id);
+  }
   if (data.ShouldNotifyClientsOnFramePresented()) {
     ForEachClient([&](PaintTimingClient* client) {
       client->OnFramePresented(data.image_records, data.text_records,
-                               data.image_element_timings,
                                *data.paint_timing_info);
     });
   }
@@ -623,47 +675,58 @@ void PaintTiming::SetPaintTimingInfoForPaintTimingRecords(
     record->SetPaintTime(raw_presentation_timestamp, paint_timing_info);
   }
 
-  // Set the first animated frame time for pending `animated_images_` if not
-  // already set (the record may have been queued multiple times for different
-  // frames, depending on timing between paint and presentation time).
-  for (ImageRecord* record : data.animated_images) {
-    if (!record->HasFirstAnimatedFrameTime()) {
-      record->SetFirstAnimatedFrameTime(raw_presentation_timestamp);
-    }
+  // Resolve pending presentation timestamps.
+  for (HeapTimeTicks* timestamp : data.pending_timestamps) {
+    CHECK(timestamp->value.is_null());
+    timestamp->value = raw_presentation_timestamp;
   }
 }
 
 void PaintTiming::Trace(Visitor* visitor) const {
   visitor->Trace(paint_timing_detector_);
   visitor->Trace(fmp_detector_);
-  visitor->Trace(image_element_timing_);
-  visitor->Trace(text_element_timing_);
+  visitor->Trace(element_timing_);
   visitor->Trace(largest_contentful_paint_manager_);
   visitor->Trace(callback_manager_);
   visitor->Trace(clients_);
   visitor->Trace(pending_presentation_data_);
   Supplement<Document>::Trace(visitor);
+  ExecutionContextLifecycleObserver::Trace(visitor);
+  PageVisibilityObserver::Trace(visitor);
+}
+
+void PaintTiming::ContextDestroyed() {
+  pending_presentation_data_.clear();
+  MaybeRecordHistogramsOnPageHiddenOrContextDestroyed();
+}
+
+void PaintTiming::PageVisibilityChanged() {
+  if (GetPage() && !GetPage()->IsPageVisible()) {
+    MaybeRecordHistogramsOnPageHiddenOrContextDestroyed();
+  }
 }
 
 PaintTiming::PaintTiming(Document& document)
     : Supplement<Document>(document),
+      ExecutionContextLifecycleObserver(document.GetExecutionContext()),
+      PageVisibilityObserver(document.GetPage()),
       paint_timing_detector_(MakeGarbageCollected<PaintTimingDetector>(this)),
-      fmp_detector_(MakeGarbageCollected<FirstMeaningfulPaintDetector>(this)) {
+      fmp_detector_(MakeGarbageCollected<FirstMeaningfulPaintDetector>(this)),
+      is_outermost_main_frame_(
+          document.GetFrame()
+              ? std::make_optional(document.GetFrame()->IsOutermostMainFrame())
+              : std::nullopt) {
   // `window` will be null if `document` has already been shut down (frame
   // detach). Typically `PaintTiming` will be created before this, but this
   // isn't guaranteed since it's created lazily.
   if (LocalDOMWindow* window = document.domWindow()) {
-    text_element_timing_ = MakeGarbageCollected<TextElementTiming>(*window);
-    image_element_timing_ = MakeGarbageCollected<ImageElementTiming>(
+    element_timing_ = MakeGarbageCollected<ElementTiming>(
         *window, paint_timing_detector_->GetImagePaintTimingDetector());
     largest_contentful_paint_manager_ =
         MakeGarbageCollected<LargestContentfulPaintManager>(
             document.domWindow());
-    // Note: these are added in the order that the spec calls out to the various
-    // other specs in https://w3c.github.io/paint-timing/#mark-paint-timing.
     AddClient(largest_contentful_paint_manager_);
-    AddClient(text_element_timing_);
-    AddClient(image_element_timing_);
+    AddClient(element_timing_);
   }
 }
 
@@ -685,15 +748,15 @@ void PaintTiming::SetFirstPaint(base::TimeTicks stamp) {
 
   relevant_paint_details.first_paint_ = stamp;
 
-    LocalFrame* frame = GetFrame();
-    if (frame && frame->GetDocument()) {
-      frame->GetDocument()->MarkFirstPaint();
-    }
-    if (frame && frame->View()) {
-      frame->View()->MaybeStopDeferringCommitsWithoutContentfulPaint();
-    }
+  LocalFrame* frame = GetFrame();
+  if (frame && frame->GetDocument()) {
+    frame->GetDocument()->MarkFirstPaint();
+  }
+  if (frame && frame->View()) {
+    frame->View()->MaybeStopDeferringCommitsWithoutContentfulPaint();
+  }
 
-  pending_paint_events_.insert(PaintEvent::kFirstPaint);
+  pending_paint_events_.Put(PaintEvent::kFirstPaint);
 }
 
 void PaintTiming::SetFirstContentfulPaint(base::TimeTicks stamp) {
@@ -721,7 +784,7 @@ void PaintTiming::SetFirstContentfulPaint(base::TimeTicks stamp) {
 }
 
 void PaintTiming::Mark(PaintEvent event) {
-  pending_paint_events_.insert(event);
+  pending_paint_events_.Put(event);
 }
 
 void PaintTiming::
@@ -823,10 +886,8 @@ void PaintTiming::SetFirstPaintPresentation(
   if (first_paint_presentation_for_ukm_.is_null()) {
     first_paint_presentation_for_ukm_ = paint_timing_info.presentation_time;
   }
-  probe::PaintTiming(
-      GetSupplementable(), "firstPaint",
-      relevant_paint_details.first_paint_presentation_.since_origin()
-          .InSecondsF());
+  probe::PaintTiming(GetSupplementable(), "firstPaint",
+                     paint_timing_info.presentation_time);
   NotifyPaintTimingChanged();
 }
 
@@ -841,10 +902,8 @@ void PaintTiming::SetFirstContentfulPaintPresentation(
       paint_timing_info.presentation_time;
   CHECK(first_contentful_paint_presentation_.is_null());
   first_contentful_paint_presentation_ = paint_timing_info.presentation_time;
-  probe::PaintTiming(
-      GetSupplementable(), "firstContentfulPaint",
-      relevant_paint_details.first_contentful_paint_presentation_.since_origin()
-          .InSecondsF());
+  probe::PaintTiming(GetSupplementable(), "firstContentfulPaint",
+                     paint_timing_info.presentation_time);
 
   NotifyPaintTimingChanged();
   fmp_detector_->NotifyFirstContentfulPaint(
@@ -876,10 +935,7 @@ void PaintTiming::SetFirstImagePaintPresentation(base::TimeTicks stamp) {
   PaintDetails& relevant_paint_details = GetRelevantPaintDetails();
   DCHECK(relevant_paint_details.first_image_paint_presentation_.is_null());
   relevant_paint_details.first_image_paint_presentation_ = stamp;
-  probe::PaintTiming(
-      GetSupplementable(), "firstImagePaint",
-      relevant_paint_details.first_image_paint_presentation_.since_origin()
-          .InSecondsF());
+  probe::PaintTiming(GetSupplementable(), "firstImagePaint", stamp);
   NotifyPaintTimingChanged();
 }
 
@@ -954,8 +1010,6 @@ void PaintTiming::NotifyPaintFinished() {
       ->OnPaintFinished();
   paint_timing_detector_->NotifyPaintFinished();
 
-  ForEachClient([](PaintTimingClient* client) { client->OnPaintFinished(); });
-
   MarkPaintTimingInternal();
 }
 
@@ -994,6 +1048,8 @@ void PaintTiming::OnInputOrScroll() {
     return;
   }
 
+  MaybeRecordBeforeInputOrScrollHistogram();
+
   RemoveClient(largest_contentful_paint_manager_);
   largest_contentful_paint_manager_ = nullptr;
 
@@ -1006,10 +1062,54 @@ void PaintTiming::OnInputOrScroll() {
   paint_timing::NotifyLoaderPerformanceTimingChanged(GetSupplementable());
 }
 
-void PaintTiming::AddClient(PaintTimingClient* client) {
+bool PaintTiming::ShouldRecordContentfulPaintCountHistograms() const {
+  const Document* document = GetSupplementable();
+  return is_outermost_main_frame_.has_value() && document &&
+         !document->IsInitialEmptyDocument() &&
+         (document->IsHTMLDocument() || document->IsXHTMLDocument());
+}
+
+void PaintTiming::RecordContentfulPaintCountHistogram(
+    std::string_view metric_suffix) {
+  CHECK(is_outermost_main_frame_.has_value());
+  base::UmaHistogramCounts10000(
+      base::StrCat({"Renderer.PaintTiming.ContentfulPaintCount.",
+                    *is_outermost_main_frame_ ? "" : "Subframe.",
+                    metric_suffix}),
+      contentful_paint_count_);
+}
+
+void PaintTiming::MaybeRecordBeforeInputOrScrollHistogram() {
+  if (recorded_before_input_or_scroll_ ||
+      !ShouldRecordContentfulPaintCountHistograms()) {
+    return;
+  }
+  recorded_before_input_or_scroll_ = true;
+  RecordContentfulPaintCountHistogram("BeforeInputOrScroll");
+}
+
+void PaintTiming::MaybeRecordHistogramsOnPageHiddenOrContextDestroyed() {
+  if (recorded_until_hidden_or_destroyed_ ||
+      !ShouldRecordContentfulPaintCountHistograms()) {
+    return;
+  }
+  recorded_until_hidden_or_destroyed_ = true;
+  // Also record BeforeInputOrScroll if no input or scroll occurred yet.
+  MaybeRecordBeforeInputOrScrollHistogram();
+  RecordContentfulPaintCountHistogram("UntilPageHiddenOrContextDestroyed");
+}
+
+void PaintTiming::AddClient(PaintTimingClient* new_client) {
   CHECK(allow_client_modifications_);
-  DCHECK(!clients_.Contains(client));
-  clients_.push_back(client);
+  DCHECK(!clients_.Contains(new_client));
+
+  // Insert clients in the order that the spec calls out to the various other
+  // specs in https://w3c.github.io/paint-timing/#mark-paint-timing.
+  auto it = std::find_if(clients_.begin(), clients_.end(),
+                         [new_client](const Member<PaintTimingClient>& client) {
+                           return client->GetType() > new_client->GetType();
+                         });
+  clients_.InsertAt(it, new_client);
 }
 
 void PaintTiming::RemoveClient(PaintTimingClient* client) {
@@ -1033,22 +1133,21 @@ PaintTiming::PresentationCallbackData::PresentationCallbackData(
     AnimationFrameTimingInfo* animation_frame_timing_info,
     HeapVector<Member<TextRecord>> text_records,
     HeapVector<Member<ImageRecord>> image_records,
-    HeapVector<Member<ElementTimingInfo>> image_element_timings,
-    HeapVector<Member<ImageRecord>> animated_images)
+    Vector<PaintTimingCallback> client_callbacks,
+    HeapVector<Member<HeapTimeTicks>> pending_timestamps)
     : id(id),
       paint_timing_record(record),
       animation_frame_timing_info(animation_frame_timing_info),
       text_records(std::move(text_records)),
       image_records(std::move(image_records)),
-      image_element_timings(std::move(image_element_timings)),
-      animated_images(std::move(animated_images)) {}
+      client_callbacks(std::move(client_callbacks)),
+      pending_timestamps(std::move(pending_timestamps)) {}
 
 void PaintTiming::PresentationCallbackData::Trace(Visitor* visitor) const {
   visitor->Trace(animation_frame_timing_info);
   visitor->Trace(text_records);
   visitor->Trace(image_records);
-  visitor->Trace(image_element_timings);
-  visitor->Trace(animated_images);
+  visitor->Trace(pending_timestamps);
 }
 
 }  // namespace blink

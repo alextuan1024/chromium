@@ -4,8 +4,9 @@
 
 #include "chrome/browser/translate/android/auto_translate_snackbar_controller.h"
 
+#include <string>
+
 #include "base/android/jni_android.h"
-#include "base/android/jni_string.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "components/language/core/browser/language_model.h"
 #include "components/language/core/browser/language_prefs.h"
@@ -51,28 +52,23 @@ class TestBridge : public AutoTranslateSnackbarController::Bridge {
                AutoTranslateSnackbarController*),
               (override));
 
-  void ShowSnackbar(
-      JNIEnv* env,
-      base::android::ScopedJavaLocalRef<jstring> target_language) override;
+  void ShowSnackbar(JNIEnv* env, std::string target_language) override;
   void WasDismissed() override;
   bool IsSnackbarShowing() override;
   MOCK_METHOD(void, DismissSnackbar, (JNIEnv * env), (override));
   MOCK_METHOD(bool, CanShowSnackbar, (), (override));
 
  private:
-  bool is_showing_;
+  bool is_showing_ = false;
   std::string target_language_;
   base::WeakPtrFactory<TestBridge> weak_ptr_factory_{this};
 };
 
 TestBridge::~TestBridge() = default;
 
-void TestBridge::ShowSnackbar(
-    JNIEnv* env,
-    base::android::ScopedJavaLocalRef<jstring> target_language) {
+void TestBridge::ShowSnackbar(JNIEnv* env, std::string target_language) {
   is_showing_ = true;
-  target_language_ =
-      base::android::ConvertJavaStringToUTF8(env, target_language);
+  target_language_ = std::move(target_language);
 }
 
 void TestBridge::WasDismissed() {
@@ -168,7 +164,7 @@ TEST_F(AutoTranslateSnackbarControllerTest, CreateAndDismissSnackbarNoAction) {
   EXPECT_EQ("tl", bridge_->GetTargetLanguage());
 
   // Dismiss snackbar from Java
-  auto_snackbar_controller_->OnDismissNoAction(env);
+  auto_snackbar_controller_->OnDismissNoAction();
   EXPECT_FALSE(bridge_->IsSnackbarShowing());
 }
 
@@ -189,8 +185,7 @@ TEST_F(AutoTranslateSnackbarControllerTest,
   EXPECT_EQ("tl", bridge_->GetTargetLanguage());
 
   // Click on Undo translation from Java
-  auto j_string = base::android::ConvertUTF8ToJavaString(env, "tl");
-  auto_snackbar_controller_->OnUndoActionPressed(env, j_string);
+  auto_snackbar_controller_->OnUndoActionPressed("tl");
   EXPECT_FALSE(bridge_->IsSnackbarShowing());
 
   // Check that the INFOBAR_REVERT histogram was recorded
@@ -236,6 +231,27 @@ TEST_F(AutoTranslateSnackbarControllerTest,
   // The Snackbar should now be showing since the controller was succefully
   // created.
   EXPECT_TRUE(auto_snackbar_controller_->IsShowing());
+}
+
+TEST_F(AutoTranslateSnackbarControllerTest,
+       ShowSnackbarWhileShowingDismissesPrevious) {
+  JNIEnv* env = base::android::AttachCurrentThread();
+  EXPECT_CALL(*bridge_, CanShowSnackbar())
+      .WillOnce(Return(true))
+      .WillOnce(Return(false));
+  EXPECT_CALL(*bridge_, DismissSnackbar(env))
+      .WillOnce([&](JNIEnv*) { bridge_->WasDismissed(); })
+      .WillOnce(Return());
+  EXPECT_CALL(*bridge_, CreateAutoTranslateSnackbarController(env, _, _))
+      .WillOnce(Return(true));
+
+  auto_snackbar_controller_->ShowSnackbar("tl");
+  EXPECT_TRUE(bridge_->IsSnackbarShowing());
+  EXPECT_EQ("tl", bridge_->GetTargetLanguage());
+
+  auto_snackbar_controller_->ShowSnackbar("es");
+  EXPECT_TRUE(bridge_->IsSnackbarShowing());
+  EXPECT_EQ("es", bridge_->GetTargetLanguage());
 }
 
 }  // namespace

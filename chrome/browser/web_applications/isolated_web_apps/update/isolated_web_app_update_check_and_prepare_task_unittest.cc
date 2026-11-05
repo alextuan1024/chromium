@@ -20,13 +20,13 @@
 #include "base/time/time.h"
 #include "chrome/browser/ui/web_applications/test/isolated_web_app_test_utils.h"
 #include "chrome/browser/web_applications/isolated_web_apps/isolated_web_app_url_info.h"
+#include "chrome/browser/web_applications/isolated_web_apps/iwa_command_scheduler.h"
 #include "chrome/browser/web_applications/isolated_web_apps/test/isolated_web_app_builder.h"
 #include "chrome/browser/web_applications/model/isolation_data.h"
 #include "chrome/browser/web_applications/test/fake_web_app_provider.h"
 #include "chrome/browser/web_applications/test/fake_web_contents_manager.h"
 #include "chrome/browser/web_applications/test/web_app_install_test_utils.h"
 #include "chrome/browser/web_applications/test/web_app_test.h"
-#include "chrome/browser/web_applications/web_app_command_scheduler.h"
 #include "chrome/browser/web_applications/web_app_provider.h"
 #include "chrome/browser/web_applications/web_app_registrar.h"
 #include "chrome/browser/web_applications/web_app_registry_update.h"
@@ -43,10 +43,11 @@
 #include "components/webapps/isolated_web_apps/types/update_channel.h"
 #include "content/public/common/content_features.h"
 #include "net/http/http_status_code.h"
-#include "services/data_decoder/public/cpp/test_support/in_process_data_decoder.h"
 #include "services/network/test/test_url_loader_factory.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/blink/public/common/manifest/manifest.h"
+#include "third_party/blink/public/mojom/manifest/display_mode.mojom.h"
 #include "url/url_constants.h"
 
 namespace web_app {
@@ -114,10 +115,6 @@ class IsolatedWebAppUpdateCheckAndPrepareTaskTest : public WebAppTest {
   }
 
  protected:
-  IsolatedWebAppUpdateManager& update_manager() {
-    return fake_provider().isolated_web_app_update_manager();
-  }
-
   FakeWebContentsManager& fake_web_contents_manager() {
     return static_cast<FakeWebContentsManager&>(
         fake_provider().web_contents_manager());
@@ -131,7 +128,8 @@ class IsolatedWebAppUpdateCheckAndPrepareTaskTest : public WebAppTest {
     return Task(IwaUpdateCheckAndPrepareTaskParams(
                     update_manifest_url_, update_channel, allow_downgrades,
                     pinned_version, url_info, /*dev_mode=*/false),
-                fake_provider().scheduler(), fake_provider().registrar_unsafe(),
+                IwaCommandScheduler::From(fake_provider()),
+                fake_provider().registrar_unsafe(),
                 profile()->GetURLLoaderFactory(), *profile());
   }
 
@@ -144,7 +142,6 @@ class IsolatedWebAppUpdateCheckAndPrepareTaskTest : public WebAppTest {
   }
 
   base::test::ScopedFeatureList scoped_feature_list_;
-  data_decoder::test::InProcessDataDecoder data_decoder_;
 
   GURL update_manifest_url_ = GURL("https://example.com/update_manifest.json");
   UpdateChannel beta_update_channel_ = UpdateChannel::Create("beta").value();
@@ -409,21 +406,17 @@ class IsolatedWebAppUpdateCheckAndPrepareTaskPrepareUpdateTest
     return bundle_update->FakeInstallPageState(profile());
   }
 
-  blink::mojom::ManifestPtr CreateDefaultManifest(const GURL& application_url,
-                                                  const IwaVersion version) {
-    auto manifest = blink::mojom::Manifest::New();
-    manifest->id = application_url.DeprecatedGetOriginAsURL();
-    manifest->scope = application_url.Resolve("/");
-    manifest->start_url = application_url.Resolve("/testing-start-url.html");
-    manifest->display = DisplayMode::kStandalone;
-    manifest->short_name = u"updated app";
-    manifest->version = base::UTF8ToUTF16(version.GetString());
-
-    return manifest;
+  blink::Manifest CreateDefaultManifest(const GURL& application_url,
+                                        const IwaVersion version) {
+    return blink::Manifest::Builder(
+               application_url.Resolve("/testing-start-url.html"),
+               application_url.DeprecatedGetOriginAsURL(),
+               application_url.Resolve("/"))
+        .SetDisplay(blink::mojom::DisplayMode::kStandalone)
+        .SetShortName(u"updated app")
+        .SetVersion(base::UTF8ToUTF16(version.GetString()))
+        .BuildChecked();
   }
-
- private:
-  data_decoder::test::InProcessDataDecoder in_process_data_decoder_;
 };
 
 TEST_F(IsolatedWebAppUpdateCheckAndPrepareTaskPrepareUpdateTest, Fails) {
@@ -682,7 +675,8 @@ TEST_F(IsolatedWebAppUpdateCheckAndPrepareTaskPrepareUpdateTest,
                 /*allow_downgrades=*/false,
                 /*pinned_version=*/std::nullopt, url_info, /*dev_mode=*/false,
                 /*update_manifest_check_only=*/true),
-            fake_provider().scheduler(), fake_provider().registrar_unsafe(),
+            IwaCommandScheduler::From(fake_provider()),
+            fake_provider().registrar_unsafe(),
             profile()->GetURLLoaderFactory(), *profile());
 
   base::test::TestFuture<Task::CompletionStatus> future;

@@ -4,10 +4,13 @@
 
 #import "ios/chrome/browser/intelligence/bwg/coordinator/gemini_container_ui_state_manager.h"
 
+#import <optional>
+
 #import "base/test/scoped_feature_list.h"
 #import "base/test/task_environment.h"
 #import "base/time/time.h"
 #import "ios/chrome/browser/assistant/ui/assistant_container_detent.h"
+#import "ios/chrome/browser/intelligence/actor/ui/actuation_worklog_view_data.h"
 #import "ios/chrome/browser/intelligence/bwg/model/gemini_session_delegate.h"
 #import "ios/chrome/browser/intelligence/bwg/utils/gemini_constants.h"
 #import "ios/chrome/browser/intelligence/features/features.h"
@@ -17,8 +20,6 @@
 #import "testing/platform_test.h"
 
 @interface GeminiContainerUIStateManager (Testing)
-@property(nonatomic, readonly) ios::provider::GeminiClientMode processingStatus;
-@property(nonatomic, readonly) ios::provider::GeminiViewMode viewMode;
 @property(nonatomic, assign) BOOL hasConversation;
 @property(nonatomic, assign) GeminiContainerUIState currentUIState;
 @end
@@ -50,11 +51,14 @@ class GeminiContainerUIStateManagerTest : public PlatformTest {
       : task_environment_(base::test::TaskEnvironment::TimeSource::MOCK_TIME),
         state_manager_([[GeminiContainerUIStateManager alloc] init]),
         delegate_([[FakeGeminiContainerUIStateManagerDelegate alloc] init]) {
+    scoped_feature_list_.InitWithFeatures(
+        {kAssistantContainer, kIOSGeminiBottomSheetMigration}, {});
     state_manager_.delegate = delegate_;
   }
 
  protected:
   base::test::TaskEnvironment task_environment_;
+  base::test::ScopedFeatureList scoped_feature_list_;
   GeminiContainerUIStateManager* state_manager_;
   FakeGeminiContainerUIStateManagerDelegate* delegate_;
 };
@@ -99,15 +103,42 @@ TEST_F(GeminiContainerUIStateManagerTest, TestUIStateFactoryMethods) {
   EXPECT_FALSE(minimized_with_grabber.actuating);
 
   GeminiContainerUIState actuating = GeminiContainerUIState::Actuating();
-  EXPECT_EQ(AssistantContainerDetent::kMinimized, actuating.detent);
+  EXPECT_EQ(AssistantContainerDetent::kMedium, actuating.detent);
   EXPECT_TRUE(actuating.hasGrabber);
   EXPECT_FALSE(actuating.zeroStateVisible);
   EXPECT_TRUE(actuating.actuating);
 }
 
+// Tests that `WorklogDisplayMode()` maps each detent to its worklog
+// presentation while actuating, and is unset otherwise.
+TEST_F(GeminiContainerUIStateManagerTest, TestWorklogDisplayMode) {
+  GeminiContainerUIState state = GeminiContainerUIState::Actuating();
+
+  state.detent = AssistantContainerDetent::kMinimized;
+  EXPECT_EQ(std::make_optional(ActuationWorklogDisplayModeMinimized),
+            state.WorklogDisplayMode());
+  state.detent = AssistantContainerDetent::kMedium;
+  EXPECT_EQ(std::make_optional(ActuationWorklogDisplayModeCompact),
+            state.WorklogDisplayMode());
+  state.detent = AssistantContainerDetent::kLarge;
+  EXPECT_EQ(std::make_optional(ActuationWorklogDisplayModeExpanded),
+            state.WorklogDisplayMode());
+
+  state.actuating = NO;
+  state.detent = AssistantContainerDetent::kMinimized;
+  EXPECT_FALSE(state.WorklogDisplayMode().has_value());
+  state.detent = AssistantContainerDetent::kMedium;
+  EXPECT_FALSE(state.WorklogDisplayMode().has_value());
+  state.detent = AssistantContainerDetent::kLarge;
+  EXPECT_FALSE(state.WorklogDisplayMode().has_value());
+}
+
 // Tests that initial state properties are correctly set upon initialization.
 TEST_F(GeminiContainerUIStateManagerTest, TestInitialProperties) {
   EXPECT_EQ(ios::provider::GeminiViewMode::kUnknown, state_manager_.viewMode);
+  EXPECT_EQ(ios::provider::GeminiViewMode::kUnknown,
+            state_manager_.lastProcessingStatusUpdateViewMode);
+  EXPECT_FALSE([state_manager_ isInGeminiLiveMode]);
   EXPECT_EQ(ios::provider::GeminiClientMode::kUnknown,
             state_manager_.processingStatus);
   EXPECT_EQ(AssistantContainerDetent::kMinimized,
@@ -118,25 +149,43 @@ TEST_F(GeminiContainerUIStateManagerTest, TestInitialProperties) {
   EXPECT_FALSE(state_manager_.hasConversation);
 }
 
-// Tests that setupInitialUIState returns the default zero state configuration.
+// Tests that `setupInitialUIStateWithConversation:NO` returns the default zero
+// state configuration.
 TEST_F(GeminiContainerUIStateManagerTest, TestInitialState) {
-  [state_manager_ setupInitialUIState];
+  [state_manager_ setupInitialUIStateWithConversation:NO];
   EXPECT_EQ(1, delegate_.changeCount);
   EXPECT_EQ(AssistantContainerDetent::kMedium, delegate_.lastUIState.detent);
   EXPECT_TRUE(delegate_.lastUIState.hasGrabber);
   EXPECT_TRUE(delegate_.lastUIState.zeroStateVisible);
   EXPECT_FALSE(state_manager_.hasConversation);
   EXPECT_EQ(ios::provider::GeminiViewMode::kFloaty, state_manager_.viewMode);
+  EXPECT_FALSE([state_manager_ isInGeminiLiveMode]);
   EXPECT_EQ(ios::provider::GeminiClientMode::kDormant,
+            state_manager_.processingStatus);
+}
+
+// Tests that `setupInitialUIStateWithConversation:YES` sets the processing
+// status to `kPreviousConversationLoading` and configures an expanded response
+// state instead of zero state.
+TEST_F(GeminiContainerUIStateManagerTest, TestInitialStateWithConversation) {
+  [state_manager_ setupInitialUIStateWithConversation:YES];
+  EXPECT_EQ(1, delegate_.changeCount);
+  EXPECT_EQ(AssistantContainerDetent::kMedium, delegate_.lastUIState.detent);
+  EXPECT_TRUE(delegate_.lastUIState.hasGrabber);
+  EXPECT_FALSE(delegate_.lastUIState.zeroStateVisible);
+  EXPECT_TRUE(state_manager_.hasConversation);
+  EXPECT_EQ(ios::provider::GeminiViewMode::kFloaty, state_manager_.viewMode);
+  EXPECT_EQ(ios::provider::GeminiClientMode::kPreviousConversationLoading,
             state_manager_.processingStatus);
 }
 
 // Tests that switching to Live mode configures a minimized container without a
 // grabber.
 TEST_F(GeminiContainerUIStateManagerTest, TestSwitchToLiveMode) {
-  [state_manager_ setupInitialUIState];
+  [state_manager_ setupInitialUIStateWithConversation:NO];
   [delegate_ reset];
   [state_manager_ transitionToMode:ios::provider::GeminiViewMode::kLive];
+  EXPECT_TRUE([state_manager_ isInGeminiLiveMode]);
   EXPECT_EQ(1, delegate_.changeCount);
   EXPECT_EQ(AssistantContainerDetent::kMinimized, delegate_.lastUIState.detent);
   EXPECT_FALSE(delegate_.lastUIState.hasGrabber);
@@ -150,7 +199,7 @@ TEST_F(GeminiContainerUIStateManagerTest, TestSwitchToLiveMode) {
 // container dimensions while transitioning conversation state to true on
 // response.
 TEST_F(GeminiContainerUIStateManagerTest, TestUpdateUIStateFromLiveMode) {
-  [state_manager_ setupInitialUIState];
+  [state_manager_ setupInitialUIStateWithConversation:NO];
   EXPECT_FALSE(state_manager_.hasConversation);
 
   [delegate_ reset];
@@ -164,8 +213,9 @@ TEST_F(GeminiContainerUIStateManagerTest, TestUpdateUIStateFromLiveMode) {
   // Subsequent processing status changes should not notify delegate in live
   // mode, but responding changes conversation state to YES.
   [delegate_ reset];
-  [state_manager_ transitionToProcessingStatus:ios::provider::GeminiClientMode::
-                                                   kResponding];
+  [state_manager_
+      transitionToProcessingStatus:ios::provider::GeminiClientMode::kResponding
+                             error:nil];
   EXPECT_EQ(0, delegate_.changeCount);
   EXPECT_EQ(AssistantContainerDetent::kMinimized,
             state_manager_.currentUIState.detent);
@@ -178,7 +228,7 @@ TEST_F(GeminiContainerUIStateManagerTest, TestUpdateUIStateFromLiveMode) {
 // adds a grabber, and sets zero state when conversation state was preserved.
 TEST_F(GeminiContainerUIStateManagerTest,
        TestSwitchFromLiveToFloatyWithPreservedZeroState) {
-  [state_manager_ setupInitialUIState];
+  [state_manager_ setupInitialUIStateWithConversation:NO];
   EXPECT_FALSE(state_manager_.hasConversation);
 
   // Switch to live mode.
@@ -201,15 +251,16 @@ TEST_F(GeminiContainerUIStateManagerTest,
 // during live mode.
 TEST_F(GeminiContainerUIStateManagerTest,
        TestSwitchFromLiveToFloatyAfterResponse) {
-  [state_manager_ setupInitialUIState];
+  [state_manager_ setupInitialUIStateWithConversation:NO];
   EXPECT_FALSE(state_manager_.hasConversation);
 
   // Switch to live mode.
   [state_manager_ transitionToMode:ios::provider::GeminiViewMode::kLive];
 
   // Gemini responds in live mode.
-  [state_manager_ transitionToProcessingStatus:ios::provider::GeminiClientMode::
-                                                   kResponding];
+  [state_manager_
+      transitionToProcessingStatus:ios::provider::GeminiClientMode::kResponding
+                             error:nil];
   EXPECT_TRUE(state_manager_.hasConversation);
 
   // Switch back to floaty mode. Grabber is added, container expands, and zero
@@ -226,7 +277,7 @@ TEST_F(GeminiContainerUIStateManagerTest,
 // Tests that switching back to Floaty mode with an active conversation returns
 // expanded response.
 TEST_F(GeminiContainerUIStateManagerTest, TestSwitchToFloatyWithConversation) {
-  [state_manager_ setupInitialUIState];
+  [state_manager_ setupInitialUIStateWithConversation:NO];
   state_manager_.hasConversation = YES;
   [state_manager_ transitionToMode:ios::provider::GeminiViewMode::kLive];
 
@@ -243,7 +294,7 @@ TEST_F(GeminiContainerUIStateManagerTest, TestSwitchToFloatyWithConversation) {
 // container UI state values when already in Floaty mode.
 TEST_F(GeminiContainerUIStateManagerTest,
        TestTransitionToModeFloatyPreservesDefaultUIState) {
-  [state_manager_ setupInitialUIState];
+  [state_manager_ setupInitialUIStateWithConversation:NO];
 
   EXPECT_EQ(AssistantContainerDetent::kMedium,
             state_manager_.currentUIState.detent);
@@ -265,11 +316,12 @@ TEST_F(GeminiContainerUIStateManagerTest,
 // processingStatus.
 TEST_F(GeminiContainerUIStateManagerTest,
        TestUpdateUIStateFromProcessingStatus) {
-  [state_manager_ setupInitialUIState];
+  [state_manager_ setupInitialUIStateWithConversation:NO];
 
   [delegate_ reset];
   [state_manager_
-      transitionToProcessingStatus:ios::provider::GeminiClientMode::kThinking];
+      transitionToProcessingStatus:ios::provider::GeminiClientMode::kThinking
+                             error:nil];
   EXPECT_EQ(1, delegate_.changeCount);
   EXPECT_EQ(AssistantContainerDetent::kMinimized, delegate_.lastUIState.detent);
   EXPECT_FALSE(delegate_.lastUIState.hasGrabber);
@@ -277,8 +329,9 @@ TEST_F(GeminiContainerUIStateManagerTest,
   EXPECT_TRUE(state_manager_.hasConversation);
 
   [delegate_ reset];
-  [state_manager_ transitionToProcessingStatus:ios::provider::GeminiClientMode::
-                                                   kResponding];
+  [state_manager_
+      transitionToProcessingStatus:ios::provider::GeminiClientMode::kResponding
+                             error:nil];
   EXPECT_EQ(1, delegate_.changeCount);
   EXPECT_EQ(AssistantContainerDetent::kMedium, delegate_.lastUIState.detent);
   EXPECT_TRUE(delegate_.lastUIState.hasGrabber);
@@ -286,9 +339,9 @@ TEST_F(GeminiContainerUIStateManagerTest,
   EXPECT_TRUE(state_manager_.hasConversation);
 
   [delegate_ reset];
-  [state_manager_
-      transitionToProcessingStatus:ios::provider::GeminiClientMode::
-                                       kPreviousConversationLoading];
+  [state_manager_ transitionToProcessingStatus:ios::provider::GeminiClientMode::
+                                                   kPreviousConversationLoading
+                                         error:nil];
   EXPECT_EQ(1, delegate_.changeCount);
   EXPECT_EQ(AssistantContainerDetent::kMedium, delegate_.lastUIState.detent);
   EXPECT_TRUE(delegate_.lastUIState.hasGrabber);
@@ -300,13 +353,14 @@ TEST_F(GeminiContainerUIStateManagerTest,
 // set hasConversation to YES and zero state to NO.
 TEST_F(GeminiContainerUIStateManagerTest,
        TestFloatyModeThinkingAndPreviousConversationLoadingSetsZeroStateToNo) {
-  [state_manager_ setupInitialUIState];
+  [state_manager_ setupInitialUIStateWithConversation:NO];
   EXPECT_FALSE(state_manager_.hasConversation);
 
   // Transition to thinking.
   [delegate_ reset];
   [state_manager_
-      transitionToProcessingStatus:ios::provider::GeminiClientMode::kThinking];
+      transitionToProcessingStatus:ios::provider::GeminiClientMode::kThinking
+                             error:nil];
   EXPECT_EQ(1, delegate_.changeCount);
   EXPECT_TRUE(state_manager_.hasConversation);
   EXPECT_FALSE(delegate_.lastUIState.zeroStateVisible);
@@ -320,9 +374,9 @@ TEST_F(GeminiContainerUIStateManagerTest,
 
   // Transition to previous conversation loading.
   [delegate_ reset];
-  [state_manager_
-      transitionToProcessingStatus:ios::provider::GeminiClientMode::
-                                       kPreviousConversationLoading];
+  [state_manager_ transitionToProcessingStatus:ios::provider::GeminiClientMode::
+                                                   kPreviousConversationLoading
+                                         error:nil];
   EXPECT_EQ(1, delegate_.changeCount);
   EXPECT_TRUE(state_manager_.hasConversation);
   EXPECT_FALSE(delegate_.lastUIState.zeroStateVisible);
@@ -331,16 +385,18 @@ TEST_F(GeminiContainerUIStateManagerTest,
 // Tests that Responding status arriving within the allowed interval
 // auto-expands the container.
 TEST_F(GeminiContainerUIStateManagerTest, TestRespondingWithinIntervalExpands) {
-  [state_manager_ setupInitialUIState];
+  [state_manager_ setupInitialUIStateWithConversation:NO];
   [state_manager_
-      transitionToProcessingStatus:ios::provider::GeminiClientMode::kThinking];
+      transitionToProcessingStatus:ios::provider::GeminiClientMode::kThinking
+                             error:nil];
 
   task_environment_.FastForwardBy(
       base::Seconds(GetGeminiResponseReadyInterval() - 1));
 
   [delegate_ reset];
-  [state_manager_ transitionToProcessingStatus:ios::provider::GeminiClientMode::
-                                                   kResponding];
+  [state_manager_
+      transitionToProcessingStatus:ios::provider::GeminiClientMode::kResponding
+                             error:nil];
   EXPECT_EQ(1, delegate_.changeCount);
   EXPECT_EQ(AssistantContainerDetent::kMedium, delegate_.lastUIState.detent);
   EXPECT_TRUE(delegate_.lastUIState.hasGrabber);
@@ -352,16 +408,18 @@ TEST_F(GeminiContainerUIStateManagerTest, TestRespondingWithinIntervalExpands) {
 // container minimized with a grabber.
 TEST_F(GeminiContainerUIStateManagerTest,
        TestRespondingAfterIntervalStaysMinimizedWithGrabber) {
-  [state_manager_ setupInitialUIState];
+  [state_manager_ setupInitialUIStateWithConversation:NO];
   [state_manager_
-      transitionToProcessingStatus:ios::provider::GeminiClientMode::kThinking];
+      transitionToProcessingStatus:ios::provider::GeminiClientMode::kThinking
+                             error:nil];
 
   task_environment_.FastForwardBy(
       base::Seconds(GetGeminiResponseReadyInterval() + 1));
 
   [delegate_ reset];
-  [state_manager_ transitionToProcessingStatus:ios::provider::GeminiClientMode::
-                                                   kResponding];
+  [state_manager_
+      transitionToProcessingStatus:ios::provider::GeminiClientMode::kResponding
+                             error:nil];
   EXPECT_EQ(1, delegate_.changeCount);
   EXPECT_EQ(AssistantContainerDetent::kMinimized, delegate_.lastUIState.detent);
   EXPECT_TRUE(delegate_.lastUIState.hasGrabber);
@@ -373,11 +431,12 @@ TEST_F(GeminiContainerUIStateManagerTest,
 // change rather than responding.
 TEST_F(GeminiContainerUIStateManagerTest,
        TestThinkingTimerResetsIfNextChangeIsModeChange) {
-  [state_manager_ setupInitialUIState];
+  [state_manager_ setupInitialUIStateWithConversation:NO];
 
   [delegate_ reset];
   [state_manager_
-      transitionToProcessingStatus:ios::provider::GeminiClientMode::kThinking];
+      transitionToProcessingStatus:ios::provider::GeminiClientMode::kThinking
+                             error:nil];
   EXPECT_EQ(1, delegate_.changeCount);
   EXPECT_EQ(AssistantContainerDetent::kMinimized, delegate_.lastUIState.detent);
   EXPECT_FALSE(delegate_.lastUIState.hasGrabber);
@@ -397,8 +456,9 @@ TEST_F(GeminiContainerUIStateManagerTest,
   // When responding status arrives, timer was reset so container stays
   // minimized.
   [delegate_ reset];
-  [state_manager_ transitionToProcessingStatus:ios::provider::GeminiClientMode::
-                                                   kResponding];
+  [state_manager_
+      transitionToProcessingStatus:ios::provider::GeminiClientMode::kResponding
+                             error:nil];
   EXPECT_EQ(1, delegate_.changeCount);
   EXPECT_EQ(AssistantContainerDetent::kMinimized, delegate_.lastUIState.detent);
   EXPECT_TRUE(delegate_.lastUIState.hasGrabber);
@@ -409,11 +469,12 @@ TEST_F(GeminiContainerUIStateManagerTest,
 // status change other than responding (e.g. dormant).
 TEST_F(GeminiContainerUIStateManagerTest,
        TestThinkingTimerResetsIfNextChangeIsDormantStatus) {
-  [state_manager_ setupInitialUIState];
+  [state_manager_ setupInitialUIStateWithConversation:NO];
 
   [delegate_ reset];
   [state_manager_
-      transitionToProcessingStatus:ios::provider::GeminiClientMode::kThinking];
+      transitionToProcessingStatus:ios::provider::GeminiClientMode::kThinking
+                             error:nil];
   EXPECT_EQ(1, delegate_.changeCount);
   EXPECT_EQ(AssistantContainerDetent::kMinimized, delegate_.lastUIState.detent);
   EXPECT_FALSE(delegate_.lastUIState.hasGrabber);
@@ -421,15 +482,17 @@ TEST_F(GeminiContainerUIStateManagerTest,
 
   // Next change is dormant status (not responding).
   [state_manager_
-      transitionToProcessingStatus:ios::provider::GeminiClientMode::kDormant];
+      transitionToProcessingStatus:ios::provider::GeminiClientMode::kDormant
+                             error:nil];
 
   // When responding subsequently arrives within interval, timer was reset so
   // container stays minimized.
   task_environment_.FastForwardBy(
       base::Seconds(GetGeminiResponseReadyInterval() - 1));
   [delegate_ reset];
-  [state_manager_ transitionToProcessingStatus:ios::provider::GeminiClientMode::
-                                                   kResponding];
+  [state_manager_
+      transitionToProcessingStatus:ios::provider::GeminiClientMode::kResponding
+                             error:nil];
   EXPECT_EQ(1, delegate_.changeCount);
   EXPECT_EQ(AssistantContainerDetent::kMinimized, delegate_.lastUIState.detent);
   EXPECT_TRUE(delegate_.lastUIState.hasGrabber);
@@ -439,7 +502,7 @@ TEST_F(GeminiContainerUIStateManagerTest,
 // Tests that handleNewChat preserves the container detent and restores
 // zero state.
 TEST_F(GeminiContainerUIStateManagerTest, TestHandleNewChatPreservesDetent) {
-  [state_manager_ setupInitialUIState];
+  [state_manager_ setupInitialUIStateWithConversation:NO];
   [state_manager_ updateDetent:AssistantContainerDetent::kMinimized];
   state_manager_.hasConversation = YES;
 
@@ -454,9 +517,10 @@ TEST_F(GeminiContainerUIStateManagerTest, TestHandleNewChatPreservesDetent) {
 
 // Tests that response cancellation with stop button sets expanded response.
 TEST_F(GeminiContainerUIStateManagerTest, TestCancelWithStopButton) {
-  [state_manager_ setupInitialUIState];
+  [state_manager_ setupInitialUIStateWithConversation:NO];
   [state_manager_
-      transitionToProcessingStatus:ios::provider::GeminiClientMode::kThinking];
+      transitionToProcessingStatus:ios::provider::GeminiClientMode::kThinking
+                             error:nil];
   [delegate_ reset];
   [state_manager_
       handleResponseCancellationWithReason:GeminiCancelTypeStopButtonTapped];
@@ -470,7 +534,7 @@ TEST_F(GeminiContainerUIStateManagerTest, TestCancelWithStopButton) {
 // Tests that response cancellation with other reasons does not return a new
 // configuration.
 TEST_F(GeminiContainerUIStateManagerTest, TestCancelWithOtherReason) {
-  [state_manager_ setupInitialUIState];
+  [state_manager_ setupInitialUIStateWithConversation:NO];
   [delegate_ reset];
   [state_manager_ handleResponseCancellationWithReason:
                       GeminiCancelTypeCollapsedStateCloseButtonTapped];
@@ -479,7 +543,7 @@ TEST_F(GeminiContainerUIStateManagerTest, TestCancelWithOtherReason) {
 
 // Tests that updateDetent updates the current detent.
 TEST_F(GeminiContainerUIStateManagerTest, TestUpdateDetent) {
-  [state_manager_ setupInitialUIState];
+  [state_manager_ setupInitialUIStateWithConversation:NO];
   [state_manager_ updateDetent:AssistantContainerDetent::kLarge];
   EXPECT_EQ(AssistantContainerDetent::kLarge,
             state_manager_.currentUIState.detent);
@@ -487,10 +551,15 @@ TEST_F(GeminiContainerUIStateManagerTest, TestUpdateDetent) {
 
 // Tests that reset restores state manager properties.
 TEST_F(GeminiContainerUIStateManagerTest, TestReset) {
-  [state_manager_ setupInitialUIState];
+  [state_manager_ setupInitialUIStateWithConversation:NO];
+  [state_manager_
+      transitionToProcessingStatus:ios::provider::GeminiClientMode::kThinking
+                             error:nil];
   state_manager_.hasConversation = YES;
   [state_manager_ reset];
   EXPECT_EQ(ios::provider::GeminiViewMode::kUnknown, state_manager_.viewMode);
+  EXPECT_EQ(ios::provider::GeminiViewMode::kUnknown,
+            state_manager_.lastProcessingStatusUpdateViewMode);
   EXPECT_EQ(ios::provider::GeminiClientMode::kUnknown,
             state_manager_.processingStatus);
   EXPECT_FALSE(state_manager_.hasConversation);
@@ -502,7 +571,7 @@ TEST_F(GeminiContainerUIStateManagerTest, TestShouldBeDismissed) {
   base::test::ScopedFeatureList scoped_feature_list;
   scoped_feature_list.InitAndEnableFeature(kChromeNextIa);
 
-  [state_manager_ setupInitialUIState];
+  [state_manager_ setupInitialUIStateWithConversation:NO];
   // Floaty mode at medium detent should not be dismissed.
   EXPECT_FALSE([state_manager_ shouldBeDismissed]);
 
@@ -513,7 +582,8 @@ TEST_F(GeminiContainerUIStateManagerTest, TestShouldBeDismissed) {
   // Floaty mode with active conversation at minimized detent should not be
   // dismissed.
   [state_manager_
-      transitionToProcessingStatus:ios::provider::GeminiClientMode::kThinking];
+      transitionToProcessingStatus:ios::provider::GeminiClientMode::kThinking
+                             error:nil];
   EXPECT_FALSE([state_manager_ shouldBeDismissed]);
 
   // Resetting conversation via new chat button at minimized detent should be
@@ -528,7 +598,7 @@ TEST_F(GeminiContainerUIStateManagerTest, TestShouldBeDismissedNextIaDisabled) {
   base::test::ScopedFeatureList scoped_feature_list;
   scoped_feature_list.InitAndDisableFeature(kChromeNextIa);
 
-  [state_manager_ setupInitialUIState];
+  [state_manager_ setupInitialUIStateWithConversation:NO];
   [state_manager_ updateDetent:AssistantContainerDetent::kMinimized];
   EXPECT_FALSE([state_manager_ shouldBeDismissed]);
 }
@@ -539,7 +609,7 @@ TEST_F(GeminiContainerUIStateManagerTest, TestShouldBeDismissedNonFloatyMode) {
   base::test::ScopedFeatureList scoped_feature_list;
   scoped_feature_list.InitAndEnableFeature(kChromeNextIa);
 
-  [state_manager_ setupInitialUIState];
+  [state_manager_ setupInitialUIStateWithConversation:NO];
   [state_manager_ transitionToMode:ios::provider::GeminiViewMode::kLive];
   [state_manager_ updateDetent:AssistantContainerDetent::kMinimized];
   EXPECT_FALSE([state_manager_ shouldBeDismissed]);
@@ -547,24 +617,26 @@ TEST_F(GeminiContainerUIStateManagerTest, TestShouldBeDismissedNonFloatyMode) {
 
 // Tests that actuation defers response expansion until it ends.
 TEST_F(GeminiContainerUIStateManagerTest, TestActuationDefersExpansion) {
-  [state_manager_ setupInitialUIState];
+  [state_manager_ setupInitialUIStateWithConversation:NO];
   [delegate_ reset];
 
   [state_manager_ handleActuationStateChanged:YES];
   EXPECT_EQ(1, delegate_.changeCount);
   EXPECT_TRUE(state_manager_.currentUIState.actuating);
-  EXPECT_EQ(AssistantContainerDetent::kMinimized, delegate_.lastUIState.detent);
+  EXPECT_EQ(AssistantContainerDetent::kMedium, delegate_.lastUIState.detent);
   EXPECT_TRUE(delegate_.lastUIState.actuating);
 
   // Transitioning processing status while actuating should not notify delegate.
   [delegate_ reset];
   [state_manager_
-      transitionToProcessingStatus:ios::provider::GeminiClientMode::kThinking];
+      transitionToProcessingStatus:ios::provider::GeminiClientMode::kThinking
+                             error:nil];
   EXPECT_EQ(0, delegate_.changeCount);
   EXPECT_TRUE(state_manager_.currentUIState.actuating);
 
-  [state_manager_ transitionToProcessingStatus:ios::provider::GeminiClientMode::
-                                                   kResponding];
+  [state_manager_
+      transitionToProcessingStatus:ios::provider::GeminiClientMode::kResponding
+                             error:nil];
   EXPECT_EQ(0, delegate_.changeCount);
   EXPECT_TRUE(state_manager_.currentUIState.actuating);
 
@@ -581,11 +653,12 @@ TEST_F(GeminiContainerUIStateManagerTest, TestShouldBeDismissedWhileActuating) {
   base::test::ScopedFeatureList scoped_feature_list;
   scoped_feature_list.InitAndEnableFeature(kChromeNextIa);
 
-  [state_manager_ setupInitialUIState];
+  [state_manager_ setupInitialUIStateWithConversation:NO];
   [state_manager_ updateDetent:AssistantContainerDetent::kMinimized];
   EXPECT_TRUE([state_manager_ shouldBeDismissed]);
 
   [state_manager_ handleActuationStateChanged:YES];
+  [state_manager_ updateDetent:AssistantContainerDetent::kMinimized];
   EXPECT_FALSE([state_manager_ shouldBeDismissed]);
 }
 
@@ -593,15 +666,98 @@ TEST_F(GeminiContainerUIStateManagerTest, TestShouldBeDismissedWhileActuating) {
 // actuation completes auto-expands the container, even if total thinking time
 // exceeded the interval during actuation.
 TEST_F(GeminiContainerUIStateManagerTest, TestRespondingAfterActuationExpands) {
-  [state_manager_ setupInitialUIState];
+  [state_manager_ setupInitialUIStateWithConversation:NO];
   [state_manager_
-      transitionToProcessingStatus:ios::provider::GeminiClientMode::kThinking];
+      transitionToProcessingStatus:ios::provider::GeminiClientMode::kThinking
+                             error:nil];
   [state_manager_ handleActuationStateChanged:YES];
   task_environment_.FastForwardBy(
       base::Seconds(GetGeminiResponseReadyInterval() + 5));
   [state_manager_ handleActuationStateChanged:NO];
-  [state_manager_ transitionToProcessingStatus:ios::provider::GeminiClientMode::
-                                                   kResponding];
+  [state_manager_
+      transitionToProcessingStatus:ios::provider::GeminiClientMode::kResponding
+                             error:nil];
 
   EXPECT_EQ(AssistantContainerDetent::kMedium, delegate_.lastUIState.detent);
+}
+
+// Tests that `didFinishLoadingConversationWithID:error:` switches to zero state
+// when an error occurs, and does nothing when `error` is nil.
+TEST_F(GeminiContainerUIStateManagerTest,
+       TestDidFinishLoadingConversationWithErrorSwitchesToZeroState) {
+  [state_manager_ setupInitialUIStateWithConversation:YES];
+  EXPECT_TRUE(state_manager_.hasConversation);
+  EXPECT_FALSE(state_manager_.currentUIState.zeroStateVisible);
+
+  // Finishing without error keeps the current conversation state.
+  [delegate_ reset];
+  [state_manager_ didFinishLoadingConversationWithID:@"conv_123" error:nil];
+  EXPECT_EQ(0, delegate_.changeCount);
+  EXPECT_TRUE(state_manager_.hasConversation);
+  EXPECT_FALSE(state_manager_.currentUIState.zeroStateVisible);
+
+  // Finishing with an error resets to zero state.
+  NSError* error = [NSError errorWithDomain:@"TestDomain" code:1 userInfo:nil];
+  [state_manager_ didFinishLoadingConversationWithID:@"conv_123" error:error];
+  EXPECT_EQ(1, delegate_.changeCount);
+  EXPECT_EQ(AssistantContainerDetent::kMedium, delegate_.lastUIState.detent);
+  EXPECT_TRUE(delegate_.lastUIState.hasGrabber);
+  EXPECT_TRUE(delegate_.lastUIState.zeroStateVisible);
+  EXPECT_FALSE(state_manager_.hasConversation);
+}
+
+// Tests that `lastProcessingStatusUpdateViewMode` only updates when
+// `transitionToProcessingStatus:error:` runs, allowing status updates with an
+// unchanged `processingStatus` to be processed after a mode switch while
+// deduplicating repeated updates within the same mode.
+TEST_F(GeminiContainerUIStateManagerTest,
+       TestLastProcessingStatusUpdateViewModeTracksStatusUpdatesAcrossModes) {
+  [state_manager_ setupInitialUIStateWithConversation:NO];
+  EXPECT_EQ(ios::provider::GeminiViewMode::kFloaty, state_manager_.viewMode);
+  EXPECT_EQ(ios::provider::GeminiClientMode::kDormant,
+            state_manager_.processingStatus);
+  EXPECT_EQ(ios::provider::GeminiViewMode::kUnknown,
+            state_manager_.lastProcessingStatusUpdateViewMode);
+
+  // First `kDormant` update in Floaty records `kFloaty` as the last update
+  // view mode even though `processingStatus` was already `kDormant`.
+  [state_manager_
+      transitionToProcessingStatus:ios::provider::GeminiClientMode::kDormant
+                             error:nil];
+  EXPECT_EQ(ios::provider::GeminiViewMode::kFloaty,
+            state_manager_.lastProcessingStatusUpdateViewMode);
+
+  // Switching to Live mode updates `viewMode` without updating
+  // `lastProcessingStatusUpdateViewMode`.
+  [state_manager_ transitionToMode:ios::provider::GeminiViewMode::kLive];
+  EXPECT_EQ(ios::provider::GeminiViewMode::kLive, state_manager_.viewMode);
+  EXPECT_EQ(ios::provider::GeminiViewMode::kFloaty,
+            state_manager_.lastProcessingStatusUpdateViewMode);
+
+  // Receiving `kDormant` in Live mode updates
+  // `lastProcessingStatusUpdateViewMode` to `kLive`.
+  [state_manager_
+      transitionToProcessingStatus:ios::provider::GeminiClientMode::kDormant
+                             error:nil];
+  EXPECT_EQ(ios::provider::GeminiViewMode::kLive,
+            state_manager_.lastProcessingStatusUpdateViewMode);
+
+  // Switching back to Floaty and receiving `kDormant` with an error processes
+  // the error because `viewMode` changed since the last status update, then
+  // deduplicates a subsequent identical `kDormant` error in Floaty.
+  [state_manager_ transitionToMode:ios::provider::GeminiViewMode::kFloaty];
+  [delegate_ reset];
+  NSError* error = [NSError errorWithDomain:@"TestDomain" code:1 userInfo:nil];
+  [state_manager_
+      transitionToProcessingStatus:ios::provider::GeminiClientMode::kDormant
+                             error:error];
+  EXPECT_EQ(ios::provider::GeminiViewMode::kFloaty,
+            state_manager_.lastProcessingStatusUpdateViewMode);
+  EXPECT_EQ(1, delegate_.changeCount);
+
+  [delegate_ reset];
+  [state_manager_
+      transitionToProcessingStatus:ios::provider::GeminiClientMode::kDormant
+                             error:error];
+  EXPECT_EQ(0, delegate_.changeCount);
 }

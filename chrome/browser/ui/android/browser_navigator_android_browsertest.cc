@@ -4,12 +4,20 @@
 
 #include "chrome/browser/ui/navigator/browser_navigator.h"
 
+#include <optional>
+#include <tuple>
+
 #include "base/base_switches.h"
 #include "base/strings/string_util.h"
+#include "base/test/bind.h"
+#include "base/test/scoped_feature_list.h"
 #include "base/test/test_future.h"
+#include "build/android_buildflags.h"
 #include "chrome/browser/android/tab_android.h"
+#include "chrome/browser/content_settings/host_content_settings_map_factory.h"
 #include "chrome/browser/flags/android/chrome_feature_list.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/renderer_host/chrome_navigation_ui_data.h"
 #include "chrome/browser/tab_list/tab_list_interface.h"
 #include "chrome/browser/tab_list/tab_list_interface_observer.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
@@ -20,9 +28,16 @@
 #include "chrome/browser/ui/tabs/tab_enums.h"
 #include "chrome/common/webui_url_constants.h"
 #include "chrome/test/base/android/android_browser_test.h"
+#include "chrome/test/base/browser_created_waiter.h"
+#include "components/content_settings/core/browser/host_content_settings_map.h"
+#include "components/content_settings/core/common/content_settings.h"
+#include "components/content_settings/core/common/content_settings_types.h"
 #include "components/feed/feed_feature_list.h"
 #include "content/public/browser/navigation_controller.h"
+#include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/navigation_handle.h"
+#include "content/public/browser/page_navigator.h"
+#include "content/public/browser/visibility.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_observer.h"
 #include "content/public/test/browser_test.h"
@@ -30,8 +45,9 @@
 #include "content/public/test/test_navigation_observer.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "ui/base/base_window.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/base/page_transition_types.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/ui_base_types.h"
 
 namespace {
 
@@ -76,14 +92,22 @@ class NavigationUIDataObserver : public content::WebContentsObserver {
 
   void DidFinishNavigation(content::NavigationHandle* handle) override {
     last_navigation_ui_data_ = handle->GetNavigationUIData();
+    if (last_navigation_ui_data_) {
+      last_bookmark_id_ =
+          static_cast<ChromeNavigationUIData*>(last_navigation_ui_data_.get())
+              ->bookmark_id();
+    }
   }
 
   content::NavigationUIData* last_navigation_ui_data() {
     return last_navigation_ui_data_;
   }
 
+  std::optional<int64_t> last_bookmark_id() { return last_bookmark_id_; }
+
  private:
   raw_ptr<content::NavigationUIData> last_navigation_ui_data_ = nullptr;
+  std::optional<int64_t> last_bookmark_id_;
 };
 
 }  // namespace
@@ -119,7 +143,7 @@ class NavigateAndroidBrowserTest : public BrowserWindowAndroidBrowserTestBase {
     for (int i = 0; i < count; ++i) {
       NavigateParams params(browser_window_, GURL("about:blank"),
                             ui::PAGE_TRANSITION_TYPED);
-      params.disposition = WindowOpenDisposition::NEW_BACKGROUND_TAB;
+      params.disposition = ui::mojom::WindowOpenDisposition::kNewBackgroundTab;
       Navigate(&params);
     }
   }
@@ -194,7 +218,7 @@ IN_PROC_BROWSER_TEST_F(NavigateAndroidBrowserTest, Disposition_CurrentTab) {
   // Prepare and execute a CURRENT_TAB navigation.
   const GURL url2 = embedded_test_server()->GetURL("/title2.html");
   NavigateParams params(browser_window_, url2, ui::PAGE_TRANSITION_LINK);
-  params.disposition = WindowOpenDisposition::CURRENT_TAB;
+  params.disposition = ui::mojom::WindowOpenDisposition::kCurrentTab;
   params.source_contents = web_contents_;
 
   content::TestNavigationObserver navigation_observer(web_contents_);
@@ -228,7 +252,7 @@ IN_PROC_BROWSER_TEST_F(NavigateAndroidBrowserTest,
   // opener.
   const GURL url2 = embedded_test_server()->GetURL("/title2.html");
   NavigateParams params1(browser_window_, url2, ui::PAGE_TRANSITION_LINK);
-  params1.disposition = WindowOpenDisposition::NEW_BACKGROUND_TAB;
+  params1.disposition = ui::mojom::WindowOpenDisposition::kNewBackgroundTab;
   params1.source_contents = source_tab->GetContents();
 
   base::WeakPtr<content::NavigationHandle> handle1 = Navigate(&params1);
@@ -240,13 +264,15 @@ IN_PROC_BROWSER_TEST_F(NavigateAndroidBrowserTest,
   EXPECT_EQ(4, tab_list_->GetTabCount());
   tabs::TabInterface* new_tab1 = tab_list_->GetTab(2);
   EXPECT_EQ(url2, new_tab1->GetContents()->GetLastCommittedURL());
+  EXPECT_EQ(content::Visibility::HIDDEN,
+            new_tab1->GetContents()->GetVisibility());
   EXPECT_EQ(source_tab, tab_list_->GetActiveTab());
 
   // 2. Prepare and execute second NEW_BACKGROUND_TAB navigation from SAME
   // opener. It should be inserted AFTER NewTab1 but BEFORE Tab2.
   const GURL url3 = embedded_test_server()->GetURL("/title3.html");
   NavigateParams params2(browser_window_, url3, ui::PAGE_TRANSITION_LINK);
-  params2.disposition = WindowOpenDisposition::NEW_BACKGROUND_TAB;
+  params2.disposition = ui::mojom::WindowOpenDisposition::kNewBackgroundTab;
   params2.source_contents = source_tab->GetContents();
 
   base::WeakPtr<content::NavigationHandle> handle2 = Navigate(&params2);
@@ -264,6 +290,8 @@ IN_PROC_BROWSER_TEST_F(NavigateAndroidBrowserTest,
   tabs::TabInterface* new_tab2 = tab_list_->GetTab(3);
   ASSERT_TRUE(new_tab2);
   EXPECT_EQ(url3, new_tab2->GetContents()->GetLastCommittedURL());
+  EXPECT_EQ(content::Visibility::HIDDEN,
+            new_tab2->GetContents()->GetVisibility());
 
   // Verify original Tab2 pushed to Index 4
   EXPECT_EQ(GURL("about:blank"),
@@ -271,6 +299,51 @@ IN_PROC_BROWSER_TEST_F(NavigateAndroidBrowserTest,
 
   // Verify Active Tab is still Source Tab
   EXPECT_EQ(1, tab_list_->GetActiveIndex());
+}
+
+IN_PROC_BROWSER_TEST_F(NavigateAndroidBrowserTest,
+                       Disposition_NewBackgroundTab_InitiallyHidden) {
+  StartAtURL("/title1.html");
+  tabs::TabInterface* initial_tab = tab_list_->GetActiveTab();
+  ASSERT_TRUE(initial_tab);
+
+  const GURL background_url = embedded_test_server()->GetURL("/title2.html");
+  NavigateParams params(browser_window_, background_url,
+                        ui::PAGE_TRANSITION_AUTO_TOPLEVEL);
+  params.disposition = ui::mojom::WindowOpenDisposition::kNewBackgroundTab;
+  params.source_contents = initial_tab->GetContents();
+  params.tabstrip_index = 1;
+
+  base::WeakPtr<content::NavigationHandle> handle = Navigate(&params);
+  ASSERT_TRUE(handle);
+  content::WebContents* bg_contents = handle->GetWebContents();
+  ASSERT_TRUE(bg_contents);
+  content::TestNavigationObserver observer(bg_contents);
+  observer.Wait();
+
+  ASSERT_EQ(2, tab_list_->GetTabCount());
+  EXPECT_EQ(0, tab_list_->GetActiveIndex());
+
+  TabAndroid* bg_tab_android = TabAndroid::FromWebContents(bg_contents);
+  ASSERT_TRUE(bg_tab_android);
+  EXPECT_TRUE(bg_tab_android->IsHidden());
+  EXPECT_EQ(content::Visibility::HIDDEN, bg_contents->GetVisibility());
+  EXPECT_EQ("hidden", content::EvalJs(bg_contents, "document.visibilityState"));
+
+  // Activating the background tab transitions WebContents to VISIBLE.
+  tabs::TabInterface* bg_tab = tab_list_->GetTab(1);
+  ASSERT_TRUE(bg_tab);
+  tab_list_->ActivateTab(bg_tab->GetHandle());
+  EXPECT_FALSE(bg_tab_android->IsHidden());
+  EXPECT_EQ(content::Visibility::VISIBLE, bg_contents->GetVisibility());
+  EXPECT_EQ("visible",
+            content::EvalJs(bg_contents, "document.visibilityState"));
+
+  // Switching back transitions WebContents back to HIDDEN.
+  tab_list_->ActivateTab(initial_tab->GetHandle());
+  EXPECT_TRUE(bg_tab_android->IsHidden());
+  EXPECT_EQ(content::Visibility::HIDDEN, bg_contents->GetVisibility());
+  EXPECT_EQ("hidden", content::EvalJs(bg_contents, "document.visibilityState"));
 }
 
 IN_PROC_BROWSER_TEST_F(NavigateAndroidBrowserTest,
@@ -294,7 +367,7 @@ IN_PROC_BROWSER_TEST_F(NavigateAndroidBrowserTest,
   // Execute NEW_BACKGROUND_TAB navigation with PAGE_TRANSITION_TYPED.
   const GURL url2 = embedded_test_server()->GetURL("/title2.html");
   NavigateParams params(browser_window_, url2, ui::PAGE_TRANSITION_TYPED);
-  params.disposition = WindowOpenDisposition::NEW_BACKGROUND_TAB;
+  params.disposition = ui::mojom::WindowOpenDisposition::kNewBackgroundTab;
   params.source_contents = source_tab->GetContents();
 
   base::WeakPtr<content::NavigationHandle> handle = Navigate(&params);
@@ -332,7 +405,7 @@ IN_PROC_BROWSER_TEST_F(NavigateAndroidBrowserTest,
   // opener.
   const GURL url2 = embedded_test_server()->GetURL("/title2.html");
   NavigateParams params(browser_window_, url2, ui::PAGE_TRANSITION_LINK);
-  params.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
+  params.disposition = ui::mojom::WindowOpenDisposition::kNewForegroundTab;
   params.source_contents = source_tab->GetContents();
 
   base::WeakPtr<content::NavigationHandle> handle = Navigate(&params);
@@ -377,7 +450,7 @@ IN_PROC_BROWSER_TEST_F(NavigateAndroidBrowserTest,
   // Execute NEW_FOREGROUND_TAB navigation with PAGE_TRANSITION_TYPED.
   const GURL url2 = embedded_test_server()->GetURL("/title2.html");
   NavigateParams params(browser_window_, url2, ui::PAGE_TRANSITION_TYPED);
-  params.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
+  params.disposition = ui::mojom::WindowOpenDisposition::kNewForegroundTab;
   params.source_contents = source_tab->GetContents();
 
   base::WeakPtr<content::NavigationHandle> handle = Navigate(&params);
@@ -405,7 +478,7 @@ IN_PROC_BROWSER_TEST_F(NavigateAndroidBrowserTest,
 
   const GURL url = embedded_test_server()->GetURL("/title1.html");
   NavigateParams params(browser_window_, url, ui::PAGE_TRANSITION_LINK);
-  params.disposition = WindowOpenDisposition::NEW_BACKGROUND_TAB;
+  params.disposition = ui::mojom::WindowOpenDisposition::kNewBackgroundTab;
 
   base::WeakPtr<content::NavigationHandle> handle = Navigate(&params);
   ASSERT_TRUE(handle);
@@ -416,7 +489,8 @@ IN_PROC_BROWSER_TEST_F(NavigateAndroidBrowserTest,
   navigation_observer.Wait();
 
   // Verify disposition was coerced.
-  EXPECT_EQ(WindowOpenDisposition::NEW_FOREGROUND_TAB, params.disposition);
+  EXPECT_EQ(ui::mojom::WindowOpenDisposition::kNewForegroundTab,
+            params.disposition);
 
   // Verify a new tab was created and became active.
   EXPECT_EQ(1, tab_list_->GetTabCount());
@@ -431,7 +505,7 @@ IN_PROC_BROWSER_TEST_F(NavigateAndroidBrowserTest,
 
   const GURL url = embedded_test_server()->GetURL("/title1.html");
   NavigateParams params(browser_window_, url, ui::PAGE_TRANSITION_LINK);
-  params.disposition = WindowOpenDisposition::CURRENT_TAB;
+  params.disposition = ui::mojom::WindowOpenDisposition::kCurrentTab;
   params.source_contents = nullptr;
 
   base::WeakPtr<content::NavigationHandle> handle = Navigate(&params);
@@ -443,7 +517,8 @@ IN_PROC_BROWSER_TEST_F(NavigateAndroidBrowserTest,
   navigation_observer.Wait();
 
   // Verify disposition was coerced.
-  EXPECT_EQ(WindowOpenDisposition::NEW_FOREGROUND_TAB, params.disposition);
+  EXPECT_EQ(ui::mojom::WindowOpenDisposition::kNewForegroundTab,
+            params.disposition);
 
   // Verify a new tab was created and became active.
   EXPECT_EQ(1, tab_list_->GetTabCount());
@@ -466,7 +541,7 @@ IN_PROC_BROWSER_TEST_F(
 
   const GURL url = embedded_test_server()->GetURL("/title1.html");
   NavigateParams params(popup_window, url, ui::PAGE_TRANSITION_LINK);
-  params.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
+  params.disposition = ui::mojom::WindowOpenDisposition::kNewForegroundTab;
 
   base::WeakPtr<content::NavigationHandle> handle = Navigate(&params);
   ASSERT_TRUE(handle);
@@ -495,7 +570,7 @@ IN_PROC_BROWSER_TEST_F(
 
   const GURL url = embedded_test_server()->GetURL("/title1.html");
   NavigateParams params(popup_window, url, ui::PAGE_TRANSITION_LINK);
-  params.disposition = WindowOpenDisposition::NEW_BACKGROUND_TAB;
+  params.disposition = ui::mojom::WindowOpenDisposition::kNewBackgroundTab;
 
   base::WeakPtr<content::NavigationHandle> handle = Navigate(&params);
   ASSERT_TRUE(handle);
@@ -504,7 +579,8 @@ IN_PROC_BROWSER_TEST_F(
 
   // Verify navigation stayed in the popup window and disposition upgraded.
   EXPECT_EQ(params.browser, popup_window);
-  EXPECT_EQ(params.disposition, WindowOpenDisposition::NEW_FOREGROUND_TAB);
+  EXPECT_EQ(params.disposition,
+            ui::mojom::WindowOpenDisposition::kNewForegroundTab);
   EXPECT_EQ(1, popup_tab_list->GetTabCount());
   EXPECT_EQ(url,
             popup_tab_list->GetTab(0)->GetContents()->GetLastCommittedURL());
@@ -521,7 +597,7 @@ IN_PROC_BROWSER_TEST_F(NavigateAndroidBrowserTest, Navigate_ProfileShutdown) {
   // Prepare and execute a navigation.
   const GURL url2 = embedded_test_server()->GetURL("/title2.html");
   NavigateParams params(browser_window_, url2, ui::PAGE_TRANSITION_LINK);
-  params.disposition = WindowOpenDisposition::CURRENT_TAB;
+  params.disposition = ui::mojom::WindowOpenDisposition::kCurrentTab;
   params.source_contents = web_contents_;
 
   base::WeakPtr<content::NavigationHandle> handle = Navigate(&params);
@@ -539,7 +615,7 @@ IN_PROC_BROWSER_TEST_F(NavigateAndroidBrowserTest,
   // Prepare and execute a CURRENT_TAB navigation.
   const GURL url2 = embedded_test_server()->GetURL("/title2.html");
   NavigateParams params(browser_window_, url2, ui::PAGE_TRANSITION_LINK);
-  params.disposition = WindowOpenDisposition::CURRENT_TAB;
+  params.disposition = ui::mojom::WindowOpenDisposition::kCurrentTab;
   params.source_contents = web_contents_;
 
   content::TestNavigationObserver navigation_observer(web_contents_);
@@ -572,7 +648,7 @@ IN_PROC_BROWSER_TEST_F(NavigateAndroidBrowserTest,
   // 1. First Background Tab
   const GURL url2 = embedded_test_server()->GetURL("/title2.html");
   NavigateParams params1(browser_window_, url2, ui::PAGE_TRANSITION_LINK);
-  params1.disposition = WindowOpenDisposition::NEW_BACKGROUND_TAB;
+  params1.disposition = ui::mojom::WindowOpenDisposition::kNewBackgroundTab;
   params1.source_contents = source_tab->GetContents();
 
   base::test::TestFuture<base::WeakPtr<content::NavigationHandle>> future1;
@@ -589,7 +665,7 @@ IN_PROC_BROWSER_TEST_F(NavigateAndroidBrowserTest,
   // 2. Second Background Tab (Same Source)
   const GURL url3 = embedded_test_server()->GetURL("/title3.html");
   NavigateParams params2(browser_window_, url3, ui::PAGE_TRANSITION_LINK);
-  params2.disposition = WindowOpenDisposition::NEW_BACKGROUND_TAB;
+  params2.disposition = ui::mojom::WindowOpenDisposition::kNewBackgroundTab;
   params2.source_contents = source_tab->GetContents();
 
   base::test::TestFuture<base::WeakPtr<content::NavigationHandle>> future2;
@@ -629,7 +705,7 @@ IN_PROC_BROWSER_TEST_F(NavigateAndroidBrowserTest,
   // Prepare and execute a NEW_FOREGROUND_TAB navigation from the active tab.
   const GURL url2 = embedded_test_server()->GetURL("/title2.html");
   NavigateParams params(browser_window_, url2, ui::PAGE_TRANSITION_LINK);
-  params.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
+  params.disposition = ui::mojom::WindowOpenDisposition::kNewForegroundTab;
   params.source_contents = source_tab->GetContents();
 
   base::test::TestFuture<base::WeakPtr<content::NavigationHandle>> future;
@@ -663,7 +739,7 @@ IN_PROC_BROWSER_TEST_F(NavigateAndroidBrowserTest,
 
   const GURL url = embedded_test_server()->GetURL("/title1.html");
   NavigateParams params(browser_window_, url, ui::PAGE_TRANSITION_LINK);
-  params.disposition = WindowOpenDisposition::NEW_BACKGROUND_TAB;
+  params.disposition = ui::mojom::WindowOpenDisposition::kNewBackgroundTab;
 
   base::test::TestFuture<base::WeakPtr<content::NavigationHandle>> future;
   Navigate(&params, future.GetCallback());
@@ -676,7 +752,8 @@ IN_PROC_BROWSER_TEST_F(NavigateAndroidBrowserTest,
   navigation_observer.Wait();
 
   // Verify disposition was coerced.
-  EXPECT_EQ(WindowOpenDisposition::NEW_FOREGROUND_TAB, params.disposition);
+  EXPECT_EQ(ui::mojom::WindowOpenDisposition::kNewForegroundTab,
+            params.disposition);
 
   // Verify a new tab was created and became active.
   EXPECT_EQ(1, tab_list_->GetTabCount());
@@ -691,7 +768,7 @@ IN_PROC_BROWSER_TEST_F(NavigateAndroidBrowserTest,
 
   const GURL url = embedded_test_server()->GetURL("/title1.html");
   NavigateParams params(browser_window_, url, ui::PAGE_TRANSITION_LINK);
-  params.disposition = WindowOpenDisposition::CURRENT_TAB;
+  params.disposition = ui::mojom::WindowOpenDisposition::kCurrentTab;
   params.source_contents = nullptr;
 
   base::test::TestFuture<base::WeakPtr<content::NavigationHandle>> future;
@@ -705,12 +782,34 @@ IN_PROC_BROWSER_TEST_F(NavigateAndroidBrowserTest,
   navigation_observer.Wait();
 
   // Verify disposition was coerced.
-  EXPECT_EQ(WindowOpenDisposition::NEW_FOREGROUND_TAB, params.disposition);
+  EXPECT_EQ(ui::mojom::WindowOpenDisposition::kNewForegroundTab,
+            params.disposition);
 
   // Verify a new tab was created and became active.
   EXPECT_EQ(1, tab_list_->GetTabCount());
   EXPECT_EQ(url,
             tab_list_->GetActiveTab()->GetContents()->GetLastCommittedURL());
+}
+
+IN_PROC_BROWSER_TEST_F(NavigateAndroidBrowserTest,
+                       Async_Disposition_CurrentTab_TabsClosedBeforeCallback) {
+  StartAtURL("/title1.html");
+
+  const GURL url2 = embedded_test_server()->GetURL("/title2.html");
+  NavigateParams params(browser_window_, url2, ui::PAGE_TRANSITION_LINK);
+  params.disposition = ui::mojom::WindowOpenDisposition::kCurrentTab;
+  params.source_contents = nullptr;
+
+  base::test::TestFuture<base::WeakPtr<content::NavigationHandle>> future;
+  Navigate(&params, future.GetCallback());
+
+  // Close all tabs after Navigate() has queued the async navigation task,
+  // before GetTabAndPerformNavigationAsync() executes.
+  CloseAllTabs();
+  ASSERT_EQ(0, tab_list_->GetTabCount());
+
+  base::WeakPtr<content::NavigationHandle> handle = future.Get();
+  EXPECT_FALSE(handle);
 }
 
 IN_PROC_BROWSER_TEST_F(NavigateAndroidBrowserTest,
@@ -725,7 +824,7 @@ IN_PROC_BROWSER_TEST_F(NavigateAndroidBrowserTest,
   // Prepare and execute a navigation.
   const GURL url2 = embedded_test_server()->GetURL("/title2.html");
   NavigateParams params(browser_window_, url2, ui::PAGE_TRANSITION_LINK);
-  params.disposition = WindowOpenDisposition::CURRENT_TAB;
+  params.disposition = ui::mojom::WindowOpenDisposition::kCurrentTab;
   params.source_contents = web_contents_;
 
   base::test::TestFuture<base::WeakPtr<content::NavigationHandle>> future;
@@ -746,16 +845,17 @@ IN_PROC_BROWSER_TEST_F(NavigateAndroidBrowserTest,
   // Prepare and execute a NEW_WINDOW navigation.
   const GURL url2 = embedded_test_server()->GetURL("/title2.html");
   NavigateParams params(browser_window_, url2, ui::PAGE_TRANSITION_LINK);
-  params.disposition = WindowOpenDisposition::NEW_WINDOW;
+  params.disposition = ui::mojom::WindowOpenDisposition::kNewWindow;
 
   base::test::TestFuture<base::WeakPtr<content::NavigationHandle>> future;
   Navigate(&params, future.GetCallback());
-  base::WeakPtr<content::NavigationHandle> handle = future.Get();
-  ASSERT_TRUE(handle);
-  ASSERT_TRUE(handle->GetWebContents());
 
-  // Observe the navigation in the new tab's WebContents.
-  content::TestNavigationObserver navigation_observer(handle->GetWebContents());
+  // The new tab starts loading before the new window is ready, so the page may
+  // finish loading before the callback runs.
+  content::WebContents* new_contents = params.navigated_or_inserted_contents;
+  ASSERT_TRUE(new_contents);
+  content::TestNavigationObserver navigation_observer(new_contents);
+  ASSERT_TRUE(future.Wait());
   navigation_observer.Wait();
 
   // Verify a new window was created and the navigation occurred in it.
@@ -770,7 +870,11 @@ IN_PROC_BROWSER_TEST_F(NavigateAndroidBrowserTest,
   ASSERT_TRUE(new_tab);
   EXPECT_NE(params.browser, browser_window_);
   EXPECT_EQ(params.browser, new_window);
-  EXPECT_EQ(url2, new_tab->GetContents()->GetLastCommittedURL());
+  EXPECT_EQ(new_contents, new_tab->GetContents());
+  EXPECT_EQ(url2, new_contents->GetLastCommittedURL());
+  // The new window's tab is created for the navigation, so there is no initial
+  // NTP to go back to.
+  EXPECT_FALSE(new_contents->GetController().CanGoBack());
 
   // Verify the original window is unchanged.
   EXPECT_EQ(1, tab_list_->GetTabCount());
@@ -784,16 +888,17 @@ IN_PROC_BROWSER_TEST_F(NavigateAndroidBrowserTest, Async_Disposition_NewPopup) {
   // Prepare and execute a NEW_POPUP navigation.
   const GURL url2 = embedded_test_server()->GetURL("/title2.html");
   NavigateParams params(browser_window_, url2, ui::PAGE_TRANSITION_LINK);
-  params.disposition = WindowOpenDisposition::NEW_POPUP;
+  params.disposition = ui::mojom::WindowOpenDisposition::kNewPopup;
 
   base::test::TestFuture<base::WeakPtr<content::NavigationHandle>> future;
   Navigate(&params, future.GetCallback());
-  base::WeakPtr<content::NavigationHandle> handle = future.Get();
-  ASSERT_TRUE(handle);
-  ASSERT_TRUE(handle->GetWebContents());
 
-  // Observe the navigation in the new tab's WebContents.
-  content::TestNavigationObserver navigation_observer(handle->GetWebContents());
+  // The new tab starts loading before the new window is ready, so the page may
+  // finish loading before the callback runs.
+  content::WebContents* new_contents = params.navigated_or_inserted_contents;
+  ASSERT_TRUE(new_contents);
+  content::TestNavigationObserver navigation_observer(new_contents);
+  ASSERT_TRUE(future.Wait());
   navigation_observer.Wait();
 
   // Verify a new window was created and the navigation occurred in it.
@@ -824,17 +929,18 @@ IN_PROC_BROWSER_TEST_F(NavigateAndroidBrowserTest,
   // Prepare and execute a NEW_POPUP navigation with bounds.
   const GURL url2 = embedded_test_server()->GetURL("/title2.html");
   NavigateParams params(browser_window_, url2, ui::PAGE_TRANSITION_LINK);
-  params.disposition = WindowOpenDisposition::NEW_POPUP;
+  params.disposition = ui::mojom::WindowOpenDisposition::kNewPopup;
   params.window_features.bounds = gfx::Rect(10, 20, 300, 400);
 
   base::test::TestFuture<base::WeakPtr<content::NavigationHandle>> future;
   Navigate(&params, future.GetCallback());
-  base::WeakPtr<content::NavigationHandle> handle = future.Get();
-  ASSERT_TRUE(handle);
-  ASSERT_TRUE(handle->GetWebContents());
 
-  // Observe the navigation in the new tab's WebContents.
-  content::TestNavigationObserver navigation_observer(handle->GetWebContents());
+  // The new tab starts loading before the new window is ready, so the page may
+  // finish loading before the callback runs.
+  content::WebContents* new_contents = params.navigated_or_inserted_contents;
+  ASSERT_TRUE(new_contents);
+  content::TestNavigationObserver navigation_observer(new_contents);
+  ASSERT_TRUE(future.Wait());
   navigation_observer.Wait();
 
   // Verify a new window was created and the navigation occurred in it.
@@ -847,8 +953,22 @@ IN_PROC_BROWSER_TEST_F(NavigateAndroidBrowserTest,
   EXPECT_EQ(params.browser, new_window);
   EXPECT_EQ(new_window->GetType(), BrowserWindowInterface::Type::TYPE_POPUP);
 
-  // Verify bounds.
-  EXPECT_EQ(new_window->GetWindow()->GetBounds(), gfx::Rect(10, 20, 300, 400));
+  // Verify bounds. Requested bounds are only applied when the window can be
+  // resized (e.g. the SDK supports the window bounds API and the window is in
+  // desktop windowing mode). Allow a margin of error for the rounding during
+  // dip->px conversion.
+  ui::WindowResizePrecheckResult resize_precheck_result;
+  if (new_window->GetWindow()->CanResize(resize_precheck_result)) {
+    constexpr int kBoundsToleranceDip = 2;
+    const gfx::Rect expected_bounds(10, 20, 300, 400);
+    const gfx::Rect actual_bounds = new_window->GetWindow()->GetBounds();
+    EXPECT_NEAR(actual_bounds.x(), expected_bounds.x(), kBoundsToleranceDip);
+    EXPECT_NEAR(actual_bounds.y(), expected_bounds.y(), kBoundsToleranceDip);
+    EXPECT_NEAR(actual_bounds.right(), expected_bounds.right(),
+                kBoundsToleranceDip);
+    EXPECT_NEAR(actual_bounds.bottom(), expected_bounds.bottom(),
+                kBoundsToleranceDip);
+  }
 
   TabListInterface* new_tab_list = TabListInterface::From(new_window);
   EXPECT_EQ(1, new_tab_list->GetTabCount());
@@ -866,7 +986,7 @@ IN_PROC_BROWSER_TEST_F(NavigateAndroidBrowserTest,
   // Prepare and execute a NEW_POPUP navigation.
   const GURL url = embedded_test_server()->GetURL("/title1.html");
   NavigateParams params(browser_window_, url, ui::PAGE_TRANSITION_LINK);
-  params.disposition = WindowOpenDisposition::NEW_POPUP;
+  params.disposition = ui::mojom::WindowOpenDisposition::kNewPopup;
 
   // Synchronous Navigate() should return null for NEW_POPUP.
   base::WeakPtr<content::NavigationHandle> handle = Navigate(&params);
@@ -881,7 +1001,7 @@ IN_PROC_BROWSER_TEST_F(
   // Prepare and execute an OFF_THE_RECORD navigation.
   const GURL url = embedded_test_server()->GetURL("/title1.html");
   NavigateParams params(browser_window_, url, ui::PAGE_TRANSITION_LINK);
-  params.disposition = WindowOpenDisposition::OFF_THE_RECORD;
+  params.disposition = ui::mojom::WindowOpenDisposition::kOffTheRecord;
 
   // Synchronous Navigate() from a regular profile should return null.
   base::WeakPtr<content::NavigationHandle> handle = Navigate(&params);
@@ -899,7 +1019,7 @@ IN_PROC_BROWSER_TEST_F(NavigateAndroidBrowserTest,
   // Prepare and execute an OFF_THE_RECORD navigation from the incognito window.
   const GURL url = embedded_test_server()->GetURL("/title1.html");
   NavigateParams params(incognito_window, url, ui::PAGE_TRANSITION_LINK);
-  params.disposition = WindowOpenDisposition::OFF_THE_RECORD;
+  params.disposition = ui::mojom::WindowOpenDisposition::kOffTheRecord;
 
   base::WeakPtr<content::NavigationHandle> handle = Navigate(&params);
   ASSERT_TRUE(handle);
@@ -911,7 +1031,8 @@ IN_PROC_BROWSER_TEST_F(NavigateAndroidBrowserTest,
 
   // Verify a new tab was created in the incognito window and the navigation
   // occurred in it.
-  EXPECT_EQ(WindowOpenDisposition::NEW_FOREGROUND_TAB, params.disposition);
+  EXPECT_EQ(ui::mojom::WindowOpenDisposition::kNewForegroundTab,
+            params.disposition);
   EXPECT_EQ(2, incognito_tab_list->GetTabCount());
   tabs::TabInterface* new_tab = incognito_tab_list->GetTab(1);
   ASSERT_TRUE(new_tab);
@@ -931,16 +1052,17 @@ IN_PROC_BROWSER_TEST_F(NavigateAndroidBrowserTest,
   // Prepare and execute an OFF_THE_RECORD navigation.
   const GURL url2 = embedded_test_server()->GetURL("/title2.html");
   NavigateParams params(browser_window_, url2, ui::PAGE_TRANSITION_LINK);
-  params.disposition = WindowOpenDisposition::OFF_THE_RECORD;
+  params.disposition = ui::mojom::WindowOpenDisposition::kOffTheRecord;
 
   base::test::TestFuture<base::WeakPtr<content::NavigationHandle>> future;
   Navigate(&params, future.GetCallback());
-  base::WeakPtr<content::NavigationHandle> handle = future.Get();
-  ASSERT_TRUE(handle);
-  ASSERT_TRUE(handle->GetWebContents());
 
-  // Observe the navigation in the new tab's WebContents.
-  content::TestNavigationObserver navigation_observer(handle->GetWebContents());
+  // The new tab starts loading before the new window is ready, so the page may
+  // finish loading before the callback runs.
+  content::WebContents* new_contents = params.navigated_or_inserted_contents;
+  ASSERT_TRUE(new_contents);
+  content::TestNavigationObserver navigation_observer(new_contents);
+  ASSERT_TRUE(future.Wait());
   navigation_observer.Wait();
 
   // Verify a new incognito window was created and the navigation occurred in
@@ -975,7 +1097,7 @@ IN_PROC_BROWSER_TEST_F(NavigateAndroidBrowserTest,
   // Prepare and execute an OFF_THE_RECORD navigation from the incognito window.
   const GURL url = embedded_test_server()->GetURL("/title1.html");
   NavigateParams params(incognito_window, url, ui::PAGE_TRANSITION_LINK);
-  params.disposition = WindowOpenDisposition::OFF_THE_RECORD;
+  params.disposition = ui::mojom::WindowOpenDisposition::kOffTheRecord;
 
   base::test::TestFuture<base::WeakPtr<content::NavigationHandle>>
       navigate_future;
@@ -990,7 +1112,8 @@ IN_PROC_BROWSER_TEST_F(NavigateAndroidBrowserTest,
 
   // Verify a new tab was created in the incognito window and the navigation
   // occurred in it.
-  EXPECT_EQ(WindowOpenDisposition::NEW_FOREGROUND_TAB, params.disposition);
+  EXPECT_EQ(ui::mojom::WindowOpenDisposition::kNewForegroundTab,
+            params.disposition);
   EXPECT_EQ(2, incognito_tab_list->GetTabCount());
   tabs::TabInterface* new_tab = incognito_tab_list->GetTab(1);
   ASSERT_TRUE(new_tab);
@@ -1009,7 +1132,7 @@ IN_PROC_BROWSER_TEST_F(NavigateAndroidBrowserTest, EnsureSingleNavigation) {
   tab_list_->AddTabListInterfaceObserver(&tab_observer);
 
   NavigateParams params(browser_window_, url2, ui::PAGE_TRANSITION_LINK);
-  params.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
+  params.disposition = ui::mojom::WindowOpenDisposition::kNewForegroundTab;
 
   base::WeakPtr<content::NavigationHandle> handle = Navigate(&params);
   ASSERT_TRUE(handle);
@@ -1029,7 +1152,7 @@ IN_PROC_BROWSER_TEST_F(NavigateAndroidBrowserTest,
   StartAtURL("/title1.html");
   const GURL url2 = embedded_test_server()->GetURL("/title2.html");
   NavigateParams open_params(browser_window_, url2, ui::PAGE_TRANSITION_LINK);
-  open_params.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
+  open_params.disposition = ui::mojom::WindowOpenDisposition::kNewForegroundTab;
   base::WeakPtr<content::NavigationHandle> handle = Navigate(&open_params);
   ASSERT_TRUE(handle);
   content::TestNavigationObserver observer(url2);
@@ -1042,7 +1165,7 @@ IN_PROC_BROWSER_TEST_F(NavigateAndroidBrowserTest,
   ASSERT_EQ(0, tab_list_->GetActiveIndex());
 
   NavigateParams switch_params(browser_window_, url2, ui::PAGE_TRANSITION_LINK);
-  switch_params.disposition = WindowOpenDisposition::SWITCH_TO_TAB;
+  switch_params.disposition = ui::mojom::WindowOpenDisposition::kSwitchToTab;
   base::test::TestFuture<base::WeakPtr<content::NavigationHandle>> future;
   Navigate(&switch_params, future.GetCallback());
   EXPECT_FALSE(future.Get());
@@ -1068,7 +1191,8 @@ IN_PROC_BROWSER_TEST_F(NavigateAndroidBrowserTest,
   // Open a second tab in window2 and make it active.
   const GURL url3 = embedded_test_server()->GetURL("/title3.html");
   NavigateParams open_params3(window2, url3, ui::PAGE_TRANSITION_LINK);
-  open_params3.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
+  open_params3.disposition =
+      ui::mojom::WindowOpenDisposition::kNewForegroundTab;
   base::WeakPtr<content::NavigationHandle> handle3 = Navigate(&open_params3);
   ASSERT_TRUE(handle3);
   content::TestNavigationObserver observer3(url3);
@@ -1080,7 +1204,7 @@ IN_PROC_BROWSER_TEST_F(NavigateAndroidBrowserTest,
   ASSERT_EQ(2u, GetAllBrowserWindowInterfaces().size());
 
   NavigateParams switch_params(browser_window_, url2, ui::PAGE_TRANSITION_LINK);
-  switch_params.disposition = WindowOpenDisposition::SWITCH_TO_TAB;
+  switch_params.disposition = ui::mojom::WindowOpenDisposition::kSwitchToTab;
   base::test::TestFuture<base::WeakPtr<content::NavigationHandle>> future;
   Navigate(&switch_params, future.GetCallback());
   EXPECT_FALSE(future.Get());
@@ -1093,12 +1217,20 @@ IN_PROC_BROWSER_TEST_F(NavigateAndroidBrowserTest,
             tab_list2->GetActiveTab()->GetContents()->GetLastCommittedURL());
 }
 
+// TODO(crbug.com/559246531): Consistently failing on Android Desktop.
+#if BUILDFLAG(IS_DESKTOP_ANDROID)
+#define MAYBE_Disposition_SwitchToTab_SameWindow_ClosesNtp \
+  DISABLED_Disposition_SwitchToTab_SameWindow_ClosesNtp
+#else
+#define MAYBE_Disposition_SwitchToTab_SameWindow_ClosesNtp \
+  Disposition_SwitchToTab_SameWindow_ClosesNtp
+#endif
 IN_PROC_BROWSER_TEST_F(NavigateAndroidBrowserTest,
-                       Disposition_SwitchToTab_SameWindow_ClosesNtp) {
+                       MAYBE_Disposition_SwitchToTab_SameWindow_ClosesNtp) {
   SetTabToNewTabPageWithNoHistory();
   const GURL url2 = embedded_test_server()->GetURL("/title2.html");
   NavigateParams open_params(browser_window_, url2, ui::PAGE_TRANSITION_LINK);
-  open_params.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
+  open_params.disposition = ui::mojom::WindowOpenDisposition::kNewForegroundTab;
   base::WeakPtr<content::NavigationHandle> handle = Navigate(&open_params);
   ASSERT_TRUE(handle);
   content::TestNavigationObserver observer(url2);
@@ -1111,7 +1243,7 @@ IN_PROC_BROWSER_TEST_F(NavigateAndroidBrowserTest,
   ASSERT_EQ(0, tab_list_->GetActiveIndex());
 
   NavigateParams switch_params(browser_window_, url2, ui::PAGE_TRANSITION_LINK);
-  switch_params.disposition = WindowOpenDisposition::SWITCH_TO_TAB;
+  switch_params.disposition = ui::mojom::WindowOpenDisposition::kSwitchToTab;
   base::test::TestFuture<base::WeakPtr<content::NavigationHandle>> future;
   Navigate(&switch_params, future.GetCallback());
   EXPECT_FALSE(future.Get());
@@ -1139,7 +1271,7 @@ IN_PROC_BROWSER_TEST_F(
   // 3. Open another tab with a target URL.
   const GURL url2 = embedded_test_server()->GetURL("/title2.html");
   NavigateParams open_params(browser_window_, url2, ui::PAGE_TRANSITION_LINK);
-  open_params.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
+  open_params.disposition = ui::mojom::WindowOpenDisposition::kNewForegroundTab;
   base::WeakPtr<content::NavigationHandle> handle = Navigate(&open_params);
   ASSERT_TRUE(handle);
   content::TestNavigationObserver observer(url2);
@@ -1153,7 +1285,7 @@ IN_PROC_BROWSER_TEST_F(
 
   // 4. Switch to the second tab.
   NavigateParams switch_params(browser_window_, url2, ui::PAGE_TRANSITION_LINK);
-  switch_params.disposition = WindowOpenDisposition::SWITCH_TO_TAB;
+  switch_params.disposition = ui::mojom::WindowOpenDisposition::kSwitchToTab;
   base::test::TestFuture<base::WeakPtr<content::NavigationHandle>> future;
   Navigate(&switch_params, future.GetCallback());
   EXPECT_FALSE(future.Get());
@@ -1165,8 +1297,17 @@ IN_PROC_BROWSER_TEST_F(
             tab_list_->GetActiveTab()->GetContents()->GetLastCommittedURL());
 }
 
-IN_PROC_BROWSER_TEST_F(NavigateAndroidBrowserTest,
-                       Disposition_SwitchToTab_DifferentWindow_ClosesNtp) {
+// TODO(crbug.com/559228399): Consistently failing on android-desktop-x64-rel.
+#if BUILDFLAG(IS_DESKTOP_ANDROID)
+#define MAYBE_Disposition_SwitchToTab_DifferentWindow_ClosesNtp \
+  DISABLED_Disposition_SwitchToTab_DifferentWindow_ClosesNtp
+#else
+#define MAYBE_Disposition_SwitchToTab_DifferentWindow_ClosesNtp \
+  Disposition_SwitchToTab_DifferentWindow_ClosesNtp
+#endif
+IN_PROC_BROWSER_TEST_F(
+    NavigateAndroidBrowserTest,
+    MAYBE_Disposition_SwitchToTab_DifferentWindow_ClosesNtp) {
   // Set up initial window with an NTP.
   SetTabToNewTabPageWithNoHistory();
   ASSERT_EQ(1, tab_list_->GetTabCount());
@@ -1191,7 +1332,7 @@ IN_PROC_BROWSER_TEST_F(NavigateAndroidBrowserTest,
   // Attempt to switch to the tab in the second window from the NTP in the
   // first.
   NavigateParams switch_params(browser_window_, url2, ui::PAGE_TRANSITION_LINK);
-  switch_params.disposition = WindowOpenDisposition::SWITCH_TO_TAB;
+  switch_params.disposition = ui::mojom::WindowOpenDisposition::kSwitchToTab;
   base::test::TestFuture<base::WeakPtr<content::NavigationHandle>> future;
   Navigate(&switch_params, future.GetCallback());
   EXPECT_FALSE(future.Get());
@@ -1215,7 +1356,7 @@ IN_PROC_BROWSER_TEST_F(NavigateAndroidBrowserTest,
   // 2. Open an NTP in a new background tab.
   NavigateParams bg_params(browser_window_, chrome::ChromeUINewTabURLAsGURL(),
                            ui::PAGE_TRANSITION_TYPED);
-  bg_params.disposition = WindowOpenDisposition::NEW_BACKGROUND_TAB;
+  bg_params.disposition = ui::mojom::WindowOpenDisposition::kNewBackgroundTab;
   base::WeakPtr<content::NavigationHandle> handle = Navigate(&bg_params);
   ASSERT_TRUE(handle);
   content::TestNavigationObserver bg_observer(handle->GetWebContents());
@@ -1229,7 +1370,7 @@ IN_PROC_BROWSER_TEST_F(NavigateAndroidBrowserTest,
   // 3. Switch to the target URL, initiated by the background tab.
   NavigateParams switch_params(browser_window_, target_url,
                                ui::PAGE_TRANSITION_LINK);
-  switch_params.disposition = WindowOpenDisposition::SWITCH_TO_TAB;
+  switch_params.disposition = ui::mojom::WindowOpenDisposition::kSwitchToTab;
   switch_params.source_contents = background_ntp_contents;
   base::test::TestFuture<base::WeakPtr<content::NavigationHandle>> future;
   Navigate(&switch_params, future.GetCallback());
@@ -1243,13 +1384,12 @@ IN_PROC_BROWSER_TEST_F(NavigateAndroidBrowserTest,
             tab_list_->GetActiveTab()->GetContents()->GetLastCommittedURL());
 }
 
-
 IN_PROC_BROWSER_TEST_F(NavigateAndroidBrowserTest,
                        Disposition_SwitchToTab_NoMatch_NewForegroundTab_Async) {
   const GURL url1 = StartAtURL("/title1.html");
   const GURL url2 = embedded_test_server()->GetURL("/title2.html");
   NavigateParams params(browser_window_, url2, ui::PAGE_TRANSITION_LINK);
-  params.disposition = WindowOpenDisposition::SWITCH_TO_TAB;
+  params.disposition = ui::mojom::WindowOpenDisposition::kSwitchToTab;
   params.source_contents = web_contents_;
 
   base::test::TestFuture<base::WeakPtr<content::NavigationHandle>> future;
@@ -1262,7 +1402,8 @@ IN_PROC_BROWSER_TEST_F(NavigateAndroidBrowserTest,
   EXPECT_EQ(2, tab_list_->GetTabCount());
   EXPECT_EQ(url1, tab_list_->GetTab(0)->GetContents()->GetLastCommittedURL());
   EXPECT_EQ(url2, tab_list_->GetTab(1)->GetContents()->GetLastCommittedURL());
-  EXPECT_EQ(WindowOpenDisposition::NEW_FOREGROUND_TAB, params.disposition);
+  EXPECT_EQ(ui::mojom::WindowOpenDisposition::kNewForegroundTab,
+            params.disposition);
 }
 
 IN_PROC_BROWSER_TEST_F(NavigateAndroidBrowserTest,
@@ -1276,7 +1417,7 @@ IN_PROC_BROWSER_TEST_F(NavigateAndroidBrowserTest,
 
   // Open url2 in a new foreground tab (Tab 1).
   NavigateParams params(browser_window_, url2, ui::PAGE_TRANSITION_LINK);
-  params.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
+  params.disposition = ui::mojom::WindowOpenDisposition::kNewForegroundTab;
   base::WeakPtr<content::NavigationHandle> handle = Navigate(&params);
   ASSERT_TRUE(handle);
   content::TestNavigationObserver observer(handle->GetWebContents());
@@ -1288,7 +1429,7 @@ IN_PROC_BROWSER_TEST_F(NavigateAndroidBrowserTest,
   // Switch to a new path on the first host (127.0.0.1).
   const GURL url3 = embedded_test_server()->GetURL("127.0.0.1", "/title3.html");
   NavigateParams switch_params(browser_window_, url3, ui::PAGE_TRANSITION_LINK);
-  switch_params.disposition = WindowOpenDisposition::SWITCH_TO_TAB;
+  switch_params.disposition = ui::mojom::WindowOpenDisposition::kSwitchToTab;
   switch_params.path_behavior = NavigateParams::IGNORE_AND_NAVIGATE;
 
   content::TestNavigationObserver switch_observer(
@@ -1306,15 +1447,17 @@ IN_PROC_BROWSER_TEST_F(NavigateAndroidBrowserTest,
             tab_list_->GetActiveTab()->GetContents()->GetLastCommittedURL());
 }
 
-IN_PROC_BROWSER_TEST_F(NavigateAndroidBrowserTest,
-                       Disposition_SwitchToTab_NavigatesCurrentTabNtp) {
+// TODO(crbug.com/565635841): Times out waiting for navigation.
+IN_PROC_BROWSER_TEST_F(
+    NavigateAndroidBrowserTest,
+    DISABLED_Disposition_SwitchToTab_NavigatesCurrentTabNtp) {
   SetTabToNewTabPageWithNoHistory();
   ASSERT_EQ(1, tab_list_->GetTabCount());
   ASSERT_EQ(0, tab_list_->GetActiveIndex());
 
   const GURL url2 = embedded_test_server()->GetURL("/title2.html");
   NavigateParams params(browser_window_, url2, ui::PAGE_TRANSITION_LINK);
-  params.disposition = WindowOpenDisposition::SWITCH_TO_TAB;
+  params.disposition = ui::mojom::WindowOpenDisposition::kSwitchToTab;
   params.source_contents = web_contents_;
 
   content::TestNavigationObserver navigation_observer(web_contents_);
@@ -1336,14 +1479,14 @@ IN_PROC_BROWSER_TEST_F(NavigateAndroidBrowserTest,
   // Window 1: chrome://flags (inactive), about:blank (active)
   const GURL flags_url("chrome://flags");
   NavigateParams params1(browser_window_, flags_url, ui::PAGE_TRANSITION_TYPED);
-  params1.disposition = WindowOpenDisposition::CURRENT_TAB;
+  params1.disposition = ui::mojom::WindowOpenDisposition::kCurrentTab;
   Navigate(&params1);
   content::TestNavigationObserver observer1(web_contents_);
   observer1.Wait();
 
   NavigateParams params2(browser_window_, GURL("about:blank"),
                          ui::PAGE_TRANSITION_TYPED);
-  params2.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
+  params2.disposition = ui::mojom::WindowOpenDisposition::kNewForegroundTab;
   Navigate(&params2);
   EXPECT_EQ(2, tab_list_->GetTabCount());
   EXPECT_EQ(1, tab_list_->GetActiveIndex());
@@ -1353,7 +1496,7 @@ IN_PROC_BROWSER_TEST_F(NavigateAndroidBrowserTest,
   TabListInterface* tab_list2 = TabListInterface::From(window2);
   const GURL title2_url = embedded_test_server()->GetURL("/title2.html");
   NavigateParams params3(window2, title2_url, ui::PAGE_TRANSITION_TYPED);
-  params3.disposition = WindowOpenDisposition::CURRENT_TAB;
+  params3.disposition = ui::mojom::WindowOpenDisposition::kCurrentTab;
   Navigate(&params3);
   content::TestNavigationObserver observer3(
       tab_list2->GetActiveTab()->GetContents());
@@ -1361,7 +1504,7 @@ IN_PROC_BROWSER_TEST_F(NavigateAndroidBrowserTest,
 
   NavigateParams params4(window2, GURL("about:blank"),
                          ui::PAGE_TRANSITION_TYPED);
-  params4.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
+  params4.disposition = ui::mojom::WindowOpenDisposition::kNewForegroundTab;
   Navigate(&params4);
   EXPECT_EQ(2, tab_list2->GetTabCount());
   EXPECT_EQ(1, tab_list2->GetActiveIndex());
@@ -1371,7 +1514,7 @@ IN_PROC_BROWSER_TEST_F(NavigateAndroidBrowserTest,
   TabListInterface* tab_list3 = TabListInterface::From(window3);
   NavigateParams params5(window3, GURL("about:blank"),
                          ui::PAGE_TRANSITION_TYPED);
-  params5.disposition = WindowOpenDisposition::CURRENT_TAB;
+  params5.disposition = ui::mojom::WindowOpenDisposition::kCurrentTab;
   Navigate(&params5);
   EXPECT_EQ(1, tab_list3->GetTabCount());
   EXPECT_EQ(0, tab_list3->GetActiveIndex());
@@ -1379,7 +1522,7 @@ IN_PROC_BROWSER_TEST_F(NavigateAndroidBrowserTest,
   // 2. Call SWITCH_TO_TAB requesting to go to title2.html
   NavigateParams switch_params1(window3, title2_url,
                                 ui::PAGE_TRANSITION_AUTO_BOOKMARK);
-  switch_params1.disposition = WindowOpenDisposition::SWITCH_TO_TAB;
+  switch_params1.disposition = ui::mojom::WindowOpenDisposition::kSwitchToTab;
   base::test::TestFuture<base::WeakPtr<content::NavigationHandle>> future1;
   Navigate(&switch_params1, future1.GetCallback());
   EXPECT_FALSE(future1.Get());
@@ -1393,7 +1536,7 @@ IN_PROC_BROWSER_TEST_F(NavigateAndroidBrowserTest,
   // 4. Call SWITCH_TO_TAB requesting to go to the chrome://flags page
   NavigateParams switch_params2(window2, flags_url,
                                 ui::PAGE_TRANSITION_AUTO_BOOKMARK);
-  switch_params2.disposition = WindowOpenDisposition::SWITCH_TO_TAB;
+  switch_params2.disposition = ui::mojom::WindowOpenDisposition::kSwitchToTab;
   base::test::TestFuture<base::WeakPtr<content::NavigationHandle>> future2;
   Navigate(&switch_params2, future2.GetCallback());
   EXPECT_FALSE(future2.Get());
@@ -1417,7 +1560,7 @@ IN_PROC_BROWSER_TEST_F(NavigateAndroidBrowserTest,
   // Desired state: [Tab0, NewTab, Tab1, Tab2]
   const GURL url_new = embedded_test_server()->GetURL("/title2.html");
   NavigateParams params(browser_window_, url_new, ui::PAGE_TRANSITION_TYPED);
-  params.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
+  params.disposition = ui::mojom::WindowOpenDisposition::kNewForegroundTab;
   params.tabstrip_index = 1;
 
   base::WeakPtr<content::NavigationHandle> handle = Navigate(&params);
@@ -1450,7 +1593,7 @@ IN_PROC_BROWSER_TEST_F(NavigateAndroidBrowserTest,
   // Expected state: [Tab0, Tab1, Tab2, NewTab]
   const GURL url_new = embedded_test_server()->GetURL("/title2.html");
   NavigateParams params(browser_window_, url_new, ui::PAGE_TRANSITION_TYPED);
-  params.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
+  params.disposition = ui::mojom::WindowOpenDisposition::kNewForegroundTab;
   params.tabstrip_index = 10;
 
   base::WeakPtr<content::NavigationHandle> handle = Navigate(&params);
@@ -1484,7 +1627,7 @@ IN_PROC_BROWSER_TEST_F(NavigateAndroidBrowserTest,
   // Expected state:[Tab0 (active), Tab1, NewTab, Tab2]
   const GURL url_new = embedded_test_server()->GetURL("/title2.html");
   NavigateParams params(browser_window_, url_new, ui::PAGE_TRANSITION_LINK);
-  params.disposition = WindowOpenDisposition::NEW_BACKGROUND_TAB;
+  params.disposition = ui::mojom::WindowOpenDisposition::kNewBackgroundTab;
   params.source_contents = source_tab->GetContents();
   params.tabstrip_index = 2;
 
@@ -1520,7 +1663,7 @@ IN_PROC_BROWSER_TEST_F(NavigateAndroidBrowserTest,
 
   // Prepare to open a new foreground tab with the existing WebContents.
   NavigateParams params(browser_window_, std::move(web_contents));
-  params.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
+  params.disposition = ui::mojom::WindowOpenDisposition::kNewForegroundTab;
 
   // Navigate and wait for navigation to complete.
   base::WeakPtr<content::NavigationHandle> handle = Navigate(&params);
@@ -1544,7 +1687,7 @@ IN_PROC_BROWSER_TEST_F(NavigateAndroidBrowserTest,
 
   // Prepare to open a new background tab with the existing WebContents.
   NavigateParams params(browser_window_, std::move(web_contents));
-  params.disposition = WindowOpenDisposition::NEW_BACKGROUND_TAB;
+  params.disposition = ui::mojom::WindowOpenDisposition::kNewBackgroundTab;
 
   // Navigate and wait for navigation to complete.
   base::WeakPtr<content::NavigationHandle> handle = Navigate(&params);
@@ -1576,7 +1719,7 @@ IN_PROC_BROWSER_TEST_F(NavigateAndroidBrowserTest,
   // 2. Prepare to open a new foreground tab with the existing WebContents.
   // Note: This NavigateParams constructor leaves params.url empty.
   NavigateParams params(browser_window_, std::move(web_contents));
-  params.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
+  params.disposition = ui::mojom::WindowOpenDisposition::kNewForegroundTab;
 
   content::TestNavigationObserver observer(raw_web_contents);
 
@@ -1618,7 +1761,7 @@ IN_PROC_BROWSER_TEST_F(NavigateAndroidBrowserTest,
   // NEW_FOREGROUND_TAB since Android Tabs cannot swap out their underlying
   // WebContents safely in this manner.
   NavigateParams params(browser_window_, std::move(web_contents));
-  params.disposition = WindowOpenDisposition::CURRENT_TAB;
+  params.disposition = ui::mojom::WindowOpenDisposition::kCurrentTab;
 
   // Navigate and wait for completion.
   base::WeakPtr<content::NavigationHandle> handle = Navigate(&params);
@@ -1646,7 +1789,7 @@ IN_PROC_BROWSER_TEST_F(NavigateAndroidBrowserTest,
 
   // Prepare to open a NEW_WINDOW with an inserted WebContents.
   NavigateParams params(browser_window_, std::move(web_contents));
-  params.disposition = WindowOpenDisposition::NEW_WINDOW;
+  params.disposition = ui::mojom::WindowOpenDisposition::kNewWindow;
 
   base::test::TestFuture<base::WeakPtr<content::NavigationHandle>> future;
   Navigate(&params, future.GetCallback());
@@ -1685,7 +1828,7 @@ IN_PROC_BROWSER_TEST_F(NavigateAndroidBrowserTest,
 
   // Prepare to open a NEW_POPUP with an inserted WebContents.
   NavigateParams params(browser_window_, std::move(web_contents));
-  params.disposition = WindowOpenDisposition::NEW_POPUP;
+  params.disposition = ui::mojom::WindowOpenDisposition::kNewPopup;
 
   base::test::TestFuture<base::WeakPtr<content::NavigationHandle>> future;
   Navigate(&params, future.GetCallback());
@@ -1728,7 +1871,7 @@ IN_PROC_BROWSER_TEST_F(NavigateAndroidBrowserTest,
 
   // Prepare to open an OFF_THE_RECORD window with an inserted WebContents.
   NavigateParams params(browser_window_, std::move(web_contents));
-  params.disposition = WindowOpenDisposition::OFF_THE_RECORD;
+  params.disposition = ui::mojom::WindowOpenDisposition::kOffTheRecord;
 
   base::test::TestFuture<base::WeakPtr<content::NavigationHandle>> future;
   Navigate(&params, future.GetCallback());
@@ -1770,7 +1913,7 @@ IN_PROC_BROWSER_TEST_F(NavigateAndroidBrowserTest,
     weak_web_contents = web_contents->GetWeakPtr();
 
     NavigateParams params(browser_window_, std::move(web_contents));
-    params.disposition = WindowOpenDisposition::IGNORE_ACTION;
+    params.disposition = ui::mojom::WindowOpenDisposition::kIgnoreAction;
 
     base::WeakPtr<content::NavigationHandle> handle = Navigate(&params);
 
@@ -1797,7 +1940,7 @@ IN_PROC_BROWSER_TEST_F(NavigateAndroidBrowserTest, AttachNavigationUIData) {
   // Prepare and execute a CURRENT_TAB navigation.
   const GURL url2 = embedded_test_server()->GetURL("/title2.html");
   NavigateParams params(browser_window_, url2, ui::PAGE_TRANSITION_LINK);
-  params.disposition = WindowOpenDisposition::CURRENT_TAB;
+  params.disposition = ui::mojom::WindowOpenDisposition::kCurrentTab;
   params.source_contents = web_contents_;
 
   NavigationUIDataObserver ui_data_observer(web_contents_);
@@ -1811,13 +1954,45 @@ IN_PROC_BROWSER_TEST_F(NavigateAndroidBrowserTest, AttachNavigationUIData) {
   EXPECT_TRUE(ui_data_observer.last_navigation_ui_data());
 }
 
+// The bookmark bar sets the bookmark ID from the OpenURL() callback, so for a
+// new window the callback must run before the navigation finishes.
+IN_PROC_BROWSER_TEST_F(NavigateAndroidBrowserTest,
+                       OpenURL_NewWindow_CallbackCanSetNavigationData) {
+  const GURL url = embedded_test_server()->GetURL("/title2.html");
+  constexpr int64_t kBookmarkId = 42;
+  content::WebContents* new_contents = nullptr;
+  std::unique_ptr<NavigationUIDataObserver> ui_data_observer;
+  BrowserCreatedWaiter window_waiter;
+  browser_window_->OpenURL(
+      content::OpenURLParams::CreateBrowserInitiated(
+          url, ui::mojom::WindowOpenDisposition::kNewWindow,
+          ui::PAGE_TRANSITION_AUTO_BOOKMARK),
+      base::BindLambdaForTesting([&](content::NavigationHandle& handle) {
+        new_contents = handle.GetWebContents();
+        ui_data_observer =
+            std::make_unique<NavigationUIDataObserver>(new_contents);
+        if (auto* ui_data = static_cast<ChromeNavigationUIData*>(
+                handle.GetNavigationUIData())) {
+          ui_data->set_bookmark_id(kBookmarkId);
+        }
+      }));
+
+  // The callback runs as soon as the navigation starts.
+  ASSERT_TRUE(new_contents);
+  content::TestNavigationObserver navigation_observer(new_contents);
+  navigation_observer.Wait();
+  ASSERT_TRUE(window_waiter.Wait());
+
+  EXPECT_EQ(kBookmarkId, ui_data_observer->last_bookmark_id());
+}
+
 IN_PROC_BROWSER_TEST_F(NavigateAndroidBrowserTest, Disposition_IgnoreAction) {
   const GURL url1 = StartAtURL("/title1.html");
 
   // Prepare and execute a IGNORE_ACTION navigation.
   const GURL url2 = embedded_test_server()->GetURL("/title2.html");
   NavigateParams params(browser_window_, url2, ui::PAGE_TRANSITION_LINK);
-  params.disposition = WindowOpenDisposition::IGNORE_ACTION;
+  params.disposition = ui::mojom::WindowOpenDisposition::kIgnoreAction;
   params.source_contents = nullptr;
 
   base::WeakPtr<content::NavigationHandle> handle = Navigate(&params);
@@ -1837,7 +2012,7 @@ IN_PROC_BROWSER_TEST_F(NavigateAndroidBrowserTest,
   // Prepare and execute a IGNORE_ACTION navigation.
   const GURL url2 = embedded_test_server()->GetURL("/title2.html");
   NavigateParams params(browser_window_, url2, ui::PAGE_TRANSITION_LINK);
-  params.disposition = WindowOpenDisposition::IGNORE_ACTION;
+  params.disposition = ui::mojom::WindowOpenDisposition::kIgnoreAction;
   params.source_contents = nullptr;
 
   base::test::TestFuture<base::WeakPtr<content::NavigationHandle>> future;
@@ -1867,7 +2042,7 @@ IN_PROC_BROWSER_TEST_F(
   // Trigger a NEW_FOREGROUND_TAB navigation from the popup window.
   const GURL url2 = embedded_test_server()->GetURL("/title2.html");
   NavigateParams params(popup_window, url2, ui::PAGE_TRANSITION_LINK);
-  params.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
+  params.disposition = ui::mojom::WindowOpenDisposition::kNewForegroundTab;
 
   base::WeakPtr<content::NavigationHandle> handle = Navigate(&params);
   ASSERT_TRUE(handle);
@@ -1897,7 +2072,7 @@ IN_PROC_BROWSER_TEST_F(
   // Trigger a NEW_BACKGROUND_TAB navigation from the popup window.
   const GURL url2 = embedded_test_server()->GetURL("/title2.html");
   NavigateParams params(popup_window, url2, ui::PAGE_TRANSITION_LINK);
-  params.disposition = WindowOpenDisposition::NEW_BACKGROUND_TAB;
+  params.disposition = ui::mojom::WindowOpenDisposition::kNewBackgroundTab;
 
   base::WeakPtr<content::NavigationHandle> handle = Navigate(&params);
   ASSERT_TRUE(handle);
@@ -1907,7 +2082,8 @@ IN_PROC_BROWSER_TEST_F(
   // Verify navigation fell back to the normal browser window, and the
   // disposition was upgraded to NEW_FOREGROUND_TAB.
   EXPECT_EQ(params.browser, browser_window_);
-  EXPECT_EQ(params.disposition, WindowOpenDisposition::NEW_FOREGROUND_TAB);
+  EXPECT_EQ(params.disposition,
+            ui::mojom::WindowOpenDisposition::kNewForegroundTab);
   EXPECT_EQ(2, tab_list_->GetTabCount());
   tabs::TabInterface* new_tab = tab_list_->GetTab(1);
   EXPECT_EQ(url2, new_tab->GetContents()->GetLastCommittedURL());
@@ -1933,7 +2109,7 @@ IN_PROC_BROWSER_TEST_F(NavigateAndroidBrowserTest,
   // Trigger a CURRENT_TAB navigation from the popup window.
   const GURL url2 = embedded_test_server()->GetURL("/title2.html");
   NavigateParams params(popup_window, url2, ui::PAGE_TRANSITION_LINK);
-  params.disposition = WindowOpenDisposition::CURRENT_TAB;
+  params.disposition = ui::mojom::WindowOpenDisposition::kCurrentTab;
   params.source_contents = popup_contents;
 
   base::WeakPtr<content::NavigationHandle> handle = Navigate(&params);
@@ -1974,7 +2150,7 @@ IN_PROC_BROWSER_TEST_F(
   // return nullptr.
   const GURL url2 = embedded_test_server()->GetURL("/title2.html");
   NavigateParams params(popup_window, url2, ui::PAGE_TRANSITION_LINK);
-  params.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
+  params.disposition = ui::mojom::WindowOpenDisposition::kNewForegroundTab;
 
   base::WeakPtr<content::NavigationHandle> handle = Navigate(&params);
   EXPECT_FALSE(handle);
@@ -2007,20 +2183,21 @@ IN_PROC_BROWSER_TEST_F(
   // to NEW_WINDOW and create one.
   const GURL url2 = embedded_test_server()->GetURL("/title2.html");
   NavigateParams params(popup_window, url2, ui::PAGE_TRANSITION_LINK);
-  params.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
+  params.disposition = ui::mojom::WindowOpenDisposition::kNewForegroundTab;
 
   base::test::TestFuture<base::WeakPtr<content::NavigationHandle>> future;
   Navigate(&params, future.GetCallback());
-  base::WeakPtr<content::NavigationHandle> handle = future.Get();
-  ASSERT_TRUE(handle);
-  content::TestNavigationObserver observer(handle->GetWebContents());
+  content::WebContents* new_contents = params.navigated_or_inserted_contents;
+  ASSERT_TRUE(new_contents);
+  content::TestNavigationObserver observer(new_contents);
+  ASSERT_TRUE(future.Wait());
   observer.Wait();
 
   // Verify a new incognito normal window was created.
   windows = GetAllBrowserWindowInterfaces();
   ASSERT_EQ(3u, windows.size());
 
-  EXPECT_EQ(params.disposition, WindowOpenDisposition::NEW_WINDOW);
+  EXPECT_EQ(params.disposition, ui::mojom::WindowOpenDisposition::kNewWindow);
   EXPECT_NE(params.browser, popup_window);
   EXPECT_NE(params.browser, browser_window_);
   EXPECT_EQ(params.browser->GetType(), BrowserWindowInterface::TYPE_NORMAL);
@@ -2055,7 +2232,7 @@ IN_PROC_BROWSER_TEST_F(
   // Trigger a NEW_FOREGROUND_TAB navigation from the incognito popup window.
   const GURL url2 = embedded_test_server()->GetURL("/title2.html");
   NavigateParams params(popup_window, url2, ui::PAGE_TRANSITION_LINK);
-  params.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
+  params.disposition = ui::mojom::WindowOpenDisposition::kNewForegroundTab;
 
   base::WeakPtr<content::NavigationHandle> handle = Navigate(&params);
   ASSERT_TRUE(handle);
@@ -2075,7 +2252,7 @@ IN_PROC_BROWSER_TEST_F(NavigateAndroidBrowserTest, TabStripAddTypes_AddActive) {
 
   const GURL url2 = embedded_test_server()->GetURL("/title2.html");
   NavigateParams params1(browser_window_, url2, ui::PAGE_TRANSITION_LINK);
-  params1.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
+  params1.disposition = ui::mojom::WindowOpenDisposition::kNewForegroundTab;
 
   base::WeakPtr<content::NavigationHandle> handle1 = Navigate(&params1);
   ASSERT_TRUE(handle1);
@@ -2086,7 +2263,7 @@ IN_PROC_BROWSER_TEST_F(NavigateAndroidBrowserTest, TabStripAddTypes_AddActive) {
 
   const GURL url3 = embedded_test_server()->GetURL("/title3.html");
   NavigateParams params2(browser_window_, url3, ui::PAGE_TRANSITION_LINK);
-  params2.disposition = WindowOpenDisposition::NEW_BACKGROUND_TAB;
+  params2.disposition = ui::mojom::WindowOpenDisposition::kNewBackgroundTab;
   params2.tabstrip_add_types |= AddTabTypes::ADD_ACTIVE;
 
   base::WeakPtr<content::NavigationHandle> handle2 = Navigate(&params2);
@@ -2102,7 +2279,7 @@ IN_PROC_BROWSER_TEST_F(NavigateAndroidBrowserTest, TabStripAddTypes_AddPinned) {
 
   const GURL url2 = embedded_test_server()->GetURL("/title2.html");
   NavigateParams params(browser_window_, url2, ui::PAGE_TRANSITION_LINK);
-  params.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
+  params.disposition = ui::mojom::WindowOpenDisposition::kNewForegroundTab;
   params.tabstrip_add_types |= AddTabTypes::ADD_PINNED;
 
   base::WeakPtr<content::NavigationHandle> handle = Navigate(&params);
@@ -2120,7 +2297,7 @@ IN_PROC_BROWSER_TEST_F(NavigateAndroidBrowserTest,
 
   const GURL url2 = embedded_test_server()->GetURL("/title2.html");
   NavigateParams params1(browser_window_, url2, ui::PAGE_TRANSITION_LINK);
-  params1.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
+  params1.disposition = ui::mojom::WindowOpenDisposition::kNewForegroundTab;
   params1.source_contents = web_contents_;
   params1.tabstrip_add_types &= ~AddTabTypes::ADD_INHERIT_OPENER;
   params1.user_gesture = false;
@@ -2135,7 +2312,7 @@ IN_PROC_BROWSER_TEST_F(NavigateAndroidBrowserTest,
 
   const GURL url3 = embedded_test_server()->GetURL("/title3.html");
   NavigateParams params2(browser_window_, url3, ui::PAGE_TRANSITION_LINK);
-  params2.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
+  params2.disposition = ui::mojom::WindowOpenDisposition::kNewForegroundTab;
   params2.source_contents = web_contents_;
   params2.tabstrip_add_types |= AddTabTypes::ADD_INHERIT_OPENER;
 
@@ -2159,7 +2336,7 @@ IN_PROC_BROWSER_TEST_F(
   // Trigger a NEW_FOREGROUND_TAB navigation with a null browser.
   const GURL url2 = embedded_test_server()->GetURL("/title2.html");
   NavigateParams params(GetProfile(), url2, ui::PAGE_TRANSITION_LINK);
-  params.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
+  params.disposition = ui::mojom::WindowOpenDisposition::kNewForegroundTab;
   params.browser = nullptr;
 
   base::WeakPtr<content::NavigationHandle> handle = Navigate(&params);
@@ -2183,14 +2360,15 @@ IN_PROC_BROWSER_TEST_F(
   // Trigger an asynchronous NEW_WINDOW navigation with a null browser.
   const GURL url2 = embedded_test_server()->GetURL("/title2.html");
   NavigateParams params(GetProfile(), url2, ui::PAGE_TRANSITION_LINK);
-  params.disposition = WindowOpenDisposition::NEW_WINDOW;
+  params.disposition = ui::mojom::WindowOpenDisposition::kNewWindow;
   params.browser = nullptr;
 
   base::test::TestFuture<base::WeakPtr<content::NavigationHandle>> future;
   Navigate(&params, future.GetCallback());
-  base::WeakPtr<content::NavigationHandle> handle = future.Get();
-  ASSERT_TRUE(handle);
-  content::TestNavigationObserver observer(handle->GetWebContents());
+  content::WebContents* new_contents = params.navigated_or_inserted_contents;
+  ASSERT_TRUE(new_contents);
+  content::TestNavigationObserver observer(new_contents);
+  ASSERT_TRUE(future.Wait());
   observer.Wait();
 
   // Verify a new normal window was created.
@@ -2198,7 +2376,7 @@ IN_PROC_BROWSER_TEST_F(
       GetAllBrowserWindowInterfaces();
   ASSERT_EQ(2u, windows.size());
 
-  EXPECT_EQ(params.disposition, WindowOpenDisposition::NEW_WINDOW);
+  EXPECT_EQ(params.disposition, ui::mojom::WindowOpenDisposition::kNewWindow);
   EXPECT_NE(params.browser, browser_window_);
   EXPECT_EQ(params.browser->GetType(), BrowserWindowInterface::TYPE_NORMAL);
   EXPECT_FALSE(params.browser->GetProfile()->IsOffTheRecord());
@@ -2227,7 +2405,8 @@ IN_PROC_BROWSER_TEST_F(NavigateAndroidBrowserTest,
   // Open a second tab in window2 and make it active.
   const GURL url3 = embedded_test_server()->GetURL("/title3.html");
   NavigateParams open_params3(window2, url3, ui::PAGE_TRANSITION_LINK);
-  open_params3.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
+  open_params3.disposition =
+      ui::mojom::WindowOpenDisposition::kNewForegroundTab;
   base::WeakPtr<content::NavigationHandle> handle3 = Navigate(&open_params3);
   ASSERT_TRUE(handle3);
   content::TestNavigationObserver observer3(url3);
@@ -2240,7 +2419,7 @@ IN_PROC_BROWSER_TEST_F(NavigateAndroidBrowserTest,
 
   // 2. Trigger SWITCH_TO_TAB navigation with a null browser.
   NavigateParams params(GetProfile(), url2, ui::PAGE_TRANSITION_LINK);
-  params.disposition = WindowOpenDisposition::SWITCH_TO_TAB;
+  params.disposition = ui::mojom::WindowOpenDisposition::kSwitchToTab;
   params.browser = nullptr;
 
   base::test::TestFuture<base::WeakPtr<content::NavigationHandle>> future;
@@ -2253,4 +2432,176 @@ IN_PROC_BROWSER_TEST_F(NavigateAndroidBrowserTest,
   EXPECT_EQ(0, tab_list2->GetActiveIndex());
   EXPECT_EQ(url2,
             tab_list2->GetActiveTab()->GetContents()->GetLastCommittedURL());
+}
+
+// This test verifies that the user agent override is set correctly for
+// browser-initiated navigations across combinations of content settings
+// and window open dispositions.
+class NavigateAndroidUserAgentOverrideBrowserTest
+    : public NavigateAndroidBrowserTest,
+      public testing::WithParamInterface<
+          std::tuple<ContentSetting, ui::mojom::WindowOpenDisposition>> {
+ public:
+  ContentSetting GetContentSetting() const { return std::get<0>(GetParam()); }
+  ui::mojom::WindowOpenDisposition GetDisposition() const {
+    return std::get<1>(GetParam());
+  }
+
+ protected:
+  // Navigates using the given NavigateParams and returns the last committed
+  // NavigationEntry.
+  content::NavigationEntry* NavigateAndWait(NavigateParams* params) {
+    // Watch all WebContents before navigating, since a new window's page may
+    // finish loading before the callback runs.
+    content::TestNavigationObserver observer(params->url);
+    observer.WatchExistingWebContents();
+    observer.StartWatchingNewWebContents();
+
+    base::test::TestFuture<base::WeakPtr<content::NavigationHandle>> future;
+    Navigate(params, future.GetCallback());
+    EXPECT_TRUE(future.Wait());
+    observer.Wait();
+
+    content::WebContents* contents = params->navigated_or_inserted_contents;
+    EXPECT_TRUE(contents);
+    return contents ? contents->GetController().GetLastCommittedEntry()
+                    : nullptr;
+  }
+};
+
+IN_PROC_BROWSER_TEST_P(NavigateAndroidUserAgentOverrideBrowserTest,
+                       RespectsDesktopSiteContentSettings) {
+  HostContentSettingsMap* content_settings =
+      HostContentSettingsMapFactory::GetForProfile(GetProfile());
+  ASSERT_TRUE(content_settings);
+
+  const GURL url = embedded_test_server()->GetURL("/title1.html");
+
+  content_settings->SetContentSettingDefaultScope(
+      url, url, ContentSettingsType::REQUEST_DESKTOP_SITE, GetContentSetting());
+
+  NavigateParams params(browser_window_, url, ui::PAGE_TRANSITION_LINK);
+  params.disposition = GetDisposition();
+  if (GetDisposition() == ui::mojom::WindowOpenDisposition::kCurrentTab) {
+    params.source_contents = web_contents_;
+  }
+
+  content::NavigationEntry* entry = NavigateAndWait(&params);
+  ASSERT_TRUE(entry);
+  bool expected_is_overriding_user_agent =
+      GetContentSetting() == CONTENT_SETTING_ALLOW;
+  EXPECT_EQ(expected_is_overriding_user_agent,
+            entry->GetIsOverridingUserAgent());
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    ,
+    NavigateAndroidUserAgentOverrideBrowserTest,
+    testing::Combine(
+        testing::Values(CONTENT_SETTING_BLOCK, CONTENT_SETTING_ALLOW),
+        testing::Values(ui::mojom::WindowOpenDisposition::kNewForegroundTab,
+                        ui::mojom::WindowOpenDisposition::kCurrentTab,
+                        ui::mojom::WindowOpenDisposition::kNewWindow)));
+
+// Verifies that for browser-initiated navigations, navigating within
+// CURRENT_TAB from an ALLOW site to a BLOCK site resets the user agent
+// override (exercising UA_OVERRIDE_FALSE).
+IN_PROC_BROWSER_TEST_F(NavigateAndroidUserAgentOverrideBrowserTest,
+                       UserAgentOverride_CurrentTab_AllowToBlock) {
+  HostContentSettingsMap* content_settings =
+      HostContentSettingsMapFactory::GetForProfile(GetProfile());
+  ASSERT_TRUE(content_settings);
+
+  auto navigate_in_current_tab = [&](const GURL& url) {
+    NavigateParams params(browser_window_, url, ui::PAGE_TRANSITION_LINK);
+    params.disposition = ui::mojom::WindowOpenDisposition::kCurrentTab;
+    params.source_contents = web_contents_;
+    return NavigateAndWait(&params);
+  };
+
+  const GURL desktop_url = embedded_test_server()->GetURL("/title1.html");
+  const GURL mobile_url = embedded_test_server()->GetURL("/title2.html");
+
+  // 1. Navigate to desktop_url with ALLOW (Desktop site) in CURRENT_TAB.
+  content_settings->SetContentSettingDefaultScope(
+      desktop_url, desktop_url, ContentSettingsType::REQUEST_DESKTOP_SITE,
+      CONTENT_SETTING_ALLOW);
+  content::NavigationEntry* entry1 = navigate_in_current_tab(desktop_url);
+  ASSERT_TRUE(entry1);
+  EXPECT_TRUE(entry1->GetIsOverridingUserAgent());
+
+  // 2. Set content setting to BLOCK (Mobile site) so navigating to mobile_url
+  // in CURRENT_TAB exercises UA_OVERRIDE_FALSE.
+  content_settings->SetContentSettingDefaultScope(
+      mobile_url, mobile_url, ContentSettingsType::REQUEST_DESKTOP_SITE,
+      CONTENT_SETTING_BLOCK);
+
+  TabAndroid* tab_android = TabAndroid::FromWebContents(web_contents_);
+  ASSERT_TRUE(tab_android);
+  EXPECT_EQ(content::NavigationController::UA_OVERRIDE_FALSE,
+            tab_android->CalculateUserAgentOverrideOption(mobile_url));
+
+  content::NavigationEntry* entry2 = navigate_in_current_tab(mobile_url);
+  ASSERT_TRUE(entry2);
+  EXPECT_FALSE(entry2->GetIsOverridingUserAgent());
+}
+
+// Verifies new-window navigations from an Incognito window when
+// `kAndroidOpenIncognitoAsWindow` is disabled (i.e. `ChromeTabbedActivity` uses
+// `SupportedProfileType.MIXED`).
+class NavigateAndroidMixedProfileBrowserTest
+    : public NavigateAndroidBrowserTest {
+ public:
+  NavigateAndroidMixedProfileBrowserTest() {
+    scoped_feature_list_.InitAndDisableFeature(
+        feed::kAndroidOpenIncognitoAsWindow);
+  }
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_;
+};
+
+IN_PROC_BROWSER_TEST_F(NavigateAndroidMixedProfileBrowserTest,
+                       Async_Disposition_NewWindow_FromIncognitoProfile) {
+  BrowserWindowInterface* incognito_window = CreateIncognitoBrowserWindow();
+  ASSERT_NE(incognito_window, nullptr);
+  ASSERT_TRUE(incognito_window->GetProfile()->IsOffTheRecord());
+  TabListInterface* incognito_tab_list =
+      TabListInterface::From(incognito_window);
+  ASSERT_NE(incognito_tab_list, nullptr);
+  ASSERT_EQ(1, incognito_tab_list->GetTabCount());
+
+  const GURL target_url = embedded_test_server()->GetURL("/title2.html");
+  NavigateParams params(incognito_window, target_url,
+                        ui::PAGE_TRANSITION_AUTO_BOOKMARK);
+  params.disposition = ui::mojom::WindowOpenDisposition::kNewWindow;
+
+  // Watch for the new window's WebContents before navigating, so the
+  // navigation can't finish before the observer exists.
+  content::TestNavigationObserver navigation_observer(target_url);
+  navigation_observer.StartWatchingNewWebContents();
+
+  base::test::TestFuture<base::WeakPtr<content::NavigationHandle>> future;
+  Navigate(&params, future.GetCallback());
+  // The page starts loading before the new window is ready, so the callback
+  // runs without a handle once the window is ready.
+  ASSERT_TRUE(future.Wait());
+  ASSERT_TRUE(params.navigated_or_inserted_contents);
+
+  navigation_observer.Wait();
+
+  BrowserWindowInterface* new_incognito_window = params.browser;
+  ASSERT_NE(new_incognito_window, nullptr);
+  EXPECT_NE(new_incognito_window, incognito_window);
+  EXPECT_TRUE(new_incognito_window->GetProfile()->IsOffTheRecord());
+
+  TabListInterface* new_tab_list = TabListInterface::From(new_incognito_window);
+  ASSERT_NE(new_tab_list, nullptr);
+  EXPECT_EQ(1, new_tab_list->GetTabCount());
+  tabs::TabInterface* new_tab = new_tab_list->GetActiveTab();
+  ASSERT_TRUE(new_tab);
+  EXPECT_EQ(target_url, new_tab->GetContents()->GetLastCommittedURL());
+
+  // Original incognito window still has its single initial tab.
+  EXPECT_EQ(1, incognito_tab_list->GetTabCount());
 }

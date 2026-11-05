@@ -11,7 +11,9 @@ enum class AiModeActivationSource {
   kDedicatedButton = 1,
   kNTPButton = 2,
   kImplicit = 3,
-  kMaxValue = kImplicit,
+  kNTPCreateImageButton = 4,
+  kNTPGalleryButton = 5,
+  kMaxValue = kNTPGalleryButton,
 };
 // LINT.ThenChange(//tools/metrics/histograms/metadata/omnibox/enums.xml:AiModeActivationSource)
 
@@ -38,7 +40,8 @@ enum class AutocompleteRequestType {
   kImageGeneration = 3,
   kCanvas = 4,
   kDeepSearch = 5,
-  kMaxValue = kDeepSearch
+  kPTM = 6,
+  kMaxValue = kPTM
 };
 // LINT.ThenChange(//tools/metrics/histograms/metadata/omnibox/enums.xml:AutocompleteRequestType)
 

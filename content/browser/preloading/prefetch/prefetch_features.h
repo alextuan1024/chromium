@@ -23,12 +23,6 @@ CONTENT_EXPORT BASE_DECLARE_FEATURE(kPrefetchTesting);
 CONTENT_EXPORT extern const base::FeatureParam<int>
     kPrefetchReusableBodySizeLimit;
 
-// This feature was used to launch the prefetch migration from embedder layer to
-// content/, and this work has finished and the old implemnetation was deleted.
-// Now this flag is just for injecting parameters through field trials as an
-// umberella feature.
-CONTENT_EXPORT BASE_DECLARE_FEATURE(kPrefetchUseContentRefactor);
-
 // If enabled, navigational prefetch is scoped to the referring document's
 // network isolation key instead of the old behavior of the referring document
 // itself. See crbug.com/1502326
@@ -36,6 +30,11 @@ BASE_DECLARE_FEATURE(kPrefetchNIKScope);
 
 // If enabled, prefetches may include client hints request headers.
 CONTENT_EXPORT BASE_DECLARE_FEATURE(kPrefetchClientHints);
+
+// If enabled, embedder additional headers will be removed upon cross-origin
+// redirects for prefetches, providing a fix for crbug.com/511781454.
+CONTENT_EXPORT BASE_DECLARE_FEATURE(
+    kPrefetchRedirectRemoveEmbedderAdditionalHeaders);
 
 // This allows controlling the behavior of client hints with prefetches in case
 // an unexpected issue arises with the planned behavior, or one is suspected and
@@ -86,6 +85,15 @@ CONTENT_EXPORT extern const base::FeatureParam<size_t>
 // Controls field trials parameters for prefetch canary checker.
 CONTENT_EXPORT BASE_DECLARE_FEATURE(kPrefetchCanaryCheckerParams);
 
+// Burst prefetches with a specific query parameter (e.g., pf=op).
+CONTENT_EXPORT BASE_DECLARE_FEATURE(kPrefetchSchedulerBurstQueryParam);
+CONTENT_EXPORT extern const base::FeatureParam<std::string>
+    kPrefetchSchedulerBurstQueryParamKey;
+CONTENT_EXPORT extern const base::FeatureParam<std::string>
+    kPrefetchSchedulerBurstQueryParamValue;
+CONTENT_EXPORT extern const base::FeatureParam<size_t>
+    kPrefetchSchedulerBurstQueryParamExtraLimit;
+
 // Allows multiple base limit on `PrefetchScheduler`.
 CONTENT_EXPORT BASE_DECLARE_FEATURE(kPrefetchMultipleActiveSetSizeLimitForBase);
 CONTENT_EXPORT extern const base::FeatureParam<size_t>
@@ -115,6 +123,14 @@ CONTENT_EXPORT extern const base::FeatureParam<size_t>
 //
 // To enable this, also enable `kPrefetchOffTheMainThread`.
 CONTENT_EXPORT BASE_DECLARE_FEATURE(kPrefetchOffTheMainThreadForceForTesting);
+
+// When enabled, `PrePrefetchService::Create()` creates the `PrefetchService` of
+// the `BrowserContext` if not yet created. This is for a Finch experiment to
+// evaluate the performance impact of making `PrePrefetchService` always depend
+// on `PrefetchService`, and will be removed after the experiment. Takes effect
+// only when `PrePrefetchService::Create()` is called, i.e. only if
+// `kPrefetchOffTheMainThread` is enabled.
+CONTENT_EXPORT BASE_DECLARE_FEATURE(kPrePrefetchServiceCreatesPrefetchService);
 
 // Cancels unrelated prefetch when a navigation is started.
 CONTENT_EXPORT BASE_DECLARE_FEATURE(kPrefetchCancelUnrelatedPrefetch);

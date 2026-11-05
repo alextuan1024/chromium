@@ -57,9 +57,6 @@ class GeolocationServiceImpl::GeolocationProxy
   void SetHighAccuracyHint(bool high_accuracy) override {
     geolocation_impl_remote_->SetHighAccuracyHint(high_accuracy);
   }
-  void QueryCachedPosition(QueryCachedPositionCallback callback) override {
-    geolocation_impl_remote_->QueryCachedPosition(std::move(callback));
-  }
   void QueryNextPosition(QueryNextPositionCallback callback) override {
     geolocation_impl_remote_->QueryNextPosition(std::move(callback));
   }
@@ -253,7 +250,7 @@ void GeolocationServiceImpl::CreateGeolocationWithPermissionResult(
         device::mojom::GeolocationClientId::kGeolocationServiceImpl,
         has_precise_permission);
   }
-  subscription_id_ =
+  permission_subscription_ =
       PermissionControllerImpl::FromBrowserContext(
           render_frame_host_->GetBrowserContext())
           ->SubscribeToPermissionResultChange(
@@ -279,10 +276,8 @@ void GeolocationServiceImpl::HandlePermissionResultChange(
   GeolocationPermissionLevel permission_level =
       GetPermissionLevel(permission_result);
   if (permission_level == GeolocationPermissionLevel::kDenied &&
-      subscription_id_.value()) {
-    PermissionControllerImpl::FromBrowserContext(
-        render_frame_host_->GetBrowserContext())
-        ->UnsubscribeFromPermissionResultChange(subscription_id_);
+      permission_subscription_) {
+    permission_subscription_.reset();
     // When kGeolocationProxy is enabled, DecrementActivityCount is managed
     // by the GeolocationProxy lifecycle.
     if (!base::FeatureList::IsEnabled(features::kGeolocationProxy)) {

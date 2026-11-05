@@ -15,6 +15,15 @@ namespace visual_guided_setter {
 // accommodate the docked Settings window.
 bool IsAnchorLargeEnoughForDocking(const gfx::Rect& anchor_rect);
 
+// Returns true if the target Settings window bounds in physical screen pixels
+// place the Settings "Default apps" page in a stable layout where the arrow
+// location is reliably known. Returns false if the client width would cause the
+// "Set default" button to wrap below text, or sits close to the navigation pane
+// collapse/expand breakpoint. Callers should degrade to the floating flow when
+// this returns false.
+bool IsSettingsLayoutStableForDocking(HWND settings_hwnd,
+                                      const gfx::Rect& target_rect_px);
+
 // Computes the target bounds for the docked Settings window (in physical
 // pixels) based on the WebUI anchor rect in DIPs, and clamps it to the
 // monitor's work area. All physical coordinate mapping is handled by
@@ -31,10 +40,10 @@ gfx::Point ComputeArrowStartPointFromAnchor(const gfx::Rect& anchor_rect);
 // Computes the ending point of the guidance arrow (in physical pixels, screen
 // coordinates) relative to the Settings window rect.
 //
-// `settings_hwnd` supplies the scale factor for the layout padding, and bounds
-// the result to the window so a resize cannot leave the arrow pointing past it.
-gfx::Point ComputeArrowEndPoint(HWND settings_hwnd,
-                                const gfx::Rect& target_rect);
+// `measured_top_offset_px` is the row's distance below the window's top, as
+// measured by SettingsRowLocatorWin. The result stays inside `target_rect`.
+gfx::Point ComputeArrowEndPoint(const gfx::Rect& target_rect,
+                                int measured_top_offset_px);
 
 // Returns true if the target docking rect is on a monitor with the same DPI
 // scaling as the Chrome window.

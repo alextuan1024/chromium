@@ -11,7 +11,6 @@
 #include "base/metrics/histogram_macros.h"
 #include "base/strings/utf_string_conversions.h"
 #include "chrome/browser/ash/notifications/screen_capture_notification_ui_ash.h"
-#include "chrome/browser/media/webrtc/desktop_capture_access_handler.h"
 #include "chrome/grit/generated_resources.h"
 #include "chromeos/ash/experiences/arc/mojom/screen_capture.mojom.h"
 #include "components/viz/common/frame_sinks/copy_output_request.h"
@@ -26,7 +25,7 @@
 #include "gpu/command_buffer/client/raster_interface.h"
 #include "gpu/command_buffer/client/shared_image_interface.h"
 #include "gpu/command_buffer/common/shared_image_usage.h"
-#include "mojo/public/cpp/system/platform_handle.h"
+#include "mojo/public/cpp/platform/platform_handle.h"
 #include "third_party/blink/public/common/mediastream/media_stream_request.h"
 #include "ui/aura/env.h"
 #include "ui/aura/window.h"
@@ -62,38 +61,27 @@ scoped_refptr<viz::RasterContextProvider> GetContextProvider() {
 // Android.
 viz::SharedImageFormat GetSharedImageFormat(mojom::BufferFormat buffer_format) {
   switch (buffer_format) {
-    case mojom::BufferFormat::R_8:
-      return viz::SinglePlaneFormat::kR_8;
-    case mojom::BufferFormat::R_16:
-      return viz::SinglePlaneFormat::kR_16;
-    case mojom::BufferFormat::RG_88:
-      return viz::SinglePlaneFormat::kRG_88;
-    case mojom::BufferFormat::RG_1616:
-      return viz::SinglePlaneFormat::kRG_1616;
-    case mojom::BufferFormat::BGR_565:
-      return viz::SinglePlaneFormat::kBGR_565;
-    case mojom::BufferFormat::RGBA_4444:
-      return viz::SinglePlaneFormat::kRGBA_4444;
-    case mojom::BufferFormat::RGBX_8888:
-      return viz::SinglePlaneFormat::kRGBX_8888;
     case mojom::BufferFormat::RGBA_8888:
       return viz::SinglePlaneFormat::kRGBA_8888;
-    case mojom::BufferFormat::BGRX_8888:
-      return viz::SinglePlaneFormat::kBGRX_8888;
-    case mojom::BufferFormat::BGRA_1010102:
-      return viz::SinglePlaneFormat::kBGRA_1010102;
-    case mojom::BufferFormat::RGBA_1010102:
-      return viz::SinglePlaneFormat::kRGBA_1010102;
     case mojom::BufferFormat::BGRA_8888:
       return viz::SinglePlaneFormat::kBGRA_8888;
+    case mojom::BufferFormat::RGBX_8888:
+      return viz::SinglePlaneFormat::kRGBX_8888;
+    case mojom::BufferFormat::BGRX_8888:
+      return viz::SinglePlaneFormat::kBGRX_8888;
+    case mojom::BufferFormat::R_8:
+    case mojom::BufferFormat::R_16:
+    case mojom::BufferFormat::RG_88:
+    case mojom::BufferFormat::RG_1616:
+    case mojom::BufferFormat::BGR_565:
+    case mojom::BufferFormat::RGBA_4444:
+    case mojom::BufferFormat::BGRA_1010102:
+    case mojom::BufferFormat::RGBA_1010102:
     case mojom::BufferFormat::RGBA_F16:
-      return viz::SinglePlaneFormat::kRGBA_F16;
     case mojom::BufferFormat::YVU_420:
-      return viz::MultiPlaneFormat::kYV12;
     case mojom::BufferFormat::YUV_420_BIPLANAR:
-      return viz::MultiPlaneFormat::kNV12;
     case mojom::BufferFormat::P010:
-      return viz::MultiPlaneFormat::kP010;
+      NOTREACHED();
   }
   NOTREACHED();
 }
@@ -217,7 +205,7 @@ void ArcScreenCaptureSession::NotificationStop() {
 }
 
 void ArcScreenCaptureSession::SetOutputBufferDeprecated(
-    mojo::ScopedHandle graphics_buffer,
+    mojo::PlatformHandle graphics_buffer,
     uint32_t stride,
     SetOutputBufferDeprecatedCallback callback) {
   // Defined locally to avoid having to add a dependency on drm_fourcc.h
@@ -233,13 +221,13 @@ void ArcScreenCaptureSession::SetOutputBufferDeprecated(
 }
 
 void ArcScreenCaptureSession::SetOutputBuffer(
-    mojo::ScopedHandle graphics_buffer,
+    mojo::PlatformHandle graphics_buffer,
     mojom::BufferFormat buffer_format,
     uint64_t buffer_format_modifier,
     uint32_t stride,
     SetOutputBufferCallback callback) {
   CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
-  if (!graphics_buffer.is_valid()) {
+  if (!graphics_buffer.is_valid_platform_file()) {
     LOG(ERROR) << "Invalid handle passed into SetOutputBuffer";
     std::move(callback).Run();
     return;
@@ -253,17 +241,9 @@ void ArcScreenCaptureSession::SetOutputBuffer(
 
   gfx::NativePixmapHandle native_pixmap_handle;
   native_pixmap_handle.modifier = buffer_format_modifier;
-  base::ScopedPlatformFile platform_file;
-  MojoResult mojo_result =
-      mojo::UnwrapPlatformFile(std::move(graphics_buffer), &platform_file);
-  if (mojo_result != MOJO_RESULT_OK) {
-    LOG(ERROR) << "Failed unwrapping Mojo handle " << mojo_result;
-    std::move(callback).Run();
-    return;
-  }
   native_pixmap_handle.planes.emplace_back(
       stride * kBytesPerPixel, 0, stride * kBytesPerPixel * size_.height(),
-      std::move(platform_file));
+      graphics_buffer.TakePlatformFile());
 
   viz::SharedImageFormat si_format = GetSharedImageFormat(buffer_format);
   UMA_HISTOGRAM_ENUMERATION("Arc.ScreenCaptureSession.SharedImageFormat",

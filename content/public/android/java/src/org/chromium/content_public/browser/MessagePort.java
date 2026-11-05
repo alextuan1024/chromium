@@ -22,14 +22,23 @@ public interface MessagePort {
          *
          * @param messagePayload The message payload that was received.
          * @param sentPorts The {@link MessagePort}s that were sent if any.
+         * @param senderOrigin The ASCII-serialized origin of the message sender per RFC 6454 /
+         *     WHATWG URL (e.g., standard {@code scheme://host[:port]} without a trailing slash, or
+         *     {@code "null"} for opaque origins), or {@code null} if unknown. Represented as a
+         *     {@link String} rather than {@code org.chromium.url.Origin} to avoid object allocation
+         *     churn on high-frequency {@code postMessage} streams and to align directly with Web
+         *     IDL's {@code DOMString origin} and Custom Tabs bundle extras.
          */
-        void onMessage(MessagePayload messagePayload, MessagePort @Nullable [] sentPorts);
+        void onMessage(
+                MessagePayload messagePayload,
+                MessagePort @Nullable [] sentPorts,
+                @Nullable String senderOrigin);
     }
 
     /**
      * Called to create an entangled pair of ports.
      *
-     * @return An array of a pair of{@link MessagePort} instances.
+     * @return An array of a pair of {@link MessagePort} instances.
      */
     static MessagePort[] createPair() {
         return AppWebMessagePort.createPair();
@@ -38,28 +47,28 @@ public interface MessagePort {
     /** Close the port for use. */
     void close();
 
-    /**
-     * @return Whether the port has been closed before.
-     */
+    /** Returns whether the port has been closed before. */
     boolean isClosed();
 
     /**
-     * @return Whether the port has been transferred using
-     *         {@link MessagePort#postMessage(MessagePayload, MessagePort[])} before.
+     * Returns whether the port has been transferred using {@link
+     * MessagePort#postMessage(MessagePayload, MessagePort[])} before.
      */
     boolean isTransferred();
 
-    /**
-     * @return Whether the port has been started.
-     */
+    /** Returns whether the port has been started. */
     boolean isStarted();
 
     /**
      * Sets the handler and message callback to be used for the messages received. If the given
-     * {@link Handler} is not null, then the callback is received on the handler thread, if not
-     * it is on UI thread.
+     * {@link Handler} is not null, then the callback is received on the handler thread, if not, it
+     * is on the UI thread.
      *
-     * See {@link MessagePort.MessageCallback}
+     * <p>See {@link MessagePort.MessageCallback}.
+     *
+     * @param messageCallback The callback that receives the messages sent to this port.
+     * @param handler The handler whose thread the callback is run on, or {@code null} to run it on
+     *     the UI thread.
      */
     void setMessageCallback(MessageCallback messageCallback, @Nullable Handler handler);
 

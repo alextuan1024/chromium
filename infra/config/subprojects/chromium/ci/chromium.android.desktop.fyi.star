@@ -16,8 +16,13 @@ load("//lib/siso.star", "siso")
 ci.defaults.set(
     executable = ci_constants.DEFAULT_EXECUTABLE,
     builder_group = "chromium.android.desktop.fyi",
+    builder_config_settings = builder_config.ci_settings(
+        retry_failed_shards = True,
+        # Android emulator tasks often flake during emulator start-up, which
+        # leads to the whole shard being marked as invalid.
+        retry_invalid_shards = True,
+    ),
     pool = ci_constants.DEFAULT_POOL,
-    builderless = False,
     os = os.LINUX_DEFAULT,
     contact_team_email = "clank-engprod@google.com",
     execution_timeout = ci_constants.DEFAULT_EXECUTION_TIMEOUT,
@@ -81,6 +86,7 @@ ci.builder(
         mixins = [
             "15-desktop-x64-emulator",
             "emulator-8-cores",
+            "force-desktop-android",
         ],
         per_test_modifications = {
             "android_browsertests": targets.mixin(
@@ -101,9 +107,119 @@ ci.builder(
         os_type = targets.os_type.ANDROID,
     ),
     cores = 8,
+    ssd = None,
     console_view_entry = consoles.console_view_entry(
         category = "x64|emu|rel",
         short_name = "15",
     ),
     cq_mirrors_console_view = "mirrors",
+)
+
+ci.builder(
+    name = "android-desktop-17-x64-fyi-rel",
+    description_html = "Android desktop x64 release with FYI tests on Android 17.",
+    builder_spec = builder_config.builder_spec(
+        gclient_config = builder_config.gclient_config(
+            config = "chromium",
+            apply_configs = [
+                "android",
+            ],
+        ),
+        chromium_config = builder_config.chromium_config(
+            config = "main_builder",
+            apply_configs = ["mb"],
+            build_config = builder_config.build_config.RELEASE,
+            target_arch = builder_config.target_arch.INTEL,
+            target_bits = 64,
+            target_platform = builder_config.target_platform.ANDROID,
+        ),
+        android_config = builder_config.android_config(
+            config = "base_config",
+        ),
+    ),
+    gn_args = gn_args.config(
+        configs = [
+            "android_desktop",
+            "android_builder",
+            "android_with_static_analysis",
+            "release_builder",
+            "remoteexec",
+            "minimal_symbols",
+            "x64",
+            "strip_debug_info",
+            "webview_debug_package_name",
+            "webview_shell",
+        ],
+    ),
+    targets = targets.bundle(
+        targets = [
+            "android_desktop_junit_tests",
+            targets.bundle(
+                targets = "android_desktop_gtests",
+                mixins = [
+                    "17-desktop-x64-emulator",
+                    "emulator-8-cores",
+                    "force-main-user",
+                ],
+            ),
+            targets.bundle(
+                targets = "android_desktop_isolated_script_tests",
+                mixins = [
+                    "17-desktop-x64-emulator",
+                    "emulator-8-cores",
+                ],
+            ),
+        ],
+        per_test_modifications = {
+            "android_browsertests": targets.mixin(
+                args = [
+                    "--test-launcher-filter-file=../../testing/buildbot/filters/android.desktop.emulator_17.android_browsertests.filter",
+                ],
+                swarming = targets.swarming(
+                    shards = 30,
+                ),
+            ),
+            "chrome_public_test_apk": targets.mixin(
+                swarming = targets.swarming(
+                    shards = 40,
+                ),
+            ),
+            "chrome_public_test_apk_desktop": targets.mixin(
+                args = [
+                    "--annotation=Restriction=Desktop,Restriction=DesktopFreeform,Restriction=TabletOrDesktop,ImportantFormFactors=Desktop,ImportantFormFactors=DesktopFreeform,ImportantFormFactors=TabletOrDesktop",
+                ],
+                swarming = targets.swarming(
+                    shards = 4,
+                ),
+            ),
+            "chrome_public_unit_test_apk": targets.mixin(
+                swarming = targets.swarming(
+                    shards = 5,
+                ),
+            ),
+            "media_unittests": targets.mixin(
+                args = [
+                    # crbug.com/391490503: AACAudioEncoderTest.FullCycleEncodeDecode*
+                    # TODO(crbug.com/558813685): Re-enable PaintCanvasVideoRendererWithGLTest.*
+                    # once emulator is updated past 37.1.11 with the Gfxstream
+                    # VK_EXT_host_image_copy fix.
+                    "--gtest_filter=-AAC/AACAudioEncoderTest.FullCycleEncodeDecode*:PaintCanvasVideoRendererWithGLTest.*",
+                ],
+            ),
+            "unit_tests": targets.mixin(
+                swarming = targets.swarming(
+                    shards = 6,
+                ),
+            ),
+        },
+    ),
+    targets_settings = targets.settings(
+        os_type = targets.os_type.ANDROID,
+    ),
+    cores = 8,
+    ssd = None,
+    console_view_entry = consoles.console_view_entry(
+        category = "x64|emu|rel",
+        short_name = "17",
+    ),
 )

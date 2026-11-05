@@ -16,6 +16,11 @@
 // headless Actor mode).
 @protocol ActorTaskInterventionDelegate <NSObject>
 
+// Dismisses the prompt shown by `selectFromSuggestions:` for `taskID` without
+// calling its completion handler. Called when the tool that requested a
+// selection ends before the user answers.
+- (void)actorTaskDidCancelSuggestionSelection:(actor::ActorTaskId)taskID;
+
 // TODO(crbug.com/501043031): Remove @optional when API stabilizes.
 @optional
 
@@ -28,6 +33,16 @@
         completionHandler:
             (void (^)(ActorFormSuggestion* selectedSuggestion,
                       BOOL shouldStorePermission))completionHandler;
+
+// Prompts the user with an intervention card containing a title,
+// subtitle, and action button text. The `completionHandler` is only invoked
+// when the user confirms the action to resume the task. To abort, the user
+// should stop the execution.
+- (void)actorTask:(actor::ActorTaskId)taskID
+    requestUserInterventionWithTitle:(NSString*)title
+                            subtitle:(NSString*)subtitle
+                          buttonText:(NSString*)buttonText
+                   completionHandler:(void (^)(void))completionHandler;
 
 @end
 

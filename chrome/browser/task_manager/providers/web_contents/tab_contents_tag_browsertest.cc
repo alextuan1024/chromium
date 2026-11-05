@@ -5,8 +5,8 @@
 #include <stddef.h>
 
 #include <array>
+#include <ranges>
 
-#include "base/containers/adapters.h"
 #include "base/files/file_util.h"
 #include "base/memory/raw_ptr.h"
 #include "base/path_service.h"
@@ -35,7 +35,6 @@
 #include "content/public/browser/security_principal.h"
 #include "content/public/browser/site_instance.h"
 #include "content/public/test/browser_test.h"
-#include "content/public/test/fenced_frame_test_util.h"
 #include "content/public/test/test_utils.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -203,7 +202,7 @@ class TabContentsTagTest : public InProcessBrowserTest {
         sessions::SessionTabHelper::IdForTab(active_web_contents());
     const std::u16string tab_prefix =
         l10n_util::GetStringFUTF16(IDS_TASK_MANAGER_TAB_PREFIX, u"");
-    for (const Task* task : base::Reversed(task_manager.tasks())) {
+    for (const Task* task : std::views::reverse(task_manager.tasks())) {
       if (task->GetTabId() == tab_id && task->title().starts_with(tab_prefix)) {
         return task;
       }
@@ -451,49 +450,5 @@ IN_PROC_BROWSER_TEST_F(TabContentsTagTest, ThemifiesDefaultAndChromeFavicons) {
   EXPECT_FALSE(task->icon().isNull());
 }
 
-class TabContentsTagFencedFrameTest : public TabContentsTagTest {
- public:
-  TabContentsTagFencedFrameTest() = default;
-  ~TabContentsTagFencedFrameTest() override = default;
-
-  content::WebContents* GetWebContents() {
-    return browser()->GetTabStripModel()->GetActiveWebContents();
-  }
-
-  content::test::FencedFrameTestHelper& fenced_frame_test_helper() {
-    return fenced_frame_helper_;
-  }
-
- private:
-  content::test::FencedFrameTestHelper fenced_frame_helper_;
-};
-
-// Tests that a fenced frame doesn't update the title of its web contents' task
-// via WebContentsTaskProvider::WebContentsEntry.
-IN_PROC_BROWSER_TEST_F(TabContentsTagFencedFrameTest,
-                       FencedFrameDoesNotUpdateTitle) {
-  MockWebContentsTaskManager task_manager;
-  EXPECT_TRUE(task_manager.tasks().empty());
-  task_manager.StartObserving();
-  ASSERT_EQ(task_manager.NonToolTasks().size(), 1u);
-
-  const GURL initial_url = embedded_test_server()->GetURL("/title3.html");
-  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), initial_url));
-  const Task* primary_mainframe_task = task_manager.NonToolTasks().front();
-  EXPECT_EQ(Task::RENDERER, primary_mainframe_task->GetType());
-  EXPECT_EQ(primary_mainframe_task->title(), u"Tab: Title Of More Awesomeness");
-
-  // Create a fenced frame and load a URL.
-  const GURL kFencedFrameUrl =
-      embedded_test_server()->GetURL("/fenced_frames/title2.html");
-  content::RenderFrameHost* fenced_frame_host =
-      fenced_frame_test_helper().CreateFencedFrame(
-          GetWebContents()->GetPrimaryMainFrame(), kFencedFrameUrl);
-  EXPECT_NE(nullptr, fenced_frame_host);
-
-  // The navigation in the fenced frame should not change the title of the
-  // primary mainframe's task to "Title Of Awesomeness".
-  EXPECT_EQ(primary_mainframe_task->title(), u"Tab: Title Of More Awesomeness");
-}
 
 }  // namespace task_manager

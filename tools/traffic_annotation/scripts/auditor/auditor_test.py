@@ -844,6 +844,8 @@ class AuditorTest(unittest.TestCase):
     test_data/test_sample_annotations.cc"""
     expected = [
       "ok_annotation",
+      "ok_annotation_pa_api",
+      "ok_annotation_legacy_api",
       "ok_annotation_only_owner",
       "syntax_error_annotation",
       "incomplete_error_annotation",
@@ -854,6 +856,10 @@ class AuditorTest(unittest.TestCase):
       "missing_new_fields_not_safe_listed",
       "missing_email_not_safe_listed",
       "invalid_userdata_not_safe_listed",
+      "invalid_api_service_name",
+      "invalid_api_service_name_subdomain",
+      "invalid_legacy_api_url_googleapis",
+      "invalid_legacy_api_url_format",
     ]
     self.assertCountEqual(expected, self.sample_annotations.keys())
 
@@ -873,10 +879,37 @@ class AuditorTest(unittest.TestCase):
     errors = self.auditor.parse_extractor_output(
       [self.sample_annotations["ok_annotation"]]
     )
+    errors.extend(
+      self.auditor.run_all_checks([], False, Exporter.GROUPING_XML_PATH)
+    )
 
     # Assert that correct annotation has been extracted and is OK (no errors).
-    self.assertTrue(self.auditor.extracted_annotations)
     self.assertFalse(errors)
+    self.assertTrue(self.auditor.extracted_annotations)
+
+  def test_result_ok_pa_api(self) -> None:
+    errors = self.auditor.parse_extractor_output(
+      [self.sample_annotations["ok_annotation_pa_api"]]
+    )
+    errors.extend(
+      self.auditor.run_all_checks([], False, Exporter.GROUPING_XML_PATH)
+    )
+
+    # Assert that correct annotation has been extracted and is OK (no errors).
+    self.assertFalse(errors)
+    self.assertTrue(self.auditor.extracted_annotations)
+
+  def test_result_ok_legacy_api(self) -> None:
+    errors = self.auditor.parse_extractor_output(
+      [self.sample_annotations["ok_annotation_legacy_api"]]
+    )
+    errors.extend(
+      self.auditor.run_all_checks([], False, Exporter.GROUPING_XML_PATH)
+    )
+
+    # Assert that correct annotation has been extracted and is OK (no errors).
+    self.assertFalse(errors)
+    self.assertTrue(self.auditor.extracted_annotations)
 
   def test_syntax_error(self) -> None:
     errors = self.auditor.parse_extractor_output(
@@ -968,6 +1001,86 @@ class AuditorTest(unittest.TestCase):
     errors = self.auditor.run_all_checks([], True, Exporter.GROUPING_XML_PATH)
     self.assertTrue(errors)
     self.assertEqual(ErrorType.INVALID_USER_DATA_TYPE, errors[0].type)
+
+  def test_invalid_api_service_name(self) -> None:
+    """Annotation traffic_semantics::api_service_name contains INVALID value.
+    Annotation Check returns INVALID_API_SERVICE_NAME error."""
+    self.auditor.parse_extractor_output(
+      [self.sample_annotations["invalid_api_service_name"]]
+    )
+    self.assertTrue(self.auditor.extracted_annotations)
+    errors = self.auditor.run_all_checks([], True, Exporter.GROUPING_XML_PATH)
+    self.assertTrue(errors)
+    self.assertEqual(ErrorType.INVALID_API_SERVICE_NAME, errors[0].type)
+
+  def test_invalid_api_service_name_subdomain(self) -> None:
+    """Annotation traffic_semantics::api_service_name uses a subdomain other
+    than 'pa' or 'corp'. Annotation Check returns INVALID_API_SERVICE_NAME
+    error."""
+    self.auditor.parse_extractor_output(
+      [self.sample_annotations["invalid_api_service_name_subdomain"]]
+    )
+    self.assertTrue(self.auditor.extracted_annotations)
+    errors = self.auditor.run_all_checks([], True, Exporter.GROUPING_XML_PATH)
+    self.assertTrue(errors)
+    self.assertEqual(ErrorType.INVALID_API_SERVICE_NAME, errors[0].type)
+
+  def test_check_api_service_name_format(self) -> None:
+    """Tests Annotation.check_api_service_name_format() directly on valid and
+    invalid inputs."""
+    valid_names = [
+      "",
+      "foobar.googleapis.com",
+      "foobar.pa.googleapis.com",
+      "remotedesktop.corp.googleapis.com",
+      "foo-bar_1.pa.googleapis.com",
+      "pa.googleapis.com",
+    ]
+    for name in valid_names:
+      annotation = self.create_annotation_sample()
+      annotation.proto.semantics.api_service_name = name
+      self.assertEqual([], annotation.check_api_service_name_format(), name)
+
+    invalid_names = [
+      "googleapis.com",
+      ".pa.googleapis.com",
+      "foobar.other.googleapis.com",
+      "foobar.PA.googleapis.com",
+      "foo.bar.pa.googleapis.com",
+      "foobar.pa.pa.googleapis.com",
+      "https://foobar.pa.googleapis.com",
+      "foobar.pa.googleapis.com/v1",
+    ]
+    for name in invalid_names:
+      annotation = self.create_annotation_sample()
+      annotation.proto.semantics.api_service_name = name
+      errors = annotation.check_api_service_name_format()
+      self.assertEqual(1, len(errors), name)
+      self.assertEqual(ErrorType.INVALID_API_SERVICE_NAME, errors[0].type)
+
+  def test_invalid_legacy_api_url_googleapis(self) -> None:
+    """Annotation traffic_semantics::legacy_api_url uses a googleapis.com
+    subdomain. Annotation Check returns INVALID_LEGACY_API_URL error."""
+    self.auditor.parse_extractor_output(
+      [self.sample_annotations["invalid_legacy_api_url_googleapis"]]
+    )
+    self.assertTrue(self.auditor.extracted_annotations)
+    errors = self.auditor.run_all_checks([], True, Exporter.GROUPING_XML_PATH)
+    self.assertTrue(errors)
+    self.assertEqual(ErrorType.INVALID_LEGACY_API_URL, errors[0].type)
+    self.assertIn("use api_service_name instead", str(errors[0]))
+
+  def test_invalid_legacy_api_url_format(self) -> None:
+    """Annotation traffic_semantics::legacy_api_url is not a valid URL.
+    Annotation Check returns INVALID_LEGACY_API_URL error."""
+    self.auditor.parse_extractor_output(
+      [self.sample_annotations["invalid_legacy_api_url_format"]]
+    )
+    self.assertTrue(self.auditor.extracted_annotations)
+    errors = self.auditor.run_all_checks([], True, Exporter.GROUPING_XML_PATH)
+    self.assertTrue(errors)
+    self.assertEqual(ErrorType.INVALID_LEGACY_API_URL, errors[0].type)
+    self.assertIn("is not a valid URL", str(errors[0]))
 
   def test_missing_new_fields_safe_listed_file(self) -> None:
     """Check annotation without new fields, related class is
@@ -1071,26 +1184,213 @@ supervised_user_refresh_token_fetcher\t\tSupervised Users\tFetches an OAuth2 ref
 
   def test_get_gn_file_mtime_max(self):
     with tempfile.TemporaryDirectory() as tmp_dir:
-      tmp_path = Path(tmp_dir)
-      # Mock SRC_DIR
-      with mock.patch("auditor.SRC_DIR", tmp_path):
-        self.auditor.file_filter.git_files = [
-          Path("BUILD.gn"),
-          Path("foo.gni"),
-          Path("src.cc"),
-        ]
-        (tmp_path / "BUILD.gn").write_text("")
-        # sleep briefly to ensure mtimes are different
-        time.sleep(0.01)
-        (tmp_path / "foo.gni").write_text("")
-        (tmp_path / "src.cc").write_text("")
+      src_path = Path(tmp_dir)
+      build_path = src_path / "out" / "Default"
+      build_path.mkdir(parents=True)
+      (src_path / "dir with space").mkdir()
 
-        mtime1 = os.path.getmtime(tmp_path / "BUILD.gn")
-        mtime2 = os.path.getmtime(tmp_path / "foo.gni")
+      gn_file = src_path / "BUILD.gn"
+      gni_file = src_path / "dir with space" / "foo.gni"
+      unused_gn_file = src_path / "unused" / "BUILD.gn"
+      unused_gn_file.parent.mkdir()
+      for mtime, path in enumerate([gn_file, gni_file, unused_gn_file], 1000):
+        path.write_text("", encoding="utf-8")
+        os.utime(path, (mtime, mtime))
 
+      # unused/BUILD.gn is the newest file, but it's not part of this build.
+      # deleted.gni is, but it doesn't exist anymore.
+      (build_path / "build.ninja.d").write_text(
+        "build.ninja.stamp: ../../BUILD.gn ../../dir\\ with\\ space/foo.gni "
+        "../../deleted.gni\n",
+        encoding="utf-8",
+      )
+
+      self.assertEqual(
+        os.path.getmtime(gni_file),
+        self.auditor._get_gn_file_mtime_max(build_path),
+      )
+
+  def test_get_gn_file_mtime_max_without_ninja_deps(self):
+    with tempfile.TemporaryDirectory() as tmp_dir:
+      with self.assertRaisesRegex(FileNotFoundError, "build.ninja.d"):
+        self.auditor._get_gn_file_mtime_max(Path(tmp_dir))
+
+  def test_get_files_without_git_repo(self):
+    """Tests throwaway --git-dir file discovery for Cog / non-git worktrees."""
+    with tempfile.TemporaryDirectory() as outer_tmp:
+      outer_path = Path(outer_tmp)
+      src_path = outer_path / "chromium"
+      src_path.mkdir()
+
+      # DEPS-managed CIPD/GCS directories are gitignored in Chromium, which is
+      # how they are kept out of the listing (no .gclient_entries parsing).
+      (src_path / ".gitignore").write_text(
+        "out/\n*.gen.cc\n/third_party/cipd_pkg/\n", encoding="utf-8"
+      )
+      (src_path / "chrome").mkdir()
+      (src_path / "chrome" / ".gitignore").write_text(
+        "ignored_dir/\n", encoding="utf-8"
+      )
+      (src_path / ".gitmodules").write_text(
+        '[submodule "third_party/submod"]\n\tpath = third_party/submod\n'
+        # A submodule whose *name* contains "path": its url/branch keys must
+        # not leak into the excludes (regression test for the --get-regexp
+        # anchoring in _build_worktree_excludes()).
+        '[submodule "third_party/xpath"]\n'
+        "\tpath = third_party/xpath\n"
+        "\turl = https://example.com/xpath.git\n"
+        "\tbranch = main\n",
+        encoding="utf-8",
+      )
+
+      files_to_create = [
+        "chrome/browser/foo.cc",
+        "chrome/browser/UPPERCASE_TEST.cc",
+        "chrome/browser/my_test_helper.cc",
+        "chrome/browser/foo.gen.cc",
+        "chrome/ignored_dir/bar.cc",
+        "out/Default/obj.cc",
+        "third_party/submod/sub.cc",
+        "third_party/xpath/x.cc",
+        "third_party/cipd_pkg/lib.cc",
+        "tools/tool.cc",
+        "ui/v1.0/dotted_dir.cc",
+      ]
+      for rel in files_to_create:
+        full_path = src_path / rel
+        full_path.parent.mkdir(parents=True, exist_ok=True)
+        full_path.write_text("", encoding="utf-8")
+
+      auditor = Auditor(get_current_platform())
+      auditor._get_safe_list()
+      self.assertIn("/tools/", auditor._safe_list_all_git_excludes)
+      self.assertIn("*test*", auditor._safe_list_all_git_excludes)
+
+      with (
+        mock.patch("auditor.SRC_DIR", src_path),
+        mock.patch("auditor.is_cog", return_value=True),
+      ):
+        file_filter = FileFilter()
+
+        # Only `submodule.<name>.path` values become excludes; the url/branch
+        # of the "xpath" submodule must not.
+        excludes = file_filter._build_worktree_excludes("git")
         self.assertEqual(
-          max(mtime1, mtime2), self.auditor._get_gn_file_mtime_max()
+          ["/third_party/submod/", "/third_party/xpath/"], excludes
         )
+
+        file_filter.get_files_from_git(
+          extra_excludes=auditor._safe_list_all_git_excludes
+        )
+        # Submodules, .gitignore (top-level & nested, incl. the CIPD dir),
+        # /tools/, and lowercase *test* are excluded; UPPERCASE_TEST.cc stays
+        # because core.ignoreCase=false matches safe_list.txt's case-sensitive
+        # regexes.
+        self.assertCountEqual(
+          [
+            Path(".gitignore"),
+            Path(".gitmodules"),
+            Path("chrome/.gitignore"),
+            Path("chrome/browser/foo.cc"),
+            Path("chrome/browser/UPPERCASE_TEST.cc"),
+            Path("ui/v1.0/dotted_dir.cc"),
+          ],
+          file_filter.git_files,
+        )
+
+        # Scoping to a directory/prefix.
+        file_filter.get_files_from_git(
+          path_filters=["chrome/browser"],
+          extra_excludes=auditor._safe_list_all_git_excludes,
+        )
+        self.assertCountEqual(
+          [
+            Path("chrome/browser/foo.cc"),
+            Path("chrome/browser/UPPERCASE_TEST.cc"),
+          ],
+          file_filter.git_files,
+        )
+
+        # Scoping to a directory whose name contains a ".", with and without
+        # the trailing slash (AuditorUI strips it). Must not be mistaken for a
+        # nonexistent file and dropped.
+        for dotted_dir_filter in ["ui/v1.0/", "ui/v1.0"]:
+          file_filter.get_files_from_git(
+            path_filters=[dotted_dir_filter],
+            extra_excludes=auditor._safe_list_all_git_excludes,
+          )
+          self.assertEqual(
+            [Path("ui/v1.0/dotted_dir.cc")],
+            file_filter.git_files,
+            msg=dotted_dir_filter,
+          )
+
+        # Scoping to a single existing file.
+        file_filter.get_files_from_git(
+          path_filters=["chrome/browser/foo.cc"],
+          extra_excludes=auditor._safe_list_all_git_excludes,
+        )
+        self.assertEqual([Path("chrome/browser/foo.cc")], file_filter.git_files)
+
+        # Scoping to a deleted/nonexistent file should return [] and still mark
+        # FileFilter initialized so get_filtered_files() does not raise.
+        deleted_filter = FileFilter()
+        deleted_filter.get_files_from_git(
+          path_filters=["chrome/browser/deleted_file.cc"],
+          extra_excludes=auditor._safe_list_all_git_excludes,
+        )
+        self.assertEqual([], deleted_filter.git_files)
+        self.assertEqual([], deleted_filter.get_filtered_files([".cc"], {}, ""))
+
+        # Results must not depend on the caller's cwd: `git ls-files` lists
+        # paths relative to (and only below) the current directory when run
+        # from inside the worktree, so the listing must always run from
+        # SRC_DIR. Regression test for running the auditor from a subdirectory.
+        original_cwd = os.getcwd()
+        os.chdir(src_path / "chrome" / "browser")
+        try:
+          subdir_filter = FileFilter()
+          subdir_filter.get_files_from_git(
+            extra_excludes=auditor._safe_list_all_git_excludes
+          )
+          self.assertCountEqual(
+            [
+              Path(".gitignore"),
+              Path(".gitmodules"),
+              Path("chrome/.gitignore"),
+              Path("chrome/browser/foo.cc"),
+              Path("chrome/browser/UPPERCASE_TEST.cc"),
+              Path("ui/v1.0/dotted_dir.cc"),
+            ],
+            subdir_filter.git_files,
+          )
+          subdir_filter.get_files_from_git(
+            path_filters=["chrome/browser/foo.cc"],
+            extra_excludes=auditor._safe_list_all_git_excludes,
+          )
+          self.assertEqual(
+            [Path("chrome/browser/foo.cc")], subdir_filter.git_files
+          )
+        finally:
+          os.chdir(original_cwd)
+
+        # An empty .gitmodules (git config exits with 1 = "no matches") is not
+        # an error; it just contributes no excludes.
+        gitmodules_path = src_path / ".gitmodules"
+        gitmodules_path.write_text("", encoding="utf-8")
+        self.assertEqual(
+          ["/tools/"], file_filter._build_worktree_excludes("git", ["/tools/"])
+        )
+
+        # A malformed .gitmodules must fail loudly rather than silently
+        # dropping the submodule excludes (which would make the listing
+        # include every file of every submodule).
+        gitmodules_path.write_text(
+          '[submodule "third_party/submod"\n\tpath = third_party/submod\n',
+          encoding="utf-8",
+        )
+        with self.assertRaisesRegex(RuntimeError, "submodule paths"):
+          file_filter._build_worktree_excludes("git")
 
   def test_header_annotations_error(self):
     """Check that header files are rejected during deserialization."""
@@ -1106,6 +1406,34 @@ supervised_user_refresh_token_fetcher\t\tSupervised Users\tFetches an OAuth2 ref
     self.assertEqual(1, len(errors))
     self.assertEqual(ErrorType.HEADER_ANNOTATION, errors[0].type)
     self.assertTrue("not header files" in str(errors[0]))
+
+  def test_check_annotations_cli_length_threshold(self):
+    """Check that long file-path lists trigger a full run ([]), staying below
+    Windows cmd.exe's 8191-character command-line limit."""
+    sys.path.insert(0, str(SCRIPT_DIR.parent))
+    try:
+      import check_annotations
+
+      with mock.patch.object(
+        check_annotations, "NetworkTrafficAnnotationTools"
+      ) as mock_tools_cls:
+        checker = check_annotations.NetworkTrafficAnnotationChecker(
+          build_path="out/Debug"
+        )
+        # 10 short paths (~180 chars total) -> partial run returns file_paths.
+        short_paths = [f"chrome/foo_{i}.java" for i in range(10)]
+        mock_tools_cls.return_value.GetModifiedFiles.return_value = short_paths
+        self.assertEqual(short_paths, checker.GetFilePaths(False))
+
+        # 60 long Java paths (< 100 files, but > 6000 chars total) -> full run ([]).
+        long_paths = [
+          f"chrome/browser/ui/android/toolbar/java/src/org/chromium/chrome/browser/toolbar/SomeVeryLongClassName_{i:02d}Test.java"
+          for i in range(60)
+        ]
+        mock_tools_cls.return_value.GetModifiedFiles.return_value = long_paths
+        self.assertEqual([], checker.GetFilePaths(False))
+    finally:
+      sys.path.pop(0)
 
 
 if __name__ == "__main__":

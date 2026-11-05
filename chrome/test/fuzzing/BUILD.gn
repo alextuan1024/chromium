@@ -19,6 +19,24 @@ group("test") {
   ]
 }
 
+source_set("js_in_process_fuzzer_utils") {
+  testonly = true
+  sources = [
+    "js_in_process_fuzzer_utils.cc",
+    "js_in_process_fuzzer_utils.h",
+  ]
+  deps = [ "//base" ]
+}
+
+source_set("unit_tests") {
+  testonly = true
+  sources = [ "js_in_process_fuzzer_utils_unittest.cc" ]
+  deps = [
+    ":js_in_process_fuzzer_utils",
+    "//testing/gtest",
+  ]
+}
+
 # TODO(crbug.com/446587184): Enable in_process_fuzzer_runner on Android.
 if (fuzzing_engine_supports_custom_main && !is_android) {
   static_library("in_process_fuzzer_runner") {
@@ -29,6 +47,7 @@ if (fuzzing_engine_supports_custom_main && !is_android) {
     ]
     deps = [
       ":in_process_fuzzer_buildflags",
+      "//chrome/test/base:testing_browser_process_impl",
       "//testing/libfuzzer:fuzzing_engine_no_main",
     ]
     if (!is_android) {
@@ -73,16 +92,21 @@ if (!is_android) {
     sources = [ "js_in_process_fuzzer.cc" ]
     deps = [
       ":in_process_fuzzer_buildflags",
+      ":js_in_process_fuzzer_utils",
       "//chrome/browser",
+      "//services/webnn/public/mojom:features",
     ]
-    data_deps = [
-      "//mojo/public/js:bindings_lite",
-      "//mojo/public/mojom/base:base_js_data_deps",
-      "//services/network/public/mojom:url_loader_base_js_data_deps",
-      "//third_party/blink/public/mojom:mojom_platform_js_data_deps",
-      "//url/mojom:url_mojom_gurl_js_data_deps",
-      "//url/mojom:url_mojom_scheme_host_port_js_data_deps",
-    ]
+    if (enable_mojom_fuzzer) {
+      # Mojo scripts pages, loading the MojoJS bindings of the fuzzed
+      # interfaces. Fuzzilli profiles tell the fuzzer which page to load.
+      data_deps = [
+        "//services/webnn/public/mojom:mojom_fuzzilli",
+        "//third_party/blink/public/mojom:authenticator_mojo_bindings_fuzzilli",
+        "//third_party/blink/public/mojom:credentialmanagement_mojo_bindings_fuzzilli",
+        "//third_party/blink/public/mojom:mojom_modules_fuzzilli",
+        "//third_party/blink/public/mojom:mojom_platform_fuzzilli",
+      ]
+    }
     is_fuzzilli_compatible = true
   }
 
@@ -148,6 +172,7 @@ if (!is_android) {
 
       deps = [
         ":domato_html_fuzzer_grammar",
+        ":in_process_proto_fuzzer_runner",
         "//testing/libfuzzer/research/domatolpm:domatolpm_context",
         "//third_party/libprotobuf-mutator",
       ]
@@ -162,7 +187,7 @@ if (!is_android) {
       sources = [ "geolocation_element_css_fuzzer.cc" ]
       deps = [
         ":geolocation_element_css_fuzzer_grammar",
-        "//chrome/test/fuzzing:in_process_fuzzer_runner",
+        ":in_process_proto_fuzzer_runner",
         "//components/viz/common",
         "//content/public/browser",
         "//testing/libfuzzer/research/domatolpm:domatolpm_context",

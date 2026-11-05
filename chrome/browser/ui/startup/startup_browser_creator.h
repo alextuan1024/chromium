@@ -175,6 +175,7 @@ class StartupBrowserCreator {
       const base::CommandLine& command_line);
 
  private:
+  friend class StartupBrowserCreatorActivationTest;
   friend class StartupBrowserCreatorImpl;
   friend class StartupBrowserCreatorInfobarsTest;
   friend class StartupBrowserCreatorInfobarsWithoutStartupWindowTest;
@@ -231,6 +232,10 @@ class StartupBrowserCreator {
                            LastUsedProfilesWithWebApp);
   FRIEND_TEST_ALL_PREFIXES(StartupBrowserCreatorTest,
                            KSameTabSwitchReplacesActiveTab);
+  FRIEND_TEST_ALL_PREFIXES(StartupBrowserCreatorTest,
+                           OpenInBackgroundSwitchKeepsActiveTab);
+  FRIEND_TEST_ALL_PREFIXES(StartupBrowserCreatorTest,
+                           OpenInBackgroundSwitchActivatesFirstTabOfNewWindow);
 
   bool ProcessCmdLineImpl(const base::CommandLine& command_line,
                           const base::FilePath& cur_dir,
@@ -265,6 +270,14 @@ class StartupBrowserCreator {
       const base::FilePath& cur_dir,
       StartupProfileMode mode,
       Profile* profile);
+
+  // Callback after the Guest profile has been loaded asynchronously for a
+  // Guest launch handled by `ProcessCommandLineAlreadyRunning()`.
+  static void OnGuestProfileLoadedForAlreadyRunning(
+      const base::CommandLine& command_line,
+      const base::FilePath& cur_dir,
+      const StartupProfilePathInfo& profile_path_info,
+      Profile* guest_profile);
 
   // Returns true once a profile was activated. Used by the
   // StartupBrowserCreatorTest.LastUsedProfileActivated test.

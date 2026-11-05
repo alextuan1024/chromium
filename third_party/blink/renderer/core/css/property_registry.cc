@@ -4,7 +4,21 @@
 
 #include "third_party/blink/renderer/core/css/property_registry.h"
 
+#include <utility>
+
+#include "base/atomic_sequence_num.h"
+#include "base/memory/values_equivalent.h"
+#include "third_party/blink/renderer/platform/wtf/text/string_builder.h"
+
 namespace blink {
+
+AtomicString PropertyRegistry::AllocatePrivatePropertyName() {
+  static base::AtomicSequenceNumber sequence;
+  StringBuilder builder;
+  builder.Append(kPrivatePropertyNamePrefix);
+  builder.AppendNumber(sequence.GetNext());
+  return AtomicString(builder.ReleaseString());
+}
 
 void PropertyRegistry::RegisterProperty(const AtomicString& name,
                                         PropertyRegistration& registration) {
@@ -14,20 +28,69 @@ void PropertyRegistry::RegisterProperty(const AtomicString& name,
   version_++;
 }
 
-void PropertyRegistry::DeclareProperty(const AtomicString& name,
-                                       PropertyRegistration& registration) {
-  declared_properties_.Set(name, &registration);
-  declared_viewport_unit_flags_ |= registration.GetViewportUnitFlags();
-  version_++;
+bool PropertyRegistry::UpdateDeclaredProperties(RegistrationMap registrations) {
+  bool changed = registrations.size() != declared_properties_.size();
+  unsigned viewport_unit_flags = 0;
+  for (auto& entry : registrations) {
+    auto old_entry = declared_properties_.find(entry.key);
+    // DevTools can mutate the descriptors of an existing StyleRuleProperty.
+    if (old_entry != declared_properties_.end() &&
+        old_entry->value->PropertyRule() == entry.value->PropertyRule() &&
+        old_entry->value->Syntax() == entry.value->Syntax() &&
+        old_entry->value->Inherits() == entry.value->Inherits() &&
+        base::ValuesEquivalent(old_entry->value->Initial(),
+                               entry.value->Initial())) {
+      // Reuse the old object to preserve its referenced state.
+      entry.value = old_entry->value;
+    } else {
+      changed = true;
+    }
+    viewport_unit_flags |= entry.value->GetViewportUnitFlags();
+  }
+  declared_properties_ = std::move(registrations);
+  declared_viewport_unit_flags_ = viewport_unit_flags;
+  if (changed) {
+    version_++;
+  }
+  return changed;
 }
 
-void PropertyRegistry::RemoveDeclaredProperties() {
-  if (declared_properties_.empty()) {
-    return;
+void PropertyRegistry::RegisterPrivateProperty(
+    const AtomicString& authored_name,
+    const AtomicString& private_name,
+    const CSSSyntaxDefinition& syntax) {
+  authored_private_names_.Set(private_name, authored_name);
+  private_registrations_.Set(
+      private_name,
+      MakeGarbageCollected<PropertyRegistration>(
+          private_name, syntax, /*inherits=*/true, /*initial=*/nullptr));
+}
+
+const AtomicString& PropertyRegistry::AuthoredPrivatePropertyName(
+    const AtomicString& private_name) const {
+  auto it = authored_private_names_.find(private_name);
+  return it == authored_private_names_.end() ? g_null_atom : it->value;
+}
+
+const PropertyRegistration* PropertyRegistry::PrivateRegistration(
+    const AtomicString& private_name) const {
+  auto it = private_registrations_.find(private_name);
+  return it == private_registrations_.end() ? nullptr : it->value.Get();
+}
+
+PropertyRegistry* PropertyRegistry::CopyPrivateRegistry() const {
+  auto* copy = MakeGarbageCollected<PropertyRegistry>();
+  for (const auto& entry : private_registrations_) {
+    const AtomicString& private_name = entry.key;
+    const PropertyRegistration* registration = entry.value.Get();
+    const AtomicString& authored_name =
+        AuthoredPrivatePropertyName(private_name);
+    CHECK(!authored_name.IsNull());
+    CHECK(registration);
+    copy->RegisterPrivateProperty(authored_name, private_name,
+                                  registration->Syntax());
   }
-  declared_properties_.clear();
-  declared_viewport_unit_flags_ = 0;
-  version_++;
+  return copy;
 }
 
 void PropertyRegistry::AddRegistrationForInspector(

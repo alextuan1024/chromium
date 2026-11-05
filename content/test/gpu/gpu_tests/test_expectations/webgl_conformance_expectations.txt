@@ -61,7 +61,12 @@
 #         angle-swiftshader
 #         angle-vulkan ]
 # Skia Renderer
-# tags: [ renderer-skia-gl
+# tags: [ renderer-graphite-dawn-d3d11
+#         renderer-graphite-dawn-d3d12
+#         renderer-graphite-dawn-gl
+#         renderer-graphite-dawn-metal
+#         renderer-graphite-dawn-vulkan
+#         renderer-skia-gl
 #         renderer-skia-vulkan
 #         renderer-software ]
 # Driver
@@ -90,6 +95,8 @@
 #         webgpu-shared-worker ]
 # WebGPU Compat context
 # tags: [ compat-default compat-min-es31 ]
+# WebGPU default features
+# tags: [ unsafe-webgpu-disabled unsafe-webgpu-enabled ]
 # Clang coverage
 # tags: [ clang-coverage no-clang-coverage ]
 # Skia Graphite
@@ -368,6 +375,7 @@ crbug.com/1490427 [ fuchsia fuchsia-board-qemu-x64 ] conformance/textures/misc/t
 crbug.com/1490427 [ fuchsia fuchsia-board-qemu-x64 ] conformance/textures/video/tex-2d-alpha-alpha-unsigned_byte.html [ Skip ]
 crbug.com/1490427 [ fuchsia fuchsia-board-qemu-x64 passthrough ] WebglExtension_EXT_texture_mirror_clamp_to_edge [ Skip ]
 crbug.com/1490427 [ fuchsia fuchsia-board-qemu-x64 ] conformance/extensions/oes-texture-float-linear.html [ Skip ]
+crbug.com/352104898 [ fuchsia fuchsia-board-qemu-x64 ] conformance/extensions/webgl-compressed-texture-size-limit.html [ Slow ]
 
 # Linux Intel
 # Can occasionally kill machines. Appears to be tied to kernel version, so can
@@ -452,13 +460,11 @@ crbug.com/angleproject/482223016 [ no-passthrough ] conformance/glsl/misc/shader
 
 crbug.com/443182226 [ angle-vulkan arm fuchsia ] conformance/uniforms/no-over-optimization-on-uniform-array-* [ Failure ]
 
-crbug.com/542707343 [ fuchsia ] conformance/textures/misc/texture-srgb-upload.html [ Failure ]
+crbug.com/542707343 [ angle-vulkan arm fuchsia ] conformance/textures/misc/texture-srgb-upload.html [ Failure ]
 
 ####################
 # Win failures     #
 ####################
-
-
 
 
 ## Win / AMD RX 5500 XT failures ##
@@ -479,7 +485,14 @@ crbug.com/1361088 [ win amd-0x7340 angle-d3d9 passthrough ] conformance/textures
 ## Vulkan / Win / NVIDIA / Passthrough command decoder ##
 
 crbug.com/40786644 [ win11 nvidia angle-vulkan passthrough ] conformance/glsl/bugs/pow-with-constant-exponent-should-not-crash.html [ Failure ]
-crbug.com/415086850 [ win11 nvidia-0x2184 angle-vulkan passthrough ] conformance/ogles/GL/mod/mod_001_to_008.html [ Failure ]
+crbug.com/572909266 [ win11 nvidia-0x2184 angle-vulkan passthrough ] conformance/ogles/GL/all/all_001_to_004.html [ RetryOnFailure ]
+crbug.com/572909266 [ win11 nvidia-0x2184 angle-vulkan passthrough ] conformance/ogles/GL/atan/atan_001_to_008.html [ RetryOnFailure ]
+crbug.com/572909266 [ win11 nvidia-0x2184 angle-vulkan passthrough ] conformance/ogles/GL/build/build_001_to_008.html [ RetryOnFailure ]
+crbug.com/572909266 [ win11 nvidia-0x2184 angle-vulkan passthrough ] conformance/ogles/GL/build/build_017_to_024.html [ RetryOnFailure ]
+crbug.com/572909266 [ win11 nvidia-0x2783 angle-vulkan passthrough ] conformance/ogles/GL/all/all_001_to_004.html [ RetryOnFailure ]
+crbug.com/572909266 [ win11 nvidia-0x2783 angle-vulkan passthrough ] conformance/ogles/GL/atan/atan_001_to_008.html [ RetryOnFailure ]
+crbug.com/572909266 [ win11 nvidia-0x2783 angle-vulkan passthrough ] conformance/ogles/GL/build/build_001_to_008.html [ RetryOnFailure ]
+crbug.com/572909266 [ win11 nvidia-0x2783 angle-vulkan passthrough ] conformance/ogles/GL/build/build_017_to_024.html [ RetryOnFailure ]
 
 ## Win / Qualcomm Snapdragon X Elite / D3D11
 crbug.com/41496016 [ win11 qualcomm-0x36334330 angle-d3d11 ] conformance/textures/misc/mipmap-fbo.html [ Failure ]
@@ -493,10 +506,12 @@ crbug.com/543976493 [ win11 nvidia-0x2184 nvidia_ge_32.0.16.1074 ] conformance/e
 # Mac failures     #
 ####################
 
+crbug.com/562980317 [ mac angle-metal debug ] conformance/extensions/webgl-compressed-texture-size-limit.html [ Slow ]
 
 ## Mac Intel failures ##
 
-crbug.com/527353878 [ mac intel-0x3e9b angle-metal ] conformance/extensions/khr-parallel-shader-compile.html [ RetryOnFailure ]
+crbug.com/527353878 [ amd-0x7340 angle-metal no-clang-coverage release sonoma ] conformance/extensions/khr-parallel-shader-compile.html [ RetryOnFailure ]
+crbug.com/527353878 [ angle-metal intel-0x3e9b sequoia ] conformance/extensions/khr-parallel-shader-compile.html [ RetryOnFailure ]
 
 ## Mac AMD failures ##
 
@@ -511,8 +526,6 @@ crbug.com/354627705 [ mac amd-0x7340 angle-metal ] conformance/extensions/webgl-
 ## Apple M2 ##
 
 crbug.com/537387984 [ mac apple-angle-metal-renderer:-apple-m2 asan ] conformance/glsl/misc/shader-with-for-loop.html [ Slow ]
-crbug.com/544806579 [ mac angle-swiftshader arch-arm64 asan ] conformance/rendering/gl-drawelements.html [ RetryOnFailure ]
-crbug.com/527353878 [ mac apple-angle-metal-renderer:-apple-m2 asan ] conformance/extensions/khr-parallel-shader-compile.html [ RetryOnFailure ]
 
 ####################
 # Linux failures   #
@@ -522,9 +535,9 @@ crbug.com/527353878 [ mac apple-angle-metal-renderer:-apple-m2 asan ] conformanc
 
 crbug.com/1021428 [ linux angle-vulkan passthrough intel ] WebglExtension_WEBGL_depth_texture [ Failure ]  # finder:disable-unused Not tested in Chromium, but tested by Intel.
 
-## Linux / OpenGL / GTX 1660 ##
+## Linux / OpenGL / NVIDIA ##
 
-crbug.com/498282277 [ linux angle-opengl nvidia-0x2184 ] conformance/extensions/oes-texture-float-with-canvas.html [ RetryOnFailure ]
+crbug.com/498282277 [ linux angle-opengl nvidia ] conformance/extensions/oes-texture-float-with-canvas.html [ RetryOnFailure ]
 
 ####################
 # Android failures #
@@ -564,7 +577,6 @@ crbug.com/1287280 [ android android-pixel-6 no-passthrough ] WebglExtension_OES_
 crbug.com/1287280 [ android android-pixel-6 no-passthrough ] WebglExtension_OES_texture_half_float_linear [ Failure ]
 crbug.com/1287280 [ android android-pixel-6 no-passthrough ] WebglExtension_WEBGL_color_buffer_float [ Failure ]
 crbug.com/40236526 [ android android-pixel-6 no-passthrough ] conformance/rendering/blending.html [ Failure ]
-crbug.com/465162387 [ android android-pixel-6 angle-opengles passthrough ] conformance/extensions/oes-element-index-uint.html [ Failure ]
 
 ## Pixel 10 ##
 
@@ -574,12 +586,6 @@ crbug.com/446122639 [ android android-pixel-10 ] conformance/glsl/functions/glsl
 crbug.com/551573368 [ android android-pixel-10 ] conformance/glsl/variables/glsl-built-ins.html [ Failure ]
 crbug.com/446122639 [ android android-pixel-10 ] conformance/ogles/GL/build/build_009_to_016.html [ Failure ]
 crbug.com/446122639 [ android android-pixel-10 ] conformance/rendering/gl-scissor-fbo-test.html [ Failure ]
-crbug.com/446122639 [ android android-pixel-10 ] conformance/textures/canvas/tex-2d-rgb-rgb-unsigned_byte.html [ Failure ]
-crbug.com/446122639 [ android android-pixel-10 ] conformance/textures/canvas/tex-2d-rgba-rgba-unsigned_byte.html [ Failure ]
-crbug.com/446122639 [ android android-pixel-10 ] conformance/textures/misc/texture-srgb-upload.html [ Failure ]
-crbug.com/446122639 [ android android-pixel-10 ] conformance/textures/misc/texture-upload-cube-maps.html [ Failure ]
-crbug.com/446122639 [ android android-pixel-10 ] conformance/textures/webgl_canvas/tex-2d-rgb-rgb-unsigned_byte.html [ Failure ]
-crbug.com/446122639 [ android android-pixel-10 ] conformance/textures/webgl_canvas/tex-2d-rgba-rgba-unsigned_byte.html [ Failure ]
 # New failures from OS upgrade.
 crbug.com/513192891 [ android android-pixel-10 angle-opengles ] conformance/rendering/out-of-bounds-array-buffers.html [ Failure ]
 
@@ -587,7 +593,9 @@ crbug.com/513192891 [ android android-pixel-10 angle-opengles ] conformance/rend
 
 crbug.com/558993697 [ android android-pixel-11-pro-xl ] WebglExtension_OES_texture_float_linear [ Failure ]
 crbug.com/558993697 [ android android-pixel-11-pro-xl ] conformance/glsl/functions/glsl-function-cross.html [ Failure ]
+crbug.com/576731808 [ android android-pixel-11-pro-xl angle-opengles passthrough ] conformance/misc/uninitialized-test.html [ Failure ]
 crbug.com/558993697 [ android android-pixel-11-pro-xl ] conformance/offscreencanvas/offscreencanvas-transfer-image-bitmap.html [ Failure ]
+crbug.com/576731808 [ android android-pixel-11-pro-xl angle-opengles passthrough ] conformance/textures/misc/tex-input-validation.html [ Failure ]
 
 ## Misc failures ##
 
@@ -647,11 +655,14 @@ crbug.com/1232446 [ chromeos chromeos-board-amd64-generic ] conformance/renderin
 # Linux/Wayland failures #
 ###########################
 
-crbug.com/1185344 [ angle-opengles linux display-server-wayland intel ] WebglExtension_EXT_shader_texture_lod [ Failure ]
 
-crbug.com/angleproject/5038 [ linux intel display-server-wayland ] conformance/extensions/ext-color-buffer-half-float.html [ Failure ]
 
 crbug.com/541251909 [ linux amd display-server-wayland ] conformance/extensions/ext-color-buffer-half-float.html [ Failure ]
+crbug.com/577119296 [ linux intel-0x4680 display-server-wayland angle-opengles ] WebglExtension_EXT_shader_texture_lod [ Failure ]
+crbug.com/577119296 [ linux intel-0x4680 display-server-wayland ] conformance/extensions/ext-sRGB.html [ Failure ]
+crbug.com/563391402 [ linux nvidia-0x2783 display-server-wayland ] WebglExtension_WEBGL_draw_buffers [ Failure ]
+crbug.com/563391402 [ linux nvidia-0x2783 display-server-wayland ] conformance/glsl/bugs/vector-matrix-constructor-scalarization.html [ Failure ]
+crbug.com/563391402 [ linux nvidia-0x2783 display-server-wayland ] conformance/rendering/draw-arrays-out-of-bounds.html [ Failure ]
 
 ###############################
 # New failures in WebGL rolls #
@@ -660,9 +671,11 @@ crbug.com/541251909 [ linux amd display-server-wayland ] conformance/extensions/
 # Roll WebGL d1b65aa..b934957.
 crbug.com/1448573 [ android angle-disabled no-passthrough qualcomm renderer-skia-gl ] conformance/extensions/oes-texture-float.html [ Failure ]
 
-
-
-
+########################################################################
+# Temporary suppressions for introduction of texElementSubImage2D
+########################################################################
+crbug.com/418089323 conformance/offscreencanvas/methods.html [ Failure ]
+crbug.com/418089323 conformance/offscreencanvas/methods-worker.html [ Failure ]
 
 #######################################################################
 # Automated Entries After This Point - Do Not Manually Add Below Here #

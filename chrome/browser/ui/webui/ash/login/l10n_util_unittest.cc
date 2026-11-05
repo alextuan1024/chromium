@@ -6,28 +6,64 @@
 
 #include <stddef.h>
 
+#include <optional>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "ash/constants/ash_features.h"
+#include "base/check_deref.h"
 #include "base/compiler_specific.h"
-#include "base/run_loop.h"
+#include "base/functional/bind.h"
+#include "base/i18n/language_tag.h"
+#include "base/i18n/tag_converters.h"
 #include "base/test/scoped_feature_list.h"
-#include "base/test/task_environment.h"
+#include "base/test/test_future.h"
 #include "base/values.h"
+#include "chrome/browser/ash/base/locale_util.h"
 #include "chrome/browser/ash/customization/customization_document.h"
 #include "chrome/browser/ash/input_method/input_method_configuration.h"
 #include "chrome/browser/ash/login/fjord_oobe/fjord_oobe_util.h"
+#include "chrome/browser/global_features.h"
 #include "chrome/browser/ui/webui/ash/login/l10n_util_test_util.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chromeos/ash/components/system/fake_statistics_provider.h"
+#include "components/application_locale_storage/application_locale_storage.h"
+#include "content/public/browser/browser_thread.h"
+#include "content/public/test/browser_task_environment.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/ime/ash/component_extension_ime_manager.h"
+#include "ui/base/ime/ash/extension_ime_util.h"
+#include "ui/base/ime/ash/fake_input_method_delegate.h"
+#include "ui/base/ime/ash/input_method_descriptor.h"
+#include "ui/base/ime/ash/input_method_util.h"
 #include "ui/base/ime/ash/mock_component_extension_ime_manager_delegate.h"
+#include "ui/base/l10n/l10n_util.h"
+#include "url/gurl.h"
 
 namespace ash {
 
+using ::base::i18n::GetKnownLanguageTag;
+using ::base::i18n::GetLanguageTagFromString;
+using ::base::i18n::LanguageTag;
+
 namespace {
+
+class TestInputMethodManager : public MockInputMethodManagerWithInputMethods {
+ public:
+  TestInputMethodManager() : util_(&delegate_) {
+    delegate_.set_get_localized_string_callback(
+        base::BindRepeating(&l10n_util::GetStringUTF16));
+  }
+
+  input_method::InputMethodUtil* GetInputMethodUtil() override {
+    return &util_;
+  }
+
+ private:
+  input_method::FakeInputMethodDelegate delegate_;
+  input_method::InputMethodUtil util_;
+};
 
 void VerifyOnlyUILanguages(const base::ListValue& list) {
   for (const auto& value : list) {
@@ -65,11 +101,23 @@ class L10nUtilTest : public testing::Test {
   void SetInputMethods1();
   void SetInputMethods2();
 
+  input_method::InputMethodDescriptors GetDescriptors() {
+    return CHECK_DEREF(input_manager_.GetComponentExtensionIMEManager())
+        .GetXkbIMEAsInputMethodDescriptor();
+  }
+
+  const LanguageTag& GetApplicationLocale() {
+    return TestingBrowserProcess::GetGlobal()
+        ->GetFeatures()
+        ->application_locale_storage()
+        ->GetTag();
+  }
+
  protected:
-  MockInputMethodManagerWithInputMethods input_manager_;
+  TestInputMethodManager input_manager_;
 
  private:
-  base::test::TaskEnvironment task_environment_;
+  content::BrowserTaskEnvironment task_environment_;
   system::ScopedFakeStatisticsProvider scoped_fake_statistics_provider_;
 };
 
@@ -79,8 +127,6 @@ L10nUtilTest::L10nUtilTest() {
   input_manager_.SetComponentExtensionIMEManager(
       std::make_unique<ComponentExtensionIMEManager>(
           std::move(mock_component_extension_ime_manager_delegate)));
-
-  base::RunLoop().RunUntilIdle();
 }
 
 void L10nUtilTest::SetInputMethods1() {
@@ -102,11 +148,53 @@ TEST_F(L10nUtilTest, GetUILanguageList) {
   SetInputMethods1();
 
   // This requires initialized StatisticsProvider (see L10nUtilTest()).
-  auto list(GetUILanguageList(
-      TestingBrowserProcess::GetGlobal()->GetApplicationLocale(), nullptr,
-      std::string(), &input_manager_));
+  auto list(GetUILanguageList(GetApplicationLocale(), nullptr, std::string(),
+                              GetDescriptors()));
 
   VerifyOnlyUILanguages(list);
+}
+
+TEST_F(L10nUtilTest, ResolveUILanguageList) {
+  SetInputMethods1();
+
+  base::test::TestFuture<base::ListValue, const std::string&,
+                         const std::string&>
+      future;
+  ResolveUILanguageList(TestingBrowserProcess::GetGlobal()
+                            ->GetFeatures()
+                            ->application_locale_storage()
+                            ->GetTag(),
+                        /*language_switch_result=*/nullptr, input_manager_,
+                        future.GetCallback());
+
+  auto [language_list, language_list_locale, selected_language] = future.Take();
+  VerifyOnlyUILanguages(language_list);
+  EXPECT_FALSE(language_list.empty());
+  EXPECT_EQ(language_list_locale,
+            TestingBrowserProcess::GetGlobal()->GetApplicationLocale());
+  EXPECT_EQ(selected_language,
+            TestingBrowserProcess::GetGlobal()->GetApplicationLocale());
+}
+
+TEST_F(L10nUtilTest, ResolveUILanguageListWithSwitchResult) {
+  SetInputMethods1();
+
+  base::test::TestFuture<base::ListValue, const std::string&,
+                         const std::string&>
+      future;
+  ResolveUILanguageList(
+      TestingBrowserProcess::GetGlobal()
+          ->GetFeatures()
+          ->application_locale_storage()
+          ->GetTag(),
+      std::make_unique<locale_util::LanguageSwitchResult>("fr", "fr", true),
+      input_manager_, future.GetCallback());
+
+  auto [language_list, language_list_locale, selected_language] = future.Take();
+  VerifyOnlyUILanguages(language_list);
+  EXPECT_FALSE(language_list.empty());
+  EXPECT_EQ(language_list_locale, "fr");
+  EXPECT_EQ(selected_language, "fr");
 }
 
 TEST_F(L10nUtilTest, FindMostRelevantLocale) {
@@ -115,21 +203,27 @@ TEST_F(L10nUtilTest, FindMostRelevantLocale) {
     available_locales.Append(base::DictValue().Set("value", locale));
   }
 
-  std::vector<std::string> most_relevant_language_codes;
-  EXPECT_EQ("en-US", FindMostRelevantLocale(most_relevant_language_codes,
-                                            available_locales, "en-US"));
+  const LanguageTag fallback_locale = GetKnownLanguageTag("en-US");
+  std::vector<LanguageTag> most_relevant_language_codes;
+  EXPECT_EQ(fallback_locale,
+            FindMostRelevantLocale(most_relevant_language_codes,
+                                   available_locales, fallback_locale));
 
-  most_relevant_language_codes.push_back("xx");
-  EXPECT_EQ("en-US", FindMostRelevantLocale(most_relevant_language_codes,
-                                            available_locales, "en-US"));
+  most_relevant_language_codes.push_back(
+      GetLanguageTagFromString("xx").value());
+  EXPECT_EQ(fallback_locale,
+            FindMostRelevantLocale(most_relevant_language_codes,
+                                   available_locales, fallback_locale));
 
-  most_relevant_language_codes.push_back("fr");
-  EXPECT_EQ("fr", FindMostRelevantLocale(most_relevant_language_codes,
-                                         available_locales, "en-US"));
+  most_relevant_language_codes.push_back(GetKnownLanguageTag("fr"));
+  EXPECT_EQ(GetKnownLanguageTag("fr"),
+            FindMostRelevantLocale(most_relevant_language_codes,
+                                   available_locales, fallback_locale));
 
-  most_relevant_language_codes.push_back("de");
-  EXPECT_EQ("fr", FindMostRelevantLocale(most_relevant_language_codes,
-                                         available_locales, "en-US"));
+  most_relevant_language_codes.push_back(GetKnownLanguageTag("de"));
+  EXPECT_EQ(GetKnownLanguageTag("fr"),
+            FindMostRelevantLocale(most_relevant_language_codes,
+                                   available_locales, fallback_locale));
 }
 
 void InitStartupCustomizationDocumentForTesting(const std::string& manifest) {
@@ -158,9 +252,8 @@ TEST_F(L10nUtilTest, GetUILanguageListMulti) {
   SetInputMethods2();
 
   // This requires initialized StatisticsProvider (see L10nUtilTest()).
-  auto list(GetUILanguageList(
-      TestingBrowserProcess::GetGlobal()->GetApplicationLocale(), nullptr,
-      std::string(), &input_manager_));
+  auto list(GetUILanguageList(GetApplicationLocale(), nullptr, std::string(),
+                              GetDescriptors()));
 
   VerifyOnlyUILanguages(list);
 
@@ -175,15 +268,15 @@ TEST_F(L10nUtilTest, GetUILanguageListMulti) {
 }
 
 TEST_F(L10nUtilTest, GetUILanguageListWithMostRelevant) {
-  std::vector<std::string> most_relevant_language_codes;
-  most_relevant_language_codes.push_back("it");
-  most_relevant_language_codes.push_back("de");
-  most_relevant_language_codes.push_back("nonexistent");
+  const std::vector<LanguageTag> most_relevant_language_codes = {
+      GetKnownLanguageTag("it"), GetKnownLanguageTag("de"),
+      // Not an available UI language.
+      GetLanguageTagFromString("xx").value()};
 
   // This requires initialized StatisticsProvider (see L10nUtilTest()).
-  auto list(GetUILanguageList(
-      TestingBrowserProcess::GetGlobal()->GetApplicationLocale(),
-      &most_relevant_language_codes, std::string(), &input_manager_));
+  auto list(GetUILanguageList(GetApplicationLocale(),
+                              &most_relevant_language_codes, std::string(),
+                              GetDescriptors()));
 
   VerifyOnlyUILanguages(list);
 
@@ -192,6 +285,59 @@ TEST_F(L10nUtilTest, GetUILanguageListWithMostRelevant) {
   VerifyLanguageCode(list, 0, "it");
   VerifyLanguageCode(list, 1, "de");
   VerifyLanguageCode(list, 2, kMostRelevantLanguagesDivider);
+}
+
+TEST_F(L10nUtilTest, GetKeyboardLayoutsForLocaleSelectsLocaleLayout) {
+  const std::string us_ime_id =
+      input_method::InputMethodUtil::GetFallbackInputMethodDescriptor().id();
+  const std::string fr_ime_id =
+      extension_ime_util::GetInputMethodIDByEngineID("xkb:fr::fra");
+  input_manager_.GetInputMethodUtil()->AppendInputMethods(
+      {input_method::InputMethodDescriptor(
+          fr_ime_id, /*name=*/"", /*indicator=*/"FR", /*keyboard_layout=*/"fr",
+          /*language_codes=*/{"fr"}, /*is_login_keyboard=*/true,
+          /*options_page_url=*/GURL(), /*input_view_url=*/GURL(),
+          /*handwriting_language=*/std::nullopt)});
+
+  base::test::TestFuture<base::ListValue> future;
+  GetKeyboardLayoutsForLocale(future.GetCallback(), "fr", &input_manager_);
+
+  const base::ListValue& layouts = future.Get();
+  ASSERT_EQ(2u, layouts.size());
+  EXPECT_EQ(us_ime_id, *layouts[0].GetDict().FindString("value"));
+  EXPECT_FALSE(layouts[0].GetDict().FindBool("selected").value_or(true));
+  EXPECT_EQ(fr_ime_id, *layouts[1].GetDict().FindString("value"));
+  EXPECT_TRUE(layouts[1].GetDict().FindBool("selected").value_or(false));
+}
+
+TEST_F(L10nUtilTest,
+       GetKeyboardLayoutsForLocaleSelectsFallbackWhenNoXkbLayoutForLocale) {
+  const std::string de_ime_id =
+      extension_ime_util::GetInputMethodIDByEngineID("xkb:de::ger");
+  const std::string pinyin_ime_id =
+      extension_ime_util::GetInputMethodIDByEngineID("zh-t-i0-pinyin");
+  input_method::InputMethodUtil* util = input_manager_.GetInputMethodUtil();
+  util->ResetInputMethods(
+      {input_method::InputMethodDescriptor(
+           de_ime_id, /*name=*/"", /*indicator=*/"DE", /*keyboard_layout=*/"de",
+           /*language_codes=*/{"de"}, /*is_login_keyboard=*/true,
+           /*options_page_url=*/GURL(), /*input_view_url=*/GURL(),
+           /*handwriting_language=*/std::nullopt),
+       input_method::InputMethodDescriptor(
+           pinyin_ime_id, /*name=*/"Pinyin", /*indicator=*/"CN",
+           /*keyboard_layout=*/"us", /*language_codes=*/{"zh-CN"},
+           /*is_login_keyboard=*/false, /*options_page_url=*/GURL(),
+           /*input_view_url=*/GURL(),
+           /*handwriting_language=*/std::nullopt)});
+  util->SetHardwareKeyboardLayoutForTesting("xkb:de::ger");
+
+  base::test::TestFuture<base::ListValue> future;
+  GetKeyboardLayoutsForLocale(future.GetCallback(), "zh-CN", &input_manager_);
+
+  const base::ListValue& layouts = future.Get();
+  ASSERT_EQ(1u, layouts.size());
+  EXPECT_EQ(de_ime_id, *layouts[0].GetDict().FindString("value"));
+  EXPECT_TRUE(layouts[0].GetDict().FindBool("selected").value_or(false));
 }
 
 class L10nUtilTestWithFjordOobe : public L10nUtilTest {
@@ -221,9 +367,8 @@ TEST_F(L10nUtilTestWithFjordOobe, TestLanguagesFiltered) {
   SetInputMethods1();
 
   // This requires initialized StatisticsProvider (see L10nUtilTest()).
-  auto list(GetUILanguageList(
-      TestingBrowserProcess::GetGlobal()->GetApplicationLocale(), nullptr,
-      std::string(), &input_manager_));
+  auto list(GetUILanguageList(GetApplicationLocale(), nullptr, std::string(),
+                              GetDescriptors()));
 
   VerifyAllowlistedLanguages(list);
 }

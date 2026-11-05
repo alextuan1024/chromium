@@ -18,6 +18,7 @@ class ActionItem;
 
 namespace views {
 class ActionViewController;
+class MenuItemView;
 }  // namespace views
 
 // A view containing the block-style section elements (e.g. New Tab, New Window,
@@ -26,15 +27,22 @@ class AppMenuBlockView : public views::BoxLayoutView {
   METADATA_HEADER(AppMenuBlockView, views::BoxLayoutView)
 
  public:
+  using ExecuteCommandCallback =
+      base::RepeatingCallback<void(actions::ActionId, int)>;
+
   AppMenuBlockView(
+      views::MenuItemView* parent_menu_item,
       actions::ActionItem* block_action_item,
       views::ActionViewController* action_view_controller,
       base::flat_map<int, raw_ptr<actions::BaseAction>>* command_to_action_map,
-      base::RepeatingCallback<void(actions::ActionId)>
-          execute_command_callback);
+      ExecuteCommandCallback execute_command_callback);
   AppMenuBlockView(const AppMenuBlockView&) = delete;
   AppMenuBlockView& operator=(const AppMenuBlockView&) = delete;
   ~AppMenuBlockView() override;
+
+  // views::BoxLayoutView:
+  gfx::Size CalculatePreferredSize(
+      const views::SizeBounds& available_size) const override;
 };
 
 using AppMenuBlockSectionView = AppMenuBlockView;

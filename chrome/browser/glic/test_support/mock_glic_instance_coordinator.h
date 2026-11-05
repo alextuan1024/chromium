@@ -7,7 +7,6 @@
 
 #include "chrome/browser/glic/host/context/glic_delegating_sharing_manager.h"
 #include "chrome/browser/glic/public/service/glic_instance_coordinator.h"
-#include "chrome/browser/glic/widget/glic_view.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -24,10 +23,19 @@ class MockGlicInstanceCoordinator
               IsConversationPresent,
               (const std::string&),
               (const, override));
+  MOCK_METHOD(bool,
+              IsConversationPanelShowingForTab,
+              (const std::string&, const tabs::TabInterface*),
+              (const, override));
   MOCK_METHOD(GlicInstanceCoordinator::ActivateTabResult,
               ActivateTabWithConversation,
               (const std::string&),
               (override));
+  MOCK_METHOD(GlicInstance*,
+              GetInstanceForConversationId,
+              (const std::string&),
+              (const, override));
+  MOCK_METHOD(GlicInstance*, GetInstanceForTaskId, (int), (const, override));
   MOCK_METHOD(GlicInstance*,
               GetInstanceForTab,
               (const tabs::TabInterface*),
@@ -35,10 +43,6 @@ class MockGlicInstanceCoordinator
   MOCK_METHOD(GlicInstance*,
               GetInstanceWithGlicWebContents,
               (content::WebContents*),
-              (const, override));
-  MOCK_METHOD(GlicInstance*,
-              GetInstanceForTabGroup,
-              (tab_groups::TabGroupId),
               (const, override));
   MOCK_METHOD(GlicInstance*,
               ShowInstanceForTabGroup,
@@ -58,30 +62,19 @@ class MockGlicInstanceCoordinator
               Invoke,
               (GlicInvokeOptions),
               (override));
-  MOCK_METHOD(void, Attach, (), ());
-  MOCK_METHOD(void, Detach, (), ());
   MOCK_METHOD(void, Shutdown, (), (override));
-  MOCK_METHOD(void,
-              Resize,
-              (const gfx::Size&, base::TimeDelta, base::OnceClosure),
-              ());
-  MOCK_METHOD(void, EnableDragResize, (bool), ());
-  MOCK_METHOD(void, SetDraggableAreas, (const std::vector<gfx::Rect>&), ());
-  MOCK_METHOD(void, SetMinimumWidgetSize, (const gfx::Size&), ());
-  MOCK_METHOD(void, Close, (const CloseOptions&), (override));
-  MOCK_METHOD(void,
-              CloseInstanceWithFrame,
-              (content::RenderFrameHost * render_frame_host),
-              (override));
+  MOCK_METHOD(void, CloseFloatingPanel, (), (override));
   MOCK_METHOD(void,
               CloseAndShutdownInstanceWithFrame,
               (content::RenderFrameHost * render_frame_host),
               (override));
-  MOCK_METHOD(bool, IsShowing, (), (const));
-  MOCK_METHOD(bool, IsDetached, (), (const, override));
   MOCK_METHOD(bool,
               IsPanelShowingForBrowser,
               (const BrowserWindowInterface&),
+              (const, override));
+  MOCK_METHOD(bool,
+              WouldToggleClose,
+              (BrowserWindowInterface*),
               (const, override));
   MOCK_METHOD(base::CallbackListSubscription,
               AddGlobalShowHideCallback,

@@ -108,32 +108,10 @@ chromium-metrics-reviews@google.com.
   <int value="3" label="CONFIRMED_WITHOUT_USER_INPUT"/>
 </enum>
 
-<enum name="DownloadLocationDialogType">
-  <int value="0" label="NO_DIALOG"/>
-  <int value="1" label="DEFAULT"/>
-  <int value="2" label="LOCATION_FULL"/>
-  <int value="3" label="LOCATION_NOT_FOUND"/>
-  <int value="4" label="NAME_CONFLICT"/>
-  <int value="5" label="NAME_TOO_LONG"/>
-  <int value="6" label="LOCATION_SUGGESTION"/>
-  <int value="7" label="FORCE_PROMPT"/>
-</enum>
-
 <enum name="DownloadLocationDirectoryType">
   <int value="0" label="DEFAULT_OPTION"/>
   <int value="1" label="ADDITIONAL_OPTION"/>
   <int value="2" label="ERROR_OPTION"/>
-</enum>
-
-<enum name="DownloadLocationSuggestionEvent">
-  <int value="0" label="LOCATION_SUGGESTION_SHOWN"/>
-  <int value="1" label="NOT_ENOUGH_SPACE_SHOWN"/>
-</enum>
-
-<enum name="DownloadPromptStatus">
-  <int value="0" label="Show initial"/>
-  <int value="1" label="Show prompt"/>
-  <int value="2" label="Don't show prompt"/>
 </enum>
 
 <enum name="IOSActivityScenario">
@@ -345,7 +323,7 @@ chromium-metrics-reviews@google.com.
   <int value="3" label="Load accounts from the device"/>
 </enum>
 
-<!-- LINT.ThenChange(/chrome/browser/ui/android/signin/java/src/org/chromium/chrome/browser/ui/signin/fullscreen_signin/FullscreenSigninMediator.java:LoadPoint) -->
+<!-- LINT.ThenChange(/chrome/browser/ui/android/signin/java/src/org/chromium/chrome/browser/ui/signin/fullscreen_signin/FullscreenSigninLoadPoint.java:LoadPoint) -->
 
 <!-- LINT.IfChange(MobileDefaultBrowserState) -->
 
@@ -573,6 +551,29 @@ chromium-metrics-reviews@google.com.
   <int value="45" label="View actor task"/>
 </enum>
 
+<!-- LINT.IfChange(SystemNotificationChannelStatus) -->
+
+<enum name="SystemNotificationChannelStatus">
+  <int value="0" label="Blocked (IMPORTANCE_NONE)"/>
+  <int value="1" label="Enabled (Default / High / Low / Min)"/>
+  <int value="2" label="Unavailable / Not Created"/>
+</enum>
+
+<!-- LINT.ThenChange(//chrome/browser/notifications/android/java/src/org/chromium/chrome/browser/notifications/NotificationUmaTracker.java:SystemNotificationChannelStatus) -->
+
+<!-- LINT.IfChange(SystemNotificationLifecycleEvent) -->
+
+<enum name="SystemNotificationLifecycleEvent">
+  <int value="0" label="Queued"/>
+  <int value="1" label="Shown"/>
+  <int value="2" label="Clicked"/>
+  <int value="3" label="Dismissed"/>
+</enum>
+
+<!-- LINT.ThenChange(//chrome/browser/notifications/android/java/src/org/chromium/chrome/browser/notifications/NotificationUmaTracker.java:SystemNotificationLifecycleEvent) -->
+
+<!-- LINT.IfChange(SystemNotificationType2) -->
+
 <enum name="SystemNotificationType2">
   <int value="0" label="Unknown"/>
   <int value="1" label="Downloads - Files"/>
@@ -622,6 +623,8 @@ chromium-metrics-reviews@google.com.
   <int value="45" label="Actor"/>
   <int value="46" label="Chrome Finds"/>
 </enum>
+
+<!-- LINT.ThenChange(//chrome/browser/notifications/android/java/src/org/chromium/chrome/browser/notifications/NotificationUmaTracker.java:SystemNotificationType) -->
 
 </enums>
 

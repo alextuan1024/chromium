@@ -22,7 +22,9 @@
 #include "chrome/browser/ui/view_ids.h"
 #include "chrome/browser/ui/views/profiles/avatar_toolbar_button_state_manager.h"
 #include "chrome/browser/ui/views/toolbar/toolbar_button.h"
+#include "chrome/browser/ui/views/toolbar/toolbar_controller.h"
 #include "chrome/browser/ui/views/toolbar/toolbar_ink_drop_util.h"
+#include "chrome/browser/ui/views/toolbar/toolbar_view.h"
 #include "components/user_education/common/user_education_class_properties.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
@@ -37,6 +39,7 @@
 #include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/animation/ink_drop.h"
 #include "ui/views/animation/ink_drop_host.h"
+#include "ui/views/bubble/bubble_anchor.h"
 #include "ui/views/controls/button/button_controller.h"
 #include "ui/views/controls/image_view.h"
 #include "ui/views/view_class_properties.h"
@@ -88,9 +91,11 @@ AvatarToolbarButton::AvatarToolbarButton(BrowserWindowInterface* browser)
   SetHorizontalAlignment(gfx::ALIGN_LEFT);
 
   SetImageLabelSpacing(kChromeRefreshImageLabelPadding);
-  label()->SetPaintToLayer();
-  label()->SetSkipSubpixelRenderingOpacityCheck(true);
-  label()->layer()->SetFillsBoundsOpaquely(false);
+  if (AvatarToolbarButtonInterface::CanShowForProfile(browser->GetProfile())) {
+    label()->SetPaintToLayer();
+    label()->SetSkipSubpixelRenderingOpacityCheck(true);
+    label()->layer()->SetFillsBoundsOpaquely(false);
+  }
   label()->SetSubpixelRenderingEnabled(false);
 
   // With default (EASE_OUT) tween type.
@@ -205,7 +210,7 @@ void AvatarToolbarButton::AnimateTextChange(
   const std::u16string new_text = state_provider->GetText();
   const std::u16string_view current_text = GetText();
 
-  if (new_text == current_text ||
+  if (!GetVisible() || new_text == current_text ||
       gfx::ScopedAnimationDurationScaleMode::is_zero()) {
     SetHighlight(new_text, state_provider->GetHighlightColor(*color_provider));
     return;
@@ -410,19 +415,9 @@ bool AvatarToolbarButton::HasExplicitButtonState() const {
   return state_manager_.HasExplicitButtonState();
 }
 
-void AvatarToolbarButton::MaybeShowProfileSwitchIPH() {
-  state_manager_.MaybeShowProfileSwitchIPH();
+bool AvatarToolbarButton::IsReadyForIPH() const {
+  return true;
 }
-
-#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
-void AvatarToolbarButton::MaybeShowSupervisedUserSignInIPH() {
-  state_manager_.MaybeShowSupervisedUserSignInIPH();
-}
-
-void AvatarToolbarButton::MaybeShowSignInBenefitsIPH() {
-  state_manager_.MaybeShowSignInBenefitsIPH();
-}
-#endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
 
 void AvatarToolbarButton::MaybeShowExplicitBrowserSigninPreferenceRememberedIPH(
     const AccountInfo& account_info) {
@@ -456,8 +451,33 @@ void AvatarToolbarButton::OnThemeChanged() {
   }
 }
 
+void AvatarToolbarButton::RunWhenVisible(WhenVisibleCallback callback) {
+  base::ScopedClosureRunner keep_visible;
+  if (BrowserWindowInterface* browser = state_manager_.browser();
+      browser &&
+      AvatarToolbarButtonInterface::CanShowForProfile(browser->GetProfile())) {
+    if (ToolbarView* toolbar = views::AsViewClass<ToolbarView>(parent());
+        toolbar && toolbar->toolbar_controller()) {
+      keep_visible = toolbar->toolbar_controller()->CreateScopedPopOut(
+          kToolbarAvatarButtonElementId);
+    }
+  }
+  views::View* anchor_view = (!GetVisible() && parent()) ? parent() : this;
+  std::move(callback).Run(views::BubbleAnchor(anchor_view),
+                          std::move(keep_visible));
+}
+
 void AvatarToolbarButton::ButtonPressed(bool is_source_accelerator) {
-  state_manager_.HandleButtonPressed(is_source_accelerator);
+  RunWhenVisible(base::BindOnce(
+      [](base::WeakPtr<AvatarToolbarButton> self, bool is_source_accelerator,
+         views::BubbleAnchor /*anchor*/,
+         base::ScopedClosureRunner keep_visible) {
+        if (self) {
+          self->state_manager_.HandleButtonPressed(is_source_accelerator,
+                                                   std::move(keep_visible));
+        }
+      },
+      weak_ptr_factory_.GetWeakPtr(), is_source_accelerator));
 }
 
 void AvatarToolbarButton::AfterPropertyChange(const void* key,
@@ -555,11 +575,6 @@ void AvatarToolbarButton::ClearActiveStateForTesting() {
 #if BUILDFLAG(ENABLE_DICE_SUPPORT)
 void AvatarToolbarButton::ForceShowingPromoForTesting() {
   state_manager_.ForceShowingPromoForTesting();
-}
-
-bool AvatarToolbarButton::
-    GetStateAndFireSignedOutTriggerDelayTimerForTesting() {
-  return state_manager_.GetStateAndFireSignedOutTriggerDelayTimerForTesting();
 }
 #endif  // BUILDFLAG(ENABLE_DICE_SUPPORT)
 

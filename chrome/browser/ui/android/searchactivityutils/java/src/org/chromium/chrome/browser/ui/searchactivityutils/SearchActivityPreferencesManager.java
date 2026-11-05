@@ -18,6 +18,7 @@ import android.text.TextUtils;
 
 import androidx.annotation.VisibleForTesting;
 
+import org.chromium.base.ApplicationStatus;
 import org.chromium.base.ObserverList;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.shared_preferences.SharedPreferencesManager;
@@ -32,10 +33,13 @@ import org.chromium.chrome.browser.lens.LensEntryPoint;
 import org.chromium.chrome.browser.lens.LensQueryParams;
 import org.chromium.chrome.browser.omnibox.voice.VoiceRecognitionUtil;
 import org.chromium.chrome.browser.preferences.ChromeSharedPreferences;
+import org.chromium.chrome.browser.preferences.Pref;
+import org.chromium.chrome.browser.preferences.PrefServiceUtil;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.profiles.ProfileManager;
 import org.chromium.chrome.browser.search_engines.TemplateUrlServiceFactory;
 import org.chromium.chrome.browser.signin.services.IdentityServicesProvider;
+import org.chromium.components.prefs.PrefChangeRegistrar;
 import org.chromium.components.search_engines.TemplateUrl;
 import org.chromium.components.search_engines.TemplateUrlService;
 import org.chromium.components.search_engines.TemplateUrlService.LoadListener;
@@ -43,9 +47,11 @@ import org.chromium.components.search_engines.TemplateUrlService.TemplateUrlServ
 import org.chromium.components.signin.base.AccountInfo;
 import org.chromium.components.signin.identitymanager.IdentityManager;
 import org.chromium.ui.base.DeviceFormFactor;
+import org.chromium.ui.permissions.ActivityAndroidPermissionDelegate;
 import org.chromium.ui.permissions.AndroidPermissionDelegate;
 import org.chromium.url.GURL;
 
+import java.lang.ref.WeakReference;
 import java.util.function.Consumer;
 
 /** Facilitates access to and updates of the cached SearchActivityPreferences. */
@@ -56,6 +62,7 @@ public class SearchActivityPreferencesManager implements LoadListener, TemplateU
             new ObserverList<>();
 
     private @Nullable SearchActivityPreferences mCurrentlyLoadedPreferences;
+    private @Nullable PrefChangeRegistrar mPrefChangeRegistrar;
 
     /**
      * Initialize instance of SearchActivityPreferencesManager. Note that the class operates as a
@@ -63,9 +70,7 @@ public class SearchActivityPreferencesManager implements LoadListener, TemplateU
      */
     private SearchActivityPreferencesManager() {}
 
-    /**
-     * @return The instance of the SearchActivityPreferencesManager singleton.
-     */
+    /** Returns the instance of the SearchActivityPreferencesManager singleton. */
     public static SearchActivityPreferencesManager get() {
         ThreadUtils.assertOnUiThread();
         if (sInstance == null) {
@@ -215,13 +220,40 @@ public class SearchActivityPreferencesManager implements LoadListener, TemplateU
      */
     public static void onNativeLibraryReady() {
         SearchActivityPreferencesManager self = get();
-        TemplateUrlService service =
-                TemplateUrlServiceFactory.getForProfile(ProfileManager.getLastUsedRegularProfile());
+        Profile profile = ProfileManager.getLastUsedRegularProfile();
+        TemplateUrlService service = TemplateUrlServiceFactory.getForProfile(profile);
         service.registerLoadListener(self);
         service.addObserver(self);
         if (!service.isLoaded()) {
             service.load();
         }
+
+        if (self.mPrefChangeRegistrar != null) {
+            self.mPrefChangeRegistrar.destroy();
+        }
+        self.mPrefChangeRegistrar = PrefServiceUtil.createFor(profile);
+        self.mPrefChangeRegistrar.addObserver(
+                Pref.AUDIO_CAPTURE_ALLOWED, self::onVoiceSearchAvailabilityChanged);
+        self.onVoiceSearchAvailabilityChanged();
+    }
+
+    @VisibleForTesting
+    void onVoiceSearchAvailabilityChanged() {
+        AndroidPermissionDelegate permissionDelegate =
+                new ActivityAndroidPermissionDelegate(
+                        new WeakReference<>(ApplicationStatus.getLastTrackedFocusedActivity()));
+        // TODO(crbug.com/582477142): Decouple SearchActivityPreferences and Search Widgets from
+        // getLastUsedRegularProfile() and associate them with a specific Profile.
+        Profile profile =
+                ProfileManager.isInitialized() ? ProfileManager.getLastUsedRegularProfile() : null;
+        assumeNonNull(mCurrentlyLoadedPreferences);
+        setCurrentlyLoadedPreferences(
+                mCurrentlyLoadedPreferences.toBuilder()
+                        .setVoiceSearchAvailable(
+                                VoiceRecognitionUtil.isVoiceSearchEnabled(
+                                        permissionDelegate, profile))
+                        .build(),
+                /* updateStorage= */ true);
     }
 
     /**
@@ -239,7 +271,8 @@ public class SearchActivityPreferencesManager implements LoadListener, TemplateU
                 getCurrent().toBuilder()
                         .setAccountEmail(getPrimaryAccountEmail(profile))
                         .setVoiceSearchAvailable(
-                                VoiceRecognitionUtil.isVoiceSearchEnabled(permissionDelegate))
+                                VoiceRecognitionUtil.isVoiceSearchEnabled(
+                                        permissionDelegate, profile))
                         .setGoogleLensAvailable(isLensEnabled(context))
                         .setIncognitoAvailable(IncognitoUtils.isIncognitoModeEnabled(profile))
                         .setAiModeAvailable(ComposeplateUtils.isComposeplateEnabled(profile))
@@ -310,6 +343,10 @@ public class SearchActivityPreferencesManager implements LoadListener, TemplateU
      * Reset the global instance of the SearchActivityPreferencesManager for the purpose of testing.
      */
     static void resetForTesting() {
+        if (sInstance != null && sInstance.mPrefChangeRegistrar != null) {
+            sInstance.mPrefChangeRegistrar.destroy();
+            sInstance.mPrefChangeRegistrar = null;
+        }
         sInstance = null;
     }
 }

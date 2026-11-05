@@ -261,8 +261,7 @@ public abstract class BrowserServicesIntentDataProvider {
     }
 
     /**
-     * @return The URL that should be used from this intent. Must be called only after native has
-     *     loaded.
+     * @return The URL that should be used from this intent.
      */
     public abstract @Nullable String getUrlToLoad();
 
@@ -725,16 +724,6 @@ public abstract class BrowserServicesIntentDataProvider {
         return ACTIVITY_SIDE_SHEET_POSITION_END;
     }
 
-    /** Return whether omnibox is allowed to be displayed in the CCT. */
-    public boolean isInteractiveOmniboxAllowed() {
-        return false;
-    }
-
-    /** Return whether omnibox should be enabled for the calling package. */
-    public boolean isInteractiveOmniboxEnabled() {
-        return false;
-    }
-
     /**
      * Return the target network handle {@link android.net.Network#getNetworkHandle} that loads
      * associated with this intent must use. Defaults to {@code NetId.INVALID}, in which case we let
@@ -875,10 +864,15 @@ public abstract class BrowserServicesIntentDataProvider {
     public void maybeAddAdditionalContentExtrasToOutboundIntent(
             Supplier<@Nullable Tab> tabProvider, Intent outboundIntent, int viewId) {}
 
-    /**
-     * @return Whether the CCT tab switcher is enabled.
-     */
-    public boolean isCctTabSwitcherEnabled() {
+    /** Returns Whether Tabbed CCT is enabled. */
+    public boolean isTabbedCctEnabled() {
         return false;
+    }
+
+    /**
+     * @return The {@link CustomTabIntentDataHolder} for this provider, or null if not applicable.
+     */
+    public @Nullable CustomTabIntentDataHolder getCustomTabIntentDataHolder() {
+        return null;
     }
 }

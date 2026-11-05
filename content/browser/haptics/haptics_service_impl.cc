@@ -45,7 +45,7 @@ std::unique_ptr<HapticsManager> CreateHapticsManager() {
 // static
 void HapticsServiceImpl::Create(
     RenderFrameHost* render_frame_host,
-    mojo::PendingReceiver<blink::mojom::HapticsService> receiver) {
+    mojo::PendingReceiver<device::mojom::HapticsService> receiver) {
   CHECK(render_frame_host);
 
   // Fenced-frame state and the "haptics" permissions policy are fixed for the
@@ -65,7 +65,8 @@ void HapticsServiceImpl::Create(
     return;
   }
 
-  new HapticsServiceImpl(*render_frame_host, std::move(receiver));
+  base::MakeSelfDeleting<HapticsServiceImpl>(*render_frame_host,
+                                             std::move(receiver));
 }
 
 // static
@@ -76,13 +77,14 @@ void HapticsServiceImpl::SetHapticsManagerFactoryForTesting(
 
 HapticsServiceImpl::HapticsServiceImpl(
     RenderFrameHost& render_frame_host,
-    mojo::PendingReceiver<blink::mojom::HapticsService> receiver)
-    : DocumentService(render_frame_host, std::move(receiver)),
+    mojo::PendingReceiver<device::mojom::HapticsService> receiver,
+    base::SelfDeletingPassKey key)
+    : DocumentService(render_frame_host, std::move(receiver), key),
       haptics_manager_(CreateHapticsManager()) {}
 
 HapticsServiceImpl::~HapticsServiceImpl() = default;
 
-void HapticsServiceImpl::PlayHaptics(blink::mojom::HapticEffect effect,
+void HapticsServiceImpl::PlayHaptics(device::mojom::HapticEffect effect,
                                      double intensity) {
   auto& rfh = static_cast<RenderFrameHostImpl&>(render_frame_host());
 

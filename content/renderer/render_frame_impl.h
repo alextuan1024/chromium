@@ -517,8 +517,6 @@ class CONTENT_EXPORT RenderFrameImpl
       blink::WebPolicyContainerBindParams policy_container_bind_params,
       ukm::SourceId document_ukm_source_id,
       FinishChildFrameCreationFn finish_creation) override;
-  void DidCreateFencedFrame(
-      const blink::RemoteFrameToken& frame_token) override;
   blink::WebFrame* FindFrame(const blink::WebString& name) override;
   void WillDetach(blink::DetachReason detach_reason) override;
   void FrameDetached(blink::DetachReason detach_reason) override;
@@ -601,7 +599,8 @@ class CONTENT_EXPORT RenderFrameImpl
       base::TimeTicks max_event_end,
       uint64_t interaction_offset,
       uint64_t performance_timeline_navigation_id) override;
-  void DidChangeCpuTiming(base::TimeDelta time) override;
+  void DidChangeCpuTiming(base::TimeDelta time,
+                          base::TimeDelta ad_time) override;
   void DidObserveLoadingBehavior(blink::LoadingBehaviorFlag behavior) override;
   void DidObserveJavaScriptFrameworks(
       const blink::JavaScriptFrameworkDetectionResult&) override;
@@ -681,8 +680,6 @@ class CONTENT_EXPORT RenderFrameImpl
       const base::UnguessableToken& input_stream_id,
       const std::string& output_device_id) override;
   void DidMeaningfulLayout(blink::WebMeaningfulLayout layout_type) override;
-  void WasHidden() override;
-  void WasShown() override;
 
   blink::WebURL LastCommittedUrlForUKM() override;
   void ScriptedPrint() override;
@@ -1302,6 +1299,7 @@ class CONTENT_EXPORT RenderFrameImpl
   // Range over the document corresponding to the actual selected text (which
   // could correspond to a substring of |selection_text_|; see above).
   gfx::Range selection_range_;
+  bool has_selection_ = false;
 
   // Implements getUserMedia() and related functionality.
   std::unique_ptr<blink::WebMediaStreamDeviceObserver>

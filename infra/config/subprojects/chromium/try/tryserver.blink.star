@@ -89,6 +89,7 @@ _rebaseline_builder(
             "remoteexec",
             "chrome_with_codecs",
             "minimal_symbols",
+            "dcheck_always_on",
             "linux",
             "x64",
         ],
@@ -115,6 +116,7 @@ _rebaseline_builder(
         },
     ),
     os = os.LINUX_DEFAULT,
+    ssd = True,
     main_list_view = "try",
 )
 
@@ -122,15 +124,13 @@ _rebaseline_builder(
 # (tests content shell) to avoid coupling their build configurations.
 try_.builder(
     name = "linux-wpt-chromium-rel",
-    description_html = "Runs {} against Chrome.".format(
-        linkify("https://web-platform-tests.org", "web platform tests"),
-    ),
     mirrors = ["ci/linux-wpt-chromium-rel"],
     builder_config_settings = builder_config.try_settings(
         retry_failed_shards = False,
     ),
     gn_args = "ci/linux-wpt-chromium-rel",
     os = os.LINUX_DEFAULT,
+    ssd = True,
     main_list_view = "try",
 )
 
@@ -139,6 +139,7 @@ try_.builder(
     mirrors = ["ci/linux-blink-tracing-rel"],
     gn_args = "ci/linux-blink-tracing-rel",
     os = os.LINUX_DEFAULT,
+    ssd = True,
     contact_team_email = "chrome-product-engprod@google.com",
     main_list_view = "try",
 )
@@ -169,6 +170,7 @@ _rebaseline_builder(
             "win",
             "x64",
             "minimal_symbols",
+            "dcheck_always_on",
         ],
     ),
     targets = targets.bundle(
@@ -215,6 +217,7 @@ _rebaseline_builder(
             "win",
             "arm64",
             "minimal_symbols",
+            "dcheck_always_on",
         ],
     ),
     targets = targets.bundle(
@@ -264,6 +267,7 @@ _rebaseline_builder(
             "win",
             "x64",
             "minimal_symbols",
+            "dcheck_always_on",
         ],
     ),
     targets = targets.bundle(
@@ -305,6 +309,7 @@ _mac_rebaseline_builder(
             "remoteexec",
             "chrome_with_codecs",
             "minimal_symbols",
+            "dcheck_always_on",
             "mac",
             "x64",
         ],
@@ -346,6 +351,7 @@ _mac_rebaseline_builder(
             "mac",
             "arm64",
             "minimal_symbols",
+            "dcheck_always_on",
         ],
     ),
     targets = targets.bundle(
@@ -370,6 +376,7 @@ _mac_rebaseline_builder(
             "remoteexec",
             "chrome_with_codecs",
             "minimal_symbols",
+            "dcheck_always_on",
             "mac",
             "x64",
         ],
@@ -398,6 +405,7 @@ _mac_rebaseline_builder(
             "mac",
             "arm64",
             "minimal_symbols",
+            "dcheck_always_on",
         ],
     ),
     targets = targets.bundle(
@@ -422,6 +430,7 @@ _mac_rebaseline_builder(
             "remoteexec",
             "chrome_with_codecs",
             "minimal_symbols",
+            "dcheck_always_on",
             "mac",
             "x64",
         ],
@@ -450,6 +459,7 @@ _mac_rebaseline_builder(
             "mac",
             "arm64",
             "minimal_symbols",
+            "dcheck_always_on",
         ],
     ),
     targets = targets.bundle(
@@ -471,6 +481,7 @@ _mac_rebaseline_builder(
             "remoteexec",
             "chrome_with_codecs",
             "minimal_symbols",
+            "dcheck_always_on",
             "mac",
             "x64",
         ],
@@ -494,6 +505,7 @@ _mac_rebaseline_builder(
             "remoteexec",
             "chrome_with_codecs",
             "minimal_symbols",
+            "dcheck_always_on",
             "mac",
             "arm64",
         ],
@@ -539,6 +551,7 @@ _rebaseline_builder(
             "release_builder",
             "remoteexec",
             "minimal_symbols",
+            "dcheck_always_on",
             "x64",
             "strip_debug_info",
             "android_fastbuild",
@@ -554,7 +567,6 @@ _rebaseline_builder(
             "15-x64-emulator",
             "emulator-8-cores",
             "linux-jammy",
-            "x86-64",
         ],
         per_test_modifications = {
             "android_chrome_wpt_tests": targets.mixin(
@@ -573,5 +585,6 @@ _rebaseline_builder(
         os_type = targets.os_type.ANDROID,
     ),
     os = os.LINUX_DEFAULT,
+    ssd = True,
     main_list_view = "try",
 )

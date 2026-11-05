@@ -184,6 +184,12 @@ class PrimaryAccountManagerTest : public testing::Test,
     }
   }
 
+#if BUILDFLAG(IS_IOS)
+  void OnEndBatchOfPrimaryAccountChanges() override {
+    num_end_batch_of_primary_account_changes_++;
+  }
+#endif  // BUILDFLAG(IS_IOS)
+
   base::test::TaskEnvironment task_environment_;
   sync_preferences::TestingPrefServiceSyncable user_prefs_;
   TestSigninClient test_signin_client_;
@@ -197,6 +203,9 @@ class PrimaryAccountManagerTest : public testing::Test,
   int num_successful_signins_{0};
   int num_successful_signouts_{0};
   int num_unconsented_account_changed_{0};
+#if BUILDFLAG(IS_IOS)
+  int num_end_batch_of_primary_account_changes_{0};
+#endif  // BUILDFLAG(IS_IOS)
 };
 
 #if !BUILDFLAG(IS_CHROMEOS)
@@ -248,6 +257,159 @@ TEST_F(PrimaryAccountManagerTest, SignOut) {
   EXPECT_TRUE(manager_->GetPrimaryAccountId(ConsentLevel::kSync).empty());
   EXPECT_TRUE(manager_->GetPrimaryAccountInfo(ConsentLevel::kSignin).IsEmpty());
 }
+
+#if BUILDFLAG(ENABLE_DICE_SUPPORT)
+TEST_F(PrimaryAccountManagerTest, ChromeLastSigninTime) {
+  CreatePrimaryAccountManager();
+  CoreAccountId first_account_id =
+      AddToAccountTracker(GaiaId("first_gaia"), "first@gmail.com");
+  CoreAccountInfo first_account_info =
+      account_tracker()->GetAccountInfo(first_account_id).GetCoreAccountInfo();
+
+  // Sign in at `ConsentLevel::kSignin`: `LastSigninTime` is recorded.
+  manager_->SetPrimaryAccountInfo(first_account_info, ConsentLevel::kSignin,
+                                  AccessPoint::kStartPage);
+  std::optional<base::Time> initial_signin_time =
+      SigninPrefs(*prefs()).GetChromeLastSigninTime(first_account_info.gaia);
+  ASSERT_TRUE(initial_signin_time.has_value());
+  EXPECT_LE(base::Time::Now() - *initial_signin_time, base::Seconds(10));
+
+  // Backdate the recorded timestamp to verify subsequent non-primary-change
+  // operations do not overwrite it.
+  const base::Time backdated_time = base::Time::Now() - base::Days(5);
+  SigninPrefs(*prefs()).SetChromeLastSigninTime(first_account_info.gaia,
+                                                backdated_time);
+
+  // Restarting `PrimaryAccountManager` preserves the recorded timestamp.
+  ShutDownManager();
+  CreatePrimaryAccountManager();
+  EXPECT_EQ(
+      SigninPrefs(*prefs()).GetChromeLastSigninTime(first_account_info.gaia),
+      backdated_time);
+
+  // Re-setting the same already-signed-in primary account at
+  // `ConsentLevel::kSignin` does not overwrite `LastSigninTime`.
+  manager_->SetPrimaryAccountInfo(first_account_info, ConsentLevel::kSignin,
+                                  AccessPoint::kStartPage);
+  EXPECT_EQ(
+      SigninPrefs(*prefs()).GetChromeLastSigninTime(first_account_info.gaia),
+      backdated_time);
+
+  // Switching directly to a second account at `ConsentLevel::kSignin` records
+  // `LastSigninTime` for the second account while leaving the first account
+  // timestamp intact.
+  CoreAccountId second_account_id =
+      AddToAccountTracker(GaiaId("second_gaia"), "second@gmail.com");
+  CoreAccountInfo second_account_info =
+      account_tracker()->GetAccountInfo(second_account_id).GetCoreAccountInfo();
+  manager_->SetPrimaryAccountInfo(second_account_info, ConsentLevel::kSignin,
+                                  AccessPoint::kStartPage);
+
+  EXPECT_EQ(
+      SigninPrefs(*prefs()).GetChromeLastSigninTime(first_account_info.gaia),
+      backdated_time);
+  std::optional<base::Time> second_signin_time =
+      SigninPrefs(*prefs()).GetChromeLastSigninTime(second_account_info.gaia);
+  ASSERT_TRUE(second_signin_time.has_value());
+  EXPECT_LE(base::Time::Now() - *second_signin_time, base::Seconds(10));
+}
+
+TEST_F(PrimaryAccountManagerTest, ChromeLastSigninTimeKillSwitchAndMigration) {
+  CoreAccountId account_id =
+      AddToAccountTracker(GaiaId("existing_gaia"), "existing@gmail.com");
+  token_service_->UpdateCredentials(account_id, "token");
+  CoreAccountInfo account_info =
+      account_tracker()->GetAccountInfo(account_id).GetCoreAccountInfo();
+
+  // Simulate signing in and restarting while `kRecordChromeLastSigninTime` is
+  // disabled: no timestamp is recorded.
+  {
+    base::test::ScopedFeatureList disabled_feature_list;
+    disabled_feature_list.InitAndDisableFeature(
+        switches::kRecordChromeLastSigninTime);
+
+    CreatePrimaryAccountManager();
+    manager_->SetPrimaryAccountInfo(account_info, ConsentLevel::kSignin,
+                                    AccessPoint::kStartPage);
+    EXPECT_FALSE(SigninPrefs(*prefs())
+                     .GetChromeLastSigninTime(account_info.gaia)
+                     .has_value());
+
+    ShutDownManager();
+    CreatePrimaryAccountManager();
+    ASSERT_TRUE(manager_->HasPrimaryAccount(ConsentLevel::kSignin));
+    EXPECT_FALSE(SigninPrefs(*prefs())
+                     .GetChromeLastSigninTime(account_info.gaia)
+                     .has_value());
+    ShutDownManager();
+  }
+
+  // Transition off -> on: re-initializing `PrimaryAccountManager` with
+  // `kRecordChromeLastSigninTime` enabled migrates the already signed-in
+  // profile by stamping `Now()` once.
+  {
+    base::test::ScopedFeatureList enabled_feature_list{
+        switches::kRecordChromeLastSigninTime};
+
+    const base::Time before_migration = base::Time::Now();
+    CreatePrimaryAccountManager();
+    ASSERT_TRUE(manager_->HasPrimaryAccount(ConsentLevel::kSignin));
+    std::optional<base::Time> migrated_time =
+        SigninPrefs(*prefs()).GetChromeLastSigninTime(account_info.gaia);
+    ASSERT_TRUE(migrated_time.has_value());
+    EXPECT_GE(*migrated_time, before_migration);
+    EXPECT_LE(base::Time::Now() - *migrated_time, base::Seconds(10));
+
+    // Subsequent restarts preserve the migrated timestamp without overwriting
+    // it.
+    const base::Time backdated_time = base::Time::Now() - base::Days(14);
+    SigninPrefs(*prefs()).SetChromeLastSigninTime(account_info.gaia,
+                                                  backdated_time);
+    ShutDownManager();
+    CreatePrimaryAccountManager();
+    EXPECT_EQ(SigninPrefs(*prefs()).GetChromeLastSigninTime(account_info.gaia),
+              backdated_time);
+
+    // Also record a timestamp for a second account that then signs back out to
+    // `account_info` (or signs out completely), leaving its timestamp in
+    // `SigninPrefs` while it is no longer the primary account.
+    CoreAccountId second_account_id =
+        AddToAccountTracker(GaiaId("second_gaia"), "second@gmail.com");
+    token_service_->UpdateCredentials(second_account_id, "token");
+    CoreAccountInfo second_account_info =
+        account_tracker()
+            ->GetAccountInfo(second_account_id)
+            .GetCoreAccountInfo();
+    manager_->SetPrimaryAccountInfo(second_account_info, ConsentLevel::kSignin,
+                                    AccessPoint::kStartPage);
+    ASSERT_TRUE(SigninPrefs(*prefs())
+                    .GetChromeLastSigninTime(second_account_info.gaia)
+                    .has_value());
+    manager_->SetPrimaryAccountInfo(account_info, ConsentLevel::kSignin,
+                                    AccessPoint::kStartPage);
+    ShutDownManager();
+  }
+
+  // Transition on -> off: re-initializing `PrimaryAccountManager` with
+  // `kRecordChromeLastSigninTime` disabled clears existing timestamps
+  // unconditionally across all accounts (both the active primary account and
+  // non-primary/signed-out accounts).
+  {
+    base::test::ScopedFeatureList disabled_feature_list;
+    disabled_feature_list.InitAndDisableFeature(
+        switches::kRecordChromeLastSigninTime);
+
+    CreatePrimaryAccountManager();
+    ASSERT_TRUE(manager_->HasPrimaryAccount(ConsentLevel::kSignin));
+    EXPECT_FALSE(SigninPrefs(*prefs())
+                     .GetChromeLastSigninTime(account_info.gaia)
+                     .has_value());
+    EXPECT_FALSE(SigninPrefs(*prefs())
+                     .GetChromeLastSigninTime(GaiaId("second_gaia"))
+                     .has_value());
+  }
+}
+#endif  // BUILDFLAG(ENABLE_DICE_SUPPORT)
 
 TEST_F(PrimaryAccountManagerTest, SignOutRevoke) {
   CreatePrimaryAccountManager();
@@ -342,6 +504,48 @@ TEST_F(PrimaryAccountManagerTest, UnconsentedSignOutWhileProhibited) {
   CheckSigninMetrics({.sign_in = AccessPoint::kStartPage,
                       .sign_out = signin_metrics::ProfileSignout::kTest});
 }
+
+#if BUILDFLAG(IS_IOS)
+// Tests `OnEndBatchOfPrimaryAccountChanges()` with
+// `StartBatchOfPrimaryAccountChanges()`.
+TEST_F(PrimaryAccountManagerTest, BatchOfPrimaryAccountChanges) {
+  CreatePrimaryAccountManager();
+  CoreAccountId account_id1 =
+      AddToAccountTracker(GaiaId("gaia_id1"), "user1@gmail.com");
+  CoreAccountId account_id2 =
+      AddToAccountTracker(GaiaId("gaia_id2"), "user2@gmail.com");
+
+  manager_->SetPrimaryAccountInfo(
+      account_tracker()->GetAccountInfo(account_id1).GetCoreAccountInfo(),
+      ConsentLevel::kSignin, AccessPoint::kStartPage);
+  EXPECT_EQ(1, num_unconsented_account_changed_);
+  EXPECT_EQ(1, num_end_batch_of_primary_account_changes_);
+  EXPECT_FALSE(manager_->IsBatchOfPrimaryAccountChangesInProgress());
+
+  base::ScopedClosureRunner scoped_closure_runner =
+      manager_->StartBatchOfPrimaryAccountChanges();
+  EXPECT_TRUE(manager_->IsBatchOfPrimaryAccountChangesInProgress());
+
+  manager_->ClearPrimaryAccount(signin_metrics::ProfileSignout::kTest);
+  EXPECT_EQ(2, num_unconsented_account_changed_);
+  EXPECT_EQ(1, num_end_batch_of_primary_account_changes_);
+
+  manager_->SetPrimaryAccountInfo(
+      account_tracker()->GetAccountInfo(account_id2).GetCoreAccountInfo(),
+      ConsentLevel::kSignin, AccessPoint::kStartPage);
+  EXPECT_EQ(3, num_unconsented_account_changed_);
+  EXPECT_EQ(1, num_end_batch_of_primary_account_changes_);
+
+  scoped_closure_runner.RunAndReset();
+  EXPECT_FALSE(manager_->IsBatchOfPrimaryAccountChangesInProgress());
+  EXPECT_EQ(3, num_unconsented_account_changed_);
+  EXPECT_EQ(2, num_end_batch_of_primary_account_changes_);
+
+  manager_->ClearPrimaryAccount(signin_metrics::ProfileSignout::kTest);
+  EXPECT_EQ(4, num_unconsented_account_changed_);
+  EXPECT_EQ(3, num_end_batch_of_primary_account_changes_);
+}
+#endif  // BUILDFLAG(IS_IOS)
 #endif
 
 TEST_F(PrimaryAccountManagerTest, RevokeSyncConsentAllowedSignoutProhibited) {
@@ -912,13 +1116,13 @@ TEST_F(PrimaryAccountManagerTest, AccountStoragePrefFeatureDisabled) {
   manager_->SetPrimaryAccountInfo(
       account_tracker()->GetAccountInfo(account_id).GetCoreAccountInfo(),
       signin::ConsentLevel::kSignin,
-      signin_metrics::AccessPoint::kAvatarBubbleSignIn);
+      signin_metrics::AccessPoint::kProfileMenuPrimaryButton);
   EXPECT_FALSE(prefs()->GetBoolean(
       prefs::kPrefsThemesSearchEnginesAccountStorageEnabled));
   manager_->SetPrimaryAccountInfo(
       account_tracker()->GetAccountInfo(account_id).GetCoreAccountInfo(),
       signin::ConsentLevel::kSync,
-      signin_metrics::AccessPoint::kAvatarBubbleSignIn);
+      signin_metrics::AccessPoint::kProfileMenuPrimaryButton);
   EXPECT_FALSE(prefs()->GetBoolean(
       prefs::kPrefsThemesSearchEnginesAccountStorageEnabled));
 }
@@ -934,7 +1138,7 @@ TEST_F(PrimaryAccountManagerTest, AccountStoragePrefExistingSyncUser) {
     manager_->SetPrimaryAccountInfo(
         account_tracker()->GetAccountInfo(account_id).GetCoreAccountInfo(),
         signin::ConsentLevel::kSync,
-        signin_metrics::AccessPoint::kAvatarBubbleSignIn);
+        signin_metrics::AccessPoint::kProfileMenuPrimaryButton);
     ASSERT_FALSE(prefs()->GetBoolean(
         prefs::kPrefsThemesSearchEnginesAccountStorageEnabled));
     ShutDownManager();
@@ -977,7 +1181,7 @@ TEST_F(PrimaryAccountManagerTest, AccountStoragePrefNewUser) {
   manager_->SetPrimaryAccountInfo(
       account_tracker()->GetAccountInfo(account_id).GetCoreAccountInfo(),
       signin::ConsentLevel::kSignin,
-      signin_metrics::AccessPoint::kAvatarBubbleSignIn);
+      signin_metrics::AccessPoint::kProfileMenuPrimaryButton);
   EXPECT_TRUE(prefs()->GetBoolean(
       prefs::kPrefsThemesSearchEnginesAccountStorageEnabled));
 
@@ -1191,32 +1395,9 @@ TEST_F(PrimaryAccountManagerTest, PerProfileMetricsSync) {
 #endif  // !BUILDFLAG(IS_CHROMEOS)
 
 #if BUILDFLAG(ENABLE_DICE_SUPPORT)
-class PrimaryAccountManagerExplicitSigninNewFeatureTest
-    : public PrimaryAccountManagerTest,
-      public testing::WithParamInterface<bool> {
- public:
-  PrimaryAccountManagerExplicitSigninNewFeatureTest() {
-    if (GetParam()) {
-      scoped_feature_list_.InitWithFeatures(
-          /*enabled_features=*/
-          {syncer::kReplaceSyncPromosWithSigninPromosNewSignin},
-          /*disabled_features=*/{syncer::kReplaceSyncPromosWithSignInPromos});
-    } else {
-      scoped_feature_list_.InitWithFeatures(
-          /*enabled_features=*/{syncer::kReplaceSyncPromosWithSignInPromos},
-          /*disabled_features=*/{
-              syncer::kReplaceSyncPromosWithSigninPromosNewSignin});
-    }
-  }
-
- private:
-  base::test::ScopedFeatureList scoped_feature_list_;
-};
-
 // Test that the extensions explicit signin pref is set if the user signs in
 // through the extension install bubble.
-TEST_P(PrimaryAccountManagerExplicitSigninNewFeatureTest,
-       ExplicitSigninExtensionPref) {
+TEST_F(PrimaryAccountManagerTest, ExplicitSigninExtensionPref) {
   CreatePrimaryAccountManager();
   GaiaId gaia_id("account_id");
   CoreAccountId account_id = AddToAccountTracker(gaia_id, "user@gmail.com");
@@ -1266,7 +1447,8 @@ TEST_P(PrimaryAccountManagerExplicitSigninNewFeatureTest,
       /*sample=*/true, /*expected_bucket_count=*/1);
   histogram_tester_.ExpectUniqueSample(
       "Signin.Extensions.ExplicitSigninFromAnyAccessPoint",
-      /*sample=*/true, /*expected_bucket_count=*/2);
+      /*sample=*/true,
+      /*expected_bucket_count=*/2);
 
   // Sign out, then sign in again through the extensions install bubble.
   manager_->ClearPrimaryAccount(signin_metrics::ProfileSignout::kTest);
@@ -1291,8 +1473,7 @@ TEST_P(PrimaryAccountManagerExplicitSigninNewFeatureTest,
 }
 
 // Test that the bookmarks explicit signin pref is set for all new sign-ins.
-TEST_P(PrimaryAccountManagerExplicitSigninNewFeatureTest,
-       ExplicitSigninBookmarksPref) {
+TEST_F(PrimaryAccountManagerTest, ExplicitSigninBookmarksPref) {
   CreatePrimaryAccountManager();
   GaiaId gaia_id("account_id");
   CoreAccountId account_id = AddToAccountTracker(gaia_id, "user@gmail.com");
@@ -1328,7 +1509,7 @@ TEST_P(PrimaryAccountManagerExplicitSigninNewFeatureTest,
   EXPECT_TRUE(SigninPrefs(*prefs()).GetBookmarksExplicitBrowserSignin(gaia_id));
 }
 
-TEST_P(PrimaryAccountManagerExplicitSigninNewFeatureTest,
+TEST_F(PrimaryAccountManagerTest,
        ExplicitSigninBookmarksPref_ResetWhenSyncTurnedOn) {
   CreatePrimaryAccountManager();
   GaiaId gaia_id("account_id");
@@ -1340,7 +1521,7 @@ TEST_P(PrimaryAccountManagerExplicitSigninNewFeatureTest,
   manager_->SetPrimaryAccountInfo(
       account_tracker()->GetAccountInfo(account_id).GetCoreAccountInfo(),
       signin::ConsentLevel::kSignin,
-      signin_metrics::AccessPoint::kChromeSigninInterceptBubble);
+      signin_metrics::AccessPoint::kBookmarkBubble);
 
   ASSERT_TRUE(SigninPrefs(*prefs()).GetBookmarksExplicitBrowserSignin(gaia_id));
 
@@ -1358,11 +1539,9 @@ TEST_P(PrimaryAccountManagerExplicitSigninNewFeatureTest,
       /*sample=*/true, /*expected_bucket_count=*/1);
 }
 
-// Tests for users already signed `ExplicitSigninExtensionsPref` is only set to
-// true if the user belongs to the group with
-// `kReplaceSyncPromosWithSignInPromos` enabled but
-// `kReplaceSyncPromosWithSigninPromosNewSignin` disabled.
-TEST_P(PrimaryAccountManagerExplicitSigninNewFeatureTest,
+// Tests that for users already signed in `ExplicitSigninExtensionsPref` is not
+// set.
+TEST_F(PrimaryAccountManagerTest,
        ExplicitSigninExtensionsPref_AlreadySignedIn) {
   GaiaId gaia_id("gaia_id");
   CoreAccountId account_id = AddToAccountTracker(gaia_id, "user@gmail.com");
@@ -1374,16 +1553,13 @@ TEST_P(PrimaryAccountManagerExplicitSigninNewFeatureTest,
 
   CreatePrimaryAccountManager();
 
-  EXPECT_NE(GetParam(),
-            SigninPrefs(*prefs()).GetExtensionsExplicitBrowserSignin(gaia_id));
+  EXPECT_FALSE(
+      SigninPrefs(*prefs()).GetExtensionsExplicitBrowserSignin(gaia_id));
 }
 
-// Tests for users already signed `ExplicitSigninBookmarksPref` is only set to
-// true if the user belongs to the group with
-// `kReplaceSyncPromosWithSignInPromos` enabled but
-// `kReplaceSyncPromosWithSigninPromosNewSignin` disabled.
-TEST_P(PrimaryAccountManagerExplicitSigninNewFeatureTest,
-       ExplicitSigninBookmarksPref_AlreadySignedIn) {
+// Tests that for users already signed in `ExplicitSigninBookmarksPref` is not
+// set.
+TEST_F(PrimaryAccountManagerTest, ExplicitSigninBookmarksPref_AlreadySignedIn) {
   GaiaId gaia_id("gaia_id");
   CoreAccountId account_id = AddToAccountTracker(gaia_id, "user@gmail.com");
   user_prefs_.SetString(prefs::kGoogleServicesAccountId, account_id.ToString());
@@ -1394,8 +1570,8 @@ TEST_P(PrimaryAccountManagerExplicitSigninNewFeatureTest,
 
   CreatePrimaryAccountManager();
 
-  EXPECT_NE(GetParam(),
-            SigninPrefs(*prefs()).GetBookmarksExplicitBrowserSignin(gaia_id));
+  EXPECT_FALSE(
+      SigninPrefs(*prefs()).GetBookmarksExplicitBrowserSignin(gaia_id));
 
   histogram_tester_.ExpectBucketCount(
       "Signin.ExplicitSigninDatatypeMigration",
@@ -1405,16 +1581,15 @@ TEST_P(PrimaryAccountManagerExplicitSigninNewFeatureTest,
       "Signin.ExplicitSigninDatatypeMigration",
       PrimaryAccountManager::ExplicitSigninDatatypeMigrationState::
           kSignedInWithExplicitBookmarks,
-      GetParam() ? 0 : 1);
+      0);
   histogram_tester_.ExpectBucketCount(
       "Signin.ExplicitSigninDatatypeMigration",
       PrimaryAccountManager::ExplicitSigninDatatypeMigrationState::
           kSignedInWithExplicitExtensions,
-      GetParam() ? 0 : 1);
+      0);
 }
 
-TEST_P(PrimaryAccountManagerExplicitSigninNewFeatureTest,
-       ExplicitSigninExtensionsPref_AlreadySyncing) {
+TEST_F(PrimaryAccountManagerTest, ExplicitSigninExtensionsPref_AlreadySyncing) {
   GaiaId gaia_id("gaia_id");
   CoreAccountId account_id = AddToAccountTracker(gaia_id, "user@gmail.com");
   user_prefs_.SetString(prefs::kGoogleServicesAccountId, account_id.ToString());
@@ -1429,8 +1604,7 @@ TEST_P(PrimaryAccountManagerExplicitSigninNewFeatureTest,
       SigninPrefs(*prefs()).GetExtensionsExplicitBrowserSignin(gaia_id));
 }
 
-TEST_P(PrimaryAccountManagerExplicitSigninNewFeatureTest,
-       ExplicitSigninBookmarksPref_AlreadySyncing) {
+TEST_F(PrimaryAccountManagerTest, ExplicitSigninBookmarksPref_AlreadySyncing) {
   GaiaId gaia_id("gaia_id");
   CoreAccountId account_id = AddToAccountTracker(gaia_id, "user@gmail.com");
   user_prefs_.SetString(prefs::kGoogleServicesAccountId, account_id.ToString());
@@ -1444,11 +1618,4 @@ TEST_P(PrimaryAccountManagerExplicitSigninNewFeatureTest,
   EXPECT_FALSE(
       SigninPrefs(*prefs()).GetBookmarksExplicitBrowserSignin(gaia_id));
 }
-
-INSTANTIATE_TEST_SUITE_P(All,
-                         PrimaryAccountManagerExplicitSigninNewFeatureTest,
-                         testing::Bool(),
-                         [](const testing::TestParamInfo<bool>& info) {
-                           return info.param ? "NewSignins" : "ExistingUsers";
-                         });
 #endif  // BUILDFLAG(ENABLE_DICE_SUPPORT)

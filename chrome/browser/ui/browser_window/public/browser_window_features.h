@@ -33,6 +33,7 @@
 
 class ActorBorderViewController;
 class ActorUiWindowController;
+class AvatarToolbarIphController;
 class BookmarkBarController;
 class BookmarksSidePanelCoordinator;
 class BookmarksServiceFeature;
@@ -85,11 +86,10 @@ class ImmersiveModeController;
 class IncognitoClearBrowsingDataDialogCoordinator;
 class InitialWebUIManager;
 class InitialWebUIWindowMetricsManager;
+class InstantController;
 class IOSPromoController;
-class LocationBar;
 class LocationBarModel;
 class MemorySaverOptInIPHController;
-class PinnedToolbarActions;
 class ProfileMenuCoordinator;
 class OrganizerPanelController;
 class ReadingListSidePanelCoordinator;
@@ -98,11 +98,12 @@ class ScrimViewController;
 class SearchboxContextData;
 class SessionServiceBrowserHelper;
 class SharingWindowController;
-class SidePanelCoordinator;
 class SidePanelRegistry;
+class SidePanelUI;
 class SigninViewController;
 class SplitViewIphController;
 class TabDragServiceFeature;
+class TabGroupFocusIphController;
 class TabListBridge;
 
 namespace send_tab_to_self {
@@ -113,8 +114,7 @@ class TabStripModel;
 class TabStripServiceFeature;
 class TabsFromOtherDevicesSidePanelCoordinator;
 class ToastService;
-class TranslateBubbleController;
-class UIControllerFactory;
+class TranslateController;
 class UnloadController;
 class UpgradeNotificationController;
 class VerticalTabIphController;
@@ -218,14 +218,6 @@ class PdfInfoBarController;
 }  // namespace pdf::infobar
 #endif
 
-namespace qrcode_generator {
-class QRCodeWindowController;
-}  // namespace qrcode_generator
-
-namespace send_tab_to_self {
-class SendTabToSelfToolbarBubbleController;
-}  // namespace send_tab_to_self
-
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
 namespace session_restore_infobar {
 class SessionRestoreInfobarController;
@@ -266,6 +258,9 @@ class EntrypointController;
 
 namespace web_app {
 class AppBrowserController;
+#if BUILDFLAG(IS_MAC)
+class WebAppNotificationRecoveryController;
+#endif
 }  // namespace web_app
 
 // This class owns the core controllers for features that are scoped to a given
@@ -303,34 +298,6 @@ class BrowserWindowFeatures {
   // Called exactly once to tear down state that depends on the window object.
   void TearDownPreBrowserWindowDestruction();
 
-  // Get the FindBarController for this browser window, creating it if it does
-  // not yet exist.
-  FindBarController* GetFindBarController();
-
-  // Returns true if a FindBarController exists for this browser window.
-  bool HasFindBarController() const;
-
-  // Returns the LocationBar for this browser window. Currently delegates to
-  // BrowserWindow::GetLocationBar() via downcast, but should eventually become
-  // an owned member of BrowserWindowFeatures.
-  LocationBar* location_bar();
-  const LocationBar* location_bar() const;
-
-  LocationBarModel* location_bar_model() { return location_bar_model_.get(); }
-  const LocationBarModel* location_bar_model() const {
-    return location_bar_model_.get();
-  }
-#if defined(UNIT_TEST)
-  void swap_location_bar_models(
-      std::unique_ptr<LocationBarModel>* location_bar_model) {
-    location_bar_model->swap(location_bar_model_);
-  }
-#endif
-
-  PinnedToolbarActions* pinned_toolbar_actions() {
-    return pinned_toolbar_actions_;
-  }
-
   static ui::UserDataFactoryWithOwner<BrowserWindowInterface>&
   GetUserDataFactoryForTesting();
 
@@ -348,6 +315,8 @@ class BrowserWindowFeatures {
   // set of commands are enabled.
   std::unique_ptr<web_app::AppBrowserController> app_browser_controller_;
 
+  std::unique_ptr<AvatarToolbarIphController> avatar_toolbar_iph_controller_;
+
   std::unique_ptr<BookmarkBarController> bookmark_bar_controller_;
   std::unique_ptr<BookmarksServiceFeature> bookmarks_service_feature_;
   std::unique_ptr<BookmarksSidePanelCoordinator>
@@ -363,6 +332,7 @@ class BrowserWindowFeatures {
   std::unique_ptr<chrome::BrowserCommandController> browser_command_controller_;
   std::unique_ptr<BrowserElements> browser_elements_;
   std::unique_ptr<BrowserFocusController> browser_focus_controller_;
+  std::unique_ptr<BrowserInstantController> browser_instant_controller_;
   std::unique_ptr<BrowserSelectFileDialogController>
       browser_select_file_dialog_controller_;
   std::unique_ptr<BrowserUiController> browser_ui_controller_;
@@ -433,7 +403,7 @@ class BrowserWindowFeatures {
   std::unique_ptr<InitialWebUIManager> initial_web_ui_manager_;
   std::unique_ptr<InitialWebUIWindowMetricsManager>
       initial_webui_window_metrics_manager_;
-  std::unique_ptr<BrowserInstantController> instant_controller_;
+  std::unique_ptr<InstantController> instant_controller_;
   std::unique_ptr<IOSPromoController> ios_promo_controller_;
   std::unique_ptr<lens::LensOverlayEntryPointController>
       lens_overlay_entry_point_controller_;
@@ -446,7 +416,7 @@ class BrowserWindowFeatures {
   // Helper which implements the LocationBarModelDelegate interface.
   std::unique_ptr<BrowserLocationBarModelDelegate> location_bar_model_delegate_;
 
-  // The model for the toolbar view.
+  // The model for the toolbar view, exposed via LocationBarModel::From().
   std::unique_ptr<LocationBarModel> location_bar_model_;
 
   std::unique_ptr<memory_saver::MemorySaverBubbleController>
@@ -455,15 +425,11 @@ class BrowserWindowFeatures {
       most_recent_shared_tab_update_store_;
   std::unique_ptr<ProfileMenuCoordinator> profile_menu_coordinator_;
   std::unique_ptr<OrganizerPanelController> organizer_panel_controller_;
-  std::unique_ptr<qrcode_generator::QRCodeWindowController>
-      qrcode_window_controller_;
   std::unique_ptr<ReadingListSidePanelCoordinator>
       reading_list_side_panel_coordinator_;
   std::unique_ptr<RecentActivityBubbleCoordinator>
       recent_activity_bubble_coordinator_;
   std::unique_ptr<SearchboxContextData> searchbox_context_data_;
-  std::unique_ptr<send_tab_to_self::SendTabToSelfToolbarBubbleController>
-      send_tab_to_self_toolbar_bubble_controller_;
   std::unique_ptr<SessionServiceBrowserHelper> session_service_browser_helper_;
   std::unique_ptr<tab_groups::SessionServiceTabGroupSyncObserver>
       session_service_tab_group_sync_observer_;
@@ -488,13 +454,14 @@ class BrowserWindowFeatures {
   std::unique_ptr<TabsFromOtherDevicesSidePanelCoordinator>
       tabs_from_other_devices_side_panel_coordinator_;
   std::unique_ptr<ToastService> toast_service_;
-  std::unique_ptr<TranslateBubbleController> translate_bubble_controller_;
+  std::unique_ptr<TranslateController> translate_bubble_controller_;
   std::unique_ptr<ttc::EntrypointController> ttc_entrypoint_controller_;
   std::unique_ptr<UpgradeNotificationController>
       upgrade_notification_controller_;
   std::unique_ptr<BrowserUserEducationInterface> user_education_;
   std::unique_ptr<send_tab_to_self::SendTabToSelfIphController>
       send_tab_to_self_iph_controller_;
+  std::unique_ptr<TabGroupFocusIphController> tab_group_focus_iph_controller_;
   std::unique_ptr<VerticalTabIphController> vertical_tab_iph_controller_;
   std::unique_ptr<tabs::VerticalTabStripStateController>
       vertical_tab_strip_state_controller_;
@@ -534,8 +501,7 @@ class BrowserWindowFeatures {
   std::unique_ptr<ScrimViewController> scrim_view_controller_;
   std::unique_ptr<tab_groups::SharedTabGroupFeedbackController>
       shared_tab_group_feedback_controller_;
-  std::unique_ptr<SidePanelCoordinator> side_panel_coordinator_;
-  std::unique_ptr<UIControllerFactory> ui_controller_factory_;
+  std::unique_ptr<SidePanelUI> side_panel_coordinator_;
   std::unique_ptr<skills::SkillsUiWindowController>
       skills_ui_window_controller_;
   std::unique_ptr<split_tabs::SplitTabHighlightController>
@@ -547,6 +513,11 @@ class BrowserWindowFeatures {
   std::unique_ptr<WebUIBrowserSidePanelUI> webui_browser_side_panel_ui_;
 
   // Platform-specific members.
+#if BUILDFLAG(IS_MAC)
+  std::unique_ptr<web_app::WebAppNotificationRecoveryController>
+      web_app_notification_recovery_controller_;
+#endif
+
 #if BUILDFLAG(IS_WIN)
   std::unique_ptr<WindowsTaskbarIconUpdater> windows_taskbar_icon_updater_;
 #endif
@@ -591,7 +562,6 @@ class BrowserWindowFeatures {
   // TODO(crbug.com/423956131): Remove this.
   raw_ptr<BrowserWindowInterface> browser_ = nullptr;
 
-  raw_ptr<PinnedToolbarActions> pinned_toolbar_actions_ = nullptr;
   raw_ptr<TabStripModel> tab_strip_model_;
 
   // Embedder features. Must be declared last.

@@ -10,6 +10,7 @@
 #include <utility>
 #include <variant>
 
+#include "base/containers/flat_set.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/metrics/field_trial.h"
@@ -28,8 +29,8 @@
 #include "net/base/http_user_agent_settings.h"
 #include "net/base/net_errors.h"
 #include "net/base/proxy_chain.h"
+#include "net/base/scheduler/task_runner.h"
 #include "net/base/session_usage.h"
-#include "net/base/task/task_runner.h"
 #include "net/dns/public/secure_dns_policy.h"
 #include "net/log/net_log_source_type.h"
 #include "net/log/net_log_with_source.h"
@@ -601,7 +602,7 @@ int HttpProxyConnectJob::DoTransportConnectComplete(int result) {
     // ALPN protocol, etc., from here. Clear the DNS aliases to match the other
     // proxy codepaths.
     SetSocket(nested_connect_job_->PassSocket(),
-              /*dns_aliases=*/std::set<std::string>());
+              /*dns_aliases=*/base::flat_set<std::string>());
     return result;
   }
 

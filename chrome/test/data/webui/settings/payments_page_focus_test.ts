@@ -7,19 +7,19 @@ import {getDeepActiveElement} from 'chrome://resources/js/util.js';
 import {PaymentsManagerImpl} from 'chrome://settings/lazy_load.js';
 import {loadTimeData} from 'chrome://settings/settings.js';
 import {assertTrue} from 'chrome://webui-test/chai_assert.js';
+import {microtasksFinished} from 'chrome://webui-test/test_util.js';
 
 import type {TestPaymentsManager} from './autofill_fake_data.js';
 import {createCreditCardEntry, createIbanEntry} from './autofill_fake_data.js';
-import {createPaymentsPage, getPaymentMethodEntry, PaymentMethod, deletePaymentMethod} from './payments_page_test_utils.js';
-
-import {waitAfterNextRender} from 'chrome://webui-test/polymer_test_util.js';
+import {createPaymentsPage, getPaymentMethodEntry, PaymentMethod, deletePaymentMethod, setupPaymentsPrefs} from './payments_page_test_utils.js';
 // clang-format on
 
 suite('PaymentsPageFocusTest', function() {
-  setup(function() {
+  setup(async function() {
     loadTimeData.overrideValues({
       showIbansSettings: true,
     });
+    await setupPaymentsPrefs();
   });
 
   test('FocusLocationAfterDeletion', async function() {
@@ -34,8 +34,8 @@ suite('PaymentsPageFocusTest', function() {
         /*payOverTimeIssuers=*/[], {credit_card_enabled: {value: true}});
 
     // Ensure the subpage's back button is focused before continuing further.
-    await waitAfterNextRender(page);
-    const subpageElement = page.shadowRoot!.querySelector('settings-subpage');
+    await microtasksFinished();
+    const subpageElement = page.shadowRoot.querySelector('settings-subpage');
     assertTrue(!!subpageElement);
     // Note: Using assertTrue instead of assertEquals on purpose, because Mocha
     // in case of failure tries to serialize the arguments, which in turn throws
@@ -45,7 +45,7 @@ suite('PaymentsPageFocusTest', function() {
 
     const manager = (PaymentsManagerImpl.getInstance() as TestPaymentsManager);
 
-    const addButton = page.shadowRoot!.querySelector('#addPaymentMethods');
+    const addButton = page.shadowRoot.querySelector('#addPaymentMethods');
     assertTrue(!!addButton);
 
     await deletePaymentMethod(page, manager, PaymentMethod.CREDIT_CARD, 1);

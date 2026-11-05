@@ -17,41 +17,40 @@
 
 namespace blink {
 
+class HTMLElement;
+
 class CORE_EXPORT PerformanceContainerTiming final : public PerformanceEntry {
   DEFINE_WRAPPERTYPEINFO();
 
  public:
-  static PerformanceContainerTiming* Create(
-      const AtomicString& name,
-      DOMHighResTimeStamp start_time,
-      const gfx::Rect& intersection_rect,
-      double size,
-      Element* root_element,
-      const AtomicString& identifier,
-      Element* last_painted_element,
-      DOMHighResTimeStamp first_render_time,
-      DOMWindow* source,
-      uint64_t navigation_id);
-  PerformanceContainerTiming(const AtomicString& name,
-                             DOMHighResTimeStamp start_time,
-                             DOMHighResTimeStamp end_time,
-                             const gfx::Rect& intersection_rect,
+  // Created at paint time. The timing is set by FinalizeEntry() once the frame
+  // is presented.
+  static PerformanceContainerTiming* Create(const gfx::Rect& intersection_rect,
+                                            double size,
+                                            HTMLElement* root_element,
+                                            const AtomicString& identifier,
+                                            Element* last_painted_element,
+                                            DOMWindow* source);
+  PerformanceContainerTiming(const gfx::Rect& intersection_rect,
                              double size,
-                             Element* rootElement,
+                             HTMLElement* root_element,
                              const AtomicString& identifier,
                              Element* last_painted_element,
-                             DOMHighResTimeStamp first_render_time,
-                             DOMWindow* source,
-                             uint64_t navigation_id);
+                             DOMWindow* source);
 
   ~PerformanceContainerTiming() override;
 
   const AtomicString& entryType() const override;
   PerformanceEntryType EntryTypeEnum() const override;
+  DOMHighResTimeStamp startTime() const override;
+  bool IsReadyForReporting() const override;
+  void FinalizeEntry(const DOMPaintTimingInfo&,
+                     uint64_t navigation_id,
+                     DOMHighResTimeStamp first_render_time);
 
   DOMRectReadOnly* intersectionRect() const { return intersection_rect_.Get(); }
   double size() const { return size_; }
-  Element* rootElement() const;
+  HTMLElement* rootElement() const;
   AtomicString identifier() const { return identifier_; }
   Element* lastPaintedElement() const;
   DOMHighResTimeStamp firstRenderTime() const { return first_render_time_; }
@@ -61,14 +60,16 @@ class CORE_EXPORT PerformanceContainerTiming final : public PerformanceEntry {
   void Trace(Visitor*) const override;
 
  private:
+  void FinalizeEntry(const DOMPaintTimingInfo&,
+                     uint64_t navigation_id) override;
   void BuildJSONValue(V8ObjectBuilder&) const override;
 
   Member<DOMRectReadOnly> intersection_rect_;
   double size_;
-  WeakMember<Element> root_element_;
+  WeakMember<HTMLElement> root_element_;
   AtomicString identifier_;
   WeakMember<Element> last_painted_element_;
-  DOMHighResTimeStamp first_render_time_;
+  DOMHighResTimeStamp first_render_time_ = 0.0;
 };
 
 template <>

@@ -18,6 +18,7 @@
 
 #include "base/command_line.h"
 #include "base/compiler_specific.h"
+#include "base/containers/span.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/numerics/safe_conversions.h"
@@ -92,7 +93,7 @@ perfetto::NamedTrack GetTracingTrack(const V4L2VideoDecodeAccelerator* ptr) {
 
 }  // namespace
 
-static const std::vector<uint32_t> kSupportedInputFourCCs = {
+constexpr uint32_t kSupportedInputFourCCs[] = {
     V4L2_PIX_FMT_H264,
     V4L2_PIX_FMT_VP8,
     V4L2_PIX_FMT_VP9,

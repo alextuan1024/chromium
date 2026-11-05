@@ -4,6 +4,8 @@
 
 #include "ios/chrome/browser/policy/model/enterprise_policy_test_helper.h"
 
+#include "base/check.h"
+#include "base/files/file_util.h"
 #include "base/task/single_thread_task_runner.h"
 #include "components/policy/core/common/policy_types.h"
 #include "components/pref_registry/pref_registry_syncable.h"
@@ -17,15 +19,11 @@
 #include "ios/chrome/browser/shared/model/profile/test/test_profile_ios.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
 
-namespace {
-
-const char kProfileName[] = "Test";
-
-}
-
 EnterprisePolicyTestHelper::EnterprisePolicyTestHelper(
     const base::FilePath& data_dir) {
-  const base::FilePath state_directory_path = data_dir.Append(kProfileName);
+  // "Test" matches the default profile subdirectory used by
+  // `TestProfileIOS::Builder::Build(data_dir)`.
+  const base::FilePath state_directory_path = data_dir.Append("Test");
   policy_provider_.SetDefaultReturns(
       true /* is_initialization_complete_return */,
       true /* is_first_policy_load_complete_return */);
@@ -39,6 +37,7 @@ EnterprisePolicyTestHelper::EnterprisePolicyTestHelper(
   scoped_refptr<PrefRegistrySimple> local_state_registry(
       new PrefRegistrySimple);
   RegisterLocalStatePrefs(local_state_registry.get());
+  CHECK(base::CreateDirectory(state_directory_path));
   local_state_ = CreateLocalState(
       state_directory_path.Append("TestLocalState"),
       base::SingleThreadTaskRunner::GetCurrentDefault().get(),
@@ -64,7 +63,6 @@ EnterprisePolicyTestHelper::EnterprisePolicyTestHelper(
           /*async=*/false);
 
   TestProfileIOS::Builder builder;
-  builder.SetName(kProfileName);
   builder.SetPrefService(std::move(pref_service));
   profile_ = std::move(builder).Build(data_dir);
 }

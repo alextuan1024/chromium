@@ -8,15 +8,35 @@
 #include <memory>
 #include <string_view>
 
+#include "base/memory/scoped_refptr.h"
 #include "chrome/browser/profiles/profile.h"
 #include "components/account_id/account_id.h"
 #include "components/user_manager/user.h"
 #include "content/public/browser/web_ui_controller.h"
 #include "url/gurl.h"
 
+class ApplicationLocaleStorage;
+class PrefService;
+
+namespace base::i18n {
+class LanguageTag;
+}  // namespace base::i18n
+
 namespace content {
 class WebUI;
 }  // namespace content
+
+namespace manta {
+class MantaService;
+}  // namespace manta
+
+namespace network {
+class SharedURLLoaderFactory;
+}  // namespace network
+
+namespace variations {
+class VariationsService;
+}  // namespace variations
 
 namespace ash::personalization_app {
 
@@ -33,9 +53,18 @@ enum class ManagedSeaPenSettings {
 
 // Creates a PersonalizationAppUI. Used as a callback by
 // PersonalizationAppUIConfig.
+// `local_state` and `application_locale_storage` must not be null and must
+// outlive the returned `WebUIController`.
+// `shared_url_loader_factory` must not be null.
+// `manta_service` is the profile's MantaService, resolved by the caller and
+// injected into the SeaPen fetcher; it may be null.
 std::unique_ptr<content::WebUIController> CreatePersonalizationAppUI(
+    PrefService* local_state,
+    const ApplicationLocaleStorage* application_locale_storage,
+    scoped_refptr<network::SharedURLLoaderFactory> shared_url_loader_factory,
     content::WebUI* web_ui,
-    const GURL& url);
+    const GURL& url,
+    manta::MantaService* manta_service);
 
 // In general, by the time this function is called, it is already guaranteed
 // that there is a valid profile and user that has opened personalization app.
@@ -53,13 +82,16 @@ AccountId GetAccountId(Profile* profile);
 bool CanSeeWallpaperOrPersonalizationApp(Profile* profile);
 
 // Verifies if the language settings in `application_locale` are supported.
-bool IsSystemInSupportedLanguage(std::string_view application_locale);
+bool IsSystemInSupportedLanguage(
+    const base::i18n::LanguageTag& application_locale);
 
 // Controls whether the profile can see and open SeaPen UI. Managed users have
 // age restrictions that underage users (<18) are not allowed to view and access
 // SeaPen features. The age check should be verified after network connection
 // is established.
-bool IsEligibleForSeaPen(Profile* profile);
+bool IsEligibleForSeaPen(
+    const variations::VariationsService& variations_service,
+    Profile* profile);
 
 // Preliminary check whether the profile is allowed to install Sea Pen apps (VC
 // Background).
@@ -76,8 +108,10 @@ bool IsManagedSeaPenVcBackgroundEnabled(Profile* profile);
 
 // Controls whether users are eligible for SeaPen text input. The age
 // requirements are stricter than for SeaPen.
-bool IsEligibleForSeaPenTextInput(Profile* profile,
-                                  std::string_view application_locale);
+bool IsEligibleForSeaPenTextInput(
+    const variations::VariationsService& variations_service,
+    Profile* profile,
+    std::string_view application_locale);
 
 // Controls whether SeaPen Wallpaper Feedback is shown for managed profiles.
 bool IsManagedSeaPenWallpaperFeedbackEnabled(Profile* profile);

@@ -47,7 +47,7 @@
 #import "ios/chrome/browser/intelligence/proto_wrappers/page_context_wrapper_config.h"
 #import "ios/chrome/browser/intelligence/proto_wrappers/page_context_wrapper_metrics.h"
 #import "ios/chrome/browser/snapshots/model/snapshot_tab_helper.h"
-#import "ios/public/provider/chrome/browser/bwg/gemini_api.h"
+#import "ios/public/provider/chrome/browser/intelligence/proto_wrappers/page_context_wrapper_api.h"
 #import "ios/web/find_in_page/find_in_page_java_script_feature.h"
 #import "ios/web/public/js_messaging/content_world.h"
 #import "ios/web/public/js_messaging/web_frame.h"
@@ -161,8 +161,9 @@ constexpr const char16_t* kInnerTextTreeJavaScript = uR"DELIM(
             return '';
         }
         const texts = [];
-        if (node.innerText) {
-            texts.push(node.innerText);
+        const nodeText = (node.innerText || '').trim();
+        if (nodeText) {
+            texts.push(nodeText);
         }
         // The node itself and its light-DOM descendants may be shadow hosts.
         // querySelectorAll does not cross shadow boundaries, so shadow hosts
@@ -569,9 +570,10 @@ const NSUInteger kMaxPDFByteLimit = 64 * 1024 * 1024;
   if (_shouldGetFullPagePDF) {
     [_pageContextMetrics executionStartedForTask:PageContextTask::kPDF];
 
-    _webState->CreateFullPagePdf(base::BindOnce(^(NSData* PDFData) {
-      [weakSelf encodeAndSetFullPagePDF:PDFData barrier:pageContextBarrier];
-    }));
+    _webState->CreatePdf(
+        {}, base::BindOnce(^(NSData* PDFData) {
+          [weakSelf encodeAndSetFullPagePDF:PDFData barrier:pageContextBarrier];
+        }));
   }
 }
 
@@ -581,30 +583,18 @@ const NSUInteger kMaxPDFByteLimit = 64 * 1024 * 1024;
   [_pageContextMetrics executionStartedForTask:PageContextTask::kScreenshot];
 
   __weak PageContextWrapper* weakSelf = self;
-  auto callback = ^(UIImage* image) {
-    __strong __typeof(weakSelf) strongSelf = weakSelf;
-    if (!strongSelf) {
-      return;
-    }
 
-    if ([strongSelf shouldUpdateSnapshotWithImage:image]) {
-      [strongSelf updateSnapshotWithBarrier:barrier];
-      return;
-    }
-
-    [strongSelf stashRawScreenshotImage:image];
-    barrier.Run();
-  };
-
-  // If the WebState is currently visible, update the snapshot in case the
-  // user was scrolling, otherwise retrieve the latest version in cache or on
-  // disk.
-  if (_webState->IsVisible()) {
+  // Capture a live snapshot if the WebState is visible or the cache is
+  // bypassed; otherwise retrieve the cached snapshot.
+  const bool shouldBypassCache =
+      _config->snapshot_cache_policy() ==
+      PageContextWrapperConfig::SnapshotCachePolicy::kBypassCache;
+  if (_webState->IsVisible() || shouldBypassCache) {
     auto updateSnapshotCallback =
         base::BindOnce(^(std::optional<int> result_matches) {
           // TODO(crbug.com/401282824): Log the matches count to measure text
           // highlighting precision.
-          [weakSelf updateSnapshotWithCallback:callback];
+          [weakSelf updateSnapshotWithBarrier:barrier];
         });
 
     // If there is text to highlight, do it before capturing the screenshot.
@@ -624,8 +614,28 @@ const NSUInteger kMaxPDFByteLimit = 64 * 1024 * 1024;
       std::move(updateSnapshotCallback).Run(std::nullopt);
     }
   } else {
-    SnapshotTabHelper::FromWebState(_webState.get())
-        ->RetrieveColorSnapshot(callback);
+    auto retrieveSnapshotCallback = ^(UIImage* image) {
+      __strong __typeof(weakSelf) strongSelf = weakSelf;
+      if (!strongSelf) {
+        return;
+      }
+
+      if ([strongSelf shouldUpdateSnapshotWithImage:image]) {
+        [strongSelf updateSnapshotWithBarrier:barrier];
+        return;
+      }
+
+      [strongSelf stashRawScreenshotImage:image];
+      barrier.Run();
+    };
+
+    SnapshotTabHelper* snapshotTabHelper =
+        SnapshotTabHelper::FromWebState(_webState.get());
+    if (snapshotTabHelper) {
+      snapshotTabHelper->RetrieveColorSnapshot(retrieveSnapshotCallback);
+    } else {
+      retrieveSnapshotCallback(nil);
+    }
   }
 }
 
@@ -768,7 +778,7 @@ const NSUInteger kMaxPDFByteLimit = 64 * 1024 * 1024;
       PopulateAutofillInformation(_webState.get(), autofillInformation);
     }
 
-    if (ios::provider::IsProtectedUrl(mainFrame->GetUrl().spec())) {
+    if (ios::provider::IsProtectedUrl(mainFrame->GetUrl())) {
       _forceDetachPageContext = YES;
       annotatedPageContentBarrier.Run();
     } else {
@@ -781,7 +791,7 @@ const NSUInteger kMaxPDFByteLimit = 64 * 1024 * 1024;
     // Execute the JavaScript on each other WebFrame and pass in the callback
     // (which executes the barrier when run).
     for (web::WebFrame* webFrame : webFrames) {
-      if (ios::provider::IsProtectedUrl(webFrame->GetUrl().spec())) {
+      if (ios::provider::IsProtectedUrl(webFrame->GetUrl())) {
         _forceDetachPageContext = YES;
       }
 
@@ -836,7 +846,7 @@ const NSUInteger kMaxPDFByteLimit = 64 * 1024 * 1024;
     // If the page is not protected, execute the JavaScript on the main
     // WebFrame first and pass in the callback (which executes the barrier
     // when run).
-    if (ios::provider::IsProtectedUrl(mainFrame->GetUrl().spec())) {
+    if (ios::provider::IsProtectedUrl(mainFrame->GetUrl())) {
       _forceDetachPageContext = YES;
       annotatedPageContentBarrier.Run();
     } else {
@@ -851,7 +861,7 @@ const NSUInteger kMaxPDFByteLimit = 64 * 1024 * 1024;
     // Execute the JavaScript on each other WebFrame and pass in the callback
     // (which executes the barrier when run).
     for (web::WebFrame* webFrame : webFrames) {
-      if (ios::provider::IsProtectedUrl(webFrame->GetUrl().spec())) {
+      if (ios::provider::IsProtectedUrl(webFrame->GetUrl())) {
         _forceDetachPageContext = YES;
       }
 
@@ -934,10 +944,21 @@ const NSUInteger kMaxPDFByteLimit = 64 * 1024 * 1024;
     if (_config->graft_cross_origin_frame_content() && registrar) {
       ResolveCrossSiteFrameContent(
           _grafter, registrar, _config->include_same_site_only(),
-          _pageContext->mutable_annotated_page_content());
+          _pageContext->mutable_annotated_page_content(),
+          [self webFramesManager]);
     }
     if (_rawScreenshotImage) {
       [self applyRedactionsAndEncodeScreenshot:_rawScreenshotImage];
+    }
+    // TODO(crbug.com/573337154): Translate the tree before screenshot redaction
+    // and screenshot info so `FrameGrafter` can reuse the translated geometry
+    // once password screenshot redaction is fully launched. `FrameGrafter`
+    // currently offsets redaction boxes by the iframe's `visible_bounding_box`
+    // rather than its `outer_bounding_box`, so this will also fix redaction
+    // offsets for partially scrolled iframes.
+    if (_pageContext->has_annotated_page_content()) {
+      TranslateIframeNodeGeometries(
+          _pageContext->mutable_annotated_page_content());
     }
     if (_shouldGetSnapshot && !_pageContext->has_tab_screenshot()) {
       response = base::unexpected(PageContextWrapperError::kScreenshotError);
@@ -954,36 +975,94 @@ const NSUInteger kMaxPDFByteLimit = 64 * 1024 * 1024;
   std::move(_completionCallback).Run(std::move(response));
 }
 
-// Returns YES if the image is nil and forcing the update of missing snapshots
-// is enabled.
+// Returns YES if the stored snapshot is nil and the configured policy falls
+// back to capturing a live snapshot when missing.
 - (BOOL)shouldUpdateSnapshotWithImage:(UIImage*)image {
-  return !image && _shouldForceUpdateMissingSnapshots;
+  return !image &&
+         _config->snapshot_cache_policy() !=
+             PageContextWrapperConfig::SnapshotCachePolicy::kUseCacheWhenHidden;
+}
+
+// Returns the visible web viewport rect in GetView() coordinates, insetting
+// by adjustedContentInset so DOM (0, 0) matches the snapshot origin.
+- (CGRect)visibleWebViewportRect {
+  if (!_webState || !_webState->GetView()) {
+    return CGRectZero;
+  }
+  CGRect bounds = _webState->GetView().bounds;
+  id<CRWWebViewProxy> webViewProxy = _webState->GetWebViewProxy();
+  if (webViewProxy && webViewProxy.scrollViewProxy) {
+    UIEdgeInsets insets = webViewProxy.scrollViewProxy.adjustedContentInset;
+    CGRect insetRect = UIEdgeInsetsInsetRect(bounds, insets);
+    if (!CGRectIsEmpty(insetRect) && insetRect.size.width > 0 &&
+        insetRect.size.height > 0) {
+      return insetRect;
+    }
+  }
+  return bounds;
+}
+
+// Generates a fallback snapshot directly from the WebState view using UIKit
+// rendering when WebKit's out-of-process snapshot returns an empty image (e.g.
+// before layout passes complete in headless test environments or rapid
+// navigations).
+- (UIImage*)fallbackSnapshotFromView {
+  if (!_webState || !_webState->GetView()) {
+    return nil;
+  }
+  UIView* view = _webState->GetView();
+  CGRect bounds = [self visibleWebViewportRect];
+  if (bounds.size.width <= 0 || bounds.size.height <= 0) {
+    bounds = view.bounds;
+  }
+  if (bounds.size.width <= 0 || bounds.size.height <= 0) {
+    return nil;
+  }
+  UIGraphicsImageRendererFormat* format =
+      [UIGraphicsImageRendererFormat defaultFormat];
+  UIGraphicsImageRenderer* renderer =
+      [[UIGraphicsImageRenderer alloc] initWithSize:bounds.size format:format];
+  return [renderer imageWithActions:^(UIGraphicsImageRendererContext* context) {
+    [view drawViewHierarchyInRect:CGRectMake(-bounds.origin.x, -bounds.origin.y,
+                                             view.bounds.size.width,
+                                             view.bounds.size.height)
+               afterScreenUpdates:NO];
+  }];
 }
 
 // Updates the snapshot for the given WebState, and executes the `barrier`
 // callback when finished.
 - (void)updateSnapshotWithBarrier:(base::RepeatingClosure)barrier {
-  if (!_webState) {
-    barrier.Run();
-    return;
-  }
   __weak PageContextWrapper* weakSelf = self;
-  SnapshotTabHelper::FromWebState(_webState.get())
-      ->UpdateSnapshotWithCallback(^(UIImage* image) {
-        __strong __typeof(weakSelf) strongSelf = weakSelf;
-        if (!strongSelf) {
-          return;
-        }
-        [strongSelf stashRawScreenshotImage:image];
-        barrier.Run();
-      });
+  [self updateSnapshotWithCallback:^(UIImage* image) {
+    __strong __typeof(weakSelf) strongSelf = weakSelf;
+    if (!strongSelf) {
+      return;
+    }
+    [strongSelf stashRawScreenshotImage:image];
+    barrier.Run();
+  }];
 }
 
 // Updates the current WebState's snapshot with the given callback.
 - (void)updateSnapshotWithCallback:(void (^)(UIImage*))callback {
-  if (_webState) {
-    SnapshotTabHelper::FromWebState(_webState.get())
-        ->UpdateSnapshotWithCallback(callback);
+  if (!callback) {
+    return;
+  }
+  if (_webState && _webState->CanTakeSnapshot()) {
+    __weak PageContextWrapper* weakSelf = self;
+    _webState->TakeSnapshot(
+        [self visibleWebViewportRect], base::BindRepeating(^(UIImage* image) {
+          __strong __typeof(weakSelf) strongSelf = weakSelf;
+          if (!strongSelf) {
+            callback(nil);
+            return;
+          }
+          if (!image || image.size.width <= 0 || image.size.height <= 0) {
+            image = [strongSelf fallbackSnapshotFromView];
+          }
+          callback(image);
+        }));
   } else {
     callback(nil);
   }
@@ -1034,6 +1113,32 @@ const NSUInteger kMaxPDFByteLimit = 64 * 1024 * 1024;
   if (_webState && _webState->GetWebViewProxy() &&
       _webState->GetWebViewProxy().scrollViewProxy) {
     zoomScale = _webState->GetWebViewProxy().scrollViewProxy.zoomScale;
+  }
+
+  if (_pageContext && _pageContext->has_annotated_page_content() &&
+      _pageContext->annotated_page_content()
+          .gemini_in_chrome_page_metadata()
+          .has_screenshot_info()) {
+    auto* screenshot_info = _pageContext->mutable_annotated_page_content()
+                                ->mutable_gemini_in_chrome_page_metadata()
+                                ->mutable_screenshot_info();
+    // Centralize screenshot_size to match the captured screenshot image size.
+    screenshot_info->mutable_screenshot_size()->set_width(
+        static_cast<int32_t>(image.size.width));
+    screenshot_info->mutable_screenshot_size()->set_height(
+        static_cast<int32_t>(image.size.height));
+
+    // Scale iframe bounding boxes by zoomScale to align with the screenshot
+    // image.
+    if (zoomScale != 1.0 && zoomScale > 0) {
+      for (auto& info : *screenshot_info->mutable_iframe_info()) {
+        auto* box = info.mutable_bounding_box();
+        box->set_x(static_cast<int32_t>(box->x() * zoomScale));
+        box->set_y(static_cast<int32_t>(box->y() * zoomScale));
+        box->set_width(static_cast<int32_t>(box->width() * zoomScale));
+        box->set_height(static_cast<int32_t>(box->height() * zoomScale));
+      }
+    }
   }
 
   _universalBoundingBoxesForRedaction.clear();
@@ -1788,6 +1893,10 @@ const NSUInteger kMaxPDFByteLimit = 64 * 1024 * 1024;
 
 - (FrameGrafter&)grafterForTesting {
   return _grafter;
+}
+
+- (CGRect)visibleWebViewportRectForTesting {
+  return [self visibleWebViewportRect];
 }
 
 @end

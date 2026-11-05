@@ -67,6 +67,7 @@ class SidePanelUIBase : public SidePanelUI {
             bool suppress_animations) override;
   std::optional<SidePanelEntry::Id> GetCurrentEntryId() const override;
   int GetCurrentEntryDefaultContentWidth() const override;
+  bool CanShow() const override;
   bool IsSidePanelShowing() const override;
   bool IsSidePanelEntryShowing(
       const SidePanelEntry::Key& entry_key) const override;
@@ -77,6 +78,7 @@ class SidePanelUIBase : public SidePanelUI {
   void OnActiveTabChanged(content::WebContents* old_contents,
                           content::WebContents* new_contents,
                           bool tab_removed_for_deletion) override;
+  SidePanelEntry* GetLoadingEntryForTesting() const override;
 
   BrowserWindowInterface* browser() const { return browser_; }
 

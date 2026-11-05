@@ -37,7 +37,38 @@
 #include "ui/events/keycodes/keyboard_codes.h"
 #include "ui/views/widget/widget.h"
 
+#if BUILDFLAG(IS_WIN)
+#include "chrome/browser/ui/omnibox/omnibox_everywhere/omnibox_everywhere_shortcut_win.h"
+#include "chrome/browser/win/taskbar_manager.h"
+#endif  // BUILDFLAG(IS_WIN)
+
 namespace omnibox_everywhere {
+
+namespace {
+
+void MarkNtpPromoCompleted(Profile* profile) {
+  if (profile && profile->GetPrefs() &&
+      profile->GetPrefs()->FindPreference(prefs::kNtpPromoCompleted)) {
+    profile->GetPrefs()->SetBoolean(prefs::kNtpPromoCompleted, true);
+  }
+}
+
+#if BUILDFLAG(IS_WIN)
+void PinToTaskbarIfShortcutExists(base::OnceCallback<void(bool)> callback,
+                                  bool shortcut_exists) {
+  // The shell only allows pinning an AUMI that has a Start Menu shortcut.
+  if (!shortcut_exists) {
+    std::move(callback).Run(false);
+    return;
+  }
+  browser_util::PinAppToTaskbar(
+      GetAppUserModelId(),
+      browser_util::PinAppToTaskbarChannel::kOmniboxEverywhere,
+      std::move(callback));
+}
+#endif  // BUILDFLAG(IS_WIN)
+
+}  // namespace
 
 OmniboxEverywhereController::OmniboxEverywhereController(
     OmniboxEverywhereUIManager::ContentsWrapperFactory contents_wrapper_factory,
@@ -398,8 +429,13 @@ void OmniboxEverywhereController::OnInvoke(InvocationSource source,
 
   SetTargetProfile(profile);
   switch (source) {
+    // Mark the NTP promo completed when the user invokes Omnibox Everywhere
+    // directly via hotkey, status tray, or command line. Invocations from
+    // `kNtpPromo` leave this unset until the user actually navigates in
+    // `OmniboxEverywhereService::NavigateInBrowserWindow()`.
     case InvocationSource::kGlobalHotkey:
     case InvocationSource::kStatusTrayIcon:
+      MarkNtpPromoCompleted(profile);
       if (ui_manager_->profile() == profile) {
         const bool should_dismiss = prefs::IsEphemeralModelEnabled()
                                         ? ui_manager_->IsVisible()
@@ -410,8 +446,11 @@ void OmniboxEverywhereController::OnInvoke(InvocationSource source,
         }
       }
       break;
-    case InvocationSource::kProfilePicker:
     case InvocationSource::kCommandLine:
+      MarkNtpPromoCompleted(profile);
+      break;
+    case InvocationSource::kProfilePicker:
+    case InvocationSource::kNtpPromo:
       break;
   }
 
@@ -516,9 +555,12 @@ void OmniboxEverywhereController::ExecuteCommand(
 
 void OmniboxEverywhereController::OfferPinToTaskbar(
     base::OnceCallback<void(bool)> callback) {
-  if (callback) {
-    std::move(callback).Run(false);
-  }
+#if BUILDFLAG(IS_WIN)
+  ui_manager_->CreateStartMenuShortcut(
+      base::BindOnce(&PinToTaskbarIfShortcutExists, std::move(callback)));
+#else
+  std::move(callback).Run(false);
+#endif
 }
 
 }  // namespace omnibox_everywhere

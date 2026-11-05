@@ -36,8 +36,11 @@ export import AdditionalContext = generated.AdditionalContext;
 export import AnnotatedPageData = generated.AnnotatedPageData;
 export import AutofillSuggestion = generated.AutofillSuggestion;
 export import CaptureRegionParams = generated.CaptureRegionParams;
+export import CaptureRegionPayload = generated.CaptureRegionPayload;
 export import CaptureRegionResult = generated.CaptureRegionResult;
 export import CapturedRegion = generated.CapturedRegion;
+export import CloseAuthTabOptions = generated.CloseAuthTabOptions;
+export import CloseAuthTabResponse = generated.CloseAuthTabResponse;
 export import CloseSignInTabOptions = generated.CloseSignInTabOptions;
 export import ConversationInfo = generated.ConversationInfo;
 export import CounterAbuseVerdict = generated.CounterAbuseVerdict;
@@ -45,7 +48,11 @@ export import CreateActorTabOptions = generated.CreateActorTabOptions;
 export import CreateSkillRequest = generated.CreateSkillRequest;
 export import CreateTabOptions = generated.CreateTabOptions;
 export import Credential = generated.Credential;
+export import DataTransferActionsBlockedNotice =
+    generated.DataTransferActionsBlockedNotice;
 export import DocumentData = generated.DocumentData;
+export import ExperimentalTriggeringPayload =
+    generated.ExperimentalTriggeringPayload;
 export import ExperimentalTriggeringUpdate =
     generated.ExperimentalTriggeringUpdate;
 export import FormFillingRequest = generated.FormFillingRequest;
@@ -64,6 +71,8 @@ export import ImageInfo = generated.ImageInfo;
 export import InvokeOptions = generated.InvokeOptions;
 export import MetaTag = generated.MetaTag;
 export import OnResponseStoppedDetails = generated.OnResponseStoppedDetails;
+export import OpenAuthTabOptions = generated.OpenAuthTabOptions;
+export import OpenAuthTabResponse = generated.OpenAuthTabResponse;
 export import OpenPinnedTabPickerOptions = generated.OpenPinnedTabPickerOptions;
 export import OpenSettingsOptions = generated.OpenSettingsOptions;
 export import OpenSignInTabOptions = generated.OpenSignInTabOptions;
@@ -91,6 +100,7 @@ export import SelectCredentialDialogRequest =
     generated.SelectCredentialDialogRequest;
 export import SelectCredentialDialogResponse =
     generated.SelectCredentialDialogResponse;
+export import SendTabToSelfDevice = generated.SendTabToSelfDevice;
 export import Skill = generated.Skill;
 export import SkillPreview = generated.SkillPreview;
 export import SkillsPayload = generated.SkillsPayload;
@@ -115,13 +125,18 @@ export import ActorTaskState = generated.ActorTaskState;
 export import ActorTaskStopReason = generated.ActorTaskStopReason;
 export import ActuationTarget = generated.ActuationTarget;
 export import AdditionalContextSource = generated.AdditionalContextSource;
+export import AuthTabPurpose = generated.AuthTabPurpose;
 export import CancelActionsResult = generated.CancelActionsResult;
 export import CaptureRegionErrorReason = generated.CaptureRegionErrorReason;
 export import ClientCapabilities = generated.ClientCapabilities;
 export import ClientErrorDialogType = generated.ClientErrorDialogType;
+export import CloseAuthTabResult = generated.CloseAuthTabResult;
 export import CloseSignInTabResult = generated.CloseSignInTabResult;
 export import CreateTaskErrorReason = generated.CreateTaskErrorReason;
 export import CredentialType = generated.CredentialType;
+export import DataTransferAction = generated.DataTransferAction;
+export import DataTransferActionsBlockedReason =
+    generated.DataTransferActionsBlockedReason;
 export import ExperimentalTriggeringUpdateType =
     generated.ExperimentalTriggeringUpdateType;
 export import FeatureMode = generated.FeatureMode;
@@ -134,6 +149,7 @@ export import LightweightPageFeature = generated.LightweightPageFeature;
 export import MetricUserInputReactionType =
     generated.MetricUserInputReactionType;
 export import MicrophoneStatus = generated.MicrophoneStatus;
+export import OpenAuthTabResult = generated.OpenAuthTabResult;
 export import OpenSignInTabResult = generated.OpenSignInTabResult;
 export import PanelStateKind = generated.PanelStateKind;
 export import PerformActionsErrorReason = generated.PerformActionsErrorReason;
@@ -154,6 +170,7 @@ export import SkillsWebClientEvent = generated.SkillsWebClientEvent;
 export import SwitchConversationErrorReason =
     generated.SwitchConversationErrorReason;
 export import TaskDuration = generated.TaskDuration;
+export import TooltipImpressionType = generated.TooltipImpressionType;
 export import UnpinTrigger = generated.UnpinTrigger;
 export import UserGrantedPermissionDuration =
     generated.UserGrantedPermissionDuration;
@@ -199,6 +216,10 @@ export declare interface AdditionalContextPart {
   annotatedPageData?: AnnotatedPageData;
   pdf?: PdfDocumentData;
   tabContext?: TabContextResult;
+  /**
+   * @deprecated Chrome no longer sends `region`. Use `pendingRegion`
+   * instead.
+   */
   region?: CapturedRegion;
   pendingRegion?: PendingCapturedRegion;
   parentConversationMetadata?: ParentConversationMetadata;
@@ -208,6 +229,8 @@ export declare interface AdditionalContextPart {
 export declare interface InvocationPayload {
   universalCart?: UniversalCartPayload;
   skillsPayload?: SkillsPayload;
+  experimentalTriggering?: ExperimentalTriggeringPayload;
+  captureRegion?: CaptureRegionPayload;
 }
 
 /**
@@ -330,6 +353,37 @@ export declare interface ExperimentalTriggeringUploadScreenshotRequest {
 }
 
 /**
+ * A confirmation decision made by the user on a remote surface.
+ * Delivered to the client so that it can resolve the corresponding
+ * pending confirmation dialog.
+ */
+export declare interface ExperimentalTriggeringConfirmationResponseRequest {
+  /**
+   * The serialized confirmation response proto. This is opaque to Chrome and
+   * is forwarded verbatim from the server.
+   *
+   * The client is responsible for decoding this payload, matching it against
+   * a pending confirmation dialog request, and invoking that request's
+   * response callback.
+   */
+  response: ArrayBuffer;
+
+  /**
+   * The client must call this exactly once. Pass true if the response was
+   * matched to a pending confirmation dialog and applied, and false otherwise
+   * (for example, if there is no pending dialog, if the payload could not be
+   * decoded, or if the decision is no longer relevant).
+   *
+   * This should be called promptly, as it reports only whether the decision
+   * was applied locally. If it is not called within a short timeout, or if the
+   * web client is torn down while the request is in flight, the decision is
+   * reported to the browser as not applied. Calls made after that point are
+   * ignored.
+   */
+  onComplete(applied: boolean): void;
+}
+
+/**
  * Interface providing experimental triggering capabilities from the browser
  * host.
  */
@@ -340,6 +394,18 @@ export declare interface GlicExperimentalTriggeringBrowserHost {
    */
   uploadEncryptedScreenshotRequests?
       (): Observable<ExperimentalTriggeringUploadScreenshotRequest>;
+
+  /**
+   * Returns an Observable emitting confirmation decisions that were made by
+   * the user on a remote surface. Each emitted request carries an opaque
+   * payload which the client must decode in order to resolve the matching
+   * pending confirmation dialog.
+   *
+   * If the client has no active subscription to this Observable, the browser
+   * treats every confirmation response as unhandled.
+   */
+  confirmationResponses?
+      (): Observable<ExperimentalTriggeringConfirmationResponseRequest>;
 }
 
 /**
@@ -392,6 +458,12 @@ export declare interface GlicBrowserHost {
    */
   resizeWindow(width: number, height: number, options?: ResizeWindowOptions):
       Promise<void>;
+
+  /**
+   * Returns the list of target devices available for Send Tab to Self.
+   * Resolves to an empty list if sync is disabled or the model is not ready.
+   */
+  getSendTabToSelfDevices?(): Promise<SendTabToSelfDevice[]>;
 
   /**
    * Set the state of the panel's user drag-to-resize capability, or if the
@@ -1275,6 +1347,13 @@ export declare interface GlicBrowserHost {
   getAdditionalContext?(): Observable<AdditionalContext>;
 
   /**
+   * Returns an observable that emits when a paste or drop into Glic is blocked
+   * by product or context eligibility checks.
+   */
+  getDataTransferActionsBlockedNotices?
+      (): Observable<DataTransferActionsBlockedNotice>;
+
+  /**
    * Returns the host's capability to act on web pages. This reflects enterprise
    * policy for whether actuation is allowed.
    */
@@ -1342,6 +1421,52 @@ export declare interface GlicBrowserHost {
    */
   processCounterAbuseVerdict?
       (tabId: string, verdict: CounterAbuseVerdict): void;
+
+  /**
+   * Returns an object providing synchronous persistent key-value storage for
+   * the web client, backed by Chrome preferences.
+   */
+  getClientStorage?(): GlicClientStorage;
+
+  /**
+   * Sets or clears (when `value` is null) a query parameter to append to
+   * subsequent Glic/GEiC guest URL loads for the active provider on this
+   * profile. Reserved keys (`hl`, `authuser`, `configId`, `location`),
+   * keys/values exceeding 256 bytes, or writes exceeding 32 parameters are
+   * silently ignored as a no-op.
+   */
+  setGuestUrlQueryParam?(key: string, value: string|null): Promise<void>;
+}
+
+/**
+ * Provides synchronous key-value storage backed by Chrome preferences,
+ * with an API equivalent to the standard Web Storage `Storage` interface.
+ */
+export declare interface GlicClientStorage {
+  /** Returns the number of key/value pairs currently present in storage. */
+  readonly length: number;
+  /**
+   * Returns the name of the nth key in storage, or null if `index` is
+   * less than 0 or greater than or equal to `length`.
+   */
+  key(index: number): string|null;
+  /**
+   * Returns the current value associated with the given `key`, or null if the
+   * given `key` does not exist.
+   */
+  getItem(key: string): string|null;
+  /**
+   * Sets the value of the pair identified by `key` to `value`, creating a new
+   * key/value pair if none existed for `key` previously.
+   */
+  setItem(key: string, value: string): void;
+  /**
+   * Removes the key/value pair with the given `key`, if a key/value pair with
+   * the given `key` exists.
+   */
+  removeItem(key: string): void;
+  /** Removes all key/value pairs, if there are any. */
+  clear(): void;
 }
 
 /** Information about a conversation. */
@@ -1530,6 +1655,12 @@ export declare interface GlicBrowserHostMetrics {
   /** Called when the opt-in CTA is shown. */
   onOptinImpression?(): void;
 
+  /**
+   * Called when the web client's main prompt input field receives focus
+   * after opening or warm-reopening the panel.
+   */
+  onInputFocused?(): void;
+
   /** Called when the user has submitted input via the web client. */
   onUserInputSubmitted?(mode: WebClientMode, promptType?: PromptType): void;
 
@@ -1587,6 +1718,15 @@ export declare interface GlicBrowserHostMetrics {
    */
   onRecordUseCounter?(action: WebUseCounter): void;
 
+  /** Called when a multi-tab sharing tooltip is shown. */
+  onTooltipImpression?(impression: TooltipImpressionType): void;
+
+  /**
+   * Called when a currently displayed multi-tab sharing tooltip is hidden in
+   * the web client (e.g. dismissed, timed out, or engaged with).
+   */
+  onTooltipHidden?(): void;
+
   // Removed fields and methods :
   onModelChanged?(): never;  // Last seen on Canary 146.0.7639.0
 }
@@ -1620,10 +1760,7 @@ export declare interface Point {
 
 /** An encoded journal. */
 export declare interface Journal {
-  /**
-   * Encoded journal data. ArrayBuffer is transferable, so it should be copied
-   * more efficiently over postMessage.
-   */
+  /** Encoded journal data. */
   data: ArrayBuffer;
 }
 

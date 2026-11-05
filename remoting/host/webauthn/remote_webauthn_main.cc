@@ -26,14 +26,12 @@
 #include "remoting/host/webauthn/remote_webauthn_caller_security_utils.h"
 #include "remoting/host/webauthn/remote_webauthn_native_messaging_host.h"
 
-#if BUILDFLAG(IS_LINUX)
+#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_WIN)
 #include "remoting/base/crash/crash_reporting_crashpad.h"
-#endif  // BUILDFLAG(IS_LINUX)
+#endif  // BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_WIN)
 
 #if BUILDFLAG(IS_WIN)
 #include <windows.h>
-
-#include "remoting/base/crash/crash_reporting_breakpad.h"
 #endif  // BUILDFLAG(IS_WIN)
 
 namespace remoting {
@@ -49,16 +47,19 @@ int RemoteWebAuthnMain(int argc, char** argv) {
 
 #if defined(REMOTING_ENABLE_CRASH_REPORTING)
   if (IsUsageStatsAllowed()) {
-#if BUILDFLAG(IS_LINUX)
+#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_WIN)
     InitializeCrashpadReporting();
-#elif BUILDFLAG(IS_WIN)
-    InitializeBreakpadReporting();
-#endif  // BUILDFLAG(IS_LINUX)
+#endif  // BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_WIN)
   }
 #endif  // defined(REMOTING_ENABLE_CRASH_REPORTING)
 
   if (!IsLaunchedByTrustedProcess()) {
     LOG(ERROR) << "Current process is not launched by a trusted process.";
+    return kNoPermissionExitCode;
+  }
+
+  if (!IsLaunchedByTrustedExtension(*base::CommandLine::ForCurrentProcess())) {
+    LOG(ERROR) << "Current process is not launched by a trusted extension.";
     return kNoPermissionExitCode;
   }
 

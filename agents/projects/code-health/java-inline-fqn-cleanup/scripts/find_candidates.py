@@ -2,8 +2,8 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 """Plugin to find Java inline FQN violations."""
-# pylint: disable=line-too-long
 
+import os
 import re
 import subprocess
 import functools
@@ -80,7 +80,13 @@ def is_valid_import(fqn, search_root):
 
 def check_file(file_path, search_root):
     """Checks a single file for valid inline FQN violations."""
-    fqns = get_file_fqns(file_path)
+    # Resolve relative paths against search_root, not the CWD.
+    full_path = (
+        file_path
+        if os.path.isabs(file_path)
+        else os.path.join(search_root, file_path)
+    )
+    fqns = get_file_fqns(full_path)
     if not fqns:
         return None
 

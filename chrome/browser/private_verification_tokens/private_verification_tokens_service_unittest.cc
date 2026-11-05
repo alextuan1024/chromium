@@ -16,6 +16,7 @@
 #include "base/functional/callback_helpers.h"
 #include "base/scoped_observation.h"
 #include "base/strings/stringprintf.h"
+#include "base/strings/utf_string_conversions.h"
 #include "base/test/bind.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
@@ -25,14 +26,20 @@
 #include "base/time/time.h"
 #include "chrome/browser/content_settings/host_content_settings_map_factory.h"
 #include "chrome/browser/private_verification_tokens/private_verification_tokens_service_factory.h"
+#include "chrome/browser/search_engines/template_url_service_factory_test_util.h"
 #include "chrome/test/base/testing_profile.h"
 #include "components/content_settings/core/browser/host_content_settings_map.h"
 #include "components/private_verification_tokens/common/athm_ffi/athm_ffi.h"
+#include "components/private_verification_tokens/common/privacy_pass_athm_batch_request.h"
 #include "components/private_verification_tokens/common/private_verification_tokens_database.h"
 #include "components/private_verification_tokens/common/private_verification_tokens_issuer_config.h"
+#include "components/private_verification_tokens/common/private_verification_tokens_metrics.h"
 #include "components/private_verification_tokens/common/private_verification_tokens_parameters.h"
 #include "components/private_verification_tokens/common/private_verification_tokens_test_util.h"
 #include "components/private_verification_tokens/common/private_verification_tokens_token.h"
+#include "components/search_engines/template_url.h"
+#include "components/search_engines/template_url_data.h"
+#include "components/search_engines/template_url_service.h"
 #include "content/public/test/browser_task_environment.h"
 #include "net/base/features.h"
 #include "services/network/public/cpp/weak_wrapper_shared_url_loader_factory.h"
@@ -63,6 +70,10 @@ class PrivateVerificationTokensServiceTest : public testing::Test {
 
   void SetUp() override {
     ASSERT_TRUE(temp_dir_.CreateUniqueTempDir());
+    template_url_service_test_util_ =
+        std::make_unique<TemplateURLServiceFactoryTestUtil>(&profile_);
+    template_url_service_test_util_->VerifyLoad();
+    SetDSEOrigin("https://a.com");
     HostContentSettingsMapFactory::GetForProfile(&profile_)
         ->SetDefaultContentSetting(ContentSettingsType::ANTI_ABUSE,
                                    CONTENT_SETTING_ALLOW);
@@ -70,7 +81,8 @@ class PrivateVerificationTokensServiceTest : public testing::Test {
     PrepopulateDatabase();
     service_ = PrivateVerificationTokensService::Create(
         temp_dir_.GetPath(),
-        HostContentSettingsMapFactory::GetForProfile(&profile_));
+        HostContentSettingsMapFactory::GetForProfile(&profile_),
+        template_url_service_test_util_->model());
     ASSERT_TRUE(service_);
   }
 
@@ -206,6 +218,17 @@ class PrivateVerificationTokensServiceTest : public testing::Test {
         observation_{this};
   };
 
+  void SetDSEOrigin(const std::string& url) {
+    TemplateURLData data;
+    data.SetShortName(u"test");
+    data.SetKeyword(u"test");
+    data.SetURL(url + "/search?q={searchTerms}");
+    TemplateURL* t_url = template_url_service_test_util_->model()->Add(
+        std::make_unique<TemplateURL>(data));
+    template_url_service_test_util_->model()
+        ->SetUserSelectedDefaultSearchProvider(t_url);
+  }
+
   void SetTestIssuerConfig(PrivateVerificationTokensService* target_service) {
     const GURL issuer_request_url_a("https://a.com/pvt/issue");
     const url::Origin redeemer_a =
@@ -306,6 +329,8 @@ class PrivateVerificationTokensServiceTest : public testing::Test {
   base::ScopedTempDir temp_dir_;
   base::FilePath db_path_;
   TestingProfile profile_;
+  std::unique_ptr<TemplateURLServiceFactoryTestUtil>
+      template_url_service_test_util_;
   std::unique_ptr<PrivateVerificationTokensService> service_;
 };
 
@@ -356,6 +381,7 @@ TEST_F(PrivateVerificationTokensServiceTest, StoreTokens_Success) {
               c_origin, std::vector<uint8_t>{10, 11}, 3, expiration, 1),
       };
 
+  SetDSEOrigin("https://c.net");
   base::test::TestFuture<void> store_future;
   service()->StoreTokens(std::move(new_tokens), store_future.GetCallback());
   EXPECT_TRUE(store_future.Wait());
@@ -391,6 +417,7 @@ TEST_F(PrivateVerificationTokensServiceTest,
               d_origin, std::vector<uint8_t>{12, 13}, 4, expiration, 1),
       };
 
+  SetDSEOrigin("https://c.net");
   base::test::TestFuture<void> store_future;
   service()->StoreTokens(std::move(new_tokens), store_future.GetCallback());
   EXPECT_TRUE(store_future.Wait());
@@ -698,6 +725,7 @@ TEST_F(PrivateVerificationTokensServiceTest,
 }
 
 TEST_F(PrivateVerificationTokensServiceTest, GetTokenForRedemption_Success) {
+  base::HistogramTester histogram_tester;
   WaitForInitialization(service());
   SetTestIssuerConfig(service());
 
@@ -712,6 +740,10 @@ TEST_F(PrivateVerificationTokensServiceTest, GetTokenForRedemption_Success) {
   ASSERT_TRUE(token_second.has_value());
   EXPECT_EQ(token_second->first, token->first);
   EXPECT_EQ(token_second->second, token->second);
+
+  // Verify that the cache hit logged `false` exactly twice.
+  histogram_tester.ExpectUniqueSample(
+      private_verification_tokens::kEmptyCacheHistogram, false, 2);
 
   // Verify tokens are still in the database.
   base::test::TestFuture<std::vector<url::Origin>> future;
@@ -869,6 +901,7 @@ TEST_F(PrivateVerificationTokensServiceEmptyDatabaseTest,
        MaybeFetchTokens_Success_FetchesAndStoresTokens) {
   WaitForInitialization(service());
   SetTestIssuerConfig(service());
+  SetDSEOrigin("https://c.net");
 
   network::TestURLLoaderFactory test_url_loader_factory;
   test_url_loader_factory.SetInterceptor(
@@ -886,7 +919,7 @@ TEST_F(PrivateVerificationTokensServiceEmptyDatabaseTest,
         }
 
         auto response = test_issuer().issue_batch_from_bytes(
-            rs_std::SliceRef<const uint8_t>(base::as_byte_span(request_body)),
+            rs::SliceRef<const uint8_t>(base::as_byte_span(request_body)),
             /*hidden_metadata=*/0);
         ASSERT_TRUE(response.has_value());
         test_url_loader_factory.AddResponse(
@@ -984,6 +1017,7 @@ TEST_F(PrivateVerificationTokensServiceEmptyDatabaseTest,
           Create(base::test::ParseJsonDict(json_str));
   ASSERT_TRUE(config);
   service()->SetIssuerConfig(config);
+  SetDSEOrigin("https://max-batch.com");
 
   network::TestURLLoaderFactory test_url_loader_factory;
   test_url_loader_factory.SetInterceptor(
@@ -1000,7 +1034,7 @@ TEST_F(PrivateVerificationTokensServiceEmptyDatabaseTest,
           }
         }
         auto response = test_issuer().issue_batch_from_bytes(
-            rs_std::SliceRef<const uint8_t>(base::as_byte_span(request_body)),
+            rs::SliceRef<const uint8_t>(base::as_byte_span(request_body)),
             /*hidden_metadata=*/0);
         ASSERT_TRUE(response.has_value());
         test_url_loader_factory.AddResponse(
@@ -1075,6 +1109,7 @@ TEST_F(PrivateVerificationTokensServiceTest,
 TEST_F(PrivateVerificationTokensServiceEmptyDatabaseTest,
        MaybeFetchTokens_PendingBeforeInitialization_QueuesOperation) {
   SetTestIssuerConfig(service());
+  SetDSEOrigin("https://c.net");
 
   network::TestURLLoaderFactory test_url_loader_factory;
   test_url_loader_factory.SetInterceptor(
@@ -1091,7 +1126,7 @@ TEST_F(PrivateVerificationTokensServiceEmptyDatabaseTest,
           }
         }
         auto response = test_issuer().issue_batch_from_bytes(
-            rs_std::SliceRef<const uint8_t>(base::as_byte_span(request_body)),
+            rs::SliceRef<const uint8_t>(base::as_byte_span(request_body)),
             /*hidden_metadata=*/0);
         ASSERT_TRUE(response.has_value());
         test_url_loader_factory.AddResponse(
@@ -1164,8 +1199,6 @@ TEST_F(PrivateVerificationTokensServiceTest,
       url::Origin::Create(GURL("https://r1.a.com"))));
 }
 
-}  // namespace
-
 TEST_F(PrivateVerificationTokensServiceEmptyDatabaseTest,
        OtrProfileRedemptionLimit) {
   base::HistogramTester histogram_tester;
@@ -1190,6 +1223,7 @@ TEST_F(PrivateVerificationTokensServiceEmptyDatabaseTest,
   WaitForInitialization(service());
 
   // 1st issuer redemption (a.com via r1.a.com)
+  SetDSEOrigin("https://a.com");
   EXPECT_TRUE(
       service()
           ->GetTokenForRedemption(url::Origin::Create(GURL("https://r1.a.com")),
@@ -1197,10 +1231,11 @@ TEST_F(PrivateVerificationTokensServiceEmptyDatabaseTest,
           .has_value());
   service()->TrackerInsert(otr_profile,
                            url::Origin::Create(GURL("https://r1.a.com")));
-  histogram_tester.ExpectTotalCount(
-      "PrivateVerificationTokens.RedemptionLimitHit", 0);
+  histogram_tester.ExpectBucketCount(
+      private_verification_tokens::kRedemptionLimitHitHistogram, false, 1);
 
   // 2nd issuer redemption (b.org via r2.b.org)
+  SetDSEOrigin("https://b.org");
   EXPECT_TRUE(
       service()
           ->GetTokenForRedemption(url::Origin::Create(GURL("https://r2.b.org")),
@@ -1208,10 +1243,11 @@ TEST_F(PrivateVerificationTokensServiceEmptyDatabaseTest,
           .has_value());
   service()->TrackerInsert(otr_profile,
                            url::Origin::Create(GURL("https://r2.b.org")));
-  histogram_tester.ExpectTotalCount(
-      "PrivateVerificationTokens.RedemptionLimitHit", 0);
+  histogram_tester.ExpectBucketCount(
+      private_verification_tokens::kRedemptionLimitHitHistogram, false, 2);
 
   // 1st issuer redemption AGAIN (fails per-issuer limit)
+  SetDSEOrigin("https://a.com");
   EXPECT_FALSE(
       service()
           ->GetTokenForRedemption(url::Origin::Create(GURL("https://r1.a.com")),
@@ -1219,12 +1255,13 @@ TEST_F(PrivateVerificationTokensServiceEmptyDatabaseTest,
           .has_value());
 
   // 3rd issuer redemption (c.net) -> fails limit!
+  SetDSEOrigin("https://c.net");
   EXPECT_FALSE(service()
                    ->GetTokenForRedemption(
                        url::Origin::Create(GURL("https://c.net")), otr_profile)
                    .has_value());
   histogram_tester.ExpectBucketCount(
-      "PrivateVerificationTokens.RedemptionLimitHit", true, 1);
+      private_verification_tokens::kRedemptionLimitHitHistogram, true, 1);
 }
 
 TEST_F(PrivateVerificationTokensServiceTest, GetAllTokens) {
@@ -1242,3 +1279,227 @@ TEST_F(PrivateVerificationTokensServiceTest, GetAllTokens) {
   EXPECT_EQ(tokens[1].token.issuer(),
             url::Origin::Create(GURL("https://b.org")));
 }
+
+TEST_F(PrivateVerificationTokensServiceTest, MaybeFetchTokens_Metrics_Success) {
+  base::HistogramTester histogram_tester;
+  WaitForInitialization(service());
+  SetTestIssuerConfig(service());
+
+  network::TestURLLoaderFactory test_url_loader_factory;
+  test_url_loader_factory.SetInterceptor(
+      base::BindLambdaForTesting([&](const network::ResourceRequest& request) {
+        EXPECT_EQ(request.url, GURL("https://a.com/pvt/issue"));
+        std::string request_body;
+        if (request.request_body) {
+          for (const auto& element : *request.request_body->elements()) {
+            if (element.type() == network::DataElement::Tag::kBytes) {
+              const auto& bytes =
+                  element.As<network::DataElementBytes>().bytes();
+              request_body.append(bytes.begin(), bytes.end());
+            }
+          }
+        }
+        auto response = test_issuer().issue_batch_from_bytes(
+            rs::SliceRef<const uint8_t>(base::as_byte_span(request_body)),
+            /*hidden_metadata=*/0);
+        ASSERT_TRUE(response.has_value());
+        test_url_loader_factory.AddResponse(
+            request.url.spec(),
+            std::string(response->begin(), response->end()));
+      }));
+
+  service()->MaybeFetchTokens(GURL("https://a.com/pvt/issue"),
+                              test_url_loader_factory.GetSafeWeakWrapper());
+
+  WaitForTokensStored(service());
+
+  histogram_tester.ExpectTotalCount(
+      private_verification_tokens::kTokenFetchTimeHistogram, 1);
+  histogram_tester.ExpectUniqueSample(
+      private_verification_tokens::kTokenParsingResultHistogram,
+      private_verification_tokens::PrivateVerificationTokensTokenParsingResult::
+          kSuccess,
+      1);
+  histogram_tester.ExpectUniqueSample(
+      private_verification_tokens::kFetchSetupResultHistogram,
+      private_verification_tokens::PrivateVerificationTokensFetchSetupResult::
+          kSuccess,
+      1);
+}
+
+TEST_F(PrivateVerificationTokensServiceTest,
+       MaybeFetchTokens_Metrics_NetError) {
+  base::HistogramTester histogram_tester;
+  WaitForInitialization(service());
+  SetTestIssuerConfig(service());
+
+  network::TestURLLoaderFactory test_url_loader_factory;
+  test_url_loader_factory.AddResponse(
+      GURL("https://a.com/pvt/issue"), network::mojom::URLResponseHead::New(),
+      /*content=*/"", network::URLLoaderCompletionStatus(net::ERR_FAILED));
+
+  service()->MaybeFetchTokens(GURL("https://a.com/pvt/issue"),
+                              test_url_loader_factory.GetSafeWeakWrapper());
+  // We use RunUntilIdle() here instead of base::test::RunUntil() because
+  // TestURLLoaderFactory posts trailing asynchronous Mojo peer closure tasks
+  // when a loader is destroyed. Since these failure tests bypass the natural
+  // message loop pumping of WaitForTokensStored(), using RunUntil() exits
+  // prematurely and strands those tasks, causing TearDown()'s strict
+  // WaitForAllTasksPosted() check to explicitly deadlock.
+  task_environment().RunUntilIdle();  // NOLINT
+
+  histogram_tester.ExpectUniqueSample(
+      private_verification_tokens::kTokenParsingResultHistogram,
+      private_verification_tokens::PrivateVerificationTokensTokenParsingResult::
+          kNetError,
+      1);
+}
+
+TEST_F(PrivateVerificationTokensServiceTest,
+       MaybeFetchTokens_Metrics_InvalidResponseLength) {
+  base::HistogramTester histogram_tester;
+  WaitForInitialization(service());
+  SetTestIssuerConfig(service());
+
+  network::TestURLLoaderFactory test_url_loader_factory;
+  test_url_loader_factory.AddResponse("https://a.com/pvt/issue",
+                                      "invalid_short_body");
+
+  service()->MaybeFetchTokens(GURL("https://a.com/pvt/issue"),
+                              test_url_loader_factory.GetSafeWeakWrapper());
+  // We use RunUntilIdle() here instead of base::test::RunUntil() because
+  // TestURLLoaderFactory posts trailing asynchronous Mojo peer closure tasks
+  // when a loader is destroyed. Since these failure tests bypass the natural
+  // message loop pumping of WaitForTokensStored(), using RunUntil() exits
+  // prematurely and strands those tasks, causing TearDown()'s strict
+  // WaitForAllTasksPosted() check to explicitly deadlock.
+  task_environment().RunUntilIdle();  // NOLINT
+
+  histogram_tester.ExpectUniqueSample(
+      private_verification_tokens::kTokenParsingResultHistogram,
+      private_verification_tokens::PrivateVerificationTokensTokenParsingResult::
+          kInvalidResponseBodyLength,
+      1);
+}
+
+TEST_F(PrivateVerificationTokensServiceTest,
+       GetTokenForRedemption_Metrics_EmptyCache) {
+  base::HistogramTester histogram_tester;
+  WaitForInitialization(service());
+  SetTestIssuerConfig(service());
+
+  // Delete tokens for a.com
+  base::test::TestFuture<void> future;
+  service()->DeleteTokens(
+      base::Time(), base::Time::Max(), future.GetCallback(),
+      std::vector<url::Origin>{url::Origin::Create(GURL("https://a.com"))});
+  EXPECT_TRUE(future.Wait());
+
+  auto result = service()->GetTokenForRedemption(
+      url::Origin::Create(GURL("https://r1.a.com")));
+  EXPECT_FALSE(result.has_value());
+
+  histogram_tester.ExpectUniqueSample(
+      private_verification_tokens::kEmptyCacheHistogram, true, 1);
+}
+
+TEST_F(PrivateVerificationTokensServiceTest,
+       MapTryGetTokensErrorToParsingResult) {
+  EXPECT_EQ(private_verification_tokens::
+                PrivateVerificationTokensTokenParsingResult::kNullResponse,
+            private_verification_tokens::MapTryGetTokensErrorToParsingResult(
+                private_verification_tokens::TryGetTokensError::kNullResponse));
+  EXPECT_EQ(private_verification_tokens::
+                PrivateVerificationTokensTokenParsingResult::kNetError,
+            private_verification_tokens::MapTryGetTokensErrorToParsingResult(
+                private_verification_tokens::TryGetTokensError::kNetNotOk));
+}
+
+TEST_F(PrivateVerificationTokensServiceTest,
+       MapPrivacyPassErrorToParsingResult) {
+  EXPECT_EQ(private_verification_tokens::
+                PrivateVerificationTokensTokenParsingResult::kInvalidBatchSize,
+            private_verification_tokens::MapPrivacyPassErrorToParsingResult(
+                private_verification_tokens::PrivacyPassAthmBatchRequestError::
+                    kInvalidBatchSize));
+  EXPECT_EQ(
+      private_verification_tokens::PrivateVerificationTokensTokenParsingResult::
+          kInvalidBucketCount,
+      private_verification_tokens::MapPrivacyPassErrorToParsingResult(
+          private_verification_tokens::PrivacyPassAthmBatchRequestError::
+              kInvalidBucketCount));
+  EXPECT_EQ(
+      private_verification_tokens::PrivateVerificationTokensTokenParsingResult::
+          kClientRequestGenerationFailed,
+      private_verification_tokens::MapPrivacyPassErrorToParsingResult(
+          private_verification_tokens::PrivacyPassAthmBatchRequestError::
+              kClientRequestGenerationFailed));
+  EXPECT_EQ(private_verification_tokens::
+                PrivateVerificationTokensTokenParsingResult::kAlreadyFinalized,
+            private_verification_tokens::MapPrivacyPassErrorToParsingResult(
+                private_verification_tokens::PrivacyPassAthmBatchRequestError::
+                    kAlreadyFinalized));
+  EXPECT_EQ(
+      private_verification_tokens::PrivateVerificationTokensTokenParsingResult::
+          kInvalidResponseBodyLength,
+      private_verification_tokens::MapPrivacyPassErrorToParsingResult(
+          private_verification_tokens::PrivacyPassAthmBatchRequestError::
+              kInvalidResponseBodyLength));
+  EXPECT_EQ(
+      private_verification_tokens::PrivateVerificationTokensTokenParsingResult::
+          kClientFinalizeFailed,
+      private_verification_tokens::MapPrivacyPassErrorToParsingResult(
+          private_verification_tokens::PrivacyPassAthmBatchRequestError::
+              kClientFinalizeFailed));
+}
+
+TEST_F(PrivateVerificationTokensServiceTest,
+       GetTokenForRedemption_IssuerNotDSE_ReturnsNullopt) {
+  WaitForInitialization(service());
+  SetTestIssuerConfig(service());
+
+  // Set the DSE to c.net so that a.com requests are blocked by IsIssuerAllowed
+  SetDSEOrigin("https://c.net");
+  const url::Origin redeemer_a = url::Origin::Create(GURL("https://r1.a.com"));
+  auto token = service()->GetTokenForRedemption(redeemer_a);
+
+  // Should fail because the DSE origin is c.net, but the issuer is a.com
+  EXPECT_FALSE(token.has_value());
+}
+
+TEST_F(PrivateVerificationTokensServiceTest,
+       IsSearchEngineSameOrigin_MatchesDSE) {
+  WaitForInitialization(service());
+
+  // DSE is set to a.com in SetUp
+  url::Origin a_origin = url::Origin::Create(GURL("https://a.com"));
+  url::Origin b_origin = url::Origin::Create(GURL("https://b.org"));
+
+  EXPECT_TRUE(service()->IsSearchEngineSameOrigin(a_origin));
+  EXPECT_FALSE(service()->IsSearchEngineSameOrigin(b_origin));
+}
+
+TEST_F(PrivateVerificationTokensServiceTest, IsIssuerAllowed_CombinesChecks) {
+  WaitForInitialization(service());
+
+  SetDSEOrigin("https://a.com");
+  url::Origin a_origin = url::Origin::Create(GURL("https://a.com"));
+  url::Origin b_origin = url::Origin::Create(GURL("https://b.org"));
+
+  // a.com is allowed by content settings and is the DSE -> true
+  EXPECT_TRUE(service()->IsIssuerAllowed(a_origin));
+
+  // b.org is allowed by content settings but not the DSE -> false
+  EXPECT_FALSE(service()->IsIssuerAllowed(b_origin));
+
+  // Block a.com via content settings
+  HostContentSettingsMapFactory::GetForProfile(profile())
+      ->SetContentSettingDefaultScope(a_origin.GetURL(), a_origin.GetURL(),
+                                      ContentSettingsType::ANTI_ABUSE,
+                                      CONTENT_SETTING_BLOCK);
+
+  // a.com is DSE but blocked by content settings -> false
+  EXPECT_FALSE(service()->IsIssuerAllowed(a_origin));
+}
+
+}  // namespace

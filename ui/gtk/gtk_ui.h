@@ -6,7 +6,6 @@
 #define UI_GTK_GTK_UI_H_
 
 #include <array>
-#include <map>
 #include <memory>
 #include <optional>
 #include <unordered_map>
@@ -35,10 +34,11 @@ typedef struct _GtkParamSpec GtkParamSpec;
 typedef struct _GtkSettings GtkSettings;
 typedef struct _GtkStyle GtkStyle;
 
-namespace gtk {
-using ColorMap = std::map<int, SkColor>;
+namespace ui {
+class LinuxKeyBindingsHandler;
+}
 
-class GtkKeyBindingsHandler;
+namespace gtk {
 class NativeThemeGtk;
 class OsSettingsProviderGtk;
 class SettingsProvider;
@@ -73,7 +73,7 @@ class GtkUi : public ui::LinuxUiAndTheme {
   gfx::Size GetPdfPaperSize(printing::PrintingContextLinux* context) override;
 #endif
   ui::SelectFileDialog* CreateSelectFileDialog(
-      void* listener,
+      ui::SelectFileDialogListener* listener,
       std::unique_ptr<ui::SelectFilePolicy> policy) const override;
   std::string GetCursorThemeName() override;
   int GetCursorThemeSize() override;
@@ -119,28 +119,6 @@ class GtkUi : public ui::LinuxUiAndTheme {
 
   void OnThemeChanged(GtkSettings* settings, GtkParamSpec* param);
 
-  // Sanitizes the "gtk-icon-theme-name" setting in GtkSettings if it is unsafe.
-  // Returns true if the setting was modified.
-  bool SanitizeIconThemeName();
-
-  // Sanitizes the "gtk-theme-name" setting in GtkSettings if it is unsafe.
-  // Returns true if the setting was modified.
-  bool SanitizeThemeName();
-
-  // Sanitizes the "gtk-key-theme-name" setting in GtkSettings if it is unsafe.
-  // Returns true if the setting was modified.
-  bool SanitizeKeyThemeName();
-
-  // Sanitizes the "gtk-cursor-theme-name" setting in GtkSettings if it is
-  // unsafe. Returns true if the setting was modified.
-  bool SanitizeCursorThemeName();
-
-  // Sanitizes the "gtk-cursor-theme-size" setting in GtkSettings if it is
-  // unsafe. Returns true if the setting was modified.
-  bool SanitizeCursorThemeSize();
-
-  void OnKeyThemeNameChanged(GtkSettings* settings, GtkParamSpec* param);
-
   void OnCursorThemeNameChanged(GtkSettings* settings, GtkParamSpec* param);
 
   void OnCursorThemeSizeChanged(GtkSettings* settings, GtkParamSpec* param);
@@ -164,9 +142,6 @@ class GtkUi : public ui::LinuxUiAndTheme {
                          guint removed,
                          guint added);
 
-  // Loads all GTK-provided settings.
-  void LoadGtkValues();
-
   // Listen for scale factor changes on `monitor`.
   void TrackMonitor(GdkMonitor* monitor);
 
@@ -187,34 +162,13 @@ class GtkUi : public ui::LinuxUiAndTheme {
 
   raw_ptr<NativeThemeGtk> native_theme_;
 
-  // Colors calculated by LoadGtkValues() that are given to the
-  // caller while |use_gtk_| is true.
-  ColorMap colors_;
-
-  // Frame colors (and colors that depend on frame colors) when using
-  // Chrome-rendered borders and titlebar.
-  ColorMap custom_frame_colors_;
-
-  // Frame colors (and colors that depend on frame colors) when using
-  // system-rendered borders and titlebar.
-  ColorMap native_frame_colors_;
-
-  // Colors that we pass to Blink. These are generated each time the theme
-  // changes.
-  SkColor focus_ring_color_;
-  SkColor active_selection_bg_color_;
-  SkColor active_selection_fg_color_;
-  SkColor inactive_selection_bg_color_;
-  SkColor inactive_selection_fg_color_;
-
   std::optional<SkColor> accent_color_;
 
   std::optional<gfx::FontRenderParams> default_font_render_params_;
 
   std::unique_ptr<SettingsProvider> settings_provider_;
 
-  // This is only used on GTK3.
-  std::unique_ptr<GtkKeyBindingsHandler> key_bindings_handler_;
+  std::unique_ptr<ui::LinuxKeyBindingsHandler> key_bindings_handler_;
 
   // The action to take when middle, double, or right clicking the titlebar.
   base::flat_map<WindowFrameActionSource, WindowFrameAction>

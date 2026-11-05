@@ -2,13 +2,16 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import {FittingType, OpenPdfParamsParser, ViewMode} from 'chrome-extension://mhjfbmdgcfjbbpaeojofohoefgiehjai/pdf_viewer_wrapper.js';
+import {FittingType, OpenPdfParamsParser, PluginController, ViewMode} from 'chrome-extension://mhjfbmdgcfjbbpaeojofohoefgiehjai/pdf_viewer_wrapper.js';
+
+import {createMockPdfPluginForTest} from './test_util.js';
 
 const URL = 'http://xyz.pdf';
 
 function getParamsParser(): OpenPdfParamsParser {
-  const getPageBoundingBoxCallback = function(_page: number) {
-    return Promise.resolve({x: 10, y: 15, width: 200, height: 300});
+  const getPageBoundingBoxCallback = function(pageIndex: number) {
+    return Promise.resolve(
+        {x: 10 + pageIndex, y: 15 + pageIndex, width: 200, height: 300});
   };
   const paramsParser = new OpenPdfParamsParser(function(destination: string) {
     // Set the dummy viewport dimensions for calculating the zoom level for
@@ -17,81 +20,88 @@ function getParamsParser(): OpenPdfParamsParser {
 
     if (destination === 'RU') {
       return Promise.resolve(
-          {messageId: 'getNamedDestination_1', pageNumber: 26});
+          {messageId: 'getNamedDestination_1', pageIndex: 26});
     }
     if (destination === 'US') {
       return Promise.resolve(
-          {messageId: 'getNamedDestination_2', pageNumber: 0});
+          {messageId: 'getNamedDestination_2', pageIndex: 0});
     }
     if (destination === 'UY') {
       return Promise.resolve(
-          {messageId: 'getNamedDestination_3', pageNumber: 22});
+          {messageId: 'getNamedDestination_3', pageIndex: 22});
     }
     if (destination === 'DestWithXYZ') {
       return Promise.resolve({
         messageId: 'getNamedDestination_4',
         namedDestinationView: `${ViewMode.XYZ},111,222,1.7`,
-        pageNumber: 10,
+        pageIndex: 10,
       });
     }
     if (destination === 'DestWithXYZAtZoomNull') {
       return Promise.resolve({
         messageId: 'getNamedDestination_5',
         namedDestinationView: `${ViewMode.XYZ},111,222,null`,
-        pageNumber: 10,
+        pageIndex: 10,
       });
     }
     if (destination === 'DestWithXYZWithX0') {
       return Promise.resolve({
         messageId: 'getNamedDestination_6',
         namedDestinationView: `${ViewMode.XYZ},0,200,1.7`,
-        pageNumber: 11,
+        pageIndex: 11,
       });
     }
     if (destination === 'DestWithXYZWithXNull') {
       return Promise.resolve({
         messageId: 'getNamedDestination_7',
         namedDestinationView: `${ViewMode.XYZ},null,200,1.7`,
-        pageNumber: 11,
+        pageIndex: 11,
       });
     }
     if (destination === 'DestWithXYZWithY0') {
       return Promise.resolve({
         messageId: 'getNamedDestination_8',
         namedDestinationView: `${ViewMode.XYZ},100,0,1.7`,
-        pageNumber: 11,
+        pageIndex: 11,
       });
     }
     if (destination === 'DestWithXYZWithYNull') {
       return Promise.resolve({
         messageId: 'getNamedDestination_9',
         namedDestinationView: `${ViewMode.XYZ},100,null,1.7`,
-        pageNumber: 11,
+        pageIndex: 11,
       });
     }
     if (destination === 'DestWithFitR') {
       return Promise.resolve({
         messageId: 'getNamedDestination_10',
         namedDestinationView: `${ViewMode.FIT_R},20,100,120,300`,
-        pageNumber: 0,
+        pageIndex: 0,
       });
     }
     if (destination === 'DestWithFitRReversedCoordinates') {
       return Promise.resolve({
         messageId: 'getNamedDestination_11',
         namedDestinationView: `${ViewMode.FIT_R},120,300,20,100`,
-        pageNumber: 0,
+        pageIndex: 0,
       });
     }
     if (destination === 'DestWithFitRWithNull') {
       return Promise.resolve({
         messageId: 'getNamedDestination_12',
         namedDestinationView: `${ViewMode.FIT_R},null,100,100,300`,
-        pageNumber: 0,
+        pageIndex: 0,
+      });
+    }
+    if (destination === 'DestWithFitB') {
+      return Promise.resolve({
+        messageId: 'getNamedDestination_13',
+        namedDestinationView: `${ViewMode.FIT_B}`,
+        pageIndex: 2,
       });
     }
     return Promise.resolve(
-        {messageId: 'getNamedDestination_13', pageNumber: -1});
+        {messageId: 'getNamedDestination_14', pageIndex: -1});
   }, getPageBoundingBoxCallback);
   return paramsParser;
 }
@@ -105,22 +115,22 @@ chrome.test.runTests([
 
     // Checking #nameddest.
     let params = await paramsParser.getViewportFromUrlParams(`${URL}#RU`);
-    chrome.test.assertEq(26, params.page);
+    chrome.test.assertEq(26, params.pageIndex);
 
     // Checking #nameddest=name.
     params = await paramsParser.getViewportFromUrlParams(`${URL}#nameddest=US`);
-    chrome.test.assertEq(0, params.page);
+    chrome.test.assertEq(0, params.pageIndex);
 
     // Checking #page=pagenum without setting the page count should not have a
     // page value.
     params = await paramsParser.getViewportFromUrlParams(`${URL}#page=6`);
-    chrome.test.assertEq(null, params.page);
+    chrome.test.assertEq(null, params.pageIndex);
 
     // Checking #page=pagenum nameddest. The document first page has a pagenum
     // value of 1.
     paramsParser.setPageCount(100);
     params = await paramsParser.getViewportFromUrlParams(`${URL}#page=6`);
-    chrome.test.assertEq(5, params.page);
+    chrome.test.assertEq(5, params.pageIndex);
 
     // Checking #zoom=scale.
     params = await paramsParser.getViewportFromUrlParams(`${URL}#zoom=200`);
@@ -136,19 +146,19 @@ chrome.test.runTests([
     // Checking #nameddest=name and zoom=scale.
     params = await paramsParser.getViewportFromUrlParams(
         `${URL}#nameddest=UY&zoom=150`);
-    chrome.test.assertEq(22, params.page);
+    chrome.test.assertEq(22, params.pageIndex);
     chrome.test.assertEq(1.5, params.zoom);
 
     // Checking #page=pagenum and zoom=scale.
     params =
         await paramsParser.getViewportFromUrlParams(`${URL}#page=2&zoom=250`);
-    chrome.test.assertEq(1, params.page);
+    chrome.test.assertEq(1, params.pageIndex);
     chrome.test.assertEq(2.5, params.zoom);
 
     // Checking #nameddest=name and zoom=scale,left,top.
     params = await paramsParser.getViewportFromUrlParams(
         `${URL}#nameddest=UY&zoom=150,100,200`);
-    chrome.test.assertEq(22, params.page);
+    chrome.test.assertEq(22, params.pageIndex);
     chrome.test.assertEq(1.5, params.zoom);
     chrome.test.assertEq(100, params.position!.x);
     chrome.test.assertEq(200, params.position!.y);
@@ -156,7 +166,7 @@ chrome.test.runTests([
     // Checking #page=pagenum and zoom=scale,left,top.
     params = await paramsParser.getViewportFromUrlParams(
         `${URL}#page=2&zoom=250,100,200`);
-    chrome.test.assertEq(1, params.page);
+    chrome.test.assertEq(1, params.pageIndex);
     chrome.test.assertEq(2.5, params.zoom);
     chrome.test.assertEq(100, params.position!.x);
     chrome.test.assertEq(200, params.position!.y);
@@ -165,18 +175,18 @@ chrome.test.runTests([
     // the upper bound.
     paramsParser.setPageCount(5);
     params = await paramsParser.getViewportFromUrlParams(`${URL}#page=6`);
-    chrome.test.assertEq(4, params.page);
+    chrome.test.assertEq(4, params.pageIndex);
 
     // Checking #page=pagenum with value out of lower bounds sets the value to
     // the lower bound.
     params = await paramsParser.getViewportFromUrlParams(`${URL}#page=0`);
-    chrome.test.assertEq(0, params.page);
+    chrome.test.assertEq(0, params.pageIndex);
 
     // Checking #page=pagenum with a page count set to 0 should not have a page
     // value.
     paramsParser.setPageCount(0);
     params = await paramsParser.getViewportFromUrlParams(`${URL}#page=1`);
-    chrome.test.assertEq(null, params.page);
+    chrome.test.assertEq(null, params.pageIndex);
 
     chrome.test.succeed();
   },
@@ -190,7 +200,7 @@ chrome.test.runTests([
     // type is "XYZ" with multiple valid parameters.
     let params = await paramsParser.getViewportFromUrlParams(
         `${URL}#nameddest=DestWithXYZ`);
-    chrome.test.assertEq(10, params.page);
+    chrome.test.assertEq(10, params.pageIndex);
     chrome.test.assertEq(1.7, params.zoom);
     chrome.test.assertEq(111, params.position!.x);
     chrome.test.assertEq(222, params.position!.y);
@@ -200,7 +210,7 @@ chrome.test.runTests([
     // type is "XYZ" with a zoom parameter of null.
     params = await paramsParser.getViewportFromUrlParams(
         `${URL}#nameddest=DestWithXYZAtZoomNull`);
-    chrome.test.assertEq(10, params.page);
+    chrome.test.assertEq(10, params.pageIndex);
     chrome.test.assertEq(undefined, params.zoom);
     chrome.test.assertEq(111, params.position!.x);
     chrome.test.assertEq(222, params.position!.y);
@@ -210,7 +220,7 @@ chrome.test.runTests([
     // type is "XYZ" and its X parameter is 0.
     params = await paramsParser.getViewportFromUrlParams(
         `${URL}#nameddest=DestWithXYZWithX0`);
-    chrome.test.assertEq(11, params.page);
+    chrome.test.assertEq(11, params.pageIndex);
     chrome.test.assertEq(1.7, params.zoom);
     chrome.test.assertEq(0, params.position!.x);
     chrome.test.assertEq(200, params.position!.y);
@@ -220,7 +230,7 @@ chrome.test.runTests([
     // type is "XYZ" and its X parameter is null.
     params = await paramsParser.getViewportFromUrlParams(
         `${URL}#nameddest=DestWithXYZWithXNull`);
-    chrome.test.assertEq(11, params.page);
+    chrome.test.assertEq(11, params.pageIndex);
     chrome.test.assertEq(1.7, params.zoom);
     chrome.test.assertTrue(Number.isNaN(params.position!.x));
     chrome.test.assertEq(200, params.position!.y);
@@ -230,7 +240,7 @@ chrome.test.runTests([
     // type is "XYZ" and its Y parameter is 0.
     params = await paramsParser.getViewportFromUrlParams(
         `${URL}#nameddest=DestWithXYZWithY0`);
-    chrome.test.assertEq(11, params.page);
+    chrome.test.assertEq(11, params.pageIndex);
     chrome.test.assertEq(1.7, params.zoom);
     chrome.test.assertEq(100, params.position!.x);
     chrome.test.assertEq(0, params.position!.y);
@@ -240,7 +250,7 @@ chrome.test.runTests([
     // type is "XYZ" and its Y parameter is null.
     params = await paramsParser.getViewportFromUrlParams(
         `${URL}#nameddest=DestWithXYZWithYNull`);
-    chrome.test.assertEq(11, params.page);
+    chrome.test.assertEq(11, params.pageIndex);
     chrome.test.assertEq(1.7, params.zoom);
     chrome.test.assertEq(100, params.position!.x);
     chrome.test.assertTrue(Number.isNaN(params.position!.y));
@@ -250,7 +260,7 @@ chrome.test.runTests([
     // type is "FitR" with multiple valid parameters.
     params = await paramsParser.getViewportFromUrlParams(
         `${URL}#nameddest=DestWithFitR`);
-    chrome.test.assertEq(0, params.page);
+    chrome.test.assertEq(0, params.pageIndex);
     chrome.test.assertEq(2.5, params.zoom);
     chrome.test.assertEq(20, params.position!.x);
     chrome.test.assertEq(100, params.position!.y);
@@ -260,7 +270,7 @@ chrome.test.runTests([
     // type is "FitR" with multiple valid parameters.
     params = await paramsParser.getViewportFromUrlParams(
         `${URL}#nameddest=DestWithFitRReversedCoordinates`);
-    chrome.test.assertEq(0, params.page);
+    chrome.test.assertEq(0, params.pageIndex);
     chrome.test.assertEq(2.5, params.zoom);
     chrome.test.assertEq(20, params.position!.x);
     chrome.test.assertEq(100, params.position!.y);
@@ -270,10 +280,23 @@ chrome.test.runTests([
     // type is "FitR" with one NULL parameters.
     params = await paramsParser.getViewportFromUrlParams(
         `${URL}#nameddest=DestWithFitRWithNull`);
-    chrome.test.assertEq(0, params.page);
+    chrome.test.assertEq(0, params.pageIndex);
     chrome.test.assertEq(undefined, params.zoom);
     chrome.test.assertEq(undefined, params.position);
     chrome.test.assertEq(undefined, params.viewPosition);
+
+    // Checking #nameddest=name with a nameddest that specifies the view fit
+    // type is "FitB".
+    paramsParser.setPageCount(3);
+    params = await paramsParser.getViewportFromUrlParams(
+        `${URL}#nameddest=DestWithFitB`);
+    chrome.test.assertEq(2, params.pageIndex);
+    chrome.test.assertEq(FittingType.FIT_TO_BOUNDING_BOX, params.view);
+    chrome.test.assertTrue(params.boundingBox !== undefined);
+    chrome.test.assertEq(12, params.boundingBox.x);
+    chrome.test.assertEq(17, params.boundingBox.y);
+    chrome.test.assertEq(200, params.boundingBox.width);
+    chrome.test.assertEq(300, params.boundingBox.height);
 
     chrome.test.succeed();
   },
@@ -504,62 +527,151 @@ chrome.test.runTests([
 
     chrome.test.succeed();
   },
-  function testParamsGetTextFragments() {
+  async function testParamsTextFragments() {
     const paramsParser = getParamsParser();
 
+    async function assertTextFragments(fragment: string, expected?: string[]) {
+      const params =
+          await paramsParser.getViewportFromUrlParams(`${URL}${fragment}`);
+      chrome.test.assertEq(expected, params.textFragments);
+    }
+
     // Checking single text fragment.
-    let fragments = paramsParser.getTextFragments(`${URL}#:~:text=apples`);
-    chrome.test.assertEq(fragments.length, 1);
-    chrome.test.assertEq(fragments[0], 'apples');
+    await assertTextFragments('#:~:text=apples', ['apples']);
 
     // Checking multiple text fragments.
-    fragments = paramsParser.getTextFragments(
-        `${URL}#:~:text=apples&text=oranges&text=hello-,world,there,-world`);
-    chrome.test.assertEq(fragments.length, 3);
-    chrome.test.assertEq(fragments[0], 'apples');
-    chrome.test.assertEq(fragments[1], 'oranges');
-    chrome.test.assertEq(fragments[2], 'hello-,world,there,-world');
+    await assertTextFragments(
+        '#:~:text=apples&text=oranges&text=hello-,world,there,-world',
+        ['apples', 'oranges', 'hello-,world,there,-world']);
 
     // Checking case where no text fragments are present.
-    fragments = paramsParser.getTextFragments(`${URL}#page=3`);
-    chrome.test.assertEq(fragments.length, 0);
+    await assertTextFragments('#page=3', undefined);
 
     // Check case where only delimiter is present.
-    fragments = paramsParser.getTextFragments(`${URL}#:~:`);
-    chrome.test.assertEq(fragments.length, 0);
+    await assertTextFragments('#:~:', undefined);
 
     // Check case where there are other viewport parameters before the text
     // fragments.
-    fragments = paramsParser.getTextFragments(
-        `${URL}#page=3&view=FitBV:~:text=foo&text=bar`);
-    chrome.test.assertEq(fragments.length, 2);
-    chrome.test.assertEq(fragments[0], 'foo');
-    chrome.test.assertEq(fragments[1], 'bar');
+    await assertTextFragments(
+        '#page=3&view=FitBV:~:text=foo&text=bar', ['foo', 'bar']);
 
     // Check case where text fragment could have percent-encoded values that
     // are used as part of the prefix / suffix like `,` and `-`.
-    fragments = paramsParser.getTextFragments(
-        `${URL}#page=3&view=FitBV:~:text=foo%2C-,apples,-bar%2D&text=bar%2D`);
-    chrome.test.assertEq(fragments.length, 2);
-    chrome.test.assertEq(fragments[0], 'foo%2C-,apples,-bar%2D');
-    chrome.test.assertEq(fragments[1], 'bar%2D');
+    await assertTextFragments(
+        '#page=3&view=FitBV:~:text=foo%2C-,apples,-bar%2D&text=bar%2D',
+        ['foo%2C-,apples,-bar%2D', 'bar%2D']);
 
     // Check case where text fragments are empty.
-    fragments = paramsParser.getTextFragments(
-        `${URL}#page=3&view=FitBV:~:text=&text=&text=`);
-    chrome.test.assertEq(fragments.length, 0);
+    await assertTextFragments(
+        '#page=3&view=FitBV:~:text=&text=&text=', undefined);
 
     // Check case where some text fragments are empty.
-    fragments = paramsParser.getTextFragments(
-        `${URL}#page=3&view=FitBV:~:text=&text=foo%2C-,apples,-bar%2D&text=`);
-    chrome.test.assertEq(fragments.length, 1);
-    chrome.test.assertEq(fragments[0], 'foo%2C-,apples,-bar%2D');
+    await assertTextFragments(
+        '#page=3&view=FitBV:~:text=&text=foo%2C-,apples,-bar%2D&text=',
+        ['foo%2C-,apples,-bar%2D']);
 
     // Check case where URL fragment is invalid and contains multiple
     // octothorpes.
-    fragments = paramsParser.getTextFragments(
-        `${URL}#page=3&view=FitBV#:~:text=&text=foo%2C-,apples,-bar%2D&text=`);
-    chrome.test.assertEq(fragments.length, 0);
+    await assertTextFragments(
+        '#page=3&view=FitBV#:~:text=&text=foo%2C-,apples,-bar%2D&text=',
+        undefined);
+
+    chrome.test.succeed();
+  },
+  async function testParamsSearch() {
+    const paramsParser = getParamsParser();
+    paramsParser.setPageCount(100);
+
+    async function assertSearch(fragment: string, expected?: string[]) {
+      const params =
+          await paramsParser.getViewportFromUrlParams(`${URL}#${fragment}`);
+      chrome.test.assertEq(expected, params.searchTerms);
+      return params;
+    }
+
+    await assertSearch('search="apple"', ['apple']);
+    await assertSearch(
+        'search="apple banana cherry"', ['apple', 'banana', 'cherry']);
+    await assertSearch('search=apple+banana', ['apple', 'banana']);
+    await assertSearch('search="apple   banana"&phrase=TRUE', ['apple banana']);
+    await assertSearch(
+        'search="apple banana"&phrase=false', ['apple', 'banana']);
+    await assertSearch(
+        'search="apple banana"&phrase=invalid', ['apple', 'banana']);
+    await assertSearch('search=', undefined);
+    await assertSearch('search="   "', undefined);
+    const emptyNamedDest = await assertSearch('RU=', undefined);
+    chrome.test.assertEq(undefined, emptyNamedDest.pageIndex);
+    const withDirective =
+        await assertSearch('search="apple":~:text=oranges', undefined);
+    chrome.test.assertEq(['oranges'], withDirective.textFragments);
+    await assertSearch('search="apple":~:text=', ['apple']);
+
+    const combined =
+        await assertSearch('page=3&zoom=200&search="apple"', ['apple']);
+    chrome.test.assertEq(2, combined.pageIndex);
+    chrome.test.assertEq(2, combined.zoom);
+
+    chrome.test.succeed();
+  },
+  async function testHandleUrlParams() {
+    const viewer = document.body.querySelector('pdf-viewer')!;
+    const mockPlugin = createMockPdfPluginForTest();
+    PluginController.getInstance().setPluginForTesting(mockPlugin);
+
+    const paramsParser = getParamsParser();
+    paramsParser.setPageCount(10);
+
+    // #search with phrase=true highlights exact phrase from page 0.
+    viewer.handleUrlParams(await paramsParser.getViewportFromUrlParams(
+        `${URL}#search="Second%20Section"&phrase=true`));
+    chrome.test.assertEq(
+        {
+          type: 'highlightSearchTerms',
+          searchTerms: ['Second Section'],
+          startPageIndex: 0,
+        },
+        mockPlugin.findMessage('highlightSearchTerms'));
+    chrome.test.assertEq(
+        undefined, mockPlugin.findMessage('highlightTextFragments'));
+
+    // #page=3 sets the search start page index to 2.
+    mockPlugin.clearMessages();
+    viewer.handleUrlParams(await paramsParser.getViewportFromUrlParams(
+        `${URL}#page=3&search="Subsection"`));
+    chrome.test.assertEq(
+        {
+          type: 'highlightSearchTerms',
+          searchTerms: ['Subsection'],
+          startPageIndex: 2,
+        },
+        mockPlugin.findMessage('highlightSearchTerms'));
+
+    // #:~:text= takes priority over #search=.
+    mockPlugin.clearMessages();
+    viewer.handleUrlParams(await paramsParser.getViewportFromUrlParams(
+        `${URL}#search="Subsection":~:text=Second%20Section`));
+    chrome.test.assertEq(
+        {type: 'highlightTextFragments', textFragments: ['Second%20Section']},
+        mockPlugin.findMessage('highlightTextFragments'));
+    chrome.test.assertEq(
+        undefined, mockPlugin.findMessage('highlightSearchTerms'));
+
+    // Navigating without #search= or #:~:text= clears prior highlights once.
+    mockPlugin.clearMessages();
+    viewer.handleUrlParams(
+        await paramsParser.getViewportFromUrlParams(`${URL}#page=1`));
+    chrome.test.assertEq(
+        {type: 'highlightTextFragments', textFragments: []},
+        mockPlugin.findMessage('highlightTextFragments'));
+
+    mockPlugin.clearMessages();
+    viewer.handleUrlParams(
+        await paramsParser.getViewportFromUrlParams(`${URL}#page=1`));
+    chrome.test.assertEq(
+        undefined, mockPlugin.findMessage('highlightTextFragments'));
+    chrome.test.assertEq(
+        undefined, mockPlugin.findMessage('highlightSearchTerms'));
 
     chrome.test.succeed();
   },

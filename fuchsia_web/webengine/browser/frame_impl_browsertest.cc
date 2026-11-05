@@ -41,7 +41,6 @@ using testing::AllOf;
 using testing::AtLeast;
 using testing::Contains;
 using testing::Field;
-using testing::InvokeWithoutArgs;
 using testing::Key;
 using testing::Mock;
 using testing::Not;
@@ -293,8 +292,9 @@ IN_PROC_BROWSER_TEST_F(FrameImplTest, FrameDeletedBeforeContext) {
   FrameImpl* frame_impl = context_impl()->GetFrameImplForTest(&frame.ptr());
   MockWebContentsObserver deletion_observer(frame_impl->web_contents());
   base::RunLoop run_loop;
-  EXPECT_CALL(deletion_observer, RenderViewDeleted(_))
-      .WillOnce(InvokeWithoutArgs([&run_loop] { run_loop.Quit(); }));
+  EXPECT_CALL(deletion_observer, RenderViewDeleted(_)).WillOnce([&run_loop] {
+    run_loop.Quit();
+  });
 
   EXPECT_TRUE(LoadUrlAndExpectResponse(frame.GetNavigationController(),
                                        fuchsia::web::LoadUrlParams(),
@@ -604,7 +604,7 @@ IN_PROC_BROWSER_TEST_F(FrameImplTest, ReloadFrame) {
     base::RunLoop run_loop;
     EXPECT_CALL(web_contents_observer,
                 DidStartNavigation(NavigationHandleUrlEquals(url)))
-        .WillOnce(InvokeWithoutArgs([&run_loop]() { run_loop.Quit(); }));
+        .WillOnce([&run_loop]() { run_loop.Quit(); });
     frame.GetNavigationController()->Reload(fuchsia::web::ReloadType::NO_CACHE);
     run_loop.Run();
   }
@@ -616,7 +616,7 @@ IN_PROC_BROWSER_TEST_F(FrameImplTest, ReloadFrame) {
     base::RunLoop run_loop;
     EXPECT_CALL(web_contents_observer,
                 DidStartNavigation(NavigationHandleUrlEquals(url)))
-        .WillOnce(InvokeWithoutArgs([&run_loop]() { run_loop.Quit(); }));
+        .WillOnce([&run_loop]() { run_loop.Quit(); });
     frame.GetNavigationController()->Reload(
         fuchsia::web::ReloadType::PARTIAL_CACHE);
     run_loop.Run();
@@ -683,7 +683,7 @@ IN_PROC_BROWSER_TEST_F(FrameImplTest, NoNavigationObserverAttached) {
   {
     base::RunLoop run_loop;
     EXPECT_CALL(observer, DidStartNavigation(NavigationHandleUrlEquals(title1)))
-        .WillOnce(InvokeWithoutArgs([&run_loop]() { run_loop.Quit(); }));
+        .WillOnce([&run_loop]() { run_loop.Quit(); });
     EXPECT_TRUE(LoadUrlAndExpectResponse(frame.GetNavigationController(),
                                          fuchsia::web::LoadUrlParams(),
                                          title1.spec()));
@@ -693,7 +693,7 @@ IN_PROC_BROWSER_TEST_F(FrameImplTest, NoNavigationObserverAttached) {
   {
     base::RunLoop run_loop;
     EXPECT_CALL(observer, DidStartNavigation(NavigationHandleUrlEquals(title2)))
-        .WillOnce(InvokeWithoutArgs([&run_loop]() { run_loop.Quit(); }));
+        .WillOnce([&run_loop]() { run_loop.Quit(); });
     EXPECT_TRUE(LoadUrlAndExpectResponse(frame.GetNavigationController(),
                                          fuchsia::web::LoadUrlParams(),
                                          title2.spec()));
@@ -731,7 +731,7 @@ IN_PROC_BROWSER_TEST_F(FrameImplTest, NavigationObserverDisconnected) {
   base::RunLoop run_loop;
   EXPECT_CALL(web_contents_observer,
               DidStartNavigation(NavigationHandleUrlEquals(title2)))
-      .WillOnce(InvokeWithoutArgs([&run_loop]() { run_loop.Quit(); }));
+      .WillOnce([&run_loop]() { run_loop.Quit(); });
   EXPECT_TRUE(LoadUrlAndExpectResponse(frame.GetNavigationController(),
                                        fuchsia::web::LoadUrlParams(),
                                        title2.spec()));
@@ -775,7 +775,7 @@ IN_PROC_BROWSER_TEST_F(FrameImplTest, DelayedNavigationEventAck) {
     base::RunLoop run_loop;
     EXPECT_CALL(web_contents_observer,
                 DidStartNavigation(NavigationHandleUrlEquals(title2)))
-        .WillOnce(InvokeWithoutArgs([&run_loop]() { run_loop.Quit(); }));
+        .WillOnce([&run_loop]() { run_loop.Quit(); });
     EXPECT_TRUE(LoadUrlAndExpectResponse(frame.GetNavigationController(),
                                          fuchsia::web::LoadUrlParams(),
                                          title2.spec()));
@@ -789,7 +789,7 @@ IN_PROC_BROWSER_TEST_F(FrameImplTest, DelayedNavigationEventAck) {
     base::RunLoop run_loop;
     EXPECT_CALL(web_contents_observer,
                 DidStartNavigation(NavigationHandleUrlEquals(title1)))
-        .WillOnce(InvokeWithoutArgs([&run_loop]() { run_loop.Quit(); }));
+        .WillOnce([&run_loop]() { run_loop.Quit(); });
     EXPECT_TRUE(LoadUrlAndExpectResponse(frame.GetNavigationController(),
                                          fuchsia::web::LoadUrlParams(),
                                          title1.spec()));
@@ -830,8 +830,9 @@ IN_PROC_BROWSER_TEST_F(FrameImplTest, Stop) {
     WebContentsObserverForStop observer;
     observer.Observe(
         context_impl()->GetFrameImplForTest(&frame.ptr())->web_contents_.get());
-    EXPECT_CALL(observer, DidStartNavigation(_))
-        .WillOnce(InvokeWithoutArgs([&run_loop]() { run_loop.Quit(); }));
+    EXPECT_CALL(observer, DidStartNavigation(_)).WillOnce([&run_loop]() {
+      run_loop.Quit();
+    });
     frame.GetNavigationController()->LoadUrl(
         hung_url.spec(), fuchsia::web::LoadUrlParams(),
         [](fuchsia::web::NavigationController_LoadUrl_Result) {});
@@ -847,8 +848,9 @@ IN_PROC_BROWSER_TEST_F(FrameImplTest, Stop) {
     WebContentsObserverForStop observer;
     observer.Observe(
         context_impl()->GetFrameImplForTest(&frame.ptr())->web_contents_.get());
-    EXPECT_CALL(observer, NavigationStopped())
-        .WillOnce(InvokeWithoutArgs([&run_loop]() { run_loop.Quit(); }));
+    EXPECT_CALL(observer, NavigationStopped()).WillOnce([&run_loop]() {
+      run_loop.Quit();
+    });
     frame.GetNavigationController()->Stop();
     run_loop.Run();
   }
@@ -1047,21 +1049,23 @@ IN_PROC_BROWSER_TEST_F(FrameImplTest, RecreateView) {
   frame.navigation_listener().RunUntilUrlAndTitleEquals(page1_url, kPage1Title);
 }
 
-IN_PROC_BROWSER_TEST_F(FrameImplTest, CreateViewMissingArgs) {
+IN_PROC_BROWSER_TEST_F(FrameImplTest, CreateViewNotSupported) {
   auto frame = FrameForTest::Create(context(), {});
 
   // Close the NavigationEventListener to avoid a test failure resulting, when
   // it is disconnected as a result of the Frame closing.
   frame.navigation_listener_binding().Close(ZX_OK);
 
-  // Create a view with GFX, without supplying a valid view token.
   base::test::TestFuture<zx_status_t> frame_status;
   frame.ptr().set_error_handler(
       CallbackToFitFunction(frame_status.GetCallback()));
 
-  frame->CreateView({});
+  fuchsia::ui::views::ViewToken view_token;
+  zx::eventpair peer;
+  zx::eventpair::create(0, &view_token.value, &peer);
+  frame->CreateView(std::move(view_token));
 
-  EXPECT_EQ(frame_status.Get(), ZX_ERR_INVALID_ARGS);
+  EXPECT_EQ(frame_status.Get(), ZX_ERR_NOT_SUPPORTED);
 }
 
 IN_PROC_BROWSER_TEST_F(FrameImplTest, CreateView2MissingArgs) {
@@ -1071,7 +1075,7 @@ IN_PROC_BROWSER_TEST_F(FrameImplTest, CreateView2MissingArgs) {
   // it is disconnected as a result of the Frame closing.
   frame.navigation_listener_binding().Close(ZX_OK);
 
-  // Create a view with GFX, without supplying a valid view token.
+  // Create a view without supplying a valid view creation token.
   base::test::TestFuture<zx_status_t> frame_status;
   frame.ptr().set_error_handler(
       CallbackToFitFunction(frame_status.GetCallback()));

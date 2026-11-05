@@ -30,6 +30,7 @@ import org.chromium.base.Callback;
 import org.chromium.base.Log;
 import org.chromium.base.ResettersForTesting;
 import org.chromium.base.SysUtils;
+import org.chromium.base.Token;
 import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.base.metrics.RecordUserAction;
 import org.chromium.base.supplier.MonotonicObservableSupplier;
@@ -59,10 +60,13 @@ import org.chromium.chrome.browser.hub.ShrinkExpandAnimationData;
 import org.chromium.chrome.browser.hub.ShrinkExpandHubLayoutAnimationFactory;
 import org.chromium.chrome.browser.hub.TabListHubLayoutAnimationFactory;
 import org.chromium.chrome.browser.tab.Tab;
+import org.chromium.chrome.browser.tab_bottom_sheet.TabBottomSheetManager;
+import org.chromium.chrome.browser.tab_bottom_sheet.TabBottomSheetUtils;
 import org.chromium.chrome.browser.tab_ui.RecyclerViewPosition;
 import org.chromium.chrome.browser.tab_ui.TabListMode;
 import org.chromium.chrome.browser.tab_ui.TabSwitcher;
 import org.chromium.chrome.browser.tab_ui.TabSwitcherCustomViewManager;
+import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.browser.toolbar.ToolbarPositionController;
 import org.chromium.chrome.browser.ui.actions.button.FullButtonData;
 import org.chromium.chrome.browser.ui.bottombar.BottomBarConfigUtils;
@@ -153,6 +157,8 @@ public abstract class TabSwitcherPaneBase extends PaneBase
     protected @Nullable Tracker mTracker;
     private @Nullable PaneHubController mPaneHubController;
     private @Nullable Long mWaitForTabStateInitializedStartTimeMs;
+    // Whether a swipe shows this pane while another pane is still focused.
+    private boolean mIsPreviewing;
     private boolean mNativeInitialized;
 
     /**
@@ -193,7 +199,8 @@ public abstract class TabSwitcherPaneBase extends PaneBase
         mIsBottomBarEnabledOnGts =
                 BottomBarConfigUtils.isBottomBarEnabled(context)
                         && BottomBarConfigUtils.shouldShowOnGts();
-        mBottomBarHeight = BottomBarUtils.getBottomBarHeight(context);
+        mBottomBarHeight =
+                BottomBarUtils.getBottomBarHeight(context, /* isBottomOmniboxPresent= */ false);
 
         mMenuOrKeyboardActionHandler =
                 (int id, boolean _) -> {
@@ -252,13 +259,19 @@ public abstract class TabSwitcherPaneBase extends PaneBase
     @Override
     public void notifyLoadHint(@LoadHint int loadHint) {
         boolean isVisible = loadHint == LoadHint.HOT;
+        boolean wasPreviewing = mIsPreviewing;
+        mIsPreviewing = loadHint == LoadHint.PREVIEW;
         mIsVisibleSupplier.set(isVisible);
         removeDelayedCallbacks();
 
-        if (isVisible) {
+        // Show the tabs whenever the pane is on screen: focused, or sliding in during a swipe.
+        if (isVisible || mIsPreviewing) {
             createTabSwitcherPaneCoordinator();
             showAllTabs();
             setInitialScrollIndexOffset();
+        }
+
+        if (isVisible) {
             // TODO(crbug.com/40942549): This should only happen when the Pane becomes user visible
             // which might only happen after the Hub animation finishes. Figure out how to handle
             // that since the load hint for hot will come before the animation is started. Panes
@@ -269,8 +282,14 @@ public abstract class TabSwitcherPaneBase extends PaneBase
             cancelWaitForTabStateInitializedTimer();
         }
 
+        TabSwitcherPaneCoordinator coordinator = mTabSwitcherPaneCoordinatorSupplier.get();
+        // If a preview ends without focus, stop updating the tabs before cleanup runs.
+        boolean isPreviewEnding = wasPreviewing && !isVisible && !mIsPreviewing;
+        if (isPreviewEnding && coordinator != null) {
+            coordinator.prepareHiding();
+        }
+
         if (loadHint == LoadHint.WARM) {
-            TabSwitcherPaneCoordinator coordinator = mTabSwitcherPaneCoordinatorSupplier.get();
             if (coordinator != null) {
                 mHandler.postDelayed(mSoftCleanupRunnable, SOFT_CLEANUP_DELAY_MS);
             } else if (shouldEagerlyCreateCoordinator()) {
@@ -279,7 +298,6 @@ public abstract class TabSwitcherPaneBase extends PaneBase
         }
 
         if (loadHint == LoadHint.COLD) {
-            TabSwitcherPaneCoordinator coordinator = mTabSwitcherPaneCoordinatorSupplier.get();
             if (coordinator != null) {
                 mHandler.postDelayed(mSoftCleanupRunnable, SOFT_CLEANUP_DELAY_MS);
                 mHandler.postDelayed(mHardCleanupRunnable, HARD_CLEANUP_DELAY_MS);
@@ -352,7 +370,7 @@ public abstract class TabSwitcherPaneBase extends PaneBase
                     hubContainerView, HUB_LAYOUT_FADE_DURATION_MS, mOnToolbarAlphaChange);
         }
 
-        @ColorInt int backgroundColor = getAnimationBackgroundColor();
+        @ColorInt int backgroundColor = getExpandAnimationBackgroundColor(tab);
         SyncOneshotSupplier<ShrinkExpandAnimationData> animationDataSupplier =
                 requestAnimationData(hubContainerView, /* isShrink= */ false, tab);
         return ShrinkExpandHubLayoutAnimationFactory.createExpandTabAnimatorProvider(
@@ -372,6 +390,23 @@ public abstract class TabSwitcherPaneBase extends PaneBase
     @Override
     public NonNullObservableSupplier<Float> getSearchBoxVisibilityFractionSupplier() {
         return mSearchBoxVisibilityFractionSupplier;
+    }
+
+    /**
+     * Returns the color for the part of the expanding tab that its thumbnail doesn't cover. If a
+     * tab bottom sheet comes back in peek mode once the Hub hides, that part is where the sheet
+     * will be, so use the sheet's color to avoid a color change when the sheet appears.
+     */
+    @VisibleForTesting
+    @ColorInt
+    int getExpandAnimationBackgroundColor(Tab tab) {
+        TabBottomSheetManager tabBottomSheetManager =
+                TabBottomSheetUtils.getManagerFromWindow(tab.getWindowAndroid());
+        @Nullable Integer sheetColor =
+                tabBottomSheetManager == null
+                        ? null
+                        : tabBottomSheetManager.getSheetColorToReshowAfterTabSwitcher(tab);
+        return sheetColor != null ? sheetColor : getAnimationBackgroundColor();
     }
 
     private @ColorInt int getAnimationBackgroundColor() {
@@ -596,11 +631,13 @@ public abstract class TabSwitcherPaneBase extends PaneBase
     }
 
     @Override
-    public boolean requestOpenTabGroupDialog(int tabId) {
+    public boolean requestOpenTabGroupDialog(Token tabGroupId) {
+        if (!mIsVisibleSupplier.get()) return false;
+
         @Nullable TabSwitcherPaneCoordinator coordinator =
                 mTabSwitcherPaneCoordinatorSupplier.get();
         if (coordinator != null) {
-            coordinator.requestOpenTabGroupDialog(tabId);
+            coordinator.requestOpenTabGroupDialog(tabGroupId);
             return true;
         } else {
             return false;
@@ -712,6 +749,32 @@ public abstract class TabSwitcherPaneBase extends PaneBase
         mRootView.removeAllViews();
         mTabSwitcherCustomViewManager.setDelegate(null);
         coordinator.destroy();
+    }
+
+    /**
+     * Returns whether to show the tabs of {@code tabModel}: while the pane is visible and its model
+     * is active, or during a swipe preview.
+     */
+    protected boolean shouldShowTabs(TabModel tabModel) {
+        return mIsPreviewing || (mIsVisibleSupplier.get() && tabModel.isActiveModel());
+    }
+
+    /** Returns whether a swipe is previewing this pane. */
+    protected boolean isPreviewing() {
+        return mIsPreviewing;
+    }
+
+    /**
+     * Shows {@code tabs} in {@code coordinator}. During a swipe preview, this leaves message cards
+     * untouched, since they belong to the focused pane.
+     */
+    protected void resetCoordinatorTabs(
+            TabSwitcherPaneCoordinator coordinator, @Nullable List<Tab> tabs) {
+        if (mIsPreviewing) {
+            coordinator.showPreviewTabs(tabs);
+        } else {
+            coordinator.resetWithListOfTabs(tabs);
+        }
     }
 
     protected void startWaitForTabStateInitializedTimer() {

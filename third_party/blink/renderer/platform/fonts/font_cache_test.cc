@@ -10,6 +10,7 @@
 #include <tuple>
 
 #include "build/build_config.h"
+#include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/platform/platform.h"
 #include "third_party/blink/renderer/platform/fonts/font_description.h"
@@ -20,11 +21,65 @@
 #include "third_party/blink/renderer/platform/testing/font_test_base.h"
 #include "third_party/blink/renderer/platform/testing/font_test_helpers.h"
 #include "third_party/blink/renderer/platform/testing/runtime_enabled_features_test_helpers.h"
+#include "third_party/blink/renderer/platform/testing/scoped_default_locale.h"
 #include "third_party/blink/renderer/platform/testing/testing_platform_support.h"
 
 namespace blink {
 
-class FontCacheTest : public FontTestBase {};
+class FontCacheTest : public FontTestBase {
+ protected:
+  static Vector<String> GetBcp47Locales(
+      const char* content_locale,
+      FontFallbackPriority priority = FontFallbackPriority::kText) {
+    FontDescription description;
+    if (content_locale) {
+      description.SetLocale(LayoutLocale::Get(AtomicString(content_locale)));
+    }
+    Vector<String> result;
+    for (const char* bcp47 :
+         FontCache::GetBcp47LocaleForRequest(description, priority)) {
+      result.push_back(String(bcp47));
+    }
+    return result;
+  }
+};
+
+TEST_F(FontCacheTest, GetBcp47LocaleForRequest) {
+  ScopedNastaliqScriptForTest scoped_nastaliq(true);
+
+  {
+    ScopedDefaultLocale default_locale("ur-PK");
+    EXPECT_THAT(GetBcp47Locales(nullptr), testing::ElementsAre("und-Aran"));
+    EXPECT_THAT(GetBcp47Locales("ur"), testing::ElementsAre("und-Aran"));
+    EXPECT_THAT(GetBcp47Locales("ks"), testing::ElementsAre("und-Aran"));
+    EXPECT_THAT(GetBcp47Locales("ar-Aran"), testing::ElementsAre("und-Aran"));
+    EXPECT_THAT(GetBcp47Locales("ar"), testing::ElementsAre("ar"));
+    EXPECT_THAT(GetBcp47Locales("ar-Arab"), testing::ElementsAre("ar-Arab"));
+    EXPECT_THAT(GetBcp47Locales("ur-Arab"), testing::ElementsAre("ur-Arab"));
+    EXPECT_THAT(GetBcp47Locales("fa"), testing::ElementsAre("fa"));
+    EXPECT_THAT(GetBcp47Locales("en"), testing::ElementsAre("en"));
+  }
+
+  {
+    ScopedDefaultLocale default_locale("en-US");
+    EXPECT_THAT(GetBcp47Locales(nullptr), testing::ElementsAre("en"));
+    EXPECT_THAT(GetBcp47Locales("ur"), testing::ElementsAre("und-Aran"));
+    EXPECT_THAT(GetBcp47Locales("ar-Aran"), testing::ElementsAre("und-Aran"));
+    EXPECT_THAT(GetBcp47Locales("ar-Arab"), testing::ElementsAre("ar-Arab"));
+  }
+
+  {
+    ScopedDefaultLocale default_locale("ja-JP");
+    EXPECT_THAT(GetBcp47Locales(nullptr), testing::ElementsAre("ja", "ja"));
+    EXPECT_THAT(GetBcp47Locales("en"), testing::ElementsAre("ja", "en"));
+    EXPECT_THAT(GetBcp47Locales("zh-Hant"),
+                testing::ElementsAre("zh-Hant", "zh-Hant"));
+    EXPECT_THAT(GetBcp47Locales("en", FontFallbackPriority::kEmojiEmoji),
+                testing::ElementsAre("ja", "en", "und-Zsye"));
+    EXPECT_THAT(GetBcp47Locales("en", FontFallbackPriority::kEmojiText),
+                testing::ElementsAre("ja", "en", "und-Zsym"));
+  }
+}
 
 TEST_F(FontCacheTest, getLastResortFallbackFont) {
   FontCache& font_cache = FontCache::Get();
@@ -124,6 +179,48 @@ TEST_F(FontCacheTest, FallbackForEmojis) {
 }
 #endif  // BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
 
+#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_MAC) || \
+    BUILDFLAG(IS_WIN)
+TEST_F(FontCacheTest, FallbackForArabicNastaliq) {
+  ScopedNastaliqScriptForTest scoped_feature(true);
+  FontCache& font_cache = FontCache::Get();
+  FontDescription font_description;
+  font_description.SetGenericFamily(FontDescription::kStandardFamily);
+#if BUILDFLAG(IS_WIN)
+  const AtomicString nastaliq_family(FontCache::FirstAvailableOrFirst(
+      "Noto Nastaliq Urdu, Aldhabi, Urdu Typesetting"));
+#else
+  const AtomicString nastaliq_family("Noto Nastaliq Urdu");
+#endif
+  if (!font_cache.GetFontData(font_description, nastaliq_family)) {
+    GTEST_SKIP() << nastaliq_family << " is not available on this system.";
+  }
+  const SimpleFontData* primary_font =
+      font_cache.GetLastResortFallbackFont(font_description);
+  ASSERT_TRUE(primary_font);
+
+  for (const char* locale : {"ur", "ar-Aran", "ks"}) {
+    scoped_refptr<LayoutLocale> layout_locale =
+        LayoutLocale::CreateForTesting(AtomicString(locale));
+    font_description.SetLocale(layout_locale.get());
+    const SimpleFontData* font_data = font_cache.FallbackFontForCharacter(
+        font_description, 0x0627, primary_font);
+    ASSERT_TRUE(font_data) << locale;
+    EXPECT_EQ(nastaliq_family, font_data->PlatformData().FontFamilyName())
+        << locale;
+  }
+
+  scoped_refptr<LayoutLocale> ar_locale =
+      LayoutLocale::CreateForTesting(AtomicString("ar"));
+  font_description.SetLocale(ar_locale.get());
+  const SimpleFontData* ar_font_data = font_cache.FallbackFontForCharacter(
+      font_description, 0x0627, primary_font);
+  ASSERT_TRUE(ar_font_data);
+  EXPECT_NE(nastaliq_family, ar_font_data->PlatformData().FontFamilyName());
+}
+#endif  // BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS) ||
+        // BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN)
+
 TEST_F(FontCacheTest, firstAvailableOrFirst) {
   EXPECT_TRUE(FontCache::FirstAvailableOrFirst("").empty());
   EXPECT_TRUE(FontCache::FirstAvailableOrFirst(String()).empty());
@@ -182,7 +279,7 @@ TEST_F(FontCacheTest, MAYBE_GetLargerThanMaxUnsignedFont) {
   FontDescription font_description;
   font_description.SetGenericFamily(FontDescription::kStandardFamily);
   font_description.SetComputedSize(
-      static_cast<float>(std::numeric_limits<unsigned>::max()) + 1.f);
+      static_cast<float>(std::numeric_limits<wtf_size_t>::max()) + 1.0f);
   FontFaceCreationParams creation_params;
   const blink::SimpleFontData* font_data =
       font_cache.GetFontData(font_description, AtomicString());

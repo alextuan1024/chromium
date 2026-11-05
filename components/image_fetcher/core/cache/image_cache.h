@@ -15,6 +15,7 @@
 #include "base/memory/weak_ptr.h"
 #include "components/image_fetcher/core/cache/image_store_types.h"
 #include "components/image_fetcher/core/cache/proto/cached_image_metadata.pb.h"
+#include "components/image_fetcher/core/image_fetcher_types.h"
 
 class PrefRegistrySimple;
 class PrefService;
@@ -48,15 +49,16 @@ class ImageCache : public base::RefCounted<ImageCache> {
   ImageCache& operator=(const ImageCache&) = delete;
 
   // Adds or updates the image data for the `url`. If the class hasn't been
-  // initialized yet, the call is queued.
+  // initialized yet, the call is queued. `image_data` must be non-null and
+  // remains alive until the queued save completes.
   void SaveImage(std::string url,
-                 std::string image_data,
+                 ImageData image_data,
                  bool needs_transcoding,
                  ExpirationInterval expiration_interval);
 
   // Loads the image data for the `url` and passes it to `callback`. If there's
-  // no image in the cache, then an empty string is returned. If `read_only`
-  // is true, then the cache metadata won't be updated.
+  // no image in the cache or initialization failed, an empty string is
+  // returned. If `read_only` is true, then the cache metadata won't be updated.
   void LoadImage(bool read_only, std::string url, ImageDataCallback callback);
 
   // Deletes the image data for the `url`.
@@ -71,14 +73,12 @@ class ImageCache : public base::RefCounted<ImageCache> {
   void QueueOrStartRequest(base::OnceClosure request);
   // Start initializing the stores if it hasn't been started already.
   void MaybeStartInitialization();
-  // Returns true iff both the stores have been initialized.
-  bool AreAllDependenciesInitialized() const;
-  // Receives callbacks when stores are initialized.
-  void OnDependencyInitialized();
+  // Runs after both stores have finished initializing, including failures.
+  void OnDependenciesInitialized();
 
   // Saves the `image_data` for `url`.
   void SaveImageImpl(const std::string& url,
-                     std::string image_data,
+                     ImageData image_data,
                      bool needs_transcoding,
                      ExpirationInterval expiration_interval);
   // Loads the data for `url`, calls the user back before updating metadata.
@@ -110,11 +110,15 @@ class ImageCache : public base::RefCounted<ImageCache> {
   // Reconcile what's on disk against what's in metadata. Any mismatches will
   // result in eviction.
   void RunReconciliation();
-  void ReconcileMetadataKeys(std::vector<std::string> md_keys);
+  void ReconcileMetadataKeys(std::optional<std::vector<std::string>> md_keys);
   void ReconcileDataKeys(std::vector<std::string> md_keys,
-                         std::vector<std::string> data_keys);
+                         std::optional<std::vector<std::string>> data_keys);
 
-  bool initialization_attempted_;
+  bool initialization_attempted_ = false;
+  // Set after both initialization callbacks run, even if a store failed.
+  bool initialization_finished_ = false;
+  // Set once initialization finishes; true only if both stores succeeded.
+  bool cache_available_ = false;
   std::vector<base::OnceClosure> queued_requests_;
 
   std::unique_ptr<ImageDataStore> data_store_;

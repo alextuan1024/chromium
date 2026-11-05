@@ -49,6 +49,7 @@
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
 #include "base/task/execution_fence.h"
+#include "base/task/responsiveness/watcher.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/task/thread_pool/environment_config.h"
 #include "base/task/thread_pool/thread_pool_instance.h"
@@ -69,9 +70,8 @@
 #include "content/browser/browser_main.h"
 #include "content/browser/browser_process_io_thread.h"
 #include "content/browser/browser_thread_impl.h"
-#include "content/browser/first_party_sets/first_party_sets_handler_impl.h"
 #include "content/browser/gpu/gpu_main_thread_factory.h"
-#include "content/browser/memory_coordinator/browser_memory_coordinator.h"
+#include "content/browser/memory_coordinator/browser_memory_coordinator_impl.h"
 #include "content/browser/renderer_host/render_process_host_impl.h"
 #include "content/browser/scheduler/browser_task_executor.h"
 #include "content/browser/service_host/utility_process_host.h"
@@ -110,7 +110,6 @@
 #include "media/base/media.h"
 #include "media/media_buildflags.h"
 #include "mojo/core/embedder/embedder.h"
-#include "mojo/public/cpp/base/shared_memory_utils.h"
 #include "mojo/public/cpp/bindings/self_owned_receiver.h"
 #include "mojo/public/cpp/bindings/sync_call_restrictions.h"
 #include "mojo/public/cpp/platform/platform_channel.h"
@@ -125,7 +124,6 @@
 #include "services/tracing/public/cpp/perfetto/perfetto_traced_process.h"
 #include "services/tracing/public/cpp/trace_startup.h"
 #include "services/tracing/public/cpp/tracing_features.h"
-#include "services/webnn/public/cpp/webnn_sandbox_init.h"
 #include "third_party/abseil-cpp/absl/cleanup/cleanup.h"
 #include "third_party/blink/public/common/origin_trials/trial_token_validator.h"
 #include "third_party/perfetto/include/perfetto/tracing/track.h"
@@ -138,8 +136,10 @@
 
 #if BUILDFLAG(IS_WIN)
 #include <malloc.h>
+
 #include <cstring>
 
+#include "base/message_loop/message_pump_win.h"
 #include "ui/base/l10n/l10n_util_win.h"
 #include "ui/display/win/dpi.h"
 #elif BUILDFLAG(IS_MAC)
@@ -444,7 +444,6 @@ void PreSandboxInit() {
   PreloadLibraryCdms();
 #endif
   InitializeWebRtcModuleBeforeSandbox();
-  webnn::PreSandboxWebNNInitialization(/*is_gpu_process=*/false);
 
 #if BUILDFLAG(BUILD_TFLITE_WITH_XNNPACK)
   // cpuinfo needs to parse /proc/cpuinfo, or its equivalent.
@@ -668,6 +667,10 @@ NO_STACK_PROTECTOR int RunZygote(ContentMainDelegate* delegate) {
   }
   delegate->PostEarlyInitialization(invoked_in_child);
 
+  // The ChildMemoryCoordinator was created in the zygote, before the
+  // FeatureList.
+  ChildMemoryCoordinator::Get().InitializePolicies();
+
   // The Zygote must use a local scoped fence, otherwise the scoped object
   // would live across the fork.
   std::optional<base::ScopedBestEffortExecutionFence> best_effort_fence;
@@ -777,13 +780,20 @@ NO_STACK_PROTECTOR int RunOtherNamedProcessTypeMain(
       {switches::kGpuProcess, GpuMain},
   });
 
+  base::MemoryPressureSource memory_pressure_source;
   // TODO(406578344): Remove `memory_pressure_listener_registry` when the
   // base::MemoryPressureListener API is deleted in favor of
-  // base::MemoryConsumer.
+  // base::MemoryConsumer. Must be created immediately after
+  // `memory_pressure_source`.
   base::MemoryPressureListenerRegistry memory_pressure_listener_registry;
   // Create the memory coordinator as early as possible to support
   // MemoryConsumers that register very early in the process lifetime.
   ChildMemoryCoordinator child_memory_coordinator;
+  // The zygote has no FeatureList. Its children initialize the policies after
+  // they fork, in RunZygote().
+  if (process_type != switches::kZygoteProcess) {
+    child_memory_coordinator.InitializePolicies();
+  }
 
   // The hang watcher needs to be started once the feature list is available
   // but before the IO thread is started.
@@ -965,7 +975,7 @@ int ContentMainRunnerImpl::Initialize(ContentMainParams params) {
   if (basic_startup_exit_code.has_value())
     return basic_startup_exit_code.value();
 
-  if (!delegate_->IsInitFeatureListEarly()) {
+  if (!delegate_->DidPerformEarlyInitialization()) {
     base::allocator::PartitionAllocSupport::Get()->ReconfigureEarlyish(
         process_type);
   }
@@ -1051,9 +1061,14 @@ int ContentMainRunnerImpl::Initialize(ContentMainParams params) {
   // happen before crash reporting is initialized (which for chrome happens in
   // the call to PreSandboxStartup() on the delegate below), because otherwise
   // this would interfere with signal handlers used by crash reporting.
-  if (should_enable_stack_dump &&
-      !command_line.HasSwitch(switches::kDisableInProcessStackTraces)) {
-    base::debug::EnableInProcessStackDumping();
+  if (should_enable_stack_dump) {
+    if (!command_line.HasSwitch(switches::kDisableInProcessStackTraces)) {
+      base::debug::EnableInProcessStackDumping();
+    } else {
+#if BUILDFLAG(IS_WIN)
+      base::debug::DisableInProcessStackDumpingForTesting();  // IN-TEST
+#endif
+    }
   }
 
   base::debug::VerifyDebugger();
@@ -1181,6 +1196,13 @@ NO_STACK_PROTECTOR int ContentMainRunnerImpl::Run() {
               ContentMainDelegate::InvokedInChildProcess())) {
         InitializeFieldTrialAndFeatureList();
       }
+#if BUILDFLAG(IS_WIN)
+      if (process_type == switches::kRendererProcess &&
+          base::FeatureList::IsEnabled(
+              features::kUseEventBasedMessagePumpForIOInRenderer)) {
+        base::MessagePumpForIO::EnableEventBasedPump();
+      }
+#endif
       if (delegate_->ShouldInitializePerfetto(
               ContentMainDelegate::InvokedInChildProcess())) {
 #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
@@ -1274,8 +1296,10 @@ int ContentMainRunnerImpl::RunBrowser(MainFunctionParams main_params,
       InitializeMojoCore();
     }
 
+    memory_pressure_source_.emplace();
     memory_pressure_listener_registry_.emplace();
-    browser_memory_coordinator_ = std::make_unique<BrowserMemoryCoordinator>();
+    browser_memory_coordinator_ =
+        std::make_unique<BrowserMemoryCoordinatorImpl>();
 
     std::optional<int> pre_browser_main_exit_code = delegate_->PreBrowserMain();
     if (pre_browser_main_exit_code.has_value())
@@ -1291,7 +1315,7 @@ int ContentMainRunnerImpl::RunBrowser(MainFunctionParams main_params,
 #endif
 
     // When this is enabled, these things will have already been initialized.
-    if (!delegate_->IsInitFeatureListEarly()) {
+    if (!delegate_->DidPerformEarlyInitialization()) {
       // Register the TaskExecutor for posting task to the BrowserThreads. It is
       // incorrect to post to a BrowserThread before this point. This
       // instantiates and binds the MessageLoopForUI on the main thread (but
@@ -1312,11 +1336,15 @@ int ContentMainRunnerImpl::RunBrowser(MainFunctionParams main_params,
     if (post_early_initialization_exit_code.has_value())
       return post_early_initialization_exit_code.value();
 
+    // The memory coordinator policies are feature-gated, so they must be
+    // initialized after the FeatureList.
+    browser_memory_coordinator_->InitializePolicies();
+
     if (HasDisableBestEffortTasksSwitch()) {
       best_effort_fence_.emplace();
     }
 
-    if (!delegate_->IsInitFeatureListEarly()) {
+    if (!delegate_->DidPerformEarlyInitialization()) {
       // Re-evaluate feature state now that FeatureList has been initialized, as
       // the task executor was created before FeatureList and could not access
       // Finch configurations.
@@ -1353,6 +1381,7 @@ int ContentMainRunnerImpl::RunBrowser(MainFunctionParams main_params,
 
       base::HangWatcher::GetInstance()->Start();
     }
+    base::responsiveness::Watcher::EnableForProcess();
 
     // WebView may have already initialized perfetto, so check if we should do
     // it here.
@@ -1364,7 +1393,7 @@ int ContentMainRunnerImpl::RunBrowser(MainFunctionParams main_params,
     background_tracing_manager_ =
         CreateBackgroundTracingManagerAndInitializeScenarios();
 
-    if (!delegate_->IsInitFeatureListEarly()) {
+    if (!delegate_->DidPerformEarlyInitialization()) {
       // The FeatureList needs to be created before starting the ThreadPool.
       StartBrowserThreadPool();
 
@@ -1387,12 +1416,8 @@ int ContentMainRunnerImpl::RunBrowser(MainFunctionParams main_params,
     AndroidBatteryMetrics::CreateInstance();
 #endif
 
-    GetContentClient()->browser()->SetIsMinimalMode(start_minimal_browser);
     if (start_minimal_browser) {
       ForceInProcessNetworkService();
-      // Minimal browser mode doesn't initialize First-Party Sets the "usual"
-      // way, so we do it manually.
-      content::FirstPartySetsHandlerImpl::GetInstance()->Init(base::FilePath());
     }
 
     discardable_shared_memory_manager_ =
@@ -1416,7 +1441,7 @@ int ContentMainRunnerImpl::RunBrowser(MainFunctionParams main_params,
 #endif
   }
 
-  if (!delegate_->IsInitFeatureListEarly()) {
+  if (!delegate_->DidPerformEarlyInitialization()) {
     // No specified process type means this is the Browser process.
     base::allocator::PartitionAllocSupport::Get()
         ->ReconfigureAfterFeatureListInit("");

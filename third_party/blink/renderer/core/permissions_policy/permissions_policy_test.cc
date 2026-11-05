@@ -1551,7 +1551,10 @@ class FeaturePolicyVisibilityTest
 INSTANTIATE_TEST_SUITE_P(All, FeaturePolicyVisibilityTest, testing::Bool());
 
 TEST_P(FeaturePolicyVisibilityTest, VerifyIsolated) {
-  auto dummy_page_holder = std::make_unique<DummyPageHolder>();
+  // Opaque-origin windows are never isolated contexts, so commit a navigation
+  // to a tuple origin.
+  auto dummy_page_holder =
+      DummyPageHolder::CreateAndCommitNavigation(KURL("https://example.test"));
   ExecutionContext* execution_context =
       dummy_page_holder->GetFrame().DomWindow();
 
@@ -1569,6 +1572,22 @@ TEST_P(FeaturePolicyVisibilityTest, VerifyIsolated) {
   EXPECT_EQ(GetDefaultFeatureNameMap(is_isolated_context)
                 .Contains(kDirectSocketsFeature),
             GetIsIsolated());
+  Agent::ResetIsIsolatedContextForTest();
+}
+
+// A window with an opaque origin is not an isolated context, even if its
+// process is isolated.
+TEST_P(FeaturePolicyVisibilityTest, OpaqueOriginIsNeverIsolated) {
+  // The initial empty document of a new frame has an opaque origin.
+  auto dummy_page_holder = std::make_unique<DummyPageHolder>();
+  ExecutionContext* execution_context =
+      dummy_page_holder->GetFrame().DomWindow();
+  ASSERT_TRUE(execution_context->GetSecurityOrigin()->IsOpaque());
+
+  Agent::ResetIsIsolatedContextForTest();
+  Agent::SetIsIsolatedContext(GetIsIsolated());
+  EXPECT_FALSE(execution_context->IsIsolatedContext());
+  Agent::ResetIsIsolatedContextForTest();
 }
 
 TEST_F(PermissionsPolicyParserTest, ParseIsolatedAppPermissionsPolicy) {
@@ -1810,6 +1829,67 @@ TEST_F(PermissionsPolicyParserTest,
                      /*self_if_matches=*/std::nullopt,
                      /*matches_all_origins=*/false,
                      /*matches_opaque_src=*/false)));
+}
+
+TEST_F(PermissionsPolicyParserTest,
+       ParseAllowForWorkersEmptyDisallowsAllFeatures) {
+  PolicyParserMessageBuffer logger;
+  network::PermissionsPolicyFeaturesBitset result =
+      PermissionsPolicyParser::ParseAllowForWorkers(g_empty_string, *origin_a_,
+                                                    *origin_a_, logger);
+  EXPECT_EQ(result, network::PermissionsPolicyFeaturesBitset());
+}
+
+TEST_F(PermissionsPolicyParserTest,
+       ParseAllowForWorkersEnablesOnlyFeaturesAllowlistedForSrc) {
+  PolicyParserMessageBuffer logger;
+  network::PermissionsPolicyFeaturesBitset result =
+      PermissionsPolicyParser::ParseAllowForWorkers(
+          "geolocation; camera 'self'; microphone " ORIGIN_A
+          "; fullscreen 'none'; payment " ORIGIN_B "; usb *",
+          *origin_a_, *origin_a_, logger);
+
+  EXPECT_TRUE(
+      result.Contains(network::mojom::PermissionsPolicyFeature::kGeolocation));
+  EXPECT_TRUE(
+      result.Contains(network::mojom::PermissionsPolicyFeature::kCamera));
+  EXPECT_TRUE(
+      result.Contains(network::mojom::PermissionsPolicyFeature::kMicrophone));
+  EXPECT_TRUE(result.Contains(network::mojom::PermissionsPolicyFeature::kUsb));
+
+  // Features declared for 'none' or another origin (not matching src_origin)
+  // are disabled.
+  EXPECT_FALSE(
+      result.Contains(network::mojom::PermissionsPolicyFeature::kFullscreen));
+  EXPECT_FALSE(
+      result.Contains(network::mojom::PermissionsPolicyFeature::kPayment));
+
+  // Undeclared features are also disabled.
+  EXPECT_FALSE(
+      result.Contains(network::mojom::PermissionsPolicyFeature::kSerial));
+}
+
+TEST_F(PermissionsPolicyParserTest, ParseAllowForWorkersOpaqueSrc) {
+  PolicyParserMessageBuffer logger;
+  scoped_refptr<const SecurityOrigin> opaque_src =
+      SecurityOrigin::CreateUniqueOpaque();
+  network::PermissionsPolicyFeaturesBitset result =
+      PermissionsPolicyParser::ParseAllowForWorkers(
+          "geolocation; camera 'src'; microphone 'self'; fullscreen " ORIGIN_A
+          "; usb *",
+          *origin_a_, *opaque_src, logger);
+
+  EXPECT_TRUE(
+      result.Contains(network::mojom::PermissionsPolicyFeature::kGeolocation));
+  EXPECT_TRUE(
+      result.Contains(network::mojom::PermissionsPolicyFeature::kCamera));
+  EXPECT_TRUE(result.Contains(network::mojom::PermissionsPolicyFeature::kUsb));
+
+  // 'self' and explicit tuple origins do not match an opaque src_origin.
+  EXPECT_FALSE(
+      result.Contains(network::mojom::PermissionsPolicyFeature::kMicrophone));
+  EXPECT_FALSE(
+      result.Contains(network::mojom::PermissionsPolicyFeature::kFullscreen));
 }
 
 }  // namespace blink

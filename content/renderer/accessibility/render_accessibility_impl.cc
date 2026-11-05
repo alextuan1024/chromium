@@ -358,19 +358,27 @@ void RenderAccessibilityImpl::PerformAction(const ui::AXActionData& data) {
   // Actions shouldn't be handled in both places.
   switch (data.action) {
     case ax::mojom::Action::kGetImageData:
-      OnGetImageData(target.get(), data.target_rect.size());
+      OnGetImageData(target.get(),
+                     data.target_rect.value_or(gfx::Rect()).size());
       break;
     case ax::mojom::Action::kLoadInlineTextBoxes:
       OnLoadInlineTextBoxes(target.get());
       break;
     case ax::mojom::Action::kSetSelection:
-      anchor->SetSelection(anchor.get(), data.anchor_offset, focus.get(),
-                           data.focus_offset);
+      anchor->SetSelection(anchor.get(), data.anchor_offset,
+                           data.anchor_offset_type, focus.get(),
+                           data.focus_offset, data.focus_offset_type);
       break;
     case ax::mojom::Action::kScrollToMakeVisible:
-      target->ScrollToMakeVisibleWithSubFocus(
-          data.target_rect, data.horizontal_scroll_alignment,
-          data.vertical_scroll_alignment, data.scroll_behavior);
+      if (data.target_rect) {
+        target->ScrollToMakeVisibleWithSubFocus(
+            *data.target_rect, data.horizontal_scroll_alignment,
+            data.vertical_scroll_alignment, data.scroll_behavior);
+      } else {
+        target->ScrollToMakeVisible(data.horizontal_scroll_alignment,
+                                    data.vertical_scroll_alignment,
+                                    data.scroll_behavior);
+      }
       break;
     case ax::mojom::Action::kBlur:
     case ax::mojom::Action::kClearAccessibilityFocus:

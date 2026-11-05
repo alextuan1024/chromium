@@ -21,6 +21,7 @@
 #include "gpu/command_buffer/service/shared_image/texture_holder_vk.h"
 #include "gpu/command_buffer/service/shared_memory_region_wrapper.h"
 #include "gpu/command_buffer/service/vulkan_context_provider.h"
+#include "gpu/gpu_gles2_export.h"
 #include "gpu/ipc/common/surface_handle.h"
 #include "gpu/vulkan/vulkan_device_queue.h"
 #include "third_party/skia/include/private/chromium/GrPromiseImageTexture.h"
@@ -32,7 +33,8 @@ class GLTextureHolder;
 class VulkanCommandPool;
 class VulkanImage;
 
-class ExternalVkImageBacking final : public ClearTrackingSharedImageBacking {
+class GPU_GLES2_EXPORT ExternalVkImageBacking final
+    : public ClearTrackingSharedImageBacking {
  public:
   static std::unique_ptr<ExternalVkImageBacking> Create(
       scoped_refptr<SharedContextState> context_state,
@@ -107,6 +109,9 @@ class ExternalVkImageBacking final : public ClearTrackingSharedImageBacking {
   bool enable_webgpu_on_vk_via_gl_interop() const {
     return enable_webgpu_on_vk_via_gl_interop_;
   }
+  bool HasLatestContentInVkImage() const {
+    return (latest_content_ & kInVkImage) != 0;
+  }
 
   bool need_synchronization() const {
     if (usage().HasAny(SHARED_IMAGE_USAGE_WEBGPU_READ |
@@ -128,6 +133,15 @@ class ExternalVkImageBacking final : public ClearTrackingSharedImageBacking {
   }
   uint32_t reads_in_progress() const { return reads_in_progress_; }
   uint32_t gl_reads_in_progress() const { return gl_reads_in_progress_; }
+  // Returns true if the most recent write access to the backing was done via
+  // GL (i.e. GL wrote the image and signaled the end access semaphore).
+  bool get_and_reset_wait_for_gl_finish() {
+    bool needs_wait = wait_for_gl_finish_;
+    if (wait_for_gl_finish_) {
+      wait_for_gl_finish_ = false;
+    }
+    return needs_wait;
+  }
 
   // Returns VkImage layouts for each plane as GL layouts.
   std::vector<GLenum> GetVkImageLayoutsForGL();
@@ -220,8 +234,8 @@ class ExternalVkImageBacking final : public ClearTrackingSharedImageBacking {
   // mapping VkImage.
   std::pair<std::vector<MapPlaneData>, size_t> GetMapPlaneData() const;
 
-  void CopyPixelsFromGLTextureToVkImage();
-  void CopyPixelsFromVkImageToGLTexture();
+  [[nodiscard]] bool CopyPixelsFromGLTextureToVkImage();
+  [[nodiscard]] bool CopyPixelsFromVkImageToGLTexture();
 
   scoped_refptr<SharedContextState> context_state_;
   std::vector<TextureHolderVk> vk_textures_;
@@ -237,6 +251,7 @@ class ExternalVkImageBacking final : public ClearTrackingSharedImageBacking {
   uint32_t reads_in_progress_ = 0;
   bool is_updating_content_ = false;
   uint32_t gl_reads_in_progress_ = 0;
+  bool wait_for_gl_finish_ = false;
 
   std::vector<scoped_refptr<GLTextureHolder>> gl_textures_;
 

@@ -12,6 +12,7 @@
 #include "base/metrics/user_metrics.h"
 #include "base/trace_event/trace_event.h"
 #include "chrome/browser/glic/glic_profile_manager.h"
+#include "chrome/browser/glic/host/glic_page_handler.h"
 #include "chrome/browser/glic/host/glic_theme_util.h"
 #include "chrome/browser/glic/host/glic_ui.h"
 #include "chrome/browser/glic/host/glic_web_client_manager.h"
@@ -33,14 +34,16 @@
 #include "content/public/browser/web_contents.h"
 #include "printing/buildflags/buildflags.h"
 
+#if !BUILDFLAG(IS_ANDROID)
+#include "chrome/browser/glic/widget/scoped_modal_dialog_manager_delegate.h"
+#endif
+
 #if BUILDFLAG(ENABLE_PRINTING)
 #include "chrome/browser/printing/printing_init.h"
 #endif
 
-#if !BUILDFLAG(IS_ANDROID)
-#include "components/web_modal/web_contents_modal_dialog_manager.h"
-#else
-#include "chrome/browser/actor/android/offscreen_rendering_manager_android.h"
+#if BUILDFLAG(IS_ANDROID)
+#include "chrome/browser/actor/android/background_tabs/offscreen_rendering_manager_android.h"
 #endif
 
 namespace glic {
@@ -72,15 +75,6 @@ GlicWebUIContentsManager::GlicWebUIContentsManager(Profile* profile,
 
   web_contents_->SetSupportsDraggableRegions(true);
 
-#if !BUILDFLAG(IS_ANDROID)
-  web_modal::WebContentsModalDialogManager::CreateForWebContents(
-      web_contents_.get());
-#else
-  if (base::FeatureList::IsEnabled(features::kGlicAndroidOffscreenRendering)) {
-    actor::StartOffscreenRenderingForWebContents(web_contents_.get());
-  }
-#endif
-
 #if BUILDFLAG(ENABLE_PRINTING)
   printing::InitializePrintingForWebContents(web_contents_.get());
 #endif
@@ -91,6 +85,7 @@ GlicWebUIContentsManager::GlicWebUIContentsManager(Profile* profile,
 }
 
 GlicWebUIContentsManager::~GlicWebUIContentsManager() {
+  page_handler_ = nullptr;
   SetContentsManagerForWebContents(web_contents(), nullptr);
   Observe(nullptr);
 #if BUILDFLAG(IS_ANDROID)
@@ -115,15 +110,27 @@ void GlicWebUIContentsManager::AttachToHost(Host* host) {
   }
 }
 
+void GlicWebUIContentsManager::AttachModalDialogManagerDelegate(
+    ScopedModalDialogManagerDelegate& delegate) {
+#if !BUILDFLAG(IS_ANDROID)
+  if (web_contents_) {
+    delegate.AddWebContents(web_contents_.get());
+  }
+#endif
+}
+
 void GlicWebUIContentsManager::DidFinishNavigation(
     content::NavigationHandle* navigation_handle) {
-  if (navigation_handle->IsInPrimaryMainFrame()) {
+  if (navigation_handle->IsInPrimaryMainFrame() &&
+      navigation_handle->HasCommitted() &&
+      !navigation_handle->IsSameDocument() &&
+      navigation_commit_time_.is_null()) {
     TRACE_EVENT_INSTANT(
         "glic",
         "GlicWebUIContentsManager::DidFinishNavigation - PrimaryMainFrame",
         perfetto::Flow::FromPointer(this));
     navigation_commit_time_ = base::TimeTicks::Now();
-    base::UmaHistogramTimes("Glic.Contents.NavigationCommitTime",
+    base::UmaHistogramTimes("Glic.Contents.NavigationCommitTime2",
                             navigation_commit_time_ - creation_time_);
   }
   if (!host_ || !navigation_handle->IsInPrimaryMainFrame() ||
@@ -134,8 +141,6 @@ void GlicWebUIContentsManager::DidFinishNavigation(
 #if BUILDFLAG(ENABLE_PRINTING)
   printing::InitializePrintingForWebContents(web_contents());
 #endif
-
-  host_->OnWebContentsNavigated();
 
   // Re-attach to the (possibly new) GlicUI.
   if (auto* glic_ui = GlicUI::From(web_contents())) {
@@ -154,8 +159,11 @@ void GlicWebUIContentsManager::DocumentOnLoadCompletedInPrimaryMainFrame() {
       "glic",
       "GlicWebUIContentsManager::DocumentOnLoadCompletedInPrimaryMainFrame",
       perfetto::Flow::FromPointer(this));
-  base::UmaHistogramTimes("Glic.Contents.LoadCompleteTime",
-                          base::TimeTicks::Now() - navigation_commit_time_);
+  if (!navigation_commit_time_.is_null() && !has_recorded_load_complete_) {
+    has_recorded_load_complete_ = true;
+    base::UmaHistogramTimes("Glic.Contents.LoadCompleteTime2",
+                            base::TimeTicks::Now() - navigation_commit_time_);
+  }
 }
 
 void GlicWebUIContentsManager::PrimaryMainFrameRenderProcessGone(
@@ -163,7 +171,7 @@ void GlicWebUIContentsManager::PrimaryMainFrameRenderProcessGone(
   TRACE_EVENT_INSTANT(
       "glic", "GlicWebUIContentsManager::PrimaryMainFrameRenderProcessGone",
       perfetto::TerminatingFlow::FromPointer(this), "status", status);
-  base::UmaHistogramEnumeration("Glic.Session.WebUiCrash.TerminationStatus",
+  base::UmaHistogramEnumeration("Glic.Contents.WebUiCrash.TerminationStatus",
                                 status, base::TERMINATION_STATUS_MAX_ENUM);
   if (status != base::TERMINATION_STATUS_NORMAL_TERMINATION) {
     base::RecordAction(base::UserMetricsAction("GlicSessionWebUiCrash"));
@@ -173,6 +181,11 @@ void GlicWebUIContentsManager::PrimaryMainFrameRenderProcessGone(
   if (browser_shutdown::HasShutdownStarted()) {
     return;
   }
+  auto callbacks = std::move(pending_wait_for_load_callbacks_);
+  pending_wait_for_load_callbacks_.clear();
+  for (auto& [_, callback] : callbacks) {
+    std::move(callback).Run(/*failed=*/true);
+  }
   auto* keyed_service = GlicKeyedServiceFactory::GetGlicKeyedService(profile_);
   // TODO(crbug.com/454120908): swap for a reloaded host in case of a crash.
   keyed_service->CloseAndShutdown(web_contents()->GetPrimaryMainFrame());
@@ -180,11 +193,36 @@ void GlicWebUIContentsManager::PrimaryMainFrameRenderProcessGone(
 }
 
 void GlicWebUIContentsManager::SetVisibility(content::Visibility visibility) {
+  last_visibility_ = visibility;
   web_contents()->UpdateWebContentsVisibility(visibility);
+  UpdateGuestMounted();
+}
+
+void GlicWebUIContentsManager::OnHostNativeLoadingChanged(bool is_showing) {
+  UpdateGuestMounted();
+}
+
+void GlicWebUIContentsManager::UpdateGuestMounted() {
+  // Unlike NoWebview mode, there's no separate overlay WebContents to swap in,
+  // so the <webview> guest is treated as mounted whenever the WebUI is visible
+  // and not covered by the native loading placeholder.
+  const content::Visibility visibility =
+      host_ ? host_->web_contents_visibility() : last_visibility_;
+  web_client_manager_.SetGuestMounted(
+      visibility == content::Visibility::VISIBLE &&
+      (!host_ || !host_->IsShowingNativeLoading()));
 }
 
 content::WebContents* GlicWebUIContentsManager::active_web_contents() const {
   return WebContentsObserver::web_contents();
+}
+
+content::WebContents* GlicWebUIContentsManager::webui_contents() const {
+  return WebContentsObserver::web_contents();
+}
+
+content::WebContents* GlicWebUIContentsManager::guest_contents() const {
+  return web_client_manager_.web_client_contents();
 }
 
 void GlicWebUIContentsManager::OnActuatingChanged(bool actuating) {
@@ -251,6 +289,65 @@ GlicWebClientManager& GlicWebUIContentsManager::web_client_manager() {
 
 bool GlicWebUIContentsManager::ShouldReloadOnShow() const {
   return web_contents_ ? web_contents_->IsCrashed() : false;
+}
+
+bool GlicWebUIContentsManager::IsCrashed() const {
+  return web_contents_ ? web_contents_->IsCrashed() : false;
+}
+
+void GlicWebUIContentsManager::WaitForLoad(
+    base::OnceCallback<void(bool failed)> callback) {
+  if (IsCrashed()) {
+    std::move(callback).Run(/*failed=*/true);
+    return;
+  }
+  const uint64_t request_id = next_wait_for_load_id_++;
+  pending_wait_for_load_callbacks_.emplace(request_id, std::move(callback));
+  if (page_handler_) {
+    page_handler_->WaitForLoad(base::BindOnce(
+        &GlicWebUIContentsManager::OnWebUiLoadComplete,
+        weak_ptr_factory_.GetWeakPtr(), page_handler_, request_id));
+  }
+}
+
+void GlicWebUIContentsManager::WebUIPageHandlerAdded(
+    GlicPageHandler* page_handler) {
+  page_handler_ = page_handler;
+  for (const auto& [request_id, _] : pending_wait_for_load_callbacks_) {
+    page_handler_->WaitForLoad(base::BindOnce(
+        &GlicWebUIContentsManager::OnWebUiLoadComplete,
+        weak_ptr_factory_.GetWeakPtr(), page_handler_, request_id));
+  }
+}
+
+void GlicWebUIContentsManager::WebUIPageHandlerRemoved(
+    GlicPageHandler* page_handler) {
+  if (page_handler_ == page_handler) {
+    page_handler_ = nullptr;
+  }
+}
+
+void GlicWebUIContentsManager::OnWebUiLoadComplete(
+    GlicPageHandler* page_handler,
+    uint64_t request_id,
+    std::optional<ClientLoadErrorReason> error_reason) {
+  if (page_handler != page_handler_) {
+    return;
+  }
+  auto it = pending_wait_for_load_callbacks_.find(request_id);
+  if (it == pending_wait_for_load_callbacks_.end()) {
+    return;
+  }
+  auto callback = std::move(it->second);
+  pending_wait_for_load_callbacks_.erase(it);
+  if (host_) {
+    if (error_reason.has_value()) {
+      host_->SetClientLoadFailed(page_handler, *error_reason);
+    } else {
+      host_->ClearClientLoadFailed(page_handler);
+    }
+  }
+  std::move(callback).Run(/*failed=*/error_reason.has_value());
 }
 
 }  // namespace glic

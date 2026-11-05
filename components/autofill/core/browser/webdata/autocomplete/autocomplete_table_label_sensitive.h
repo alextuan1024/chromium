@@ -15,6 +15,7 @@
 #include <string>
 #include <string_view>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 #include "base/compiler_specific.h"
@@ -28,6 +29,7 @@ class WebDatabase;
 namespace autofill {
 
 class AutocompleteEntryLabelSensitive;
+struct AutocompleteTableStats;
 
 enum class MatchingType {
   kUnknown = 0,
@@ -41,7 +43,7 @@ constexpr MatchingType ToSafeMatchingType(
     std::underlying_type_t<MatchingType> matching_type) {
   const bool is_valid =
       matching_type >= 0 &&
-      matching_type <= static_cast<int>(MatchingType::kMaxValue);
+      matching_type <= std::to_underlying(MatchingType::kMaxValue);
   return is_valid ? static_cast<MatchingType>(matching_type)
                   : MatchingType::kUnknown;
 }
@@ -195,6 +197,9 @@ class AutocompleteTableLabelSensitive : public WebDatabaseTable {
   // Retrieves all of the entries in the autocomplete table.
   [[nodiscard]] bool GetAllAutocompleteEntries(
       std::vector<AutocompleteEntryLabelSensitive>* entries);
+
+  // Computes table-level statistics for the autocomplete table.
+  [[nodiscard]] AutocompleteTableStats GetTableStats() const;
 
   // Retrieves a single entry from the autocomplete table.
   [[nodiscard]] std::optional<AutocompleteEntryLabelSensitive>

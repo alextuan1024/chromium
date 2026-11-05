@@ -2,6 +2,7 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
+import("//build/config/ui.gni")
 import("//components/signin/features.gni")
 
 assert(is_win || is_mac || is_linux || is_chromeos)
@@ -157,6 +158,7 @@ if (enable_dice_support) {
     sources = [ "address_sign_in_promo_view.cc" ]
     public_deps = [
       ":address_bubble_base_view",
+      "//base",
       "//chrome/browser/ui/autofill",
       "//ui/base/metadata",
     ]
@@ -164,6 +166,7 @@ if (enable_dice_support) {
       "//chrome/browser:resources",
       "//chrome/browser/signin",
       "//chrome/browser/ui/signin",
+      "//components/autofill/core/browser",
       "//components/signin/public/base",
       "//components/strings:components_strings",
       "//ui/base",
@@ -184,13 +187,11 @@ source_set("autofill_field_promo_view_impl") {
 
 source_set("autofill_field_promo_view_impl_impl") {
   sources = [ "autofill_field_promo_view_impl.cc" ]
-  public_deps = [
-    ":autofill_field_promo_view_impl",
-    "//chrome/browser:browser_public_dependencies",
-  ]
+  public_deps = [ ":autofill_field_promo_view_impl" ]
   deps = [
     "//chrome/browser/ui/browser_window",
     "//chrome/browser/ui/views/autofill/popup",
+    "//chrome/browser/ui/views/frame:browser_view_header",
     "//content/public/browser",
     "//ui/base",
     "//ui/gfx",
@@ -209,10 +210,7 @@ source_set("at_memory_promo_bubble_view") {
 
 source_set("at_memory_promo_bubble_view_impl") {
   sources = [ "at_memory_promo_bubble_view.cc" ]
-  public_deps = [
-    ":at_memory_promo_bubble_view",
-    "//chrome/browser:browser_public_dependencies",
-  ]
+  public_deps = [ ":at_memory_promo_bubble_view" ]
   deps = [
     "//base",
     "//chrome/app/theme:theme_resources",
@@ -221,6 +219,7 @@ source_set("at_memory_promo_bubble_view_impl") {
     "//chrome/browser/ui/browser_window",
     "//chrome/browser/ui/navigator",
     "//chrome/browser/ui/views:layout_provider",
+    "//chrome/browser/ui/views/frame:browser_view_header",
     "//chrome/browser/ui/views/frame:toolbar_button_provider",
     "//chrome/browser/ui/views/user_education",
     "//components/personal_context/core",
@@ -247,6 +246,7 @@ source_set("autofill_bubble_handler_impl") {
   deps = [
     ":save_address_profile_view",
     ":update_address_profile_view",
+    "//chrome/browser/ui:browser_commands",
     "//chrome/browser/ui/views:bubble_anchor_util_views",
     "//chrome/browser/ui/views/autofill/autofill_ai",
     "//chrome/browser/ui/views/autofill/payments:filled_card_information_bubble_views",
@@ -269,5 +269,64 @@ source_set("autofill_bubble_handler_impl") {
 
   if (enable_dice_support) {
     deps += [ ":address_sign_in_promo_view" ]
+  }
+}
+
+source_set("browser_tests") {
+  testonly = true
+
+  defines = [ "HAS_OUT_OF_PROC_TEST_RUNNER" ]
+
+  sources = [ "autofill_field_promo_view_impl_browsertest.cc" ]
+
+  deps = [
+    ":autofill_field_promo_view_impl",
+    "//chrome/browser/ui/tabs:tab_strip",
+    "//chrome/browser/ui/views/autofill/popup:popup_view_views",
+    "//chrome/browser/ui/views/frame:browser_view_header",
+    "//chrome/test/base:in_process_browser_test",
+    "//chrome/test/base:ui_test_utils",
+  ]
+}
+
+source_set("unit_tests") {
+  testonly = true
+
+  sources = [
+    "address_editor_view_unittest.cc",
+    "edit_address_profile_view_unittest.cc",
+    "save_address_profile_view_unittest.cc",
+    "update_address_profile_view_unittest.cc",
+  ]
+
+  deps = [
+    ":address_editor_view",
+    ":edit_address_profile_view",
+    ":save_address_profile_view",
+    ":update_address_profile_view",
+    "//chrome/test:test_support",
+  ]
+}
+
+source_set("interactive_ui_tests") {
+  testonly = true
+
+  defines = [ "HAS_OUT_OF_PROC_TEST_RUNNER" ]
+
+  if (is_win && use_aura) {
+    sources = [ "autofill_accessibility_win_browsertest.cc" ]
+
+    deps = [
+      "//chrome/browser/ui/tabs:tab_strip",
+      "//chrome/browser/ui/views/accessibility:uia_test_support",
+      "//chrome/browser/ui/views/frame:browser_view_header",
+      "//chrome/test/base:in_process_browser_test",
+      "//chrome/test/base:ui_test_utils",
+      "//components/autofill/content/browser",
+      "//components/autofill/content/browser:test_support",
+      "//components/autofill/core/browser:test_support",
+      "//content/test:browsertest_support",
+      "//net:test_support",
+    ]
   }
 }

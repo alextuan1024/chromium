@@ -21,10 +21,8 @@
 #include "base/version_info/version_info.h"
 #include "build/branding_buildflags.h"
 #include "build/build_config.h"
-#include "components/optimization_guide/core/model_execution/model_execution_prefs.h"
-#include "components/optimization_guide/core/optimization_guide_enums.h"
+#include "components/optimization_guide/core/model_execution/on_device_prefs.h"
 #include "components/optimization_guide/core/optimization_guide_features.h"
-#include "components/optimization_guide/core/optimization_guide_switches.h"
 #include "components/optimization_guide/optimization_guide_buildflags.h"
 #include "components/optimization_guide/public/mojom/model_broker_debug.mojom.h"
 #include "components/prefs/pref_service.h"
@@ -47,7 +45,7 @@ namespace {
 // performance class requirement.
 uint64_t GetMinimumVramRequired() {
   std::string perf_classes_string =
-      optimization_guide::features::kPerformanceClassListForOnDeviceModel.Get();
+      on_device_model::features::kPerformanceClassListForOnDeviceModel.Get();
 
   if (optimization_guide::IsPerformanceClassCompatible(
           perf_classes_string,
@@ -372,7 +370,7 @@ OnDeviceModelPerformanceClass PerformanceClassifier::GetPerformanceClass()
 
 bool PerformanceClassifier::IsDeviceGPUCapable() const {
   return IsPerformanceClassCompatible(
-      features::kPerformanceClassListForOnDeviceModel.Get(),
+      on_device_model::features::kPerformanceClassListForOnDeviceModel.Get(),
       GetPerformanceClass());
 }
 
@@ -382,14 +380,16 @@ bool PerformanceClassifier::IsDeviceCapable() const {
 
 bool PerformanceClassifier::IsLowTierDevice() const {
   return IsPerformanceClassCompatible(
-      features::kLowTierPerformanceClassListForOnDeviceModel.Get(),
+      on_device_model::features::kLowTierPerformanceClassListForOnDeviceModel
+          .Get(),
       GetPerformanceClass());
 }
 
 bool PerformanceClassifier::SupportsImageInput() const {
   return (IsDeviceGPUCapable() &&
           IsPerformanceClassCompatible(
-              features::kPerformanceClassListForImageInput.Get(),
+              on_device_model::features::kPerformanceClassListForImageInput
+                  .Get(),
               GetPerformanceClass())) ||
          (IsDeviceCapable() &&
           base::FeatureList::IsEnabled(kOnDeviceModelCpuImageInput));

@@ -200,6 +200,10 @@ void ExtensionRegistrar::AddExtension(
 
   // If the extension was disabled for a reload, we will enable it.
   bool was_reloading = reloading_extensions_.erase(extension->id()) > 0;
+  // If the extension was terminated and is being reloaded, notify observers
+  // below once it's enabled again.
+  bool was_reloading_terminated =
+      reloading_terminated_extensions_.erase(extension->id()) > 0;
 
   // The extension is now loaded; remove its data from unloaded extension map.
   unloaded_extension_paths_.erase(extension->id());
@@ -223,6 +227,10 @@ void ExtensionRegistrar::AddExtension(
       UnregisterServiceWorkerWithRootScope(extension.get());
     }
     AddNewExtension(extension);
+    if (was_reloading_terminated &&
+        registry_->enabled_extensions().Contains(extension->id())) {
+      registry_->TriggerOnReloaded(extension.get());
+    }
   }
 
   if (registry_->disabled_extensions().Contains(extension->id())) {
@@ -311,6 +319,10 @@ void ExtensionRegistrar::RemoveExtension(const ExtensionId& extension_id,
     return;
   }
 
+  // Stop tracking whether a terminated extension was being reloaded. Do this
+  // before the early return below, which handles terminated extensions.
+  reloading_terminated_extensions_.erase(extension_id);
+
   if (registry_->terminated_extensions().Contains(extension_id)) {
     // The extension was already deactivated from the call to
     // TerminateExtension(), which also should have added it to
@@ -349,8 +361,9 @@ void ExtensionRegistrar::EnableExtension(const ExtensionId& extension_id) {
 
   // If the extension is currently reloading, it will be enabled once the reload
   // is complete.
-  if (reloading_extensions_.count(extension_id) > 0)
+  if (reloading_extensions_.contains(extension_id)) {
     return;
+  }
 
   // First, check that the extension can be enabled.
   if (IsExtensionEnabled(extension_id) ||
@@ -468,6 +481,10 @@ void ExtensionRegistrar::DisableExtensionWithRawReasons(
     // notifications for it being disabled.
     bool removed = registry_->RemoveTerminated(extension->id());
     DCHECK(removed);
+    // The extension is no longer terminated, so stop tracking whether it was
+    // being reloaded. Otherwise a later add of the extension, after it's
+    // enabled again, would notify observers that it was reloaded.
+    reloading_terminated_extensions_.erase(extension_id);
   }
 }
 
@@ -883,6 +900,7 @@ void ExtensionRegistrar::UnblockAllExtensions() {
   for (const auto& extension : to_unblock) {
     registry_->RemoveBlocked(extension->id());
     AddExtension(extension.get());
+    TriggerOnEnabledIfReAddedAsEnabled(extension->id());
   }
 
   // While extensions are blocked, we won't display any external install
@@ -906,6 +924,7 @@ void ExtensionRegistrar::OnBlocklistStateRemoved(
   DCHECK(extension);
   registry_->RemoveBlocklisted(extension_id);
   AddExtension(extension.get());
+  TriggerOnEnabledIfReAddedAsEnabled(extension_id);
 }
 
 void ExtensionRegistrar::OnBlocklistStateAdded(
@@ -1142,6 +1161,18 @@ void ExtensionRegistrar::ActivateExtension(const Extension* extension,
   }
 }
 
+void ExtensionRegistrar::TriggerOnEnabledIfReAddedAsEnabled(
+    const ExtensionId& extension_id) {
+  // The extension may still be disabled, blocked or blocklisted for another
+  // reason, or `AddExtension()` may have declined to add it. In those cases it
+  // wasn't enabled.
+  const Extension* extension =
+      registry_->enabled_extensions().GetByID(extension_id);
+  if (extension) {
+    registry_->TriggerOnEnabled(extension);
+  }
+}
+
 void ExtensionRegistrar::DeactivateExtension(const Extension* extension,
                                              UnloadedExtensionReason reason) {
   // NOTE: Call `TriggerOnUnloaded` before `DeactivateTaskQueueForExtension`.
@@ -1178,7 +1209,7 @@ void ExtensionRegistrar::DoReloadExtension(
     // If an unpacked extension previously failed to reload, it will still be
     // marked as disabled, but we can try to reload it again - the developer
     // may have fixed the issue.
-    if (failed_to_reload_unpacked_extensions_.count(path) == 0) {
+    if (!failed_to_reload_unpacked_extensions_.contains(path)) {
       return;
     }
     failed_to_reload_unpacked_extensions_.erase(path);
@@ -1225,6 +1256,9 @@ void ExtensionRegistrar::DoReloadExtension(
       return;
     }
     path = unloaded_extension_paths_[extension_id];
+    if (registry_->terminated_extensions().Contains(extension_id)) {
+      reloading_terminated_extensions_.insert(extension_id);
+    }
   }
 
   if (delayed_install_manager_->Contains(extension_id) &&
@@ -1338,6 +1372,7 @@ bool ExtensionRegistrar::ReplaceReloadedExtension(
   CHECK(registry_->AddEnabled(extension));
 
   ActivateExtension(extension.get(), false);
+  registry_->TriggerOnReloaded(extension.get());
 
   return true;
 }
@@ -1401,7 +1436,7 @@ bool ExtensionRegistrar::CanAddExtension(const Extension* extension) const {
   if (!extensions_enabled() &&
       !Manifest::ShouldAlwaysLoadExtension(extension->location(),
                                            extension->is_theme()) &&
-      disable_flag_exempted_extensions_.count(extension->id()) == 0) {
+      !disable_flag_exempted_extensions_.contains(extension->id())) {
     return false;
   }
   return true;

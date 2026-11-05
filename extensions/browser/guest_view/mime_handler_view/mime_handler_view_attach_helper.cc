@@ -75,7 +75,7 @@ std::string MimeHandlerViewAttachHelper::OverrideBodyForInterceptedResponse(
       std::move(resume_load));
   return CreateTemplateMimeHandlerPage(resource_url, mime_type, internal_id,
                                        /*use_oopif=*/false,
-                                       /*is_oopif_pdf=*/false);
+                                       /*handler=*/nullptr);
 }
 
 void MimeHandlerViewAttachHelper::RenderProcessHostDestroyed(
@@ -83,7 +83,7 @@ void MimeHandlerViewAttachHelper::RenderProcessHostDestroyed(
   if (render_process_host != render_process_host_) {
     return;
   }
-  render_process_host->RemoveObserver(this);
+  render_process_host_observation_.Reset();
   GetProcessIdToHelperMap()->erase(render_process_host_->GetID());
 }
 
@@ -112,7 +112,7 @@ void MimeHandlerViewAttachHelper::CreateFullPageMimeHandlerView(
 MimeHandlerViewAttachHelper::MimeHandlerViewAttachHelper(
     content::RenderProcessHost* render_process_host)
     : render_process_host_(render_process_host) {
-  render_process_host->AddObserver(this);
+  render_process_host_observation_.Observe(render_process_host);
 }
 
 MimeHandlerViewAttachHelper::~MimeHandlerViewAttachHelper() = default;

@@ -859,10 +859,10 @@ TEST(EventTest, ToStringNotEmpty) {
 #if BUILDFLAG(IS_WIN)
 namespace {
 
-const struct AltGraphEventTestCase {
+constexpr struct AltGraphEventTestCase {
   KeyboardCode key_code;
   KeyboardLayout layout;
-  std::vector<KeyboardCode> modifier_key_codes;
+  std::array<KeyboardCode, 4> modifier_key_codes;
   int expected_flags;
 } kAltGraphEventTestCases[] = {
     // US English -> AltRight never behaves as AltGraph.
@@ -1240,6 +1240,98 @@ TEST(EventTest, CreateCharcterEvent) {
   EXPECT_EQ(0x5A, key_event.GetCharacter());
   EXPECT_EQ(VKEY_Z, key_event.key_code());
   EXPECT_EQ(EF_NONE, key_event.flags());
+}
+
+TEST(EventTest, GestureEventDetailsRailingGetters) {
+  // GestureScrollBegin - Horizontal
+  {
+    GestureEventDetails details(EventType::kGestureScrollBegin, 10.0f, 20.0f);
+    details.set_scroll_begin_rails_mode(GestureScrollRailsMode::kHorizontal);
+    EXPECT_EQ(10.0f, details.scroll_x_hint());
+    EXPECT_EQ(0.0f, details.scroll_y_hint());
+    EXPECT_EQ(10.0f, details.scroll_x_hint_unconstrained());
+    EXPECT_EQ(20.0f, details.scroll_y_hint_unconstrained());
+  }
+
+  // GestureScrollBegin - Vertical
+  {
+    GestureEventDetails details(EventType::kGestureScrollBegin, 10.0f, 20.0f);
+    details.set_scroll_begin_rails_mode(GestureScrollRailsMode::kVertical);
+    EXPECT_EQ(0.0f, details.scroll_x_hint());
+    EXPECT_EQ(20.0f, details.scroll_y_hint());
+    EXPECT_EQ(10.0f, details.scroll_x_hint_unconstrained());
+    EXPECT_EQ(20.0f, details.scroll_y_hint_unconstrained());
+  }
+
+  // GestureScrollBegin - None
+  {
+    GestureEventDetails details(EventType::kGestureScrollBegin, 10.0f, 20.0f);
+    details.set_scroll_begin_rails_mode(GestureScrollRailsMode::kNone);
+    EXPECT_EQ(10.0f, details.scroll_x_hint());
+    EXPECT_EQ(20.0f, details.scroll_y_hint());
+    EXPECT_EQ(10.0f, details.scroll_x_hint_unconstrained());
+    EXPECT_EQ(20.0f, details.scroll_y_hint_unconstrained());
+  }
+
+  // GestureScrollUpdate - Horizontal
+  {
+    GestureEventDetails details(EventType::kGestureScrollUpdate, 15.0f, 25.0f);
+    details.set_scroll_update_rails_mode(GestureScrollRailsMode::kHorizontal);
+    EXPECT_EQ(15.0f, details.scroll_x());
+    EXPECT_EQ(0.0f, details.scroll_y());
+    EXPECT_EQ(15.0f, details.scroll_x_unconstrained());
+    EXPECT_EQ(25.0f, details.scroll_y_unconstrained());
+  }
+
+  // GestureScrollUpdate - Vertical
+  {
+    GestureEventDetails details(EventType::kGestureScrollUpdate, 15.0f, 25.0f);
+    details.set_scroll_update_rails_mode(GestureScrollRailsMode::kVertical);
+    EXPECT_EQ(0.0f, details.scroll_x());
+    EXPECT_EQ(25.0f, details.scroll_y());
+    EXPECT_EQ(15.0f, details.scroll_x_unconstrained());
+    EXPECT_EQ(25.0f, details.scroll_y_unconstrained());
+  }
+
+  // GestureScrollUpdate - None
+  {
+    GestureEventDetails details(EventType::kGestureScrollUpdate, 15.0f, 25.0f);
+    details.set_scroll_update_rails_mode(GestureScrollRailsMode::kNone);
+    EXPECT_EQ(15.0f, details.scroll_x());
+    EXPECT_EQ(25.0f, details.scroll_y());
+    EXPECT_EQ(15.0f, details.scroll_x_unconstrained());
+    EXPECT_EQ(25.0f, details.scroll_y_unconstrained());
+  }
+
+  // ScrollFlingStart - Horizontal
+  {
+    GestureEventDetails details(EventType::kScrollFlingStart, 100.0f, 200.0f);
+    details.set_fling_rails_mode(GestureScrollRailsMode::kHorizontal);
+    EXPECT_EQ(100.0f, details.velocity_x());
+    EXPECT_EQ(0.0f, details.velocity_y());
+    EXPECT_EQ(100.0f, details.velocity_x_unconstrained());
+    EXPECT_EQ(200.0f, details.velocity_y_unconstrained());
+  }
+
+  // ScrollFlingStart - Vertical
+  {
+    GestureEventDetails details(EventType::kScrollFlingStart, 100.0f, 200.0f);
+    details.set_fling_rails_mode(GestureScrollRailsMode::kVertical);
+    EXPECT_EQ(0.0f, details.velocity_x());
+    EXPECT_EQ(200.0f, details.velocity_y());
+    EXPECT_EQ(100.0f, details.velocity_x_unconstrained());
+    EXPECT_EQ(200.0f, details.velocity_y_unconstrained());
+  }
+
+  // ScrollFlingStart - None
+  {
+    GestureEventDetails details(EventType::kScrollFlingStart, 100.0f, 200.0f);
+    details.set_fling_rails_mode(GestureScrollRailsMode::kNone);
+    EXPECT_EQ(100.0f, details.velocity_x());
+    EXPECT_EQ(200.0f, details.velocity_y());
+    EXPECT_EQ(100.0f, details.velocity_x_unconstrained());
+    EXPECT_EQ(200.0f, details.velocity_y_unconstrained());
+  }
 }
 
 }  // namespace ui

@@ -38,13 +38,13 @@
 #include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/mojom/dialog_button.mojom.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/base/page_transition_types.h"
 #include "ui/base/resource/resource_bundle.h"
-#include "ui/base/window_open_disposition.h"
 #include "ui/gfx/geometry/insets.h"
 #include "ui/gfx/image/image_skia.h"
 #include "ui/views/bubble/bubble_frame_view.h"
-#include "ui/views/controls/button/checkbox.h"
+#include "ui/views/controls/button/radio_button.h"
 #include "ui/views/controls/image_view.h"
 #include "ui/views/controls/label.h"
 #include "ui/views/controls/link.h"
@@ -53,12 +53,14 @@
 #include "ui/views/layout/box_layout.h"
 #include "ui/views/layout/box_layout_view.h"
 #include "ui/views/layout/fill_layout.h"
+#include "ui/views/layout/layout_provider.h"
 #include "ui/views/layout/table_layout.h"
 #include "ui/views/layout/table_layout_view.h"
 #include "ui/views/metadata/view_factory.h"
 #include "ui/views/widget/widget.h"
 #include "ui/views/widget/widget_delegate.h"
 #include "ui/views/window/dialog_delegate.h"
+#include "ui/views/window/non_client_view.h"
 
 using content::OpenURLParams;
 using content::Referrer;
@@ -86,7 +88,7 @@ void ShowExtensionInstallDialogImpl(
     std::unique_ptr<ExtensionInstallPromptShowParams> show_params,
     ExtensionInstallPrompt::DoneCallback done_callback,
     std::unique_ptr<InstallPromptData> prompt) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
 
   // If the dialog has to be parented to WebContents, force activate the
   // contents. See crbug.com/40059470.
@@ -150,12 +152,12 @@ class ExtensionJustificationView : public views::BoxLayoutView {
 
   // Get the text currently present in the justification text field.
   std::u16string_view GetJustificationText() {
-    DCHECK(justification_field_);
+    CHECK(justification_field_, base::NotFatalUntil::M162);
     return justification_field_->GetText();
   }
 
   void SetJustificationTextForTesting(const std::u16string& new_text) {
-    DCHECK(justification_field_);
+    CHECK(justification_field_, base::NotFatalUntil::M162);
     // Resets the text field to an empty string so that InsertOrReplaceText()
     // below does not append to the already entered text. Does not trigger
     // UpdateAfterChange().
@@ -249,16 +251,16 @@ ExtensionInstallDialogView::ExtensionInstallDialogView(
       done_callback_(std::move(done_callback)),
       prompt_(std::move(prompt)),
       scroll_view_(nullptr),
-      install_button_enabled_(false),
-      grant_permissions_checkbox_(nullptr) {
-  DCHECK(prompt_->extension());
+      install_button_enabled_(false) {
+  CHECK(prompt_->extension(), base::NotFatalUntil::M162);
 
   extensions::ExtensionRegistry* extension_registry =
       extensions::ExtensionRegistry::Get(profile_);
   extension_registry_observation_.Observe(extension_registry);
 
   int buttons = prompt_->GetDialogButtons();
-  DCHECK(buttons & static_cast<int>(ui::mojom::DialogButton::kCancel));
+  CHECK(buttons & static_cast<int>(ui::mojom::DialogButton::kCancel),
+        base::NotFatalUntil::M162);
 
   int default_button = static_cast<int>(ui::mojom::DialogButton::kCancel);
 
@@ -291,10 +293,6 @@ ExtensionInstallDialogView::ExtensionInstallDialogView(
     store_link->SetCallback(base::BindRepeating(
         &ExtensionInstallDialogView::LinkClicked, base::Unretained(this)));
     SetExtraView(std::move(store_link));
-  } else if (prompt_->ShouldWithheldPermissionsOnDialogAccept()) {
-    grant_permissions_checkbox_ = SetExtraView(
-        std::make_unique<views::Checkbox>(l10n_util::GetStringUTF16(
-            IDS_EXTENSION_PROMPT_GRANT_PERMISSIONS_CHECKBOX)));
   }
 
   SetButtonLabel(ui::mojom::DialogButton::kOk, prompt_->GetAcceptButtonLabel());
@@ -331,7 +329,7 @@ bool ExtensionInstallDialogView::IsJustificationFieldVisibleForTesting() {
 
 void ExtensionInstallDialogView::SetJustificationTextForTesting(
     const std::u16string& new_text) {
-  DCHECK(justification_view_ != nullptr);
+  CHECK(justification_view_ != nullptr, base::NotFatalUntil::M162);
   justification_view_->SetJustificationTextForTesting(new_text);  // IN-TEST
 }
 
@@ -345,10 +343,6 @@ bool ExtensionInstallDialogView::
 bool ExtensionInstallDialogView::
     ShouldAllowKeyEventsDuringInputProtectionForTesting() const {
   return ShouldAllowKeyEventsDuringInputProtection();
-}
-
-void ExtensionInstallDialogView::ResizeWidget() {
-  GetWidget()->SetSize(GetWidget()->non_client_view()->GetPreferredSize());
 }
 
 void ExtensionInstallDialogView::VisibilityChanged(views::View* starting_from,
@@ -381,7 +375,7 @@ void ExtensionInstallDialogView::AddedToWidget() {
 }
 
 void ExtensionInstallDialogView::OnDialogCanceled() {
-  DCHECK(done_callback_);
+  CHECK(done_callback_, base::NotFatalUntil::M162);
 
   // The dialog will be closed, so stop observing for any extension changes
   // that could potentially crop up during that process (like the extension
@@ -395,7 +389,7 @@ void ExtensionInstallDialogView::OnDialogCanceled() {
 }
 
 void ExtensionInstallDialogView::OnDialogAccepted() {
-  DCHECK(done_callback_);
+  CHECK(done_callback_, base::NotFatalUntil::M162);
 
   // The dialog will be closed, so stop observing for any extension changes
   // that could potentially crop up during that process (like the extension
@@ -404,16 +398,16 @@ void ExtensionInstallDialogView::OnDialogAccepted() {
 
   bool expect_justification =
       prompt_->type() == InstallPromptData::EXTENSION_REQUEST_PROMPT;
-  DCHECK(expect_justification == !!justification_view_);
+  CHECK(expect_justification == !!justification_view_,
+        base::NotFatalUntil::M162);
 
   prompt_->OnDialogAccepted();
 
   // Permissions are withheld at installation when the prompt specifies it and
-  // `grant_permissions_checkbox_` wasn't selected.
+  // the "On click" site access radio button is selected.
   auto result =
       (prompt_->ShouldWithheldPermissionsOnDialogAccept() &&
-       grant_permissions_checkbox_ &&
-       !grant_permissions_checkbox_->GetChecked())
+       on_click_radio_button_ && on_click_radio_button_->GetChecked())
           ? ExtensionInstallPrompt::Result::ACCEPTED_WITH_WITHHELD_PERMISSIONS
           : ExtensionInstallPrompt::Result::ACCEPTED;
 
@@ -475,8 +469,9 @@ void ExtensionInstallDialogView::OnShutdown(
     extensions::ExtensionRegistry* registry) {
   extensions::ExtensionRegistry* extension_registry =
       extensions::ExtensionRegistry::Get(profile_);
-  DCHECK_EQ(extension_registry, registry);
-  DCHECK(extension_registry_observation_.IsObservingSource(extension_registry));
+  CHECK_EQ(extension_registry, registry, base::NotFatalUntil::M162);
+  CHECK(extension_registry_observation_.IsObservingSource(extension_registry),
+        base::NotFatalUntil::M162);
   extension_registry_observation_.Reset();
   CloseDialog();
 }
@@ -485,10 +480,10 @@ void ExtensionInstallDialogView::LinkClicked() {
   GURL store_url(extension_urls::GetWebstoreItemDetailURLPrefix() +
                  prompt_->extension()->id());
   OpenURLParams params = OpenURLParams::CreateBrowserInitiated(
-      store_url, WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      store_url, ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui::PAGE_TRANSITION_LINK);
 
-  DCHECK(show_params_);
+  CHECK(show_params_, base::NotFatalUntil::M162);
   if (show_params_->GetParentWebContents()) {
     show_params_->GetParentWebContents()->OpenURL(
         params, /*navigation_handle_callback=*/{});
@@ -506,8 +501,10 @@ void ExtensionInstallDialogView::CreateContents() {
   bool has_permissions = prompt_->GetPermissionCount() > 0;
   bool requires_justification =
       prompt_->type() == InstallPromptData::EXTENSION_REQUEST_PROMPT;
+  bool has_site_access_options =
+      prompt_->ShouldWithheldPermissionsOnDialogAccept();
 
-  if (!has_permissions && !requires_justification) {
+  if (!has_permissions && !requires_justification && !has_site_access_options) {
     // Use a smaller margin between the title area and buttons, since there
     // isn't any content.
     set_margins(
@@ -523,8 +520,8 @@ void ExtensionInstallDialogView::CreateContents() {
   set_margins(
       gfx::Insets::TLBR(content_insets.top(), 0, content_insets.bottom(), 0));
 
-  std::unique_ptr<views::ScrollView> scroll_view =
-      CreateExtensionInfoContainer(has_permissions, requires_justification);
+  std::unique_ptr<views::ScrollView> scroll_view = CreateExtensionInfoContainer(
+      has_permissions, requires_justification, has_site_access_options);
   scroll_view_ = scroll_view.get();
   AddChildView(std::move(scroll_view));
 }
@@ -532,8 +529,9 @@ void ExtensionInstallDialogView::CreateContents() {
 std::unique_ptr<views::ScrollView>
 ExtensionInstallDialogView::CreateExtensionInfoContainer(
     bool has_permissions,
-    bool requires_justification) {
-  CHECK(has_permissions || requires_justification);
+    bool requires_justification,
+    bool has_site_access_options) {
+  CHECK(has_permissions || requires_justification || has_site_access_options);
   const ChromeLayoutProvider* provider = ChromeLayoutProvider::Get();
   const gfx::Insets content_insets = provider->GetDialogInsetsForContentType(
       views::DialogContentType::kControl, views::DialogContentType::kControl);
@@ -547,6 +545,9 @@ ExtensionInstallDialogView::CreateExtensionInfoContainer(
               views::DISTANCE_UNRELATED_CONTROL_VERTICAL));
 
   if (has_permissions) {
+    auto permissions_view =
+        std::make_unique<ExtensionPermissionsView>(prompt_->GetPermissions());
+    permissions_view_observation_.Observe(permissions_view.get());
     extension_info_container.AddChild(
         views::Builder<views::BoxLayoutView>()
             .SetOrientation(views::BoxLayout::Orientation::kVertical)
@@ -561,8 +562,7 @@ ExtensionInstallDialogView::CreateExtensionInfoContainer(
                     .SetMultiLine(true),
                 // Permissions content.
                 views::Builder<ExtensionPermissionsView>(
-                    std::make_unique<ExtensionPermissionsView>(
-                        prompt_->GetPermissions()))));
+                    std::move(permissions_view))));
   }
 
   if (requires_justification) {
@@ -574,10 +574,41 @@ ExtensionInstallDialogView::CreateExtensionInfoContainer(
             std::move(justification_view)));
   }
 
+  if (has_site_access_options) {
+    constexpr int kRadioGroupId = 0;
+    extension_info_container.AddChild(
+        views::Builder<views::BoxLayoutView>()
+            .SetOrientation(views::BoxLayout::Orientation::kVertical)
+            .SetBetweenChildSpacing(provider->GetDistanceMetric(
+                views::DISTANCE_RELATED_CONTROL_VERTICAL))
+            .SetAccessibleRole(ax::mojom::Role::kRadioGroup)
+            .SetAccessibleName(l10n_util::GetStringUTF16(
+                IDS_EXTENSION_PROMPT_ALLOW_SITE_ACCESS_TITLE))
+            .AddChildren(
+                views::Builder<views::Label>()
+                    .SetText(l10n_util::GetStringUTF16(
+                        IDS_EXTENSION_PROMPT_ALLOW_SITE_ACCESS_TITLE))
+                    .SetTextContext(views::style::CONTEXT_DIALOG_BODY_TEXT)
+                    .SetHorizontalAlignment(gfx::ALIGN_LEFT)
+                    .SetMultiLine(true),
+                views::Builder<views::RadioButton>()
+                    .CopyAddressTo(&on_click_radio_button_)
+                    .SetText(l10n_util::GetStringUTF16(
+                        IDS_EXTENSIONS_CONTEXT_MENU_PAGE_ACCESS_RUN_ON_CLICK))
+                    .SetGroup(kRadioGroupId)
+                    .SetChecked(true),
+                views::Builder<views::RadioButton>()
+                    .CopyAddressTo(&always_all_sites_radio_button_)
+                    .SetText(l10n_util::GetStringUTF16(
+                        IDS_EXTENSIONS_CONTEXT_MENU_PAGE_ACCESS_RUN_ON_ALL_SITES_V2))
+                    .SetGroup(kRadioGroupId)));
+  }
+
   return views::Builder<views::ScrollView>()
       .SetHorizontalScrollBarMode(views::ScrollView::ScrollBarMode::kDisabled)
-      .ClipHeightTo(0, provider->GetDistanceMetric(
-                           views::DISTANCE_DIALOG_SCROLLABLE_AREA_MAX_HEIGHT))
+      .ClipHeightTo(
+          0, provider->GetDistanceMetric(
+                 views::DISTANCE_MODAL_DIALOG_SCROLLABLE_AREA_MAX_HEIGHT))
       .SetContents(extension_info_container)
       .Build();
 }
@@ -707,7 +738,7 @@ void ExtensionInstallDialogView::ContentsChanged(
     views::Textfield* sender,
     const std::u16string& new_contents) {
   // This should never be triggered if justification_view_ is not initialized.
-  DCHECK(justification_view_);
+  CHECK(justification_view_, base::NotFatalUntil::M162);
 
   justification_view_->UpdateLengthLabel();
 
@@ -719,6 +750,17 @@ void ExtensionInstallDialogView::ContentsChanged(
     request_button_enabled_ = is_justification_length_within_limit;
     DialogModelChanged();
   }
+}
+
+void ExtensionInstallDialogView::OnViewPreferredSizeChanged(
+    views::View* observed_view) {
+  if (GetWidget() && !GetWidget()->IsClosed()) {
+    GetWidget()->SetSize(GetWidget()->non_client_view()->GetPreferredSize());
+  }
+}
+
+void ExtensionInstallDialogView::OnViewIsDeleting(views::View* observed_view) {
+  permissions_view_observation_.Reset();
 }
 
 void ExtensionInstallDialogView::EnableInstallButton() {

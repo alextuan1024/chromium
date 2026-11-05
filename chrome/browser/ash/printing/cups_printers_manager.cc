@@ -46,7 +46,6 @@
 #include "chrome/browser/ash/printing/usb_printer_detector.h"
 #include "chrome/browser/ash/printing/usb_printer_notification_controller.h"
 #include "chrome/browser/ash/printing/zeroconf_printer_detector.h"
-#include "chrome/browser/ash/scanning/zeroconf_scanner_detector.h"
 #include "chrome/browser/printing/print_preview_sticky_settings.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chromeos/ash/components/dbus/dlcservice/dlcservice_client.h"
@@ -64,6 +63,7 @@
 #include "mojo/public/cpp/bindings/receiver.h"
 #include "mojo/public/cpp/bindings/remote.h"
 #include "printing/printer_query_result.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 
 namespace ash {
 
@@ -96,17 +96,6 @@ constexpr auto kGoodStatePollingIntervalMap =
 bool IsIppUri(const chromeos::Uri& uri) {
   return (uri.GetScheme() == chromeos::kIppScheme ||
           uri.GetScheme() == chromeos::kIppsScheme);
-}
-
-// TODO(b/192467856) Remove this metric gathering by M99
-void SendScannerCountToUMA(std::unique_ptr<ZeroconfScannerDetector> detector) {
-  if (detector == nullptr) {
-    PRINTER_LOG(DEBUG) << "SendScannerCountToUMA detector was null";
-    return;
-  }
-  const uint16_t num_scanners = detector->GetScanners().size();
-  base::UmaHistogramCounts100("Scanning.NumDetectedScannersAtLogin",
-                              num_scanners);
 }
 
 namespace {
@@ -147,7 +136,7 @@ class CupsPrintersManagerImpl
       SyncedPrintersManager* synced_printers_manager,
       std::unique_ptr<PrinterDetector> usb_detector,
       std::unique_ptr<PrinterDetector> zeroconf_detector,
-      scoped_refptr<PpdProvider> ppd_provider,
+      std::unique_ptr<PpdProvider> ppd_provider,
       DlcserviceClient* dlc_service_client,
       std::unique_ptr<UsbPrinterNotificationController>
           usb_notification_controller,
@@ -204,15 +193,6 @@ class CupsPrintersManagerImpl
         base::BindRepeating(&CupsPrintersManagerImpl::OnPrintersFound,
                             weak_ptr_factory_.GetWeakPtr(), kZeroconfDetector));
     OnPrintersFound(kZeroconfDetector, zeroconf_detector_->GetPrinters());
-
-    // TODO(b/192467856) Remove this metric gathering by M99
-    // Creates a ZeroconfScannerDetector, then logs the number of scanners
-    // detected after 5 minutes.
-    base::SequencedTaskRunner::GetCurrentDefault()->PostDelayedTask(
-        FROM_HERE,
-        base::BindOnce(&SendScannerCountToUMA,
-                       ZeroconfScannerDetector::Create()),
-        base::Minutes(5));
 
     print_servers_manager_->AddObserver(this);
 
@@ -426,7 +406,7 @@ class CupsPrintersManagerImpl
     if (printers_being_setup_[id].fingerprint != fingerprint) {
       printers_being_setup_[id].configurer =
           PrinterConfigurer::Create(&application_locale_storage_.get(),
-                                    ppd_provider_, dlc_service_client_);
+                                    ppd_provider_.get(), dlc_service_client_);
       printers_being_setup_[id].fingerprint = fingerprint;
       printers_being_setup_[id].configurer->SetUpPrinterInCups(
           printer, base::BindOnce(
@@ -1166,7 +1146,7 @@ class CupsPrintersManagerImpl
 
     std::map<std::string, PrinterSetupTracker>::iterator it =
         printers_being_setup_.find(printer_id);
-    DCHECK(it != printers_being_setup_.end());
+    CHECK(it != printers_being_setup_.end(), base::NotFatalUntil::M160);
 
     if (result == PrinterSetupResult::kSuccess) {
       installed_printer_fingerprints_[printer_id] = it->second.fingerprint;
@@ -1233,7 +1213,7 @@ class CupsPrintersManagerImpl
 
   std::unique_ptr<PrinterDetector> zeroconf_detector_;
 
-  scoped_refptr<PpdProvider> ppd_provider_;
+  std::unique_ptr<PpdProvider> ppd_provider_;
   raw_ptr<DlcserviceClient> dlc_service_client_;
 
   std::unique_ptr<UsbPrinterNotificationController>
@@ -1313,16 +1293,20 @@ class CupsPrintersManagerImpl
 std::unique_ptr<CupsPrintersManager> CupsPrintersManager::Create(
     PrefService& local_state,
     const ApplicationLocaleStorage* application_locale_storage,
-    Profile* profile) {
+    scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
+    Profile* profile,
+    const policy::PolicyService* policy_service) {
   return std::make_unique<CupsPrintersManagerImpl>(
       application_locale_storage,
       SyncedPrintersManagerFactory::GetInstance()->GetForBrowserContext(
           profile),
       UsbPrinterDetector::Create(), ZeroconfPrinterDetector::Create(),
-      CreatePpdProvider(profile), DlcserviceClient::Get(),
+      CreatePpdProvider(std::move(url_loader_factory), profile),
+      DlcserviceClient::Get(),
       UsbPrinterNotificationController::Create(profile),
       PrintServersManager::Create(local_state, profile),
-      EnterprisePrintersProvider::Create(CrosSettings::Get(), profile),
+      EnterprisePrintersProvider::Create(CrosSettings::Get(), profile,
+                                         policy_service),
       PrinterEventTrackerFactory::GetInstance()->GetForBrowserContext(profile),
       profile->GetPrefs());
 }
@@ -1333,7 +1317,7 @@ std::unique_ptr<CupsPrintersManager> CupsPrintersManager::CreateForTesting(
     SyncedPrintersManager* synced_printers_manager,
     std::unique_ptr<PrinterDetector> usb_detector,
     std::unique_ptr<PrinterDetector> zeroconf_detector,
-    scoped_refptr<PpdProvider> ppd_provider,
+    std::unique_ptr<PpdProvider> ppd_provider,
     DlcserviceClient* dlc_service_client,
     std::unique_ptr<UsbPrinterNotificationController>
         usb_notification_controller,

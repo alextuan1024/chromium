@@ -189,9 +189,14 @@ class LensComposeboxControllerBrowserTest : public InProcessBrowserTest {
          {lens::features::kLensAimSuggestions,
           {{"lens-aim-suggestions-type", "Contextual"}}},
          {lens::features::kLensSearchReinvocationAffordance, {}}},
-        /*disabled_features=*/{contextual_tasks::kContextualTasks,
-                               contextual_tasks::kContextualTasksSidePanel,
-                               omnibox::kAimServerEligibilityEnabled});
+        /*disabled_features=*/{
+            contextual_tasks::kContextualTasks,
+            contextual_tasks::kContextualTasksSidePanel,
+            contextual_tasks::kContextualTasksRearchitecture,
+            contextual_tasks::kContextualTasksSidePanelRearchitecture,
+            omnibox::kAimServerEligibilityEnabled,
+            lens::features::
+                kLensOverlayNonBlockingPrivacyNoticeForImageSearch});
 
     InProcessBrowserTest::SetUp();
   }
@@ -1145,7 +1150,7 @@ IN_PROC_BROWSER_TEST_F(LensComposeboxControllerBrowserTest,
   // Issue a text search request to open the side panel without the overlay.
   controller->IssueTextSearchRequest(
       lens::LensOverlayInvocationSource::kContentAreaContextMenuText, "query",
-      {}, AutocompleteMatchType::Type::SEARCH_WHAT_YOU_TYPED,
+      {}, omnibox::AutocompleteMatchType::kSearchWhatYouTyped,
       /*is_zero_prefix_suggestion=*/false,
       /*suppress_contextualization=*/true);
 
@@ -1217,7 +1222,7 @@ IN_PROC_BROWSER_TEST_F(LensComposeboxControllerBrowserTest,
   // Issue a text search request to open the side panel without the overlay.
   controller->IssueTextSearchRequest(
       lens::LensOverlayInvocationSource::kContentAreaContextMenuText, "query",
-      {}, AutocompleteMatchType::Type::SEARCH_WHAT_YOU_TYPED,
+      {}, omnibox::AutocompleteMatchType::kSearchWhatYouTyped,
       /*is_zero_prefix_suggestion=*/false,
       /*suppress_contextualization=*/true);
 
@@ -1287,7 +1292,7 @@ IN_PROC_BROWSER_TEST_F(LensComposeboxControllerBrowserTest,
   // Issue a text search request to open the side panel without the overlay.
   controller->IssueTextSearchRequest(
       lens::LensOverlayInvocationSource::kContentAreaContextMenuText, "query",
-      {}, AutocompleteMatchType::Type::SEARCH_WHAT_YOU_TYPED,
+      {}, omnibox::AutocompleteMatchType::kSearchWhatYouTyped,
       /*is_zero_prefix_suggestion=*/false,
       /*suppress_contextualization=*/true);
 
@@ -1411,7 +1416,7 @@ IN_PROC_BROWSER_TEST_F(LensComposeboxControllerBrowserTest,
   // Issue a text search request to open the side panel without the overlay.
   controller->IssueTextSearchRequest(
       lens::LensOverlayInvocationSource::kContentAreaContextMenuText, "query",
-      {}, AutocompleteMatchType::Type::SEARCH_WHAT_YOU_TYPED,
+      {}, omnibox::AutocompleteMatchType::kSearchWhatYouTyped,
       /*is_zero_prefix_suggestion=*/false,
       /*suppress_contextualization=*/true);
 
@@ -1455,7 +1460,7 @@ IN_PROC_BROWSER_TEST_F(LensComposeboxControllerBrowserTest,
   // Issue a text search request to open the side panel without the overlay.
   controller->IssueTextSearchRequest(
       lens::LensOverlayInvocationSource::kContentAreaContextMenuText, "query",
-      {}, AutocompleteMatchType::Type::SEARCH_WHAT_YOU_TYPED,
+      {}, omnibox::AutocompleteMatchType::kSearchWhatYouTyped,
       /*is_zero_prefix_suggestion=*/false,
       /*suppress_contextualization=*/true);
 
@@ -1513,7 +1518,7 @@ IN_PROC_BROWSER_TEST_F(LensComposeboxControllerBrowserTest,
   // Issue a text search request to open the side panel without the overlay.
   controller->IssueTextSearchRequest(
       lens::LensOverlayInvocationSource::kContentAreaContextMenuText, "query",
-      {}, AutocompleteMatchType::Type::SEARCH_WHAT_YOU_TYPED,
+      {}, omnibox::AutocompleteMatchType::kSearchWhatYouTyped,
       /*is_zero_prefix_suggestion=*/false,
       /*suppress_contextualization=*/true);
 
@@ -1555,7 +1560,7 @@ IN_PROC_BROWSER_TEST_F(LensComposeboxControllerBrowserTest,
   // Issue a text search request to open the side panel without the overlay.
   controller->IssueTextSearchRequest(
       lens::LensOverlayInvocationSource::kContentAreaContextMenuText, "query",
-      {}, AutocompleteMatchType::Type::SEARCH_WHAT_YOU_TYPED,
+      {}, omnibox::AutocompleteMatchType::kSearchWhatYouTyped,
       /*is_zero_prefix_suggestion=*/false,
       /*suppress_contextualization=*/true);
 

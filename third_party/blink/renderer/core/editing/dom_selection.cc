@@ -50,6 +50,7 @@
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/instrumentation/use_counter.h"
 #include "third_party/blink/renderer/platform/runtime_enabled_features.h"
+#include "third_party/blink/renderer/platform/wtf/text/format.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
 
 namespace blink {
@@ -57,10 +58,6 @@ namespace blink {
 DomSelection::DomSelection(const TreeScope* tree_scope)
     : ExecutionContextClient(tree_scope->RootNode().GetExecutionContext()),
       tree_scope_(tree_scope) {}
-
-void DomSelection::ClearTreeScope() {
-  tree_scope_ = nullptr;
-}
 
 FrameSelection& DomSelection::Selection() const {
   DCHECK(DomWindow());
@@ -592,7 +589,7 @@ Range* DomSelection::getRangeAt(wtf_size_t index,
   if (index >= rangeCount()) {
     exception_state.ThrowDOMException(
         DOMExceptionCode::kIndexSizeError,
-        StrCat({String::Number(index), " is not a valid index."}));
+        Format("{} is not a valid index.", index));
     return nullptr;
   }
 

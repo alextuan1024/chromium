@@ -4,8 +4,6 @@
 
 package org.chromium.android_webview.robolectric;
 
-import androidx.test.filters.SmallTest;
-
 import org.junit.Assert;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -32,7 +30,6 @@ import java.util.Set;
 @RunWith(BaseRobolectricTestRunner.class)
 public class SupportLibTest {
     @Test
-    @SmallTest
     @Feature({"AndroidWebView"})
     public void testFeaturesExist() {
         WebViewCachedFlags.initForTesting(new InMemorySharedPreferences());
@@ -40,10 +37,12 @@ public class SupportLibTest {
                 Arrays.asList(SupportLibWebViewChromiumFactory.assembleSupportedFeatures());
         Assert.assertTrue(
                 supportedFeaturesList.contains(Features.SAFE_BROWSING_RESPONSE_SHOW_INTERSTITIAL));
+        Assert.assertTrue(supportedFeaturesList.contains(Features.USER_AGENT_METADATA));
+        Assert.assertTrue(
+                supportedFeaturesList.contains(Features.USER_AGENT_METADATA_FORM_FACTORS));
     }
 
     @Test
-    @SmallTest
     @Feature({"AndroidWebView"})
     public void testEnqueuePreconnectFeatureSupportedWhenLazyProfileEnabled() {
         InMemorySharedPreferences prefs = new InMemorySharedPreferences();
@@ -59,7 +58,6 @@ public class SupportLibTest {
     }
 
     @Test
-    @SmallTest
     @Feature({"AndroidWebView"})
     public void testEnqueuePreconnectFeatureNotSupportedWhenLazyProfileDisabled() {
         InMemorySharedPreferences prefs = new InMemorySharedPreferences();
@@ -75,7 +73,6 @@ public class SupportLibTest {
     }
 
     @Test
-    @SmallTest
     @Feature({"AndroidWebView"})
     public void testMethodsExist() {
         testMethodExists(WebMessageBoundaryInterface.class, "getData", null, String.class);

@@ -7,10 +7,16 @@ package org.chromium.chrome.browser.settings;
 import static androidx.test.espresso.Espresso.onView;
 import static androidx.test.espresso.action.ViewActions.click;
 import static androidx.test.espresso.assertion.ViewAssertions.matches;
+import static androidx.test.espresso.matcher.ViewMatchers.isDescendantOfA;
 import static androidx.test.espresso.matcher.ViewMatchers.isDisplayed;
 import static androidx.test.espresso.matcher.ViewMatchers.withId;
+import static androidx.test.espresso.matcher.ViewMatchers.withText;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertTrue;
 
 import static org.chromium.ui.test.util.ViewUtils.onViewWaiting;
 
@@ -34,19 +40,20 @@ import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
+import org.chromium.base.FeatureOverrides;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.util.ApplicationTestUtils;
+import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.Criteria;
 import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.base.test.util.DisabledTest;
-import org.chromium.base.test.util.DoNotBatch;
 import org.chromium.base.test.util.Feature;
 import org.chromium.base.test.util.Features.DisableFeatures;
-import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.base.test.util.Restriction;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.about_settings.AboutChromeSettings;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
+import org.chromium.chrome.browser.ui.edge_to_edge.EdgeToEdgeUtils;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.chrome.test.util.ActivityTestUtils;
 import org.chromium.components.browser_ui.settings.SettingsFragment;
@@ -60,7 +67,7 @@ import java.util.Locale;
 
 /** Tests for the Settings menu. */
 @RunWith(ChromeJUnit4ClassRunner.class)
-@DoNotBatch(reason = "Tests cannot run batched because they launch a Settings activity.")
+@Batch(Batch.PER_CLASS)
 @DisableFeatures({
     ChromeFeatureList.SETTINGS_IN_TAB, // crbug.com/521895796
     ChromeFeatureList.SETTINGS_IN_TAB_DESKTOP // crbug.com/556881398
@@ -75,19 +82,38 @@ public class SettingsActivityTest {
         LocalizationUtils.setRtlForTesting(false);
         if (mSettingsActivityTestRule.getActivity() != null) {
             ActivityTestUtils.clearActivityOrientation(mSettingsActivityTestRule.getActivity());
-            mSettingsActivityTestRule.getActivity().finish();
+            mSettingsActivityTestRule.finishActivity();
         }
     }
 
-    /** Test status bar is always black in Automotive devices. */
     @Test
     @SmallTest
     @Feature({"StatusBar, Automotive Toolbar"})
     @Restriction(DeviceRestriction.RESTRICTION_TYPE_AUTO)
-    public void testStatusBarBlackInAutomotive() {
+    public void testStatusBarInAutomotive() {
+        EdgeToEdgeUtils.setEdgeToEdgeAutomotiveEnabledForTesting(true);
+        SettingsActivity activity = mSettingsActivityTestRule.startSettingsActivity();
+
+        assertEquals(
+                "Window status bar should be transparent when drawing edge-to-edge.",
+                Color.TRANSPARENT,
+                activity.getWindow().getStatusBarColor());
+        assertEquals(
+                "Edge-to-edge layout should draw the status bar with the settings background"
+                        + " color.",
+                SemanticColorUtils.getSettingsBackgroundColor(activity),
+                activity.ensureEdgeToEdgeLayoutCoordinator().getStatusBarColor());
+    }
+
+    @Test
+    @SmallTest
+    @Feature({"StatusBar, Automotive Toolbar"})
+    @Restriction(DeviceRestriction.RESTRICTION_TYPE_AUTO)
+    @DisableFeatures(ChromeFeatureList.EDGE_TO_EDGE_AUTOMOTIVE)
+    public void testStatusBarBlackInAutomotive_EdgeToEdgeDisabled() {
         mSettingsActivityTestRule.startSettingsActivity();
         assertEquals(
-                "Status bar should always be black in automotive devices.",
+                "Status bar should be black in automotive devices without edge-to-edge.",
                 Color.BLACK,
                 mSettingsActivityTestRule.getActivity().getWindow().getStatusBarColor());
     }
@@ -114,7 +140,6 @@ public class SettingsActivityTest {
 
     @Test
     @SmallTest
-    @EnableFeatures({ChromeFeatureList.SETTINGS_SINGLE_ACTIVITY})
     public void testStandaloneFragments() {
         // Start the main settings, which is an embeddable fragment.
         SettingsActivity activity = mSettingsActivityTestRule.startSettingsActivity();
@@ -134,15 +159,23 @@ public class SettingsActivityTest {
         // Open a standalone fragment. This will create a new activity.
         final Intent intent2 =
                 SettingsIntentUtil.createIntent(activity, TestFragment.class.getName(), null);
-        ApplicationTestUtils.waitForActivityWithClass(
-                SettingsActivity.class, Stage.CREATED, () -> activity.startActivity(intent2));
+        SettingsActivity activity2 =
+                ApplicationTestUtils.waitForActivityWithClass(
+                        SettingsActivity.class,
+                        Stage.CREATED,
+                        () -> activity.startActivity(intent2));
 
         // Open an embeddable fragment. This starts a new activity as the last fragment is
         // standalone.
         final Intent intent3 =
                 SettingsIntentUtil.createIntent(activity, MainSettings.class.getName(), null);
-        ApplicationTestUtils.waitForActivityWithClass(
-                SettingsActivity.class, Stage.CREATED, () -> activity.startActivity(intent3));
+        SettingsActivity activity3 =
+                ApplicationTestUtils.waitForActivityWithClass(
+                        SettingsActivity.class,
+                        Stage.CREATED,
+                        () -> activity.startActivity(intent3));
+        ApplicationTestUtils.finishActivity(activity3);
+        ApplicationTestUtils.finishActivity(activity2);
     }
 
     /** Regression test for crash. https://crbug.com/535398041 */
@@ -157,6 +190,36 @@ public class SettingsActivityTest {
         onView(withId(R.id.search_box)).perform(click());
     }
 
+    /**
+     * Regression test for https://crbug.com/563146381. Launching SettingsActivity with an intent
+     * that explicitly names MainSettings must create a single MainSettings, in the header pane.
+     */
+    @Test
+    @SmallTest
+    public void testMainSettingsIntentDoesNotDuplicateMainSettings() {
+        SettingsActivity activity = mSettingsActivityTestRule.startSettingsActivity();
+
+        MultiColumnSettings multiColumnSettings = activity.getMultiColumnSettings();
+        assertNotNull("Multi-column settings should be enabled", multiColumnSettings);
+
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    int mainSettingsCount = 0;
+                    var fragmentManager = multiColumnSettings.getChildFragmentManager();
+                    for (Fragment fragment : fragmentManager.getFragments()) {
+                        if (fragment instanceof MainSettings) ++mainSettingsCount;
+                    }
+                    assertEquals("Exactly one MainSettings should exist", 1, mainSettingsCount);
+
+                    assertNotNull(
+                            "MainSettings should be in the header pane",
+                            fragmentManager.findFragmentById(R.id.preferences_header));
+                });
+
+        // The root settings title should be unambiguous, i.e. only rendered once.
+        onViewWaiting(withText(R.string.search_engine_settings)).check(matches(isDisplayed()));
+    }
+
     /** Regression test for https://crbug.com/548848118. */
     @Test
     @MediumTest
@@ -169,16 +232,7 @@ public class SettingsActivityTest {
         LocalizationUtils.setRtlForTesting(true);
         SettingsActivity activity = mSettingsActivityTestRule.startSettingsActivity();
 
-        // Skip the test on landscape devices running Android 14 or earlier. See
-        // crbug.com/561400736 and the similar workaround in SettingsPageTest.
-        boolean isLandscape =
-                activity.getResources().getConfiguration().orientation
-                        == Configuration.ORIENTATION_LANDSCAPE;
-        Assume.assumeFalse(
-                "Rotating to portrait letterboxes the activity on landscape-oriented devices,"
-                        + " which moves the window on screen and pops Android 14's letterbox"
-                        + " education dialog.",
-                Build.VERSION.SDK_INT <= Build.VERSION_CODES.UPSIDE_DOWN_CAKE && isLandscape);
+        assumeNotLandscapeDeviceOnAndroid14OrEarlier(activity);
 
         ensureActivityOrientation(activity, Configuration.ORIENTATION_PORTRAIT);
 
@@ -248,6 +302,156 @@ public class SettingsActivityTest {
                 "Search icon should align horizontally after rotating back in RTL",
                 searchIconBounds.left,
                 searchIconBoundsAfterRotate.left);
+    }
+
+    /**
+     * Regression test for crbug.com/562619494: when a folded device (< 600dp) opens settings (as
+     * SettingsActivity), unfolding the device (>= 600dp) keeps settings hosted in SettingsActivity
+     * rather than converting to a tab.
+     */
+    @Test
+    @SmallTest
+    public void testUnfoldKeepsSettingsActivity() {
+        FeatureOverrides.enable(ChromeFeatureList.SETTINGS_IN_TAB);
+        SettingsActivity activity = mSettingsActivityTestRule.startSettingsActivity();
+        assertNull(
+                "SettingsActivity should not have SettingsHostFragment",
+                SettingsHostFragment.get(activity));
+        assertFalse(
+                "SettingsActivity fragment should not be shown in tab",
+                SettingsHostUtil.isShownInTab(activity.getMainFragment()));
+
+        Configuration originalConfig =
+                new Configuration(activity.getResources().getConfiguration());
+        try {
+            // Simulate unfold by updating configuration to tablet width (>= 600dp).
+            ThreadUtils.runOnUiThreadBlocking(
+                    () -> {
+                        Configuration config =
+                                new Configuration(activity.getResources().getConfiguration());
+                        config.smallestScreenWidthDp = 700;
+                        activity.getResources()
+                                .updateConfiguration(
+                                        config, activity.getResources().getDisplayMetrics());
+                    });
+
+            mSettingsActivityTestRule.recreateActivity();
+            SettingsActivity recreated = mSettingsActivityTestRule.getActivity();
+            assertNotNull("SettingsActivity should be recreated", recreated);
+            assertNull(
+                    "Recreated activity should not have SettingsHostFragment",
+                    SettingsHostFragment.get(recreated));
+            assertFalse(
+                    "Recreated settings fragment should still not be shown in tab",
+                    SettingsHostUtil.isShownInTab(recreated.getMainFragment()));
+            onViewWaiting(
+                            Matchers.allOf(
+                                    withText(R.string.search_engine_settings),
+                                    isDescendantOfA(withId(R.id.preferences_header))))
+                    .check(matches(isDisplayed()));
+        } finally {
+            ThreadUtils.runOnUiThreadBlocking(
+                    () -> {
+                        var current = mSettingsActivityTestRule.getActivity();
+                        if (current != null) {
+                            current.getResources()
+                                    .updateConfiguration(
+                                            originalConfig,
+                                            current.getResources().getDisplayMetrics());
+                        }
+                    });
+        }
+    }
+
+    /** Regression test for https://crbug.com/514934630. */
+    @Test
+    @MediumTest
+    @Restriction({
+        DeviceFormFactor.ONLY_TABLET,
+        // Automotive devices do not support display rotation.
+        DeviceRestriction.RESTRICTION_TYPE_NON_AUTO,
+    })
+    public void testRootSettingsShownAfterRotatingPortraitToLandscapeAndBack() {
+        SettingsActivity activity = mSettingsActivityTestRule.startSettingsActivity();
+        assumeNotLandscapeDeviceOnAndroid14OrEarlier(activity);
+
+        ensureActivityOrientation(activity, Configuration.ORIENTATION_PORTRAIT);
+        assertRootSettingsShown(activity);
+
+        // Rotate to landscape (two-column mode on a tablet) and back to portrait.
+        ensureActivityOrientation(activity, Configuration.ORIENTATION_LANDSCAPE);
+        ensureActivityOrientation(activity, Configuration.ORIENTATION_PORTRAIT);
+
+        // Root settings should be showing, not the detail fragment that two-column mode
+        // created to fill its detail pane.
+        assertRootSettingsShown(activity);
+    }
+
+    /**
+     * Regression test for https://crbug.com/514934630, following the original repro steps: enter
+     * search, rotate to landscape, then rotate back to portrait.
+     */
+    @Test
+    @MediumTest
+    @Restriction({
+        DeviceFormFactor.ONLY_TABLET,
+        // Automotive devices do not support display rotation.
+        DeviceRestriction.RESTRICTION_TYPE_NON_AUTO,
+    })
+    public void testRootSettingsShownAfterEnteringSearchAndRotatingLandscapeToPortrait() {
+        SettingsActivity activity = mSettingsActivityTestRule.startSettingsActivity();
+        assumeNotLandscapeDeviceOnAndroid14OrEarlier(activity);
+
+        ensureActivityOrientation(activity, Configuration.ORIENTATION_PORTRAIT);
+        onViewWaiting(withId(R.id.search_box)).perform(click());
+        onViewWaiting(withId(R.id.search_query_container)).check(matches(isDisplayed()));
+
+        ensureActivityOrientation(activity, Configuration.ORIENTATION_LANDSCAPE);
+        ensureActivityOrientation(activity, Configuration.ORIENTATION_PORTRAIT);
+
+        // Rotating exits search and returns to root settings.
+        assertRootSettingsShown(activity);
+        onView(withId(R.id.search_box)).check(matches(isDisplayed()));
+    }
+
+    /**
+     * Asserts that root settings is showing, i.e. no detail page is covering it.
+     *
+     * <p>Espresso's isDisplayed() only tests whether a view occupies screen space, and the header
+     * pane still does while an open detail pane is drawn on top of it. The pane state therefore has
+     * to be checked directly.
+     */
+    private void assertRootSettingsShown(SettingsActivity activity) {
+        onViewWaiting(
+                        Matchers.allOf(
+                                withText(R.string.search_engine_settings),
+                                isDescendantOfA(withId(R.id.preferences_header))))
+                .check(matches(isDisplayed()));
+
+        boolean rootShown =
+                ThreadUtils.runOnUiThreadBlocking(
+                        () -> {
+                            MultiColumnSettings multiColumn = activity.getMultiColumnSettings();
+                            assertNotNull(multiColumn);
+                            // Two-column mode always shows root settings in the header pane.
+                            return multiColumn.isTwoColumn() || !multiColumn.isLayoutOpen();
+                        });
+        assertTrue("A detail page is covering root settings.", rootShown);
+    }
+
+    /**
+     * Skips the test on landscape devices running Android 14 or earlier. See crbug.com/561400736
+     * and the similar workaround in SettingsPageTest.
+     */
+    private void assumeNotLandscapeDeviceOnAndroid14OrEarlier(SettingsActivity activity) {
+        boolean isLandscape =
+                activity.getResources().getConfiguration().orientation
+                        == Configuration.ORIENTATION_LANDSCAPE;
+        Assume.assumeFalse(
+                "Rotating to portrait letterboxes the activity on landscape-oriented devices,"
+                        + " which moves the window on screen and pops Android 14's letterbox"
+                        + " education dialog.",
+                Build.VERSION.SDK_INT <= Build.VERSION_CODES.UPSIDE_DOWN_CAKE && isLandscape);
     }
 
     /** Rotates the activity and waits for the window to be laid out in the new orientation. */

@@ -6,10 +6,9 @@
 
 #include <utility>
 
-#include "base/containers/span.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
-#include "base/strings/string_view_util.h"
+#include "base/memory/ref_counted_memory.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/thread_pool.h"
 #include "base/time/time.h"
@@ -23,6 +22,7 @@
 #include "ui/gfx/codec/png_codec.h"
 #include "ui/gfx/image/image.h"
 #include "ui/gfx/image/image_skia.h"
+#include "ui/gfx/image/image_util.h"
 
 namespace image_fetcher {
 
@@ -46,8 +46,11 @@ struct CachedImageFetcherRequest {
 
 namespace {
 
+// Quality used when encoding transcoded images as JPEG.
+constexpr int kJpegEncodingQuality = 90;
+
 void DataCallbackIfPresent(ImageDataFetcherCallback data_callback,
-                           const std::string& image_data,
+                           ImageData image_data,
                            const image_fetcher::RequestMetadata& metadata) {
   if (data_callback.is_null()) {
     return;
@@ -66,9 +69,9 @@ void ImageCallbackIfPresent(ImageFetcherCallback image_callback,
   std::move(image_callback).Run(image, metadata);
 }
 
-std::string EncodeSkBitmapToPNG(const std::string& uma_client_name,
-                                const SkBitmap& bitmap,
-                                uint64_t request_flow_id) {
+ImageData EncodeSkBitmapToPNG(const std::string& uma_client_name,
+                              const SkBitmap& bitmap,
+                              uint64_t request_flow_id) {
   TRACE_EVENT("ui", "CachedImageFetcher::EncodeSkBitmapToPNG",
               perfetto::Flow::ProcessScoped(request_flow_id));
   std::optional<std::vector<uint8_t>> encoded_data = gfx::PNGCodec::Encode(
@@ -80,10 +83,27 @@ std::string EncodeSkBitmapToPNG(const std::string& uma_client_name,
   if (!encoded_data) {
     ImageFetcherMetricsReporter::ReportEvent(
         uma_client_name, ImageFetcherEvent::kTranscodingError);
-    return "";
+    return base::MakeRefCounted<base::RefCountedBytes>();
   } else {
-    return std::string(base::as_string_view(encoded_data.value()));
+    return base::MakeRefCounted<base::RefCountedBytes>(
+        std::move(*encoded_data));
   }
+}
+
+ImageData EncodeSkBitmapToJPEG(const std::string& uma_client_name,
+                               const SkBitmap& bitmap,
+                               uint64_t request_flow_id) {
+  TRACE_EVENT("ui", "CachedImageFetcher::EncodeSkBitmapToJPEG",
+              perfetto::Flow::ProcessScoped(request_flow_id));
+  std::optional<std::vector<uint8_t>> encoded_data =
+      gfx::JPEG1xEncodedDataFromImage(gfx::Image::CreateFrom1xBitmap(bitmap),
+                                      kJpegEncodingQuality);
+  if (!encoded_data) {
+    ImageFetcherMetricsReporter::ReportEvent(
+        uma_client_name, ImageFetcherEvent::kTranscodingError);
+    return base::MakeRefCounted<base::RefCountedBytes>();
+  }
+  return base::MakeRefCounted<base::RefCountedBytes>(std::move(*encoded_data));
 }
 
 }  // namespace
@@ -156,10 +176,16 @@ void CachedImageFetcher::OnImageFetchedFromCache(
                                  std::move(image_data_callback),
                                  std::move(image_callback));
   } else {
-    DataCallbackIfPresent(std::move(image_data_callback), image_data,
+    auto shared_image_data =
+        base::MakeRefCounted<base::RefCountedString>(std::move(image_data));
+    auto weak_this = weak_ptr_factory_.GetWeakPtr();
+    DataCallbackIfPresent(std::move(image_data_callback), shared_image_data,
                           RequestMetadata());
     ImageFetcherMetricsReporter::ReportEvent(request.params.uma_client_name(),
                                              ImageFetcherEvent::kCacheHit);
+    if (!weak_this) {
+      return;
+    }
 
     // Only continue with decoding if the user actually asked for an image, or
     // the image hadn't been transcoded yet and NOT loaded in the reduced mode.
@@ -169,9 +195,9 @@ void CachedImageFetcher::OnImageFetchedFromCache(
       TRACE_EVENT("ui", "CachedImageFetcher::OnImageFetchedFromCache Decode");
       auto* data_decoder = request.params.data_decoder();
       GetImageDecoder()->DecodeImage(
-          image_data, gfx::Size(), data_decoder,
+          std::move(shared_image_data), gfx::Size(), data_decoder,
           base::BindOnce(&CachedImageFetcher::OnImageDecodedFromCache,
-                         weak_ptr_factory_.GetWeakPtr(), std::move(request),
+                         weak_this, std::move(request),
                          ImageDataFetcherCallback(), std::move(image_callback),
                          cache_result_needs_transcoding));
     }
@@ -197,9 +223,13 @@ void CachedImageFetcher::OnImageDecodedFromCache(
                                  std::move(image_data_callback),
                                  std::move(image_callback));
   } else {
+    auto weak_this = weak_ptr_factory_.GetWeakPtr();
     ImageCallbackIfPresent(std::move(image_callback), image, RequestMetadata());
     ImageFetcherMetricsReporter::ReportImageLoadFromCacheTime(
         request.params.uma_client_name(), request.start_time);
+    if (!weak_this) {
+      return;
+    }
 
     // If cache_result_needs_transcoding is true, then this should be stored
     // again to replace the image data already on disk with the transcoded data.
@@ -232,7 +262,7 @@ void CachedImageFetcher::FetchImageFromNetwork(
     ImageFetcherCallback image_callback) {
   TRACE_EVENT("ui", "CachedImageFetcher::FetchImageFromNetwork",
               perfetto::Flow::ProcessScoped(request.flow_id));
-  const GURL& url = request.url;
+  GURL url = request.url;
 
   ImageDataFetcherCallback wrapper_data_callback;
   ImageFetcherCallback wrapper_image_callback;
@@ -265,19 +295,23 @@ void CachedImageFetcher::FetchImageFromNetwork(
 void CachedImageFetcher::OnImageFetchedWithoutTranscoding(
     CachedImageFetcherRequest request,
     ImageDataFetcherCallback image_data_callback,
-    const std::string& image_data,
+    ImageData image_data,
     const RequestMetadata& request_metadata) {
+  auto weak_this = weak_ptr_factory_.GetWeakPtr();
   DataCallbackIfPresent(std::move(image_data_callback), image_data,
                         request_metadata);
 
-  if (image_data.empty()) {
+  if (image_data->size() == 0) {
     ImageFetcherMetricsReporter::ReportEvent(request.params.uma_client_name(),
                                              ImageFetcherEvent::kTotalFailure);
+  }
+  if (!weak_this) {
+    return;
   }
 
   StoreData(/* cache_result_needs_transcoding */ false,
             /* is_image_data_transcoded */ false, std::move(request),
-            image_data);
+            std::move(image_data));
 }
 
 void CachedImageFetcher::OnImageFetchedForTranscoding(
@@ -287,6 +321,7 @@ void CachedImageFetcher::OnImageFetchedForTranscoding(
     const RequestMetadata& request_metadata) {
   TRACE_EVENT("ui", "CachedImageFetcher::OnImageFetchedForTranscoding",
               perfetto::Flow::ProcessScoped(request.flow_id));
+  auto weak_this = weak_ptr_factory_.GetWeakPtr();
   ImageCallbackIfPresent(std::move(image_callback), image, request_metadata);
 
   // Report to different histograms depending upon if there was a cache hit.
@@ -296,6 +331,9 @@ void CachedImageFetcher::OnImageFetchedForTranscoding(
   } else {
     ImageFetcherMetricsReporter::ReportImageLoadFromNetworkTime(
         request.params.uma_client_name(), request.start_time);
+  }
+  if (!weak_this) {
+    return;
   }
 
   EncodeAndStoreData(/* cache_result_needs_transcoding */ false,
@@ -319,10 +357,20 @@ void CachedImageFetcher::EncodeAndStoreData(bool cache_result_needs_transcoding,
     // Copy of flow_id is necessary to avoid use after move in bindings below.
     auto flow_id = request.flow_id;
     std::string uma_client_name = request.params.uma_client_name();
+    base::OnceCallback<ImageData()> encode_callback;
+    switch (request.params.transcode_format()) {
+      case ImageFetcherParams::TranscodeFormat::kPng:
+        encode_callback = base::BindOnce(&EncodeSkBitmapToPNG, uma_client_name,
+                                         *bitmap, flow_id);
+        break;
+      case ImageFetcherParams::TranscodeFormat::kJpeg:
+        encode_callback = base::BindOnce(&EncodeSkBitmapToJPEG, uma_client_name,
+                                         *bitmap, flow_id);
+        break;
+    }
     // Post a task to another thread to encode the image data downloaded.
     base::ThreadPool::PostTaskAndReplyWithResult(
-        FROM_HERE,
-        base::BindOnce(&EncodeSkBitmapToPNG, uma_client_name, *bitmap, flow_id),
+        FROM_HERE, std::move(encode_callback),
         base::BindOnce(&CachedImageFetcher::StoreData,
                        weak_ptr_factory_.GetWeakPtr(),
                        cache_result_needs_transcoding, is_image_data_transcoded,
@@ -333,12 +381,12 @@ void CachedImageFetcher::EncodeAndStoreData(bool cache_result_needs_transcoding,
 void CachedImageFetcher::StoreData(bool cache_result_needs_transcoding,
                                    bool is_image_data_transcoded,
                                    CachedImageFetcherRequest request,
-                                   std::string image_data) {
+                                   ImageData image_data) {
   TRACE_EVENT("ui", "CachedImageFetcher::StoreData",
               perfetto::Flow::ProcessScoped(request.flow_id));
   std::string url = request.url.spec();
   // If the image is empty, delete the image.
-  if (image_data.empty()) {
+  if (image_data->size() == 0) {
     image_cache_->DeleteImage(std::move(url));
     return;
   }

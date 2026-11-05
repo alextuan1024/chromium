@@ -76,12 +76,8 @@ const cryptauthv2::FeatureMetadata& GenerateFeatureMetadata() {
                   BetterTogetherFeatureMetadata_FeatureName_WIFI_SYNC_CLIENT);
         }
 
-        // Eche is only supported if the associated flag is enabled.
-        if (features::IsEcheSWAEnabled()) {
-          inner_metadata.add_supported_features(
-              cryptauthv2::
-                  BetterTogetherFeatureMetadata_FeatureName_ECHE_CLIENT);
-        }
+        inner_metadata.add_supported_features(
+            cryptauthv2::BetterTogetherFeatureMetadata_FeatureName_ECHE_CLIENT);
 
         // Camera Roll is enabled by default.
         inner_metadata.add_supported_features(
@@ -324,7 +320,7 @@ void ClientAppMetadataProviderService::OnInstanceIdTokenFetched(
   metadata.set_long_device_id(
       cryptauth_device_id::GetDeviceID(local_state_.get()));
 
-  metadata.set_locale(application_locale_storage_->Get());
+  metadata.set_locale(application_locale_storage_->GetTag().tag_string());
   metadata.set_device_os_version(base::GetLinuxDistro());
   metadata.set_device_os_version_code(SoftwareVersionCodeAsInt64());
   metadata.set_device_os_release(std::string(version_info::GetVersionNumber()));

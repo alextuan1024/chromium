@@ -17,8 +17,6 @@ import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.ntp_customization.NtpCustomizationUtils.NtpBackgroundType;
 
-import java.util.Objects;
-
 /** Base class for NTP background data. */
 @NullMarked
 public class NtpBackgroundDataBase {
@@ -93,15 +91,53 @@ public class NtpBackgroundDataBase {
     @Override
     public boolean equals(@Nullable Object obj) {
         if (obj instanceof NtpBackgroundDataBase other) {
-            return mPlatformType == other.getPlatformType()
-                    && getBackgroundType() == other.getBackgroundType();
+            // A theme is identified by what it looks like, not by the device it came from. The
+            // sync payload carries no platform of origin, so the same background reaches this
+            // device tagged ANDROID when it is replayed through sync and tagged DESKTOP or IOS
+            // when it is listed as a cross device history entry. Comparing the platform would
+            // make those two copies distinct and show the same background twice.
+            return getBackgroundType() == other.getBackgroundType();
         }
         return false;
     }
 
+    /**
+     * Returns whether this background data has the same theme identity and primary color as {@code
+     * obj}.
+     *
+     * <p>Unlike {@link #equals}, which compares theme identity (ignoring primary color for theme
+     * collections so that color updates merge into the existing history entry, and ignoring the
+     * rotated color ID for Chrome colors with daily refresh), this method also checks whether the
+     * color matches. Callers that decide whether to re-apply a theme or recreate the activity
+     * should use this method so that color-only updates are applied.
+     *
+     * <p>Neither method compares the platform type (where an entry came from) or, for theme
+     * collections, the attribution string (display-only text that can differ in language and format
+     * for the same image).
+     */
+    public boolean hasSameThemeAndColor(@Nullable Object obj) {
+        return equals(obj);
+    }
+
+    /**
+     * Returns whether this background data has the same theme identity as {@code obj} and a
+     * compatible primary color.
+     *
+     * <p>For theme collection images, this is like {@link #hasSameThemeAndColor}, but a null
+     * primary color on either side is treated as "unknown" and matches any color. For example, iOS
+     * never sends a primary color, so an iOS theme collection with the same image as a Desktop or
+     * Android theme collection with a known primary color is considered the same theme. Two
+     * non-null colors must still match.
+     *
+     * <p>For all other background types, this is the same as {@link #equals}.
+     */
+    public boolean hasSameThemeAndCompatibleColor(@Nullable Object obj) {
+        return equals(obj);
+    }
+
     @Override
     public int hashCode() {
-        return Objects.hash(mPlatformType, getBackgroundType());
+        return Integer.hashCode(getBackgroundType());
     }
 
     /** Returns the image bitmap of this background data. */

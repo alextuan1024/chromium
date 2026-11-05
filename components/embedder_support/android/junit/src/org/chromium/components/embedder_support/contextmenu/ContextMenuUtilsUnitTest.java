@@ -9,6 +9,8 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 
 import android.app.Activity;
 import android.content.Context;
@@ -20,6 +22,7 @@ import android.view.Window;
 import android.view.WindowManager;
 import android.webkit.URLUtil;
 
+import org.jni_zero.JniUniquePtr;
 import org.junit.After;
 import org.junit.Assert;
 import org.junit.Before;
@@ -37,9 +40,11 @@ import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.Features.EnableFeatures;
+import org.chromium.blink_public.common.BlinkFeatures;
 import org.chromium.blink_public.common.ContextMenuDataMediaFlags;
 import org.chromium.blink_public.common.ContextMenuDataMediaType;
 import org.chromium.components.embedder_support.contextmenu.ContextMenuUtils.HeaderInfo;
+import org.chromium.content_public.browser.AdditionalNavigationParams;
 import org.chromium.content_public.browser.WebContents;
 import org.chromium.content_public.common.ContentFeatures;
 import org.chromium.ui.base.ViewAndroidDelegate;
@@ -67,7 +72,8 @@ public class ContextMenuUtilsUnitTest {
 
     @Before
     public void setup() {
-        mActivity = Robolectric.buildActivity(Activity.class).create().get();
+        // Make the activity visible so that its content view is attached to a window.
+        mActivity = Robolectric.buildActivity(Activity.class).setup().get();
     }
 
     @After
@@ -79,7 +85,7 @@ public class ContextMenuUtilsUnitTest {
     public void testGetHeaderInfo_noCustomItemPresent() {
         ContextMenuParams params =
                 new ContextMenuParams(
-                        0,
+                        null,
                         mMenuModelBridge,
                         ContextMenuDataMediaType.IMAGE,
                         ContextMenuDataMediaFlags.MEDIA_NONE,
@@ -96,7 +102,6 @@ public class ContextMenuUtilsUnitTest {
                         0,
                         false,
                         false,
-                        0,
                         null);
 
         HeaderInfo headerInfo =
@@ -119,7 +124,7 @@ public class ContextMenuUtilsUnitTest {
     public void testGetHeaderInfo_customItemPresent_notImage() {
         ContextMenuParams params =
                 new ContextMenuParams(
-                        0,
+                        null,
                         mMenuModelBridge,
                         ContextMenuDataMediaType.VIDEO,
                         ContextMenuDataMediaFlags.MEDIA_NONE,
@@ -136,7 +141,6 @@ public class ContextMenuUtilsUnitTest {
                         0,
                         false,
                         false,
-                        0,
                         null);
 
         HeaderInfo headerInfo =
@@ -164,7 +168,7 @@ public class ContextMenuUtilsUnitTest {
     public void testGetHeaderInfo_customItemPresent_isImageLink() {
         ContextMenuParams params =
                 new ContextMenuParams(
-                        0,
+                        null,
                         mMenuModelBridge,
                         ContextMenuDataMediaType.IMAGE,
                         ContextMenuDataMediaFlags.MEDIA_NONE,
@@ -181,7 +185,6 @@ public class ContextMenuUtilsUnitTest {
                         0,
                         false,
                         false,
-                        0,
                         null);
 
         HeaderInfo headerInfo =
@@ -204,7 +207,7 @@ public class ContextMenuUtilsUnitTest {
     public void testGetHeaderInfo_customItemPresent_isImageNotAnchor() {
         ContextMenuParams params =
                 new ContextMenuParams(
-                        0,
+                        null,
                         mMenuModelBridge,
                         ContextMenuDataMediaType.IMAGE,
                         ContextMenuDataMediaFlags.MEDIA_NONE,
@@ -221,7 +224,6 @@ public class ContextMenuUtilsUnitTest {
                         0,
                         false,
                         false,
-                        0,
                         null);
 
         HeaderInfo headerInfo =
@@ -244,7 +246,7 @@ public class ContextMenuUtilsUnitTest {
     public void getAltText_hasAltTextText() {
         ContextMenuParams params =
                 new ContextMenuParams(
-                        0,
+                        null,
                         mMenuModelBridge,
                         ContextMenuDataMediaType.IMAGE,
                         ContextMenuDataMediaFlags.MEDIA_NONE,
@@ -261,7 +263,6 @@ public class ContextMenuUtilsUnitTest {
                         0,
                         false,
                         /* openedFromInterestFor= */ false,
-                        /* interestForNodeID= */ 0,
                         /* additionalNavigationParams= */ null);
 
         assertEquals(ALT_TEXT, ContextMenuUtils.getAltText(params));
@@ -271,7 +272,7 @@ public class ContextMenuUtilsUnitTest {
     public void getAltText_noAltTextTextHasLinkText() {
         ContextMenuParams params =
                 new ContextMenuParams(
-                        0,
+                        null,
                         mMenuModelBridge,
                         ContextMenuDataMediaType.IMAGE,
                         ContextMenuDataMediaFlags.MEDIA_NONE,
@@ -288,7 +289,6 @@ public class ContextMenuUtilsUnitTest {
                         0,
                         false,
                         /* openedFromInterestFor= */ false,
-                        /* interestForNodeID= */ 0,
                         /* additionalNavigationParams= */ null);
 
         assertEquals(sLinkText, ContextMenuUtils.getAltText(params));
@@ -298,7 +298,7 @@ public class ContextMenuUtilsUnitTest {
     public void getAltText_noAltTextTextOrLinkText() {
         ContextMenuParams params =
                 new ContextMenuParams(
-                        0,
+                        null,
                         mMenuModelBridge,
                         ContextMenuDataMediaType.IMAGE,
                         0,
@@ -315,7 +315,6 @@ public class ContextMenuUtilsUnitTest {
                         0,
                         false,
                         /* openedFromInterestFor= */ false,
-                        /* interestForNodeID= */ 0,
                         /* additionalNavigationParams= */ null);
 
         assertEquals(
@@ -326,7 +325,7 @@ public class ContextMenuUtilsUnitTest {
     public void getAltText_noShareParams() {
         ContextMenuParams params =
                 new ContextMenuParams(
-                        0,
+                        null,
                         mMenuModelBridge,
                         ContextMenuDataMediaType.NONE,
                         ContextMenuDataMediaFlags.MEDIA_NONE,
@@ -343,7 +342,6 @@ public class ContextMenuUtilsUnitTest {
                         0,
                         false,
                         /* openedFromInterestFor= */ false,
-                        /* interestForNodeID= */ 0,
                         /* additionalNavigationParams= */ null);
 
         assertEquals("", ContextMenuUtils.getAltText(params));
@@ -431,7 +429,7 @@ public class ContextMenuUtilsUnitTest {
     public void isMouseOrHighlightPopup_mouse() {
         ContextMenuParams params =
                 new ContextMenuParams(
-                        0,
+                        null,
                         mMenuModelBridge,
                         ContextMenuDataMediaType.NONE,
                         ContextMenuDataMediaFlags.MEDIA_NONE,
@@ -448,7 +446,6 @@ public class ContextMenuUtilsUnitTest {
                         MenuSourceType.MOUSE,
                         false,
                         /* openedFromInterestFor= */ false,
-                        /* interestForNodeID= */ 0,
                         /* additionalNavigationParams= */ null);
 
         assertTrue(
@@ -460,7 +457,7 @@ public class ContextMenuUtilsUnitTest {
     public void isMouseOrHighlightPopup_highlight() {
         ContextMenuParams params =
                 new ContextMenuParams(
-                        0,
+                        null,
                         mMenuModelBridge,
                         ContextMenuDataMediaType.NONE,
                         ContextMenuDataMediaFlags.MEDIA_NONE,
@@ -477,7 +474,6 @@ public class ContextMenuUtilsUnitTest {
                         MenuSourceType.NONE,
                         true, // openedFromHighlight
                         /* openedFromInterestFor= */ false,
-                        /* interestForNodeID= */ 0,
                         /* additionalNavigationParams= */ null);
 
         assertTrue(
@@ -489,7 +485,7 @@ public class ContextMenuUtilsUnitTest {
     public void isMouseOrHighlightPopup_neither() {
         ContextMenuParams params =
                 new ContextMenuParams(
-                        0,
+                        null,
                         mMenuModelBridge,
                         ContextMenuDataMediaType.NONE,
                         ContextMenuDataMediaFlags.MEDIA_NONE,
@@ -506,12 +502,53 @@ public class ContextMenuUtilsUnitTest {
                         MenuSourceType.NONE,
                         false,
                         /* openedFromInterestFor= */ false,
-                        /* interestForNodeID= */ 0,
                         /* additionalNavigationParams= */ null);
 
         assertFalse(
                 "Should return false if neither mouse nor highlight.",
                 ContextMenuUtils.isMouseOrHighlightPopup(params));
+    }
+
+    @Test
+    @EnableFeatures({BlinkFeatures.ANDROID_KEYBOARD_CONTEXT_MENU})
+    public void isMouseOrHighlightPopup_keyboardFeatureEnabled() {
+        ContextMenuParams params = createKeyboardContextMenuParams();
+
+        assertTrue(
+                "Should return true if source type is KEYBOARD and feature is enabled.",
+                ContextMenuUtils.isMouseOrHighlightPopup(params));
+    }
+
+    @Test
+    @DisableFeatures({BlinkFeatures.ANDROID_KEYBOARD_CONTEXT_MENU})
+    public void isMouseOrHighlightPopup_keyboardFeatureDisabled() {
+        ContextMenuParams params = createKeyboardContextMenuParams();
+
+        assertFalse(
+                "Should return false if source type is KEYBOARD and feature is disabled.",
+                ContextMenuUtils.isMouseOrHighlightPopup(params));
+    }
+
+    private ContextMenuParams createKeyboardContextMenuParams() {
+        return new ContextMenuParams(
+                null,
+                mMenuModelBridge,
+                ContextMenuDataMediaType.NONE,
+                ContextMenuDataMediaFlags.MEDIA_NONE,
+                GURL.emptyGURL(),
+                GURL.emptyGURL(),
+                sLinkText,
+                GURL.emptyGURL(),
+                new GURL(sSrcUrl),
+                ALT_TEXT,
+                null,
+                false,
+                0,
+                0,
+                MenuSourceType.KEYBOARD,
+                false,
+                /* openedFromInterestFor= */ false,
+                /* additionalNavigationParams= */ null);
     }
 
     @Test
@@ -527,26 +564,17 @@ public class ContextMenuUtilsUnitTest {
     private void doTestGetTouchPointCoordinates(boolean isPopup) {
         Context context = mActivity;
 
-        // In a real Android environment, the containerView would be part of a
-        // layout hierarchy that's been inflated and attached to a Window.
-        // However, in our JUnit tests, we don't have a real layout, so we need
-        // to mock the containerView and its behavior.
-        View mockContainerView = mock(View.class);
+        View containerView = new View(context);
+        containerView.setTranslationX(200);
+        containerView.setTranslationY(300);
+        mActivity.setContentView(containerView);
+        int[] containerLocation = new int[2];
+        containerView.getLocationOnScreen(containerLocation);
+        assertTrue(containerLocation[0] >= 200);
+        assertTrue(containerLocation[1] >= 300);
+
         Window mockWindow = mock(Window.class);
         WindowManager.LayoutParams mockLayoutParams = mock(WindowManager.LayoutParams.class);
-
-        int[] mockLocation = {200, 300};
-        // Simulate the behavior of View.getLocationOnScreen(), which populates the passed-in int
-        // array with the view's screen coordinates.
-        Mockito.doAnswer(
-                        invocation -> {
-                            int[] location = invocation.getArgument(0);
-                            location[0] = mockLocation[0];
-                            location[1] = mockLocation[1];
-                            return null;
-                        })
-                .when(mockContainerView)
-                .getLocationOnScreen(Mockito.any(int[].class));
 
         mockLayoutParams.x = 10;
         mockLayoutParams.y = 20;
@@ -559,7 +587,7 @@ public class ContextMenuUtilsUnitTest {
 
         ContextMenuParams params =
                 new ContextMenuParams(
-                        0,
+                        null,
                         mMenuModelBridge,
                         ContextMenuDataMediaType.NONE,
                         ContextMenuDataMediaFlags.MEDIA_NONE,
@@ -576,17 +604,11 @@ public class ContextMenuUtilsUnitTest {
                         MenuSourceType.NONE,
                         false,
                         /* openedFromInterestFor= */ false,
-                        /* interestForNodeID= */ 0,
                         /* additionalNavigationParams= */ null);
 
         Point result =
                 ContextMenuUtils.getTouchPointCoordinates(
-                        context,
-                        mockWindow,
-                        params,
-                        topContentOffsetPx,
-                        isPopup,
-                        mockContainerView);
+                        context, mockWindow, params, topContentOffsetPx, isPopup, containerView);
 
         // We need to check if the X and Y have been correctly modified by the method.
         final float density = context.getResources().getDisplayMetrics().density;
@@ -596,8 +618,8 @@ public class ContextMenuUtilsUnitTest {
         int expectedY = (int) (touchPointYPx + topContentOffsetPx);
 
         if (isPopup) {
-            expectedX += mockLocation[0];
-            expectedY += mockLocation[1];
+            expectedX += containerLocation[0];
+            expectedY += containerLocation[1];
 
             expectedX += mockLayoutParams.x;
             expectedY += mockLayoutParams.y;
@@ -666,7 +688,7 @@ public class ContextMenuUtilsUnitTest {
 
         ContextMenuParams params =
                 new ContextMenuParams(
-                        0,
+                        null,
                         mMenuModelBridge,
                         ContextMenuDataMediaType.NONE,
                         ContextMenuDataMediaFlags.MEDIA_NONE,
@@ -683,7 +705,6 @@ public class ContextMenuUtilsUnitTest {
                         MenuSourceType.NONE,
                         false,
                         /* openedFromInterestFor= */ false,
-                        /* interestForNodeID= */ 0,
                         /* additionalNavigationParams= */ null);
 
         // getContextMenuAnchorRect depends on static methods, and since we can't create static
@@ -757,5 +778,113 @@ public class ContextMenuUtilsUnitTest {
 
         doReturn(viewAndroidDelegate).when(mWebContentsMock).getViewAndroidDelegate();
         doReturn(dragStateTracker).when(viewAndroidDelegate).getDragStateTracker();
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    public void testContextMenuParamsDestroy() {
+        JniUniquePtr<ContextMenuParams.NativeContextMenuParams> nativePtr =
+                mock(JniUniquePtr.class);
+        AdditionalNavigationParams unusedParams = mock(AdditionalNavigationParams.class);
+        ContextMenuParams menuParamsUnused =
+                new ContextMenuParams(
+                        nativePtr,
+                        mMenuModelBridge,
+                        ContextMenuDataMediaType.NONE,
+                        ContextMenuDataMediaFlags.MEDIA_NONE,
+                        GURL.emptyGURL(),
+                        GURL.emptyGURL(),
+                        sLinkText,
+                        GURL.emptyGURL(),
+                        new GURL(sSrcUrl),
+                        ALT_TEXT,
+                        null,
+                        false,
+                        0,
+                        0,
+                        MenuSourceType.NONE,
+                        false,
+                        /* openedFromInterestFor= */ false,
+                        unusedParams);
+        menuParamsUnused.destroy();
+        verify(nativePtr).destroy();
+        verify(unusedParams).destroy();
+
+        AdditionalNavigationParams takenParams = mock(AdditionalNavigationParams.class);
+        ContextMenuParams menuParamsTaken =
+                new ContextMenuParams(
+                        null,
+                        mMenuModelBridge,
+                        ContextMenuDataMediaType.NONE,
+                        ContextMenuDataMediaFlags.MEDIA_NONE,
+                        GURL.emptyGURL(),
+                        GURL.emptyGURL(),
+                        sLinkText,
+                        GURL.emptyGURL(),
+                        new GURL(sSrcUrl),
+                        ALT_TEXT,
+                        null,
+                        false,
+                        0,
+                        0,
+                        MenuSourceType.NONE,
+                        false,
+                        /* openedFromInterestFor= */ false,
+                        takenParams);
+        Assert.assertEquals(takenParams, menuParamsTaken.takeAdditionalNavigationParams());
+        Assert.assertNull(menuParamsTaken.takeAdditionalNavigationParams());
+        menuParamsTaken.destroy();
+        verify(takenParams, never()).destroy();
+    }
+
+    @Test
+    public void testGetContextMenuTypeForHistogram_canvas() {
+        ContextMenuParams bareCanvasParams =
+                new ContextMenuParams(
+                        null,
+                        mMenuModelBridge,
+                        ContextMenuDataMediaType.CANVAS,
+                        ContextMenuDataMediaFlags.MEDIA_NONE,
+                        sPageGUrl,
+                        GURL.emptyGURL(),
+                        "",
+                        GURL.emptyGURL(),
+                        GURL.emptyGURL(),
+                        ALT_TEXT,
+                        null,
+                        false,
+                        0,
+                        0,
+                        MenuSourceType.MOUSE,
+                        false,
+                        /* openedFromInterestFor= */ false,
+                        /* additionalNavigationParams= */ null);
+        assertEquals("Image", ContextMenuUtils.getContextMenuTypeForHistogram(bareCanvasParams));
+    }
+
+    @Test
+    public void testGetContextMenuTypeForHistogram_canvasLink() {
+        ContextMenuParams linkedCanvasParams =
+                new ContextMenuParams(
+                        null,
+                        mMenuModelBridge,
+                        ContextMenuDataMediaType.CANVAS,
+                        ContextMenuDataMediaFlags.MEDIA_NONE,
+                        sPageGUrl,
+                        sLinkGUrl,
+                        sLinkText,
+                        GURL.emptyGURL(),
+                        GURL.emptyGURL(),
+                        ALT_TEXT,
+                        null,
+                        false,
+                        0,
+                        0,
+                        MenuSourceType.MOUSE,
+                        false,
+                        /* openedFromInterestFor= */ false,
+                        /* additionalNavigationParams= */ null);
+        assertEquals(
+                "ImageLink", ContextMenuUtils.getContextMenuTypeForHistogram(linkedCanvasParams));
     }
 }

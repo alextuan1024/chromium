@@ -20,8 +20,8 @@
 #include "content/public/browser/weak_document_ptr.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/referrer.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "ui/base/page_transition_types.h"
-#include "ui/base/window_open_disposition.h"
 #include "url/gurl.h"
 
 #if BUILDFLAG(IS_CHROMEOS)
@@ -39,7 +39,8 @@ namespace {
 BrowserWindowInterface* GetBrowser() {
   chrome::ScopedTabbedBrowserDisplayer browser_displayer(
       ProfileManager::GetLastUsedProfileAllowedByPolicy());
-  DCHECK(browser_displayer.browser_window_interface());
+  CHECK(browser_displayer.browser_window_interface(),
+        base::NotFatalUntil::M162);
   return browser_displayer.browser_window_interface();
 }
 
@@ -65,7 +66,7 @@ void ChromeBluetoothChooserController::OpenAdapterOffHelpUrl() const {
   // For other operating systems, show a help center page in a tab.
   GetBrowser()->OpenURL(content::OpenURLParams::CreateBrowserInitiated(
                             GURL(chrome::kBluetoothAdapterOffHelpURL),
-                            WindowOpenDisposition::NEW_FOREGROUND_TAB,
+                            ui::mojom::WindowOpenDisposition::kNewForegroundTab,
                             ui::PAGE_TRANSITION_AUTO_TOPLEVEL),
                         /*navigation_handle_callback=*/{});
 #endif
@@ -83,7 +84,7 @@ void ChromeBluetoothChooserController::OpenPermissionPreferences() const {
 void ChromeBluetoothChooserController::OpenHelpCenterUrl() const {
   GetBrowser()->OpenURL(content::OpenURLParams::CreateBrowserInitiated(
                             GURL(permissions::kChooserBluetoothOverviewURL),
-                            WindowOpenDisposition::NEW_FOREGROUND_TAB,
+                            ui::mojom::WindowOpenDisposition::kNewForegroundTab,
                             ui::PAGE_TRANSITION_AUTO_TOPLEVEL),
                         /*navigation_handle_callback=*/{});
 }

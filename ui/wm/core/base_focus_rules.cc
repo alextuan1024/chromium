@@ -4,7 +4,8 @@
 
 #include "ui/wm/core/base_focus_rules.h"
 
-#include "base/containers/adapters.h"
+#include <ranges>
+
 #include "ui/aura/client/focus_client.h"
 #include "ui/aura/window.h"
 #include "ui/wm/core/window_modality_controller.h"
@@ -146,7 +147,7 @@ aura::Window* BaseFocusRules::GetFocusableWindow(aura::Window* window) const {
 
 aura::Window* BaseFocusRules::GetNextActivatableWindow(
     aura::Window* ignore) const {
-  DCHECK(ignore);
+  CHECK(ignore, base::NotFatalUntil::M163);
 
   // Can be called from the RootWindow's destruction, which has a NULL parent.
   if (!ignore->parent())
@@ -155,9 +156,9 @@ aura::Window* BaseFocusRules::GetNextActivatableWindow(
   // In the basic scenarios handled by BasicFocusRules, the pool of activatable
   // windows is limited to the |ignore|'s siblings.
   const aura::Window::Windows& siblings = ignore->parent()->children();
-  DCHECK(!siblings.empty());
+  CHECK(!siblings.empty(), base::NotFatalUntil::M163);
 
-  for (aura::Window* cur : base::Reversed(siblings)) {
+  for (aura::Window* cur : std::views::reverse(siblings)) {
     if (cur == ignore)
       continue;
     if (CanActivateWindow(cur))

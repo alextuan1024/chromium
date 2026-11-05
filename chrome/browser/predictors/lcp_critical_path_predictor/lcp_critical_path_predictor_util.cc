@@ -4,8 +4,11 @@
 
 #include "chrome/browser/predictors/lcp_critical_path_predictor/lcp_critical_path_predictor_util.h"
 
+#include <string_view>
+
 #include "base/metrics/histogram_functions.h"
 #include "base/no_destructor.h"
+#include "base/strings/strcat.h"
 #include "base/strings/string_split.h"
 #include "base/strings/stringprintf.h"
 #include "base/trace_event/trace_event.h"
@@ -340,6 +343,7 @@ class LcppFrequencyStatDataUpdater {
     // Now we have one free space to store a new lcp_script_url.
     // (`SumOfFrequency()` takes time. Hence `DCHECK_LE` is used.)
     // Adds `1e-5` to avoid floating point errors.
+    // CHECK-exclusion: SumOfFrequency() takes time.
     DCHECK_LE(1 + SumOfFrequency(histogram_, other_bucket_frequency_),
               sliding_window_size_ + 1e-5);
 
@@ -529,22 +533,8 @@ bool RecordFetchedFontUrlsHistogram(int sliding_window_size,
   *stat.mutable_fetched_font_url_stat() =
       updater.ToLcppStringFrequencyStatData();
 
-  base::UmaHistogramCounts10000(
-      "Blink.LCPP.RecordedFontCount",
-      base::checked_cast<int>(fetched_font_urls.size()));
   base::UmaHistogramCounts10000("Blink.LCPP.RecordedFontUrlsMaxLength",
                                 base::checked_cast<int>(max_url_length));
-  base::UmaHistogramCounts10000("Blink.LCPP.RecordedFontUrlMatchCount",
-                                base::checked_cast<int>(updater.num_matched()));
-  if (!fetched_font_urls.empty()) {
-    base::UmaHistogramCounts10000(
-        "Blink.LCPP.RecordedFontUrlMatchCountForPagesWithFonts",
-        base::checked_cast<int>(updater.num_matched()));
-    base::UmaHistogramPercentage(
-        "Blink.LCPP.RecordedFontUrlPredictionMatchPercent",
-        base::checked_cast<int>(100 * updater.num_matched() /
-                                fetched_font_urls.size()));
-  }
 
   return updater.has_updated();
 }
@@ -648,8 +638,8 @@ size_t GetLCPPMultipleKeyMaxPathLength() {
   return blink::features::kLCPPMultipleKeyMaxPathLength.Get();
 }
 
-bool IsKeyLengthValidForMultipleKey(const std::string& host,
-                                    const std::string& first_level_path) {
+bool IsKeyLengthValidForMultipleKey(std::string_view host,
+                                    std::string_view first_level_path) {
   CHECK(base::FeatureList::IsEnabled(blink::features::kLCPPMultipleKey));
   // The key must not be longer than `kMaxStringLength`.
   // Note that we confirmed that url.host() is less than the limit in
@@ -669,14 +659,14 @@ std::string GetLCPPDatabaseKey(const GURL& url) {
 
   if (!base::FeatureList::IsEnabled(blink::features::kLCPPMultipleKey) ||
       IsLcppMultipleKeyKeyStatEnabled()) {
-    return url.GetHost();
+    return std::string(url.host());
   }
 
   const std::string first_level_path = GetFirstLevelPath(url);
-  if (!IsKeyLengthValidForMultipleKey(url.GetHost(), first_level_path)) {
-    return url.GetHost();
+  if (!IsKeyLengthValidForMultipleKey(url.host(), first_level_path)) {
+    return std::string(url.host());
   }
-  return url.GetHost() + first_level_path;
+  return base::StrCat({url.host(), first_level_path});
 }
 
 // Returns LcppStat from `data` for LcppMultipleKeyKeyStat.
@@ -691,7 +681,7 @@ LcppStat* TryToGetLcppStatForKeyStat(const LoadingPredictorConfig& config,
 
   const std::string first_level_path = GetFirstLevelPath(url);
   if (first_level_path.empty() ||
-      !IsKeyLengthValidForMultipleKey(url.GetHost(), first_level_path)) {
+      !IsKeyLengthValidForMultipleKey(url.host(), first_level_path)) {
     return data.mutable_lcpp_stat();
   }
 
@@ -711,7 +701,7 @@ bool IsLCPPFontPrefetchExcludedHost(const GURL& url) {
       base::SplitString(
           blink::features::kLCPPFontURLPredictorExcludedHosts.Get(), ",",
           base::TRIM_WHITESPACE, base::SPLIT_WANT_NONEMPTY));
-  return excluded_hosts->contains(url.GetHost());
+  return excluded_hosts->contains(url.host());
 }
 
 template <typename T>
@@ -908,8 +898,8 @@ std::vector<GURL> PredictFetchedFontUrls(const LcppStat& stat) {
     return font_urls;
   }
 
-  // No need to record metrics for pages without web fonts to be prefetched
-  // or preloaded.
+  // Bandwidth limit check for prefetch/preload. If the bandwidth is below the
+  // limit, an empty fonts list is returned to disable the prefetch/preload.
   double max_bandwidth_mbps;
   net::NetworkChangeNotifier::ConnectionType connection_type;
   net::NetworkChangeNotifier::GetMaxBandwidthAndConnectionType(
@@ -919,17 +909,8 @@ std::vector<GURL> PredictFetchedFontUrls(const LcppStat& stat) {
            net::NetworkChangeNotifier::ConnectionType::CONNECTION_UNKNOWN ||
        max_bandwidth_mbps <
            blink::features::kLCPPFontURLPredictorThresholdInMbps.Get())) {
-    base::UmaHistogramEnumeration(
-        "Blink.LCPP.FontFetch.Disabled.ConnectionType", connection_type,
-        net::NetworkChangeNotifier::ConnectionType::CONNECTION_LAST);
     return std::vector<GURL>();
   }
-  // Workaround: we cannot use UmaHistogramEnumeration because
-  // connection_type is defined with old C enum, and setting kValue causes
-  // namespace conflict.
-  base::UmaHistogramEnumeration(
-      "Blink.LCPP.FontFetch.Enabled.ConnectionType", connection_type,
-      net::NetworkChangeNotifier::ConnectionType::CONNECTION_LAST);
   return font_urls;
 }
 
@@ -1052,30 +1033,9 @@ bool UpdateLcppStatWithLcppDataInputs(const LcppDataInputs& inputs,
         "Blink.LCPP.RecordedFontUrlPredictionHitPercent",
         base::checked_cast<int>(100 * inputs.font_url_hit_count /
                                 inputs.font_url_count));
-    base::UmaHistogramPercentage(
-        "Blink.LCPP.RecordedFontUrlPredictionHitPercentInRecordedFonts",
-        base::checked_cast<int>(100 * inputs.font_url_hit_count /
-                                inputs.font_urls.size()));
     base::UmaHistogramCounts10000(
         "Blink.LCPP.RecordedFontUrlReenterCountForPagesWithFonts",
         base::checked_cast<int>(inputs.font_url_reenter_count));
-    base::UmaHistogramPercentage(
-        "Blink.LCPP.RecordedFontUrlReenterPercentInRecordedFonts",
-        base::checked_cast<int>(100 * inputs.font_url_reenter_count /
-                                inputs.font_urls.size()));
-    base::UmaHistogramCounts10000(
-        "Blink.LCPP.CrossSiteFontUrls",
-        base::checked_cast<int>(inputs.cross_site_font_url_count));
-    base::UmaHistogramCounts10000(
-        "Blink.LCPP.SameSiteFontUrls",
-        base::checked_cast<int>(inputs.same_site_font_url_count));
-    CHECK_GT(inputs.same_site_font_url_count + inputs.cross_site_font_url_count,
-             0UL);
-    base::UmaHistogramPercentage(
-        "Blink.LCPP.SameSiteFontUrlRatio",
-        base::checked_cast<int>(100 * inputs.same_site_font_url_count /
-                                (inputs.same_site_font_url_count +
-                                 inputs.cross_site_font_url_count)));
   }
   return data_updated;
 }
@@ -1129,31 +1089,14 @@ bool IsValidLcppStat(const LcppStat& lcpp_stat) {
 }
 
 bool IsURLValidForLcpp(const GURL& url) {
-  return url.is_valid() && !url.GetHost().empty() && !net::IsLocalhost(url) &&
+  return url.is_valid() && !url.host().empty() && !net::IsLocalhost(url) &&
          url.SchemeIs(url::kHttpsScheme) &&
-         url.GetHost().size() <=
-             ResourcePrefetchPredictorTables::kMaxStringLength;
+         url.host().size() <= ResourcePrefetchPredictorTables::kMaxStringLength;
 }
 
-// TODO(crbug.com/380105415): Remove this kill switch after we confirmed that
-// this works fine.
-BASE_FEATURE(kMultipleLcppKeyInitiatorOriginFix,
-             base::FEATURE_ENABLED_BY_DEFAULT);
-
 bool IsValidInitiatorOrigin(const url::Origin& initiator_origin) {
-  static const bool kMultipleLcppKeyInitiatorOriginFixEnabled =
-      base::FeatureList::IsEnabled(kMultipleLcppKeyInitiatorOriginFix);
-  if (kMultipleLcppKeyInitiatorOriginFixEnabled) {
-    GURL url = initiator_origin.GetURL();
-    return !initiator_origin.opaque() && url.is_valid() &&
-           !initiator_origin.host().empty() && !net::IsLocalhost(url) &&
-           url.SchemeIs(url::kHttpsScheme) &&
-           initiator_origin.host().size() <=
-               ResourcePrefetchPredictorTables::kMaxStringLength;
-  } else {
-    return initiator_origin.host().size() <=
-           ResourcePrefetchPredictorTables::kMaxStringLength;
-  }
+  return !initiator_origin.opaque() &&
+         IsURLValidForLcpp(initiator_origin.GetURL());
 }
 
 std::string GetFirstLevelPath(const GURL& url) {
@@ -1184,11 +1127,11 @@ std::string GetFirstLevelPath(const GURL& url) {
   } else {
     first_level_path_length = second_slash_pos;
   }
-  return url.GetPath().substr(0, first_level_path_length);
+  return std::string(url.path().substr(0, first_level_path_length));
 }
 
 bool IsSameSite(const GURL& url1, const GURL& url2) {
-  return url1.SchemeIs(url2.GetScheme()) &&
+  return url1.SchemeIs(url2.scheme()) &&
          net::registry_controlled_domains::SameDomainOrHost(
              url1, url2,
              net::registry_controlled_domains::INCLUDE_PRIVATE_REGISTRIES);
@@ -1334,8 +1277,6 @@ bool LcppDataMap::LearnLcpp(const std::optional<url::Origin>& initiator_origin,
   if (lcpp_stat) {
     if (!IsValidLcppStat(*lcpp_stat)) {
       lcpp_stat->Clear();
-      base::UmaHistogramBoolean("LoadingPredictor.LcppStatCorruptedAtLearnTime",
-                                true);
     }
     data_updated |= UpdateLcppStatWithLcppDataInputs(inputs, *lcpp_stat);
     if (IsLCPPFontPrefetchExcludedHost(url) &&
@@ -1343,7 +1284,7 @@ bool LcppDataMap::LearnLcpp(const std::optional<url::Origin>& initiator_origin,
       lcpp_stat->clear_fetched_font_url_stat();
       data_updated = true;
     }
-    DCHECK(IsValidLcppStat(*lcpp_stat));
+    CHECK(IsValidLcppStat(*lcpp_stat), base::NotFatalUntil::M162);
   }
   if (use_origin_map) {
     // `origin_map` needs always update due to updating the frequency stat.
@@ -1396,7 +1337,7 @@ std::optional<LcppStat> LcppDataMap::GetLcppStat(
   if (IsLcppMultipleKeyKeyStatEnabled()) {
     const std::string first_level_path = GetFirstLevelPath(url);
     if (first_level_path.empty() ||
-        !IsKeyLengthValidForMultipleKey(url.GetHost(), first_level_path)) {
+        !IsKeyLengthValidForMultipleKey(url.host(), first_level_path)) {
       return lcpp_data->lcpp_stat();
     }
     const auto& lcpp_stat_map = lcpp_data->lcpp_key_stat().lcpp_stat_map();
@@ -1539,13 +1480,10 @@ void LcppDataMap::GetPreconnectAndPrefetchRequest(
       features::kLoadingPredictorPrefetchSubresourceType.Get() ==
           features::PrefetchSubresourceType::kAll;
   if (kLCPPFontURLPredictorEnabled && kLoadingPredictorPrefetchEnabled) {
-    size_t count = 0;
     for (const GURL& font_url : PredictFetchedFontUrls(*lcpp_stat)) {
       prediction.prefetch_requests.emplace_back(
           font_url, network::mojom::RequestDestination::kFont);
-      ++count;
     }
-    base::UmaHistogramCounts1000("Blink.LCPP.PrefetchFontCount", count);
   }
 
   if (base::FeatureList::IsEnabled(blink::features::kLCPPPrefetchSubresource)) {

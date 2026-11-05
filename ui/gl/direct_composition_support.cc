@@ -23,7 +23,6 @@
 #include "ui/gl/gl_features.h"
 #include "ui/gl/gl_switches.h"
 #include "ui/gl/gl_utils.h"
-#include "ui/gl/gpu_switching_manager.h"
 
 namespace gl {
 namespace {
@@ -38,8 +37,6 @@ bool g_supports_hardware_overlays = false;
 bool g_supports_vp_auto_hdr = false;
 // Whether the DecodeSwapChain is disabled or not.
 bool g_disable_decode_swap_chain = false;
-// Whether to force the nv12 overlay support.
-bool g_force_nv12_overlay_support = false;
 // Whether software overlays have been disabled.
 bool g_disable_sw_overlays = false;
 
@@ -146,6 +143,8 @@ std::set<HMONITOR>* GetHDRMonitors() {
 
 // Global direct composition device.
 IDCompositionDevice3* g_dcomp_device = nullptr;
+// Whether the direct composition device supports brushes.
+bool g_supports_dcomp_brushes = false;
 // Global d3d11 device used by direct composition.
 ID3D11Device* g_d3d11_device = nullptr;
 // Global d3d12 command queue created by Chromium's Dawn instance and used by
@@ -373,13 +372,6 @@ void UpdateOverlaySupport() {
       &yuy2_overlay_support_flags, &bgra8_overlay_support_flags,
       &rgb10a2_overlay_support_flags, &p010_overlay_support_flags);
 
-  if (g_force_nv12_overlay_support) {
-    supports_overlays = true;
-    supports_hardware_overlays = true;
-    nv12_overlay_support_flags = DXGI_OVERLAY_SUPPORT_FLAG_SCALING;
-    overlay_format_used = DXGI_FORMAT_NV12;
-  }
-
   if (base::CommandLine::ForCurrentProcess()->HasSwitch(
           switches::kDirectCompositionVideoSwapChainFormat)) {
     std::string override_format =
@@ -406,8 +398,6 @@ void UpdateOverlaySupport() {
   }
   base::UmaHistogramBoolean("GPU.DirectComposition.OverlaysSupported",
                             supports_overlays);
-  base::UmaHistogramBoolean("GPU.DirectComposition.HardwareOverlaysSupported",
-                            supports_hardware_overlays);
 
   // Update global caps.
   SetSupportsOverlays(supports_overlays);
@@ -780,6 +770,10 @@ void InitializeDirectComposition(
   g_dcomp_device = dcomp_device.Detach();
   DCHECK(g_dcomp_device);
 
+  Microsoft::WRL::ComPtr<EXPERIMENTAL_IDCompositionDevice7> dcomp_device7;
+  g_supports_dcomp_brushes =
+      SUCCEEDED(g_dcomp_device->QueryInterface(IID_PPV_ARGS(&dcomp_device7)));
+
   g_d3d11_device = d3d11_device.Detach();
 
   GetSolidColorPoolFactoryRef() =
@@ -834,6 +828,7 @@ void ShutdownDirectComposition() {
     }
     GetSolidColorPoolFactoryRef().Reset();
   }
+  g_supports_dcomp_brushes = false;
 }
 
 SolidColorPoolFactory GetDirectCompositionSolidColorPoolFactory() {
@@ -854,6 +849,11 @@ ID3D12CommandQueue* GetDirectCompositionD3D12CommandQueue() {
 
 bool DirectCompositionSupported() {
   return g_dcomp_device;
+}
+
+bool ShouldUseDirectCompositionBrushes() {
+  return g_supports_dcomp_brushes &&
+         base::FeatureList::IsEnabled(features::kDCompBrushes);
 }
 
 bool DirectCompositionOverlaysSupported() {
@@ -1189,7 +1189,6 @@ void SetDirectCompositionOverlayWorkarounds(
   g_disable_decode_swap_chain = workarounds.disable_decode_swap_chain;
   g_enable_bgra8_overlays_with_yuv_overlay_support =
       workarounds.enable_bgra8_overlays_with_yuv_overlay_support;
-  g_force_nv12_overlay_support = workarounds.force_nv12_overlay_support;
   g_force_rgb10a2_overlay_support = workarounds.force_rgb10a2_overlay_support;
   g_check_ycbcr_studio_g22_left_p709_for_nv12_support =
       workarounds.check_ycbcr_studio_g22_left_p709_for_nv12_support;
@@ -1197,10 +1196,6 @@ void SetDirectCompositionOverlayWorkarounds(
   if (workarounds.disable_dcomp_texture) {
     g_direct_composition_texture_supported = false;
   }
-}
-
-bool IsSwapChainYuvFormatForced() {
-  return g_force_nv12_overlay_support;
 }
 
 void SetDirectCompositionMonitorInfoForTesting(
@@ -1281,13 +1276,10 @@ bool DirectCompositionTextureSupported() {
 // For DirectComposition Display Monitor.
 DirectCompositionOverlayCapsMonitor::DirectCompositionOverlayCapsMonitor()
     : observer_list_(new base::ObserverListThreadSafe<
-                     DirectCompositionOverlayCapsObserver>()) {
-  ui::GpuSwitchingManager::GetInstance()->AddObserver(this);
-}
+                     DirectCompositionOverlayCapsObserver>()) {}
 
-DirectCompositionOverlayCapsMonitor::~DirectCompositionOverlayCapsMonitor() {
-  ui::GpuSwitchingManager::GetInstance()->RemoveObserver(this);
-}
+DirectCompositionOverlayCapsMonitor::~DirectCompositionOverlayCapsMonitor() =
+    default;
 
 // static
 DirectCompositionOverlayCapsMonitor*
@@ -1312,7 +1304,7 @@ void DirectCompositionOverlayCapsMonitor::NotifyOverlayCapsChanged() {
       FROM_HERE, &DirectCompositionOverlayCapsObserver::OnOverlayCapsChanged);
 }
 
-// Called from GpuSwitchingObserver on the GPU main thread.
+// Called from GpuServiceImpl on the GPU main thread.
 void DirectCompositionOverlayCapsMonitor::OnDisplayAdded() {
   SetOverlayCapsValid(false);
   UpdateOverlaySupport();
@@ -1322,7 +1314,7 @@ void DirectCompositionOverlayCapsMonitor::OnDisplayAdded() {
   NotifyOverlayCapsChanged();
 }
 
-// Called from GpuSwitchingObserver on the GPU main thread.
+// Called from GpuServiceImpl on the GPU main thread.
 void DirectCompositionOverlayCapsMonitor::OnDisplayRemoved() {
   SetOverlayCapsValid(false);
   UpdateOverlaySupport();
@@ -1332,7 +1324,7 @@ void DirectCompositionOverlayCapsMonitor::OnDisplayRemoved() {
   NotifyOverlayCapsChanged();
 }
 
-// Called from GpuSwitchingObserver on the GPU main thread.
+// Called from GpuServiceImpl on the GPU main thread.
 void DirectCompositionOverlayCapsMonitor::OnDisplayMetricsChanged() {
   UpdateMonitorInfo();
 

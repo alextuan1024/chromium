@@ -18,6 +18,18 @@
 #include "net/log/net_log_with_source.h"
 #include "services/proxy_resolver/proxy_host_resolver.h"
 #include "services/proxy_resolver/proxy_resolver_v8_tracing.h"
+#include "third_party/jni_zero/jni_zero.h"
+
+namespace android_webview {
+class AwPacProcessor;
+}
+
+namespace jni_zero {
+template <>
+struct TemplatedDeleter<android_webview::AwPacProcessor> : public DeleterBase {
+  void Destroy(void* ptr) const override;
+};
+}  // namespace jni_zero
 
 namespace android_webview {
 
@@ -33,6 +45,10 @@ class AwPacProcessor {
   ~AwPacProcessor();
   void DestroyNative();
 
+  // Fails all unfinished and future jobs, unblocking the threads waiting for
+  // them.
+  void CancelJobs();
+
   bool SetProxyScript(const std::string& script);
   std::optional<std::string> MakeProxyRequest(const std::string& url);
   bool MakeProxyRequest(std::string url, std::string* result);
@@ -41,7 +57,8 @@ class AwPacProcessor {
       const std::vector<std::string>& string_link_addresses);
 
  private:
-  void Destroy(base::WaitableEvent* event);
+  static scoped_refptr<base::SingleThreadTaskRunner> GetTaskRunner();
+  void CancelJobsOnPacThread();
   void SetProxyScriptNative(
       std::unique_ptr<net::ProxyResolverFactory::Request>* request,
       const std::string& script,
@@ -52,6 +69,7 @@ class AwPacProcessor {
       net::ProxyInfo* proxy_info,
       net::CompletionOnceCallback complete);
 
+  friend class AwPacProcessorTest;
   friend class Job;
   friend class SetProxyScriptJob;
   friend class MakeProxyRequestJob;
@@ -60,6 +78,7 @@ class AwPacProcessor {
   std::unique_ptr<HostResolver> host_resolver_;
 
   std::set<raw_ptr<Job, SetExperimental>> jobs_;
+  bool jobs_cancelled_ = false;
 };
 }  // namespace android_webview
 

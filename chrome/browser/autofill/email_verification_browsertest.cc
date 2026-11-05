@@ -4,6 +4,7 @@
 
 #include <optional>
 
+#include "base/command_line.h"
 #include "base/test/gmock_callback_support.h"
 #include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
@@ -18,12 +19,14 @@
 #include "components/autofill/content/browser/test_autofill_client_injector.h"
 #include "components/autofill/content/browser/test_content_autofill_client.h"
 #include "components/autofill/core/browser/data_model/addresses/autofill_profile.h"
+#include "components/autofill/core/browser/filling/filling_product.h"
 #include "components/autofill/core/browser/form_structure.h"
 #include "components/autofill/core/browser/foundations/browser_autofill_manager.h"
 #include "components/autofill/core/browser/foundations/browser_autofill_manager_test_api.h"
 #include "components/autofill/core/browser/foundations/test_autofill_manager_waiter.h"
 #include "components/autofill/core/browser/test_utils/autofill_test_util.h"
 #include "components/autofill/core/common/autofill_features.h"
+#include "components/autofill/core/common/autofill_prefs.h"
 #include "components/autofill/core/common/autofill_test_util.h"
 #include "content/public/browser/runtime_feature_state/runtime_feature_state_document_data.h"
 #include "content/public/browser/webid/email_verifier.h"
@@ -36,6 +39,7 @@
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/common/runtime_feature_state/runtime_feature_state_context.h"
+#include "third_party/blink/public/common/switches.h"
 
 namespace autofill {
 
@@ -73,6 +77,13 @@ class EmailVerificationBrowserTest : public InProcessBrowserTest {
     feature_list_.InitAndEnableFeature(::features::kEmailVerificationProtocol);
   }
 
+  // Avoids dropping simulated key presses that arrive before the first
+  // compositor commit (e.g. on slow bots).
+  void SetUpCommandLine(base::CommandLine* command_line) override {
+    InProcessBrowserTest::SetUpCommandLine(command_line);
+    command_line->AppendSwitch(blink::switches::kAllowPreCommitInput);
+  }
+
   void SetUpOnMainThread() override {
     InProcessBrowserTest::SetUpOnMainThread();
     embedded_test_server()->RegisterRequestHandler(base::BindRepeating(
@@ -90,11 +101,17 @@ class EmailVerificationBrowserTest : public InProcessBrowserTest {
     MOCK_METHOD(void,
                 ShowEmailVerificationPopup,
                 (const gfx::RectF&,
-                 const net::SchemefulSite&,
+                 const url::Origin&,
                  const std::u16string&,
                  base::OnceCallback<void(
                      AutofillClient::EmailVerificationPermissionUiStatus)>),
                 (override));
+    MOCK_METHOD(void, HideEmailVerificationPopup, (), (override));
+    MOCK_METHOD(void,
+                ShowEmailVerificationLoadingToast,
+                (base::OnceClosure),
+                (override));
+    MOCK_METHOD(void, ShowEmailVerificationErrorToast, (), (override));
 
     EmailVerifierDelegate& email_verifier_delegate() {
       return email_verifier_delegate_;
@@ -209,7 +226,7 @@ IN_PROC_BROWSER_TEST_F(EmailVerificationBrowserTest, FullFlowRendererStorage) {
   MockEmailVerifier* verifier_ptr = SetupMockEmailVerifier(main_frame);
   content::webid::EmailVerifier::Result result;
   result.email = "test@example.com";
-  result.issuer_site = net::SchemefulSite(GURL("https://example.com"));
+  result.issuer_origin = url::Origin::Create(GURL("https://example.com"));
   result.issuance_endpoint = GURL("https://example.com/issuance");
   result.signing_alg_values_supported.push_back("RS256");
 
@@ -245,7 +262,7 @@ IN_PROC_BROWSER_TEST_F(EmailVerificationBrowserTest, FullFlowRendererStorage) {
 
   base::RunLoop popup_run_loop;
   EXPECT_CALL(*mock_client, ShowEmailVerificationPopup)
-      .WillOnce([&](const gfx::RectF&, const net::SchemefulSite&,
+      .WillOnce([&](const gfx::RectF&, const url::Origin&,
                     const std::u16string&,
                     base::OnceCallback<void(
                         AutofillClient::EmailVerificationPermissionUiStatus)>
@@ -256,10 +273,12 @@ IN_PROC_BROWSER_TEST_F(EmailVerificationBrowserTest, FullFlowRendererStorage) {
       });
   EXPECT_CALL(*mock_client,
               ShowEmailVerifiedToast(GURL("https://example.com")));
+  EXPECT_CALL(*mock_client, HideEmailVerificationPopup);
 
   manager->FillOrPreviewForm(
       mojom::ActionPersistence::kFill, form_structure->global_id(), field_id,
-      &autofill_profile_.value(), AutofillTriggerSource::kPopup,
+      FillingProduct::kAddress, &autofill_profile_.value(),
+      AutofillTriggerSource::kPopup, /*require_user_confirmation=*/false,
       /*blocked_fields=*/{});
 
   // 3. Wait for the deferred browser task to execute and trigger the popup
@@ -306,11 +325,11 @@ IN_PROC_BROWSER_TEST_F(EmailVerificationBrowserTest,
 
   EmailVerifier::Result result1;
   result1.email = "test@example.com";
-  result1.issuer_site = net::SchemefulSite(GURL("https://example.com"));
+  result1.issuer_origin = url::Origin::Create(GURL("https://example.com"));
 
   EmailVerifier::Result result2;
   result2.email = "other@example.com";
-  result2.issuer_site = net::SchemefulSite(GURL("https://example.com"));
+  result2.issuer_origin = url::Origin::Create(GURL("https://example.com"));
 
   testing::InSequence s;
 
@@ -338,7 +357,7 @@ IN_PROC_BROWSER_TEST_F(EmailVerificationBrowserTest,
   base::RunLoop popup_run_loop1;
 
   EXPECT_CALL(*mock_client, ShowEmailVerificationPopup)
-      .WillOnce([&](const gfx::RectF&, const net::SchemefulSite&,
+      .WillOnce([&](const gfx::RectF&, const url::Origin&,
                     const std::u16string&,
                     base::OnceCallback<void(
                         AutofillClient::EmailVerificationPermissionUiStatus)>
@@ -355,12 +374,15 @@ IN_PROC_BROWSER_TEST_F(EmailVerificationBrowserTest,
       .WillOnce(RunOnceCallback<2>(
           kTestToken1, blink::mojom::EmailVerificationRequestResult::kSuccess,
           base::Milliseconds(200)));
+  EXPECT_CALL(*mock_client, HideEmailVerificationPopup);
+  EXPECT_CALL(*mock_client, ShowEmailVerifiedToast);
 
   ASSERT_EQ(&manager->client(), mock_client);
 
   manager->FillOrPreviewForm(
       mojom::ActionPersistence::kFill, form_structure->global_id(), field_id,
-      &autofill_profile_.value(), AutofillTriggerSource::kPopup,
+      FillingProduct::kAddress, &autofill_profile_.value(),
+      AutofillTriggerSource::kPopup, /*require_user_confirmation=*/false,
       /*blocked_fields=*/{});
 
   popup_run_loop1.Run();
@@ -374,7 +396,7 @@ IN_PROC_BROWSER_TEST_F(EmailVerificationBrowserTest,
           base::Milliseconds(100)));
 
   EXPECT_CALL(*mock_client, ShowEmailVerificationPopup)
-      .WillOnce([&](const gfx::RectF&, const net::SchemefulSite&,
+      .WillOnce([&](const gfx::RectF&, const url::Origin&,
                     const std::u16string&,
                     base::OnceCallback<void(
                         AutofillClient::EmailVerificationPermissionUiStatus)>
@@ -391,7 +413,7 @@ IN_PROC_BROWSER_TEST_F(EmailVerificationBrowserTest,
       .WillOnce(RunOnceCallback<2>(
           kTestToken2, blink::mojom::EmailVerificationRequestResult::kSuccess,
           base::Milliseconds(200)));
-
+  EXPECT_CALL(*mock_client, HideEmailVerificationPopup);
   EXPECT_CALL(*mock_client, ShowEmailVerifiedToast);
 
   FormData form_data = form_structure->ToFormData();
@@ -441,7 +463,7 @@ IN_PROC_BROWSER_TEST_F(EmailVerificationBrowserTest, FullFlowAutocomplete) {
 
   EmailVerifier::Result result;
   result.email = "test@example.com";
-  result.issuer_site = net::SchemefulSite(GURL("https://example.com"));
+  result.issuer_origin = url::Origin::Create(GURL("https://example.com"));
   result.issuance_endpoint = GURL("https://example.com/issuance");
   result.signing_alg_values_supported.push_back("RS256");
 
@@ -476,7 +498,7 @@ IN_PROC_BROWSER_TEST_F(EmailVerificationBrowserTest, FullFlowAutocomplete) {
 
   base::RunLoop popup_run_loop;
   EXPECT_CALL(*mock_client, ShowEmailVerificationPopup)
-      .WillOnce([&](const gfx::RectF&, const net::SchemefulSite&,
+      .WillOnce([&](const gfx::RectF&, const url::Origin&,
                     const std::u16string&,
                     base::OnceCallback<void(
                         AutofillClient::EmailVerificationPermissionUiStatus)>
@@ -486,6 +508,7 @@ IN_PROC_BROWSER_TEST_F(EmailVerificationBrowserTest, FullFlowAutocomplete) {
         popup_run_loop.Quit();
       });
   EXPECT_CALL(*mock_client, ShowEmailVerifiedToast);
+  EXPECT_CALL(*mock_client, HideEmailVerificationPopup);
 
   FormData form_data = form_structure->ToFormData();
   FormFieldData field_data = form_data.fields()[0];
@@ -509,6 +532,374 @@ IN_PROC_BROWSER_TEST_F(EmailVerificationBrowserTest, FullFlowAutocomplete) {
       web_contents(), "document.getElementById('testform').requestSubmit();"));
 
   // Verify the token was found in onsubmit.
+  EXPECT_EQ(
+      kTestToken,
+      content::EvalJs(web_contents(), "window.tokenPromise").ExtractString());
+}
+
+// Tests that during a subsequent verification run (where user consent was
+// previously granted and saved in prefs), the permission popup is skipped, a
+// loading toast is displayed while the token is fetched, and upon successful
+// token retrieval, the verified toast is shown.
+IN_PROC_BROWSER_TEST_F(EmailVerificationBrowserTest,
+                       SubsequentRunShowsLoadingToastAndSuccessToast) {
+  GURL url =
+      embedded_test_server()->GetURL("/autofill/email_verification.html");
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), url));
+
+  content::RenderFrameHost* main_frame = web_contents()->GetPrimaryMainFrame();
+  EnableEmailVerificationFeatureForFrame(main_frame);
+
+  // Mark email as already allowed in prefs.
+  PrefService* prefs = client()->GetPrefs();
+  base::DictValue state;
+  base::DictValue email_dict;
+  email_dict.Set("allowed", true);
+  email_dict.Set("issuer_site", "https://example.com");
+  email_dict.Set("timestamp", true);
+  state.Set("test@example.com", std::move(email_dict));
+  prefs->SetDict(prefs::kAutofillEmailVerificationState, std::move(state));
+
+  const std::string kTestToken = "subsequent_token_123";
+  MockEmailVerifier* verifier_ptr = SetupMockEmailVerifier(main_frame);
+
+  EmailVerifier::Result result;
+  result.email = "test@example.com";
+  result.issuer_origin = url::Origin::Create(GURL("https://example.com"));
+  result.issuance_endpoint = GURL("https://example.com/issuance");
+  result.signing_alg_values_supported.push_back("RS256");
+
+  EXPECT_CALL(*verifier_ptr, CheckIfVerifiable("test@example.com", _, _))
+      .WillOnce(RunOnceCallback<2>(
+          result, blink::mojom::EmailVerificationRequestResult::kSuccess,
+          base::Milliseconds(100)));
+
+  EXPECT_CALL(
+      *verifier_ptr,
+      Verify(testing::Field(&EmailVerifier::Result::email, "test@example.com"),
+             "test_nonce", _))
+      .WillOnce(RunOnceCallback<2>(
+          kTestToken, blink::mojom::EmailVerificationRequestResult::kSuccess,
+          base::Milliseconds(200)));
+
+  BrowserAutofillManager* manager = GetBrowserAutofillManager(main_frame);
+  const FormStructure* form_structure = WaitForMatchingForm(
+      manager, base::BindRepeating([](const FormStructure& form) {
+        return std::ranges::any_of(
+            form.fields(), [](const std::unique_ptr<AutofillField>& field) {
+              return field->Type().GetAddressType() == EMAIL_ADDRESS;
+            });
+      }));
+  ASSERT_TRUE(form_structure);
+  FieldGlobalId field_id = form_structure->field(0)->global_id();
+
+  TestEmailVerificationAutofillClient* mock_client = client();
+  // Permission popup should NOT be shown for subsequent run.
+  EXPECT_CALL(*mock_client, ShowEmailVerificationPopup).Times(0);
+  // Loading toast SHOULD be shown.
+  EXPECT_CALL(*mock_client, ShowEmailVerificationLoadingToast);
+  // Success toast SHOULD be shown upon token retrieval.
+  base::RunLoop toast_run_loop;
+  EXPECT_CALL(*mock_client, ShowEmailVerifiedToast(GURL("https://example.com")))
+      .WillOnce([&](const GURL&) { toast_run_loop.Quit(); });
+
+  manager->FillOrPreviewForm(
+      mojom::ActionPersistence::kFill, form_structure->global_id(), field_id,
+      FillingProduct::kAddress, &autofill_profile_.value(),
+      AutofillTriggerSource::kPopup, /*require_user_confirmation=*/false,
+      /*blocked_fields=*/{});
+
+  toast_run_loop.Run();
+
+  // Submit form and check token is injected.
+  ASSERT_TRUE(content::ExecJs(
+      web_contents(),
+      "document.getElementById('email').value = 'test@example.com';"));
+  ASSERT_TRUE(content::ExecJs(
+      web_contents(), "document.getElementById('testform').requestSubmit();"));
+
+  EXPECT_EQ(
+      kTestToken,
+      content::EvalJs(web_contents(), "window.tokenPromise").ExtractString());
+}
+
+// Tests that during a subsequent verification run, if the verification token
+// request fails, the loading toast is displayed initially and then transitions
+// to the error toast upon failure.
+IN_PROC_BROWSER_TEST_F(EmailVerificationBrowserTest,
+                       SubsequentRunShowsLoadingToastAndErrorToastOnFailure) {
+  GURL url =
+      embedded_test_server()->GetURL("/autofill/email_verification.html");
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), url));
+
+  content::RenderFrameHost* main_frame = web_contents()->GetPrimaryMainFrame();
+  EnableEmailVerificationFeatureForFrame(main_frame);
+
+  // Mark email as already allowed in prefs.
+  PrefService* prefs = client()->GetPrefs();
+  base::DictValue state;
+  base::DictValue email_dict;
+  email_dict.Set("allowed", true);
+  email_dict.Set("issuer_site", "https://example.com");
+  email_dict.Set("timestamp", true);
+  state.Set("test@example.com", std::move(email_dict));
+  prefs->SetDict(prefs::kAutofillEmailVerificationState, std::move(state));
+
+  MockEmailVerifier* verifier_ptr = SetupMockEmailVerifier(main_frame);
+
+  EmailVerifier::Result result;
+  result.email = "test@example.com";
+  result.issuer_origin = url::Origin::Create(GURL("https://example.com"));
+  result.issuance_endpoint = GURL("https://example.com/issuance");
+  result.signing_alg_values_supported.push_back("RS256");
+
+  EXPECT_CALL(*verifier_ptr, CheckIfVerifiable("test@example.com", _, _))
+      .WillOnce(RunOnceCallback<2>(
+          result, blink::mojom::EmailVerificationRequestResult::kSuccess,
+          base::Milliseconds(100)));
+
+  // Simulate verification token request failure (returning nullopt).
+  EXPECT_CALL(
+      *verifier_ptr,
+      Verify(testing::Field(&EmailVerifier::Result::email, "test@example.com"),
+             "test_nonce", _))
+      .WillOnce(RunOnceCallback<2>(
+          std::nullopt,
+          blink::mojom::EmailVerificationRequestResult::kTokenNoResponse,
+          base::Milliseconds(200)));
+
+  BrowserAutofillManager* manager = GetBrowserAutofillManager(main_frame);
+  const FormStructure* form_structure = WaitForMatchingForm(
+      manager, base::BindRepeating([](const FormStructure& form) {
+        return std::ranges::any_of(
+            form.fields(), [](const std::unique_ptr<AutofillField>& field) {
+              return field->Type().GetAddressType() == EMAIL_ADDRESS;
+            });
+      }));
+  ASSERT_TRUE(form_structure);
+  FieldGlobalId field_id = form_structure->field(0)->global_id();
+
+  TestEmailVerificationAutofillClient* mock_client = client();
+  // Permission popup should NOT be shown for subsequent run.
+  EXPECT_CALL(*mock_client, ShowEmailVerificationPopup).Times(0);
+  // Loading toast SHOULD be shown.
+  EXPECT_CALL(*mock_client, ShowEmailVerificationLoadingToast);
+  // Success toast should NOT be shown on failure.
+  EXPECT_CALL(*mock_client, ShowEmailVerifiedToast).Times(0);
+  // Error toast SHOULD be shown upon token failure.
+  base::RunLoop toast_run_loop;
+  EXPECT_CALL(*mock_client, ShowEmailVerificationErrorToast).WillOnce([&]() {
+    toast_run_loop.Quit();
+  });
+
+  manager->FillOrPreviewForm(
+      mojom::ActionPersistence::kFill, form_structure->global_id(), field_id,
+      FillingProduct::kAddress, &autofill_profile_.value(),
+      AutofillTriggerSource::kPopup, /*require_user_confirmation=*/false,
+      /*blocked_fields=*/{});
+
+  toast_run_loop.Run();
+}
+
+// Tests that during a first-run verification flow where the user confirms the
+// popup, if the verification token request fails, the popup is hidden and the
+// error toast is shown instead of the success toast.
+IN_PROC_BROWSER_TEST_F(EmailVerificationBrowserTest,
+                       FullFlowShowsErrorToastOnFailure) {
+  GURL url =
+      embedded_test_server()->GetURL("/autofill/email_verification.html");
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), url));
+
+  content::RenderFrameHost* main_frame = web_contents()->GetPrimaryMainFrame();
+  EnableEmailVerificationFeatureForFrame(main_frame);
+
+  MockEmailVerifier* verifier_ptr = SetupMockEmailVerifier(main_frame);
+
+  EmailVerifier::Result result;
+  result.email = "test@example.com";
+  result.issuer_origin = url::Origin::Create(GURL("https://example.com"));
+  result.issuance_endpoint = GURL("https://example.com/issuance");
+  result.signing_alg_values_supported.push_back("RS256");
+
+  EXPECT_CALL(*verifier_ptr, CheckIfVerifiable("test@example.com", _, _))
+      .WillOnce(RunOnceCallback<2>(
+          result, blink::mojom::EmailVerificationRequestResult::kSuccess,
+          base::Milliseconds(100)));
+
+  // Simulate verification token request failure (returning nullopt).
+  EXPECT_CALL(
+      *verifier_ptr,
+      Verify(testing::Field(&EmailVerifier::Result::email, "test@example.com"),
+             "test_nonce", _))
+      .WillOnce(RunOnceCallback<2>(
+          std::nullopt,
+          blink::mojom::EmailVerificationRequestResult::kTokenNoResponse,
+          base::Milliseconds(200)));
+
+  BrowserAutofillManager* manager = GetBrowserAutofillManager(main_frame);
+  const FormStructure* form_structure = WaitForMatchingForm(
+      manager, base::BindRepeating([](const FormStructure& form) {
+        return std::ranges::any_of(
+            form.fields(), [](const std::unique_ptr<AutofillField>& field) {
+              return field->Type().GetAddressType() == EMAIL_ADDRESS;
+            });
+      }));
+  ASSERT_TRUE(form_structure);
+  FieldGlobalId field_id = form_structure->field(0)->global_id();
+
+  TestEmailVerificationAutofillClient* mock_client = client();
+  base::RunLoop popup_run_loop;
+  EXPECT_CALL(*mock_client, ShowEmailVerificationPopup)
+      .WillOnce([&](const gfx::RectF&, const url::Origin&,
+                    const std::u16string&,
+                    base::OnceCallback<void(
+                        AutofillClient::EmailVerificationPermissionUiStatus)>
+                        callback) {
+        std::move(callback).Run(
+            AutofillClient::EmailVerificationPermissionUiStatus::kAllowed);
+        popup_run_loop.Quit();
+      });
+  EXPECT_CALL(*mock_client, HideEmailVerificationPopup);
+  EXPECT_CALL(*mock_client, ShowEmailVerifiedToast).Times(0);
+  base::RunLoop error_toast_run_loop;
+  EXPECT_CALL(*mock_client, ShowEmailVerificationErrorToast).WillOnce([&]() {
+    error_toast_run_loop.Quit();
+  });
+
+  manager->FillOrPreviewForm(
+      mojom::ActionPersistence::kFill, form_structure->global_id(), field_id,
+      FillingProduct::kAddress, &autofill_profile_.value(),
+      AutofillTriggerSource::kPopup, /*require_user_confirmation=*/false,
+      /*blocked_fields=*/{});
+
+  popup_run_loop.Run();
+  error_toast_run_loop.Run();
+}
+
+// Tests that programmatic text insertion via document.execCommand('insertText')
+// does not mark the email field as user-edited or trigger email verification on
+// focus loss, whereas genuine user typing does.
+IN_PROC_BROWSER_TEST_F(EmailVerificationBrowserTest,
+                       ExecCommandDoesNotTriggerVerification) {
+  GURL url =
+      embedded_test_server()->GetURL("/autofill/email_verification.html");
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), url));
+
+  content::RenderFrameHost* main_frame = web_contents()->GetPrimaryMainFrame();
+  EnableEmailVerificationFeatureForFrame(main_frame);
+
+  // Mark email as already allowed in prefs.
+  PrefService* prefs = client()->GetPrefs();
+  base::DictValue state;
+  base::DictValue email_dict;
+  email_dict.Set("allowed", true);
+  email_dict.Set("issuer_site", "https://example.com");
+  email_dict.Set("timestamp", true);
+  state.Set("test@example.com", std::move(email_dict));
+  prefs->SetDict(prefs::kAutofillEmailVerificationState, std::move(state));
+
+  MockEmailVerifier* verifier_ptr = SetupMockEmailVerifier(main_frame);
+  TestEmailVerificationAutofillClient* mock_client = client();
+
+  BrowserAutofillManager* manager = GetBrowserAutofillManager(main_frame);
+  const FormStructure* form_structure = WaitForMatchingForm(
+      manager, base::BindRepeating([](const FormStructure& form) {
+        return std::ranges::any_of(
+            form.fields(), [](const std::unique_ptr<AutofillField>& field) {
+              return field->Type().GetAddressType() == EMAIL_ADDRESS;
+            });
+      }));
+  ASSERT_TRUE(form_structure);
+
+  // Add a second text control to the form so shifting focus to it triggers
+  // OnAfterFocusOnFormField -> OnFieldLostFocus for the email field.
+  ASSERT_TRUE(content::ExecJs(
+      web_contents(),
+      "const other = document.createElement('input');"
+      "other.type = 'text';"
+      "other.id = 'other_field';"
+      "document.getElementById('testform').appendChild(other);"));
+
+  // 1. Negative path: Programmatic execCommand('insertText') followed by blur
+  // should not be treated as a user edit and should not trigger verification.
+  EXPECT_CALL(*verifier_ptr, CheckIfVerifiable).Times(0);
+  EXPECT_CALL(*verifier_ptr, Verify).Times(0);
+  EXPECT_CALL(*mock_client, ShowEmailVerificationPopup).Times(0);
+  EXPECT_CALL(*mock_client, ShowEmailVerificationLoadingToast).Times(0);
+
+  {
+    TestAutofillManagerWaiter focus_waiter(
+        *manager, {AutofillManagerEvent::kFocusOnFormField});
+    ASSERT_TRUE(content::ExecJs(
+        web_contents(),
+        "const email = document.getElementById('email');"
+        "email.focus();"
+        "document.execCommand('insertText', false, 'test@example.com');"));
+    ASSERT_TRUE(focus_waiter.Wait(1));
+  }
+
+  {
+    TestAutofillManagerWaiter blur_waiter(
+        *manager, {AutofillManagerEvent::kFocusOnFormField});
+    ASSERT_TRUE(content::ExecJs(
+        web_contents(), "document.getElementById('other_field').focus();"));
+    ASSERT_TRUE(blur_waiter.Wait(1));
+  }
+
+  EXPECT_EQ(form_structure->field(0)->last_modifier(), std::nullopt);
+  testing::Mock::VerifyAndClearExpectations(verifier_ptr);
+  testing::Mock::VerifyAndClearExpectations(mock_client);
+
+  // 2. Positive path: Genuine user typing followed by blur marks the field as
+  // user-edited and triggers verification.
+  const std::string kTestToken = "typed_token_123";
+  EmailVerifier::Result result;
+  result.email = "test@example.com";
+  result.issuer_origin = url::Origin::Create(GURL("https://example.com"));
+  result.issuance_endpoint = GURL("https://example.com/issuance");
+  result.signing_alg_values_supported.push_back("RS256");
+
+  EXPECT_CALL(*verifier_ptr, CheckIfVerifiable("test@example.com", _, _))
+      .WillOnce(RunOnceCallback<2>(
+          result, blink::mojom::EmailVerificationRequestResult::kSuccess,
+          base::Milliseconds(100)));
+  EXPECT_CALL(
+      *verifier_ptr,
+      Verify(testing::Field(&EmailVerifier::Result::email, "test@example.com"),
+             "test_nonce", _))
+      .WillOnce(RunOnceCallback<2>(
+          kTestToken, blink::mojom::EmailVerificationRequestResult::kSuccess,
+          base::Milliseconds(200)));
+  EXPECT_CALL(*mock_client, ShowEmailVerificationLoadingToast);
+  base::RunLoop toast_run_loop;
+  EXPECT_CALL(*mock_client, ShowEmailVerifiedToast(GURL("https://example.com")))
+      .WillOnce([&](const GURL&) { toast_run_loop.Quit(); });
+
+  {
+    TestAutofillManagerWaiter focus_waiter(
+        *manager, {AutofillManagerEvent::kFocusOnFormField});
+    ASSERT_TRUE(
+        content::ExecJs(web_contents(),
+                        "const email = document.getElementById('email');"
+                        "email.value = '';"
+                        "email.focus();"));
+    ASSERT_TRUE(focus_waiter.Wait(1));
+  }
+
+  for (char16_t ch : std::u16string_view(u"test@example.com")) {
+    content::SimulateCharTyped(web_contents(), ch);
+  }
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return form_structure->field(0)->last_modifier() == FieldModifier::kUser &&
+           form_structure->field(0)->value() == u"test@example.com";
+  }));
+
+  ASSERT_TRUE(content::ExecJs(
+      web_contents(), "document.getElementById('other_field').focus();"));
+  toast_run_loop.Run();
+
+  ASSERT_TRUE(content::ExecJs(
+      web_contents(), "document.getElementById('testform').requestSubmit();"));
   EXPECT_EQ(
       kTestToken,
       content::EvalJs(web_contents(), "window.tokenPromise").ExtractString());

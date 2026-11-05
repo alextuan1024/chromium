@@ -4,14 +4,21 @@
 
 package org.chromium.chrome.browser.toolbar.account_menu;
 
+import static org.chromium.build.NullUtil.assertNonNull;
 import static org.chromium.build.NullUtil.assumeNonNull;
 
 import android.app.Activity;
 import android.content.Context;
 import android.content.Intent;
+import android.view.View.OnClickListener;
 
+import androidx.annotation.IntDef;
+
+import org.chromium.base.CallbackController;
+import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
+import org.chromium.chrome.browser.enterprise.util.ManagedBrowserUtils;
 import org.chromium.chrome.browser.incognito.IncognitoUtils;
 import org.chromium.chrome.browser.multiwindow.MultiInstanceManager.NewWindowAppSource;
 import org.chromium.chrome.browser.multiwindow.MultiInstanceOrchestratorFactory;
@@ -21,12 +28,16 @@ import org.chromium.chrome.browser.signin.services.DisplayableProfileData;
 import org.chromium.chrome.browser.signin.services.IdentityServicesProvider;
 import org.chromium.chrome.browser.signin.services.ProfileDataCache;
 import org.chromium.chrome.browser.signin.services.SigninManager;
+import org.chromium.chrome.browser.signin.services.SigninManager.SignInStateObserver;
+import org.chromium.chrome.browser.signin.services.SigninMetricsUtils;
 import org.chromium.chrome.browser.sync.SyncServiceFactory;
+import org.chromium.chrome.browser.tab.TabLaunchType;
 import org.chromium.chrome.browser.tabmodel.TabCreator;
 import org.chromium.chrome.browser.tabmodel.TabCreatorUtil;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
 import org.chromium.chrome.browser.tabmodel.TabModelSelectorSupplier;
 import org.chromium.chrome.browser.toolbar.R;
+import org.chromium.chrome.browser.toolbar.account_menu.AccountMenuProperties.ErrorCardProperties;
 import org.chromium.chrome.browser.toolbar.account_menu.AccountMenuProperties.IdentityCardProperties;
 import org.chromium.chrome.browser.toolbar.account_menu.AccountMenuProperties.ItemType;
 import org.chromium.chrome.browser.toolbar.account_menu.AccountMenuProperties.MenuItemProperties;
@@ -36,26 +47,96 @@ import org.chromium.chrome.browser.ui.signin.BottomSheetSigninAndHistorySyncConf
 import org.chromium.chrome.browser.ui.signin.BottomSheetSigninAndHistorySyncConfig.WithAccountSigninMode;
 import org.chromium.chrome.browser.ui.signin.BottomSheetSigninAndHistorySyncCoordinator;
 import org.chromium.chrome.browser.ui.signin.SigninAndHistorySyncActivityLauncher;
-import org.chromium.chrome.browser.ui.signin.SigninSurveyController;
+import org.chromium.chrome.browser.ui.signin.SigninSurveyController.SigninSurveyType;
 import org.chromium.chrome.browser.ui.signin.account_picker.AccountPickerBottomSheetStrings;
 import org.chromium.chrome.browser.ui.signin.history_sync.HistorySyncConfig;
 import org.chromium.components.browser_ui.settings.SettingsNavigation;
 import org.chromium.components.browser_ui.settings.SettingsNavigation.SettingsFragment;
+import org.chromium.components.embedder_support.util.UrlConstants;
 import org.chromium.components.signin.SigninFeatureMap;
+import org.chromium.components.signin.SigninFeatures;
 import org.chromium.components.signin.base.AccountInfo;
 import org.chromium.components.signin.identitymanager.IdentityManager;
 import org.chromium.components.signin.metrics.SigninAccessPoint;
+import org.chromium.components.signin.metrics.SigninPromoAction;
 import org.chromium.components.sync.SyncService;
+import org.chromium.components.sync.SyncService.SyncStateChangedListener;
 import org.chromium.components.sync.UserActionableError;
+import org.chromium.google_apis.gaia.CoreAccountId;
 import org.chromium.ui.base.WindowAndroid;
 import org.chromium.ui.modelutil.MVCListAdapter.ListItem;
 import org.chromium.ui.modelutil.MVCListAdapter.ModelList;
 import org.chromium.ui.modelutil.PropertyModel;
 
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
+
 /** Mediator managing business logic and menu items for the Account Menu popup. */
 @NullMarked
 public class AccountMenuMediator
-        implements SigninManager.SignInStateObserver, ProfileDataCache.Observer {
+        implements SignInStateObserver, ProfileDataCache.Observer, SyncStateChangedListener {
+    /**
+     * Events recorded for the account menu: the menu being shown, along with the sign-in state it
+     * was shown in, and the item the user selected in it. These values are persisted to logs.
+     * Entries should not be renumbered and numeric values should never be reused.
+     */
+    // LINT.IfChange(AccountMenuEvent)
+    @IntDef({
+        Event.SHOWN_SIGNED_OUT,
+        Event.SHOWN_SIGNED_OUT_SIGNIN_DISABLED,
+        Event.SHOWN_SIGNED_IN,
+        Event.SHOWN_SIGNED_IN_WITH_ERROR,
+        Event.SIGNIN_PROMO_CLICKED,
+        Event.PASSWORDS_AND_AUTOFILL_CLICKED,
+        Event.NEW_INCOGNITO_TAB_CLICKED,
+        Event.NEW_INCOGNITO_WINDOW_CLICKED,
+        Event.MANAGE_GOOGLE_ACCOUNT_CLICKED,
+        Event.ACCOUNT_SETTINGS_CLICKED,
+        Event.MANAGED_HEADER_CLICKED
+    })
+    @Retention(RetentionPolicy.SOURCE)
+    @interface Event {
+        /** The menu was shown, the user is signed out and the sign-in promo card is shown. */
+        int SHOWN_SIGNED_OUT = 0;
+
+        /**
+         * The menu was shown, the user is signed out and sign-in is disallowed, so no promo card is
+         * shown.
+         */
+        int SHOWN_SIGNED_OUT_SIGNIN_DISABLED = 1;
+
+        /** The menu was shown, the user is signed in and the identity card is shown. */
+        int SHOWN_SIGNED_IN = 2;
+
+        /** The menu was shown, the user is signed in but has an error requiring their attention. */
+        int SHOWN_SIGNED_IN_WITH_ERROR = 3;
+
+        /** The user selected the sign-in button on the promo card. */
+        int SIGNIN_PROMO_CLICKED = 4;
+
+        /** The user selected the "Passwords and autofill" item. */
+        int PASSWORDS_AND_AUTOFILL_CLICKED = 5;
+
+        /** The user selected the "New Incognito tab" item. */
+        int NEW_INCOGNITO_TAB_CLICKED = 6;
+
+        /** The user selected the "New Incognito window" item. */
+        int NEW_INCOGNITO_WINDOW_CLICKED = 7;
+
+        /** The user selected the "Manage your Google Account" item. */
+        int MANAGE_GOOGLE_ACCOUNT_CLICKED = 8;
+
+        /** The user selected the account settings item, shown to signed-in users. */
+        int ACCOUNT_SETTINGS_CLICKED = 9;
+
+        /** The user selected the managed header button, shown to signed-in managed users. */
+        int MANAGED_HEADER_CLICKED = 10;
+
+        int COUNT = 11;
+    }
+
+    // LINT.ThenChange(//tools/metrics/histograms/metadata/signin/enums.xml:AccountMenuEvent)
+
     private final Context mContext;
     private final Profile mProfile;
     private final WindowAndroid mWindowAndroid;
@@ -63,8 +144,11 @@ public class AccountMenuMediator
     private final @Nullable BottomSheetSigninAndHistorySyncCoordinator mSigninCoordinator;
     private final SigninAndHistorySyncActivityLauncher mSigninLauncher;
     private final Runnable mDismissCallback;
+    private @Nullable CallbackController mCallbackController = new CallbackController();
     private @Nullable ProfileDataCache mProfileDataCache;
-    private @Nullable SigninManager mSigninManager;
+    private final SigninManager mSigninManager;
+    private final IdentityManager mIdentityManager;
+    private final SyncService mSyncService;
 
     public AccountMenuMediator(
             Context context,
@@ -82,94 +166,85 @@ public class AccountMenuMediator
         mSigninLauncher = signinLauncher;
         mDismissCallback = dismissCallback;
 
-        if (!mProfile.isOffTheRecord()) {
-            mSigninManager = IdentityServicesProvider.get().getSigninManager(mProfile);
-            if (mSigninManager != null) {
-                mSigninManager.addSignInStateObserver(this);
-            }
-        }
+        mSigninManager = assumeNonNull(IdentityServicesProvider.get().getSigninManager(mProfile));
+        mSigninManager.addSignInStateObserver(this);
+        mIdentityManager =
+                assertNonNull(IdentityServicesProvider.get().getIdentityManager(mProfile));
+        mSyncService = assertNonNull(SyncServiceFactory.getForProfile(mProfile));
+        mSyncService.addSyncStateChangedListener(this);
 
-        updateMenuItems();
+        updateMenuItems(/* recordShownMetrics= */ false);
     }
 
-    // SigninManager.SignInStateObserver implementation.
+    // SignInStateObserver implementation.
     @Override
     public void onSignInAllowedChanged() {
-        updateMenuItems();
+        updateMenuItems(/* recordShownMetrics= */ false);
     }
 
     @Override
     public void onSignedIn() {
-        updateMenuItems();
+        updateMenuItems(/* recordShownMetrics= */ false);
     }
 
     @Override
     public void onSignedOut() {
-        updateMenuItems();
+        updateMenuItems(/* recordShownMetrics= */ false);
     }
 
-    /** Populates the menu action items. */
-    public void updateMenuItems() {
+    /** {@link SyncStateChangedListener} implementation. */
+    @Override
+    public void syncStateChanged() {
+        updateMenuItems(/* recordShownMetrics= */ false);
+    }
+
+    /**
+     * Populates the menu action items.
+     *
+     * @param recordShownMetrics Whether to record that the menu became visible to the user. Only
+     *     set by the coordinator when it is about to show the popup.
+     */
+    public void updateMenuItems(boolean recordShownMetrics) {
         mModelList.clear();
 
-        maybeAddHeader();
+        maybeAddHeader(recordShownMetrics);
 
-        mModelList.add(
-                new ListItem(
-                        ItemType.MENU_ITEM,
-                        MenuItemProperties.createModel(
-                                R.string.menu_passwords_and_autofill,
-                                R.drawable.ic_password_manager_24dp,
-                                v -> {
-                                    mDismissCallback.run();
-                                    openAutofillSettings();
-                                })));
-
-        maybeAddManageGoogleAccount();
-
-        IdentityManager identityManager =
-                assumeNonNull(IdentityServicesProvider.get().getIdentityManager(mProfile));
-        if (identityManager.hasPrimaryAccount()) {
-            SyncService syncService = assumeNonNull(SyncServiceFactory.getForProfile(mProfile));
-            boolean showIconBadge =
-                    syncService.getUserActionableError() != UserActionableError.NONE;
+        boolean isSignedIn = mIdentityManager.hasPrimaryAccount();
+        if (isSignedIn) {
             mModelList.add(
-                    new ListItem(
-                            ItemType.MENU_ITEM,
-                            MenuItemProperties.createModel(
-                                    R.string.profile_menu_account_settings_button,
-                                    R.drawable.settings_cog,
-                                    v -> {
-                                        mDismissCallback.run();
-                                        openAccountSettings();
-                                    },
-                                    showIconBadge)));
+                    createPasswordsAndAutofillItem(
+                            /* isSectionTop= */ true, /* isSectionBottom= */ false));
+            mModelList.add(
+                    createManageGoogleAccountItem(
+                            /* isSectionTop= */ false, /* isSectionBottom= */ false));
+            mModelList.add(
+                    createAccountSettingsItem(
+                            /* isSectionTop= */ false, /* isSectionBottom= */ true));
+        } else {
+            mModelList.add(
+                    createPasswordsAndAutofillItem(
+                            /* isSectionTop= */ true, /* isSectionBottom= */ true));
         }
 
         if (IncognitoUtils.isIncognitoModeEnabled(mProfile)) {
-            mModelList.add(new ListItem(ItemType.DIVIDER, new PropertyModel()));
-            int titleRes =
-                    IncognitoUtils.shouldOpenIncognitoAsWindow()
-                            ? R.string.menu_new_incognito_window
-                            : R.string.menu_new_incognito_tab;
+            if (!SigninFeatureMap.isEnabled(
+                    SigninFeatures.SIGNIN_BUTTON_PROFILE_MENU_REFINEMENTS)) {
+                // TODO(crbug.com/565733817): Remove when SigninButtonProfileMenuRefinements is
+                // launched.
+                mModelList.add(new ListItem(ItemType.DIVIDER, new PropertyModel()));
+            }
             mModelList.add(
-                    new ListItem(
-                            ItemType.MENU_ITEM,
-                            MenuItemProperties.createModel(
-                                    titleRes,
-                                    R.drawable.ic_incognito_24dp,
-                                    v -> {
-                                        mDismissCallback.run();
-                                        openIncognito();
-                                    })));
+                    createIncognitoItem(/* isSectionTop= */ true, /* isSectionBottom= */ true));
         }
     }
 
     /** Cleans up observers and resources. */
     public void destroy() {
-        if (mSigninManager != null) {
-            mSigninManager.removeSignInStateObserver(this);
-            mSigninManager = null;
+        mSyncService.removeSyncStateChangedListener(this);
+        mSigninManager.removeSignInStateObserver(this);
+        if (mCallbackController != null) {
+            mCallbackController.destroy();
+            mCallbackController = null;
         }
         if (mProfileDataCache != null) {
             mProfileDataCache.removeObserver(this);
@@ -179,10 +254,7 @@ public class AccountMenuMediator
 
     @Override
     public void onProfileDataUpdated(DisplayableProfileData profileData) {
-        IdentityManager identityManager =
-                IdentityServicesProvider.get().getIdentityManager(mProfile);
-        AccountInfo primaryAccount =
-                identityManager != null ? identityManager.getPrimaryAccountInfo() : null;
+        AccountInfo primaryAccount = mIdentityManager.getPrimaryAccountInfo();
         if (primaryAccount == null || !primaryAccount.getId().equals(profileData.getAccountId())) {
             return;
         }
@@ -195,32 +267,105 @@ public class AccountMenuMediator
         }
     }
 
-    private void maybeAddHeader() {
-        IdentityManager identityManager =
-                IdentityServicesProvider.get().getIdentityManager(mProfile);
-        if (identityManager != null) {
-            AccountInfo accountInfo = identityManager.getPrimaryAccountInfo();
-            if (accountInfo != null) {
-                addIdentityCard(identityManager, accountInfo);
-                return;
-            }
-        }
-        if (mSigninManager != null && mSigninManager.isSigninAllowed()) {
+    private void maybeAddHeader(boolean recordShownMetrics) {
+        AccountInfo accountInfo = mIdentityManager.getPrimaryAccountInfo();
+
+        final @Event int shownEvent;
+        if (accountInfo != null) {
+            addIdentityCard(mIdentityManager, accountInfo);
+            maybeAddErrorCard(accountInfo);
+            boolean hasIdentityError =
+                    mSyncService.getUserActionableError() != UserActionableError.NONE;
+            shownEvent =
+                    hasIdentityError ? Event.SHOWN_SIGNED_IN_WITH_ERROR : Event.SHOWN_SIGNED_IN;
+        } else if (mSigninManager.isSigninAllowed()) {
             addPromoCard();
+            shownEvent = Event.SHOWN_SIGNED_OUT;
+            if (recordShownMetrics) {
+                // The promo card is part of the menu, so sign-in was offered to the user.
+                SigninMetricsUtils.logSigninOffered(
+                        SigninPromoAction.NO_SIGNIN_PROMO,
+                        SigninAccessPoint.ACCOUNT_MENU_SIGNED_OUT_STATE);
+            }
+        } else {
+            shownEvent = Event.SHOWN_SIGNED_OUT_SIGNIN_DISABLED;
+        }
+
+        if (recordShownMetrics) {
+            recordEvent(shownEvent);
         }
     }
 
     private void addIdentityCard(IdentityManager identityManager, AccountInfo accountInfo) {
         if (mProfileDataCache == null) {
             mProfileDataCache =
-                    ProfileDataCache.createWithoutBadge(
+                    ProfileDataCache.create(
                             mContext, identityManager, R.dimen.account_menu_avatar_size);
             mProfileDataCache.addObserver(this);
         }
         DisplayableProfileData profileData = mProfileDataCache.getById(accountInfo.getId());
+        if (!SigninFeatureMap.isEnabled(SigninFeatures.SIGNIN_BUTTON_PROFILE_MENU_REFINEMENTS)) {
+            mModelList.add(
+                    new ListItem(
+                            ItemType.IDENTITY_CARD,
+                            IdentityCardProperties.createModel(profileData)));
+            return;
+        }
+        boolean isProfileManaged = ManagedBrowserUtils.isProfileManaged(mProfile);
         mModelList.add(
                 new ListItem(
-                        ItemType.IDENTITY_CARD, IdentityCardProperties.createModel(profileData)));
+                        ItemType.IDENTITY_CARD,
+                        IdentityCardProperties.createModel(
+                                profileData,
+                                isProfileManaged,
+                                isProfileManaged ? createManagedHeaderClickListener() : null)));
+        if (!isProfileManaged && mCallbackController != null) {
+            CoreAccountId accountId = accountInfo.getId();
+            mSigninManager.isAccountManaged(
+                    accountInfo,
+                    mCallbackController.makeCancelable(
+                            isManaged -> updateAccountManagedHeader(accountId, isManaged)));
+        }
+    }
+
+    private void maybeAddErrorCard(AccountInfo accountInfo) {
+        if (!SigninFeatureMap.isEnabled(SigninFeatures.SIGNIN_BUTTON_PROFILE_MENU_ERROR_CARD)) {
+            return;
+        }
+        // TODO(crbug.com/555648510): Record a AccountMenu.Event for error card button click.
+        @UserActionableError int error = mSyncService.getUserActionableError();
+        if (error != UserActionableError.NONE) {
+            mModelList.add(
+                    new ListItem(
+                            ItemType.ERROR_CARD,
+                            ErrorCardProperties.createModel(error, accountInfo, () -> {})));
+        }
+    }
+
+    private void updateAccountManagedHeader(CoreAccountId accountId, boolean isAccountManaged) {
+        AccountInfo primaryAccount = mIdentityManager.getPrimaryAccountInfo();
+        if (!isAccountManaged
+                || primaryAccount == null
+                || !primaryAccount.getId().equals(accountId)) {
+            return;
+        }
+        for (ListItem item : mModelList) {
+            if (item.type == ItemType.IDENTITY_CARD) {
+                item.model.set(IdentityCardProperties.SHOULD_DISPLAY_MANAGED_HEADER, true);
+                item.model.set(
+                        IdentityCardProperties.MANAGED_HEADER_CLICK_LISTENER,
+                        createManagedHeaderClickListener());
+                break;
+            }
+        }
+    }
+
+    private OnClickListener createManagedHeaderClickListener() {
+        return v -> {
+            recordEvent(Event.MANAGED_HEADER_CLICKED);
+            mDismissCallback.run();
+            openManagementPage();
+        };
     }
 
     private void addPromoCard() {
@@ -229,13 +374,14 @@ public class AccountMenuMediator
                         ItemType.PROMO_CARD,
                         PromoCardProperties.createModel(
                                 v -> {
+                                    recordEvent(Event.SIGNIN_PROMO_CLICKED);
                                     mDismissCallback.run();
                                     startSigninFlow();
                                 })));
     }
 
     private void startSigninFlow() {
-        if (mSigninManager == null || !mSigninManager.isSigninAllowed()) {
+        if (!mSigninManager.isSigninAllowed()) {
             return;
         }
 
@@ -255,7 +401,7 @@ public class AccountMenuMediator
                                 HistorySyncConfig.OptInMode.OPTIONAL,
                                 mContext.getString(R.string.history_sync_title),
                                 mContext.getString(R.string.history_sync_subtitle))
-                        .signinSurveyType(SigninSurveyController.SigninSurveyType.NTP_SIGNIN_BUTTON)
+                        .signinSurveyType(SigninSurveyType.NTP_SIGNIN_BUTTON)
                         .build();
 
         if (SigninFeatureMap.getInstance().isActivitylessSigninAllEntryPointEnabled()) {
@@ -285,6 +431,15 @@ public class AccountMenuMediator
         settingsNavigation.startSettings(mContext, SettingsFragment.MAIN);
     }
 
+    private void openManagementPage() {
+        TabModelSelector selector = TabModelSelectorSupplier.getValueOrNullFrom(mWindowAndroid);
+        if (selector != null) {
+            TabCreator tabCreator =
+                    selector.getTabCreatorManager().getTabCreator(/* incognito= */ false);
+            tabCreator.launchUrl(UrlConstants.MANAGEMENT_URL, TabLaunchType.FROM_CHROME_UI);
+        }
+    }
+
     /** Opens a new Incognito window if supported, or a new Incognito tab otherwise. */
     private void openIncognito() {
         if (IncognitoUtils.shouldOpenIncognitoAsWindow()) {
@@ -308,23 +463,78 @@ public class AccountMenuMediator
         }
     }
 
-    private void maybeAddManageGoogleAccount() {
-        if (mProfile.isOffTheRecord()) {
-            return;
-        }
-        IdentityManager identityManager =
-                IdentityServicesProvider.get().getIdentityManager(mProfile);
-        if (identityManager != null && identityManager.hasPrimaryAccount()) {
-            mModelList.add(
-                    new ListItem(
-                            ItemType.MENU_ITEM,
-                            MenuItemProperties.createModel(
-                                    R.string.manage_your_google_account,
-                                    R.drawable.ic_google_services_24dp,
-                                    v -> {
-                                        mDismissCallback.run();
-                                        mSigninLauncher.openManageGoogleAccount(mContext);
-                                    })));
-        }
+    private ListItem createPasswordsAndAutofillItem(boolean isSectionTop, boolean isSectionBottom) {
+        return new ListItem(
+                ItemType.MENU_ITEM,
+                MenuItemProperties.createModel(
+                        R.string.menu_passwords_and_autofill,
+                        R.drawable.ic_password_manager_24dp,
+                        v -> {
+                            recordEvent(Event.PASSWORDS_AND_AUTOFILL_CLICKED);
+                            mDismissCallback.run();
+                            openAutofillSettings();
+                        },
+                        isSectionTop,
+                        isSectionBottom));
+    }
+
+    private ListItem createManageGoogleAccountItem(boolean isSectionTop, boolean isSectionBottom) {
+        return new ListItem(
+                ItemType.MENU_ITEM,
+                MenuItemProperties.createModel(
+                        R.string.manage_your_google_account,
+                        R.drawable.ic_google_services_24dp,
+                        v -> {
+                            recordEvent(Event.MANAGE_GOOGLE_ACCOUNT_CLICKED);
+                            mDismissCallback.run();
+                            mSigninLauncher.openManageGoogleAccount(mContext);
+                        },
+                        isSectionTop,
+                        isSectionBottom));
+    }
+
+    private ListItem createAccountSettingsItem(boolean isSectionTop, boolean isSectionBottom) {
+        boolean showIconBadge =
+                !SigninFeatureMap.isEnabled(SigninFeatures.SIGNIN_BUTTON_PROFILE_MENU_ERROR_CARD)
+                        && mSyncService.getUserActionableError() != UserActionableError.NONE;
+        return new ListItem(
+                ItemType.MENU_ITEM,
+                MenuItemProperties.createModel(
+                        R.string.profile_menu_account_settings_button,
+                        R.drawable.settings_cog,
+                        v -> {
+                            recordEvent(Event.ACCOUNT_SETTINGS_CLICKED);
+                            mDismissCallback.run();
+                            openAccountSettings();
+                        },
+                        showIconBadge,
+                        isSectionTop,
+                        isSectionBottom));
+    }
+
+    private ListItem createIncognitoItem(boolean isSectionTop, boolean isSectionBottom) {
+        boolean openAsWindow = IncognitoUtils.shouldOpenIncognitoAsWindow();
+        int titleRes =
+                openAsWindow ? R.string.menu_new_incognito_window : R.string.menu_new_incognito_tab;
+        return new ListItem(
+                ItemType.MENU_ITEM,
+                MenuItemProperties.createModel(
+                        titleRes,
+                        R.drawable.ic_incognito_24dp,
+                        v -> {
+                            recordEvent(
+                                    openAsWindow
+                                            ? Event.NEW_INCOGNITO_WINDOW_CLICKED
+                                            : Event.NEW_INCOGNITO_TAB_CLICKED);
+                            mDismissCallback.run();
+                            openIncognito();
+                        },
+                        isSectionTop,
+                        isSectionBottom));
+    }
+
+    /** Records an account menu event: the menu being shown, or an item being selected in it. */
+    private static void recordEvent(@Event int event) {
+        RecordHistogram.recordEnumeratedHistogram("Signin.AccountMenu.Event", event, Event.COUNT);
     }
 }

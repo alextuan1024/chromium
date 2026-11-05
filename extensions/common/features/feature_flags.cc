@@ -28,8 +28,10 @@ const base::Feature* kFeatureFlags[] = {
     &extensions_features::kApiMimeHandler,
     &extensions_features::kApiGlicPrivate,
     &extensions_features::kApiContextualTasksPrivate,
+    &extensions_features::kApiContextualTasksPrivateAba,
     &extensions_features::kApiOdfsConfigPrivate,
     &extensions_features::kApiProxyOverrideRulesPrivate,
+    &extensions_features::kApiRuntimeGetDocumentId,
     &extensions_features::kApiTabsSplitView,
     &extensions_features::kExperimentalOmniboxLabs,
     &extensions_features::kExtensionAsyncListenerRegistration,
@@ -39,6 +41,7 @@ const base::Feature* kFeatureFlags[] = {
         kApiEnterpriseReportingPrivateOnDataMaskingRulesTriggered,
     &extensions_features::
         kApiEnterpriseReportingPrivateReportForceSaveToCloudEventHandled,
+    &extensions_features::kBackForwardCacheForComponentExtensionFrames,
 #if BUILDFLAG(IS_CHROMEOS)
     &blink::features::kSmartCard,
 #endif

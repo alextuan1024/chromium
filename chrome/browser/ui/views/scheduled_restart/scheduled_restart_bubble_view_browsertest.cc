@@ -13,17 +13,31 @@
 #include "chrome/browser/lifetime/scheduled_restart_manager.h"
 #include "chrome/browser/ui/toasts/api/toast_id.h"
 #include "chrome/browser/ui/toasts/toast_controller.h"
+#include "chrome/browser/ui/views/chrome_layout_provider.h"
+#include "chrome/browser/ui/views/chrome_typography.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/common/chrome_features.h"
 #include "chrome/grit/branded_strings.h"
 #include "chrome/grit/generated_resources.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "content/public/test/browser_test.h"
+#include "ui/accessibility/ax_role_properties.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/l10n/time_format.h"
+#include "ui/events/base_event_utils.h"
+#include "ui/events/event.h"
+#include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/controls/button/md_text_button.h"
+#include "ui/views/controls/label.h"
+#include "ui/views/controls/styled_label.h"
+#include "ui/views/interaction/element_tracker_views.h"
+#include "ui/views/layout/layout_provider.h"
+#include "ui/views/metrics.h"
+#include "ui/views/style/typography.h"
 #include "ui/views/test/button_test_api.h"
 #include "ui/views/view_utils.h"
 #include "ui/views/widget/widget.h"
+#include "ui/views/window/dialog_delegate.h"
 
 namespace scheduled_restart {
 
@@ -54,16 +68,41 @@ IN_PROC_BROWSER_TEST_F(ScheduledRestartBubbleViewBrowserTest,
   auto widget = ScheduledRestartBubbleView::ShowBubble(browser());
   ASSERT_TRUE(widget);
   EXPECT_TRUE(widget->IsVisible());
+  EXPECT_FALSE(widget->IsActive());
+  EXPECT_EQ(
+      widget->GetRootView()->GetViewAccessibility().GetCachedDescription(),
+      l10n_util::GetStringUTF16(IDS_SHOW_BUBBLE_INACTIVE_DESCRIPTION));
 
   auto* dialog_delegate = widget->widget_delegate()->AsDialogDelegate();
   ASSERT_TRUE(dialog_delegate);
 
   EXPECT_EQ(
       dialog_delegate->GetWindowTitle(),
-      l10n_util::GetPluralStringFUTF16(IDS_RELAUNCH_RECOMMENDED_TITLE, 0));
+      l10n_util::GetStringUTF16(IDS_RELAUNCH_RECOMMENDED_SCHEDULED_TITLE));
+  EXPECT_TRUE(
+      ui::IsAlert(widget->widget_delegate()->GetAccessibleWindowRole()));
   EXPECT_TRUE(dialog_delegate->ShouldShowCloseButton());
+  EXPECT_EQ(dialog_delegate->fixed_width(),
+            ChromeLayoutProvider::Get()->GetDistanceMetric(
+                views::DISTANCE_MODAL_DIALOG_PREFERRED_WIDTH));
 
-  // Verify prominent OK button is "Restart now" and default.
+  // Verify the body paragraph by element identifier.
+  const ui::ElementContext context =
+      views::ElementTrackerViews::GetContextForWidget(widget.get());
+  auto* first_paragraph = views::ElementTrackerViews::GetInstance()
+                              ->GetFirstMatchingViewAs<views::StyledLabel>(
+                                  kScheduledRestartBodyId, context);
+  ASSERT_TRUE(first_paragraph);
+  EXPECT_EQ(first_paragraph->GetTextContext(), views::style::CONTEXT_LABEL);
+  EXPECT_EQ(first_paragraph->GetText(),
+            l10n_util::GetStringFUTF16(
+                IDS_RELAUNCH_RECOMMENDED_BODY_SCHEDULE,
+                l10n_util::GetStringUTF16(
+                    IDS_RELAUNCH_RECOMMENDED_BODY_SCHEDULE_IMPORTANT_UPDATE),
+                ScheduledRestartBubbleView::FormatIdleDuration(
+                    ScheduledRestartManager::GetIdleThreshold())));
+
+  // Verify prominent OK button is "Relaunch now" and default.
   EXPECT_TRUE(
       dialog_delegate->IsDialogButtonEnabled(ui::mojom::DialogButton::kOk));
   EXPECT_EQ(dialog_delegate->GetDialogButtonLabel(ui::mojom::DialogButton::kOk),
@@ -73,7 +112,7 @@ IN_PROC_BROWSER_TEST_F(ScheduledRestartBubbleViewBrowserTest,
   EXPECT_EQ(dialog_delegate->GetDefaultDialogButton(),
             static_cast<int>(ui::mojom::DialogButton::kOk));
 
-  // Verify tonal ExtraView button is "Restart when idle".
+  // Verify tonal ExtraView button is "Update when I step away".
   auto* idle_button =
       views::AsViewClass<views::MdTextButton>(dialog_delegate->GetExtraView());
   ASSERT_TRUE(idle_button);
@@ -126,7 +165,14 @@ IN_PROC_BROWSER_TEST_F(ScheduledRestartBubbleViewBrowserTest,
       views::AsViewClass<views::MdTextButton>(dialog_delegate->GetExtraView());
   ASSERT_TRUE(idle_button);
 
-  views::test::ButtonTestApi(idle_button).NotifyDefaultMouseClick();
+  // The click timestamp must be past the dialog's input protection window,
+  // otherwise the extra button ignores it as a possibly unintended
+  // interaction.
+  views::test::ButtonTestApi(idle_button)
+      .NotifyClick(ui::MouseEvent(
+          ui::EventType::kMousePressed, gfx::Point(), gfx::Point(),
+          ui::EventTimeForNow() + 2 * views::GetDoubleClickInterval(),
+          ui::EF_LEFT_MOUSE_BUTTON, ui::EF_LEFT_MOUSE_BUTTON));
 
   EXPECT_TRUE(manager()->is_scheduled());
   EXPECT_EQ(manager()->mode(), ScheduledRestartMode::kOnIdle);
@@ -162,6 +208,41 @@ IN_PROC_BROWSER_TEST_F(ScheduledRestartBubbleViewBrowserTest,
   histogram_tester.ExpectUniqueSample(
       "Session.ScheduledRestart.DialogChoice",
       ScheduledRestartBubbleView::ScheduledRestartDialogChoice::kDismissed, 1);
+}
+
+// Verifies that configuring a non-default idle threshold through the feature
+// parameter updates the formatted duration displayed to the user.
+class ScheduledRestartBubbleViewCustomIdleThresholdBrowserTest
+    : public InProcessBrowserTest {
+ public:
+  ScheduledRestartBubbleViewCustomIdleThresholdBrowserTest() {
+    feature_list_.InitAndEnableFeatureWithParameters(
+        features::kScheduledRestart, {{"idle_threshold", "10m"}});
+  }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+};
+
+IN_PROC_BROWSER_TEST_F(ScheduledRestartBubbleViewCustomIdleThresholdBrowserTest,
+                       BubbleDisplaysConfiguredIdleThreshold) {
+  auto widget = ScheduledRestartBubbleView::ShowBubble(browser());
+  ASSERT_TRUE(widget);
+
+  const ui::ElementContext context =
+      views::ElementTrackerViews::GetContextForWidget(widget.get());
+  auto* first_paragraph = views::ElementTrackerViews::GetInstance()
+                              ->GetFirstMatchingViewAs<views::StyledLabel>(
+                                  kScheduledRestartBodyId, context);
+  ASSERT_TRUE(first_paragraph);
+  EXPECT_EQ(ScheduledRestartManager::GetIdleThreshold(), base::Minutes(10));
+  EXPECT_EQ(
+      first_paragraph->GetText(),
+      l10n_util::GetStringFUTF16(
+          IDS_RELAUNCH_RECOMMENDED_BODY_SCHEDULE,
+          l10n_util::GetStringUTF16(
+              IDS_RELAUNCH_RECOMMENDED_BODY_SCHEDULE_IMPORTANT_UPDATE),
+          ScheduledRestartBubbleView::FormatIdleDuration(base::Minutes(10))));
 }
 
 }  // namespace scheduled_restart

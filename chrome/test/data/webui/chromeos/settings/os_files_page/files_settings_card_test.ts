@@ -7,7 +7,7 @@ import 'chrome://os-settings/lazy_load.js';
 import type {FilesSettingsCardElement} from 'chrome://os-settings/lazy_load.js';
 import {OneDriveConnectionState, SmbBrowserProxyImpl} from 'chrome://os-settings/lazy_load.js';
 import type {CrLinkRowElement, Route, SettingsPrefsElement} from 'chrome://os-settings/os_settings.js';
-import {createRouterForTesting, CrSettingsPrefs, OneDriveBrowserProxy, Router, routes} from 'chrome://os-settings/os_settings.js';
+import {createRouterForTesting, CrSettingsPrefs, Router, routes} from 'chrome://os-settings/os_settings.js';
 import {assert} from 'chrome://resources/js/assert.js';
 import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
 import {flush} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
@@ -16,8 +16,8 @@ import {FakeSettingsPrivate} from 'chrome://webui-test/fake_settings_private.js'
 import {flushTasks, waitAfterNextRender} from 'chrome://webui-test/polymer_test_util.js';
 import {eventToPromise, isVisible} from 'chrome://webui-test/test_util.js';
 
-import type {ProxyOptions} from './one_drive_test_browser_proxy.js';
-import {OneDriveTestBrowserProxy} from './one_drive_test_browser_proxy.js';
+import type {OneDriveTestBrowserProxy, ProxyOptions} from './one_drive_test_browser_proxy.js';
+import {setupOneDriveTestProxy} from './one_drive_test_browser_proxy.js';
 import {TestSmbBrowserProxy} from './test_smb_browser_proxy.js';
 
 suite('<files-settings-card>', () => {
@@ -45,11 +45,6 @@ suite('<files-settings-card>', () => {
       },
       {
         key: 'drivefs.bulk_pinning_enabled',
-        type: chrome.settingsPrivate.PrefType.BOOLEAN,
-        value: false,
-      },
-      {
-        key: 'drivefs.enable_mirror_sync',
         type: chrome.settingsPrivate.PrefType.BOOLEAN,
         value: false,
       },
@@ -139,7 +134,6 @@ suite('<files-settings-card>', () => {
   });
 
   test('Card rendering does not depend on OneDriveBrowserProxy', async () => {
-    OneDriveBrowserProxy.setInstance(null);
     await createFilesSettingsCard();
     await flushTasks();
     assertTrue(isVisible(filesSettingsCard));
@@ -182,8 +176,7 @@ suite('<files-settings-card>', () => {
     let testOneDriveBrowserProxy: OneDriveTestBrowserProxy;
 
     function setupBrowserProxy(options: ProxyOptions): void {
-      testOneDriveBrowserProxy = new OneDriveTestBrowserProxy(options);
-      OneDriveBrowserProxy.setInstance(testOneDriveBrowserProxy);
+      testOneDriveBrowserProxy = setupOneDriveTestProxy(options);
     }
 
     setup(() => {
@@ -290,8 +283,7 @@ suite('<files-settings-card>', () => {
     let testOneDriveBrowserProxy: OneDriveTestBrowserProxy;
 
     function setupBrowserProxy(options: ProxyOptions): void {
-      testOneDriveBrowserProxy = new OneDriveTestBrowserProxy(options);
-      OneDriveBrowserProxy.setInstance(testOneDriveBrowserProxy);
+      testOneDriveBrowserProxy = setupOneDriveTestProxy(options);
     }
 
     setup(() => {
@@ -378,62 +370,6 @@ suite('<files-settings-card>', () => {
       assertTrue(googleDriveRowSubLabel.innerText.startsWith('Signed in as'));
 
       filesSettingsCard.setPrefValue('drivefs.bulk_pinning_enabled', true);
-      flush();
-      assertEquals('File sync on', googleDriveRowSubLabel.innerText);
-    });
-  });
-
-  suite('with enableDriveFsMirrorSync set to true', () => {
-    setup(() => {
-      loadTimeData.overrideValues({
-        enableDriveFsMirrorSync: true,
-      });
-    });
-
-    test(
-        'with gdata.disabled set to true, text shows appropriately',
-        async () => {
-          await createFilesSettingsCard();
-          filesSettingsCard.setPrefValue('gdata.disabled', true);
-          flush();
-          assertEquals('Not signed in', getGoogleDriveRowSubLabel().innerText);
-        });
-
-    test(
-        'with gdata.disabled set to false, but mirror sync disabled',
-        async () => {
-          await createFilesSettingsCard();
-          filesSettingsCard.setPrefValue('drivefs.enable_mirror_sync', false);
-          flush();
-
-          assertTrue(
-              getGoogleDriveRowSubLabel().innerText.startsWith('Signed in as'));
-        });
-
-    test(
-        'with gdata.disabled set to false, and mirror sync enabled',
-        async () => {
-          await createFilesSettingsCard();
-          filesSettingsCard.setPrefValue('drivefs.enable_mirror_sync', true);
-          flush();
-
-          assertEquals('File sync on', getGoogleDriveRowSubLabel().innerText);
-        });
-
-    test('cycling through the prefs updates the sublabel texts', async () => {
-      await createFilesSettingsCard();
-      filesSettingsCard.setPrefValue('gdata.disabled', true);
-      filesSettingsCard.setPrefValue('drivefs.enable_mirror_sync', false);
-      flush();
-
-      const googleDriveRowSubLabel = getGoogleDriveRowSubLabel();
-      assertEquals('Not signed in', googleDriveRowSubLabel.innerText);
-
-      filesSettingsCard.setPrefValue('gdata.disabled', false);
-      flush();
-      assertTrue(googleDriveRowSubLabel.innerText.startsWith('Signed in as'));
-
-      filesSettingsCard.setPrefValue('drivefs.enable_mirror_sync', true);
       flush();
       assertEquals('File sync on', googleDriveRowSubLabel.innerText);
     });

@@ -25,11 +25,12 @@
 #include "base/task/thread_pool.h"
 #include "base/time/time.h"
 #include "base/timer/timer.h"
-#include "chrome/app/vector_icons/vector_icons.h"
 #include "chrome/browser/ash/borealis/borealis_util.h"
 #include "chrome/browser/ash/video_conference/video_conference_ash_feature_client.h"
 #include "chrome/grit/generated_resources.h"
 #include "chromeos/ash/experiences/settings_ui/settings_app_manager.h"
+#include "components/session_manager/core/session.h"
+#include "components/session_manager/core/session_manager.h"
 #include "components/user_manager/user_manager.h"
 #include "components/vector_icons/vector_icons.h"
 #include "content/public/browser/browser_task_traits.h"
@@ -229,7 +230,8 @@ class VmCameraMicManager::VmInfo : public message_center::NotificationObserver {
 
   void UpdateActiveNotificationAndIndicators(
       NotificationType new_notification) {
-    DCHECK_NE(notifications_.active, new_notification);
+    CHECK_NE(notifications_.active, new_notification,
+             base::NotFatalUntil::M160);
 
     auto app_name = l10n_util::GetStringUTF16(name_id_);
     auto delegate = base::MakeRefCounted<PrivacyIndicatorsNotificationDelegate>(
@@ -283,7 +285,8 @@ class VmCameraMicManager::VmInfo : public message_center::NotificationObserver {
     }
 
     // Only target notification is different.
-    DCHECK_NE(notifications_.active, notifications_.target);
+    CHECK_NE(notifications_.active, notifications_.target,
+             base::NotFatalUntil::M160);
     notifications_.stage = notifications_.target;
     UpdateActiveNotificationAndIndicators(notifications_.target);
     VLOG(1) << "sync from target. vm_type=" << static_cast<int>(vm_type_)
@@ -309,7 +312,7 @@ class VmCameraMicManager::VmInfo : public message_center::NotificationObserver {
         message_id = IDS_APP_USING_CAMERA_NOTIFICATION_MESSAGE;
       }
     } else {
-      DCHECK_EQ(type, kMicNotification);
+      CHECK_EQ(type, kMicNotification, base::NotFatalUntil::M160);
       source_icon = ::features::IsRoundedIconsEnabled()
                         ? &vector_icons::kMicFilledIcon
                         : &vector_icons::kMicOldIcon;
@@ -378,9 +381,13 @@ class VmCameraMicManager::VmInfo : public message_center::NotificationObserver {
     }
 
     // A notification can only exist after `OnPrimaryUserSessionStarted()`, so
-    // the primary user is guaranteed to be present here.
+    // the primary session is guaranteed to be present here.
+    const session_manager::Session* primary_session =
+        session_manager::SessionManager::Get()->GetPrimarySession();
+    CHECK(primary_session);
     ash::SettingsAppManager::Get()->Open(
-        CHECK_DEREF(user_manager::UserManager::Get()->GetPrimaryUser()),
+        CHECK_DEREF(user_manager::UserManager::Get()->FindUser(
+            primary_session->account_id())),
         ash::SettingsAppManager::OpenParams{.sub_page = sub_page,
                                             .entry_point = entry_point});
   }
@@ -414,7 +421,7 @@ VmCameraMicManager* VmCameraMicManager::Get() {
 VmCameraMicManager::VmCameraMicManager() = default;
 
 void VmCameraMicManager::OnPrimaryUserSessionStarted() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
 
   auto emplace_vm_info = [this](VmType vm, int name_id) {
     vm_info_map_.emplace(
@@ -452,7 +459,7 @@ VmCameraMicManager::~VmCameraMicManager() = default;
 
 void VmCameraMicManager::MaybeSubscribeToCameraService(
     bool should_use_cros_camera_service) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
 
   if (!should_use_cros_camera_service) {
     return;
@@ -545,7 +552,7 @@ void VmCameraMicManager::OnCameraHWPrivacySwitchStateChanged(
 }
 
 void VmCameraMicManager::SetCameraPrivacyIsOn(bool is_on) {
-  DCHECK(!vm_info_map_.empty());
+  CHECK(!vm_info_map_.empty(), base::NotFatalUntil::M160);
   for (auto& vm_and_info : vm_info_map_) {
     UpdateVmInfo(/*vm=*/vm_and_info.first, &VmInfo::SetCameraPrivacyIsOn,
                  is_on);
@@ -585,7 +592,7 @@ std::string VmCameraMicManager::GetNotificationId(VmType vm,
 }
 
 void VmCameraMicManager::OnNumberOfInputStreamsWithPermissionChanged() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
 
   const auto& clients_and_numbers =
       CrasAudioHandler::Get()->GetNumberOfInputStreamsWithPermission();

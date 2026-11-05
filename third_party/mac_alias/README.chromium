@@ -2,7 +2,7 @@ Name: mac_alias
 Short Name: mac_alias
 URL: https://github.com/dmgbuild/mac_alias
 Version: N/A
-Revision: d0c076b4562541c1509d9874f42880378245d268
+Revision: 272dc95cc653a2b09b2711d3029cbf61dd69ea74
 Update Mechanism: Autoroll
 License: MIT
 License File: src/LICENSE
@@ -14,4 +14,5 @@ A Python library for generating and parsing macOS Alias records. This dependency
 is required by for programmatic creation of macOS DMG installer .DS_Store files.
 
 Local Modifications:
-None
+Added mac_alias.dist-info/METADATA stub so importlib.metadata.version() succeeds
+when imported directly from the source checkout via sys.path.

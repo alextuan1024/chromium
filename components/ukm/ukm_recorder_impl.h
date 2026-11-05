@@ -44,7 +44,6 @@ class UkmRecorderImplTest;
 class UkmRecorderObserver;
 class UkmSource;
 class UkmTestHelper;
-class UkmUtilsForTest;
 
 COMPONENT_EXPORT(UKM_RECORDER) BASE_DECLARE_FEATURE(kUkmSamplingRateFeature);
 
@@ -163,6 +162,15 @@ class COMPONENT_EXPORT(UKM_RECORDER) UkmRecorderImpl : public UkmRecorder {
 
   bool ShouldDropEntryForTesting(mojom::UkmEntry* entry);
 
+  const std::map<SourceId, std::unique_ptr<UkmSource>>& sources_for_testing()
+      const {
+    return recordings_.sources;
+  }
+
+  const std::vector<mojom::UkmEntryPtr>& entries_for_testing() const {
+    return recordings_.entries;
+  }
+
  protected:
   // Returns whether kRestructureMetricsConsentSettings feature is enabled.
   // This is a pure virtual method to force subclasses to override this
@@ -243,7 +251,6 @@ class COMPONENT_EXPORT(UKM_RECORDER) UkmRecorderImpl : public UkmRecorder {
   friend ::metrics::UkmBrowserTestBase;
   friend ::ukm::debug::UkmDebugDataExtractor;
   friend ::ukm::UkmTestHelper;
-  friend ::ukm::UkmUtilsForTest;
   FRIEND_TEST_ALL_PREFIXES(UkmRecorderImplTest, IsSampledIn);
   FRIEND_TEST_ALL_PREFIXES(UkmRecorderImplTest, PurgeExtensionRecordings);
   FRIEND_TEST_ALL_PREFIXES(UkmRecorderImplTest, WebApkSourceUrl);
@@ -266,13 +273,7 @@ class COMPONENT_EXPORT(UKM_RECORDER) UkmRecorderImpl : public UkmRecorder {
                            StoreDownsamplingParametersInReport);
 
   struct MetricAggregate {
-    uint64_t total_count = 0;
     double value_sum = 0;
-    double value_square_sum = 0.0;
-    uint64_t dropped_due_to_limits = 0;
-    uint64_t dropped_due_to_sampling = 0;
-    uint64_t dropped_due_to_filter = 0;
-    uint64_t dropped_due_to_unconfigured = 0;
   };
 
   struct EventAggregate {
@@ -286,11 +287,8 @@ class COMPONENT_EXPORT(UKM_RECORDER) UkmRecorderImpl : public UkmRecorder {
     uint64_t total_count = 0;
     uint64_t dropped_due_to_limits = 0;
     uint64_t dropped_due_to_sampling = 0;
-    uint64_t dropped_due_to_filter = 0;
     uint64_t dropped_due_to_unconfigured = 0;
   };
-
-  using MetricAggregateMap = std::map<uint64_t, MetricAggregate>;
 
   // Marks for deletion if the |source_id| is of a certain type.
   void MaybeMarkForDeletion(SourceId source_id);

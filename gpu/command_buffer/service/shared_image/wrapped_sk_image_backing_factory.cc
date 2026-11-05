@@ -65,6 +65,12 @@ bool GraphiteSupportsCompressedTextures(
         wgpu::FeatureName::TextureCompressionETC2);
   }
 #endif
+#if BUILDFLAG(SKIA_USE_GRAPHITE_VULKAN)
+  if (context_state->IsGraphiteVulkan()) {
+    // TODO(crbug.com/552951905): Add a way to query for this info.
+    return true;
+  }
+#endif
   return false;
 }
 
@@ -162,28 +168,28 @@ bool WrappedSkImageBackingFactory::IsSupported(
   // queues, we need to synchronize the reads/writes via semaphores.
   if (thread_safe) {
     bool is_vulkan = gr_context_type == GrContextType::kVulkan ||
-                     context_state_->IsGraphiteDawnVulkan();
+                     context_state_->IsGraphiteDawnVulkan() ||
+                     context_state_->IsGraphiteVulkan();
     bool is_dawn_metal = context_state_->IsGraphiteDawnMetal();
     if (!is_drdc_enabled_ || (!is_vulkan && !is_dawn_metal)) {
       return false;
     }
   }
 
-  if (format == viz::SinglePlaneFormat::kALPHA_8) {
-    // For ALPHA8 skia will pick format depending on context version and
-    // extensions available and we'll have to match that format when we record
-    // DDLs. To avoid matching logic here, fallback to other backings (e.g
-    // GLTextureImageBacking) where we control what format was used.
-    if (gr_context_type == GrContextType::kGL) {
-      return false;
-    }
-  } else if (format == viz::SinglePlaneFormat::kBGRX_8888 ||
-             format == viz::SinglePlaneFormat::kBGR_565) {
+  if (format == viz::SinglePlaneFormat::kBGRX_8888 ||
+      format == viz::SinglePlaneFormat::kBGR_565) {
     // For BGRX_8888/BGR_565 there is no equivalent SkColorType. Skia will use
     // the RGBX_8888/RGB_565 color type on upload so R/B channels are reversed.
     if (usage.Has(SHARED_IMAGE_USAGE_CPU_UPLOAD) || !pixel_data.empty()) {
       return false;
     }
+  }
+
+  if (format.is_single_plane() &&
+      viz::ToClosestSkColorType(format) == kUnknown_SkColorType) {
+    // No SkColorType describes the format at the image size, e.g. packed
+    // 4:2:2 Y210 whose texels each hold two pixels.
+    return false;
   }
 
   if (context_state_->context_lost()) {
@@ -244,16 +250,16 @@ bool WrappedSkImageBackingFactory::IsSupportedForAccessStream(
     return false;
   }
 
+  AccessParams access_params = params ? *params : AccessParams();
   if (use_graphite_) {
     // We create a temporary backing just to check for support.
     // TODO(crbug.com/394385381): Consider refactoring this to not require a
     // context_state or a backing instance.
-    AccessParams access_params = params ? *params : AccessParams();
-    bool supported = WrappedGraphiteTextureBacking::CheckSupportForAccessStream(
+    return WrappedGraphiteTextureBacking::CheckSupportForAccessStream(
         stream, format, access_params);
-    return supported;
   }
-  return true;
+  return WrappedSkImageBacking::CheckSupportForAccessStream(stream,
+                                                            access_params);
 }
 
 }  // namespace gpu

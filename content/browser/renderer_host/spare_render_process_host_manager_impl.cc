@@ -330,7 +330,7 @@ constexpr base::MemoryConsumerTraits kSpareRenderProcessHostManagerTraits(
     // Pools pre-warmed renderer processes (tens of MBs each).
     base::MemoryConsumerTraits::EstimatedMemoryUsage::kMedium,
     // Process termination lets the OS reclaim memory pages directly.
-    base::MemoryConsumerTraits::ReleaseMemoryCost::kFreesPagesWithoutTraversal,
+    base::MemoryConsumerTraits::ReleaseMemoryDataAccess::kNone,
     // Eviction results in a cold start, but no user state is lost.
     base::MemoryConsumerTraits::InformationRetention::kLossless,
     // Cleans up host objects synchronously on the browser main thread.
@@ -455,6 +455,15 @@ SpareRenderProcessHostManagerImpl::GetLastSpareRendererCreationInfo() const {
 RenderProcessHost* SpareRenderProcessHostManagerImpl::WarmupSpare(
     BrowserContext* browser_context,
     std::optional<base::TimeDelta> timeout) {
+  // Keep the current spares if no navigation in `browser_context` can use a
+  // spare. `no_spare_renderer_reason_` is kept too, since this doesn't remove
+  // a spare.
+  if (!GetContentClient()
+           ->browser()
+           ->CanBrowserContextUseSpareRenderProcessHost(browser_context)) {
+    return nullptr;
+  }
+
   if (delay_timer_) {
     // If the timeout does not have a value, the delayed creation is no longer
     // required since we will create the spare renderer here.
@@ -933,7 +942,7 @@ size_t SpareRenderProcessHostManagerImpl::GetTargetSpareRPHCount() const {
 
   // Preserve 1 spare if keep-one-alive policy is active.
   if (base::FeatureList::IsEnabled(kSpareRPHKeepOneAliveOnMemoryPressure) &&
-      memory_limit() > 0) {
+      memory_limit() > base::MemoryLimit::FromPercent(0)) {
     target = std::max(size_t{1}, target);
   }
 

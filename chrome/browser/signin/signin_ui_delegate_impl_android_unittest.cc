@@ -51,7 +51,8 @@ class MockSigninBridge : public SigninBridge {
               (content::WebContents * web_contents,
                const GURL& continue_url,
                const std::optional<CoreAccountId>& account_id,
-               const std::string& extension_name),
+               const std::string& extension_name,
+               base::OnceClosure on_flow_finished),
               (override));
 
   MOCK_METHOD(void,
@@ -66,7 +67,8 @@ class MockSigninBridge : public SigninBridge {
               StartUpdateCredentialsFlow,
               (TabAndroid * tab,
                const GURL& continue_url,
-               const CoreAccountId& account_id),
+               const CoreAccountId& account_to_reauth,
+               const CoreAccountId& target_account_id),
               (override));
 };
 
@@ -131,13 +133,13 @@ TEST_F(SigninUiDelegateImplAndroidTest, ShowSigninUI) {
 
   signin_ui_util::SigninUiDelegateImplAndroid delegate;
 
-  EXPECT_CALL(
-      *signin_bridge(),
-      OpenAccountPickerBottomSheetForExtensions(
-          _, GetTestUrl(), std::make_optional(account_id), kTestExtensionName));
+  EXPECT_CALL(*signin_bridge(),
+              OpenAccountPickerBottomSheetForExtensions(
+                  _, GetTestUrl(), std::make_optional(account_id),
+                  kTestExtensionName, _));
 
-  delegate.ShowSigninUI(profile(), /*enable_sync=*/true, kTestAccessPoint,
-                        kTestPromoAction, kTestExtensionName);
+  delegate.ShowSigninUI(profile(), /*enable_history_sync=*/true,
+                        kTestAccessPoint, kTestPromoAction, kTestExtensionName);
 
   TabModelList::RemoveTabModel(&tab_model);
 }
@@ -160,8 +162,8 @@ TEST_F(SigninUiDelegateImplAndroidTest, ShowSigninUINoAccountsOnDevice) {
       *signin_bridge(),
       StartAddAccountFlow(_, std::string(), GetTestUrl(), kTestExtensionName));
 
-  delegate.ShowSigninUI(profile(), /*enable_sync=*/true, kTestAccessPoint,
-                        kTestPromoAction, kTestExtensionName);
+  delegate.ShowSigninUI(profile(), /*enable_history_sync=*/true,
+                        kTestAccessPoint, kTestPromoAction, kTestExtensionName);
 
   TabModelList::RemoveTabModel(&tab_model);
 }
@@ -186,10 +188,10 @@ TEST_F(SigninUiDelegateImplAndroidTest, ShowReauthUI) {
 
   signin_ui_util::SigninUiDelegateImplAndroid delegate;
 
-  EXPECT_CALL(*signin_bridge(),
-              StartUpdateCredentialsFlow(_, GetTestUrl(), account_id));
+  EXPECT_CALL(*signin_bridge(), StartUpdateCredentialsFlow(
+                                    _, GetTestUrl(), account_id, account_id));
 
-  delegate.ShowReauthUI(profile(), kTestEmail, /*enable_sync=*/true,
+  delegate.ShowReauthUI(profile(), kTestEmail, /*enable_history_sync=*/true,
                         kTestAccessPoint, kTestPromoAction);
 
   TabModelList::RemoveTabModel(&tab_model);

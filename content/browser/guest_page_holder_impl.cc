@@ -12,6 +12,7 @@
 #include "content/browser/site_instance_impl.h"
 #include "content/browser/web_contents/web_contents_impl.h"
 #include "content/public/browser/site_instance.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 
 namespace content {
 
@@ -183,6 +184,10 @@ void GuestPageHolderImpl::SetFocusedFrame(FrameTreeNode* node,
   owner_web_contents_->SetFocusedFrame(node, source);
 }
 
+void GuestPageHolderImpl::DidChangeFocusedFrame() {
+  owner_web_contents_->DidChangeFocusedFrame();
+}
+
 FrameTree* GuestPageHolderImpl::GetOwnedDocumentPictureInPictureFrameTree() {
   return nullptr;
 }
@@ -309,7 +314,7 @@ GuestPageHolderImpl::RegisterLoadStopCallbackForTesting(
 }
 
 FrameTree* GuestPageHolderImpl::CreateNewWindow(
-    WindowOpenDisposition disposition,
+    ui::mojom::WindowOpenDisposition disposition,
     const GURL& url,
     const std::string& main_frame_name,
     scoped_refptr<SiteInstance> site_instance,

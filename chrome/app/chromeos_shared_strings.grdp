@@ -4,11 +4,6 @@
      Everything in this file is wrapped in <if expr="is_chromeos">. -->
 <grit-part>
 
-  <!-- Settings -->
-  <message name="IDS_OS_SETTINGS_PEOPLE_V2" desc="Name of a section in the OS settings page." meaning="People and their accounts.">
-    Accounts
-  </message>
-
   <!-- RequestPin dialog messages -->
   <message name="IDS_REQUEST_PIN_DIALOG_HEADER" desc="The text displayed in the certificate provider PIN request dialog.">
     "<ph name="EXTENSION_NAME">$1<ex>My Extension</ex></ph>" is requesting your <ph name="CODE_TYPE">$2<ex>PIN</ex></ph>
@@ -38,12 +33,6 @@
   </message>
   <message name="IDS_FILE_SYSTEM_REQUEST_FILE_SYSTEM_DIALOG_DENY_BUTTON" desc="Label on the button to reject permissions.">
     Deny
-  </message>
-  <message name="IDS_FILE_SYSTEM_REQUEST_FILE_SYSTEM_NOTIFICATION_MESSAGE" desc="Message in a notification about granted read-only pemissions (read, write, delete, create files and directories) to a volume (eg. USB drive, SD card, MTP device) with the specified name to the extension.">
-    Read-only access to <ph name="VOLUME_NAME">$1<ex>FooBar 4GB</ex></ph> has been granted.
-  </message>
-  <message name="IDS_FILE_SYSTEM_REQUEST_FILE_SYSTEM_NOTIFICATION_WRITABLE_MESSAGE" desc="Message in a notification about granted full permissions (read, write, delete, create files and directories) to a volume (eg. USB drive, SD card, MTP device) with the specified name to the extension.">
-    Read and write access to <ph name="VOLUME_NAME">$1<ex>FooBar 4GB</ex></ph> has been granted.
   </message>
 
   <!-- Office web app string-->

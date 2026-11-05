@@ -93,7 +93,6 @@
 #include "components/supervised_user/core/browser/supervised_user_test_environment.h"
 #include "components/supervised_user/core/common/pref_names.h"
 #include "components/supervised_user/core/common/supervised_user_constants.h"
-#include "components/sync/base/features.h"
 #include "components/sync/test/fake_sync_change_processor.h"
 #include "components/sync_preferences/pref_service_syncable.h"
 #include "components/sync_preferences/testing_pref_service_syncable.h"
@@ -222,7 +221,7 @@ TestingProfile::TestingProfile(const base::FilePath& path,
                      /*prefs=*/nullptr,
                      /*parent=*/nullptr,
                      /*guest_session=*/false,
-                     /*allows_browser_windows=*/true,
+                     /*allows_browser_windows=*/std::nullopt,
                      /*is_new_profile=*/false,
                      /*is_supervised_profile=*/false,
                      /*policy_manager=*/{},
@@ -244,7 +243,7 @@ TestingProfile::TestingProfile(
     std::unique_ptr<sync_preferences::PrefServiceSyncable> prefs,
     TestingProfile* parent,
     bool guest_session,
-    bool allows_browser_windows,
+    std::optional<bool> allows_browser_windows,
     bool is_new_profile,
     bool is_supervised_profile,
 #if BUILDFLAG(IS_CHROMEOS)
@@ -285,7 +284,9 @@ TestingProfile::TestingProfile(
       profile_load_tracker_enabled_(profile_load_tracker_enabled)
 #endif
 {
-  set_allows_browser_windows_for_testing(allows_browser_windows);
+  if (allows_browser_windows.has_value()) {
+    set_allows_browser_windows_for_testing(*allows_browser_windows);
+  }
   // TestingProfile is not registered with ProfileManager in most unit tests,
   // but AddKeepAlive() should still work on it without failing CHECK().
   set_lifecycle_state(LifecycleState::kRegistered);
@@ -994,11 +995,8 @@ void TestingProfile::AckCrashForTracking() {
 bool TestingProfile::IsSignedIn() {
   signin::IdentityManager* identity_manager =
       IdentityManagerFactory::GetForProfile(this);
-  signin::ConsentLevel consent_level =
-      syncer::IsReplaceSyncPromosWithSignInPromosEnabled()
-          ? signin::ConsentLevel::kSignin
-          : signin::ConsentLevel::kSync;
-  return identity_manager && identity_manager->HasPrimaryAccount(consent_level);
+  return identity_manager &&
+         identity_manager->HasPrimaryAccount(signin::ConsentLevel::kSignin);
 }
 
 storage::SpecialStoragePolicy* TestingProfile::GetSpecialStoragePolicy() {
@@ -1044,11 +1042,6 @@ TestingProfile::GetBrowsingDataRemoverDelegate() {
   // data backends, which are already mocked if considered too heavy-weight
   // for TestingProfile.
   return ChromeBrowsingDataRemoverDelegateFactory::GetForProfile(this);
-}
-
-content::ReduceAcceptLanguageControllerDelegate*
-TestingProfile::GetReduceAcceptLanguageControllerDelegate() {
-  return nullptr;
 }
 
 content::OriginTrialsControllerDelegate*

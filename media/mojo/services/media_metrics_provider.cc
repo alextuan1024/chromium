@@ -47,6 +47,8 @@ std::string GetDemuxerNameStringForTrackChangeMetrics(DemuxerType type) {
       return "ChunkDemuxer";
     case DemuxerType::kManifestDemuxer:
       return "ManifestDemuxer";
+    case DemuxerType::kSymphoniaDemuxer:
+      return "SymphoniaDemuxer";
     default:
       return "UnknownDemuxer";
   }
@@ -300,11 +302,11 @@ void MediaMetricsProvider::Initialize(
       .url_scheme = url_scheme,
       .media_stream_type = media_stream_type,
   });
-  DCHECK(IsInitialized());
+  CHECK(IsInitialized(), base::NotFatalUntil::M163);
 }
 
 void MediaMetricsProvider::OnStarted(const PipelineStatus& status) {
-  DCHECK(IsInitialized());
+  CHECK(IsInitialized(), base::NotFatalUntil::M163);
   if (is_shutting_down_cb_.Run()) {
     DVLOG(1) << __func__ << ": Start status " << PipelineStatusToString(status)
              << " ignored since it is reported during shutdown.";
@@ -315,7 +317,7 @@ void MediaMetricsProvider::OnStarted(const PipelineStatus& status) {
 }
 
 void MediaMetricsProvider::OnError(const PipelineStatus& status) {
-  DCHECK(IsInitialized());
+  CHECK(IsInitialized(), base::NotFatalUntil::M163);
   if (is_shutting_down_cb_.Run()) {
     DVLOG(1) << __func__ << ": Error " << PipelineStatusToString(status)
              << " ignored since it is reported during shutdown.";
@@ -326,7 +328,7 @@ void MediaMetricsProvider::OnError(const PipelineStatus& status) {
 }
 
 void MediaMetricsProvider::OnFallback(const PipelineStatus& status) {
-  DCHECK(IsInitialized());
+  CHECK(IsInitialized(), base::NotFatalUntil::M163);
   if (is_shutting_down_cb_.Run()) {
     DVLOG(1) << __func__ << ": Error " << PipelineStatusToString(status)
              << " ignored since it is reported during shutdown.";
@@ -345,20 +347,20 @@ void MediaMetricsProvider::SetHasTrackChange() {
 }
 
 void MediaMetricsProvider::SetTimeToMetadata(base::TimeDelta elapsed) {
-  DCHECK(IsInitialized());
-  DCHECK_EQ(time_to_metadata_, kNoTimestamp);
+  CHECK(IsInitialized(), base::NotFatalUntil::M163);
+  CHECK_EQ(time_to_metadata_, kNoTimestamp, base::NotFatalUntil::M163);
   time_to_metadata_ = elapsed;
 }
 
 void MediaMetricsProvider::SetTimeToFirstFrame(base::TimeDelta elapsed) {
-  DCHECK(IsInitialized());
-  DCHECK_EQ(time_to_first_frame_, kNoTimestamp);
+  CHECK(IsInitialized(), base::NotFatalUntil::M163);
+  CHECK_EQ(time_to_first_frame_, kNoTimestamp, base::NotFatalUntil::M163);
   time_to_first_frame_ = elapsed;
 }
 
 void MediaMetricsProvider::SetTimeToPlayReady(base::TimeDelta elapsed) {
-  DCHECK(IsInitialized());
-  DCHECK_EQ(time_to_play_ready_, kNoTimestamp);
+  CHECK(IsInitialized(), base::NotFatalUntil::M163);
+  CHECK_EQ(time_to_play_ready_, kNoTimestamp, base::NotFatalUntil::M163);
   time_to_play_ready_ = elapsed;
 }
 
@@ -368,8 +370,8 @@ void MediaMetricsProvider::SetVisibilityRatioAtPlaybackStart(double ratio) {
 
 void MediaMetricsProvider::SetContainerName(
     container_names::MediaContainerName container_name) {
-  DCHECK(IsInitialized());
-  DCHECK(!container_name_.has_value());
+  CHECK(IsInitialized(), base::NotFatalUntil::M163);
+  CHECK(!container_name_.has_value(), base::NotFatalUntil::M163);
   container_name_ = container_name;
 }
 

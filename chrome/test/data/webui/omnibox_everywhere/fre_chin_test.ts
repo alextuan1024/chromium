@@ -7,7 +7,7 @@ import 'chrome://omnibox-everywhere.top-chrome/fre_chin.js';
 import {FreChinMode} from 'chrome://omnibox-everywhere.top-chrome/fre_chin.js';
 import type {FreChinElement, ShowHotkeyDropdownDetail} from 'chrome://omnibox-everywhere.top-chrome/fre_chin.js';
 import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
-import {assertEquals, assertTrue} from 'chrome://webui-test/chai_assert.js';
+import {assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chai_assert.js';
 import {eventToPromise, isVisible} from 'chrome://webui-test/test_util.js';
 
 suite('FreChinTest', () => {
@@ -196,5 +196,47 @@ suite('FreChinTest', () => {
     const closePromise = eventToPromise('close', freChin);
     closeBtn.click();
     await closePromise;
+  });
+
+  test(
+      'reflects small-loomnibox attribute when small loomnibox is enabled',
+      async () => {
+        assertFalse(freChin.hasAttribute('small-loomnibox'));
+
+        freChin.smallLoomnibox = true;
+        await freChin.updateComplete;
+        assertTrue(freChin.hasAttribute('small-loomnibox'));
+
+        freChin.mode = FreChinMode.SHORTCUT_REMINDER;
+        await freChin.updateComplete;
+        assertTrue(freChin.hasAttribute('small-loomnibox'));
+
+        freChin.smallLoomnibox = false;
+        await freChin.updateComplete;
+        assertFalse(freChin.hasAttribute('small-loomnibox'));
+      });
+
+  test('resolves dark mode surface and text tokens', async () => {
+    const rootStyle = document.documentElement.style;
+    const darkTokens: Array<[string, string]> = [
+      ['--color-new-tab-page-background', 'rgb(60, 60, 60)'],
+      ['--color-sys-surface-container-high', 'rgb(42, 42, 42)'],
+      ['--color-sys-on-surface', 'rgb(227, 227, 227)'],
+    ];
+    darkTokens.forEach(([k, v]) => rootStyle.setProperty(k, v));
+
+    try {
+      const q = (sel: string) =>
+          window.getComputedStyle(freChin.shadowRoot.querySelector(sel)!);
+      assertEquals('rgb(60, 60, 60)', q('.chin-container').backgroundColor);
+      assertEquals('rgb(42, 42, 42)', q('.dropdown-trigger').backgroundColor);
+      assertEquals('rgb(227, 227, 227)', q('.to-search-label').color);
+
+      freChin.mode = FreChinMode.SHORTCUT_REMINDER;
+      await freChin.updateComplete;
+      assertEquals('rgb(42, 42, 42)', q('.hotkey-container').backgroundColor);
+    } finally {
+      darkTokens.forEach(([k]) => rootStyle.removeProperty(k));
+    }
   });
 });

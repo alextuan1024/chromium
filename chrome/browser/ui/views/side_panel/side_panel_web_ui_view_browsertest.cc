@@ -21,10 +21,11 @@
 #include "chrome/browser/ui/webui/webui_embedding_context.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "components/tabs/public/tab_interface.h"
+#include "content/public/browser/visibility.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "extensions/buildflags/buildflags.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 
 #if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 #include "chrome/browser/extensions/window_controller.h"
@@ -35,6 +36,8 @@ namespace {
 
 constexpr SidePanelEntry::Id kTestGlobalEntryId =
     SidePanelEntry::Id::kReadingList;
+constexpr SidePanelEntry::Id kTestSecondGlobalEntryId =
+    SidePanelEntry::Id::kBookmarks;
 constexpr SidePanelEntry::Id kTestTabEntryId =
     SidePanelEntry::Id::kAboutThisSite;
 
@@ -85,7 +88,8 @@ void QueryTabsForCurrentWindowAndCheckResults(
       content::EvalJs(contents, "chrome.tabs.query({currentWindow: true})")
           .ExtractList()
           .Clone());
-  EXPECT_EQ(list.size(), browser->GetTabStripModel()->count());
+  EXPECT_EQ(list.size(),
+            static_cast<size_t>(browser->GetTabStripModel()->count()));
   EXPECT_TRUE(list[0].is_dict());
   EXPECT_TRUE(list[1].is_dict());
   {
@@ -121,9 +125,10 @@ class SidePanelWebUIViewTest : public InProcessBrowserTest {
 
   // Registers a per-browser-window side panel entry with the test's default
   // browser.
-  void RegisterBrowserSidePanelEntry() {
+  void RegisterBrowserSidePanelEntry(
+      SidePanelEntry::Id id = kTestGlobalEntryId) {
     auto entry = std::make_unique<SidePanelEntry>(
-        SidePanelEntry::Key(kTestGlobalEntryId),
+        SidePanelEntry::Key(id),
         base::BindRepeating(
             [](Profile* profile,
                SidePanelEntryScope& scope) -> std::unique_ptr<views::View> {
@@ -237,9 +242,9 @@ IN_PROC_BROWSER_TEST_F(SidePanelWebUIViewTest,
 
   // Create tabs, and new window for testing.
   browser()->OpenGURL(GURL(kTestUrl1ForThisBrowser),
-                      WindowOpenDisposition::CURRENT_TAB);
+                      ui::mojom::WindowOpenDisposition::kCurrentTab);
   browser()->OpenGURL(GURL(kTestUrl2ForThisBrowser),
-                      WindowOpenDisposition::NEW_BACKGROUND_TAB);
+                      ui::mojom::WindowOpenDisposition::kNewBackgroundTab);
   EXPECT_EQ(browser()->GetTabStripModel()->count(), 2);
   EXPECT_EQ(browser()->GetTabStripModel()->active_index(), 0);
   content::WaitForLoadStop(
@@ -266,9 +271,9 @@ IN_PROC_BROWSER_TEST_F(SidePanelWebUIViewTest,
   BrowserWindowInterface* new_browser = CreateBrowser(browser()->GetProfile());
   EXPECT_TRUE(new_browser);
   new_browser->OpenGURL(GURL(kTestUrl1ForNewBrowser),
-                        WindowOpenDisposition::CURRENT_TAB);
+                        ui::mojom::WindowOpenDisposition::kCurrentTab);
   new_browser->OpenGURL(GURL(kTestUrl2ForNewBrowser),
-                        WindowOpenDisposition::NEW_BACKGROUND_TAB);
+                        ui::mojom::WindowOpenDisposition::kNewBackgroundTab);
   EXPECT_EQ(new_browser->GetTabStripModel()->count(), 2);
   EXPECT_EQ(new_browser->GetTabStripModel()->active_index(), 0);
   content::WaitForLoadStop(
@@ -352,4 +357,34 @@ IN_PROC_BROWSER_TEST_F(
   // contents after discard.
   EXPECT_EQ(browser(), webui::GetBrowserWindowInterface(tab_contents));
   EXPECT_EQ(tab_interface, webui::GetTabInterface(tab_contents));
+}
+
+// Swapping the side panel to another entry removes the previous entry's view
+// from the side panel and caches it, which hides its WebContents even when
+// occlusion tracking never reported its window as visible.
+IN_PROC_BROWSER_TEST_F(SidePanelWebUIViewTest,
+                       WebContentsHiddenWhenSwappedOut) {
+  RegisterBrowserSidePanelEntry();
+  RegisterBrowserSidePanelEntry(kTestSecondGlobalEntryId);
+  SidePanelUI* const side_panel_ui = SidePanelUI::From(browser());
+
+  // Get the WebContents before showing the entry: `GetWebContentsForTest()`
+  // caches the entry's view, which `Show()` then reuses.
+  content::WebContents* const contents =
+      side_panel_ui->GetWebContentsForTest(kTestGlobalEntryId);
+  ASSERT_TRUE(contents);
+  side_panel_ui->Show(kTestGlobalEntryId);
+  ASSERT_TRUE(side_panel_ui->IsSidePanelEntryShowing(
+      SidePanelEntryKey(kTestGlobalEntryId)));
+  EXPECT_EQ(content::Visibility::VISIBLE, contents->GetVisibility());
+
+  side_panel_ui->Show(kTestSecondGlobalEntryId);
+  ASSERT_TRUE(side_panel_ui->IsSidePanelEntryShowing(
+      SidePanelEntryKey(kTestSecondGlobalEntryId)));
+  EXPECT_EQ(content::Visibility::HIDDEN, contents->GetVisibility());
+
+  side_panel_ui->Show(kTestGlobalEntryId);
+  ASSERT_TRUE(side_panel_ui->IsSidePanelEntryShowing(
+      SidePanelEntryKey(kTestGlobalEntryId)));
+  EXPECT_EQ(content::Visibility::VISIBLE, contents->GetVisibility());
 }

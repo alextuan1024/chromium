@@ -32,6 +32,7 @@
 #include "content/public/browser/content_browser_client.h"
 #include "content/public/browser/devtools_manager_delegate.h"
 #include "content/public/browser/devtools_socket_factory.h"
+#include "content/public/common/buildflags.h"
 #include "content/public/common/content_client.h"
 #include "content/public/common/content_constants.h"
 #include "content/public/common/content_switches.h"
@@ -51,6 +52,10 @@
 #include "net/url_request/url_request_test_util.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+
+#if BUILDFLAG(BUNDLE_CHROME_BIDI_MAPPER)
+#include "content/grit/content_resources.h"
+#endif
 
 namespace content {
 namespace {
@@ -157,6 +162,9 @@ class MockDevToolsManagerDelegate : public DevToolsManagerDelegate {
     last_instance = this;
     EXPECT_CALL(*this, SetActiveWebSocketConnections(testing::_))
         .Times(testing::AtLeast(0));
+    EXPECT_CALL(*this, ClientAttached(testing::_)).Times(testing::AtLeast(0));
+    ON_CALL(*this, AllowInspectingTarget(testing::_))
+        .WillByDefault(testing::Return(true));
   }
   MOCK_METHOD(scoped_refptr<DevToolsAgentHost>,
               CreateNewTarget,
@@ -173,6 +181,14 @@ class MockDevToolsManagerDelegate : public DevToolsManagerDelegate {
   MOCK_METHOD(void,
               SetActiveWebSocketConnections,
               (size_t count),
+              (override));
+  MOCK_METHOD(bool,
+              AllowInspectingTarget,
+              (DevToolsAgentHost*),
+              (override));
+  MOCK_METHOD(void,
+              ClientAttached,
+              (DevToolsAgentHostClientChannel*),
               (override));
 };
 
@@ -542,6 +558,34 @@ TEST_F(DevToolsHttpHandlerWithServerTest, JsonVersionIncludesFilePathStyle) {
 #endif
 }
 
+TEST_F(DevToolsHttpHandlerWithServerTest, TestBidi) {
+  int port = StartServer();
+
+  GURL url(base::StringPrintf("http://127.0.0.1:%d/bidi-mapper.js", port));
+  net::TestDelegate delegate;
+  auto request = request_context_->CreateRequest(
+      url, net::DEFAULT_PRIORITY, &delegate, TRAFFIC_ANNOTATION_FOR_TESTS,
+      net::handles::kInvalidNetworkHandle);
+  request->Start();
+  delegate.RunUntilComplete();
+  EXPECT_GE(delegate.request_status(), 0);
+
+#if BUILDFLAG(BUNDLE_CHROME_BIDI_MAPPER)
+  EXPECT_EQ(200, request->response_info().headers->response_code());
+  std::string mime_type;
+  EXPECT_TRUE(request->response_info().headers->GetMimeType(&mime_type));
+  EXPECT_EQ("text/javascript", mime_type);
+  EXPECT_FALSE(delegate.data_received().empty());
+  EXPECT_EQ(GetContentClientForTesting()->GetDataResourceString(
+                IDR_CHROME_BIDI_MAPPER_JS),
+            delegate.data_received());
+#else
+  EXPECT_EQ(404, request->response_info().headers->response_code());
+#endif
+
+  StopServer();
+}
+
 class DevToolsWebSocketHandlerTest : public DevToolsHttpHandlerWithServerTest {
  public:
   DevToolsWebSocketHandlerTest() = default;
@@ -770,6 +814,75 @@ TEST_F(DevToolsHttpHandlerWithApprovalTest,
       url, {{"connection", "upgrade"}, {"upgrade", "websocket"}});
 
   EXPECT_EQ(403, request->response_info().headers->response_code());
+
+  StopServer();
+}
+
+
+TEST_F(DevToolsHttpHandlerWithServerTest, JsonActivateCloseRespectsAllowlist) {
+  scoped_refptr<DevToolsAgentHost> host = DevToolsAgentHost::CreateForDiscovery();
+  int port = StartServer();
+
+  EXPECT_CALL(*MockDevToolsManagerDelegate::last_instance, AllowInspectingTarget(testing::_))
+      .WillRepeatedly(testing::Return(false));
+
+  auto request = RunRequestUntilCompletion(
+      base::StringPrintf("http://127.0.0.1:%d/json/activate/%s", port, host->GetId().c_str()));
+  EXPECT_EQ(403, request->response_info().headers->response_code());
+
+  request = RunRequestUntilCompletion(
+      base::StringPrintf("http://127.0.0.1:%d/json/close/%s", port, host->GetId().c_str()));
+  EXPECT_EQ(403, request->response_info().headers->response_code());
+
+  StopServer();
+}
+
+TEST_F(DevToolsHttpHandlerWithServerTest, WebSocketRespectsAllowlist) {
+  scoped_refptr<DevToolsAgentHost> host = DevToolsAgentHost::CreateForDiscovery();
+  int port = StartServer();
+
+  EXPECT_CALL(*MockDevToolsManagerDelegate::last_instance, AllowInspectingTarget(testing::_))
+      .WillRepeatedly(testing::Return(false));
+
+  auto request = RunRequestUntilCompletion(
+      base::StringPrintf("http://127.0.0.1:%d/devtools/page/%s", port, host->GetId().c_str()),
+      {{"connection", "upgrade"}, {"upgrade", "websocket"}});
+
+  // Expect HTTP 403 Forbidden because AllowInspectingTarget returned false
+  EXPECT_EQ(403, request->response_info().headers->response_code());
+
+  StopServer();
+}
+
+TEST_F(DevToolsWebSocketHandlerTest, WebSocketClientExposesTransportMetadata) {
+  int port = StartServer();
+  std::string debugging_url = GetWebSocketDebuggingURL(port);
+
+  std::optional<net::IPEndPoint> peer_address;
+  EXPECT_CALL(*MockDevToolsManagerDelegate::last_instance,
+              ClientAttached(testing::_))
+      .WillOnce([&](DevToolsAgentHostClientChannel* channel) {
+        DevToolsAgentHostClient* client = channel->GetClient();
+        ASSERT_NE(client, nullptr);
+        EXPECT_EQ(client->GetTypeForMetrics(), "RemoteDebugger");
+        DevToolsAgentHostClient::PeerMetadata metadata =
+            client->GetPeerMetadata();
+        EXPECT_EQ(
+            metadata.transport_type,
+            DevToolsAgentHostClient::PeerMetadata::TransportType::kWebSocket);
+        peer_address = metadata.peer_address;
+        ASSERT_TRUE(peer_address.has_value());
+        EXPECT_TRUE(peer_address->address().IsLoopback());
+        EXPECT_GT(peer_address->port(), 0);
+      });
+
+  auto request =
+      RunRequestUntilCompletion(debugging_url, {
+                                                   {"connection", "upgrade"},
+                                                   {"upgrade", "websocket"},
+                                               });
+  EXPECT_EQ(request->GetResponseCode(), 500);
+  EXPECT_TRUE(peer_address.has_value());
 
   StopServer();
 }

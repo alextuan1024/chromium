@@ -20,6 +20,7 @@
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/bind.h"
 #include "base/test/scoped_feature_list.h"
+#include "build/build_config.h"
 #include "build/chromeos_buildflags.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/enterprise/connectors/analysis/content_analysis_delegate.h"
@@ -27,7 +28,6 @@
 #include "chrome/browser/enterprise/connectors/test/deep_scanning_test_utils.h"
 #include "chrome/browser/enterprise/connectors/test/fake_clipboard_request_handler.h"
 #include "chrome/browser/enterprise/connectors/test/fake_content_analysis_delegate.h"
-#include "chrome/browser/enterprise/data_protection/data_protection_features.h"
 #include "chrome/browser/policy/chrome_browser_policy_connector.h"
 #include "chrome/browser/policy/dm_token_utils.h"
 #include "chrome/test/base/testing_browser_process.h"
@@ -37,7 +37,6 @@
 #include "components/enterprise/connectors/core/cloud_content_scanning/clipboard_request_handler.h"
 #include "components/enterprise/connectors/core/cloud_content_scanning/common.h"
 #include "components/enterprise/connectors/core/cloud_content_scanning/file_analysis_request_base.h"
-#include "components/enterprise/connectors/core/features.h"
 #include "components/prefs/scoped_user_pref_update.h"
 #include "components/safe_browsing/core/common/features.h"
 #include "components/safe_browsing/core/common/safe_browsing_prefs.h"
@@ -45,6 +44,11 @@
 #include "content/public/common/drop_data.h"
 #include "content/public/test/browser_task_environment.h"
 #include "testing/gtest/include/gtest/gtest.h"
+
+#if BUILDFLAG(IS_ANDROID)
+#include "base/test/android/content_uri_test_utils.h"
+#include "components/enterprise/connectors/core/features.h"
+#endif  // BUILDFLAG(IS_ANDROID)
 
 #if BUILDFLAG(IS_CHROMEOS)
 #include "chrome/browser/ash/file_manager/fileapi_util.h"
@@ -140,8 +144,10 @@ class MockFileAnalysisRequest
   }
 
  protected:
+#if !BUILDFLAG(IS_ANDROID)
   void ProcessZipFile(Data data) override {}
   void ProcessRarFile(Data data) override {}
+#endif  // !BUILDFLAG(IS_ANDROID)
 };
 
 class MockDelegate : public enterprise_connectors::FilesRequestHandler {
@@ -288,24 +294,19 @@ class FakeFuseboxDelegate : public fusebox::Server::Delegate {
 #endif
 
 class ChromeWebContentsViewDelegateHandleOnPerformingDrop
-    : public testing::TestWithParam</*EnableDlpFileSystemApi_enabled=*/bool> {
+    : public testing::Test {
  public:
   ChromeWebContentsViewDelegateHandleOnPerformingDrop() {
+#if BUILDFLAG(IS_ANDROID)
+    feature_list_.InitAndEnableFeature(
+        enterprise_connectors::kEnableFileAttachedEnterpriseScanOnClank);
+#endif  // BUILDFLAG(IS_ANDROID)
     EXPECT_TRUE(profile_manager_.SetUp());
     profile_ = profile_manager_.CreateTestingProfile("test-user");
   }
 
  protected:
-  bool IsDlpFileSystemApiEnabled() const { return GetParam(); }
-
   void SetUp() override {
-    if (IsDlpFileSystemApiEnabled()) {
-      scoped_feature_list_.InitAndEnableFeature(
-          enterprise_connectors::kEnableDlpFileSystemApi);
-    } else {
-      scoped_feature_list_.InitAndDisableFeature(
-          enterprise_connectors::kEnableDlpFileSystemApi);
-    }
 #if BUILDFLAG(IS_CHROMEOS)
     storage::ExternalMountPoints::GetSystemInstance()->RegisterFileSystem(
         "fake_mount", storage::kFileSystemTypeProvided,
@@ -437,12 +438,16 @@ class ChromeWebContentsViewDelegateHandleOnPerformingDrop
     HandleOnPerformingDrop(
         contents(), data,
         base::BindLambdaForTesting(
-            [&data, &successful_text_scan, &successful_file_paths,
+            [this, &data, &successful_text_scan, &successful_file_paths,
              &successful_vfs_urls,
              quit_closure](std::optional<content::DropData> result_data) {
               if (successful_text_scan || !successful_file_paths.empty() ||
                   !successful_vfs_urls.empty()) {
                 EXPECT_TRUE(result_data.has_value());
+                if (expected_document_is_handling_drag_.has_value()) {
+                  EXPECT_EQ(result_data->document_is_handling_drag,
+                            *expected_document_is_handling_drag_);
+                }
                 EXPECT_EQ(result_data->filenames.size(),
                           successful_file_paths.size());
                 for (const auto& filename : result_data->filenames) {
@@ -501,9 +506,24 @@ class ChromeWebContentsViewDelegateHandleOnPerformingDrop
 
   std::string small_text() const { return "random small text"; }
 
+  // Makes RunTest() check the `document_is_handling_drag` value of the
+  // forwarded drop.
+  void SetExpectedDocumentIsHandlingDrag(bool expected) {
+    expected_document_is_handling_drag_ = expected;
+  }
+
+#if BUILDFLAG(IS_ANDROID)
+  void DisableFileAttachedScanOnClank() {
+    feature_list_.Reset();
+    feature_list_.InitAndDisableFeature(
+        enterprise_connectors::kEnableFileAttachedEnterpriseScanOnClank);
+  }
+#endif  // BUILDFLAG(IS_ANDROID)
+
  private:
+  base::test::ScopedFeatureList feature_list_;
+  std::optional<bool> expected_document_is_handling_drag_;
   content::BrowserTaskEnvironment task_environment_;
-  base::test::ScopedFeatureList scoped_feature_list_;
   TestingProfileManager profile_manager_{TestingBrowserProcess::GetGlobal()};
   raw_ptr<TestingProfile> profile_;
   std::unique_ptr<base::RunLoop> run_loop_;
@@ -524,7 +544,7 @@ class ChromeWebContentsViewDelegateHandleOnPerformingDrop
 
 // When no drop data is specified, HandleOnPerformingDrop() should indicate
 // the caller can proceed, whether scanning is enabled or not.
-TEST_P(ChromeWebContentsViewDelegateHandleOnPerformingDrop, NoData) {
+TEST_F(ChromeWebContentsViewDelegateHandleOnPerformingDrop, NoData) {
   content::DropData data;
 
   SetExpectedRequestsCount(0);
@@ -538,7 +558,7 @@ TEST_P(ChromeWebContentsViewDelegateHandleOnPerformingDrop, NoData) {
 // When drop data is specified, but document_is_handling_drag is false,
 // HandleOnPerformingDrop() should indicate the caller can proceed
 // and no scanning is done.
-TEST_P(ChromeWebContentsViewDelegateHandleOnPerformingDrop,
+TEST_F(ChromeWebContentsViewDelegateHandleOnPerformingDrop,
        WithData_NoneDocOp) {
   content::DropData data;
   data.text = base::UTF8ToUTF16(large_text());
@@ -551,8 +571,11 @@ TEST_P(ChromeWebContentsViewDelegateHandleOnPerformingDrop,
           /*successful_file_paths*/ {});
 }
 
+// Text, HTML and URL title drops are only scanned on desktop. On Android they
+// are forwarded unchanged; see the Android tests below.
+#if !BUILDFLAG(IS_ANDROID)
 // Make sure DropData::url_title is handled correctly.
-TEST_P(ChromeWebContentsViewDelegateHandleOnPerformingDrop, UrlTitle) {
+TEST_F(ChromeWebContentsViewDelegateHandleOnPerformingDrop, UrlTitle) {
   content::DropData data;
   data.document_is_handling_drag = true;
   data.url_infos = {ui::ClipboardUrlInfo(GURL("https://example.com"),
@@ -575,7 +598,7 @@ TEST_P(ChromeWebContentsViewDelegateHandleOnPerformingDrop, UrlTitle) {
 }
 
 // Make sure DropData::text is handled correctly.
-TEST_P(ChromeWebContentsViewDelegateHandleOnPerformingDrop, Text) {
+TEST_F(ChromeWebContentsViewDelegateHandleOnPerformingDrop, Text) {
   content::DropData data;
   data.document_is_handling_drag = true;
   data.text = base::UTF8ToUTF16(large_text());
@@ -597,7 +620,7 @@ TEST_P(ChromeWebContentsViewDelegateHandleOnPerformingDrop, Text) {
 }
 
 // Make sure DropData::html is handled correctly.
-TEST_P(ChromeWebContentsViewDelegateHandleOnPerformingDrop, Html) {
+TEST_F(ChromeWebContentsViewDelegateHandleOnPerformingDrop, Html) {
   content::DropData data;
   data.document_is_handling_drag = true;
   data.html = base::UTF8ToUTF16(large_text());
@@ -617,9 +640,118 @@ TEST_P(ChromeWebContentsViewDelegateHandleOnPerformingDrop, Html) {
   RunTest(data, /*enable=*/true, /*successful_text_scan=*/true,
           /*successful_file_paths*/ {});
 }
+#endif  // !BUILDFLAG(IS_ANDROID)
+
+#if BUILDFLAG(IS_ANDROID)
+// On Android, drops without files aren't scanned even when the policy and the
+// flag are on: the drop is forwarded unchanged.
+TEST_F(ChromeWebContentsViewDelegateHandleOnPerformingDrop,
+       TextNotScannedOnAndroid) {
+  content::DropData data;
+  // Left as reported by the renderer, unlike the desktop policy-off path.
+  data.document_is_handling_drag = false;
+  SetExpectedDocumentIsHandlingDrag(false);
+  data.url_infos = {ui::ClipboardUrlInfo(GURL("https://example.com"),
+                                         base::UTF8ToUTF16(large_text()))};
+  data.text = base::UTF8ToUTF16(large_text());
+  data.html = base::UTF8ToUTF16(large_text());
+
+  SetExpectedRequestsCount(0);
+  RunTest(data, /*enable=*/true, /*successful_text_scan=*/true,
+          /*successful_file_paths*/ {});
+}
+
+// On Android, file drops aren't scanned while the flag is off, even when the
+// policy is on: every file is forwarded.
+TEST_F(ChromeWebContentsViewDelegateHandleOnPerformingDrop,
+       FilesNotScannedWhenFlagDisabledOnAndroid) {
+  DisableFileAttachedScanOnClank();
+
+  base::ScopedTempDir temp_dir;
+  ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
+  base::FilePath path = temp_dir.GetPath().AppendASCII("Foo.doc");
+  ASSERT_TRUE(base::WriteFile(path, "foo content"));
+
+  content::DropData data;
+  // Left as reported by the renderer, unlike the desktop policy-off path.
+  data.document_is_handling_drag = false;
+  SetExpectedDocumentIsHandlingDrag(false);
+  data.filenames.emplace_back(path, path);
+
+  // Would be blocked if it were scanned.
+  SetFailingFileScans({path});
+  SetExpectedRequestsCount(0);
+  RunTest(data, /*enable=*/true, /*successful_text_scan=*/false,
+          /*successful_file_paths*/ {path});
+}
+
+// On Android, file drops with the flag on but no policy are forwarded
+// unchanged: unlike desktop, `document_is_handling_drag` is left as reported
+// by the renderer.
+TEST_F(ChromeWebContentsViewDelegateHandleOnPerformingDrop,
+       FilesNotScannedWhenPolicyDisabledOnAndroid) {
+  base::ScopedTempDir temp_dir;
+  ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
+  base::FilePath path = temp_dir.GetPath().AppendASCII("Foo.doc");
+  ASSERT_TRUE(base::WriteFile(path, "foo content"));
+
+  content::DropData data;
+  data.document_is_handling_drag = false;
+  SetExpectedDocumentIsHandlingDrag(false);
+  data.filenames.emplace_back(path, path);
+
+  SetExpectedRequestsCount(0);
+  RunTest(data, /*enable=*/false, /*successful_text_scan=*/false,
+          /*successful_file_paths*/ {path});
+}
+
+// Android drops deliver files as content URIs with a display name rather than
+// as file system paths. Make sure those are expanded, read and filtered by
+// verdict like regular files.
+TEST_F(ChromeWebContentsViewDelegateHandleOnPerformingDrop,
+       ContentUriFilesOnAndroid) {
+  base::ScopedTempDir temp_dir;
+  ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
+
+  base::FilePath path_1 = temp_dir.GetPath().AppendASCII("Foo.doc");
+  base::FilePath path_2 = temp_dir.GetPath().AppendASCII("Bar.doc");
+  ASSERT_TRUE(base::WriteFile(path_1, "foo content"));
+  ASSERT_TRUE(base::WriteFile(path_2, "bar content"));
+
+  std::optional<base::FilePath> uri_1 =
+      base::test::android::GetContentUriFromCacheDirFilePath(path_1);
+  std::optional<base::FilePath> uri_2 =
+      base::test::android::GetContentUriFromCacheDirFilePath(path_2);
+  ASSERT_TRUE(uri_1.has_value());
+  ASSERT_TRUE(uri_2.has_value());
+  ASSERT_TRUE(uri_1->IsContentUri());
+  ASSERT_TRUE(uri_2->IsContentUri());
+
+  content::DropData data;
+  data.document_is_handling_drag = true;
+  data.filenames.emplace_back(*uri_1, path_1.BaseName());
+  data.filenames.emplace_back(*uri_2, path_2.BaseName());
+
+  SetExpectedRequestsCount(0);
+  RunTest(data, /*enable=*/false, /*successful_text_scan=*/false,
+          /*successful_file_paths*/ {*uri_1, *uri_2});
+
+  SetExpectedRequestsCount(2);
+  RunTest(data, /*enable=*/true, /*successful_text_scan=*/false,
+          /*successful_file_paths*/ {*uri_1, *uri_2});
+  SetFailingFileScans({*uri_1});
+  SetFailingFileAcks({*uri_1});
+  RunTest(data, /*enable=*/true, /*successful_text_scan=*/false,
+          /*successful_file_paths*/ {*uri_2});
+  SetFailingFileScans({*uri_1, *uri_2});
+  SetFailingFileAcks({*uri_1, *uri_2});
+  RunTest(data, /*enable=*/true, /*successful_text_scan=*/false,
+          /*successful_file_paths*/ {});
+}
+#endif  // BUILDFLAG(IS_ANDROID)
 
 // Make sure DropData::filenames is handled correctly.
-TEST_P(ChromeWebContentsViewDelegateHandleOnPerformingDrop, Files) {
+TEST_F(ChromeWebContentsViewDelegateHandleOnPerformingDrop, Files) {
   base::ScopedTempDir temp_dir;
   ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
 
@@ -662,7 +794,7 @@ TEST_P(ChromeWebContentsViewDelegateHandleOnPerformingDrop, Files) {
 }
 
 // Make sure DropData::filenames directories are handled correctly.
-TEST_P(ChromeWebContentsViewDelegateHandleOnPerformingDrop, Directories) {
+TEST_F(ChromeWebContentsViewDelegateHandleOnPerformingDrop, Directories) {
   base::ScopedTempDir temp_dir;
   ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
 
@@ -740,7 +872,7 @@ TEST_P(ChromeWebContentsViewDelegateHandleOnPerformingDrop, Directories) {
 }
 
 #if BUILDFLAG(IS_CHROMEOS)
-TEST_P(ChromeWebContentsViewDelegateHandleOnPerformingDrop, VirtualFiles) {
+TEST_F(ChromeWebContentsViewDelegateHandleOnPerformingDrop, VirtualFiles) {
   content::WebContents* web_contents = contents();
   Profile* profile =
       Profile::FromBrowserContext(web_contents->GetBrowserContext());
@@ -800,61 +932,42 @@ TEST_P(ChromeWebContentsViewDelegateHandleOnPerformingDrop, VirtualFiles) {
   data.file_system_files.push_back({url_3, 30, std::string()});
   data.document_is_handling_drag = true;
 
-  if (IsDlpFileSystemApiEnabled()) {
-    // Scenario 1: DLP Disabled -> All files allowed (including unscanned VFS 3)
-    SetExpectedRequestsCount(0);
-    RunTest(data, /*enable=*/false, /*successful_text_scan=*/false,
-            /*successful_file_paths=*/{},
-            /*successful_vfs_urls=*/{url_1, url_2, url_3},
-            /*use_mock_handler=*/true);
+  // Scenario 1: DLP Disabled -> All files allowed (including unscanned VFS 3)
+  SetExpectedRequestsCount(0);
+  RunTest(data, /*enable=*/false, /*successful_text_scan=*/false,
+          /*successful_file_paths=*/{},
+          /*successful_vfs_urls=*/{url_1, url_2, url_3},
+          /*use_mock_handler=*/true);
 
-    // Scenario 2: DLP Enabled, all allowed -> All files allowed (since no
-    // violations)
-    SetExpectedRequestsCount(2);
-    RunTest(data, /*enable=*/true, /*successful_text_scan=*/false,
-            /*successful_file_paths=*/{},
-            /*successful_vfs_urls=*/{url_1, url_2, url_3},
-            /*use_mock_handler=*/true);
+  // Scenario 2: DLP Enabled, all allowed -> All files allowed (since no
+  // violations)
+  SetExpectedRequestsCount(2);
+  RunTest(data, /*enable=*/true, /*successful_text_scan=*/false,
+          /*successful_file_paths=*/{},
+          /*successful_vfs_urls=*/{url_1, url_2, url_3},
+          /*use_mock_handler=*/true);
 
-    // Scenario 3: DLP Enabled, selective block -> url_1 (resolved_path_1)
-    // blocks, others allowed. Note: url_3 is not backed by Fusebox, so it is
-    // allowed because it was never scanned.
-    SetExpectedRequestsCount(2);
-    SetFailingFileScans({resolved_path_1});
-    SetFailingFileAcks({resolved_path_1});
-    RunTest(data, /*enable=*/true, /*successful_text_scan=*/false,
-            /*successful_file_paths=*/{},
-            /*successful_vfs_urls=*/{url_2, url_3},
-            /*use_mock_handler=*/true);
+  // Scenario 3: DLP Enabled, selective block -> url_1 (resolved_path_1)
+  // blocks, others allowed. Note: url_3 is not backed by Fusebox, so it is
+  // allowed because it was never scanned.
+  SetExpectedRequestsCount(2);
+  SetFailingFileScans({resolved_path_1});
+  SetFailingFileAcks({resolved_path_1});
+  RunTest(data, /*enable=*/true, /*successful_text_scan=*/false,
+          /*successful_file_paths=*/{},
+          /*successful_vfs_urls=*/{url_2, url_3},
+          /*use_mock_handler=*/true);
 
-    // Scenario 4: DLP Enabled, all scannable files blocked -> Allow
-    // non-scannable Note: Since all files that *could* be scanned (url_1,
-    // url_2) are blocked, but url_3 is not scannable, the drop is not aborted
-    // and url_3 is allowed.
-    SetExpectedRequestsCount(2);
-    SetFailingFileScans({resolved_path_1, resolved_path_2});
-    SetFailingFileAcks({resolved_path_1, resolved_path_2});
-    RunTest(data, /*enable=*/true, /*successful_text_scan=*/false,
-            /*successful_file_paths=*/{},
-            /*successful_vfs_urls=*/{url_3},
-            /*use_mock_handler=*/true);
-  } else {
-    // When the feature is disabled, virtual files are allowed by default
-    // without scanning, regardless of DLP policy settings.
-    SetExpectedRequestsCount(0);
-    RunTest(data, /*enable=*/false, /*successful_text_scan=*/false,
-            /*successful_file_paths=*/{},
-            /*successful_vfs_urls=*/{url_1, url_2, url_3},
-            /*use_mock_handler=*/true);
-
-    RunTest(data, /*enable=*/true, /*successful_text_scan=*/false,
-            /*successful_file_paths=*/{},
-            /*successful_vfs_urls=*/{url_1, url_2, url_3},
-            /*use_mock_handler=*/true);
-  }
+  // Scenario 4: DLP Enabled, all scannable files blocked -> Allow
+  // non-scannable Note: Since all files that *could* be scanned (url_1,
+  // url_2) are blocked, but url_3 is not scannable, the drop is not aborted
+  // and url_3 is allowed.
+  SetExpectedRequestsCount(2);
+  SetFailingFileScans({resolved_path_1, resolved_path_2});
+  SetFailingFileAcks({resolved_path_1, resolved_path_2});
+  RunTest(data, /*enable=*/true, /*successful_text_scan=*/false,
+          /*successful_file_paths=*/{},
+          /*successful_vfs_urls=*/{url_3},
+          /*use_mock_handler=*/true);
 }
 #endif  // BUILDFLAG(IS_CHROMEOS)
-
-INSTANTIATE_TEST_SUITE_P(All,
-                         ChromeWebContentsViewDelegateHandleOnPerformingDrop,
-                         /*EnableDlpFileSystemApi_enabled=*/testing::Bool());

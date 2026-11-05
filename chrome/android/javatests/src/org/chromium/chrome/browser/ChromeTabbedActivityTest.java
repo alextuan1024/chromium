@@ -12,11 +12,14 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import android.content.Intent;
+import android.content.res.Configuration;
+import android.graphics.fonts.FontStyle;
 import android.net.Uri;
 import android.os.Build.VERSION_CODES;
 import android.os.SystemClock;
 import android.provider.Browser;
 
+import androidx.annotation.RequiresApi;
 import androidx.appcompat.app.AppCompatDelegate;
 import androidx.test.filters.MediumTest;
 import androidx.test.filters.SmallTest;
@@ -56,7 +59,7 @@ import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.base.test.util.MinAndroidSdkLevel;
 import org.chromium.base.test.util.RequiresRestart;
 import org.chromium.base.test.util.Restriction;
-import org.chromium.chrome.browser.actor.ActorForegroundServiceController;
+import org.chromium.chrome.browser.actor.foreground_service.ActorForegroundServiceController;
 import org.chromium.chrome.browser.app.tabwindow.TabWindowManagerSingleton;
 import org.chromium.chrome.browser.back_press.BackPressManager;
 import org.chromium.chrome.browser.device.DeviceClassManager;
@@ -66,6 +69,7 @@ import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.incognito.IncognitoWindowNightModeStateProvider;
 import org.chromium.chrome.browser.multiwindow.MultiInstanceManager.PersistedInstanceType;
 import org.chromium.chrome.browser.multiwindow.MultiInstanceOrchestratorFactory;
+import org.chromium.chrome.browser.multiwindow.MultiWindowTestHelper;
 import org.chromium.chrome.browser.multiwindow.MultiWindowUtils;
 import org.chromium.chrome.browser.night_mode.NightModeStateProvider;
 import org.chromium.chrome.browser.preferences.ChromePreferenceKeys;
@@ -90,7 +94,6 @@ import org.chromium.chrome.browser.url_constants.UrlOverrideUtils;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.chrome.test.transit.AutoResetCtaTransitTestRule;
 import org.chromium.chrome.test.transit.ChromeTransitTestRules;
-import org.chromium.chrome.test.util.ChromeTabUtils;
 import org.chromium.components.browser_ui.widget.gesture.BackPressHandler;
 import org.chromium.components.tab_group_sync.LocalTabGroupId;
 import org.chromium.components.tab_group_sync.SavedTabGroup;
@@ -385,7 +388,6 @@ public class ChromeTabbedActivityTest {
                         TAB_GROUP_TITLE,
                         /* mhtmlTabTitle= */ null,
                         /* tabGroupCollapsed= */ true,
-                        /* isGroupShared= */ false,
                         /* isIncognito= */ false);
         IntentHandler.setTabGroupMetadata(intent, metadata);
         IntentUtils.setForceIsTrustedIntentForTesting(true);
@@ -695,6 +697,43 @@ public class ChromeTabbedActivityTest {
 
     @Test
     @MediumTest
+    @MinAndroidSdkLevel(VERSION_CODES.S)
+    @RequiresApi(VERSION_CODES.S)
+    @RequiresRestart("Recreates the ChromeTabbedActivity")
+    public void testFontWeightAdjustmentChange_ReparentsTabs() {
+        Tab tab = ThreadUtils.runOnUiThreadBlocking(mActivity::getActivityTab);
+        Configuration newConfig =
+                ThreadUtils.runOnUiThreadBlocking(
+                        () -> new Configuration(mActivity.getSavedConfigurationForTesting()));
+        // Simulate toggling the OS "Bold text" accessibility setting.
+        int boldAdjustment = FontStyle.FONT_WEIGHT_BOLD - FontStyle.FONT_WEIGHT_NORMAL;
+        newConfig.fontWeightAdjustment =
+                newConfig.fontWeightAdjustment == boldAdjustment ? 0 : boldAdjustment;
+
+        ChromeTabbedActivity newActivity =
+                ApplicationTestUtils.waitForActivityWithClass(
+                        ChromeTabbedActivity.class,
+                        Stage.RESUMED,
+                        () -> mActivity.onConfigurationChanged(newConfig));
+        mActivityTestRule.getActivityTestRule().setActivity(newActivity);
+
+        Assert.assertNotSame("Activity must be recreated", mActivity, newActivity);
+        ApplicationTestUtils.waitForActivityState(mActivity, Stage.DESTROYED);
+        mActivity = newActivity;
+        CriteriaHelper.pollUiThread(
+                () -> {
+                    Criteria.checkThat(
+                            "Tab instance must be reparented, not restored",
+                            newActivity
+                                    .getTabModelSelector()
+                                    .getModel(false)
+                                    .getTabById(tab.getId()),
+                            Matchers.sameInstance(tab));
+                });
+    }
+
+    @Test
+    @MediumTest
     // Intentionally not batched due to recreating activity.
     @RequiresRestart
     @DisabledTest(
@@ -767,6 +806,60 @@ public class ChromeTabbedActivityTest {
         boolean retNoParent =
                 ThreadUtils.runOnUiThreadBlocking(() -> mActivity.backShouldCloseTab(tabNoParent));
         Assert.assertFalse(retNoParent);
+    }
+
+    @Test
+    @MediumTest
+    @DisableIf.Device(DeviceFormFactor.DESKTOP)
+    @EnableFeatures(ChromeFeatureList.SEND_TAB_TO_SELF_SWITCH_TO_PARENT_ON_BACK)
+    public void testBackShouldCloseTab_FromSyncBackground() {
+        Tab tabWithParent =
+                ThreadUtils.runOnUiThreadBlocking(
+                        () -> {
+                            ChromeTabCreator tabCreator = mActivity.getCurrentTabCreator();
+                            return tabCreator.createNewTab(
+                                    new LoadUrlParams("about:blank"),
+                                    TabLaunchType.FROM_SYNC_BACKGROUND,
+                                    mActivity.getActivityTab());
+                        });
+        boolean retWithParent =
+                ThreadUtils.runOnUiThreadBlocking(
+                        () -> mActivity.backShouldCloseTab(tabWithParent));
+        Assert.assertTrue(retWithParent);
+
+        Tab tabNoParent =
+                ThreadUtils.runOnUiThreadBlocking(
+                        () -> {
+                            ChromeTabCreator tabCreator = mActivity.getCurrentTabCreator();
+                            return tabCreator.createNewTab(
+                                    new LoadUrlParams("about:blank"),
+                                    TabLaunchType.FROM_SYNC_BACKGROUND,
+                                    null);
+                        });
+        boolean retNoParent =
+                ThreadUtils.runOnUiThreadBlocking(() -> mActivity.backShouldCloseTab(tabNoParent));
+        Assert.assertFalse(retNoParent);
+    }
+
+    @Test
+    @MediumTest
+    @DisableIf.Device(DeviceFormFactor.DESKTOP)
+    @DisableFeatures(ChromeFeatureList.SEND_TAB_TO_SELF_SWITCH_TO_PARENT_ON_BACK)
+    public void testBackShouldCloseTab_FromSyncBackground_FeatureDisabled() {
+        Tab tabWithParent =
+                ThreadUtils.runOnUiThreadBlocking(
+                        () -> {
+                            ChromeTabCreator tabCreator = mActivity.getCurrentTabCreator();
+                            return tabCreator.createNewTab(
+                                    new LoadUrlParams("about:blank"),
+                                    TabLaunchType.FROM_SYNC_BACKGROUND,
+                                    mActivity.getActivityTab());
+                        });
+        // With the feature disabled, received tabs keep the pre-existing behavior of minimizing
+        // the app rather than closing.
+        Assert.assertFalse(
+                ThreadUtils.runOnUiThreadBlocking(
+                        () -> mActivity.backShouldCloseTab(tabWithParent)));
     }
 
     @Test
@@ -1025,7 +1118,6 @@ public class ChromeTabbedActivityTest {
                 TAB_GROUP_TITLE,
                 /* mhtmlTabTitle= */ null,
                 /* tabGroupCollapsed= */ true,
-                /* isGroupShared= */ false,
                 /* isIncognito= */ false);
     }
 
@@ -1265,6 +1357,7 @@ public class ChromeTabbedActivityTest {
     @Test
     @MediumTest
     @MinAndroidSdkLevel(VERSION_CODES.S)
+    @Restriction(DeviceRestriction.RESTRICTION_TYPE_NON_AUTO)
     @RequiresRestart("Creates an additional window and manipulates multi-window orchestrator state")
     public void testMoveTabsToOtherWindowAndMerge() {
         // 1. Launch a second ChromeTabbedActivity.
@@ -1274,9 +1367,7 @@ public class ChromeTabbedActivityTest {
         intent.setClass(mActivity, ChromeTabbedActivity.class);
 
         final ChromeTabbedActivity activity2 =
-                ApplicationTestUtils.waitForActivityWithClass(
-                        ChromeTabbedActivity.class,
-                        Stage.RESUMED,
+                MultiWindowTestHelper.waitForNewChromeTabbedActivity(
                         () -> mActivity.getApplicationContext().startActivity(intent));
 
         MultiWindowUtils.getInstance().setIsInMultiWindowModeForTesting(true);
@@ -1475,8 +1566,6 @@ public class ChromeTabbedActivityTest {
                         });
 
         mActivityTestRule.loadUrl(ntpUrl);
-        Tab tab = ThreadUtils.runOnUiThreadBlocking(() -> mActivity.getActivityTab());
-        ChromeTabUtils.waitForTabPageLoaded(tab, ntpUrl);
     }
 
     @Test
@@ -1511,6 +1600,8 @@ public class ChromeTabbedActivityTest {
                 .restoreActiveWindowBackgroundTabs(
                         ArgumentMatchers.eq(activity.getTabModelSelector()),
                         ArgumentMatchers.any(),
-                        ArgumentMatchers.any());
+                        ArgumentMatchers.any(),
+                        ArgumentMatchers.anyLong(),
+                        ArgumentMatchers.eq(false));
     }
 }

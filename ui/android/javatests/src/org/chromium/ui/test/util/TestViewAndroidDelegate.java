@@ -4,6 +4,8 @@
 
 package org.chromium.ui.test.util;
 
+import android.content.Context;
+import android.graphics.Bitmap;
 import android.view.ViewGroup;
 import android.widget.FrameLayout;
 
@@ -11,17 +13,26 @@ import org.jni_zero.CalledByNative;
 import org.jni_zero.JNINamespace;
 
 import org.chromium.base.ContextUtils;
+import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.ui.base.ViewAndroidDelegate;
+import org.chromium.ui.mojom.CursorType;
 
 /**
  * Mimics the Chrome TestViewAndroidDelegate in chrome/browser/tab for use in tests, driven by the
  * {@code RenderWidgetHostViewAndroidTest}.
  */
 @JNINamespace("ui")
+@NullMarked
 public class TestViewAndroidDelegate extends ViewAndroidDelegate {
     /** Stores the Visual Viewport bottom inset when under test, just like the real one. */
     private int mApplicationViewportInsetBottomPx;
+
+    private int mLastCursorType = CursorType.NULL;
+    private int mLastCustomCursorWidth;
+    private int mLastCustomCursorHeight;
+    private int mLastCustomCursorHotspotX;
+    private int mLastCustomCursorHotspotY;
 
     /**
      * @param containerView {@link ViewGroup} to be used as a container view.
@@ -37,7 +48,8 @@ public class TestViewAndroidDelegate extends ViewAndroidDelegate {
      */
     @CalledByNative
     private static TestViewAndroidDelegate create() {
-        FrameLayout layout = new FrameLayout(ContextUtils.getApplicationContext());
+        PositionableFrameLayout layout =
+                new PositionableFrameLayout(ContextUtils.getApplicationContext());
         layout.setFocusable(true);
         layout.setFocusableInTouchMode(true);
         return new TestViewAndroidDelegate(layout);
@@ -56,5 +68,94 @@ public class TestViewAndroidDelegate extends ViewAndroidDelegate {
     @Override
     protected int getViewportInsetBottom() {
         return mApplicationViewportInsetBottomPx;
+    }
+
+    @Override
+    public void onCursorChanged(int cursorType) {
+        super.onCursorChanged(cursorType);
+        mLastCursorType = cursorType;
+        mLastCustomCursorWidth = 0;
+        mLastCustomCursorHeight = 0;
+        mLastCustomCursorHotspotX = 0;
+        mLastCustomCursorHotspotY = 0;
+    }
+
+    @Override
+    public void onCursorChangedToCustom(Bitmap customCursorBitmap, int hotspotX, int hotspotY) {
+        super.onCursorChangedToCustom(customCursorBitmap, hotspotX, hotspotY);
+        mLastCursorType = CursorType.CUSTOM;
+        mLastCustomCursorWidth = customCursorBitmap.getWidth();
+        mLastCustomCursorHeight = customCursorBitmap.getHeight();
+        mLastCustomCursorHotspotX = hotspotX;
+        mLastCustomCursorHotspotY = hotspotY;
+    }
+
+    @CalledByNative
+    private int getLastCursorType() {
+        return mLastCursorType;
+    }
+
+    @CalledByNative
+    private int getLastCustomCursorWidth() {
+        return mLastCustomCursorWidth;
+    }
+
+    @CalledByNative
+    private int getLastCustomCursorHeight() {
+        return mLastCustomCursorHeight;
+    }
+
+    @CalledByNative
+    private int getLastCustomCursorHotspotX() {
+        return mLastCustomCursorHotspotX;
+    }
+
+    @CalledByNative
+    private int getLastCustomCursorHotspotY() {
+        return mLastCustomCursorHotspotY;
+    }
+
+    @CalledByNative
+    private void setContainerLocation(int windowX, int windowY, int screenX, int screenY) {
+        if (!(mContainerView instanceof PositionableFrameLayout containerView)) {
+            throw new AssertionError(
+                    "Container view must be a PositionableFrameLayout when setting location.");
+        }
+        containerView.setLocation(windowX, windowY, screenX, screenY);
+    }
+
+    @CalledByNative
+    private void clearContainerView() {
+        setContainerView(null);
+    }
+
+    private static class PositionableFrameLayout extends FrameLayout {
+        private int mWindowX;
+        private int mWindowY;
+        private int mScreenX;
+        private int mScreenY;
+
+        PositionableFrameLayout(Context context) {
+            super(context);
+        }
+
+        void setLocation(int windowX, int windowY, int screenX, int screenY) {
+            mWindowX = windowX;
+            mWindowY = windowY;
+            mScreenX = screenX;
+            mScreenY = screenY;
+        }
+
+        @Override
+        public void getLocationInWindow(int[] outLocation) {
+            outLocation[0] = mWindowX;
+            outLocation[1] = mWindowY;
+        }
+
+        @Override
+        public void getLocationOnScreen(int[] outLocation) {
+            outLocation[0] = mScreenX;
+            outLocation[1] = mScreenY;
+        }
     }
 }

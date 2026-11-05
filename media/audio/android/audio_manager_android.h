@@ -172,12 +172,6 @@ class MEDIA_EXPORT AudioManagerAndroid : public AudioManagerBase {
   AddInputMuteStateChangeCallback(
       base::RepeatingCallback<void(bool)> callback) override;
 
-  // Sets a volume that applies to all this manager's output audio streams.
-  // This overrides other SetVolume calls (e.g. through AudioHostMsg_SetVolume).
-  // TODO(https://crbug.com/422733084): this functionality is likely unused.
-  void SetOutputVolumeOverride(double volume);
-  bool HasOutputVolumeOverride(double* out_volume) const;
-
   // Get the latency introduced by the hardware.  It relies on
   // AudioManager.getOutputLatency, which is both (a) hidden and (b) not
   // guaranteed to be meaningful.  Do not use this, except in the context of
@@ -186,6 +180,7 @@ class MEDIA_EXPORT AudioManagerAndroid : public AudioManagerBase {
   base::TimeDelta GetOutputLatency();
 
   bool IsMicrophoneMuted();
+  bool IsBluetoothScoEnabledForTesting();
 
   // Returns a bitmask of audio encoding formats supported by all connected HDMI
   // output devices.
@@ -262,7 +257,6 @@ class MEDIA_EXPORT AudioManagerAndroid : public AudioManagerBase {
   ChannelLayoutConfig GetLayoutWithMaxChannels();
 
   void DoSetMuteOnAudioThread(bool muted);
-  void DoSetVolumeOnAudioThread(double volume);
   void OnScoStateChangedOnAudioThread(bool state);
   void OnMicrophoneMuteStateChangedOnAudioThread(bool muted);
 
@@ -292,11 +286,14 @@ class MEDIA_EXPORT AudioManagerAndroid : public AudioManagerBase {
   // Enabled when first input stream is created and set to false when last
   // input stream is destroyed. Also affects the stream type of output streams.
   bool communication_mode_is_on_;
-
-  // If set, overrides volume level on output streams
-  bool output_volume_override_set_;
-  double output_volume_override_;
 };
+
+MEDIA_EXPORT void JNI_AudioManagerAndroid_SetMute(JNIEnv* env, bool muted);
+MEDIA_EXPORT void JNI_AudioManagerAndroid_OnScoStateChanged(JNIEnv* env,
+                                                            bool state);
+MEDIA_EXPORT void JNI_AudioManagerAndroid_OnMicrophoneMuteStateChanged(
+    JNIEnv* env,
+    bool muted);
 
 }  // namespace media
 

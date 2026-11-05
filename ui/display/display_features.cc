@@ -45,17 +45,20 @@ BASE_FEATURE(kDrmColorSpaceDefaultIsRec709, base::FEATURE_DISABLED_BY_DEFAULT);
 #if BUILDFLAG(IS_MAC)
 BASE_FEATURE(kCADisplayLinkInBrowser, base::FEATURE_DISABLED_BY_DEFAULT);
 
-BASE_FEATURE(kSkipPostTaskForCallbacks, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kCADisplayLinkInGpu, base::FEATURE_DISABLED_BY_DEFAULT);
+
+// Minimum macOS major version (e.g. "14", "15", "26", or "27") required
+// to use CADisplayLink in the GPU process when `kCADisplayLinkInGpu` is
+// enabled.
+// The minimum required version has been raised to macOS 15.0, as CVDisplayLink
+// is fully deprecated at this version and replaced by CADisplayLink.
+BASE_FEATURE_PARAM(int,
+                   kCADisplayLinkInGpuMinMacOSMajorVersion,
+                   &kCADisplayLinkInGpu,
+                   15);
+
+BASE_FEATURE(kSkipPostTaskForCallbacks, base::FEATURE_ENABLED_BY_DEFAULT);
 #endif
-
-// TODO(gildekel): A temporary flag to control whether EDID-based (vs.
-// port-based) display IDs are generated per display. Remove once the migration
-// process it complete (b/193019614).
-BASE_FEATURE(kEnableEdidBasedDisplayIds, base::FEATURE_DISABLED_BY_DEFAULT);
-
-bool IsEdidBasedDisplayIdsEnabled() {
-  return base::FeatureList::IsEnabled(kEnableEdidBasedDisplayIds);
-}
 
 // Enable display scale factor meant for OLED display.
 BASE_FEATURE(kOledScaleFactorEnabled, base::FEATURE_DISABLED_BY_DEFAULT);
@@ -78,12 +81,6 @@ bool IsHardwareMirrorModeEnabled() {
 BASE_FEATURE(kRequireHdcpKeyProvisioning, base::FEATURE_DISABLED_BY_DEFAULT);
 bool IsHdcpKeyProvisioningRequired() {
   return base::FeatureList::IsEnabled(kRequireHdcpKeyProvisioning);
-}
-
-BASE_FEATURE(kPanelSelfRefresh2, base::FEATURE_DISABLED_BY_DEFAULT);
-
-bool IsPanelSelfRefresh2Enabled() {
-  return base::FeatureList::IsEnabled(kPanelSelfRefresh2);
 }
 
 BASE_FEATURE(kTiledDisplaySupport, base::FEATURE_DISABLED_BY_DEFAULT);

@@ -4,6 +4,7 @@
 
 #include "components/policy/core/common/policy_service_impl.h"
 
+#include <initializer_list>
 #include <memory>
 #include <utility>
 
@@ -32,7 +33,6 @@
 
 using ::testing::_;
 using ::testing::AnyNumber;
-using ::testing::IsEmpty;
 using ::testing::Mock;
 using ::testing::Return;
 
@@ -161,8 +161,7 @@ class PolicyServiceTest : public testing::Test {
     PolicyServiceImpl::Migrators migrators;
     migrators.push_back(std::move(migrator));
     policy_service_ = std::make_unique<PolicyServiceImpl>(
-        std::move(providers), PolicyServiceImpl::ScopeForMetrics::kUnspecified,
-        std::move(migrators));
+        std::move(providers), scope_for_metrics_, std::move(migrators));
   }
 
   virtual void UpdatePolicy0() {
@@ -208,6 +207,9 @@ class PolicyServiceTest : public testing::Test {
   }
 
  protected:
+  PolicyServiceImpl::ScopeForMetrics scope_for_metrics_ =
+      PolicyServiceImpl::ScopeForMetrics::kUnspecified;
+
   base::test::SingleThreadTaskEnvironment task_environment_;
   MockConfigurationPolicyProvider provider0_;
   MockConfigurationPolicyProvider provider1_;
@@ -2608,175 +2610,318 @@ TEST_F(PolicyServiceTest, PolicyMessages) {
 
   EXPECT_TRUE(VerifyPolicies(chrome_namespace, expected_chrome));
 }
+
+namespace {
+
+const char kExtensionListPolicy[] = "ExampleExtensionListPolicy";
+
+const char kListValueChangedHistogram[] =
+    "Enterprise.PolicyMerge.NonChromeNamespace.ValueChanged.List";
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
+const char kDictionaryValueChangedHistogram[] =
+    "Enterprise.PolicyMerge.NonChromeNamespace.ValueChanged.Dictionary";
+#endif  // BUILDFLAG(ENABLE_EXTENSIONS_CORE)
+
+base::Value MakeList(std::initializer_list<std::string> items) {
+  base::ListValue list;
+  for (const std::string& item : items) {
+    list.Append(item);
+  }
+  return base::Value(std::move(list));
+}
+
+// Sets `policy` in `ns` of `bundle` to a mandatory list policy of `items`.
+void SetListPolicy(PolicyBundle& bundle,
+                   const PolicyNamespace& ns,
+                   const std::string& policy,
+                   PolicyScope scope,
+                   PolicySource source,
+                   std::initializer_list<std::string> items) {
+  bundle.Get(ns).Set(policy, POLICY_LEVEL_MANDATORY, scope, source,
+                     MakeList(items), nullptr);
+}
+
+}  // namespace
+
+// The merge metapolicies are read from the Chrome namespace but applied to
+// every namespace. With a wildcard merge list, an affiliated user and
+// CloudUserPolicyMerge enabled, a list policy in an extension namespace that is
+// set by both machine cloud and user cloud policy is merged exactly like a
+// Chrome policy would be.
+TEST_F(PolicyServiceTest,
+       NonChromeNamespaceListPolicyMerge_AffiliatedWildcard) {
+  const PolicyNamespace chrome_namespace(POLICY_DOMAIN_CHROME, std::string());
+  const PolicyNamespace extension_namespace(POLICY_DOMAIN_EXTENSIONS,
+                                            kExtension);
+  const base::flat_set<std::string> ids{kAffiliationId1};
+
+  PolicyBundle machine_platform;
+  SetListPolicy(machine_platform, chrome_namespace,
+                key::kPolicyListMultipleSourceMergeList, POLICY_SCOPE_MACHINE,
+                POLICY_SOURCE_PLATFORM, {"*"});
+  machine_platform.Get(chrome_namespace)
+      .Set(key::kCloudUserPolicyMerge, POLICY_LEVEL_MANDATORY,
+           POLICY_SCOPE_MACHINE, POLICY_SOURCE_PLATFORM, base::Value(true),
+           nullptr);
+  PolicyBundle machine_cloud;
+  machine_cloud.Get(chrome_namespace).SetDeviceAffiliationIds(ids);
+  SetListPolicy(machine_cloud, extension_namespace, kExtensionListPolicy,
+                POLICY_SCOPE_MACHINE, POLICY_SOURCE_CLOUD, {kUrl1, kUrl2});
+  PolicyBundle user_cloud;
+  user_cloud.Get(chrome_namespace).SetUserAffiliationIds(ids);
+  SetListPolicy(user_cloud, extension_namespace, kExtensionListPolicy,
+                POLICY_SCOPE_USER, POLICY_SOURCE_CLOUD, {kUrl2, kUrl3});
+
+  // The machine cloud entry has the higher priority and is the base of the
+  // merge; the user cloud values are appended.
+  PolicyMap::Entry merged(POLICY_LEVEL_MANDATORY, POLICY_SCOPE_MACHINE,
+                          POLICY_SOURCE_MERGED, MakeList({kUrl1, kUrl2, kUrl3}),
+                          nullptr);
+  merged.AddConflictingPolicy(user_cloud.Get(extension_namespace)
+                                  .Get(kExtensionListPolicy)
+                                  ->DeepCopy());
+  merged.AddConflictingPolicy(machine_cloud.Get(extension_namespace)
+                                  .Get(kExtensionListPolicy)
+                                  ->DeepCopy());
+  PolicyMap expected_extension;
+  expected_extension.Set(kExtensionListPolicy, std::move(merged));
+
+  provider0_.UpdatePolicy(std::move(machine_platform));
+  provider1_.UpdatePolicy(std::move(machine_cloud));
+  provider2_.UpdatePolicy(std::move(user_cloud));
+  RunUntilIdle();
+
+  EXPECT_TRUE(VerifyPolicies(extension_namespace, expected_extension));
+}
+
+class PolicyServiceMergeMetricsTest : public PolicyServiceTest {
+ public:
+  PolicyServiceMergeMetricsTest() {
+    scope_for_metrics_ = PolicyServiceImpl::ScopeForMetrics::kUser;
+  }
+
+ protected:
+  void ExpectMergedValue(const PolicyNamespace& ns,
+                         const std::string& policy,
+                         const base::Value& expected) {
+    const PolicyMap::Entry* entry =
+        policy_service_->GetPolicies(ns).Get(policy);
+    ASSERT_TRUE(entry);
+    EXPECT_EQ(POLICY_SOURCE_MERGED, entry->source);
+    EXPECT_EQ(expected, *entry->value_unsafe());
+  }
+
+  const PolicyNamespace chrome_namespace_{POLICY_DOMAIN_CHROME, std::string()};
+  const PolicyNamespace extension_namespace_{POLICY_DOMAIN_EXTENSIONS,
+                                             kExtension};
+  base::HistogramTester histogram_tester_;
+};
+
+// An extension list policy set by machine platform and machine cloud policy,
+// followed over several cloud policy refreshes. A Chrome list policy merged the
+// same way is not counted.
+TEST_F(PolicyServiceMergeMetricsTest, RecordedOnFirstMergeAndOnChange) {
+  PolicyBundle machine_platform;
+  SetListPolicy(machine_platform, chrome_namespace_,
+                key::kPolicyListMultipleSourceMergeList, POLICY_SCOPE_MACHINE,
+                POLICY_SOURCE_PLATFORM, {"*"});
+  SetListPolicy(machine_platform, chrome_namespace_,
+                key::kDefaultSearchProviderEncodings, POLICY_SCOPE_MACHINE,
+                POLICY_SOURCE_PLATFORM, {kUrl1});
+  SetListPolicy(machine_platform, extension_namespace_, kExtensionListPolicy,
+                POLICY_SCOPE_MACHINE, POLICY_SOURCE_PLATFORM, {kUrl1, kUrl2});
+  // Set by a single source, so not merged and not recorded.
+  SetListPolicy(machine_platform, extension_namespace_, "UnmergedListPolicy",
+                POLICY_SCOPE_MACHINE, POLICY_SOURCE_PLATFORM, {kUrl1});
+  PolicyBundle machine_cloud;
+  SetListPolicy(machine_cloud, chrome_namespace_,
+                key::kDefaultSearchProviderEncodings, POLICY_SCOPE_MACHINE,
+                POLICY_SOURCE_CLOUD, {kUrl2});
+  SetListPolicy(machine_cloud, extension_namespace_, kExtensionListPolicy,
+                POLICY_SCOPE_MACHINE, POLICY_SOURCE_CLOUD, {kUrl3});
+  PolicyBundle machine_cloud_copy = machine_cloud.Clone();
+
+  provider0_.UpdatePolicy(std::move(machine_platform));
+  provider1_.UpdatePolicy(std::move(machine_cloud));
+  RunUntilIdle();
+  ExpectMergedValue(chrome_namespace_, key::kDefaultSearchProviderEncodings,
+                    MakeList({kUrl1, kUrl2}));
+  ExpectMergedValue(extension_namespace_, kExtensionListPolicy,
+                    MakeList({kUrl1, kUrl2, kUrl3}));
+  histogram_tester_.ExpectUniqueSample(kListValueChangedHistogram, true, 1);
+
+  // An identical merge result is not re-recorded.
+  provider1_.UpdatePolicy(std::move(machine_cloud_copy));
+  RunUntilIdle();
+  histogram_tester_.ExpectTotalCount(kListValueChangedHistogram, 1);
+
+  // The cloud value is now a subset of the platform value. The entry is still
+  // POLICY_SOURCE_MERGED, but the merged value equals what precedence alone
+  // would have produced.
+  PolicyBundle machine_cloud_subset;
+  SetListPolicy(machine_cloud_subset, extension_namespace_,
+                kExtensionListPolicy, POLICY_SCOPE_MACHINE, POLICY_SOURCE_CLOUD,
+                {kUrl2});
+  provider1_.UpdatePolicy(std::move(machine_cloud_subset));
+  RunUntilIdle();
+  ExpectMergedValue(extension_namespace_, kExtensionListPolicy,
+                    MakeList({kUrl1, kUrl2}));
+  histogram_tester_.ExpectBucketCount(kListValueChangedHistogram, false, 1);
+  histogram_tester_.ExpectTotalCount(kListValueChangedHistogram, 2);
+
+  // A changed merge result is recorded again.
+  PolicyBundle machine_cloud_changed;
+  SetListPolicy(machine_cloud_changed, extension_namespace_,
+                kExtensionListPolicy, POLICY_SCOPE_MACHINE, POLICY_SOURCE_CLOUD,
+                {kUrl4});
+  provider1_.UpdatePolicy(std::move(machine_cloud_changed));
+  RunUntilIdle();
+  ExpectMergedValue(extension_namespace_, kExtensionListPolicy,
+                    MakeList({kUrl1, kUrl2, kUrl4}));
+  histogram_tester_.ExpectBucketCount(kListValueChangedHistogram, true, 2);
+  histogram_tester_.ExpectTotalCount(kListValueChangedHistogram, 3);
+}
+
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
+// PolicyDictionaryMerger only merges policies on its allowlist of Chrome
+// policy names, so an extension policy is dictionary-merged only if it shares
+// one of those names, here ExtensionSettings.
+TEST_F(PolicyServiceMergeMetricsTest, DictionaryMergeRecorded) {
+  base::DictValue platform_dict;
+  platform_dict.Set(kUrl1, true);
+  base::DictValue cloud_dict;
+  cloud_dict.Set(kUrl2, false);
+  base::DictValue merged_dict;
+  merged_dict.Set(kUrl1, true);
+  merged_dict.Set(kUrl2, false);
+
+  PolicyBundle machine_platform;
+  SetListPolicy(machine_platform, chrome_namespace_,
+                key::kPolicyDictionaryMultipleSourceMergeList,
+                POLICY_SCOPE_MACHINE, POLICY_SOURCE_PLATFORM,
+                {key::kExtensionSettings});
+  machine_platform.Get(extension_namespace_)
+      .Set(key::kExtensionSettings, POLICY_LEVEL_MANDATORY,
+           POLICY_SCOPE_MACHINE, POLICY_SOURCE_PLATFORM,
+           base::Value(std::move(platform_dict)), nullptr);
+  PolicyBundle machine_cloud;
+  machine_cloud.Get(extension_namespace_)
+      .Set(key::kExtensionSettings, POLICY_LEVEL_MANDATORY,
+           POLICY_SCOPE_MACHINE, POLICY_SOURCE_CLOUD,
+           base::Value(std::move(cloud_dict)), nullptr);
+
+  provider0_.UpdatePolicy(std::move(machine_platform));
+  provider1_.UpdatePolicy(std::move(machine_cloud));
+  RunUntilIdle();
+
+  ExpectMergedValue(extension_namespace_, key::kExtensionSettings,
+                    base::Value(std::move(merged_dict)));
+  histogram_tester_.ExpectTotalCount(kListValueChangedHistogram, 0);
+  histogram_tester_.ExpectUniqueSample(kDictionaryValueChangedHistogram, true,
+                                       1);
+}
+#endif  // BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 #endif  // !BUILDFLAG(IS_CHROMEOS) && !BUILDFLAG(IS_IOS)
 
+// Expected histogram names and suffixes are spelled out as literals matching
+// tools/metrics/histograms/metadata/enterprise/histograms.xml. They are
+// intentionally not built from the PolicyServiceImpl constants, so that a
+// wrong constant value is caught.
 struct PolicyServiceInitTimeTestParams {
   PolicyServiceImpl::ScopeForMetrics scope_for_metrics;
   size_t policy_count;
-  std::vector<std::vector<std::string>> expected_histogram_parts;
+  // Per-scope histogram. Empty if nothing should be recorded.
+  std::string expected_histogram;
+  // Suffixes appended to `expected_histogram` for the breakdown histograms.
+  std::vector<std::string> expected_breakdown_suffixes;
 } kInitTimeTestParams[] = {
     {
         .scope_for_metrics = PolicyServiceImpl::ScopeForMetrics::kUnspecified,
         .policy_count = 0,
-        .expected_histogram_parts = {},
+        .expected_histogram = "",
+        .expected_breakdown_suffixes = {},
     },
     {
         .scope_for_metrics = PolicyServiceImpl::ScopeForMetrics::kMachine,
         .policy_count = 0,
-        .expected_histogram_parts =
-            {
-                {
-                    PolicyServiceImpl::kInitTimeHistogramPrefix,
-                    PolicyServiceImpl::kMachineHistogramSuffix,
-                },
-                {
-                    PolicyServiceImpl::kInitTimeHistogramPrefix,
-                    PolicyServiceImpl::kMachineHistogramSuffix,
-                    PolicyServiceImpl::kWithoutPoliciesHistogramSuffix,
-                },
-            },
+        .expected_histogram = "Enterprise.PolicyServiceInitTime.Machine",
+        .expected_breakdown_suffixes = {".WithoutPolicies"},
     },
     {
         .scope_for_metrics = PolicyServiceImpl::ScopeForMetrics::kMachine,
-        .policy_count = 3,
-        .expected_histogram_parts =
-            {
-                {
-                    PolicyServiceImpl::kInitTimeHistogramPrefix,
-                    PolicyServiceImpl::kMachineHistogramSuffix,
-                },
-                {
-                    PolicyServiceImpl::kInitTimeHistogramPrefix,
-                    PolicyServiceImpl::kMachineHistogramSuffix,
-                    PolicyServiceImpl::kWithPoliciesHistogramSuffix,
-                },
-                {
-                    PolicyServiceImpl::kInitTimeHistogramPrefix,
-                    PolicyServiceImpl::kMachineHistogramSuffix,
-                    PolicyServiceImpl::kWith1to50PoliciesHistogramSuffix,
-                },
-            },
+        .policy_count = 1,
+        .expected_histogram = "Enterprise.PolicyServiceInitTime.Machine",
+        .expected_breakdown_suffixes = {".WithPolicies",
+                                        ".With_1_to_50_Policies"},
     },
     {
         .scope_for_metrics = PolicyServiceImpl::ScopeForMetrics::kMachine,
-        .policy_count = 60,
-        .expected_histogram_parts =
-            {
-                {
-                    PolicyServiceImpl::kInitTimeHistogramPrefix,
-                    PolicyServiceImpl::kMachineHistogramSuffix,
-                },
-                {
-                    PolicyServiceImpl::kInitTimeHistogramPrefix,
-                    PolicyServiceImpl::kMachineHistogramSuffix,
-                    PolicyServiceImpl::kWithPoliciesHistogramSuffix,
-                },
-                {
-                    PolicyServiceImpl::kInitTimeHistogramPrefix,
-                    PolicyServiceImpl::kMachineHistogramSuffix,
-                    PolicyServiceImpl::kWith51to100PoliciesHistogramSuffix,
-                },
-            },
+        .policy_count = 50,
+        .expected_histogram = "Enterprise.PolicyServiceInitTime.Machine",
+        .expected_breakdown_suffixes = {".WithPolicies",
+                                        ".With_1_to_50_Policies"},
     },
     {
         .scope_for_metrics = PolicyServiceImpl::ScopeForMetrics::kMachine,
-        .policy_count = 200,
-        .expected_histogram_parts =
-            {
-                {
-                    PolicyServiceImpl::kInitTimeHistogramPrefix,
-                    PolicyServiceImpl::kMachineHistogramSuffix,
-                },
-                {
-                    PolicyServiceImpl::kInitTimeHistogramPrefix,
-                    PolicyServiceImpl::kMachineHistogramSuffix,
-                    PolicyServiceImpl::kWithPoliciesHistogramSuffix,
-                },
-                {
-                    PolicyServiceImpl::kInitTimeHistogramPrefix,
-                    PolicyServiceImpl::kMachineHistogramSuffix,
-                    PolicyServiceImpl::kWith101PlusPoliciesHistogramSuffix,
-                },
-            },
+        .policy_count = 51,
+        .expected_histogram = "Enterprise.PolicyServiceInitTime.Machine",
+        .expected_breakdown_suffixes = {".WithPolicies",
+                                        ".With_51_to_100_Policies"},
+    },
+    {
+        .scope_for_metrics = PolicyServiceImpl::ScopeForMetrics::kMachine,
+        .policy_count = 100,
+        .expected_histogram = "Enterprise.PolicyServiceInitTime.Machine",
+        .expected_breakdown_suffixes = {".WithPolicies",
+                                        ".With_51_to_100_Policies"},
+    },
+    {
+        .scope_for_metrics = PolicyServiceImpl::ScopeForMetrics::kMachine,
+        .policy_count = 101,
+        .expected_histogram = "Enterprise.PolicyServiceInitTime.Machine",
+        .expected_breakdown_suffixes = {".WithPolicies",
+                                        ".With_101_Plus_Policies"},
     },
     {
         .scope_for_metrics = PolicyServiceImpl::ScopeForMetrics::kUser,
         .policy_count = 0,
-        .expected_histogram_parts =
-            {
-                {
-                    PolicyServiceImpl::kInitTimeHistogramPrefix,
-                    PolicyServiceImpl::kUserHistogramSuffix,
-                },
-                {
-                    PolicyServiceImpl::kInitTimeHistogramPrefix,
-                    PolicyServiceImpl::kUserHistogramSuffix,
-                    PolicyServiceImpl::kWithoutPoliciesHistogramSuffix,
-                },
-            },
+        .expected_histogram = "Enterprise.PolicyServiceInitTime.User",
+        .expected_breakdown_suffixes = {".WithoutPolicies"},
     },
     {
         .scope_for_metrics = PolicyServiceImpl::ScopeForMetrics::kUser,
-        .policy_count = 3,
-        .expected_histogram_parts =
-            {
-                {
-                    PolicyServiceImpl::kInitTimeHistogramPrefix,
-                    PolicyServiceImpl::kUserHistogramSuffix,
-                },
-                {
-                    PolicyServiceImpl::kInitTimeHistogramPrefix,
-                    PolicyServiceImpl::kUserHistogramSuffix,
-                    PolicyServiceImpl::kWithPoliciesHistogramSuffix,
-                },
-                {
-                    PolicyServiceImpl::kInitTimeHistogramPrefix,
-                    PolicyServiceImpl::kUserHistogramSuffix,
-                    PolicyServiceImpl::kWith1to50PoliciesHistogramSuffix,
-                },
-            },
+        .policy_count = 1,
+        .expected_histogram = "Enterprise.PolicyServiceInitTime.User",
+        .expected_breakdown_suffixes = {".WithPolicies",
+                                        ".With_1_to_50_Policies"},
     },
     {
         .scope_for_metrics = PolicyServiceImpl::ScopeForMetrics::kUser,
-        .policy_count = 60,
-        .expected_histogram_parts =
-            {
-                {
-                    PolicyServiceImpl::kInitTimeHistogramPrefix,
-                    PolicyServiceImpl::kUserHistogramSuffix,
-                },
-                {
-                    PolicyServiceImpl::kInitTimeHistogramPrefix,
-                    PolicyServiceImpl::kUserHistogramSuffix,
-                    PolicyServiceImpl::kWithPoliciesHistogramSuffix,
-                },
-                {
-                    PolicyServiceImpl::kInitTimeHistogramPrefix,
-                    PolicyServiceImpl::kUserHistogramSuffix,
-                    PolicyServiceImpl::kWith51to100PoliciesHistogramSuffix,
-                },
-            },
+        .policy_count = 50,
+        .expected_histogram = "Enterprise.PolicyServiceInitTime.User",
+        .expected_breakdown_suffixes = {".WithPolicies",
+                                        ".With_1_to_50_Policies"},
     },
     {
         .scope_for_metrics = PolicyServiceImpl::ScopeForMetrics::kUser,
-        .policy_count = 200,
-        .expected_histogram_parts =
-            {
-                {
-                    PolicyServiceImpl::kInitTimeHistogramPrefix,
-                    PolicyServiceImpl::kUserHistogramSuffix,
-                },
-                {
-                    PolicyServiceImpl::kInitTimeHistogramPrefix,
-                    PolicyServiceImpl::kUserHistogramSuffix,
-                    PolicyServiceImpl::kWithPoliciesHistogramSuffix,
-                },
-                {
-                    PolicyServiceImpl::kInitTimeHistogramPrefix,
-                    PolicyServiceImpl::kUserHistogramSuffix,
-                    PolicyServiceImpl::kWith101PlusPoliciesHistogramSuffix,
-                },
-            },
+        .policy_count = 51,
+        .expected_histogram = "Enterprise.PolicyServiceInitTime.User",
+        .expected_breakdown_suffixes = {".WithPolicies",
+                                        ".With_51_to_100_Policies"},
+    },
+    {
+        .scope_for_metrics = PolicyServiceImpl::ScopeForMetrics::kUser,
+        .policy_count = 100,
+        .expected_histogram = "Enterprise.PolicyServiceInitTime.User",
+        .expected_breakdown_suffixes = {".WithPolicies",
+                                        ".With_51_to_100_Policies"},
+    },
+    {
+        .scope_for_metrics = PolicyServiceImpl::ScopeForMetrics::kUser,
+        .policy_count = 101,
+        .expected_histogram = "Enterprise.PolicyServiceInitTime.User",
+        .expected_breakdown_suffixes = {".WithPolicies",
+                                        ".With_101_Plus_Policies"},
     },
 };
 
@@ -2787,29 +2932,30 @@ INSTANTIATE_TEST_SUITE_P(All,
                          PolicyServiceInitTimeTest,
                          ::testing::ValuesIn(kInitTimeTestParams));
 
+// Checks that exactly the expected histograms are recorded, and that no other
+// histogram under the Enterprise.PolicyServiceInitTime prefix receives a
+// sample.
 TEST_P(PolicyServiceInitTimeTest, HistogramsRecorded) {
   constexpr base::TimeDelta kInitTime = base::Seconds(9);
 
   base::HistogramTester histogram_tester;
-  PolicyServiceInitTimeTestParams params = GetParam();
+  const PolicyServiceInitTimeTestParams& params = GetParam();
   PolicyServiceImpl::RecordInitializationTime(params.scope_for_metrics,
                                               params.policy_count, kInitTime);
 
-  if (params.expected_histogram_parts.empty()) {
-    EXPECT_THAT(histogram_tester.GetAllSamples(
-                    base::StrCat({PolicyServiceImpl::kInitTimeHistogramPrefix,
-                                  PolicyServiceImpl::kUserHistogramSuffix})),
-                IsEmpty());
-    EXPECT_THAT(histogram_tester.GetAllSamples(
-                    base::StrCat({PolicyServiceImpl::kInitTimeHistogramPrefix,
-                                  PolicyServiceImpl::kMachineHistogramSuffix})),
-                IsEmpty());
+  base::HistogramTester::CountsMap expected_counts;
+  if (!params.expected_histogram.empty()) {
+    expected_counts[params.expected_histogram] = 1;
+    for (const std::string& suffix : params.expected_breakdown_suffixes) {
+      expected_counts[base::StrCat({params.expected_histogram, suffix})] = 1;
+    }
   }
-
-  for (auto hist_name_parts : params.expected_histogram_parts) {
-    histogram_tester.ExpectTimeBucketCount(base::StrCat(hist_name_parts),
-                                           kInitTime, 1);
+  for (const auto& [name, count] : expected_counts) {
+    histogram_tester.ExpectUniqueTimeSample(name, kInitTime, count);
   }
+  EXPECT_THAT(histogram_tester.GetTotalCountsForPrefix(
+                  "Enterprise.PolicyServiceInitTime."),
+              ::testing::ContainerEq(expected_counts));
 }
 
 }  // namespace policy

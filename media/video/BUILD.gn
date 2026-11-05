@@ -10,9 +10,11 @@ source_set("video") {
   # is a roll-up target which is part of the //media component. Most other DEPs
   # should be using //media and not directly DEP this roll-up target.
   visibility = [
+    ":openh264rs_video_encoder",
     "//media",
     "//media/filters",
     "//media/formats",
+    "//media/gfx",
     "//media/renderers",
   ]
 
@@ -21,14 +23,10 @@ source_set("video") {
     "alpha_video_encoder_wrapper.h",
     "gpu_video_accelerator_factories.cc",
     "gpu_video_accelerator_factories.h",
-    "mappable_shared_image_video_frame_pool.cc",
-    "mappable_shared_image_video_frame_pool.h",
     "offloading_video_encoder.cc",
     "offloading_video_encoder.h",
     "picture.cc",
     "picture.h",
-    "renderable_mappable_shared_image_video_frame_pool.cc",
-    "renderable_mappable_shared_image_video_frame_pool.h",
     "video_decode_accelerator.cc",
     "video_decode_accelerator.h",
     "video_encode_accelerator.cc",
@@ -85,6 +83,28 @@ source_set("video") {
   }
 }
 
+if (proprietary_codecs && media_use_rust_openh264) {
+  source_set("openh264rs_video_encoder") {
+    visibility = [ "//media" ]
+    sources = [
+      "openh264_video_encoder.cc",
+      "openh264_video_encoder.h",
+    ]
+    defines = [ "RUST_OPENH264_BUILD" ]
+    configs += [ "//media:subcomponent_config" ]
+    deps = [
+      ":video",
+      "//base",
+      "//media:media_buildflags",
+      "//media/base",
+      "//media/formats",
+      "//media/parsers",
+      "//third_party/openh264rs",
+      "//ui/gfx",
+    ]
+  }
+}
+
 # Note: This is a roll-up only target; do not expand the visibility. DEPS should
 # depend on the //media:test_support target instead.
 static_library("test_support") {
@@ -95,8 +115,6 @@ static_library("test_support") {
     "fake_video_encode_accelerator.h",
     "mock_gpu_video_accelerator_factories.cc",
     "mock_gpu_video_accelerator_factories.h",
-    "mock_mappable_shared_image_video_frame_pool.cc",
-    "mock_mappable_shared_image_video_frame_pool.h",
     "mock_video_encode_accelerator.cc",
     "mock_video_encode_accelerator.h",
   ]
@@ -117,9 +135,7 @@ source_set("unit_tests") {
   testonly = true
   sources = [
     "alpha_video_encoder_wrapper_unittest.cc",
-    "mappable_shared_image_video_frame_pool_unittest.cc",
     "offloading_video_encoder_unittest.cc",
-    "renderable_mappable_shared_image_video_frame_pool_unittest.cc",
     "software_video_encoder_test.cc",
     "video_encode_accelerator_adapter_test.cc",
     "video_encoder_fallback_test.cc",
@@ -144,5 +160,11 @@ source_set("unit_tests") {
   if (use_libgav1_parser) {
     sources += [ "libgav1_decoder_unittest.cc" ]
     deps += [ "//third_party/libgav1:libgav1_decoder" ]
+  }
+
+  # TODO(crbug.com/581458350): Enable on Windows and Android once decoder stack
+  # usage and APK test-data lookup are fixed.
+  if (proprietary_codecs && media_use_rust_openh264 && (is_linux || is_mac)) {
+    deps += [ "//third_party/openh264rs:openh264rs_unittests" ]
   }
 }

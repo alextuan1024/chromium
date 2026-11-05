@@ -6,8 +6,29 @@
 #define COMPONENTS_AUTOFILL_CORE_BROWSER_UI_PAYMENTS_PAYMENTS_CHURNED_USERS_UI_DELEGATE_H_
 
 #include "base/functional/callback_forward.h"
+#include "components/autofill/core/browser/ui/payments/payments_ui_closed_reasons.h"
+#include "components/signin/public/identity_manager/account_info.h"
 
-namespace autofill::payments {
+namespace autofill {
+
+// The experiment arm assigned to the user for the resurrecting churned users
+// experiment. This experiment arm affects the resurrection UI.
+// GENERATED_JAVA_ENUM_PACKAGE: org.chromium.components.autofill
+enum class AutofillEnableResurrectingPaymentsUsersTreatmentArm {
+  // Security-focused experiment arm, resulting in a prompt that emphasizes the
+  // security benefits of turning on payments autofill to the user.
+  kSecurity = 0,
+  // Convenience-focused experiment arm, resulting in a prompt that emphasizes
+  // the convenience and speed benefits of turning on payments autofill to the
+  // user.
+  kConvenience = 1,
+  // Message-banner experiment arm on Android, resulting in a lightweight
+  // top-of-screen message banner prompting the user to turn on payments
+  // autofill.
+  kMessage = 2,
+};
+
+namespace payments {
 
 // The cross-platform C++ UI delegate interface for displaying the Payments
 // Churned Users resurrection UI. This UI is shown to resurrect users who
@@ -25,11 +46,11 @@ class PaymentsChurnedUsersUiDelegate {
   // resurrection UI, prompting churned users who turned off Autofill payment
   // methods to resurrect and re-enable Autofill.
   virtual void ShowPaymentsChurnedUsersUI(
-      base::OnceClosure accept_callback,
-      base::OnceClosure cancel_callback,
-      base::OnceClosure closed_callback) = 0;
+      AccountInfo account_info,
+      base::OnceCallback<void(PaymentsUiClosedReason)> closed_callback) = 0;
 };
 
-}  // namespace autofill::payments
+}  // namespace payments
+}  // namespace autofill
 
 #endif  // COMPONENTS_AUTOFILL_CORE_BROWSER_UI_PAYMENTS_PAYMENTS_CHURNED_USERS_UI_DELEGATE_H_

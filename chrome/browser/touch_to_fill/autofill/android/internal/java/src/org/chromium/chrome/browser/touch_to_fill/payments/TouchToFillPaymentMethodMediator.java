@@ -4,6 +4,8 @@
 
 package org.chromium.chrome.browser.touch_to_fill.payments;
 
+import static org.chromium.build.NullUtil.assertNonNull;
+import static org.chromium.build.NullUtil.assumeNonNull;
 import static org.chromium.chrome.browser.autofill.AutofillUiUtils.getCardIcon;
 import static org.chromium.chrome.browser.autofill.AutofillUiUtils.getValuableIcon;
 import static org.chromium.chrome.browser.autofill.AutofillUiUtils.openLink;
@@ -84,7 +86,6 @@ import static org.chromium.chrome.browser.touch_to_fill.payments.TouchToFillPaym
 import static org.chromium.chrome.browser.touch_to_fill.payments.TouchToFillPaymentMethodProperties.ProgressIconProperties.PROGRESS_CONTENT_DESCRIPTION_ID;
 import static org.chromium.chrome.browser.touch_to_fill.payments.TouchToFillPaymentMethodProperties.SELECTED_TAB_INDEX;
 import static org.chromium.chrome.browser.touch_to_fill.payments.TouchToFillPaymentMethodProperties.SHEET_CLOSED_DESCRIPTION_ID;
-import static org.chromium.chrome.browser.touch_to_fill.payments.TouchToFillPaymentMethodProperties.SHEET_CONTENT_DESCRIPTION_ID;
 import static org.chromium.chrome.browser.touch_to_fill.payments.TouchToFillPaymentMethodProperties.SHEET_FULL_HEIGHT_DESCRIPTION_ID;
 import static org.chromium.chrome.browser.touch_to_fill.payments.TouchToFillPaymentMethodProperties.SHEET_HALF_HEIGHT_DESCRIPTION_ID;
 import static org.chromium.chrome.browser.touch_to_fill.payments.TouchToFillPaymentMethodProperties.SHEET_ITEMS;
@@ -119,11 +120,12 @@ import androidx.annotation.VisibleForTesting;
 import org.chromium.base.ServiceLoaderUtil;
 import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.base.metrics.RecordUserAction;
+import org.chromium.build.annotations.EnsuresNonNullIf;
+import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.autofill.AutofillImageFetcher;
 import org.chromium.chrome.browser.autofill.AutofillUiUtils;
 import org.chromium.chrome.browser.autofill.PersonalDataManager;
-import org.chromium.chrome.browser.autofill.PersonalDataManager.Iban;
 import org.chromium.chrome.browser.autofill.PersonalDataManagerFactory;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.night_mode.GlobalNightModeStateProviderHolder;
@@ -159,6 +161,7 @@ import org.chromium.components.autofill.PaymentsPayload;
 import org.chromium.components.autofill.SuggestionType;
 import org.chromium.components.autofill.payments.BnplIssuerContext;
 import org.chromium.components.autofill.payments.BnplIssuerTosDetail;
+import org.chromium.components.autofill.payments.Iban;
 import org.chromium.components.autofill.payments.LegalMessageLine;
 import org.chromium.components.autofill.payments.TouchToFillDisplayOptions;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
@@ -183,6 +186,7 @@ import java.util.List;
  * Contains the logic for the TouchToFillPaymentMethod component. It sets the state of the model and
  * reacts to events like clicks.
  */
+@NullMarked
 class TouchToFillPaymentMethodMediator implements AutofillImageFetcher.Observer {
     /**
      * The final outcome that closes the credit card Touch To Fill sheet.
@@ -469,24 +473,23 @@ class TouchToFillPaymentMethodMediator implements AutofillImageFetcher.Observer 
     private final PropertyModel mModel;
     private final BottomSheetFocusHelper mBottomSheetFocusHelper;
     private final PersonalDataManager mPersonalDataManager;
-    private List<AutofillSuggestion> mSuggestions;
-    private List<Iban> mIbans;
-    private List<LoyaltyCard> mAffiliatedLoyaltyCards;
-    private List<LoyaltyCard> mAllLoyaltyCards;
-    private List<BnplIssuerContext> mBnplIssuerContexts;
-    private String mBnplIssuerIdWithTosShown;
-    private TouchToFillDisplayOptions mTouchToFillDisplayOptions;
-    private AutofillSuggestion mBnplSuggestion;
+    private @Nullable List<AutofillSuggestion> mSuggestions;
+    private @Nullable List<Iban> mIbans;
+    private @Nullable List<LoyaltyCard> mAffiliatedLoyaltyCards;
+    private @Nullable List<LoyaltyCard> mAllLoyaltyCards;
+    private @Nullable List<BnplIssuerContext> mBnplIssuerContexts;
+    private @Nullable String mBnplIssuerIdWithTosShown;
+    private @Nullable TouchToFillDisplayOptions mTouchToFillDisplayOptions;
+    private @Nullable AutofillSuggestion mBnplSuggestion;
     // It holds the properties needed to render the BNPL chip on the bottom sheet.
     // It acts as a bridge between the data and the view.
-    private PropertyModel mBnplSuggestionModel;
+    private @Nullable PropertyModel mBnplSuggestionModel;
     private @TouchToFillBnplSuggestionVisibility int mBnplSuggestionVisibility;
     private InputProtector mInputProtector = new InputProtector();
-    private PrefChangeRegistrar mPrefChangeRegistrar;
+    private @Nullable PrefChangeRegistrar mPrefChangeRegistrar;
     private boolean mDidShowBoldedAiTerms;
-    private boolean mWasDismissed;
     private boolean mShowBnplLoadingInTab;
-    private AutofillImageFetcher mImageFetcher;
+    private @Nullable AutofillImageFetcher mImageFetcher;
 
     TouchToFillPaymentMethodMediator(
             Context context,
@@ -569,14 +572,11 @@ class TouchToFillPaymentMethodMediator implements AutofillImageFetcher.Observer 
 
     private void setTabbedHomeScreenItems() {
         mModel.set(CURRENT_SCREEN, TABBED_HOME_SCREEN);
-        mModel.set(TABBED_HEADER_LOGO_DRAWABLE_ID, R.drawable.google_pay);
+        mModel.set(TABBED_HEADER_LOGO_DRAWABLE_ID, getGPayLogoDrawableId());
         mModel.set(TABBED_HEADER_TITLE_ID, R.string.autofill_payment_method_bottom_sheet_title);
         // Default to Pay Now tab
         onTabSelected(PAY_NOW);
 
-        mModel.set(
-                SHEET_CONTENT_DESCRIPTION_ID,
-                R.string.autofill_payment_method_bottom_sheet_content_description);
         mModel.set(
                 SHEET_HALF_HEIGHT_DESCRIPTION_ID,
                 R.string.autofill_payment_method_bottom_sheet_half_height);
@@ -606,6 +606,7 @@ class TouchToFillPaymentMethodMediator implements AutofillImageFetcher.Observer 
     private ModelList getCreditCardTabItems() {
         ModelList sheetItems = new ModelList();
         List<AutofillSuggestion> ccSuggestions = new ArrayList<>();
+        assumeNonNull(mSuggestions);
         for (AutofillSuggestion suggestion : mSuggestions) {
             if (suggestion.getSuggestionType() != SuggestionType.BNPL_ENTRY) {
                 ccSuggestions.add(suggestion);
@@ -633,6 +634,7 @@ class TouchToFillPaymentMethodMediator implements AutofillImageFetcher.Observer 
                                     R.string.autofill_payment_method_continue_button,
                                     () -> onSelectedCreditCard(ccSuggestions.get(0)))));
         }
+        assumeNonNull(mTouchToFillDisplayOptions);
         sheetItems.add(
                 buildFooterForCreditCard(mTouchToFillDisplayOptions.shouldShowScanCreditCard()));
 
@@ -730,17 +732,17 @@ class TouchToFillPaymentMethodMediator implements AutofillImageFetcher.Observer 
                             FILL_BUTTON,
                             createButtonModel(
                                     R.string.autofill_payment_method_continue_button,
-                                    () -> onSelectedCreditCard(mSuggestions.get(0)))));
+                                    () ->
+                                            onSelectedCreditCard(
+                                                    assumeNonNull(mSuggestions).get(0)))));
         }
 
+        assumeNonNull(mTouchToFillDisplayOptions);
         sheetItems.add(0, buildHeaderForPayments(mTouchToFillDisplayOptions.shouldShowGPayLogo()));
         sheetItems.add(
                 buildFooterForCreditCard(mTouchToFillDisplayOptions.shouldShowScanCreditCard()));
 
         mModel.set(SHEET_ITEMS, sheetItems);
-        mModel.set(
-                SHEET_CONTENT_DESCRIPTION_ID,
-                R.string.autofill_payment_method_bottom_sheet_content_description);
         mModel.set(
                 SHEET_HALF_HEIGHT_DESCRIPTION_ID,
                 R.string.autofill_payment_method_bottom_sheet_half_height);
@@ -782,16 +784,13 @@ class TouchToFillPaymentMethodMediator implements AutofillImageFetcher.Observer 
                             FILL_BUTTON,
                             createButtonModel(
                                     R.string.autofill_payment_method_continue_button,
-                                    () -> this.onSelectedIban(mIbans.get(0)))));
+                                    () -> this.onSelectedIban(assumeNonNull(mIbans).get(0)))));
         }
 
-        sheetItems.add(0, buildHeaderForPayments(/* shouldShowGPayLogo= */ false));
+        sheetItems.add(0, buildHeaderForPayments(/* shouldShowGPayLogo= */ true));
         sheetItems.add(buildFooterForIban());
 
         mBottomSheetFocusHelper.registerForOneTimeUse();
-        mModel.set(
-                SHEET_CONTENT_DESCRIPTION_ID,
-                R.string.autofill_payment_method_bottom_sheet_content_description);
         mModel.set(
                 SHEET_HALF_HEIGHT_DESCRIPTION_ID,
                 R.string.autofill_payment_method_bottom_sheet_half_height);
@@ -824,9 +823,6 @@ class TouchToFillPaymentMethodMediator implements AutofillImageFetcher.Observer 
 
         mBottomSheetFocusHelper.registerForOneTimeUse();
         mModel.set(
-                SHEET_CONTENT_DESCRIPTION_ID,
-                R.string.autofill_loyalty_card_bottom_sheet_content_description);
-        mModel.set(
                 SHEET_HALF_HEIGHT_DESCRIPTION_ID,
                 R.string.autofill_loyalty_card_bottom_sheet_half_height);
         mModel.set(
@@ -856,9 +852,6 @@ class TouchToFillPaymentMethodMediator implements AutofillImageFetcher.Observer 
         showAllLoyaltyCardsList();
         mBottomSheetFocusHelper.registerForOneTimeUse();
         mModel.set(
-                SHEET_CONTENT_DESCRIPTION_ID,
-                R.string.autofill_loyalty_card_bottom_sheet_content_description);
-        mModel.set(
                 SHEET_HALF_HEIGHT_DESCRIPTION_ID,
                 R.string.autofill_loyalty_card_bottom_sheet_half_height);
         mModel.set(
@@ -886,7 +879,7 @@ class TouchToFillPaymentMethodMediator implements AutofillImageFetcher.Observer 
             sheetItems.add(new ListItem(ALL_LOYALTY_CARDS, createAllLoyaltyCardsItemModel()));
         }
 
-        if (mAffiliatedLoyaltyCards.size() == 1) {
+        if (affiliatedLoyaltyCards.size() == 1) {
             // Use the LOYALTY_CARD model as the property model for the fill button too.
             assert sheetItems.get(0).type == LOYALTY_CARD;
             sheetItems.add(
@@ -896,7 +889,7 @@ class TouchToFillPaymentMethodMediator implements AutofillImageFetcher.Observer 
                                     R.string.autofill_loyalty_card_autofill_button,
                                     () ->
                                             this.onSelectedLoyaltyCard(
-                                                    mAffiliatedLoyaltyCards.get(0)))));
+                                                    affiliatedLoyaltyCards.get(0)))));
         }
 
         if (firstTimeUsage) {
@@ -925,8 +918,7 @@ class TouchToFillPaymentMethodMediator implements AutofillImageFetcher.Observer 
         if (mModel.get(CURRENT_SCREEN) == PROGRESS_SCREEN) {
             if (extractedAmount != null) {
                 assert !bnplIssuerContexts.isEmpty();
-                mBnplSuggestion
-                        .getPaymentsPayload()
+                assumeNonNull(mBnplSuggestion.getPaymentsPayload())
                         .setExtractedAmount(isAmountSupportedByAnyIssuer ? extractedAmount : null);
                 showBnplIssuers(bnplIssuerContexts);
             } else {
@@ -935,8 +927,10 @@ class TouchToFillPaymentMethodMediator implements AutofillImageFetcher.Observer 
                         mContext.getString(R.string.autofill_bnpl_temporary_error_description));
             }
         } else {
+            assumeNonNull(mBnplSuggestionModel);
             if (isAmountSupportedByAnyIssuer) {
-                mBnplSuggestion.getPaymentsPayload().setExtractedAmount(extractedAmount);
+                assumeNonNull(mBnplSuggestion.getPaymentsPayload())
+                        .setExtractedAmount(extractedAmount);
                 mBnplSuggestionModel.set(IS_ENABLED, true);
                 mBnplSuggestionModel.set(SECONDARY_TEXT, mBnplSuggestion.getSublabel());
 
@@ -944,7 +938,7 @@ class TouchToFillPaymentMethodMediator implements AutofillImageFetcher.Observer 
                         mBnplSuggestionVisibility,
                         TouchToFillBnplSuggestionInteraction.SHOWN_AND_SELECTABLE);
             } else {
-                mBnplSuggestion.getPaymentsPayload().setExtractedAmount(null);
+                assumeNonNull(mBnplSuggestion.getPaymentsPayload()).setExtractedAmount(null);
                 mBnplSuggestionModel.set(IS_ENABLED, false);
                 mBnplSuggestionModel.set(
                         SECONDARY_TEXT,
@@ -980,9 +974,6 @@ class TouchToFillPaymentMethodMediator implements AutofillImageFetcher.Observer 
                         this::showPaymentMethodSettings));
 
         mModel.set(SHEET_ITEMS, progressScreenModel);
-        mModel.set(
-                SHEET_CONTENT_DESCRIPTION_ID,
-                R.string.autofill_bnpl_progress_sheet_content_description);
         mModel.set(
                 SHEET_HALF_HEIGHT_DESCRIPTION_ID,
                 R.string.autofill_bnpl_progress_sheet_half_height);
@@ -1041,9 +1032,6 @@ class TouchToFillPaymentMethodMediator implements AutofillImageFetcher.Observer 
                         this::showPaymentMethodSettings));
 
         mModel.set(
-                SHEET_CONTENT_DESCRIPTION_ID,
-                R.string.autofill_bnpl_issuer_bottom_sheet_content_description);
-        mModel.set(
                 SHEET_HALF_HEIGHT_DESCRIPTION_ID,
                 R.string.autofill_bnpl_issuer_bottom_sheet_half_height);
         mModel.set(
@@ -1079,9 +1067,6 @@ class TouchToFillPaymentMethodMediator implements AutofillImageFetcher.Observer 
                                                         .INTERACTION_COMPLETE))));
 
         mModel.set(SHEET_ITEMS, errorScreenModel);
-        mModel.set(
-                SHEET_CONTENT_DESCRIPTION_ID,
-                R.string.autofill_bnpl_error_sheet_content_description);
         mModel.set(
                 SHEET_HALF_HEIGHT_DESCRIPTION_ID, R.string.autofill_bnpl_error_sheet_half_height);
         mModel.set(
@@ -1149,9 +1134,6 @@ class TouchToFillPaymentMethodMediator implements AutofillImageFetcher.Observer 
                                                 BottomSheetController.StateChangeReason
                                                         .INTERACTION_COMPLETE))));
         mModel.set(
-                SHEET_CONTENT_DESCRIPTION_ID,
-                R.string.autofill_bnpl_issuer_tos_bottom_sheet_content_description);
-        mModel.set(
                 SHEET_HALF_HEIGHT_DESCRIPTION_ID,
                 R.string.autofill_bnpl_issuer_tos_bottom_sheet_half_height);
         mModel.set(
@@ -1168,18 +1150,29 @@ class TouchToFillPaymentMethodMediator implements AutofillImageFetcher.Observer 
     }
 
     void hideSheet() {
-        onDismissed(BottomSheetController.StateChangeReason.NONE);
+        dismiss(BottomSheetController.StateChangeReason.NONE);
     }
 
     void setVisible(boolean visible) {
         mModel.set(VISIBLE, visible);
     }
 
+    public void onDismissed(@StateChangeReason int reason) {
+        if (!mModel.get(VISIBLE)) return; // Dismiss only if not hidden via setVisible(false).
+        dismiss(reason);
+    }
+
     // TODO(crbug.com/461545861): Split logic by screen (e.g. BNPL_ISSUER_SELECTION_SCREEN) instead
     // of the type of payment method set (e.g. mIbans).
-    public void onDismissed(@StateChangeReason int reason) {
-        if (mWasDismissed) return;
-        mWasDismissed = true;
+    private void dismiss(@StateChangeReason int reason) {
+        if (isDestroyed()) return;
+        // Tear down first so that re-entrant calls (e.g. via native callbacks or VISIBLE
+        // observers) return early.
+        mPrefChangeRegistrar.destroy();
+        mPrefChangeRegistrar = null;
+        mImageFetcher.removeObserver(this);
+        mImageFetcher = null;
+
         mModel.set(VISIBLE, false);
         boolean dismissedByUser =
                 reason == StateChangeReason.SWIPE
@@ -1220,14 +1213,17 @@ class TouchToFillPaymentMethodMediator implements AutofillImageFetcher.Observer 
             }
             // If all possible payment methods are null, then nothing is recorded on dismissal.
         }
-        if (mPrefChangeRegistrar != null) {
-            mPrefChangeRegistrar.destroy();
-            mPrefChangeRegistrar = null;
-        }
+    }
+
+    @EnsuresNonNullIf(
+            value = {"mImageFetcher", "mPrefChangeRegistrar"},
+            result = false)
+    private boolean isDestroyed() {
         if (mImageFetcher != null) {
-            mImageFetcher.removeObserver(this);
-            mImageFetcher = null;
+            assert mPrefChangeRegistrar != null;
+            return false;
         }
+        return true;
     }
 
     @Override
@@ -1239,6 +1235,7 @@ class TouchToFillPaymentMethodMediator implements AutofillImageFetcher.Observer 
             return;
         }
 
+        assert !isDestroyed();
         ModelList items = mModel.get(SHEET_ITEMS);
         for (ListItem item : items) {
             if (item.type == CREDIT_CARD) {
@@ -1395,6 +1392,7 @@ class TouchToFillPaymentMethodMediator implements AutofillImageFetcher.Observer 
                 isVirtualCard
                         ? TouchToFillCreditCardOutcome.VIRTUAL_CARD
                         : TouchToFillCreditCardOutcome.CREDIT_CARD);
+        assumeNonNull(mSuggestions);
         RecordHistogram.recordCount100Histogram(
                 TOUCH_TO_FILL_CREDIT_CARD_INDEX_SELECTED, mSuggestions.indexOf(suggestion));
     }
@@ -1402,11 +1400,12 @@ class TouchToFillPaymentMethodMediator implements AutofillImageFetcher.Observer 
     private void onSelectedIban(Iban iban) {
         if (!mInputProtector.shouldInputBeProcessed()) return;
         if (iban.getRecordType() == IbanRecordType.LOCAL_IBAN) {
-            mDelegate.localIbanSuggestionSelected(iban.getGuid());
+            mDelegate.localIbanSuggestionSelected(assertNonNull(iban.getGuid()));
         } else {
             mDelegate.serverIbanSuggestionSelected(iban.getInstrumentId());
         }
         recordTouchToFillIbanOutcomeHistogram(TouchToFillIbanOutcome.IBAN);
+        assumeNonNull(mIbans);
         RecordHistogram.recordCount100Histogram(
                 TOUCH_TO_FILL_IBAN_INDEX_SELECTED, mIbans.indexOf(iban));
     }
@@ -1423,10 +1422,12 @@ class TouchToFillPaymentMethodMediator implements AutofillImageFetcher.Observer 
                         ? TouchToFillLoyaltyCardOutcome.AFFILIATED_LOYALTY_CARD
                         : TouchToFillLoyaltyCardOutcome.NON_AFFILIATED_LOYALTY_CARD);
         if (mModel.get(CURRENT_SCREEN) == HOME_SCREEN) {
+            assumeNonNull(mAffiliatedLoyaltyCards);
             RecordHistogram.recordCount100Histogram(
                     TOUCH_TO_FILL_AFFILIATED_LOYALTY_CARDS_SCREEN_INDEX_SELECTED,
                     mAffiliatedLoyaltyCards.indexOf(loyaltyCard));
         } else {
+            assumeNonNull(mAllLoyaltyCards);
             RecordHistogram.recordCount100Histogram(
                     TOUCH_TO_FILL_ALL_LOYALTY_CARDS_SCREEN_INDEX_SELECTED,
                     mAllLoyaltyCards.indexOf(loyaltyCard));
@@ -1435,7 +1436,8 @@ class TouchToFillPaymentMethodMediator implements AutofillImageFetcher.Observer 
 
     private void onAcceptedBnplSuggestion(AutofillSuggestion suggestion) {
         if (!mInputProtector.shouldInputBeProcessed()) return;
-        mDelegate.bnplSuggestionSelected(suggestion.getPaymentsPayload().getExtractedAmount());
+        mDelegate.bnplSuggestionSelected(
+                assumeNonNull(suggestion.getPaymentsPayload()).getExtractedAmount());
 
         recordTouchToFillBnplSuggestionVisibility(
                 mBnplSuggestionVisibility, TouchToFillBnplSuggestionInteraction.SELECTED);
@@ -1464,6 +1466,7 @@ class TouchToFillPaymentMethodMediator implements AutofillImageFetcher.Observer 
         mModel.set(CURRENT_SCREEN, ALL_LOYALTY_CARDS_SCREEN);
         mModel.set(FOCUSED_VIEW_ID_FOR_ACCESSIBILITY, R.id.all_loyalty_cards_back_image_button);
         ModelList allLoyaltyCardsModel = new ModelList();
+        assumeNonNull(mAllLoyaltyCards);
         for (LoyaltyCard loyaltyCard : mAllLoyaltyCards) {
             final PropertyModel loyaltyCardModel = createLoyaltyCardModel(loyaltyCard);
             allLoyaltyCardsModel.add(new ListItem(LOYALTY_CARD, loyaltyCardModel));
@@ -1473,6 +1476,7 @@ class TouchToFillPaymentMethodMediator implements AutofillImageFetcher.Observer 
 
     private PropertyModel createCardSuggestionModel(
             AutofillSuggestion suggestion, FillableItemCollectionInfo itemCollectionInfo) {
+        assert !isDestroyed();
         int drawableId = suggestion.getIconId();
         GURL artUrl =
                 AutofillUiUtils.shouldShowCustomIcon(
@@ -1532,7 +1536,7 @@ class TouchToFillPaymentMethodMediator implements AutofillImageFetcher.Observer 
     }
 
     private PropertyModel createBnplIssuerContextModel(BnplIssuerContext issuerContext) {
-        @Nullable
+
         final TouchToFillResourceProvider resourceProvider =
                 ServiceLoaderUtil.maybeCreate(TouchToFillResourceProvider.class);
         @DrawableRes
@@ -1568,6 +1572,7 @@ class TouchToFillPaymentMethodMediator implements AutofillImageFetcher.Observer 
     }
 
     private PropertyModel createLoyaltyCardModel(LoyaltyCard loyaltyCard) {
+        assert !isDestroyed();
         PropertyModel.Builder loyaltyCardModelBuilder =
                 new PropertyModel.Builder(NON_TRANSFORMING_LOYALTY_CARD_KEYS)
                         .with(LoyaltyCardProperties.LOYALTY_CARD, loyaltyCard)
@@ -1642,14 +1647,19 @@ class TouchToFillPaymentMethodMediator implements AutofillImageFetcher.Observer 
                         .with(
                                 IMAGE_DRAWABLE_ID,
                                 shouldShowGPayLogo
-                                        ? R.drawable.google_pay
+                                        ? getGPayLogoDrawableId()
                                         : R.drawable.fre_product_logo)
                         .with(TITLE_ID, R.string.autofill_payment_method_bottom_sheet_title)
                         .build());
     }
 
+    private @DrawableRes int getGPayLogoDrawableId() {
+        return ChromeFeatureList.isEnabled(AutofillFeatures.AUTOFILL_ENABLE_GRADIENT_GOOGLE_LOGOS)
+                ? R.drawable.googlepay_with_gradient
+                : R.drawable.google_pay;
+    }
+
     private ListItem buildHeaderForLoyaltyCards(boolean firstTimeUsage) {
-        @Nullable
         final TouchToFillResourceProvider resourceProvider =
                 ServiceLoaderUtil.maybeCreate(TouchToFillResourceProvider.class);
         @DrawableRes
@@ -1704,9 +1714,9 @@ class TouchToFillPaymentMethodMediator implements AutofillImageFetcher.Observer 
     }
 
     private ListItem buildHeaderForBnplIssuerTos(String title) {
-        @Nullable
         final TouchToFillResourceProvider resourceProvider =
                 ServiceLoaderUtil.maybeCreate(TouchToFillResourceProvider.class);
+        assert mBnplIssuerIdWithTosShown != null;
         @DrawableRes
         final int issuerImageId =
                 resourceProvider == null
@@ -1911,6 +1921,7 @@ class TouchToFillPaymentMethodMediator implements AutofillImageFetcher.Observer 
     }
 
     private @StringRes int getTosIconContentDescriptionId() {
+        assumeNonNull(mBnplIssuerIdWithTosShown);
         switch (mBnplIssuerIdWithTosShown) {
             case "affirm":
                 return R.string.autofill_bnpl_affirm;
@@ -1926,6 +1937,7 @@ class TouchToFillPaymentMethodMediator implements AutofillImageFetcher.Observer 
     private void recordTouchToFillBnplTosUserAction(
             @TouchToFillBnplTosScreenUserAction int userAction) {
         String tosUserAction;
+        assumeNonNull(mBnplIssuerIdWithTosShown);
         switch (mBnplIssuerIdWithTosShown) {
             case "affirm":
                 tosUserAction = AFFIRM_TOS_SCREEN;
@@ -2005,7 +2017,7 @@ class TouchToFillPaymentMethodMediator implements AutofillImageFetcher.Observer 
         mInputProtector = inputProtector;
     }
 
-    PropertyModel getBnplSuggestionModelForTesting() {
+    @Nullable PropertyModel getBnplSuggestionModelForTesting() {
         return mBnplSuggestionModel;
     }
 }

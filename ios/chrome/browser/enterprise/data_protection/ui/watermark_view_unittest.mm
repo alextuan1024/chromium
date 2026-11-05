@@ -6,7 +6,6 @@
 
 #import <UIKit/UIKit.h>
 
-#import "ios/chrome/browser/enterprise/data_protection/ui/watermark_consumer.h"
 #import "ios/chrome/browser/enterprise/data_protection/ui/watermark_view_utils.h"
 #import "testing/gtest/include/gtest/gtest.h"
 #import "testing/gtest_mac.h"
@@ -75,23 +74,29 @@ TEST_F(WatermarkViewTest, TestExpandedSizeForSizeAngle) {
   EXPECT_NEAR(sizeNeg45.height, 212.13, 0.1);
 }
 
-// Tests that updating the view through the WatermarkConsumer protocol
-// correctly sets its text and style parameters.
-TEST_F(WatermarkViewTest, TestWatermarkConsumerProtocol) {
+// Tests that updateWithText:style: updates the text and style properties,
+// clamping opacities and preserving unset fields.
+TEST_F(WatermarkViewTest, TestUpdateWithTextAndStyle) {
   WatermarkView* view = [[WatermarkView alloc] initWithFrame:CGRectZero];
 
   WatermarkStyle style;
-  style.fill_opacity = 0.45;
-  style.outline_opacity = 0.75;
-  style.font_size = 32;
+  style.fill_opacity = 0.4f;
+  style.outline_opacity = 1.5f;  // should clamp to 1.0
+  style.font_size = 28;
 
-  id<WatermarkConsumer> consumer = (id<WatermarkConsumer>)view;
-  [consumer updateWatermarkWithText:@"ProtocolText" style:style];
+  [view updateWithText:@"Confidential Document" style:style];
+  EXPECT_NSEQ(view.text, @"Confidential Document");
+  EXPECT_NEAR(view.fillOpacity, 0.40, 0.01);
+  EXPECT_NEAR(view.outlineOpacity, 1.0, 0.01);
+  EXPECT_NEAR(view.fontSize, 28.0, 0.01);
 
-  EXPECT_NSEQ(view.text, @"ProtocolText");
-  EXPECT_NEAR(view.fillOpacity, 0.45, 0.01);
-  EXPECT_NEAR(view.outlineOpacity, 0.75, 0.01);
-  EXPECT_NEAR(view.fontSize, 32.0, 0.01);
+  // Partial update: only text changes, style fields unset.
+  WatermarkStyle empty_style;
+  [view updateWithText:@"Updated Text" style:empty_style];
+  EXPECT_NSEQ(view.text, @"Updated Text");
+  EXPECT_NEAR(view.fillOpacity, 0.40, 0.01);
+  EXPECT_NEAR(view.outlineOpacity, 1.0, 0.01);
+  EXPECT_NEAR(view.fontSize, 28.0, 0.01);
 }
 
 }  // namespace

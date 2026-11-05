@@ -11,9 +11,12 @@
 #include "chrome/browser/ui/tabs/tab_menu_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/view_ids.h"
+#include "chrome/browser/ui/views/frame/base_tab_strip_region_view.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/tabs/browser_tab_strip_controller.h"
+#include "chrome/browser/ui/views/tabs/common/tab_strip_collection_controller.h"
 #include "chrome/browser/ui/views/tabs/tab.h"
+#include "chrome/browser/ui/views/tabs/tab/tab_context_menu_controller.h"
 #include "chrome/browser/ui/views/tabs/tab_strip.h"
 #include "chrome/browser/ui/views/toolbar/browser_app_menu_button.h"
 #include "chrome/browser/ui/views/toolbar/toolbar_view.h"
@@ -145,6 +148,10 @@ IN_PROC_BROWSER_TEST_F(HelpBubbleFactoryRegistryInteractiveUitest,
                         bubble = GetRegistry()->CreateHelpBubble(
                             el, GetBubbleParams());
                       }),
+          Check([&bubble]() { return bubble != nullptr; },
+                "Check bubble is not null."),
+          Check([&bubble]() { return bubble->is_open(); },
+                "Check bubble registers as open."),
           WaitForShow(
               user_education::HelpBubbleView::kHelpBubbleElementIdForTesting),
 
@@ -153,6 +160,14 @@ IN_PROC_BROWSER_TEST_F(HelpBubbleFactoryRegistryInteractiveUitest,
           // never finish the test. On other platforms, this is harmless and
           // will clean up all of the secondary UI.
           Do([this]() {
+            if (auto* const base_region =
+                    views::AsViewClass<BaseTabStripRegionView>(
+                        GetBrowserView()->tab_strip_view())) {
+              base_region->GetTabStripCollectionController()
+                  ->GetTabContextMenuController()
+                  ->CloseMenu();
+              return;
+            }
             static_cast<BrowserTabStripController*>(
                 GetBrowserView()
                     ->horizontal_tab_strip_for_testing()
@@ -162,5 +177,9 @@ IN_PROC_BROWSER_TEST_F(HelpBubbleFactoryRegistryInteractiveUitest,
 #if BUILDFLAG(IS_MAC)
               )  // WithoutDelay(
 #endif
-  );
+      ,
+      WaitForHide(
+          user_education::HelpBubbleView::kHelpBubbleElementIdForTesting),
+      Check([&bubble]() { return !bubble->is_open(); },
+            "Check bubble closes when context menu closes."));
 }

@@ -27,6 +27,19 @@ api::GetDetailsForUpsertPassRequest::PassType ToProtoPassType(
   }
 }
 
+WalletHttpClient::UserEligibility FromProtoUserEligibility(
+    api::GetDetailsForUpsertPassResponse::UserEligibility user_eligibility) {
+  switch (user_eligibility) {
+    case api::GetDetailsForUpsertPassResponse::USER_ELIGIBILITY_ELIGIBLE:
+      return WalletHttpClient::UserEligibility::kEligible;
+    case api::GetDetailsForUpsertPassResponse::USER_ELIGIBILITY_INELIGIBLE:
+      return WalletHttpClient::UserEligibility::kIneligible;
+    case api::GetDetailsForUpsertPassResponse::USER_ELIGIBILITY_UNSPECIFIED:
+      return WalletHttpClient::UserEligibility::kUnspecified;
+  }
+  return WalletHttpClient::UserEligibility::kUnspecified;
+}
+
 }  // namespace
 
 GetDetailsForUpsertPassRequest::GetDetailsForUpsertPassRequest(
@@ -72,23 +85,18 @@ void GetDetailsForUpsertPassRequest::OnResponse(
     return;
   }
 
-  // The server omits `legal_message` and `context_token` if the user/account is
-  // not eligible for disclosures (e.g. non-US regions or missing capabilities).
-  // In this case, both fields are `std::nullopt`, and the client proceeds with
-  // the regular save flow without legal disclosures.
-  std::optional<std::string> context_token;
-  if (response.has_context_token()) {
-    context_token = response.context_token();
-  }
-
+  // The server omits `legal_message` (which also carries the context `token`)
+  // if the user/account is not eligible for disclosures (e.g. non-US regions or
+  // missing capabilities). In this case, `legal_message` is `std::nullopt`, and
+  // the client proceeds with the regular save flow without legal disclosures.
   std::optional<LegalMessage> legal_message;
   if (response.has_legal_message()) {
     legal_message = std::move(*response.mutable_legal_message());
   }
 
   std::move(callback_).Run(WalletHttpClient::PassUpsertDetails{
-      .context_token = std::move(context_token),
       .legal_message = std::move(legal_message),
+      .user_eligibility = FromProtoUserEligibility(response.user_eligibility()),
   });
 }
 

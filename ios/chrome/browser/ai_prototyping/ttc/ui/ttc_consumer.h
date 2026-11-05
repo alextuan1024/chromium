@@ -7,34 +7,16 @@
 
 #import <Foundation/Foundation.h>
 
-// High-level session states for the TalkToChrome experience.
-enum class TTCSessionState {
-  // Idle state; audio and network sessions are inactive.
-  kIdle = 0,
-  // Establishing connection with model endpoint.
-  kConnecting,
-  // WebSocket open; exchanging setup handshake parameters.
-  kHandshaking,
-  // Handshake complete; microphone is capturing and streaming upstream.
-  kListening,
-  // Model is synthesizing audio and streaming back responses.
-  kModelSpeaking,
-  // A fatal network or hardware error occurred.
-  kError,
-};
-
-// Consumer protocol receiving state and microphone input telemetry to render
-// in the TalkToChrome prototype UI.
+// Consumer protocol receiving session journal telemetry to render in the TTC
+// prototype UI.
 @protocol TTCConsumer <NSObject>
 
-// Updates the current high-level voice session state.
-- (void)setSessionState:(TTCSessionState)state;
+// Replaces the displayed session journal log lines (used on initial hydration,
+// filter change, or clear).
+- (void)setJournalLines:(NSArray<NSString*>*)lines;
 
-// Updates the microphone input energy level in RMS (normalized 0.0 - 1.0).
-- (void)setMicEnergyLevel:(float)rms;
-
-// Displays an error message in the status label.
-- (void)didEncounterError:(NSString*)errorMessage;
+// Appends a single formatted line to the displayed session journal.
+- (void)appendJournalLine:(NSString*)line;
 
 @end
 

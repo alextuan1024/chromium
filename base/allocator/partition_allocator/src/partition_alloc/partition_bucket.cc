@@ -12,6 +12,7 @@
 #include "partition_alloc/address_pool_manager.h"
 #include "partition_alloc/build_config.h"
 #include "partition_alloc/buildflags.h"
+#include "partition_alloc/debug_data_on_stack.h"
 #include "partition_alloc/internal/partition_root_internal.h"
 #include "partition_alloc/oom.h"
 #include "partition_alloc/page_allocator.h"
@@ -30,6 +31,7 @@
 #include "partition_alloc/partition_alloc_config.h"
 #include "partition_alloc/partition_alloc_constants.h"
 #include "partition_alloc/partition_alloc_forward.h"
+#include "partition_alloc/partition_alloc_public_constants.h"
 #include "partition_alloc/partition_direct_map_extent.h"
 #include "partition_alloc/partition_freelist_entry.h"
 #include "partition_alloc/partition_oom.h"
@@ -98,13 +100,16 @@ bool AreAllowedSuperPagesForBRPPool(uintptr_t start, uintptr_t end) {
 //   AreAllowedSuperPagesForBRPPool.
 // - IsAllowedSuperPageForBRPPool (used by AreAllowedSuperPagesForBRPPool) is
 //   designed to not need locking.
-uintptr_t ReserveMemoryFromPool(pool_handle pool,
-                                uintptr_t requested_address,
-                                size_t requested_size) {
+uintptr_t ReserveMemoryFromPool(
+    pool_handle pool,
+    uintptr_t requested_address,
+    size_t requested_size,
+    AddressPoolManager::ReservationLifetime lifetime =
+        AddressPoolManager::ReservationLifetime::kPersistent) {
   PA_DCHECK(!(requested_address % kSuperPageSize));
 
   uintptr_t reserved_address = AddressPoolManager::GetInstance().Reserve(
-      pool, requested_address, requested_size);
+      pool, requested_address, requested_size, lifetime);
 
   // In 32-bit mode, when allocating from BRP pool, verify that the requested
   // allocation honors the block list. Find a better address otherwise.
@@ -190,32 +195,39 @@ SlotSpanMetadata* PartitionDirectMap(PartitionRoot* root,
 
   const bool return_null = ContainsFlags(flags, AllocFlags::kReturnNull);
   if (raw_size > MaxAllocationSize()) [[unlikely]] {
-    if (return_null) {
-      return nullptr;
-    }
+    const bool allow_giga =
+        ContainsFlags(flags, AllocFlags::kAllowGigaAllocations) &&
+        root->allow_giga_allocations();
+    if (!allow_giga || raw_size > MaxGigaAllocationSize()) {
+      if (return_null) {
+        return nullptr;
+      }
 
-    // The lock is here to protect PA from:
-    // 1. Concurrent calls
-    // 2. Reentrant calls
-    //
-    // This is fine here however, as:
-    // 1. Concurrency: |PartitionRoot::OutOfMemory()| never returns, so the lock
-    //    will not be re-acquired, which would lead to acting on inconsistent
-    //    data that could have been modified in-between releasing and acquiring
-    //    it.
-    // 2. Reentrancy: This is why we release the lock. On some platforms,
-    //    terminating the process may free() memory, or even possibly try to
-    //    allocate some. Calling free() is fine, but will deadlock since
-    //    |PartitionRoot::lock_| is not recursive.
-    //
-    // Supporting reentrant calls properly is hard, and not a requirement for
-    // PA. However up to that point, we've only *read* data, not *written* to
-    // any state. Reentrant calls are then fine, especially as we don't continue
-    // on this path. The only downside is possibly endless recursion if the OOM
-    // handler allocates and fails to use UncheckedMalloc() or equivalent, but
-    // that's violating the contract of base::TerminateBecauseOutOfMemory().
-    ScopedUnlockGuard unlock{PartitionRootLock(root)};
-    PartitionExcessiveAllocationSize(raw_size);
+      // The lock is here to protect PA from:
+      // 1. Concurrent calls
+      // 2. Reentrant calls
+      //
+      // This is fine here however, as:
+      // 1. Concurrency: |PartitionRoot::OutOfMemory()| never returns, so the
+      // lock
+      //    will not be re-acquired, which would lead to acting on inconsistent
+      //    data that could have been modified in-between releasing and
+      //    acquiring it.
+      // 2. Reentrancy: This is why we release the lock. On some platforms,
+      //    terminating the process may free() memory, or even possibly try to
+      //    allocate some. Calling free() is fine, but will deadlock since
+      //    |PartitionRoot::lock_| is not recursive.
+      //
+      // Supporting reentrant calls properly is hard, and not a requirement for
+      // PA. However up to that point, we've only *read* data, not *written* to
+      // any state. Reentrant calls are then fine, especially as we don't
+      // continue on this path. The only downside is possibly endless recursion
+      // if the OOM handler allocates and fails to use UncheckedMalloc() or
+      // equivalent, but that's violating the contract of
+      // base::TerminateBecauseOutOfMemory().
+      ScopedUnlockGuard unlock{PartitionRootLock(root)};
+      PartitionExcessiveAllocationSize(raw_size);
+    }
   }
 
   PartitionDirectMapExtent* map_extent = nullptr;
@@ -266,7 +278,11 @@ SlotSpanMetadata* PartitionDirectMap(PartitionRoot* root,
 #if !PA_BUILDFLAG(HAS_64_BIT_POINTERS)
       ScopedSyscallTimer timer{root};
 #endif
-      reservation_start = ReserveMemoryFromPool(pool, 0, reservation_size);
+      // Contrary to bucketed allocations, direct-mapped ones are actually
+      // decommitted from the GigaCage.
+      reservation_start = ReserveMemoryFromPool(
+          pool, 0, reservation_size,
+          AddressPoolManager::ReservationLifetime::kTransient);
     }
     if (!reservation_start) [[unlikely]] {
       if (return_null) {
@@ -570,7 +586,7 @@ uint8_t ComputeSystemPagesPerSlotSpan(size_t slot_size,
   return ComputeSystemPagesPerSlotSpanInternal(slot_size);
 }
 
-void PartitionBucket::Init(uint32_t new_slot_size) {
+void PartitionBucket::Init(size_t new_slot_size) {
   slot_size = new_slot_size;
   slot_size_reciprocal = kReciprocalMask / new_slot_size + 1;
   active_slot_spans_head = SlotSpanMetadata::get_sentinel_slot_span_non_const();
@@ -728,7 +744,8 @@ uintptr_t PartitionBucket::AllocNewSuperPageSpan(PartitionRoot* root,
   uintptr_t requested_address = root->next_super_page_;
   pool_handle pool = root->ChoosePool();
   uintptr_t super_page_span_start = ReserveMemoryFromPool(
-      pool, requested_address, super_page_count * kSuperPageSize);
+      pool, requested_address, super_page_count * kSuperPageSize,
+      AddressPoolManager::ReservationLifetime::kPersistent);
   if (!super_page_span_start) [[unlikely]] {
     if (ContainsFlags(flags, AllocFlags::kReturnNull)) {
       return 0;
@@ -879,13 +896,14 @@ PartitionBucket::ProvisionMoreSlotsAndAllocOne(PartitionRoot* root,
                                                AllocFlags flags,
                                                SlotSpanMetadata* slot_span) {
   PA_DCHECK(slot_span != SlotSpanMetadata::get_sentinel_slot_span());
-  size_t num_slots = slot_span->num_unprovisioned_slots;
-  PA_DCHECK(num_slots);
-  PA_DCHECK(num_slots <= get_slots_per_span());
+  const size_t num_unprovisioned_slots = slot_span->num_unprovisioned_slots;
+  PA_DCHECK(num_unprovisioned_slots);
+  PA_DCHECK(num_unprovisioned_slots <= get_slots_per_span());
   // We should only get here when _every_ slot is either used or unprovisioned.
   // (The third possible state is "on the freelist". If we have a non-empty
   // freelist, we should not get here.)
-  PA_DCHECK(num_slots + slot_span->num_allocated_slots == get_slots_per_span());
+  PA_DCHECK(num_unprovisioned_slots + slot_span->num_allocated_slots ==
+            get_slots_per_span());
   // Similarly, make explicitly sure that the freelist is empty.
   PA_DCHECK(!slot_span->get_freelist_head());
   PA_DCHECK(!slot_span->is_full());
@@ -899,7 +917,25 @@ PartitionBucket::ProvisionMoreSlotsAndAllocOne(PartitionRoot* root,
   uintptr_t next_slot = return_slot + slot_size;
   uintptr_t commit_start = base::bits::AlignUp(return_slot, SystemPageSize());
   PA_DCHECK(next_slot > commit_start);
-  uintptr_t commit_end = base::bits::AlignUp(next_slot, SystemPageSize());
+  // Find the end of the slots we want to provision: at least the returned
+  // slot, or as many whole slots as fit in
+  // `PartitionRoot::GetMinProvisioningSize()` (capped by
+  // `num_unprovisioned_slots`).
+  uintptr_t provision_end = next_slot;
+  if (const size_t min_provisioning_size =
+          PartitionRoot::GetMinProvisioningSize();
+      min_provisioning_size > SystemPageSize()) {
+    size_t slots_wanted = std::clamp<size_t>(
+        GetSlotNumber(std::min(min_provisioning_size, get_bytes_per_span())),
+        1u, num_unprovisioned_slots);
+    provision_end = return_slot + slots_wanted * slot_size;
+  }
+  // Align `provision_end` (a slot boundary) up to `SystemPageSize()`. Every
+  // slot that fits in `[return_slot, commit_end)` will be provisioned below.
+  // Aligning from a slot boundary rather than `return_slot +
+  // min_provisioning_size` ensures that the last committed page always
+  // contains part of a provisioned slot.
+  uintptr_t commit_end = base::bits::AlignUp(provision_end, SystemPageSize());
   // If the slot was partially committed, |return_slot| and |next_slot| fall
   // in different pages. If the slot was fully uncommitted, |return_slot| points
   // to the page start and |next_slot| doesn't, thus only the latter gets
@@ -930,6 +966,7 @@ PartitionBucket::ProvisionMoreSlotsAndAllocOne(PartitionRoot* root,
   // Round down, because a slot that doesn't fully fit in the new page(s) isn't
   // provisioned.
   size_t slots_to_provision = (commit_end - return_slot) / slot_size;
+  PA_DCHECK(slots_to_provision <= num_unprovisioned_slots);
   slot_span->num_unprovisioned_slots -= slots_to_provision;
   // Note: the bitfields are promoted to int for arithmetic operations, so the
   // static_casts are necessary to avoid -Werror=sign-compare.

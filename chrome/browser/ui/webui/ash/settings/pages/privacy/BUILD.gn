@@ -23,7 +23,6 @@ static_library("privacy") {
   public_deps = [
     "//ash/public/cpp",
     "//base",
-    "//chrome/browser:browser_public_dependencies",
     "//chrome/browser/profiles:profile",
     "//chrome/browser/ui/webui/ash/settings/pages/privacy/mojom",
     "//chrome/browser/ui/webui/settings",
@@ -39,6 +38,7 @@ static_library("privacy") {
 
   deps = [
     "//ash/constants",
+    "//ash/strings",
     "//ash/webui/projector_app/public/cpp",
     "//base:i18n",
     "//build:branding_buildflags",
@@ -56,8 +56,6 @@ static_library("privacy") {
     "//chrome/browser/metrics",
     "//chrome/browser/ui/webui/ash/settings/search",
     "//chrome/browser/web_applications",
-    "//chrome/common",
-    "//chrome/common:chrome_features",
     "//chromeos/ash/components/browser_context_helper",
     "//chromeos/ash/components/dbus/pciguard",
     "//chromeos/ash/components/dbus/userdataauth",
@@ -66,9 +64,9 @@ static_library("privacy") {
     "//chromeos/ash/components/settings",
     "//chromeos/ash/components/signin:identity_manager_provider",
     "//chromeos/ash/experiences/arc",
+    "//chromeos/ash/experiences/settings_ui/resources:strings",
     "//components/application_locale_storage",
     "//components/google/core/common",
-    "//components/sync/base:features",
     "//ui/base",
     "//ui/chromeos",
     "//ui/webui",
@@ -112,6 +110,7 @@ source_set("unit_tests") {
     "//chrome/common:chrome_features",
     "//chrome/test:test_support",
     "//chrome/test:test_support_unit",
+    "//chrome/test/base:testing_browser_process",
     "//chromeos/ash/components/audio",
     "//chromeos/ash/components/dbus/session_manager",
     "//chromeos/ash/components/policy/device_policy:test_support",

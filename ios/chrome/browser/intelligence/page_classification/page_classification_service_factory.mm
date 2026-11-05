@@ -4,6 +4,8 @@
 
 #import "ios/chrome/browser/intelligence/page_classification/page_classification_service_factory.h"
 
+#import <utility>
+
 #import "ios/chrome/browser/commerce/model/shopping_service_factory.h"
 #import "ios/chrome/browser/intelligence/page_classification/optimization_guide_page_classification_service.h"
 #import "ios/chrome/browser/intelligence/page_classification/page_classification_service.h"
@@ -14,8 +16,8 @@
 namespace {
 
 std::unique_ptr<KeyedService> BuildPageClassificationService(
-    ProfileIOS* profile) {
-  CHECK(!profile->IsOffTheRecord());
+    ProfileIOS& profile) {
+  CHECK(!profile.IsOffTheRecord());
   return std::make_unique<OptimizationGuidePageClassificationService>(
       OptimizationGuideServiceFactory::GetForProfile(profile),
       commerce::ShoppingServiceFactory::GetForProfile(profile));
@@ -24,35 +26,20 @@ std::unique_ptr<KeyedService> BuildPageClassificationService(
 }  // namespace
 
 // static
-PageClassificationService* PageClassificationServiceFactory::GetForProfile(
-    ProfileIOS* profile) {
-  return GetInstance()->GetServiceForProfileAs<PageClassificationService>(
-      profile, /*create=*/true);
-}
-
-// static
-PageClassificationServiceFactory*
-PageClassificationServiceFactory::GetInstance() {
-  static base::NoDestructor<PageClassificationServiceFactory> instance;
-  return instance.get();
-}
-
-// static
-ProfileKeyedServiceFactoryIOS::TestingFactory
+PageClassificationServiceFactory::TestingFactory
 PageClassificationServiceFactory::GetDefaultFactory() {
-  return base::BindRepeating(&BuildPageClassificationService);
+  return base::BindOnce(&BuildPageClassificationService);
 }
 
-PageClassificationServiceFactory::PageClassificationServiceFactory()
-    : ProfileKeyedServiceFactoryIOS("PageClassificationService") {
+PageClassificationServiceFactory::PageClassificationServiceFactory(PassKey key)
+    : TypedProfileKeyedServiceFactoryIOS(std::move(key),
+                                         "PageClassificationService") {
   DependsOn(OptimizationGuideServiceFactory::GetInstance());
   DependsOn(commerce::ShoppingServiceFactory::GetInstance());
 }
 
-PageClassificationServiceFactory::~PageClassificationServiceFactory() = default;
-
 std::unique_ptr<KeyedService>
 PageClassificationServiceFactory::BuildServiceInstanceFor(
-    ProfileIOS* profile) const {
+    ProfileIOS& profile) const {
   return BuildPageClassificationService(profile);
 }

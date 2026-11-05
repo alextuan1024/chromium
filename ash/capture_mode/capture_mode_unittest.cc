@@ -334,7 +334,7 @@ class CaptureModeTestBase : public AshTestBase {
 
   void SwitchToUser2() {
     constexpr char kUserEmail[] = "user2@capture_mode";
-    SimulateUserLogin({kUserEmail});
+    SimulateUserLogin(AccountId::FromUserEmail(kUserEmail));
   }
 
   void OpenSettingsView() {
@@ -5693,6 +5693,69 @@ TEST_P(CaptureModeCursorOverlayTest, OverlayBoundsAccountForCursorScaleFactor) {
   }
 }
 
+// Verifies that the cursor overlay bounds reflect `SetCustomCursorSize()` (even
+// when software cursor compositing is not enabled) and still respect
+// `cursor.image_scale_factor()` when no custom cursor size is set on a
+// fractional-DSF display.
+TEST_P(CaptureModeCursorOverlayTest, OverlayBoundsMatchCustomCursorSize) {
+  // 800x640 at 1.6 DSF gives a 500x400 DIP root window.
+  UpdateDisplay("800x640*1.6");
+  StartRecordingAndSetupFakeOverlay(CaptureModeSource::kFullscreen);
+
+  auto* generator = GetEventGenerator();
+  // {400, 320} in host pixels corresponds to {250, 200} in DIPs at 1.6 DSF.
+  generator->MoveMouseTo({400, 320});
+
+  const gfx::Size root_size = window()->GetRootWindow()->bounds().size();
+  ASSERT_EQ(root_size, (gfx::Size{500, 400}));
+  auto get_overlay_bounds_in_dip = [&]() {
+    // Click to trigger an immediate (unthrottled) cursor overlay update.
+    generator->ClickLeftButton();
+    FlushOverlay();
+    EXPECT_FALSE(fake_overlay()->IsHidden());
+    return gfx::ScaleRect(fake_overlay()->last_bounds(), root_size.width(),
+                          root_size.height());
+  };
+
+  auto* cursor_manager = Shell::Get()->cursor_manager();
+  cursor_manager->SetCustomCursorSize(64);
+  ASSERT_FALSE(IsCursorCompositingEnabled());
+  // int(64 * 1.6f) = 102 px -> 102 / 1.6f = 63.75 DIPs.
+  const gfx::SizeF size_64 = get_overlay_bounds_in_dip().size();
+  EXPECT_FLOAT_EQ(size_64.width(), 63.75f);
+  EXPECT_FLOAT_EQ(size_64.height(), 63.75f);
+
+  cursor_manager->SetCustomCursorSize(100);
+  // int(100 * 1.6f) = 160 px -> 160 / 1.6f = 100 DIPs.
+  EXPECT_EQ(get_overlay_bounds_in_dip().size(), (gfx::SizeF{100.f, 100.f}));
+
+  // Verify custom cursor bitmap when a custom cursor size (100 DIPs) is set:
+  // 50x50 bitmap with {10, 10} hotspot is rescaled by 160 / 50 = 3.2f ->
+  // 160x160 px (100x100 DIPs) and {32, 32} px ({20, 20} DIP) hotspot at
+  // {250, 200}.
+  ui::Cursor custom_cursor =
+      ui::Cursor::NewCustom(gfx::test::CreateBitmap(50), {10, 10}, 2.f);
+  custom_cursor.SetPlatformCursor(
+      ui::CursorFactory::GetInstance()->CreateImageCursor(
+          custom_cursor.type(), custom_cursor.custom_bitmap(),
+          custom_cursor.custom_hotspot(), custom_cursor.image_scale_factor()));
+  cursor_manager->SetCursor(custom_cursor);
+  cursor_manager->LockCursor();
+  EXPECT_EQ(get_overlay_bounds_in_dip(),
+            (gfx::RectF{230.f, 180.f, 100.f, 100.f}));
+
+  // Clear custom cursor size (`std::nullopt`) and verify the custom cursor uses
+  // `cursor.image_scale_factor()` (2.f -> 25x25 DIPs with {5, 5} DIP hotspot at
+  // {250, 200}) rather than display DSF (1.6f).
+  cursor_manager->UnlockCursor();
+  cursor_manager->SetCustomCursorSize(std::nullopt);
+  cursor_manager->SetCursor(std::move(custom_cursor));
+  cursor_manager->LockCursor();
+  EXPECT_EQ(get_overlay_bounds_in_dip(),
+            (gfx::RectF{245.f, 195.f, 25.f, 25.f}));
+  cursor_manager->UnlockCursor();
+}
+
 // -----------------------------------------------------------------------------
 // TODO(afakhry): Add more cursor overlay tests.
 
@@ -7449,6 +7512,51 @@ TEST_P(CaptureModeSettingsTest, FolderRecommendedByPolicy) {
   EXPECT_TRUE(test_api->GetSelectFolderMenuItem()->GetEnabled());
 }
 
+// Tests that a folder recommended by policy can be overridden by selecting the
+// default Downloads folder in the settings menu, and switched back.
+TEST_P(CaptureModeSettingsTest,
+       OverrideFolderRecommendedByPolicyWithDownloads) {
+  auto* controller = StartImageRegionCapture();
+
+  const base::FilePath custom_folder(
+      CreateCustomFolderInUserDownloadsPath("test"));
+  auto* test_delegate =
+      static_cast<TestCaptureModeDelegate*>(controller->delegate_for_testing());
+  test_delegate->set_policy_capture_path(
+      {custom_folder,
+       CaptureModeDelegate::CapturePathEnforcement::kRecommended});
+
+  auto* event_generator = GetEventGenerator();
+  ClickOnView(GetSettingsButton(), event_generator);
+  CaptureModeSettingsTestApi test_api;
+  WaitForSettingsMenuToBeRefreshed();
+
+  CaptureModeMenuGroup* save_to_menu_group = test_api.GetSaveToMenuGroup();
+  ASSERT_TRUE(save_to_menu_group);
+  EXPECT_TRUE(save_to_menu_group->IsOptionChecked(kCustomFolder));
+  EXPECT_FALSE(save_to_menu_group->IsOptionChecked(kDownloadsFolder));
+
+  // Clicking the "Downloads" option should override the recommended policy
+  // folder without clearing the custom folder option from the menu.
+  ClickOnView(test_api.GetDefaultDownloadsOption(), event_generator);
+  EXPECT_TRUE(save_to_menu_group->IsOptionChecked(kDownloadsFolder));
+  EXPECT_FALSE(save_to_menu_group->IsOptionChecked(kCustomFolder));
+  const auto default_downloads_folder =
+      test_delegate->GetUserDefaultDownloadsFolder();
+  auto capture_folder = controller->GetCurrentCaptureFolder();
+  EXPECT_EQ(capture_folder.path, default_downloads_folder);
+  EXPECT_TRUE(capture_folder.is_default_downloads_folder);
+  EXPECT_EQ(custom_folder, controller->GetCustomCaptureFolder());
+
+  // Clicking on the recommended folder option should switch back to using it.
+  ClickOnView(test_api.GetCustomFolderOptionIfAny(), event_generator);
+  EXPECT_TRUE(save_to_menu_group->IsOptionChecked(kCustomFolder));
+  EXPECT_FALSE(save_to_menu_group->IsOptionChecked(kDownloadsFolder));
+  capture_folder = controller->GetCurrentCaptureFolder();
+  EXPECT_EQ(capture_folder.path, custom_folder);
+  EXPECT_FALSE(capture_folder.is_default_downloads_folder);
+}
+
 // Tests the folder selection settings when it's enforced by policy.
 TEST_P(CaptureModeSettingsTest, FolderSetByPolicy) {
   auto* controller = StartImageRegionCapture();
@@ -7474,13 +7582,35 @@ TEST_P(CaptureModeSettingsTest, FolderSetByPolicy) {
   CaptureModeMenuGroup* save_to_menu_group = test_api->GetSaveToMenuGroup();
   EXPECT_TRUE(save_to_menu_group->IsManagedByPolicy());
 
-  EXPECT_TRUE(test_api->GetCustomFolderOptionIfAny()->GetEnabled());
+  views::View* custom_option = test_api->GetCustomFolderOptionIfAny();
+  ASSERT_TRUE(custom_option);
+  EXPECT_TRUE(custom_option->GetEnabled());
+  EXPECT_TRUE(save_to_menu_group->IsOptionChecked(kCustomFolder));
+
+  // Clicking on the custom folder option when managed by policy should be a
+  // no-op and not crash.
+  ClickOnView(custom_option, event_generator);
   EXPECT_TRUE(save_to_menu_group->IsOptionChecked(kCustomFolder));
 
   EXPECT_FALSE(test_api->GetDefaultDownloadsOption()->GetEnabled());
   EXPECT_FALSE(save_to_menu_group->IsOptionChecked(kDownloadsFolder));
 
   EXPECT_FALSE(test_api->GetSelectFolderMenuItem()->GetEnabled());
+
+  // Disabled options and menu items should not be highlightable.
+  CaptureModeSettingsView* settings_menu = GetCaptureModeSettingsView();
+  ASSERT_TRUE(settings_menu);
+  std::vector<CaptureModeSessionFocusCycler::HighlightableView*>
+      highlightable_items = settings_menu->GetHighlightableItems();
+  EXPECT_TRUE(std::ranges::contains(
+      highlightable_items, test_api->GetCustomFolderOptionIfAny(),
+      &CaptureModeSessionFocusCycler::HighlightableView::GetView));
+  EXPECT_FALSE(std::ranges::contains(
+      highlightable_items, test_api->GetDefaultDownloadsOption(),
+      &CaptureModeSessionFocusCycler::HighlightableView::GetView));
+  EXPECT_FALSE(std::ranges::contains(
+      highlightable_items, test_api->GetSelectFolderMenuItem(),
+      &CaptureModeSessionFocusCycler::HighlightableView::GetView));
 }
 
 // -----------------------------------------------------------------------------

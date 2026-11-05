@@ -5,8 +5,8 @@
 #import "ios/chrome/browser/reader_mode/model/reader_mode_java_script_feature.h"
 
 #import "base/values.h"
-#import "components/dom_distiller/core/distillable_page_detector.h"
-#import "components/dom_distiller/core/page_features.h"
+#import "components/web_distiller/core/distillable_page_detector.h"
+#import "components/web_distiller/core/page_features.h"
 #import "ios/chrome/browser/reader_mode/model/constants.h"
 #import "ios/chrome/browser/reader_mode/model/reader_mode_tab_helper.h"
 #import "ios/chrome/browser/shared/model/url/url_util.h"
@@ -64,26 +64,27 @@ void ReaderModeJavaScriptFeature::ScriptMessageReceived(
     return;
   }
 
-  if (!message.legacy_body() || !message.legacy_body()->is_dict()) {
+  const web::ScriptMessageValue& body = message.body();
+  if (body.type() != base::Value::Type::DICT) {
     ReaderModeHeuristicResultAvailable(
         web_state, ReaderModeHeuristicResult::kMalformedResponse);
     return;
   }
 
   std::optional<std::vector<double>> result =
-      TransformToDerivedFeatures(message.legacy_body()->GetDict(), url.value());
+      TransformToDerivedFeatures(body.GetDict(), url.value());
   if (!result.has_value()) {
     ReaderModeHeuristicResultAvailable(
         web_state, ReaderModeHeuristicResult::kMalformedResponse);
     return;
   }
 
-  const dom_distiller::DistillablePageDetector* detector =
-      dom_distiller::DistillablePageDetector::GetNewModel();
+  const web_distiller::DistillablePageDetector* detector =
+      web_distiller::DistillablePageDetector::GetNewModel();
   double page_score =
       detector->Score(result.value()) - detector->GetThreshold();
-  const dom_distiller::DistillablePageDetector* long_page_detector =
-      dom_distiller::DistillablePageDetector::GetLongPageModel();
+  const web_distiller::DistillablePageDetector* long_page_detector =
+      web_distiller::DistillablePageDetector::GetLongPageModel();
   double long_page_score = long_page_detector->Score(result.value()) -
                            long_page_detector->GetThreshold();
 
@@ -110,7 +111,7 @@ void ReaderModeJavaScriptFeature::TriggerReaderModeHeuristic(
 
 std::optional<std::vector<double>>
 ReaderModeJavaScriptFeature::TransformToDerivedFeatures(
-    const base::DictValue& body,
+    const web::ScriptMessageDictValue& body,
     const GURL& request_url) {
   std::optional<double> opt_num_elements = body.FindDouble("numElements");
   if (!opt_num_elements.has_value()) {
@@ -142,7 +143,7 @@ ReaderModeJavaScriptFeature::TransformToDerivedFeatures(
     return std::nullopt;
   }
 
-  return dom_distiller::CalculateDerivedFeatures(
+  return web_distiller::CalculateDerivedFeatures(
       true, request_url, opt_num_elements.value(), opt_num_elements.value(),
       opt_num_forms.value(), opt_moz_score.value(), opt_moz_sqrt.value(),
       opt_moz_linear.value());

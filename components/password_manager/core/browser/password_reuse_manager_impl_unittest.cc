@@ -117,11 +117,11 @@ class MockStoreResultFilter : public StubCredentialsFilter {
   MOCK_METHOD(bool,
               ShouldSaveGaiaPasswordHash,
               (const PasswordForm&),
-              (const override));
+              (const, override));
   MOCK_METHOD(bool,
               ShouldSaveEnterprisePasswordHash,
               (const PasswordForm&),
-              (const override));
+              (const, override));
 };
 
 class MockPasswordManagerClient : public StubPasswordManagerClient {
@@ -533,7 +533,6 @@ TEST_F(PasswordReuseManagerImplTest, ReportMetrics) {
 
   // Save password.
   const std::u16string not_sync_password = u"password";
-  const std::u16string input = u"123password";
   reuse_manager()->SaveGaiaPasswordHash(
       "not_sync_username", not_sync_password,
       /*is_primary_account=*/false,

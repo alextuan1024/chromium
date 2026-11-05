@@ -473,7 +473,7 @@ TEST(AutocompleteGrouperSectionsTest, DesktopNTPZpsSectionWithMIA) {
         });
   }
   {
-    SCOPED_TRACE("MIA is not added if feature is disabled.");
+    SCOPED_TRACE("MIA is not added when mia_enabled is false.");
     test(
         {
             // remote `GROUP_PERSONALIZED_ZERO_SUGGEST` should all be added.
@@ -508,7 +508,7 @@ TEST(AutocompleteGrouperSectionsTest, DesktopNTPZpsSectionWithMIA) {
 
 TEST(AutocompleteGrouperSectionsTest, AndroidNTPZpsSectionWithMIA) {
   auto test = [](std::vector<std::pair<int, omnibox::GroupId>> input,
-                 bool mia_enabled, bool suppress_psuggest_backfill_with_mia,
+                 bool mia_enabled,
                  std::vector<std::pair<int, omnibox::GroupId>> output) {
     ACMatches in_matches;
     for (const auto& [relevance, group_id] : input) {
@@ -517,69 +517,12 @@ TEST(AutocompleteGrouperSectionsTest, AndroidNTPZpsSectionWithMIA) {
     PSections sections;
     omnibox::GroupConfigMap group_configs;
 
-    // Cache the fieldtrial state from the singleton instance: we will be
-    // overriding the state for the purpose of the test, and should revert the
-    // default value right after.
-    auto& mia_zps = const_cast<omnibox_feature_configs::MiaZPS&>(
-        omnibox_feature_configs::MiaZPS::Get());
-    bool default_suppress_psuggest_backfill_with_mia =
-        mia_zps.suppress_psuggest_backfill_with_mia;
-    mia_zps.suppress_psuggest_backfill_with_mia =
-        suppress_psuggest_backfill_with_mia;
-
     sections.push_back(
         std::make_unique<AndroidNTPZpsSection>(group_configs, mia_enabled));
     auto out_matches = Section::GroupMatches(std::move(sections), in_matches);
 
-    // Restore the backfill state as we can't reset the singleton.
-    mia_zps.suppress_psuggest_backfill_with_mia =
-        default_suppress_psuggest_backfill_with_mia;
-
     VerifyMatches(out_matches, output);
   };
-
-  {
-    SCOPED_TRACE(
-        "MIA above pSuggest - local history zps takes precedence over Trends.");
-    test(
-        {
-            {90, omnibox::GROUP_PERSONALIZED_ZERO_SUGGEST_WITH_MIA},
-            {89, omnibox::GROUP_PERSONALIZED_ZERO_SUGGEST_WITH_MIA},
-            {88, omnibox::GROUP_MIA_RECOMMENDATIONS},
-            {87, omnibox::GROUP_MIA_RECOMMENDATIONS},
-            {86, omnibox::GROUP_PERSONALIZED_ZERO_SUGGEST},
-            {85, omnibox::GROUP_PERSONALIZED_ZERO_SUGGEST},
-            {84, omnibox::GROUP_TRENDS},
-            {83, omnibox::GROUP_TRENDS},
-            {82, omnibox::GROUP_TRENDS},
-            {81, omnibox::GROUP_TRENDS},
-            {50, omnibox::GROUP_PERSONALIZED_ZERO_SUGGEST},
-            {49, omnibox::GROUP_PERSONALIZED_ZERO_SUGGEST},
-            {48, omnibox::GROUP_PERSONALIZED_ZERO_SUGGEST},
-            {47, omnibox::GROUP_PERSONALIZED_ZERO_SUGGEST},
-        },
-        /*mia_enabled=*/true,
-        /*supppress_psuggest_backfill_with_mia=*/false,
-        {
-            // First: MIA
-            {90, omnibox::GROUP_PERSONALIZED_ZERO_SUGGEST_WITH_MIA},
-            {89, omnibox::GROUP_PERSONALIZED_ZERO_SUGGEST_WITH_MIA},
-            {88, omnibox::GROUP_MIA_RECOMMENDATIONS},
-            {87, omnibox::GROUP_MIA_RECOMMENDATIONS},
-            // Next: backfill
-            {86, omnibox::GROUP_PERSONALIZED_ZERO_SUGGEST},
-            {85, omnibox::GROUP_PERSONALIZED_ZERO_SUGGEST},
-            {50, omnibox::GROUP_PERSONALIZED_ZERO_SUGGEST},
-            {49, omnibox::GROUP_PERSONALIZED_ZERO_SUGGEST},
-            {48, omnibox::GROUP_PERSONALIZED_ZERO_SUGGEST},
-            {47, omnibox::GROUP_PERSONALIZED_ZERO_SUGGEST},
-            // Lastly: Inspire Me
-            {84, omnibox::GROUP_TRENDS},
-            {83, omnibox::GROUP_TRENDS},
-            {82, omnibox::GROUP_TRENDS},
-            {81, omnibox::GROUP_TRENDS},
-        });
-  }
 
   {
     SCOPED_TRACE("MIA above pSuggest - local history suppressed.");
@@ -601,7 +544,6 @@ TEST(AutocompleteGrouperSectionsTest, AndroidNTPZpsSectionWithMIA) {
             {47, omnibox::GROUP_PERSONALIZED_ZERO_SUGGEST},
         },
         /*mia_enabled=*/true,
-        /*supppress_psuggest_backfill_with_mia=*/true,
         {
             // First: MIA
             {90, omnibox::GROUP_PERSONALIZED_ZERO_SUGGEST_WITH_MIA},
@@ -633,7 +575,6 @@ TEST(AutocompleteGrouperSectionsTest, AndroidNTPZpsSectionWithMIA) {
             {47, omnibox::GROUP_PERSONALIZED_ZERO_SUGGEST},
         },
         /*mia_enabled=*/true,
-        /*supppress_psuggest_backfill_with_mia=*/true,
         {
             // Show backfill
             {86, omnibox::GROUP_PERSONALIZED_ZERO_SUGGEST},
@@ -653,7 +594,7 @@ TEST(AutocompleteGrouperSectionsTest, AndroidNTPZpsSectionWithMIA) {
 
 TEST(AutocompleteGrouperSectionsTest, IosNTPZpsSectionWithMIA) {
   auto test = [](std::vector<std::pair<int, omnibox::GroupId>> input,
-                 bool mia_enabled, bool suppress_psuggest_backfill_with_mia,
+                 bool mia_enabled,
                  std::vector<std::pair<int, omnibox::GroupId>> output) {
     ACMatches in_matches;
     for (const auto& [relevance, group_id] : input) {
@@ -662,69 +603,12 @@ TEST(AutocompleteGrouperSectionsTest, IosNTPZpsSectionWithMIA) {
     PSections sections;
     omnibox::GroupConfigMap group_configs;
 
-    // Cache the fieldtrial state from the singleton instance: we will be
-    // overriding the state for the purpose of the test, and should revert the
-    // default value right after.
-    auto& mia_zps = const_cast<omnibox_feature_configs::MiaZPS&>(
-        omnibox_feature_configs::MiaZPS::Get());
-    bool default_suppress_psuggest_backfill_with_mia =
-        mia_zps.suppress_psuggest_backfill_with_mia;
-    mia_zps.suppress_psuggest_backfill_with_mia =
-        suppress_psuggest_backfill_with_mia;
-
     sections.push_back(
         std::make_unique<IOSNTPZpsSection>(group_configs, mia_enabled));
     auto out_matches = Section::GroupMatches(std::move(sections), in_matches);
 
-    // Restore the backfill state as we can't reset the singleton.
-    mia_zps.suppress_psuggest_backfill_with_mia =
-        default_suppress_psuggest_backfill_with_mia;
-
     VerifyMatches(out_matches, output);
   };
-
-  {
-    SCOPED_TRACE(
-        "MIA above pSuggest - local history zps takes precedence over Trends.");
-    test(
-        {
-            {90, omnibox::GROUP_PERSONALIZED_ZERO_SUGGEST_WITH_MIA},
-            {89, omnibox::GROUP_PERSONALIZED_ZERO_SUGGEST_WITH_MIA},
-            {88, omnibox::GROUP_MIA_RECOMMENDATIONS},
-            {87, omnibox::GROUP_MIA_RECOMMENDATIONS},
-            {86, omnibox::GROUP_PERSONALIZED_ZERO_SUGGEST},
-            {85, omnibox::GROUP_PERSONALIZED_ZERO_SUGGEST},
-            {84, omnibox::GROUP_TRENDS},
-            {83, omnibox::GROUP_TRENDS},
-            {82, omnibox::GROUP_TRENDS},
-            {81, omnibox::GROUP_TRENDS},
-            {50, omnibox::GROUP_PERSONALIZED_ZERO_SUGGEST},
-            {49, omnibox::GROUP_PERSONALIZED_ZERO_SUGGEST},
-            {48, omnibox::GROUP_PERSONALIZED_ZERO_SUGGEST},
-            {47, omnibox::GROUP_PERSONALIZED_ZERO_SUGGEST},
-        },
-        /*mia_enabled=*/true,
-        /*suppress_psuggest_backfill_with_mia=*/false,
-        {
-            // First: MIA
-            {90, omnibox::GROUP_PERSONALIZED_ZERO_SUGGEST_WITH_MIA},
-            {89, omnibox::GROUP_PERSONALIZED_ZERO_SUGGEST_WITH_MIA},
-            {88, omnibox::GROUP_MIA_RECOMMENDATIONS},
-            {87, omnibox::GROUP_MIA_RECOMMENDATIONS},
-            // Next: backfill
-            {86, omnibox::GROUP_PERSONALIZED_ZERO_SUGGEST},
-            {85, omnibox::GROUP_PERSONALIZED_ZERO_SUGGEST},
-            {50, omnibox::GROUP_PERSONALIZED_ZERO_SUGGEST},
-            {49, omnibox::GROUP_PERSONALIZED_ZERO_SUGGEST},
-            {48, omnibox::GROUP_PERSONALIZED_ZERO_SUGGEST},
-            {47, omnibox::GROUP_PERSONALIZED_ZERO_SUGGEST},
-            // Lastly: Inspire Me
-            {84, omnibox::GROUP_TRENDS},
-            {83, omnibox::GROUP_TRENDS},
-            {82, omnibox::GROUP_TRENDS},
-            {81, omnibox::GROUP_TRENDS},
-        });
-  }
 
   {
     SCOPED_TRACE("MIA above pSuggest - local history suppressed.");
@@ -746,7 +630,6 @@ TEST(AutocompleteGrouperSectionsTest, IosNTPZpsSectionWithMIA) {
             {47, omnibox::GROUP_PERSONALIZED_ZERO_SUGGEST},
         },
         /*mia_enabled=*/true,
-        /*suppress_psuggest_backfill_with_mia=*/true,
         {
             // First: MIA
             {90, omnibox::GROUP_PERSONALIZED_ZERO_SUGGEST_WITH_MIA},
@@ -778,7 +661,6 @@ TEST(AutocompleteGrouperSectionsTest, IosNTPZpsSectionWithMIA) {
             {47, omnibox::GROUP_PERSONALIZED_ZERO_SUGGEST},
         },
         /*mia_enabled=*/true,
-        /*suppress_psuggest_backfill_with_mia=*/true,
         {
             // Show backfill
             {86, omnibox::GROUP_PERSONALIZED_ZERO_SUGGEST},
@@ -828,6 +710,17 @@ TEST(AutocompleteGrouperSectionsTest, IOSComposeboxZpsSection) {
         },
         // Nothing but personalized zero suggest and aim recommendations.
         {103, 102, 97, 101, 96});
+  }
+  {
+    SCOPED_TRACE("Contextual search and multimodal matches");
+    test(
+        {
+            CreateMatch(99, omnibox::GROUP_AI_MODE_ZERO_SUGGEST_CANNED),
+            CreateMatch(98, omnibox::GROUP_CONTEXTUAL_SEARCH),
+            CreateMatch(97, omnibox::GROUP_MULTIMODAL),
+        },
+        // Canned first, then contextual/multimodal.
+        {99, 98, 97});
   }
 }
 
@@ -1490,6 +1383,18 @@ TEST(AutocompleteGrouperSectionsTest, AndroidSRPZpsSection) {
         },
         {300, 298, 100, 99, 98, 97, 96, 95, 94, 93, 92, 91, 90, 89, 88});
   }
+  {
+    SCOPED_TRACE(
+        "Given cross-device tab matches, should display at most 1 after "
+        "clipboard and above related/recent searches");
+    test({CreateMatch(103, omnibox::GROUP_MOBILE_SEARCH_READY_OMNIBOX),
+          CreateMatch(102, omnibox::GROUP_MOBILE_CLIPBOARD),
+          CreateMatch(101, omnibox::GROUP_CROSS_DEVICE_TABS),
+          CreateMatch(100, omnibox::GROUP_CROSS_DEVICE_TABS),
+          CreateMatch(99, omnibox::GROUP_PREVIOUS_SEARCH_RELATED),
+          CreateMatch(98, omnibox::GROUP_PERSONALIZED_ZERO_SUGGEST)},
+         {103, 102, 101, 99, 98});
+  }
 }
 
 // Tests the groups, limits, and rules for the Android Web ZPS section.
@@ -1653,6 +1558,20 @@ TEST(AutocompleteGrouperSectionsTest, AndroidWebZpsSection) {
         },
         {300, 298, 296, 295, 100, 99, 98, 97, 96, 95, 94, 93, 92, 91, 90, 89});
   }
+  {
+    SCOPED_TRACE(
+        "Given cross-device tab matches, should display at most 1 after "
+        "contextual action and above related/recent searches");
+    test({CreateMatch(105, omnibox::GROUP_MOBILE_SEARCH_READY_OMNIBOX),
+          CreateMatch(104, omnibox::GROUP_MOBILE_CLIPBOARD),
+          CreateMatch(103, omnibox::GROUP_MOBILE_MOST_VISITED),
+          CreateMatch(102, omnibox::GROUP_CONTEXTUAL_SEARCH_ACTION),
+          CreateMatch(101, omnibox::GROUP_CROSS_DEVICE_TABS),
+          CreateMatch(100, omnibox::GROUP_CROSS_DEVICE_TABS),
+          CreateMatch(99, omnibox::GROUP_VISITED_DOC_RELATED),
+          CreateMatch(98, omnibox::GROUP_PERSONALIZED_ZERO_SUGGEST)},
+         {105, 104, 103, 102, 101, 99, 98});
+  }
 }
 
 // Tests the groups, limits, and rules for the Android NTP ZPS + Inspire Me.
@@ -1779,6 +1698,17 @@ TEST(AutocompleteGrouperSectionsTest, AndroidNTPZpsSection_withInspireMe) {
         },
         // No more than MAX_PREVIOUS_SEARCH_RELATED + MAX_TRENDING_QUERIES.
         {15, 14, 13, 12, 11});
+  }
+  {
+    SCOPED_TRACE(
+        "Given cross-device tab matches, should display at most 1 above "
+        "psuggest and trends");
+    test({CreateMatch(102, omnibox::GROUP_MOBILE_CLIPBOARD),
+          CreateMatch(101, omnibox::GROUP_CROSS_DEVICE_TABS),
+          CreateMatch(100, omnibox::GROUP_CROSS_DEVICE_TABS),
+          CreateMatch(99, omnibox::GROUP_PERSONALIZED_ZERO_SUGGEST),
+          CreateMatch(98, omnibox::GROUP_TRENDS)},
+         {102, 101, 99, 98});
   }
 }
 
@@ -1953,6 +1883,18 @@ TEST(AutocompleteGrouperSectionsTest, IOSNTPZpsSection) {
           CreateMatch(94, omnibox::GROUP_TRENDS),
           CreateMatch(93, omnibox::GROUP_TRENDS)},
          {100, 99, 98, 97, 96, 95, 94, 93});
+  }
+
+  {
+    SCOPED_TRACE(
+        "Given cross-device tab matches, should display at most 1 above "
+        "psuggest and trends");
+    test({CreateMatch(102, omnibox::GROUP_MOBILE_CLIPBOARD),
+          CreateMatch(101, omnibox::GROUP_CROSS_DEVICE_TABS),
+          CreateMatch(100, omnibox::GROUP_CROSS_DEVICE_TABS),
+          CreateMatch(99, omnibox::GROUP_PERSONALIZED_ZERO_SUGGEST),
+          CreateMatch(98, omnibox::GROUP_TRENDS)},
+         {102, 101, 99, 98});
   }
 }
 
@@ -2374,6 +2316,22 @@ TEST(AutocompleteGrouperSectionsTest, DesktopWebZpsContextualSuggestionsOnly) {
         // Nothing but contextual action and contextual search matches.
         {96, 95, 93});
   }
+  {
+    SCOPED_TRACE("ZPS contextual search matches with cross-device tab");
+    test(
+        {
+            CreateMatch(100, omnibox::GROUP_CROSS_DEVICE_TABS),
+            CreateMatch(99, omnibox::GROUP_MOST_VISITED),
+            CreateMatch(98, omnibox::GROUP_VISITED_DOC_RELATED),
+            CreateMatch(97, omnibox::GROUP_PERSONALIZED_ZERO_SUGGEST),
+            CreateMatch(96, omnibox::GROUP_CONTEXTUAL_SEARCH_ACTION),
+            CreateMatch(95, omnibox::GROUP_CONTEXTUAL_SEARCH),
+            CreateMatch(94, omnibox::GROUP_CONTEXTUAL_SEARCH_ACTION),
+            CreateMatch(93, omnibox::GROUP_CONTEXTUAL_SEARCH),
+        },
+        // Cross-device tab at the top, followed by contextual matches.
+        {100, 96, 95, 93});
+  }
 }
 
 TEST(AutocompleteGrouperSectionsTest, DesktopComposeboxZpsSection) {
@@ -2406,15 +2364,17 @@ TEST(AutocompleteGrouperSectionsTest, DesktopComposeboxZpsSection) {
         {103, 102, 97, 101, 96});
   }
   {
-    SCOPED_TRACE("All contextual search with one verbatim match");
+    SCOPED_TRACE(
+        "All contextual search and multimodal with one verbatim match");
     test(
         {
             CreateMatch(96, omnibox::GROUP_SEARCH),
             CreateMatch(95, omnibox::GROUP_CONTEXTUAL_SEARCH),
+            CreateMatch(94, omnibox::GROUP_MULTIMODAL),
             CreateMatch(93, omnibox::GROUP_CONTEXTUAL_SEARCH),
         },
-        // Group search gets in along with contextual searches.
-        {96, 95, 93});
+        // Group search gets in along with contextual and multimodal searches.
+        {96, 95, 93, 94});
   }
   {
     SCOPED_TRACE("ZPS rich image action matches only");
@@ -2473,13 +2433,13 @@ TEST(AutocompleteGrouperSectionsTest,
 
   auto make_search = [](int score) {
     auto match = CreateMatch(score, omnibox::GROUP_SEARCH);
-    match.type = AutocompleteMatchType::SEARCH_HISTORY;
+    match.type = omnibox::AutocompleteMatchType::kSearchHistory;
     return match;
   };
 
   auto make_url = [](int score) {
     auto match = CreateMatch(score, omnibox::GROUP_OTHER_NAVS);
-    match.type = AutocompleteMatchType::NAVSUGGEST;
+    match.type = omnibox::AutocompleteMatchType::kNavsuggest;
     return match;
   };
 
@@ -2566,16 +2526,31 @@ TEST(AutocompleteGrouperSectionsTest,
              10, 9, 8, 7, 6, 5,  // top adaptive group.
          });
   }
+  {
+    SCOPED_TRACE("Custom num_visible_matches adjusts top group size.");
+    PSections sections;
+    omnibox::GroupConfigMap group_configs;
+    sections.push_back(std::make_unique<AndroidNonZPSSection>(
+        kSearchesAndUrls, group_configs, /*num_visible_matches=*/4u));
+    ACMatches matches{
+        make_url(20),    make_url(19),   make_url(18),
+        make_search(10), make_search(9),
+    };
+    auto out_matches = Section::GroupMatches(std::move(sections), matches);
+    // 20 (default), 10, 19, 18 (3 visible matches above fold), then 9 (bottom).
+    VerifyMatches(out_matches, {20, 10, 19, 18, 9});
+  }
 }
 
 TEST(AutocompleteGrouperSectionsTest, AndroidComposeboxZpsSection) {
-  auto test = [](ACMatches matches, std::vector<int> expected_relevances) {
+  auto test = [](ACMatches matches, std::vector<int> expected_relevances,
+                 size_t num_contextual_attachments = 0) {
     PSections sections;
     omnibox::GroupConfigMap group_configs;
     sections.push_back(std::make_unique<AndroidComposeboxZpsSection>(
         group_configs, /*max_suggestions=*/5u,
         /*max_aim_suggestions=*/5u,
-        /*max_contextual_suggestions=*/5u));
+        /*max_contextual_suggestions=*/5u, num_contextual_attachments));
     auto out_matches = Section::GroupMatches(std::move(sections), matches);
     VerifyMatches(out_matches, expected_relevances);
   };
@@ -2597,6 +2572,64 @@ TEST(AutocompleteGrouperSectionsTest, AndroidComposeboxZpsSection) {
         // Nothing but personalized zero suggest and aim recommendations.
         {103, 102, 97, 101, 96});
   }
+  {
+    SCOPED_TRACE("Single image attachment multimodal and contextual matches");
+    test(
+        {
+            CreateMatch(99, omnibox::GROUP_AI_MODE_ZERO_SUGGEST_CANNED),
+            CreateMatch(98, omnibox::GROUP_CONTEXTUAL_SEARCH),
+            CreateMatch(97, omnibox::GROUP_MULTIMODAL),
+            CreateMatch(96, omnibox::GROUP_MULTIMODAL),
+        },
+        // Canned first, then contextual search and multimodal.
+        {99, 98, 97, 96},
+        /*num_contextual_attachments=*/1u);
+  }
+  {
+    SCOPED_TRACE("Multiple attachments suppress ZPS suggestions");
+    test(
+        {
+            CreateMatch(103, omnibox::GROUP_PERSONALIZED_ZERO_SUGGEST),
+            CreateMatch(101, omnibox::GROUP_MIA_RECOMMENDATIONS),
+            CreateMatch(99, omnibox::GROUP_AI_MODE_ZERO_SUGGEST_CANNED),
+            CreateMatch(95, omnibox::GROUP_CONTEXTUAL_SEARCH),
+            CreateMatch(94, omnibox::GROUP_MULTIMODAL),
+        },
+        {}, /*num_contextual_attachments=*/2u);
+  }
+}
+
+TEST(AutocompleteGrouperSectionsTest, AndroidComposeboxNonZPSSection) {
+  omnibox::GroupConfigMap group_configs;
+  ACMatches matches = {
+      CreateMatch(100, omnibox::GROUP_SEARCH),
+      CreateMatch(99, omnibox::GROUP_SEARCH),
+      CreateMatch(98, omnibox::GROUP_SEARCH),
+  };
+
+  {
+    PSections sections;
+    sections.push_back(
+        std::make_unique<AndroidComposeboxNonZPSSection>(group_configs));
+    auto out_matches = Section::GroupMatches(std::move(sections), matches);
+    VerifyMatches(out_matches, {100, 99, 98});
+  }
+  {
+    PSections sections;
+    sections.push_back(std::make_unique<AndroidComposeboxNonZPSSection>(
+        group_configs, /*num_contextual_attachments=*/1u,
+        omnibox::ToolMode::TOOL_MODE_UNSPECIFIED));
+    auto out_matches = Section::GroupMatches(std::move(sections), matches);
+    VerifyMatches(out_matches, {100});
+  }
+  {
+    PSections sections;
+    sections.push_back(std::make_unique<AndroidComposeboxNonZPSSection>(
+        group_configs, /*num_contextual_attachments=*/0u,
+        omnibox::ToolMode::TOOL_MODE_DEEP_SEARCH));
+    auto out_matches = Section::GroupMatches(std::move(sections), matches);
+    VerifyMatches(out_matches, {100});
+  }
 }
 
 TEST(AutocompleteGrouperSectionsTest, AndroidHubZPSSection) {
@@ -2617,6 +2650,13 @@ TEST(AutocompleteGrouperSectionsTest, AndroidTabSearchZPSSection) {
   sections.push_back(
       std::make_unique<AndroidTabSearchZPSSection>(group_configs));
   ACMatches matches;
+  // AndroidTabSearchZPSSection allows up to 35 open tabs followed by 5 recently
+  // closed tabs. Recently closed tabs are added first to verify that they
+  // cannot take slots reserved for open tabs.
+  for (int i = 0; i < 10; ++i) {
+    matches.push_back(
+        CreateMatch(200 - i, omnibox::GROUP_RECENTLY_CLOSED_TABS));
+  }
   for (int i = 0; i < 40; ++i) {
     matches.push_back(CreateMatch(100 - i, omnibox::GROUP_MOBILE_OPEN_TABS));
   }
@@ -2625,6 +2665,9 @@ TEST(AutocompleteGrouperSectionsTest, AndroidTabSearchZPSSection) {
   std::vector<int> expected_relevances;
   for (int i = 0; i < 35; ++i) {
     expected_relevances.push_back(100 - i);
+  }
+  for (int i = 0; i < 5; ++i) {
+    expected_relevances.push_back(200 - i);
   }
   VerifyMatches(out_matches, expected_relevances);
 }
@@ -2649,8 +2692,14 @@ TEST(AutocompleteGrouperSectionsTest, AndroidTabSearchNonZPSSection) {
   sections.push_back(
       std::make_unique<AndroidTabSearchNonZPSSection>(group_configs));
   ACMatches matches;
-  // AndroidTabSearchNonZPSSection allows up to 30 open tabs and 5 history
-  // matches.
+  // AndroidTabSearchNonZPSSection allows up to 30 open tabs, followed by 5
+  // recently closed tabs and 5 history matches. Recently closed tabs are added
+  // first to verify that they cannot take slots reserved for open tabs or
+  // history.
+  for (int i = 0; i < 10; ++i) {
+    matches.push_back(
+        CreateMatch(200 - i, omnibox::GROUP_RECENTLY_CLOSED_TABS));
+  }
   for (int i = 0; i < 35; ++i) {
     matches.push_back(CreateMatch(100 - i, omnibox::GROUP_MOBILE_OPEN_TABS));
   }
@@ -2662,6 +2711,9 @@ TEST(AutocompleteGrouperSectionsTest, AndroidTabSearchNonZPSSection) {
   std::vector<int> expected_relevances;
   for (int i = 0; i < 30; ++i) {
     expected_relevances.push_back(100 - i);
+  }
+  for (int i = 0; i < 5; ++i) {
+    expected_relevances.push_back(200 - i);
   }
   for (int i = 0; i < 5; ++i) {
     expected_relevances.push_back(65 - i);

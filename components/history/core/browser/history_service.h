@@ -17,6 +17,7 @@
 #include "base/callback_list.h"
 #include "base/check.h"
 #include "base/containers/flat_set.h"
+#include "base/containers/span.h"
 #include "base/files/file_path.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
@@ -716,6 +717,18 @@ class HistoryService : public KeyedService,
 
   // Journeys ------------------------------------------------------------------
 
+  using GetJourneyCallback =
+      base::OnceCallback<void(std::optional<journeys::Journey>)>;
+  // Retrieves the journey identified by `journey_id`, with history entries
+  // resolved to URLs and titles. `callback` is invoked on the calling sequence
+  // with `std::nullopt` if there is no such journey, or if it contains
+  // unresolved visits (the same journeys `GetAllJourneys()` excludes).
+  // Note: Virtual needed for mocking.
+  virtual base::CancelableTaskTracker::TaskId GetJourney(
+      const std::string& journey_id,
+      GetJourneyCallback callback,
+      base::CancelableTaskTracker* tracker);
+
   using GetAllJourneysCallback =
       base::OnceCallback<void(std::vector<journeys::Journey>)>;
   // Retrieves all stored journeys with history entries resolved to URLs and
@@ -724,6 +737,20 @@ class HistoryService : public KeyedService,
   // Note: Virtual needed for mocking.
   virtual base::CancelableTaskTracker::TaskId GetAllJourneys(
       GetAllJourneysCallback callback,
+      base::CancelableTaskTracker* tracker);
+
+  using GetUnresolvableJourneysCountForFishfoodCallback =
+      base::OnceCallback<void(size_t)>;
+  // Retrieves the count of stored journeys that cannot be resolved due to at
+  // least one missing visit on this device. `callback` is invoked on the
+  // calling sequence. Temporary for Topics fishfood evaluation; will not stay
+  // in production code.
+  // TODO(crbug.com/568422896): Remove once Topics fishfood evaluation is
+  // complete.
+  // Note: Virtual needed for mocking.
+  virtual base::CancelableTaskTracker::TaskId
+  GetUnresolvableJourneysCountForFishfood(
+      GetUnresolvableJourneysCountForFishfoodCallback callback,
       base::CancelableTaskTracker* tracker);
 
   // Observers -----------------------------------------------------------------
@@ -999,7 +1026,7 @@ class HistoryService : public KeyedService,
   // long as its size is larger than a specific value.
   base::CancelableTaskTracker::TaskId GetLargestFaviconForURL(
       const GURL& page_url,
-      const std::vector<favicon_base::IconTypeSet>& icon_types,
+      base::span<const favicon_base::IconTypeSet> icon_types,
       int minimum_size_in_pixels,
       favicon_base::FaviconRawBitmapCallback callback,
       base::CancelableTaskTracker* tracker);
@@ -1150,16 +1177,15 @@ class HistoryService : public KeyedService,
 
   // Whether the given `url` should be added to history. See
   // HistoryClient::GetCanAddURLCallback().
-  bool CanAddURL(const GURL& url);
+  bool CanAddURL(const GURL& url) const;
 
   // A helper function that records UMA metrics on the PageTransition type of
   // each visit added to the VisitedLinks hashtable.
   void LogTransitionMetricsForVisit(ui::PageTransition transition);
 
-  // Returns the backend task runner from `backend_runner_`, ensuring that
-  // HistoryBackend::Init has been scheduled first if it was deferred during
-  // startup. This is called when dispatching queries and requests to
-  // HistoryBackend.
+  // Returns the backend task runner from `backend_runner_`. When backend
+  // initialization is deferred during startup, tasks posted to this runner are
+  // queued in FIFO order until EnsureBackendInitScheduled() is called.
   base::SequencedTaskRunner* GetBackendTaskRunner() const;
 
   // Dispatches a task to the backend sequence without triggering backend

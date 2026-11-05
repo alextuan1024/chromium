@@ -79,6 +79,7 @@ export interface PageElementTypes {
   desktopScreenshotErrorReason: HTMLSpanElement;
   panelScreenshot: HTMLButtonElement;
   captureRegionBtn: HTMLButtonElement;
+  releaseCaptureRegionHotkey: HTMLButtonElement;
   deleteCaptureRegion: HTMLInputElement;
   deleteCaptureRegionBtn: HTMLButtonElement;
   captureRegionResultList: HTMLUListElement;
@@ -188,6 +189,12 @@ export interface PageElementTypes {
   manageSkillsBtn: HTMLButtonElement;
   browseSkillsBtn: HTMLButtonElement;
   skillsList: HTMLUListElement;
+  getChromeToolsBtn: HTMLButtonElement;
+  toolSelect: HTMLSelectElement;
+  toolArgumentsInput: HTMLTextAreaElement;
+  executeToolBtn: HTMLButtonElement;
+  toolsStatus: HTMLParagraphElement;
+  executeToolResult: HTMLTextAreaElement;
   stressTestEngageBtn: HTMLButtonElement;
   stressTestEngageRetainBtn: HTMLButtonElement;
   invocationLog: HTMLDivElement;

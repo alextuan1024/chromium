@@ -20,6 +20,7 @@
 #import "components/keyed_service/core/service_access_type.h"
 #import "components/password_manager/core/browser/import/import_results.h"
 #import "components/password_manager/core/browser/password_form.h"
+#import "components/password_manager/core/browser/password_manager_test_utils.h"
 #import "components/password_manager/core/browser/password_store/test_password_store.h"
 #import "components/password_manager/core/browser/ui/saved_passwords_presenter.h"
 #import "components/webauthn/core/browser/import/imported_passkey_checker.h"
@@ -88,15 +89,6 @@ CredentialExchangePasskey* CreateTestPasskey() {
       largeBlobUncompressedSize:nil];
 }
 
-scoped_refptr<RefcountedKeyedService> BuildPasswordStore(
-    password_manager::IsAccountStore is_account_store,
-    ProfileIOS* profile) {
-  auto store = base::MakeRefCounted<password_manager::TestPasswordStore>(
-      is_account_store);
-  store->Init();
-  return store;
-}
-
 class FakePasswordStoreObserver
     : public password_manager::PasswordStoreInterface::Observer {
  public:
@@ -146,12 +138,16 @@ class CredentialImporterTest : public PlatformTest {
     TestProfileIOS::Builder builder;
     builder.AddTestingFactory(
         IOSChromeProfilePasswordStoreFactory::GetInstance(),
-        base::BindOnce(&BuildPasswordStore,
+        base::BindOnce(&password_manager::BuildPasswordStoreWithArgs<
+                           ProfileIOS, password_manager::TestPasswordStore,
+                           password_manager::IsAccountStore>,
                        password_manager::IsAccountStore(false)));
 
     builder.AddTestingFactory(
         IOSChromeAccountPasswordStoreFactory::GetInstance(),
-        base::BindOnce(&BuildPasswordStore,
+        base::BindOnce(&password_manager::BuildPasswordStoreWithArgs<
+                           ProfileIOS, password_manager::TestPasswordStore,
+                           password_manager::IsAccountStore>,
                        password_manager::IsAccountStore(true)));
     builder.AddTestingFactory(
         IOSChromeAffiliationServiceFactory::GetInstance(),
@@ -241,7 +237,8 @@ TEST_F(CredentialImporterTest, ImportsPasskeyWithHmacSecret) {
   sync_pb::WebauthnCredentialSpecifics_Encrypted decrypted;
   EXPECT_TRUE(
       webauthn::passkey_model_utils::DecryptWebauthnCredentialSpecificsData(
-          TestTrustedVaultKey(), passkeys[0], &decrypted));
+          TestTrustedVaultKey(), /*device_authorization_key=*/{}, passkeys[0],
+          &decrypted));
   EXPECT_EQ(decrypted.hmac_secret(), "01234567890123456789012345678901");
 }
 
@@ -269,7 +266,8 @@ TEST_F(CredentialImporterTest, ImportsPasskeyWithLargeBlob) {
   sync_pb::WebauthnCredentialSpecifics_Encrypted decrypted;
   EXPECT_TRUE(
       webauthn::passkey_model_utils::DecryptWebauthnCredentialSpecificsData(
-          TestTrustedVaultKey(), passkeys[0], &decrypted));
+          TestTrustedVaultKey(), /*device_authorization_key=*/{}, passkeys[0],
+          &decrypted));
   EXPECT_EQ(decrypted.large_blob(), "large_blob");
   EXPECT_EQ(decrypted.large_blob_uncompressed_size(), 100u);
 }
@@ -298,7 +296,8 @@ TEST_F(CredentialImporterTest, ImportsPasskeyWithEmptyLargeBlob) {
   sync_pb::WebauthnCredentialSpecifics_Encrypted decrypted;
   EXPECT_TRUE(
       webauthn::passkey_model_utils::DecryptWebauthnCredentialSpecificsData(
-          TestTrustedVaultKey(), passkeys[0], &decrypted));
+          TestTrustedVaultKey(), /*device_authorization_key=*/{}, passkeys[0],
+          &decrypted));
   EXPECT_TRUE(decrypted.has_large_blob());
   EXPECT_EQ(decrypted.large_blob(), "");
   EXPECT_TRUE(decrypted.has_large_blob_uncompressed_size());
@@ -637,7 +636,8 @@ TEST_F(CredentialImporterFidoExtensionsDisabledTest,
   sync_pb::WebauthnCredentialSpecifics_Encrypted decrypted;
   EXPECT_TRUE(
       webauthn::passkey_model_utils::DecryptWebauthnCredentialSpecificsData(
-          TestTrustedVaultKey(), passkeys[0], &decrypted));
+          TestTrustedVaultKey(), /*device_authorization_key=*/{}, passkeys[0],
+          &decrypted));
   EXPECT_FALSE(decrypted.has_hmac_secret());
   EXPECT_FALSE(decrypted.has_large_blob());
   EXPECT_FALSE(decrypted.has_large_blob_uncompressed_size());

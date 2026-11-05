@@ -2,7 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#import "base/ios/ios_util.h"
 #import "base/strings/sys_string_conversions.h"
 #import "base/test/ios/wait_util.h"
 #import "components/data_sharing/public/features.h"
@@ -31,6 +30,7 @@
 #import "ios/testing/earl_grey/app_launch_manager.h"
 #import "ios/testing/earl_grey/earl_grey_test.h"
 #import "ios/testing/earl_grey/matchers.h"
+#import "ios/testing/test_tag_registry.h"
 #import "net/test/embedded_test_server/embedded_test_server.h"
 #import "ui/base/l10n/l10n_util.h"
 #import "ui/base/l10n/l10n_util_mac.h"
@@ -313,9 +313,6 @@ void TapTabGroupTitle() {
   AppLaunchConfiguration config = [super appConfigurationForTestCase];
   config.features_enabled.push_back(
       data_sharing::features::kDataSharingFeature);
-  if ([self isRunningTest:@selector(testUpdateGroupByTappingTitle)]) {
-    config.features_enabled.push_back(kOpenEditGroupViewByTappingTitle);
-  }
   if ([self isRunningTest:@selector(testCreateGroupFromTabInAnotherWindow)]) {
     config.features_disabled.push_back(kChromeNextIa);
   } else {
@@ -354,6 +351,7 @@ void TapTabGroupTitle() {
 }
 
 // Tests that creates a tab group and opens the grouped tab.
+TAG_SMOKE_TEST(TabGroupsTestCase, testCompleteTabGroupCreation);
 - (void)testCompleteTabGroupCreation {
   [ChromeEarlGreyUI openTabGrid];
 
@@ -699,20 +697,11 @@ void TapTabGroupTitle() {
   }
 }
 
-// TODO(crbug.com/378900884): Flaky on ios simulator.
-#if TARGET_OS_SIMULATOR
-#define MAYBE_testMovingBetweenGroupsUsingGridContextMenuInRegularGrid \
-  DISABLED_testMovingBetweenGroupsUsingGridContextMenuInRegularGrid
-#else
-#define MAYBE_testMovingBetweenGroupsUsingGridContextMenuInRegularGrid \
-  testMovingBetweenGroupsUsingGridContextMenuInRegularGrid
-#endif
-- (void)MAYBE_testMovingBetweenGroupsUsingGridContextMenuInRegularGrid {
+- (void)testMovingBetweenGroupsUsingGridContextMenuInRegularGrid {
   [self testMovingBetweenGroupsUsingGridContextMenuInGrid:/*incognito*/ NO];
 }
 
-// TODO(crbug.com/460748104): Test is flaky.
-- (void)FLAKY_testMovingBetweenGroupsUsingGridContextMenuInIncognitoGrid {
+- (void)testMovingBetweenGroupsUsingGridContextMenuInIncognitoGrid {
   [self testMovingBetweenGroupsUsingGridContextMenuInGrid:/*incognito*/ YES];
 }
 
@@ -1281,15 +1270,9 @@ void TapTabGroupTitle() {
 }
 
 // Tests drag and drop the last tab from a group to another window.
-// TODO(crbug.com/524679738): Re-enable this test.
-- (void)DISABLED_testDragAndDropLastTabToOtherWindow {
+- (void)testDragAndDropLastTabToOtherWindow {
   if (![ChromeEarlGrey areMultipleWindowsSupported]) {
     EARL_GREY_TEST_SKIPPED(@"Multiple windows can't be opened.");
-  }
-  if (@available(iOS 26.0, *)) {
-    // TODO(crbug.com/427699033): Re-enable test on iOS 26.
-    // Fails to interact with new window.
-    EARL_GREY_TEST_DISABLED(@"Test disabled on iOS 26.");
   }
 
   // Create a group and open it.
@@ -1315,11 +1298,6 @@ void TapTabGroupTitle() {
 - (void)testReopenGroupFromAnotherWindow {
   if (![ChromeEarlGrey areMultipleWindowsSupported]) {
     EARL_GREY_TEST_SKIPPED(@"Multiple windows can't be opened.");
-  }
-  if (@available(iOS 26.0, *)) {
-    // TODO(crbug.com/427699033): Re-enable test on iOS 26.
-    // Fails to interact with new window.
-    EARL_GREY_TEST_DISABLED(@"Test disabled on iOS 26.");
   }
 
   // Create a first group.
@@ -1482,10 +1460,6 @@ void TapTabGroupTitle() {
 
 // Tests opening a tab from the group view.
 - (void)testOpenTabFromGroupView {
-  // TODO(crbug.com/429593547): Re-enable the test on iOS26.
-  if (base::ios::IsRunningOnIOS26OrLater()) {
-    EARL_GREY_TEST_DISABLED(@"Test disabled on iOS 26.");
-  }
   std::string URL1 = "chrome://version";
   std::string URL2 = "chrome://about";
   std::string content1 = "Revision";
@@ -1620,9 +1594,9 @@ void TapTabGroupTitle() {
 
 // Ensures to create a group from a pinned tab and the tab is no longer pinned.
 - (void)testCreateGroupFromPinnedTab {
-  // This test is not relevant on iPads because there is no pinned tabs in iPad.
-  if ([ChromeEarlGrey isIPadIdiom]) {
-    EARL_GREY_TEST_SKIPPED(@"Skipped for iPad.");
+  // This test is not relevant if pinned tabs are not enabled.
+  if (![ChromeEarlGrey isPinnedTabsEnabled]) {
+    EARL_GREY_TEST_SKIPPED(@"Pinned tabs not enabled.");
   }
 
   CreatePinnedTabs(1, self.testServer);
@@ -1661,12 +1635,6 @@ void TapTabGroupTitle() {
   if (![ChromeEarlGrey areMultipleWindowsSupported]) {
     EARL_GREY_TEST_DISABLED(@"Multiple windows can't be opened.");
   }
-
-  // TODO(crbug.com/456744844): Re-enable the test on iOS simulator. See also:
-  // crbug.com/518530903.
-#if TARGET_OS_SIMULATOR
-  EARL_GREY_TEST_DISABLED(@"Test disabled on simulator.");
-#endif
 
   [ChromeEarlGrey loadURL:GetQueryTitleURL(self.testServer, kTab2Title)];
 
@@ -1832,9 +1800,9 @@ void TapTabGroupTitle() {
 
 // Ensures that creating a group doesn't change the state of pinned tabs.
 - (void)testCreateGroupWithPinnedTab {
-  // This test is not relevant on iPads because there is no pinned tabs in iPad.
-  if ([ChromeEarlGrey isIPadIdiom]) {
-    EARL_GREY_TEST_SKIPPED(@"Skipped for iPad.");
+  // This test is not relevant if pinned tabs are not enabled.
+  if (![ChromeEarlGrey isPinnedTabsEnabled]) {
+    EARL_GREY_TEST_SKIPPED(@"Pinned tabs not enabled.");
   }
 
   // Create a pinned tab.

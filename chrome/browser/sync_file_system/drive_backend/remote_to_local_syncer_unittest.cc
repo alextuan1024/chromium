@@ -212,8 +212,7 @@ class RemoteToLocalSyncerTest : public testing::Test {
   SyncStatusCode ListChanges() {
     SyncStatusCode status = SYNC_STATUS_UNKNOWN;
     sync_task_manager_->ScheduleSyncTask(
-        FROM_HERE,
-        std::unique_ptr<SyncTask>(new ListChangesTask(context_.get())),
+        FROM_HERE, std::make_unique<ListChangesTask>(context_.get()),
         SyncTaskManager::PRIORITY_MED, CreateResultReceiver(&status));
     base::RunLoop().RunUntilIdle();
     return status;
@@ -251,9 +250,9 @@ TEST_F(RemoteToLocalSyncerTest, AddNewFile) {
   RegisterApp(kOrigin.GetHost(), app_root);
 
   const std::string folder1 = CreateRemoteFolder(app_root, "folder1");
-  const std::string file1 = CreateRemoteFile(app_root, "file1", "data1");
-  const std::string folder2 = CreateRemoteFolder(folder1, "folder2");
-  const std::string file2 = CreateRemoteFile(folder1, "file2", "data2");
+  CreateRemoteFile(app_root, "file1", "data1");
+  CreateRemoteFolder(folder1, "folder2");
+  CreateRemoteFile(folder1, "file2", "data2");
 
   EXPECT_EQ(SYNC_STATUS_NO_CHANGE_TO_SYNC, RunSyncerAndPromoteUntilIdle());
 
@@ -320,9 +319,9 @@ TEST_F(RemoteToLocalSyncerTest, DeleteNestedFiles) {
   RegisterApp(kOrigin.GetHost(), app_root);
 
   const std::string folder1 = CreateRemoteFolder(app_root, "folder1");
-  const std::string file1 = CreateRemoteFile(app_root, "file1", "data1");
-  const std::string folder2 = CreateRemoteFolder(folder1, "folder2");
-  const std::string file2 = CreateRemoteFile(folder1, "file2", "data2");
+  CreateRemoteFile(app_root, "file1", "data1");
+  CreateRemoteFolder(folder1, "folder2");
+  CreateRemoteFile(folder1, "file2", "data2");
 
   AppendExpectedChange(URL(kOrigin, "folder1"),
                        FileChange::FILE_CHANGE_ADD_OR_UPDATE,

@@ -78,6 +78,8 @@ struct ChromeMLModelData {
   PlatformFile encoder_cache_file = kInvalidPlatformFile;
   PlatformFile adapter_cache_file = kInvalidPlatformFile;
   PlatformFile program_cache_file = kInvalidPlatformFile;
+  PlatformFile mtp_drafter_cache_file = kInvalidPlatformFile;
+  PlatformFile mtp_drafter_program_cache_file = kInvalidPlatformFile;
 
   // Null-terminated model path pointing to the model to use. Only kApuBackend
   // provides this field. Other backends provide model through the
@@ -115,6 +117,8 @@ struct ChromeMLModelDescriptor {
   // TODO(crbug.com/517228178): Remove this once internal LiteRT-LM migrates
   // to per-session speculative decoding.
   bool enable_speculative_decoding;
+  // TODO(crbug.com/578136046): Remove once LiteRT-LM GPU IR migration is done.
+  bool use_gpu_ir_model;
 
   ml::ModelPerformanceHint performance_hint;
 
@@ -141,10 +145,6 @@ struct ChromeMLAdaptationDescriptor {
 
   // Whether this model will handle InputPieces containing audio.
   bool enable_audio_input;
-
-  // TODO(crbug.com/517228178): Remove once internal code migrates to
-  // `allow_speculative_decoding`.
-  bool enable_speculative_decoding = false;
 
   // Whether the session is allowed to use speculative decoding (MTP).
   bool allow_speculative_decoding = false;
@@ -195,7 +195,7 @@ struct ChromeMLGenerateOutput {
   // The tokens decoded after generate has completed. Should be -1 if `status`
   // is not `kComplete`. If `tokens_decoded` is -1 and `status` is `kComplete`,
   // then the caller will have to determine tokens decoded via callback
-  // counting.
+  // counting. Does not include thinking tokens.
   int tokens_decoded = -1;
 };
 using ChromeMLExecutionOutput = ChromeMLGenerateOutput;
@@ -281,6 +281,10 @@ struct ChromeMLGenerateOptions {
   ChromeMLConstraint constraint;
   // How to return the generated tokens.
   const ChromeMLGenerateOutputFn* output_fn;
+  // Whether thinking mode is enabled for this generation call.
+  bool enable_thinking = false;
+  // Maximum number of thinking tokens allowed before closing the thought block.
+  uint32_t thinking_token_budget = 0;
 };
 
 // DEPRECATED, migrating to Append/Generate.
@@ -299,6 +303,11 @@ struct ChromeMLExecuteOptions {
   // A constraint to apply on the output. Ownership of this object is passed to
   // the callee.
   ChromeMLConstraint constraint;
+
+  // Whether thinking mode is enabled for this execution call.
+  bool enable_thinking = false;
+  // Maximum number of thinking tokens allowed before closing the thought block.
+  uint32_t thinking_token_budget = 0;
 };
 
 // Performance data filled out by GetEstimatedPerformance().
@@ -460,6 +469,14 @@ struct ChromeMLASRStreamOptions {
   const ChromeMLASRStreamOutputFn* output_fn;
   int32_t decoder_prefill_backoff;
   const char* language;
+  // Optional model backing the post-processing polisher model.
+  ChromeMLModel polisher_model = 0;
+  bool enable_token_stability = false;
+  int32_t interim_token_holdback = -1;
+  int32_t interim_release_silence_ms = -1;
+  int32_t interim_stability_steps = -1;
+  bool enable_draft_verification = false;
+  int32_t final_decoder_prefill_backoff = -2;
 };
 
 struct ChromeMLASRAPI {

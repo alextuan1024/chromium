@@ -10,10 +10,7 @@ static_library("testapi") {
     "oobe_test_api_handler.h",
   ]
 
-  public_deps = [
-    "//base",
-    "//chrome/browser:browser_public_dependencies",
-  ]
+  public_deps = [ "//base" ]
 
   deps = [
     "//ash",
@@ -21,7 +18,6 @@ static_library("testapi") {
     "//ash/public/cpp",
     "//ash/public/mojom:input_device_settings",
     "//build:branding_buildflags",
-    "//chrome/browser:browser_process",
     "//chrome/browser/ash/login",
     "//chrome/browser/ash/login/quick_unlock",
     "//chrome/browser/ash/policy/enrollment",
@@ -53,10 +49,12 @@ source_set("browser_tests") {
     "//base",
     "//base/test:test_support",
     "//build:branding_buildflags",
+    "//chrome/browser:browser_process",
     "//chrome/browser/ash/login",
     "//chrome/browser/ash/login/screens",
     "//chrome/browser/ash/login/test:test_support",
     "//chrome/browser/ash/policy/enrollment",
+    "//chrome/browser/ui/ash/login",
     "//chrome/browser/ui/webui/ash/login",
     "//chromeos/ash/components/hid_detection:test_support",
     "//content/test:test_support",

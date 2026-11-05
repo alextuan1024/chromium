@@ -6,8 +6,7 @@ import 'chrome://customize-chrome-side-panel.top-chrome/themes.js';
 
 import {CustomizeChromeAction, NtpImageType} from 'chrome://customize-chrome-side-panel.top-chrome/common.js';
 import type {BackgroundCollection, CollectionImage, CustomizeChromePageRemote} from 'chrome://customize-chrome-side-panel.top-chrome/customize_chrome.mojom-webui.js';
-import {CustomizeChromePageCallbackRouter, CustomizeChromePageHandlerRemote} from 'chrome://customize-chrome-side-panel.top-chrome/customize_chrome.mojom-webui.js';
-import {CustomizeChromeApiProxy} from 'chrome://customize-chrome-side-panel.top-chrome/customize_chrome_api_proxy.js';
+import {browserProxyFactory, CustomizeChromePageHandlerRemote} from 'chrome://customize-chrome-side-panel.top-chrome/customize_chrome.mojom-webui.js';
 import type {ThemesElement} from 'chrome://customize-chrome-side-panel.top-chrome/themes.js';
 import {CHROME_THEME_BACK_ELEMENT_ID, CHROME_THEME_ELEMENT_ID} from 'chrome://customize-chrome-side-panel.top-chrome/themes.js';
 import {WindowProxy} from 'chrome://customize-chrome-side-panel.top-chrome/window_proxy.js';
@@ -68,11 +67,11 @@ suite('ThemesTest', () => {
     windowProxy = installMock(WindowProxy);
     handler = installMock(
         CustomizeChromePageHandlerRemote,
-        (mock: CustomizeChromePageHandlerRemote) =>
-            CustomizeChromeApiProxy.setInstance(
-                mock, new CustomizeChromePageCallbackRouter()));
-    callbackRouterRemote = CustomizeChromeApiProxy.getInstance()
-                               .callbackRouter.$.bindNewPipeAndPassRemote();
+        (mock: CustomizeChromePageHandlerRemote) => {
+          const {instance, remote} = browserProxyFactory.createForTest(mock);
+          browserProxyFactory.setInstance(instance);
+          callbackRouterRemote = remote;
+        });
     themesElement = document.createElement('customize-chrome-themes');
     document.body.appendChild(themesElement);
     metrics = fakeMetricsPrivate();
@@ -349,6 +348,11 @@ suite('ThemesTest', () => {
     assertTrue(tooltip.$.tooltip.hidden);
 
     tile.dispatchEvent(new Event('focus'));
+    assertTrue(tooltip.$.tooltip.hidden);
+
+    tile.matches = (selector: string): this is HTMLElement =>
+        selector === ':focus-visible';
+    tile.dispatchEvent(new Event('focus'));
     assertFalse(tooltip.$.tooltip.hidden);
 
     tile.dispatchEvent(new Event('blur'));
@@ -357,9 +361,18 @@ suite('ThemesTest', () => {
 
   [true, false].forEach((errorDetectionEnabled) => {
     suite(`ImageErrorDetectionEnabled_${errorDetectionEnabled}`, () => {
+      let originalEnabled: boolean;
+
       suiteSetup(() => {
+        originalEnabled = loadTimeData.getBoolean('imageErrorDetectionEnabled');
         loadTimeData.overrideValues({
           imageErrorDetectionEnabled: errorDetectionEnabled,
+        });
+      });
+
+      suiteTeardown(() => {
+        loadTimeData.overrideValues({
+          imageErrorDetectionEnabled: originalEnabled,
         });
       });
 
@@ -396,37 +409,64 @@ suite('ThemesTest', () => {
         assertTrue(isVisible(theme));
       });
     });
+  });
 
-    suite('ImageErrorDetectionMetric', () => {
-      suiteSetup(() => {
-        loadTimeData.overrideValues({
-          imageErrorDetectionEnabled: true,
-        });
+  suite('ImageErrorDetectionMetric', () => {
+    let originalEnabled: boolean;
+
+    suiteSetup(() => {
+      originalEnabled = loadTimeData.getBoolean('imageErrorDetectionEnabled');
+      loadTimeData.overrideValues({
+        imageErrorDetectionEnabled: true,
       });
+    });
 
-      test('error detection metrics fire correctly', async () => {
-        const numImages = 1;
-        await setCollection('test1', numImages);
-        const img = $$(themesElement, '.theme img');
-        assertTrue(!!img);
-
-        const metricCount = metrics.count(
-            'NewTabPage.BackgroundService.Images.Headers.ErrorDetected');
-        if (metricCount !== numImages) {
-          await eventToPromise('error', img);
-          await microtasksFinished();
-        }
-
-        assertEquals(
-            numImages,
-            metrics.count(
-                'NewTabPage.BackgroundService.Images.Headers.ErrorDetected'));
-        assertEquals(
-            numImages,
-            metrics.count(
-                'NewTabPage.BackgroundService.Images.Headers.ErrorDetected',
-                NtpImageType.BACKGROUND_IMAGE));
+    suiteTeardown(() => {
+      loadTimeData.overrideValues({
+        imageErrorDetectionEnabled: originalEnabled,
       });
+    });
+
+    test('error detection metrics fire correctly', async () => {
+      const numImages = 1;
+      await setCollection('test1', numImages);
+      const img = $$(themesElement, '.theme img');
+      assertTrue(!!img);
+
+      const metricCount = metrics.count(
+          'NewTabPage.BackgroundService.Images.Headers.ErrorDetected');
+      if (metricCount !== numImages) {
+        await eventToPromise('error', img);
+        await microtasksFinished();
+      }
+
+      assertEquals(
+          numImages,
+          metrics.count(
+              'NewTabPage.BackgroundService.Images.Headers.ErrorDetected'));
+      assertEquals(
+          numImages,
+          metrics.count(
+              'NewTabPage.BackgroundService.Images.Headers.ErrorDetected',
+              NtpImageType.BACKGROUND_IMAGE));
+    });
+
+    test('ignores load and error events after disconnect', async () => {
+      await setCollection('test1', 1);
+      const img = $$(themesElement, '.theme img');
+      assertTrue(!!img);
+
+      themesElement.remove();
+      metrics = fakeMetricsPrivate();
+      img.dispatchEvent(new Event('load'));
+      img.dispatchEvent(new Event('error'));
+
+      assertEquals(
+          0, metrics.count('NewTabPage.Images.ShownTime.ThemePreviewImage'));
+      assertEquals(
+          0,
+          metrics.count(
+              'NewTabPage.BackgroundService.Images.Headers.ErrorDetected'));
     });
   });
 });

@@ -152,6 +152,16 @@ OptimizationGuideModelStreamingExecutionResult::
     OptimizationGuideModelStreamingExecutionResult(
         OptimizationGuideModelStreamingExecutionResult&& src) = default;
 
+OnDeviceBaseModel OnDeviceSession::GetBaseModel() const {
+  return OnDeviceBaseModel::kUnknown;
+}
+
+void OnDeviceModelControl::Observer::OnModelInstalled(
+    OnDeviceBaseModel base_model) {}
+
+void OnDeviceModelControl::Observer::OnModelUninstalled(
+    OnDeviceBaseModel base_model) {}
+
 OnDeviceCapability::OnDeviceCapability() = default;
 OnDeviceCapability::~OnDeviceCapability() = default;
 
@@ -160,6 +170,10 @@ OnDeviceCapability::BindAndPassRemoteBroker() {
   mojo::PendingRemote<mojom::ModelBroker> remote;
   BindModelBroker(remote.InitWithNewPipeAndPassReceiver());
   return remote;
+}
+
+OnDeviceModelControl* OnDeviceCapability::GetModelControl() {
+  return nullptr;
 }
 
 std::unique_ptr<OnDeviceSession> OnDeviceCapability::StartSession(

@@ -8,7 +8,10 @@ import android.content.Context;
 
 import org.jni_zero.CalledByNative;
 import org.jni_zero.JNINamespace;
+import org.jni_zero.JniPtr;
+import org.jni_zero.JniRawPtr;
 import org.jni_zero.JniType;
+import org.jni_zero.JniTypeToken;
 import org.jni_zero.NativeMethods;
 
 import org.chromium.build.annotations.NullMarked;
@@ -27,11 +30,14 @@ import java.util.List;
 @NullMarked
 @JNINamespace("autofill")
 public class AtMemoryBottomSheetBridge implements AtMemoryBottomSheetCoordinator.Delegate {
-    private long mNativeAtMemoryBottomSheetBridge;
+    @JniType("::autofill::AtMemoryBottomSheetBridge")
+    interface NativeAtMemoryBottomSheetBridge extends JniTypeToken {}
+
+    private @Nullable JniRawPtr<NativeAtMemoryBottomSheetBridge> mNativeAtMemoryBottomSheetBridge;
     private final AtMemoryBottomSheetCoordinator mCoordinator;
 
     private AtMemoryBottomSheetBridge(
-            long nativeAtMemoryBottomSheetBridge,
+            JniRawPtr<NativeAtMemoryBottomSheetBridge> nativeAtMemoryBottomSheetBridge,
             Context context,
             BottomSheetController bottomSheetController,
             Profile profile) {
@@ -42,17 +48,19 @@ public class AtMemoryBottomSheetBridge implements AtMemoryBottomSheetCoordinator
 
     @CalledByNative
     public static @Nullable AtMemoryBottomSheetBridge create(
-            long nativeAtMemoryBottomSheetBridge,
+            JniRawPtr<NativeAtMemoryBottomSheetBridge> nativeAtMemoryBottomSheetBridge,
             WindowAndroid windowAndroid,
             @JniType("Profile*") Profile profile) {
         Context context = windowAndroid.getContext().get();
         if (context == null) {
+            nativeAtMemoryBottomSheetBridge.release();
             return null;
         }
 
         BottomSheetController bottomSheetController =
                 BottomSheetControllerProvider.from(windowAndroid);
         if (bottomSheetController == null) {
+            nativeAtMemoryBottomSheetBridge.release();
             return null;
         }
 
@@ -61,8 +69,10 @@ public class AtMemoryBottomSheetBridge implements AtMemoryBottomSheetCoordinator
     }
 
     @CalledByNative
-    public void show(@JniType("std::vector") List<AutofillSuggestion> suggestions) {
-        mCoordinator.show(suggestions);
+    public void show(
+            @JniType("std::vector") List<AutofillSuggestion> suggestions,
+            @JniType("std::optional<std::u16string>") @Nullable String searchBarInitialValue) {
+        mCoordinator.show(suggestions, searchBarInitialValue);
     }
 
     // TODO(crbug.com/534668889): Refactor isAcceptable and hasDeactivatedStyle to enum.
@@ -97,20 +107,23 @@ public class AtMemoryBottomSheetBridge implements AtMemoryBottomSheetCoordinator
 
     @CalledByNative
     public void destroy() {
-        mNativeAtMemoryBottomSheetBridge = 0;
+        if (mNativeAtMemoryBottomSheetBridge != null) {
+            mNativeAtMemoryBottomSheetBridge.release();
+            mNativeAtMemoryBottomSheetBridge = null;
+        }
         mCoordinator.hide();
     }
 
     @Override
     public void onDismissed() {
-        if (mNativeAtMemoryBottomSheetBridge != 0) {
+        if (mNativeAtMemoryBottomSheetBridge != null) {
             AtMemoryBottomSheetBridgeJni.get().onDismissed(mNativeAtMemoryBottomSheetBridge);
         }
     }
 
     @Override
     public void onQuerySubmitted(String query) {
-        if (mNativeAtMemoryBottomSheetBridge != 0) {
+        if (mNativeAtMemoryBottomSheetBridge != null) {
             AtMemoryBottomSheetBridgeJni.get()
                     .onQuerySubmitted(mNativeAtMemoryBottomSheetBridge, query);
         }
@@ -118,7 +131,7 @@ public class AtMemoryBottomSheetBridge implements AtMemoryBottomSheetCoordinator
 
     @Override
     public void onQueryTextChanged(String query) {
-        if (mNativeAtMemoryBottomSheetBridge != 0) {
+        if (mNativeAtMemoryBottomSheetBridge != null) {
             AtMemoryBottomSheetBridgeJni.get()
                     .onQueryTextChanged(mNativeAtMemoryBottomSheetBridge, query);
         }
@@ -131,7 +144,7 @@ public class AtMemoryBottomSheetBridge implements AtMemoryBottomSheetCoordinator
 
     @Override
     public void onSuggestionAccepted(int position) {
-        if (mNativeAtMemoryBottomSheetBridge != 0) {
+        if (mNativeAtMemoryBottomSheetBridge != null) {
             AtMemoryBottomSheetBridgeJni.get()
                     .onSuggestionAccepted(mNativeAtMemoryBottomSheetBridge, position);
         }
@@ -139,7 +152,7 @@ public class AtMemoryBottomSheetBridge implements AtMemoryBottomSheetCoordinator
 
     @Override
     public void onSuggestionDismissed(int position) {
-        if (mNativeAtMemoryBottomSheetBridge != 0) {
+        if (mNativeAtMemoryBottomSheetBridge != null) {
             AtMemoryBottomSheetBridgeJni.get()
                     .onSuggestionDismissed(mNativeAtMemoryBottomSheetBridge, position);
         }
@@ -147,46 +160,51 @@ public class AtMemoryBottomSheetBridge implements AtMemoryBottomSheetCoordinator
 
     @Override
     public void onChildSuggestionsShown(int parentPosition) {
-        if (mNativeAtMemoryBottomSheetBridge != 0) {
+        if (mNativeAtMemoryBottomSheetBridge != null) {
             AtMemoryBottomSheetBridgeJni.get()
                     .onChildSuggestionsShown(mNativeAtMemoryBottomSheetBridge, parentPosition);
         }
     }
 
     @Override
-    public void onChildSuggestionClicked(int parentPosition, int childPosition) {
-        if (mNativeAtMemoryBottomSheetBridge != 0) {
+    public void onChildSuggestionAccepted(int parentPosition, int childPosition) {
+        if (mNativeAtMemoryBottomSheetBridge != null) {
             AtMemoryBottomSheetBridgeJni.get()
-                    .onChildSuggestionSelected(
+                    .onChildSuggestionAccepted(
                             mNativeAtMemoryBottomSheetBridge, parentPosition, childPosition);
         }
     }
 
     @Override
     public boolean isSearching() {
-        if (mNativeAtMemoryBottomSheetBridge == 0) return false;
+        if (mNativeAtMemoryBottomSheetBridge == null) return false;
         return AtMemoryBottomSheetBridgeJni.get().isSearching(mNativeAtMemoryBottomSheetBridge);
     }
 
     @NativeMethods
-    public interface Natives {
-        void onDismissed(long nativeAtMemoryBottomSheetBridge);
+    interface Natives {
+        void onDismissed(JniPtr<NativeAtMemoryBottomSheetBridge> self);
 
         void onQuerySubmitted(
-                long nativeAtMemoryBottomSheetBridge, @JniType("std::u16string") String query);
+                JniPtr<NativeAtMemoryBottomSheetBridge> self,
+                @JniType("std::u16string") String query);
 
         void onQueryTextChanged(
-                long nativeAtMemoryBottomSheetBridge, @JniType("std::u16string") String query);
+                JniPtr<NativeAtMemoryBottomSheetBridge> self,
+                @JniType("std::u16string") String query);
 
-        void onSuggestionAccepted(long nativeAtMemoryBottomSheetBridge, int position);
+        void onSuggestionAccepted(JniPtr<NativeAtMemoryBottomSheetBridge> self, int position);
 
-        void onSuggestionDismissed(long nativeAtMemoryBottomSheetBridge, int position);
+        void onSuggestionDismissed(JniPtr<NativeAtMemoryBottomSheetBridge> self, int position);
 
-        void onChildSuggestionsShown(long nativeAtMemoryBottomSheetBridge, int parentPosition);
+        void onChildSuggestionsShown(
+                JniPtr<NativeAtMemoryBottomSheetBridge> self, int parentPosition);
 
-        void onChildSuggestionSelected(
-                long nativeAtMemoryBottomSheetBridge, int parentPosition, int childPosition);
+        void onChildSuggestionAccepted(
+                JniPtr<NativeAtMemoryBottomSheetBridge> self,
+                int parentPosition,
+                int childPosition);
 
-        boolean isSearching(long nativeAtMemoryBottomSheetBridge);
+        boolean isSearching(JniPtr<NativeAtMemoryBottomSheetBridge> self);
     }
 }

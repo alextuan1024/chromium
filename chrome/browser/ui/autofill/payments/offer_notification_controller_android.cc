@@ -7,16 +7,18 @@
 #include <algorithm>
 #include <memory>
 
+#include "base/feature_list.h"
 #include "chrome/browser/android/resource_mapper.h"
 #include "components/autofill/core/browser/data_model/payments/autofill_offer_data.h"
+#include "components/autofill/core/common/autofill_payments_features.h"
 #include "components/grit/components_scaled_resources.h"
 #include "components/messages/android/message_dispatcher_bridge.h"
 #include "components/messages/android/message_enums.h"
 #include "components/strings/grit/components_strings.h"
 #include "ui/android/window_android.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "ui/base/page_transition_types.h"
-#include "ui/base/window_open_disposition.h"
 
 namespace autofill {
 
@@ -32,7 +34,7 @@ OfferNotificationControllerAndroid::~OfferNotificationControllerAndroid() {
 void OfferNotificationControllerAndroid::ShowIfNecessary(
     const AutofillOfferData* offer,
     const CreditCard* card) {
-  DCHECK(offer);
+  CHECK(offer, base::NotFatalUntil::M162);
   if (!card) {
     return;
   }
@@ -53,8 +55,10 @@ void OfferNotificationControllerAndroid::ShowIfNecessary(
   message_->SetDescription(
       l10n_util::GetStringFUTF16(IDS_AUTOFILL_OFFERS_REMINDER_DESCRIPTION_TEXT,
                                  card->CardNameAndLastFourDigits()));
-  message_->SetIconResourceId(
-      ResourceMapper::MapToJavaDrawableId(IDR_AUTOFILL_GOOGLE_PAY));
+  message_->SetIconResourceId(ResourceMapper::MapToJavaDrawableId(
+      base::FeatureList::IsEnabled(features::kAutofillEnableGradientGoogleLogos)
+          ? IDR_AUTOFILL_GOOGLE_PAY_WITH_GRADIENT
+          : IDR_AUTOFILL_GOOGLE_PAY));
   message_->DisableIconTint();
   message_->SetPrimaryButtonText(l10n_util::GetStringUTF16(
       IDS_AUTOFILL_OFFERS_MESSAGE_PRIMARY_BUTTON_TEXT));
@@ -72,10 +76,11 @@ void OfferNotificationControllerAndroid::Dismiss() {
 }
 
 void OfferNotificationControllerAndroid::HandleMessageAction(const GURL& url) {
-  GetWebContents().OpenURL(content::OpenURLParams::CreateBrowserInitiated(
-                               url, WindowOpenDisposition::NEW_FOREGROUND_TAB,
-                               ui::PAGE_TRANSITION_LINK),
-                           /*navigation_handle_callback=*/{});
+  GetWebContents().OpenURL(
+      content::OpenURLParams::CreateBrowserInitiated(
+          url, ui::mojom::WindowOpenDisposition::kNewForegroundTab,
+          ui::PAGE_TRANSITION_LINK),
+      /*navigation_handle_callback=*/{});
 }
 
 void OfferNotificationControllerAndroid::HandleMessageDismiss(

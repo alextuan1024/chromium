@@ -17,7 +17,6 @@
 #include "base/gtest_prod_util.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
-#include "base/scoped_observation.h"
 #include "ui/accessibility/ax_enums.mojom-forward.h"
 #include "ui/accessibility/ax_node_data.h"
 #include "ui/accessibility/platform/ax_platform_node_id.h"
@@ -26,7 +25,6 @@
 #include "ui/views/accessibility/ax_attribute_changed_callbacks.h"
 #include "ui/views/accessibility/view_accessibility_utils.h"
 #include "ui/views/views_export.h"
-#include "ui/views/widget/widget_observer.h"
 
 namespace ui {
 
@@ -45,21 +43,12 @@ class View;
 class ViewAccessibilityAXTreeSource;
 class Widget;
 
-using RoleCallbackList = base::RepeatingCallbackList<void(ax::mojom::Role)>;
-using IntAttributeCallbackList =
-    base::RepeatingCallbackList<void(ax::mojom::IntAttribute,
-                                     std::optional<int>)>;
-using StringAttributeCallbackList =
-    base::RepeatingCallbackList<void(ax::mojom::StringAttribute,
-                                     const std::optional<std::string>&)>;
-using BoolAttributeCallbackList =
-    base::RepeatingCallbackList<void(ax::mojom::BoolAttribute,
-                                     std::optional<bool>)>;
-using StateCallbackList =
-    base::RepeatingCallbackList<void(ax::mojom::State, bool)>;
-using IntListAttributeCallbackList = base::RepeatingCallbackList<void(
-    ax::mojom::IntListAttribute,
-    const std::optional<std::vector<int32_t>>&)>;
+using ui::BoolAttributeCallbackList;
+using ui::IntAttributeCallbackList;
+using ui::IntListAttributeCallbackList;
+using ui::RoleCallbackList;
+using ui::StateCallbackList;
+using ui::StringAttributeCallbackList;
 
 // An object that manages the accessibility interface for a View.
 //
@@ -71,7 +60,7 @@ using IntListAttributeCallbackList = base::RepeatingCallbackList<void(
 //
 // TODO(crbug.com/40672441): Update the comment about AXPlatformNode once
 // ViewsAX is completed.
-class VIEWS_EXPORT ViewAccessibility : public WidgetObserver {
+class VIEWS_EXPORT ViewAccessibility {
  public:
   using AccessibilityEventsCallback =
       base::RepeatingCallback<void(const ui::AXPlatformNodeDelegate*,
@@ -130,7 +119,7 @@ class VIEWS_EXPORT ViewAccessibility : public WidgetObserver {
 
   ViewAccessibility(const ViewAccessibility&) = delete;
   ViewAccessibility& operator=(const ViewAccessibility&) = delete;
-  ~ViewAccessibility() override;
+  virtual ~ViewAccessibility();
 
   // Retrieves the accessibility data in the cache.
   void GetAccessibleNodeData(ui::AXNodeData* node_data) const;
@@ -203,15 +192,15 @@ class VIEWS_EXPORT ViewAccessibility : public WidgetObserver {
 
   void SetCharacterOffsets(const std::vector<int32_t>& offsets);
 
-  const std::vector<int32_t>& GetCharacterOffsets() const;
+  base::span<const int32_t> GetCharacterOffsets() const;
 
   void SetWordStarts(const std::vector<int32_t>& offsets);
 
-  const std::vector<int32_t>& GetWordStarts() const;
+  base::span<const int32_t> GetWordStarts() const;
 
   void SetWordEnds(const std::vector<int32_t>& offsets);
 
-  const std::vector<int32_t>& GetWordEnds() const;
+  base::span<const int32_t> GetWordEnds() const;
 
   void ClearTextOffsets();
 
@@ -681,9 +670,12 @@ class VIEWS_EXPORT ViewAccessibility : public WidgetObserver {
   const AccessibilityEventsCallback& accessibility_events_callback() const;
   void set_accessibility_events_callback(AccessibilityEventsCallback callback);
 
-  // WidgetObserver overrides.
-  void OnWidgetClosing(Widget* widget) override;
-  void OnWidgetDestroyed(Widget* widget) override;
+  // Called by `widget` on its RootView's ViewAccessibility once the Widget has
+  // been closed (see Widget::IsClosed()) and again when its native widget has
+  // been destroyed. Marks this View and all of its descendants, including
+  // virtual children, as belonging to a closed Widget so that they report
+  // "null-like" accessibility data and ignore further attribute updates.
+  void OnWidgetClosed(Widget* widget);
 
   virtual void OnWidgetUpdated(Widget* widget, Widget* old_widget);
 
@@ -771,6 +763,17 @@ class VIEWS_EXPORT ViewAccessibility : public WidgetObserver {
   virtual void UpdateIgnoredState();
 
   void SetState(ax::mojom::State state, bool is_enabled);
+
+  void SetIntAttribute(ax::mojom::IntAttribute attribute, int32_t value);
+  void RemoveIntAttribute(ax::mojom::IntAttribute attribute);
+  void SetStringAttribute(ax::mojom::StringAttribute attribute,
+                          const std::string& value);
+  void RemoveStringAttribute(ax::mojom::StringAttribute attribute);
+  void SetBoolAttribute(ax::mojom::BoolAttribute attribute, bool value);
+  void SetFloatAttribute(ax::mojom::FloatAttribute attribute, float value);
+  void SetIntListAttribute(ax::mojom::IntListAttribute attribute,
+                           const std::vector<int32_t>& value);
+  void RemoveIntListAttribute(ax::mojom::IntListAttribute attribute);
 
   // We don't want to fire accessibility events when the view is being
   // initialized and any setters are called from their respective constructors.
@@ -926,8 +929,6 @@ class VIEWS_EXPORT ViewAccessibility : public WidgetObserver {
       attribute_changed_callbacks_ = nullptr;
 
   State initialization_state_ = State::kUninitialized;
-
-  base::ScopedObservation<Widget, WidgetObserver> observation_{this};
 
   // Must be the last member.
   base::WeakPtrFactory<ViewAccessibility> weak_ptr_factory_{this};

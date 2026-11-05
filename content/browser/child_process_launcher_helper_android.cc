@@ -11,10 +11,8 @@
 
 #include "base/android/android_info.h"
 #include "base/android/apk_assets.h"
-#include "base/android/apk_info.h"
 #include "base/android/application_status_listener.h"
 #include "base/android/jni_array.h"
-#include "base/base_switches.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/i18n/icu_util.h"
@@ -37,6 +35,7 @@
 #include "content/public/browser/site_isolation_policy.h"
 #include "content/public/common/content_descriptors.h"
 #include "content/public/common/content_switches.h"
+#include "gpu/config/gpu_finch_features.h"
 #include "sandbox/policy/features.h"
 #include "sandbox/policy/switches.h"
 
@@ -118,21 +117,6 @@ bool ChildProcessLauncherHelper::BeforeLaunchOnLauncherThread(
   DCHECK(process_type == switches::kGpuProcess ||
          !command_line()->HasSwitch(sandbox::policy::switches::kNoSandbox));
 
-  // The child processes can't correctly retrieve host package information so we
-  // rather feed this information through the command line.
-  command_line()->AppendSwitchASCII(
-      switches::kHostPackageName, base::android::apk_info::host_package_name());
-  command_line()->AppendSwitchASCII(switches::kPackageName,
-                                    base::android::apk_info::package_name());
-  command_line()->AppendSwitchASCII(
-      switches::kHostPackageLabel,
-      base::android::apk_info::host_package_label());
-  command_line()->AppendSwitchASCII(
-      switches::kHostVersionCode, base::android::apk_info::host_version_code());
-  command_line()->AppendSwitchASCII(
-      switches::kPackageVersionName,
-      base::android::apk_info::package_version_name());
-
   return true;
 }
 
@@ -209,8 +193,9 @@ ChildProcessTerminationInfo ChildProcessLauncherHelper::GetTerminationInfo(
     const ChildProcessLauncherHelper::Process& process,
     bool known_dead) {
   ChildProcessTerminationInfo info;
-  if (!java_peer_avaiable_on_client_thread_)
+  if (!java_peer_avaiable_on_client_thread_) {
     return info;
+  }
 
   Java_ChildProcessLauncherHelperImpl_getTerminationInfoAndStop(
       AttachCurrentThread(), java_peer_, reinterpret_cast<intptr_t>(&info));
@@ -271,6 +256,11 @@ static bool JNI_ChildProcessLauncherHelperImpl_ServiceGroupImportanceEnabled(
           base::FeatureList::IsEnabled(kServiceGroupImportance));
 }
 
+static bool JNI_ChildProcessLauncherHelperImpl_IsSandboxedGpuProcessEnabled(
+    JNIEnv* env) {
+  return features::IsAndroidSandboxedGpuProcessEnabled();
+}
+
 // static
 bool ChildProcessLauncherHelper::TerminateProcess(const base::Process& process,
                                                   int exit_code) {
@@ -302,26 +292,30 @@ ChildProcessLauncherHelper::GetEffectiveChildBindingState() {
           env, java_peer_));
 }
 
-void ChildProcessLauncherHelper::DumpProcessStack(
-    const base::Process& process) {
+void ChildProcessLauncherHelper::DumpProcessStack() {
+  if (!child_process_.IsValid()) {
+    return;
+  }
   JNIEnv* env = AttachCurrentThread();
   CHECK(env, base::NotFatalUntil::M159);
-  return Java_ChildProcessLauncherHelperImpl_dumpProcessStack(env, java_peer_,
-                                                              process.Handle());
+  return Java_ChildProcessLauncherHelperImpl_dumpProcessStack(
+      env, java_peer_, child_process_.Handle());
 }
 
 void ChildProcessLauncherHelper::SetRenderProcessPriorityOnLauncherThread(
-    base::Process process,
     const RenderProcessPriority& priority,
     base::TimeTicks post_from_ui_thread_time) {
+  if (!child_process_.IsValid()) {
+    return;
+  }
   TRACE_EVENT(
       "content",
       "ChildProcessLauncherHelper::SetRenderProcessPriorityOnLauncherThread",
-      "pid", process.Handle());
+      "pid", child_process_.Handle());
   JNIEnv* env = AttachCurrentThread();
   CHECK(env, base::NotFatalUntil::M159);
   int32_t result = Java_ChildProcessLauncherHelperImpl_setPriority(
-      env, java_peer_, process.Handle(), priority.visible,
+      env, java_peer_, child_process_.Handle(), priority.visible,
       priority.has_media_stream, priority.has_immersive_xr_session,
       priority.has_foreground_service_worker, priority.frame_depth,
       priority.intersects_viewport, priority.boost_for_pending_views,

@@ -14,13 +14,9 @@ source_set("media_gallery_util") {
     "local_media_data_source_factory.h",
     "media_parser_provider.cc",
     "media_parser_provider.h",
-    "safe_audio_video_checker.cc",
-    "safe_audio_video_checker.h",
     "safe_media_metadata_parser.cc",
     "safe_media_metadata_parser.h",
   ]
-
-  configs += [ "//build/config/compiler:wexit_time_destructors" ]
 
   deps = [
     "//base",

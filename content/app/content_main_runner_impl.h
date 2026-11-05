@@ -11,6 +11,7 @@
 #include "base/memory/memory_pressure_listener_registry.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory_coordinator/memory_consumer_registry.h"
+#include "base/memory_coordinator/memory_pressure_source.h"
 #include "base/task/execution_fence.h"
 #include "content/browser/startup_data_impl.h"
 #include "content/public/app/content_main.h"
@@ -29,7 +30,7 @@ class DiscardableSharedMemoryManager;
 namespace content {
 
 class BackgroundTracingManagerImpl;
-class BrowserMemoryCoordinator;
+class BrowserMemoryCoordinatorImpl;
 class MojoIpcSupport;
 
 class ContentMainRunnerImpl : public ContentMainRunner {
@@ -57,14 +58,18 @@ class ContentMainRunnerImpl : public ContentMainRunner {
 
   bool is_browser_main_loop_started_ = false;
 
+  // The MemoryPressureSource instantiated in the browser process.
+  std::optional<base::MemoryPressureSource> memory_pressure_source_;
+
   // The MemoryPressureListenerRegistry instantiated in the browser process.
+  // Must be created immediately after `memory_pressure_source_`.
   // TODO(406578344): Remove `memory_pressure_listener_registry_` when the
   // base::MemoryPressureListener API is deleted in favor of
   // base::MemoryConsumer.
   std::optional<base::MemoryPressureListenerRegistry>
       memory_pressure_listener_registry_;
 
-  std::unique_ptr<BrowserMemoryCoordinator> browser_memory_coordinator_;
+  std::unique_ptr<BrowserMemoryCoordinatorImpl> browser_memory_coordinator_;
 
   std::unique_ptr<discardable_memory::DiscardableSharedMemoryManager>
       discardable_shared_memory_manager_;

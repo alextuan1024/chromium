@@ -63,6 +63,16 @@ bool OSExchangeDataProviderNonBacked::IsFromPrivileged() const {
   return is_from_privileged_;
 }
 
+void OSExchangeDataProviderNonBacked::SetChromeDragId(
+    const base::UnguessableToken& drag_id) {
+  chrome_drag_id_ = drag_id;
+}
+
+std::optional<base::UnguessableToken>
+OSExchangeDataProviderNonBacked::GetChromeDragId() const {
+  return chrome_drag_id_;
+}
+
 void OSExchangeDataProviderNonBacked::SetString(std::u16string_view data) {
   if (HasString())
     return;
@@ -125,7 +135,7 @@ std::vector<ClipboardUrlInfo> OSExchangeDataProviderNonBacked::GetURLs(
   if ((formats_ & OSExchangeData::URL) == 0) {
     if (std::optional<GURL> plaintext_url = GetPlainTextURL();
         plaintext_url.has_value()) {
-      DCHECK(plaintext_url->is_valid());
+      CHECK(plaintext_url->is_valid(), base::NotFatalUntil::M163);
       url_infos.push_back(
           ClipboardUrlInfo{plaintext_url.value(), std::u16string()});
     }
@@ -292,7 +302,7 @@ DataTransferEndpoint* OSExchangeDataProviderNonBacked::GetSource() const {
 
 void OSExchangeDataProviderNonBacked::CopyData(
     OSExchangeDataProviderNonBacked* provider) const {
-  DCHECK(provider);
+  CHECK(provider, base::NotFatalUntil::M163);
   provider->formats_ = formats_;
   provider->string_ = string_;
   provider->url_ = url_;
@@ -308,6 +318,7 @@ void OSExchangeDataProviderNonBacked::CopyData(
               : nullptr;
   provider->tainted_by_renderer_origin_ = tainted_by_renderer_origin_;
   provider->is_from_privileged_ = is_from_privileged_;
+  provider->chrome_drag_id_ = chrome_drag_id_;
   provider->drag_image_ = drag_image_;
   provider->drag_image_offset_ = drag_image_offset_;
 }

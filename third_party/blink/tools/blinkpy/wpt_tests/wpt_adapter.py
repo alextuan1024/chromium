@@ -24,6 +24,7 @@ from blinkpy.w3c.local_wpt import LocalWPT
 from blinkpy.web_tests import command_line
 from blinkpy.web_tests.controllers.web_test_finder import WebTestFinder
 from blinkpy.web_tests.models.test_expectations import TestExpectations
+from blinkpy.web_tests.servers import server_base
 from blinkpy.wpt_tests import product
 from blinkpy.wpt_tests.logging import (
     GroupingFormatter,
@@ -34,13 +35,19 @@ from blinkpy.wpt_tests.test_loader import TestLoader, wpt_url_to_blink_test
 from blinkpy.wpt_tests.wpt_results_processor import WPTResultsProcessor
 
 path_finder.bootstrap_wpt_imports()
-import mozlog
-from tools.wpt import run
-from tools.wpt.virtualenv import Virtualenv
-from wptrunner import wptcommandline, wptlogging
+import mozlog  # noqa: E402
+from tools.wpt import run  # noqa: E402
+from tools.wpt.virtualenv import Virtualenv  # noqa: E402
+from wptrunner import wptcommandline, wptlogging  # noqa: E402
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger('run_wpt_tests')
+
+
+class _PortSetupError(Exception):
+    def __init__(self, exit_code):
+        super().__init__(f'Port setup failed with exit status {exit_code}')
+        self.exit_code = exit_code
 
 
 class WPTAdapter:
@@ -59,28 +66,33 @@ class WPTAdapter:
         self.finder = path_finder.PathFinder(self.fs)
         self.options = options
         self.paths = paths
-        self.tests_root = self.fs.join(self.port.web_tests_dir(), 'external',
-                                       'wpt')
+        self.tests_root = self.fs.join(
+            self.port.web_tests_dir(), 'external', 'wpt'
+        )
         self.processor = WPTResultsProcessor(
             self.fs,
             self.port,
             artifacts_dir=self.port.artifacts_directory(),
             reset_results=self.options.reset_results,
             repeat_each=self.options.repeat_each,
-            processes=product.processes)
-        self._expectations = TestExpectations(self.port)
+            processes=product.processes,
+        )
+
+    @functools.cached_property
+    def _expectations(self):
+        return TestExpectations(self.port)
 
     @classmethod
-    def from_args(cls,
-                  host: Host,
-                  args: List[str],
-                  port_name: Optional[str] = None):
+    def from_args(
+        cls, host: Host, args: List[str], port_name: Optional[str] = None
+    ):
         options, tests = parse_arguments(args)
         cls._ensure_value(options, 'wpt_only', True)
         if options.use_upstream_wpt:
             cls._ensure_value(options, 'no_virtual_tests', True)
-            cls._ensure_value(options, 'layout_tests_directory',
-                              tempfile.gettempdir())
+            cls._ensure_value(
+                options, 'layout_tests_directory', tempfile.gettempdir()
+            )
             options.no_expectations = True
             options.manifest_update = False
 
@@ -98,8 +110,11 @@ class WPTAdapter:
 
     def set_up_derived_options(self):
         explicit_tests = self.paths or self.options.test_list
-        if (not explicit_tests and self.options.smoke is None
-                and not self.options.use_upstream_wpt):
+        if (
+            not explicit_tests
+            and self.options.smoke is None
+            and not self.options.use_upstream_wpt
+        ):
             self.options.smoke = self.port.default_smoke_test_only()
         if self.options.smoke:
             if not explicit_tests and self.options.num_retries is None:
@@ -116,19 +131,22 @@ class WPTAdapter:
             self.paths.extend(self.options.gtest_filter.split(':'))
 
     def create_config_files(self):
-        """Create config files based on its template and change the paths to absolute paths.
-        """
+        """Create config files based on its template and change the paths to absolute paths."""
         if self.options.use_upstream_wpt:
             return
         # create //third_party/blink/web_tests/external/wpt/config.json
         src_config_json = self.finder.path_from_wpt_tests('config.tmpl.json')
         with self.fs.open_text_file_for_reading(src_config_json) as src:
             data = json.load(src)
-        data['aliases'] = [{
-            **alias,
-            'local-dir':
-            self.finder.path_from_web_tests(alias['local-dir']),
-        } for alias in data['aliases']]
+        data['aliases'] = [
+            {
+                **alias,
+                'local-dir': self.finder.path_from_web_tests(
+                    alias['local-dir']
+                ),
+            }
+            for alias in data['aliases']
+        ]
         dst_config_json = self.finder.path_from_wpt_tests('config.json')
         with self.fs.open_text_file_for_writing(dst_config_json) as dst:
             json.dump(data, dst)
@@ -214,20 +232,25 @@ class WPTAdapter:
         if self.options.use_upstream_wpt:
             runner_options.log_wptreport = [
                 mozlog.commandline.log_file(
-                    self.fs.join(self.port.results_directory(),
-                                 'wpt_reports.json'))
+                    self.fs.join(
+                        self.port.results_directory(), 'wpt_reports.json'
+                    )
+                )
             ]
             runner_options.log_wptscreenshot = [
                 mozlog.commandline.log_file(
-                    self.fs.join(self.port.results_directory(),
-                                 'wpt_screenshots.txt'))
+                    self.fs.join(
+                        self.port.results_directory(), 'wpt_screenshots.txt'
+                    )
+                )
             ]
 
         # Dump `*-{actual,expected}.png` screenshots for all failures like
         # `run_web_tests.py` does. See crbug.com/40947531.
         runner_options.reftest_screenshot = 'fail'
-        runner_options.log = wptlogging.setup(dict(vars(runner_options)),
-                                              {'grouped': sys.stdout})
+        runner_options.log = wptlogging.setup(
+            dict(vars(runner_options)), {'grouped': sys.stdout}
+        )
         runner_options.log.send_message('show_logs', 'on')
         if self.options.driver_logging:
             runner_options.log.send_message('driver_logging', 'enable')
@@ -250,15 +273,19 @@ class WPTAdapter:
         runner_options.chunk_type = 'id_hash'
 
     def _set_up_runner_config_options(self, runner_options):
-        runner_options.webdriver_args.extend([
-            '--enable-chrome-logs',
-        ])
-        runner_options.binary_args.extend([
-            '--host-resolver-rules='
-            'MAP nonexistent.*.test ^NOTFOUND,'
-            'MAP *.test 127.0.0.1, MAP *.test. 127.0.0.1',
-            *self.port.additional_driver_flags(),
-        ])
+        runner_options.webdriver_args.extend(
+            [
+                '--enable-chrome-logs',
+            ]
+        )
+        runner_options.binary_args.extend(
+            [
+                '--host-resolver-rules='
+                'MAP nonexistent.*.test ^NOTFOUND,'
+                'MAP *.test 127.0.0.1, MAP *.test. 127.0.0.1',
+                *self.port.additional_driver_flags(),
+            ]
+        )
 
         # Implicitly pass `--enable-blink-features=MojoJS,MojoJSTest`.
         runner_options.mojojs_path = self.port.generated_sources_directory()
@@ -272,14 +299,18 @@ class WPTAdapter:
         runner_options.fully_parallel = self.options.fully_parallel
         runner_options.leak_check = self.options.enable_leak_detection
 
-        if (self.options.enable_sanitizer
-                or self.options.configuration == 'Debug'):
+        if (
+            self.options.enable_sanitizer
+            or self.options.configuration == 'Debug'
+        ):
             runner_options.sanitizer_enabled = self.options.enable_sanitizer
             runner_options.timeout_multiplier = (
-                self.options.timeout_multiplier or 1) * 5
+                self.options.timeout_multiplier or 1
+            ) * 5
             logger.info(
                 f'Using timeout multiplier of {runner_options.timeout_multiplier} '
-                + 'because the build is debug or sanitized')
+                + 'because the build is debug or sanitized'
+            )
         elif self.options.timeout_multiplier:
             runner_options.timeout_multiplier = self.options.timeout_multiplier
 
@@ -324,12 +355,13 @@ class WPTAdapter:
         #
         # See also: https://github.com/web-platform-tests/wpt/pull/41594
         certs_path = self.finder.path_from_chromium_base(
-            'third_party', 'wpt_tools', 'certs')
+            'third_party', 'wpt_tools', 'certs'
+        )
         runner_options.ca_cert_path = self.fs.join(certs_path, 'cacert.pem')
-        runner_options.host_key_path = self.fs.join(certs_path,
-                                                    '127.0.0.1.key')
-        runner_options.host_cert_path = self.fs.join(certs_path,
-                                                     '127.0.0.1.pem')
+        runner_options.host_key_path = self.fs.join(certs_path, '127.0.0.1.key')
+        runner_options.host_cert_path = self.fs.join(
+            certs_path, '127.0.0.1.pem'
+        )
 
     def _collect_tests(self):
         finder = WebTestFinder(self.port, self.options)
@@ -339,10 +371,10 @@ class WPTAdapter:
                 self.paths,
                 test_lists=self.options.test_list,
                 filter_files=self.options.isolated_script_test_filter_file,
-                inverted_filter_files=self.options.
-                inverted_test_launcher_filter_file,
+                inverted_filter_files=self.options.inverted_test_launcher_filter_file,
                 fastest_percentile=None,
-                filters=self.options.isolated_script_test_filter)
+                filters=self.options.isolated_script_test_filter,
+            )
         except IOError:
             logger.exception('Failed to find tests.')
 
@@ -360,8 +392,9 @@ class WPTAdapter:
         # TODO(crbug.com/1426296): Actually log these tests as
         # `test_{start,end}` in `mozlog` so that they're recorded in the results
         # JSON (and shown in `results.html`).
-        tests_to_skip = finder.skip_tests(self.paths, test_names,
-                                          self._expectations)
+        tests_to_skip = finder.skip_tests(
+            self.paths, test_names, self._expectations
+        )
         tests_to_run = [
             test for test in test_names if test not in tests_to_skip
         ]
@@ -379,13 +412,13 @@ class WPTAdapter:
         return []
 
     def _prepare_tests_for_wptrunner(self, tests_to_run):
-        """Remove external/wpt from test name, and create subsuite config
-        """
+        """Remove external/wpt from test name, and create subsuite config"""
         tests_by_subsuite = defaultdict(list)
         include_tests = []
         for test in tests_to_run:
-            (subsuite_name,
-             base_test) = self.port.get_suite_name_and_base_test(test)
+            (subsuite_name, base_test) = self.port.get_suite_name_and_base_test(
+                test
+            )
             if subsuite_name:
                 base_test = self.finder.strip_wpt_path(base_test)
                 tests_by_subsuite[subsuite_name].append(base_test)
@@ -416,17 +449,18 @@ class WPTAdapter:
         runner_options.test_types = self.options.test_types
         if not self.options.use_upstream_wpt:
             tests_to_run, tests_to_skip = self._collect_tests()
-            include_tests, subsuite_json = self._prepare_tests_for_wptrunner([
-                *tests_to_run,
-                # Pass skipped tests to wptrunner too so that they're added to
-                # the log and test results, but the Blink-side `TestLoader`
-                # will generate metadata that disables them.
-                *tests_to_skip,
-            ])
+            include_tests, subsuite_json = self._prepare_tests_for_wptrunner(
+                [
+                    *tests_to_run,
+                    # Pass skipped tests to wptrunner too so that they're added to
+                    # the log and test results, but the Blink-side `TestLoader`
+                    # will generate metadata that disables them.
+                    *tests_to_skip,
+                ]
+            )
             if subsuite_json:
                 config_path = self.fs.join(tmp_dir, 'subsuite.json')
-                with self.fs.open_text_file_for_writing(
-                        config_path) as outfile:
+                with self.fs.open_text_file_for_writing(config_path) as outfile:
                     json.dump(subsuite_json, outfile)
                 runner_options.subsuite_file = config_path
                 runner_options.subsuites = list(subsuite_json)
@@ -435,17 +469,23 @@ class WPTAdapter:
             runner_options.retry_unexpected = self.options.num_retries
 
             self.processor.failure_threshold = self.port.max_allowed_failures(
-                len(include_tests))
-            self.processor.crash_timeout_threshold = self.port.max_allowed_crash_or_timeouts(
-                len(include_tests))
+                len(include_tests)
+            )
+            self.processor.crash_timeout_threshold = (
+                self.port.max_allowed_crash_or_timeouts(len(include_tests))
+            )
 
             # sharding is done inside wrapper
             runner_options.total_chunks = 1
             runner_options.this_chunk = 1
             runner_options.default_exclude = True
 
-            TestLoader.install(self.port, self._expectations,
-                               runner_options.include, tests_to_skip)
+            TestLoader.install(
+                self.port,
+                self._expectations,
+                runner_options.include,
+                tests_to_skip,
+            )
         else:
             self._set_up_runner_sharding_options(runner_options)
             # To run tests from command line, prepend the test names with
@@ -481,8 +521,9 @@ class WPTAdapter:
             string_variables = getattr(self.options, 'additional_env_var', [])
             for string_variable in string_variables:
                 name, value = string_variable.split('=', 1)
-                logger.info('Setting environment variable %s to %s', name,
-                            value)
+                logger.info(
+                    'Setting environment variable %s to %s', name, value
+                )
                 self.host.environ[name] = value
             self.host.environ['FONTCONFIG_SYSROOT'] = self.port.build_path()
 
@@ -496,21 +537,52 @@ class WPTAdapter:
             if self.options.wrapper:
                 runner_options.debug_test = True
                 runner_options.binary = self._generate_wrapper_script(
-                    tmp_dir, runner_options.binary)
+                    tmp_dir, runner_options.binary
+                )
 
-            stack.enter_context(
-                self.process_and_upload_results(runner_options))
-            self.port.setup_test_run()  # Start Xvfb, if necessary.
+            stack.enter_context(self.process_and_upload_results(runner_options))
             stack.callback(self.port.clean_up_test_run)
+            exit_code = self.port.setup_test_run()
+            if exit_code:
+                raise _PortSetupError(exit_code)
             yield runner_options
 
     def run_tests(self) -> int:
+        if self.options.namespace and (
+            self.options.use_upstream_wpt or self.options.stable
+        ):
+            logger.error(
+                '--namespace cannot be used with --use-upstream-wpt or '
+                '--stable because they require external network access.'
+            )
+            return exit_codes.UNEXPECTED_ERROR_EXIT_STATUS
+        try:
+            with server_base.acquire_run_lock(
+                self.port, use_namespace=self.options.namespace
+            ):
+                return self._run_tests()
+        except server_base.RunLockError as error:
+            logger.error('%s', error)
+            return exit_codes.UNEXPECTED_ERROR_EXIT_STATUS
+
+    def _run_tests(self) -> int:
+        if self.product.name == 'chrome_ios':
+            # Xcode needs to be installed early so that `git clone` works.
+            _maybe_install_xcode(self.options.xcode_build_version)
+        if self.options.use_upstream_wpt:
+            self.checkout_upstream_wpt()
+        self.set_up_derived_options()
+        self.create_config_files()
+
         exit_code = 0
         show_results = self.port.get_option('show_results')
         try:
             with self.test_env() as runner_options:
                 run = _load_entry_point(runner_options.deps_path)
                 exit_code = 1 if run(**vars(runner_options)) else 0
+        except _PortSetupError as error:
+            logger.error('%s', error)
+            return error.exit_code
         except KeyboardInterrupt:
             logger.critical('Harness exited after signal interrupt')
             exit_code = exit_codes.INTERRUPTED_EXIT_STATUS
@@ -519,10 +591,12 @@ class WPTAdapter:
         # the results directory is rotated next time.
         self.processor.copy_results_viewer()
         results_json = self.processor.process_results_json(
-            self.port.get_option('json_test_results'))
+            self.port.get_option('json_test_results')
+        )
         if show_results and self.processor.num_initial_failures > 0:
             self.port.show_results_html_file(
-                self.fs.join(self.port.artifacts_directory(), 'results.html'))
+                self.fs.join(self.port.artifacts_directory(), 'results.html')
+            )
         return exit_code or int(results_json['num_regressions'] > 0)
 
     def _initialize_run_info(self, tmp_dir: str, tests_root: str):
@@ -595,10 +669,12 @@ class WPTAdapter:
             yield
         if runner_options.log_wptreport:
             self.processor.process_wpt_report(
-                runner_options.log_wptreport[0].name)
+                runner_options.log_wptreport[0].name
+            )
         if runner_options.log_wptscreenshot:
             self.processor.upload_wpt_screenshots(
-                runner_options.log_wptscreenshot[0].name)
+                runner_options.log_wptscreenshot[0].name
+            )
         if self.options.reset_results:
             self._optimize(runner_options)
 
@@ -613,11 +689,14 @@ class WPTAdapter:
         if self.options.verbose:
             command.append('--verbose')
         command.extend(
-            wpt_url_to_blink_test(f'/{url}') for url in runner_options.include)
+            wpt_url_to_blink_test(f'/{url}') for url in runner_options.include
+        )
         exit_code = BlinkTool(blink_tool_path).main(command)
         if exit_code != exit_codes.OK_EXIT_STATUS:
-            logger.error('Failed to optimize baselines during results reset '
-                         f'(exit code: {exit_code})')
+            logger.error(
+                'Failed to optimize baselines during results reset '
+                f'(exit code: {exit_code})'
+            )
 
     def checkout_upstream_wpt(self) -> str:
         """Check out a recent epoch-aligned revision of WPT.
@@ -639,7 +718,8 @@ class WPTAdapter:
         local_wpt.fetch(depth=100)
         wpt_executable = self.host.filesystem.join(local_wpt.path, 'wpt')
         rev_list_output = self.host.executive.run_command(
-            [wpt_executable, 'rev-list', '--epoch', '3h'])
+            [wpt_executable, 'rev-list', '--epoch', '3h']
+        )
         commit = rev_list_output.splitlines()[0]
         git = self.host.git(local_wpt.path)
         assert git, 'cloned repo should have a `git` environment'
@@ -685,21 +765,21 @@ def handle_interrupt_signals():
 
 
 def parse_arguments(argv):
-    parser = command_line.ArgumentParser(usage='%(prog)s [options] [tests]',
-                                         description=__doc__.splitlines()[0])
+    parser = command_line.ArgumentParser(
+        usage='%(prog)s [options] [tests]', description=__doc__.splitlines()[0]
+    )
     command_line.add_configuration_options_group(
-        parser,
-        rwt=False,
-        product_choices=list(product.make_product_registry()))
+        parser, rwt=False, product_choices=list(product.make_product_registry())
+    )
     command_line.add_logging_options_group(parser)
     command_line.add_results_options_group(parser, rwt=False)
     command_line.add_testing_options_group(parser, rwt=False)
     command_line.add_android_options_group(parser)
     command_line.add_ios_options_group(parser)
 
-    parser.add_argument('tests',
-                        nargs='*',
-                        help='Paths to test files or directories to run')
+    parser.add_argument(
+        'tests', nargs='*', help='Paths to test files or directories to run'
+    )
     params = vars(parser.parse_args(argv))
     args = params.pop('tests')
     options = optparse.Values(params)
@@ -713,11 +793,16 @@ def _maybe_install_xcode(build_version: str | None):
 
     path_finder.add_build_ios_to_sys_path()
     import xcode_util
-    xcode_util.install_xcode('../../mac_toolchain', build_version,
-                             '../../Xcode.app', '../../Runtime-ios-',
-                             product.IOS_DEVICE, product.IOS_VERSION)
-    logger.info('Xcode build version %s successfully installed.',
-                build_version)
+
+    xcode_util.install_xcode(
+        '../../mac_toolchain',
+        build_version,
+        '../../Xcode.app',
+        '../../Runtime-ios-',
+        product.IOS_DEVICE,
+        product.IOS_VERSION,
+    )
+    logger.info('Xcode build version %s successfully installed.', build_version)
 
 
 def main(argv) -> int:
@@ -740,16 +825,9 @@ def main(argv) -> int:
     exit_code = exit_codes.UNEXPECTED_ERROR_EXIT_STATUS
     try:
         adapter = WPTAdapter.from_args(host, argv)
-        if adapter.product.name == 'chrome_ios':
-            # Xcode needs to be installed early so that `git clone` works.
-            _maybe_install_xcode(adapter.options.xcode_build_version)
-        if adapter.options.use_upstream_wpt:
-            adapter.checkout_upstream_wpt()
-        adapter.set_up_derived_options()
-        adapter.create_config_files()
         exit_code = adapter.run_tests()
     except KeyboardInterrupt:
-        # This clause catches interrupts outside `WPTAdapter.run_tests()`.
+        # This clause catches interrupts outside `WPTAdapter.test_env()`.
         exit_code = exit_codes.INTERRUPTED_EXIT_STATUS
     except Exception as error:
         logger.exception(error)

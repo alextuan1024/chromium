@@ -150,9 +150,10 @@ TEST_F(IOSEnterpriseInterstitialTest, EnterpriseBlock_MetricsRecorded) {
   histograms.ExpectTotalCount(kBlockDecisionHistogram, 0);
 
   // Creating the blocking page should trigger a blocked seen event.;
-  EXPECT_CALL(*event_router_, OnUrlFilteringInterstitial(
-                                  Eq(GURL(kTestUrl)),
-                                  Eq("ENTERPRISE_BLOCKED_SEEN"), _, _, Eq("")));
+  EXPECT_CALL(
+      *event_router_,
+      OnUrlFilteringInterstitial(
+          Eq(GURL(kTestUrl)), Eq("ENTERPRISE_BLOCKED_SEEN"), _, _, Eq(""), _));
 
   auto test_page = CreateBlockingPage(CreateBlockUnsafeResource());
   EXPECT_TRUE(test_page->ShouldCreateNewNavigation());
@@ -175,9 +176,10 @@ TEST_F(IOSEnterpriseInterstitialTest, EnterpriseBlock_MetricsRecorded) {
 TEST_F(IOSEnterpriseInterstitialTest, EnterpriseBlock_VerifyTitleString) {
   // Creating the blocking page should trigger a blocked seen event with the
   // title string.
-  EXPECT_CALL(*event_router_, OnUrlFilteringInterstitial(
-                                  Eq(GURL(kTestUrl)),
-                                  Eq("ENTERPRISE_BLOCKED_SEEN"), _, _, Eq("")));
+  EXPECT_CALL(
+      *event_router_,
+      OnUrlFilteringInterstitial(
+          Eq(GURL(kTestUrl)), Eq("ENTERPRISE_BLOCKED_SEEN"), _, _, Eq(""), _));
 
   auto test_page = CreateBlockingPage(CreateBlockUnsafeResource());
 }
@@ -191,13 +193,13 @@ TEST_F(IOSEnterpriseInterstitialTest, EnterpriseWarn_MetricsRecorded) {
     // Creating the warning page should trigger a warned seen event.;
     EXPECT_CALL(
         *event_router_,
-        OnUrlFilteringInterstitial(Eq(GURL(kTestUrl)),
-                                   Eq("ENTERPRISE_WARNED_SEEN"), _, _, Eq("")));
-    // Proceed command should trigger reporting a bypass event;
-    EXPECT_CALL(
-        *event_router_,
         OnUrlFilteringInterstitial(
-            Eq(GURL(kTestUrl)), Eq("ENTERPRISE_WARNED_BYPASS"), _, _, Eq("")));
+            Eq(GURL(kTestUrl)), Eq("ENTERPRISE_WARNED_SEEN"), _, _, Eq(""), _));
+    // Proceed command should trigger reporting a bypass event;
+    EXPECT_CALL(*event_router_,
+                OnUrlFilteringInterstitial(Eq(GURL(kTestUrl)),
+                                           Eq("ENTERPRISE_WARNED_BYPASS"), _, _,
+                                           Eq(""), _));
   }
 
   auto test_page = CreateWarningPage(CreateWarnUnsafeResource());
@@ -300,7 +302,7 @@ TEST_F(IOSEnterpriseInterstitialTest, HandProceedCommand) {
   auto test_page = CreateWarningPage(CreateWarnUnsafeResource());
   test_page->HandleCommand(security_interstitials::CMD_PROCEED);
 
-  std::set<SBThreatType> allowed_threats;
+  safe_browsing::SBThreatTypeSet allowed_threats;
   EXPECT_TRUE(allow_list->AreUnsafeNavigationsAllowed(GURL(kTestUrl),
                                                       &allowed_threats));
   EXPECT_THAT(
@@ -318,7 +320,7 @@ TEST_F(IOSEnterpriseInterstitialTest, RemovePendingDecisionsUponDestruction) {
       SafeBrowsingUrlAllowList::FromWebState(&web_state_);
   allow_list->AddPendingUnsafeNavigationDecision(
       GURL(kTestUrl), SBThreatType::SB_THREAT_TYPE_MANAGED_POLICY_WARN);
-  std::set<safe_browsing::SBThreatType> pending_threats;
+  safe_browsing::SBThreatTypeSet pending_threats;
   ASSERT_TRUE(allow_list->IsUnsafeNavigationDecisionPending(GURL(kTestUrl),
                                                             &pending_threats));
   EXPECT_THAT(

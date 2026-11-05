@@ -6,8 +6,6 @@ assert(is_chromeos)
 
 source_set("app_list") {
   sources = [
-    "app_collections_constants.cc",
-    "app_collections_constants.h",
     "app_list_badge_controller.cc",
     "app_list_badge_controller.h",
     "app_list_bubble_event_filter.cc",
@@ -36,8 +34,6 @@ source_set("app_list") {
     "app_list_view_provider.h",
     "app_waiter.cc",
     "app_waiter.h",
-    "apps_collections_controller.cc",
-    "apps_collections_controller.h",
     "apps_grid_row_change_animator.cc",
     "apps_grid_row_change_animator.h",
     "grid_index.cc",
@@ -81,8 +77,6 @@ source_set("app_list") {
     "views/app_list_view.h",
     "views/app_list_view_util.cc",
     "views/app_list_view_util.h",
-    "views/apps_collection_section_view.cc",
-    "views/apps_collection_section_view.h",
     "views/apps_container_view.cc",
     "views/apps_container_view.h",
     "views/apps_grid_context_menu.cc",
@@ -173,7 +167,6 @@ source_set("app_list") {
     "//chromeos/ui/vector_icons",
     "//chromeos/ui/wm",
     "//chromeos/utils",
-    "//components/feature_engagement/public",
     "//components/keyed_service/core",
     "//components/pref_registry",
     "//components/prefs",
@@ -318,7 +311,6 @@ source_set("unit_tests") {
     "//chromeos/ash/components/feature_usage",
     "//chromeos/ash/services/assistant:test_support",
     "//chromeos/ash/services/assistant/public/cpp",
-    "//components/feature_engagement/public",
     "//mojo/core/embedder",
     "//mojo/public/cpp/bindings",
     "//skia",

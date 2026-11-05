@@ -14,9 +14,10 @@ import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.search_engines.ExtensionControlHandler;
 import org.chromium.chrome.browser.search_engines.R;
 import org.chromium.chrome.browser.search_engines.settings.common.BaseSiteSearchMediator;
-import org.chromium.components.browser_ui.settings.SettingsCustomTabLauncher;
+import org.chromium.components.browser_ui.util.CustomTabLauncher;
 import org.chromium.components.browser_ui.widget.BrowserUiListMenuUtils;
 import org.chromium.components.browser_ui.widget.ListItemBuilder;
+import org.chromium.components.search_engines.SearchEngineSettingsDataProvider;
 import org.chromium.components.search_engines.TemplateUrl;
 import org.chromium.components.search_engines.TemplateUrlCategory;
 import org.chromium.ui.listmenu.ListMenuDelegate;
@@ -29,16 +30,17 @@ import java.util.List;
 @NullMarked
 public class ExtensionSearchEngineMediator extends BaseSiteSearchMediator {
     private static final String EXTENSION_MANAGE_URL_PREFIX = "chrome://extensions/?id=";
-    private final SettingsCustomTabLauncher mSettingsCustomTabLauncher;
+    private final CustomTabLauncher mCustomTabLauncher;
     private final ExtensionControlHandler mExtensionControlHandler;
 
     public ExtensionSearchEngineMediator(
             Context context,
             ModelList modelList,
             Profile profile,
-            SettingsCustomTabLauncher settingsCustomTabLauncher) {
-        super(context, modelList, profile);
-        mSettingsCustomTabLauncher = settingsCustomTabLauncher;
+            SearchEngineSettingsDataProvider settingsDataProvider,
+            CustomTabLauncher customTabLauncher) {
+        super(context, modelList, profile, settingsDataProvider);
+        mCustomTabLauncher = customTabLauncher;
         mExtensionControlHandler = ExtensionControlHandler.createForProfile(profile);
 
         initializeTemplateUrlService();
@@ -49,7 +51,7 @@ public class ExtensionSearchEngineMediator extends BaseSiteSearchMediator {
         mModelList.clear();
 
         List<TemplateUrl> urls =
-                mTemplateUrlService.getTemplateUrlsByCategory(TemplateUrlCategory.EXTENSION);
+                mSettingsDataProvider.getTemplateUrlsByCategory(TemplateUrlCategory.EXTENSION);
 
         for (TemplateUrl url : urls) {
             mModelList.add(createListItem(url));
@@ -85,8 +87,7 @@ public class ExtensionSearchEngineMediator extends BaseSiteSearchMediator {
         if (extensionId == null) return;
 
         if (R.string.site_search_extensions_menu_manage == textId) {
-            mSettingsCustomTabLauncher.openUrlInCct(
-                    mContext, EXTENSION_MANAGE_URL_PREFIX + extensionId);
+            mCustomTabLauncher.openUrlInCct(mContext, EXTENSION_MANAGE_URL_PREFIX + extensionId);
         } else if (R.string.site_search_extensions_menu_disable == textId) {
             mExtensionControlHandler.disableExtension(extensionId);
         }

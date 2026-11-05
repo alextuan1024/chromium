@@ -7,6 +7,7 @@
 
 #include <memory>
 
+#include "base/callback_list.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "chrome/browser/lens/core/mojom/lens.mojom.h"
@@ -17,10 +18,15 @@
 #include "components/lens/lens_overlay_invocation_source.h"
 #include "components/omnibox/browser/autocomplete_match_type.h"
 #include "components/tabs/public/tab_interface.h"
+#include "third_party/omnibox_proto/chrome_aim_entry_point.pb.h"
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "ui/base/unowned_user_data/scoped_unowned_user_data.h"
 #include "ui/gfx/geometry/rect.h"
 #include "url/origin.h"
+
+namespace contextual_search {
+class ContextualSearchSessionHandle;
+}  // namespace contextual_search
 
 namespace lens {
 class LensOverlayQueryController;
@@ -130,12 +136,12 @@ class LensSearchController {
   // is fully opened.
   // TODO(crbug.com/403629222): Revisit if it makes sense to pass the
   // destination URL instead of the query text directly.
-  void IssueContextualSearchRequest(
+  virtual void IssueContextualSearchRequest(
       lens::LensOverlayInvocationSource invocation_source,
       const GURL& destination_url,
-      AutocompleteMatchType::Type match_type,
-      bool is_zero_prefix_suggestion);
-
+      omnibox::AutocompleteMatchType match_type,
+      bool is_zero_prefix_suggestion,
+      bool grant_session_permission);
 
   // If `suppress_contextualization` is true, queries will not be performed with
   // contextualization for the duration of the session. However,
@@ -146,9 +152,32 @@ class LensSearchController {
       lens::LensOverlayInvocationSource invocation_source,
       std::string query_text,
       std::map<std::string, std::string> additional_query_parameters,
-      AutocompleteMatchType::Type match_type,
+      omnibox::AutocompleteMatchType match_type,
       bool is_zero_prefix_suggestion,
-      bool suppress_contextualization);
+      bool suppress_contextualization,
+      bool grant_session_permission = false);
+
+  // Starts a zero-state session in the side panel for this tab, creating or
+  // taking the contextual search session handle and updating invocation source.
+  // If `open_lens_overlay` is true, concurrently opens the Lens Overlay.
+  void StartZeroStateSessionInSidePanel(
+      omnibox::ChromeAimEntryPoint entry_point,
+      lens::LensOverlayInvocationSource invocation_source,
+      bool open_lens_overlay = false);
+
+  // Attempts to open a pre-constructed AIM query `url` with `session_handle`
+  // in the side panel for this tab. The active tab context must have already
+  // been uploaded to `session_handle`; to start a query that uploads the active
+  // tab for the caller, use `IssueContextualSearchRequest` or
+  // `IssueTextSearchRequest` instead. Returns true and takes ownership of
+  // `session_handle` if opened in the side panel; returns false and leaves
+  // `session_handle` untouched if the query should not or cannot be opened in
+  // the side panel.
+  [[nodiscard]] virtual bool StartContextualAimQueryInSidePanel(
+      const GURL& url,
+      std::unique_ptr<contextual_search::ContextualSearchSessionHandle>&
+          session_handle,
+      omnibox::ChromeAimEntryPoint aim_entry_point);
 
   // Starts the closing process of the overlay. This is an asynchronous process
   // with the following sequence:
@@ -225,6 +254,10 @@ class LensSearchController {
   void SetThumbnailCreatedCallback(
       base::RepeatingCallback<void(const std::string&)> callback);
 
+  // Registers a callback to be invoked when Lens is about to open on this tab.
+  base::CallbackListSubscription RegisterWillOpenCallback(
+      base::RepeatingClosure callback);
+
   // Whether the user has selected a region on the overlay.
   bool HasRegionSelection();
 
@@ -285,7 +318,7 @@ class LensSearchController {
 
   // Returns whether the current tab's committed origin matches the origin
   // of the page when this Lens session was initiated.
-  bool IsCurrentTabSameOrigin() const;
+  virtual bool IsCurrentTabSameOrigin() const;
 
   // Returns the origin of the page when this Lens session was initiated.
   const url::Origin& session_origin() const { return session_origin_; }
@@ -317,8 +350,10 @@ class LensSearchController {
       bool use_dark_mode,
       lens::LensOverlayGen204Controller* gen204_controller);
 
-  // Override these methods to be able to track calls made to the query flow router.
-  virtual std::unique_ptr<lens::LensQueryFlowRouter> CreateLensQueryFlowRouter();
+  // Override these methods to be able to track calls made to the query flow
+  // router.
+  virtual std::unique_ptr<lens::LensQueryFlowRouter>
+  CreateLensQueryFlowRouter();
 
   // Override these methods to be able to track calls made to the side panel
   // coordinator.
@@ -405,7 +440,8 @@ class LensSearchController {
   // Creates all state necessary to start a Lens session. This method contains
   // shared state that is used no matter the entrypoint.
   void StartLensSession(lens::LensOverlayInvocationSource invocation_source,
-                        bool suppress_contextualization = false);
+                        bool suppress_contextualization = false,
+                        bool grant_session_permission = false);
 
   // Runs the eligibility checks necessary for Lens to open on this tab. If the
   // user has not granted permission to use Lens on this tab, the permission
@@ -455,7 +491,6 @@ class LensSearchController {
   // Called when the tab will be removed from the window.
   void WillDetach(tabs::TabInterface* tab,
                   tabs::TabInterface::DetachReason reason);
-
 
   // Whether the LensSearchController has been initialized. Meaning, all the
   // dependencies have been initialized and the controller is ready to use.
@@ -547,6 +582,9 @@ class LensSearchController {
 
   // Callback to be invoked when a thumbnail is created.
   base::RepeatingCallback<void(const std::string&)> thumbnail_created_callback_;
+
+  // Callbacks to be notified when Lens is about to open on this tab.
+  base::RepeatingClosureList will_open_callbacks_;
 
   // Unowned IdentityManager for fetching access tokens. Could be null for
   // incognito profiles.

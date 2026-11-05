@@ -5,6 +5,7 @@
 package org.chromium.chrome.browser;
 
 import android.app.Service;
+import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ServiceInfo;
 import android.os.Build;
@@ -43,6 +44,22 @@ public class GracefulShutdownServiceImpl extends SplitCompatService.Impl {
 
     private final Handler mHandler = new Handler(Looper.getMainLooper());
     private @Nullable Runnable mStopRunnable;
+
+    /** Starts the GracefulShutdownService ONLY if the last open activity is dying. */
+    public static void maybeStartGracefulShutdown(Context context) {
+        if (!GracefulShutdownService.isLastActivityDying()) {
+            return;
+        }
+        Log.i(TAG, "Starting GracefulShutdownService.");
+        try {
+            Intent intent = new Intent(context, GracefulShutdownService.class);
+            ForegroundServiceUtils.getInstance().startForegroundService(intent);
+            GracefulShutdownService.recordStatus(GracefulShutdownService.Status.LAUNCH_ATTEMPTED);
+        } catch (Throwable e) {
+            GracefulShutdownService.recordStatus(GracefulShutdownService.Status.LAUNCH_FAILED);
+            Log.e(TAG, "Failed to start GracefulShutdownService", e);
+        }
+    }
 
     @Override
     public void onCreate() {

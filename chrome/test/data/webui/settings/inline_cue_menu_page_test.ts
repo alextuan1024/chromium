@@ -5,21 +5,39 @@
 // clang-format off
 import 'chrome://settings/lazy_load.js';
 
-import type {InlineCueMenuPageElement, SettingsToggleButtonElement} from 'chrome://settings/lazy_load.js';
+import type {SettingsInlineCueMenuPageElement} from 'chrome://settings/lazy_load.js';
 import {ContentSetting, ContentSettingsTypes, SiteSettingsBrowserProxyImpl} from 'chrome://settings/lazy_load.js';
+import type {SettingsToggleButtonElement} from 'chrome://settings/settings.js';
+import {loadTimeData, PrefService, PrefsBrowserProxy} from 'chrome://settings/settings.js';
 import {assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chai_assert.js';
-import {flushTasks} from 'chrome://webui-test/polymer_test_util.js';
-import {isVisible} from 'chrome://webui-test/test_util.js';
+import {isVisible, microtasksFinished} from 'chrome://webui-test/test_util.js';
 
+import {TestPrefsBrowserProxy} from './test_prefs_browser_proxy.js';
 import {TestSiteSettingsBrowserProxy} from './test_site_settings_browser_proxy.js';
 import {createContentSettingTypeToValuePair, createRawSiteException, createSiteSettingsPrefs} from './test_util.js';
 // clang-format on
 
+const EXPLAIN_PREF_KEY = 'glic.quick_answers_fre_accepted';
+
 suite('InlineCueMenuPage', function() {
   let browserProxy: TestSiteSettingsBrowserProxy;
-  let page: InlineCueMenuPageElement;
+  let page: SettingsInlineCueMenuPageElement;
 
-  setup(function() {
+  setup(async function() {
+    loadTimeData.overrideValues({
+      enableQuickAnswersSelectionSuggestions: true,
+      glicAssetsV2Enabled: false,
+      enableGlicSelectionOverlayPromptBox: false,
+    });
+    const prefsBrowserProxy = new TestPrefsBrowserProxy([{
+      key: EXPLAIN_PREF_KEY,
+      type: chrome.settingsPrivate.PrefType.BOOLEAN,
+      value: false,
+    }]);
+    PrefsBrowserProxy.setInstance(prefsBrowserProxy);
+    PrefService.resetInstanceForTesting();
+    await PrefService.getInstance().whenInitialized();
+
     browserProxy = new TestSiteSettingsBrowserProxy();
     SiteSettingsBrowserProxyImpl.setInstance(browserProxy);
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
@@ -33,15 +51,16 @@ suite('InlineCueMenuPage', function() {
     browserProxy.setPrefs(prefs);
     page = document.createElement('settings-inline-cue-menu-page');
     document.body.appendChild(page);
-    await flushTasks();
+    await Promise.all([
+      browserProxy.whenCalled('getDefaultValueForContentType'),
+      browserProxy.whenCalled('getExceptionList'),
+    ]);
+    await microtasksFinished();
   }
 
   test('MainToggle', async function() {
     await initPage();
-    const mainToggle =
-        page.shadowRoot!.querySelector<SettingsToggleButtonElement>(
-            '#mainToggle');
-    assertTrue(!!mainToggle);
+    const mainToggle = page.$.mainToggle;
     assertTrue(mainToggle.checked);
 
     mainToggle.click();
@@ -53,11 +72,11 @@ suite('InlineCueMenuPage', function() {
   test('BlockedSitesListUpdate', async function() {
     await initPage();
     const noSitesLabel =
-        page.shadowRoot!.querySelector<HTMLElement>('.list-frame .secondary');
+        page.shadowRoot.querySelector<HTMLElement>('.list-frame .secondary');
     assertTrue(!!noSitesLabel);
     assertTrue(isVisible(noSitesLabel));
 
-    const siteListItems = page.shadowRoot!.querySelectorAll<HTMLElement>(
+    const siteListItems = page.shadowRoot.querySelectorAll<HTMLElement>(
         '.list-item[role=listitem]');
     assertEquals(0, siteListItems.length);
   });
@@ -75,7 +94,7 @@ suite('InlineCueMenuPage', function() {
     ]);
     await initPage(prefs);
 
-    const siteListItems = page.shadowRoot!.querySelectorAll<HTMLElement>(
+    const siteListItems = page.shadowRoot.querySelectorAll<HTMLElement>(
         '.list-item[role=listitem]');
     assertEquals(1, siteListItems.length);
     assertTrue(siteListItems[0]!.textContent.includes('foo.com'));
@@ -98,7 +117,7 @@ suite('InlineCueMenuPage', function() {
     ]);
     await initPage(prefs);
 
-    const siteListItems = page.shadowRoot!.querySelectorAll<HTMLElement>(
+    const siteListItems = page.shadowRoot.querySelectorAll<HTMLElement>(
         '.list-item[role=listitem]');
     assertEquals(2, siteListItems.length);
 
@@ -117,15 +136,84 @@ suite('InlineCueMenuPage', function() {
 
   test('AddSiteDialog', async function() {
     await initPage();
-    assertFalse(!!page.shadowRoot!.querySelector('add-site-dialog'));
+    assertFalse(!!page.shadowRoot.querySelector('add-site-dialog'));
 
     const addSiteButton =
-        page.shadowRoot!.querySelector<HTMLElement>('#addSite');
+        page.shadowRoot.querySelector<HTMLElement>('#addSite');
     assertTrue(!!addSiteButton);
     addSiteButton.click();
-    await flushTasks();
+    await microtasksFinished();
 
-    const addSiteDialog = page.shadowRoot!.querySelector('add-site-dialog');
+    const addSiteDialog = page.shadowRoot.querySelector('add-site-dialog');
     assertTrue(!!addSiteDialog);
+  });
+
+  function getExplainToggle(): SettingsToggleButtonElement|null {
+    return page.shadowRoot.querySelector<SettingsToggleButtonElement>(
+        '#explainToggle');
+  }
+
+  async function acceptExplainFre() {
+    await PrefService.getInstance().setPrefValue(EXPLAIN_PREF_KEY, true);
+    await microtasksFinished();
+  }
+
+  test('ExplainToggleGrayedOutUntilFreAccepted', async function() {
+    await initPage();
+    const toggle = getExplainToggle();
+    assertTrue(!!toggle);
+    assertFalse(toggle.checked);
+    assertTrue(toggle.disabled);
+
+    await acceptExplainFre();
+    assertTrue(toggle.checked);
+    assertFalse(toggle.disabled);
+  });
+
+  test('ExplainToggleTurnsOffAndGraysOut', async function() {
+    await acceptExplainFre();
+    await initPage();
+    const toggle = getExplainToggle();
+    assertTrue(!!toggle);
+    assertTrue(toggle.checked);
+    assertFalse(toggle.disabled);
+
+    toggle.click();
+    await microtasksFinished();
+    assertFalse(
+        PrefService.getInstance().getPref<boolean>(EXPLAIN_PREF_KEY).value);
+    assertFalse(toggle.checked);
+    // Turning it back on goes through the FRE.
+    assertTrue(toggle.disabled);
+  });
+
+  test('ExplainToggleHiddenWhenExplainOff', async function() {
+    loadTimeData.overrideValues(
+        {enableQuickAnswersSelectionSuggestions: false});
+    await acceptExplainFre();
+    await initPage();
+    assertFalse(!!getExplainToggle());
+  });
+
+  test('PreviewChipIcon', async function() {
+    await initPage();
+    assertTrue(isVisible(page.$.previewChipIcon));
+    // <if expr="_google_chrome">
+    assertEquals('settings-internal:spark', page.$.previewChipIcon.icon);
+
+    page.remove();
+    browserProxy.reset();
+    loadTimeData.overrideValues({glicAssetsV2Enabled: true});
+    await initPage();
+    assertTrue(isVisible(page.$.previewChipIcon));
+    assertEquals('settings-internal:sparkv2', page.$.previewChipIcon.icon);
+
+    page.remove();
+    browserProxy.reset();
+    loadTimeData.overrideValues({enableGlicSelectionOverlayPromptBox: true});
+    await initPage();
+    assertTrue(isVisible(page.$.previewChipIcon));
+    // </if>
+    assertEquals('settings20:text-analysis', page.$.previewChipIcon.icon);
   });
 });

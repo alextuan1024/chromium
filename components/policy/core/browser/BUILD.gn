@@ -21,8 +21,6 @@ source_set("internal") {
     "browser_policy_connector_base.h",
     "cloud/message_util.cc",
     "cloud/message_util.h",
-    "cloud/user_cloud_management_status_fetcher.cc",
-    "cloud/user_cloud_management_status_fetcher.h",
     "configuration_policy_handler.cc",
     "configuration_policy_handler.h",
     "configuration_policy_handler_list.cc",
@@ -85,15 +83,24 @@ source_set("internal") {
     ]
   }
 
+  if (!is_android && !is_fuchsia) {
+    sources += [
+      "cloud/user_cloud_management_status_fetcher.cc",
+      "cloud/user_cloud_management_status_fetcher.h",
+    ]
+  }
+
   configs += [ "//components/policy:component_implementation" ]
 
-  public_deps = [ "//base" ]
+  public_deps = [
+    "//base",
+    "//components/policy/resources/webui/mojom:mojo_bindings",
+  ]
   deps = [
     "//build:android_buildflags",
     "//build:branding_buildflags",
     "//components/google/core/common",
     "//components/keyed_service/core",
-    "//components/policy/resources/webui/mojom:mojo_bindings",
     "//components/pref_registry",
     "//components/prefs",
     "//components/reporting/proto:record_proto",
@@ -199,7 +206,6 @@ source_set("unit_tests") {
   testonly = true
   sources = [
     "boolean_disabling_policy_handler_unittest.cc",
-    "cloud/user_cloud_management_status_fetcher_unittest.cc",
     "configuration_policy_handler_list_unittest.cc",
     "configuration_policy_handler_unittest.cc",
     "configuration_policy_pref_store_unittest.cc",
@@ -251,5 +257,9 @@ source_set("unit_tests") {
 
   if (!is_fuchsia) {
     sources += [ "url_list/incognito_mode_policy_handler_unittest.cc" ]
+  }
+
+  if (!is_android && !is_fuchsia) {
+    sources += [ "cloud/user_cloud_management_status_fetcher_unittest.cc" ]
   }
 }

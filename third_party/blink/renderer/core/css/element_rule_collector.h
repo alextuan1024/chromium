@@ -35,12 +35,14 @@
 #include "third_party/blink/renderer/core/css/style_recalc_context.h"
 #include "third_party/blink/renderer/core/css/style_request.h"
 #include "third_party/blink/renderer/core/style/computed_style_base_constants.h"
+#include "third_party/blink/renderer/platform/heap/heap_auto_reset.h"
 #include "third_party/blink/renderer/platform/wtf/gc_plugin.h"
 #include "third_party/blink/renderer/platform/wtf/ref_counted.h"
 #include "third_party/blink/renderer/platform/wtf/vector.h"
 
 namespace blink {
 
+class CSSPrivateBindings;
 class Element;
 class ElementResolveContext;
 class ElementRuleCollector;
@@ -56,7 +58,8 @@ class MatchedRule {
   // cannot make the class itself private, since
   // WTF_ALLOW_MOVE_AND_INIT_WITH_MEM_FUNCTIONS() and Vector::emplace_back()
   // need it to be visible from the outside.
-  static const unsigned kBitsForPositionInRuleData = 18;
+  static constexpr unsigned kBitsForPositionInRuleData =
+      RuleData::kPositionBits;
 
  public:
   // Does not take overship of rule_data (it is owned by the appropriate
@@ -69,7 +72,9 @@ class MatchedRule {
   MatchedRule(const RuleData* rule_data,
               uint16_t layer_order,
               unsigned proximity,
-              unsigned style_sheet_index)
+              unsigned style_sheet_index,
+              bool precompute_hover,
+              const CSSPrivateBindings* private_bindings = nullptr)
       : sort_key_((static_cast<uint64_t>(layer_order) << 48) |
                   (static_cast<uint64_t>(rule_data->Specificity()) << 16) |
                   (65535 - ClampTo<uint16_t>(proximity))),
@@ -77,19 +82,25 @@ class MatchedRule {
                    << kBitsForPositionInRuleData) +
                   rule_data->GetPosition()),
         rule_(rule_data->Rule()),
+        private_bindings_(private_bindings),
         link_match_type_(rule_data->LinkMatchType()),
+        precompute_hover_(precompute_hover),
         valid_property_filter_(
             static_cast<unsigned>(rule_data->GetValidPropertyFilter())),
         selector_index_(rule_data->SelectorIndex()) {}
 
-  void Trace(Visitor* visitor) const { visitor->Trace(rule_); }
+  CORE_EXPORT void Trace(Visitor* visitor) const;
 
  private:
   StyleRule* Rule() const { return rule_; }
   uint16_t LayerOrder() const { return sort_key_ >> 48; }
   uint64_t SortKey() const { return sort_key_; }
   uint64_t GetPosition() const { return position_; }  // Secondary sort key.
+  unsigned StyleSheetIndex() const {
+    return static_cast<unsigned>(position_ >> kBitsForPositionInRuleData);
+  }
   unsigned LinkMatchType() const { return link_match_type_; }
+  bool PrecomputeHover() const { return precompute_hover_; }
   ValidPropertyFilter GetValidPropertyFilter(bool is_matching_ua_rules) const {
     return is_matching_ua_rules
                ? ValidPropertyFilter::kNoFilter
@@ -107,12 +118,14 @@ class MatchedRule {
   uint64_t position_;
 
   Member<StyleRule> rule_;
+  Member<const CSSPrivateBindings> private_bindings_;
 
   // NOTE: If we need some more spare bits, we can probably move some bits
   // in position_ upwards and use some of the bottom. Right now, though,
   // packing these better wouldn't make the struct any smaller, due to
   // alignment/padding.
-  uint8_t link_match_type_;        // 2 bits needed.
+  uint8_t link_match_type_ : 2;
+  uint8_t precompute_hover_ : 1;
   uint8_t valid_property_filter_;  // ValidPropertyFilter, 3 bits needed.
   uint16_t selector_index_;  // RuleData::kSelectorIndexBits (13) bits needed.
 
@@ -221,8 +234,6 @@ class CORE_EXPORT ElementRuleCollector {
     return pseudo_style_request_.pseudo_argument;
   }
 
-  void AddMatchedRulesToTracker(StyleRuleUsageTracker*) const;
-
   // Writes out the collected selector statistics and clears the values.
   // These values are gathered during rule matching and require higher-level
   // control of when they are output - the statistics are designed to be
@@ -249,7 +260,7 @@ class CORE_EXPORT ElementRuleCollector {
         : tree_scope_(&collector.current_rule_tree_scope_, &rule_tree_scope) {}
 
    private:
-    base::AutoReset<const TreeScope*> tree_scope_;
+    HeapAutoReset<const TreeScope> tree_scope_;
   };
 
  private:
@@ -289,13 +300,17 @@ class CORE_EXPORT ElementRuleCollector {
                     const ContainerQuerySet*,
                     unsigned proximity,
                     const SelectorChecker::MatchResult&,
-                    int style_sheet_index);
+                    int style_sheet_index,
+                    const CSSPrivateBindings*);
 
   void AppendCSSOMWrapperForRule(const TreeScope* tree_scope_containing_rule,
                                  const MatchedRule& matched_rule,
                                  wtf_size_t position);
 
   void SortMatchedRules();
+  void AddMatchedRulesToTracker(CascadeOrigin origin,
+                                bool is_vtt_embedded_style,
+                                StyleRuleUsageTracker* tracker) const;
 
   RuleIndexList* EnsureRuleList();
   StyleRuleList* EnsureStyleRuleList();

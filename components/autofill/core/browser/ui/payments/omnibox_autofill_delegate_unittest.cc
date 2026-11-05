@@ -12,6 +12,7 @@
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
+#include "components/autofill/core/browser/filling/filling_product.h"
 #include "components/autofill/core/browser/form_structure.h"
 #include "components/autofill/core/browser/form_structure_test_api.h"
 #include "components/autofill/core/browser/foundations/autofill_driver_router.h"
@@ -146,8 +147,9 @@ class OmniboxAutofillDelegateTest
     // Filling should trigger on the "Card Number" field located at index 1.
     autofill_manager().FillOrPreviewForm(
         mojom::ActionPersistence::kFill, form.global_id(),
-        form.fields()[1].global_id(), &credit_card,
+        form.fields()[1].global_id(), FillingProduct::kCreditCard, &credit_card,
         AutofillTriggerSource::kOmniboxAutofill,
+        /*require_user_confirmation=*/false,
         /*blocked_fields=*/{});
   }
 
@@ -1176,7 +1178,8 @@ TEST_F(OmniboxAutofillDelegateTest,
 
   Suggestion suggestion(SuggestionType::kCreditCardEntry);
 
-  delegate->DidAcceptSuggestion(suggestion, /*metadata=*/{});
+  delegate->DidAcceptSuggestion(suggestion, /*metadata=*/{}, form.global_id(),
+                                form.fields().front().global_id());
 
   histogram_tester.ExpectBucketCount("Autofill.OmniboxAutofill.Events",
                                      OmniboxAutofillEvents::kSuggestionAccepted,
@@ -1455,7 +1458,8 @@ TEST_F(OmniboxAutofillDelegateFillingTest, FillOrPreviewCard_SubframeForm) {
   std::string guid = cards[0]->guid();
   suggestion.payload = Suggestion::Guid(guid);
 
-  delegate->DidSelectSuggestion(suggestion);
+  delegate->DidSelectSuggestion(suggestion, child_form.global_id(),
+                                child_form.fields().front().global_id());
 
   // Trigger fill (DidAcceptSuggestion).
   EXPECT_CALL(autofill_driver(1),
@@ -1464,7 +1468,8 @@ TEST_F(OmniboxAutofillDelegateFillingTest, FillOrPreviewCard_SubframeForm) {
       .Times(1);
   EXPECT_CALL(autofill_driver(0), ExecuteApplyFormAction).Times(0);
 
-  delegate->DidAcceptSuggestion(suggestion, {});
+  delegate->DidAcceptSuggestion(suggestion, {}, child_form.global_id(),
+                                child_form.fields().front().global_id());
 }
 
 // Tests that selecting and accepting a credit card suggestion for a main frame
@@ -1514,7 +1519,8 @@ TEST_F(OmniboxAutofillDelegateFillingTest, FillOrPreviewCard_MainFrameForm) {
   std::string guid = cards[0]->guid();
   suggestion.payload = Suggestion::Guid(guid);
 
-  delegate->DidSelectSuggestion(suggestion);
+  delegate->DidSelectSuggestion(suggestion, form.global_id(),
+                                form.fields().front().global_id());
 
   // Trigger fill (DidAcceptSuggestion).
   EXPECT_CALL(autofill_driver(0),
@@ -1522,7 +1528,8 @@ TEST_F(OmniboxAutofillDelegateFillingTest, FillOrPreviewCard_MainFrameForm) {
                                      mojom::ActionPersistence::kFill))
       .Times(1);
 
-  delegate->DidAcceptSuggestion(suggestion, {});
+  delegate->DidAcceptSuggestion(suggestion, {}, form.global_id(),
+                                form.fields().front().global_id());
 }
 
 }  // namespace

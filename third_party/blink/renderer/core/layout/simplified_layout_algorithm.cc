@@ -155,12 +155,15 @@ SimplifiedLayoutAlgorithm::SimplifiedLayoutAlgorithm(
             *physical_fragment.GetFrameSetLayoutData()));
   }
 
-  if (physical_fragment.IsHiddenForPaint())
-    container_builder_.SetIsHiddenForPaint(true);
+  if (physical_fragment.IsHiddenDueToLayout()) {
+    container_builder_.SetIsHiddenDueToLayout(true);
+  }
 
   if (auto* gap_geometry = physical_fragment.GetGapGeometry()) {
     container_builder_.SetGapGeometry(gap_geometry);
   }
+
+  container_builder_.SetReadingFlowNodes(physical_fragment.ReadingFlowNodes());
 
   if (auto first_baseline = physical_fragment.FirstBaseline())
     container_builder_.SetFirstBaseline(*first_baseline);
@@ -207,12 +210,6 @@ SimplifiedLayoutAlgorithm::SimplifiedLayoutAlgorithm(
   // We need the previous physical container size to calculate the position of
   // any child fragments.
   previous_physical_container_size_ = physical_fragment.Size();
-}
-
-void SimplifiedLayoutAlgorithm::AppendNewChildFragment(
-    const PhysicalFragment& fragment,
-    LogicalOffset offset) {
-  container_builder_.AddChild(fragment, offset);
 }
 
 const LayoutResult* SimplifiedLayoutAlgorithm::Layout() {
@@ -297,7 +294,9 @@ const LayoutResult* SimplifiedLayoutAlgorithm::Layout() {
       previous_result_.InitialBreakBefore());
   container_builder_.SetPreviousBreakAfter(previous_result_.FinalBreakAfter());
 
-  container_builder_.HandleOofsAndSpecialDescendants();
+  LayoutResult::EStatus oof_status =
+      container_builder_.HandleOofsAndSpecialDescendants();
+  DCHECK_EQ(oof_status, LayoutResult::kSuccess);
 
   return container_builder_.ToBoxFragment();
 }
@@ -326,12 +325,22 @@ void SimplifiedLayoutAlgorithm::AddChildFragment(
       WritingModeConverter(writing_direction_,
                            previous_physical_container_size_)
           .ToLogical(old_fragment.Offset(), new_fragment.Size());
-  // Any relative offset will have already been applied, avoid re-adding one.
-  std::optional<LogicalOffset> relative_offset = LogicalOffset();
+
+  // Unapply the relative offset as `AddChild` will reapply it.
+  BoxStrut margins;
+  PhysicalBoxStrut relative_insets;
+  if (const auto* box = DynamicTo<PhysicalBoxFragment>(old_fragment.get())) {
+    margins = box->Margins().ConvertToLogical(writing_direction_);
+    if (box->Style().GetPosition() == EPosition::kRelative) {
+      relative_insets = box->UsedPositionInsets();
+      child_offset -=
+          relative_insets.ConvertToLogical(writing_direction_).StartOffset();
+    }
+  }
 
   // Add the new fragment to the builder.
-  container_builder_.AddChild(new_fragment, child_offset, margin_strut,
-                              is_self_collapsing, relative_offset);
+  container_builder_.AddChild(new_fragment, child_offset, margins, margin_strut,
+                              is_self_collapsing, relative_insets);
 }
 
 }  // namespace blink

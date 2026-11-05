@@ -7,7 +7,6 @@
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/json/values_util.h"
-#include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
 #include "build/build_config.h"
 #include "chrome/browser/download/download_prompt_status.h"
@@ -16,7 +15,7 @@
 #include "components/download/public/common/download_features.h"
 #include "components/prefs/pref_service.h"
 #include "components/prefs/scoped_user_pref_update.h"
-#include "components/safe_browsing/content/common/file_type_policies.h"
+#include "components/safe_browsing/content/common/file_type_policies/file_type_policies.h"
 #include "components/safe_browsing/core/common/features.h"
 #include "components/sync_preferences/testing_pref_service_syncable.h"
 #include "content/public/test/browser_task_environment.h"
@@ -42,6 +41,9 @@
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
 #if BUILDFLAG(IS_ANDROID)
+#include "base/android/device_info.h"
+#include "base/functional/bind.h"
+#include "base/functional/callback_helpers.h"
 #include "chrome/browser/flags/android/chrome_feature_list.h"
 #endif
 
@@ -62,7 +64,6 @@ TEST(DownloadPrefsTest, Prerequisites) {
 // Verifies prefs are registered correctly.
 TEST(DownloadPrefsTest, RegisterPrefs) {
   content::BrowserTaskEnvironment task_environment_;
-  base::HistogramTester histogram_tester;
 
   // Download prefs are registered when creating the profile.
   TestingProfile profile;
@@ -70,8 +71,6 @@ TEST(DownloadPrefsTest, RegisterPrefs) {
 
 #if BUILDFLAG(IS_ANDROID)
   // Download prompt prefs should be registered correctly.
-  histogram_tester.ExpectBucketCount("MobileDownload.DownloadPromptStatus",
-                                     DownloadPromptStatus::SHOW_INITIAL, 1);
   int prompt_status = profile.GetTestingPrefService()->GetInteger(
       prefs::kPromptForDownloadAndroid);
   EXPECT_EQ(prompt_status,
@@ -682,6 +681,48 @@ TEST(DownloadPrefsTest, ManagedPromptForDownload) {
   profile.GetTestingPrefService()->SetManagedPref(
       prefs::kPromptForDownload, std::make_unique<base::Value>(false));
   EXPECT_FALSE(prefs.PromptForDownload());
+}
+
+TEST(DownloadPrefsTest, PromptForDownload_AndroidDesktopSystemFileDialog) {
+  content::BrowserTaskEnvironment task_environment;
+  base::android::device_info::set_is_desktop_for_testing(true);
+  base::ScopedClosureRunner reset_desktop(base::BindOnce(
+      &base::android::device_info::reset_is_desktop_for_testing));
+  base::test::ScopedFeatureList scoped_feature_list(
+      download::features::kEnableDownloadSaveAsSystemFileDialog);
+
+  TestingProfile profile;
+  DownloadPrefs prefs(&profile);
+
+  // Even though kPromptForDownloadAndroid defaults to SHOW_INITIAL,
+  // PromptForDownload() should default to false (from
+  // prefs::kPromptForDownload).
+  EXPECT_FALSE(prefs.PromptForDownload());
+
+  profile.GetPrefs()->SetBoolean(prefs::kPromptForDownload, true);
+  profile.GetPrefs()->SetInteger(
+      prefs::kPromptForDownloadAndroid,
+      static_cast<int>(DownloadPromptStatus::DONT_SHOW));
+  EXPECT_TRUE(prefs.PromptForDownload());
+
+  profile.GetPrefs()->SetBoolean(prefs::kPromptForDownload, false);
+  profile.GetPrefs()->SetInteger(
+      prefs::kPromptForDownloadAndroid,
+      static_cast<int>(DownloadPromptStatus::SHOW_PREFERENCE));
+  EXPECT_FALSE(prefs.PromptForDownload());
+
+  // When the feature is disabled on desktop, fallback to
+  // kPromptForDownloadAndroid.
+  {
+    base::test::ScopedFeatureList disabled_feature_list;
+    disabled_feature_list.InitAndDisableFeature(
+        download::features::kEnableDownloadSaveAsSystemFileDialog);
+    EXPECT_TRUE(prefs.PromptForDownload());
+  }
+
+  // When not on desktop, fallback to kPromptForDownloadAndroid.
+  base::android::device_info::set_is_desktop_for_testing(false);
+  EXPECT_TRUE(prefs.PromptForDownload());
 }
 #endif  // BUILDFLAG(IS_ANDROID)
 

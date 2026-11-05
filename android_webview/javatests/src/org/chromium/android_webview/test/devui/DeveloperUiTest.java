@@ -31,6 +31,8 @@ import static org.hamcrest.Matchers.not;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
+import static org.chromium.base.test.transit.ViewFinder.waitForView;
+
 import android.app.Activity;
 import android.app.Instrumentation.ActivityResult;
 import android.content.ActivityNotFoundException;
@@ -61,9 +63,10 @@ import org.chromium.android_webview.nonembedded_util.WebViewPackageHelper;
 import org.chromium.android_webview.test.AwJUnit4ClassRunner;
 import org.chromium.base.ContextUtils;
 import org.chromium.base.test.BaseActivityTestRule;
-import org.chromium.base.test.util.DisabledTest;
 import org.chromium.base.test.util.DoNotBatch;
 import org.chromium.base.test.util.Feature;
+import org.chromium.base.test.util.Restriction;
+import org.chromium.ui.test.util.DeviceRestriction;
 import org.chromium.ui.test.util.ViewUtils;
 
 /**
@@ -111,9 +114,7 @@ public class DeveloperUiTest {
         openActionBarOverflowOrOptionsMenu(ApplicationProvider.getApplicationContext());
         // Wait for the first menu item to be visible.
         // Using a text matcher since IDs are not available in the options_menu once rendered.
-        onData(anything())
-                .atPosition(0)
-                .check(ViewUtils.isEventuallyVisible(withText("Change WebView Provider")));
+        waitForView(withText("Change WebView Provider"));
     }
 
     @Before
@@ -221,7 +222,7 @@ public class DeveloperUiTest {
     @Test
     @MediumTest
     @Feature({"AndroidWebView"})
-    @DisabledTest(message = "https://crbug.com/369532182")
+    @Restriction({DeviceRestriction.RESTRICTION_TYPE_NON_AUTO})
     public void testMenuOptions_switchProvider_shownOnNougat() throws Throwable {
         launchHomeFragment();
 
@@ -235,7 +236,7 @@ public class DeveloperUiTest {
     @Test
     @MediumTest
     @Feature({"AndroidWebView"})
-    @DisabledTest(message = "https://crbug.com/369532182")
+    @Restriction({DeviceRestriction.RESTRICTION_TYPE_NON_AUTO})
     // Hamcrest's allOf(Matcher...) has generic varargs; each call site uses multiple matchers.
     @SuppressWarnings("unchecked")
     public void testMenuOptions_reportBug() throws Throwable {
@@ -269,7 +270,7 @@ public class DeveloperUiTest {
     @Test
     @MediumTest
     @Feature({"AndroidWebView"})
-    @DisabledTest(message = "https://crbug.com/369532182")
+    @Restriction({DeviceRestriction.RESTRICTION_TYPE_NON_AUTO})
     public void testMenuOptions_checkUpdates_withPlayStore() throws Throwable {
         launchHomeFragment();
 
@@ -305,7 +306,7 @@ public class DeveloperUiTest {
     @Test
     @MediumTest
     @Feature({"AndroidWebView"})
-    @DisabledTest(message = "https://crbug.com/369532182")
+    @Restriction({DeviceRestriction.RESTRICTION_TYPE_NON_AUTO})
     public void testMenuOptions_aboutDevTools() throws Throwable {
         launchHomeFragment();
 
@@ -327,7 +328,7 @@ public class DeveloperUiTest {
     @Test
     @MediumTest
     @Feature({"AndroidWebView"})
-    @DisabledTest(message = "https://crbug.com/369532182")
+    @Restriction({DeviceRestriction.RESTRICTION_TYPE_NON_AUTO})
     public void testMenuOptions_safeMode() throws Throwable {
         launchHomeFragment();
 

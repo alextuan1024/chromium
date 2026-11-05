@@ -9,7 +9,7 @@ import {LineFocusController, LineFocusModel, LineFocusMovement, LineFocusStyle, 
 import type {SpeechController} from 'chrome-untrusted://read-anything-side-panel.top-chrome/read_anything.js';
 import {assertEquals, assertFalse, assertLT, assertNotEquals, assertTrue} from 'chrome-untrusted://webui-test/chai_assert.js';
 
-import {setupTestEnvironment} from './common.js';
+import {applyContainerStyles, createShortContainer, setupTestEnvironment} from './common.js';
 import type {TestMetricsBrowserProxy} from './test_metrics_browser_proxy.js';
 import type {TestReadAloudModelBrowserProxy} from './test_read_aloud_browser_proxy.js';
 import type {TestVisualBrowserProxy} from './test_visual_browser_proxy.js';
@@ -28,19 +28,6 @@ suite('LineFocusController', () => {
   let lineFocusModesChanged: boolean;
   let visualBrowserProxy: TestVisualBrowserProxy;
 
-  function createShortContainer(): HTMLElement {
-    const container = document.createElement('p');
-    container.innerText =
-        'I\'ve heard it said\nThat people come into our lives\nfor a reason.';
-    container.style.whiteSpace = 'pre';
-    container.style.width = 'max-content';
-    container.style.margin = '0';
-    container.style.fontSize = '20px';
-    container.style.lineHeight = '40px';
-    document.body.appendChild(container);
-    return container;
-  }
-
   function createLongContainer(): HTMLElement {
     const container = document.createElement('p');
     container.innerText =
@@ -48,11 +35,7 @@ suite('LineFocusController', () => {
         'who help us most to grow\nif we let them and we help them in return\n' +
         'Now I don\'t know if I believe that\'s true\n' +
         'But I know I\'m who I am today because I met you';
-    container.style.whiteSpace = 'pre';
-    container.style.width = 'max-content';
-    container.style.margin = '0';
-    container.style.fontSize = '20px';
-    container.style.lineHeight = '40px';
+    applyContainerStyles(container);
     document.body.appendChild(container);
     return container;
   }
@@ -76,6 +59,9 @@ suite('LineFocusController', () => {
   setup(() => {
     const result = setupTestEnvironment();
     visualBrowserProxy = result.visualBrowserProxy;
+    // Initialize font size so that moving one line exceeds the movement
+    // threshold.
+    visualBrowserProxy.fontSize = 1.5;
     metrics = result.metrics;
     readAloudModel = result.readAloudModel;
     speechController = result.speechController;
@@ -128,12 +114,6 @@ suite('LineFocusController', () => {
     assertFalse(lineFocusController.isEnabled());
   });
 
-  test('isEnabled is false with flag disabled', () => {
-    visualBrowserProxy.lineFocusEnabled = false;
-    lineFocusController.toggle(true, defaultContainer, defaultHeight);
-    assertFalse(lineFocusController.isEnabled());
-  });
-
   test('onStyleChange updates style only', () => {
     lineFocusController.toggle(false, defaultContainer, defaultHeight);
     const isStatic = lineFocusController.getCurrentLineFocusMovement() ===
@@ -178,18 +158,6 @@ suite('LineFocusController', () => {
     assertEquals(
         visualBrowserProxy.lineFocusLargeCursorWindow,
         (await visualBrowserProxy.whenCalled('onLineFocusChanged'))[1]);
-  });
-
-  test('style and movement changes do nothing with flag disabled', () => {
-    visualBrowserProxy.lineFocusEnabled = false;
-
-    lineFocusController.onStyleChange(
-        LineFocusStyle.SMALL_WINDOW, defaultContainer, defaultHeight);
-    assertEquals(0, visualBrowserProxy.getCallCount('onLineFocusChanged'));
-
-    lineFocusController.onMovementChange(
-        LineFocusMovement.CURSOR, defaultContainer, defaultHeight);
-    assertEquals(0, visualBrowserProxy.getCallCount('onLineFocusChanged'));
   });
 
   test('onMovementChange propagates line focus mode', async () => {
@@ -390,24 +358,11 @@ suite('LineFocusController', () => {
     assertFalse(await metrics.whenCalled('recordLineFocusToggled'));
   });
 
-  test('onMouseMove does nothing if flag disabled', () => {
-    lineFocusController.onMovementChange(
-        LineFocusMovement.CURSOR, defaultContainer, defaultHeight);
-    lineFocusController.onStyleChange(
-        LineFocusStyle.UNDERLINE, defaultContainer, defaultHeight);
-    visualBrowserProxy.lineFocusEnabled = false;
-    lineFocusContentPositionChanged = false;
-
-    lineFocusController.onMouseMove(101);
-
-    assertFalse(lineFocusContentPositionChanged);
-  });
-
   test('onMouseMove does nothing when speech active', () => {
     readAloudModel.setInitialized(false);
     const container = createLongContainer();
     readAloudModel.setCurrentTextSegments(
-        [{node: ReadAloudNode.create(container)!, start: 0, length: 1}]);
+        [{node: ReadAloudNode.create(container), start: 0, length: 1}]);
     readAloudModel.setCurrentTextContent('a');
     lineFocusController.onMovementChange(
         LineFocusMovement.CURSOR, container, defaultHeight);
@@ -421,23 +376,11 @@ suite('LineFocusController', () => {
     assertFalse(lineFocusContentPositionChanged);
   });
 
-  test('onMouseMoveInToolbar does nothing if flag disabled', () => {
-    visualBrowserProxy.lineFocusEnabled = false;
-    lineFocusController.onMovementChange(
-        LineFocusMovement.CURSOR, defaultContainer, defaultHeight);
-    lineFocusController.onStyleChange(
-        LineFocusStyle.UNDERLINE, defaultContainer, defaultHeight);
-
-    lineFocusController.onMouseMoveInToolbar(101);
-
-    assertEquals(0, model.getTop());
-  });
-
   test('onMouseMoveInToolbar does nothing when speech active', () => {
     readAloudModel.setInitialized(false);
     const container = createLongContainer();
     readAloudModel.setCurrentTextSegments(
-        [{node: ReadAloudNode.create(container)!, start: 0, length: 1}]);
+        [{node: ReadAloudNode.create(container), start: 0, length: 1}]);
     readAloudModel.setCurrentTextContent('a');
     lineFocusController.onMovementChange(
         LineFocusMovement.CURSOR, container, defaultHeight);
@@ -468,7 +411,7 @@ suite('LineFocusController', () => {
     readAloudModel.setInitialized(false);
     const container = createLongContainer();
     readAloudModel.setCurrentTextSegments(
-        [{node: ReadAloudNode.create(container)!, start: 0, length: 1}]);
+        [{node: ReadAloudNode.create(container), start: 0, length: 1}]);
     readAloudModel.setCurrentTextContent('a');
     lineFocusController.toggle(true, container, defaultHeight);
     lineFocusController.onStyleChange(
@@ -638,15 +581,6 @@ suite('LineFocusController', () => {
 
       lineFocusController.toggle(true, defaultContainer, defaultHeight);
 
-      assertFalse(lineFocusModesChanged);
-    });
-
-    test('does nothing if flag is disabled', () => {
-      visualBrowserProxy.lineFocusEnabled = false;
-
-      lineFocusController.toggle(true, defaultContainer, defaultHeight);
-
-      assertFalse(lineFocusController.isEnabled());
       assertFalse(lineFocusModesChanged);
     });
   });

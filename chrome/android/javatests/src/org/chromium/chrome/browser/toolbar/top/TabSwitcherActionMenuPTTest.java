@@ -6,7 +6,6 @@ package org.chromium.chrome.browser.toolbar.top;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertTrue;
 
 import static org.chromium.chrome.test.util.ChromeTabUtils.getTabCountOnUiThread;
@@ -17,13 +16,9 @@ import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
-import org.chromium.base.test.util.CommandLineFlags;
-import org.chromium.base.test.util.DisableIf;
 import org.chromium.base.test.util.DoNotBatch;
 import org.chromium.base.test.util.Features.DisableFeatures;
-import org.chromium.chrome.browser.ChromeTabbedActivity;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
-import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.incognito.IncognitoUtils;
 import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
@@ -35,7 +30,6 @@ import org.chromium.chrome.test.transit.ntp.IncognitoNewTabPageStation;
 import org.chromium.chrome.test.transit.ntp.RegularNewTabPageStation;
 import org.chromium.chrome.test.transit.page.TabSwitcherActionMenuFacility;
 import org.chromium.chrome.test.transit.page.WebPageStation;
-import org.chromium.ui.base.DeviceFormFactor;
 
 /**
  * Instrumentation tests for tab switcher long-press menu popup.
@@ -43,7 +37,6 @@ import org.chromium.ui.base.DeviceFormFactor;
  * <p>Public Transit version of TabSwitcherActionMenuTest.
  */
 @RunWith(ChromeJUnit4ClassRunner.class)
-@CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
 @DoNotBatch(
         reason =
                 "Example for Public Transit tests. TabSwitcherActionMenuBatchedPTTest is the"
@@ -64,7 +57,6 @@ public class TabSwitcherActionMenuPTTest {
 
     @Test
     @LargeTest
-    @DisableIf.Device(DeviceFormFactor.DESKTOP) // https://crbug.com/538659918
     public void testOpenNewIncognitoTab() {
         mCtaTestRule.startOnBlankPage().openTabSwitcherActionMenu().selectNewIncognitoTabOrWindow();
         if (IncognitoUtils.shouldOpenIncognitoAsWindow()) {
@@ -78,14 +70,16 @@ public class TabSwitcherActionMenuPTTest {
     @LargeTest
     public void testOpenNewTabFromIncognito() {
         IncognitoNewTabPageStation incognitoNtp =
-                mCtaTestRule.startOnBlankPage().openNewIncognitoTabOrWindowFast();
+                mCtaTestRule
+                        .startOnBlankPage()
+                        .openTabSwitcherActionMenu()
+                        .selectNewIncognitoTabOrWindow();
 
         RegularNewTabPageStation page =
                 incognitoNtp.openTabSwitcherActionMenu().selectNewTabOrWindow();
 
         assertFalse(page.getTabModelSelector().isIncognitoSelected());
         if (IncognitoUtils.shouldOpenIncognitoAsWindow()) {
-            assertNotEquals(mCtaTestRule.getActivity(), page.getActivity());
             assertEquals(1, getTabCountOnUiThread(page.getActivity().getCurrentTabModel()));
         } else {
             assertEquals(2, getTabCountOnUiThread(page.getActivity().getCurrentTabModel()));
@@ -96,19 +90,16 @@ public class TabSwitcherActionMenuPTTest {
     @LargeTest
     public void testOpenNewIncognitoTabFromIncognito() {
         IncognitoNewTabPageStation incognitoNtp =
-                mCtaTestRule.startOnBlankPage().openNewIncognitoTabOrWindowFast();
-        ChromeTabbedActivity initialIncognitoActivity = incognitoNtp.getActivity();
+                mCtaTestRule
+                        .startOnBlankPage()
+                        .openTabSwitcherActionMenu()
+                        .selectNewIncognitoTabOrWindow();
 
         IncognitoNewTabPageStation page =
                 incognitoNtp.openTabSwitcherActionMenu().selectNewIncognitoTab();
 
-        ChromeTabbedActivity newPageActivity = page.getActivity();
         assertTrue(page.getTabModelSelector().isIncognitoSelected());
-        assertEquals(initialIncognitoActivity, newPageActivity);
-        if (IncognitoUtils.shouldOpenIncognitoAsWindow()) {
-            assertNotEquals(mCtaTestRule.getActivity(), newPageActivity);
-        }
-        assertEquals(2, getTabCountOnUiThread(newPageActivity.getCurrentTabModel()));
+        assertEquals(2, getTabCountOnUiThread(page.getActivity().getCurrentTabModel()));
     }
 
     @Test

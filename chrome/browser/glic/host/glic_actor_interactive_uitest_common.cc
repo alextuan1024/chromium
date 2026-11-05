@@ -26,11 +26,13 @@
 #include "chrome/browser/glic/host/context/glic_page_context_fetcher.h"
 #include "chrome/browser/glic/host/glic.mojom-shared.h"
 #include "chrome/browser/glic/public/features.h"
+#include "chrome/browser/glic/public/glic_enabling.h"
 #include "chrome/browser/glic/service/glic_instance_impl.h"
 #include "chrome/browser/glic/test_support/interactive_glic_test.h"
 #include "chrome/browser/glic/test_support/interactive_test_util.h"
 #include "chrome/common/actor/action_result.h"
 #include "chrome/common/chrome_features.h"
+#include "chrome/test/interaction/webcontents_interaction_test_util.h"
 #include "components/actor/core/actor_features.h"
 #include "components/actor/public/mojom/actor_types.mojom.h"
 #include "components/optimization_guide/core/optimization_guide_features.h"
@@ -90,8 +92,8 @@ GlicActorUiTest::GlicActorUiTest() {
       {// Increase timeout since tests are timing out with ASAN builds.
        {features::kGlicWebClientLoadTimes,
         {{features::kGlicMaxLoadingTimeMs.name, "30000"}}},
-       {features::kGlicActor,
-        {{features::kGlicActorPolicyControlExemption.name, "true"}}},
+       {features::kGlicActor, {}},
+       {features::kGlicActorPolicyControlExemption, {}},
        // Decrease the timeout for observation delays to prevent test timeouts
        // on slow builders.
        {actor::kActorObservationDelay,
@@ -408,12 +410,15 @@ MultiStep GlicActorUiTest::StartActorTaskInNewTab(
     bool open_in_foreground) {
   return Steps(
       // clang-format off
-      InstrumentNextTab(new_tab_id),
+      Do([this, new_tab_id]() {
+        browser_test_impl().AddInstrumentedWebContents(
+            WebContentsInteractionTestUtil::ForNextTabInAnyBrowser(new_tab_id));
+      }),
       CreateTask(task_id_, ""),
       CreateTabAction(task_id_,
                       browser()->GetSessionID(),
                       /*foreground=*/open_in_foreground),
-      WaitForWebContentsReady(new_tab_id),
+      InAnyContext(WaitForWebContentsReady(new_tab_id)),
       InAnyContext(WithElement(new_tab_id, [this](ui::TrackedElement* el) {
         content::WebContents* new_tab_contents =
             AsInstrumentedWebContents(el)->web_contents();
@@ -424,7 +429,7 @@ MultiStep GlicActorUiTest::StartActorTaskInNewTab(
       NavigateAction(task_url,
                      task_id_,
                      tab_handle_),
-      WaitForWebContentsReady(new_tab_id, task_url)
+      InAnyContext(WaitForWebContentsReady(new_tab_id, task_url))
       // clang-format on
   );
 }
@@ -432,7 +437,9 @@ MultiStep GlicActorUiTest::StartActorTaskInNewTab(
 MultiStep GlicActorUiTest::RoundTrip(actor::TaskId& task_id) {
   return Steps(Do([this, &task_id]() {
     ASSERT_TRUE(content::ExecJs(GetGlicContents(), "true;"));
-    ASSERT_TRUE(content::ExecJs(GetGlicHost(task_id), "true;"));
+    if (!glic_service()->IsNoWebviewEnabled()) {
+      ASSERT_TRUE(content::ExecJs(GetGlicHost(task_id), "true;"));
+    }
   }));
 }
 
@@ -673,8 +680,8 @@ MultiStep GlicActorUiTest::GetPageContextForActorTab() {
                 annotated_page_content_ =
                     std::make_unique<AnnotatedPageContent>(
                         serialized_apc.As<AnnotatedPageContent>().value());
-                actor::ActorTabData* tab_data =
-                    actor::ActorTabData::From(tab_handle_.Get());
+                actor::ActorTabData* tab_data = actor::ActorTabData::From(
+                    actor::ActorSurfaceHandle::From(tab_handle_));
                 if (tab_data) {
                   tab_data->DidObserveContent(*annotated_page_content_,
                                               actor::ApcSource::kActor);

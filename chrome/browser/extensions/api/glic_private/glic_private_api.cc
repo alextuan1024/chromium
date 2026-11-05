@@ -4,7 +4,10 @@
 
 #include "chrome/browser/extensions/api/glic_private/glic_private_api.h"
 
+#include <algorithm>
+#include <array>
 #include <optional>
+#include <string_view>
 
 #include "base/base64.h"
 #include "base/json/json_reader.h"
@@ -16,9 +19,12 @@
 #include "chrome/browser/extensions/glic_util.h"
 #include "chrome/browser/glic/actor/glic_actor_policy_checker.h"
 #include "chrome/browser/glic/host/glic.mojom.h"
+#include "chrome/browser/glic/host/guest_util.h"
 #include "chrome/browser/glic/public/glic_enabling.h"
+#include "chrome/browser/glic/public/glic_feature.h"
 #include "chrome/browser/glic/public/glic_keyed_service.h"
 #include "chrome/browser/glic/public/glic_keyed_service_factory.h"
+#include "chrome/browser/glic/public/glic_provider_spec.h"
 #include "chrome/browser/glic/public/service/glic_instance_coordinator.h"
 #include "chrome/browser/metrics/chrome_metrics_service_accessor.h"
 #include "chrome/browser/profiles/profile.h"
@@ -44,6 +50,8 @@
 #include "extensions/browser/guest_view/web_view/web_view_guest.h"
 #include "extensions/common/constants.h"
 #include "extensions/common/extension_features.h"
+#include "url/gurl.h"
+#include "url/origin.h"
 
 namespace extensions {
 
@@ -210,26 +218,29 @@ api::glic_private::ProfileState CreateProfileState(
   state.user_enable_actuation_on_web =
       glic_service && glic_service->enabling().GetUserEnabledActuationOnWeb();
 
-  bool invocation_source_enabled = false;
+  if (!glic::GetGlicProviderSpec(profile).SupportsFeature(
+          glic::GlicFeature::kGooglePageInvocation)) {
+    return state;
+  }
+
   switch (invocation_source) {
     case api::glic_private::InvocationSource::kUniversalCart:
-      invocation_source_enabled = base::FeatureList::IsEnabled(
+      state.invocation_source_enabled = base::FeatureList::IsEnabled(
           extensions_features::kApiGlicAccessFromGoogleWebpage);
       break;
     case api::glic_private::InvocationSource::kPromotionPage:
-      invocation_source_enabled = base::FeatureList::IsEnabled(
+      state.invocation_source_enabled = base::FeatureList::IsEnabled(
           extensions_features::kApiGlicAccessFromPromotionPage);
       break;
     case api::glic_private::InvocationSource::kWebContinuity:
-      invocation_source_enabled = base::FeatureList::IsEnabled(
+      state.invocation_source_enabled = base::FeatureList::IsEnabled(
           extensions_features::kApiGlicAccessFromWebContinuity);
       break;
     case api::glic_private::InvocationSource::kUnknown:
     case api::glic_private::InvocationSource::kNone:
-      invocation_source_enabled = false;
+      state.invocation_source_enabled = false;
       break;
   }
-  state.invocation_source_enabled = invocation_source_enabled;
 
   return state;
 }
@@ -367,8 +378,19 @@ content::RenderFrameHost* GetRfhForDocumentId(
 std::optional<extensions::api::glic_private::ErrorCode> ValidateRenderFrameHost(
     Profile* profile,
     content::RenderFrameHost* rfh) {
-  if (!rfh || !rfh->IsInPrimaryMainFrame()) {
+  // Reject documents outside the primary page, e.g. in prerendered,
+  // back/forward cached or fenced frame pages.
+  if (!rfh || !rfh->GetMainFrame()->IsInPrimaryMainFrame()) {
     return api::glic_private::ErrorCode::kLocalInvalidDocumentId;
+  }
+  // Subframes (e.g. Universal Cart embedded in gemini.google.com) are only
+  // allowed if every ancestor is a Gemini Web frame. Otherwise another page
+  // could embed a Google subframe to make Glic act on that page.
+  for (content::RenderFrameHost* ancestor = rfh->GetParent(); ancestor;
+       ancestor = ancestor->GetParent()) {
+    if (!glic::IsGeminiOrigin(ancestor->GetLastCommittedOrigin())) {
+      return api::glic_private::ErrorCode::kLocalInvalidDocumentId;
+    }
   }
   if (!IsAccountConsistent(IdentityManagerFactory::GetForProfile(profile),
                            *rfh)) {

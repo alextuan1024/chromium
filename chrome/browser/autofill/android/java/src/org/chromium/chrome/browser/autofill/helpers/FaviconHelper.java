@@ -11,6 +11,7 @@ import android.graphics.drawable.Drawable;
 import androidx.annotation.VisibleForTesting;
 
 import org.chromium.base.Callback;
+import org.chromium.base.ResettersForTesting;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.chrome.browser.autofill.R;
 import org.chromium.chrome.browser.profiles.Profile;
@@ -47,6 +48,7 @@ public class FaviconHelper {
     @VisibleForTesting
     public static void setCreationStrategy(CreationStrategy strategy) {
         sCreationStrategy = strategy;
+        ResettersForTesting.register(() -> sCreationStrategy = FaviconHelper::new);
     }
 
     /**
@@ -81,22 +83,27 @@ public class FaviconHelper {
      * @param setIconCallback Callback called with fetched icons. May be called with null.
      */
     public void fetchFavicon(String origin, Callback<Drawable> setIconCallback) {
-        final LargeIconBridge iconBridge = new LargeIconBridge(mProfile);
         final GURL gurlOrigin = new GURL(origin);
         if (!gurlOrigin.isValid()) return;
-        iconBridge.getLargeIconForUrl(
-                gurlOrigin,
-                mDesiredSize,
-                (icon, fallbackColor, isFallbackColorDefault, iconType) -> {
-                    Drawable drawable =
-                            FaviconUtils.getIconDrawableWithoutFilter(
-                                    icon,
-                                    gurlOrigin,
-                                    fallbackColor,
-                                    mIconGenerator,
-                                    mContext.getResources(),
-                                    mDesiredSize);
-                    setIconCallback.onResult(drawable);
-                });
+        final LargeIconBridge iconBridge = new LargeIconBridge(mProfile);
+        boolean willCall =
+                iconBridge.getLargeIconForUrl(
+                        gurlOrigin,
+                        mDesiredSize,
+                        (icon, fallbackColor, isFallbackColorDefault, iconType) -> {
+                            iconBridge.destroy();
+                            Drawable drawable =
+                                    FaviconUtils.getIconDrawableWithoutFilter(
+                                            icon,
+                                            gurlOrigin,
+                                            fallbackColor,
+                                            mIconGenerator,
+                                            mContext.getResources(),
+                                            mDesiredSize);
+                            setIconCallback.onResult(drawable);
+                        });
+        if (!willCall) {
+            iconBridge.destroy();
+        }
     }
 }

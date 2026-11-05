@@ -4,6 +4,7 @@
 
 package org.chromium.components.omnibox;
 
+import android.graphics.Bitmap;
 import android.text.TextUtils;
 
 import androidx.annotation.VisibleForTesting;
@@ -23,8 +24,9 @@ import org.chromium.chrome.browser.omnibox.MatchClassificationStyle;
 import org.chromium.components.omnibox.AutocompleteProto.AutocompleteMatchProto;
 import org.chromium.components.omnibox.AutocompleteProto.MatchClassificationProto;
 import org.chromium.components.omnibox.GroupsProto.GroupId;
-import org.chromium.components.omnibox.RichAnswerTemplateProto.RichAnswerTemplate;
 import org.chromium.components.omnibox.SuggestTemplateInfoProto.SuggestTemplateInfo;
+import org.chromium.components.omnibox.SuggestTemplateInfoProtoIntDef.ActionIconType;
+import org.chromium.components.omnibox.SuggestTemplateInfoProtoIntDef.BadgeType;
 import org.chromium.components.omnibox.TypesProto.SuggestSubtype;
 import org.chromium.components.omnibox.action.OmniboxAction;
 import org.chromium.components.omnibox.action.OmniboxActionId;
@@ -82,7 +84,6 @@ public class AutocompleteMatch {
     private final List<MatchClassification> mDisplayTextClassifications;
     private String mDescription;
     private final List<MatchClassification> mDescriptionClassifications;
-    private @Nullable RichAnswerTemplate mAnswerTemplate;
     private final String mFillIntoEdit;
     private GURL mUrl;
     private final GURL mImageUrl;
@@ -109,6 +110,8 @@ public class AutocompleteMatch {
     private @Nullable SuggestTemplateInfo mSuggestTemplate;
     private final @DocumentType int mDocumentType;
     private final boolean mIsExtensionMatch;
+    private final String mVectorIconName;
+    private final String mBookmarkVectorIconName;
 
     public AutocompleteMatch(
             int nativeType,
@@ -121,7 +124,6 @@ public class AutocompleteMatch {
             List<MatchClassification> displayTextClassifications,
             String description,
             List<MatchClassification> descriptionClassifications,
-            byte @Nullable [] serializedAnswerTemplate,
             String fillIntoEdit,
             GURL url,
             GURL imageUrl,
@@ -144,7 +146,9 @@ public class AutocompleteMatch {
             @Nullable String associatedKeyword,
             byte @Nullable [] serializedSuggestTemplate,
             @DocumentType int documentType,
-            boolean isExtensionMatch) {
+            boolean isExtensionMatch,
+            String vectorIconName,
+            String bookmarkVectorIconName) {
         if (subtypes == null) {
             subtypes = Collections.emptySet();
         }
@@ -158,14 +162,7 @@ public class AutocompleteMatch {
         mDisplayTextClassifications = displayTextClassifications;
         mDescription = description;
         mDescriptionClassifications = descriptionClassifications;
-        if (serializedAnswerTemplate != null) {
-            try {
-                mAnswerTemplate = RichAnswerTemplate.parseFrom(serializedAnswerTemplate);
-            } catch (InvalidProtocolBufferException e) {
-                // When parsing error occurs, leave template as null.
-            }
-        }
-        mFillIntoEdit = TextUtils.isEmpty(fillIntoEdit) ? displayText : fillIntoEdit;
+        mFillIntoEdit = fillIntoEdit;
         assert url != null;
         mUrl = url;
         assert imageUrl != null;
@@ -206,6 +203,8 @@ public class AutocompleteMatch {
 
         mDocumentType = documentType;
         mIsExtensionMatch = isExtensionMatch;
+        mVectorIconName = vectorIconName;
+        mBookmarkVectorIconName = bookmarkVectorIconName;
         updatePostContentType(postContentType);
     }
 
@@ -232,7 +231,6 @@ public class AutocompleteMatch {
             @JniType("std::u16string") String description,
             @JniType("std::vector<int32_t>") int[] descriptionClassificationOffsets,
             @JniType("std::vector<int32_t>") int[] descriptionClassificationStyles,
-            byte[] serializedAnswerTemplate,
             @JniType("std::u16string") String fillIntoEdit,
             @JniType("GURL") GURL url,
             @JniType("GURL") GURL imageUrl,
@@ -255,7 +253,9 @@ public class AutocompleteMatch {
             @JniType("std::u16string") String associatedKeyword,
             byte[] serializedSuggestTemplate,
             @JniType("AutocompleteMatch::DocumentType") @DocumentType int documentType,
-            boolean isExtensionMatch) {
+            boolean isExtensionMatch,
+            @JniType("std::string") String vectorIconName,
+            @JniType("std::string") String bookmarkVectorIconName) {
         assert contentClassificationOffsets.length == contentClassificationStyles.length;
         List<MatchClassification> contentClassifications = new ArrayList<>();
         for (int i = 0; i < contentClassificationOffsets.length; i++) {
@@ -281,7 +281,6 @@ public class AutocompleteMatch {
                         contentClassifications,
                         description,
                         new ArrayList<>(),
-                        serializedAnswerTemplate,
                         fillIntoEdit,
                         url,
                         imageUrl,
@@ -304,7 +303,9 @@ public class AutocompleteMatch {
                         TextUtils.isEmpty(associatedKeyword) ? null : associatedKeyword,
                         serializedSuggestTemplate,
                         documentType,
-                        isExtensionMatch);
+                        isExtensionMatch,
+                        vectorIconName,
+                        bookmarkVectorIconName);
         match.updateNativeObjectRef(nativeObject);
         match.setDescription(
                 description, descriptionClassificationOffsets, descriptionClassificationStyles);
@@ -371,17 +372,6 @@ public class AutocompleteMatch {
     }
 
     @CalledByNative
-    private void setAnswerTemplate(byte[] serializedAnswerTemplate) {
-        if (serializedAnswerTemplate != null) {
-            try {
-                mAnswerTemplate = RichAnswerTemplate.parseFrom(serializedAnswerTemplate);
-            } catch (InvalidProtocolBufferException e) {
-                mAnswerTemplate = null;
-            }
-        }
-    }
-
-    @CalledByNative
     private void setDescription(
             @JniType("std::u16string") String description,
             @JniType("std::vector<int32_t>") int[] descriptionClassificationOffsets,
@@ -419,10 +409,6 @@ public class AutocompleteMatch {
 
     public List<MatchClassification> getDescriptionClassifications() {
         return mDescriptionClassifications;
-    }
-
-    public @Nullable RichAnswerTemplate getAnswerTemplate() {
-        return mAnswerTemplate;
     }
 
     public String getFillIntoEdit() {
@@ -527,6 +513,37 @@ public class AutocompleteMatch {
         return mIconType;
     }
 
+    public @Nullable SuggestTemplateInfo getSuggestTemplate() {
+        return mSuggestTemplate;
+    }
+
+    public boolean shouldWrapSecondaryText() {
+        return mSuggestTemplate != null
+                && mSuggestTemplate.hasWrapSecondaryText()
+                && mSuggestTemplate.getWrapSecondaryText();
+    }
+
+    public boolean shouldWrapPrimaryText() {
+        if (mSuggestTemplate != null && mSuggestTemplate.hasWrapPrimaryText()) {
+            return mSuggestTemplate.getWrapPrimaryText();
+        }
+        return isSearchSuggestion();
+    }
+
+    /** Returns the right-hand action icon type for this suggestion. */
+    public @ActionIconType int getActionIconType() {
+        return mSuggestTemplate != null
+                ? mSuggestTemplate.getActionIcon().getNumber()
+                : ActionIconType.ACTION_ICON_TYPE_UNSPECIFIED;
+    }
+
+    /** Returns the type of the badge drawn on the icon of this suggestion. */
+    public @BadgeType int getTypeIconBadgeType() {
+        return mSuggestTemplate != null
+                ? mSuggestTemplate.getTypeIconBadge().getBadgeType().getNumber()
+                : BadgeType.BADGE_TYPE_UNSPECIFIED;
+    }
+
     /**
      * @return The image data for the image clipbaord suggestion. This data has already been
      *     validated in C++ and is safe to use in the browser process.
@@ -563,10 +580,6 @@ public class AutocompleteMatch {
         }
 
         AutocompleteMatch suggestion = (AutocompleteMatch) obj;
-        boolean answerTemplateIsEqual =
-                (mAnswerTemplate != null && suggestion.mAnswerTemplate != null)
-                        ? mAnswerTemplate.equals(suggestion.mAnswerTemplate)
-                        : mAnswerTemplate == null && suggestion.mAnswerTemplate == null;
         boolean suggestTemplateIsEqual =
                 (mSuggestTemplate != null && suggestion.mSuggestTemplate != null)
                         ? mSuggestTemplate.equals(suggestion.mSuggestTemplate)
@@ -587,7 +600,6 @@ public class AutocompleteMatch {
                 && mGroupId == suggestion.mGroupId
                 && mSwapContentsAndDescription == suggestion.mSwapContentsAndDescription
                 && mAndroidTabId == suggestion.mAndroidTabId
-                && answerTemplateIsEqual
                 && suggestTemplateIsEqual
                 && ObjectsCompat.equals(mTabGroupUuid, suggestion.mTabGroupUuid)
                 && ObjectsCompat.equals(mAssociatedKeyword, suggestion.mAssociatedKeyword)
@@ -651,6 +663,30 @@ public class AutocompleteMatch {
         }
 
         AutocompleteMatchJni.get().updateWithClipboardContent(mNativeMatch, callback);
+    }
+
+    /**
+     * Returns the name of the native vector icon associated with this match, suitable as a cache
+     * key, or an empty string if no vector icon is available.
+     *
+     * @param isBookmark Whether the match destination is bookmarked.
+     */
+    public String getVectorIconName(boolean isBookmark) {
+        return isBookmark ? mBookmarkVectorIconName : mVectorIconName;
+    }
+
+    /**
+     * Returns the native vector icon associated with this match, rasterized to a square bitmap, or
+     * {@code null} when the native counterpart is gone or no vector icon is available.
+     *
+     * @param isBookmark Whether the match destination is bookmarked.
+     * @param sizeDip Edge length of the requested icon, in device independent pixels.
+     * @param scale Display density the icon should be rasterized at.
+     */
+    public @Nullable Bitmap getVectorIconBitmap(boolean isBookmark, int sizeDip, float scale) {
+        if (mNativeMatch == 0) return null;
+        return AutocompleteMatchJni.get()
+                .getVectorIconBitmap(mNativeMatch, isBookmark, sizeDip, scale);
     }
 
     /** Serialize suggestion to a protocol buffer message. */
@@ -731,7 +767,6 @@ public class AutocompleteMatch {
                 displayTextClassifications,
                 input.getDescription(),
                 descriptionClassifications,
-                /* serializedAnswerTemplate= */ null,
                 input.getFillIntoEdit(),
                 new GURL(input.getUrl()),
                 new GURL(input.getImageUrl()),
@@ -754,7 +789,9 @@ public class AutocompleteMatch {
                 /* associatedKeyword= */ null,
                 /* serializedSuggestTemplate= */ null,
                 DocumentType.NONE,
-                /* isExtensionMatch= */ false);
+                /* isExtensionMatch= */ false,
+                /* vectorIconName= */ "",
+                /* bookmarkVectorIconName= */ "");
     }
 
     @Override
@@ -780,14 +817,18 @@ public class AutocompleteMatch {
                         "mAndroidTabId=" + mAndroidTabId,
                         "mDisplayTextClassifications=" + mDisplayTextClassifications,
                         "mDescriptionClassifications=" + mDescriptionClassifications,
-                        "mAnswerTemplate=" + mAnswerTemplate,
                         "mSuggestTemplate=" + mSuggestTemplate,
                         "mIsExtensionMatch=" + mIsExtensionMatch);
         return pieces.toString();
     }
 
     @NativeMethods
-    interface Natives {
+    @VisibleForTesting
+    public interface Natives {
         void updateWithClipboardContent(long nativeAutocompleteMatch, Runnable callback);
+
+        @JniType("SkBitmap")
+        @Nullable Bitmap getVectorIconBitmap(
+                long nativeAutocompleteMatch, boolean isBookmark, int sizeDip, float scale);
     }
 }

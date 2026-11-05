@@ -33,7 +33,6 @@ import org.robolectric.ParameterizedRobolectricTestRunner.Parameters;
 
 import org.chromium.base.FeatureOverrides;
 import org.chromium.base.test.BaseRobolectricTestRule;
-import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.preferences.ChromePreferenceKeys;
 import org.chromium.chrome.browser.preferences.ChromeSharedPreferences;
@@ -68,7 +67,6 @@ import java.util.Set;
  * MAKE_IDENTITY_MANAGER_SOURCE_OF_ACCOUNTS launch.
  */
 @RunWith(ParameterizedRobolectricTestRunner.class)
-@EnableFeatures(SigninFeatures.ENABLE_SEAMLESS_SIGNIN)
 public class SigninPromoDelegateTest {
     @Parameters(name = "{index}_isIdentityMgrMigration={0}")
     public static Collection parameters() {
@@ -162,7 +160,8 @@ public class SigninPromoDelegateTest {
                         "TestName LastName",
                         "TestName",
                         /* hasDisplayableEmailAddress= */ true,
-                        /* hasAiTierRing= */ false);
+                        /* hasAiTierRing= */ false,
+                        /* aiSubscriptionTier= */ 0);
 
         assertTrue(mDelegate.canShowPromo());
         assertEquals(
@@ -589,7 +588,7 @@ public class SigninPromoDelegateTest {
     }
 
     @Test
-    public void testNtpPromo_seamlessFlow_accountOnDevice_secondaryButtonShowsSnackbar() {
+    public void testNtpPromo_seamlessFlow_accountOnDevice_accountPickerShowsSnackbar() {
         doReturn(true).when(mSigninManager).isSigninAllowed();
         mAccountManagerTestRule.addAccount(TestAccounts.ACCOUNT1);
         doReturn(TestAccounts.ACCOUNT1)
@@ -600,7 +599,7 @@ public class SigninPromoDelegateTest {
                 TestDisplayableProfileData.profileDataOf(TestAccounts.ACCOUNT1));
         assertTrue(mDelegate.canShowPromo());
 
-        BottomSheetSigninAndHistorySyncConfig config = mDelegate.getConfigForSecondaryButtonClick();
+        BottomSheetSigninAndHistorySyncConfig config = mDelegate.getConfigForAccountPickerClick();
 
         assertEquals(
                 WithAccountSigninMode.CHOOSE_ACCOUNT_BOTTOM_SHEET, config.withAccountSigninMode);
@@ -679,13 +678,6 @@ public class SigninPromoDelegateTest {
 
     private void setupDelegate(
             @SigninAccessPoint int accessPoint, @Nullable DisplayableProfileData visibleAccount) {
-        setupDelegate(accessPoint, visibleAccount, /* isSetupListActive= */ false);
-    }
-
-    private void setupDelegate(
-            @SigninAccessPoint int accessPoint,
-            @Nullable DisplayableProfileData visibleAccount,
-            boolean isSetupListActive) {
         mDelegate =
                 switch (accessPoint) {
                     case SigninAccessPoint.BOOKMARK_MANAGER ->
@@ -704,11 +696,7 @@ public class SigninPromoDelegateTest {
                                     /* isCreatedInCct= */ false);
                     case SigninAccessPoint.NTP_FEED_TOP_PROMO ->
                             new NtpSigninPromoDelegate(
-                                    mContext,
-                                    mProfile,
-                                    mLauncher,
-                                    mOnPromoStateChange,
-                                    () -> isSetupListActive);
+                                    mContext, mProfile, mLauncher, mOnPromoStateChange);
                     case SigninAccessPoint.RECENT_TABS ->
                             new RecentTabsSigninPromoDelegate(
                                     mContext, mProfile, mLauncher, mOnPromoStateChange);

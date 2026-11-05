@@ -5,13 +5,11 @@
 source_set("history") {
   sources = [ "history_util.cc" ]
   public = [ "history_util.h" ]
-  public_deps = [ "//chrome/browser:browser_public_dependencies" ]
   deps = [
     "//base",
     "//chrome/app:branded_strings",
     "//chrome/app:generated_resources_grit",
     "//chrome/app/resources:locale_settings",
-    "//chrome/browser/history_embeddings",
     "//chrome/browser/profiles:profile",
     "//chrome/browser/resources/history:resources",
     "//chrome/browser/signin",
@@ -28,6 +26,7 @@ source_set("history") {
     "//components/prefs",
     "//components/signin/public/base",
     "//components/strings:components_strings_grit",
+    "//components/sync/base:features",
     "//content/public/browser",
     "//ui/base",
     "//ui/webui",

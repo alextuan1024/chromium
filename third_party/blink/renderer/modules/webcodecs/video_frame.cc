@@ -27,10 +27,11 @@
 #include "media/base/video_frame_pool.h"
 #include "media/base/video_types.h"
 #include "media/base/video_util.h"
-#include "media/renderers/paint_canvas_video_renderer.h"
+#include "media/gfx/paint_canvas_video_renderer.h"
 #include "third_party/blink/public/mojom/frame/lifecycle.mojom-blink.h"
 #include "third_party/blink/public/mojom/use_counter/metrics/web_feature.mojom-blink.h"
 #include "third_party/blink/public/platform/platform.h"
+#include "third_party/blink/public/platform/task_type.h"
 #include "third_party/blink/public/platform/web_graphics_context_3d_provider.h"
 #include "third_party/blink/renderer/bindings/core/v8/to_v8_traits.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_background_blur.h"
@@ -59,7 +60,6 @@
 #include "third_party/blink/renderer/modules/webcodecs/video_frame_layout.h"
 #include "third_party/blink/renderer/modules/webcodecs/video_frame_rect_util.h"
 #include "third_party/blink/renderer/platform/geometry/geometry_hash_traits.h"
-#include "third_party/blink/renderer/platform/graphics/canvas_non_2d_resource_provider.h"
 #include "third_party/blink/renderer/platform/graphics/canvas_snapshot_info.h"
 #include "third_party/blink/renderer/platform/graphics/gpu/shared_gpu_context.h"
 #include "third_party/blink/renderer/platform/graphics/image.h"
@@ -68,7 +68,6 @@
 #include "third_party/blink/renderer/platform/graphics/unaccelerated_static_bitmap_image.h"
 #include "third_party/blink/renderer/platform/graphics/video_frame_image_util.h"
 #include "third_party/blink/renderer/platform/heap/cross_thread_handle.h"
-#include "third_party/blink/renderer/platform/wtf/cross_thread_copier_base.h"
 #include "third_party/blink/renderer/platform/wtf/cross_thread_functional.h"
 #include "third_party/blink/renderer/platform/wtf/hash_map.h"
 #include "third_party/blink/renderer/platform/wtf/text/format.h"
@@ -224,7 +223,6 @@ bool IsFormatEnabled(media::VideoPixelFormat fmt) {
     case media::PIXEL_FORMAT_YUV444P12:
     case media::PIXEL_FORMAT_I444A:
     case media::PIXEL_FORMAT_YUV444AP10:
-    case media::PIXEL_FORMAT_RGBAF16:
       return true;
     default:
       return false;
@@ -328,40 +326,42 @@ class CachedVideoFramePool : public GarbageCollected<CachedVideoFramePool>,
 const char CachedVideoFramePool::kSupplementName[] = "CachedVideoFramePool";
 const base::TimeDelta CachedVideoFramePool::kIdleTimeout = base::Seconds(10);
 
-class CanvasNon2DResourceProviderCache
-    : public GarbageCollected<CanvasNon2DResourceProviderCache>,
+class VideoFrameAcceleratedSnapshotPoolCache
+    : public GarbageCollected<VideoFrameAcceleratedSnapshotPoolCache>,
       public Supplement<ExecutionContext>,
       public ExecutionContextLifecycleStateObserver {
  public:
   static const char kSupplementName[];
 
-  static CanvasNon2DResourceProviderCache& From(ExecutionContext& context) {
-    CanvasNon2DResourceProviderCache* supplement =
-        Supplement<ExecutionContext>::From<CanvasNon2DResourceProviderCache>(
-            context);
+  static VideoFrameAcceleratedSnapshotPoolCache& From(
+      ExecutionContext& context) {
+    VideoFrameAcceleratedSnapshotPoolCache* supplement =
+        Supplement<ExecutionContext>::From<
+            VideoFrameAcceleratedSnapshotPoolCache>(context);
     if (!supplement) {
       supplement =
-          MakeGarbageCollected<CanvasNon2DResourceProviderCache>(context);
+          MakeGarbageCollected<VideoFrameAcceleratedSnapshotPoolCache>(context);
       Supplement<ExecutionContext>::ProvideTo(context, supplement);
     }
     return *supplement;
   }
-  CanvasNon2DResourceProviderCache& operator=(
-      const CanvasNon2DResourceProviderCache&) = delete;
+  VideoFrameAcceleratedSnapshotPoolCache& operator=(
+      const VideoFrameAcceleratedSnapshotPoolCache&) = delete;
 
-  explicit CanvasNon2DResourceProviderCache(ExecutionContext& context)
+  explicit VideoFrameAcceleratedSnapshotPoolCache(ExecutionContext& context)
       : Supplement<ExecutionContext>(context),
         ExecutionContextLifecycleStateObserver(&context) {
     UpdateStateIfNeeded();
   }
-  ~CanvasNon2DResourceProviderCache() override = default;
+  ~VideoFrameAcceleratedSnapshotPoolCache() override = default;
 
   // Disallow copy and assign.
-  CanvasNon2DResourceProviderCache(const CanvasNon2DResourceProviderCache&) =
-      delete;
+  VideoFrameAcceleratedSnapshotPoolCache(
+      const VideoFrameAcceleratedSnapshotPoolCache&) = delete;
 
-  CanvasNon2DResourceProvider* CreateProvider(const media::VideoFrame& frame) {
-    if (providers_.empty()) {
+  VideoFrameAcceleratedSnapshotPool* GetOrCreatePool(
+      const media::VideoFrame& frame) {
+    if (pools_.empty()) {
       PostMonitoringTask();
     }
 
@@ -369,32 +369,25 @@ class CanvasNon2DResourceProviderCache
 
     auto required_provider_info =
         CreateSnapshotProviderInfoForVideoFrame(frame);
-    for (const auto& provider : providers_) {
-      if (provider->IsValid() &&
-          required_provider_info.Matches(provider->GetInfo())) {
-        return provider.get();
+    for (const auto& pool : pools_) {
+      if (pool->IsValid() && required_provider_info.Matches(pool->GetInfo())) {
+        return pool.get();
       }
     }
 
-    if (providers_.size() >= kMaxSize) {
-      providers_.clear();
+    if (pools_.size() >= kMaxSize) {
+      pools_.clear();
     }
 
-    std::unique_ptr<CanvasNon2DResourceProvider> provider =
-        CanvasNon2DResourceProvider::Create(
-            required_provider_info.size, required_provider_info.format,
-            required_provider_info.alpha_type,
-            required_provider_info.color_space,
-            required_provider_info.hdr_metadata,
-            SharedGpuContext::ContextProviderWrapper(),
-            gpu::SHARED_IMAGE_USAGE_DISPLAY_READ);
+    std::unique_ptr<VideoFrameAcceleratedSnapshotPool> pool =
+        VideoFrameAcceleratedSnapshotPool::Create(required_provider_info);
 
-    if (!provider) {
+    if (!pool) {
       return nullptr;
     }
 
-    auto* result = provider.get();
-    providers_.emplace_back(std::move(provider));
+    auto* result = pool.get();
+    pools_.emplace_back(std::move(pool));
     return result;
   }
 
@@ -408,12 +401,12 @@ class CanvasNon2DResourceProviderCache
     if (state == mojom::blink::FrameLifecycleState::kRunning) {
       return;
     }
-    // Reset `providers_` because the task runner for purging will get paused.
-    providers_.clear();
+    // Reset `pools_` because the task runner for purging will get paused.
+    pools_.clear();
     task_handle_.Cancel();
   }
 
-  void ContextDestroyed() override { providers_.clear(); }
+  void ContextDestroyed() override { pools_.clear(); }
 
  private:
   static constexpr int kMaxSize = 50;
@@ -424,28 +417,28 @@ class CanvasNon2DResourceProviderCache
     task_handle_ = PostDelayedCancellableTask(
         *GetSupplementable()->GetTaskRunner(TaskType::kInternalMedia),
         FROM_HERE,
-        BindOnce(&CanvasNon2DResourceProviderCache::PurgeIdleFramePool,
+        BindOnce(&VideoFrameAcceleratedSnapshotPoolCache::PurgeIdleFramePool,
                  WrapWeakPersistent(this)),
         kIdleTimeout);
   }
 
   void PurgeIdleFramePool() {
     if (base::TimeTicks::Now() - last_access_time_ > kIdleTimeout) {
-      providers_.clear();
+      pools_.clear();
       return;
     }
     PostMonitoringTask();
   }
 
-  Vector<std::unique_ptr<CanvasNon2DResourceProvider>> providers_;
+  Vector<std::unique_ptr<VideoFrameAcceleratedSnapshotPool>> pools_;
   base::TimeTicks last_access_time_;
   TaskHandle task_handle_;
 };
 
 // static -- defined out of line to satisfy link time requirements.
-const char CanvasNon2DResourceProviderCache::kSupplementName[] =
-    "CanvasNon2DResourceProviderCache";
-const base::TimeDelta CanvasNon2DResourceProviderCache::kIdleTimeout =
+const char VideoFrameAcceleratedSnapshotPoolCache::kSupplementName[] =
+    "VideoFrameAcceleratedSnapshotPoolCache";
+const base::TimeDelta VideoFrameAcceleratedSnapshotPoolCache::kIdleTimeout =
     base::Seconds(10);
 
 std::optional<media::VideoPixelFormat> CopyToFormat(
@@ -492,21 +485,39 @@ bool ParseCopyToOptions(const media::VideoFrame& frame,
                         gfx::Rect* src_rect_out = nullptr) {
   DCHECK(dest_layout_out);
 
-  auto frame_format = CopyToFormat(frame);
-  if (!frame_format.has_value()) {
+  const bool mappable =
+      frame.HasDirectCpuAccess() || frame.HasMappableSharedImage();
+  const bool texturable = frame.HasSharedImage();
+  if (!mappable && !texturable) {
     exception_state.ThrowDOMException(
         DOMExceptionCode::kNotSupportedError,
         "Operation is not supported when format is null.");
     return false;
   }
 
-  media::VideoPixelFormat copy_to_format = frame_format.value();
+  auto frame_format = CopyToFormat(frame);
+  media::VideoPixelFormat copy_to_format;
+
   if (options->hasFormat()) {
     copy_to_format = ToMediaPixelFormat(options->format().AsEnum());
     if (!IsFormatEnabled(copy_to_format)) {
       exception_state.ThrowTypeError("Unsupported format.");
       return false;
     }
+    if (!media::IsRGB(copy_to_format)) {
+      exception_state.ThrowDOMException(
+          DOMExceptionCode::kNotSupportedError,
+          "copyTo() doesn't support explicit copy to non-RGB formats. Remove "
+          "format parameter to use VideoFrame's pixel format.");
+      return false;
+    }
+  } else if (frame_format.has_value()) {
+    copy_to_format = frame_format.value();
+  } else {
+    exception_state.ThrowDOMException(
+        DOMExceptionCode::kNotSupportedError,
+        "Operation is not supported when format is null.");
+    return false;
   }
 
   if (options->hasColorSpace() &&
@@ -515,13 +526,6 @@ bool ParseCopyToOptions(const media::VideoFrame& frame,
     exception_state.ThrowDOMException(
         DOMExceptionCode::kNotSupportedError,
         "This pixel conversion to this color space is not supported.");
-    return false;
-  }
-
-  if (copy_to_format != frame.format() && !media::IsRGB(copy_to_format)) {
-    exception_state.ThrowDOMException(
-        DOMExceptionCode::kNotSupportedError,
-        "This pixel format conversion is not supported.");
     return false;
   }
 
@@ -756,7 +760,7 @@ VideoFrame* VideoFrame::Create(ScriptState* script_state,
     // content will convert to LINEAR in the lower branch.
     gfx_color_space = gfx::ColorSpace::CreateSRGBLinear();
   } else {
-    gfx_color_space = gfx::ColorSpace(*sk_color_space);
+    gfx_color_space = gfx::ColorSpace(sk_color_space.get());
     if (!gfx_color_space.IsValid()) {
       exception_state.ThrowTypeError("Invalid color space");
       return nullptr;
@@ -978,19 +982,13 @@ VideoFrame* VideoFrame::Create(ScriptState* script_state,
   }
 
   // Validate data.
-  auto buffer = AsSpan<const uint8_t>(data);
-  if (!buffer.data()) {
+  DOMArrayBufferView* data_view = CoerceToArrayBufferView(*data);
+  if (data_view->IsDetached()) {
     exception_state.ThrowTypeError("data is detached.");
     return nullptr;
   }
-  if (buffer.size() < src_layout.Size()) {
+  if (data_view->byteLength() < src_layout.Size()) {
     exception_state.ThrowTypeError("data is not large enough.");
-    return nullptr;
-  }
-
-  auto frame_contents = TransferArrayBufferForSpan(init->transfer(), buffer,
-                                                   exception_state, isolate);
-  if (exception_state.HadException()) {
     return nullptr;
   }
 
@@ -1000,6 +998,12 @@ VideoFrame* VideoFrame::Create(ScriptState* script_state,
     display_size = ParseAndValidateDisplaySize(init, exception_state);
     if (exception_state.HadException())
       return nullptr;
+  }
+
+  auto [frame_contents, buffer] = TransferArrayBuffers(
+      isolate, init->transfer(), data_view, exception_state);
+  if (exception_state.HadException()) {
+    return nullptr;
   }
 
   // Destination frame.
@@ -1298,10 +1302,10 @@ bool VideoFrame::ConvertAndCopyToRGB(scoped_refptr<media::VideoFrame> frame,
     return true;
   }
 
+  const auto sk_info = media::GetSkInfoForFormat(dest_layout.Format());
   SkImageInfo dst_image_info = SkImageInfo::Make(
       src_rect.width(), src_rect.height(),
-      media::SkColorTypeForPlane(dest_layout.Format(),
-                                 media::VideoFrame::Plane::kARGB),
+      sk_info.plane_color_types[media::VideoFrame::Plane::kARGB],
       kUnpremul_SkAlphaType, sk_color_space);
 
   const wtf_size_t plane = 0;
@@ -1379,9 +1383,15 @@ VideoFrame::CopyToPromise VideoFrame::CopyToAsync(
                                            "Failed to read VideoFrame data.");
         }
       };
-  auto done_cb =
-      BindOnce(readback_done_handler, std::move(contents),
-               MakeUnwrappingCrossThreadHandle(resolver), dest_layout);
+  // `BackgroundReadback` may invoke `done_cb` on a background worker thread or
+  // via `SequencedTaskRunner::GetCurrentDefault()`, neither of which is paused
+  // or frozen with the ExecutionContext. Bind explicitly to an ExecutionContext
+  // task runner.
+  auto done_cb = base::BindPostTask(
+      context->GetTaskRunner(TaskType::kInternalMedia),
+      ConvertToBaseOnceCallback(CrossThreadBindOnce(
+          readback_done_handler, std::move(contents),
+          MakeUnwrappingCrossThreadHandle(resolver), dest_layout)));
 
   background_readback->ReadbackTextureBackedFrame(
       std::move(frame), std::move(dest_frame), std::move(done_cb));
@@ -1390,7 +1400,7 @@ VideoFrame::CopyToPromise VideoFrame::CopyToAsync(
 
 VideoFrame::CopyToPromise VideoFrame::copyTo(
     ScriptState* script_state,
-    const AllowSharedBufferSource* destination,
+    AllowSharedBufferSource* destination,
     VideoFrameCopyToOptions* options,
     ExceptionState& exception_state) {
   auto local_frame = handle_->frame();
@@ -1408,7 +1418,7 @@ VideoFrame::CopyToPromise VideoFrame::copyTo(
   }
 
   // Validate destination buffer.
-  auto buffer = AsSpan<uint8_t>(destination);
+  base::span<uint8_t> buffer = AsSpan<SharedBufferPolicy::kAllow>(*destination);
   if (!buffer.data()) {
     exception_state.ThrowTypeError("destination is detached.");
     return CopyToPromise();
@@ -1611,20 +1621,20 @@ scoped_refptr<StaticBitmapImage> VideoFrame::CreateImageFromVideoFrame(
     scoped_refptr<media::VideoFrame> frame) {
   auto* execution_context =
       ExecutionContext::From(v8::Isolate::GetCurrent()->GetCurrentContext());
-  auto& provider_cache =
-      CanvasNon2DResourceProviderCache::From(*execution_context);
+  auto& pool_cache =
+      VideoFrameAcceleratedSnapshotPoolCache::From(*execution_context);
 
   if (!ShouldCreateAcceleratedImages(GetRasterContextProvider().get())) {
     return CreateUnacceleratedImageFromVideoFrame(
         frame, CreateSnapshotProviderInfoForVideoFrame(*frame));
   }
 
-  auto* snapshot_provider = provider_cache.CreateProvider(*frame);
-  if (!snapshot_provider) {
+  auto* snapshot_pool = pool_cache.GetOrCreatePool(*frame);
+  if (!snapshot_pool) {
     return nullptr;
   }
 
-  return CreateAcceleratedImageFromVideoFrame(frame, snapshot_provider);
+  return CreateAcceleratedImageFromVideoFrame(frame, snapshot_pool);
 }
 
 ScriptPromise<ImageBitmap> VideoFrame::CreateImageBitmap(

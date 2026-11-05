@@ -35,10 +35,6 @@
 namespace chromeos {
 namespace {
 
-// Age limit for time-sensitive API calls. Typically denotes "Please
-// respond with data no older than kMaxDataAge." Arbitrarily chosen.
-constexpr base::TimeDelta kMaxDataAge = base::Minutes(30LL);
-
 bool PpdReferenceIsWellFormed(const Printer::PpdReference& reference) {
   int filled_fields = 0;
   if (!reference.user_supplied_ppd_url.empty()) {
@@ -97,8 +93,10 @@ class PpdProviderImpl : public PpdProvider {
             {base::TaskPriority::USER_VISIBLE, base::MayBlock(),
              base::TaskShutdownBehavior::SKIP_ON_SHUTDOWN})) {}
 
+  ~PpdProviderImpl() override = default;
+
   void ResolveManufacturers(ResolveManufacturersCallback cb) override {
-    metadata_manager_->GetManufacturers(kMaxDataAge, std::move(cb));
+    metadata_manager_->GetManufacturers(std::move(cb));
   }
 
   void ResolvePrinters(const std::string& manufacturer,
@@ -106,8 +104,7 @@ class PpdProviderImpl : public PpdProvider {
     PpdMetadataManager::GetPrintersCallback manager_callback =
         base::BindOnce(&PpdProviderImpl::OnPrintersGotten,
                        weak_factory_.GetWeakPtr(), std::move(cb));
-    metadata_manager_->GetPrinters(manufacturer, kMaxDataAge,
-                                   std::move(manager_callback));
+    metadata_manager_->GetPrinters(manufacturer, std::move(manager_callback));
   }
 
   // This method examines the members of |search_data| in turn and seeks
@@ -145,8 +142,7 @@ class PpdProviderImpl : public PpdProvider {
           &PpdProviderImpl::TryToResolvePpdReferenceFromForwardIndices,
           weak_factory_.GetWeakPtr(), std::move(context));
       metadata_manager_->FindAllEmmsAvailableInIndex(
-          lowercased_search_data.make_and_model, kMaxDataAge,
-          std::move(callback));
+          lowercased_search_data.make_and_model, std::move(callback));
       return;
     }
 
@@ -191,7 +187,7 @@ class PpdProviderImpl : public PpdProvider {
         base::BindOnce(&PpdProviderImpl::OnPpdBasenameSoughtFromForwardIndex,
                        weak_factory_.GetWeakPtr(),
                        std::move(lowercased_reference), std::move(cb));
-    metadata_manager_->FindAllEmmsAvailableInIndex(target_emm, kMaxDataAge,
+    metadata_manager_->FindAllEmmsAvailableInIndex(target_emm,
                                                    std::move(callback));
   }
 
@@ -204,7 +200,7 @@ class PpdProviderImpl : public PpdProvider {
 
     // Delegates directly to the PpdMetadataManager.
     metadata_manager_->SplitMakeAndModel(lowercased_effective_make_and_model,
-                                         kMaxDataAge, std::move(cb));
+                                         std::move(cb));
   }
 
   // This method depends on forward indices.
@@ -219,12 +215,8 @@ class PpdProviderImpl : public PpdProvider {
         &PpdProviderImpl::FindLicenseForEmm, weak_factory_.GetWeakPtr(),
         lowercased_effective_make_and_model, std::move(cb));
     metadata_manager_->FindAllEmmsAvailableInIndex(
-        {lowercased_effective_make_and_model}, kMaxDataAge,
-        std::move(callback));
+        {lowercased_effective_make_and_model}, std::move(callback));
   }
-
- protected:
-  ~PpdProviderImpl() override = default;
 
  private:
   // Convenience container used throughout ResolvePpdReference().
@@ -374,7 +366,7 @@ class PpdProviderImpl : public PpdProvider {
           &PpdProviderImpl::FailToResolvePpdReferenceWithUsbManufacturer,
           std::move(context.cb));
       metadata_manager_->GetUsbManufacturerName(
-          context.search_data.usb_vendor_id, kMaxDataAge, std::move(callback));
+          context.search_data.usb_vendor_id, std::move(callback));
       return;
     }
 
@@ -415,8 +407,8 @@ class PpdProviderImpl : public PpdProvider {
           base::BindOnce(&PpdProviderImpl::OnForwardIndicesSearchedForUsbEmm,
                          weak_factory_.GetWeakPtr(), std::move(context),
                          effective_make_and_model);
-      metadata_manager_->FindAllEmmsAvailableInIndex(
-          {effective_make_and_model}, kMaxDataAge, std::move(callback));
+      metadata_manager_->FindAllEmmsAvailableInIndex({effective_make_and_model},
+                                                     std::move(callback));
       return;
     }
 
@@ -435,7 +427,7 @@ class PpdProviderImpl : public PpdProvider {
           base::BindOnce(&PpdProviderImpl::OnUsbIndicesSearched,
                          weak_factory_.GetWeakPtr(), std::move(context));
       metadata_manager_->FindDeviceInUsbIndex(vendor_id, product_id,
-                                              kMaxDataAge, std::move(callback));
+                                              std::move(callback));
       return;
     }
 
@@ -601,7 +593,7 @@ class PpdProviderImpl : public PpdProvider {
       auto callback = base::BindOnce(
           &PpdProviderImpl::OnPpdFetchedFromServingRoot,
           weak_factory_.GetWeakPtr(), std::move(reference), std::move(cb));
-      config_cache_->Fetch(PpdPathInServingRoot(ppd_basename), kMaxDataAge,
+      config_cache_->Fetch(PpdPathInServingRoot(ppd_basename),
                            std::move(callback));
       return;
     }
@@ -850,13 +842,13 @@ std::string PpdProvider::PpdBasenameToCacheKey(std::string_view ppd_basename) {
 }
 
 // static
-scoped_refptr<PpdProvider> PpdProvider::Create(
+std::unique_ptr<PpdProvider> PpdProvider::Create(
     const base::Version& current_version,
     scoped_refptr<PpdCache> cache,
     std::unique_ptr<PpdMetadataManager> metadata_manager,
     std::unique_ptr<PrinterConfigCache> config_cache,
     std::unique_ptr<RemotePpdFetcher> remote_ppd_fetcher) {
-  return base::MakeRefCounted<PpdProviderImpl>(
+  return std::make_unique<PpdProviderImpl>(
       current_version, cache, std::move(metadata_manager),
       std::move(config_cache), std::move(remote_ppd_fetcher));
 }

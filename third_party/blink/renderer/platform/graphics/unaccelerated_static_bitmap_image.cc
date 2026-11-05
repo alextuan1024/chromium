@@ -11,7 +11,6 @@
 #include "third_party/blink/public/platform/platform.h"
 #include "third_party/blink/public/platform/web_graphics_context_3d_provider.h"
 #include "third_party/blink/renderer/platform/graphics/accelerated_static_bitmap_image.h"
-#include "third_party/blink/renderer/platform/graphics/canvas_2d_resource_provider.h"
 #include "third_party/blink/renderer/platform/graphics/graphics_context.h"
 #include "third_party/blink/renderer/platform/graphics/image.h"
 #include "third_party/blink/renderer/platform/graphics/paint/paint_canvas.h"
@@ -20,7 +19,6 @@
 #include "third_party/blink/renderer/platform/scheduler/public/post_cross_thread_task.h"
 #include "third_party/blink/renderer/platform/scheduler/public/thread.h"
 #include "third_party/blink/renderer/platform/scheduler/public/thread_scheduler.h"
-#include "third_party/blink/renderer/platform/wtf/cross_thread_copier_skia.h"
 #include "third_party/blink/renderer/platform/wtf/cross_thread_functional.h"
 #include "third_party/skia/include/core/SkImage.h"
 #include "third_party/skia/include/core/SkSurface.h"
@@ -104,6 +102,9 @@ UnacceleratedStaticBitmapImage::UnacceleratedStaticBitmapImage(
     ImageOrientation orientation)
     : StaticBitmapImage(orientation), paint_image_(std::move(image)) {
   DCHECK(paint_image_);
+  if (paint_image_.is_read_back_disallowed()) {
+    SetOriginClean(false);
+  }
 }
 
 UnacceleratedStaticBitmapImage::~UnacceleratedStaticBitmapImage() {
@@ -137,6 +138,12 @@ void UnacceleratedStaticBitmapImage::Draw(
 }
 
 PaintImage UnacceleratedStaticBitmapImage::PaintImageForCurrentFrame() {
+  if (paint_image_ && !OriginClean() &&
+      !paint_image_.is_read_back_disallowed()) {
+    return PaintImageBuilder::WithCopy(paint_image_)
+        .set_is_read_back_disallowed(true)
+        .TakePaintImage();
+  }
   return paint_image_;
 }
 

@@ -27,11 +27,11 @@ void TestNewWindowDelegate::OpenUrl(const GURL& url,
                                     Disposition disposition) {}
 void TestNewWindowDelegate::OpenCalculator() {}
 void TestNewWindowDelegate::OpenFileManager() {}
-void TestNewWindowDelegate::OpenDownloadsFolder() {}
+void TestNewWindowDelegate::OpenDownloadsFolder(const AccountId& account_id) {}
 void TestNewWindowDelegate::OpenCrosh() {}
 void TestNewWindowDelegate::OpenDiagnostics() {}
 void TestNewWindowDelegate::OpenGetHelp() {}
-void TestNewWindowDelegate::RestoreTab() {}
+void TestNewWindowDelegate::RestoreTab(const AccountId& account_id) {}
 void TestNewWindowDelegate::ShowShortcutCustomizationApp() {}
 void TestNewWindowDelegate::ShowTaskManager(bool from_context_menu) {}
 void TestNewWindowDelegate::OpenFeedbackPage(

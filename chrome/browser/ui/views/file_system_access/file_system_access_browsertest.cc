@@ -2,12 +2,15 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include <string>
+#include <string_view>
 #include <vector>
 
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
 #include "base/path_service.h"
+#include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/task/current_thread.h"
 #include "base/test/bind.h"
@@ -27,7 +30,6 @@
 #include "chrome/browser/ui/browser_actions.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
-#include "chrome/browser/ui/tabs/public/tab_features.h"
 #include "chrome/browser/ui/tabs/split_tab_metrics.h"
 #include "chrome/browser/ui/tabs/tab_enums.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
@@ -44,17 +46,20 @@
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/content_settings/core/browser/host_content_settings_map.h"
+#include "components/permissions/permission_request_manager.h"
 #include "components/permissions/permission_util.h"
 #include "components/safe_browsing/buildflags.h"
-#include "components/safe_browsing/content/common/file_type_policies_test_util.h"
+#include "components/safe_browsing/content/common/file_type_policies/file_type_policies_test_util.h"
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/file_system_access_permission_context.h"
 #include "content/public/browser/navigation_controller.h"
+#include "content/public/browser/render_widget_host.h"
+#include "content/public/browser/render_widget_host_view.h"
 #include "content/public/common/content_switches.h"
+#include "content/public/common/drop_data.h"
 #include "content/public/test/back_forward_cache_util.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
-#include "content/public/test/fenced_frame_test_util.h"
 #include "content/public/test/file_system_chooser_test_helpers.h"
 #include "content/public/test/prerender_test_util.h"
 #include "content/public/test/scoped_web_ui_controller_factory_registration.h"
@@ -63,8 +68,13 @@
 #include "net/dns/mock_host_resolver.h"
 #include "net/test/embedded_test_server/controllable_http_response.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
+#include "net/test/embedded_test_server/http_request.h"
+#include "net/test/embedded_test_server/http_response.h"
+#include "third_party/blink/public/common/page/drag_operation.h"
+#include "ui/base/clipboard/file_info.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/base/page_transition_types.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/gfx/geometry/point_f.h"
 #include "ui/webui/webui_allowlist.h"
 
 using safe_browsing::ClientDownloadRequest;
@@ -224,7 +234,6 @@ IN_PROC_BROWSER_TEST_F(FileSystemAccessBrowserTest, OpenFile) {
 
 IN_PROC_BROWSER_TEST_F(FileSystemAccessBrowserTest, FullscreenOpenFile) {
   const base::FilePath test_file = CreateTestFile("");
-  const std::string file_contents = "file contents to write";
   GURL frame_url = embedded_test_server()->GetURL("/title1.html");
 
   ui::SelectFileDialog::SetFactory(
@@ -595,7 +604,232 @@ class PersistedPermissionsFileSystemAccessBrowserTest
   PersistedPermissionsFileSystemAccessBrowserTest& operator=(
       const PersistedPermissionsFileSystemAccessBrowserTest&) = delete;
 
+ protected:
+  // Creates a local test file containing `"initial data"`, starts
+  // `https_server` with a `/shared_worker.js` handler, navigates the active tab
+  // to a first-party `b.test` page, and populates first-party IndexedDB and
+  // OPFS with a `readwrite`-granted `FileSystemFileHandle` and OPFS file.
+  void SetUpSharedWorkerTest(net::EmbeddedTestServer& https_server,
+                             base::FilePath& test_file) {
+    test_file = CreateTestFile("initial data");
+    ui::SelectFileDialog::SetFactory(
+        std::make_unique<SelectPredeterminedFileDialogFactory>(
+            std::vector<base::FilePath>{test_file}));
+
+    StartSharedWorkerHttpsServer(https_server);
+
+    ASSERT_TRUE(ui_test_utils::NavigateToURL(
+        browser(), https_server.GetURL("b.test", "/title1.html")));
+    SelectFileAndPopulateFirstPartyStorage(
+        browser()->GetTabStripModel()->GetActiveWebContents(), test_file);
+  }
+
+  // Evaluates `worker_creation_expr` in `execution_target` to connect to a
+  // `SharedWorker` and installs `self.askWorker(cmd)` to exchange messages with
+  // it.
+  void ConnectToSharedWorker(const content::ToRenderFrameHost& execution_target,
+                             std::string_view worker_creation_expr) {
+    ASSERT_TRUE(content::ExecJs(
+        execution_target,
+        base::StrCat({
+            "(async () => {\n"
+            "  self.worker = ",
+            worker_creation_expr,
+            ";\n"
+            "  self.worker.port.start();\n"
+            "  self.askWorker = (cmd) => new Promise((resolve) => {\n"
+            "    self.worker.port.onmessage = (e) => resolve(e.data);\n"
+            "    self.worker.port.postMessage(cmd);\n"
+            "  });\n"
+            "})()",
+        })));
+  }
+
+  // Verifies that the connected `SharedWorker` can access unpartitioned OPFS as
+  // well as query, read, and write the non-sandboxed `FileSystemFileHandle`
+  // loaded from first-party IndexedDB.
+  void ExpectSharedWorkerHandleAccessAllowed(
+      const content::ToRenderFrameHost& execution_target,
+      const base::FilePath& test_file) {
+    EXPECT_EQ("first-party opfs data",
+              content::EvalJs(execution_target, "self.askWorker('opfs')"));
+    EXPECT_EQ("granted", content::EvalJs(execution_target,
+                                         "self.askWorker('query_read')"));
+    EXPECT_EQ("granted", content::EvalJs(execution_target,
+                                         "self.askWorker('query_readwrite')"));
+    EXPECT_EQ("read_success: initial data",
+              content::EvalJs(execution_target, "self.askWorker('read')"));
+    EXPECT_EQ("write_success",
+              content::EvalJs(execution_target, "self.askWorker('write')"));
+    EXPECT_EQ("read_success: shared worker write",
+              content::EvalJs(execution_target, "self.askWorker('read')"));
+
+    base::ScopedAllowBlockingForTesting allow_blocking;
+    std::string contents;
+    EXPECT_TRUE(base::ReadFileToString(test_file, &contents));
+    EXPECT_EQ("shared worker write", contents);
+  }
+
+  // Verifies that the connected `SharedWorker` can still access unpartitioned
+  // OPFS, while non-sandboxed `FileSystemFileHandle` permissions and read/write
+  // operations are denied / rejected with `SecurityError` and `test_file` on
+  // disk remains unmodified.
+  void ExpectSharedWorkerHandleAccessBlocked(
+      const content::ToRenderFrameHost& execution_target,
+      const base::FilePath& test_file) {
+    EXPECT_EQ("first-party opfs data",
+              content::EvalJs(execution_target, "self.askWorker('opfs')"));
+    EXPECT_EQ("denied", content::EvalJs(execution_target,
+                                        "self.askWorker('query_read')"));
+    EXPECT_EQ("denied", content::EvalJs(execution_target,
+                                        "self.askWorker('query_readwrite')"));
+    EXPECT_EQ("SecurityError",
+              content::EvalJs(execution_target, "self.askWorker('read')"));
+    EXPECT_EQ("SecurityError",
+              content::EvalJs(execution_target, "self.askWorker('write')"));
+
+    base::ScopedAllowBlockingForTesting allow_blocking;
+    std::string contents;
+    EXPECT_TRUE(base::ReadFileToString(test_file, &contents));
+    EXPECT_EQ("initial data", contents);
+  }
+
  private:
+  // Configures and starts `https_server` with `CERT_TEST_NAMES` and a
+  // `/shared_worker.js` endpoint that exercises OPFS and a
+  // `FileSystemFileHandle` stored in IndexedDB (`fsa_db` / `handles` /
+  // `'entry'`).
+  void StartSharedWorkerHttpsServer(net::EmbeddedTestServer& https_server) {
+    https_server.SetSSLConfig(net::EmbeddedTestServer::CERT_TEST_NAMES);
+    https_server.RegisterRequestHandler(base::BindRepeating(
+        [](const net::test_server::HttpRequest& request)
+            -> std::unique_ptr<net::test_server::HttpResponse> {
+          if (request.relative_url != "/shared_worker.js") {
+            return nullptr;
+          }
+          auto response =
+              std::make_unique<net::test_server::BasicHttpResponse>();
+          response->set_code(net::HTTP_OK);
+          response->set_content_type("application/javascript");
+          response->set_content(R"(
+            function loadHandleFromIdb() {
+              return new Promise((resolve, reject) => {
+                const openReq = self.indexedDB.open('fsa_db', 1);
+                openReq.onerror = () => reject(openReq.error);
+                openReq.onsuccess = () => {
+                  try {
+                    const db = openReq.result;
+                    const tx = db.transaction('handles', 'readonly');
+                    const getReq = tx.objectStore('handles').get('entry');
+                    getReq.onerror = () => reject(getReq.error);
+                    getReq.onsuccess = () => resolve(getReq.result);
+                  } catch (e) {
+                    reject(e);
+                  }
+                };
+              });
+            }
+
+            self.onconnect = (event) => {
+              const port = event.ports[0];
+              port.onmessage = async (msg) => {
+                try {
+                  if (msg.data === 'opfs') {
+                    const root = await self.navigator.storage.getDirectory();
+                    const fileHandle = await root.getFileHandle('opfs.txt');
+                    const file = await fileHandle.getFile();
+                    port.postMessage(await file.text());
+                    return;
+                  }
+                  const entry = await loadHandleFromIdb();
+                  switch (msg.data) {
+                    case 'query_read':
+                      port.postMessage(
+                          await entry.queryPermission({mode: 'read'}));
+                      break;
+                    case 'query_readwrite':
+                      port.postMessage(
+                          await entry.queryPermission({mode: 'readwrite'}));
+                      break;
+                    case 'read': {
+                      const file = await entry.getFile();
+                      port.postMessage('read_success: ' + (await file.text()));
+                      break;
+                    }
+                    case 'write': {
+                      const w = await entry.createWritable();
+                      await w.write('shared worker write');
+                      await w.close();
+                      port.postMessage('write_success');
+                      break;
+                    }
+                  }
+                } catch (e) {
+                  port.postMessage(e.name);
+                }
+              };
+            };
+          )");
+          return response;
+        }));
+    https_server.AddDefaultHandlers(GetChromeTestDataDir());
+    ASSERT_TRUE(https_server.Start());
+  }
+
+  // Picks `test_file` in `first_party_web_contents`, activates `readwrite`
+  // permission, stores the handle in IndexedDB (`fsa_db` / `handles` /
+  // `'entry'`), and writes `'first-party opfs data'` to OPFS (`opfs.txt`).
+  void SelectFileAndPopulateFirstPartyStorage(
+      content::WebContents* first_party_web_contents,
+      const base::FilePath& test_file) {
+    FileSystemAccessPermissionRequestManager::FromWebContents(
+        first_party_web_contents)
+        ->set_auto_response_for_test(permissions::PermissionAction::GRANTED);
+
+    // Select the local file in the first-party page, then request readwrite
+    // permission in a separate EvalJs call. (This avoids a cross-pipe Mojo
+    // ordering race between LocalFrameHost::NotifyUserActivation and
+    // FileSystemAccessFileHandle::RequestPermission.)
+    ASSERT_EQ(test_file.BaseName().AsUTF8Unsafe(),
+              content::EvalJs(first_party_web_contents, R"(
+                (async () => {
+                  const [entry] = await self.showOpenFilePicker();
+                  self.entry = entry;
+                  return entry.name;
+                })()
+              )"));
+    ASSERT_EQ(
+        "granted",
+        content::EvalJs(first_party_web_contents,
+                        "self.entry.requestPermission({mode: 'readwrite'})"));
+
+    // Store the handle in first-party IndexedDB and populate first-party OPFS.
+    ASSERT_TRUE(content::ExecJs(first_party_web_contents, R"(
+      (async () => {
+        await new Promise((resolve, reject) => {
+          const openReq = self.indexedDB.open('fsa_db', 1);
+          openReq.onupgradeneeded = () => {
+            openReq.result.createObjectStore('handles');
+          };
+          openReq.onerror = () => reject(openReq.error);
+          openReq.onsuccess = () => {
+            const db = openReq.result;
+            const tx = db.transaction('handles', 'readwrite');
+            tx.objectStore('handles').put(self.entry, 'entry');
+            tx.oncomplete = () => resolve();
+            tx.onerror = () => reject(tx.error);
+          };
+        });
+        const opfsRoot = await navigator.storage.getDirectory();
+        const opfsFile =
+            await opfsRoot.getFileHandle('opfs.txt', {create: true});
+        const opfsWritable = await opfsFile.createWritable();
+        await opfsWritable.write('first-party opfs data');
+        await opfsWritable.close();
+      })()
+    )"));
+  }
+
   base::test::ScopedFeatureList feature_list_;
 };
 
@@ -723,12 +957,23 @@ IN_PROC_BROWSER_TEST_F(PersistedPermissionsFileSystemAccessBrowserTest,
       content::EvalJs(first_party_web_contents,
                       "self.entry.requestPermission({mode: 'readwrite'})"));
 
-  // And write to file from iframe.
+  auto* permission_context =
+      FileSystemAccessPermissionContextFactory::GetForProfile(profile);
+  const url::Origin b_origin =
+      url::Origin::Create(https_server.GetURL("b.com", "/title1.html"));
+  auto grant = permission_context->GetWritePermissionGrant(
+      b_origin, content::PathInfo(test_file),
+      content::FileSystemAccessPermissionContext::HandleType::kFile,
+      content::FileSystemAccessPermissionContext::AccessTrigger::kOpen);
+  EXPECT_EQ(content::FileSystemAccessPermissionGrant::PermissionStatus::GRANTED,
+            grant->GetStatus());
+
+  // Write to file from first-party window.
   const std::string initial_file_contents = "file contents to write";
   EXPECT_EQ(
       static_cast<int>(initial_file_contents.size()),
       content::EvalJs(
-          third_party_iframe,
+          first_party_web_contents,
           content::JsReplace("(async () => {"
                              "  const w = await self.entry.createWritable();"
                              "  await w.write(new Blob([$1]));"
@@ -743,16 +988,21 @@ IN_PROC_BROWSER_TEST_F(PersistedPermissionsFileSystemAccessBrowserTest,
     EXPECT_EQ(initial_file_contents, read_contents);
   }
 
+  // Third-party iframe is not allowed to query or use the grant even though
+  // the origin holds an active first-party permission grant.
+  EXPECT_EQ("denied",
+            content::EvalJs(third_party_iframe,
+                            "self.entry.queryPermission({mode: 'readwrite'})"));
+
   // Now navigate away from b.com in first window.
   browser()->GetTabStripModel()->ActivateTabAt(0);
   ASSERT_TRUE(ui_test_utils::NavigateToURL(
       browser(), https_server.GetURL("c.com", "/title1.html")));
 
-  // Permission should still be granted in iframe.
-  browser()->GetTabStripModel()->ActivateTabAt(1);
-  EXPECT_EQ("granted",
-            content::EvalJs(third_party_iframe,
-                            "self.entry.queryPermission({mode: 'readwrite'})"));
+  // Permission should still be granted on the origin because the third window
+  // is still open to b.com.
+  EXPECT_EQ(content::FileSystemAccessPermissionGrant::PermissionStatus::GRANTED,
+            grant->GetStatus());
 
   // Now navigate away from b.com in third window as well.
   ASSERT_TRUE(ui_test_utils::NavigateToURL(
@@ -763,13 +1013,236 @@ IN_PROC_BROWSER_TEST_F(PersistedPermissionsFileSystemAccessBrowserTest,
   FileSystemAccessPermissionContextFactory::GetForProfile(profile)
       ->TriggerTimersForTesting();
 
-  // Permission should have been revoked.
-  EXPECT_EQ("prompt",
+  // Permission should have been revoked on the origin because all top-level
+  // frames have navigated away, despite the third-party iframe remaining open.
+  EXPECT_EQ(content::FileSystemAccessPermissionGrant::PermissionStatus::ASK,
+            grant->GetStatus());
+}
+
+// Verifies that a `FileSystemFileHandle` transferred from a top-level frame to
+// a cross-origin third-party iframe cannot write to the host file or request
+// permissions, and that write attempts reject with `SecurityError` while
+// disk contents remain unmodified.
+IN_PROC_BROWSER_TEST_F(PersistedPermissionsFileSystemAccessBrowserTest,
+                       ThirdPartyIframeTransferredHandleUseBlocked) {
+  const base::FilePath test_file = CreateTestFile("initial data");
+  ui::SelectFileDialog::SetFactory(
+      std::make_unique<SelectPredeterminedFileDialogFactory>(
+          std::vector<base::FilePath>{test_file}));
+
+  net::EmbeddedTestServer https_server(net::EmbeddedTestServer::TYPE_HTTPS);
+  https_server.SetCertHostnames({"a.com", "b.com"});
+  https_server.AddDefaultHandlers(GetChromeTestDataDir());
+  content::SetupCrossSiteRedirector(&https_server);
+  ASSERT_TRUE(https_server.Start());
+
+  // Navigate to first-party origin b.com and configure automatic grant
+  // response.
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(
+      browser(), https_server.GetURL("b.com", "/title1.html")));
+  content::WebContents* first_party_web_contents =
+      browser()->GetTabStripModel()->GetActiveWebContents();
+  FileSystemAccessPermissionRequestManager::FromWebContents(
+      first_party_web_contents)
+      ->set_auto_response_for_test(permissions::PermissionAction::GRANTED);
+
+  // Open an auxiliary window hosting an a.com document embedding a b.com
+  // iframe.
+  content::TestNavigationObserver popup_observer(nullptr);
+  popup_observer.StartWatchingNewWebContents();
+  const GURL iframe_url =
+      https_server.GetURL("a.com", "/iframe_cross_site.html");
+  EXPECT_TRUE(ExecJs(
+      first_party_web_contents,
+      "self.third_party_window = window.open('" + iframe_url.spec() + "');"));
+  popup_observer.Wait();
+  ASSERT_EQ(2, browser()->GetTabStripModel()->count());
+  content::WebContents* third_party_web_contents =
+      browser()->GetTabStripModel()->GetActiveWebContents();
+  content::RenderFrameHost* third_party_iframe =
+      ChildFrameAt(third_party_web_contents, 0);
+  ASSERT_TRUE(third_party_iframe);
+
+  // Set up message communication to forward the handle to the embedded frame.
+  EXPECT_EQ(
+      base::Value(),
+      content::EvalJs(
+          third_party_iframe,
+          "self.msgPromise = new Promise(r => self.onmessage = r); null;"));
+  EXPECT_EQ(base::Value(),
+            content::EvalJs(third_party_web_contents,
+                            "self.onmessage = e => {"
+                            "  "
+                            "document.getElementsByTagName('iframe')[0]."
+                            "contentWindow.postMessage('p', '*', [e.ports[0]]);"
+                            "}; null;"));
+  EXPECT_EQ(base::Value(),
+            content::EvalJs(
+                first_party_web_contents,
+                "let mc = new MessageChannel();"
+                "self.port = mc.port1;"
+                "self.third_party_window.postMessage('p', '*', [mc.port2]);"
+                "null;"));
+  EXPECT_EQ(
+      base::Value(),
+      content::EvalJs(
+          third_party_iframe,
+          "(async () => {"
+          "  let e = await self.msgPromise;"
+          "  self.port = e.ports[0];"
+          "  self.handlePromise = new Promise(r => self.port.onmessage = r);"
+          "})();"));
+
+  // Select the local file in the first-party page and transmit its handle.
+  browser()->GetTabStripModel()->ActivateTabAt(
+      browser()->GetTabStripModel()->GetIndexOfWebContents(
+          first_party_web_contents));
+  EXPECT_EQ(test_file.BaseName().AsUTF8Unsafe(),
+            content::EvalJs(first_party_web_contents,
+                            "(async () => {"
+                            "  let [e] = await self.showOpenFilePicker();"
+                            "  self.entry = e;"
+                            "  self.port.postMessage({entry: e});"
+                            "  return e.name; })()"));
+
+  // Request write permission in the first-party context to activate the grant.
+  EXPECT_EQ(
+      "granted",
+      content::EvalJs(first_party_web_contents,
+                      "self.entry.requestPermission({mode: 'readwrite'})"));
+
+  // Receive the handle inside the third-party iframe.
+  EXPECT_EQ(test_file.BaseName().AsUTF8Unsafe(),
             content::EvalJs(third_party_iframe,
-                            "self.entry.queryPermission({mode: 'readwrite'})"));
-  EXPECT_EQ("prompt",
-            content::EvalJs(third_party_iframe,
-                            "self.entry.queryPermission({mode: 'read'})"));
+                            "(async () => {"
+                            "  let e = await self.handlePromise;"
+                            "  self.entry = e.data.entry;"
+                            "  return self.entry.name; })()"));
+
+  // Attempts to read from the transferred `FileSystemFileHandle` inside the
+  // third-party iframe must reject with `SecurityError`.
+  constexpr char kTryIframeRead[] = R"(
+    (async () => {
+      try {
+        const file = await self.entry.getFile();
+        const text = await file.text();
+        return 'read_success: ' + text;
+      } catch (e) {
+        return e.name;
+      }
+    })()
+  )";
+  EXPECT_EQ("SecurityError",
+            content::EvalJs(third_party_iframe, kTryIframeRead));
+
+  // Attempts to write to the transferred `FileSystemFileHandle` from the
+  // cross-origin iframe must reject with `SecurityError`.
+  constexpr char kTryIframeWrite[] = R"(
+    (async () => {
+      try {
+        const w = await self.entry.createWritable();
+        await w.write('unauthorized 3p overwrite');
+        await w.close();
+        return 'write_success';
+      } catch (e) {
+        return e.name;
+      }
+    })()
+  )";
+  EXPECT_EQ("SecurityError",
+            content::EvalJs(third_party_iframe, kTryIframeWrite));
+
+  // Verifies that the underlying local file on disk remains unmodified.
+  {
+    base::ScopedAllowBlockingForTesting allow_blocking;
+    std::string contents;
+    EXPECT_TRUE(base::ReadFileToString(test_file, &contents));
+    EXPECT_EQ("initial data", contents);
+  }
+}
+
+// Verifies that a regular first-party `SharedWorker` (default
+// `sameSiteCookies: 'all'`) can still query, read, and write a non-sandboxed
+// `FileSystemFileHandle` loaded from first-party IndexedDB, as well as OPFS.
+IN_PROC_BROWSER_TEST_F(PersistedPermissionsFileSystemAccessBrowserTest,
+                       FirstPartySharedWorkerHandleUseAllowed) {
+  net::EmbeddedTestServer https_server(net::EmbeddedTestServer::TYPE_HTTPS);
+  base::FilePath test_file;
+  SetUpSharedWorkerTest(https_server, test_file);
+
+  content::WebContents* first_party_web_contents =
+      browser()->GetTabStripModel()->GetActiveWebContents();
+  ConnectToSharedWorker(first_party_web_contents,
+                        "new SharedWorker('/shared_worker.js')");
+  ExpectSharedWorkerHandleAccessAllowed(first_party_web_contents, test_file);
+}
+
+// Verifies that a `SharedWorker` created by a first-party page with
+// `{sameSiteCookies: 'none'}` (which cross-site iframes with Storage Access can
+// attach to) cannot use a non-sandboxed `FileSystemFileHandle` loaded from
+// first-party IndexedDB, while still allowing OPFS access.
+IN_PROC_BROWSER_TEST_F(
+    PersistedPermissionsFileSystemAccessBrowserTest,
+    FirstPartySharedWorkerSameSiteCookiesNoneHandleUseBlocked) {
+  net::EmbeddedTestServer https_server(net::EmbeddedTestServer::TYPE_HTTPS);
+  base::FilePath test_file;
+  SetUpSharedWorkerTest(https_server, test_file);
+
+  content::WebContents* first_party_web_contents =
+      browser()->GetTabStripModel()->GetActiveWebContents();
+  ConnectToSharedWorker(first_party_web_contents,
+                        "new SharedWorker('/shared_worker.js', "
+                        "{sameSiteCookies: 'none'})");
+  ExpectSharedWorkerHandleAccessBlocked(first_party_web_contents, test_file);
+}
+
+// Verifies that a `SharedWorker` created via
+// `StorageAccessHandle.SharedWorker()` in a third-party iframe cannot use a
+// non-sandboxed `FileSystemFileHandle` loaded from first-party IndexedDB (even
+// while the origin holds an active first-party read/write grant), while still
+// allowing access to the unpartitioned Origin Private File System (OPFS).
+IN_PROC_BROWSER_TEST_F(
+    PersistedPermissionsFileSystemAccessBrowserTest,
+    ThirdPartyIframeStorageAccessSharedWorkerHandleUseBlocked) {
+  net::EmbeddedTestServer https_server(net::EmbeddedTestServer::TYPE_HTTPS);
+  base::FilePath test_file;
+  SetUpSharedWorkerTest(https_server, test_file);
+  content::WebContents* first_party_web_contents =
+      browser()->GetTabStripModel()->GetActiveWebContents();
+
+  // Open an auxiliary window hosting an a.test document embedding a b.test
+  // iframe, keeping the first-party b.test tab open so the permission grant
+  // remains active.
+  content::TestNavigationObserver popup_observer(nullptr);
+  popup_observer.StartWatchingNewWebContents();
+  const GURL embedder_url = https_server.GetURL("a.test", "/iframe_blank.html");
+  ASSERT_TRUE(ExecJs(
+      first_party_web_contents,
+      "self.third_party_window = window.open('" + embedder_url.spec() + "');"));
+  popup_observer.Wait();
+  ASSERT_EQ(2, browser()->GetTabStripModel()->count());
+  content::WebContents* third_party_web_contents =
+      browser()->GetTabStripModel()->GetActiveWebContents();
+  ASSERT_TRUE(content::NavigateIframeToURL(
+      third_party_web_contents, "test",
+      https_server.GetURL("b.test", "/title1.html")));
+  content::RenderFrameHost* third_party_iframe =
+      ChildFrameAt(third_party_web_contents, 0);
+  ASSERT_TRUE(third_party_iframe);
+
+  // Grant Storage Access to b.test embedded under a.test.
+  HostContentSettingsMapFactory::GetForProfile(browser()->GetProfile())
+      ->SetContentSettingDefaultScope(https_server.GetURL("b.test", "/"),
+                                      https_server.GetURL("a.test", "/"),
+                                      ContentSettingsType::STORAGE_ACCESS,
+                                      CONTENT_SETTING_ALLOW);
+
+  // Obtain a StorageAccessHandle and connect to a SharedWorker via
+  // StorageAccessHandle.SharedWorker().
+  ConnectToSharedWorker(third_party_iframe,
+                        "(await document.requestStorageAccess({all: true}))"
+                        ".SharedWorker('/shared_worker.js')");
+  ExpectSharedWorkerHandleAccessBlocked(third_party_iframe, test_file);
 }
 
 // Tests that permissions are revoked after all top-level frames have been
@@ -891,14 +1364,34 @@ IN_PROC_BROWSER_TEST_F(PersistedPermissionsFileSystemAccessBrowserTest,
       content::EvalJs(first_party_web_contents,
                       "self.entry.requestPermission({mode: 'readwrite'})"));
 
-  // Permission should also be granted in iframe.
-  EXPECT_EQ("granted",
+  auto* permission_context =
+      FileSystemAccessPermissionContextFactory::GetForProfile(profile);
+  const url::Origin b_origin =
+      url::Origin::Create(https_server.GetURL("b.com", "/title1.html"));
+  auto grant = permission_context->GetWritePermissionGrant(
+      b_origin, content::PathInfo(test_file),
+      content::FileSystemAccessPermissionContext::HandleType::kFile,
+      content::FileSystemAccessPermissionContext::AccessTrigger::kOpen);
+  EXPECT_EQ(content::FileSystemAccessPermissionGrant::PermissionStatus::GRANTED,
+            grant->GetStatus());
+
+  // Third-party iframe is not allowed to query or use the grant even though
+  // the origin holds an active first-party permission grant.
+  EXPECT_EQ("denied",
             content::EvalJs(third_party_iframe,
                             "self.entry.queryPermission({mode: 'readwrite'})"));
 
   // Now close first window.
+  content::WebContentsDestroyedWatcher destroyed_watcher(
+      first_party_web_contents);
   browser()->GetTabStripModel()->CloseWebContentsAt(
       0, TabCloseTypes::CLOSE_CREATE_HISTORICAL_TAB);
+  destroyed_watcher.Wait();
+  // `OneTimePermissionsConditionTracker::Factory::OnTrackerDestroyed()` starts
+  // a `base::Seconds(0)` `OneShotTimer` when the last page for `b.com` is
+  // destroyed; pump the UI thread message loop so
+  // `NotifyLastPageFromOriginClosed()` runs.
+  base::RunLoop().RunUntilIdle();
   ASSERT_EQ(1, browser()->GetTabStripModel()->count());
   ASSERT_EQ(browser()->GetTabStripModel()->GetActiveWebContents(),
             third_party_web_contents);
@@ -908,13 +1401,10 @@ IN_PROC_BROWSER_TEST_F(PersistedPermissionsFileSystemAccessBrowserTest,
   FileSystemAccessPermissionContextFactory::GetForProfile(profile)
       ->TriggerTimersForTesting();
 
-  // Permission should have been revoked.
-  EXPECT_EQ("prompt",
-            content::EvalJs(third_party_iframe,
-                            "self.entry.queryPermission({mode: 'readwrite'})"));
-  EXPECT_EQ("prompt",
-            content::EvalJs(third_party_iframe,
-                            "self.entry.queryPermission({mode: 'read'})"));
+  // Permission should have been revoked on the origin because all top-level
+  // frames have been closed, despite the third-party iframe remaining open.
+  EXPECT_EQ(content::FileSystemAccessPermissionGrant::PermissionStatus::ASK,
+            grant->GetStatus());
 }
 
 IN_PROC_BROWSER_TEST_F(PersistedPermissionsFileSystemAccessBrowserTest,
@@ -1020,7 +1510,7 @@ IN_PROC_BROWSER_TEST_F(PersistedPermissionsFileSystemAccessBrowserTest,
   // Open a second tab on the same origin in the background so that the origin
   // remains active after the first tab navigates away.
   ui_test_utils::NavigateToURLWithDisposition(
-      browser(), test_url, WindowOpenDisposition::NEW_BACKGROUND_TAB,
+      browser(), test_url, ui::mojom::WindowOpenDisposition::kNewBackgroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
   ASSERT_EQ(web_contents, browser()->tab_strip_model()->GetActiveWebContents());
 
@@ -1042,7 +1532,7 @@ IN_PROC_BROWSER_TEST_F(PersistedPermissionsFileSystemAccessBrowserTest,
   // Open a second tab on a different origin in the background.
   ui_test_utils::NavigateToURLWithDisposition(
       browser(), embedded_test_server()->GetURL("a.com", "/title1.html"),
-      WindowOpenDisposition::NEW_BACKGROUND_TAB,
+      ui::mojom::WindowOpenDisposition::kNewBackgroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
   ASSERT_EQ(2, browser()->tab_strip_model()->count());
 
@@ -1060,8 +1550,7 @@ IN_PROC_BROWSER_TEST_F(PersistedPermissionsFileSystemAccessBrowserTest,
       browser()->tab_strip_model()->GetTabAtIndex(1);
   ASSERT_TRUE(background_tab);
   FileSystemAccessPageActionController* controller =
-      background_tab->GetTabFeatures()
-          ->file_system_access_page_action_controller();
+      FileSystemAccessPageActionController::From(background_tab);
   ASSERT_TRUE(controller);
   controller->UpdateVisibility();
 
@@ -1142,6 +1631,72 @@ IN_PROC_BROWSER_TEST_F(BackForwardCacheFileSystemAccessBrowserTest,
   deleted_observer.WaitUntilDeleted();
 }
 
+// Verifies that calling `RequestPermission()` from a document in
+// BackForwardCache for an already-granted permission grant resolves immediately
+// with `PermissionRequestOutcome::kRequestAborted` without prompting the user
+// or evicting the document from BackForwardCache.
+IN_PROC_BROWSER_TEST_F(BackForwardCacheFileSystemAccessBrowserTest,
+                       RequestWriteAccess_AlreadyGranted_DoesNotEvict) {
+  std::unique_ptr<ChromeFileSystemAccessPermissionContext> permission_context =
+      std::make_unique<ChromeFileSystemAccessPermissionContext>(
+          browser()->GetProfile());
+
+  const base::FilePath test_file = CreateTestFile("");
+
+  const GURL initial_url =
+      embedded_test_server()->GetURL("a.com", "/title1.html");
+  auto* initial_rfh = ui_test_utils::NavigateToURL(browser(), initial_url);
+  ASSERT_TRUE(initial_rfh);
+
+  // Open a second tab with the same origin to ensure active grants are not
+  // revoked by `MaybeCleanupPermissions()` when the primary tab navigates away.
+  ui_test_utils::NavigateToURLWithDisposition(
+      browser(), initial_url,
+      ui::mojom::WindowOpenDisposition::kNewForegroundTab,
+      ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
+  browser()->GetTabStripModel()->ActivateTabAt(0);
+
+  // Obtain an active write grant before navigating away.
+  auto grant = permission_context->GetWritePermissionGrant(
+      url::Origin::Create(initial_url), content::PathInfo(test_file),
+      content::FileSystemAccessPermissionContext::HandleType::kFile,
+      content::FileSystemAccessPermissionContext::AccessTrigger::kSave);
+  ASSERT_EQ(
+      grant->GetStatus(),
+      content::FileSystemAccessPermissionGrant::PermissionStatus::GRANTED);
+
+  content::RenderFrameDeletedObserver deleted_observer(initial_rfh);
+
+  // Navigate to another page so that initial_rfh enters BackForwardCache.
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(
+      browser(), embedded_test_server()->GetURL("b.com", "/title2.html")));
+  ASSERT_FALSE(deleted_observer.deleted());
+  ASSERT_EQ(initial_rfh->GetLifecycleState(),
+            content::RenderFrameHost::LifecycleState::kInBackForwardCache);
+
+  base::test::TestFuture<
+      content::FileSystemAccessPermissionGrant::PermissionRequestOutcome>
+      future;
+
+  // Requesting permission for an already-granted handle from BackForwardCache
+  // must resolve immediately without prompting or evicting the document.
+  grant->RequestPermission(initial_rfh->GetGlobalId(),
+                           content::FileSystemAccessPermissionGrant::
+                               UserActivationState::kNotRequired,
+                           future.GetCallback());
+
+  EXPECT_EQ(future.Get(), content::FileSystemAccessPermissionGrant::
+                              PermissionRequestOutcome::kRequestAborted);
+  EXPECT_EQ(
+      grant->GetStatus(),
+      content::FileSystemAccessPermissionGrant::PermissionStatus::GRANTED);
+
+  // The document must remain cached in BackForwardCache.
+  EXPECT_FALSE(deleted_observer.deleted());
+  EXPECT_EQ(initial_rfh->GetLifecycleState(),
+            content::RenderFrameHost::LifecycleState::kInBackForwardCache);
+}
+
 class PrerenderFileSystemAccessBrowserTest
     : public FileSystemAccessBrowserTest {
  public:
@@ -1220,118 +1775,6 @@ IN_PROC_BROWSER_TEST_F(PrerenderFileSystemAccessBrowserTest,
   deleted_observer.WaitUntilDeleted();
 }
 
-class FencedFrameFileSystemAccessBrowserTest
-    : public FileSystemAccessBrowserTest {
- public:
-  FencedFrameFileSystemAccessBrowserTest() {
-    fenced_frame_helper_ =
-        std::make_unique<content::test::FencedFrameTestHelper>();
-  }
-
-  void SetUpOnMainThread() override {
-    FileSystemAccessBrowserTest::SetUpOnMainThread();
-    https_server_.ServeFilesFromSourceDirectory(GetChromeTestDataDir());
-    ASSERT_TRUE(https_server_.Start());
-  }
-
-  ~FencedFrameFileSystemAccessBrowserTest() override = default;
-
-  FencedFrameFileSystemAccessBrowserTest(
-      const FencedFrameFileSystemAccessBrowserTest&) = delete;
-  FencedFrameFileSystemAccessBrowserTest& operator=(
-      const FencedFrameFileSystemAccessBrowserTest&) = delete;
-
- protected:
-  content::RenderFrameHost* CreateFencedFrame(
-      content::RenderFrameHost* fenced_frame_parent,
-      const GURL& url) {
-    if (fenced_frame_helper_) {
-      return fenced_frame_helper_->CreateFencedFrame(fenced_frame_parent, url);
-    }
-
-    // FencedFrameTestHelper only supports the MPArch version of fenced
-    // frames. So need to maually create a fenced frame for the ShadowDOM
-    // version.
-    content::TestNavigationManager navigation(
-        browser()->GetTabStripModel()->GetActiveWebContents(), url);
-    constexpr char kAddFencedFrameScript[] = R"({
-        const fenced_frame = document.createElement('fencedframe');
-        fenced_frame.src = $1;
-        document.body.appendChild(fenced_frame);
-    })";
-    EXPECT_TRUE(ExecJs(fenced_frame_parent,
-                       content::JsReplace(kAddFencedFrameScript, url)));
-    EXPECT_TRUE(navigation.WaitForNavigationFinished());
-
-    content::RenderFrameHost* new_frame = ChildFrameAt(fenced_frame_parent, 0);
-
-    return new_frame;
-  }
-
- protected:
-  net::EmbeddedTestServer& https_server() { return https_server_; }
-
- private:
-  std::unique_ptr<content::test::FencedFrameTestHelper> fenced_frame_helper_;
-  base::test::ScopedFeatureList feature_list_;
-  net::EmbeddedTestServer https_server_{net::EmbeddedTestServer::TYPE_HTTPS};
-};
-
-IN_PROC_BROWSER_TEST_F(FencedFrameFileSystemAccessBrowserTest,
-                       RequestWriteAccess) {
-  std::unique_ptr<ChromeFileSystemAccessPermissionContext> permission_context =
-      std::make_unique<ChromeFileSystemAccessPermissionContext>(
-          browser()->GetProfile());
-
-  const base::FilePath test_file = CreateTestFile("");
-
-  ui::SelectFileDialog::SetFactory(
-      std::make_unique<SelectPredeterminedFileDialogFactory>(
-          std::vector<base::FilePath>{test_file}));
-  ASSERT_TRUE(ui_test_utils::NavigateToURL(
-      browser(), embedded_test_server()->GetURL("/title1.html")));
-  content::WebContents* web_contents =
-      browser()->GetTabStripModel()->GetActiveWebContents();
-
-  FileSystemAccessPermissionRequestManager::FromWebContents(web_contents)
-      ->set_auto_response_for_test(permissions::PermissionAction::GRANTED);
-
-  EXPECT_FALSE(IsUsageIndicatorVisible(browser()));
-
-  // Load a fenced frame.
-  GURL fenced_frame_url = https_server().GetURL("/fenced_frames/title1.html");
-  content::RenderFrameHost* fenced_frame_host =
-      CreateFencedFrame(web_contents->GetPrimaryMainFrame(), fenced_frame_url);
-  ASSERT_TRUE(fenced_frame_host);
-
-  // File system access is disabled for fenced frames.
-  EXPECT_FALSE(content::ExecJs(fenced_frame_host,
-                               "(async () => {"
-                               "  let [e] = await self.showOpenFilePicker();"
-                               "  self.entry = e;"
-                               "  return e.name; })()"));
-
-  // Even read-only access should show a usage indicator.
-  EXPECT_FALSE(IsUsageIndicatorVisible(browser()));
-
-  auto grant = permission_context->GetWritePermissionGrant(
-      url::Origin::Create(fenced_frame_url), content::PathInfo(test_file),
-      content::FileSystemAccessPermissionContext::HandleType::kFile,
-      content::FileSystemAccessPermissionContext::AccessTrigger::kOpen);
-
-  base::test::TestFuture<
-      content::FileSystemAccessPermissionGrant::PermissionRequestOutcome>
-      future;
-
-  // RequestPermission() for the fenced frame must fail.
-  grant->RequestPermission(
-      fenced_frame_host->GetGlobalId(),
-      content::FileSystemAccessPermissionGrant::UserActivationState::kRequired,
-      future.GetCallback());
-  EXPECT_EQ(future.Get<>(), content::FileSystemAccessPermissionGrant::
-                                PermissionRequestOutcome::kInvalidFrame);
-}
-
 // https://crbug.com/419721056
 IN_PROC_BROWSER_TEST_F(FileSystemAccessBrowserTest,
                        ShowOpenFilePickerInBackgroundTab) {
@@ -1343,7 +1786,7 @@ IN_PROC_BROWSER_TEST_F(FileSystemAccessBrowserTest,
   // Create a second tab
   ui_test_utils::NavigateToURLWithDisposition(
       browser(), embedded_test_server()->GetURL("/title2.html"),
-      WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
 
   content::WebContents* second_tab =
@@ -1386,7 +1829,7 @@ IN_PROC_BROWSER_TEST_F(FileSystemAccessBrowserTest, ShowOpenFileThenHide) {
   // Create a second tab.
   ui_test_utils::NavigateToURLWithDisposition(
       browser(), embedded_test_server()->GetURL("/title2.html"),
-      WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
 
   // The first tab should not be the active tab anymore.
@@ -1430,6 +1873,54 @@ IN_PROC_BROWSER_TEST_F(FileSystemAccessBrowserTest,
 
   // Check that the dialog was closed.
   ASSERT_EQ("AbortError", content::EvalJs(first_tab, "window.p"));
+}
+
+// Test that resizing a window below minimum dimensions while the dialog is
+// showing closes the dialog.
+IN_PROC_BROWSER_TEST_F(FileSystemAccessBrowserTest,
+                       ShowOpenFileThenResizeSmall) {
+  // Use a popup browser because normal tabbed browser windows on macOS enforce
+  // a minimum client size of 500x375 (via kMainBrowserContentsMinimumWidth and
+  // the 4:3 aspect ratio in BrowserFrameViewMac::GetMinimumSize), which clamps
+  // programmatic SetBounds() calls above the 400x300 threshold.
+  BrowserWindowInterface* popup_browser =
+      CreateBrowserForPopup(browser()->GetProfile());
+  BrowserView::GetBrowserViewForBrowser(popup_browser)
+      ->SetBounds(gfx::Rect(0, 0, 800, 600));
+  EXPECT_TRUE(ui_test_utils::NavigateToURL(
+      popup_browser, embedded_test_server()->GetURL("/title1.html")));
+  content::WebContents* popup_tab =
+      popup_browser->GetTabStripModel()->GetActiveWebContents();
+
+  // Open the dialog and wait until it's created.
+  content::SelectFileDialogRecorder recorder;
+  ui::SelectFileDialog::SetFactory(
+      std::make_unique<content::ObservableSelectFileDialogFactory>(
+          recorder.GetWeakPtr()));
+  EXPECT_EQ(42,
+            content::EvalJs(
+                popup_tab,
+                "window.p = self.showOpenFilePicker().catch(e => e.name); 42"));
+  EXPECT_TRUE(base::test::RunUntil([&recorder]() {
+    return recorder.state != content::SelectFileDialogRecorder::kNotCreated;
+  }));
+
+  // Narrowing only the WebContents (e.g. when opening a side panel or split
+  // view) while the top-level browser window remains large should NOT cancel
+  // the dialog.
+  popup_tab->Resize(gfx::Rect(0, 0, 200, 600));
+  EXPECT_NE(recorder.state, content::SelectFileDialogRecorder::kDestroyed);
+
+  // Resize the top-level window below the minimum dimension threshold.
+  BrowserView::GetBrowserViewForBrowser(popup_browser)
+      ->SetBounds(gfx::Rect(0, 0, 100, 100));
+  popup_tab->Resize(gfx::Rect(0, 0, 100, 100));
+  EXPECT_TRUE(base::test::RunUntil([&recorder]() {
+    return recorder.state == content::SelectFileDialogRecorder::kDestroyed;
+  }));
+
+  // Check that the dialog was closed.
+  EXPECT_EQ("AbortError", content::EvalJs(popup_tab, "window.p"));
 }
 
 class FileSystemAccessBrowserTestForWebUI : public InProcessBrowserTest {
@@ -1582,6 +2073,228 @@ IN_PROC_BROWSER_TEST_F(FileSystemAccessBrowserTestForWebUI,
 
   content::WebContents* web_contents = SetUpAndNavigateToTestWebUI();
   TestDirectoryPermission(web_contents, test_dir_path);
+}
+
+IN_PROC_BROWSER_TEST_F(FileSystemAccessBrowserTest,
+                       DropFileInThirdPartyIframe_ReadSucceedsWriteFails) {
+  net::EmbeddedTestServer https_server(net::EmbeddedTestServer::TYPE_HTTPS);
+  https_server.SetCertHostnames({"a.com", "b.com", "c.com"});
+  https_server.AddDefaultHandlers(GetChromeTestDataDir());
+  content::SetupCrossSiteRedirector(&https_server);
+  ASSERT_TRUE(https_server.Start());
+
+  // Navigate top-level frame to a.com embedding an iframe.
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(
+      browser(), https_server.GetURL("a.com", "/iframe.html")));
+  content::WebContents* web_contents =
+      browser()->tab_strip_model()->GetActiveWebContents();
+  ASSERT_TRUE(content::NavigateIframeToURL(
+      web_contents, "test", https_server.GetURL("b.com", "/title1.html")));
+  content::RenderFrameHost* third_party_iframe = ChildFrameAt(web_contents, 0);
+  ASSERT_TRUE(third_party_iframe);
+  EXPECT_EQ(third_party_iframe->GetLastCommittedOrigin(),
+            url::Origin::Create(https_server.GetURL("b.com", "/")));
+
+  // Register drag and drop listener inside the third-party b.com iframe.
+  ASSERT_TRUE(
+      ExecJs(third_party_iframe,
+             "window.ondragenter = (e) => { e.preventDefault(); };"
+             "window.ondragover = (e) => { e.preventDefault(); };"
+             "self.droppedHandlePromise = new Promise((resolve) => {"
+             "  window.ondrop = async (event) => {"
+             "    event.preventDefault();"
+             "    const item = event.dataTransfer.items[0];"
+             "    self.droppedHandle = await item.getAsFileSystemHandle();"
+             "    resolve('Dropped');"
+             "  };"
+             "});"
+             "'ready';"));
+
+  const base::FilePath test_file = CreateTestFile("hello dropped world");
+  content::DropData drop_data;
+  drop_data.operation = ui::mojom::DragOperation::kCopy;
+  drop_data.document_is_handling_drag = true;
+  drop_data.filenames.emplace_back(test_file, test_file.BaseName());
+
+  content::RenderWidgetHost* rwh = third_party_iframe->GetRenderWidgetHost();
+  ASSERT_TRUE(rwh->GetView());
+  const gfx::Rect bounds = rwh->GetView()->GetViewBounds();
+  const gfx::PointF screen_pt = gfx::PointF(bounds.CenterPoint());
+  const gfx::PointF client_pt =
+      gfx::PointF(bounds.width() / 2, bounds.height() / 2);
+  rwh->FilterDropData(&drop_data);
+  rwh->DragTargetDragEnter(drop_data, client_pt, screen_pt,
+                           blink::DragOperationsMask::kDragOperationEvery, 0,
+                           base::DoNothing());
+  rwh->DragTargetDragOver(client_pt, screen_pt,
+                          blink::DragOperationsMask::kDragOperationEvery, 0,
+                          base::DoNothing());
+  rwh->DragTargetDrop(drop_data, client_pt, screen_pt, 0, base::DoNothing());
+
+  EXPECT_EQ("Dropped", EvalJs(third_party_iframe, "self.droppedHandlePromise"));
+
+  // 1. Verify reading the dropped file succeeds in the 3P iframe (WICG § 3.6).
+  EXPECT_EQ("hello dropped world",
+            EvalJs(third_party_iframe,
+                   "(async () => {"
+                   "  const file = await self.droppedHandle.getFile();"
+                   "  return await file.text();"
+                   "})();"));
+
+  // 2. Verify write operations fail with SecurityError in 3P iframe (WICG
+  // § 5.3).
+  EXPECT_EQ("SecurityError",
+            EvalJs(third_party_iframe,
+                   "(async () => {"
+                   "  try {"
+                   "    await self.droppedHandle.createWritable();"
+                   "    return 'write_unexpectedly_succeeded';"
+                   "  } catch (e) {"
+                   "    return e.name;"
+                   "  }"
+                   "})();"));
+
+  // 3. Verify requesting write permission throws SecurityError in 3P iframe.
+  EXPECT_EQ(
+      "SecurityError",
+      EvalJs(
+          third_party_iframe,
+          "(async () => {"
+          "  try {"
+          "    await self.droppedHandle.requestPermission({mode: 'readwrite'});"
+          "    return 'prompt_unexpectedly_succeeded';"
+          "  } catch (e) {"
+          "    return e.name;"
+          "  }"
+          "})();"));
+}
+
+IN_PROC_BROWSER_TEST_F(FileSystemAccessBrowserTest,
+                       DropDirectoryInThirdPartyIframe_ReadSucceedsWriteFails) {
+  net::EmbeddedTestServer https_server(net::EmbeddedTestServer::TYPE_HTTPS);
+  https_server.SetCertHostnames({"a.com", "b.com", "c.com"});
+  https_server.AddDefaultHandlers(GetChromeTestDataDir());
+  content::SetupCrossSiteRedirector(&https_server);
+  ASSERT_TRUE(https_server.Start());
+
+  // Navigate top-level frame to a.com embedding an iframe.
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(
+      browser(), https_server.GetURL("a.com", "/iframe.html")));
+  content::WebContents* web_contents =
+      browser()->tab_strip_model()->GetActiveWebContents();
+  ASSERT_TRUE(content::NavigateIframeToURL(
+      web_contents, "test", https_server.GetURL("b.com", "/title1.html")));
+  content::RenderFrameHost* third_party_iframe = ChildFrameAt(web_contents, 0);
+  ASSERT_TRUE(third_party_iframe);
+  EXPECT_EQ(third_party_iframe->GetLastCommittedOrigin(),
+            url::Origin::Create(https_server.GetURL("b.com", "/")));
+
+  // Register drag and drop listener inside the third-party b.com iframe.
+  ASSERT_TRUE(ExecJs(third_party_iframe,
+                     "window.ondragenter = (e) => { e.preventDefault(); };"
+                     "window.ondragover = (e) => { e.preventDefault(); };"
+                     "self.droppedHandlePromise = new Promise((resolve) => {"
+                     "  window.ondrop = async (event) => {"
+                     "    event.preventDefault();"
+                     "    const item = event.dataTransfer.items[0];"
+                     "    self.droppedDir = await item.getAsFileSystemHandle();"
+                     "    resolve('Dropped');"
+                     "  };"
+                     "});"
+                     "'ready';"));
+
+  base::ScopedAllowBlockingForTesting allow_blocking;
+  base::ScopedTempDir temp_dir;
+  ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
+  base::FilePath sub_dir = temp_dir.GetPath().AppendASCII("sub");
+  ASSERT_TRUE(base::CreateDirectory(sub_dir));
+  base::FilePath test_file = sub_dir.AppendASCII("data.txt");
+  ASSERT_TRUE(base::WriteFile(test_file, "data.txt contents"));
+
+  content::DropData drop_data;
+  drop_data.operation = ui::mojom::DragOperation::kCopy;
+  drop_data.document_is_handling_drag = true;
+  drop_data.filenames.emplace_back(temp_dir.GetPath(),
+                                   temp_dir.GetPath().BaseName());
+
+  content::RenderWidgetHost* rwh = third_party_iframe->GetRenderWidgetHost();
+  ASSERT_TRUE(rwh->GetView());
+  const gfx::Rect bounds = rwh->GetView()->GetViewBounds();
+  const gfx::PointF screen_pt = gfx::PointF(bounds.CenterPoint());
+  const gfx::PointF client_pt =
+      gfx::PointF(bounds.width() / 2, bounds.height() / 2);
+  rwh->FilterDropData(&drop_data);
+  rwh->DragTargetDragEnter(drop_data, client_pt, screen_pt,
+                           blink::DragOperationsMask::kDragOperationEvery, 0,
+                           base::DoNothing());
+  rwh->DragTargetDragOver(client_pt, screen_pt,
+                          blink::DragOperationsMask::kDragOperationEvery, 0,
+                          base::DoNothing());
+  rwh->DragTargetDrop(drop_data, client_pt, screen_pt, 0, base::DoNothing());
+
+  EXPECT_EQ("Dropped", EvalJs(third_party_iframe, "self.droppedHandlePromise"));
+
+  // 1. Verify reading child file inside dropped directory succeeds.
+  EXPECT_EQ(
+      "data.txt contents",
+      EvalJs(third_party_iframe,
+             "(async () => {"
+             "  const sub = await self.droppedDir.getDirectoryHandle('sub');"
+             "  const file = await sub.getFileHandle('data.txt');"
+             "  const blob = await file.getFile();"
+             "  return await blob.text();"
+             "})();"));
+
+  // 2. Verify write operations on child entry fail with SecurityError.
+  EXPECT_EQ(
+      "SecurityError",
+      EvalJs(third_party_iframe,
+             "(async () => {"
+             "  try {"
+             "    const sub = await self.droppedDir.getDirectoryHandle('sub');"
+             "    const file = await sub.getFileHandle('data.txt');"
+             "    await file.createWritable();"
+             "    return 'write_unexpectedly_succeeded';"
+             "  } catch (e) {"
+             "    return e.name;"
+             "  }"
+             "})();"));
+
+  // 3. Verify removeEntry on child entry fails with SecurityError.
+  EXPECT_EQ(
+      "SecurityError",
+      EvalJs(third_party_iframe,
+             "(async () => {"
+             "  try {"
+             "    const sub = await self.droppedDir.getDirectoryHandle('sub');"
+             "    await sub.removeEntry('data.txt');"
+             "    return 'remove_unexpectedly_succeeded';"
+             "  } catch (e) {"
+             "    return e.name;"
+             "  }"
+             "})();"));
+
+  // 4. Verify creating a new file in dropped directory fails with
+  // SecurityError.
+  EXPECT_EQ(
+      "SecurityError",
+      EvalJs(
+          third_party_iframe,
+          "(async () => {"
+          "  try {"
+          "    await self.droppedDir.getFileHandle('new.txt', {create: true});"
+          "    return 'create_unexpectedly_succeeded';"
+          "  } catch (e) {"
+          "    return e.name;"
+          "  }"
+          "})();"));
+
+  // Verify on disk that files were not modified or created.
+  EXPECT_TRUE(base::PathExists(test_file));
+  std::string file_contents;
+  EXPECT_TRUE(base::ReadFileToString(test_file, &file_contents));
+  EXPECT_EQ("data.txt contents", file_contents);
+  EXPECT_FALSE(base::PathExists(temp_dir.GetPath().AppendASCII("new.txt")));
 }
 
 // TODO(mek): Add more end-to-end test including other bits of UI.

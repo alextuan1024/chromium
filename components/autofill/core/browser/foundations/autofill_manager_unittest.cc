@@ -24,6 +24,7 @@
 #include "components/autofill/core/browser/foundations/test_autofill_driver.h"
 #include "components/autofill/core/browser/foundations/test_autofill_manager_waiter.h"
 #include "components/autofill/core/browser/foundations/with_test_autofill_client_driver_manager.h"
+#include "components/autofill/core/browser/integrators/custom_form_controls/custom_form_control_script_index.h"
 #include "components/autofill/core/browser/ml_model/field_classification_model_handler.h"
 #include "components/autofill/core/browser/test_utils/autofill_test_util.h"
 #include "components/autofill/core/common/autofill_constants.h"
@@ -64,10 +65,11 @@ class MockAutofillDriver : public TestAutofillDriver {
   explicit MockAutofillDriver(TestAutofillClient* client)
       : TestAutofillDriver(client) {
     ON_CALL(*this, TriggerFormExtractionInAllFrames)
-        .WillByDefault([this](base::OnceCallback<void(bool)>
+        .WillByDefault([this](bool force,
+                              base::OnceCallback<void(bool)>
                                   form_extraction_finished_callback) {
           TestAutofillDriver::TriggerFormExtractionInAllFrames(
-              std::move(form_extraction_finished_callback));
+              force, std::move(form_extraction_finished_callback));
         });
   }
   MockAutofillDriver(const MockAutofillDriver&) = delete;
@@ -77,9 +79,12 @@ class MockAutofillDriver : public TestAutofillDriver {
   MOCK_METHOD(bool, CanShowAutofillUi, (), (const));
   MOCK_METHOD(void,
               TriggerFormExtractionInAllFrames,
-              (base::OnceCallback<void(bool)>),
-              ());
-  MOCK_METHOD(void, ClearFormCacheInAllFrames, (), (override));
+              (bool, base::OnceCallback<void(bool)>),
+              (override));
+  MOCK_METHOD(void,
+              LoadCustomFormControlScript,
+              (const std::string&),
+              (override));
 };
 
 class MockFieldClassificationModelHandler
@@ -338,9 +343,6 @@ class AutofillManagerTest_ObserverCalls
     InitAutofillClient();
     CreateAutofillDriver();
     ON_CALL(autofill_manager(), ShouldParseForms).WillByDefault(Return(true));
-    ON_CALL(autofill_manager(), ReparseKnownForms).WillByDefault([this] {
-      autofill_manager().AutofillManager::ReparseKnownForms();
-    });
     observation_.Observe(&autofill_manager());
   }
 
@@ -476,8 +478,8 @@ TEST_F(AutofillManagerTest_ObserverCalls, OnFormsSeen) {
   std::move(run_loop).Run();
 }
 
-// Tests that determining the page language fires OnBeforeLanguageDetermined(),
-// OnAfterLanguageDetermined(), and re-determines field types for known forms.
+// Tests that determining the page language triggers form extraction and
+// re-determines field types for known forms.
 TEST_F(AutofillManagerTest_ObserverCalls, OnLanguageDetermined) {
   std::vector<FormData> forms = CreateTestForms(2);
   SeeForms(forms);
@@ -489,22 +491,24 @@ TEST_F(AutofillManagerTest_ObserverCalls, OnLanguageDetermined) {
   auto small_forms_parsing = Eq(autofill_client().IsTabInActorMode());
 
   base::RunLoop run_loop;
-  EXPECT_CALL(observer(), OnBeforeLanguageDetermined(m));
+  EXPECT_CALL(observer(),
+              OnBeforeFormsSeen(m, UnorderedElementsAre(f, g), IsEmpty()));
   EXPECT_CALL(observer(),
               OnBeforeLoadedServerPredictions(m, UnorderedElementsAre(f, g)));
   EXPECT_CALL(observer(),
               OnAfterLoadedServerPredictions(m, UnorderedElementsAre(f, g)));
+  EXPECT_CALL(observer(),
+              OnFieldTypesDetermined(m, f, heuristics, small_forms_parsing));
+  EXPECT_CALL(observer(),
+              OnFieldTypesDetermined(m, g, heuristics, small_forms_parsing));
+  EXPECT_CALL(observer(),
+              OnAfterFormsSeen(m, UnorderedElementsAre(f, g), IsEmpty()))
+      .WillOnce(RunClosure(run_loop.QuitClosure()));
   autofill_manager().OnLanguageDetermined([] {
     translate::LanguageDetectionDetails details;
     details.adopted_language = "en";
     return details;
   }());
-  EXPECT_CALL(observer(), OnAfterLanguageDetermined(m))
-      .WillOnce(RunClosure(run_loop.QuitClosure()));
-  EXPECT_CALL(observer(),
-              OnFieldTypesDetermined(m, f, heuristics, small_forms_parsing));
-  EXPECT_CALL(observer(),
-              OnFieldTypesDetermined(m, g, heuristics, small_forms_parsing));
   std::move(run_loop).Run();
 }
 
@@ -719,9 +723,10 @@ TEST_F(AutofillManagerTest_ObserverCalls, OnFormSubmitted) {
   std::move(run_loop).Run();
 }
 
-// Tests that calling ReparseKnownForms() fires OnBeforeFormsSeen(),
-// OnAfterFormsSeen(), and re-determines field types for known forms.
-TEST_F(AutofillManagerTest_ObserverCalls, ReparseKnownForms) {
+// Tests that calling TriggerFormExtractionInAllFrames() fires
+// OnBeforeFormsSeen(), OnAfterFormsSeen(), and re-determines field types for
+// known forms.
+TEST_F(AutofillManagerTest_ObserverCalls, TriggerFormExtractionInAllFrames) {
   std::vector<FormData> forms = CreateTestForms(2);
   SeeForms(forms);
 
@@ -745,7 +750,8 @@ TEST_F(AutofillManagerTest_ObserverCalls, ReparseKnownForms) {
   EXPECT_CALL(observer(),
               OnAfterFormsSeen(m, UnorderedElementsAre(f, g), IsEmpty()))
       .WillOnce(RunClosure(run_loop.QuitClosure()));
-  autofill_manager().ReparseKnownForms();
+  autofill_manager().TriggerFormExtractionInAllFrames(/*force=*/true,
+                                                      base::DoNothing());
   std::move(run_loop).Run();
 }
 
@@ -898,14 +904,82 @@ TEST_F(AutofillManagerTest, CanShowAutofillUi) {
 }
 
 TEST_F(AutofillManagerTest, TriggerFormExtractionInAllFrames) {
-  EXPECT_CALL(autofill_driver(), TriggerFormExtractionInAllFrames);
-  autofill_manager().TriggerFormExtractionInAllFrames(base::DoNothing());
+  EXPECT_CALL(autofill_driver(),
+              TriggerFormExtractionInAllFrames(/*force=*/false, _));
+  autofill_manager().TriggerFormExtractionInAllFrames(/*force=*/false,
+                                                      base::DoNothing());
+  EXPECT_CALL(autofill_driver(),
+              TriggerFormExtractionInAllFrames(/*force=*/true, _));
+  autofill_manager().TriggerFormExtractionInAllFrames(/*force=*/true,
+                                                      base::DoNothing());
 }
 
-TEST_F(AutofillManagerTest, ReparseKnownForms) {
-  EXPECT_CALL(autofill_driver(), ClearFormCacheInAllFrames);
-  EXPECT_CALL(autofill_driver(), TriggerFormExtractionInAllFrames);
-  autofill_manager().ReparseKnownForms();
+// Tests that `OnFormsSeen()` loads a matching custom form control script once
+// when non-empty `updated_forms` are first seen.
+TEST_F(AutofillManagerTest,
+       OnFormsSeen_LoadsCustomFormControlScriptOncePerDocument) {
+  base::test::ScopedFeatureList feature_list{
+      features::kAutofillCustomFormControlExtraction};
+  autofill_client().set_last_committed_primary_main_frame_url(
+      GURL("https://example.com/"));
+  autofill_client().GetCustomFormControlScriptIndex()->SetEntries(
+      {{.host = "example.com", .script = "const x = 1;"}});
+  std::vector<FormData> forms = CreateTestForms(1);
+
+  EXPECT_CALL(autofill_driver(), LoadCustomFormControlScript("const x = 1;"))
+      .Times(1);
+
+  // Empty `updated_forms` does not trigger script loading.
+  OnFormsSeenWithExpectations(autofill_manager(), /*updated_forms=*/{},
+                              /*removed_forms=*/{}, /*expectation=*/{});
+  // The first non-empty `updated_forms` loads the script.
+  OnFormsSeenWithExpectations(autofill_manager(), /*updated_forms=*/forms,
+                              /*removed_forms=*/{}, /*expectation=*/forms);
+  // A subsequent `OnFormsSeen()` without `Reset()` does not load the script
+  // again.
+  OnFormsSeenWithExpectations(autofill_manager(), /*updated_forms=*/forms,
+                              /*removed_forms=*/{}, /*expectation=*/forms);
+}
+
+// Tests that `OnFormsSeen()` reloads a matching custom form control script
+// after `Reset()`.
+TEST_F(AutofillManagerTest,
+       OnFormsSeen_ReloadsCustomFormControlScriptAfterReset) {
+  base::test::ScopedFeatureList feature_list{
+      features::kAutofillCustomFormControlExtraction};
+  autofill_client().set_last_committed_primary_main_frame_url(
+      GURL("https://example.com/"));
+  autofill_client().GetCustomFormControlScriptIndex()->SetEntries(
+      {{.host = "example.com", .script = "const x = 1;"}});
+  std::vector<FormData> forms = CreateTestForms(1);
+
+  EXPECT_CALL(autofill_driver(), LoadCustomFormControlScript("const x = 1;"))
+      .Times(2);
+
+  OnFormsSeenWithExpectations(autofill_manager(), /*updated_forms=*/forms,
+                              /*removed_forms=*/{}, /*expectation=*/forms);
+  test_api(autofill_manager()).Reset();
+  OnFormsSeenWithExpectations(autofill_manager(), /*updated_forms=*/forms,
+                              /*removed_forms=*/{}, /*expectation=*/forms);
+}
+
+// Tests that `OnFormsSeen()` does not load custom form control scripts in
+// iframes.
+TEST_F(AutofillManagerTest,
+       OnFormsSeen_DoesNotLoadCustomFormControlScriptInSubframe) {
+  base::test::ScopedFeatureList feature_list{
+      features::kAutofillCustomFormControlExtraction};
+  autofill_client().set_last_committed_primary_main_frame_url(
+      GURL("https://example.com/"));
+  autofill_client().GetCustomFormControlScriptIndex()->SetEntries(
+      {{.host = "example.com", .script = "const x = 1;"}});
+  CreateAutofillDriver();
+  autofill_driver(1).SetParent(&autofill_driver(0));
+  std::vector<FormData> forms = CreateTestForms(1);
+
+  EXPECT_CALL(autofill_driver(1), LoadCustomFormControlScript).Times(0);
+  OnFormsSeenWithExpectations(autofill_manager(1), /*updated_forms=*/forms,
+                              /*removed_forms=*/{}, /*expectation=*/forms);
 }
 
 // Ensure that `FieldClassificationModelHandler`s are called when parsing the

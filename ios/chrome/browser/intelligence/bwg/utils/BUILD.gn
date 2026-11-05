@@ -42,6 +42,22 @@ source_set("feature_availability") {
   ]
 }
 
+source_set("live_utils") {
+  sources = [
+    "gemini_live_utils.h",
+    "gemini_live_utils.mm",
+  ]
+  deps = [
+    "//ios/chrome/app/strings:ios_strings",
+    "//ios/chrome/browser/intelligence/features",
+    "//ios/chrome/browser/shared/model/browser",
+    "//ios/chrome/browser/shared/model/profile",
+    "//ios/chrome/browser/shared/public/commands",
+    "//ios/chrome/browser/shared/public/features",
+    "//ios/public/provider/chrome/browser/bwg:gemini_api",
+  ]
+}
+
 source_set("availability") {
   sources = [
     "gemini_availability.h",
@@ -101,6 +117,7 @@ source_set("unit_tests") {
   ]
   deps = [
     ":availability",
+    ":constants",
     ":feature_availability",
     ":prefs",
     ":test_support",
@@ -110,6 +127,7 @@ source_set("unit_tests") {
     "//components/signin/public/base",
     "//components/signin/public/identity_manager",
     "//components/signin/public/identity_manager:test_support",
+    "//ios/chrome/app/strings",
     "//ios/chrome/browser/intelligence/bwg/model:gemini_service_factory",
     "//ios/chrome/browser/intelligence/bwg/model:tab_helper",
     "//ios/chrome/browser/intelligence/bwg/model:test_support",
@@ -130,5 +148,6 @@ source_set("unit_tests") {
     "//net",
     "//net:test_support",
     "//testing/gtest",
+    "//ui/base",
   ]
 }

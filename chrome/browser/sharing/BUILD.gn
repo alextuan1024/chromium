@@ -47,6 +47,7 @@ source_set("impl") {
     "//chrome/browser/sharing/one_time_tokens",
     "//chrome/browser/sharing/optimization_guide",
     "//chrome/browser/sharing/shared_clipboard",
+    "//chrome/browser/stream_transport",
     "//chrome/browser/sync",
     "//chrome/common:channel_info",
     "//components/browser_actuator/public",
@@ -57,6 +58,7 @@ source_set("impl") {
     "//components/sync/base",
     "//components/sync/model",
     "//components/sync/service",
+    "//ui/strings:ui_strings",
   ]
 
   if (!is_android) {
@@ -66,7 +68,6 @@ source_set("impl") {
     ]
     deps += [
       "//chrome/browser/sync:factories",
-      "//chrome/browser/ui",
       "//chrome/browser/ui:browser_window_header",
       "//chrome/browser/ui:singleton_tabs",
       "//chrome/browser/ui/views/sharing",
@@ -94,8 +95,14 @@ source_set("unit_tests") {
     ":sharing",
     "//base",
     "//base/test:test_support",
+    "//chrome/browser/glic",
+    "//chrome/browser/glic/test_support",
     "//chrome/browser/sharing/browser_actuator:unit_tests",
+    "//chrome/browser/sharing/glic_experimental_triggering:unit_tests",
+    "//chrome/browser/signin",
     "//chrome/common:chrome_features",
+    "//chrome/test/base:testing_browser_process",
+    "//chrome/test/base:testing_profile",
     "//components/browser_actuator/public",
     "//components/gcm_driver/instance_id",
     "//components/prefs",

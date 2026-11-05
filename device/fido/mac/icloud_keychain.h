@@ -5,14 +5,22 @@
 #ifndef DEVICE_FIDO_MAC_ICLOUD_KEYCHAIN_H_
 #define DEVICE_FIDO_MAC_ICLOUD_KEYCHAIN_H_
 
+#include <os/availability.h>
+
 #include <memory>
 #include <optional>
+#include <string>
 
 #include "base/apple/owned_objc.h"
 #include "base/component_export.h"
+#include "base/containers/flat_set.h"
 #include "build/build_config.h"
 
 static_assert(BUILDFLAG(IS_MAC));
+
+namespace base {
+class FilePath;
+}  // namespace base
 
 namespace device {
 
@@ -39,6 +47,33 @@ std::optional<bool> HasPermission();
 // SupportsLargeBlob returns true if the current macOS version and the chrome
 // feature flag both support large blob extension for iCloud Keychain.
 COMPONENT_EXPORT(DEVICE_FIDO) bool SupportsLargeBlob();
+
+// Returns true if iCloud Keychain is configured for passkeys according to the
+// macOS AuthenticationServices API.
+COMPONENT_EXPORT(DEVICE_FIDO)
+API_AVAILABLE(macos(26.2))
+bool IsConfiguredForPasskeys();
+
+// Overrides the set of localized Apple Passwords `providerName` strings for the
+// lifetime of this object.
+class COMPONENT_EXPORT(DEVICE_FIDO)
+    ScopedApplePasswordsProviderNamesForTesting {
+ public:
+  explicit ScopedApplePasswordsProviderNamesForTesting(
+      base::flat_set<std::string> names);
+  ScopedApplePasswordsProviderNamesForTesting(
+      const ScopedApplePasswordsProviderNamesForTesting&) = delete;
+  ScopedApplePasswordsProviderNamesForTesting& operator=(
+      const ScopedApplePasswordsProviderNamesForTesting&) = delete;
+  ~ScopedApplePasswordsProviderNamesForTesting();
+};
+
+// Returns the localized display names discovered for the macOS `.app` bundle
+// at `app_bundle_path` (from `NSFileManager`, `NSBundle`, and
+// `Contents/Resources/InfoPlist.loctable`). Exposed for unit testing.
+COMPONENT_EXPORT(DEVICE_FIDO)
+base::flat_set<std::string> GetLocalizedAppNamesForTesting(
+    const base::FilePath& app_bundle_path);
 
 }  // namespace fido::icloud_keychain
 }  // namespace device

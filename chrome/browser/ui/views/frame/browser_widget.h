@@ -14,6 +14,7 @@
 #include "ui/base/mojom/menu_source_type.mojom-forward.h"
 #include "ui/base/mojom/window_show_state.mojom-forward.h"
 #include "ui/base/pointer/touch_ui_controller.h"
+#include "ui/gfx/geometry/insets.h"
 #include "ui/views/context_menu_controller.h"
 #include "ui/views/widget/widget.h"
 
@@ -138,6 +139,21 @@ class BrowserWidget : public views::Widget,
   void SetTabDragKind(TabDragKind tab_drag_kind);
   TabDragKind tab_drag_kind() const { return tab_drag_kind_; }
 
+  // Returns the insets of the parts of the widget that the platform does not
+  // treat as part of the window, e.g. client-drawn shadows and resize borders
+  // on Linux X11. Window bounds exposed through BrowserWindow exclude them. If
+  // `restored` is true, returns the insets for the restored window state.
+  gfx::Insets GetInvisibleFrameInsets(bool restored) const;
+
+  // Overrides the insets that the platform reports for the normal window state
+  // (Linux only). Insets for other states are derived from them as usual.
+  void SetInvisibleFrameInsetsForTesting(std::optional<gfx::Insets> insets) {
+    invisible_frame_insets_for_testing_ = insets;
+  }
+  const std::optional<gfx::Insets>& invisible_frame_insets_override() const {
+    return invisible_frame_insets_for_testing_;
+  }
+
  protected:
   // views::Widget:
   void OnNativeThemeUpdated(ui::NativeTheme* observed_theme) override;
@@ -147,7 +163,6 @@ class BrowserWidget : public views::Widget,
   const ui::ThemeProvider* GetBaseThemeProvider() const;
 
   void OnTouchUiChanged();
-  void OnGlassFrameEligibilityChanged(bool is_eligible);
 
   // Callback for MenuRunner.
   void OnMenuClosed();
@@ -174,6 +189,8 @@ class BrowserWidget : public views::Widget,
 
   raw_ptr<BrowserNativeWidget> browser_native_widget_;
 
+  std::optional<gfx::Insets> invisible_frame_insets_for_testing_;
+
   // A weak reference to the root view associated with the window. We save a
   // copy as a BrowserRootView to avoid evil casting later, when we need to call
   // functions that only exist on BrowserRootView (versus RootView).
@@ -195,10 +212,6 @@ class BrowserWidget : public views::Widget,
       ui::TouchUiController::Get()->RegisterCallback(
           base::BindRepeating(&BrowserWidget::OnTouchUiChanged,
                               base::Unretained(this)));
-
-  // Observes changes in glass frame eligibility from GlassFrameService to
-  // trigger a widget theme update when eligibility transitions.
-  base::CallbackListSubscription glass_frame_subscription_;
 
   // Indicates the drag state for this window. The value can be kWindowDrag
   // if the accociated browser is the dragged browser or kTabDrag

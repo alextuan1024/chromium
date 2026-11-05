@@ -31,7 +31,6 @@
 #import "ios/chrome/browser/shared/model/application_context/application_context.h"
 #import "ios/chrome/browser/shared/public/commands/open_new_tab_command.h"
 #import "ios/chrome/browser/shared/public/commands/scene_commands.h"
-#import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/shared/ui/table_view/cells/table_view_text_edit_item_delegate.h"
 #import "ios/chrome/browser/shared/ui/table_view/table_view_utils.h"
 #import "ios/chrome/browser/shared/ui/util/uikit_ui_util.h"
@@ -164,11 +163,13 @@ typedef NS_ENUM(NSInteger, ItemType) {
                 [NSCharacterSet whitespaceAndNewlineCharacterSet]];
         _creditCard.SetNickname(base::SysNSStringToUTF16(trimmedNickname));
       } else {
-        _creditCard.SetInfo(
-            autofill::AutofillType(AutofillTypeFromAutofillUITypeForCard(
-                item.autofillCreditCardUIType)),
-            base::SysNSStringToUTF16(item.textFieldValue),
-            GetApplicationContext()->GetApplicationLocaleStorage()->Get());
+        _creditCard.SetInfo(AutofillTypeFromAutofillUITypeForCard(
+                                item.autofillCreditCardUIType),
+                            base::SysNSStringToUTF16(item.textFieldValue),
+                            GetApplicationContext()
+                                ->GetApplicationLocaleStorage()
+                                ->GetTag()
+                                .tag_string());
       }
     }
     std::u16string newCVC = _creditCard.cvc();
@@ -385,8 +386,10 @@ typedef NS_ENUM(NSInteger, ItemType) {
   cardholderNameItem.fieldNameLabelText =
       l10n_util::GetNSString(IDS_IOS_AUTOFILL_CARDHOLDER);
   cardholderNameItem.textFieldValue = autofill::GetCreditCardName(
-      _creditCard,
-      GetApplicationContext()->GetApplicationLocaleStorage()->Get());
+      _creditCard, std::string(GetApplicationContext()
+                                   ->GetApplicationLocaleStorage()
+                                   ->GetTag()
+                                   .tag_string()));
   cardholderNameItem.textFieldEnabled = isEditing;
   cardholderNameItem.autofillCreditCardUIType =
       AutofillCreditCardUIType::kFullName;
@@ -499,9 +502,10 @@ typedef NS_ENUM(NSInteger, ItemType) {
          expirationYear:expirationYear
            cardNickname:nickname
                 cardCvc:cvc
-               appLocal:GetApplicationContext()
-                            ->GetApplicationLocaleStorage()
-                            ->Get()];
+               appLocal:std::string(GetApplicationContext()
+                                        ->GetApplicationLocaleStorage()
+                                        ->GetTag()
+                                        .tag_string())];
 }
 
 // Returns the value in the field corresponding to the `itemType`.
@@ -531,9 +535,11 @@ typedef NS_ENUM(NSInteger, ItemType) {
     case ItemTypeCardNumber:
       isValid = [AutofillCreditCardUtil
           isValidCreditCardNumber:item.textFieldValue
-                         appLocal:GetApplicationContext()
-                                      ->GetApplicationLocaleStorage()
-                                      ->Get()];
+                         appLocal:std::string(
+                                      GetApplicationContext()
+                                          ->GetApplicationLocaleStorage()
+                                          ->GetTag()
+                                          .tag_string())];
       break;
     case ItemTypeExpirationMonth:
       isValid = [AutofillCreditCardUtil
@@ -542,9 +548,12 @@ typedef NS_ENUM(NSInteger, ItemType) {
     case ItemTypeExpirationYear:
       isValid = [AutofillCreditCardUtil
           isValidCreditCardExpirationYear:item.textFieldValue
-                                 appLocal:GetApplicationContext()
-                                              ->GetApplicationLocaleStorage()
-                                              ->Get()];
+                                 appLocal:
+                                     std::string(
+                                         GetApplicationContext()
+                                             ->GetApplicationLocaleStorage()
+                                             ->GetTag()
+                                             .tag_string())];
       break;
     case ItemTypeNickname:
       isValid = [AutofillCreditCardUtil

@@ -7,7 +7,6 @@
 #import "base/metrics/field_trial_params.h"
 #import "base/time/time.h"
 #import "components/omnibox/common/omnibox_features.h"
-#import "ui/base/device_form_factor.h"
 
 BASE_FEATURE(kComposeboxDevTools, base::FEATURE_DISABLED_BY_DEFAULT);
 
@@ -48,40 +47,6 @@ bool AlignComposeboxCloseButtonToInputPlateTop() {
   return base::FeatureList::IsEnabled(kComposeboxCloseButtonTopAlign);
 }
 
-BASE_FEATURE(kComposeboxAdditionalAdvancedTools,
-             base::FEATURE_DISABLED_BY_DEFAULT);
-
-bool ShowComposeboxAdditionalAdvancedTools() {
-  if (!EnableComposeboxServerSideState()) {
-    return false;
-  }
-  // Launched by default on phones.
-  if (ui::GetDeviceFormFactor() != ui::DEVICE_FORM_FACTOR_TABLET) {
-    return true;
-  }
-  return base::FeatureList::IsEnabled(kComposeboxAdditionalAdvancedTools);
-}
-
-bool ShowDeepSearchTool() {
-  // Launched by default on phones.
-  if (ui::GetDeviceFormFactor() != ui::DEVICE_FORM_FACTOR_TABLET) {
-    return true;
-  }
-  return base::FeatureList::IsEnabled(kComposeboxDeepSearch);
-}
-
-BASE_FEATURE(kComposeboxDeepSearch, base::FEATURE_DISABLED_BY_DEFAULT);
-
-bool EnableComposeboxServerSideState() {
-  // Launched by default on phones.
-  if (ui::GetDeviceFormFactor() != ui::DEVICE_FORM_FACTOR_TABLET) {
-    return true;
-  }
-  return base::FeatureList::IsEnabled(kComposeboxServerSideState);
-}
-
-BASE_FEATURE(kComposeboxServerSideState, base::FEATURE_DISABLED_BY_DEFAULT);
-
 bool IsComposeboxVerbatimSuggestionInAIMEnabled() {
   return base::FeatureList::IsEnabled(kComposeboxVerbatimSuggestionInAIM);
 }
@@ -89,20 +54,11 @@ bool IsComposeboxVerbatimSuggestionInAIMEnabled() {
 BASE_FEATURE(kComposeboxVerbatimSuggestionInAIM,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
-
 BASE_FEATURE(kComposeboxAIMNudge, base::FEATURE_DISABLED_BY_DEFAULT);
 
 bool IsComposeboxAIMNudgeEnabled() {
   // Reminder to also check AIM availability.
   return base::FeatureList::IsEnabled(kComposeboxAIMNudge);
-}
-
-BASE_FEATURE(kComposeboxFetchContextualSuggestionsForMultipleAttachments,
-             base::FEATURE_DISABLED_BY_DEFAULT);
-
-bool IsComposeboxFetchContextualSuggestionsForMultiAttachmentsEnabled() {
-  return base::FeatureList::IsEnabled(
-      kComposeboxFetchContextualSuggestionsForMultipleAttachments);
 }
 
 BASE_FEATURE(kComposeboxConditionalPlusButton,
@@ -130,7 +86,7 @@ bool IsComposeboxDriveOptionEnabled() {
 }
 
 BASE_FEATURE(kComposeboxPhysicalKeyboardReturnKeys,
-             base::FEATURE_DISABLED_BY_DEFAULT);
+             base::FEATURE_ENABLED_BY_DEFAULT);
 
 bool IsComposeboxPhysicalKeyboardReturnKeysEnabled() {
   return base::FeatureList::IsEnabled(kComposeboxPhysicalKeyboardReturnKeys);

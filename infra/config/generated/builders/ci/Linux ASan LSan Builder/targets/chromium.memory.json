@@ -192,10 +192,11 @@
         "name": "blink_unittests",
         "swarming": {
           "dimensions": {
+            "machine_type": "e2-standard-8",
             "os": "Ubuntu-22.04"
           },
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com",
-          "shards": 5
+          "shards": 4
         },
         "test": "blink_unittests",
         "test_id_prefix": "ninja://third_party/blink/renderer/controller:blink_unittests/"
@@ -241,8 +242,7 @@
       {
         "args": [
           "--test-launcher-print-test-stdio=always",
-          "--test-launcher-filter-file=../../testing/buildbot/filters/linux.asan.browser_tests.filter",
-          "--disable-features=WebUIOmniboxPopup,WebUIOmniboxAimPopup"
+          "--test-launcher-filter-file=../../testing/buildbot/filters/linux.asan.browser_tests.filter"
         ],
         "ci_only": true,
         "merge": {
@@ -382,6 +382,7 @@
         "args": [
           "--test-launcher-print-test-stdio=always"
         ],
+        "enable_rts_filtering": true,
         "merge": {
           "script": "//testing/merge_scripts/standard_gtest_merge.py"
         },
@@ -393,7 +394,7 @@
             "os": "Ubuntu-22.04"
           },
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com",
-          "shards": 7
+          "shards": 5
         },
         "test": "components_unittests",
         "test_id_prefix": "ninja://components:components_unittests/"
@@ -421,6 +422,7 @@
         "args": [
           "--test-launcher-print-test-stdio=always"
         ],
+        "enable_rts_filtering": true,
         "merge": {
           "script": "//testing/merge_scripts/standard_gtest_merge.py"
         },
@@ -432,7 +434,7 @@
             "os": "Ubuntu-22.04"
           },
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com",
-          "shards": 74
+          "shards": 40
         },
         "test": "content_browsertests",
         "test_id_prefix": "ninja://content/test:content_browsertests/"
@@ -693,6 +695,7 @@
           "--use-gpu-in-tests",
           "--no-xvfb"
         ],
+        "ci_only": true,
         "merge": {
           "script": "//testing/merge_scripts/standard_gtest_merge.py"
         },
@@ -702,8 +705,8 @@
         "swarming": {
           "dimensions": {
             "display_server": "x11",
-            "gpu": "10de:2184-535.183.01",
-            "os": "Ubuntu-22.04",
+            "gpu": "10de:2184-595.104.02",
+            "os": "Ubuntu-24.04",
             "pool": "chromium.tests.gpu"
           },
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com",
@@ -848,8 +851,7 @@
       },
       {
         "args": [
-          "--test-launcher-print-test-stdio=always",
-          "--disable-features=WebUIOmniboxPopup,WebUIOmniboxAimPopup"
+          "--test-launcher-print-test-stdio=always"
         ],
         "merge": {
           "script": "//testing/merge_scripts/standard_gtest_merge.py"
@@ -867,7 +869,7 @@
             }
           },
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com",
-          "shards": 127
+          "shards": 68
         },
         "test": "interactive_ui_tests",
         "test_id_prefix": "ninja://chrome/test:interactive_ui_tests/"
@@ -1390,9 +1392,9 @@
       },
       {
         "args": [
-          "--test-launcher-print-test-stdio=always",
-          "--disable-features=WebUIOmniboxPopup,WebUIOmniboxAimPopup"
+          "--test-launcher-print-test-stdio=always"
         ],
+        "enable_rts_filtering": true,
         "merge": {
           "script": "//testing/merge_scripts/standard_gtest_merge.py"
         },
@@ -1404,7 +1406,7 @@
             "os": "Ubuntu-22.04"
           },
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com",
-          "shards": 20
+          "shards": 7
         },
         "test": "sync_integration_tests",
         "test_id_prefix": "ninja://chrome/test:sync_integration_tests/"
@@ -1481,7 +1483,7 @@
             "os": "Ubuntu-22.04"
           },
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com",
-          "shards": 7
+          "shards": 5
         },
         "test": "unit_tests",
         "test_id_prefix": "ninja://chrome/test:unit_tests/"

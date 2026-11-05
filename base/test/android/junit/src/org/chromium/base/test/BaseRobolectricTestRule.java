@@ -30,6 +30,7 @@ import org.chromium.base.library_loader.LibraryLoader;
 import org.chromium.base.library_loader.LibraryProcessType;
 import org.chromium.base.lifetime.LifetimeAssert;
 import org.chromium.base.metrics.UmaRecorderHolder;
+import org.chromium.base.shared_preferences.SharedPreferencesManager;
 import org.chromium.base.task.AsyncTask;
 import org.chromium.base.task.PostTask;
 import org.chromium.base.test.BaseRobolectricTestRunner.HelperTestRunner;
@@ -38,6 +39,8 @@ import org.chromium.base.version_info.VersionConstants;
 import org.chromium.build.NativeLibraries;
 import org.chromium.build.annotations.Nullable;
 
+import java.io.OutputStream;
+import java.io.PrintStream;
 import java.lang.reflect.Method;
 import java.util.List;
 import java.util.Locale;
@@ -54,7 +57,12 @@ public class BaseRobolectricTestRule implements TestRule {
     private static final Locale ORIG_LOCALE = Locale.getDefault();
     private static final TimeZone ORIG_TIMEZONE = TimeZone.getDefault();
     private static final String TAG = "BaseRobolectric";
+    // Discards logs between tests. A null stream would crash stray background threads.
+    private static final PrintStream NULL_LOG_STREAM =
+            new PrintStream(OutputStream.nullOutputStream());
     static @Nullable PausedExecutorService sPausedExecutor;
+    private static @Nullable Method sSetDefaultNightModeMethod;
+    private static boolean sSetDefaultNightModeLookupDone;
 
     // Removes the API Level suffix. E.g. "testSomething[28]" -> "testSomething".
     private static String stripBrackets(String methodName) {
@@ -161,17 +169,43 @@ public class BaseRobolectricTestRule implements TestRule {
             sPausedExecutor = null;
             ApplicationStatus.destroyForJUnitTests();
             PathUtils.resetForTesting();
+            SharedPreferencesManager.resetForTesting();
             ThreadUtils.clearUiThreadForTesting();
             Locale.setDefault(ORIG_LOCALE);
             TimeZone.setDefault(ORIG_TIMEZONE);
             ResettersForTesting.afterHooksDidExecute();
-            ShadowLog.stream = null;
+            resetDefaultNightMode();
+            ShadowLog.stream = NULL_LOG_STREAM;
             // Run assertions only when the test has not already failed so as to not mask
             // failures. https://crbug.com/1466313
             if (testFailed) {
                 LifetimeAssert.resetForTesting();
             } else {
                 LifetimeAssert.assertAllInstancesDestroyedForTesting();
+            }
+        }
+    }
+
+    // Use reflection because //base does not depend on androidx.appcompat, and adding
+    // appcompat_java to base_junit_test_support would pull it into non-Chrome suites (e.g. Cronet).
+    private static void resetDefaultNightMode() {
+        if (!sSetDefaultNightModeLookupDone) {
+            sSetDefaultNightModeLookupDone = true;
+            try {
+                Class<?> appCompatDelegateClass =
+                        Class.forName("androidx.appcompat.app.AppCompatDelegate");
+                sSetDefaultNightModeMethod =
+                        appCompatDelegateClass.getMethod("setDefaultNightMode", int.class);
+            } catch (ReflectiveOperationException ignored) {
+                // AppCompatDelegate is not on the classpath for this test suite.
+            }
+        }
+        if (sSetDefaultNightModeMethod != null) {
+            try {
+                // AppCompatDelegate.MODE_NIGHT_FOLLOW_SYSTEM = -1
+                sSetDefaultNightModeMethod.invoke(null, -1);
+            } catch (ReflectiveOperationException e) {
+                throw new RuntimeException(e);
             }
         }
     }

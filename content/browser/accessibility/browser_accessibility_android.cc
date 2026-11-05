@@ -7,6 +7,7 @@
 #include <algorithm>
 
 #include "base/check_deref.h"
+#include "base/containers/to_vector.h"
 #include "base/debug/alias.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
@@ -183,13 +184,12 @@ void PopulateStyleData(const content::BrowserAccessibilityAndroid& node,
     AXStyleData::AddRange(style_data->background_colors,
                           static_cast<int>(node.GetBackgroundColor()), start,
                           end);
-    if (const auto& family = node.GetInheritedFontFamilyName();
-        !family.empty()) {
+    if (auto family = node.GetInheritedFontFamilyName(); !family.empty()) {
       AXStyleData::AddRange(style_data->font_families, std::move(family), start,
                             end);
     }
     // GetLanguage() gets the inherited language locale.
-    if (const auto& lang = node.GetLanguage(); !lang.empty()) {
+    if (auto lang = node.GetLanguage(); !lang.empty()) {
       AXStyleData::AddRange(style_data->locales, std::move(lang), start, end);
     }
   }
@@ -607,6 +607,14 @@ bool BrowserAccessibilityAndroid::IsInterestingOnAndroid() const {
   // already skips over things like iframes and child frames that are
   // technically focusable but shouldn't be exposed as focusable on Android.
   if (IsFocusable()) {
+    // Focusable generic containers with `NameFrom::kNone` and no text of their
+    // own are not interesting when they are not leaves, as their descendants
+    // will be navigated directly.
+    if (GetRole() == ax::mojom::Role::kGenericContainer &&
+        GetNameFrom() == ax::mojom::NameFrom::kNone && !HasTextContent() &&
+        !IsLeaf()) {
+      return false;
+    }
     return true;
   }
 
@@ -1438,7 +1446,7 @@ std::u16string BrowserAccessibilityAndroid::GetRadioButtonStateDescription()
   // these attributes for all nodes automatically, including for nodes of
   // <input type="radio"> which share a common name. If the list is empty,
   // escape with empty string.
-  std::vector<ui::AXNodeID> group_ids =
+  base::span<const ui::AXNodeID> group_ids =
       GetIntListAttribute(ax::mojom::IntListAttribute::kRadioGroupIds);
 
   if (group_ids.empty() || group_ids.size() == 1) {
@@ -1725,6 +1733,14 @@ std::u16string BrowserAccessibilityAndroid::GetAndroidRoleDescription() const {
     case ax::mojom::Role::kVideo:
       // Default is no special role description.
       return GetLocalizedString(IDS_AX_MEDIA_VIDEO_ELEMENT);
+
+    // TODO(b/581440709): All roles with a new className mapping should be added
+    // below (to fallthrough). This ensures that ATs will not rely on
+    // roleDescription to populate role.
+    case ax::mojom::Role::kNote:
+      return features::IsAccessibilityMapToNewClassNamesEnabled()
+                 ? std::u16string()
+                 : GetLocalizedStringForRoleDescription();
     default:
       return GetLocalizedStringForRoleDescription();
   }
@@ -2023,18 +2039,16 @@ bool BrowserAccessibilityAndroid::Scroll(int direction,
 // * addedCount = len(X)
 // * removedCount = len(X') = len(A|'X'B) - (len(AX|B) - len(X))
 int BrowserAccessibilityAndroid::GetTextChangeFromIndex() const {
-  if (::features::IsAccessibilityTextChangeTypesEnabled()) {
-    int committed_text_length =
-        node()->GetIntAttribute(ax::mojom::IntAttribute::kCommittedTextLength);
-    // If the text change is due to a IME text commit.
-    if (committed_text_length > 0) {
-      // Cursor should move to the end of committed text.
-      // TODO(crbug.com/557456841): CHECK-exclusion: Convert to a CHECK once we
-      // are confident it won't be triggered.
-      DCHECK_GE(GetSelectionStart() - committed_text_length, 0);
-      // This is current_cursor_location - len(X).
-      return GetSelectionStart() - committed_text_length;
-    }
+  int committed_text_length =
+      node()->GetIntAttribute(ax::mojom::IntAttribute::kCommittedTextLength);
+  // If the text change is due to a IME text commit.
+  if (committed_text_length > 0) {
+    // Cursor should move to the end of committed text.
+    // TODO(crbug.com/557456841): CHECK-exclusion: Convert to a CHECK once we
+    // are confident it won't be triggered.
+    DCHECK_GE(GetSelectionStart() - committed_text_length, 0);
+    // This is current_cursor_location - len(X).
+    return GetSelectionStart() - committed_text_length;
   }
 
   // This is len(A)
@@ -2042,14 +2056,12 @@ int BrowserAccessibilityAndroid::GetTextChangeFromIndex() const {
 }
 
 int BrowserAccessibilityAndroid::GetTextChangeAddedCount() const {
-  if (::features::IsAccessibilityTextChangeTypesEnabled()) {
-    int committed_text_length =
-        node()->GetIntAttribute(ax::mojom::IntAttribute::kCommittedTextLength);
-    // If the text change is due to a IME text commit.
-    if (committed_text_length > 0) {
-      // This is len(X).
-      return committed_text_length;
-    }
+  int committed_text_length =
+      node()->GetIntAttribute(ax::mojom::IntAttribute::kCommittedTextLength);
+  // If the text change is due to a IME text commit.
+  if (committed_text_length > 0) {
+    // This is len(X).
+    return committed_text_length;
   }
 
   // This is len(AYB) - (len(A) + len(B)), or len(Y), the added characters.
@@ -2057,15 +2069,12 @@ int BrowserAccessibilityAndroid::GetTextChangeAddedCount() const {
 }
 
 int BrowserAccessibilityAndroid::GetTextChangeRemovedCount() const {
-  if (::features::IsAccessibilityTextChangeTypesEnabled()) {
-    int committed_text_length =
-        node()->GetIntAttribute(ax::mojom::IntAttribute::kCommittedTextLength);
-    // If the text change is due to a IME text commit.
-    if (committed_text_length > 0) {
-      // This is len(A|X'B)-(len(AX|B) - len(X))
-      return old_value_.length() -
-             (new_value_.length() - committed_text_length);
-    }
+  int committed_text_length =
+      node()->GetIntAttribute(ax::mojom::IntAttribute::kCommittedTextLength);
+  // If the text change is due to a IME text commit.
+  if (committed_text_length > 0) {
+    // This is len(A|X'B)-(len(AX|B) - len(X))
+    return old_value_.length() - (new_value_.length() - committed_text_length);
   }
 
   // This is len(AXB) - (len(A) + len(B)), or len(X), the removed characters.
@@ -2239,14 +2248,14 @@ std::optional<int> BrowserAccessibilityAndroid::RowCount() const {
     return *GetSetSize();
   }
 
-  return node()->GetTableRowCount();
+  return node()->GetTableDomRowCount();
 }
 
 std::optional<int> BrowserAccessibilityAndroid::ColumnCount() const {
   if (!IsCollection()) {
     return std::nullopt;
   }
-  std::optional<int> ax_cols = node()->GetTableColCount();
+  std::optional<int> ax_cols = node()->GetTableDomColCount();
   if (GetRole() == ax::mojom::Role::kList ||
       GetRole() == ax::mojom::Role::kListBox ||
       GetRole() == ax::mojom::Role::kMenu ||
@@ -2267,11 +2276,11 @@ std::optional<int> BrowserAccessibilityAndroid::RowIndex() const {
   if (pos_in_set && pos_in_set > 0) {
     return *pos_in_set - 1;
   }
-  return node()->GetTableCellRowIndex();
+  return node()->GetTableCellDomRowIndex();
 }
 
 std::optional<int> BrowserAccessibilityAndroid::RowSpan() const {
-  std::optional<int> ax_row_span = node()->GetTableCellRowSpan();
+  std::optional<int> ax_row_span = node()->GetTableCellDomRowSpan();
   if (GetRole() == ax::mojom::Role::kListItem ||
       GetRole() == ax::mojom::Role::kListBoxOption) {
     // For <ol> and <ul> elements on Android (e.g. role kListItem), the AX
@@ -2283,11 +2292,11 @@ std::optional<int> BrowserAccessibilityAndroid::RowSpan() const {
 }
 
 std::optional<int> BrowserAccessibilityAndroid::ColumnIndex() const {
-  return node()->GetTableCellColIndex();
+  return node()->GetTableCellDomColIndex();
 }
 
 std::optional<int> BrowserAccessibilityAndroid::ColumnSpan() const {
-  std::optional<int> ax_col_span = node()->GetTableCellColSpan();
+  std::optional<int> ax_col_span = node()->GetTableCellDomColSpan();
   if (GetRole() == ax::mojom::Role::kListItem ||
       GetRole() == ax::mojom::Role::kListBoxOption) {
     // For <ol> and <ul> elements on Android (e.g. role kListItem), the AX
@@ -2316,8 +2325,9 @@ BrowserAccessibilityAndroid::GetSortDirection() const {
       return ANDROID_SORT_DIRECTION_DESCENDING;
     case ax::mojom::SortDirection::kOther:
       return ANDROID_SORT_DIRECTION_OTHER;
-    case ax::mojom::SortDirection::kNone:
     case ax::mojom::SortDirection::kUnsorted:
+      return ANDROID_SORT_DIRECTION_NONE;
+    case ax::mojom::SortDirection::kNone:
       NOTREACHED();
   }
   return ANDROID_SORT_DIRECTION_NONE;
@@ -2403,9 +2413,9 @@ void BrowserAccessibilityAndroid::GetWordBoundaries(
     std::vector<int32_t>* word_ends,
     int offset) {
   if (GetRole() == ax::mojom::Role::kInlineTextBox) {
-    const std::vector<int32_t>& starts =
+    base::span<const int32_t> starts =
         GetIntListAttribute(ax::mojom::IntListAttribute::kWordStarts);
-    const std::vector<int32_t>& ends =
+    base::span<const int32_t> ends =
         GetIntListAttribute(ax::mojom::IntListAttribute::kWordEnds);
     for (size_t i = 0; i < starts.size(); ++i) {
       word_starts->push_back(offset + starts[i]);
@@ -2475,12 +2485,12 @@ void BrowserAccessibilityAndroid::GetSuggestions(
   int start_offset = 0;
   while (node && node != this) {
     if (node->IsText()) {
-      const std::vector<int32_t>& marker_types =
+      base::span<const int32_t> marker_types =
           node->GetIntListAttribute(ax::mojom::IntListAttribute::kMarkerTypes);
       if (!marker_types.empty()) {
-        const std::vector<int>& marker_starts = node->GetIntListAttribute(
+        base::span<const int32_t> marker_starts = node->GetIntListAttribute(
             ax::mojom::IntListAttribute::kMarkerStarts);
-        const std::vector<int>& marker_ends =
+        base::span<const int32_t> marker_ends =
             node->GetIntListAttribute(ax::mojom::IntListAttribute::kMarkerEnds);
 
         for (size_t i = 0; i < marker_types.size(); ++i) {
@@ -2756,7 +2766,7 @@ BrowserAccessibilityAndroid::GetAndroidContentInvalidErrorMessage() const {
         BrowserAccessibilityAndroid* child =
             static_cast<BrowserAccessibilityAndroid*>(it.get());
         if (child->IsText()) {
-          const std::vector<int32_t>& marker_types = child->GetIntListAttribute(
+          base::span<const int32_t> marker_types = child->GetIntListAttribute(
               ax::mojom::IntListAttribute::kMarkerTypes);
 
           for (int marker_type : marker_types) {
@@ -2985,8 +2995,8 @@ const std::vector<int> BrowserAccessibilityAndroid::GetLabelledByAndroidIds()
   if (!::features::IsAccessibilityLabeledByEnabled()) {
     return std::vector<int>();
   }
-  std::vector<int32_t> ids = GetData().GetIntListAttribute(
-      ax::mojom::IntListAttribute::kLabelledbyIds);
+  std::vector<int32_t> ids = base::ToVector(GetData().GetIntListAttribute(
+      ax::mojom::IntListAttribute::kLabelledbyIds));
 
   // If this is a table, check for a caption child that labels this table.
   if (GetRole() == ax::mojom::Role::kTable ||

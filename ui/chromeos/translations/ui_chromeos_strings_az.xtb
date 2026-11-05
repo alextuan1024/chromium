@@ -519,10 +519,10 @@
 <translation id="5045550434625856497">Yanlış parol</translation>
 <translation id="5059127710849015030">Nepal dilində Transliterasiya</translation>
 <translation id="5068919226082848014">Pizza</translation>
+<translation id="5075336522277785691"><ph name="EXTENSION_NAME" /> proksi əvəzetmə qaydalarını ayarladı</translation>
 <translation id="5081517858322016911"><ph name="TOTAL_FILE_SIZE" /> həcmində fayllar silinəcək</translation>
 <translation id="508423945471810158"><ph name="NUMBER_OF_ITEMS" /> element <ph name="FOLDER_NAME" /> qovluğuna köçürülür</translation>
 <translation id="509429900233858213">Xəta baş verdi.</translation>
-<translation id="5102922915594634436">Sinxronlaşdırılmış qovluqları idarə edin</translation>
 <translation id="5109254780565519649">Xəta baş verdi. Bəzi elementlər bərpa edilməmiş ola bilər.</translation>
 <translation id="5110329002213341433">İngilis dili (Kanada)</translation>
 <translation id="5119780910075847424">Sinxronlaşdırma durdurulub</translation>
@@ -558,7 +558,6 @@
 <translation id="5305688511332277257">Heç biri quraşdırılmayıb</translation>
 <translation id="5317780077021120954">Yadda saxlayın</translation>
 <translation id="5318819489018851358">Linux ilə paylaşın</translation>
-<translation id="5330145655348521461">Bu fayllar başqa masa üstündə açıldı. Ona baxmaq üçün <ph name="USER_NAME" /> (<ph name="MAIL_ADDRESS" />) üzərinə köçürün.</translation>
 <translation id="5330512191124428349">Məlumatı əldə edin</translation>
 <translation id="535792325654997756">Pişiklərin əhatəsində olan adam</translation>
 <translation id="5358764674931277">Çərçivə nisbəti</translation>
@@ -699,7 +698,6 @@
 <translation id="636254897931573416">Domen sonluğunun uyğunluğu dəyəri yanlışdır</translation>
 <translation id="6364301859968397756">Təşkilatın yaddaşı doludur</translation>
 <translation id="6367976544441405720">Furqon</translation>
-<translation id="637062427944097960">Bu fayl başqa masaüstündə açıldı. Ona baxmaq üçün <ph name="USER_NAME" /> (<ph name="MAIL_ADDRESS" />) köçürün.</translation>
 <translation id="6394388407447716302">Yalnız oxunan</translation>
 <translation id="6395575651121294044"><ph name="NUMBER_OF_FILES" /> element</translation>
 <translation id="6407769893376380348"><ph name="FILE_NAME" /> şifrələndiyi üçün köçürülmədi.</translation>

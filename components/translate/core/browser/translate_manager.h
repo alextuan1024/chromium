@@ -143,6 +143,10 @@ class TranslateManager {
   // Full Page Translate menu item.
   bool CanManuallyTranslate(bool menu_logging = false);
 
+  // Returns true iff a selection on the current page could be partially
+  // translated.
+  bool CanPartiallyTranslate();
+
   // Whether or not partial translation is supported for the current target
   // language. Partial translate supports a subset of translation languages,
   // but shares a target language with full page translation.
@@ -247,10 +251,20 @@ class TranslateManager {
  private:
   friend class translate::testing::TranslateManagerTest;
 
+  // Shared helper for CanManuallyTranslate() and CanPartiallyTranslate().
+  bool CanManuallyTranslateInternal(bool menu_logging,
+                                    bool is_partial_translate);
+
   // Sends a translation request to the TranslateDriver.
   void DoTranslatePage(std::string_view translate_script,
                        std::string_view source_lang,
                        std::string_view target_lang);
+
+  // Shows the translate error UI for a PDF that was determined to be
+  // untranslatable.
+  void ShowUntranslatablePdfError(base::i18n::LanguageTag source_lang,
+                                  base::i18n::LanguageTag target_lang,
+                                  bool triggered_from_menu);
 
   // Notifies all registered callbacks of translate errors.
   void NotifyTranslateError(TranslateErrors error_type);

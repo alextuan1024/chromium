@@ -33,6 +33,7 @@
 #import <CoreFoundation/CoreFoundation.h>
 #import <CoreText/CoreText.h>
 #include <Foundation/Foundation.h>
+#include <stdint.h>
 
 #include <memory>
 
@@ -53,6 +54,7 @@
 #include "third_party/blink/renderer/platform/fonts/simple_font_data.h"
 #include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/scheduler/public/main_thread.h"
+#include "third_party/blink/renderer/platform/text/character.h"
 #include "third_party/blink/renderer/platform/web_test_support.h"
 #include "third_party/blink/renderer/platform/wtf/functional.h"
 #include "third_party/blink/renderer/platform/wtf/std_lib_extras.h"
@@ -124,16 +126,74 @@ bool IsAppleColorEmojiFont(CTFontRef font) {
                           kCFCompareCaseInsensitive) == kCFCompareEqualTo);
 }
 
-ScopedCFTypeRef<CTFontRef> GetSubstituteFont(CTFontRef ct_font,
-                                             UChar32 character,
-                                             float size) {
+// Creates a copy of `font` configured with CoreText's default fallback cascade
+// list for `language`, so `CTFontCreateForString` resolves fallback fonts
+// preferred for that language.
+ScopedCFTypeRef<CTFontRef> CreateCopyWithCascadeListForLanguage(
+    CTFontRef font,
+    NSString* language,
+    float size) {
+  NSArray* cascade_list =
+      CFToNSOwnershipCast(CTFontCopyDefaultCascadeListForLanguages(
+          font, NSToCFPtrCast(@[ language ])));
+  if (!cascade_list) {
+    return ScopedCFTypeRef<CTFontRef>(nullptr);
+  }
+  NSDictionary* attributes = @{
+    CFToNSPtrCast(kCTFontCascadeListAttribute) : cascade_list,
+  };
+  ScopedCFTypeRef<CTFontDescriptorRef> descriptor(
+      CTFontDescriptorCreateWithAttributes(NSToCFPtrCast(attributes)));
+  return ScopedCFTypeRef<CTFontRef>(
+      CTFontCreateCopyWithAttributes(font, size, nullptr, descriptor.get()));
+}
+
+enum class ArabicCascadeMode : uint8_t {
+  // Use CoreText's default cascade list (derived from OS AppleLanguages).
+  kSystemDefault = 0,
+  // Override with CoreText's "ar" (Naskh) cascade list so an Urdu OS language
+  // does not force Nastaliq when a non-Nastaliq content locale is specified.
+  kArabic = 1,
+  // Override with CoreText's "ur" (Nastaliq) cascade list.
+  kNastaliq = 2,
+  kMaxValue = kNastaliq,
+};
+
+ArabicCascadeMode GetArabicCascadeMode(const FontDescription& font_description,
+                                       UChar32 character) {
+  if (character < 0x0600 ||
+      unicode::GetScriptBasedOnUnicodeBlock(character) != USCRIPT_ARABIC ||
+      !RuntimeEnabledFeatures::NastaliqScriptEnabled()) {
+    return ArabicCascadeMode::kSystemDefault;
+  }
+  if (!RuntimeEnabledFeatures::MacFontFallbackPreferContentLocaleEnabled()) {
+    const LayoutLocale* locale = font_description.Locale();
+    if (locale && locale->GetScriptForFont() == USCRIPT_ARABIC_NASTALIQ) {
+      return ArabicCascadeMode::kNastaliq;
+    }
+    return ArabicCascadeMode::kSystemDefault;
+  }
+  if (font_description.GetScriptForFont() == USCRIPT_ARABIC_NASTALIQ) {
+    return ArabicCascadeMode::kNastaliq;
+  }
+  if (font_description.Locale()) {
+    return ArabicCascadeMode::kArabic;
+  }
+  return ArabicCascadeMode::kSystemDefault;
+}
+
+ScopedCFTypeRef<CTFontRef> GetSubstituteFont(
+    CTFontRef ct_font,
+    UChar32 character,
+    float size,
+    ArabicCascadeMode arabic_cascade_mode) {
   auto bytes = base::bit_cast<std::array<UInt8, 4>>(character);
   ScopedCFTypeRef<CFStringRef> string(CFStringCreateWithBytes(
       kCFAllocatorDefault, std::data(bytes), std::size(bytes),
       kCFStringEncodingUTF32LE, false));
   CFRange range = CFRangeMake(0, CFStringGetLength(string.get()));
 
-  ScopedCFTypeRef<CTFontRef> substitute_font;
+  ScopedCFTypeRef<CTFontRef> font_to_substitute;
   if (!ct_font) {
     // For some web fonts for which we use FreeType backend (for instance some
     // color fonts), `ct_font` is null. For these fonts we still want to have a
@@ -141,13 +201,23 @@ ScopedCFTypeRef<CTFontRef> GetSubstituteFont(CTFontRef ct_font,
     // standard font from user settings defined in
     // `chrome/app/resources/locale_settings_mac.grd` as the font to substitute
     // from in `CTFontCreateForString`.
-    ScopedCFTypeRef<CTFontRef> font_to_substitute(
+    font_to_substitute.reset(
         CTFontCreateWithName(CFSTR("Times"), size, nullptr));
-    substitute_font.reset(
-        CTFontCreateForString(font_to_substitute.get(), string.get(), range));
-  } else {
-    substitute_font.reset(CTFontCreateForString(ct_font, string.get(), range));
+    ct_font = font_to_substitute.get();
   }
+  if (ct_font && arabic_cascade_mode != ArabicCascadeMode::kSystemDefault)
+      [[unlikely]] {
+    NSString* cascade_language =
+        arabic_cascade_mode == ArabicCascadeMode::kNastaliq ? @"ur" : @"ar";
+    if (ScopedCFTypeRef<CTFontRef> font_with_cascade_list =
+            CreateCopyWithCascadeListForLanguage(ct_font, cascade_language,
+                                                 size)) {
+      font_to_substitute = std::move(font_with_cascade_list);
+      ct_font = font_to_substitute.get();
+    }
+  }
+  ScopedCFTypeRef<CTFontRef> substitute_font(
+      CTFontCreateForString(ct_font, string.get(), range));
 
   if (!substitute_font || IsLastResortFont(substitute_font.get())) {
     return ScopedCFTypeRef<CTFontRef>(nullptr);
@@ -160,8 +230,8 @@ ScopedCFTypeRef<CTFontRef> GetSubstituteFont(CTFontRef ct_font,
   // (text) presentation of emoji. To do that we will replace colored emoji font
   // with the "Apple Symbols" monochromatic emoji font with the color emoji
   // cascade list since it has better glyph coverage.
-  if (IsAppleColorEmojiFont(substitute_font.get()) &&
-      Character::IsEmoji(character)) {
+  if (unicode::IsEmoji(character) &&
+      IsAppleColorEmojiFont(substitute_font.get())) {
     NSArray* lang_list = @[ @"en" ];
     NSArray* cascade_list =
         CFToNSOwnershipCast(CTFontCopyDefaultCascadeListForLanguages(
@@ -199,13 +269,14 @@ bool TraitsMismatch(CTFontSymbolicTraits desired_traits,
 const FontPlatformData* GetAlternateFontPlatformData(
     const FontDescription& font_description,
     UChar32 character,
-    const FontPlatformData& platform_data) {
+    const FontPlatformData& platform_data,
+    ArabicCascadeMode arabic_cascade_mode) {
   CTFontRef ct_font = platform_data.CtFont();
 
   float size = font_description.ComputedPixelSize();
 
   ScopedCFTypeRef<CTFontRef> substitute_font(
-      GetSubstituteFont(ct_font, character, size));
+      GetSubstituteFont(ct_font, character, size, arabic_cascade_mode));
   if (!substitute_font) {
     return nullptr;
   }
@@ -253,14 +324,15 @@ const FontPlatformData* GetAlternateFontPlatformData(
           CTFontGetSymbolicTraits(best_variation.get());
       float best_variation_font_weight =
           get_ct_font_weight(best_variation.get());
-      ScopedCFTypeRef<CFCharacterSetRef> char_set(
-          CTFontCopyCharacterSet(best_variation.get()));
-      if ((!ct_font || best_variation_font_traits != substitute_font_traits ||
-           best_variation_font_weight != substitute_font_weight) &&
-          char_set &&
-          CFCharacterSetIsLongCharacterMember(char_set.get(), character)) {
-        substitute_font = best_variation;
-        substitute_font_traits = CTFontGetSymbolicTraits(substitute_font.get());
+      if (!ct_font || best_variation_font_traits != substitute_font_traits ||
+          best_variation_font_weight != substitute_font_weight) {
+        ScopedCFTypeRef<CFCharacterSetRef> char_set(
+            CTFontCopyCharacterSet(best_variation.get()));
+        if (char_set &&
+            CFCharacterSetIsLongCharacterMember(char_set.get(), character)) {
+          substitute_font = best_variation;
+          substitute_font_traits = best_variation_font_traits;
+        }
       }
     }
   }
@@ -325,39 +397,75 @@ const SimpleFontData* FontCache::PlatformFallbackFontForCharacter(
   const FontPlatformData& platform_data =
       font_data_to_substitute->PlatformData();
 
-  std::optional<CharacterFallbackKey> key;
+  const ArabicCascadeMode arabic_cascade_mode =
+      GetArabicCascadeMode(font_description, character);
 
-  // Caching results of going through the cascade list can introduces
-  // context sensitivity of fallback for individual characters. The
-  // cache may return a font that was the result for a previous fallback
-  // request. But if we had asked CoreText for the fallback for the
-  // current character, the result might have been different. This is
-  // particularly striking for symbols or emoji. Emoji in particular
-  // also need to go through fallback uncached to handle variation
-  // selectors right. To minimize risk of context sensitivity, perform
-  // caching only for ideographic codepoints, Unicode property
+  // For ideographic codepoints (Unicode property [:Ideographic=Yes:]), share a
+  // single cache entry (character == 0) verified via unicharToGlyph(). For
+  // non-ideographic codepoints, include the exact codepoint and fallback
+  // priority in the key so repeated fallback lookups of the same character do
+  // not re-invoke CoreText cascade and typeface creation while avoiding any
+  // cross-character context sensitivity.
+  // U+3006 (IDEOGRAPHIC CLOSING MARK) is the lowest Unicode codepoint with
   // [:Ideographic=Yes:].
-  if (Character::IsIdeographic(character) &&
-      RuntimeEnabledFeatures::MacCharacterFallbackCacheEnabled()) {
-    key = CharacterFallbackKey::Make(
-        platform_data.CtFont(), font_description.Weight().RawValue(),
-        font_description.Style().RawValue(),
-        static_cast<uint8_t>(font_description.Orientation()),
-        font_description.EffectiveFontSize());
+  const bool is_ideographic =
+      character >= 0x3006 && unicode::IsIdeographic(character);
+  const UChar32 key_char = is_ideographic ? 0 : character;
+  uint8_t key_flags;
+  if (RuntimeEnabledFeatures::MacFontFallbackPreferContentLocaleEnabled()) {
+    constexpr uint8_t kFallbackPriorityMask = 0x0F;
+    constexpr uint8_t kSyntheticBoldFlag = 1 << 4;
+    constexpr uint8_t kSyntheticItalicFlag = 1 << 5;
+    constexpr uint8_t kArabicCascadeShift = 6;
+    static_assert(static_cast<uint8_t>(FontFallbackPriority::kMaxEnumValue) <=
+                  kFallbackPriorityMask);
+    static_assert(static_cast<uint8_t>(ArabicCascadeMode::kMaxValue) <=
+                  (0xFFu >> kArabicCascadeShift));
+    key_flags = static_cast<uint8_t>(
+        (platform_data.synthetic_bold_ ? kSyntheticBoldFlag : 0) |
+        (platform_data.synthetic_italic_ ? kSyntheticItalicFlag : 0) |
+        (static_cast<uint8_t>(arabic_cascade_mode) << kArabicCascadeShift) |
+        (is_ideographic ? 0
+                        : (static_cast<uint8_t>(fallback_priority) &
+                           kFallbackPriorityMask)));
+  } else {
+    constexpr uint8_t kFallbackPriorityMask = 0x1F;
+    constexpr uint8_t kSyntheticBoldFlag = 1 << 5;
+    constexpr uint8_t kSyntheticItalicFlag = 1 << 6;
+    constexpr uint8_t kNastaliqFlag = 1 << 7;
+    static_assert(static_cast<uint8_t>(FontFallbackPriority::kMaxEnumValue) <=
+                  kFallbackPriorityMask);
+    const bool is_nastaliq =
+        !is_ideographic &&
+        font_description.GetScriptForFont() == USCRIPT_ARABIC_NASTALIQ &&
+        RuntimeEnabledFeatures::NastaliqScriptEnabled();
+    key_flags = static_cast<uint8_t>(
+        (platform_data.synthetic_bold_ ? kSyntheticBoldFlag : 0) |
+        (platform_data.synthetic_italic_ ? kSyntheticItalicFlag : 0) |
+        (is_nastaliq ? kNastaliqFlag : 0) |
+        (is_ideographic ? 0
+                        : (static_cast<uint8_t>(fallback_priority) &
+                           kFallbackPriorityMask)));
   }
-
+  const std::optional<CharacterFallbackKey> key = CharacterFallbackKey::Make(
+      platform_data.CtFont(), font_description.Weight().RawValue(),
+      font_description.Style().RawValue(),
+      static_cast<uint8_t>(font_description.Orientation()),
+      font_description.EffectiveFontSize(), key_char, key_flags);
   if (key) {
     CharacterFallbackCache::iterator found =
         character_fallback_cache_.find(*key);
-    if (found != character_fallback_cache_.end() &&
+    if (found != character_fallback_cache_.end() && found->value &&
         found->value->PlatformData().TypefaceSp() &&
-        found->value->PlatformData().TypefaceSp()->unicharToGlyph(character)) {
+        (key->character != 0 ||
+         found->value->PlatformData().TypefaceSp()->unicharToGlyph(
+             character))) {
       return found->value;
     }
   }
 
-  const FontPlatformData* alternate_font =
-      GetAlternateFontPlatformData(font_description, character, platform_data);
+  const FontPlatformData* alternate_font = GetAlternateFontPlatformData(
+      font_description, character, platform_data, arabic_cascade_mode);
   if (!alternate_font) {
     return nullptr;
   }
@@ -366,6 +474,10 @@ const SimpleFontData* FontCache::PlatformFallbackFontForCharacter(
       FontDataFromFontPlatformData(alternate_font);
 
   if (key) {
+    constexpr wtf_size_t kMaxCharacterFallbackCacheEntries = 512;
+    if (character_fallback_cache_.size() >= kMaxCharacterFallbackCacheEntries) {
+      character_fallback_cache_.clear();
+    }
     character_fallback_cache_.insert(*key, fallback_font_data);
   }
 

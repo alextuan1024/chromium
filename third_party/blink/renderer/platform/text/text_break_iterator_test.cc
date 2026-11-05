@@ -6,6 +6,8 @@
 
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/blink/renderer/platform/testing/runtime_enabled_features_test_helpers.h"
+#include "third_party/blink/renderer/platform/wtf/text/string_builder.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
 
 namespace blink {
@@ -38,7 +40,7 @@ class TextBreakIteratorTest : public testing::Test {
   void TestIsBreakable(const Vector<int> expected_break_positions,
                        const LazyLineBreakIterator& break_iterator) {
     Vector<int> break_positions;
-    for (unsigned i = 0; i <= test_string_.length(); i++) {
+    for (wtf_size_t i = 0; i <= test_string_.length(); ++i) {
       if (break_iterator.IsBreakable(i)) {
         break_positions.push_back(i);
       }
@@ -54,7 +56,7 @@ class TextBreakIteratorTest : public testing::Test {
   void TestNextBreakOpportunity(const Vector<int> expected_break_positions,
                                 const LazyLineBreakIterator& break_iterator) {
     Vector<int> break_positions;
-    for (unsigned i = 0; i <= test_string_.length(); i++) {
+    for (wtf_size_t i = 0; i <= test_string_.length(); ++i) {
       i = break_iterator.NextBreakOpportunity(i);
       break_positions.push_back(i);
     }
@@ -64,14 +66,14 @@ class TextBreakIteratorTest : public testing::Test {
         << break_iterator.BreakSpace();
   }
 
-  unsigned TestLengthOfGraphemeCluster() {
+  wtf_size_t TestLengthOfGraphemeCluster() {
     return LengthOfGraphemeCluster(test_string_);
   }
 
-  Vector<unsigned> GraphemesClusterList(String input,
-                                        unsigned start,
-                                        unsigned length) {
-    Vector<unsigned> result(length);
+  Vector<wtf_size_t> GraphemesClusterList(String input,
+                                          wtf_size_t start,
+                                          wtf_size_t length) {
+    Vector<wtf_size_t> result(length);
     ::blink::GraphemesClusterList(StringView(input, start, length), result);
     return result;
   }
@@ -151,6 +153,18 @@ TEST_F(TextBreakIteratorTest, Strictness) {
   iterator.SetStrictness(LineBreakStrictness::kStrict);
   EXPECT_EQ(iterator.NextBreakOpportunity(0), 2u);
   EXPECT_EQ(iterator.LocaleWithKeyword(), "ja@lb=strict");
+
+  iterator.SetLocale(nullptr);
+  EXPECT_EQ(iterator.NextBreakOpportunity(0), 2u);
+  EXPECT_EQ(iterator.LocaleWithKeyword(), "@lb=strict");
+
+  iterator.SetLocale(LayoutLocale::Get(g_empty_atom));
+  EXPECT_EQ(iterator.NextBreakOpportunity(0), 2u);
+  EXPECT_EQ(iterator.LocaleWithKeyword(), "@lb=strict");
+
+  iterator.SetStrictness(LineBreakStrictness::kDefault);
+  EXPECT_EQ(iterator.NextBreakOpportunity(0), 1u);
+  EXPECT_EQ(iterator.LocaleWithKeyword(), "");
 
   iterator.SetLocale(nullptr);
   EXPECT_EQ(iterator.NextBreakOpportunity(0), 1u);
@@ -319,23 +333,24 @@ TEST_F(TextBreakIteratorTest, LengthOfGraphemeCluster) {
 
 TEST_F(TextBreakIteratorTest, GraphemesClusterListTest) {
   EXPECT_EQ(GraphemesClusterList(u"hello", 0, 5),
-            Vector<unsigned>({0, 1, 2, 3, 4}));
-  EXPECT_EQ(GraphemesClusterList(u"hello", 2, 2), Vector<unsigned>({0, 1}));
+            Vector<wtf_size_t>({0, 1, 2, 3, 4}));
+  EXPECT_EQ(GraphemesClusterList(u"hello", 2, 2), Vector<wtf_size_t>({0, 1}));
   EXPECT_EQ(GraphemesClusterList(u"voila\u0300!", 0, 7),
-            Vector<unsigned>({0, 1, 2, 3, 4, 4, 5}));
+            Vector<wtf_size_t>({0, 1, 2, 3, 4, 4, 5}));
   EXPECT_EQ(GraphemesClusterList(u"di\u0303\u031c\u0337!", 0, 6),
-            Vector<unsigned>({0, 1, 1, 1, 1, 2}));
-  EXPECT_EQ(GraphemesClusterList(u"🇨🇦", 0, 4), Vector<unsigned>({0, 0, 0, 0}));
+            Vector<wtf_size_t>({0, 1, 1, 1, 1, 2}));
+  EXPECT_EQ(GraphemesClusterList(u"🇨🇦", 0, 4),
+            Vector<wtf_size_t>({0, 0, 0, 0}));
 
   EXPECT_EQ(GraphemesClusterList(u"🏳️‍🌈", 0, 6),
-            Vector<unsigned>({0, 0, 0, 0, 0, 0}));
+            Vector<wtf_size_t>({0, 0, 0, 0, 0, 0}));
   // NO ZWJ on this sequence.
   EXPECT_EQ(GraphemesClusterList(u"🏳🌈", 0, 4),
-            Vector<unsigned>({0, 0, 1, 1}));
+            Vector<wtf_size_t>({0, 0, 1, 1}));
 
   // ARABIC LETTER MEEM + ARABIC FATHA
   EXPECT_EQ(GraphemesClusterList(u"\u0645\u064E", 0, 2),
-            Vector<unsigned>({0, 0}));
+            Vector<wtf_size_t>({0, 0}));
 }
 
 // word-break:break-all should NOT break before BA-class characters (LB21).
@@ -379,6 +394,43 @@ TEST_F(TextBreakIteratorTest, HyphenMinusBeforeHighLatin) {
   MatchLineBreaks({6, 11});
   SetTestString("Lorem-èpsum");
   MatchLineBreaks({6, 11});
+}
+
+TEST_P(BreakTypeTest, RightSingleQuotationMark) {
+  // The fast path for U+2019 should not change break opportunities next to it,
+  // for all characters in the fast table range and some CJK characters, in
+  // locales and strictness values that use different ICU rules.
+  StringBuilder builder;
+  for (UChar ch = '!'; ch <= 0xFF; ++ch) {
+    builder.Append(ch);
+    builder.Append(uchar::kRightSingleQuotationMark);
+  }
+  builder.Append(String(u"あ’一’、’。’，’"));
+  const String text = builder.ReleaseString();
+
+  auto break_positions = [&](const char* locale, LineBreakStrictness strictness,
+                             bool enable_fast_path) {
+    ScopedBreakIteratorRightSingleQuotationMarkForTest scoped_feature(
+        enable_fast_path);
+    LazyLineBreakIterator break_iterator(text, AtomicString(locale));
+    break_iterator.SetBreakType(GetParam());
+    break_iterator.SetStrictness(strictness);
+    Vector<wtf_size_t> positions;
+    for (wtf_size_t i = 0; i <= text.length(); ++i) {
+      i = break_iterator.NextBreakOpportunity(i);
+      positions.push_back(i);
+    }
+    return positions;
+  };
+  for (const char* locale : {"", "zh", "ja"}) {
+    for (LineBreakStrictness strictness :
+         {LineBreakStrictness::kDefault, LineBreakStrictness::kNormal,
+          LineBreakStrictness::kStrict, LineBreakStrictness::kLoose}) {
+      EXPECT_EQ(break_positions(locale, strictness, true),
+                break_positions(locale, strictness, false))
+          << locale << " " << static_cast<int>(strictness);
+    }
+  }
 }
 
 TEST_F(TextBreakIteratorTest, WordBreakSwedish) {

@@ -18,7 +18,6 @@ import androidx.annotation.VisibleForTesting;
 import androidx.recyclerview.widget.GridLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 
-import org.chromium.base.Callback;
 import org.chromium.base.Log;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
@@ -26,7 +25,6 @@ import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.ntp_customization.BottomSheetDelegate;
 import org.chromium.chrome.browser.ntp_customization.NtpCustomizationConfigManager;
 import org.chromium.chrome.browser.ntp_customization.NtpCustomizationMetricsUtils;
-import org.chromium.chrome.browser.ntp_customization.NtpCustomizationUtils;
 import org.chromium.chrome.browser.ntp_customization.NtpCustomizationUtils.NtpBackgroundType;
 import org.chromium.chrome.browser.ntp_customization.R;
 import org.chromium.chrome.browser.ntp_customization.theme.ThemeBottomSheetObserver;
@@ -54,7 +52,7 @@ public class NtpChromeColorsCoordinator implements ThemeBottomSheetObserver {
     private final PropertyModel mPropertyModel;
     private final int mItemWidth;
     private final int mSpacing;
-    private final Callback<Integer> mOnChromeColorSelectedCallback;
+    private final Runnable mOnChromeColorSelectedCallback;
 
     // The color info when the Chrome color bottom sheet is created. We compare it with the newly
     // selected one to see if recreate() is necessary when the bottom sheet is closed. This color
@@ -77,9 +75,7 @@ public class NtpChromeColorsCoordinator implements ThemeBottomSheetObserver {
      * @param onChromeColorSelectedCallback The callback to run when a color is selected.
      */
     public NtpChromeColorsCoordinator(
-            Context context,
-            BottomSheetDelegate delegate,
-            Callback<Integer> onChromeColorSelectedCallback) {
+            Context context, BottomSheetDelegate delegate, Runnable onChromeColorSelectedCallback) {
         mContext = context;
         mDelegate = delegate;
         mOnChromeColorSelectedCallback = onChromeColorSelectedCallback;
@@ -139,12 +135,12 @@ public class NtpChromeColorsCoordinator implements ThemeBottomSheetObserver {
         NtpThemeColorInfo currentColorInfo =
                 NtpCustomizationConfigManager.getInstance().getNtpThemeColorInfo();
 
-        // Initializes the state of the daily refresh toggle.
+        // Initializes the state of the daily refresh toggle from the color that is applied now.
+        // SharedPreferences isn't used, because it may hold a synced theme that isn't applied yet.
         mIsDailyRefreshEnabled =
-                NtpCustomizationConfigManager.getInstance().getBackgroundType()
-                                == NtpBackgroundType.CHROME_COLOR
-                        && NtpCustomizationUtils
-                                .getIsChromeColorDailyRefreshEnabledFromSharedPreference();
+                NtpCustomizationConfigManager.getInstance().getNtpBackgroundData()
+                                instanceof NtpBackgroundDataColor colorData
+                        && colorData.isChromeColorDailyRefreshEnabled();
         mPropertyModel.set(
                 NtpChromeColorsProperties.IS_DAILY_REFRESH_SWITCH_CHECKED, mIsDailyRefreshEnabled);
 
@@ -163,21 +159,41 @@ public class NtpChromeColorsCoordinator implements ThemeBottomSheetObserver {
         mPropertyModel.set(NtpChromeColorsProperties.HIGHLIGHTED_ITEM_INDEX, primaryColorIndex);
     }
 
+    /**
+     * Called when the daily refresh switch changes state, either by the user or when {@link
+     * #prepareToShow()} or {@link #onBackgroundTypeChanged()} set it programmatically.
+     */
     @VisibleForTesting
     void onDailyRefreshSwitchToggled(CompoundButton buttonView, boolean isChecked) {
         mIsDailyRefreshToggled = true;
         mIsDailyRefreshEnabled = isChecked;
-        NtpCustomizationUtils.setIsChromeColorDailyRefreshEnabledToSharedPreference(isChecked);
 
-        if (isChecked
-                && NtpCustomizationConfigManager.getInstance().getBackgroundType()
-                        != NtpBackgroundType.CHROME_COLOR) {
-            // If the current background type isn't Chrome color and user turns on daily refresh,
-            // highlights the first color info.
-            mPropertyModel.set(
-                    NtpChromeColorsProperties.HIGHLIGHTED_ITEM_INDEX,
-                    DAILY_REFRESH_DEFAULT_COLOR_POSITION);
+        NtpCustomizationConfigManager configManager = NtpCustomizationConfigManager.getInstance();
+        if (!(configManager.getNtpBackgroundData() instanceof NtpBackgroundDataColor colorData)) {
+            // If the current background isn't a Chrome color and user turns on daily refresh,
+            // highlights the first color info. The adapter reports the newly highlighted color to
+            // onItemClicked(), which saves it with daily refresh on.
+            if (isChecked) {
+                mPropertyModel.set(
+                        NtpChromeColorsProperties.HIGHLIGHTED_ITEM_INDEX,
+                        DAILY_REFRESH_DEFAULT_COLOR_POSITION);
+            }
+            return;
         }
+
+        // Nothing to do if the current color already has this setting. Showing the bottom sheet
+        // gets here, because checking the switch from code notifies this listener too.
+        if (colorData.isChromeColorDailyRefreshEnabled() == isChecked) return;
+
+        // Saves the current color again with the new setting, so that the setting is stored with
+        // the color in native preferences and synced to other devices.
+        configManager.onBackgroundDataChanged(
+                mContext,
+                new NtpBackgroundDataColor(
+                        PlatformType.ANDROID, isChecked, colorData.getNtpThemeColorInfo()));
+        // The color with and without daily refresh are different entries in the theme history. The
+        // bottom sheet only saves to the history on close when the color changed, so save it here.
+        configManager.maybeSaveUserSelectedBackgroundTypeToSharedPreference(mContext);
     }
 
     /**
@@ -195,17 +211,18 @@ public class NtpChromeColorsCoordinator implements ThemeBottomSheetObserver {
         if (ntpThemeColorInfo instanceof NtpThemeColorFromHexInfo colorFromHexInfo) {
             backgroundData =
                     new NtpBackgroundDataCustomizedColor(PlatformType.ANDROID, colorFromHexInfo);
+            mLastClickedColorInfo = null;
         } else {
             backgroundData =
                     new NtpBackgroundDataColor(
                             PlatformType.ANDROID, mIsDailyRefreshEnabled, ntpThemeColorInfo);
+            mLastClickedColorInfo = ntpThemeColorInfo;
         }
 
         NtpCustomizationConfigManager.getInstance()
                 .onBackgroundDataChanged(mContext, backgroundData);
 
-        mOnChromeColorSelectedCallback.onResult(ntpThemeColorInfo.id);
-        mLastClickedColorInfo = ntpThemeColorInfo;
+        mOnChromeColorSelectedCallback.run();
     }
 
     /** Cleans up the resources used by this coordinator. */

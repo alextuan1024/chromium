@@ -6,6 +6,7 @@
 #define CHROME_BROWSER_UI_VIEWS_WEBID_FEDCM_ACCOUNT_SELECTION_VIEW_DESKTOP_H_
 
 #include <memory>
+#include <optional>
 
 #include "base/functional/function_ref.h"
 #include "base/gtest_prod_util.h"
@@ -29,6 +30,15 @@
 #include "ui/views/widget/widget_observer.h"
 #include "ui/views/window/dialog_delegate.h"
 
+namespace ambient_signin {
+class AmbientLoginPermissionController;
+}  // namespace ambient_signin
+
+namespace permissions {
+struct PermissionPromptDecision;
+struct PermissionRequestData;
+}  // namespace permissions
+
 namespace tabs {
 class TabInterface;
 class ScopedAcceptMouseEventsWhileWindowInactive;
@@ -46,7 +56,7 @@ class AccountSelectionViewBase;
 //  * tabs::TabInterface, which represents the tab in which the UI is shown.
 // If either goes away, then this class should be destroyed. This class is owned
 // as a unique_ptr by IdentityDialogController which ensures that the lifetime
-// is scoped to that of content::webid::Request. However, the lifetime
+// is scoped to that of content::webid::RequestHandler. However, the lifetime
 // must be manually scoped to the tabs::TabInterface. This is done by:
 //  * Registering callbacks on tabs::TabInterface for relevant changes.
 //  * If the tab goes away, Close() is called.
@@ -89,6 +99,11 @@ class FedCmAccountSelectionView : public AccountSelectionView,
     // FedCM is shown as a page action (omnibox chip) and does not have an
     // associated widget.
     AMBIENT,
+
+    // FedCM is shown in the ambient bubble (AmbientLoginPermissionBubbleView),
+    // which is owned by PermissionRequestManager rather than by this class.
+    // There is no associated widget owned by this class.
+    AMBIENT_BUBBLE,
   };
 
   FedCmAccountSelectionView(AccountSelectionView::Delegate* delegate,
@@ -128,6 +143,8 @@ class FedCmAccountSelectionView : public AccountSelectionView,
                            const IdentityRequestAccountPtr& account,
                            Account::SignInMode sign_in_mode,
                            blink::mojom::RpMode rp_mode) override;
+  bool ShowNativeAppUi(
+      const content::NativeAppRequestOptions& request_options) override;
 
   void SetCanShowUi(bool can_show_ui) override;
 
@@ -188,7 +205,18 @@ class FedCmAccountSelectionView : public AccountSelectionView,
   bool OnAccountSelected(const IdentityRequestAccountPtr& account,
                          const ui::Event& event);
 
-  // Called when the user clicks "privacy policy" or "terms of service" link.
+  // Returns whether selecting `account` in the bubble replaces the bubble with
+  // the modal dialog's request permission sheet, which also shows the identity
+  // provider's links, instead of asking for permission in the bubble. If so,
+  // the bubble doesn't show disclosure text for `account`. True only with
+  // `kFedCmIdpLinks`, and if `account` needs permission to share its `fields`.
+  // With multiple identity providers, it also requires
+  // `kFedCmActiveModeMultipleIdentityProviders` to be enabled.
+  bool ShouldSwitchToModalForPermission(
+      const content::IdentityRequestAccount& account) const;
+
+  // Called when the user clicks the RP's "privacy policy" or "terms of service"
+  // link, or one of the identity provider's links (`LinkType::IDP_LINK`).
   void OnLinkClicked(
       content::IdentityRequestDialogController::LinkType link_type,
       const GURL& url,
@@ -206,6 +234,12 @@ class FedCmAccountSelectionView : public AccountSelectionView,
                     const GURL& idp_login_url,
                     const ui::Event& event);
 
+  // Called when the user clicks an IDP row on the IDP picker. Like
+  // OnLoginToIdP(), but ignored while a pop-up is already open.
+  void OnIdpPickerRowClicked(const GURL& idp_config_url,
+                             const GURL& idp_login_url,
+                             const ui::Event& event);
+
   // Called when the user clicks "got it" button.
   void OnGotIt(const ui::Event& event);
 
@@ -215,6 +249,10 @@ class FedCmAccountSelectionView : public AccountSelectionView,
 
   // Called when the user clicks on the 'Choose an account' button
   void OnChooseAnAccountClicked();
+
+  // Called when the user clicks the 'Use a different account' button on the
+  // multi-IDP modal account chooser. Shows the IDP picker.
+  void OnShowIdpPickerClicked(const ui::Event& event);
 
   // Public for testing.
   AccountSelectionViewBase* account_selection_view() {
@@ -355,6 +393,10 @@ class FedCmAccountSelectionView : public AccountSelectionView,
     // with IDP to communicate with RP on the button flow modal.
     REQUEST_PERMISSION,
 
+    // User is shown the list of IDPs so that they can sign in to one of them.
+    // Only reachable on the modal with multiple IDPs.
+    IDP_PICKER,
+
     // Shown after the user has granted permission while the id token is being
     // fetched.
     VERIFYING,
@@ -399,10 +441,10 @@ class FedCmAccountSelectionView : public AccountSelectionView,
   // the background, becomes foregrounded.
   void BackgroundTaskTabForegrounded(tabs::TabInterface* tab);
 
-  // Calls a delegate method while guarding against `this` being deleted.
-  // Returns false if `this` got deleted. In that case, the caller must early
-  // return.
-  [[nodiscard]] bool NotifyDelegate(base::FunctionRef<void()> notify_callback);
+  // Runs `callback` while guarding against `this` being deleted, e.g. by
+  // a delegate method or by closing the pop-up window. Returns false if `this`
+  // got deleted. In that case, the caller must early return.
+  [[nodiscard]] bool RunAndCheckAlive(base::FunctionRef<void()> callback);
 
   // Shows the verifying sheet.
   void ShowVerifyingSheet(const IdentityRequestAccountPtr& account);
@@ -426,6 +468,50 @@ class FedCmAccountSelectionView : public AccountSelectionView,
   // Returns whether the ambient UI is enabled.
   bool IsAmbientEnabled() const;
 
+  // Returns whether the ambient bubble is enabled. This is controlled by the
+  // fedcm-ambient-bubble flag and is independent of `IsAmbientEnabled()`.
+  bool IsAmbientBubbleEnabled() const;
+
+  // Attempts to show the accounts in the ambient bubble. Returns false if the
+  // ambient bubble cannot be used for this request, in which case the caller
+  // should fall back to the regular UI. This isn't known to destroy `this`,
+  // but callers must check either way, e.g. with `RunAndCheckAlive()`.
+  bool ShowAmbientBubble(
+      const std::vector<IdentityProviderDataPtr>& idp_list,
+      const std::vector<IdentityRequestAccountPtr>& accounts,
+      const std::vector<IdentityRequestAccountPtr>& new_accounts);
+
+  // Called when the user accepts the ambient bubble, right before
+  // `OnAmbientBubbleDecided()`. `index` is the index of the selected account in
+  // `accounts_`.
+  void OnAmbientBubbleAccountSelected(size_t index);
+
+  // Called when the user makes a decision on the ambient bubble, or when the
+  // bubble is otherwise dismissed.
+  void OnAmbientBubbleDecided(
+      const permissions::PermissionPromptDecision& decision,
+      const permissions::PermissionRequestData& request_data);
+
+  // Handles the ambient bubble decision. Posted from `OnAmbientBubbleDecided()`
+  // so that it runs after PermissionRequestManager has finished processing the
+  // decision. `selected_account_index` is the index of the account that the
+  // user selected in `accounts_`, or nullopt if the bubble was dismissed.
+  void HandleAmbientBubbleDecision(
+      std::optional<size_t> selected_account_index);
+
+  // Shows the request permission dialog with the disclosure text for `account`
+  // in the modal dialog, in passive mode: after the user accepted the ambient
+  // bubble, or selected `account` in the bubble when
+  // `ShouldSwitchToModalForPermission()` is true. Used for accounts that
+  // require disclosure text, e.g. new accounts. The rest of the flow is handled
+  // by the regular modal dialog logic.
+  void ShowRequestPermissionModal(const IdentityRequestAccountPtr& account);
+
+  // Cancels the outstanding ambient bubble request, if any, e.g. because the
+  // FedCM UI is closed or replaced. A decision on the bubble that has not been
+  // handled yet is dropped as well. The delegate is not notified.
+  void CancelAmbientBubble();
+
   // Shows the multi account picker and updates the internal state.
   void ShowMultiAccountPicker(
       const std::vector<IdentityRequestAccountPtr>& accounts,
@@ -439,6 +525,11 @@ class FedCmAccountSelectionView : public AccountSelectionView,
   // This should be called exactly once when the dialog is dismissed.
   using DismissReason = content::IdentityRequestDialogController::DismissReason;
   void LogDialogDismissal(DismissReason dismiss_reason);
+
+  // Closes the existing dialog widget and resets `account_selection_view_`
+  // without notifying `delegate_` when `CreateOrUpdateViewAndWidget()` cannot
+  // reuse them, e.g. for a multi-IDP bubble or a dialog without modal support.
+  void MaybeResetViewAndWidget(bool has_modal_support);
 
   // Creates account_selection_view_ (different subclasses for
   // bubble/modal) and dialog_widget_ if it hasn't been created yet.
@@ -456,11 +547,16 @@ class FedCmAccountSelectionView : public AccountSelectionView,
                    views::Widget::ClosedReason reason,
                    bool hide_widget);
 
-  // Called when the user closes the dialog. This is called by
-  // OnCloseButtonClicked() if the user clicks the close button, and directly
-  // called by views toolkit if the user dismisses with another mechanism such
-  // as pressing "esc".
+  // Called when the user closes the dialog. This is called (in a separate task)
+  // by `OnCloseButtonClicked()` if the user clicks the close button, and
+  // directly called by views toolkit if the user dismisses with another
+  // mechanism such as pressing "esc".
   void OnUserClosedDialog(views::Widget::ClosedReason reason);
+
+  // Closes the dialog for a click on the close button, unless `closing_widget`
+  // was destroyed or replaced since the click. Posted by
+  // `OnCloseButtonClicked()`.
+  void CloseDialogForCloseButton(base::WeakPtr<views::Widget> closing_widget);
 
   // This method calculates whether the dialog should be visible. This method
   // always updates the dialog position if the dialog should be visible. If the
@@ -470,7 +566,7 @@ class FedCmAccountSelectionView : public AccountSelectionView,
   // This ensures the complex logic to determine visibility is centralized.
   void UpdateDialogVisibilityAndPosition();
 
-  // Called when any of the Show*() methods is called.
+  // Called when any of the `Show*()` methods is called.
   void ResetDialogWidgetStateOnAnyShow();
 
   // Returns the intended bounds and position of the dialog. Rather than
@@ -669,6 +765,24 @@ class FedCmAccountSelectionView : public AccountSelectionView,
   //    between the UI state and the request lifecycle.
   std::optional<ui::ScopedUnownedUserData<AccountSelectionView>>
       scoped_user_data_;
+
+  // Whether an ambient bubble request added by this class is outstanding, i.e.
+  // has not been decided or cancelled yet.
+  bool ambient_bubble_request_pending_{false};
+
+  // The controller that the outstanding ambient bubble request was added to.
+  base::WeakPtr<ambient_signin::AmbientLoginPermissionController>
+      ambient_login_permission_controller_;
+
+  // The index of the account that the user selected in the ambient bubble, in
+  // `accounts_`. Set when the user accepts the bubble, and consumed by
+  // `OnAmbientBubbleDecided()` right after.
+  std::optional<size_t> ambient_bubble_selected_account_index_;
+
+  // Used for the callbacks of the ambient bubble request, so that they can be
+  // dropped when the bubble is cancelled.
+  base::WeakPtrFactory<FedCmAccountSelectionView>
+      ambient_bubble_weak_ptr_factory_{this};
 
   base::WeakPtrFactory<FedCmAccountSelectionView> weak_ptr_factory_{this};
 };

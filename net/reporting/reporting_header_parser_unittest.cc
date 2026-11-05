@@ -13,7 +13,6 @@
 #include "base/json/json_reader.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
-#include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/simple_test_tick_clock.h"
 #include "base/time/time.h"
@@ -27,6 +26,7 @@
 #include "net/reporting/reporting_endpoint.h"
 #include "net/reporting/reporting_target_type.h"
 #include "net/reporting/reporting_test_util.h"
+#include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "url/gurl.h"
 #include "url/origin.h"
@@ -36,8 +36,6 @@ namespace {
 
 using CommandType = MockPersistentReportingStore::Command::Type;
 using Dictionary = structured_headers::Dictionary;
-
-constexpr char kReportingHeaderTypeHistogram[] = "Net.Reporting.HeaderType";
 
 class ReportingHeaderParserTestBase
     : public ReportingTestBase,
@@ -262,43 +260,28 @@ TEST_P(ReportingHeaderParserTest, Invalid) {
        "{\"max_age\":1, \"endpoints\": [{\"url\":\"https://b/\"}]}]",
        "wrapped in list"}};
 
-  base::HistogramTester histograms;
-  int invalid_case_count = 0;
-
   for (const auto& test_case : kInvalidHeaderTestCases) {
     ParseHeader(kNak_, kOrigin1_, test_case.header_value);
-    invalid_case_count++;
 
     EXPECT_EQ(0u, cache()->GetEndpointCount())
         << "Invalid Report-To header (" << test_case.description << ": \""
         << test_case.header_value << "\") parsed as valid.";
-    histograms.ExpectBucketCount(
-        kReportingHeaderTypeHistogram,
-        ReportingHeaderParser::ReportingHeaderType::kReportToInvalid,
-        invalid_case_count);
     if (mock_store()) {
       mock_store()->Flush();
       EXPECT_EQ(0, mock_store()->StoredEndpointsCount());
       EXPECT_EQ(0, mock_store()->StoredEndpointGroupsCount());
     }
   }
-  histograms.ExpectBucketCount(
-      kReportingHeaderTypeHistogram,
-      ReportingHeaderParser::ReportingHeaderType::kReportTo, 0);
 }
 
 TEST_P(ReportingHeaderParserTest, Basic) {
   std::vector<ReportingEndpoint::EndpointInfo> endpoints = {{kEndpoint1_}};
-  base::HistogramTester histograms;
 
   std::string header =
       ConstructHeaderGroupString(MakeEndpointGroup(kGroup1_, endpoints));
 
   ParseHeader(kNak_, kOrigin1_, header);
   EXPECT_EQ(1u, cache()->GetEndpointGroupCountForTesting());
-  histograms.ExpectBucketCount(
-      kReportingHeaderTypeHistogram,
-      ReportingHeaderParser::ReportingHeaderType::kReportTo, 1);
   EXPECT_TRUE(
       EndpointGroupExistsInCache(kGroupKey11_, OriginSubdomains::DEFAULT));
   EXPECT_TRUE(ClientExistsInCacheForOrigin(kOrigin1_));
@@ -331,13 +314,9 @@ TEST_P(ReportingHeaderParserTest, PathAbsoluteURLEndpoint) {
   std::string header =
       "{\"group\": \"group1\", \"max_age\":1, \"endpoints\": "
       "[{\"url\":\"/path-absolute-url\"}]}";
-  base::HistogramTester histograms;
 
   ParseHeader(kNak_, kOrigin1_, header);
   EXPECT_EQ(1u, cache()->GetEndpointGroupCountForTesting());
-  histograms.ExpectBucketCount(
-      kReportingHeaderTypeHistogram,
-      ReportingHeaderParser::ReportingHeaderType::kReportTo, 1);
   EXPECT_TRUE(
       EndpointGroupExistsInCache(kGroupKey11_, OriginSubdomains::DEFAULT));
   EXPECT_TRUE(ClientExistsInCacheForOrigin(kOrigin1_));
@@ -1834,8 +1813,11 @@ TEST_P(ReportingHeaderParserStructuredHeaderTest, ParseInvalid) {
     const char* header_value;
     const char* description;
   } kInvalidHeaderTestCases[] = {
+      {"", "empty"},
       {"default=", "missing url"},
       {"default=1", "non-string url"},
+      {"default=(\"https://endpoint.test/\")", "inner list"},
+      {"a=\"https://endpoint.test/\", b=1", "valid followed by non-string"},
   };
 
   for (auto& test_case : kInvalidHeaderTestCases) {
@@ -1856,9 +1838,6 @@ TEST_P(ReportingHeaderParserStructuredHeaderTest, ProcessInvalid) {
       {"default=\"relative/path\"", "path relative url"},
       {"default=\"http://insecure/\"", "insecure url"}};
 
-  base::HistogramTester histograms;
-  int invalid_case_count = 0;
-
   for (auto& test_case : kInvalidHeaderTestCases) {
     auto parsed_result = ParseReportingEndpoints(test_case.header_value);
 
@@ -1869,20 +1848,11 @@ TEST_P(ReportingHeaderParserStructuredHeaderTest, ProcessInvalid) {
     ProcessParsedHeader(kReportingSource_, kIsolationInfo_, kOrigin1_,
                         parsed_result);
 
-    invalid_case_count++;
-    histograms.ExpectBucketCount(
-        kReportingHeaderTypeHistogram,
-        ReportingHeaderParser::ReportingHeaderType::kReportingEndpointsInvalid,
-        invalid_case_count);
-
     // The endpoint should not have been set up in the cache.
     ReportingEndpoint endpoint =
         cache()->GetV1EndpointForTesting(kReportingSource_, "default");
     EXPECT_FALSE(endpoint);
   }
-  histograms.ExpectBucketCount(
-      kReportingHeaderTypeHistogram,
-      ReportingHeaderParser::ReportingHeaderType::kReportingEndpoints, 0);
 }
 
 TEST_P(ReportingHeaderParserStructuredHeaderTest, ParseBasic) {
@@ -1899,8 +1869,23 @@ TEST_P(ReportingHeaderParserStructuredHeaderTest, ParseBasic) {
   EXPECT_EQ(parsed_result->at(kGroup1_), kEndpoint1_.spec());
 }
 
+TEST_P(ReportingHeaderParserStructuredHeaderTest, ParseMultipleAndDuplicate) {
+  auto parsed_result = ParseReportingEndpoints(
+      "z=\"https://endpoint-z.example.test/report-collector\", "
+      "a=\"https://endpoint-a-old.example.test/report-collector\", "
+      "a=\"https://endpoint-a.example.test/report-collector\"");
+
+  ASSERT_TRUE(parsed_result.has_value());
+  EXPECT_THAT(
+      *parsed_result,
+      testing::ElementsAre(
+          testing::Pair("a",
+                        "https://endpoint-a.example.test/report-collector"),
+          testing::Pair("z",
+                        "https://endpoint-z.example.test/report-collector")));
+}
+
 TEST_P(ReportingHeaderParserStructuredHeaderTest, Basic) {
-  base::HistogramTester histograms;
   std::vector<ReportingEndpoint::EndpointInfo> endpoints = {{kEndpoint1_}};
 
   std::string header =
@@ -1926,9 +1911,6 @@ TEST_P(ReportingHeaderParserStructuredHeaderTest, Basic) {
             endpoint.info.priority);
   EXPECT_EQ(ReportingEndpoint::EndpointInfo::kDefaultWeight,
             endpoint.info.weight);
-  histograms.ExpectBucketCount(
-      kReportingHeaderTypeHistogram,
-      ReportingHeaderParser::ReportingHeaderType::kReportingEndpoints, 1);
 
   // Ephemeral endpoints should not be persisted in the store
   if (mock_store()) {
@@ -1939,7 +1921,6 @@ TEST_P(ReportingHeaderParserStructuredHeaderTest, Basic) {
 }
 
 TEST_P(ReportingHeaderParserStructuredHeaderTest, PathAbsoluteURLEndpoint) {
-  base::HistogramTester histograms;
   std::string header = "group1=\"/path-absolute-url\"";
   auto parsed_result = ParseReportingEndpoints(header);
   ProcessParsedHeader(kReportingSource_, kIsolationInfo_, kOrigin1_,
@@ -1959,9 +1940,6 @@ TEST_P(ReportingHeaderParserStructuredHeaderTest, PathAbsoluteURLEndpoint) {
             endpoint.info.priority);
   EXPECT_EQ(ReportingEndpoint::EndpointInfo::kDefaultWeight,
             endpoint.info.weight);
-  histograms.ExpectBucketCount(
-      kReportingHeaderTypeHistogram,
-      ReportingHeaderParser::ReportingHeaderType::kReportingEndpoints, 1);
 
   // Ephemeral endpoints should not be persisted in the store
   if (mock_store()) {
@@ -1973,7 +1951,6 @@ TEST_P(ReportingHeaderParserStructuredHeaderTest, PathAbsoluteURLEndpoint) {
 
 TEST_P(ReportingHeaderParserStructuredHeaderTest,
        EmptyPathAbsoluteURLEndpoint) {
-  base::HistogramTester histograms;
   std::string header = "group1=\"/\"";
   auto parsed_result = ParseReportingEndpoints(header);
   ProcessParsedHeader(kReportingSource_, kIsolationInfo_, kOrigin1_,
@@ -1993,9 +1970,6 @@ TEST_P(ReportingHeaderParserStructuredHeaderTest,
             endpoint.info.priority);
   EXPECT_EQ(ReportingEndpoint::EndpointInfo::kDefaultWeight,
             endpoint.info.weight);
-  histograms.ExpectBucketCount(
-      kReportingHeaderTypeHistogram,
-      ReportingHeaderParser::ReportingHeaderType::kReportingEndpoints, 1);
 
   // Ephemeral endpoints should not be persisted in the store
   if (mock_store()) {

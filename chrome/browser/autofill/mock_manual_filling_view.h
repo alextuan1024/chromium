@@ -33,7 +33,9 @@ class MockManualFillingView : public ManualFillingViewInterface {
   MOCK_METHOD((void), SwapSheetWithKeyboard, (), (override));
   MOCK_METHOD((void),
               Show,
-              (WaitForKeyboard, ShouldShowOnLargeFormFactor, IsContentEditable),
+              (WaitForKeyboard,
+               ShouldShowOnLargeFormFactor,
+               IsUnstructuredField),
               (override));
   MOCK_METHOD((void), Hide, (), (override));
   MOCK_METHOD((void),
@@ -41,10 +43,8 @@ class MockManualFillingView : public ManualFillingViewInterface {
               (const autofill::AccessoryTabType&),
               (override));
   MOCK_METHOD((void), SetSelectedSuggestion, (std::optional<int>), (override));
-  MOCK_METHOD((bool),
-              NavigateSuggestions,
-              (autofill::NavigationDirection),
-              (override));
+  MOCK_METHOD((bool), Navigate, (autofill::NavigationAction), (override));
+  MOCK_METHOD(bool, AcceptFallback, (), (override));
 };
 
 #endif  // CHROME_BROWSER_AUTOFILL_MOCK_MANUAL_FILLING_VIEW_H_

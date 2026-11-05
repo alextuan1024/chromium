@@ -10,14 +10,17 @@
 #include <vector>
 
 #include "base/auto_reset.h"
+#include "base/files/scoped_temp_dir.h"
 #include "base/test/bind.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/test_future.h"
+#include "chrome/browser/glic/public/glic_enabling.h"
 #include "chrome/browser/glic/public/glic_invoke_options.h"
-#include "chrome/browser/signin/signin_ui_delegate.h"
+#include "chrome/browser/signin/mock_signin_ui_delegate.h"
 #include "chrome/browser/signin/signin_ui_util.h"
 #include "chrome/browser/skills/skills_service_factory.h"
 #include "chrome/browser/skills/skills_ui_tab_controller_interface.h"
+#include "chrome/browser/ui/browser_window/test/mock_browser_window_interface.h"
 #include "chrome/browser/ui/webui/skills/skills_dialog_delegate.h"
 #include "chrome/test/base/chrome_render_view_host_test_harness.h"
 #include "components/prefs/pref_service.h"
@@ -39,6 +42,7 @@
 namespace skills {
 namespace {
 
+using signin_ui_util::MockSigninUiDelegate;
 using ::testing::_;
 using ::testing::NiceMock;
 using ::testing::Return;
@@ -69,38 +73,31 @@ class MockSkillsDialogDelegate : public SkillsDialogDelegate {
  public:
   MOCK_METHOD(void, CloseDialog, (), (override));
   MOCK_METHOD(void, OnSkillSaved, (const std::string& skill_id), (override));
+  MOCK_METHOD(void,
+              OnSkillSaved,
+              (const std::string& skill_id,
+               const std::string& skill_name,
+               const std::string& skill_icon),
+              (override));
   MOCK_METHOD(void, OnSkillDeleted, (const std::string& skill_id), (override));
+  MOCK_METHOD(void,
+              OnSkillDeleted,
+              (const std::string& skill_id,
+               base::OnceCallback<void(bool)> callback),
+              (override));
   MOCK_METHOD(BrowserWindowInterface*,
               GetBrowserWindowInterface,
               (),
               (override));
+  MOCK_METHOD(void,
+              InvokeSkill,
+              (std::string_view skill_id,
+               std::string_view skill_name,
+               std::string_view skill_icon,
+               bool auto_submit),
+              (override));
+  MOCK_METHOD(void, SendPrompt, (std::string_view prompt), (override));
 };
-
-#if BUILDFLAG(ENABLE_DICE_SUPPORT)
-class MockSigninUiDelegate : public signin_ui_util::SigninUiDelegate {
- public:
-  MOCK_METHOD(void,
-              ShowSigninUI,
-              (Profile*,
-               bool,
-               signin_metrics::AccessPoint,
-               signin_metrics::PromoAction,
-               const std::string&),
-              (override));
-  MOCK_METHOD(void,
-              ShowReauthUI,
-              (Profile*,
-               const std::string&,
-               bool,
-               signin_metrics::AccessPoint,
-               signin_metrics::PromoAction),
-              (override));
-  MOCK_METHOD(void,
-              ShowCrossDeviceSigninQrBubble,
-              (BrowserWindowInterface*, GURL, base::OnceClosure),
-              (override));
-};
-#endif
 
 class MockSkillsUiTabController : public SkillsUiTabControllerInterface {
  public:
@@ -125,6 +122,19 @@ class MockSkillsUiTabController : public SkillsUiTabControllerInterface {
                bool auto_submit),
               (override));
   MOCK_METHOD(void, SendPrompt, (std::string_view prompt), (override));
+  MOCK_METHOD(void, OnSkillDeleted, (const std::string& skill_id), (override));
+  MOCK_METHOD(void,
+              OnSkillDeleted,
+              (const std::string& skill_id,
+               base::OnceCallback<void(bool)> callback),
+              (override));
+  MOCK_METHOD(void, OnSkillSaved, (const std::string& skill_id), (override));
+  MOCK_METHOD(void,
+              OnSkillSaved,
+              (const std::string& skill_id,
+               const std::string& skill_name,
+               const std::string& skill_icon),
+              (override));
 };
 
 class SkillsPageHandlerV2Test : public ChromeRenderViewHostTestHarness {
@@ -133,8 +143,17 @@ class SkillsPageHandlerV2Test : public ChromeRenderViewHostTestHarness {
     feature_list_.InitAndEnableFeature(features::kSkillsEnabled);
   }
 
+  std::unique_ptr<TestingProfile> CreateTestingProfile() override {
+    CHECK(temp_dir_.CreateUniqueTempDir());
+    TestingProfile::Builder builder;
+    builder.SetPath(temp_dir_.GetPath());
+    builder.AddTestingFactories(GetTestingFactories());
+    return builder.Build();
+  }
+
   void SetUp() override {
     ChromeRenderViewHostTestHarness::SetUp();
+    scoped_glic_bypass_.emplace();
 
     SkillsServiceFactory::GetInstance()->SetTestingFactory(
         profile(),
@@ -145,11 +164,13 @@ class SkillsPageHandlerV2Test : public ChromeRenderViewHostTestHarness {
 
     handler_ = std::make_unique<SkillsPageHandlerV2>(
         remote_handler_.BindNewPipeAndPassReceiver(), profile(),
-        identity_test_env_.identity_manager(), web_contents());
+        identity_test_env_.identity_manager(), web_contents(),
+        /*delegate=*/nullptr);
   }
 
   void TearDown() override {
     handler_.reset();
+    scoped_glic_bypass_.reset();
     ChromeRenderViewHostTestHarness::TearDown();
   }
 
@@ -158,7 +179,11 @@ class SkillsPageHandlerV2Test : public ChromeRenderViewHostTestHarness {
         SkillsServiceFactory::GetForProfile(profile()));
   }
 
+  base::ScopedTempDir temp_dir_;
+
   base::test::ScopedFeatureList feature_list_;
+  std::optional<glic::GlicEnabling::ScopedBypassEnablementChecksForTesting>
+      scoped_glic_bypass_;
   signin::IdentityTestEnvironment identity_test_env_;
   mojo::Remote<::skills::mojom::SkillsPageHandler> remote_handler_;
   std::unique_ptr<SkillsPageHandlerV2> handler_;
@@ -170,15 +195,108 @@ TEST_F(SkillsPageHandlerV2Test, SyncCookies) {
   EXPECT_FALSE(future.Get());
 }
 
-TEST_F(SkillsPageHandlerV2Test, ShowSaveToast) {
+TEST_F(SkillsPageHandlerV2Test, ShowSaveToast_WithTabController) {
+  tabs::MockTabInterface mock_tab;
+  ::ui::UnownedUserDataHost user_data_host;
+  EXPECT_CALL(mock_tab, GetUnownedUserDataHost())
+      .WillRepeatedly(testing::ReturnRef(user_data_host));
+  tabs::TabLookupFromWebContents::CreateForWebContents(web_contents(),
+                                                       &mock_tab);
+  MockSkillsUiTabController mock_tab_controller(mock_tab);
+  EXPECT_CALL(mock_tab_controller, OnSkillSaved(std::string(""))).Times(1);
+
   remote_handler_->ShowSaveToast();
   remote_handler_.FlushForTesting();
 }
 
-TEST_F(SkillsPageHandlerV2Test, ShowDeleteToast) {
+TEST_F(SkillsPageHandlerV2Test, ShowSaveToast_WithDelegate) {
+  MockSkillsDialogDelegate mock_delegate;
+  base::WeakPtrFactory<SkillsDialogDelegate> weak_factory(&mock_delegate);
+
+  mojo::Remote<::skills::mojom::SkillsPageHandler> remote_handler;
+  auto handler = std::make_unique<SkillsPageHandlerV2>(
+      remote_handler.BindNewPipeAndPassReceiver(), profile(),
+      identity_test_env_.identity_manager(), web_contents(),
+      weak_factory.GetWeakPtr());
+
+  EXPECT_CALL(mock_delegate, OnSkillSaved(std::string(""))).Times(1);
+
+  remote_handler->ShowSaveToast();
+  remote_handler.FlushForTesting();
+}
+
+TEST_F(SkillsPageHandlerV2Test, ShowSaveAndInvokeToast_WithTabController) {
+  tabs::MockTabInterface mock_tab;
+  ::ui::UnownedUserDataHost user_data_host;
+  EXPECT_CALL(mock_tab, GetUnownedUserDataHost())
+      .WillRepeatedly(testing::ReturnRef(user_data_host));
+  tabs::TabLookupFromWebContents::CreateForWebContents(web_contents(),
+                                                       &mock_tab);
+  MockSkillsUiTabController mock_tab_controller(mock_tab);
+  EXPECT_CALL(mock_tab_controller,
+              OnSkillSaved("test_id", "test_name", "test_icon"))
+      .Times(1);
+
+  remote_handler_->ShowSaveAndInvokeToast("test_id", "test_name", "test_icon");
+  remote_handler_.FlushForTesting();
+}
+
+TEST_F(SkillsPageHandlerV2Test, ShowSaveAndInvokeToast_WithDelegate) {
+  MockSkillsDialogDelegate mock_delegate;
+  base::WeakPtrFactory<SkillsDialogDelegate> weak_factory(&mock_delegate);
+
+  mojo::Remote<::skills::mojom::SkillsPageHandler> remote_handler;
+  auto handler = std::make_unique<SkillsPageHandlerV2>(
+      remote_handler.BindNewPipeAndPassReceiver(), profile(),
+      identity_test_env_.identity_manager(), web_contents(),
+      weak_factory.GetWeakPtr());
+
+  EXPECT_CALL(mock_delegate, OnSkillSaved("test_id", "test_name", "test_icon"))
+      .Times(1);
+  EXPECT_CALL(mock_delegate, CloseDialog()).Times(1);
+
+  remote_handler->ShowSaveAndInvokeToast("test_id", "test_name", "test_icon");
+  remote_handler.FlushForTesting();
+}
+
+TEST_F(SkillsPageHandlerV2Test, ShowDeleteToast_WithTabController) {
+  tabs::MockTabInterface mock_tab;
+  ::ui::UnownedUserDataHost user_data_host;
+  EXPECT_CALL(mock_tab, GetUnownedUserDataHost())
+      .WillRepeatedly(testing::ReturnRef(user_data_host));
+  tabs::TabLookupFromWebContents::CreateForWebContents(web_contents(),
+                                                       &mock_tab);
+  MockSkillsUiTabController mock_tab_controller(mock_tab);
+  EXPECT_CALL(mock_tab_controller, OnSkillDeleted("test_skill_id", testing::_))
+      .WillOnce(
+          [](const std::string& skill_id, base::OnceCallback<void(bool)> cb) {
+            std::move(cb).Run(true);
+          });
+
   base::test::TestFuture<bool> future;
   remote_handler_->ShowDeleteToast("test_skill_id", future.GetCallback());
-  EXPECT_FALSE(future.Get());
+  EXPECT_TRUE(future.Get());
+}
+
+TEST_F(SkillsPageHandlerV2Test, ShowDeleteToast_WithDelegate) {
+  MockSkillsDialogDelegate mock_delegate;
+  base::WeakPtrFactory<SkillsDialogDelegate> weak_factory(&mock_delegate);
+
+  mojo::Remote<::skills::mojom::SkillsPageHandler> remote_handler;
+  auto handler = std::make_unique<SkillsPageHandlerV2>(
+      remote_handler.BindNewPipeAndPassReceiver(), profile(),
+      identity_test_env_.identity_manager(), web_contents(),
+      weak_factory.GetWeakPtr());
+
+  EXPECT_CALL(mock_delegate, OnSkillDeleted("test_skill_id", testing::_))
+      .WillOnce(
+          [](const std::string& skill_id, base::OnceCallback<void(bool)> cb) {
+            std::move(cb).Run(true);
+          });
+
+  base::test::TestFuture<bool> future;
+  remote_handler->ShowDeleteToast("test_skill_id", future.GetCallback());
+  EXPECT_TRUE(future.Get());
 }
 
 TEST_F(SkillsPageHandlerV2Test, InvokeSkill) {
@@ -202,6 +320,26 @@ TEST_F(SkillsPageHandlerV2Test, InvokeSkill) {
   remote_handler_.FlushForTesting();
 }
 
+TEST_F(SkillsPageHandlerV2Test, InvokeSkill_FromDialog) {
+  MockSkillsDialogDelegate mock_delegate;
+  base::WeakPtrFactory<SkillsDialogDelegate> weak_factory(&mock_delegate);
+
+  mojo::Remote<::skills::mojom::SkillsPageHandler> remote_handler;
+  auto handler = std::make_unique<SkillsPageHandlerV2>(
+      remote_handler.BindNewPipeAndPassReceiver(), profile(),
+      identity_test_env_.identity_manager(), web_contents(),
+      weak_factory.GetWeakPtr());
+
+  EXPECT_CALL(mock_delegate,
+              InvokeSkill("test_skill_id", std::string_view("test_name"),
+                          std::string_view("test_icon"),
+                          /*auto_submit=*/true))
+      .Times(1);
+
+  remote_handler->InvokeSkill("test_skill_id", "test_name", "test_icon");
+  remote_handler.FlushForTesting();
+}
+
 TEST_F(SkillsPageHandlerV2Test, SendPrompt) {
   tabs::MockTabInterface mock_tab;
   ::ui::UnownedUserDataHost user_data_host;
@@ -219,8 +357,44 @@ TEST_F(SkillsPageHandlerV2Test, SendPrompt) {
   remote_handler_.FlushForTesting();
 }
 
+TEST_F(SkillsPageHandlerV2Test, SendPrompt_FromDialog) {
+  MockSkillsDialogDelegate mock_delegate;
+  base::WeakPtrFactory<SkillsDialogDelegate> weak_factory(&mock_delegate);
+
+  mojo::Remote<::skills::mojom::SkillsPageHandler> remote_handler;
+  auto handler = std::make_unique<SkillsPageHandlerV2>(
+      remote_handler.BindNewPipeAndPassReceiver(), profile(),
+      identity_test_env_.identity_manager(), web_contents(),
+      weak_factory.GetWeakPtr());
+
+  EXPECT_CALL(mock_delegate, SendPrompt("test_prompt")).Times(1);
+
+  remote_handler->SendPrompt("test_prompt");
+  remote_handler.FlushForTesting();
+}
+
 TEST_F(SkillsPageHandlerV2Test, InvokeSkill_NoOpWhenDisabled) {
   profile()->GetPrefs()->SetBoolean(prefs::kChromeSkillsEnabled, false);
+  tabs::MockTabInterface mock_tab;
+  ::ui::UnownedUserDataHost user_data_host;
+  EXPECT_CALL(mock_tab, GetUnownedUserDataHost())
+      .WillRepeatedly(testing::ReturnRef(user_data_host));
+
+  tabs::TabLookupFromWebContents::CreateForWebContents(web_contents(),
+                                                       &mock_tab);
+
+  MockSkillsUiTabController mock_tab_controller(mock_tab);
+
+  EXPECT_CALL(mock_tab_controller,
+              InvokeSkill(testing::_, testing::_, testing::_, testing::_))
+      .Times(0);
+
+  remote_handler_->InvokeSkill("test_skill_id", "test_name", "test_icon");
+  remote_handler_.FlushForTesting();
+}
+
+TEST_F(SkillsPageHandlerV2Test, InvokeSkill_NoOpWhenGlicDisabled) {
+  scoped_glic_bypass_.reset();
   tabs::MockTabInterface mock_tab;
   ::ui::UnownedUserDataHost user_data_host;
   EXPECT_CALL(mock_tab, GetUnownedUserDataHost())
@@ -266,7 +440,7 @@ TEST_F(SkillsPageHandlerV2Test, SignInWithPrimaryAccount) {
 
   EXPECT_CALL(
       mock_signin_ui_delegate,
-      ShowReauthUI(profile(), "test@example.com", /*enable_sync=*/false,
+      ShowReauthUI(profile(), "test@example.com", /*enable_history_sync=*/false,
                    signin_metrics::AccessPoint::kSkills,
                    signin_metrics::PromoAction::PROMO_ACTION_NO_SIGNIN_PROMO));
 
@@ -280,7 +454,7 @@ TEST_F(SkillsPageHandlerV2Test, SignInWithoutPrimaryAccount) {
       signin_ui_util::SetSigninUiDelegateForTesting(&mock_signin_ui_delegate);
 
   EXPECT_CALL(mock_signin_ui_delegate,
-              ShowSigninUI(profile(), /*enable_sync=*/false,
+              ShowSigninUI(profile(), /*enable_history_sync=*/false,
                            signin_metrics::AccessPoint::kSkills,
                            signin_metrics::PromoAction::
                                PROMO_ACTION_NEW_ACCOUNT_NO_EXISTING_ACCOUNT,

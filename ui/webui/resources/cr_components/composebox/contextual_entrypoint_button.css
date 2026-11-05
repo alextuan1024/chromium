@@ -324,6 +324,14 @@ cr-icon-button {
   }
 }
 
+/* The omnibox and Lens searchbox are themed, so let the favicon skeleton
+ * loader follow the ColorProvider token (light, dark, and custom themes). */
+:host([apply-context-button-background]) #entrypoint,
+:host([is-lens-searchbox_]) #entrypoint {
+  --composebox-favicon-skeleton-color: var(--color-sys-surface-variant,
+      var(--cr-fallback-color-surface-variant));
+}
+
 #entrypoint:not(:hover) {
   background-color:
       var(--cr-composebox-entrypoint-background-color, transparent);
@@ -334,7 +342,8 @@ cr-icon-button {
   --cr-composebox-entrypoint-width: 40px;
   border-radius: 100px;
   color: var(
-    --color-sys-on-surface, --cr-fallback-color-on-surface);
+    --composebox-context-menu-entrypoint-button-color,
+    var(--color-sys-on-surface, --cr-fallback-color-on-surface));
   /* This line handles specific margin spacing for the oblong shape in omnibox
      and the composebox. */
   margin-inline-start: var(
@@ -343,7 +352,9 @@ cr-icon-button {
 
 /* Keeps the hover color on the entrypoint button while menu is open on omnibox. */
 :host([apply-context-button-background].menu-open) #entrypoint {
-  background-color: var(--cr-active-neutral-on-subtle-background-color);
+  background-color: var(
+      --cr-icon-button-hover-background-color,
+      var(--cr-active-neutral-on-subtle-background-color));
 }
 
 :host([is-lens-searchbox_]) #entrypoint {
@@ -389,9 +400,21 @@ cr-icon-button {
     color: ButtonText;
   }
   #entrypoint {
+    animation: none;
     background-color: ButtonFace;
     border: 1px solid ButtonText;
     box-sizing: border-box;
+    forced-color-adjust: none;
+  }
+  #entrypoint:hover:not([disabled]),
+  :host(.menu-open) #entrypoint:not([disabled]) {
+    --cr-button-text-color: HighlightText;
+    --cr-hover-background-color: Highlight;
+    --cr-icon-button-fill-color: HighlightText !important;
+    --cr-icon-button-hover-background-color: Highlight;
+    background-color: Highlight;
+    border-color: Highlight;
+    color: HighlightText;
   }
 }
 
@@ -415,6 +438,8 @@ cr-icon-button {
 
 .pill-button {
   --cr-composebox-entrypoint-background-color: var(--color-composebox-context-entrypoint-hover-background, rgba(0, 0, 0, 0.05));
+  /* Match the icon button variant, which embedders size with this variable. */
+  height: var(--cr-composebox-entrypoint-height, var(--cr-button-height));
   min-width: auto;
   padding: 0 10px 0 8px;
 }

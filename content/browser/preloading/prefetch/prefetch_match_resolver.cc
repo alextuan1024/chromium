@@ -20,7 +20,6 @@
 #include "content/browser/preloading/prefetch/prefetch_service.h"
 #include "content/browser/preloading/prefetch/prefetch_serving_handle.h"
 #include "content/browser/preloading/preload_serving_metrics_holder.h"
-#include "content/browser/preloading/prerender/prerender_features.h"
 #include "content/browser/preloading/prerender/prerender_host.h"
 #include "content/browser/preloading/prerender/prerender_host_registry.h"
 #include "content/browser/renderer_host/frame_tree.h"
@@ -499,9 +498,7 @@ void PrefetchMatchResolver::StartWaitFor(const PrefetchKey& prefetch_key,
   // https://chromium-review.googlesource.com/c/chromium/src/+/5668924 and
   // write tests.
   base::TimeDelta timeout = PrefetchBlockUntilHeadTimeout(
-      prefetch_container.request().prefetch_type(),
-      prefetch_container.request().should_disable_block_until_head_timeout(),
-      is_nav_prerender_);
+      prefetch_container.request(), is_nav_prerender_);
   if (timeout.is_positive()) {
     candidate_data->timeout_timer = std::make_unique<base::OneShotTimer>();
     candidate_data->timeout_timer->Start(
@@ -566,8 +563,6 @@ void PrefetchMatchResolver::OnWillBeDestroyed(
 
 void PrefetchMatchResolver::OnGotInitialEligibility(
     const PrefetchContainer& prefetch_container) {
-  CHECK(features::UsePrefetchPrerenderIntegration());
-
   std::optional<PreloadingEligibility> eligibility =
       prefetch_container.GetInitialEligibility();
   CHECK(eligibility.has_value());

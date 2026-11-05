@@ -6,17 +6,20 @@ import './extension.js';
 import './toolbar_divider.js';
 
 import {CrLitElement} from '//resources/lit/v3_0/lit.rollup.js';
+import {getExtensionActionKey, isExtensionAction} from '/shared/extension_action_id.js';
 import type {ExtensionActionInfo} from '/shared/extensions_bar_data_model.mojom-webui.js';
 
 import {BrowserProxyImpl} from './browser_proxy.js';
 import {getHtml} from './extensions.html.js';
+import {OverflowableToolbarActionContainerMixin} from './overflowable_toolbar_action_container_mixin.js';
+import type {OverflowableToolbarActionElement} from './overflowable_toolbar_action_mixin.js';
 import {getCss} from './toolbar_action_container.css.js';
 import {ToolbarActionContainerMixin} from './toolbar_action_container_mixin.js';
 
 const initialState: ExtensionActionInfo[] = [];
 
-const ExtensionsElementBase =
-    ToolbarActionContainerMixin(CrLitElement, initialState);
+const ExtensionsElementBase = OverflowableToolbarActionContainerMixin(
+    ToolbarActionContainerMixin(CrLitElement, initialState));
 
 export class ExtensionsElement extends ExtensionsElementBase {
   static get is() {
@@ -31,9 +34,38 @@ export class ExtensionsElement extends ExtensionsElementBase {
     return getHtml.bind(this)();
   }
 
+  // Whether the browser's initial state has been rendered. Until then, all
+  // updates are treated as initial.
+  private initialStateRendered_: boolean = false;
+
+  override disconnectedCallback() {
+    super.disconnectedCallback();
+    this.initialStateRendered_ = false;
+  }
+
+  // Called once the browser's initial state has been rendered.
+  markInitialStateRendered() {
+    this.initialStateRendered_ = true;
+  }
+
+  // ToolbarActionContainerMixin override
+  override isInitialUpdate(_newStates: ExtensionActionInfo[]): boolean {
+    return !this.initialStateRendered_;
+  }
+
   // ToolbarActionContainerMixin override
   override getKey(state: ExtensionActionInfo): string {
-    return state.id;
+    return getExtensionActionKey(state.id);
+  }
+
+  // OverflowableToolbarActionContainerMixin override. Selects the extension
+  // actions and the divider by tag name, since they may not be the only
+  // children: TrackedElementManager adds an element after an action while a
+  // dialog is anchored to it.
+  override getActions(): OverflowableToolbarActionElement[] {
+    return Array.from(
+        this.shadowRoot.querySelectorAll<OverflowableToolbarActionElement>(
+            `${this.childTagName}, toolbar-divider`));
   }
 
   override moveItem(id: string, index: number) {
@@ -59,7 +91,13 @@ export class ExtensionsElement extends ExtensionsElementBase {
   }
 
   override isDraggable(state: ExtensionActionInfo, _index: number): boolean {
-    return state.id !== '';
+    return this.isExtensionAction(state);
+  }
+
+  // Returns whether `state` is for an actual extension, as opposed to the
+  // extensions menu button or the request access button.
+  isExtensionAction(state: ExtensionActionInfo): boolean {
+    return isExtensionAction(state.id);
   }
 }
 

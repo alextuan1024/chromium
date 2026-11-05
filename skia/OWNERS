@@ -1,6 +1,5 @@
 set noparent
 borenet@google.com
-drott@chromium.org
 egdaniel@google.com
 fmalita@chromium.org
 michaelludwig@google.com
@@ -8,4 +7,4 @@ robertphillips@google.com
 thakis@chromium.org
 
 # For Fuchsia-specific changes:
-per-file ..._fuchsia*=file://build/fuchsia/OWNERS
+per-file ...fuchsia...=file://build/fuchsia/OWNERS

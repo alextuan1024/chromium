@@ -36,6 +36,7 @@
 #include "third_party/blink/renderer/core/layout/layout_object.h"
 #include "third_party/blink/renderer/core/style/clip_path_operation.h"
 #include "third_party/blink/renderer/core/style/computed_style_constants.h"
+#include "third_party/blink/renderer/core/style/scoped_css_name.h"
 #include "third_party/blink/renderer/core/style/shape_clip_path_operation.h"
 #include "third_party/blink/renderer/core/style/shape_value.h"
 #include "third_party/blink/renderer/core/style/style_difference.h"
@@ -148,6 +149,83 @@ TEST_F(ComputedStyleTest, ClipPathEqual) {
   EXPECT_EQ(*builder1.TakeStyle(), *builder2.TakeStyle());
 }
 
+TEST_F(ComputedStyleTest, ScrollMarkerGroupDifference) {
+  auto create_style = [this](ScrollMarkerGroup::ScrollMarkerPosition position,
+                             ScrollMarkerGroup::ScrollMarkerMode mode) {
+    ComputedStyleBuilder builder = CreateComputedStyleBuilder();
+    builder.SetScrollMarkerGroup(
+        MakeGarbageCollected<ScrollMarkerGroup>(position, mode));
+    return builder.TakeStyle();
+  };
+
+  const ComputedStyle* initial = InitialComputedStyle();
+  const ComputedStyle* before_links =
+      create_style(ScrollMarkerGroup::ScrollMarkerPosition::kBefore,
+                   ScrollMarkerGroup::ScrollMarkerMode::kLinks);
+  const ComputedStyle* after_links =
+      create_style(ScrollMarkerGroup::ScrollMarkerPosition::kAfter,
+                   ScrollMarkerGroup::ScrollMarkerMode::kLinks);
+  const ComputedStyle* before_tabs =
+      create_style(ScrollMarkerGroup::ScrollMarkerPosition::kBefore,
+                   ScrollMarkerGroup::ScrollMarkerMode::kTabs);
+
+  // Adding or removing scroll-marker-group affects descendant ::scroll-markers.
+  EXPECT_EQ(ComputedStyle::Difference::kDescendantAffecting,
+            ComputedStyle::ComputeDifference(initial, before_links));
+  EXPECT_EQ(ComputedStyle::Difference::kDescendantAffecting,
+            ComputedStyle::ComputeDifference(before_links, initial));
+
+  // Switching between 'before' and 'after' changes which ::scroll-marker-group
+  // pseudo-element is generated.
+  EXPECT_EQ(ComputedStyle::Difference::kPseudoElementStyle,
+            ComputedStyle::ComputeDifference(before_links, after_links));
+  EXPECT_EQ(ComputedStyle::Difference::kPseudoElementStyle,
+            ComputedStyle::ComputeDifference(after_links, before_links));
+
+  // Changing only the mode keeps the same pseudo-element node, but still
+  // reattaches its layout tree.
+  EXPECT_EQ(ComputedStyle::Difference::kNonInherited,
+            ComputedStyle::ComputeDifference(before_links, before_tabs));
+}
+
+TEST_F(ComputedStyleTest, ScrollMarkerGroupScrollContainerDifference) {
+  auto create_style = [this](EOverflow overflow, bool has_group) {
+    ComputedStyleBuilder builder = CreateComputedStyleBuilder();
+    if (has_group) {
+      builder.SetScrollMarkerGroup(MakeGarbageCollected<ScrollMarkerGroup>(
+          ScrollMarkerGroup::ScrollMarkerPosition::kBefore));
+    }
+    builder.SetOverflowX(overflow);
+    builder.SetOverflowY(overflow);
+    return builder.TakeStyle();
+  };
+
+  const ComputedStyle* visible_with_group =
+      create_style(EOverflow::kVisible, /*has_group=*/true);
+  const ComputedStyle* auto_with_group =
+      create_style(EOverflow::kAuto, /*has_group=*/true);
+
+  // Becoming or ceasing to be a scroll container affects descendant
+  // ::scroll-markers.
+  EXPECT_EQ(
+      ComputedStyle::Difference::kDescendantAffecting,
+      ComputedStyle::ComputeDifference(visible_with_group, auto_with_group));
+  EXPECT_EQ(
+      ComputedStyle::Difference::kDescendantAffecting,
+      ComputedStyle::ComputeDifference(auto_with_group, visible_with_group));
+
+  // Without scroll-marker-group, the overflow change does not affect
+  // descendants.
+  const ComputedStyle* visible_no_group =
+      create_style(EOverflow::kVisible, /*has_group=*/false);
+  const ComputedStyle* auto_no_group =
+      create_style(EOverflow::kAuto, /*has_group=*/false);
+  EXPECT_EQ(ComputedStyle::Difference::kNonInherited,
+            ComputedStyle::ComputeDifference(visible_no_group, auto_no_group));
+  EXPECT_EQ(ComputedStyle::Difference::kNonInherited,
+            ComputedStyle::ComputeDifference(auto_no_group, visible_no_group));
+}
+
 TEST_F(ComputedStyleTest, ForcesStackingContext) {
   ComputedStyleBuilder builder = CreateComputedStyleBuilder();
   builder.SetForcesStackingContext(true);
@@ -244,6 +322,18 @@ TEST_F(ComputedStyleTest, ViewTransitionScopeUsedContainment) {
     EXPECT_TRUE(vt_style->EffectiveContainIntrinsicWidth().HasAuto());
     EXPECT_TRUE(vt_style->EffectiveContainIntrinsicHeight().HasAuto());
   }
+}
+
+TEST_F(ComputedStyleTest, OverscrollContainerForcedLayoutContainment) {
+  const ComputedStyle* initial_style = InitialComputedStyle();
+  EXPECT_FALSE(initial_style->ContainsLayout());
+
+  ComputedStyleBuilder builder(*initial_style);
+  builder.SetHasLayoutContainmentForOverscrollContainer(true);
+  const ComputedStyle* style = builder.TakeStyle();
+
+  EXPECT_EQ(style->Contain(), kContainsNone);
+  EXPECT_TRUE(style->ContainsLayout());
 }
 
 TEST_F(ComputedStyleTest, IsStackingContextWithoutContainmentAfterClone) {
@@ -535,9 +625,11 @@ TEST_F(ComputedStyleTest, CursorList) {
       nullptr, nullptr, nullptr, nullptr, nullptr, cssvalue::kRepeating);
 
   auto* image_value = MakeGarbageCollected<StyleGeneratedImage>(
-      *gradient, StyleGeneratedImage::ContainerSizes());
+      *gradient, StyleGeneratedImage::ContainerSizes(),
+      StyleGeneratedImage::ViewportSize());
   auto* other_image_value = MakeGarbageCollected<StyleGeneratedImage>(
-      *gradient, StyleGeneratedImage::ContainerSizes());
+      *gradient, StyleGeneratedImage::ContainerSizes(),
+      StyleGeneratedImage::ViewportSize());
 
   EXPECT_TRUE(base::ValuesEquivalent(image_value, other_image_value));
 
@@ -680,6 +772,9 @@ TEST_F(ComputedStyleTest, AnimationFlags) {
                     ComputedStyle::Difference::kNonInherited,
                     kCompositingReasonsChanged);
   TestAnimationFlag(FLAG_PARAMS(HasCurrentBackdropFilterAnimation),
+                    ComputedStyle::Difference::kNonInherited,
+                    kCompositingReasonsChanged);
+  TestAnimationFlag(FLAG_PARAMS(HasCurrentDynamicBackdropFilterAnimation),
                     ComputedStyle::Difference::kNonInherited,
                     kCompositingReasonsChanged);
   TestAnimationFlag(FLAG_PARAMS(HasCurrentClipPathAnimation),
@@ -1129,6 +1224,26 @@ TEST_F(ComputedStyleTest, InheritedVariableNames) {
   EXPECT_EQ(2u, style->GetVariableNames().size());
   EXPECT_TRUE(style->GetVariableNames().Contains("--a"));
   EXPECT_TRUE(style->GetVariableNames().Contains("--b"));
+}
+
+TEST_F(ComputedStyleTest, PrivateVariablesNotEnumerated) {
+  const AtomicString name = PropertyRegistry::AllocatePrivatePropertyName();
+  CSSVariableData* data = css_test_helpers::CreateVariableData("green");
+  const CSSValue* value = CSSIdentifierValue::Create(CSSValueID::kGreen);
+  ComputedStyleBuilder builder = CreateComputedStyleBuilder();
+  builder.SetVariableData(name, data, /*is_inherited_property=*/true);
+  builder.SetVariableValue(name, value, /*is_inherited_property=*/true);
+  builder.SetVariableData(AtomicString("--public"), data,
+                          /*is_inherited_property=*/true);
+  const ComputedStyle* style = builder.TakeStyle();
+
+  EXPECT_EQ(data, style->GetVariableData(name));
+  EXPECT_EQ(value, style->InheritedPrivateVariables().GetValue(name).value_or(
+                       nullptr));
+  EXPECT_FALSE(style->InheritedVariables().GetData(name).has_value());
+  EXPECT_FALSE(style->InheritedVariables().GetValue(name).has_value());
+  ASSERT_EQ(1u, style->GetVariableNamesCount());
+  EXPECT_EQ(AtomicString("--public"), style->GetVariableNames()[0]);
 }
 
 TEST_F(ComputedStyleTest, NonInheritedVariableNames) {
@@ -1745,9 +1860,9 @@ TEST_F(ComputedStyleTest, ShouldApplyAnyContainment) {
           EXPECT_TRUE(!html->GetComputedStyle());
           continue;
         }
-        EXPECT_EQ(html->GetLayoutObject()->ShouldApplyAnyContainment(),
-                  html->GetLayoutObject()->StyleRef().ShouldApplyAnyContainment(
-                      *html))
+        EXPECT_EQ(
+            html->GetLayoutObject()->ShouldApplyAnyContainment(),
+            html->GetLayoutObject()->Style().ShouldApplyAnyContainment(*html))
             << "html contain:" << GetCSSValueName(contain)
             << " display:" << GetCSSValueName(html_display);
         if (!body->GetLayoutObject()) {
@@ -1758,9 +1873,9 @@ TEST_F(ComputedStyleTest, ShouldApplyAnyContainment) {
           }
           continue;
         }
-        EXPECT_EQ(body->GetLayoutObject()->ShouldApplyAnyContainment(),
-                  body->GetLayoutObject()->StyleRef().ShouldApplyAnyContainment(
-                      *body))
+        EXPECT_EQ(
+            body->GetLayoutObject()->ShouldApplyAnyContainment(),
+            body->GetLayoutObject()->Style().ShouldApplyAnyContainment(*body))
             << "body contain:" << GetCSSValueName(contain)
             << " display:" << GetCSSValueName(body_display);
       }
@@ -1960,10 +2075,17 @@ TEST_F(ComputedStyleTest, ScrollTimelineNameNoDiff) {
   ComputedStyleBuilder builder1(*InitialComputedStyle());
   ComputedStyleBuilder builder2(*InitialComputedStyle());
 
+  HeapVector<Member<const ScopedCSSName>> names1;
+  names1.push_back(
+      MakeGarbageCollected<ScopedCSSName>(AtomicString("test"), nullptr));
+  HeapVector<Member<const ScopedCSSName>> names2;
+  names2.push_back(
+      MakeGarbageCollected<ScopedCSSName>(AtomicString("test"), nullptr));
+
   builder1.SetScrollTimelineName(
-      Vector<AtomicString>(1u, AtomicString("test")));
+      MakeGarbageCollected<ScopedCSSNameList>(std::move(names1)));
   builder2.SetScrollTimelineName(
-      Vector<AtomicString>(1u, AtomicString("test")));
+      MakeGarbageCollected<ScopedCSSNameList>(std::move(names2)));
 
   const ComputedStyle* style1 = builder1.TakeStyle();
   const ComputedStyle* style2 = builder2.TakeStyle();
@@ -1990,10 +2112,17 @@ TEST_F(ComputedStyleTest, ViewTimelineNameNoDiff) {
   ComputedStyleBuilder builder1(*InitialComputedStyle());
   ComputedStyleBuilder builder2(*InitialComputedStyle());
 
-  builder1.SetScrollTimelineName(
-      Vector<AtomicString>(1u, AtomicString("test")));
-  builder2.SetScrollTimelineName(
-      Vector<AtomicString>(1u, AtomicString("test")));
+  HeapVector<Member<const ScopedCSSName>> names1;
+  names1.push_back(
+      MakeGarbageCollected<ScopedCSSName>(AtomicString("test"), nullptr));
+  HeapVector<Member<const ScopedCSSName>> names2;
+  names2.push_back(
+      MakeGarbageCollected<ScopedCSSName>(AtomicString("test"), nullptr));
+
+  builder1.SetViewTimelineName(
+      MakeGarbageCollected<ScopedCSSNameList>(std::move(names1)));
+  builder2.SetViewTimelineName(
+      MakeGarbageCollected<ScopedCSSNameList>(std::move(names2)));
 
   const ComputedStyle* style1 = builder1.TakeStyle();
   const ComputedStyle* style2 = builder2.TakeStyle();
@@ -2605,6 +2734,23 @@ TEST_F(ComputedStyleTest, SingleAxisIsOverflowVisibleOrClip) {
   builder.SetOverflowX(EOverflow::kScroll);
   builder.SetOverflowY(EOverflow::kScroll);
   EXPECT_FALSE(builder.TakeStyle()->IsOverflowVisibleOrClip());
+}
+
+// TODO(crbug.com/40127672): Remove this test with the
+// CSSTextTransformGeorgianUppercase kill switch once rollback is no longer
+// needed.
+TEST_F(ComputedStyleTest, ApplyTextTransformGeorgianUppercaseFeature) {
+  ComputedStyleBuilder builder = CreateComputedStyleBuilder();
+  builder.SetTextTransform(ETextTransform::kUppercase);
+  const ComputedStyle* style = builder.TakeStyle();
+
+  for (bool enabled : {false, true}) {
+    SCOPED_TRACE(enabled);
+    ScopedCSSTextTransformGeorgianUppercaseForTest scoped_feature(enabled);
+    // Rollback also lowercases Mtavruli capitals already present in the input.
+    EXPECT_EQ(String(enabled ? u"\u1C90\u1CBD" : u"\u10D0\u10FD"),
+              style->ApplyTextTransform(String(u"\u10D0\u1CBD")));
+  }
 }
 
 TEST_F(ComputedStyleTest, ApplyTextTransformUpdateOffsetMap) {

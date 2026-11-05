@@ -13,12 +13,12 @@
 #include "base/functional/bind.h"
 #include "base/memory/raw_ptr.h"
 #include "base/run_loop.h"
-#include "base/strings/strcat.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/types/expected.h"
 #include "build/build_config.h"
 #include "chrome/browser/enterprise/data_protection/data_protection_features.h"
+#include "chrome/browser/media/webrtc/desktop_media_picker.h"
 #include "chrome/browser/media/webrtc/desktop_media_picker_controller.h"
 #include "chrome/browser/media/webrtc/desktop_media_picker_manager.h"
 #include "chrome/browser/media/webrtc/desktop_media_picker_utils.h"
@@ -39,6 +39,7 @@
 #include "third_party/blink/public/mojom/mediastream/media_stream.mojom.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/mojom/dialog_button.mojom.h"
+#include "ui/base/ui_base_types.h"
 #include "ui/events/event_utils.h"
 #include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/bubble/bubble_frame_view.h"
@@ -82,16 +83,6 @@ class TestDialogObserver : public DesktopMediaPickerManager::DialogObserver {
   bool closed_ = false;
 };
 
-std::vector<DesktopMediaList::Type> GetSourceTypes(bool new_order) {
-  if (new_order) {
-    return {DesktopMediaList::Type::kWebContents,
-            DesktopMediaList::Type::kWindow, DesktopMediaList::Type::kScreen};
-  } else {
-    return {DesktopMediaList::Type::kScreen, DesktopMediaList::Type::kWindow,
-            DesktopMediaList::Type::kWebContents};
-  }
-}
-
 std::string GetTypeAsTestNameString(const DesktopMediaList::Type type) {
   switch (type) {
     case DesktopMediaList::Type::kScreen:
@@ -134,7 +125,9 @@ class DesktopMediaPickerViewsTestBase
       public AudioCapturePermissionChecker::Factory {
  public:
   explicit DesktopMediaPickerViewsTestBase(
-      const std::vector<DesktopMediaList::Type>& source_types)
+      const std::vector<DesktopMediaList::Type>& source_types =
+          {DesktopMediaList::Type::kWebContents,
+           DesktopMediaList::Type::kWindow, DesktopMediaList::Type::kScreen})
       : source_types_(source_types) {}
 
   ~DesktopMediaPickerViewsTestBase() override = default;
@@ -288,30 +281,12 @@ class DesktopMediaPickerViewsTestBase
   base::WeakPtrFactory<DesktopMediaPickerViewsTestBase> weak_factory_{this};
 };
 
-class DesktopMediaPickerViewsTest : public DesktopMediaPickerViewsTestBase,
-                                    public testing::WithParamInterface<bool> {
- public:
-  DesktopMediaPickerViewsTest()
-      : DesktopMediaPickerViewsTestBase(GetSourceTypes(NewOrder())) {}
-  ~DesktopMediaPickerViewsTest() override = default;
-
-  bool NewOrder() const { return GetParam(); }
-};
-
-INSTANTIATE_TEST_SUITE_P(,
-                         DesktopMediaPickerViewsTest,
-                         /*NewOrder=*/testing::Bool());
+class DesktopMediaPickerViewsTest : public DesktopMediaPickerViewsTestBase {};
 
 class DesktopMediaPickerDefaultAudioOnTest
     : public DesktopMediaPickerViewsTestBase,
       public ::testing::WithParamInterface<bool> {
  public:
-  DesktopMediaPickerDefaultAudioOnTest()
-      : DesktopMediaPickerViewsTestBase(
-            {DesktopMediaList::Type::kScreen, DesktopMediaList::Type::kWindow,
-             DesktopMediaList::Type::kWebContents}) {}
-  ~DesktopMediaPickerDefaultAudioOnTest() override = default;
-
   void TearDown() override {
     DesktopMediaPickerController::SetSystemAudioCaptureSupportedForTesting(
         std::nullopt);
@@ -462,14 +437,14 @@ INSTANTIATE_TEST_SUITE_P(All,
                          DesktopMediaPickerDefaultAudioOnTest,
                          /*system_audio_on_by_default=*/testing::Bool());
 
-TEST_P(DesktopMediaPickerViewsTest, DoneCallbackCalledWhenWindowClosed) {
+TEST_F(DesktopMediaPickerViewsTest, DoneCallbackCalledWhenWindowClosed) {
   GetPickerDialogView()->GetWidget()->Close();
   EXPECT_EQ(
       WaitForPickerResult(),
       base::unexpected(MediaStreamRequestResult::PERMISSION_DENIED_BY_USER));
 }
 
-TEST_P(DesktopMediaPickerViewsTest, DoneCallbackCalledOnOkButtonPressed) {
+TEST_F(DesktopMediaPickerViewsTest, DoneCallbackCalledOnOkButtonPressed) {
   const DesktopMediaID kFakeId(DesktopMediaID::TYPE_WINDOW, 222);
 
   media_lists_[DesktopMediaList::Type::kWindow]->AddSourceByFullMediaID(
@@ -489,7 +464,7 @@ TEST_P(DesktopMediaPickerViewsTest, DoneCallbackCalledOnOkButtonPressed) {
 }
 
 #if BUILDFLAG(ENTERPRISE_SCREENSHOT_PROTECTION)
-TEST_P(DesktopMediaPickerViewsTest, BlockedSourceOkButtonDisabled) {
+TEST_F(DesktopMediaPickerViewsTest, BlockedSourceOkButtonDisabled) {
   base::test::ScopedFeatureList feature_list(
       enterprise_data_protection::kEnableTabSharingProtection);
 
@@ -515,7 +490,7 @@ TEST_P(DesktopMediaPickerViewsTest, BlockedSourceOkButtonDisabled) {
 #endif  // BUILDFLAG(ENTERPRISE_SCREENSHOT_PROTECTION)
 
 // Regression test for https://crbug.com/40052774
-TEST_P(DesktopMediaPickerViewsTest, DoneCallbackNotCalledOnDoubleTap) {
+TEST_F(DesktopMediaPickerViewsTest, DoneCallbackNotCalledOnDoubleTap) {
   const DesktopMediaID kFakeId(DesktopMediaID::TYPE_SCREEN, 222);
 
   test_api_.SelectTabForSourceType(DesktopMediaList::Type::kScreen);
@@ -529,12 +504,12 @@ TEST_P(DesktopMediaPickerViewsTest, DoneCallbackNotCalledOnDoubleTap) {
   EXPECT_FALSE(has_picker_result());
 }
 
-TEST_P(DesktopMediaPickerViewsTest, CancelButtonAlwaysEnabled) {
+TEST_F(DesktopMediaPickerViewsTest, CancelButtonAlwaysEnabled) {
   EXPECT_TRUE(GetPickerDialogView()->IsDialogButtonEnabled(
       ui::mojom::DialogButton::kCancel));
 }
 
-TEST_P(DesktopMediaPickerViewsTest, AudioCheckboxDefaultStates) {
+TEST_F(DesktopMediaPickerViewsTest, AudioCheckboxDefaultStates) {
   if (test_api_.AudioSupported(DesktopMediaList::Type::kScreen)) {
     test_api_.SelectTabForSourceType(DesktopMediaList::Type::kScreen);
     EXPECT_FALSE(test_api_.IsAudioSharingApprovedByUser());
@@ -551,7 +526,7 @@ TEST_P(DesktopMediaPickerViewsTest, AudioCheckboxDefaultStates) {
   }
 }
 
-TEST_P(DesktopMediaPickerViewsTest, DistinctAudioCheckboxesHaveDistinctState) {
+TEST_F(DesktopMediaPickerViewsTest, DistinctAudioCheckboxesHaveDistinctState) {
   DesktopMediaList::Type source_1 = DesktopMediaList::Type::kWebContents;
   DesktopMediaList::Type source_2 = DesktopMediaList::Type::kScreen;
 
@@ -579,7 +554,7 @@ TEST_P(DesktopMediaPickerViewsTest, DistinctAudioCheckboxesHaveDistinctState) {
 // Verifies the visible status of audio checkbox.
 // This test takes it as an article of faith that no checkbox is visible
 // when GetAudioShareCheckbox() returns false.
-TEST_P(DesktopMediaPickerViewsTest, AudioCheckboxVisibility) {
+TEST_F(DesktopMediaPickerViewsTest, AudioCheckboxVisibility) {
   bool is_system_audio_capture_supported =
       DesktopMediaPickerController::IsSystemAudioCaptureSupported(
           DesktopMediaPicker::Params::RequestSource::kGetDisplayMedia);
@@ -606,7 +581,7 @@ TEST_P(DesktopMediaPickerViewsTest, AudioCheckboxVisibility) {
 
 // Verifies that audio share information is recorded in the ID if the checkbox
 // is checked.
-TEST_P(DesktopMediaPickerViewsTest, DoneWithAudioShare) {
+TEST_F(DesktopMediaPickerViewsTest, DoneWithAudioShare) {
   constexpr DesktopMediaID kOriginId(DesktopMediaID::TYPE_WEB_CONTENTS, 222);
 
   DesktopMediaID result_id(DesktopMediaID::TYPE_WEB_CONTENTS, 222, true);
@@ -625,19 +600,14 @@ TEST_P(DesktopMediaPickerViewsTest, DoneWithAudioShare) {
   EXPECT_EQ(result_id, WaitForPickerResult());
 }
 
-TEST_P(DesktopMediaPickerViewsTest, OkButtonEnabledDuringAcceptSpecific) {
-  // The first pane is |tabs| in the new order and |screens| otherwise.
-  DesktopMediaID::Type type = NewOrder() ? DesktopMediaID::TYPE_WEB_CONTENTS
-                                         : DesktopMediaID::TYPE_SCREEN;
-  DesktopMediaID fake_id(type, 222);
+TEST_F(DesktopMediaPickerViewsTest, OkButtonEnabledDuringAcceptSpecific) {
+  DesktopMediaID fake_id(DesktopMediaID::TYPE_WEB_CONTENTS, 222);
 
   media_lists_[DesktopMediaList::Type::kWindow]->AddSourceByFullMediaID(
       fake_id);
-  if (NewOrder()) {
-    // Audio-sharing supported for tabs, but not for windows.
-    fake_id.web_contents_id.disable_local_echo = true;
-    fake_id.audio_share = true;
-  }
+  // Audio-sharing supported for tabs, but not for windows.
+  fake_id.web_contents_id.disable_local_echo = true;
+  fake_id.audio_share = true;
 
   EXPECT_FALSE(GetPickerDialogView()->IsDialogButtonEnabled(
       ui::mojom::DialogButton::kOk));
@@ -646,7 +616,7 @@ TEST_P(DesktopMediaPickerViewsTest, OkButtonEnabledDuringAcceptSpecific) {
   EXPECT_EQ(fake_id, WaitForPickerResult());
 }
 
-TEST_P(DesktopMediaPickerViewsTest, AccessibleBubbleFrameViewTitle) {
+TEST_F(DesktopMediaPickerViewsTest, AccessibleBubbleFrameViewTitle) {
   // TODO(420734141): Make DesktopMediaPickerDialogView always have a
   // BubbleFrameView.
   views::BubbleFrameView* bubble_frame_view =
@@ -665,7 +635,7 @@ TEST_P(DesktopMediaPickerViewsTest, AccessibleBubbleFrameViewTitle) {
 }
 
 #if BUILDFLAG(IS_MAC)
-TEST_P(DesktopMediaPickerViewsTest, OnPermissionUpdateWithPermissions) {
+TEST_F(DesktopMediaPickerViewsTest, OnPermissionUpdateWithPermissions) {
   test_api_.OnPermissionUpdate(true);
 
   test_api_.SelectTabForSourceType(DesktopMediaList::Type::kScreen);
@@ -681,7 +651,7 @@ TEST_P(DesktopMediaPickerViewsTest, OnPermissionUpdateWithPermissions) {
   EXPECT_FALSE(test_api_.GetActivePane()->IsPermissionPaneVisible());
 }
 
-TEST_P(DesktopMediaPickerViewsTest, OnPermissionUpdateWithoutPermissions) {
+TEST_F(DesktopMediaPickerViewsTest, OnPermissionUpdateWithoutPermissions) {
   test_api_.OnPermissionUpdate(false);
 
   test_api_.SelectTabForSourceType(DesktopMediaList::Type::kScreen);
@@ -696,16 +666,58 @@ TEST_P(DesktopMediaPickerViewsTest, OnPermissionUpdateWithoutPermissions) {
   EXPECT_TRUE(test_api_.GetActivePane()->IsContentPaneVisible());
   EXPECT_FALSE(test_api_.GetActivePane()->IsPermissionPaneVisible());
 }
+
+// A floating picker (one opened from a floating companion surface) stays
+// floating while the permission pane is merely visible, so that it remains
+// usable over fullscreen spaces.
+TEST_F(DesktopMediaPickerViewsTest, PermissionPaneKeepsPickerFloating) {
+  views::Widget* const widget = GetPickerDialogView()->GetWidget();
+  widget->SetZOrderLevel(ui::ZOrderLevel::kFloatingWindow);
+  widget->SetActivationIndependence(true);
+
+  test_api_.SelectTabForSourceType(DesktopMediaList::Type::kScreen);
+  test_api_.OnPermissionUpdate(false);
+
+  EXPECT_EQ(ui::ZOrderLevel::kFloatingWindow, widget->GetZOrderLevel());
+}
+
+// Clicking the button sends the user to System Settings, which a floating
+// picker would cover. The picker must get out of the way at that point.
+TEST_F(DesktopMediaPickerViewsTest, PermissionButtonLowersFloatingPicker) {
+  views::Widget* const widget = GetPickerDialogView()->GetWidget();
+  widget->SetZOrderLevel(ui::ZOrderLevel::kFloatingWindow);
+  widget->SetActivationIndependence(true);
+
+  test_api_.SelectTabForSourceType(DesktopMediaList::Type::kScreen);
+  test_api_.OnPermissionUpdate(false);
+  ASSERT_TRUE(test_api_.GetActivePane()->IsPermissionPaneVisible());
+
+  test_api_.GetActivePane()->SimulatePermissionButtonClickForTesting();
+
+  EXPECT_EQ(ui::ZOrderLevel::kNormal, widget->GetZOrderLevel());
+}
+
+TEST_F(DesktopMediaPickerViewsTest, PermissionButtonKeepsNormalPickerZOrder) {
+  views::Widget* const widget = GetPickerDialogView()->GetWidget();
+  ASSERT_EQ(ui::ZOrderLevel::kNormal, widget->GetZOrderLevel());
+
+  test_api_.SelectTabForSourceType(DesktopMediaList::Type::kScreen);
+  test_api_.OnPermissionUpdate(false);
+  ASSERT_TRUE(test_api_.GetActivePane()->IsPermissionPaneVisible());
+
+  test_api_.GetActivePane()->SimulatePermissionButtonClickForTesting();
+
+  EXPECT_EQ(ui::ZOrderLevel::kNormal, widget->GetZOrderLevel());
+}
+
 #endif
 
 class DesktopMediaPickerViewsPerTypeTest
     : public DesktopMediaPickerViewsTestBase,
-      public testing::WithParamInterface<
-          std::tuple<bool, DesktopMediaList::Type>> {
+      public testing::WithParamInterface<DesktopMediaList::Type> {
  public:
   DesktopMediaPickerViewsPerTypeTest()
-      : DesktopMediaPickerViewsTestBase(GetSourceTypes(NewOrder())),
-        source_id_type_(AsDesktopMediaIdType(type())) {}
+      : source_id_type_(AsDesktopMediaIdType(type())) {}
   ~DesktopMediaPickerViewsPerTypeTest() override = default;
 
   void SetUp() override {
@@ -720,32 +732,25 @@ class DesktopMediaPickerViewsPerTypeTest
     test_api_.SelectTabForSourceType(type());
   }
 
-  bool NewOrder() const { return std::get<0>(GetParam()); }
-  DesktopMediaList::Type type() const { return std::get<1>(GetParam()); }
+  DesktopMediaList::Type type() const { return GetParam(); }
   DesktopMediaID::Type source_id_type() const { return source_id_type_; }
 
   static std::string GetDescription(
       const testing::TestParamInfo<
           DesktopMediaPickerViewsPerTypeTest::ParamType>& info) {
-    const bool new_order = std::get<0>(info.param);
-    const DesktopMediaList::Type type = std::get<1>(info.param);
-
-    return base::StrCat(
-        {new_order ? "New" : "Old", "Order", GetTypeAsTestNameString(type)});
+    return GetTypeAsTestNameString(info.param);
   }
 
  private:
   const DesktopMediaID::Type source_id_type_;
 };
 
-INSTANTIATE_TEST_SUITE_P(
-    ,
-    DesktopMediaPickerViewsPerTypeTest,
-    testing::Combine(/*NewOrder=*/testing::Bool(),
-                     testing::Values(DesktopMediaList::Type::kWebContents,
-                                     DesktopMediaList::Type::kWindow,
-                                     DesktopMediaList::Type::kScreen)),
-    &DesktopMediaPickerViewsPerTypeTest::GetDescription);
+INSTANTIATE_TEST_SUITE_P(,
+                         DesktopMediaPickerViewsPerTypeTest,
+                         testing::Values(DesktopMediaList::Type::kWebContents,
+                                         DesktopMediaList::Type::kWindow,
+                                         DesktopMediaList::Type::kScreen),
+                         &DesktopMediaPickerViewsPerTypeTest::GetDescription);
 
 // Verifies that a MediaSourceView is selected with mouse left click and
 // original selected MediaSourceView gets unselected.
@@ -852,10 +857,6 @@ class DesktopMediaPickerViewsPerTypeAndAudioTest
           /*SystemAudio=*/bool,
           /*WindowAudioPreference=*/blink::mojom::WindowAudioPreference>> {
  public:
-  DesktopMediaPickerViewsPerTypeAndAudioTest()
-      : DesktopMediaPickerViewsTestBase(GetSourceTypes(/*new_order=*/true)) {}
-  ~DesktopMediaPickerViewsPerTypeAndAudioTest() override = default;
-
   void SetUp() override {
 #if BUILDFLAG(IS_WIN)
     feature_list_.InitAndEnableFeature(media::kApplicationAudioCaptureWin);
@@ -914,23 +915,9 @@ TEST_P(DesktopMediaPickerViewsPerTypeAndAudioTest, AcceptSpecific) {
 class DesktopMediaPickerViewsSystemAudioTest
     : public DesktopMediaPickerViewsTestBase {
  public:
-  DesktopMediaPickerViewsSystemAudioTest()
-      : DesktopMediaPickerViewsTestBase(GetSourceTypes(/*new_order=*/false)) {}
-  ~DesktopMediaPickerViewsSystemAudioTest() override = default;
-
-  void SetUp() override {
-#if BUILDFLAG(IS_MAC)
-    feature_list_.InitWithFeatures({media::kMacCatapLoopbackAudioForCast}, {});
-#endif
-    DesktopMediaPickerViewsTestBase::SetUp();
-  }
-
   void MaybeCreatePickerViews() override {
     // CreatePickerViews() called  directly from tests.
   }
-
- private:
-  base::test::ScopedFeatureList feature_list_;
 };
 
 TEST_F(DesktopMediaPickerViewsSystemAudioTest,
@@ -1051,10 +1038,6 @@ class DesktopMediaPickerViewsApplicationAudioTest
                      /*request_audio=*/bool,
                      /*screen_exclude_system_audio=*/bool>> {
  public:
-  DesktopMediaPickerViewsApplicationAudioTest()
-      : DesktopMediaPickerViewsTestBase(GetSourceTypes(/*new_order=*/false)) {}
-  ~DesktopMediaPickerViewsApplicationAudioTest() override = default;
-
   void SetUp() override {
     if (ShouldEnableApplicationAudioCapture()) {
 #if BUILDFLAG(IS_WIN)
@@ -1347,11 +1330,8 @@ TEST_F(DesktopMediaPickerViewsSingleTabPaneTest, AccessibleProperties) {
 class DesktopMediaPickerPreferredDisplaySurfaceTest
     : public DesktopMediaPickerViewsTestBase,
       public testing::WithParamInterface<
-          std::tuple<bool, blink::mojom::PreferredDisplaySurface>> {
+          blink::mojom::PreferredDisplaySurface> {
  public:
-  DesktopMediaPickerPreferredDisplaySurfaceTest()
-      : DesktopMediaPickerViewsTestBase(GetSourceTypes(NewOrder())) {}
-
   void MaybeCreatePickerViews() override {
     CreatePickerViews(/*request_audio=*/true,
                       /*screen_exclude_system_audio=*/false,
@@ -1359,30 +1339,25 @@ class DesktopMediaPickerPreferredDisplaySurfaceTest
                       PreferredDisplaySurface());
   }
 
-  bool NewOrder() const { return std::get<0>(GetParam()); }
-
   blink::mojom::PreferredDisplaySurface PreferredDisplaySurface() const {
-    return std::get<1>(GetParam());
+    return GetParam();
   }
 };
 
 INSTANTIATE_TEST_SUITE_P(
     ,
     DesktopMediaPickerPreferredDisplaySurfaceTest,
-    testing::Combine(
-        /*NewOrder=*/testing::Bool(),
-        testing::Values(blink::mojom::PreferredDisplaySurface::NO_PREFERENCE,
-                        blink::mojom::PreferredDisplaySurface::MONITOR,
-                        blink::mojom::PreferredDisplaySurface::WINDOW,
-                        blink::mojom::PreferredDisplaySurface::BROWSER)));
+    testing::Values(blink::mojom::PreferredDisplaySurface::NO_PREFERENCE,
+                    blink::mojom::PreferredDisplaySurface::MONITOR,
+                    blink::mojom::PreferredDisplaySurface::WINDOW,
+                    blink::mojom::PreferredDisplaySurface::BROWSER));
 
 TEST_P(DesktopMediaPickerPreferredDisplaySurfaceTest,
        SelectedTabMatchesPreferredDisplaySurface) {
   switch (PreferredDisplaySurface()) {
     case blink::mojom::PreferredDisplaySurface::NO_PREFERENCE:
       EXPECT_EQ(test_api_.GetSelectedSourceListType(),
-                NewOrder() ? DesktopMediaList::Type::kWebContents
-                           : DesktopMediaList::Type::kScreen);
+                DesktopMediaList::Type::kWebContents);
       break;
     case blink::mojom::PreferredDisplaySurface::MONITOR:
       EXPECT_EQ(test_api_.GetSelectedSourceListType(),
@@ -1399,14 +1374,25 @@ TEST_P(DesktopMediaPickerPreferredDisplaySurfaceTest,
   }
 }
 
+class DesktopMediaPickerCustomOrderTest
+    : public DesktopMediaPickerViewsTestBase {
+ public:
+  DesktopMediaPickerCustomOrderTest()
+      : DesktopMediaPickerViewsTestBase(
+            {DesktopMediaList::Type::kScreen, DesktopMediaList::Type::kWindow,
+             DesktopMediaList::Type::kWebContents}) {}
+  ~DesktopMediaPickerCustomOrderTest() override = default;
+};
+
+TEST_F(DesktopMediaPickerCustomOrderTest, RespectsCustomSourceListOrder) {
+  EXPECT_EQ(test_api_.GetSelectedSourceListType(),
+            DesktopMediaList::Type::kScreen);
+}
+
 class DesktopMediaPickerDoubleClickTest
     : public DesktopMediaPickerViewsTestBase,
       public testing::WithParamInterface<
-          std::pair<DesktopMediaList::Type, DesktopMediaID::Type>> {
- public:
-  DesktopMediaPickerDoubleClickTest()
-      : DesktopMediaPickerViewsTestBase(GetSourceTypes(/*new_order=*/true)) {}
-};
+          std::pair<DesktopMediaList::Type, DesktopMediaID::Type>> {};
 
 INSTANTIATE_TEST_SUITE_P(
     ,
@@ -1789,6 +1775,84 @@ TEST_F(DelegatedSourceListTest, ReselectTriggersShowDelegatedSourceList) {
                    ->clear_delegated_source_list_selection_count());
 }
 
+// Delegated source lists (such as the xdg-desktop-portal picker for PipeWire
+// capture) shown as a button that opens the system picker, as on macOS.
+class DelegatedSourceListButtonTest : public DelegatedSourceListTest {
+ public:
+  DelegatedSourceListButtonTest() {
+    feature_list_.InitAndEnableFeature(kDesktopMediaPickerPortalButton);
+  }
+
+  void SetUp() override {
+    DelegatedSourceListTest::SetUp();
+    SetSourceTypes(
+        {DesktopMediaList::Type::kWebContents},
+        {DesktopMediaList::Type::kScreen, DesktopMediaList::Type::kWindow});
+    CreatePickerViews(/*request_audio=*/false,
+                      /*screen_exclude_system_audio=*/true,
+                      blink::mojom::WindowAudioPreference::kExclude);
+  }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+};
+
+// Selecting a delegated pane shows a button instead of starting the source
+// list, since starting a PipeWire capturer opens the portal.
+TEST_F(DelegatedSourceListButtonTest, ButtonStartsSourceList) {
+  test_api_.SelectTabForSourceType(DesktopMediaList::Type::kScreen);
+  EXPECT_EQ(test_api_.GetDelegatedButtonText(),
+            l10n_util::GetStringUTF16(
+                IDS_DESKTOP_MEDIA_PICKER_DELEGATED_SOURCE_LIST_SCREEN_BUTTON));
+  EXPECT_EQ(nullptr, test_api_.GetReselectButton());
+
+  FakeDesktopMediaList* screen_list =
+      media_lists_[DesktopMediaList::Type::kScreen];
+  EXPECT_FALSE(screen_list->is_updating());
+  EXPECT_EQ(0, screen_list->show_delegated_list_count());
+
+  test_api_.SelectTabForSourceType(DesktopMediaList::Type::kWindow);
+  EXPECT_EQ(test_api_.GetDelegatedButtonText(),
+            l10n_util::GetStringUTF16(
+                IDS_DESKTOP_MEDIA_PICKER_DELEGATED_SOURCE_LIST_WINDOW_BUTTON));
+  FakeDesktopMediaList* window_list =
+      media_lists_[DesktopMediaList::Type::kWindow];
+  EXPECT_FALSE(window_list->is_updating());
+
+  test_api_.PressDelegatedButton();
+  EXPECT_TRUE(window_list->is_updating());
+  EXPECT_EQ(1, window_list->show_delegated_list_count());
+  EXPECT_FALSE(screen_list->is_updating());
+  EXPECT_FALSE(has_picker_result());
+}
+
+// The source that appears once the user has selected it in the portal is
+// accepted right away.
+TEST_F(DelegatedSourceListButtonTest, SelectionIsAccepted) {
+  const DesktopMediaID kScreenId(
+      AsDesktopMediaIdType(DesktopMediaList::Type::kScreen), 10);
+  test_api_.SelectTabForSourceType(DesktopMediaList::Type::kScreen);
+  test_api_.PressDelegatedButton();
+  media_lists_[DesktopMediaList::Type::kScreen]
+      ->OnDelegatedSourceListSelection();
+  media_lists_[DesktopMediaList::Type::kScreen]->AddSourceByFullMediaID(
+      kScreenId);
+
+  EXPECT_EQ(kScreenId, WaitForPickerResult());
+}
+
+// Cancelling the portal cancels the request, since the picker was hidden when
+// the portal was shown.
+TEST_F(DelegatedSourceListButtonTest, DismissRejects) {
+  test_api_.SelectTabForSourceType(DesktopMediaList::Type::kScreen);
+  test_api_.PressDelegatedButton();
+  media_lists_[DesktopMediaList::Type::kScreen]
+      ->OnDelegatedSourceListDismissed();
+
+  EXPECT_EQ(
+      WaitForPickerResult(),
+      base::unexpected(MediaStreamRequestResult::PERMISSION_DENIED_BY_USER));
+}
 #endif  // BUILDFLAG(IS_MAC)
 }  // namespace views
 

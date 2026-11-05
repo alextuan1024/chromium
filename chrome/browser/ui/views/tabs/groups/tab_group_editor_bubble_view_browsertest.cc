@@ -5,6 +5,8 @@
 #include "chrome/browser/ui/views/tabs/groups/tab_group_editor_bubble_view.h"
 
 #include <memory>
+#include <optional>
+#include <string>
 #include <vector>
 
 #include "base/strings/string_util.h"
@@ -20,6 +22,7 @@
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/tabs/features.h"
+#include "chrome/browser/ui/tabs/saved_tab_groups/saved_tab_group_metrics.h"
 #include "chrome/browser/ui/tabs/tab_enums.h"
 #include "chrome/browser/ui/tabs/tab_group_deletion_dialog_controller.h"
 #include "chrome/browser/ui/tabs/tab_group_model.h"
@@ -28,6 +31,11 @@
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/views/bookmarks/bookmark_editor_view.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
+#include "chrome/browser/ui/views/frame/tab_strip_region_view.h"
+#include "chrome/browser/ui/views/tabs/common/tab_group_view.h"
+#include "chrome/browser/ui/views/tabs/common/tab_view.h"
+#include "chrome/browser/ui/views/tabs/groups/ephemeral_tab_group_promotion_bubble_view.h"
+#include "chrome/browser/ui/views/tabs/shared/tab_strip_types.h"
 #include "chrome/browser/ui/views/tabs/tab_group_header.h"
 #include "chrome/browser/ui/views/tabs/tab_strip.h"
 #include "chrome/grit/generated_resources.h"
@@ -36,19 +44,24 @@
 #include "components/bookmarks/common/bookmark_pref_names.h"
 #include "components/data_sharing/public/features.h"
 #include "components/prefs/pref_service.h"
+#include "components/strings/grit/components_strings.h"
 #include "components/tab_groups/tab_group_id.h"
 #include "components/tabs/public/tab_group.h"
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/test/browser_test.h"
+#include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/l10n/l10n_util.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/display/screen.h"
 #include "ui/events/event.h"
 #include "ui/gfx/geometry/point_f.h"
+#include "ui/gfx/geometry/rect.h"
 #include "ui/views/bubble/bubble_border.h"
+#include "ui/views/bubble/bubble_frame_view.h"
 #include "ui/views/controls/button/button.h"
 #include "ui/views/controls/button/label_button.h"
 #include "ui/views/controls/button/label_button_image_container.h"
+#include "ui/views/controls/label.h"
 #include "ui/views/interaction/element_tracker_views.h"
 #include "ui/views/test/button_test_api.h"
 #include "ui/views/test/widget_test.h"
@@ -63,20 +76,16 @@
 #include "ash/public/cpp/tablet_mode.h"
 #include "base/test/run_until.h"
 #include "ui/base/interaction/element_test_util.h"
-#include "ui/display/screen.h"
 #include "ui/strings/grit/ui_strings.h"
-#endif
-
-#if BUILDFLAG(IS_OZONE)
-#include "ui/ozone/public/ozone_platform.h"
 #endif
 
 class TabGroupEditorBubbleViewDialogBrowserTest : public DialogBrowserTest {
  public:
   TabGroupEditorBubbleViewDialogBrowserTest() {
     scoped_feature_list_.InitWithFeatures(
-        {}, {data_sharing::features::kDataSharingFeature,
-             data_sharing::features::kDataSharingJoinOnly});
+        {features::kTabGroupsFocusing, features::kNonGroupFocus},
+        {data_sharing::features::kDataSharingFeature,
+         data_sharing::features::kDataSharingJoinOnly});
   }
 
  protected:
@@ -85,16 +94,31 @@ class TabGroupEditorBubbleViewDialogBrowserTest : public DialogBrowserTest {
     browser()->GetTabStripModel()->OpenTabGroupEditor(group_.value());
   }
 
+  // Returns the widget for the bubble opened by OpenTabGroupEditor(): the
+  // editor bubble for regular groups, or the promotion bubble for ephemeral
+  // groups.
   static views::Widget* WaitForAndGetEditorBubbleWidget() {
-    auto bubble_view =
-        views::ElementTrackerViews::GetInstance()
-            ->GetAllMatchingViewsInAnyContext(
-                TabGroupEditorBubbleView::kTabGroupEditorBubbleViewId);
-    if (bubble_view.empty()) {
+    auto find_open_widget = [](ui::ElementIdentifier id) -> views::Widget* {
+      for (views::View* view : views::ElementTrackerViews::GetInstance()
+                                   ->GetAllMatchingViewsInAnyContext(id)) {
+        if (views::Widget* widget = view->GetWidget();
+            widget && !widget->IsClosed()) {
+          return widget;
+        }
+      }
+      return nullptr;
+    };
+
+    views::Widget* widget =
+        find_open_widget(TabGroupEditorBubbleView::kTabGroupEditorBubbleViewId);
+    if (!widget) {
+      widget = find_open_widget(EphemeralTabGroupPromotionBubbleView::
+                                    kEphemeralTabGroupPromotionBubbleViewId);
+    }
+    if (!widget) {
       return nullptr;
     }
 
-    views::Widget* const widget = bubble_view[0]->GetWidget();
     views::test::WidgetVisibleWaiter(widget).Wait();
     return widget;
   }
@@ -111,7 +135,15 @@ class TabGroupEditorBubbleViewPixelBrowserTest
     : public TabGroupEditorBubbleViewDialogBrowserTest {
  protected:
   void ShowUi(const std::string& name) override {
-    TabGroupEditorBubbleViewDialogBrowserTest::ShowUi(name);
+    if (name == "ephemeral_group") {
+      // An ephemeral (non-group focus) group gets the promotion prompt rather
+      // than the full editor. Open it through the same public entry point as
+      // the default case so this test keeps exercising whatever UI backs it.
+      group_ = browser()->GetTabStripModel()->EnterFocusMode({0});
+      browser()->GetTabStripModel()->OpenTabGroupEditor(group_.value());
+    } else {
+      TabGroupEditorBubbleViewDialogBrowserTest::ShowUi(name);
+    }
     views::Widget* widget = WaitForAndGetEditorBubbleWidget();
     if (widget) {
       auto* test_info = testing::UnitTest::GetInstance()->current_test_info();
@@ -126,6 +158,13 @@ class TabGroupEditorBubbleViewPixelBrowserTest
 
 IN_PROC_BROWSER_TEST_F(TabGroupEditorBubbleViewPixelBrowserTest,
                        InvokeUi_default) {
+  ShowAndVerifyUi();
+}
+
+// Pixel baseline for the ephemeral group promotion prompt (title, color picker
+// and Create / Cancel buttons).
+IN_PROC_BROWSER_TEST_F(TabGroupEditorBubbleViewPixelBrowserTest,
+                       InvokeUi_ephemeral_group) {
   ShowAndVerifyUi();
 }
 
@@ -156,6 +195,11 @@ IN_PROC_BROWSER_TEST_F(TabGroupEditorBubbleViewDialogBrowserTest,
 
   histogram_tester.ExpectUniqueSample("TabGroups.TabGroupBubble.TabCount", 2,
                                       1);
+  histogram_tester.ExpectUniqueSample(
+      "TabGroups.ContextMenu.EditorBubble.Action",
+      tab_groups::saved_tab_groups::metrics::TabGroupEditorBubbleAction::
+          kNewTabInGroup,
+      1);
 }
 
 #if BUILDFLAG(IS_CHROMEOS)
@@ -334,6 +378,11 @@ IN_PROC_BROWSER_TEST_F(TabGroupEditorBubbleViewDialogBrowserTest, Ungroup) {
 
   // Should not record for 0 tabs.
   histogram_tester.ExpectTotalCount("TabGroups.TabGroupBubble.TabCount", 0);
+  histogram_tester.ExpectUniqueSample(
+      "TabGroups.ContextMenu.EditorBubble.Action",
+      tab_groups::saved_tab_groups::metrics::TabGroupEditorBubbleAction::
+          kUngroup,
+      1);
 }
 
 // TODO(crbug.com/388544209): Flaky on linux-win-cross-rel.
@@ -344,6 +393,7 @@ IN_PROC_BROWSER_TEST_F(TabGroupEditorBubbleViewDialogBrowserTest, Ungroup) {
 #endif
 IN_PROC_BROWSER_TEST_F(TabGroupEditorBubbleViewDialogBrowserTest,
                        MAYBE_MoveGroupToNewWindow) {
+  base::HistogramTester histogram_tester;
   // Add a tab so theres more than just the group in the tabstrip
   InProcessBrowserTest::AddBlankTabAndShow(browser());
 
@@ -376,6 +426,11 @@ IN_PROC_BROWSER_TEST_F(TabGroupEditorBubbleViewDialogBrowserTest,
                     ->group_model()
                     ->ListTabGroups()
                     .size());
+  histogram_tester.ExpectUniqueSample(
+      "TabGroups.ContextMenu.EditorBubble.Action",
+      tab_groups::saved_tab_groups::metrics::TabGroupEditorBubbleAction::
+          kMoveGroupToNewWindow,
+      1);
 }
 
 IN_PROC_BROWSER_TEST_F(TabGroupEditorBubbleViewDialogBrowserTest,
@@ -416,26 +471,37 @@ IN_PROC_BROWSER_TEST_F(TabGroupEditorBubbleViewDialogBrowserTest,
   ASSERT_EQ(3, tsm->count());
   std::optional<tab_groups::TabGroupId> group = tsm->AddToNewGroup({0, 1});
 
-  ASSERT_FALSE(browser_view->horizontal_tab_strip_for_testing()
-                   ->tab_at(0)
-                   ->HasFreezingVote(FreezingVoteReason::kCollapsedGroup));
-  ASSERT_FALSE(browser_view->horizontal_tab_strip_for_testing()
-                   ->tab_at(1)
-                   ->HasFreezingVote(FreezingVoteReason::kCollapsedGroup));
-  ASSERT_FALSE(browser_view->horizontal_tab_strip_for_testing()
-                   ->tab_at(2)
-                   ->HasFreezingVote(FreezingVoteReason::kCollapsedGroup));
-  browser_view->horizontal_tab_strip_for_testing()
-      ->ToggleTabGroupCollapsedState(group.value());
-  EXPECT_TRUE(browser_view->horizontal_tab_strip_for_testing()
-                  ->tab_at(0)
-                  ->HasFreezingVote(FreezingVoteReason::kCollapsedGroup));
-  EXPECT_TRUE(browser_view->horizontal_tab_strip_for_testing()
-                  ->tab_at(1)
-                  ->HasFreezingVote(FreezingVoteReason::kCollapsedGroup));
-  EXPECT_FALSE(browser_view->horizontal_tab_strip_for_testing()
-                   ->tab_at(2)
-                   ->HasFreezingVote(FreezingVoteReason::kCollapsedGroup));
+  auto tab_has_freezing_vote = [&](int tab_index, FreezingVoteReason reason) {
+    views::View* tab_anchor = browser_view->tab_strip_view()->GetTabAnchorView(
+        tsm->GetTabAtIndex(tab_index)->GetHandle());
+    if (auto* tab = views::AsViewClass<Tab>(tab_anchor)) {
+      return tab->HasFreezingVote(reason);
+    }
+    if (auto* tab_view = views::AsViewClass<TabView>(tab_anchor)) {
+      return tab_view->HasFreezingVote(reason);
+    }
+    return false;
+  };
+
+  ASSERT_FALSE(tab_has_freezing_vote(0, FreezingVoteReason::kCollapsedGroup));
+  ASSERT_FALSE(tab_has_freezing_vote(1, FreezingVoteReason::kCollapsedGroup));
+  ASSERT_FALSE(tab_has_freezing_vote(2, FreezingVoteReason::kCollapsedGroup));
+  if (auto* tab_strip = browser_view->horizontal_tab_strip_for_testing()) {
+    tab_strip->ToggleTabGroupCollapsedState(group.value());
+  } else {
+    views::View* anchor =
+        browser_view->tab_strip_view()->GetTabGroupAnchorView(group.value());
+    auto* tab_group_view = views::AsViewClass<TabGroupView>(anchor);
+    if (!tab_group_view && anchor && anchor->parent()) {
+      tab_group_view = views::AsViewClass<TabGroupView>(anchor->parent());
+    }
+    ASSERT_TRUE(tab_group_view);
+    tab_group_view->ToggleCollapsedState(
+        ToggleTabGroupCollapsedStateOrigin::kMenuAction);
+  }
+  EXPECT_TRUE(tab_has_freezing_vote(0, FreezingVoteReason::kCollapsedGroup));
+  EXPECT_TRUE(tab_has_freezing_vote(1, FreezingVoteReason::kCollapsedGroup));
+  EXPECT_FALSE(tab_has_freezing_vote(2, FreezingVoteReason::kCollapsedGroup));
 }
 
 class TabGroupEditorBubbleViewDialogBrowserTestWithSavedGroup
@@ -532,7 +598,6 @@ IN_PROC_BROWSER_TEST_F(TabGroupEditorBubbleViewDialogBrowserTestWithSavedGroup,
   EXPECT_EQ(2, tsm->count());
 }
 
-
 class TabGroupEditorBubbleViewDialogBrowserTestWithFocusingEnabled
     : public TabGroupEditorBubbleViewDialogBrowserTest {
  public:
@@ -550,6 +615,7 @@ IN_PROC_BROWSER_TEST_F(
   ShowUi("SetUp");
 
   base::HistogramTester histogram_tester;
+  base::UserActionTester user_action_tester;
   TabStripModel* const tsm = browser()->GetTabStripModel();
   ASSERT_TRUE(group_.has_value());
   const tab_groups::TabGroupId group_id = group_.value();
@@ -588,6 +654,15 @@ IN_PROC_BROWSER_TEST_F(
   histogram_tester.ExpectUniqueSample(
       "TabGroups.Focus.EntryPoint", TabGroupFocusEntryPoint::kEditorBubble, 1);
   histogram_tester.ExpectTotalCount("TabGroups.Focus.ExitReason", 0);
+  histogram_tester.ExpectUniqueSample(
+      "TabGroups.ContextMenu.EditorBubble.Action",
+      tab_groups::saved_tab_groups::metrics::TabGroupEditorBubbleAction::
+          kFocusOrUnfocusGroup,
+      1);
+  EXPECT_EQ(1, user_action_tester.GetActionCount(
+                   "TabGroups_TabGroupBubble_FocusGroup"));
+  EXPECT_EQ(0, user_action_tester.GetActionCount(
+                   "TabGroups_TabGroupBubble_UnfocusGroup"));
 
   // 3. Open the editor again to unfocus.
   browser()->GetTabStripModel()->OpenTabGroupEditor(group_id);
@@ -617,6 +692,15 @@ IN_PROC_BROWSER_TEST_F(
       "TabGroups.Focus.EntryPoint", TabGroupFocusEntryPoint::kEditorBubble, 1);
   histogram_tester.ExpectUniqueSample(
       "TabGroups.Focus.ExitReason", TabGroupFocusExitReason::kEditorBubble, 1);
+  histogram_tester.ExpectUniqueSample(
+      "TabGroups.ContextMenu.EditorBubble.Action",
+      tab_groups::saved_tab_groups::metrics::TabGroupEditorBubbleAction::
+          kFocusOrUnfocusGroup,
+      2);
+  EXPECT_EQ(1, user_action_tester.GetActionCount(
+                   "TabGroups_TabGroupBubble_FocusGroup"));
+  EXPECT_EQ(1, user_action_tester.GetActionCount(
+                   "TabGroups_TabGroupBubble_UnfocusGroup"));
 }
 
 #if !BUILDFLAG(IS_CHROMEOS)
@@ -657,6 +741,7 @@ class TabGroupEditorBubbleViewDialogBrowserTestWithTabGroupHome
 IN_PROC_BROWSER_TEST_F(
     TabGroupEditorBubbleViewDialogBrowserTestWithTabGroupHome,
     TabGroupHomeTrigger) {
+  base::HistogramTester histogram_tester;
   ShowUi("SetUp");
 
   views::Widget* editor_bubble = WaitForAndGetEditorBubbleWidget();
@@ -689,91 +774,120 @@ IN_PROC_BROWSER_TEST_F(
       browser()->GetTabStripModel()->GetActiveWebContents();
   ASSERT_NE(nullptr, active_contents);
   EXPECT_EQ(active_contents->GetVisibleURL(), GURL("chrome://tab-group-home/"));
+  histogram_tester.ExpectUniqueSample(
+      "TabGroups.ContextMenu.EditorBubble.Action",
+      tab_groups::saved_tab_groups::metrics::TabGroupEditorBubbleAction::kHome,
+      1);
 }
 
-#if BUILDFLAG(IS_OZONE)
 IN_PROC_BROWSER_TEST_F(TabGroupEditorBubbleViewDialogBrowserTest,
-                       ArrowPositionNearBottom) {
-  if (ui::OzonePlatform::GetInstance()
-          ->GetPlatformProperties()
-          .supports_global_screen_coordinates) {
-    GTEST_SKIP() << "Only test when global screen coordinates aren't supported";
-  }
-  browser()->GetWindow()->SetBounds(gfx::Rect(0, 0, 1000, 1000));
+                       AdjustIfOffscreen) {
+  browser()->GetWindow()->SetBounds(
+      display::Screen::Get()
+          ->GetDisplayNearestWindow(browser()->GetWindow()->GetNativeWindow())
+          .work_area());
 
   group_ = browser()->GetTabStripModel()->AddToNewGroup({0});
   ASSERT_TRUE(group_.has_value());
 
-  // Try showing the bubble near the top left of the window. The arrow should be
-  // on the top left.
-  gfx::Rect top_left_anchor_rect(100, 100, 50, 50);
-  std::unique_ptr<views::Widget> top_left_widget =
-      TabGroupEditorBubbleView::Show(
-          browser(), group_.value(),
-          BrowserView::GetBrowserViewForBrowser(browser())->tab_strip_view(),
-          top_left_anchor_rect, false);
-  views::test::WidgetVisibleWaiter(top_left_widget.get()).Wait();
+  const gfx::Rect window_bounds =
+      BrowserView::GetBrowserViewForBrowser(browser())
+          ->GetWidget()
+          ->GetWindowBoundsInScreen();
 
-  TabGroupEditorBubbleView* top_left_bubble_view =
+  // Show the bubble near the top-left of the window. The frame arrow should
+  // stay on the top-left without horizontal offset.
+  std::unique_ptr<views::Widget> widget = TabGroupEditorBubbleView::Show(
+      browser(), group_.value(),
+      BrowserView::GetBrowserViewForBrowser(browser())->tab_strip_view(),
+      gfx::Rect(window_bounds.x() + 50, window_bounds.y() + 50, 50, 30), false);
+  views::test::WidgetVisibleWaiter(widget.get()).Wait();
+
+  TabGroupEditorBubbleView* bubble_view =
       static_cast<TabGroupEditorBubbleView*>(
-          top_left_widget->widget_delegate()->AsBubbleDialogDelegate());
+          widget->widget_delegate()->AsBubbleDialogDelegate());
+  views::BubbleFrameView* frame_view = bubble_view->GetBubbleFrameView();
 
-  EXPECT_EQ(top_left_bubble_view->arrow(),
-            views::BubbleBorder::Arrow::TOP_LEFT);
-  top_left_widget->CloseNow();
+  EXPECT_EQ(frame_view->GetArrow(), views::BubbleBorder::Arrow::TOP_LEFT);
+  EXPECT_EQ(frame_view->bubble_border()->arrow_offset(), 0);
+  EXPECT_TRUE(window_bounds.Contains(bubble_view->GetBubbleBounds()));
 
-  // Try showing the bubble near the bottom left of the window. The arrow should
-  // be on the bottom left.
-  gfx::Rect bottom_left_anchor_rect(100, 900, 50, 50);
-  std::unique_ptr<views::Widget> bottom_left_widget =
-      TabGroupEditorBubbleView::Show(
-          browser(), group_.value(),
-          BrowserView::GetBrowserViewForBrowser(browser())->tab_strip_view(),
-          bottom_left_anchor_rect, false);
-  views::test::WidgetVisibleWaiter(bottom_left_widget.get()).Wait();
+  // Move the anchor near the bottom-left of the window. The frame arrow should
+  // flip vertically to the bottom-left.
+  bubble_view->SetAnchorRect(
+      gfx::Rect(window_bounds.x() + 50, window_bounds.bottom() - 50, 50, 30));
+  EXPECT_EQ(frame_view->GetArrow(), views::BubbleBorder::Arrow::BOTTOM_LEFT);
+  EXPECT_EQ(frame_view->bubble_border()->arrow_offset(), 0);
+  EXPECT_TRUE(window_bounds.Contains(bubble_view->GetBubbleBounds()));
 
-  TabGroupEditorBubbleView* bottom_left_bubble_view =
-      static_cast<TabGroupEditorBubbleView*>(
-          bottom_left_widget->widget_delegate()->AsBubbleDialogDelegate());
+  // Move the anchor near the top-right of the window. Because
+  // `TabGroupEditorBubbleView` uses `PreferredArrowAdjustment::kOffset`, the
+  // frame arrow remains `TOP_LEFT` and offsets horizontally to stay inside the
+  // browser window.
+  bubble_view->SetAnchorRect(
+      gfx::Rect(window_bounds.right() - 80, window_bounds.y() + 50, 50, 30));
+  EXPECT_EQ(frame_view->GetArrow(), views::BubbleBorder::Arrow::TOP_LEFT);
+  EXPECT_NE(frame_view->bubble_border()->arrow_offset(), 0);
+  EXPECT_TRUE(window_bounds.Contains(bubble_view->GetBubbleBounds()));
 
-  EXPECT_EQ(bottom_left_bubble_view->arrow(),
-            views::BubbleBorder::Arrow::BOTTOM_LEFT);
-  bottom_left_widget->CloseNow();
+  // Move the anchor near the bottom-right of the window. The frame arrow flips
+  // vertically to `BOTTOM_LEFT` and offsets horizontally to stay inside the
+  // browser window.
+  bubble_view->SetAnchorRect(gfx::Rect(window_bounds.right() - 80,
+                                       window_bounds.bottom() - 50, 50, 30));
+  EXPECT_EQ(frame_view->GetArrow(), views::BubbleBorder::Arrow::BOTTOM_LEFT);
+  EXPECT_NE(frame_view->bubble_border()->arrow_offset(), 0);
+  EXPECT_TRUE(window_bounds.Contains(bubble_view->GetBubbleBounds()));
 
-  // Try showing the bubble near the top right of the window. The arrow should
-  // be on the top right.
-  gfx::Rect top_right_anchor_rect(900, 100, 50, 50);
-  std::unique_ptr<views::Widget> top_right_widget =
-      TabGroupEditorBubbleView::Show(
-          browser(), group_.value(),
-          BrowserView::GetBrowserViewForBrowser(browser())->tab_strip_view(),
-          top_right_anchor_rect, false);
-  views::test::WidgetVisibleWaiter(top_right_widget.get()).Wait();
-
-  TabGroupEditorBubbleView* top_right_bubble_view =
-      static_cast<TabGroupEditorBubbleView*>(
-          top_right_widget->widget_delegate()->AsBubbleDialogDelegate());
-
-  EXPECT_EQ(top_right_bubble_view->arrow(),
-            views::BubbleBorder::Arrow::TOP_RIGHT);
-  top_right_widget->CloseNow();
-
-  // Try showing the bubble near the bottom right of the window. The arrow
-  // should be on the bottom right.
-  gfx::Rect bottom_right_anchor_rect(900, 900, 50, 50);
-  std::unique_ptr<views::Widget> bottom_right_widget =
-      TabGroupEditorBubbleView::Show(
-          browser(), group_.value(),
-          BrowserView::GetBrowserViewForBrowser(browser())->tab_strip_view(),
-          bottom_right_anchor_rect, false);
-  views::test::WidgetVisibleWaiter(bottom_right_widget.get()).Wait();
-
-  TabGroupEditorBubbleView* bottom_right_bubble_view =
-      static_cast<TabGroupEditorBubbleView*>(
-          bottom_right_widget->widget_delegate()->AsBubbleDialogDelegate());
-
-  EXPECT_EQ(bottom_right_bubble_view->arrow(),
-            views::BubbleBorder::Arrow::BOTTOM_RIGHT);
-  bottom_right_widget->CloseNow();
+  widget->CloseNow();
 }
-#endif
+
+IN_PROC_BROWSER_TEST_F(TabGroupEditorBubbleViewDialogBrowserTest,
+                       EditorBubbleNameChangeAndCloseGroupMetrics) {
+  base::HistogramTester histogram_tester;
+  InProcessBrowserTest::AddBlankTabAndShow(browser());
+  ShowUi("SetUp");
+
+  // 1. Rename the group and close the bubble.
+  views::Widget* editor_bubble = WaitForAndGetEditorBubbleWidget();
+  ASSERT_NE(nullptr, editor_bubble);
+
+  auto* title_field = views::AsViewClass<views::Textfield>(
+      views::ElementTrackerViews::GetInstance()->GetFirstMatchingView(
+          kTabGroupEditorBubbleId,
+          views::ElementTrackerViews::GetContextForWidget(editor_bubble)));
+  ASSERT_NE(nullptr, title_field);
+  title_field->InsertOrReplaceText(u"Renamed Group");
+
+  base::WeakPtr<views::Widget> weak_widget = editor_bubble->GetWeakPtr();
+  editor_bubble->Close();
+  EXPECT_TRUE(base::test::RunUntil([&]() { return !weak_widget; }));
+
+  histogram_tester.ExpectBucketCount(
+      "TabGroups.ContextMenu.EditorBubble.Action",
+      tab_groups::saved_tab_groups::metrics::TabGroupEditorBubbleAction::
+          kNameChanged,
+      1);
+
+  // 2. Reopen the bubble and click "Close group".
+  browser()->GetTabStripModel()->OpenTabGroupEditor(group_.value());
+  views::Widget* editor_bubble2 = WaitForAndGetEditorBubbleWidget();
+  ASSERT_NE(nullptr, editor_bubble2);
+
+  views::Button* const close_group_button =
+      views::Button::AsButton(editor_bubble2->GetContentsView()->GetViewByID(
+          TabGroupEditorBubbleView::TAB_GROUP_HEADER_CXMENU_CLOSE_GROUP));
+  ASSERT_NE(nullptr, close_group_button);
+
+  ui::MouseEvent released_event(ui::EventType::kMouseReleased, gfx::PointF(),
+                                gfx::PointF(), base::TimeTicks(), 0, 0);
+  base::WeakPtr<views::Widget> weak_widget2 = editor_bubble2->GetWeakPtr();
+  views::test::ButtonTestApi(close_group_button).NotifyClick(released_event);
+  EXPECT_TRUE(base::test::RunUntil([&]() { return !weak_widget2; }));
+
+  histogram_tester.ExpectBucketCount(
+      "TabGroups.ContextMenu.EditorBubble.Action",
+      tab_groups::saved_tab_groups::metrics::TabGroupEditorBubbleAction::
+          kCloseGroup,
+      1);
+}

@@ -4,6 +4,9 @@
 
 #include "chrome/browser/critical_actions/critical_action_ui_utils.h"
 
+#include <optional>
+#include <string>
+
 #include "base/strings/strcat.h"
 #include "chrome/browser/ui/passwords/ui_utils.h"
 #include "chrome/common/webui_url_constants.h"
@@ -45,8 +48,8 @@ std::string GetSiteDetailsLinkoutUrl(const GURL& page_url) {
 
 }  // namespace
 
-std::string GetCriticalActionLinkoutUrl(ActionType action_type,
-                                        const GURL& page_url) {
+std::optional<std::string> GetCriticalActionLinkoutUrl(ActionType action_type,
+                                                       const GURL& page_url) {
   switch (action_type) {
     case ActionType::kCredentialAccess:
     case ActionType::kGooglePasswordManager:
@@ -60,6 +63,10 @@ std::string GetCriticalActionLinkoutUrl(ActionType action_type,
       return chrome::kChromeUIDownloadsURL;
     case ActionType::kSettingChange:
       return GetSiteDetailsLinkoutUrl(page_url);
+    case ActionType::kWebMcpTool:
+      // WebMCP tool calls have no management surface to link to. The visit
+      // row itself already links to the page.
+      return std::nullopt;
     case ActionType::kUnknown:
       return chrome::kChromeUISettingsURL;
   }

@@ -9,16 +9,18 @@
 
 #include "base/containers/flat_set.h"
 #include "base/functional/bind.h"
+#include "base/strings/string_view_util.h"
 #include "base/trace_event/trace_event.h"
 #include "content/browser/bad_message.h"
 #include "content/browser/devtools/devtools_manager.h"
-#include "content/public/browser/render_process_host.h"
 #include "content/browser/devtools/protocol/devtools_domain_handler.h"
 #include "content/browser/devtools/protocol/protocol.h"
 #include "content/browser/devtools/render_frame_devtools_agent_host.h"
 #include "content/public/browser/devtools_external_agent_proxy_delegate.h"
 #include "content/public/browser/devtools_manager_delegate.h"
 #include "content/public/browser/network_service_instance.h"
+#include "content/public/browser/render_process_host.h"
+#include "third_party/blink/public/common/devtools/devtools_interrupt_methods.h"
 #include "third_party/inspector_protocol/crdtp/cbor.h"
 #include "third_party/inspector_protocol/crdtp/dispatch.h"
 #include "third_party/inspector_protocol/crdtp/json.h"
@@ -26,28 +28,6 @@
 
 namespace content {
 namespace {
-// Keep in sync with WebDevToolsAgent::ShouldInterruptForMethod.
-// TODO(petermarshall): find a way to share this.
-bool ShouldSendOnIO(crdtp::span<uint8_t> method) {
-  static auto* kEntries = new std::vector<crdtp::span<uint8_t>>{
-      crdtp::SpanFrom("Debugger.getPossibleBreakpoints"),
-      crdtp::SpanFrom("Debugger.getScriptSource"),
-      crdtp::SpanFrom("Debugger.getStackTrace"),
-      crdtp::SpanFrom("Debugger.pause"),
-      crdtp::SpanFrom("Debugger.removeBreakpoint"),
-      crdtp::SpanFrom("Debugger.resume"),
-      crdtp::SpanFrom("Debugger.setBreakpoint"),
-      crdtp::SpanFrom("Debugger.setBreakpointByUrl"),
-      crdtp::SpanFrom("Debugger.setBreakpointsActive"),
-      crdtp::SpanFrom("Emulation.setScriptExecutionDisabled"),
-      crdtp::SpanFrom("Page.crash"),
-      crdtp::SpanFrom("Performance.getMetrics"),
-      crdtp::SpanFrom("Runtime.terminateExecution"),
-  };
-  DCHECK(std::is_sorted(kEntries->begin(), kEntries->end(), crdtp::SpanLt()));
-  return std::binary_search(kEntries->begin(), kEntries->end(), method,
-                            crdtp::SpanLt());
-}
 
 // During navigation, we only suspend the main-thread messages. The IO thread
 // messages should go through so that the renderer can be woken up
@@ -66,10 +46,10 @@ bool ShouldSendOnIO(crdtp::span<uint8_t> method) {
 // To give the renderer a chance to wake up, we always forward the messages
 // for the IO thread to the renderer.
 bool ShouldSuspendDuringNavigation(crdtp::span<uint8_t> method) {
-  return !ShouldSendOnIO(method);
+  return !blink::ShouldInterruptForMethod(base::as_string_view(method));
 }
 
-// Async control commands (such as CSS.enable) are idempotant and can
+// Async control commands (such as CSS.enable) are idempotent and can
 // be safely replayed in the new RenderFrameHost. We will always forward
 // them to the new renderer on cross process navigation. Main rationale for
 // it is that the client doesn't expect such calls to fail in normal
@@ -78,7 +58,7 @@ bool ShouldSuspendDuringNavigation(crdtp::span<uint8_t> method) {
 // Ideally all non-control async commands shoulds be listed here but we
 // conservatively start with Runtime domain where the decision is more
 // clear.
-bool TerminateOnCrossProcessNavigation(crdtp::span<uint8_t> method) {
+bool MayCauseJavascriptExecution(crdtp::span<uint8_t> method) {
   static auto* kEntries = new std::vector<crdtp::span<uint8_t>>{
       crdtp::SpanFrom("Runtime.awaitPromise"),
       crdtp::SpanFrom("Runtime.callFunctionOn"),
@@ -178,7 +158,12 @@ void DevToolsSession::Dispose() {
   dispatcher_.reset();
   for (auto& pair : handlers_)
     pair.second->Disable();
-  handlers_.clear();
+  // Destroy handlers in reverse order: `handlers_` is sorted by domain name,
+  // and `PageHandler` holds `raw_ptr`s to `BrowserHandler` and
+  // `EmulationHandler`, which sort before "Page".
+  while (!handlers_.empty()) {
+    handlers_.erase(std::prev(handlers_.end()));
+  }
 }
 
 DevToolsSession* DevToolsSession::GetRootSession() {
@@ -244,11 +229,11 @@ void DevToolsSession::AttachToAgent(blink::mojom::DevToolsAgent* agent,
   // We're attaching to a new agent while suspended; therefore, messages that
   // have been sent previously either need to be terminated or re-sent once we
   // resume, as we will not get any responses from the old agent at this point.
-  if (suspended_sending_messages_to_agent_) {
+  if (suspend_mode_ != SuspendMode::kNone) {
     for (auto it = pending_messages_.begin(); it != pending_messages_.end();) {
       const PendingMessage& message = *it;
       if (waiting_for_response_.count(message.call_id) &&
-          TerminateOnCrossProcessNavigation(crdtp::SpanFrom(message.method))) {
+          MayCauseJavascriptExecution(crdtp::SpanFrom(message.method))) {
         // Send error to the client and remove the message from pending.
         SendProtocolResponse(
             message.call_id,
@@ -444,9 +429,15 @@ void DevToolsSession::FallThrough(int call_id,
 
   auto it = pending_messages_.emplace(pending_messages_.end(), call_id, method,
                                       message, std::string(fallthrough_data));
-  if (suspended_sending_messages_to_agent_ &&
-      ShouldSuspendDuringNavigation(method))
-    return;
+  if (ShouldSuspendDuringNavigation(method)) {
+    if (suspend_mode_ == SuspendMode::kAll) {
+      return;
+    }
+    if (suspend_mode_ == SuspendMode::kExecutionOnly &&
+        MayCauseJavascriptExecution(method)) {
+      return;
+    }
+  }
 
   DispatchToAgent(pending_messages_.back());
   waiting_for_response_[call_id] = it;
@@ -485,7 +476,7 @@ void DevToolsSession::DispatchToAgent(const PendingMessage& message) {
   DCHECK(!browser_only_);
   // We send all messages on the IO channel for workers so that messages like
   // Debugger.pause don't get stuck behind other blocking messages.
-  if (ShouldSendOnIO(crdtp::SpanFrom(message.method)) || use_io_session_) {
+  if (blink::ShouldInterruptForMethod(message.method) || use_io_session_) {
     if (io_session_) {
       TRACE_EVENT("devtools", "DevToolsSession::DispatchToAgent on IO",
                   perfetto::Flow::ProcessScoped(message.call_id), "method",
@@ -506,14 +497,14 @@ void DevToolsSession::DispatchToAgent(const PendingMessage& message) {
   }
 }
 
-void DevToolsSession::SuspendSendingMessagesToAgent() {
+void DevToolsSession::SuspendSendingMessagesToAgent(SuspendMode mode) {
   DCHECK(!browser_only_);
-  suspended_sending_messages_to_agent_ = true;
+  suspend_mode_ = mode;
 }
 
 void DevToolsSession::ResumeSendingMessagesToAgent() {
   DCHECK(!browser_only_);
-  suspended_sending_messages_to_agent_ = false;
+  suspend_mode_ = SuspendMode::kNone;
   for (auto it = pending_messages_.begin(); it != pending_messages_.end();
        ++it) {
     const PendingMessage& message = *it;

@@ -24,11 +24,12 @@
 #include "chrome/browser/task_manager/sampling/task_group.h"
 #include "chrome/browser/task_manager/task_manager_interface.h"
 #include "content/public/browser/global_routing_id.h"
+#include "content/public/common/child_process_id.h"
 #include "gpu/ipc/common/memory_stats.h"
 #include "services/resource_coordinator/public/cpp/memory_instrumentation/global_memory_dump.h"
 
 #if BUILDFLAG(IS_CHROMEOS)
-#include "chrome/browser/task_manager/sampling/arc_shared_sampler.h"
+#include "chrome/browser/task_manager/sampling/vm_memory_sampler.h"
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
 namespace task_manager {
@@ -80,7 +81,8 @@ class TaskManagerImpl : public TaskManagerInterface,
   Task::Type GetType(TaskId task_id) const override;
   Task::SubType GetSubType(TaskId task_id) const override;
   SessionID GetTabId(TaskId task_id) const override;
-  int GetChildProcessUniqueId(TaskId task_id) const override;
+  content::ChildProcessId GetChildProcessUniqueId(
+      TaskId task_id) const override;
   void GetTerminationStatus(TaskId task_id,
                             base::TerminationStatus* out_status,
                             int* out_error_code) const override;
@@ -193,7 +195,7 @@ class TaskManagerImpl : public TaskManagerInterface,
 #if BUILDFLAG(IS_CHROMEOS)
   // A sampler shared with all instances of TaskGroup that hold ARC tasks and
   // calculates memory footprint for all processes at once.
-  std::unique_ptr<ArcSharedSampler> arc_shared_sampler_;
+  std::unique_ptr<VmMemorySampler> arc_shared_sampler_;
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
   // This will be set to true while there are observers and the task manager is

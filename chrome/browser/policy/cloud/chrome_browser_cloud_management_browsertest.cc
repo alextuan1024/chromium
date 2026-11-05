@@ -18,6 +18,7 @@
 #include "base/task/thread_pool.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
+#include "base/test/test_future.h"
 #include "base/threading/thread_restrictions.h"
 #include "build/branding_buildflags.h"
 #include "build/build_config.h"
@@ -47,10 +48,12 @@
 #include "components/policy/core/common/cloud/machine_level_user_cloud_policy_store.h"
 #include "components/policy/core/common/cloud/mock_cloud_external_data_manager.h"
 #include "components/policy/core/common/cloud/mock_device_management_service.h"
+#include "components/policy/core/common/cloud/test/policy_builder.h"
 #include "components/policy/core/common/features.h"
 #include "components/policy/core/common/policy_switches.h"
 #include "components/policy/core/common/policy_types.h"
 #include "components/policy/policy_constants.h"
+#include "components/policy/proto/cloud_policy.pb.h"
 #include "components/policy/test_support/client_storage.h"
 #include "components/policy/test_support/embedded_policy_test_server.h"
 #include "components/policy/test_support/policy_storage.h"
@@ -428,6 +431,27 @@ IN_PROC_BROWSER_TEST_P(ChromeBrowserCloudManagementServiceIntegrationTest,
   UploadChromeDesktopReport(&chrome_desktop_report);
 }
 
+// Desktop only.
+#if !BUILDFLAG(IS_ANDROID)
+IN_PROC_BROWSER_TEST_P(ChromeBrowserCloudManagementServiceIntegrationTest,
+                       ChromeProfileReport) {
+  CloudPolicyClient client("fake_profile_id", service_.get(),
+                           g_browser_process->system_network_context_manager()
+                               ->GetSharedURLLoaderFactory(),
+                           CloudPolicyClient::DeviceDMTokenCallback());
+  client.SetupRegistration(kDMToken, kClientID,
+                           /*user_affiliation_ids=*/{});
+
+  auto report = std::make_unique<em::ChromeProfileReportRequest>();
+  report->mutable_browser_report()->set_browser_version("1.2.3");
+
+  base::test::TestFuture<CloudPolicyClient::Result> future;
+  client.UploadChromeProfileReport(/*use_cookies=*/false, std::move(report),
+                                   future.GetCallback());
+  EXPECT_TRUE(future.Get().IsSuccess());
+}
+#endif  // !BUILDFLAG(IS_ANDROID)
+
 INSTANTIATE_TEST_SUITE_P(
     ChromeBrowserCloudManagementServiceIntegrationTestInstance,
     ChromeBrowserCloudManagementServiceIntegrationTest,
@@ -572,6 +596,10 @@ class ChromeBrowserCloudManagementEnrollmentTest
     if (is_enrollment_token_valid()) {
       EXPECT_TRUE(dm_token.is_valid());
       EXPECT_EQ(kFakeDeviceToken, dm_token.value());
+      EXPECT_FALSE(GetMachineName().empty());
+      EXPECT_EQ(
+          test_server_.client_storage()->GetClient("client_id").machine_name,
+          GetMachineName());
     } else {
       EXPECT_TRUE(dm_token.is_empty());
     }
@@ -735,6 +763,9 @@ class MachineLevelUserCloudPolicyPolicyFetchTest
     base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
     command_line->AppendSwitchASCII(switches::kDeviceManagementUrl,
                                     test_server_->GetServiceURL().spec());
+    command_line->AppendSwitchASCII(
+        switches::kPolicyVerificationKey,
+        PolicyBuilder::GetEncodedPolicyVerificationKey());
     ChromeBrowserPolicyConnector::EnableCommandLineSupportForTesting();
   }
 
@@ -1258,6 +1289,9 @@ class MachineLevelUserCloudPolicyRobotAuthTest : public PlatformBrowserTest {
     base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
     command_line->AppendSwitchASCII(switches::kDeviceManagementUrl,
                                     test_server_->GetServiceURL().spec());
+    command_line->AppendSwitchASCII(
+        switches::kPolicyVerificationKey,
+        PolicyBuilder::GetEncodedPolicyVerificationKey());
     ChromeBrowserPolicyConnector::EnableCommandLineSupportForTesting();
   }
 

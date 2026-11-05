@@ -18,23 +18,14 @@ clean up these resources while ensuring no test regressions occur.
 **Goal:** Remove expired Chromium histograms (dead metrics) from XML files and
 all code recording sites.
 
-## Relevant Resources & Style Guides
-
-- [Chromium Metrics - Histograms Guide](https://chromium.googlesource.com/chromium/src/+/main/tools/metrics/histograms/README.md)
-- **Implementation Patterns:** [patterns.md](references/patterns.md) (C++, Java,
-  XML examples)
-- **Analysis Guidelines:**
-  [analysis_guidelines.md](references/analysis_guidelines.md) (Safety checks and
-  effort estimation)
-- **Bug Discovery:** [bug_discovery.md](references/bug_discovery.md) (Finding
-  existing trackers)
-- **Discovery Script:** [find_candidates.py](scripts/find_candidates.py)
-  (Identify expired histograms)
-- **Automated Review Protocol:**
-  [automated_review.md](references/automated_review.md)
-
 ## Scope & Proactivity
 
+- **Allowlist (Hard Constraint):** Only histograms defined in one of the
+  `histograms.xml` files listed in [safe_dirs.md](references/safe_dirs.md) may
+  be examined, selected, bundled, or cleaned up. Never run discovery,
+  `scripts/find_expired_in_file.py`, or a deep dive against any other
+  `histograms.xml`, and never edit one. If the user names a histogram outside
+  the allowlist, explain the restriction and run discovery instead.
 - **Primary Scope:** Focus exclusively on the identified histogram by default.
   Do NOT suggest removing random additional histograms across the file or
   component just because they are expired.
@@ -43,11 +34,15 @@ all code recording sites.
   co-located in the same helper function or branching from the same condition)
   as the target histogram, their removal MAY be bundled into the same cleanup
   plan IF AND ONLY IF:
-  1. **Expiry Verification:** Confirm in `histograms.xml` that the co-located
+  1. **Allowlist Verification:** Confirm each co-located histogram's
+     `<histogram>` definition lives in an allowlisted `histograms.xml` from
+     `references/safe_dirs.md`. If it does not, it MUST NOT be bundled — leave
+     its recording code intact even if shared boilerplate remains.
+  2. **Expiry Verification:** Confirm in `histograms.xml` that the co-located
      histograms are also expired and lack the `<expired_intentionally>` tag.
-  2. **Safety Verification:** Perform the same safety checks (no test
+  3. **Safety Verification:** Perform the same safety checks (no test
      dependencies, no external repo references) for each bundled histogram.
-  3. **Atomic Benefit:** Removing them together cleanly eliminates shared
+  4. **Atomic Benefit:** Removing them together cleanly eliminates shared
      boilerplate (e.g., timer calculations, string building, parameter passing)
      that would otherwise be left as dead or awkward code.
 - **Related Dead Code:** If dead code is found (e.g., constants, enums, or
@@ -58,21 +53,35 @@ all code recording sites.
 
 ## Workflow
 
-> [!IMPORTANT] **Execution Protocol:** Execute all steps sequentially one by
-> one. Do not skip any step. Do not use `edit-code` or `grep`. Use `rg`
-> (ripgrep) for searches.
+> [!IMPORTANT] **Execution Protocol:** Execute Steps 1–7 continuously in one
+> autonomous run, without skipping steps or pausing between files or steps. Stop
+> only at explicit `ask_question` gates (confidence `1–8` or missing `out` dir)
+> or documented interactive stops. Use `rg` (ripgrep) for searches.
 
 ### Step 1: Workspace Preparation
 
-Follow the workspace preparation steps in
-[workspace_preparation.md](../hub/references/workspace_preparation.md) to ensure
-a clean and updated environment.
+Run the workspace preparation script:
+
+```bash
+python3 agents/projects/code-health/hub/scripts/prepare_workspace.py --stash
+```
+
+- If the script outputs `(stashed local changes)`, inform the user.
+- If the script exits non-zero, stop and report the error instead of continuing
+  on a dirty or diverged tree.
 
 ### Step 2: Discovery & Batch Selection
 
 Follow the
 [Discovery & Batch Selection](../hub/references/discovery_and_batch_selection.md)
 workflow.
+
+The discovery plugin (`scripts/find_candidates.py`) only scans and shuffles
+across the allowlisted files in [safe_dirs.md](references/safe_dirs.md). Before
+presenting any candidate, confirm its `File:` path is in the allowlist; discard
+any non-allowlisted or user-supplied out-of-list candidate and repeat discovery.
+Only run `scripts/find_expired_in_file.py` on allowlisted files (it refuses
+non-allowlisted files with exit code 2).
 
 ### Step 3: Deep Dive & Safety Analysis
 
@@ -92,7 +101,7 @@ workflow.
      this message, then proceed directly to the **Refactoring & Implementation**
      phase. Do NOT ask for permission.
    - **If Confidence is between 1 and 8:** Present the findings and prompt the
-     user using `ask_user` (`type='choice'`):
+     user using `ask_question` (single choice):
      - `header`: "Confidence Check"
      - `question`: "This histogram is safe to remove from [Files] and [Tests].
        My confidence for this cleanup is [X]/10 because [Justification]. Shall I
@@ -111,15 +120,25 @@ workflow.
      identify a different candidate. Ensure the same histogram is not selected
      again in this session.
 
+3. **Record XML Owners:** Before editing in Step 4 deletes the histogram from
+   XML, inspect its entry in `histograms.xml` and note its XML `<owner>` entries
+   **in the exact order listed** (emails and any `OWNERS` file references) so
+   they are available for Step 7.
+
 ### Step 4: Refactoring & Implementation
 
 Process the changes **file by file**, and apply modifications inside each file
 **one recording call at a time** (rather than refactoring all files or recording
 calls at once). This ensures stability and allows for precise verification.
+Process all files and recording calls sequentially within the same run, without
+pausing for user confirmation between edits, then proceed directly to Step 5.
+Refer to [patterns.md](references/patterns.md) for C++, Java, and XML removal
+patterns.
 
 1. **Apply Changes:** Make the changes directly. Apply the code modifications
-   for the candidate histogram. When removing recording calls, carefully check
-   if the string literal spans multiple lines and ensure the entire multi-line
+   for the candidate histogram. Only edit `histograms.xml` files listed in
+   `references/safe_dirs.md`. When removing recording calls, carefully check if
+   the string literal spans multiple lines and ensure the entire multi-line
    statement is cleanly removed. Search for dot-less versions of the name to
    ensure related constants are also removed. Check for and update any
    references to the histogram in code comments as well. For each removal,
@@ -127,49 +146,107 @@ calls at once). This ensures stability and allows for precise verification.
    the codebase. Each individual change must have a corresponding 'What & Why'
    explanation provided to the user.
 
-### Step 5: Validation
+### Step 5: Formatting & Automated Review
 
-1. **Linting & Formatting:**
-   - **XML Linting:** Execute
-     `python3 tools/metrics/histograms/validate_format.py` to validate all
-     metadata changes. Address any errors that are reported.
-   - **Code Formatting:** Execute `git cl format` to format the modified source
-     code. Address any errors that are reported.
-2. **Mandatory Final Review:** Follow the
-   [Automated Review Protocol](references/automated_review.md) to delegate a
-   final review of the patch to the `generalist` sub-agent. Proceed to the
-   Verification phase only after the review returns `PASS`.
+1. **Format & Lint:** Run
+   `python3 agents/projects/code-health/hub/scripts/format_and_lint.py` (must
+   exit 0).
+2. **Automated Review:** Follow
+   [Automated Review](../hub/references/automated_review.md), passing
+   [review_rules.md](references/review_rules.md) as
+   `<SKILL_SPECIFIC_CLEANUP_RULES>`.
 
 ### Step 6: Verification
 
 Follow the [Verification](../hub/references/verification.md) workflow.
 
-### Step 7: Submission
+### Step 7: Submission & Commit Generation
 
-1. **Bug Tracking:**
+#### 1. Expiry Bug Discovery (Autonomous)
 
-   - Execute the **Bug Discovery and Triage** workflow in
-     `references/bug_discovery.md` using the `<HistogramName>` and
-     `<ExpiryDate>` from the candidate.
-   - **Interactive Pause:** Do NOT proceed until the bug handling is resolved
-     and a Bug ID is resolved (or the user has chosen to skip).
+- For each cleaned histogram, query Buganizer for open expiry tracking bugs. For
+  patterned histograms containing `{...}` tokens, strip the `{...}` suffix and
+  search the un-tokenized name prefix, because expiry bug titles use `.*`
+  instead of `{Token}` names:
+  `get_bugs_with_external(query='"Check expiry of your histograms" "<UnTokenizedHistogramName>" status:open')`
+- Collect the lowest numeric open bug ID found for each cleaned histogram
+  (resolving any legacy Monorail IDs if needed) as `<ExpiryBugID>`, or `"none"`
+  if none are open. Do NOT prompt the user or file a new bug.
 
-2. **Upload Pipeline:**
+#### 2. Prepare Commit Message
 
-   - Determine the obsoletion tag:
-     - If `<ExpiryDate>` is in the past: Set `customObsoletionMessage` to
-       `OBSOLETE_HISTOGRAMS[<HistogramName>]=expired`.
-     - If `<ExpiryDate>` is in the future: Set `customObsoletionMessage` to
-       `OBSOLETE_HISTOGRAMS[<HistogramName>]=<reason>`.
-   - Invoke the [Submission](../hub/references/submission.md) workflow. Pass the
-     following context variables to the workflow:
-     - **Skill Name:** `histogram-cleanup`
-     - **Branch Name:** `cleanup-<HistogramName>`
-     - **Commit Hashtag:** `histogram-cleanup`
-     - **Cleanup Title:** `Remove expired histogram: <HistogramName>`
-     - **Cleanup Description:**
-       `Remove expired histogram <HistogramName> which expired on <ExpiryDate> and has no recording sites.\n\n<customObsoletionMessage>`
-     - **Parent Bug:** `499059525`
-     - **Bug ID:** The resolved `<Bug ID>` from the Bug Tracking step.
-     - **Cleaned Component:** `histograms.xml`
-     - **File Count:** Number of files modified during this cleanup.
+Generate `../commit`. Set `--title` to `Remove expired <Area> histograms` using
+the top histogram prefix or XML metadata folder. Keep the full
+`[histogram-cleanup][LSC] <Title>` line `<= 72` characters (`<Title>` `<= 47`;
+use `Remove expired histograms` if `<Area>` does not fit). Always pass at least
+one `--bug`: one repeatable `--bug "<ExpiryBugID>"` per bug found, or
+`--bug "none"` if none are open. The script adds the parent bug first, so do not
+pass it.
+
+```bash
+python3 agents/projects/code-health/hub/scripts/prepare_commit_message.py \
+  --skill histogram-cleanup \
+  --title "Remove expired <Area> histograms" \
+  --bug "<ExpiryBugID>" \
+  --description - \
+  --out-commit ../commit <<'EOF'
+<Brief summary of removed recording sites, dead code, tests, and XML entries.>
+
+OBSOLETE_HISTOGRAMS=<message>
+EOF
+```
+
+The `OBSOLETE_HISTOGRAMS=<message>` line applies to every removed histogram
+(including patterned variants) and must be a single unwrapped line in its own
+final paragraph of the description. Do NOT use `OBSOLETE_HISTOGRAMS[Name]=` or
+singular `OBSOLETE_HISTOGRAM[Name]=` (including
+`OBSOLETE_HISTOGRAM[Name.{Token}]=`, which does not expand patterned variants).
+Choose `<message>`:
+
+- **Expired:** `Expired on <ExpiryDate> and no longer recorded.` (or
+  `Expired and no longer recorded.` if the dates differ or are missing).
+- **Removed before expiry:**
+  `<reason it was removed; replaced by <NewHistogram>, if any>.`
+
+#### 3. Validate Commit File
+
+Pass the same `--bug` flags used in Step 7.2 (one `--bug "<ExpiryBugID>"` per
+bug found, or `--bug "none"` if none):
+
+```bash
+python3 agents/projects/code-health/hub/scripts/prepare_commit_message.py \
+  --skill histogram-cleanup \
+  --validate ../commit \
+  --bug "<ExpiryBugID>"
+```
+
+If validation fails, fix the title or description and re-run Steps 7.2–7.3 until
+validation exits 0.
+
+#### 4. Submission Pipeline
+
+Run the reviewer picker first, then follow the shared pipeline.
+
+1. Run the reviewer picker before submission (pass the XML `<owner>` entries
+   recorded in Step 3 in listed order, space-separated; do not run
+   `find_owners.py` for this skill):
+
+   ```bash
+   python3 agents/projects/code-health/histogram-cleanup/scripts/pick_histogram_reviewer.py \
+     --owners <ordered XML owners from Step 3>
+   ```
+
+2. Follow [submission.md](../hub/references/submission.md), passing:
+
+   - **Branch Name:** `cleanup-<HistogramName>` (without `{...}` token braces
+     for patterned names)
+   - **Commit File:** `../commit`
+   - **Reviewer Lookup:** `none` (the lookup already ran in the previous step)
+
+   Suggest only: do NOT pass `Upload Flags`, `--reviewers`, or `--cc`.
+
+3. In the final summary (even if the user skips uploading), report the suggested
+   reviewer from step 1, or state that no clear reviewer was found. Also include
+   any secondary note, warning, or skipped-owner reasons (e.g., left Google,
+   team alias, or OOO for more than a week) so the user can add a reviewer
+   manually on Gerrit if desired.

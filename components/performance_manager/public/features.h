@@ -36,7 +36,16 @@ BASE_DECLARE_FEATURE(kUnthrottledTabProcessReporting);
 BASE_DECLARE_FEATURE(kBatterySaverModeAvailable);
 
 // Flags to control HaTS surveys about Chrome performance.
+BASE_DECLARE_FEATURE(kPerformanceControlsPerformanceSurvey);
+BASE_DECLARE_FEATURE(kPerformanceControlsBatteryPerformanceSurvey);
+BASE_DECLARE_FEATURE(kPerformanceControlsMemorySaverOptOutSurvey);
+BASE_DECLARE_FEATURE(kPerformanceControlsBatterySaverOptOutSurvey);
 BASE_DECLARE_FEATURE(kPerformanceControlsPPMSurvey);
+
+// Defines the time delta to look back when checking if a device has used
+// battery.
+BASE_DECLARE_FEATURE_PARAM(base::TimeDelta,
+                           kPerformanceControlsBatterySurveyLookback);
 
 // Defines the minimum and maximum delay before showing the PPM survey. It will
 // be shown the next time the user opens the New Tab Page after a random time in
@@ -98,6 +107,11 @@ BASE_DECLARE_FEATURE(kPerformanceInterventionNotificationStringImprovements);
 // The version string that is used on the performance detection dialog.
 BASE_DECLARE_FEATURE_PARAM(int, kNotificationStringVersion);
 
+// When enabled, activates a MemoryCoordinatorPolicy while Memory Saver Mode is
+// active that scales down stateful MemoryConsumer limits based on the
+// configured MemorySaverModeAggressiveness level.
+BASE_DECLARE_FEATURE(kMemorySaverMemoryCoordinatorPolicy);
+
 #endif
 
 // When enabled, LevelDBSiteDataStore uses BEST_EFFORT priority for its task
@@ -120,7 +134,23 @@ extern const base::FeatureParam<bool> kRenderedOutOfViewIsNotVisible;
 
 extern const base::FeatureParam<bool> kRendererHighInitialPriority;
 
+// When enabled, a subframe is not visible if its parent frame is not visible.
+// This covers frames whose viewport intersection is never reported, e.g. frames
+// inside a `display:none` frame.
+BASE_DECLARE_FEATURE(kSubframeNotVisibleIfParentNotVisible);
+
+// Boosts the priority of loading pages: kUserBlocking in the active tab, and
+// kUserVisible in background tabs. Original version, which boosts every
+// background load. Kept only for diagnostics (e.g. comparing with V2 when
+// investigating reports), to be removed when kPMLoadingPageVoterV2 launches.
+// Takes precedence over kPMLoadingPageVoterV2 when both are enabled.
 BASE_DECLARE_FEATURE(kPMLoadingPageVoter);
+
+// Same as kPMLoadingPageVoter, but only boosts background loads that are user-
+// or browser-initiated (see PageNode::IsUserOrBrowserInitiatedLoad()) while no
+// load is in progress in an active tab, and doesn't consider kLoadedBusy as
+// loading.
+BASE_DECLARE_FEATURE(kPMLoadingPageVoterV2);
 
 // Whether tabs are discarded under high memory pressure.
 BASE_DECLARE_FEATURE(kUrgentPageDiscarding);
@@ -198,9 +228,50 @@ BASE_DECLARE_FEATURE(kInfiniteTabsFreezingOnMemoryPressure);
 BASE_DECLARE_FEATURE_PARAM(base::TimeDelta,
                            kInfiniteTabsFreezingOnMemoryPressureInterval);
 
-// The available physical memory percentage below which to trigger freezing when
-// enabled.
-BASE_DECLARE_FEATURE_PARAM(int, kInfiniteTabsFreezingOnMemoryPressurePercent);
+// The available physical memory percentage below which to enter freezing when
+// `kInfiniteTabsFreezingOnMemoryPressure` is enabled.
+BASE_DECLARE_FEATURE_PARAM(
+    int,
+    kInfiniteTabsFreezingOnMemoryPressureEnterAvailableMemoryPercent);
+
+// The available physical memory percentage at or above which to exit freezing
+// when `kInfiniteTabsFreezingOnMemoryPressure` is enabled.
+BASE_DECLARE_FEATURE_PARAM(
+    int,
+    kInfiniteTabsFreezingOnMemoryPressureExitAvailableMemoryPercent);
+
+// Whether the low-RAM enter and exit thresholds below apply only on Windows 11
+// 25H2 and later (build 26200+). `kInfiniteTabsFreezingOnMemoryPressure` is
+// Windows-only, so when false, the low-RAM thresholds apply on all Windows
+// versions for devices with at most 8 GiB of physical memory.
+BASE_DECLARE_FEATURE_PARAM(
+    bool,
+    kInfiniteTabsFreezingOnMemoryPressureLowRamRequireWin1125H2OrLater);
+
+// The available physical memory percentage below which to enter freezing on
+// matching low-RAM devices (at most 8 GiB of physical memory). When
+// `kDisablePeriodicUnfreezeOnCriticalMemoryPressure` is also enabled, configure
+// `critical < enter <= exit` so devices enter periodic unfreezing before
+// suppressing it.
+BASE_DECLARE_FEATURE_PARAM(
+    int,
+    kInfiniteTabsFreezingOnMemoryPressureLowRamEnterAvailableMemoryPercent);
+
+// The available physical memory percentage at or above which to exit freezing
+// on matching low-RAM devices (at most 8 GiB of physical memory).
+BASE_DECLARE_FEATURE_PARAM(
+    int,
+    kInfiniteTabsFreezingOnMemoryPressureLowRamExitAvailableMemoryPercent);
+
+// If enabled, periodic unfreezing of tabs is disabled while the system is under
+// critical memory pressure.
+BASE_DECLARE_FEATURE(kDisablePeriodicUnfreezeOnCriticalMemoryPressure);
+
+// The available physical memory percentage below which periodic unfreezing is
+// disabled when `kDisablePeriodicUnfreezeOnCriticalMemoryPressure` is enabled.
+BASE_DECLARE_FEATURE_PARAM(
+    int,
+    kDisablePeriodicUnfreezeOnCriticalMemoryPressurePercent);
 
 // If enabled, tabs may be discarded on Windows when the system approaches the
 // commit limit.
@@ -258,6 +329,18 @@ BASE_DECLARE_FEATURE(kDisableTabDiscarding);
 BASE_DECLARE_FEATURE(kUseLoadingStateToDetectBackgroundTitleOrFaviconUpdate);
 
 BASE_DECLARE_FEATURE(kGlicActuationPriorityVoter);
+
+// When enabled, casts a kUserBlocking vote for every frame of a page that an
+// embedder is withholding from view until it is ready to be shown (see
+// PageLiveStateDecorator::MarkWithheldFromView). Fixes a deadlock where such a
+// page is deprioritized for being hidden, so it loads slowly, so it is never
+// shown (crbug.com/549552319).
+BASE_DECLARE_FEATURE(kPMWithheldFromViewVoter);
+
+// When enabled, boosts the priority of side panel contents while loading even
+// when not visible (see performance_manager::priority::MarkAsSidePanel).
+// Expected to be superseded by kPMWithheldFromViewVoter (crbug.com/549552319).
+BASE_DECLARE_FEATURE(kPMSidePanelLoadingVoter);
 
 // When enabled, ignores kMediaQueryChange favicon updates (e.g.
 // prefers-color-scheme toggles) when determining whether a background tab

@@ -17,7 +17,8 @@
 #include "chrome/browser/ui/ash/shelf/chrome_shelf_controller.h"
 #include "chrome/browser/ui/ash/shelf/shelf_spinner_item_controller.h"
 #include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
-#include "components/user_manager/user_manager.h"
+#include "components/session_manager/core/session.h"
+#include "components/session_manager/core/session_manager.h"
 #include "ui/gfx/canvas.h"
 #include "ui/gfx/image/canvas_image_source.h"
 #include "ui/gfx/image/image_skia_operations.h"
@@ -42,6 +43,26 @@ double TimeProportionSince(const base::Time& t1,
                            const base::Time& t2,
                            const base::TimeDelta& d) {
   return std::clamp((t2 - t1) / d, 0.0, 1.0);
+}
+
+// The user the spinner starts out tracking. ActiveUserChanged() keeps it up
+// to date from there on.
+AccountId GetActiveSessionAccountId() {
+  const session_manager::SessionManager* const session_manager =
+      session_manager::SessionManager::Get();
+  if (!session_manager) {
+    LOG(ERROR) << "Failed to get active user, there is no SessionManager";
+    return EmptyAccountId();
+  }
+
+  const session_manager::Session* const session =
+      session_manager->GetActiveSession();
+  if (!session) {
+    LOG(ERROR) << "Failed to get active user, no session is active";
+    return EmptyAccountId();
+  }
+
+  return session->account_id();
 }
 
 }  // namespace
@@ -160,17 +181,8 @@ class SpinningEffectSource : public gfx::CanvasImageSource {
 }  // namespace
 
 ShelfSpinnerController::ShelfSpinnerController(ChromeShelfController* owner)
-    : owner_(owner) {
+    : owner_(owner), current_account_id_(GetActiveSessionAccountId()) {
   owner->shelf_model()->AddObserver(this);
-  if (user_manager::UserManager::IsInitialized()) {
-    if (auto* active_user = user_manager::UserManager::Get()->GetActiveUser()) {
-      current_account_id_ = active_user->GetAccountId();
-    } else {
-      LOG(ERROR) << "Failed to get active user, UserManager returned null";
-    }
-  } else {
-    LOG(ERROR) << "Failed to get active user, UserManager is not initialized";
-  }
 }
 
 ShelfSpinnerController::~ShelfSpinnerController() {
@@ -179,7 +191,7 @@ ShelfSpinnerController::~ShelfSpinnerController() {
 
 void ShelfSpinnerController::MaybeApplySpinningEffect(const std::string& app_id,
                                                       gfx::ImageSkia* image) {
-  DCHECK(image);
+  CHECK(image, base::NotFatalUntil::M162);
   auto it = app_controller_map_.find(app_id);
   if (it == app_controller_map_.end()) {
     return;
@@ -230,10 +242,11 @@ bool ShelfSpinnerController::RemoveSpinnerFromControllerMap(
   }
 
   const ash::ShelfID shelf_id(app_id);
-  DCHECK_EQ(it->second.controller(),
-            it->second.IsKilled()
-                ? nullptr
-                : owner_->shelf_model()->GetShelfItemDelegate(shelf_id));
+  CHECK_EQ(it->second.controller(),
+           it->second.IsKilled()
+               ? nullptr
+               : owner_->shelf_model()->GetShelfItemDelegate(shelf_id),
+           base::NotFatalUntil::M162);
   app_controller_map_.erase(it);
 
   return true;

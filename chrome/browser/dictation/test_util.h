@@ -6,10 +6,13 @@
 #define CHROME_BROWSER_DICTATION_TEST_UTIL_H_
 
 #include <memory>
+#include <set>
 #include <string>
 #include <string_view>
 
+#include "base/auto_reset.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory/raw_ref.h"
 #include "base/test/scoped_feature_list.h"
 #include "chrome/browser/dictation/dictation_context.h"
 #include "chrome/browser/dictation/dictation_keyed_service.h"
@@ -20,13 +23,19 @@
 #include "chrome/browser/dictation/target.h"
 #include "chrome/common/extensions/api/dictation_private.h"
 #include "content/public/browser/global_dom_node_id.h"
+#include "mojo/public/cpp/bindings/pending_receiver.h"
+#include "services/device/public/cpp/test/test_wake_lock_provider.h"
+#include "services/device/public/mojom/wake_lock_provider.mojom-forward.h"
 #include "testing/gmock/include/gmock/gmock.h"
+#include "ui/base/accelerators/accelerator.h"
+#include "ui/base/accelerators/global_accelerator_listener/global_accelerator_listener.h"
 
 class Profile;
 
 namespace content {
+class RenderFrameHost;
 class WebContents;
-}
+}  // namespace content
 
 namespace extensions {
 class Extension;
@@ -54,10 +63,8 @@ inline TargetDetails DefaultInPageTargetId(content::WebContents* web_contents) {
 }
 
 // Returns a ScopedFeatureList that enables Dictation with common params for
-// testing. `session_ends_on_stream_end` takes its default value if unspecified.
+// testing.
 base::test::ScopedFeatureList CreateEnablingFeatureList();
-base::test::ScopedFeatureList CreateEnablingFeatureList(
-    bool session_ends_on_stream_end);
 
 // Loads an extension that provides an implementation of the connector
 // extension in a "manual" mode usable from tests which prevents the extension
@@ -106,6 +113,14 @@ DictationContext ExtensionGetUpdatedContext(
     Profile* profile,
     DictationMultiplexer::StreamId stream_id);
 
+// There's no great way to wait on the dictation target to have fully
+// committed text (i.e. visible to the page) so this function will poll until
+// the editable shows the expected text. Return the string for ergonomics so
+// that a failure can show up as a failing EXPECT_EQ.
+std::string GetEditableExpectedText(content::RenderFrameHost* render_frame_host,
+                                    std::string_view selector,
+                                    std::string_view expected);
+
 class MockStreamProvider : public StreamProvider {
  public:
   MockStreamProvider();
@@ -134,6 +149,13 @@ class MockSessionUi : public SessionUi {
   MockSessionUi();
   ~MockSessionUi() override;
 
+  bool show_reviewing_page_status() const {
+    return show_reviewing_page_status_;
+  }
+  void set_show_reviewing_page_status(bool show) {
+    show_reviewing_page_status_ = show;
+  }
+
   MOCK_METHOD(void,
               OnError,
               (StreamType stream_type, StreamErrorReason reason),
@@ -144,6 +166,9 @@ class MockSessionUi : public SessionUi {
               OnStartedStream,
               (content::GlobalDOMNodeId target_id),
               (override));
+
+ private:
+  bool show_reviewing_page_status_ = false;
 };
 
 class MockSessionControllerDelegate : public SessionControllerDelegate {
@@ -163,9 +188,77 @@ class MockSessionControllerDelegate : public SessionControllerDelegate {
               CreateUi,
               (SessionController & controller),
               (const, override));
+  MOCK_METHOD(void,
+              BindWakeLockProvider,
+              (mojo::PendingReceiver<device::mojom::WakeLockProvider> receiver),
+              (override));
   MOCK_METHOD(void, EndSession, (), (override));
+
+  device::TestWakeLockProvider& wake_lock_provider() {
+    return wake_lock_provider_;
+  }
+
+ private:
+  device::TestWakeLockProvider wake_lock_provider_;
 };
 
+// A ui::GlobalAcceleratorListener that doesn't touch the OS. Use with
+// ScopedFakeGlobalAcceleratorListener or pass directly to ScopedGlobalHotkey.
+class FakeGlobalAcceleratorListener : public ui::GlobalAcceleratorListener {
+ public:
+  FakeGlobalAcceleratorListener();
+  ~FakeGlobalAcceleratorListener() override;
+
+  // Simulates the OS reporting that `accelerator` was struck. The accelerator
+  // must be registered.
+  void Press(const ui::Accelerator& accelerator);
+
+  // When true, platform registration fails (as if another app owns the
+  // accelerator).
+  void set_fail_registration(bool fail) { fail_registration_ = fail; }
+  void set_handled_externally(bool handled) { handled_externally_ = handled; }
+
+  bool IsListeningFor(const ui::Accelerator& accelerator) const;
+
+  // ui::GlobalAcceleratorListener:
+  bool IsRegistrationHandledExternally() const override;
+
+ private:
+  // ui::GlobalAcceleratorListener:
+  void StartListening() override;
+  void StopListening() override;
+  bool StartListeningForAccelerator(
+      const ui::Accelerator& accelerator) override;
+  void StopListeningForAccelerator(const ui::Accelerator& accelerator) override;
+
+  bool fail_registration_ = false;
+  bool handled_externally_ = false;
+  std::set<ui::Accelerator> listening_;
+};
+
+// Installs a FakeGlobalAcceleratorListener for all HotkeyManagers for the
+// lifetime of this object, so that tests never register real OS-wide hotkeys.
+// Must be destroyed before `service` (e.g. in TearDownOnMainThread()). Ends any
+// active session on destruction so nothing remains registered with the fake.
+class ScopedFakeGlobalAcceleratorListener {
+ public:
+  explicit ScopedFakeGlobalAcceleratorListener(DictationKeyedService& service);
+  ScopedFakeGlobalAcceleratorListener(
+      const ScopedFakeGlobalAcceleratorListener&) = delete;
+  ScopedFakeGlobalAcceleratorListener& operator=(
+      const ScopedFakeGlobalAcceleratorListener&) = delete;
+  ~ScopedFakeGlobalAcceleratorListener();
+
+  FakeGlobalAcceleratorListener& listener() { return listener_; }
+
+ private:
+  const raw_ref<DictationKeyedService> service_;
+  FakeGlobalAcceleratorListener listener_;
+  base::AutoReset<ui::GlobalAcceleratorListener*> listener_override_;
+};
+
+// Uses a FakeGlobalAcceleratorListener so that tests never register real
+// OS-wide hotkeys.
 class MockDictationKeyedService : public DictationKeyedService {
  public:
   explicit MockDictationKeyedService(Profile* profile);
@@ -176,8 +269,21 @@ class MockDictationKeyedService : public DictationKeyedService {
       SessionController& controller) const override;
   std::unique_ptr<SessionUi> CreateUi(
       SessionController& controller) const override;
+  void BindWakeLockProvider(
+      mojo::PendingReceiver<device::mojom::WakeLockProvider> receiver) override;
 
   MOCK_METHOD(void, ToggleHotkeyHandler, (), (override));
+
+  FakeGlobalAcceleratorListener& fake_global_listener() {
+    return fake_global_listener_.listener();
+  }
+  device::TestWakeLockProvider& wake_lock_provider() {
+    return wake_lock_provider_;
+  }
+
+ private:
+  ScopedFakeGlobalAcceleratorListener fake_global_listener_{*this};
+  device::TestWakeLockProvider wake_lock_provider_;
 };
 
 }  // namespace dictation

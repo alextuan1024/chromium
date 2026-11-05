@@ -2,18 +2,23 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "chrome/browser/glic/browser_ui/glic_split_button_delegate.h"
+
 #include <string>
 #include <vector>
 
 #include "base/android/jni_android.h"
 #include "base/android/jni_string.h"
 #include "base/check.h"
-#include "base/memory/raw_ptr.h"
-#include "chrome/browser/actor/ui/task_list_bubble/actor_task_list_bubble_controller.h"
-#include "chrome/browser/glic/browser_ui/glic_actor_task_icon_manager.h"
-#include "chrome/browser/glic/browser_ui/glic_actor_task_icon_manager_factory.h"
+#include "base/feature_list.h"
+#include "base/strings/utf_string_conversions.h"
+#include "chrome/browser/glic/browser_ui/activity_list_bubble/glic_activity_list_bubble_controller.h"
 #include "chrome/browser/glic/browser_ui/glic_nudge_controller.h"
-#include "chrome/browser/glic/browser_ui/glic_split_button_view_delegate.h"
+#include "chrome/browser/glic/browser_ui/glic_split_button_controller.h"
+#include "chrome/browser/glic/browser_ui/glic_split_button_ui_state.h"
+#include "chrome/browser/glic/public/features.h"
+#include "chrome/browser/glic/public/glic_keyed_service.h"
+#include "chrome/browser/glic/public/service/legacy_glic_activity_manager.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "components/actor/core/task_id.h"
@@ -27,20 +32,28 @@ namespace glic {
 
 using jni_zero::AttachCurrentThread;
 
-// C++ implementation of GlicSplitButtonViewDelegate for Android.
+// C++ implementation of GlicSplitButtonDelegate for Android.
 // Acts as JNI bridge to forward C++ split button requests to Java's
 // GlicSplitButtonDelegateBridge.
-// TODO(crbug.com/559190458): Rename to GlicSplitButtonViewDelegateAndroid.
-class GlicSplitButtonDelegateAndroid : public GlicSplitButtonViewDelegate {
+class GlicSplitButtonDelegateAndroid : public GlicSplitButtonDelegate {
  public:
   GlicSplitButtonDelegateAndroid(
       BrowserWindowInterface* browser,
       base::WeakPtr<GlicNudgeController> controller,
       const base::android::ScopedJavaGlobalRef<JGlicSplitButtonDelegateBridge>&
           j_delegate)
-      : browser_(browser), controller_(controller), j_delegate_(j_delegate) {
+      : controller_(controller), j_delegate_(j_delegate) {
     CHECK(controller_);
     controller_->SetHorizontalTabsDelegate(this);
+    if (browser) {
+      if (auto* split_controller = GlicSplitButtonController::From(browser)) {
+        split_controller_ = split_controller->GetWeakPtr();
+      }
+      if (auto* bubble_controller =
+              GlicActivityListBubbleController::From(browser)) {
+        bubble_controller_ = bubble_controller->GetWeakPtr();
+      }
+    }
   }
 
   GlicSplitButtonDelegateAndroid(const GlicSplitButtonDelegateAndroid&) =
@@ -53,7 +66,7 @@ class GlicSplitButtonDelegateAndroid : public GlicSplitButtonViewDelegate {
     }
   }
 
-  // GlicSplitButtonViewDelegate:
+  // GlicSplitButtonDelegate:
   void OnTriggerGlicNudgeUI(NudgeParams params) override {
     Java_GlicSplitButtonDelegateBridge_onTriggerGlicNudgeUi(
         AttachCurrentThread(), j_delegate_, params.label,
@@ -70,65 +83,71 @@ class GlicSplitButtonDelegateAndroid : public GlicSplitButtonViewDelegate {
         AttachCurrentThread(), j_delegate_);
   }
 
-  void ShowGlicActorTaskIcon() override {
+  void ShowGlicSecondaryButton() override {
     Java_GlicSplitButtonDelegateBridge_showGlicActorTaskIcon(
         AttachCurrentThread(), j_delegate_);
   }
 
-  void HideGlicActorTaskIcon() override {
+  void HideGlicSecondaryButton() override {
     Java_GlicSplitButtonDelegateBridge_hideGlicActorTaskIcon(
         AttachCurrentThread(), j_delegate_);
   }
 
-  bool GetIsShowingGlicActorTaskIconNudge() override {
+  bool GetIsShowingGlicSecondaryNudge() override {
     return Java_GlicSplitButtonDelegateBridge_getIsShowingGlicActorTaskIconNudge(
         AttachCurrentThread(), j_delegate_);
   }
 
-  void SetGlicActorNudgeLabel(const std::u16string& nudge_label) override {
+  void SetGlicSecondaryNudgeLabel(const std::u16string& nudge_label) override {
     Java_GlicSplitButtonDelegateBridge_setGlicActorNudgeLabel(
         AttachCurrentThread(), j_delegate_, nudge_label);
   }
 
-  void TriggerGlicActorNudge(const std::u16string& nudge_label) override {
+  void TriggerGlicSecondaryNudge(const std::u16string& nudge_label) override {
     Java_GlicSplitButtonDelegateBridge_triggerGlicActorNudge(
         AttachCurrentThread(), j_delegate_, nudge_label);
   }
 
-  void SetGlicActorNudgePressedState(bool pressed) override {
+  void SetGlicSecondaryButtonPressedState(bool pressed) override {
     Java_GlicSplitButtonDelegateBridge_setGlicActorNudgePressedState(
         AttachCurrentThread(), j_delegate_, pressed);
   }
 
-  void ShowActorTaskListBubble() override {
-    Profile* profile = browser_->GetProfile();
-    auto* manager =
-        glic::GlicActorTaskIconManagerFactory::GetForProfile(profile);
-    if (!manager) {
+  void UpdateGlicSplitButtonUi(const GlicSplitButtonUiState& state) override {
+    Java_GlicSplitButtonDelegateBridge_updateSplitButtonUi(
+        AttachCurrentThread(), j_delegate_, state.secondary_action,
+        state.secondary_label);
+  }
+
+  void ShowActivityListBubble() override {
+    if (!bubble_controller_) {
       return;
     }
-    std::vector<actor::ui::ActorTaskRowData> rows =
-        ActorTaskListBubbleController::GetActorTaskRowsForBubble(
-            profile, manager->actor_task_list_bubble_rows());
+    std::vector<GlicActivityRowViewModel> rows =
+        bubble_controller_->CreateRowViewModels();
 
     JNIEnv* env = AttachCurrentThread();
     std::vector<jni_zero::ScopedJavaLocalRef<jobject>> j_rows;
     j_rows.reserve(rows.size());
     for (const auto& row : rows) {
+      if (!row.task_id.has_value()) {
+        continue;
+      }
       j_rows.push_back(Java_ActorTaskRowData_Constructor(
-          env, row.task_id.value(), row.title, row.subtitle, row.is_enabled,
-          row.needs_review, row.tab_id));
+          env, row.task_id->value(), base::UTF16ToUTF8(row.title),
+          base::UTF16ToUTF8(row.subtitle), row.is_enabled, row.needs_review,
+          row.tab_id));
     }
     Java_GlicSplitButtonDelegateBridge_showActorTaskListBubble(env, j_delegate_,
                                                                j_rows);
   }
 
-  void CloseActorTaskListBubble() override {
+  void CloseActivityListBubble() override {
     Java_GlicSplitButtonDelegateBridge_closeActorTaskListBubble(
         AttachCurrentThread(), j_delegate_);
   }
 
-  bool IsActorTaskListBubbleShowing() override {
+  bool IsActivityListBubbleShowing() override {
     return Java_GlicSplitButtonDelegateBridge_isActorTaskListBubbleShowing(
         AttachCurrentThread(), j_delegate_);
   }
@@ -151,47 +170,40 @@ class GlicSplitButtonDelegateAndroid : public GlicSplitButtonViewDelegate {
   }
 
   void OnTaskRowClicked(int task_id) {
-    if (browser_) {
-      if (auto* bubble_controller =
-              ActorTaskListBubbleController::From(browser_)) {
-        bubble_controller->OnTaskRowClicked(actor::TaskId(task_id));
-      }
+    if (bubble_controller_) {
+      bubble_controller_->OnTaskRowClicked(actor::TaskId(task_id));
     }
   }
 
   void OnGlicActorButtonClicked() {
-    if (browser_) {
-      if (auto* bubble_controller =
-              ActorTaskListBubbleController::From(browser_)) {
-        bubble_controller->ShowBubble();
-      }
+    if (base::FeatureList::IsEnabled(features::kGlicActivityHub) &&
+        split_controller_) {
+      split_controller_->OnSecondaryButtonClicked();
+    } else if (bubble_controller_) {
+      bubble_controller_->ShowBubble();
     }
   }
 
   void OnActorTaskListBubbleDismissed() {
-    if (browser_) {
-      if (auto* bubble_controller =
-              ActorTaskListBubbleController::From(browser_)) {
-        bubble_controller->OnBubbleDestroyed();
-      }
+    if (bubble_controller_) {
+      bubble_controller_->OnBubbleDestroyed();
     }
   }
 
   void Destroy() { delete this; }
 
  private:
-  raw_ptr<BrowserWindowInterface> browser_;
   base::WeakPtr<GlicNudgeController> controller_;
+  base::WeakPtr<GlicSplitButtonController> split_controller_;
+  base::WeakPtr<GlicActivityListBubbleController> bubble_controller_;
   base::android::ScopedJavaGlobalRef<JGlicSplitButtonDelegateBridge>
       j_delegate_;
 };
 
 static int64_t JNI_GlicSplitButtonDelegateBridge_Create(
     JNIEnv* env,
-    int64_t j_native_browser_window_interface,
+    BrowserWindowInterface* browser,
     const base::android::JavaRef<JGlicSplitButtonDelegateBridge>& j_delegate) {
-  BrowserWindowInterface* browser = reinterpret_cast<BrowserWindowInterface*>(
-      j_native_browser_window_interface);
   if (!browser) {
     return 0l;
   }

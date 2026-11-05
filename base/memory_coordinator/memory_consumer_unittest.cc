@@ -4,9 +4,11 @@
 
 #include "base/memory_coordinator/memory_consumer.h"
 
+#include "base/memory_coordinator/memory_coordinator_features.h"
 #include "base/memory_coordinator/mock_memory_consumer.h"
 #include "base/memory_coordinator/test_memory_consumer_registry.h"
 #include "base/test/gtest_util.h"
+#include "base/test/scoped_feature_list.h"
 #include "build/build_config.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -16,7 +18,7 @@ namespace {
 
 constexpr MemoryConsumerTraits kTestTraits(
     MemoryConsumerTraits::EstimatedMemoryUsage::kSmall,
-    MemoryConsumerTraits::ReleaseMemoryCost::kFreesPagesWithoutTraversal,
+    MemoryConsumerTraits::ReleaseMemoryDataAccess::kNone,
     MemoryConsumerTraits::InformationRetention::kLossless,
     MemoryConsumerTraits::ExecutionType::kSynchronous);
 
@@ -45,50 +47,108 @@ TEST(MemoryConsumerTest, UpdateMemoryLimit) {
 
   // Try a couple values.
   EXPECT_CALL(consumer, OnUpdateMemoryLimit());
-  test_registry.NotifyUpdateMemoryLimit(20);
+  test_registry.NotifyUpdateMemoryLimit(MemoryLimit::FromPercent(20));
 
   EXPECT_EQ(consumer.memory_limit(), MemoryLimit::FromPercent(20));
   EXPECT_DOUBLE_EQ(consumer.memory_limit_ratio(), 0.2);
 
   EXPECT_CALL(consumer, OnUpdateMemoryLimit());
-  test_registry.NotifyUpdateMemoryLimit(150);
+  test_registry.NotifyUpdateMemoryLimit(MemoryLimit::FromPercent(150));
 
   EXPECT_EQ(consumer.memory_limit(), MemoryLimit::FromPercent(150));
   EXPECT_DOUBLE_EQ(consumer.memory_limit_ratio(), 1.5);
 }
 
-TEST(MemoryConsumerTest, ScaleByMemoryLimit) {
+TEST(MemoryConsumerTest, DisabledMemoryConsumerIsNotRegistered) {
+  test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeatureWithParameters(
+      kMemoryConsumerModeOverrides,
+      {{"disabled_consumer", "disabled"}, {"stateless_consumer", "stateless"}});
+
+  TestMemoryConsumerRegistry test_registry;
+  test_registry.OnFeatureListInitialized();
+
+  // A disabled consumer is not registered, and keeps the default memory limit.
+  MockMemoryConsumer disabled_consumer;
+  MemoryConsumerRegistration disabled_registration(
+      "disabled_consumer", kTestTraits, &disabled_consumer);
+  EXPECT_EQ(test_registry.size(), 0u);
+  EXPECT_CALL(disabled_consumer, OnUpdateMemoryLimit()).Times(0);
+  test_registry.NotifyUpdateMemoryLimit(MemoryLimit::FromPercent(20));
+  EXPECT_EQ(disabled_consumer.memory_limit(), MemoryLimit::Default());
+
+  // Consumers with a non-disabled override are registered normally.
+  MockMemoryConsumer stateless_consumer;
+  MemoryConsumerRegistration stateless_registration(
+      "stateless_consumer", kTestTraits, &stateless_consumer);
+  EXPECT_EQ(test_registry.size(), 1u);
+}
+
+// The "disabled" override also applies to the consumers that registered before
+// OnFeatureListInitialized(): they are removed from the registry.
+TEST(MemoryConsumerTest, EarlyDisabledMemoryConsumerIsRemoved) {
+  test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeatureWithParameters(
+      kMemoryConsumerModeOverrides,
+      {{"early_consumer", "disabled"},
+       {"early_stateless_consumer", "stateless"}});
+
   TestMemoryConsumerRegistry test_registry;
 
-  MockMemoryConsumer consumer;
-  MemoryConsumerRegistration registration("consumer", kTestTraits, &consumer);
+  // Registered before the overrides are applied.
+  MockMemoryConsumer early_consumer;
+  MemoryConsumerRegistration early_registration("early_consumer", kTestTraits,
+                                                &early_consumer);
+  MockMemoryConsumer early_stateless_consumer;
+  MemoryConsumerRegistration early_stateless_registration(
+      "early_stateless_consumer", kTestTraits, &early_stateless_consumer);
 
-  EXPECT_CALL(consumer, OnUpdateMemoryLimit()).Times(4);
+  // Registered and unregistered before the overrides are applied.
+  {
+    MockMemoryConsumer transient_consumer;
+    MemoryConsumerRegistration transient_registration(
+        "early_consumer", kTestTraits, &transient_consumer);
+    EXPECT_EQ(test_registry.size(), 3u);
+  }
+  EXPECT_EQ(test_registry.size(), 2u);
 
-  // Default limit is 100.
-  EXPECT_EQ(ScaleByMemoryLimit(100, consumer.memory_limit()), 100);
-  EXPECT_EQ(ScaleByMemoryLimit(100u, consumer.memory_limit()), 100u);
+  test_registry.OnFeatureListInitialized();
 
-  // Test at 50%
-  test_registry.NotifyUpdateMemoryLimit(50);
-  EXPECT_EQ(ScaleByMemoryLimit(100, consumer.memory_limit()), 50);
-  EXPECT_EQ(ScaleByMemoryLimit(100u, consumer.memory_limit()), 50u);
+  // Only the disabled consumer is removed. The "stateless" override still
+  // applies to the other early consumer.
+  EXPECT_EQ(test_registry.size(), 1u);
+  EXPECT_FALSE(ShouldUseStatefulMemoryPressure("early_stateless_consumer"));
 
-  // Test truncation for integer types (15% of 10 is 1.5, which truncates to 1)
-  test_registry.NotifyUpdateMemoryLimit(15);
-  EXPECT_EQ(ScaleByMemoryLimit(10, consumer.memory_limit()), 1);
-  EXPECT_EQ(ScaleByMemoryLimit(10u, consumer.memory_limit()), 1u);
+  EXPECT_CALL(early_consumer, OnUpdateMemoryLimit()).Times(0);
+  EXPECT_CALL(early_stateless_consumer, OnUpdateMemoryLimit());
+  test_registry.NotifyUpdateMemoryLimit(MemoryLimit::FromPercent(20));
+  EXPECT_EQ(early_consumer.memory_limit(), MemoryLimit::Default());
 
-  // Test zero limit
-  test_registry.NotifyUpdateMemoryLimit(0);
-  EXPECT_EQ(ScaleByMemoryLimit(100, consumer.memory_limit()), 0);
-  EXPECT_EQ(ScaleByMemoryLimit(100u, consumer.memory_limit()), 0u);
+  // A new instance of the disabled consumer is not registered either.
+  MockMemoryConsumer late_consumer;
+  MemoryConsumerRegistration late_registration("early_consumer", kTestTraits,
+                                               &late_consumer);
+  EXPECT_EQ(test_registry.size(), 1u);
+}
 
-  // Test large limits (scaling up) and saturation
-  test_registry.NotifyUpdateMemoryLimit(200);
-  EXPECT_EQ(ScaleByMemoryLimit(100, consumer.memory_limit()), 200);
-  EXPECT_EQ(ScaleByMemoryLimit(100u, consumer.memory_limit()), 200u);
-  EXPECT_EQ(ScaleByMemoryLimit<int8_t>(100, consumer.memory_limit()), 127);
+TEST(MemoryConsumerTest, LateRegistrationInheritsMemoryLimit) {
+  TestMemoryConsumerRegistry test_registry;
+
+  MockMemoryConsumer consumer1;
+  MemoryConsumerRegistration registration1("consumer1", kTestTraits,
+                                           &consumer1);
+
+  EXPECT_CALL(consumer1, OnUpdateMemoryLimit());
+  test_registry.NotifyUpdateMemoryLimit(MemoryLimit::FromPercent(20));
+
+  // A consumer registered afterwards starts at the current limit, without its
+  // callback being invoked.
+  MockMemoryConsumer consumer2;
+  EXPECT_CALL(consumer2, OnUpdateMemoryLimit()).Times(0);
+  MemoryConsumerRegistration registration2("consumer2", kTestTraits,
+                                           &consumer2);
+
+  EXPECT_EQ(consumer2.memory_limit(), MemoryLimit::FromPercent(20));
 }
 
 #if !BUILDFLAG(IS_IOS)
@@ -112,7 +172,7 @@ TEST(MemoryConsumerTraitsTest, ActiveConsumerWithActiveTraits) {
   MockMemoryConsumer consumer;
   constexpr MemoryConsumerTraits kActiveTraits(
       MemoryConsumerTraits::EstimatedMemoryUsage::kSmall,
-      MemoryConsumerTraits::ReleaseMemoryCost::kFreesPagesWithoutTraversal,
+      MemoryConsumerTraits::ReleaseMemoryDataAccess::kNone,
       MemoryConsumerTraits::InformationRetention::kLossless,
       MemoryConsumerTraits::ExecutionType::kSynchronous);
   MemoryConsumerRegistration registration("consumer", kActiveTraits, &consumer);
@@ -142,8 +202,8 @@ TEST(MemoryConsumerTraitsTest, PassiveConsumerTraitsValidation) {
   // Non-customizable traits for passive should have default passive values
   EXPECT_EQ(kDefaultPassive.estimated_memory_usage,
             MemoryConsumerTraits::EstimatedMemoryUsage::kNA);
-  EXPECT_EQ(kDefaultPassive.release_memory_cost,
-            MemoryConsumerTraits::ReleaseMemoryCost::kNA);
+  EXPECT_EQ(kDefaultPassive.release_memory_data_access,
+            MemoryConsumerTraits::ReleaseMemoryDataAccess::kNA);
   EXPECT_EQ(kDefaultPassive.information_retention,
             MemoryConsumerTraits::InformationRetention::kNA);
   EXPECT_EQ(kDefaultPassive.execution_type,
@@ -154,6 +214,10 @@ TEST(MemoryConsumerTraitsTest, PassiveConsumerTraitsValidation) {
             MemoryConsumerTraits::GarbageCollectsV8Heap::kNo);
   EXPECT_EQ(kDefaultPassive.is_stateful,
             MemoryConsumerTraits::IsStateful::kYes);
+  EXPECT_EQ(kDefaultPassive.recovery_behavior,
+            MemoryConsumerTraits::RecoveryBehavior::kNA);
+  EXPECT_EQ(kDefaultPassive.release_memory_cpu_cost,
+            MemoryConsumerTraits::ReleaseMemoryCpuCost::kNA);
 
   // 2. Custom passive traits
   constexpr MemoryConsumerTraits kCustomPassive(
@@ -172,8 +236,8 @@ TEST(MemoryConsumerTraitsTest, PassiveConsumerTraitsValidation) {
   // Non-customizable traits should still be default passive values
   EXPECT_EQ(kCustomPassive.estimated_memory_usage,
             MemoryConsumerTraits::EstimatedMemoryUsage::kNA);
-  EXPECT_EQ(kCustomPassive.release_memory_cost,
-            MemoryConsumerTraits::ReleaseMemoryCost::kNA);
+  EXPECT_EQ(kCustomPassive.release_memory_data_access,
+            MemoryConsumerTraits::ReleaseMemoryDataAccess::kNA);
   EXPECT_EQ(kCustomPassive.information_retention,
             MemoryConsumerTraits::InformationRetention::kNA);
   EXPECT_EQ(kCustomPassive.execution_type,
@@ -183,6 +247,10 @@ TEST(MemoryConsumerTraitsTest, PassiveConsumerTraitsValidation) {
   EXPECT_EQ(kCustomPassive.garbage_collects_v8_heap,
             MemoryConsumerTraits::GarbageCollectsV8Heap::kNo);
   EXPECT_EQ(kCustomPassive.is_stateful, MemoryConsumerTraits::IsStateful::kYes);
+  EXPECT_EQ(kCustomPassive.recovery_behavior,
+            MemoryConsumerTraits::RecoveryBehavior::kNA);
+  EXPECT_EQ(kCustomPassive.release_memory_cpu_cost,
+            MemoryConsumerTraits::ReleaseMemoryCpuCost::kNA);
 }
 
 #if defined(GTEST_HAS_DEATH_TEST)

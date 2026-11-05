@@ -41,13 +41,15 @@ class StorageRestoreOrchestrator
                        const TabCollectionNodes& handles,
                        bool insert_from_detached) override;
   void OnChildrenRemoved(const TabCollection::Position& position,
-                         const TabCollectionNodes& handles) override;
+                         const TabCollectionNodes& handles,
+                         bool remove_for_detach) override;
   void OnChildMoved(const TabCollection::Position& to_position,
                     const NodeData& node_data) override;
-  void SaveChildNodeOnly(TabCollectionNodeHandle handle) override;
+  void SaveStructureSnapshot(bool clear_unused_nodes) override;
+  void SetSynchronizer(StorageCollectionSynchronizer* synchronizer) override;
+  void OnRestoreCancelled() override;
 
   void OnNodeRejected(StorageId node);
-  void OnRestoreCancelled() override;
 
  private:
   class ObserverImpl : public StorageLoadedData::Observer {
@@ -60,17 +62,13 @@ class StorageRestoreOrchestrator
     raw_ptr<StorageRestoreOrchestrator> orchestrator_;
   };
 
-  void OnSaveChildTab(const TabCollection::NodeHandle& handle,
-                      bool was_inserted);
-  void OnSaveChildCollection(const TabCollection::NodeHandle& handle,
-                             bool was_inserted);
-
   // Tracks events performed on StorageLoadedData.
   ObserverImpl data_observer_;
 
   raw_ptr<TabStripCollection> collection_;
   raw_ptr<TabStateStorageService> service_;
   raw_ptr<StorageLoadedData> loaded_data_;
+  raw_ptr<StorageCollectionSynchronizer> synchronizer_ = nullptr;
 
   bool is_restore_cancelled_ = false;
 };

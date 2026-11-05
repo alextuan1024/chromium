@@ -6,9 +6,12 @@
 
 #include <jni.h>
 
+#include <memory>
+
 #include "base/android/jni_android.h"
 #include "base/android/scoped_java_ref.h"
 #include "base/check_deref.h"
+#include "base/functional/callback_helpers.h"
 #include "base/memory/weak_ptr.h"
 #include "base/notimplemented.h"
 #include "base/notreached.h"
@@ -24,13 +27,9 @@
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents.h"
-#include "extensions/buildflags/buildflags.h"
 #include "third_party/blink/public/mojom/window_features/window_features.mojom.h"
+#include "third_party/jni_zero/jni_zero.h"
 #include "ui/base/unowned_user_data/unowned_user_data_host.h"
-
-#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
-#include "chrome/browser/extensions/extension_browser_window_helper.h"
-#endif  // BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 
 namespace {
 using base::android::AttachCurrentThread;
@@ -39,13 +38,31 @@ using base::android::JavaRef;
 }  // namespace
 
 // Implements Java |AndroidBrowserWindow.Natives#create|.
-static int64_t JNI_AndroidBrowserWindow_Create(JNIEnv* env,
-                                               const JavaRef<jobject>& caller,
-                                               int32_t browser_window_type,
-                                               Profile* profile) {
-  return reinterpret_cast<intptr_t>(new AndroidBrowserWindow(
-      env, caller,
-      static_cast<BrowserWindowInterface::Type>(browser_window_type), profile));
+static jni_zero::JniUniquePtr<BrowserWindowInterface>
+JNI_AndroidBrowserWindow_Create(JNIEnv* env,
+                                const JavaRef<jobject>& caller,
+                                int32_t browser_window_type,
+                                Profile* profile) {
+  std::unique_ptr<BrowserWindowInterface> browser_window =
+      std::make_unique<AndroidBrowserWindow>(
+          env, caller,
+          static_cast<BrowserWindowInterface::Type>(browser_window_type),
+          profile);
+  return jni_zero::MakeUnique(std::move(browser_window));
+}
+
+// Implements Java |AndroidBrowserWindow.Natives#getLegacyNativePtr|.
+static int64_t JNI_AndroidBrowserWindow_GetLegacyNativePtr(
+    JNIEnv* env,
+    BrowserWindowInterface* browser_window) {
+  return reinterpret_cast<intptr_t>(browser_window);
+}
+
+// Implements Java |AndroidBrowserWindow.Natives#getSessionIdForTesting|.
+static int32_t JNI_AndroidBrowserWindow_GetSessionIdForTesting(
+    JNIEnv* env,
+    BrowserWindowInterface* browser_window) {
+  return browser_window->GetSessionID().id();
 }
 
 AndroidBrowserWindow::AndroidBrowserWindow(
@@ -57,25 +74,10 @@ AndroidBrowserWindow::AndroidBrowserWindow(
       profile_(CHECK_DEREF(profile)),
       session_id_(SessionID::NewUnique()) {
   java_android_browser_window_.Reset(env, java_android_browser_window);
-
-#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
-  extension_browser_window_helper_ =
-      std::make_unique<extensions::ExtensionBrowserWindowHelper>(this, profile);
-#endif  // BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 }
 
 AndroidBrowserWindow::~AndroidBrowserWindow() {
   browser_did_close_callback_list_.Notify(this);
-  Java_AndroidBrowserWindow_clearNativePtr(AttachCurrentThread(),
-                                           java_android_browser_window_);
-}
-
-void AndroidBrowserWindow::Destroy(JNIEnv* env) {
-  delete this;
-}
-
-int32_t AndroidBrowserWindow::GetSessionIdForTesting(JNIEnv* env) const {
-  return GetSessionID().id();
 }
 
 ui::UnownedUserDataHost& AndroidBrowserWindow::GetUnownedUserDataHost() {
@@ -162,41 +164,23 @@ content::WebContents* AndroidBrowserWindow::OpenURL(
   }
 
   NavigateParams* params_ptr = popup_delegate->nav_params();
+  // Navigate() runs the callback once the navigation starts. For a new window,
+  // that's before the window is ready.
+  params_ptr->navigation_handle_callback =
+      std::move(navigation_handle_callback);
 
   // Try to handle the request synchronously first.
   base::WeakPtr<content::NavigationHandle> handle = Navigate(params_ptr);
-  // If navigation started synchronously, run the callback and return the
-  // WebContents.
+  // If navigation started synchronously, return the WebContents.
   if (handle) {
-    if (navigation_handle_callback) {
-      std::move(navigation_handle_callback).Run(*handle);
-    }
     return handle->GetWebContents();
   }
 
-  // Else, run asynchronously and return nullptr.
-  Navigate(
-      params_ptr,
-      base::BindOnce(
-          [](std::unique_ptr<ChromePopupNavigationDelegate> owned_delegate,
-             base::OnceCallback<void(content::NavigationHandle&)> callback,
-             base::WeakPtr<content::NavigationHandle> handle) {
-            // Check if the handle is valid and dereference it to match the
-            // signature expected by OpenURL's callback
-            // (NavigationHandle&).
-            if (handle && callback) {
-              std::move(callback).Run(*handle);
-            }
-            // If handle is null, callback is never called.
-          },
-          std::move(popup_delegate), std::move(navigation_handle_callback)));
+  // Else, run asynchronously and return nullptr. `popup_delegate` owns the
+  // params, so keep it alive until the navigation is done.
+  Navigate(params_ptr, base::DoNothingWithBoundArgs(std::move(popup_delegate)));
 
   return nullptr;
-}
-
-base::android::ScopedJavaLocalRef<jobject> AndroidBrowserWindow::GetActivity() {
-  return Java_AndroidBrowserWindow_getActivity(AttachCurrentThread(),
-                                               java_android_browser_window_);
 }
 
 DEFINE_JNI(AndroidBrowserWindow)

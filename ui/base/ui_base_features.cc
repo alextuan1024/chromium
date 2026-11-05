@@ -60,6 +60,17 @@ BASE_FEATURE(kAlwaysTrackNativeWindowOcclusionForTest,
 BASE_FEATURE(kRecalculateNativeWinOcclusionOnWindowDestroy,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
+// If enabled, native window occlusion tracking ignores
+// EVENT_OBJECT_LOCATIONCHANGE events that can't change the occlusion state of
+// tracked windows: events for child windows, and events for top-level windows
+// whose ability to occlude other windows and bounds haven't changed since the
+// last occlusion calculation. Layered windows, for example, raise this event
+// every time their contents are updated, even if they don't move. Enabled by
+// default; behind a feature flag so it can be disabled remotely via Finch if a
+// regression is observed.
+BASE_FEATURE(kFilterNativeWinOcclusionLocationChanges,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+
 // Field trial param name for `kApplyNativeOcclusionToCompositor`.
 const base::FeatureParam<std::string> kApplyNativeOcclusionToCompositorType{
     &kApplyNativeOcclusionToCompositor, "type", /*default=*/""};
@@ -79,18 +90,25 @@ BASE_FEATURE(kHideCursorWhileTyping, base::FEATURE_ENABLED_BY_DEFAULT);
 
 #if BUILDFLAG(IS_MAC)
 BASE_FEATURE(kOnlyUseWindowResizeHelperOnResize,
-             base::FEATURE_DISABLED_BY_DEFAULT);
+             base::FEATURE_ENABLED_BY_DEFAULT);
 
-// Controls replacement of CATransactionCoordinator with a new implementation.
-BASE_FEATURE(kCATransactionV2, base::FEATURE_DISABLED_BY_DEFAULT);
+// Re-create the CAContext on window resize to try to better synchronize the
+// resize.
+BASE_FEATURE(kCAContextFenceOnResize, base::FEATURE_ENABLED_BY_DEFAULT);
 
 // Make live-resize of an NSWindow be asynchronous (so it doesn't block the
 // UI thread).
-BASE_FEATURE(kAsyncLiveResize, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kAsyncLiveResize, base::FEATURE_ENABLED_BY_DEFAULT);
 
 // Keeps the NSWindow invisible (via its `alphaValue`) until the first
 // compositor frame has been received.
 BASE_FEATURE(kAlphaInsteadOfCATransaction, base::FEATURE_ENABLED_BY_DEFAULT);
+
+// When enabled, uses the window's occlusion state
+// (NSWindowOcclusionStateVisible) in addition to -[NSWindow isOnActiveSpace] to
+// detect when a window becomes visible during space transition gestures before
+// the active space changes.
+BASE_FEATURE(kDetectSpaceChangeViaOcclusion, base::FEATURE_DISABLED_BY_DEFAULT);
 #endif  // BUILDFLAG(IS_MAC)
 
 #if BUILDFLAG(IS_CHROMEOS)
@@ -224,8 +242,16 @@ BASE_FEATURE(kFocusFollowsCursor, base::FEATURE_DISABLED_BY_DEFAULT);
 BASE_FEATURE(kDragDropOnlySynthesizeHttpOrHttpsUrlsFromText,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
+// Kill-switch. Disabled text fields, menulists, checkboxes, and radios
+// paint a translucent fill in dark mode (matching light mode) so a
+// colored page background shows through. Disabled buttons and
+// progress/slider tracks are unaffected. Disabling preserves the opaque
+// dark-mode fills.
+BASE_FEATURE(kDarkModeTranslucentDisabledControls,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+
 // Enables applying scroll railing in the renderer.
-BASE_FEATURE(kApplyScrollRailingInRenderer, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kApplyScrollRailingInRenderer, base::FEATURE_ENABLED_BY_DEFAULT);
 
 #if BUILDFLAG(IS_CHROMEOS)
 bool IsImprovedKeyboardShortcutsEnabled() {
@@ -289,7 +315,7 @@ bool IsForcedColorsEnabled() {
 // milestones.
 BASE_FEATURE(kEyeDropper,
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX) || \
-    BUILDFLAG(IS_CHROMEOS)
+    BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_ANDROID)
              base::FEATURE_ENABLED_BY_DEFAULT
 #else
              base::FEATURE_DISABLED_BY_DEFAULT
@@ -297,6 +323,18 @@ BASE_FEATURE(kEyeDropper,
 );
 
 bool IsEyeDropperEnabled() {
+#if BUILDFLAG(IS_ANDROID)
+  // On Android, the system EyeDropper API (Intent.ACTION_OPEN_EYE_DROPPER) is
+  // only available starting in Android CinnamonBun (API level 37). Return
+  // false on older Android versions to match
+  // SetCustomizedRuntimeFeaturesFromCombinedArgs in runtime_features.cc, which
+  // disables the blink runtime feature in order to prevent the IDL from being
+  // registered.
+  if (base::android::android_info::sdk_int() <
+      base::android::android_info::SDK_VERSION_CINNAMON_BUN) {
+    return false;
+  }
+#endif
   return base::FeatureList::IsEnabled(features::kEyeDropper);
 }
 
@@ -365,27 +403,6 @@ bool IsSwipeToMoveCursorEnabled() {
       IsTouchTextEditingRedesignEnabled();
 #endif
   return enabled;
-}
-
-// Enable raw draw for tiles.
-BASE_FEATURE(kRawDraw, base::FEATURE_DISABLED_BY_DEFAULT);
-
-// Tile size = viewport size * TileSizeFactor
-const base::FeatureParam<double> kRawDrawTileSizeFactor{&kRawDraw,
-                                                        "TileSizeFactor", 1};
-
-const base::FeatureParam<bool> kIsRawDrawUsingMSAA{&kRawDraw, "IsUsingMSAA",
-                                                   false};
-bool IsUsingRawDraw() {
-  return base::FeatureList::IsEnabled(kRawDraw);
-}
-
-double RawDrawTileSizeFactor() {
-  return kRawDrawTileSizeFactor.Get();
-}
-
-bool IsRawDrawUsingMSAA() {
-  return kIsRawDrawUsingMSAA.Get();
 }
 
 BASE_FEATURE(kVariableRefreshRateAvailable, base::FEATURE_DISABLED_BY_DEFAULT);
@@ -502,9 +519,10 @@ BASE_FEATURE(kDesktopGlowUp, base::FEATURE_DISABLED_BY_DEFAULT);
 
 BASE_FEATURE(kGlassFrame, base::FEATURE_DISABLED_BY_DEFAULT);
 BASE_FEATURE_PARAM(bool, kGlassExpandOnHoverEnabled, &kGlassFrame, true);
+BASE_FEATURE_PARAM(bool, kGlassFrameEnabledByDefault, &kGlassFrame, true);
 
 BASE_FEATURE(kRoundedIcons, base::FEATURE_DISABLED_BY_DEFAULT);
-BASE_FEATURE(kWebUIRoundedIcons, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kWebUIRoundedIcons, base::FEATURE_ENABLED_BY_DEFAULT);
 
 // Updates the default dark neutrals for the theme palette.
 BASE_FEATURE(kChromeDarkNeutrals26, base::FEATURE_DISABLED_BY_DEFAULT);
@@ -519,10 +537,15 @@ BASE_FEATURE(kUsePortalAccentColor, base::FEATURE_ENABLED_BY_DEFAULT);
 // ColorProviderKey, hierarchical theme observation, and coalescing updates.
 BASE_FEATURE(kThemeChangeOptimization, base::FEATURE_DISABLED_BY_DEFAULT);
 
+BASE_FEATURE(kThemeChangeOptimizationV2, base::FEATURE_DISABLED_BY_DEFAULT);
+
 BASE_FEATURE(kRemoveEnsureRFHVisibilityConsistent,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kColorIdCssStyleSheetOptimization,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
+BASE_FEATURE(kOmitNativeFrameOnShadowlessMenus,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
 bool IsGlassFrameEnabled() {
@@ -545,6 +568,10 @@ bool IsWebUIRoundedIconsEnabled() {
 
 bool IsColorIdCssStyleSheetOptimizationEnabled() {
   return base::FeatureList::IsEnabled(kColorIdCssStyleSheetOptimization);
+}
+
+bool IsThemeChangeOptimizationV2Enabled() {
+  return base::FeatureList::IsEnabled(kThemeChangeOptimizationV2);
 }
 
 }  // namespace features

@@ -5,6 +5,8 @@
 #ifndef BASE_TRACE_EVENT_MALLOC_DUMP_PROVIDER_H_
 #define BASE_TRACE_EVENT_MALLOC_DUMP_PROVIDER_H_
 
+#include <stddef.h>
+
 #include "base/allocator/buildflags.h"
 #include "base/base_export.h"
 #include "base/functional/callback.h"
@@ -35,12 +37,28 @@ class MemoryAllocatorDump;
 // Dump provider which collects process-wide memory stats.
 class BASE_EXPORT MallocDumpProvider : public MemoryDumpProvider {
  public:
-  // Name of the allocated_objects dump. Use this to declare suballocator dumps
-  // from other dump providers.
+  // Name of the dump of the objects allocated out of every backend.
   static const char kAllocatedObjects[];
 
+  // Name of the dump other providers suballocate from, through
+  // MemoryDumpManager::system_allocator_pool_name(): the objects dump of the
+  // backend serving malloc(), or kAllocatedObjects where that dump is not
+  // reported at every level of detail.
+  static const char kSuballocationTarget[];
+
+#if PA_BUILDFLAG(USE_PARTITION_ALLOC_AS_MALLOC)
+  // Names of the PartitionAlloc dumps.
+  static const char kPartitions[];
+  static const char kPartitionsAllocatedObjects[];
+#endif
+
+  // Names of the system allocator dumps, reported from mallinfo(3).
+  static const char kSysMalloc[];
+  static const char kSysMallocAllocatedObjects[];
+
 #if BUILDFLAG(IS_WIN)
-  // Names of the WinHeap dumps. Only reported at kDetailed level of detail.
+  // Names of the WinHeap dumps. Only reported at kDetailed level of detail;
+  // kWinHeapAllocatedObjects only with PartitionAlloc-as-malloc.
   static const char kWinHeap[];
   static const char kWinHeapAllocatedObjects[];
 #endif
@@ -146,6 +164,8 @@ class BASE_EXPORT MemoryDumpPartitionStatsDumper final
 
   size_t total_mmapped_bytes() const { return total_mmapped_bytes_; }
   size_t total_resident_bytes() const { return total_resident_bytes_; }
+  size_t total_committed_bytes() const { return total_committed_bytes_; }
+  size_t total_wasted_bytes() const { return total_wasted_bytes_; }
   size_t total_active_bytes() const { return total_active_bytes_; }
   size_t total_active_count() const { return total_active_count_; }
   uint64_t syscall_count() const { return syscall_count_; }
@@ -162,6 +182,8 @@ class BASE_EXPORT MemoryDumpPartitionStatsDumper final
   uint64_t uid_ = 0;
   size_t total_mmapped_bytes_ = 0;
   size_t total_resident_bytes_ = 0;
+  size_t total_committed_bytes_ = 0;
+  size_t total_wasted_bytes_ = 0;
   size_t total_active_bytes_ = 0;
   size_t total_active_count_ = 0;
   uint64_t syscall_count_ = 0;
@@ -171,6 +193,35 @@ class BASE_EXPORT MemoryDumpPartitionStatsDumper final
 };
 
 #endif  // PA_BUILDFLAG(USE_PARTITION_ALLOC)
+
+#if (PA_BUILDFLAG(USE_PARTITION_ALLOC_AS_MALLOC) && BUILDFLAG(IS_ANDROID)) || \
+    (!PA_BUILDFLAG(USE_PARTITION_ALLOC_AS_MALLOC) && !BUILDFLAG(IS_WIN) &&    \
+     !BUILDFLAG(IS_APPLE) && !BUILDFLAG(IS_FUCHSIA)) ||                       \
+    BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
+namespace internal {
+
+// Totals derived from mallinfo(3).
+struct MallinfoTotals {
+  size_t held_size = 0;
+  size_t allocated_size = 0;
+};
+
+// For mallinfo2(), and bionic's mallinfo(), whose fields are size_t.
+BASE_EXPORT MallinfoTotals MallinfoTotalsFromSizeT(size_t arena,
+                                                   size_t hblkhd,
+                                                   size_t uordblks);
+
+#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
+// For glibc's legacy mallinfo(), which truncates its size_t counters into int
+// fields. Reading them as unsigned recovers values up to 4 GiB; larger ones
+// still wrap, undetectably.
+BASE_EXPORT MallinfoTotals MallinfoTotalsFromInt(int arena,
+                                                 int hblkhd,
+                                                 int uordblks);
+#endif  // BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
+
+}  // namespace internal
+#endif
 
 #if BUILDFLAG(IS_WIN)
 namespace internal {

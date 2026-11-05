@@ -127,7 +127,6 @@ TEST(JsonSchemaCompilerErrorTest, WrongPropertyValueType) {
 
 TEST(JsonSchemaCompilerErrorTest, WrongParameterCreationType) {
   {
-    std::u16string error;
     base::ListValue params_value;
     params_value.Append("Yeah!");
     EXPECT_TRUE(errors::TestString::Params::Create(params_value).has_value());
@@ -135,7 +134,6 @@ TEST(JsonSchemaCompilerErrorTest, WrongParameterCreationType) {
   {
     base::ListValue params_value;
     params_value.Append(5);
-    std::u16string error;
     EXPECT_TRUE(
         EqualsUtf16("'paramObject': expected dictionary, got integer",
                     errors::TestTypeInObject::Params::Create(params_value)
@@ -298,4 +296,57 @@ TEST(JsonSchemaCompilerErrorTest, TooManyKeys) {
     EXPECT_TRUE(
         EqualsUtf16("", GetPopulateError<errors::TestType>(value.GetDict())));
   }
+}
+
+// Tests for choices whose base::Value type is shared with another choice (here:
+// several object choices). A failed parse of the first choice must fall through
+// to the next choice instead of failing Populate.
+
+TEST(JsonSchemaCompilerErrorTest, AmbiguousChoicePopulate) {
+  {
+    base::Value value = Dictionary("a", Value(5));
+    auto out = errors::ObjectChoices::FromValue(value);
+    ASSERT_TRUE(out.has_value());
+    EXPECT_TRUE(out->as_object_choice_a);
+    EXPECT_FALSE(out->as_object_choice_b);
+  }
+  {
+    // The first object choice fails to parse (property 'a' is missing), so
+    // parsing must continue with the second choice.
+    base::Value value = Dictionary("b", Value("bling"));
+    auto out = errors::ObjectChoices::FromValue(value);
+    ASSERT_TRUE(out.has_value());
+    EXPECT_FALSE(out->as_object_choice_a);
+    EXPECT_TRUE(out->as_object_choice_b);
+  }
+  {
+    // The first object choice matches the dictionary guard but fails to parse,
+    // so parsing must continue.
+    base::Value value =
+        Dictionary("a", Value("not_an_int"), "b", Value("bling"));
+    auto out = errors::ObjectChoices::FromValue(value);
+    ASSERT_TRUE(out.has_value());
+    EXPECT_FALSE(out->as_object_choice_a);
+    EXPECT_TRUE(out->as_object_choice_b);
+  }
+}
+
+TEST(JsonSchemaCompilerErrorTest, AmbiguousChoicePopulateFailure) {
+  // The value matches neither object choice, so an aggregate error must be
+  // reported and |error| must be left in a state usable by the reporter.
+  base::Value value = Dictionary("c", Value(true));
+  auto out = errors::ObjectChoices::FromValue(value);
+  EXPECT_FALSE(out.has_value());
+  EXPECT_TRUE(EqualsUtf16(
+      "expected ObjectChoiceA or ObjectChoiceB, got dictionary", out.error()));
+}
+
+TEST(JsonSchemaCompilerErrorTest, AmbiguousChoicePopulateWrongPropertyType) {
+  // Property 'a' has the wrong type for the first choice and the required
+  // property 'b' is missing for the second.
+  base::Value value = Dictionary("a", Value("not_an_int"));
+  auto out = errors::ObjectChoices::FromValue(value);
+  ASSERT_FALSE(out.has_value());
+  EXPECT_TRUE(EqualsUtf16(
+      "expected ObjectChoiceA or ObjectChoiceB, got dictionary", out.error()));
 }

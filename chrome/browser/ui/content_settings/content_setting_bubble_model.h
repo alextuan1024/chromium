@@ -373,14 +373,11 @@ class ContentSettingRPHBubbleModel : public ContentSettingSimpleBubbleModel {
 
  private:
   void RegisterProtocolHandler();
-  void UnregisterProtocolHandler();
   void IgnoreProtocolHandler();
-  void ClearOrSetPreviousHandler();
   void PerformActionForSelectedItem();
 
   raw_ptr<custom_handlers::ProtocolHandlerRegistry> registry_;
   custom_handlers::ProtocolHandler pending_handler_;
-  custom_handlers::ProtocolHandler previous_handler_;
 };
 
 // The model of the content settings bubble for media settings.
@@ -666,8 +663,15 @@ class ContentSettingNotificationsBubbleModel
 
   // ContentSettingBubbleModel:
   void OnDoneButtonClicked() override;
+  void OnCancelButtonClicked() override;
+
+ private:
+  // True when the app's macOS notification permission is still kNotDetermined,
+  // meaning the app cannot be configured in macOS System Settings yet and
+  // accepting the bubble must request system permission first.
+  bool should_request_system_permission_ = false;
 };
-#endif
+#endif  // BUILDFLAG(IS_MAC)
 
 #if !BUILDFLAG(IS_ANDROID)
 // The model for the blocked Framebust bubble.

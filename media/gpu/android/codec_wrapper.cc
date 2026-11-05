@@ -19,7 +19,7 @@
 #include "base/memory/ptr_util.h"
 #include "base/memory/ref_counted.h"
 #include "base/memory/scoped_refptr.h"
-#include "base/metrics/histogram_macros.h"
+#include "base/numerics/safe_conversions.h"
 #include "base/task/sequenced_task_runner.h"
 #include "media/base/android/media_codec_util.h"
 #include "media/base/android/media_format_color_space.h"
@@ -205,10 +205,12 @@ gfx::Size CodecOutputBuffer::GuessCodedSize() const {
   }
 
   return gfx::Size(
-      base::bits::AlignUpDeprecatedDoNotUse(visible_rect_.width(),
-                                            coded_size_alignment_->width()),
-      base::bits::AlignUpDeprecatedDoNotUse(visible_rect_.height(),
-                                            coded_size_alignment_->height()));
+      base::bits::AlignUp(
+          base::checked_cast<uint32_t>(visible_rect_.width()),
+          base::checked_cast<uint32_t>(coded_size_alignment_->width())),
+      base::bits::AlignUp(
+          base::checked_cast<uint32_t>(visible_rect_.height()),
+          base::checked_cast<uint32_t>(coded_size_alignment_->height())));
 }
 
 CodecWrapperImpl::CodecWrapperImpl(
@@ -450,7 +452,6 @@ CodecWrapperImpl::DequeueStatus CodecWrapperImpl::DequeueOutputBuffer(
                    << " r: " << color_space_.range
                    << " t: " << color_space_.transfer;
         }
-        UMA_HISTOGRAM_BOOLEAN("Media.Android.GetColorSpaceError", error);
         // If we fail to get a color space after we have gotten a valid size,
         // reset the color space. The higher levels of the stack will decide
         // the color space (e.g, based on the container settings).

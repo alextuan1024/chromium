@@ -17,7 +17,7 @@
 #include "base/containers/id_map.h"
 #include "base/functional/callback_helpers.h"
 #include "base/functional/function_ref.h"
-#include "base/memory/advanced_memory_safety_checks.h"
+#include "base/memory/sanitized_object.h"
 #include "base/process/kill.h"
 #include "base/process/process.h"
 #include "base/supports_user_data.h"
@@ -111,7 +111,6 @@ class Origin;
 namespace content {
 class BrowserContext;
 class BucketContext;
-class IsolationContext;
 class ProcessLock;
 class RenderFrameHost;
 class RenderProcessHostObserver;
@@ -125,6 +124,7 @@ enum class ChildProcessImportance;
 
 namespace mojom {
 class Renderer;
+class RendererVariationsConfiguration;
 }  // namespace mojom
 
 // Interface that represents the browser side of the browser <-> renderer
@@ -134,7 +134,7 @@ class CONTENT_EXPORT RenderProcessHost : public IPC::Listener,
                                          public base::SupportsUserData {
   // Do not remove this macro!
   // The macro is maintained by the memory safety team.
-  ADVANCED_MEMORY_SAFETY_CHECKS();
+  SANITIZED_OBJECT();
 
  public:
   using iterator = base::IDMap<RenderProcessHost*, ChildProcessId>::iterator;
@@ -152,9 +152,27 @@ class CONTENT_EXPORT RenderProcessHost : public IPC::Listener,
     kServiceWorker
   };
 
+  // Controls which active (initialized, non-dead, non-spare) RenderProcessHosts
+  // are counted by GetCurrentRenderProcessCountForTesting().
+  enum class RenderProcessCountMode {
+    // Counts all initialized, non-dead, non-spare RenderProcessHosts, including
+    // processes that only host prerendered frames or currently host no frames.
+    kIncludePrerenderOnlyOrEmptyProcess,
+
+    // Excludes RenderProcessHosts that only host prerendered frames or
+    // currently host no RenderFrameHosts (i.e., where
+    // IsOnlyHostingPrerenderedFramesOrEmpty() is true, such as transient
+    // speculative/prewarm prerender processes or worker-only processes).
+    kExcludePrerenderOnlyOrEmptyProcess,
+  };
+
   // General functions ---------------------------------------------------------
 
   ~RenderProcessHost() override {}
+
+  // Returns true if this is a test fake, such as MockRenderProcessHost, rather
+  // than the production RenderProcessHostImpl.
+  virtual bool IsMock() const = 0;
 
   // Initialize the new renderer process, returning true on success. This must
   // be called once before the object can be used, but can be called after
@@ -294,12 +312,12 @@ class CONTENT_EXPORT RenderProcessHost : public IPC::Listener,
   virtual bool ShutdownRequested() = 0;
 
   // Try to shut down the associated renderer process as fast as possible. If a
-  // non-zero |page_count| value is provided, then a fast shutdown will only
+  // non-zero |page_count| value is provided, or if
+  // `use_outermost_main_frame_check` is true, then a fast shutdown will only
   // happen if the count matches the active view count. Returns true if it was
-  // able to do fast shutdown.
-  // If `use_outermost_main_frame_check` is true `page_count` will check
-  // resident counts of outermost main frames, instead of resident
-  // RenderWidgetHosts.
+  // able to do fast shutdown. If `use_outermost_main_frame_check` is true,
+  // `page_count` will check against the number of active, non-discarded
+  // outermost main frames, instead of resident RenderWidgetHosts.
   // TODO(crbug.com/463513005): Make this behavior default and remove
   // `page_count`.
   // If |skip_unload_handlers| is false and this renderer has any RenderViews
@@ -577,18 +595,6 @@ class CONTENT_EXPORT RenderProcessHost : public IPC::Listener,
   //    the renderer process to be alive. The ref count is incremented when
   //    a shared worker is created in the process, and decremented when
   //    it is terminated (it self-destructs when it no longer has clients).
-  //  - Shared Storage Worklet:
-  //    (https://github.com/pythagoraskitty/shared-storage)
-  //    While there are shared storage worklets who live in this process, they
-  //    wish the renderer process to be alive. The ref count is incremented when
-  //    a shared storage worklet is created in the process, and decremented when
-  //    it is terminated (after the document is destroyed, the worklet
-  //    will be destroyed when all pending operations have finished or a timeout
-  //    is reached). Note that this is only relevant for the implementation of
-  //    shared storage worklets that run in the renderer process. The actual
-  //    process that the shared storage worklets are going to use is determined
-  //    by the concrete implementation of
-  //    `SharedStorageRenderThreadWorkletDriver`.
   //  - Auction Worklets (on Android only):
   //    (https://github.com/WICG/turtledove/blob/main/FLEDGE.md)
   //    Keeps the renderer alive if there are any worklets using it.
@@ -623,6 +629,12 @@ class CONTENT_EXPORT RenderProcessHost : public IPC::Listener,
   // MockRenderProcessHost usage in tests.
   virtual mojom::Renderer* GetRendererInterface() = 0;
 
+  // Acquires the `mojom::RendererVariationsConfiguration` interface to the
+  // render process. This is for internal use only, and is only exposed here to
+  // support `MockRenderProcessHost` usage in tests.
+  virtual mojom::RendererVariationsConfiguration*
+  GetRendererVariationsConfiguration() = 0;
+
   // Whether this process is locked out from ever being reused for sites other
   // than the ones it currently has.
   virtual bool MayReuseHost() = 0;
@@ -656,8 +668,7 @@ class CONTENT_EXPORT RenderProcessHost : public IPC::Listener,
   // This method is public so that it can be called from within //content, and
   // used by MockRenderProcessHost. It isn't meant to be called outside of
   // //content.
-  virtual void SetProcessLock(const IsolationContext& isolation_context,
-                              const ProcessLock& process_lock) = 0;
+  virtual void SetProcessLock(const ProcessLock& process_lock) = 0;
 
   // Returns the ProcessLock associated with this process.
   // This method is public so that it can be called from within //content, and
@@ -849,6 +860,12 @@ class CONTENT_EXPORT RenderProcessHost : public IPC::Listener,
   // to support MockRenderProcessHost usage in tests.
   virtual bool IsOnlyHostingPrerenderedFramesOrEmpty() = 0;
 
+  // Returns whether the process is hosting any outermost main frame RFH that
+  // has not yet committed or any RFH that is currently loading. This is for
+  // internal use only, and is only exposed here to support
+  // MockRenderProcessHost usage in tests.
+  virtual bool HasLoadingFrames() const = 0;
+
   // Static management functions -----------------------------------------------
 
   // Flag to run the renderer in process.  This is primarily
@@ -905,13 +922,12 @@ class CONTENT_EXPORT RenderProcessHost : public IPC::Listener,
   // content module.
   static size_t GetMaxRendererProcessCount();
 
-  // TODO(siggi): Remove once https://crbug.com/806661 is resolved.
-  using AnalyzeHungRendererFunction = void (*)(const base::Process& renderer);
-  static void SetHungRendererAnalysisFunction(
-      AnalyzeHungRendererFunction analyze_hung_renderer);
-
-  // Counts current RenderProcessHost(s), ignoring all spare processes.
-  static int GetCurrentRenderProcessCountForTesting();
+  // Counts current RenderProcessHost(s), ignoring all spare processes, and
+  // optionally ignoring processes that only host prerendered frames or no
+  // frames.
+  static int GetCurrentRenderProcessCountForTesting(
+      RenderProcessCountMode mode =
+          RenderProcessCountMode::kIncludePrerenderOnlyOrEmptyProcess);
 
   // Allows tests to override host interface binding behavior. Any interface
   // binding request which would normally pass through the RPH's internal

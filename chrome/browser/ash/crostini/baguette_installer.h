@@ -21,11 +21,6 @@
 
 class Profile;
 
-// TODO(crbug.com/377377749): add downloader which grabs image file from GS
-// bucket based on VERSION-PIN
-inline constexpr char kBaguettePath[] =
-    "/home/chronos/user/MyFiles/Downloads/baguette.img.zst";
-
 namespace crostini {
 
 // This class is responsible for managing (un)instatllation of Baguette - the
@@ -67,7 +62,6 @@ class BaguetteInstaller {
   void Uninstall(base::OnceCallback<void(bool)> callback);
 
  private:
-  void GetBaguetteImageUrl(BaguetteInstallerCallback callback);
   void OnListVmDisks(
       BaguetteInstallerCallback callback,
       std::optional<vm_tools::concierge::ListVmDisksResponse> response);

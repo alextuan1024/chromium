@@ -15,8 +15,8 @@
 #include "base/feature_list.h"
 #include "base/metrics/histogram_macros.h"
 #include "components/prefs/pref_service.h"
-#include "components/safe_browsing/content/browser/content_unsafe_resource_util.h"
-#include "components/safe_browsing/content/browser/threat_details.h"
+#include "components/safe_browsing/content/browser/interstitials/content_unsafe_resource_util.h"
+#include "components/safe_browsing/content/browser/threat_details/threat_details.h"
 #include "components/safe_browsing/content/browser/triggers/trigger_manager.h"
 #include "components/safe_browsing/content/browser/web_contents_key.h"
 #include "components/safe_browsing/core/common/features.h"
@@ -163,8 +163,9 @@ void AwSafeBrowsingBlockingPage::FinishThreatDetails(
     bool did_proceed,
     int num_visits) {
   // Not all interstitials collect threat details, e.g. when not opted in.
-  if (!threat_details_in_progress_)
+  if (!threat_details_in_progress_) {
     return;
+  }
 
   // Finish computing threat details. TriggerManager will decide if it is safe
   // to send the report.

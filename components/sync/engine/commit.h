@@ -7,10 +7,10 @@
 
 #include <stddef.h>
 
-#include <map>
 #include <memory>
 #include <string>
 
+#include "base/containers/flat_map.h"
 #include "components/sync/base/data_type.h"
 #include "components/sync/base/extensions_activity.h"
 #include "components/sync/engine/commit_contribution.h"
@@ -36,7 +36,7 @@ class SyncCycle;
 class Commit {
  public:
   using ContributionMap =
-      std::map<DataType, std::unique_ptr<CommitContribution>>;
+      base::flat_map<DataType, std::unique_ptr<CommitContribution>>;
 
   Commit(ContributionMap contributions,
          const sync_pb::ClientToServerMessage& message,
@@ -51,6 +51,7 @@ class Commit {
   static std::unique_ptr<Commit> Init(
       DataTypeSet enabled_types,
       size_t max_entries,
+      size_t max_target_specifics_bytes,
       const std::string& account_name,
       const std::string& cache_guid,
       bool cookie_jar_mismatch,

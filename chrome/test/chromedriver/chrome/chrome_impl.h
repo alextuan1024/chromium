@@ -26,16 +26,6 @@ class WebView;
 class WebViewImpl;
 
 namespace internal {
-struct Position {
-  int left = 0;
-  int top = 0;
-};
-
-struct Size {
-  int width = 0;
-  int height = 0;
-};
-
 struct Window {
   int id;
   std::string state;
@@ -48,8 +38,10 @@ struct Window {
 struct WindowBounds {
   WindowBounds();
   ~WindowBounds();
-  std::optional<Position> position;
-  std::optional<Size> size;
+  std::optional<int> left;
+  std::optional<int> top;
+  std::optional<int> width;
+  std::optional<int> height;
   std::optional<std::string> state;
   base::DictValue ToDict() const;
   bool Matches(const Window& window) const;
@@ -124,6 +116,11 @@ class ChromeImpl : public Chrome {
   Status SetWindowBounds(internal::Window window,
                          const std::string& target_id,
                          const internal::WindowBounds& bounds);
+  // Re-sends Browser.setWindowBounds with `params` up to 10 times, 100ms
+  // apart, until the window reaches `desired_state`.
+  Status RetrySetWindowBounds(const base::DictValue& params,
+                              const std::string& desired_state,
+                              internal::Window& window);
 
   bool quit_ = false;
   std::optional<MobileDevice> mobile_device_;

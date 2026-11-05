@@ -23,6 +23,7 @@
 #include "chromeos/ash/components/phonehub/phone_hub_manager.h"
 #include "chromeos/constants/chromeos_features.h"
 #include "content/public/browser/web_ui_data_source.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 
 namespace ash::settings {
 
@@ -30,6 +31,8 @@ OsSettingsManager::OsSettingsManager(
     PrefService* local_state,
     const ApplicationLocaleStorage* application_locale_storage,
     policy::BrowserPolicyConnectorAsh* browser_policy_connector_ash,
+    system::TimeZoneResolverManager* timezone_resolver_manager,
+    scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
     Profile* profile,
     local_search_service::LocalSearchServiceProxy* local_search_service_proxy,
     multidevice_setup::MultiDeviceSetupClient* multidevice_setup_client,
@@ -46,6 +49,8 @@ OsSettingsManager::OsSettingsManager(
           std::make_unique<OsSettingsSections>(local_state,
                                                application_locale_storage,
                                                browser_policy_connector_ash,
+                                               timezone_resolver_manager,
+                                               std::move(url_loader_factory),
                                                profile,
                                                search_tag_registry_.get(),
                                                multidevice_setup_client,
@@ -75,7 +80,7 @@ OsSettingsManager::OsSettingsManager(
                                                        profile)),
       graduation_handler_(std::make_unique<GraduationHandler>(profile)),
       input_device_settings_provider_(
-          std::make_unique<InputDeviceSettingsProvider>()),
+          std::make_unique<InputDeviceSettingsProvider>(app_service_proxy)),
       display_settings_provider_(std::make_unique<DisplaySettingsProvider>()),
       shortcut_input_provider_(std::make_unique<ShortcutInputProvider>()),
       accelerator_fetcher_(std::make_unique<AcceleratorFetcher>()) {}

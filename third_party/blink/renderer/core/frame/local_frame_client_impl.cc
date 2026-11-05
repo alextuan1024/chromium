@@ -638,7 +638,7 @@ void LocalFrameClientImpl::BeginNavigation(
     bool has_rel_opener,
     mojo::PendingReceiver<mojom::blink::NavigationResumeDeferredCommitListener>
         resume_defer_commit_listener,
-    std::optional<base::UnguessableToken> script_tool_invocation_id,
+    std::optional<ToolInvocationToken> script_tool_invocation_id,
     const String& script_injector_host) {
   if (!web_frame_->Client()) {
     return;
@@ -661,11 +661,7 @@ void LocalFrameClientImpl::BeginNavigation(
   navigation_info->frame_load_type = frame_load_type;
   navigation_info->is_client_redirect = is_client_redirect;
   navigation_info->script_injector_host = script_injector_host;
-
-  if (script_tool_invocation_id.has_value()) {
-    navigation_info->script_tool_invocation_id =
-        script_tool_invocation_id.value();
-  }
+  navigation_info->script_tool_invocation_id = script_tool_invocation_id;
 
   navigation_info->triggering_event_info = triggering_event_info;
   navigation_info->should_check_main_world_content_security_policy =
@@ -875,9 +871,10 @@ void LocalFrameClientImpl::DidObserveUserInteraction(
   }
 }
 
-void LocalFrameClientImpl::DidChangeCpuTiming(base::TimeDelta time) {
+void LocalFrameClientImpl::DidChangeCpuTiming(base::TimeDelta time,
+                                              base::TimeDelta ad_time) {
   if (web_frame_->Client()) {
-    web_frame_->Client()->DidChangeCpuTiming(time);
+    web_frame_->Client()->DidChangeCpuTiming(time, ad_time);
   }
 }
 
@@ -1002,13 +999,6 @@ LocalFrame* LocalFrameClientImpl::CreateFrame(
     const AtomicString& name,
     HTMLFrameOwnerElement* owner_element) {
   return web_frame_->CreateChildFrame(name, owner_element);
-}
-
-RemoteFrame* LocalFrameClientImpl::CreateFencedFrame(
-    HTMLFencedFrameElement* fenced_frame,
-    mojo::PendingAssociatedReceiver<mojom::blink::FencedFrameOwnerHost>
-        receiver) {
-  return web_frame_->CreateFencedFrame(fenced_frame, std::move(receiver));
 }
 
 WebPluginContainerImpl* LocalFrameClientImpl::CreatePlugin(

@@ -32,11 +32,13 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <memory>
 #include <utility>
 
 #include "base/compiler_specific.h"
 #include "base/memory/ptr_util.h"
+#include "base/no_destructor.h"
 #include "base/synchronization/lock.h"
 #include "third_party/blink/renderer/platform/audio/audio_bus.h"
 #include "third_party/blink/renderer/platform/audio/hrtf_database.h"
@@ -117,19 +119,19 @@ constexpr auto kMaxElevations = std::to_array<int>({
 scoped_refptr<AudioBus> GetConcatenatedImpulseResponsesForSubject(
     int subject_resource_id) {
   using AudioBusMap = HashMap<int, scoped_refptr<AudioBus>>;
-  DEFINE_THREAD_SAFE_STATIC_LOCAL(AudioBusMap, audio_bus_map, ());
-  DEFINE_THREAD_SAFE_STATIC_LOCAL(base::Lock, lock, ());
+  static base::NoDestructor<AudioBusMap> audio_bus_map;
+  static base::NoDestructor<base::Lock> lock;
 
-  base::AutoLock locker(lock);
+  base::AutoLock locker(*lock);
   scoped_refptr<AudioBus> bus;
-  AudioBusMap::iterator iterator = audio_bus_map.find(subject_resource_id);
-  if (iterator == audio_bus_map.end()) {
+  AudioBusMap::iterator iterator = audio_bus_map->find(subject_resource_id);
+  if (iterator == audio_bus_map->end()) {
     scoped_refptr<AudioBus> concatenated_impulse_responses(
         AudioBus::GetDataResource(subject_resource_id, kResponseSampleRate));
     DCHECK(concatenated_impulse_responses);
 
     bus = concatenated_impulse_responses;
-    audio_bus_map.Set(subject_resource_id, bus);
+    audio_bus_map->Set(subject_resource_id, bus);
   } else {
     bus = iterator->value;
   }
@@ -337,8 +339,8 @@ std::unique_ptr<HRTFElevation> HRTFElevation::CreateByInterpolatingSlices(
   }
 
   // Interpolate elevation angle.
-  const double angle = (1.0 - x) * hrtf_elevation1->elevation_angle_ +
-                       x * hrtf_elevation2->elevation_angle_;
+  const double angle = std::lerp(hrtf_elevation1->elevation_angle_,
+                                 hrtf_elevation2->elevation_angle_, x);
 
   std::unique_ptr<HRTFElevation> hrtf_elevation = base::WrapUnique(
       new HRTFElevation(std::move(kernel_list_l), std::move(kernel_list_r),
@@ -375,10 +377,8 @@ void HRTFElevation::GetKernelsFromAzimuth(double azimuth_blend,
   const double frame_delay2r = kernel_list_r_->at(azimuth_index2)->FrameDelay();
 
   // Linearly interpolate delays.
-  frame_delay_l =
-      (1.0 - azimuth_blend) * frame_delay_l + azimuth_blend * frame_delay2l;
-  frame_delay_r =
-      (1.0 - azimuth_blend) * frame_delay_r + azimuth_blend * frame_delay2r;
+  frame_delay_l = std::lerp(frame_delay_l, frame_delay2l, azimuth_blend);
+  frame_delay_r = std::lerp(frame_delay_r, frame_delay2r, azimuth_blend);
 }
 
 }  // namespace blink

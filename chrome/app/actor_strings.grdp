@@ -48,7 +48,7 @@
    Done
   </message>
   <message name="IDS_EXPERIMENTAL_TRIGGERING_TASK_LIST_BUBBLE_ROW_COMPLETED_TASK_SUBTITLE" desc="Subtitle shown for an experimental triggering task in the task list bubble informing the user that the task is completed.">
-   Task done and returned to Gemini Spark
+   Task done and returned to Gemini
   </message>
   <message name="IDS_ACTOR_TASK_LIST_BUBBLE_ROW_FAILED_TASK_SUBTITLE" desc="Subtitle shown for a task in the task list bubble informing the user that the task has failed." formatter_data="android_java">
    Something went wrong
@@ -86,6 +86,9 @@
   <!-- Android specific strings. -->
   <message name="IDS_ACTOR_OVERLAY_SNACKBAR_MESSAGE" desc="Message shown in a snackbar when the user clicks on the actor overlay but they cannot interact with the tab until the task is paused or complete." formatter_data="android_java">
     To interact with this site, pause the current task or wait for Gemini to finish working
+  </message>
+  <message name="IDS_ACTOR_SNACKBAR_BACK_TO_GEMINI" desc="Text on the snackbar action button that takes the user back to the Gemini app. The snackbar is shown in Chrome when a task triggered from the Gemini app could not be completed." formatter_data="android_java">
+    Go back to Gemini
   </message>
   <message name="IDS_GLIC_BUTTON_STATUS_REVIEW" desc="Label on the Gemini entry point button when Gemini requires user attention." formatter_data="android_java">
     Review
@@ -134,6 +137,15 @@
   </message>
   <message name="IDS_ACTOR_EXPERIMENTAL_TRIGGERING_NOTIFICATION_BODY_FALLBACK" desc="Fallback notification body text when the actor is working on an experimental triggering task without a task title.">
     Working on your Gemini App task in Chrome. Check Chrome for more updates
+  </message>
+  <message name="IDS_ACTOR_EXPERIMENTAL_TRIGGERING_NOTIFICATION_TITLE_V2" desc="Title of the system notification shown when Gemini task starts.">
+    Gemini task running
+  </message>
+  <message name="IDS_ACTOR_EXPERIMENTAL_TRIGGERING_NOTIFICATION_BODY_STARTED_WITH_TITLE_V2" desc="Body text of the system notification shown when Gemini task starts.">
+    <ph name="TASK_TITLE">$1<ex>Book a table</ex></ph>: Started
+  </message>
+  <message name="IDS_ACTOR_EXPERIMENTAL_TRIGGERING_NOTIFICATION_BODY_STARTED_V2" meaning="Gemini task has started" desc="Body text of the system notification shown when Gemini task starts that doesn't have a name yet.">
+    Started
   </message>
   <message name="IDS_ACTOR_NOTIFICATION_BODY_WORKING_WITH_STEP_INFO" desc="Notification body text when the actor is working on a task with step progress." formatter_data="android_java">
     <ph name="TASK_TITLE">%1$s<ex>My Task</ex></ph>: <ph name="STEP_PROGRESS">%2$s<ex>Searching flights</ex></ph>

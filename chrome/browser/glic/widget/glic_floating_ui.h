@@ -83,11 +83,12 @@ class GlicFloatingUi : public GlicUiEmbedder,
       glic::mojom::ConversationInfoPtr info,
       mojom::WebClientHandler::SwitchConversationCallback callback) override;
   void ClosePanel() override;
-  void OnReload() override;
   void OnMicrophoneStatusChanged(mojom::MicrophoneStatus status) override;
 
   // Host::Observer:
   void ActiveWebContentsChanged(content::WebContents* new_contents) override;
+  void ContentsCreated() override;
+  void NativeLoadingStateChanged(bool is_showing) override;
 
   // views::WidgetObserver implementation, monitoring the glic window widget.
   void OnWidgetActivationChanged(views::Widget* widget, bool active) override;
@@ -106,6 +107,8 @@ class GlicFloatingUi : public GlicUiEmbedder,
   bool ActivateBrowser() override;
   void Zoom(mojom::ZoomAction zoom_action, ZoomSource source) override;
   void ShowTitleBarContextMenuAt(gfx::Point event_loc) override;
+  bool Print() override;
+  bool Find() override;
 #if !BUILDFLAG(IS_ANDROID)
   bool HasSelectionOverlay() override;
   void CloseSelectionOverlay() override;
@@ -125,8 +128,6 @@ class GlicFloatingUi : public GlicUiEmbedder,
   void RemoveObserver(web_modal::ModalDialogHostObserver* observer) override;
 
  private:
-  ScopedModalDialogManagerDelegate scoped_modal_dialog_delegate_{this};
-
   GlicWidget* GetGlicWidget() const;
   GlicView* GetGlicView() const;
   void CreateAndSetupWidget(gfx::Rect initial_bounds);
@@ -170,6 +171,7 @@ class GlicFloatingUi : public GlicUiEmbedder,
 
   std::unique_ptr<BrowserAttachObservation> browser_attach_observation_;
   ScopedProfileKeepAlive profile_keep_alive_;
+  ScopedModalDialogManagerDelegate scoped_modal_dialog_delegate_{this};
 
   base::WeakPtrFactory<GlicFloatingUi> weak_ptr_factory_{this};
 };

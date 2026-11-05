@@ -37,13 +37,6 @@ const char kGCMFromField[] = "gcm@android.com";
 // MCS status message types.
 // TODO(zea): handle these at the GCMClient layer.
 const char kIdleNotification[] = "IdleNotification";
-// const char kAlwaysShowOnIdle[] = "ShowAwayOnIdle";
-// const char kPowerNotification[] = "PowerNotification";
-// const char kDataActiveNotification[] = "DataActiveNotification";
-
-// Settings for MCS Login packet.
-const char kHeartbeatIntervalSettingName[] = "hbping";
-const int kNoCustomHeartbeat = 0;
 
 // The number of unacked messages to allow before sending a stream ack.
 // Applies to both incoming and outgoing messages.
@@ -142,20 +135,6 @@ int MCSClient::GetResendQueueSize() const {
   return to_resend_.size();
 }
 
-std::string MCSClient::GetStateString() const {
-  switch (state_) {
-    case UNINITIALIZED:
-      return "UNINITIALIZED";
-    case LOADED:
-      return "LOADED";
-    case CONNECTING:
-      return "CONNECTING";
-    case CONNECTED:
-      return "CONNECTED";
-  }
-  NOTREACHED();
-}
-
 MCSClient::MCSClient(const std::string& version_string,
                      base::Clock* clock,
                      ConnectionFactory* connection_factory,
@@ -185,14 +164,12 @@ MCSClient::MCSClient(const std::string& version_string,
 MCSClient::~MCSClient() = default;
 
 void MCSClient::Initialize(
-    const ErrorCallback& error_callback,
     const OnMessageReceivedCallback& message_received_callback,
     const OnMessageSentCallback& message_sent_callback,
     std::unique_ptr<GCMStore::LoadResult> load_result) {
   DCHECK_EQ(state_, UNINITIALIZED);
 
   state_ = LOADED;
-  mcs_error_callback_ = error_callback;
   message_received_callback_ = message_received_callback;
   message_sent_callback_ = message_sent_callback;
 
@@ -235,8 +212,6 @@ void MCSClient::Initialize(
     uint64_t timestamp = 0;
     if (!base::StringToUint64(iter->first, &timestamp)) {
       LOG(ERROR) << "Invalid restored message.";
-      // TODO(fgorski): Error: data unreadable
-      mcs_error_callback_.Run();
       return;
     }
 
@@ -277,12 +252,6 @@ void MCSClient::Initialize(
         collapse_key_map_[collapse_key] = packet_info_ptr;
     }
   }
-
-  // Establish if there is any custom client interval persisted from the last
-  // run and set it on the heartbeat manager.
-  custom_heartbeat_intervals_.swap(load_result->heartbeat_intervals);
-  int min_interval_ms = GetMinHeartbeatIntervalMs();
-  heartbeat_manager_.SetClientHeartbeatIntervalMs(min_interval_ms);
 }
 
 void MCSClient::Login(uint64_t android_id, uint64_t security_token) {
@@ -380,50 +349,6 @@ void MCSClient::SendMessage(const MCSMessage& message) {
   MaybeSendMessage();
 }
 
-void MCSClient::UpdateHeartbeatTimer(
-    std::unique_ptr<base::RetainingOneShotTimer> timer) {
-  heartbeat_manager_.UpdateHeartbeatTimer(std::move(timer));
-}
-
-void MCSClient::AddHeartbeatInterval(const std::string& scope,
-                                     int interval_ms) {
-  if (!heartbeat_manager_.IsValidClientHeartbeatInterval(interval_ms))
-    return;
-
-  custom_heartbeat_intervals_[scope] = interval_ms;
-  gcm_store_->AddHeartbeatInterval(
-      scope, interval_ms,
-      base::BindOnce(&MCSClient::OnGCMUpdateFinished,
-                     weak_ptr_factory_.GetWeakPtr()));
-
-  int min_interval_ms = GetMinHeartbeatIntervalMs();
-  heartbeat_manager_.SetClientHeartbeatIntervalMs(min_interval_ms);
-}
-
-void MCSClient::RemoveHeartbeatInterval(const std::string& scope) {
-  custom_heartbeat_intervals_.erase(scope);
-  gcm_store_->RemoveHeartbeatInterval(
-      scope, base::BindOnce(&MCSClient::OnGCMUpdateFinished,
-                            weak_ptr_factory_.GetWeakPtr()));
-
-  int min_interval = GetMinHeartbeatIntervalMs();
-  heartbeat_manager_.SetClientHeartbeatIntervalMs(min_interval);
-}
-
-int MCSClient::GetMinHeartbeatIntervalMs() {
-  if (custom_heartbeat_intervals_.empty())
-    return kNoCustomHeartbeat;
-
-  int min_interval = custom_heartbeat_intervals_.begin()->second;
-  for (std::map<std::string, int>::const_iterator it =
-           custom_heartbeat_intervals_.begin();
-       it != custom_heartbeat_intervals_.end(); ++it) {
-    if (it->second < min_interval)
-      min_interval = it->second;
-  }
-  return min_interval;
-}
-
 void MCSClient::ResetStateAndBuildLoginRequest(
     mcs_proto::LoginRequest* request) {
   DCHECK(android_id_);
@@ -457,15 +382,6 @@ void MCSClient::ResetStateAndBuildLoginRequest(
   // Then build the request, consuming all pending acknowledgments.
   request->Swap(
       BuildLoginRequest(android_id_, security_token_, version_string_).get());
-
-  // Set custom heartbeat interval if specified.
-  if (heartbeat_manager_.HasClientHeartbeatInterval()) {
-    // Ensure that the custom heartbeat interval is communicated to the server.
-    mcs_proto::Setting* setting = request->add_setting();
-    setting->set_name(kHeartbeatIntervalSettingName);
-    setting->set_value(base::NumberToString(
-        heartbeat_manager_.GetClientHeartbeatIntervalMs()));
-  }
 
   for (PersistentIdList::const_iterator iter =
            restored_unackeds_server_ids_.begin();
@@ -704,7 +620,6 @@ void MCSClient::HandlePacketFromWire(
         LOG(ERROR) << "Failed to log in to GCM, resetting connection.";
         connection_factory_->SignalConnectionReset(
             ConnectionFactory::LOGIN_FAILURE);
-        mcs_error_callback_.Run();
         return;
       }
 
@@ -799,12 +714,10 @@ void MCSClient::HandlePacketFromWire(
 
 void MCSClient::HandleStreamAck(StreamId last_stream_id_received) {
   PersistentIdList acked_outgoing_persistent_ids;
-  StreamIdList acked_outgoing_stream_ids;
   while (!to_resend_.empty() &&
          to_resend_.front()->stream_id <= last_stream_id_received) {
     const MCSPacketInternal& outgoing_packet = to_resend_.front();
     acked_outgoing_persistent_ids.push_back(outgoing_packet->persistent_id);
-    acked_outgoing_stream_ids.push_back(outgoing_packet->stream_id);
     NotifyMessageSendStatus(*outgoing_packet->protobuf, SENT);
     to_resend_.pop_front();
   }
@@ -937,8 +850,7 @@ void MCSClient::NotifyMessageSendStatus(
       data_message_stanza->category(), data_message_stanza->to(),
       data_message_stanza->id(), status, protobuf.ByteSizeLong(),
       data_message_stanza->ttl());
-  message_sent_callback_.Run(data_message_stanza->device_user_id(),
-                             data_message_stanza->category(),
+  message_sent_callback_.Run(data_message_stanza->category(),
                              data_message_stanza->id(), status);
 }
 

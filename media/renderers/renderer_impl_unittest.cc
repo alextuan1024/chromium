@@ -1003,7 +1003,6 @@ TEST_F(RendererImplTest, AudioUnderflowDuringAudioTrackChange) {
 
   EXPECT_CALL(time_source_, CurrentMediaTime()).Times(2);
   EXPECT_CALL(time_source_, SetMediaTime(_)).Times(testing::AnyNumber());
-  std::vector<raw_ptr<DemuxerStream>> tracks;
   renderer_impl_->OnTracksChanged(DemuxerStream::AUDIO, {}, loop.QuitClosure());
 
   EXPECT_CALL(callbacks_,
@@ -1098,6 +1097,11 @@ TEST_F(RendererImplTest, AudioUnderflowDuringVideoTrackChange) {
 TEST_F(RendererImplTest, VideoResumedFromUnderflowDuringAudioTrackChange) {
   InitializeWithAudioAndVideo();
   Play();
+
+  // Set a zero threshold such that the deferred video underflow will be
+  // executed on the next run of the message loop, instead of after the default
+  // multi-second delay.
+  renderer_impl_->set_video_underflow_threshold_for_testing(base::TimeDelta());
 
   // Underflow the renderer.
   base::RunLoop underflow_wait;

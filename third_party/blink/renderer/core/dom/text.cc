@@ -49,6 +49,7 @@
 #include "third_party/blink/renderer/core/svg_names.h"
 #include "third_party/blink/renderer/platform/bindings/dom_data_store.h"
 #include "third_party/blink/renderer/platform/bindings/exception_state.h"
+#include "third_party/blink/renderer/platform/wtf/text/format.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_builder.h"
 
 namespace blink {
@@ -121,8 +122,7 @@ Text* Text::splitText(unsigned offset, ExceptionState& exception_state) {
   if (offset > length()) {
     exception_state.ThrowDOMException(
         DOMExceptionCode::kIndexSizeError,
-        StrCat({"The offset ", String::Number(offset),
-                " is larger than the Text node's length."}));
+        Format("The offset {} is larger than the Text node's length.", offset));
     return nullptr;
   }
 
@@ -305,9 +305,18 @@ static inline bool CanHaveWhitespaceChildren(
       parent.IsFlexibleBox() || parent.IsLayoutGridOrGridLanes() ||
       parent.IsSVGRoot() || parent.IsSVGContainer() || parent.IsSVGImage() ||
       parent.IsSVGShape()) {
-    if (!context.use_previous_in_flow || !context.previous_in_flow ||
-        !context.previous_in_flow->IsText())
+    if (!context.use_previous_in_flow || !context.previous_in_flow) {
       return false;
+    }
+
+    // White space after an inline in a table goes into the same anonymous
+    // cell as the inline, so keep it.
+    // https://drafts.csswg.org/css-tables/#fixup-algorithm
+    if (!context.previous_in_flow->IsText()) {
+      return (parent.IsTable() || parent.IsTableRow() ||
+              parent.IsTableSection()) &&
+             context.previous_in_flow->IsInline();
+    }
 
     return style.ShouldPreserveBreaks() ||
            !EndsWithWhitespace(
@@ -382,10 +391,10 @@ void Text::AttachLayoutTree(AttachContext& context) {
             LayoutTreeBuilderTraversal::ParentElement(*this)) {
       const ComputedStyle& style =
           IsA<HTMLHtmlElement>(style_parent) && style_parent->GetLayoutObject()
-              ? style_parent->GetLayoutObject()->StyleRef()
+              ? style_parent->GetLayoutObject()->Style()
               : style_parent->ComputedStyleRef();
       if (TextLayoutObjectIsNeeded(context, style)) {
-        LayoutTreeBuilderForText(*this, context, &style).CreateLayoutObject();
+        LayoutTreeBuilderForText(*this, context, style).CreateLayoutObject();
         context.previous_in_flow = GetLayoutObject();
       }
     }
@@ -410,7 +419,7 @@ void Text::ReattachLayoutTreeIfNeeded(AttachContext& context) {
 
   if (layout_object_is_needed) {
     DCHECK(!GetLayoutObject());
-    LayoutTreeBuilderForText(*this, context, style_parent->GetComputedStyle())
+    LayoutTreeBuilderForText(*this, context, style_parent->ComputedStyleRef())
         .CreateLayoutObject();
   } else {
     DetachLayoutTree(/*performing_reattach=*/true);
@@ -431,7 +440,7 @@ void Text::RecalcTextStyle(const StyleRecalcChange change) {
       GetDocument().GetStyleResolver().StyleForText(this);
   if (LayoutText* layout_text = GetLayoutObject()) {
     const ComputedStyle& layout_parent_style =
-        GetLayoutObject()->Parent()->StyleRef();
+        GetLayoutObject()->Parent()->Style();
     if (!new_style || GetForceReattachLayoutTree() ||
         (*new_style != layout_parent_style &&
          !new_style->InheritedEqual(layout_parent_style))) {
@@ -473,7 +482,7 @@ static bool ShouldUpdateLayoutByReattaching(const Text& text_node,
   Node::AttachContext context;
   context.parent = text_layout_object->Parent();
   if (!text_node.TextLayoutObjectIsNeeded(context,
-                                          text_layout_object->StyleRef())) {
+                                          text_layout_object->Style())) {
     return true;
   }
   if (text_layout_object->IsTextFragment()) {
@@ -498,12 +507,12 @@ static bool ShouldUpdateLayoutByReattaching(const Text& text_node,
   if (text_layout_object->IsSecure()) {
     return false;
   }
-  FirstLetterPseudoElement::Punctuation punctuation1 =
-      FirstLetterPseudoElement::Punctuation::kNotSeen;
-  FirstLetterPseudoElement::Punctuation punctuation2 =
-      FirstLetterPseudoElement::Punctuation::kNotSeen;
-  bool preserve_breaks = ShouldPreserveBreaks(
-      text_layout_object->StyleRef().GetWhiteSpaceCollapse());
+  FirstLetterPseudoElement::LeadingPunctuationState punctuation1 =
+      FirstLetterPseudoElement::LeadingPunctuationState::kNotStarted;
+  FirstLetterPseudoElement::LeadingPunctuationState punctuation2 =
+      FirstLetterPseudoElement::LeadingPunctuationState::kNotStarted;
+  bool preserve_breaks =
+      ShouldPreserveBreaks(text_layout_object->Style().GetWhiteSpaceCollapse());
   if (!FirstLetterPseudoElement::FirstLetterLength(
           text_layout_object->TransformedText(), preserve_breaks,
           punctuation1) &&

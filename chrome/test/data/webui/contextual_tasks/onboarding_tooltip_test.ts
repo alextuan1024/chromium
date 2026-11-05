@@ -5,7 +5,6 @@
 import 'chrome://contextual-tasks/app.js';
 import 'chrome://contextual-tasks/onboarding_tooltip.js';
 
-import {BrowserProxyImpl} from 'chrome://contextual-tasks/contextual_tasks_browser_proxy.js';
 import type {ContextualTasksOnboardingTooltipElement} from 'chrome://contextual-tasks/onboarding_tooltip.js';
 import {PageHandlerRemote as ComposeboxPageHandlerRemote} from 'chrome://resources/cr_components/composebox/composebox.mojom-webui.js';
 import {ComposeboxProxyImpl} from 'chrome://resources/cr_components/composebox/composebox_proxy.js';
@@ -14,12 +13,12 @@ import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
 import {PageCallbackRouter as SearchboxPageCallbackRouter, PageHandlerRemote as SearchboxPageHandlerRemote} from 'chrome://resources/mojo/components/omnibox/browser/searchbox.mojom-webui.js';
 import type {PageRemote as SearchboxPageRemote} from 'chrome://resources/mojo/components/omnibox/browser/searchbox.mojom-webui.js';
 import {assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chai_assert.js';
+import {fakeMetricsPrivate} from 'chrome://webui-test/metrics_test_support.js';
 import {TestMock} from 'chrome://webui-test/test_mock.js';
 import {microtasksFinished} from 'chrome://webui-test/test_util.js';
 
-import {createCtComposeboxApp} from './contextual_tasks_test_utils.js';
+import {createCtComposeboxApp, setupTestHandler} from './contextual_tasks_test_utils.js';
 import type {CtComposeboxAppParts} from './contextual_tasks_test_utils.js';
-import {TestContextualTasksBrowserProxy} from './test_contextual_tasks_browser_proxy.js';
 
 suite('OnboardingTooltipTest', () => {
   let tooltipElement: ContextualTasksOnboardingTooltipElement;
@@ -110,170 +109,224 @@ suite('OnboardingTooltipTest', () => {
   });
 });
 
-[true, false].forEach(useFork => {
-  suite(
-      `ContextualTasksOnboardingTooltipForkTest ` +
-          `(useContextualTasksComposeboxFork = ${useFork})`,
-      () => {
-        const AUTO_TOKEN = '0000000000000000AAAAAAAAAAAAAA01';
+suite('ContextualTasksOnboardingTooltipForkTest', () => {
+  const AUTO_TOKEN = '0000000000000000AAAAAAAAAAAAAA01';
 
-        let mockComposeboxPageHandler: TestMock<ComposeboxPageHandlerRemote>&
-            ComposeboxPageHandlerRemote;
-        let mockSearchboxPageHandler: TestMock<SearchboxPageHandlerRemote>&
-            SearchboxPageHandlerRemote;
-        let searchboxCallbackRouterRemote: SearchboxPageRemote;
-        let parts: CtComposeboxAppParts;
+  let mockComposeboxPageHandler: TestMock<ComposeboxPageHandlerRemote>&
+      ComposeboxPageHandlerRemote;
+  let mockSearchboxPageHandler: TestMock<SearchboxPageHandlerRemote>&
+      SearchboxPageHandlerRemote;
+  let searchboxCallbackRouterRemote: SearchboxPageRemote;
+  let parts: CtComposeboxAppParts;
 
-        function autoTabInfo() {
-          return {
-            tabId: 1,
-            title: 'Auto tab',
-            url: 'https://auto.example.com',
-            lastActive: {internalValue: BigInt(100)},
-            showInCurrentTabChip: true,
-            showInPreviousTabChip: false,
-          };
-        }
+  function autoTabInfo() {
+    return {
+      tabId: 1,
+      title: 'Auto tab',
+      url: 'https://auto.example.com',
+      lastActive: {internalValue: BigInt(100)},
+      showInCurrentTabChip: true,
+      showInPreviousTabChip: false,
+      isLoading: false,
+      recentTab: false,
+    };
+  }
 
-        setup(() => {
-          if (!window.chrome) {
-            Object.assign(window, {chrome: {}});
-          }
-          // Unconditionally replace any pre-existing stub; the composebox
-          // metric paths call all three methods.
-          Object.assign(window.chrome, {
-            histograms: {
-              recordEnumerationValue: () => {},
-              recordUserAction: () => {},
-              recordBoolean: () => {},
-            },
-          });
-          document.body.innerHTML = window.trustedTypes!.emptyHTML;
+  setup(() => {
+    if (!window.chrome) {
+      Object.assign(window, {chrome: {}});
+    }
+    // Unconditionally replace any pre-existing stub; the composebox
+    // metric paths call all three methods.
+    Object.assign(window.chrome, {
+      histograms: {
+        recordEnumerationValue: () => {},
+        recordUserAction: () => {},
+        recordBoolean: () => {},
+      },
+    });
+    document.body.innerHTML = window.trustedTypes!.emptyHTML;
 
-          loadTimeData.overrideValues({
-            contextualMenuUsePecApi: false,
-            composeboxSmartTabSharingVisible: false,
-            contextManagementInComposeboxEnabled: false,
-            enableComposeboxJumpFix: false,
-            composeboxShowTypedSuggest: true,
-            composeboxShowZps: true,
-            enableBasicModeZOrder: true,
-            composeboxShowContextMenu: true,
-            webUIOmniboxAskGAboutThisPageEnabled: false,
-            forcedEmbeddedPageHost: '',
-            tabFaviconChipsToCoinsEnabled: false,
-            showOnboardingTooltip: true,
-            isOnboardingTooltipDismissCountBelowCap: true,
-            composeboxShowOnboardingTooltipSessionImpressionCap: 10,
-            composeboxShowOnboardingTooltipImpressionDelay: 0,
-          });
+    loadTimeData.overrideValues({
+      contextualMenuUsePecApi: false,
+      composeboxSmartTabSharingVisible: false,
+      contextManagementInComposeboxEnabled: false,
+      enableComposeboxJumpFix: false,
+      composeboxShowTypedSuggest: true,
+      composeboxShowZps: true,
+      enableBasicModeZOrder: true,
+      composeboxShowContextMenu: true,
+      webUIOmniboxAskGAboutThisPageEnabled: false,
+      forcedEmbeddedPageHost: '',
+      tabFaviconChipsToCoinsEnabled: false,
+      showOnboardingTooltip: true,
+      isOnboardingTooltipDismissCountBelowCap: true,
+      composeboxShowOnboardingTooltipSessionImpressionCap: 10,
+      composeboxShowOnboardingTooltipImpressionDelay: 0,
+    });
 
-          // SlimWebview (Android) only allows https/http/about:blank in
-          // navigate(); the chrome://webui-test fixture url would assert.
-          const testProxy = new TestContextualTasksBrowserProxy('about:blank');
-          BrowserProxyImpl.setInstance(testProxy);
+    // SlimWebview (Android) only allows https/http/about:blank in
+    // navigate(); the chrome://webui-test fixture url would assert.
+    setupTestHandler('about:blank');
 
-          mockComposeboxPageHandler =
-              TestMock.fromClass(ComposeboxPageHandlerRemote);
-          mockComposeboxPageHandler.setResultFor(
-              'getSmartTabSharingActive', Promise.resolve({active: false}));
-          mockComposeboxPageHandler.setResultFor(
-              'canShowNextboxAnimation', Promise.resolve({canShow: true}));
-          mockSearchboxPageHandler =
-              TestMock.fromClass(SearchboxPageHandlerRemote);
-          mockSearchboxPageHandler.setResultFor(
-              'getRecentTabs', Promise.resolve({tabs: []}));
-          mockSearchboxPageHandler.setResultFor(
-              'getPageClassification',
-              Promise.resolve({metricSource: 'CO_BROWSING_COMPOSEBOX'}));
-          mockSearchboxPageHandler.setResultFor(
-              'addTabContext', Promise.resolve(AUTO_TOKEN));
-          // This file also runs on Android, where MockInputState is not built
-          // and the searchbox getSmartTabSharingActive is absent from mojom.
-          mockSearchboxPageHandler.setResultFor(
-              'getInputState', Promise.resolve({
-                state: {
-                  allowedModels: [],
-                  allowedTools: [],
-                  allowedInputTypes: [],
-                  activeModel: 0,
-                  activeTool: 0,
-                  disabledModels: [],
-                  disabledTools: [],
-                  disabledInputTypes: [],
-                  toolConfigs: [],
-                },
-              }));
-          const searchboxCallbackRouter = new SearchboxPageCallbackRouter();
-          searchboxCallbackRouterRemote =
-              searchboxCallbackRouter.$.bindNewPipeAndPassRemote();
-          ComposeboxProxyImpl.setInstance(new ComposeboxProxyImpl(
-              mockComposeboxPageHandler, mockSearchboxPageHandler,
-              searchboxCallbackRouter));
-        });
+    mockComposeboxPageHandler = TestMock.fromClass(ComposeboxPageHandlerRemote);
+    mockComposeboxPageHandler.setResultFor(
+        'getSmartTabSharingActive', Promise.resolve({active: false}));
+    mockComposeboxPageHandler.setResultFor(
+        'canShowNextboxAnimation', Promise.resolve({canShow: true}));
+    mockSearchboxPageHandler = TestMock.fromClass(SearchboxPageHandlerRemote);
+    mockSearchboxPageHandler.setResultFor(
+        'getRecentTabs', Promise.resolve({tabs: []}));
+    mockSearchboxPageHandler.setResultFor(
+        'getPageClassification',
+        Promise.resolve({metricSource: 'CO_BROWSING_COMPOSEBOX'}));
+    mockSearchboxPageHandler.setResultFor(
+        'addTabContext', Promise.resolve(AUTO_TOKEN));
+    // This file also runs on Android, where MockInputState is not built
+    // and the searchbox getSmartTabSharingActive is absent from mojom.
+    mockSearchboxPageHandler.setResultFor('getInputState', Promise.resolve({
+      state: {
+        allowedModels: [],
+        allowedTools: [],
+        allowedInputTypes: [],
+        activeModel: 0,
+        activeTool: 0,
+        disabledModels: [],
+        disabledTools: [],
+        disabledInputTypes: [],
+        toolConfigs: [],
+      },
+    }));
+    const searchboxCallbackRouter = new SearchboxPageCallbackRouter();
+    searchboxCallbackRouterRemote =
+        searchboxCallbackRouter.$.bindNewPipeAndPassRemote();
+    ComposeboxProxyImpl.setInstance(new ComposeboxProxyImpl(
+        mockComposeboxPageHandler, mockSearchboxPageHandler,
+        searchboxCallbackRouter));
+  });
 
-        async function mountWithAutoTab():
-            Promise<ComposeboxFileCarouselElement> {
-          parts = await createCtComposeboxApp(useFork);
-          searchboxCallbackRouterRemote.updateAutoSuggestedTabContext(
-              autoTabInfo(), null);
-          await searchboxCallbackRouterRemote.$.flushForTesting();
-          await mockSearchboxPageHandler.whenCalled('addTabContext');
-          await microtasksFinished();
-          await parts.innerComposebox.updateComplete;
-          const carousel =
-              parts.innerComposebox.shadowRoot
-                  .querySelector<ComposeboxFileCarouselElement>('#carousel');
-          assertTrue(!!carousel);
-          await carousel.updateComplete;
-          return carousel;
-        }
+  async function mountWithAutoTab(): Promise<ComposeboxFileCarouselElement> {
+    parts = await createCtComposeboxApp();
+    searchboxCallbackRouterRemote.updateAutoSuggestedTabContext(
+        autoTabInfo(), null);
+    await searchboxCallbackRouterRemote.$.flushForTesting();
+    await mockSearchboxPageHandler.whenCalled('addTabContext');
+    await microtasksFinished();
+    await parts.innerComposebox.updateComplete;
+    const carousel =
+        parts.innerComposebox.shadowRoot
+            .querySelector<ComposeboxFileCarouselElement>('#carousel');
+    assertTrue(!!carousel);
+    await carousel.updateComplete;
+    return carousel;
+  }
 
-        function getTooltip(): ContextualTasksOnboardingTooltipElement {
-          const tooltip =
-              parts.app.shadowRoot
-                  .querySelector<ContextualTasksOnboardingTooltipElement>(
-                      '#onboardingTooltip');
-          assertTrue(!!tooltip);
-          return tooltip;
-        }
+  function getTooltip(): ContextualTasksOnboardingTooltipElement {
+    const tooltip = parts.app.shadowRoot
+                        .querySelector<ContextualTasksOnboardingTooltipElement>(
+                            '#onboardingTooltip');
+    assertTrue(!!tooltip);
+    return tooltip;
+  }
 
-        test('anchors the tooltip on the real automatic tab chip', async () => {
-          const carousel = await mountWithAutoTab();
-          const {app, innerComposebox} = parts;
-          assertTrue(innerComposebox.getHasAutomaticActiveTabChipToken());
+  test('anchors the tooltip on the real automatic tab chip', async () => {
+    const carousel = await mountWithAutoTab();
+    const {app, innerComposebox} = parts;
+    assertTrue(innerComposebox.getHasAutomaticActiveTabChipToken());
 
-          app.updateTooltipVisibilityForTesting();
-          await microtasksFinished();
+    app.updateTooltipVisibilityForTesting();
+    await microtasksFinished();
 
-          const tooltip = getTooltip();
-          assertTrue(tooltip.shouldShow);
-          const chip = innerComposebox.getAutomaticActiveTabChipElement();
-          assertTrue(!!chip);
-          assertEquals(chip, tooltip.target);
-          assertEquals('CR-COMPOSEBOX-FILE-THUMBNAIL', chip.tagName);
-          assertTrue(carousel.shadowRoot.contains(chip));
-        });
+    const tooltip = getTooltip();
+    assertTrue(tooltip.shouldShow);
+    const chip = innerComposebox.getAutomaticActiveTabChipElement();
+    assertTrue(!!chip);
+    assertEquals(chip, tooltip.target);
+    assertEquals('CR-COMPOSEBOX-FILE-THUMBNAIL', chip.tagName);
+    assertTrue(carousel.shadowRoot.contains(chip));
+  });
 
-        test('hides the tooltip when the automatic tab goes away', async () => {
-          await mountWithAutoTab();
-          const {app, innerComposebox} = parts;
-          app.updateTooltipVisibilityForTesting();
-          await microtasksFinished();
-          const tooltip = getTooltip();
-          assertTrue(tooltip.shouldShow);
+  test('hides the tooltip when the automatic tab goes away', async () => {
+    await mountWithAutoTab();
+    const {app, innerComposebox} = parts;
+    app.updateTooltipVisibilityForTesting();
+    await microtasksFinished();
+    const tooltip = getTooltip();
+    assertTrue(tooltip.shouldShow);
 
-          searchboxCallbackRouterRemote.updateAutoSuggestedTabContext(
-              null, null);
-          await searchboxCallbackRouterRemote.$.flushForTesting();
-          await microtasksFinished();
-          await innerComposebox.updateComplete;
-          await microtasksFinished();
+    searchboxCallbackRouterRemote.updateAutoSuggestedTabContext(null, null);
+    await searchboxCallbackRouterRemote.$.flushForTesting();
+    await microtasksFinished();
+    await innerComposebox.updateComplete;
+    await microtasksFinished();
 
-          assertFalse(innerComposebox.getHasAutomaticActiveTabChipToken());
-          app.updateTooltipVisibilityForTesting();
-          await microtasksFinished();
-          assertFalse(tooltip.shouldShow);
-        });
-      });
+    assertFalse(innerComposebox.getHasAutomaticActiveTabChipToken());
+    app.updateTooltipVisibilityForTesting();
+    await microtasksFinished();
+    assertFalse(tooltip.shouldShow);
+  });
+
+  test('records shown and accepted metrics', async () => {
+    const metrics = fakeMetricsPrivate();
+    await mountWithAutoTab();
+    parts.app.updateTooltipVisibilityForTesting();
+    await microtasksFinished();
+    const tooltip = getTooltip();
+    assertTrue(tooltip.shouldShow);
+
+    // The impression delay is 0, so the shown metric is recorded on the next
+    // task.
+    await new Promise(resolve => setTimeout(resolve, 0));
+    // `recordAction()` records both a user action (logged as 0 by
+    // `fakeMetricsPrivate()`) and a boolean histogram (logged as true).
+    assertEquals(
+        1, metrics.count('ContextualTasks.OnboardingTooltip.Shown', 0));
+    assertEquals(
+        1, metrics.count('ContextualTasks.OnboardingTooltip.Shown', true));
+    assertEquals(
+        0, metrics.count('ContextualTasks.OnboardingTooltip.Accepted'));
+
+    const acceptButton =
+        tooltip.shadowRoot.querySelector<HTMLElement>('cr-button');
+    assertTrue(!!acceptButton);
+    acceptButton.click();
+    await microtasksFinished();
+
+    assertFalse(tooltip.shouldShow);
+    assertEquals(
+        1, metrics.count('ContextualTasks.OnboardingTooltip.Accepted', 0));
+    assertEquals(
+        1, metrics.count('ContextualTasks.OnboardingTooltip.Accepted', true));
+    // Shown was already recorded, so accepting doesn't record it again.
+    assertEquals(
+        1, metrics.count('ContextualTasks.OnboardingTooltip.Shown', 0));
+  });
+
+  test('records shown when accepted before the impression delay', async () => {
+    loadTimeData.overrideValues({
+      composeboxShowOnboardingTooltipImpressionDelay: 100000,
+    });
+    const metrics = fakeMetricsPrivate();
+    await mountWithAutoTab();
+    parts.app.updateTooltipVisibilityForTesting();
+    await microtasksFinished();
+    const tooltip = getTooltip();
+    assertTrue(tooltip.shouldShow);
+    assertEquals(0, metrics.count('ContextualTasks.OnboardingTooltip.Shown'));
+
+    const acceptButton =
+        tooltip.shadowRoot.querySelector<HTMLElement>('cr-button');
+    assertTrue(!!acceptButton);
+    acceptButton.click();
+    await microtasksFinished();
+
+    assertEquals(
+        1, metrics.count('ContextualTasks.OnboardingTooltip.Shown', 0));
+    assertEquals(
+        1, metrics.count('ContextualTasks.OnboardingTooltip.Shown', true));
+    assertEquals(
+        1, metrics.count('ContextualTasks.OnboardingTooltip.Accepted', 0));
+    assertEquals(
+        1, metrics.count('ContextualTasks.OnboardingTooltip.Accepted', true));
+  });
 });

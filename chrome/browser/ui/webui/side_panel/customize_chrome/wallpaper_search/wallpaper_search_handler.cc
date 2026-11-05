@@ -57,6 +57,7 @@
 #include "components/optimization_guide/proto/model_quality_service.pb.h"
 #include "components/prefs/pref_change_registrar.h"
 #include "components/search/ntp_features.h"
+#include "components/signin/public/identity_manager/identity_manager.h"
 #include "mojo/public/cpp/bindings/callback_helpers.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "net/traffic_annotation/network_traffic_annotation.h"
@@ -67,8 +68,8 @@
 #include "skia/ext/skia_utils_base.h"
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/base/page_transition_types.h"
-#include "ui/base/window_open_disposition.h"
 #include "ui/gfx/codec/png_codec.h"
 #include "ui/gfx/geometry/size.h"
 #include "ui/gfx/image/image.h"
@@ -508,7 +509,6 @@ void WallpaperSearchHandler::SetBackgroundToInspirationImage(
 
 void WallpaperSearchHandler::UpdateHistory() {
   const auto& history = wallpaper_search_background_manager_->GetHistory();
-  std::vector<WallpaperSearchResultPtr> thumbnails;
 
   auto barrier = base::BarrierCallback<std::pair<SkBitmap, base::Token>>(
       history.size(), base::BindOnce(&WallpaperSearchHandler::OnHistoryDecoded,
@@ -560,7 +560,8 @@ void WallpaperSearchHandler::OpenHelpArticle() {
                                  GURL(chrome::kWallpaperSearchLearnMorePageURL),
                                  ui::PAGE_TRANSITION_LINK);
   navigate_params.window_action = NavigateParams::WindowAction::kShowWindow;
-  navigate_params.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
+  navigate_params.disposition =
+      ui::mojom::WindowOpenDisposition::kNewForegroundTab;
   Navigate(&navigate_params);
 }
 
@@ -614,12 +615,14 @@ void WallpaperSearchHandler::OnHistoryUpdated() {
   WallpaperSearchHandler::UpdateHistory();
 }
 
-// This function is a wrapper around image_fetcher::ImageDecoder::DecodeImage()
-// because of argument order when working with PostTaskAndReplyWithResult().
+// This function is a wrapper around
+// image_fetcher::ImageDecoder::DecodeImageFromString() because of argument
+// order when working with PostTaskAndReplyWithResult().
 void WallpaperSearchHandler::DecodeHistoryImage(
     image_fetcher::ImageDecodedCallback callback,
     std::string image) {
-  image_decoder_->DecodeImage(image, gfx::Size(), nullptr, std::move(callback));
+  image_decoder_->DecodeImageFromString(image, gfx::Size(), nullptr,
+                                        std::move(callback));
 }
 
 void WallpaperSearchHandler::OnDescriptorsRetrieved(
@@ -785,7 +788,7 @@ void WallpaperSearchHandler::OnInspirationImageDownloaded(
              << image_download_simple_url_loader_->NetError();
     return;
   }
-  image_decoder_->DecodeImage(
+  image_decoder_->DecodeImageFromString(
       *response_body, gfx::Size(), nullptr,
       base::BindOnce(&WallpaperSearchHandler::OnInspirationImageDecoded,
                      weak_ptr_factory_.GetWeakPtr(), id, std::move(timer)));
@@ -1034,7 +1037,7 @@ void WallpaperSearchHandler::OnWallpaperSearchResultsRetrieved(
       image_quality->set_previewed(false);
       image_quality->set_selected(false);
     }
-    image_decoder_->DecodeImage(
+    image_decoder_->DecodeImageFromString(
         image.encoded_image(), gfx::Size(), nullptr,
         base::BindOnce(
             [](base::RepeatingCallback<void(

@@ -10,11 +10,8 @@ import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tabmodel.TabList;
 import org.chromium.chrome.browser.tabmodel.TabModel;
-import org.chromium.components.tab_groups.TabGroupColorId;
-import org.chromium.components.tabs.TabAlert;
 import org.chromium.ui.modelutil.PropertyModel;
 
-import java.util.List;
 import java.util.Objects;
 
 /**
@@ -27,41 +24,24 @@ class FlatLayoutDelegate extends TabListLayoutDelegate {
     }
 
     @Override
-    boolean requiresThumbnailUpdateOnDeselect() {
-        return false;
-    }
-
-    @Override
-    boolean requiresThumbnailUpdateOnSelect() {
-        return true;
-    }
-
-    @Override
-    boolean supportsTabGroups() {
-        return false;
-    }
-
-    @Override
     boolean isChildTabRepresentedByGroupCard(Tab tab) {
         return false;
     }
 
     @Override
-    @TabAlert
-    int getAlertState(Tab representativeTab, PropertyModel model) {
-        return representativeTab.getAlertState();
-    }
-
-    @Override
     int getInsertionIndexOfTab(Tab tab) {
-        if (tab == null) return TabList.INVALID_TAB_INDEX;
         // Compute the index of the tab within the tab's group.
         @Nullable PropertyModel model = mModelList.getFirstTabPropertyModel();
         if (model == null) return TabList.INVALID_TAB_INDEX;
 
-        List<Tab> related = mMediator.getRelatedTabsForId(model.get(TabProperties.TAB_ID));
-        int tabIndex = related.indexOf(tab);
+        TabModel tabModel = mMediator.getCurrentTabModelChecked();
+        int firstTabId = model.get(TabProperties.TAB_ID);
+        Tab firstTab = tabModel.getTabById(firstTabId);
+        if (firstTab == null || !Objects.equals(firstTab.getTabGroupId(), tab.getTabGroupId())) {
+            return TabList.INVALID_TAB_INDEX;
+        }
 
+        int tabIndex = tabModel.getIndexOfTabInGroup(tab);
         // Get the position of the nth tab card ignoring any other CARD_TYPE entries present in the
         // model list outside of TAB, TAB_GROUP, and ARCHIVED_TAB_GROUP.
         return mModelList.indexOfNthTabCard(tabIndex);
@@ -81,12 +61,7 @@ class FlatLayoutDelegate extends TabListLayoutDelegate {
     }
 
     @Override
-    public void didChangeTabGroupColor(Token tabGroupId, @TabGroupColorId int newColor) {
-        // No update needed. Flat layout does not display tab group headers.
-    }
-
-    @Override
-    public void didMoveTabOutOfGroup(Tab movedTab, int prevFilterIndex) {
+    public void didMoveTabOutOfGroup(Tab movedTab, Token oldTabGroupId) {
         int curTabListModelIndex = getIndexFromTabId(movedTab.getId());
         if (!mModelList.isValidIndex(curTabListModelIndex)) return;
 

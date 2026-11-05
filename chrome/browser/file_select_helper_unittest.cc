@@ -7,6 +7,7 @@
 #include <stddef.h>
 
 #include <array>
+#include <set>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -17,10 +18,12 @@
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
+#include "base/functional/callback_helpers.h"
 #include "base/memory/raw_ptr.h"
 #include "base/path_service.h"
 #include "base/process/launch.h"
 #include "base/test/bind.h"
+#include "base/test/run_until.h"
 #include "build/build_config.h"
 #include "chrome/common/chrome_paths.h"
 #include "chrome/test/base/chrome_render_view_host_test_harness.h"
@@ -39,15 +42,30 @@
 using blink::mojom::FileChooserParams;
 
 #if BUILDFLAG(IS_CHROMEOS)
-#include "base/test/scoped_feature_list.h"
 #include "chrome/browser/ash/file_manager/fileapi_util.h"
 #include "chrome/browser/ash/fusebox/fusebox_server.h"
-#include "components/enterprise/connectors/core/features.h"
 #include "content/public/browser/storage_partition.h"
 #include "storage/browser/file_system/external_mount_points.h"
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
-#if BUILDFLAG(ENTERPRISE_CLOUD_CONTENT_ANALYSIS)
+#if BUILDFLAG(ENTERPRISE_CLOUD_CONTENT_ANALYSIS) || BUILDFLAG(IS_ANDROID)
+#include "chrome/browser/enterprise/connectors/analysis/content_analysis_delegate.h"
+#include "chrome/browser/enterprise/connectors/test/deep_scanning_test_utils.h"
+#include "chrome/browser/enterprise/connectors/test/fake_content_analysis_delegate.h"
+#include "chrome/browser/policy/dm_token_utils.h"
+#endif  // BUILDFLAG(ENTERPRISE_CLOUD_CONTENT_ANALYSIS) || BUILDFLAG(IS_ANDROID)
+
+#if BUILDFLAG(IS_ANDROID)
+#include "base/test/android/content_uri_test_utils.h"
+#include "components/enterprise/connectors/core/features.h"
+#endif  // BUILDFLAG(IS_ANDROID)
+
+#include "base/test/metrics/histogram_tester.h"
+#include "base/test/scoped_feature_list.h"
+#include "content/public/browser/web_contents_delegate.h"
+#include "content/public/common/content_features.h"
+#include "content/public/test/web_contents_tester.h"
+
 namespace {
 
 // A listener that remembers the list of files chosen.  The |files| argument
@@ -76,6 +94,28 @@ class TestFileSelectListener : public content::FileSelectListener {
   bool canceled_ = false;
 };
 
+class TestWindowBoundsDelegate : public content::WebContentsDelegate {
+ public:
+  explicit TestWindowBoundsDelegate(const gfx::Rect& window_bounds)
+      : window_bounds_(window_bounds) {}
+
+  void set_window_bounds(const gfx::Rect& window_bounds) {
+    window_bounds_ = window_bounds;
+  }
+
+  std::optional<gfx::Rect> GetWindowBoundsInScreen() override {
+    return window_bounds_;
+  }
+
+ private:
+  gfx::Rect window_bounds_;
+};
+
+}  // namespace
+
+#if BUILDFLAG(ENTERPRISE_CLOUD_CONTENT_ANALYSIS) || BUILDFLAG(IS_ANDROID)
+namespace {
+
 // Fill in the arguments to be passed to the ContentAnalysisCompletionCallback()
 // method based on a list of paths and the desired result for each path.
 // This function simulates a path either passing the deep scan (status of true)
@@ -102,7 +142,7 @@ void PrepareContentAnalysisCompletionCallbackArgs(
 }
 
 }  // namespace
-#endif  // BUILDFLAG(ENTERPRISE_CLOUD_CONTENT_ANALYSIS)
+#endif  // BUILDFLAG(ENTERPRISE_CLOUD_CONTENT_ANALYSIS) || BUILDFLAG(IS_ANDROID)
 
 class FileSelectHelperTest : public testing::Test {
  public:
@@ -384,7 +424,7 @@ TEST_F(FileSelectHelperTest, LastSelectedDirectory) {
 
 // The following tests depend on the enterprise cloud content analysis feature
 // set.
-#if BUILDFLAG(ENTERPRISE_CLOUD_CONTENT_ANALYSIS)
+#if BUILDFLAG(ENTERPRISE_CLOUD_CONTENT_ANALYSIS) || BUILDFLAG(IS_ANDROID)
 
 TEST_F(FileSelectHelperTest, ContentAnalysisCompletionCallback_NoFiles) {
   content::BrowserTaskEnvironment task_environment;
@@ -638,12 +678,278 @@ TEST_F(FileSelectHelperTest, WebContentsDestroyedDuringAsyncFileProcessing) {
   EXPECT_FALSE(weak_ptr);
 }
 
+#if BUILDFLAG(IS_ANDROID)
+TEST_F(FileSelectHelperTest, ContentAnalysisCompletionCallback_ContentUriFile) {
+  content::BrowserTaskEnvironment task_environment;
+  TestingProfile profile;
+  scoped_refptr<FileSelectHelper> file_select_helper =
+      new FileSelectHelper(&profile);
+
+  std::vector<blink::mojom::FileChooserFileInfoPtr> files;
+  auto listener = base::MakeRefCounted<TestFileSelectListener>(&files);
+  file_select_helper->SetFileSelectListenerForTesting(std::move(listener));
+  file_select_helper->DontAbortOnMissingWebContentsForTesting();
+
+  std::vector<blink::mojom::FileChooserFileInfoPtr> orig_files;
+  enterprise_connectors::ContentAnalysisDelegate::Data data;
+  enterprise_connectors::ContentAnalysisDelegate::Result result;
+  base::FilePath content_uri_1(
+      FILE_PATH_LITERAL("content://media/external/file/101"));
+  base::FilePath content_uri_2(
+      FILE_PATH_LITERAL("content://media/external/file/102"));
+  PrepareContentAnalysisCompletionCallbackArgs({content_uri_1, content_uri_2},
+                                               {false, true}, &orig_files,
+                                               &data, &result);
+
+  file_select_helper->ContentAnalysisCompletionCallback(std::move(orig_files),
+                                                        data, result);
+
+  ASSERT_EQ(1u, files.size());
+  EXPECT_EQ(content_uri_2, files[0]->get_native_file()->file_path);
+}
+#endif  // BUILDFLAG(IS_ANDROID)
+#endif  // BUILDFLAG(ENTERPRISE_CLOUD_CONTENT_ANALYSIS) || BUILDFLAG(IS_ANDROID)
+
+#if BUILDFLAG(ENTERPRISE_CLOUD_CONTENT_ANALYSIS) || BUILDFLAG(IS_ANDROID)
+namespace {
+
+std::vector<base::FilePath> PathsOf(
+    const std::vector<blink::mojom::FileChooserFileInfoPtr>& files) {
+  std::vector<base::FilePath> paths;
+  for (const auto& file : files) {
+    paths.push_back(file->get_native_file()->file_path);
+  }
+  return paths;
+}
+
+}  // namespace
+
+// Drives a file selection end to end through content analysis:
+// MultiFilesSelected() -> PerformContentAnalysisIfNeeded() ->
+// ContentAnalysisDelegate -> the real FilesRequestHandler, which opens and
+// reads each file. Only the upload is faked, through
+// FakeContentAnalysisDelegate, whose status callback decides the verdict per
+// file.
+class FileSelectHelperContentAnalysisTest
+    : public ChromeRenderViewHostTestHarness {
+ public:
+  FileSelectHelperContentAnalysisTest() {
+#if BUILDFLAG(IS_ANDROID)
+    feature_list_.InitAndEnableFeature(
+        enterprise_connectors::kEnableFileAttachedEnterpriseScanOnClank);
+#endif  // BUILDFLAG(IS_ANDROID)
+  }
+
+  void SetUp() override {
+    ChromeRenderViewHostTestHarness::SetUp();
+    NavigateAndCommit(GURL("https://example.com"));
+    ASSERT_TRUE(temp_dir_.CreateUniqueTempDir());
+
+    policy::SetDMTokenForTesting(policy::DMToken::CreateValidToken("dm_token"));
+    enterprise_connectors::ContentAnalysisDelegate::SetFactoryForTesting(
+        base::BindRepeating(
+            &enterprise_connectors::test::FakeContentAnalysisDelegate::Create,
+            base::DoNothing(),
+            base::BindRepeating(
+                &FileSelectHelperContentAnalysisTest::ScanStatus,
+                base::Unretained(this)),
+            "dm_token"));
+    enterprise_connectors::ContentAnalysisDelegate::DisableUIForTesting();
+  }
+
+  void TearDown() override {
+    enterprise_connectors::ContentAnalysisDelegate::ResetFactoryForTesting();
+    enterprise_connectors::ContentAnalysisDelegate::EnableUIAfterTesting();
+    ChromeRenderViewHostTestHarness::TearDown();
+  }
+
+ protected:
+  void EnablePolicy() {
+    static constexpr char kPolicy[] = R"({
+      "service_provider": "google",
+      "enable": [{"url_list": ["*"], "tags": ["dlp"]}],
+      "block_until_verdict": 1
+    })";
+    enterprise_connectors::test::SetAnalysisConnector(
+        profile()->GetPrefs(), enterprise_connectors::FILE_ATTACHED, kPolicy);
+  }
+
+  // Creates `name` under the temp dir and returns its path.
+  base::FilePath CreateFile(std::string_view name) {
+    base::FilePath path = temp_dir_.GetPath().AppendASCII(name);
+    EXPECT_TRUE(base::WriteFile(path, "file content"));
+    return path;
+  }
+
+#if BUILDFLAG(IS_ANDROID)
+  void DisableFlag() {
+    feature_list_.Reset();
+    feature_list_.InitAndDisableFeature(
+        enterprise_connectors::kEnableFileAttachedEnterpriseScanOnClank);
+  }
+
+  // Returns a FileProvider content URI for `path`, as the Android file picker
+  // would hand to FileSelectHelper.
+  base::FilePath ContentUriFor(const base::FilePath& path) {
+    std::optional<base::FilePath> uri =
+        base::test::android::GetContentUriFromCacheDirFilePath(path);
+    EXPECT_TRUE(uri.has_value());
+    EXPECT_TRUE(uri->IsContentUri());
+    return uri.value_or(base::FilePath());
+  }
+#endif  // BUILDFLAG(IS_ANDROID)
+
+  // Files whose scan should return a BLOCK verdict.
+  void SetBlockedFiles(std::set<base::FilePath> paths) {
+    blocked_files_ = std::move(paths);
+  }
+
+  // Simulates the picker returning `selected` and runs the result through
+  // content analysis. Returns the files the listener received.
+  std::vector<blink::mojom::FileChooserFileInfoPtr> SelectFiles(
+      const std::vector<ui::SelectedFileInfo>& selected) {
+    scan_count_ = 0;
+    scoped_refptr<FileSelectHelper> helper = new FileSelectHelper(profile());
+    std::vector<blink::mojom::FileChooserFileInfoPtr> result;
+    helper->SetFileSelectListenerForTesting(
+        base::MakeRefCounted<TestFileSelectListener>(&result));
+    // State that RunFileChooser() sets before opening the picker.
+    helper->render_frame_host_ = main_rfh();
+    helper->web_contents_ = web_contents();
+    helper->dialog_type_ = ui::SelectFileDialog::SELECT_OPEN_MULTI_FILE;
+    helper->dialog_mode_ = blink::mojom::FileChooserParams::Mode::kOpenMultiple;
+
+    helper->MultiFilesSelected(selected);
+    // The scan completes asynchronously; the listener is notified last.
+    EXPECT_TRUE(base::test::RunUntil([&]() { return !helper->listener_; }));
+    return result;
+  }
+
+  int scan_count() const { return scan_count_; }
+
+ private:
+  enterprise_connectors::ContentAnalysisResponse ScanStatus(
+      const std::string& contents,
+      const base::FilePath& path) {
+    ++scan_count_;
+    using FakeDelegate =
+        enterprise_connectors::test::FakeContentAnalysisDelegate;
+    if (blocked_files_.contains(path)) {
+      return FakeDelegate::DlpResponse(
+          enterprise_connectors::ContentAnalysisResponse::Result::SUCCESS,
+          "block_rule",
+          enterprise_connectors::ContentAnalysisResponse::Result::
+              TriggeredRule::BLOCK);
+    }
+    return FakeDelegate::SuccessfulResponse({"dlp"});
+  }
+
+  base::test::ScopedFeatureList feature_list_;
+  base::ScopedTempDir temp_dir_;
+  std::set<base::FilePath> blocked_files_;
+  int scan_count_ = 0;
+};
+
+TEST_F(FileSelectHelperContentAnalysisTest, AllowedFilesAreUploaded) {
+  EnablePolicy();
+  base::FilePath foo = CreateFile("foo.txt");
+  base::FilePath bar = CreateFile("bar.txt");
+
+  auto result =
+      SelectFiles({ui::SelectedFileInfo(foo), ui::SelectedFileInfo(bar)});
+
+  EXPECT_EQ(scan_count(), 2);
+  EXPECT_THAT(PathsOf(result), testing::ElementsAre(foo, bar));
+}
+
+TEST_F(FileSelectHelperContentAnalysisTest, BlockedFileIsRemoved) {
+  EnablePolicy();
+  base::FilePath foo = CreateFile("foo.txt");
+  base::FilePath bar = CreateFile("bar.txt");
+  SetBlockedFiles({foo});
+
+  auto result =
+      SelectFiles({ui::SelectedFileInfo(foo), ui::SelectedFileInfo(bar)});
+
+  EXPECT_EQ(scan_count(), 2);
+  EXPECT_THAT(PathsOf(result), testing::ElementsAre(bar));
+}
+
+TEST_F(FileSelectHelperContentAnalysisTest, AllFilesBlocked) {
+  EnablePolicy();
+  base::FilePath foo = CreateFile("foo.txt");
+  base::FilePath bar = CreateFile("bar.txt");
+  SetBlockedFiles({foo, bar});
+
+  auto result =
+      SelectFiles({ui::SelectedFileInfo(foo), ui::SelectedFileInfo(bar)});
+
+  EXPECT_EQ(scan_count(), 2);
+  EXPECT_TRUE(result.empty());
+}
+
+TEST_F(FileSelectHelperContentAnalysisTest, NotScannedWithoutPolicy) {
+  base::FilePath foo = CreateFile("foo.txt");
+  SetBlockedFiles({foo});  // Would be removed if it were scanned.
+
+  auto result = SelectFiles({ui::SelectedFileInfo(foo)});
+
+  EXPECT_EQ(scan_count(), 0);
+  EXPECT_THAT(PathsOf(result), testing::ElementsAre(foo));
+}
+
+#if BUILDFLAG(IS_ANDROID)
+TEST_F(FileSelectHelperContentAnalysisTest, NotScannedWithFlagDisabled) {
+  DisableFlag();
+  EnablePolicy();
+  base::FilePath foo = CreateFile("foo.txt");
+  SetBlockedFiles({foo});  // Would be removed if it were scanned.
+
+  auto result = SelectFiles({ui::SelectedFileInfo(foo)});
+
+  EXPECT_EQ(scan_count(), 0);
+  EXPECT_THAT(PathsOf(result), testing::ElementsAre(foo));
+}
+
+// The Android picker returns content URIs with a display name rather than
+// file system paths. They must be read through the content resolver and
+// filtered by verdict like regular files, and the URIs (not the display names)
+// must be handed to the page.
+TEST_F(FileSelectHelperContentAnalysisTest, ContentUris) {
+  EnablePolicy();
+  base::FilePath foo_uri = ContentUriFor(CreateFile("foo.txt"));
+  base::FilePath bar_uri = ContentUriFor(CreateFile("bar.txt"));
+  ui::SelectedFileInfo foo(foo_uri);
+  foo.display_name = "foo.txt";
+  ui::SelectedFileInfo bar(bar_uri);
+  bar.display_name = "bar.txt";
+
+  auto result = SelectFiles({foo, bar});
+  EXPECT_EQ(scan_count(), 2);
+  ASSERT_THAT(PathsOf(result), testing::ElementsAre(foo_uri, bar_uri));
+  EXPECT_EQ(result[0]->get_native_file()->display_name, u"foo.txt");
+
+  SetBlockedFiles({foo_uri});
+  result = SelectFiles({foo, bar});
+  EXPECT_EQ(scan_count(), 2);
+  EXPECT_THAT(PathsOf(result), testing::ElementsAre(bar_uri));
+
+  SetBlockedFiles({foo_uri, bar_uri});
+  result = SelectFiles({foo, bar});
+  EXPECT_EQ(scan_count(), 2);
+  EXPECT_TRUE(result.empty());
+}
+#endif  // BUILDFLAG(IS_ANDROID)
+#endif  // BUILDFLAG(ENTERPRISE_CLOUD_CONTENT_ANALYSIS) || BUILDFLAG(IS_ANDROID)
+
 TEST_F(FileSelectHelperTest, EnumerateDirectory_TabDeactivated) {
   content::BrowserTaskEnvironment task_environment;
   TestingProfile profile;
   content::TestWebContentsFactory web_contents_factory;
   content::WebContents* web_contents =
       web_contents_factory.CreateWebContents(&profile);
+  TestWindowBoundsDelegate delegate(gfx::Rect(0, 0, 800, 600));
+  web_contents->SetDelegate(&delegate);
 
   tabs::MockTabInterface mock_tab;
   EXPECT_CALL(mock_tab, GetContents())
@@ -660,15 +966,209 @@ TEST_F(FileSelectHelperTest, EnumerateDirectory_TabDeactivated) {
   std::vector<blink::mojom::FileChooserFileInfoPtr> files;
   auto listener = base::MakeRefCounted<TestFileSelectListener>(&files);
 
-  FileSelectHelper::EnumerateDirectory(web_contents, listener,
-                                       base::FilePath(FILE_PATH_LITERAL("/")));
+  FileSelectHelper::EnumerateDirectory(web_contents, listener, data_dir_);
+  EXPECT_FALSE(listener->canceled());
 
   ASSERT_FALSE(deactivation_callback.is_null());
   deactivation_callback.Run(&mock_tab);
 
   EXPECT_TRUE(listener->canceled());
+  web_contents->SetDelegate(nullptr);
 }
-#endif  // BUILDFLAG(ENTERPRISE_CLOUD_CONTENT_ANALYSIS)
+
+TEST_F(FileSelectHelperTest, EnumerateDirectory_VisibilityChanged) {
+  content::BrowserTaskEnvironment task_environment;
+  TestingProfile profile;
+  content::TestWebContentsFactory web_contents_factory;
+  content::WebContents* web_contents =
+      web_contents_factory.CreateWebContents(&profile);
+  TestWindowBoundsDelegate delegate(gfx::Rect(0, 0, 800, 600));
+  web_contents->SetDelegate(&delegate);
+  web_contents->WasShown();
+
+  std::vector<blink::mojom::FileChooserFileInfoPtr> files;
+  auto listener = base::MakeRefCounted<TestFileSelectListener>(&files);
+
+  FileSelectHelper::EnumerateDirectory(web_contents, listener, data_dir_);
+  EXPECT_FALSE(listener->canceled());
+
+#if !BUILDFLAG(IS_ANDROID)
+  web_contents->WasHidden();
+  EXPECT_TRUE(listener->canceled());
+#endif
+  web_contents->SetDelegate(nullptr);
+}
+
+#if !BUILDFLAG(IS_ANDROID)
+TEST_F(FileSelectHelperTest, RunFileChooser_HeightOnlyViolation) {
+  content::BrowserTaskEnvironment task_environment;
+  TestingProfile profile;
+  content::TestWebContentsFactory web_contents_factory;
+  content::WebContents* web_contents =
+      web_contents_factory.CreateWebContents(&profile);
+  web_contents->WasShown();
+
+  // Width (500) >= kMinWindowWidth (400), but height (200) < kMinWindowHeight
+  // (300).
+  TestWindowBoundsDelegate delegate(gfx::Rect(0, 0, 500, 200));
+  web_contents->SetDelegate(&delegate);
+
+  base::HistogramTester histograms;
+  std::vector<blink::mojom::FileChooserFileInfoPtr> files;
+  auto listener = base::MakeRefCounted<TestFileSelectListener>(&files);
+
+  FileChooserParams params;
+  params.mode = FileChooserParams::Mode::kOpen;
+  FileSelectHelper::RunFileChooser(web_contents->GetPrimaryMainFrame(),
+                                   listener, params);
+  ASSERT_TRUE(base::test::RunUntil([&]() { return listener->canceled(); }));
+
+  EXPECT_TRUE(listener->canceled());
+  histograms.ExpectUniqueSample("Content.FileChooser.SuppressedByWindowSize",
+                                true, 1);
+  histograms.ExpectTotalCount("Content.FileChooser.CancelledByWindowResize", 0);
+  histograms.ExpectUniqueSample("Content.FileChooser.SuppressedWindowWidth",
+                                500, 1);
+  histograms.ExpectUniqueSample("Content.FileChooser.SuppressedWindowHeight",
+                                200, 1);
+  web_contents->SetDelegate(nullptr);
+}
+
+TEST_F(FileSelectHelperTest,
+       EnumerateDirectory_WindowResizedSmallerLogsCancelledByWindowResize) {
+  content::BrowserTaskEnvironment task_environment;
+  TestingProfile profile;
+  content::TestWebContentsFactory web_contents_factory;
+  content::WebContents* web_contents =
+      web_contents_factory.CreateWebContents(&profile);
+  web_contents->WasShown();
+
+  TestWindowBoundsDelegate delegate(gfx::Rect(0, 0, 800, 600));
+  web_contents->SetDelegate(&delegate);
+
+  base::HistogramTester histograms;
+  std::vector<blink::mojom::FileChooserFileInfoPtr> files;
+  auto listener = base::MakeRefCounted<TestFileSelectListener>(&files);
+
+  FileSelectHelper::EnumerateDirectory(web_contents, listener, data_dir_);
+  EXPECT_FALSE(listener->canceled());
+  histograms.ExpectUniqueSample("Content.FileChooser.SuppressedByWindowSize",
+                                false, 1);
+  histograms.ExpectTotalCount("Content.FileChooser.CancelledByWindowResize", 0);
+
+  delegate.set_window_bounds(gfx::Rect(0, 0, 200, 150));
+  content::WebContentsTester::For(web_contents)
+      ->SetMainFrameSize(gfx::Size(200, 150));
+
+  EXPECT_TRUE(listener->canceled());
+  histograms.ExpectUniqueSample("Content.FileChooser.SuppressedByWindowSize",
+                                false, 1);
+  histograms.ExpectUniqueSample("Content.FileChooser.CancelledByWindowResize",
+                                true, 1);
+  histograms.ExpectUniqueSample("Content.FileChooser.SuppressedWindowWidth",
+                                200, 1);
+  histograms.ExpectUniqueSample("Content.FileChooser.SuppressedWindowHeight",
+                                150, 1);
+  web_contents->SetDelegate(nullptr);
+}
+
+TEST_F(FileSelectHelperTest, EnumerateDirectory_WebUIExemptFromSizeCheck) {
+  content::BrowserTaskEnvironment task_environment;
+  TestingProfile profile;
+  content::TestWebContentsFactory web_contents_factory;
+  content::WebContents* web_contents =
+      web_contents_factory.CreateWebContents(&profile);
+  web_contents->WasShown();
+
+  content::WebContentsTester::For(web_contents)
+      ->NavigateAndCommit(GURL("chrome://version"));
+
+  TestWindowBoundsDelegate delegate(gfx::Rect(0, 0, 100, 100));
+  web_contents->SetDelegate(&delegate);
+
+  std::vector<blink::mojom::FileChooserFileInfoPtr> files;
+  auto listener = base::MakeRefCounted<TestFileSelectListener>(&files);
+
+  FileSelectHelper::EnumerateDirectory(web_contents, listener, data_dir_);
+  EXPECT_FALSE(listener->canceled());
+  ASSERT_TRUE(base::test::RunUntil([&]() { return !files.empty(); }));
+  web_contents->SetDelegate(nullptr);
+}
+
+TEST_F(FileSelectHelperTest,
+       EnumerateDirectory_NarrowedTabBySidePanelOrSplitViewAllowed) {
+  content::BrowserTaskEnvironment task_environment;
+  TestingProfile profile;
+  content::TestWebContentsFactory web_contents_factory;
+  content::WebContents* web_contents =
+      web_contents_factory.CreateWebContents(&profile);
+  web_contents->WasShown();
+
+  // Top-level browser window is 800x600, while the tab's WebContents is
+  // narrowed to 200x600 (e.g., by a side panel or split view).
+  TestWindowBoundsDelegate delegate(gfx::Rect(0, 0, 800, 600));
+  web_contents->SetDelegate(&delegate);
+  web_contents->Resize(gfx::Rect(0, 0, 200, 600));
+
+  base::HistogramTester histograms;
+  std::vector<blink::mojom::FileChooserFileInfoPtr> files;
+  auto listener = base::MakeRefCounted<TestFileSelectListener>(&files);
+
+  FileSelectHelper::EnumerateDirectory(web_contents, listener, data_dir_);
+  EXPECT_FALSE(listener->canceled());
+  ASSERT_TRUE(base::test::RunUntil([&]() { return !files.empty(); }));
+  histograms.ExpectUniqueSample("Content.FileChooser.SuppressedByWindowSize",
+                                false, 1);
+  histograms.ExpectUniqueSample("Content.FileChooser.CancelledByWindowResize",
+                                false, 1);
+  web_contents->SetDelegate(nullptr);
+}
+
+TEST_F(FileSelectHelperTest,
+       EnumerateDirectory_KillswitchDisabledAllowsSmallWindow) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndDisableFeature(features::kFileChooserMinWindowSize);
+
+  content::BrowserTaskEnvironment task_environment;
+  TestingProfile profile;
+  content::TestWebContentsFactory web_contents_factory;
+  content::WebContents* web_contents =
+      web_contents_factory.CreateWebContents(&profile);
+  web_contents->WasShown();
+
+  TestWindowBoundsDelegate delegate(gfx::Rect(0, 0, 100, 100));
+  web_contents->SetDelegate(&delegate);
+
+  std::vector<blink::mojom::FileChooserFileInfoPtr> files;
+  auto listener = base::MakeRefCounted<TestFileSelectListener>(&files);
+
+  FileSelectHelper::EnumerateDirectory(web_contents, listener, data_dir_);
+  EXPECT_FALSE(listener->canceled());
+  ASSERT_TRUE(base::test::RunUntil([&]() { return !files.empty(); }));
+  web_contents->SetDelegate(nullptr);
+}
+
+TEST_F(FileSelectHelperTest, RunFileChooser_HiddenNonTabCancelled) {
+  content::BrowserTaskEnvironment task_environment;
+  TestingProfile profile;
+  content::TestWebContentsFactory web_contents_factory;
+  content::WebContents* web_contents =
+      web_contents_factory.CreateWebContents(&profile);
+  // Simulate a non-tab WebContents (no TabInterface attached) becoming hidden
+  // before RunFileChooserOnUIThread runs.
+  web_contents->WasHidden();
+
+  std::vector<blink::mojom::FileChooserFileInfoPtr> files;
+  auto listener = base::MakeRefCounted<TestFileSelectListener>(&files);
+
+  FileChooserParams params;
+  params.mode = FileChooserParams::Mode::kOpen;
+  FileSelectHelper::RunFileChooser(web_contents->GetPrimaryMainFrame(),
+                                   listener, params);
+  ASSERT_TRUE(base::test::RunUntil([&]() { return listener->canceled(); }));
+  EXPECT_TRUE(listener->canceled());
+}
+#endif  // !BUILDFLAG(IS_ANDROID)
 
 TEST_F(FileSelectHelperTest, GetFileTypesFromAcceptType) {
   content::BrowserTaskEnvironment task_environment;
@@ -715,14 +1215,13 @@ TEST_F(FileSelectHelperTest, MultipleFileExtensionsForMime) {
   std::unique_ptr<ui::SelectFileDialog::FileTypeInfo> file_type_info =
       file_select_helper->GetFileTypesFromAcceptType(accept_types);
 
-  std::vector<base::FilePath::StringType> expected_extensions {
+  std::vector<base::FilePath::StringType> expected_extensions = {
 #if BUILDFLAG(IS_WIN)
-    L"ppt", L"pot", L"pps"
-  };
+      L"ppt", L"pot", L"pps"
 #else
-    "ppt", "pot", "pps"
-  };
+      "ppt", "pot", "pps"
 #endif
+  };
   std::sort(expected_extensions.begin(), expected_extensions.end());
 
   ASSERT_EQ(file_type_info->extensions.size(), 1u);
@@ -777,7 +1276,6 @@ class FakeFuseboxDelegate : public fusebox::Server::Delegate {
 }  // namespace
 
 struct FuseboxFileParams {
-  bool feature_enabled;
   base::FilePath virtual_path;
   base::FilePath expected_fusebox_path;
 };
@@ -787,24 +1285,11 @@ class FileSelectHelperChromeOSTest : public ChromeRenderViewHostTestHarness {
   FileSelectHelperChromeOSTest() = default;
 
  protected:
-  void EnableDlpFileSystemApi(bool enabled) {
-    feature_list_.Reset();
-    if (enabled) {
-      feature_list_.InitAndEnableFeature(
-          enterprise_connectors::kEnableDlpFileSystemApi);
-    } else {
-      feature_list_.InitAndDisableFeature(
-          enterprise_connectors::kEnableDlpFileSystemApi);
-    }
-  }
-
   void SetUp() override {
     ChromeRenderViewHostTestHarness::SetUp();
     ASSERT_TRUE(base::PathService::Get(chrome::DIR_TEST_DATA, &data_dir_));
     data_dir_ = data_dir_.AppendASCII("file_select_helper");
     ASSERT_TRUE(base::PathExists(data_dir_));
-
-    EnableDlpFileSystemApi(true);
 
     // Register fake mount points
     storage::ExternalMountPoints::GetSystemInstance()->RegisterFileSystem(
@@ -862,7 +1347,6 @@ class FileSelectHelperChromeOSTest : public ChromeRenderViewHostTestHarness {
   }
 
   base::FilePath data_dir_;
-  base::test::ScopedFeatureList feature_list_;
   FakeFuseboxDelegate fake_fusebox_delegate_;
   std::unique_ptr<fusebox::Server> fusebox_server_;
 };
@@ -872,12 +1356,6 @@ class MaybeSubstituteFuseboxFilePathParamTest
       public testing::WithParamInterface<FuseboxFileParams> {
  public:
   MaybeSubstituteFuseboxFilePathParamTest() = default;
-
- protected:
-  void SetUp() override {
-    FileSelectHelperChromeOSTest::SetUp();
-    EnableDlpFileSystemApi(GetParam().feature_enabled);
-  }
 };
 
 TEST_P(MaybeSubstituteFuseboxFilePathParamTest, ConvertVirtualFile) {
@@ -947,8 +1425,7 @@ TEST_P(MaybeSubstituteFuseboxFilePathParamTest,
   enterprise_connectors::ContentAnalysisDelegate::Result result;
 
   base::FilePath expected_fusebox_path = GetParam().expected_fusebox_path;
-  bool virtual_file_is_scanned =
-      GetParam().feature_enabled && !expected_fusebox_path.empty();
+  bool virtual_file_is_scanned = !expected_fusebox_path.empty();
 
   if (virtual_file_is_scanned) {
     data.paths.push_back(expected_fusebox_path);
@@ -977,30 +1454,16 @@ TEST_P(MaybeSubstituteFuseboxFilePathParamTest,
 }
 
 const FuseboxFileParams kFuseboxTestCases[] = {
-    // Case 0: Feature enabled, virtual file -> Should substitute Fusebox path
-    {.feature_enabled = true,
-     .virtual_path =
+    // Case 0: Virtual file -> Should substitute Fusebox path
+    {.virtual_path =
          base::FilePath(FILE_PATH_LITERAL("fake_mount/virtual_doc.docx")),
      .expected_fusebox_path = base::FilePath(
          FILE_PATH_LITERAL("/media/fuse/fusebox/fake_mount/virtual_doc.docx"))},
-    // Case 1: Feature enabled, virtual file not backed by fusebox -> Should
-    // return empty
-    {.feature_enabled = true,
-     .virtual_path =
+    // Case 1: Virtual file not backed by fusebox -> Should return empty
+    {.virtual_path =
          base::FilePath(FILE_PATH_LITERAL("not_backed_mount/virtual_doc.docx")),
      .expected_fusebox_path = base::FilePath()},
-    // Case 2: Feature disabled, virtual file -> Should return empty
-    {.feature_enabled = false,
-     .virtual_path =
-         base::FilePath(FILE_PATH_LITERAL("fake_mount/virtual_doc.docx")),
-     .expected_fusebox_path = base::FilePath(
-         FILE_PATH_LITERAL("/media/fuse/fusebox/fake_mount/virtual_doc.docx"))},
-    // Case 3: Feature disabled, virtual file not backed by fusebox -> Should
-    // return empty
-    {.feature_enabled = false,
-     .virtual_path =
-         base::FilePath(FILE_PATH_LITERAL("not_backed_mount/virtual_doc.docx")),
-     .expected_fusebox_path = base::FilePath()},
+
 };
 
 INSTANTIATE_TEST_SUITE_P(MaybeSubstituteFuseboxFilePath,

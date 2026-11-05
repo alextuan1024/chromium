@@ -53,6 +53,8 @@ std::string Placeholder(ml::Token token) {
       return "TC";
     case ml::Token::kToolResponse:
       return "TR";
+    case ml::Token::kThought:
+      return "T";
   }
 }
 
@@ -296,6 +298,11 @@ void FakeOnDeviceSession::GenerateImpl(
     chunk->text = "Adaptation model: " + model_->data().adaptation_model_weight;
     remote->OnResponse(std::move(chunk));
   }
+  if (!model_->data().postprocessor_weight.empty()) {
+    auto chunk = mojom::ResponseChunk::New();
+    chunk->text = "Postprocessor model: " + model_->data().postprocessor_weight;
+    remote->OnResponse(std::move(chunk));
+  }
   if (!model_->data().cache_weight.empty()) {
     auto chunk = mojom::ResponseChunk::New();
     chunk->text = "Cache weight: " + model_->data().cache_weight;
@@ -316,6 +323,18 @@ void FakeOnDeviceSession::GenerateImpl(
   if (!model_->data().shader_cache_data.empty()) {
     auto chunk = mojom::ResponseChunk::New();
     chunk->text = "Shader cache data: " + model_->data().shader_cache_data;
+    remote->OnResponse(std::move(chunk));
+  }
+  if (!model_->data().mtp_drafter_cache_weight.empty()) {
+    auto chunk = mojom::ResponseChunk::New();
+    chunk->text =
+        "MTP drafter cache weight: " + model_->data().mtp_drafter_cache_weight;
+    remote->OnResponse(std::move(chunk));
+  }
+  if (!model_->data().mtp_drafter_shader_cache_data.empty()) {
+    auto chunk = mojom::ResponseChunk::New();
+    chunk->text = "MTP drafter shader cache data: " +
+                  model_->data().mtp_drafter_shader_cache_data;
     remote->OnResponse(std::move(chunk));
   }
 
@@ -341,6 +360,13 @@ void FakeOnDeviceSession::GenerateImpl(
     } else {
       chunk->text = "Constraint: unknown";
     }
+    remote->OnResponse(std::move(chunk));
+  }
+
+  if (options->enable_thinking) {
+    auto chunk = mojom::ResponseChunk::New();
+    chunk->thought = "Thinking (budget=" +
+                     base::NumberToString(options->thinking_token_budget) + ")";
     remote->OnResponse(std::move(chunk));
   }
 
@@ -489,6 +515,24 @@ void FakeOnDeviceModel::LoadAdaptation(
   std::move(callback).Run(mojom::LoadModelResult::kSuccess);
 }
 
+void FakeOnDeviceModel::LoadPostProcessor(
+    mojom::LoadPostProcessorParamsPtr params,
+    mojo::PendingReceiver<mojom::OnDeviceModel> model,
+    LoadPostProcessorCallback callback) {
+  TRACE_EVENT("optimization_guide", "FakeOnDeviceModel::LoadPostProcessor",
+              perfetto::Flow::FromPointer(this));
+  if (!params || !params->weights.IsValid()) {
+    std::move(callback).Run(mojom::LoadModelResult::kFailedToLoadLibrary);
+    return;
+  }
+  Data data = data_;
+  data.postprocessor_weight = ReadFile(params->weights);
+  auto test_model = std::make_unique<FakeOnDeviceModel>(
+      settings_, std::move(data), performance_hint_, backend_type_);
+  model_adaptation_receivers_.Add(std::move(test_model), std::move(model));
+  std::move(callback).Run(mojom::LoadModelResult::kSuccess);
+}
+
 FakeTextSafetyModel::FakeTextSafetyModel(
     on_device_model::mojom::TextSafetyModelParamsPtr params) {
   if (params->safety_model.IsValid()) {
@@ -556,6 +600,98 @@ void FakeSafetyModelHolder::Reset(
              std::move(model_receiver));
 }
 
+FakeDecisionModel::FakeDecisionModel(
+    on_device_model::mojom::DecisionModelParamsPtr params) {
+  if (params) {
+    if (params->assets.weights.IsFile() &&
+        params->assets.weights.file().IsValid()) {
+      data_ = ReadFile(params->assets.weights.file());
+    }
+    has_decision_model_ = true;
+  }
+}
+
+FakeDecisionModel::~FakeDecisionModel() {
+  TRACE_EVENT("optimization_guide", "FakeDecisionModel::~FakeDecisionModel",
+              perfetto::TerminatingFlow::FromPointer(this));
+}
+
+void FakeDecisionModel::StartSession(
+    mojom::DecisionQueryPtr query,
+    mojo::PendingReceiver<mojom::DecisionSession> session) {
+  TRACE_EVENT("optimization_guide", "FakeDecisionModel::StartSession",
+              perfetto::Flow::FromPointer(this));
+  sessions_.Add(this, std::move(session), std::move(query));
+}
+
+void FakeDecisionModel::Decide(const std::string& input,
+                               DecideCallback callback) {
+  TRACE_EVENT("optimization_guide", "FakeDecisionModel::Decide",
+              perfetto::Flow::FromPointer(this), "input", input);
+  CHECK(has_decision_model_);
+  if (input.find("fail") != std::string::npos) {
+    std::move(callback).Run(std::nullopt);
+    return;
+  }
+
+  const mojom::DecisionQueryPtr& query = sessions_.current_context();
+  std::vector<mojom::DecisionQuestionResultPtr> results;
+  if (query) {
+    results.reserve(query->questions.size());
+    for (const auto& question : query->questions) {
+      auto result = mojom::DecisionQuestionResult::New();
+      const size_t num_options = question->options.size();
+      if (num_options == 0) {
+        results.push_back(std::move(result));
+        continue;
+      }
+
+      std::vector<float> scores(num_options, 0.0f);
+      size_t match_count = 0;
+      for (size_t i = 0; i < num_options; ++i) {
+        const std::string& label = question->options[i]->label;
+        if (!label.empty() && input.find(label) != std::string::npos) {
+          scores[i] = 1.0f;
+          ++match_count;
+        }
+      }
+
+      if (match_count == 0) {
+        result->probabilities.assign(num_options, 1.0f / num_options);
+      } else {
+        constexpr float kMatchedProb = 0.8f;
+        const float remaining_prob =
+            (match_count < num_options) ? (1.0f - kMatchedProb) : 1.0f;
+        const float per_match = (match_count < num_options)
+                                    ? (kMatchedProb / match_count)
+                                    : (1.0f / match_count);
+        const float per_non_match =
+            (match_count < num_options)
+                ? (remaining_prob / (num_options - match_count))
+                : 0.0f;
+        for (size_t i = 0; i < num_options; ++i) {
+          result->probabilities.push_back(scores[i] > 0.0f ? per_match
+                                                           : per_non_match);
+        }
+      }
+      results.push_back(std::move(result));
+    }
+  }
+  std::move(callback).Run(std::move(results));
+}
+
+FakeDecisionModelHolder::FakeDecisionModelHolder() = default;
+FakeDecisionModelHolder::~FakeDecisionModelHolder() = default;
+
+void FakeDecisionModelHolder::Reset(
+    mojom::DecisionModelParamsPtr params,
+    mojo::PendingReceiver<mojom::DecisionModel> model_receiver) {
+  model_.Clear();
+  auto test_model = std::make_unique<FakeDecisionModel>(std::move(params));
+  auto* raw_model = test_model.get();
+  model_.Add(std::move(test_model), std::move(model_receiver), raw_model);
+}
+
 FakeOnDeviceModelService::FakeOnDeviceModelService(
     FakeOnDeviceServiceSettings* settings)
     : settings_(settings) {}
@@ -585,6 +721,13 @@ void FakeOnDeviceModelService::LoadModel(
   }
   if (params->assets.program_cache.IsValid()) {
     data.shader_cache_data = ReadFile(params->assets.program_cache);
+  }
+  if (params->assets.mtp_drafter_cache.IsValid()) {
+    data.mtp_drafter_cache_weight = ReadFile(params->assets.mtp_drafter_cache);
+  }
+  if (params->assets.mtp_drafter_program_cache.IsValid()) {
+    data.mtp_drafter_shader_cache_data =
+        ReadFile(params->assets.mtp_drafter_program_cache);
   }
   data.adaptation_ranks = params->adaptation_ranks;
   auto test_model = std::make_unique<FakeOnDeviceModel>(
@@ -627,6 +770,23 @@ void FakeOnDeviceModelService::LoadTextSafetyModel(
               perfetto::Flow::FromPointer(this));
   safety_model_holder_.Reset(std::move(params), std::move(model));
 #endif
+}
+
+void FakeOnDeviceModelService::LoadDecisionModel(
+    mojom::DecisionModelParamsPtr params,
+    mojo::PendingReceiver<mojom::DecisionModel> model,
+    LoadDecisionModelCallback callback) {
+  TRACE_EVENT("optimization_guide",
+              "FakeOnDeviceModelService::LoadDecisionModel",
+              perfetto::Flow::FromPointer(this));
+  if (settings_->drop_connection_request) {
+    model.ResetWithReason(
+        static_cast<uint32_t>(*settings_->drop_connection_request), "");
+    std::move(callback).Run(mojom::LoadModelResult::kSuccess);
+    return;
+  }
+  decision_model_holder_.Reset(std::move(params), std::move(model));
+  std::move(callback).Run(mojom::LoadModelResult::kSuccess);
 }
 
 void FakeOnDeviceModelService::GetDeviceAndPerformanceInfo(

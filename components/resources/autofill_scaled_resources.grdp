@@ -18,8 +18,6 @@
   <structure type="chrome_scaled_image" name="IDR_AUTOFILL_CC_TROY" file="autofill/troy.png" />
   <structure type="chrome_scaled_image" name="IDR_AUTOFILL_IBAN" file="autofill/iban.png" />
   <structure type="chrome_scaled_image" name="IDR_AUTOFILL_BNPL_GENERIC" file="autofill/pay_over_time.png" />
-  <structure type="chrome_scaled_image" name="IDR_AUTOFILL_VIRTUAL_CARD_ENROLL_DIALOG" file="autofill/virtual_card_enroll.png" />
-  <structure type="chrome_scaled_image" name="IDR_AUTOFILL_VIRTUAL_CARD_ENROLL_DIALOG_DARK" file="autofill/virtual_card_enroll_dark.png" />
   <structure type="chrome_scaled_image" name="IDR_AUTOFILL_METADATA_CC_AMEX" file="autofill/metadata/amex.png" />
   <structure type="chrome_scaled_image" name="IDR_AUTOFILL_METADATA_CC_DINERS" file="autofill/metadata/diners.png" />
   <structure type="chrome_scaled_image" name="IDR_AUTOFILL_METADATA_CC_DISCOVER" file="autofill/metadata/discover.png" />
@@ -86,6 +84,8 @@
       <structure type="chrome_scaled_image" name="IDR_AUTOFILL_GOOGLE_WALLET_DARK" file="google_chrome/autofill/googlewallet_dark.png" />
       <structure type="chrome_scaled_image" name="IDR_AUTOFILL_GOOGLE_WALLET_ICON" file="google_chrome/autofill/googlewallet_icon.png" />
       <structure type="chrome_scaled_image" name="IDR_AUTOFILL_GOOGLE_WALLET_ICON_WITH_GRADIENT" file="google_chrome/autofill/googlewallet_icon_with_gradient.png" />
+      <structure type="chrome_scaled_image" name="IDR_AUTOFILL_GOOGLE_WALLET_WITH_GRADIENT" file="google_chrome/autofill/googlewallet_with_gradient.png" />
+      <structure type="chrome_scaled_image" name="IDR_AUTOFILL_GOOGLE_WALLET_WITH_GRADIENT_DARK" file="google_chrome/autofill/googlewallet_with_gradient_dark.png" />
       <structure type="chrome_scaled_image" name="IDR_AUTOFILL_AFFIRM" file="google_chrome/autofill/affirm.png" />
       <structure type="chrome_scaled_image" name="IDR_AUTOFILL_AFFIRM_DARK" file="google_chrome/autofill/affirm_dark.png" />
       <structure type="chrome_scaled_image" name="IDR_AUTOFILL_AFFIRM_LINKED" file="google_chrome/autofill/affirm_linked.png" />
@@ -140,6 +140,8 @@
       <structure type="chrome_scaled_image" name="IDR_AUTOFILL_GOOGLE_WALLET_DARK" file="autofill/cc-generic.png" />
       <structure type="chrome_scaled_image" name="IDR_AUTOFILL_GOOGLE_WALLET_ICON" file="autofill/cc-generic.png" />
       <structure type="chrome_scaled_image" name="IDR_AUTOFILL_GOOGLE_WALLET_ICON_WITH_GRADIENT" file="autofill/cc-generic.png" />
+      <structure type="chrome_scaled_image" name="IDR_AUTOFILL_GOOGLE_WALLET_WITH_GRADIENT" file="autofill/cc-generic.png" />
+      <structure type="chrome_scaled_image" name="IDR_AUTOFILL_GOOGLE_WALLET_WITH_GRADIENT_DARK" file="autofill/cc-generic.png" />
       <structure type="chrome_scaled_image" name="IDR_AUTOFILL_AFFIRM" file="autofill/metadata/pay_over_time.png" />
       <structure type="chrome_scaled_image" name="IDR_AUTOFILL_AFFIRM_DARK" file="autofill/metadata/pay_over_time.png" />
       <structure type="chrome_scaled_image" name="IDR_AUTOFILL_AFFIRM_LINKED" file="autofill/metadata/pay_over_time.png" />

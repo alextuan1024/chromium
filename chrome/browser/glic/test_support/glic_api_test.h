@@ -17,7 +17,9 @@
 #include "chrome/browser/actor/actor_test_util.h"
 #include "chrome/browser/glic/host/host.h"
 #include "chrome/browser/glic/public/features.h"
+#include "chrome/browser/glic/public/glic_provider_latch.h"
 #include "chrome/browser/glic/test_support/glic_browser_test.h"
+#include "chrome/browser/profiles/profile.h"
 #include "chrome/common/chrome_switches.h"
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/render_frame_host.h"
@@ -302,6 +304,11 @@ class GlicApiBrowserTestMixin : public T {
           "embeddedHttpsTestServerUrl",
           Base::embedded_https_test_server().GetURL("example.com", "/").spec());
     }
+    Profile* profile =
+        Profile::FromBrowserContext(glic_guest_frame->GetBrowserContext());
+    init_dict.Set("isGeic",
+                  profile && GlicProviderLatch::GetProvider(*profile) ==
+                                 GlicProvider::kGeminiEnterprise);
     std::string test_init_data = base::WriteJson(init_dict).value_or("");
     // Store `frame_id` early to avoid evaluation-order use-after-free if
     // `EvalJs` yields and the frame is destroyed.
@@ -345,7 +352,11 @@ class GlicApiBrowserTestMixin : public T {
       GlicInstanceImpl* instance = nullptr) {
     auto end_time = base::TimeTicks::Now() + base::Seconds(30);
     auto next_message_time = base::TimeTicks::Now() + base::Seconds(2);
-    auto sleep_time = base::Milliseconds(200);
+    // Poll frequently at first: the guest typically becomes ready within ~1 s
+    // of the panel opening, and any sleep that overshoots that moment is paid
+    // by every Glic API test. Grow slowly (1.25x) up to 2 s so slow bots that
+    // take many seconds to load are not flooded with EvalJs checks.
+    auto sleep_time = base::Milliseconds(25);
     content::RenderFrameHost* frame = nullptr;
     content::RenderFrameHost* last_frame = nullptr;
     while (base::TimeTicks::Now() < end_time) {
@@ -386,7 +397,7 @@ class GlicApiBrowserTestMixin : public T {
         next_message_time = base::TimeTicks::Now() + base::Seconds(2);
       }
       sleepWithRunLoop(sleep_time);
-      sleep_time = std::min(base::Seconds(2), 2 * sleep_time);
+      sleep_time = std::min(base::Seconds(2), sleep_time * 1.25);
     }
     return base::unexpected(base::StrCat(
         {"Timed out waiting for guest frame. Guest frame: ",
@@ -446,7 +457,7 @@ class GlicApiBrowserTestMixin : public T {
         return;
       }
 
-      ASSERT_TRUE(result.is_ok());
+      ASSERT_TRUE(result.is_ok()) << result;
       if (result.is_dict()) {
         content::EvalJsResult result_copy = result;
         const base::DictValue& dict = result_copy.ExtractDict();

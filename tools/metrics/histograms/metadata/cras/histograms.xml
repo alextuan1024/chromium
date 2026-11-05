@@ -332,7 +332,7 @@ This collects each top-level device metric type. For example,
 </variants>
 
 <histogram name="Cras.A2dp100msFailureOverStream" units="units"
-    expires_after="2027-02-21">
+    expires_after="2027-04-25">
   <owner>hychao@chromium.org</owner>
   <owner>chromeos-audio@google.com</owner>
   <summary>
@@ -343,7 +343,7 @@ This collects each top-level device metric type. For example,
 </histogram>
 
 <histogram name="Cras.A2dp20msFailureOverStream" units="units"
-    expires_after="2027-02-21">
+    expires_after="2027-04-25">
   <owner>hychao@chromium.org</owner>
   <owner>chromeos-audio@google.com</owner>
   <summary>
@@ -507,7 +507,7 @@ This collects each top-level device metric type. For example,
 </histogram>
 
 <histogram name="Cras.DeviceOpenStatus.Input{Device}"
-    enum="CrasDeviceOpenStatus" expires_after="2027-03-07">
+    enum="CrasDeviceOpenStatus" expires_after="2027-05-09">
   <owner>yuhsuan@chromium.org</owner>
   <owner>chromeos-audio@google.com</owner>
   <summary>
@@ -517,7 +517,7 @@ This collects each top-level device metric type. For example,
 </histogram>
 
 <histogram name="Cras.DeviceOpenStatus.Output{Device}"
-    enum="CrasDeviceOpenStatus" expires_after="2027-03-07">
+    enum="CrasDeviceOpenStatus" expires_after="2027-05-09">
   <owner>yuhsuan@chromium.org</owner>
   <owner>chromeos-audio@google.com</owner>
   <summary>
@@ -528,7 +528,7 @@ This collects each top-level device metric type. For example,
 
 <histogram
     name="Cras.DeviceRuntime.Input{Device}{HostCapability}{PeripheralCapability}"
-    units="seconds" expires_after="2026-12-30">
+    units="seconds" expires_after="2027-05-02">
   <owner>jrwu@google.com</owner>
   <owner>chromeos-audio@google.com</owner>
   <summary>
@@ -612,7 +612,7 @@ This collects each top-level device metric type. For example,
 </histogram>
 
 <histogram name="Cras.DeviceTypeInput" enum="CrasDeviceType"
-    expires_after="2027-01-17">
+    expires_after="2027-03-21">
   <owner>yuhsuan@chromium.org</owner>
   <owner>chromeos-audio@google.com</owner>
   <summary>
@@ -623,7 +623,7 @@ This collects each top-level device metric type. For example,
 </histogram>
 
 <histogram name="Cras.DeviceTypeOutput" enum="CrasDeviceType"
-    expires_after="2027-01-17">
+    expires_after="2027-03-21">
   <owner>yuhsuan@chromium.org</owner>
   <owner>chromeos-audio@google.com</owner>
   <summary>
@@ -845,7 +845,6 @@ This collects each top-level device metric type. For example,
 
 <histogram name="Cras.InputGainChangedSource" enum="AudioSettingsChangeSource"
     expires_after="2027-08-20">
-  <owner>gavinwill@google.com</owner>
   <owner>yuhsuan@chromium.org</owner>
   <owner>chromeos-audio@google.com</owner>
   <summary>Records the source of a change to the input gain.</summary>
@@ -853,7 +852,6 @@ This collects each top-level device metric type. For example,
 
 <histogram name="Cras.InputGainMutedSource" enum="AudioSettingsChangeSource"
     expires_after="2027-08-20">
-  <owner>gavinwill@google.com</owner>
   <owner>yuhsuan@chromium.org</owner>
   <owner>chromeos-audio@google.com</owner>
   <summary>Records the source of muting/unmuting the input gain.</summary>
@@ -981,7 +979,6 @@ This collects each top-level device metric type. For example,
 
 <histogram name="Cras.NoiseCancellationEnabledSource"
     enum="AudioSettingsChangeSource" expires_after="2027-01-05">
-  <owner>gavinwill@google.com</owner>
   <owner>yuhsuan@chromium.org</owner>
   <owner>chromeos-audio@google.com</owner>
   <summary>
@@ -991,7 +988,6 @@ This collects each top-level device metric type. For example,
 
 <histogram name="Cras.OutputVolumeChangedSource"
     enum="AudioSettingsChangeSource" expires_after="2027-09-01">
-  <owner>gavinwill@google.com</owner>
   <owner>yuhsuan@chromium.org</owner>
   <owner>chromeos-audio@google.com</owner>
   <summary>Records the source of a change to the output volume.</summary>
@@ -999,7 +995,6 @@ This collects each top-level device metric type. For example,
 
 <histogram name="Cras.OutputVolumeMutedSource" enum="AudioSettingsChangeSource"
     expires_after="2027-06-10">
-  <owner>gavinwill@google.com</owner>
   <owner>yuhsuan@chromium.org</owner>
   <owner>chromeos-audio@google.com</owner>
   <summary>Records the source of muting/unmuting the output volume.</summary>

@@ -12,7 +12,7 @@
 
 #include "base/at_exit.h"
 #include "base/command_line.h"
-#include "base/compiler_specific.h"
+#include "base/containers/map_util.h"
 #include "base/containers/span.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
@@ -30,7 +30,7 @@
 #include "ui/events/event_switches.h"
 #include "ui/events/keycodes/keyboard_code_conversion_x.h"
 #include "ui/gfx/geometry/point3_f.h"
-#include "ui/gfx/x/atom_cache.h"
+#include "ui/gfx/x/connection.h"
 #include "ui/gfx/x/future.h"
 
 // Constants for checking if a data type lies in the range of CMT/Touch data
@@ -185,6 +185,21 @@ bool DeviceDataManagerX11::IsXInput2Available() const {
 }
 
 void DeviceDataManagerX11::UpdateDeviceList(x11::Connection* connection) {
+  const XDeviceList& dev_list =
+      ui::DeviceListCacheX11::GetInstance()->GetXDeviceList(connection);
+  if (!IsXInput2Available()) {
+    UpdateDeviceListFromLists(connection, dev_list, {});
+    return;
+  }
+  UpdateDeviceListFromLists(
+      connection, dev_list,
+      ui::DeviceListCacheX11::GetInstance()->GetXI2DeviceList(connection));
+}
+
+void DeviceDataManagerX11::UpdateDeviceListFromLists(
+    x11::Connection* connection,
+    const XDeviceList& dev_list,
+    const XIDeviceList& info_list) {
   cmt_devices_.clear();
   touchpads_.clear();
   stylus_.clear();
@@ -195,24 +210,44 @@ void DeviceDataManagerX11::UpdateDeviceList(x11::Connection* connection) {
   scroll_data_.clear();
   last_seen_valuator_.clear();
 
-  // Find all the touchpad devices.
-  const XDeviceList& dev_list =
-      ui::DeviceListCacheX11::GetInstance()->GetXDeviceList(connection);
-  x11::Atom xi_touchpad = x11::GetAtom("TOUCHPAD");
+  // Classify devices from XInput 1 device type atoms. Touchpads (on evdev),
+  // touchscreens, and tablet pucks/pads (on libinput/wacom) may expose an
+  // "Abs Pressure" valuator without being pens, while styluses without pressure
+  // or tilt axes only expose "Abs X" and "Abs Y" valuators alongside a
+  // stylus/eraser/tablet device type.
+  x11::Atom xi_touchpad = connection->GetAtom("TOUCHPAD");
+  x11::Atom xi_touchscreen = connection->GetAtom("TOUCHSCREEN");
+  x11::Atom xi_stylus = connection->GetAtom("STYLUS");
+  x11::Atom xi_eraser = connection->GetAtom("ERASER");
+  x11::Atom xi_tablet = connection->GetAtom("TABLET");
+  x11::Atom xi_cursor = connection->GetAtom("CURSOR");
+  x11::Atom xi_pad = connection->GetAtom("PAD");
+  base::flat_set<x11::Input::DeviceId> xi_stylus_devices;
+  base::flat_set<x11::Input::DeviceId> non_stylus_devices;
   for (const auto& device : dev_list) {
-    if (device.device_type == xi_touchpad)
-      touchpads_.insert(static_cast<x11::Input::DeviceId>(device.device_id));
+    const auto device_id = static_cast<x11::Input::DeviceId>(device.device_id);
+    if (device.device_type == xi_touchpad) {
+      touchpads_.insert(device_id);
+      non_stylus_devices.insert(device_id);
+    } else if (device.device_type == xi_touchscreen ||
+               device.device_type == xi_cursor ||
+               device.device_type == xi_pad) {
+      non_stylus_devices.insert(device_id);
+    } else if (device.device_type == xi_stylus ||
+               device.device_type == xi_eraser ||
+               device.device_type == xi_tablet) {
+      xi_stylus_devices.insert(device_id);
+    }
   }
 
-  if (!IsXInput2Available())
+  if (info_list.empty()) {
     return;
+  }
 
   // Update the structs with new valuator information
-  const XIDeviceList& info_list =
-      ui::DeviceListCacheX11::GetInstance()->GetXI2DeviceList(connection);
   base::flat_map<x11::Atom, DataType> atom_to_data_type;
   for (const auto& map_entry : kAtomNameToDataType) {
-    atom_to_data_type[x11::GetAtom(map_entry.name)] = map_entry.type;
+    atom_to_data_type[connection->GetAtom(map_entry.name)] = map_entry.type;
   }
 
   for (const auto& info : info_list) {
@@ -225,41 +260,51 @@ void DeviceDataManagerX11::UpdateDeviceList(x11::Connection* connection) {
       continue;
     }
 
-    bool possible_stylus = false;
+    const auto deviceid = info.deviceid;
+    bool possible_stylus = xi_stylus_devices.contains(deviceid);
+    bool not_stylus = non_stylus_devices.contains(deviceid);
     bool possible_cmt = false;
     bool not_cmt = false;
-    const auto deviceid = info.deviceid;
 
     for (const auto& device_class : info.classes) {
-      if (device_class.valuator.has_value())
+      if (device_class.valuator.has_value()) {
         ++valuator_count_[deviceid];
-      else if (device_class.scroll.has_value())
+      } else if (device_class.scroll.has_value()) {
         not_cmt = true;
+      } else if (device_class.touch.has_value()) {
+        not_stylus = true;
+      }
     }
 
     // Skip devices that don't use any valuator
-    if (!valuator_count_.contains(deviceid)) {
+    const int* count = base::FindOrNull(valuator_count_, deviceid);
+    if (!count) {
       continue;
     }
 
     valuator_lookup_[deviceid].resize(DT_LAST_ENTRY);
-    data_type_lookup_[deviceid].resize(valuator_count_[deviceid],
-                                       DT_LAST_ENTRY);
+    data_type_lookup_[deviceid].resize(*count, DT_LAST_ENTRY);
     for (const auto& device_class : info.classes) {
       if (device_class.valuator.has_value()) {
         auto dt = UpdateValuatorClassDevice(*device_class.valuator,
                                             atom_to_data_type, deviceid);
-        if (IsStylusDataType(dt))
+        // Do not treat "Abs X" / "Abs Y" alone as stylus indicators, since
+        // absolute mice (remote desktop, VMs, XWayland pointers) expose them.
+        if (IsStylusDataType(dt) && dt != DT_STYLUS_POSITION_X &&
+            dt != DT_STYLUS_POSITION_Y) {
           possible_stylus = true;
+        }
         if (IsCMTDataType(dt))
           possible_cmt = true;
       } else if (device_class.scroll.has_value()) {
         UpdateScrollClassDevice(*device_class.scroll, deviceid);
       }
     }
+    UpdateScrollClassValuators(deviceid, info.classes);
 
-    if (possible_stylus)
+    if (possible_stylus && !not_stylus) {
       stylus_.insert(deviceid);
+    }
 
     if (possible_cmt && !not_cmt)
       cmt_devices_.insert(deviceid);
@@ -283,14 +328,20 @@ void DeviceDataManagerX11::GetEventRawData(const x11::Event& x11_event,
     return;
 
   auto sourceid = xiev->sourceid;
-  if (!valuator_count_.contains(sourceid)) {
+  const int* count = base::FindOrNull(valuator_count_, sourceid);
+  if (!count) {
+    return;
+  }
+  const std::vector<int>* data_types =
+      base::FindOrNull(data_type_lookup_, sourceid);
+  if (!data_types) {
     return;
   }
   data->clear();
   auto valuators_iter = xiev->axisvalues.begin();
-  for (int i = 0; i <= valuator_count_[sourceid]; ++i) {
+  for (int i = 0; i <= *count; ++i) {
     if (IsXinputMaskSet(base::as_byte_span(xiev->valuator_mask), i)) {
-      int type = data_type_lookup_[sourceid][i];
+      int type = (*data_types)[i];
       if (type != DT_LAST_ENTRY) {
         double valuator = Fp3232ToDouble(*valuators_iter);
         (*data)[type] = valuator;
@@ -318,7 +369,8 @@ bool DeviceDataManagerX11::GetEventData(const x11::Event& x11_event,
     return false;
 
   auto sourceid = xiev->sourceid;
-  if (!valuator_lookup_.contains(sourceid)) {
+  const auto* valuator_info = base::FindOrNull(valuator_lookup_, sourceid);
+  if (!valuator_info || type >= valuator_info->size()) {
     return false;
   }
 
@@ -335,7 +387,7 @@ bool DeviceDataManagerX11::GetEventData(const x11::Event& x11_event,
     return true;
   }
 
-  int val_index = valuator_lookup_[sourceid][type].number;
+  int val_index = (*valuator_info)[type].number;
   int slot = 0;
   if (val_index >= 0) {
     if (IsXinputMaskSet(base::as_byte_span(xiev->valuator_mask), val_index)) {
@@ -359,9 +411,11 @@ bool DeviceDataManagerX11::GetEventData(const x11::Event& x11_event,
       return true;
     } else if (IsTouchDataType(type)) {
       if (GetSlotNumber(*xiev, &slot) && slot >= 0) {
-        if (last_seen_valuator_.contains(sourceid) &&
-            last_seen_valuator_.at(sourceid).contains(slot)) {
-          *value = last_seen_valuator_.at(sourceid).at(slot)[type];
+        if (const auto* slot_map =
+                base::FindOrNull(last_seen_valuator_, sourceid)) {
+          if (const auto* slot_valuators = base::FindOrNull(*slot_map, slot)) {
+            *value = (*slot_valuators)[type];
+          }
         }
       }
     }
@@ -406,11 +460,12 @@ int DeviceDataManagerX11::GetScrollClassEventDetail(
   if (!xievent)
     return SCROLL_TYPE_NO_SCROLL;
   auto sourceid = xievent->sourceid;
-  if (!scroll_data_.contains(sourceid)) {
+  const ScrollInfo* scroll_info = base::FindOrNull(scroll_data_, sourceid);
+  if (!scroll_info) {
     return SCROLL_TYPE_NO_SCROLL;
   }
-  int horizontal_id = scroll_data_.at(sourceid).horizontal.number;
-  int vertical_id = scroll_data_.at(sourceid).vertical.number;
+  int horizontal_id = scroll_info->horizontal.number;
+  int vertical_id = scroll_info->vertical.number;
   return (horizontal_id != -1 &&
                   IsXinputMaskSet(base::as_byte_span(xievent->valuator_mask),
                                   horizontal_id)
@@ -430,12 +485,12 @@ int DeviceDataManagerX11::GetScrollClassDeviceDetail(
     return SCROLL_TYPE_NO_SCROLL;
 
   auto sourceid = xiev->sourceid;
-  if (!scroll_data_.contains(sourceid)) {
+  const ScrollInfo* device_data = base::FindOrNull(scroll_data_, sourceid);
+  if (!device_data) {
     return SCROLL_TYPE_NO_SCROLL;
   }
-  const ScrollInfo& device_data = scroll_data_.at(sourceid);
-  return (device_data.vertical.number >= 0 ? SCROLL_TYPE_VERTICAL : 0) |
-         (device_data.horizontal.number >= 0 ? SCROLL_TYPE_HORIZONTAL : 0);
+  return (device_data->vertical.number >= 0 ? SCROLL_TYPE_VERTICAL : 0) |
+         (device_data->horizontal.number >= 0 ? SCROLL_TYPE_HORIZONTAL : 0);
 }
 
 bool DeviceDataManagerX11::IsCMTGestureEvent(const x11::Event& xev) const {
@@ -448,13 +503,11 @@ bool DeviceDataManagerX11::HasEventData(const x11::Event& xev,
   if (!xiev)
     return false;
   auto sourceid = xiev->sourceid;
-  if (!valuator_lookup_.contains(sourceid)) {
+  const auto* valuators = base::FindOrNull(valuator_lookup_, sourceid);
+  if (!valuators || type >= valuators->size()) {
     return false;
   }
-  if (type >= valuator_lookup_.at(sourceid).size()) {
-    return false;
-  }
-  const int idx = valuator_lookup_.at(sourceid)[type].number;
+  const int idx = (*valuators)[type].number;
   return (idx >= 0) &&
          IsXinputMaskSet(base::as_byte_span(xiev->valuator_mask), idx);
 }
@@ -509,22 +562,28 @@ void DeviceDataManagerX11::GetScrollOffsets(const x11::Event& xev,
   EventData data;
   GetEventRawData(xev, &data);
 
-  if (data.find(DT_CMT_SCROLL_X) != data.end())
-    *x_offset = data[DT_CMT_SCROLL_X];
-  if (data.find(DT_CMT_SCROLL_Y) != data.end())
-    *y_offset = data[DT_CMT_SCROLL_Y];
-  if (data.find(DT_CMT_ORDINAL_X) != data.end())
-    *x_offset_ordinal = data[DT_CMT_ORDINAL_X];
-  if (data.find(DT_CMT_ORDINAL_Y) != data.end())
-    *y_offset_ordinal = data[DT_CMT_ORDINAL_Y];
-  if (data.find(DT_CMT_FINGER_COUNT) != data.end())
-    *finger_count = static_cast<int>(data[DT_CMT_FINGER_COUNT]);
+  if (const double* val = base::FindOrNull(data, DT_CMT_SCROLL_X)) {
+    *x_offset = *val;
+  }
+  if (const double* val = base::FindOrNull(data, DT_CMT_SCROLL_Y)) {
+    *y_offset = *val;
+  }
+  if (const double* val = base::FindOrNull(data, DT_CMT_ORDINAL_X)) {
+    *x_offset_ordinal = *val;
+  }
+  if (const double* val = base::FindOrNull(data, DT_CMT_ORDINAL_Y)) {
+    *y_offset_ordinal = *val;
+  }
+  if (const double* val = base::FindOrNull(data, DT_CMT_FINGER_COUNT)) {
+    *finger_count = static_cast<int>(*val);
+  }
 }
 
 void DeviceDataManagerX11::GetScrollClassOffsets(const x11::Event& x11_event,
                                                  double* x_offset,
                                                  double* y_offset) {
-  DCHECK_NE(SCROLL_TYPE_NO_SCROLL, GetScrollClassDeviceDetail(x11_event));
+  CHECK_NE(SCROLL_TYPE_NO_SCROLL, GetScrollClassDeviceDetail(x11_event),
+           base::NotFatalUntil::M163);
 
   *x_offset = 0;
   *y_offset = 0;
@@ -534,17 +593,20 @@ void DeviceDataManagerX11::GetScrollClassOffsets(const x11::Event& x11_event,
     return;
 
   auto sourceid = xiev->sourceid;
-  if (!scroll_data_.contains(sourceid)) {
+  ScrollInfo* info = base::FindOrNull(scroll_data_, sourceid);
+  if (!info) {
+    return;
+  }
+  const int* count = base::FindOrNull(valuator_count_, sourceid);
+  if (!count) {
     return;
   }
   auto valuators_iter = xiev->axisvalues.begin();
 
-  ScrollInfo* info = &scroll_data_[sourceid];
-
   const int horizontal_number = info->horizontal.number;
   const int vertical_number = info->vertical.number;
 
-  for (int i = 0; i <= valuator_count_[sourceid]; ++i) {
+  for (int i = 0; i <= *count; ++i) {
     if (!IsXinputMaskSet(base::as_byte_span(xiev->valuator_mask), i)) {
       continue;
     }
@@ -560,14 +622,56 @@ void DeviceDataManagerX11::GetScrollClassOffsets(const x11::Event& x11_event,
 void DeviceDataManagerX11::InvalidateScrollClasses(
     x11::Input::DeviceId device_id) {
   if (device_id == kAllDevices) {
+    if (scroll_data_.empty()) {
+      return;
+    }
     for (auto& i : scroll_data_) {
       i.second.horizontal.seen = false;
       i.second.vertical.seen = false;
     }
   } else {
-    if (scroll_data_.contains(device_id)) {
-      scroll_data_[device_id].horizontal.seen = false;
-      scroll_data_[device_id].vertical.seen = false;
+    ScrollInfo* info = base::FindOrNull(scroll_data_, device_id);
+    if (!info) {
+      return;
+    }
+    info->horizontal.seen = false;
+    info->vertical.seen = false;
+  }
+
+  if (!IsXInput2Available()) {
+    return;
+  }
+
+  const auto query_id =
+      device_id == kAllDevices ? x11::Input::DeviceId::All : device_id;
+  if (auto reply =
+          x11::Connection::Get()->xinput().XIQueryDevice(query_id).Sync()) {
+    for (const auto& info : reply->infos) {
+      UpdateScrollClassValuators(info.deviceid, info.classes);
+    }
+  }
+}
+
+void DeviceDataManagerX11::UpdateScrollClassValuators(
+    x11::Input::DeviceId device_id,
+    const std::vector<x11::Input::DeviceClass>& classes) {
+  ScrollInfo* info = base::FindOrNull(scroll_data_, device_id);
+  if (!info) {
+    return;
+  }
+  info->horizontal.seen = false;
+  info->vertical.seen = false;
+  for (const auto& device_class : classes) {
+    if (!device_class.valuator.has_value()) {
+      continue;
+    }
+    const auto& valuator = *device_class.valuator;
+    if (valuator.number == info->vertical.number) {
+      info->vertical.position = Fp3232ToDouble(valuator.value);
+      info->vertical.seen = true;
+    } else if (valuator.number == info->horizontal.number) {
+      info->horizontal.position = Fp3232ToDouble(valuator.value);
+      info->horizontal.seen = true;
     }
   }
 }
@@ -587,16 +691,21 @@ void DeviceDataManagerX11::GetFlingData(const x11::Event& xev,
   EventData data;
   GetEventRawData(xev, &data);
 
-  if (data.find(DT_CMT_FLING_X) != data.end())
-    *vx = data[DT_CMT_FLING_X];
-  if (data.find(DT_CMT_FLING_Y) != data.end())
-    *vy = data[DT_CMT_FLING_Y];
-  if (data.find(DT_CMT_FLING_STATE) != data.end())
-    *is_cancel = !!static_cast<unsigned int>(data[DT_CMT_FLING_STATE]);
-  if (data.find(DT_CMT_ORDINAL_X) != data.end())
-    *vx_ordinal = data[DT_CMT_ORDINAL_X];
-  if (data.find(DT_CMT_ORDINAL_Y) != data.end())
-    *vy_ordinal = data[DT_CMT_ORDINAL_Y];
+  if (const double* val = base::FindOrNull(data, DT_CMT_FLING_X)) {
+    *vx = *val;
+  }
+  if (const double* val = base::FindOrNull(data, DT_CMT_FLING_Y)) {
+    *vy = *val;
+  }
+  if (const double* val = base::FindOrNull(data, DT_CMT_FLING_STATE)) {
+    *is_cancel = !!static_cast<unsigned int>(*val);
+  }
+  if (const double* val = base::FindOrNull(data, DT_CMT_ORDINAL_X)) {
+    *vx_ordinal = *val;
+  }
+  if (const double* val = base::FindOrNull(data, DT_CMT_ORDINAL_Y)) {
+    *vy_ordinal = *val;
+  }
 }
 
 void DeviceDataManagerX11::GetMetricsData(const x11::Event& xev,
@@ -610,17 +719,16 @@ void DeviceDataManagerX11::GetMetricsData(const x11::Event& xev,
   EventData data;
   GetEventRawData(xev, &data);
 
-  if (data.find(DT_CMT_METRICS_TYPE) != data.end()) {
-    int val = static_cast<int>(data[DT_CMT_METRICS_TYPE]);
-    if (val == 0)
-      *type = kGestureMetricsTypeNoisyGround;
-    else
-      *type = kGestureMetricsTypeUnknown;
+  if (const double* val = base::FindOrNull(data, DT_CMT_METRICS_TYPE)) {
+    *type = static_cast<int>(*val) == 0 ? kGestureMetricsTypeNoisyGround
+                                        : kGestureMetricsTypeUnknown;
   }
-  if (data.find(DT_CMT_METRICS_DATA1) != data.end())
-    *data1 = data[DT_CMT_METRICS_DATA1];
-  if (data.find(DT_CMT_METRICS_DATA2) != data.end())
-    *data2 = data[DT_CMT_METRICS_DATA2];
+  if (const double* val = base::FindOrNull(data, DT_CMT_METRICS_DATA1)) {
+    *data1 = *val;
+  }
+  if (const double* val = base::FindOrNull(data, DT_CMT_METRICS_DATA2)) {
+    *data2 = *val;
+  }
 }
 
 int DeviceDataManagerX11::GetMappedButton(int button) {
@@ -643,10 +751,12 @@ void DeviceDataManagerX11::GetGestureTimes(const x11::Event& xev,
   EventData data;
   GetEventRawData(xev, &data);
 
-  if (data.find(DT_CMT_START_TIME) != data.end())
-    *start_time = data[DT_CMT_START_TIME];
-  if (data.find(DT_CMT_END_TIME) != data.end())
-    *end_time = data[DT_CMT_END_TIME];
+  if (const double* val = base::FindOrNull(data, DT_CMT_START_TIME)) {
+    *start_time = *val;
+  }
+  if (const double* val = base::FindOrNull(data, DT_CMT_END_TIME)) {
+    *end_time = *val;
+  }
 }
 
 bool DeviceDataManagerX11::NormalizeData(x11::Input::DeviceId deviceid,
@@ -656,7 +766,7 @@ bool DeviceDataManagerX11::NormalizeData(x11::Input::DeviceId deviceid,
   double min_value;
   if (GetDataRange(deviceid, type, &min_value, &max_value)) {
     *value = (*value - min_value) / (max_value - min_value);
-    DCHECK(*value >= 0.0 && *value <= 1.0);
+    CHECK(*value >= 0.0 && *value <= 1.0, base::NotFatalUntil::M163);
     return true;
   }
   return false;
@@ -666,12 +776,14 @@ bool DeviceDataManagerX11::GetDataRange(x11::Input::DeviceId deviceid,
                                         const DataType type,
                                         double* min,
                                         double* max) {
-  if (!valuator_lookup_.contains(deviceid)) {
+  const auto* valuator_info = base::FindOrNull(valuator_lookup_, deviceid);
+  if (!valuator_info || type >= valuator_info->size()) {
     return false;
   }
-  if (valuator_lookup_[deviceid][type].number >= 0) {
-    *min = valuator_lookup_[deviceid][type].min;
-    *max = valuator_lookup_[deviceid][type].max;
+  const auto& info = (*valuator_info)[type];
+  if (info.number >= 0) {
+    *min = info.min;
+    *max = info.max;
     return true;
   }
   return false;
@@ -684,7 +796,10 @@ void DeviceDataManagerX11::SetDeviceListForTest(
   valuator_count_.clear();
   valuator_lookup_.clear();
   data_type_lookup_.clear();
+  scroll_data_.clear();
   last_seen_valuator_.clear();
+  stylus_.clear();
+  touchpads_.clear();
 
   for (auto deviceid : touchscreen) {
     InitializeValuatorsForTest(static_cast<x11::Input::DeviceId>(deviceid),
@@ -715,18 +830,17 @@ void DeviceDataManagerX11::SetValuatorDataForTest(
   CHECK(index >= 0 && index < valuator_count_[device]);
   SetXinputMask(base::as_writable_byte_span(devev->valuator_mask), index);
 
-  x11::Input::Fp3232* valuators = devev->axisvalues.data();
+  int valuator_index = 0;
   for (int i = 0; i < index; ++i) {
     if (IsXinputMaskSet(base::as_byte_span(devev->valuator_mask), i)) {
-      UNSAFE_TODO(valuators++);
+      valuator_index++;
     }
   }
-  for (int i = DT_LAST_ENTRY - 1; i > valuators - devev->axisvalues.data();
-       --i) {
+  for (int i = DT_LAST_ENTRY - 1; i > valuator_index; --i) {
     devev->axisvalues[i] = devev->axisvalues[i - 1];
   }
 
-  *valuators = DoubleToFp3232(value);
+  devev->axisvalues[valuator_index] = DoubleToFp3232(value);
 }
 
 void DeviceDataManagerX11::InitializeValuatorsForTest(
@@ -802,7 +916,8 @@ double DeviceDataManagerX11::ExtractAndUpdateScrollOffset(
 
 void DeviceDataManagerX11::SetDisabledKeyboardAllowedKeys(
     std::unique_ptr<std::set<KeyboardCode>> excepted_keys) {
-  DCHECK(!excepted_keys.get() || !blocked_keyboard_allowed_keys_.get());
+  CHECK(!excepted_keys.get() || !blocked_keyboard_allowed_keys_.get(),
+        base::NotFatalUntil::M163);
   blocked_keyboard_allowed_keys_ = std::move(excepted_keys);
 }
 

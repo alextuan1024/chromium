@@ -24,6 +24,8 @@ component("shell_dialogs") {
     "select_file_dialog.h",
     "select_file_dialog_factory.cc",
     "select_file_dialog_factory.h",
+    "select_file_dialog_listener.cc",
+    "select_file_dialog_listener.h",
     "select_file_policy.cc",
     "select_file_policy.h",
     "selected_file_info.cc",
@@ -31,10 +33,7 @@ component("shell_dialogs") {
     "shell_dialogs_export.h",
   ]
 
-  configs += [
-    "//build/config/compiler:wexit_time_destructors",
-    "//build/config/compiler:wglobal_constructors",
-  ]
+  configs += [ "//build/config/compiler:wglobal_constructors" ]
 
   defines = [ "SHELL_DIALOGS_IMPLEMENTATION" ]
 
@@ -181,6 +180,10 @@ test("shell_dialogs_unittests") {
       "//components/dbus",
       "//dbus",
       "//dbus:test_support",
+      "//ui/aura",
+      "//ui/display:test_support",
+      "//ui/ozone:ozone_switches",
+      "//ui/platform_window",
     ]
   }
 

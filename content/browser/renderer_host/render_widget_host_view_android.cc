@@ -6,6 +6,8 @@
 
 #include <android/bitmap.h>
 
+#include <algorithm>
+#include <array>
 #include <limits>
 #include <utility>
 
@@ -53,7 +55,7 @@
 #include "components/viz/common/surfaces/frame_sink_id_allocator.h"
 #include "components/viz/common/surfaces/parent_local_surface_id_allocator.h"
 #include "content/browser/accessibility/browser_accessibility_manager_android.h"
-#include "content/browser/accessibility/web_contents_accessibility_android.h"
+#include "content/browser/accessibility/web_contents_accessibility_base.h"
 #include "content/browser/android/gesture_listener_manager.h"
 #include "content/browser/android/ime_adapter_android.h"
 #include "content/browser/android/overscroll_controller_android.h"
@@ -263,6 +265,23 @@ class ScopedLatencyHistogram {
   const raw_ref<const ui::MotionEventAndroid> event_;
   bool emit_histogrmams_ = true;
 };
+
+bool AreControlsEquivalent(const cc::BrowserControlsMetadata& a,
+                           const cc::BrowserControlsMetadata& b) {
+  return cc::MathUtil::IsFloatNearlyTheSame(a.top_controls_height,
+                                            b.top_controls_height) &&
+         cc::MathUtil::IsFloatNearlyTheSame(a.top_controls_shown_ratio,
+                                            b.top_controls_shown_ratio) &&
+         cc::MathUtil::IsFloatNearlyTheSame(a.top_controls_min_height_offset,
+                                            b.top_controls_min_height_offset) &&
+         cc::MathUtil::IsFloatNearlyTheSame(a.bottom_controls_height,
+                                            b.bottom_controls_height) &&
+         cc::MathUtil::IsFloatNearlyTheSame(a.bottom_controls_shown_ratio,
+                                            b.bottom_controls_shown_ratio) &&
+         cc::MathUtil::IsFloatNearlyTheSame(
+             a.bottom_controls_min_height_offset,
+             b.bottom_controls_min_height_offset);
+}
 
 }  // namespace
 
@@ -509,15 +528,16 @@ bool RenderWidgetHostViewAndroid::ScreenStateChangeHandler::
         } else {
           // A standalone non-rotation resize has occurred. For WebView, we sync
           // immediately. For the browser, schedule a vsync-aligned update to
-          // process it smoothly.
-          sync_needed = true;
-          if (rwhva_->using_browser_compositor_ &&
-              features::IsFluidResizeEnabled()) {
-            sync_needed = false;
-            if (!rwhva_->visual_properties_update_pending_) {
-              rwhva_->visual_properties_update_pending_ = true;
-              rwhva_->SetNeedsAnimate();
-            }
+          // process it smoothly. In fullscreen, sync now: the new size is
+          // embedded on a black fallback, and a deferred update waits for any
+          // pending visual properties ack.
+          const bool defer_to_animate = rwhva_->using_browser_compositor_ &&
+                                        features::IsFluidResizeEnabled() &&
+                                        !pending_screen_state_.is_fullscreen;
+          sync_needed = !defer_to_animate;
+          if (defer_to_animate && !rwhva_->visual_properties_update_pending_) {
+            rwhva_->visual_properties_update_pending_ = true;
+            rwhva_->SetNeedsAnimate();
           }
         }
       }
@@ -605,6 +625,8 @@ bool RenderWidgetHostViewAndroid::ScreenStateChangeHandler::
     if (pending_screen_state_.is_fullscreen) {
       pending_screen_state_.any_non_rotation_size_changed = true;
     }
+    // This sync supersedes any update deferred to Animate().
+    rwhva_->visual_properties_update_pending_ = false;
     rwhva_->SynchronizeVisualProperties(
         deadline_policy, std::nullopt,
         /*reuse_current_local_surface_id=*/false,
@@ -650,6 +672,16 @@ RenderWidgetHostViewAndroid::RenderWidgetHostViewAndroid(
     RenderWidgetHostImpl* widget_host,
     gfx::NativeView parent_native_view,
     cc::slim::Layer* parent_layer)
+    : RenderWidgetHostViewAndroid(widget_host,
+                                  parent_native_view,
+                                  parent_layer,
+                                  CompositorImpl::IsInitialized()) {}
+
+RenderWidgetHostViewAndroid::RenderWidgetHostViewAndroid(
+    RenderWidgetHostImpl* widget_host,
+    gfx::NativeView parent_native_view,
+    cc::slim::Layer* parent_layer,
+    bool using_browser_compositor)
     : RenderWidgetHostViewBase(widget_host),
       is_window_visible_(true),
       is_window_activity_started_(true),
@@ -667,17 +699,9 @@ RenderWidgetHostViewAndroid::RenderWidgetHostViewAndroid(
               GetUIThreadTaskRunner({BrowserTaskType::kUserInput})),
           this)),
       stylus_text_selector_(this),
-      using_browser_compositor_(CompositorImpl::IsInitialized()),
+      using_browser_compositor_(using_browser_compositor),
       synchronous_compositor_client_(nullptr),
       observing_root_window_(false),
-      prev_top_shown_pix_(0.f),
-      prev_top_controls_pix_(0.f),
-      prev_top_controls_translate_(0.f),
-      prev_top_controls_min_height_offset_pix_(0.f),
-      prev_bottom_shown_pix_(0.f),
-      prev_bottom_controls_pix_(0.f),
-      prev_bottom_controls_translate_(0.f),
-      prev_bottom_controls_min_height_offset_pix_(0.f),
       page_scale_(1.f),
       min_page_scale_(1.f),
       max_page_scale_(1.f),
@@ -837,13 +861,6 @@ RenderWidgetHostViewAndroid::GetVirtualKeyboardMode() {
   return frame_host->GetPage().virtual_keyboard_mode();
 }
 
-void RenderWidgetHostViewAndroid::ShowInterestInElement(int nodeID) {
-  // TODO(crbug.com/326681249): This only works if the link is in the main frame
-  // for this tab. Need to find a way to pass the frame back and forth to the
-  // browser, so this can work in iframes.
-  host()->frame_tree()->GetMainFrame()->GetPage().ShowInterestInElement(nodeID);
-}
-
 viz::SurfaceId RenderWidgetHostViewAndroid::GetFallbackSurfaceIdForTesting()
     const {
   return delegated_frame_host_->GetFallbackSurfaceIdForTesting();  // IN-TEST
@@ -961,47 +978,35 @@ void RenderWidgetHostViewAndroid::OnRenderFrameMetadataChangedBeforeActivation(
 
   // Note that the height of browser control is not affected by page scale
   // factor. Thus, |top_content_offset| in CSS pixels is also in DIPs.
-  float top_content_offset =
-      metadata.browser_controls_metadata.top_controls_height *
-      metadata.browser_controls_metadata.top_controls_shown_ratio;
-  float top_shown_pix = top_content_offset;
+  const ClampedBrowserControls controls =
+      ClampBrowserControls(metadata.browser_controls_metadata);
+  const float top_content_offset = controls.top_content_offset;
+  const float bottom_content_offset = controls.bottom_content_offset;
 
   if (ime_adapter_android_) {
     ime_adapter_android_->UpdateFrameInfo(metadata.selection.start, dip_scale,
-                                          top_shown_pix);
+                                          top_content_offset);
   }
 
   if (!gesture_listener_manager_)
     return;
 
-  base::WeakPtr<RenderWidgetHostViewAndroid> weak_this =
-      weak_ptr_factory_.GetWeakPtr();
-
-  UpdateTouchSelectionController(
-      metadata.selection, metadata.page_scale_factor,
-      metadata.browser_controls_metadata.top_controls_height,
-      metadata.browser_controls_metadata.top_controls_shown_ratio,
-      scrollable_viewport_size_dip);
+  input::ScopedInputDispatchPin pin(this);
+  UpdateTouchSelectionController(metadata.selection, metadata.page_scale_factor,
+                                 top_content_offset,
+                                 scrollable_viewport_size_dip);
 
   // Abort if the view was destroyed during UpdateTouchSelectionController
   // (e.g. via synchronous JNI callout to Java).
-  if (!weak_this) {
+  if (destroy_pending()) {
     return;
   }
 
   // ViewAndroid::content_offset() must be in dip.
   float top_content_offset_dip = top_content_offset / dip_scale;
   view_.UpdateFrameInfo({scrollable_viewport_size_dip, top_content_offset_dip});
-  // TODO(b/555766816): UpdateControls() should take in
-  // `browser_controls_metadata`.
-  bool controls_changed = UpdateControls(
-      view_.GetDipScale(),
-      metadata.browser_controls_metadata.top_controls_height,
-      metadata.browser_controls_metadata.top_controls_shown_ratio,
-      metadata.browser_controls_metadata.top_controls_min_height_offset,
-      metadata.browser_controls_metadata.bottom_controls_height,
-      metadata.browser_controls_metadata.bottom_controls_shown_ratio,
-      metadata.browser_controls_metadata.bottom_controls_min_height_offset);
+  bool controls_changed =
+      UpdateControls(metadata.browser_controls_metadata, controls);
 
   // TODO(crbug.com/40219248): Remove toSkColor and make all SkColor4f.
   SetContentBackgroundColor(is_transparent
@@ -1017,15 +1022,16 @@ void RenderWidgetHostViewAndroid::OnRenderFrameMetadataChangedBeforeActivation(
         metadata.root_overflow_y_hidden);
   }
 
-  // All offsets and sizes except |top_shown_pix| are in dip.
+  // All offsets and sizes except |top_content_offset| and
+  // |bottom_content_offset| are in dip.
   gesture_listener_manager_->UpdateScrollInfo(
       root_scroll_offset_dip, metadata.page_scale_factor,
       metadata.min_page_scale_factor, metadata.max_page_scale_factor,
       root_layer_size_dip, scrollable_viewport_size_dip, top_content_offset_dip,
-      top_shown_pix, controls_changed);
+      top_content_offset, bottom_content_offset, controls_changed);
   // This needs to be called after GestureListenerManager::UpdateScrollInfo, as
   // it depends on frame info being updated during the UpdateScrollInfo call.
-  auto* wcax = GetWebContentsAccessibilityAndroid();
+  auto* wcax = GetWebContentsAccessibilityBase();
   if (wcax)
     wcax->UpdateFrameInfo(metadata.page_scale_factor);
 
@@ -1151,6 +1157,13 @@ void RenderWidgetHostViewAndroid::OnRenderFrameMetadataChangedAfterActivation(
     // a new surface.
     pre_navigation_content_ = true;
 
+    if (delegated_frame_host_) {
+      // Let the frame host know which surface activated, so it can time
+      // fullscreen resizes.
+      delegated_frame_host_->OnRendererSurfaceActivated(
+          activated_local_surface_id, activation_time);
+    }
+
     while (!rotation_metrics_.empty()) {
       auto rotation_target = rotation_metrics_.front();
       // Activation from a previous surface before the new rotation has set a
@@ -1265,7 +1278,7 @@ void RenderWidgetHostViewAndroid::LostFocusInternal() {
 }
 
 bool RenderWidgetHostViewAndroid::HasFocus() {
-  return view_.HasFocus();
+  return has_focus_for_testing_.value_or(view_.HasFocus());
 }
 
 bool RenderWidgetHostViewAndroid::IsSurfaceAvailableForCopy() {
@@ -1845,7 +1858,8 @@ void RenderWidgetHostViewAndroid::NotifyHoverActionStylusWritable(
   view_.NotifyHoverActionStylusWritable(stylus_writable);
 }
 
-void RenderWidgetHostViewAndroid::OnStartStylusWriting() {
+void RenderWidgetHostViewAndroid::OnStartStylusWriting(
+    const std::optional<input::StylusWritingProperties>& properties) {
   if (host()) {
     host()->UpdateElementFocusForStylusWriting();
   }
@@ -1890,15 +1904,10 @@ void RenderWidgetHostViewAndroid::DestroyImpl() {
 }
 
 void RenderWidgetHostViewAndroid::CreateUnboundedSurface(
-    mojo::PendingAssociatedReceiver<blink::mojom::UnboundedSurfaceHost> host,
-    mojo::PendingAssociatedRemote<blink::mojom::UnboundedSurfaceClient> client,
-    const gfx::Rect& bounds_in_dips,
+    const gfx::Rect& bounds_in_screen,
     base::WeakPtr<RenderWidgetHostViewBase> subframe_view) {
-  gfx::Rect bounds_in_screen =
-      ConvertSubframeBoundsToScreen(bounds_in_dips, subframe_view.get());
   unbounded_surface_window_ = UnboundedSurfaceWindowAndroid::Create(
-      this, std::move(host), std::move(client), bounds_in_screen,
-      std::move(subframe_view));
+      this, bounds_in_screen, std::move(subframe_view));
 }
 
 void RenderWidgetHostViewAndroid::OnDestroyOrDefer() {
@@ -2049,12 +2058,13 @@ bool RenderWidgetHostViewAndroid::HasFallbackSurface() const {
   return delegated_frame_host_->HasFallbackSurface();
 }
 
-void RenderWidgetHostViewAndroid::CopyFromSurface(
+void RenderWidgetHostViewAndroid::CopyFromSurfaceImpl(
     const gfx::Rect& src_subrect,
     const gfx::Size& output_size,
+    bool is_copy_request_secure,
     base::TimeDelta timeout,
     base::OnceCallback<void(const content::CopyFromSurfaceResult&)> callback) {
-  TRACE_EVENT0("cc", "RenderWidgetHostViewAndroid::CopyFromSurface");
+  TRACE_EVENT0("cc", "RenderWidgetHostViewAndroid::CopyFromSurfaceImpl");
   if (!IsSurfaceAvailableForCopy()) {
     std::move(callback).Run(viz::CopyOutputBitmapWithMetadata());
     return;
@@ -2066,18 +2076,19 @@ void RenderWidgetHostViewAndroid::CopyFromSurface(
   }
 
   delegated_frame_host_->CopyFromCompositingSurface(
-      src_subrect, output_size, timeout,
+      src_subrect, output_size, /*capture_exact_surface_id=*/false,
+      is_copy_request_secure, timeout,
       base::BindOnce(
           [](base::OnceCallback<void(const content::CopyFromSurfaceResult&)>
                  callback,
              const base::expected<viz::CopyOutputBitmapWithMetadata,
                                   viz::CopyOutputResult::Error>& result) {
             TRACE_EVENT0(
-                "cc", "RenderWidgetHostViewAndroid::CopyFromSurface finished");
+                "cc",
+                "RenderWidgetHostViewAndroid::CopyFromSurfaceImpl finished");
             std::move(callback).Run(ToCopyFromSurfaceResult(result));
           },
-          std::move(callback)),
-      /*capture_exact_surface_id=*/false);
+          std::move(callback)));
 }
 
 ui::FilteredGestureProvider*
@@ -2247,8 +2258,10 @@ void RenderWidgetHostViewAndroid::SelectBetweenCoordinates(
 
 void RenderWidgetHostViewAndroid::OnSelectionEvent(
     ui::SelectionEventType event) {
-  if (!selection_popup_controller_)
+  if (destroy_pending() || !selection_popup_controller_) {
     return;
+  }
+  input::ScopedInputDispatchPin pin(this);
   CHECK(touch_selection_controller_, base::NotFatalUntil::M152);
   // If a selection drag has started, it has taken over the active touch
   // sequence. Immediately cancel gesture detection and any downstream touch
@@ -2269,6 +2282,9 @@ void RenderWidgetHostViewAndroid::OnSelectionEvent(
     }
     if (gesture_provider_->GetCurrentDownEvent()) {
       ResetGestureDetection();
+      if (destroy_pending() || !selection_popup_controller_) {
+        return;
+      }
     }
   }
   selection_popup_controller_->OnSelectionEvent(
@@ -2361,88 +2377,98 @@ void RenderWidgetHostViewAndroid::SynchronousCopyContents(
   std::move(callback).Run(viz::CopyOutputBitmapWithMetadata(bitmap));
 }
 
-WebContentsAccessibilityAndroid*
-RenderWidgetHostViewAndroid::GetWebContentsAccessibilityAndroid() const {
+WebContentsAccessibilityBase*
+RenderWidgetHostViewAndroid::GetWebContentsAccessibilityBase() const {
   return web_contents_accessibility_;
 }
 
 void RenderWidgetHostViewAndroid::UpdateTouchSelectionController(
     const viz::Selection<gfx::SelectionBound>& selection,
     float page_scale_factor,
-    float top_controls_height,
-    float top_controls_shown_ratio,
+    float top_content_offset,
     const gfx::SizeF& scrollable_viewport_size_dip) {
-  if (!touch_selection_controller_)
+  if (destroy_pending() || !touch_selection_controller_) {
     return;
+  }
+  input::ScopedInputDispatchPin pin(this);
 
   CHECK(touch_selection_controller_client_manager_, base::NotFatalUntil::M152);
   touch_selection_controller_client_manager_->UpdateClientSelectionBounds(
       selection.start, selection.end, this, nullptr);
+  if (destroy_pending()) {
+    return;
+  }
   OnUpdateScopedSelectionHandles();
 
   // Set parameters for adaptive handle orientation.
   gfx::SizeF viewport_size(scrollable_viewport_size_dip);
   viewport_size.Scale(page_scale_factor);
-  gfx::RectF viewport_rect(0.0f, top_controls_height * top_controls_shown_ratio,
-                           viewport_size.width(), viewport_size.height());
+  gfx::RectF viewport_rect(0.0f, top_content_offset, viewport_size.width(),
+                           viewport_size.height());
   touch_selection_controller_->OnViewportChanged(viewport_rect);
 }
 
+RenderWidgetHostViewAndroid::ClampedBrowserControls
+RenderWidgetHostViewAndroid::ClampBrowserControls(
+    const cc::BrowserControlsMetadata& metadata) const {
+  // Bound by the heights the browser is laying out right now. The renderer
+  // may still be reporting a previous height (it learns of changes
+  // asynchronously via VisualProperties), but it can never legitimately
+  // need to position anything outside the controls the browser is drawing.
+  RenderViewHostDelegateView* delegate_view =
+      host()->delegate() ? host()->delegate()->GetDelegateView() : nullptr;
+  const float browser_top_height =
+      delegate_view ? delegate_view->GetTopControlsHeight() : 0;
+  const float browser_bottom_height =
+      delegate_view ? delegate_view->GetBottomControlsHeight() : 0;
+  CHECK_GE(browser_top_height, 0.f);
+  CHECK_GE(browser_bottom_height, 0.f);
+
+  // The renderer reports a height and a shown ratio, from which both the
+  // controls' translation (shown - height) and the content offset (shown) are
+  // derived. Clamp the translation and derive the content offset from it so
+  // the two always agree. Clamping `height * ratio` directly would let a
+  // renderer claim height 0 at ratio 1: translation 0 (controls fully shown)
+  // with content offset 0 (page drawn underneath them).
+  const float top_translate = std::clamp(
+      metadata.top_controls_height * (metadata.top_controls_shown_ratio - 1.f),
+      -browser_top_height, 0.f);
+  const float bottom_translate =
+      std::clamp(metadata.bottom_controls_height *
+                     (1.f - metadata.bottom_controls_shown_ratio),
+                 0.f, browser_bottom_height);
+
+  ClampedBrowserControls clamped;
+  clamped.top_translate = top_translate;
+  clamped.top_content_offset = browser_top_height + top_translate;
+  clamped.top_min_height_offset = std::clamp(
+      metadata.top_controls_min_height_offset, 0.f, browser_top_height);
+  clamped.bottom_translate = bottom_translate;
+  clamped.bottom_content_offset = browser_bottom_height - bottom_translate;
+  clamped.bottom_min_height_offset = std::clamp(
+      metadata.bottom_controls_min_height_offset, 0.f, browser_bottom_height);
+  return clamped;
+}
+
 bool RenderWidgetHostViewAndroid::UpdateControls(
-    float dip_scale,
-    float top_controls_height,
-    float top_controls_shown_ratio,
-    float top_controls_min_height_offset,
-    float bottom_controls_height,
-    float bottom_controls_shown_ratio,
-    float bottom_controls_min_height_offset) {
-  float top_controls_pix = top_controls_height;
-  // |top_content_offset| is in physical pixels if --use-zoom-for-dsf is
-  // enabled. Otherwise, it is in DIPs.
-  // Note that the height of browser control is not affected by page scale
-  // factor. Thus, |top_content_offset| in CSS pixels is also in DIPs.
-  float top_content_offset = top_controls_height * top_controls_shown_ratio;
-  float top_shown_pix = top_content_offset;
-  float top_translate = top_shown_pix - top_controls_pix;
-  bool top_changed =
-      !cc::MathUtil::IsFloatNearlyTheSame(top_shown_pix, prev_top_shown_pix_);
-
-  float top_min_height_offset_pix = top_controls_min_height_offset;
-  top_changed |= !cc::MathUtil::IsFloatNearlyTheSame(
-      top_min_height_offset_pix, prev_top_controls_min_height_offset_pix_);
-
-  top_changed |= !cc::MathUtil::IsFloatNearlyTheSame(top_controls_pix,
-                                                     prev_top_controls_pix_);
-
-  prev_top_shown_pix_ = top_shown_pix;
-  prev_top_controls_pix_ = top_controls_pix;
-  prev_top_controls_translate_ = top_translate;
-  prev_top_controls_min_height_offset_pix_ = top_min_height_offset_pix;
-
-  float bottom_controls_pix = bottom_controls_height;
-  float bottom_shown_pix = bottom_controls_pix * bottom_controls_shown_ratio;
-  bool bottom_changed = !cc::MathUtil::IsFloatNearlyTheSame(
-      bottom_shown_pix, prev_bottom_shown_pix_);
-  bottom_changed |= !cc::MathUtil::IsFloatNearlyTheSame(
-      bottom_controls_pix, prev_bottom_controls_pix_);
-  float bottom_translate = bottom_controls_pix - bottom_shown_pix;
-
-  float bottom_min_height_offset_pix = bottom_controls_min_height_offset;
-  bottom_changed |= !cc::MathUtil::IsFloatNearlyTheSame(
-      bottom_min_height_offset_pix,
-      prev_bottom_controls_min_height_offset_pix_);
-
-  if (top_changed || bottom_changed || !controls_initialized_) {
-    view_.OnControlsChanged(top_translate, top_shown_pix,
-                            top_min_height_offset_pix, bottom_translate,
-                            bottom_min_height_offset_pix);
+    const cc::BrowserControlsMetadata& renderer_metadata,
+    const ClampedBrowserControls& clamped) {
+  // Notify when the renderer reports new browser controls state; `clamped` is
+  // the browser-bounded reading of that report. Comparing `clamped` instead
+  // would notify for a stale frame right after the embedder changes its control
+  // heights (the bound moved, the renderer did not), which embedders animating
+  // height changes may mistake for the renderer having finished the animation.
+  const bool changed =
+      !last_renderer_controls_.has_value() ||
+      !AreControlsEquivalent(*last_renderer_controls_, renderer_metadata);
+  last_renderer_controls_ = renderer_metadata;
+  if (changed) {
+    view_.OnControlsChanged(clamped.top_translate, clamped.top_content_offset,
+                            clamped.top_min_height_offset,
+                            clamped.bottom_translate,
+                            clamped.bottom_min_height_offset);
   }
-  prev_bottom_shown_pix_ = bottom_shown_pix;
-  prev_bottom_controls_translate_ = bottom_translate;
-  prev_bottom_controls_min_height_offset_pix_ = bottom_min_height_offset_pix;
-  prev_bottom_controls_pix_ = bottom_controls_pix;
-  controls_initialized_ = true;
-  return top_changed || bottom_changed;
+  return changed;
 }
 
 void RenderWidgetHostViewAndroid::OnDidUpdateVisualPropertiesComplete(
@@ -2551,10 +2577,10 @@ void RenderWidgetHostViewAndroid::HideInternal() {
   // If a RWHVA gets hidden and swapped out then gets swapped back in and shown,
   // the last known controls offsets may be the same as the latest values we get
   // from the renderer. In this case, we would skip pushing the offset to
-  // `ViewAndroid` assuming there was no change. To prevent this, we should
-  // reset `controls_initialized_` to make sure the offsets are pushed once the
-  // RWHVA is shown again.
-  controls_initialized_ = false;
+  // `ViewAndroid` assuming there was no change. To prevent this, forget the
+  // last report to make sure the offsets are pushed once the RWHVA is shown
+  // again.
+  last_renderer_controls_.reset();
 
   // Only preserve the frontbuffer if the activity was stopped while the
   // window is still visible. This avoids visual artifacts when transitioning
@@ -2576,6 +2602,9 @@ void RenderWidgetHostViewAndroid::HideInternal() {
   if (hide_frontbuffer) {
     view_.GetLayer()->SetHideLayerAndSubtree(true);
     delegated_frame_host_->WasHidden();
+  } else if (delegated_frame_host_) {
+    // The frontbuffer stays visible, but the renderer is hidden.
+    delegated_frame_host_->OnRendererHidden();
   }
 
   if (stop_observing_root_window) {
@@ -2709,6 +2738,9 @@ void RenderWidgetHostViewAndroid::ProcessAckedTouchEvent(
     const input::TouchEventWithLatencyInfo& touch,
     blink::mojom::InputEventResultState ack_result) {
   TRACE_EVENT0("input", "RenderWidgetHostViewAndroid::ProcessAckedTouchEvent");
+  if (destroy_pending()) {
+    return;
+  }
   input::ScopedInputDispatchPin pin(this);
   input_helper_->ProcessAckedTouchEvent(touch, ack_result);
 }
@@ -2758,13 +2790,6 @@ blink::mojom::PointerLockResult RenderWidgetHostViewAndroid::LockPointer(
     return blink::mojom::PointerLockResult::kWrongDocument;
   }
 
-  // ExclusiveAccessManager handles the pointer lock toast.
-  if (!base::FeatureList::IsEnabled(features::kEnableExclusiveAccessManager)) {
-    JNIEnv* env = base::android::AttachCurrentThread();
-    Java_RenderWidgetHostViewImpl_showPointerLockToast(
-        env, GetJavaObject(), window_android->GetJavaObject());
-  }
-
   return blink::mojom::PointerLockResult::kSuccess;
 }
 
@@ -2806,12 +2831,6 @@ void RenderWidgetHostViewAndroid::UnlockPointer() {
 
   window_android->ReleasePointerLock(view_);
 
-  // ExclusiveAccessManager handles the pointer lock toast.
-  if (!base::FeatureList::IsEnabled(features::kEnableExclusiveAccessManager)) {
-    JNIEnv* env = base::android::AttachCurrentThread();
-    Java_RenderWidgetHostViewImpl_hidePointerLockToast(env, GetJavaObject());
-  }
-
   host()->LostPointerLock();
 }
 
@@ -2819,23 +2838,46 @@ void RenderWidgetHostViewAndroid::OnPointerLockRelease() {
   host()->LostPointerLock();
 }
 
-bool RenderWidgetHostViewAndroid::LockKeyboard(
-    std::optional<base::flat_set<ui::DomCode>> codes) {
-  if (keyboard_locked_) {
+// static
+bool RenderWidgetHostViewAndroid::ShouldCaptureSystemKeys(
+    const std::optional<base::flat_set<ui::DomCode>>& codes) {
+  if (!codes) {
     return true;
   }
+  static constexpr auto kModifierCodes = std::to_array<ui::DomCode>({
+      ui::DomCode::ALT_LEFT,
+      ui::DomCode::ALT_RIGHT,
+      ui::DomCode::CONTROL_LEFT,
+      ui::DomCode::CONTROL_RIGHT,
+      ui::DomCode::META_LEFT,
+      ui::DomCode::META_RIGHT,
+  });
+  return std::ranges::any_of(kModifierCodes, [&codes](ui::DomCode code) {
+    return codes->contains(code);
+  });
+}
 
+bool RenderWidgetHostViewAndroid::LockKeyboard(
+    std::optional<base::flat_set<ui::DomCode>> codes) {
+  // This may be called while already locked, e.g. when the page calls lock()
+  // again with a different set of keys, so the OS capture state and the locked
+  // keys are always updated. If this fails, the window attributes are left
+  // unchanged, so the previous lock state (if any) remains accurate.
   ui::WindowAndroid* window_android = view_.GetWindowAndroid();
   if (!window_android) {
     return false;
   }
 
-  if (!window_android->SetHasKeyboardCapture(true)) {
+  // SetHasKeyboardCapture() returns false without changing window state when
+  // the platform lacks the keyboard capture API (SDK < 36.1) or there is no
+  // Activity window, even when disabling capture. Failing here keeps keyboard
+  // lock unsupported on those Android versions.
+  if (!window_android->SetHasKeyboardCapture(ShouldCaptureSystemKeys(codes))) {
     return false;
   }
 
   keyboard_locked_ = true;
-  locked_keyboard_keys_ = codes;
+  locked_keyboard_keys_ = std::move(codes);
   return true;
 }
 
@@ -2900,8 +2942,7 @@ void RenderWidgetHostViewAndroid::SendMouseEvent(
   }
 
   if (ShouldRouteEvents()) {
-    host()->delegate()->GetInputEventRouter()->RouteMouseEvent(this, &event,
-                                                               info);
+    host()->GetInputEventRouter()->RouteMouseEvent(this, &event, info);
   } else {
     host()->ForwardMouseEventWithLatencyInfo(event, info);
   }
@@ -2945,8 +2986,8 @@ void RenderWidgetHostViewAndroid::SendMouseWheelEvent(
       wheel_event, should_route_events, /*is_fling_capable=*/true);
 
   if (should_route_events) {
-    host()->delegate()->GetInputEventRouter()->RouteMouseWheelEvent(
-        this, &wheel_event, latency_info);
+    host()->GetInputEventRouter()->RouteMouseWheelEvent(this, &wheel_event,
+                                                        latency_info);
   } else {
     host()->ForwardWheelEventWithLatencyInfo(wheel_event, latency_info);
   }
@@ -2954,6 +2995,9 @@ void RenderWidgetHostViewAndroid::SendMouseWheelEvent(
 
 void RenderWidgetHostViewAndroid::SendGestureEvent(
     const blink::WebGestureEvent& event) {
+  if (destroy_pending()) {
+    return;
+  }
   input::ScopedInputDispatchPin pin(this);
   // Sending a gesture that may trigger overscroll should resume the effect.
   if (overscroll_controller_)
@@ -3914,7 +3958,7 @@ void RenderWidgetHostViewAndroid::OnUpdateScopedSelectionHandles() {
 }
 
 void RenderWidgetHostViewAndroid::SetWebContentsAccessibility(
-    WebContentsAccessibilityAndroid* web_contents_accessibility) {
+    WebContentsAccessibilityBase* web_contents_accessibility) {
   web_contents_accessibility_ = web_contents_accessibility;
   UpdateRootScrollOffsetUpdateFrequency();
 }

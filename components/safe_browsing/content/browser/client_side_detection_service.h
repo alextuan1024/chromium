@@ -30,8 +30,8 @@
 #include "base/sequence_checker.h"
 #include "base/time/time.h"
 #include "components/prefs/pref_change_registrar.h"
-#include "components/safe_browsing/core/browser/client_side_detection_service_base.h"
-#include "components/safe_browsing/core/browser/client_side_phishing_model.h"
+#include "components/safe_browsing/core/browser/client_side_detection/client_side_detection_service_base.h"
+#include "components/safe_browsing/core/browser/client_side_detection/client_side_phishing_model.h"
 #include "components/safe_browsing/core/common/proto/csd.pb.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/browser_thread.h"
@@ -40,7 +40,6 @@
 #include "net/base/ip_address.h"
 #include "net/http/http_status_code.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
-#include "url/gurl.h"
 
 namespace network {
 class SharedURLLoaderFactory;
@@ -103,6 +102,7 @@ class ClientSideDetectionService
  private:
   // ClientSideDetectionServiceBase implementation:
   void OnModelUpdated() override;
+  bool ShouldCreateBrowserScorer() const override;
   void DidSendClientReportPhishingRequest(
       std::unique_ptr<ClientPhishingRequest> request,
       const std::string& access_token) override;

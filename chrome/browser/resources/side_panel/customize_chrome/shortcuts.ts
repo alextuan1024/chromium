@@ -18,7 +18,8 @@ import {CrLitElement} from 'chrome://resources/lit/v3_0/lit.rollup.js';
 import type {PropertyValues} from 'chrome://resources/lit/v3_0/lit.rollup.js';
 
 import {CustomizeChromeAction, recordCustomizeChromeAction} from './common.js';
-import {CustomizeChromeApiProxy} from './customize_chrome_api_proxy.js';
+import type {BrowserProxy} from './customize_chrome.mojom-webui.js';
+import {browserProxyFactory} from './customize_chrome.mojom-webui.js';
 import {getCss} from './shortcuts.css.js';
 import {getHtml} from './shortcuts.html.js';
 import {TileType} from './tile_type.mojom-webui.js';
@@ -72,13 +73,12 @@ export class ShortcutsElement extends CrLitElement {
   protected accessor show_: boolean = false;
   protected accessor showPersonalShortcuts_: boolean = false;
   protected accessor showEnterpriseShortcuts_: boolean = false;
-  protected accessor shortcutConfigs_: ShortcutConfig[] = [];
-  protected accessor disabledShortcuts_: TileType[] = [];
+  private accessor shortcutConfigs_: ShortcutConfig[] = [];
+  private accessor disabledShortcuts_: TileType[] = [];
 
   private setMostVisitedSettingsListenerId_: number|null = null;
 
-  private apiProxy_: CustomizeChromeApiProxy =
-      CustomizeChromeApiProxy.getInstance();
+  private apiProxy_: BrowserProxy = browserProxyFactory.getInstance();
 
   override connectedCallback() {
     super.connectedCallback();

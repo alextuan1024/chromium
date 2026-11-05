@@ -12,6 +12,14 @@ namespace prefs {
 inline constexpr char kAddressBarSettingsNewBadgeShownCount[] =
     "ios.address_bar_settings_new_badge_shown_count";
 
+// Integer storing the `AppBarAssistantButtonPreferredState` chosen by the user
+// in the AppBar assistant button menu. The assistant button only shows this
+// state when its entry point is available. `kDefault`, or any value outside of
+// the enum range, means that the user didn't make any choice. Per-profile and
+// not synced.
+inline constexpr char kAppBarAssistantButtonPreferredState[] =
+    "ios.app_bar.assistant_button_preferred_state";
+
 // The application locale.
 inline constexpr char kApplicationLocale[] = "intl.app_locale";
 
@@ -35,10 +43,16 @@ inline constexpr char kBrowserLockdownModeEnabled[] =
 // (serverID) and creation timestamp.
 inline constexpr char kBwgSessionMap[] = "ios.bwg.session_map";
 
-// Map of scene session IDs to AIM thread IDs. The presence of a thread ID
-// indicates if a cobrowse session is active.
+// Map of scene session IDs to sub-dictionaries containing the AIM search query
+// (`q`), thread ID (`mtid`), and turn ID (`mstk`). The presence of a non-empty
+// `mtid` and `mstk` indicates that a cobrowse session is active.
 inline constexpr char kCobrowseSessionActiveMap[] =
     "ios.cobrowse.session_active_map";
+
+// Boolean indicating whether the user has accepted the tab sharing consent
+// alert in the AI Mode Cobrowse assistant.
+inline constexpr char kCobrowseTabSharingConsentAccepted[] =
+    "ios.cobrowse.tab_sharing_consent_accepted";
 
 // Number of times the "BWG" settings "new" IPH badge has been shown.
 // This is set to INT_MAX when the user visites the "BWG" settings page.
@@ -64,6 +78,21 @@ inline constexpr char kProfileForScene[] = "ios.multiprofile.profile_for_scene";
 // List of profiles' name that has been marked for deletion.
 inline constexpr char kProfilesToRemove[] =
     "ios.multiprofile.profiles_marked_for_deletion";
+
+// Dictionary mapping abandoned profile names to their removed
+// `kProfileInfoCache` entries (which include PII such as `GaiaId` and email,
+// moved from `kProfileInfoCache`). These profiles were removed from
+// `kProfileInfoCache` during corrupted-mapping cleanup (crbug.com/577577657) so
+// they cannot be loaded, while keeping their directories on disk for potential
+// data recovery or later deletion. If the associated managed account is removed
+// from the device, the entry is removed from `kAbandonedProfiles` and added to
+// `kProfilesToRemove` so its directory on disk is purged.
+// Privacy review: crbug.com/577577657
+// TODO(crbug.com/581920319): Purge `kAbandonedProfiles` (moving any remaining
+// entries to `kProfilesToRemove`) once we decide whether to perform any data
+// recovery.
+inline constexpr char kAbandonedProfiles[] =
+    "ios.multiprofile.abandoned_profiles";
 
 // A string of NSUUID used to access the WebKit storage per Profile.
 inline constexpr char kBrowserStateStorageIdentifier[] = "profile.storage_id";
@@ -233,6 +262,16 @@ inline constexpr char kIosDefaultBrowserBlueDotPromoFirstDisplay[] =
 inline constexpr char kIosDefaultBrowserPromoLastAction[] =
     "ios.default_browser_promo.last_action";
 
+// The last Default Browser promo surface where the user tapped the primary
+// action button ("Open Settings").
+inline constexpr char kIosDefaultBrowserPromoLastActionSurface[] =
+    "ios.default_browser_promo.last_action_surface";
+
+// Integer indicating the experiment cohort ID for which the first-time default
+// browser promo opportunity telemetry was logged.
+inline constexpr char kIosDefaultBrowserPromoOpportunityFirstTimeCohort[] =
+    "ios.default_browser_promo.opportunity_first_time_cohort";
+
 // The time when the DiscoverFeed was last refreshed while the feed was visible
 // to the user.
 inline constexpr char kIosDiscoverFeedLastRefreshTime[] =
@@ -251,6 +290,12 @@ inline constexpr char kIosDockingPromoEligibilityMet[] =
 
 // A list of the latest fetched Most Visited Sites.
 inline constexpr char kIosLatestMostVisitedSites[] = "ios.most_visited_sites";
+
+// Integer storing the position of the AI Mode tile in Most Visited Tiles.
+// A non-negative value indicates the position (default 0), and -1 indicates
+// that the tile was unpinned/removed by the user.
+inline constexpr char kIosMostVisitedAiModeTileIndex[] =
+    "ios.most_visited_tiles.ai_mode_tile_index";
 
 // The last saved index of an NTP WebState. Only updated on app background, so
 // it does not always reflect the current WebStateList.
@@ -456,6 +501,12 @@ inline constexpr char kIosNtpThemeMigrationComplete[] =
 // background, updated by both local changes and remote sync updates.
 inline constexpr char kIosNtpThemeSpecifics[] = "ios.ntp.theme_specifics";
 
+// Dictionary preference storing the downloaded ephemeral theme metadata
+// (animation URLs, local file paths, color mapping dictionaries, Google logo
+// URLs, and seed color).
+inline constexpr char kIosNtpEphemeralThemeData[] =
+    "ios.ntp.ephemeral_theme_data";
+
 // Preference that hold a boolean indicating if the user has already dismissed
 // the sign-in promo in the reading list.
 inline constexpr char kIosReadingListPromoAlreadySeen[] =
@@ -633,11 +684,6 @@ inline constexpr char kShowMemoryDebuggingTools[] =
 inline constexpr char kSigninShouldPromptForSigninAgain[] =
     "ios.signin.should_prompt_for_signin_again";
 
-// Per-account pref. True if the user has accepted the management dialog during
-// signin.
-inline constexpr char kSigninHasAcceptedManagementDialog[] =
-    "ios.signin.has_accepted_management_dialog";
-
 // Number of times the user dismissed the web sign-in dialog. This value is
 // reset to zero when the user signs in (using the web sign-in dialog).
 inline constexpr char kSigninWebSignDismissalCount[] =
@@ -752,22 +798,7 @@ inline constexpr char kUserAgentWasChanged[] = "UserAgentWasChanged";
 inline constexpr char kLastApplicationStorageMetricsLogTime[] =
     "LastApplicationStorageMetricsLogTime";
 
-// Prefs indicating whether Home surface modules are enabled.
-inline constexpr char kHomeCustomizationMostVisitedEnabled[] =
-    "ios.home_customization.most_visited.enabled";
-inline constexpr char kHomeCustomizationMagicStackEnabled[] =
-    "ios.home_customization.magic_stack.enabled";
-
-// Prefs indicating whether Magic Stack cards are enabled.
-inline constexpr char kHomeCustomizationMagicStackSafetyCheckEnabled[] =
-    "ios.home_customization.magic_stack.safety_check.enabled";
-inline constexpr char kHomeCustomizationMagicStackTabResumptionEnabled[] =
-    "ios.home_customization.magic_stack.tab_resumption.enabled";
-inline constexpr char kHomeCustomizationMagicStackTipsEnabled[] =
-    "ios.home_customization.magic_stack.tips.enabled";
-inline constexpr char
-    kHomeCustomizationMagicStackShopCardPriceTrackingEnabled[] =
-        "ios.home_customization.magic_stack.shop_card_price_tracking.enabled";
+// Pref indicating whether the ShopCard Reviews Magic Stack card is enabled.
 inline constexpr char kHomeCustomizationMagicStackShopCardReviewsEnabled[] =
     "ios.home_customization.magic_stack.shop_card_price_reviews.enabled";
 
@@ -845,6 +876,16 @@ inline constexpr char kIOSGeminiLiveIntroPlayed[] =
 // A boolean specifying whether the Gemini camera permission setting is enabled.
 inline constexpr char kIOSGeminiCameraSetting[] = "ios.gemini.camera.setting";
 
+// A boolean specifying whether the Gemini suggestions setting is enabled.
+inline constexpr char kIOSGeminiSuggestionsSetting[] =
+    "ios.gemini.suggestions.setting";
+
+// A dictionary storing per-vertical UI state (consecutive Message ignores,
+// whether a Message was accepted, and whether the vertical permanently switched
+// from Message UI to Omnibox Chip UI) for contextual cueing.
+inline constexpr char kIOSContextualCueingVerticalUiState[] =
+    "ios.contextual_cueing.vertical_ui_state";
+
 // A boolean specifying whether the Gemini Live closed captioning setting is
 // enabled.
 inline constexpr char kIOSGeminiLiveClosedCaptioningSetting[] =
@@ -890,6 +931,24 @@ inline constexpr char kSigninStartupPromoLastShownTimeWithRandomOffset[] =
 // An integer determining the enabled status of Gemini by policy.
 // 0 means Gemini is enabled (default), and 1 means it's disabled.
 inline constexpr char kGeminiEnabledByPolicy[] = "ios.gemini_enabled_by_policy";
+
+// An integer pref that holds the policy value for whether Gemini can act on
+// web pages (0 = Enabled, 1 = Disabled).
+inline constexpr char kGeminiActOnWebSettings[] = "ios.actuation_on_web";
+
+// List prefs that hold URL patterns where Gemini is explicitly allowed or
+// blocked from acting on web pages.
+inline constexpr char kGeminiActOnWebAllowedForURLs[] =
+    "ios.actuation_on_web_allowed_for_urls";
+inline constexpr char kGeminiActOnWebBlockedForURLs[] =
+    "ios.actuation_on_web_blocked_for_urls";
+
+// An integer pref that holds the policy value for whether Gemini Spark is
+// allowed to connect to Chrome and use auto browse (0 = Enabled,
+// 1 = Disabled). Defaults to 1 (Disabled). Only meaningful for managed
+// profiles; consumers should ignore it when the profile is unmanaged (see
+// GlicEnabling on desktop).
+inline constexpr char kGeminiSparkSettings[] = "ios.gemini_spark_settings";
 
 // An integer determining the enabled status of Gen Ai by policy.
 // 0 or 1 means all covered generative AI features are enabled, while 2 means
@@ -966,6 +1025,31 @@ inline constexpr char kSceneSessionIdentifierMap[] =
 // Identifier of the last SceneState connected.
 inline constexpr char kLastConnectedSceneIdentifier[] =
     "ios.multiwindow.last_connect_scene_identifier";
+
+// Timestamp tracking the last time the geolocation system settings prompt was
+// displayed when iOS app-level location authorization is denied. Stored in
+// LocalState since iOS location permission is an app-level setting shared
+// across all profiles.
+inline constexpr char kIosGeolocationSystemPromptLastShownTime[] =
+    "ios.geolocation.system_prompt_last_shown_time";
+
+// Earliest time at which device authorization keys may be silently fetched
+// again (at startup or sign-in) for the primary account, after failed fetches.
+// Cleared once a fetch succeeds and whenever the primary account changes.
+inline constexpr char kDeviceAuthorizationStartupFetchNextTime[] =
+    "ios.device_authorization.startup_fetch_next_time";
+
+// Current backoff after failed silent fetches of device authorization keys for
+// the primary account. Cleared along with
+// `kDeviceAuthorizationStartupFetchNextTime`.
+inline constexpr char kDeviceAuthorizationStartupFetchBackoff[] =
+    "ios.device_authorization.startup_fetch_backoff";
+
+// Boolean pref indicating whether the Universal Opt-Out error toast has been
+// displayed. Stored in Profile prefs so the toast is only displayed once across
+// scenes and sessions per profile until reset.
+inline constexpr char kUniversalOptOutErrorToastShown[] =
+    "ios.universal_optout.error_toast_shown";
 
 }  // namespace prefs
 

@@ -4,8 +4,13 @@
 
 #include "chrome/browser/ui/views/webid/fedcm_account_selection_view_desktop.h"
 
+#include "base/command_line.h"
+#include "base/run_loop.h"
+#include "base/task/sequenced_task_runner.h"
+#include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/test_future.h"
+#include "build/build_config.h"
 #include "chrome/browser/actor/actor_keyed_service.h"
 #include "chrome/browser/actor/actor_test_util.h"
 #include "chrome/browser/picture_in_picture/picture_in_picture_occlusion_tracker.h"
@@ -17,11 +22,13 @@
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/test/popup_test_base.h"
 #include "chrome/browser/ui/test/test_browser_dialog.h"
+#include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/views/webid/account_selection_view_test_base.h"
 #include "chrome/browser/ui/views/webid/fake_delegate.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/actor/core/task_id.h"
+#include "components/permissions/permission_request_manager.h"
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/web_contents_delegate.h"
 #include "content/public/common/content_features.h"
@@ -30,9 +37,15 @@
 #include "content/public/test/test_renderer_host.h"
 #include "content/public/test/web_contents_tester.h"
 #include "net/dns/mock_host_resolver.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/base/page_transition_types.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/events/event.h"
 #include "ui/views/test/views_test_utils.h"
+#include "ui/views/views_switches.h"
+
+#if BUILDFLAG(IS_OZONE)
+#include "ui/ozone/public/ozone_platform.h"
+#endif
 
 namespace webid {
 
@@ -244,8 +257,8 @@ IN_PROC_BROWSER_TEST_F(FedCmAccountSelectionViewBrowserTest,
                        DetachForInsertion) {
   Show();
   browser()->GetTabStripModel()->DetachAndDeleteWebContentsAt(0);
-  // TODO(npm): it would be better if the dialog actually moves with the
-  // corresponding tab, instead of being altogether deleted.
+  // TODO(crbug.com/567569639): it would be better if the dialog actually moves
+  // with the corresponding tab, instead of being altogether deleted.
   EXPECT_FALSE(GetDialog());
 }
 
@@ -313,6 +326,14 @@ IN_PROC_BROWSER_TEST_F(FedCmAccountSelectionViewBrowserTest,
 // Test that the dialog is disabled when occluded by a PiP window.
 IN_PROC_BROWSER_TEST_F(FedCmAccountSelectionViewBrowserTest,
                        DisabledWhenOccluded) {
+#if BUILDFLAG(IS_OZONE)
+  if (!ui::OzonePlatform::GetInstance()
+           ->GetPlatformProperties()
+           .supports_global_screen_coordinates) {
+    GTEST_SKIP() << "Occlusion between top-level windows requires global "
+                    "screen coordinates.";
+  }
+#endif
   Show();
   ASSERT_TRUE(GetDialog());
   EXPECT_TRUE(GetDialog()->IsVisible());
@@ -368,8 +389,10 @@ IN_PROC_BROWSER_TEST_F(FedCmAccountSelectionViewBrowserTest,
 // FedCmAccountSelectionViewPopupTest.
 class FedCmMixin {
  public:
-  // In a bubble view.
-  void ShowAccounts(BrowserWindowInterface* browser) {
+  // In a bubble view. If `requires_disclosure` is true, the account requires
+  // disclosure text, e.g. because it is a new account.
+  void ShowAccounts(BrowserWindowInterface* browser,
+                    bool requires_disclosure = false) {
     delegate_ = std::make_unique<FakeDelegate>(
         browser->GetActiveTabInterface()->GetContents());
     account_selection_view_ = std::make_unique<FedCmAccountSelectionView>(
@@ -389,6 +412,9 @@ class FedCmMixin {
         /*domain_hints=*/std::vector<std::string>(),
         /*labels=*/std::vector<std::string>())};
     accounts_[0]->identity_provider = idps_[0];
+    if (requires_disclosure) {
+      accounts_[0]->fields = idps_[0]->disclosure_fields;
+    }
     account_selection_view_->Show(
         content::RelyingPartyData(u"rp-example.com",
                                   /*iframe_for_display=*/u""),
@@ -492,7 +518,7 @@ IN_PROC_BROWSER_TEST_F(FedCmActorBrowserTest,
 
   // Open a new unrelated tab in the foreground.
   ui_test_utils::NavigateToURLWithDisposition(
-      browser(), other_url, WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      browser(), other_url, ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
 
   base::test::TestFuture<content::WebContents*> future_popup_contents =
@@ -524,7 +550,7 @@ IN_PROC_BROWSER_TEST_F(FedCmActorBrowserTest,
 
   // Open a new unrelated tab in the foreground.
   ui_test_utils::NavigateToURLWithDisposition(
-      browser(), other_url, WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      browser(), other_url, ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
 
   // Enter fullscreen mode.
@@ -582,7 +608,7 @@ IN_PROC_BROWSER_TEST_F(FedCmActorBrowserTest,
 
   // Open a new unrelated tab in the foreground.
   ui_test_utils::NavigateToURLWithDisposition(
-      browser(), other_url, WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      browser(), other_url, ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
 
   base::test::TestFuture<content::WebContents*> future_popup_contents =
@@ -616,7 +642,8 @@ IN_PROC_BROWSER_TEST_F(FedCmBrowserTest, InputDisabledForModalDialog) {
 
   // If we make a new tab input should be enabled.
   ui_test_utils::NavigateToURLWithDisposition(
-      browser(), GURL("about:blank"), WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      browser(), GURL("about:blank"),
+      ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
   EXPECT_FALSE(browser()
                    ->GetActiveTabInterface()
@@ -653,6 +680,109 @@ IN_PROC_BROWSER_TEST_F(FedCmBrowserTest, InputEnabledForBubbleDialog) {
                    ->GetActiveTabInterface()
                    ->GetContents()
                    ->ShouldIgnoreInputEventsForTesting());
+}
+
+class FedCmAmbientBubbleBrowserTest : public FedCmBrowserTest {
+ public:
+  void SetUpOnMainThread() override {
+    FedCmBrowserTest::SetUpOnMainThread();
+    host_resolver()->AddRule("*", "127.0.0.1");
+    ASSERT_TRUE(embedded_https_test_server().Start());
+  }
+
+  void TearDownOnMainThread() override {
+    Reset();
+    FedCmBrowserTest::TearDownOnMainThread();
+  }
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_{
+      features::kFedCmAmbientBubble};
+};
+
+// Tests that accepting the ambient bubble for an account that requires
+// disclosure text shows the disclosure text in the modal dialog.
+IN_PROC_BROWSER_TEST_F(FedCmAmbientBubbleBrowserTest,
+                       AcceptingBubbleForNewAccountShowsModalDialog) {
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(
+      browser(),
+      embedded_https_test_server().GetURL("rp.example", "/title1.html")));
+  content::WebContents* web_contents =
+      browser()->GetActiveTabInterface()->GetContents();
+  // Accept the ambient bubble as soon as it is shown.
+  permissions::PermissionRequestManager::FromWebContents(web_contents)
+      ->set_auto_response_for_test(
+          permissions::PermissionRequestManager::ACCEPT_ALL);
+
+  ShowAccounts(browser(), /*requires_disclosure=*/true);
+  EXPECT_FALSE(account_selection_view_->GetDialogWidget());
+
+  ASSERT_TRUE(base::test::RunUntil(
+      [&]() { return account_selection_view_->IsDialogWidgetVisible(); }));
+  // Unlike the bubble dialog, the modal dialog disables input to the page.
+  EXPECT_TRUE(web_contents->ShouldIgnoreInputEventsForTesting());
+
+  // Run the tasks posted while the modal dialog was shown, e.g. the one that
+  // announces the disclosure text to screen readers.
+  base::RunLoop run_loop;
+  base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+      FROM_HERE, run_loop.QuitClosure());
+  run_loop.Run();
+  EXPECT_TRUE(account_selection_view_->IsDialogWidgetVisible());
+}
+
+class FedCmIdpLinksBrowserTest : public FedCmBrowserTest {
+ public:
+  void SetUpCommandLine(base::CommandLine* command_line) override {
+    FedCmBrowserTest::SetUpCommandLine(command_line);
+    // Lets the test select an account right after a dialog is shown.
+    command_line->AppendSwitch(
+        views::switches::kDisableInputEventActivationProtectionForTesting);
+  }
+
+  void TearDownOnMainThread() override {
+    Reset();
+    FedCmBrowserTest::TearDownOnMainThread();
+  }
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_{features::kFedCmIdpLinks};
+};
+
+// Tests that selecting an account that requires disclosure text in the bubble
+// replaces the bubble with the modal dialog on the request permission sheet.
+IN_PROC_BROWSER_TEST_F(FedCmIdpLinksBrowserTest,
+                       SelectingNewAccountInBubbleShowsModalDialog) {
+  content::WebContents* web_contents =
+      browser()->GetActiveTabInterface()->GetContents();
+  ShowAccounts(browser(), /*requires_disclosure=*/true);
+  base::test::TestFuture<void> account_selected;
+  delegate_->SetAccountSelectedCallback(account_selected.GetCallback());
+  ASSERT_TRUE(account_selection_view_->IsDialogWidgetVisible());
+  EXPECT_FALSE(web_contents->ShouldIgnoreInputEventsForTesting());
+
+  const ui::MouseEvent event(ui::EventType::kMousePressed, gfx::Point(),
+                             gfx::Point(), base::TimeTicks::Now(),
+                             ui::EF_LEFT_MOUSE_BUTTON, 0);
+  EXPECT_TRUE(account_selection_view_->OnAccountSelected(accounts_[0], event));
+  EXPECT_TRUE(account_selection_view_->IsDialogWidgetVisible());
+  // Unlike the bubble dialog, the modal dialog disables input to the page.
+  EXPECT_TRUE(web_contents->ShouldIgnoreInputEventsForTesting());
+  // The flow continues in the modal dialog, so the account isn't selected yet.
+  EXPECT_FALSE(account_selected.IsReady());
+
+  // Run the tasks posted while the modal dialog was shown, e.g. the one that
+  // announces the disclosure text to screen readers.
+  base::RunLoop run_loop;
+  base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+      FROM_HERE, run_loop.QuitClosure());
+  run_loop.Run();
+  EXPECT_TRUE(account_selection_view_->IsDialogWidgetVisible());
+
+  // The modal dialog is on the request permission sheet, so continuing there
+  // selects the account.
+  EXPECT_TRUE(account_selection_view_->OnAccountSelected(accounts_[0], event));
+  EXPECT_TRUE(account_selected.IsReady());
 }
 
 class FedCmAccountSelectionViewPopupTest : public PopupTestBase,

@@ -36,6 +36,7 @@ suite('MsbbFragment', function() {
 
     fragment = document.createElement('privacy-guide-msbb-fragment');
     document.body.appendChild(fragment);
+    await microtasksFinished();
   });
 
   async function assertMsbbMetrics({
@@ -49,11 +50,11 @@ suite('MsbbFragment', function() {
   }) {
     prefService.setPrefValue(
         'url_keyed_anonymized_data_collection.enabled', msbbStartOn);
+    await microtasksFinished();
 
     // The fragment is informed that it becomes visible by a receiving
     // a view-enter-start event.
-    fragment.dispatchEvent(
-        new CustomEvent('view-enter-start', {bubbles: true, composed: true}));
+    fragment.fire('view-enter-start');
 
     if (changeSetting) {
       const toggle = fragment.shadowRoot.querySelector<HTMLElement>(
@@ -71,8 +72,7 @@ suite('MsbbFragment', function() {
 
     // The fragment is informed that it becomes invisible by
     // receiving a view-enter-finish event.
-    fragment.dispatchEvent(
-        new CustomEvent('view-exit-finish', {bubbles: true, composed: true}));
+    fragment.fire('view-exit-finish');
 
     const result = await testMetricsBrowserProxy.whenCalled(
         'recordPrivacyGuideSettingsStatesHistogram');

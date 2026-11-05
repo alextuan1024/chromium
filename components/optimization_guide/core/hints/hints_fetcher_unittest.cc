@@ -19,10 +19,9 @@
 #include "base/test/simple_test_clock.h"
 #include "base/test/task_environment.h"
 #include "components/optimization_guide/core/hints/hints_processing_util.h"
+#include "components/optimization_guide/core/hints/prefs.h"
 #include "components/optimization_guide/core/hints/store_update_data.h"
-#include "components/optimization_guide/core/optimization_guide_enums.h"
 #include "components/optimization_guide/core/optimization_guide_features.h"
-#include "components/optimization_guide/core/optimization_guide_prefs.h"
 #include "components/prefs/pref_service.h"
 #include "components/prefs/scoped_user_pref_update.h"
 #include "components/prefs/testing_pref_service.h"
@@ -129,7 +128,6 @@ class HintsFetcherTest : public testing::Test,
 
   void VerifyHasPendingFetchRequests() {
     EXPECT_GE(test_url_loader_factory_.NumPending(), 1);
-    std::string key_value;
     for (const auto& pending_request :
          *test_url_loader_factory_.pending_requests()) {
       EXPECT_EQ(pending_request.request.method, "POST");
@@ -197,7 +195,7 @@ TEST_P(HintsFetcherTest,
   histogram_tester.ExpectUniqueSample(
       "OptimizationGuide.HintsFetcher.GetHintsRequest.RequestStatus."
       "BatchUpdateActiveTabs",
-      FetcherRequestStatus::kRequestCanceled, 1);
+      HintsFetcherRequestStatus::kRequestCanceled, 1);
 }
 
 TEST_P(HintsFetcherTest, FetchOptimizationGuideServiceHints) {
@@ -216,7 +214,7 @@ TEST_P(HintsFetcherTest, FetchOptimizationGuideServiceHints) {
   histogram_tester.ExpectUniqueSample(
       "OptimizationGuide.HintsFetcher.GetHintsRequest.RequestStatus."
       "BatchUpdateActiveTabs",
-      FetcherRequestStatus::kSuccess, 1);
+      HintsFetcherRequestStatus::kSuccess, 1);
 }
 
 // Tests to ensure that multiple hint fetches by the same object cannot be in
@@ -233,7 +231,7 @@ TEST_P(HintsFetcherTest, FetchInProgress) {
     histogram_tester.ExpectUniqueSample(
         "OptimizationGuide.HintsFetcher.GetHintsRequest.RequestStatus."
         "BatchUpdateActiveTabs",
-        FetcherRequestStatus::kFetcherBusy, 1);
+        HintsFetcherRequestStatus::kFetcherBusy, 1);
   }
 
   // Once response arrives, check to make sure a new fetch can start.
@@ -245,7 +243,7 @@ TEST_P(HintsFetcherTest, FetchInProgress) {
     histogram_tester.ExpectUniqueSample(
         "OptimizationGuide.HintsFetcher.GetHintsRequest.RequestStatus."
         "BatchUpdateActiveTabs",
-        FetcherRequestStatus::kSuccess, 1);
+        HintsFetcherRequestStatus::kSuccess, 1);
   }
 }
 
@@ -274,7 +272,6 @@ TEST_P(HintsFetcherTest, FetchInProgress_HostsHintsRefreshed) {
   EXPECT_FALSE(FetchHints({"foo.com"}, /*urls=*/{}));
   EXPECT_FALSE(FetchHints({"bar.com"}, /*urls=*/{}));
 
-  std::vector<std::string> hosts{"foo.com", "bar.com"};
   // Advancing the clock so that it's still one hour before the hints need to be
   // refreshed.
   test_clock->Advance(StoreUpdateData::kMaxStoreDuration -
@@ -355,7 +352,7 @@ TEST_P(HintsFetcherTest, FetchReturned404) {
   histogram_tester.ExpectUniqueSample(
       "OptimizationGuide.HintsFetcher.GetHintsRequest.RequestStatus."
       "BatchUpdateActiveTabs",
-      FetcherRequestStatus::kResponseError, 1);
+      HintsFetcherRequestStatus::kResponseError, 1);
 }
 
 TEST_P(HintsFetcherTest, FetchReturnBadResponse) {
@@ -375,7 +372,7 @@ TEST_P(HintsFetcherTest, FetchReturnBadResponse) {
   histogram_tester.ExpectUniqueSample(
       "OptimizationGuide.HintsFetcher.GetHintsRequest.RequestStatus."
       "BatchUpdateActiveTabs",
-      FetcherRequestStatus::kResponseError, 1);
+      HintsFetcherRequestStatus::kResponseError, 1);
 }
 
 TEST_P(HintsFetcherTest, HintsFetchSuccessfulHostsRecorded) {
@@ -655,11 +652,10 @@ TEST_P(HintsFetcherTest, MaxHostsForOptimizationGuideServiceHintsFetch) {
         WasHostCoveredByFetch("host" + base::NumberToString(i) + ".com"));
   }
 
-  // extra1.com and extra2.com should have been considered "dropped".
   histogram_tester.ExpectUniqueSample(
-      "OptimizationGuide.HintsFetcher.GetHintsRequest.DroppedHosts."
+      "OptimizationGuide.HintsFetcher.GetHintsRequest.HostCount."
       "BatchUpdateActiveTabs",
-      2, 1);
+      max_hosts_in_fetch_request, 1);
 }
 
 TEST_P(HintsFetcherTest, MaxUrlsForOptimizationGuideServiceHintsFetch) {
@@ -697,12 +693,6 @@ TEST_P(HintsFetcherTest, MaxUrlsForOptimizationGuideServiceHintsFetch) {
     EXPECT_EQ(last_request.urls(i).url(),
               "https://url" + base::NumberToString(i) + ".com/");
   }
-
-  // notfetched.com and notfetched-2.com should have been considered "dropped".
-  histogram_tester.ExpectUniqueSample(
-      "OptimizationGuide.HintsFetcher.GetHintsRequest.DroppedUrls."
-      "BatchUpdateActiveTabs",
-      2, 1);
 }
 
 TEST_P(HintsFetcherTest, OnlyURLsToFetch) {
@@ -721,24 +711,18 @@ TEST_P(HintsFetcherTest, OnlyURLsToFetch) {
   histogram_tester.ExpectUniqueSample(
       "OptimizationGuide.HintsFetcher.GetHintsRequest.RequestStatus."
       "BatchUpdateActiveTabs",
-      static_cast<int>(FetcherRequestStatus::kSuccess), 1);
-  // Nothing was dropped so this shouldn't be recorded.
-  histogram_tester.ExpectTotalCount(
-      "OptimizationGuide.HintsFetcher.GetHintsRequest.DroppedHosts", 0);
-  histogram_tester.ExpectTotalCount(
-      "OptimizationGuide.HintsFetcher.GetHintsRequest.DroppedUrls", 0);
+      HintsFetcherRequestStatus::kSuccess, 1);
 }
 
 TEST_P(HintsFetcherTest, NoHostsOrURLsToFetch) {
   base::HistogramTester histogram_tester;
-  std::string response_content;
 
   EXPECT_FALSE(FetchHints({} /* hosts */, /*urls=*/{}));
   EXPECT_FALSE(hints_fetched());
   histogram_tester.ExpectUniqueSample(
       "OptimizationGuide.HintsFetcher.GetHintsRequest.RequestStatus."
       "BatchUpdateActiveTabs",
-      static_cast<int>(FetcherRequestStatus::kNoHostsOrURLsToFetchHints), 1);
+      HintsFetcherRequestStatus::kNoHostsOrURLsToFetchHints, 1);
 }
 
 TEST_P(HintsFetcherTest, HintsLanguageOverrideHeader) {

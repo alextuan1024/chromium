@@ -7,6 +7,8 @@ package org.chromium.chrome.browser.omnibox;
 import android.graphics.Paint;
 import android.graphics.Paint.FontMetricsInt;
 import android.graphics.drawable.Drawable;
+import android.text.SpannableString;
+import android.text.Spanned;
 import android.text.TextUtils;
 import android.text.style.ImageSpan;
 
@@ -15,13 +17,12 @@ import org.chromium.base.supplier.MonotonicObservableSupplier;
 import org.chromium.base.supplier.NonNullObservableSupplier;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
-import org.chromium.chrome.browser.contextual_tasks.ContextualTasksUtils;
 import org.chromium.chrome.browser.feature_engagement.TrackerFactory;
 import org.chromium.chrome.browser.omnibox.SearchEngineService.SearchEngineNameObserver;
 import org.chromium.chrome.browser.omnibox.fusebox.ComposeboxQueryControllerBridge;
+import org.chromium.chrome.browser.omnibox.fusebox.Fusebox.FuseboxLayoutMode;
+import org.chromium.chrome.browser.omnibox.fusebox.Fusebox.FuseboxState;
 import org.chromium.chrome.browser.omnibox.fusebox.FuseboxCoordinator;
-import org.chromium.chrome.browser.omnibox.fusebox.FuseboxCoordinator.FuseboxLayoutMode;
-import org.chromium.chrome.browser.omnibox.fusebox.FuseboxCoordinator.FuseboxState;
 import org.chromium.chrome.browser.omnibox.styles.OmniboxResourceProvider;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.components.contextual_search.InputState;
@@ -32,12 +33,11 @@ import org.chromium.components.omnibox.AutocompleteInput.AutocompleteState;
 import org.chromium.components.omnibox.AutocompleteInput.DisplayState;
 import org.chromium.components.omnibox.AutocompleteInput.SiteSearchData;
 import org.chromium.components.omnibox.AutocompleteRequestType;
+import org.chromium.components.omnibox.ModelConfigProto.ModelConfig;
 import org.chromium.components.omnibox.ToolConfigProto.ToolConfig;
 import org.chromium.components.omnibox.ToolModeProtoIntDef.ToolMode;
 import org.chromium.components.omnibox.ToolModeUtils;
-import org.chromium.ui.text.SpanApplier;
-import org.chromium.ui.text.SpanApplier.SpanInfo;
-import org.chromium.url.GURL;
+import org.chromium.components.search_engines.AiModeButtonUiConfig;
 
 /**
  * Handles tracking updates and calculating what should be used for the omnibox hint text. Accepts a
@@ -55,27 +55,27 @@ public class HintTextUpdater implements LocationBarDataProvider.Observer {
     private final NonNullObservableSupplier<Boolean> mActivationChipSelectedSupplier;
     private final MonotonicObservableSupplier<Profile> mProfileSupplier;
     private final SearchEngineNameObserver mSearchEngineNameObserver = this::updateHintText;
+    private final Callback<@Nullable AiModeButtonUiConfig> mAiModeButtonUiConfigObserver =
+            _ -> updateHintText();
     private final Callback<@AutocompleteRequestType Integer> mAutocompleteRequestTypeObserver =
-            (type) -> updateHintText();
+            _ -> updateHintText();
     private final Callback<@Nullable SiteSearchData> mSiteSearchDataObserver =
-            (siteSearchData) -> updateHintText();
+            _ -> updateHintText();
     private final Callback<SearchEngineService> mSearchEngineServiceObserver =
             this::onSearchEngineServiceChanged;
-    private final Callback<@FuseboxState Integer> mFuseboxStateObserver =
-            (state) -> updateHintText();
+    private final Callback<@FuseboxState Integer> mFuseboxStateObserver = _ -> updateHintText();
     private final Callback<@FuseboxLayoutMode Integer> mFuseboxLayoutModeObserver =
-            (mode) -> updateHintText();
-    private final Callback<Boolean> mActivationChipVisibilityObserver =
-            (visible) -> updateHintText();
-    private final Callback<Boolean> mActivationChipSelectedObserver =
-            (selected) -> updateHintText();
-    private final Callback<Profile> mProfileObserver = (profile) -> updateHintText();
-    private final Callback<String> mUserTextObserver = (text) -> updateHintText();
-    private final Callback<@DisplayState Integer> mDisplayStateObserver =
-            (state) -> updateHintText();
+            _ -> updateHintText();
+    private final Callback<Boolean> mActivationChipVisibilityObserver = _ -> updateHintText();
+    private final Callback<Boolean> mActivationChipSelectedObserver = _ -> updateHintText();
+    private final Callback<Profile> mProfileObserver = _ -> updateHintText();
+    private final Callback<String> mUserTextObserver = _ -> updateHintText();
+    private final Callback<@DisplayState Integer> mDisplayStateObserver = _ -> updateHintText();
+    private final Callback<InputState> mInputStateObserver = _ -> updateHintText();
 
     private @Nullable SearchEngineService mSearchEngineService;
     private @Nullable AutocompleteInput mCurrentInput;
+    private @Nullable ComposeboxQueryControllerBridge mObservedBridge;
     private boolean mAimHintShownThisSession;
 
     public HintTextUpdater(
@@ -117,6 +117,9 @@ public class HintTextUpdater implements LocationBarDataProvider.Observer {
         mSearchEngineServiceSupplier.removeObserver(mSearchEngineServiceObserver);
         if (mSearchEngineService != null) {
             mSearchEngineService.removeSearchEngineNameObserver(mSearchEngineNameObserver);
+            mSearchEngineService
+                    .getAiModeButtonUiConfigSupplier()
+                    .removeObserver(mAiModeButtonUiConfigObserver);
         }
         mFuseboxCoordinator.getFuseboxStateSupplier().removeObserver(mFuseboxStateObserver);
         mFuseboxCoordinator
@@ -143,6 +146,7 @@ public class HintTextUpdater implements LocationBarDataProvider.Observer {
         mCurrentInput.getSiteSearchDataSupplier().addSyncObserver(mSiteSearchDataObserver);
         mCurrentInput.getUserTextSupplier().addSyncObserver(mUserTextObserver);
         mCurrentInput.getDisplayStateSupplier().addSyncObserver(mDisplayStateObserver);
+        observeInputState(getComposeboxQueryControllerBridge());
         updateHintText();
     }
 
@@ -154,6 +158,7 @@ public class HintTextUpdater implements LocationBarDataProvider.Observer {
             mCurrentInput.getUserTextSupplier().removeObserver(mUserTextObserver);
             mCurrentInput.getDisplayStateSupplier().removeObserver(mDisplayStateObserver);
         }
+        observeInputState(null);
         dismissAimHintIph();
         mCurrentInput = null;
         updateHintText();
@@ -164,13 +169,49 @@ public class HintTextUpdater implements LocationBarDataProvider.Observer {
         updateHintText();
     }
 
+    /**
+     * Observes the {@link InputState} of {@code bridge} so the hint follows active model changes,
+     * which do not otherwise change the request type. Pass null to stop observing.
+     */
+    private void observeInputState(@Nullable ComposeboxQueryControllerBridge bridge) {
+        if (mObservedBridge != null) {
+            mObservedBridge.getInputStateSupplier().removeObserver(mInputStateObserver);
+        }
+        mObservedBridge = bridge;
+        if (mObservedBridge != null) {
+            mObservedBridge.getInputStateSupplier().addSyncObserver(mInputStateObserver);
+        }
+    }
+
+    /** Returns the session's bridge if it exposes an {@link InputState} supplier, else null. */
+    private @Nullable ComposeboxQueryControllerBridge getComposeboxQueryControllerBridge() {
+        FuseboxSessionState fuseboxSessionState =
+                FuseboxSessionState.from(mLocationBarDataProvider);
+        if (fuseboxSessionState == null) {
+            return null;
+        }
+
+        ComposeboxQueryControllerBridge bridge =
+                fuseboxSessionState.getComposeboxQueryControllerBridge();
+        if (bridge == null || bridge.getInputStateSupplier() == null) {
+            return null;
+        }
+        return bridge;
+    }
+
     private void onSearchEngineServiceChanged(@Nullable SearchEngineService service) {
         if (mSearchEngineService != null) {
             mSearchEngineService.removeSearchEngineNameObserver(mSearchEngineNameObserver);
+            mSearchEngineService
+                    .getAiModeButtonUiConfigSupplier()
+                    .removeObserver(mAiModeButtonUiConfigObserver);
         }
         mSearchEngineService = service;
         if (mSearchEngineService != null) {
             mSearchEngineService.addSearchEngineNameObserver(mSearchEngineNameObserver);
+            mSearchEngineService
+                    .getAiModeButtonUiConfigSupplier()
+                    .addSyncObserver(mAiModeButtonUiConfigObserver);
         }
         updateHintText();
     }
@@ -189,13 +230,18 @@ public class HintTextUpdater implements LocationBarDataProvider.Observer {
                     mCurrentInput != null
                             && mCurrentInput.getDisplayState() != DisplayState.SUGGESTIONS
                             && TextUtils.isEmpty(mCurrentInput.getUserText());
-            mUpdateHintTextCallback.onResult(showDefaultHint ? getDefaultHintText() : "");
+            mUpdateHintTextCallback.onResult(showDefaultHint ? getOmniboxHintText() : "");
             return;
         }
 
         if (useAimActivationOrEmptyHint()) {
-            if (triggerOrAlreadyShowingActivationHint()) {
-                mUpdateHintTextCallback.onResult(getAimActivationHintWithSpan());
+            AiModeButtonUiConfig config =
+                    mSearchEngineService.getAiModeButtonUiConfigSupplier().get();
+            if (config != null
+                    && !TextUtils.isEmpty(config.placeholderText)
+                    && triggerOrAlreadyShowingActivationHint()) {
+                mUpdateHintTextCallback.onResult(
+                        getAimActivationHintWithSpan(config.placeholderText));
             } else {
                 mUpdateHintTextCallback.onResult("");
             }
@@ -207,26 +253,10 @@ public class HintTextUpdater implements LocationBarDataProvider.Observer {
             return;
         }
 
-        mUpdateHintTextCallback.onResult(getDefaultHintText());
+        mUpdateHintTextCallback.onResult(getOmniboxHintText());
     }
 
-    private String getDefaultHintText() {
-        FuseboxSessionState fuseboxSession = FuseboxSessionState.from(mLocationBarDataProvider);
-        return getOmniboxHintText(fuseboxSession);
-    }
-
-    private String getOmniboxHintText(@Nullable FuseboxSessionState fuseboxSessionState) {
-        if (fuseboxSessionState != null) {
-            AutocompleteInput input = fuseboxSessionState.getAutocompleteInput();
-            if (input != null) {
-                GURL url = input.getPageUrl();
-                String title = input.getPageTitle();
-                if (ContextualTasksUtils.isContextualTasksUrl(url) && !TextUtils.isEmpty(title)) {
-                    return title;
-                }
-            }
-        }
-
+    private String getOmniboxHintText() {
         assert mSearchEngineService != null;
         SearchEngineService searchEngineService = mSearchEngineService;
         String searchEngineName = searchEngineService.getSearchEngineName();
@@ -234,17 +264,26 @@ public class HintTextUpdater implements LocationBarDataProvider.Observer {
             return mResourceProvider.getString(R.string.omnibox_empty_hint);
         }
 
-        String toolHint = getToolHintFromInputState(fuseboxSessionState);
-        if (!TextUtils.isEmpty(toolHint)) {
-            return toolHint;
+        String inputStateHint = getHintFromInputState();
+        if (inputStateHint != null) {
+            return inputStateHint;
         }
 
-        return getSearchEngineHintText(searchEngineService, searchEngineName);
+        if (mCurrentInput != null && ToolModeUtils.isAimRequest(mCurrentInput.getRequestType())) {
+            return mResourceProvider.getString(R.string.omnibox_ai_mode_scope_placeholder_text);
+        }
+
+        return mResourceProvider.getString(
+                searchEngineService.getOmniboxHintStringRes(), searchEngineName);
     }
 
-    private @Nullable String getToolHintFromInputState(
-            @Nullable FuseboxSessionState fuseboxSessionState) {
-        if (fuseboxSessionState == null || mCurrentInput == null) {
+    /**
+     * Returns the hint text from the server-provided {@link InputState}, or null when no server
+     * hint applies. The active tool's hint takes precedence, followed by the active model's hint
+     * and then the default searchbox hint.
+     */
+    private @Nullable String getHintFromInputState() {
+        if (mCurrentInput == null) {
             return null;
         }
 
@@ -253,9 +292,10 @@ public class HintTextUpdater implements LocationBarDataProvider.Observer {
             return null;
         }
 
-        ComposeboxQueryControllerBridge bridge =
-                fuseboxSessionState.getComposeboxQueryControllerBridge();
-        if (bridge == null || bridge.getInputStateSupplier() == null) {
+        // The input state lives on the session state, so it is only consulted while an input
+        // session is active and an AIM request type is selected.
+        ComposeboxQueryControllerBridge bridge = getComposeboxQueryControllerBridge();
+        if (bridge == null) {
             return null;
         }
 
@@ -267,28 +307,17 @@ public class HintTextUpdater implements LocationBarDataProvider.Observer {
         @ToolMode
         int activeTool =
                 ToolModeUtils.getToolModeForRequestType(requestType, /* hasAttachments= */ false);
-        for (ToolConfig config : inputState.getToolConfigs()) {
-            if (config.getToolValue() == activeTool) {
-                return config.getHintText();
-            }
+        ToolConfig toolConfig = inputState.getToolConfig(activeTool);
+        if (toolConfig != null && !toolConfig.getHintText().isEmpty()) {
+            return toolConfig.getHintText();
         }
 
-        return null;
-    }
-
-    private String getSearchEngineHintText(
-            SearchEngineService searchEngineService, String searchEngineName) {
-        if (mCurrentInput != null) {
-            switch (mCurrentInput.getRequestType()) {
-                case AutocompleteRequestType.AI_MODE:
-                    return mResourceProvider.getString(
-                            R.string.omnibox_ai_mode_scope_placeholder_text, searchEngineName);
-                case AutocompleteRequestType.IMAGE_GENERATION:
-                    return mResourceProvider.getString(
-                            R.string.omnibox_empty_hint_for_image_generation, searchEngineName);
-            }
+        ModelConfig modelConfig = inputState.getModelConfig(inputState.activeModel);
+        if (modelConfig != null && !modelConfig.getHintText().isEmpty()) {
+            return modelConfig.getHintText();
         }
-        return searchEngineService.getOmniboxHintString();
+
+        return TextUtils.isEmpty(inputState.hintText) ? null : inputState.hintText;
     }
 
     private boolean useAimActivationOrEmptyHint() {
@@ -360,16 +389,18 @@ public class HintTextUpdater implements LocationBarDataProvider.Observer {
         }
     }
 
-    private CharSequence getAimActivationHintWithSpan() {
-        String rawHint =
-                mResourceProvider.getString(
-                        R.string.ai_mode_omnibox_placeholder_android,
-                        mResourceProvider.getString(R.string.ai_mode_entrypoint_label));
+    private CharSequence getAimActivationHintWithSpan(String placeholderText) {
         Drawable keyboardTabDrawable = mResourceProvider.getDrawable(R.drawable.ic_keyboard_tab);
         if (keyboardTabDrawable == null) {
-            return rawHint;
+            return placeholderText;
         }
-        ImageSpan imageSpan = new TextSizedImageSpan(keyboardTabDrawable);
-        return SpanApplier.applySpans(rawHint, new SpanInfo("<tab_key>", "</tab_key>", imageSpan));
+        // The first space is replaced by the ImageSpan; the second separates the icon from text.
+        SpannableString spanned = new SpannableString("  " + placeholderText);
+        spanned.setSpan(
+                new TextSizedImageSpan(keyboardTabDrawable),
+                /* start= */ 0,
+                /* end= */ 1,
+                Spanned.SPAN_INCLUSIVE_EXCLUSIVE);
+        return spanned;
     }
 }

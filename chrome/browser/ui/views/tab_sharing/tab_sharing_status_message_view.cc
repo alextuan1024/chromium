@@ -13,14 +13,11 @@
 #include "media/capture/capture_switches.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
-#include "ui/base/window_open_disposition.h"
 #include "ui/views/accessibility/view_accessibility.h"
-#include "ui/views/controls/link.h"
 #include "ui/views/controls/separator.h"
 #include "ui/views/layout/flex_layout.h"
 #include "ui/views/metadata/view_factory.h"
 #include "ui/views/view_class_properties.h"
-#include "ui/views/view_utils.h"
 
 namespace {
 using EndpointInfo = ::TabSharingStatusMessageView::EndpointInfo;
@@ -282,22 +279,6 @@ gfx::Size TabSharingStatusMessageView::GetMinimumSize() const {
   return gfx::Size();
 }
 
-void TabSharingStatusMessageView::OnThemeChanged() {
-  views::View::OnThemeChanged();
-  const auto* cp = GetColorProvider();
-  const SkColor text_color = cp->GetColor(kColorInfoBarForeground);
-  const SkColor background_color = cp->GetColor(kColorInfoBarBackground);
-
-  for (views::View* child : children()) {
-    auto* label = views::AsViewClass<views::Label>(child);
-    if (label && !views::IsViewClass<views::Link>(child)) {
-      label->SetEnabledColor(text_color);
-      label->SetBackgroundColor(background_color);
-      label->SetAutoColorReadabilityEnabled(false);
-    }
-  }
-}
-
 void TabSharingStatusMessageView::SetupMessage(MessageInfo info) {
   // Format the message text and retrieve the offsets to where the replacements
   // should go.
@@ -365,6 +346,9 @@ void TabSharingStatusMessageView::AddLabel(const std::u16string& text,
       views::kFlexBehaviorKey,
       views::FlexSpecification(views::MinimumFlexSizeRule::kScaleToZero)
           .WithOrder(flex_layout_order));
+  label->SetEnabledColor(kColorInfoBarForeground);
+  label->SetBackgroundColor(kColorInfoBarBackground);
+  label->SetAutoColorReadabilityEnabled(false);
 }
 
 void TabSharingStatusMessageView::AddButton(
@@ -383,7 +367,7 @@ void TabSharingStatusMessageView::AddButton(
   button->SetCustomPadding(kRefreshButtonInsets);
   button->SetProperty(views::kCrossAxisAlignmentKey,
                       views::LayoutAlignment::kCenter);
-  button->SetBgColorIdOverride(ui::kColorSysNeutralContainer);
+  button->SetBgColorOverride(ui::kColorSysNeutralContainer);
   button->SetTextColor(views::Button::ButtonState::STATE_NORMAL,
                        ui::kColorLinkForeground);
   button->SetTextColor(views::Button::ButtonState::STATE_HOVERED,

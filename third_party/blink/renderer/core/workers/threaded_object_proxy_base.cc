@@ -11,9 +11,7 @@
 #include "third_party/blink/renderer/core/inspector/console_message.h"
 #include "third_party/blink/renderer/core/workers/parent_execution_context_task_runners.h"
 #include "third_party/blink/renderer/core/workers/threaded_messaging_proxy_base.h"
-#include "third_party/blink/renderer/platform/bindings/source_location_copier.h"
 #include "third_party/blink/renderer/platform/scheduler/public/post_cross_thread_task.h"
-#include "third_party/blink/renderer/platform/wtf/cross_thread_copier_std.h"
 #include "third_party/blink/renderer/platform/wtf/cross_thread_functional.h"
 #include "third_party/blink/renderer/platform/wtf/functional.h"
 
@@ -97,10 +95,12 @@ void ThreadedObjectProxyBase::DidTerminateWorkerThread() {
     return;
   }
 
-  // This will terminate the MessagingProxy.
-  PostCrossThreadTask(
-      *GetParentExecutionContextTaskRunners()->Get(TaskType::kInternalDefault),
-      FROM_HERE,
+  // This will terminate the MessagingProxy. The parent thread must not miss
+  // `WorkerThreadTerminated()`: a parent worker waits for it before finishing
+  // its own shutdown. Use a cleanup task so it still runs if the parent's task
+  // queue is shut down first (e.g., by `WorkerScheduler::Dispose()`).
+  GetParentExecutionContextTaskRunners()->PostCrossThreadCleanupTask(
+      TaskType::kInternalDefault, FROM_HERE,
       CrossThreadBindOnce(&ThreadedMessagingProxyBase::WorkerThreadTerminated,
                           MessagingProxyWeakPtr()));
 }

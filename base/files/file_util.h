@@ -162,6 +162,18 @@ BASE_EXPORT bool PreventExecuteMappingUnchecked(
 BASE_EXPORT void SetExtraNoExecuteAllowedPath(int path_key);
 #endif  // BUILDFLAG(IS_WIN)
 
+#if BUILDFLAG(IS_MAC)
+enum class DarwinUserDirectory {
+  kUser,
+  kUserCache,
+  kUserTemp,
+};
+
+// Returns the canonicalized path of a Darwin user directory, or empty FilePath
+// on failure.
+BASE_EXPORT FilePath GetDarwinUserDirectory(DarwinUserDirectory directory);
+#endif  // BUILDFLAG(IS_MAC)
+
 // Moves the given path, whether it's a file or a directory.
 // If a simple rename is not possible, such as in the case where the paths are
 // on different volumes, this will attempt to copy and delete. Returns
@@ -220,6 +232,16 @@ BASE_EXPORT bool CopyDirectory(const FilePath& from_path,
                                const FilePath& to_path,
                                bool recursive);
 
+#if BUILDFLAG(IS_POSIX)
+// Same as `CopyDirectory()` above, except returns false when symlinks and
+// non-regular files are encountered. Directory traversal is performed using
+// file descriptors with `O_NOFOLLOW` to prevent TOCTOU symlink traversal
+// attacks.
+BASE_EXPORT bool CopyDirectoryNoFollow(const FilePath& from_path,
+                                       const FilePath& to_path,
+                                       bool recursive);
+#endif  // BUILDFLAG(IS_POSIX)
+
 // Returns true if the given path exists on the local filesystem,
 // false otherwise.
 BASE_EXPORT bool PathExists(const FilePath& path);
@@ -248,6 +270,14 @@ BASE_EXPORT bool TextContentsEqual(const FilePath& filename1,
 // components ('..') is treated as a read error, returning nullopt.
 BASE_EXPORT std::optional<std::vector<uint8_t>> ReadFileToBytes(
     const FilePath& path);
+
+// Reads the file at `path` and returns a vector of bytes on success, and
+// nullopt on error. For security reasons, a `path` containing path traversal
+// components ('..') is treated as a read error, returning nullopt. When the
+// file size exceeds `max_size`, the function returns nullopt.
+BASE_EXPORT std::optional<std::vector<uint8_t>> ReadFileToBytesWithMaxSize(
+    const FilePath& path,
+    size_t max_size);
 
 // Reads the file at |path| into |contents| and returns true on success and
 // false on error.  For security reasons, a |path| containing path traversal
@@ -746,7 +776,7 @@ BASE_EXPORT bool SetCloseOnExec(int fd);
 BASE_EXPORT bool RemoveCloseOnExec(int fd);
 #endif  // BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
 
-#if BUILDFLAG(IS_MAC)
+#if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
 // Test that |path| can only be changed by a given user and members of
 // a given set of groups.
 // Specifically, test that all parts of |path| under (and including) |base|:
@@ -762,7 +792,9 @@ BASE_EXPORT bool VerifyPathControlledByUser(const base::FilePath& base,
                                             const base::FilePath& path,
                                             uid_t owner_uid,
                                             const std::set<gid_t>& group_gids);
+#endif  // BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
 
+#if BUILDFLAG(IS_MAC)
 // Is |path| writable only by a user with administrator privileges?
 // This function uses Mac OS conventions.  The super user is assumed to have
 // uid 0, and the administrator group is assumed to be named "admin".

@@ -28,6 +28,7 @@ import org.chromium.base.ApplicationStatus;
 import org.chromium.base.ApplicationStatus.ActivityStateListener;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.shared_preferences.SharedPreferencesManager;
+import org.chromium.base.test.transit.Triggers;
 import org.chromium.base.test.util.CallbackHelper;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.Criteria;
@@ -52,7 +53,9 @@ import org.chromium.chrome.browser.tab.TabLaunchType;
 import org.chromium.chrome.browser.tabmodel.TabPersistentStoreTest.MockTabPersistentStoreObserver;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.chrome.test.transit.ChromeTransitTestRules;
+import org.chromium.chrome.test.transit.ChromeTriggers;
 import org.chromium.chrome.test.transit.FreshCtaTransitTestRule;
+import org.chromium.chrome.test.transit.hub.RegularTabSwitcherStation;
 import org.chromium.chrome.test.util.ChromeTabUtils;
 import org.chromium.content_public.browser.LoadUrlParams;
 import org.chromium.ui.base.DeviceFormFactor;
@@ -110,13 +113,6 @@ public class TabModelMergingTest {
         mActivity2 =
                 MultiWindowTestHelper.createSecondChromeTabbedActivity(
                         mActivity1, new LoadUrlParams(TEST_URL_7));
-        CriteriaHelper.pollUiThread(
-                () -> {
-                    Criteria.checkThat(mActivity2.areTabModelsInitialized(), Matchers.is(true));
-                    Criteria.checkThat(
-                            mActivity2.getTabModelSelector().isTabStateInitialized(),
-                            Matchers.is(true));
-                });
 
         // Create a few tabs in each activity.
         createTabsOnUiThread();
@@ -450,7 +446,7 @@ public class TabModelMergingTest {
         // tab metadata file for ChromeTabbedActivity gets deleted before attempting to merge
         // on cold start.
         mergeTabsAndAssert(mActivity2, mMergeIntoActivity2ExpectedTabs);
-        mockObserver.stateMergedCallback.waitForCallback(0, 1);
+        mockObserver.stateLoadedCallback.waitForCallback(0, 1);
 
         // Create an intent to launch a new ChromeTabbedActivity.
         Intent intent = createChromeTabbedActivityIntent(mActivity2);
@@ -565,7 +561,14 @@ public class TabModelMergingTest {
                 mActivity1.getLayoutManager(), LayoutType.HUB, false);
 
         // Close all tabs and wait for the callback.
-        ChromeTabUtils.closeAllTabs(InstrumentationRegistry.getInstrumentation(), mActivity1);
+        RegularTabSwitcherStation tabSwitcher =
+                Triggers.noopTo()
+                        .hopOnTo(
+                                mActivity1,
+                                new RegularTabSwitcherStation(
+                                        /* regularTabsExist= */ true,
+                                        /* incognitoTabsExist= */ false));
+        ChromeTriggers.closeAllTabsProgrammatically(tabSwitcher);
 
         String[] expectedTabUrls = new String[3];
         for (int i = 0; i < 3; i++) {

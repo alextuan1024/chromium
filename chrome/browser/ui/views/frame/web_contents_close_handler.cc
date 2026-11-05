@@ -30,7 +30,7 @@ void WebContentsCloseHandler::ActiveTabChanged() {
 }
 
 void WebContentsCloseHandler::WillCloseAllTabs() {
-  DCHECK(!in_close_);
+  CHECK(!in_close_, base::NotFatalUntil::M162);
   in_close_ = true;
   tab_changed_after_clone_ = false;
   delegate_->CloneWebContentsLayer();
@@ -38,6 +38,8 @@ void WebContentsCloseHandler::WillCloseAllTabs() {
 }
 
 void WebContentsCloseHandler::CloseAllTabsCanceled() {
+  // TODO(crbug.com/582169836): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
   DCHECK(in_close_);
   in_close_ = false;
   if (tab_changed_after_clone_) {

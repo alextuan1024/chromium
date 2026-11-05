@@ -112,12 +112,6 @@ NewTabUI::NewTabUI(content::WebUI* web_ui) : content::WebUIController(web_ui) {
 NewTabUI::~NewTabUI() = default;
 
 // static
-bool NewTabUI::IsNewTab(const GURL& url) {
-  return url.DeprecatedGetOriginAsURL() ==
-         chrome::ChromeUINewTabURLAsGURL().DeprecatedGetOriginAsURL();
-}
-
-// static
 void NewTabUI::SetUrlTitleAndDirection(base::DictValue* dictionary,
                                        const std::u16string& title,
                                        const GURL& gurl) {
@@ -177,7 +171,7 @@ void NewTabUI::NewTabHTMLSource::StartDataRequest(
     const GURL& url,
     const content::WebContents::Getter& wc_getter,
     content::URLDataSource::GotDataCallback callback) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
 
   // Sometimes the |profile_| is the parent (non-incognito) version of the user
   // so we check the |web_contents| if it is provided.

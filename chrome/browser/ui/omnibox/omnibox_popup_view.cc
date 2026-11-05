@@ -17,6 +17,10 @@ OmniboxPopupPresenterBase* OmniboxPopupView::presenter() {
   return nullptr;
 }
 
+OmniboxPopupHost* OmniboxPopupView::popup_host() const {
+  return nullptr;
+}
+
 OmniboxController* OmniboxPopupView::controller() {
   return const_cast<OmniboxController*>(
       const_cast<const OmniboxPopupView*>(this)->controller());
@@ -44,3 +48,9 @@ bool OmniboxPopupView::IsReverting() const {
 }
 
 void OmniboxPopupView::SetIsReverting(bool reverting) {}
+
+bool OmniboxPopupView::RequestWebUIContextMenu(
+    const gfx::Point& screen_point,
+    ui::mojom::MenuSourceType source_type) {
+  return false;
+}

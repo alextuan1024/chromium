@@ -20,6 +20,7 @@ import {getHtml} from './profile_icon.html.js';
 
 export interface OmniboxEverywhereProfileIconElement {
   $: {
+    profileContainer: HTMLButtonElement,
     profileMenu: CrActionMenuElement,
   };
 }
@@ -42,6 +43,8 @@ export class OmniboxEverywhereProfileIconElement extends
 
   static override get properties() {
     return {
+      hasVirtualFocus: {type: Boolean, reflect: true},
+      removeFromTabOrder: {type: Boolean},
       isEnterpriseProfile_: {
         type: Boolean,
         reflect: true,
@@ -54,6 +57,12 @@ export class OmniboxEverywhereProfileIconElement extends
     };
   }
 
+  // Set by `<omnibox-everywhere-omnibox>` while the profile button has virtual
+  // focus, which keeps DOM focus on the input.
+  accessor hasVirtualFocus: boolean = false;
+  // Set by `<omnibox-everywhere-omnibox>` while virtual focus handles Tab, as
+  // for the other input row buttons.
+  accessor removeFromTabOrder: boolean = false;
   protected accessor isEnterpriseProfile_: boolean =
       loadTimeData.getBoolean('isEnterpriseProfile');
   protected accessor profileAvatarUrl_: string =
@@ -70,6 +79,24 @@ export class OmniboxEverywhereProfileIconElement extends
   private callbackRouter_: PageCallbackRouter =
       SearchboxBrowserProxy.getInstance().callbackRouter;
   private updateProfileInfoListenerId_: number|null = null;
+  private isOpeningMenu_: boolean = false;
+
+  get isMenuOpen(): boolean {
+    return this.isOpeningMenu_ || this.$.profileMenu.open;
+  }
+
+  /** Whether the profile button opens the profile menu. */
+  get isMenuEnabled(): boolean {
+    return this.profilePickerEnabled_;
+  }
+
+  // Closes the unbounded menu when Loomnibox hides in place (keeping the DOM
+  // connected without firing disconnectedCallback).
+  private onVisibilityChange_ = () => {
+    if (document.hidden && this.isMenuOpen) {
+      this.$.profileMenu.close();
+    }
+  };
 
   override connectedCallback() {
     super.connectedCallback();
@@ -80,14 +107,21 @@ export class OmniboxEverywhereProfileIconElement extends
               this.profileName_ = name;
               this.profileEmail_ = email;
             });
+    document.addEventListener('visibilitychange', this.onVisibilityChange_);
   }
 
   override disconnectedCallback() {
     super.disconnectedCallback();
+    // Closes the unbounded menu when <omnibox-everywhere-omnibox> unmounts
+    // while the document remains visible (e.g. switching to Composebox).
+    if (this.isMenuOpen) {
+      this.$.profileMenu.close();
+    }
     if (this.updateProfileInfoListenerId_ !== null) {
       this.callbackRouter_.removeListener(this.updateProfileInfoListenerId_);
       this.updateProfileInfoListenerId_ = null;
     }
+    document.removeEventListener('visibilitychange', this.onVisibilityChange_);
   }
 
   protected getProfileTooltip_(): string {
@@ -99,7 +133,8 @@ export class OmniboxEverywhereProfileIconElement extends
         .join('\n');
   }
 
-  protected getProfileAriaLabel_(): string {
+  /** Returns the label screen readers narrate for the profile button. */
+  getA11yLabel(): string {
     return [
       this.i18n('profileTooltipHeader'),
       this.profileName_,
@@ -108,25 +143,41 @@ export class OmniboxEverywhereProfileIconElement extends
         .join(' ');
   }
 
-  protected onProfileIconClick_() {
-    if (!this.profilePickerEnabled_) {
+  /**
+   * Opens the profile menu, or closes it if it is open. Does nothing when the
+   * profile picker is off. Runs on click, and from the omnibox while the
+   * button has virtual focus.
+   */
+  async toggleMenu(): Promise<void> {
+    if (!this.isMenuEnabled) {
       return;
     }
-    const anchor =
-        this.shadowRoot?.querySelector<HTMLElement>('#profileContainer');
-    if (anchor && this.$.profileMenu) {
-      this.$.profileMenu.showAt(anchor, {
+    if (this.isMenuOpen) {
+      this.$.profileMenu.close();
+      return;
+    }
+    await this.$.profileMenu.setUnbounded();
+    if (!this.isConnected || this.isMenuOpen) {
+      return;
+    }
+    this.isOpeningMenu_ = true;
+    try {
+      this.$.profileMenu.showAt(this.$.profileContainer, {
         anchorAlignmentX: AnchorAlignment.BEFORE_END,
         anchorAlignmentY: AnchorAlignment.AFTER_END,
       });
+    } finally {
+      this.isOpeningMenu_ = false;
     }
   }
 
+  protected onProfileIconClick_(): Promise<void> {
+    return this.toggleMenu();
+  }
+
   protected onSwitchProfileClick_() {
-    if (this.$.profileMenu) {
-      this.$.profileMenu.close();
-    }
     this.searchboxHandler_.openProfilePicker();
+    this.$.profileMenu.close();
   }
 }
 

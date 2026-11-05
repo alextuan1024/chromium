@@ -11,23 +11,27 @@ import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentCaptor.captor;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.robolectric.Shadows.shadowOf;
 
 import android.app.Activity;
 import android.content.Context;
+import android.content.Intent;
 import android.graphics.Color;
 import android.view.ContextThemeWrapper;
 import android.view.DragAndDropPermissions;
 import android.view.DragEvent;
 import android.view.LayoutInflater;
 import android.view.View;
-import android.view.ViewTreeObserver;
+import android.view.ViewGroup;
 import android.view.Window;
+import android.widget.FrameLayout;
 
 import androidx.test.core.app.ApplicationProvider;
 
@@ -41,21 +45,30 @@ import org.mockito.Mockito;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 import org.robolectric.Robolectric;
+import org.robolectric.android.controller.ActivityController;
 import org.robolectric.shadows.ShadowLooper;
 
+import org.chromium.base.ActivityState;
 import org.chromium.base.UnownedUserDataHost;
 import org.chromium.base.supplier.MonotonicObservableSupplier;
 import org.chromium.base.supplier.ObservableSuppliers;
 import org.chromium.base.test.BaseRobolectricTestRunner;
+import org.chromium.base.test.util.Features.DisableFeatures;
+import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.R;
+import org.chromium.chrome.browser.ephemeraltab.EphemeralTabCoordinator;
+import org.chromium.chrome.browser.ephemeraltab.EphemeralTabCoordinatorSupplier;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.intents.BrowserIntentUtils;
 import org.chromium.chrome.browser.multiwindow.MultiInstanceOrchestrator;
 import org.chromium.chrome.browser.multiwindow.MultiInstanceOrchestratorFactory;
+import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabLaunchType;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
 import org.chromium.chrome.browser.tabmodel.TabModelSelectorSupplier;
+import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
 import org.chromium.components.embedder_support.contextmenu.ContextMenuItemDelegate;
 import org.chromium.components.embedder_support.contextmenu.ContextMenuPopulatorFactory;
 import org.chromium.components.embedder_support.view.ContentView;
@@ -63,48 +76,75 @@ import org.chromium.components.thinwebview.ThinWebView;
 import org.chromium.components.thinwebview.ThinWebViewAttachParams;
 import org.chromium.components.thinwebview.ThinWebViewFactory;
 import org.chromium.components.thinwebview.internal.ThinWebViewContextMenuItemDelegate;
+import org.chromium.components.thinwebview.internal.ThinWebViewContextMenuItemDelegate.EphemeralTabOpener;
+import org.chromium.content_public.browser.AdditionalNavigationParams;
+import org.chromium.content_public.browser.LoadUrlParams;
+import org.chromium.content_public.browser.RenderFrameHost;
+import org.chromium.content_public.browser.Visibility;
 import org.chromium.content_public.browser.WebContents;
 import org.chromium.content_public.browser.selection.SelectionDropdownMenuDelegate;
+import org.chromium.content_public.common.Referrer;
 import org.chromium.ui.base.EventForwarder;
 import org.chromium.ui.base.ViewAndroidDelegate;
 import org.chromium.ui.base.WindowAndroid;
+import org.chromium.ui.base.WindowAndroid.ActivityStateObserver;
 import org.chromium.url.GURL;
+import org.chromium.url.Origin;
 
 import java.lang.ref.WeakReference;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.function.BiConsumer;
 
 /** Unit tests for {@link TabBottomSheetWebUi}. */
 @RunWith(BaseRobolectricTestRunner.class)
+@DisableFeatures(ChromeFeatureList.GLIC_VOICE)
 public class TabBottomSheetWebUiUnitTest {
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
 
     @Mock private WindowAndroid mWindowAndroid;
+    @Mock private BottomSheetController mBottomSheetController;
     @Mock private WebContents mWebContents;
     @Mock private ThinWebView mThinWebView;
-    @Mock private View mView;
     @Mock private ContextMenuPopulatorFactory mContextMenuPopulatorFactory;
     @Mock private SelectionDropdownMenuDelegate mSelectionDropdownMenuDelegate;
-    @Mock private ContentView mMockContentView;
     @Mock private Window mMockWindow;
-    @Mock private View mMockDecorView;
     @Mock private EventForwarder mEventForwarder;
-    @Mock private Activity mMockActivity;
+    @Mock private CoBrowseComponentProvider mMockComponentProvider;
+    @Mock private ResizingPlaceholderCoordinator mMockPlaceholderCoordinator;
 
+    private ActivityController<Activity> mActivityController;
+    private Activity mActivity;
+    private ContentView mContentView;
     private TabBottomSheetWebUi mWebUi;
 
     @Before
     public void setUp() {
-        ThinWebViewFactory.setInstanceForTesting(mThinWebView);
-        when(mThinWebView.getView()).thenReturn(mView);
+        mActivityController = Robolectric.buildActivity(Activity.class).setup();
+        mActivity = mActivityController.get();
+        // A null WebContents keeps ContentView from calling into native-backed WebContents
+        // helpers (e.g. ViewEventSink) on focus / attach changes.
+        mContentView = ContentView.createContentView(mActivity, /* webContents= */ null);
 
-        WeakReference<Activity> weakActivity = new WeakReference<>(mMockActivity);
+        ThinWebViewFactory.setInstanceForTesting(mThinWebView);
+        when(mThinWebView.getView()).thenReturn(new View(mActivity));
+
+        WeakReference<Activity> weakActivity = new WeakReference<>(mActivity);
         when(mWindowAndroid.getActivity()).thenReturn(weakActivity);
 
+        View decorView = new View(mActivity);
+        decorView.layout(0, 0, /* right= */ 0, /* bottom= */ 1000);
         when(mWindowAndroid.getWindow()).thenReturn(mMockWindow);
-        when(mMockWindow.getDecorView()).thenReturn(mMockDecorView);
-        when(mMockDecorView.getHeight()).thenReturn(1000);
+        when(mMockWindow.getDecorView()).thenReturn(decorView);
 
         Mockito.lenient().doReturn(mEventForwarder).when(mWebContents).getEventForwarder();
+        mWebUi = createWebUi(TabBottomSheetClientType.GLIC);
+        TabBottomSheetWebUi.setInTestModeForTesting();
+    }
+
+    private TabBottomSheetWebUi createWebUi(@TabBottomSheetClientType int clientType) {
         Context context =
                 new ContextThemeWrapper(
                         ApplicationProvider.getApplicationContext(),
@@ -115,20 +155,20 @@ public class TabBottomSheetWebUiUnitTest {
                                 org.chromium.chrome.browser.context_sharing.R.layout
                                         .tab_bottom_sheet,
                                 null);
-        mWebUi =
-                new TestTabBottomSheetWebUi(
-                        context,
-                        containerView,
-                        mWindowAndroid,
-                        mContextMenuPopulatorFactory,
-                        mSelectionDropdownMenuDelegate,
-                        Color.WHITE,
-                        TabBottomSheetClientType.UNKNOWN,
-                        CoBrowseContainerType.BOTTOM_SHEET,
-                        /* ephemeralTabOpener= */ null,
-                        /* readLaterOpener= */ null,
-                        mMockContentView);
-        TabBottomSheetWebUi.setInTestModeForTesting();
+        return new TestTabBottomSheetWebUi(
+                context,
+                containerView,
+                mWindowAndroid,
+                mBottomSheetController,
+                mContextMenuPopulatorFactory,
+                mSelectionDropdownMenuDelegate,
+                Color.WHITE,
+                Color.LTGRAY,
+                clientType,
+                CoBrowseContainerType.BOTTOM_SHEET,
+                /* ephemeralTabOpener= */ null,
+                /* readLaterOpener= */ null,
+                mContentView);
     }
 
     @Test
@@ -137,23 +177,25 @@ public class TabBottomSheetWebUiUnitTest {
                 new ContextThemeWrapper(
                         ApplicationProvider.getApplicationContext(),
                         R.style.Theme_BrowserUI_DayNight);
-        CoBrowseComponentProvider mockProvider = mock(CoBrowseComponentProvider.class);
         View containerView = new View(context);
         TabBottomSheetWebUi webUi =
                 new TabBottomSheetWebUi(
                         context,
                         containerView,
                         mWindowAndroid,
+                        mBottomSheetController,
                         mContextMenuPopulatorFactory,
                         mSelectionDropdownMenuDelegate,
                         Color.WHITE,
+                        Color.LTGRAY,
                         TabBottomSheetClientType.UNKNOWN,
                         CoBrowseContainerType.BOTTOM_SHEET,
                         null,
                         null,
-                        mockProvider);
+                        mMockComponentProvider);
         assertEquals(
-                mockProvider, webUi.getWebViewResizingHelper().getComponentProviderForTesting());
+                mMockComponentProvider,
+                webUi.getWebViewResizingHelper().getComponentProviderForTesting());
     }
 
     @Test
@@ -168,9 +210,11 @@ public class TabBottomSheetWebUiUnitTest {
                         context,
                         containerView,
                         mWindowAndroid,
+                        mBottomSheetController,
                         mContextMenuPopulatorFactory,
                         mSelectionDropdownMenuDelegate,
                         Color.WHITE,
+                        Color.LTGRAY,
                         TabBottomSheetClientType.UNKNOWN,
                         CoBrowseContainerType.BOTTOM_SHEET,
                         null,
@@ -215,38 +259,81 @@ public class TabBottomSheetWebUiUnitTest {
     }
 
     @Test
+    public void testSetWebContents_Null_ClearsTopLevelWindowWhenStillOwned() {
+        ViewAndroidDelegate viewDelegate = ViewAndroidDelegate.createBasicDelegate(null);
+        when(mWebContents.getViewAndroidDelegate()).thenReturn(viewDelegate);
+
+        mWebUi.setWebContents(mWebContents, true);
+        assertEquals(mContentView, viewDelegate.getContainerView());
+
+        mWebUi.setWebContents(null, false);
+        verify(mWebContents).setTopLevelNativeWindow(null);
+    }
+
+    @Test
+    public void testSetWebContents_Null_DoesNotClearTopLevelWindowWhenMovedToAnotherWebUi() {
+        ViewAndroidDelegate viewDelegate = ViewAndroidDelegate.createBasicDelegate(null);
+        when(mWebContents.getViewAndroidDelegate()).thenReturn(viewDelegate);
+
+        mWebUi.setWebContents(mWebContents, true);
+        assertEquals(mContentView, viewDelegate.getContainerView());
+
+        // Simulate another TabBottomSheetWebUi (e.g. in another window after "Move here") taking
+        // ownership of the WebContents before this WebUi finishes closing.
+        ContentView otherContentView = ContentView.createContentView(mActivity, null);
+        viewDelegate.setContainerView(otherContentView);
+
+        mWebUi.setWebContents(null, false);
+        verify(mWebContents, never()).setTopLevelNativeWindow(null);
+    }
+
+    @Test
+    public void testSetWebContents_Null_DoesNotClearTopLevelWindowWhenDestroyed() {
+        ViewAndroidDelegate viewDelegate = ViewAndroidDelegate.createBasicDelegate(null);
+        when(mWebContents.getViewAndroidDelegate()).thenReturn(viewDelegate);
+
+        mWebUi.setWebContents(mWebContents, true);
+        assertEquals(mContentView, viewDelegate.getContainerView());
+
+        when(mWebContents.isDestroyed()).thenReturn(true);
+        mWebUi.setWebContents(null, false);
+        verify(mWebContents, never()).setTopLevelNativeWindow(null);
+    }
+
+    @Test
     public void testFocusHandling() {
-        ViewTreeObserver mockViewTreeObserver = mock(ViewTreeObserver.class);
-        when(mMockContentView.getViewTreeObserver()).thenReturn(mockViewTreeObserver);
+        mWebUi.setWebContents(mWebContents, true);
+        // Attaching registers the window focus listener.
+        attachToActivityWithFocusableSibling(mContentView);
+        assertTrue(mContentView.requestFocus());
+
+        mActivityController.windowFocusChanged(false);
+        ShadowLooper.idleMainLooper();
+        assertFalse(mContentView.isFocused());
+
+        assertTrue(mContentView.requestFocus());
+        mActivityController.windowFocusChanged(true);
+        ShadowLooper.idleMainLooper();
+        assertTrue(mContentView.isFocused());
+
+        // Detaching unregisters the listener: once moved to another window, losing focus in the
+        // original window no longer clears the ContentView's focus.
+        ((ViewGroup) mContentView.getParent()).removeView(mContentView);
+        Activity otherActivity = Robolectric.buildActivity(Activity.class).setup().get();
+        otherActivity.setContentView(mContentView);
+        assertTrue(mContentView.requestFocus());
+        mActivityController.windowFocusChanged(false);
+        ShadowLooper.idleMainLooper();
+        assertTrue(mContentView.isFocused());
+    }
+
+    @Test
+    public void testSetWebContents_ListensForContentViewFocusChanges() {
+        assertNull(mContentView.getOnFocusChangeListener());
 
         mWebUi.setWebContents(mWebContents, true);
 
-        ArgumentCaptor<View.OnAttachStateChangeListener> attachListenerCaptor =
-                ArgumentCaptor.forClass(View.OnAttachStateChangeListener.class);
-        verify(mMockContentView).addOnAttachStateChangeListener(attachListenerCaptor.capture());
-        View.OnAttachStateChangeListener attachListener = attachListenerCaptor.getValue();
-        assertNotNull(attachListener);
-
-        attachListener.onViewAttachedToWindow(mMockContentView);
-
-        ArgumentCaptor<ViewTreeObserver.OnWindowFocusChangeListener> focusListenerCaptor =
-                ArgumentCaptor.forClass(ViewTreeObserver.OnWindowFocusChangeListener.class);
-        verify(mockViewTreeObserver).addOnWindowFocusChangeListener(focusListenerCaptor.capture());
-        ViewTreeObserver.OnWindowFocusChangeListener focusListener = focusListenerCaptor.getValue();
-        assertNotNull(focusListener);
-
-        focusListener.onWindowFocusChanged(false);
-        ShadowLooper.idleMainLooper();
-        verify(mMockContentView).clearFocus();
-
-        Mockito.reset(mMockContentView);
-        when(mMockContentView.getViewTreeObserver()).thenReturn(mockViewTreeObserver);
-
-        focusListener.onWindowFocusChanged(true);
-        verify(mMockContentView, times(0)).clearFocus();
-
-        attachListener.onViewDetachedFromWindow(mMockContentView);
-        verify(mockViewTreeObserver).removeOnWindowFocusChangeListener(focusListener);
+        assertNotNull(mContentView.getOnFocusChangeListener());
     }
 
     @Test
@@ -268,9 +355,12 @@ public class TabBottomSheetWebUiUnitTest {
 
         mWebUi.setWebContents(nonNullWebContents, true);
 
-        Activity mockActivity = mock(Activity.class);
-        when(mockActivity.isDestroyed()).thenReturn(true);
-        WeakReference<Activity> weakActivity = new WeakReference<>(mockActivity);
+        ActivityController<Activity> destroyedController =
+                Robolectric.buildActivity(Activity.class).setup();
+        Activity destroyedActivity = destroyedController.get();
+        destroyedController.destroy();
+        assertTrue(destroyedActivity.isDestroyed());
+        WeakReference<Activity> weakActivity = new WeakReference<>(destroyedActivity);
         when(mWindowAndroid.getActivity()).thenReturn(weakActivity);
 
         // Reset verification state of mThinWebView
@@ -307,11 +397,189 @@ public class TabBottomSheetWebUiUnitTest {
     }
 
     @Test
+    @EnableFeatures(ChromeFeatureList.GLIC_VOICE)
     public void testDestroy() {
         mWebUi.setWebContents(mWebContents, true);
         mWebUi.destroy();
         verify(mThinWebView).destroy();
+        // One observer each for WebViewResizingHelper and WebContents visibility.
+        verify(mWindowAndroid, times(2)).removeActivityStateObserver(any());
         assertNull(mWebUi.getWebContents());
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.GLIC_VOICE)
+    public void testActivityStopAndResume_updatesWebContentsVisibility() {
+        Mockito.clearInvocations(mWindowAndroid);
+        mWebUi.setWebContents(mWebContents, false);
+        ArgumentCaptor<ActivityStateObserver> observerCaptor =
+                ArgumentCaptor.forClass(ActivityStateObserver.class);
+        verify(mWindowAndroid).addActivityStateObserver(observerCaptor.capture());
+        ActivityStateObserver observer = observerCaptor.getValue();
+
+        observer.onActivityStopped();
+        verify(mWebContents).updateWebContentsVisibility(Visibility.HIDDEN);
+
+        observer.onActivityResumed();
+        verify(mWebContents).updateWebContentsVisibility(Visibility.VISIBLE);
+    }
+
+    @Test
+    @DisableFeatures(ChromeFeatureList.GLIC_VOICE)
+    public void testGlicVoiceDisabled_doesNotObserveActivityState() {
+        Mockito.clearInvocations(mWindowAndroid);
+        when(mWindowAndroid.getActivityState()).thenReturn(ActivityState.STOPPED);
+
+        mWebUi.setWebContents(mWebContents, false);
+        mWebUi.setWebContents(null, false);
+
+        verify(mWindowAndroid, never()).addActivityStateObserver(any());
+        verify(mWindowAndroid, never()).removeActivityStateObserver(any());
+        verify(mWebContents, never()).updateWebContentsVisibility(anyInt());
+    }
+
+    @Test
+    @DisableFeatures(ChromeFeatureList.GLIC_VOICE)
+    public void testGlicVoiceDisabled_destroyRemovesOnlyResizingObserver() {
+        mWebUi.setWebContents(mWebContents, true);
+        mWebUi.destroy();
+        verify(mWindowAndroid, times(1)).removeActivityStateObserver(any());
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.GLIC_VOICE)
+    public void testNonGlicClient_doesNotObserveActivityState() {
+        TabBottomSheetWebUi webUi = createWebUi(TabBottomSheetClientType.CONTEXTUAL_TASKS);
+        Mockito.clearInvocations(mWindowAndroid);
+        when(mWindowAndroid.getActivityState()).thenReturn(ActivityState.STOPPED);
+
+        webUi.setWebContents(mWebContents, false);
+
+        verify(mWindowAndroid, never()).addActivityStateObserver(any());
+        verify(mWebContents, never()).updateWebContentsVisibility(anyInt());
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.GLIC_VOICE)
+    public void testSetWebContents_Null_StopsObservingActivityState() {
+        Mockito.clearInvocations(mWindowAndroid);
+        mWebUi.setWebContents(mWebContents, false);
+        ArgumentCaptor<ActivityStateObserver> observerCaptor =
+                ArgumentCaptor.forClass(ActivityStateObserver.class);
+        verify(mWindowAndroid).addActivityStateObserver(observerCaptor.capture());
+
+        mWebUi.setWebContents(null, false);
+
+        verify(mWindowAndroid).removeActivityStateObserver(observerCaptor.getValue());
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.GLIC_VOICE)
+    public void testSetWebContents_SwapWebContents_KeepsSingleObserver() {
+        Mockito.clearInvocations(mWindowAndroid);
+        mWebUi.setWebContents(mWebContents, false);
+
+        WebContents secondWebContents = mock(WebContents.class);
+        Mockito.doReturn(mEventForwarder).when(secondWebContents).getEventForwarder();
+        mWebUi.setWebContents(secondWebContents, false);
+
+        verify(mWindowAndroid, times(1)).addActivityStateObserver(any());
+        verify(mWindowAndroid, never()).removeActivityStateObserver(any());
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.GLIC_VOICE)
+    public void testSetWebContents_WhileActivityStopped_HidesWebContents() {
+        when(mWindowAndroid.getActivityState()).thenReturn(ActivityState.STOPPED);
+
+        mWebUi.setWebContents(mWebContents, false);
+
+        verify(mWebContents).updateWebContentsVisibility(Visibility.HIDDEN);
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.GLIC_VOICE)
+    public void testSetWebContents_WhileActivityResumed_DoesNotHideWebContents() {
+        when(mWindowAndroid.getActivityState()).thenReturn(ActivityState.RESUMED);
+
+        mWebUi.setWebContents(mWebContents, false);
+
+        verify(mWebContents, never()).updateWebContentsVisibility(Visibility.HIDDEN);
+    }
+
+    @Test
+    public void testDestroy_withoutResize_doesNotInflatePlaceholder() {
+        Context context =
+                new ContextThemeWrapper(
+                        ApplicationProvider.getApplicationContext(),
+                        R.style.Theme_BrowserUI_DayNight);
+        when(mMockComponentProvider.createResizingPlaceholderCoordinator(
+                        any(), eq(Color.WHITE), eq(Color.LTGRAY)))
+                .thenReturn(mMockPlaceholderCoordinator);
+        View containerView = new View(context);
+        TabBottomSheetWebUi webUi =
+                new TabBottomSheetWebUi(
+                        context,
+                        containerView,
+                        mWindowAndroid,
+                        mBottomSheetController,
+                        mContextMenuPopulatorFactory,
+                        mSelectionDropdownMenuDelegate,
+                        Color.WHITE,
+                        Color.LTGRAY,
+                        TabBottomSheetClientType.UNKNOWN,
+                        CoBrowseContainerType.BOTTOM_SHEET,
+                        null,
+                        null,
+                        mMockComponentProvider);
+
+        webUi.setWebContents(mWebContents, false);
+        webUi.destroy();
+
+        verify(mMockComponentProvider, never())
+                .createResizingPlaceholderCoordinator(any(), anyInt(), anyInt());
+        verify(mMockPlaceholderCoordinator, never()).destroy();
+    }
+
+    @Test
+    public void testDestroy_destroysPlaceholderCoordinator() {
+        Context context =
+                new ContextThemeWrapper(
+                        ApplicationProvider.getApplicationContext(),
+                        R.style.Theme_BrowserUI_DayNight);
+        when(mMockComponentProvider.createResizingPlaceholderCoordinator(
+                        any(), eq(Color.WHITE), eq(Color.LTGRAY)))
+                .thenReturn(mMockPlaceholderCoordinator);
+        View containerView = new View(context);
+        TabBottomSheetWebUi webUi =
+                new TabBottomSheetWebUi(
+                        context,
+                        containerView,
+                        mWindowAndroid,
+                        mBottomSheetController,
+                        mContextMenuPopulatorFactory,
+                        mSelectionDropdownMenuDelegate,
+                        Color.WHITE,
+                        Color.LTGRAY,
+                        TabBottomSheetClientType.UNKNOWN,
+                        CoBrowseContainerType.BOTTOM_SHEET,
+                        null,
+                        null,
+                        mMockComponentProvider);
+
+        verify(mMockComponentProvider, never())
+                .createResizingPlaceholderCoordinator(any(), anyInt(), anyInt());
+        webUi.setWebContents(mWebContents, false);
+        verify(mMockComponentProvider, never())
+                .createResizingPlaceholderCoordinator(any(), anyInt(), anyInt());
+
+        WebViewResizingHelper.ResizeLock lock = webUi.getWebViewResizingHelper().requestResize();
+        assertNotNull(lock);
+        verify(mMockComponentProvider)
+                .createResizingPlaceholderCoordinator(any(), anyInt(), anyInt());
+
+        webUi.destroy();
+        verify(mMockPlaceholderCoordinator).destroy();
     }
 
     @Test
@@ -330,26 +598,26 @@ public class TabBottomSheetWebUiUnitTest {
 
     @Test
     public void testSetWebContents_clearsActivityFocus() {
-        Activity mockActivity = mMockActivity;
-        assertNotNull(mockActivity);
-        View focusedView = mock();
-        when(mockActivity.getCurrentFocus()).thenReturn(focusedView);
+        View focusedView = createFocusableView(mActivity);
+        attachToActivityWithFocusableSibling(focusedView);
+        assertTrue(focusedView.requestFocus());
+        shadowOf(mActivity).setCurrentFocus(focusedView);
 
         mWebUi.setWebContents(mWebContents, true);
 
-        verify(focusedView, times(1)).clearFocus();
+        assertFalse(focusedView.isFocused());
     }
 
     @Test
     public void testSetWebContents_noFocus_doesNotClearActivityFocus() {
-        Activity mockActivity = mMockActivity;
-        assertNotNull(mockActivity);
-        View focusedView = mock();
-        when(mockActivity.getCurrentFocus()).thenReturn(focusedView);
+        View focusedView = createFocusableView(mActivity);
+        attachToActivityWithFocusableSibling(focusedView);
+        assertTrue(focusedView.requestFocus());
+        shadowOf(mActivity).setCurrentFocus(focusedView);
 
         mWebUi.setWebContents(mWebContents, false);
 
-        verify(focusedView, times(0)).clearFocus();
+        assertTrue(focusedView.isFocused());
     }
 
     @Test
@@ -370,6 +638,19 @@ public class TabBottomSheetWebUiUnitTest {
         assertFalse(delegate.supportsSaveImage());
         assertFalse(delegate.supportsSearchByImage());
         assertFalse(delegate.supportsInspectElement());
+
+        GURL url = new GURL("https://example.com");
+        AdditionalNavigationParams newTabParams = mock(AdditionalNavigationParams.class);
+        delegate.onOpenInNewTab(url, null, false, newTabParams);
+        verify(newTabParams).destroy();
+
+        AdditionalNavigationParams ephemeralParams = mock(AdditionalNavigationParams.class);
+        delegate.onOpenInEphemeralTab(url, "Title", ephemeralParams);
+        verify(ephemeralParams).destroy();
+
+        AdditionalNavigationParams imageParams = mock(AdditionalNavigationParams.class);
+        delegate.onOpenImageInNewTab(url, null, imageParams);
+        verify(imageParams).destroy();
     }
 
     @Test
@@ -393,11 +674,12 @@ public class TabBottomSheetWebUiUnitTest {
                         mockFactory,
                         mSelectionDropdownMenuDelegate,
                         Color.WHITE,
+                        Color.LTGRAY,
                         TabBottomSheetClientType.UNKNOWN,
                         CoBrowseContainerType.SIDE_PANEL,
                         /* ephemeralTabOpener= */ null,
                         /* readLaterOpener= */ null,
-                        mMockContentView);
+                        mContentView);
         sidePanelWebUi.setWebContents(mWebContents, true);
 
         ArgumentCaptor<ContextMenuItemDelegate> captor =
@@ -439,11 +721,12 @@ public class TabBottomSheetWebUiUnitTest {
                         mockFactory,
                         mSelectionDropdownMenuDelegate,
                         Color.WHITE,
+                        Color.LTGRAY,
                         TabBottomSheetClientType.UNKNOWN,
                         CoBrowseContainerType.SIDE_PANEL,
                         /* ephemeralTabOpener= */ null,
                         /* readLaterOpener= */ null,
-                        mMockContentView);
+                        mContentView);
         sidePanelWebUi.setWebContents(mWebContents, true);
 
         ArgumentCaptor<ContextMenuItemDelegate> delegateCaptor =
@@ -452,65 +735,145 @@ public class TabBottomSheetWebUiUnitTest {
         ContextMenuItemDelegate delegate = delegateCaptor.getValue();
 
         GURL url = new GURL("https://example.com");
+        Referrer referrer = new Referrer("https://referrer.example.com", 0);
 
-        // Test New Tab
-        delegate.onOpenInNewTab(url, null, false, null);
-        ArgumentCaptor<android.content.Intent> intentCaptor =
-                ArgumentCaptor.forClass(android.content.Intent.class);
-        verify(mMockActivity).startActivity(intentCaptor.capture());
-        assertEquals(android.content.Intent.ACTION_VIEW, intentCaptor.getValue().getAction());
-        assertEquals(url.getSpec(), intentCaptor.getValue().getData().toString());
+        // Test New Tab fallback when TabModelSelector is unavailable: fires Intent and destroys
+        // AdditionalNavigationParams.
+        AdditionalNavigationParams fallbackNewTabParams = mock(AdditionalNavigationParams.class);
+        delegate.onOpenInNewTab(url, referrer, false, fallbackNewTabParams);
+        Intent newTabIntent = shadowOf(mActivity).getNextStartedActivity();
+        assertNotNull(newTabIntent);
+        assertEquals(Intent.ACTION_VIEW, newTabIntent.getAction());
+        assertEquals(url.getSpec(), newTabIntent.getData().toString());
+        verify(fallbackNewTabParams).destroy();
 
-        // Test New Tab in Group
+        // Test New Tab via TabModelSelector: forwards referrer and AdditionalNavigationParams
+        // without destroying them when tab creation succeeds.
         TabModelSelector mockSelector = mock(TabModelSelector.class);
         TabModelSelectorSupplier.setInstanceForTesting(mockSelector);
         Tab mockTab = mock(Tab.class);
+        Tab mockOpenedTab = mock(Tab.class);
         when(mockSelector.getCurrentTab()).thenReturn(mockTab);
         when(mockTab.isIncognito()).thenReturn(false);
+        when(mockSelector.openNewTab(any(), anyInt(), any(), Mockito.anyBoolean()))
+                .thenReturn(mockOpenedTab);
 
-        delegate.onOpenInNewTabInGroup(url, null, null);
+        AdditionalNavigationParams newTabParams = mock(AdditionalNavigationParams.class);
+        ArgumentCaptor<LoadUrlParams> loadUrlCaptor = captor();
+        delegate.onOpenInNewTab(url, referrer, false, newTabParams);
         verify(mockSelector)
                 .openNewTab(
-                        any(),
+                        loadUrlCaptor.capture(),
+                        eq(TabLaunchType.FROM_LONGPRESS_FOREGROUND),
+                        eq(mockTab),
+                        eq(false));
+        assertEquals(referrer, loadUrlCaptor.getValue().getReferrer());
+        assertEquals(newTabParams, loadUrlCaptor.getValue().getAdditionalNavigationParams());
+        verify(newTabParams, never()).destroy();
+        assertNull(shadowOf(mActivity).getNextStartedActivity());
+
+        // Test Open Image in New Tab routes through LinkOpener and preserves initiator params.
+        AdditionalNavigationParams imageParams = mock(AdditionalNavigationParams.class);
+        ArgumentCaptor<LoadUrlParams> imageLoadCaptor = captor();
+        GURL imageUrl = new GURL("https://example.com/img.png");
+        delegate.onOpenImageInNewTab(imageUrl, referrer, imageParams);
+        verify(mockSelector, times(2))
+                .openNewTab(
+                        imageLoadCaptor.capture(),
+                        eq(TabLaunchType.FROM_LONGPRESS_FOREGROUND),
+                        eq(mockTab),
+                        eq(false));
+        assertEquals(imageUrl.getSpec(), imageLoadCaptor.getValue().getUrl());
+        assertEquals(imageParams, imageLoadCaptor.getValue().getAdditionalNavigationParams());
+        verify(imageParams, never()).destroy();
+
+        // Test New Tab in Group (same non-OTR mode): forwards AdditionalNavigationParams.
+        AdditionalNavigationParams groupParams = mock(AdditionalNavigationParams.class);
+        ArgumentCaptor<LoadUrlParams> groupLoadCaptor = captor();
+        delegate.onOpenInNewTabInGroup(url, referrer, groupParams);
+        verify(mockSelector)
+                .openNewTab(
+                        groupLoadCaptor.capture(),
                         eq(TabLaunchType.FROM_LONGPRESS_BACKGROUND_IN_GROUP),
                         eq(mockTab),
                         eq(false));
-        TabModelSelectorSupplier.setInstanceForTesting(null);
+        assertEquals(groupParams, groupLoadCaptor.getValue().getAdditionalNavigationParams());
+        verify(groupParams, never()).destroy();
 
-        Mockito.reset(mMockActivity);
+        // Test New Tab in Group when currentTab is incognito: strips & destroys non-OTR initiator
+        // params so state does not cross the OTR boundary.
+        when(mockTab.isIncognito()).thenReturn(true);
+        AdditionalNavigationParams crossOtrParams = mock(AdditionalNavigationParams.class);
+        ArgumentCaptor<LoadUrlParams> crossOtrCaptor = captor();
+        delegate.onOpenInNewTabInGroup(url, referrer, crossOtrParams);
+        verify(mockSelector)
+                .openNewTab(
+                        crossOtrCaptor.capture(),
+                        eq(TabLaunchType.FROM_LONGPRESS_BACKGROUND_IN_GROUP),
+                        eq(mockTab),
+                        eq(true));
+        assertNull(crossOtrCaptor.getValue().getReferrer());
+        assertNull(crossOtrCaptor.getValue().getAdditionalNavigationParams());
+        verify(crossOtrParams).destroy();
+
+        TabModelSelectorSupplier.setInstanceForTesting(null);
+        assertNull(shadowOf(mActivity).getNextStartedActivity());
+
+        // Test New Tab in Group fallback when selector is null: destroys
+        // AdditionalNavigationParams.
+        AdditionalNavigationParams fallbackGroupParams = mock(AdditionalNavigationParams.class);
+        delegate.onOpenInNewTabInGroup(url, referrer, fallbackGroupParams);
+        assertNotNull(shadowOf(mActivity).getNextStartedActivity());
+        verify(fallbackGroupParams).destroy();
 
         // Test Incognito Tab
         delegate.onOpenInNewIncognitoTab(url);
-        verify(mMockActivity).startActivity(intentCaptor.capture());
+        Intent incognitoIntent = shadowOf(mActivity).getNextStartedActivity();
+        assertNotNull(incognitoIntent);
         assertTrue(
-                intentCaptor
-                        .getValue()
-                        .getBooleanExtra(BrowserIntentUtils.EXTRA_OPEN_NEW_INCOGNITO_TAB, false));
+                incognitoIntent.getBooleanExtra(
+                        BrowserIntentUtils.EXTRA_OPEN_NEW_INCOGNITO_TAB, false));
 
         MultiInstanceOrchestrator mockOrchestrator = mock(MultiInstanceOrchestrator.class);
         MultiInstanceOrchestratorFactory.setInstanceForTesting(mockOrchestrator);
 
-        // Test New Window
-        delegate.openInOtherWindow(url, null, false, true, null);
+        // Test New Window forwards AdditionalNavigationParams.
+        AdditionalNavigationParams windowParams = mock(AdditionalNavigationParams.class);
+        ArgumentCaptor<LoadUrlParams> windowLoadCaptor = captor();
+        delegate.openInOtherWindow(url, referrer, false, true, windowParams);
         verify(mockOrchestrator)
                 .openUrlInOtherWindow(
-                        eq(mMockActivity), any(), eq(Tab.INVALID_TAB_ID), eq(true), eq(false));
+                        eq(mActivity),
+                        windowLoadCaptor.capture(),
+                        eq(Tab.INVALID_TAB_ID),
+                        eq(true),
+                        eq(false));
+        assertEquals(windowParams, windowLoadCaptor.getValue().getAdditionalNavigationParams());
+        verify(windowParams, never()).destroy();
+
+        // Test openInOtherWindow with isIncognito=true destroys AdditionalNavigationParams.
+        AdditionalNavigationParams incognitoWindowParams = mock(AdditionalNavigationParams.class);
+        delegate.openInOtherWindow(url, referrer, true, false, incognitoWindowParams);
+        verify(incognitoWindowParams).destroy();
 
         // Test Incognito Window
         delegate.openInIncognitoWindow(url);
-        verify(mockOrchestrator)
+        verify(mockOrchestrator, times(2))
                 .openUrlInOtherWindow(
-                        eq(mMockActivity), any(), eq(Tab.INVALID_TAB_ID), eq(false), eq(true));
+                        eq(mActivity), any(), eq(Tab.INVALID_TAB_ID), eq(false), eq(true));
+
+        // Test default unimplemented ContextMenuItemDelegate method destroys params.
+        AdditionalNavigationParams openImageParams = mock(AdditionalNavigationParams.class);
+        delegate.onOpenImageUrl(url, referrer, openImageParams);
+        verify(openImageParams).destroy();
 
         MultiInstanceOrchestratorFactory.setInstanceForTesting(null);
     }
 
     @Test
     public void testSelectionDropdownWrapper_ignoresFocusClearWhenShowing() {
-        ViewTreeObserver mockViewTreeObserver = mock(ViewTreeObserver.class);
-        when(mMockContentView.getViewTreeObserver()).thenReturn(mockViewTreeObserver);
-
         mWebUi.setWebContents(mWebContents, true);
+        attachToActivityWithFocusableSibling(mContentView);
 
         // Capture the wrapped delegate.
         ArgumentCaptor<ThinWebViewAttachParams> attachParamsCaptor =
@@ -520,17 +883,7 @@ public class TabBottomSheetWebUiUnitTest {
                 attachParamsCaptor.getValue().selectionDropdownMenuDelegate;
         assertNotNull(wrappedDelegate);
 
-        // Capture the OnWindowFocusChangeListener.
-        ArgumentCaptor<View.OnAttachStateChangeListener> attachListenerCaptor =
-                ArgumentCaptor.forClass(View.OnAttachStateChangeListener.class);
-        verify(mMockContentView).addOnAttachStateChangeListener(attachListenerCaptor.capture());
-        View.OnAttachStateChangeListener attachListener = attachListenerCaptor.getValue();
-        attachListener.onViewAttachedToWindow(mMockContentView);
-
-        ArgumentCaptor<ViewTreeObserver.OnWindowFocusChangeListener> focusListenerCaptor =
-                ArgumentCaptor.forClass(ViewTreeObserver.OnWindowFocusChangeListener.class);
-        verify(mockViewTreeObserver).addOnWindowFocusChangeListener(focusListenerCaptor.capture());
-        ViewTreeObserver.OnWindowFocusChangeListener focusListener = focusListenerCaptor.getValue();
+        assertTrue(mContentView.requestFocus());
 
         // 1. Show the dropdown menu.
         Runnable dismissCallback = mock(Runnable.class);
@@ -541,24 +894,21 @@ public class TabBottomSheetWebUiUnitTest {
                 .show(any(), any(), any(), any(), any(), eq(0), eq(0));
 
         // 2. Trigger window focus loss. Since the dropdown is showing, it should NOT clear focus.
-        Mockito.reset(mMockContentView);
-        focusListener.onWindowFocusChanged(false);
+        mActivityController.windowFocusChanged(false);
         ShadowLooper.idleMainLooper();
-        verify(mMockContentView, times(0)).clearFocus();
+        assertTrue(mContentView.isFocused());
 
         // 3. Dismiss the dropdown menu when window does NOT have focus. It should clear focus.
-        when(mMockContentView.hasWindowFocus()).thenReturn(false);
+        assertFalse(mContentView.hasWindowFocus());
         wrappedDelegate.dismiss();
         verify(mSelectionDropdownMenuDelegate).dismiss();
-        verify(mMockContentView, times(1)).clearFocus();
+        assertFalse(mContentView.isFocused());
     }
 
     @Test
     public void testSelectionDropdownWrapper_callbackResetsIgnoreClearFocus() {
-        ViewTreeObserver mockViewTreeObserver = mock(ViewTreeObserver.class);
-        when(mMockContentView.getViewTreeObserver()).thenReturn(mockViewTreeObserver);
-
         mWebUi.setWebContents(mWebContents, true);
+        attachToActivityWithFocusableSibling(mContentView);
 
         // Capture the wrapped delegate.
         ArgumentCaptor<ThinWebViewAttachParams> attachParamsCaptor =
@@ -567,17 +917,7 @@ public class TabBottomSheetWebUiUnitTest {
         SelectionDropdownMenuDelegate wrappedDelegate =
                 attachParamsCaptor.getValue().selectionDropdownMenuDelegate;
 
-        // Capture the OnWindowFocusChangeListener.
-        ArgumentCaptor<View.OnAttachStateChangeListener> attachListenerCaptor =
-                ArgumentCaptor.forClass(View.OnAttachStateChangeListener.class);
-        verify(mMockContentView).addOnAttachStateChangeListener(attachListenerCaptor.capture());
-        View.OnAttachStateChangeListener attachListener = attachListenerCaptor.getValue();
-        attachListener.onViewAttachedToWindow(mMockContentView);
-
-        ArgumentCaptor<ViewTreeObserver.OnWindowFocusChangeListener> focusListenerCaptor =
-                ArgumentCaptor.forClass(ViewTreeObserver.OnWindowFocusChangeListener.class);
-        verify(mockViewTreeObserver).addOnWindowFocusChangeListener(focusListenerCaptor.capture());
-        ViewTreeObserver.OnWindowFocusChangeListener focusListener = focusListenerCaptor.getValue();
+        assertTrue(mContentView.requestFocus());
 
         // 1. Show the dropdown menu.
         Runnable dismissCallback = mock(Runnable.class);
@@ -594,10 +934,9 @@ public class TabBottomSheetWebUiUnitTest {
         verify(dismissCallback).run();
 
         // 3. Trigger window focus loss. Since the callback has run, it should clear focus.
-        Mockito.reset(mMockContentView);
-        focusListener.onWindowFocusChanged(false);
+        mActivityController.windowFocusChanged(false);
         ShadowLooper.idleMainLooper();
-        verify(mMockContentView, times(1)).clearFocus();
+        assertFalse(mContentView.isFocused());
     }
 
     @Test
@@ -613,8 +952,8 @@ public class TabBottomSheetWebUiUnitTest {
                                 org.chromium.chrome.browser.context_sharing.R.layout
                                         .tab_bottom_sheet,
                                 null);
-        @SuppressWarnings("unchecked")
-        BiConsumer<GURL, String> mockOpener = mock(BiConsumer.class);
+        ThinWebViewContextMenuItemDelegate.EphemeralTabOpener mockOpener =
+                mock(ThinWebViewContextMenuItemDelegate.EphemeralTabOpener.class);
 
         TabBottomSheetWebUi webUi =
                 new TestTabBottomSheetWebUi(
@@ -624,11 +963,12 @@ public class TabBottomSheetWebUiUnitTest {
                         mockFactory,
                         mSelectionDropdownMenuDelegate,
                         Color.WHITE,
+                        Color.LTGRAY,
                         TabBottomSheetClientType.UNKNOWN,
                         CoBrowseContainerType.SIDE_PANEL,
                         mockOpener,
                         /* readLaterOpener= */ null,
-                        mMockContentView);
+                        mContentView);
         webUi.setWebContents(mWebContents, true);
 
         ArgumentCaptor<ContextMenuItemDelegate> captor =
@@ -641,9 +981,84 @@ public class TabBottomSheetWebUiUnitTest {
 
         GURL testUrl = new GURL("https://example.com/image.jpg");
         String testTitle = "Test Image";
-        delegate.onOpenInEphemeralTab(testUrl, testTitle, /* additionalNavigationParams= */ null);
+        AdditionalNavigationParams ephemeralParams = mock(AdditionalNavigationParams.class);
+        delegate.onOpenInEphemeralTab(testUrl, testTitle, ephemeralParams);
 
-        verify(mockOpener).accept(eq(testUrl), eq(testTitle));
+        verify(mockOpener).openInEphemeralTab(eq(testUrl), eq(testTitle), eq(ephemeralParams));
+        verify(ephemeralParams, never()).destroy();
+    }
+
+    @Test
+    public void testCoBrowseViewFactory_OpenInEphemeralTab() {
+        UnownedUserDataHost userDataHost = new UnownedUserDataHost();
+        when(mWindowAndroid.getUnownedUserDataHost()).thenReturn(userDataHost);
+        Profile profile = mock(Profile.class);
+        when(profile.isOffTheRecord()).thenReturn(false);
+        var profileSupplier = ObservableSuppliers.createNonNull(profile);
+        CoBrowseViewFactory factory =
+                new CoBrowseViewFactory(
+                        mActivity,
+                        profileSupplier,
+                        mWindowAndroid,
+                        /* lifecycleDispatcher= */ null,
+                        /* snackbarManager= */ null,
+                        mContextMenuPopulatorFactory,
+                        mSelectionDropdownMenuDelegate,
+                        ObservableSuppliers.alwaysNull(),
+                        ObservableSuppliers.createMonotonic(),
+                        /* priceDropNotificationManager= */ null,
+                        /* bookmarkManagerOpener= */ null);
+
+        GURL url = new GURL("https://example.com");
+        String title = "Example";
+
+        // Missing coordinator destroys AdditionalNavigationParams.
+        AdditionalNavigationParams missingCoordParams = mock(AdditionalNavigationParams.class);
+        factory.openInEphemeralTab(url, title, missingCoordParams, mWebContents);
+        verify(missingCoordParams).destroy();
+
+        EphemeralTabCoordinator coordinator = mock(EphemeralTabCoordinator.class);
+        EphemeralTabCoordinatorSupplier.setInstanceForTesting(coordinator);
+        RenderFrameHost mainFrame = mock(RenderFrameHost.class);
+        Origin initiatorOrigin = Origin.createOpaqueOrigin();
+        when(mWebContents.getMainFrame()).thenReturn(mainFrame);
+        when(mainFrame.getLastCommittedOrigin()).thenReturn(initiatorOrigin);
+        when(mWebContents.isIncognito()).thenReturn(false);
+
+        // Matching non-OTR forwards initiator origin and AdditionalNavigationParams.
+        AdditionalNavigationParams sameOtrParams = mock(AdditionalNavigationParams.class);
+        factory.openInEphemeralTab(url, title, sameOtrParams, mWebContents);
+        verify(coordinator)
+                .requestOpenSheet(
+                        eq(url),
+                        eq(null),
+                        eq(title),
+                        eq(profile),
+                        eq(true),
+                        eq(true),
+                        eq(initiatorOrigin),
+                        eq(sameOtrParams),
+                        any());
+        verify(sameOtrParams, never()).destroy();
+
+        // Cross-OTR strips initiator origin and AdditionalNavigationParams and destroys params.
+        when(profile.isOffTheRecord()).thenReturn(true);
+        AdditionalNavigationParams crossOtrParams = mock(AdditionalNavigationParams.class);
+        factory.openInEphemeralTab(url, title, crossOtrParams, mWebContents);
+        verify(coordinator)
+                .requestOpenSheet(
+                        eq(url),
+                        eq(null),
+                        eq(title),
+                        eq(profile),
+                        eq(true),
+                        eq(true),
+                        eq(null),
+                        eq(null),
+                        any());
+        verify(crossOtrParams).destroy();
+
+        factory.destroy();
     }
 
     @Test
@@ -670,11 +1085,12 @@ public class TabBottomSheetWebUiUnitTest {
                         mockFactory,
                         mSelectionDropdownMenuDelegate,
                         Color.WHITE,
+                        Color.LTGRAY,
                         TabBottomSheetClientType.UNKNOWN,
                         CoBrowseContainerType.SIDE_PANEL,
                         /* ephemeralTabOpener= */ null,
                         /* readLaterOpener= */ mockOpener,
-                        mMockContentView);
+                        mContentView);
         webUi.setWebContents(mWebContents, true);
 
         ArgumentCaptor<ContextMenuItemDelegate> captor =
@@ -712,11 +1128,12 @@ public class TabBottomSheetWebUiUnitTest {
                         mContextMenuPopulatorFactory,
                         mSelectionDropdownMenuDelegate,
                         Color.WHITE,
+                        Color.LTGRAY,
                         TabBottomSheetClientType.CONTEXTUAL_TASKS,
                         CoBrowseContainerType.BOTTOM_SHEET,
                         /* ephemeralTabOpener= */ null,
                         /* readLaterOpener= */ null,
-                        mMockContentView);
+                        mContentView);
         webUi.setWebContents(mWebContents, true);
 
         assertTrue(webUi.isDisableActionModeSelectionMenuCalled());
@@ -742,11 +1159,12 @@ public class TabBottomSheetWebUiUnitTest {
                         mContextMenuPopulatorFactory,
                         mSelectionDropdownMenuDelegate,
                         Color.WHITE,
+                        Color.LTGRAY,
                         TabBottomSheetClientType.GLIC,
                         CoBrowseContainerType.BOTTOM_SHEET,
                         /* ephemeralTabOpener= */ null,
                         /* readLaterOpener= */ null,
-                        mMockContentView);
+                        mContentView);
         webUi.setWebContents(mWebContents, true);
 
         assertFalse(webUi.isDisableActionModeSelectionMenuCalled());
@@ -755,7 +1173,8 @@ public class TabBottomSheetWebUiUnitTest {
     @Test
     public void
             testTabBottomSheetWebUiContainer_dispatchDragEvent_requestsAndReleasesPermissions() {
-        Activity activity = Mockito.spy(Robolectric.buildActivity(Activity.class).setup().get());
+        DragAndDropActivity activity =
+                Robolectric.buildActivity(DragAndDropActivity.class).setup().get();
         TabBottomSheetWebUiContainer container = new TabBottomSheetWebUiContainer(activity, null);
 
         DragAndDropPermissions mockPermissions1 = mock(DragAndDropPermissions.class);
@@ -765,23 +1184,23 @@ public class TabBottomSheetWebUiUnitTest {
 
         DragEvent dropEvent1 = mock(DragEvent.class);
         when(dropEvent1.getAction()).thenReturn(DragEvent.ACTION_DROP);
-        doReturn(mockPermissions1).when(activity).requestDragAndDropPermissions(dropEvent1);
+        activity.mPermissionsForEvent.put(dropEvent1, mockPermissions1);
 
         DragEvent dropEvent2 = mock(DragEvent.class);
         when(dropEvent2.getAction()).thenReturn(DragEvent.ACTION_DROP);
-        doReturn(mockPermissions2).when(activity).requestDragAndDropPermissions(dropEvent2);
+        activity.mPermissionsForEvent.put(dropEvent2, mockPermissions2);
 
         container.dispatchDragEvent(dragStartedEvent);
-        verify(activity, times(0)).requestDragAndDropPermissions(any());
+        assertEquals(List.of(), activity.mRequestedEvents);
 
         container.dispatchDragEvent(dropEvent1);
-        verify(activity, times(1)).requestDragAndDropPermissions(dropEvent1);
+        assertEquals(List.of(dropEvent1), activity.mRequestedEvents);
         verify(mockPermissions1, times(0)).release();
 
         // Consecutive drop releases previous permissions.
         container.dispatchDragEvent(dropEvent2);
         verify(mockPermissions1, times(1)).release();
-        verify(activity, times(1)).requestDragAndDropPermissions(dropEvent2);
+        assertEquals(List.of(dropEvent1, dropEvent2), activity.mRequestedEvents);
         verify(mockPermissions2, times(0)).release();
 
         // A new drag session starting releases previous drag permissions.
@@ -791,16 +1210,17 @@ public class TabBottomSheetWebUiUnitTest {
 
     @Test
     public void testTabBottomSheetWebUiContainer_onDetachedFromWindow_releasesPermissions() {
-        Activity activity = Mockito.spy(Robolectric.buildActivity(Activity.class).setup().get());
+        DragAndDropActivity activity =
+                Robolectric.buildActivity(DragAndDropActivity.class).setup().get();
         TabBottomSheetWebUiContainer container = new TabBottomSheetWebUiContainer(activity, null);
 
         DragAndDropPermissions mockPermissions = mock(DragAndDropPermissions.class);
         DragEvent dropEvent = mock(DragEvent.class);
         when(dropEvent.getAction()).thenReturn(DragEvent.ACTION_DROP);
-        doReturn(mockPermissions).when(activity).requestDragAndDropPermissions(dropEvent);
+        activity.mPermissionsForEvent.put(dropEvent, mockPermissions);
 
         container.dispatchDragEvent(dropEvent);
-        verify(activity, times(1)).requestDragAndDropPermissions(dropEvent);
+        assertEquals(List.of(dropEvent), activity.mRequestedEvents);
         verify(mockPermissions, times(0)).release();
 
         container.onDetachedFromWindow();
@@ -837,9 +1257,71 @@ public class TabBottomSheetWebUiUnitTest {
         assertEquals(selectorSupplier, TabModelSelectorSupplier.from(thinWindow));
     }
 
+    /**
+     * Attaches {@code view} to {@link #mActivity}'s window, after a focusable sibling. When {@code
+     * view} clears its focus, the framework may re-assign focus to the first focusable view in the
+     * window; the sibling ensures that this isn't {@code view} itself.
+     */
+    private void attachToActivityWithFocusableSibling(View view) {
+        FrameLayout root = new FrameLayout(mActivity);
+        root.addView(createFocusableView(mActivity));
+        root.addView(view);
+        mActivity.setContentView(root);
+    }
+
+    private static View createFocusableView(Context context) {
+        View view = new View(context);
+        view.setFocusable(true);
+        view.setFocusableInTouchMode(true);
+        return view;
+    }
+
+    /** Robolectric does not shadow requestDragAndDropPermissions(), so canned values are used. */
+    private static class DragAndDropActivity extends Activity {
+        final Map<DragEvent, DragAndDropPermissions> mPermissionsForEvent = new HashMap<>();
+        final List<DragEvent> mRequestedEvents = new ArrayList<>();
+
+        @Override
+        public DragAndDropPermissions requestDragAndDropPermissions(DragEvent event) {
+            mRequestedEvents.add(event);
+            return mPermissionsForEvent.get(event);
+        }
+    }
+
     private static class TestTabBottomSheetWebUi extends TabBottomSheetWebUi {
-        private final ContentView mMockContentView;
+        private final ContentView mContentView;
         private boolean mDisableActionModeSelectionMenuCalled;
+
+        TestTabBottomSheetWebUi(
+                Context context,
+                View containerView,
+                WindowAndroid windowAndroid,
+                @Nullable BottomSheetController bottomSheetController,
+                ContextMenuPopulatorFactory contextMenuPopulatorFactory,
+                SelectionDropdownMenuDelegate selectionDropdownMenuDelegate,
+                int backgroundColor,
+                int placeholderElemColor,
+                @TabBottomSheetClientType int clientType,
+                @CoBrowseContainerType int containerType,
+                @Nullable EphemeralTabOpener ephemeralTabOpener,
+                @Nullable BiConsumer<GURL, String> readLaterOpener,
+                ContentView contentView) {
+            super(
+                    context,
+                    containerView,
+                    windowAndroid,
+                    bottomSheetController,
+                    contextMenuPopulatorFactory,
+                    selectionDropdownMenuDelegate,
+                    backgroundColor,
+                    placeholderElemColor,
+                    clientType,
+                    containerType,
+                    ephemeralTabOpener,
+                    readLaterOpener,
+                    mock(CoBrowseComponentProvider.class));
+            mContentView = contentView;
+        }
 
         TestTabBottomSheetWebUi(
                 Context context,
@@ -848,29 +1330,31 @@ public class TabBottomSheetWebUiUnitTest {
                 ContextMenuPopulatorFactory contextMenuPopulatorFactory,
                 SelectionDropdownMenuDelegate selectionDropdownMenuDelegate,
                 int backgroundColor,
+                int placeholderElemColor,
                 @TabBottomSheetClientType int clientType,
                 @CoBrowseContainerType int containerType,
-                @Nullable BiConsumer<GURL, String> ephemeralTabOpener,
+                @Nullable EphemeralTabOpener ephemeralTabOpener,
                 @Nullable BiConsumer<GURL, String> readLaterOpener,
-                ContentView mockContentView) {
-            super(
+                ContentView contentView) {
+            this(
                     context,
                     containerView,
                     windowAndroid,
+                    /* bottomSheetController= */ null,
                     contextMenuPopulatorFactory,
                     selectionDropdownMenuDelegate,
                     backgroundColor,
+                    placeholderElemColor,
                     clientType,
                     containerType,
                     ephemeralTabOpener,
                     readLaterOpener,
-                    mock(CoBrowseComponentProvider.class));
-            mMockContentView = mockContentView;
+                    contentView);
         }
 
         @Override
         ContentView createContentView(Context context, WebContents webContents) {
-            return mMockContentView;
+            return mContentView;
         }
 
         @Override

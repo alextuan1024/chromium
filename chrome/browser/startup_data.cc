@@ -41,6 +41,7 @@
 #include "chrome/browser/profiles/chrome_browser_main_extra_parts_profiles.h"
 #include "chrome/browser/profiles/pref_service_builder_utils.h"
 #include "chrome/browser/profiles/profile_key.h"
+#include "chrome/browser/profiles/profiles_state.h"
 #include "chrome/common/chrome_constants.h"
 #include "chrome/common/chrome_paths.h"
 #include "components/keyed_service/content/browser_context_dependency_manager.h"
@@ -50,6 +51,7 @@
 #include "components/policy/core/common/cloud/user_cloud_policy_manager.h"
 #include "components/policy/core/common/cloud/user_cloud_policy_store.h"
 #include "components/pref_registry/pref_registry_syncable.h"
+#include "components/prefs/pref_service.h"
 #include "components/sync_preferences/pref_service_syncable.h"
 #include "components/variations/service/variations_service.h"
 #include "content/public/browser/network_service_instance.h"
@@ -60,16 +62,6 @@
 #include "chrome/browser/extensions/chrome_extensions_browser_client.h"
 #include "extensions/browser/extensions_browser_client.h"
 #endif
-
-namespace {
-
-base::FilePath GetProfilePath() {
-  base::FilePath user_data_dir;
-  base::PathService::Get(chrome::DIR_USER_DATA, &user_data_dir);
-  return user_data_dir.AppendASCII(chrome::kInitialProfile);
-}
-
-}  // namespace
 
 #endif
 
@@ -152,7 +144,19 @@ void StartupData::RecordCoreSystemProfile() {
 
 #if BUILDFLAG(IS_ANDROID)
 void StartupData::InitProfileKey() {
-  key_ = std::make_unique<ProfileKey>(GetProfilePath());
+  // Local State is already loaded here, even in reduced mode.
+  PrefService* local_state = chrome_feature_list_creator()->local_state();
+  CHECK(local_state);
+  base::FilePath user_data_dir;
+  base::PathService::Get(chrome::DIR_USER_DATA, &user_data_dir);
+  profile_path_ =
+      user_data_dir.Append(GetProfileBaseNameForStartup(*local_state));
+  key_ = std::make_unique<ProfileKey>(profile_path_);
+  // Record the profile that Chrome starts with, for Java code that runs before
+  // native next time. This also covers reduced mode, which never sets the last
+  // used profile, and fixes a stale base name, e.g. after a crash or a flag
+  // change.
+  profiles::WriteLastUsedProfileBaseName(profile_path_.BaseName());
   PreProfilePrefServiceInit();
 
   ProfileKeyStartupAccessor::GetInstance()->SetProfileKey(key_.get());
@@ -170,6 +174,22 @@ bool StartupData::HasBuiltProfilePrefService() {
 
 ProfileKey* StartupData::GetProfileKey() {
   return key_.get();
+}
+
+const base::FilePath& StartupData::GetProfilePath() const {
+  return profile_path_;
+}
+
+// static
+base::FilePath StartupData::GetProfileBaseNameForStartup(
+    const PrefService& local_state) {
+  // Only the flag may start a non-Default profile, the same as
+  // ProfileManager::GetInitialProfileDir(), which opens this profile first.
+  if (!profiles::IsAndroidMultiprofileStartupDataEnabled()) {
+    return base::FilePath::FromASCII(chrome::kInitialProfile);
+  }
+
+  return profiles::GetLastUsedProfileBaseName(local_state);
 }
 
 std::unique_ptr<ProfileKey> StartupData::TakeProfileKey() {
@@ -280,7 +300,8 @@ void StartupData::CreateServicesInternal() {
   mojo::PendingRemote<prefs::mojom::TrackedPreferenceValidationDelegate>
       pref_validation_delegate;
   // The preference tracking and protection is not required on Android.
-  DCHECK(!ProfilePrefStoreManager::kPlatformSupportsPreferenceTracking);
+  CHECK(!ProfilePrefStoreManager::kPlatformSupportsPreferenceTracking,
+        base::NotFatalUntil::M162);
 
   prefs_ = ::CreateProfilePrefService(
       pref_registry_, nullptr /* extension_pref_store */,
@@ -288,6 +309,10 @@ void StartupData::CreateServicesInternal() {
       std::move(pref_validation_delegate), io_task_runner, key_.get(), path,
       false /* async_prefs*/, g_browser_process->os_crypt_async(),
       g_browser_process->device_parental_controls());
+}
+
+void StartupData::SetProfilePathForTesting(const base::FilePath& profile_path) {
+  profile_path_ = profile_path;
 }
 #endif
 

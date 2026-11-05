@@ -48,8 +48,31 @@ class AvatarToolbarButtonInterface {
   // button, or nullptr if none exists.
   virtual views::DialogDelegate* GetDialogDelegate() = 0;
 
+  // Callback invoked by RunWhenVisible(). `anchor` must be used immediately to
+  // anchor a bubble and not stored across turns, as any underlying
+  // TrackedElement may become invalid once hidden. Callers should keep
+  // `keep_visible` alive while any bubble anchored to `anchor` is open, and
+  // must not synchronously destroy `this` (or its browser window) or hide the
+  // toolbar inside the callback.
+  using WhenVisibleCallback =
+      base::OnceCallback<void(views::BubbleAnchor anchor,
+                              base::ScopedClosureRunner keep_visible)>;
+
+  // Invokes `callback` once the button is visible with its anchor and an
+  // overflow-prevention closure. If the button is already visible, `callback`
+  // may be invoked synchronously. If the button is hidden due to overflow, it
+  // is popped out / prevented from overflowing and `callback` is invoked once
+  // visible. If the button is never shown for the profile (e.g., regular
+  // profiles on ChromeOS) or remains hidden in an app window, `callback` is
+  // invoked synchronously with a fallback toolbar view anchor and an empty
+  // `keep_visible` while the avatar button itself stays hidden. If `this` is
+  // destroyed before becoming visible, `callback` is not invoked.
+  virtual void RunWhenVisible(WhenVisibleCallback callback) = 0;
+
   // Returns the anchor to use for avatar button bubbles.
-  views::BubbleAnchor GetBubbleAnchor(BrowserWindowInterface& browser);
+  // TODO(crbug.com/580760684): Remove once all callers are migrated to
+  // RunWhenVisible().
+  static views::BubbleAnchor GetBubbleAnchor(BrowserWindowInterface& browser);
 
   virtual void ButtonPressed(bool is_source_accelerator) = 0;
 
@@ -70,6 +93,10 @@ class AvatarToolbarButtonInterface {
   // Returns whether the button currently has an explicit state set.
   virtual bool HasExplicitButtonState() const = 0;
 
+  // Returns whether the control is ready for an avatar IPH request. WebUI
+  // controls must be attached to a widget before accepting these requests.
+  virtual bool IsReadyForIPH() const = 0;
+
   // Methods to register or remove observers.
   virtual void AddObserver(Observer* observer) = 0;
   virtual void RemoveObserver(Observer* observer) = 0;
@@ -84,19 +111,6 @@ class AvatarToolbarButtonInterface {
   virtual void SetAnnounceCallbackForTesting(
       base::OnceCallback<void(std::u16string)> callback) = 0;
 
-  // Attempts showing the In-Product-Help for profile Switching.
-  virtual void MaybeShowProfileSwitchIPH() = 0;
-
-#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
-  // Attempts showing the In-Product-Help when a supervised user signs-in in a
-  // profile.
-  virtual void MaybeShowSupervisedUserSignInIPH() = 0;
-
-  // Attempts showing the In-Product-Help listing benefits for signed-in users
-  // after the sync-to-signin migration.
-  virtual void MaybeShowSignInBenefitsIPH() = 0;
-#endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
-
   // Clears the active state (makes it inactive).
   virtual void ClearActiveStateForTesting() = 0;
 
@@ -105,15 +119,7 @@ class AvatarToolbarButtonInterface {
   // necessary to bypass resetting the profile - e.g. when attempting to reach
   // the limit counts.
   virtual void ForceShowingPromoForTesting() = 0;
-
-  // Returns whether the delay timer was running or not.
-  // Stops the timer if it is running.
-  virtual bool GetStateAndFireSignedOutTriggerDelayTimerForTesting() = 0;
 #endif  // BUILDFLAG(ENABLE_DICE_SUPPORT)
-
-  // Can be used in tests to reduce or remove the delay before showing the IPH.
-  [[nodiscard]] static base::AutoReset<base::TimeDelta>
-  SetScopedIPHMinDelayAfterCreationForTesting(base::TimeDelta delay);
 
   [[nodiscard]] static base::AutoReset<std::optional<base::TimeDelta>>
   CreateScopedInfiniteDelayOverrideForTesting(AvatarDelayType delay_type);

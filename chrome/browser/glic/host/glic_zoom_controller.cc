@@ -6,15 +6,16 @@
 
 #include <algorithm>
 #include <cmath>
+#include <optional>
+#include <utility>
 
-#include "base/metrics/histogram_functions.h"
 #include "base/metrics/user_metrics.h"
 #include "chrome/browser/glic/glic_pref_names.h"
 #include "chrome/browser/glic/host/glic_webui.mojom.h"
+#include "chrome/browser/glic/public/glic_provider_metrics.h"
+#include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/pwc/privileged_web_contents.h"
 #include "components/prefs/pref_service.h"
-#include "content/public/browser/host_zoom_map.h"
-#include "content/public/browser/navigation_handle.h"
-#include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents.h"
 #include "third_party/blink/public/common/page/page_zoom.h"
 
@@ -24,6 +25,8 @@ namespace {
 
 class Metrics {
  public:
+  explicit Metrics(Profile* profile) : metric_reporter_(profile) {}
+
   void RecordZoomIn(bool at_max, ZoomSource source) {
     GlicZoomAction action =
         at_max ? GlicZoomAction::kZoomInAtMax : GlicZoomAction::kZoomIn;
@@ -47,24 +50,26 @@ class Metrics {
 
  private:
   void RecordAction(GlicZoomAction action, ZoomSource source) {
-    base::UmaHistogramEnumeration("Glic.ZoomAction", action);
+    metric_reporter_.RecordEnumeration("ZoomAction", action);
 
     const char* source_histogram = nullptr;
     switch (source) {
       case ZoomSource::kHotkey:
-        source_histogram = "Glic.ZoomAction.Hotkey";
+        source_histogram = "ZoomAction.Hotkey";
         break;
       case ZoomSource::kHotkeyWithShift:
-        source_histogram = "Glic.ZoomAction.HotkeyWithShift";
+        source_histogram = "ZoomAction.HotkeyWithShift";
         break;
       case ZoomSource::kScroll:
-        source_histogram = "Glic.ZoomAction.Scroll";
+        source_histogram = "ZoomAction.Scroll";
         break;
     }
     if (source_histogram) {
-      base::UmaHistogramEnumeration(source_histogram, action);
+      metric_reporter_.RecordEnumeration(source_histogram, action);
     }
   }
+
+  GlicMetricReporter metric_reporter_;
 };
 
 std::optional<double> FindNextZoomInFactor(double current_zoom) {
@@ -93,23 +98,21 @@ std::optional<double> FindNextZoomOutFactor(double current_zoom) {
 }  // namespace
 
 GlicZoomController::GlicZoomController(
-    content::WebContents* guest_contents,
+    pwc::PrivilegedWebContents* guest_contents,
     PrefService* pref_service,
     base::RepeatingClosure on_zoom_change_callback)
-    : content::WebContentsObserver(guest_contents),
+    : guest_contents_(guest_contents
+                          ? guest_contents->web_contents()->GetWeakPtr()
+                          : nullptr),
       pref_service_(pref_service),
       on_zoom_change_callback_(std::move(on_zoom_change_callback)) {
   ApplyZoom();
 }
 
 GlicZoomController::~GlicZoomController() {
-  if (web_contents()) {
-    if (auto* rfh = web_contents()->GetPrimaryMainFrame()) {
-      if (rfh->IsRenderFrameLive()) {
-        content::HostZoomMap::Get(rfh->GetSiteInstance())
-            ->ClearTemporaryZoomLevel(rfh->GetGlobalId());
-      }
-    }
+  if (auto* pwc =
+          pwc::PrivilegedWebContents::FromWebContents(guest_contents_.get())) {
+    pwc->SetOverrideZoomLevel(std::nullopt);
   }
 }
 
@@ -126,33 +129,14 @@ double GlicZoomController::GetCurrentZoomFactor() const {
 }
 
 void GlicZoomController::ApplyZoom() {
-  if (!web_contents()) {
-    return;
-  }
-  auto* rfh = web_contents()->GetPrimaryMainFrame();
-  if (!rfh || !rfh->IsRenderFrameLive()) {
+  auto* pwc =
+      pwc::PrivilegedWebContents::FromWebContents(guest_contents_.get());
+  if (!pwc) {
     return;
   }
   double factor = GetCurrentZoomFactor();
   double level = blink::ZoomFactorToZoomLevel(factor);
-  content::HostZoomMap::Get(rfh->GetSiteInstance())
-      ->SetTemporaryZoomLevel(rfh->GetGlobalId(), level);
-}
-
-void GlicZoomController::DidFinishNavigation(
-    content::NavigationHandle* navigation_handle) {
-  if (!navigation_handle->HasCommitted() ||
-      !navigation_handle->IsInPrimaryMainFrame() ||
-      navigation_handle->IsSameDocument()) {
-    return;
-  }
-  ApplyZoom();
-}
-
-void GlicZoomController::PrimaryMainFrameRenderProcessGone(
-    base::TerminationStatus status) {
-  // When the renderer recovers/reloads, DidFinishNavigation will re-apply the
-  // temporary zoom level to the new RenderFrameHost.
+  pwc->SetOverrideZoomLevel(level);
 }
 
 void GlicZoomController::Zoom(mojom::ZoomAction zoom_action,
@@ -160,7 +144,9 @@ void GlicZoomController::Zoom(mojom::ZoomAction zoom_action,
   double current_factor = GetCurrentZoomFactor();
   int current_percent = static_cast<int>(std::round(current_factor * 100.0));
 
-  Metrics metrics;
+  Metrics metrics(guest_contents_ ? Profile::FromBrowserContext(
+                                        guest_contents_->GetBrowserContext())
+                                  : nullptr);
   std::optional<double> target_factor;
 
   switch (zoom_action) {

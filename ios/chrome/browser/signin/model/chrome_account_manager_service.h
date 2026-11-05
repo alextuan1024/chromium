@@ -13,32 +13,50 @@
 #import "base/memory/raw_ptr.h"
 #import "base/memory/weak_ptr.h"
 #import "base/observer_list.h"
-#import "base/scoped_observation.h"
 #import "base/types/pass_key.h"
 #import "components/keyed_service/core/keyed_service.h"
 #import "components/prefs/pref_change_registrar.h"
 #import "ios/chrome/browser/signin/model/account_profile_mapper.h"
-#import "ios/chrome/browser/signin/model/constants.h"
 #import "ios/chrome/browser/signin/model/pattern_account_restriction.h"
 #import "ios/chrome/browser/signin/model/system_identity.h"
 
 class AccountInfo;
+class AuthenticationService;
+class ChromeAccountManagerServiceTest;
 class DeviceAccountsProviderImpl;
 class PrefService;
 @protocol RefreshAccessTokenError;
 
-// Service that provides SystemIdentities and avatar caches. Most methods only
-// return the identities belonging to `profile_name_`  according to
-// `AccountProfileMapper`, but this can also be used to access identities on
-// device. This service filters out identities according to the
-// RestrictAccountsToPatterns policy.
+// Service that provides `SystemIdentity` instances. Most methods only return
+// the identities belonging to `profile_name_` according to
+// `AccountProfileMapper`, but `ChromeAccountManagerService` can also be used to
+// access identities on device. Unless stated otherwise, this service filters
+// out identities according to the `kRestrictAccountsToPatterns` policy, and all
+// returned or passed `SystemIdentity` and `AccountInfo` instances correspond to
+// accounts on the device that match `kRestrictAccountsToPatterns`.
+//
+// IMPORTANT: `signin::IdentityManager` is the source of truth for accounts in
+// Chrome (both in-profile and on-device). Feature and UI code outside
+// `//ios/chrome/browser/signin/model` must query and observe
+// `signin::IdentityManager` (using `AccountInfo`) instead of
+// `ChromeAccountManagerService`, and only use `ChromeAccountManagerService`
+// when converting a `GaiaId` or `AccountInfo` into an `id<SystemIdentity>`
+// (until `SystemIdentity` is replaced by `AccountInfo`, see
+// crbug.com/377467350).
 class ChromeAccountManagerService : public KeyedService,
                                     public AccountProfileMapper::Observer {
  public:
-  // Observer handling events related to the ChromeAccountManagerService.
+  // Observer handling events related to `ChromeAccountManagerService`.
+  // Unless stated otherwise, `identity` always corresponds to an account on the
+  // device that matches `kRestrictAccountsToPatterns`.
+  //
+  // Internal to `//ios/chrome/browser/signin/model` (e.g.
+  // `AuthenticationService` and `DeviceAccountsProviderImpl`). Do not add new
+  // observers or reintroduce an Objective-C observer bridge outside
+  // `signin/model`; observe `signin::IdentityManager` instead (via
+  // `signin::IdentityManager::Observer` or `IdentityManagerObserverBridge`).
   class Observer : public base::CheckedObserver {
    public:
-    Observer() = default;
     Observer(const Observer&) = delete;
     Observer& operator=(const Observer&) = delete;
     ~Observer() override {}
@@ -57,6 +75,8 @@ class ChromeAccountManagerService : public KeyedService,
     virtual void OnIdentityInProfileUpdated(id<SystemIdentity> identity) {}
 
     // Called when an identity on this device is updated.
+    // TODO(crbug.com/576575308): Currently `identity` can be an account on the
+    // device that is filtered by `kRestrictAccountsToPatterns`.
     virtual void OnIdentityOnDeviceUpdated(id<SystemIdentity> identity) {}
 
     // Handles refresh token updated events.
@@ -75,6 +95,14 @@ class ChromeAccountManagerService : public KeyedService,
     // their observers.
     virtual void OnChromeAccountManagerServiceShutdown(
         ChromeAccountManagerService* chrome_account_manager_service) {}
+
+   private:
+    // Only internal signin classes may observe `ChromeAccountManagerService`.
+    // Feature and UI code must observe `signin::IdentityManager` instead.
+    friend class AuthenticationService;
+    friend class DeviceAccountsProviderImpl;
+    friend class ChromeAccountManagerServiceTest;
+    Observer() = default;
   };
 
   // Initializes the service, getting identities corresponding to `profile_name`
@@ -94,15 +122,17 @@ class ChromeAccountManagerService : public KeyedService,
   bool HasIdentities() const;
 
   // Returns whether `gaia_id` is valid and belongs to the profile of this
-  // service.
+  // service. `gaia_id` does not need to correspond to an account on the device.
   bool IsValidIdentity(const GaiaId& gaia_id) const;
 
   // Returns whether `email` is restricted according to the
-  // RestrictAccountsToPatterns policy.
+  // `kRestrictAccountsToPatterns` policy. `email` does not need to correspond
+  // to an account on the device.
   bool IsEmailRestricted(std::string_view email) const;
 
-  // Returns the SystemIdentity with gaia ID equals to `gaia_id` or nil if
-  // no matching identity is found in the profile of this service.
+  // Returns the `SystemIdentity` with Gaia ID equals to `gaia_id` or `nil` if
+  // no matching identity is found in the profile of this service. `gaia_id`
+  // does not need to correspond to an account on the device.
   id<SystemIdentity> GetIdentityWithGaiaID(const GaiaId& gaia_id) const;
 
   // Returns all SystemIdentity objects of the profile of this service, sorted
@@ -119,7 +149,9 @@ class ChromeAccountManagerService : public KeyedService,
   // KeyedService implementation.
   void Shutdown() override;
 
-  // Adds and removes observers.
+  // Adds and removes observers. Reserved for internal signin plumbing in
+  // `//ios/chrome/browser/signin/model`; feature and UI code must observe
+  // `signin::IdentityManager` instead.
   void AddObserver(Observer* observer);
   void RemoveObserver(Observer* observer);
 
@@ -151,7 +183,9 @@ class ChromeAccountManagerService : public KeyedService,
   NSArray<id<SystemIdentity>>* GetAllIdentitiesOnDevice(
       base::PassKey<DeviceAccountsProviderImpl>) const;
 
-  // AccountProfileMapper::Observer implementation.
+  // `AccountProfileMapper::Observer` implementation. `identity` corresponds to
+  // an account on the device and can be an account filtered by
+  // `kRestrictAccountsToPatterns`.
   void OnIdentitiesInProfileChanged() override;
   void OnIdentitiesOnDeviceChanged() override;
   void OnIdentityInProfileUpdated(id<SystemIdentity> identity) override;

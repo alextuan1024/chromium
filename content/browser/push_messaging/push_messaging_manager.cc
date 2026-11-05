@@ -158,12 +158,7 @@ void PushMessagingManager::AddPushMessagingReceiver(
 }
 
 bool PushMessagingManager::IsRequestFromFencedFrame() const {
-  if (!IsRequestFromDocument(render_frame_id_)) {
-    return false;
-  }
-  RenderFrameHostImpl* render_frame_host = RenderFrameHostImpl::FromID(
-      render_process_host_->GetDeprecatedID(), render_frame_id_);
-  return render_frame_host && render_frame_host->IsNestedWithinFencedFrame();
+  return false;
 }
 
 // Subscribe methods, merged in order of use.
@@ -344,7 +339,7 @@ void PushMessagingManager::Register(PushMessagingManager::RegisterData data) {
             blink::mojom::PushRegistrationStatus::INCOGNITO_PERMISSION_DENIED);
       } else {
         RenderFrameHostImpl* render_frame_host_impl =
-            RenderFrameHostImpl::FromID(render_process_host_->GetDeprecatedID(),
+            RenderFrameHostImpl::FromID(render_process_host_->GetID(),
                                         render_frame_id_);
         if (render_frame_host_impl) {
           render_frame_host_impl->AddMessageToConsole(

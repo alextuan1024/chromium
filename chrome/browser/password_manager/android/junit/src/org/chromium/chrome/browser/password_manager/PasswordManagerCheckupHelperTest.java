@@ -10,6 +10,7 @@ import static org.junit.Assert.assertNull;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
@@ -17,10 +18,14 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import android.app.Activity;
+import android.app.ActivityOptions;
 import android.app.PendingIntent;
 import android.app.PendingIntent.CanceledException;
 import android.content.Context;
 import android.content.pm.PackageInfo;
+import android.os.Build;
+import android.os.Bundle;
 
 import androidx.fragment.app.FragmentActivity;
 import androidx.test.core.content.pm.PackageInfoBuilder;
@@ -40,6 +45,7 @@ import org.mockito.junit.MockitoRule;
 import org.robolectric.Robolectric;
 import org.robolectric.Shadows;
 import org.robolectric.annotation.Config;
+import org.robolectric.shadows.ShadowDisplayManager;
 import org.robolectric.shadows.ShadowPackageManager;
 import org.robolectric.shadows.ShadowSystemClock;
 
@@ -60,8 +66,9 @@ import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.pwm_disabled.PasswordCsvDownloadFlowController;
 import org.chromium.chrome.browser.pwm_disabled.PasswordCsvDownloadFlowControllerFactory;
 import org.chromium.chrome.browser.sync.SyncServiceFactory;
-import org.chromium.components.browser_ui.settings.SettingsCustomTabLauncher;
+import org.chromium.chrome.browser.util.BrowserUiUtils;
 import org.chromium.components.browser_ui.test.BrowserUiTestFragmentActivity;
+import org.chromium.components.browser_ui.util.CustomTabLauncher;
 import org.chromium.components.signin.base.CoreAccountInfo;
 import org.chromium.components.sync.SyncService;
 import org.chromium.components.sync.UserSelectableType;
@@ -97,7 +104,7 @@ public class PasswordManagerCheckupHelperTest {
     // TODO(crbug.com/40854050): Use fake instead of mock
     @Mock private PasswordManagerBackendSupportHelper mBackendSupportHelperMock;
 
-    private SettingsCustomTabLauncher mSettingsCustomTabLauncher;
+    private CustomTabLauncher mCustomTabLauncher;
 
     private ModalDialogManager mModalDialogManager;
     private SettableNonNullObservableSupplier<ModalDialogManager> mModalDialogManagerSupplier;
@@ -133,7 +140,7 @@ public class PasswordManagerCheckupHelperTest {
                 .thenReturn(mPasswordCheckupClientHelperMock);
         PasswordCheckupClientHelperFactory.setFactoryForTesting(
                 mPasswordCheckupClientHelperFactoryMock);
-        mSettingsCustomTabLauncher = (Context context, String url) -> {};
+        mCustomTabLauncher = (Context context, String url) -> {};
     }
 
     @Test
@@ -165,7 +172,7 @@ public class PasswordManagerCheckupHelperTest {
                 PasswordCheckReferrer.SAFETY_CHECK,
                 mModalDialogManagerSupplier,
                 TEST_EMAIL_ADDRESS,
-                mSettingsCustomTabLauncher);
+                mCustomTabLauncher);
 
         assertNull(mModalDialogManager.getCurrentDialogForTest());
     }
@@ -181,7 +188,7 @@ public class PasswordManagerCheckupHelperTest {
                 PasswordCheckReferrer.SAFETY_CHECK,
                 mModalDialogManagerSupplier,
                 TEST_NO_EMAIL_ADDRESS,
-                mSettingsCustomTabLauncher);
+                mCustomTabLauncher);
 
         assertNull(mModalDialogManager.getCurrentDialogForTest());
     }
@@ -195,7 +202,7 @@ public class PasswordManagerCheckupHelperTest {
                 PasswordCheckReferrer.SAFETY_CHECK,
                 mModalDialogManagerSupplier,
                 TEST_EMAIL_ADDRESS,
-                mSettingsCustomTabLauncher);
+                mCustomTabLauncher);
 
         verify(mPasswordCheckupClientHelperMock)
                 .getPasswordCheckupIntent(
@@ -212,7 +219,7 @@ public class PasswordManagerCheckupHelperTest {
                 PasswordCheckReferrer.SAFETY_CHECK,
                 mModalDialogManagerSupplier,
                 TEST_NO_EMAIL_ADDRESS,
-                mSettingsCustomTabLauncher);
+                mCustomTabLauncher);
 
         verify(mPasswordCheckupClientHelperMock)
                 .getPasswordCheckupIntent(
@@ -231,7 +238,7 @@ public class PasswordManagerCheckupHelperTest {
                 PasswordCheckReferrer.SAFETY_CHECK,
                 mModalDialogManagerSupplier,
                 TEST_EMAIL_ADDRESS,
-                mSettingsCustomTabLauncher);
+                mCustomTabLauncher);
         verify(mPendingIntentMock).send();
     }
 
@@ -243,7 +250,7 @@ public class PasswordManagerCheckupHelperTest {
                 PasswordCheckReferrer.SAFETY_CHECK,
                 mModalDialogManagerSupplier,
                 TEST_NO_EMAIL_ADDRESS,
-                mSettingsCustomTabLauncher);
+                mCustomTabLauncher);
         verify(mPendingIntentMock).send();
     }
 
@@ -267,7 +274,7 @@ public class PasswordManagerCheckupHelperTest {
                 PasswordCheckReferrer.SAFETY_CHECK,
                 mModalDialogManagerSupplier,
                 TEST_EMAIL_ADDRESS,
-                mSettingsCustomTabLauncher);
+                mCustomTabLauncher);
 
         histogram.assertExpected();
     }
@@ -290,7 +297,7 @@ public class PasswordManagerCheckupHelperTest {
                 PasswordCheckReferrer.SAFETY_CHECK,
                 mModalDialogManagerSupplier,
                 TEST_NO_EMAIL_ADDRESS,
-                mSettingsCustomTabLauncher);
+                mCustomTabLauncher);
 
         histogram.assertExpected();
     }
@@ -317,7 +324,7 @@ public class PasswordManagerCheckupHelperTest {
                 PasswordCheckReferrer.SAFETY_CHECK,
                 mModalDialogManagerSupplier,
                 TEST_EMAIL_ADDRESS,
-                mSettingsCustomTabLauncher);
+                mCustomTabLauncher);
 
         histogram.assertExpected();
     }
@@ -343,7 +350,7 @@ public class PasswordManagerCheckupHelperTest {
                 PasswordCheckReferrer.SAFETY_CHECK,
                 mModalDialogManagerSupplier,
                 TEST_NO_EMAIL_ADDRESS,
-                mSettingsCustomTabLauncher);
+                mCustomTabLauncher);
 
         histogram.assertExpected();
     }
@@ -371,7 +378,7 @@ public class PasswordManagerCheckupHelperTest {
                 PasswordCheckReferrer.SAFETY_CHECK,
                 mModalDialogManagerSupplier,
                 TEST_EMAIL_ADDRESS,
-                mSettingsCustomTabLauncher);
+                mCustomTabLauncher);
 
         histogram.assertExpected();
     }
@@ -397,7 +404,7 @@ public class PasswordManagerCheckupHelperTest {
                 PasswordCheckReferrer.SAFETY_CHECK,
                 mModalDialogManagerSupplier,
                 TEST_NO_EMAIL_ADDRESS,
-                mSettingsCustomTabLauncher);
+                mCustomTabLauncher);
 
         histogram.assertExpected();
     }
@@ -663,7 +670,7 @@ public class PasswordManagerCheckupHelperTest {
                 PasswordCheckReferrer.SAFETY_CHECK,
                 mModalDialogManagerSupplier,
                 TEST_EMAIL_ADDRESS,
-                mSettingsCustomTabLauncher);
+                mCustomTabLauncher);
 
         histogram.assertExpected();
     }
@@ -678,7 +685,7 @@ public class PasswordManagerCheckupHelperTest {
                 mLoadingModalDialogCoordinator,
                 mModalDialogManager,
                 ContextUtils.getApplicationContext(),
-                mSettingsCustomTabLauncher);
+                mCustomTabLauncher);
 
         verify(mLoadingModalDialogCoordinator).show();
     }
@@ -694,7 +701,7 @@ public class PasswordManagerCheckupHelperTest {
                 mLoadingModalDialogCoordinator,
                 mModalDialogManager,
                 ContextUtils.getApplicationContext(),
-                mSettingsCustomTabLauncher);
+                mCustomTabLauncher);
 
         verify(mLoadingModalDialogCoordinator).dismiss();
     }
@@ -712,7 +719,7 @@ public class PasswordManagerCheckupHelperTest {
                 mLoadingModalDialogCoordinator,
                 mModalDialogManager,
                 ContextUtils.getApplicationContext(),
-                mSettingsCustomTabLauncher);
+                mCustomTabLauncher);
 
         verify(mLoadingModalDialogCoordinator).dismiss();
     }
@@ -730,7 +737,7 @@ public class PasswordManagerCheckupHelperTest {
                 mLoadingModalDialogCoordinator,
                 mModalDialogManager,
                 ContextUtils.getApplicationContext(),
-                mSettingsCustomTabLauncher);
+                mCustomTabLauncher);
 
         verify(mLoadingModalDialogCoordinator).dismiss();
     }
@@ -749,7 +756,7 @@ public class PasswordManagerCheckupHelperTest {
                 mLoadingModalDialogCoordinator,
                 mModalDialogManager,
                 ContextUtils.getApplicationContext(),
-                mSettingsCustomTabLauncher);
+                mCustomTabLauncher);
 
         verify(mPendingIntentMock, never()).send();
     }
@@ -768,7 +775,7 @@ public class PasswordManagerCheckupHelperTest {
                 mLoadingModalDialogCoordinator,
                 mModalDialogManager,
                 ContextUtils.getApplicationContext(),
-                mSettingsCustomTabLauncher);
+                mCustomTabLauncher);
 
         verify(mPendingIntentMock, never()).send();
     }
@@ -786,7 +793,7 @@ public class PasswordManagerCheckupHelperTest {
                 mLoadingModalDialogCoordinator,
                 mModalDialogManager,
                 ContextUtils.getApplicationContext(),
-                mSettingsCustomTabLauncher);
+                mCustomTabLauncher);
 
         verify(mPendingIntentMock, never()).send();
 
@@ -807,7 +814,7 @@ public class PasswordManagerCheckupHelperTest {
                 mLoadingModalDialogCoordinator,
                 mModalDialogManager,
                 ContextUtils.getApplicationContext(),
-                mSettingsCustomTabLauncher);
+                mCustomTabLauncher);
 
         verify(mLoadingModalDialogCoordinator).dismiss();
     }
@@ -826,7 +833,7 @@ public class PasswordManagerCheckupHelperTest {
                 mLoadingModalDialogCoordinator,
                 mModalDialogManager,
                 ContextUtils.getApplicationContext(),
-                mSettingsCustomTabLauncher);
+                mCustomTabLauncher);
 
         RobolectricUtil.runAllBackgroundAndUiIncludingDelayed();
         verify(mLoadingModalDialogCoordinator).dismiss();
@@ -847,7 +854,7 @@ public class PasswordManagerCheckupHelperTest {
                 mLoadingModalDialogCoordinator,
                 mModalDialogManager,
                 ContextUtils.getApplicationContext(),
-                mSettingsCustomTabLauncher);
+                mCustomTabLauncher);
 
         mLoadingDialogCoordinatorObserver.onDismissable();
 
@@ -868,7 +875,7 @@ public class PasswordManagerCheckupHelperTest {
                 mLoadingModalDialogCoordinator,
                 mModalDialogManager,
                 ContextUtils.getApplicationContext(),
-                mSettingsCustomTabLauncher);
+                mCustomTabLauncher);
     }
 
     @Test
@@ -885,7 +892,7 @@ public class PasswordManagerCheckupHelperTest {
                 mLoadingModalDialogCoordinator,
                 mModalDialogManager,
                 ContextUtils.getApplicationContext(),
-                mSettingsCustomTabLauncher);
+                mCustomTabLauncher);
 
         when(mLoadingModalDialogCoordinator.getState())
                 .thenReturn(LoadingModalDialogCoordinator.State.CANCELLED);
@@ -906,7 +913,7 @@ public class PasswordManagerCheckupHelperTest {
                 mLoadingModalDialogCoordinator,
                 mModalDialogManager,
                 ContextUtils.getApplicationContext(),
-                mSettingsCustomTabLauncher);
+                mCustomTabLauncher);
     }
 
     @Test
@@ -923,7 +930,7 @@ public class PasswordManagerCheckupHelperTest {
                 mLoadingModalDialogCoordinator,
                 mModalDialogManager,
                 ContextUtils.getApplicationContext(),
-                mSettingsCustomTabLauncher);
+                mCustomTabLauncher);
 
         when(mLoadingModalDialogCoordinator.getState())
                 .thenReturn(LoadingModalDialogCoordinator.State.TIMED_OUT);
@@ -946,7 +953,7 @@ public class PasswordManagerCheckupHelperTest {
                 mLoadingModalDialogCoordinator,
                 mModalDialogManager,
                 ContextUtils.getApplicationContext(),
-                mSettingsCustomTabLauncher);
+                mCustomTabLauncher);
 
         verify(mLoadingModalDialogCoordinator).dismiss();
     }
@@ -965,9 +972,62 @@ public class PasswordManagerCheckupHelperTest {
                 mLoadingModalDialogCoordinator,
                 mModalDialogManager,
                 ContextUtils.getApplicationContext(),
-                mSettingsCustomTabLauncher);
+                mCustomTabLauncher);
 
         verify(mLoadingModalDialogCoordinator).dismiss();
+    }
+
+    @Test
+    @Config(sdk = Build.VERSION_CODES.CINNAMON_BUN)
+    public void testPasswordCheckupLaunchesOnCurrentDisplayWhenProjected()
+            throws CanceledException {
+        BrowserUiUtils.setIsAndroidAutoProjectedForTesting(true);
+        int displayId = ShadowDisplayManager.addDisplay("");
+        Activity activity = buildActivityOnDisplay(displayId);
+        chooseToSyncPasswords();
+        setUpSuccessfulCheckupIntentFetching(mPendingIntentMock, TEST_EMAIL_ADDRESS);
+
+        mPasswordManagerHelper.launchPasswordCheckup(
+                PasswordCheckReferrer.SAFETY_CHECK,
+                TEST_EMAIL_ADDRESS,
+                mLoadingModalDialogCoordinator,
+                mModalDialogManager,
+                activity,
+                mCustomTabLauncher);
+
+        ArgumentCaptor<Bundle> optionsCaptor = ArgumentCaptor.forClass(Bundle.class);
+        verify(mPendingIntentMock)
+                .send(
+                        eq(activity),
+                        eq(0),
+                        isNull(),
+                        isNull(),
+                        isNull(),
+                        isNull(),
+                        optionsCaptor.capture());
+        verify(mPendingIntentMock, never()).send();
+        assertEquals(displayId, new ActivityOptions(optionsCaptor.getValue()).getLaunchDisplayId());
+    }
+
+    @Test
+    @Config(sdk = Build.VERSION_CODES.CINNAMON_BUN)
+    public void testPasswordCheckupUsesDefaultLaunchWhenNotProjected() throws CanceledException {
+        BrowserUiUtils.setIsAndroidAutoProjectedForTesting(false);
+        Activity activity = buildActivityOnDisplay(ShadowDisplayManager.addDisplay(""));
+        chooseToSyncPasswords();
+        setUpSuccessfulCheckupIntentFetching(mPendingIntentMock, TEST_EMAIL_ADDRESS);
+
+        mPasswordManagerHelper.launchPasswordCheckup(
+                PasswordCheckReferrer.SAFETY_CHECK,
+                TEST_EMAIL_ADDRESS,
+                mLoadingModalDialogCoordinator,
+                mModalDialogManager,
+                activity,
+                mCustomTabLauncher);
+
+        verify(mPendingIntentMock).send();
+        verify(mPendingIntentMock, never())
+                .send(any(), anyInt(), any(), any(), any(), any(), any());
     }
 
     @Test
@@ -1040,7 +1100,7 @@ public class PasswordManagerCheckupHelperTest {
                 PasswordCheckReferrer.SAFETY_CHECK,
                 mModalDialogManagerSupplier,
                 TEST_NO_EMAIL_ADDRESS,
-                mSettingsCustomTabLauncher);
+                mCustomTabLauncher);
 
         verify(mockController)
                 .showDialogAndStartFlow(
@@ -1048,7 +1108,7 @@ public class PasswordManagerCheckupHelperTest {
                         eq(mProfile),
                         /* isGooglePlayServicesAvailable= */ eq(true),
                         /* isPasswordManagerAvailable= */ eq(false),
-                        eq(mSettingsCustomTabLauncher));
+                        eq(mCustomTabLauncher));
     }
 
     @Test
@@ -1068,7 +1128,7 @@ public class PasswordManagerCheckupHelperTest {
                 PasswordCheckReferrer.SAFETY_CHECK,
                 mModalDialogManagerSupplier,
                 TEST_NO_EMAIL_ADDRESS,
-                mSettingsCustomTabLauncher);
+                mCustomTabLauncher);
 
         verify(mockController)
                 .showDialogAndStartFlow(
@@ -1076,7 +1136,7 @@ public class PasswordManagerCheckupHelperTest {
                         eq(mProfile),
                         /* isGooglePlayServicesAvailable= */ eq(false),
                         /* isPasswordManagerAvailable= */ eq(false),
-                        eq(mSettingsCustomTabLauncher));
+                        eq(mCustomTabLauncher));
     }
 
     @Test
@@ -1093,7 +1153,7 @@ public class PasswordManagerCheckupHelperTest {
                 PasswordCheckReferrer.SAFETY_CHECK,
                 mModalDialogManagerSupplier,
                 TEST_NO_EMAIL_ADDRESS,
-                mSettingsCustomTabLauncher);
+                mCustomTabLauncher);
         PropertyModel dialogModel = mModalDialogManager.getCurrentDialogForTest();
         assertNotNull(dialogModel);
         assertEquals(
@@ -1115,7 +1175,7 @@ public class PasswordManagerCheckupHelperTest {
                 PasswordCheckReferrer.SAFETY_CHECK,
                 mModalDialogManagerSupplier,
                 TEST_NO_EMAIL_ADDRESS,
-                mSettingsCustomTabLauncher);
+                mCustomTabLauncher);
         PropertyModel dialogModel = mModalDialogManager.getCurrentDialogForTest();
         assertNotNull(dialogModel);
         assertEquals(
@@ -1347,5 +1407,14 @@ public class PasswordManagerCheckupHelperTest {
         PackageInfo playStorePackageInfo =
                 PackageInfoBuilder.newBuilder().setPackageName("com.android.vending").build();
         shadowPackageManager.installPackage(playStorePackageInfo);
+    }
+
+    private Activity buildActivityOnDisplay(int displayId) {
+        return Robolectric.buildActivity(
+                        Activity.class,
+                        /* intent= */ null,
+                        ActivityOptions.makeBasic().setLaunchDisplayId(displayId).toBundle())
+                .setup()
+                .get();
     }
 }

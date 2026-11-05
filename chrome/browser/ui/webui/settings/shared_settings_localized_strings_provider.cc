@@ -149,6 +149,18 @@ void AddLiveCaptionSectionStrings(content::WebUIDataSource* html_source) {
        IDS_SETTINGS_CAPTIONS_MASK_OFFENSIVE_WORDS_TITLE},
       {"captionsEnableLiveCaptionSubtitle",
        IDS_SETTINGS_CAPTIONS_ENABLE_LIVE_CAPTION_SUBTITLE},
+      {"speechRecognitionSmallExpertModelTitle",
+       IDS_SETTINGS_CAPTIONS_SPEECH_RECOGNITION_SMALL_EXPERT_MODEL_SECTION_TITLE},
+      {"speechRecognitionSmallExpertModelSubtitle",
+       IDS_SETTINGS_CAPTIONS_SPEECH_RECOGNITION_SMALL_EXPERT_MODEL_SECTION_SUBTITLE},
+      {"speechRecognitionSmallExpertModelDeleteButton",
+       IDS_SETTINGS_CAPTIONS_SPEECH_RECOGNITION_SMALL_EXPERT_MODEL_DELETE_BUTTON},
+      {"speechRecognitionSmallExpertModelDownloadProgress",
+       IDS_SETTINGS_CAPTIONS_LIVE_CAPTION_DOWNLOAD_PROGRESS},
+      {"speechRecognitionSmallExpertModelDownloadComplete",
+       IDS_SETTINGS_CAPTIONS_LIVE_CAPTION_DOWNLOAD_COMPLETE},
+      {"speechRecognitionSmallExpertModelDownloadError",
+       IDS_SETTINGS_CAPTIONS_LIVE_CAPTION_DOWNLOAD_ERROR},
   };
   html_source->AddLocalizedStrings(kLocalizedStrings);
 
@@ -157,22 +169,13 @@ void AddLiveCaptionSectionStrings(content::WebUIDataSource* html_source) {
   html_source->AddBoolean("enableLiveCaption",
                           captions::IsLiveCaptionFeatureSupported());
   html_source->AddBoolean("enableLiveCaptionMultiLanguage", true);
+  html_source->AddBoolean(
+      "enableLiveCaptionSpeechRecognitionSmallExpertModel",
+      base::FeatureList::IsEnabled(
+          media::kLiveCaptionSpeechRecognitionSmallExpertModel));
 
   html_source->AddBoolean("enableLiveTranslate", liveTranslateEnabled);
 }
-
-#if BUILDFLAG(IS_CHROMEOS)
-void AddPasswordPromptDialogStrings(content::WebUIDataSource* html_source) {
-  static constexpr webui::LocalizedString kLocalizedStrings[] = {
-      {"passwordPromptTitle", IDS_SETTINGS_PEOPLE_PASSWORD_PROMPT_TITLE},
-      {"passwordPromptInvalidPassword",
-       IDS_SETTINGS_PEOPLE_PASSWORD_PROMPT_INVALID_PASSWORD},
-      {"passwordPromptPasswordLabel",
-       IDS_SETTINGS_PEOPLE_PASSWORD_PROMPT_PASSWORD_LABEL},
-  };
-  html_source->AddLocalizedStrings(kLocalizedStrings);
-}
-#endif  // BUILDFLAG(IS_CHROMEOS)
 
 void AddSharedSyncPageStrings(content::WebUIDataSource* html_source) {
   static constexpr webui::LocalizedString kLocalizedStrings[] = {
@@ -201,10 +204,7 @@ void AddSharedSyncPageStrings(content::WebUIDataSource* html_source) {
 
   std::string sync_dashboard_url =
       google_util::AppendGoogleLocaleParam(
-          GURL(base::FeatureList::IsEnabled(
-                   syncer::kSyncEnableNewSyncDashboardUrl)
-                   ? chrome::kNewSyncGoogleDashboardURL
-                   : chrome::kLegacySyncGoogleDashboardURL),
+          GURL(chrome::kSyncGoogleDashboardURL),
           g_browser_process->GetApplicationLocale())
           .spec();
 

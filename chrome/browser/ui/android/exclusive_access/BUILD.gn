@@ -15,7 +15,6 @@ source_set("exclusive_access") {
     "//base",
     "//chrome/android:jni_headers",
     "//chrome/browser/profiles",
-    "//chrome/browser/ui:ui_features",
     "//chrome/browser/ui/exclusive_access",
     "//components/fullscreen_control",
     "//components/input",
@@ -23,6 +22,7 @@ source_set("exclusive_access") {
     "//content/public/browser",
     "//third_party/jni_zero",
     "//ui/base",
+    "//ui/gfx",
     "//ui/strings",
   ]
 }
@@ -33,8 +33,15 @@ source_set("unit_tests") {
   deps = [
     ":exclusive_access",
     "//base",
+    "//chrome/browser/ui:ui_features",
     "//chrome/test:test_support",
+    "//chrome/test/base:chrome_render_view_host_test_harness",
+    "//components/fullscreen_control",
+    "//components/url_formatter",
     "//testing/gmock",
     "//testing/gtest",
+    "//ui/base",
+    "//ui/strings",
+    "//url",
   ]
 }

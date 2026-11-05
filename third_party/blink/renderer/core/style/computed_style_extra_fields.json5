@@ -138,6 +138,15 @@
       reset_on_new_style: true,
       custom_compare: true,
     },
+    // Whether this style is affected by matching non-subject :hover selectors.
+    {
+      name: "AffectedByNonSubjectHoverSelector",
+      field_template: "monotonic_flag",
+      field_group: "*",
+      default_value: "false",
+      reset_on_new_style: true,
+      custom_compare: true,
+    },
     // A property references a variable that needs to be resolved
     {
       name: "HasVariableReference",
@@ -183,6 +192,15 @@
     {
       name: "HasExplicitInheritance",
       field_template: "monotonic_flag",
+      default_value: "false",
+    },
+    // The color was computed from the parent's color (e.g. color-mix() with
+    // currentColor), so it must be recomputed when the parent's color changes.
+    {
+      name: "ColorIsDerivedFromParent",
+      field_group: "*",
+      field_template: "primitive",
+      type_name: "bool",
       default_value: "false",
     },
     // These are set if we used viewport or rem units when resolving a length.
@@ -258,7 +276,7 @@
       field_template: "primitive",
       // See the definition of the PseudoId enum for details. This field_size
       // must be updated when public IDs are added or removed.
-      field_size: 26,
+      field_size: 25,
       default_value: "kPseudoIdNone",
       type_name: "unsigned",
       reset_on_new_style: true,
@@ -497,6 +515,18 @@
       default_value: "false",
       field_group: "*",
     },
+    // Though overscroll container properties are not themselves inherited,
+    // this flag is set on the overscroll container itself and inherited by
+    // its descendants, which participate in overscroll inertness and gesture
+    // behavior.
+    {
+      name: "IsInOverscrollContainer",
+      inherited: true,
+      field_template: "primitive",
+      type_name: "bool",
+      default_value: "false",
+      field_group: "*",
+    },
     {
       name: "IsInShrinkToFitSubtree",
       inherited: true,
@@ -556,6 +586,18 @@
       computed_style_custom_functions: ["getter", "setter"],
       // Highlight Pseudos may use var() references but those must be resolved
       // against the originating element.
+      highlight_style_comes_from_originating_element: true,
+    },
+    {
+      name: "InheritedPrivateVariables",
+      inherited: true,
+      semi_independent_variable: true,
+      field_template: "external",
+      type_name: "StyleInheritedVariables",
+      include_paths: ["third_party/blink/renderer/core/style/style_inherited_variables.h"],
+      default_value: "StyleInheritedVariables()",
+      field_group: "inherited",
+      computed_style_custom_functions: [],
       highlight_style_comes_from_originating_element: true,
     },
     {
@@ -785,6 +827,18 @@
     },
     {
       name: "HasCurrentBackdropFilterAnimation",
+      field_template: "primitive",
+      type_name: "bool",
+      field_group: "*",
+      default_value: "false",
+      invalidate: ["compositing"],
+    },
+    {
+      // A current animation may change the backdrop-filter value, i.e. it
+      // needs a composited backdrop-filter effect. Unlike
+      // HasCurrentBackdropFilterAnimation, this doesn't affect whether the
+      // element is a stacking context.
+      name: "HasCurrentDynamicBackdropFilterAnimation",
       field_template: "primitive",
       type_name: "bool",
       field_group: "*",
@@ -1040,6 +1094,27 @@
       default_value: "false",
       custom_compare: true,
     },
+    // Set when the layout parent allows z-index on non-positioned children
+    // (e.g., flex/grid), including on display:contents ancestors, so display
+    // changes invalidate descendants.
+    {
+      name: "IsInZIndexAllowingDisplay",
+      field_template: "monotonic_flag",
+      default_value: "false",
+      custom_compare: true,
+    },
+    // Set to true on elements which are either:
+    // 1. An element that generates a child box of a content=drawable <canvas>
+    // 2. display:contents ancestors of (1).
+    //
+    // The flag is used to invalidate style such that old/new direct child box
+    // elements are updated correctly for display type changes.
+    {
+      name: "IsContentDrawableCanvasChild",
+      field_template: "monotonic_flag",
+      default_value: "false",
+      custom_compare: true,
+    },
     {
       name: "IsSpecifiedDisplayWebkitBox",
       name_for_methods: "IsSpecifiedDisplayWebkitBox",
@@ -1270,6 +1345,14 @@
       invalidate: ["layout"],
     },
     {
+      name: "HasLayoutContainmentForOverscrollContainer",
+      field_template: "primitive",
+      type_name: "bool",
+      field_group: "*",
+      default_value: "false",
+      invalidate: ["layout"],
+    },
+    {
       // https://html.spec.whatwg.org/multipage/interaction.html#inert
       name: "IsHTMLInert",
       inherited: true,
@@ -1292,6 +1375,18 @@
       invalidate: ["inert"],
     },
     {
+      // True when the current HTML inertness was established solely by a single
+      // closed overscroll area, allowing a toggle-overscroll command invoker
+      // inside that area to escape inertness. Reset to false if an
+      // already-inert subtree is inerted again (e.g. a nested closed area).
+      name: "CanEscapeOverscrollInertness",
+      inherited: true,
+      field_template: "primitive",
+      type_name: "bool",
+      default_value: "false",
+      field_group: "*",
+    },
+    {
       // We need to go through LayoutObject::SetStyle with
       // ApplyStyleChanges::kYes if the body changes from being the first body
       // element to a secondary one because the same style could lead to
@@ -1304,7 +1399,10 @@
       field_group: "*",
     },
     {
-      name: "InlineStyleLostCascade",
+      // Blocks incremental styling after unsafe cascade losses.
+      // False does not guarantee eligibility; see
+      // CanApplyStyleIncrementally() in style_resolver.cc.
+      name: "HasIncrementalStyleBlocker",
       field_template: "primitive",
       type_name: "bool",
       field_group: "*",
@@ -1375,6 +1473,13 @@
     },
     {
       name: "HasAnchorFunctions",
+      field_template: "monotonic_flag",
+      field_group: "surround",
+      default_value: "false",
+      custom_compare: true,
+    },
+    {
+      name: "HasDefaultAnchorFunctions",
       field_template: "monotonic_flag",
       field_group: "surround",
       default_value: "false",
@@ -1500,6 +1605,17 @@
       type_name: "EBlockEllipsis",
       default_value: "no-ellipsis",
       invalidate: ["layout", "paint"],
+    },
+    {
+      // Tracks animation sources for independent inherited properties.
+      name: "IndependentInheritedAnimatedSources",
+      inherited: true,
+      custom_compare: true,
+      field_group: "inherited->independent-inherited-animated-sources",
+      field_template: "external",
+      type_name: "StyleAnimatedSources",
+      include_paths: ["third_party/blink/renderer/core/style/style_animated_sources.h"],
+      default_value: "StyleAnimatedSources()",
     },
     {
       // Tracks animation sources for inherited properties.

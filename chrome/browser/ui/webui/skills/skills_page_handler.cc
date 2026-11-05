@@ -9,10 +9,12 @@
 #include "chrome/browser/glic/public/glic_invoke_options.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/skills/skills_service_factory.h"
-#include "chrome/browser/skills/skills_ui_window_controller.h"
+#include "chrome/browser/skills/skills_ui_tab_controller_interface.h"
 #include "chrome/browser/ui/webui/skills/skills.mojom-shared.h"
 #include "components/skills/public/skill.h"
 #include "components/skills/public/skill.mojom.h"
+#include "components/skills/public/skills_constants.h"
+#include "components/skills/public/skills_features.h"
 #include "components/skills/public/skills_metrics.h"
 #include "components/skills/public/skills_prefs.h"
 #include "components/skills/public/skills_types.h"
@@ -142,9 +144,8 @@ void SkillsPageHandler::GetInitialUserSkills(
 void SkillsPageHandler::DeleteSkill(const std::string& skill_id) {
   // Show a toast to the user that the skill was deleted.
   auto* tabs = tabs::TabInterface::GetFromContents(&web_contents_.get());
-  if (auto* browser_window_interface = tabs->GetBrowserWindowInterface()) {
-    SkillsUiWindowController::From(browser_window_interface)
-        ->OnSkillDeleted(skill_id);
+  if (auto* controller = SkillsUiTabControllerInterface::From(tabs)) {
+    controller->OnSkillDeleted(skill_id, {});
   }
 }
 
@@ -338,14 +339,13 @@ void SkillsPageHandler::AppendProvidedSkills(
               [](const skills::Skill& a, const skills::Skill& b) {
                 return a.name < b.name;
               });
-    // TODO(b/540008460): Create a shared constant.
-    state->skill_map["From your organization"] = std::move(enterprise_skills);
+    state->skill_map[kFromYourOrganizationCategory] =
+        std::move(enterprise_skills);
   }
 }
 
 void SkillsPageHandler::OnSkillsEnabledPrefChanged() {
-  page_->SetSkillsEnabled(SkillsServiceFactory::IsSkillsEnabledForProfile(
-      base::to_address(profile_)));
+  page_->SetSkillsEnabled(skills::IsSkillsEnabled(profile_->GetPrefs()));
 }
 
 }  // namespace skills

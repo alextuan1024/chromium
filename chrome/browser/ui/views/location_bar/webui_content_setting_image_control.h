@@ -10,7 +10,9 @@
 #include <variant>
 #include <vector>
 
+#include "base/callback_list.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory/weak_ptr.h"
 #include "chrome/browser/ui/views/bubble/webui_bubble_reopen_suppressor.h"
 #include "components/browser_apis/ui_controllers/toolbar/toolbar_ui_api.mojom.h"
 #include "components/browser_apis/ui_controllers/toolbar/toolbar_ui_api_data_model.mojom.h"
@@ -20,8 +22,13 @@ namespace content {
 class WebContents;
 }
 
+namespace ui {
+class TrackedElement;
+}
+
 class ContentSettingImageModel;
 class ContentSettingImageViewDelegate;
+class PermissionDashboardController;
 class WebUIToolbarControlDelegate;
 
 // Manages the ContentSettingImageModels for WebUI toolbar and provides
@@ -46,6 +53,12 @@ class WebUIContentSettingImageControl {
   void InitForTesting(
       std::vector<std::unique_ptr<ContentSettingImageModel>> models,
       WebUIToolbarControlDelegate* webui_delegate = nullptr);
+
+  // Updates `permission_dashboard_controller` with the left-hand side activity
+  // indicator models (prioritizing Media Stream over Sensors). Returns `true`
+  // if that produced a user-visible change to the permission dashboard.
+  bool UpdatePermissionDashboard(
+      PermissionDashboardController* permission_dashboard_controller);
 
   // Returns the current state of all content setting images for `web_contents`,
   // auto-opens a bubble if requested, and updates model state for fields that
@@ -78,16 +91,32 @@ class WebUIContentSettingImageControl {
     bubble_reopen_suppressor_.SetSuppressionThresholdForTesting(threshold);
   }
 
-  // Called when the WebUI animation for `type` has finished.
-  void OnContentSettingImageAnimationEnded(
-      toolbar_ui_api::mojom::ContentSettingImageType type);
-
  private:
   // Like ShowContentSettingsBubble(), but returns the result instead of passing
   // it to a callback.
   base::expected<std::monostate, mojo_base::mojom::ErrorPtr>
   ShowContentSettingsBubbleImpl(
       toolbar_ui_api::mojom::ContentSettingImageType type);
+
+  // Invoked when `kLocationBarElementId` is shown, only if bubble creation
+  // was deferred from `ShowContentSettingsBubbleImpl()` because the anchor
+  // element was not yet ready.
+  void OnDeferredLocationBarElementShownForBubble(ui::TrackedElement* element);
+
+  struct DeferredBubbleRequest {
+    DeferredBubbleRequest(toolbar_ui_api::mojom::ContentSettingImageType type,
+                          base::WeakPtr<content::WebContents> web_contents,
+                          base::CallbackListSubscription subscription);
+    ~DeferredBubbleRequest();
+    DeferredBubbleRequest(DeferredBubbleRequest&&);
+    DeferredBubbleRequest& operator=(DeferredBubbleRequest&&) = delete;
+    DeferredBubbleRequest(const DeferredBubbleRequest&) = delete;
+    DeferredBubbleRequest& operator=(const DeferredBubbleRequest&) = delete;
+
+    const toolbar_ui_api::mojom::ContentSettingImageType type;
+    const base::WeakPtr<content::WebContents> web_contents;
+    base::CallbackListSubscription subscription;
+  };
 
   // Safe since the constructor requires that `setting_view_delegate_` outlive
   // this instance.
@@ -102,6 +131,10 @@ class WebUIContentSettingImageControl {
       last_tracked_bubble_type_;
 
   WebUIBubbleReopenSuppressor bubble_reopen_suppressor_;
+
+  std::optional<DeferredBubbleRequest> pending_bubble_;
+
+  base::WeakPtrFactory<WebUIContentSettingImageControl> weak_factory_{this};
 };
 
 #endif  // CHROME_BROWSER_UI_VIEWS_LOCATION_BAR_WEBUI_CONTENT_SETTING_IMAGE_CONTROL_H_

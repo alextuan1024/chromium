@@ -28,9 +28,9 @@
 #include <algorithm>
 #include <memory>
 #include <optional>
+#include <ranges>
 #include <utility>
 
-#include "base/containers/adapters.h"
 #include "base/notreached.h"
 #include "build/build_config.h"
 #include "third_party/blink/renderer/core/css/basic_shape_functions.h"
@@ -87,6 +87,7 @@
 #include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/core/frame/settings.h"
 #include "third_party/blink/renderer/core/frame/web_feature.h"
+#include "third_party/blink/renderer/core/layout/layout_theme.h"
 #include "third_party/blink/renderer/core/style/computed_style_constants.h"
 #include "third_party/blink/renderer/core/style/coord_box_offset_path_operation.h"
 #include "third_party/blink/renderer/core/style/geometry_box_clip_path_operation.h"
@@ -198,6 +199,22 @@ Vector<AtomicString> ConvertNoneOrCustomIdentListUnscoped(
         StyleBuilderConverter::ConvertNoneOrCustomIdentUnscoped(state, *item));
   }
   return names;
+}
+
+ScopedCSSNameList* ConvertNoneOrCustomIdentList(StyleResolverState& state,
+                                                const CSSValue& value) {
+  DCHECK(value.IsScopedValue());
+  if (const auto* identifier_value = DynamicTo<CSSIdentifierValue>(value)) {
+    DCHECK_EQ(identifier_value->GetValueID(), CSSValueID::kNone);
+    return nullptr;
+  }
+  DCHECK(value.IsBaseValueList());
+  HeapVector<Member<const ScopedCSSName>> names;
+  for (const Member<const CSSValue>& item : To<CSSValueList>(value)) {
+    names.push_back(
+        StyleBuilderConverter::ConvertNoneOrCustomIdent(state, *item));
+  }
+  return MakeGarbageCollected<ScopedCSSNameList>(std::move(names));
 }
 
 }  // namespace
@@ -398,12 +415,6 @@ FilterOperations StyleBuilderConverter::ConvertFilterOperations(
                                                          property_id);
 }
 
-FilterOperations StyleBuilderConverter::ConvertOffscreenFilterOperations(
-    const CSSValue& value,
-    const Font* font) {
-  return FilterOperationResolver::CreateOffscreenFilterOperations(value, font);
-}
-
 StyleFlexWrapData StyleBuilderConverter::ConvertFlexWrapData(
     StyleResolverState& state,
     const CSSValue& value) {
@@ -516,7 +527,7 @@ FontDescription::FamilyDescription StyleBuilderConverterBase::ConvertFontFamily(
   scoped_refptr<SharedFontFamily> next;
   bool has_value = false;
 
-  for (auto& family : base::Reversed(To<CSSValueList>(value))) {
+  for (auto& family : std::views::reverse(To<CSSValueList>(value))) {
     AtomicString next_family_name;
     FontDescription::GenericFamilyType generic_family =
         FontDescription::kNoFamily;
@@ -639,7 +650,7 @@ FontVariantEmoji StyleBuilderConverter::ConvertFontVariantEmoji(
   // properties. The auto generated converter does not handle this incoming
   // value.
   if (value.IsPendingSystemFontValue()) {
-    return kNormalVariantEmoji;
+    return FontVariantEmoji::kNormal;
   }
 
   return To<CSSIdentifierValue>(value).ConvertTo<FontVariantEmoji>();
@@ -654,15 +665,15 @@ OpticalSizing StyleBuilderConverter::ConvertFontOpticalSizing(
   // properties. The auto generated converter does not handle this incoming
   // value.
   if (value.IsPendingSystemFontValue()) {
-    return kAutoOpticalSizing;
+    return OpticalSizing::kAuto;
   }
 
   CSSValueID value_id = To<CSSIdentifierValue>(value).GetValueID();
   switch (value_id) {
     case CSSValueID::kAuto:
-      return kAutoOpticalSizing;
+      return OpticalSizing::kAuto;
     case CSSValueID::kNone:
-      return kNoneOpticalSizing;
+      return OpticalSizing::kNone;
     default:
       NOTREACHED();
   }
@@ -1114,8 +1125,7 @@ FontSelectionValue StyleBuilderConverterBase::ConvertFontStyle(
     if (values->length()) {
       const double angle_degrees = To<CSSPrimitiveValue>(values->Item(0))
                                        .ComputeDegrees(length_resolver);
-      if (RuntimeEnabledFeatures::FontStyleObliqueZeroDegreeAsNormalEnabled() &&
-          angle_degrees == 0.0) {
+      if (angle_degrees == 0.0) {
         return kNormalSlopeValue;
       }
       return FontSelectionValue(angle_degrees);
@@ -1833,15 +1843,15 @@ ComputedGridTrackList* StyleBuilderConverter::ConvertGridTrackList(
   return computed_grid_track_list;
 }
 
-FlowTolerance StyleBuilderConverter::ConvertFlowTolerance(
+FitTolerance StyleBuilderConverter::ConvertFitTolerance(
     const StyleResolverState& state,
     const CSSValue& value) {
   auto* identifier_value = DynamicTo<CSSIdentifierValue>(value);
   if (identifier_value) {
-    return FlowTolerance(identifier_value->GetValueID());
+    return FitTolerance(identifier_value->GetValueID());
   }
 
-  return FlowTolerance(ConvertLength(state, value));
+  return FitTolerance(ConvertLength(state, value));
 }
 
 GridLanesDirection StyleBuilderConverter::ConvertGridLanesDirection(
@@ -2150,6 +2160,8 @@ Length StyleBuilderConverter::ConvertLengthSizing(StyleResolverState& state,
     case CSSValueID::kWebkitFitContent:
     case CSSValueID::kFitContent:
       return Length::FitContent();
+    case CSSValueID::kShrinkContent:
+      return Length::ShrinkContent();
     case CSSValueID::kContent:
       return Length::Content();
     case CSSValueID::kAuto:
@@ -2213,10 +2225,10 @@ Length StyleBuilderConverter::ConvertLineHeight(StyleResolverState& state,
     float computed_font_size =
         state.StyleBuilder().GetFontDescription().ComputedSize();
     if (primitive_value->IsPercentage()) {
-      return Length::Fixed(
-          (computed_font_size * ClampTo<int>(primitive_value->ComputePercentage(
-                                    AdjustedZoomConversionData(state)))) /
-          100.0);
+      return Length::Fixed(ClampTo<float>(
+          (computed_font_size * primitive_value->ComputePercentage(
+                                    AdjustedZoomConversionData(state))) /
+          100.0));
     }
     if (primitive_value->IsCalculated()) {
       Length zoomed_length =
@@ -2274,17 +2286,6 @@ ScopedCSSName* StyleBuilderConverter::ConvertNoneOrCustomIdent(
   return ConvertCustomIdent(state, value);
 }
 
-ScopedCSSName* StyleBuilderConverter::ConvertNormalOrCustomIdent(
-    StyleResolverState& state,
-    const CSSValue& value) {
-  DCHECK(value.IsScopedValue());
-  if (const auto* identifier_value = DynamicTo<CSSIdentifierValue>(value)) {
-    DCHECK_EQ(identifier_value->GetValueID(), CSSValueID::kNormal);
-    return nullptr;
-  }
-  return ConvertCustomIdent(state, value);
-}
-
 ScopedCSSName* StyleBuilderConverter::ConvertCustomIdent(
     StyleResolverState& state,
     const CSSValue& value) {
@@ -2307,8 +2308,7 @@ AtomicString StyleBuilderConverter::ConvertNoneOrCustomIdentUnscoped(
 AtomicString StyleBuilderConverter::ConvertCustomIdentUnscoped(
     StyleResolverState& state,
     const CSSValue& value) {
-  return To<CSSCustomIdentValue>(value).ComputeIdent(
-      state.CssToLengthConversionData());
+  return To<CSSCustomIdentValue>(value).Value();
 }
 
 StylePositionAnchor StyleBuilderConverter::ConvertPositionAnchor(
@@ -2871,44 +2871,7 @@ StyleViewTransitionName* StyleBuilderConverter::ConvertViewTransitionName(
 ScopedCSSNameList* StyleBuilderConverter::ConvertViewTransitionClass(
     StyleResolverState& state,
     const CSSValue& value) {
-  DCHECK(value.IsScopedValue());
-  if (IsA<CSSIdentifierValue>(value)) {
-    DCHECK_EQ(To<CSSIdentifierValue>(value).GetValueID(), CSSValueID::kNone);
-    return nullptr;
-  }
-  DCHECK(value.IsBaseValueList());
-  HeapVector<Member<const ScopedCSSName>> names;
-  for (const Member<const CSSValue>& item : To<CSSValueList>(value)) {
-    names.push_back(ConvertNoneOrCustomIdent(state, *item));
-  }
-  return MakeGarbageCollected<ScopedCSSNameList>(std::move(names));
-}
-
-ScopedCSSNameList* StyleBuilderConverter::ConvertOverscrollArea(
-    StyleResolverState& state,
-    const CSSValue& value) {
-  DCHECK(value.IsScopedValue());
-  if (const auto* identifier_value = DynamicTo<CSSIdentifierValue>(value)) {
-    DCHECK_EQ(identifier_value->GetValueID(), CSSValueID::kNone);
-    return nullptr;
-  }
-  DCHECK(value.IsBaseValueList());
-  HeapVector<Member<const ScopedCSSName>> names;
-  for (const Member<const CSSValue>& item : To<CSSValueList>(value)) {
-    names.push_back(ConvertCustomIdent(state, *item));
-  }
-  return MakeGarbageCollected<ScopedCSSNameList>(std::move(names));
-}
-
-ScopedCSSName* StyleBuilderConverter::ConvertOverscrollPosition(
-    StyleResolverState& state,
-    const CSSValue& value) {
-  DCHECK(value.IsScopedValue());
-  if (const auto* identifier_value = DynamicTo<CSSIdentifierValue>(value)) {
-    DCHECK_EQ(identifier_value->GetValueID(), CSSValueID::kNone);
-    return nullptr;
-  }
-  return ConvertCustomIdent(state, value);
+  return ConvertNoneOrCustomIdentList(state, value);
 }
 
 namespace {
@@ -2917,7 +2880,8 @@ const CSSValue& ResolveLightDarkPair(const CSSLightDarkValuePair& value,
                                      const ResolveColorValueContext& context);
 
 StyleColor ResolveColorValueImpl(const CSSValue& value,
-                                 const ResolveColorValueContext& context) {
+                                 const ResolveColorValueContext& context,
+                                 bool* depends_on_accent_color = nullptr) {
   if (auto* color_value = DynamicTo<cssvalue::CSSColor>(value)) {
     Color result_color = color_value->Value();
     result_color.ResolveNonFiniteValues();
@@ -2926,17 +2890,19 @@ StyleColor ResolveColorValueImpl(const CSSValue& value,
 
   if (auto* identifier_value = DynamicTo<CSSIdentifierValue>(value)) {
     CSSValueID value_id = identifier_value->GetValueID();
+    if (depends_on_accent_color && (value_id == CSSValueID::kAccentcolor ||
+                                    value_id == CSSValueID::kAccentcolortext)) {
+      *depends_on_accent_color = true;
+    }
     if (value_id == CSSValueID::kCurrentcolor) {
       return StyleColor::CurrentColor();
     }
     if (IsQuirkOrLinkOrFocusRingColor(value_id)) {
       return StyleColor(ResolveQuirkOrLinkOrFocusRingColor(
-          value_id, context.text_link_colors, context.used_color_scheme,
+          value_id, context.text_link_colors, context.theme_info.color_scheme,
           context.for_visited_link));
     }
-    Color color = StyleColor::ColorFromKeyword(
-        value_id, context.used_color_scheme, context.color_provider,
-        context.can_expose_accent_color);
+    Color color = StyleColor::ColorFromKeyword(value_id, context.theme_info);
     // Preserve the identifier for system colors since this is needed by
     // 'forced colors mode'.
     if (StyleColor::IsSystemColorIncludingDeprecated(value_id)) {
@@ -2946,10 +2912,12 @@ StyleColor ResolveColorValueImpl(const CSSValue& value,
   }
 
   if (auto* color_mix_value = DynamicTo<cssvalue::CSSColorMixValue>(value)) {
-    const StyleColor style_color1 =
-        ResolveColorValueImpl(color_mix_value->Color1(), context);
-    const StyleColor style_color2 =
-        ResolveColorValueImpl(color_mix_value->Color2(), context);
+    const HeapVector<StyleColor, 2> style_colors(
+        color_mix_value->Items(), [&context, depends_on_accent_color](
+                                      const cssvalue::CSSColorMixItem& item) {
+          return ResolveColorValueImpl(*item.color, context,
+                                       depends_on_accent_color);
+        });
     double alpha_multiplier;
     double mix_amount;
     color_mix_value->NormalizePercentages(mix_amount, alpha_multiplier,
@@ -2957,23 +2925,27 @@ StyleColor ResolveColorValueImpl(const CSSValue& value,
     const StyleColor::UnresolvedColorMix* unresolved_color_mix =
         MakeGarbageCollected<StyleColor::UnresolvedColorMix>(
             color_mix_value->ColorInterpolationSpace(),
-            color_mix_value->HueInterpolationMethod(), style_color1,
-            style_color2, mix_amount, alpha_multiplier);
+            color_mix_value->HueInterpolationMethod(),
+            StyleColor::UnresolvedColorMix::ItemVector(
+                style_colors,
+                [](const StyleColor& style_color) {
+                  return StyleColor::UnresolvedColorMix::Item(style_color);
+                }),
+            mix_amount, alpha_multiplier);
     // https://drafts.csswg.org/css-color-5/#resolving-mix
-    // If both parameters are resolvable at computed-value time, the color-mix
+    // If all parameters are resolvable at computed-value time, the color-mix
     // function should be resolved at computed-value time as well.
     // Otherwise we need to store an unresolved value on StyleColor.
-    if (style_color1.IsAbsoluteColor() && style_color2.IsAbsoluteColor()) {
+    if (std::ranges::all_of(style_colors, &StyleColor::IsAbsoluteColor)) {
       return StyleColor(unresolved_color_mix->Resolve(Color()));
-    } else {
-      return StyleColor(unresolved_color_mix);
     }
+    return StyleColor(unresolved_color_mix);
   }
 
   if (auto* relative_color_value =
           DynamicTo<cssvalue::CSSRelativeColorValue>(value)) {
-    const StyleColor origin_color =
-        ResolveColorValueImpl(relative_color_value->OriginColor(), context);
+    const StyleColor origin_color = ResolveColorValueImpl(
+        relative_color_value->OriginColor(), context, depends_on_accent_color);
     const StyleColor::UnresolvedRelativeColor* unresolved_relative_color =
         MakeGarbageCollected<StyleColor::UnresolvedRelativeColor>(
             origin_color, relative_color_value->ColorInterpolationSpace(),
@@ -2993,8 +2965,8 @@ StyleColor ResolveColorValueImpl(const CSSValue& value,
 
   if (auto* contrast_color_value =
           DynamicTo<cssvalue::CSSContrastColorValue>(value)) {
-    const StyleColor param_color =
-        ResolveColorValueImpl(contrast_color_value->Color(), context);
+    const StyleColor param_color = ResolveColorValueImpl(
+        contrast_color_value->Color(), context, depends_on_accent_color);
     const StyleColor::UnresolvedContrastColor* unresolved_contrast_color =
         MakeGarbageCollected<StyleColor::UnresolvedContrastColor>(param_color);
     if (param_color.IsAbsoluteColor()) {
@@ -3006,8 +2978,8 @@ StyleColor ResolveColorValueImpl(const CSSValue& value,
 
   if (auto* alpha_color_value =
           DynamicTo<cssvalue::CSSAlphaColorValue>(value)) {
-    const StyleColor origin_color =
-        ResolveColorValueImpl(alpha_color_value->OriginColor(), context);
+    const StyleColor origin_color = ResolveColorValueImpl(
+        alpha_color_value->OriginColor(), context, depends_on_accent_color);
     const StyleColor::UnresolvedAlphaColor* unresolved_alpha_color =
         MakeGarbageCollected<StyleColor::UnresolvedAlphaColor>(
             origin_color, alpha_color_value->Alpha(), context.length_resolver);
@@ -3025,37 +2997,41 @@ StyleColor ResolveColorValueImpl(const CSSValue& value,
 
   auto& light_dark_pair = To<CSSLightDarkValuePair>(value);
   const CSSValue& color_value = ResolveLightDarkPair(light_dark_pair, context);
-  return ResolveColorValueImpl(color_value, context);
+  return ResolveColorValueImpl(color_value, context, depends_on_accent_color);
 }
 
 const CSSValue& ResolveLightDarkPair(
     const CSSLightDarkValuePair& light_dark_pair,
     const ResolveColorValueContext& context) {
-  return context.used_color_scheme == mojom::blink::ColorScheme::kLight
+  return context.theme_info.color_scheme == mojom::blink::ColorScheme::kLight
              ? light_dark_pair.First()
              : light_dark_pair.Second();
 }
 
 bool ShouldConvertLegacyColorSpaceToSRGB(const CSSValue& value) {
-  return value.IsRelativeColorValue() || value.IsColorMixValue();
+  return value.IsRelativeColorValue() || value.IsAlphaColorValue() ||
+         value.IsColorMixValue();
 }
 
 }  // anonymous namespace
 
 StyleColor ResolveColorValue(const CSSValue& value,
-                             const ResolveColorValueContext& context) {
+                             const ResolveColorValueContext& context,
+                             bool* depends_on_accent_color) {
   // The rules for converting at the top level should apply transitively through
   // light-dark().
   if (auto* light_dark_pair = DynamicTo<CSSLightDarkValuePair>(value)) {
     const CSSValue& light_dark_result =
         ResolveLightDarkPair(*light_dark_pair, context);
-    return ResolveColorValue(light_dark_result, context);
+    return ResolveColorValue(light_dark_result, context,
+                             depends_on_accent_color);
   }
 
-  StyleColor result = ResolveColorValueImpl(value, context);
+  StyleColor result =
+      ResolveColorValueImpl(value, context, depends_on_accent_color);
   if (ShouldConvertLegacyColorSpaceToSRGB(value) && result.IsAbsoluteColor()) {
     Color color = result.GetColor();
-    if (Color::IsLegacyColorSpace(color.GetColorSpace())) {
+    if (color.IsLegacy()) {
       // Missing components can be carried forward when converting rgb(...) to
       // color(srgb, ...) since the two color spaces have analogous components.
       // For other legacy spaces, conversion to color(srgb, ...) requires
@@ -3074,17 +3050,20 @@ StyleColor StyleBuilderConverter::ConvertStyleColor(
     const StyleResolverState& state,
     const CSSValue& value,
     bool for_visited_link) {
-  mojom::blink::ColorScheme color_scheme =
-      state.StyleBuilder().UsedColorScheme();
   auto& document = state.GetDocument();
+
+  // `accent-color` is a high-priority property, so it is applied before other
+  // properties (e.g. `color`) that may use the `AccentColor`/`AccentColorText`
+  // keywords. That means the builder already holds this element's own computed
+  // `accent-color`, which is what those keywords resolve against per spec,
+  // except within the `accent-color` property itself, where the builder still
+  // holds the inherited value and the keyword resolves to the parent's value.
   const ResolveColorValueContext context{
       .length_resolver = state.CssToLengthConversionData(),
       .text_link_colors = document.GetTextLinkColors(),
-      .used_color_scheme = color_scheme,
-      .color_provider = document.GetColorProviderForPainting(color_scheme),
-      .can_expose_accent_color =
-          document.IsInWebAppScope() && document.IsInitialProfile(),
-      .for_visited_link = for_visited_link};
+      .theme_info = state.GetColorThemeInfo(),
+      .for_visited_link = for_visited_link,
+  };
   return ResolveColorValue(value, context);
 }
 
@@ -3368,6 +3347,11 @@ cc::ScrollSnapAlign StyleBuilderConverter::ConvertSnapAlign(
   return snapAlign;
 }
 
+cc::SnapStop StyleBuilderConverter::ConvertSnapStop(StyleResolverState&,
+                                                    const CSSValue& value) {
+  return To<CSSIdentifierValue>(value).ConvertTo<cc::SnapStop>();
+}
+
 TranslateTransformOperation* StyleBuilderConverter::ConvertTranslate(
     StyleResolverState& state,
     const CSSValue& value) {
@@ -3531,14 +3515,11 @@ static const CSSValue& ComputeColorValue(
     const CSSToLengthConversionData& conversion_data,
     const CSSValue& color_value,
     const Document& document,
-    mojom::blink::ColorScheme color_scheme) {
+    const ColorThemeInfo& theme_info) {
   const ResolveColorValueContext context{
       .length_resolver = conversion_data,
       .text_link_colors = document.GetTextLinkColors(),
-      .used_color_scheme = color_scheme,
-      .color_provider = document.GetColorProviderForPainting(color_scheme),
-      .can_expose_accent_color =
-          document.IsInWebAppScope() && document.IsInitialProfile(),
+      .theme_info = theme_info,
       .for_visited_link = false};
   const StyleColor style_color = ResolveColorValue(color_value, context);
   return *style_color.ToCSSValue();
@@ -3620,9 +3601,14 @@ static const CSSValue& ComputeRegisteredPropertyValue(
     }
   }
 
-  mojom::blink::ColorScheme color_scheme =
-      state ? state->StyleBuilder().UsedColorScheme()
-            : mojom::blink::ColorScheme::kLight;
+  const ColorThemeInfo theme_info =
+      state
+          ? state->GetColorThemeInfo()
+          : ColorThemeInfo{
+                .color_provider = document.GetColorProviderForPainting(
+                    mojom::blink::ColorScheme::kLight),
+                .can_expose_system_accent_color =
+                    document.IsInWebAppScope() && document.IsInitialProfile()};
 
   if (auto* identifier_value = DynamicTo<CSSIdentifierValue>(value)) {
     CSSValueID value_id = identifier_value->GetValueID();
@@ -3631,7 +3617,7 @@ static const CSSValue& ComputeRegisteredPropertyValue(
     }
     if (StyleColor::IsColorKeyword(value_id)) {
       return ComputeColorValue(css_to_length_conversion_data, *identifier_value,
-                               document, color_scheme);
+                               document, theme_info);
     }
   }
 
@@ -3643,7 +3629,7 @@ static const CSSValue& ComputeRegisteredPropertyValue(
 
   if (const auto* light_dark_pair = DynamicTo<CSSLightDarkValuePair>(value)) {
     const CSSValue& selected_value =
-        color_scheme == mojom::blink::ColorScheme::kLight
+        theme_info.color_scheme == mojom::blink::ColorScheme::kLight
             ? light_dark_pair->First()
             : light_dark_pair->Second();
     return ComputeRegisteredPropertyValue(document, state,
@@ -3655,10 +3641,7 @@ static const CSSValue& ComputeRegisteredPropertyValue(
       value.IsRelativeColorValue() || value.IsContrastColorValue() ||
       value.IsUnresolvedColorValue()) {
     return ComputeColorValue(css_to_length_conversion_data, value, document,
-                             color_scheme);
-  }
-  if (auto* custom_ident = DynamicTo<CSSCustomIdentValue>(value)) {
-    return *custom_ident->Resolve(css_to_length_conversion_data);
+                             theme_info);
   }
   return value;
 }
@@ -3984,10 +3967,16 @@ Vector<TimelineInset> StyleBuilderConverter::ConvertViewTimelineInset(
   return insets;
 }
 
-Vector<AtomicString> StyleBuilderConverter::ConvertViewTimelineName(
+ScopedCSSNameList* StyleBuilderConverter::ConvertScrollTimelineName(
     StyleResolverState& state,
     const CSSValue& value) {
-  return ConvertNoneOrCustomIdentListUnscoped(state, value);
+  return ConvertNoneOrCustomIdentList(state, value);
+}
+
+ScopedCSSNameList* StyleBuilderConverter::ConvertViewTimelineName(
+    StyleResolverState& state,
+    const CSSValue& value) {
+  return ConvertNoneOrCustomIdentList(state, value);
 }
 
 StyleTimelineScope StyleBuilderConverter::ConvertTimelineScope(

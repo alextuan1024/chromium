@@ -81,7 +81,11 @@ public abstract class TabSwitcherStation extends HubBaseStation {
         declareElementFactory(
                 mActivityElement,
                 delayedElements -> {
-                    Matcher<View> searchBox = withId(R.id.search_box);
+                    // Scope to the Hub toolbar: the NTP's fakebox uses the same R.id.search_box,
+                    // so an unscoped matcher also matches the page behind the Hub. That makes the
+                    // declareNoView() exit condition below impossible to fulfill when leaving the
+                    // Hub back to an NTP.
+                    ViewSpec<View> searchBox = toolbarElement.descendant(withId(R.id.search_box));
                     ViewSpec<View> searchLoupe =
                             toolbarElement.descendant(withId(R.id.search_loupe));
                     if (shouldHubSearchBoxBeVisible()) {
@@ -100,8 +104,6 @@ public abstract class TabSwitcherStation extends HubBaseStation {
      * @return the {@link TabSwitcherAppMenuFacility} for the Hub.
      */
     public TabSwitcherAppMenuFacility openAppMenu() {
-        recheckActiveConditions();
-
         return menuButtonElement
                 .clickTo()
                 .enterFacility(new TabSwitcherAppMenuFacility<>(mIsIncognito));
@@ -179,8 +181,6 @@ public abstract class TabSwitcherStation extends HubBaseStation {
      */
     public <T extends CtaPageStation> T selectTabAtIndex(
             int index, BasePageStation.Builder<T> destinationBuilder) {
-        recheckActiveConditions();
-
         return selectTabAtCardIndexTo(index)
                 .arriveAt(
                         destinationBuilder
@@ -262,7 +262,7 @@ public abstract class TabSwitcherStation extends HubBaseStation {
             BasePageStation.Builder<T> destinationBuilder) {
         T destination =
                 destinationBuilder.initSelectingExistingTab().withIncognito(mIsIncognito).build();
-        return pressBackTo().withRetry().arriveAt(destination);
+        return pressBackTo().arriveAt(destination);
     }
 
     /** Expect a tab group card to exist. */

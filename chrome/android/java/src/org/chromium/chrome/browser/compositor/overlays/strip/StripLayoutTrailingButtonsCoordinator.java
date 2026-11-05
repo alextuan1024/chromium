@@ -37,17 +37,18 @@ import org.chromium.chrome.browser.compositor.layouts.components.TintedComposito
 import org.chromium.chrome.browser.compositor.overlays.strip.StripLayoutView.StripLayoutViewOnClickHandler;
 import org.chromium.chrome.browser.compositor.overlays.strip.StripLayoutView.StripLayoutViewOnKeyboardFocusHandler;
 import org.chromium.chrome.browser.compositor.overlays.strip.TabContextMenuCoordinator.TabStripLayoutType;
-import org.chromium.chrome.browser.glic.ActorTaskRowData;
-import org.chromium.chrome.browser.glic.GlicButtonDelegate;
 import org.chromium.chrome.browser.glic.GlicEnabling;
 import org.chromium.chrome.browser.glic.GlicHelper;
 import org.chromium.chrome.browser.glic.GlicKeyedService.GlicInvocationSource;
 import org.chromium.chrome.browser.glic.GlicNudgeActivity;
 import org.chromium.chrome.browser.glic.GlicPrefNames;
-import org.chromium.chrome.browser.glic.GlicSplitButtonDelegate;
-import org.chromium.chrome.browser.glic.GlicSplitButtonDelegateBridge;
-import org.chromium.chrome.browser.glic.GlicTaskMenuCoordinator;
 import org.chromium.chrome.browser.glic.GlicUtils;
+import org.chromium.chrome.browser.glic.SecondaryAction;
+import org.chromium.chrome.browser.glic.toolbar_button.ActorTaskRowData;
+import org.chromium.chrome.browser.glic.toolbar_button.GlicButtonDelegate;
+import org.chromium.chrome.browser.glic.toolbar_button.GlicSplitButtonDelegate;
+import org.chromium.chrome.browser.glic.toolbar_button.GlicSplitButtonDelegateBridge;
+import org.chromium.chrome.browser.glic.toolbar_button.GlicTaskMenuCoordinator;
 import org.chromium.chrome.browser.incognito.IncognitoUtils;
 import org.chromium.chrome.browser.layouts.animation.CompositorAnimator;
 import org.chromium.chrome.browser.layouts.components.VirtualView;
@@ -56,10 +57,10 @@ import org.chromium.chrome.browser.tabmodel.TabModelSelector;
 import org.chromium.chrome.browser.ui.browser_window.ChromeAndroidTask;
 import org.chromium.chrome.browser.ui.browser_window.ChromeAndroidTaskFeatureKey;
 import org.chromium.chrome.browser.ui.browser_window.ChromeAndroidTaskTracker;
-import org.chromium.chrome.browser.ui.side_panel.AndroidSidePanelEnabledFn;
 import org.chromium.chrome.browser.ui.side_ui.SideUiCoordinator.SideUiId;
 import org.chromium.chrome.browser.ui.side_ui.SideUiCoordinator.SideUiShowability;
 import org.chromium.chrome.browser.ui.side_ui.SideUiCoordinator.SideUiSpecs;
+import org.chromium.chrome.browser.ui.side_ui.SideUiCoordinator.UiUpdateRequest;
 import org.chromium.chrome.browser.ui.side_ui.SideUiObserver;
 import org.chromium.chrome.browser.ui.side_ui.SideUiStateProvider;
 import org.chromium.components.browser_ui.styles.SemanticColorUtils;
@@ -126,7 +127,12 @@ public class StripLayoutTrailingButtonsCoordinator {
     private final SideUiObserver mSideUiObserver =
             new SideUiObserver() {
                 @Override
-                public void onSideUiSpecsChanged(SideUiSpecs sideUiSpecs) {}
+                public void onSideUiSpecsChangeStarted(
+                        SideUiSpecs sideUiSpecs, UiUpdateRequest request) {}
+
+                @Override
+                public void onSideUiSpecsChangeCompleted(
+                        SideUiSpecs sideUiSpecs, UiUpdateRequest request) {}
 
                 @Override
                 public void onShowableSideUisUpdated(SideUiShowability sideUiShowability) {
@@ -257,6 +263,21 @@ public class StripLayoutTrailingButtonsCoordinator {
                         mGlicActorButton.setHighlighted(pressed);
                         mRenderHost.requestRender();
                     }
+                }
+
+                @Override
+                public void updateSplitButtonUi(
+                        @SecondaryAction int secondaryAction, String secondaryLabel) {
+                    // TODO(b/582740696): Swap mGlicActorButton's drawable to a chevron when
+                    // secondaryAction == SecondaryAction.CHEVRON once Android Activity Hub UI is
+                    // supported; for now both TEXT and CHEVRON keep ic_arrow_selector_spark_16dp.
+                    mIsGlicActorButtonShowing = (secondaryAction != SecondaryAction.NONE);
+                    mActorNudgeLabel =
+                            (secondaryAction == SecondaryAction.TEXT && !secondaryLabel.isEmpty())
+                                    ? secondaryLabel
+                                    : null;
+                    updateTrailingButtonsState(
+                            /* animate= */ true, /* forceLayoutChanged= */ false);
                 }
 
                 @Override
@@ -462,7 +483,7 @@ public class StripLayoutTrailingButtonsCoordinator {
             mModelSelectorButton.setVisible(false);
         }
 
-        if (GlicEnabling.isEnabledByFlags() && AndroidSidePanelEnabledFn.isEnabled()) {
+        if (GlicEnabling.isEnabledByFlags() && GlicUtils.isSidePanelFormFactor(mContext)) {
             mSideUiStateProviderSupplier.onAvailable(
                     (provider) -> {
                         mSideUiStateProvider = provider;
@@ -477,8 +498,6 @@ public class StripLayoutTrailingButtonsCoordinator {
 
             float dismissIconWidthDp =
                     getDimensionDp(mContext, R.dimen.tab_strip_glic_dismiss_icon_width);
-            // TODO(crbug.com/541373786) Replace GLIC close button PNG assets with vector drawables
-            //  and remove unused PNGs.
             mGlicDismissNudgeButton =
                     new TintedCompositorButton(
                             mContext,
@@ -492,7 +511,7 @@ public class StripLayoutTrailingButtonsCoordinator {
                                 handleDismissButtonClick();
                             },
                             glicKeyboardFocusHandler,
-                            R.drawable.btn_tab_close_normal,
+                            R.drawable.ic_tab_close_tabstrip_24dp,
                             Resources.ID_NULL,
                             /* clickSlopDp= */ 0.f,
                             /* hasLongClickAction= */ false);
@@ -656,10 +675,7 @@ public class StripLayoutTrailingButtonsCoordinator {
      */
     public void getVirtualViews(List<VirtualView> views) {
         if (isGlicButtonVisible()) {
-            views.add(mGlicButton);
-        }
-        if (isGlicDismissNudgeButtonVisible()) {
-            views.add(mGlicDismissNudgeButton);
+            mGlicButton.getVirtualViews(views);
         }
         if (isGlicActorButtonVisible()) {
             views.add(mGlicActorButton);
@@ -1543,7 +1559,7 @@ public class StripLayoutTrailingButtonsCoordinator {
                 || !mSideUiStateProvider.canShowSideUi(SideUiId.SIDE_PANEL)) {
             return false;
         }
-        if (!GlicUtils.isTabStripGlicSupported(mProfile)
+        if (!GlicUtils.isTabStripGlicSupported(mContext, mProfile)
                 || !GlicUtils.isButtonPinnedToTabStrip(mProfile)) {
             return false;
         }
@@ -1656,12 +1672,18 @@ public class StripLayoutTrailingButtonsCoordinator {
     public boolean onLongPress(float x, float y) {
         Activity activity = mWindowAndroid.getActivity().get();
         if (activity == null) return false;
+        if (mGlicButton != null && mGlicButton.checkClickedOrHovered(x, y)) {
+            return mGlicButton.handleLongClick();
+        }
+        // Consume long-presses on other trailing buttons to prevent triggering the empty space
+        // context menu.
         if (mModelSelectorButton != null && mModelSelectorButton.click(x, y, 0)) {
             return true;
         }
-        if (mGlicButton != null && mGlicButton.checkClickedOrHovered(x, y)) {
-            return mGlicButton.handleLongClick();
-        } else if (mGlicActorButton != null && mGlicActorButton.checkClickedOrHovered(x, y)) {
+        if (mGlicDismissNudgeButton != null && mGlicDismissNudgeButton.click(x, y, 0)) {
+            return true;
+        }
+        if (mGlicActorButton != null && mGlicActorButton.checkClickedOrHovered(x, y)) {
             return true;
         }
         return false;
@@ -1676,7 +1698,11 @@ public class StripLayoutTrailingButtonsCoordinator {
     public boolean onHoverEvent(float x, float y) {
         boolean msbHovered =
                 mModelSelectorButton != null && mModelSelectorButton.checkClickedOrHovered(x, y);
-        boolean glicHovered = mGlicButton != null && mGlicButton.checkClickedOrHovered(x, y);
+        boolean dismissHovered =
+                mGlicDismissNudgeButton != null
+                        && mGlicDismissNudgeButton.checkClickedOrHovered(x, y);
+        boolean glicHovered =
+                (mGlicButton != null && mGlicButton.checkClickedOrHovered(x, y)) || dismissHovered;
         boolean actorHovered =
                 mGlicActorButton != null && mGlicActorButton.checkClickedOrHovered(x, y);
         boolean renderNeeded = false;
@@ -1687,6 +1713,11 @@ public class StripLayoutTrailingButtonsCoordinator {
         }
         if (mGlicButton != null && glicHovered != mGlicButton.isHovered()) {
             mGlicButton.setHovered(glicHovered);
+            renderNeeded = true;
+        }
+        if (mGlicDismissNudgeButton != null
+                && dismissHovered != mGlicDismissNudgeButton.isHovered()) {
+            mGlicDismissNudgeButton.setHovered(dismissHovered);
             renderNeeded = true;
         }
         if (mGlicActorButton != null && actorHovered != mGlicActorButton.isHovered()) {
@@ -1711,6 +1742,10 @@ public class StripLayoutTrailingButtonsCoordinator {
             mGlicButton.setHovered(false);
             renderNeeded = true;
         }
+        if (mGlicDismissNudgeButton != null && mGlicDismissNudgeButton.isHovered()) {
+            mGlicDismissNudgeButton.setHovered(false);
+            renderNeeded = true;
+        }
         if (mGlicActorButton != null && mGlicActorButton.isHovered()) {
             mGlicActorButton.setHovered(false);
             renderNeeded = true;
@@ -1729,6 +1764,10 @@ public class StripLayoutTrailingButtonsCoordinator {
      */
     public boolean checkClickedOrHovered(float x, float y) {
         if (mModelSelectorButton != null && mModelSelectorButton.checkClickedOrHovered(x, y)) {
+            return true;
+        }
+        if (mGlicDismissNudgeButton != null
+                && mGlicDismissNudgeButton.checkClickedOrHovered(x, y)) {
             return true;
         }
         if (mGlicButton != null && mGlicButton.checkClickedOrHovered(x, y)) {
@@ -1768,31 +1807,32 @@ public class StripLayoutTrailingButtonsCoordinator {
      * @return Whether the event was handled.
      */
     public boolean click(long time, float x, float y, int buttons, int modifiers) {
-        if (mModelSelectorButton != null && mModelSelectorButton.checkClickedOrHovered(x, y)) {
-            if (mModelSelectorButton.click(x, y, buttons)) {
-                mModelSelectorButton.handleClick(time, buttons, modifiers);
-                return true;
-            }
-        }
-        if (mGlicButton != null && mGlicButton.checkClickedOrHovered(x, y)) {
-            if (MotionEventUtils.isSecondaryClick(buttons)) {
+        if (MotionEventUtils.isSecondaryClick(buttons)) {
+            if (mGlicButton != null && mGlicButton.checkClickedOrHovered(x, y)) {
                 Activity activity = mWindowAndroid.getActivity().get();
                 if (activity != null) {
                     showMenu(activity);
                     return true;
                 }
-            } else if (mGlicButton.click(x, y, buttons)) {
-                mGlicButton.handleClick(time, buttons, modifiers);
-                return true;
             }
-        } else if (mGlicActorButton != null && mGlicActorButton.checkClickedOrHovered(x, y)) {
-            if (MotionEventUtils.isSecondaryClick(buttons)) {
-                // Consume secondary click to prevent triggering empty space context menu.
-                return true;
-            } else if (mGlicActorButton.click(x, y, buttons)) {
-                mGlicActorButton.handleClick(time, buttons, modifiers);
-                return true;
-            }
+            // Consume secondary clicks on other trailing buttons to prevent triggering the empty
+            // space context menu.
+            return checkClickedOrHovered(x, y);
+        }
+        if (mModelSelectorButton != null && mModelSelectorButton.click(x, y, buttons)) {
+            mModelSelectorButton.handleClick(time, buttons, modifiers);
+            return true;
+        }
+        if (mGlicDismissNudgeButton != null && mGlicDismissNudgeButton.click(x, y, buttons)) {
+            mGlicDismissNudgeButton.handleClick(time, buttons, modifiers);
+            return true;
+        }
+        if (mGlicButton != null && mGlicButton.click(x, y, buttons)) {
+            mGlicButton.handleClick(time, buttons, modifiers);
+            return true;
+        } else if (mGlicActorButton != null && mGlicActorButton.click(x, y, buttons)) {
+            mGlicActorButton.handleClick(time, buttons, modifiers);
+            return true;
         }
         return false;
     }

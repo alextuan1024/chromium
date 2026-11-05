@@ -44,7 +44,6 @@ import org.mockito.Mockito;
 
 import org.chromium.base.DeviceInfo;
 import org.chromium.base.ThreadUtils;
-import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.Criteria;
 import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.base.test.util.DisabledTest;
@@ -58,7 +57,6 @@ import org.chromium.chrome.R;
 import org.chromium.chrome.browser.ChromeTabbedActivity;
 import org.chromium.chrome.browser.educational_tip.EducationalTipModuleUtils;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
-import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.incognito.IncognitoUtils;
 import org.chromium.chrome.browser.layouts.LayoutTestUtils;
 import org.chromium.chrome.browser.layouts.LayoutType;
@@ -75,6 +73,7 @@ import org.chromium.chrome.test.transit.FreshCtaTransitTestRule;
 import org.chromium.chrome.test.util.ActivityTestUtils;
 import org.chromium.chrome.test.util.ChromeRenderTestRule;
 import org.chromium.chrome.test.util.NewTabPageTestUtils;
+import org.chromium.components.browser_ui.widget.displaystyle.UiConfig;
 import org.chromium.components.embedder_support.util.UrlUtilities;
 import org.chromium.components.signin.SigninFeatures;
 import org.chromium.ui.base.DeviceFormFactor;
@@ -86,7 +85,6 @@ import java.io.IOException;
 // Restrict to Phones and Tablets because Desktop Android does not show NTP at startup.
 @Restriction(DeviceFormFactor.PHONE_OR_TABLET)
 @EnableFeatures({ChromeFeatureList.START_SURFACE_RETURN_TIME})
-@CommandLineFlags.Add(ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE)
 @DoNotBatch(reason = "This test suite tests startup behaviors.")
 public class ShowNtpAtStartupTest {
     private static final int RENDER_TEST_REVISION = 2;
@@ -470,7 +468,7 @@ public class ShowNtpAtStartupTest {
 
         ThreadUtils.runOnUiThreadBlocking(
                 () -> cta.findViewById(R.id.tab_switcher_button).performClick());
-        LayoutTestUtils.waitForLayout(cta.getLayoutManager(), LayoutType.HUB);
+        LayoutTestUtils.waitForHubLayout(cta);
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
                     cta.getTabModelSelector()
@@ -491,7 +489,7 @@ public class ShowNtpAtStartupTest {
         NewTabPageTestUtils.waitForNtpLoaded(ntpTab);
         ThreadUtils.runOnUiThreadBlocking(
                 () -> cta.getLayoutManager().showLayout(LayoutType.HUB, false));
-        LayoutTestUtils.waitForLayout(cta.getLayoutManager(), LayoutType.HUB);
+        LayoutTestUtils.waitForHubLayout(cta);
         ThreadUtils.runOnUiThreadBlocking(() -> cta.onBackPressed());
         NewTabPageTestUtils.waitForNtpLoaded(ntpTab);
         assertFalse(
@@ -574,10 +572,7 @@ public class ShowNtpAtStartupTest {
     @Restriction(DeviceFormFactor.PHONE)
     @EnableFeatures({START_SURFACE_RETURN_TIME_IMMEDIATE, NEW_TAB_PAGE_CUSTOMIZATION_V2})
     // TODO(crbug.com/475816843): Remove this and update goldens once migration is complete.
-    @DisableFeatures({
-        SigninFeatures.SIGNIN_LEVEL_UP_BUTTON,
-        SigninFeatures.ENABLE_AI_SUBSCRIPTION_AVATAR_RING
-    })
+    @DisableFeatures(SigninFeatures.ENABLE_AI_SUBSCRIPTION_AVATAR_RING)
     public void testToolbar_defaultBackground() throws IOException {
         mActivityTestRule.startFromLauncherAtNtp();
         ChromeTabbedActivity cta = mActivityTestRule.getActivity();
@@ -687,9 +682,29 @@ public class ShowNtpAtStartupTest {
         verifyFakeSearchBoxWidthForCurrentOrientation();
     }
 
-    private int calculateExpectedWidthSlack(int currentWidth, Resources res) {
-        int contentTwoSideMarginConstant =
-                2 * res.getDimensionPixelSize(R.dimen.ntp_search_box_lateral_margin_tablet);
+    private int calculateExpectedWidthSlack(
+            int currentWidth, Resources res, int horizontalInsetDp) {
+        // Narrow windows use the narrow-window margins. In medium-width windows, the search box has
+        // no extra lateral margins since the NTP is already inset by the Feed's lateral paddings.
+        // Expanded windows use the tablet margins. Same as UiConfig, the window width excludes the
+        // horizontal inset.
+        int windowWidthDp = res.getConfiguration().screenWidthDp - horizontalInsetDp;
+        int expandedWindowMinWidthDp =
+                Math.round(
+                        res.getDimension(R.dimen.ntp_search_box_expanded_window_min_width)
+                                / res.getDisplayMetrics().density);
+        int contentTwoSideMarginConstant;
+        if (windowWidthDp < UiConfig.WIDE_DISPLAY_STYLE_MIN_WIDTH_DP) {
+            contentTwoSideMarginConstant =
+                    2
+                            * res.getDimensionPixelSize(
+                                    R.dimen.ntp_search_box_lateral_margin_narrow_window_tablet);
+        } else if (windowWidthDp >= expandedWindowMinWidthDp) {
+            contentTwoSideMarginConstant =
+                    2 * res.getDimensionPixelSize(R.dimen.ntp_search_box_lateral_margin_tablet);
+        } else {
+            contentTwoSideMarginConstant = 0;
+        }
         int maxContentWidth = res.getDimensionPixelSize(R.dimen.ntp_search_box_max_width);
         return Math.max(contentTwoSideMarginConstant, currentWidth - maxContentWidth);
     }
@@ -707,7 +722,9 @@ public class ShowNtpAtStartupTest {
                     int width = ntpLayout.getWidth();
 
                     // Expected: Calculate the expected slack mathematically from constants.
-                    int expectedSlack = calculateExpectedWidthSlack(width, res);
+                    int horizontalInsetDp =
+                            ntp.getCoordinatorForTesting().getUiConfig().getHorizontalInset();
+                    int expectedSlack = calculateExpectedWidthSlack(width, res, horizontalInsetDp);
 
                     // Actual: Assert the actual search box matches the expected slack.
                     Criteria.checkThat(

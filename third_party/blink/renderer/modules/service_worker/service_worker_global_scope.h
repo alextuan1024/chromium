@@ -33,6 +33,7 @@
 #include <stdint.h>
 
 #include <memory>
+#include <optional>
 
 #include "base/memory/raw_ptr.h"
 #include "base/time/time.h"
@@ -43,6 +44,7 @@
 #include "services/network/public/mojom/network_context.mojom-blink-forward.h"
 #include "services/network/public/mojom/url_loader_factory.mojom-blink.h"
 #include "third_party/blink/public/common/associated_interfaces/associated_interface_registry.h"
+#include "third_party/blink/public/common/frame/delegated_capability_request_token.h"
 #include "third_party/blink/public/common/tokens/tokens.h"
 #include "third_party/blink/public/mojom/associated_interfaces/associated_interfaces.mojom-blink.h"
 #include "third_party/blink/public/mojom/cache_storage/cache_storage.mojom-blink-forward.h"
@@ -146,10 +148,25 @@ class MODULES_EXPORT ServiceWorkerGlobalScope final
   void MaybeRecordNetworkRequestUrlForPushEvents(const KURL& url) override;
   void MaybeRecordFetchError(int net_error_code,
                              const FetchRequestData* request_data) override;
+  // Returns a custom TypeError message when `request_data` consumed the
+  // `race-network-and-fetch-handler` loader (`kRaceLoaderUsed`), failed with
+  // `net::ERR_ABORTED`, and
+  // `kServiceWorkerRaceNetworkRequestAbortedErrorMessage` is enabled; returns
+  // `std::nullopt` otherwise. Must be called on the worker context thread
+  // before `MaybeRecordFetchError()` erases the token's loader state.
+  std::optional<String> GetCustomFetchErrorMessage(
+      int net_error_code,
+      const FetchRequestData* request_data) const override;
   bool IsInFencedFrame() const override;
   void NotifyWebSocketActivity() override;
 
   const blink::BlinkStorageKey& storage_key() const { return storage_key_; }
+
+  // Manages popup capability delegation from notification clicks.
+  // See crbug.com/542314185 for architectural details.
+  void AllowPopupCapabilityDelegation();
+  bool ConsumePopupCapabilityDelegation();
+  bool IsPopupCapabilityDelegationAllowed() const;
 
   // Implements WorkerGlobalScope:
   void Initialize(
@@ -424,7 +441,8 @@ class MODULES_EXPORT ServiceWorkerGlobalScope final
       const KURL& script_url,
       KURL* out_response_url,
       String* out_source_code,
-      std::unique_ptr<Vector<uint8_t>>* out_cached_meta_data) override;
+      std::unique_ptr<Vector<uint8_t>>* out_cached_meta_data,
+      TextEncoding* out_response_encoding) override;
 
   ResourceLoadScheduler::ThrottleOptionOverride GetThrottleOptionOverride()
       const override;
@@ -435,8 +453,9 @@ class MODULES_EXPORT ServiceWorkerGlobalScope final
       ExceptionState&) override;
   CachedMetadataHandler* CreateWorkerScriptCachedMetadataHandler(
       const KURL& script_url,
-      std::unique_ptr<Vector<uint8_t>> meta_data) override;
-  void ExceptionThrown(ErrorEvent*) override;
+      std::unique_ptr<Vector<uint8_t>> meta_data,
+      TextEncoding encoding) override;
+  void ExceptionThrown(ErrorEvent*, SanitizeScriptErrors) override;
 
   // Loads and runs the installed top-level classic worker script.
   void LoadAndRunInstalledClassicScript(
@@ -916,6 +935,8 @@ class MODULES_EXPORT ServiceWorkerGlobalScope final
                              ServiceWorkerGlobalScope>
       associated_interfaces_receiver_{this, this};
   AssociatedInterfaceRegistry associated_inteface_registy_;
+
+  DelegatedCapabilityRequestToken popup_capability_token_;
 };
 
 template <>

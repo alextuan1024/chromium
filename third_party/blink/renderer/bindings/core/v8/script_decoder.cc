@@ -11,8 +11,6 @@
 #include "third_party/blink/renderer/platform/loader/fetch/response_body_loader_client.h"
 #include "third_party/blink/renderer/platform/scheduler/public/post_cross_thread_task.h"
 #include "third_party/blink/renderer/platform/scheduler/public/worker_pool.h"
-#include "third_party/blink/renderer/platform/wtf/cross_thread_copier.h"
-#include "third_party/blink/renderer/platform/wtf/cross_thread_copier_std.h"
 #include "third_party/blink/renderer/platform/wtf/cross_thread_functional.h"
 #include "third_party/blink/renderer/platform/wtf/deque.h"
 
@@ -36,7 +34,7 @@ void AppendDataImpl(Digestor* digestor,
     // The hash data computed so far is invalid and must be recomputed. This can
     // only happen once per builder when it changes from 8-bit to 16-bit mode.
     DCHECK(!builder->Is8Bit());
-    *digestor = Digestor(kHashAlgorithmSha256);
+    *digestor = Digestor(HashAlgorithm::kSha256);
     digestor->Update(StringView(*builder).RawByteSpan());
   }
 }

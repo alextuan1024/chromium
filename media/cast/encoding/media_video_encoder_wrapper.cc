@@ -149,22 +149,11 @@ void CallEncodeVideoFrame(
 
 // Must be called on the ENCODER thread, which resolves to VIDEO for hardware
 // encoding, and MAIN for software encoding.
-//
-// NOTE: since this call depends on a successful flush, `flush_result` is
-// checked before the encoder is accessed.
 void CallChangeOptions(media::VideoEncoder& encoder,
-                       media::VideoEncoder::Options options,
-                       media::VideoEncoder::OutputCB output_cb,
+                       const media::VideoEncoder::Options& options,
                        media::VideoEncoder::EncoderStatusCB done_cb) {
-  encoder.ChangeOptions(std::move(options), std::move(output_cb),
+  encoder.ChangeOptions(options, media::VideoEncoder::OutputCB(),
                         std::move(done_cb));
-}
-
-// Must be called on the ENCODER thread, which resolves to VIDEO for hardware
-// encoding, and MAIN for software encoding.
-void CallFlush(media::VideoEncoder& encoder,
-               media::VideoEncoder::EncoderStatusCB done_cb) {
-  encoder.Flush(std::move(done_cb));
 }
 
 // TODO(crbug.com/282984511): just use EncoderStatus directly once we remove
@@ -220,10 +209,26 @@ MediaVideoEncoderWrapper::MediaVideoEncoderWrapper(
   options_.bitrate = Bitrate::ConstantBitrate(
       base::checked_cast<uint32_t>(video_config.start_bitrate));
 
-  // NOTE: the H264 encoder can produce either AVC or annexb formatted frames.
-  // Annexb is better supported by Cast receivers.
+  // Mirroring captures tabs, windows, and screens, so tune the encoder for
+  // screen content. This enables screen content tuning in software encoders
+  // (e.g. screen content mode for VP8), and the "display" content type for
+  // hardware encoders, which keeps text and other sharp edges legible.
+  //
+  // TODO(crbug.com/572902679): Enable this for VP9 software encoding too.
+  // libvpx's VP9 screen content mode uses a stronger loop filter and lowers QP
+  // more slowly than camera mode, so text blurs after every content change and
+  // static content takes several frames to sharpen again.
+  if (codec_ != media::VideoCodec::kVP9 || is_hardware_encoder_) {
+    options_.content_hint = media::VideoEncoder::ContentHint::Screen;
+  }
+
+  // NOTE: H.264 and HEVC encoders can produce either length-prefixed
+  // (AVC/HEVC) or Annex-B formatted frames. Cast receivers expect Annex-B
+  // bitstreams with in-band parameter sets.
   if (codec_ == media::VideoCodec::kH264) {
     options_.avc.produce_annexb = true;
+  } else if (codec_ == media::VideoCodec::kHEVC) {
+    options_.hevc.produce_annexb = true;
   }
 
   // NOTE: since we don't actually know the frame size until the first
@@ -243,13 +248,6 @@ bool MediaVideoEncoderWrapper::EncodeVideoFrame(
     FrameEncodedCallback frame_encoded_callback) {
   CHECK(cast_environment_->CurrentlyOn(CastEnvironment::ThreadId::kMain));
   CHECK(!video_frame->visible_rect().IsEmpty());
-
-  // TODO(crbug.com/282984511): consider adding optimization to store frames
-  // that are queued for encoding and sending them once updating options is
-  // complete.
-  if (num_pending_updates_ > 0) {
-    return false;
-  }
 
   // Construct and initialize the encoder on the first call to this method.
   const gfx::Size frame_size = video_frame->visible_rect().size();
@@ -276,17 +274,27 @@ bool MediaVideoEncoderWrapper::EncodeVideoFrame(
   }
   CHECK(encoder_);
 
+  const media::VideoEncoder::EncodeOptions encode_options = encode_options_;
+  encode_options_.key_frame = false;
+
+  if (encoder_reports_qp_ && pending_complexity_estimations_ == 0) {
+    EnqueueFrameForEncode(std::move(video_frame), encode_options,
+                          reference_time, std::move(frame_encoded_callback),
+                          encoder_version_,
+                          /*estimated_complexity=*/std::nullopt);
+    return true;
+  }
+
+  pending_complexity_estimations_++;
   frame_complexity_estimator_
-      .AsyncCall(encode_options_.key_frame
+      .AsyncCall(encode_options.key_frame
                      ? &FrameComplexityEstimator::EstimateForKeyFrame
                      : &FrameComplexityEstimator::EstimateForDeltaFrame)
       .WithArgs(std::cref(*video_frame))
       .Then(base::BindOnce(
           &MediaVideoEncoderWrapper::OnComplexityEstimated,
-          weak_factory_.GetWeakPtr(), video_frame, encode_options_,
+          weak_factory_.GetWeakPtr(), video_frame, encode_options,
           reference_time, std::move(frame_encoded_callback), encoder_version_));
-
-  encode_options_.key_frame = false;
 
   return true;
 }
@@ -299,6 +307,8 @@ void MediaVideoEncoderWrapper::OnComplexityEstimated(
     int encoder_version,
     std::optional<double> estimated_complexity) {
   CHECK(cast_environment_->CurrentlyOn(CastEnvironment::ThreadId::kMain));
+  CHECK_GT(pending_complexity_estimations_, 0);
+  pending_complexity_estimations_--;
 
   if (encoder_version != encoder_version_) {
     // The encoder was reconstructed while we were estimating the quantizer.
@@ -307,6 +317,19 @@ void MediaVideoEncoderWrapper::OnComplexityEstimated(
     return;
   }
 
+  EnqueueFrameForEncode(std::move(video_frame), encode_options, reference_time,
+                        std::move(frame_encoded_callback), encoder_version,
+                        estimated_complexity);
+}
+
+void MediaVideoEncoderWrapper::EnqueueFrameForEncode(
+    scoped_refptr<media::VideoFrame> video_frame,
+    media::VideoEncoder::EncodeOptions encode_options,
+    base::TimeTicks reference_time,
+    FrameEncodedCallback frame_encoded_callback,
+    int encoder_version,
+    std::optional<double> estimated_complexity) {
+  CHECK(cast_environment_->CurrentlyOn(CastEnvironment::ThreadId::kMain));
   CHECK(encoder_);
 
   recent_metadata_.emplace(
@@ -323,29 +346,29 @@ void MediaVideoEncoderWrapper::OnComplexityEstimated(
   }
   last_frame_timestamp_ = video_frame->timestamp();
 
-  auto encode_task = base::BindOnce(
+  CallEncoderOnCorrectThread(base::BindOnce(
       &CallEncodeVideoFrame, std::ref(*encoder_), std::move(video_frame),
       encode_options,
       CreateCallback(&MediaVideoEncoderWrapper::OnFrameEncodeDone,
-                     encoder_version, reference_time));
-
-  if (num_pending_updates_ > 0) {
-    pending_encodes_.push_back(std::move(encode_task));
-  } else {
-    CallEncoderOnCorrectThread(std::move(encode_task));
-  }
+                     encoder_version, reference_time)));
 }
 
 // Inform the encoder about the new target bit rate.
 void MediaVideoEncoderWrapper::SetBitRate(uint32_t new_bit_rate) {
   CHECK(cast_environment_->CurrentlyOn(CastEnvironment::ThreadId::kMain));
-  options_.bitrate = Bitrate::ConstantBitrate(new_bit_rate);
+  const Bitrate bitrate = Bitrate::ConstantBitrate(new_bit_rate);
+  if (options_.bitrate == bitrate) {
+    return;
+  }
+  options_.bitrate = bitrate;
 
   // If this method is called before the encoder_ is constructed, the bitrate
   // will be set as part of construction.
   if (encoder_) {
-    // If we have an encoder, we need to update its options.
-    UpdateEncoderOptions();
+    CallEncoderOnCorrectThread(base::BindOnce(
+        &CallChangeOptions, std::ref(*encoder_), options_,
+        CreateCallback(&MediaVideoEncoderWrapper::OnEncoderStatus,
+                       encoder_version_)));
   }
 }
 
@@ -377,7 +400,11 @@ void MediaVideoEncoderWrapper::OnEncodedFrame(
   CachedMetadata& metadata = recent_metadata_.front();
   auto encoded_frame = std::make_unique<SenderEncodedFrame>();
   encoded_frame->is_key_frame = output.key_frame;
-  encoded_frame->frame_id = next_frame_id_++;
+  // An empty output means the encoder dropped the frame (e.g. due to rate
+  // control). Dropped frames never become references, so don't consume a
+  // FrameId: the next emitted frame should reference the last emitted one.
+  encoded_frame->frame_id =
+      output.data.empty() ? next_frame_id_ : next_frame_id_++;
   encoded_frame->referenced_frame_id = encoded_frame->is_key_frame
                                            ? encoded_frame->frame_id
                                            : encoded_frame->frame_id - 1;
@@ -391,11 +418,18 @@ void MediaVideoEncoderWrapper::OnEncodedFrame(
   encoded_frame->encoder_utilization =
       ComputeAndRecordUtilization(processing_time);
 
-  encoded_frame->lossiness =
-      metadata.estimated_complexity
-          ? ComputeLossiness(output.data.size(), metadata.frame_duration,
-                             *metadata.estimated_complexity)
-          : 0.0f;
+  std::optional<double> complexity = metadata.estimated_complexity;
+  if (output.qp.has_value()) {
+    encoder_reports_qp_ = true;
+    complexity = std::clamp(*output.qp, 0.0, 1.0);
+  } else if (!output.data.empty()) {
+    encoder_reports_qp_ = false;
+  }
+
+  if (complexity) {
+    encoded_frame->lossiness = ComputeLossiness(
+        output.data.size(), metadata.frame_duration, *complexity);
+  }
 
   encoded_frame->capture_begin_time = metadata.capture_begin_time;
   encoded_frame->capture_end_time = metadata.capture_end_time;
@@ -432,11 +466,12 @@ double MediaVideoEncoderWrapper::ComputeAndRecordUtilization(
 //
 // A higher return value indicates a more heavily compressed (lower quality)
 // frame. This is estimated by multiplying the frame's bitrate utilization
-// by its estimated spatial/temporal complexity.
+// by its normalized quantizer (or estimated spatial/temporal complexity when
+// the encoder does not report a quantizer).
 double MediaVideoEncoderWrapper::ComputeLossiness(
     size_t data_size,
     base::TimeDelta frame_duration,
-    double estimated_complexity) const {
+    double complexity) const {
   const double duration = frame_duration.InSecondsF();
   if (duration <= 0.0) {
     return 0.0;
@@ -454,13 +489,11 @@ double MediaVideoEncoderWrapper::ComputeLossiness(
   CHECK_GT(target_bitrate, 0.0);
   const double bitrate_utilization = actual_bitrate / target_bitrate;
 
-  // 3. Scale utilization by the estimated complexity of the frame.
-  // The estimated_complexity represents how difficult the frame is to compress
-  // (e.g., high motion or high detail). A frame that uses 100% of the bitrate
-  // budget on a blank wall (low complexity) is not very lossy. A frame that
-  // uses 100% of the budget on a confetti explosion (high complexity) is
-  // assumed to be highly lossy.
-  const double raw_lossiness = bitrate_utilization * estimated_complexity;
+  // 3. Scale utilization by the normalized quantizer (or estimated complexity).
+  // A frame that uses 100% of the bitrate budget at a low quantizer is not
+  // very lossy. A frame that uses 100% of the budget at a high quantizer is
+  // heavily compressed.
+  const double raw_lossiness = bitrate_utilization * complexity;
 
   // 4. Clamp to a safe upper bound to protect the rate controller's internal
   // state from timestamp jitter anomalies.
@@ -533,10 +566,7 @@ MediaVideoEncoderWrapper::CachedMetadata::~CachedMetadata() = default;
 void MediaVideoEncoderWrapper::ConstructEncoder() {
   CHECK(cast_environment_->CurrentlyOn(CastEnvironment::ThreadId::kMain));
   encoder_version_++;
-
-  // Clear any pending encodes and options updates meant for the old encoder.
-  pending_encodes_.clear();
-  num_pending_updates_ = 0;
+  encoder_reports_qp_ = false;
 
   // Clear metadata and run callbacks with nullptr for any frames that were
   // in-flight to the old encoder, as the old encoder will be deleted and will
@@ -598,41 +628,6 @@ base::TimeDelta MediaVideoEncoderWrapper::GetFrameDuration(
   return std::clamp(duration, min_duration, max_duration);
 }
 
-// The VideoEncoder API requires you to Flush() and wait before calling
-// ChangeOptions(). This results in this annoying set of nested callbacks.
-void MediaVideoEncoderWrapper::UpdateEncoderOptions() {
-  CHECK(cast_environment_->CurrentlyOn(CastEnvironment::ThreadId::kMain));
-  num_pending_updates_++;
-
-  auto flush_done_callback =
-      CreateCallback(&MediaVideoEncoderWrapper::OnFlushDoneForOptionsUpdate,
-                     encoder_version_, options_);
-  CallEncoderOnCorrectThread(base::BindOnce(&CallFlush, std::ref(*encoder_),
-                                            std::move(flush_done_callback)));
-}
-
-void MediaVideoEncoderWrapper::OnFlushDoneForOptionsUpdate(
-    int encoder_version,
-    media::VideoEncoder::Options options,
-    EncoderStatus status) {
-  CHECK(cast_environment_->CurrentlyOn(CastEnvironment::ThreadId::kMain));
-  if (encoder_version != encoder_version_) {
-    return;
-  }
-
-  if (!status.is_ok()) {
-    OnOptionsUpdated(encoder_version, status);
-    return;
-  }
-
-  CallEncoderOnCorrectThread(base::BindOnce(
-      &CallChangeOptions, std::ref(*encoder_), std::move(options),
-      CreateCallback(&MediaVideoEncoderWrapper::OnEncodedFrame,
-                     encoder_version),
-      CreateCallback(&MediaVideoEncoderWrapper::OnOptionsUpdated,
-                     encoder_version)));
-}
-
 void MediaVideoEncoderWrapper::CallEncoderOnCorrectThread(
     base::OnceClosure closure) {
   CHECK(cast_environment_->CurrentlyOn(CastEnvironment::ThreadId::kMain));
@@ -669,24 +664,6 @@ void MediaVideoEncoderWrapper::OnFrameEncodeDone(int encoder_version,
   recent_metadata_.pop();
 
   std::move(callback).Run(nullptr);
-
-  OnEncoderStatus(encoder_version, status);
-}
-
-void MediaVideoEncoderWrapper::OnOptionsUpdated(int encoder_version,
-                                                EncoderStatus status) {
-  CHECK(cast_environment_->CurrentlyOn(CastEnvironment::ThreadId::kMain));
-  if (encoder_version != encoder_version_) {
-    return;
-  }
-  --num_pending_updates_;
-
-  if (num_pending_updates_ == 0) {
-    for (auto& task : pending_encodes_) {
-      CallEncoderOnCorrectThread(std::move(task));
-    }
-    pending_encodes_.clear();
-  }
 
   OnEncoderStatus(encoder_version, status);
 }

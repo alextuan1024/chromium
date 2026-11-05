@@ -22,20 +22,20 @@
 #include "base/notreached.h"
 #include "base/sequence_checker.h"
 #include "base/strings/strcat.h"
-#include "base/strings/string_number_conversions.h"
 #include "build/build_config.h"
 #include "components/autofill/core/browser/data_model/autofill_ai/entity_instance.h"
 #include "components/autofill/core/browser/data_model/autofill_ai/entity_type_names.h"
 #include "components/autofill/core/browser/data_model/valuables/loyalty_card.h"
 #include "components/autofill/core/browser/data_model/valuables/valuable_types.h"
 #include "components/autofill/core/browser/integrators/autofill_ai/autofill_ai_import_util.h"
+#include "components/autofill/core/browser/integrators/autofill_ai/autofill_ai_wallet_util.h"
 #include "components/autofill/core/browser/integrators/autofill_ai/metrics/autofill_ai_metrics.h"
 #include "components/autofill/core/browser/webdata/autofill_ai/entity_sync_util.h"
 #include "components/autofill/core/browser/webdata/autofill_change.h"
+#include "components/autofill/core/browser/webdata/autofill_sync_bridge_util.h"
 #include "components/autofill/core/browser/webdata/autofill_sync_metadata_table.h"
 #include "components/autofill/core/browser/webdata/autofill_webdata_service.h"
 #include "components/autofill/core/browser/webdata/payments/payments_autofill_table.h"
-#include "components/autofill/core/browser/webdata/payments/payments_sync_bridge_util.h"
 #include "components/autofill/core/browser/webdata/valuables/valuables_sync_util.h"
 #include "components/autofill/core/browser/webdata/valuables/valuables_table.h"
 #include "components/autofill/core/common/autofill_features.h"
@@ -63,6 +63,8 @@
 namespace autofill {
 namespace {
 
+using AutofillAiWalletManagementUrlSyncStatus =
+    ValuableSyncBridge::AutofillAiWalletManagementUrlSyncStatus;
 using ValuableDatabaseOperationResult =
     ValuableSyncBridge::ValuableDatabaseOperationResult;
 
@@ -106,24 +108,44 @@ bool AreAutofillOfferSpecificsValid(
                           [](const std::string& domain) {
                             return !domain.empty() && GURL(domain).is_valid();
                           });
-  // `AutofillOfferData` identifies offers by an int64. Offers whose id cannot
-  // be represented as a positive int64 are dropped.
-  int64_t offer_id = 0;
-  return base::StringToInt64(specifics.id(), &offer_id) && offer_id > 0 &&
-         !offer.offer_code().empty() && !offer.description().empty() &&
-         !offer.offer_short_title().empty() &&
+  return !specifics.id().empty() && !offer.offer_code().empty() &&
+         !offer.offer_short_title().empty() && !offer.issuer_name().empty() &&
          offer.expiration_time_unix_epoch_micros() > 0 &&
          GURL(specifics.pass_view_url()).is_valid() && has_valid_issuer_domains;
 }
 
-// Tests whether the `EntityInstance` represented by the `specifics` meets the
-// AutofillAi import constraints.
-bool AreAutofillAiSpecificsValid(
-    const sync_pb::AutofillValuableSpecifics& specifics) {
+// Tests whether `specifics` has an empty or valid Wallet management URL and
+// logs the validation status to UMA.
+bool HasEmptyOrValidManagementUrl(
+    const sync_pb::AutofillValuableSpecifics& specifics,
+    EntityType entity_type) {
+  const auto status =
+      specifics.pass_view_url().empty()
+          ? AutofillAiWalletManagementUrlSyncStatus::kMissingOrEmpty
+      : IsValidWalletManagementUrl(GURL(specifics.pass_view_url()))
+          ? AutofillAiWalletManagementUrlSyncStatus::kValid
+          : AutofillAiWalletManagementUrlSyncStatus::kInvalid;
+  constexpr std::string_view kHistogramPrefix =
+      "Autofill.Ai.ValuableSync.ManagementUrlStatus";
+  base::UmaHistogramEnumeration(kHistogramPrefix, status);
+  base::UmaHistogramEnumeration(
+      base::StrCat(
+          {kHistogramPrefix, ".", EntityTypeToMetricsString(entity_type)}),
+      status);
+
   if (!base::FeatureList::IsEnabled(
-          features::kAutofillAiImportConstraintsForSync)) {
+          features::kAutofillAiWalletServerProvidedDeepLink)) {
+    // Tolerate invalid management URLs if the feature is not enabled.
     return true;
   }
+
+  return status != AutofillAiWalletManagementUrlSyncStatus::kInvalid;
+}
+
+// Tests whether the `EntityInstance` represented by the `specifics` meets the
+// AutofillAi import constraints and has an empty or valid management URL.
+bool AreAutofillAiSpecificsValid(
+    const sync_pb::AutofillValuableSpecifics& specifics) {
   std::optional<EntityInstance> entity =
       CreateEntityInstanceFromSpecifics(specifics);
   if (!entity) {
@@ -135,7 +157,9 @@ bool AreAutofillAiSpecificsValid(
       base::StrCat({"Autofill.Ai.ImportConstraintsMet.WalletSync.",
                     EntityTypeToMetricsString(entity->type())}),
       meets_import_constraints);
-  return meets_import_constraints;
+  const bool has_valid_management_url =
+      HasEmptyOrValidManagementUrl(specifics, entity->type());
+  return meets_import_constraints && has_valid_management_url;
 }
 
 bool IsSyncWalletFlightReservationsEnabled() {
@@ -163,11 +187,32 @@ bool IsSyncWalletShoppingEnabled() {
   return base::FeatureList::IsEnabled(features::kAutofillAiWalletShopping);
 }
 
+bool IsWalletDisclosureNoticePublicPassEnabled() {
+  return base::FeatureList::IsEnabled(
+      features::kAutofillEnableWalletDisclosureNoticePublicPass);
+}
+
+std::optional<std::string> GetLegalMessageToken(
+    const EntityTable& entity_table,
+    const EntityInstance::EntityId& guid) {
+  if (!IsWalletDisclosureNoticePublicPassEnabled()) {
+    return std::nullopt;
+  }
+  return entity_table.GetLegalMessageToken(guid);
+}
+
 bool IsSyncWalletDirectOffersEnabled(std::string_view app_locale) {
-  return (app_locale == "en-US" || app_locale == "en-CA" ||
-          app_locale == "en-GB") &&
-         base::FeatureList::IsEnabled(
-             features::kAutofillEnableWalletDirectOffers);
+  if (!base::FeatureList::IsEnabled(
+          features::kAutofillEnableWalletDirectOffers)) {
+    return false;
+  }
+  if (base::FeatureList::IsEnabled(
+          features::
+              kAutofillDisableWalletDirectOffersLocaleCountryCheckForTesting)) {
+    return true;
+  }
+  return app_locale == "en-US" || app_locale == "en-CA" ||
+         app_locale == "en-GB";
 }
 
 // Returns if the entity `change` should be uploaded to AUTOFILL_VALUABLE.
@@ -378,11 +423,9 @@ ValuableDatabaseOperationResult ValuableSyncBridge::HandleDeleteRequest(
   }
 
   if (IsSyncWalletDirectOffersEnabled(app_locale_)) {
-    int64_t offer_id = 0;
     PaymentsAutofillTable* payments_table = GetPaymentsAutofillTable();
-    if (base::StringToInt64(storage_key, &offer_id) &&
-        payments_table->AutofillOfferExists(offer_id)) {
-      if (!payments_table->RemoveAutofillOffer(offer_id)) {
+    if (payments_table->AutofillOfferExists(storage_key)) {
+      if (!payments_table->RemoveAutofillOffer(storage_key)) {
         return ValuableDatabaseOperationResult::kDatabaseError;
       }
       return ValuableDatabaseOperationResult::kDataChanged;
@@ -450,7 +493,8 @@ ValuableSyncBridge::ApplyIncrementalSyncChanges(
             if (std::optional<EntityInstance> entity =
                     CreateEntityInstanceFromSpecificsAndLoadMetadata(
                         specifics, *GetEntityTable())) {
-              if (!GetEntityTable()->AddOrUpdateEntityInstance(*entity)) {
+              if (!GetEntityTable()->AddOrUpdateEntityInstance(
+                      *entity, /*legal_message_token=*/"")) {
                 db_operation_result =
                     ValuableDatabaseOperationResult::kDatabaseError;
               }
@@ -479,6 +523,23 @@ ValuableSyncBridge::ApplyIncrementalSyncChanges(
           db_operation_result = ValuableDatabaseOperationResult::kDatabaseError;
         }
         break;
+    }
+  }
+
+  // When Sync finishes uploading local changes to the server
+  // (`ClientTagBasedDataTypeProcessor::OnCommitCompleted`), it marks those
+  // entities as synced and calls `ApplyIncrementalSyncChanges()` with an empty
+  // `entity_changes` list. Clear any non-empty `legal_message_token` whose
+  // entity is no longer unsynced so the single-use creation token is not
+  // retained after commit.
+  if (IsWalletDisclosureNoticePublicPassEnabled()) {
+    std::vector<EntityInstance::EntityId> guids_to_clear =
+        GetEntityTable()->GetEntityGuidsWithLegalMessageToken();
+    std::erase_if(guids_to_clear, [this](const EntityInstance::EntityId& guid) {
+      return change_processor()->IsEntityUnsynced(guid.value());
+    });
+    if (!GetEntityTable()->ClearLegalMessageTokens(guids_to_clear)) {
+      db_operation_result = ValuableDatabaseOperationResult::kDatabaseError;
     }
   }
 
@@ -517,13 +578,20 @@ std::unique_ptr<syncer::MutableDataBatch> ValuableSyncBridge::GetData() {
     if (IsPassTypeEnabled(instance.type().name())) {
       const std::string& id = instance.guid().value();
       batch->Put(id, CreateEntityDataFromEntityInstance(
-                         instance, GetPossiblyTrimmedValuableSpecifics(id)));
+                         instance, GetPossiblyTrimmedValuableSpecifics(id),
+                         /*legal_message_token=*/{}));
     }
   }
 
-  // TODO(crbug.com/546252995): Add the offers from `PaymentsAutofillTable`.
-  // Without them, offers don't show up in chrome://sync-internals, which reads
-  // this batch through `GetAllDataForDebugging()`.
+  if (IsSyncWalletDirectOffersEnabled(app_locale_)) {
+    std::vector<std::unique_ptr<AutofillOfferData>> offers;
+    GetPaymentsAutofillTable()->GetAutofillOffers(&offers);
+    for (const std::unique_ptr<AutofillOfferData>& offer : offers) {
+      const std::string& id = offer->GetOfferId();
+      batch->Put(id, CreateEntityDataFromOfferData(
+                         *offer, GetPossiblyTrimmedValuableSpecifics(id)));
+    }
+  }
   return batch;
 }
 
@@ -544,6 +612,11 @@ std::unique_ptr<syncer::DataBatch> ValuableSyncBridge::GetDataForCommit(
   while (all_data->HasNext()) {
     syncer::KeyAndData item = all_data->Next();
     if (keys_set.contains(item.first)) {
+      if (std::optional<std::string> legal_message_token = GetLegalMessageToken(
+              *GetEntityTable(), EntityInstance::EntityId(item.first))) {
+        item.second->specifics.mutable_autofill_valuable()
+            ->set_legal_message_token(std::move(*legal_message_token));
+      }
       batch->Put(item.first, std::move(item.second));
     }
   }
@@ -714,7 +787,8 @@ ValuableDatabaseOperationResult ValuableSyncBridge::SetEntities(
       EntityInstance::RecordType::kServerWallet);
 
   for (const EntityInstance& entity : entities) {
-    success &= entity_table->AddOrUpdateEntityInstance(entity);
+    success &= entity_table->AddOrUpdateEntityInstance(
+        entity, /*legal_message_token=*/"");
   }
 
   return success ? ValuableDatabaseOperationResult::kDataChanged
@@ -728,7 +802,13 @@ ValuableDatabaseOperationResult ValuableSyncBridge::SetWalletDirectOffers(
   std::vector<std::unique_ptr<AutofillOfferData>> existing_offers;
   table->GetAutofillOffers(&existing_offers);
 
-  if (!AreAnyItemsDifferent(existing_offers, wallet_direct_offers)) {
+  if (!AreAnyItemsDifferent(
+          existing_offers, wallet_direct_offers,
+          [](const AutofillOfferData& a, const AutofillOfferData& b) {
+            return a.Compare(b) < 0;
+          },
+          [](const std::unique_ptr<AutofillOfferData>& offer)
+              -> const AutofillOfferData& { return *offer; })) {
     return ValuableDatabaseOperationResult::kNoChange;
   }
 
@@ -843,7 +923,7 @@ std::optional<syncer::ModelError> ValuableSyncBridge::SetSyncData(
 
 void ValuableSyncBridge::EntityInstanceChanged(
     const EntityInstanceChange& change,
-    std::optional<std::string_view> context_token) {
+    std::optional<std::string_view> legal_message_token) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   if (!IsSyncWalletFlightReservationsEnabled() &&
       !IsSyncWalletVehicleRegistrationsEnabled()) {
@@ -870,17 +950,22 @@ void ValuableSyncBridge::EntityInstanceChanged(
           CreateEntityDataFromEntityInstance(
               change.data_model(),
               GetPossiblyTrimmedValuableSpecifics(*change.key()),
-              context_token.value_or("")),
+              legal_message_token.value_or("")),
           metadata_change_list.get());
       break;
     case EntityInstanceChange::UPDATE:
-      CHECK(!context_token.has_value());
+      CHECK(!legal_message_token.has_value());
+      // If the entity is updated locally before its initial creation commit has
+      // synced, preserve the pending creation `legal_message_token` from
+      // `EntityTable`. Once synced, `GetLegalMessageToken()` returns
+      // `std::nullopt`.
       change_processor()->Put(
           *change.key(),
           CreateEntityDataFromEntityInstance(
               change.data_model(),
               GetPossiblyTrimmedValuableSpecifics(*change.key()),
-              /*context_token=*/{}),
+              GetLegalMessageToken(*GetEntityTable(), change.key())
+                  .value_or("")),
           metadata_change_list.get());
       break;
     case EntityInstanceChange::REMOVE:

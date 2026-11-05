@@ -4,7 +4,8 @@
 
 #include "chrome/browser/ui/webui/cr_components/history/history_util.h"
 
-#include "chrome/browser/history_embeddings/history_embeddings_utils.h"
+#include "base/feature_list.h"
+#include "build/build_config.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/sync/sync_service_factory.h"
@@ -25,6 +26,7 @@
 #include "components/prefs/pref_service.h"
 #include "components/signin/public/base/signin_pref_names.h"
 #include "components/strings/grit/components_strings.h"
+#include "components/sync/base/features.h"
 #include "content/public/browser/web_ui_data_source.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/webui/web_ui_util.h"
@@ -37,6 +39,7 @@ content::WebUIDataSource* HistoryUtil::PopulateCommonSourceForHistory(
   static constexpr webui::LocalizedString kStrings[] = {
       // Localized strings (alphabetical order).
       {"actionMenuDescription", IDS_HISTORY_ACTION_MENU_DESCRIPTION},
+      {"actorTaskTooltip", IDS_HISTORY_ACTOR_TASK_TOOLTIP},
       {"ariaRoleDescription", IDS_HISTORY_ARIA_ROLE_DESCRIPTION},
       {"bookmarked", IDS_HISTORY_ENTRY_BOOKMARKED},
       {"cancel", IDS_CANCEL},
@@ -49,26 +52,36 @@ content::WebUIDataSource* HistoryUtil::PopulateCommonSourceForHistory(
       {"deleteConfirm", IDS_HISTORY_DELETE_PRIOR_VISITS_CONFIRM_BUTTON},
       {"deleteSession", IDS_HISTORY_OTHER_SESSIONS_HIDE_FOR_NOW},
       {"deleteWarning", IDS_HISTORY_DELETE_PRIOR_VISITS_WARNING},
+      {"deviceFilterAllDevices", IDS_HISTORY_DEVICE_FILTER_ALL_DEVICES},
       {"entrySummary", IDS_HISTORY_ENTRY_SUMMARY},
       {"expandSessionButton", IDS_HISTORY_OTHER_SESSIONS_EXPAND_SESSION},
       {"foundSearchResults", IDS_HISTORY_FOUND_SEARCH_RESULTS},
       {"goToGeminiChat", IDS_HISTORY_GO_TO_GEMINI_CHAT},
       {"goToGeminiChatError", IDS_HISTORY_GO_TO_GEMINI_CHAT_ERROR},
+      {"historyClustersTabLabel", IDS_HISTORY_CLUSTERS_BY_GROUP_TAB_LABEL},
+      {"historyListTabLabel", IDS_HISTORY_CLUSTERS_BY_DATE_TAB_LABEL},
       {"historyMenuButton", IDS_HISTORY_HISTORY_MENU_DESCRIPTION},
       {"historyMenuItem", IDS_HISTORY_HISTORY_MENU_ITEM},
+      {"historyPromoClose", IDS_HISTORY_PROMO_CLOSE},
       {"itemsSelected", IDS_HISTORY_ITEMS_SELECTED},
       {"itemsUnselected", IDS_HISTORY_ITEMS_UNSELECTED},
       {"loading", IDS_HISTORY_LOADING},
+      {"manageDeviceTabVisibility",
+       IDS_HISTORY_OTHER_SESSIONS_MANAGE_DEVICE_TAB_VISIBILITY},
       {"menu", IDS_MENU},
       {"moreFromSite", IDS_HISTORY_MORE_FROM_SITE},
       {"openAll", IDS_HISTORY_OTHER_SESSIONS_OPEN_ALL},
       {"openSelected", IDS_HISTORY_OPEN},
       {"openTabsMenuItem", IDS_HISTORY_OPEN_TABS_MENU_ITEM},
+      {"openWindowPlural", IDS_HISTORY_OTHER_SESSIONS_OPEN_WINDOW_PLURAL},
+      {"openWindowSingular", IDS_HISTORY_OTHER_SESSIONS_OPEN_WINDOW_SINGULAR},
+      {"noMatchingResults", IDS_HISTORY_NO_MATCHING_RESULTS},
       {"noResults", IDS_HISTORY_NO_RESULTS},
       {"noSearchResults", IDS_HISTORY_NO_SEARCH_RESULTS},
       {"removeBookmark", IDS_HISTORY_REMOVE_BOOKMARK},
       {"removeFromHistory", IDS_HISTORY_REMOVE_PAGE},
       {"removeSelected", IDS_HISTORY_REMOVE_SELECTED_ITEMS},
+      {"resetFilters", IDS_HISTORY_RESET_FILTERS},
       {"reviewGeminiActivity", IDS_HISTORY_REVIEW_GEMINI_ACTIVITY},
       {"geminiKeyBrowsingActionsTitle",
        IDS_HISTORY_GEMINI_KEY_BROWSING_ACTIONS_TITLE},
@@ -77,11 +90,14 @@ content::WebUIDataSource* HistoryUtil::PopulateCommonSourceForHistory(
       {"searchPrompt", IDS_HISTORY_SEARCH_PROMPT},
       {"searchResult", IDS_HISTORY_SEARCH_RESULT},
       {"searchResults", IDS_HISTORY_SEARCH_RESULTS},
-      {"searchResultExactMatch", IDS_HISTORY_SEARCH_EXACT_MATCH_RESULT},
-      {"searchResultExactMatches", IDS_HISTORY_SEARCH_EXACT_MATCH_RESULTS},
+      {"sourceFilterAllActors", IDS_HISTORY_ACTOR_FILTER_ALL_ACTORS},
       {"sourceFilterChipsAriaLabel",
        IDS_HISTORY_SOURCE_FILTER_CHIPS_ARIA_LABEL},
       {"sourceFilterChipUser", IDS_HISTORY_SOURCE_FILTER_CHIP_USER},
+      {"syncedTabsWindowHeaderPlural",
+       IDS_HISTORY_OTHER_SESSIONS_WINDOW_HEADER_PLURAL},
+      {"syncedTabsWindowHeaderSingular",
+       IDS_HISTORY_OTHER_SESSIONS_WINDOW_HEADER_SINGULAR},
       {"title", IDS_HISTORY_TITLE},
   };
   source->AddLocalizedStrings(kStrings);
@@ -93,15 +109,10 @@ content::WebUIDataSource* HistoryUtil::PopulateCommonSourceForHistory(
           ? IDS_HISTORY_SOURCE_FILTER_CHIP_ACTOR_GEMINI
           : IDS_HISTORY_SOURCE_FILTER_CHIP_ACTOR);
 
-  source->AddLocalizedString(
-      "actorTaskTooltip",
-      base::FeatureList::IsEnabled(
-          critical_actions::features::kCriticalActionHistory)
-          ? IDS_HISTORY_ACTOR_TASK_TOOLTIP_GEMINI
-          : IDS_HISTORY_ACTOR_TASK_TOOLTIP);
-
   source->AddString("myActivityGeminiAppsUrl",
                     chrome::kMyActivityGeminiAppsUrl);
+  source->AddString("deviceTabVisibilitySettingsUrl",
+                    chrome::kChromeUIDeviceTabVisibilitySettingsURL);
 
   PrefService* prefs = profile->GetPrefs();
   bool allow_deleting_history =
@@ -111,37 +122,19 @@ content::WebUIDataSource* HistoryUtil::PopulateCommonSourceForHistory(
   source->AddBoolean("isGuestSession", profile->IsGuestSession());
   source->AddBoolean("isSignInAllowed",
                      prefs->GetBoolean(prefs::kSigninAllowed));
+#if !BUILDFLAG(IS_ANDROID)
+  source->AddBoolean(
+      "enableDeviceTabVisibilitySettings",
+      base::FeatureList::IsEnabled(syncer::kDeviceTabVisibilitySettings));
+#else
+  // TODO(crbug.com/570417844): Check how to integrate this into Android
+  // desktop.
+  source->AddBoolean("enableDeviceTabVisibilitySettings", false);
+#endif
 
   source->AddInteger(
       "lastSelectedTab",
       prefs->GetInteger(history_clusters::prefs::kLastSelectedTab));
-
-  history_embeddings::PopulateSourceForWebUI(source, profile);
-
-  static constexpr webui::LocalizedString kHistoryEmbeddingsStrings[] = {
-      {"historyEmbeddingsAnswersSearchAlternativePrompt1",
-       IDS_HISTORY_EMBEDDINGS_SEARCH_ANSWERS_ALTERNATIVE_PROMPT_1},
-      {"historyEmbeddingsAnswersSearchAlternativePrompt2",
-       IDS_HISTORY_EMBEDDINGS_SEARCH_ANSWERS_ALTERNATIVE_PROMPT_2},
-      {"historyEmbeddingsAnswersSearchAlternativePrompt3",
-       IDS_HISTORY_EMBEDDINGS_SEARCH_ANSWERS_ALTERNATIVE_PROMPT_3},
-      {"historyEmbeddingsAnswersSearchAlternativePrompt4",
-       IDS_HISTORY_EMBEDDINGS_SEARCH_ANSWERS_ALTERNATIVE_PROMPT_4},
-      {"historyEmbeddingsShowByLabel",
-       IDS_HISTORY_EMBEDDINGS_SHOW_BY_ARIA_LABEL},
-      {"historyEmbeddingsShowByDate", IDS_HISTORY_EMBEDDINGS_SHOW_BY_DATE},
-      {"historyEmbeddingsShowByGroup", IDS_HISTORY_EMBEDDINGS_SHOW_BY_GROUP},
-      {"historyEmbeddingsSuggestion1", IDS_HISTORY_EMBEDDINGS_SUGGESTION_1},
-      {"historyEmbeddingsSuggestion2", IDS_HISTORY_EMBEDDINGS_SUGGESTION_2},
-      {"historyEmbeddingsSuggestion3", IDS_HISTORY_EMBEDDINGS_SUGGESTION_3},
-      {"historyEmbeddingsSuggestion1AriaLabel",
-       IDS_HISTORY_EMBEDDINGS_SUGGESTION_1_ARIA_LABEL},
-      {"historyEmbeddingsSuggestion2AriaLabel",
-       IDS_HISTORY_EMBEDDINGS_SUGGESTION_2_ARIA_LABEL},
-      {"historyEmbeddingsSuggestion3AriaLabel",
-       IDS_HISTORY_EMBEDDINGS_SUGGESTION_3_ARIA_LABEL},
-  };
-  source->AddLocalizedStrings(kHistoryEmbeddingsStrings);
 
   webui::SetupWebUIDataSource(source, kHistoryResources,
                               IDR_HISTORY_HISTORY_HTML);

@@ -157,6 +157,7 @@ static_library("browser") {
     ":fetcher_config",
     "//base",
     "//components/content_settings/core/browser",
+    "//components/enterprise/isolated_mode",
     "//components/feed/core/shared_prefs:feed_shared_prefs",
     "//components/google/core/common",
     "//components/metrics",
@@ -240,6 +241,7 @@ source_set("unit_tests") {
     "//base",
     "//base/test:test_support",
     "//components/content_settings/core/browser:test_support",
+    "//components/enterprise/isolated_mode",
     "//components/metrics",
     "//components/prefs:test_support",
     "//components/resources:components_resources",
@@ -265,9 +267,5 @@ source_set("unit_tests") {
   if (is_android) {
     deps += [ "//components/supervised_user/core/browser/android" ]
   }
-
-  # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
-  # enable the diagnostic by removing this line.
-  configs += [ "//build/config/compiler:no_exit_time_destructors" ]
 }
 

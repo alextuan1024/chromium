@@ -13,7 +13,7 @@ namespace actor {
 BASE_FEATURE(kActorBypassTOUValidationForGuestView,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
-BASE_FEATURE(kGlicActionUseOptimizationGuide, base::FEATURE_ENABLED_BY_DEFAULT);
+BASE_FEATURE(kUseTabHandleAsSurfaceHandle, base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kGlicExternalProtocolActionResultCode,
              base::FEATURE_ENABLED_BY_DEFAULT);
@@ -28,22 +28,19 @@ BASE_FEATURE(kGlicDeferDownloadFilePickerToUserTakeover,
 
 BASE_FEATURE(kGlicActorLocalhostIsSensitive, base::FEATURE_ENABLED_BY_DEFAULT);
 
+BASE_FEATURE(kGlicActorSubframeGatingDryRun, base::FEATURE_ENABLED_BY_DEFAULT);
+
 BASE_FEATURE(kGlicCrossOriginNavigationGating,
              base::FEATURE_ENABLED_BY_DEFAULT);
 BASE_FEATURE_PARAM(bool,
                    kGlicConfirmNavigationToNewOrigins,
                    &kGlicCrossOriginNavigationGating,
                    "confirm_navigation_to_new_origins",
-                   false);
+                   true);
 BASE_FEATURE_PARAM(bool,
                    kGlicPromptUserForNavigationToNewOrigins,
                    &kGlicCrossOriginNavigationGating,
                    "prompt_user_for_navigation_to_new_origins",
-                   false);
-BASE_FEATURE_PARAM(bool,
-                   kGlicConfirmNavigationToNewOriginsDarkLaunch,
-                   &kGlicCrossOriginNavigationGating,
-                   "confirm_navigation_to_new_origins_dark_launch",
                    false);
 BASE_FEATURE_PARAM(bool,
                    kGlicNavigationGatingUseSiteNotOrigin,
@@ -90,8 +87,6 @@ BASE_FEATURE(kGlicNavigateWithoutUserGesture, base::FEATURE_ENABLED_BY_DEFAULT);
 // performAction return first when a task is stopped or paused.
 BASE_FEATURE(kGlicPerformActionsReturnsBeforeStateChange,
              base::FEATURE_DISABLED_BY_DEFAULT);
-
-BASE_FEATURE(kGlicEarlyAddTaskTabs, base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kGlicSkipBeforeUnloadDialogAndNavigate,
              base::FEATURE_DISABLED_BY_DEFAULT);
@@ -156,6 +151,20 @@ const base::FeatureParam<base::TimeDelta>
         &kGlicActorLoadAndExtractContentTool, "timeout",
         kGlicActorLoadAndExtractContentToolTimeoutDefault};
 
+BASE_FEATURE(kGlicActorFileUploadTool, base::FEATURE_DISABLED_BY_DEFAULT);
+
+const base::FeatureParam<int> kGlicActorFileUploadToolMaxFileSizeBytes{
+    &kGlicActorFileUploadTool, "max_file_size_bytes", 100 * 1024 * 1024};
+
+const base::FeatureParam<base::TimeDelta> kGlicActorFileUploadToolTimeout{
+    &kGlicActorFileUploadTool, "timeout", base::Seconds(30)};
+
+// The hosts serving files uploaded to Gemini (ContribService).
+const base::FeatureParam<std::string> kGlicActorFileUploadToolCredentialedHosts{
+    &kGlicActorFileUploadTool, "credentialed_hosts",
+    "contribution.usercontent.google.com,"
+    "contribution-autopush.usercontent.corp.google.com"};
+
 BASE_FEATURE(kGlicActorTransientTasks, base::FEATURE_DISABLED_BY_DEFAULT);
 const base::FeatureParam<bool> kGlicActorTransientTasksForceTransient{
     &kGlicActorTransientTasks, "force_transient", false};
@@ -170,14 +179,6 @@ const base::FeatureParam<base::TimeDelta> kActorScriptToolExecutionTimeout{
 const base::FeatureParam<base::TimeDelta> kActorScriptToolCrossDocumentTimeout{
     &kGlicActorEnableScriptTools, "cross_document_timeout", base::Seconds(5)};
 
-BASE_FEATURE(kActorScriptToolDelayObservation,
-             base::FEATURE_DISABLED_BY_DEFAULT);
-
-const base::FeatureParam<int> kActorScriptToolDelayObservationMillis{
-    &kActorScriptToolDelayObservation, "script_tool_delay_observation_ms", 0};
-
-BASE_FEATURE(kActorFormScriptToolInterrupt, base::FEATURE_ENABLED_BY_DEFAULT);
-
 BASE_FEATURE(kActorObserveScreenshotDefault, base::FEATURE_ENABLED_BY_DEFAULT);
 BASE_FEATURE(kActorObservePageContentDefault, base::FEATURE_ENABLED_BY_DEFAULT);
 
@@ -186,6 +187,9 @@ BASE_FEATURE(kActorScriptToolSkipPageContent,
              base::FEATURE_DISABLED_BY_DEFAULT);
 BASE_FEATURE(kActorScriptToolTransientUserActivation,
              base::FEATURE_ENABLED_BY_DEFAULT);
+BASE_FEATURE(kActorScriptToolIdValidation, base::FEATURE_ENABLED_BY_DEFAULT);
+
+BASE_FEATURE(kActorExecuteJsTool, base::FEATURE_DISABLED_BY_DEFAULT);
 
 BASE_FEATURE(kActorRecordInvocationSourceCompletionMetrics,
              base::FEATURE_ENABLED_BY_DEFAULT);
@@ -195,14 +199,12 @@ BASE_FEATURE(kActorPageStability, base::FEATURE_ENABLED_BY_DEFAULT);
 
 // The overall observation timeout when waiting on a renderer tool to complete.
 const base::FeatureParam<base::TimeDelta> kActorPageStabilityTimeout{
-    &kActorPageStability, "glic-actor-page-stability-timeout",
-    base::Seconds(4)};
+    &kActorPageStability, "actor-page-stability-timeout", base::Seconds(4)};
 
 // The minimum amount of time to wait for page stability before invoking the
 // callback.
 const base::FeatureParam<base::TimeDelta> kActorPageStabilityMinWait{
-    &kActorPageStability, "glic-actor-page-stability-min-wait",
-    base::Seconds(1)};
+    &kActorPageStability, "actor-page-stability-min-wait", base::Seconds(1)};
 
 // Timeout controlling how long the paint stability monitor waits after the
 // initial contentful paint before considering the UI to have stabilized.
@@ -243,5 +245,24 @@ const base::FeatureParam<base::TimeDelta>
         "actor-observation-delay-autofill-predictions-timeout",
         base::Seconds(1)};
 // LINT.ThenChange(//ios/chrome/browser/intelligence/features/features.mm:kActorPageStabilityAutofillPredictionsTimeout)
+
+// Experiment with different tool execution delays and timeouts for Actor.
+BASE_FEATURE(kActorPageToolTimeout, base::FEATURE_ENABLED_BY_DEFAULT);
+
+const base::FeatureParam<base::TimeDelta> kActorPageToolTimeoutParam{
+    &kActorPageToolTimeout, "actor-page-tool-timeout", base::Seconds(30)};
+
+BASE_FEATURE(kActorClickDelay, base::FEATURE_ENABLED_BY_DEFAULT);
+
+const base::FeatureParam<base::TimeDelta> kActorClickDelayParam{
+    &kActorClickDelay, "actor-click-delay", base::Milliseconds(5)};
+
+BASE_FEATURE(kActorTypeToolEnterDelay, base::FEATURE_ENABLED_BY_DEFAULT);
+
+// If the TypeTool is invoked with followed_by_enter, the enter key is
+// dispatched with this delay.
+const base::FeatureParam<base::TimeDelta> kActorTypeToolEnterDelayParam{
+    &kActorTypeToolEnterDelay, "actor-type-tool-enter-delay",
+    base::Milliseconds(600)};
 
 }  // namespace actor

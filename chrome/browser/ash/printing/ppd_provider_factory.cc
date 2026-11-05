@@ -10,8 +10,7 @@
 #include "base/command_line.h"
 #include "base/files/file_path.h"
 #include "base/time/default_clock.h"
-#include "chrome/browser/browser_process.h"
-#include "chrome/browser/net/system_network_context_manager.h"
+#include "base/time/time.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chromeos/printing/ppd_cache.h"
 #include "chromeos/printing/ppd_metadata_manager.h"
@@ -19,17 +18,11 @@
 #include "chromeos/printing/printer_config_cache.h"
 #include "chromeos/printing/remote_ppd_fetcher.h"
 #include "components/version_info/version_info.h"
-#include "content/public/browser/browser_thread.h"
 #include "google_apis/google_api_keys.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 
 namespace ash {
 namespace {
-
-network::mojom::URLLoaderFactory* GetURLLoaderFactory() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-  return g_browser_process->system_network_context_manager()
-      ->GetURLLoaderFactory();
-}
 
 chromeos::PpdIndexChannel ToPpdIndexChannel(const std::string& channel) {
   if (channel == ash::switches::kPrintingPpdChannelStaging) {
@@ -44,9 +37,15 @@ chromeos::PpdIndexChannel ToPpdIndexChannel(const std::string& channel) {
   return chromeos::PpdIndexChannel::kProduction;
 }
 
+// Maximum age of cached PPDs and PPD metadata. Requests are answered
+// with data no older than this, and older data is evicted.
+constexpr base::TimeDelta kMaxDataAge = base::Minutes(30);
+
 }  // namespace
 
-scoped_refptr<chromeos::PpdProvider> CreatePpdProvider(Profile* profile) {
+std::unique_ptr<chromeos::PpdProvider> CreatePpdProvider(
+    scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
+    Profile* profile) {
   const chromeos::PpdIndexChannel channel = ToPpdIndexChannel(
       base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
           ash::switches::kPrintingPpdChannel));
@@ -58,18 +57,18 @@ scoped_refptr<chromeos::PpdProvider> CreatePpdProvider(Profile* profile) {
                             : FILE_PATH_LITERAL("PPDCache"));
 
   auto provider_config_cache = chromeos::PrinterConfigCache::Create(
-      base::DefaultClock::GetInstance(),
-      base::BindRepeating(&GetURLLoaderFactory), use_localhost_as_root);
+      base::DefaultClock::GetInstance(), kMaxDataAge, url_loader_factory,
+      use_localhost_as_root);
 
   auto manager_config_cache = chromeos::PrinterConfigCache::Create(
-      base::DefaultClock::GetInstance(),
-      base::BindRepeating(&GetURLLoaderFactory), use_localhost_as_root);
+      base::DefaultClock::GetInstance(), kMaxDataAge, url_loader_factory,
+      use_localhost_as_root);
   auto metadata_manager = chromeos::PpdMetadataManager::Create(
-      channel, base::DefaultClock::GetInstance(),
+      channel, base::DefaultClock::GetInstance(), kMaxDataAge,
       std::move(manager_config_cache));
 
-  auto remote_ppd_fetcher = chromeos::RemotePpdFetcher::Create(
-      base::BindRepeating(&GetURLLoaderFactory));
+  auto remote_ppd_fetcher =
+      chromeos::RemotePpdFetcher::Create(std::move(url_loader_factory));
 
   return chromeos::PpdProvider::Create(
       version_info::GetVersion(), chromeos::PpdCache::Create(ppd_cache_path),

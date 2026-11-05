@@ -26,16 +26,19 @@
 #include "base/test/bind.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/null_task_runner.h"
+#include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/test_timeouts.h"
 #include "base/test/with_feature_override.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
 #include "cc/trees/render_frame_metadata.h"
+#include "components/input/event_with_latency_info.h"
 #include "components/input/input_router.h"
 #include "components/input/mouse_wheel_event_queue.h"
 #include "components/input/native_web_keyboard_event.h"
 #include "components/input/render_widget_host_view_input.h"
+#include "components/input/render_widget_host_view_input_observer.h"
 #include "components/viz/common/features.h"
 #include "components/viz/common/frame_sinks/begin_frame_args.h"
 #include "components/viz/common/surfaces/child_local_surface_id_allocator.h"
@@ -58,6 +61,7 @@
 #include "content/browser/renderer_host/render_widget_host_impl.h"
 #include "content/browser/renderer_host/render_widget_host_view_event_handler.h"
 #include "content/browser/renderer_host/text_input_manager.h"
+#include "content/browser/renderer_host/unbounded_surface_window.h"
 #include "content/browser/site_instance_group.h"
 #include "content/browser/web_contents/web_contents_impl.h"
 #include "content/browser/web_contents/web_contents_view_aura.h"
@@ -67,6 +71,7 @@
 #include "content/public/browser/render_widget_host_view.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_view_delegate.h"
+#include "content/public/common/content_features.h"
 #include "content/public/test/fake_frame_widget.h"
 #include "content/public/test/mock_render_process_host.h"
 #include "content/public/test/test_browser_context.h"
@@ -75,6 +80,7 @@
 #include "content/test/mock_render_widget_host_delegate.h"
 #include "content/test/mock_widget.h"
 #include "content/test/mock_widget_input_handler.h"
+#include "content/test/recording_cursor_client.h"
 #include "content/test/test_overscroll_delegate.h"
 #include "content/test/test_render_view_host.h"
 #include "content/test/test_web_contents.h"
@@ -83,6 +89,7 @@
 #include "mojo/public/cpp/bindings/remote.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/common/input/synthetic_web_input_event_builders.h"
 #include "third_party/blink/public/mojom/input/touch_event.mojom.h"
 #include "ui/aura/client/aura_constants.h"
@@ -95,9 +102,11 @@
 #include "ui/aura/test/test_cursor_client.h"
 #include "ui/aura/test/test_screen.h"
 #include "ui/aura/test/test_window_delegate.h"
+#include "ui/aura/test/test_window_parenting_client.h"
 #include "ui/aura/window.h"
 #include "ui/aura/window_event_dispatcher.h"
 #include "ui/aura/window_observer.h"
+#include "ui/aura/window_tracker.h"
 #include "ui/aura/window_tree_host.h"
 #include "ui/base/clipboard/clipboard.h"
 #include "ui/base/clipboard/test/clipboard_test_util.h"
@@ -115,6 +124,7 @@
 #include "ui/compositor/layer_tree_owner.h"
 #include "ui/compositor/test/draw_waiter_for_test.h"
 #include "ui/display/display.h"
+#include "ui/display/display_list.h"
 #include "ui/display/screen.h"
 #include "ui/events/blink/blink_event_util.h"
 #include "ui/events/blink/blink_features.h"
@@ -129,8 +139,12 @@
 #include "ui/events/keycodes/dom/keycode_converter.h"
 #include "ui/events/keycodes/keyboard_code_conversion.h"
 #include "ui/events/test/event_generator.h"
+#include "ui/gfx/geometry/point_conversions.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/selection_bound.h"
+#include "ui/wm/core/coordinate_conversion.h"
+#include "ui/wm/core/default_screen_position_client.h"
+#include "ui/wm/core/shadow_types.h"
 #include "ui/wm/core/window_util.h"
 
 #if BUILDFLAG(IS_WIN)
@@ -145,6 +159,9 @@
 #include "ui/base/ime/text_input_client.h"
 #include "ui/base/view_prop.h"
 #include "ui/base/win/window_event_target.h"
+#include "ui/display/win/display_info.h"
+#include "ui/display/win/screen_win.h"
+#include "ui/display/win/test/screen_util_win.h"
 #include "ui/events/keycodes/keyboard_codes_win.h"
 #include "ui/events/test/keyboard_layout.h"
 #include "ui/gfx/win/window_impl.h"
@@ -330,8 +347,42 @@ class FakeRenderWidgetHostViewAura : public RenderWidgetHostViewAura {
         metadata);
   }
 
-  bool ShouldSkipCursorUpdate() const override { return false; }
+  void set_use_real_should_skip_cursor_update(bool use_real) {
+    use_real_should_skip_cursor_update_ = use_real;
+  }
 
+  bool ShouldSkipCursorUpdate() const override {
+    return use_real_should_skip_cursor_update_
+               ? RenderWidgetHostViewAura::ShouldSkipCursorUpdate()
+               : false;
+  }
+
+  bool CanSynchronizeVisualProperties() override {
+    ++can_synchronize_visual_properties_count_;
+    return RenderWidgetHostViewAura::CanSynchronizeVisualProperties();
+  }
+
+  void SetBounds(const gfx::Rect& rect) override {
+    RenderWidgetHostViewAura::SetBounds(rect);
+    if (set_bounds_callback_) {
+      std::move(set_bounds_callback_).Run();
+    }
+  }
+
+#if BUILDFLAG(IS_WIN)
+  void SetPendingStylusHandwritingProperties(
+      uint32_t touch_start_event_id,
+      const ui::StylusHandwritingPropertiesWin& properties) {
+    pending_stylus_handwriting_properties_.insert_or_assign(
+        touch_start_event_id, properties);
+  }
+#endif
+
+  bool use_real_should_skip_cursor_update_ = false;
+  size_t can_synchronize_visual_properties_count_ = 0;
+  // If set, runs synchronously at the end of the next SetBounds() to simulate
+  // re-entrant native window or focus notifications.
+  base::OnceClosure set_bounds_callback_;
   gfx::Size last_frame_size_;
   raw_ptr<FakeWindowEventDispatcher> dispatcher_;
 };
@@ -733,10 +784,8 @@ class RenderWidgetHostViewAuraTest : public testing::Test {
                                        ui::TextInputType type) {
     DCHECK_NE(ui::TEXT_INPUT_TYPE_NONE, type);
     // First mock-focus the widget if not already.
-    if (render_widget_host_delegate()->GetFocusedRenderWidgetHost(
-            widget_host_) != view->GetRenderWidgetHost()) {
-      render_widget_host_delegate()->set_focused_widget(view->host());
-    }
+    render_widget_host_delegate()->set_focused_widget(view ? view->host()
+                                                           : nullptr);
 
     TextInputManager* manager = GetTextInputManager(view);
     if (manager->GetActiveWidget()) {
@@ -1038,8 +1087,7 @@ class RenderWidgetHostViewAuraOverscrollTest
   void ReleaseAndResetDispatchedMessages() {
     ReleaseTouchPoint(0);
     SendTouchEvent();
-    MockWidgetInputHandler::MessageVector events =
-        GetAndResetDispatchedMessages();
+    GetAndResetDispatchedMessages();
   }
 
   MockWidgetInputHandler::MessageVector ExpectGestureScrollEndForWheelScrolling(
@@ -1183,6 +1231,194 @@ TEST_F(RenderWidgetHostViewAuraTest, InitController) {
   view_->OnMouseEvent(&mouse_event);
   EXPECT_EQ(StylusHandwritingControllerWin::StylusHandwritingSupportedOnBuild(),
             StylusHandwritingControllerWin::BindInterfacesCalledForTesting());
+}
+
+class RenderWidgetHostViewAuraHandwritingPropertiesTest
+    : public RenderWidgetHostViewAuraTest {
+ protected:
+  void SetUp() override {
+    feature_list_.InitAndEnableFeature(
+        stylus_handwriting::win::kStylusHandwritingWin);
+    RenderWidgetHostViewAuraTest::SetUp();
+    InitViewForFrame(nullptr);
+    ParentHostView(view_, parent_view_);
+    view_->ShowWithVisibility(PageVisibilityState::kVisible);
+    widget_host_->input_router()->OnHasTouchEventConsumers(
+        blink::mojom::TouchEventConsumers::New(HasTouchEventHandlers(true),
+                                               HasHitTestableScrollbar(false)));
+  }
+
+  ui::TouchEvent PenPress() {
+    return ui::TouchEvent(ui::EventType::kTouchPressed, gfx::Point(),
+                          ui::EventTimeForNow(),
+                          ui::PointerDetails(ui::EventPointerType::kPen, 0));
+  }
+};
+
+TEST_F(RenderWidgetHostViewAuraTest, TakesPropertiesForMatchingTouchStart) {
+  InitViewForFrame(nullptr);
+  const ui::StylusHandwritingPropertiesWin first_properties(
+      1, 101, gfx::Vector2dF(192.f, 288.f));
+  const ui::StylusHandwritingPropertiesWin second_properties(
+      2, 202, gfx::Vector2dF(240.f, 360.f));
+  view_->SetPendingStylusHandwritingProperties(1, first_properties);
+  view_->SetPendingStylusHandwritingProperties(2, second_properties);
+
+  EXPECT_FALSE(view_->TakeStylusHandwritingProperties(3));
+  auto first = view_->TakeStylusHandwritingProperties(1);
+  ASSERT_TRUE(first);
+  EXPECT_EQ(first_properties.handwriting_pointer_id,
+            first->handwriting_pointer_id);
+  EXPECT_EQ(first_properties.handwriting_stroke_id,
+            first->handwriting_stroke_id);
+  EXPECT_EQ(first_properties.pixels_per_inch, first->pixels_per_inch);
+  EXPECT_FALSE(view_->TakeStylusHandwritingProperties(1));
+
+  auto second = view_->TakeStylusHandwritingProperties(2);
+  ASSERT_TRUE(second);
+  EXPECT_EQ(second_properties.handwriting_pointer_id,
+            second->handwriting_pointer_id);
+  EXPECT_EQ(second_properties.handwriting_stroke_id,
+            second->handwriting_stroke_id);
+  EXPECT_EQ(second_properties.pixels_per_inch, second->pixels_per_inch);
+  EXPECT_FALSE(view_->TakeStylusHandwritingProperties(2));
+}
+
+TEST_F(RenderWidgetHostViewAuraTest, DiscardsUnclaimedPropertiesOnTouchAck) {
+  InitViewForFrame(nullptr);
+  blink::SyntheticWebTouchEvent touch;
+  touch.PressPoint(0, 0);
+  view_->SetPendingStylusHandwritingProperties(
+      touch.unique_touch_event_id, ui::StylusHandwritingPropertiesWin(1, 0));
+  const uint32_t other_id = touch.unique_touch_event_id + 1;
+  view_->SetPendingStylusHandwritingProperties(
+      other_id, ui::StylusHandwritingPropertiesWin(2, 0));
+
+  view_->ProcessAckedTouchEvent(input::TouchEventWithLatencyInfo(touch),
+                                blink::mojom::InputEventResultState::kConsumed);
+
+  EXPECT_FALSE(
+      view_->TakeStylusHandwritingProperties(touch.unique_touch_event_id));
+  auto remaining = view_->TakeStylusHandwritingProperties(other_id);
+  ASSERT_TRUE(remaining);
+  EXPECT_EQ(2u, remaining->handwriting_pointer_id);
+}
+
+TEST_F(RenderWidgetHostViewAuraHandwritingPropertiesTest,
+       StagesPropertiesForTouchStart) {
+  const ui::StylusHandwritingPropertiesWin properties(
+      1, 101, gfx::Vector2dF(192.f, 288.f));
+  ui::TouchEvent press = PenPress();
+  ui::SetStylusHandwritingProperties(press, properties);
+  view_->OnTouchEvent(&press);
+
+  ASSERT_TRUE(press.synchronous_handling_disabled());
+  auto taken = view_->TakeStylusHandwritingProperties(press.unique_event_id());
+  ASSERT_TRUE(taken);
+  EXPECT_EQ(properties.handwriting_pointer_id, taken->handwriting_pointer_id);
+  EXPECT_EQ(properties.handwriting_stroke_id, taken->handwriting_stroke_id);
+  EXPECT_EQ(properties.pixels_per_inch, taken->pixels_per_inch);
+}
+
+TEST_F(RenderWidgetHostViewAuraHandwritingPropertiesTest,
+       DiscardsPropertiesForRejectedTouchStart) {
+  ui::TouchEvent press = PenPress();
+  ui::SetStylusHandwritingProperties(press,
+                                     ui::StylusHandwritingPropertiesWin(1, 0));
+  view_->OnTouchEvent(&press);
+
+  ui::TouchEvent duplicate_press = PenPress();
+  ui::SetStylusHandwritingProperties(duplicate_press,
+                                     ui::StylusHandwritingPropertiesWin(2, 0));
+  view_->OnTouchEvent(&duplicate_press);
+
+  EXPECT_TRUE(duplicate_press.stopped_propagation());
+  EXPECT_FALSE(duplicate_press.synchronous_handling_disabled());
+  EXPECT_FALSE(view_->TakeStylusHandwritingProperties(
+      duplicate_press.unique_event_id()));
+}
+
+TEST_F(RenderWidgetHostViewAuraTest, StartsWritingWithPassedProperties) {
+  feature_list_.InitAndEnableFeature(
+      stylus_handwriting::win::kStylusHandwritingWin);
+  StylusHandwritingWinTestHelper handwriting_helper;
+  handwriting_helper.SetUpDefaultMockInfrastructure();
+  handwriting_helper.DefaultMockRequestHandwritingForPointerMethod();
+  InitViewForFrame(nullptr);
+  ParentHostView(view_, parent_view_);
+
+  const ui::StylusHandwritingPropertiesWin properties(1, 101);
+  EXPECT_CALL(*handwriting_helper.mock_tf_impl(),
+              RequestHandwritingForPointer(1, 101, _, _))
+      .Times(3);
+
+  ASSERT_FALSE(view_->last_stylus_handwriting_properties());
+  view_->OnStartStylusWriting(properties);
+
+  // Populate the legacy cache with different properties to verify that the
+  // explicitly passed properties take precedence over the latest contact.
+  ui::TouchEvent press(ui::EventType::kTouchPressed, gfx::Point(),
+                       ui::EventTimeForNow(),
+                       ui::PointerDetails(ui::EventPointerType::kPen, 0));
+  ui::SetStylusHandwritingProperties(
+      press, ui::StylusHandwritingPropertiesWin(2, 202));
+  EXPECT_CALL(*handwriting_helper.mock_tf_impl(),
+              GetHandwritingDistanceThreshold(_))
+      .WillOnce(SetValueParamAndReturnResult<0>(SIZE{10, 10}, S_OK));
+  view_->OnTouchEvent(&press);
+  ASSERT_TRUE(view_->last_stylus_handwriting_properties());
+  EXPECT_EQ(
+      2u, view_->last_stylus_handwriting_properties()->handwriting_pointer_id);
+  EXPECT_EQ(202u,
+            view_->last_stylus_handwriting_properties()->handwriting_stroke_id);
+
+  // Both start writing with explicit properties entry points must leave the
+  // legacy cache intact.
+  view_->OnStartStylusWriting(properties);
+  ASSERT_TRUE(view_->last_stylus_handwriting_properties());
+  EXPECT_EQ(
+      2u, view_->last_stylus_handwriting_properties()->handwriting_pointer_id);
+  EXPECT_EQ(202u,
+            view_->last_stylus_handwriting_properties()->handwriting_stroke_id);
+
+  view_->StartStylusWritingFromChildHostView(view_, base::DoNothing(),
+                                             properties);
+  ASSERT_TRUE(view_->last_stylus_handwriting_properties());
+  EXPECT_EQ(
+      2u, view_->last_stylus_handwriting_properties()->handwriting_pointer_id);
+  EXPECT_EQ(202u,
+            view_->last_stylus_handwriting_properties()->handwriting_stroke_id);
+
+  // Absent properties preserve the legacy behavior: use and clear the cache.
+  EXPECT_CALL(*handwriting_helper.mock_tf_impl(),
+              RequestHandwritingForPointer(2, 202, _, _));
+  view_->OnStartStylusWriting(std::nullopt);
+  EXPECT_FALSE(view_->last_stylus_handwriting_properties());
+}
+
+TEST_F(RenderWidgetHostViewAuraTest,
+       HandwritingPropertiesNotStagedWithoutSmallGestures) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeatureWithParameters(
+      stylus_handwriting::win::kStylusHandwritingWin,
+      {{stylus_handwriting::win::kStylusHandwritingWinSmallGestures.name,
+        "false"}});
+  InitViewForFrame(nullptr);
+  view_->ShowWithVisibility(PageVisibilityState::kVisible);
+  widget_host_->input_router()->OnHasTouchEventConsumers(
+      blink::mojom::TouchEventConsumers::New(HasTouchEventHandlers(true),
+                                             HasHitTestableScrollbar(false)));
+  ui::TouchEvent press(ui::EventType::kTouchPressed, gfx::Point(),
+                       ui::EventTimeForNow(),
+                       ui::PointerDetails(ui::EventPointerType::kPen, 0));
+  ui::SetStylusHandwritingProperties(press,
+                                     ui::StylusHandwritingPropertiesWin(1, 0));
+  view_->OnTouchEvent(&press);
+
+  EXPECT_FALSE(view_->TakeStylusHandwritingProperties(press.unique_event_id()));
+  ASSERT_TRUE(view_->last_stylus_handwriting_properties());
+  EXPECT_EQ(
+      1u, view_->last_stylus_handwriting_properties()->handwriting_pointer_id);
 }
 #endif  // BUILDFLAG(IS_WIN)
 
@@ -1384,6 +1620,31 @@ TEST_F(RenderWidgetHostViewAuraTest, PopupClosesWhenParentMoves) {
   EXPECT_TRUE(observer.destroyed());
 }
 #endif
+
+// A popup may be closed synchronously while InitAsPopup() sets its bounds, e.g.
+// because its parent loses focus. It must not be deleted until InitAsPopup()
+// returns, or be initialized any further, e.g. shown.
+TEST_F(RenderWidgetHostViewAuraTest, PopupClosedWhileSettingBounds) {
+  parent_view_->SetBounds(gfx::Rect(10, 10, 400, 400));
+  parent_view_->Focus();
+  EXPECT_TRUE(parent_view_->HasFocus());
+
+  FakeRenderWidgetHostViewAura* popup = view_;
+  widget_host_ = nullptr;  // Deleted when the popup is closed.
+  view_ = nullptr;         // Deleted when InitAsPopup() returns.
+  std::optional<TestWindowObserver> observer;
+  popup->set_bounds_callback_ = base::BindLambdaForTesting([&]() {
+    observer.emplace(popup->GetNativeView());
+    parent_view_->OnWindowFocused(/*gained_focus=*/nullptr,
+                                  parent_view_->GetNativeView());
+    EXPECT_TRUE(popup->destroy_pending());
+  });
+
+  popup->SetWidgetType(WidgetType::kPopup);
+  popup->InitAsPopup(parent_view_, gfx::Rect(10, 10, 100, 100),
+                     gfx::Rect(10, 10, 1, 1));
+  EXPECT_TRUE(observer->destroyed());
+}
 
 // Checks that IME-composition-event state is maintained correctly.
 TEST_F(RenderWidgetHostViewAuraTest, SetCompositionText) {
@@ -1648,7 +1909,7 @@ TEST_F(RenderWidgetHostViewAuraTest,
                           ui::DomCode::US_A, ui::EF_NONE);
   view_->OnKeyEvent(&key_event1);
   const input::NativeWebKeyboardEvent* event1 =
-      render_widget_host_delegate()->last_event();
+      render_widget_host_delegate()->last_keyboard_event();
   ASSERT_FALSE(event1);
   // Run the runloop to ensure input messages are dispatched.  Otherwise the
   // result of GetAndResetDispatchedMessages() will not be valid.
@@ -1673,7 +1934,7 @@ TEST_F(RenderWidgetHostViewAuraTest,
                            dom_code, ui::EF_NONE);
     view_->OnKeyEvent(&key_event);
     const input::NativeWebKeyboardEvent* event =
-        render_widget_host_delegate()->last_event();
+        render_widget_host_delegate()->last_keyboard_event();
     ASSERT_TRUE(event) << "Failed for DomCode: "
                        << ui::KeycodeConverter::DomCodeToCodeString(dom_code);
     ASSERT_EQ(key_event.key_code(), event->windows_key_code);
@@ -1699,7 +1960,7 @@ TEST_F(RenderWidgetHostViewAuraTest,
       ui::DomCode::ESCAPE, ui::EF_NONE);
   view_->OnKeyEvent(&key_event1);
   const input::NativeWebKeyboardEvent* event1 =
-      render_widget_host_delegate()->last_event();
+      render_widget_host_delegate()->last_keyboard_event();
   ASSERT_TRUE(event1);
   ASSERT_EQ(key_event1.key_code(), event1->windows_key_code);
   ASSERT_EQ(ui::KeycodeConverter::DomCodeToNativeKeycode(key_event1.code()),
@@ -1711,7 +1972,7 @@ TEST_F(RenderWidgetHostViewAuraTest,
                           ui::DomCode::US_B, ui::EF_NONE);
   view_->OnKeyEvent(&key_event2);
   const input::NativeWebKeyboardEvent* event2 =
-      render_widget_host_delegate()->last_event();
+      render_widget_host_delegate()->last_keyboard_event();
   ASSERT_TRUE(event2);
   ASSERT_EQ(key_event2.key_code(), event2->windows_key_code);
   ASSERT_EQ(ui::KeycodeConverter::DomCodeToNativeKeycode(key_event2.code()),
@@ -1737,7 +1998,7 @@ TEST_F(RenderWidgetHostViewAuraTest,
                            dom_code, ui::EF_NONE);
     view_->OnKeyEvent(&key_event);
     const input::NativeWebKeyboardEvent* event =
-        render_widget_host_delegate()->last_event();
+        render_widget_host_delegate()->last_keyboard_event();
     ASSERT_FALSE(event) << "Failed for DomCode: "
                         << ui::KeycodeConverter::DomCodeToCodeString(dom_code);
     // Run the runloop to ensure input messages are dispatched.  Otherwise the
@@ -1766,7 +2027,7 @@ TEST_F(RenderWidgetHostViewAuraTest,
       ui::DomCode::ESCAPE, ui::EF_NONE);
   view_->OnKeyEvent(&esc_key_event);
   const input::NativeWebKeyboardEvent* esc_event =
-      render_widget_host_delegate()->last_event();
+      render_widget_host_delegate()->last_keyboard_event();
   ASSERT_TRUE(esc_event);
   ASSERT_EQ(esc_key_event.key_code(), esc_event->windows_key_code);
   ASSERT_EQ(ui::KeycodeConverter::DomCodeToNativeKeycode(esc_key_event.code()),
@@ -1809,13 +2070,13 @@ TEST_F(RenderWidgetHostViewAuraTest,
                            dom_code, ui::EF_NONE);
     parent_view_->OnKeyEvent(&key_event);
     const input::NativeWebKeyboardEvent* parent_event =
-        delegates_[0]->last_event();
+        delegates_.front()->last_keyboard_event();
     ASSERT_FALSE(parent_event)
         << "Failed for DomCode: "
         << ui::KeycodeConverter::DomCodeToCodeString(dom_code);
 
     const input::NativeWebKeyboardEvent* child_event =
-        render_widget_host_delegate()->last_event();
+        render_widget_host_delegate()->last_keyboard_event();
     ASSERT_TRUE(child_event)
         << "Failed for DomCode: "
         << ui::KeycodeConverter::DomCodeToCodeString(dom_code);
@@ -1835,6 +2096,63 @@ TEST_F(RenderWidgetHostViewAuraTest,
         << "Failed for DomCode: "
         << ui::KeycodeConverter::DomCodeToCodeString(dom_code);
   }
+}
+
+TEST_F(RenderWidgetHostViewAuraTest, KeyEventRoutingWithLockKeyboard) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndDisableFeature(features::kSystemKeyboardLock);
+
+  InitViewForFrame(parent_view_->GetNativeView());
+  view_->ShowWithVisibility(PageVisibilityState::kVisible);
+
+  aura::WindowTreeHost* host = view_->GetNativeView()->GetHost();
+  ASSERT_TRUE(host);
+  EXPECT_FALSE(view_->IsKeyboardLocked());
+  EXPECT_FALSE(host->IsKeyLocked(ui::DomCode::US_A));
+
+  ASSERT_TRUE(
+      view_->LockKeyboard(base::flat_set<ui::DomCode>{ui::DomCode::US_A}));
+  EXPECT_TRUE(view_->IsKeyboardLocked());
+  EXPECT_TRUE(host->IsKeyLocked(ui::DomCode::US_A));
+  EXPECT_FALSE(host->IsKeyLocked(ui::DomCode::US_B));
+
+  // Locked key skips the prehandler and is sent to the input handler.
+  ui::KeyEvent locked_key_event(
+      ui::EventType::kKeyPressed,
+      ui::DomCodeToUsLayoutKeyboardCode(ui::DomCode::US_A), ui::DomCode::US_A,
+      ui::EF_NONE);
+  view_->OnKeyEvent(&locked_key_event);
+  ASSERT_FALSE(render_widget_host_delegate()->last_keyboard_event());
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return !widget_host_->input_handler()->dispatched_messages().empty();
+  }));
+  auto events = GetAndResetDispatchedMessages();
+  ASSERT_FALSE(events.empty());
+  ASSERT_TRUE(events[0]->ToEvent());
+  const blink::WebKeyboardEvent* blink_key_event =
+      static_cast<const blink::WebKeyboardEvent*>(
+          &events[0]->ToEvent()->Event()->Event());
+  EXPECT_EQ(locked_key_event.key_code(), blink_key_event->windows_key_code);
+  EXPECT_EQ(
+      ui::KeycodeConverter::DomCodeToNativeKeycode(locked_key_event.code()),
+      blink_key_event->native_key_code);
+
+  // Unlocked key passes through the prehandler.
+  ui::KeyEvent unlocked_key_event(
+      ui::EventType::kKeyPressed,
+      ui::DomCodeToUsLayoutKeyboardCode(ui::DomCode::US_B), ui::DomCode::US_B,
+      ui::EF_NONE);
+  view_->OnKeyEvent(&unlocked_key_event);
+  const input::NativeWebKeyboardEvent* prehandled_event =
+      render_widget_host_delegate()->last_keyboard_event();
+  ASSERT_TRUE(prehandled_event);
+  EXPECT_EQ(unlocked_key_event.key_code(), prehandled_event->windows_key_code);
+
+  // Unlocking clears both RenderWidgetHostViewEventHandler and WindowTreeHost
+  // lock state.
+  view_->UnlockKeyboard();
+  EXPECT_FALSE(view_->IsKeyboardLocked());
+  EXPECT_FALSE(host->IsKeyLocked(ui::DomCode::US_A));
 }
 
 TEST_F(RenderWidgetHostViewAuraTest, TimerBasedWheelEventPhaseInfo) {
@@ -2096,6 +2414,253 @@ TEST_F(RenderWidgetHostViewAuraTest,
   wheel_event = static_cast<const WebMouseWheelEvent*>(
       &events[2]->ToEvent()->Event()->Event());
   EXPECT_EQ(WebMouseWheelEvent::kPhaseBegan, wheel_event->phase);
+}
+
+// Tests that touchpad scroll latching (a scroll sequence that started with a
+// GFC, e.g. on Wayland) breaks when the scroll direction changes and the first
+// GSU of the sequence was not consumed.
+TEST_F(RenderWidgetHostViewAuraTest,
+       TouchpadScrollLatchingBreaksWithDirectionChange) {
+  InitViewForFrame(nullptr);
+  view_->ShowWithVisibility(PageVisibilityState::kVisible);
+
+  // The user puts their fingers down.
+  ui::ScrollEvent fling_cancel(ui::EventType::kScrollFlingCancel,
+                               gfx::Point(2, 2), ui::EventTimeForNow(), 0, 0, 0,
+                               0, 0, 2);
+  view_->OnScrollEvent(&fling_cancel);
+  GetAndResetDispatchedMessages();
+
+  // The user scrolls in a direction that nothing can scroll in.
+  ui::ScrollEvent scroll0(ui::EventType::kScroll, gfx::Point(2, 2),
+                          ui::EventTimeForNow(), 0, 0, 5, 0, 5, 2);
+  view_->OnScrollEvent(&scroll0);
+  MockWidgetInputHandler::MessageVector events =
+      GetAndResetDispatchedMessages();
+  ASSERT_EQ("MouseWheel", GetMessageNames(events));
+  const WebMouseWheelEvent* wheel_event =
+      static_cast<const WebMouseWheelEvent*>(
+          &events[0]->ToEvent()->Event()->Event());
+  EXPECT_EQ(WebMouseWheelEvent::kPhaseBegan, wheel_event->phase);
+  events[0]->ToEvent()->CallCallback(
+      blink::mojom::InputEventResultState::kNotConsumed);
+
+  // ACK the GSU as NOT_CONSUMED.
+  events = GetAndResetDispatchedMessages();
+  ASSERT_EQ("GestureScrollBegin GestureScrollUpdate", GetMessageNames(events));
+  events[0]->ToEvent()->CallCallback(
+      blink::mojom::InputEventResultState::kNotConsumed);
+  events[1]->ToEvent()->CallCallback(
+      blink::mojom::InputEventResultState::kNotConsumed);
+  EXPECT_EQ(
+      content::TOUCHPAD_SCROLL_IN_PROGRESS,
+      GetMouseWheelPhaseHandler()->touchpad_scroll_phase_state_for_test());
+
+  // Continuing in the same direction keeps the latching.
+  ui::ScrollEvent scroll1(ui::EventType::kScroll, gfx::Point(2, 2),
+                          ui::EventTimeForNow(), 0, 0, 5, 0, 5, 2);
+  view_->OnScrollEvent(&scroll1);
+  events = GetAndResetDispatchedMessages();
+  ASSERT_EQ("MouseWheel GestureScrollUpdate", GetMessageNames(events));
+  wheel_event = static_cast<const WebMouseWheelEvent*>(
+      &events[0]->ToEvent()->Event()->Event());
+  EXPECT_EQ(WebMouseWheelEvent::kPhaseChanged, wheel_event->phase);
+  events[1]->ToEvent()->CallCallback(
+      blink::mojom::InputEventResultState::kNotConsumed);
+
+  // Reversing the direction without lifting the fingers ends the current
+  // sequence and starts a new one.
+  ui::ScrollEvent scroll2(ui::EventType::kScroll, gfx::Point(2, 2),
+                          ui::EventTimeForNow(), 0, 0, -5, 0, -5, 2);
+  view_->OnScrollEvent(&scroll2);
+  events = GetAndResetDispatchedMessages();
+  ASSERT_EQ("MouseWheel GestureScrollEnd MouseWheel", GetMessageNames(events));
+  wheel_event = static_cast<const WebMouseWheelEvent*>(
+      &events[0]->ToEvent()->Event()->Event());
+  EXPECT_EQ(WebMouseWheelEvent::kPhaseEnded, wheel_event->phase);
+  wheel_event = static_cast<const WebMouseWheelEvent*>(
+      &events[2]->ToEvent()->Event()->Event());
+  EXPECT_EQ(WebMouseWheelEvent::kPhaseBegan, wheel_event->phase);
+  EXPECT_EQ(
+      content::TOUCHPAD_SCROLL_IN_PROGRESS,
+      GetMouseWheelPhaseHandler()->touchpad_scroll_phase_state_for_test());
+}
+
+// Tests that touchpad scroll latching does not break on a direction change
+// when the first GSU of the sequence was consumed.
+TEST_F(RenderWidgetHostViewAuraTest,
+       TouchpadScrollLatchingKeptWithDirectionChangeAfterConsumedGSU) {
+  InitViewForFrame(nullptr);
+  view_->ShowWithVisibility(PageVisibilityState::kVisible);
+
+  ui::ScrollEvent fling_cancel(ui::EventType::kScrollFlingCancel,
+                               gfx::Point(2, 2), ui::EventTimeForNow(), 0, 0, 0,
+                               0, 0, 2);
+  view_->OnScrollEvent(&fling_cancel);
+  GetAndResetDispatchedMessages();
+
+  ui::ScrollEvent scroll0(ui::EventType::kScroll, gfx::Point(2, 2),
+                          ui::EventTimeForNow(), 0, 0, 5, 0, 5, 2);
+  view_->OnScrollEvent(&scroll0);
+  MockWidgetInputHandler::MessageVector events =
+      GetAndResetDispatchedMessages();
+  ASSERT_EQ("MouseWheel", GetMessageNames(events));
+  events[0]->ToEvent()->CallCallback(
+      blink::mojom::InputEventResultState::kNotConsumed);
+
+  // ACK the GSU as CONSUMED.
+  events = GetAndResetDispatchedMessages();
+  ASSERT_EQ("GestureScrollBegin GestureScrollUpdate", GetMessageNames(events));
+  events[0]->ToEvent()->CallCallback(
+      blink::mojom::InputEventResultState::kConsumed);
+  events[1]->ToEvent()->CallCallback(
+      blink::mojom::InputEventResultState::kConsumed);
+
+  ui::ScrollEvent scroll1(ui::EventType::kScroll, gfx::Point(2, 2),
+                          ui::EventTimeForNow(), 0, 0, -5, 0, -5, 2);
+  view_->OnScrollEvent(&scroll1);
+  events = GetAndResetDispatchedMessages();
+  ASSERT_EQ("MouseWheel GestureScrollUpdate", GetMessageNames(events));
+  const WebMouseWheelEvent* wheel_event =
+      static_cast<const WebMouseWheelEvent*>(
+          &events[0]->ToEvent()->Event()->Event());
+  EXPECT_EQ(WebMouseWheelEvent::kPhaseChanged, wheel_event->phase);
+}
+
+// Tests that small secondary-axis scroll deltas (e.g. vertical jitter during a
+// large horizontal scroll) do not count as a direction change and do not break
+// touchpad scroll latching when the main axis of movement stays the same.
+TEST_F(RenderWidgetHostViewAuraTest,
+       TouchpadScrollLatchingKeptWithSecondaryAxisJitter) {
+  InitViewForFrame(nullptr);
+  view_->ShowWithVisibility(PageVisibilityState::kVisible);
+
+  ui::ScrollEvent fling_cancel(ui::EventType::kScrollFlingCancel,
+                               gfx::Point(2, 2), ui::EventTimeForNow(), 0, 0, 0,
+                               0, 0, 2);
+  view_->OnScrollEvent(&fling_cancel);
+  GetAndResetDispatchedMessages();
+
+  // Start with a horizontal scroll whose first GSU is not consumed.
+  ui::ScrollEvent scroll0(ui::EventType::kScroll, gfx::Point(2, 2),
+                          ui::EventTimeForNow(), 0, 50, 1, 50, 1, 2);
+  view_->OnScrollEvent(&scroll0);
+  MockWidgetInputHandler::MessageVector events =
+      GetAndResetDispatchedMessages();
+  ASSERT_EQ("MouseWheel", GetMessageNames(events));
+  events[0]->ToEvent()->CallCallback(
+      blink::mojom::InputEventResultState::kNotConsumed);
+
+  events = GetAndResetDispatchedMessages();
+  ASSERT_EQ("GestureScrollBegin GestureScrollUpdate", GetMessageNames(events));
+  events[0]->ToEvent()->CallCallback(
+      blink::mojom::InputEventResultState::kNotConsumed);
+  events[1]->ToEvent()->CallCallback(
+      blink::mojom::InputEventResultState::kNotConsumed);
+
+  // Continue scrolling in the same horizontal direction with opposite vertical
+  // jitter. Since the main axis of movement is still +x, latching is kept.
+  ui::ScrollEvent scroll1(ui::EventType::kScroll, gfx::Point(2, 2),
+                          ui::EventTimeForNow(), 0, 50, -2, 50, -2, 2);
+  view_->OnScrollEvent(&scroll1);
+  events = GetAndResetDispatchedMessages();
+  ASSERT_EQ("MouseWheel GestureScrollUpdate", GetMessageNames(events));
+  const WebMouseWheelEvent* wheel_event =
+      static_cast<const WebMouseWheelEvent*>(
+          &events[0]->ToEvent()->Event()->Event());
+  EXPECT_EQ(WebMouseWheelEvent::kPhaseChanged, wheel_event->phase);
+  events[1]->ToEvent()->CallCallback(
+      blink::mojom::InputEventResultState::kNotConsumed);
+
+  // Reversing the main axis (-x) breaks latching even if the secondary axis
+  // has the same sign as the initial event.
+  ui::ScrollEvent scroll2(ui::EventType::kScroll, gfx::Point(2, 2),
+                          ui::EventTimeForNow(), 0, -50, 1, -50, 1, 2);
+  view_->OnScrollEvent(&scroll2);
+  events = GetAndResetDispatchedMessages();
+  ASSERT_EQ("MouseWheel GestureScrollEnd MouseWheel", GetMessageNames(events));
+  wheel_event = static_cast<const WebMouseWheelEvent*>(
+      &events[0]->ToEvent()->Event()->Event());
+  EXPECT_EQ(WebMouseWheelEvent::kPhaseEnded, wheel_event->phase);
+  wheel_event = static_cast<const WebMouseWheelEvent*>(
+      &events[2]->ToEvent()->Event()->Event());
+  EXPECT_EQ(WebMouseWheelEvent::kPhaseBegan, wheel_event->phase);
+}
+
+// Tests that when a touchpad scroll initiates a history-swipe overscroll in one
+// direction and then reverses direction without lifting the fingers, the
+// direction reversal cancels the overscroll rather than initiating a history
+// navigation in the other direction.
+TEST_F(RenderWidgetHostViewAuraOverscrollTest,
+       TouchpadScrollDirectionChangeCancelsOverscroll) {
+  SetUpOverscrollEnvironment();
+
+  ui::ScrollEvent fling_cancel(ui::EventType::kScrollFlingCancel,
+                               gfx::Point(2, 2), ui::EventTimeForNow(), 0, 0, 0,
+                               0, 0, 2);
+  view_->OnScrollEvent(&fling_cancel);
+  GetAndResetDispatchedMessages();
+
+  // Scroll right past the overscroll start threshold (60 DIPs) to initiate an
+  // east history-swipe overscroll.
+  ui::ScrollEvent scroll_east(ui::EventType::kScroll, gfx::Point(2, 2),
+                              ui::EventTimeForNow(), 0, 70, 0, 70, 0, 2);
+  view_->OnScrollEvent(&scroll_east);
+  MockWidgetInputHandler::MessageVector events =
+      GetAndResetDispatchedMessages();
+  ASSERT_EQ("MouseWheel", GetMessageNames(events));
+  events[0]->ToEvent()->CallCallback(
+      blink::mojom::InputEventResultState::kNotConsumed);
+
+  events = GetAndResetDispatchedMessages();
+  ASSERT_EQ("GestureScrollBegin GestureScrollUpdate", GetMessageNames(events));
+  events[0]->ToEvent()->CallCallback(
+      blink::mojom::InputEventResultState::kConsumed);
+  events[1]->ToEvent()->CallCallback(
+      blink::mojom::InputEventResultState::kNotConsumed);
+  EXPECT_EQ(OVERSCROLL_EAST, overscroll_mode());
+  EXPECT_EQ(OverscrollSource::TOUCHPAD, overscroll_source());
+  EXPECT_EQ(OVERSCROLL_EAST, overscroll_delegate()->current_mode());
+
+  // Reverse direction enough to abort the east overscroll.
+  ui::ScrollEvent scroll_west1(ui::EventType::kScroll, gfx::Point(2, 2),
+                               ui::EventTimeForNow(), 0, -20, 0, -20, 0, 2);
+  view_->OnScrollEvent(&scroll_west1);
+  events = GetAndResetDispatchedMessages();
+  ASSERT_EQ("MouseWheel GestureScrollEnd MouseWheel", GetMessageNames(events));
+  events[1]->ToEvent()->CallCallback(
+      blink::mojom::InputEventResultState::kNotConsumed);
+  events[2]->ToEvent()->CallCallback(
+      blink::mojom::InputEventResultState::kNotConsumed);
+
+  events = GetAndResetDispatchedMessages();
+  ASSERT_EQ("GestureScrollBegin", GetMessageNames(events));
+  events[0]->ToEvent()->CallCallback(
+      blink::mojom::InputEventResultState::kConsumed);
+  EXPECT_EQ(OVERSCROLL_NONE, overscroll_mode());
+  EXPECT_EQ(OverscrollSource::NONE, overscroll_source());
+  EXPECT_EQ(OVERSCROLL_NONE, overscroll_delegate()->current_mode());
+
+  // Continue scrolling in the reverse direction well past the overscroll
+  // threshold. Overscroll in the west direction must not be initiated.
+  ui::ScrollEvent scroll_west2(ui::EventType::kScroll, gfx::Point(2, 2),
+                               ui::EventTimeForNow(), 0, -100, 0, -100, 0, 2);
+  view_->OnScrollEvent(&scroll_west2);
+  events = GetAndResetDispatchedMessages();
+  ASSERT_EQ("MouseWheel", GetMessageNames(events));
+  EXPECT_EQ(OVERSCROLL_NONE, overscroll_mode());
+  EXPECT_EQ(OverscrollSource::NONE, overscroll_source());
+  EXPECT_EQ(OVERSCROLL_NONE, overscroll_delegate()->current_mode());
+  EXPECT_EQ(OVERSCROLL_NONE, overscroll_delegate()->completed_mode());
+
+  // Lifting the fingers ends the sequence without completing any navigation.
+  ui::ScrollEvent fling_start(ui::EventType::kScrollFlingStart,
+                              gfx::Point(2, 2), ui::EventTimeForNow(), 0, 0, 0,
+                              0, 0, 2);
+  view_->OnScrollEvent(&fling_start);
+  EXPECT_EQ(OVERSCROLL_NONE, overscroll_mode());
+  EXPECT_EQ(OVERSCROLL_NONE, overscroll_delegate()->current_mode());
+  EXPECT_EQ(OVERSCROLL_NONE, overscroll_delegate()->completed_mode());
 }
 
 TEST_F(RenderWidgetHostViewAuraTest,
@@ -3132,6 +3697,430 @@ TEST_F(RenderWidgetHostViewAuraTest, UpdateCursorIfOverSelf) {
   EXPECT_EQ(0, cursor_client.calls_to_set_cursor());
 }
 
+// A cursor update from the renderer is displayed while the pointer is over the
+// unbounded surface spawned by the view, even though the surface lies outside
+// the view's bounds, and the surface window hands out the view's cursor.
+TEST_F(RenderWidgetHostViewAuraTest, UpdateCursorOverUnboundedSurface) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeature(blink::features::kUnboundedElement);
+
+  InitViewForFrame(nullptr);
+  ParentHostView(view_, parent_view_);
+  // Note that all coordinates in this test are screen coordinates.
+  view_->SetBounds(gfx::Rect(60, 60, 100, 100));
+  view_->ShowWithVisibility(PageVisibilityState::kVisible);
+
+  aura::Window* root_window = parent_view_->GetNativeView()->GetRootWindow();
+  RecordingCursorClient cursor_client(root_window);
+
+  // Place the surface entirely outside the view.
+  constexpr gfx::Rect kSurfaceBounds(200, 200, 50, 50);
+  constexpr gfx::Point kPointOverSurface(220, 220);
+  view_->CreateUnboundedSurface(kSurfaceBounds, nullptr);
+  UnboundedSurfaceWindow* surface = view_->GetUnboundedSurfaceWindow();
+  ASSERT_TRUE(surface);
+  aura::Window* surface_window = surface->GetNativeWindow();
+  ASSERT_TRUE(surface_window);
+  ASSERT_EQ(root_window, surface_window->GetRootWindow());
+  ASSERT_EQ(kSurfaceBounds, surface_window->GetBoundsInScreen());
+
+  // Pointer over the view itself still works while the surface is open.
+  aura::Env::GetInstance()->SetLastMouseLocation(gfx::Point(110, 110));
+  cursor_client.reset_calls_to_set_cursor();
+  view_->DisplayCursor(ui::Cursor(ui::mojom::CursorType::kIBeam));
+  EXPECT_EQ(1, cursor_client.calls_to_set_cursor());
+  EXPECT_EQ(ui::mojom::CursorType::kIBeam, cursor_client.GetCursor().type());
+
+  // Pointer over the surface: the cursor is displayed.
+  aura::Env::GetInstance()->SetLastMouseLocation(kPointOverSurface);
+  cursor_client.reset_calls_to_set_cursor();
+  view_->DisplayCursor(ui::Cursor(ui::mojom::CursorType::kHand));
+  EXPECT_EQ(1, cursor_client.calls_to_set_cursor());
+  EXPECT_EQ(ui::mojom::CursorType::kHand, cursor_client.GetCursor().type());
+
+  // The surface window reports the view's cursor, which is what
+  // wm::CompoundEventFilter shows when the pointer enters or moves over it.
+  EXPECT_EQ(ui::mojom::CursorType::kHand,
+            surface_window->delegate()->GetCursor(gfx::Point()).type());
+
+  // A loading page shows the pointer instead, as over the view itself, and
+  // restores the renderer cursor once loading completes.
+  cursor_client.reset_calls_to_set_cursor();
+  view_->SetIsLoading(true);
+  EXPECT_EQ(1, cursor_client.calls_to_set_cursor());
+  EXPECT_EQ(ui::mojom::CursorType::kPointer, cursor_client.GetCursor().type());
+  cursor_client.reset_calls_to_set_cursor();
+  view_->SetIsLoading(false);
+  EXPECT_EQ(1, cursor_client.calls_to_set_cursor());
+  EXPECT_EQ(ui::mojom::CursorType::kHand, cursor_client.GetCursor().type());
+
+  // When the cursor is hidden (kNone), loading does not replace it with the
+  // pointer cursor over the surface.
+  view_->DisplayCursor(ui::Cursor(ui::mojom::CursorType::kNone));
+  EXPECT_EQ(ui::mojom::CursorType::kNone, cursor_client.GetCursor().type());
+  view_->SetIsLoading(true);
+  EXPECT_EQ(ui::mojom::CursorType::kNone, cursor_client.GetCursor().type());
+  view_->SetIsLoading(false);
+
+  // Pointer outside both the view and the surface: no update.
+  aura::Env::GetInstance()->SetLastMouseLocation(gfx::Point(300, 300));
+  cursor_client.reset_calls_to_set_cursor();
+  view_->DisplayCursor(ui::Cursor(ui::mojom::CursorType::kIBeam));
+  EXPECT_EQ(0, cursor_client.calls_to_set_cursor());
+
+  // The surface hides the cursor while the pointer is locked.
+  ASSERT_EQ(blink::mojom::PointerLockResult::kSuccess,
+            view_->LockPointer(/*request_unadjusted_movement=*/false));
+  ASSERT_TRUE(view_->IsPointerLocked());
+  EXPECT_EQ(ui::mojom::CursorType::kNone,
+            surface_window->delegate()->GetCursor(gfx::Point()).type());
+  view_->UnlockPointer();
+  EXPECT_EQ(ui::mojom::CursorType::kIBeam,
+            surface_window->delegate()->GetCursor(gfx::Point()).type());
+
+  // Dismissing the surface stops cursor updates over its former bounds.
+  // Destruction of the surface is deferred to a posted task, and the surface
+  // keeps showing the cursor until then.
+  surface->Dismiss();
+  aura::Env::GetInstance()->SetLastMouseLocation(kPointOverSurface);
+  cursor_client.reset_calls_to_set_cursor();
+  view_->DisplayCursor(ui::Cursor(ui::mojom::CursorType::kHand));
+  EXPECT_EQ(1, cursor_client.calls_to_set_cursor());
+  ASSERT_TRUE(base::test::RunUntil(
+      [&] { return !view_->HasActiveUnboundedSurface(); }));
+  ASSERT_FALSE(view_->GetUnboundedSurfaceWindow());
+  cursor_client.reset_calls_to_set_cursor();
+  view_->DisplayCursor(ui::Cursor(ui::mojom::CursorType::kHand));
+  EXPECT_EQ(0, cursor_client.calls_to_set_cursor());
+}
+
+namespace {
+
+// `wm::DefaultScreenPositionClient` derives the root window's screen origin
+// from `WindowTreeHost::GetBoundsInPixels()`, which on Windows
+// (`ui::WinWindow`) queries `GetClientRect()` and always returns (0, 0).
+// Override `GetRootWindowOriginInScreen()` to place the test root at a known
+// non-zero screen origin across all platforms.
+class OffsetScreenPositionClient : public wm::DefaultScreenPositionClient {
+ public:
+  OffsetScreenPositionClient(aura::Window* root_window,
+                             const gfx::Point& origin_in_screen)
+      : wm::DefaultScreenPositionClient(root_window),
+        origin_in_screen_(origin_in_screen) {}
+
+ protected:
+  gfx::Point GetRootWindowOriginInScreen(
+      const aura::Window* root_window) override {
+    return origin_in_screen_;
+  }
+
+ private:
+  const gfx::Point origin_in_screen_;
+};
+
+}  // namespace
+
+// Same as above with the surface in its own root window, as on desktop Aura
+// where the surface is a top-level window: the pointer is hit-tested in the
+// surface's root, and the view's root cursor client still shows the cursor.
+TEST_F(RenderWidgetHostViewAuraTest,
+       UpdateCursorOverUnboundedSurfaceInSeparateRoot) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeature(blink::features::kUnboundedElement);
+
+  InitViewForFrame(nullptr);
+  ParentHostView(view_, parent_view_);
+  // Note that all coordinates in this test are screen coordinates.
+  view_->SetBounds(gfx::Rect(60, 60, 100, 100));
+  view_->ShowWithVisibility(PageVisibilityState::kVisible);
+
+  aura::Window* root_window = parent_view_->GetNativeView()->GetRootWindow();
+  RecordingCursorClient cursor_client(root_window);
+
+  // A second host, standing in for the top-level window that desktop Aura
+  // creates for the surface, placed at a non-zero screen origin so screen-to-
+  // root coordinate conversion is exercised.
+  constexpr gfx::Point kSurfaceRootOrigin(400, 20);
+  std::unique_ptr<aura::TestScreen> surface_screen =
+      base::WrapUnique(aura::TestScreen::Create(gfx::Size(800, 600)));
+  aura::WindowTreeHost* surface_host =
+      surface_screen->CreateHostForPrimaryDisplay();
+  surface_host->SetBoundsInPixels(gfx::Rect(kSurfaceRootOrigin, {200, 200}));
+  aura::Window* surface_root = surface_host->window();
+  OffsetScreenPositionClient surface_screen_position_client(surface_root,
+                                                            kSurfaceRootOrigin);
+
+  // Parent the surface into the second host. The surface is created with the
+  // view's root as context, so swap that root's parenting client temporarily.
+  aura::client::WindowParentingClient* original_parenting_client =
+      aura::client::GetWindowParentingClient(root_window);
+  constexpr gfx::Rect kSurfaceBounds(450, 50, 50, 50);
+  {
+    aura::test::TestWindowParentingClient parenting_client(root_window);
+    parenting_client.set_default_parent(surface_root);
+    view_->CreateUnboundedSurface(kSurfaceBounds, nullptr);
+  }
+  aura::client::SetWindowParentingClient(root_window,
+                                         original_parenting_client);
+
+  UnboundedSurfaceWindow* surface = view_->GetUnboundedSurfaceWindow();
+  ASSERT_TRUE(surface);
+  aura::Window* surface_window = surface->GetNativeWindow();
+  ASSERT_TRUE(surface_window);
+  ASSERT_EQ(surface_root, surface_window->GetRootWindow());
+  ASSERT_NE(root_window, surface_root);
+  const gfx::Rect surface_bounds = surface_window->GetBoundsInScreen();
+  const gfx::Rect surface_root_bounds = surface_root->GetBoundsInScreen();
+  ASSERT_EQ(kSurfaceRootOrigin, surface_root_bounds.origin());
+  ASSERT_EQ(kSurfaceBounds, surface_bounds);
+  ASSERT_TRUE(surface_root_bounds.Contains(surface_bounds));
+  const gfx::Point point_over_surface = surface_bounds.CenterPoint();
+  const gfx::Point point_beside_surface =
+      surface_root_bounds.origin() + gfx::Vector2d(10, 10);
+  ASSERT_FALSE(surface_bounds.Contains(point_beside_surface));
+
+  // Pointer over the surface in the other root: the cursor is displayed
+  // through the view's root cursor client.
+  aura::Env::GetInstance()->SetLastMouseLocation(point_over_surface);
+  cursor_client.reset_calls_to_set_cursor();
+  view_->DisplayCursor(ui::Cursor(ui::mojom::CursorType::kHand));
+  EXPECT_EQ(1, cursor_client.calls_to_set_cursor());
+  EXPECT_EQ(ui::mojom::CursorType::kHand, cursor_client.GetCursor().type());
+
+  // Pointer in the other root but outside the surface: no update.
+  aura::Env::GetInstance()->SetLastMouseLocation(point_beside_surface);
+  cursor_client.reset_calls_to_set_cursor();
+  view_->DisplayCursor(ui::Cursor(ui::mojom::CursorType::kIBeam));
+  EXPECT_EQ(0, cursor_client.calls_to_set_cursor());
+
+  // Pointer over the view itself still works.
+  aura::Env::GetInstance()->SetLastMouseLocation(gfx::Point(110, 110));
+  cursor_client.reset_calls_to_set_cursor();
+  view_->DisplayCursor(ui::Cursor(ui::mojom::CursorType::kIBeam));
+  EXPECT_EQ(1, cursor_client.calls_to_set_cursor());
+
+  // The host tearing down the surface's window, before the surface has been
+  // removed from the view, leaves a surface without a native window. Cursor
+  // updates over its former bounds are dropped rather than crashing.
+  aura::Env::GetInstance()->SetLastMouseLocation(point_over_surface);
+  delete surface_window;
+  ASSERT_TRUE(view_->HasActiveUnboundedSurface());
+  ASSERT_FALSE(surface->GetNativeWindow());
+  cursor_client.reset_calls_to_set_cursor();
+  view_->DisplayCursor(ui::Cursor(ui::mojom::CursorType::kHand));
+  EXPECT_EQ(0, cursor_client.calls_to_set_cursor());
+  ASSERT_TRUE(base::test::RunUntil(
+      [&] { return !view_->HasActiveUnboundedSurface(); }));
+}
+
+namespace {
+
+// Delegating display::Screen that lets tests control which Aura window the OS
+// reports as being under the cursor for ShouldSkipCursorUpdate().
+class ScopedCursorTestScreen : public display::Screen {
+ public:
+  ScopedCursorTestScreen() : original_screen_(display::Screen::Get()) {
+    set_shutdown(true);
+    display::Screen::SetScreenInstance(this);
+  }
+  ScopedCursorTestScreen(const ScopedCursorTestScreen&) = delete;
+  ScopedCursorTestScreen& operator=(const ScopedCursorTestScreen&) = delete;
+  ~ScopedCursorTestScreen() override {
+    display::Screen::SetScreenInstance(nullptr);
+    display::Screen::SetScreenInstance(original_screen_);
+  }
+
+  void set_window_under_cursor(aura::Window* window) {
+    window_under_cursor_ = window;
+  }
+
+  // display::Screen:
+  gfx::Point GetCursorScreenPoint() override {
+    return original_screen_->GetCursorScreenPoint();
+  }
+  bool IsWindowUnderCursor(gfx::NativeWindow window) override {
+    return window_under_cursor_ && window &&
+           window_under_cursor_->GetRootWindow() == window->GetRootWindow();
+  }
+  gfx::NativeWindow GetWindowAtScreenPoint(const gfx::Point&) override {
+    return window_under_cursor_;
+  }
+  gfx::NativeWindow GetLocalProcessWindowAtPoint(
+      const gfx::Point& point,
+      const std::set<gfx::NativeWindow>& ignore) override {
+    return original_screen_->GetLocalProcessWindowAtPoint(point, ignore);
+  }
+  int GetNumDisplays() const override {
+    return original_screen_->GetNumDisplays();
+  }
+  const std::vector<display::Display>& GetAllDisplays() const override {
+    return original_screen_->GetAllDisplays();
+  }
+  display::Display GetDisplayNearestWindow(
+      gfx::NativeWindow window) const override {
+    return original_screen_->GetDisplayNearestWindow(window);
+  }
+  display::Display GetDisplayNearestPoint(
+      const gfx::Point& point) const override {
+    return original_screen_->GetDisplayNearestPoint(point);
+  }
+  display::Display GetDisplayMatching(
+      const gfx::Rect& match_rect) const override {
+    return original_screen_->GetDisplayMatching(match_rect);
+  }
+  display::Display GetPrimaryDisplay() const override {
+    return original_screen_->GetPrimaryDisplay();
+  }
+  void AddObserver(display::DisplayObserver* observer) override {
+    original_screen_->AddObserver(observer);
+  }
+  void RemoveObserver(display::DisplayObserver* observer) override {
+    original_screen_->RemoveObserver(observer);
+  }
+
+ private:
+  raw_ptr<display::Screen> original_screen_;
+  raw_ptr<aura::Window> window_under_cursor_ = nullptr;
+};
+
+}  // namespace
+
+// RenderWidgetHostViewAura::ShouldSkipCursorUpdate() permits cursor updates
+// when the OS window under the cursor is either the view's root window or its
+// unbounded surface's root window, and skips updates when the cursor is over
+// no window or an unrelated root window.
+TEST_F(RenderWidgetHostViewAuraTest,
+       ShouldSkipCursorUpdateWithUnboundedSurface) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeature(blink::features::kUnboundedElement);
+
+  InitViewForFrame(nullptr);
+  ParentHostView(view_, parent_view_);
+  view_->SetBounds(gfx::Rect(60, 60, 100, 100));
+  view_->ShowWithVisibility(PageVisibilityState::kVisible);
+  view_->set_use_real_should_skip_cursor_update(true);
+
+  aura::Window* root_window = parent_view_->GetNativeView()->GetRootWindow();
+  RecordingCursorClient cursor_client(root_window);
+
+  std::unique_ptr<aura::TestScreen> surface_screen =
+      base::WrapUnique(aura::TestScreen::Create(gfx::Size(800, 600)));
+  aura::WindowTreeHost* surface_host =
+      surface_screen->CreateHostForPrimaryDisplay();
+  aura::Window* surface_root = surface_host->window();
+  wm::DefaultScreenPositionClient surface_screen_position_client(surface_root);
+
+  std::unique_ptr<aura::TestScreen> unrelated_screen =
+      base::WrapUnique(aura::TestScreen::Create(gfx::Size(800, 600)));
+  aura::WindowTreeHost* unrelated_host =
+      unrelated_screen->CreateHostForPrimaryDisplay();
+  aura::Window* unrelated_root = unrelated_host->window();
+
+  aura::client::WindowParentingClient* original_parenting_client =
+      aura::client::GetWindowParentingClient(root_window);
+  constexpr gfx::Rect kSurfaceBounds(200, 200, 50, 50);
+  {
+    aura::test::TestWindowParentingClient parenting_client(root_window);
+    parenting_client.set_default_parent(surface_root);
+    view_->CreateUnboundedSurface(kSurfaceBounds, nullptr);
+  }
+  aura::client::SetWindowParentingClient(root_window,
+                                         original_parenting_client);
+
+  UnboundedSurfaceWindow* surface = view_->GetUnboundedSurfaceWindow();
+  ASSERT_TRUE(surface);
+  aura::Window* surface_window = surface->GetNativeWindow();
+  ASSERT_TRUE(surface_window);
+  const gfx::Point point_over_surface =
+      surface_window->GetBoundsInScreen().CenterPoint();
+
+  ScopedCursorTestScreen test_screen;
+
+  // When no window or an unrelated root window is under the OS cursor, cursor
+  // updates are skipped on desktop Aura.
+  aura::Env::GetInstance()->SetLastMouseLocation(point_over_surface);
+  test_screen.set_window_under_cursor(nullptr);
+#if BUILDFLAG(IS_CHROMEOS)
+  EXPECT_FALSE(view_->ShouldSkipCursorUpdate());
+#else
+  EXPECT_TRUE(view_->ShouldSkipCursorUpdate());
+  cursor_client.reset_calls_to_set_cursor();
+  view_->DisplayCursor(ui::Cursor(ui::mojom::CursorType::kHand));
+  EXPECT_EQ(0, cursor_client.calls_to_set_cursor());
+#endif
+
+  test_screen.set_window_under_cursor(unrelated_root);
+#if BUILDFLAG(IS_CHROMEOS)
+  EXPECT_FALSE(view_->ShouldSkipCursorUpdate());
+#else
+  EXPECT_TRUE(view_->ShouldSkipCursorUpdate());
+  cursor_client.reset_calls_to_set_cursor();
+  view_->DisplayCursor(ui::Cursor(ui::mojom::CursorType::kHand));
+  EXPECT_EQ(0, cursor_client.calls_to_set_cursor());
+#endif
+
+  // When the view's own root window is under the OS cursor, updates proceed.
+  test_screen.set_window_under_cursor(view_->GetNativeView());
+  EXPECT_FALSE(view_->ShouldSkipCursorUpdate());
+
+  // When the surface's root window is under the OS cursor, updates proceed and
+  // reach the cursor client.
+  test_screen.set_window_under_cursor(surface_window);
+  EXPECT_FALSE(view_->ShouldSkipCursorUpdate());
+  cursor_client.reset_calls_to_set_cursor();
+  view_->DisplayCursor(ui::Cursor(ui::mojom::CursorType::kHand));
+  EXPECT_EQ(1, cursor_client.calls_to_set_cursor());
+  EXPECT_EQ(ui::mojom::CursorType::kHand, cursor_client.GetCursor().type());
+
+  // Once the surface window is destroyed, `surface_root` is no longer accepted.
+  test_screen.set_window_under_cursor(surface_root);
+  delete surface_window;
+#if BUILDFLAG(IS_CHROMEOS)
+  EXPECT_FALSE(view_->ShouldSkipCursorUpdate());
+#else
+  EXPECT_TRUE(view_->ShouldSkipCursorUpdate());
+#endif
+  ASSERT_TRUE(base::test::RunUntil(
+      [&] { return !view_->HasActiveUnboundedSurface(); }));
+}
+
+TEST_F(RenderWidgetHostViewAuraTest,
+       UnboundedSurfaceShadowElevationFollowsFeatureFlag) {
+  InitViewForFrame(nullptr);
+  ParentHostView(view_, parent_view_);
+  view_->SetBounds(gfx::Rect(60, 60, 100, 100));
+  view_->ShowWithVisibility(PageVisibilityState::kVisible);
+
+  constexpr gfx::Rect kSurfaceBounds(200, 200, 50, 50);
+  {
+    base::test::ScopedFeatureList scoped_feature_list;
+    scoped_feature_list.InitWithFeatures(
+        {blink::features::kUnboundedElement},
+        {features::kOmitNativeFrameOnShadowlessMenus});
+    view_->CreateUnboundedSurface(kSurfaceBounds, nullptr);
+    UnboundedSurfaceWindow* surface = view_->GetUnboundedSurfaceWindow();
+    ASSERT_TRUE(surface);
+    EXPECT_EQ(wm::kShadowElevationDefault,
+              surface->GetNativeWindow()->GetProperty(wm::kShadowElevationKey));
+    surface->Dismiss();
+    ASSERT_TRUE(base::test::RunUntil(
+        [&] { return !view_->HasActiveUnboundedSurface(); }));
+  }
+
+  {
+    base::test::ScopedFeatureList scoped_feature_list;
+    scoped_feature_list.InitWithFeatures(
+        {blink::features::kUnboundedElement,
+         features::kOmitNativeFrameOnShadowlessMenus},
+        {});
+    view_->CreateUnboundedSurface(kSurfaceBounds, nullptr);
+    UnboundedSurfaceWindow* surface = view_->GetUnboundedSurfaceWindow();
+    ASSERT_TRUE(surface);
+    EXPECT_EQ(wm::kShadowElevationNone,
+              surface->GetNativeWindow()->GetProperty(wm::kShadowElevationKey));
+  }
+}
+
 TEST_F(RenderWidgetHostViewAuraTest, ZeroSizeStillGetsLocalSurfaceId) {
   parent_local_surface_id_allocator_.GenerateId();
 
@@ -3387,17 +4376,12 @@ TEST_F(RenderWidgetHostViewAuraTest, DiscardDelegatedFrames) {
   gfx::Size size2(200, 200);
   views[1]->SetSize(size2);
   // Show it, it should block until we give it a frame.
-  UNSAFE_TODO(views[1])->ShowWithVisibility(PageVisibilityState::kVisible);
-  ASSERT_TRUE(UNSAFE_TODO(views[1])
-                  ->window_->layer()
-                  ->AsSurface()
-                  ->GetOldestAcceptableFallback());
+  views[1]->ShowWithVisibility(PageVisibilityState::kVisible);
+  ASSERT_TRUE(
+      views[1]->window_->layer()->AsSurface()->GetOldestAcceptableFallback());
   EXPECT_EQ(
-      *UNSAFE_TODO(views[1])
-           ->window_->layer()
-           ->AsSurface()
-           ->GetOldestAcceptableFallback(),
-      *UNSAFE_TODO(views[1])->window_->layer()->AsSurface()->GetSurfaceId());
+      *views[1]->window_->layer()->AsSurface()->GetOldestAcceptableFallback(),
+      *views[1]->window_->layer()->AsSurface()->GetSurfaceId());
 
   for (size_t i = 0; i < renderer_count; ++i)
     views[i]->DestroyOrDefer();
@@ -3589,7 +4573,6 @@ TEST_F(RenderWidgetHostViewAuraOverscrollTest, WheelScrollEventOverscrolls) {
   EXPECT_EQ(OVERSCROLL_WEST, overscroll_delegate()->current_mode());
   EXPECT_EQ(-90.f, overscroll_delta_x());
   EXPECT_EQ(-30.f, overscroll_delegate()->delta_x());
-  EXPECT_EQ(0.f, overscroll_delegate()->delta_y());
   events = GetAndResetDispatchedMessages();
   EXPECT_EQ(0U, events.size());
 
@@ -3703,7 +4686,6 @@ TEST_F(RenderWidgetHostViewAuraOverscrollTest, WheelScrollOverscrollToggle) {
   EXPECT_EQ(OVERSCROLL_EAST, overscroll_delegate()->current_mode());
   EXPECT_EQ(70.f, overscroll_delta_x());
   EXPECT_EQ(10.f, overscroll_delegate()->delta_x());
-  EXPECT_EQ(0.f, overscroll_delegate()->delta_y());
 
   // Scroll in the reverse direction enough to abort the overscroll.
   SimulateWheelEvent(-20, 0, 0, true, WebMouseWheelEvent::kPhaseChanged);
@@ -3738,7 +4720,6 @@ TEST_F(RenderWidgetHostViewAuraOverscrollTest, WheelScrollOverscrollToggle) {
   EXPECT_EQ(OVERSCROLL_NONE, overscroll_delegate()->current_mode());
   EXPECT_EQ(-105.f, overscroll_delta_x());
   EXPECT_EQ(0.f, overscroll_delegate()->delta_x());
-  EXPECT_EQ(0.f, overscroll_delegate()->delta_y());
 }
 
 // Tests that a small fling after overscroll is initiated aborts the overscroll.
@@ -3786,7 +4767,6 @@ TEST_F(RenderWidgetHostViewAuraOverscrollTest,
 
   EXPECT_EQ(70.f, overscroll_delta_x());
   EXPECT_EQ(10.f, overscroll_delegate()->delta_x());
-  EXPECT_EQ(0.f, overscroll_delegate()->delta_y());
   events = GetAndResetDispatchedMessages();
   EXPECT_EQ(0U, events.size());
 
@@ -3863,7 +4843,6 @@ TEST_F(RenderWidgetHostViewAuraOverscrollTest,
 
   EXPECT_EQ(70.f, overscroll_delta_x());
   EXPECT_EQ(10.f, overscroll_delegate()->delta_x());
-  EXPECT_EQ(0.f, overscroll_delegate()->delta_y());
   events = GetAndResetDispatchedMessages();
   EXPECT_EQ(0U, events.size());
 
@@ -3999,7 +4978,6 @@ TEST_F(RenderWidgetHostViewAuraOverscrollTest, GestureScrollOverscrolls) {
   EXPECT_EQ(55.f, overscroll_delta_x());
   EXPECT_EQ(-5.f, overscroll_delta_y());
   EXPECT_EQ(5.f, overscroll_delegate()->delta_x());
-  EXPECT_EQ(0.f, overscroll_delegate()->delta_y());
 
   // Send another gesture update event. This event should be consumed by the
   // controller, and not be forwarded to the renderer. The gesture-event filter
@@ -4013,7 +4991,6 @@ TEST_F(RenderWidgetHostViewAuraOverscrollTest, GestureScrollOverscrolls) {
   EXPECT_EQ(65.f, overscroll_delta_x());
   EXPECT_EQ(-10.f, overscroll_delta_y());
   EXPECT_EQ(15.f, overscroll_delegate()->delta_x());
-  EXPECT_EQ(0.f, overscroll_delegate()->delta_y());
 
   // Now send a scroll end. This should cancel the overscroll gesture, and send
   // the event to the renderer. The gesture-event filter should receive this
@@ -4059,7 +5036,6 @@ TEST_F(RenderWidgetHostViewAuraOverscrollTest, OverscrollDeltaCap) {
   EXPECT_EQ(55.f, overscroll_delta_x());
   EXPECT_EQ(-5.f, overscroll_delta_y());
   EXPECT_EQ(5.f, overscroll_delegate()->delta_x());
-  EXPECT_EQ(0.f, overscroll_delegate()->delta_y());
 
   // Scroll beyond overscroll cap. Overscroll delta should not surpass the cap.
   SimulateGestureScrollUpdateEvent(75, -5, 0);
@@ -4071,7 +5047,6 @@ TEST_F(RenderWidgetHostViewAuraOverscrollTest, OverscrollDeltaCap) {
   EXPECT_EQ(100.f, overscroll_delta_x());
   EXPECT_EQ(-10.f, overscroll_delta_y());
   EXPECT_EQ(50.f, overscroll_delegate()->delta_x());
-  EXPECT_EQ(0.f, overscroll_delegate()->delta_y());
 
   // Scroll back a bit. Since the extra scroll after cap in previous step is
   // ignored, scrolling back should immediately reduce overscroll delta.
@@ -4084,7 +5059,6 @@ TEST_F(RenderWidgetHostViewAuraOverscrollTest, OverscrollDeltaCap) {
   EXPECT_EQ(90.f, overscroll_delta_x());
   EXPECT_EQ(-15.f, overscroll_delta_y());
   EXPECT_EQ(40.f, overscroll_delegate()->delta_x());
-  EXPECT_EQ(0.f, overscroll_delegate()->delta_y());
 
   // End overscrolling.
   SimulateGestureEvent(WebInputEvent::Type::kGestureScrollEnd,
@@ -4200,7 +5174,6 @@ TEST_F(RenderWidgetHostViewAuraOverscrollTest,
   EXPECT_EQ(OVERSCROLL_EAST, overscroll_delegate()->current_mode());
   EXPECT_EQ(55.f, overscroll_delta_x());
   EXPECT_EQ(5.f, overscroll_delegate()->delta_x());
-  EXPECT_EQ(0.f, overscroll_delegate()->delta_y());
 
   // Receive an ACK for the last scroll-update event as not being processed.
   // This will be consumed by the overscroll controller.
@@ -4210,7 +5183,6 @@ TEST_F(RenderWidgetHostViewAuraOverscrollTest,
   EXPECT_EQ(OVERSCROLL_EAST, overscroll_delegate()->current_mode());
   EXPECT_EQ(65.f, overscroll_delta_x());
   EXPECT_EQ(15.f, overscroll_delegate()->delta_x());
-  EXPECT_EQ(0.f, overscroll_delegate()->delta_y());
   ReleaseAndResetDispatchedMessages();
 }
 
@@ -4256,7 +5228,6 @@ TEST_F(RenderWidgetHostViewAuraOverscrollTest,
   EXPECT_EQ(OVERSCROLL_EAST, overscroll_delegate()->current_mode());
   EXPECT_EQ(55.f, overscroll_delta_x());
   EXPECT_EQ(5.f, overscroll_delegate()->delta_x());
-  EXPECT_EQ(0.f, overscroll_delegate()->delta_y());
 
   // Let the timer for the debounce queue fire. That should release the queued
   // scroll-end event. Since overscroll has started, but there hasn't been
@@ -4337,7 +5308,6 @@ TEST_F(RenderWidgetHostViewAuraOverscrollTest, OverscrollWithTouchEvents) {
   EXPECT_EQ(OVERSCROLL_EAST, overscroll_delegate()->current_mode());
   EXPECT_EQ(65.f, overscroll_delta_x());
   EXPECT_EQ(15.f, overscroll_delegate()->delta_x());
-  EXPECT_EQ(0.f, overscroll_delegate()->delta_y());
 
   // Send another touch event. The page should get the touch-move event, even
   // though overscroll has started.
@@ -4348,7 +5318,6 @@ TEST_F(RenderWidgetHostViewAuraOverscrollTest, OverscrollWithTouchEvents) {
   EXPECT_EQ(OVERSCROLL_EAST, overscroll_delegate()->current_mode());
   EXPECT_EQ(65.f, overscroll_delta_x());
   EXPECT_EQ(15.f, overscroll_delegate()->delta_x());
-  EXPECT_EQ(0.f, overscroll_delegate()->delta_y());
   events = GetAndResetDispatchedMessages();
 
   // When `SendEmptyGestureScrollUpdate` is enabled, `TouchMove` events are
@@ -4369,7 +5338,6 @@ TEST_F(RenderWidgetHostViewAuraOverscrollTest, OverscrollWithTouchEvents) {
   EXPECT_EQ(OVERSCROLL_EAST, overscroll_delegate()->current_mode());
   EXPECT_EQ(55.f, overscroll_delta_x());
   EXPECT_EQ(5.f, overscroll_delegate()->delta_x());
-  EXPECT_EQ(0.f, overscroll_delegate()->delta_y());
 
   PressTouchPoint(255, 5);
   SendTouchEvent();
@@ -4385,7 +5353,6 @@ TEST_F(RenderWidgetHostViewAuraOverscrollTest, OverscrollWithTouchEvents) {
   EXPECT_EQ(OVERSCROLL_EAST, overscroll_delegate()->current_mode());
   EXPECT_EQ(255.f, overscroll_delta_x());
   EXPECT_EQ(205.f, overscroll_delegate()->delta_x());
-  EXPECT_EQ(0.f, overscroll_delegate()->delta_y());
 
   // The touch-end/cancel event should always reach the renderer if the page has
   // touch handlers.
@@ -4449,7 +5416,6 @@ TEST_F(RenderWidgetHostViewAuraOverscrollTest,
   EXPECT_EQ(OVERSCROLL_EAST, overscroll_delegate()->current_mode());
   EXPECT_EQ(55.f, overscroll_delta_x());
   EXPECT_EQ(5.f, overscroll_delegate()->delta_x());
-  EXPECT_EQ(0.f, overscroll_delegate()->delta_y());
 
   // Send end event.
   SimulateGestureEvent(blink::WebInputEvent::Type::kGestureScrollEnd,
@@ -4492,7 +5458,6 @@ TEST_F(RenderWidgetHostViewAuraOverscrollTest,
   EXPECT_EQ(OVERSCROLL_EAST, overscroll_delegate()->current_mode());
   EXPECT_EQ(235.f, overscroll_delta_x());
   EXPECT_EQ(185.f, overscroll_delegate()->delta_x());
-  EXPECT_EQ(0.f, overscroll_delegate()->delta_y());
 
   // Send end event.
   SimulateGestureEvent(blink::WebInputEvent::Type::kGestureScrollEnd,
@@ -4914,7 +5879,6 @@ TEST_F(RenderWidgetHostViewAuraOverscrollTest, OverscrollResetsOnBlur) {
   EXPECT_EQ(OVERSCROLL_NONE, overscroll_delegate()->current_mode());
   EXPECT_EQ(OVERSCROLL_NONE, overscroll_delegate()->completed_mode());
   EXPECT_EQ(0.f, overscroll_delegate()->delta_x());
-  EXPECT_EQ(0.f, overscroll_delegate()->delta_y());
 
   SimulateGestureEvent(WebInputEvent::Type::kGestureScrollEnd,
                        blink::WebGestureDevice::kTouchscreen);
@@ -5093,7 +6057,8 @@ TEST_F(RenderWidgetHostViewAuraTest, KeyEvent) {
                          ui::DomCode::US_A, ui::EF_NONE);
   view_->OnKeyEvent(&key_event);
 
-  const input::NativeWebKeyboardEvent* event = delegates_.back()->last_event();
+  const input::NativeWebKeyboardEvent* event =
+      render_widget_host_delegate()->last_keyboard_event();
   ASSERT_TRUE(event);
   EXPECT_EQ(key_event.key_code(), event->windows_key_code);
   EXPECT_EQ(ui::KeycodeConverter::DomCodeToNativeKeycode(key_event.code()),
@@ -5101,17 +6066,13 @@ TEST_F(RenderWidgetHostViewAuraTest, KeyEvent) {
 }
 
 TEST_F(RenderWidgetHostViewAuraTest, KeyEventsHandled) {
-  InitViewForFrame(nullptr);
-  view_->ShowWithVisibility(PageVisibilityState::kVisible);
-
   ui::KeyEvent key_event1(ui::EventType::kKeyPressed, ui::VKEY_A, ui::EF_NONE);
   view_->OnKeyEvent(&key_event1);
   // Normally event should be handled.
   EXPECT_TRUE(key_event1.handled());
 
-  ASSERT_FALSE(delegates_.empty());
   // Make the delegate mark the event as not-handled.
-  delegates_.back()->set_pre_handle_keyboard_event_result(
+  render_widget_host_delegate()->set_pre_handle_keyboard_event_result(
       KeyboardEventProcessingResult::HANDLED_DONT_UPDATE_EVENT);
   ui::KeyEvent key_event2(ui::EventType::kKeyPressed, ui::VKEY_A, ui::EF_NONE);
   view_->OnKeyEvent(&key_event2);
@@ -5152,14 +6113,15 @@ TEST_F(RenderWidgetHostViewAuraTest, ArabicIndicDigitInputRightAlt) {
                            ui::DomCode::NONE, ui::EF_ALT_DOWN);
     view_->OnKeyEvent(&key_event);
     const input::NativeWebKeyboardEvent* event =
-        delegates_.back()->last_event();
+        render_widget_host_delegate()->last_keyboard_event();
     ASSERT_TRUE(event);
 
     // InsertChar should no-op for right alt + digit key. On Windows versions
     // where Arabic 101 does not implement AltGr, this generates WM_SYSCHAR
     // which invokes InsertChar.
     view_->InsertChar(key_event);
-    EXPECT_EQ(event, delegates_.back()->last_event()) << "Digit index: " << i;
+    EXPECT_EQ(event, render_widget_host_delegate()->last_keyboard_event())
+        << "Digit index: " << i;
 
     char16_t expected = static_cast<char16_t>(i + kArabicIndicZero);
     EXPECT_EQ(expected, event->windows_key_code) << "Digit index: " << i;
@@ -5192,7 +6154,7 @@ TEST_F(RenderWidgetHostViewAuraTest, ArabicIndicDigitInputCtrlAndAlt) {
                            (ui::EF_ALT_DOWN | ui::EF_CONTROL_DOWN));
     view_->OnKeyEvent(&key_event);
     const input::NativeWebKeyboardEvent* event =
-        delegates_.back()->last_event();
+        render_widget_host_delegate()->last_keyboard_event();
     ASSERT_TRUE(event);
 
     char16_t expected = static_cast<char16_t>(i + kArabicIndicZero);
@@ -5440,6 +6402,374 @@ TEST_F(RenderWidgetHostViewAuraTest, ForwardMouseEvent) {
 }
 
 #if BUILDFLAG(IS_WIN)
+namespace {
+
+// Supplies native monitor data for ScreenWin's real DIP-to-pixel conversion.
+// Cursor capture continues to use Aura's TestScreen, not the native cursor.
+class PointerLockTestScreenWin : public display::win::ScreenWin {
+ public:
+  PointerLockTestScreenWin(const gfx::Size& display_size_in_pixels,
+                           float primary_scale)
+      : ScreenWin(/*initialize_from_system=*/false) {
+    std::vector<display::win::internal::DisplayInfo> display_infos;
+    // The primary monitor hosts the browser at the test's device scale factor.
+    {
+      const gfx::Rect bounds(display_size_in_pixels);
+      display_infos.emplace_back(
+          /*hmonitor=*/std::nullopt,
+          display::win::test::CreateMonitorInfo(bounds, bounds, L"primary"),
+          /*config_path=*/std::nullopt, primary_scale,
+          /*text_scale_multiplier=*/1.0f,
+          display::Display::kDefaultBitsPerPixel,
+          /*sdr_white_level=*/1.0f, display::Display::ROTATE_0,
+          /*display_frequency=*/60.0f, /*pixels_per_inch=*/gfx::Vector2dF(),
+          DISPLAYCONFIG_OUTPUT_TECHNOLOGY_OTHER,
+          /*label=*/std::string());
+    }
+    // The secondary monitor is to the left at a different scale to exercise
+    // restoration across displays with a nonzero native origin.
+    {
+      const float secondary_scale = primary_scale == 2.0f ? 1.0f : 2.0f;
+      const gfx::Rect bounds(gfx::Point(-display_size_in_pixels.width(), 0),
+                             display_size_in_pixels);
+      display_infos.emplace_back(
+          /*hmonitor=*/std::nullopt,
+          display::win::test::CreateMonitorInfo(bounds, bounds, L"secondary"),
+          /*config_path=*/std::nullopt, secondary_scale,
+          /*text_scale_multiplier=*/1.0f,
+          display::Display::kDefaultBitsPerPixel,
+          /*sdr_white_level=*/1.0f, display::Display::ROTATE_0,
+          /*display_frequency=*/60.0f, /*pixels_per_inch=*/gfx::Vector2dF(),
+          DISPLAYCONFIG_OUTPUT_TECHNOLOGY_OTHER,
+          /*label=*/std::string());
+    }
+    UpdateFromDisplayInfos(display_infos);
+  }
+
+  using ScreenWin::GetAllDisplays;
+};
+
+}  // namespace
+#endif  // BUILDFLAG(IS_WIN)
+
+class RenderWidgetHostViewAuraPointerLockTest
+    : public RenderWidgetHostViewAuraTest,
+      public testing::WithParamInterface<std::tuple<bool, float>> {
+ public:
+  void SetUp() override {
+    feature_list_.InitWithFeatureState(
+        features::kPointerLockRestoreScreenPosition,
+        ShouldRestoreScreenPosition());
+    RenderWidgetHostViewAuraTest::SetUp();
+    aura_test_helper_->GetTestScreen()->SetDeviceScaleFactor(
+        DeviceScaleFactor());
+#if BUILDFLAG(IS_WIN)
+    screen_win_ = std::make_unique<PointerLockTestScreenWin>(
+        aura_test_helper_->GetTestScreen()
+            ->GetPrimaryDisplay()
+            .GetSizeInPixel(),
+        DeviceScaleFactor());
+#endif  // BUILDFLAG(IS_WIN)
+    parent_view_->SetBounds(gfx::Rect(0, 0, 400, 300));
+    InitViewForFrame(parent_view_->GetNativeView());
+    view_->SetBounds(kViewBounds);
+  }
+
+  void TearDown() override {
+    view_->UnlockPointer();
+    RenderWidgetHostViewAuraTest::TearDown();
+#if BUILDFLAG(IS_WIN)
+    screen_win_.reset();
+#endif  // BUILDFLAG(IS_WIN)
+  }
+
+ protected:
+  static constexpr gfx::Rect kViewBounds{40, 40, 200, 160};
+  static constexpr gfx::Point kPositionInWidget{80, 60};
+
+  bool ShouldRestoreScreenPosition() const { return std::get<0>(GetParam()); }
+  float DeviceScaleFactor() const { return std::get<1>(GetParam()); }
+
+  gfx::Point ScreenPosition(const gfx::Point& position_in_widget) const {
+    gfx::Point position_in_screen = position_in_widget;
+    wm::ConvertPointToScreen(view_->GetNativeView(), &position_in_screen);
+    return position_in_screen;
+  }
+
+  void SendMouseMove(const gfx::Point& position_in_widget) {
+    const gfx::Point position_in_screen = ScreenPosition(position_in_widget);
+    aura::Env::GetInstance()->SetLastMouseLocation(position_in_screen);
+    gfx::Point position_in_root = position_in_screen;
+    wm::ConvertPointFromScreen(view_->GetNativeView()->GetRootWindow(),
+                               &position_in_root);
+    ui::MouseEvent event(ui::EventType::kMouseMoved, position_in_widget,
+                         position_in_root, ui::EventTimeForNow(), 0, 0);
+    view_->OnMouseEvent(&event);
+  }
+
+  void ExpectRestorationAt(const gfx::Point& position_in_screen) {
+    // Inspect the requested host position, not the shared native OS cursor.
+    EXPECT_EQ(gfx::ScaleToFlooredPoint(position_in_screen, DeviceScaleFactor()),
+              aura::test::QueryLatestMousePositionRequestInHost(
+                  view_->GetNativeView()->GetHost()));
+  }
+
+#if BUILDFLAG(IS_WIN)
+  std::unique_ptr<PointerLockTestScreenWin> screen_win_;
+#endif  // BUILDFLAG(IS_WIN)
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+};
+
+INSTANTIATE_TEST_SUITE_P(All,
+                         RenderWidgetHostViewAuraPointerLockTest,
+                         testing::Combine(testing::Bool(),
+                                          testing::Values(1.0f, 1.25f, 2.0f)));
+
+TEST_P(RenderWidgetHostViewAuraPointerLockTest, RestoreWithoutWindowMovement) {
+  SendMouseMove(kPositionInWidget);
+  const gfx::Point original_position = ScreenPosition(kPositionInWidget);
+
+  ASSERT_EQ(blink::mojom::PointerLockResult::kSuccess,
+            view_->LockPointer(/*request_unadjusted_movement=*/false));
+  view_->UnlockPointer();
+
+  ExpectRestorationAt(original_position);
+}
+
+TEST_P(RenderWidgetHostViewAuraPointerLockTest,
+       RestoreOnDisplayWithDifferentScale) {
+  auto* screen = aura_test_helper_->GetTestScreen();
+  const display::Display primary_display = screen->GetPrimaryDisplay();
+  const gfx::Point secondary_origin(-primary_display.GetSizeInPixel().width(),
+                                    0);
+#if BUILDFLAG(IS_WIN)
+  ASSERT_EQ(2u, screen_win_->GetAllDisplays().size());
+  const display::Display cursor_display = screen_win_->GetAllDisplays()[1];
+#else
+  const float secondary_scale = DeviceScaleFactor() == 2.0f ? 1.0f : 2.0f;
+  display::Display cursor_display(primary_display.id() + 1);
+  cursor_display.SetScaleAndBounds(
+      secondary_scale,
+      gfx::Rect(secondary_origin, primary_display.GetSizeInPixel()));
+  cursor_display.set_native_origin(secondary_origin);
+#endif  // BUILDFLAG(IS_WIN)
+  ASSERT_NE(DeviceScaleFactor(), cursor_display.device_scale_factor());
+  ASSERT_LT(cursor_display.bounds().x(), 0);
+  screen->display_list().AddDisplay(cursor_display,
+                                    display::DisplayList::Type::NOT_PRIMARY);
+
+  auto* window_host = view_->GetNativeView()->GetHost();
+  gfx::Rect host_bounds = window_host->GetBoundsInPixels();
+  host_bounds.Offset(40, 40);
+  window_host->SetBoundsInPixels(host_bounds);
+  // The Windows Aura test host reports client-relative bounds with origin
+  // (0, 0), so use the reported bounds rather than the requested bounds.
+  host_bounds = window_host->GetBoundsInPixels();
+  SendMouseMove(kPositionInWidget);
+
+  // These offsets expose rounding if restoration passes through host DIPs.
+  const gfx::Point kOffsetInCursorDisplay(81, 61);
+  const gfx::Point cursor_in_screen_dips =
+      cursor_display.bounds().origin() +
+      kOffsetInCursorDisplay.OffsetFromOrigin();
+  aura::Env::GetInstance()->SetLastMouseLocation(cursor_in_screen_dips);
+  ASSERT_EQ(blink::mojom::PointerLockResult::kSuccess,
+            view_->LockPointer(/*request_unadjusted_movement=*/false));
+  view_->UnlockPointer();
+
+  // Scale only the offset within the destination display, not its origin.
+  const gfx::Point cursor_in_screen_pixels =
+      secondary_origin +
+      gfx::ScaleToFlooredPoint(kOffsetInCursorDisplay,
+                               cursor_display.device_scale_factor())
+          .OffsetFromOrigin();
+  const gfx::Point expected_position_in_host =
+      ShouldRestoreScreenPosition()
+          ? cursor_in_screen_pixels - host_bounds.origin().OffsetFromOrigin()
+          : gfx::ScaleToFlooredPoint(
+                kViewBounds.origin() + kPositionInWidget.OffsetFromOrigin(),
+                DeviceScaleFactor());
+  EXPECT_EQ(expected_position_in_host,
+            aura::test::QueryLatestMousePositionRequestInHost(window_host));
+}
+
+TEST_P(RenderWidgetHostViewAuraPointerLockTest, RestoreAfterWindowMovement) {
+  SendMouseMove(kPositionInWidget);
+  const gfx::Point original_position = ScreenPosition(kPositionInWidget);
+  ASSERT_EQ(blink::mojom::PointerLockResult::kSuccess,
+            view_->LockPointer(/*request_unadjusted_movement=*/false));
+
+  gfx::Rect moved_bounds = kViewBounds;
+  moved_bounds.Offset(60, 40);
+  view_->SetBounds(moved_bounds);
+  view_->UnlockPointer();
+
+  ExpectRestorationAt(ShouldRestoreScreenPosition()
+                          ? original_position
+                          : ScreenPosition(kPositionInWidget));
+}
+
+// A keyboard request can acquire lock with the cursor outside the view and the
+// last mouse event in the view reporting an outdated position.
+TEST_P(RenderWidgetHostViewAuraPointerLockTest,
+       RestoreOutsideViewWithStaleMouseEvent) {
+  SendMouseMove(kPositionInWidget);
+  const gfx::Point previous_position = ScreenPosition(kPositionInWidget);
+  const gfx::Point outside_position =
+      kViewBounds.bottom_right() + gfx::Vector2d(40, 40);
+  aura::Env::GetInstance()->SetLastMouseLocation(outside_position);
+
+  ASSERT_EQ(blink::mojom::PointerLockResult::kSuccess,
+            view_->LockPointer(/*request_unadjusted_movement=*/false));
+  view_->UnlockPointer();
+
+  ExpectRestorationAt(ShouldRestoreScreenPosition() ? outside_position
+                                                    : previous_position);
+}
+
+TEST_P(RenderWidgetHostViewAuraPointerLockTest, RestoreWithoutPriorMouseEvent) {
+  const gfx::Point outside_position =
+      kViewBounds.bottom_right() + gfx::Vector2d(40, 40);
+  aura::Env::GetInstance()->SetLastMouseLocation(outside_position);
+
+  ASSERT_EQ(blink::mojom::PointerLockResult::kSuccess,
+            view_->LockPointer(/*request_unadjusted_movement=*/false));
+  view_->UnlockPointer();
+
+  ExpectRestorationAt(ShouldRestoreScreenPosition() ? outside_position
+                                                    : kViewBounds.origin());
+}
+
+TEST_P(RenderWidgetHostViewAuraPointerLockTest, RestoreOutsideResizedView) {
+  const gfx::Point position_in_widget =
+      kPositionInWidget + gfx::Vector2d(80, 60);
+  SendMouseMove(position_in_widget);
+  const gfx::Point original_position = ScreenPosition(position_in_widget);
+  ASSERT_EQ(blink::mojom::PointerLockResult::kSuccess,
+            view_->LockPointer(/*request_unadjusted_movement=*/false));
+
+  gfx::Rect resized_bounds = kViewBounds;
+  resized_bounds.Offset(60, 40);
+  resized_bounds.set_size(gfx::Size(40, 40));
+  view_->SetBounds(resized_bounds);
+  ASSERT_FALSE(view_->GetViewBounds().Contains(original_position));
+  view_->UnlockPointer();
+
+  ExpectRestorationAt(ShouldRestoreScreenPosition()
+                          ? original_position
+                          : ScreenPosition(position_in_widget));
+}
+
+TEST_P(RenderWidgetHostViewAuraPointerLockTest,
+       RepeatedLockPreservesOriginalPosition) {
+  SendMouseMove(kPositionInWidget);
+  const gfx::Point last_event_position = ScreenPosition(kPositionInWidget);
+  const gfx::Point original_position =
+      last_event_position + gfx::Vector2d(40, 40);
+  aura::Env::GetInstance()->SetLastMouseLocation(original_position);
+  ASSERT_EQ(blink::mojom::PointerLockResult::kSuccess,
+            view_->LockPointer(/*request_unadjusted_movement=*/false));
+
+  aura::Env::GetInstance()->SetLastMouseLocation(original_position +
+                                                 gfx::Vector2d(20, 20));
+  ASSERT_EQ(blink::mojom::PointerLockResult::kSuccess,
+            view_->LockPointer(/*request_unadjusted_movement=*/false));
+  view_->UnlockPointer();
+  ExpectRestorationAt(ShouldRestoreScreenPosition() ? original_position
+                                                    : last_event_position);
+
+  // A new lock session must capture a new position.
+  const gfx::Point next_position = kPositionInWidget + gfx::Vector2d(20, 20);
+  SendMouseMove(next_position);
+  const gfx::Point next_event_position = ScreenPosition(next_position);
+  const gfx::Point next_restore_position =
+      next_event_position + gfx::Vector2d(60, 40);
+  aura::Env::GetInstance()->SetLastMouseLocation(next_restore_position);
+  ASSERT_EQ(blink::mojom::PointerLockResult::kSuccess,
+            view_->LockPointer(/*request_unadjusted_movement=*/false));
+  view_->UnlockPointer();
+  ExpectRestorationAt(ShouldRestoreScreenPosition() ? next_restore_position
+                                                    : next_event_position);
+}
+
+TEST_F(RenderWidgetHostViewAuraTest, MouseEventsHandled) {
+  InitViewForFrame(nullptr);
+
+  // Simulate mouse event, ensure it is dispatched.
+  ui::MouseEvent mouse_event(ui::EventType::kMousePressed, gfx::Point(),
+                             gfx::Point(), ui::EventTimeForNow(),
+                             ui::EF_LEFT_MOUSE_BUTTON, 0);
+  view_->OnMouseEvent(&mouse_event);
+  MockWidgetInputHandler::MessageVector events =
+      GetAndResetDispatchedMessages();
+  ASSERT_FALSE(events.empty());  // No point continuing test if this is broken
+  EXPECT_EQ("MouseDown", GetMessageNames(events));
+
+  // Now simulate again but pre-handle the event.
+  render_widget_host_delegate()->set_pre_handle_mouse_event_result(true);
+  mouse_event =
+      ui::MouseEvent(ui::EventType::kMousePressed, gfx::Point(), gfx::Point(),
+                     ui::EventTimeForNow(), ui::EF_LEFT_MOUSE_BUTTON, 0);
+  view_->OnMouseEvent(&mouse_event);
+
+  // view_ will be destroyed when parent is destroyed. Reset now in case assert
+  // below fails.
+  view_ = nullptr;
+
+  // The pre-handle phase should have seen the event.
+  const blink::WebMouseEvent* pre_handled_event =
+      render_widget_host_delegate()->last_mouse_event();
+  ASSERT_TRUE(pre_handled_event);
+  EXPECT_EQ(1, pre_handled_event->ClickCount());
+
+  // The event should not have actually been dispatched.
+  events = GetAndResetDispatchedMessages();
+  EXPECT_TRUE(events.empty());
+}
+
+TEST_F(RenderWidgetHostViewAuraTest, GestureEventsHandled) {
+  InitViewForFrame(nullptr);
+
+  // Simulate gesture event, ensure it is dispatched.
+  ui::GestureEventDetails gesture_tap_down_details(
+      ui::EventType::kGestureTapDown);
+  gesture_tap_down_details.set_is_source_touch_event_set_blocking(true);
+  gesture_tap_down_details.set_device_type(
+      ui::GestureDeviceType::DEVICE_TOUCHSCREEN);
+  ui::GestureEvent gesture_tap_down(2, 2, 0, ui::EventTimeForNow(),
+                                    gesture_tap_down_details);
+  view_->OnGestureEvent(&gesture_tap_down);
+  base::RunLoop().RunUntilIdle();
+  MockWidgetInputHandler::MessageVector events =
+      GetAndResetDispatchedMessages();
+  ASSERT_FALSE(events.empty());  // No point continuing test if this is broken.
+  EXPECT_EQ("GestureTapDown", GetMessageNames(events));
+
+  // Now simulate again but pre-handle the event.
+  render_widget_host_delegate()->set_pre_handle_gesture_event_result(true);
+  gesture_tap_down = ui::GestureEvent(2, 2, 0, ui::EventTimeForNow(),
+                                      gesture_tap_down_details);
+  view_->OnGestureEvent(&gesture_tap_down);
+  base::RunLoop().RunUntilIdle();
+
+  // view_ will be destroyed when parent is destroyed. Reset now in case assert
+  // below fails.
+  view_ = nullptr;
+
+  // The pre-handle phase should have seen the event.
+  const blink::WebGestureEvent* pre_handled_event =
+      render_widget_host_delegate()->last_gesture_event();
+  ASSERT_TRUE(pre_handled_event);
+  EXPECT_EQ(WebInputEvent::Type::kGestureTapDown, pre_handled_event->GetType());
+
+  // The event should not have actually been dispatched.
+  events = GetAndResetDispatchedMessages();
+  EXPECT_TRUE(events.empty());
+}
+
+#if BUILDFLAG(IS_WIN)
 class MockWindowEventTarget : public ui::WindowEventTarget {
  public:
   MockWindowEventTarget() = default;
@@ -5641,6 +6971,56 @@ TEST_F(RenderWidgetHostViewAuraTest,
   EXPECT_EQ(3, new_event_target.handle_pointer_count_);
 }
 #endif
+
+// Verify that SetBounds/SetSize does not re-entrantly invoke InternalSetBounds
+// a second time via OnBoundsChanged when kPreventReentrantInternalSetBounds is
+// enabled, while still syncing direct window()->SetBounds() calls.
+TEST_F(RenderWidgetHostViewAuraTest, SetBoundsDoesNotReenterInternalSetBounds) {
+  InitViewForFrame(nullptr);
+  ParentHostView(view_, parent_view_);
+  view_->ShowWithVisibility(PageVisibilityState::kVisible);
+
+  // Force CanSynchronizeVisualProperties() to return false so
+  // visual_properties_ack_pending_ does not short-circuit a second call.
+  view_->needs_to_update_display_metrics_ = true;
+
+  {
+    base::test::ScopedFeatureList feature_list;
+    feature_list.InitAndDisableFeature(kPreventReentrantInternalSetBounds);
+    view_->can_synchronize_visual_properties_count_ = 0;
+
+    view_->SetBounds(gfx::Rect(0, 0, 150, 150));
+    EXPECT_EQ(2u, view_->can_synchronize_visual_properties_count_);
+    EXPECT_EQ(gfx::Size(150, 150), view_->GetViewBounds().size());
+
+    view_->SetSize(gfx::Size(250, 250));
+    EXPECT_EQ(4u, view_->can_synchronize_visual_properties_count_);
+    EXPECT_EQ(gfx::Size(250, 250), view_->GetViewBounds().size());
+
+    view_->window()->SetBounds(gfx::Rect(0, 0, 350, 350));
+    EXPECT_EQ(5u, view_->can_synchronize_visual_properties_count_);
+    EXPECT_EQ(gfx::Size(350, 350), view_->GetViewBounds().size());
+  }
+
+  {
+    base::test::ScopedFeatureList feature_list;
+    feature_list.InitAndEnableFeature(kPreventReentrantInternalSetBounds);
+    view_->can_synchronize_visual_properties_count_ = 0;
+
+    view_->SetBounds(gfx::Rect(0, 0, 200, 200));
+    EXPECT_EQ(1u, view_->can_synchronize_visual_properties_count_);
+    EXPECT_EQ(gfx::Size(200, 200), view_->GetViewBounds().size());
+
+    view_->SetSize(gfx::Size(300, 300));
+    EXPECT_EQ(2u, view_->can_synchronize_visual_properties_count_);
+    EXPECT_EQ(gfx::Size(300, 300), view_->GetViewBounds().size());
+
+    // Direct window()->SetBounds() must still sync visual properties once.
+    view_->window()->SetBounds(gfx::Rect(0, 0, 400, 400));
+    EXPECT_EQ(3u, view_->can_synchronize_visual_properties_count_);
+    EXPECT_EQ(gfx::Size(400, 400), view_->GetViewBounds().size());
+  }
+}
 
 // Test that we elide touchpad pinch gesture steams consisting of only begin
 // and end events.
@@ -6508,6 +7888,43 @@ TEST_F(InputMethodResultAuraTest, ChangeTextDirectionAndLayoutAlignment) {
   }
 }
 
+// Test that an unfocused view cannot become active in TextInputManager.
+TEST_F(InputMethodResultAuraTest, UnfocusedViewCannotBecomeActive) {
+  TextInputManager* manager = GetTextInputManager(tab_view());
+  EXPECT_TRUE(manager);
+
+  ActivateViewForTextInputManager(views_[0], ui::TEXT_INPUT_TYPE_TEXT);
+  EXPECT_EQ(views_[0], manager->active_view_for_testing());
+  EXPECT_EQ(widget_hosts_[0], manager->GetActiveWidget());
+  EXPECT_EQ(ui::TEXT_INPUT_TYPE_TEXT, tab_view()->GetTextInputType());
+
+  // Attempt to activate an unfocused view without granting focus.
+  ui::mojom::TextInputState child_state;
+  child_state.type = ui::TEXT_INPUT_TYPE_PASSWORD;
+  views_[1]->TextInputStateChanged(child_state);
+
+  // The active view, active widget, and text input type must remain unchanged.
+  EXPECT_EQ(views_[0], manager->active_view_for_testing());
+  EXPECT_EQ(widget_hosts_[0], manager->GetActiveWidget());
+  EXPECT_EQ(ui::TEXT_INPUT_TYPE_TEXT, tab_view()->GetTextInputType());
+
+  // Inserting text should route to the focused widget (index 0), not widget 1.
+  text_input_client()->InsertText(
+      u"sample_text",
+      ui::TextInputClient::InsertTextCursorBehavior::kMoveCursorAfterText);
+  std::string dispatched_messages;
+  EXPECT_TRUE(base::test::RunUntil([&]() {
+    dispatched_messages = GetMessageNames(
+        widget_hosts_[0]->input_handler()->GetAndResetDispatchedMessages());
+    return !dispatched_messages.empty();
+  }));
+  EXPECT_EQ("CommitText", dispatched_messages);
+  EXPECT_EQ(
+      "",
+      GetMessageNames(
+          widget_hosts_[1]->input_handler()->GetAndResetDispatchedMessages()));
+}
+
 // A class of tests which verify the correctness of some tracked IME related
 // state at the browser side. Each test verifies the correctness tracking for
 // one specific state. To do so, the views are activated in a predetermined
@@ -6592,6 +8009,34 @@ TEST_F(InputMethodStateAuraTest, EditContextBoundsClamped) {
 
   EXPECT_EQ(control_bounds.value(), expected_bounds);
   EXPECT_EQ(selection_bounds.value(), expected_bounds);
+  EXPECT_EQ(text_input_client()->GetCaretBounds(),
+            view->ConvertRectToScreen({100, 100}));
+
+  // Out-of-bounds composition character bounds should also be clamped.
+  view->ImeCompositionRangeChanged(gfx::Range(0, 1), {{{-50, -50, 40, 20}}});
+  gfx::Rect composition_bound;
+  EXPECT_TRUE(text_input_client()->GetCompositionCharacterBounds(
+      0, &composition_bound));
+  EXPECT_EQ(composition_bound, view->ConvertRectToScreen({40, 20}));
+
+  // Out-of-bounds SelectionBoundsChanged caret bounds should also be clamped.
+  state.edit_context_selection_bounds.reset();
+  manager->UpdateTextInputState(view, state);
+  view->SelectionBoundsChanged({-50, -50, 0, 20}, base::i18n::LEFT_TO_RIGHT,
+                               {-50, -50, 0, 20}, base::i18n::LEFT_TO_RIGHT,
+                               gfx::Rect(), true);
+  EXPECT_EQ(text_input_client()->GetCaretBounds(),
+            view->ConvertRectToScreen({0, 20}));
+
+#if BUILDFLAG(IS_CHROMEOS)
+  auto span_info = ui::mojom::ImeTextSpanInfo::New(
+      ui::ImeTextSpan(ui::ImeTextSpan::Type::kAutocorrect, 0, 3),
+      gfx::Rect{-50, -50, 40, 20});
+  state.ime_text_spans_info.push_back(std::move(span_info));
+  manager->UpdateTextInputState(view, state);
+  EXPECT_EQ(text_input_client()->GetAutocorrectCharacterBounds(),
+            view->ConvertRectToScreen({40, 20}));
+#endif
 }
 
 // This test is for composition character bounds.
@@ -6724,22 +8169,24 @@ TEST_F(InputMethodStateAuraTest, GetAutocorrectRangeFromActiveView) {
   ASSERT_TRUE(manager);
 
   // Send an autocorrect span from a child view, making it the active view.
+  ActivateViewForTextInputManager(views_[1], ui::TEXT_INPUT_TYPE_TEXT);
   ui::mojom::TextInputState child_state;
   child_state.type = ui::TEXT_INPUT_TYPE_TEXT;
   child_state.ime_text_spans_info.push_back(ui::mojom::ImeTextSpanInfo::New(
       ui::ImeTextSpan(ui::ImeTextSpan::Type::kAutocorrect, 0, 1000),
       gfx::Rect()));
   views_[1]->TextInputStateChanged(child_state);
-  ASSERT_EQ(views_[1], manager->active_view_for_testing());
+  EXPECT_EQ(views_[1], manager->active_view_for_testing());
   EXPECT_EQ(gfx::Range(0, 1000), manager->GetAutocorrectRange());
 
   // Activate the tab view with no autocorrect span. The child view's span is
   // still stored in the manager, but it must not be returned for the now
   // active tab view.
+  ActivateViewForTextInputManager(views_[0], ui::TEXT_INPUT_TYPE_TEXT);
   ui::mojom::TextInputState tab_state;
   tab_state.type = ui::TEXT_INPUT_TYPE_TEXT;
   views_[0]->TextInputStateChanged(tab_state);
-  ASSERT_EQ(views_[0], manager->active_view_for_testing());
+  EXPECT_EQ(views_[0], manager->active_view_for_testing());
   EXPECT_EQ(gfx::Range(), manager->GetAutocorrectRange());
 
   // Activate the tab view with its own autocorrect span and verify that the
@@ -7030,21 +8477,12 @@ TEST_F(RenderWidgetHostViewAuraInputMethodTest,
   GetInputMethod()->RemoveObserver(this);
 }
 
-// Mock InputMethod that runs a closure when OnCaretBoundsChanged is invoked.
-// Simulates a Windows TSF IME whose ITextStoreACPSink::OnLayoutChange handler
-// pumps the thread message queue, allowing a queued task to synchronously
-// destroy the RenderWidgetHostViewAura while it is still inside
-// OnBoundsChanged().
+// Mock InputMethod that runs a closure when IME methods are invoked.
+// Simulates a platform IME whose handler pumps the thread message queue,
+// allowing a queued task to synchronously destroy the RenderWidgetHostViewAura.
 class DestroyingMockInputMethod : public ui::MockInputMethod {
  public:
   DestroyingMockInputMethod() : ui::MockInputMethod(nullptr) {}
-
-  void OnCaretBoundsChanged(const ui::TextInputClient* client) override {
-    ui::MockInputMethod::OnCaretBoundsChanged(client);
-    if (on_caret_bounds_changed_) {
-      std::move(on_caret_bounds_changed_).Run();
-    }
-  }
 
   void OnTextInputTypeChanged(ui::TextInputClient* client) override {
     ui::MockInputMethod::OnTextInputTypeChanged(client);
@@ -7067,8 +8505,11 @@ class DestroyingMockInputMethod : public ui::MockInputMethod {
     }
   }
 
-  void set_on_caret_bounds_changed(base::OnceClosure closure) {
-    on_caret_bounds_changed_ = std::move(closure);
+  void CancelComposition(const ui::TextInputClient* client) override {
+    ui::MockInputMethod::CancelComposition(client);
+    if (on_cancel_composition_) {
+      std::move(on_cancel_composition_).Run();
+    }
   }
 
   void set_on_text_input_type_changed(base::OnceClosure closure) {
@@ -7084,11 +8525,15 @@ class DestroyingMockInputMethod : public ui::MockInputMethod {
     on_detach_text_input_client_ = std::move(closure);
   }
 
+  void set_on_cancel_composition(base::OnceClosure closure) {
+    on_cancel_composition_ = std::move(closure);
+  }
+
  private:
-  base::OnceClosure on_caret_bounds_changed_;
   base::OnceClosure on_text_input_type_changed_;
   base::OnceClosure on_set_virtual_keyboard_visibility_if_enabled_;
   base::OnceClosure on_detach_text_input_client_;
+  base::OnceClosure on_cancel_composition_;
 };
 
 class RenderWidgetHostViewAuraReentrantDestructionIME
@@ -7110,40 +8555,6 @@ class RenderWidgetHostViewAuraReentrantDestructionIME
  protected:
   raw_ptr<DestroyingMockInputMethod> input_method_ = nullptr;
 };
-
-// RWHVA::OnBoundsChanged() constructs a base::AutoReset<bool> holding
-// &in_bounds_changed_, then calls GetInputMethod()->OnCaretBoundsChanged(this).
-// On Windows that reaches TSFTextStore::SendOnLayoutChange ->
-// text_store_acp_sink_->OnLayoutChange(), a synchronous COM call into the
-// active third-party IME. If the IME pumps messages and the view is destroyed
-// re-entrantly, on unwind UpdateInsetsWithVirtualKeyboardEnabled() and
-// ~AutoReset both touch freed memory. AutoReset::scoped_variable_ is
-// RAW_PTR_EXCLUSION, so it is not MiraclePtr-protected: the ~AutoReset write
-// lands in a freed (un-quarantined) slot.
-TEST_F(RenderWidgetHostViewAuraReentrantDestructionIME,
-       DestroyDuringOnCaretBoundsChanged) {
-  InitViewForFrame(nullptr);
-  ParentHostView(view_, parent_view_);
-  // `view_` shares the root window (and thus the InputMethod) with
-  // `parent_view_`.
-  ASSERT_EQ(static_cast<ui::InputMethod*>(input_method_.get()),
-            GetInputMethod());
-
-  // Arrange for the view to be synchronously destroyed inside
-  // OnCaretBoundsChanged, simulating re-entrant destruction triggered by a
-  // TSF IME callout that pumps a queued window.close() / renderer-gone task.
-  FakeRenderWidgetHostViewAura* raw_view = view_.get();
-  input_method_->set_on_caret_bounds_changed(base::BindLambdaForTesting([&]() {
-    widget_host_ = nullptr;
-    view_.ExtractAsDangling()->DestroyOrDefer();
-  }));
-
-  // Under ASAN this triggers heap-use-after-free in
-  // UpdateInsetsWithVirtualKeyboardEnabled() (read of freed
-  // keyboard_occluded_bounds_) followed by a write-after-free in
-  // ~AutoReset<bool> to the freed in_bounds_changed_ slot.
-  raw_view->OnBoundsChanged(gfx::Rect(), gfx::Rect(0, 0, 100, 100));
-}
 
 // RWHVA::OnUpdateTextInputStateCalled() calls
 // GetInputMethod()->OnTextInputTypeChanged(this), which on Windows reaches
@@ -7249,6 +8660,56 @@ TEST_F(RenderWidgetHostViewAuraReentrantDestructionIME,
   // branch resumes after DetachFromInputMethod() returns and dereferences
   // `this->selection_controller_` on the freed view.
   raw_view->OnWindowFocused(nullptr, raw_view->GetNativeView());
+}
+
+// When a mouse press occurs during active composition,
+// RenderWidgetHostViewEventHandler::OnMouseEvent calls
+// FinishImeCompositionSession(), which triggers
+// GetInputMethod()->CancelComposition(this). If the IME callout re-entrantly
+// destroys the view (e.g. by pumping a message loop on Windows TSF),
+// OnMouseEvent must not touch freed memory or cleared pointers.
+TEST_F(RenderWidgetHostViewAuraReentrantDestructionIME,
+       DestroyDuringFinishImeCompositionSessionOnMousePressed) {
+  InitViewForFrame(nullptr);
+  ParentHostView(view_, parent_view_);
+  ASSERT_EQ(static_cast<ui::InputMethod*>(input_method_.get()),
+            GetInputMethod());
+
+  input_method_->set_on_cancel_composition(base::BindLambdaForTesting([&]() {
+    widget_host_ = nullptr;
+    view_.ExtractAsDangling()->DestroyOrDefer();
+  }));
+
+  FakeRenderWidgetHostViewAura* target_view = view_.get();
+  ui::MouseEvent mouse_press(ui::EventType::kMousePressed, gfx::Point(10, 10),
+                             gfx::Point(10, 10), ui::EventTimeForNow(),
+                             ui::EF_LEFT_MOUSE_BUTTON,
+                             ui::EF_LEFT_MOUSE_BUTTON);
+  target_view->OnMouseEvent(&mouse_press);
+}
+
+// When a gesture tap occurs during active composition,
+// RenderWidgetHostViewEventHandler::OnGestureEvent calls
+// FinishImeCompositionSession(), which triggers
+// GetInputMethod()->CancelComposition(this). If the IME callout re-entrantly
+// destroys the view, OnGestureEvent must not touch freed memory or cleared
+// pointers.
+TEST_F(RenderWidgetHostViewAuraReentrantDestructionIME,
+       DestroyDuringFinishImeCompositionSessionOnGestureTap) {
+  InitViewForFrame(nullptr);
+  ParentHostView(view_, parent_view_);
+  ASSERT_EQ(static_cast<ui::InputMethod*>(input_method_.get()),
+            GetInputMethod());
+
+  input_method_->set_on_cancel_composition(base::BindLambdaForTesting([&]() {
+    widget_host_ = nullptr;
+    view_.ExtractAsDangling()->DestroyOrDefer();
+  }));
+
+  FakeRenderWidgetHostViewAura* target_view = view_.get();
+  ui::GestureEventDetails tap_details(ui::EventType::kGestureTap);
+  ui::GestureEvent gesture_tap(10, 10, 0, ui::EventTimeForNow(), tap_details);
+  target_view->OnGestureEvent(&gesture_tap);
 }
 
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_CHROMEOS)
@@ -7947,6 +9408,181 @@ TEST_F(RenderWidgetHostViewAuraTest, TouchDispatchSurvivesSynchronousDestroy) {
 
   EXPECT_TRUE(observer.fired());
   widget_host_->RemoveInputEventObserver(&observer);
+}
+
+TEST_F(RenderWidgetHostViewAuraTest,
+       MouseDispatchSurvivesSynchronousDestroyInForwardMouseEventToParent) {
+  InitViewForFrame(nullptr);
+
+  // A parent window delegate that destroys the child window during
+  // OnMouseEvent. This simulates the behavior of
+  // WebContentsViewAura::OnMouseEvent on Windows, where
+  // ForwardMouseEventToParent() calls ActivateContents() on the delegate, which
+  // can synchronously destroy the WebContents (and therefore the Aura window).
+  class DestroyingParentWindowDelegate : public aura::test::TestWindowDelegate {
+   public:
+    explicit DestroyingParentWindowDelegate(
+        RenderWidgetHostViewAura* child_view)
+        : child_view_(child_view) {}
+
+    void OnMouseEvent(ui::MouseEvent* event) override {
+      if (child_view_) {
+        fired_ = true;
+        aura::Window* window = child_view_->GetNativeView();
+        aura::Env::GetInstance()->gesture_recognizer()->CancelActiveTouches(
+            window);
+        aura::Env::GetInstance()->gesture_recognizer()->CleanupStateForConsumer(
+            window);
+        delete window;
+        child_view_ = nullptr;
+      }
+    }
+
+    bool fired() const { return fired_; }
+
+   private:
+    raw_ptr<RenderWidgetHostViewAura> child_view_ = nullptr;
+    bool fired_ = false;
+  };
+
+  aura::Window* root = parent_view_->GetNativeView()->GetRootWindow();
+  DestroyingParentWindowDelegate parent_delegate(view_.get());
+  std::unique_ptr<aura::Window> parent = std::make_unique<aura::Window>(&parent_delegate);
+  parent->Init(ui::LAYER_NOT_DRAWN);
+  parent->Show();
+  root->AddChild(parent.get());
+  parent->AddChild(view_->GetNativeView());
+
+  FakeRenderWidgetHostViewAura* target_view = view_.ExtractAsDangling();
+
+  ui::MouseEvent mouse_press(ui::EventType::kMousePressed, gfx::Point(10, 10),
+                             gfx::Point(10, 10), ui::EventTimeForNow(),
+                             ui::EF_LEFT_MOUSE_BUTTON,
+                             ui::EF_LEFT_MOUSE_BUTTON);
+  target_view->OnMouseEvent(&mouse_press);
+
+  EXPECT_TRUE(parent_delegate.fired());
+}
+
+// Regression test for crbug.com/567673405. An observer notified during
+// DestroyOrDefer() may synchronously dispatch input to the view, taking and
+// releasing a ScopedInputDispatchPin. Releasing that pin must not delete the
+// view while DestroyOrDefer() is still on the stack; otherwise the remainder
+// of teardown would use a freed object, and DestroyImpl() would run twice.
+TEST_F(RenderWidgetHostViewAuraTest,
+       PinReleasedDuringDestroyNotificationDoesNotDestroyEarly) {
+  InitViewForFrame(nullptr);
+  aura::client::ParentWindowWithContext(
+      view_->GetNativeView(), aura_test_helper_->GetContext(), gfx::Rect(),
+      display::kInvalidDisplayId);
+
+  class PinningObserver : public input::RenderWidgetHostViewInputObserver {
+   public:
+    explicit PinningObserver(aura::WindowTracker* tracker)
+        : tracker_(tracker) {}
+
+    void OnRenderWidgetHostViewInputDestroyed(
+        input::RenderWidgetHostViewInput* view) override {
+      view->RemoveObserver(this);
+      aura::Window* window =
+          static_cast<RenderWidgetHostViewAura*>(view)->GetNativeView();
+      // Simulate a synchronous input dispatch to |view| during teardown.
+      {
+        input::ScopedInputDispatchPin pin(view);
+      }
+      // DestroyImpl() deletes the native window; it must not have run yet.
+      notified_ = true;
+      window_survived_unpin_ = tracker_->Contains(window);
+    }
+
+    bool notified() const { return notified_; }
+    bool window_survived_unpin() const { return window_survived_unpin_; }
+
+   private:
+    raw_ptr<aura::WindowTracker> tracker_;
+    bool notified_ = false;
+    bool window_survived_unpin_ = false;
+  };
+
+  aura::Window* window = view_->GetNativeView();
+  aura::WindowTracker tracker({window});
+  PinningObserver observer(&tracker);
+  view_->AddObserver(&observer);
+
+  view_.ExtractAsDangling()->DestroyOrDefer();
+
+  EXPECT_TRUE(observer.notified());
+  EXPECT_TRUE(observer.window_survived_unpin());
+  // DestroyImpl() ran once DestroyOrDefer() finished, deleting the window.
+  EXPECT_FALSE(tracker.Contains(window));
+}
+
+TEST_F(RenderWidgetHostViewAuraTest,
+       InitAsChildWithoutRootWindowPopulatesScreenInfo) {
+  base::test::ScopedFeatureList scoped_feature_list(
+      features::kPopulateUnattachedAuraScreenInfo);
+
+  // When a RenderWidgetHostViewAura is initialized without a parent view (or
+  // with an unattached parent view), it has no root window. Verify that
+  // InitAsChild() populates screen_infos_ from the display for new windows
+  // without triggering SynchronizeVisualProperties() while detached/hidden.
+  FakeRenderWidgetHostViewAura* hidden_view = CreateView(/*hidden=*/true);
+  hidden_view->InitAsChild(nullptr);
+  EXPECT_FALSE(hidden_view->GetScreenInfo().rect.IsEmpty());
+  EXPECT_EQ(hidden_view->GetScreenInfo().rect,
+            display::Screen::Get()->GetDisplayForNewWindows().bounds());
+  EXPECT_EQ(
+      hidden_view->GetDeviceScaleFactor(),
+      display::Screen::Get()->GetDisplayForNewWindows().device_scale_factor());
+  EXPECT_TRUE(static_cast<MockRenderWidgetHostImpl*>(hidden_view->host())
+                  ->visual_properties()
+                  .empty());
+  DestroyView(hidden_view);
+
+  // Also verify when initialized with an unattached parent window.
+  aura::Window unattached_parent(nullptr);
+  unattached_parent.Init(ui::LAYER_NOT_DRAWN);
+  FakeRenderWidgetHostViewAura* child_view = CreateView(/*hidden=*/true);
+  child_view->InitAsChild(&unattached_parent);
+  EXPECT_FALSE(child_view->GetScreenInfo().rect.IsEmpty());
+  EXPECT_EQ(child_view->GetScreenInfo().rect,
+            display::Screen::Get()->GetDisplayForNewWindows().bounds());
+  EXPECT_EQ(
+      child_view->GetDeviceScaleFactor(),
+      display::Screen::Get()->GetDisplayForNewWindows().device_scale_factor());
+  EXPECT_TRUE(static_cast<MockRenderWidgetHostImpl*>(child_view->host())
+                  ->visual_properties()
+                  .empty());
+  DestroyView(child_view);
+
+  // Also verify that if a designated display for new windows is set (e.g.
+  // on ChromeOS or in multi-display configurations), InitAsChild() uses that
+  // display.
+  display::Display secondary_display(1001, gfx::Rect(800, 0, 1920, 1080));
+  secondary_display.set_device_scale_factor(2.0f);
+  aura_test_helper_->GetTestScreen()->display_list().AddDisplay(
+      secondary_display, display::DisplayList::Type::NOT_PRIMARY);
+  display::Screen::Get()->SetDisplayForNewWindows(secondary_display.id());
+
+  FakeRenderWidgetHostViewAura* secondary_view = CreateView(/*hidden=*/true);
+  secondary_view->InitAsChild(nullptr);
+  EXPECT_EQ(secondary_view->GetScreenInfo().rect, secondary_display.bounds());
+  EXPECT_EQ(secondary_view->GetDeviceScaleFactor(),
+            secondary_display.device_scale_factor());
+  DestroyView(secondary_view);
+
+  display::Screen::Get()->SetDisplayForNewWindows(display::kInvalidDisplayId);
+
+  // Verify that when a visible unattached view is later parented to a root
+  // window, AddedToRootWindow() -> UpdateScreenInfo() still triggers its first
+  // display property synchronization even though screen_infos_ already matched
+  // the display for new windows.
+  parent_local_surface_id_allocator_.GenerateId();
+  InitViewForFrame(nullptr);
+  ASSERT_EQ(1u, widget_host_->visual_properties().size());
+  ParentHostView(view_, parent_view_);
+  EXPECT_TRUE(base::test::RunUntil(
+      [&]() { return widget_host_->visual_properties().size() == 2u; }));
 }
 
 }  // namespace content

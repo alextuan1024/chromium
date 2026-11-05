@@ -15,7 +15,8 @@
 #include "base/time/time.h"
 #include "base/unguessable_token.h"
 #include "chrome/browser/ash/video_conference/video_conference_client_base.h"
-#include "chrome/browser/chromeos/video_conference/video_conference_manager_client_common.h"
+#include "chrome/browser/ash/video_conference/video_conference_manager_client_common.h"
+#include "components/account_id/account_id.h"
 #include "components/services/app_service/public/cpp/app_capability_access_cache.h"
 #include "components/services/app_service/public/cpp/app_types.h"
 #include "components/services/app_service/public/cpp/instance_registry.h"
@@ -29,13 +30,10 @@ namespace ukm {
 class UkmRecorder;
 }
 
-namespace video_conference {
-class VideoConferenceUkmHelper;
-}
-
 namespace ash {
 
 class VideoConferenceManagerAsh;
+class VideoConferenceUkmHelper;
 
 // VideoConferenceAppServiceClient is a client class for CrOS
 // videoconferencing. It detects the launching/closing/media-capturing actions
@@ -99,11 +97,14 @@ class VideoConferenceAppServiceClient
   raw_ptr<apps::AppRegistryCache> app_registry_;
   raw_ptr<apps::AppCapabilityAccessCache> capability_cache_;
 
+  // The active user whose registries are observed. Set in
+  // `OnSessionStateChanged()`.
+  AccountId account_id_;
+
   // Only used for testing purpose.
   raw_ptr<ukm::UkmRecorder> test_ukm_recorder_ = nullptr;
 
-  std::map<AppIdString,
-           std::unique_ptr<video_conference::VideoConferenceUkmHelper>>
+  std::map<AppIdString, std::unique_ptr<VideoConferenceUkmHelper>>
       id_to_ukm_hepler_;
 
   base::ScopedObservation<SessionController, SessionObserver>

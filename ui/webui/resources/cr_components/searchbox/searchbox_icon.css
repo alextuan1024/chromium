@@ -15,7 +15,14 @@
   display: flex;
   flex-shrink: 0;
   justify-content: center;
+  user-select: none;
   width: var(--cr-searchbox-icon-container-size, 32px);
+}
+
+#image,
+#iconImg,
+#faviconImage {
+  -webkit-user-drag: none;
 }
 
 :host(:not([is-lens-searchbox_])) {
@@ -81,8 +88,20 @@
 }
 
 @media (forced-colors: active) {
-  #icon {
+  :host {
+    --color-searchbox-answer-icon-background: transparent;
+    --color-searchbox-answer-icon-foreground:
+        var(--color-searchbox-search-icon-background);
+    --color-searchbox-google-g-background:
+        var(--color-searchbox-search-icon-background);
+    --color-searchbox-results-icon-container-background: transparent;
+    --color-searchbox-results-starter-pack-icon:
+        var(--color-searchbox-search-icon-background);
     --color-searchbox-search-icon-background: ButtonText;
+  }
+
+  #icon {
+    forced-color-adjust: none;
   }
 }
 
@@ -90,6 +109,18 @@
   background-color: var(--color-searchbox-google-g-background);
   height: var(--cr-searchbox-icon-size-in-searchbox);
   width: var(--cr-searchbox-icon-size-in-searchbox);
+}
+
+/* In dark mode, TopChrome searchbox uses a monochrome Google G mask colored
+   white. */
+:host([in-searchbox][mask-image*='google_g_cr23.svg']) #icon {
+  background-color: var(--color-searchbox-google-g-background, #fff);
+}
+
+@media (forced-colors: active) {
+  :host([in-searchbox][mask-image*='google_g_cr23.svg']) #icon {
+    background-color: ButtonText;
+  }
 }
 
 :host([in-searchbox][favicon-image_*='//resources/cr_components/omnibox/icons/google_g.svg']) #faviconImage {
@@ -110,8 +141,8 @@
   background-color: var(--color-searchbox-answer-icon-foreground);
 }
 
-:host([has-icon-container-background][is-starter-pack]:not([in-searchbox])) #icon,
-:host([has-icon-container-background][is-featured-enterprise-search]:not([in-searchbox])) #icon {
+:host([has-icon-container-background][is-featured-search]:not([in-searchbox]))
+    #icon {
   background-color: var(--color-searchbox-results-starter-pack-icon,
       var(--color-searchbox-answer-icon-foreground));
 }

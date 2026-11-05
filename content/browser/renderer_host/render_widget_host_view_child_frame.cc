@@ -5,6 +5,7 @@
 #include "content/browser/renderer_host/render_widget_host_view_child_frame.h"
 
 #include <algorithm>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -12,7 +13,6 @@
 #include "base/debug/dump_without_crashing.h"
 #include "base/functional/bind.h"
 #include "base/location.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/task/single_thread_task_runner.h"
 #include "build/build_config.h"
 #include "components/input/cursor_manager.h"
@@ -37,7 +37,6 @@
 #include "content/common/input/synthetic_gesture_target.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/render_widget_host_view.h"
-#include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/common/frame/frame_visual_properties.h"
 #include "third_party/blink/public/common/input/web_touch_event.h"
 #include "third_party/blink/public/mojom/frame/intrinsic_sizing_info.mojom.h"
@@ -46,12 +45,14 @@
 #include "ui/base/ime/mojom/text_input_state.mojom.h"
 #include "ui/display/display_util.h"
 #include "ui/gfx/geometry/dip_util.h"
+#include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/size_conversions.h"
 #include "ui/gfx/geometry/size_f.h"
 #include "ui/touch_selection/touch_selection_controller.h"
 
 #if BUILDFLAG(IS_WIN)
 #include "content/browser/renderer_host/input/stylus_handwriting_controller_win.h"
+#include "ui/events/win/stylus_handwriting_properties_win.h"
 #endif  // BUILDFLAG(IS_WIN)
 
 namespace content {
@@ -71,7 +72,8 @@ RenderWidgetHostViewChildFrame::RenderWidgetHostViewChildFrame(
     const display::ScreenInfos& parent_screen_infos)
     : RenderWidgetHostViewBase(widget_host),
       frame_sink_id_(widget_host->GetFrameSinkId()),
-      frame_connector_(nullptr) {
+      frame_connector_(nullptr),
+      mouse_wheel_phase_handler_(this) {
   // TODO(enne): this appears to have a null current() in some tests.
   screen_infos_ = parent_screen_infos;
 
@@ -127,6 +129,7 @@ void RenderWidgetHostViewChildFrame::SetFrameConnector(
     return;
 
   if (frame_connector_) {
+    DestroyUnboundedSurfaceForThisView();
     SetParentFrameSinkId(viz::FrameSinkId());
 
     // Unlocks the mouse if this RenderWidgetHostView holds the lock.
@@ -186,8 +189,6 @@ void RenderWidgetHostViewChildFrame::SetFrameConnector(
   }
 
   if (frame_connector_ && pending_sizing_info_) {
-    CHECK(base::FeatureList::IsEnabled(blink::features::kResponsiveIframes),
-          base::NotFatalUntil::M152);
     frame_connector_->SendIntrinsicSizingInfoToParent(
         std::move(pending_sizing_info_));
   }
@@ -197,8 +198,7 @@ void RenderWidgetHostViewChildFrame::UpdateIntrinsicSizingInfo(
     blink::mojom::IntrinsicSizingInfoPtr sizing_info) {
   if (frame_connector_) {
     frame_connector_->SendIntrinsicSizingInfoToParent(std::move(sizing_info));
-  } else if (base::FeatureList::IsEnabled(
-                 blink::features::kResponsiveIframes)) {
+  } else {
     pending_sizing_info_ = std::move(sizing_info);
   }
 }
@@ -250,6 +250,9 @@ void RenderWidgetHostViewChildFrame::Focus() {
 }
 
 bool RenderWidgetHostViewChildFrame::HasFocus() {
+  if (has_focus_for_testing_.has_value()) {
+    return *has_focus_for_testing_;
+  }
   if (!frame_connector_) {
     return false;
   }
@@ -263,10 +266,6 @@ bool RenderWidgetHostViewChildFrame::IsSurfaceAvailableForCopy() {
 
 void RenderWidgetHostViewChildFrame::ShowWithVisibility(
     PageVisibilityState /*page_visibility*/) {
-  if (frame_connector_) {
-    frame_connector_->SetKeepSurfaceAlive(true);
-  }
-
   if (!host()->IsHidden()) {
     return;
   }
@@ -285,10 +284,6 @@ void RenderWidgetHostViewChildFrame::Show() {
 }
 
 void RenderWidgetHostViewChildFrame::Hide() {
-  if (frame_connector_) {
-    frame_connector_->SetKeepSurfaceAlive(false);
-  }
-
   if (host()->IsHidden()) {
     return;
   }
@@ -502,6 +497,11 @@ RenderWidgetHostViewBase* RenderWidgetHostViewChildFrame::GetRootView() {
                           : nullptr;
 }
 
+input::RenderWidgetHostViewInput*
+RenderWidgetHostViewChildFrame::GetPinchZoomTarget() {
+  return frame_connector_ ? frame_connector_->GetPinchZoomTarget() : nullptr;
+}
+
 #if BUILDFLAG(IS_WIN)
 bool RenderWidgetHostViewChildFrame::ShouldInitiateStylusWriting() {
   auto* root = GetRootView();
@@ -509,15 +509,26 @@ bool RenderWidgetHostViewChildFrame::ShouldInitiateStylusWriting() {
               : RenderWidgetHostViewBase::ShouldInitiateStylusWriting();
 }
 
-void RenderWidgetHostViewChildFrame::OnStartStylusWriting() {
+std::optional<ui::StylusHandwritingPropertiesWin>
+RenderWidgetHostViewChildFrame::TakeStylusHandwritingProperties(
+    uint32_t touch_start_event_id) {
+  auto* root = GetRootView();
+  return root ? root->TakeStylusHandwritingProperties(touch_start_event_id)
+              : std::nullopt;
+}
+
+void RenderWidgetHostViewChildFrame::OnStartStylusWriting(
+    const std::optional<input::StylusWritingProperties>& properties) {
   auto* root = GetRootView();
   if (!root) {
     return;
   }
   root->StartStylusWritingFromChildHostView(
-      this, base::BindRepeating(
-                &RenderWidgetHostViewChildFrame::OnFocusHandwritingTarget,
-                weak_factory_.GetWeakPtr()));
+      this,
+      base::BindRepeating(
+          &RenderWidgetHostViewChildFrame::OnFocusHandwritingTarget,
+          weak_factory_.GetWeakPtr()),
+      properties);
 }
 
 void RenderWidgetHostViewChildFrame::OnEditElementFocusedForStylusWriting(
@@ -663,17 +674,40 @@ void RenderWidgetHostViewChildFrame::UpdateTooltipUnderCursor(
 void RenderWidgetHostViewChildFrame::UpdateTooltipFromKeyboard(
     const std::u16string& tooltip_text,
     const gfx::Rect& bounds) {
-  if (!frame_connector_)
+  if (!frame_connector_) {
     return;
+  }
 
   auto* root_view = frame_connector_->GetRootRenderWidgetHostView();
-  if (!root_view)
+  if (!root_view) {
     return;
+  }
 
+  if (tooltip_text.empty()) {
+    ClearKeyboardTriggeredTooltip();
+    return;
+  }
+
+  gfx::Rect visible_bounds = bounds;
+  visible_bounds.Intersect(gfx::Rect(GetViewBounds().size()));
+  visible_bounds.Intersect(gfx::ScaleToEnclosingRect(
+      frame_connector_->GetIntersectionState().viewport_intersection,
+      1.0f / GetDeviceScaleFactor()));
+  if (visible_bounds.IsEmpty()) {
+    ClearKeyboardTriggeredTooltip();
+    return;
+  }
+
+  gfx::Rect adjusted_bounds = visible_bounds;
   // TODO(bebeaudr): Keyboard-triggered tooltips are not positioned correctly
   // when set for an element in an OOPIF. See https://crbug.com/1210269.
-  gfx::Rect adjusted_bounds(TransformPointToRootCoordSpace(bounds.origin()),
-                            bounds.size());
+  if (!RenderWidgetHostViewBase::TransformPointAndRectToRootView(
+          this, root_view, nullptr, &adjusted_bounds)) {
+    // No reliable transform (e.g. hit-test data not available yet); don't risk
+    // anchoring the tooltip at an arbitrary location.
+    ClearKeyboardTriggeredTooltip();
+    return;
+  }
   root_view->UpdateTooltipFromKeyboard(tooltip_text, adjusted_bounds);
 }
 
@@ -700,9 +734,8 @@ void RenderWidgetHostViewChildFrame::RegisterFrameSinkId() {
 
 void RenderWidgetHostViewChildFrame::UnregisterFrameSinkId() {
   if (host()) {
-    if (host()->delegate() && host()->delegate()->GetInputEventRouter()) {
-      host()->delegate()->GetInputEventRouter()->RemoveFrameSinkIdOwner(
-          frame_sink_id_);
+    if (auto* router = host()->GetInputEventRouter()) {
+      router->RemoveFrameSinkIdOwner(frame_sink_id_);
     }
   }
   DetachFromTouchSelectionClientManagerIfNecessary();
@@ -767,6 +800,8 @@ void RenderWidgetHostViewChildFrame::GestureEventAck(
     blink::mojom::InputEventResultState ack_result) {
   TRACE_EVENT1("input", "RenderWidgetHostViewChildFrame::GestureEventAck",
                "type", blink::WebInputEvent::GetName(event.GetType()));
+
+  mouse_wheel_phase_handler_.GestureEventAck(event, ack_result);
 
 #if !BUILDFLAG(IS_ANDROID)
   HandleSwipeToMoveCursorGestureAck(event);
@@ -858,6 +893,11 @@ void RenderWidgetHostViewChildFrame::DidStopFlinging() {
     selection_controller_client_->DidStopFlinging();
 }
 
+MouseWheelPhaseHandler*
+RenderWidgetHostViewChildFrame::GetMouseWheelPhaseHandler() {
+  return &mouse_wheel_phase_handler_;
+}
+
 blink::mojom::PointerLockResult RenderWidgetHostViewChildFrame::LockPointer(
     bool request_unadjusted_movement) {
   if (frame_connector_)
@@ -934,12 +974,6 @@ void RenderWidgetHostViewChildFrame::PreProcessTouchEvent(
   }
 
   FrameConnector::RootViewFocusState state = frame_connector_->HasFocus();
-#if BUILDFLAG(IS_ANDROID)
-  UMA_HISTOGRAM_ENUMERATION(
-      "Android.FocusChanged.RenderWidgetHostViewChildFrame.RootViewFocusState",
-      state);
-#endif
-
   if (state == FrameConnector::RootViewFocusState::kNotFocused) {
     Focus();
   }
@@ -992,6 +1026,12 @@ gfx::PointF RenderWidgetHostViewChildFrame::TransformRootPointToViewCoordSpace(
   return input_helper_->TransformRootPointToViewCoordSpace(point);
 }
 
+std::optional<gfx::PointF>
+RenderWidgetHostViewChildFrame::TryTransformRootPointToViewCoordSpace(
+    const gfx::PointF& point) {
+  return input_helper_->TryTransformRootPointToViewCoordSpace(point);
+}
+
 bool RenderWidgetHostViewChildFrame::IsRenderWidgetHostViewChildFrame() const {
   return true;
 }
@@ -1035,9 +1075,10 @@ uint64_t RenderWidgetHostViewChildFrame::GetNSViewId() const {
 
 #endif  // BUILDFLAG(IS_MAC)
 
-void RenderWidgetHostViewChildFrame::CopyFromSurface(
+void RenderWidgetHostViewChildFrame::CopyFromSurfaceImpl(
     const gfx::Rect& src_subrect,
     const gfx::Size& output_size,
+    bool is_copy_request_secure,
     base::TimeDelta timeout,
     base::OnceCallback<void(const content::CopyFromSurfaceResult&)> callback) {
   if (!IsSurfaceAvailableForCopy()) {
@@ -1059,6 +1100,7 @@ void RenderWidgetHostViewChildFrame::CopyFromSurface(
                         .GetOutScopedBitmapAndMetadata()));
               },
               std::move(callback)));
+  request->set_is_secure(is_copy_request_secure);
 
   // Run result callback on the current thread in case `callback` needs to run
   // on the current thread. See http://crbug.com/1431363.
@@ -1224,8 +1266,10 @@ bool RenderWidgetHostViewChildFrame::CanBecomeVisible() {
 
 void RenderWidgetHostViewChildFrame::OnDidUpdateVisualPropertiesComplete(
     const cc::RenderFrameMetadata& metadata) {
-  if (frame_connector_)
-    frame_connector_->DidUpdateVisualProperties(metadata);
+  if (frame_connector_ && metadata.local_surface_id.has_value()) {
+    frame_connector_->DidUpdateChildLocalSurfaceId(
+        metadata.local_surface_id.value());
+  }
   host()->SynchronizeVisualProperties();
 }
 

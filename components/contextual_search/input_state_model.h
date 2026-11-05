@@ -72,12 +72,20 @@ class InputStateModel {
   // entries for tools, models, or input types.
   static bool IsConfigPopulated(const omnibox::SearchboxConfig* config);
 
+  // Returns the tools from `config` that should be offered to the user, i.e.
+  // the tools that end up in `InputState::allowed_tools`. This is independent
+  // of any session state, so it can be used by surfaces that need to know
+  // which tools are available before a session is started.
+  static std::vector<ToolMode> GetAllowedTools(
+      const omnibox::SearchboxConfig& config,
+      bool is_off_the_record);
+
   // Returns the current input types from the session handle.
   static std::vector<InputType> GetCurrentInputTypes(
       const contextual_search::ContextualSearchSessionHandle* session_handle);
 
   // Add a subscriber to this model.
-  base::CallbackListSubscription subscribe(Subscriber callback);
+  base::CallbackListSubscription Subscribe(Subscriber callback);
 
   // Initializes the model and notifies subscribers of the initial state.
   void Initialize();
@@ -88,11 +96,16 @@ class InputStateModel {
   // were notified.
   bool UpdateConfig(const omnibox::SearchboxConfig& config);
 
+  // Updates the identity state and re-evaluates allowed and disabled inputs
+  // as well as the placeholder hint text.
+  void SetIdentityState(bool is_signed_in,
+                        bool browser_identity_matches_aim_identity);
+
   // Set a new tool.
-  void setActiveTool(ToolMode tool);
+  void SetActiveTool(ToolMode tool);
 
   // Set a new model.
-  void setActiveModel(ModelMode model);
+  void SetActiveModel(ModelMode model);
   void UpdateStateFromUrl(const GURL& url);
 
   // Called when an input of type `InputType` is added or deleted.
@@ -116,6 +129,19 @@ class InputStateModel {
   // Gets additional query params for the current state.
   std::map<std::string, std::string> GetAdditionalQueryParams();
 
+  // Turns on dynamic AIM fulfillment: `InputState::will_fulfill_in_aim` is
+  // computed instead of always true. One-way, since the model can be shared by
+  // handlers that didn't opt in, and safe to call more than once.
+  void EnableDynamicAimFulfillment();
+  bool dynamic_aim_fulfillment_enabled() const {
+    return dynamic_aim_fulfillment_enabled_;
+  }
+
+  // Enters AI Mode without picking a model, e.g. for the Omnibox AI Mode
+  // button. With dynamic AIM fulfillment, routing then shows the default model,
+  // including once the models arrive or the model opts in later.
+  void EnterAimMode();
+
   // Returns the current state.
   const InputState& GetInputState() const;
 
@@ -132,7 +158,6 @@ class InputStateModel {
   }
 
   struct LensCrop {
-    std::string data_id;
     std::string data_uri;
     bool operator==(const LensCrop&) const = default;
   };
@@ -140,12 +165,11 @@ class InputStateModel {
   // Lens region crop storage.
   // There is only ever one region crop; setting a crop clears any existing
   // crop.
-  void SetLensCrop(const std::string& data_id, const std::string& data_uri);
-  std::optional<std::string> GetLensCrop(const std::string& data_id) const;
-  void RemoveLensCrop(const std::string& data_id);
-  void ClearLensCrop();
-  void ClearLensCrops() { ClearLensCrop(); }
+  void SetLensCrop(const std::string& data_uri);
+  std::optional<std::string> GetLensCrop() const;
+  void RemoveLensCrop();
   const std::optional<LensCrop>& lens_crop() const { return lens_crop_; }
+  uint64_t lens_crop_sequence() const { return lens_crop_sequence_; }
 
   // Gets the `PrefService`.
   void SetPrefService(PrefService* pref_service);
@@ -157,13 +181,18 @@ class InputStateModel {
 
  private:
   // Notify all subscribers of the current `state_`.
-  void notifySubscribers();
+  void NotifySubscribers();
 
   // Update the current value of `state_` based on new tool or model.
-  void updateSelectedState(ToolMode tool, ModelMode model);
+  void UpdateSelectedState(ToolMode tool, ModelMode model);
 
-  // Update the currently disabled tools, models, and inputs.
-  void updateDisabledState();
+  // Recomputes routing (`state_.will_fulfill_in_aim` and the shown model), then
+  // the allowed input types and the disabled tools, models, and inputs.
+  void UpdateDisabledState();
+
+  // Updates `state_.will_fulfill_in_aim`, `aim_mode_active_` and the shown
+  // model. Called by `UpdateDisabledState()`.
+  void RecomputeRouting();
 
   //  Helper method to update `disabled_tools` based on `rule_set_`.
   void UpdateDisabledTools();
@@ -189,8 +218,17 @@ class InputStateModel {
   // Rebuilds allowed input types based on config, sharing, and drive status.
   void RebuildAllowedInputTypes();
 
+  // Sets `state_.hint_text` to `personalized_hint_text_` when the browser
+  // identity matches the AIM identity, or to `default_hint_text_` otherwise.
+  void UpdateHintText();
+
   // Returns the rule for a given `model`.
   const omnibox::ModelRule* GetModelRule(ModelMode model) const;
+
+  // Returns the model whose rule limits tools and inputs. With dynamic AIM
+  // fulfillment and no model shown (headed to SRP), that's the default model,
+  // since routing picks it when the query switches to AI Mode.
+  ModelMode GetModelForRules() const;
 
   // Returns a rule for a given `tool`.
   const omnibox::ToolRule* GetToolRule(ToolMode tool) const;
@@ -208,8 +246,11 @@ class InputStateModel {
   raw_ptr<PrefService> pref_service_ = nullptr;
   PrefChangeRegistrar pref_change_registrar_;
   const bool is_off_the_record_;
-  const bool is_signed_in_;
-  const bool browser_identity_matches_aim_identity_;
+  bool is_signed_in_;
+  bool browser_identity_matches_aim_identity_;
+  // Default and personalized hint texts from the `SearchboxConfig`.
+  std::string default_hint_text_;
+  std::string personalized_hint_text_;
   bool has_valid_config_ = false;
   GURL current_url_;
 
@@ -222,7 +263,6 @@ class InputStateModel {
   // Stores input_types that are permanently disabled by an external trigger and
   // must persist through state updates. Persists after Initialize() is called.
   std::vector<InputType> permanently_disabled_input_types_;
-
 
   bool is_smart_tab_sharing_active_ = false;
 
@@ -238,6 +278,13 @@ class InputStateModel {
 
   // Stores the active region crop preview, if any.
   std::optional<LensCrop> lens_crop_;
+  uint64_t lens_crop_sequence_ = 0;
+
+  // Set by `EnableDynamicAimFulfillment()`; never cleared.
+  bool dynamic_aim_fulfillment_enabled_ = false;
+  // Whether the query is in AI Mode: set when routing goes to AIM or a model is
+  // set; cleared when the model is cleared.
+  bool aim_mode_active_ = false;
 
   base::WeakPtrFactory<InputStateModel> weak_ptr_factory_{this};
 };

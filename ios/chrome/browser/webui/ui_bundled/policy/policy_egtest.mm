@@ -6,14 +6,12 @@
 #import <XCTest/XCTest.h>
 
 #import "base/json/json_reader.h"
-#import "base/strings/strcat.h"
 #import "base/strings/stringprintf.h"
 #import "base/strings/sys_string_conversions.h"
 #import "base/strings/utf_string_conversions.h"
 #import "base/system/sys_info.h"
 #import "base/test/ios/wait_util.h"
 #import "base/version_info/version_info.h"
-#import "components/enterprise/browser/enterprise_switches.h"
 #import "components/grit/policy_resources.h"
 #import "components/grit/policy_resources_map.h"
 #import "components/policy/core/common/features.h"
@@ -22,10 +20,10 @@
 #import "components/strings/grit/components_strings.h"
 #import "ios/chrome/browser/authentication/test/signin_earl_grey.h"
 #import "ios/chrome/browser/authentication/test/signin_earl_grey_ui_test_util.h"
+#import "ios/chrome/browser/download/ui/download_egtest_util.h"
 #import "ios/chrome/browser/policy/model/policy_app_interface.h"
 #import "ios/chrome/browser/policy/model/policy_earl_grey_utils.h"
 #import "ios/chrome/browser/shared/model/url/chrome_url_constants.h"
-#import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/signin/model/fake_system_identity.h"
 #import "ios/chrome/grit/ios_strings.h"
 #import "ios/chrome/test/earl_grey/chrome_actions.h"
@@ -168,44 +166,17 @@ ElementSelector* ApplyPoliciesButton() {
   return [ElementSelector selectorWithElementID:kApplyPoliciesButton];
 }
 
-// Matcher for "Download" button on Download Manager UI.
-id<GREYMatcher> DownloadButton() {
-  return grey_accessibilityID(
-      @"kDownloadManagerDownloadAccessibilityIdentifier");
-}
-
-// Waits until Download button is shown.
-[[nodiscard]] bool WaitForDownloadButton() {
-  return base::test::ios::WaitUntilConditionOrTimeout(
-      base::test::ios::kWaitForPageLoadTimeout, ^{
-        NSError* error = nil;
-        [[EarlGrey selectElementWithMatcher:DownloadButton()]
-            assertWithMatcher:grey_interactable()
-                        error:&error];
-        return (error == nil);
-      });
-}
-
-// Waits until Open in... button is shown on file download.
-[[nodiscard]] bool WaitForOpenInButton() {
-  // These downloads usually take longer and need a longer timeout.
-  constexpr base::TimeDelta kLongDownloadTimeout = base::Minutes(1);
-  return base::test::ios::WaitUntilConditionOrTimeout(kLongDownloadTimeout, ^{
-    NSError* error = nil;
-    [[EarlGrey selectElementWithMatcher:chrome_test_util::OpenInButton()]
-        assertWithMatcher:grey_interactable()
-                    error:&error];
-    return (error == nil);
-  });
-}
-
 }  // namespace
 
 // Base test case for chrome://policy WebUI pages.
 @interface PolicyUITestCaseBase : ChromeTestCase
 @end
 
-@implementation PolicyUITestCaseBase
+@implementation PolicyUITestCaseBase {
+  // Fake DM server used by CBCM tests so that the app never contacts the
+  // production DM server, whose latency would otherwise delay app startup.
+  std::unique_ptr<policy::EmbeddedPolicyTestServer> _policyServer;
+}
 
 // Prevents this base class from being executed directly by the XCTest runner.
 - (void)invokeTest {
@@ -228,7 +199,6 @@ id<GREYMatcher> DownloadButton() {
     // can only be accessed in non-stable channels.
     config.additional_args = {"--fake-variations-channel=canary"};
   }
-  config.features_disabled.push_back(kIOSSaveToDriveSignedOut);
   return config;
 }
 
@@ -293,16 +263,14 @@ id<GREYMatcher> DownloadButton() {
 
 // Tests the chrome://policy page when there are machine level policies.
 - (void)testPolicyPageManagedWithCBCM {
+  _policyServer = std::make_unique<policy::EmbeddedPolicyTestServer>();
+  GREYAssertTrue(_policyServer->Start(), @"Policy server did not start.");
+
   // Fake browser enrollment with an enrollment token that will start chrome
   // browser cloud management without making network calls.
   AppLaunchConfiguration config = [self appConfigurationForTestCase];
-  config.additional_args.push_back(
-      base::StrCat({"--", switches::kEnableChromeBrowserCloudManagement}));
-  config.additional_args.push_back("-com.apple.configuration.managed");
-
-  config.additional_args.push_back(
-      base::StrCat({"<dict><key>CloudManagementEnrollmentToken</key><string>",
-                    policy::kInvalidEnrollmentToken, "</string></dict>"}));
+  policy_test_utils::AddCBCMEnrollmentArguments(
+      config, policy::kInvalidEnrollmentToken, _policyServer->GetServiceURL());
   [[AppLaunchManager sharedManager] ensureAppLaunchedWithConfiguration:config];
 
   // Open the policy page and check that the enrollment token is shown.
@@ -317,7 +285,7 @@ id<GREYMatcher> DownloadButton() {
 // Tests the chrome://policy page when there are policies set.
 - (void)testPoliciesShowOnPage {
   // Set policies
-  policy_test_utils::MergePolicy(false, "AutofillCreditCardEnabled");
+  policy_test_utils::MergePolicy(false, "DefaultSearchProviderEnabled");
   policy_test_utils::MergePolicy(1, "IncognitoModeAvailability");
 
   // Navigate to chrome://policy.
@@ -326,7 +294,7 @@ id<GREYMatcher> DownloadButton() {
   // Verify that the policy set is shown on the page.
   std::vector<std::vector<std::string>> expected_policies;
   expected_policies.push_back(
-      PopulateExpectedPolicy("AutofillCreditCardEnabled", "false"));
+      PopulateExpectedPolicy("DefaultSearchProviderEnabled", "false"));
   expected_policies.push_back(
       PopulateExpectedRestartPolicy("IncognitoModeAvailability", "1"));
   VerifyPolicies(expected_policies);
@@ -413,7 +381,7 @@ id<GREYMatcher> DownloadButton() {
                  @"Status update received prematurely.");
 
   // Update a policy to trigger OnPolicyUpdated and SendStatus.
-  policy_test_utils::SetPolicy(false, "AutofillCreditCardEnabled");
+  policy_test_utils::SetPolicy(false, "DefaultSearchProviderEnabled");
 
   bool statusUpdated = base::test::ios::WaitUntilConditionOrTimeout(
       base::test::ios::kWaitForPageLoadTimeout, ^{
@@ -450,10 +418,11 @@ id<GREYMatcher> DownloadButton() {
   [[EarlGrey selectElementWithMatcher:chrome_test_util::WebViewMatcher()]
       performAction:chrome_test_util::TapWebElement(ExportLogsButton())];
   // Verify the download button at the bottom shows.
-  GREYAssert(WaitForDownloadButton(), @"Download button did not show up");
-  [[EarlGrey selectElementWithMatcher:DownloadButton()]
-      performAction:grey_tap()];
-  GREYAssert(WaitForOpenInButton(), @"Open in... button did not show up");
+  GREYAssert(download::WaitForDownloadButton(/*loading=*/true),
+             @"Download button did not show up");
+  download::StartLocalDownload();
+  GREYAssert(download::WaitForOpenInButton(),
+             @"Open in... button did not show up");
 }
 
 // Tests that the version information displayed is correct.
@@ -567,12 +536,6 @@ id<GREYMatcher> DownloadButton() {
   return config;
 }
 
-- (void)testPolicyPageManagedWithCBCM {
-  // TODO(crbug.com/40897784): Enable for both versions of the test, once the
-  // required logic is implemented.
-  [super testPolicyPageManagedWithCBCM];
-}
-
 MULTIPLEX_TESTS
 
 @end
@@ -586,11 +549,6 @@ MULTIPLEX_TESTS
   AppLaunchConfiguration config = [super appConfigurationForTestCase];
   config.features_enabled.push_back(policy::features::kPolicyPageMojoMigration);
   return config;
-}
-
-- (void)testPolicyPageManagedWithCBCM {
-  // TODO(crbug.com/40897784): Re-enable once the required logic is implemented.
-  EARL_GREY_TEST_DISABLED(@"Disabled for Mojo migration");
 }
 
 MULTIPLEX_TESTS

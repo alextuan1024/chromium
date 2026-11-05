@@ -10,12 +10,17 @@
 #include "base/notreached.h"
 #include "base/run_loop.h"
 #include "base/strings/stringprintf.h"
+#include "content/public/browser/render_frame_host.h"
+#include "content/public/browser/render_widget_host_view.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_ui.h"
 #include "content/public/browser/web_ui_controller.h"
+#include "third_party/blink/public/mojom/frame/viewport_intersection_state.mojom.h"
+#include "ui/base/interaction/anchored_dialog_registry.h"
 #include "ui/base/interaction/element_highlighter.h"
 #include "ui/base/interaction/element_identifier.h"
 #include "ui/base/interaction/element_tracker.h"
+#include "ui/webui/tracked_element/anchored_dialog_registry_webui.h"
 #include "ui/webui/tracked_element/element_highlighter_webui.h"
 #include "ui/webui/tracked_element/tracked_element_web_ui.h"
 
@@ -66,12 +71,39 @@ TrackedElementHandler::TrackedElementHandler(content::WebContents* web_contents,
     : context_(context), receiver_(this) {
   ui::ElementHighlighter::GetElementHighlighter()
       ->MaybeRegisterBackend<ElementHighlighterWebUI>();
+  ui::AnchoredDialogRegistry::GetInstance()
+      ->MaybeRegisterBackend<AnchoredDialogRegistryWebUI>();
 
   if (web_contents) {
     Observe(web_contents);
     is_web_contents_visible_ =
         web_contents->GetVisibility() == content::Visibility::VISIBLE;
   }
+}
+
+TrackedElementHandler::TrackedElementHandler(
+    content::WebContents* web_contents,
+    mojo::PendingReceiver<tracked_element::mojom::TrackedElementHandler>
+        receiver,
+    ui::ElementContext context,
+    const std::vector<ui::ElementIdentifier>& identifiers,
+    content::RenderFrameHost* render_frame_host)
+    : context_(context),
+      receiver_(this, std::move(receiver)),
+      rfh_id_(render_frame_host ? render_frame_host->GetGlobalId()
+                                : content::GlobalRenderFrameHostId()) {
+  ui::ElementHighlighter::GetElementHighlighter()
+      ->MaybeRegisterBackend<ElementHighlighterWebUI>();
+  ui::AnchoredDialogRegistry::GetInstance()
+      ->MaybeRegisterBackend<AnchoredDialogRegistryWebUI>();
+
+  if (web_contents) {
+    Observe(web_contents);
+    is_web_contents_visible_ =
+        web_contents->GetVisibility() == content::Visibility::VISIBLE;
+  }
+
+  RegisterIdentifiers(identifiers);
 }
 
 TrackedElementHandler::~TrackedElementHandler() = default;
@@ -92,13 +124,49 @@ void TrackedElementHandler::OnVisibilityChanged(
   UpdateAllEffectiveVisibilities();
 }
 
-void TrackedElementHandler::UpdateAllEffectiveVisibilities() {
+void TrackedElementHandler::RenderFrameDeleted(content::RenderFrameHost* rfh) {
+  if (rfh && occluded_subframes_.erase(rfh->GetGlobalId()) > 0) {
+    UpdateAllEffectiveVisibilities(
+        /*bounds_changed=*/is_subframe_unoccluded());
+  }
+}
+
+void TrackedElementHandler::OnRemoteSubframeViewportIntersectionStateChanged(
+    content::RenderFrameHost* rfh,
+    const blink::mojom::ViewportIntersectionState&
+        viewport_intersection_state) {
+  if (!rfh) {
+    return;
+  }
+  for (content::RenderFrameHost* frame = render_frame_host(); frame;
+       frame = frame->GetParentOrOuterDocument()) {
+    if (frame == rfh) {
+      const bool is_frame_unoccluded =
+          !viewport_intersection_state.is_hidden_for_media_playback &&
+          viewport_intersection_state.occlusion_state !=
+              blink::mojom::FrameOcclusionState::kPossiblyOccluded &&
+          (viewport_intersection_state.occlusion_state ==
+               blink::mojom::FrameOcclusionState::kUnknown ||
+           !viewport_intersection_state.viewport_intersection.IsEmpty());
+      if (is_frame_unoccluded) {
+        occluded_subframes_.erase(rfh->GetGlobalId());
+      } else {
+        occluded_subframes_.insert(rfh->GetGlobalId());
+      }
+      UpdateAllEffectiveVisibilities(/*bounds_changed=*/is_frame_unoccluded);
+      return;
+    }
+  }
+}
+
+void TrackedElementHandler::UpdateAllEffectiveVisibilities(
+    bool bounds_changed) {
   // This is complicated because it is possible that UpdateEffectiveVisibility
   // could invoke this class's destructor.
   auto weak_ptr = weak_ptr_factory_.GetWeakPtr();
   for (auto& [_, elements] : elements_) {
     for (auto& [_, element] : elements) {
-      element->UpdateEffectiveVisibility();
+      element->UpdateEffectiveVisibility(bounds_changed);
       if (!weak_ptr) {
         return;
       }
@@ -116,6 +184,22 @@ void TrackedElementHandler::SetHighlightState(
             element.identifier().GetName(), element.GetSecondaryIdentifier()),
         highlight);
   }
+}
+
+void TrackedElementHandler::SetHasAnchoredDialog(
+    TrackedElementWebUI& element,
+    bool has_anchored_dialog,
+    base::PassKey<TrackedElementWebUI>) {
+  if (manager_remote_) {
+    manager_remote_->OnElementAnchoredDialogChanged(
+        tracked_element::mojom::TrackedElementIdentifier::New(
+            element.identifier().GetName(), element.GetSecondaryIdentifier()),
+        has_anchored_dialog);
+  }
+}
+
+content::RenderFrameHost* TrackedElementHandler::render_frame_host() const {
+  return content::RenderFrameHost::FromID(rfh_id_);
 }
 
 void TrackedElementHandler::FlushManagerRemoteForTesting() {
@@ -356,6 +440,41 @@ void TrackedElementHandler::TrackedElementCanHighlightChanged(
     return;
   }
   element->set_can_highlight(can_highlight);
+}
+
+void TrackedElementHandler::FocusAnchoredDialog(
+    tracked_element::mojom::TrackedElementIdentifierPtr id,
+    bool reverse,
+    FocusAnchoredDialogCallback callback) {
+  // The element and its dialog may legitimately have gone away since the WebUI
+  // last heard about them, so this is not a bad message.
+  TrackedElementWebUI* const element = GetElement(id);
+  if (!element || !element->visible()) {
+    std::move(callback).Run(false);
+    return;
+  }
+
+  // This is meant to continue keyboard focus traversal, so don't let the WebUI
+  // move focus into a dialog while it doesn't have keyboard focus itself.
+  if (!HasKeyboardFocus()) {
+    std::move(callback).Run(false);
+    return;
+  }
+
+  std::move(callback).Run(element->FocusAnchoredDialog(reverse));
+}
+
+bool TrackedElementHandler::HasKeyboardFocus() const {
+  if (has_keyboard_focus_for_testing_.has_value()) {
+    return *has_keyboard_focus_for_testing_;
+  }
+  content::RenderWidgetHostView* view = nullptr;
+  if (content::RenderFrameHost* const rfh = render_frame_host()) {
+    view = rfh->GetView();
+  } else if (web_contents()) {
+    view = web_contents()->GetRenderWidgetHostView();
+  }
+  return view && view->HasFocus();
 }
 
 void TrackedElementHandler::RegisterIdentifier(ui::ElementIdentifier id) {

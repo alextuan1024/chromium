@@ -8,18 +8,21 @@
 #include <stdint.h>
 
 #include <algorithm>
+#include <array>
+#include <atomic>
+#include <optional>
 #include <string_view>
 
+#include "base/callback_list.h"
 #include "base/check_op.h"
 #include "base/command_line.h"
-#include "base/containers/fixed_flat_set.h"
 #include "base/files/file_path.h"
+#include "base/functional/bind.h"
 #include "base/i18n/base_i18n_switches.h"
-#include "base/i18n/icu4c_tag_converter.h"
 #include "base/i18n/icubridge/default_icu_locale.h"
 #include "base/i18n/language_tag.h"
-#include "base/i18n/tag_converters.h"
 #include "base/logging.h"
+#include "base/no_destructor.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
 #include "base/strings/sys_string_conversions.h"
@@ -31,40 +34,11 @@
 #include "third_party/icu/source/i18n/unicode/coll.h"
 
 #if BUILDFLAG(IS_IOS)
-#include "base/debug/crash_logging.h"
 #include "base/ios/ios_util.h"
 #endif
 
 namespace base::i18n {
 namespace {
-
-// Extract language, country and variant, but ignore keywords.  For example,
-// en-US, ca@valencia, ca-ES@valencia.
-std::string GetLocaleString(const icu::Locale& locale) {
-  const char* language = locale.getLanguage();
-  const char* country = locale.getCountry();
-  const char* variant = locale.getVariant();
-  const char* script = locale.getScript();
-
-  std::string result =
-      (language != nullptr && *language != '\0') ? language : "und";
-
-  if (script != nullptr && *script != '\0') {
-    result += '-';
-    result += script;
-  }
-
-  if (country != nullptr && *country != '\0') {
-    result += '-';
-    result += country;
-  }
-
-  if (variant != nullptr && *variant != '\0') {
-    result += '@' + base::ToLowerASCII(variant);
-  }
-
-  return result;
-}
 
 // Returns LEFT_TO_RIGHT or RIGHT_TO_LEFT if |character| has strong
 // directionality, returns UNKNOWN_DIRECTION if it doesn't. Please refer to
@@ -101,93 +75,71 @@ TextDirection GetCharacterDirection(UChar32 character) {
   return UNKNOWN_DIRECTION;
 }
 
-// Convert Chrome locale name to ICU locale name
-std::string ICULocaleName(std::string_view locale_string) {
-  // If not Spanish, just return it.
-  if (locale_string.substr(0, 2) != "es") {
-    return std::string(locale_string);
-  }
-  // Expand es to es-ES.
-  if (EqualsCaseInsensitiveASCII(locale_string, "es")) {
-    return "es-ES";
-  }
-  // Map es-419 (Latin American Spanish) to es-FOO depending on the system
-  // locale.  If it's es-RR other than es-ES, map to es-RR. Otherwise, map
-  // to es-MX (the most populous in Spanish-speaking Latin America).
-  if (EqualsCaseInsensitiveASCII(locale_string, "es-419")) {
-    const icu::Locale& locale = icu::Locale::getDefault();
-    std::string language = locale.getLanguage();
-    const char* country = locale.getCountry();
-    if (EqualsCaseInsensitiveASCII(language, "es") &&
-        !EqualsCaseInsensitiveASCII(country, "es")) {
-      language += '-';
-      language += country;
-      return language;
-    }
-    return "es-MX";
-  }
-  // Currently, Chrome has only "es" and "es-419", but later we may have
-  // more specific "es-RR".
-  return std::string(locale_string);
-}
+// Value of `g_cached_text_direction` when no direction is cached.
+constexpr int kTextDirectionNotCached = -1;
 
-TextDirection GetTextDirectionInternal() {
-  TextDirection forced_direction = GetForcedTextDirection();
-  if (forced_direction != UNKNOWN_DIRECTION) {
-    return forced_direction;
-  }
+// Cached result of GetTextDirectionInternal(), or `kTextDirectionNotCached`.
+// Reset whenever the default ICU locale is updated.
+constinit std::atomic<int> g_cached_text_direction{kTextDirectionNotCached};
 
+TextDirection GetDirectionForLanguageTag(const LanguageTag& language_tag) {
   static constexpr auto kRtlLanguageTags =
       std::to_array<std::string_view>({"ar", "fa", "he", "ur"});
-  if (std::ranges::contains(kRtlLanguageTags,
-                            GetDefaultIcuLocale().language_subtag())) {
+  if (std::ranges::contains(kRtlLanguageTags, language_tag.language_subtag())) {
     return RIGHT_TO_LEFT;
   }
   return LEFT_TO_RIGHT;
 }
 
+void OnDefaultLocaleUpdated(const LanguageTag&) {
+  g_cached_text_direction.store(kTextDirectionNotCached,
+                                std::memory_order_relaxed);
+}
+
+// Subscribes to default ICU locale updates on the first call; later calls do
+// nothing.
+void EnsureObservingDefaultLocale() {
+  // A function-local static gives thread-safe one-time registration without a
+  // static initializer, and keeps the subscription alive for the life of the
+  // process.
+  static base::NoDestructor<base::CallbackListSubscription> subscription(
+      RegisterOnDefaultLocaleUpdatedCallback(
+          base::BindRepeating(&OnDefaultLocaleUpdated)));
+}
+
+// Returns the cached text direction, or std::nullopt if none is cached.
+std::optional<TextDirection> GetCachedTextDirection() {
+  const int direction = g_cached_text_direction.load(std::memory_order_relaxed);
+  if (direction == kTextDirectionNotCached) {
+    return std::nullopt;
+  }
+  return static_cast<TextDirection>(direction);
+}
+
+TextDirection GetTextDirectionInternal() {
+  EnsureObservingDefaultLocale();
+  if (std::optional<TextDirection> direction = GetCachedTextDirection()) {
+    return *direction;
+  }
+
+  const LanguageTag locale = GetDefaultIcuLocale();
+  TextDirection direction = GetForcedTextDirection();
+  if (direction == UNKNOWN_DIRECTION) {
+    direction = GetDirectionForLanguageTag(locale);
+  }
+  g_cached_text_direction.store(direction, std::memory_order_relaxed);
+  // If another thread updated the default locale after `locale` was read, its
+  // reset may have run before the store above. Drop the stale value then.
+  if (GetDefaultIcuLocale() != locale) {
+    g_cached_text_direction.store(kTextDirectionNotCached,
+                                  std::memory_order_relaxed);
+  }
+  return direction;
+}
+
 }  // namespace
 
-// Convert the ICU default locale to a string.
-std::string GetConfiguredLocale() {
-  return GetLocaleString(icu::Locale::getDefault());
-}
-
-// Convert the ICU canonicalized locale to a string.
-std::string GetCanonicalLocale(std::string_view locale) {
-  return GetLocaleString(
-      icu::Locale::createCanonical(std::string(locale).c_str()));
-}
-
-void SetICUDefaultLocale(std::string_view locale_string) {
-#if BUILDFLAG(IS_IOS)
-  static base::debug::CrashKeyString* crash_key_locale =
-      base::debug::AllocateCrashKeyString("icu_locale_input",
-                                          base::debug::CrashKeySize::Size256);
-  base::debug::SetCrashKeyString(crash_key_locale, locale_string);
-#endif
-  icu::Locale locale(ICULocaleName(locale_string).c_str());
-  UErrorCode error_code = U_ZERO_ERROR;
-  const char* lang = locale.getLanguage();
-  if (lang != nullptr && *lang != '\0') {
-    icu::Locale::setDefault(locale, error_code);
-    SetDefaultIcuLocale(
-        DefaultIcuLocaleSetterKey(),
-        IcuLocaleConverter::GetInstance().ToLanguageTag(locale));
-  } else {
-    LOG(ERROR) << "Failed to set the ICU default locale to " << locale_string
-               << ". Falling back to en-US.";
-    icu::Locale::setDefault(icu::Locale::getUS(), error_code);
-    SetDefaultIcuLocale(DefaultIcuLocaleSetterKey(),
-                        GetKnownLanguageTag("en-US"));
-  }
-}
-
 bool IsRTL() {
-  return ICUIsRTL();
-}
-
-bool ICUIsRTL() {
   return GetTextDirectionInternal() == RIGHT_TO_LEFT;
 }
 

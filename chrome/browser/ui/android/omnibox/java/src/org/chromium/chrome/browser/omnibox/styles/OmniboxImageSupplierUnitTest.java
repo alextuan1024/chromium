@@ -7,11 +7,18 @@ package org.chromium.chrome.browser.omnibox.styles;
 import static com.google.common.truth.Truth.assertThat;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotSame;
+import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertSame;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.ArgumentMatchers.anyFloat;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
@@ -39,14 +46,20 @@ import org.mockito.quality.Strictness;
 
 import org.chromium.base.Callback;
 import org.chromium.base.ContextUtils;
+import org.chromium.base.MemoryPressureLevel;
+import org.chromium.base.MemoryPressureListener;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.RobolectricUtil;
 import org.chromium.chrome.browser.omnibox.R;
+import org.chromium.chrome.browser.omnibox.styles.OmniboxImageSupplier.FallbackIconType;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.components.favicon.LargeIconBridge;
 import org.chromium.components.favicon.LargeIconBridge.LargeIconCallback;
 import org.chromium.components.favicon.LargeIconBridgeJni;
 import org.chromium.components.image_fetcher.ImageFetcher;
+import org.chromium.components.omnibox.AutocompleteMatch;
+import org.chromium.components.omnibox.AutocompleteMatchBuilder;
+import org.chromium.components.omnibox.AutocompleteMatchJni;
 import org.chromium.components.url_formatter.UrlFormatter;
 import org.chromium.components.url_formatter.UrlFormatterJni;
 import org.chromium.ui.test.util.MockitoHelper;
@@ -59,6 +72,7 @@ public final class OmniboxImageSupplierUnitTest {
     private static final GURL NAV_URL = JUnitTestGURLs.URL_1;
     private static final GURL NAV_URL_2 = JUnitTestGURLs.URL_2;
     private static final int FALLBACK_COLOR = 0xACE0BA5E;
+    private static final long NATIVE_MATCH = 1L;
 
     @Rule
     public final MockitoRule mMockitoRule = MockitoJUnit.rule().strictness(Strictness.STRICT_STUBS);
@@ -71,17 +85,23 @@ public final class OmniboxImageSupplierUnitTest {
     @Mock private Callback<Drawable> mCallback2;
     @Mock private Profile mProfile;
     @Mock private ImageFetcher mImageFetcher;
+    @Mock private AutocompleteMatch.Natives mAutocompleteMatchJni;
     @Captor private ArgumentCaptor<LargeIconCallback> mIconCallbackCaptor;
     @Captor private ArgumentCaptor<Drawable> mDrawableCaptor;
     @Captor private ArgumentCaptor<ImageFetcher.Params> mParamCaptor;
+    @Captor private ArgumentCaptor<Callback<Bitmap>> mBitmapCallbackCaptor;
 
     private OmniboxImageSupplier mSupplier;
+    private AutocompleteMatch mMatch;
     private @Px int mFaviconSize;
 
     @Before
     public void setUp() {
         LargeIconBridgeJni.setInstanceForTesting(mLargeIconBridgeJni);
         UrlFormatterJni.setInstanceForTesting(mUrlFormatterJni);
+        AutocompleteMatchJni.setInstanceForTesting(mAutocompleteMatchJni);
+        mMatch = new AutocompleteMatchBuilder().setVectorIconNames("search", "star").build();
+        mMatch.updateNativeObjectRef(NATIVE_MATCH);
 
         var context = ContextUtils.getApplicationContext();
         mFaviconSize =
@@ -196,7 +216,7 @@ public final class OmniboxImageSupplierUnitTest {
     @Test
     public void generateFavicon_globe() {
         mSupplier.onNativeInitialized();
-        mSupplier.generateFavicon(NAV_URL, OmniboxImageSupplier.FallbackIconType.GLOBE, mCallback1);
+        mSupplier.generateFavicon(NAV_URL, FallbackIconType.GLOBE, mCallback1);
         RobolectricUtil.runAllBackgroundAndUi();
 
         verify(mCallback1).onResult(mDrawableCaptor.capture());
@@ -432,7 +452,7 @@ public final class OmniboxImageSupplierUnitTest {
         verify(mImageFetcher).fetchImage(any(), callbackCaptor.capture());
         verifyNoMoreInteractions(mImageFetcher, mCallback1);
 
-        // Simulate end of Omnibox interaction.
+        // Simulate cache reset.
         mSupplier.resetCache();
         verify(mImageFetcher).clear();
         verifyNoMoreInteractions(mImageFetcher, mCallback1);
@@ -440,6 +460,25 @@ public final class OmniboxImageSupplierUnitTest {
         // Emit late reply. The callback should not be delivered.
         callbackCaptor.getValue().onResult(mBitmap1);
         verifyNoMoreInteractions(mImageFetcher, mCallback1);
+    }
+
+    @Test
+    public void fetchImage_resultsAfterClearPendingRequestsAreDiscardedWithoutClearingCache() {
+        mSupplier.setImageFetcherForTesting(mImageFetcher);
+
+        var url = JUnitTestGURLs.RED_1;
+
+        mSupplier.fetchImage(url, mCallback1);
+        verify(mImageFetcher).fetchImage(any(), mBitmapCallbackCaptor.capture());
+
+        // Simulate end of Omnibox interaction: pending callbacks are dropped without clearing
+        // cache.
+        mSupplier.clearPendingRequests();
+        verify(mImageFetcher, never()).clear();
+
+        // Emit late reply. The callback should not be delivered.
+        mBitmapCallbackCaptor.getValue().onResult(mBitmap1);
+        verify(mCallback1, never()).onResult(any());
     }
 
     @Test
@@ -518,5 +557,98 @@ public final class OmniboxImageSupplierUnitTest {
 
         // Observe listeners receiving no notification.
         verifyNoMoreInteractions(mCallback1, mCallback2);
+    }
+
+    @Test
+    public void memoryPressureListener_resetsCacheWhenUnderPressureAndStopsAfterDestroy() {
+        mSupplier.setImageFetcherForTesting(mImageFetcher);
+
+        MemoryPressureListener.notifyMemoryPressure(MemoryPressureLevel.NONE);
+        verify(mImageFetcher, never()).clear();
+
+        MemoryPressureListener.notifyMemoryPressure(MemoryPressureLevel.MODERATE);
+        verify(mImageFetcher).clear();
+        clearInvocations(mImageFetcher);
+
+        MemoryPressureListener.notifyMemoryPressure(MemoryPressureLevel.CRITICAL);
+        verify(mImageFetcher).clear();
+        clearInvocations(mImageFetcher);
+
+        mSupplier.destroy();
+        verify(mImageFetcher).destroy();
+        clearInvocations(mImageFetcher);
+
+        MemoryPressureListener.notifyMemoryPressure(MemoryPressureLevel.CRITICAL);
+        verify(mImageFetcher, never()).clear();
+    }
+
+    @Test
+    public void getVectorIcon_nullWhenNativeNotInitialized() {
+        assertNull(mSupplier.getVectorIcon(mMatch, false, 26));
+        verify(mAutocompleteMatchJni, never())
+                .getVectorIconBitmap(anyLong(), anyBoolean(), anyInt(), anyFloat());
+    }
+
+    @Test
+    public void getVectorIcon_nullWhenMatchHasNoVectorIcon() {
+        mSupplier.onNativeInitialized();
+        mMatch = new AutocompleteMatchBuilder().build();
+        mMatch.updateNativeObjectRef(NATIVE_MATCH);
+
+        assertNull(mSupplier.getVectorIcon(mMatch, false, 26));
+        verify(mAutocompleteMatchJni, never())
+                .getVectorIconBitmap(anyLong(), anyBoolean(), anyInt(), anyFloat());
+    }
+
+    @Test
+    public void getVectorIcon_rasterizesOnceAndServesFromCache() {
+        mSupplier.onNativeInitialized();
+        doReturn(mBitmap1)
+                .when(mAutocompleteMatchJni)
+                .getVectorIconBitmap(eq(NATIVE_MATCH), eq(true), eq(26), anyFloat());
+
+        Drawable first = mSupplier.getVectorIcon(mMatch, true, 26);
+        assertSame(mBitmap1, ((BitmapDrawable) first).getBitmap());
+        verify(mAutocompleteMatchJni)
+                .getVectorIconBitmap(eq(NATIVE_MATCH), eq(true), eq(26), anyFloat());
+        clearInvocations(mAutocompleteMatchJni);
+
+        // Same icon and size: no second native round trip, but a distinct Drawable instance.
+        Drawable second = mSupplier.getVectorIcon(mMatch, true, 26);
+        verify(mAutocompleteMatchJni, never())
+                .getVectorIconBitmap(anyLong(), anyBoolean(), anyInt(), anyFloat());
+        assertNotSame(first, second);
+        assertSame(mBitmap1, ((BitmapDrawable) second).getBitmap());
+    }
+
+    @Test
+    public void getVectorIcon_cachesPerSize() {
+        mSupplier.onNativeInitialized();
+        doReturn(mBitmap1)
+                .when(mAutocompleteMatchJni)
+                .getVectorIconBitmap(eq(NATIVE_MATCH), eq(false), eq(26), anyFloat());
+        doReturn(mBitmap2)
+                .when(mAutocompleteMatchJni)
+                .getVectorIconBitmap(eq(NATIVE_MATCH), eq(false), eq(36), anyFloat());
+
+        Drawable small = mSupplier.getVectorIcon(mMatch, false, 26);
+        Drawable large = mSupplier.getVectorIcon(mMatch, false, 36);
+        assertSame(mBitmap1, ((BitmapDrawable) small).getBitmap());
+        assertSame(mBitmap2, ((BitmapDrawable) large).getBitmap());
+    }
+
+    @Test
+    public void getVectorIcon_doesNotCacheFailedRasterization() {
+        mSupplier.onNativeInitialized();
+        doReturn(null)
+                .when(mAutocompleteMatchJni)
+                .getVectorIconBitmap(eq(NATIVE_MATCH), eq(false), eq(26), anyFloat());
+
+        assertNull(mSupplier.getVectorIcon(mMatch, false, 26));
+        clearInvocations(mAutocompleteMatchJni);
+
+        assertNull(mSupplier.getVectorIcon(mMatch, false, 26));
+        verify(mAutocompleteMatchJni)
+                .getVectorIconBitmap(eq(NATIVE_MATCH), eq(false), eq(26), anyFloat());
     }
 }

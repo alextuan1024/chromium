@@ -61,7 +61,7 @@ class ResourceLoaderCodeCacheTest : public testing::Test {
     return MakeGarbageCollected<ResourceFetcher>(ResourceFetcherInit(
         properties->MakeDetachable(), context, CreateTaskRunner(),
         CreateTaskRunner(), loader_factory,
-        MakeGarbageCollected<MockContextLifecycleNotifier>(),
+        context_lifecycle_notifier_.Notifier(),
         /*back_forward_cache_loader_helper=*/nullptr));
   }
 
@@ -141,6 +141,7 @@ class ResourceLoaderCodeCacheTest : public testing::Test {
 
   test::TaskEnvironment task_environment_;
   ScopedTestingPlatformSupport<TestingPlatformSupport> platform_;
+  ScopedMockContextLifecycleNotifier context_lifecycle_notifier_;
 
   // State initialized by CommonSetup().
   Persistent<ScriptResource> resource_;
@@ -209,6 +210,99 @@ TEST_F(ResourceLoaderCodeCacheTest, CodeCacheFullHttpsSchemeWithResponseFlag) {
   // Code cache data was present.
   EXPECT_EQ(resource_->CodeCacheSize(),
             cache_data.size() + sizeof(CachedMetadataHeader));
+}
+
+TEST_F(ResourceLoaderCodeCacheTest, CodeCacheFullServiceWorkerResponse) {
+  V8TestingScope scope;
+  CommonSetup(scope.GetIsolate(), "https://www.example.com/");
+
+  std::vector<uint8_t> cache_data{2, 3, 4, 5, 6};
+
+  // Nothing has changed yet because the content response hasn't arrived yet.
+  EXPECT_FALSE(resource_->CodeCacheSize());
+
+  response_.SetWasFetchedViaServiceWorker(true);
+  loader_->DidReceiveResponse(
+      WrappedResourceResponse(response_),
+      /*body=*/mojo::ScopedDataPipeConsumerHandle(),
+      mojo_base::BigBuffer(MakeSerializedCodeCacheDataWithHash(cache_data)));
+
+  // Code cache data was present.
+  EXPECT_EQ(resource_->CodeCacheSize(),
+            cache_data.size() + sizeof(CachedMetadataHeader));
+  EXPECT_TRUE(resource_->CacheHandler()->HashRequired());
+}
+
+TEST_F(ResourceLoaderCodeCacheTest,
+       ServiceWorkerResponseRejectsUnhashedCodeCache) {
+  V8TestingScope scope;
+  CommonSetup(scope.GetIsolate(), "https://www.example.com/");
+
+  std::vector<uint8_t> cache_data{2, 3, 4, 5, 6};
+
+  response_.SetWasFetchedViaServiceWorker(true);
+  loader_->DidReceiveResponse(
+      WrappedResourceResponse(response_),
+      /*body=*/mojo::ScopedDataPipeConsumerHandle(),
+      mojo_base::BigBuffer(MakeSerializedCodeCacheData(cache_data)));
+
+  // Unhashed code cache data is rejected because hash is required for SW
+  // responses.
+  EXPECT_FALSE(resource_->CodeCacheSize());
+}
+
+TEST_F(ResourceLoaderCodeCacheTest, ServiceWorkerResponseHashCheckSuccess) {
+  V8TestingScope scope;
+  CommonSetup(scope.GetIsolate(), "https://www.example.com/");
+
+  String source_text("alert('hello service worker');");
+  std::vector<uint8_t> cache_data{2, 3, 4, 5, 6};
+  response_.SetWasFetchedViaServiceWorker(true);
+  loader_->DidReceiveResponse(
+      WrappedResourceResponse(response_),
+      /*body=*/mojo::ScopedDataPipeConsumerHandle(),
+      mojo_base::BigBuffer(
+          MakeSerializedCodeCacheDataWithHash(cache_data, source_text)));
+
+  // Code cache data was present.
+  EXPECT_EQ(cache_data.size() + sizeof(CachedMetadataHeader),
+            resource_->CodeCacheSize());
+
+  // Successful check: source text matches.
+  resource_->CacheHandler()->Check(loader_factory_->GetCodeCacheHost(),
+                                   ParkableString(source_text.Impl()));
+
+  // Code cache remains available.
+  EXPECT_EQ(cache_data.size() + sizeof(CachedMetadataHeader),
+            resource_->CodeCacheSize());
+  EXPECT_TRUE(resource_->CacheHandler()->GetCachedMetadata(0));
+}
+
+TEST_F(ResourceLoaderCodeCacheTest, ServiceWorkerResponseHashCheckFailure) {
+  V8TestingScope scope;
+  CommonSetup(scope.GetIsolate(), "https://www.example.com/");
+
+  String source_text_1("alert('hello service worker');");
+  std::vector<uint8_t> cache_data{2, 3, 4, 5, 6};
+  response_.SetWasFetchedViaServiceWorker(true);
+  loader_->DidReceiveResponse(
+      WrappedResourceResponse(response_),
+      /*body=*/mojo::ScopedDataPipeConsumerHandle(),
+      mojo_base::BigBuffer(
+          MakeSerializedCodeCacheDataWithHash(cache_data, source_text_1)));
+
+  // Code cache data was present.
+  EXPECT_EQ(cache_data.size() + sizeof(CachedMetadataHeader),
+            resource_->CodeCacheSize());
+
+  // Failed check: source text is different.
+  String source_text_2("alert('goodbye service worker');");
+  resource_->CacheHandler()->Check(loader_factory_->GetCodeCacheHost(),
+                                   ParkableString(source_text_2.Impl()));
+
+  // The metadata has been cleared.
+  EXPECT_FALSE(resource_->CodeCacheSize());
+  EXPECT_FALSE(resource_->CacheHandler()->GetCachedMetadata(0));
 }
 
 TEST_F(ResourceLoaderCodeCacheTest, WebUICodeCacheInvalidOuterType) {

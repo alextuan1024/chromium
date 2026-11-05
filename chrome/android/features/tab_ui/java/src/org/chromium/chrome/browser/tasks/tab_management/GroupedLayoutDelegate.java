@@ -7,16 +7,13 @@ package org.chromium.chrome.browser.tasks.tab_management;
 import static org.chromium.build.NullUtil.assumeNonNull;
 import static org.chromium.chrome.browser.tasks.tab_management.TabListModel.CardProperties.CARD_TYPE;
 
-import android.graphics.Bitmap;
 import android.util.Pair;
 
 import androidx.annotation.VisibleForTesting;
 
 import org.chromium.base.Token;
-import org.chromium.base.metrics.RecordUserAction;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
-import org.chromium.chrome.browser.actor.ui.ActorUiTabController.UiTabState;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabId;
 import org.chromium.chrome.browser.tab.TabLaunchType;
@@ -30,7 +27,6 @@ import org.chromium.chrome.browser.tasks.tab_management.TabListModel.CardPropert
 import org.chromium.components.tab_groups.TabGroupColorId;
 import org.chromium.components.tabs.TabAlert;
 import org.chromium.ui.modelutil.PropertyModel;
-import org.chromium.url.GURL;
 
 import java.util.List;
 
@@ -53,65 +49,66 @@ class GroupedLayoutDelegate extends TabListLayoutDelegate {
     }
 
     @Override
-    boolean requiresThumbnailUpdateOnDeselect() {
-        return true;
-    }
-
-    @Override
-    boolean requiresThumbnailUpdateOnSelect() {
-        return true;
-    }
-
-    @Override
-    boolean supportsTabGroups() {
-        return true;
-    }
-
-    @Override
     boolean isChildTabRepresentedByGroupCard(Tab tab) {
-        return mMediator.getCurrentTabModelChecked().isTabInTabGroup(tab);
+        return mMediator.isTabInTabGroup(tab);
     }
 
     @Override
     @TabAlert
-    int getAlertState(Tab representativeTab, PropertyModel model) {
-        @TabAlert int stateToReturn = representativeTab.getAlertState();
+    int getAlertStateForGroupHeader(Token tabGroupId) {
+        @TabAlert int stateToReturn = TabAlert.NONE;
         int statePriority = TabUtils.getTabAlertPriority(stateToReturn);
-        // Fast exit if not in a group or already at maximum priority state.
-        if (!mMediator.isTabInTabGroup(representativeTab)
-                || statePriority == TabUtils.MAX_TAB_ALERT_PRIORITY) {
-            return stateToReturn;
-        }
-
-        // Check all tabs in the group to surface the highest priority alert state onto the group
-        // card.
-        List<Tab> relatedTabs = mMediator.getRelatedTabsForId(representativeTab.getId());
-        for (Tab tab : relatedTabs) {
-            @TabAlert int currentState = tab.getAlertState();
+        TabModel tabModel = mMediator.getCurrentTabModelChecked();
+        List<Tab> groupTabs = tabModel.getTabsInGroup(tabGroupId);
+        for (Tab tab : groupTabs) {
+            @TabAlert int currentState = getAlertStateForTab(tab);
             int currentPriority = TabUtils.getTabAlertPriority(currentState);
             if (currentPriority > statePriority) {
                 statePriority = currentPriority;
                 stateToReturn = currentState;
             }
-            if (statePriority == TabUtils.MAX_TAB_ALERT_PRIORITY) return stateToReturn;
+            if (statePriority == TabUtils.MAX_TAB_ALERT_PRIORITY) {
+                break;
+            }
         }
         return stateToReturn;
     }
 
     @Override
     int getInsertionIndexOfTab(Tab tab) {
-        if (tab == null) return TabList.INVALID_TAB_INDEX;
         int tabIndex = TabList.INVALID_TAB_INDEX;
         TabModel tabModel = mMediator.getCurrentTabModelChecked();
 
-        // Compute the index of the tab out of all tabs in the filter (ignore tabs that are not
-        // the representative tab in a group).
-        int count = tabModel.getIndividualTabAndGroupCount();
-        for (int i = 0; i < count; i++) {
-            Tab representativeTab = tabModel.getRepresentativeTabAt(i);
-            if (representativeTab != null && tab.getId() == representativeTab.getId()) {
-                tabIndex = i;
-                break;
+        if (mUseTabGroupCardType) {
+            // Count ungrouped tabs and the first tab of each contiguous tab group. Subsequent tabs
+            // in a group share the group's card and are skipped.
+            int currentIndex = -1;
+            Token prevGroupId = null;
+            for (int i = 0, count = tabModel.getCount(); i < count; i++) {
+                Tab currentTab = tabModel.getTabAt(i);
+                if (currentTab == null) continue;
+                Token currentGroupId = currentTab.getTabGroupId();
+                if (currentGroupId == null || !currentGroupId.equals(prevGroupId)) {
+                    currentIndex++;
+                    if (currentTab.getId() == tab.getId()) {
+                        tabIndex = currentIndex;
+                        break;
+                    }
+                } else if (currentTab.getId() == tab.getId()) {
+                    break;
+                }
+                prevGroupId = currentGroupId;
+            }
+        } else {
+            // Compute the index of the tab out of all tabs in the filter (ignore tabs that are not
+            // the representative tab in a group).
+            int count = tabModel.getIndividualTabAndGroupCount();
+            for (int i = 0; i < count; i++) {
+                Tab representativeTab = tabModel.getRepresentativeTabAt(i);
+                if (representativeTab != null && tab.getId() == representativeTab.getId()) {
+                    tabIndex = i;
+                    break;
+                }
             }
         }
 
@@ -161,6 +158,10 @@ class GroupedLayoutDelegate extends TabListLayoutDelegate {
         super.didAddTab(tab, type);
 
         if (type == TabLaunchType.FROM_RESTORE) {
+            if (mUseTabGroupCardType) {
+                updateGroupCard(tab.getTabGroupId(), /* isUpdatingId= */ false);
+                return;
+            }
             TabModel tabModel = mMediator.getCurrentTabModelChecked();
             int filterIndex = tabModel.representativeIndexOf(tab);
             if (filterIndex == TabList.INVALID_TAB_INDEX) return;
@@ -169,19 +170,15 @@ class GroupedLayoutDelegate extends TabListLayoutDelegate {
 
             // Refresh the group's card so its thumbnail and title match the group's current
             // state.
-            if (mUseTabGroupCardType) {
-                updateGroupCard(currentGroupSelectedTab, /* isUpdatingId= */ false);
-            } else {
-                int tabListModelIndex = mModelList.indexOfNthTabCard(filterIndex);
-                if (getIndexFromTabId(currentGroupSelectedTab.getId()) != tabListModelIndex) {
-                    return;
-                }
-                mMediator.updateTab(
-                        tabListModelIndex,
-                        currentGroupSelectedTab,
-                        /* isUpdatingId= */ false,
-                        /* quickMode= */ false);
+            int tabListModelIndex = mModelList.indexOfNthTabCard(filterIndex);
+            if (getIndexFromTabId(currentGroupSelectedTab.getId()) != tabListModelIndex) {
+                return;
             }
+            mMediator.updateTab(
+                    tabListModelIndex,
+                    currentGroupSelectedTab,
+                    /* isUpdatingId= */ false,
+                    /* quickMode= */ false);
         }
     }
 
@@ -189,6 +186,11 @@ class GroupedLayoutDelegate extends TabListLayoutDelegate {
     void tabClosureUndone(Tab tab) {
         // Restores the card for the tab, or no-ops for a child tab of a group.
         super.tabClosureUndone(tab);
+        // Updates the group card, if the tab being restored is part of a group.
+        if (mUseTabGroupCardType) {
+            updateGroupCard(tab.getTabGroupId(), /* isUpdatingId= */ false);
+            return;
+        }
 
         TabModel tabModel = mMediator.getCurrentTabModelChecked();
         int filterIndex = tabModel.representativeIndexOf(tab);
@@ -201,19 +203,15 @@ class GroupedLayoutDelegate extends TabListLayoutDelegate {
         assumeNonNull(currentGroupSelectedTab);
 
         // Refresh the group's card so its thumbnail and title match the group's current state.
-        if (mUseTabGroupCardType) {
-            updateGroupCard(currentGroupSelectedTab, /* isUpdatingId= */ false);
-        } else {
-            int tabListModelIndex = mModelList.indexOfNthTabCard(filterIndex);
-            assert getIndexFromTabId(currentGroupSelectedTab.getId()) == tabListModelIndex;
+        int tabListModelIndex = mModelList.indexOfNthTabCard(filterIndex);
+        assert getIndexFromTabId(currentGroupSelectedTab.getId()) == tabListModelIndex;
 
-            // TODO(crbug.com/549722494): Clean up updateTab() calls.
-            mMediator.updateTab(
-                    tabListModelIndex,
-                    currentGroupSelectedTab,
-                    /* isUpdatingId= */ false,
-                    /* quickMode= */ false);
-        }
+        // TODO(crbug.com/549722494): Clean up updateTab() calls.
+        mMediator.updateTab(
+                tabListModelIndex,
+                currentGroupSelectedTab,
+                /* isUpdatingId= */ false,
+                /* quickMode= */ false);
     }
 
     /**
@@ -280,115 +278,29 @@ class GroupedLayoutDelegate extends TabListLayoutDelegate {
         // same tab as before entering the switcher), which is not tracked at this level.
     }
 
-    // TabObserver implementation.
-
-    @Override
-    public void onFaviconUpdated(Tab updatedTab, @Nullable Bitmap icon, @Nullable GURL iconUrl) {
-        if (!mMediator.isTrackingTabs()) return;
-
-        if (mMediator.isTabInTabGroup(updatedTab)) {
-            Pair<Integer, Tab> indexAndTab =
-                    getIndexAndTabForTabGroupId(updatedTab.getTabGroupId());
-            if (indexAndTab == null) return;
-
-            PropertyModel model = mModelList.get(indexAndTab.first).model;
-            Tab representativeTab = indexAndTab.second;
-
-            mMediator.updateThumbnailFetcher(model, representativeTab.getId());
-            mMediator.updateFaviconForTab(model, representativeTab, icon, iconUrl);
-        } else {
-            super.onFaviconUpdated(updatedTab, icon, iconUrl);
-        }
-    }
-
-    @Override
-    public void onUrlUpdated(Tab updatedTab) {
-        if (!mMediator.isTrackingTabs()) return;
-
-        if (mMediator.isTabInTabGroup(updatedTab)) {
-            Pair<Integer, Tab> indexAndTab =
-                    getIndexAndTabForTabGroupId(updatedTab.getTabGroupId());
-            if (indexAndTab == null) return;
-
-            PropertyModel model = mModelList.get(indexAndTab.first).model;
-            Tab representativeTab = indexAndTab.second;
-            if (!TabUtils.isValid(representativeTab) || model == null) return;
-
-            model.set(
-                    TabProperties.URL_DOMAIN, mMediator.getDomainForTab(representativeTab, model));
-            mMediator.updateThumbnailFetcher(model, representativeTab.getId());
-            mMediator.updateFaviconForTab(model, representativeTab, null, null);
-        } else {
-            super.onUrlUpdated(updatedTab);
-        }
-    }
-
-    @Override
-    public void onAlertStateChanged(Tab updatedTab, @TabAlert int alertState) {
-        if (!mMediator.isTrackingTabs()) return;
-
-        if (mMediator.isTabInTabGroup(updatedTab)) {
-            Token tabGroupId = updatedTab.getTabGroupId();
-            assumeNonNull(tabGroupId);
-            Pair<Integer, Tab> indexAndTab = getIndexAndTabForTabGroupId(tabGroupId);
-            if (indexAndTab == null) return;
-
-            PropertyModel model = mModelList.get(indexAndTab.first).model;
-            if (model == null || model.get(TabProperties.USE_SHRINK_CLOSE_ANIMATION)) {
-                return;
-            }
-            Tab representativeTab = indexAndTab.second;
-            @TabAlert int alertStateToSet = getAlertState(representativeTab, model);
-            model.set(TabProperties.ALERT_STATE, alertStateToSet);
-            mMediator.updateDescriptionString(model);
-        } else {
-            super.onAlertStateChanged(updatedTab, alertState);
-        }
-    }
-
-    /**
-     * When a tab in a tab group changes Actor UI state, refresh the group card thumbnail to reflect
-     * the update.
-     */
-    @Override
-    void onUiTabStateChanged(Tab updatedTab, UiTabState state) {
-        if (mMediator.isTabInTabGroup(updatedTab)) {
-            // Resolves the containing group card and refreshes its thumbnail.
-            int index = getUiIndexForTab(updatedTab.getId());
-            if (index != TabModel.INVALID_TAB_INDEX) {
-                PropertyModel groupModel = mModelList.get(index).model;
-                mMediator.updateThumbnailFetcher(groupModel, groupModel.get(TabProperties.TAB_ID));
-            }
-        }
-    }
-
     @Override
     void onTabClose(Tab tab) {
         TabModel tabModel = mMediator.getCurrentTabModelChecked();
         Token tabGroupId = tab.getTabGroupId();
-        if (tabGroupId != null && tabModel.tabGroupExists(tabGroupId)) {
-            // If the tab closed was part of a tab group and the closure was
-            // triggered from a grouped layout, update the group to reflect the
+        if (tabGroupId != null && tabModel.containsTabGroup(tabGroupId)) {
+            // If the tab closed was part of a tab group, update the group to reflect the
             // closure instead of closing the tab.
+            if (mUseTabGroupCardType) {
+                updateGroupCard(tabGroupId, /* isUpdatingId= */ true);
+                return;
+            }
+
             int groupIndex = tabModel.representativeIndexOf(tab);
             Tab groupTab = tabModel.getRepresentativeTabAt(groupIndex);
             assumeNonNull(groupTab);
             if (!groupTab.isClosing()) {
-                if (mUseTabGroupCardType) {
-                    updateGroupCard(groupTab, /* isUpdatingId= */ true);
-                } else {
-                    mMediator.updateTab(
-                            mModelList.indexOfNthTabCard(groupIndex),
-                            groupTab,
-                            /* isUpdatingId= */ true,
-                            /* quickMode= */ false);
-                }
+                mMediator.updateTab(
+                        mModelList.indexOfNthTabCard(groupIndex),
+                        groupTab,
+                        /* isUpdatingId= */ true,
+                        /* quickMode= */ false);
                 return;
             }
-
-            // The card is keyed by token, so a child tab's closure must never remove it.
-            // didRemoveTabGroup owns that removal.
-            if (mUseTabGroupCardType) return;
         }
 
         // Standalone (ungrouped) tabs are removed by the base class.
@@ -404,8 +316,7 @@ class GroupedLayoutDelegate extends TabListLayoutDelegate {
         Tab tab = indexAndTab.second;
         PropertyModel model = mModelList.get(indexAndTab.first).model;
 
-        mMediator.updateTabGroupProperties(tab, model, newColor);
-        mMediator.updateFaviconForTab(model, tab, null, null);
+        mMediator.updateTabGroupProperties(model, tabGroupId, newColor);
         mMediator.updateDescriptionString(model);
         mMediator.updateActionButtonDescriptionString(tab, model);
         mMediator.updateThumbnailFetcher(model, tab.getId());
@@ -417,27 +328,13 @@ class GroupedLayoutDelegate extends TabListLayoutDelegate {
      */
     @Override
     public void didMoveWithinGroup(Tab movedTab, int tabModelOldIndex, int tabModelNewIndex) {
-        if (tabModelNewIndex == tabModelOldIndex) return;
-        if (mThumbnailProvider == null) {
-            return;
-        }
-        int indexInModel = getUiIndexForTab(movedTab.getId());
-        if (indexInModel == TabModel.INVALID_TAB_INDEX) return;
-
-        TabModel tabModel = mMediator.getCurrentTabModelChecked();
-        Tab lastShownTab =
-                tabModel.getRepresentativeTabAt(tabModel.representativeIndexOf(movedTab));
-        assumeNonNull(lastShownTab);
-        PropertyModel model = mModelList.get(indexInModel).model;
-        mMediator.updateThumbnailFetcher(model, lastShownTab.getId());
+        if (tabModelNewIndex == tabModelOldIndex || mThumbnailProvider == null) return;
+        updateGroupThumbnailForTab(movedTab);
     }
 
     @Override
-    public void didMoveTabOutOfGroup(Tab movedTab, int prevFilterIndex) {
+    public void didMoveTabOutOfGroup(Tab movedTab, Token oldTabGroupId) {
         TabModel tabModel = mMediator.getCurrentTabModelChecked();
-        Tab previousGroupTab = tabModel.getRepresentativeTabAt(prevFilterIndex);
-        assumeNonNull(previousGroupTab);
-
         Token movedTabGroupId = movedTab.getTabGroupId();
         if (mUseTabGroupCardType) {
             // Add a card for movedTab unless it moved directly into an existing multi-tab group
@@ -446,13 +343,15 @@ class GroupedLayoutDelegate extends TabListLayoutDelegate {
                 mMediator.addTabCardToModel(movedTab, getInsertionIndexOfTab(movedTab));
             }
             // Update the old group's card if it still has tabs left (if the old group dissolved,
-            // didRemoveTabGroup removes its card).
-            Token previousGroupId = previousGroupTab.getTabGroupId();
-            if (previousGroupId != null && !previousGroupId.equals(movedTabGroupId)) {
-                updateGroupCard(previousGroupTab, /* isUpdatingId= */ true);
+            // didRemoveTabGroup removes its card). Skip updating if the group is being removed.
+            if (!isRemovingTabGroup(oldTabGroupId)) {
+                updateGroupCard(oldTabGroupId, /* isUpdatingId= */ true);
             }
             return;
         }
+
+        Tab lastShownTab = tabModel.getTabById(tabModel.getGroupLastShownTabId(oldTabGroupId));
+        Tab previousGroupTab = lastShownTab != null ? lastShownTab : movedTab;
 
         if (tabModel.getTabCountForGroup(movedTabGroupId) <= 1 && movedTab != previousGroupTab) {
             // Add a tab to the model if it represents a new card. This happens if
@@ -479,7 +378,7 @@ class GroupedLayoutDelegate extends TabListLayoutDelegate {
         // Always update the previous group to clean up old state e.g. thumbnail,
         // title, etc.
         mMediator.updateTab(
-                mModelList.indexOfNthTabCard(prevFilterIndex),
+                mModelList.indexOfNthTabCard(tabModel.representativeIndexOf(previousGroupTab)),
                 previousGroupTab,
                 /* isUpdatingId= */ true,
                 /* quickMode= */ false);
@@ -487,56 +386,53 @@ class GroupedLayoutDelegate extends TabListLayoutDelegate {
 
     @Override
     public void didMergeTabToGroup(Tab movedTab, boolean isDestinationTab) {
-        boolean mergedSourceCard =
-                mUseTabGroupCardType
-                        ? didMergeTabToGroupByToken(movedTab, isDestinationTab)
-                        : didMergeTabToGroupLegacy(movedTab, isDestinationTab);
-        if (!mergedSourceCard) return;
+        Token tabGroupId = movedTab.getTabGroupId();
+        if (tabGroupId == null) return;
 
-        // TODO(crbug.com/434246302): These metrics are probably wrong as it looks
-        // like they get emitted per-tab merged, rather than per-group merged.
-        if (mMediator.getRelatedTabsForId(movedTab.getId()).size() == 2) {
-            // When users use drop-to-merge to create a group.
-            RecordUserAction.record("TabGroup.Created.DropToMerge");
+        TabModel tabModel = mMediator.getCurrentTabModelChecked();
+        List<Tab> groupTabs = tabModel.getTabsInGroup(tabGroupId);
+        if (groupTabs.isEmpty()) return;
+
+        if (mUseTabGroupCardType) {
+            didMergeTabToGroupByToken(movedTab, isDestinationTab, groupTabs);
         } else {
-            RecordUserAction.record("TabGrid.Drag.DropToMerge");
+            didMergeTabToGroupLegacy(tabModel, movedTab, isDestinationTab, groupTabs);
         }
     }
 
-    private boolean didMergeTabToGroupByToken(Tab movedTab, boolean isDestinationTab) {
-        List<Tab> relatedTabs = mMediator.getRelatedTabsForId(movedTab.getId());
+    private void didMergeTabToGroupByToken(
+            Tab movedTab, boolean isDestinationTab, List<Tab> groupTabs) {
         Pair<Integer, Integer> positions =
-                getIndexesForMergeToGroupByToken(movedTab, isDestinationTab, relatedTabs);
+                getIndexesForMergeToGroupByToken(movedTab, isDestinationTab, groupTabs);
         int desIndex = positions.first;
         int srcIndex = positions.second;
-        if (!mModelList.isValidIndex(desIndex)) return false;
+        if (!mModelList.isValidIndex(desIndex)) return;
 
         if (srcIndex == TabModel.INVALID_TAB_INDEX) {
             // Update the destination group card.
-            mMediator.updateTab(desIndex, movedTab, true, false);
+            mMediator.updateTab(
+                    desIndex, movedTab, /* isUpdatingId= */ true, /* quickMode= */ false);
             if (isDestinationTab) {
                 // Only reposition when movedTab is the target tab starting the group; when
                 // another tab joins an existing group, the group card stays in its spot.
                 mModelList.moveItem(desIndex, getInsertionIndexOfTab(movedTab));
             }
-            return false;
+            return;
         }
 
-        if (!mModelList.isValidIndex(srcIndex)) return false;
+        if (!mModelList.isValidIndex(srcIndex)) return;
 
         // Remove the merged source card and update the destination group card.
         mModelList.removeAt(srcIndex);
         desIndex = srcIndex > desIndex ? desIndex : mModelList.getTabIndexBefore(desIndex);
-        mMediator.updateTab(desIndex, movedTab, true, false);
-        return true;
+        mMediator.updateTab(desIndex, movedTab, /* isUpdatingId= */ true, /* quickMode= */ false);
     }
 
     // TODO(crbug.com/517544602): Delete when removing the flag.
-    private boolean didMergeTabToGroupLegacy(Tab movedTab, boolean isDestinationTab) {
-        TabModel tabModel = mMediator.getCurrentTabModelChecked();
-        List<Tab> relatedTabs = mMediator.getRelatedTabsForId(movedTab.getId());
+    private void didMergeTabToGroupLegacy(
+            TabModel tabModel, Tab movedTab, boolean isDestinationTab, List<Tab> groupTabs) {
         Pair<Integer, Integer> positions =
-                getIndexesForMergeToGroupLegacy(tabModel, movedTab, isDestinationTab, relatedTabs);
+                getIndexesForMergeToGroupLegacy(tabModel, movedTab, isDestinationTab, groupTabs);
         int srcIndex = positions.second;
         int desIndex = positions.first;
 
@@ -558,11 +454,11 @@ class GroupedLayoutDelegate extends TabListLayoutDelegate {
             mMediator.updateTab(desIndex, lastShownTab, true, false);
             int targetIndex = getInsertionIndexOfTab(lastShownTab);
             mModelList.moveItem(desIndex, targetIndex);
-            return false;
+            return;
         }
 
         if (!mModelList.isValidIndex(srcIndex) || !mModelList.isValidIndex(desIndex)) {
-            return false;
+            return;
         }
 
         // We merged the source group to the destination group. Remove the source
@@ -575,26 +471,34 @@ class GroupedLayoutDelegate extends TabListLayoutDelegate {
         if (newSelectedTabInMergedGroup != null) {
             mMediator.updateTab(desIndex, newSelectedTabInMergedGroup, true, false);
         }
-        return true;
     }
 
     @Override
-    public void didMoveTabGroup(Tab movedTab, int tabModelOldIndex, int tabModelNewIndex) {
-        List<Tab> relatedTabs = mMediator.getRelatedTabsForId(movedTab.getId());
+    public void onTabGroupMoved(Token tabGroupId, int tabModelOldIndex, int tabModelNewIndex) {
+        if (tabModelOldIndex == tabModelNewIndex) return;
+
         TabModel tabModel = mMediator.getCurrentTabModelChecked();
+        int tabCount = tabModel.getTabCountForGroup(tabGroupId);
+        if (tabCount == 0) return;
+
         int curPosition;
         if (mUseTabGroupCardType) {
-            curPosition = getIndexFromTab(movedTab);
+            curPosition = mModelList.indexFromTabGroupId(tabGroupId);
         } else {
             Tab currentGroupSelectedTab =
-                    TabGroupUtils.getSelectedTabInGroupForTab(tabModel, movedTab);
+                    tabModel.getTabById(tabModel.getGroupLastShownTabId(tabGroupId));
+            if (currentGroupSelectedTab == null) return;
             curPosition = getIndexFromTabId(currentGroupSelectedTab.getId());
             if (curPosition == TabModel.INVALID_TAB_INDEX) {
-                // Sync TabListModel with updated TabModel.
+                // Query the group's original slot to re-sync the representative tab card in the
+                // model list.
                 int indexToUpdate =
                         mModelList.indexOfNthTabCard(
                                 tabModel.representativeIndexOf(
-                                        tabModel.getTabAt(tabModelOldIndex)));
+                                        tabModel.getTabAt(
+                                                tabModelNewIndex > tabModelOldIndex
+                                                        ? tabModelOldIndex
+                                                        : tabModelOldIndex + tabCount - 1)));
                 mModelList.updateTabListModelIdForGroup(currentGroupSelectedTab, indexToUpdate);
                 curPosition = getIndexFromTabId(currentGroupSelectedTab.getId());
             }
@@ -605,14 +509,15 @@ class GroupedLayoutDelegate extends TabListLayoutDelegate {
         // to determine the new position, instead of manual offset math and looking up
         // adjacent tabs.
 
-        // Find the tab which was in the destination index before this move. Use
-        // that tab to figure out the new position.
+        // Find the adjacent tab leapfrogged by this move to determine the target UI position.
+        // Moving forward anchors to the tab before the group (-1); moving backward anchors to
+        // the tab shifted past the group (+tabCount).
         int destinationTabIndex =
                 tabModelNewIndex > tabModelOldIndex
-                        ? tabModelNewIndex - relatedTabs.size()
-                        : tabModelNewIndex + 1;
+                        ? tabModelNewIndex - 1
+                        : tabModelNewIndex + tabCount;
         Tab destinationTab = tabModel.getTabAt(destinationTabIndex);
-        assumeNonNull(destinationTab);
+        if (destinationTab == null) return;
         int newPosition;
         if (mUseTabGroupCardType) {
             newPosition = getIndexFromTab(destinationTab);
@@ -631,24 +536,6 @@ class GroupedLayoutDelegate extends TabListLayoutDelegate {
             }
         }
         mModelList.moveItem(curPosition, newPosition);
-    }
-
-    @Override
-    public void didCreateNewGroup(Tab destinationTab, TabModel tabModel) {
-        // On new group creation for the tab group representation in the GTS, update
-        // the tab group color icon.
-        int groupIndex = tabModel.representativeIndexOf(destinationTab);
-        Tab groupTab = tabModel.getRepresentativeTabAt(groupIndex);
-        assumeNonNull(groupTab);
-        PropertyModel model = getModelFromTabId(groupTab.getId());
-
-        if (model != null) {
-            Token tabGroupId = destinationTab.getTabGroupId();
-            assumeNonNull(tabGroupId);
-            @TabGroupColorId int colorId = tabModel.getTabGroupColorWithFallback(tabGroupId);
-            mMediator.updateTabGroupProperties(destinationTab, model, colorId);
-            mMediator.updateFaviconForTab(model, groupTab, null, null);
-        }
     }
 
     @Override
@@ -686,7 +573,7 @@ class GroupedLayoutDelegate extends TabListLayoutDelegate {
      * TabListModel} that the moved tab should exist in. The source index may be invalid if a group
      * of size 1 is created or the tab was moved between groups. In the case of moving between
      * groups as the other group will be updated by {@link
-     * TabGroupObserver#didMoveTabOutOfGroup(Tab, int)}.
+     * TabGroupObserver#didMoveTabOutOfGroup(Tab, Token)}.
      *
      * @param tabModel The tabModel that owns the tabs.
      * @param movedTab The tab that is being merged.
@@ -793,18 +680,18 @@ class GroupedLayoutDelegate extends TabListLayoutDelegate {
     }
 
     /**
-     * Updates the card of {@code selectedTab}'s group so it matches the group's current state.
-     * No-ops if the tab is not in a group.
+     * Updates the card of {@code tabGroupId} so it matches the group's current state. No-ops if
+     * {@code tabGroupId} is null, not in the model list, or has no tabs.
      *
-     * @param selectedTab The tab the group's card should reflect.
-     * @param isUpdatingId Whether the card should be re-keyed to {@code selectedTab}.
+     * @param tabGroupId The {@link Token} identifying the tab group.
+     * @param isUpdatingId Whether the card should be re-keyed to the resolved member tab.
      */
-    private void updateGroupCard(Tab selectedTab, boolean isUpdatingId) {
-        Token tabGroupId = selectedTab.getTabGroupId();
-        if (tabGroupId == null) return;
+    private void updateGroupCard(@Nullable Token tabGroupId, boolean isUpdatingId) {
+        Pair<Integer, Tab> indexAndTab = getIndexAndTabForTabGroupId(tabGroupId);
+        if (indexAndTab == null) return;
 
-        int index = mModelList.indexFromTabGroupId(tabGroupId);
-        mMediator.updateTab(index, selectedTab, isUpdatingId, /* quickMode= */ false);
+        mMediator.updateTab(
+                indexAndTab.first, indexAndTab.second, isUpdatingId, /* quickMode= */ false);
     }
 
     /**
@@ -817,8 +704,7 @@ class GroupedLayoutDelegate extends TabListLayoutDelegate {
         int index = mModelList.indexFromTabId(tab.getId());
         if (index != TabModel.INVALID_TAB_INDEX) return index;
 
-        // A group Token is immutable for the life of the group, unlike the representative tab ID.
-        // This only matches a card whose CARD_TYPE is TAB_GROUP.
+        // Fall back to resolving the tab's group card by its Token (only matches TAB_GROUP cards).
         Token tabGroupId = tab.getTabGroupId();
         if (tabGroupId == null) return TabModel.INVALID_TAB_INDEX;
         return mModelList.indexFromTabGroupId(tabGroupId);

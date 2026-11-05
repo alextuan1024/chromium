@@ -12,7 +12,6 @@ import org.chromium.base.ContextUtils;
 import org.chromium.base.TriState;
 import org.chromium.base.TriStateUtils;
 import org.chromium.base.library_loader.LibraryProcessType;
-import org.chromium.build.BuildConfig;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.content_public.browser.JavalessRenderersFeatureList;
@@ -24,6 +23,8 @@ public class ChildProcessCreationParamsImpl {
             "org.chromium.content.common.child_service_params.library_process_type";
     private static final String PRIVILEGED_SERVICES_NAME =
             "org.chromium.content.app.PrivilegedProcessService";
+    private static final String SANDBOXED_GPU_SERVICES_NAME =
+            "org.chromium.content.app.SandboxedGpuProcessService";
     private static final String SANDBOXED_SERVICES_NAME =
             "org.chromium.content.app.SandboxedProcessService";
     private static final String NATIVE_SANDBOXED_SERVICES_NAME =
@@ -107,6 +108,10 @@ public class ChildProcessCreationParamsImpl {
         return PRIVILEGED_SERVICES_NAME;
     }
 
+    public static String getSandboxedGpuServicesName() {
+        return SANDBOXED_GPU_SERVICES_NAME;
+    }
+
     private static boolean isPrimaryAbi64Bit() {
         if (Build.SUPPORTED_ABIS.length == 0) return false;
         String primaryAbi = Build.SUPPORTED_ABIS[0];
@@ -122,9 +127,6 @@ public class ChildProcessCreationParamsImpl {
 
     private static boolean isNativeSandboxedServiceSupported() {
         return Build.VERSION.SDK_INT >= Build.VERSION_CODES.CINNAMON_BUN
-                // Incremental install disables isolated processes, which are required for
-                // javaless renderers.
-                && !BuildConfig.IS_INCREMENTAL_INSTALL
                 // Native App Zygote (/system/bin/zygote_next) is built only for the device's
                 // primary ABI. If Chrome is running in a secondary ABI, disable native
                 // sandboxed services to avoid dlopen failures in zygote_next.

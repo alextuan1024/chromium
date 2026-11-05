@@ -25,12 +25,15 @@
 
 #include "third_party/blink/renderer/platform/wtf/text/string_impl.h"
 
+#include <hwy/highway.h>
+
 #include <algorithm>
 #include <memory>
 
 #include "base/compiler_specific.h"
 #include "base/functional/callback.h"
 #include "base/i18n/string_search.h"
+#include "base/no_destructor.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/strings/string_view_util.h"
 #include "third_party/blink/renderer/platform/wtf/allocator/partitions.h"
@@ -38,7 +41,6 @@
 #include "third_party/blink/renderer/platform/wtf/leak_annotations.h"
 #include "third_party/blink/renderer/platform/wtf/size_assertions.h"
 #include "third_party/blink/renderer/platform/wtf/static_constructors.h"
-#include "third_party/blink/renderer/platform/wtf/std_lib_extras.h"
 #include "third_party/blink/renderer/platform/wtf/text/atomic_string.h"
 #include "third_party/blink/renderer/platform/wtf/text/atomic_string_table.h"
 #include "third_party/blink/renderer/platform/wtf/text/character_names.h"
@@ -50,6 +52,7 @@
 #include "third_party/blink/renderer/platform/wtf/text/unicode.h"
 #include "third_party/blink/renderer/platform/wtf/text/unicode_string.h"
 #include "third_party/blink/renderer/platform/wtf/text/utf16.h"
+#include "third_party/blink/renderer/platform/wtf/wtf.h"
 
 using std::numeric_limits;
 
@@ -137,6 +140,7 @@ void* StringImpl::operator new(size_t size) {
 }
 
 void StringImpl::operator delete(StringImpl* impl, std::destroying_delete_t) {
+  DCHECK(!impl->IsStatic());
   size_t size = impl->GetAllocatedSize();
   impl->~StringImpl();
   // Use sized deallocation. We explicitly pass `GetAllocatedSize()` because
@@ -144,17 +148,13 @@ void StringImpl::operator delete(StringImpl* impl, std::destroying_delete_t) {
   Partitions::BufferFreeWithSize(impl, size);
 }
 
-inline StringImpl::~StringImpl() {
-  DCHECK(!IsStatic());
-}
-
 void StringImpl::DestroyIfNeeded() {
   // Pay the acquire cost only on the possible-last-reference path, before
   // checking kIsAtomic so we're sure flag writes are visible. The value may
   // be greater than 1 if the string was revived by AtomicStringTable::Add()
   // after Release() observed 1.
-  const uint32_t ref_count = ref_count_.load(std::memory_order_acquire);
-  if (hash_and_flags_.load(std::memory_order_acquire) & kIsAtomic) {
+  const uint32_t ref_count = RefCountAtomic().load(std::memory_order_acquire);
+  if (HashAndFlagsAtomic().load(std::memory_order_acquire) & kIsAtomic) {
     if (AtomicStringTable::Instance().ReleaseAndRemoveIfNeeded(this)) {
       delete this;
     } else {
@@ -172,7 +172,7 @@ uint32_t StringImpl::ComputeAsciiFlags() const {
       *this, [](auto chars) { return CharacterAttributes(chars); });
   uint32_t new_flags = AsciiStringAttributesToFlags(ascii_attributes);
   const uint32_t previous_flags =
-      hash_and_flags_.fetch_or(new_flags, std::memory_order_relaxed);
+      HashAndFlagsAtomic().fetch_or(new_flags, std::memory_order_relaxed);
   static constexpr uint32_t mask =
       kAsciiPropertyCheckDone | kContainsOnlyAscii | kIsLowerAscii;
   DCHECK((previous_flags & mask) == 0 || (previous_flags & mask) == new_flags);
@@ -226,8 +226,8 @@ scoped_refptr<StringImpl> StringImpl::CreateUninitialized(
 }
 
 static StaticStringsTable& StaticStrings() {
-  DEFINE_STATIC_LOCAL(StaticStringsTable, static_strings, ());
-  return static_strings;
+  static base::NoDestructor<StaticStringsTable> static_strings;
+  return *static_strings;
 }
 
 #if DCHECK_IS_ON()
@@ -248,22 +248,16 @@ void StringImpl::FreezeStaticStrings() {
 
 StringImpl::size_type StringImpl::highest_static_string_length_ = 0;
 
-DEFINE_GLOBAL(, StringImpl, g_global_empty);
-DEFINE_GLOBAL(, StringImpl, g_global_empty16_bit);
+constexpr StringImpl StringImpl::g_global_empty(
+    StringImpl::kConstructEmptyString);
+constexpr StringImpl StringImpl::g_global_empty16_bit(
+    StringImpl::kConstructEmptyString16Bit);
 // Callers need the global empty strings to be non-const.
-StringImpl* StringImpl::empty_ = const_cast<StringImpl*>(&g_global_empty);
-StringImpl* StringImpl::empty16_bit_ =
-    const_cast<StringImpl*>(&g_global_empty16_bit);
-void StringImpl::InitStatics() {
-  new ((void*)empty_) StringImpl(kConstructEmptyString);
-  new ((void*)empty16_bit_) StringImpl(kConstructEmptyString16Bit);
-  WTF_ANNOTATE_BENIGN_RACE(StringImpl::empty_,
-                           "Benign race on the reference counter of a static "
-                           "string created by StringImpl::empty");
-  WTF_ANNOTATE_BENIGN_RACE(StringImpl::empty16_bit_,
-                           "Benign race on the reference counter of a static "
-                           "string created by StringImpl::empty16Bit");
-}
+constinit StringImpl* const StringImpl::empty_ =
+    const_cast<StringImpl*>(&StringImpl::g_global_empty);
+constinit StringImpl* const StringImpl::empty16_bit_ =
+    const_cast<StringImpl*>(&StringImpl::g_global_empty16_bit);
+void StringImpl::InitStatics() {}
 
 StringImpl* StringImpl::CreateStatic(base::span<const char> string) {
 #if DCHECK_IS_ON()
@@ -298,12 +292,48 @@ StringImpl* StringImpl::CreateStatic(base::span<const char> string) {
   DCHECK(IsMainThread());
   highest_static_string_length_ =
       std::max(highest_static_string_length_, narrowed_length);
-  StaticStrings().insert(hash, impl);
-  WTF_ANNOTATE_BENIGN_RACE(impl,
+  String added = AtomicStringTable::Instance().AddStaticLiteral(impl);
+  DCHECK(added.Impl()->IsStatic());
+  StaticStrings().insert(hash, added.Impl());
+  WTF_ANNOTATE_BENIGN_RACE(added.Impl(),
                            "Benign race on the reference counter of a static "
                            "string created by StringImpl::createStatic");
 
-  return impl;
+  return added.Impl();
+}
+
+StringImpl* StringImpl::CreateStatic(const StringImpl* static_impl) {
+#if DCHECK_IS_ON()
+  DCHECK(g_allow_creation_of_static_strings);
+#endif
+  DCHECK(static_impl);
+  DCHECK(static_impl->length());
+  DCHECK(static_impl->IsStatic());
+  DCHECK(static_impl->Is8Bit());
+  DCHECK(static_impl->IsAtomic());
+  DCHECK(static_impl->HasHash());
+
+  uint32_t hash = static_impl->ExistingHash();
+
+  StaticStringsTable::const_iterator it = StaticStrings().find(hash);
+  if (it != StaticStrings().end()) {
+    DCHECK_EQ(base::as_string_view(it->value->Span8()),
+              base::as_string_view(static_impl->Span8()));
+    return it->value;
+  }
+
+  StringImpl* impl = const_cast<StringImpl*>(static_impl);
+#if DCHECK_IS_ON()
+  impl->AssertHashIsCorrect();
+#endif
+
+  DCHECK(IsMainThread());
+  highest_static_string_length_ =
+      std::max(highest_static_string_length_, impl->length());
+  String added = AtomicStringTable::Instance().AddStaticLiteral(impl);
+  DCHECK(added.Impl()->IsStatic());
+  StaticStrings().insert(hash, added.Impl());
+  return added.Impl();
 }
 
 void StringImpl::ReserveStaticStringsCapacityForSize(wtf_size_t size) {
@@ -311,6 +341,7 @@ void StringImpl::ReserveStaticStringsCapacityForSize(wtf_size_t size) {
   DCHECK(g_allow_creation_of_static_strings);
 #endif
   StaticStrings().ReserveCapacityForSize(size);
+  AtomicStringTable::Instance().ReserveCapacity(size);
 }
 
 scoped_refptr<StringImpl> StringImpl::Create(
@@ -345,7 +376,7 @@ scoped_refptr<StringImpl> StringImpl::Create(
     // If length is 0 then `ret` is empty_ and should not have its
     // attributes calculated or changed.
     uint32_t new_flags = AsciiStringAttributesToFlags(ascii_attributes);
-    ret->hash_and_flags_.fetch_or(new_flags, std::memory_order_relaxed);
+    ret->HashAndFlagsAtomic().fetch_or(new_flags, std::memory_order_relaxed);
   }
 
   return ret;
@@ -722,6 +753,191 @@ const std::array<UChar, 256> StringImpl::kLatin1CaseFoldTable = {
     0x00f3, 0x00f4, 0x00f5, 0x00f6, 0x00f7, 0x00f8, 0x00f9, 0x00fa, 0x00fb,
     0x00fc, 0x00fd, 0x00fe, 0x00ff,
 };
+
+// The vectorized parts of StringImpl::CopyChars() and EqualIgnoringAsciiCase().
+// They are here and not in the header because <hwy/highway.h> is expensive to
+// include. See the comment at StringImpl::kMinLengthForSimd8.
+#if HWY_TARGET != HWY_SCALAR
+
+#if HWY_HAVE_CONSTEXPR_LANES
+
+static_assert(
+    StringImpl::kMinLengthForSimd8 ==
+    hwy::HWY_NAMESPACE::Lanes(hwy::HWY_NAMESPACE::FixedTag<uint8_t, 16>()));
+static_assert(
+    StringImpl::kMinLengthForSimd16 ==
+    hwy::HWY_NAMESPACE::Lanes(hwy::HWY_NAMESPACE::FixedTag<uint16_t, 8>()));
+
+#endif
+
+void StringImpl::CopyCharsSimd(base::span<UChar> destination,
+                               base::span<const LChar> source) {
+  namespace hw = hwy::HWY_NAMESPACE;
+
+  constexpr hw::FixedTag<uint16_t, 8> d16;
+  constexpr hw::FixedTag<uint8_t, 16> d8;
+  HWY_LANES_CONSTEXPR size_t kLanes = hw::Lanes(d8);
+
+  const size_t length = source.size();
+  const LChar* src = source.data();
+  UChar* dst = destination.data();
+
+  // SAFETY: The SIMD code requires raw buffer access.
+  UNSAFE_BUFFERS({
+    size_t i = 0;
+    if (length >= kLanes) {
+      for (; i + kLanes <= length; i += kLanes) {
+        const auto v8 = hw::LoadU(d8, src + i);
+        const auto v16_low = hw::PromoteLowerTo(d16, v8);
+        const auto v16_high = hw::PromoteUpperTo(d16, v8);
+        hw::StoreU(v16_low, d16, reinterpret_cast<uint16_t*>(dst + i));
+        hw::StoreU(v16_high, d16,
+                   reinterpret_cast<uint16_t*>(dst + i + hw::Lanes(d16)));
+      }
+    }
+
+    for (; i < length; ++i) {
+      dst[i] = src[i];
+    }
+  });
+}
+
+bool EqualIgnoringAsciiCaseSimd(base::span<const LChar> a,
+                                base::span<const LChar> b) {
+  namespace hw = hwy::HWY_NAMESPACE;
+  constexpr hw::FixedTag<uint8_t, 16> d;
+  HWY_LANES_CONSTEXPR size_t kLanes = hw::Lanes(d);
+
+  // SAFETY: The SIMD code requires raw buffer access.
+  UNSAFE_BUFFERS({
+    size_t i = 0;
+    if (a.size() >= kLanes) {
+      const auto upper_a = hw::Set(d, 'A');
+      const auto upper_z = hw::Set(d, 'Z');
+      const auto case_bit = hw::Set(d, 0x20);
+      for (; i + kLanes <= a.size(); i += kLanes) {
+        auto va = hw::LoadU(d, reinterpret_cast<const uint8_t*>(a.data() + i));
+        auto vb = hw::LoadU(d, reinterpret_cast<const uint8_t*>(b.data() + i));
+        auto is_upper_a = hw::And(hw::Ge(va, upper_a), hw::Le(va, upper_z));
+        va = hw::IfThenElse(is_upper_a, hw::Or(va, case_bit), va);
+        auto is_upper_b = hw::And(hw::Ge(vb, upper_a), hw::Le(vb, upper_z));
+        vb = hw::IfThenElse(is_upper_b, hw::Or(vb, case_bit), vb);
+        if (!hw::AllTrue(d, hw::Eq(va, vb))) {
+          return false;
+        }
+      }
+    }
+    for (; i < a.size(); ++i) {
+      if (ToAsciiLower(a.data()[i]) != ToAsciiLower(b.data()[i])) {
+        return false;
+      }
+    }
+  });
+  return true;
+}
+
+bool EqualIgnoringAsciiCaseSimd(base::span<const UChar> a,
+                                base::span<const LChar> b) {
+  namespace hw = hwy::HWY_NAMESPACE;
+  constexpr hw::FixedTag<uint16_t, 8> d16;
+  constexpr hw::FixedTag<uint8_t, 8> d8;
+  HWY_LANES_CONSTEXPR size_t kLanes = hw::Lanes(d16);
+
+  // SAFETY: The SIMD code requires raw buffer access.
+  UNSAFE_BUFFERS({
+    size_t i = 0;
+    if (a.size() >= kLanes) {
+      const auto upper_a = hw::Set(d16, 'A');
+      const auto upper_z = hw::Set(d16, 'Z');
+      const auto case_bit = hw::Set(d16, 0x20);
+      for (; i + kLanes <= a.size(); i += kLanes) {
+        auto va =
+            hw::LoadU(d16, reinterpret_cast<const uint16_t*>(a.data() + i));
+        auto vb_8 =
+            hw::LoadU(d8, reinterpret_cast<const uint8_t*>(b.data() + i));
+        auto vb = hw::PromoteTo(d16, vb_8);
+        auto is_upper_a = hw::And(hw::Ge(va, upper_a), hw::Le(va, upper_z));
+        va = hw::IfThenElse(is_upper_a, hw::Or(va, case_bit), va);
+        auto is_upper_b = hw::And(hw::Ge(vb, upper_a), hw::Le(vb, upper_z));
+        vb = hw::IfThenElse(is_upper_b, hw::Or(vb, case_bit), vb);
+        if (!hw::AllTrue(d16, hw::Eq(va, vb))) {
+          return false;
+        }
+      }
+    }
+    for (; i < a.size(); ++i) {
+      if (ToAsciiLower(a.data()[i]) != ToAsciiLower(b.data()[i])) {
+        return false;
+      }
+    }
+  });
+  return true;
+}
+
+bool EqualIgnoringAsciiCaseSimd(base::span<const UChar> a,
+                                base::span<const UChar> b) {
+  namespace hw = hwy::HWY_NAMESPACE;
+  constexpr hw::FixedTag<uint16_t, 8> d;
+  HWY_LANES_CONSTEXPR size_t kLanes = hw::Lanes(d);
+
+  // SAFETY: The SIMD code requires raw buffer access.
+  UNSAFE_BUFFERS({
+    size_t i = 0;
+    if (a.size() >= kLanes) {
+      const auto upper_a = hw::Set(d, 'A');
+      const auto upper_z = hw::Set(d, 'Z');
+      const auto case_bit = hw::Set(d, 0x20);
+      for (; i + kLanes <= a.size(); i += kLanes) {
+        auto va = hw::LoadU(d, reinterpret_cast<const uint16_t*>(a.data() + i));
+        auto vb = hw::LoadU(d, reinterpret_cast<const uint16_t*>(b.data() + i));
+        auto is_upper_a = hw::And(hw::Ge(va, upper_a), hw::Le(va, upper_z));
+        va = hw::IfThenElse(is_upper_a, hw::Or(va, case_bit), va);
+        auto is_upper_b = hw::And(hw::Ge(vb, upper_a), hw::Le(vb, upper_z));
+        vb = hw::IfThenElse(is_upper_b, hw::Or(vb, case_bit), vb);
+        if (!hw::AllTrue(d, hw::Eq(va, vb))) {
+          return false;
+        }
+      }
+    }
+    for (; i < a.size(); ++i) {
+      if (ToAsciiLower(a.data()[i]) != ToAsciiLower(b.data()[i])) {
+        return false;
+      }
+    }
+  });
+  return true;
+}
+
+#else  // HWY_TARGET != HWY_SCALAR
+
+void StringImpl::CopyCharsSimd(base::span<UChar> destination,
+                               base::span<const LChar> source) {
+  const LChar* src = source.data();
+  UChar* dst = destination.data();
+  // SAFETY: The caller checked that both spans have the same size.
+  UNSAFE_BUFFERS({
+    for (size_t i = 0; i < source.size(); ++i) {
+      dst[i] = src[i];
+    }
+  });
+}
+
+bool EqualIgnoringAsciiCaseSimd(base::span<const LChar> a,
+                                base::span<const LChar> b) {
+  return EqualIgnoringAsciiCase<LChar, LChar>(a, b);
+}
+
+bool EqualIgnoringAsciiCaseSimd(base::span<const UChar> a,
+                                base::span<const LChar> b) {
+  return EqualIgnoringAsciiCase<UChar, LChar>(a, b);
+}
+
+bool EqualIgnoringAsciiCaseSimd(base::span<const UChar> a,
+                                base::span<const UChar> b) {
+  return EqualIgnoringAsciiCase<UChar, UChar>(a, b);
+}
+
+#endif  // HWY_TARGET != HWY_SCALAR
 
 bool DeprecatedEqualIgnoringCase(base::span<const LChar> a,
                                  base::span<const LChar> b) {

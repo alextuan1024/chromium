@@ -36,6 +36,8 @@ import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.autofill.AutofillUiUtils.ErrorType;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
+import org.chromium.components.autofill.AutofillFeatures;
 import org.chromium.components.autofill.ImageSize;
 import org.chromium.ui.modaldialog.DialogDismissalCause;
 import org.chromium.ui.modaldialog.ModalDialogManager;
@@ -201,6 +203,11 @@ public class CardUnmaskPrompt
                         cardArtUrl, /* isVirtualCard= */ isVirtualCard));
 
         updateTitleForCustomView(title);
+        ImageView titleIconView = mMainView.findViewById(R.id.title_icon);
+        titleIconView.setImageResource(
+                ChromeFeatureList.isEnabled(AutofillFeatures.AUTOFILL_ENABLE_GRADIENT_GOOGLE_LOGOS)
+                        ? R.drawable.googlepay_with_gradient
+                        : R.drawable.google_pay);
         mInstructions = mMainView.findViewById(R.id.instructions);
         mInstructions.setText(instructions);
         mNoRetryErrorMessage = mMainView.findViewById(R.id.no_retry_error_message);
@@ -366,7 +373,7 @@ public class CardUnmaskPrompt
     }
 
     public void verificationFinished(String errorMessage, boolean allowRetry) {
-        if (errorMessage != null) {
+        if (!errorMessage.isEmpty()) {
             setOverlayVisibility(View.GONE);
             if (allowRetry) {
                 AutofillUiUtils.showErrorMessage(errorMessage, mErrorMessage);
@@ -572,8 +579,8 @@ public class CardUnmaskPrompt
         ViewCompat.setImportantForAccessibility(
                 mControlsContainer,
                 contentsShowing
-                        ? View.IMPORTANT_FOR_ACCESSIBILITY_AUTO
-                        : View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
+                        ? ViewCompat.IMPORTANT_FOR_ACCESSIBILITY_AUTO
+                        : ViewCompat.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
         mControlsContainer.setDescendantFocusability(
                 contentsShowing
                         ? ViewGroup.FOCUS_BEFORE_DESCENDANTS

@@ -11,13 +11,11 @@ import androidx.annotation.ColorInt;
 import androidx.annotation.VisibleForTesting;
 import androidx.fragment.app.Fragment;
 
-import com.google.android.material.color.MaterialColors;
-
 import org.chromium.base.Callback;
 import org.chromium.build.annotations.EnsuresNonNullIf;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
+import org.chromium.chrome.browser.flags.ChromeFeatures;
 import org.chromium.chrome.browser.omnibox.UrlBar.ScrollType;
 import org.chromium.chrome.browser.omnibox.UrlBar.UrlBarDelegate;
 import org.chromium.chrome.browser.omnibox.UrlBar.UrlBarTextContextMenuDelegate;
@@ -126,7 +124,10 @@ class UrlBarMediator implements UrlBarTextContextMenuDelegate {
         mModel.set(UrlBarProperties.ALLOW_MULTILINE_INPUT, false);
         var pageUrl = mCurrentInput.getPageUrl();
         mCurrentInput = null;
-        var data = UrlBarData.forUrl(pageUrl);
+        // NTPs display a search hint rather than their internal chrome-native://newtab/ URL, so
+        // reset to EMPTY instead of populating the raw page URL via UrlBarData.forUrl.
+        UrlBarData data =
+                OmniboxUrlUtils.isNtpUrl(pageUrl) ? UrlBarData.EMPTY : UrlBarData.forUrl(pageUrl);
         setUrlBarData(data, ScrollType.SCROLL_TO_TLD, TextSelection.SELECT_END);
     }
 
@@ -156,11 +157,14 @@ class UrlBarMediator implements UrlBarTextContextMenuDelegate {
     /**
      * Signals that the UrlBar has finished being relocated to a new parent.
      *
-     * @param postReparentingFocus Whether the UrlBar should be focused.
+     * @param focusGained Whether the UrlBar gained focus as part of the reparenting. Outside of an
+     *     input session the text is re-pushed so the view picks up the focused presentation. When
+     *     focus is unchanged the view is deliberately left untouched: re-pushing text calls
+     *     setText(), which replaces the Editable and destroys any in-progress IME composition.
      */
-    void finishReparenting(boolean postReparentingFocus) {
+    void finishReparenting(boolean focusGained) {
         mIsReparenting = false;
-        if (postReparentingFocus && !isInInputSession()) {
+        if (focusGained && !isInInputSession()) {
             pushTextToModel(/* originChanged= */ false);
         }
     }
@@ -303,7 +307,13 @@ class UrlBarMediator implements UrlBarTextContextMenuDelegate {
             textForAutofillServices = mUrlBarData.url.getSpec();
         }
 
-        @ScrollType int scrollType = isInInputSession() ? ScrollType.NO_SCROLL : mScrollType;
+        @ScrollType
+        int scrollType =
+                (isInInputSession()
+                                && mCurrentInput.getDisplayState()
+                                        != DisplayState.DRAFTING_NO_FOCUS)
+                        ? ScrollType.NO_SCROLL
+                        : mScrollType;
         if (text == null) text = "";
 
         UrlBarTextState state =
@@ -423,11 +433,6 @@ class UrlBarMediator implements UrlBarTextContextMenuDelegate {
         // Trim to just the currently selected text as that is the only text we are replacing.
         currentText = currentText.substring(minSel, maxSel);
 
-        UrlBarDelegate delegate = mModel.get(UrlBarProperties.DELEGATE);
-        assert delegate != null;
-        String replacement = delegate.getReplacementCutCopyText(currentText, selection);
-        if (replacement != null) return replacement;
-
         String formattedUrlLocation;
         String originalUrlLocation;
 
@@ -512,8 +517,8 @@ class UrlBarMediator implements UrlBarTextContextMenuDelegate {
     void setUrlBarHintTextColorForNtp() {
         mIsHintTextFixedForNtp = true;
         final @ColorInt int hintTextColor =
-                ChromeFeatureList.sNtpAurora.isEnabled()
-                        ? MaterialColors.getColor(mContext, R.attr.colorOutline, TAG)
+                ChromeFeatures.NtpAurora.isEnabled()
+                        ? SemanticColorUtils.getDefaultTextColorSecondary(mContext)
                         : SemanticColorUtils.getDefaultTextColor(mContext);
         mModel.set(UrlBarProperties.HINT_TEXT_COLOR, hintTextColor);
     }

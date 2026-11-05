@@ -13,8 +13,14 @@
 #include "base/memory/raw_ptr.h"
 #include "base/supports_user_data.h"
 
+class BrowserWindowInterface;
+class GURL;
 class Profile;
 class TabAndroid;
+
+namespace content {
+class RenderFrameHost;
+}  // namespace content
 
 namespace glic {
 
@@ -33,23 +39,18 @@ class GlicKeyedServiceAndroid : public base::SupportsUserData::Data {
   // JNI bridge to show, summon, or activate the panel, or close it if it is
   // already active.
   // `env` is the JNI environment.
-  // `browser_window_ptr` is unpacked to call the cross-platform service.
   // `prevent_close` whether to prevent closing the UI if it's already open.
   // `profile` associated with this request.
   // `source` for the UI toggle.
   void ToggleUI(JNIEnv* env,
-                int64_t browser_window_ptr,
+                BrowserWindowInterface* browser_window,
                 bool prevent_close,
                 Profile* profile,
                 int32_t source);
 
-  bool InvokeWithAutoSubmit(JNIEnv* env,
-                            TabAndroid* tab,
-                            std::string text,
-                            int32_t source);
-
   bool InvokeWithPrompt(JNIEnv* env,
                         TabAndroid* tab,
+                        content::RenderFrameHost* frame,
                         std::string text,
                         int32_t source);
 
@@ -59,10 +60,15 @@ class GlicKeyedServiceAndroid : public base::SupportsUserData::Data {
                               TabAndroid* tab,
                               std::string glic_conversation_id,
                               int32_t source);
+  void ShareContextImage(JNIEnv* env,
+                         TabAndroid* tab,
+                         content::RenderFrameHost* frame,
+                         const GURL& src_url);
 
   void ShowExperimentalOptInDialogForTesting(JNIEnv* env, TabAndroid* tab);
 
-  bool IsPanelShowingForBrowser(JNIEnv* env, int64_t browser_window_ptr);
+  bool IsPanelShowingForBrowser(JNIEnv* env,
+                                BrowserWindowInterface* browser_window);
 
   bool GetUserEnabledActuationOnWeb(JNIEnv* env);
   void SetUserEnabledActuationOnWeb(JNIEnv* env, bool enabled);

@@ -4,17 +4,16 @@
 
 import 'chrome://password-manager/password_manager.js';
 
-import {BatchUploadPasswordsEntryPoint, OpenWindowProxyImpl, Page, PasswordManagerImpl, Router, SyncBrowserProxyImpl, TrustedVaultBannerState} from 'chrome://password-manager/password_manager.js';
+import {BatchUploadPasswordsEntryPoint, OpenWindowProxyImpl, Page, PasswordManagerImpl, PrefsBrowserProxy, PrefService, Router, SyncBrowserProxyImpl, TrustedVaultBannerState} from 'chrome://password-manager/password_manager.js';
 import {webUIListenerCallback} from 'chrome://resources/js/cr.js';
 import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
-import {flush} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
 import {assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chai_assert.js';
-import {flushTasks} from 'chrome://webui-test/polymer_test_util.js';
 import {TestOpenWindowProxy} from 'chrome://webui-test/test_open_window_proxy.js';
-import {$$, eventToPromise, isVisible} from 'chrome://webui-test/test_util.js';
+import {$$, eventToPromise, isVisible, microtasksFinished} from 'chrome://webui-test/test_util.js';
 
 import type {ActorLoginPermission} from './password_manager.mojom-webui.js';
 import {TestPasswordManagerProxy} from './test_password_manager_proxy.js';
+import {TestPrefsBrowserProxy} from './test_prefs_browser_proxy.js';
 import {TestSyncBrowserProxy} from './test_sync_browser_proxy.js';
 import {createBlockedSiteEntry, createCredentialGroup, createPasswordEntry, makePasswordManagerPrefs} from './test_util.js';
 
@@ -64,13 +63,20 @@ function createActorLoginPermission(
 suite('SettingsSectionTest', function() {
   let passwordManager: TestPasswordManagerProxy;
   let openWindowProxy: TestOpenWindowProxy;
+  let prefsBrowserProxy: TestPrefsBrowserProxy;
+  let prefService: PrefService;
   let syncProxy: TestSyncBrowserProxy;
   // <if expr="is_win or is_macosx">
   let passkeysProxy: TestPasskeysBrowserProxy;
   // </if>
 
-  setup(function() {
+  setup(async function() {
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
+    prefsBrowserProxy = new TestPrefsBrowserProxy(makePasswordManagerPrefs());
+    PrefsBrowserProxy.setInstance(prefsBrowserProxy);
+    PrefService.resetInstanceForTesting();
+    prefService = PrefService.getInstance();
+    await prefService.whenInitialized();
     passwordManager = new TestPasswordManagerProxy();
     PasswordManagerImpl.setInstance(passwordManager);
     openWindowProxy = new TestOpenWindowProxy();
@@ -86,11 +92,9 @@ suite('SettingsSectionTest', function() {
 
   test('pref value displayed in the UI', async function() {
     const settings = document.createElement('settings-section');
-    settings.prefs = makePasswordManagerPrefs();
-    const prefObject = settings.getPref<boolean>('credentials_enable_service');
-    prefObject.value = false;
+    prefService.setPrefValue('credentials_enable_service', false);
     document.body.appendChild(settings);
-    await flushTasks();
+    await microtasksFinished();
 
     assertFalse(settings.$.passwordToggle.checked);
     assertTrue(settings.$.autosigninToggle.checked);
@@ -98,66 +102,72 @@ suite('SettingsSectionTest', function() {
 
   test('clicking the toggle updates corresponding pref', async function() {
     const settings = document.createElement('settings-section');
-    settings.prefs = makePasswordManagerPrefs();
     document.body.appendChild(settings);
-    await flushTasks();
+    await microtasksFinished();
 
-    assertTrue(settings.getPref<boolean>('credentials_enable_service').value);
+    assertTrue(
+        prefService.getPref<boolean>('credentials_enable_service').value);
     assertTrue(settings.$.passwordToggle.checked);
 
     settings.$.passwordToggle.click();
-    assertFalse(settings.getPref<boolean>('credentials_enable_service').value);
+    assertFalse(
+        prefService.getPref<boolean>('credentials_enable_service').value);
     assertFalse(settings.$.passwordToggle.checked);
   });
 
   test('enforcement disables toggle', async function() {
     const settings = document.createElement('settings-section');
-    settings.prefs = makePasswordManagerPrefs();
-    const prefObject = settings.getPref<boolean>('credentials_enable_service');
-    prefObject.enforcement = chrome.settingsPrivate.Enforcement.ENFORCED;
+    prefsBrowserProxy.fakeApi.sendPrefChanges([{
+      key: 'credentials_enable_service',
+      value: true,
+      enforcement: chrome.settingsPrivate.Enforcement.ENFORCED,
+    }]);
     document.body.appendChild(settings);
-    await flushTasks();
+    await microtasksFinished();
 
-    assertTrue(settings.getPref<boolean>('credentials_enable_service').value);
+    assertTrue(
+        prefService.getPref<boolean>('credentials_enable_service').value);
     assertTrue(settings.$.passwordToggle.checked);
     settings.$.passwordToggle.click();
-    assertTrue(settings.getPref<boolean>('credentials_enable_service').value);
+    assertTrue(
+        prefService.getPref<boolean>('credentials_enable_service').value);
   });
 
   test('extension control includes icon', async function() {
     const settings = document.createElement('settings-section');
-    settings.prefs = makePasswordManagerPrefs();
-    const prefObject = settings.getPref<boolean>('credentials_enable_service');
-    prefObject.extensionId = 'test';
-    prefObject.controlledByName = 'test extension';
+    prefsBrowserProxy.fakeApi.sendPrefChanges([{
+      key: 'credentials_enable_service',
+      value: true,
+      extensionId: 'test',
+      controlledByName: 'test extension',
+    }]);
     document.body.appendChild(settings);
-    await flushTasks();
+    await microtasksFinished();
 
     assertTrue(settings.$.passwordToggle.checked);
     assertTrue(
-        !!settings.shadowRoot!.querySelector('extension-controlled-indicator'));
+        !!settings.shadowRoot.querySelector('extension-controlled-indicator'));
   });
 
   test('no extension control icon by default', async function() {
     const settings = document.createElement('settings-section');
-    settings.prefs = makePasswordManagerPrefs();
     document.body.appendChild(settings);
-    await flushTasks();
+    await microtasksFinished();
 
     assertTrue(settings.$.passwordToggle.checked);
     settings.$.passwordToggle.click();
-    assertFalse(!!settings.$.passwordToggle.shadowRoot!.querySelector(
+    assertFalse(!!settings.$.passwordToggle.shadowRoot.querySelector(
         'extension-controlled-indicator'));
   });
 
   test('pref updated externally', async function() {
     const settings = document.createElement('settings-section');
-    settings.prefs = makePasswordManagerPrefs();
     document.body.appendChild(settings);
-    await flushTasks();
+    await microtasksFinished();
 
     assertTrue(settings.$.autosigninToggle.checked);
-    settings.set('prefs.credentials_enable_autosignin.value', false);
+    prefService.setPrefValue('credentials_enable_autosignin', false);
+    await microtasksFinished();
 
     assertFalse(settings.$.autosigninToggle.checked);
   });
@@ -170,18 +180,17 @@ suite('SettingsSectionTest', function() {
         {biometricAuthenticationForFillingToggleVisible: true});
 
     const settings = document.createElement('settings-section');
-    settings.prefs = makePasswordManagerPrefs();
-    settings.getPref('password_manager.biometric_authentication_filling')
-        .value = false;
+    prefService.setPrefValue(
+        'password_manager.biometric_authentication_filling', false);
     document.body.appendChild(settings);
-    await flushTasks();
+    await microtasksFinished();
 
     const biometricAuthenticationToggle =
-        settings.shadowRoot!.querySelector<PrefToggleButtonElement>(
+        settings.shadowRoot.querySelector<PrefToggleButtonElement>(
             '#biometricAuthenticationToggle');
     assertTrue(!!biometricAuthenticationToggle);
     assertFalse(biometricAuthenticationToggle.checked);
-    assertFalse(settings
+    assertFalse(prefService
                     .getPref<boolean>(
                         'password_manager.biometric_authentication_filling')
                     .value);
@@ -191,7 +200,7 @@ suite('SettingsSectionTest', function() {
     // Pref settings should not change until authentication succeeds.
     await passwordManager.whenCalled('switchBiometricAuthBeforeFillingState');
     assertFalse(biometricAuthenticationToggle.checked);
-    assertFalse(settings
+    assertFalse(prefService
                     .getPref<boolean>(
                         'password_manager.biometric_authentication_filling')
                     .value);
@@ -203,10 +212,9 @@ suite('SettingsSectionTest', function() {
     loadTimeData.overrideValues(
         {biometricAuthenticationForFillingToggleVisible: false});
     const settings = document.createElement('settings-section');
-    settings.prefs = makePasswordManagerPrefs();
     document.body.appendChild(settings);
-    await flushTasks();
-    assertFalse(!!settings.shadowRoot!.querySelector<PrefToggleButtonElement>(
+    await microtasksFinished();
+    assertFalse(!!settings.shadowRoot.querySelector<PrefToggleButtonElement>(
         '#biometricAuthenticationToggle'));
   });
   // </if>
@@ -218,7 +226,7 @@ suite('SettingsSectionTest', function() {
     ];
     const settings = document.createElement('settings-section');
     document.body.appendChild(settings);
-    await flushTasks();
+    await microtasksFinished();
     await passwordManager.whenCalled('getBlockedSitesList');
 
     assertTrue(isVisible(settings.$.blockedSitesList));
@@ -234,7 +242,7 @@ suite('SettingsSectionTest', function() {
         [createBlockedSiteEntry('test.com', blockedId)];
     const settings = document.createElement('settings-section');
     document.body.appendChild(settings);
-    await flushTasks();
+    await microtasksFinished();
     await passwordManager.whenCalled('getBlockedSitesList');
     assertTrue(isVisible(settings.$.blockedSitesList));
 
@@ -248,7 +256,7 @@ suite('SettingsSectionTest', function() {
     passwordManager.data.blockedSites = [createBlockedSiteEntry('test.com', 1)];
     const settings = document.createElement('settings-section');
     document.body.appendChild(settings);
-    await flushTasks();
+    await microtasksFinished();
     await passwordManager.whenCalled('getBlockedSitesList');
     // Check that only one entry is shown.
     assertTrue(isVisible(settings.$.blockedSitesList));
@@ -262,7 +270,7 @@ suite('SettingsSectionTest', function() {
         createBlockedSiteEntry('test2.com', 2));
     passwordManager.listeners.blockedSitesListChangedListener!
         (passwordManager.data.blockedSites);
-    await flushTasks();
+    await microtasksFinished();
     // Check that two entries are shown.
     assertTrue(isVisible(settings.$.blockedSitesList));
     assertEquals(
@@ -278,10 +286,10 @@ suite('SettingsSectionTest', function() {
 
     const settings = document.createElement('settings-section');
     document.body.appendChild(settings);
-    await flushTasks();
+    await microtasksFinished();
 
     const addShortcutBanner =
-        settings.shadowRoot!.querySelector<HTMLElement>('#addShortcutBanner');
+        settings.shadowRoot.querySelector<HTMLElement>('#addShortcutBanner');
     assertTrue(!!addShortcutBanner);
     assertTrue(isVisible(addShortcutBanner));
     addShortcutBanner.click();
@@ -294,53 +302,67 @@ suite('SettingsSectionTest', function() {
 
     const settings = document.createElement('settings-section');
     document.body.appendChild(settings);
-    await flushTasks();
+    await microtasksFinished();
 
-    assertFalse(!!settings.shadowRoot!.querySelector('#addShortcutBanner'));
+    assertFalse(!!settings.shadowRoot.querySelector('#addShortcutBanner'));
+  });
+
+  test('import visible when extension turns saving off', async function() {
+    const settings = document.createElement('settings-section');
+    prefsBrowserProxy.fakeApi.sendPrefChanges([{
+      key: 'credentials_enable_service',
+      value: false,
+      enforcement: chrome.settingsPrivate.Enforcement.ENFORCED,
+      controlledBy: chrome.settingsPrivate.ControlledBy.EXTENSION,
+    }]);
+    document.body.appendChild(settings);
+    await microtasksFinished();
+
+    assertTrue(!!settings.shadowRoot.querySelector('passwords-importer'));
   });
 
   test(
-      'import visible when policy disabled and controlled by extension',
+      'import hidden when mandatory policy blocks password saving',
       async function() {
         const settings = document.createElement('settings-section');
-        settings.prefs = makePasswordManagerPrefs();
-        const prefObject =
-            settings.getPref<boolean>('credentials_enable_service');
-        prefObject.value = false;
-        prefObject.enforcement = chrome.settingsPrivate.Enforcement.ENFORCED;
-        prefObject.controlledBy = chrome.settingsPrivate.ControlledBy.EXTENSION;
+        prefsBrowserProxy.fakeApi.sendPrefChanges([{
+          key: 'credentials_enable_service',
+          value: false,
+          enforcement: chrome.settingsPrivate.Enforcement.ENFORCED,
+          controlledBy: chrome.settingsPrivate.ControlledBy.DEVICE_POLICY,
+        }]);
         document.body.appendChild(settings);
-        await flushTasks();
+        await microtasksFinished();
 
-        assertTrue(!!settings.shadowRoot!.querySelector('passwords-importer'));
+        assertFalse(!!settings.shadowRoot.querySelector('passwords-importer'));
       });
 
   test(
-      'import hidden when policy disabled and not controlled by extension',
+      'import hidden when mandatory policy arrives after load',
       async function() {
         const settings = document.createElement('settings-section');
-        settings.prefs = makePasswordManagerPrefs();
-        const prefObject =
-            settings.getPref<boolean>('credentials_enable_service');
-        prefObject.value = false;
-        prefObject.enforcement = chrome.settingsPrivate.Enforcement.ENFORCED;
-        prefObject.controlledBy =
-            chrome.settingsPrivate.ControlledBy.DEVICE_POLICY;
         document.body.appendChild(settings);
-        await flushTasks();
+        await microtasksFinished();
+        assertTrue(!!settings.shadowRoot.querySelector('passwords-importer'));
 
-        assertFalse(!!settings.shadowRoot!.querySelector('passwords-importer'));
+        prefsBrowserProxy.fakeApi.sendPrefChanges([{
+          key: 'credentials_enable_service',
+          value: false,
+          enforcement: chrome.settingsPrivate.Enforcement.ENFORCED,
+          controlledBy: chrome.settingsPrivate.ControlledBy.USER_POLICY,
+        }]);
+        await microtasksFinished();
+
+        assertFalse(!!settings.shadowRoot.querySelector('passwords-importer'));
       });
 
-  test('import visible when policy enabled', async function() {
+  test('import visible when no policy is set', async function() {
     const settings = document.createElement('settings-section');
-    settings.prefs = makePasswordManagerPrefs();
-    const prefObject = settings.getPref<boolean>('credentials_enable_service');
-    prefObject.value = true;
+    prefService.setPrefValue('credentials_enable_service', true);
     document.body.appendChild(settings);
-    await flushTasks();
+    await microtasksFinished();
 
-    assertTrue(!!settings.shadowRoot!.querySelector('passwords-importer'));
+    assertTrue(!!settings.shadowRoot.querySelector('passwords-importer'));
   });
 
   test('Password exporter element', async function() {
@@ -349,30 +371,30 @@ suite('SettingsSectionTest', function() {
     const settings = document.createElement('settings-section');
     document.body.appendChild(settings);
     await passwordManager.whenCalled('getSavedPasswordList');
-    assertFalse(!!settings.shadowRoot!.querySelector('passwords-exporter'));
+    assertFalse(!!settings.shadowRoot.querySelector('passwords-exporter'));
 
     // Exporter should appear when saved passwords are observed.
     passwordManager.data.passwords.push(
         createPasswordEntry({username: 'user1', id: 1}));
     passwordManager.listeners.savedPasswordListChangedListener!
         (passwordManager.data.passwords);
-    flush();
-    assertTrue(!!settings.shadowRoot!.querySelector('passwords-exporter'));
+    await microtasksFinished();
+    assertTrue(!!settings.shadowRoot.querySelector('passwords-exporter'));
   });
 
-  test('trustedVaultBannerVisibilityChangesWithState', function() {
+  test('trustedVaultBannerVisibilityChangesWithState', async function() {
     const settings = document.createElement('settings-section');
     document.body.appendChild(settings);
     webUIListenerCallback(
         'trusted-vault-banner-state-changed',
         TrustedVaultBannerState.NOT_SHOWN);
-    flush();
+    await microtasksFinished();
     assertTrue(settings.$.trustedVaultBanner.hidden);
 
     webUIListenerCallback(
         'trusted-vault-banner-state-changed',
         TrustedVaultBannerState.OFFER_OPT_IN);
-    flush();
+    await microtasksFinished();
     assertFalse(settings.$.trustedVaultBanner.hidden);
     assertEquals(
         settings.i18n('trustedVaultBannerSubLabelOfferOptIn'),
@@ -380,7 +402,7 @@ suite('SettingsSectionTest', function() {
 
     webUIListenerCallback(
         'trusted-vault-banner-state-changed', TrustedVaultBannerState.OPTED_IN);
-    flush();
+    await microtasksFinished();
     assertFalse(settings.$.trustedVaultBanner.hidden);
     assertEquals(
         settings.i18n('trustedVaultBannerSubLabelOptedIn'),
@@ -390,10 +412,11 @@ suite('SettingsSectionTest', function() {
   test('trustedVaultBannerOpensOptInPage', async function() {
     const settings = document.createElement('settings-section');
     document.body.appendChild(settings);
+    await microtasksFinished();
     webUIListenerCallback(
         'trusted-vault-banner-state-changed',
         TrustedVaultBannerState.OFFER_OPT_IN);
-    flush();
+    await microtasksFinished();
     assertFalse(settings.$.trustedVaultBanner.hidden);
 
     settings.$.trustedVaultBanner.click();
@@ -404,9 +427,10 @@ suite('SettingsSectionTest', function() {
   test('trustedVaultBannerOpensLearnMorePage', async function() {
     const settings = document.createElement('settings-section');
     document.body.appendChild(settings);
+    await microtasksFinished();
     webUIListenerCallback(
         'trusted-vault-banner-state-changed', TrustedVaultBannerState.OPTED_IN);
-    flush();
+    await microtasksFinished();
     assertFalse(settings.$.trustedVaultBanner.hidden);
 
     settings.$.trustedVaultBanner.click();
@@ -419,7 +443,7 @@ suite('SettingsSectionTest', function() {
       async function() {
         const section = document.createElement('settings-section');
         document.body.appendChild(section);
-        await flushTasks();
+        await microtasksFinished();
 
         const trustedVaultBanner = section.$.trustedVaultBanner;
 
@@ -431,7 +455,7 @@ suite('SettingsSectionTest', function() {
         passwordManager.listeners.passwordManagerActionableErrorChangedListener!
             (chrome.passwordsPrivate.PasswordManagerActionableError
                  .TRUSTED_VAULT_KEY_NEEDED);
-        await flushTasks();
+        await microtasksFinished();
 
         // The banner should now be visible, as the state internally
         // transitioned to OPTED_IN.
@@ -445,7 +469,7 @@ suite('SettingsSectionTest', function() {
         // authenticated).
         passwordManager.listeners.passwordManagerActionableErrorChangedListener!
             (chrome.passwordsPrivate.PasswordManagerActionableError.NO_ERROR);
-        await flushTasks();
+        await microtasksFinished();
 
         // The observer should re-fetch the Trusted Vault state from the browser
         // to determine if it should stay visible or be hidden.
@@ -462,8 +486,8 @@ suite('SettingsSectionTest', function() {
     const settings = document.createElement('settings-section');
     document.body.appendChild(settings);
     await passkeysProxy.whenCalled('passkeysHasPasskeys');
-    flush();
-    assertFalse(!!settings.shadowRoot!.querySelector('#managePasskeysRow'));
+    await microtasksFinished();
+    assertFalse(!!settings.shadowRoot.querySelector('#managePasskeysRow'));
   });
 
   test('managePasskeysShownWhenNeeded', async function() {
@@ -471,9 +495,9 @@ suite('SettingsSectionTest', function() {
     const settings = document.createElement('settings-section');
     document.body.appendChild(settings);
     await passkeysProxy.whenCalled('passkeysHasPasskeys');
-    flush();
+    await microtasksFinished();
     const managePasskeysRow =
-        settings.shadowRoot!.querySelector<HTMLElement>('#managePasskeysRow');
+        settings.shadowRoot.querySelector<HTMLElement>('#managePasskeysRow');
     assertTrue(!!managePasskeysRow);
 
     managePasskeysRow.click();
@@ -485,7 +509,7 @@ suite('SettingsSectionTest', function() {
     passwordManager.data.blockedSites = [];
     const settings = document.createElement('settings-section');
     document.body.appendChild(settings);
-    await flushTasks();
+    await microtasksFinished();
     await passwordManager.whenCalled('getBlockedSitesList');
 
     assertFalse(isVisible(settings.$.blockedSitesList));
@@ -498,10 +522,10 @@ suite('SettingsSectionTest', function() {
         loadTimeData.overrideValues({enableActorLoginPermissions: false});
         const settings = document.createElement('settings-section');
         document.body.appendChild(settings);
-        await flushTasks();
+        await microtasksFinished();
 
         assertFalse(
-            !!settings.shadowRoot!.querySelector('#actorLoginPermissions'));
+            !!settings.shadowRoot.querySelector('#actorLoginPermissions'));
       });
 
   test(
@@ -513,10 +537,10 @@ suite('SettingsSectionTest', function() {
         });
         const settings = document.createElement('settings-section');
         document.body.appendChild(settings);
-        await flushTasks();
+        await microtasksFinished();
 
         assertFalse(
-            !!settings.shadowRoot!.querySelector('#actorLoginPermissions'));
+            !!settings.shadowRoot.querySelector('#actorLoginPermissions'));
       });
 
 
@@ -529,11 +553,11 @@ suite('SettingsSectionTest', function() {
         passwordManager.data.actorLoginPermissions = [];
         const settings = document.createElement('settings-section');
         document.body.appendChild(settings);
-        await flushTasks();
+        await microtasksFinished();
         await passwordManager.whenCalled('getActorLoginPermissions');
 
         assertFalse(
-            !!settings.shadowRoot!.querySelector('#actorLoginPermissions'));
+            !!settings.shadowRoot.querySelector('#actorLoginPermissions'));
       });
 
   test('settings section shows actor login permissions', async function() {
@@ -545,10 +569,10 @@ suite('SettingsSectionTest', function() {
         [createActorLoginPermission('test.com', 'testuser')];
     const settings = document.createElement('settings-section');
     document.body.appendChild(settings);
-    await flushTasks();
+    await microtasksFinished();
     await passwordManager.whenCalled('getActorLoginPermissions');
 
-    assertTrue(!!settings.shadowRoot!.querySelector('#actorLoginPermissions'));
+    assertTrue(!!settings.shadowRoot.querySelector('#actorLoginPermissions'));
   });
 
   test(
@@ -565,11 +589,11 @@ suite('SettingsSectionTest', function() {
         passwordManager.data.actorLoginPermissions = sites;
         const settings = document.createElement('settings-section');
         document.body.appendChild(settings);
-        await flushTasks();
+        await microtasksFinished();
         await passwordManager.whenCalled('getActorLoginPermissions');
 
         const list =
-            settings.shadowRoot!.querySelector('#actorLoginPermissions');
+            settings.shadowRoot.querySelector('#actorLoginPermissions');
         assertTrue(!!list);
 
         const siteElements =
@@ -603,18 +627,18 @@ suite('SettingsSectionTest', function() {
         [createActorLoginPermission('test.com', 'testuser')];
     const settings = document.createElement('settings-section');
     document.body.appendChild(settings);
-    await flushTasks();
+    await microtasksFinished();
     await passwordManager.whenCalled('getActorLoginPermissions');
 
-    const list = settings.shadowRoot!.querySelector('#actorLoginPermissions');
+    const list = settings.shadowRoot.querySelector('#actorLoginPermissions');
     assertTrue(!!list);
 
     list.querySelector<HTMLElement>(
             '#removeActorLoginPermissionValueButton')!.click();
-    await flushTasks();
+    await microtasksFinished();
 
     // Check that the removal dialog is now open.
-    const dialog = settings.shadowRoot!.querySelector(
+    const dialog = settings.shadowRoot.querySelector(
         'remove-actor-login-permission-dialog');
     assertTrue(!!dialog);
   });
@@ -628,22 +652,22 @@ suite('SettingsSectionTest', function() {
     passwordManager.data.actorLoginPermissions = [site];
     const settings = document.createElement('settings-section');
     document.body.appendChild(settings);
-    await flushTasks();
+    await microtasksFinished();
     await passwordManager.whenCalled('getActorLoginPermissions');
 
-    const list = settings.shadowRoot!.querySelector('#actorLoginPermissions');
+    const list = settings.shadowRoot.querySelector('#actorLoginPermissions');
     assertTrue(!!list);
 
     list.querySelector<HTMLElement>(
             '#removeActorLoginPermissionValueButton')!.click();
-    await flushTasks();
+    await microtasksFinished();
 
     // Check that the removal dialog is now open.
-    const dialog = settings.shadowRoot!.querySelector(
+    const dialog = settings.shadowRoot.querySelector(
         'remove-actor-login-permission-dialog');
     assertTrue(!!dialog);
 
-    dialog.shadowRoot!.querySelector<HTMLElement>('#disconnect')!.click();
+    dialog.$.disconnect.click();
     await passwordManager.whenCalled('revokeActorLoginPermission');
     assertEquals(passwordManager.data.actorLoginPermissions.length, 0);
   });
@@ -660,10 +684,10 @@ suite('SettingsSectionTest', function() {
     passwordManager.data.actorLoginPermissions = sites;
     const settings = document.createElement('settings-section');
     document.body.appendChild(settings);
-    await flushTasks();
+    await microtasksFinished();
 
     // Check that two entries are shown.
-    const list = settings.shadowRoot!.querySelector('#actorLoginPermissions');
+    const list = settings.shadowRoot.querySelector('#actorLoginPermissions');
     assertTrue(!!list);
     assertEquals(2, list.querySelectorAll<HTMLElement>('.site-content').length);
 
@@ -672,7 +696,7 @@ suite('SettingsSectionTest', function() {
     // permissions.
     passwordManager.listeners.savedPasswordListChangedListener!
         (passwordManager.data.passwords);
-    await flushTasks();
+    await microtasksFinished();
 
     // Check that only one entry is shown now.
     assertEquals(1, list.querySelectorAll<HTMLElement>('.site-content').length);
@@ -701,9 +725,9 @@ suite('SettingsSectionTest', function() {
     const settings = document.createElement('settings-section');
     document.body.appendChild(settings);
     await passwordManager.whenCalled('getSavedPasswordList');
-    await flushTasks();
+    await microtasksFinished();
 
-    assertTrue(!!settings.shadowRoot!.getElementById('movePasswordsButton'));
+    assertTrue(!!settings.shadowRoot.getElementById('movePasswordsButton'));
   });
 
   test('Move passwords to account button is not visible', async function() {
@@ -728,9 +752,9 @@ suite('SettingsSectionTest', function() {
     const settings = document.createElement('settings-section');
     document.body.appendChild(settings);
     await passwordManager.whenCalled('getSavedPasswordList');
-    await flushTasks();
+    await microtasksFinished();
 
-    assertFalse(!!settings.shadowRoot!.getElementById('movePasswordsButton'));
+    assertFalse(!!settings.shadowRoot.getElementById('movePasswordsButton'));
   });
 
   test(
@@ -761,15 +785,15 @@ suite('SettingsSectionTest', function() {
         const settings = document.createElement('settings-section');
         document.body.appendChild(settings);
         await passwordManager.whenCalled('getSavedPasswordList');
-        await flushTasks();
+        await microtasksFinished();
 
         const movePasswordsButton =
-            settings.shadowRoot!.getElementById('movePasswordsButton');
+            settings.shadowRoot.getElementById('movePasswordsButton');
         assertTrue(!!movePasswordsButton);
         assertTrue(isVisible(movePasswordsButton));
 
         movePasswordsButton.click();
-        await flushTasks();
+        await microtasksFinished();
 
         const entryPoint = await syncProxy.whenCalled('openBatchUpload');
         assertEquals(
@@ -779,7 +803,7 @@ suite('SettingsSectionTest', function() {
   test('Change Password Manager PIN is not available ', async function() {
     const section = document.createElement('settings-section');
     document.body.appendChild(section);
-    await flushTasks();
+    await microtasksFinished();
 
     assertFalse(isVisible($$(section, '#changePasswordManagerPinRow')));
   });
@@ -795,7 +819,7 @@ suite('SettingsSectionTest', function() {
 
         const section = document.createElement('settings-section');
         document.body.appendChild(section);
-        await flushTasks();
+        await microtasksFinished();
 
         const changePasswordManagerPinRow =
             $$(section, '#changePasswordManagerPinRow');
@@ -817,7 +841,7 @@ suite('SettingsSectionTest', function() {
 
         const section = document.createElement('settings-section');
         document.body.appendChild(section);
-        await flushTasks();
+        await microtasksFinished();
         await passwordManager.whenCalled('isPasswordManagerPinAvailable');
 
         assertTrue(isVisible($$(section, '#changePasswordManagerPinRow')));
@@ -826,7 +850,7 @@ suite('SettingsSectionTest', function() {
         webUIListenerCallback('sync-info-changed', {
           isSyncingPasswords: false,
         });
-        await flushTasks();
+        await microtasksFinished();
         await passwordManager.whenCalled('isPasswordManagerPinAvailable');
         await passwordManager.whenCalled('isConnectedToCloudAuthenticator');
 
@@ -842,7 +866,7 @@ suite('SettingsSectionTest', function() {
 
     const section = document.createElement('settings-section');
     document.body.appendChild(section);
-    await flushTasks();
+    await microtasksFinished();
 
     const changePasswordManagerPinRow =
         $$(section, '#changePasswordManagerPinRow');
@@ -864,6 +888,7 @@ suite('SettingsSectionTest', function() {
     changePasswordManagerPinRow.click();
 
     await passwordManager.whenCalled('changePasswordManagerPin');
+    await microtasksFinished();
     assertTrue(section.$.toast.open);
     assertEquals(
         loadTimeData.getString('passwordManagerPinChanged'),
@@ -879,7 +904,7 @@ suite('SettingsSectionTest', function() {
 
     const section = document.createElement('settings-section');
     document.body.appendChild(section);
-    await flushTasks();
+    await microtasksFinished();
 
     const disconnectCloudAuthenticatorRow =
         $$(section, '#disconnectCloudAuthenticatorRow');
@@ -900,6 +925,7 @@ suite('SettingsSectionTest', function() {
 
     confirmButton.click();
     await passwordManager.whenCalled('disconnectCloudAuthenticator');
+    await microtasksFinished();
 
     assertTrue(section.$.toast.open);
     assertEquals(
@@ -910,31 +936,30 @@ suite('SettingsSectionTest', function() {
   test('shows full-data-reset row', async function() {
     const section = document.createElement('settings-section');
     document.body.appendChild(section);
-    await flushTasks();
+    await microtasksFinished();
 
     assertTrue(isVisible($$(section, 'full-data-reset')));
   });
 
   test('passkey upgrade toggle changes pref value', async () => {
     const settings = document.createElement('settings-section');
-    settings.prefs = makePasswordManagerPrefs();
     document.body.appendChild(settings);
-    await flushTasks();
+    await microtasksFinished();
 
     const passkeyUpgradeToggle =
-        settings.shadowRoot!.querySelector<PrefToggleButtonElement>(
+        settings.shadowRoot.querySelector<PrefToggleButtonElement>(
             '#passkeyUpgradeToggle');
     assertTrue(!!passkeyUpgradeToggle);
 
     assertTrue(
-        settings
+        prefService
             .getPref<boolean>('credentials_enable_automatic_passkey_upgrades')
             .value);
     assertTrue(passkeyUpgradeToggle.checked);
 
     passkeyUpgradeToggle.click();
     assertFalse(
-        settings
+        prefService
             .getPref<boolean>('credentials_enable_automatic_passkey_upgrades')
             .value);
     assertFalse(passkeyUpgradeToggle.checked);
@@ -944,12 +969,11 @@ suite('SettingsSectionTest', function() {
       'passkey upgrade toggle hides with password toggle unchecked',
       async () => {
         const settings = document.createElement('settings-section');
-        settings.prefs = makePasswordManagerPrefs();
         document.body.appendChild(settings);
-        await flushTasks();
+        await microtasksFinished();
 
         const passkeyUpgradeToggle =
-            settings.shadowRoot!.querySelector<PrefToggleButtonElement>(
+            settings.shadowRoot.querySelector<PrefToggleButtonElement>(
                 '#passkeyUpgradeToggle');
         assertTrue(!!passkeyUpgradeToggle);
 
@@ -957,6 +981,7 @@ suite('SettingsSectionTest', function() {
         assertTrue(isVisible(passkeyUpgradeToggle));
 
         settings.$.passwordToggle.click();
+        await microtasksFinished();
         assertFalse(settings.$.passwordToggle.checked);
         assertFalse(isVisible(passkeyUpgradeToggle));
       });
@@ -965,12 +990,12 @@ suite('SettingsSectionTest', function() {
     loadTimeData.overrideValues({passwordChangeAvailable: true});
     const section = document.createElement('settings-section');
     document.body.appendChild(section);
-    await flushTasks();
+    await microtasksFinished();
 
     const automatedPasswordChange = $$(section, '#automatedPasswordChange');
     assertTrue(!!automatedPasswordChange);
     automatedPasswordChange.click();
-    await flushTasks();
+    await microtasksFinished();
 
     assertEquals(Router.getInstance().currentRoute.page, Page.PASSWORD_CHANGE);
   });

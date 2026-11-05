@@ -6,6 +6,7 @@ import("//build/buildflag_header.gni")
 import("//mojo/public/tools/fuzzers/mojolpm.gni")
 import("//services/on_device_model/on_device_model.gni")
 import("//services/webnn/features.gni")
+import("//third_party/litert/features.gni")
 import("//third_party/protobuf/proto_library.gni")
 import("//third_party/tflite/features.gni")
 
@@ -92,26 +93,6 @@ source_set("webnn_service_base") {
   defines = [ "IS_WEBNN_SERVICE_IMPL" ]
 }
 
-if (is_apple || webnn_use_tflite || webnn_use_litert) {
-  source_set("webnn_service_resource_management") {
-    visibility = [ ":*" ]
-
-    sources = [
-      "queueable_resource_state.h",
-      "queueable_resource_state_base.cc",
-      "queueable_resource_state_base.h",
-      "resource_task.cc",
-      "resource_task.h",
-    ]
-
-    deps = [ "//base" ]
-
-    configs += [ "//build/config/compiler:prevent_unsafe_narrowing" ]
-
-    defines = [ "IS_WEBNN_SERVICE_IMPL" ]
-  }
-}
-
 component("webnn_service") {
   _configs = configs
   configs = []
@@ -137,8 +118,6 @@ component("webnn_service") {
 
   if (is_apple) {
     sources += [
-      "coreml/buffer_content_coreml.h",
-      "coreml/buffer_content_coreml.mm",
       "coreml/compiler_context_impl_coreml.h",
       "coreml/compiler_context_impl_coreml.mm",
       "coreml/context_impl_coreml.h",
@@ -199,6 +178,9 @@ component("webnn_service") {
         "//third_party/litert",
         "//third_party/litert:buildflags",
       ]
+      if (build_litert_with_ml_drift) {
+        deps += [ "//third_party/litert:ml_drift_webgpu_accelerator" ]
+      }
     }
 
     if (enable_ml_internal) {
@@ -220,6 +202,8 @@ component("webnn_service") {
       "ort/dispatch_context_impl_ort.h",
       "ort/environment.cc",
       "ort/environment.h",
+      "ort/epcontext_model_validator.cc",
+      "ort/epcontext_model_validator.h",
       "ort/external_weights_manager.cc",
       "ort/external_weights_manager.h",
       "ort/graph_builder_ort.cc",
@@ -242,8 +226,6 @@ component("webnn_service") {
       "ort/tensor_impl_ort.cc",
       "ort/tensor_impl_ort.h",
       "ort/trivial_model.h",
-      "webnn_compiler_service_impl.cc",
-      "webnn_compiler_service_impl.h",
     ]
     deps += [
       "//services/webnn/public/cpp:win",
@@ -253,8 +235,11 @@ component("webnn_service") {
     libs = [ "runtimeobject.lib" ]
   }
 
-  if (is_apple || webnn_use_tflite || webnn_use_litert) {
-    deps += [ ":webnn_service_resource_management" ]
+  if (is_win || is_apple) {
+    sources += [
+      "webnn_compiler_service_impl.cc",
+      "webnn_compiler_service_impl.h",
+    ]
   }
 }
 
@@ -291,6 +276,18 @@ source_set("webnn_test_support") {
   }
 }
 
+# Byte builders shared by the EPContext model validator unit test and fuzzer.
+if (is_win) {
+  source_set("epcontext_model_validator_test_support") {
+    testonly = true
+    sources = [
+      "ort/epcontext_model_validator_test_support.cc",
+      "ort/epcontext_model_validator_test_support.h",
+    ]
+    deps = [ "//base" ]
+  }
+}
+
 source_set("tests") {
   testonly = true
 
@@ -311,7 +308,11 @@ source_set("tests") {
 
   if (is_win) {
     sources += [
+      "host/execution_provider_initializer_unittest.cc",
+      "ort/epcontext_model_validator_test.cc",
+      "ort/graph_builder_ort_test.cc",
       "ort/model_editor_test.cc",
+      "ort/ort_session_options_test.cc",
       "ort/platform_functions_ort_test.cc",
       "ort/test_base_ort.cc",
       "ort/test_base_ort.h",
@@ -334,6 +335,11 @@ source_set("tests") {
 
   if (is_win) {
     deps += [
+      ":epcontext_model_validator_test_support",
+      ":webnn_switches",
+      "//services/webnn/host",
+      "//services/webnn/public/cpp:win",
+      "//third_party/windows_app_sdk_headers",
       "//ui/gl",
       "//ui/gl/init",
     ]
@@ -473,68 +479,77 @@ if (!is_debug) {
       "GPU.DQSoftmaxQ",
       "GPU.DQSplitQ",
       "GPU.DQTransposeQ",
-      "NPU.Activation",
-      "NPU.ArgMinMax",
-      "NPU.BatchNormalization",
-      "NPU.Clamp",
-      "NPU.Concat",
-      "NPU.Conv2d",
-      "NPU.CumulativeSum",
-      "NPU.DequantizeLinear",
-      "NPU.ElementWiseBinary",
-      "NPU.Elu",
-      "NPU.Expand",
-      "NPU.Gather",
-      "NPU.GatherElements",
-      "NPU.GatherND",
-      "NPU.Gemm",
-      "NPU.Gru",
-      "NPU.GruCell",
-      "NPU.HardSigmoid",
-      "NPU.InstanceNormalization",
-      "NPU.LayerNormalization",
-      "NPU.LeakyRelu",
-      "NPU.Linear",
-      "NPU.Lstm",
-      "NPU.LstmCell",
-      "NPU.Matmul",
-      "NPU.Pad",
-      "NPU.Pool2d",
-      "NPU.Prelu",
-      "NPU.QuantizeLinear",
-      "NPU.Reduce",
-      "NPU.Resample2d",
-      "NPU.Reshape",
-      "NPU.Reverse",
-      "NPU.ScatterElements",
-      "NPU.ScatterND",
-      "NPU.Slice",
-      "NPU.Softmax",
-      "NPU.Split",
-      "NPU.Tile",
-      "NPU.Transpose",
-      "NPU.Triangular",
-      "NPU.Where",
-      "NPU.DQActivationQ",
-      "NPU.DQArgMax",
-      "NPU.DQClampQ",
-      "NPU.DQConcatQ",
-      "NPU.DQConv2dQ",
-      "NPU.DQElementWiseBinaryQ",
-      "NPU.DQEluQ",
-      "NPU.DQGatherQ",
-      "NPU.DQGemmQ",
-      "NPU.DQLeakyReluQ",
-      "NPU.DQPadQ",
-      "NPU.DQPool2dQ",
-      "NPU.DQReduceQ",
-      "NPU.DQResample2dQ",
-      "NPU.DQReshapeQ",
-      "NPU.DQSliceQ",
-      "NPU.DQSoftmaxQ",
-      "NPU.DQSplitQ",
-      "NPU.DQTransposeQ",
     ]
+
+    # NPU tests are skipped on Linux.
+    # LINT.IfChange(npu_fuzztests)
+    if (!is_linux) {
+      fuzztests += [
+        "NPU.Activation",
+        "NPU.ArgMinMax",
+        "NPU.BatchNormalization",
+        "NPU.Clamp",
+        "NPU.Concat",
+        "NPU.Conv2d",
+        "NPU.CumulativeSum",
+        "NPU.DequantizeLinear",
+        "NPU.ElementWiseBinary",
+        "NPU.Elu",
+        "NPU.Expand",
+        "NPU.Gather",
+        "NPU.GatherElements",
+        "NPU.GatherND",
+        "NPU.Gemm",
+        "NPU.Gru",
+        "NPU.GruCell",
+        "NPU.HardSigmoid",
+        "NPU.InstanceNormalization",
+        "NPU.LayerNormalization",
+        "NPU.LeakyRelu",
+        "NPU.Linear",
+        "NPU.Lstm",
+        "NPU.LstmCell",
+        "NPU.Matmul",
+        "NPU.Pad",
+        "NPU.Pool2d",
+        "NPU.Prelu",
+        "NPU.QuantizeLinear",
+        "NPU.Reduce",
+        "NPU.Resample2d",
+        "NPU.Reshape",
+        "NPU.Reverse",
+        "NPU.ScatterElements",
+        "NPU.ScatterND",
+        "NPU.Slice",
+        "NPU.Softmax",
+        "NPU.Split",
+        "NPU.Tile",
+        "NPU.Transpose",
+        "NPU.Triangular",
+        "NPU.Where",
+        "NPU.DQActivationQ",
+        "NPU.DQArgMax",
+        "NPU.DQClampQ",
+        "NPU.DQConcatQ",
+        "NPU.DQConv2dQ",
+        "NPU.DQElementWiseBinaryQ",
+        "NPU.DQEluQ",
+        "NPU.DQGatherQ",
+        "NPU.DQGemmQ",
+        "NPU.DQLeakyReluQ",
+        "NPU.DQPadQ",
+        "NPU.DQPool2dQ",
+        "NPU.DQReduceQ",
+        "NPU.DQResample2dQ",
+        "NPU.DQReshapeQ",
+        "NPU.DQSliceQ",
+        "NPU.DQSoftmaxQ",
+        "NPU.DQSplitQ",
+        "NPU.DQTransposeQ",
+      ]
+    }
+
+    # LINT.ThenChange(//services/webnn/webnn_graph_impl_fuzzer.cc:npu_fuzztests)
 
     deps = [
       ":webnn_service",
@@ -574,4 +589,18 @@ mojolpm_fuzzer_test("webnn_graph_mojolpm_textproto_fuzzer") {
     "//services/webnn/public/mojom:mojom_mojolpm",
     "//third_party/libprotobuf-mutator",
   ]
+}
+
+# The ORT EPContext model validator is only compiled on Windows.
+if (is_win) {
+  test("webnn_ort_epcontext_model_validator_fuzzer") {
+    sources = [ "ort/epcontext_model_validator_fuzzer.cc" ]
+    fuzztests = [ "EpcontextModelValidatorFuzzTest.ValidateNeverCrashes" ]
+    deps = [
+      ":epcontext_model_validator_test_support",
+      ":webnn_service",
+      "//base",
+      "//third_party/fuzztest:fuzztest_gtest_main",
+    ]
+  }
 }

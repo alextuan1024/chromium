@@ -44,22 +44,57 @@ class TraceProcessorTestCase(unittest.TestCase):
       )
       self.assertIn('--allow-sql-file-access', run_patch.call_args[0])
 
-  def testConvertProtoTraceToJsonFallback(self):
-    with mock.patch(RUN_METHOD) as run_patch:
-      run_patch.side_effect = [
-        RuntimeError(
-          'Running trace processor failed. Stderr: trace_processor_shell: '
-          'unrecognized option \'--allow-sql-file-access\''
-        ),
-        None,
-      ]
+  def testEnsureTraceProcessorUsesDownloadedWhenRunnable(self):
+    fetched_tp = os.path.join(self.temp_dir, 'fetched_trace_processor_shell')
+    with open(fetched_tp, 'w'):
+      pass
+    with (
+      mock.patch('core.tbmv3.trace_processor._fetched_trace_processor', None),
+      mock.patch(
+        'core.tbmv3.trace_processor.binary_deps_manager.FetchHostBinary',
+        return_value=fetched_tp,
+      ),
+      mock.patch(RUN_METHOD, return_value='version') as run_patch,
+    ):
       trace_processor.ConvertProtoTraceToJson(
-        self.tp_path, '/path/to/proto', '/path/to/json'
+        None, '/path/to/proto', '/path/to/json'
       )
       self.assertEqual(run_patch.call_count, 2)
-      self.assertNotIn(
-        '--allow-sql-file-access', run_patch.call_args_list[1][0]
+      self.assertEqual(
+        run_patch.call_args_list[0][0], (fetched_tp, '--version')
       )
+      self.assertEqual(run_patch.call_args_list[1][0][0], fetched_tp)
+
+  def testEnsureTraceProcessorFallsBackToLocalWhenDownloadedCannotRun(self):
+    fetched_tp = os.path.join(self.temp_dir, 'fetched_trace_processor_shell')
+    with open(fetched_tp, 'w'):
+      pass
+
+    def run_side_effect(tp_path, *_args):
+      if tp_path == fetched_tp:
+        raise RuntimeError('Running trace processor failed.')
+      return 'version'
+
+    with (
+      mock.patch('core.tbmv3.trace_processor._fetched_trace_processor', None),
+      mock.patch(
+        'core.tbmv3.trace_processor.binary_deps_manager.FetchHostBinary',
+        return_value=fetched_tp,
+      ),
+      mock.patch.dict(os.environ, {'CHROMIUM_OUTPUT_DIR': self.temp_dir}),
+      mock.patch(RUN_METHOD, side_effect=run_side_effect) as run_patch,
+    ):
+      trace_processor.ConvertProtoTraceToJson(
+        None, '/path/to/proto', '/path/to/json'
+      )
+      self.assertEqual(run_patch.call_count, 3)
+      self.assertEqual(
+        run_patch.call_args_list[0][0], (fetched_tp, '--version')
+      )
+      self.assertEqual(
+        run_patch.call_args_list[1][0], (self.tp_path, '--version')
+      )
+      self.assertEqual(run_patch.call_args_list[2][0][0], self.tp_path)
 
   def testRunMetricNoRepeated(self):
     metric_output = """

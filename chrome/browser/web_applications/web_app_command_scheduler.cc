@@ -10,7 +10,6 @@
 #include "base/barrier_closure.h"
 #include "base/check_is_test.h"
 #include "base/command_line.h"
-#include "base/feature_list.h"
 #include "base/files/file_path.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
@@ -20,9 +19,7 @@
 #include "base/metrics/histogram_functions.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/time/time.h"
-#include "base/types/expected.h"
 #include "base/values.h"
-#include "base/version.h"
 #include "build/build_config.h"
 #include "chrome/browser/profiles/keep_alive/profile_keep_alive_types.h"
 #include "chrome/browser/profiles/keep_alive/scoped_profile_keep_alive.h"
@@ -62,15 +59,6 @@
 #include "chrome/browser/web_applications/commands/web_app_install_from_migrate_from_field_command.h"
 #include "chrome/browser/web_applications/commands/web_app_uninstall_command.h"
 #include "chrome/browser/web_applications/commands/web_install_from_manifest_command.h"
-#include "chrome/browser/web_applications/isolated_web_apps/commands/check_isolated_web_app_bundle_user_installability_command.h"
-#include "chrome/browser/web_applications/isolated_web_apps/commands/cleanup_orphaned_isolated_web_apps_command.h"
-#include "chrome/browser/web_applications/isolated_web_apps/commands/get_controlled_frame_partition_command.h"
-#include "chrome/browser/web_applications/isolated_web_apps/commands/install_isolated_web_app_command.h"
-#include "chrome/browser/web_applications/isolated_web_apps/commands/isolated_web_app_apply_update_command.h"
-#include "chrome/browser/web_applications/isolated_web_apps/commands/isolated_web_app_prepare_and_store_update_command.h"
-#include "chrome/browser/web_applications/isolated_web_apps/install/isolated_web_app_install_source.h"
-#include "chrome/browser/web_applications/isolated_web_apps/isolated_web_app_url_info.h"
-#include "chrome/browser/web_applications/isolated_web_apps/signed_web_bundle_metadata.h"
 #include "chrome/browser/web_applications/jobs/update_ignore_state.h"
 #include "chrome/browser/web_applications/locks/all_apps_lock.h"
 #include "chrome/browser/web_applications/locks/app_lock.h"
@@ -84,12 +72,15 @@
 #include "chrome/browser/web_applications/scheduler/fetch_install_info_from_install_url_result.h"
 #include "chrome/browser/web_applications/scheduler/manifest_silent_update_result.h"
 #include "chrome/browser/web_applications/scheduler/update_validated_origin_associations_result.h"
+#include "chrome/browser/web_applications/web_app.h"
 #include "chrome/browser/web_applications/web_app_command_manager.h"
 #include "chrome/browser/web_applications/web_app_constants.h"
 #include "chrome/browser/web_applications/web_app_install_params.h"
 #include "chrome/browser/web_applications/web_app_management_type.h"
 #include "chrome/browser/web_applications/web_app_proto_utils.h"
 #include "chrome/browser/web_applications/web_app_provider.h"
+#include "chrome/browser/web_applications/web_app_registrar.h"
+#include "chrome/browser/web_applications/web_app_registry_update.h"
 #include "chrome/browser/web_applications/web_app_sync_bridge.h"
 #include "chrome/browser/web_applications/web_app_ui_manager.h"
 #include "chrome/browser/web_applications/web_app_utils.h"
@@ -101,18 +92,12 @@
 #include "components/webapps/browser/installable/installable_metrics.h"
 #include "components/webapps/browser/installable/ml_install_operation_tracker.h"
 #include "components/webapps/browser/web_contents/web_app_url_loader.h"
-#include "content/public/browser/storage_partition_config.h"
 #include "content/public/browser/web_contents.h"
+#include "third_party/blink/public/common/manifest/manifest.h"
 
-#if BUILDFLAG(IS_CHROMEOS)
-#include "chrome/browser/web_applications/isolated_web_apps/commands/cleanup_bundle_cache_command.h"
-#include "chrome/browser/web_applications/isolated_web_apps/commands/copy_bundle_to_cache_command.h"
-#include "chrome/browser/web_applications/isolated_web_apps/commands/get_bundle_cache_path_command.h"
-#include "chrome/browser/web_applications/isolated_web_apps/commands/remove_obsolete_bundle_versions_cache_command.h"
-#include "chrome/browser/web_applications/isolated_web_apps/policy/isolated_web_app_cache_client.h"
-#else  // !BUILDFLAG(IS_CHROMEOS)
+#if !BUILDFLAG(IS_CHROMEOS)
 #include "chrome/browser/web_applications/jobs/link_capturing.h"
-#endif
+#endif  // !BUILDFLAG(IS_CHROMEOS)
 
 #if BUILDFLAG(IS_MAC)
 #include "chrome/browser/web_applications/commands/rewrite_diy_icons_command.h"
@@ -285,35 +270,6 @@ void WebAppCommandScheduler::ScheduleNavigateAndTriggerInstallDialog(
       location);
 }
 
-void WebAppCommandScheduler::InstallIsolatedWebApp(
-    const IsolatedWebAppUrlInfo& url_info,
-    const IsolatedWebAppInstallSource& install_source,
-    const std::optional<IwaVersion>& expected_version,
-    std::unique_ptr<ScopedKeepAlive> optional_keep_alive,
-    std::unique_ptr<ScopedProfileKeepAlive> optional_profile_keep_alive,
-    InstallIsolatedWebAppCallback callback,
-    std::optional<IwaUpdateInfo> optional_update_info,
-    const base::Location& call_location) {
-  CHECK(optional_profile_keep_alive == nullptr ||
-        optional_profile_keep_alive->profile() == &*profile_);
-  provider_->command_manager().ScheduleCommand(
-      std::make_unique<InstallIsolatedWebAppCommand>(
-          url_info, install_source, expected_version, *profile_,
-          std::move(optional_keep_alive),
-          std::move(optional_profile_keep_alive), std::move(callback),
-          std::move(optional_update_info)),
-      call_location);
-}
-
-void WebAppCommandScheduler::CleanupOrphanedIsolatedApps(
-    CleanupOrphanedIsolatedWebAppsCallback callback,
-    const base::Location& call_location) {
-  provider_->command_manager().ScheduleCommand(
-      std::make_unique<CleanupOrphanedIsolatedWebAppsCommand>(
-          *profile_, std::move(callback)),
-      call_location);
-}
-
 void WebAppCommandScheduler::LaunchOrReparentWebContentsIntoApp(
     const webapps::AppId& app_id,
     base::WeakPtr<content::WebContents> web_contents,
@@ -325,115 +281,11 @@ void WebAppCommandScheduler::LaunchOrReparentWebContentsIntoApp(
       call_location);
 }
 
-void WebAppCommandScheduler::PrepareAndStoreIsolatedWebAppUpdate(
-    const IsolatedWebAppUpdatePrepareAndStoreCommand::UpdateInfo& update_info,
-    const IsolatedWebAppUrlInfo& url_info,
-    std::unique_ptr<ScopedKeepAlive> optional_keep_alive,
-    std::unique_ptr<ScopedProfileKeepAlive> optional_profile_keep_alive,
-    base::OnceCallback<void(IsolatedWebAppUpdatePrepareAndStoreCommandResult)>
-        callback,
-    const base::Location& call_location) {
-  provider_->command_manager().ScheduleCommand(
-      std::make_unique<IsolatedWebAppUpdatePrepareAndStoreCommand>(
-          update_info, url_info, *profile_, std::move(optional_keep_alive),
-          std::move(optional_profile_keep_alive), std::move(callback)),
-      call_location);
-}
-
-void WebAppCommandScheduler::ApplyPendingIsolatedWebAppUpdate(
-    const IsolatedWebAppUrlInfo& url_info,
-    std::unique_ptr<ScopedKeepAlive> optional_keep_alive,
-    std::unique_ptr<ScopedProfileKeepAlive> optional_profile_keep_alive,
-    base::OnceCallback<void(IsolatedWebAppApplyUpdateCommandResult)> callback,
-    const base::Location& call_location) {
-  provider_->command_manager().ScheduleCommand(
-      std::make_unique<IsolatedWebAppApplyUpdateCommand>(
-          url_info, *profile_, std::move(optional_keep_alive),
-          std::move(optional_profile_keep_alive), std::move(callback)),
-      call_location);
-}
-
-// Given the |bundle_metadata| of a Signed Web Bundle, schedules a command to
-// check the installability of the bundle.
-void WebAppCommandScheduler::CheckIsolatedWebAppBundleUserInstallability(
-    const SignedWebBundleMetadata& bundle_metadata,
-    base::OnceCallback<void(IsolatedInstallabilityCheckResult,
-                            std::optional<IwaVersion>)> callback,
-    const base::Location& call_location) {
-  provider_->command_manager().ScheduleCommand(
-      std::make_unique<CheckIsolatedWebAppBundleUserInstallabilityCommand>(
-          &profile_.get(), bundle_metadata, std::move(callback)),
-      call_location);
-}
-
-#if BUILDFLAG(IS_CHROMEOS)
-void WebAppCommandScheduler::GetIsolatedWebAppBundleCachePath(
-    const IsolatedWebAppUrlInfo& url_info,
-    const std::optional<IwaVersion>& version,
-    IwaCacheClient::SessionType session_type,
-    base::OnceCallback<void(base::expected<GetBundleCachePathSuccess,
-                                           GetBundleCachePathError>)> callback,
-    const base::Location& call_location) {
-  provider_->command_manager().ScheduleCommand(
-      std::make_unique<GetBundleCachePathCommand>(
-          url_info, version, session_type, std::move(callback)),
-      call_location);
-}
-
-void WebAppCommandScheduler::CopyIsolatedWebAppBundleToCache(
-    const IsolatedWebAppUrlInfo& url_info,
-    IwaCacheClient::SessionType session_type,
-    base::OnceCallback<void(CopyBundleToCacheResult)> callback,
-    const base::Location& call_location) {
-  provider_->command_manager().ScheduleCommand(
-      std::make_unique<CopyBundleToCacheCommand>(
-          url_info, session_type, *profile_, std::move(callback)),
-      call_location);
-}
-
-void WebAppCommandScheduler::CleanupIsolatedWebAppBundleCache(
-    const std::vector<web_package::SignedWebBundleId>& iwas_to_keep_in_cache,
-    IwaCacheClient::SessionType session_type,
-    base::OnceCallback<void(CleanupBundleCacheResult)> callback,
-    const base::Location& call_location) {
-  provider_->command_manager().ScheduleCommand(
-      std::make_unique<CleanupBundleCacheCommand>(
-          iwas_to_keep_in_cache, session_type, std::move(callback)),
-      call_location);
-}
-
-void WebAppCommandScheduler::RemoveObsoleteIsolatedWebAppVersionsCache(
-    const IsolatedWebAppUrlInfo& url_info,
-    IwaCacheClient::SessionType session_type,
-    base::OnceCallback<void(RemoveObsoleteBundleVersionsResult)> callback,
-    const base::Location& call_location) {
-  provider_->command_manager().ScheduleCommand(
-      std::make_unique<RemoveObsoleteBundleVersionsCacheCommand>(
-          url_info, session_type, std::move(callback)),
-      call_location);
-}
-
-#endif  // BUILDFLAG(IS_CHROMEOS)
-
-void WebAppCommandScheduler::GetControlledFramePartition(
-    const IsolatedWebAppUrlInfo& url_info,
-    const std::string& partition_name,
-    bool in_memory,
-    base::OnceCallback<void(std::optional<content::StoragePartitionConfig>)>
-        callback,
-    const base::Location& location) {
-  provider_->scheduler().ScheduleCallbackWithResult(
-      "GetControlledFramePartition", AppLockDescription(url_info.app_id()),
-      base::BindOnce(&GetControlledFramePartitionWithLock, &profile_.get(),
-                     url_info, partition_name, in_memory),
-      std::move(callback), /*arg_for_shutdown=*/
-      std::optional<content::StoragePartitionConfig>(std::nullopt), location);
-}
-
 void WebAppCommandScheduler::InstallFromSync(const WebApp& web_app,
                                              OnceInstallCallback callback,
                                              const base::Location& location) {
-  DCHECK(web_app.is_from_sync_and_pending_installation());
+  CHECK(web_app.is_from_sync_and_pending_installation(),
+        base::NotFatalUntil::M162);
   std::vector<apps::IconInfo> manifest_icon_infos =
       ParseAppIconInfos("InstallFromSyncManifestIcons",
                         web_app.sync_proto().icon_infos())
@@ -447,9 +299,7 @@ void WebAppCommandScheduler::InstallFromSync(const WebApp& web_app,
     theme_color = web_app.sync_proto().theme_color();
   }
   std::optional<webapps::ManifestId> migrated_from_manifest_id;
-  if (base::FeatureList::IsEnabled(
-          features::kWebAppHandleAppMigrationViaSync) &&
-      web_app.sync_proto().has_migrated_from_manifest_id()) {
+  if (web_app.sync_proto().has_migrated_from_manifest_id()) {
     migrated_from_manifest_id = webapps::ManifestId::Create(
         GURL(web_app.sync_proto().migrated_from_manifest_id()));
   }
@@ -716,6 +566,45 @@ void WebAppCommandScheduler::SetAppCapturesSupportedLinksDisableOverlapping(
 #endif
 }
 
+#if BUILDFLAG(IS_CHROMEOS)
+void WebAppCommandScheduler::SetUserLinkCapturingChoiceOnChromeOs(
+    const webapps::AppId& app_id,
+    bool open_in_app,
+    base::OnceClosure done,
+    const base::Location& location) {
+  CHECK(!app_id.empty());
+  ScheduleCallback(
+      "SetUserLinkCapturingChoiceOnChromeOs", AppLockDescription(app_id),
+      base::BindOnce(
+          [](const webapps::AppId& app_id, bool open_in_app, AppLock& lock,
+             base::DictValue& debug_value) {
+            debug_value.Set("app_id", app_id);
+            debug_value.Set("open_in_app", open_in_app);
+            // App Service publishes apps in both installed states as ready,
+            // so the user can make a choice for both.
+            if (!lock.registrar().IsInstallState(
+                    app_id,
+                    {proto::InstallState::INSTALLED_WITH_OS_INTEGRATION,
+                     proto::InstallState::INSTALLED_WITHOUT_OS_INTEGRATION})) {
+              debug_value.Set("result", "App not installed.");
+              return;
+            }
+            if (lock.registrar().IsSystemApp(app_id)) {
+              debug_value.Set("result", "System web app.");
+              return;
+            }
+            ScopedRegistryUpdate update = lock.sync_bridge().BeginUpdate();
+            update->UpdateApp(app_id)->SetLinkCapturingUserPreference(
+                open_in_app
+                    ? proto::NAVIGATION_CAPTURING_PREFERENCE_CAPTURE
+                    : proto::NAVIGATION_CAPTURING_PREFERENCE_DO_NOT_CAPTURE);
+            debug_value.Set("result", "Recorded.");
+          },
+          app_id, open_in_app),
+      std::move(done), location);
+}
+#endif  // BUILDFLAG(IS_CHROMEOS)
+
 void WebAppCommandScheduler::RunIconDiagnosticsForApp(
     const webapps::AppId& app_id,
     WebAppIconDiagnosticResultCallback result_callback,
@@ -727,7 +616,7 @@ void WebAppCommandScheduler::RunIconDiagnosticsForApp(
 }
 
 void WebAppCommandScheduler::InstallAppFromManifest(
-    blink::mojom::ManifestPtr manifest,
+    blink::Manifest manifest,
     const GURL& manifest_url,
     base::WeakPtr<content::WebContents> initiating_web_contents,
     base::WeakPtr<content::Page> initiating_page,
@@ -874,16 +763,17 @@ void WebAppCommandScheduler::ScheduleResolveWebAppPendingMigrationInfo(
 void WebAppCommandScheduler::UpdateValidatedOriginAssociations(
     const webapps::AppId& app_id,
     base::OnceCallback<void(UpdateValidatedOriginAssociationsResult)> callback,
+    bool revalidate_migration_destination,
     const base::Location& location) {
   provider_->command_manager().ScheduleCommand(
       std::make_unique<UpdateValidatedOriginAssociationsCommand>(
-          app_id, std::move(callback)),
+          app_id, std::move(callback), revalidate_migration_destination),
       location);
 }
 
 void WebAppCommandScheduler::ScheduleWebAppInstallFromMigrateFromField(
     base::WeakPtr<content::WebContents> web_contents,
-    blink::mojom::ManifestPtr manifest,
+    blink::Manifest manifest,
     WebAppInstallFromMigrateFromFieldCallback callback,
     const base::Location& location) {
   provider_->command_manager().ScheduleCommand(
@@ -991,7 +881,6 @@ void WebAppCommandScheduler::LaunchAppWithKeepAlives(
          std::unique_ptr<ScopedKeepAlive> browser_keep_alive) {},
       std::move(profile_keep_alive), std::move(browser_keep_alive)));
 
-  webapps::AppId app_id = params.app_id;
   provider_->command_manager().ScheduleCommand(
       std::make_unique<LaunchWebAppCommand>(&profile_.get(), provider_.get(),
                                             std::move(params), launch_setting,

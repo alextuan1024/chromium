@@ -38,14 +38,12 @@ import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 
 import org.chromium.base.Token;
+import org.chromium.base.UserDataHost;
 import org.chromium.base.supplier.LazyOneshotSupplier;
 import org.chromium.base.supplier.ObservableSuppliers;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.RobolectricUtil;
-import org.chromium.base.test.util.Features.DisableFeatures;
-import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.base.test.util.UserActionTester;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabCreationState;
@@ -77,8 +75,6 @@ public class TabGroupSyncLocalObserverUnitTest {
     private static final int TAB_ID_1 = 1;
     private static final int TAB_ID_2 = 2;
     private static final int TAB_ID_3 = 3;
-    private static final int ROOT_ID_1 = 1;
-    private static final int ROOT_ID_3 = 3;
     private static final Token TOKEN_1 = new Token(2, 3);
     private static final LocalTabGroupId LOCAL_TAB_GROUP_ID_1 = new LocalTabGroupId(TOKEN_1);
     private static final String SYNC_ID = "sync_id";
@@ -107,10 +103,9 @@ public class TabGroupSyncLocalObserverUnitTest {
 
     private UserActionTester mActionTester;
 
-    private static Tab prepareTab(int tabId, int rootId, @Nullable Token tabGroupId) {
+    private static Tab prepareTab(int tabId, @Nullable Token tabGroupId) {
         Tab tab = mock(Tab.class);
         when(tab.getId()).thenReturn(tabId);
-        when(tab.getRootId()).thenReturn(rootId);
         when(tab.getUrl()).thenReturn(TAB_URL_1);
         when(tab.getTitle()).thenReturn(TAB_TITLE_1);
         when(tab.getTabGroupId()).thenReturn(tabGroupId);
@@ -121,9 +116,9 @@ public class TabGroupSyncLocalObserverUnitTest {
     public void setUp() {
         mActionTester = new UserActionTester();
         mTabGroupSyncService = spy(new TestTabGroupSyncService());
-        mTab1 = prepareTab(TAB_ID_1, ROOT_ID_1, TOKEN_1);
-        mTab2 = prepareTab(TAB_ID_2, ROOT_ID_1, TOKEN_1);
-        mTab3 = prepareTab(TAB_ID_3, ROOT_ID_3, null);
+        mTab1 = prepareTab(TAB_ID_1, TOKEN_1);
+        mTab2 = prepareTab(TAB_ID_2, TOKEN_1);
+        mTab3 = prepareTab(TAB_ID_3, /* tabGroupId= */ null);
 
         mTabModel = spy(new MockTabModel(mProfile, null));
 
@@ -133,8 +128,7 @@ public class TabGroupSyncLocalObserverUnitTest {
 
         when(mTabModel.isTabInTabGroup(mTab1)).thenReturn(true);
         when(mTabModel.isTabInTabGroup(mTab2)).thenReturn(true);
-        when(mTabModel.getGroupLastShownTabId(TOKEN_1)).thenReturn(ROOT_ID_1);
-        when(mTabModel.tabGroupExists(TOKEN_1)).thenReturn(true);
+        when(mTabModel.containsTabGroup(TOKEN_1)).thenReturn(true);
 
         doNothing().when(mTabModel).addObserver(mTabModelObserverCaptor.capture());
         doNothing().when(mTabModel).addTabGroupObserver(mTabGroupObserverCaptor.capture());
@@ -262,71 +256,78 @@ public class TabGroupSyncLocalObserverUnitTest {
     }
 
     @Test
-    @DisableFeatures(ChromeFeatureList.TAB_CLOSURE_METHOD_REFACTOR)
-    public void testWillCloseTab() {
-        when(mTabModel.isTabGroupHiding(TOKEN_1)).thenReturn(false);
+    public void testTabAddedLocally_WithPendingReconciliation_ReconcilesInsteadOfAddTab() {
+        int replacedId = 99;
+        UserDataHost userDataHost = new UserDataHost();
+        when(mTab1.getUserDataHost()).thenReturn(userDataHost);
+        TabGroupSyncPendingReconciliation.suppress(mTab1, replacedId);
 
-        // Not alone.
-        mTabModelObserverCaptor.getValue().willCloseTab(mTab1, /* didCloseAlone= */ false);
-        verify(mTabGroupSyncService, never()).removeTab(any(), anyInt());
+        SavedTabGroup savedGroup = new SavedTabGroup();
+        savedGroup.localId = LOCAL_TAB_GROUP_ID_1;
+        savedGroup.syncId = SYNC_ID;
+        SavedTabGroupTab savedTab = new SavedTabGroupTab();
+        savedTab.localId = replacedId;
+        savedTab.syncId = "tab_sync_id_1";
+        savedGroup.savedTabs.add(savedTab);
+        when(mTabGroupSyncService.getGroup(LOCAL_TAB_GROUP_ID_1)).thenReturn(savedGroup);
+        when(mTabModel.getIndexOfTabInGroup(mTab1)).thenReturn(0);
 
-        // Alone.
-        mTabModelObserverCaptor.getValue().willCloseTab(mTab1, /* didCloseAlone= */ true);
-        verify(mTabGroupSyncService).removeTab(LOCAL_TAB_GROUP_ID_1, TAB_ID_1);
+        mTabModelObserverCaptor
+                .getValue()
+                .didAddTab(
+                        mTab1,
+                        TabLaunchType.FROM_RESTORE,
+                        TabCreationState.LIVE_IN_BACKGROUND,
+                        false);
+
+        assertEquals(Integer.valueOf(TAB_ID_1), savedTab.localId);
+        verify(mTabGroupSyncService)
+                .updateLocalTabId(eq(LOCAL_TAB_GROUP_ID_1), eq("tab_sync_id_1"), eq(TAB_ID_1));
+        verify(mTabGroupSyncService)
+                .updateTab(
+                        eq(LOCAL_TAB_GROUP_ID_1),
+                        eq(TAB_ID_1),
+                        eq(TAB_TITLE_1),
+                        eq(TAB_URL_1),
+                        eq(0));
+        verify(mTabGroupSyncService, never()).addTab(any(), anyInt(), anyString(), any(), anyInt());
+        assertFalse(TabGroupSyncPendingReconciliation.isSuppressed(mTab1));
     }
 
     @Test
-    @DisableFeatures(ChromeFeatureList.TAB_CLOSURE_METHOD_REFACTOR)
-    public void testWillCloseMultipleTabs_GroupDeleted() {
-        List<Tab> tabs = new ArrayList<>(Arrays.asList(mTab1, mTab2));
+    public void testDidMergeTabToGroup_WithPendingReconciliation_ReconcilesInsteadOfAddTab() {
+        int replacedId = 99;
+        UserDataHost userDataHost = new UserDataHost();
+        when(mTab1.getUserDataHost()).thenReturn(userDataHost);
+        TabGroupSyncPendingReconciliation.suppress(mTab1, replacedId);
 
-        when(mTabModel.isTabGroupHiding(TOKEN_1)).thenReturn(false);
-        mTabModelObserverCaptor.getValue().willCloseMultipleTabs(/* allowUndo= */ true, tabs);
+        SavedTabGroup savedGroup = new SavedTabGroup();
+        savedGroup.localId = LOCAL_TAB_GROUP_ID_1;
+        savedGroup.syncId = SYNC_ID;
+        SavedTabGroupTab savedTab = new SavedTabGroupTab();
+        savedTab.localId = replacedId;
+        savedTab.syncId = "tab_sync_id_1";
+        savedGroup.savedTabs.add(savedTab);
+        when(mTabGroupSyncService.getGroup(LOCAL_TAB_GROUP_ID_1)).thenReturn(savedGroup);
+        when(mTabModel.getIndexOfTabInGroup(mTab1)).thenReturn(0);
 
-        verify(mTabGroupSyncService).removeTab(LOCAL_TAB_GROUP_ID_1, TAB_ID_1);
-        verify(mTabGroupSyncService).removeTab(LOCAL_TAB_GROUP_ID_1, TAB_ID_2);
+        mTabGroupObserverCaptor.getValue().didMergeTabToGroup(mTab1, /* isDestinationTab= */ false);
+
+        assertEquals(Integer.valueOf(TAB_ID_1), savedTab.localId);
+        verify(mTabGroupSyncService)
+                .updateLocalTabId(eq(LOCAL_TAB_GROUP_ID_1), eq("tab_sync_id_1"), eq(TAB_ID_1));
+        verify(mTabGroupSyncService)
+                .updateTab(
+                        eq(LOCAL_TAB_GROUP_ID_1),
+                        eq(TAB_ID_1),
+                        eq(TAB_TITLE_1),
+                        eq(TAB_URL_1),
+                        eq(0));
+        verify(mTabGroupSyncService, never()).addTab(any(), anyInt(), anyString(), any(), anyInt());
+        assertFalse(TabGroupSyncPendingReconciliation.isSuppressed(mTab1));
     }
 
     @Test
-    @DisableFeatures(ChromeFeatureList.TAB_CLOSURE_METHOD_REFACTOR)
-    public void testWillCloseMultipleTabs_IncompleteGroupHiding() {
-        List<Tab> tabs = new ArrayList<>(Arrays.asList(mTab1));
-        when(mTabModel.getLazyAllTabGroupIds(any(), anyBoolean()))
-                .thenReturn(LazyOneshotSupplier.fromValue(Set.of(TOKEN_1)));
-        when(mTabModel.isTabGroupHiding(TOKEN_1)).thenReturn(true);
-        mTabModelObserverCaptor.getValue().willCloseMultipleTabs(/* allowUndo= */ true, tabs);
-
-        verify(mTabGroupSyncService).removeTab(LOCAL_TAB_GROUP_ID_1, TAB_ID_1);
-    }
-
-    @Test
-    @DisableFeatures(ChromeFeatureList.TAB_CLOSURE_METHOD_REFACTOR)
-    public void testWillCloseMultipleTabs_GroupHiding() {
-        List<Tab> tabs = new ArrayList<>(Arrays.asList(mTab1, mTab2));
-        when(mTabModel.getLazyAllTabGroupIds(any(), anyBoolean()))
-                .thenReturn(LazyOneshotSupplier.fromValue(new HashSet<>()));
-        when(mTabModel.isTabGroupHiding(TOKEN_1)).thenReturn(true);
-        mTabModelObserverCaptor.getValue().willCloseMultipleTabs(/* allowUndo= */ true, tabs);
-
-        verify(mTabGroupSyncService, never()).removeTab(any(), anyInt());
-    }
-
-    @Test
-    @DisableFeatures(ChromeFeatureList.TAB_CLOSURE_METHOD_REFACTOR)
-    public void testWillCloseAllTabs() {
-        when(mTabModel.isTabGroupHiding(TOKEN_1)).thenReturn(false);
-        mTabModel.addTab(
-                mTab1, 0, TabLaunchType.FROM_TAB_GROUP_UI, TabCreationState.LIVE_IN_BACKGROUND);
-        mTabModel.addTab(
-                mTab2, 1, TabLaunchType.FROM_TAB_GROUP_UI, TabCreationState.LIVE_IN_BACKGROUND);
-        mTabModelObserverCaptor.getValue().willCloseAllTabs(/* incognito= */ false);
-
-        verify(mTabGroupSyncService).removeTab(LOCAL_TAB_GROUP_ID_1, TAB_ID_1);
-        verify(mTabGroupSyncService).removeTab(LOCAL_TAB_GROUP_ID_1, TAB_ID_2);
-    }
-
-    @Test
-    @EnableFeatures(ChromeFeatureList.TAB_CLOSURE_METHOD_REFACTOR)
     public void testWillCloseTabs_SingleTab() {
         when(mTabModel.isTabGroupHiding(TOKEN_1)).thenReturn(false);
         mTabModelObserverCaptor
@@ -336,7 +337,6 @@ public class TabGroupSyncLocalObserverUnitTest {
     }
 
     @Test
-    @EnableFeatures(ChromeFeatureList.TAB_CLOSURE_METHOD_REFACTOR)
     public void testWillCloseTabs_GroupDeleted() {
         List<Tab> tabs = new ArrayList<>(Arrays.asList(mTab1, mTab2));
 
@@ -350,7 +350,6 @@ public class TabGroupSyncLocalObserverUnitTest {
     }
 
     @Test
-    @EnableFeatures(ChromeFeatureList.TAB_CLOSURE_METHOD_REFACTOR)
     public void testWillCloseTabs_IncompleteGroupHiding() {
         List<Tab> tabs = new ArrayList<>(Arrays.asList(mTab1));
         when(mTabModel.getLazyAllTabGroupIds(any(), anyBoolean()))
@@ -364,7 +363,6 @@ public class TabGroupSyncLocalObserverUnitTest {
     }
 
     @Test
-    @EnableFeatures(ChromeFeatureList.TAB_CLOSURE_METHOD_REFACTOR)
     public void testWillCloseTabs_GroupHiding() {
         List<Tab> tabs = new ArrayList<>(Arrays.asList(mTab1, mTab2));
         when(mTabModel.getLazyAllTabGroupIds(any(), anyBoolean()))
@@ -378,7 +376,6 @@ public class TabGroupSyncLocalObserverUnitTest {
     }
 
     @Test
-    @EnableFeatures(ChromeFeatureList.TAB_CLOSURE_METHOD_REFACTOR)
     public void testWillCloseTabs_AllTabs() {
         when(mTabModel.isTabGroupHiding(TOKEN_1)).thenReturn(false);
         List<Tab> tabs = List.of(mTab1, mTab2);
@@ -448,6 +445,8 @@ public class TabGroupSyncLocalObserverUnitTest {
         when(mTabGroupSyncService.getGroup(LOCAL_TAB_GROUP_ID_1)).thenReturn(savedTabGroup);
         boolean hiding = true;
         when(mTabModel.isTabGroupHiding(TOKEN_1)).thenReturn(hiding);
+        when(mTabModel.getLazyAllTabGroupIds(any(), anyBoolean()))
+                .thenReturn(LazyOneshotSupplier.fromValue(new HashSet<>()));
         when(mTabModel.getTabsInGroup(TOKEN_1)).thenReturn(List.of(mTab1, mTab2));
         TabModelObserver modelObserver = mTabModelObserverCaptor.getValue();
         TabGroupObserver groupObserver = mTabGroupObserverCaptor.getValue();
@@ -455,8 +454,8 @@ public class TabGroupSyncLocalObserverUnitTest {
         // Close starting.
         groupObserver.willCloseTabGroup(TOKEN_1, hiding);
         assertTrue(mLocalObserver.hasAnyPendingTabGroupClosuresForTesting());
-        modelObserver.willCloseTab(mTab1, /* didCloseAlone= */ false);
-        modelObserver.willCloseTab(mTab2, /* didCloseAlone= */ false);
+        modelObserver.willCloseTabs(
+                List.of(mTab1, mTab2), /* isAllTabs= */ false, /* allowUndo= */ true);
 
         // Undo.
         modelObserver.tabClosureUndone(mTab1);
@@ -484,6 +483,8 @@ public class TabGroupSyncLocalObserverUnitTest {
         when(mTabGroupSyncService.getGroup(LOCAL_TAB_GROUP_ID_1)).thenReturn(savedTabGroup);
         boolean hiding = true;
         when(mTabModel.isTabGroupHiding(TOKEN_1)).thenReturn(hiding);
+        when(mTabModel.getLazyAllTabGroupIds(any(), anyBoolean()))
+                .thenReturn(LazyOneshotSupplier.fromValue(new HashSet<>()));
         when(mTabModel.getTabsInGroup(TOKEN_1)).thenReturn(List.of(mTab1, mTab2));
         TabModelObserver modelObserver = mTabModelObserverCaptor.getValue();
         TabGroupObserver groupObserver = mTabGroupObserverCaptor.getValue();
@@ -491,8 +492,8 @@ public class TabGroupSyncLocalObserverUnitTest {
         // Close starting.
         groupObserver.willCloseTabGroup(TOKEN_1, hiding);
         assertTrue(mLocalObserver.hasAnyPendingTabGroupClosuresForTesting());
-        modelObserver.willCloseTab(mTab1, /* didCloseAlone= */ false);
-        modelObserver.willCloseTab(mTab2, /* didCloseAlone= */ false);
+        modelObserver.willCloseTabs(
+                List.of(mTab1, mTab2), /* isAllTabs= */ false, /* allowUndo= */ true);
 
         // During the undo window the group was deleted remotely.
         when(mTabGroupSyncService.getGroup(LOCAL_TAB_GROUP_ID_1)).thenReturn(null);
@@ -524,18 +525,19 @@ public class TabGroupSyncLocalObserverUnitTest {
         when(mTabGroupSyncService.getGroup(LOCAL_TAB_GROUP_ID_1)).thenReturn(savedTabGroup);
         boolean hiding = true;
         when(mTabModel.isTabGroupHiding(TOKEN_1)).thenReturn(hiding);
+        when(mTabModel.getLazyAllTabGroupIds(any(), anyBoolean()))
+                .thenReturn(LazyOneshotSupplier.fromValue(new HashSet<>()));
         TabModelObserver modelObserver = mTabModelObserverCaptor.getValue();
         TabGroupObserver groupObserver = mTabGroupObserverCaptor.getValue();
 
         // Close starting.
         groupObserver.willCloseTabGroup(TOKEN_1, hiding);
         assertTrue(mLocalObserver.hasAnyPendingTabGroupClosuresForTesting());
-        modelObserver.willCloseTab(mTab1, /* didCloseAlone= */ false);
-        modelObserver.willCloseTab(mTab2, /* didCloseAlone= */ false);
+        modelObserver.willCloseTabs(
+                List.of(mTab1, mTab2), /* isAllTabs= */ false, /* allowUndo= */ true);
 
         // Commit.
         modelObserver.onFinishingMultipleTabClosure(List.of(mTab1, mTab2), /* canRestore= */ true);
-        groupObserver.committedTabGroupClosure(TOKEN_1, hiding);
         assertFalse(mLocalObserver.hasAnyPendingTabGroupClosuresForTesting());
         verify(mTabGroupSyncService)
                 .removeLocalTabGroupMapping(LOCAL_TAB_GROUP_ID_1, ClosingSource.CLOSED_BY_USER);
@@ -567,8 +569,8 @@ public class TabGroupSyncLocalObserverUnitTest {
                 .removeLocalTabGroupMapping(LOCAL_TAB_GROUP_ID_1, ClosingSource.DELETED_BY_USER);
         verify(mTabGroupSyncService).removeGroup(SYNC_ID);
         assertTrue(mLocalObserver.hasAnyPendingTabGroupClosuresForTesting());
-        modelObserver.willCloseTab(mTab1, /* didCloseAlone= */ false);
-        modelObserver.willCloseTab(mTab2, /* didCloseAlone= */ false);
+        modelObserver.willCloseTabs(
+                List.of(mTab1, mTab2), /* isAllTabs= */ false, /* allowUndo= */ true);
 
         // Undo.
         modelObserver.tabClosureUndone(mTab1);
@@ -605,12 +607,11 @@ public class TabGroupSyncLocalObserverUnitTest {
                 .removeLocalTabGroupMapping(LOCAL_TAB_GROUP_ID_1, ClosingSource.DELETED_BY_USER);
         verify(mTabGroupSyncService).removeGroup(SYNC_ID);
         assertTrue(mLocalObserver.hasAnyPendingTabGroupClosuresForTesting());
-        modelObserver.willCloseTab(mTab1, /* didCloseAlone= */ false);
-        modelObserver.willCloseTab(mTab2, /* didCloseAlone= */ false);
+        modelObserver.willCloseTabs(
+                List.of(mTab1, mTab2), /* isAllTabs= */ false, /* allowUndo= */ true);
 
         // Commit.
         modelObserver.onFinishingMultipleTabClosure(List.of(mTab1, mTab2), /* canRestore= */ true);
-        groupObserver.committedTabGroupClosure(TOKEN_1, hiding);
         assertFalse(mLocalObserver.hasAnyPendingTabGroupClosuresForTesting());
 
         RobolectricUtil.runAllBackgroundAndUi();
@@ -634,18 +635,15 @@ public class TabGroupSyncLocalObserverUnitTest {
                 mTab1, 0, TabLaunchType.FROM_TAB_GROUP_UI, TabCreationState.LIVE_IN_BACKGROUND);
         mTabModel.addTab(
                 mTab2, 1, TabLaunchType.FROM_TAB_GROUP_UI, TabCreationState.LIVE_IN_BACKGROUND);
-        when(mTabModel.getRepresentativeTabAt(0)).thenReturn(mTab1);
 
         // Move tab 2 out of group and verify.
-        mTabGroupObserverCaptor
-                .getValue()
-                .willMoveTabOutOfGroup(mTab2, /* destinationTabGroupId= */ null);
+        mTabGroupObserverCaptor.getValue().willMoveTabOutOfGroup(mTab2);
         verify(mTabGroupSyncService, times(1)).removeTab(eq(LOCAL_TAB_GROUP_ID_1), eq(2));
     }
 
     @Test
-    public void testDidCreateNewGroup() {
-        mTabGroupObserverCaptor.getValue().didCreateNewGroup(mTab1, mTabModel);
+    public void testOnTabGroupCreated() {
+        mTabGroupObserverCaptor.getValue().onTabGroupCreated(TOKEN_1);
         verify(mTabGroupSyncService, times(1)).addGroup(mSavedTabGroupCaptor.capture());
         Assert.assertEquals(LOCAL_TAB_GROUP_ID_1, mSavedTabGroupCaptor.getValue().localId);
     }
@@ -675,7 +673,6 @@ public class TabGroupSyncLocalObserverUnitTest {
 
     @Test
     public void testDidChangeColor() {
-        // Mock that we have a stored color (red) stored with reference to ROOT_ID_1.
         when(mTabModel.getTabGroupColor(TOKEN_1)).thenReturn(TabGroupColorId.RED);
 
         mTabGroupObserverCaptor.getValue().didChangeTabGroupColor(TOKEN_1, TabGroupColorId.RED);
@@ -685,7 +682,7 @@ public class TabGroupSyncLocalObserverUnitTest {
 
     @Test
     public void testDidChangeTitleAndColorForNonExistingGroup() {
-        when(mTabModel.tabGroupExists(TOKEN_1)).thenReturn(false);
+        when(mTabModel.containsTabGroup(TOKEN_1)).thenReturn(false);
         // Handle updates for non-existing groups.
         mTabGroupObserverCaptor.getValue().didChangeTabGroupTitle(TOKEN_1, TITLE_1);
         verify(mTabGroupSyncService, never()).updateVisualData(any(), any(), anyInt());
@@ -701,7 +698,7 @@ public class TabGroupSyncLocalObserverUnitTest {
     public void testDidRemoveGroup_Close() {
         mTabGroupObserverCaptor
                 .getValue()
-                .didRemoveTabGroup(ROOT_ID_1, TOKEN_1, DidRemoveTabGroupReason.CLOSE);
+                .didRemoveTabGroup(TOKEN_1, DidRemoveTabGroupReason.CLOSE);
         verify(mTabGroupSyncService, never()).removeGroup(LOCAL_TAB_GROUP_ID_1);
     }
 
@@ -709,7 +706,7 @@ public class TabGroupSyncLocalObserverUnitTest {
     public void testDidRemoveGroup_Merge() {
         mTabGroupObserverCaptor
                 .getValue()
-                .didRemoveTabGroup(ROOT_ID_1, TOKEN_1, DidRemoveTabGroupReason.MERGE);
+                .didRemoveTabGroup(TOKEN_1, DidRemoveTabGroupReason.MERGE);
         verify(mTabGroupSyncService).removeGroup(LOCAL_TAB_GROUP_ID_1);
     }
 
@@ -717,7 +714,7 @@ public class TabGroupSyncLocalObserverUnitTest {
     public void testDidRemoveGroup_Ungroup() {
         mTabGroupObserverCaptor
                 .getValue()
-                .didRemoveTabGroup(ROOT_ID_1, TOKEN_1, DidRemoveTabGroupReason.UNGROUP);
+                .didRemoveTabGroup(TOKEN_1, DidRemoveTabGroupReason.UNGROUP);
         verify(mTabGroupSyncService).removeGroup(LOCAL_TAB_GROUP_ID_1);
     }
 }

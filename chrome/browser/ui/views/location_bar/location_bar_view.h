@@ -60,10 +60,10 @@ class OmniboxContextMenu;
 enum class OmniboxPart;
 class OmniboxPopupAimPresenter;
 class OmniboxPopupFileSelector;
+class OmniboxPopupPresenterBase;
 class OmniboxPopupUI;
 class OmniboxPopupView;
 class OmniboxViewViews;
-class PermissionChipView;
 class PermissionDashboardView;
 class Profile;
 class SelectedKeywordView;
@@ -187,8 +187,6 @@ class LocationBarView
 
   const OmniboxController* GetOmniboxController() const;
 
-
-  PermissionChipView* chip_view() { return chip_view_; }
   PermissionDashboardView* permission_dashboard_view() {
     return permission_dashboard_view_;
   }
@@ -266,7 +264,10 @@ class LocationBarView
   views::Widget* GetLocationBarWidget() override;
   OmniboxPopupFileSelector* GetOmniboxPopupFileSelector() const override;
   OmniboxPopupAimPresenter* GetOmniboxPopupAimPresenter() const override;
+  void OnPopupFirstVisuallyNonEmptyPaint() override;
+  void OnPopupWebUIContentsReleased() override;
   views::View* GetLocationBarFocusRestoreView() override;
+  bool is_full_webui_omnibox() const override;
 
   static bool IsVirtualKeyboardVisible(views::Widget* widget);
 
@@ -320,6 +321,12 @@ class LocationBarView
 
   SkColor GetBackgroundColorForTesting() const { return background_color_; }
 
+  // Returns the presenter that shows the omnibox popup's WebUI in a widget, or
+  // null if the popup isn't shown by one (e.g. a native popup, or the WebUI
+  // omnibox hosted in the location bar).
+  // TODO(crbug.com/585197660): Remove; tests should use the popup host.
+  OmniboxPopupPresenterBase* GetOmniboxPopupPresenterForTesting();
+
   OmniboxPopupUI* GetOmniboxPopupUI();
 
  private:
@@ -332,6 +339,8 @@ class LocationBarView
                            AddContextButtonVisibilityAndClick);
   FRIEND_TEST_ALL_PREFIXES(LocationBarViewAddContextButtonBrowserTest,
                            PrefChangesAddContextButtonVisibility);
+  FRIEND_TEST_ALL_PREFIXES(FullWebUIOmniboxInteractiveTest,
+                           NativeFocusHandoffKeepsDraftAndSelection);
   using ContentSettingViews =
       std::vector<raw_ptr<ContentSettingImageView, VectorExperimental>>;
 
@@ -391,6 +400,18 @@ class LocationBarView
   // to process input and display suggestions.
   void OnFullWebUiOmniboxReady();
 
+  // Forwards focus to the WebUI omnibox. Like `OmniboxViewViews::SetFocus()`,
+  // this selects all when `select_all` is true or the omnibox didn't already
+  // have focus.
+  void ForwardFocusToWebUI(bool query_zps, bool select_all, bool show_full_url);
+
+  // Creates `omnibox_popup_aim_presenter_` if it doesn't exist yet and the
+  // profile is eligible for the AI Mode popup. Returns whether it exists.
+  bool CreateOmniboxPopupAimPresenterIfEligible();
+
+  // Retries creating the AI Mode popup presenter until it succeeds.
+  void OnAimEligibilityChanged();
+
   // Called when the popup state changes (classic, AIM, or none).
   void OnPopupStateChanged(OmniboxPopupState old_state,
                            OmniboxPopupState new_state);
@@ -405,6 +426,10 @@ class LocationBarView
   // TODO(crbug.com/40251974): Remove this once state manager is proven
   //  reliable.
   void ClearInPopupStateTransition();
+
+  // Once the location bar is drawn again, reopens the Full WebUI popup closed
+  // in `VisibilityChanged()` if the edit model still has a draft.
+  void RestoreOmniboxStateIfDrawn();
 
   // LocationBar:
   void FocusSearch() override;
@@ -424,6 +449,7 @@ class LocationBarView
   void OnBoundsChanged(const gfx::Rect& previous_bounds) override;
   bool GetNeedsNotificationWhenVisibleBoundsChange() const override;
   void OnVisibleBoundsChanged() override;
+  void VisibilityChanged(views::View* starting_from, bool is_visible) override;
   void OnFocus() override;
   void OnPaintBorder(gfx::Canvas* canvas) override;
   // LocationBarView directs mouse button events from
@@ -446,6 +472,8 @@ class LocationBarView
                            const gfx::Point& press_pt,
                            const gfx::Point& p) override;
 
+  bool ShouldUsePopupOpenAppearance() const;
+
   bool ShouldHidePageActionIcons() const;
 
   struct PageActionInfo {
@@ -461,6 +489,8 @@ class LocationBarView
   void AnimationEnded(const gfx::Animation* animation) override;
   void AnimationCanceled(const gfx::Animation* animation) override;
   void OnChildViewRemoved(View* observed_view, View* child) override;
+
+  void OnChangedImpl(bool suppress_animations);
 
   void OnTouchUiChanged();
 
@@ -487,7 +517,7 @@ class LocationBarView
   bool GetPopupMode() const;
 
   // Returns the `PageActionController` for the currently active tab, or nullptr
-  // if there is no valid active tab or the tab is in the process of being
+  // if there is no valid active tab or its `PageActionController` has been
   // destroyed.
   page_actions::PageActionController* GetPageActionController();
 
@@ -538,22 +568,22 @@ class LocationBarView
 
   // The view holding the regular results popup.
   std::unique_ptr<OmniboxPopupView> omnibox_popup_view_;
-  // The presenter controlling the showing of the AI mode popup.
+  // Non-owning pointer to the presenter owned by `omnibox_popup_view_`, if any.
+  // Declared after `omnibox_popup_view_` so it is destroyed first in reverse
+  // member order.
+  // TODO(crbug.com/585197660): Remove with
+  // GetOmniboxPopupPresenterForTesting().
+  raw_ptr<OmniboxPopupPresenterBase> omnibox_popup_presenter_ = nullptr;
+  // The presenter controlling the showing of the AI mode popup. Null until the
+  // profile is eligible for it.
   std::unique_ptr<OmniboxPopupAimPresenter> omnibox_popup_aim_presenter_;
+  // Set while waiting for the profile to become eligible for the AI mode popup.
+  base::CallbackListSubscription aim_eligibility_subscription_;
 
   base::CallbackListSubscription popup_state_changed_subscription_;
 
   // Our delegate.
   raw_ptr<Delegate> delegate_;
-
-  // A controller for a view that contains a chip button which is used for
-  // permission information and requests.
-  std::unique_ptr<ChipController> chip_controller_ = nullptr;
-
-  // The concrete native view used for the permission chip. Stored separately
-  // from the controller to allow layout calculations to bypass the UI-agnostic
-  // PermissionChipInterface.
-  raw_ptr<PermissionChipView> chip_view_ = nullptr;
 
   std::unique_ptr<PermissionDashboardController>
       permission_dashboard_controller_;
@@ -605,7 +635,19 @@ class LocationBarView
   // window). This value also controls whether the location bar is read-only.
   const bool is_popup_mode_;
 
+  // Whether this location bar hosts a Full WebUI Omnibox. Determined at
+  // construction from the window type and the feature state, and fixed for the
+  // lifetime of the location bar.
+  // NOTE: This says nothing about whether the WebUI omnibox is ready to handle
+  // input; the WebUI popup handler connects asynchronously. Use
+  // `IsFullWebUiOmniboxReady()` for that.
+  const bool is_full_webui_omnibox_;
+
   bool is_initialized_ = false;
+
+  // True while `Update()` is updating the omnibox view, used to suppress
+  // intermediate `OnChanged()` calls before the final `OnChangedImpl()` call.
+  bool in_update_ = false;
 
   SkColor background_color_ = gfx::kPlaceholderColor;
 
@@ -630,6 +672,10 @@ class LocationBarView
   // TODO(crbug.com/40251974): Remove this once state manager is proven
   //  reliable.
   bool in_popup_state_transition_ = false;
+  // True while routing Views focus to `LocationBarView` so
+  // `LocationBarView::OnFocus()` skips its default WebUI focus forwarding and
+  // leaves it to the caller's `ForwardFocusToWebUI()` call.
+  bool moving_focus_to_webui_ = false;
   // Caches the latest toolbar visibility state for re-evaluating focus
   // behavior.
   bool is_toolbar_visible_ = true;

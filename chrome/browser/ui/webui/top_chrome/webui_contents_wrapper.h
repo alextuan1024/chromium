@@ -16,6 +16,7 @@
 #include "chrome/browser/ui/webui/top_chrome/top_chrome_web_ui_controller.h"
 #include "chrome/browser/ui/webui/top_chrome/top_chrome_webui_config.h"
 #include "chrome/browser/ui/webui_name_variants.h"
+#include "components/site_engagement/content/site_engagement_service.h"
 #include "components/web_modal/web_contents_modal_dialog_manager_delegate.h"
 #include "content/public/browser/file_select_listener.h"
 #include "content/public/browser/web_contents.h"
@@ -24,6 +25,7 @@
 #include "content/public/common/referrer.h"
 #include "third_party/blink/public/mojom/page/draggable_region.mojom.h"
 #include "ui/base/models/menu_model.h"
+#include "ui/base/mojom/window_open_disposition.mojom-forward.h"
 
 // WebUIContentsWrapper wraps a WebContents that hosts a top chrome WebUI.
 // This class notifies the Host when it should be shown or hidden via ShowUI()
@@ -80,7 +82,7 @@ class WebUIContentsWrapper
         content::WebContents* source,
         std::unique_ptr<content::WebContents> new_contents,
         const GURL& target_url,
-        WindowOpenDisposition disposition,
+        ui::mojom::WindowOpenDisposition disposition,
         const blink::mojom::WindowFeatures& window_features,
         bool user_gesture,
         bool* was_blocked);
@@ -88,13 +90,15 @@ class WebUIContentsWrapper
     GetWebContentsModalDialogHost(content::WebContents* web_contents);
   };
 
+  // `user_profile` is required if `profile` is TopChromeWebUIProfile.
   WebUIContentsWrapper(const GURL& webui_url,
                        Profile* profile,
                        int task_manager_string_id,
                        bool webui_resizes_host,
                        bool esc_closes_ui,
                        bool supports_draggable_regions,
-                       std::string_view webui_name);
+                       std::string_view webui_name,
+                       Profile* user_profile = nullptr);
   ~WebUIContentsWrapper() override;
 
   // content::WebContentsDelegate:
@@ -127,17 +131,11 @@ class WebUIContentsWrapper
       content::WebContents* contents) override;
   void SetContentsBounds(content::WebContents* source,
                          const gfx::Rect& bounds) override;
-  void FindReply(content::WebContents* web_contents,
-                 int request_id,
-                 int number_of_matches,
-                 const gfx::Rect& selection_rect,
-                 int active_match_ordinal,
-                 bool final_update) override;
   content::WebContents* AddNewContents(
       content::WebContents* source,
       std::unique_ptr<content::WebContents> new_contents,
       const GURL& target_url,
-      WindowOpenDisposition disposition,
+      ui::mojom::WindowOpenDisposition disposition,
       const blink::mojom::WindowFeatures& window_features,
       bool user_gesture,
       bool* was_blocked) override;
@@ -150,6 +148,11 @@ class WebUIContentsWrapper
   void PrimaryPageChanged(content::Page& page) override;
   void PrimaryMainFrameRenderProcessGone(
       base::TerminationStatus status) override;
+  void DidReceiveFindReply(int request_id,
+                           int number_of_matches,
+                           const gfx::Rect& selection_rect,
+                           int active_match_ordinal,
+                           bool final_update) override;
 
   // ProfileObserver:
   void OnProfileWillBeDestroyed(Profile* profile) override;
@@ -202,6 +205,13 @@ class WebUIContentsWrapper
 
   base::WeakPtr<WebUIContentsWrapper::Host> host_;
   std::unique_ptr<content::WebContents> web_contents_;
+  // Tracks user engagement with non-tab Top Chrome WebUIs (bubbles and side
+  // panels). `WebUIContentsPreloadManager` (via
+  // `webui::ProfilePreloadCandidateSelector`) queries `SiteEngagementService`
+  // scores for `.top-chrome` URLs to select which WebUI to preload and skips
+  // preloading when engagement is `NONE` or `MINIMAL`.
+  std::unique_ptr<site_engagement::SiteEngagementService::Helper>
+      site_engagement_helper_;
 };
 
 // WebUIContentsWrapperT is designed to be paired with the WebUIController
@@ -235,7 +245,8 @@ class WebUIContentsWrapperT : public WebUIContentsWrapper {
                         Profile* profile,
                         int task_manager_string_id,
                         bool esc_closes_ui = true,
-                        bool supports_draggable_regions = false)
+                        bool supports_draggable_regions = false,
+                        Profile* user_profile = nullptr)
       : WebUIContentsWrapper(webui_url,
                              profile,
                              task_manager_string_id,
@@ -243,7 +254,8 @@ class WebUIContentsWrapperT : public WebUIContentsWrapper {
                                  ->ShouldAutoResizeHost(),
                              esc_closes_ui,
                              supports_draggable_regions,
-                             T::GetWebUIName()),
+                             T::GetWebUIName(),
+                             user_profile),
         webui_url_(webui_url) {
     static_assert(views_metrics::IsValidWebUIName(
         ConcatStrings({".", T::GetWebUIName()})));

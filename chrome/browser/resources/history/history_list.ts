@@ -11,7 +11,7 @@ import 'chrome://resources/cr_elements/cr_toast/cr_toast.js';
 import './history_item.js';
 
 import type {HistoryEntry, HistoryQuery, PageCallbackRouter, QueryState} from 'chrome://resources/cr_components/history/history.mojom-webui.js';
-import {OpenConversationResult} from 'chrome://resources/cr_components/history/history.mojom-webui.js';
+import {OpenConversationResult, TimePeriodOptionId} from 'chrome://resources/cr_components/history/history.mojom-webui.js';
 import {getInstance as getAnnouncerInstance} from 'chrome://resources/cr_elements/cr_a11y_announcer/cr_a11y_announcer.js';
 import type {CrActionMenuElement} from 'chrome://resources/cr_elements/cr_action_menu/cr_action_menu.js';
 import type {CrDialogElement} from 'chrome://resources/cr_elements/cr_dialog/cr_dialog.js';
@@ -43,6 +43,10 @@ type HistoryCheckboxSelectEvent = CustomEvent<{
   shiftKey: boolean,
 }>;
 
+type ToggleCollapseEvent = CustomEvent<{
+  index: number,
+}>;
+
 export interface HistoryListElement {
   $: {
     errorToast: CrToastElement,
@@ -55,9 +59,11 @@ export interface HistoryListElement {
 
 declare global {
   interface HTMLElementEventMap {
+    'domain-filter-selected': CustomEvent<{domain: string}>;
     'history-checkbox-select': HistoryCheckboxSelectEvent;
     'open-menu': OpenMenuEvent;
     'remove-bookmark-stars': CustomEvent<string>;
+    'toggle-card-collapse': ToggleCollapseEvent;
   }
 }
 
@@ -87,8 +93,6 @@ export class HistoryListElement extends HistoryListElementBase {
        * Indexes into historyData_ of selected items.
        */
       selectedItems: {type: Object},
-
-      canDeleteHistory_: {type: Boolean},
 
       // An array of history entries in reverse chronological order.
       historyData_: {type: Array},
@@ -123,8 +127,6 @@ export class HistoryListElement extends HistoryListElementBase {
 
   protected accessor historyData_: HistoryEntry[] = [];
   private callbackRouter_: PageCallbackRouter;
-  protected accessor canDeleteHistory_: boolean =
-      loadTimeData.getBoolean('allowDeletingHistory');
   protected accessor actionMenuModel_: ActionMenuModel|null = null;
   private lastOffsetHeight_: number = 0;
   private resizeObserver_: ResizeObserver = new ResizeObserver(() => {
@@ -156,10 +158,17 @@ export class HistoryListElement extends HistoryListElementBase {
     after: null,
     includeUserVisits: true,
     includeActorVisits: true,
+    clientIds: [],
+    timePeriodOptionId: TimePeriodOptionId.kAllTime,
   };
   accessor scrollTarget: HTMLElement = document.documentElement;
   accessor scrollOffset: number = 0;
+
+  protected readonly canDeleteHistory_: boolean =
+      loadTimeData.getBoolean('allowDeletingHistory');
+
   private onHistoryDeletedListenerId_: number|null = null;
+  private collapsedDays_: Set<string> = new Set();
 
   constructor() {
     super();
@@ -198,6 +207,7 @@ export class HistoryListElement extends HistoryListElementBase {
     this.addEventListener('open-menu', this.onOpenMenu_);
     this.addEventListener(
         'remove-bookmark-stars', e => this.onRemoveBookmarkStars_(e));
+    this.addEventListener('toggle-card-collapse', this.onToggleCardCollapse_);
   }
 
   override updated(changedProperties: PropertyValues<this>) {
@@ -228,17 +238,8 @@ export class HistoryListElement extends HistoryListElementBase {
     this.closeMenu_();
 
     if (info.term && !this.queryState.incremental) {
-      let resultsLabelId;
-      if (loadTimeData.getBoolean('enableHistoryEmbeddings')) {
-        // Differentiate screen reader messages if embeddings are enabled so
-        // that the messages specify these are results for exact matches not
-        // embeddings results.
-        resultsLabelId = results.length === 1 ? 'searchResultExactMatch' :
-                                                'searchResultExactMatches';
-      } else {
-        resultsLabelId =
-            results.length === 1 ? 'searchResult' : 'searchResults';
-      }
+      const resultsLabelId =
+          results.length === 1 ? 'searchResult' : 'searchResults';
       const message = loadTimeData.getStringF(
           'foundSearchResults', results.length,
           loadTimeData.getString(resultsLabelId), info.term);
@@ -267,6 +268,7 @@ export class HistoryListElement extends HistoryListElementBase {
     if (!incremental) {
       this.resultLoadingDisabled_ = false;
       this.historyData_ = [];
+      this.collapsedDays_.clear();
       this.fire('unselect-all');
       this.scrollTarget.scrollTop = 0;
     }
@@ -466,14 +468,59 @@ export class HistoryListElement extends HistoryListElementBase {
   }
 
   /**
-   * Called when the page is scrolled to near the bottom of the list.
+   * Requests the next batch of history results, unless loading is disabled or
+   * a query is already in progress.
    */
-  private onScrollToBottom_() {
+  private loadMoreHistory_() {
     if (this.resultLoadingDisabled_ || this.queryState.querying) {
       return;
     }
 
     this.fire('query-history', true);
+  }
+
+  protected onViewportFilled_() {
+    this.loadMoreIfListNotScrollable_();
+  }
+
+  /**
+   * Each query returns a fixed number of visits, which can merge into only a
+   * few entries. If the rendered list is too short to scroll, the user can't
+   * trigger loading more by scrolling, so request more results directly.
+   */
+  private loadMoreIfListNotScrollable_() {
+    if (!this.isActive || this.historyData_.length === 0) {
+      return;
+    }
+
+    const listRect = this.$.infiniteList.getBoundingClientRect();
+    if (listRect.height === 0) {
+      // The list has not been laid out yet (e.g. it is hidden).
+      return;
+    }
+
+    // Use on-screen positions, not scrollHeight. `scrollTarget` may be <html>
+    // or <body>, which never scroll here, so scrollHeight would say the list
+    // fits even when it doesn't. Limit the result to window.innerHeight so the
+    // check doesn't rely on CSS sizing <html> to the screen. Without that CSS
+    // (e.g. in tests), <html> grows with its content and we'd keep loading
+    // results the user doesn't need.
+    const viewportBottom = Math.min(
+        this.scrollTarget.getBoundingClientRect().bottom, window.innerHeight);
+    let contentBottom = listRect.bottom;
+    if (this.collapsedDays_.size > 0) {
+      const visibleItems = this.shadowRoot.querySelectorAll<HTMLElement>(
+          'history-item:not([is-card-collapsed]), history-item[is-card-start]');
+      const lastVisible = visibleItems[visibleItems.length - 1];
+      if (lastVisible) {
+        contentBottom = lastVisible.getBoundingClientRect().bottom;
+      }
+    }
+    if (contentBottom > viewportBottom) {
+      return;
+    }
+
+    this.loadMoreHistory_();
   }
 
   private onOpenMenu_(e: OpenMenuEvent) {
@@ -506,6 +553,11 @@ export class HistoryListElement extends HistoryListElementBase {
 
 
     assert(this.$.sharedMenu.getIfExists());
+    if (this.isFilterByDomainEnabled_()) {
+      this.fire(
+          'domain-filter-selected',
+          {domain: this.actionMenuModel_!.item.domain});
+    }
     this.fire(
         'change-query', {search: 'host:' + this.actionMenuModel_!.item.domain});
     this.actionMenuModel_ = null;
@@ -522,6 +574,10 @@ export class HistoryListElement extends HistoryListElementBase {
     this.closeMenu_();
   }
 
+  private isFilterByDomainEnabled_(): boolean {
+    return loadTimeData.getBoolean('isBrowsingHistoryFilterByDomainEnabled');
+  }
+
   private isCriticalActionsEnabled_(): boolean {
     return loadTimeData.getBoolean('isCriticalActionsEnabled');
   }
@@ -533,7 +589,6 @@ export class HistoryListElement extends HistoryListElementBase {
 
   protected canShowGoToGeminiChat_(): boolean {
     return this.isCriticalActionsEnabled_() && this.isChatLinkoutsEnabled_() &&
-        !!this.actionMenuModel_?.item.isActorVisit &&
         (this.actionMenuModel_?.item.criticalActions?.length ?? 0) > 0;
   }
 
@@ -556,7 +611,8 @@ export class HistoryListElement extends HistoryListElementBase {
 
   protected canShowReviewGeminiActivity_(): boolean {
     return this.isCriticalActionsEnabled_() && !this.isChatLinkoutsEnabled_() &&
-        !!this.actionMenuModel_?.item.isActorVisit;
+        (!!this.actionMenuModel_?.item.isActorVisit ||
+         (this.actionMenuModel_?.item.criticalActions?.length ?? 0) > 0);
   }
 
   protected onReviewGeminiActivityClick_(e: MouseEvent) {
@@ -631,8 +687,45 @@ export class HistoryListElement extends HistoryListElementBase {
     this.lastSelectedIndex = index;
   }
 
+  private onToggleCardCollapse_(e: ToggleCollapseEvent) {
+    if (!this.isCollapsibleDayCardsEnabled_()) {
+      return;
+    }
+    const item = this.historyData_[e.detail.index];
+    if (!item) {
+      return;
+    }
+    const key = this.getCardKey_(item);
+    if (this.collapsedDays_.has(key)) {
+      this.collapsedDays_.delete(key);
+    } else {
+      this.collapsedDays_.add(key);
+    }
+    this.requestUpdate();
+    this.updateComplete.then(() => {
+      this.loadMoreIfListNotScrollable_();
+    });
+  }
+
+  private isCollapsibleDayCardsEnabled_(): boolean {
+    return loadTimeData.valueExists(
+               'isBrowsingHistoryCollapsibleDayCardsEnabled') &&
+        loadTimeData.getBoolean('isBrowsingHistoryCollapsibleDayCardsEnabled');
+  }
+
   /////////////////////////////////////////////////////////////////////////////
   // Template helpers:
+
+  private getCardKey_(item: HistoryEntry): string {
+    return item.dateRelativeDay;
+  }
+
+  protected isCardCollapsed_(item: HistoryEntry): boolean {
+    if (!item || !this.isCollapsibleDayCardsEnabled_()) {
+      return false;
+    }
+    return this.collapsedDays_.has(this.getCardKey_(item));
+  }
 
   /**
    * Check whether the time difference between the given history item and the
@@ -645,6 +738,10 @@ export class HistoryListElement extends HistoryListElementBase {
     }
 
     const currentItem = this.historyData_[index]!;
+    if (this.isCardCollapsed_(currentItem)) {
+      return false;
+    }
+
     const nextItem = this.historyData_[index + 1]!;
 
     if (this.searchedTerm) {
@@ -678,6 +775,10 @@ export class HistoryListElement extends HistoryListElementBase {
     if (length === 0 || i > length - 1) {
       return false;
     }
+    const currentItem = this.historyData_[i]!;
+    if (this.isCardCollapsed_(currentItem)) {
+      return this.isCardStart_(currentItem, i);
+    }
     return i === length - 1 ||
         this.historyData_[i]!.dateRelativeDay !==
         this.historyData_[i + 1]!.dateRelativeDay;
@@ -687,10 +788,30 @@ export class HistoryListElement extends HistoryListElementBase {
     return this.historyData_.length > 0;
   }
 
+  private isHistoryFilteringEnabled_(): boolean {
+    return loadTimeData.getBoolean('isBrowsingHistoryFilterByActorEnabled') ||
+        loadTimeData.getBoolean('isBrowsingHistoryFilterByDeviceEnabled');
+  }
+
+  private hasActiveFilter_(): boolean {
+    const hasActiveActorDropdownFilter =
+        loadTimeData.getBoolean('isBrowsingHistoryFilterByActorEnabled') &&
+        (!this.queryState.includeUserVisits ||
+         !this.queryState.includeActorVisits);
+    return hasActiveActorDropdownFilter ||
+        this.queryState.clientIds.length > 0 ||
+        this.queryState.timePeriodOptionId !== TimePeriodOptionId.kAllTime;
+  }
+
   protected noResultsMessage_(): string {
-    const messageId =
-        this.searchedTerm !== '' ? 'noSearchResults' : 'noResults';
-    return loadTimeData.getString(messageId);
+    if (this.isHistoryFilteringEnabled_()) {
+      return loadTimeData.getString(
+          this.searchedTerm !== '' || this.hasActiveFilter_() ?
+              'noMatchingResults' :
+              'noResults');
+    }
+    return loadTimeData.getString(
+        this.searchedTerm !== '' ? 'noSearchResults' : 'noResults');
   }
 
   protected canSearchMoreFromSite_(): boolean {
@@ -758,7 +879,7 @@ export class HistoryListElement extends HistoryListElementBase {
     const lowerScroll = this.scrollTarget.scrollHeight -
         this.scrollTarget.scrollTop - this.scrollTarget.offsetHeight;
     if (lowerScroll < 500) {
-      this.onScrollToBottom_();
+      this.loadMoreHistory_();
     }
     this.fire('scroll-timeout-for-test');
   }

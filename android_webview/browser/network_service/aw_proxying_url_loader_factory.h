@@ -8,8 +8,10 @@
 #include <optional>
 
 #include "android_webview/browser/aw_cookie_access_policy.h"
+#include "android_webview/browser/http_headers/aw_header_interceptor_store.h"
 #include "android_webview/browser/http_headers/aw_origin_matched_header.h"
 #include "android_webview/browser/network_service/aw_browser_context_io_thread_handle.h"
+#include "base/containers/flat_set.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
@@ -19,6 +21,7 @@
 #include "mojo/public/cpp/bindings/receiver_set.h"
 #include "mojo/public/cpp/bindings/remote.h"
 #include "services/network/public/mojom/cookie_manager.mojom.h"
+#include "services/network/public/mojom/fetch_api.mojom-shared.h"
 #include "services/network/public/mojom/url_loader.mojom.h"
 #include "services/network/public/mojom/url_loader_factory.mojom.h"
 #include "services/network/public/mojom/url_response_head.mojom.h"
@@ -64,6 +67,31 @@ class AwProxyingURLLoaderFactory : public network::mojom::URLLoaderFactory {
  public:
   using SecurityOptions =
       embedder_support::AndroidStreamReaderURLLoader::SecurityOptions;
+  using InterceptorEntryPtr = AwHeaderInterceptorStore::InterceptorEntryPtr;
+
+  // State shared by all requests started by this proxy.
+  // This helps reduce the number of copies of data that is stable for the
+  // lifetime of this proxy.
+  class ProxySharedState : public base::RefCountedThreadSafe<ProxySharedState> {
+   public:
+    ProxySharedState(
+        std::vector<scoped_refptr<AwOriginMatchedHeader>>
+            origin_matched_headers,
+        std::vector<InterceptorEntryPtr> profile_header_interceptors,
+        std::vector<InterceptorEntryPtr> web_contents_header_interceptors);
+
+    // These vectors are const since they are not meant to be modified after
+    // initialization. Making them `const` makes it easier to see that they
+    // can be safely read from other threads after being initialized.
+    const std::vector<scoped_refptr<AwOriginMatchedHeader>>
+        origin_matched_headers;
+    const std::vector<InterceptorEntryPtr> profile_header_interceptors;
+    const std::vector<InterceptorEntryPtr> web_contents_header_interceptors;
+
+   private:
+    friend class base::RefCountedThreadSafe<ProxySharedState>;
+    ~ProxySharedState();
+  };
 
   // Create a factory that will create specialized URLLoaders for Android
   // WebView. If |intercept_only| parameter is true the loader created by
@@ -81,8 +109,11 @@ class AwProxyingURLLoaderFactory : public network::mojom::URLLoaderFactory {
       mojo::PendingRemote<network::mojom::URLLoaderFactory>
           target_factory_remote,
       bool intercept_only,
+      bool is_for_profile_initiated_prefetch,
       std::optional<SecurityOptions> security_options,
       std::vector<scoped_refptr<AwOriginMatchedHeader>> origin_matched_headers,
+      std::vector<InterceptorEntryPtr> profile_header_interceptors,
+      std::vector<InterceptorEntryPtr> web_contents_header_interceptors,
       scoped_refptr<AwBrowserContextIoThreadHandle> browser_context_handle,
       std::optional<int64_t> navigation_id);
 
@@ -98,6 +129,16 @@ class AwProxyingURLLoaderFactory : public network::mojom::URLLoaderFactory {
       const network::ResourceRequest& request,
       net::HttpRequestHeaders& cors_exempt_headers);
 
+  // Returns true if shouldInterceptRequest should be skipped for `request`
+  // because it is a profile-initiated prefetch. The decision is based on the
+  // type of factory the request was issued through, since the absence of a
+  // WebContents association is not sufficient to identify such requests
+  // (factories for service worker and shared worker subresources also have
+  // none).
+  static bool ShouldSkipInterceptForPrefetch(
+      const network::ResourceRequest& request,
+      bool is_for_profile_initiated_prefetch);
+
   // static
   static void CreateProxy(
       mojo::PendingRemote<network::mojom::CookieManager> cookie_manager,
@@ -108,8 +149,11 @@ class AwProxyingURLLoaderFactory : public network::mojom::URLLoaderFactory {
       mojo::PendingReceiver<network::mojom::URLLoaderFactory> loader,
       mojo::PendingRemote<network::mojom::URLLoaderFactory>
           target_factory_remote,
+      bool is_for_profile_initiated_prefetch,
       std::optional<SecurityOptions> security_options,
       std::vector<scoped_refptr<AwOriginMatchedHeader>> origin_matched_headers,
+      std::vector<InterceptorEntryPtr> profile_header_interceptors,
+      std::vector<InterceptorEntryPtr> web_contents_header_interceptors,
       scoped_refptr<AwBrowserContextIoThreadHandle> browser_context_handle,
       std::optional<int64_t> navigation_id);
 
@@ -134,6 +178,8 @@ class AwProxyingURLLoaderFactory : public network::mojom::URLLoaderFactory {
                  loader_receiver) override;
 
  private:
+  scoped_refptr<ProxySharedState> proxy_shared_state_;
+
   void OnTargetFactoryError();
   void OnProxyBindingError();
   void GetCookieHeader(bool is_3pc_allowed,
@@ -159,13 +205,23 @@ class AwProxyingURLLoaderFactory : public network::mojom::URLLoaderFactory {
   // a response, the loader will abort loading.
   bool intercept_only_;
 
-  std::optional<SecurityOptions> security_options_;
+  // True only when this factory was created for a profile-initiated prefetch
+  // (i.e. a `URLLoaderFactoryType::kPrefetch` factory not bound to a frame).
+  const bool is_for_profile_initiated_prefetch_;
 
-  std::vector<scoped_refptr<AwOriginMatchedHeader>> origin_matched_headers_;
+  std::optional<SecurityOptions> security_options_;
 
   scoped_refptr<AwBrowserContextIoThreadHandle> browser_context_handle_;
 
   std::optional<int64_t> navigation_id_;
+
+  // We record UMA when a non-local (so not file:// or content://) URL loads a
+  // local resource. We only want to record once per destination type for a
+  // given load. These sets track which ones have already been recorded.
+  base::flat_set<network::mojom::RequestDestination>
+      recorded_file_access_destinations_;
+  base::flat_set<network::mojom::RequestDestination>
+      recorded_content_access_destinations_;
 
   base::WeakPtrFactory<AwProxyingURLLoaderFactory> weak_factory_{this};
 };

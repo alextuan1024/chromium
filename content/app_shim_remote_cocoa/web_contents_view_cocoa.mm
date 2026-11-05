@@ -11,7 +11,7 @@
 #import "base/mac/mac_util.h"
 #include "base/strings/sys_string_conversions.h"
 #include "base/threading/thread_restrictions.h"
-#import "content/app_shim_remote_cocoa/web_contents_occlusion_checker_mac.h"
+#import "components/remote_cocoa/app_shim/window_occlusion_checker_mac.h"
 #import "content/app_shim_remote_cocoa/web_drag_source_mac.h"
 #import "content/browser/web_contents/web_contents_view_mac.h"
 #import "content/browser/web_contents/web_drag_dest_mac.h"
@@ -20,6 +20,7 @@
 #include "ui/base/clipboard/clipboard_constants.h"
 #include "ui/base/clipboard/clipboard_util_mac.h"
 #include "ui/base/clipboard/custom_data_helper.h"
+#include "ui/base/cocoa/drag_coordinator.h"
 #include "ui/base/dragdrop/drag_drop_types.h"
 #include "ui/events/event_utils.h"
 #include "ui/events/platform_event.h"
@@ -131,13 +132,22 @@ gfx::PointF GetSanitizedFlippedPoint(NSPoint point, CGFloat height) {
   // Drag variables.
   WebDragSource* __strong _dragSource;
   NSDragOperation _dragOperation;
+  BOOL _allowExternalDrag;
 
+  NSWindow* __weak _trackedWindow;
   BOOL _willSetWebContentsOccludedAfterDelay;
 }
 
 + (void)initialize {
-  // Create the WebContentsOcclusionCheckerMac shared instance.
-  [WebContentsOcclusionCheckerMac sharedInstance];
+  if (self != [WebContentsViewCocoa class]) {
+    return;
+  }
+
+  // Create the WindowOcclusionCheckerMac shared instance.
+  // TODO(crbug.com/505314004): Remove once
+  // `remote_cocoa::features::kTrackAllTopLevelWindowsForOcclusion` is enabled
+  // by default and cleaned up.
+  [WindowOcclusionCheckerMac sharedInstance];
 }
 
 - (instancetype)initWithViewsHostableView:(ui::ViewsHostableView*)v {
@@ -159,6 +169,10 @@ gfx::PointF GetSanitizedFlippedPoint(NSPoint point, CGFloat height) {
   // This probably isn't strictly necessary, but can't hurt.
   [self unregisterDraggedTypes];
 
+  if (_trackedWindow) {
+    [[WindowOcclusionCheckerMac sharedInstanceIfCreated]
+        removeTrackedWindow:_trackedWindow];
+  }
   [[NSNotificationCenter defaultCenter] removeObserver:self];
   [self cancelDelayedSetWebContentsOccluded];
 }
@@ -241,8 +255,9 @@ gfx::PointF GetSanitizedFlippedPoint(NSPoint point, CGFloat height) {
                         image:(NSImage*)image
                        offset:(NSPoint)offset
                  isPrivileged:(BOOL)isPrivileged {
-  if (!_host)
+  if (!_host || !ui::IsDragSessionInitiationAllowed()) {
     return;
+  }
 
   NSPoint mouseLocation = [self.window mouseLocationOutsideOfEventStream];
   NSEvent* dragEvent = [NSEvent mouseEventWithType:NSEventTypeLeftMouseDragged
@@ -305,6 +320,15 @@ gfx::PointF GetSanitizedFlippedPoint(NSPoint point, CGFloat height) {
   }
 
   _dragOperation = operationMask;
+  // An empty `dropData` is valid and used in situations where internal UI
+  // elements (e.g. WebUI tiles or cards being reordered) are dragged within the
+  // page without exporting any payload to external drop targets.
+  _allowExternalDrag = !dropData.url_infos.empty() ||
+                       !dropData.file_contents.empty() ||
+                       dropData.download_metadata.has_value() ||
+                       (dropData.html && !dropData.html->empty()) ||
+                       (dropData.text && !dropData.text->empty()) ||
+                       !dropData.custom_data.empty();
 
   // Start the drag session. This hands control to AppKit, which queries each
   // item's pasteboard writer (the primary WebDragSource and the URL-only
@@ -322,13 +346,22 @@ gfx::PointF GetSanitizedFlippedPoint(NSPoint point, CGFloat height) {
 
 - (NSDragOperation)draggingSession:(NSDraggingSession*)session
     sourceOperationMaskForDraggingContext:(NSDraggingContext)context {
+  if (context == NSDraggingContextOutsideApplication && !_allowExternalDrag) {
+    return NSDragOperationNone;
+  }
   return _dragOperation;
+}
+
+- (void)draggingSession:(NSDraggingSession*)session
+       willBeginAtPoint:(NSPoint)screenPoint {
+  ui::SetDragSessionInProgress(self);
 }
 
 // Called when a drag initiated in our view ends.
 - (void)draggingSession:(NSDraggingSession*)session
            endedAtPoint:(NSPoint)screenPoint
               operation:(NSDragOperation)operation {
+  ui::SetDragSessionInProgress(nil);
   if (!_host) {
     return;
   }
@@ -349,7 +382,8 @@ gfx::PointF GetSanitizedFlippedPoint(NSPoint point, CGFloat height) {
   gfx::PointF screen_point_f =
       GetSanitizedFlippedPoint(screenPoint, screenFrame.size.height);
 
-  _host->EndDrag(operation, local_point_f, screen_point_f);
+  _host->EndDrag(ui::DragDropTypes::NSDragOperationToDragOperation(operation),
+                 local_point_f, screen_point_f);
 
   // The drag is complete. Disconnect the drag source.
   [_dragSource webContentsIsGone];
@@ -501,14 +535,18 @@ gfx::PointF GetSanitizedFlippedPoint(NSPoint point, CGFloat height) {
   // occluded if our window switches back to visible or hidden in the meantime.
   if (visibility != Visibility::kOccluded) {
     [self cancelDelayedSetWebContentsOccluded];
-    _host->OnWindowVisibilityChanged(visibility);
+    [self setWebContentsVisibility:visibility];
     return;
   }
 
   if (_willSetWebContentsOccludedAfterDelay)
     return;
 
-  // Coalesce one second's worth of occlusion updates.
+  // Coalesce one second's worth of occlusion updates.  Note: the occlusion hide
+  // delay in `views::NativeWidgetMacNSWindowHost::OnWindowOcclusionChanged`
+  // should stay longer than this delay. Update it if this changes. (This is not
+  // a correctness issue, which is why it's not enforced by something stronger
+  // than a comment).
   const NSTimeInterval kOcclusionUpdateDelayInSeconds = 1.0;
   [self performSelector:@selector(performDelayedSetWebContentsOccluded)
              withObject:nil
@@ -547,43 +585,56 @@ gfx::PointF GetSanitizedFlippedPoint(NSPoint point, CGFloat height) {
 }
 
 - (void)viewWillMoveToWindow:(NSWindow*)newWindow {
+  [super viewWillMoveToWindow:newWindow];
+  if (_trackedWindow == newWindow) {
+    return;
+  }
+
   NSNotificationCenter* notificationCenter =
       [NSNotificationCenter defaultCenter];
 
-  NSWindow* oldWindow = [self window];
-
-  if (oldWindow) {
+  if (_trackedWindow) {
     [notificationCenter
         removeObserver:self
                   name:NSWindowDidChangeOcclusionStateNotification
-                object:oldWindow];
+                object:_trackedWindow];
+    [[WindowOcclusionCheckerMac sharedInstanceIfCreated]
+        removeTrackedWindow:_trackedWindow];
   }
 
-  if (newWindow) {
+  _trackedWindow = newWindow;
+
+  if (_trackedWindow) {
+    [[WindowOcclusionCheckerMac sharedInstance]
+        addTrackedWindow:_trackedWindow];
     [notificationCenter addObserver:self
                            selector:@selector(windowChangedOcclusionState:)
                                name:NSWindowDidChangeOcclusionStateNotification
-                             object:newWindow];
+                             object:_trackedWindow];
   }
 }
 
 - (void)windowChangedOcclusionState:(NSNotification*)aNotification {
   // Only respond to occlusion notifications sent by the occlusion checker.
   NSDictionary* userInfo = [aNotification userInfo];
-  NSString* occlusionCheckerKey = [WebContentsOcclusionCheckerMac className];
-  if (userInfo[occlusionCheckerKey] != nil)
+  if (userInfo[remote_cocoa::kWindowOcclusionCheckerNotificationUserInfoKey] !=
+      nil) {
     [self updateWebContentsVisibility];
+  }
 }
 
 - (void)viewDidMoveToWindow {
+  [super viewDidMoveToWindow];
   [self updateWebContentsVisibility];
 }
 
 - (void)viewDidHide {
+  [super viewDidHide];
   [self updateWebContentsVisibility];
 }
 
 - (void)viewDidUnhide {
+  [super viewDidUnhide];
   [self updateWebContentsVisibility];
 }
 
@@ -601,18 +652,12 @@ gfx::PointF GetSanitizedFlippedPoint(NSPoint point, CGFloat height) {
 - (void)_addWebContentsViewCocoasFromView:(NSView*)view
                                   toArray:
                                       (NSMutableArray<WebContentsViewCocoa*>*)
-                                          webContents
-                           haltAfterFirst:(BOOL)haltAfterFirst {
+                                          webContents {
   for (NSView* subview in [view subviews]) {
     if ([subview isKindOfClass:[WebContentsViewCocoa class]]) {
       [webContents addObject:(WebContentsViewCocoa*)subview];
-      if (haltAfterFirst) {
-        return;
-      }
     } else {
-      [self _addWebContentsViewCocoasFromView:subview
-                                      toArray:webContents
-                               haltAfterFirst:haltAfterFirst];
+      [self _addWebContentsViewCocoasFromView:subview toArray:webContents];
     }
   }
 }
@@ -621,20 +666,9 @@ gfx::PointF GetSanitizedFlippedPoint(NSPoint point, CGFloat height) {
   NSMutableArray<WebContentsViewCocoa*>* webContents = [NSMutableArray array];
 
   [self _addWebContentsViewCocoasFromView:[self contentView]
-                                  toArray:webContents
-                           haltAfterFirst:NO];
+                                  toArray:webContents];
 
   return webContents;
-}
-
-- (BOOL)containsWebContentsViewCocoa {
-  NSMutableArray<WebContentsViewCocoa*>* webContents = [NSMutableArray array];
-
-  [self _addWebContentsViewCocoasFromView:[self contentView]
-                                  toArray:webContents
-                           haltAfterFirst:YES];
-
-  return webContents.count > 0;
 }
 
 @end

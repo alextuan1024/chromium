@@ -54,6 +54,7 @@
 #include "third_party/blink/renderer/core/style/computed_style.h"
 #include "third_party/blink/renderer/core/style/computed_style_constants.h"
 #include "third_party/blink/renderer/core/style/fill_layer.h"
+#include "third_party/blink/renderer/core/style/scoped_css_name.h"
 #include "third_party/blink/renderer/platform/animation/timing_function.h"
 
 namespace blink {
@@ -355,8 +356,9 @@ StyleTimeline CSSToStyleMap::MapAnimationTimeline(StyleResolverState& state,
     return StyleTimeline(ident->GetValueID());
   }
   if (auto* custom_ident = DynamicTo<CSSCustomIdentValue>(value)) {
-    return StyleTimeline(
-        custom_ident->ComputeIdent(state.CssToLengthConversionData()));
+    state.SetHasTreeScopedReference();
+    return StyleTimeline(MakeGarbageCollected<ScopedCSSName>(
+        custom_ident->Value(), custom_ident->GetPopulatedTreeScope()));
   }
   if (value.IsViewValue()) {
     const auto& view_value = To<cssvalue::CSSViewValue>(value);
@@ -746,9 +748,8 @@ const ScopedCSSName* CSSToStyleMap::MapAnimationTimelineTriggerName(
     return nullptr;
   }
   if (auto* custom_ident = DynamicTo<CSSCustomIdentValue>(value)) {
-    return MakeGarbageCollected<ScopedCSSName>(
-        custom_ident->ComputeIdent(state.CssToLengthConversionData()),
-        custom_ident->GetTreeScope());
+    return MakeGarbageCollected<ScopedCSSName>(custom_ident->Value(),
+                                               custom_ident->GetTreeScope());
   }
   return nullptr;
 }

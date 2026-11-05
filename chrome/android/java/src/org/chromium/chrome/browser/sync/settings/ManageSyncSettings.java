@@ -35,6 +35,7 @@ import org.chromium.base.supplier.OneshotSupplier;
 import org.chromium.base.supplier.SettableMonotonicObservableSupplier;
 import org.chromium.base.task.PostTask;
 import org.chromium.base.task.TaskTraits;
+import org.chromium.build.annotations.Initializer;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.R;
@@ -51,6 +52,7 @@ import org.chromium.chrome.browser.settings.SettingsNavigationFactory;
 import org.chromium.chrome.browser.settings.search.ChromeBaseSearchIndexProvider;
 import org.chromium.chrome.browser.signin.services.IdentityServicesProvider;
 import org.chromium.chrome.browser.signin.services.ProfileDataCache;
+import org.chromium.chrome.browser.subscription_eligibility.SubscriptionEligibilityServiceFactory;
 import org.chromium.chrome.browser.sync.SyncServiceFactory;
 import org.chromium.chrome.browser.sync.SyncSettingsUtils;
 import org.chromium.chrome.browser.sync.ui.PassphraseCreationDialogFragment;
@@ -81,6 +83,7 @@ import org.chromium.components.sync.BookmarksLimitExceededHelpClickedSource;
 import org.chromium.components.sync.SyncService;
 import org.chromium.components.sync.UserActionableError;
 import org.chromium.components.sync.UserSelectableType;
+import org.chromium.components.trusted_vault.SecurityDomainId;
 import org.chromium.components.trusted_vault.TrustedVaultClient;
 import org.chromium.components.trusted_vault.TrustedVaultUserActionTriggerForUMA;
 import org.chromium.ui.modaldialog.DialogDismissalCause;
@@ -116,7 +119,8 @@ public class ManageSyncSettings extends ChromeBaseSettingsFragment
     @VisibleForTesting public static final String FRAGMENT_CUSTOM_PASSPHRASE = "custom_password";
     private static final String FRAGMENT_PASSPHRASE_TYPE = "password_type";
 
-    private static final String PREF_CENTRAL_ACCOUNT_CARD_PREFERENCE = "central_account_card";
+    @VisibleForTesting
+    public static final String PREF_CENTRAL_ACCOUNT_CARD_PREFERENCE = "central_account_card";
 
     @VisibleForTesting
     public static final String PREF_IDENTITY_ERROR_CARD_PREFERENCE = "identity_error_card";
@@ -174,6 +178,13 @@ public class ManageSyncSettings extends ChromeBaseSettingsFragment
     @VisibleForTesting public static final String PREF_ENCRYPTION = "encryption";
 
     @VisibleForTesting
+    public static final String PREF_SEARCH_AI_MODE_CONNECTED_APPS = "search_ai_mode_connected_apps";
+
+    @VisibleForTesting
+    public static final String SEARCH_AI_MODE_CONNECTED_APPS_URL =
+            "https://myactivity.google.com/search-services/apps";
+
+    @VisibleForTesting
     public static final String PREF_ACCOUNT_DATA_DASHBOARD = "account_data_dashboard";
 
     @VisibleForTesting
@@ -215,13 +226,30 @@ public class ManageSyncSettings extends ChromeBaseSettingsFragment
     public void onCreatePreferences(@Nullable Bundle savedInstanceState, @Nullable String rootKey) {
         Profile profile = getProfile();
         mSyncService = assumeNonNull(SyncServiceFactory.getForProfile(profile));
+        mPageTitle.set(getString(R.string.account_settings_title));
 
+        // Restoration by the FragmentManager and Intents both reach this page without going
+        // through SettingsFragmentRegistry, so it can still land here signed out. Inflate nothing;
+        // onStart() finishes the page.
+        if (isSignedOut()) {
+            return;
+        }
+
+        initializeSignedInPreferences(profile);
+    }
+
+    /**
+     * Inflates the page for the signed in user. Skipped when signed out, in which case onStart()
+     * finishes the page before anything reads the preferences set here.
+     */
+    @Initializer
+    private void initializeSignedInPreferences(Profile profile) {
         setHasOptionsMenu(true);
 
         setupAccountSettings(profile);
 
         mGoogleActivityControls = findPreference(PREF_GOOGLE_ACTIVITY_CONTROLS);
-        if (isEeaChoiceCountry()) {
+        if (mayShowLinkedGoogleServicesSetting()) {
             mGoogleActivityControls.setTitle(
                     R.string.sign_in_personalize_google_services_title_eea);
         }
@@ -271,6 +299,12 @@ public class ManageSyncSettings extends ChromeBaseSettingsFragment
     @Override
     public void onStart() {
         super.onStart();
+        // Nothing was inflated for a signed out user, and a sign out while the page was stopped
+        // leaves it describing an account that is gone. Either way there is no page to show.
+        if (isSignedOut()) {
+            finishCurrentSettings();
+            return;
+        }
         mSyncService.addSyncStateChangedListener(this);
         getIdentityManager().addObserver(this);
 
@@ -337,12 +371,19 @@ public class ManageSyncSettings extends ChromeBaseSettingsFragment
     @Override
     public void onPrimaryAccountChanged(PrimaryAccountChangeEvent eventDetails) {
         if (eventDetails.getEventTypeFor() == PrimaryAccountChangeEvent.Type.CLEARED) {
+            // This page and its settings (e.g. "Sign out") no longer exist, so settings search
+            // must stop offering them. If this page was opened from search results, closing it
+            // returns to the results, which are re-run against the rebuilt index.
+            SettingsIndexData indexData = SettingsIndexData.getInstance();
+            if (indexData != null) {
+                indexData.setNeedsIndexing();
+                indexData.setRefreshResult(true);
+            }
             finishCurrentSettings();
         }
     }
 
     private void setupAccountSettings(Profile profile) {
-        mPageTitle.set(getString(R.string.account_settings_title));
         SettingsUtils.addPreferencesFromResource(this, R.xml.unified_account_settings_preferences);
 
         setupCentralAccountCardPreference(profile);
@@ -352,6 +393,7 @@ public class ManageSyncSettings extends ChromeBaseSettingsFragment
         if (mSyncService.isSyncDisabledByEnterprisePolicy()) {
             setupSyncDisabledByAdministrator();
         }
+        setupSearchAiModeConnectedAppsPreference();
         setupReviewSyncDataPreference(PREF_ACCOUNT_DATA_DASHBOARD);
         setupAccountManagementPreferences();
         setupSwitchToIncognitoPreference(profile);
@@ -362,10 +404,29 @@ public class ManageSyncSettings extends ChromeBaseSettingsFragment
         CentralAccountCardPreference centralAccountCardPreference =
                 findPreference(PREF_CENTRAL_ACCOUNT_CARD_PREFERENCE);
         IdentityManager identityManager = getIdentityManager(profile);
+        ProfileDataCache profileDataCache;
+        if (SigninFeatureMap.getInstance().isAiTierRingInSettingsEnabled()) {
+            int imageSize =
+                    getResources()
+                            .getDimensionPixelSize(
+                                    R.dimen.account_management_picture_size_with_ai_tier_ring);
+            int ringThickness =
+                    getResources().getDimensionPixelSize(R.dimen.ai_tier_ring_thickness_large);
+            profileDataCache =
+                    ProfileDataCache.createWithAiTierRing(
+                            getContext(),
+                            identityManager,
+                            SubscriptionEligibilityServiceFactory.getForProfile(profile),
+                            mSyncService,
+                            imageSize,
+                            ringThickness);
+        } else {
+            profileDataCache =
+                    ProfileDataCache.create(
+                            getContext(), identityManager, R.dimen.account_management_picture_size);
+        }
         centralAccountCardPreference.initialize(
-                assumeNonNull(identityManager.getPrimaryAccountInfo()),
-                ProfileDataCache.createWithDefaultImageSizeAndNoBadge(
-                        getContext(), identityManager));
+                assumeNonNull(identityManager.getPrimaryAccountInfo()).getId(), profileDataCache);
     }
 
     private void setupIdentityErrorCardPreference(Profile profile) {
@@ -437,6 +498,18 @@ public class ManageSyncSettings extends ChromeBaseSettingsFragment
                 findPreference(PREF_SETTINGS_SYNC_DISABLED_BY_ADMINISTRATOR);
         settingsSyncDisabledByAdministrator.setDividerAllowedAbove(false);
         settingsSyncDisabledByAdministrator.setVisible(true);
+    }
+
+    private void setupSearchAiModeConnectedAppsPreference() {
+        Preference connectedApps = findPreference(PREF_SEARCH_AI_MODE_CONNECTED_APPS);
+        connectedApps.setOnPreferenceClickListener(
+                SyncSettingsUtils.toOnClickListener(
+                        this,
+                        () ->
+                                new ChromeAsyncTabLauncher(/* incognito= */ false)
+                                        .launchUrl(
+                                                SEARCH_AI_MODE_CONNECTED_APPS_URL,
+                                                TabLaunchType.FROM_CHROME_UI)));
     }
 
     private void setupReviewSyncDataPreference(String preference) {
@@ -718,7 +791,7 @@ public class ManageSyncSettings extends ChromeBaseSettingsFragment
     }
 
     private void onGoogleActivityControlsClicked(String signedInAccountName) {
-        if (isEeaChoiceCountry()) {
+        if (mayShowLinkedGoogleServicesSetting()) {
             SettingsNavigationFactory.createSettingsNavigation(getContext())
                     .startSettings(
                             getContext(),
@@ -855,14 +928,14 @@ public class ManageSyncSettings extends ChromeBaseSettingsFragment
         // done even if the user cancelled the flow (i.e. resultCode != RESULT_OK) because it's
         // harmless to issue a redundant notifyKeysChanged().
         if (requestCode == REQUEST_CODE_TRUSTED_VAULT_KEY_RETRIEVAL) {
-            TrustedVaultClient.get()
+            TrustedVaultClient.get(SecurityDomainId.CHROME_SYNC)
                     .notifyKeysChanged(TrustedVaultUserActionTriggerForUMA.SETTINGS);
             if (resultCode == Activity.RESULT_OK) {
                 mShouldUpdatePrefs = true;
             }
         }
         if (requestCode == REQUEST_CODE_TRUSTED_VAULT_RECOVERABILITY_DEGRADED) {
-            TrustedVaultClient.get().notifyRecoverabilityChanged();
+            TrustedVaultClient.get(SecurityDomainId.CHROME_SYNC).notifyRecoverabilityChanged();
         }
     }
 
@@ -883,6 +956,9 @@ public class ManageSyncSettings extends ChromeBaseSettingsFragment
             case UserActionableError.SIGN_IN_NEEDS_UPDATE:
                 AccountManagerFacadeProvider.getInstance()
                         .updateCredentials(primaryAccountInfo.getId(), getActivity(), null);
+                return;
+            case UserActionableError.DEVICE_MANAGEMENT_ERROR:
+                SyncSettingsUtils.openDeviceManagementResolution(getContext(), mSyncService);
                 return;
             case UserActionableError.NEEDS_CLIENT_UPGRADE:
                 // Opens the client in play store for update.
@@ -933,14 +1009,14 @@ public class ManageSyncSettings extends ChromeBaseSettingsFragment
         notifyPreferencesUpdated();
     }
 
-    private static boolean isEeaChoiceCountry(Profile profile) {
+    private static boolean mayShowLinkedGoogleServicesSetting(Profile profile) {
         RegionalCapabilitiesService regionalCapabilities =
                 RegionalCapabilitiesServiceFactory.getForProfile(profile);
-        return regionalCapabilities.isInEeaCountry();
+        return regionalCapabilities.mayShowLinkedGoogleServicesSetting();
     }
 
-    private boolean isEeaChoiceCountry() {
-        return isEeaChoiceCountry(getProfile());
+    private boolean mayShowLinkedGoogleServicesSetting() {
+        return mayShowLinkedGoogleServicesSetting(getProfile());
     }
 
     /**
@@ -949,7 +1025,8 @@ public class ManageSyncSettings extends ChromeBaseSettingsFragment
      * <p>This method is idempotent, i.e. it does nothing if it was called before.
      */
     private void finishCurrentSettings() {
-        SettingsNavigationFactory.createSettingsNavigation().finishCurrentSettings(this);
+        SettingsNavigationFactory.createSettingsNavigation(requireActivity())
+                .finishCurrentSettings(this);
     }
 
     @Override
@@ -973,6 +1050,11 @@ public class ManageSyncSettings extends ChromeBaseSettingsFragment
 
     private IdentityManager getIdentityManager() {
         return assumeNonNull(IdentityServicesProvider.get().getIdentityManager(getProfile()));
+    }
+
+    /** Whether there is no primary account, leaving this page with nothing to describe. */
+    private boolean isSignedOut() {
+        return !getIdentityManager().hasPrimaryAccount();
     }
 
     private FragmentTransaction beginTransaction() {
@@ -1016,7 +1098,7 @@ public class ManageSyncSettings extends ChromeBaseSettingsFragment
                     if (!shouldShowSwitchToIncognitoPref(profile)) {
                         indexData.removeEntryForKey(frag, PREF_SWITCH_TO_INCOGNITO);
                     }
-                    if (isEeaChoiceCountry(profile)) {
+                    if (mayShowLinkedGoogleServicesSetting(profile)) {
                         String activityControlsId = getUniqueId(PREF_GOOGLE_ACTIVITY_CONTROLS);
                         SettingsIndexData.Entry entry = indexData.getEntry(activityControlsId);
                         if (entry != null) {

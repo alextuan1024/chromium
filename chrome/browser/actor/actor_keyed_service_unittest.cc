@@ -11,12 +11,11 @@
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
 #include "base/test/bind.h"
-#include "base/test/metrics/histogram_tester.h"
-#include "base/test/run_until.h"
 #include "base/test/scoped_command_line.h"
+#include "chrome/browser/actor/actor_surface_handle.h"
+#include "chrome/browser/actor/actor_surface_registry.h"
 #include "chrome/browser/actor/actor_task.h"
 #include "chrome/browser/actor/actor_test_util.h"
-#include "chrome/browser/actor/enterprise_policy_checker.h"
 #include "chrome/browser/actor/execution_engine.h"
 #include "chrome/browser/actor/ui/event_dispatcher.h"
 #include "chrome/browser/actor/ui/test_support/mock_actor_ui_state_manager.h"
@@ -25,12 +24,12 @@
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile.h"
 #include "chrome/test/base/testing_profile_manager.h"
-#include "components/actor/core/actor_features.h"
 #include "components/actor/core/actor_switches.h"
 #include "components/actor/core/task_source_info.h"
 #include "components/actor/public/mojom/actor_types.mojom.h"
 #include "components/tabs/public/mock_tab_interface.h"
 #include "content/public/test/browser_task_environment.h"
+#include "content/public/test/test_renderer_host.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -81,10 +80,15 @@ class ActorKeyedServiceTest : public testing::Test {
   std::unique_ptr<tabs::MockTabInterface> CreateMockTab() {
     auto mock_tab = std::make_unique<tabs::MockTabInterface>();
     ON_CALL(*mock_tab, GetProfile).WillByDefault(testing::Return(profile()));
+    ActorKeyedService::Get(profile())->GetSurfaceRegistry().OnTabCreated(
+        *mock_tab);
     return mock_tab;
   }
 
   void RunTasksUntilIdle() { task_environment_.RunUntilIdle(); }
+  void FastForwardBy(base::TimeDelta delta) {
+    task_environment_.FastForwardBy(delta);
+  }
 
  protected:
   base::CallbackListSubscription user_confirmation_dialog_subscription_;
@@ -93,6 +97,9 @@ class ActorKeyedServiceTest : public testing::Test {
  private:
   base::test::ScopedFeatureList scoped_feature_list_;
   content::BrowserTaskEnvironment task_environment_;
+  // Lets ActorKeyedService::CreateHeadlessActorSurface() create a WebContents
+  // in this unit test.
+  content::RenderViewHostTestEnabler rvh_test_enabler_;
   std::unique_ptr<ui::ActorUiStateManagerInterface> ui_state_manager_;
   TestingProfileManager testing_profile_manager_;
   raw_ptr<TestingProfile> profile_;
@@ -307,7 +314,7 @@ TEST_F(ActorKeyedServiceTest, InitialTabAssociationOnCreate) {
   auto mock_tab = CreateMockTab();
   const tabs::TabHandle tab_handle = mock_tab->GetHandle();
   auto options = webui::mojom::TaskOptions::New();
-  options->actuation_tab_id = tab_handle.raw_value();
+  options->actuation_tab_id = ActorSurfaceHandle::From(tab_handle).raw_value();
 
   TaskId id = actor_service->CreateTaskWithOptions(
       TestTaskSourceInfo(), NoEnterprisePolicyChecker(), std::move(options),
@@ -319,6 +326,61 @@ TEST_F(ActorKeyedServiceTest, InitialTabAssociationOnCreate) {
   EXPECT_TRUE(task->IsActingOnTab(tab_handle));
   EXPECT_EQ(task->GetTabs().size(), 1u);
   EXPECT_TRUE(task->GetTabs().contains(tab_handle));
+}
+
+TEST_F(ActorKeyedServiceTest, InitialHeadlessSurfaceAssociationOnCreate) {
+  auto* actor_service = ActorKeyedService::Get(profile());
+  ScopedHeadlessActorSurface headless =
+      actor_service->CreateHeadlessActorSurface();
+  const ActorSurfaceHandle handle = headless.actor_surface_handle();
+  auto options = webui::mojom::TaskOptions::New();
+  options->actuation_tab_id = handle.raw_value();
+
+  TaskId id = actor_service->CreateTaskWithOptions(
+      TestTaskSourceInfo(), NoEnterprisePolicyChecker(), std::move(options),
+      /*delegate=*/nullptr, ui_state_manager());
+
+  ActorTask* task = actor_service->GetTask(id);
+  ASSERT_TRUE(task);
+  EXPECT_TRUE(task->HasActorSurface(handle));
+  EXPECT_TRUE(task->IsActingOnActorSurface(handle));
+}
+
+// `actuation_tab_id` can come from the web client, so a surface ID that another
+// profile owns must not be attached to the task.
+TEST_F(ActorKeyedServiceTest, InitialSurfaceFromOtherProfileNotAssociated) {
+  TestingProfile* other_profile =
+      testing_profile_manager()->CreateTestingProfile("other_profile");
+  ScopedHeadlessActorSurface other_headless =
+      ActorKeyedService::Get(other_profile)->CreateHeadlessActorSurface();
+  auto options = webui::mojom::TaskOptions::New();
+  options->actuation_tab_id = other_headless.actor_surface_handle().raw_value();
+
+  auto* actor_service = ActorKeyedService::Get(profile());
+  TaskId id = actor_service->CreateTaskWithOptions(
+      TestTaskSourceInfo(), NoEnterprisePolicyChecker(), std::move(options),
+      /*delegate=*/nullptr, ui_state_manager());
+
+  ActorTask* task = actor_service->GetTask(id);
+  ASSERT_TRUE(task);
+  EXPECT_TRUE(task->GetActorSurfaces().empty());
+}
+
+// ActorTask::AddActorSurface() does not attach a surface ID that resolves to no
+// surface, but CreateTaskImpl() still creates the task.
+TEST_F(ActorKeyedServiceTest, InitialUnknownSurfaceNotAssociated) {
+  auto options = webui::mojom::TaskOptions::New();
+  options->actuation_tab_id =
+      ActorSurfaceHandle::CreateForTesting().raw_value();
+
+  auto* actor_service = ActorKeyedService::Get(profile());
+  TaskId id = actor_service->CreateTaskWithOptions(
+      TestTaskSourceInfo(), NoEnterprisePolicyChecker(), std::move(options),
+      /*delegate=*/nullptr, ui_state_manager());
+
+  ActorTask* task = actor_service->GetTask(id);
+  ASSERT_TRUE(task);
+  EXPECT_TRUE(task->GetActorSurfaces().empty());
 }
 
 TEST_F(ActorKeyedServiceTest, TraceRecordingToFile) {
@@ -379,6 +441,222 @@ TEST_F(ActorKeyedServiceTest, TraceRecordingToDirectory) {
   std::optional<int64_t> file_size = base::GetFileSize(expected_trace_file);
   ASSERT_TRUE(file_size.has_value());
   EXPECT_GT(*file_size, 0);
+}
+
+TEST_F(ActorKeyedServiceTest, PendingTasksLifecycle) {
+  auto* actor_service = ActorKeyedService::Get(profile());
+  ASSERT_TRUE(actor_service);
+
+  EXPECT_EQ(0u, actor_service->GetPendingTasksCount());
+  EXPECT_FALSE(actor_service->HasPendingTask("msg-1"));
+
+  int notification_call_count = 0;
+  size_t last_notified_count = 999;
+  base::CallbackListSubscription subscription =
+      actor_service->AddPendingTaskCountChangedCallback(
+          base::BindLambdaForTesting([&](size_t count) {
+            notification_call_count++;
+            last_notified_count = count;
+          }));
+
+  std::vector<std::string> added_tasks;
+  base::CallbackListSubscription added_subscription =
+      actor_service->AddPendingTaskAddedCallback(
+          base::BindLambdaForTesting([&](const std::string& context_id) {
+            added_tasks.push_back(context_id);
+          }));
+
+  // Adding a pending task fires notification.
+  actor_service->AddPendingTask("msg-1");
+  EXPECT_EQ(1, notification_call_count);
+  EXPECT_EQ(1u, actor_service->GetPendingTasksCount());
+  EXPECT_TRUE(actor_service->HasPendingTask("msg-1"));
+  EXPECT_EQ(1u, last_notified_count);
+  EXPECT_THAT(added_tasks, testing::ElementsAre("msg-1"));
+
+  // Duplicate addition is ignored and does NOT fire notification.
+  actor_service->AddPendingTask("msg-1");
+  EXPECT_EQ(1, notification_call_count);
+  EXPECT_EQ(1u, actor_service->GetPendingTasksCount());
+  EXPECT_THAT(added_tasks, testing::ElementsAre("msg-1"));
+
+  // Second pending task.
+  actor_service->AddPendingTask("msg-2");
+  EXPECT_EQ(2, notification_call_count);
+  EXPECT_EQ(2u, actor_service->GetPendingTasksCount());
+  EXPECT_EQ(2u, last_notified_count);
+  EXPECT_THAT(added_tasks, testing::ElementsAre("msg-1", "msg-2"));
+
+  // Remove first pending task.
+  actor_service->RemovePendingTask("msg-1");
+  EXPECT_EQ(3, notification_call_count);
+  EXPECT_EQ(1u, actor_service->GetPendingTasksCount());
+  EXPECT_FALSE(actor_service->HasPendingTask("msg-1"));
+  EXPECT_TRUE(actor_service->HasPendingTask("msg-2"));
+  EXPECT_EQ(1u, last_notified_count);
+
+  // Remove second pending task.
+  actor_service->RemovePendingTask("msg-2");
+  EXPECT_EQ(4, notification_call_count);
+  EXPECT_EQ(0u, actor_service->GetPendingTasksCount());
+  EXPECT_EQ(0u, last_notified_count);
+
+  // Adding without background setup updates the count but skips the added
+  // callback.
+  actor_service->AddPendingTaskWithoutBackgroundSetup("msg-no-notify");
+  EXPECT_EQ(5, notification_call_count);
+  EXPECT_EQ(1u, actor_service->GetPendingTasksCount());
+  EXPECT_TRUE(actor_service->HasPendingTask("msg-no-notify"));
+  EXPECT_EQ(1u, last_notified_count);
+  EXPECT_THAT(added_tasks, testing::ElementsAre("msg-1", "msg-2"));
+
+  actor_service->RemovePendingTask("msg-no-notify");
+  EXPECT_EQ(6, notification_call_count);
+  EXPECT_EQ(0u, actor_service->GetPendingTasksCount());
+}
+
+TEST_F(ActorKeyedServiceTest, PendingTaskRemovedOnFailureAndCancellation) {
+  auto* actor_service = ActorKeyedService::Get(profile());
+  ASSERT_TRUE(actor_service);
+
+  // 1. Verify NotifyBackgroundSetupFailed removes the pending task.
+  actor_service->AddPendingTask("fail-msg");
+  EXPECT_EQ(1u, actor_service->GetPendingTasksCount());
+  EXPECT_TRUE(actor_service->HasPendingTask("fail-msg"));
+
+  actor_service->NotifyBackgroundSetupFailed("fail-msg");
+  EXPECT_EQ(0u, actor_service->GetPendingTasksCount());
+  EXPECT_FALSE(actor_service->HasPendingTask("fail-msg"));
+
+  // 2. Verify OnMessageTriggerTaskStopped removes the pending task.
+  actor_service->AddPendingTask("cancel-msg");
+  EXPECT_EQ(1u, actor_service->GetPendingTasksCount());
+  EXPECT_TRUE(actor_service->HasPendingTask("cancel-msg"));
+
+  actor_service->OnMessageTriggerTaskStopped("cancel-msg");
+  EXPECT_EQ(0u, actor_service->GetPendingTasksCount());
+  EXPECT_FALSE(actor_service->HasPendingTask("cancel-msg"));
+}
+
+TEST_F(ActorKeyedServiceTest, ExternalTriggerTimesOutWhenNoTaskArrives) {
+  auto* actor_service = ActorKeyedService::Get(profile());
+  ASSERT_TRUE(actor_service);
+
+  size_t last_notified_count = 99;
+  int added_callback_count = 0;
+  base::CallbackListSubscription count_subscription =
+      actor_service->AddPendingTaskCountChangedCallback(
+          base::BindLambdaForTesting(
+              [&](size_t count) { last_notified_count = count; }));
+  base::CallbackListSubscription added_subscription =
+      actor_service->AddPendingTaskAddedCallback(base::BindLambdaForTesting(
+          [&](const std::string&) { ++added_callback_count; }));
+
+  actor_service->AddExternalTriggerPendingTask(base::Minutes(2));
+  EXPECT_TRUE(actor_service->HasExternalTriggerPendingTaskForTesting());
+  EXPECT_EQ(1u, actor_service->GetPendingTasksCount());
+  EXPECT_EQ(1u, last_notified_count);
+  EXPECT_EQ(0, added_callback_count);
+
+  // Advance by 1 minute: external trigger is still within its 2-minute window.
+  FastForwardBy(base::Minutes(1));
+  EXPECT_TRUE(actor_service->HasExternalTriggerPendingTaskForTesting());
+  EXPECT_EQ(1u, actor_service->GetPendingTasksCount());
+
+  // Advance to 2 minutes: external trigger expires and drops pending count to
+  // 0 so the foreground service stops cleanly.
+  FastForwardBy(base::Minutes(1));
+  EXPECT_FALSE(actor_service->HasExternalTriggerPendingTaskForTesting());
+  EXPECT_EQ(0u, actor_service->GetPendingTasksCount());
+  EXPECT_EQ(0u, last_notified_count);
+  EXPECT_EQ(0, added_callback_count);
+}
+
+TEST_F(ActorKeyedServiceTest,
+       ExternalTriggerHandsOffAtomicallyToFcmPendingTaskWithoutTimeout) {
+  auto* actor_service = ActorKeyedService::Get(profile());
+  ASSERT_TRUE(actor_service);
+
+  std::vector<size_t> observed_counts;
+  std::vector<std::string> provisioned_contexts;
+  base::CallbackListSubscription count_subscription =
+      actor_service->AddPendingTaskCountChangedCallback(
+          base::BindLambdaForTesting(
+              [&](size_t count) { observed_counts.push_back(count); }));
+  base::CallbackListSubscription added_subscription =
+      actor_service->AddPendingTaskAddedCallback(base::BindLambdaForTesting(
+          [&](const std::string& id) { provisioned_contexts.push_back(id); }));
+
+  // External Gemini intent arrives at t = 0s.
+  actor_service->AddExternalTriggerPendingTask(base::Minutes(2));
+  EXPECT_EQ(1u, actor_service->GetPendingTasksCount());
+  EXPECT_THAT(observed_counts, testing::ElementsAre(1u));
+  EXPECT_TRUE(provisioned_contexts.empty());
+  EXPECT_FALSE(actor_service->HasPendingTask("fcm-context-1"));
+
+  // FCM TriggerActuationRequest arrives at t = 5s: pending count stays at 1
+  // without dropping to 0, and the external trigger timeout is cancelled.
+  FastForwardBy(base::Seconds(5));
+  actor_service->AddPendingTask("fcm-context-1");
+  EXPECT_FALSE(actor_service->HasExternalTriggerPendingTaskForTesting());
+  EXPECT_TRUE(actor_service->HasPendingTask("fcm-context-1"));
+  EXPECT_EQ(1u, actor_service->GetPendingTasksCount());
+  EXPECT_THAT(observed_counts, testing::ElementsAre(1u));
+  EXPECT_THAT(provisioned_contexts, testing::ElementsAre("fcm-context-1"));
+
+  // Even if WebUI loading + server planning exceeds 2 minutes, the FCM pending
+  // task remains alive until explicitly resolved by Glic/server.
+  FastForwardBy(base::Minutes(3));
+  EXPECT_TRUE(actor_service->HasPendingTask("fcm-context-1"));
+  EXPECT_EQ(1u, actor_service->GetPendingTasksCount());
+
+  actor_service->RemovePendingTask("fcm-context-1");
+  EXPECT_EQ(0u, actor_service->GetPendingTasksCount());
+  EXPECT_THAT(observed_counts, testing::ElementsAre(1u, 0u));
+}
+
+TEST_F(ActorKeyedServiceTest,
+       RepeatedExternalTriggerRefreshesTimeoutWithoutDoubleCounting) {
+  auto* actor_service = ActorKeyedService::Get(profile());
+  ASSERT_TRUE(actor_service);
+
+  actor_service->AddExternalTriggerPendingTask(base::Minutes(2));
+  EXPECT_EQ(1u, actor_service->GetPendingTasksCount());
+
+  // Re-trigger at t = 45s resets the 2-minute window without double counting.
+  FastForwardBy(base::Seconds(45));
+  actor_service->AddExternalTriggerPendingTask(base::Minutes(2));
+  EXPECT_EQ(1u, actor_service->GetPendingTasksCount());
+
+  // Still pending at t = 120s (75s into second trigger).
+  FastForwardBy(base::Seconds(75));
+  EXPECT_TRUE(actor_service->HasExternalTriggerPendingTaskForTesting());
+  EXPECT_EQ(1u, actor_service->GetPendingTasksCount());
+
+  // Expires cleanly at t = 165s (120s after second trigger).
+  FastForwardBy(base::Seconds(45));
+  EXPECT_FALSE(actor_service->HasExternalTriggerPendingTaskForTesting());
+  EXPECT_EQ(0u, actor_service->GetPendingTasksCount());
+}
+
+TEST_F(ActorKeyedServiceTest,
+       DirectCreateTaskClearsExternalTriggerPendingTask) {
+  auto* actor_service = ActorKeyedService::Get(profile());
+  ASSERT_TRUE(actor_service);
+
+  actor_service->AddExternalTriggerPendingTask(base::Minutes(2));
+  EXPECT_TRUE(actor_service->HasExternalTriggerPendingTaskForTesting());
+  EXPECT_EQ(1u, actor_service->GetPendingTasksCount());
+
+  TaskId task_id = actor_service->CreateTaskWithOptions(
+      TestTaskSourceInfo(), NoEnterprisePolicyChecker(), /*options=*/nullptr,
+      /*delegate=*/nullptr, ui_state_manager());
+  EXPECT_FALSE(actor_service->HasExternalTriggerPendingTaskForTesting());
+  EXPECT_EQ(0u, actor_service->GetPendingTasksCount());
+  EXPECT_EQ(1u, actor_service->GetActiveTasksCount());
+
+  actor_service->StopTask(task_id, ActorTask::StoppedReason::kTaskComplete);
+  EXPECT_EQ(0u, actor_service->GetPendingTasksCount());
 }
 
 }  // namespace

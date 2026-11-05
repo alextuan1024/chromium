@@ -4,6 +4,7 @@
 
 package org.chromium.chrome.browser.download;
 
+import static org.chromium.build.NullUtil.assertNonNull;
 import static org.chromium.build.NullUtil.assumeNonNull;
 
 import android.content.Context;
@@ -165,28 +166,6 @@ public class DownloadMessageUiControllerImpl implements DownloadMessageUiControl
         int ANIMATED_VECTOR_DRAWABLE = 2;
     }
 
-    /** Represents the values for the histogram Download.Incognito.Message. */
-    @IntDef({
-        IncognitoMessageEvent.SHOWN,
-        IncognitoMessageEvent.ACCEPTED,
-        IncognitoMessageEvent.DISMISSED_WITH_GESTURE,
-        IncognitoMessageEvent.DISMISSED_WITH_TIMER,
-        IncognitoMessageEvent.NUM_ENTRIES,
-        IncognitoMessageEvent.DISMISSED_WITH_DIFFERENT_REASON,
-        IncognitoMessageEvent.NOT_SHOWN_NULL_MESSAGE_DISPATCHER
-    })
-    @Retention(RetentionPolicy.SOURCE)
-    private @interface IncognitoMessageEvent {
-        int SHOWN = 0;
-        int ACCEPTED = 1;
-        int DISMISSED_WITH_GESTURE = 2;
-        int DISMISSED_WITH_TIMER = 3;
-        int DISMISSED_WITH_DIFFERENT_REASON = 4;
-        int NOT_SHOWN_NULL_MESSAGE_DISPATCHER = 5;
-
-        int NUM_ENTRIES = 6;
-    }
-
     /** Represents the data required to show UI elements of the message. */
     static class DownloadProgressMessageUiData {
         public @Nullable ContentId id;
@@ -225,9 +204,8 @@ public class DownloadMessageUiControllerImpl implements DownloadMessageUiControl
         @Override
         public boolean equals(@Nullable Object obj) {
             if (obj == this) return true;
-            if (!(obj instanceof DownloadProgressMessageUiData)) return false;
+            if (!(obj instanceof DownloadProgressMessageUiData other)) return false;
 
-            DownloadProgressMessageUiData other = (DownloadProgressMessageUiData) obj;
             return Objects.equals(id, other.id)
                     && TextUtils.equals(message, other.message)
                     && TextUtils.equals(description, other.description)
@@ -305,9 +283,8 @@ public class DownloadMessageUiControllerImpl implements DownloadMessageUiControl
         @Override
         public boolean equals(@Nullable Object obj) {
             if (obj == this) return true;
-            if (!(obj instanceof DownloadCount)) return false;
+            if (!(obj instanceof DownloadCount other)) return false;
 
-            DownloadCount other = (DownloadCount) obj;
             return inProgress == other.inProgress
                     && pending == other.pending
                     && failed == other.failed
@@ -368,12 +345,16 @@ public class DownloadMessageUiControllerImpl implements DownloadMessageUiControl
     }
 
     /**
-     * Shows the message that download has started. Unlike other methods in this class, this
-     * method doesn't require an {@link OfflineItem} and is invoked by the backend to provide a
-     * responsive feedback to the users even before the download has actually started.
+     * Shows the message that download has started. Unlike other methods in this class, this method
+     * doesn't require an {@link OfflineItem} and is invoked by the backend to provide a responsive
+     * feedback to the users even before the download has actually started.
      */
     @Override
     public void onDownloadStarted() {
+        // The download toolbar button provides this feedback when enabled.
+        if (DownloadFeatures.isDownloadToolbarButtonEnabled()) {
+            return;
+        }
         computeNextStepForUpdate(null, true, false, false);
     }
 
@@ -388,7 +369,7 @@ public class DownloadMessageUiControllerImpl implements DownloadMessageUiControl
         Context context = ContextUtils.getApplicationContext();
 
         if (window == null) {
-            mDelegate.maybeSwitchToFocusedActivity();
+            maybeSwitchToFocusedActivity();
         }
 
         MessageDispatcher dispatcher =
@@ -399,7 +380,6 @@ public class DownloadMessageUiControllerImpl implements DownloadMessageUiControl
             // When the message dispatcher is null we don't want to block the download, hence
             // we mimic the accepted workflow.
             callback.onResult(/* result= */ true);
-            recordIncognitoDownloadMessage(IncognitoMessageEvent.NOT_SHOWN_NULL_MESSAGE_DISPATCHER);
             return;
         }
 
@@ -426,31 +406,20 @@ public class DownloadMessageUiControllerImpl implements DownloadMessageUiControl
                 MessageBannerProperties.ON_PRIMARY_ACTION,
                 () -> {
                     callback.onResult(/* result= */ true);
-                    recordIncognitoDownloadMessage(IncognitoMessageEvent.ACCEPTED);
                     return PrimaryActionClickBehavior.DISMISS_IMMEDIATELY;
                 });
         propertyModel.set(
                 MessageBannerProperties.ON_DISMISSED,
                 (dismissReason) -> {
-                    if (dismissReason == DismissReason.TIMER) {
-                        recordIncognitoDownloadMessage(IncognitoMessageEvent.DISMISSED_WITH_TIMER);
-                    } else if (dismissReason == DismissReason.GESTURE) {
-                        recordIncognitoDownloadMessage(
-                                IncognitoMessageEvent.DISMISSED_WITH_GESTURE);
-                    } else if (dismissReason == DismissReason.PRIMARY_ACTION) {
+                    if (dismissReason == DismissReason.PRIMARY_ACTION) {
                         // Dismissal triggered by ON_PRIMARY_ACTION handler, which is already
-                        // running the download callback. Here we need to not record this action
-                        // into the dismiss reasons buckets.
+                        // running the download callback.
                         return;
-                    } else {
-                        recordIncognitoDownloadMessage(
-                                IncognitoMessageEvent.DISMISSED_WITH_DIFFERENT_REASON);
                     }
                     callback.onResult(/* result= */ false);
                 });
 
         dispatcher.enqueueWindowScopedMessage(propertyModel, /* highPriority= */ true);
-        recordIncognitoDownloadMessage(IncognitoMessageEvent.SHOWN);
     }
 
     /** Associates a notification ID with the tracked download for future usage. */
@@ -575,6 +544,16 @@ public class DownloadMessageUiControllerImpl implements DownloadMessageUiControl
             return false;
         }
 
+        // When the download toolbar button is enabled it conveys progress and completion, so those
+        // messages are suppressed. Safety warnings above and failures (including enterprise
+        // FILE_BLOCKED) are still shown because the button has no way to communicate them.
+        // TODO(crbug.com/570647830): Split the progress/complete UI out of this controller so it
+        // can be skipped entirely instead of flag-guarded here and in onDownloadStarted().
+        if (DownloadFeatures.isDownloadToolbarButtonEnabled()
+                && offlineItem.state != OfflineItemState.FAILED) {
+            return false;
+        }
+
         if (LegacyHelpers.isLegacyDownload(offlineItem.id)) {
             boolean shouldNotify =
                     offlineItem.state == OfflineItemState.FAILED
@@ -614,11 +593,15 @@ public class DownloadMessageUiControllerImpl implements DownloadMessageUiControl
         }
 
         preProcessUpdatedItem(updatedItem);
+        // A download displayed as dangerous is held pending the user's decision, so it is a result
+        // (see getDownloadCount()) rather than a new download, even if this is the first update
+        // seen for it.
         boolean isNewDownload =
                 forceShowDownloadStarted
                         || (updatedItem != null
                                 && updatedItem.state == OfflineItemState.IN_PROGRESS
-                                && !mSeenItems.contains(updatedItem.id));
+                                && !mSeenItems.contains(updatedItem.id)
+                                && !shouldDisplayItemAsDangerousInMessage(updatedItem));
         boolean itemResumedFromPending = itemResumedFromPending(updatedItem);
         boolean itemValidatedAfterDangerous = itemValidatedAfterDangerous(updatedItem);
 
@@ -755,11 +738,16 @@ public class DownloadMessageUiControllerImpl implements DownloadMessageUiControl
     /**
      * Prepares the message to show the next state. This includes setting the message title,
      * description, icon, and action.
+     *
      * @param uiState The UI state to be shown.
      * @param resultState The state of the corresponding offline items to be shown.
      */
     private void createMessageForState(@UiState int uiState, @ResultState int resultState) {
-        if (getContext() == null) return;
+        maybeSwitchToFocusedActivity();
+        if (getContext() == null || getMessageDispatcher() == null) {
+            clearCurrentMessage();
+            return;
+        }
         DownloadProgressMessageUiData info = new DownloadProgressMessageUiData();
 
         @PluralsRes int stringRes = -1;
@@ -961,18 +949,14 @@ public class DownloadMessageUiControllerImpl implements DownloadMessageUiControl
      * Central function called to show the message UI. If the previous message has been dismissed,
      * it will be recreated only if |info.forceShow| is true. If the message hasn't been dismissed,
      * it will be simply updated.
+     *
      * @param state The state of the message to be shown.
      * @param info Contains the information to be displayed in the UI.
      */
     @VisibleForTesting
     protected void showMessage(@UiState int state, DownloadProgressMessageUiData info) {
-        if (mDelegate.maybeSwitchToFocusedActivity()) {
-            closePreviousMessage();
-        }
-
-        boolean shouldShowMessage =
-                getMessageDispatcher() != null && (info.forceShow || mPropertyModel != null);
-        if (!shouldShowMessage) return;
+        final MessageDispatcher dispatcher = getMessageDispatcher();
+        if (dispatcher == null || (!info.forceShow && mPropertyModel == null)) return;
 
         recordMessageState(state, info);
 
@@ -1026,16 +1010,14 @@ public class DownloadMessageUiControllerImpl implements DownloadMessageUiControl
         mPropertyModel.set(
                 MessageBannerProperties.ON_PRIMARY_ACTION,
                 () -> onPrimaryAction(info.id, info.ignoreAction));
-        final MessageDispatcher dispatcher = getMessageDispatcher();
         mDismissRunnable =
                 () -> {
-                    if (dispatcher == null || mPropertyModel == null) return;
+                    if (mPropertyModel == null) return;
                     dispatcher.dismissMessage(mPropertyModel, DismissReason.SCOPE_DESTROYED);
                 };
 
         if (updateOnly) return;
-        assumeNonNull(dispatcher)
-                .enqueueWindowScopedMessage(mPropertyModel, /* highPriority= */ false);
+        dispatcher.enqueueWindowScopedMessage(mPropertyModel, /* highPriority= */ false);
     }
 
     @VisibleForTesting
@@ -1045,6 +1027,19 @@ public class DownloadMessageUiControllerImpl implements DownloadMessageUiControl
             mDismissRunnable = null;
         }
         mPropertyModel = null;
+    }
+
+    private void clearCurrentMessage() {
+        closePreviousMessage();
+        mCurrentInfo = null;
+        clearEndTimerRunnable();
+    }
+
+    private void maybeSwitchToFocusedActivity() {
+        if (mDelegate.maybeSwitchToFocusedActivity()) {
+            closePreviousMessage();
+            mCurrentInfo = null;
+        }
     }
 
     private Context getContext() {
@@ -1180,7 +1175,9 @@ public class DownloadMessageUiControllerImpl implements DownloadMessageUiControl
             // item.
             mDelegate.openDownloadsPage(
                     getOtrProfileIdFromItems(
-                            itemId == null ? mTrackedItems.values() : List.of(offlineItem)),
+                            itemId == null
+                                    ? mTrackedItems.values()
+                                    : List.of(assertNonNull(offlineItem))),
                     DownloadOpenSource.DOWNLOAD_PROGRESS_MESSAGE);
         }
         recordLinkClicked(shouldOpenItem);
@@ -1270,15 +1267,6 @@ public class DownloadMessageUiControllerImpl implements DownloadMessageUiControl
         } else {
             RecordUserAction.record("Android.Download.InfoBar.LinkClicked.OpenDownloadHome");
         }
-    }
-
-    /**
-     * Collects incognito download message event metrics.
-     * @param event The UI event to collect.
-     */
-    private static void recordIncognitoDownloadMessage(@IncognitoMessageEvent int event) {
-        RecordHistogram.recordEnumeratedHistogram(
-                "Download.Incognito.Message", event, IncognitoMessageEvent.NUM_ENTRIES);
     }
 
     /**

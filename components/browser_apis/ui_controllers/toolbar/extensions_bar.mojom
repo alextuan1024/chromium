@@ -23,22 +23,15 @@ interface PageHandlerFactory {
 // Browser-side handler for requests from WebUI page.
 interface PageHandler {
   // Runs the action with given ID.
-  // `is_pointer_interaction` is true if the action was triggered by a pointer
-  // interaction (mouse, touch, etc.) rather than a keyboard interaction.
-  ExecuteUserAction(string id, bool is_pointer_interaction);
-
-  // Called when an extension button is pressed.
-  OnPointerDown(string id);
+  ExecuteUserAction(ExtensionActionId id);
 
   // Show the context menu for the toolbar button corresponding to the
   // given action ID. `source` denotes the type of input that produced the
   // request.
-  ShowContextMenu(ui.mojom.MenuSourceType source, string id);
+  ShowContextMenu(ui.mojom.MenuSourceType source, ExtensionActionId id);
 
   // Asks the browser to flip show/hide status of extensions menu.
-  // `is_pointer_interaction` is true if the action was triggered by a pointer
-  // interaction (mouse, touch, etc.) rather than a keyboard interaction.
-  ToggleExtensionsMenuFromWebUI(bool is_pointer_interaction);
+  ToggleExtensionsMenuFromWebUI();
 };
 
 // WebUI-side handler for requests from the browser.

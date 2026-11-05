@@ -9,7 +9,10 @@
 
 #include <xf86drm.h>
 
+#include <array>
+
 #include "base/compiler_specific.h"
+#include "base/containers/to_vector.h"
 #include "base/files/file_path.h"
 #include "base/strings/stringprintf.h"
 #include "base/test/metrics/histogram_tester.h"
@@ -132,13 +135,14 @@ constexpr char kTestOnlyModesetFallbacksAttemptedTwoDisplaysMetric[] =
     "ConfigureDisplays.Modeset.Test.DynamicCRTCs.TwoDisplays."
     "PermutationsAttempted";
 
-const std::vector<ResolutionAndRefreshRate> kStandardModes = {
-    ResolutionAndRefreshRate{gfx::Size(3840, 2160), 60u},
-    ResolutionAndRefreshRate{gfx::Size(3840, 2160), 50u},
-    ResolutionAndRefreshRate{gfx::Size(3840, 2160), 30u},
-    ResolutionAndRefreshRate{gfx::Size(1920, 1080), 60u},
-    ResolutionAndRefreshRate{gfx::Size(1920, 1080), 50u},
-    ResolutionAndRefreshRate{gfx::Size(1920, 1080), 30u}};
+constexpr auto kStandardModes = std::to_array<ResolutionAndRefreshRate>({
+    {gfx::Size(3840, 2160), 60u},
+    {gfx::Size(3840, 2160), 50u},
+    {gfx::Size(3840, 2160), 30u},
+    {gfx::Size(1920, 1080), 60u},
+    {gfx::Size(1920, 1080), 50u},
+    {gfx::Size(1920, 1080), 30u},
+});
 
 enum class TestOnlyModesetOutcome {
   kSuccess = 0,
@@ -548,7 +552,7 @@ TEST_F(DrmGpuDisplayManagerTest, TestEdidIdConflictResolution) {
 
     auto& connector = fake_drm->AddConnector();
     connector.connection = true;
-    connector.modes = kStandardModes;
+    connector.modes = base::ToVector(kStandardModes);
     connector.encoders = std::vector<uint32_t>{encoder.id};
     connector.edid_blob = std::vector<uint8_t>(
         kNoSerialNumberDisplay,
@@ -563,7 +567,7 @@ TEST_F(DrmGpuDisplayManagerTest, TestEdidIdConflictResolution) {
 
     auto& connector = fake_drm->AddConnector();
     connector.connection = true;
-    connector.modes = kStandardModes;
+    connector.modes = base::ToVector(kStandardModes);
     connector.encoders = std::vector<uint32_t>{encoder.id};
     connector.edid_blob = std::vector<uint8_t>(
         kNoSerialNumberDisplay,
@@ -591,6 +595,75 @@ TEST_F(DrmGpuDisplayManagerTest, TestEdidIdConflictResolution) {
   const int64_t unresolved_display_id2 =
       display_snapshots[2]->edid_display_id() & 0xffffffff;
   ASSERT_EQ(unresolved_display_id1, unresolved_display_id2);
+}
+
+class DrmGpuDisplayManagerSerialNumberIdentifierTest
+    : public DrmGpuDisplayManagerTest {
+ protected:
+  static constexpr char kMetric[] =
+      "Display.MultipleDisplays.GenerateId.SerialNumberIdentifierCollision";
+
+  // `kHPz32x` has a placeholder block zero serial number (0x01010101) and a
+  // valid serial number descriptor ("CNC7270MW0").
+  static std::vector<uint8_t> HpZ32x() {
+    return std::vector<uint8_t>(std::begin(kHPz32x), std::end(kHPz32x));
+  }
+
+  // `kHPz32x` with a different serial number descriptor ("DNC7270MW0").
+  static std::vector<uint8_t> HpZ32xWithOtherSerialNumber() {
+    constexpr size_t kSerialNumberDescriptorTextOffset = 113u;
+    std::vector<uint8_t> edid = HpZ32x();
+    CHECK_EQ(edid[kSerialNumberDescriptorTextOffset], 'C');
+    edid[kSerialNumberDescriptorTextOffset] = 'D';
+    return edid;
+  }
+
+  static std::vector<uint8_t> NoSerialNumber() {
+    return std::vector<uint8_t>(std::begin(kNoSerialNumberDisplay),
+                                std::end(kNoSerialNumberDisplay));
+  }
+
+  // Connects displays with `edids` to a new DRM device and gets the displays.
+  void ConnectDisplays(const std::vector<std::vector<uint8_t>>& edids) {
+    auto fake_drm = AddDrmDevice();
+    fake_drm->ResetStateWithAllProperties();
+    uint32_t possible_crtcs = 0b1;
+    for (const auto& edid : edids) {
+      fake_drm->AddCrtcWithPrimaryAndCursorPlanes();
+      auto& encoder = fake_drm->AddEncoder();
+      encoder.possible_crtcs = possible_crtcs;
+      possible_crtcs <<= 1;
+      auto& connector = fake_drm->AddConnector();
+      connector.connection = true;
+      connector.modes = base::ToVector(kStandardModes);
+      connector.encoders = std::vector<uint32_t>{encoder.id};
+      connector.edid_blob = edid;
+    }
+    fake_drm->InitializeState(/*use_atomic=*/true);
+    ASSERT_EQ(drm_gpu_display_manager_->GetDisplays().size(), edids.size());
+  }
+};
+
+TEST_F(DrmGpuDisplayManagerSerialNumberIdentifierTest, SameSerialNumber) {
+  ConnectDisplays({HpZ32x(), HpZ32x()});
+  histogram_tester_.ExpectUniqueSample(kMetric, true, 1);
+}
+
+TEST_F(DrmGpuDisplayManagerSerialNumberIdentifierTest, DifferentSerialNumbers) {
+  ConnectDisplays({HpZ32x(), HpZ32xWithOtherSerialNumber()});
+  histogram_tester_.ExpectUniqueSample(kMetric, false, 1);
+}
+
+// Not recorded when only one display has a serial number based identifier.
+TEST_F(DrmGpuDisplayManagerSerialNumberIdentifierTest, OneIdentifier) {
+  ConnectDisplays({HpZ32x(), NoSerialNumber()});
+  histogram_tester_.ExpectTotalCount(kMetric, 0);
+}
+
+// Displays without valid serial numbers are excluded.
+TEST_F(DrmGpuDisplayManagerSerialNumberIdentifierTest, NoIdentifier) {
+  ConnectDisplays({NoSerialNumber(), NoSerialNumber()});
+  histogram_tester_.ExpectTotalCount(kMetric, 0);
 }
 
 class DrmGpuDisplayManagerMockedDeviceTest : public DrmGpuDisplayManagerTest {
@@ -639,7 +712,7 @@ TEST_F(DrmGpuDisplayManagerMockedDeviceTest,
 
     auto& connector = drm->AddConnector();
     connector.connection = true;
-    connector.modes = kStandardModes;
+    connector.modes = base::ToVector(kStandardModes);
     connector.encoders = std::vector<uint32_t>{encoder.id};
 
     small_display_connector_id = connector.id;
@@ -757,7 +830,7 @@ TEST_F(DrmGpuDisplayManagerMockedDeviceTest,
 
     auto& connector = drm->AddConnector();
     connector.connection = true;
-    connector.modes = kStandardModes;
+    connector.modes = base::ToVector(kStandardModes);
     connector.encoders = std::vector<uint32_t>{encoder.id};
 
     secondary_connector_id = connector.id;
@@ -846,7 +919,7 @@ TEST_F(DrmGpuDisplayManagerMockedDeviceTest,
 
     auto& connector = drm->AddConnector();
     connector.connection = true;
-    connector.modes = kStandardModes;
+    connector.modes = base::ToVector(kStandardModes);
     connector.encoders = std::vector<uint32_t>{encoder.id};
   }
 
@@ -906,7 +979,7 @@ TEST_F(DrmGpuDisplayManagerMockedDeviceTest,
 
     auto& connector = drm->AddConnector();
     connector.connection = true;
-    connector.modes = kStandardModes;
+    connector.modes = base::ToVector(kStandardModes);
     connector.encoders = std::vector<uint32_t>{encoder.id};
 
     secondary_connector_id = connector.id;
@@ -2099,7 +2172,7 @@ TEST_F(DrmGpuDisplayManagerTest, RelinquishDisplayControlFastDrop) {
 
   auto& connector = drm->AddConnector();
   connector.connection = true;
-  connector.modes = kStandardModes;
+  connector.modes = base::ToVector(kStandardModes);
   connector.encoders = std::vector<uint32_t>{encoder.id};
   connector.edid_blob =
       std::vector<uint8_t>(kHPz32x, UNSAFE_TODO(kHPz32x + kHPz32xLength));
@@ -2165,7 +2238,7 @@ TEST_F(DrmGpuDisplayManagerTest,
 
   auto& connector = drm->AddConnector();
   connector.connection = true;
-  connector.modes = kStandardModes;
+  connector.modes = base::ToVector(kStandardModes);
   connector.encoders = std::vector<uint32_t>{encoder.id};
   connector.edid_blob =
       std::vector<uint8_t>(kHPz32x, UNSAFE_TODO(kHPz32x + kHPz32xLength));

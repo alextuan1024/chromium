@@ -133,6 +133,8 @@ chromium-metrics-reviews@google.com.
 
 <!-- LINT.ThenChange(//components/permissions/permission_uma_util.h:OsScreenAction) -->
 
+<!-- LINT.IfChange(PermissionAction) -->
+
 <enum name="PermissionAction">
   <int value="0" label="GRANTED"/>
   <int value="1" label="DENIED"/>
@@ -141,6 +143,8 @@ chromium-metrics-reviews@google.com.
   <int value="4" label="REVOKED"/>
   <int value="5" label="GRANTED_ONCE"/>
 </enum>
+
+<!-- LINT.ThenChange(//components/permissions/permission_uma_constants.h:PermissionAction) -->
 
 <!-- LINT.IfChange(PermissionAiRelevanceModel) -->
 
@@ -344,8 +348,8 @@ chromium-metrics-reviews@google.com.
   <int value="7" label="Remove Site Group"/>
   <int value="8" label="Remove Origin"/>
   <int value="9" label="Remove Origin Partitioned"/>
-  <int value="10" label="Filter sites by FPS owner"/>
-  <int value="11" label="Delete all site entries for a FPS owner"/>
+  <int value="10" label="(Obsolete) Filter sites by FPS owner"/>
+  <int value="11" label="(Obsolete) Delete all site entries for a FPS owner"/>
 </enum>
 
 </enums>

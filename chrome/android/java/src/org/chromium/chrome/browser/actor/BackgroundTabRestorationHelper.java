@@ -6,6 +6,7 @@ package org.chromium.chrome.browser.actor;
 
 import static org.chromium.base.ThreadUtils.assertOnUiThread;
 
+import org.chromium.base.TimeUtils;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.profiles.Profile;
@@ -14,6 +15,7 @@ import org.chromium.chrome.browser.tab.TabId;
 import org.chromium.chrome.browser.tab.TabState;
 import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
+import org.chromium.chrome.browser.tabmodel.TabModelType;
 import org.chromium.chrome.browser.tabmodel.TabOrchestratorType;
 
 import java.util.ArrayList;
@@ -47,7 +49,7 @@ public final class BackgroundTabRestorationHelper {
             boolean isAuthoritativeStore) {
         return isAuthoritativeStore
                 && orchestratorType == TabOrchestratorType.TABBED
-                && ActorUtils.isBackgroundActuationEnabled()
+                && ActorUtils.isBackgroundActuationFeatureEnabled()
                 && !isIncognito;
     }
 
@@ -63,9 +65,14 @@ public final class BackgroundTabRestorationHelper {
         if (selector == null) return null;
 
         TabModel model = selector.getModel(/* incognito= */ false);
+        if (model == null) {
+            return BackgroundTabPoolManager.restorePoolIfTokenExists();
+        }
         Profile profile = model.getProfile();
         if (profile != null) {
-            if (profile.isOffTheRecord()) return null;
+            if (profile.isOffTheRecord() || model.getTabModelType() == TabModelType.EMPTY) {
+                return null;
+            }
             if (profile.isNativeInitialized() || BackgroundTabPoolManager.hasPoolForTesting()) {
                 return BackgroundTabPoolManager.acquire(profile);
             }
@@ -144,8 +151,8 @@ public final class BackgroundTabRestorationHelper {
      * @param selector The {@link TabModelSelector} managing tab models.
      * @param placeholderTabId The placeholder tab ID of the background tab to restore.
      * @param index The index to insert the restored tab into the model.
-     * @param tabState Optional placeholder {@link TabState} whose WebContentsState will be
-     *     destroyed upon attachment.
+     * @param tabState Optional placeholder {@link TabState} whose WebContentsState reference will
+     *     be cleared upon attachment.
      * @param isAuthoritativeStore Whether the caller is an authoritative store.
      * @return The restored {@link Tab}, or null if not found or restoration failed.
      */
@@ -168,6 +175,7 @@ public final class BackgroundTabRestorationHelper {
         }
 
         try {
+            long startTimeMs = TimeUtils.uptimeMillis();
             BackgroundPoolTab backgroundTab = pool.loadTabByPlaceholderId(placeholderTabId);
             if (backgroundTab == null) return null;
 
@@ -177,9 +185,12 @@ public final class BackgroundTabRestorationHelper {
                     tabState != null
                             ? backgroundTab.attachTab(model, index, tabState)
                             : backgroundTab.attachTab(model, index);
-            if (tabState != null && tabState.contentsState != null) {
-                tabState.contentsState.destroy();
+            long durationMs = TimeUtils.uptimeMillis() - startTimeMs;
+            if (tabState != null) {
                 tabState.contentsState = null;
+            }
+            if (restoredTab != null) {
+                ActorMetrics.recordColdRestoreLatency(durationMs);
             }
             return restoredTab;
         } finally {
@@ -221,11 +232,14 @@ public final class BackgroundTabRestorationHelper {
                     pool.removeTabById(tabId);
                     continue;
                 }
-                assert pool.getLiveTab(tabId) == null;
+                long startTimeMs = TimeUtils.uptimeMillis();
                 BackgroundPoolTab backgroundTab = pool.loadTabByOriginalId(tabId);
                 if (backgroundTab != null) {
+                    backgroundTab.prepareForForeground(selector);
                     Tab restoredTab = backgroundTab.attachTab(model, model.getCount());
+                    long durationMs = TimeUtils.uptimeMillis() - startTimeMs;
                     if (restoredTab != null) {
+                        ActorMetrics.recordColdRestoreLatency(durationMs);
                         restoredTabs.add(restoredTab);
                     }
                 }

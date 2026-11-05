@@ -5,10 +5,12 @@
 #ifndef COMPONENTS_LOOKALIKES_CORE_LOOKALIKE_URL_UTIL_H_
 #define COMPONENTS_LOOKALIKES_CORE_LOOKALIKE_URL_UTIL_H_
 
+#include <array>
 #include <string>
 #include <string_view>
 #include <vector>
 
+#include "base/containers/span.h"
 #include "base/functional/callback.h"
 #include "base/memory/raw_ptr_exclusion.h"
 #include "base/memory/raw_span.h"
@@ -25,9 +27,17 @@ namespace lookalikes {
 // types.
 extern const char kInterstitialHistogramName[];
 extern const char kIncognitoInterstitialHistogramName[];
+extern const char kIsolatedInterstitialHistogramName[];
 
 // Register applicable preferences with the provided registry.
 void RegisterProfilePrefs(user_prefs::PrefRegistrySyncable* registry);
+
+// Returns the URL to evaluate for lookalike checks. Unwraps nested `blob:` and
+// `filesystem:` URLs (e.g., `blob:https://example.com/uuid`) to their inner
+// origin's URL (`https://example.com/`), since a document committed from such a
+// URL executes in and displays that inner origin. Returns `url` unchanged for
+// other schemes or opaque inner origins.
+GURL GetUrlForLookalikeChecks(const GURL& url);
 
 // Returns the console message to be shown in devtools when a URL is flagged by
 // a lookalike heuristic. If is_new_heuristic is true, the message is for a new
@@ -130,15 +140,9 @@ struct TopBucketDomainsParams {
   // Skeletons of top bucket domains. This is the top 500 or 1000 most popular
   // domains (though, there can be fewer than 500 or 1000 skeletons in this
   // array).
-  // This field is not a raw_ptr<> because it only ever points to statically-
+  // This field is not a raw_span<> because it only ever points to statically-
   // allocated memory which is never freed, so it cannot dangle.
-  // Spanification note: unlike the raw_spans below, the pointed-to arrays
-  // are defined in generated files, so their size isn't exposed in the header.
-  // To get compile-time safety guarantees, the header itself would have to be
-  // generated as well.
-  RAW_PTR_EXCLUSION const char* const* edit_distance_skeletons;
-  // Number of skeletons in `edit_distance_skeletons`.
-  size_t num_edit_distance_skeletons;
+  RAW_PTR_EXCLUSION base::span<const char* const> edit_distance_skeletons;
 };
 
 struct ComboSquattingParams {
@@ -146,7 +150,7 @@ struct ComboSquattingParams {
   // (in pairs). The first item in each pair is the brand name and the second
   // item is its skeleton. Brand names should be usable in domain names (i.e.
   // lower case, no punctuation except for - etc.)
-  base::raw_span<const std::string_view[2]> brand_names;
+  base::raw_span<const std::array<std::string_view, 2>> brand_names;
 
   // List of popular keywords such as "login", "online".
   base::raw_span<const std::string_view> popular_keywords;
@@ -191,7 +195,8 @@ struct DomainInfo {
 // eTLD+1 is empty.
 DomainInfo GetDomainInfo(const std::string& hostname);
 
-// Convenience function for returning GetDomainInfo(url.host()).
+// Convenience function for returning
+// GetDomainInfo(GetUrlForLookalikeChecks(url).GetHost()).
 DomainInfo GetDomainInfo(const GURL& url);
 
 // Returns true if the Levenshtein distance between |str1| and |str2| is at most
@@ -222,15 +227,17 @@ std::string GetETLDPlusOne(const std::string& hostname);
 
 // Records an interstitial histogram entry for the given match type.
 void RecordUMAFromMatchType(LookalikeUrlMatchType match_type,
-                            bool is_incognito);
+                            bool is_incognito,
+                            bool is_isolated);
 
 using LookalikeTargetAllowlistChecker =
     base::RepeatingCallback<bool(const std::string&)>;
 
-// Returns true if a domain is visually similar to the hostname of |url|. The
-// matching domain can be a top domain or an engaged site. Similarity
-// check is made using both visual skeleton and edit distance comparison.  If
-// this returns true, match details will be written into |matched_domain|.
+// Returns true if `navigated_domain` matches a lookalike heuristic against a
+// top domain or an engaged site (via IDN skeleton matching, edit distance,
+// character swap, target embedding, or combo squatting), selecting the
+// highest-severity match across non-rollout-gated heuristics. If this returns
+// true, match details are written into `matched_domain` and `match_type`.
 // Pointer arguments can't be nullptr.
 bool GetMatchingDomain(
     const DomainInfo& navigated_domain,
@@ -312,7 +319,8 @@ ComboSquattingType GetComboSquattingType(
 // lookalike checks, such as government sites.
 bool IsSafeTLD(const std::string& hostname);
 
-// The action to take for a given lookalike match.
+// The action to take for a given lookalike match, ordered by increasing
+// severity.
 enum class LookalikeActionType {
   // No action.
   kNone,
@@ -322,6 +330,9 @@ enum class LookalikeActionType {
   kShowSafetyTip,
   // Show an interstitial.
   kShowInterstitial,
+
+  // Keep values ordered by increasing severity; `GetMatchingDomain()` compares
+  // `LookalikeActionType` values directly to prioritize more severe matches.
 };
 
 // Returns the action to take for the given `etld_plus_one` and lookalike

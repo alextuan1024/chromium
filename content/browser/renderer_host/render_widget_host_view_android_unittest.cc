@@ -6,8 +6,12 @@
 
 #include <memory>
 
+#include "base/android/device_info.h"
+#include "base/containers/flat_set.h"
 #include "base/memory/raw_ptr.h"
 #include "base/test/bind.h"
+#include "base/test/metrics/histogram_tester.h"
+#include "base/test/scoped_feature_list.h"
 #include "cc/layers/deadline_policy.h"
 #include "cc/slim/layer.h"
 #include "components/input/render_input_router.mojom.h"
@@ -17,9 +21,11 @@
 #include "content/browser/renderer_host/input/touch_selection_controller_client_manager_android.h"
 #include "content/browser/renderer_host/mock_render_widget_host.h"
 #include "content/browser/renderer_host/mojo_render_input_router_delegate_impl.h"
+#include "content/browser/renderer_host/render_view_host_delegate_view.h"
 #include "content/browser/site_instance_group.h"
 #include "content/browser/site_instance_impl.h"
 #include "content/common/features.h"
+#include "content/public/common/content_features.h"
 #include "content/public/test/browser_task_environment.h"
 #include "content/public/test/mock_render_process_host.h"
 #include "content/public/test/test_browser_context.h"
@@ -30,12 +36,15 @@
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/common/features.h"
+#include "ui/android/delegated_frame_host_android.h"
 #include "ui/android/test_view_android_delegate.h"
 #include "ui/android/view_android.h"
 #include "ui/android/window_android.h"
 #include "ui/events/android/motion_event_android_factory.h"
 #include "ui/events/android/motion_event_android_java.h"
 #include "ui/events/base_event_utils.h"
+#include "ui/events/keycodes/dom/dom_code.h"
+#include "ui/events/keycodes/dom/keycode_converter.h"
 #include "ui/events/motionevent_jni_headers/MotionEvent_jni.h"
 
 namespace content {
@@ -54,8 +63,9 @@ class CustomScreenInfoRenderWidgetHostViewAndroid
   CustomScreenInfoRenderWidgetHostViewAndroid(
       RenderWidgetHostImpl* widget,
       gfx::NativeView parent_native_view,
-      cc::slim::Layer* parent_layer);
-  ~CustomScreenInfoRenderWidgetHostViewAndroid() override {}
+      cc::slim::Layer* parent_layer,
+      bool using_browser_compositor = false);
+  ~CustomScreenInfoRenderWidgetHostViewAndroid() override = default;
 
   void SetScreenInfo(display::ScreenInfo screen_info);
 
@@ -76,8 +86,12 @@ CustomScreenInfoRenderWidgetHostViewAndroid::
     CustomScreenInfoRenderWidgetHostViewAndroid(
         RenderWidgetHostImpl* widget,
         gfx::NativeView parent_native_view,
-        cc::slim::Layer* parent_layer)
-    : RenderWidgetHostViewAndroid(widget, parent_native_view, parent_layer) {}
+        cc::slim::Layer* parent_layer,
+        bool using_browser_compositor)
+    : RenderWidgetHostViewAndroid(widget,
+                                  parent_native_view,
+                                  parent_layer,
+                                  using_browser_compositor) {}
 
 void CustomScreenInfoRenderWidgetHostViewAndroid::SetScreenInfo(
     display::ScreenInfo screen_info) {
@@ -97,6 +111,32 @@ display::ScreenInfo CustomScreenInfoRenderWidgetHostViewAndroid::GetScreenInfo()
 std::string PostTestCaseName(const ::testing::TestParamInfo<bool>& info) {
   return info.param ? "FullscreenKillswitch" : "Default";
 }
+
+// The fixture's RenderWidgetHostDelegate. Its RenderViewHostDelegateView
+// reports configurable browser controls heights, as the embedder's would.
+class TestRenderWidgetHostDelegate : public MockRenderWidgetHostDelegate {
+ public:
+  void SetControlsHeights(int top, int bottom) {
+    delegate_view_.top = top;
+    delegate_view_.bottom = bottom;
+  }
+
+  // MockRenderWidgetHostDelegate:
+  RenderViewHostDelegateView* GetDelegateView() override {
+    return &delegate_view_;
+  }
+
+ private:
+  struct DelegateView : public RenderViewHostDelegateView {
+    int GetTopControlsHeight() const override { return top; }
+    int GetBottomControlsHeight() const override { return bottom; }
+
+    int top = 0;
+    int bottom = 0;
+  };
+
+  DelegateView delegate_view_;
+};
 
 }  // namespace
 
@@ -168,12 +208,15 @@ class RenderWidgetHostViewAndroidTest : public RenderViewHostImplTestHarness {
   viz::LocalSurfaceId GetLocalSurfaceIdAndConfirmNewerThan(
       viz::LocalSurfaceId other);
 
-  MockRenderWidgetHostDelegate* delegate() { return delegate_.get(); }
+  TestRenderWidgetHostDelegate* delegate() { return delegate_.get(); }
 
   // Directly map to `RenderWidgetHostViewAndroid` methods.
   bool SynchronizeVisualProperties(
       const cc::DeadlinePolicy& deadline_policy,
       const std::optional<viz::LocalSurfaceId>& child_local_surface_id);
+  bool UpdateControls(const cc::BrowserControlsMetadata& metadata);
+  RenderWidgetHostViewAndroid::ClampedBrowserControls ClampBrowserControls(
+      const cc::BrowserControlsMetadata& metadata);
   void WasEvicted();
   ui::ViewAndroid* GetNativeView();
   void OnRenderFrameMetadataChangedAfterActivation(
@@ -197,7 +240,7 @@ class RenderWidgetHostViewAndroidTest : public RenderViewHostImplTestHarness {
  private:
   std::unique_ptr<MockRenderProcessHost> process_;
   scoped_refptr<SiteInstanceGroup> site_instance_group_;
-  std::unique_ptr<MockRenderWidgetHostDelegate> delegate_;
+  std::unique_ptr<TestRenderWidgetHostDelegate> delegate_;
 
   // TestRenderViewHost
   scoped_refptr<RenderViewHostImpl> render_view_host_;
@@ -236,6 +279,18 @@ bool RenderWidgetHostViewAndroidTest::SynchronizeVisualProperties(
       deadline_policy, child_local_surface_id);
 }
 
+bool RenderWidgetHostViewAndroidTest::UpdateControls(
+    const cc::BrowserControlsMetadata& metadata) {
+  return render_widget_host_view_android_->UpdateControls(
+      metadata, ClampBrowserControls(metadata));
+}
+
+RenderWidgetHostViewAndroid::ClampedBrowserControls
+RenderWidgetHostViewAndroidTest::ClampBrowserControls(
+    const cc::BrowserControlsMetadata& metadata) {
+  return render_widget_host_view_android_->ClampBrowserControls(metadata);
+}
+
 void RenderWidgetHostViewAndroidTest::WasEvicted() {
   render_widget_host_view_android_->WasEvicted();
 }
@@ -272,7 +327,7 @@ RenderWidgetHostViewAndroidTest::CreateRenderWidgetHostViewAndroid(
 void RenderWidgetHostViewAndroidTest::SetUp() {
   RenderViewHostImplTestHarness::SetUp();
 
-  delegate_ = std::make_unique<MockRenderWidgetHostDelegate>();
+  delegate_ = std::make_unique<TestRenderWidgetHostDelegate>();
   process_ = std::make_unique<MockRenderProcessHost>(browser_context());
   site_instance_group_ = base::WrapRefCounted(
       SiteInstanceGroup::CreateForTesting(browser_context(), process_.get()));
@@ -718,82 +773,96 @@ TEST_F(RenderWidgetHostViewAndroidTest, StopFlingingOnViz) {
 }
 
 TEST_F(RenderWidgetHostViewAndroidTest, UpdateControls) {
-  float dip_scale = 1.0f;
-  float top_height = 90.f;
-  float top_ratio = 1.f;
-  float top_min_height = 0.f;
-  float bottom_height = 50.f;
-  float bottom_ratio = 1.f;
-  float bottom_min_height = 0.f;
-
-  // Get the test view instance from the fixture.
-  RenderWidgetHostViewAndroid* rwhva = render_widget_host_view_android();
+  cc::BrowserControlsMetadata controls;
+  controls.top_controls_height = 90.f;
+  controls.top_controls_shown_ratio = 1.f;
+  controls.top_controls_min_height_offset = 0.f;
+  controls.bottom_controls_height = 50.f;
+  controls.bottom_controls_shown_ratio = 1.f;
+  controls.bottom_controls_min_height_offset = 0.f;
 
   // 1. First call should return true as controls are uninitialized.
-  EXPECT_TRUE(rwhva->UpdateControls(dip_scale, top_height, top_ratio,
-                                    top_min_height, bottom_height, bottom_ratio,
-                                    bottom_min_height));
+  EXPECT_TRUE(UpdateControls(controls));
+  EXPECT_FALSE(UpdateControls(controls));
 
-  EXPECT_FALSE(rwhva->UpdateControls(dip_scale, top_height, top_ratio,
-                                     top_min_height, bottom_height,
-                                     bottom_ratio, bottom_min_height));
+  // 2. Change top_controls_height.
+  controls.top_controls_height = 100.f;
+  EXPECT_TRUE(UpdateControls(controls));
+  EXPECT_FALSE(UpdateControls(controls));
 
-  // 3. Change top_controls_height.
-  float new_top_height = 100.f;
-  EXPECT_TRUE(rwhva->UpdateControls(dip_scale, new_top_height, top_ratio,
-                                    top_min_height, bottom_height, bottom_ratio,
-                                    bottom_min_height));
-  // Call again with same values, should return false.
-  EXPECT_FALSE(rwhva->UpdateControls(dip_scale, new_top_height, top_ratio,
-                                     top_min_height, bottom_height,
-                                     bottom_ratio, bottom_min_height));
+  // 3. Change top_controls_shown_ratio.
+  controls.top_controls_shown_ratio = 0.5f;
+  EXPECT_TRUE(UpdateControls(controls));
+  EXPECT_FALSE(UpdateControls(controls));
 
-  // 4. Change top_controls_shown_ratio.
-  float new_top_ratio = 0.5f;
-  EXPECT_TRUE(rwhva->UpdateControls(dip_scale, new_top_height, new_top_ratio,
-                                    top_min_height, bottom_height, bottom_ratio,
-                                    bottom_min_height));
-  EXPECT_FALSE(rwhva->UpdateControls(dip_scale, new_top_height, new_top_ratio,
-                                     top_min_height, bottom_height,
-                                     bottom_ratio, bottom_min_height));
+  // 4. Change top_controls_min_height_offset.
+  controls.top_controls_min_height_offset = 10.f;
+  EXPECT_TRUE(UpdateControls(controls));
+  EXPECT_FALSE(UpdateControls(controls));
 
-  // 5. Change top_controls_min_height_offset.
-  float new_top_min_height = 10.f;
-  EXPECT_TRUE(rwhva->UpdateControls(dip_scale, new_top_height, new_top_ratio,
-                                    new_top_min_height, bottom_height,
-                                    bottom_ratio, bottom_min_height));
-  // Call again with same values, should return false.
-  EXPECT_FALSE(rwhva->UpdateControls(dip_scale, new_top_height, new_top_ratio,
-                                     new_top_min_height, bottom_height,
-                                     bottom_ratio, bottom_min_height));
+  // 5. Change bottom_controls_shown_ratio.
+  controls.bottom_controls_shown_ratio = 0.0f;
+  EXPECT_TRUE(UpdateControls(controls));
+  EXPECT_FALSE(UpdateControls(controls));
 
-  // 6. Change bottom_controls_shown_ratio.
-  float new_bottom_ratio = 0.0f;
-  EXPECT_TRUE(rwhva->UpdateControls(dip_scale, new_top_height, new_top_ratio,
-                                    new_top_min_height, bottom_height,
-                                    new_bottom_ratio, bottom_min_height));
+  // 6. Change bottom_controls_height while at 0% shown ratio.
+  controls.bottom_controls_height = 60.f;
+  EXPECT_TRUE(UpdateControls(controls));
+  EXPECT_FALSE(UpdateControls(controls));
 
-  EXPECT_FALSE(rwhva->UpdateControls(dip_scale, new_top_height, new_top_ratio,
-                                     new_top_min_height, bottom_height,
-                                     new_bottom_ratio, bottom_min_height));
+  // 7. Change bottom_controls_min_height_offset.
+  controls.bottom_controls_min_height_offset = 10.f;
+  EXPECT_TRUE(UpdateControls(controls));
+  EXPECT_FALSE(UpdateControls(controls));
+}
 
-  // 7. Change bottom_controls_height while at 0% shown ratio.
-  float new_bottom_height = 60.f;
-  EXPECT_TRUE(rwhva->UpdateControls(dip_scale, new_top_height, new_top_ratio,
-                                    new_top_min_height, new_bottom_height,
-                                    new_bottom_ratio, bottom_min_height));
-  EXPECT_FALSE(rwhva->UpdateControls(dip_scale, new_top_height, new_top_ratio,
-                                     new_top_min_height, new_bottom_height,
-                                     new_bottom_ratio, bottom_min_height));
+// The renderer is untrusted; its reported browser controls offsets must be
+// clamped to the heights the browser owns (crbug.com/579587136).
+TEST_F(RenderWidgetHostViewAndroidTest, ClampBrowserControls) {
+  delegate()->SetControlsHeights(/*top=*/150, /*bottom=*/80);
 
-  // 8. Change bottom_controls_min_height_offset.
-  float new_bottom_min_height = 10.f;
-  EXPECT_TRUE(rwhva->UpdateControls(dip_scale, new_top_height, new_top_ratio,
-                                    new_top_min_height, new_bottom_height,
-                                    new_bottom_ratio, new_bottom_min_height));
-  EXPECT_FALSE(rwhva->UpdateControls(dip_scale, new_top_height, new_top_ratio,
-                                     new_top_min_height, new_bottom_height,
-                                     new_bottom_ratio, new_bottom_min_height));
+  // Honest values pass through unchanged.
+  cc::BrowserControlsMetadata metadata;
+  metadata.top_controls_height = 150.f;
+  metadata.top_controls_shown_ratio = 0.5f;
+  metadata.top_controls_min_height_offset = 20.f;
+  metadata.bottom_controls_height = 80.f;
+  metadata.bottom_controls_shown_ratio = 0.25f;
+  metadata.bottom_controls_min_height_offset = 10.f;
+  auto clamped = ClampBrowserControls(metadata);
+  EXPECT_FLOAT_EQ(-75.f, clamped.top_translate);
+  EXPECT_FLOAT_EQ(75.f, clamped.top_content_offset);
+  EXPECT_FLOAT_EQ(20.f, clamped.top_min_height_offset);
+  EXPECT_FLOAT_EQ(60.f, clamped.bottom_translate);
+  EXPECT_FLOAT_EQ(20.f, clamped.bottom_content_offset);
+  EXPECT_FLOAT_EQ(10.f, clamped.bottom_min_height_offset);
+
+  // A zero height with the controls fully shown must not report a zero content
+  // offset: the controls are still drawn at full height.
+  metadata.top_controls_height = 0.f;
+  metadata.top_controls_shown_ratio = 1.f;
+  metadata.bottom_controls_height = 0.f;
+  metadata.bottom_controls_shown_ratio = 1.f;
+  clamped = ClampBrowserControls(metadata);
+  EXPECT_FLOAT_EQ(0.f, clamped.top_translate);
+  EXPECT_FLOAT_EQ(150.f, clamped.top_content_offset);
+  EXPECT_FLOAT_EQ(0.f, clamped.bottom_translate);
+  EXPECT_FLOAT_EQ(80.f, clamped.bottom_content_offset);
+
+  // Oversized values are bounded by the browser's heights.
+  metadata.top_controls_height = 4294967296.f;
+  metadata.top_controls_shown_ratio = 0.f;
+  metadata.top_controls_min_height_offset = 500.f;
+  metadata.bottom_controls_height = 4294967296.f;
+  metadata.bottom_controls_shown_ratio = 0.f;
+  metadata.bottom_controls_min_height_offset = 500.f;
+  clamped = ClampBrowserControls(metadata);
+  EXPECT_FLOAT_EQ(-150.f, clamped.top_translate);
+  EXPECT_FLOAT_EQ(0.f, clamped.top_content_offset);
+  EXPECT_FLOAT_EQ(150.f, clamped.top_min_height_offset);
+  EXPECT_FLOAT_EQ(80.f, clamped.bottom_translate);
+  EXPECT_FLOAT_EQ(0.f, clamped.bottom_content_offset);
+  EXPECT_FLOAT_EQ(80.f, clamped.bottom_min_height_offset);
 }
 
 // Test for scaling.
@@ -898,6 +967,8 @@ class RenderWidgetHostViewAndroidRotationTest
   void OnDidUpdateVisualPropertiesComplete(
       const cc::RenderFrameMetadata& metadata);
   void SetScreenInfo(display::ScreenInfo screen_info);
+  void OnAnimate();
+  bool IsVisualPropertiesUpdatePending();
 
   // ViewAndroid:
   void OnPhysicalBackingSizeChanged(const gfx::Size& size);
@@ -914,6 +985,10 @@ class RenderWidgetHostViewAndroidRotationTest
 
   // testing::Test:
   void SetUp() override;
+
+  // Whether the view uses the browser compositor, rather than the synchronous
+  // (WebView) compositor. Must be set before `SetUp()`.
+  bool use_browser_compositor_ = false;
 };
 
 void RenderWidgetHostViewAndroidRotationTest::SetPortraitScreenInfo(
@@ -1063,11 +1138,20 @@ void RenderWidgetHostViewAndroidRotationTest::OnVisibleViewportSizeChanged(
   GetParentView()->OnSizeChanged(width, height);
 }
 
+void RenderWidgetHostViewAndroidRotationTest::OnAnimate() {
+  render_widget_host_view_android()->OnAnimate(base::TimeTicks::Now());
+}
+
+bool RenderWidgetHostViewAndroidRotationTest::
+    IsVisualPropertiesUpdatePending() {
+  return render_widget_host_view_android()->visual_properties_update_pending_;
+}
+
 RenderWidgetHostViewAndroid*
 RenderWidgetHostViewAndroidRotationTest::CreateRenderWidgetHostViewAndroid(
     RenderWidgetHostImpl* widget_host) {
   return new CustomScreenInfoRenderWidgetHostViewAndroid(
-      widget_host, GetParentView(), GetParentLayer());
+      widget_host, GetParentView(), GetParentLayer(), use_browser_compositor_);
 }
 
 void RenderWidgetHostViewAndroidRotationTest::SetUp() {
@@ -1404,6 +1488,180 @@ TEST_F(RenderWidgetHostViewAndroidRotationTest, FullscreenEviction) {
   GetLocalSurfaceIdAndConfirmNewerThan(local_surface_id);
 }
 
+// Tests that resizing a visible fullscreen page records the time until a frame
+// from the Renderer at the new size activates.
+TEST_F(RenderWidgetHostViewAndroidRotationTest,
+       FullscreenResizeRecordsTimeToNewFrame) {
+  base::HistogramTester histograms;
+  // Use a valid fallback, so that the fullscreen resize replaces it.
+  render_widget_host_view_android()->ResetFallbackToFirstNavigationSurface();
+  const viz::LocalSurfaceId initial_local_surface_id =
+      render_widget_host_view_android()->GetLocalSurfaceId();
+  const viz::LocalSurfaceId fullscreen_local_surface_id =
+      PortraitToFullscreenPortrait();
+  histograms.ExpectTotalCount("Android.FullscreenResize.Result", 0);
+
+  // A frame at the old size does not end the resize.
+  cc::RenderFrameMetadata metadata;
+  metadata.local_surface_id = initial_local_surface_id;
+  OnRenderFrameMetadataChangedAfterActivation(metadata, base::TimeTicks::Now());
+  histograms.ExpectTotalCount("Android.FullscreenResize.Result", 0);
+
+  // A frame at the new size ends the resize. The recorded time runs until Viz
+  // activated that frame, which here is 1 s before the browser is notified.
+  task_environment()->FastForwardBy(base::Seconds(3));
+  metadata.local_surface_id = fullscreen_local_surface_id;
+  OnRenderFrameMetadataChangedAfterActivation(
+      metadata, base::TimeTicks::Now() - base::Seconds(1));
+  histograms.ExpectUniqueSample(
+      "Android.FullscreenResize.Result",
+      ui::DelegatedFrameHostAndroid::FullscreenResizeResult::kCompleted, 1);
+  histograms.ExpectUniqueTimeSample("Android.FullscreenResize.TimeToNewFrame",
+                                    base::Seconds(2), 1);
+
+  // Later frames record nothing.
+  OnRenderFrameMetadataChangedAfterActivation(metadata, base::TimeTicks::Now());
+  histograms.ExpectTotalCount("Android.FullscreenResize.Result", 1);
+}
+
+// Tests that when a fullscreen page is resized again before a frame at the
+// first new size arrives, the time runs until a frame at the latest size.
+TEST_F(RenderWidgetHostViewAndroidRotationTest,
+       FullscreenResizeWaitsForLatestSize) {
+  base::HistogramTester histograms;
+  render_widget_host_view_android()->ResetFallbackToFirstNavigationSurface();
+  const viz::LocalSurfaceId first_local_surface_id =
+      PortraitToFullscreenPortrait();
+
+  task_environment()->FastForwardBy(base::Milliseconds(100));
+  OnPhysicalBackingSizeChanged(gfx::Size(600, 780));
+  const viz::LocalSurfaceId second_local_surface_id =
+      GetLocalSurfaceIdAndConfirmNewerThan(first_local_surface_id);
+
+  cc::RenderFrameMetadata metadata;
+  metadata.local_surface_id = first_local_surface_id;
+  OnRenderFrameMetadataChangedAfterActivation(metadata, base::TimeTicks::Now());
+  histograms.ExpectTotalCount("Android.FullscreenResize.Result", 0);
+
+  task_environment()->FastForwardBy(base::Milliseconds(400));
+  // A frame at the latest size (including one with a newer child sequence
+  // number) ends the resize and records the time from the first resize.
+  metadata.local_surface_id =
+      viz::LocalSurfaceId(second_local_surface_id.parent_sequence_number(),
+                          second_local_surface_id.child_sequence_number() + 1,
+                          second_local_surface_id.embed_token());
+  OnRenderFrameMetadataChangedAfterActivation(metadata, base::TimeTicks::Now());
+  histograms.ExpectUniqueSample(
+      "Android.FullscreenResize.Result",
+      ui::DelegatedFrameHostAndroid::FullscreenResizeResult::kCompleted, 1);
+  histograms.ExpectUniqueTimeSample("Android.FullscreenResize.TimeToNewFrame",
+                                    base::Milliseconds(500), 1);
+}
+
+// Tests that leaving fullscreen before a frame at the new size arrives records
+// the result, but no time.
+TEST_F(RenderWidgetHostViewAndroidRotationTest,
+       FullscreenResizeEndsWhenExitingFullscreen) {
+  base::HistogramTester histograms;
+  render_widget_host_view_android()->ResetFallbackToFirstNavigationSurface();
+  PortraitToFullscreenPortrait();
+
+  ExitFullscreenMode();
+  OnPhysicalBackingSizeChanged(portrait_physical_backing);
+  histograms.ExpectUniqueSample(
+      "Android.FullscreenResize.Result",
+      ui::DelegatedFrameHostAndroid::FullscreenResizeResult::kExitedFullscreen,
+      1);
+  histograms.ExpectTotalCount("Android.FullscreenResize.TimeToNewFrame", 0);
+}
+
+// Tests that hiding a fullscreen page before a frame at the new size arrives
+// records the result, but no time.
+TEST_F(RenderWidgetHostViewAndroidRotationTest,
+       FullscreenResizeEndsWhenHidden) {
+  base::HistogramTester histograms;
+  render_widget_host_view_android()->ResetFallbackToFirstNavigationSurface();
+  PortraitToFullscreenPortrait();
+
+  render_widget_host_view_android()->Hide();
+  histograms.ExpectUniqueSample(
+      "Android.FullscreenResize.Result",
+      ui::DelegatedFrameHostAndroid::FullscreenResizeResult::kHidden, 1);
+  histograms.ExpectTotalCount("Android.FullscreenResize.TimeToNewFrame", 0);
+}
+
+// Tests that occluding a fullscreen page (which hides the renderer while
+// keeping the frontbuffer) ends the resize and blocks new resize timers while
+// occluded.
+TEST_F(RenderWidgetHostViewAndroidRotationTest,
+       FullscreenResizeEndsWhenOccluded) {
+  base::HistogramTester histograms;
+  render_widget_host_view_android()->ResetFallbackToFirstNavigationSurface();
+  PortraitToFullscreenPortrait();
+
+  render_widget_host_view_android()->WasOccluded();
+  histograms.ExpectUniqueSample(
+      "Android.FullscreenResize.Result",
+      ui::DelegatedFrameHostAndroid::FullscreenResizeResult::kHidden, 1);
+  histograms.ExpectTotalCount("Android.FullscreenResize.TimeToNewFrame", 0);
+
+  // Resizing while occluded does not start a new resize timer.
+  OnPhysicalBackingSizeChanged(gfx::Size(600, 780));
+  render_widget_host_view_android()->Hide();
+  histograms.ExpectTotalCount("Android.FullscreenResize.Result", 1);
+}
+
+// Tests that evicting the frames of a fullscreen page before a frame at the
+// new size arrives records the result, but no time.
+TEST_F(RenderWidgetHostViewAndroidRotationTest,
+       FullscreenResizeEndsWhenEvicted) {
+  base::HistogramTester histograms;
+  render_widget_host_view_android()->ResetFallbackToFirstNavigationSurface();
+  PortraitToFullscreenPortrait();
+
+  render_widget_host_view_android()->ClearFallbackSurfaceForCommitPending();
+  histograms.ExpectUniqueSample(
+      "Android.FullscreenResize.Result",
+      ui::DelegatedFrameHostAndroid::FullscreenResizeResult::kEvicted, 1);
+  histograms.ExpectTotalCount("Android.FullscreenResize.TimeToNewFrame", 0);
+}
+
+// Tests that destroying the view while a fullscreen resize is in progress
+// records the result, but no time.
+TEST_F(RenderWidgetHostViewAndroidRotationTest,
+       FullscreenResizeEndsWhenDestroyed) {
+  base::HistogramTester histograms;
+  render_widget_host_view_android()->ResetFallbackToFirstNavigationSurface();
+  PortraitToFullscreenPortrait();
+
+  RenderWidgetHostViewAndroid* rwhva = render_widget_host_view_android();
+  ResetViewForTesting();
+  rwhva->DestroyOrDefer();
+  histograms.ExpectUniqueSample(
+      "Android.FullscreenResize.Result",
+      ui::DelegatedFrameHostAndroid::FullscreenResizeResult::kDestroyed, 1);
+  histograms.ExpectTotalCount("Android.FullscreenResize.TimeToNewFrame", 0);
+}
+
+// Tests that resizing a page that is not fullscreen records nothing.
+TEST_F(RenderWidgetHostViewAndroidRotationTest,
+       NonFullscreenResizeRecordsNoFullscreenResize) {
+  base::HistogramTester histograms;
+  render_widget_host_view_android()->ResetFallbackToFirstNavigationSurface();
+  const viz::LocalSurfaceId initial_local_surface_id =
+      render_widget_host_view_android()->GetLocalSurfaceId();
+
+  // Portrait split screen.
+  OnVisibleViewportSizeChanged(300, 195);
+  OnPhysicalBackingSizeChanged(gfx::Size(600, 390));
+  cc::RenderFrameMetadata metadata;
+  metadata.local_surface_id =
+      GetLocalSurfaceIdAndConfirmNewerThan(initial_local_surface_id);
+  OnRenderFrameMetadataChangedAfterActivation(metadata, base::TimeTicks::Now());
+  histograms.ExpectTotalCount("Android.FullscreenResize.Result", 0);
+  histograms.ExpectTotalCount("Android.FullscreenResize.TimeToNewFrame", 0);
+}
+
 // Tests that when Android fakes visibility to start a rotation, before hiding
 // and completing the rotation later, that the rotation timeout and subsequent
 // actual visibility change correctly updates the viz::LocalSurfaceId and stops
@@ -1519,6 +1777,104 @@ TEST_F(RenderWidgetHostViewAndroidRotationTest,
   rwhva->ShowWithVisibility(blink::mojom::PageVisibilityState::kVisible);
   EXPECT_TRUE(rwhva->GetLocalSurfaceId().is_valid());
   EXPECT_TRUE(rwhva->CanSynchronizeVisualProperties());
+}
+
+// Tests the FluidResize path of tablets and desktop Android, where the browser
+// compositor also re-synchronizes non-rotation resizes in Animate(), except in
+// fullscreen.
+//
+// Initializes to Portrait.
+class RenderWidgetHostViewAndroidFluidResizeTest
+    : public RenderWidgetHostViewAndroidRotationTest {
+ protected:
+  // testing::Test:
+  void SetUp() override {
+    // FluidResize is only enabled on tablets and desktop Android.
+    base::android::device_info::set_is_desktop_for_testing(true);
+    use_browser_compositor_ = true;
+    RenderWidgetHostViewAndroidRotationTest::SetUp();
+    ASSERT_TRUE(features::IsFluidResizeEnabled());
+    // Complete the resize scheduled during setup.
+    OnAnimate();
+    ASSERT_FALSE(IsVisualPropertiesUpdatePending());
+  }
+
+  void TearDown() override {
+    RenderWidgetHostViewAndroidRotationTest::TearDown();
+    base::android::device_info::reset_is_desktop_for_testing();
+  }
+};
+
+// Tests that a fullscreen resize synchronizes immediately via
+// ScreenStateChangeHandler instead of deferring to Animate(), clearing any
+// pending visual properties ack, and that subsequent calls to OnAnimate() and
+// FireFullscreenTimeout() do not advance the LocalSurfaceId again.
+TEST_F(RenderWidgetHostViewAndroidFluidResizeTest,
+       FullscreenResizeSyncsImmediately) {
+  RenderWidgetHostViewAndroid* rwhva = render_widget_host_view_android();
+  const viz::LocalSurfaceId initial_local_surface_id =
+      rwhva->GetLocalSurfaceId();
+
+  // 1. Before fullscreen, a standalone non-rotation resize defers to Animate().
+  OnPhysicalBackingSizeChanged(gfx::Size(600, 700));
+  EXPECT_TRUE(IsVisualPropertiesUpdatePending());
+  OnAnimate();
+  EXPECT_FALSE(IsVisualPropertiesUpdatePending());
+  const viz::LocalSurfaceId pre_fs_local_surface_id =
+      GetLocalSurfaceIdAndConfirmNewerThan(initial_local_surface_id);
+
+  // 2. Enter fullscreen.
+  EnterFullscreenMode();
+  EXPECT_FALSE(rwhva->CanSynchronizeVisualProperties());
+
+  auto* mock_host = static_cast<MockRenderWidgetHost*>(rwhva->host());
+  // An update from an earlier step of fullscreen entry awaits its ack.
+  mock_host->visual_properties_ack_pending_ = true;
+
+  // 3. Resize to fullscreen physical backing.
+  OnPhysicalBackingSizeChanged(fullscreen_portrait_physical_backing);
+  EXPECT_TRUE(rwhva->CanSynchronizeVisualProperties());
+  EXPECT_FALSE(IsVisualPropertiesUpdatePending());
+  EXPECT_FALSE(mock_host->visual_properties_ack_pending_);
+
+  const viz::LocalSurfaceId fullscreen_local_surface_id =
+      GetLocalSurfaceIdAndConfirmNewerThan(pre_fs_local_surface_id);
+
+  // Neither OnAnimate() nor FireFullscreenTimeout() advances LocalSurfaceId
+  // or sets visual_properties_update_pending_.
+  OnAnimate();
+  EXPECT_EQ(fullscreen_local_surface_id, rwhva->GetLocalSurfaceId());
+  EXPECT_FALSE(IsVisualPropertiesUpdatePending());
+
+  FireFullscreenTimeout();
+  EXPECT_EQ(fullscreen_local_surface_id, rwhva->GetLocalSurfaceId());
+  EXPECT_FALSE(IsVisualPropertiesUpdatePending());
+}
+
+// Tests that a fullscreen resize clears any update still deferred to Animate()
+// and that the subsequent Animate() does not allocate a new LocalSurfaceId.
+TEST_F(RenderWidgetHostViewAndroidFluidResizeTest,
+       FullscreenResizeSupersedesDeferredUpdate) {
+  RenderWidgetHostViewAndroid* rwhva = render_widget_host_view_android();
+
+  // 1. A standalone non-rotation resize defers to Animate(). Do not call
+  // OnAnimate(), leaving the deferred update pending.
+  OnPhysicalBackingSizeChanged(gfx::Size(600, 700));
+  EXPECT_TRUE(IsVisualPropertiesUpdatePending());
+
+  // 2. Enter fullscreen and resize to fullscreen physical backing.
+  EnterFullscreenMode();
+  OnPhysicalBackingSizeChanged(fullscreen_portrait_physical_backing);
+
+  // The immediate fullscreen sync supersedes the deferred update.
+  EXPECT_FALSE(IsVisualPropertiesUpdatePending());
+  const viz::LocalSurfaceId fullscreen_local_surface_id =
+      rwhva->GetLocalSurfaceId();
+
+  // The subsequent Animate() does not advance the LocalSurfaceId.
+  OnAnimate();
+  EXPECT_EQ(fullscreen_local_surface_id, rwhva->GetLocalSurfaceId());
+  EXPECT_FALSE(IsVisualPropertiesUpdatePending());
 }
 
 // Tests rotation and fullscreen cases that are supported by both the visual
@@ -2003,6 +2359,41 @@ TEST_F(RenderWidgetHostViewAndroidTest, DeferredTeardownSafety) {
     manager->ShowContextMenu(gfx::Point());
     manager->SetNeedsAnimate();
     manager->OnSelectionEvent(ui::SELECTION_HANDLES_SHOWN);
+  }
+}
+
+// OS-level keyboard capture on Android also captures system shortcuts such as
+// Alt+Tab, so it should only be requested when all keys or a modifier key is
+// locked.
+TEST(RenderWidgetHostViewAndroidKeyboardLockTest, ShouldCaptureSystemKeys) {
+  using Codes = base::flat_set<ui::DomCode>;
+
+  // Locking all keys requires capture.
+  EXPECT_TRUE(
+      RenderWidgetHostViewAndroid::ShouldCaptureSystemKeys(std::nullopt));
+
+  // Non-modifier keys are handled in-browser and don't require capture.
+  EXPECT_FALSE(RenderWidgetHostViewAndroid::ShouldCaptureSystemKeys(Codes()));
+  EXPECT_FALSE(RenderWidgetHostViewAndroid::ShouldCaptureSystemKeys(
+      Codes({ui::DomCode::ESCAPE})));
+  EXPECT_FALSE(RenderWidgetHostViewAndroid::ShouldCaptureSystemKeys(
+      Codes({ui::DomCode::TAB})));
+  // Similar to the set of keys locked by GeForce NOW.
+  EXPECT_FALSE(RenderWidgetHostViewAndroid::ShouldCaptureSystemKeys(
+      Codes({ui::DomCode::ESCAPE, ui::DomCode::F11, ui::DomCode::US_W,
+             ui::DomCode::SPACE, ui::DomCode::ARROW_LEFT,
+             ui::DomCode::PRINT_SCREEN, ui::DomCode::DIGIT1})));
+
+  // Any modifier key requires capture, alone or mixed with other keys.
+  for (ui::DomCode modifier :
+       {ui::DomCode::ALT_LEFT, ui::DomCode::ALT_RIGHT,
+        ui::DomCode::CONTROL_LEFT, ui::DomCode::CONTROL_RIGHT,
+        ui::DomCode::META_LEFT, ui::DomCode::META_RIGHT}) {
+    SCOPED_TRACE(ui::KeycodeConverter::DomCodeToCodeString(modifier));
+    EXPECT_TRUE(RenderWidgetHostViewAndroid::ShouldCaptureSystemKeys(
+        Codes({modifier})));
+    EXPECT_TRUE(RenderWidgetHostViewAndroid::ShouldCaptureSystemKeys(
+        Codes({ui::DomCode::ESCAPE, modifier})));
   }
 }
 

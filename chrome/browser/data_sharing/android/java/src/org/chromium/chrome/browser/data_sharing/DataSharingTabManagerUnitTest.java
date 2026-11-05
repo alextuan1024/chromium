@@ -64,14 +64,14 @@ import org.chromium.components.data_sharing.DataSharingService.ParseUrlResult;
 import org.chromium.components.data_sharing.DataSharingUIDelegate;
 import org.chromium.components.data_sharing.GroupToken;
 import org.chromium.components.data_sharing.ParseUrlStatus;
-import org.chromium.components.dom_distiller.core.DomDistillerUrlUtils;
-import org.chromium.components.dom_distiller.core.DomDistillerUrlUtilsJni;
 import org.chromium.components.tab_group_sync.EitherId.EitherGroupId;
 import org.chromium.components.tab_group_sync.LocalTabGroupId;
 import org.chromium.components.tab_group_sync.SavedTabGroup;
 import org.chromium.components.tab_group_sync.SyncedGroupTestHelper;
 import org.chromium.components.tab_group_sync.TabGroupSyncService;
 import org.chromium.components.tab_group_sync.TabGroupUiActionHandler;
+import org.chromium.components.web_distiller.core.WebDistillerUrlUtils;
+import org.chromium.components.web_distiller.core.WebDistillerUrlUtilsJni;
 import org.chromium.ui.base.TestActivity;
 import org.chromium.ui.base.WindowAndroid;
 import org.chromium.ui.modaldialog.ModalDialogManager;
@@ -88,7 +88,6 @@ public class DataSharingTabManagerUnitTest {
     private static final Token GROUP_ID = Token.createRandom();
     private static final LocalTabGroupId LOCAL_ID = new LocalTabGroupId(GROUP_ID);
     private static final Integer TAB_ID = 456;
-    private static final int TAB_GROUP_ROOT_ID = 148;
     private static final GURL TEST_URL = JUnitTestGURLs.URL_1;
 
     private final OneshotSupplierImpl<TabGroupUiActionHandler> mTabGroupUiActionHandlerSupplier =
@@ -113,7 +112,7 @@ public class DataSharingTabManagerUnitTest {
     @Mock private BottomSheetController mBottomSheetController;
     @Mock private WindowAndroid mWindowAndroid;
     @Mock private ShareDelegate mShareDelegate;
-    @Mock private DomDistillerUrlUtils.Natives mDistillerUrlUtilsJniMock;
+    @Mock private WebDistillerUrlUtils.Natives mDistillerUrlUtilsJniMock;
     @Mock private Callback<Boolean> mCreateGroupFinishedCallback;
     @Mock private ModalDialogManager mModalDialogManager;
     @Mock private TabModel mTabModel;
@@ -131,7 +130,7 @@ public class DataSharingTabManagerUnitTest {
 
     @Before
     public void setUp() {
-        DomDistillerUrlUtilsJni.setInstanceForTesting(mDistillerUrlUtilsJniMock);
+        WebDistillerUrlUtilsJni.setInstanceForTesting(mDistillerUrlUtilsJniMock);
 
         DataSharingServiceFactory.setForTesting(mDataSharingService);
         TabGroupSyncServiceFactory.setForTesting(mTabGroupSyncService);
@@ -303,8 +302,7 @@ public class DataSharingTabManagerUnitTest {
         when(mProfile.getOriginalProfile()).thenReturn(mProfile);
         when(mTabModelSelector.getModel(anyBoolean())).thenReturn(mTabModel);
         when(mTabGroupSyncService.getGroup(SYNC_GROUP_ID1)).thenReturn(mSavedTabGroup);
-        when(mTabModel.getGroupLastShownTabId(GROUP_ID)).thenReturn(TAB_GROUP_ROOT_ID);
-        when(mTabModel.tabGroupExists(GROUP_ID)).thenReturn(true);
+        when(mTabModel.containsTabGroup(GROUP_ID)).thenReturn(true);
 
         mDataSharingTabManager.displayTabGroupAnywhere(
                 COLLABORATION_ID1, /* isFromInviteFlow= */ true);

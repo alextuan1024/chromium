@@ -9,15 +9,15 @@
 #include <string>
 #include <utility>
 
-#include "ash/accelerators/accelerator_controller_impl.h"
+#include "ash/constants/ash_features.h"
 #include "ash/constants/ash_switches.h"
 #include "ash/public/cpp/login_accelerators.h"
-#include "ash/shell.h"
 #include "base/check.h"
 #include "base/check_deref.h"
 #include "base/check_is_test.h"
 #include "base/check_op.h"
 #include "base/command_line.h"
+#include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/location.h"
@@ -43,7 +43,9 @@
 #include "chrome/browser/ash/app_mode/kiosk_launch_state.h"
 #include "chrome/browser/ash/app_mode/kiosk_profile_load_failed_observer.h"
 #include "chrome/browser/ash/app_mode/load_profile.h"
+#include "chrome/browser/ash/app_mode/scoped_accelerator_disabler.h"
 #include "chrome/browser/ash/app_mode/startup_app_launcher.h"
+#include "chrome/browser/ash/app_mode/watchdog/kiosk_app_launch_watchdog.h"
 #include "chrome/browser/ash/app_mode/web_app/kiosk_web_app_manager.h"
 #include "chrome/browser/ash/app_mode/web_app/kiosk_web_app_service_launcher.h"
 #include "chrome/browser/ash/login/app_mode/force_install_observer.h"
@@ -51,6 +53,7 @@
 #include "chrome/browser/ash/login/app_mode/network_ui_controller.h"
 #include "chrome/browser/ash/login/screens/app_launch_splash_screen.h"
 #include "chrome/browser/ash/login/wizard_controller.h"
+#include "chrome/browser/ash/policy/core/browser_policy_connector_ash.h"
 #include "chrome/browser/ui/ash/keyboard/chrome_keyboard_controller_client.h"
 #include "chrome/browser/ui/ash/login/login_display_host.h"
 #include "chrome/browser/ui/webui/ash/login/app_launch_splash_screen_handler.h"
@@ -62,6 +65,7 @@
 #include "chromeos/ash/components/network/network_state.h"
 #include "components/session_manager/core/session_manager.h"
 #include "components/session_manager/session_manager_types.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "url/gurl.h"
 
 namespace ash {
@@ -235,26 +239,6 @@ class DefaultNetworkMonitor : public NetworkUiController::NetworkMonitor {
   scoped_refptr<NetworkStateInformer> network_state_informer_;
 };
 
-class DefaultAcceleratorController
-    : public KioskLaunchController::AcceleratorController {
- public:
-  DefaultAcceleratorController() = default;
-  DefaultAcceleratorController(const DefaultAcceleratorController&) = delete;
-  DefaultAcceleratorController& operator=(const AcceleratorController&) =
-      delete;
-  ~DefaultAcceleratorController() override = default;
-
-  void DisableAccelerators() override {
-    Shell::Get()->accelerator_controller()->SetPreventProcessingAccelerators(
-        true);
-  }
-
-  void EnableAccelerators() override {
-    Shell::Get()->accelerator_controller()->SetPreventProcessingAccelerators(
-        false);
-  }
-};
-
 std::string ToString(app_mode::ForceInstallObserver::Result result) {
   switch (result) {
     case app_mode::ForceInstallObserver::Result::kSuccess:
@@ -306,32 +290,18 @@ using NetworkUIState = NetworkUiController::NetworkUIState;
 
 const base::TimeDelta kDefaultKioskSplashScreenMinTime = base::Seconds(10);
 
-class KioskLaunchController::ScopedAcceleratorDisabler {
- public:
-  explicit ScopedAcceleratorDisabler(AcceleratorController& controller)
-      : controller_(controller) {
-    controller_->DisableAccelerators();
-  }
-
-  ScopedAcceleratorDisabler(const ScopedAcceleratorDisabler&) = delete;
-  ScopedAcceleratorDisabler& operator=(const ScopedAcceleratorDisabler&) =
-      delete;
-  ~ScopedAcceleratorDisabler() { controller_->EnableAccelerators(); }
-
- private:
-  raw_ref<AcceleratorController> controller_;
-};
-
 KioskLaunchController::KioskLaunchController(
     PrefService* local_state,
-    const policy::PolicyService* policy_service,
+    scoped_refptr<network::SharedURLLoaderFactory> shared_url_loader_factory,
+    policy::BrowserPolicyConnectorAsh* browser_policy_connector_ash,
     LoginDisplayHost* host,
     AppLaunchedCallback app_launched_callback,
     AppLaunchSplashScreen* splash_screen,
     LaunchCompleteCallback done_callback)
     : KioskLaunchController(
           local_state,
-          policy_service,
+          std::move(shared_url_loader_factory),
+          browser_policy_connector_ash,
           host,
           splash_screen,
           /*profile_loader=*/base::BindOnce(&LoadProfile),
@@ -347,11 +317,12 @@ KioskLaunchController::KioskLaunchController(
           }),
           /*app_launcher_factory=*/base::BindRepeating(&BuildKioskAppLauncher),
           std::make_unique<DefaultNetworkMonitor>(),
-          std::make_unique<DefaultAcceleratorController>()) {}
+          kiosk::CreateAcceleratorController()) {}
 
 KioskLaunchController::KioskLaunchController(
     PrefService* local_state,
-    const policy::PolicyService* policy_service,
+    scoped_refptr<network::SharedURLLoaderFactory> shared_url_loader_factory,
+    policy::BrowserPolicyConnectorAsh* browser_policy_connector_ash,
     LoginDisplayHost* host,
     AppLaunchSplashScreen* splash_screen,
     LoadProfileCallback profile_loader,
@@ -363,7 +334,8 @@ KioskLaunchController::KioskLaunchController(
     std::unique_ptr<NetworkUiController::NetworkMonitor> network_monitor,
     std::unique_ptr<AcceleratorController> accelerator_controller)
     : local_state_(CHECK_DEREF(local_state)),
-      policy_service_(CHECK_DEREF(policy_service)),
+      shared_url_loader_factory_(std::move(shared_url_loader_factory)),
+      browser_policy_connector_ash_(CHECK_DEREF(browser_policy_connector_ash)),
       host_(host),
       splash_screen_(splash_screen),
       app_launcher_factory_(std::move(app_launcher_factory)),
@@ -378,6 +350,7 @@ KioskLaunchController::KioskLaunchController(
       attempt_relaunch_(std::move(attempt_relaunch)),
       profile_loader_(std::move(profile_loader)),
       accelerator_controller_(std::move(accelerator_controller)) {
+  CHECK(shared_url_loader_factory_);
   if (!host_) {
     CHECK_IS_TEST();
   }
@@ -415,7 +388,8 @@ void KioskLaunchController::Start(KioskApp kiosk_app, bool auto_launch) {
   profile_loader_handle_ =
       std::move(profile_loader_)
           .Run(
-              /*local_state=*/&local_state_.get(), kiosk_app_id().account_id,
+              /*local_state=*/&local_state_.get(), shared_url_loader_factory_,
+              &browser_policy_connector_ash_.get(), kiosk_app_id().account_id,
               kiosk_app_id().type,
               /*on_done=*/
               base::BindOnce(
@@ -490,7 +464,7 @@ void KioskLaunchController::InitializeKeyboard() {
 }
 
 void KioskLaunchController::InitializeLauncher() {
-  DCHECK(!app_launcher_);
+  CHECK(!app_launcher_, base::NotFatalUntil::M161);
 
   app_state_ = kInitLauncher;
   app_launcher_ = app_launcher_factory_.Run(profile_, kiosk_app_id(),
@@ -522,10 +496,11 @@ AppLaunchSplashScreen::Data KioskLaunchController::GetSplashScreenAppData() {
 }
 
 void KioskLaunchController::CleanUp() {
-  DCHECK(!cleaned_up_);
+  CHECK(!cleaned_up_, base::NotFatalUntil::M161);
   cleaned_up_ = true;
 
   splash_wait_timer_.Stop();
+  app_launch_watchdog_.reset();
 
   // Close all windows opened on the splash screen before entering the kiosk
   // session.
@@ -597,7 +572,7 @@ void KioskLaunchController::OnAppPrepared() {
   UpdateSplashScreenData(GetSplashScreenAppData());
 
   force_install_observer_ = std::make_unique<app_mode::ForceInstallObserver>(
-      policy_service_.get(), profile_,
+      CHECK_DEREF(browser_policy_connector_ash_->GetPolicyService()), profile_,
       base::BindOnce(&KioskLaunchController::FinishForcedExtensionsInstall,
                      weak_ptr_factory_.GetWeakPtr()));
 }
@@ -608,6 +583,11 @@ void KioskLaunchController::OnLaunchFailed(KioskAppLaunchError::Error error) {
   if (cleaned_up_) {
     return;
   }
+
+  // The launch is being aborted for a known reason; the watchdog must not
+  // reboot the device on top of that (in particular for errors like
+  // `kChromeAppDeprecated` that keep the splash screen up).
+  app_launch_watchdog_.reset();
 
   SetKioskLaunchStateCrashKey(KioskLaunchState::kLaunchFailed);
 
@@ -726,6 +706,9 @@ void KioskLaunchController::OnAppWindowCreated(
     const std::optional<webapps::AppId>& app_id) {
   SYSLOG(INFO) << "App window created, closing splash screen.";
 
+  if (app_launch_watchdog_) {
+    DisarmAppLaunchWatchdogOnSuccess();
+  }
   app_window_id_ = app_id;
 
   // Not receiving the `OnAppLaunched` event before we come here leads to bugs
@@ -771,6 +754,9 @@ void KioskLaunchController::OnNetworkConfigRequested() {
 
 void KioskLaunchController::OnNetworkConfigureUiShowing() {
   splash_wait_timer_.Stop();
+  // The launcher is torn down below and re-created once the user is done;
+  // `LaunchApp()` will arm the watchdog again.
+  app_launch_watchdog_.reset();
   app_state_ = kInitNetwork;
   launch_on_install_ = true;
   app_launcher_observation_.Reset();
@@ -802,9 +788,33 @@ void KioskLaunchController::LaunchApp() {
     return;
   }
 
-  DCHECK(app_state_ == AppState::kInstalled);
+  CHECK(app_state_ == AppState::kInstalled, base::NotFatalUntil::M161);
   splash_wait_timer_.Stop();
+
+  if (features::IsKioskAppLaunchWatchdogEnabled()) {
+    ArmAppLaunchWatchdog();
+  }
   app_launcher_->LaunchApp();
+}
+
+void KioskLaunchController::ArmAppLaunchWatchdog() {
+  app_launch_watchdog_ = std::make_unique<KioskAppLaunchWatchdog>(
+      local_state_.get(),
+      base::BindOnce(
+          [](KioskLaunchController* self) {
+            // Deliberately not going through `OnLaunchFailed()`: that path
+            // persists a `KioskAppLaunchError`, which blocks auto-launch on the
+            // next start and would leave the device on the login screen instead
+            // of recovering.
+            std::move(self->attempt_relaunch_).Run();
+          },
+          // Safe because `this` owns `app_launch_watchdog_`.
+          base::Unretained(this)));
+}
+
+void KioskLaunchController::DisarmAppLaunchWatchdogOnSuccess() {
+  app_launch_watchdog_->ClearRebootCounter();
+  app_launch_watchdog_.reset();
 }
 
 void KioskLaunchController::FinishLaunchWithSuccess() {

@@ -69,7 +69,8 @@ void TabStripModelEventBridge::OnChildrenAdded(
 
 void TabStripModelEventBridge::OnChildrenRemoved(
     const tabs::TabCollection::Position& position,
-    const tabs::TabCollectionNodes& handles) {
+    const tabs::TabCollectionNodes& handles,
+    bool remove_for_detach) {
   tabs::TabCollectionNodes filtered_handles;
   for (const auto& handle : handles) {
     // We only forward TabCollectionHandles because tab removal events do not
@@ -119,6 +120,11 @@ void TabStripModelEventBridge::OnTabStripModelChanged(
 void TabStripModelEventBridge::OnTabChangedAt(tabs::TabInterface* tab,
                                               TabChangeType change_type) {
   Notify(events::ToEvent(*tab_strip_model_adapter_, tab, change_type));
+}
+
+void TabStripModelEventBridge::OnTabBlockedStateChanged(
+    tabs::TabInterface* tab) {
+  Notify(events::ToBlockedStateChangedEvent(*tab_strip_model_adapter_, tab));
 }
 
 void TabStripModelEventBridge::OnTabGroupChanged(const TabGroupChange& change) {

@@ -5,15 +5,14 @@
 import '//resources/cr_elements/cr_icon/cr_icon.js';
 import '//resources/cr_elements/cr_icon_button/cr_icon_button.js';
 import '//resources/cr_elements/cr_url_list_item/cr_url_list_item.js';
+import './organizer_favicon.js';
 import './organizer_list_section_item_description.js';
 import './organizer_list_section_item_title.js';
-import './stacked_favicons.js';
 
-import type {CrIconElement} from '//resources/cr_elements/cr_icon/cr_icon.js';
-import type {CrIconButtonElement} from '//resources/cr_elements/cr_icon_button/cr_icon_button.js';
 import type {CrUrlListItemElement, CrUrlListItemSize} from '//resources/cr_elements/cr_url_list_item/cr_url_list_item.js';
 import {MouseHoverableMixinLit} from '//resources/cr_elements/mouse_hoverable_mixin_lit.js';
-import type {TemplateResult} from '//resources/lit/v3_0/lit.rollup.js';
+import {isRTL} from '//resources/js/util.js';
+import type {PropertyValues, TemplateResult} from '//resources/lit/v3_0/lit.rollup.js';
 import {CrLitElement} from '//resources/lit/v3_0/lit.rollup.js';
 import type {Range} from '/tab_group_shared/search.js';
 
@@ -21,9 +20,6 @@ import {getCss} from './organizer_list_section_item.css.js';
 import {getHtml} from './organizer_list_section_item.html.js';
 import type {OrganizerListSectionItemDescriptionElement, OrganizerListSectionItemDescriptionPart} from './organizer_list_section_item_description.js';
 import type {OrganizerListSectionItemTitleElement} from './organizer_list_section_item_title.js';
-import {sliceRangesForParts} from './search_utils.js';
-
-export type {OrganizerListSectionItemDescriptionPart};
 
 // Stacked favicons configuration for an organizer list section item.
 export interface OrganizerListSectionItemStackedFavicons {
@@ -54,6 +50,9 @@ export interface OrganizerListSectionItemActionButton {
 
   // Accessibility label.
   ariaLabel: string;
+
+  // Optional: Tooltip to display on hover.
+  tooltip?: string;
 }
 
 // Model for a single item in an organizer list section.
@@ -61,8 +60,19 @@ export interface OrganizerListSectionItem<T> {
   // Title (main line) of the item.
   title: string[];
 
+  // Optional: Override accessible label parts (defaults to |title|).
+  ariaLabel?: string[];
+
   // Description (secondary line) of the item.
   description?: OrganizerListSectionItemDescriptionPart[];
+
+  // Optional: Override accessible description parts (defaults to |description|
+  // text).
+  ariaDescription?: string[];
+
+  // Optional: Terms that should match on search, but shouldn't be shown in the
+  // UI.
+  extraSearchTerms?: string[];
 
   // Icon displayed at the beginning of the item.
   prefixIcon?: OrganizerListSectionItemIcon;
@@ -75,6 +85,11 @@ export interface OrganizerListSectionItem<T> {
   // onItemActionButtonClicked on the delegate.
   hoveredActionButton?: OrganizerListSectionItemActionButton;
 
+  // Optional: Whether this item should be prioritized to be shown when the
+  // section is truncated. If at least one item has this set to true, the
+  // count of items shown is increased by 1 (up to 4). Defaults to false.
+  alwaysShow?: boolean;
+
   // The size to render. Defaults to medium.
   size?: CrUrlListItemSize;
 
@@ -85,8 +100,8 @@ export interface OrganizerListSectionItem<T> {
 // Search metadata attached to an item for highlighting matching ranges.
 export interface HighlightableItem {
   highlightRanges?: {
-    title?: Range[],
-    description?: Range[],
+    title?: Range[][],
+    description?: Range[][],
   };
 }
 
@@ -95,11 +110,9 @@ export type HighlightableOrganizerListSectionItem<T = unknown> =
 
 export interface OrganizerListSectionItemElement {
   $: {
-    actionButton: CrIconButtonElement,
     crUrlListItem: CrUrlListItemElement,
     description: OrganizerListSectionItemDescriptionElement,
     title: OrganizerListSectionItemTitleElement,
-    trailingIcon: CrIconElement,
   };
 }
 
@@ -122,26 +135,126 @@ export class OrganizerListSectionItemElement extends
 
   static override get properties() {
     return {
+      hasContextMenu: {
+        type: Boolean,
+        reflect: true,
+      },
       item: {type: Object},
+      tabbable: {type: Boolean},
     };
   }
 
+  accessor hasContextMenu: boolean = false;
   accessor item: HighlightableOrganizerListSectionItem<unknown> = {
     title: [],
   };
+  accessor tabbable: boolean = false;
+
+  private listFormatter_ = new Intl.ListFormat(
+      document.documentElement.lang || undefined,
+      {style: 'narrow', type: 'conjunction'});
+
+  override updated(changedProperties: PropertyValues<this>) {
+    super.updated(changedProperties);
+    if (changedProperties.has('tabbable')) {
+      this.$.crUrlListItem.getFocusableElement().tabIndex =
+          this.tabbable ? 0 : -1;
+    }
+  }
+
+  override focus() {
+    this.$.crUrlListItem.focus();
+  }
+
+  focusActionButton() {
+    const actionButton =
+        this.shadowRoot.querySelector<HTMLElement>('#actionButton');
+    if (actionButton) {
+      actionButton.focus();
+    }
+  }
+
+  focusLast() {
+    if (this.hasActionButton_()) {
+      this.focusActionButton();
+    } else {
+      this.focus();
+    }
+  }
+
+  protected onItemKeydown_(e: KeyboardEvent) {
+    const actionButton =
+        this.shadowRoot.querySelector<HTMLElement>('#actionButton');
+    if (actionButton && e.composedPath().includes(actionButton)) {
+      return;
+    }
+
+    if (e.key === 'Tab') {
+      if (!e.shiftKey) {
+        if (actionButton) {
+          actionButton.focus();
+          e.preventDefault();
+          e.stopPropagation();
+        } else {
+          this.fire('focus-next-section', {sourceEvent: e});
+        }
+      } else if (!this.tabbable) {
+        this.fire('focus-current-section', {sourceEvent: e});
+      }
+      return;
+    }
+
+    const forwardKey = isRTL() ? 'ArrowLeft' : 'ArrowRight';
+    if (e.key === forwardKey && actionButton) {
+      actionButton.focus();
+      e.preventDefault();
+      e.stopPropagation();
+    }
+  }
+
+  protected onActionButtonKeydown_(e: KeyboardEvent) {
+    const backwardKey = isRTL() ? 'ArrowRight' : 'ArrowLeft';
+    if ((e.key === 'Tab' && e.shiftKey) || e.key === backwardKey) {
+      this.focus();
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
+
+    if (e.key === 'Tab' && !e.shiftKey) {
+      this.fire('focus-next-section', {sourceEvent: e});
+    }
+  }
 
   protected getAriaLabel_(): string {
-    // TODO(crbug.com/560308768): Update to use a GRD string.
-    return this.item.title.join(' | ');
+    return this.listFormatter_.format(this.item.ariaLabel ?? this.item.title);
   }
 
   protected getAriaDescription_(): string {
-    // TODO(crbug.com/560308768): Update to use a GRD string.
-    return this.item.description?.map(d => d.text).join(' · ') || '';
+    const parts =
+        this.item.ariaDescription ?? this.item.description?.map(d => d.text);
+    return parts && parts.length > 0 ? this.listFormatter_.format(parts) : '';
   }
 
   protected hasDescription_(): boolean {
     return !!this.item.description && this.item.description.length > 0;
+  }
+
+  protected hasFavicon_(): boolean {
+    return !!this.getPrimaryFaviconUrl_();
+  }
+
+  protected getPrimaryFaviconUrl_(): string {
+    return this.item.prefixIcon?.url ??
+        this.item.prefixIcon?.stackedFavicons?.urls[0] ?? '';
+  }
+
+  protected getSecondaryFaviconUrl_(): string {
+    return this.item.prefixIcon?.stackedFavicons?.urls[1] ?? '';
+  }
+
+  protected shouldStackFaviconsVertically_(): boolean {
+    return !!this.item.prefixIcon?.stackedFavicons?.stackVertically;
   }
 
   protected hasSuffix_(): boolean {
@@ -160,15 +273,30 @@ export class OrganizerListSectionItemElement extends
     });
   }
 
+  protected onContextmenu_(e: MouseEvent) {
+    if (!this.hasContextMenu) {
+      return;
+    }
+    e.preventDefault();
+    e.stopPropagation();
+    this.fire('context-menu-click', {
+      item: this.item,
+      x: e.clientX,
+      y: e.clientY,
+    });
+  }
+
   protected titleHighlightRanges_(): Range[][] {
-    return sliceRangesForParts(
-        this.item.title, this.item.highlightRanges?.title);
+    return this.item.highlightRanges?.title ?? this.item.title.map(() => []);
   }
 
   protected descriptionHighlightRanges_(): Range[][] {
-    return sliceRangesForParts(
-        this.item.description?.map(d => d.text) || [],
-        this.item.highlightRanges?.description);
+    return this.item.highlightRanges?.description ??
+        (this.item.description?.map(() => []) || []);
+  }
+
+  resetActionButtonStateIfNeeded() {
+    this.shadowRoot.querySelector<HTMLElement>('#actionButton')?.blur();
   }
 }
 

@@ -5,6 +5,7 @@
 #include "android_webview/browser/aw_feature_list_creator.h"
 
 #include <memory>
+#include <optional>
 #include <set>
 #include <string>
 #include <utility>
@@ -15,6 +16,7 @@
 #include "android_webview/browser/aw_browser_process.h"
 #include "android_webview/browser/aw_enterprise_authentication_app_link_manager.h"
 #include "android_webview/browser/aw_metrics_service_client_delegate.h"
+#include "android_webview/browser/content_restriction/aw_content_restriction_manager_client.h"
 #include "android_webview/browser/metrics/android_metrics_provider.h"
 #include "android_webview/browser/metrics/aw_entropy_state_provider.h"
 #include "android_webview/browser/metrics/aw_metrics_service_client.h"
@@ -72,15 +74,76 @@ namespace {
 
 bool g_signature_verification_enabled = true;
 
-// A list of Finch study names that should use the nonembedded low entropy
-// source. IMPORTANT: Any experiment listed here must not be part of a layer.
-const char* const kNonembeddedLowEntropySourceAllowlist[] = {
-    "DefaultPassthroughCommandDecoder",
-    "WebViewFasterGetDefaultUserAgent",
-    "WebViewStartupNonBlockingWebViewConstructor",
-    "WebViewStaticMethodsNotTriggerStartup",
-    "WebViewTestNonembeddedLowEntropySource",
-    "WebViewProfileStoreNotTriggerStartup"
+// A list of Finch study names that should NOT use the nonembedded low entropy
+// source.
+const char* const kNonembeddedLowEntropySourceDenylist[] = {
+    "AsyncThreadPoolInit",
+    "AttributionReportingDeprecation",
+    "AudioRendererMixerImmediatePause",
+    "AutofillAiCrowdsourcingPredictions",
+    "AutofillAndroidUseGlobalIdForFormComparison",
+    "AutofillFixIframeOwnership",
+    "AutofillOnlyConsiderSingleFieldFormsAsSearchForms",
+    "AutofillSupportSplitZipCode",
+    "ComponentsBase32InRust",
+    "CompressionDictionaryTTL",
+    "DefaultANGLEVulkan",
+    "DomStorageSqliteNewDatabases",
+    "EnableQuicReadMultipleAndUdpGRO",
+    "FlushPersistentSystemProfileOnWrite",
+    "GamepadPollingInterval",
+    "HardenUrlProvisionFetcher",
+    "HarfRustShaping",
+    "HeapVectorPromptlyFree",
+    "IcuNormalizerMigration",
+    "IdbSqliteOnDiskRollout",
+    "IndexedDBConnectionDeduplication",
+    "MediaCodecLinearBlock",
+    "MetricsLogTrimmingLimitsWebView",
+    "MojoDirectSharedMemoryAllocation",
+    "MutationEvents",
+    "MutationEventsTurnDownHighRisk",
+    "NoSelectionMenuCaching",
+    "PartitionAllocBackupRefPtrAndroid",
+    "PartitionAllocMiracleObject",
+    "PaymentRequestEnforceLNAWithClientSecurityState",
+    "PreviewHandwritingGesture",
+    "PrioritizeMainFrameNavigationNetworkResponse",
+    "QUIC",
+    "RebindServiceBatchApi",
+    "RequiresLoadIgnoreLimitsForDomWindowsOnly",
+    "RestrictLinkHeaderOnSubresource",
+    "RustyIcoFeature",
+    "ScrollJankV4MetricFastScrollContinuityRequiresSameDirection",
+    "ScrollPredictorEnhancements",
+    "TextClassifierTimeout",
+    "ThreeDSecureTelemetry",
+    "UMA-Uniformity-Trial-0.5-Percent-1",
+    "UMA-Uniformity-Trial-0.5-Percent-2",
+    "UMA-Uniformity-Trial-1-Percent",
+    "UMA-Uniformity-Trial-10-Percent",
+    "UMA-Uniformity-Trial-10-Percent-sanity",
+    "UMA-Uniformity-Trial-20-Percent",
+    "UMA-Uniformity-Trial-5-Percent",
+    "UMA-Uniformity-Trial-50-Percent",
+    "UnthrottleAsyncTouchMovesV2",
+    "UseDynamicBackingAllocations",
+    "UseRustCborParser",
+    "UseRustCborWriter",
+    "V8DateTimePatternGeneratorCacheEviction",
+    "V8SqrtAllocationLimits",
+    "V8Turbolev",
+    "VariationsFeatureAccessLogging",
+    "VulkanImaginationMSAA",
+    "WebViewMemoryProfilingClient",
+    "WebViewMigrateVisitedLinks",
+    "WebViewMultiProfileSkipDefaultProfile",
+    "WebViewPrefetchAheadOfPrerender",
+    "WebViewReducedFinchTime",
+    "WebViewSurfaceControlV2",
+    "WebviewSingleSharedContextState",
+    "XMLParsingRustNonXslt",
+    "XSLTSpecialTrialWebView",
 };
 
 // These values are persisted to logs. Entries should not be renumbered and
@@ -153,6 +216,9 @@ const char* const kPersistentPrefsAllowlist[] = {
     // Records about profiles/contexts and their stored data
     prefs::kProfileListPref,
     prefs::kProfileCounterPref,
+
+    // Content restriction enabled state.
+    android_webview::prefs::kContentRestrictionEnabled,
 };
 
 void HandleReadError(PersistentPrefStore::PrefReadError error) {}
@@ -214,6 +280,7 @@ std::unique_ptr<PrefService> AwFeatureListCreator::CreatePrefService() {
   AwBrowserContextStore::RegisterPrefs(pref_registry.get());
   AwSupervisedUserUrlClassifier::RegisterPrefs(pref_registry.get());
   AwUrlCheckerDelegateImpl::RegisterPrefs(pref_registry.get());
+  AwContentRestrictionManagerClient::RegisterPrefs(pref_registry.get());
 
   PrefServiceFactory pref_service_factory;
 
@@ -271,9 +338,14 @@ void AwFeatureListCreator::SetUpFieldTrials() {
     seed->country = seed_proto->country();
     seed->date = seed_date;
     seed->is_gzip_compressed = seed_proto->is_gzip_compressed();
-    // Reading without checking for presence would result in a default value of
-    // 0, which would be indistinguishable from a valid low entropy source.
-    if (seed_proto->has_low_entropy_source()) {
+
+    // Use the cached flag as a kill switch to gate the nonembedded low entropy
+    // source logic. Reading without checking for presence would result in a
+    // default value of 0, which would be indistinguishable from a valid low
+    // entropy source.
+    if (!CachedFlags::IsEnabled(
+            features::kWebViewNonembeddedLowEntropySourceKillSwitch) &&
+        seed_proto->has_low_entropy_source()) {
       nonembedded_low_entropy_source = seed_proto->low_entropy_source();
     }
     LimitedEntropySourceState limited_source_state;
@@ -344,19 +416,23 @@ void AwFeatureListCreator::SetUpFieldTrials() {
           /*enable_limited_entropy_mode=*/false);
 
   std::unique_ptr<const variations::EntropyProviders> entropy_providers;
+  std::optional<int> low_entropy_source_value;
 
   if (nonembedded_low_entropy_source >= 0) {
     local_state_->SetInteger(prefs::kWebViewLowEntropySource,
                              nonembedded_low_entropy_source);
+    low_entropy_source_value = nonembedded_low_entropy_source;
 
     // If we have a nonembedded low entropy source, wrap the standard providers.
     entropy_providers = std::make_unique<AwEntropyProviders>(
         std::move(standard_providers),
         /*nonembedded_low_entropy_source=*/nonembedded_low_entropy_source,
         std::make_unique<std::set<std::string_view>>(
-            std::from_range, kNonembeddedLowEntropySourceAllowlist),
+            std::from_range, kNonembeddedLowEntropySourceDenylist),
         limited_entropy_randomization_source);
   } else {
+    low_entropy_source_value =
+        metrics_client->metrics_state_manager()->GetLowEntropySource();
     entropy_providers = std::move(standard_providers);
   }
 
@@ -369,7 +445,7 @@ void AwFeatureListCreator::SetUpFieldTrials() {
       variation_ids, GetSwitchDependentFeatureOverrides(*command_line),
       std::move(feature_list), metrics_client->metrics_state_manager(),
       aw_field_trials_.get(), &ignored_safe_seed_manager,
-      /*add_entropy_source_to_variations_ids=*/true, *entropy_providers);
+      low_entropy_source_value, *entropy_providers);
 }
 
 }  // namespace android_webview

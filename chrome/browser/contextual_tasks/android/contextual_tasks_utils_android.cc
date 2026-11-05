@@ -2,14 +2,11 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "chrome/browser/contextual_tasks/contextual_tasks_utils.h"
-
-#include "base/android/jni_string.h"
-#include "base/strings/utf_string_conversions.h"
+#include "chrome/browser/contextual_tasks/android/contextual_tasks_bridge.h"
+#include "chrome/browser/contextual_tasks/android/contextual_tasks_omnibox_query_helper.h"
 #include "components/contextual_tasks/public/features.h"
-#include "components/omnibox/browser/location_bar_model_util.h"
+#include "components/lens/lens_overlay_invocation_source.h"
 #include "content/public/browser/web_contents.h"
-#include "third_party/jni_zero/default_conversions.h"
 #include "url/android/gurl_android.h"
 #include "url/gurl.h"
 
@@ -20,43 +17,36 @@ static bool JNI_ContextualTasksUtils_IsContextualTasksUiEnabled() {
   return contextual_tasks::IsContextualTasksUIEnabled();
 }
 
-static GURL JNI_ContextualTasksUtils_GetContextualTasksDisplayUrl(
-    content::WebContents* web_contents) {
-  return contextual_tasks::GetContextualTasksDisplayURL(web_contents);
+static bool
+JNI_ContextualTasksUtils_IsAllowSignedOutUserInDesktopAndroidEnabled() {
+  return contextual_tasks::IsAllowSignedOutUserInDesktopAndroidEnabled();
 }
 
-static GURL JNI_ContextualTasksUtils_GetContextualTasksFunctionalURL(
+static bool JNI_ContextualTasksUtils_ShouldShowAskGoogleEntryPoints(
     content::WebContents* web_contents) {
-  return contextual_tasks::GetContextualTasksFunctionalURL(web_contents);
+  return contextual_tasks::ContextualTasksBridge::
+      ShouldShowAskGoogleEntryPoints(web_contents);
 }
 
-static std::string JNI_ContextualTasksUtils_GetReplacementUrl(
-    const std::u16string& current_text,
-    int32_t selection_start,
-    int32_t selection_end,
-    const GURL& functional_gurl) {
-  if (selection_start < 0 ||
-      selection_end > static_cast<int>(current_text.length()) ||
-      selection_start >= selection_end) {
-    return {};
-  }
+static void JNI_ContextualTasksUtils_OpenAskGoogleAboutThisPage(
+    content::WebContents* web_contents,
+    lens::LensOverlayInvocationSource invocation_source) {
+  contextual_tasks::ContextualTasksBridge::OpenAskGoogleAboutThisPage(
+      web_contents, invocation_source);
+}
 
-  // Do not adjust if selection did not start at the beginning of the field.
-  if (selection_start != 0) {
-    return {};
-  }
+static void JNI_ContextualTasksUtils_ToggleAskGoogleSidePanel(
+    content::WebContents* web_contents,
+    lens::LensOverlayInvocationSource invocation_source) {
+  contextual_tasks::ContextualTasksBridge::ToggleAskGoogleSidePanel(
+      web_contents, invocation_source);
+}
 
-  GURL url_from_text(
-      current_text.substr(selection_start, selection_end - selection_start));
-
-  GURL replacement_url = location_bar_model::AdjustContextualTasksURLForCopy(
-      url_from_text, functional_gurl);
-
-  if (replacement_url.is_valid()) {
-    return replacement_url.spec();
-  }
-
-  return {};
+static void JNI_ContextualTasksUtils_IssueOmniboxContextualQuery(
+    content::WebContents* web_contents,
+    const GURL& suggestion_url) {
+  contextual_tasks::ContextualTasksOmniboxQueryHelper::Start(web_contents,
+                                                             suggestion_url);
 }
 
 DEFINE_JNI(ContextualTasksUtils)

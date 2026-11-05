@@ -6,26 +6,34 @@
 
 #include <stddef.h>
 
+#include <memory>
 #include <optional>
 #include <tuple>
 #include <utility>
 
 #include "base/command_line.h"
 #include "base/functional/bind.h"
+#include "base/functional/callback.h"
 #include "base/location.h"
 #include "base/memory/ptr_util.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory/weak_ptr.h"
+#include "base/no_destructor.h"
 #include "base/run_loop.h"
+#include "base/scoped_observation.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/single_thread_task_runner.h"
+#include "base/test/bind.h"
+#include "base/test/gtest_util.h"
 #include "base/test/test_timeouts.h"
 #include "base/values.h"
 #include "build/build_config.h"
 #include "content/browser/renderer_host/navigation_controller_impl.h"
 #include "content/browser/renderer_host/navigation_entry_impl.h"
 #include "content/browser/renderer_host/overscroll_controller.h"
+#include "content/browser/renderer_host/render_frame_host_impl.h"
 #include "content/browser/renderer_host/render_widget_host_view_aura.h"
 #include "content/browser/web_contents/web_contents_impl.h"
 #include "content/browser/web_contents/web_contents_view.h"
@@ -33,7 +41,7 @@
 #include "content/public/browser/overscroll_configuration.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_widget_host.h"
-#include "content/public/browser/web_contents_observer.h"
+#include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_view_delegate.h"
 #include "content/public/browser/web_drag_dest_delegate.h"
 #include "content/public/common/content_switches.h"
@@ -41,13 +49,18 @@
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/content_browser_test.h"
 #include "content/public/test/content_browser_test_utils.h"
+#include "content/public/test/popup_test_utils.h"
 #include "content/public/test/test_renderer_host.h"
 #include "content/public/test/test_utils.h"
 #include "content/shell/browser/shell.h"
 #include "net/dns/mock_host_resolver.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "third_party/blink/public/common/input/synthetic_web_input_event_builders.h"
+#include "ui/aura/client/window_types.h"
+#include "ui/aura/env.h"
+#include "ui/aura/env_observer.h"
 #include "ui/aura/window.h"
+#include "ui/aura/window_observer.h"
 #include "ui/aura/window_tree_host.h"
 #include "ui/base/dragdrop/drag_drop_types.h"
 #include "ui/base/dragdrop/drop_target_event.h"
@@ -114,7 +127,331 @@ class TestWebContentsViewDelegate : public WebContentsViewDelegate {
   base::OnceClosure drop_callback_;
 };
 
+// Where ReentrantDestructionRenderWidgetHostViewAura runs the pending
+// synchronous callback: from InitAsChild(), while the view is being shown
+// (from EnsurePlatformVisibility(), since ShowWithVisibility() is final), or
+// while InitAsChild() adds the view's window to its parent.
+enum class ReentrantCallbackPoint {
+  kInitAsChild,
+  kShow,
+  kAddChild,
+};
+ReentrantCallbackPoint g_reentrant_callback_point =
+    ReentrantCallbackPoint::kInitAsChild;
+
+// Synchronous callback invoked at `g_reentrant_callback_point` to simulate
+// re-entrant destruction or teardown (see content/browser/SECURITY.md).
+using ReentrantCallback = base::OnceCallback<void(RenderWidgetHostViewAura*)>;
+
+// If set, the next view created runs this from `g_reentrant_callback_point`.
+ReentrantCallback& PendingReentrantCallback() {
+  static base::NoDestructor<ReentrantCallback> callback;
+  return *callback;
+}
+
+ReentrantCallback CloseShellCallback(Shell* shell) {
+  return base::BindOnce(
+      [](Shell* shell, RenderWidgetHostViewAura*) { shell->Close(); }, shell);
+}
+
+// Synchronously initiates destruction of `view` while it is still pinned on the
+// stack.
+ReentrantCallback DestroyViewCallback() {
+  return base::BindOnce(
+      [](RenderWidgetHostViewAura* view) { view->DestroyOrDefer(); });
+}
+
+// Runs a closure once a window has been added to the observed window, at the
+// end of aura::Window::AddChild().
+class WindowAddedCallback : public aura::WindowObserver {
+ public:
+  WindowAddedCallback(aura::Window* window, base::OnceClosure callback)
+      : callback_(std::move(callback)) {
+    observation_.Observe(window);
+  }
+
+  // aura::WindowObserver:
+  void OnWindowHierarchyChanged(const HierarchyChangeParams& params) override {
+    if (params.new_parent == observation_.GetSource() && callback_) {
+      std::move(callback_).Run();
+    }
+  }
+
+ private:
+  base::OnceClosure callback_;
+  base::ScopedObservation<aura::Window, aura::WindowObserver> observation_{
+      this};
+};
+
+// A view that invokes a synchronous callback while it is initialized or shown
+// (as can happen via native window, focus, or input-method callbacks; see
+// content/browser/SECURITY.md) to exercise re-entrant teardown paths.
+class ReentrantDestructionRenderWidgetHostViewAura
+    : public RenderWidgetHostViewAura {
+ public:
+  explicit ReentrantDestructionRenderWidgetHostViewAura(RenderWidgetHost* host)
+      : RenderWidgetHostViewAura(host),
+        // Only views created after the callback is set run it, so that existing
+        // views, like the opener's, don't.
+        armed_(!PendingReentrantCallback().is_null()) {}
+  ~ReentrantDestructionRenderWidgetHostViewAura() override = default;
+
+  void InitAsChild(gfx::NativeView parent_view) override {
+    std::optional<WindowAddedCallback> window_added;
+    if (parent_view) {
+      window_added.emplace(
+          parent_view,
+          base::BindOnce(&ReentrantDestructionRenderWidgetHostViewAura::
+                             MaybeRunReentrantCallback,
+                         base::Unretained(this),
+                         ReentrantCallbackPoint::kAddChild));
+    }
+    base::WeakPtr<RenderWidgetHostViewBase> weak_this = GetWeakPtr();
+    RenderWidgetHostViewAura::InitAsChild(parent_view);
+    window_added.reset();
+    // InitAsChild() deletes this view if it was destroyed while its window was
+    // added.
+    if (!weak_this) {
+      return;
+    }
+    MaybeRunReentrantCallback(ReentrantCallbackPoint::kInitAsChild);
+  }
+
+ protected:
+  void EnsurePlatformVisibility(PageVisibilityState page_visibility) override {
+    RenderWidgetHostViewAura::EnsurePlatformVisibility(page_visibility);
+    MaybeRunReentrantCallback(ReentrantCallbackPoint::kShow);
+  }
+
+ private:
+  void MaybeRunReentrantCallback(ReentrantCallbackPoint point) {
+    if (!armed_ || point != g_reentrant_callback_point ||
+        PendingReentrantCallback().is_null()) {
+      return;
+    }
+    std::move(PendingReentrantCallback()).Run(this);
+  }
+
+  const bool armed_;
+};
+
+void InstallReentrantDestructionRenderWidgetHostViewCreateHook() {
+  WebContentsViewAura::InstallCreateHookForTests(
+      [](RenderWidgetHost* host) -> RenderWidgetHostViewAura* {
+        return new ReentrantDestructionRenderWidgetHostViewAura(host);
+      });
+}
+
+// Closes the next popup that is created, the way `parent_view` closes its popup
+// when it loses focus, synchronously once the popup's window is added to a root
+// window while RenderWidgetHostViewAura::InitAsPopup() initializes it.
+class PopupClosingObserver : public aura::EnvObserver,
+                             public aura::WindowObserver {
+ public:
+  explicit PopupClosingObserver(RenderWidgetHostViewAura* parent_view)
+      : parent_view_(parent_view) {
+    env_observation_.Observe(aura::Env::GetInstance());
+  }
+
+  bool closed_popup() const { return closed_popup_; }
+
+  // aura::EnvObserver:
+  void OnWindowInitialized(aura::Window* window) override {
+    // The popup's window is the first menu window created. On desktop Aura, the
+    // window it is added to is created later, in a root window of its own.
+    if (window->GetType() == aura::client::WINDOW_TYPE_MENU) {
+      env_observation_.Reset();
+      popup_window_observation_.Observe(window);
+    }
+  }
+
+  // aura::WindowObserver:
+  void OnWindowAddedToRootWindow(aura::Window* window) override {
+    popup_window_observation_.Reset();
+    closed_popup_ = true;
+    parent_view_->OnWindowFocused(/*gained_focus=*/nullptr,
+                                  parent_view_->GetNativeView());
+  }
+  void OnWindowDestroying(aura::Window* window) override {
+    popup_window_observation_.Reset();
+  }
+
+ private:
+  const raw_ptr<RenderWidgetHostViewAura> parent_view_;
+  bool closed_popup_ = false;
+  base::ScopedObservation<aura::Env, aura::EnvObserver> env_observation_{this};
+  base::ScopedObservation<aura::Window, aura::WindowObserver>
+      popup_window_observation_{this};
+};
+
 }  // namespace
+
+class WebContentsViewAuraReentrantDestructionTest : public ContentBrowserTest {
+ public:
+  void SetUpCommandLine(base::CommandLine* command_line) override {
+    IsolateAllSitesForTesting(command_line);
+  }
+
+  void SetUpInProcessBrowserTestFixture() override {
+    InstallReentrantDestructionRenderWidgetHostViewCreateHook();
+    ContentBrowserTest::SetUpInProcessBrowserTestFixture();
+  }
+
+  void SetUpOnMainThread() override {
+    g_reentrant_callback_point = ReentrantCallbackPoint::kInitAsChild;
+    PendingReentrantCallback().Reset();
+    host_resolver()->AddRule("*", "127.0.0.1");
+    ASSERT_TRUE(embedded_test_server()->Start());
+  }
+
+ protected:
+  // Synchronously closes the opener at `point` while
+  // WebContentsImpl::CreateNewWindow() creates the window it opens.
+  void CloseOpenerWhileCreatingNewWindow(ReentrantCallbackPoint point) {
+    Shell* opener = CreateBrowser();
+    ASSERT_TRUE(NavigateToURL(
+        opener, embedded_test_server()->GetURL("a.com", "/title1.html")));
+    const size_t web_contents_count = GetAllWebContents().size();
+
+    WebContentsDestroyedWatcher destroyed_watcher(opener->web_contents());
+    g_reentrant_callback_point = point;
+    PendingReentrantCallback() = CloseShellCallback(opener);
+    // Without noopener, the new window's view is created and shown in
+    // WebContentsImpl::CreateNewWindow().
+    ExecuteScriptAsync(opener, "window.open('about:blank')");
+    destroyed_watcher.Wait();
+
+    // Only the opener's WebContents is gone; the new window's was destroyed
+    // before it was opened.
+    EXPECT_EQ(web_contents_count - 1, GetAllWebContents().size());
+  }
+};
+
+// WebContentsViewAura::CreateViewForWidget() calls InitAsChild(), which may
+// trigger synchronous re-entrant callbacks, and then keeps using the view and
+// WebContentsViewAura. Closing the tab inside that callback destroys both, so
+// this verifies that destroying the WebContents re-entrantly there fails a
+// CHECK instead of using freed memory.
+IN_PROC_BROWSER_TEST_F(WebContentsViewAuraReentrantDestructionTest,
+                       WebContentsDestroyedDuringInitAsChild) {
+  Shell* tab = CreateBrowser();
+
+  // The embedded b.com subframe gives this tab a live RenderViewHost for b.com
+  // that has no view yet. A same-BrowsingInstance main-frame navigation to
+  // b.com reuses it and creates its view during the navigation, rather than
+  // when a new RenderViewHost is created.
+  const GURL initial_url = embedded_test_server()->GetURL(
+      "a.com", "/cross_site_iframe_factory.html?a(b)");
+  ASSERT_TRUE(NavigateToURL(tab, initial_url));
+
+  // Stay in the same BrowsingInstance so the navigation reuses that
+  // RenderViewHost.
+  static_cast<WebContentsImpl*>(tab->web_contents())
+      ->GetPrimaryMainFrame()
+      ->DisableProactiveBrowsingInstanceSwapForTesting();
+
+  const GURL target_url =
+      embedded_test_server()->GetURL("b.com", "/title1.html");
+
+  // Destroying the WebContents while its view is being created is not
+  // supported, so it must fail a CHECK rather than touch freed memory.
+  EXPECT_CHECK_DEATH_WITH(
+      {
+        PendingReentrantCallback() = CloseShellCallback(tab);
+        // Not NavigateToURL(), which would use the Shell after it is
+        // destroyed.
+        tab->web_contents()->GetController().LoadURLWithParams(
+            NavigationController::LoadURLParams(target_url));
+      },
+      "prevent_destruction_");
+}
+
+// WebContentsImpl::CreateNewWindow() creates the new window's view via
+// InitAsChild() and then keeps using the opener. If the opener is closed
+// synchronously during InitAsChild(), the window must not be created, and the
+// opener must not be used after it is destroyed.
+IN_PROC_BROWSER_TEST_F(WebContentsViewAuraReentrantDestructionTest,
+                       OpenerDestroyedDuringNewWindowInitAsChild) {
+  CloseOpenerWhileCreatingNewWindow(ReentrantCallbackPoint::kInitAsChild);
+}
+
+// Same, but with the opener closed synchronously while CreateNewWindow() shows
+// the new window's view.
+IN_PROC_BROWSER_TEST_F(WebContentsViewAuraReentrantDestructionTest,
+                       OpenerDestroyedDuringNewWindowShow) {
+  CloseOpenerWhileCreatingNewWindow(ReentrantCallbackPoint::kShow);
+}
+
+// Same, but with only the opener frame removed synchronously during
+// InitAsChild(). The opener's WebContents is still used afterwards, but the
+// opener frame must not be.
+IN_PROC_BROWSER_TEST_F(WebContentsViewAuraReentrantDestructionTest,
+                       OpenerFrameRemovedDuringNewWindowInitAsChild) {
+  Shell* tab = CreateBrowser();
+  ASSERT_TRUE(
+      NavigateToURL(tab, embedded_test_server()->GetURL(
+                             "a.com", "/cross_site_iframe_factory.html?a(b)")));
+  RenderFrameHost* main_frame = tab->web_contents()->GetPrimaryMainFrame();
+  RenderFrameHost* opener_frame = ChildFrameAt(main_frame, 0);
+  ASSERT_TRUE(opener_frame);
+  ASSERT_NE(main_frame->GetProcess(), opener_frame->GetProcess());
+  const size_t web_contents_count = GetAllWebContents().size();
+
+  RenderFrameDeletedObserver opener_frame_deleted(opener_frame);
+  PendingReentrantCallback() = base::BindLambdaForTesting(
+      [main_frame, opener_frame](RenderWidgetHostViewAura*) {
+        static_cast<RenderFrameHostImpl*>(main_frame)
+            ->RemoveChild(static_cast<RenderFrameHostImpl*>(opener_frame)
+                              ->frame_tree_node());
+      });
+  ExecuteScriptAsync(opener_frame, "window.open('about:blank')");
+  ASSERT_TRUE(opener_frame_deleted.WaitUntilDeleted());
+
+  // The new window's WebContents was destroyed before it was opened.
+  EXPECT_EQ(web_contents_count, GetAllWebContents().size());
+  EXPECT_TRUE(main_frame->IsRenderFrameLive());
+}
+
+// The new window's view itself may also be destroyed synchronously while
+// CreateNewWindow() creates it, e.g. via native window callbacks while
+// InitAsChild() adds its window to its parent.
+IN_PROC_BROWSER_TEST_F(WebContentsViewAuraReentrantDestructionTest,
+                       NewWindowViewDestroyedWhileAddedToParent) {
+  Shell* opener = CreateBrowser();
+  ASSERT_TRUE(NavigateToURL(
+      opener, embedded_test_server()->GetURL("a.com", "/title1.html")));
+  const size_t web_contents_count = GetAllWebContents().size();
+
+  g_reentrant_callback_point = ReentrantCallbackPoint::kAddChild;
+  PendingReentrantCallback() = DestroyViewCallback();
+  // window.open() returns null when the window isn't created.
+  EXPECT_EQ(true, EvalJs(opener, "window.open('about:blank') === null"));
+  // The new window's WebContents was destroyed before it was opened.
+  EXPECT_EQ(web_contents_count, GetAllWebContents().size());
+}
+
+// A popup may be closed synchronously while ShowCreatedWidget() initializes it,
+// e.g. because its parent loses focus, which deletes its RenderWidgetHost.
+// Neither may be used after that.
+IN_PROC_BROWSER_TEST_F(WebContentsViewAuraReentrantDestructionTest,
+                       PopupClosedWhileParented) {
+  ASSERT_TRUE(NavigateToURL(
+      shell(), GURL("data:text/html,<select id='s'><option>a</option>"
+                    "<option>b</option></select>")));
+  WebContents* web_contents = shell()->web_contents();
+  RenderFrameHost* main_frame = web_contents->GetPrimaryMainFrame();
+  PopupClosingObserver popup_closer(static_cast<RenderWidgetHostViewAura*>(
+      web_contents->GetRenderWidgetHostView()));
+
+  ShowPopupWidgetWaiter popup_waiter(web_contents, main_frame);
+  ASSERT_TRUE(ExecJs(main_frame, "document.getElementById('s').showPicker();"));
+  popup_waiter.Wait();
+
+  EXPECT_TRUE(popup_closer.closed_popup());
+  EXPECT_FALSE(
+      RenderWidgetHost::FromID(main_frame->GetProcess()->GetDeprecatedID(),
+                               popup_waiter.last_routing_id()));
+}
 
 class WebContentsViewAuraTest : public ContentBrowserTest {
  public:
@@ -186,8 +523,9 @@ class WebContentsViewAuraTest : public ContentBrowserTest {
     ui::DropTargetEvent event(*data.get(), point, point,
                               ui::DragDropTypes::DRAG_COPY);
     view->OnDragEntered(event);
-    view->UpdateDragOperation(ui::mojom::DragOperation::kCopy,
-                              document_is_handling_drag);
+    view->UpdateDragOperation(
+        ui::mojom::DragOperation::kCopy, document_is_handling_drag,
+        GetWebContentsImpl()->GetPrimaryMainFrame()->GetRenderWidgetHost());
     EXPECT_TRUE(drag_dest_delegate_.GetDragInitializeCalled());
     auto drop_cb = view->GetDropCallback(event);
     ASSERT_TRUE(drop_cb);
@@ -1162,6 +1500,7 @@ IN_PROC_BROWSER_TEST_F(WebContentsViewAuraTest,
   TestWebContentsViewDelegate* delegate =
       PrepareWebContentsViewForDropTest(/*delegate_allows_drop=*/true);
   SimulateDragEnterAndDrop(/*document_is_handling_drag=*/true);
+  view->end_drag_runner_session_id_ = view->drag_session_id_;
   // `drag_in_progress_` should still be true before `CompleteDrop()` is called.
   ASSERT_TRUE(view->drag_in_progress_);
 
@@ -1198,6 +1537,7 @@ IN_PROC_BROWSER_TEST_F(WebContentsViewAuraTest,
   TestWebContentsViewDelegate* delegate =
       PrepareWebContentsViewForDropTest(/*delegate_allows_drop=*/false);
   SimulateDragEnterAndDrop(/*document_is_handling_drag=*/true);
+  view->end_drag_runner_session_id_ = view->drag_session_id_;
   // `drag_in_progress_` should still be true before `CompleteDrop()` is called.
   ASSERT_TRUE(view->drag_in_progress_);
 

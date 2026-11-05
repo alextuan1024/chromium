@@ -8,6 +8,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 
 #include "ash/constants/ash_features.h"
 #include "ash/constants/ash_pref_names.h"
@@ -15,6 +16,8 @@
 #include "ash/webui/personalization_app/personalization_app_ui.h"
 #include "base/base64.h"
 #include "base/containers/fixed_flat_set.h"
+#include "base/i18n/language_tag.h"
+#include "base/i18n/tag_converters.h"
 #include "base/logging.h"
 #include "base/strings/strcat.h"
 #include "chrome/browser/ash/login/demo_mode/demo_session.h"
@@ -25,20 +28,19 @@
 #include "chrome/browser/ash/system_web_apps/apps/personalization_app/personalization_app_user_provider_impl.h"
 #include "chrome/browser/ash/system_web_apps/apps/personalization_app/personalization_app_wallpaper_provider_impl.h"
 #include "chrome/browser/ash/wallpaper_handlers/wallpaper_fetcher_delegate.h"
-#include "chrome/browser/browser_process.h"
-#include "chrome/browser/manta/manta_service_factory.h"
 #include "chrome/browser/policy/profile_policy_connector.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
 #include "chromeos/ash/components/demo_mode/utils/demo_session_utils.h"
+#include "chromeos/ash/components/manta/manta_service_provider.h"
 #include "components/account_id/account_id.h"
-#include "components/language/core/common/locale_util.h"
 #include "components/manta/manta_service.h"
 #include "components/user_manager/user.h"
 #include "components/user_manager/user_manager.h"
 #include "components/user_manager/user_type.h"
 #include "components/variations/service/variations_service.h"
 #include "google_apis/gaia/gaia_auth_util.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "url/gurl.h"
 
 namespace ash::personalization_app {
@@ -47,7 +49,8 @@ namespace {
 bool CanAccessMantaFeaturesWithoutMinorRestrictions(Profile* profile) {
   // Only users who can access manta features without minor restrictions will
   // have SeaPen enabled.
-  auto* manta_service = manta::MantaServiceFactory::GetForProfile(profile);
+  const AccountId account_id = GetAccountId(profile);
+  auto* manta_service = MantaServiceProvider::Get().Find(account_id);
   const bool canAccessMantaFeaturesWithoutMinorRestrictions =
       manta_service &&
       manta_service->CanAccessMantaFeaturesWithoutMinorRestrictions() ==
@@ -60,21 +63,15 @@ constexpr auto kSeaPenTextInputSupportedLanguages =
                                               "nl", "it", "sv", "nb", "da",
                                               "fi", "pt"});
 
-// Returns country code in the format of lowercase ISO 3166-1 alpha-2.
-// Example: us, br, in.
-std::optional<std::string> GetCountryCode() {
-  if (g_browser_process == nullptr ||
-      g_browser_process->variations_service() == nullptr) {
-    return std::nullopt;
-  }
-  return g_browser_process->variations_service()->GetLatestCountry();
-}
-
 }  // namespace
 
 std::unique_ptr<content::WebUIController> CreatePersonalizationAppUI(
+    PrefService* local_state,
+    const ApplicationLocaleStorage* application_locale_storage,
+    scoped_refptr<network::SharedURLLoaderFactory> shared_url_loader_factory,
     content::WebUI* web_ui,
-    const GURL& url) {
+    const GURL& url,
+    manta::MantaService* manta_service) {
   auto ambient_provider = std::make_unique<
       ash::personalization_app::PersonalizationAppAmbientProviderImpl>(web_ui);
   auto keyboard_backlight_provider =
@@ -85,15 +82,17 @@ std::unique_ptr<content::WebUIController> CreatePersonalizationAppUI(
       ash::personalization_app::PersonalizationAppThemeProviderImpl>(web_ui);
   auto user_provider = std::make_unique<
       ash::personalization_app::PersonalizationAppUserProviderImpl>(web_ui);
-  // TODO(crbug.com/404133902): Avoid using g_browser_process.
   auto wallpaper_provider = std::make_unique<
       ash::personalization_app::PersonalizationAppWallpaperProviderImpl>(
-      g_browser_process->local_state(), web_ui,
-      std::make_unique<wallpaper_handlers::WallpaperFetcherDelegateImpl>());
+      local_state, web_ui,
+      std::make_unique<wallpaper_handlers::WallpaperFetcherDelegateImpl>(
+          application_locale_storage, shared_url_loader_factory));
   auto sea_pen_provider = std::make_unique<
       ash::personalization_app::PersonalizationAppSeaPenProviderImpl>(
       web_ui,
-      std::make_unique<wallpaper_handlers::WallpaperFetcherDelegateImpl>());
+      std::make_unique<wallpaper_handlers::WallpaperFetcherDelegateImpl>(
+          application_locale_storage, std::move(shared_url_loader_factory)),
+      manta_service);
   return std::make_unique<ash::personalization_app::PersonalizationAppUI>(
       web_ui, std::move(ambient_provider),
       std::move(keyboard_backlight_provider), std::move(sea_pen_provider),
@@ -134,23 +133,23 @@ bool CanSeeWallpaperOrPersonalizationApp(Profile* profile) {
   }
 }
 
-bool IsSystemInSupportedLanguage(std::string_view application_locale) {
-  const std::string_view language =
-      language::ExtractBaseLanguage(application_locale);
+bool IsSystemInSupportedLanguage(
+    const base::i18n::LanguageTag& application_locale) {
+  const std::string_view language = application_locale.language_subtag();
   if (ash::features::IsSeaPenTextInputTranslationEnabled()) {
     return kSeaPenTextInputSupportedLanguages.contains(language);
   }
   return language == "en";
 }
 
-bool IsEligibleForSeaPen(Profile* profile) {
+bool IsEligibleForSeaPen(
+    const variations::VariationsService& variations_service,
+    Profile* profile) {
   if (!IsAllowedToInstallSeaPen(profile)) {
     return false;
   }
 
-  std::optional<std::string> country_code = GetCountryCode();
-  if (!country_code.has_value() ||
-      !ash::IsGenerativeAiAllowedForCountry(country_code.value())) {
+  if (!IsGenerativeAiAllowedForCountry(variations_service.GetLatestCountry())) {
     return false;
   }
 
@@ -237,8 +236,10 @@ bool IsManagedSeaPenVcBackgroundFeedbackEnabled(Profile* profile) {
          static_cast<int>(ManagedSeaPenSettings::kAllowed);
 }
 
-bool IsEligibleForSeaPenTextInput(Profile* profile,
-                                  std::string_view application_locale) {
+bool IsEligibleForSeaPenTextInput(
+    const variations::VariationsService& variations_service,
+    Profile* profile,
+    std::string_view application_locale) {
   if (!profile) {
     LOG(ERROR) << __func__ << " no profile";
     return false;
@@ -248,12 +249,15 @@ bool IsEligibleForSeaPenTextInput(Profile* profile,
     DVLOG(1) << __func__ << " SeaPenTextInput disabled";
     return false;
   }
-  if (!IsSystemInSupportedLanguage(application_locale)) {
+  const std::optional<base::i18n::LanguageTag> application_locale_tag =
+      base::i18n::GetLanguageTagFromString(application_locale);
+  if (!application_locale_tag ||
+      !IsSystemInSupportedLanguage(*application_locale_tag)) {
     // The feature only supports a limited number of languages.
     DVLOG(1) << __func__ << " system not in supported language";
     return false;
   }
-  return IsEligibleForSeaPen(profile) &&
+  return IsEligibleForSeaPen(variations_service, profile) &&
          CanAccessMantaFeaturesWithoutMinorRestrictions(profile);
 }
 

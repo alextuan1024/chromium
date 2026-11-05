@@ -143,7 +143,7 @@ class RtcTransportTest : public PageTestBase {
 
     transport_ = RtcTransport::CreateForTests(context, config, exception_state,
                                               std::move(mock_connection));
-    ASSERT_FALSE(exception_state.HadException());
+    EXPECT_FALSE(exception_state.HadException());
   }
 
   void OnInitialized(std::unique_ptr<AsyncDatagramConnection> connection) {
@@ -516,6 +516,24 @@ TEST_F(RtcTransportTest, DtlsWireProtocol) {
   CreateInitializedTransport(config);
 }
 
+TEST_F(RtcTransportTest, DtlsSrtpWireProtocol) {
+  RtcTransportConfig* config = CreateRtcTransportConfig();
+  config->setWireProtocol(V8RtcTransportWireProtocol::Enum::kDtlsSrtp);
+  CreateInitializedTransport(config);
+}
+
+TEST_F(RtcTransportTest, DtlsWithFeedbackWireProtocol) {
+  RtcTransportConfig* config = CreateRtcTransportConfig();
+  config->setWireProtocol(V8RtcTransportWireProtocol::Enum::kDtlsWithFeedback);
+  CreateInitializedTransport(config);
+}
+
+TEST_F(RtcTransportTest, DefaultWireProtocolIsDtlsSrtp) {
+  RtcTransportConfig* config = CreateRtcTransportConfig();
+  EXPECT_EQ(config->wireProtocol().AsEnum(),
+            V8RtcTransportWireProtocol::Enum::kDtlsSrtp);
+}
+
 class RtcTransportMultithreadedTest : public PageTestBase {
  public:
   void SetUp() override {
@@ -542,7 +560,7 @@ TEST_F(RtcTransportMultithreadedTest, SetRemoteDtlsParameters) {
 
   base::RunLoop run_loop;
   EXPECT_CALL(*mock_sync_connection_, SetRemoteDtlsParameters(_, _, _, _))
-      .WillOnce(testing::InvokeWithoutArgs([&] { run_loop.Quit(); }));
+      .WillOnce([&] { run_loop.Quit(); });
 
   transport->setRemoteDtlsParameters(CreateRtcDtlsParameters());
   run_loop.Run();

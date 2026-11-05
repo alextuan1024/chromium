@@ -25,7 +25,7 @@
 #include "chrome/browser/sync_file_system/local/sync_file_system_backend.h"
 #include "chrome/browser/sync_file_system/syncable_file_system_util.h"
 #include "storage/browser/blob/blob_storage_context.h"
-#include "storage/browser/blob/shareable_file_reference.h"
+#include "storage/browser/blob/scoped_file.h"
 #include "storage/browser/file_system/copy_or_move_hook_delegate.h"
 #include "storage/browser/file_system/external_mount_points.h"
 #include "storage/browser/file_system/file_system_backend.h"
@@ -60,7 +60,7 @@ void AssignAndQuit(base::TaskRunner* original_task_runner,
                    base::OnceClosure quit_closure,
                    R* result_out,
                    R result) {
-  DCHECK(result_out);
+  CHECK(result_out, base::NotFatalUntil::M162);
   *result_out = std::forward<R>(result);
   original_task_runner->PostTask(FROM_HERE, std::move(quit_closure));
 }
@@ -115,7 +115,7 @@ void OnCreateSnapshotFileAndVerifyData(
     base::File::Error result,
     const base::File::Info& file_info,
     const base::FilePath& platform_path,
-    scoped_refptr<storage::ShareableFileReference> /* file_ref */) {
+    storage::ScopedFile /* temp_file */) {
   if (result != base::File::FILE_OK) {
     std::move(callback).Run(result);
     return;
@@ -128,17 +128,16 @@ void OnCreateSnapshotFileAndVerifyData(
   std::move(callback).Run(result);
 }
 
-void OnCreateSnapshotFile(
-    base::File::Info* file_info_out,
-    base::FilePath* platform_path_out,
-    CannedSyncableFileSystem::StatusCallback callback,
-    base::File::Error result,
-    const base::File::Info& file_info,
-    const base::FilePath& platform_path,
-    scoped_refptr<storage::ShareableFileReference> file_ref) {
-  DCHECK(!file_ref.get());
-  DCHECK(file_info_out);
-  DCHECK(platform_path_out);
+void OnCreateSnapshotFile(base::File::Info* file_info_out,
+                          base::FilePath* platform_path_out,
+                          CannedSyncableFileSystem::StatusCallback callback,
+                          base::File::Error result,
+                          const base::File::Info& file_info,
+                          const base::FilePath& platform_path,
+                          storage::ScopedFile temp_file) {
+  CHECK(temp_file.path().empty(), base::NotFatalUntil::M162);
+  CHECK(file_info_out, base::NotFatalUntil::M162);
+  CHECK(platform_path_out, base::NotFatalUntil::M162);
   *file_info_out = file_info;
   *platform_path_out = platform_path;
   std::move(callback).Run(result);
@@ -153,7 +152,7 @@ class DirectoryHelper {
                        base::File::Error error,
                        storage::FileSystemOperation::FileEntryList entries,
                        bool has_more) {
-    DCHECK(entries_out);
+    CHECK(entries_out, base::NotFatalUntil::M162);
     entries_out->reserve(entries_out->size() + entries.size());
     std::ranges::copy(entries, std::back_inserter(*entries_out));
 
@@ -333,7 +332,7 @@ void CannedSyncableFileSystem::RemoveSyncStatusObserver(
 
 SyncStatusCode CannedSyncableFileSystem::MaybeInitializeFileSystemContext(
     LocalFileSyncContext* sync_context) {
-  DCHECK(sync_context);
+  CHECK(sync_context, base::NotFatalUntil::M162);
   base::RunLoop run_loop;
   sync_status_ = sync_file_system::SYNC_STATUS_UNKNOWN;
   VerifySameTaskRunner(io_task_runner_.get(),
@@ -683,7 +682,7 @@ void CannedSyncableFileSystem::DoGetUsageAndQuota(
     storage::StatusCallback callback) {
   EXPECT_TRUE(io_task_runner_->RunsTasksInCurrentSequence());
   EXPECT_TRUE(is_filesystem_opened_);
-  DCHECK(quota_manager_.get());
+  CHECK(quota_manager_.get(), base::NotFatalUntil::M162);
   quota_manager_->GetUsageAndQuota(
       blink::StorageKey::CreateFirstParty(url::Origin::Create(origin_)),
       base::BindOnce(&DidGetUsageAndQuota, std::move(callback), usage, quota));
@@ -700,7 +699,8 @@ void CannedSyncableFileSystem::DidOpenFileSystem(
     is_filesystem_opened_ = true;
   }
   if (!original_task_runner->RunsTasksInCurrentSequence()) {
-    DCHECK(io_task_runner_->RunsTasksInCurrentSequence());
+    CHECK(io_task_runner_->RunsTasksInCurrentSequence(),
+          base::NotFatalUntil::M162);
     original_task_runner->PostTask(
         FROM_HERE, base::BindOnce(&CannedSyncableFileSystem::DidOpenFileSystem,
                                   base::Unretained(this),

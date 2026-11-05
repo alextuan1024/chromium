@@ -121,7 +121,6 @@ HTMLFormElement::HTMLFormElement(Document& document)
       image_elements_are_dirty_(false),
       has_elements_associated_by_parser_(false),
       has_elements_associated_by_form_attribute_(false),
-      did_finish_parsing_children_(false),
       is_in_reset_function_(false),
       is_connected_nested_form_(false),
       rel_list_(MakeGarbageCollected<RelList>(this)) {
@@ -165,7 +164,7 @@ bool HTMLFormElement::MatchesToolFormActivePseudoClass() const {
   return active_webmcp_tool_ && active_webmcp_tool_->CurrentlyRunning();
 }
 
-std::optional<base::UnguessableToken>
+std::optional<ToolInvocationToken>
 HTMLFormElement::GetActiveWebMCPToolInvocationId() const {
   return (active_webmcp_tool_ && active_webmcp_tool_->CurrentlyRunning())
              ? active_webmcp_tool_->InvocationId()
@@ -173,7 +172,7 @@ HTMLFormElement::GetActiveWebMCPToolInvocationId() const {
 }
 
 void HTMLFormElement::HTMLFormMcpTool::ExecuteTool(
-    const base::UnguessableToken& invocation_id,
+    const ToolInvocationToken& invocation_id,
     String input_arguments,
     base::OnceCallback<void(McpToolCallbackResult)> done_callback) {
   invocation_id_ = invocation_id;
@@ -196,6 +195,16 @@ void HTMLFormElement::HTMLFormMcpTool::ExecuteTool(
 
   if (error.has_value()) {
     return std::move(done_callback).Run(base::unexpected(error.value()));
+  }
+
+  // Filling out the form controls dispatches `input` and `change` events,
+  // whose handlers may have detached the document.
+  if (!form_->GetDocument().IsActive()) {
+    return std::move(done_callback)
+        .Run(base::unexpected(
+            ScriptToolError(ScriptToolErrorCode::kToolInvocationFailed,
+                            "The document was detached while filling out "
+                            "the form")));
   }
 
   // Success. Now we can either submit the form or focus the submit button.
@@ -315,7 +324,21 @@ void HTMLFormElement::HandleWebMcpToolResponse(HTMLFormMcpTool* tool,
     }
 
     if (result.IsNull()) {
-      value.ToString(result);
+      // Objects were handled above, so `value` is a primitive here. Symbol is
+      // the only primitive whose string conversion throws.
+      v8::TryCatch try_catch(script_state->GetIsolate());
+      v8::Local<v8::String> string;
+      if (!value.V8Value()
+               ->ToString(script_state->GetContext())
+               .ToLocal(&string)) {
+        tool->CallDoneCallback(base::unexpected(
+            ScriptToolError(ScriptToolErrorCode::kToolInvocationFailed,
+                            "respondWith promise resolved with a value that "
+                            "could not be converted to a string")));
+        return;
+      }
+      result = ToBlinkString<String>(script_state->GetIsolate(), string,
+                                     kDoNotExternalize);
     }
     tool->CallDoneCallback(result);
   } else {
@@ -348,25 +371,27 @@ void HTMLFormElement::ReportInvalidMCPFormIssueIfNeeded(
                                   DOMNodeIds::IdForNode(this));
 }
 
-// This gets called when a <form> is added or removed from the document, or
-// when `toolname` or `tooldescription` attributes are added, removed, or
-// changed, and when the children of `this` are changed.
-void HTMLFormElement::ScheduleDeclarativeWebMCPToolRegistration() {
-  if (!RuntimeEnabledFeatures::WebMCPEnabled(GetExecutionContext())) {
-    return;
-  }
+bool HTMLFormElement::CanDocumentHaveDeclarativeWebMCPTools() const {
   // Declarative WebMCP tools require an active frame to bind to the browser
-  // process. If the document has no frame, there is nothing to schedule.
+  // process.
   if (!GetDocument().GetFrame()) {
-    return;
+    return false;
   }
   // Declarative WebMCP tools require script execution capability. Sandboxed
   // frames without `allow-scripts` cannot register tools, consistent with the
   // imperative `registerTool()` API.
-  if (GetExecutionContext()->IsSandboxed(
-          network::mojom::blink::WebSandboxFlags::kScripts)) {
+  return !GetExecutionContext()->IsSandboxed(
+      network::mojom::blink::WebSandboxFlags::kScripts);
+}
+
+// This gets called when a <form> is added or removed from the document, or
+// when `toolname` or `tooldescription` attributes are added, removed, or
+// changed, and when the children of `this` are changed.
+void HTMLFormElement::ScheduleDeclarativeWebMCPToolRegistration() {
+  if (!ModelContext::IsDeclarativeWebMCPEnabled(GetExecutionContext())) {
     return;
   }
+  const bool document_can_have_tools = CanDocumentHaveDeclarativeWebMCPTools();
   // The `<form>` must have *both* the `toolname` and `tooldescription`
   // attributes, and the form must be document-connected, to qualify for
   // declarative WebMCP inclusion.
@@ -379,19 +404,36 @@ void HTMLFormElement::ScheduleDeclarativeWebMCPToolRegistration() {
   // Only report issues if it is not a valid mcp form and
   // at least one of name or description is present.
   // If no name or description are present, ignore.
-  if (!is_valid_mcp_form && (name || description)) {
+  if (document_can_have_tools && !is_valid_mcp_form && (name || description)) {
     ReportInvalidMCPFormIssueIfNeeded(name, description);
   }
 
   // If we are unregistering/removing the tool, do so synchronously and
   // immediately to ensure DOM safety and correct event sequence.
-  if (!is_valid_mcp_form) {
+  //
+  // This must also run when the document can't have tools. A form only
+  // registers its tool in a document that can have tools, and a document's
+  // sandbox flags don't change, so the only way to get here with
+  // `active_webmcp_tool_` populated is when the document has *lost* its frame:
+  // e.g., the form registered its tool in an iframe's document, the iframe was
+  // removed, and the form is now being removed from that frameless document
+  // (possibly to be adopted into another document).
+  //
+  // If we returned early in that case, the form would keep
+  // `active_webmcp_tool_` after leaving the document whose `ModelContext` it is
+  // registered with. If the form were then adopted into another document
+  // without its attributes changing, a later unregistration would target the
+  // new document's `ModelContext` with the old document's tool.
+  if (!document_can_have_tools || !is_valid_mcp_form) {
     // Cancel the pending registration of `this`, since we no longer represent a
     // valid tool.
     mcp_registration_task_.Cancel();
     if (!active_webmcp_tool_) {
       return;
     }
+    // See above: only a frameless document can hold a registered tool that it
+    // can't have.
+    CHECK(document_can_have_tools || !GetDocument().GetFrame());
 
     ModelContext* model_context =
         ModelContextSupplement::modelContext(GetDocument());
@@ -401,7 +443,7 @@ void HTMLFormElement::ScheduleDeclarativeWebMCPToolRegistration() {
                           "Tool execution cancelled, since tool definition "
                           "was updated")));
     }
-    model_context->UnregisterTool(active_webmcp_tool_->ToolName());
+    model_context->UnregisterTool(active_webmcp_tool_->ToolId());
 
     active_webmcp_tool_ = nullptr;
     return;
@@ -416,19 +458,19 @@ void HTMLFormElement::ScheduleDeclarativeWebMCPToolRegistration() {
 }
 
 void HTMLFormElement::RegisterDeclarativeWebMCPTool() {
-  CHECK(RuntimeEnabledFeatures::WebMCPEnabled(GetExecutionContext()));
+  CHECK(ModelContext::IsDeclarativeWebMCPEnabled(GetExecutionContext()));
 
   String name = FastGetAttribute(html_names::kToolnameAttr);
   String description = FastGetAttribute(html_names::kTooldescriptionAttr);
   String title = FastGetAttribute(html_names::kTooltitleAttr);
   const bool has_toolautosubmit =
       FastHasAttribute(html_names::kToolautosubmitAttr);
-  // We check that `this` is "still" a valid declarative WebMCP form because
-  // last we checked when this method was queued, it was, but that could've
-  // changed.
+  // We check that `this` is "still" a valid declarative WebMCP form, in a
+  // document that can have tools, because last we checked when this method was
+  // queued, it was, but that could've changed.
   const bool is_still_valid_mcp_form = isConnected() && name && description;
 
-  if (!is_still_valid_mcp_form) {
+  if (!CanDocumentHaveDeclarativeWebMCPTools() || !is_still_valid_mcp_form) {
     return;
   }
 
@@ -458,7 +500,7 @@ void HTMLFormElement::RegisterDeclarativeWebMCPTool() {
           ScriptToolErrorCode::kToolCancelled,
           "Tool execution cancelled, since tool definition was updated")));
     }
-    model_context->UnregisterTool(active_webmcp_tool_->ToolName());
+    model_context->UnregisterTool(active_webmcp_tool_->ToolId());
     active_webmcp_tool_ = nullptr;
   }
 
@@ -467,7 +509,11 @@ void HTMLFormElement::RegisterDeclarativeWebMCPTool() {
   active_webmcp_tool_->SetLastComputedSchema(
       active_webmcp_tool_->ComputeInputSchema());
 
-  model_context->RegisterDeclarativeTool(active_webmcp_tool_);
+  // Registration can be rejected (e.g., for a duplicate or invalid name). In
+  // that case, don't hold onto a tool that `model_context` doesn't know about.
+  if (!model_context->RegisterDeclarativeTool(active_webmcp_tool_)) {
+    active_webmcp_tool_ = nullptr;
+  }
 }
 
 Node::InsertionNotificationRequest HTMLFormElement::InsertedInto(
@@ -795,7 +841,7 @@ void HTMLFormElement::PrepareForSubmission(const Event* event,
           submitter && RuntimeEnabledFeatures::ShadowRootReferenceTargetEnabled(
                            submitter->GetExecutionContext()));
       if (declarative_webmcp_call) {
-        CHECK(RuntimeEnabledFeatures::WebMCPEnabled(GetExecutionContext()));
+        CHECK(ModelContext::IsDeclarativeWebMCPEnabled(GetExecutionContext()));
         submit_event_init->setAgentInvoked(true);
       }
       SubmitEvent* submit_event = MakeGarbageCollected<SubmitEvent>(
@@ -851,7 +897,7 @@ void HTMLFormElement::PrepareForSubmission(const Event* event,
     }
     ScheduleFormSubmission(event, submitter);
     if (executing_tool && executing_tool->CurrentlyRunning()) {
-      CHECK(RuntimeEnabledFeatures::WebMCPEnabled(GetExecutionContext()));
+      CHECK(ModelContext::IsDeclarativeWebMCPEnabled(GetExecutionContext()));
       // Return a null string to indicate that a navigation has been
       // triggered.
       executing_tool->CallDoneCallback(base::ok(String()));
@@ -865,7 +911,7 @@ void HTMLFormElement::submitFromJavaScript() {
   // If a WebMCP tool is running, resolving it here handles the case where
   // the site manually called form.submit() from inside a submit handler.
   if (active_webmcp_tool_ && active_webmcp_tool_->CurrentlyRunning()) {
-    CHECK(RuntimeEnabledFeatures::WebMCPEnabled(GetExecutionContext()));
+    CHECK(ModelContext::IsDeclarativeWebMCPEnabled(GetExecutionContext()));
     active_webmcp_tool_->CallDoneCallback(base::ok(String()));
   }
 }
@@ -963,21 +1009,11 @@ void HTMLFormElement::ScheduleFormSubmission(const Event* event,
   FormSubmission* form_submission =
       FormSubmission::Create(this, attributes_, event, submitter);
   if (!form_submission) {
-    // Form submission is not allowed for some NavigationPolicies, e.g. Link
-    // Preview. If an user triggered such user event for form submission, just
-    // ignores it.
+    // Form submission was canceled (e.g. a 'formdata' event handler
+    // disconnected the form or detached the frame).
     return;
   }
   Frame* target_frame = form_submission->TargetFrame();
-
-  // 'formdata' event handlers might disconnect the form.
-  if (!isConnected()) {
-    GetDocument().AddConsoleMessage(MakeGarbageCollected<ConsoleMessage>(
-        mojom::ConsoleMessageSource::kJavaScript,
-        mojom::ConsoleMessageLevel::kWarning,
-        "Form submission canceled because the form is not connected"));
-    return;
-  }
 
   if (form_submission->Method() == FormSubmission::kDialogMethod) {
     SubmitDialog(form_submission);
@@ -1070,6 +1106,7 @@ void HTMLFormElement::ScheduleFormSubmission(const Event* event,
       target_frame->ScheduleFormSubmission(scheduler, form_submission);
 }
 
+// https://html.spec.whatwg.org/multipage/#constructing-the-form-data-set
 FormData* HTMLFormElement::ConstructEntryList(Element* submitter,
                                               const TextEncoding& encoding) {
   if (is_constructing_entry_list_) {
@@ -1082,7 +1119,10 @@ FormData* HTMLFormElement::ConstructEntryList(Element* submitter,
     submitter->SetActivatedSubmit(true);
   }
 
-  for (ListedElement* control : ListedElements()) {
+  // Copy the element list because |AppendToFormData()| can update DOM
+  // structure.
+  ListedElement::List elements(ListedElements());
+  for (ListedElement* control : elements) {
     DCHECK(control);
     HTMLElement& element = control->ToHTMLElement();
     if (!element.IsDisabledFormControl())
@@ -1262,9 +1302,7 @@ void HTMLFormElement::Disassociate(HTMLImageElement& e) {
   RemoveFromPastNamesMap(e);
 }
 
-void HTMLFormElement::DidAssociateByParser() {
-  if (!did_finish_parsing_children_)
-    return;
+void HTMLFormElement::DidAssociateNonDescendantByParser() {
   has_elements_associated_by_parser_ = true;
   UseCounter::Count(GetDocument(), WebFeature::kFormAssociationByParser);
 }
@@ -1638,7 +1676,6 @@ bool HTMLFormElement::HasRel(RelAttribute relation) const {
 void HTMLFormElement::FinishParsingChildren() {
   HTMLElement::FinishParsingChildren();
   GetDocument().EnsureFormController().RestoreControlStateIn(*this);
-  did_finish_parsing_children_ = true;
 }
 
 void HTMLFormElement::ChildrenChanged(const ChildrenChange& change) {
@@ -1715,13 +1752,6 @@ void HTMLFormElement::InvalidateListedElementsForAutofill() {
   listed_elements_for_autofill_are_dirty_ = true;
 }
 
-void HTMLFormElement::InvalidateListedElements() {
-  listed_elements_are_dirty_ = true;
-  listed_elements_.clear();
-  listed_elements_for_autofill_are_dirty_ = true;
-  listed_elements_for_autofill_.clear();
-}
-
 void HTMLFormElement::UseCountPropertyAccess(
     v8::Local<v8::Name>& v8_property_name,
     const v8::PropertyCallbackInfo<v8::Value>& info) {
@@ -1739,7 +1769,7 @@ void HTMLFormElement::UseCountPropertyAccess(
 }
 
 void HTMLFormElement::ScheduleWebMCPSchemaUpdateIfActive() {
-  if (!RuntimeEnabledFeatures::WebMCPEnabled(GetExecutionContext())) {
+  if (!ModelContext::IsDeclarativeWebMCPEnabled(GetExecutionContext())) {
     return;
   }
   if (!active_webmcp_tool_) {

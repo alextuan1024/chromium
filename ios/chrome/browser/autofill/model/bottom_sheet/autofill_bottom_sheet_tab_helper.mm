@@ -38,8 +38,10 @@
 #import "components/password_manager/ios/password_manager_java_script_feature.h"
 #import "components/personal_context/first_run/personal_context_first_run_service.h"
 #import "components/prefs/pref_service.h"
+#import "ios/chrome/browser/autofill/model/autofill_ai_save_entity_prompt_model.h"
 #import "ios/chrome/browser/autofill/model/bottom_sheet/autofill_bottom_sheet_java_script_feature.h"
 #import "ios/chrome/browser/autofill/model/bottom_sheet/autofill_bottom_sheet_observer.h"
+#import "ios/chrome/browser/autofill/model/bottom_sheet/autofill_pending_prompt_manager.h"
 #import "ios/chrome/browser/autofill/model/features.h"
 #import "ios/chrome/browser/autofill/model/form_input_suggestions_provider.h"
 #import "ios/chrome/browser/autofill/model/form_suggestion_tab_helper.h"
@@ -167,6 +169,27 @@ bool FieldHasPersonalContextSuggestions(
   return std::ranges::any_of(suggestions, is_personal_context_suggestion);
 }
 
+void RecordPaymentsBottomSheetUserGestureStatus(
+    PaymentsBottomSheetUserGestureStatus status) {
+  base::UmaHistogramEnumeration(kPaymentsBottomSheetUserGestureStatusHistogram,
+                                status);
+}
+
+PaymentsBottomSheetUserGestureStatus EvaluateUserGestureSufficiency(
+    const autofill::FormActivityParams& params,
+    const web::ScriptMessage& message) {
+  // `is_user_interacting` is necessary because `has_user_gesture` (derived
+  // from `event.isTrusted` in JS-land) is true for certain programmatic focus
+  // events.
+  if (!params.has_user_gesture) {
+    return PaymentsBottomSheetUserGestureStatus::kNoUserGesture;
+  }
+  if (!message.is_user_interacting()) {
+    return PaymentsBottomSheetUserGestureStatus::kUserNotInteracting;
+  }
+  return PaymentsBottomSheetUserGestureStatus::kValidGesture;
+}
+
 }  // namespace
 
 AutofillBottomSheetTabHelper::~AutofillBottomSheetTabHelper() = default;
@@ -178,10 +201,31 @@ AutofillBottomSheetTabHelper::AutofillBottomSheetTabHelper(
       AutofillBottomSheetJavaScriptFeature::GetInstance()->GetWebFramesManager(
           web_state));
   web_state->AddObserver(this);
+  pending_prompt_manager_ = std::make_unique<AutofillPendingPromptManager>(
+      web_state, commands_handler_);
 }
 
 // Public methods
 
+void AutofillBottomSheetTabHelper::ShowAutofillAiSaveEntityBottomSheet(
+    std::unique_ptr<AutofillAiSaveEntityPromptModel> model) {
+  pending_prompt_manager_->ShowSaveEntityPrompt(std::move(model));
+}
+
+const AutofillAiSaveEntityPromptModel*
+AutofillBottomSheetTabHelper::GetAutofillAiSaveEntityPromptModel() const {
+  return pending_prompt_manager_->GetSaveEntityPromptModel();
+}
+
+AutofillAiSaveEntityPromptModel*
+AutofillBottomSheetTabHelper::GetAutofillAiSaveEntityPromptModel() {
+  return pending_prompt_manager_->GetSaveEntityPromptModel();
+}
+
+std::unique_ptr<AutofillAiSaveEntityPromptModel>
+AutofillBottomSheetTabHelper::TakeAutofillAiSaveEntityPromptModel() {
+  return pending_prompt_manager_->TakeSaveEntityPromptModel();
+}
 void AutofillBottomSheetTabHelper::ShowCardUnmaskAuthenticationSelection(
     std::unique_ptr<
         autofill::CardUnmaskAuthenticationSelectionDialogControllerImpl>
@@ -211,12 +255,13 @@ void AutofillBottomSheetTabHelper::ShowEditAddressBottomSheet() {
 
 void AutofillBottomSheetTabHelper::SetAutofillBottomSheetHandler(
     id<AutofillCommands> commands_handler) {
-  if (!commands_handler) {
-    // Means that the web state has been destroyed therefore dismiss the edit
-    // address bottom sheet if it's shown.
+  if (!commands_handler && commands_handler_) {
+    // If the handler is being cleared, dismiss the edit address bottom sheet
+    // if it is currently shown.
     [commands_handler_ dismissEditAddressBottomSheet];
   }
   commands_handler_ = commands_handler;
+  pending_prompt_manager_->SetAutofillBottomSheetHandler(commands_handler_);
 }
 
 void AutofillBottomSheetTabHelper::SetPasswordGenerationProvider(
@@ -256,6 +301,25 @@ void AutofillBottomSheetTabHelper::OnFormMessageReceived(
   if (is_password_related) {
     ShowCredentialBottomSheet(params);
   } else if (is_payments_related) {
+    // Enforce user gesture requirement to prevent focus-jacking by embedded
+    // cross-origin frames. Only enforce this for payments because password
+    // suggestions are origin-scoped, and opening the sheet on page load is
+    // intentionally supported in that flow.
+    if (base::FeatureList::IsEnabled(
+            kAutofillPaymentsBottomSheetRequiresUserGesture)) {
+      PaymentsBottomSheetUserGestureStatus user_gesture_status =
+          EvaluateUserGestureSufficiency(params, message);
+      RecordPaymentsBottomSheetUserGestureStatus(user_gesture_status);
+      if (user_gesture_status !=
+          PaymentsBottomSheetUserGestureStatus::kValidGesture) {
+        // In its current state, the renderer will keep blurring the keyboard on
+        // subsequent focus events, so we need to detach listeners. Detaching on
+        // only this frame ensures a frame can't use this to block the bottom
+        // sheet on other frames.
+        DetachPaymentsListeners(params.frame_id, /*refocus=*/false);
+        return;
+      }
+    }
     MaybeShowPaymentsBottomSheet(params);
   } else if (is_password_generation_related) {
     ShowProactivePasswordGenerationBottomSheet(params);
@@ -323,15 +387,23 @@ void AutofillBottomSheetTabHelper::MaybeShowPaymentsBottomSheet(
   id<FormInputSuggestionsProvider> provider =
       tabHelper->GetAccessoryViewProvider();
 
-  // Force this bit to true as retrieving Autofill suggestions for a form
-  // requires a user manual gesture and we consider the signal to trigger
-  // the bottom sheet as a valid signal as a manual gesture.
-  params.has_user_gesture = true;
+  if (!base::FeatureList::IsEnabled(
+          kAutofillPaymentsBottomSheetRequiresUserGesture)) {
+    // Force this bit to true as retrieving Autofill suggestions for a form
+    // requires a user manual gesture and we consider the signal to trigger
+    // the bottom sheet as a valid signal as a manual gesture.
+    params.has_user_gesture = true;
+  } else {
+    // This is enforced upstream. Verify the invariant here because otherwise
+    // we will get unexpected behavior, including silent failures, later on.
+    CHECK(params.has_user_gesture);
+  }
 
-  auto completion = base::CallbackToBlock(base::BindOnce(
-      &AutofillBottomSheetTabHelper::
-          OnSuggestionsRetrievedForPaymentsBottomSheet,
-      weak_factory_.GetWeakPtr(), params, base::TimeTicks::Now()));
+  auto completion = base::CallbackToBlock(
+      base::BindOnce(&AutofillBottomSheetTabHelper::
+                         OnSuggestionsRetrievedForPaymentsBottomSheet,
+                     suggestion_request_weak_factory_.GetWeakPtr(), params,
+                     base::TimeTicks::Now()));
   [provider retrieveSuggestionsForForm:params
                               webState:web_state_
               accessoryViewUpdateBlock:completion];
@@ -412,7 +484,7 @@ void AutofillBottomSheetTabHelper::ShowProactivePasswordGenerationBottomSheet(
   [generation_provider_
       triggerPasswordGenerationForFormId:params.form_renderer_id
                          fieldIdentifier:params.field_renderer_id
-                                 inFrame:frame
+                                 inFrame:frame->AsWeakPtr()
                                proactive:YES];
 }
 
@@ -617,16 +689,50 @@ void AutofillBottomSheetTabHelper::RefocusElementIfNeeded(
                  web_state_->GetWeakPtr()));
 }
 
-// WebStateObserver
+void AutofillBottomSheetTabHelper::CancelPendingSuggestionRequests() {
+  suggestion_request_weak_factory_.InvalidateWeakPtrs();
+}
 
-void AutofillBottomSheetTabHelper::DidFinishNavigation(
+// WebStateObserver:
+
+void AutofillBottomSheetTabHelper::WasShown(web::WebState* web_state) {
+  pending_prompt_manager_->WasShown(web_state);
+}
+
+void AutofillBottomSheetTabHelper::DidStartNavigation(
     web::WebState* web_state,
     web::NavigationContext* navigation_context) {
+  CHECK(navigation_context);
   if (navigation_context->IsSameDocument()) {
     return;
   }
 
-  // Clear all registered renderer ids
+  CancelPendingSuggestionRequests();
+}
+
+void AutofillBottomSheetTabHelper::DidFinishNavigation(
+    web::WebState* web_state,
+    web::NavigationContext* navigation_context) {
+  CHECK(navigation_context);
+  pending_prompt_manager_->DidFinishNavigation(web_state, navigation_context);
+  if (navigation_context->IsSameDocument() ||
+      !navigation_context->HasCommitted()) {
+    return;
+  }
+
+  CancelPendingSuggestionRequests();
+
+  // Clear all registered renderer IDs.
+  registered_password_renderer_ids_.clear();
+  registered_payments_renderer_ids_.clear();
+  registered_password_generation_renderer_ids_.clear();
+  registered_ambient_renderer_ids_.clear();
+}
+
+void AutofillBottomSheetTabHelper::RenderProcessGone(web::WebState* web_state) {
+  CancelPendingSuggestionRequests();
+
+  // Clear all registered renderer IDs.
   registered_password_renderer_ids_.clear();
   registered_payments_renderer_ids_.clear();
   registered_password_generation_renderer_ids_.clear();
@@ -634,6 +740,8 @@ void AutofillBottomSheetTabHelper::DidFinishNavigation(
 }
 
 void AutofillBottomSheetTabHelper::WebStateDestroyed(web::WebState* web_state) {
+  pending_prompt_manager_->WebStateDestroyed(web_state);
+  CancelPendingSuggestionRequests();
   web_state->RemoveObserver(this);
   frames_manager_observation_.Reset();
   web_state_ = nullptr;

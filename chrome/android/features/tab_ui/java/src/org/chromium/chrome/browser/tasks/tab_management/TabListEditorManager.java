@@ -25,15 +25,19 @@ import org.chromium.chrome.browser.tasks.tab_management.TabListEditorCoordinator
 import org.chromium.chrome.browser.tasks.tab_management.TabListEditorCoordinator.TabListEditorController;
 import org.chromium.chrome.browser.tasks.tab_management.TabListMediator.TabListLayoutType;
 import org.chromium.chrome.browser.tasks.tab_management.TabUiMetricsHelper.TabListEditorOpenMetricGroups;
+import org.chromium.chrome.browser.tasks.tab_management.data_provider.GroupedTabListDataProvider;
+import org.chromium.chrome.browser.tasks.tab_management.data_provider.TabListDataProvider;
 import org.chromium.chrome.browser.ui.edge_to_edge.EdgeToEdgeController;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
 import org.chromium.components.browser_ui.desktop_windowing.DesktopWindowStateManager;
+import org.chromium.components.tab_group_sync.TabGroupUiActionHandler;
 import org.chromium.ui.modaldialog.ModalDialogManager;
 
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.function.Supplier;
 
 /**
  * Manages the {@link TabListEditorCoordinator} and related components for a {@link TabSwitcher}.
@@ -54,8 +58,10 @@ public class TabListEditorManager {
     private final TabGroupCreationDialogManager mTabGroupCreationDialogManager;
     private final @Nullable DesktopWindowStateManager mDesktopWindowStateManager;
     private final MonotonicObservableSupplier<EdgeToEdgeController> mEdgeToEdgeSupplier;
+    private final Supplier<@Nullable TabGroupUiActionHandler> mTabGroupUiActionHandlerSupplier;
 
     private @Nullable TabListEditorCoordinator mTabListEditorCoordinator;
+    private @Nullable TabListDataProvider mDataProvider;
     private @Nullable List<TabListEditorAction> mTabListEditorActions;
 
     /**
@@ -67,8 +73,11 @@ public class TabListEditorManager {
      * @param currentTabModelSupplier The supplier of the current {@link TabModel}.
      * @param tabContentManager The {@link TabContentManager} for thumbnails.
      * @param tabListCoordinator The parent {@link TabListCoordinator}.
+     * @param bottomSheetController The bottom sheet controller.
      * @param onTabGroupCreation Should be run when the UI is used to create a tab group.
+     * @param desktopWindowStateManager The desktop window state manager.
      * @param edgeToEdgeSupplier Supplier to the {@link EdgeToEdgeController} instance.
+     * @param tabGroupUiActionHandlerSupplier Supplier for the tab group UI action handler.
      */
     public TabListEditorManager(
             Activity activity,
@@ -82,7 +91,8 @@ public class TabListEditorManager {
             @Nullable BottomSheetController bottomSheetController,
             @Nullable Runnable onTabGroupCreation,
             @Nullable DesktopWindowStateManager desktopWindowStateManager,
-            MonotonicObservableSupplier<EdgeToEdgeController> edgeToEdgeSupplier) {
+            MonotonicObservableSupplier<EdgeToEdgeController> edgeToEdgeSupplier,
+            Supplier<@Nullable TabGroupUiActionHandler> tabGroupUiActionHandlerSupplier) {
         mActivity = activity;
         mModalDialogManager = modalDialogManager;
         mCoordinatorView = coordinatorView;
@@ -96,12 +106,18 @@ public class TabListEditorManager {
                 new TabGroupCreationDialogManager(activity, modalDialogManager, onTabGroupCreation);
         mDesktopWindowStateManager = desktopWindowStateManager;
         mEdgeToEdgeSupplier = edgeToEdgeSupplier;
+        mTabGroupUiActionHandlerSupplier = tabGroupUiActionHandlerSupplier;
     }
 
     /** Destroys the tab list editor. */
     public void destroy() {
         if (mTabListEditorCoordinator != null) {
             mTabListEditorCoordinator.destroy();
+        }
+        // Destroyed after the editor, which stops observing it in destroy().
+        if (mDataProvider != null) {
+            mDataProvider.destroy();
+            mDataProvider = null;
         }
     }
 
@@ -110,6 +126,14 @@ public class TabListEditorManager {
         // TODO(crbug.com/40945154): Permit a method of switching between selectable and closable
         // modes (or create separate instances).
         if (mTabListEditorCoordinator == null) {
+            // Lists the same tabs as the tab switcher grid. Can't share the grid's provider
+            // because the editor stops it on hide.
+            mDataProvider =
+                    TabUiFeatureUtilities.isTabUiDataVirtualizationEnabled(
+                                    TabListLayoutType.GROUPED)
+                            ? new GroupedTabListDataProvider(
+                                    mCurrentTabModelSupplier, /* supportsGroupExpansion= */ false)
+                            : null;
             mTabListEditorCoordinator =
                     new TabListEditorCoordinator(
                             mActivity,
@@ -132,7 +156,7 @@ public class TabListEditorManager {
                             /* undoBarExplicitTrigger= */ null,
                             /* componentId= */ null,
                             TabListEditorCoordinator.UNLIMITED_SELECTION,
-                            false);
+                            mDataProvider);
             mControllerSupplier.set(mTabListEditorCoordinator.getController());
         }
     }
@@ -161,7 +185,8 @@ public class TabListEditorManager {
                             mTabGroupCreationDialogManager,
                             ShowMode.MENU_ONLY,
                             ButtonType.ICON_AND_TEXT,
-                            IconPosition.START));
+                            IconPosition.START,
+                            mTabGroupUiActionHandlerSupplier));
             mTabListEditorActions.add(
                     TabListEditorBookmarkAction.createAction(
                             mActivity,

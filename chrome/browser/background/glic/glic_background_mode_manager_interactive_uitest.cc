@@ -16,6 +16,7 @@
 #include "chrome/browser/glic/glic_pref_names.h"
 #include "chrome/browser/glic/public/glic_keyed_service.h"
 #include "chrome/browser/glic/public/glic_keyed_service_factory.h"
+#include "chrome/browser/glic/public/provider_features.h"
 #include "chrome/browser/glic/test_support/glic_test_util.h"
 #include "chrome/browser/glic/test_support/interactive_glic_test.h"
 #include "chrome/browser/global_features.h"
@@ -32,7 +33,6 @@
 #include "components/keep_alive_registry/keep_alive_registry.h"
 #include "components/keep_alive_registry/keep_alive_types.h"
 #include "components/prefs/pref_service.h"
-#include "content/public/common/content_features.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_base.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -85,11 +85,19 @@ class GlicBackgroundModeManagerUiTest : public test::InteractiveGlicTest {
     feature_list_.InitWithFeatures({features::kGlicCaptureRegion}, {});
   }
 
+  void SetUpOnMainThread() override {
+    test::InteractiveGlicTest::SetUpOnMainThread();
+    g_browser_process->local_state()->SetBoolean(
+        prefs::kGlicHotkeyGlobalScopeEnabled, true);
+  }
+
   void TearDownOnMainThread() override {
     // Disable glic so that the glic_background_mode_manager won't prevent the
     // browser process from closing which causes the test to hang.
     g_browser_process->local_state()->SetBoolean(prefs::kGlicLauncherEnabled,
                                                  false);
+    g_browser_process->local_state()->SetBoolean(
+        prefs::kGlicHotkeyGlobalScopeEnabled, false);
     test::InteractiveGlicTest::TearDownOnMainThread();
   }
 
@@ -119,6 +127,8 @@ class GlicBackgroundModeManagerUiTest : public test::InteractiveGlicTest {
 
 // Checks that modifying the pref propagates to KeepAliveRegistry.
 IN_PROC_BROWSER_TEST_F(GlicBackgroundModeManagerUiTest, KeepAlive) {
+  g_browser_process->local_state()->SetBoolean(
+      prefs::kGlicHotkeyGlobalScopeEnabled, false);
   auto* keep_alive_registry = KeepAliveRegistry::GetInstance();
   ASSERT_FALSE(
       keep_alive_registry->IsOriginRegistered(KeepAliveOrigin::GLIC_LAUNCHER));
@@ -177,6 +187,7 @@ IN_PROC_BROWSER_TEST_F(GlicBackgroundModeManagerUiTest,
     GTEST_SKIP() << "Test does not apply to this platform.";
   }
   PrefService* const pref_service = g_browser_process->local_state();
+  pref_service->SetBoolean(prefs::kGlicHotkeyGlobalScopeEnabled, false);
   ASSERT_FALSE(pref_service->GetBoolean(prefs::kGlicLauncherEnabled));
   GlicBackgroundModeManager* const manager =
       g_browser_process->GetFeatures()->glic_background_mode_manager();
@@ -190,6 +201,7 @@ IN_PROC_BROWSER_TEST_F(GlicBackgroundModeManagerUiTest,
 
   // Re-enabling glic should register the updated hotkey pref.
   pref_service->SetBoolean(prefs::kGlicLauncherEnabled, true);
+  pref_service->SetBoolean(prefs::kGlicHotkeyGlobalScopeEnabled, true);
   EXPECT_EQ(updated_hotkey,
             manager->RegisteredHotkeyForTesting().at(static_cast<size_t>(
                 GlicBackgroundModeManager::HotkeyIndex::kPanelKey)));
@@ -239,9 +251,12 @@ IN_PROC_BROWSER_TEST_F(GlicBackgroundModeManagerUiTest, LaunchOnStartup) {
   auto* launch_manager = static_cast<TestStartupLaunchManager*>(
       StartupLaunchManager::From(g_browser_process));
 
-  // Disable foreground launch explicitly.
+  // Disable foreground launch and global hotkey scope explicitly so launch on
+  // startup follows kGlicLauncherEnabled.
   g_browser_process->local_state()->SetBoolean(
       ::prefs::kForegroundLaunchOnLogin, false);
+  g_browser_process->local_state()->SetBoolean(
+      prefs::kGlicHotkeyGlobalScopeEnabled, false);
 
   EXPECT_CALL(*launch_manager,
               UpdateLaunchOnStartup({StartupLaunchMode::kBackground}))
@@ -295,10 +310,6 @@ IN_PROC_BROWSER_TEST_F(GlicBackgroundModeManagerUiTest, HotkeyPressed) {
 // session.
 #if !BUILDFLAG(IS_CHROMEOS)
 IN_PROC_BROWSER_TEST_F(GlicBackgroundModeManagerUiTest, DeleteEligibleProfile) {
-  // TODO(crbug.com/527717763): Re-enable this test
-  if (!base::FeatureList::IsEnabled(features::kInitialWebUI)) {
-    GTEST_SKIP() << "InitialWebUI is disabled.";
-  }
   GlicBackgroundModeManager* const background_mode_manager =
       g_browser_process->GetFeatures()->glic_background_mode_manager();
   g_browser_process->local_state()->SetBoolean(prefs::kGlicLauncherEnabled,

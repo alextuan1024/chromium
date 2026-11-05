@@ -11,31 +11,26 @@
 #import "base/test/ios/wait_util.h"
 #import "base/test/metrics/histogram_tester.h"
 #import "components/prefs/pref_service.h"
-#import "components/signin/internal/identity_manager/account_capabilities_constants.h"
 #import "components/signin/public/base/signin_metrics.h"
 #import "components/signin/public/identity_manager/account_capabilities.h"
 #import "components/signin/public/identity_manager/account_capabilities_test_mutator.h"
 #import "components/signin/public/identity_manager/identity_test_utils.h"
-#import "components/signin/public/identity_manager/objc/identity_manager_observer_bridge.h"
 #import "ios/chrome/app/application_delegate/app_state.h"
 #import "ios/chrome/app/profile/profile_state.h"
 #import "ios/chrome/app/profile/profile_state_test_utils.h"
 #import "ios/chrome/browser/authentication/age_mismatch_signout/coordinator/age_mismatch_signout_coordinator.h"
-#import "ios/chrome/browser/scoped_ui_blocker/ui_bundled/ui_blocker_manager.h"
-#import "ios/chrome/browser/scoped_ui_blocker/ui_bundled/ui_blocker_target.h"
 #import "ios/chrome/browser/shared/coordinator/layout_guide/layout_guide_scene_agent.h"
 #import "ios/chrome/browser/shared/coordinator/scene/scene_state.h"
 #import "ios/chrome/browser/shared/coordinator/scene/scene_ui_provider.h"
 #import "ios/chrome/browser/shared/coordinator/scene/test/fake_scene_state.h"
 #import "ios/chrome/browser/shared/model/application_context/application_context.h"
 #import "ios/chrome/browser/shared/model/browser/browser.h"
-#import "ios/chrome/browser/shared/model/browser/browser_provider.h"
 #import "ios/chrome/browser/shared/model/browser/browser_provider_interface.h"
 #import "ios/chrome/browser/shared/model/prefs/pref_names.h"
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_ios.h"
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_manager_ios.h"
 #import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
-#import "ios/chrome/browser/shared/public/commands/scene_commands.h"
+#import "ios/chrome/browser/shared/public/commands/scene_sign_in_commands.h"
 #import "ios/chrome/browser/shared/public/commands/show_signin_command.h"
 #import "ios/chrome/browser/signin/model/account_capabilities_fetcher_ios.h"
 #import "ios/chrome/browser/signin/model/authentication_service_factory.h"
@@ -50,7 +45,6 @@
 #import "ios/chrome/test/ios_chrome_scoped_testing_local_state.h"
 #import "ios/chrome/test/testing_application_context.h"
 #import "ios/web/public/test/web_task_environment.h"
-#import "testing/gmock/include/gmock/gmock.h"
 #import "testing/platform_test.h"
 #import "third_party/ocmock/OCMock/OCMock.h"
 #import "third_party/ocmock/gtest_support.h"
@@ -164,7 +158,7 @@ class SigninAccountCapabilitiesSceneAgentTest : public PlatformTest {
   }
 
   Browser* browser() {
-    return scene_state_.browserProviderInterface.currentBrowserProvider.browser;
+    return scene_state_.browserProviderInterface.currentBrowser;
   }
 
  protected:
@@ -183,19 +177,19 @@ class SigninAccountCapabilitiesSceneAgentTest : public PlatformTest {
 
 // Tests that the agent handles the sign-in request from the coordinator.
 TEST_F(SigninAccountCapabilitiesSceneAgentTest, TestWantsToSignIn) {
-  // Mock the SceneCommands handler.
-  id<SceneCommands> scene_commands_mock =
-      OCMProtocolMock(@protocol(SceneCommands));
+  // Mock the sign-in handler.
+  id<SceneSignInCommands> mock_scene_sign_in_handler =
+      OCMProtocolMock(@protocol(SceneSignInCommands));
   [browser()->GetCommandDispatcher()
-      startDispatchingToTarget:scene_commands_mock
-                   forProtocol:@protocol(SceneCommands)];
+      startDispatchingToTarget:mock_scene_sign_in_handler
+                   forProtocol:@protocol(SceneSignInCommands)];
 
   // Create a mock coordinator.
   id coordinator_mock = OCMClassMock([AgeMismatchSignoutCoordinator class]);
   [agent_ setValue:coordinator_mock forKey:@"ageMismatchSignoutCoordinator"];
 
   // Expect the sign-in command to be shown.
-  OCMExpect([scene_commands_mock
+  OCMExpect([mock_scene_sign_in_handler
               showSignin:[OCMArg checkWithBlock:^BOOL(
                                      ShowSigninCommand* command) {
                 return command.accessPoint ==
@@ -218,7 +212,7 @@ TEST_F(SigninAccountCapabilitiesSceneAgentTest, TestWantsToSignIn) {
   [agent_ setValue:nil forKey:@"ageMismatchSignoutCoordinator"];
 
   // Verify that the sign-in command was shown.
-  EXPECT_OCMOCK_VERIFY((id)scene_commands_mock);
+  EXPECT_OCMOCK_VERIFY((id)mock_scene_sign_in_handler);
   EXPECT_OCMOCK_VERIFY(coordinator_mock);
 }
 
@@ -388,7 +382,7 @@ TEST_F(SigninAccountCapabilitiesSceneAgentTest, StandardSignoutDoesNotSetPref) {
   AuthenticationService* authentication_service =
       AuthenticationServiceFactory::GetForProfile(profile_.get());
   authentication_service->SignOut(
-      signin_metrics::ProfileSignout::kUserClickedSignoutSettings, nil);
+      signin_metrics::ProfileSignout::kUserClickedSignoutSettings);
 
   base::RunLoop run_loop;
   task_environment_.GetMainThreadTaskRunner()->PostTask(FROM_HERE,

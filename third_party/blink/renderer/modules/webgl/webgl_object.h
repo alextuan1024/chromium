@@ -26,10 +26,10 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_MODULES_WEBGL_WEBGL_OBJECT_H_
 #define THIRD_PARTY_BLINK_RENDERER_MODULES_WEBGL_WEBGL_OBJECT_H_
 
+#include "third_party/angle/include/GLES2/gl2.h"
 #include "third_party/blink/renderer/platform/bindings/dom_wrapper_world.h"
 #include "third_party/blink/renderer/platform/bindings/script_wrappable.h"
 #include "third_party/blink/renderer/platform/heap/prefinalizer.h"
-#include "third_party/khronos/GLES2/gl2.h"
 
 namespace gpu::gles2 {
 class GLES2Interface;
@@ -54,10 +54,12 @@ GLuint ObjectNonZero(const T* object) {
 class WebGLObject : public ScriptWrappable {
   DEFINE_WRAPPERTYPEINFO();
 
-  // WebGLObjects are pre-finalized, and the WebGLRenderingContextBase
-  // is specifically not. This is done in order to allow WebGLObjects to
-  // refer back to their owning context in their destructor to delete their
-  // resources if they are GC'd before the context is.
+  // WebGLObjects are pre-finalized so they can refer back to their owning
+  // context to delete their GL resources if they are GC'd before the context
+  // is. When both die in the same GC cycle, WebGLObjects created after the
+  // context have their pre-finalizers invoked first (LIFO), and DeleteObject()
+  // also checks GetContextGeneration() in case the context was already lost or
+  // disposed.
   USING_PRE_FINALIZER(WebGLObject, Dispose);
 
  public:

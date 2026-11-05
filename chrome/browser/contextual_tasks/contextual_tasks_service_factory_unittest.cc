@@ -8,6 +8,7 @@
 
 #include "base/callback_list.h"
 #include "base/test/scoped_feature_list.h"
+#include "chrome/browser/contextual_tasks/contextual_tasks_test_utils.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/sync/data_type_store_service_factory.h"
 #include "chrome/test/base/testing_profile.h"
@@ -53,6 +54,7 @@ class ContextualTasksServiceFactoryTest : public testing::Test {
   ~ContextualTasksServiceFactoryTest() override = default;
 
   void SetUp() override {
+    SKIP_IF_CONTEXTUAL_TASKS_UNSUPPORTED();
     create_services_subscription_ =
         BrowserContextDependencyManager::GetInstance()
             ->RegisterCreateServicesCallbackForTesting(
@@ -88,15 +90,6 @@ TEST_F(ContextualTasksServiceFactoryTest, UsesRealService) {
 
   ContextualTask task = service->CreateTask();
   EXPECT_EQ(false, task.IsEphemeral());
-}
-
-TEST_F(ContextualTasksServiceFactoryTest, ReturnsNullIfFeatureDisabled) {
-  feature_list_.InitAndDisableFeature(kContextualTasks);
-  std::unique_ptr<TestingProfile> profile = TestingProfile::Builder().Build();
-
-  ContextualTasksService* service =
-      ContextualTasksServiceFactory::GetForProfile(profile.get());
-  EXPECT_EQ(nullptr, service);
 }
 
 TEST_F(ContextualTasksServiceFactoryTest, UsesRealServiceInIncognito) {

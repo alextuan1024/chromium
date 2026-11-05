@@ -13,16 +13,16 @@
 #include "base/types/expected.h"
 #include "chrome/browser/ui/web_applications/test/isolated_web_app_test_utils.h"
 #include "chrome/browser/web_applications/isolated_web_apps/isolated_web_app_url_info.h"
+#include "chrome/browser/web_applications/isolated_web_apps/iwa_command_scheduler.h"
 #include "chrome/browser/web_applications/isolated_web_apps/test/isolated_web_app_builder.h"
+#include "chrome/browser/web_applications/test/fake_web_app_provider.h"
 #include "chrome/browser/web_applications/test/web_app_install_test_utils.h"
 #include "chrome/browser/web_applications/test/web_app_test.h"
-#include "chrome/browser/web_applications/web_app_provider.h"
 #include "chrome/browser/web_applications/web_app_registrar.h"
 #include "chrome/common/chrome_features.h"
 #include "components/web_package/signed_web_bundles/signed_web_bundle_id.h"
 #include "content/public/browser/storage_partition_config.h"
 #include "content/public/common/content_features.h"
-#include "services/data_decoder/public/cpp/test_support/in_process_data_decoder.h"
 #include "url/gurl.h"
 
 using ::testing::UnorderedElementsAre;
@@ -48,12 +48,9 @@ class GetControlledFramePartitionCommandTest : public WebAppTest {
       const base::Location location = FROM_HERE) {
     base::test::TestFuture<std::optional<content::StoragePartitionConfig>>
         future;
-    provider().scheduler().ScheduleCallbackWithResult(
-        "GetControlledFramePartition", AppLockDescription(url_info.app_id()),
-        base::BindOnce(&GetControlledFramePartitionWithLock, profile(),
-                       url_info, partition_name, in_memory),
-        future.GetCallback(), /*arg_for_shutdown=*/
-        std::optional<content::StoragePartitionConfig>(std::nullopt), location);
+    IwaCommandScheduler::From(fake_provider())
+        .GetControlledFramePartition(url_info, partition_name, in_memory,
+                                     future.GetCallback(), location);
     return future.Get().value();
   }
 
@@ -66,14 +63,10 @@ class GetControlledFramePartitionCommandTest : public WebAppTest {
     return bundle->InstallChecked(profile());
   }
 
-  WebAppProvider& provider() { return *WebAppProvider::GetForTest(profile()); }
-
-  WebAppRegistrar& registrar() { return provider().registrar_unsafe(); }
+  WebAppRegistrar& registrar() { return fake_provider().registrar_unsafe(); }
 
  private:
   base::test::ScopedFeatureList scoped_feature_list_;
-  // isolated web app builder uses json parser from the decoder
-  data_decoder::test::InProcessDataDecoder in_process_data_decoder_;
 };
 
 TEST_F(GetControlledFramePartitionCommandTest, CanRegisterPartition) {

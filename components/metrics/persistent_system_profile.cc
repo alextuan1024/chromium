@@ -43,6 +43,10 @@ constexpr char kFieldTrialDeletionSentinel[] = "";
 
 static_assert(sizeof(RecordHeader) == sizeof(base::subtle::Atomic32),
               "bad RecordHeader size");
+static_assert(base::PersistentMemoryAllocator::kAllocAlignment %
+                      sizeof(RecordHeader) ==
+                  0,
+              "RecordHeader size must divide kAllocAlignment");
 
 // Calculate the size of a record based on the amount of data. This adds room
 // for the record header and rounds up to the next multiple of the record-header
@@ -57,38 +61,49 @@ size_t CalculateRecordSize(size_t data_amount) {
 PersistentSystemProfile::RecordAllocator::RecordAllocator(
     base::PersistentMemoryAllocator* memory_allocator,
     size_t min_size)
-    : allocator_(memory_allocator),
-      has_complete_profile_(false),
-      alloc_reference_(0),
-      alloc_size_(0),
-      end_offset_(0) {
+    : allocator_(memory_allocator) {
+  // Scan once at registration time to adopt and reset any pre-existing system
+  // profile segments before caching all segments owned by this writer.
+  base::PersistentMemoryAllocator::Iterator iter(allocator_);
+  uint32_t ref;
+  while ((ref = iter.GetNextOfType(kTypeIdSystemProfile)) != 0) {
+    segment_refs_.push_back(ref);
+  }
+  Reset();
   AddSegment(min_size);
 }
 
 PersistentSystemProfile::RecordAllocator::RecordAllocator(
     const base::PersistentMemoryAllocator* memory_allocator)
     : allocator_(
-          const_cast<base::PersistentMemoryAllocator*>(memory_allocator)),
-      alloc_reference_(0),
-      alloc_size_(0),
-      end_offset_(0) {}
+          const_cast<base::PersistentMemoryAllocator*>(memory_allocator)) {}
+
+PersistentSystemProfile::RecordAllocator::RecordAllocator(RecordAllocator&&) =
+    default;
+PersistentSystemProfile::RecordAllocator&
+PersistentSystemProfile::RecordAllocator::operator=(RecordAllocator&&) =
+    default;
+PersistentSystemProfile::RecordAllocator::~RecordAllocator() = default;
 
 void PersistentSystemProfile::RecordAllocator::Reset() {
   // Clear the first word of all blocks so they're known to be "empty".
-  alloc_reference_ = 0;
-  while (NextSegment()) {
+  for (uint32_t ref : segment_refs_) {
     // Get the block as a char* and cast it. It can't be fetched directly as
     // an array of RecordHeader because that's not a fundamental type and only
     // arrays of fundamental types are allowed.
     RecordHeader* header =
         reinterpret_cast<RecordHeader*>(allocator_->GetAsArray<char>(
-            alloc_reference_, kTypeIdSystemProfile, sizeof(RecordHeader)));
-    DCHECK(header);
-    base::subtle::NoBarrier_Store(&header->as_atomic, 0);
+            ref, kTypeIdSystemProfile, sizeof(RecordHeader)));
+    // `header` may be null if the underlying persistent memory is corrupted
+    // concurrently after the segment was validated.
+    if (header) {
+      base::subtle::NoBarrier_Store(&header->as_atomic, 0);
+    }
   }
 
   // Reset member variables.
   has_complete_profile_ = false;
+  next_segment_index_ = 0;
   alloc_reference_ = 0;
   alloc_size_ = 0;
   end_offset_ = 0;
@@ -121,9 +136,8 @@ bool PersistentSystemProfile::RecordAllocator::HasMoreData() const {
     return false;
   }
 
-  char* block =
-      allocator_->GetAsArray<char>(alloc_reference_, kTypeIdSystemProfile,
-                                   base::PersistentMemoryAllocator::kSizeAny);
+  char* block = allocator_->GetAsArray<char>(alloc_reference_,
+                                             kTypeIdSystemProfile, alloc_size_);
   if (!block) {
     return false;
   }
@@ -143,33 +157,41 @@ bool PersistentSystemProfile::RecordAllocator::Read(RecordType* type,
   // Access data and read records until everything has been loaded.
   while (true) {
     if (end_offset_ == alloc_size_) {
-      if (!NextSegment())
+      if (!NextSegment()) {
         return false;
+      }
     }
-    if (ReadData(type, record))
+    if (ReadData(type, record)) {
       return *type != kUnusedSpace;
+    }
   }
 }
 
 bool PersistentSystemProfile::RecordAllocator::NextSegment() const {
   base::PersistentMemoryAllocator::Iterator iter(allocator_, alloc_reference_);
-  alloc_reference_ = iter.GetNextOfType(kTypeIdSystemProfile, &alloc_size_);
+  uint32_t ref = iter.GetNextOfType(kTypeIdSystemProfile, &alloc_size_);
+  if (!ref) {
+    return false;
+  }
+  alloc_reference_ = ref;
   end_offset_ = 0;
-  return alloc_reference_ != 0;
+  return true;
 }
 
 bool PersistentSystemProfile::RecordAllocator::AddSegment(size_t min_size) {
-  if (NextSegment()) {
+  if (next_segment_index_ < segment_refs_.size()) {
+    alloc_reference_ = segment_refs_[next_segment_index_++];
+    end_offset_ = 0;
     // The first record-header should have been zeroed as part of the allocation
     // or by the "reset" procedure.
-    DCHECK_EQ(0, base::subtle::NoBarrier_Load(
-                     allocator_->GetAsArray<base::subtle::Atomic32>(
-                         alloc_reference_, kTypeIdSystemProfile, 1)));
+    auto* header = allocator_->GetAsArray<base::subtle::Atomic32>(
+        alloc_reference_, kTypeIdSystemProfile, 1, &alloc_size_);
+    if (!header) {
+      return false;
+    }
+    DCHECK_EQ(0, base::subtle::NoBarrier_Load(header));
     return true;
   }
-
-  DCHECK_EQ(0U, alloc_reference_);
-  DCHECK_EQ(0U, end_offset_);
 
   size_t size =
       std::max(CalculateRecordSize(min_size), kSystemProfileAllocSize);
@@ -182,17 +204,19 @@ bool PersistentSystemProfile::RecordAllocator::AddSegment(size_t min_size) {
   }
   allocator_->MakeIterable(ref);
 
+  segment_refs_.push_back(ref);
+  next_segment_index_ = segment_refs_.size();
   alloc_reference_ = ref;
   alloc_size_ = new_alloc_size;
+  end_offset_ = 0;
   return true;
 }
 
 bool PersistentSystemProfile::RecordAllocator::WriteData(RecordType type,
                                                          const char** data,
                                                          size_t* data_size) {
-  char* block =
-      allocator_->GetAsArray<char>(alloc_reference_, kTypeIdSystemProfile,
-                                   base::PersistentMemoryAllocator::kSizeAny);
+  char* block = allocator_->GetAsArray<char>(alloc_reference_,
+                                             kTypeIdSystemProfile, alloc_size_);
   if (!block) {
     return false;  // It's bad if there is no accessible block.
   }
@@ -236,9 +260,8 @@ bool PersistentSystemProfile::RecordAllocator::ReadData(
     std::string* record) const {
   DCHECK_GT(alloc_size_, end_offset_);
 
-  char* block =
-      allocator_->GetAsArray<char>(alloc_reference_, kTypeIdSystemProfile,
-                                   base::PersistentMemoryAllocator::kSizeAny);
+  char* block = allocator_->GetAsArray<char>(alloc_reference_,
+                                             kTypeIdSystemProfile, alloc_size_);
   if (!block) {
     *type = kUnusedSpace;
     return true;  // No more data.
@@ -393,8 +416,9 @@ bool PersistentSystemProfile::GetSystemProfile(
   RecordType type;
   std::string record;
   do {
-    if (!records.Read(&type, &record))
+    if (!records.Read(&type, &record)) {
       return false;
+    }
   } while (type != kSystemProfileProto);
 
   if (!system_profile) {
@@ -493,8 +517,9 @@ void PersistentSystemProfile::MergeUpdateRecords(
 
 void PersistentSystemProfile::WriteToAll(RecordType type,
                                          std::string_view record) {
-  for (auto& allocator : allocators_)
+  for (auto& allocator : allocators_) {
     allocator.Write(type, record);
+  }
 }
 
 GlobalPersistentSystemProfile* GlobalPersistentSystemProfile::GetInstance() {

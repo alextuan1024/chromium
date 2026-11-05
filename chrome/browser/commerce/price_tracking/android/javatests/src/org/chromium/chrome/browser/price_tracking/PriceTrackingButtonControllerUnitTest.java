@@ -13,7 +13,6 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import android.app.Activity;
-import android.content.res.Resources;
 import android.os.Looper;
 import android.view.View;
 
@@ -83,7 +82,7 @@ public class PriceTrackingButtonControllerUnitTest {
 
     @Before
     public void setUp() {
-        mActivity = Robolectric.setupActivity(Activity.class);
+        mActivity = Robolectric.buildActivity(Activity.class).setup().get();
         mActivity.setTheme(R.style.Theme_BrowserUI_DayNight);
 
         PriceTrackingUtilsJni.setInstanceForTesting(mMockPriceTrackingUtilsJni);
@@ -130,19 +129,18 @@ public class PriceTrackingButtonControllerUnitTest {
 
     @Test
     public void testPriceTrackingButtonClick() {
+        View view = new View(mActivity);
         PriceTrackingButtonController priceTrackingButtonController = createButtonController();
         ButtonData buttonData = priceTrackingButtonController.get(mMockTab);
 
-        buttonData.getButtonSpec().getOnClickListener().onClick(null);
+        buttonData.getButtonSpec().getOnClickListener().onClick(view);
 
-        verify(mMockTabBookmarker).startOrModifyPriceTracking(mMockTab);
+        verify(mMockTabBookmarker).startOrModifyPriceTracking(mMockTab, view);
     }
 
     @Test
     public void testPriceTrackingButtonClick_shouldRemoveTrackingWhenAlreadyTracking() {
-        View mockView = Mockito.mock(View.class);
-        Resources mockResources = Mockito.mock(Resources.class);
-        when(mockView.getResources()).thenReturn(mockResources);
+        View view = new View(mActivity);
 
         BookmarkId bookmarkId = new BookmarkId(1234, BookmarkType.NORMAL);
         when(mMockBookmarkModel.getUserBookmarkIdForTab(mMockTab)).thenReturn(bookmarkId);
@@ -154,9 +152,9 @@ public class PriceTrackingButtonControllerUnitTest {
 
         ButtonData buttonData = priceTrackingButtonController.get(mMockTab);
 
-        buttonData.getButtonSpec().getOnClickListener().onClick(mockView);
+        buttonData.getButtonSpec().getOnClickListener().onClick(view);
 
-        verify(mMockTabBookmarker, never()).startOrModifyPriceTracking(mMockTab);
+        verify(mMockTabBookmarker, never()).startOrModifyPriceTracking(any(), any());
         verify(mMockPriceTrackingUtilsJni)
                 .setPriceTrackingStateForBookmark(
                         eq(mMockProfile),

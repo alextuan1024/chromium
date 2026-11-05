@@ -8,17 +8,18 @@
 
 #import <memory>
 
+#import "base/functional/bind.h"
+#import "base/memory/raw_ptr.h"
 #import "base/test/metrics/histogram_tester.h"
 #import "base/test/scoped_feature_list.h"
 #import "components/autofill/ios/browser/autofill_client_ios.h"
 #import "components/autofill/ios/browser/test_autofill_client_ios.h"
 #import "components/device_reauth/device_authenticator.h"
+#import "components/device_reauth/mock_device_auth_availability_checker.h"
 #import "components/device_reauth/mock_device_authenticator.h"
 #import "components/enterprise/connectors/core/features.h"
-#import "components/enterprise/connectors/core/reporting_event_router.h"
 #import "components/infobars/core/infobar.h"
 #import "components/infobars/core/infobar_delegate.h"
-#import "components/keyed_service/core/keyed_service.h"
 #import "components/password_manager/core/browser/mock_password_form_manager_for_ui.h"
 #import "components/password_manager/core/browser/password_form.h"
 #import "components/password_manager/core/browser/password_form_manager.h"
@@ -31,10 +32,11 @@
 #import "components/sync/test/test_sync_service.h"
 #import "components/ukm/test_ukm_recorder.h"
 #import "ios/chrome/browser/autofill/ui_bundled/chrome_autofill_client_ios.h"
-#import "ios/chrome/browser/enterprise/connectors/reporting/ios_realtime_reporting_client.h"
-#import "ios/chrome/browser/enterprise/connectors/reporting/ios_realtime_reporting_client_factory.h"
+#import "ios/chrome/browser/enterprise/common/test/mock_reporting_event_router.h"
 #import "ios/chrome/browser/enterprise/connectors/reporting/ios_reporting_event_router_factory.h"
 #import "ios/chrome/browser/infobars/model/infobar_manager_impl.h"
+#import "ios/chrome/browser/intelligence/actor/model/actor_tab_helper.h"
+#import "ios/chrome/browser/intelligence/actor/public/actor_control_state.h"
 #import "ios/chrome/browser/passwords/model/features.h"
 #import "ios/chrome/browser/passwords/model/password_controller.h"
 #import "ios/chrome/browser/shared/model/browser/test/test_browser.h"
@@ -57,6 +59,7 @@
 #import "third_party/ocmock/OCMock/OCMock.h"
 #import "url/gurl.h"
 
+using ::actor::ActorControlState;
 using ::password_manager::MockPasswordFormManagerForUI;
 using ::password_manager::PasswordFormManager;
 using ::password_manager::PasswordFormManagerForUI;
@@ -66,32 +69,6 @@ using ::testing::_;
 using ::testing::NiceMock;
 using ::testing::Return;
 using ::testing::ReturnRef;
-
-class MockRouter : public enterprise_connectors::ReportingEventRouter {
- public:
-  MockRouter(enterprise_connectors::IOSRealtimeReportingClient* client)
-      : ReportingEventRouter(client) {}
-  MOCK_METHOD(void,
-              OnLoginEvent,
-              (const GURL& url,
-               bool is_federated,
-               const url::SchemeHostPort& federated_origin,
-               const std::u16string& username),
-              (override));
-
-  MOCK_METHOD(
-      void,
-      OnPasswordBreach,
-      (const std::string& trigger,
-       (const std::vector<std::pair<GURL, std::u16string>>& identities)),
-      (override));
-};
-
-std::unique_ptr<KeyedService> MakeMockRouter(ProfileIOS* profile) {
-  return std::make_unique<MockRouter>(
-      enterprise_connectors::IOSRealtimeReportingClientFactory::GetForProfile(
-          profile));
-}
 
 // TODO(crbug.com/41456340): this file is initiated because of needing test for
 // ios policy. More unit test of the client should be added.
@@ -104,11 +81,12 @@ class IOSChromePasswordManagerClientTest : public PlatformTest {
     TestProfileIOS::Builder builder;
     builder.AddTestingFactory(
         enterprise_connectors::IOSReportingEventRouterFactory::GetInstance(),
-        base::BindOnce(&MakeMockRouter));
+        base::BindOnce(
+            &MockReportingEventRouter::BuildMockReportingEventRouter));
     builder.AddTestingFactory(SyncServiceFactory::GetInstance(),
                               base::BindRepeating(&CreateTestSyncService));
     profile_ = std::move(builder).Build();
-    reporting_event_router_ = static_cast<MockRouter*>(
+    reporting_event_router_ = static_cast<MockReportingEventRouter*>(
         enterprise_connectors::IOSReportingEventRouterFactory::GetForProfile(
             profile_.get()));
     browser_ = std::make_unique<TestBrowser>(profile_.get());
@@ -147,7 +125,7 @@ class IOSChromePasswordManagerClientTest : public PlatformTest {
   std::unique_ptr<TestProfileIOS> profile_;
   std::unique_ptr<Browser> browser_;
   std::unique_ptr<web::WebState> web_state_;
-  raw_ptr<MockRouter> reporting_event_router_;
+  raw_ptr<MockReportingEventRouter> reporting_event_router_;
 
   // PasswordController for testing.
   PasswordController* passwordController_;
@@ -262,7 +240,7 @@ TEST_F(IOSChromePasswordManagerClientTest,
 TEST_F(IOSChromePasswordManagerClientTest, OnLogInInvoked) {
 
   PasswordManagerClient* client = passwordController_.passwordManagerClient;
-  EXPECT_CALL(*reporting_event_router_, OnLoginEvent(_, _, _, _)).Times(1);
+  EXPECT_CALL(*reporting_event_router_, OnLoginEvent);
   client->MaybeReportEnterpriseLoginEvent(GURL("https://www.example.com/"),
                                           url::SchemeHostPort().IsValid(),
                                           url::SchemeHostPort(), u"Fakeuser");
@@ -283,29 +261,55 @@ TEST_F(IOSChromePasswordManagerClientTest, OnPasswordBreachInvoked) {
 }
 
 // Tests that `IsReauthBeforeFillingRequired` returns true when the
-// authenticator can authenticate with biometric or screen lock.
+// checker can authenticate with biometric or screen lock.
 TEST_F(IOSChromePasswordManagerClientTest,
        IsReauthBeforeFillingRequired_ReauthRequired) {
+  PasswordManagerClient* client = passwordController_.passwordManagerClient;
+  auto checker =
+      std::make_unique<device_reauth::MockDeviceAuthAvailabilityChecker>();
+
+  EXPECT_CALL(*checker, CanAuthenticateWithBiometricOrScreenLock)
+      .WillOnce(Return(true));
+  EXPECT_TRUE(client->IsReauthBeforeFillingRequired(checker.get()));
+}
+
+// Tests that `IsReauthBeforeFillingRequiredLegacy` returns true when the
+// authenticator can authenticate with biometric or screen lock.
+TEST_F(IOSChromePasswordManagerClientTest,
+       IsReauthBeforeFillingRequiredLegacy_ReauthRequired) {
   PasswordManagerClient* client = passwordController_.passwordManagerClient;
   auto authenticator =
       std::make_unique<device_reauth::MockDeviceAuthenticator>();
 
   EXPECT_CALL(*authenticator, CanAuthenticateWithBiometricOrScreenLock)
       .WillOnce(Return(true));
-  EXPECT_TRUE(client->IsReauthBeforeFillingRequired(authenticator.get()));
+  EXPECT_TRUE(client->IsReauthBeforeFillingRequiredLegacy(authenticator.get()));
 }
 
 // Tests that `IsReauthBeforeFillingRequired` returns false when the
-// authenticator cannot authenticate with biometric or screen lock.
+// checker cannot authenticate with biometric or screen lock.
 TEST_F(IOSChromePasswordManagerClientTest,
        IsReauthBeforeFillingRequired_ReauthNotRequired) {
+  PasswordManagerClient* client = passwordController_.passwordManagerClient;
+  auto checker =
+      std::make_unique<device_reauth::MockDeviceAuthAvailabilityChecker>();
+
+  EXPECT_CALL(*checker, CanAuthenticateWithBiometricOrScreenLock)
+      .WillOnce(Return(false));
+  EXPECT_FALSE(client->IsReauthBeforeFillingRequired(checker.get()));
+}
+
+// Tests that `IsReauthBeforeFillingRequiredLegacy` returns false when the
+// authenticator cannot authenticate with biometric or screen lock.
+TEST_F(IOSChromePasswordManagerClientTest,
+       IsReauthBeforeFillingRequiredLegacy_ReauthNotRequired) {
   PasswordManagerClient* client = passwordController_.passwordManagerClient;
   auto authenticator =
       std::make_unique<device_reauth::MockDeviceAuthenticator>();
 
   EXPECT_CALL(*authenticator, CanAuthenticateWithBiometricOrScreenLock)
       .WillOnce(Return(false));
-  EXPECT_FALSE(client->IsReauthBeforeFillingRequired(authenticator.get()));
+  EXPECT_FALSE(client->IsReauthBeforeFillingRequiredLegacy(authenticator.get()));
 }
 
 // Tests that `GetDeviceAuthenticator` returns a valid device authenticator.
@@ -314,6 +318,14 @@ TEST_F(IOSChromePasswordManagerClientTest, GetDeviceAuthenticator) {
   std::unique_ptr<device_reauth::DeviceAuthenticator> authenticator =
       client->GetDeviceAuthenticator();
   EXPECT_TRUE(authenticator);
+}
+
+// Tests that `GetDeviceAuthAvailabilityChecker` returns a valid checker.
+TEST_F(IOSChromePasswordManagerClientTest, GetDeviceAuthAvailabilityChecker) {
+  PasswordManagerClient* client = passwordController_.passwordManagerClient;
+  std::unique_ptr<device_reauth::DeviceAuthAvailabilityChecker> checker =
+      client->GetDeviceAuthAvailabilityChecker();
+  EXPECT_TRUE(checker);
 }
 
 // Tests that `AutomaticPasswordSave` displays the password saved infobar.
@@ -547,4 +559,24 @@ TEST_F(IOSChromePasswordManagerClientTest, TestTouchToFillConsecutiveFills) {
       ukm::builders::TouchToFill_TimeToSuccessfulLogin::
           kTimeToSuccessfulLoginName,
       ukm::GetExponentialBucketMinForUserTiming(3000));
+}
+
+// Tests that `IsActorTaskActive` reflects the actuation state of the tab's
+// `ActorTabHelper`.
+TEST_F(IOSChromePasswordManagerClientTest, TestIsActorTaskActive) {
+  PasswordManagerClient* client = passwordController_.passwordManagerClient;
+  EXPECT_FALSE(client->IsActorTaskActive());
+
+  ActorTabHelper::CreateForWebState(web_state());
+  ActorTabHelper* actor_tab_helper = ActorTabHelper::FromWebState(web_state());
+  ASSERT_TRUE(actor_tab_helper);
+
+  actor_tab_helper->SetControlState(ActorControlState::kInactive);
+  EXPECT_FALSE(client->IsActorTaskActive());
+
+  actor_tab_helper->SetControlState(ActorControlState::kActorControlled);
+  EXPECT_TRUE(client->IsActorTaskActive());
+
+  actor_tab_helper->SetControlState(ActorControlState::kInactive);
+  EXPECT_FALSE(client->IsActorTaskActive());
 }

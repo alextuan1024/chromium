@@ -194,6 +194,10 @@ struct BLINK_COMMON_EXPORT StructTraits<blink::mojom::WebPreferencesDataView,
     return r.webgl2_enabled;
   }
 
+  static bool webgpu_enabled(const blink::web_pref::WebPreferences& r) {
+    return r.webgpu_enabled;
+  }
+
   static bool privileged_webgl_extensions_enabled(
       const blink::web_pref::WebPreferences& r) {
     return r.privileged_webgl_extensions_enabled;
@@ -858,6 +862,11 @@ struct BLINK_COMMON_EXPORT StructTraits<blink::mojom::WebPreferencesDataView,
 
   static bool is_indigo_onboarding(const blink::web_pref::WebPreferences& r) {
     return r.is_indigo_onboarding;
+  }
+
+  static bool is_xslt_deprecation_banner_suppressed(
+      const blink::web_pref::WebPreferences& r) {
+    return r.is_xslt_deprecation_banner_suppressed;
   }
 
   static bool Read(blink::mojom::WebPreferencesDataView r,

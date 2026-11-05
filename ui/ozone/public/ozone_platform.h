@@ -154,11 +154,24 @@ class COMPONENT_EXPORT(OZONE) OzonePlatform {
     // global screen coordinates. Wayland, for example, disallow it by design.
     bool supports_global_screen_coordinates = true;
 
+    // Indicates that windows shown inactive (e.g. via
+    // `PlatformWindow::Show(/*inactive=*/true)`) stay inactive. Wayland, for
+    // example, lets the compositor focus newly mapped toplevels regardless.
+    bool supports_inactive_window_show = true;
+
     // Indicates that the platform exposes webgpu via interop gl interop with
     // vulkan.
     // TODO(https://crbug.com/500609035): Remove when active gpu device info is
     // passed to media.
     bool webgpu_on_vulkan_via_gl_interop = false;
+
+    // Whether the browser must wait synchronously for the GPU/Viz root
+    // CompositorFrameSink (and its viz::Display) to be destroyed before
+    // destroying the PlatformWindow. Platforms with surfaceless DMA-BUF
+    // presentation (such as Ozone-DRM) do not bind an OS window to an
+    // EGL/Vulkan surface and handle asynchronous window removal on the GPU
+    // side.
+    bool wait_for_root_compositor_frame_sink_destruction = true;
   };
 
   // Groups platform properties that can only be known at run time.
@@ -192,6 +205,14 @@ class COMPONENT_EXPORT(OZONE) OzonePlatform {
     // Wayland only: determines whether single pixel buffer protocol is
     // supported.
     bool supports_single_pixel_buffer = false;
+
+    // Whether the system compositor tone maps HDR surfaces using the
+    // client-provided content light level information (CLLI) and mastering
+    // display color volume (MDCV), respectively. Used to decide whether HDR
+    // content can be passed through with its metadata instead of being tone
+    // mapped by Chromium.
+    bool compositor_tone_maps_using_clli = false;
+    bool compositor_tone_maps_using_mdcv = false;
 
     // Indicates whether the platform supports native pixmaps.
     bool supports_native_pixmaps = false;

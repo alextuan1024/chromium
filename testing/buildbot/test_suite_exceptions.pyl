@@ -195,6 +195,15 @@
       },
     },
   },
+  'litert_e2e_tests_gpu': {
+    'modifications': {
+      # TODO(crbug.com/547936735): Make blocking again once
+      # VK_ERROR_DEVICE_LOST on Linux Intel GPUs is fixed.
+      'optimization_guide-linux': {
+        'experiment_percentage': 100,
+      },
+    },
+  },
   'model_validation_tests MODEL_VALIDATION_BASE': {
     'modifications': {
       'optimization_guide-win32': {
@@ -219,7 +228,7 @@
       'ToTWinOfficial64',
     ],
   },
-  'ondevice_stability_tests AMD Radeon RX 5500 XT': {
+  'ondevice_stability_tests AMD RX 5500 XT or RX 9070 XT': {
     'modifications': {
       'optimization_guide-win32': {
         'args': [
@@ -237,7 +246,7 @@
       },
     },
   },
-  'ondevice_stability_tests NVIDIA GeForce GTX 1660': {
+  'ondevice_stability_tests NVIDIA GTX 1660 or RTX 4070 or RTX 5070': {
     'modifications': {
       'optimization_guide-win32': {
         'args': [
@@ -245,6 +254,11 @@
         ],
       },
     },
+  },
+  'openscreen_unittests': {
+    'remove_from': [
+      'chromium_win_x64',
+    ],
   },
   'ozone_unittests': {
     'modifications': {
@@ -454,12 +468,6 @@
       # Removed from V8 builders since WebGL 1 should provide reasonable
       # upstream test coverage without the capacity hit from WebGL 2.
       'Mac V8 FYI Release (Intel)',
-    ],
-  },
-  'webgl_conformance_vulkan_passthrough_tests': {
-    'remove_from': [
-      # TODO(crbug.com/380431384): Re-enable when fixed
-      'Win V8 FYI Release (NVIDIA)',
     ],
   },
 }

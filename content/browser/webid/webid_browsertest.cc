@@ -25,12 +25,12 @@
 #include "base/test/values_test_util.h"
 #include "base/values.h"
 #include "build/build_config.h"
-#include "content/browser/in_memory_federated_permission_context.h"
 #include "content/browser/webid/delegation/jwt_signer.h"
 #include "content/browser/webid/delegation/sd_jwt.h"
 #include "content/browser/webid/fake_identity_request_dialog_controller.h"
 #include "content/browser/webid/identity_registry.h"
-#include "content/browser/webid/request.h"
+#include "content/browser/webid/in_memory_federated_permission_context.h"
+#include "content/browser/webid/request_handler.h"
 #include "content/browser/webid/request_service.h"
 #include "content/browser/webid/test/mock_digital_identity_provider.h"
 #include "content/browser/webid/test/mock_identity_request_dialog_controller.h"
@@ -438,9 +438,9 @@ class WebIdBrowserTest : public ContentBrowserTest {
 
 class WebIdIdpSigninStatusBrowserTest : public WebIdBrowserTest {
  public:
-  InMemoryFederatedPermissionContext* sharing_context() {
+  webid::InMemoryFederatedPermissionContext* sharing_context() {
     BrowserContext* context = shell()->web_contents()->GetBrowserContext();
-    return static_cast<InMemoryFederatedPermissionContext*>(
+    return static_cast<webid::InMemoryFederatedPermissionContext*>(
         context->GetFederatedIdentityPermissionContext());
   }
 };
@@ -453,9 +453,9 @@ class WebIdLightweightFedcmBrowserTest : public WebIdBrowserTest {
     scoped_feature_list_.InitWithFeatures(features, {});
   }
 
-  InMemoryFederatedPermissionContext* sharing_context() {
+  webid::InMemoryFederatedPermissionContext* sharing_context() {
     BrowserContext* context = shell()->web_contents()->GetBrowserContext();
-    return static_cast<InMemoryFederatedPermissionContext*>(
+    return static_cast<webid::InMemoryFederatedPermissionContext*>(
         context->GetFederatedIdentityPermissionContext());
   }
 };
@@ -468,9 +468,9 @@ class WebIdIdpSigninStatusForFetchKeepAliveBrowserTest
         {blink::features::kKeepAliveInBrowserMigration}, {});
   }
 
-  InMemoryFederatedPermissionContext* sharing_context() {
+  webid::InMemoryFederatedPermissionContext* sharing_context() {
     BrowserContext* context = shell()->web_contents()->GetBrowserContext();
-    return static_cast<InMemoryFederatedPermissionContext*>(
+    return static_cast<webid::InMemoryFederatedPermissionContext*>(
         context->GetFederatedIdentityPermissionContext());
   }
 };
@@ -487,9 +487,9 @@ class WebIdIdPRegistryBrowserTest : public WebIdBrowserTest {
     scoped_feature_list_.InitWithFeatures(features, {});
   }
 
-  InMemoryFederatedPermissionContext* sharing_context() {
+  webid::InMemoryFederatedPermissionContext* sharing_context() {
     BrowserContext* context = shell()->web_contents()->GetBrowserContext();
-    return static_cast<InMemoryFederatedPermissionContext*>(
+    return static_cast<webid::InMemoryFederatedPermissionContext*>(
         context->GetFederatedIdentityPermissionContext());
   }
 
@@ -1174,9 +1174,9 @@ class WebIdDigitalCredentialsBrowserTest : public WebIdBrowserTest {
     scoped_feature_list_.InitWithFeatures(features, {});
   }
 
-  InMemoryFederatedPermissionContext* sharing_context() {
+  webid::InMemoryFederatedPermissionContext* sharing_context() {
     BrowserContext* context = shell()->web_contents()->GetBrowserContext();
-    return static_cast<InMemoryFederatedPermissionContext*>(
+    return static_cast<webid::InMemoryFederatedPermissionContext*>(
         context->GetFederatedIdentityPermissionContext());
   }
 
@@ -1286,8 +1286,10 @@ IN_PROC_BROWSER_TEST_F(WebIdDigitalCredentialsBrowserTest,
   // JSON comparison in IsJson below.
   base::RemoveChars(request, "\n ", &json);
 
-  EXPECT_CALL(*digital_identity_provider, Get(_, _, JsonMatches(json), _))
-      .WillOnce(WithArg<3>(
+  EXPECT_CALL(*digital_identity_provider,
+              Get(_, _, JsonMatches(json),
+                  DigitalIdentityProvider::UiWarningLevel::kHintCaution, _))
+      .WillOnce(WithArg<4>(
           [&kIdentityProviderResponse](
               DigitalIdentityProvider::DigitalIdentityCallback callback) {
             std::move(callback).Run(DigitalCredential(
@@ -1312,7 +1314,7 @@ IN_PROC_BROWSER_TEST_F(WebIdDigitalCredentialsBrowserTest,
           .value();
 
   EXPECT_CALL(*digital_identity_provider, Get)
-      .WillOnce(WithArg<3>(
+      .WillOnce(WithArg<4>(
           [&](DigitalIdentityProvider::DigitalIdentityCallback callback) {
             EXPECT_EQ(
                 "NotAllowedError: Only one navigator.credentials.get/create "
@@ -1336,7 +1338,7 @@ IN_PROC_BROWSER_TEST_F(WebIdDigitalCredentialsBrowserTest,
           test_browser_client_->GetDigitalIdentityProviderForTests());
 
   EXPECT_CALL(*digital_identity_provider, Get)
-      .WillOnce(WithArg<3>(
+      .WillOnce(WithArg<4>(
           [&](DigitalIdentityProvider::DigitalIdentityCallback callback) {
             std::move(callback).Run(base::unexpected(
                 DigitalIdentityProvider::RequestStatusForMetrics::
@@ -1359,7 +1361,7 @@ IN_PROC_BROWSER_TEST_F(WebIdDigitalCredentialsBrowserTest,
           test_browser_client_->GetDigitalIdentityProviderForTests());
 
   EXPECT_CALL(*digital_identity_provider, Get)
-      .WillOnce(WithArg<3>(
+      .WillOnce(WithArg<4>(
           [](DigitalIdentityProvider::DigitalIdentityCallback callback) {
             std::move(callback).Run(DigitalCredential(
                 "openid4vp",
@@ -1746,7 +1748,7 @@ IN_PROC_BROWSER_TEST_F(WebIdBrowserTest,
   // The client id `client_id_1` is on the `approved_clients` list defined in
   // content/test/data/fedcm/accounts_endpoint.json so by exempting the IdP from
   // the check, auto re-authn can be triggered and a token can be returned.
-  static_cast<InMemoryFederatedPermissionContext*>(
+  static_cast<webid::InMemoryFederatedPermissionContext*>(
       shell()
           ->web_contents()
           ->GetBrowserContext()
@@ -2058,16 +2060,8 @@ IN_PROC_BROWSER_TEST_F(WebIdDelegationBrowserTest, ConditionalMediation) {
       testing::UnorderedElementsAre("Sam"));
 }
 
-// Flaky on mac, https://crbug.com/415953689
-#if BUILDFLAG(IS_MAC)
-#define MAYBE_ConditionalMediationForMediatedRequest \
-  DISABLED_ConditionalMediationForMediatedRequest
-#else
-#define MAYBE_ConditionalMediationForMediatedRequest \
-  ConditionalMediationForMediatedRequest
-#endif
 IN_PROC_BROWSER_TEST_F(WebIdDelegationBrowserTest,
-                       MAYBE_ConditionalMediationForMediatedRequest) {
+                       ConditionalMediationForMediatedRequest) {
   idp_server()->SetConfigResponseDetails(BuildValidConfigDetails());
 
   auto mock = std::make_unique<
@@ -2733,9 +2727,11 @@ IN_PROC_BROWSER_TEST_F(WebIdEmbedderInitiatedLoginTest,
       shell()->web_contents(), url::Origin::Create(config_url),
       "not_real_account", base::DoNothing());
 
-  // Kick off the identity credential request via a navigation.
+  // Kick off the identity credential request via a navigation that the RP page
+  // initiates. Navigations without an initiator are not intercepted.
   LoadStopObserver stop_observer(shell()->web_contents());
-  shell()->LoadURL(config_url.Resolve("/intercept"));
+  EXPECT_TRUE(BeginNavigateToURLFromRenderer(shell(),
+                                             config_url.Resolve("/intercept")));
 
   // Wait for the redirect to load.
   stop_observer.Wait();

@@ -100,6 +100,7 @@ class MockSyncService : public SyncService {
               (bool enabled),
               (override));
 #endif  // BUILDFLAG(IS_ANDROID)
+  MOCK_METHOD(void, SetPasskeysLocked, (bool passkeys_locked), (override));
   MOCK_METHOD(void, SendExplicitPassphraseToPlatformClient, (), (override));
   MOCK_METHOD(void, AddObserver, (SyncServiceObserver * observer), (override));
   MOCK_METHOD(void,
@@ -132,6 +133,10 @@ class MockSyncService : public SyncService {
               (base::RepeatingCallback<void(const TypeEntitiesCount&)>),
               (const override));
   MOCK_METHOD(const GURL&, GetSyncServiceUrlForDebugging, (), (const override));
+  MOCK_METHOD(base::FilePath,
+              GetLocalSyncBackendFolderForDebugging,
+              (),
+              (const override));
   MOCK_METHOD(std::string,
               GetUnrecoverableErrorMessageForDebugging,
               (),

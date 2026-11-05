@@ -7,6 +7,8 @@
 
 #import <Foundation/Foundation.h>
 
+@class ActuationHeaderContentVariants;
+@class ActuationInterventionData;
 @class ActuationWorklogChip;
 @class ActuationWorklogItem;
 
@@ -16,13 +18,22 @@
 // Sets whether actuation is actively executing.
 - (void)setActuationActive:(BOOL)active;
 
-// Sets the task title displayed in the header.
-- (void)setTaskTitle:(NSString*)taskTitle;
+// Sets the header content to display in each display mode.
+- (void)setHeaderContentVariants:(ActuationHeaderContentVariants*)variants;
 
 // Called when a new actuation worklog step and its chip are ready to display.
 - (void)updateWorklogWithItem:(ActuationWorklogItem*)item
                          chip:(ActuationWorklogChip*)chip
                      animated:(BOOL)animated;
+
+// Replaces the active (last) worklog item in-place and its tool chip.
+- (void)setLastItem:(ActuationWorklogItem*)item
+               chip:(ActuationWorklogChip*)chip;
+
+// Displays an interactive intervention below the worklog, or dismisses any
+// active intervention if `intervention` is nil. No-op if `intervention` is
+// already displayed.
+- (void)setIntervention:(ActuationInterventionData*)intervention;
 
 // Resets and clears all worklog timeline items and state.
 - (void)reset;

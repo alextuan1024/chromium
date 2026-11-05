@@ -22,6 +22,7 @@
 #include "content/public/browser/browsing_data_remover.h"
 #include "net/base/registry_controlled_domains/registry_controlled_domain.h"
 #include "services/network/public/mojom/network_context.mojom.h"
+#include "third_party/blink/public/public_buildflags.h"
 #include "url/gurl.h"
 #include "url/url_util.h"
 
@@ -114,10 +115,6 @@ void RemoveEmbedderCookieData(
       ContentSettingsType::CLIENT_HINTS, base::Time(), base::Time::Max(),
       website_settings_filter);
 
-  host_content_settings_map->ClearSettingsForOneTypeWithPredicate(
-      ContentSettingsType::REDUCED_ACCEPT_LANGUAGE, base::Time(),
-      base::Time::Max(), website_settings_filter);
-
   // Clear the safebrowsing cookies only if time period is for "all time".  It
   // doesn't make sense to apply the time period of deleting in the last X
   // hours/days to the safebrowsing cookies since they aren't the result of
@@ -191,13 +188,17 @@ void RemoveSiteSettingsData(const base::Time& delete_begin,
   host_content_settings_map->ClearSettingsForOneTypeWithPredicate(
       ContentSettingsType::FILE_SYSTEM_ACCESS_EXTENDED_PERMISSION, delete_begin,
       delete_end, HostContentSettingsMap::PatternSourcePredicate());
+
+  host_content_settings_map->ClearSettingsForOneTypeWithPredicate(
+      ContentSettingsType::WEBAUTHN_AMBIENT_SIGNIN_DATA, delete_begin,
+      delete_end, HostContentSettingsMap::PatternSourcePredicate());
 #endif  // !BUILDFLAG(IS_ANDROID)
 
-#if BUILDFLAG(IS_CHROMEOS)
+#if BUILDFLAG(ENABLE_SMART_CARD)
   host_content_settings_map->ClearSettingsForOneTypeWithPredicate(
       ContentSettingsType::SMART_CARD_DATA, delete_begin, delete_end,
       HostContentSettingsMap::PatternSourcePredicate());
-#endif  // BUILDFLAG(IS_CHROMEOS)
+#endif  // BUILDFLAG(ENABLE_SMART_CARD)
 
   host_content_settings_map->ClearSettingsForOneTypeWithPredicate(
       ContentSettingsType::ON_DEVICE_SPEECH_RECOGNITION_LANGUAGES_DOWNLOADED,

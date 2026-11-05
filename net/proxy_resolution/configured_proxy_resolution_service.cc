@@ -9,6 +9,7 @@
 #include <memory>
 #include <utility>
 
+#include "base/check.h"
 #include "base/compiler_specific.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
@@ -17,11 +18,13 @@
 #include "base/logging.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
+#include "base/metrics/histogram_functions.h"
 #include "base/strings/string_util.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/time/time.h"
 #include "base/values.h"
 #include "build/build_config.h"
+#include "net/base/features.h"
 #include "net/base/net_errors.h"
 #include "net/base/net_info_source_list.h"
 #include "net/base/network_anonymization_key.h"
@@ -29,10 +32,12 @@
 #include "net/base/proxy_delegate.h"
 #include "net/base/proxy_server.h"
 #include "net/base/proxy_string_util.h"
+#include "net/base/request_priority.h"
 #include "net/base/url_util.h"
 #include "net/dns/host_resolver.h"
 #include "net/log/net_log.h"
 #include "net/log/net_log_event_type.h"
+#include "net/log/net_log_source_type.h"
 #include "net/log/net_log_util.h"
 #include "net/log/net_log_with_source.h"
 #include "net/proxy_resolution/configured_proxy_resolution_request.h"
@@ -41,6 +46,8 @@
 #include "net/proxy_resolution/pac_file_decider.h"
 #include "net/proxy_resolution/pac_file_fetcher.h"
 #include "net/proxy_resolution/proxy_config_service_fixed.h"
+#include "net/proxy_resolution/proxy_host_matching_rules.h"
+#include "net/proxy_resolution/proxy_resolution_url_sanitizer.h"
 #include "net/proxy_resolution/proxy_resolver_factory.h"
 #include "net/url_request/url_request_context.h"
 
@@ -269,6 +276,17 @@ class ProxyResolverFactoryForSystem : public MultiThreadedProxyResolverFactory {
   }
 };
 
+std::unique_ptr<ProxyResolverFactory> CreateSystemProxyResolverFactory() {
+#if BUILDFLAG(IS_APPLE)
+  // `ProxyResolverApple` is asynchronous and cancellable under this feature, so
+  // it does not need `MultiThreadedProxyResolver`.
+  if (base::FeatureList::IsEnabled(features::kAsyncProxyResolverApple)) {
+    return std::make_unique<ProxyResolverFactoryApple>();
+  }
+#endif
+  return std::make_unique<ProxyResolverFactoryForSystem>(kDefaultNumPacThreads);
+}
+
 class ProxyResolverFactoryForNullResolver : public ProxyResolverFactory {
  public:
   ProxyResolverFactoryForNullResolver() : ProxyResolverFactory(false) {}
@@ -358,38 +376,6 @@ base::DictValue NetLogBadProxyListParams(const ProxyRetryInfoMap* retry_info) {
   return dict;
 }
 
-// Returns a sanitized copy of |url| which is safe to pass on to a PAC script.
-//
-// PAC scripts are modelled as being controllable by a network-present
-// attacker (since such an attacker can influence the outcome of proxy
-// auto-discovery, or modify the contents of insecurely delivered PAC scripts).
-//
-// As such, it is important that the full path/query of https:// URLs not be
-// sent to PAC scripts, since that would give an attacker access to data that
-// is ordinarily protected by TLS.
-//
-// Obscuring the path for http:// URLs isn't being done since it doesn't matter
-// for security (attacker can already route traffic through their HTTP proxy
-// and see the full URL for http:// requests).
-//
-// TODO(crbug.com/41412888): Use the same stripping for insecure URL
-// schemes.
-GURL SanitizeUrl(const GURL& url) {
-  DCHECK(url.is_valid());
-
-  GURL::Replacements replacements;
-  replacements.ClearUsername();
-  replacements.ClearPassword();
-  replacements.ClearRef();
-
-  if (url.SchemeIsCryptographic()) {
-    replacements.ClearPath();
-    replacements.ClearQuery();
-  }
-
-  return url.ReplaceComponents(replacements);
-}
-
 base::DictValue CreateDnsConditionNetLogParam(
     const ProxyConfig::ProxyOverrideRule::DnsProbeCondition& dns_condition) {
   base::DictValue dict;
@@ -398,6 +384,52 @@ base::DictValue CreateDnsConditionNetLogParam(
 }
 
 }  // namespace
+
+// Adapts native system resolution to the configured service's resolver jobs.
+class ConfiguredProxyResolutionService::SystemProxyResolver
+    : public ProxyResolver {
+ public:
+  explicit SystemProxyResolver(
+      std::unique_ptr<ProxyResolutionService> system_proxy_service)
+      : service_(std::move(system_proxy_service)) {}
+
+  int GetProxyForURL(const GURL& url,
+                     const NetworkAnonymizationKey& network_anonymization_key,
+                     ProxyInfo* results,
+                     CompletionOnceCallback callback,
+                     std::unique_ptr<Request>* request,
+                     const NetLogWithSource& net_log) override {
+    auto job = std::make_unique<SystemRequest>();
+    const auto system_net_log = NetLogWithSource::Make(
+        net_log.net_log(), NetLogSourceType::SYSTEM_PROXY_RESOLUTION);
+    system_net_log.AddEventReferencingSource(
+        NetLogEventType::SYSTEM_PROXY_RESOLUTION, net_log.source());
+    net_log.AddEventReferencingSource(NetLogEventType::SYSTEM_PROXY_RESOLUTION,
+                                      system_net_log.source());
+    // Native resolution does not use the HTTP method, target network, or
+    // priority. Delegate notifications stay in the configured service.
+    int rv = service_->ResolveProxy(
+        url, std::string(), network_anonymization_key,
+        handles::kInvalidNetworkHandle, results, std::move(callback),
+        &job->request, system_net_log, DEFAULT_PRIORITY);
+    if (rv == ERR_IO_PENDING) {
+      *request = std::move(job);
+    }
+    return rv;
+  }
+
+  void OnShutdown() { service_->OnShutdown(); }
+
+ private:
+  class SystemRequest : public ProxyResolver::Request {
+   public:
+    LoadState GetLoadState() override { return request->GetLoadState(); }
+
+    std::unique_ptr<ProxyResolutionRequest> request;
+  };
+
+  const std::unique_ptr<ProxyResolutionService> service_;
+};
 
 // ConfiguredProxyResolutionService::InitProxyResolver
 // ----------------------------------
@@ -826,8 +858,13 @@ ConfiguredProxyResolutionService::ConfiguredProxyResolutionService(
     HostResolver* host_resolver_for_override_rules,
     NetLog* net_log,
     bool quick_check_enabled,
-    bool enable_pac_runtime_backoff)
+    bool enable_pac_runtime_backoff,
+    std::unique_ptr<ProxyResolutionService> system_proxy_service)
     : config_service_(std::move(config_service)),
+      system_proxy_resolver_(system_proxy_service
+                                 ? std::make_unique<SystemProxyResolver>(
+                                       std::move(system_proxy_service))
+                                 : nullptr),
       resolver_factory_(std::move(resolver_factory)),
       host_resolver_for_override_rules_(host_resolver_for_override_rules),
       net_log_(net_log),
@@ -846,21 +883,21 @@ ConfiguredProxyResolutionService::CreateUsingSystemProxyResolver(
     std::unique_ptr<ProxyConfigService> proxy_config_service,
     HostResolver* host_resolver_for_override_rules,
     NetLog* net_log,
-    bool quick_check_enabled) {
+    bool quick_check_enabled,
+    std::unique_ptr<ProxyResolutionService> system_proxy_service) {
   DCHECK(proxy_config_service);
 
   if (!ProxyResolverFactoryForSystem::IsSupported()) {
     VLOG(1) << "PAC support disabled because there is no system implementation";
     return CreateWithoutProxyResolver(std::move(proxy_config_service),
-                                      host_resolver_for_override_rules,
-                                      net_log);
+                                      host_resolver_for_override_rules, net_log,
+                                      std::move(system_proxy_service));
   }
 
   return std::make_unique<ConfiguredProxyResolutionService>(
-      std::move(proxy_config_service),
-      std::make_unique<ProxyResolverFactoryForSystem>(kDefaultNumPacThreads),
+      std::move(proxy_config_service), CreateSystemProxyResolverFactory(),
       host_resolver_for_override_rules, net_log, quick_check_enabled,
-      /*enable_pac_runtime_backoff=*/true);
+      /*enable_pac_runtime_backoff=*/true, std::move(system_proxy_service));
 }
 
 // static
@@ -868,12 +905,14 @@ std::unique_ptr<ConfiguredProxyResolutionService>
 ConfiguredProxyResolutionService::CreateWithoutProxyResolver(
     std::unique_ptr<ProxyConfigService> proxy_config_service,
     HostResolver* host_resolver_for_override_rules,
-    NetLog* net_log) {
+    NetLog* net_log,
+    std::unique_ptr<ProxyResolutionService> system_proxy_service) {
   return std::make_unique<ConfiguredProxyResolutionService>(
       std::move(proxy_config_service),
       std::make_unique<ProxyResolverFactoryForNullResolver>(),
       host_resolver_for_override_rules, net_log,
-      /*quick_check_enabled=*/false);
+      /*quick_check_enabled=*/false, /*enable_pac_runtime_backoff=*/false,
+      std::move(system_proxy_service));
 }
 
 // static
@@ -994,7 +1033,7 @@ int ConfiguredProxyResolutionService::ResolveProxy(
   // script). The goal is to remove sensitive data (like embedded user names
   // and password), and local data (i.e. reference fragment) which does not need
   // to be disclosed to the resolver.
-  GURL url = SanitizeUrl(raw_url);
+  GURL url = SanitizeUrlForProxyResolution(raw_url);
 
   if (config_ && !host_resolver_for_override_rules_) {
     // A host resolver should always be configured in services which may receive
@@ -1004,10 +1043,10 @@ int ConfiguredProxyResolutionService::ResolveProxy(
 
   // Check if the request can be completed right away. (This is the case when
   // using a direct connection for example).
-  int rv = TryToCompleteSynchronously(url, /*bypass_override_rules=*/false,
-                                      net_log, result);
+  int rv = TryResolveSynchronously(url, /*bypass_override_rules=*/false,
+                                   net_log, result);
   if (rv != ERR_IO_PENDING) {
-    rv = DidFinishResolvingProxy(url, network_anonymization_key, method, result,
+    rv = ProcessResolutionResult(url, network_anonymization_key, method, result,
                                  rv, net_log);
     return rv;
   }
@@ -1020,14 +1059,13 @@ int ConfiguredProxyResolutionService::ResolveProxy(
     // Start the resolve request.
     rv = req->Start();
     if (rv != ERR_IO_PENDING)
-      return req->QueryDidCompleteSynchronously(rv);
-  } else if (!IsPacReady()) {
-    req->net_log()->BeginEvent(
-        NetLogEventType::PROXY_RESOLUTION_SERVICE_WAITING_FOR_INIT_PAC);
+      return req->FinalizeRequestResult(rv);
   } else {
-    req->net_log()->BeginEvent(
-        NetLogEventType::
-            PROXY_RESOLUTION_SERVICE_WAITING_FOR_DYNAMIC_PROXY_CONFIGS);
+    req->BeginWaitEvent(
+        IsPacReady()
+            ? NetLogEventType::
+                  PROXY_RESOLUTION_SERVICE_WAITING_FOR_DYNAMIC_PROXY_CONFIGS
+            : NetLogEventType::PROXY_RESOLUTION_SERVICE_WAITING_FOR_INIT_PAC);
   }
 
   DCHECK_EQ(ERR_IO_PENDING, rv);
@@ -1040,7 +1078,7 @@ int ConfiguredProxyResolutionService::ResolveProxy(
   return rv;  // ERR_IO_PENDING
 }
 
-int ConfiguredProxyResolutionService::TryToCompleteSynchronously(
+int ConfiguredProxyResolutionService::TryResolveSynchronously(
     const GURL& url,
     bool bypass_override_rules,
     const NetLogWithSource& net_log,
@@ -1092,6 +1130,13 @@ int ConfiguredProxyResolutionService::TryToCompleteSynchronously(
     }
   }
 
+  if (ShouldUseSystemProxyResolver(config_->value())) {
+    if (ApplySystemImplicitBypassRules(url, result)) {
+      return OK;
+    }
+    return ERR_IO_PENDING;
+  }
+
   // If it was impossible to fetch or parse the PAC script, we cannot complete
   // the request here and bail out.
   if (permanent_error_ != OK) {
@@ -1131,6 +1176,7 @@ int ConfiguredProxyResolutionService::TryToCompleteSynchronously(
 ConfiguredProxyResolutionService::~ConfiguredProxyResolutionService() {
   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
   in_destruction_ = true;
+  MaybeEndDynamicRoutingPause();
   NetworkChangeNotifier::RemoveIPAddressObserver(this);
   NetworkChangeNotifier::RemoveDNSObserver(this);
   config_service_->RemoveObserver(this);
@@ -1143,48 +1189,65 @@ ConfiguredProxyResolutionService::~ConfiguredProxyResolutionService() {
   // for-loop will not work.
   while (!pending_requests_.empty()) {
     ConfiguredProxyResolutionRequest* req = *pending_requests_.begin();
-    req->QueryComplete(ERR_ABORTED);
+    req->OnAsyncResolutionComplete(ERR_ABORTED);
   }
 }
 
 void ConfiguredProxyResolutionService::SuspendAllPendingRequests() {
+  if (!IsPacReady()) {
+    return;
+  }
+
   for (ConfiguredProxyResolutionRequest* req : pending_requests_) {
     if (req->is_started()) {
-      req->Cancel();
-
-      req->net_log()->BeginEvent(
-          NetLogEventType::PROXY_RESOLUTION_SERVICE_WAITING_FOR_INIT_PAC);
+      req->CancelActiveJob();
+    } else {
+      req->ResetOverrideRulesEvaluated();
     }
+    req->BeginWaitEvent(
+        NetLogEventType::PROXY_RESOLUTION_SERVICE_WAITING_FOR_INIT_PAC);
   }
 
   // Also cancel any pending DNS resolution requests.
   host_resolution_requests_.clear();
 }
 
-void ConfiguredProxyResolutionService::SetReady() {
+void ConfiguredProxyResolutionService::SetPacReadyAndResumePendingRequests() {
   DCHECK(!init_proxy_resolver_.get());
   pac_resolver_state_ = PacResolverState::kReady;
 
+  // Keep requests paused if a dynamic routing update is still in progress.
+  if (!IsReady()) {
+    MaybeBeginDynamicRoutingPause();
+    for (ConfiguredProxyResolutionRequest* req : pending_requests_) {
+      req->BeginWaitEvent(
+          NetLogEventType::
+              PROXY_RESOLUTION_SERVICE_WAITING_FOR_DYNAMIC_PROXY_CONFIGS);
+    }
+    return;
+  }
+
+  MaybeEndDynamicRoutingPause();
+
   // TODO(lilyhoughton): This is necessary because a callback invoked by
-  // |StartAndCompleteCheckingForSynchronous()| might delete |this|.  A better
+  // |ResumeOrCompleteSynchronously()| might delete |this|.  A better
   // solution would be to disallow synchronous callbacks altogether.
   base::WeakPtr<ConfiguredProxyResolutionService> weak_this =
       weak_ptr_factory_.GetWeakPtr();
 
   auto pending_requests_copy = pending_requests_;
   for (ConfiguredProxyResolutionRequest* req : pending_requests_copy) {
-    if (!ContainsPendingRequest(req))
+    if (!ContainsPendingRequest(req) || req->is_started()) {
       continue;
+    }
 
-    if (!req->is_started()) {
-      req->net_log()->EndEvent(
-          NetLogEventType::PROXY_RESOLUTION_SERVICE_WAITING_FOR_INIT_PAC);
+    req->EndWaitEvent();
 
-      // Note that we re-check for synchronous completion, in case we are
-      // no longer using a ProxyResolver (can happen if we fell-back to manual.)
-      req->StartAndCompleteCheckingForSynchronous();
-      if (!weak_this)
-        return;  // Synchronous callback deleted |this|
+    // Note that we re-check for synchronous completion, in case we are
+    // no longer using a ProxyResolver (can happen if we fell-back to manual.)
+    req->ResumeOrCompleteSynchronously();
+    if (!weak_this || !IsReady()) {
+      return;  // Synchronous callback deleted `this` or reset readiness.
     }
   }
 }
@@ -1201,6 +1264,7 @@ void ConfiguredProxyResolutionService::ApplyProxyConfigIfAvailable() {
   }
 
   // Otherwise we need to first fetch the configuration.
+  MaybeEndDynamicRoutingPause();
   pac_resolver_state_ = PacResolverState::kWaitingForProxyConfig;
 
   // Retrieve the current proxy configuration from the ProxyConfigService.
@@ -1266,7 +1330,7 @@ void ConfiguredProxyResolutionService::OnInitProxyResolverComplete(int result) {
 
   // Resume any requests which we had to defer until the PAC script was
   // downloaded.
-  SetReady();
+  SetPacReadyAndResumePendingRequests();
 }
 
 void ConfiguredProxyResolutionService::ReportSuccess(const ProxyInfo& result) {
@@ -1293,7 +1357,7 @@ void ConfiguredProxyResolutionService::RemovePendingRequest(
   pending_requests_.erase(req);
 }
 
-int ConfiguredProxyResolutionService::DidFinishResolvingProxy(
+int ConfiguredProxyResolutionService::ProcessResolutionResult(
     const GURL& url,
     const NetworkAnonymizationKey& network_anonymization_key,
     const std::string& method,
@@ -1301,6 +1365,8 @@ int ConfiguredProxyResolutionService::DidFinishResolvingProxy(
     int result_code,
     const NetLogWithSource& net_log) {
   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
+  const bool using_system_proxy_resolver =
+      config_ && ShouldUseSystemProxyResolver(config_->value());
 
   // Log the result of the proxy resolution.
   if (result_code == OK) {
@@ -1320,14 +1386,22 @@ int ConfiguredProxyResolutionService::DidFinishResolvingProxy(
     DeprioritizeBadProxyChains(proxy_retry_info_, result, net_log);
     // If we previously had PAC failures and now we have a successful
     // resolution while using a PAC resolver, reset the throttler.
-    if (enable_pac_runtime_backoff_ &&
+    if (!using_system_proxy_resolver && enable_pac_runtime_backoff_ &&
         !pac_retry_throttler_.HasFailedDuringCurrentLoad()) {
       ResetPacRetryThrottler();
     }
+    net_log.EndEvent(NetLogEventType::PROXY_RESOLUTION_SERVICE);
   } else {
     net_log.AddEventWithNetErrorCode(
         NetLogEventType::PROXY_RESOLUTION_SERVICE_RESOLVED_PROXY_LIST,
         result_code);
+
+    // Platform services already fall back to DIRECT on OS errors; preserve
+    // non-OK completion codes, such as ERR_ABORTED during teardown.
+    if (using_system_proxy_resolver) {
+      net_log.EndEvent(NetLogEventType::PROXY_RESOLUTION_SERVICE);
+      return result_code;
+    }
 
     // Preserve the original resolver error for backoff/throttle decisions.
     const int resolver_error = result_code;
@@ -1339,10 +1413,10 @@ int ConfiguredProxyResolutionService::DidFinishResolvingProxy(
     //
     // This can be observed because the service destructor sets
     // `in_destruction_ = true` and synchronously calls
-    // QueryComplete(ERR_ABORTED) on each pending request. QueryComplete
-    // removes the request from `pending_requests_` and synchronously calls
-    // QueryDidComplete, which in turn calls DidFinishResolvingProxy on this
-    // service, and then runs the user callback.
+    // OnAsyncResolutionComplete(ERR_ABORTED) on each pending request.
+    // OnAsyncResolutionComplete removes the request from `pending_requests_`
+    // and synchronously calls FinalizeRequestResult, which in turn calls
+    // ProcessResolutionResult on this service, and then runs the user callback.
     if (resolver_error == ERR_ABORTED && in_destruction_ && !config_) {
       result_code = ERR_MANDATORY_PROXY_CONFIGURATION_FAILED;
       net_log.EndEvent(NetLogEventType::PROXY_RESOLUTION_SERVICE);
@@ -1366,10 +1440,16 @@ int ConfiguredProxyResolutionService::DidFinishResolvingProxy(
       }
     }
 
+    // End the NetLog event before resetting the config, as synchronous
+    // re-initialization can destroy the completing request (and `net_log`).
+    net_log.EndEvent(NetLogEventType::PROXY_RESOLUTION_SERVICE);
+
     if (reset_config) {
       ResetProxyConfig(false);
       if (!pending_requests_.empty()) {
         ApplyProxyConfigIfAvailable();
+      } else {
+        MaybeEndDynamicRoutingPause();
       }
     } else if (enable_pac_runtime_backoff_ &&
                resolver_error == ERR_PAC_SCRIPT_FAILED) {
@@ -1377,7 +1457,6 @@ int ConfiguredProxyResolutionService::DidFinishResolvingProxy(
     }
   }
 
-  net_log.EndEvent(NetLogEventType::PROXY_RESOLUTION_SERVICE);
   return result_code;
 }
 
@@ -1410,6 +1489,9 @@ void ConfiguredProxyResolutionService::OnShutdown() {
     pac_file_fetcher_->OnShutdown();
   if (dhcp_pac_file_fetcher_)
     dhcp_pac_file_fetcher_->OnShutdown();
+  if (system_proxy_resolver_) {
+    system_proxy_resolver_->OnShutdown();
+  }
 }
 
 const ProxyRetryInfoMap& ConfiguredProxyResolutionService::proxy_retry_info()
@@ -1438,6 +1520,9 @@ bool ConfiguredProxyResolutionService::GetLoadStateIfAvailable(
 }
 
 ProxyResolver* ConfiguredProxyResolutionService::GetProxyResolver() const {
+  if (ShouldUseSystemProxyResolver(config_->value())) {
+    return system_proxy_resolver_.get();
+  }
   return resolver_.get();
 }
 
@@ -1551,8 +1636,52 @@ bool ConfiguredProxyResolutionService::IsDynamicRoutesReady() const {
          !config_->value().dynamic_routing_config().is_update_in_progress;
 }
 
+void ConfiguredProxyResolutionService::MaybeBeginDynamicRoutingPause() {
+  CHECK(IsPacReady());
+  CHECK(!IsDynamicRoutesReady());
+  if (dynamic_routing_pause_start_time_.has_value()) {
+    return;
+  }
+  ++dynamic_routing_pause_episode_id_;
+  dynamic_routing_pause_start_time_ = TimeTicks::Now();
+  paused_requests_in_episode_ = 0;
+}
+
+void ConfiguredProxyResolutionService::MaybeEndDynamicRoutingPause() {
+  if (!dynamic_routing_pause_start_time_.has_value()) {
+    return;
+  }
+  const base::TimeDelta duration =
+      TimeTicks::Now() - *dynamic_routing_pause_start_time_;
+  dynamic_routing_pause_start_time_.reset();
+  const size_t paused_requests = std::exchange(paused_requests_in_episode_, 0);
+  base::UmaHistogramMediumTimes(
+      "Net.ProxyResolution.DynamicRoutingPause.Duration", duration);
+  base::UmaHistogramCounts1000(
+      "Net.ProxyResolution.DynamicRoutingPause.PausedRequestCount",
+      paused_requests);
+}
+
+void ConfiguredProxyResolutionService::OnRequestPausedForDynamicRouting(
+    ConfiguredProxyResolutionRequest* req) {
+  CHECK(dynamic_routing_pause_start_time_.has_value());
+  if (req->last_counted_dynamic_pause_episode_id() ==
+      dynamic_routing_pause_episode_id_) {
+    return;
+  }
+  req->set_last_counted_dynamic_pause_episode_id(
+      dynamic_routing_pause_episode_id_);
+  ++paused_requests_in_episode_;
+}
+
 base::DictValue ConfiguredProxyResolutionService::GetProxyNetLogValues() {
   base::DictValue net_info_dict;
+  if (system_proxy_resolver_) {
+    net_info_dict.Set("baseline_proxy_resolver",
+                      config_ && ShouldUseSystemProxyResolver(config_->value())
+                          ? "system"
+                          : "configured");
+  }
 
   // Log Proxy Settings.
   {
@@ -1629,32 +1758,61 @@ void ConfiguredProxyResolutionService::OnProxyConfigChanged(
   // Set the new configuration as the most recently fetched one.
   fetched_config_ = effective_config;
 
-  // If this update is PvD-only and a configuration is active, update config_
-  // in-place without resetting PAC deciders or restarting PAC file fetching.
-  if (is_dynamic_routing_only_update && config_) {
-    ProxyConfig new_config = config_->value();
-    new_config.set_dynamic_routing_config(
-        effective_config.value().dynamic_routing_config());
-    config_ =
-        ProxyConfigWithAnnotation(new_config, config_->traffic_annotation());
-    if (IsReady()) {
-      auto pending_requests_copy = pending_requests_;
-      for (ConfiguredProxyResolutionRequest* req : pending_requests_copy) {
-        if (!ContainsPendingRequest(req)) {
-          continue;
-        }
-        if (!req->is_started()) {
-          req->net_log()->EndEvent(
-              NetLogEventType::
-                  PROXY_RESOLUTION_SERVICE_WAITING_FOR_DYNAMIC_PROXY_CONFIGS);
-        }
-        req->StartAndCompleteCheckingForSynchronous();
-      }
-    }
+  if (!is_dynamic_routing_only_update) {
+    InitializeUsingLastFetchedConfig();
     return;
   }
 
-  InitializeUsingLastFetchedConfig();
+  // For PvD-only updates, update in-place without resetting PAC deciders or
+  // restarting service-level PAC script fetching (`init_proxy_resolver_`). If
+  // PAC initialization is still in flight, `OnInitProxyResolverComplete()` will
+  // apply `fetched_config_->dynamic_routing_config()` once PAC is ready.
+  if (!IsPacReady()) {
+    return;
+  }
+
+  CHECK(config_);
+  ProxyConfig new_config = config_->value();
+  new_config.set_dynamic_routing_config(
+      effective_config.value().dynamic_routing_config());
+  config_ =
+      ProxyConfigWithAnnotation(new_config, config_->traffic_annotation());
+
+  if (!IsReady()) {
+    MaybeBeginDynamicRoutingPause();
+  }
+
+  // Cancel any in-flight per-request PAC or system proxy resolutions so they
+  // re-evaluate the updated higher-priority dynamic routing rules once ready,
+  // while leaving any in-flight `ProxyOverrideRules` (POR) DNS probes running.
+  for (ConfiguredProxyResolutionRequest* req : pending_requests_) {
+    req->CancelResolveJob();
+    if (!IsReady() && !req->is_started()) {
+      req->BeginWaitEvent(
+          NetLogEventType::
+              PROXY_RESOLUTION_SERVICE_WAITING_FOR_DYNAMIC_PROXY_CONFIGS);
+    }
+  }
+
+  if (!IsReady()) {
+    return;
+  }
+
+  MaybeEndDynamicRoutingPause();
+
+  base::WeakPtr<ConfiguredProxyResolutionService> weak_this =
+      weak_ptr_factory_.GetWeakPtr();
+  auto pending_requests_copy = pending_requests_;
+  for (ConfiguredProxyResolutionRequest* req : pending_requests_copy) {
+    if (!ContainsPendingRequest(req) || req->is_started()) {
+      continue;
+    }
+    req->EndWaitEvent();
+    req->ResumeOrCompleteSynchronously();
+    if (!weak_this || !IsReady()) {
+      return;  // Synchronous callback deleted `this` or reset readiness.
+    }
+  }
 }
 
 bool ConfiguredProxyResolutionService::ApplyPacBypassRules(const GURL& url,
@@ -1669,13 +1827,47 @@ bool ConfiguredProxyResolutionService::ApplyPacBypassRules(const GURL& url,
   return false;
 }
 
+bool ConfiguredProxyResolutionService::ShouldUseSystemProxyResolver(
+    const ProxyConfig& config) const {
+  return system_proxy_resolver_ && config.from_system();
+}
+
+bool ConfiguredProxyResolutionService::ApplySystemImplicitBypassRules(
+    const GURL& url,
+    ProxyInfo* results) const {
+  CHECK(config_);
+  if (!ProxyHostMatchingRules::MatchesImplicitRules(url)) {
+    return false;
+  }
+
+  const ProxyConfig& config = config_->value();
+  // Always enforce implicit bypass for PAC/WPAD (even if manual bypass_rules
+  // contains "<-loopback>"). For static manual proxies, honor explicit
+  // "<-loopback>" exclusions.
+  if (!config.HasAutomaticSettings() && !config.proxy_rules().empty() &&
+      !config.proxy_rules().bypass_rules.Matches(
+          url, config.proxy_rules().reverse_bypass)) {
+    return false;
+  }
+
+  if (config.HasAutomaticSettings() || !config.proxy_rules().empty()) {
+    results->UseDirectWithBypassedProxy();
+  } else {
+    results->UseDirect();
+  }
+  results->set_traffic_annotation(
+      MutableNetworkTrafficAnnotationTag(config_->traffic_annotation()));
+  return true;
+}
+
 void ConfiguredProxyResolutionService::InitializeUsingLastFetchedConfig() {
   ResetProxyConfig(false, ShouldResetPacRetryStateForNextReset());
 
   DCHECK(fetched_config_);
-  if (!fetched_config_->value().HasAutomaticSettings()) {
+  if (ShouldUseSystemProxyResolver(fetched_config_->value()) ||
+      !fetched_config_->value().HasAutomaticSettings()) {
     config_ = fetched_config_;
-    SetReady();
+    SetPacReadyAndResumePendingRequests();
     return;
   }
 
@@ -1695,8 +1887,11 @@ void ConfiguredProxyResolutionService::InitializeUsingLastFetchedConfig() {
           &ConfiguredProxyResolutionService::OnInitProxyResolverComplete,
           base::Unretained(this)));
 
-  if (rv != ERR_IO_PENDING)
+  if (rv != ERR_IO_PENDING) {
     OnInitProxyResolverComplete(rv);
+  } else {
+    MaybeEndDynamicRoutingPause();
+  }
 }
 
 void ConfiguredProxyResolutionService::InitializeUsingDecidedConfig(
@@ -1718,8 +1913,11 @@ void ConfiguredProxyResolutionService::InitializeUsingDecidedConfig(
           &ConfiguredProxyResolutionService::OnInitProxyResolverComplete,
           base::Unretained(this)));
 
-  if (rv != ERR_IO_PENDING)
+  if (rv != ERR_IO_PENDING) {
     OnInitProxyResolverComplete(rv);
+  } else {
+    MaybeEndDynamicRoutingPause();
+  }
 }
 
 std::optional<ResolveHostResult>

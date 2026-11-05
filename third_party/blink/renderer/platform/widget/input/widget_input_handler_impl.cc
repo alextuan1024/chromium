@@ -60,7 +60,7 @@ WidgetInputHandlerImpl::WidgetInputHandlerImpl(
       frame_widget_input_handler_(std::move(frame_widget_input_handler)) {
   // NOTE: DirectReceiver must be bound on an IO thread, so input handlers which
   // live on the main thread (e.g. for popups) cannot use direct IPC for now.
-  if (base::CurrentIOThread::IsSet()) {
+  if (base::CurrentIOThread::IsSet() && mojo::IsDirectReceiverSupported()) {
     receiver_.emplace<DirectReceiver>(mojo::DirectReceiverKey{}, this);
   } else {
     receiver_.emplace<Receiver>(this);
@@ -116,9 +116,10 @@ static void ImeSetCompositionOnMainThread(
     mojom::blink::ImeState ime_state,
     DOMNodeIdType target_dom_node_id,
     WidgetInputHandlerImpl::ImeSetCompositionCallback callback) {
-  widget->ImeSetComposition(text, ime_text_spans, range, start, end, ime_state,
-                            target_dom_node_id);
-  callback_task_runner->PostTask(FROM_HERE, std::move(callback));
+  gfx::Range composition_range = widget->ImeSetComposition(
+      text, ime_text_spans, range, start, end, ime_state, target_dom_node_id);
+  callback_task_runner->PostTask(
+      FROM_HERE, base::BindOnce(std::move(callback), composition_range));
 }
 
 void WidgetInputHandlerImpl::ImeSetComposition(
@@ -202,11 +203,17 @@ void WidgetInputHandlerImpl::DispatchEvent(
         original_event_for_gesture,
     DispatchEventCallback callback) {
   TRACE_EVENT("input,input.scrolling", "WidgetInputHandlerImpl::DispatchEvent");
+  scoped_refptr<WidgetInputHandlerManager> manager = input_handler_manager_;
   if (original_event_for_gesture.has_value()) {
-    input_handler_manager_->DispatchEvent(
-        std::move(original_event_for_gesture.value()), DispatchEventCallback());
+    base::WeakPtr<WidgetInputHandlerImpl> weak_this =
+        weak_ptr_factory_.GetWeakPtr();
+    manager->DispatchEvent(std::move(original_event_for_gesture.value()),
+                           DispatchEventCallback());
+    if (!weak_this) {
+      return;
+    }
   }
-  input_handler_manager_->DispatchEvent(std::move(event), std::move(callback));
+  manager->DispatchEvent(std::move(event), std::move(callback));
 }
 
 void WidgetInputHandlerImpl::DispatchNonBlockingEvent(

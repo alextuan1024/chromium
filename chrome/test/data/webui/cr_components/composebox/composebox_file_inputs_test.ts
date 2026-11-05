@@ -2,9 +2,10 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import 'chrome://contextual-tasks/strings.m.js';
+import 'chrome://webui-test/strings.m.js';
+import 'chrome://resources/cr_components/composebox/composebox_file_inputs.js';
 
-import {ComposeboxFileInputsElement} from 'chrome://resources/cr_components/composebox/composebox_file_inputs.js';
+import type {ComposeboxFileInputsElement} from 'chrome://resources/cr_components/composebox/composebox_file_inputs.js';
 import {assertEquals, assertTrue} from 'chrome://webui-test/chai_assert.js';
 import {eventToPromise} from 'chrome://webui-test/test_util.js';
 
@@ -14,23 +15,29 @@ suite('ComposeboxFileInputsTest', () => {
 
   setup(() => {
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
-    fileInputsElement = new ComposeboxFileInputsElement();
+    fileInputsElement = document.createElement('cr-composebox-file-inputs');
     fileUploadSlot = document.createElement('button');
     fileInputsElement.appendChild(fileUploadSlot);
     document.body.appendChild(fileInputsElement);
   });
 
   test('open image event clicks image input', async () => {
-    const imageUploadClickEventPromise =
-        eventToPromise('click', fileInputsElement.$.imageInput);
+    const imageInput =
+        fileInputsElement.shadowRoot.querySelector<HTMLInputElement>(
+            '#imageInput')!;
+    imageInput.addEventListener('click', e => e.preventDefault(), {once: true});
+    const imageUploadClickEventPromise = eventToPromise('click', imageInput);
     fileUploadSlot.dispatchEvent(
         new CustomEvent('open-image-upload', {bubbles: true, composed: true}));
     await imageUploadClickEventPromise;
   });
 
   test('open file event clicks file input', async () => {
-    const imageFileClickEventPromise =
-        eventToPromise('click', fileInputsElement.$.fileInput);
+    const fileInput =
+        fileInputsElement.shadowRoot.querySelector<HTMLInputElement>(
+            '#fileInput')!;
+    fileInput.addEventListener('click', e => e.preventDefault(), {once: true});
+    const imageFileClickEventPromise = eventToPromise('click', fileInput);
     fileUploadSlot.dispatchEvent(
         new CustomEvent('open-file-upload', {bubbles: true, composed: true}));
     await imageFileClickEventPromise;
@@ -48,18 +55,21 @@ suite('ComposeboxFileInputsTest', () => {
     const whenFileChange = eventToPromise<CustomEvent<{files: FileList}>>(
         'file-change', fileInputsElement);
     const mockFileChange = new Event('change', {bubbles: true});
+    const fileInput =
+        fileInputsElement.shadowRoot.querySelector<HTMLInputElement>(
+            '#fileInput')!;
     Object.defineProperty(mockFileChange, 'target', {
       writable: false,
-      value: fileInputsElement.$.fileInput,
+      value: fileInput,
     });
-    fileInputsElement.$.fileInput.files = dataTransfer.files;
-    fileInputsElement.$.fileInput.dispatchEvent(mockFileChange);
+    fileInput.files = dataTransfer.files;
+    fileInput.dispatchEvent(mockFileChange);
 
     // Assert
     const event = await whenFileChange;
     assertTrue(!!event);
     assertEquals(event.detail.files, dataTransfer.files);
-    assertEquals(fileInputsElement.$.fileInput.value, '');
+    assertEquals(fileInput.value, '');
   });
 
   test('picker methods are no-ops when file inputs are disabled', async () => {

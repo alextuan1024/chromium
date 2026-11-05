@@ -6,6 +6,7 @@
 
 #include <AppKit/AppKit.h>
 #include <Carbon/Carbon.h>  // for <HIToolbox/Events.h>
+#include <unistd.h>
 
 #include <algorithm>
 #include <limits>
@@ -16,6 +17,7 @@
 #import "base/apple/foundation_util.h"
 #include "base/apple/owned_objc.h"
 #include "base/debug/crash_logging.h"
+#include "base/functional/bind.h"
 #import "base/mac/mac_util.h"
 #include "base/memory/raw_ptr.h"
 #include "base/numerics/safe_conversions.h"
@@ -23,6 +25,7 @@
 #include "base/strings/sys_string_conversions.h"
 #include "base/trace_event/trace_event.h"
 #include "components/input/web_input_event_builders_mac.h"
+#import "components/remote_cocoa/app_shim/bridged_content_view.h"
 #include "components/remote_cocoa/app_shim/immersive_mode_controller_cocoa.h"
 #include "components/remote_cocoa/app_shim/ns_view_ids.h"
 #import "content/browser/cocoa/system_hotkey_helper_mac.h"
@@ -216,6 +219,9 @@ void ExtractUnderlines(NSAttributedString* string,
 - (void)windowDidResignKey:(NSNotification*)notification;
 - (void)sendViewBoundsInWindowToHost;
 - (void)requestTextSubstitutions;
+- (void)didGetRect:(const std::optional<gfx::Rect>&)rect
+    forTextCheckingResult:(NSTextCheckingResult*)result;
+- (BOOL)isPendingCorrectionTextUnchanged;
 - (void)requestTextSuggestions;
 - (void)sendWindowFrameInScreenToHost;
 - (bool)hostIsDisconnected;
@@ -406,6 +412,11 @@ gfx::PointF GetSanitizedFlippedPoint(NSPoint point, CGFloat height) {
   NSInteger _textSuggestionsSequenceNumber;
   BOOL _shouldRequestTextSubstitutions;
   BOOL _substitutionWasApplied;
+  // The text replacement candidate whose correction indicator is waiting for
+  // the bounds of the text it replaces (see -requestTextSubstitutions).
+  NSTextCheckingResult* __strong _pendingCorrectionResult;
+  NSUInteger _pendingCorrectionChangeNumber;
+  std::u16string _pendingCorrectionText;
   bool _sonomaAccessibilityRefinementsAreActive;
   std::unique_ptr<content::ScopedAccessibilityMode> _basic_accessibility_mode;
 }
@@ -419,6 +430,10 @@ gfx::PointF GetSanitizedFlippedPoint(NSPoint point, CGFloat height) {
 static NSWindow* __weak _deferredResignKeyWindow;
 
 + (void)initialize {
+  if (self != [RenderWidgetHostViewCocoa class]) {
+    return;
+  }
+
   RenderWidgetHostViewMacEditCommandHelper::AddEditingSelectorsToClass(self);
 }
 
@@ -509,10 +524,10 @@ static NSWindow* __weak _deferredResignKeyWindow;
   for (NSTextCheckingResult* result in textCheckingResults) {
     NSTextCheckingResult* adjustedResult =
         [result resultByAdjustingRangesWithOffset:_availableTextOffset];
-    if (!NSLocationInRange(cursorLocation,
-                           NSMakeRange(adjustedResult.range.location,
-                                       adjustedResult.range.length + 1)))
+    if (cursorLocation != NSMaxRange(adjustedResult.range)) {
       continue;
+    }
+
     constexpr NSTextCheckingType textCheckingTypesToReplaceImmediately =
         NSTextCheckingTypeQuote | NSTextCheckingTypeDash;
     if (adjustedResult.resultType & textCheckingTypesToReplaceImmediately) {
@@ -522,30 +537,73 @@ static NSWindow* __weak _deferredResignKeyWindow;
     }
     candidateResult = adjustedResult;
   }
-  if (!candidateResult)
+
+  if (!candidateResult) {
     return;
+  }
 
-  NSRect textRectInScreenCoordinates =
-      [self firstRectForCharacterRange:candidateResult.range
-                           actualRange:nullptr];
-  NSRect textRectInWindowCoordinates =
-      [self.window convertRectFromScreen:textRectInScreenCoordinates];
-  NSRect textRectInViewCoordinates =
-      [self convertRect:textRectInWindowCoordinates fromView:nil];
+  const size_t candidateStart =
+      candidateResult.range.location - _availableTextOffset;
+  _pendingCorrectionResult = candidateResult;
+  _pendingCorrectionChangeNumber = _availableTextChangeCounter;
+  _pendingCorrectionText =
+      _availableText.substr(candidateStart, candidateResult.range.length);
+  RenderWidgetHostViewCocoa* __weak weakSelf = self;
+  _host->GetFirstRectForRange(
+      gfx::Range::FromPossiblyInvalidNSRange(candidateResult.range),
+      base::BindOnce(^(const std::optional<gfx::Rect>& rect) {
+        [weakSelf didGetRect:rect forTextCheckingResult:candidateResult];
+      }));
+}
 
-  NSUInteger capturedChangeCounter = _availableTextChangeCounter;
+- (void)didGetRect:(const std::optional<gfx::Rect>&)rect
+    forTextCheckingResult:(NSTextCheckingResult*)result {
+  // Ignore the bounds if the candidate is no longer pending, e.g. because the
+  // text changed or the composition was cancelled before they arrived.
+  if (_pendingCorrectionResult != result) {
+    return;
+  }
 
+  // Check IsZero instead of IsEmpty (the caret's position is a zero-width rect)
+  // to ensure we only drop rects with no size at all.
+  if (!rect || rect->size().IsZero()) {
+    _pendingCorrectionResult = nil;
+    return;
+  }
+
+  // The rect is in WebKit coordinates (upper left origin), so flip the
+  // coordinate system.
+  NSRect textRectInViewCoordinates = rect->ToCGRect();
+  textRectInViewCoordinates.origin.y =
+      NSHeight([self frame]) - NSMaxY(textRectInViewCoordinates);
+
+  NSUInteger changeNumber = _pendingCorrectionChangeNumber;
   [self.spellChecker
       showCorrectionIndicatorOfType:NSCorrectionIndicatorTypeDefault
-                      primaryString:candidateResult.replacementString
-                 alternativeStrings:candidateResult.alternativeStrings
+                      primaryString:result.replacementString
+                 alternativeStrings:result.alternativeStrings
                     forStringInRect:textRectInViewCoordinates
                                view:self
                   completionHandler:^(NSString* acceptedString) {
-                    [self didAcceptReplacementString:acceptedString
-                               forTextCheckingResult:candidateResult
-                                    withChangeNumber:capturedChangeCounter];
+                    if (self->_pendingCorrectionResult == result) {
+                      self->_pendingCorrectionResult = nil;
+                      [self didAcceptReplacementString:acceptedString
+                                 forTextCheckingResult:result
+                                      withChangeNumber:changeNumber];
+                    }
                   }];
+}
+
+// Returns whether the text that the pending correction replaces is unchanged.
+- (BOOL)isPendingCorrectionTextUnchanged {
+  // `_availableText` starts at `_availableTextOffset` within the field.
+  const NSRange range = _pendingCorrectionResult.range;
+  if (range.location < _availableTextOffset ||
+      NSMaxRange(range) > _availableTextOffset + _availableText.length()) {
+    return NO;
+  }
+  return _availableText.compare(range.location - _availableTextOffset,
+                                range.length, _pendingCorrectionText) == 0;
 }
 
 - (void)didAcceptReplacementString:(NSString*)acceptedString
@@ -734,7 +792,18 @@ static NSWindow* __weak _deferredResignKeyWindow;
   _availableTextChangeCounter++;
   _textSelectionRange = range;
   _substitutionWasApplied = NO;
+  // Dismissing the indicator makes NSSpellChecker accept the correction, so
+  // decide here instead: accept it only if its text is unchanged.
+  NSTextCheckingResult* pendingResult = _pendingCorrectionResult;
+  const BOOL isSuggestionTextUnchanged =
+      pendingResult && [self isPendingCorrectionTextUnchanged];
+  _pendingCorrectionResult = nil;
   [self.spellChecker dismissCorrectionIndicatorForView:self];
+  if (isSuggestionTextUnchanged) {
+    [self didAcceptReplacementString:pendingResult.replacementString
+               forTextCheckingResult:pendingResult
+                    withChangeNumber:_pendingCorrectionChangeNumber];
+  }
   if (_shouldRequestTextSubstitutions && !_substitutionWasApplied &&
       _textSelectionRange.is_empty()) {
     _shouldRequestTextSubstitutions = NO;
@@ -855,6 +924,18 @@ static NSWindow* __weak _deferredResignKeyWindow;
 }
 
 - (BOOL)acceptsFirstMouse:(NSEvent*)theEvent {
+  // A click that another process posts straight to this process does not
+  // activate the app, unlike one the window server routes here, so treating it
+  // as an activation click would only drop it.
+  CGEventRef cgEvent = theEvent.CGEvent;
+  if (!NSApp.active && cgEvent) {
+    int64_t sourcePid =
+        CGEventGetIntegerValueField(cgEvent, kCGEventSourceUnixProcessID);
+    if (sourcePid != 0 && sourcePid != getpid()) {
+      return YES;
+    }
+  }
+
   // Enable "click-through" if mouse clicks are accepted in inactive windows.
   return
       [self acceptsMouseEventsOption] > AcceptMouseEvents::kWhenInActiveWindow;
@@ -1083,6 +1164,17 @@ static NSWindow* __weak _deferredResignKeyWindow;
     [self.window makeFirstResponder:self];
   }
 
+  // In fullscreen, AppKit skips -makeFirstResponder: on a click when this view
+  // is already the first responder of its window, even if the key tracking
+  // window's first responder is another view. Key events would then keep
+  // going to that other view, so synchronize the key tracking window here.
+  // See crbug.com/563226016.
+  if (theEvent.type == NSEventTypeLeftMouseDown &&
+      [self.window firstResponder] == self &&
+      [[self keyTrackingWindow] firstResponder] != self) {
+    [self synchronizeFirstResponderWithKeyTrackingWindow:YES];
+  }
+
   if (_responderDelegate &&
       [_responderDelegate respondsToSelector:@selector(handleEvent:)]) {
     BOOL handled = [_responderDelegate handleEvent:theEvent];
@@ -1149,12 +1241,18 @@ static NSWindow* __weak _deferredResignKeyWindow;
 
   if ([self shouldIgnoreMouseEvent:theEvent]) {
     // If this is the first such event, send a mouse exit to the host view.
-    if (!_mouseEventWasIgnored && !self.hidden) {
+    // Mouse exited events are also delivered for hidden views, so that hover
+    // state gets cleared when a view under the cursor is hidden (see the
+    // synthesized exit in -[BaseView viewDidHide]).
+    if (!_mouseEventWasIgnored &&
+        (!self.hidden || type == NSEventTypeMouseExited)) {
       WebMouseEvent exitEvent =
           WebMouseEventBuilder::Build(theEvent, self, _pointerType);
       exitEvent.SetType(WebInputEvent::Type::kMouseLeave);
       exitEvent.button = WebMouseEvent::Button::kNoButton;
-      _hostHelper->ForwardMouseEvent(exitEvent);
+      // Route the leave through the input event router so that it also
+      // reaches an OOPIF under the cursor.
+      _hostHelper->RouteOrProcessMouseEvent(exitEvent);
     }
     _mouseEventWasIgnored = YES;
     [self updateCursor:nil];
@@ -1357,6 +1455,16 @@ static NSWindow* __weak _deferredResignKeyWindow;
   if (![self isKeyTrackingWindowKey] ||
       [[self window] firstResponder] != self) {
     TRACE_EVENT_INSTANT("browser", "NotKeyWindow");
+    return NO;
+  }
+
+  // While a Views menu is active on the window, do not intercept key
+  // equivalents for the web page so the menu or browser command dispatcher can
+  // handle them.
+  if (BridgedContentView* contentView =
+          base::apple::ObjCCast<BridgedContentView>(
+              [[self window] contentView]);
+      contentView && [contentView hasActiveMenuController]) {
     return NO;
   }
 
@@ -2596,34 +2704,49 @@ extern NSString* NSTextInputReplacementRangeAttributeName;
 // Each RenderWidgetHostViewCocoa has its own input context, but we return
 // nil when the caret is in non-editable content or password box to avoid
 // making input methods do their work.
-//
-// We disable input method inside password field as it is normal for macOS
-// password input fields to not allow dead keys or non ASCII input methods.
-// There is also a privacy risk if the composition candidate window shows your
-// password when the user is "composing" inside a password field. See
-// https://crbug.com/40759416 for more info.
-//
-// If AutoFill support has been disabled and we're currently showing a native
-// context menu, then we return nil in order to ensure that macOS does NOT add
-// any "AutoFill" items (contact, passwords, etc.) to the menu. This logic
-// mirrors `ui/views/cocoa/text_input_host.mm`.
 - (NSTextInputContext*)inputContext {
+  // MenuHost windows do not become the key window, so when a Views menu opens
+  // over a focused web page, `RenderWidgetHostViewCocoa` remains the key
+  // window's `firstResponder` (see `-[NativeWidgetMacNSWindow sendEvent:]`).
+  // Delegate `-inputContext` to the window's `BridgedContentView` while a
+  // Views menu is active so `+[NSTextInputContext currentInputContext]` routes
+  // key interpretation and IME events to any active menu text input client
+  // rather than the web page.
+  if (BridgedContentView* contentView =
+          base::apple::ObjCCast<BridgedContentView>(
+              [[self window] contentView]);
+      contentView && [contentView hasActiveMenuController]) {
+    return [contentView inputContext];
+  }
+
   if (_textInputType == ui::TEXT_INPUT_TYPE_NONE ||
       _textInputType == ui::TEXT_INPUT_TYPE_PASSWORD) {
     return nil;
   }
 
-  if (_textInputFlags & ui::TEXT_INPUT_FLAG_HAS_BEEN_PASSWORD ||
-      _textInputFlags & ui::TEXT_INPUT_FLAG_HAS_BEEN_CUSTOM_PASSWORD) {
+  // Disable input method inside password field as it is normal for macOS
+  // password input fields to not allow dead keys or non ASCII input methods.
+  // There is also a privacy risk if the composition candidate window shows your
+  // password when the user is "composing" inside a password field. See
+  // https://crbug.com/40759416 for more info.
+  //
+  // Do not disable input methods for "custom password" fields
+  // (TEXT_INPUT_FLAG_HAS_BEEN_CUSTOM_PASSWORD) as the heuristic is weak and has
+  // too many false positives; https://crbug.com/567321058.
+  if (_textInputFlags & ui::TEXT_INPUT_FLAG_HAS_BEEN_PASSWORD) {
     return nil;
   }
 
+  // If AutoFill support is disabled and a native context menu is being shown,
+  // then return nil in order to ensure that macOS does NOT add any "AutoFill"
+  // items (contact, passwords, etc.) to the menu. This logic mirrors
+  // `ui/views/cocoa/text_input_host.mm`.
   if (!_supportsAutoFill &&
       ui::GetActiveCocoaMenuAnchorLocation().has_value()) {
     return nil;
   }
 
-  return [super inputContext];
+  return super.inputContext;
 }
 
 - (BOOL)hasMarkedText {
@@ -2760,6 +2883,17 @@ extern NSString* NSTextInputReplacementRangeAttributeName;
       RenderWidgetHostViewMacEditCommandHelper::CommandNameForSelector(
           selector)));
 
+  // The NSStandardKeyBindingResponding protocol (to which this class conforms)
+  // has a family of character-inserting selectors whose names begin with
+  // "insert". These are the only selectors that insert characters, and we only
+  // wish to accept a pending correcting following the insertion of a character.
+  const bool isInsertCommand =
+      base::StartsWith(command, "insert", base::CompareCase::INSENSITIVE_ASCII);
+  if (_pendingCorrectionResult && !isInsertCommand) {
+    _pendingCorrectionResult = nil;
+    [self.spellChecker dismissCorrectionIndicatorForView:self];
+  }
+
   // If this method is called when handling a key down event, then we need to
   // handle the command in the key event handler. Otherwise we can just handle
   // it here.
@@ -2797,9 +2931,9 @@ extern NSString* NSTextInputReplacementRangeAttributeName;
     // We ignore commands that insert characters, because this was causing
     // strange behavior (e.g. tab always inserted a tab rather than moving to
     // the next field on the page).
-    if (!base::StartsWith(command, "insert",
-                          base::CompareCase::INSENSITIVE_ASCII))
+    if (!isInsertCommand) {
       _editCommands.push_back(blink::mojom::EditCommand::New(command, ""));
+    }
   } else {
     _host->ExecuteEditCommand(command);
   }
@@ -2855,7 +2989,14 @@ extern NSString* NSTextInputReplacementRangeAttributeName;
     // at the end of insertion point.
     // This is required for macOS 10.12+, otherwise the predictive completions
     // of IMEs won't work. See crbug.com/710101.
-    int insertEndpoint = _markedRange.location + [imText length];
+    // The text replaces the marked range if there is one, otherwise the
+    // current selection. We cannot use _markedRange unconditionally, since it
+    // is set to {NSNotFound, 0} after cancelling a composition.
+    NSUInteger insertStart = _markedRange.location != NSNotFound
+                                 ? _markedRange.location
+                                 : _textSelectionRange.start();
+    uint32_t insertEndpoint =
+        base::saturated_cast<uint32_t>(insertStart + [imText length]);
     _textSelectionRange = gfx::Range(insertEndpoint, insertEndpoint);
     // IMEs read |_availableText| preceding the insertion point as the context
     // for predictive completion. Unfortunately by the moment IME reads the
@@ -2869,10 +3010,11 @@ extern NSString* NSTextInputReplacementRangeAttributeName;
     // the sync |interpretKeyEvents:| with the async
     // |handleEventByInputMethod:|, which is an undocumented API used in
     // Webkit2.
-    if (_markedRange.location >= _availableTextOffset &&
-        _markedRange.location <= _availableTextOffset + _availableText.length())
-      _availableText.insert(_markedRange.location - _availableTextOffset,
+    if (insertStart >= _availableTextOffset &&
+        insertStart <= _availableTextOffset + _availableText.length()) {
+      _availableText.insert(insertStart - _availableTextOffset,
                             base::SysNSStringToUTF16(imText));
+    }
   }
 
   // Inserting text will delete all marked text automatically.
@@ -2884,6 +3026,7 @@ extern NSString* NSTextInputReplacementRangeAttributeName;
 }
 
 - (void)viewDidMoveToWindow {
+  [super viewDidMoveToWindow];
   // Update the window's frame, the view's bounds, focus, and the display info,
   // as they have not been updated while unattached to a window.
   [self sendWindowFrameInScreenToHost];
@@ -2964,6 +3107,9 @@ extern NSString* NSTextInputReplacementRangeAttributeName;
 
 - (void)cancelComposition {
   [NSSpellChecker.sharedSpellChecker dismissCorrectionIndicatorForView:self];
+  // Don't show an indicator for a pending correction once the input session is
+  // cancelled, e.g. because focus moved.
+  _pendingCorrectionResult = nil;
 
   if (!_hasMarkedText)
     return;
@@ -3005,21 +3151,24 @@ extern NSString* NSTextInputReplacementRangeAttributeName;
   return [super validRequestorForSendType:sendType returnType:returnType];
 }
 
+- (BOOL)canChangeCurrentCursor {
+  if (![self isKeyTrackingWindowKey] || _cursorHidden || _showingContextMenu) {
+    return NO;
+  }
+  return YES;
+}
+
 - (BOOL)shouldChangeCurrentCursor {
   // |updateCursor:| might be called outside the view bounds. Check the mouse
   // location before setting the cursor. Also, do not set cursor if it's not a
   // key window.
   NSPoint location = [self.window convertPointFromScreen:NSEvent.mouseLocation];
   location = [self convertPoint:location fromView:nil];
-  if (![self mouse:location inRect:[self bounds]] ||
-      ![self isKeyTrackingWindowKey]) {
+  if (![self mouse:location inRect:[self bounds]]) {
     return NO;
   }
 
-  if (_cursorHidden || _showingContextMenu)
-    return NO;
-
-  return YES;
+  return [self canChangeCurrentCursor];
 }
 
 - (void)updateCursor:(NSCursor*)cursor {

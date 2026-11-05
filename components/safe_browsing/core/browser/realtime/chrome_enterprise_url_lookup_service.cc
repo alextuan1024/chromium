@@ -4,11 +4,17 @@
 
 #include "components/safe_browsing/core/browser/realtime/chrome_enterprise_url_lookup_service.h"
 
+#include <optional>
+#include <string_view>
+#include <utility>
+
 #include "base/command_line.h"
+#include "base/containers/fixed_flat_set.h"
 #include "base/functional/callback.h"
 #include "base/task/sequenced_task_runner.h"
 #include "build/build_config.h"
 #include "components/enterprise/common/proto/connectors.pb.h"
+#include "components/enterprise/common/proto/synced/browser_events.pb.h"
 #include "components/enterprise/connectors/core/common.h"
 #include "components/enterprise/connectors/core/connectors_service_base.h"
 #include "components/policy/core/common/cloud/dm_token.h"
@@ -26,6 +32,7 @@
 #include "components/safe_browsing/core/common/proto/realtimeapi.pb.h"
 #include "components/safe_browsing/core/common/safebrowsing_switches.h"
 #include "components/safe_browsing/core/common/utils.h"
+#include "components/sessions/core/session_id.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "net/traffic_annotation/network_traffic_annotation.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
@@ -38,6 +45,15 @@ namespace {
 // From chrome/common/webui_url_constants.h
 inline constexpr char kChromeUINewTabPageURL[] = "chrome://new-tab-page/";
 inline constexpr char kChromeUINewTabURL[] = "chrome://newtab/";
+inline constexpr char kChromeNativeNewTabURL[] = "chrome-native://newtab/";
+inline constexpr char kChromeUIOmniboxPopupAimURL[] =
+    "chrome://omnibox-popup.top-chrome/omnibox_popup_aim.html";
+inline constexpr char kChromeUIOmniboxPopupURL[] =
+    "chrome://omnibox-popup.top-chrome/";
+
+// Search warmup page loaded in the background by the omnibox.
+inline constexpr char kWarmupURL[] =
+    "https://www.google.com/search/warmup.html";
 
 // From content/public/common/url_constants.h
 inline constexpr char kChromeUIScheme[] = "chrome";
@@ -89,7 +105,8 @@ ChromeEnterpriseRealTimeUrlLookupService::
         bool is_command_line_switch_supported,
         IntelligentScanDelegate* intelligent_scan_delegate,
         base::RepeatingCallback<network::mojom::NetworkContext*()>
-            network_context_getter)
+            network_context_getter,
+        GetEventInitiatorCallback get_event_initiator_callback)
     : RealTimeUrlLookupServiceBase(url_loader_factory,
                                    cache_manager,
                                    get_user_population_callback,
@@ -110,7 +127,8 @@ ChromeEnterpriseRealTimeUrlLookupService::
       get_content_area_account_email_callback_(
           get_content_area_account_email_callback),
       is_profile_affiliated_callback_(is_profile_affiliated_callback),
-      is_command_line_switch_supported_(is_command_line_switch_supported) {}
+      is_command_line_switch_supported_(is_command_line_switch_supported),
+      get_event_initiator_callback_(std::move(get_event_initiator_callback)) {}
 
 ChromeEnterpriseRealTimeUrlLookupService::
     ~ChromeEnterpriseRealTimeUrlLookupService() = default;
@@ -124,7 +142,9 @@ bool ChromeEnterpriseRealTimeUrlLookupService::CanPerformFullURLLookup() const {
 
 bool ChromeEnterpriseRealTimeUrlLookupService::
     CanPerformFullURLLookupWithToken() const {
-  DCHECK(CanPerformFullURLLookup());
+  if (!CanPerformFullURLLookup()) {
+    return false;
+  }
 
   // Don't allow using the access token if the managed profile doesn't match the
   // managed device and the URL check is set at device level.
@@ -214,6 +234,7 @@ ChromeEnterpriseRealTimeUrlLookupService::GetTrafficAnnotationTag() const {
             "The main frame URL that did not match the local safelist and "
             "the DM token of the device."
           destination: GOOGLE_OWNED_SERVICE
+          api_service_name: "safebrowsingrealtime.googleapis.com"
         }
         policy {
           cookies_allowed: NO
@@ -234,18 +255,50 @@ std::string ChromeEnterpriseRealTimeUrlLookupService::GetMetricSuffix() const {
 
 bool ChromeEnterpriseRealTimeUrlLookupService::
     ShouldOverrideKnownSafeUrlDecision(const GURL& url) const {
-  // No need to check new tab to reduce number of rpc calls
-  bool new_tab = url == kChromeUINewTabPageURL || url == kChromeUINewTabURL;
-  return url.SchemeIs(kChromeUIScheme) && !new_tab;
+  static constexpr auto kSkippedChromeUIUrls =
+      base::MakeFixedFlatSet<std::string_view>({
+          kChromeUINewTabPageURL,
+          kChromeUINewTabURL,
+          kChromeUIOmniboxPopupAimURL,
+          kChromeUIOmniboxPopupURL,
+      });
+
+  // Override safe chrome:// scheme decisions unless one of
+  // kSkippedChromeUIUrls. `GURL::spec()` must not be called on invalid URLs.
+  return url.is_valid() && url.SchemeIs(kChromeUIScheme) &&
+         !kSkippedChromeUIUrls.contains(url.spec());
 }
 
+// LINT.IfChange(CanCheckUrl)
 bool ChromeEnterpriseRealTimeUrlLookupService::CanCheckUrl(const GURL& url) {
-  // Any URL can be checked in the enterprise case since URLs that might return
-  // false when passed to `safe_browsing::CanGetReputationOfUrl` could still
-  // trigger DLP rules. For example, this includes publicly routable IP
-  // addresses.
+  // Any URL not on kSkippedChromeUIUrls or kSkippedUrls can be checked
+  // in the enterprise case since URLs that might return false when passed to
+  // `safe_browsing::CanGetReputationOfUrl` could still trigger DLP rules. For
+  // example, this includes publicly routable IP addresses.
+  if (url.SchemeIs(kChromeUIScheme)) {
+    return ShouldOverrideKnownSafeUrlDecision(url);
+  }
+  if (base::FeatureList::IsEnabled(kEnterpriseRealTimeUrlCheckUrlSkiplist)) {
+#if BUILDFLAG(IS_ANDROID)
+    // TODO(b/568906444): validate kEnterpriseRealTimeUrlCheckUrlSkiplist and
+    // clean up this check
+    if (url.IsAboutBlank()) {
+      return false;
+    }
+#endif  // BUILDFLAG(IS_ANDROID)
+
+    static constexpr auto kSkippedUrls =
+        base::MakeFixedFlatSet<std::string_view>({
+            kChromeNativeNewTabURL,
+            kWarmupURL,
+        });
+
+    // `GURL::spec()` must not be called on invalid URLs.
+    return url.is_valid() && !kSkippedUrls.contains(url.spec());
+  }
   return true;
 }
+// LINT.ThenChange(//chrome/browser/enterprise/data_protection/data_protection_navigation_observer_unittest.cc:CanCheckUrl)
 
 bool ChromeEnterpriseRealTimeUrlLookupService::ShouldIncludeCredentials()
     const {
@@ -293,6 +346,15 @@ std::string
 ChromeEnterpriseRealTimeUrlLookupService::GetContentAreaAccountEmail(
     const GURL& tab_url) const {
   return get_content_area_account_email_callback_.Run(tab_url);
+}
+
+std::optional<chrome::cros::reporting::proto::EventInitiatorInfo>
+ChromeEnterpriseRealTimeUrlLookupService::GetEventInitiator(
+    SessionID tab_id) const {
+  if (!get_event_initiator_callback_ || !tab_id.is_valid()) {
+    return std::nullopt;
+  }
+  return get_event_initiator_callback_.Run(tab_id);
 }
 
 }  // namespace safe_browsing

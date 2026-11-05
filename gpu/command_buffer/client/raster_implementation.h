@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "base/containers/span.h"
+#include "base/feature.h"
 #include "base/memory/raw_ptr.h"
 #include "base/trace_event/memory_dump_provider.h"
 #include "cc/paint/paint_cache.h"
@@ -46,6 +47,8 @@ struct SharedMemoryLimits;
 namespace raster {
 
 class RasterCmdHelper;
+
+RASTER_EXPORT BASE_DECLARE_FEATURE(kDisableErrorHandlingForReadback);
 
 // This class emulates Raster over command buffers. It can be used by a client
 // program so that the program does not need deal with shared memory and command
@@ -140,7 +143,6 @@ class RASTER_EXPORT RasterImplementation : public RasterInterface,
                            GLuint msaa_sample_count,
                            MsaaMode msaa_mode,
                            GLboolean can_use_lcd_text,
-                           GLboolean visible,
                            const gfx::ColorSpace& color_space,
                            float hdr_headroom,
                            const GLbyte* mailbox) override;
@@ -152,7 +154,7 @@ class RASTER_EXPORT RasterImplementation : public RasterInterface,
                       const gfx::Vector2dF& post_translate,
                       const gfx::Vector2dF& post_scale,
                       bool requires_clear,
-                      const ScrollOffsetMap* raster_inducing_scroll_offsets,
+                      const cc::RasterInducingValues* raster_inducing_values,
                       size_t* max_op_size_hint,
                       base::RepeatingCallback<void(SkCanvas*, uint32_t)>
                           custom_raster_callback) override;
@@ -162,32 +164,24 @@ class RASTER_EXPORT RasterImplementation : public RasterInterface,
       GrSurfaceOrigin source_origin,
       const gfx::Size& source_size,
       const gfx::Point& source_starting_point,
-      const SkImageInfo& dst_info,
-      GLuint dst_row_bytes,
-      base::span<uint8_t> out,
+      const SkPixmap& dst_pixmap,
       base::OnceCallback<void(bool)> readback_done) override;
 
   void ReadbackYUVPixelsAsync(
       const gpu::Mailbox& source_mailbox,
       GLenum source_target,
       const gfx::Rect& source_rect,
-      const gfx::Rect& output_rect,
       bool vertically_flip_texture,
-      int y_plane_row_stride_bytes,
-      base::span<uint8_t> y_plane_data,
-      int u_plane_row_stride_bytes,
-      base::span<uint8_t> u_plane_data,
-      int v_plane_row_stride_bytes,
-      base::span<uint8_t> v_plane_data,
+      const SkYUVAPixmaps& dst_pixmaps,
+      sk_sp<SkColorSpace> dst_color_space,
       base::OnceCallback<void()> release_mailbox,
       base::OnceCallback<void(bool)> readback_done) override;
   bool ReadbackImagePixels(const gpu::Mailbox& source_mailbox,
-                           const SkImageInfo& dst_info,
-                           GLuint dst_row_bytes,
+                           const gfx::Size& source_size,
                            int src_x,
                            int src_y,
                            int plane_index,
-                           void* dst_pixels) override;
+                           const SkPixmap& dst_pixmap) override;
 
   // ContextSupport implementation.
   void SetAggressivelyFreeResources(bool aggressively_free_resources) override;
@@ -297,13 +291,14 @@ class RASTER_EXPORT RasterImplementation : public RasterInterface,
   const std::string& GetLogPrefix() const;
 
   bool ReadbackImagePixelsINTERNAL(const gpu::Mailbox& source_mailbox,
+                                   const gfx::Size& source_size,
                                    const SkImageInfo& dst_info,
                                    GLuint dst_row_bytes,
                                    int src_x,
                                    int src_y,
                                    int plane_index,
                                    base::OnceCallback<void(bool)> readback_done,
-                                   void* dst_pixels);
+                                   base::span<uint8_t> dst_pixels);
 
   struct AsyncARGBReadbackRequest;
   void OnAsyncARGBReadbackDone(AsyncARGBReadbackRequest* request);

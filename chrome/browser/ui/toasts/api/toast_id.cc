@@ -123,6 +123,24 @@ std::string_view GetToastName(ToastId toast_id) {
       return "EmailVerificationLoading";
     case ToastId::kScheduledRestartOnIdle:
       return "ScheduledRestartOnIdle";
+    case ToastId::kEmailVerificationError:
+      return "EmailVerificationError";
+    case ToastId::kAutofillAiSuggestionRemoved:
+      return "AutofillAiSuggestionRemoved";
+    case ToastId::kTtcGenericError:
+      return "TtcGenericError";
+    case ToastId::kTtcNoMicrophoneError:
+      return "TtcNoMicrophoneError";
+    case ToastId::kTabGroupFocusExited:
+      return "TabGroupFocusExited";
+    case ToastId::kEnterpriseCopyFailClosed:
+      return "EnterpriseCopyFailClosed";
+    case ToastId::kTtcInactivityTimeout:
+      return "TtcInactivityTimeout";
+    case ToastId::kGlic:
+      return "Glic";
+    case ToastId::kTtcMicrophoneMuted:
+      return "TtcMicrophoneMuted";
   }
 
   NOTREACHED();

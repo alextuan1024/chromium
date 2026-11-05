@@ -31,6 +31,7 @@
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/metrics/tab_footprint_aggregator.h"
 #include "chrome/browser/profiles/profile_manager.h"
+#include "chrome/browser/search/search.h"
 #include "chrome/common/chrome_switches.h"
 #include "chrome/common/url_constants.h"
 #include "chrome/common/webui_url_constants.h"
@@ -46,7 +47,6 @@
 #include "content/public/browser/render_process_host.h"
 #include "content/public/common/child_process_id.h"
 #include "content/public/common/content_switches.h"
-#include "content/public/common/url_constants.h"
 #include "extensions/buildflags/buildflags.h"
 #include "media/mojo/mojom/cdm_service.mojom.h"
 #include "partition_alloc/buildflags.h"
@@ -98,9 +98,7 @@ bool Is1pNtpUrl(const GURL& url) {
   if (!url.is_valid()) {
     return false;
   }
-  if (url.SchemeIs(content::kChromeUIScheme) &&
-      (url.host() == chrome::kChromeUINewTabPageHost ||
-       url.host() == chrome::kChromeUINewTabHost)) {
+  if (search::IsNewTabPageOrigin(url) || search::IsNewTabOrigin(url)) {
     return true;
   }
   if (url.SchemeIs(chrome::kChromeNativeScheme) &&
@@ -354,6 +352,8 @@ const Metric kAllocatorDumpNamesForMetrics[] = {
     {"gpu/transfer_cache", "ServiceTransferCache.AvgImageSize",
      MetricSize::kCustom, "average_size", EmitTo::kSizeInUmaOnly, nullptr,
      ImageSizeMetricRange},
+    {"gpu/viz_buffer_queue", "VizBufferQueue", MetricSize::kLarge, kSize,
+     EmitTo::kSizeInUmaOnly, nullptr},
     // For the Vulkan Memory Allocator, "allocated_size" is the amount of GPU
     // memory used by the allocator except lazily allocated memory; "used_size"
     // is the amount allocated by clients except lazily used memory.
@@ -450,6 +450,13 @@ const Metric kAllocatorDumpNamesForMetrics[] = {
     {"malloc/partitions", "Malloc.BRPQuarantinedCountPerMinute",
      MetricSize::kTiny, "brp_quarantined_count_per_minute",
      EmitTo::kSizeInUmaOnly, nullptr},
+    {"malloc/partitions",
+     "Malloc.MaxBRPRefCount",
+     MetricSize::kCustom,
+     "max_brp_ref_count",
+     EmitTo::kSizeInUmaOnly,
+     nullptr,
+     {1 << 12, 1 << 28}},
 #if PA_BUILDFLAG(USE_PARTITION_ALLOC_AS_MALLOC)
     {"malloc/extreme_lud/large_objects", "Malloc.ExtremeLUD.LargeObjects.Count",
      MetricSize::kTiny, "count", EmitTo::kSizeInUmaOnly, nullptr},
@@ -919,7 +926,7 @@ void EmitProcessUma(HistogramProcessType process_type,
   if (std::string_view(item.uma_name) == "CommandBuffer") {
     uma_name =
         EXPERIMENTAL_UMA_PREFIX "Gpu" VERSION_SUFFIX_NORMAL "CommandBuffer";
-    DCHECK(item.metric_size == MetricSize::kLarge);
+    CHECK(item.metric_size == MetricSize::kLarge, base::NotFatalUntil::M161);
   } else {
     uma_name = base::StrCat(
         {EXPERIMENTAL_UMA_PREFIX, HistogramProcessTypeToString(process_type),
@@ -1904,12 +1911,14 @@ ProcessMemoryMetricsEmitter::GetProcessToPageInfoMap(
       PageInfo& page_info = process_info.page_infos.emplace_back();
       page_info.ukm_source_id = page_node->GetUkmSourceID();
 
+      auto [is_visible, last_visibility_change_time] =
+          page_node->GetVisibilityState();
       page_info.tab_id = tab_id;
       page_info.hosts_main_frame = HostsMainFrame(process_node, page_node);
-      page_info.is_visible = page_node->IsVisible();
+      page_info.is_visible = is_visible;
       page_info.is_1p_ntp = Is1pNtpUrl(page_node->GetMainFrameUrl());
       page_info.time_since_last_visibility_change =
-          now - page_node->GetLastVisibilityChangeTime();
+          now - last_visibility_change_time;
       page_info.time_since_last_navigation =
           page_node->GetTimeSinceLastNavigation();
     }

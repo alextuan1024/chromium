@@ -568,8 +568,7 @@ bool MP4StreamParser::ParseMoov(BoxReader* reader) {
         }
 
         codec = AudioCodec::kIAMF;
-        profile = entry.iacb.profile == 0 ? AudioCodecProfile::kIAMF_SIMPLE
-                                          : AudioCodecProfile::kIAMF_BASE;
+        profile = entry.iacb.profile;
         extra_data = entry.iacb.ia_descriptors;
 
         // The correct values for the channel layout and sample rate can
@@ -841,9 +840,7 @@ bool MP4StreamParser::ParseMoov(BoxReader* reader) {
         video_config.set_color_space_info(entry.dv_info->color_space);
       }
 
-      if (!entry.hdr_metadata.IsEmpty() && entry.hdr_metadata.IsValid()) {
-        video_config.set_hdr_metadata(entry.hdr_metadata);
-      }
+      video_config.set_hdr_metadata(entry.hdr_metadata);
 
       video_config.set_spatial_format(entry.video_spatial_format);
 

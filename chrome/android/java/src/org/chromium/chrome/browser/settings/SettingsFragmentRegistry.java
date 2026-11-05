@@ -4,6 +4,7 @@
 
 package org.chromium.chrome.browser.settings;
 
+import android.content.Context;
 import android.net.Uri;
 import android.os.Bundle;
 import android.util.ArrayMap;
@@ -13,11 +14,16 @@ import androidx.fragment.app.Fragment;
 
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 
+import org.chromium.base.ApplicationStatus;
+import org.chromium.base.ContextUtils;
+import org.chromium.base.DeviceInfo;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.about_settings.AboutChromeSettings;
 import org.chromium.chrome.browser.about_settings.LegalInformationSettings;
 import org.chromium.chrome.browser.appearance.settings.AppearanceSettingsFragment;
+import org.chromium.chrome.browser.appearance.settings.BookmarkBarSettingsFragment;
+import org.chromium.chrome.browser.appearance.settings.TabPositionSettingsFragment;
 import org.chromium.chrome.browser.autofill.settings.AndroidPaymentAppsFragment;
 import org.chromium.chrome.browser.autofill.settings.AutofillAndPasswordsFragment;
 import org.chromium.chrome.browser.autofill.settings.AutofillAndPasswordsFragment.AutofillSettingsReferrer;
@@ -34,12 +40,19 @@ import org.chromium.chrome.browser.autofill.settings.options.AutofillOptionsFrag
 import org.chromium.chrome.browser.autofill.settings.options.AutofillOptionsReferrer;
 import org.chromium.chrome.browser.autofill.settings.personal_context.AutofillPersonalContextFragment;
 import org.chromium.chrome.browser.browsing_data.ClearBrowsingDataFragment;
+import org.chromium.chrome.browser.commerce.PriceNotificationSettingsFragment;
+import org.chromium.chrome.browser.contextualsearch.ContextualSearchSettingsFragment;
 import org.chromium.chrome.browser.download.settings.DownloadSettings;
-import org.chromium.chrome.browser.glic.GlicSettings;
+import org.chromium.chrome.browser.glic.actor_login.GlicActorLoginPermissionsFragment;
+import org.chromium.chrome.browser.glic.settings.GlicNavigationUtils;
+import org.chromium.chrome.browser.glic.settings.GlicSettings;
 import org.chromium.chrome.browser.homepage.settings.HomepageSettings;
 import org.chromium.chrome.browser.image_descriptions.ImageDescriptionsSettings;
+import org.chromium.chrome.browser.language.settings.AlwaysTranslateListFragment;
 import org.chromium.chrome.browser.language.settings.LanguageSettings;
-import org.chromium.chrome.browser.night_mode.NightModeMetrics;
+import org.chromium.chrome.browser.language.settings.NeverTranslateListFragment;
+import org.chromium.chrome.browser.language.settings.SelectLanguageFragment;
+import org.chromium.chrome.browser.multiwindow.MultiWindowUtils;
 import org.chromium.chrome.browser.night_mode.settings.ThemeSettingsFragment;
 import org.chromium.chrome.browser.prefetch.settings.ExtendedPreloadingSettingsFragment;
 import org.chromium.chrome.browser.prefetch.settings.PreloadPagesSettingsFragment;
@@ -47,25 +60,32 @@ import org.chromium.chrome.browser.prefetch.settings.StandardPreloadingSettingsF
 import org.chromium.chrome.browser.privacy.secure_dns.SecureDnsSettings;
 import org.chromium.chrome.browser.privacy.settings.DoNotTrackSettings;
 import org.chromium.chrome.browser.privacy.settings.PrivacySettings;
+import org.chromium.chrome.browser.privacy.settings.UniversalOptOutSettings;
 import org.chromium.chrome.browser.privacy_guide.PrivacyGuideFragment;
+import org.chromium.chrome.browser.profiles.Profile;
+import org.chromium.chrome.browser.safe_browsing.metrics.SettingsAccessPoint;
 import org.chromium.chrome.browser.safe_browsing.settings.EnhancedProtectionSettingsFragment;
 import org.chromium.chrome.browser.safe_browsing.settings.SafeBrowsingSettingsFragment;
 import org.chromium.chrome.browser.safe_browsing.settings.StandardProtectionSettingsFragment;
 import org.chromium.chrome.browser.safety_hub.SafetyHubFragment;
-import org.chromium.chrome.browser.safety_hub.SafetyHubNotificationsFragment;
 import org.chromium.chrome.browser.safety_hub.SafetyHubPermissionsFragment;
 import org.chromium.chrome.browser.search_engines.settings.SearchEngineSettings;
 import org.chromium.chrome.browser.search_engines.settings.SiteSearchSettings;
-import org.chromium.chrome.browser.settings.search.SearchResultsPreferenceFragment;
+import org.chromium.chrome.browser.settings.startup.OnStartupSettingsFragment;
+import org.chromium.chrome.browser.signin.services.IdentityServicesProvider;
 import org.chromium.chrome.browser.ssl.HttpsFirstModeSettingsFragment;
 import org.chromium.chrome.browser.sync.settings.GoogleServicesSettings;
 import org.chromium.chrome.browser.sync.settings.ManageSyncSettings;
 import org.chromium.chrome.browser.sync.settings.PersonalizeGoogleServicesSettings;
-import org.chromium.chrome.browser.tasks.tab_management.TabArchiveSettingsFragment;
 import org.chromium.chrome.browser.tasks.tab_management.TabsSettings;
+import org.chromium.chrome.browser.tasks.tab_management.archived_tabs.TabArchiveSettingsFragment;
 import org.chromium.chrome.browser.toolbar.adaptive.settings.AdaptiveToolbarSettingsFragment;
+import org.chromium.chrome.browser.toolbar.settings.AddressBarSettingsFragment;
+import org.chromium.chrome.browser.toolbar.settings.AddressBarSettingsFragment.HighlightedOption;
 import org.chromium.chrome.browser.tracing.settings.DeveloperSettings;
+import org.chromium.chrome.browser.tracing.settings.TracingCategoriesSettings;
 import org.chromium.chrome.browser.tracing.settings.TracingSettings;
+import org.chromium.chrome.browser.ui.vertical_tabs.VerticalTabUtils;
 import org.chromium.components.browser_ui.accessibility.AccessibilitySettings;
 import org.chromium.components.browser_ui.site_settings.AllSiteSettings;
 import org.chromium.components.browser_ui.site_settings.ChosenObjectSettings;
@@ -75,12 +95,15 @@ import org.chromium.components.browser_ui.site_settings.LocationPermissionSubpag
 import org.chromium.components.browser_ui.site_settings.SingleCategorySettings;
 import org.chromium.components.browser_ui.site_settings.SingleWebsiteSettings;
 import org.chromium.components.browser_ui.site_settings.SiteSettings;
+import org.chromium.components.browser_ui.site_settings.SiteSettingsCategory;
 import org.chromium.components.browser_ui.site_settings.StorageAccessSubpageSettings;
 import org.chromium.components.browser_ui.site_settings.Website;
 import org.chromium.components.browser_ui.site_settings.WebsiteAddress;
 import org.chromium.components.browser_ui.site_settings.WebsiteGroup;
+import org.chromium.components.content_settings.CookieControlsMode;
 import org.chromium.components.embedder_support.util.UrlConstants;
 import org.chromium.components.embedder_support.util.UrlUtilities;
+import org.chromium.components.signin.identitymanager.IdentityManager;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -88,6 +111,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 import java.util.function.Consumer;
+import java.util.function.Predicate;
 
 /** Centralized registry mapping chrome://settings URLs to Fragment classes. */
 @NullMarked
@@ -113,16 +137,29 @@ public class SettingsFragmentRegistry {
     /**
      * Declarative rules for a registered route.
      *
-     * <p>A URL carries less than the fragment transaction it replaces: the caller used to be able
-     * to hand the page any extra it liked, while a URL only has the query its author wrote. The
-     * route declares what to fill in for the rest.
+     * <p>A settings URL is user editable and is replayed from browser history long after it was
+     * created, so it cannot be assumed to carry the arguments its page needs: the user may have
+     * trimmed a query parameter, or the data the parameter referred to may have been deleted.
+     * Rather than letting each page assert its way to a crash, a route declares what it needs and
+     * where to send the user when it is not there.
      */
     public static final class RouteSpec {
         private final Class<? extends Fragment> mFragmentClass;
+        private String[] mRequiredArgKeys = new String[0];
         private @Nullable Consumer<Bundle> mDefaultsProvider;
+        private @Nullable ArgValidator mValidator;
+        private @Nullable Predicate<Profile> mAvailability;
+        private @Nullable String mFallbackPath;
+        private boolean mDropArgsFromUrl;
 
         private RouteSpec(Class<? extends Fragment> fragmentClass) {
             mFragmentClass = fragmentClass;
+        }
+
+        /** Declares argument keys without which the page cannot be shown. */
+        RouteSpec requireArgs(String... bundleKeys) {
+            mRequiredArgKeys = bundleKeys;
+            return this;
         }
 
         /** Declares arguments to fill in when the URL omits them. */
@@ -130,19 +167,73 @@ public class SettingsFragmentRegistry {
             mDefaultsProvider = provider;
             return this;
         }
+
+        /** Declares a check on argument values, beyond their mere presence. */
+        RouteSpec validateWith(ArgValidator validator) {
+            mValidator = validator;
+            return this;
+        }
+
+        /**
+         * Declares browser state the page needs beyond what the URL carries. The URL is still
+         * correct and works again once the state returns, so failing it redirects to the fallback.
+         */
+        RouteSpec availableWhen(Predicate<Profile> availability) {
+            mAvailability = availability;
+            return this;
+        }
+
+        /**
+         * Declares where to send the user when the page cannot be shown. Defaults to the settings
+         * root.
+         */
+        RouteSpec fallback(String path) {
+            mFallbackPath = path;
+            return this;
+        }
+
+        /**
+         * Declares the page's arguments optional: the page works without them, so its URL never
+         * carries them, and a URL naming the page always opens it without arguments.
+         *
+         * <p>For pages whose arguments are a snapshot of transient state rather than what the page
+         * shows. Such a snapshot must not be replayed when the URL is restored from history, so
+         * opening the page by URL drops it instead of falling back to an Intent that carries it.
+         */
+        RouteSpec dropArgsFromUrl() {
+            mDropArgsFromUrl = true;
+            return this;
+        }
+    }
+
+    /** Checks argument values for a route. */
+    @FunctionalInterface
+    interface ArgValidator {
+        /**
+         * Returns the URL to redirect to instead of showing the page, or null if the arguments are
+         * usable as they are.
+         */
+        @Nullable String validate(Bundle args);
     }
 
     /** The outcome of resolving a settings URL. */
     public static final class Resolution {
-        /** The page to show. */
-        public final Class<? extends Fragment> fragmentClass;
+        /** The page to show. Null only when {@link #redirectUrl} is set. */
+        public final @Nullable Class<? extends Fragment> fragmentClass;
 
         /** Arguments for {@link #fragmentClass}. */
         public final Bundle args;
 
-        private Resolution(Class<? extends Fragment> fragmentClass, Bundle args) {
+        /** A URL to navigate to instead of showing a page, or null to show the page. */
+        public final @Nullable String redirectUrl;
+
+        private Resolution(
+                @Nullable Class<? extends Fragment> fragmentClass,
+                Bundle args,
+                @Nullable String redirectUrl) {
             this.fragmentClass = fragmentClass;
             this.args = args;
+            this.redirectUrl = redirectUrl;
         }
     }
 
@@ -163,24 +254,36 @@ public class SettingsFragmentRegistry {
     static final ArrayMap<Class<? extends Fragment>, String> sFragmentToMainMenuAnchorMap =
             new ArrayMap<>();
 
+    /**
+     * The third-party cookies category, which the cookies page is opened from. The title is left
+     * out so that the page shows the category's localized name.
+     *
+     * <p>Declared before the static block that reads it, since it is not a compile-time constant.
+     */
+    private static final String THIRD_PARTY_COOKIES_CATEGORY_PATH =
+            "/siteSettings/category?category="
+                    + SiteSettingsCategory.preferenceKey(
+                            SiteSettingsCategory.Type.THIRD_PARTY_COOKIES);
+
     static {
         // Root path mappings pointing to the top-level main settings fragment.
         registerMapping("", MainSettings.class);
         registerMapping("/", MainSettings.class);
-
-        // Search Results Fragment
-        registerMapping("/results", SearchResultsPreferenceFragment.class);
 
         // Multi Column Settings Categories
         // --------------------------------
 
         // You and Google
         //
-        // TODO(crbug.com/542745585): Handle /account differently based on local state
-        // since it's not a static page which is always available.
-        registerMapping("/account", ManageSyncSettings.class);
-        registerMapping("/account/personalize", PersonalizeGoogleServicesSettings.class);
+        // Both pages describe the signed in account, and a URL can be typed or replayed from
+        // history long after the user signed out, so neither is reachable without one.
+        registerMapping("/account", ManageSyncSettings.class)
+                .availableWhen(SettingsFragmentRegistry::hasSignedInAccount);
+        registerMapping("/account/personalize", PersonalizeGoogleServicesSettings.class)
+                .availableWhen(SettingsFragmentRegistry::hasSignedInAccount);
         registerMapping("/googleServices", GoogleServicesSettings.class);
+        registerMapping("/googleServices/priceTracking", PriceNotificationSettingsFragment.class);
+        registerMapping("/googleServices/contextualSearch", ContextualSearchSettingsFragment.class);
 
         // Basics
         registerMapping("/search", SearchEngineSettings.class);
@@ -188,9 +291,20 @@ public class SettingsFragmentRegistry {
 
         // Privacy & Security
         registerMapping("/privacy", PrivacySettings.class);
+        registerMapping("/privacy/universalOptOut", UniversalOptOutSettings.class);
         registerMapping("/privacyGuide", PrivacyGuideFragment.class);
         registerMapping("/clearBrowsingData", ClearBrowsingDataFragment.class);
-        registerMapping("/cookies", CookieSettings.class);
+        registerMapping("/cookies", CookieSettings.class)
+                .requireArgs(CookieSettings.EXTRA_COOKIE_PAGE_STATE)
+                .fallback(THIRD_PARTY_COOKIES_CATEGORY_PATH)
+                .validateWith(
+                        args -> {
+                            int mode = args.getInt(CookieSettings.EXTRA_COOKIE_PAGE_STATE);
+                            return mode == CookieControlsMode.BLOCK_THIRD_PARTY
+                                            || mode == CookieControlsMode.INCOGNITO_ONLY
+                                    ? null
+                                    : settingsUrlForPath(THIRD_PARTY_COOKIES_CATEGORY_PATH);
+                        });
         registerMapping("/doNotTrack", DoNotTrackSettings.class);
         registerMapping("/preloadPages", PreloadPagesSettingsFragment.class);
         registerMapping("/preloadPages/standard", StandardPreloadingSettingsFragment.class);
@@ -206,7 +320,6 @@ public class SettingsFragmentRegistry {
         // Safety Check / Safety Hub
         registerMapping("/safetyCheck", SafetyHubFragment.class);
         registerMapping("/safetyCheck/permissions", SafetyHubPermissionsFragment.class);
-        registerMapping("/safetyCheck/notifications", SafetyHubNotificationsFragment.class);
 
         // Autofill & Passwords
         registerMapping("/autofill", AutofillAndPasswordsFragment.class);
@@ -240,20 +353,28 @@ public class SettingsFragmentRegistry {
         // Homepage
         registerMapping("/homepage", HomepageSettings.class);
 
+        // On startup
+        registerMapping("/onStartup", OnStartupSettingsFragment.class)
+                .availableWhen(profile -> MultiWindowUtils.isOnStartupSettingsUiEnabled());
+
         // Appearance
         registerMapping("/appearance", AppearanceSettingsFragment.class);
-        registerMapping("/theme", ThemeSettingsFragment.class)
-                // The page asserts on its entry point extra.
-                .withDefaults(
-                        bundle -> {
-                            if (!bundle.containsKey(
-                                    ThemeSettingsFragment.KEY_THEME_SETTINGS_ENTRY)) {
-                                bundle.putInt(
-                                        ThemeSettingsFragment.KEY_THEME_SETTINGS_ENTRY,
-                                        NightModeMetrics.ThemeSettingsEntry.SETTINGS);
-                            }
-                        });
-        registerMapping("/toolbar", AdaptiveToolbarSettingsFragment.class);
+        registerMapping("/bookmarkBar", BookmarkBarSettingsFragment.class);
+        registerMapping("/theme", ThemeSettingsFragment.class);
+        registerMapping("/toolbar", AdaptiveToolbarSettingsFragment.class)
+                // The toolbar shortcut's "Edit shortcut" menu passes a snapshot of the toolbar's UI
+                // state, which the page otherwise computes itself.
+                .dropArgsFromUrl();
+        // The page only exists on devices eligible for vertical tabs, and asserts as much. A URL
+        // can still be typed or replayed from history elsewhere, so send it back to Appearance.
+        registerMapping("/tabPosition", TabPositionSettingsFragment.class)
+                .availableWhen(SettingsFragmentRegistry::isVerticalTabsEligible)
+                .fallback("/appearance");
+
+        // Address bar. Only foldables can move the address bar while settings is in a tab, since
+        // folding switches them to a phone form factor.
+        registerMapping("/addressBar", AddressBarSettingsFragment.class)
+                .availableWhen(profile -> DeviceInfo.isFoldable());
 
         // Accessibility
         registerMapping("/accessibility", AccessibilitySettings.class);
@@ -261,13 +382,57 @@ public class SettingsFragmentRegistry {
 
         // Content / Site Settings
         registerMapping("/siteSettings", SiteSettings.class);
-        registerMapping("/siteSettings/category", SingleCategorySettings.class);
-        registerMapping("/allSites", AllSiteSettings.class);
-        registerMapping("/allSites/group", GroupedWebsitesSettings.class);
-        registerMapping("/siteDetails", SingleWebsiteSettings.class);
-        registerMapping("/storageAccess", StorageAccessSubpageSettings.class);
-        registerMapping("/locationPermission", LocationPermissionSubpageSettings.class);
-        registerMapping("/chosenObject", ChosenObjectSettings.class);
+        registerMapping("/siteSettings/category", SingleCategorySettings.class)
+                .requireArgs(SingleCategorySettings.EXTRA_CATEGORY)
+                .fallback("/siteSettings")
+                .validateWith(
+                        args -> {
+                            String category =
+                                    args.getString(SingleCategorySettings.EXTRA_CATEGORY, "");
+                            // A Url can name any category, including one this build does not
+                            // have. There is no page for it, so offer the list of categories.
+                            if (!SiteSettingsCategory.isValidPreferenceKey(category)) {
+                                return createUrlForFragment(SiteSettings.class, /* args= */ null);
+                            }
+                            // "All sites", "Storage" and "Zoom" are rendered by AllSiteSettings;
+                            // SingleCategorySettings throws for them.
+                            return isAllSitesCategory(category)
+                                    ? createUrlForFragment(AllSiteSettings.class, args)
+                                    : null;
+                        });
+        registerMapping("/allSites", AllSiteSettings.class)
+                // The mirror image of the above: AllSiteSettings throws for a per-category key.
+                // An unknown category is decoration here rather than an error, since the page
+                // falls back to "All sites" for anything it does not render, so only a real
+                // per-category key is sent on. Redirecting on an unknown one would hand it to a
+                // page that cannot show it either, and it would be carried back here in a loop.
+                .validateWith(
+                        args -> {
+                            String category = args.getString(AllSiteSettings.EXTRA_CATEGORY);
+                            return SiteSettingsCategory.isValidPreferenceKey(category)
+                                            && !isAllSitesCategory(category)
+                                    ? createUrlForFragment(SingleCategorySettings.class, args)
+                                    : null;
+                        });
+        registerMapping("/allSites/group", GroupedWebsitesSettings.class)
+                .requireArgs(GroupedWebsitesSettings.EXTRA_GROUP)
+                .fallback("/allSites");
+        registerMapping("/siteDetails", SingleWebsiteSettings.class)
+                .requireArgs(SingleWebsiteSettings.EXTRA_SITE_ADDRESS)
+                .fallback("/allSites");
+        registerMapping("/storageAccess", StorageAccessSubpageSettings.class)
+                // The page shows one origin's storage access permissions, either the allowed or
+                // the blocked ones, so it needs both to know what to show.
+                .requireArgs(
+                        SingleWebsiteSettings.EXTRA_SITE_ADDRESS,
+                        StorageAccessSubpageSettings.EXTRA_ALLOWED)
+                .fallback("/allSites");
+        registerMapping("/locationPermission", LocationPermissionSubpageSettings.class)
+                .requireArgs(SingleWebsiteSettings.EXTRA_SITE_ADDRESS)
+                .fallback("/allSites");
+        // ChosenObjectSettings is deliberately not registered. It is identified by a serialized
+        // device descriptor with no stable short form, so it has no meaningful URL. It is opened
+        // from SingleCategorySettings by a fragment transaction instead.
 
         // These pages are attached at runtime, e.g. by tapping a row in "All sites", instead of
         // being declared with android:fragment in a preference XML. They therefore have no entry
@@ -280,14 +445,29 @@ public class SettingsFragmentRegistry {
         registerMainMenuAnchor(ChosenObjectSettings.class, SiteSettings.MAIN_MENU_KEY);
 
         // Languages, Downloads, Tabs, Homepage
-        //
-        // Only the top-level languages page is URL routed. The subpages (language picker, always
-        // and never translate lists) exchange the selected language using the androidx Fragment
-        // Result API, which requires the calling fragment to remain on the fragment back stack.
-        // URL navigation replaces detail fragments with addToBackStack=false, which breaks that
-        // contract. See crbug.com/555347875; these routes are restored once the subpages no longer
-        // depend on the fragment back stack.
         registerMapping("/languages", LanguageSettings.class);
+        registerMapping("/languages/alwaysTranslate", AlwaysTranslateListFragment.class);
+        registerMapping("/languages/neverTranslate", NeverTranslateListFragment.class);
+
+        // The language picker shows a different list, and its selection means something different,
+        // depending on which page asked for it. Each of those is its own page as far as the user is
+        // concerned, so each is its own subclass with its own Url.
+        registerMapping(
+                "/languages/currentDeviceLanguage",
+                SelectLanguageFragment.AppLanguagePickerFragment.class);
+        registerMapping(
+                "/languages/addLanguage",
+                SelectLanguageFragment.ContentLanguagePickerFragment.class);
+        registerMapping(
+                "/languages/translateIntoLanguage",
+                SelectLanguageFragment.TranslateTargetLanguagePickerFragment.class);
+        registerMapping(
+                "/languages/alwaysTranslate/addLanguage",
+                SelectLanguageFragment.AlwaysTranslateLanguagePickerFragment.class);
+        registerMapping(
+                "/languages/neverTranslate/addLanguage",
+                SelectLanguageFragment.NeverTranslateLanguagePickerFragment.class);
+
         registerMapping("/downloads", DownloadSettings.class);
 
         // About & Developer
@@ -295,17 +475,23 @@ public class SettingsFragmentRegistry {
         registerMapping("/about/legal", LegalInformationSettings.class);
         registerMapping("/developer", DeveloperSettings.class);
         registerMapping("/developer/tracing", TracingSettings.class);
+        registerMapping("/developer/tracing/categories", TracingCategoriesSettings.class)
+                .requireArgs(TracingCategoriesSettings.EXTRA_CATEGORY_TYPE)
+                .fallback("/developer/tracing");
 
         // Glic
         registerMapping("/ai/gemini", GlicSettings.class);
+        registerMapping("/ai/gemini/permissions", GlicActorLoginPermissionsFragment.class);
 
         // Parameter translations mapping URL query string keys to Fragment
         // argument extra keys with appropriate type deserialization.
         registerWebsiteAddressParameterMapping("site", SingleWebsiteSettings.EXTRA_SITE_ADDRESS);
         registerBooleanParameterMapping("fromGrouped", SingleWebsiteSettings.EXTRA_FROM_GROUPED);
+        registerBooleanParameterMapping("allowed", StorageAccessSubpageSettings.EXTRA_ALLOWED);
         registerParameterMapping("category", SingleCategorySettings.EXTRA_CATEGORY);
         registerParameterMapping("title", SingleCategorySettings.EXTRA_TITLE);
         registerParameterMapping("group", GroupedWebsitesSettings.EXTRA_GROUP);
+        registerParameterMapping("highlight", GlicNavigationUtils.EXTRA_HIGHLIGHT_FIELD);
         registerIntParameterMapping(
                 "referrer",
                 AutofillAndPasswordsFragment.EXTRA_REFERRER,
@@ -314,12 +500,28 @@ public class SettingsFragmentRegistry {
                 "optionsReferrer",
                 AutofillOptionsFragment.AUTOFILL_OPTIONS_REFERRER,
                 /* defaultValue= */ AutofillOptionsReferrer.SETTINGS);
+        registerIntParameterMapping(
+                "categoryType",
+                TracingCategoriesSettings.EXTRA_CATEGORY_TYPE,
+                /* defaultValue= */ TracingSettings.CategoryType.DEFAULT);
+        registerIntParameterMapping(
+                "accessPoint",
+                SafeBrowsingSettingsFragment.ACCESS_POINT,
+                /* defaultValue= */ SettingsAccessPoint.DEFAULT);
+        registerIntParameterMapping(
+                "mode",
+                CookieSettings.EXTRA_COOKIE_PAGE_STATE,
+                /* defaultValue= */ CookieControlsMode.OFF);
+        registerIntParameterMapping(
+                "highlightedOption",
+                AddressBarSettingsFragment.HIGHLIGHTED_OPTION,
+                /* defaultValue= */ HighlightedOption.NONE);
     }
 
     /**
      * Registers {@code path} as the URL for {@code detailFragmentClass}.
      *
-     * @return the route's spec, for declaring rules that apply to it.
+     * @return the route's spec, for declaring required arguments and a fallback.
      */
     @CanIgnoreReturnValue
     private static RouteSpec registerMapping(
@@ -384,23 +586,6 @@ public class SettingsFragmentRegistry {
                 });
     }
 
-    // Currently unused: its only caller was the "potentialLanguages" mapping, removed along with
-    // the languages subpage routes. Retained for when those routes are re-landed.
-    @SuppressWarnings("unused")
-    private static void registerShortParameterMapping(
-            String queryParam, String argKey, short defaultValue) {
-        registerParameterMapping(
-                queryParam,
-                argKey,
-                (bundle, key, val) -> {
-                    try {
-                        bundle.putShort(key, Short.parseShort(val));
-                    } catch (NumberFormatException e) {
-                        bundle.putShort(key, defaultValue);
-                    }
-                });
-    }
-
     private static void registerWebsiteAddressParameterMapping(String queryParam, String argKey) {
         registerParameterMapping(
                 queryParam,
@@ -419,22 +604,6 @@ public class SettingsFragmentRegistry {
     }
 
     /**
-     * Resolves a settings URL to the page to show and the arguments to show it with.
-     *
-     * <p>The single entry point for turning a URL into a page. A URL carries less than the fragment
-     * transaction it replaces, so the registry fills in what the route declares before handing the
-     * arguments back.
-     */
-    public static Resolution resolve(String url) {
-        Bundle args = parseUrlArguments(url);
-        RouteSpec spec = getRouteSpecForUrl(url);
-
-        // An unrecognised path shows the main settings page, matching what the omnibox does for
-        // any other unrecognised chrome:// URL.
-        return new Resolution(spec != null ? spec.mFragmentClass : MainSettings.class, args);
-    }
-
-    /**
      * Resolves a chrome://settings URL string to a target Fragment class.
      *
      * @param url Target URL to resolve.
@@ -445,20 +614,13 @@ public class SettingsFragmentRegistry {
         return spec == null ? null : spec.mFragmentClass;
     }
 
-    /** Returns the route spec for a settings URL, or null if the URL is not routed. */
-    private static @Nullable RouteSpec getRouteSpecForUrl(String url) {
-        String path = settingsPathForUrl(url);
-        return path == null ? null : sPathToRouteSpecMap.get(path);
-    }
-
     /**
-     * Returns the normalized path of a settings URL, or null if {@code uri} does not address
-     * settings.
+     * Returns the normalized registry path of a settings URL, or null if it is not one.
      *
-     * <p>Strict scheme and host validation keeps other pages, e.g. a local file scheme, from being
-     * routed through this registry. The path is lower cased with {@link Locale#US} so that matching
-     * does not depend on the device locale, and a trailing slash is stripped so that
-     * "chrome://settings/appearance/" and "chrome://settings/appearance" agree.
+     * <p>The scheme is validated to prevent cross-origin or local file scheme injection, and the
+     * host to ensure only settings pages are routed through this registry. The path is lowercased
+     * with {@link Locale#US} so matching is insensitive to the device locale, and a trailing slash
+     * is stripped so "chrome://settings/appearance/" matches "chrome://settings/appearance".
      */
     private static @Nullable String settingsPath(Uri uri) {
         if (!UrlUtilities.isChromeScheme(uri.getScheme())) return null;
@@ -517,7 +679,10 @@ public class SettingsFragmentRegistry {
             Set<String> queryNames = uri.getQueryParameterNames();
             for (String param : queryNames) {
                 String val = uri.getQueryParameter(param);
-                if (val == null) continue;
+                // "?site=" and "?site" both parse to an empty value, which names nothing. Treating
+                // it as absent is what every reader of these arguments already expects, and it
+                // keeps the required argument check in resolve() a question of presence alone.
+                if (val == null || val.isEmpty()) continue;
 
                 // Map query parameter key to argument bundle key if registered,
                 // otherwise keep original.
@@ -552,6 +717,144 @@ public class SettingsFragmentRegistry {
         }
     }
 
+    /** Returns the route spec for a settings URL, or null if the URL is not routed. */
+    private static @Nullable RouteSpec getRouteSpecForUrl(String url) {
+        String path = settingsPathForUrl(url);
+        return path == null ? null : sPathToRouteSpecMap.get(path);
+    }
+
+    /**
+     * Resolves a settings URL to the page to show, or to a URL to go to instead.
+     *
+     * <p>A redirect is returned when the URL cannot produce a usable page: the path names no page,
+     * a required argument is absent, an argument names something the page cannot render, or the
+     * browser is not in a state the page needs. This is the norm rather than the exception for
+     * settings URLs, which are user editable and are replayed from history after the data they
+     * point at may have been deleted. Callers must honour the redirect instead of instantiating a
+     * page, since the pages themselves respond to missing arguments by crashing.
+     *
+     * @param url The chrome://settings URL to resolve.
+     * @param profile the profile the page would be shown for, checked against {@link
+     *     RouteSpec#availableWhen}.
+     */
+    public static Resolution resolve(String url, Profile profile) {
+        Bundle args = parseUrlArguments(url);
+        RouteSpec spec = getRouteSpecForUrl(url);
+
+        if (spec == null) {
+            // An unknown path is more often a mistyped or truncated version of a real one than a
+            // page in its own right, so offer the closest thing the user asked for before giving
+            // up: chrome://settings/siteSettings/nonsense belongs on Site settings.
+            String ancestorUrl = nearestRegisteredAncestorUrl(url);
+            if (ancestorUrl != null) {
+                return new Resolution(/* fragmentClass= */ null, args, ancestorUrl);
+            }
+
+            // Nothing recognisable is left, so send the user to the settings root. Redirecting
+            // rather than showing it in place keeps the unrecognised Url out of the omnibox and
+            // out of history.
+            if (settingsPathForUrl(url) != null) {
+                return new Resolution(
+                        /* fragmentClass= */ null, args, settingsUrlForPath(/* path= */ null));
+            }
+
+            // Not a settings Url at all, so there is no settings root to redirect to.
+            return new Resolution(MainSettings.class, args, /* redirectUrl= */ null);
+        }
+
+        // Such a Url is never generated with a query, so any query on it was typed or edited by
+        // hand. Ignore it rather than hand the page arguments it does not expect from a Url.
+        if (spec.mDropArgsFromUrl) {
+            args = new Bundle();
+        }
+
+        for (String requiredKey : spec.mRequiredArgKeys) {
+            if (!args.containsKey(requiredKey)) {
+                return new Resolution(
+                        /* fragmentClass= */ null, args, settingsUrlForPath(spec.mFallbackPath));
+            }
+        }
+
+        if (spec.mAvailability != null && !spec.mAvailability.test(profile)) {
+            return new Resolution(
+                    /* fragmentClass= */ null, args, settingsUrlForPath(spec.mFallbackPath));
+        }
+
+        if (spec.mValidator != null) {
+            String redirectUrl = spec.mValidator.validate(args);
+            if (redirectUrl != null) {
+                return new Resolution(/* fragmentClass= */ null, args, redirectUrl);
+            }
+        }
+
+        return new Resolution(spec.mFragmentClass, args, /* redirectUrl= */ null);
+    }
+
+    /** Whether {@code profile} has a signed in account for the account pages to describe. */
+    private static boolean hasSignedInAccount(Profile profile) {
+        IdentityManager identityManager =
+                IdentityServicesProvider.get().getIdentityManager(profile);
+        return identityManager != null && identityManager.hasPrimaryAccount();
+    }
+
+    /** Returns whether the device is eligible for the vertical tabs setting page. */
+    private static boolean isVerticalTabsEligible(Profile profile) {
+        // Use an Activity context when available because getApplicationContext() does not have
+        // ChromeBaseAppCompatActivity's smallestScreenWidthDp override, so it loses its tablet
+        // screen width qualifiers (-sw600dp) in portrait multi-window mode and after theme changes.
+        Context context = ApplicationStatus.getLastTrackedFocusedActivity();
+        if (context == null) {
+            context = ContextUtils.getApplicationContext();
+        }
+        return VerticalTabUtils.isVerticalTabsEligible(context);
+    }
+
+    /** Returns the settings URL for a registered path, defaulting to the settings root. */
+    private static String settingsUrlForPath(@Nullable String path) {
+        String root = UrlConstants.CHROME_URL_PREFIX + UrlConstants.SETTINGS_HOST;
+        return path == null ? root : root + path;
+    }
+
+    /**
+     * Returns the Url of the closest ancestor path that is a page, or null if there is none.
+     *
+     * <p>Paths are walked one segment at a time, so "/siteSettings/category&title=Location" offers
+     * "/siteSettings". The canonical Url is rebuilt from the fragment so the redirect keeps the
+     * registered casing rather than the lowercased form used for matching.
+     */
+    private static @Nullable String nearestRegisteredAncestorUrl(String url) {
+        String path = settingsPathForUrl(url);
+        if (path == null) return null;
+
+        // Stop before index 0: an empty ancestor is the settings root, which the caller handles.
+        for (int slash = path.lastIndexOf('/');
+                slash > 0;
+                slash = path.lastIndexOf('/', slash - 1)) {
+            String ancestor = path.substring(0, slash);
+            RouteSpec spec = sPathToRouteSpecMap.get(ancestor);
+            if (spec == null) continue;
+
+            String canonicalUrl = createUrlForFragment(spec.mFragmentClass, /* args= */ null);
+            return canonicalUrl != null ? canonicalUrl : settingsUrlForPath(ancestor);
+        }
+        return null;
+    }
+
+    /**
+     * Returns whether {@code categoryPreferenceKey} names one of the categories rendered by {@link
+     * AllSiteSettings} rather than {@link SingleCategorySettings}. Each page throws when given the
+     * other's categories.
+     */
+    private static boolean isAllSitesCategory(@Nullable String categoryPreferenceKey) {
+        if (categoryPreferenceKey == null) return false;
+        return categoryPreferenceKey.equals(
+                        SiteSettingsCategory.preferenceKey(SiteSettingsCategory.Type.ALL_SITES))
+                || categoryPreferenceKey.equals(
+                        SiteSettingsCategory.preferenceKey(SiteSettingsCategory.Type.USE_STORAGE))
+                || categoryPreferenceKey.equals(
+                        SiteSettingsCategory.preferenceKey(SiteSettingsCategory.Type.ZOOM));
+    }
+
     /**
      * Creates a canonical URL for a Fragment class and argument Bundle.
      *
@@ -572,9 +875,9 @@ public class SettingsFragmentRegistry {
         String chromeSettingsUrl = UrlConstants.CHROME_URL_PREFIX + UrlConstants.SETTINGS_HOST;
         String targetUrl = chromeSettingsUrl + "/" + (path != null ? path : "");
 
-        // If there are no supplied arguments, just return the page.
-        // (e.g., chrome://settings/about).
-        if (args == null || args.isEmpty()) {
+        // If there are no supplied arguments, or the page does not take them in its URL, just
+        // return the page (e.g., chrome://settings/about).
+        if (args == null || args.isEmpty() || dropsArgsFromUrl(fragmentClass)) {
             return targetUrl;
         }
 
@@ -597,6 +900,61 @@ public class SettingsFragmentRegistry {
             }
         }
         return builder.build().toString();
+    }
+
+    /**
+     * Returns whether {@code url} carries every argument in {@code args} back with the same key,
+     * type and value.
+     *
+     * <p>Under URL navigation the URL is the source of truth: the page is rebuilt from it when the
+     * tab is restored, when the user walks back to it, and whenever it is replayed from history. An
+     * argument the URL cannot carry is therefore not merely absent from the first navigation, it is
+     * absent from every later one. A caller holding both a URL and the {@link Bundle} it was built
+     * from must ask this before treating the URL as a replacement for the Bundle.
+     *
+     * <p>{@link #createUrlForFragment} is deliberately permissive: an argument whose key has no
+     * registered query parameter is still written out, under its raw key, as long as its value is a
+     * CharSequence, Number or Boolean. {@link #parseUrlArguments} is permissive in the same way,
+     * but it has no type information to restore with, so it puts the value back as a String. An int
+     * or boolean argument therefore survives the round trip in name only, and the page reads 0 or
+     * false from it. Registering the argument with {@link #registerIntParameterMapping} and its
+     * siblings is what makes the round trip typed; this method is how a caller - and the next
+     * engineer to add a page - finds out that it has not been done.
+     *
+     * <p>Strictly, the question is whether the URL can replace the Bundle without losing anything
+     * the page needs. For most routes that means carrying every argument back. A route declared
+     * with {@link RouteSpec#dropArgsFromUrl} answers it differently: its arguments are optional and
+     * are left out of its URL by design, so this returns true for it even though the arguments are
+     * not carried.
+     */
+    public static boolean urlPreservesArgs(String url, @Nullable Bundle args) {
+        if (args == null || args.isEmpty()) return true;
+
+        // A route declared with RouteSpec#dropArgsFromUrl() is the exception described above. Its
+        // URL leaves the arguments out on purpose and resolve() opens the page without them, so
+        // the URL already says everything the page needs. Falling back to the Intent would only
+        // replay a snapshot the route has opted out of, and SettingsIntentUtil would open the
+        // settings root instead of the page.
+        RouteSpec spec = getRouteSpecForUrl(url);
+        if (spec != null && spec.mDropArgsFromUrl) return true;
+
+        Bundle parsed = parseUrlArguments(url);
+        for (String key : args.keySet()) {
+            Object original = args.get(key);
+            // A null value carries no information, so nothing is lost by not carrying it.
+            if (original == null) continue;
+
+            Object restored = parsed.get(key);
+            if (restored == null) return false;
+
+            // Compare types as well as values: an int written as "3" comes back as the String "3"
+            // unless the argument has a registered typed parser, and Bundle#getInt would then
+            // silently return 0 rather than 3.
+            if (original.getClass() != restored.getClass()) return false;
+
+            if (!original.equals(restored)) return false;
+        }
+        return true;
     }
 
     private static @Nullable UrlParam extractQueryParam(String key, Object val) {
@@ -637,5 +995,14 @@ public class SettingsFragmentRegistry {
     public static @Nullable String getUrlPathForFragmentClass(
             Class<? extends Fragment> fragmentClass) {
         return sFragmentToPathMap.get(fragmentClass);
+    }
+
+    /** Returns whether {@code fragmentClass} is routed with {@link RouteSpec#dropArgsFromUrl}. */
+    private static boolean dropsArgsFromUrl(Class<? extends Fragment> fragmentClass) {
+        String path = getUrlPathForFragmentClass(fragmentClass);
+        if (path == null) return false;
+
+        RouteSpec spec = sPathToRouteSpecMap.get(("/" + path).toLowerCase(Locale.US));
+        return spec != null && spec.mDropArgsFromUrl;
     }
 }

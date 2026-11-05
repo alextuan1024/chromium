@@ -14,6 +14,7 @@
 
 #include "base/functional/callback_helpers.h"
 #include "base/memory/raw_ptr.h"
+#include "base/timer/timer.h"
 #include "components/remote_cocoa/app_shim/native_widget_ns_window_host_helper.h"
 #include "components/remote_cocoa/app_shim/ns_view_ids.h"
 #include "components/remote_cocoa/browser/application_host.h"
@@ -25,6 +26,7 @@
 #include "ui/accelerated_widget_mac/accelerated_widget_mac.h"
 #include "ui/base/cocoa/accessibility_focus_overrider.h"
 #include "ui/base/mojom/dialog_button.mojom.h"
+#include "ui/base/mojom/window_open_disposition.mojom-forward.h"
 #include "ui/color/color_provider_key.h"
 #include "ui/compositor/layer_owner.h"
 #include "ui/views/cocoa/drag_drop_client_mac.h"
@@ -108,7 +110,7 @@ class VIEWS_EXPORT NativeWidgetMacNSWindowHost
     return native_widget_mac_;
   }
   NativeWidgetMacNSWindowHost* parent() const { return parent_; }
-  std::vector<NativeWidgetMacNSWindowHost*> children() const {
+  const std::vector<raw_ptr<NativeWidgetMacNSWindowHost>>& children() const {
     return children_;
   }
 
@@ -181,6 +183,11 @@ class VIEWS_EXPORT NativeWidgetMacNSWindowHost
   // Changes the size of the window, leaving the top-left corner in its current
   // location.
   void SetSize(const gfx::Size& size);
+
+  // Changes the content size of the window to `content_size`, and centers the
+  // window over its parent, or, if it has no parent, in the work area of its
+  // display.
+  void CenterWindow(const gfx::Size& content_size);
 
   // Tell the window to transition to being fullscreen or not-fullscreen.
   // If `fullscreen` is true, then `target_display_id` specifies the display to
@@ -273,6 +280,12 @@ class VIEWS_EXPORT NativeWidgetMacNSWindowHost
   // space.
   bool IsVisibleOnScreen() const { return is_visible_ && is_on_active_space_; }
 
+  // Exposes the timer that debounces becoming occluded, so tests can check
+  // whether a hide is pending and fire it without waiting.
+  base::OneShotTimer& occlusion_hide_timer_for_testing() {
+    return occlusion_hide_timer_;
+  }
+
   void SetVisibilityState(remote_cocoa::mojom::WindowVisibilityState new_state);
 
   // Add a NSEvent local event monitor, which will send events to `client`
@@ -328,6 +341,14 @@ class VIEWS_EXPORT NativeWidgetMacNSWindowHost
   // minimum/maximum window size constraints.
   gfx::Rect GetAdjustedContentBoundsInScreen();
 
+  // Returns the size of the window frame for a content area of `content_size`,
+  // which depends on the style mask that the window was created with.
+  gfx::Size GetWindowSizeForContentSize(const gfx::Size& content_size) const;
+
+  // Returns the origin at which a window of `window_size` is centered, as
+  // described in CenterWindow().
+  gfx::Point GetCenteredWindowOrigin(const gfx::Size& window_size) const;
+
   // NativeWidgetNSWindowHostHelper:
   id GetNativeViewAccessible() override;
   void DispatchKeyEvent(ui::KeyEvent* event) override;
@@ -346,6 +367,7 @@ class VIEWS_EXPORT NativeWidgetMacNSWindowHost
   // remote_cocoa::mojom::NativeWidgetNSWindowHost:
   void OnVisibilityChanged(bool visible) override;
   void OnSpaceActivationChanged(bool is_on_active_space) override;
+  void OnWindowOcclusionChanged(bool occluded) override;
   void OnWindowNativeThemeChanged() override;
   void OnViewSizeChanged(const gfx::Size& new_size) override;
   bool GetSheetOffsetY(int32_t* offset_y) override;
@@ -395,6 +417,8 @@ class VIEWS_EXPORT NativeWidgetMacNSWindowHost
   void OnImmersiveFullscreenToolbarRevealChanged(bool is_revealed) override;
   void OnImmersiveFullscreenMenuBarRevealChanged(double reveal_amount) override;
   void OnAutohidingMenuBarHeightChanged(int menu_bar_height) override;
+  void OnImmersiveFullscreenTitlebarFrameChanged(
+      const gfx::Rect& frame) override;
   void DoDialogButtonAction(ui::mojom::DialogButton button) override;
   bool GetDialogButtonInfo(ui::mojom::DialogButton type,
                            bool* button_exists,
@@ -418,12 +442,13 @@ class VIEWS_EXPORT NativeWidgetMacNSWindowHost
       int32_t command,
       remote_cocoa::mojom::ValidateUserInterfaceItemResultPtr* out_result)
       override;
-  bool WillExecuteCommand(int32_t command,
-                          WindowOpenDisposition window_open_disposition,
-                          bool is_before_first_responder,
-                          bool* will_execute) override;
+  bool WillExecuteCommand(
+      int32_t command,
+      ui::mojom::WindowOpenDisposition window_open_disposition,
+      bool is_before_first_responder,
+      bool* will_execute) override;
   bool ExecuteCommand(int32_t command,
-                      WindowOpenDisposition window_open_disposition,
+                      ui::mojom::WindowOpenDisposition window_open_disposition,
                       bool is_before_first_responder,
                       bool* was_executed) override;
   bool HandleAccelerator(const ui::Accelerator& accelerator,
@@ -465,12 +490,13 @@ class VIEWS_EXPORT NativeWidgetMacNSWindowHost
   void ValidateUserInterfaceItem(
       int32_t command,
       ValidateUserInterfaceItemCallback callback) override;
-  void WillExecuteCommand(int32_t command,
-                          WindowOpenDisposition window_open_disposition,
-                          bool is_before_first_responder,
-                          ExecuteCommandCallback callback) override;
+  void WillExecuteCommand(
+      int32_t command,
+      ui::mojom::WindowOpenDisposition window_open_disposition,
+      bool is_before_first_responder,
+      ExecuteCommandCallback callback) override;
   void ExecuteCommand(int32_t command,
-                      WindowOpenDisposition window_open_disposition,
+                      ui::mojom::WindowOpenDisposition window_open_disposition,
                       bool is_before_first_responder,
                       ExecuteCommandCallback callback) override;
   void HandleAccelerator(const ui::Accelerator& accelerator,
@@ -508,7 +534,7 @@ class VIEWS_EXPORT NativeWidgetMacNSWindowHost
 
   // Parent and child widgets.
   raw_ptr<NativeWidgetMacNSWindowHost> parent_ = nullptr;
-  std::vector<NativeWidgetMacNSWindowHost*> children_;
+  std::vector<raw_ptr<NativeWidgetMacNSWindowHost>> children_;
 
   // The factory that was used to create |remote_ns_window_remote_|. This must
   // be the same as |parent_->application_host_|.
@@ -547,6 +573,12 @@ class VIEWS_EXPORT NativeWidgetMacNSWindowHost
   // Window that is guaranteed to exist in this process (see
   // GetInProcessNSWindow).
   NativeWidgetMacNSWindow* __strong in_process_ns_window_;
+
+  // The style mask that the NSWindow was created with, used to convert between
+  // content and frame sizes the same way whether the NSWindow is in this
+  // process or not (the placeholder `in_process_ns_window_` of a remote window
+  // is borderless).
+  uint64_t ns_window_style_mask_ = 0;
 
   // Id mapping for |in_process_ns_window_|'s content NSView.
   std::unique_ptr<remote_cocoa::ScopedNSViewIdMapping>
@@ -605,8 +637,23 @@ class VIEWS_EXPORT NativeWidgetMacNSWindowHost
   void UpdateCompositorVisibility();
   void OnVideoCaptureLockDestroyed();
 
+  // Applies a pending occlusion once `occlusion_hide_timer_` fires.
+  void ApplyOcclusion();
+  // Clears the occlusion state (applied or pending). Updates compositor
+  // visibility if `update_compositor` is true and the applied state changed.
+  void ResetOcclusion(bool update_compositor);
+
   // Number of active video capture locks.
   uint32_t video_capture_count_ = 0;
+
+  // Debounced occlusion state, as reported by WindowOcclusionCheckerMac.
+  // Only affects compositor visibility (behind
+  // `features::kNotifyCompositorOfWindowOcclusionOnMacOs`), not
+  // IsVisibleOnScreen().
+  bool is_occluded_ = false;
+  // Delays applying `is_occluded_ = true`, to avoid compositor churn on brief
+  // occlusions. Becoming unoccluded is applied immediately.
+  base::OneShotTimer occlusion_hide_timer_;
 
   base::ScopedObservation<View, ViewObserver> root_view_observation_{this};
 

@@ -38,6 +38,7 @@
 #include "content/browser/renderer_host/render_process_host_internal_observer.h"
 #include "content/browser/web_contents/web_contents_impl.h"
 #include "content/common/content_navigation_policy.h"
+#include "content/common/features.h"
 #include "content/common/pseudonymization_salt.h"
 #include "content/public/browser/back_forward_cache.h"
 #include "content/public/browser/browser_context.h"
@@ -537,7 +538,6 @@ IN_PROC_BROWSER_TEST_P(RenderProcessHostTest, KillProcessZerosAudioStreams) {
                                 shell()->web_contents()->GetPrimaryMainFrame(),
                                 run_loop.QuitClosure());
 
-    std::string result;
     EXPECT_EQ("OK", EvalJs(shell(), "StartOscillator();"))
         << "Failed to execute javascript.";
     run_loop.Run();
@@ -606,7 +606,6 @@ IN_PROC_BROWSER_TEST_F(CaptureStreamRenderProcessHostTest,
       shell(), embedded_test_server()->GetURL("/media/getusermedia.html")));
   RenderProcessHostImpl* rph = static_cast<RenderProcessHostImpl*>(
       shell()->web_contents()->GetPrimaryMainFrame()->GetProcess());
-  std::string result;
   EXPECT_TRUE(ExecJs(shell(), "getUserMediaAndExpectSuccess({video: true});"))
       << "Failed to execute javascript.";
   EXPECT_EQ(1, rph->get_media_stream_count_for_testing());
@@ -621,7 +620,6 @@ IN_PROC_BROWSER_TEST_F(CaptureStreamRenderProcessHostTest,
       shell(), embedded_test_server()->GetURL("/media/getusermedia.html")));
   RenderProcessHostImpl* rph = static_cast<RenderProcessHostImpl*>(
       shell()->web_contents()->GetPrimaryMainFrame()->GetProcess());
-  std::string result;
   EXPECT_TRUE(ExecJs(shell(), "getUserMediaAndStop({video: true});"))
       << "Failed to execute javascript.";
   EXPECT_EQ(0, rph->get_media_stream_count_for_testing());
@@ -645,7 +643,6 @@ IN_PROC_BROWSER_TEST_F(CaptureStreamRenderProcessHostTest,
       shell(), embedded_test_server()->GetURL("/media/getusermedia.html")));
   RenderProcessHostImpl* rph = static_cast<RenderProcessHostImpl*>(
       shell()->web_contents()->GetPrimaryMainFrame()->GetProcess());
-  std::string result;
   EXPECT_TRUE(ExecJs(shell(), "getUserMediaAndExpectSuccess({video: true});"))
       << "Failed to execute javascript.";
   EXPECT_EQ(1, rph->get_media_stream_count_for_testing());
@@ -688,7 +685,6 @@ IN_PROC_BROWSER_TEST_F(CaptureStreamRenderProcessHostTest,
       shell(), embedded_test_server()->GetURL("/media/getusermedia.html")));
   RenderProcessHostImpl* rph = static_cast<RenderProcessHostImpl*>(
       shell()->web_contents()->GetPrimaryMainFrame()->GetProcess());
-  std::string result;
   EXPECT_TRUE(ExecJs(
       shell(), "getUserMediaAndExpectSuccess({video: false, audio: true});"))
       << "Failed to execute javascript.";
@@ -698,14 +694,6 @@ IN_PROC_BROWSER_TEST_F(CaptureStreamRenderProcessHostTest,
 // Tests that media stream counts (used for process priority
 // calculations) are properly set and cleared during media playback and renderer
 // terminations for audio only streams.
-// Test is flaky on Android builders: https://crbug.com/352065578
-#if BUILDFLAG(IS_ANDROID)
-#define MAYBE_KillProcessZerosVideoCaptureStreams \
-  DISABLED_KillProcessZerosVideoCaptureStreams
-#else
-#define MAYBE_KillProcessZerosVideoCaptureStreams \
-  KillProcessZerosVideoCaptureStreams
-#endif
 IN_PROC_BROWSER_TEST_F(CaptureStreamRenderProcessHostTest,
                        KillProcessZerosAudioCaptureStreams) {
   ASSERT_TRUE(embedded_test_server()->Start());
@@ -713,7 +701,6 @@ IN_PROC_BROWSER_TEST_F(CaptureStreamRenderProcessHostTest,
       shell(), embedded_test_server()->GetURL("/media/getusermedia.html")));
   RenderProcessHostImpl* rph = static_cast<RenderProcessHostImpl*>(
       shell()->web_contents()->GetPrimaryMainFrame()->GetProcess());
-  std::string result;
   EXPECT_TRUE(ExecJs(
       shell(), "getUserMediaAndExpectSuccess({video: false, audio: true});"))
       << "Failed to execute javascript.";
@@ -1397,6 +1384,37 @@ IN_PROC_BROWSER_TEST_P(RenderProcessHostTest, PriorityOverrideAndroid) {
 }
 #endif
 
+// Observer that listens for process exits and counts when they are treated as
+// fast shutdown cases.
+class FastShutdownExitObserver : public RenderProcessHostObserver {
+ public:
+  explicit FastShutdownExitObserver(RenderProcessHost* process) {
+    observation_.Observe(process);
+  }
+  ~FastShutdownExitObserver() override = default;
+
+  // RenderProcessHostObserver:
+  void RenderProcessExited(RenderProcessHost* host,
+                           const ChildProcessTerminationInfo& info) override {
+    if (host->FastShutdownStarted()) {
+      fast_shutdown_exit_count_++;
+    }
+  }
+
+  void RenderProcessHostDestroyed(RenderProcessHost* host) override {
+    observation_.Reset();
+  }
+
+  int fast_shutdown_exit_count() { return fast_shutdown_exit_count_; }
+
+  void reset_exit_count() { fast_shutdown_exit_count_ = 0; }
+
+ private:
+  base::ScopedObservation<RenderProcessHost, RenderProcessHostObserver>
+      observation_{this};
+  int fast_shutdown_exit_count_ = 0;
+};
+
 class DiscardFrameBrowserTest : public RenderProcessHostTestBase,
                                 public WebContentsObserver {
  public:
@@ -1447,7 +1465,7 @@ IN_PROC_BROWSER_TEST_F(DiscardFrameBrowserTest,
 
   // Keep the renderer process alive after discard.
   EXPECT_TRUE(process->IsInitializedAndNotDead());
-  process->IncrementWorkerRefCount();
+  process->IncrementPendingReuseRefCount();
 
   // Discard the page.
   web_contents().Discard(base::NullCallback());
@@ -1465,6 +1483,37 @@ IN_PROC_BROWSER_TEST_F(DiscardFrameBrowserTest,
     return process->GetPriority() == base::Process::Priority::kBestEffort;
   }));
   EXPECT_EQ(process->GetPriority(), base::Process::Priority::kBestEffort);
+
+  process->DecrementPendingReuseRefCount();
+}
+
+IN_PROC_BROWSER_TEST_F(DiscardFrameBrowserTest, VerifyFastShutdownWithWorker) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  GURL test_url(embedded_test_server()->GetURL("a.com", "/simple_page.html"));
+  EXPECT_TRUE(NavigateToURL(shell(), test_url));
+
+  RenderProcessHost* process =
+      web_contents().GetPrimaryMainFrame()->GetProcess();
+
+  // Add a worker to the process.
+  EXPECT_TRUE(process->IsInitializedAndNotDead());
+  process->IncrementWorkerRefCount();
+
+  FastShutdownExitObserver fast_shutdown_observer(process);
+  RenderProcessHostWatcher watcher(
+      process, RenderProcessHostWatcher::WATCH_FOR_PROCESS_EXIT);
+  // Discard the page and verify that Stage 2 (the LocalMainFrame::Discard()
+  // reply callback) initiates fast shutdown synchronously before running the
+  // discard completion callback, rather than waiting ~500ms for
+  // DiscardedRFHProcessHelper.
+  base::RunLoop run_loop;
+  web_contents().Discard(run_loop.QuitClosure());
+  run_loop.Run();
+  EXPECT_TRUE(process->FastShutdownStarted());
+  watcher.Wait();
+
+  EXPECT_EQ(1, fast_shutdown_observer.fast_shutdown_exit_count());
+  EXPECT_FALSE(process->IsInitializedAndNotDead());
 
   process->DecrementWorkerRefCount();
 }
@@ -1629,33 +1678,6 @@ class LeakCleanupObserver : public WebContentsObserver {
   int termination_count_ = 0;
 };
 
-// Observer that listens for process exits and counts when they are treated as
-// fast shutdown cases.
-class FastShutdownExitObserver : public RenderProcessHostObserver {
- public:
-  explicit FastShutdownExitObserver(RenderProcessHost* process) {
-    process->AddObserver(this);
-  }
-  ~FastShutdownExitObserver() override = default;
-
-  // RenderProcessHostObserver:
-  void RenderProcessExited(RenderProcessHost* host,
-                           const ChildProcessTerminationInfo& info) override {
-    if (host->FastShutdownStarted())
-      fast_shutdown_exit_count_++;
-  }
-
-  void RenderProcessHostDestroyed(RenderProcessHost* host) override {
-    host->RemoveObserver(this);
-  }
-
-  int fast_shutdown_exit_count() { return fast_shutdown_exit_count_; }
-
-  void reset_exit_count() { fast_shutdown_exit_count_ = 0; }
-
- private:
-  int fast_shutdown_exit_count_ = 0;
-};
 
 }  // namespace
 
@@ -1898,6 +1920,106 @@ IN_PROC_BROWSER_TEST_P(RenderProcessHostTest,
   EXPECT_TRUE(new_child_rfh1->IsRenderFrameLive());
   EXPECT_EQ(0, process_exits_);
   EXPECT_EQ(0, host_destructions_);
+}
+
+namespace {
+
+// Releases a worker refcount on `process_` when a navigation finishes (e.g.,
+// when `~NavigationRequest()` destroys `ServiceWorkerClient` during
+// `FrameTreeNode::CancelNavigation()`), and records whether the process was
+// still alive immediately afterward.
+class WorkerRefReleasingNavigationObserver : public WebContentsObserver {
+ public:
+  WorkerRefReleasingNavigationObserver(WebContents* web_contents,
+                                       RenderProcessHost* process)
+      : WebContentsObserver(web_contents), process_(process) {}
+
+  void DidFinishNavigation(NavigationHandle* navigation_handle) override {
+    if (process_) {
+      RenderProcessHost* process = std::exchange(process_, nullptr);
+      process->DecrementWorkerRefCount();
+      released_ = true;
+      process_alive_after_release_ = process->IsInitializedAndNotDead();
+    }
+  }
+
+  bool released() const { return released_; }
+  bool process_alive_after_release() const {
+    return process_alive_after_release_;
+  }
+
+ private:
+  raw_ptr<RenderProcessHost> process_;
+  bool released_ = false;
+  bool process_alive_after_release_ = false;
+};
+
+}  // namespace
+
+// Regression test for b/569408565: Ensure that dropping the last worker
+// refcount during `FrameTreeNode::CancelNavigation()` while detaching a
+// non-live subframe does not make `RenderProcessHostImpl::Cleanup()` run
+// `FastShutdown()` -> `RenderProcessGone()` and destroy the `FrameTreeNode`
+// mid-detach. The process must still exit after the detach completes.
+IN_PROC_BROWSER_TEST_P(RenderProcessHostTest,
+                       NoReentrantCleanupOnSubframeDetachWithWorkerRef) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  IsolateAllSitesForTesting(base::CommandLine::ForCurrentProcess());
+
+  GURL initial_url(embedded_test_server()->GetURL(
+      "a.com", "/cross_site_iframe_factory.html?a(b,b)"));
+  EXPECT_TRUE(NavigateToURL(shell(), initial_url));
+  FrameTreeNode* root = static_cast<WebContentsImpl*>(shell()->web_contents())
+                            ->GetPrimaryFrameTree()
+                            .root();
+  RenderFrameHostImpl* child_rfh0 = root->child_at(0)->current_frame_host();
+  RenderFrameHostImpl* child_rfh1 = root->child_at(1)->current_frame_host();
+  RenderProcessHost* process_b = child_rfh0->GetProcess();
+
+  // Start a cross-site navigation in child-0 and pause it before commit while
+  // `child_rfh0` is still live (so no early RFH swap occurs, and the
+  // speculative RFH is in a different process so terminating `process_b` does
+  // not cancel the navigation).
+  GURL url_c(embedded_test_server()->GetURL("c.com", "/title1.html"));
+  TestNavigationManager nav_manager(shell()->web_contents(), url_c);
+  ASSERT_TRUE(ExecJs(
+      root, JsReplace("document.getElementById('child-0').src = $1;", url_c)));
+  ASSERT_TRUE(nav_manager.WaitForRequestStart());
+
+  // Terminate the b.com subframe process while the navigation is in flight so
+  // both subframes are non-live while `child_rfh0` remains current_frame_host()
+  // with an active NavigationRequest.
+  {
+    RenderProcessHostWatcher termination_observer(
+        process_b, RenderProcessHostWatcher::WATCH_FOR_PROCESS_EXIT);
+    process_b->Shutdown(0);
+    termination_observer.Wait();
+  }
+  ASSERT_FALSE(child_rfh0->IsRenderFrameLive());
+  ASSERT_FALSE(child_rfh1->IsRenderFrameLive());
+  ASSERT_EQ(child_rfh0, root->child_at(0)->current_frame_host());
+  ASSERT_TRUE(root->child_at(0)->navigation_request());
+
+  // Relaunch `process_b` and hold a worker refcount on it, simulating a service
+  // worker running in `process_b`.
+  ASSERT_TRUE(process_b->Init());
+  process_b->IncrementWorkerRefCount();
+  ASSERT_TRUE(process_b->IsInitializedAndNotDead());
+
+  // When child-0's navigation is cancelled during detach, drop the worker
+  // refcount on `process_b`.
+  WorkerRefReleasingNavigationObserver nav_observer(shell()->web_contents(),
+                                                    process_b);
+  RenderProcessHostWatcher exit_observer(
+      process_b, RenderProcessHostWatcher::WATCH_FOR_PROCESS_EXIT);
+  EXPECT_TRUE(ExecJs(root, "document.getElementById('child-0').remove();"));
+  exit_observer.Wait();
+  EXPECT_FALSE(process_b->IsInitializedAndNotDead());
+
+  // The process must not have been shut down synchronously while the subframe
+  // was being detached; it should only exit after the detach completes.
+  ASSERT_TRUE(nav_observer.released());
+  EXPECT_TRUE(nav_observer.process_alive_after_release());
 }
 
 // Test that RenderProcessHostImpl::Cleanup can handle nested deletions of
@@ -3065,4 +3187,41 @@ IN_PROC_BROWSER_TEST_P(RenderProcessHostTest, RendererCheckIsTest) {
   EXPECT_TRUE(future.Get());
 }
 
+IN_PROC_BROWSER_TEST_F(DiscardFrameBrowserTest,
+                       DiscardSharedProcessFastShutdown) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  GURL test_url(embedded_test_server()->GetURL("a.com", "/simple_page.html"));
+
+  // Navigate the first shell
+  EXPECT_TRUE(NavigateToURL(shell(), test_url));
+
+  // Create a second shell in the same site instance
+  scoped_refptr<SiteInstance> site_instance =
+      shell()->web_contents()->GetSiteInstance();
+  Shell* shell2 =
+      Shell::CreateNewWindow(shell()->web_contents()->GetBrowserContext(),
+                             test_url, site_instance, gfx::Size());
+  EXPECT_TRUE(NavigateToURL(shell2, test_url));
+
+  RenderProcessHost* process =
+      shell()->web_contents()->GetPrimaryMainFrame()->GetProcess();
+  EXPECT_EQ(process,
+            shell2->web_contents()->GetPrimaryMainFrame()->GetProcess());
+
+  RenderProcessHostWatcher watcher(
+      process, RenderProcessHostWatcher::WATCH_FOR_PROCESS_EXIT);
+
+  // Discard the first page - process should stay alive
+  base::RunLoop run_loop;
+  shell()->web_contents()->Discard(base::BindLambdaForTesting([&]() {
+    EXPECT_TRUE(process->IsInitializedAndNotDead());
+    run_loop.Quit();
+  }));
+  run_loop.Run();
+
+  // Discard the second page - process should exit
+  shell2->web_contents()->Discard(base::NullCallback());
+  watcher.Wait();
+  EXPECT_FALSE(process->IsInitializedAndNotDead());
+}
 }  // namespace content

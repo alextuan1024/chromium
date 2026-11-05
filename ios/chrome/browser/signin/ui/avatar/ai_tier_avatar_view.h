@@ -7,17 +7,21 @@
 
 #import <UIKit/UIKit.h>
 
+#import "ios/chrome/browser/shared/ui/table_view/content_configuration/chrome_content_view.h"
+
+@class AITierAvatarContentConfiguration;
+
 // A view containing an avatar image view and, optionally, an AI tier outer
 // ring.
-@interface AITierAvatarView : UIView
+@interface AITierAvatarView : UIView <ChromeContentView>
 
-- (instancetype)initWithAvatarImage:(UIImage*)avatarImage
-                     avatarDiameter:(CGFloat)avatarDiameter
-                    showsAITierRing:(BOOL)showsAITierRing
-    NS_DESIGNATED_INITIALIZER;
+// Initializes the view with a content `configuration`.
+- (instancetype)initWithConfiguration:
+    (AITierAvatarContentConfiguration*)configuration NS_DESIGNATED_INITIALIZER;
 
 - (instancetype)initWithFrame:(CGRect)frame NS_UNAVAILABLE;
 - (instancetype)initWithCoder:(NSCoder*)coder NS_UNAVAILABLE;
+- (instancetype)init NS_UNAVAILABLE;
 
 @end
 

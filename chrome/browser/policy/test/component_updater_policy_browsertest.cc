@@ -15,6 +15,7 @@
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/component_updater/chrome_component_updater_configurator.h"
 #include "chrome/browser/policy/policy_test_utils.h"
+#include "chrome/common/chrome_switches.h"
 #include "components/component_updater/component_updater_service.h"
 #include "components/component_updater/component_updater_switches.h"
 #include "components/policy/core/common/policy_map.h"
@@ -46,6 +47,7 @@ class ComponentUpdaterPolicyTest : public PolicyTest {
   ~ComponentUpdaterPolicyTest() override;
 
   void SetUpCommandLine(base::CommandLine* command_line) override;
+  void SetUpDefaultCommandLine(base::CommandLine* command_line) override;
   void SetUpOnMainThread() override;
 
  protected:
@@ -128,6 +130,13 @@ void ComponentUpdaterPolicyTest::SetUpCommandLine(
   PolicyTest::SetUpCommandLine(command_line);
 }
 
+void ComponentUpdaterPolicyTest::SetUpDefaultCommandLine(
+    base::CommandLine* command_line) {
+  PolicyTest::SetUpDefaultCommandLine(command_line);
+  // The test makes update checks against the mock server.
+  command_line->RemoveSwitch(::switches::kDisableComponentUpdate);
+}
+
 void ComponentUpdaterPolicyTest::SetUpOnMainThread() {
   const auto config = component_updater::MakeChromeComponentUpdaterConfigurator(
       base::CommandLine::ForCurrentProcess(), g_browser_process->local_state());
@@ -183,15 +192,13 @@ ComponentUpdaterPolicyTest::MakeComponentRegistration(
       0xf6, 0xc4, 0x11, 0x9f, 0xbc, 0xb3, 0x09, 0xb3, 0x5b, 0x40};
 
   // The component uses HTTPS only for network interception purposes.
-  return component_updater::ComponentRegistration(
-      "jebgalgnebhfojomionfpkfelancnnkf", {}, jebg_hash, base::Version("0.9"),
-      /*fingerprint=*/{}, /*installer_attributes=*/{},
-      /*action_handler=*/nullptr, base::MakeRefCounted<MockInstaller>(),
-      /*requires_network_encryption=*/true,
-      supports_group_policy_enable_component_updates,
-      /*allow_cached_copies=*/true,
-      /*allow_updates_on_metered_connection=*/true,
-      /*allow_updates=*/true);
+  return {.app_id = "jebgalgnebhfojomionfpkfelancnnkf",
+          .public_key_hash = jebg_hash,
+          .version = base::Version("0.9"),
+          .installer = base::MakeRefCounted<MockInstaller>(),
+          .requires_network_encryption = true,
+          .supports_group_policy_enable_component_updates =
+              supports_group_policy_enable_component_updates};
 }
 
 void ComponentUpdaterPolicyTest::UpdateComponent(

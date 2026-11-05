@@ -2,7 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include <cstdlib>
 #include <memory>
 #include <optional>
 #include <string>
@@ -608,6 +607,14 @@ class IntegrationTestCommandsSystem : public IntegrationTestCommands {
       const base::FilePath& bundle_path) const override {
     RunCommand("expect_prepare_to_run_bundle_success",
                {Param("bundle_path", bundle_path.AsUTF8Unsafe())});
+  }
+
+  void QuarantineWakePlist() const override {
+    RunCommand("quarantine_wake_plist");
+  }
+
+  void ExpectWakeJobLoaded() const override {
+    RunCommand("expect_wake_job_loaded");
   }
 
   void ExpectKSAdminFetchTag(

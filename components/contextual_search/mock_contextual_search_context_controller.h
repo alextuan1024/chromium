@@ -67,13 +67,24 @@ class MockContextualSearchContextController
               GetFileInfo,
               (const base::UnguessableToken& file_token),
               (override));
+  MOCK_METHOD(const FileInfo*,
+              MarkFileSuperceded,
+              (const base::UnguessableToken& file_token),
+              (override));
   MOCK_METHOD(std::vector<raw_ptr<const FileInfo>>,
               GetFileInfoList,
               (),
               (override));
+  MOCK_METHOD(void, SetAuthUserIndex, (size_t auth_user_index), (override));
   MOCK_METHOD(base::WeakPtr<ContextualSearchContextController>,
               AsWeakPtr,
               (),
+              (override));
+  MOCK_METHOD(std::string, search_session_id, (), (const, override));
+  MOCK_METHOD((std::optional<lens::LensOverlayVisualSearchInteractionData>),
+              GetVisualSearchInteractionData,
+              (const base::UnguessableToken&,
+               const std::optional<std::string>&),
               (override));
 };
 

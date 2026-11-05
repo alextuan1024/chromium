@@ -42,6 +42,13 @@ using ReportBadMessageCallback =
 // Message owns its data and handles, but a consumer of Message is free to
 // mutate the data and handles. The message's data is comprised of a header
 // followed by payload.
+//
+// WARNING: Generated Mojom bindings declare stack-allocated `Message` objects
+// with `STACK_UNINITIALIZED` to avoid pre-filling `sizeof(Message)` bytes at
+// thousands of call sites before the out-of-line `Message` constructor runs.
+// Any field added to `Message` (or `internal::Buffer`) MUST be initialized by
+// a non-trivial default constructor, a default member initializer, or every
+// `Message` constructor.
 class COMPONENT_EXPORT(MOJO_CPP_BINDINGS_BASE) Message {
  public:
   static const uint32_t kFlagExpectsResponse = 1 << 0;
@@ -100,15 +107,17 @@ class COMPONENT_EXPORT(MOJO_CPP_BINDINGS_BASE) Message {
           std::vector<ScopedHandle>* handles,
           size_t estimated_payload_size = 0);
 
-  // Constructor for the common case of unknown `payload_size`, unspecified
-  // `payload_interface_id_count`, and no `handles` vector.
+  // Constructs a serialized Message and pre-allocates its initial parameter
+  // struct at `sizeof(MessageHeaderV3)` initialized to `payload_header`.
   Message(uint32_t name,
           uint32_t flags,
           MojoCreateMessageFlags create_message_flags,
-          size_t estimated_payload_size);
+          size_t estimated_payload_size,
+          internal::StructHeader payload_header);
 
-  // Same as above, but the with default MojoCreateMessageFlags.
-  Message(uint32_t name, uint32_t flags, size_t estimated_payload_size);
+  // Same as above, with default `MojoCreateMessageFlags` and no payload size
+  // estimate.
+  Message(uint32_t name, uint32_t flags, internal::StructHeader payload_header);
 
   // Constructs a new Message object from an existing message handle. Used
   // exclusively for serializing an existing unserialized message.
@@ -121,6 +130,19 @@ class COMPONENT_EXPORT(MOJO_CPP_BINDINGS_BASE) Message {
   // long as the Message is not moved and neither |Reset()| nor
   // |TakeMojoMessage()| is called.
   Message(base::span<const uint8_t> payload, base::span<ScopedHandle> handles);
+
+  // Constructs a serialized `Message` object from an existing
+  // `ScopedMessageHandle` whose message header has already been validated and
+  // whose attached handles have already been extracted (e.g. by bindings in
+  // another language).
+  //
+  // This is like `CreateFromMessageHandle`, but for callers who have already
+  // extracted the handles from the message.
+  //
+  // This should only be used to represent an incoming message. Outgoing
+  // operations like serializing or attaching handles will `CHECK`-fail.
+  Message(ScopedMessageHandle message_handle,
+          std::vector<ScopedHandle> handles);
 
   Message(const Message&) = delete;
   Message& operator=(const Message&) = delete;
@@ -260,6 +282,19 @@ class COMPONENT_EXPORT(MOJO_CPP_BINDINGS_BASE) Message {
   // ownership of its internal storage and any attached handles.
   ScopedMessageHandle TakeMojoMessage();
 
+  // Takes the underlying message handle, invalidating this `Message` object.
+  //
+  // Unlike `TakeMojoMessage()`, which is used for sending outgoing messages,
+  // this function is used to pass ownership of a message to Rust. It can be
+  // used for either direction of message.
+  //
+  // Before calling this method, the message must be serialized and the caller
+  // must empty `handles_` and `associated_endpoint_handles_` (either by taking
+  // ownership of them via `mutable_handles()` and
+  // `mutable_associated_endpoint_handles()` for incoming messages, or by
+  // calling `SerializeHandles()` for outgoing messages).
+  ScopedMessageHandle TakeMessageHandleForRust();
+
   // Notifies the system that this message is "bad," in this case meaning it was
   // rejected by bindings validation code.
   void NotifyBadMessage(std::string_view error);
@@ -334,10 +369,18 @@ class COMPONENT_EXPORT(MOJO_CPP_BINDINGS_BASE) Message {
           internal::Buffer payload_buffer,
           bool serialized);
 
+  // WARNING: Generated code constructs stack `Message` instances with
+  // `STACK_UNINITIALIZED`. Every member below MUST be initialized by a
+  // non-trivial default constructor, a default member initializer, or every
+  // `Message` constructor so no field is ever left uninitialized.
   ScopedMessageHandle handle_;
 
   // A Buffer which may be used to allocate blocks of data within the message
-  // payload for reading or writing.
+  // payload for reading or writing. For serialized messages, this points to
+  // storage owned by `handle_`. For unserialized messages, this points to the
+  // dummy header inside the `UnserializedMessageContext` attached to `handle_`.
+  // In either case, `payload_buffer_` must be reset before `handle_` or its
+  // attached context is destroyed.
   internal::Buffer payload_buffer_;
 
   std::vector<ScopedHandle> handles_;
@@ -377,12 +420,11 @@ class COMPONENT_EXPORT(MOJO_CPP_BINDINGS_BASE) MessageFilter {
   virtual void DidDispatchOrReject(Message* message, bool accepted) = 0;
 };
 
+using MessageValidatorFunc = bool (*)(Message*);
+
 class COMPONENT_EXPORT(MOJO_CPP_BINDINGS_BASE) MessageReceiver {
  public:
   virtual ~MessageReceiver() = default;
-
-  // Indicates whether the receiver prefers to receive serialized messages.
-  virtual bool PrefersSerializedMessages();
 
   // The receiver may mutate the given message.  Returns true if the message
   // was accepted and false otherwise, indicating that the message was invalid
@@ -419,18 +461,9 @@ class MessageReceiverWithResponderStatus : public MessageReceiver {
       std::unique_ptr<internal::ResponderThunk> responder) = 0;
 };
 
-class COMPONENT_EXPORT(MOJO_CPP_BINDINGS_BASE) PassThroughFilter
-    : public MessageReceiver {
+class COMPONENT_EXPORT(MOJO_CPP_BINDINGS_BASE) PassThroughFilter {
  public:
-  PassThroughFilter();
-
-  PassThroughFilter(const PassThroughFilter&) = delete;
-  PassThroughFilter& operator=(const PassThroughFilter&) = delete;
-
-  ~PassThroughFilter() override;
-
-  // MessageReceiver:
-  bool Accept(Message* message) override;
+  static bool Accept(Message* message);
 };
 
 // Reports the currently dispatching Message as bad. Note that this is only

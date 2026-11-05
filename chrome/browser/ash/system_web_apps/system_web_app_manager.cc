@@ -23,6 +23,7 @@
 #include "base/check_op.h"
 #include "base/command_line.h"
 #include "base/containers/flat_map.h"
+#include "base/containers/flat_set.h"
 #include "base/dcheck_is_on.h"
 #include "base/debug/crash_logging.h"
 #include "base/debug/dump_without_crashing.h"
@@ -456,6 +457,14 @@ void SystemWebAppManager::InstallSystemAppsForTesting() {
   run_loop.Run();
 }
 
+void SystemWebAppManager::InstallSystemAppsForTesting(
+    base::flat_set<SystemWebAppType> types) {
+  base::EraseIf(system_app_delegates_, [&types](const auto& entry) {
+    return !types.contains(entry.first);
+  });
+  InstallSystemAppsForTesting();
+}
+
 std::optional<webapps::AppId> SystemWebAppManager::GetAppIdForSystemApp(
     SystemWebAppType type) const {
   if (!provider_->is_registry_ready()) {
@@ -714,7 +723,7 @@ void SystemWebAppManager::OnAppsSynchronized(
   pref_service_->SetString(prefs::kSystemWebAppLastUpdateVersion,
                            CurrentVersion().GetString());
   pref_service_->SetString(prefs::kSystemWebAppLastInstalledLocale,
-                           application_locale_storage_->Get());
+                           application_locale_storage_->GetTag().tag_string());
 
   // Report install duration only if the install pipeline actually installs
   // all the apps (e.g. on version upgrade).
@@ -823,7 +832,8 @@ bool SystemWebAppManager::ShouldForceInstallApps() const {
   // If system language changes, ensure System Web Apps launcher localization
   // are in sync with current language.
   const bool localeIsDifferent =
-      current_installed_locale != application_locale_storage_->Get();
+      current_installed_locale !=
+      application_locale_storage_->GetTag().tag_string();
 
   return versionIsDifferent || localeIsDifferent;
 }
@@ -835,10 +845,10 @@ void SystemWebAppManager::UpdateLastAttemptedInfo() {
   const std::string& last_attempted_locale(
       pref_service_->GetString(prefs::kSystemWebAppLastAttemptedLocale));
 
-  const bool is_retry =
-      last_attempted_version.IsValid() &&
-      last_attempted_version == CurrentVersion() &&
-      last_attempted_locale == application_locale_storage_->Get();
+  const bool is_retry = last_attempted_version.IsValid() &&
+                        last_attempted_version == CurrentVersion() &&
+                        last_attempted_locale ==
+                            application_locale_storage_->GetTag().tag_string();
 
   if (!is_retry) {
     pref_service_->SetInteger(prefs::kSystemWebAppInstallFailureCount, 0);
@@ -847,7 +857,7 @@ void SystemWebAppManager::UpdateLastAttemptedInfo() {
   pref_service_->SetString(prefs::kSystemWebAppLastAttemptedVersion,
                            CurrentVersion().GetString());
   pref_service_->SetString(prefs::kSystemWebAppLastAttemptedLocale,
-                           application_locale_storage_->Get());
+                           application_locale_storage_->GetTag().tag_string());
   pref_service_->CommitPendingWrite();
 }
 

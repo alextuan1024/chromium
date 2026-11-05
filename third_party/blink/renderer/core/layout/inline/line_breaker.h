@@ -23,6 +23,7 @@
 namespace blink {
 
 class ColumnSpannerPath;
+class FragmentedOofContainer;
 class Hyphenation;
 class InlineBreakToken;
 class InlineItem;
@@ -51,6 +52,7 @@ class CORE_EXPORT LineBreaker {
               const LeadingFloats& leading_floats,
               const InlineBreakToken*,
               const ColumnSpannerPath*,
+              const FragmentedOofContainer*,
               ExclusionSpace*);
   ~LineBreaker();
 
@@ -85,8 +87,15 @@ class CORE_EXPORT LineBreaker {
 
   void SetLineClampEllipsisWidth(LayoutUnit width) {
     DCHECK(RuntimeEnabledFeatures::CSSLineClampLineBreakingEllipsisEnabled());
+    bool had_ellipsis = line_clamp_ellipsis_width_;
     line_clamp_ellipsis_width_ = width;
     UpdateAvailableWidth();
+
+    // The presence of an ellipsis has an effect on how the style is applied.
+    if (current_style_ &&
+        had_ellipsis != static_cast<bool>(line_clamp_ellipsis_width_)) {
+      SetCurrentStyleForce(*current_style_);
+    }
   }
 
   // Computing |LineBreakerMode::kMinContent| with |MaxSizeCache| caches
@@ -136,6 +145,9 @@ class CORE_EXPORT LineBreaker {
  private:
   Document& GetDocument() const { return node_.GetDocument(); }
 
+  // Returns true if this LineBreaker is computing min/max content size.
+  bool IsComputingContentSize() const;
+
   // True if `this` is for a part of an IFC. Used by Ruby.
   bool IsSubLineBreaker() const { return end_item_index_ != Items().size(); }
 
@@ -156,6 +168,10 @@ class CORE_EXPORT LineBreaker {
   // event if "white-space" means wrap, because combined text should be laid
   // out in one line.
   bool ShouldAutoWrap(const ComputedStyle& style) const;
+
+  // True if this is a sub-LineBreaker for <ruby> that doesn't retry with
+  // `override_break_anywhere_` by itself, but inherits it from the parent.
+  bool DefersBreakAnywhereToParent() const;
 
   enum class LineBreakState {
     // The line breaking is complete.
@@ -244,6 +260,7 @@ class CORE_EXPORT LineBreaker {
   LineInfo CreateSubLineInfo(
       InlineItemTextIndex start,
       wtf_size_t end_item_index,
+      const ComputedStyle& line_style,
       LineBreakerMode mode,
       LayoutUnit limit,
       WhitespaceState initial_whitespace_state,
@@ -448,6 +465,7 @@ class CORE_EXPORT LineBreaker {
   // BreakLine consumes it.
   const RubyBreakTokenData* ruby_break_token_ = nullptr;
   const ColumnSpannerPath* column_spanner_path_;
+  const FragmentedOofContainer* fragmented_oof_container_ = nullptr;
   const ComputedStyle* current_style_ = nullptr;
 
   LazyLineBreakIterator break_iterator_;
@@ -522,6 +540,9 @@ class CORE_EXPORT LineBreaker {
 
   // This member is available after calling SetInputRange().
   const LineBreaker* parent_breaker_ = nullptr;
+
+  // The line style of a sub-LineBreaker for <ruby>. Set by CreateSubLineInfo().
+  const ComputedStyle* sub_line_style_ = nullptr;
 };
 
 }  // namespace blink

@@ -37,14 +37,15 @@
 #include "components/prefs/pref_service.h"
 #include "components/profile_metrics/state.h"
 #include "components/signin/public/base/consent_level.h"
+#include "components/signin/public/base/signin_metrics.h"
 #include "components/signin/public/base/signin_pref_names.h"
 #include "components/signin/public/base/signin_prefs.h"
 #include "components/signin/public/identity_manager/account_capabilities_test_mutator.h"
 #include "components/signin/public/identity_manager/account_info.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/signin/public/identity_manager/identity_test_utils.h"
+#include "components/signin/public/identity_manager/primary_account_mutator.h"
 #include "components/signin/public/identity_manager/signin_constants.h"
-#include "components/sync/base/features.h"
 #include "components/sync_preferences/pref_service_syncable.h"
 #include "components/sync_preferences/testing_pref_service_syncable.h"
 #include "content/public/test/browser_task_environment.h"
@@ -187,16 +188,12 @@ class GAIAInfoUpdateServiceTest : public testing::Test {
   network::TestURLLoaderFactory test_url_loader_factory_;
 };
 
-TEST_F(GAIAInfoUpdateServiceTest, SyncOnSyncOff) {
-  if (syncer::IsReplaceSyncPromosWithSignInPromosEnabled()) {
-    GTEST_SKIP() << "Sync is deprecated";
-  }
-
+TEST_F(GAIAInfoUpdateServiceTest, LogInLogOut) {
   AccountInfo info =
       signin::MakeAccountAvailable(identity_manager(), "pat@example.com");
   base::RunLoop().RunUntilIdle();
   signin::SetPrimaryAccount(identity_manager(), info.GetEmail(),
-                            signin::ConsentLevel::kSync);
+                            signin::ConsentLevel::kSignin);
   info = GetValidAccountInfo(info.GetEmail(), info.GetGaiaId(), "Pat",
                              "Pat Foo", "");
   signin::UpdateAccountInfoForAccount(identity_manager(), info);
@@ -223,42 +220,6 @@ TEST_F(GAIAInfoUpdateServiceTest, SyncOnSyncOff) {
   EXPECT_FALSE(entry->GetHostedDomain().has_value());
   EXPECT_EQ(entry->GetIsManaged(), signin::Tribool::kFalse);
 }
-
-#if BUILDFLAG(ENABLE_DICE_SUPPORT)
-TEST_F(GAIAInfoUpdateServiceTest, RevokeSyncConsent) {
-  if (syncer::IsReplaceSyncPromosWithSignInPromosEnabled()) {
-    GTEST_SKIP() << "RevokeSyncConsent() is no-op as Sync is deprecated";
-  }
-
-  AccountInfo info =
-      signin::MakeAccountAvailable(identity_manager(), "pat@example.com");
-  base::RunLoop().RunUntilIdle();
-  signin::SetPrimaryAccount(identity_manager(), info.GetEmail(),
-                            signin::ConsentLevel::kSync);
-  info = GetValidAccountInfo(info.GetEmail(), info.GetGaiaId(), "Pat",
-                             "Pat Foo", "");
-  signin::UpdateAccountInfoForAccount(identity_manager(), info);
-  base::RunLoop().RunUntilIdle();
-
-  ASSERT_EQ(1u, storage()->GetNumberOfProfiles());
-  ProfileAttributesEntry* entry = storage()->GetAllProfilesAttributes().front();
-  gfx::Image gaia_picture = gfx::test::CreateImage(256, 256);
-  signin::SimulateAccountImageFetch(identity_manager(), info.GetAccountId(),
-                                    "GAIA_IMAGE_URL_WITH_SIZE", gaia_picture);
-  // Revoke sync consent (stay signed in with the primary account).
-  signin::RevokeSyncConsent(identity_manager());
-  ASSERT_TRUE(
-      identity_manager()->HasPrimaryAccount(signin::ConsentLevel::kSignin));
-  // Verify that the GAIA name and picture, and picture URL are not cleared
-  // as unconsented primary account still exists.
-  EXPECT_EQ(entry->GetGAIAGivenName(), u"Pat");
-  EXPECT_EQ(entry->GetGAIAName(), u"Pat Foo");
-  EXPECT_EQ(entry->GetHostedDomain(), "");
-  EXPECT_EQ(entry->GetIsManaged(), signin::Tribool::kFalse);
-  EXPECT_TRUE(gfx::test::AreImagesEqual(gaia_picture, entry->GetAvatarIcon()));
-}
-
-#endif  // !BUILDFLAG(ENABLE_DICE_SUPPORT)
 
 TEST_F(GAIAInfoUpdateServiceTest, ClearGaiaInfoOnStartup) {
   // Simulate a state where the profile entry has GAIA related information
@@ -334,6 +295,11 @@ TEST_F(GAIAInfoUpdateServiceTest,
       identity_manager()->HasPrimaryAccount(signin::ConsentLevel::kSignin));
   // Primary account prefs should remain since the account is still signed in.
   EXPECT_TRUE(HasAccountPrefs(primary_gaia_id));
+  // The secondary account still has a refresh token, so its prefs are kept
+  // until its refresh token is removed.
+  EXPECT_TRUE(HasAccountPrefs(secondary_gaia_id));
+  signin::RemoveRefreshTokenForAccount(identity_manager(),
+                                       secondary_info.GetAccountId());
   // Secondary account prefs should be cleared.
   EXPECT_FALSE(HasAccountPrefs(secondary_gaia_id));
 
@@ -386,8 +352,13 @@ TEST_F(GAIAInfoUpdateServiceTest, SigninPrefsWithSignedInWebOnly) {
       {{std::string(info.GetEmail()), info.GetGaiaId(), /*signed_out=*/true}});
   EXPECT_TRUE(HasAccountPrefs(gaia_id));
 
-  // Clearing the cookie removes the prefs.
+  // Clearing the cookie keeps the prefs, since the account still has a refresh
+  // token.
   signin::SetCookieAccounts(identity_manager(), test_url_loader_factory(), {});
+  EXPECT_TRUE(HasAccountPrefs(gaia_id));
+
+  // Removing the refresh token removes the prefs.
+  signin::RemoveRefreshTokenForAccount(identity_manager(), info.GetAccountId());
   EXPECT_FALSE(HasAccountPrefs(gaia_id));
 }
 
@@ -421,6 +392,71 @@ TEST_F(GAIAInfoUpdateServiceTest, SigninPrefsWithGaiaIdNotInChrome) {
   // Prefs for the Account in Chrome remains, not for the account not in Chrome.
   EXPECT_TRUE(HasAccountPrefs(gaia_id));
   EXPECT_FALSE(HasAccountPrefs(gaia_id_not_in_chrome));
+}
+
+// Signing out while keeping the tokens (e.g. on Android, the accounts on the
+// device are kept) keeps the prefs of accounts with refresh tokens until their
+// refresh tokens are removed.
+TEST_F(GAIAInfoUpdateServiceTest, SigninPrefsKeptOnSignoutForAccountWithToken) {
+  base::HistogramTester histogram_tester;
+  const GaiaId gaia_id("gaia_id");
+  AccountInfo info = signin::MakeAccountAvailable(
+      identity_manager(),
+      signin::AccountAvailabilityOptionsBuilder(test_url_loader_factory())
+          .AsPrimary(signin::ConsentLevel::kSignin)
+          .WithGaiaId(gaia_id)
+          .WithCookie()
+          .Build("test@gmail.com"));
+  ASSERT_EQ(gaia_id, info.GetGaiaId());
+  InitializeAccountPref(gaia_id);
+  ASSERT_TRUE(HasAccountPrefs(gaia_id));
+
+  // Sign out but keep the tokens (like on Android), and clear the cookies.
+  ASSERT_TRUE(identity_manager()
+                  ->GetPrimaryAccountMutator()
+                  ->RemovePrimaryAccountButKeepTokens(
+                      signin_metrics::ProfileSignout::kTest));
+  signin::SetCookieAccounts(identity_manager(), test_url_loader_factory(), {});
+  ASSERT_FALSE(
+      identity_manager()->HasPrimaryAccount(signin::ConsentLevel::kSignin));
+  ASSERT_TRUE(
+      identity_manager()->HasAccountWithRefreshToken(info.GetAccountId()));
+
+  // The prefs are kept since the account still has a refresh token.
+  EXPECT_TRUE(HasAccountPrefs(gaia_id));
+  histogram_tester.ExpectTotalCount("Signin.AccountPref.RemovedCount",
+                                    /*expected_count=*/0);
+
+  // Removing the refresh token removes the prefs.
+  signin::RemoveRefreshTokenForAccount(identity_manager(), info.GetAccountId());
+  EXPECT_FALSE(HasAccountPrefs(gaia_id));
+  histogram_tester.ExpectUniqueSample(
+      "Signin.AccountPref.RemovedCount.SignedOut",
+      /*sample=*/1,
+      /*expected_bucket_count=*/1);
+}
+
+// Prefs should not be removed until the refresh tokens are loaded.
+TEST_F(GAIAInfoUpdateServiceTest,
+       SigninPrefsNotRemovedBeforeRefreshTokensLoaded) {
+  IdentityTestEnvironmentProfileAdaptor adaptor(profile());
+  adaptor.identity_test_env()->ResetToAccountsNotYetLoadedFromDiskState();
+  ASSERT_FALSE(identity_manager()->AreRefreshTokensLoaded());
+
+  const GaiaId gaia_id("gaia_id");
+  InitializeAccountPref(gaia_id);
+  ASSERT_TRUE(HasAccountPrefs(gaia_id));
+
+  // A fresh cookie jar without the account does not remove the prefs, since the
+  // account may still have a refresh token.
+  signin::SetCookieAccounts(identity_manager(), test_url_loader_factory(), {});
+  EXPECT_TRUE(HasAccountPrefs(gaia_id));
+
+  // Once the refresh tokens are loaded, the prefs are removed since the account
+  // has no refresh token.
+  adaptor.identity_test_env()->ReloadAccountsFromDisk();
+  ASSERT_TRUE(identity_manager()->AreRefreshTokensLoaded());
+  EXPECT_FALSE(HasAccountPrefs(gaia_id));
 }
 
 #if !BUILDFLAG(IS_ANDROID)
@@ -472,11 +508,6 @@ TEST_F(GAIAInfoUpdateServiceWithGlicEnablingTest, LogInLogOut) {
       identity_manager(), email, signin::ConsentLevel::kSignin);
   EXPECT_TRUE(
       identity_manager()->HasPrimaryAccount(signin::ConsentLevel::kSignin));
-
-  if (!syncer::IsReplaceSyncPromosWithSignInPromosEnabled()) {
-    EXPECT_FALSE(
-        identity_manager()->HasPrimaryAccount(signin::ConsentLevel::kSync));
-  }
 
   info = GetValidAccountInfo(info.GetEmail(), info.GetGaiaId(), "Pat",
                              "Pat Foo", "");

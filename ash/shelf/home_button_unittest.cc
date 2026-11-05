@@ -44,6 +44,7 @@
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/compositor/layer.h"
 #include "ui/compositor/layer_animator.h"
+#include "ui/compositor/layer_tree_owner.h"
 #include "ui/compositor/test/layer_animation_stopped_waiter.h"
 #include "ui/display/test/display_manager_test_api.h"
 #include "ui/events/event.h"
@@ -58,6 +59,7 @@
 #include "ui/views/animation/bounds_animator.h"
 #include "ui/views/controls/button/image_button.h"
 #include "ui/wm/core/coordinate_conversion.h"
+#include "ui/wm/core/window_util.h"
 
 namespace ash {
 
@@ -195,7 +197,13 @@ class HomeButtonWithQuickAppAccess : public HomeButtonTestBase {
 
 class HomeButtonNoSessionTest : public HomeButtonTest {
  public:
-  HomeButtonNoSessionTest() { set_start_session(false); }
+  HomeButtonNoSessionTest() = default;
+
+  // HomeButtonTest:
+  void SetUpInitParams(AshTestHelper::InitParams& init_params) override {
+    HomeButtonTest::SetUpInitParams(init_params);
+    init_params.users.clear();
+  }
 };
 
 // Test that setting an existing app item as the quick app shows a working
@@ -955,6 +963,37 @@ TEST_F(HomeButtonAnimationTest, ShowWhileAnimatingToHide) {
   EXPECT_EQ(1.0f, home_button_view->layer()->GetTargetOpacity());
 }
 
+// Verifies that the home button hide animation observer is cleaned up if the
+// button is deleted before the animation completes. Recreating the layers
+// mid-animation, as screen rotation does, means the observer's animation never
+// completes, so without cleanup it would leak and keep a dangling pointer to
+// the deleted button.
+TEST_F(HomeButtonAnimationTest, ShelfDestroyedWhileAnimatingToHide) {
+  UpdateDisplay("800x600,800x600");
+  ASSERT_EQ(2u, Shell::GetAllRootWindows().size());
+  aura::Window* const secondary_root = Shell::GetAllRootWindows()[1];
+  views::View* const secondary_home_button =
+      Shelf::ForWindow(secondary_root)->navigation_widget()->GetHomeButton();
+  ASSERT_TRUE(secondary_home_button);
+
+  // Switch to tablet mode to initiate the home button hide animation.
+  ash::TabletModeControllerTestApi().EnterTabletMode();
+  EXPECT_TRUE(secondary_home_button->GetVisible());
+  EXPECT_EQ(0.0f, secondary_home_button->layer()->GetTargetOpacity());
+  EXPECT_TRUE(secondary_home_button->layer()->GetAnimator()->is_animating());
+
+  // Recreate the layers mid-animation, as ScreenRotationAnimator does.
+  std::unique_ptr<ui::LayerTreeOwner> old_layer_tree =
+      ::wm::RecreateLayers(secondary_root);
+
+  // Remove the secondary display, which deletes its shelf and home button
+  // before the hide animation completes.
+  UpdateDisplay("800x600");
+  ASSERT_EQ(1u, Shell::GetAllRootWindows().size());
+
+  old_layer_tree.reset();
+}
+
 // Verifies that unanimated navigation widget layout update interrupts in
 // progress button animation.
 TEST_F(HomeButtonAnimationTest, NonAnimatedLayoutDuringAnimation) {
@@ -1005,12 +1044,10 @@ TEST_F(HomeButtonAnimationTest, NonAnimatedLayoutDuringAnimation) {
   EXPECT_EQ(1.0f, home_button_view->layer()->opacity());
 }
 
-inline constexpr LoginInfo k2ndRegularUserLoginInfo = {"user1@tray"};
-
 TEST_P(HomeButtonNoSessionTest, LongPressGestureSunfishScanner) {
   // Simulate two users with primary user as active.
   auto primary = SimulateUserLogin(kRegularUserLoginInfo);
-  SimulateUserLogin(k2ndRegularUserLoginInfo);
+  SimulateUserLogin(AccountId::FromUserEmail("user1@tray"));
   SwitchActiveUser(primary);
 
   // Sunfish / Scanner should already be enabled.
@@ -1045,7 +1082,7 @@ TEST_P(HomeButtonNoSessionTest, LongPressGestureSunfishScanner) {
 TEST_P(HomeButtonNoSessionTest, LongPressGestureInTabletModeSunfishScanner) {
   // Simulate two users with primary user as active.
   auto primary = SimulateUserLogin(kRegularUserLoginInfo);
-  SimulateUserLogin(k2ndRegularUserLoginInfo);
+  SimulateUserLogin(AccountId::FromUserEmail("user1@tray"));
   SwitchActiveUser(primary);
 
   // Sunfish / Scanner should already be enabled.

@@ -66,6 +66,7 @@
 #include "ui/base/mojom/ui_base_types.mojom-shared.h"
 #include "ui/compositor/compositor.h"
 #include "ui/compositor/layer_surface.h"
+#include "ui/decoration/decoration.h"
 #include "ui/decoration/shadow.h"
 #include "ui/display/display.h"
 #include "ui/display/display_layout_builder.h"
@@ -88,7 +89,7 @@
 #include "ui/views/widget/widget.h"
 #include "ui/views/window/caption_button_layout_constants.h"
 #include "ui/wm/core/capture_controller.h"
-#include "ui/wm/core/shadow_controller.h"
+#include "ui/wm/core/decoration_controller.h"
 #include "ui/wm/core/shadow_types.h"
 #include "ui/wm/core/transient_window_manager.h"
 #include "ui/wm/core/window_properties.h"
@@ -3303,10 +3304,10 @@ TEST_F(ShellSurfaceTest, ShadowBoundsWithNegativeCoordinate) {
 
   // Shadow content bounds is relative to ExoShellSurface and should use window
   // bounds.
-  ui::Shadow* shadow =
-      wm::ShadowController::GetShadowForWindow(widget->GetNativeWindow());
-  ASSERT_TRUE(shadow);
-  EXPECT_EQ(gfx::Rect(0, 0, 256, 256), shadow->content_bounds());
+  ui::Decoration* decoration = wm::DecorationController::GetDecorationForWindow(
+      widget->GetNativeWindow());
+  ASSERT_TRUE(decoration);
+  EXPECT_EQ(gfx::Rect(0, 0, 256, 256), decoration->content_bounds());
 }
 
 TEST_F(ShellSurfaceTest, ShadowBoundsWithScaleFactor) {
@@ -3349,10 +3350,10 @@ TEST_F(ShellSurfaceTest, ShadowBoundsWithScaleFactor) {
 
   // Shadow content bounds is relative to ExoShellSurface and should use window
   // bounds.
-  ui::Shadow* shadow =
-      wm::ShadowController::GetShadowForWindow(widget->GetNativeWindow());
-  ASSERT_TRUE(shadow);
-  EXPECT_EQ(gfx::Rect(0, 0, 256, 256), shadow->content_bounds());
+  ui::Decoration* decoration = wm::DecorationController::GetDecorationForWindow(
+      widget->GetNativeWindow());
+  ASSERT_TRUE(decoration);
+  EXPECT_EQ(gfx::Rect(0, 0, 256, 256), decoration->content_bounds());
 }
 
 TEST_F(ShellSurfaceTest, ShadowRoundedCorners) {
@@ -3373,29 +3374,30 @@ TEST_F(ShellSurfaceTest, ShadowRoundedCorners) {
   ASSERT_TRUE(widget);
 
   aura::Window* window = widget->GetNativeWindow();
-  ui::Shadow* shadow = wm::ShadowController::GetShadowForWindow(window);
-  ASSERT_TRUE(shadow);
+  ui::Decoration* decoration =
+      wm::DecorationController::GetDecorationForWindow(window);
+  ASSERT_TRUE(decoration);
 
   // Window shadow radius needs to match the window radius.
-  EXPECT_EQ(shadow->rounded_corners(), gfx::RoundedCornersF());
+  EXPECT_EQ(decoration->rounded_corners(), gfx::RoundedCornersF());
 
   // Have a window with radius of 12dp.
   shell_surface->SetWindowCornersRadii(
       gfx::RoundedCornersF(kWindowCornerRadius));
   root_surface->Commit();
 
-  shadow = wm::ShadowController::GetShadowForWindow(window);
-  ASSERT_TRUE(shadow);
-  EXPECT_EQ(shadow->rounded_corners(),
+  decoration = wm::DecorationController::GetDecorationForWindow(window);
+  ASSERT_TRUE(decoration);
+  EXPECT_EQ(decoration->rounded_corners(),
             gfx::RoundedCornersF(kWindowCornerRadius));
 
   // Have a window with radius of 0dp.
   shell_surface->SetWindowCornersRadii(gfx::RoundedCornersF());
   root_surface->Commit();
 
-  shadow = wm::ShadowController::GetShadowForWindow(window);
-  ASSERT_TRUE(shadow);
-  EXPECT_EQ(shadow->rounded_corners(), gfx::RoundedCornersF());
+  decoration = wm::DecorationController::GetDecorationForWindow(window);
+  ASSERT_TRUE(decoration);
+  EXPECT_EQ(decoration->rounded_corners(), gfx::RoundedCornersF());
 }
 
 TEST_F(ShellSurfaceTest, RoundedWindows) {
@@ -3494,21 +3496,27 @@ TEST_F(ShellSurfaceTest, ResizeShadowIndependentBounds) {
       ash::Shell::Get()->resize_shadow_controller()->GetShadowForWindowForTest(
           widget->GetNativeWindow());
   ASSERT_TRUE(resize_shadow);
+  ui::Decoration* resize_shadow_decoration =
+      ash::Shell::Get()
+          ->resize_shadow_controller()
+          ->GetDecorationForWindowForTest(widget->GetNativeWindow());
+  ASSERT_TRUE(resize_shadow_decoration);
   shell_surface->root_surface()->SetFrame(SurfaceFrameType::SHADOW);
   shell_surface->root_surface()->Commit();
   EXPECT_FALSE(widget->GetNativeWindow()->GetProperty(
       aura::client::kUseWindowBoundsForShadow));
 
-  ui::Shadow* normal_shadow =
-      wm::ShadowController::GetShadowForWindow(widget->GetNativeWindow());
-  ASSERT_TRUE(normal_shadow);
+  ui::Decoration* normal_decoration =
+      wm::DecorationController::GetDecorationForWindow(
+          widget->GetNativeWindow());
+  ASSERT_TRUE(normal_decoration);
 
   // ash::ResizeShadow::InitParams set the default |thickness| to 8.
   constexpr int kResizeShadowThickness = 8;
 
   EXPECT_EQ(gfx::Size(size.width() + kResizeShadowThickness, size.height()),
-            resize_shadow->GetLayerForTest()->bounds().size());
-  EXPECT_EQ(size, normal_shadow->content_bounds().size());
+            resize_shadow_decoration->layer()->bounds().size());
+  EXPECT_EQ(size, normal_decoration->content_bounds().size());
 
   constexpr gfx::Rect kNewBounds(kOrigin, {100, 100});
   uint32_t serial = 0;
@@ -3532,15 +3540,15 @@ TEST_F(ShellSurfaceTest, ResizeShadowIndependentBounds) {
   // updated yet until commit.
   shell_surface->AcknowledgeConfigure(serial);
   EXPECT_EQ(gfx::Size(size.width() + kResizeShadowThickness, size.height()),
-            resize_shadow->GetLayerForTest()->bounds().size());
-  EXPECT_EQ(size, normal_shadow->content_bounds().size());
+            resize_shadow_decoration->layer()->bounds().size());
+  EXPECT_EQ(size, normal_decoration->content_bounds().size());
 
   // Normal and resize shadow sizes are updated after commit.
   shell_surface->root_surface()->Commit();
   EXPECT_EQ(gfx::Size(kNewBounds.width() + kResizeShadowThickness,
                       kNewBounds.height()),
-            resize_shadow->GetLayerForTest()->bounds().size());
-  EXPECT_EQ(kNewBounds.size(), normal_shadow->content_bounds().size());
+            resize_shadow_decoration->layer()->bounds().size());
+  EXPECT_EQ(kNewBounds.size(), normal_decoration->content_bounds().size());
 
   // Explicitly ends the drag here.
   ash::Shell::Get()->toplevel_window_event_handler()->CompleteDragForTesting(
@@ -3578,7 +3586,7 @@ TEST_F(ShellSurfaceTest, ResizeShadowIndependentBounds) {
       bounds.width() + kResizeShadowThickness,
       bounds.height() + kResizeShadowThickness);
   EXPECT_EQ(expected_shadow_on_secondary,
-            resize_shadow->GetLayerForTest()->bounds());
+            resize_shadow_decoration->layer()->bounds());
 
   aura::Env::GetInstance()->set_mouse_button_flags(ui::EF_LEFT_MOUSE_BUTTON);
   constexpr gfx::Rect kResizedBoundsOn2nd{950, 50, 150, 150};
@@ -3588,7 +3596,7 @@ TEST_F(ShellSurfaceTest, ResizeShadowIndependentBounds) {
   shell_surface->AcknowledgeConfigure(serial);
 
   EXPECT_EQ(expected_shadow_on_secondary,
-            resize_shadow->GetLayerForTest()->bounds());
+            resize_shadow_decoration->layer()->bounds());
 
   shell_surface->root_surface()->Commit();
   constexpr gfx::Rect kExpectedShadowBoundsOn2nd(
@@ -3597,7 +3605,7 @@ TEST_F(ShellSurfaceTest, ResizeShadowIndependentBounds) {
       kResizedBoundsOn2nd.height() + kResizeShadowThickness);
 
   EXPECT_EQ(kExpectedShadowBoundsOn2nd,
-            resize_shadow->GetLayerForTest()->bounds());
+            resize_shadow_decoration->layer()->bounds());
 }
 
 // Make sure that resize shadow updates as soon as widget bounds change when
@@ -3619,10 +3627,11 @@ TEST_F(ShellSurfaceTest, ResizeShadowDependentBounds) {
   event_generator->MoveMouseTo(size.width() + 2, size.height() / 2);
 
   // Creates resize shadow and normal shadow for resizable exo window.
-  ash::ResizeShadow* resize_shadow =
-      ash::Shell::Get()->resize_shadow_controller()->GetShadowForWindowForTest(
-          widget->GetNativeWindow());
-  ASSERT_TRUE(resize_shadow);
+  ui::Decoration* resize_shadow_decoration =
+      ash::Shell::Get()
+          ->resize_shadow_controller()
+          ->GetDecorationForWindowForTest(widget->GetNativeWindow());
+  ASSERT_TRUE(resize_shadow_decoration);
   shell_surface->root_surface()->SetFrame(SurfaceFrameType::SHADOW);
   shell_surface->root_surface()->Commit();
   EXPECT_FALSE(widget->GetNativeWindow()->GetProperty(
@@ -3631,16 +3640,17 @@ TEST_F(ShellSurfaceTest, ResizeShadowDependentBounds) {
   widget->GetNativeWindow()->SetProperty(
       aura::client::kUseWindowBoundsForShadow, true);
 
-  ui::Shadow* normal_shadow =
-      wm::ShadowController::GetShadowForWindow(widget->GetNativeWindow());
-  ASSERT_TRUE(normal_shadow);
+  ui::Decoration* normal_decoration =
+      wm::DecorationController::GetDecorationForWindow(
+          widget->GetNativeWindow());
+  ASSERT_TRUE(normal_decoration);
 
   // ash::ResizeShadow::InitParams set the default |thickness| to 8.
   const int kResizeShadowThickness = 8;
 
   EXPECT_EQ(gfx::Size(size.width() + kResizeShadowThickness, size.height()),
-            resize_shadow->GetLayerForTest()->bounds().size());
-  EXPECT_EQ(size, normal_shadow->content_bounds().size());
+            resize_shadow_decoration->layer()->bounds().size());
+  EXPECT_EQ(size, normal_decoration->content_bounds().size());
 
   gfx::Size new_size(100, 100);
   gfx::Rect new_bounds(new_size);
@@ -3652,8 +3662,8 @@ TEST_F(ShellSurfaceTest, ResizeShadowDependentBounds) {
   // Shadow bounds are updated as soon as the widget bounds change.
   EXPECT_EQ(
       gfx::Size(new_size.width() + kResizeShadowThickness, new_size.height()),
-      resize_shadow->GetLayerForTest()->bounds().size());
-  EXPECT_EQ(new_size, normal_shadow->content_bounds().size());
+      resize_shadow_decoration->layer()->bounds().size());
+  EXPECT_EQ(new_size, normal_decoration->content_bounds().size());
 }
 
 TEST_F(ShellSurfaceTest, PropertyResolverTest) {
@@ -5141,8 +5151,14 @@ TEST_F(ShellSurfaceTest, DisplayScaleChangeSendsMinimalOcclusionUpdates) {
     surface2->Attach(surface2_buffer_zoom.get());
     surface2->Commit();
   }
+  // Because `surface1` (bottom window) commits its larger post-zoom buffer
+  // before `surface2` (top window), `surface1` temporarily exceeds `window2`'s
+  // pre-zoom opaque region (`host_window()->bounds()`) and flips
+  // OCCLUDED -> VISIBLE -> OCCLUDED. Reset the counter after verifying so
+  // subsequent checks only test their own operations.
   EXPECT_EQ(2, observer1.num_occlusion_state_changes());
   EXPECT_EQ(0, observer2.num_occlusion_state_changes());
+  observer1.Reset();
 
   display_manager->ZoomDisplay(display_id, /*up=*/false);
   {
@@ -5157,7 +5173,7 @@ TEST_F(ShellSurfaceTest, DisplayScaleChangeSendsMinimalOcclusionUpdates) {
   }
   // Should not get any occlusion changes - requires occlusion tracking clip
   // to the root window and that the shelf occlude what is below it, too.
-  EXPECT_EQ(2, observer1.num_occlusion_state_changes());
+  EXPECT_EQ(0, observer1.num_occlusion_state_changes());
   EXPECT_EQ(0, observer2.num_occlusion_state_changes());
 
   // Test Snapped State
@@ -5167,7 +5183,7 @@ TEST_F(ShellSurfaceTest, DisplayScaleChangeSendsMinimalOcclusionUpdates) {
 
   window_state1->OnWMEvent(&snap_event);
   window_state2->OnWMEvent(&snap_event);
-  EXPECT_EQ(2, observer1.num_occlusion_state_changes());
+  EXPECT_EQ(0, observer1.num_occlusion_state_changes());
   EXPECT_EQ(0, observer2.num_occlusion_state_changes());
 
   EXPECT_TRUE(window1->GetTransparent());
@@ -5187,7 +5203,7 @@ TEST_F(ShellSurfaceTest, DisplayScaleChangeSendsMinimalOcclusionUpdates) {
     surface2->Attach(snapped_buffer2.get());
     surface2->Commit();
   }
-  EXPECT_EQ(2, observer1.num_occlusion_state_changes());
+  EXPECT_EQ(0, observer1.num_occlusion_state_changes());
   EXPECT_EQ(0, observer2.num_occlusion_state_changes());
 
   display_manager->ZoomDisplay(display_id, /*up=*/true);
@@ -5202,7 +5218,11 @@ TEST_F(ShellSurfaceTest, DisplayScaleChangeSendsMinimalOcclusionUpdates) {
     surface2->Attach(snapped_buffer2.get());
     surface2->Commit();
   }
-  EXPECT_EQ(4, observer1.num_occlusion_state_changes());
+  // In snapped state, `ZoomDisplay` updates bounds via cross-fade animation,
+  // which recreates layers and updates `host_window()->layer()` bounds to match
+  // the new widget size immediately, so no intermediate occlusion changes
+  // occur.
+  EXPECT_EQ(0, observer1.num_occlusion_state_changes());
   EXPECT_EQ(0, observer2.num_occlusion_state_changes());
 
   display_manager->ZoomDisplay(display_id, /*up=*/false);
@@ -5217,14 +5237,20 @@ TEST_F(ShellSurfaceTest, DisplayScaleChangeSendsMinimalOcclusionUpdates) {
     surface2->Attach(snapped_buffer2.get());
     surface2->Commit();
   }
-  EXPECT_EQ(4, observer1.num_occlusion_state_changes());
+  // When zooming back in (`up=false`), cross-fade immediately shrinks
+  // `window2` and `shell_surface2->host_window()` to the smaller post-zoom
+  // snapped bounds while `surface1->window()` still has its larger pre-zoom
+  // bounds until `surface1->Commit()`, causing `surface1` to flip
+  // OCCLUDED -> VISIBLE -> OCCLUDED. Reset the counter after verifying.
+  EXPECT_EQ(2, observer1.num_occlusion_state_changes());
   EXPECT_EQ(0, observer2.num_occlusion_state_changes());
+  observer1.Reset();
 
   // Make sure the occlusion tracking is working.
   surface2->RemoveSurfaceObserver(&observer2);
   shell_surface2.reset();
 
-  EXPECT_EQ(5, observer1.num_occlusion_state_changes());
+  EXPECT_EQ(1, observer1.num_occlusion_state_changes());
 
   surface1->RemoveSurfaceObserver(&observer1);
 }

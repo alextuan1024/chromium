@@ -6,22 +6,23 @@
 
 #include <sstream>
 #include <string>
+#include <utility>
 
+#include "base/check.h"
 #include "base/command_line.h"
 #include "base/functional/bind.h"
 #include "base/logging.h"
 #include "base/strings/string_number_conversions.h"
+#include "base/test/test_timeouts.h"
 #include "base/timer/timer.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace {
 
-constexpr base::TimeDelta kDefaultTimeout = base::Seconds(30);
-
 base::TimeDelta GetTimeoutFromCommandLineOrDefault() {
   if (!base::CommandLine::ForCurrentProcess()->HasSwitch(
           switches::kStatusChangeCheckerTimeoutInSeconds)) {
-    return kDefaultTimeout;
+    return TestTimeouts::action_max_timeout();
   }
   std::string timeout_string(
       base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
@@ -45,6 +46,7 @@ StatusChangeChecker::~StatusChangeChecker() = default;
 void StatusChangeChecker::WillStartWaiting() {}
 
 bool StatusChangeChecker::Wait(const base::Location& location) {
+  CHECK(!wait_done_called_);
   WillStartWaiting();
 
   std::ostringstream s;
@@ -53,7 +55,9 @@ bool StatusChangeChecker::Wait(const base::Location& location) {
     wait_done_called_ = true;
     WaitDone();
   } else {
-    DVLOG(1) << "Blocking: " << s.str();
+    const std::string message = std::move(s).str();
+    CHECK(!message.empty());
+    DVLOG(1) << "Blocking: " << message;
     StartBlockingWait(location);
   }
   return !TimedOut();
@@ -86,12 +90,14 @@ void StatusChangeChecker::CheckExitCondition() {
     DVLOG(1) << "Await -> Condition met: " << s.str();
     StopWaiting();
   } else {
-    DVLOG(1) << "Await -> Condition not met: " << s.str();
+    const std::string message = std::move(s).str();
+    CHECK(!message.empty());
+    DVLOG(1) << "Await -> Condition not met: " << message;
   }
 }
 
 void StatusChangeChecker::StartBlockingWait(const base::Location& location) {
-  DCHECK(!run_loop_.running());
+  CHECK(!run_loop_.running(), base::NotFatalUntil::M163);
 
   base::OneShotTimer timer;
   timer.Start(FROM_HERE, timeout_,
@@ -110,7 +116,9 @@ void StatusChangeChecker::OnTimeout(const base::Location& location) {
                      "triggered from "
                   << location.ToString();
   } else {
-    ADD_FAILURE() << "Await -> Timed out: " << s.str() << ", triggered from "
+    const std::string message = std::move(s).str();
+    CHECK(!message.empty());
+    ADD_FAILURE() << "Await -> Timed out: " << message << ", triggered from "
                   << location.ToString();
   }
 

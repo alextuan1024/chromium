@@ -39,7 +39,7 @@
 #include "components/prefs/pref_service.h"
 #include "components/prefs/scoped_user_pref_update.h"
 #include "components/safe_browsing/buildflags.h"
-#include "components/safe_browsing/content/browser/safe_browsing_navigation_observer_manager.h"
+#include "components/safe_browsing/content/browser/navigation_observer/safe_browsing_navigation_observer_manager.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/user_prefs/user_prefs.h"
 #include "content/public/browser/browser_context.h"
@@ -186,8 +186,7 @@ class PendingApprovals {
   }
 
   void MaybeAddShutdownSubscription(content::BrowserContext* context) {
-    if (shutdown_subscriptions_.find(context) ==
-        shutdown_subscriptions_.end()) {
+    if (!shutdown_subscriptions_.contains(context)) {
       shutdown_subscriptions_[context] =
           PendingApprovalsShutdownNotifierFactory::GetInstance()
               ->Get(context)

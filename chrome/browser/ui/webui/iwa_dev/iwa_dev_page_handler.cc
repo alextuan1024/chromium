@@ -4,6 +4,7 @@
 
 #include "chrome/browser/ui/webui/iwa_dev/iwa_dev_page_handler.h"
 
+#include <algorithm>
 #include <optional>
 #include <string>
 #include <vector>
@@ -15,8 +16,12 @@
 #include "base/functional/callback_helpers.h"
 #include "base/strings/strcat.h"
 #include "base/types/expected_macros.h"
+#include "build/build_config.h"
+#include "chrome/browser/about_flags.h"
 #include "chrome/browser/file_select_helper.h"
+#include "chrome/browser/lifetime/application_lifetime.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/web_applications/isolated_web_apps/install/isolated_web_app_dev_install_manager.h"
 #include "chrome/browser/web_applications/isolated_web_apps/isolated_web_app_url_info.h"
 #include "chrome/browser/web_applications/isolated_web_apps/update/isolated_web_app_update_check_and_prepare_task.h"
 #include "chrome/browser/web_applications/isolated_web_apps/update/isolated_web_app_update_manager.h"
@@ -27,6 +32,7 @@
 #include "chrome/browser/web_applications/model/iwa_update_info.h"
 #include "chrome/browser/web_applications/web_app.h"
 #include "chrome/browser/web_applications/web_app_command_scheduler.h"
+#include "chrome/browser/web_applications/web_app_filter.h"
 #include "chrome/browser/web_applications/web_app_install_manager.h"
 #include "chrome/browser/web_applications/web_app_provider.h"
 #include "chrome/browser/web_applications/web_app_registrar.h"
@@ -41,16 +47,23 @@
 #include "components/webapps/isolated_web_apps/types/storage_location.h"
 #include "components/webapps/isolated_web_apps/types/update_channel.h"
 #include "components/webapps/isolated_web_apps/types/update_check_and_prepare_result.h"
+#include "components/webui/flags/flags_storage.h"
 #include "content/public/browser/file_select_listener.h"
 #include "content/public/browser/storage_partition.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_ui.h"
+#include "content/public/common/drop_data.h"
 #include "mojo/public/mojom/base/empty.mojom.h"
 #include "mojo/public/mojom/base/error.mojom.h"
 #include "net/traffic_annotation/network_traffic_annotation.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "third_party/abseil-cpp/absl/functional/overload.h"
 #include "third_party/blink/public/mojom/choosers/file_chooser.mojom.h"
+
+#if BUILDFLAG(IS_CHROMEOS)
+#include "base/logging.h"
+#include "chrome/browser/ash/settings/about_flags.h"
+#endif
 
 namespace {
 
@@ -108,19 +121,6 @@ iwa_dev::mojom::IwaDevModeSourcePtr MapToMojomIwaDevModeSource(
           },
       },
       isolation_data.location().variant());
-}
-
-iwa_dev::mojom::IwaDevModeAppInfoPtr MapToMojomIwaDevModeAppInfo(
-    const web_app::WebApp& app) {
-  auto iwa_origin = web_app::IwaOrigin::Create(app.start_url()).value();
-  std::string web_bundle_id = iwa_origin.web_bundle_id().id();
-
-  const web_app::IsolationData& isolation_data = app.isolation_data().value();
-
-  return iwa_dev::mojom::IwaDevModeAppInfo::New(
-      app.app_id(), std::move(web_bundle_id), app.untranslated_name(),
-      MapToMojomIwaDevModeSource(isolation_data),
-      isolation_data.version().GetString());
 }
 
 template <typename T>
@@ -220,7 +220,7 @@ class IwaDevPageHandler::LocalBundleSelectListener
   void FileSelectionCanceled() override {
     CHECK(callback_);
     std::move(callback_).Run(base::unexpected(mojo_base::mojom::Error::New(
-        mojo_base::mojom::Code::kInvalidArgument, "No file selected")));
+        mojo_base::mojom::Code::kCancelled, "No file selected")));
   }
 
  private:
@@ -240,7 +240,8 @@ IwaDevPageHandler::IwaDevPageHandler(
       receiver_(this, std::move(receiver)),
       page_(std::move(page)) {
   install_observation_.Observe(&provider_->install_manager());
-  update_observation_.Observe(&provider_->isolated_web_app_update_manager());
+  update_observation_.Observe(
+      &web_app::IsolatedWebAppUpdateManager::From(*provider_));
 }
 
 IwaDevPageHandler::~IwaDevPageHandler() = default;
@@ -260,8 +261,7 @@ void IwaDevPageHandler::UninstallApp(const std::string& app_id,
                                      UninstallAppCallback callback) {
   // If the app is no longer installed (e.g. uninstalled via another window),
   // or the webui compromised, this should be ignored.
-  if (!provider_->registrar_unsafe().GetAppById(
-          app_id, web_app::WebAppFilter::IsDevModeIsolatedApp())) {
+  if (!IsDevModeAppOrSubApp(app_id)) {
     std::move(callback).Run(false);
     return;
   }
@@ -275,7 +275,7 @@ void IwaDevPageHandler::UninstallApp(const std::string& app_id,
 void IwaDevPageHandler::InstallAppFromDevProxy(
     const GURL& url,
     InstallAppFromDevProxyCallback callback) {
-  provider_->isolated_web_app_dev_install_manager()
+  web_app::IsolatedWebAppDevInstallManager::From(*provider_)
       .InstallIsolatedWebAppFromDevModeProxy(
           url, web_app::IsolatedWebAppDevInstallManager::InstallSurface::kDevUi,
           base::BindOnce(&MapToMojomEmptyResult<
@@ -307,7 +307,7 @@ void IwaDevPageHandler::InstallAppFromUpdateManifest(
             "Invalid update channel provided.")));
       });
 
-  provider_->isolated_web_app_dev_install_manager()
+  web_app::IsolatedWebAppDevInstallManager::From(*provider_)
       .DownloadAndInstallIsolatedWebAppFromDevModeBundle(
           web_bundle_url,
           web_app::IsolatedWebAppDevInstallManager::InstallSurface::kDevUi,
@@ -317,6 +317,22 @@ void IwaDevPageHandler::InstallAppFromUpdateManifest(
           /*expected_bundle_id=*/std::nullopt,
           web_app::IwaUpdateInfo(update_info->update_manifest_url,
                                  std::move(update_channel)));
+}
+
+void IwaDevPageHandler::LaunchApp(const std::string& app_id,
+                                  LaunchAppCallback callback) {
+  if (!IsDevModeAppOrSubApp(app_id)) {
+    std::move(callback).Run(false);
+    return;
+  }
+
+  provider_->scheduler().LaunchApp(
+      app_id, /*url=*/std::nullopt,
+      base::BindOnce([](base::WeakPtr<BrowserWindowInterface>,
+                        base::WeakPtr<content::WebContents> web_contents,
+                        apps::LaunchContainer) {
+        return web_contents != nullptr;
+      }).Then(std::move(callback)));
 }
 
 void IwaDevPageHandler::ParseUpdateManifestFromUrl(
@@ -333,7 +349,7 @@ void IwaDevPageHandler::ParseUpdateManifestFromUrl(
       base::DoNothingWithBoundArgs(std::move(fetcher));
   fetcher_ptr->FetchUpdateManifest(
       base::BindOnce(
-          [](base::expected<web_app::UpdateManifest,
+          [](base::expected<web_app::UpdateManifestWithAddressSpace,
                             web_app::UpdateManifestFetcher::Error> result)
               -> base::expected<iwa_dev::mojom::UpdateManifestPtr,
                                 mojo_base::mojom::ErrorPtr> {
@@ -344,13 +360,34 @@ void IwaDevPageHandler::ParseUpdateManifestFromUrl(
                                 web_app::UpdateManifestFetcher::ErrorToString(
                                     result.error())})));
             }
-            return MapToMojomUpdateManifest(result.value());
+            return MapToMojomUpdateManifest(result->manifest);
           })
           .Then(std::move(callback))
           .Then(std::move(fetcher_keep_alive)));
 }
 
-void IwaDevPageHandler::SelectLocalWebBundle(
+void IwaDevPageHandler::RestartBrowser() {
+#if BUILDFLAG(IS_CHROMEOS)
+  // On Chrome OS be less intrusive and restart inside the user session after
+  // we apply the newly selected flags.
+  about_flags::GetStorage(
+      &profile_.get(),
+      base::BindOnce(
+          [](PrefService* prefs,
+             std::unique_ptr<flags_ui::FlagsStorage> flags_storage,
+             flags_ui::FlagAccess access) {
+            VLOG(1) << "Restarting to apply per-session flags...";
+            ash::about_flags::FeatureFlagsUpdate(*flags_storage, prefs)
+                .UpdateSessionManager();
+            chrome::AttemptRestart();
+          },
+          profile_->GetPrefs()));
+#else
+  chrome::AttemptRestart();
+#endif
+}
+
+void IwaDevPageHandler::PromptUserForLocalWebBundle(
     base::OnceCallback<void(SelectLocalBundleResult)> callback) {
   content::RenderFrameHost* render_frame_host =
       web_contents_->GetPrimaryMainFrame();
@@ -359,34 +396,102 @@ void IwaDevPageHandler::SelectLocalWebBundle(
       ->Show(render_frame_host);
 }
 
-void IwaDevPageHandler::SelectAndInstallAppFromLocalWebBundle(
-    SelectAndInstallAppFromLocalWebBundleCallback callback) {
-  SelectLocalWebBundle(
-      base::BindOnce(&IwaDevPageHandler::OnLocalBundleSelectedForInstall,
+void IwaDevPageHandler::SelectLocalWebBundle(
+    SelectLocalWebBundleCallback callback) {
+  PromptUserForLocalWebBundle(
+      base::BindOnce(&IwaDevPageHandler::OnLocalBundleSelectedForStaging,
                      weak_ptr_factory_.GetWeakPtr(), std::move(callback)));
 }
 
-void IwaDevPageHandler::OnLocalBundleSelectedForInstall(
-    SelectAndInstallAppFromLocalWebBundleCallback callback,
+void IwaDevPageHandler::OnLocalBundleSelectedForStaging(
+    SelectLocalWebBundleCallback callback,
     SelectLocalBundleResult path) {
-  if (!path.has_value()) {
-    std::move(callback).Run(base::unexpected(std::move(path.error())));
+  ASSIGN_OR_RETURN(
+      base::FilePath file_path, std::move(path),
+      [&](mojo_base::mojom::ErrorPtr error) {
+        if (error->code != mojo_base::mojom::Code::kCancelled) {
+          staged_bundle_path_.reset();
+        }
+        std::move(callback).Run(base::unexpected(std::move(error)));
+      });
+
+  staged_bundle_path_ = std::move(file_path);
+  std::move(callback).Run(staged_bundle_path_->BaseName().AsUTF8Unsafe());
+}
+
+void IwaDevPageHandler::StageDroppedLocalWebBundle(
+    StageDroppedLocalWebBundleCallback callback) {
+  if (!dragged_bundle_path_.has_value()) {
+    staged_bundle_path_.reset();
+    std::move(callback).Run(base::unexpected(mojo_base::mojom::Error::New(
+        mojo_base::mojom::Code::kInvalidArgument,
+        "Invalid file type. Please select a Signed Web Bundle (.swbn) file.")));
     return;
   }
 
-  provider_->isolated_web_app_dev_install_manager()
+  staged_bundle_path_ = *std::exchange(dragged_bundle_path_, std::nullopt);
+  std::move(callback).Run(staged_bundle_path_->BaseName().AsUTF8Unsafe());
+}
+
+void IwaDevPageHandler::InstallStagedLocalWebBundle(
+    InstallStagedLocalWebBundleCallback callback) {
+  if (!staged_bundle_path_.has_value()) {
+    std::move(callback).Run(base::unexpected(mojo_base::mojom::Error::New(
+        mojo_base::mojom::Code::kFailedPrecondition, "No bundle staged.")));
+    return;
+  }
+
+  web_app::IsolatedWebAppDevInstallManager::From(*provider_)
       .InstallIsolatedWebAppFromDevModeBundle(
-          *path,
+          *staged_bundle_path_,
           web_app::IsolatedWebAppDevInstallManager::InstallSurface::kDevUi,
-          base::BindOnce(&MapToMojomEmptyResult<
-                             web_app::InstallIsolatedWebAppCommandSuccess>)
-              .Then(std::move(callback)));
+          base::BindOnce(
+              &IwaDevPageHandler::OnInstallStagedLocalWebBundleCompleted,
+              weak_ptr_factory_.GetWeakPtr(), std::move(callback)));
+}
+
+void IwaDevPageHandler::OnInstallStagedLocalWebBundleCompleted(
+    InstallStagedLocalWebBundleCallback callback,
+    base::expected<web_app::InstallIsolatedWebAppCommandSuccess, std::string>
+        result) {
+  // Retain staged_bundle_path_ on failure so retry or UI correction is
+  // possible.
+  RETURN_IF_ERROR(result, [&](std::string error) {
+    std::move(callback).Run(base::unexpected(mojo_base::mojom::Error::New(
+        mojo_base::mojom::Code::kInvalidArgument, std::move(error))));
+  });
+
+  staged_bundle_path_.reset();
+  std::move(callback).Run(std::monostate());
+}
+
+void IwaDevPageHandler::ClearStagedLocalWebBundle() {
+  staged_bundle_path_.reset();
+}
+
+void IwaDevPageHandler::NotifyDragBundleEnter() {
+  dragged_bundle_path_.reset();
+  content::DropData* drop_data = web_contents_->GetDropData();
+  if (!drop_data || drop_data->filenames.size() != 1) {
+    return;
+  }
+
+  const ui::FileInfo& file_info = drop_data->filenames.front();
+  if (!file_info.path.MatchesExtension(FILE_PATH_LITERAL(".swbn"))) {
+    return;
+  }
+
+  dragged_bundle_path_ = file_info.path;
+}
+
+void IwaDevPageHandler::NotifyDragBundleLeave() {
+  dragged_bundle_path_.reset();
 }
 
 void IwaDevPageHandler::SelectAndUpdateAppFromLocalWebBundle(
     const std::string& app_id,
     SelectAndUpdateAppFromLocalWebBundleCallback callback) {
-  SelectLocalWebBundle(base::BindOnce(
+  PromptUserForLocalWebBundle(base::BindOnce(
       &IwaDevPageHandler::OnLocalBundleSelectedForUpdate,
       weak_ptr_factory_.GetWeakPtr(), app_id, std::move(callback)));
 }
@@ -405,6 +510,31 @@ void IwaDevPageHandler::OnLocalBundleSelectedForUpdate(
                          web_app::IwaSourceBundleDevModeWithFileOp(
                              *path, web_app::IwaSourceBundleDevFileOp::kCopy)),
                      std::move(callback));
+}
+
+void IwaDevPageHandler::SetIwaDevModeEnabled(
+    bool enabled,
+    SetIwaDevModeEnabledCallback callback) {
+  about_flags::GetStorage(
+      &profile_.get(),
+      base::BindOnce(
+          [](bool enabled, SetIwaDevModeEnabledCallback callback,
+             std::unique_ptr<flags_ui::FlagsStorage> flags_storage,
+             flags_ui::FlagAccess access) {
+            const flags_ui::FeatureEntry* entry =
+                about_flags::GetCurrentFlagsState()->FindFeatureEntryByName(
+                    "enable-isolated-web-app-dev-mode");
+            CHECK(entry);
+            about_flags::SetFeatureEntryEnabled(
+                flags_storage.get(),
+                entry->NameForOption(enabled
+                                         ? flags_ui::FeatureEntry::ENABLED
+                                         : flags_ui::FeatureEntry::DISABLED),
+                true);
+            flags_storage->CommitPendingWrites();
+            std::move(callback).Run();
+          },
+          enabled, std::move(callback)));
 }
 
 void IwaDevPageHandler::SetUpdateChannel(const std::string& app_id,
@@ -510,15 +640,16 @@ void IwaDevPageHandler::UpdateManifestInstalledApp(
 
   manifest_update_requests_.emplace(app_id, std::move(callback));
 
-  provider_->isolated_web_app_update_manager().DiscoverAndPrepareUpdate(
-      *web_app::IsolatedWebAppUrlInfo::Create(iwa->scope()),
-      *isolation_data.update_manifest_url(),
-      /*update_channel=*/
-      isolation_data.update_channel().value_or(
-          web_app::UpdateChannel::default_channel()),
-      /*allow_downgrades=*/options->allow_downgrades,
-      /*pinned_version=*/std::move(pinned_version),
-      /*dev_mode=*/true);
+  web_app::IsolatedWebAppUpdateManager::From(*provider_)
+      .DiscoverAndPrepareUpdate(
+          *web_app::IsolatedWebAppUrlInfo::Create(iwa->scope()),
+          *isolation_data.update_manifest_url(),
+          /*update_channel=*/
+          isolation_data.update_channel().value_or(
+              web_app::UpdateChannel::default_channel()),
+          /*allow_downgrades=*/options->allow_downgrades,
+          /*pinned_version=*/std::move(pinned_version),
+          /*dev_mode=*/true);
 }
 
 void IwaDevPageHandler::OnUpdateDiscoverAndPrepareTaskCompleted(
@@ -591,6 +722,50 @@ IwaDevPageHandler::GetInstalledAppById(const std::string& app_id) {
   return iwa;
 }
 
+bool IwaDevPageHandler::IsDevModeAppOrSubApp(
+    const webapps::AppId& app_id) const {
+  return provider_->registrar_unsafe().AppMatches(
+      app_id, web_app::WebAppFilter::IsDevModeIsolatedApp() |
+                  web_app::WebAppFilter::IsDevModeIsolatedSubApp());
+}
+
+iwa_dev::mojom::IwaDevModeAppInfoPtr
+IwaDevPageHandler::MapToMojomIwaDevModeAppInfo(
+    const web_app::WebApp& app) const {
+  auto iwa_origin = web_app::IwaOrigin::Create(app.start_url()).value();
+  std::string web_bundle_id = iwa_origin.web_bundle_id().id();
+
+  const web_app::IsolationData& isolation_data = app.isolation_data().value();
+
+  return iwa_dev::mojom::IwaDevModeAppInfo::New(
+      app.app_id(), std::move(web_bundle_id), app.untranslated_name(),
+      MapToMojomIwaDevModeSource(isolation_data),
+      isolation_data.version().GetString(),
+      GetDevModeSubAppsInfo(app.app_id()));
+}
+
+std::vector<iwa_dev::mojom::SubAppInfoPtr>
+IwaDevPageHandler::GetDevModeSubAppsInfo(
+    const webapps::AppId& parent_app_id) const {
+  const auto& registrar = provider_->registrar_unsafe();
+  CHECK(registrar.AppMatches(parent_app_id,
+                             web_app::WebAppFilter::IsDevModeIsolatedApp()));
+  auto sub_apps =
+      base::ToVector(registrar.GetAllSubAppIds(parent_app_id),
+                     [&](const webapps::AppId& sub_app_id) {
+                       return iwa_dev::mojom::SubAppInfo::New(
+                           sub_app_id, registrar.GetAppShortName(sub_app_id));
+                     });
+  std::ranges::sort(sub_apps, {}, &iwa_dev::mojom::SubAppInfo::name);
+  return sub_apps;
+}
+
+const web_app::WebApp& IwaDevPageHandler::GetParentApp(
+    const web_app::WebApp& sub_app) const {
+  return CHECK_DEREF(
+      provider_->registrar_unsafe().GetAppById(*sub_app.parent_app_id()));
+}
+
 void IwaDevPageHandler::ApplyDevModeUpdate(
     const std::string& app_id,
     base::optional_ref<const web_app::IwaSourceDevModeWithFileOp> location,
@@ -620,7 +795,7 @@ void IwaDevPageHandler::ApplyDevModeUpdate(
     return;
   }
 
-  provider_->isolated_web_app_update_manager()
+  web_app::IsolatedWebAppUpdateManager::From(*provider_)
       .DiscoverApplyAndPrioritizeLocalDevModeUpdate(
           location.has_value()
               ? *location
@@ -632,24 +807,40 @@ void IwaDevPageHandler::ApplyDevModeUpdate(
 }
 
 void IwaDevPageHandler::OnWebAppInstalled(const webapps::AppId& app_id) {
-  if (const web_app::WebApp* app = provider_->registrar_unsafe().GetAppById(
+  const auto& registrar = provider_->registrar_unsafe();
+  if (const web_app::WebApp* app = registrar.GetAppById(
           app_id, web_app::WebAppFilter::IsDevModeIsolatedApp())) {
     page_->OnAppInstalled(MapToMojomIwaDevModeAppInfo(*app));
+  } else if (const web_app::WebApp* sub_app = registrar.GetAppById(
+                 app_id, web_app::WebAppFilter::IsDevModeIsolatedSubApp())) {
+    page_->OnAppUpdated(MapToMojomIwaDevModeAppInfo(GetParentApp(*sub_app)));
   }
 }
 
 void IwaDevPageHandler::OnWebAppManifestUpdated(const webapps::AppId& app_id) {
-  if (const web_app::WebApp* app = provider_->registrar_unsafe().GetAppById(
+  const auto& registrar = provider_->registrar_unsafe();
+  if (const web_app::WebApp* app = registrar.GetAppById(
           app_id, web_app::WebAppFilter::IsDevModeIsolatedApp())) {
     page_->OnAppUpdated(MapToMojomIwaDevModeAppInfo(*app));
+  } else if (const web_app::WebApp* sub_app = registrar.GetAppById(
+                 app_id, web_app::WebAppFilter::IsDevModeIsolatedSubApp())) {
+    page_->OnAppUpdated(MapToMojomIwaDevModeAppInfo(GetParentApp(*sub_app)));
   }
 }
 
 void IwaDevPageHandler::OnWebAppWillBeUninstalled(
     const webapps::AppId& app_id) {
-  if (provider_->registrar_unsafe().AppMatches(
-          app_id, web_app::WebAppFilter::IsDevModeIsolatedApp())) {
+  const auto& registrar = provider_->registrar_unsafe();
+  if (registrar.AppMatches(app_id,
+                           web_app::WebAppFilter::IsDevModeIsolatedApp())) {
     page_->OnAppUninstalled(app_id);
+  } else if (const web_app::WebApp* sub_app = registrar.GetAppById(
+                 app_id, web_app::WebAppFilter::IsDevModeIsolatedSubApp())) {
+    iwa_dev::mojom::IwaDevModeAppInfoPtr parent_info =
+        MapToMojomIwaDevModeAppInfo(GetParentApp(*sub_app));
+    std::erase_if(parent_info->sub_apps,
+                  [&](const auto& sub) { return sub->app_id == app_id; });
+    page_->OnAppUpdated(std::move(parent_info));
   }
 }
 

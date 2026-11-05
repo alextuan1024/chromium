@@ -8,18 +8,21 @@
 #include <locale.h>
 #include <stddef.h>
 
+#include <cmath>
 #include <memory>
-#include <optional>
 #include <string_view>
 
+#include "base/check_op.h"
 #include "base/compiler_specific.h"
 #include "base/containers/flat_map.h"
+#include "base/containers/span.h"
 #include "base/environment.h"
-#include "base/files/file_path.h"
 #include "base/functional/callback.h"
+#include "base/functional/callback_helpers.h"
 #include "base/logging.h"
 #include "base/no_destructor.h"
 #include "base/notreached.h"
+#include "base/numerics/safe_conversions.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_tokenizer.h"
 #include "base/strings/string_util.h"
@@ -27,7 +30,6 @@
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "ui/aura/window_tree_host.h"
 #include "ui/base/accelerators/accelerator.h"
-#include "ui/base/cursor/cursor_factory.h"
 #include "ui/gfx/color_palette.h"
 #include "ui/gfx/color_utils.h"
 #include "ui/gfx/geometry/size.h"
@@ -36,6 +38,7 @@
 #include "ui/gtk/gtk_types.h"
 #include "ui/gtk/gtk_ui.h"
 #include "ui/gtk/gtk_ui_platform.h"
+#include "ui/gtk/nav_button_provider_gtk.h"
 #include "ui/linux/linux_ui.h"
 #include "ui/ozone/public/ozone_platform.h"
 #include "ui/views/widget/desktop_aura/desktop_window_tree_host_linux.h"
@@ -203,7 +206,7 @@ GtkWidget* CreateDummyWindow() {
 }
 
 double GetOpacityFromRenderNode(GskRenderNode* node) {
-  DCHECK(GtkCheckVersion(4));
+  CHECK(GtkCheckVersion(4), base::NotFatalUntil::M163);
   if (!node) {
     return 1;
   }
@@ -232,11 +235,11 @@ bool GtkInitFromCommandLine(int* argc, char** argv) {
   // Callers should have already called setlocale(LC_ALL, "") and
   // setlocale(LC_NUMERIC, "C") by now. Chrome does this in
   // service_manager::Main.
-  UNSAFE_TODO(DCHECK_EQ(strcmp(setlocale(LC_NUMERIC, nullptr), "C"), 0));
+  CHECK_EQ(std::string_view(setlocale(LC_NUMERIC, nullptr)), "C",
+           base::NotFatalUntil::M163);
   // This prevents GTK from calling setlocale(LC_ALL, ""), which potentially
   // overwrites the LC_NUMERIC locale to something other than "C".
   gtk_disable_setlocale();
-  InstallGtkSettingsInterceptor();
   InstallGtkLogWriter();
   return GtkInitCheck(argc, argv);
 }
@@ -347,7 +350,8 @@ CairoSurface::CairoSurface(const gfx::Size& size)
                                           size.width(),
                                           size.height())),
       cairo_(cairo_create(surface_)) {
-  DCHECK(cairo_surface_status(surface_) == CAIRO_STATUS_SUCCESS);
+  CHECK(cairo_surface_status(surface_) == CAIRO_STATUS_SUCCESS,
+        base::NotFatalUntil::M163);
   // Clear the surface.
   cairo_save(cairo_);
   cairo_set_source_rgba(cairo_, 0, 0, 0, 0);
@@ -367,15 +371,19 @@ CairoSurface::~CairoSurface() {
 
 SkColor CairoSurface::GetAveragePixelValue(bool frame) {
   cairo_surface_flush(surface_);
-  SkColor* data =
-      reinterpret_cast<SkColor*>(cairo_image_surface_get_data(surface_));
-  int width = cairo_image_surface_get_width(surface_);
-  int height = cairo_image_surface_get_height(surface_);
-  DCHECK(4 * width == cairo_image_surface_get_stride(surface_));
+  const int width = cairo_image_surface_get_width(surface_);
+  const int height = cairo_image_surface_get_height(surface_);
+  CHECK_EQ(4 * width, cairo_image_surface_get_stride(surface_));
+  // SAFETY: `cairo_image_surface_get_data` returns a pointer to the surface's
+  // pixel buffer of `height * stride` bytes. `CHECK_EQ` above verifies that
+  // `stride == 4 * width` (`sizeof(SkColor) * width`), so the buffer contains
+  // `width * height` contiguous `SkColor` elements.
+  base::span<const SkColor> data = UNSAFE_BUFFERS(base::span(
+      reinterpret_cast<const SkColor*>(cairo_image_surface_get_data(surface_)),
+      base::checked_cast<size_t>(width * height)));
   long a = 0, r = 0, g = 0, b = 0;
   unsigned int max_alpha = 0;
-  for (int i = 0; i < width * height; i++) {
-    SkColor color = UNSAFE_TODO(data[i]);
+  for (SkColor color : data) {
     max_alpha = std::max(SkColorGetA(color), max_alpha);
     a += SkColorGetA(color);
     r += SkColorGetR(color);
@@ -391,12 +399,12 @@ SkColor CairoSurface::GetAveragePixelValue(bool frame) {
 
 GtkCssContext::GtkCssContext(GtkWidget* widget, GtkWidget* root)
     : widget_(widget), root_(WrapGObject(root)) {
-  DCHECK(GtkCheckVersion(4));
+  CHECK(GtkCheckVersion(4), base::NotFatalUntil::M163);
 }
 
 GtkCssContext::GtkCssContext(GtkStyleContext* context)
     : context_(WrapGObject(context)) {
-  DCHECK(!GtkCheckVersion(4));
+  CHECK(!GtkCheckVersion(4), base::NotFatalUntil::M163);
 }
 
 GtkCssContext::GtkCssContext() = default;
@@ -424,12 +432,12 @@ GtkCssContext GtkCssContext::GetParent() {
 }
 
 GtkWidget* GtkCssContext::widget() {
-  DCHECK(GtkCheckVersion(4));
+  CHECK(GtkCheckVersion(4), base::NotFatalUntil::M163);
   return widget_;
 }
 
 GtkWidget* GtkCssContext::root() {
-  DCHECK(GtkCheckVersion(4));
+  CHECK(GtkCheckVersion(4), base::NotFatalUntil::M163);
   return root_;
 }
 
@@ -461,7 +469,7 @@ GtkCssContext AppendCssNodeToStyleContext(GtkCssContext context,
   } part_type = CSS_OBJECT_NAME;
 
   static const struct {
-    const char* name;
+    std::string_view name;
     GtkStateFlags state_flag;
   } pseudo_classes[] = {
       {"active", GTK_STATE_FLAG_ACTIVE},
@@ -516,8 +524,7 @@ GtkCssContext AppendCssNodeToStyleContext(GtkCssContext context,
         case CSS_PSEUDOCLASS: {
           GtkStateFlags state_flag = GTK_STATE_FLAG_NORMAL;
           for (const auto& pseudo_class_entry : pseudo_classes) {
-            if (UNSAFE_TODO(
-                    strcmp(pseudo_class_entry.name, t.token().c_str())) == 0) {
+            if (pseudo_class_entry.name == t.token_piece()) {
               state_flag = pseudo_class_entry.state_flag;
               break;
             }
@@ -698,7 +705,7 @@ SkColor ComputeSeparatorColor(const std::string& css_selector) {
     w = 24;
     h = std::max(h, 1);
   } else {
-    DCHECK(ContextHasClass(context, "vertical"));
+    CHECK(ContextHasClass(context, "vertical"), base::NotFatalUntil::M163);
     h = 24;
     w = std::max(w, 1);
   }
@@ -724,12 +731,20 @@ void ClearStyleColorCache() {
   cache.separator.clear();
 }
 
+bool IsGtkThemeDark() {
+  return color_utils::IsDark(GetBgColor({}));
+}
+
+SkColor GetThemeAccentColor() {
+  return GetBgColor("treeview.view treeview.view.cell:selected:focus");
+}
+
 std::string GetGtkSettingsStringProperty(GtkSettings* settings,
                                          const gchar* prop_name) {
   GValue layout = G_VALUE_INIT;
   g_value_init(&layout, G_TYPE_STRING);
   g_object_get_property(G_OBJECT(settings), prop_name, &layout);
-  DCHECK(G_VALUE_HOLDS_STRING(&layout));
+  CHECK(G_VALUE_HOLDS_STRING(&layout), base::NotFatalUntil::M163);
   std::string prop_value(g_value_get_string(&layout));
   g_value_unset(&layout);
   return prop_value;
@@ -739,6 +754,51 @@ GtkIconTheme* GetDefaultIconTheme() {
   return GtkCheckVersion(4)
              ? gtk_icon_theme_get_for_display(gdk_display_get_default())
              : gtk_icon_theme_get_default();
+}
+
+base::ScopedClosureRunner PrependIconThemeSearchPathForTesting(
+    const base::FilePath& path) {
+  if (GtkCheckVersion(4)) {
+    return base::ScopedClosureRunner();
+  }
+  GtkIconTheme* theme = GetDefaultIconTheme();
+  gchar** search_path = nullptr;
+  gint n_elements = 0;
+  gtk_icon_theme_get_search_path(theme, &search_path, &n_elements);
+  gtk_icon_theme_prepend_search_path(theme, path.value().c_str());
+  NavButtonProviderGtk::ClearIconCacheForTesting();  // IN-TEST
+  return base::ScopedClosureRunner(base::BindOnce(
+      [](GtkIconTheme* theme, gchar** search_path, gint n_elements) {
+        gtk_icon_theme_set_search_path(
+            theme, const_cast<const gchar**>(search_path), n_elements);
+        g_strfreev(search_path);
+        NavButtonProviderGtk::ClearIconCacheForTesting();  // IN-TEST
+      },
+      theme, search_path, n_elements));
+}
+
+base::ScopedClosureRunner AddGlobalCssForTesting(const std::string& css) {
+  ScopedCssProvider provider = GetCssProvider(css);
+  if (GtkCheckVersion(4)) {
+    gtk_style_context_add_provider_for_display(
+        gdk_display_get_default(), GTK_STYLE_PROVIDER(provider.get()),
+        GTK_STYLE_PROVIDER_PRIORITY_USER);
+    return base::ScopedClosureRunner(base::BindOnce(
+        [](ScopedCssProvider provider) {
+          gtk_style_context_remove_provider_for_display(
+              gdk_display_get_default(), GTK_STYLE_PROVIDER(provider.get()));
+        },
+        std::move(provider)));
+  }
+  gtk_style_context_add_provider_for_screen(gdk_screen_get_default(),
+                                            GTK_STYLE_PROVIDER(provider.get()),
+                                            GTK_STYLE_PROVIDER_PRIORITY_USER);
+  return base::ScopedClosureRunner(base::BindOnce(
+      [](ScopedCssProvider provider) {
+        gtk_style_context_remove_provider_for_screen(
+            gdk_screen_get_default(), GTK_STYLE_PROVIDER(provider.get()));
+      },
+      std::move(provider)));
 }
 
 void GtkWindowDestroy(GtkWidget* widget) {
@@ -795,8 +855,35 @@ float GetDeviceScaleFactor() {
   return 1.0f;
 }
 
+int GetXftDpi() {
+  int dpi = -1;
+  g_object_get(gtk_settings_get_default(), "gtk-xft-dpi", &dpi, nullptr);
+  return dpi < 0 ? 0 : dpi;
+}
+
+GtkSettings* GetDefaultGtkSettings() {
+  return gtk_settings_get_default();
+}
+
+double GetFontScale() {
+  double resolution = 0;
+  if (const int dpi = GetXftDpi()) {
+    resolution = dpi / 1024.0;
+  } else if (!GtkCheckVersion(4)) {
+    // GdkScreen was removed in GTK4.  On GTK4, `gtk-xft-dpi` may be unset
+    // (eg. on Wayland without the xdg-desktop-portal Settings interface), in
+    // which case the default font scale is used.
+    GdkScreen* screen = gdk_screen_get_default();
+    resolution = gdk_screen_get_resolution(screen);
+  }
+  const double font_scale = resolution > 0 ? resolution / kDefaultDPI : 1.0;
+  // Round to the nearest 1/64th so that UI can losslessly multiply and divide
+  // the scale factor.
+  return std::round(font_scale * 64) / 64;
+}
+
 GdkTexture* GetTextureFromRenderNode(GskRenderNode* node) {
-  DCHECK(GtkCheckVersion(4));
+  CHECK(GtkCheckVersion(4), base::NotFatalUntil::M163);
   if (!node) {
     return nullptr;
   }
@@ -841,115 +928,6 @@ double GetOpacityFromContext(GtkStyleContext* context) {
     gsk_render_node_unref(node);
   }
   return opacity;
-}
-
-bool IsValidThemeName(ThemeProperty property, const char* theme) {
-  const bool is_optional = property == ThemeProperty::kKeyThemeName ||
-                           property == ThemeProperty::kCursorThemeName;
-  if (!theme) {
-    return is_optional;
-  }
-  std::string_view theme_str(theme);
-  if (theme_str.empty()) {
-    return is_optional;
-  }
-  return ui::IsValidCursorThemeName(theme_str);
-}
-
-const char* GetThemeFallback(ThemeProperty property) {
-  switch (property) {
-    case ThemeProperty::kIconThemeName:
-      return "hicolor";
-    case ThemeProperty::kThemeName:
-    case ThemeProperty::kCursorThemeName:
-      return "Adwaita";
-    case ThemeProperty::kKeyThemeName:
-      return nullptr;
-  }
-  NOTREACHED();
-}
-
-namespace {
-
-void (*g_orig_set_property)(GObject* object,
-                            guint property_id,
-                            const GValue* value,
-                            GParamSpec* pspec) = nullptr;
-
-DISABLE_CFI_ICALL
-void GtkSettingsSetProperty(GObject* object,
-                            guint property_id,
-                            const GValue* value,
-                            GParamSpec* pspec) {
-  if (pspec && pspec->name) {
-    std::string_view prop_name(pspec->name);
-    if (prop_name == "gtk-modules") {
-      GValue sanitized_value = G_VALUE_INIT;
-      g_value_init(&sanitized_value, G_TYPE_STRING);
-      g_value_set_string(&sanitized_value, "");
-      g_orig_set_property(object, property_id, &sanitized_value, pspec);
-      g_value_unset(&sanitized_value);
-      return;
-    }
-    std::optional<ThemeProperty> property;
-    if (prop_name == "gtk-theme-name") {
-      property = ThemeProperty::kThemeName;
-    } else if (prop_name == "gtk-icon-theme-name") {
-      property = ThemeProperty::kIconThemeName;
-    } else if (prop_name == "gtk-key-theme-name") {
-      property = ThemeProperty::kKeyThemeName;
-    } else if (prop_name == "gtk-cursor-theme-name") {
-      property = ThemeProperty::kCursorThemeName;
-    } else if (prop_name == "gtk-cursor-theme-size") {
-      int size = g_value_get_int(value);
-      if (!ui::IsValidCursorThemeSize(size)) {
-        GValue sanitized_value = G_VALUE_INIT;
-        g_value_init(&sanitized_value, G_TYPE_INT);
-        g_value_set_int(&sanitized_value, 24);
-        g_orig_set_property(object, property_id, &sanitized_value, pspec);
-        g_value_unset(&sanitized_value);
-        return;
-      }
-    }
-    if (property) {
-      const gchar* name = g_value_get_string(value);
-      if (!IsValidThemeName(*property, name)) {
-        GValue sanitized_value = G_VALUE_INIT;
-        g_value_init(&sanitized_value, G_TYPE_STRING);
-        g_value_set_string(&sanitized_value, GetThemeFallback(*property));
-        g_orig_set_property(object, property_id, &sanitized_value, pspec);
-        g_value_unset(&sanitized_value);
-        return;
-      }
-    }
-  }
-  g_orig_set_property(object, property_id, value, pspec);
-}
-
-}  // namespace
-
-void InstallGtkSettingsInterceptor() {
-  if (!g_orig_set_property) {
-    GObjectClass* gobject_class =
-        G_OBJECT_CLASS(g_type_class_ref(GTK_TYPE_SETTINGS));
-    g_orig_set_property = gobject_class->set_property;
-    gobject_class->set_property = GtkSettingsSetProperty;
-    g_type_class_unref(gobject_class);
-  }
-}
-
-void UninstallGtkSettingsInterceptor() {
-  if (g_orig_set_property) {
-    GObjectClass* gobject_class =
-        G_OBJECT_CLASS(g_type_class_ref(GTK_TYPE_SETTINGS));
-    gobject_class->set_property = g_orig_set_property;
-    g_orig_set_property = nullptr;
-    g_type_class_unref(gobject_class);
-  }
-}
-
-GtkSettings* GetDefaultGtkSettings() {
-  return gtk_settings_get_default();
 }
 
 namespace {

@@ -6,20 +6,29 @@
 
 #include <algorithm>
 #include <memory>
+#include <string_view>
+#include <vector>
 
+#include "base/containers/to_vector.h"
 #include "base/memory/raw_span.h"
 #include "base/memory/ref_counted.h"
+#include "base/strings/string_number_conversions.h"
+#include "base/test/gtest_util.h"
+#include "base/test/metrics/histogram_tester.h"
 #include "base/time/time.h"
 #include "crypto/keypair.h"
+#include "crypto/openssl_util.h"
 #include "crypto/sign.h"
-#include "crypto/signature_verifier.h"
 #include "net/cert/x509_certificate.h"
+#include "net/test/cert_builder.h"
 #include "net/test/cert_test_util.h"
 #include "net/test/key_util.h"
 #include "net/test/test_data_directory.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/boringssl/src/include/openssl/bytestring.h"
 #include "third_party/boringssl/src/include/openssl/evp.h"
 #include "third_party/boringssl/src/include/openssl/rsa.h"
+#include "third_party/boringssl/src/pki/parse_name.h"
 
 namespace net::x509_util {
 
@@ -662,7 +671,7 @@ bool DigestSign(EVP_PKEY* key,
 
 }  // namespace
 
-TEST(X509UtilTest, SignatureVerifierInitWithCertificate) {
+TEST(X509UtilTest, CreateSignatureVerifierWithCertificate) {
   static const uint8_t kMessage[] = {'h', 'e', 'l', 'l', 'o'};
   static const uint8_t kWrongMessage[] = {'n', 'o', 'p', 'e'};
 
@@ -721,13 +730,6 @@ TEST(X509UtilTest, SignatureVerifierInitWithCertificate) {
        rsaSignaturePKCS1, false},
       {"key_usage_rsa_keyencipherment.pem", crypto::sign::RSA_PSS_SHA256,
        rsaSignaturePSS, false},
-
-      // The key and signature must match, rather than only extracting the hash
-      // function.
-      {"key_usage_p256_digitalsignature.pem", crypto::sign::RSA_PKCS1_SHA256,
-       p256Signature, false},
-      {"key_usage_rsa_digitalsignature.pem", crypto::sign::ECDSA_SHA256,
-       rsaSignaturePKCS1, false},
   };
 
   for (const auto& test : kTests) {
@@ -736,20 +738,38 @@ TEST(X509UtilTest, SignatureVerifierInitWithCertificate) {
         ImportCertFromFile(GetTestCertsDirectory(), test.cert);
     ASSERT_TRUE(cert);
 
-    crypto::SignatureVerifier verifier;
-    bool ok = SignatureVerifierInitWithCertificate(
-        &verifier, test.algorithm, test.signature, cert->cert_buffer());
-    EXPECT_EQ(ok, test.ok);
-    if (ok) {
-      verifier.VerifyUpdate(kMessage);
-      EXPECT_TRUE(verifier.VerifyFinal());
+    std::optional<crypto::sign::Verifier> verifier =
+        CreateSignatureVerifierWithCertificate(test.algorithm, test.signature,
+                                               cert->cert_buffer());
+    EXPECT_EQ(verifier.has_value(), test.ok);
+    if (verifier) {
+      verifier->Update(kMessage);
+      EXPECT_TRUE(verifier->Finish());
 
-      ASSERT_TRUE(SignatureVerifierInitWithCertificate(
-          &verifier, test.algorithm, test.signature, cert->cert_buffer()));
-      verifier.VerifyUpdate(kWrongMessage);
-      EXPECT_FALSE(verifier.VerifyFinal());
+      std::optional<crypto::sign::Verifier> verifier2 =
+          CreateSignatureVerifierWithCertificate(test.algorithm, test.signature,
+                                                 cert->cert_buffer());
+      ASSERT_TRUE(verifier2);
+      verifier2->Update(kWrongMessage);
+      EXPECT_FALSE(verifier2->Finish());
     }
   }
+
+  // Mismatched public key and signature algorithm CHECK-fails in
+  // crypto::sign::Verifier.
+  scoped_refptr<X509Certificate> p256_cert = ImportCertFromFile(
+      GetTestCertsDirectory(), "key_usage_p256_digitalsignature.pem");
+  ASSERT_TRUE(p256_cert);
+  EXPECT_CHECK_DEATH(std::ignore = CreateSignatureVerifierWithCertificate(
+                         crypto::sign::RSA_PKCS1_SHA256, p256Signature,
+                         p256_cert->cert_buffer()));
+
+  scoped_refptr<X509Certificate> rsa_cert = ImportCertFromFile(
+      GetTestCertsDirectory(), "key_usage_rsa_digitalsignature.pem");
+  ASSERT_TRUE(rsa_cert);
+  EXPECT_CHECK_DEATH(std::ignore = CreateSignatureVerifierWithCertificate(
+                         crypto::sign::ECDSA_SHA256, rsaSignaturePKCS1,
+                         rsa_cert->cert_buffer()));
 }
 
 TEST(X509UtilTest, HasRsaPkcs1Sha1Signature) {
@@ -988,6 +1008,140 @@ TEST(X509UtilTest, TrustAnchorIDsToString) {
   };
   EXPECT_EQ("44363.48.7, 44363.48.7.127",
             TrustAnchorIDsToString(trust_anchor_ids));
+}
+
+TEST(X509UtilTest, CreateParsedCertificateHistograms) {
+  const struct {
+    std::vector<uint8_t> serial;
+    SerialNumberType expected_type;
+  } kTests[] = {
+      // Positive serial numbers.
+      {{0x01}, SerialNumberType::kPositive},
+      {{0x7f}, SerialNumberType::kPositive},
+      {{0x00, 0x80}, SerialNumberType::kPositive},
+      {std::vector<uint8_t>(21, 0x01), SerialNumberType::kPositive},
+
+      // Zero serial number.
+      {{0x00}, SerialNumberType::kZero},
+
+      // Negative serial numbers.
+      {{0x80}, SerialNumberType::kNegative},
+      {{0xff}, SerialNumberType::kNegative},
+      {{0x80, 0x01}, SerialNumberType::kNegative},
+      {{0xff, 0x7f}, SerialNumberType::kNegative},
+
+      // Invalid (empty or non-minimally encoded) serial numbers.
+      {{}, SerialNumberType::kInvalid},
+      {{0x00, 0x00}, SerialNumberType::kInvalid},
+      {{0x00, 0x01}, SerialNumberType::kInvalid},
+      {{0x00, 0x7f}, SerialNumberType::kInvalid},
+      {{0xff, 0x80}, SerialNumberType::kInvalid},
+      {{0xff, 0xff}, SerialNumberType::kInvalid},
+  };
+
+  std::unique_ptr<CertBuilder> builder =
+      std::move(CertBuilder::CreateSimpleChain(1)[0]);
+  for (const auto& test : kTests) {
+    base::HistogramTester histogram_tester;
+    builder->SetSerialNumber(test.serial);
+
+    std::shared_ptr<const bssl::ParsedCertificate> cert =
+        CreateParsedCertificate(builder->DupCertBuffer(), nullptr);
+    ASSERT_TRUE(cert);
+
+    histogram_tester.ExpectUniqueSample("Net.Certificate.SerialNumberLength",
+                                        test.serial.size(), 1);
+    histogram_tester.ExpectUniqueSample("Net.Certificate.SerialNumberType",
+                                        test.expected_type, 1);
+  }
+
+  // Failed parses should not record histograms.
+  base::HistogramTester histogram_tester;
+  static const uint8_t kInvalidCert[] = {0x30, 0x00};
+  EXPECT_FALSE(
+      CreateParsedCertificate(CreateCryptoBuffer(kInvalidCert), nullptr));
+  histogram_tester.ExpectTotalCount("Net.Certificate.SerialNumberLength", 0);
+  histogram_tester.ExpectTotalCount("Net.Certificate.SerialNumberType", 0);
+  histogram_tester.ExpectTotalCount("Net.Certificate.RdnAttributeOrder.Subject",
+                                    0);
+  histogram_tester.ExpectTotalCount("Net.Certificate.RdnAttributeOrder.Issuer",
+                                    0);
+}
+
+// Builds a Name with one RDN per element of `rdns`. Each RDN contains a
+// commonName attribute for each string, encoded in the order given, which may
+// not be DER SET OF order.
+std::vector<uint8_t> BuildName(
+    const std::vector<std::vector<std::string_view>>& rdns) {
+  // A parent CBB points to its child until the parent is next flushed, so the
+  // children are declared outside the loops to keep them alive.
+  bssl::ScopedCBB cbb;
+  CBB name, rdn, attribute;
+  CHECK(CBB_init(cbb.get(), 64));
+  CHECK(CBB_add_asn1(cbb.get(), &name, CBS_ASN1_SEQUENCE));
+  for (const auto& common_names : rdns) {
+    CHECK(CBB_add_asn1(&name, &rdn, CBS_ASN1_SET));
+    for (std::string_view common_name : common_names) {
+      CHECK(CBB_add_asn1(&rdn, &attribute, CBS_ASN1_SEQUENCE));
+      CHECK(CBB_add_asn1_element(&attribute, CBS_ASN1_OBJECT,
+                                 bssl::kTypeCommonNameOid,
+                                 sizeof(bssl::kTypeCommonNameOid)));
+      auto value_bytes = base::as_byte_span(common_name);
+      CHECK(CBB_add_asn1_element(&attribute, CBS_ASN1_UTF8STRING,
+                                 value_bytes.data(), value_bytes.size()));
+    }
+  }
+  CHECK(CBB_flush(cbb.get()));
+  return base::ToVector(crypto::CbbAsSpan(cbb.get()));
+}
+
+TEST(X509UtilTest, CreateParsedCertificateRdnAttributeOrderHistogram) {
+  // DER sorts SET OF elements by encoding. These all have the same length, so
+  // this is the order of the values.
+  const std::vector<uint8_t> kSingleValued = BuildName({{"a"}, {"b"}});
+  const struct {
+    std::vector<uint8_t> name;
+    RdnAttributeOrder expected;
+  } kTests[] = {
+      {kSingleValued, RdnAttributeOrder::kAllSingleValued},
+      {BuildName({{"a"}}), RdnAttributeOrder::kAllSingleValued},
+      {BuildName({{"a", "b"}}), RdnAttributeOrder::kMultiValuedSorted},
+      {BuildName({{"a"}, {"b", "c"}}), RdnAttributeOrder::kMultiValuedSorted},
+      // Duplicates are allowed in DER SET OF.
+      {BuildName({{"b", "b"}}), RdnAttributeOrder::kMultiValuedSorted},
+      {BuildName({{"b", "a"}}), RdnAttributeOrder::kMultiValuedUnsorted},
+      {BuildName({{"c", "b"}, {"a"}}), RdnAttributeOrder::kMultiValuedUnsorted},
+      {BuildName({{"a", "b"}, {"c", "a", "b"}}),
+       RdnAttributeOrder::kMultiValuedUnsorted},
+  };
+
+  std::unique_ptr<CertBuilder> builder =
+      std::move(CertBuilder::CreateSimpleChain(1)[0]);
+  for (const auto& test : kTests) {
+    SCOPED_TRACE(base::HexEncode(test.name));
+    {
+      base::HistogramTester histogram_tester;
+      builder->SetSubjectTLV(test.name);
+      builder->SetIssuerTLV(kSingleValued);
+      ASSERT_TRUE(CreateParsedCertificate(builder->DupCertBuffer(), nullptr));
+      histogram_tester.ExpectUniqueSample(
+          "Net.Certificate.RdnAttributeOrder.Subject", test.expected, 1);
+      histogram_tester.ExpectUniqueSample(
+          "Net.Certificate.RdnAttributeOrder.Issuer",
+          RdnAttributeOrder::kAllSingleValued, 1);
+    }
+    {
+      base::HistogramTester histogram_tester;
+      builder->SetSubjectTLV(kSingleValued);
+      builder->SetIssuerTLV(test.name);
+      ASSERT_TRUE(CreateParsedCertificate(builder->DupCertBuffer(), nullptr));
+      histogram_tester.ExpectUniqueSample(
+          "Net.Certificate.RdnAttributeOrder.Subject",
+          RdnAttributeOrder::kAllSingleValued, 1);
+      histogram_tester.ExpectUniqueSample(
+          "Net.Certificate.RdnAttributeOrder.Issuer", test.expected, 1);
+    }
+  }
 }
 
 }  // namespace net::x509_util

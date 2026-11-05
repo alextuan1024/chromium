@@ -4,6 +4,8 @@
 
 #include "media/gpu/windows/d3d12_video_encode_delegate_unittest.h"
 
+#include <algorithm>
+
 #include "base/containers/flat_map.h"
 #include "base/no_destructor.h"
 #include "base/rand_util.h"
@@ -197,6 +199,74 @@ void D3D12VideoEncodeDelegateTestBase::DisableFeature(
   scoped_feature_list_->InitAndDisableFeature(feature);
 }
 
+std::vector<int> D3D12VideoEncodeDelegateTestBase::InitializeAndEncodeFrames(
+    const VideoEncodeAccelerator::Config& config,
+    size_t frame_size,
+    const std::vector<base::TimeDelta>& timestamps) {
+  if (!encoder_delegate_->Initialize(config).is_ok()) {
+    ADD_FAILURE() << "Failed to initialize the encoder delegate";
+    return {};
+  }
+
+  Microsoft::WRL::ComPtr<ID3D12Resource> input_frame =
+      CreateResource(config.input_visible_size, config.input_format);
+  // Leave room for the parameter sets written in front of the slice data.
+  const size_t buffer_size = frame_size + 1024;
+  auto shared_memory = base::UnsafeSharedMemoryRegion::Create(buffer_size);
+  BitstreamBuffer bitstream_buffer(0, shared_memory.Duplicate(), buffer_size);
+  EXPECT_CALL(*GetVideoEncoderWrapper(), GetEncoderOutputMetadata)
+      .WillRepeatedly([this, frame_size] {
+        return GetEncoderOutputMetadataResourceMap(frame_size);
+      });
+  // Some codec delegates check that the slice data starts with a start code.
+  EXPECT_CALL(*GetVideoEncoderWrapper(), ReadbackBitstream)
+      .WillRepeatedly([](base::span<uint8_t> buffer) {
+        constexpr base::span kStartCode = base::span_from_cstring("\0\0\1");
+        if (buffer.size() >= kStartCode.size()) {
+          std::ranges::copy(kStartCode, buffer.begin());
+        }
+        return EncoderStatus(EncoderStatus::Codes::kOk);
+      });
+
+  std::vector<int> qps;
+  for (base::TimeDelta timestamp : timestamps) {
+    auto result_or_error = encoder_delegate_->Encode(
+        input_frame, gfx::Rect(config.input_visible_size),
+        gfx::ColorSpace::CreateSRGB(), bitstream_buffer,
+        VideoEncoder::EncodeOptions(), gfx::HDRMetadata(), timestamp);
+    if (!result_or_error.has_value()) {
+      ADD_FAILURE() << "Failed to encode the frame at " << timestamp;
+      break;
+    }
+    qps.push_back(std::move(result_or_error).value().metadata.qp);
+  }
+  return qps;
+}
+
+std::pair<int, int>
+D3D12VideoEncodeDelegateTestBase::GetLastQpAtIntervalAndAtConfigFramerate(
+    const VideoEncodeAccelerator::Config& config,
+    size_t frame_size,
+    int num_frames,
+    base::TimeDelta interval) {
+  auto last_qp = [&](base::TimeDelta frame_interval) {
+    std::vector<base::TimeDelta> timestamps;
+    for (int i = 0; i < num_frames; ++i) {
+      timestamps.push_back(i * frame_interval);
+    }
+    CreateEncoderDelegate();
+    std::vector<int> qps =
+        InitializeAndEncodeFrames(config, frame_size, timestamps);
+    EXPECT_EQ(qps.size(), timestamps.size());
+    return qps.empty() ? -1 : qps.back();
+  };
+  return {last_qp(interval), last_qp(base::Seconds(1) / config.framerate)};
+}
+
+void D3D12VideoEncodeDelegateTestBase::CreateEncoderDelegate() {
+  ADD_FAILURE() << "CreateEncoderDelegate() is not implemented by this fixture";
+}
+
 class D3D12VideoEncodeDelegateTest : public D3D12VideoEncodeDelegateTestBase {
  protected:
   void SetUp() override {
@@ -220,7 +290,7 @@ class D3D12VideoEncodeDelegateTest : public D3D12VideoEncodeDelegateTestBase {
 
 TEST_F(D3D12VideoEncodeDelegateTest, Initialize) {
   EXPECT_TRUE(encoder_delegate_->Initialize(GetDefaultH264Config()).is_ok());
-  EXPECT_EQ(encoder_delegate_->GetFormatForTesting(), DXGI_FORMAT_NV12);
+  EXPECT_EQ(encoder_delegate_->GetInputFormat(), DXGI_FORMAT_NV12);
 }
 
 TEST_F(D3D12VideoEncodeDelegateTest, P010InputFormatFor10BitProfile) {
@@ -228,7 +298,7 @@ TEST_F(D3D12VideoEncodeDelegateTest, P010InputFormatFor10BitProfile) {
   config.input_format = PIXEL_FORMAT_P010LE;
   config.output_profile = H264PROFILE_HIGH10PROFILE;
   EXPECT_TRUE(encoder_delegate_->Initialize(config).is_ok());
-  EXPECT_EQ(encoder_delegate_->GetFormatForTesting(), DXGI_FORMAT_P010);
+  EXPECT_EQ(encoder_delegate_->GetInputFormat(), DXGI_FORMAT_P010);
 }
 
 TEST_F(D3D12VideoEncodeDelegateTest,
@@ -242,7 +312,7 @@ TEST_F(D3D12VideoEncodeDelegateTest,
     config.input_format = rgb_format;
     config.output_profile = H264PROFILE_HIGH10PROFILE;
     EXPECT_TRUE(encoder_delegate_->Initialize(config).is_ok());
-    EXPECT_EQ(encoder_delegate_->GetFormatForTesting(), DXGI_FORMAT_P010)
+    EXPECT_EQ(encoder_delegate_->GetInputFormat(), DXGI_FORMAT_P010)
         << "Unexpected input format for RGB pixel format "
         << VideoPixelFormatToString(rgb_format);
   }
@@ -590,7 +660,8 @@ TEST_F(D3D12VideoEncodeDelegateTest, EncodeWithTooManyReferenceBuffersFails) {
 
   // Expect an error indicating too many reference buffers.
   EXPECT_FALSE(result_or_error.has_value());
-  EXPECT_EQ(result_or_error.code(), EncoderStatus::Codes::kBadReferenceBuffer);
+  EXPECT_EQ(result_or_error.error().code(),
+            EncoderStatus::Codes::kBadReferenceBuffer);
 }
 
 TEST_F(D3D12VideoEncodeDelegateTest,
@@ -615,7 +686,8 @@ TEST_F(D3D12VideoEncodeDelegateTest,
                                 bitstream_buffer, options);
 
   EXPECT_FALSE(result_or_error.has_value());
-  EXPECT_EQ(result_or_error.code(), EncoderStatus::Codes::kBadReferenceBuffer);
+  EXPECT_EQ(result_or_error.error().code(),
+            EncoderStatus::Codes::kBadReferenceBuffer);
 }
 
 TEST_F(D3D12VideoEncodeDelegateTest,
@@ -640,7 +712,8 @@ TEST_F(D3D12VideoEncodeDelegateTest,
                                 bitstream_buffer, options);
 
   EXPECT_FALSE(result_or_error.has_value());
-  EXPECT_EQ(result_or_error.code(), EncoderStatus::Codes::kBadReferenceBuffer);
+  EXPECT_EQ(result_or_error.error().code(),
+            EncoderStatus::Codes::kBadReferenceBuffer);
 }
 
 TEST_F(D3D12VideoEncodeDelegateTest, EncodeWithEmptyRefsOnNonKeyframeFails) {
@@ -677,7 +750,8 @@ TEST_F(D3D12VideoEncodeDelegateTest, EncodeWithEmptyRefsOnNonKeyframeFails) {
       encoder_delegate_->Encode(input_frame, gfx::Rect(input_size), color_space,
                                 bitstream_buffer, options);
   EXPECT_FALSE(result_or_error.has_value());
-  EXPECT_EQ(result_or_error.code(), EncoderStatus::Codes::kBadReferenceBuffer);
+  EXPECT_EQ(result_or_error.error().code(),
+            EncoderStatus::Codes::kBadReferenceBuffer);
 }
 
 }  // namespace media

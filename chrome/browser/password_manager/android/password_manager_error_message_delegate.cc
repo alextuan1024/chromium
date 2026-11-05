@@ -43,6 +43,7 @@ std::string GetErrorMessageName(PasswordStoreBackendErrorType error_type) {
     case PasswordStoreBackendErrorType::kUncategorized:
     case PasswordStoreBackendErrorType::kKeychainError:
     case PasswordStoreBackendErrorType::kNeedsPassphrase:
+    case PasswordStoreBackendErrorType::kCancelled:
       // Other error types aren't supported.
       NOTREACHED();
   }
@@ -134,7 +135,7 @@ void PasswordManagerErrorMessageDelegate::MaybeDisplayErrorMessage(
     password_manager::ErrorMessageFlowType flow_type,
     PasswordStoreBackendErrorType error_type,
     base::OnceCallback<void()> dismissal_callback) {
-  DCHECK(web_contents);
+  CHECK(web_contents, base::NotFatalUntil::M161);
 
   if (!ShouldShowErrorUI(web_contents, error_type)) {
     // Even if no message was technically shown, the owner of `this` should know
@@ -143,7 +144,7 @@ void PasswordManagerErrorMessageDelegate::MaybeDisplayErrorMessage(
     return;
   }
 
-  DCHECK(!message_);
+  CHECK(!message_, base::NotFatalUntil::M161);
   message_ =
       CreateMessage(web_contents, error_type, std::move(dismissal_callback));
   error_type_ = error_type;
@@ -160,6 +161,7 @@ void PasswordManagerErrorMessageDelegate::MaybeDisplayErrorMessage(
     case PasswordStoreBackendErrorType::kUncategorized:
     case PasswordStoreBackendErrorType::kKeychainError:
     case PasswordStoreBackendErrorType::kNeedsPassphrase:
+    case PasswordStoreBackendErrorType::kCancelled:
       // Other error types aren't supported.
       NOTREACHED();
   }
@@ -187,6 +189,7 @@ bool PasswordManagerErrorMessageDelegate::ShouldShowErrorUI(
     case PasswordStoreBackendErrorType::kNeedsPassphrase:
     case PasswordStoreBackendErrorType::kUncategorized:
     case PasswordStoreBackendErrorType::kKeychainError:
+    case PasswordStoreBackendErrorType::kCancelled:
       // Other error types aren't supported.
       NOTREACHED();
   }
@@ -254,6 +257,7 @@ void PasswordManagerErrorMessageDelegate::HandleActionButtonClicked(
     case PasswordStoreBackendErrorType::kUncategorized:
     case PasswordStoreBackendErrorType::kKeychainError:
     case PasswordStoreBackendErrorType::kNeedsPassphrase:
+    case PasswordStoreBackendErrorType::kCancelled:
       // Other error types aren't supported.
       NOTREACHED();
   }

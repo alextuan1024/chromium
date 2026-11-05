@@ -12,6 +12,7 @@
 #include "base/android/jni_string.h"
 #include "base/android/jni_weak_ref.h"
 #include "base/android/scoped_java_ref.h"
+#include "base/check.h"
 #include "base/feature_list.h"
 #include "base/logging.h"
 #include "base/metrics/histogram_macros.h"
@@ -19,6 +20,7 @@
 #include "base/trace_event/trace_event.h"
 #include "ui/android/color_utils_android.h"
 #include "ui/android/display_android_manager.h"
+#include "ui/android/modal_dialog_manager_bridge.h"
 #include "ui/android/ui_android_features.h"
 #include "ui/android/view_android.h"
 #include "ui/android/window_android_compositor.h"
@@ -54,7 +56,8 @@ WindowAndroid::ScopedSelectionHandles::ScopedSelectionHandles(
 }
 
 WindowAndroid::ScopedSelectionHandles::~ScopedSelectionHandles() {
-  DCHECK_GT(window_->selection_handles_active_count_, 0);
+  CHECK_GT(window_->selection_handles_active_count_, 0,
+           base::NotFatalUntil::M163);
 
   if (--window_->selection_handles_active_count_ == 0) {
     JNIEnv* env = AttachCurrentThread();
@@ -109,6 +112,7 @@ WindowAndroid::WindowAndroid(JNIEnv* env,
   mouse_wheel_scroll_factor_ =
       scroll_factor > 0 ? scroll_factor
                         : kDefaultMouseWheelTickMultiplier * GetDipScale();
+  native_theme_observation_.Observe(ui::NativeTheme::GetInstanceForWeb());
 }
 
 void WindowAndroid::Destroy(JNIEnv* env) {
@@ -121,9 +125,9 @@ ScopedJavaLocalRef<JWindowAndroid> WindowAndroid::GetJavaObject() {
 
 WindowAndroid::~WindowAndroid() {
   DCHECK(parent_ == nullptr) << "WindowAndroid must be a root view.";
-  DCHECK(!compositor_);
+  CHECK(!compositor_, base::NotFatalUntil::M163);
   RemoveAllChildren(true);
-  DCHECK(!pointer_locking_view_);
+  CHECK(!pointer_locking_view_, base::NotFatalUntil::M163);
   java_window_->clearNativePointer(AttachCurrentThread());
 }
 
@@ -145,14 +149,22 @@ void WindowAndroid::RemoveObserver(WindowAndroidObserver* observer) {
 }
 
 void WindowAndroid::AttachCompositor(WindowAndroidCompositor* compositor) {
-  if (compositor_ && compositor != compositor_)
+  if (compositor_ && compositor != compositor_) {
     DetachCompositor();
+  }
 
   compositor_ = compositor;
-  observer_list_.Notify(&WindowAndroidObserver::OnAttachCompositor);
+  if (compositor_) {
+    JNIEnv* env = AttachCurrentThread();
+    compositor_->SetWindowOccluded(java_window_->isOccluded(env));
+    observer_list_.Notify(&WindowAndroidObserver::OnAttachCompositor);
+  }
 }
 
 void WindowAndroid::DetachCompositor() {
+  if (compositor_) {
+    compositor_->SetWindowOccluded(false);
+  }
   observer_list_.Notify(&WindowAndroidObserver::OnDetachCompositor);
   observer_list_.Clear();
   compositor_ = nullptr;
@@ -206,6 +218,13 @@ void WindowAndroid::Animate(base::TimeTicks begin_frame_time) {
 void WindowAndroid::OnVisibilityChanged(JNIEnv* env, bool visible) {
   observer_list_.Notify(&WindowAndroidObserver::OnRootWindowVisibilityChanged,
                         visible);
+}
+
+void WindowAndroid::OnOcclusionChanged(JNIEnv* env, bool occluded) {
+  TRACE_EVENT("ui", "WindowAndroid::OnOcclusionChanged", "occluded", occluded);
+  if (compositor_) {
+    compositor_->SetWindowOccluded(occluded);
+  }
 }
 
 void WindowAndroid::OnActivityStopped(JNIEnv* env) {
@@ -291,9 +310,7 @@ ProgressBarConfig WindowAndroid::GetProgressBarConfig() {
 }
 
 ModalDialogManagerBridge* WindowAndroid::GetModalDialogManagerBridge() {
-  JNIEnv* env = AttachCurrentThread();
-  return reinterpret_cast<ModalDialogManagerBridge*>(
-      java_window_->getNativeModalDialogManagerBridge(env));
+  return java_window_->getNativeModalDialogManagerBridge(AttachCurrentThread());
 }
 
 void WindowAndroid::SetModalDialogManagerForTesting(
@@ -341,7 +358,7 @@ bool WindowAndroid::CanRequestPermission(const std::string& permission) {
 }
 
 WindowAndroid* WindowAndroid::GetWindowAndroid() const {
-  DCHECK(parent_ == nullptr);
+  CHECK(parent_ == nullptr, base::NotFatalUntil::M163);
   return const_cast<WindowAndroid*>(this);
 }
 
@@ -360,9 +377,9 @@ display::Display WindowAndroid::GetDisplayWithWindowColorSpace() {
 }
 
 bool WindowAndroid::RequestPointerLock(ViewAndroid& view_android) {
-  DCHECK(view_android.GetWindowAndroid() == this);
-  DCHECK(view_android.GetContainerView());
-  DCHECK(pointer_locking_view_ == nullptr);
+  CHECK(view_android.GetWindowAndroid() == this, base::NotFatalUntil::M163);
+  CHECK(view_android.GetContainerView(), base::NotFatalUntil::M163);
+  CHECK(pointer_locking_view_ == nullptr, base::NotFatalUntil::M163);
 
   JNIEnv* env = AttachCurrentThread();
   bool has_lock = Java_WindowAndroid_requestPointerLock(
@@ -380,7 +397,7 @@ bool WindowAndroid::HasPointerLock(ViewAndroid& view_android) {
 }
 
 void WindowAndroid::ReleasePointerLock(ViewAndroid& view_android) {
-  DCHECK(&view_android == pointer_locking_view_);
+  CHECK(&view_android == pointer_locking_view_, base::NotFatalUntil::M163);
   pointer_locking_view_ = nullptr;
 
   JNIEnv* env = AttachCurrentThread();
@@ -389,9 +406,8 @@ void WindowAndroid::ReleasePointerLock(ViewAndroid& view_android) {
 }
 
 void WindowAndroid::OnWindowPointerLockRelease(JNIEnv* env) {
-  DCHECK(pointer_locking_view_);
-  pointer_locking_view_->OnPointerLockRelease();
-  pointer_locking_view_ = nullptr;
+  CHECK(pointer_locking_view_);
+  std::exchange(pointer_locking_view_, nullptr)->OnPointerLockRelease();
 }
 
 void WindowAndroid::OnWindowPositionChanged(JNIEnv* env) {
@@ -458,6 +474,10 @@ ui::RendererColorMap WindowAndroid::GetRendererColorMap(
 
 ui::ColorProviderKey WindowAndroid::GetColorProviderKey() const {
   return GetColorProviderKeyImpl(ColorProviderBridge::HasInstance());
+}
+
+void WindowAndroid::OnNativeThemeUpdated(ui::NativeTheme* observed_theme) {
+  NotifyColorProviderChanged();
 }
 
 ui::ColorProviderKey WindowAndroid::GetColorProviderKeyForTesting(

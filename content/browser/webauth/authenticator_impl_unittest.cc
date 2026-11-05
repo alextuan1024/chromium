@@ -210,6 +210,28 @@ constexpr char kTestSignClientDataJsonString[] =
     R"({"challenge":"aHE0loIi7BcgLkJQX47SsWriLxa7BbiMJdueYCZF8UE","origin":)"
     R"("https://a.google.com", "type":"webauthn.get"})";
 
+std::vector<device::PublicKeyCredentialParams::CredentialInfo>
+PublicKeyParametersFor(
+    const std::vector<device::CoseAlgorithmIdentifier>& algorithms) {
+  std::vector<device::PublicKeyCredentialParams::CredentialInfo> parameters;
+  for (device::CoseAlgorithmIdentifier algorithm : algorithms) {
+    parameters.push_back(
+        {device::CredentialType::kPublicKey, static_cast<int32_t>(algorithm)});
+  }
+  return parameters;
+}
+
+std::vector<device::CoseAlgorithmIdentifier> AlgorithmsIn(
+    const device::CtapMakeCredentialRequest& request) {
+  std::vector<device::CoseAlgorithmIdentifier> algorithms;
+  for (const auto& param :
+       request.public_key_credential_params.public_key_credential_params()) {
+    algorithms.push_back(
+        static_cast<device::CoseAlgorithmIdentifier>(param.algorithm));
+  }
+  return algorithms;
+}
+
 }  // namespace
 
 TEST_F(AuthenticatorImplTest, ClientDataJSONSerialization) {
@@ -453,13 +475,13 @@ TEST_F(AuthenticatorImplTest, GetClientCapabilities_ConditionalCreate) {
   ExpectCapability(capabilities, client_capabilities::kConditionalCreate, true);
 }
 
-TEST_F(AuthenticatorImplTest, GetClientCapabilities_AmbientGet) {
+TEST_F(AuthenticatorImplTest, GetClientCapabilities_ConditionalPassiveGet) {
   for (const bool enabled : {false, true}) {
     base::test::ScopedFeatureList feature_list;
     feature_list.InitWithFeatureState(device::kWebAuthnAmbientSignin, enabled);
     NavigateAndCommit(GURL(kTestOrigin1));
     ClientCapabilitiesList capabilities = AuthenticatorGetClientCapabilities();
-    ExpectCapability(capabilities, client_capabilities::kAmbientGet,
+    ExpectCapability(capabilities, client_capabilities::kConditionalPassiveGet,
                      enabled ? std::optional<bool>(true) : std::nullopt);
   }
 }
@@ -1137,6 +1159,40 @@ TEST_F(AuthenticatorImplTest, Win_IsUVPAA) {
     }
   }
 }
+
+// Tests that a create() response from the Windows API that can't be parsed
+// fails the request immediately, rather than crashing or timing out.
+TEST_F(AuthenticatorImplTest, WinMakeCredentialUnparsableResponse) {
+  virtual_device_factory_->set_discover_win_webauthn_api_authenticator(true);
+  fake_win_webauthn_api_.set_available(true);
+  fake_win_webauthn_api_.set_corrupt_authenticator_data(true);
+  NavigateAndCommit(GURL(kTestOrigin1));
+
+  EXPECT_EQ(AuthenticatorMakeCredential().status,
+            AuthenticatorStatus::NOT_ALLOWED_ERROR);
+  VerifyMakeCredentialOutcomeUkm(
+      0, MakeCredentialOutcome::kUnknownResponseFromAuthenticator,
+      AuthenticationRequestMode::kModalWebAuthn);
+}
+
+// Tests that a get() response from the Windows API that can't be parsed fails
+// the request immediately, rather than timing out.
+TEST_F(AuthenticatorImplTest, WinGetAssertionUnparsableResponse) {
+  virtual_device_factory_->set_discover_win_webauthn_api_authenticator(true);
+  fake_win_webauthn_api_.set_available(true);
+  NavigateAndCommit(GURL(kTestOrigin1));
+  PublicKeyCredentialRequestOptionsPtr options =
+      GetTestPublicKeyCredentialRequestOptions();
+  ASSERT_TRUE(fake_win_webauthn_api_.InjectNonDiscoverableCredential(
+      options->allow_credentials[0].id, kTestRelyingPartyId));
+  fake_win_webauthn_api_.set_corrupt_authenticator_data(true);
+
+  EXPECT_EQ(AuthenticatorGetAssertion(std::move(options)).status,
+            AuthenticatorStatus::NOT_ALLOWED_ERROR);
+  VerifyGetAssertionOutcomeUkm(
+      0, GetAssertionOutcome::kUnknownResponseFromAuthenticator,
+      AuthenticationRequestMode::kModalWebAuthn);
+}
 #endif  // BUILDFLAG(IS_WIN)
 
 #if BUILDFLAG(IS_CHROMEOS)
@@ -1484,6 +1540,37 @@ TEST_F(AuthenticatorContentBrowserClientTest,
       GetTestPublicKeyCredentialReportOptions();
   EXPECT_EQ(AuthenticatorReport(std::move(options)),
             AuthenticatorStatus::SUCCESS);
+}
+
+TEST_F(AuthenticatorContentBrowserClientTest,
+       GetPasswordOnlyCredentialTLSError) {
+  NavigateAndCommit(GURL(kTestOrigin1));
+  test_client_.is_webauthn_security_level_acceptable = false;
+  auto options = GetCredentialOptions::New();
+  options->mediation = blink::mojom::Mediation::IMMEDIATE;
+  options->password = true;
+  EXPECT_EQ(AuthenticatorGetCredential(std::move(options)).status,
+            AuthenticatorStatus::CERTIFICATE_ERROR);
+  VerifyGetAssertionOutcomeUkm(0, GetAssertionOutcome::kOtherFailure,
+                               AuthenticationRequestMode::kImmediate);
+}
+
+TEST_F(AuthenticatorContentBrowserClientTest,
+       GetPasswordOnlyCredentialSkipTLSCheckWithVirtualEnvironment) {
+  NavigateAndCommit(GURL(kTestOrigin1));
+  content::AuthenticatorEnvironment::GetInstance()
+      ->EnableVirtualAuthenticatorFor(
+          static_cast<content::RenderFrameHostImpl*>(main_rfh())
+              ->frame_tree_node(),
+          /*enable_ui=*/false);
+  test_client_.is_webauthn_security_level_acceptable = false;
+  auto options = GetCredentialOptions::New();
+  options->mediation = blink::mojom::Mediation::IMMEDIATE;
+  options->password = true;
+  // The TLS check is skipped, so the request proceeds until the immediate
+  // mediation timeout fires.
+  EXPECT_EQ(AuthenticatorGetCredential(std::move(options)).status,
+            AuthenticatorStatus::IMMEDIATE_NOT_FOUND);
 }
 
 TEST_F(AuthenticatorContentBrowserClientTest, TestGetAssertionCancel) {
@@ -3032,6 +3119,32 @@ TEST_F(AuthenticatorImplRemoteClientDataJSONDisabledTest,
 }
 
 TEST_F(AuthenticatorImplRemoteClientDataJSONDisabledTest,
+       CrossOriginMakeCredentialRejectsExtensionWhenFeatureDisabled) {
+  NavigateAndCommit(GURL(kExampleOrigin));
+  RenderFrameHost* child =
+      RenderFrameHostTester::For(main_rfh())->AppendChild("child");
+  child = NavigationSimulator::NavigateAndCommitFromDocument(
+      GURL(kOtherRdpOrigin), child);
+
+  PublicKeyCredentialCreationOptionsPtr options =
+      GetTestPublicKeyCredentialCreationOptions();
+  options->relying_party.id = kExampleRpId;
+  options->remote_client_data_json = MakeClientDataJSON(kExampleOrigin);
+
+  mojo::Remote<blink::mojom::Authenticator> authenticator;
+  static_cast<RenderFrameHostImpl*>(child)->GetWebAuthenticationService(
+      authenticator.BindNewPipeAndPassReceiver());
+  base::test::TestFuture<void> mojo_error_future;
+  SetMojoErrorHandler(base::BindLambdaForTesting([&](const std::string& error) {
+    EXPECT_EQ(error, "invalid remoteClientDataJSON request");
+    mojo_error_future.SetValue();
+  }));
+
+  authenticator->MakeCredential(std::move(options), base::DoNothing());
+  EXPECT_TRUE(mojo_error_future.Wait());
+}
+
+TEST_F(AuthenticatorImplRemoteClientDataJSONDisabledTest,
        GetAssertionRejectsExtensionWhenFeatureDisabled) {
   NavigateAndCommit(GURL(kExampleOrigin));
 
@@ -3310,13 +3423,11 @@ TEST_F(AuthenticatorImplRequestDelegateTest,
 
   base::RunLoop usb_device_found_done;
   EXPECT_CALL(*mock_delegate_ptr, FidoAuthenticatorAdded(_))
-      .WillOnce(testing::InvokeWithoutArgs(
-          [&usb_device_found_done]() { usb_device_found_done.Quit(); }));
+      .WillOnce([&usb_device_found_done]() { usb_device_found_done.Quit(); });
 
   base::RunLoop usb_device_lost_done;
   EXPECT_CALL(*mock_delegate_ptr, FidoAuthenticatorRemoved(_))
-      .WillOnce(testing::InvokeWithoutArgs(
-          [&usb_device_lost_done]() { usb_device_lost_done.Quit(); }));
+      .WillOnce([&usb_device_lost_done]() { usb_device_lost_done.Quit(); });
 
   authenticator->GetCredential(std::move(options), future.GetCallback());
   fake_hid_discovery->WaitForCallToStartAndSimulateSuccess();
@@ -3339,6 +3450,10 @@ TEST_F(AuthenticatorImplRequestDelegateTest, FailureReasonForTimeout) {
   auto mock_delegate = std::make_unique<
       ::testing::NiceMock<MockAuthenticatorRequestDelegateObserver>>(
       failure_reason_future.GetCallback());
+  EXPECT_CALL(*mock_delegate,
+              OnTransactionFailed(std::optional<device::AuthenticatorType>(),
+                                  AuthenticatorRequestClientDelegate::
+                                      InterestingFailureReason::kTimeout));
   auto authenticator = ConnectToFakeAuthenticator(std::move(mock_delegate));
 
   TestGetCredentialFuture future;
@@ -3394,6 +3509,11 @@ TEST_F(AuthenticatorImplRequestDelegateTest,
   auto mock_delegate = std::make_unique<
       ::testing::NiceMock<MockAuthenticatorRequestDelegateObserver>>(
       failure_reason_future.GetCallback());
+  EXPECT_CALL(
+      *mock_delegate,
+      OnTransactionFailed(std::optional(device::AuthenticatorType::kOther),
+                          AuthenticatorRequestClientDelegate::
+                              InterestingFailureReason::kKeyNotRegistered));
   auto authenticator = ConnectToFakeAuthenticator(std::move(mock_delegate));
 
   TestGetCredentialFuture future;
@@ -4173,6 +4293,99 @@ TEST_F(AuthenticatorImplTest, AlgorithmsOmitted) {
         AuthenticationRequestMode::kModalWebAuthn);
     EXPECT_TRUE(touched);
   }
+}
+
+// Parameterized on whether kWebAuthnFilterAlgorithmsForAuthenticator is
+// enabled.
+class AuthenticatorImplFilterAlgorithmsTest
+    : public AuthenticatorImplTest,
+      public testing::WithParamInterface<bool> {
+ protected:
+  void SetUp() override {
+    scoped_feature_list_.InitWithFeatureState(
+        device::kWebAuthnFilterAlgorithmsForAuthenticator, GetParam());
+    AuthenticatorImplTest::SetUp();
+  }
+
+  base::test::ScopedFeatureList scoped_feature_list_;
+};
+
+TEST_P(AuthenticatorImplFilterAlgorithmsTest, FilterAlgorithms) {
+  // When filtering is enabled, only algorithms advertised by the authenticator
+  // should be sent to it, in the order requested by the RP. Otherwise, the
+  // requested list should be sent unchanged.
+  using Alg = device::CoseAlgorithmIdentifier;
+  const struct {
+    const char* desc;
+    std::vector<Alg> advertised;
+    std::vector<Alg> requested;
+    std::vector<Alg> expected;
+  } kTests[] = {
+      {
+          .desc = "Removes unadvertised algorithms",
+          .advertised = {Alg::kEs256},
+          .requested = {Alg::kMlDsa65, Alg::kEdDSA, Alg::kEs256},
+          .expected = {Alg::kEs256},
+      },
+      {
+          .desc = "Preserves the RP's order",
+          .advertised = {Alg::kEs256, Alg::kEdDSA},
+          .requested = {Alg::kMlDsa65, Alg::kEdDSA, Alg::kEs256},
+          .expected = {Alg::kEdDSA, Alg::kEs256},
+      },
+      {
+          .desc = "No filtering without advertised algorithms",
+          .advertised = {},
+          .requested = {Alg::kMlDsa65, Alg::kEs256},
+          .expected = {Alg::kMlDsa65, Alg::kEs256},
+      },
+  };
+
+  NavigateAndCommit(GURL(kTestOrigin1));
+  for (const auto& test : kTests) {
+    SCOPED_TRACE(test.desc);
+    device::VirtualCtap2Device::Config config;
+    config.advertised_algorithms = test.advertised;
+    virtual_device_factory_->SetCtap2Config(config);
+    virtual_device_factory_->mutable_state()->last_make_credential_request =
+        std::nullopt;
+
+    PublicKeyCredentialCreationOptionsPtr options =
+        GetTestPublicKeyCredentialCreationOptions();
+    options->public_key_parameters = PublicKeyParametersFor(test.requested);
+    MakeCredentialResult result =
+        AuthenticatorMakeCredential(std::move(options));
+    ASSERT_EQ(result.status, AuthenticatorStatus::SUCCESS);
+
+    const auto& request =
+        virtual_device_factory_->mutable_state()->last_make_credential_request;
+    ASSERT_TRUE(request);
+    EXPECT_EQ(AlgorithmsIn(*request),
+              GetParam() ? test.expected : test.requested);
+  }
+}
+
+INSTANTIATE_TEST_SUITE_P(All,
+                         AuthenticatorImplFilterAlgorithmsTest,
+                         testing::Bool());
+
+TEST_F(AuthenticatorImplTest,
+       MakeCredentialEmptyPublicKeyParametersIsBadMessage) {
+  // Blink never sends an empty list of public key parameters, so receiving one
+  // indicates a compromised renderer.
+  NavigateAndCommit(GURL(kTestOrigin1));
+
+  PublicKeyCredentialCreationOptionsPtr options =
+      GetTestPublicKeyCredentialCreationOptions();
+  options->public_key_parameters.clear();
+
+  mojo::Remote<blink::mojom::Authenticator> authenticator =
+      ConnectToAuthenticator();
+
+  mojo::test::BadMessageObserver bad_message_observer;
+  authenticator->MakeCredential(std::move(options), base::DoNothing());
+  EXPECT_EQ(bad_message_observer.WaitForBadMessage(),
+            "empty public_key_parameters");
 }
 
 TEST_F(AuthenticatorImplTest, VirtualAuthenticatorPublicKeyAlgos) {

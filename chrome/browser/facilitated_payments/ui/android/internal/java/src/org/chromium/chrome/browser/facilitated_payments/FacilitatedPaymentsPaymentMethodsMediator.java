@@ -40,6 +40,7 @@ import static org.chromium.chrome.browser.facilitated_payments.FacilitatedPaymen
 import static org.chromium.chrome.browser.facilitated_payments.FacilitatedPaymentsPaymentMethodsProperties.PixAccountLinkingPromptProperties.SETTINGS_LINK_CALLBACK;
 import static org.chromium.chrome.browser.facilitated_payments.FacilitatedPaymentsPaymentMethodsProperties.PixAccountLinkingPromptProperties.VIDEO_LINK_CALLBACK;
 import static org.chromium.chrome.browser.facilitated_payments.FacilitatedPaymentsPaymentMethodsProperties.ProgressScreenProperties.MESSAGE_TEXT;
+import static org.chromium.chrome.browser.facilitated_payments.FacilitatedPaymentsPaymentMethodsProperties.ProgressScreenProperties.SHOW_GPAY_ICON;
 import static org.chromium.chrome.browser.facilitated_payments.FacilitatedPaymentsPaymentMethodsProperties.SCREEN;
 import static org.chromium.chrome.browser.facilitated_payments.FacilitatedPaymentsPaymentMethodsProperties.SCREEN_VIEW_MODEL;
 import static org.chromium.chrome.browser.facilitated_payments.FacilitatedPaymentsPaymentMethodsProperties.SURVIVES_NAVIGATION;
@@ -90,6 +91,7 @@ import org.chromium.chrome.browser.ui.messages.snackbar.Snackbar;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager.SnackbarController;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManagerProvider;
+import org.chromium.components.autofill.AutofillFeatures;
 import org.chromium.components.autofill.ImageSize;
 import org.chromium.components.autofill.ImageType;
 import org.chromium.components.autofill.payments.AccountType;
@@ -120,6 +122,8 @@ import java.util.Set;
 class FacilitatedPaymentsPaymentMethodsMediator implements SnackbarController {
     static final String PIX_BANK_ACCOUNT_TRANSACTION_LIMIT = "500";
     static final int STRIKE_THRESHOLD_FOR_HARD_DECLINE = 2;
+    static final String DEFAULT_PIX_ACCOUNT_LINKING_VIDEO_URL =
+            "https://www.youtube.com/watch?v=zXMuvna_X4c";
 
     // This histogram name should be in sync with the one in
     // components/facilitated_payments/core/metrics/facilitated_payments_metrics.cc:LogPixFopSelected.
@@ -137,6 +141,10 @@ class FacilitatedPaymentsPaymentMethodsMediator implements SnackbarController {
     // components/facilitated_payments/core/metrics/facilitated_payments_metrics.cc:LogNonCardPaymentMethodsFopSelected.
     static final String PAYMENT_LINK_FOP_SELECTOR_TYPES_USER_ACTION_HISTOGRAM =
             "FacilitatedPayments.{PaymentLinkFopSelectorTypes}.FopSelector.UserAction";
+
+    @VisibleForTesting
+    static final String PIX_ACCOUNT_LINKING_VIDEO_LINK_CLICKED_HISTOGRAM =
+            "FacilitatedPayments.Pix.AccountLinking.VideoLinkClicked";
 
     private Context mContext;
     private PropertyModel mModel;
@@ -242,11 +250,7 @@ class FacilitatedPaymentsPaymentMethodsMediator implements SnackbarController {
     void showSheetForPaymentLink(List<Ewallet> ewallets, List<ResolveInfo> apps) {
         mInputProtector.markShowTime();
         boolean isEwalletAvailable = ewallets != null && !ewallets.isEmpty();
-        boolean isPaymentAppAvailable =
-                apps != null
-                        && !apps.isEmpty()
-                        && ChromeFeatureList.isEnabled(
-                                ChromeFeatureList.FACILITATED_PAYMENTS_ENABLE_A2A_PAYMENT);
+        boolean isPaymentAppAvailable = apps != null && !apps.isEmpty();
         if (!isEwalletAvailable && !isPaymentAppAvailable) {
             return;
         }
@@ -261,12 +265,9 @@ class FacilitatedPaymentsPaymentMethodsMediator implements SnackbarController {
             screenItems.add(new ListItem(EWALLET, model));
         }
 
-        if (ChromeFeatureList.isEnabled(
-                ChromeFeatureList.FACILITATED_PAYMENTS_ENABLE_A2A_PAYMENT)) {
-            for (ResolveInfo app : apps) {
-                PropertyModel model = createPaymentAppModel(mContext, app);
-                screenItems.add(new ListItem(PAYMENT_APP, model));
-            }
+        for (ResolveInfo app : apps) {
+            PropertyModel model = createPaymentAppModel(mContext, app);
+            screenItems.add(new ListItem(PAYMENT_APP, model));
         }
         screenItems.add(buildPaymentLinkAdditionalInfo(ewallets, apps));
 
@@ -300,7 +301,14 @@ class FacilitatedPaymentsPaymentMethodsMediator implements SnackbarController {
                     case ProgressScreenType.ACCOUNT_LINKING -> "";
                     default -> "";
                 };
+        boolean showGpayIcon =
+                switch (type) {
+                    case ProgressScreenType.PAYMENT -> true;
+                    case ProgressScreenType.ACCOUNT_LINKING -> false;
+                    default -> false;
+                };
         mModel.get(SCREEN_VIEW_MODEL).set(MESSAGE_TEXT, progressText);
+        mModel.get(SCREEN_VIEW_MODEL).set(SHOW_GPAY_ICON, showGpayIcon);
         mModel.set(SURVIVES_NAVIGATION, false);
         mModel.set(VISIBLE_STATE, SHOWN);
     }
@@ -394,9 +402,11 @@ class FacilitatedPaymentsPaymentMethodsMediator implements SnackbarController {
                                     ChromeFeatureList.getFieldTrialParamByFeature(
                                             ChromeFeatureList.ENABLE_PIX_ACCOUNT_LINKING_NATIVE,
                                             "video_url_on_prompt");
-                            if (!TextUtils.isEmpty(videoUrl)) {
-                                openUrl(videoUrl);
+                            if (TextUtils.isEmpty(videoUrl)) {
+                                videoUrl = DEFAULT_PIX_ACCOUNT_LINKING_VIDEO_URL;
                             }
+                            openUrl(videoUrl);
+                            recordHistogramOnVideoLinkClicked();
                         });
         // Prevent the bottom sheet from closing during page navigations.
         mModel.set(SURVIVES_NAVIGATION, true);
@@ -494,7 +504,12 @@ class FacilitatedPaymentsPaymentMethodsMediator implements SnackbarController {
                                     .getDimension(
                                             R.dimen.facilitated_payments_gpay_icon_header_height);
             headerBuilder
-                    .with(PRODUCT_ICON_DRAWABLE_ID, R.drawable.google_pay)
+                    .with(
+                            PRODUCT_ICON_DRAWABLE_ID,
+                            ChromeFeatureList.isEnabled(
+                                            AutofillFeatures.AUTOFILL_ENABLE_GRADIENT_GOOGLE_LOGOS)
+                                    ? R.drawable.googlepay_with_gradient
+                                    : R.drawable.google_pay)
                     .with(PRODUCT_ICON_HEIGHT, productIconHeight)
                     .with(
                             PRODUCT_ICON_CONTENT_DESCRIPTION_ID,
@@ -525,10 +540,7 @@ class FacilitatedPaymentsPaymentMethodsMediator implements SnackbarController {
     // payment app both are not present.
     private String getPaymentLinkHeaderTitle(
             Context context, List<Ewallet> ewallets, List<ResolveInfo> apps) {
-        if (apps != null
-                && !apps.isEmpty()
-                && ChromeFeatureList.isEnabled(
-                        ChromeFeatureList.FACILITATED_PAYMENTS_ENABLE_A2A_PAYMENT)) {
+        if (apps != null && !apps.isEmpty()) {
             return context.getString(
                     R.string.facilitated_payments_non_card_payment_methods_bottom_sheet_title);
         }
@@ -580,15 +592,10 @@ class FacilitatedPaymentsPaymentMethodsMediator implements SnackbarController {
                                         this.recordManagePaymentMethodsOptionSelected(
                                                 getEwalletFopSelectorUserActionHistogram(ewallets));
                                     }
-                                    if (ChromeFeatureList.isEnabled(
-                                            ChromeFeatureList
-                                                    .FACILITATED_PAYMENTS_ENABLE_A2A_PAYMENT)) {
-                                        this
-                                                .recordManagePaymentMethodsOptionSelectedNonCardPaymentMethods(
-                                                        getPaymentLinkFopSelectorTypesUserActionHistogram(
-                                                                !ewallets.isEmpty(),
-                                                                !apps.isEmpty()));
-                                    }
+                                    this
+                                            .recordManagePaymentMethodsOptionSelectedNonCardPaymentMethods(
+                                                    getPaymentLinkFopSelectorTypesUserActionHistogram(
+                                                            !ewallets.isEmpty(), !apps.isEmpty()));
                                 })
                         .build());
     }
@@ -728,14 +735,11 @@ class FacilitatedPaymentsPaymentMethodsMediator implements SnackbarController {
     }
 
     private static int getPaymentAdditionalInfoString(boolean hasEwallets, boolean hasApps) {
-        if (ChromeFeatureList.isEnabled(
-                ChromeFeatureList.FACILITATED_PAYMENTS_ENABLE_A2A_PAYMENT)) {
-            if (hasApps && hasEwallets) {
-                return R.string.ewallet_and_payment_app_payment_additional_info;
-            }
-            if (hasApps) {
-                return R.string.payment_app_payment_additional_info;
-            }
+        if (hasApps && hasEwallets) {
+            return R.string.ewallet_and_payment_app_payment_additional_info;
+        }
+        if (hasApps) {
+            return R.string.payment_app_payment_additional_info;
         }
         return hasEwallets ? R.string.ewallet_payment_additional_info : 0;
     }
@@ -774,6 +778,11 @@ class FacilitatedPaymentsPaymentMethodsMediator implements SnackbarController {
                 histogramName,
                 PaymentLinkFopSelectorAction.TURN_OFF_PAYMENT_PROMPT_LINK_CLICKED,
                 PaymentLinkFopSelectorAction.MAX_VALUE + 1);
+    }
+
+    private void recordHistogramOnVideoLinkClicked() {
+        RecordHistogram.recordBooleanHistogram(
+                PIX_ACCOUNT_LINKING_VIDEO_LINK_CLICKED_HISTOGRAM, true);
     }
 
     private String getEwalletFopSelectorUserActionHistogram(List<Ewallet> ewallets) {

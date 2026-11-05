@@ -4,21 +4,73 @@
 
 #import "ios/chrome/browser/intelligence/actor/model/actor_engine.h"
 
+#import <algorithm>
+#import <optional>
+#import <string>
+#import <utility>
+
+#import "base/check_deref.h"
 #import "base/check_op.h"
 #import "base/functional/bind.h"
 #import "base/strings/stringprintf.h"
+#import "base/types/pass_key.h"
+#import "components/actor/core/safety_list_manager.h"
 #import "components/actor/public/mojom/actor_types.mojom.h"
+#import "components/origin_gating/core/decision_source.h"
+#import "components/origin_gating/core/gateable_event.h"
+#import "components/origin_gating/core/origin_gating_checker.h"
+#import "components/origin_gating/core/origin_gating_configuration.h"
+#import "components/origin_gating/core/origin_gating_registration.h"
+#import "components/origin_gating/core/origin_gating_service.h"
 #import "ios/chrome/browser/intelligence/actor/model/actor_task.h"
-#import "ios/chrome/browser/intelligence/actor/model/actor_task_intervention_handler.h"
 #import "ios/chrome/browser/intelligence/actor/tools/model/actor_task_form_filling_handler.h"
+#import "ios/chrome/browser/intelligence/actor/tools/model/actor_tool_factory.h"
 #import "ios/chrome/browser/intelligence/actor/tools/model/actor_tool_request.h"
 #import "ios/chrome/browser/intelligence/actor/tools/model/tool_controller.h"
 #import "ios/chrome/browser/intelligence/actor/tools/public/actor_tool_types.h"
+#import "ios/chrome/browser/intelligence/actor/tools/public/metrics.h"
+#import "ios/chrome/browser/intelligence/actor/tools/utils/actor_tool_utils.h"
 #import "ios/chrome/browser/intelligence/actor/tools/utils/logging_util.h"
+#import "ios/chrome/browser/intelligence/actor/tools/utils/profile_context_resolver.h"
+#import "ios/chrome/browser/intelligence/features/features.h"
+#import "ios/web/public/web_state.h"
+#import "third_party/abseil-cpp/absl/container/flat_hash_set.h"
+#import "url/gurl.h"
+#import "url/origin.h"
 
 namespace actor {
 
 namespace {
+
+// Evaluates the destination against the Actor Safety List component data.
+void EvaluateSafetyListPredicate(
+    origin_gating::GatingDecisionContext* context,
+    const origin_gating::GateableEvent& event,
+    base::OnceCallback<void(origin_gating::Decision)> callback) {
+  actor::SafetyListManager* safety_list_manager =
+      actor::SafetyListManager::GetInstance();
+  if (!safety_list_manager) {
+    std::move(callback).Run(origin_gating::Decision::kNoDecision);
+    return;
+  }
+
+  const GURL& destination = event.destination();
+  const GURL& effective_source = event.source() && !event.source()->is_empty()
+                                     ? *event.source()
+                                     : destination;
+  safety_list_manager->Find(
+      effective_source, destination,
+      base::BindOnce([](actor::SafetyListManager::Decision decision) {
+        switch (decision) {
+          case actor::SafetyListManager::Decision::kAllow:
+            return origin_gating::Decision::kAllowed;
+          case actor::SafetyListManager::Decision::kBlock:
+            return origin_gating::Decision::kBlocked;
+          case actor::SafetyListManager::Decision::kNone:
+            return origin_gating::Decision::kNoDecision;
+        }
+      }).Then(std::move(callback)));
+}
 
 // Returns the string representation of the ActorEngine::State.
 std::string ActorEngineStateToString(ActorEngine::State state) {
@@ -68,8 +120,12 @@ void LogActStart(
     const std::vector<std::unique_ptr<ActorToolRequest>>& actions) {
   std::vector<std::pair<std::string, std::string>> details;
   for (size_t i = 0; i < actions.size(); ++i) {
-    details.push_back({base::StringPrintf("Actions[%zu]", i),
-                       base::StringPrintf("Tool %zu", i)});
+    std::string tool_name =
+        actions[i] ? std::string(ActorActionCaseToToolName(
+                                     actions[i]->action().action_case())
+                                     .value_or("unknown tool"))
+                   : "null tool";
+    details.push_back({base::StringPrintf("Actions[%zu]", i), tool_name});
   }
   LogJournalEvent(journal, GURL(), task_id, "ExecutionEngine::Act", details);
 }
@@ -82,15 +138,85 @@ web::WebStateID GetWebStateIDForAction(const ActorToolRequest* action) {
   return action->GetTargetWebStateId();
 }
 
+// Pre-approves explicit target origins (e.g. `NavigateAction` destinations) in
+// `checker` before tool execution begins. `checker` may be null if
+// `OriginGatingService` has already shut down.
+void GrantAssociatedOrigins(
+    origin_gating::OriginGatingChecker* checker,
+    const std::vector<std::unique_ptr<ActorToolRequest>>& actions) {
+  if (!checker) {
+    return;
+  }
+  for (const std::unique_ptr<ActorToolRequest>& action : actions) {
+    if (!action) {
+      continue;
+    }
+    std::optional<url::Origin> maybe_origin = action->AssociatedOriginGrant();
+    if (maybe_origin.has_value()) {
+      checker->AllowNavigationTo(*maybe_origin, /*is_user_confirmed=*/false);
+    }
+  }
+}
+
+// Merges `followup`'s result into `target`. Preserves
+// `requires_page_stabilization` via OR and keeps `target`'s message if
+// `followup` succeeded without a non-empty message.
+void MergeActionResult(ActionResult& target, ActionResult followup) {
+  const ToolExecutionResult& followup_result = followup.tool_result;
+  bool requires_page_stabilization =
+      target.tool_result.requires_page_stabilization() ||
+      followup_result.requires_page_stabilization();
+  std::optional<std::string> message = target.tool_result.message();
+  std::optional<std::string> followup_message = followup_result.message();
+  if (!followup_result.IsOk() ||
+      (followup_message.has_value() && !followup_message->empty())) {
+    message = std::move(followup_message);
+  }
+  std::optional<InternalToolErrorCode> internal_code =
+      followup_result.internal_code();
+  if (internal_code.has_value()) {
+    target.tool_result =
+        ToolExecutionResult(followup_result.code(), *internal_code,
+                            requires_page_stabilization, std::move(message));
+  } else {
+    target.tool_result =
+        ToolExecutionResult(followup_result.code(), requires_page_stabilization,
+                            std::move(message));
+  }
+}
+
 }  // namespace
+
+PageActionGatingContext::PageActionGatingContext(
+    base::WeakPtr<web::WebState> web_state)
+    : web_state(web_state) {}
+PageActionGatingContext::~PageActionGatingContext() = default;
 
 ActorEngine::ActorEngine(ExecutionUpdatesDelegate* execution_updates_delegate,
                          ActorTask* owner_task)
     : state_(State::kInit),
       execution_updates_delegate_(execution_updates_delegate),
-      owner_task_(owner_task) {
+      owner_task_(&CHECK_DEREF(owner_task)),
+      // `base::Unretained(owner_task_)` is safe because `owner_task_` owns
+      // `this` (`ActorEngine`) and `origin_gating_delegate_`, so `owner_task_`
+      // strictly outlives `origin_gating_delegate_`.
+      origin_gating_delegate_(
+          owner_task_->policy_checker(),
+          base::BindRepeating(&ActorTask::ConfirmNavigationToOrigin,
+                              base::Unretained(owner_task_))),
+      form_filling_handler_(
+          ActorTaskFormFillingHandler::Create(base::PassKey<ActorEngine>(),
+                                              owner_task_->GetJournal(),
+                                              owner_task_->task_id())),
+      tool_controller_(
+          std::make_unique<ToolController>(/*tool_delegate=*/this)) {
   CHECK(execution_updates_delegate_);
-  CHECK(owner_task_);
+  origin_gating::OriginGatingService* origin_gating_service =
+      owner_task_->profile_context_resolver().GetOriginGatingService();
+  CHECK(origin_gating_service);
+  origin_gating_registration_ = origin_gating_service->CreateAndRegisterChecker(
+      origin_gating_delegate_.GetWeakPtr(), CreateOriginGatingConfig());
+  CHECK(origin_gating_registration_);
 }
 
 ActorEngine::~ActorEngine() = default;
@@ -105,6 +231,10 @@ void ActorEngine::Act(std::vector<std::unique_ptr<ActorToolRequest>> actions,
 
   LogActStart(GetJournal(), GetTaskId(), action_sequence_);
 
+  if (!action_sequence_.empty() && IsActorOriginGatingEnabled()) {
+    GrantAssociatedOrigins(GetOriginGatingChecker(), action_sequence_);
+  }
+
   ExecuteNextAction();
 }
 
@@ -113,10 +243,7 @@ void ActorEngine::CancelOngoingAndPendingActions(
   weak_ptr_factory_.InvalidateWeakPtrs();
   action_sequence_.clear();
 
-  if (tool_controller_) {
-    tool_controller_->Cancel();
-    tool_controller_.reset();
-  }
+  tool_controller_->Cancel();
 
   SetState(State::kFailed);
 
@@ -126,6 +253,23 @@ void ActorEngine::CancelOngoingAndPendingActions(
   if (completion_callback_) {
     std::move(completion_callback_).Run(std::move(action_results_));
   }
+}
+
+void ActorEngine::FailCurrentTool(mojom::ActionResultCode reason) {
+  CHECK_NE(reason, mojom::ActionResultCode::kOk);
+  if (state_ != State::kToolInvoke) {
+    return;
+  }
+
+  tool_controller_->FailCurrentTool(reason);
+}
+
+void ActorEngine::PauseOngoingActions() {
+  // TODO(crbug.com/548051839): Support pausing in-progress tool actions.
+}
+
+void ActorEngine::DidUninterruptTask() {
+  // TODO(crbug.com/548051839): Support resuming deferred tool invoke.
 }
 
 #pragma mark - ToolDelegate
@@ -146,25 +290,17 @@ ActorToolFactory& ActorEngine::GetToolFactory() const {
 }
 
 ActorTaskFormFillingHandler* ActorEngine::GetActorTaskFormFillingHandler() {
-  if (!form_filling_handler_) {
-    intervention_handler_ = [[ActorTaskInterventionHandler alloc] init];
-    form_filling_handler_ = ActorTaskFormFillingHandler::Create(
-        base::PassKey<ActorEngine>(), GetJournal(), GetTaskId());
-    form_filling_handler_->SetInterventionDelegate(base::PassKey<ActorEngine>(),
-                                                   intervention_handler_);
-  }
   return form_filling_handler_.get();
 }
 
 void ActorEngine::InterruptFromTool() {
   CHECK(owner_task_);
-  owner_task_->Interrupt(/*retain_user_control=*/false,
-                         ActorTaskInterruptReason::kUnknownReason);
+  owner_task_->InterruptForTool(base::PassKey<ActorEngine>());
 }
 
 void ActorEngine::UninterruptFromTool() {
   CHECK(owner_task_);
-  owner_task_->Uninterrupt(ActorTaskState::kActing);
+  owner_task_->UninterruptForTool(base::PassKey<ActorEngine>());
 }
 
 bool ActorEngine::IsWindowIdValid(int32_t window_id) {
@@ -180,13 +316,102 @@ web::WebState* ActorEngine::InsertWebState(
   return owner_task_->InsertWebState(window_id, load_params, in_background);
 }
 
-origin_gating::OriginGatingChecker* ActorEngine::GetOriginGatingChecker()
-    const {
-  CHECK(owner_task_);
-  return owner_task_->GetOriginGatingChecker();
+void ActorEngine::EnqueueFollowupAction(
+    std::unique_ptr<ActorToolRequest> action) {
+  CHECK(action);
+  CHECK(state_ == State::kToolVerify || state_ == State::kUiPreInvoke ||
+        state_ == State::kToolInvoke || state_ == State::kUiPostInvoke);
+  CHECK_GT(next_action_index_, 0ul);
+  CHECK_LE(next_action_index_, action_sequence_.size());
+  action->SetAsFollowup(base::PassKey<ActorEngine>());
+  action_sequence_.insert(action_sequence_.begin() + next_action_index_,
+                          std::move(action));
+}
+
+origin_gating::CheckerId ActorEngine::GetOriginGatingCheckerId() const {
+  return origin_gating_registration_->id();
+}
+
+origin_gating::OriginGatingChecker* ActorEngine::GetOriginGatingChecker() {
+  return origin_gating_registration_->service().GetChecker(
+      origin_gating_registration_->id());
 }
 
 #pragma mark - Private
+
+// static
+origin_gating::OriginGatingConfiguration
+ActorEngine::CreateOriginGatingConfig() {
+  return origin_gating::OriginGatingConfiguration(
+      /*predicates=*/
+      {
+          origin_gating::PredicateConfiguration(
+              /*predicate=*/origin_gating::DecisionSource::kEnterprisePolicy,
+              /*events=*/
+              {origin_gating::GateableEvent::kNavigationResponse,
+               origin_gating::GateableEvent::kPageAction}),
+          origin_gating::PredicateConfiguration(
+              /*predicate=*/origin_gating::CustomPredicate(
+                  base::BindRepeating(&EvaluateSafetyListPredicate),
+                  ActorCustomPredicate::kSafetyList),
+              /*events=*/
+              {// Gate navigations to prevent the actor from navigating to
+               // unapproved or dangerous destinations.
+               origin_gating::GateableEvent::kNavigationResponse,
+               // Gate user/actor page interactions (clicks, from inputs,
+               // etc.) within the loaded page.
+               origin_gating::GateableEvent::kPageAction}),
+          origin_gating::PredicateConfiguration(
+              /*predicate=*/origin_gating::DecisionSource::
+                  kCacheWithUserConfirmation,
+              /*events=*/origin_gating::GateableEventSet::All()),
+          origin_gating::PredicateConfiguration(
+              /*predicate=*/origin_gating::DecisionSource::kAllowSameOrigin,
+              /*events=*/
+              {origin_gating::GateableEvent::kNavigationResponse}),
+          origin_gating::PredicateConfiguration(
+              /*predicate=*/origin_gating::DecisionSource::
+                  kCacheWithoutUserConfirmation,
+              /*events=*/
+              {origin_gating::GateableEvent::kNavigationResponse}),
+      },
+      origin_gating::OriginGatingConfiguration::CacheScope::kOrigin);
+}
+
+void ActorEngine::IsAcceptableNavigationDestination(
+    const GURL& url,
+    ToolExecutionCallback callback) {
+  if (!IsActorOriginGatingForExplicitNavigationEnabled()) {
+    std::move(callback).Run(ToolExecutionResult::Ok());
+    return;
+  }
+
+  origin_gating::OriginGatingChecker* checker = GetOriginGatingChecker();
+  if (!checker) {
+    std::move(callback).Run(ToolExecutionResult(
+        InternalToolErrorCode::kExecutionMissingDependencies));
+    return;
+  }
+
+  checker->ComputeGatingDecision(
+      std::make_unique<origin_gating::GatingDecisionContext>(),
+      origin_gating::GateableEvent(origin_gating::NavigationRequestEvent{
+          .source = GURL(), .destination = url}),
+      base::BindOnce(&ActorEngine::OnNavigationDestinationGatingDecision,
+                     weak_ptr_factory_.GetWeakPtr(), std::move(callback)));
+}
+
+void ActorEngine::OnNavigationDestinationGatingDecision(
+    ToolExecutionCallback callback,
+    std::unique_ptr<origin_gating::GatingDecisionContext> context,
+    origin_gating::GatingDecision decision) {
+  if (!decision.is_allowed) {
+    std::move(callback).Run(ToolExecutionResult(
+        mojom::ActionResultCode::kTriggeredNavigationBlocked));
+    return;
+  }
+  std::move(callback).Run(ToolExecutionResult::Ok());
+}
 
 void ActorEngine::ExecuteNextAction() {
   if (next_action_index_ >= action_sequence_.size()) {
@@ -196,14 +421,39 @@ void ActorEngine::ExecuteNextAction() {
 
   next_action_index_++;
 
-  // TODO(crbug.com/496196533): Add pre-execution checks.
   SetState(State::kPreExecutionChecks);
+  const ActorToolRequest* action =
+      action_sequence_[InProgressActionIndex()].get();
+  if (action && action->RequiresUrlCheckInCurrentTab() &&
+      IsActorOriginGatingEnabled()) {
+    base::expected<ProfileContextResolver::TabResolutionResult,
+                   ToolExecutionResult>
+        tab_resolution = owner_task_->profile_context_resolver().ResolveTab(
+            action->GetTargetWebStateId().identifier());
+    if (!tab_resolution.has_value() || !tab_resolution->web_state) {
+      CompleteActions(ActionResult(
+          ToolExecutionResult(mojom::ActionResultCode::kTabWentAway)));
+      return;
+    }
 
-  // TODO(crbug.com/503072595): Add tool verification.
-  SetState(State::kToolVerify);
+    base::WeakPtr<web::WebState> web_state = tab_resolution->web_state;
+    origin_gating::OriginGatingChecker* checker = GetOriginGatingChecker();
+    if (!checker) {
+      CompleteActions(ActionResult(ToolExecutionResult(
+          InternalToolErrorCode::kExecutionMissingDependencies)));
+      return;
+    }
+    checker->ComputeGatingDecision(
+        std::make_unique<PageActionGatingContext>(web_state),
+        origin_gating::GateableEvent(origin_gating::PageActionEvent{
+            .destination = web_state->GetLastCommittedURL(),
+            .tool = origin_gating::ClientTool(action->GetToolType())}),
+        base::BindOnce(&ActorEngine::OnPreExecutionGatingDecision,
+                       weak_ptr_factory_.GetWeakPtr(), web_state));
+    return;
+  }
 
-  // TODO(crbug.com/496195979): Add UI pre-invoke.
-  UiPreInvoke();
+  OnPreExecutionChecksComplete();
 }
 
 void ActorEngine::UiPreInvoke() {
@@ -242,7 +492,6 @@ void ActorEngine::FinishedUiPreInvoke(ActionResult result) {
 
   const ActorToolRequest* action =
       action_sequence_[InProgressActionIndex()].get();
-  tool_controller_ = std::make_unique<ToolController>(/*tool_delegate=*/this);
   tool_controller_->CreateToolAndValidate(
       *action, base::BindOnce(&ActorEngine::OnToolValidationComplete,
                               weak_ptr_factory_.GetWeakPtr()));
@@ -275,7 +524,14 @@ void ActorEngine::FinishedToolInvoke(ActionResult result) {
     return;
   }
 
-  action_results_.push_back(std::move(result));
+  const ActorToolRequest* current_action =
+      action_sequence_[InProgressActionIndex()].get();
+  if (current_action && current_action->IsFollowup()) {
+    CHECK(!action_results_.empty());
+    MergeActionResult(action_results_.back(), std::move(result));
+  } else {
+    action_results_.push_back(std::move(result));
+  }
 
   // TODO(crbug.com/496195979): Add UI post-invoke.
   SetState(State::kUiPostInvoke);
@@ -292,19 +548,23 @@ void ActorEngine::FinishedUiPostInvoke(ActionResult result) {
 
 void ActorEngine::CompleteActions(ActionResult result) {
   bool success = result.tool_result.IsOk();
+  if (!success &&
+      (state_ == State::kPreExecutionChecks || state_ == State::kUiPreInvoke)) {
+    RecordActionResultCode(result.tool_result.code());
+  }
 
   // Successful tool results are already appended in `FinishedToolInvoke`,
   // therefore only record/overwrite the result if it is a failure.
   if (!success) {
-    size_t index = InProgressActionIndex();
-    if (action_results_.size() == index) {
+    size_t result_index = GetResultIndexForAction(InProgressActionIndex());
+    if (action_results_.size() == result_index) {
       // This is the first result for the current action, append to results
       // vector.
       action_results_.push_back(std::move(result));
-    } else if (action_results_.size() > index) {
-      // A result was already recorded for this action. Overwrite the success
-      // result with the failure.
-      action_results_[index] = std::move(result);
+    } else if (action_results_.size() > result_index) {
+      // A result was already recorded for this action (e.g. a post-invoke
+      // failure or a follow-up action failure). Merge the failure into it.
+      MergeActionResult(action_results_[result_index], std::move(result));
     }
   }
 
@@ -320,6 +580,56 @@ void ActorEngine::CompleteActions(ActionResult result) {
 size_t ActorEngine::InProgressActionIndex() const {
   CHECK_GT(next_action_index_, 0ul);
   return next_action_index_ - 1;
+}
+
+size_t ActorEngine::GetResultIndexForAction(size_t action_index) const {
+  CHECK_LT(action_index, action_sequence_.size());
+  size_t original_count = std::count_if(
+      action_sequence_.begin(), action_sequence_.begin() + action_index + 1,
+      [](const std::unique_ptr<ActorToolRequest>& action) {
+        return !action || !action->IsFollowup();
+      });
+  // At least the first action could not be a follow up.
+  CHECK_GT(original_count, 0ul);
+  return original_count - 1;
+}
+
+void ActorEngine::OnPreExecutionGatingDecision(
+    base::WeakPtr<web::WebState> web_state,
+    std::unique_ptr<origin_gating::GatingDecisionContext> context,
+    origin_gating::GatingDecision decision) {
+  if (!web_state) {
+    CompleteActions(ActionResult(
+        ToolExecutionResult(mojom::ActionResultCode::kTabWentAway)));
+    return;
+  }
+
+  if (!decision.is_allowed) {
+    CompleteActions(ActionResult(
+        ToolExecutionResult(mojom::ActionResultCode::kUrlBlocked)));
+    return;
+  }
+
+  OnPreExecutionChecksComplete();
+}
+
+void ActorEngine::OnPreExecutionChecksComplete() {
+  // TODO(crbug.com/503072595): Add tool verification.
+  SetState(State::kToolVerify);
+
+  // TODO(crbug.com/496195979): Add UI pre-invoke.
+  UiPreInvoke();
+}
+
+void ActorEngine::AddWritableMainframeOrigins(
+    const absl::flat_hash_set<url::Origin>& added_writable_mainframe_origins) {
+  if (added_writable_mainframe_origins.empty() ||
+      !IsActorOriginGatingEnabled()) {
+    return;
+  }
+  if (origin_gating::OriginGatingChecker* checker = GetOriginGatingChecker()) {
+    checker->AllowNavigationTo(added_writable_mainframe_origins);
+  }
 }
 
 }  // namespace actor

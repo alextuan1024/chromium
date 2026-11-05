@@ -5,6 +5,7 @@
 #include "chrome/browser/ash/login/screens/welcome_screen.h"
 
 #include <algorithm>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -12,11 +13,13 @@
 #include "ash/constants/ash_login_pref_names.h"
 #include "ash/constants/ash_pref_names.h"
 #include "ash/constants/ash_switches.h"
+#include "ash/public/cpp/locale_update_controller.h"
 #include "base/check_deref.h"
 #include "base/check_is_test.h"
 #include "base/command_line.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
+#include "base/i18n/language_tag.h"
 #include "base/logging.h"
 #include "base/memory/weak_ptr.h"
 #include "base/metrics/histogram_functions.h"
@@ -228,7 +231,8 @@ void WelcomeScreen::UpdateLanguageList() {
 void WelcomeScreen::SetApplicationLocaleAndInputMethod(
     const std::string& locale,
     const std::string& input_method) {
-  const std::string& app_locale = application_locale_storage_->Get();
+  std::string_view app_locale =
+      application_locale_storage_->GetTag().tag_string();
   if (app_locale == locale || locale.empty()) {
     // If the locale doesn't change, set input method directly.
     SetInputMethod(input_method);
@@ -256,7 +260,8 @@ std::string WelcomeScreen::GetInputMethod() const {
 
 void WelcomeScreen::SetApplicationLocale(const std::string& locale,
                                          const bool is_from_ui) {
-  const std::string& app_locale = application_locale_storage_->Get();
+  std::string_view app_locale =
+      application_locale_storage_->GetTag().tag_string();
   if (app_locale == locale || locale.empty()) {
     if (selected_language_code_.empty())
       UpdateLanguageList();
@@ -374,7 +379,13 @@ void WelcomeScreen::ShowImpl() {
     } else {
       const StartupCustomizationDocument* startup_manifest =
           StartupCustomizationDocument::GetInstance();
-      SetApplicationLocale(startup_manifest->initial_locale_default(),
+      const std::optional<base::i18n::LanguageTag> initial_locale =
+          startup_manifest->initial_locale_default();
+      // TODO(crbug.com/542711615): Make SetApplicationLocale() take a
+      // base::i18n::LanguageTag.
+      SetApplicationLocale(initial_locale
+                               ? std::string(initial_locale->tag_string())
+                               : std::string(),
                            /*is_from_ui=*/false);
     }
   }
@@ -491,20 +502,20 @@ void WelcomeScreen::OnUserAction(const base::ListValue& args) {
     } else if (action_id == kUserActionDisableHighContrast) {
       AccessibilityManager::Get()->EnableHighContrast(false);
     } else if (action_id == kUserActionEnableScreenMagnifier) {
-      DCHECK(MagnificationManager::Get());
+      CHECK(MagnificationManager::Get(), base::NotFatalUntil::M161);
       MagnificationManager::Get()->SetMagnifierEnabled(true);
     } else if (action_id == kUserActionDisableScreenMagnifier) {
-      DCHECK(MagnificationManager::Get());
+      CHECK(MagnificationManager::Get(), base::NotFatalUntil::M161);
       MagnificationManager::Get()->SetMagnifierEnabled(false);
     } else if (action_id == kUserActionEnableSelectToSpeak) {
       AccessibilityManager::Get()->SetSelectToSpeakEnabled(true);
     } else if (action_id == kUserActionDisableSelectToSpeak) {
       AccessibilityManager::Get()->SetSelectToSpeakEnabled(false);
     } else if (action_id == kUserActionEnableDockedMagnifier) {
-      DCHECK(MagnificationManager::Get());
+      CHECK(MagnificationManager::Get(), base::NotFatalUntil::M161);
       MagnificationManager::Get()->SetDockedMagnifierEnabled(true);
     } else if (action_id == kUserActionDisableDockedMagnifier) {
-      DCHECK(MagnificationManager::Get());
+      CHECK(MagnificationManager::Get(), base::NotFatalUntil::M161);
       MagnificationManager::Get()->SetDockedMagnifierEnabled(false);
     } else if (action_id == kUserActionEnableVirtualKeyboard) {
       AccessibilityManager::Get()->EnableVirtualKeyboard(true);
@@ -644,8 +655,8 @@ void WelcomeScreen::ScheduleResolveLanguageList(
   language_weak_ptr_factory_.InvalidateWeakPtrs();
 
   ResolveUILanguageList(
-      std::move(language_switch_result),
-      input_method::InputMethodManager::Get(),
+      application_locale_storage_->GetTag(), std::move(language_switch_result),
+      CHECK_DEREF(input_method::InputMethodManager::Get()),
       base::BindOnce(&WelcomeScreen::OnLanguageListResolved,
                      language_weak_ptr_factory_.GetWeakPtr()));
 }
@@ -654,9 +665,10 @@ void WelcomeScreen::OnLanguageListResolved(
     base::ListValue new_language_list,
     const std::string& new_language_list_locale,
     const std::string& new_selected_language) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
 
-  if (new_language_list_locale != application_locale_storage_->Get()) {
+  if (new_language_list_locale !=
+      application_locale_storage_->GetTag().tag_string()) {
     UpdateLanguageList();
     return;
   }
@@ -712,8 +724,8 @@ void WelcomeScreen::OnAccessibilityStatusChanged(
 }
 
 void WelcomeScreen::UpdateA11yState() {
-  DCHECK(MagnificationManager::Get());
-  DCHECK(AccessibilityManager::Get());
+  CHECK(MagnificationManager::Get(), base::NotFatalUntil::M161);
+  CHECK(AccessibilityManager::Get(), base::NotFatalUntil::M161);
   const WelcomeView::A11yState a11y_state{
       .high_contrast = AccessibilityManager::Get()->IsHighContrastEnabled(),
       .large_cursor = AccessibilityManager::Get()->IsLargeCursorEnabled(),

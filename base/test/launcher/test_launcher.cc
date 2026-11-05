@@ -7,7 +7,9 @@
 #include <stdio.h>
 
 #include <algorithm>
+#include <optional>
 #include <random>
+#include <ranges>
 #include <string_view>
 #include <utility>
 
@@ -69,6 +71,9 @@
 #include <fcntl.h>
 
 #include "base/files/file_descriptor_watcher_posix.h"
+#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
+#include "base/test/launcher/test_launcher_fork_server.h"
+#endif
 #endif
 
 #if BUILDFLAG(IS_APPLE)
@@ -284,6 +289,9 @@ void KillSpawnedTestProcesses() {
   // Keep the lock until exiting the process to prevent further processes
   // from being spawned.
   AutoLock lock(*GetLiveProcessesLock());
+#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
+  NotifyTestLauncherForkServerShutdown();
+#endif
 
   fprintf(stdout, "Sending SIGTERM to %zu child processes... ",
           GetLiveProcesses()->size());
@@ -359,6 +367,38 @@ bool BotModeEnabled(const CommandLine* command_line) {
          env->HasVar("CHROMIUM_TEST_LAUNCHER_BOT_MODE");
 }
 
+#if BUILDFLAG(IS_LINUX)
+// Warns when tests run in parallel against a host X server instead of under
+// testing/xvfb.py (which exports XVFB_DISPLAY). Each X11 test process opens
+// several X connections, so many parallel jobs can exceed the host server's
+// client limit, and tests may also depend on window manager behavior that
+// differs from the openbox instance xvfb.py starts.
+void MaybeWarnAboutHostXServer(const CommandLine* command_line,
+                               size_t parallel_jobs) {
+  if (parallel_jobs <= 1 || BotModeEnabled(command_line)) {
+    return;
+  }
+  std::unique_ptr<Environment> env = Environment::Create();
+  if (!env->HasVar("DISPLAY") || env->HasVar("XVFB_DISPLAY")) {
+    return;
+  }
+  // Runs on Wayland (e.g. `testing/xvfb.py --use-weston`) don't use X.
+  const std::string platform =
+      command_line->GetSwitchValueASCII("ozone-platform");
+  if (!platform.empty() && platform != "x11") {
+    return;
+  }
+  fprintf(stderr,
+          "WARNING: Running %zu parallel jobs on DISPLAY without "
+          "testing/xvfb.py.\nTests that use X11 may fail by exhausting the "
+          "X server's client limit or\nby depending on window manager "
+          "behavior. Run tests with testing/xvfb.py, or\npass "
+          "--test-launcher-jobs to limit parallelism.\n",
+          parallel_jobs);
+  fflush(stderr);
+}
+#endif  // BUILDFLAG(IS_LINUX)
+
 // Returns command line command line after gtest-specific processing
 // and applying |wrapper|.
 CommandLine PrepareCommandLineForGTest(const CommandLine& command_line,
@@ -422,6 +462,17 @@ int LaunchChildTestProcessWithOptions(const CommandLine& command_line,
 #if BUILDFLAG(IS_POSIX)
   // Make sure an option we rely on is present - see LaunchChildGTestProcess.
   DCHECK(options.new_process_group);
+#endif
+
+#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
+  if (CanUseTestLauncherForkServer(command_line, num_tests, delegate)) {
+    if (std::optional<int> exit_code = LaunchChildTestProcessViaForkServer(
+            command_line, options, timeout_per_test, delegate, was_timeout,
+            GetLiveProcessesLock(), GetLiveProcesses());
+        exit_code.has_value()) {
+      return *exit_code;
+    }
+  }
 #endif
 
   LaunchOptions new_options(options);
@@ -1009,6 +1060,9 @@ class TestLauncher::TestInfo {
  public:
   TestInfo() = default;
   TestInfo(const TestInfo& other) = default;
+  TestInfo(TestInfo&& other) noexcept = default;
+  TestInfo& operator=(const TestInfo& other) = default;
+  TestInfo& operator=(TestInfo&& other) noexcept = default;
   explicit TestInfo(const TestIdentifier& test_id);
   ~TestInfo() = default;
 
@@ -1047,16 +1101,16 @@ TestLauncher::TestInfo::TestInfo(const TestIdentifier& test_id)
       test_name_(test_id.test_name),
       file_(test_id.file),
       line_(test_id.line),
-      disabled_(false),
-      pre_test_(false) {
-  disabled_ = GetFullName().find(kDisabledTestPrefix) != std::string::npos;
-  pre_test_ = test_name_.find(kPreTestPrefix) != std::string::npos;
-}
+      disabled_(test_case_name_.contains(kDisabledTestPrefix) ||
+                test_name_.contains(kDisabledTestPrefix)),
+      pre_test_(test_name_.contains(kPreTestPrefix)) {}
 
 std::string TestLauncher::TestInfo::GetDisabledStrippedName() const {
   std::string test_name = GetFullName();
-  ReplaceSubstringsAfterOffset(&test_name, 0, kDisabledTestPrefix,
-                               std::string());
+  if (disabled_) {
+    ReplaceSubstringsAfterOffset(&test_name, 0, kDisabledTestPrefix,
+                                 std::string_view());
+  }
   return test_name;
 }
 
@@ -1066,16 +1120,24 @@ std::string TestLauncher::TestInfo::GetFullName() const {
 
 std::string TestLauncher::TestInfo::GetPreName() const {
   std::string name = test_name_;
-  ReplaceSubstringsAfterOffset(&name, 0, kDisabledTestPrefix, std::string());
+  if (disabled_) {
+    ReplaceSubstringsAfterOffset(&name, 0, kDisabledTestPrefix,
+                                 std::string_view());
+  }
   std::string case_name = test_case_name_;
-  ReplaceSubstringsAfterOffset(&case_name, 0, kDisabledTestPrefix,
-                               std::string());
+  if (disabled_) {
+    ReplaceSubstringsAfterOffset(&case_name, 0, kDisabledTestPrefix,
+                                 std::string_view());
+  }
   return FormatFullTestName(case_name, kPreTestPrefix + name);
 }
 
 std::string TestLauncher::TestInfo::GetPrefixStrippedName() const {
   std::string test_name = GetDisabledStrippedName();
-  ReplaceSubstringsAfterOffset(&test_name, 0, kPreTestPrefix, std::string());
+  if (pre_test_) {
+    ReplaceSubstringsAfterOffset(&test_name, 0, kPreTestPrefix,
+                                 std::string_view());
+  }
   return test_name;
 }
 
@@ -1114,6 +1176,9 @@ TestLauncher::TestLauncher(TestLauncherDelegate* launcher_delegate,
       print_test_stdio_(AUTO) {}
 
 TestLauncher::~TestLauncher() {
+#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
+  StopTestLauncherForkServer();
+#endif
   if (base::ThreadPoolInstance::Get()) {
     // Clear the ThreadPoolInstance entirely to make it clear to final cleanup
     // phases that they are happening in a single-threaded phase. Assertions in
@@ -1191,6 +1256,10 @@ bool TestLauncher::Run(CommandLine* command_line) {
   }
 
   MaybeSaveSummaryAsJSON(std::vector<std::string>());
+
+#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
+  StopTestLauncherForkServer();
+#endif
 
   return run_result;
 }
@@ -1656,6 +1725,9 @@ bool TestLauncher::Init(CommandLine* command_line) {
 
   fprintf(stdout, "Using %zu parallel jobs.\n", parallel_jobs_);
   fflush(stdout);
+#if BUILDFLAG(IS_LINUX)
+  MaybeWarnAboutHostXServer(command_line, parallel_jobs_);
+#endif
 
   CreateAndStartThreadPool(parallel_jobs_);
 
@@ -1880,6 +1952,7 @@ bool TestLauncher::InitTests() {
   CHECK(!dups_found);
 
   std::vector<std::string> uninstantiated_tests;
+  tests_.reserve(tests.size());
   for (const TestIdentifier& test_id : tests) {
     TestInfo test_info(test_id);
     if (test_id.test_case_name == "GoogleTestVerification") {
@@ -1891,7 +1964,7 @@ bool TestLauncher::InitTests() {
     // TODO(isamsonov): crbug.com/1004417 remove when windows builders
     // stop flaking on MANAUAL_ tests.
     if (launcher_delegate_->ShouldRunTest(test_id)) {
-      tests_.push_back(test_info);
+      tests_.push_back(std::move(test_info));
     }
   }
   if (!uninstantiated_tests.empty()) {
@@ -1951,6 +2024,7 @@ bool TestLauncher::ProcessAndValidateTests() {
   absl::flat_hash_map<std::string, TestInfo> pre_tests;
 
   // Find disabled and pre tests
+  results_tracker_.ReserveTests(tests_.size());
   for (const TestInfo& test_info : tests_) {
     std::string test_name = test_info.GetFullName();
     results_tracker_.AddTest(test_name);
@@ -1964,6 +2038,7 @@ bool TestLauncher::ProcessAndValidateTests() {
   }
 
   std::vector<TestInfo> tests_to_run;
+  tests_to_run.reserve(tests_.size());
   for (const TestInfo& test_info : tests_) {
     std::string test_name = test_info.GetFullName();
     // If any test has a matching disabled test, fail and log for audit.
@@ -1978,16 +2053,20 @@ bool TestLauncher::ProcessAndValidateTests() {
     }
 
     std::vector<TestInfo> test_sequence;
-    test_sequence.push_back(test_info);
     // Move Pre Tests prior to final test in order.
-    while (pre_tests.contains(test_sequence.back().GetPreName())) {
-      test_sequence.push_back(pre_tests[test_sequence.back().GetPreName()]);
-      pre_tests.erase(test_sequence.back().GetDisabledStrippedName());
+    if (!pre_tests.empty()) {
+      for (auto it = pre_tests.find(test_info.GetPreName());
+           it != pre_tests.end();
+           it = pre_tests.find(test_sequence.back().GetPreName())) {
+        test_sequence.push_back(std::move(it->second));
+        pre_tests.erase(it);
+      }
     }
     // Skip disabled tests unless explicitly requested.
     if (!test_info.disabled() || !skip_disabled_tests_) {
-      tests_to_run.insert(tests_to_run.end(), test_sequence.rbegin(),
-                          test_sequence.rend());
+      tests_to_run.append_range(
+          std::views::as_rvalue(std::views::reverse(test_sequence)));
+      tests_to_run.push_back(test_info);
     }
   }
   tests_ = std::move(tests_to_run);
@@ -2075,7 +2154,10 @@ std::vector<std::string> TestLauncher::CollectTests() {
   for (const TestInfo& test_info : tests_) {
     std::string test_name = test_info.GetFullName();
 
-    std::string prefix_stripped_name = test_info.GetPrefixStrippedName();
+    std::string prefix_stripped_name =
+        test_info.disabled() || test_info.pre_test()
+            ? test_info.GetPrefixStrippedName()
+            : test_name;
 
     // Skip the test that doesn't match the filter (if given).
     if (has_at_least_one_positive_filter_) {
@@ -2138,7 +2220,7 @@ std::vector<std::string> TestLauncher::CollectTests() {
       results_tracker_.AddTestPlaceholder(test_name);
     }
 
-    test_names.push_back(test_name);
+    test_names.push_back(std::move(test_name));
   }
 
   // If `kEnforceExactPositiveFilter` is set, all test cases listed in the
@@ -2173,7 +2255,7 @@ void TestLauncher::RunTests() {
                       original_test_names.end());
   }
 
-  broken_threshold_ = std::max(static_cast<size_t>(20), tests_.size() / 10);
+  broken_threshold_ = std::max(static_cast<size_t>(20), test_names.size() / 10);
 
   test_started_count_ = test_names.size();
 

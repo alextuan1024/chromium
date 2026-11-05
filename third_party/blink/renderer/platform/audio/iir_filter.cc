@@ -8,6 +8,7 @@
 #include <complex>
 #include <limits>
 #include <numbers>
+#include <ranges>
 
 #include "base/compiler_specific.h"
 #include "base/containers/span.h"
@@ -33,7 +34,7 @@ std::complex<double> EvaluatePolynomial(base::span<const double> coef,
   // 0, order);
   std::complex<double> result = 0;
   if (coef.size()) {
-    for (double c : base::Reversed(coef)) {
+    for (double c : std::views::reverse(coef)) {
       result = result * z + std::complex<double>(c);
     }
   }
@@ -209,7 +210,7 @@ double IIRFilter::TailTime(double sample_rate,
 
   // Process the first block and get the max magnitude of the output.
   Process(input.as_span(), output.as_span());
-  magnitudes[0] = vector_math::Vmaxmgv(output.as_span(), render_quantum_frames);
+  magnitudes[0] = vector_math::Vmaxmgv(output.as_span());
 
   // Process the rest of the signal, getting the max magnitude of the
   // output for each block.
@@ -217,8 +218,7 @@ double IIRFilter::TailTime(double sample_rate,
 
   for (int k = 1; k < number_of_blocks; ++k) {
     Process(input.as_span(), output.as_span());
-    magnitudes[k] =
-        vector_math::Vmaxmgv(output.as_span(), render_quantum_frames);
+    magnitudes[k] = vector_math::Vmaxmgv(output.as_span());
   }
 
   // Done computing the impulse response; reset the state so the actual node

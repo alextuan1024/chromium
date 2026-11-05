@@ -519,10 +519,10 @@
 <translation id="5045550434625856497">ভুল পাছৱৰ্ড</translation>
 <translation id="5059127710849015030">নেপালী লিপ্যন্তৰণ</translation>
 <translation id="5068919226082848014">পিজ্জা</translation>
+<translation id="5075336522277785691"><ph name="EXTENSION_NAME" />এ প্ৰ’ক্সী অ’ভাৰৰাইডৰ নিয়ম ছেট কৰিছে</translation>
 <translation id="5081517858322016911"><ph name="TOTAL_FILE_SIZE" /> ফাইল মচা হ'ব</translation>
 <translation id="508423945471810158"><ph name="NUMBER_OF_ITEMS" /> টা বস্তু <ph name="FOLDER_NAME" />লৈ স্থানান্তৰ কৰি থকা হৈছে</translation>
 <translation id="509429900233858213">কোনো আসোঁৱাহ হৈছে।</translation>
-<translation id="5102922915594634436">ছিংক কৰা ফ’ল্ডাৰ পৰিচালনা কৰক</translation>
 <translation id="5109254780565519649">কিবা আসোঁৱাহ হৈছে। কিছুমান বস্তু পুনঃস্থাপন কৰা নহ’ব পাৰে।</translation>
 <translation id="5110329002213341433">ইংৰাজী (কানাডা)</translation>
 <translation id="5119780910075847424">ছিংক পজ কৰা হৈছে</translation>
@@ -558,7 +558,6 @@
 <translation id="5305688511332277257">এটাও ইনষ্টল কৰা হোৱা নাই</translation>
 <translation id="5317780077021120954">ছেভ কৰক</translation>
 <translation id="5318819489018851358">Linuxৰ জৰিয়তে শ্বেয়াৰ কৰক</translation>
-<translation id="5330145655348521461">এই ফাইলসমূহ বেলেগ এটা ডেস্কটপত খোল খালে। ফাইলটো চাবলৈ <ph name="USER_NAME" /> (<ph name="MAIL_ADDRESS" />)লৈ নিয়ক।</translation>
 <translation id="5330512191124428349">তথ্য পাওক</translation>
 <translation id="535792325654997756">মেকুৰীৰ সৈতে ব্যক্তিৰ ছবি</translation>
 <translation id="5358764674931277">ফ্ৰেমৰ হাৰ</translation>
@@ -699,7 +698,6 @@
 <translation id="636254897931573416">ডমেইন চাফিক্সৰ সৈতে মিলা মান অমান্য</translation>
 <translation id="6364301859968397756">প্ৰতিষ্ঠানৰ ষ্ট’ৰেজ পূৰ্ণ হৈছে</translation>
 <translation id="6367976544441405720">ভেন</translation>
-<translation id="637062427944097960">এই ফাইলটো বিভিন্ন ডেস্কটেপত খোলা হৈছে। ফাইলটো চাবলৈ <ph name="USER_NAME" /> (<ph name="MAIL_ADDRESS" />) লৈ নিয়ক।</translation>
 <translation id="6394388407447716302">কেৱল পঢ়িব পৰা</translation>
 <translation id="6395575651121294044"><ph name="NUMBER_OF_FILES" />টা বস্তু</translation>
 <translation id="6407769893376380348"><ph name="FILE_NAME" /> এনক্ৰিপ্ট কৰা হৈছে বাবে এইটো স্থানান্তৰ কৰিব পৰা নগ’ল।</translation>

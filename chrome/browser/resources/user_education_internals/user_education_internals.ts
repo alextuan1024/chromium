@@ -28,7 +28,9 @@ import type {CrMenuSelectorElement} from 'chrome://resources/cr_elements/cr_menu
 import type {CrPageSelectorElement} from 'chrome://resources/cr_elements/cr_page_selector/cr_page_selector.js';
 import type {CrToastElement} from 'chrome://resources/cr_elements/cr_toast/cr_toast.js';
 import {assertNotReached} from 'chrome://resources/js/assert.js';
+// <if expr="not is_chromeos">
 import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
+// </if>
 import {TrackedElementManager} from 'chrome://resources/js/tracked_element/tracked_element_manager.js';
 import {CrLitElement} from 'chrome://resources/lit/v3_0/lit.rollup.js';
 import type {PropertyValues} from 'chrome://resources/lit/v3_0/lit.rollup.js';
@@ -37,8 +39,8 @@ import type {UserEducationMixedTrustHandlerInterface} from 'chrome://resources/m
 
 import {getCss} from './user_education_internals.css.js';
 import {getHtml} from './user_education_internals.html.js';
+import {browserProxyFactory} from './user_education_internals.mojom-webui.js';
 import type {FeaturePromoDemoPageData, FeaturePromoDemoPageInfo, UserEducationInternalsPageHandlerInterface, WhatsNewEditionDemoPageInfo, WhatsNewModuleDemoPageInfo} from './user_education_internals.mojom-webui.js';
-import {UserEducationInternalsPageHandler} from './user_education_internals.mojom-webui.js';
 import type {PromoAction, PromoActionDescription} from './user_education_internals_card.js';
 
 const CLEAR_PROMO_DATA_WARNING =
@@ -188,18 +190,20 @@ export class UserEducationInternalsElement extends
         value: false,
       },
 
+      // <if expr="not is_chromeos">
       /**
        * The current version used to request the What's New page.
        */
       whatsNewVersionToRequest_: {
         type: Number,
       },
+      currentChromeVersion_: {type: Number},
+      // </if>
       whatsNewModules_: {type: Array},
       whatsNewEditions_: {type: Array},
       ntpPromos_: {type: Array},
       ntpPromoPreferences_: {type: Array},
       sessionData_: {type: Array},
-      currentChromeVersion_: {type: Number},
       initialized_: {type: Boolean},
     };
   }
@@ -219,10 +223,12 @@ export class UserEducationInternalsElement extends
   protected accessor narrow_: boolean = false;
   protected accessor sessionExpanded_: boolean = false;
   protected accessor sessionData_: FeaturePromoDemoPageData[] = [];
+  // <if expr="not is_chromeos">
   protected accessor whatsNewVersionToRequest_: number =
       loadTimeData.getInteger('whatsNewVersionToRequest');
   protected accessor currentChromeVersion_: number =
       loadTimeData.getInteger('currentChromeVersion');
+  // </if>
   protected accessor initialized_ = false;
 
   private handler_: UserEducationInternalsPageHandlerInterface;
@@ -230,7 +236,7 @@ export class UserEducationInternalsElement extends
 
   constructor() {
     super();
-    this.handler_ = UserEducationInternalsPageHandler.getRemote();
+    this.handler_ = browserProxyFactory.getInstance().handler;
     this.userEducation_ = userEducationProxyFactory.getInstance().handler;
   }
 
@@ -562,11 +568,39 @@ export class UserEducationInternalsElement extends
       } else {
         this.handler_.getWhatsNewModules().then(({whatsNewModules}) => {
           this.whatsNewModules_ = whatsNewModules;
-          this.requestUpdate();
         });
         this.handler_.getWhatsNewEditions().then(({whatsNewEditions}) => {
           this.whatsNewEditions_ = whatsNewEditions;
-          this.requestUpdate();
+        });
+      }
+    });
+  }
+
+  protected onModuleClearWhatsNewData_(e: CustomEvent<string>) {
+    this.featurePromoErrorMessage_ = '';
+
+    this.handler_.clearWhatsNewModuleData(e.detail).then(({errorMessage}) => {
+      this.featurePromoErrorMessage_ = errorMessage;
+      if (errorMessage !== '') {
+        this.$.errorMessageToast.show();
+      } else {
+        this.handler_.getWhatsNewModules().then(({whatsNewModules}) => {
+          this.whatsNewModules_ = whatsNewModules;
+        });
+      }
+    });
+  }
+
+  protected onEditionClearWhatsNewData_(e: CustomEvent<string>) {
+    this.featurePromoErrorMessage_ = '';
+
+    this.handler_.clearWhatsNewEditionData(e.detail).then(({errorMessage}) => {
+      this.featurePromoErrorMessage_ = errorMessage;
+      if (errorMessage !== '') {
+        this.$.errorMessageToast.show();
+      } else {
+        this.handler_.getWhatsNewEditions().then(({whatsNewEditions}) => {
+          this.whatsNewEditions_ = whatsNewEditions;
         });
       }
     });
@@ -611,8 +645,8 @@ export class UserEducationInternalsElement extends
   }
 
   protected onSelectorIronActivate_(event: CustomEvent<{selected: string}>) {
+    this.$.menu.selected = event.detail.selected;
     const index = Number(event.detail.selected);
-    this.$.menu.selected = index;
     if (index >= 0) {
       this.$.selector.removeAttribute('show-all');
       this.selectedTabIndex = index;
@@ -635,6 +669,16 @@ export class UserEducationInternalsElement extends
   }
 
   // <if expr="not is_chromeos">
+  protected onClearWhatsNewDataClick_() {
+    if (!confirm(
+            'Clear all What\'s New data?\n' +
+            'This affects module order, edition use, and version history' +
+            ' data.')) {
+      return;
+    }
+    this.onClearWhatsNewData_();
+  }
+
   protected onLaunchWhatsNewStagingClick_() {
     this.handler_.launchWhatsNewStaging();
   }

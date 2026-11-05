@@ -15,6 +15,15 @@ source_set("android") {
     "//base",
     "//components/enterprise/device_trust/core",
   ]
+
+  deps = [
+    "//chrome/browser/enterprise/connectors/device_trust:features",
+    "//chrome/browser/enterprise/connectors/device_trust/attestation/android",
+    "//components/enterprise/device_trust",
+    "//components/policy/core/common",
+    "//components/prefs",
+    "//crypto",
+  ]
 }
 
 source_set("unit_tests") {
@@ -27,6 +36,12 @@ source_set("unit_tests") {
     ":android",
     "//base",
     "//base/test:test_support",
+    "//chrome/browser/enterprise/connectors/device_trust:features",
+    "//chrome/browser/enterprise/connectors/device_trust/attestation/android",
+    "//components/enterprise/device_trust",
+    "//components/prefs:test_support",
+    "//crypto",
+    "//testing/gmock",
     "//testing/gtest",
   ]
 }

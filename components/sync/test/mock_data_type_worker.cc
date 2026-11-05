@@ -4,17 +4,20 @@
 
 #include "components/sync/test/mock_data_type_worker.h"
 
+#include <limits>
 #include <map>
+#include <ranges>
 #include <set>
 #include <utility>
 
 #include "base/check_op.h"
-#include "base/containers/adapters.h"
+#include "base/containers/to_vector.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/memory/ptr_util.h"
 #include "base/notreached.h"
 #include "base/run_loop.h"
+#include "base/test/run_until.h"
 #include "components/sync/base/collaboration_id.h"
 #include "components/sync/base/data_type.h"
 #include "components/sync/protocol/collaboration_metadata.h"
@@ -68,8 +71,10 @@ MockDataTypeWorker::~MockDataTypeWorker() = default;
 void MockDataTypeWorker::NudgeForCommit() {
   if (get_local_changes_upon_nudge_enabled_) {
     processor_->GetLocalChanges(
-        INT_MAX, base::BindRepeating(&MockDataTypeWorker::LocalChangesReceived,
-                                     weak_ptr_factory_.GetWeakPtr()));
+        /*max_entries=*/std::numeric_limits<size_t>::max(),
+        /*max_target_specifics_bytes=*/std::numeric_limits<size_t>::max(),
+        base::BindRepeating(&MockDataTypeWorker::LocalChangesReceived,
+                            weak_ptr_factory_.GetWeakPtr()));
     // Processors often use a proxy object to communicate with the worker, so it
     // is necessary to process posted tasks.
     base::RunLoop().RunUntilIdle();
@@ -77,7 +82,8 @@ void MockDataTypeWorker::NudgeForCommit() {
 }
 
 void MockDataTypeWorker::LocalChangesReceived(
-    CommitRequestDataList&& commit_request) {
+    CommitRequestDataList&& commit_request,
+    bool /*has_more_local_changes*/) {
   if (commit_request.empty()) {
     return;
   }
@@ -100,12 +106,18 @@ std::vector<const CommitRequestData*> MockDataTypeWorker::GetNthPendingCommit(
   if (n >= GetNumPendingCommits()) {
     return {};
   }
-  std::vector<const CommitRequestData*> nth_pending_commits;
-  for (const std::unique_ptr<CommitRequestData>& request_data :
-       pending_commits_[n]) {
-    nth_pending_commits.push_back(request_data.get());
-  }
-  return nth_pending_commits;
+  return base::ToVector(
+      pending_commits_[n],
+      [](const std::unique_ptr<CommitRequestData>& request_data)
+          -> const CommitRequestData* { return request_data.get(); });
+}
+
+std::vector<const CommitRequestData*>
+MockDataTypeWorker::WaitForPendingCommits() {
+  EXPECT_TRUE(
+      base::test::RunUntil([this]() { return !pending_commits_.empty(); }));
+  EXPECT_EQ(1u, GetNumPendingCommits());
+  return GetNthPendingCommit(0);
 }
 
 bool MockDataTypeWorker::HasPendingCommitForHash(
@@ -124,7 +136,8 @@ const CommitRequestData* MockDataTypeWorker::GetLatestPendingCommitForHash(
     const ClientTagHash& tag_hash) const {
   // Iterate backward through the sets of commit requests to find the most
   // recent one that applies to the specified tag_hash.
-  for (const CommitRequestDataList& commit : base::Reversed(pending_commits_)) {
+  for (const CommitRequestDataList& commit :
+       std::views::reverse(pending_commits_)) {
     for (const std::unique_ptr<CommitRequestData>& data : commit) {
       if (data && data->entity->client_tag_hash == tag_hash) {
         return data.get();

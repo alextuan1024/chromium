@@ -24,7 +24,6 @@
 #include "build/build_config.h"
 #include "chrome/browser/autocomplete/aim_eligibility_service_factory.h"
 #include "chrome/browser/browser_process.h"
-#include "chrome/browser/global_features.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/search_engines/template_url_service_factory.h"
 #include "chrome/browser/signin/chrome_signin_client_test_util.h"
@@ -33,7 +32,6 @@
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/scoped_browser_locale.h"
 #include "chrome/test/base/search_test_utils.h"
-#include "components/application_locale_storage/application_locale_storage.h"
 #include "components/contextual_tasks/public/features.h"
 #include "components/embedder_support/user_agent_utils.h"
 #include "components/omnibox/browser/aim_eligibility_service.h"
@@ -210,36 +208,31 @@ class AimEligibilityTestBase : public InProcessBrowserTest {
   }
 
  protected:
-  explicit AimEligibilityTestBase(bool use_null_factory = true)
-      : use_null_factory_(use_null_factory) {}
+  AimEligibilityTestBase() = default;
 
   void SetUpInProcessBrowserTestFixture() override {
     signin_client_with_url_loader_helper_.SetUp();
     create_services_subscription_ =
         BrowserContextDependencyManager::GetInstance()
             ->RegisterCreateServicesCallbackForTesting(base::BindRepeating(
-                &AimEligibilityTestBase::OnWillCreateBrowserContextServices,
-                use_null_factory_));
+                &AimEligibilityTestBase::OnWillCreateBrowserContextServices));
     InProcessBrowserTest::SetUpInProcessBrowserTestFixture();
   }
 
   static void OnWillCreateBrowserContextServices(
-      bool use_null_factory,
       content::BrowserContext* context) {
     IdentityTestEnvironmentProfileAdaptor::
         SetIdentityTestEnvironmentFactoriesOnBrowserContext(context);
 
-    if (use_null_factory) {
-      // Prevent the service from being created automatically during profile
-      // initialization. Tests will call `GetAimEligibilityService()` when
-      // ready.
-      AimEligibilityServiceFactory::GetInstance()->SetTestingFactory(
-          context,
-          base::BindRepeating([](content::BrowserContext* context)
-                                  -> std::unique_ptr<KeyedService> {
-            return nullptr;
-          }));
-    }
+    // Prevent the service from being created automatically during profile
+    // initialization. Tests will call `GetAimEligibilityService()` when
+    // ready.
+    AimEligibilityServiceFactory::GetInstance()->SetTestingFactory(
+        context,
+        base::BindRepeating(
+            [](content::BrowserContext*) -> std::unique_ptr<KeyedService> {
+              return nullptr;
+            }));
   }
 
   void SetUpOnMainThread() override {
@@ -263,9 +256,6 @@ class AimEligibilityTestBase : public InProcessBrowserTest {
   base::CallbackListSubscription create_services_subscription_;
   std::unique_ptr<IdentityTestEnvironmentProfileAdaptor>
       identity_test_env_adaptor_;
-
- private:
-  const bool use_null_factory_;
 };
 
 class ChromeAimEligibilityServiceBrowserTest
@@ -287,7 +277,8 @@ class ChromeAimEligibilityServiceBrowserTest
 
     // Needed for bots with field trial testing configs explicitly disabled.
     enabled_features.push_back(
-        {omnibox::kAimEligibilityServiceIdentityImprovements, {}});
+        {omnibox::kAimEligibilityServiceIdentityImprovements,
+         {{"refresh_on_cookie_changes", "false"}}});
     enabled_features.push_back(
         {omnibox::kAimServerEligibilityForPrimaryAccountEnabled, {}});
     enabled_features.push_back({omnibox::kAimUrlNavigationFetchEnabled, {}});
@@ -361,9 +352,9 @@ INSTANTIATE_TEST_SUITE_P(,
                              // Values for Pdf server response eligibility.
                              ::testing::Values(true, false)));
 
-#if (BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_LINUX)) || \
+#if BUILDFLAG(IS_CHROMEOS) || \
     (BUILDFLAG(IS_WIN) && defined(ADDRESS_SANITIZER))
-// TODO(crbug.com/488467253): Fix and re-enable this test for all platforms.
+// TODO(crbug.com/488467253): Fix and re-enable this test on CrOS and win-asan.
 #define MAYBE_ComprehensiveEligibilityTest DISABLED_ComprehensiveEligibilityTest
 #else
 #define MAYBE_ComprehensiveEligibilityTest ComprehensiveEligibilityTest
@@ -735,10 +726,8 @@ class ChromeAimEligibilityServiceStartupRequestBrowserTest
   base::test::ScopedFeatureList feature_list_;
 };
 
-// TODO(crbug.com/473787329): Flaky on multiple platforms. Re-enable once
-// flakiness has been resolved.
 IN_PROC_BROWSER_TEST_F(ChromeAimEligibilityServiceStartupRequestBrowserTest,
-                       DISABLED_RequestWhenOfflineAtStartup) {
+                       RequestWhenOfflineAtStartup) {
   base::HistogramTester histogram_tester;
 
   omnibox::AimEligibilityResponse response;
@@ -853,53 +842,7 @@ IN_PROC_BROWSER_TEST_F(ChromeAimEligibilityServiceStartupRequestBrowserTest,
 }
 
 IN_PROC_BROWSER_TEST_F(ChromeAimEligibilityServiceStartupRequestBrowserTest,
-                       RequestOnLocaleChange) {
-  base::HistogramTester histogram_tester;
-
-  omnibox::AimEligibilityResponse response;
-  response.set_is_eligible(true);
-  base::test::TestFuture<bool> request_handled_future;
-  auto url_loader_interceptor = std::make_unique<content::URLLoaderInterceptor>(
-      base::BindLambdaForTesting(
-          [&](content::URLLoaderInterceptor::RequestParams* params) {
-            return OnRequest(params, std::make_optional(response),
-                             request_handled_future.GetRepeatingCallback());
-          }));
-
-  // Given the service is initialized at startup.
-  auto* service = GetAimEligibilityService(GetProfile());
-  base::test::TestFuture<void> eligibility_changed_future;
-  auto eligibility_subscription = service->RegisterEligibilityChangedCallback(
-      eligibility_changed_future.GetRepeatingCallback());
-  EXPECT_TRUE(request_handled_future.Take());
-  EXPECT_TRUE(eligibility_changed_future.Wait());
-  request_handled_future.Clear();
-  eligibility_changed_future.Clear();
-
-  // Change response so eligibility changed observer fires on next request.
-  response.set_is_eligible(false);
-
-  // When the application locale changes.
-  g_browser_process->GetFeatures()->application_locale_storage()->Set("fr-FR");
-
-  // Then an eligibility request with kLocaleChange should be sent.
-  EXPECT_TRUE(request_handled_future.Take());
-  EXPECT_TRUE(eligibility_changed_future.Wait());
-
-  histogram_tester.ExpectTotalCount(
-      "Omnibox.AimEligibility.EligibilityRequestStatus.LocaleChange", 2);
-  histogram_tester.ExpectBucketCount(
-      "Omnibox.AimEligibility.EligibilityRequestStatus.LocaleChange",
-      AimEligibilityServiceFriend::EligibilityRequestStatus::kSent, 1);
-  histogram_tester.ExpectBucketCount(
-      "Omnibox.AimEligibility.EligibilityRequestStatus.LocaleChange",
-      AimEligibilityServiceFriend::EligibilityRequestStatus::kSuccess, 1);
-}
-
-// TODO(crbug.com/473787329): Flaky on multiple platforms. Re-enable once
-// flakiness has been resolved.
-IN_PROC_BROWSER_TEST_F(ChromeAimEligibilityServiceStartupRequestBrowserTest,
-                       DISABLED_NoRequestOnSubsequentNetworkChanges) {
+                       NoRequestOnSubsequentNetworkChanges) {
   base::HistogramTester histogram_tester;
 
   omnibox::AimEligibilityResponse response;
@@ -1310,8 +1253,7 @@ IN_PROC_BROWSER_TEST_F(ChromeAimEligibilityServiceOffTheRecordBrowserTest,
 class ChromeAimEligibilityServiceOAuthBrowserTest
     : public AimEligibilityTestBase {
  public:
-  ChromeAimEligibilityServiceOAuthBrowserTest()
-      : AimEligibilityTestBase(false) {}
+  ChromeAimEligibilityServiceOAuthBrowserTest() = default;
   ~ChromeAimEligibilityServiceOAuthBrowserTest() override = default;
 
  protected:
@@ -1386,9 +1328,8 @@ IN_PROC_BROWSER_TEST_F(ChromeAimEligibilityServiceOAuthBrowserTest,
   EXPECT_TRUE(request_handled_future.Get());
 }
 
-// TODO(crbug.com/488467253): Fix and re-enable this test.
 IN_PROC_BROWSER_TEST_F(ChromeAimEligibilityServiceOAuthBrowserTest,
-                       DISABLED_OTRRequestIsNotDropped) {
+                       OTRRequestIsNotDropped) {
   // Expectation: The request should include the Authorization header.
   omnibox::AimEligibilityResponse response;
   response.set_is_eligible(true);
@@ -1443,9 +1384,6 @@ IN_PROC_BROWSER_TEST_F(ChromeAimEligibilityServiceOAuthBrowserTest,
   base::test::TestFuture<void> eligibility_changed_future;
   auto eligibility_subscription = service->RegisterEligibilityChangedCallback(
       eligibility_changed_future.GetRepeatingCallback());
-  // Set the cookies to be empty so they are fresh and the first request is not
-  // dropped.
-  identity_test_env()->SetCookieAccounts({{}});
 
   // Wait for initial startup request (anonymous/no primary account).
   EXPECT_TRUE(request_handled_future.Take());
@@ -1511,7 +1449,6 @@ IN_PROC_BROWSER_TEST_F(ChromeAimEligibilityServiceOAuthBrowserTest,
   base::test::TestFuture<void> eligibility_changed_future;
   auto eligibility_subscription = service->RegisterEligibilityChangedCallback(
       eligibility_changed_future.GetRepeatingCallback());
-  identity_test_env()->SetCookieAccounts({{}});
 
   EXPECT_TRUE(request_handled_future.Take());
   EXPECT_TRUE(eligibility_changed_future.Wait());
@@ -1535,7 +1472,6 @@ IN_PROC_BROWSER_TEST_F(ChromeAimEligibilityServiceOAuthBrowserTest,
   base::test::TestFuture<void> eligibility_changed_future;
   auto eligibility_subscription = service->RegisterEligibilityChangedCallback(
       eligibility_changed_future.GetRepeatingCallback());
-  identity_test_env()->SetCookieAccounts({{}});
 
   // Wait for the first request (Startup) to be handled.
   EXPECT_TRUE(request_handled_future.Take());
@@ -1585,7 +1521,6 @@ IN_PROC_BROWSER_TEST_F(ChromeAimEligibilityServiceOAuthBrowserTest,
   base::test::TestFuture<void> eligibility_changed_future;
   auto eligibility_subscription = service->RegisterEligibilityChangedCallback(
       eligibility_changed_future.GetRepeatingCallback());
-  identity_test_env()->SetCookieAccounts({{}});
 
   // Wait for initial startup request (anonymous/cookie).
   EXPECT_TRUE(request_handled_future.Take());

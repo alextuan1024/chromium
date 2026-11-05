@@ -8,7 +8,7 @@
 #include "base/android/scoped_java_ref.h"
 #include "base/containers/flat_set.h"
 #include "base/memory/raw_ptr.h"
-#include "cc/mojom/render_frame_metadata.mojom-shared.h"
+#include "cc/mojom/root_scroll_offset_update_frequency.mojom-shared.h"
 #include "content/browser/android/render_widget_host_connector.h"
 #include "content/common/content_export.h"
 #include "content/public/browser/render_widget_host.h"
@@ -57,8 +57,8 @@ class CONTENT_EXPORT GestureListenerManager
   void DidStopFlinging();
   bool FilterInputEvent(const blink::WebInputEvent& event);
 
-  // All sizes and offsets are in CSS pixels (except |top_show_pix|)
-  // as cached by the renderer.
+  // All sizes and offsets are in CSS pixels (except |top_shown_pix| and
+  // |bottom_shown_pix|) as cached by the renderer.
   void UpdateScrollInfo(const gfx::PointF& scroll_offset,
                         float page_scale_factor,
                         const float min_page_scale,
@@ -67,7 +67,8 @@ class CONTENT_EXPORT GestureListenerManager
                         const gfx::SizeF& viewport,
                         const float content_offset,
                         const float top_shown_pix,
-                        bool top_changed);
+                        const float bottom_shown_pix,
+                        bool controls_changed);
   void UpdateOnTouchDown();
   void UpdateOnTouchUp();
   void OnRootScrollOffsetChanged(const gfx::PointF& root_scroll_offset);

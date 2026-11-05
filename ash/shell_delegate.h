@@ -73,10 +73,6 @@ class ASH_EXPORT ShellDelegate {
   // The Shell owns the delegate.
   virtual ~ShellDelegate() = default;
 
-  // Returns true if |window| can be shown for the delegate's concept of current
-  // user.
-  virtual bool CanShowWindowForUser(const aura::Window* window) const = 0;
-
   // Creates and returns the delegate of the Capture Mode feature.
   virtual std::unique_ptr<CaptureModeDelegate> CreateCaptureModeDelegate(
       PrefService* local_state) const = 0;
@@ -140,7 +136,7 @@ class ASH_EXPORT ShellDelegate {
   // Returns the `SharedURLLoaderFactory` associated with the browser process.
   // Do not use for requests related to the user profile.
   virtual scoped_refptr<network::SharedURLLoaderFactory>
-  GetBrowserProcessUrlLoaderFactory() const = 0;
+  GetBrowserProcessUrlLoaderFactory() = 0;
 
   // Check whether the current tab of the browser window can go back.
   virtual bool CanGoBack(gfx::NativeWindow window) const = 0;
@@ -176,7 +172,8 @@ class ASH_EXPORT ShellDelegate {
   // Returns if window browser sessions are restoring.
   virtual bool IsSessionRestoreInProgress() const = 0;
 
-  // Adjust system configuration for a Locked Fullscreen window.
+  // Adjust system configuration for a trusted-pinned (locked fullscreen)
+  // window.
   virtual void SetUpEnvironmentForLockedFullscreen(
       const WindowState& window_state) = 0;
 

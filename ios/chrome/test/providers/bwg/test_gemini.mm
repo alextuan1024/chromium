@@ -27,20 +27,14 @@ namespace ios::provider {
 void ConfigureWithStartupConfiguration(
     GeminiStartupConfiguration* startup_configuration) {}
 
-void StartGeminiOverlay(GeminiConfiguration* gemini_configuration) {}
+static GeminiConfiguration* g_last_start_gemini_overlay_configuration = nil;
 
-const std::u16string GetPageContextShouldDetachScript() {
-  return uR"JS(
-      if (window.__gCrWeb && window.__gCrWeb.pageContext) {
-        if (typeof window.__gCrWeb.pageContext.shouldDetach === 'boolean') {
-          return window.__gCrWeb.pageContext.shouldDetach;
-        }
-        if (window.__gCrWeb.pageContext.shouldTimeout) {
-          while(true);
-        }
-      }
-      return false;
-  )JS";
+void StartGeminiOverlay(GeminiConfiguration* gemini_configuration) {
+  g_last_start_gemini_overlay_configuration = gemini_configuration;
+}
+
+GeminiConfiguration* GetLastStartGeminiOverlayConfiguration() {
+  return g_last_start_gemini_overlay_configuration;
 }
 
 id<BWGGatewayProtocol> CreateGeminiGateway() {
@@ -56,23 +50,39 @@ static GeminiPageContextAttachmentState g_current_attachment_state =
     GeminiPageContextAttachmentState::kUnknown;
 static std::optional<gemini::EntryPoint>
     g_last_update_prompt_action_entry_point;
+static std::optional<gemini::InputType> g_last_update_prompt_action_input_type;
 static NSString* g_last_update_prompt_action_prompt = nil;
 static BOOL g_last_update_prompt_action_should_auto_submit = NO;
 
 static bool g_mock_feature_mode_disabled_by_quota = false;
 static NSDate* g_mock_refill_date = nil;
 static bool g_force_refresh_quota_info_called = false;
+static int g_update_active_page_context_call_count = 0;
+static UIImage* g_last_attached_image = nil;
+static std::optional<bool> g_last_should_show_suggestion_chips;
+static std::optional<bool> g_last_block_query_submission_while_loading;
+static std::optional<bool>
+    g_last_show_page_loading_snackbar_on_opening_invocation;
+static bool g_show_account_snackbar_called = false;
 
 void ResetGemini() {
   g_current_mode = GeminiViewMode::kUnknown;
   g_current_view_state = GeminiViewState::kUnknown;
   g_current_attachment_state = GeminiPageContextAttachmentState::kUnknown;
   g_last_update_prompt_action_entry_point.reset();
+  g_last_update_prompt_action_input_type.reset();
   g_last_update_prompt_action_prompt = nil;
   g_last_update_prompt_action_should_auto_submit = NO;
   g_mock_feature_mode_disabled_by_quota = false;
   g_mock_refill_date = nil;
   g_force_refresh_quota_info_called = false;
+  g_update_active_page_context_call_count = 0;
+  g_last_attached_image = nil;
+  g_last_should_show_suggestion_chips.reset();
+  g_last_block_query_submission_while_loading.reset();
+  g_last_show_page_loading_snackbar_on_opening_invocation.reset();
+  g_show_account_snackbar_called = false;
+  g_last_start_gemini_overlay_configuration = nil;
 }
 
 void UpdatePageAttachmentState(
@@ -80,22 +90,14 @@ void UpdatePageAttachmentState(
   g_current_attachment_state = gemini_attachment_state;
 }
 
-// Mock value used by unit tests to override the return value of IsProtectedUrl.
-static bool g_mock_protected_url = false;
-
-// Sets whether all URLs should be simulated as protected in tests.
-void SetMockProtectedUrl(bool is_protected) {
-  g_mock_protected_url = is_protected;
-}
-
-// Stub implementation for tests. Returns the mock value set by
-// SetMockProtectedUrl.
-bool IsProtectedUrl(std::string url) {
-  return g_mock_protected_url;
-}
-
 void UpdateActivePageContext(GeminiPageContext* gemini_page_context,
-                             NSArray<GeminiPageContext*>* shared_tabs) {}
+                             NSArray<GeminiPageContext*>* shared_tabs) {
+  g_update_active_page_context_call_count++;
+}
+
+int GetUpdateActivePageContextCallCount() {
+  return g_update_active_page_context_call_count;
+}
 
 NSArray<GeminiSettingsMetadata*>* GetEligibleSettings(
     AuthenticationService* auth_service) {
@@ -126,8 +128,20 @@ void UpdatePromptAction(gemini::EntryPoint entry_point,
   g_last_update_prompt_action_should_auto_submit = should_auto_submit;
 }
 
+void UpdatePromptAction(gemini::InputType input_type,
+                        NSString* prepopulated_prompt,
+                        bool should_auto_submit) {
+  g_last_update_prompt_action_input_type = input_type;
+  g_last_update_prompt_action_prompt = [prepopulated_prompt copy];
+  g_last_update_prompt_action_should_auto_submit = should_auto_submit;
+}
+
 std::optional<gemini::EntryPoint> GetLastUpdatePromptActionEntryPoint() {
   return g_last_update_prompt_action_entry_point;
+}
+
+std::optional<gemini::InputType> GetLastUpdatePromptActionInputType() {
+  return g_last_update_prompt_action_input_type;
 }
 
 NSString* GetLastUpdatePromptActionPrompt() {
@@ -144,7 +158,13 @@ GeminiViewState GetCurrentGeminiViewState() {
 
 void RequestUIChange(GeminiUIElementType ui_element_type) {}
 
-void AttachImage(UIImage* image) {}
+void AttachImage(UIImage* image) {
+  g_last_attached_image = image;
+}
+
+UIImage* GetLastAttachedImage() {
+  return g_last_attached_image;
+}
 
 GeminiClientMode GetCurrentClientMode() {
   return GeminiClientMode::kUnknown;
@@ -183,13 +203,39 @@ int GetLiveCaptionsNumberOfLines() {
   return 0;
 }
 
-void SetShouldShowSuggestionChips(bool should_show) {}
+void SetShouldShowSuggestionChips(bool should_show) {
+  g_last_should_show_suggestion_chips = should_show;
+}
 
-void SetBlockQuerySubmissionWhileLoading(bool block_submission) {}
+std::optional<bool> GetLastShouldShowSuggestionChips() {
+  return g_last_should_show_suggestion_chips;
+}
 
-void SetShowPageLoadingSnackbarOnOpeningInvocation(bool show_snackbar) {}
+void SetShouldShowInputPlate(bool should_show) {}
 
-void ShowAccountSnackbar() {}
+void SetBlockQuerySubmissionWhileLoading(bool block_submission) {
+  g_last_block_query_submission_while_loading = block_submission;
+}
+
+std::optional<bool> GetLastBlockQuerySubmissionWhileLoading() {
+  return g_last_block_query_submission_while_loading;
+}
+
+void SetShowPageLoadingSnackbarOnOpeningInvocation(bool show_snackbar) {
+  g_last_show_page_loading_snackbar_on_opening_invocation = show_snackbar;
+}
+
+std::optional<bool> GetLastShowPageLoadingSnackbarOnOpeningInvocation() {
+  return g_last_show_page_loading_snackbar_on_opening_invocation;
+}
+
+void ShowAccountSnackbar() {
+  g_show_account_snackbar_called = true;
+}
+
+bool WasShowAccountSnackbarCalled() {
+  return g_show_account_snackbar_called;
+}
 
 UIViewController* GetFloatyViewControllerWithConfiguration(
     GeminiConfiguration* gemini_configuration) {

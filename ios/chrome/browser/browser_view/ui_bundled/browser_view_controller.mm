@@ -13,6 +13,7 @@
 #import "base/metrics/user_metrics_action.h"
 #import "base/strings/sys_string_conversions.h"
 #import "base/task/sequenced_task_runner.h"
+#import "base/time/time.h"
 #import "components/enterprise/idle/idle_pref_names.h"
 #import "components/prefs/pref_service.h"
 #import "components/signin/public/identity_manager/identity_manager.h"
@@ -110,6 +111,7 @@
 #import "ios/chrome/grit/ios_strings.h"
 #import "ios/public/provider/chrome/browser/fullscreen/fullscreen_api.h"
 #import "ios/public/provider/chrome/browser/voice_search/voice_search_controller.h"
+#import "ios/web/common/features.h"
 #import "ios/web/public/ui/crw_web_view_proxy.h"
 #import "ios/web/public/ui/crw_web_view_scroll_view_proxy.h"
 #import "ios/web/public/web_state_observer_bridge.h"
@@ -127,9 +129,9 @@ enum HeaderBehaviour {
   Overlap
 };
 
-// Inset to remove from the toolbar height when in full-screen mode with the
-// dynamic island visible.
-const CGFloat kTopDynamicIslandInset = 24;
+// The maximum number of polling attempts for the presented view controller
+// dismissal.
+const CGFloat kMaxPollingAttemptsForDismissal = 3;
 
 // Returns true if Chrome Next IA layout and full-screen refactoring are active.
 bool IsFullscreenNextIAEnabled() {
@@ -283,6 +285,9 @@ bool IsFullscreenNextIAEnabled() {
   NSArray<NSLayoutConstraint*>* _NTPConstraints;
   // The last recorded view size to avoid redundant updates on layout.
   CGSize _lastViewSize;
+  // The last recorded top inset with corner adaptation to avoid redundant
+  // toolbar state updates on every layout pass.
+  CGFloat _lastTopInsetWithCornerAdaptation;
 }
 
 // Activates/deactivates the object. This will enable/disable the ability for
@@ -500,18 +505,18 @@ bool IsFullscreenNextIAEnabled() {
 }
 
 - (void)setBroadcasting:(BOOL)broadcasting {
+  if (_broadcasting == broadcasting) {
+    return;
+  }
+  _broadcasting = broadcasting;
+
   if (IsFullscreenRefactoringEnabled()) {
-    if (broadcasting && _fullscreenBrowserAgent) {
+    if (_broadcasting && _fullscreenBrowserAgent) {
       _fullscreenBrowserAgent->InvalidateInsetRange();
     }
     // Broadcasting is not needed for FullscreenRefactoring.
     return;
   }
-
-  if (_broadcasting == broadcasting) {
-    return;
-  }
-  _broadcasting = broadcasting;
 
   ChromeBroadcaster* broadcaster = self.fullscreenController->broadcaster();
   if (_broadcasting) {
@@ -524,12 +529,14 @@ bool IsFullscreenNextIAEnabled() {
     if (!IsRefactorToolbarsSize()) {
       StartBroadcastingToolbarsSize(_toolbarsSize, broadcaster);
     }
-    _mainContentUIUpdater = [[MainContentUIStateUpdater alloc]
-        initWithState:[[MainContentUIState alloc] init]];
-    _webMainContentUIForwarder = [[WebScrollViewMainContentUIForwarder alloc]
-        initWithUpdater:_mainContentUIUpdater
-           webStateList:self.webStateList];
-    StartBroadcastingMainContentUI(self, broadcaster);
+    if (web::features::ShouldUseBroadcasterForSmoothScrolling()) {
+      _mainContentUIUpdater = [[MainContentUIStateUpdater alloc]
+          initWithState:[[MainContentUIState alloc] init]];
+      _webMainContentUIForwarder = [[WebScrollViewMainContentUIForwarder alloc]
+          initWithUpdater:_mainContentUIUpdater
+             webStateList:self.webStateList];
+      StartBroadcastingMainContentUI(self, broadcaster);
+    }
 
     if (!IsFullscreenRefactoringEnabled()) {
       _fullscreenUIUpdater = std::make_unique<FullscreenUIUpdater>(
@@ -541,11 +548,13 @@ bool IsFullscreenNextIAEnabled() {
     if (!IsRefactorToolbarsSize()) {
       StopBroadcastingToolbarsSize(broadcaster);
     }
-    StopBroadcastingMainContentUI(broadcaster);
-    _mainContentUIUpdater = nil;
     _toolbarsSize = nil;
-    [_webMainContentUIForwarder disconnect];
-    _webMainContentUIForwarder = nil;
+    if (web::features::ShouldUseBroadcasterForSmoothScrolling()) {
+      StopBroadcastingMainContentUI(broadcaster);
+      _mainContentUIUpdater = nil;
+      [_webMainContentUIForwarder disconnect];
+      _webMainContentUIForwarder = nil;
+    }
 
     _fullscreenUIUpdater = nullptr;
   }
@@ -710,16 +719,19 @@ bool IsFullscreenNextIAEnabled() {
     return;
   }
   const BOOL offTheRecord = _isOffTheRecord;
+  self.ntpCoordinator.willFocusOmniboxAfterNewTabAnimation = focusOmnibox;
   ProceduralBlock oldForegroundTabWasAddedCompletionBlock =
       self.foregroundTabWasAddedCompletionBlock;
   __weak id<BrowserCoordinatorCommands> browserCoordinatorHandler =
       _browserCoordinatorHandler;
+  __weak NewTabPageCoordinator* ntpCoordinator = self.ntpCoordinator;
   self.foregroundTabWasAddedCompletionBlock = ^{
     if (oldForegroundTabWasAddedCompletionBlock) {
       oldForegroundTabWasAddedCompletionBlock();
     }
     if (focusOmnibox) {
       [browserCoordinatorHandler showComposebox];
+      ntpCoordinator.willFocusOmniboxAfterNewTabAnimation = NO;
     }
   };
 
@@ -836,8 +848,10 @@ bool IsFullscreenNextIAEnabled() {
     // Dismissed controllers will be so after a delay. Queue the completion
     // callback after that.
     if (completion) {
-      base::SequencedTaskRunner::GetCurrentDefault()->PostDelayedTask(
-          FROM_HERE, base::BindOnce(completion), base::Milliseconds(400));
+      [self pollUntilPresentationDismissedWithInterval:base::Milliseconds(400)
+                                           maxAttempts:
+                                               kMaxPollingAttemptsForDismissal
+                                            completion:completion];
     }
   } else if (completion) {
     // If no view controllers are presented, we should be ok with dispatching
@@ -995,18 +1009,17 @@ bool IsFullscreenNextIAEnabled() {
     self.view.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;
   }
 
-  NSArray<UITrait>* traits = TraitCollectionSetForTraits(nil);
-  __weak __typeof(self) weakSelf = self;
-  UITraitChangeHandler handler = ^(id<UITraitEnvironment> traitEnvironment,
-                                   UITraitCollection* previousCollection) {
-    [weakSelf updateUIOnTraitChange:previousCollection];
-  };
-  [self registerForTraitChanges:traits withHandler:handler];
+  [self
+      registerForTraitChanges:
+          @[ UITraitVerticalSizeClass.class, UITraitHorizontalSizeClass.class ]
+                   withAction:@selector(
+                                  sizeClassDidChange:previousTraitCollection:)];
 }
 
 - (void)viewSafeAreaInsetsDidChange {
   [super viewSafeAreaInsetsDidChange];
   [self setUpViewLayout:NO];
+  [self updateNTPSafeAreaInsets];
   // Update the heights of the toolbars to account for the new insets.
   self.primaryToolbarHeightConstraint.constant =
       [self primaryToolbarHeightWithInset];
@@ -1042,12 +1055,22 @@ bool IsFullscreenNextIAEnabled() {
   self.primaryToolbarHeightConstraint.constant =
       [self primaryToolbarHeightWithInset];
 
-  if ([self topInsetWithCornerAdaptation] - self.rootSafeAreaInsets.top > 0) {
-    // On iOS 26, the safe area layout guide doesn't automatically adjust
-    // for the control setting island's dimensions.
-    // Update the collapsedTopToolbarHeight when the dynamic island has moved.
-    [self updateToolbarState];
+  const CGFloat topInsetWithCornerAdaptation =
+      [self topInsetWithCornerAdaptation];
+  if (topInsetWithCornerAdaptation != _lastTopInsetWithCornerAdaptation) {
+    const BOOL hadCornerAdaptation =
+        _lastTopInsetWithCornerAdaptation > self.rootSafeAreaInsets.top;
+    _lastTopInsetWithCornerAdaptation = topInsetWithCornerAdaptation;
+    if (hadCornerAdaptation ||
+        topInsetWithCornerAdaptation > self.rootSafeAreaInsets.top) {
+      // On iOS 26, the safe area layout guide doesn't automatically adjust
+      // for the control setting island's dimensions.
+      // Update the collapsedTopToolbarHeight when the dynamic island has moved.
+      [self updateToolbarState];
+    }
   }
+
+  [self updateNTPSafeAreaInsets];
 
   if (!IsFullscreenRefactoringEnabled()) {
     if (self.ntpCoordinator.isNTPActiveForCurrentWebState &&
@@ -1372,7 +1395,7 @@ bool IsFullscreenNextIAEnabled() {
   // When the tab strip is active, it acts as the topmost header and covers
   // the safe area. The primary toolbar is laid out below it.
   if (!CanShowTabStrip(self)) {
-    height += self.rootSafeAreaInsets.top;
+    height += [self topInset];
   }
 
   return height;
@@ -1508,6 +1531,9 @@ bool IsFullscreenNextIAEnabled() {
 - (void)addConstraintsToToolbar {
   [self addConstraintsToPrimaryToolbar];
   [self addConstraintsToSecondaryToolbar];
+  if (!IsFullscreenNextIAEnabled()) {
+    [self.view layoutIfNeeded];
+  }
 }
 
 // Sets the correct frame and hierarchy for subviews and helper views.  Only
@@ -1584,7 +1610,6 @@ bool IsFullscreenNextIAEnabled() {
     // TODO(crbug.com/40842406): -updateToolbar will move out of the BVC; make
     // sure this comment remains accurate. Hide findbar.  `updateToolbar` will
     // restore the findbar later.
-    [self.findInPageCommandsHandler hideFindUI];
     [self.textZoomHandler hideTextZoomUI];
 
     // Make new content visible, resizing it first as the orientation may
@@ -1622,10 +1647,6 @@ bool IsFullscreenNextIAEnabled() {
       }
     } else {
       self.browserContentViewController.contentView = view;
-      if (IsFullscreenRefactoringEnabled()) {
-        view.translatesAutoresizingMaskIntoConstraints = NO;
-        AddSameConstraints(self.browserContentViewController.view, view);
-      }
       [self invalidateFullscreenInsets];
     }
     // Resize horizontal viewport if Smooth Scrolling is on.
@@ -1656,11 +1677,13 @@ bool IsFullscreenNextIAEnabled() {
 // Calls `callback` for each edge that has a safe area inset.
 - (void)getSafeAreaInsets:(void (^)(UIRectEdge edge, CGFloat amount))callback {
   callback(UIRectEdgeTop, [self topInset]);
-  if (IsSplitToolbarMode(self) && !IsChromeNextIaEnabled() &&
-      self.rootSafeAreaInsets.bottom > 0) {
-    // Avoid adding the bottom safe area inset when Chrome Next is enabled
-    // because the bottom UI elements report heights that already include the
-    // safe area.
+  if (self.rootSafeAreaInsets.bottom > 0 &&
+      (IsChromeNextIaEnabled()
+           ? (self.layoutState.appBarPosition == AppBarPosition::kBottom)
+           : IsSplitToolbarMode(self))) {
+    // Report `UIRectEdgeBottom` in portrait (`AppBarPosition::kBottom`) when
+    // Chrome Next IA is enabled (bottom UI elements report only their height
+    // above the bottom safe area) and in `IsSplitToolbarMode` otherwise.
     callback(UIRectEdgeBottom, self.rootSafeAreaInsets.bottom);
   }
 }
@@ -1687,15 +1710,55 @@ bool IsFullscreenNextIAEnabled() {
   [_browserCoordinatorHandler hideComposebox];
 }
 
+// Updates the safe area insets for the NTP view controller to account for
+// dynamic window controls (e.g. Stage Manager window control pill on iPad)
+// when the NTP view is pinned to the top view edge.
+- (void)updateNTPSafeAreaInsets {
+  if (!self.ntpCoordinator.started ||
+      !self.ntpCoordinator.isNTPActiveForCurrentWebState) {
+    return;
+  }
+  UIViewController* NTPViewController = self.ntpCoordinator.viewController;
+  if (!NTPViewController.isViewLoaded) {
+    return;
+  }
+
+  BOOL canShowTabStrip = CanShowTabStrip(self);
+  BOOL isSplitToolbarMode = IsSplitToolbarMode(self);
+
+  BOOL useTopViewEdge = NO;
+  if (IsChromeNextIaEnabled()) {
+    useTopViewEdge = !canShowTabStrip && !_isOffTheRecord;
+  } else {
+    useTopViewEdge = !canShowTabStrip && isSplitToolbarMode && !_isOffTheRecord;
+  }
+
+  CGFloat additionalTopSafeAreaInset = 0;
+  if (useTopViewEdge) {
+    additionalTopSafeAreaInset =
+        std::max<CGFloat>(0, [self topInset] - self.view.safeAreaInsets.top);
+  }
+
+  UIEdgeInsets currentInsets = NTPViewController.additionalSafeAreaInsets;
+  if (currentInsets.top != additionalTopSafeAreaInset) {
+    currentInsets.top = additionalTopSafeAreaInset;
+    NTPViewController.additionalSafeAreaInsets = currentInsets;
+  }
+}
+
 // Updates the constraints for the NTP view.
 - (void)updateNTPConstraints {
   CHECK(IsFullscreenRefactoringEnabled());
+  if (!self.ntpCoordinator.started ||
+      !self.ntpCoordinator.isNTPActiveForCurrentWebState) {
+    return;
+  }
   UIViewController* NTPViewController = self.ntpCoordinator.viewController;
   if (!NTPViewController.isViewLoaded || !NTPViewController.view.superview) {
     return;
   }
+  [self updateNTPSafeAreaInsets];
   [NSLayoutConstraint deactivateConstraints:_NTPConstraints];
-  DCHECK(self.ntpCoordinator.isNTPActiveForCurrentWebState);
 
   BOOL canShowTabStrip = CanShowTabStrip(self);
   BOOL isSplitToolbarMode = IsSplitToolbarMode(self);
@@ -1819,24 +1882,19 @@ bool IsFullscreenNextIAEnabled() {
   return webState->GetView();
 }
 
-// Notifies or modifies BVC owned UI elements when a UITrait has been changed.
-- (void)updateUIOnTraitChange:(UITraitCollection*)previousTraitCollection {
-  if (!IsChromeNextIaEnabled() &&
-      base::FeatureList::IsEnabled(kEnableTraitCollectionWorkAround)) {
-    [self updateTraitsIfNeeded];
-  }
-
+// Notifies or modifies BVC owned UI elements when a size class UITrait has
+// changed.
+- (void)sizeClassDidChange:(id<UITraitEnvironment>)traitEnvironment
+    previousTraitCollection:(UITraitCollection*)previousTraitCollection {
   // After `-shutdown` is called, profile is invalid and will cause a
   // crash.
   if (_isShutdown) {
     return;
   }
 
-  if (self.traitCollection.horizontalSizeClass ==
-          previousTraitCollection.horizontalSizeClass &&
-      self.traitCollection.verticalSizeClass ==
-          previousTraitCollection.verticalSizeClass) {
-    return;
+  if (!IsChromeNextIaEnabled() &&
+      base::FeatureList::IsEnabled(kEnableTraitCollectionWorkAround)) {
+    [self updateTraitsIfNeeded];
   }
 
   if (IsFullscreenRefactoringEnabled() &&
@@ -1847,11 +1905,13 @@ bool IsFullscreenNextIAEnabled() {
 
   self.fullscreenController->BrowserTraitCollectionChangedBegin();
 
+  const CGFloat secondaryToolbarHeightWithInset =
+      [self secondaryToolbarHeightWithInset];
   if (self.currentWebState) {
     UIEdgeInsets contentPadding =
         self.currentWebState->GetWebViewProxy().contentInset;
     contentPadding.bottom = AlignValueToLowerPixel(
-        self.footerFullscreenProgress * [self secondaryToolbarHeightWithInset]);
+        self.footerFullscreenProgress * secondaryToolbarHeightWithInset);
     self.currentWebState->GetWebViewProxy().contentInset = contentPadding;
   }
 
@@ -1862,7 +1922,7 @@ bool IsFullscreenNextIAEnabled() {
 
   // Change the height of the secondary toolbar to show/hide it.
   self.secondaryToolbarHeightConstraint.constant =
-      [self secondaryToolbarHeightWithInset];
+      secondaryToolbarHeightWithInset;
   [self updateFootersForFullscreenProgress:self.footerFullscreenProgress];
 
   // If the device's size class has changed from RegularXRegular to another and
@@ -1885,15 +1945,18 @@ bool IsFullscreenNextIAEnabled() {
   self.fullscreenController->BrowserTraitCollectionChangedEnd();
 }
 
-// On iOS 26, returns the top inset with corner adapation, otherwise returns 0.
+// On iOS 26, returns the top inset with corner adaptation in windowed mode,
+// otherwise returns 0.
 - (CGFloat)topInsetWithCornerAdaptation {
   if (@available(iOS 26, *)) {
-    UIViewLayoutRegion* safeAreaRegion =
-        [UIViewLayoutRegion safeAreaLayoutRegionWithCornerAdaptation:
-                                UIViewLayoutRegionAdaptivityAxisVertical];
-    NSDirectionalEdgeInsets calculatedInsets = [self.safeAreaProvider
-        directionalEdgeInsetsForLayoutRegion:safeAreaRegion];
-    return calculatedInsets.top;
+    if (self.layoutState.windowedMode) {
+      UIViewLayoutRegion* safeAreaRegion =
+          [UIViewLayoutRegion safeAreaLayoutRegionWithCornerAdaptation:
+                                  UIViewLayoutRegionAdaptivityAxisVertical];
+      NSDirectionalEdgeInsets calculatedInsets = [self.safeAreaProvider
+          directionalEdgeInsetsForLayoutRegion:safeAreaRegion];
+      return calculatedInsets.top;
+    }
   }
 
   return 0;
@@ -1904,13 +1967,10 @@ bool IsFullscreenNextIAEnabled() {
   CGFloat topInset = self.rootSafeAreaInsets.top;
 
   // On iOS 26, the safe area layout guide doesn't automatically adjust for the
-  // control setting island's dimensions.
-  // If the app is windowed, the dynamic island is not included in the
-  // status bar. In that case, `topInset` should be updated.
+  // window controls / corner adaptation dimensions in windowed mode.
   CGFloat topInsetWithCornerAdaptation = [self topInsetWithCornerAdaptation];
   if (topInsetWithCornerAdaptation - topInset > 0) {
-    topInset =
-        fmax(topInset, topInsetWithCornerAdaptation - kTopDynamicIslandInset);
+    topInset = topInsetWithCornerAdaptation;
   }
   return topInset;
 }
@@ -1928,6 +1988,42 @@ bool IsFullscreenNextIAEnabled() {
                                       fromSource:gemini::FloatyUpdateSource::
                                                      ViewTransition];
   }
+}
+
+// Polls periodically until `self.presentedViewController` has been fully
+// dismissed, or until `maxAttempts` is exhausted.
+- (void)pollUntilPresentationDismissedWithInterval:(base::TimeDelta)interval
+                                       maxAttempts:(NSUInteger)maxAttempts
+                                        completion:(ProceduralBlock)completion {
+  BOOL pollingAttemptsElapsed = maxAttempts == 0;
+
+  // If already dismissed or polling attempts elapsed, trigger completion
+  // immediately without posting tasks.
+  if (!self.presentedViewController || pollingAttemptsElapsed) {
+    if (completion) {
+      completion();
+    }
+    return;
+  }
+
+  __weak __typeof(self) weakSelf = self;
+  ProceduralBlock delayedCompletion = ^{
+    // Decrement the attempt counter and poll again if the VC is still
+    // presented.
+    if (weakSelf.presentedViewController) {
+      [weakSelf pollUntilPresentationDismissedWithInterval:interval
+                                               maxAttempts:maxAttempts - 1
+                                                completion:completion];
+      return;
+    }
+
+    if (completion) {
+      completion();
+    }
+  };
+
+  base::SequencedTaskRunner::GetCurrentDefault()->PostDelayedTask(
+      FROM_HERE, base::BindOnce(delayedCompletion), interval);
 }
 
 #pragma mark - Private Methods: Tap handling
@@ -2069,6 +2165,10 @@ bool IsFullscreenNextIAEnabled() {
 }
 
 - (void)updateForFullscreenEnabled:(BOOL)enabled {
+  if (self.fullscreenController &&
+      self.fullscreenController->IsForceFullscreenMode()) {
+    return;
+  }
   if (!enabled) {
     [self updateForFullscreenProgress:1.0];
   }
@@ -2165,15 +2265,20 @@ bool IsFullscreenNextIAEnabled() {
 // The minimum amount by which the bottom toolbar overlaps the browser content
 // area.
 - (CGFloat)collapsedBottomToolbarHeight {
-  if (IsChromeNextIaEnabled()) {
-    return self.toolbarCoordinator.collapsedSecondaryToolbarHeight;
-  }
   CGFloat height = self.toolbarCoordinator.collapsedSecondaryToolbarHeight;
   if (!height) {
     return 0.0;
   }
-  // Height is non-zero only when bottom omnibox is enabled.
-  return self.rootSafeAreaInsets.bottom + height;
+  // `collapsedSecondaryToolbarHeight` returns only the toolbar height above
+  // the safe area. Include the bottom safe area inset for legacy fullscreen
+  // (`!IsChromeNextIaEnabled()`) and for the view-height constraint
+  // calculation in `updateNextIASecondaryToolbarForFullscreenProgress:` when
+  // `AppBarPosition::kBottom`.
+  if (!IsChromeNextIaEnabled() ||
+      self.layoutState.appBarPosition == AppBarPosition::kBottom) {
+    return self.rootSafeAreaInsets.bottom + height;
+  }
+  return height;
 }
 
 // The maximum amount by which the top toolbar overlaps the browser content
@@ -2923,7 +3028,6 @@ bool IsFullscreenNextIAEnabled() {
 #pragma mark - CardSwipeViewDelegate
 
 - (void)sideSwipeViewDismissAnimationDidEnd:(UIView*)sideSwipeView {
-  DCHECK(!CanShowTabStrip(self));
   // TODO(crbug.com/40842406): Signal to the toolbar coordinator to perform this
   // update. Longer-term, make SideSwipeMediatorDelegate observable instead of
   // delegating.
@@ -3049,6 +3153,9 @@ bool IsFullscreenNextIAEnabled() {
   // Return to required priority, otherwise UIKeyboardLayoutGuide would set the
   // toolbar minimum height to the bottom safe area.
   self.secondaryToolbarHeightConstraint.priority = UILayoutPriorityRequired - 1;
+  if (!IsSplitToolbarMode(self)) {
+    self.secondaryToolbarHeightConstraint.constant = 0;
+  }
 }
 
 - (void)adjustSecondaryToolbarForKeyboardHeight:(CGFloat)keyboardHeight
@@ -3098,6 +3205,22 @@ bool IsFullscreenNextIAEnabled() {
 - (id<LogoAnimationControllerOwner>)logoAnimationControllerOwner {
   // This is required to enable voice search in the NTP.
   return nil;
+}
+
+#pragma mark - LensPresentationDelegate
+
+- (CGRect)webContentAreaForLensCoordinator:(LensCoordinator*)lensCoordinator {
+  DCHECK(lensCoordinator);
+
+  // The LensCoordinator needs the content area of the webView with the
+  // header and footer toolbars visible.
+  UIEdgeInsets viewportInsets = self.rootSafeAreaInsets;
+  if (!CanShowTabStrip(self)) {
+    viewportInsets.bottom = [self secondaryToolbarHeightWithInset];
+  }
+
+  viewportInsets.top = [self expandedTopToolbarHeight];
+  return UIEdgeInsetsInsetRect(self.contentArea.bounds, viewportInsets);
 }
 
 #pragma mark - ContextualSheetPresenter
@@ -3154,8 +3277,9 @@ bool IsFullscreenNextIAEnabled() {
 
 - (NSDirectionalEdgeInsets)presentationInsetsForLensOverlay {
   if (IsRegularXRegularSizeClass(self)) {
-    return NSDirectionalEdgeInsetsMake([self expandedTopToolbarHeight], 0, 0,
-                                       0);
+    // Subtract one unit to have the overlay cover the divider of the toolbar.
+    return NSDirectionalEdgeInsetsMake([self expandedTopToolbarHeight] - 1, 0,
+                                       0, 0);
   }
   return NSDirectionalEdgeInsetsZero;
 }

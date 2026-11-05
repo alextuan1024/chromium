@@ -445,6 +445,59 @@ TEST_F(BrowserModalHostTest, StartsAndStopsStoreKitCoordinator) {
   EXPECT_OCMOCK_VERIFY(classMock);
 }
 
+// Tests that `-showAppStoreWithParameters:` does not clear presented state or
+// start a new `StoreKitCoordinator` if one is already started.
+TEST_F(BrowserModalHostTest, DoesNotStartStoreKitCoordinatorIfAlreadyStarted) {
+  id classMock = OCMClassMock([StoreKitCoordinator class]);
+  StoreKitCoordinator* mockCoordinator = classMock;
+  NSDictionary* parameters = @{@"id" : @"12345"};
+  OCMExpect([classMock alloc]).andReturn(classMock);
+  OCMExpect([[classMock ignoringNonObjectArgs]
+                initWithBaseViewController:base_view_controller_
+                                   browser:browser_.get()])
+      .andReturn(mockCoordinator);
+  OCMExpect([mockCoordinator setDelegate:[OCMArg any]]);
+  OCMExpect([mockCoordinator setITunesProductParameters:parameters]);
+  OCMExpect([mockCoordinator start]);
+
+  CommandDispatcher* dispatcher = browser_->GetCommandDispatcher();
+  id mockBrowserCoordinatorCommandsHandler =
+      OCMProtocolMock(@protocol(BrowserCoordinatorCommands));
+  [dispatcher startDispatchingToTarget:mockBrowserCoordinatorCommandsHandler
+                           forProtocol:@protocol(BrowserCoordinatorCommands)];
+  OCMExpect([mockBrowserCoordinatorCommandsHandler
+                clearPresentedStateWithCompletion:[OCMArg any]
+                                   dismissOmnibox:YES])
+      .andDo(^(NSInvocation* invocation) {
+        __unsafe_unretained ProceduralBlock completion;
+        [invocation getArgument:&completion atIndex:2];
+        if (completion) {
+          completion();
+        }
+      });
+
+  id<WebContentCommands> handler =
+      HandlerForProtocol(dispatcher, WebContentCommands);
+
+  [handler showAppStoreWithParameters:parameters];
+
+  EXPECT_OCMOCK_VERIFY(mockBrowserCoordinatorCommandsHandler);
+  EXPECT_OCMOCK_VERIFY(classMock);
+
+  // Calling `-showAppStoreWithParameters:` again while `StoreKitCoordinator` is
+  // already started should early return without clearing presented state or
+  // starting another coordinator.
+  OCMReject([mockBrowserCoordinatorCommandsHandler
+      clearPresentedStateWithCompletion:[OCMArg any]
+                         dismissOmnibox:YES]);
+  OCMReject([classMock alloc]);
+
+  [handler showAppStoreWithParameters:parameters];
+
+  EXPECT_OCMOCK_VERIFY(mockBrowserCoordinatorCommandsHandler);
+  EXPECT_OCMOCK_VERIFY(classMock);
+}
+
 // Tests that `-showDialogForPassKitPasses:` starts the PassKitCoordinator.
 TEST_F(BrowserModalHostTest, StartsPassKitCoordinator) {
   id classMock = OCMClassMock([PassKitCoordinator class]);
@@ -529,6 +582,56 @@ TEST_F(BrowserModalHostTest, StartsAndStopsQuickDeleteCoordinator) {
   OCMExpect([mockCoordinator stop]);
   [handler stopQuickDelete];
   EXPECT_OCMOCK_VERIFY(classMock);
+}
+
+// Test that `-stopQuickDeleteForAnimationWithCompletion:` does not crash when
+// `BrowserCoordinatorCommands` and `SceneCommands` are no longer dispatched
+// during UI shutdown, and invokes them when they are dispatched.
+TEST_F(BrowserModalHostTest, StopQuickDeleteForAnimationWithCompletion) {
+  id mockBaseViewController = OCMPartialMock(base_view_controller_);
+  UIViewController* presentedViewController = [[UIViewController alloc] init];
+  OCMStub([mockBaseViewController presentedViewController])
+      .andReturn(presentedViewController);
+  OCMStub([mockBaseViewController
+      dismissViewControllerAnimated:YES
+                         completion:[OCMArg invokeBlock]]);
+
+  CommandDispatcher* dispatcher = browser_->GetCommandDispatcher();
+  id<QuickDeleteCommands> handler =
+      HandlerForProtocol(dispatcher, QuickDeleteCommands);
+
+  // When `BrowserCoordinatorCommands` and `SceneCommands` are not dispatched
+  // (e.g. during shutdown), the completion block should still run without
+  // crashing.
+  __block base::test::TestFuture<void> first_completion;
+  [handler stopQuickDeleteForAnimationWithCompletion:^{
+    first_completion.SetValue();
+  }];
+  EXPECT_TRUE(first_completion.Wait());
+
+  // When `BrowserCoordinatorCommands` and `SceneCommands` are dispatched, both
+  // handlers should be invoked.
+  id mockBrowserCoordinatorCommands =
+      OCMProtocolMock(@protocol(BrowserCoordinatorCommands));
+  [dispatcher startDispatchingToTarget:mockBrowserCoordinatorCommands
+                           forProtocol:@protocol(BrowserCoordinatorCommands)];
+  OCMExpect([mockBrowserCoordinatorCommands
+      clearPresentedStateWithCompletion:nil
+                         dismissOmnibox:YES]);
+
+  id mockSceneCommands = OCMProtocolMock(@protocol(SceneCommands));
+  [dispatcher startDispatchingToTarget:mockSceneCommands
+                           forProtocol:@protocol(SceneCommands)];
+  OCMExpect([mockSceneCommands dismissModalDialogsWithCompletion:nil]);
+
+  __block base::test::TestFuture<void> second_completion;
+  [handler stopQuickDeleteForAnimationWithCompletion:^{
+    second_completion.SetValue();
+  }];
+  EXPECT_TRUE(second_completion.Wait());
+
+  EXPECT_OCMOCK_VERIFY(mockBrowserCoordinatorCommands);
+  EXPECT_OCMOCK_VERIFY(mockSceneCommands);
 }
 
 // Tests that `-dismissCurrentPromo` stops PromosManagerCoordinator.

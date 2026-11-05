@@ -9,9 +9,11 @@ import static androidx.test.espresso.action.ViewActions.click;
 import static androidx.test.espresso.assertion.ViewAssertions.matches;
 import static androidx.test.espresso.matcher.ViewMatchers.hasDescendant;
 import static androidx.test.espresso.matcher.ViewMatchers.isChecked;
+import static androidx.test.espresso.matcher.ViewMatchers.isDescendantOfA;
 import static androidx.test.espresso.matcher.ViewMatchers.withId;
 import static androidx.test.espresso.matcher.ViewMatchers.withText;
 
+import static org.hamcrest.Matchers.allOf;
 import static org.hamcrest.Matchers.not;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
@@ -58,8 +60,8 @@ import org.chromium.base.test.util.RequiresRestart;
 import org.chromium.base.test.util.Restriction;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.FederatedIdentityTestUtils;
+import org.chromium.chrome.browser.app.tab_activity_glue.PopupCreatorImpl;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
-import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.notifications.channels.ChromeChannelDefinitions;
 import org.chromium.chrome.browser.permissions.PermissionTestRule;
 import org.chromium.chrome.browser.permissions.PermissionTestRule.PermissionUpdateWaiter;
@@ -103,15 +105,10 @@ import java.util.concurrent.TimeoutException;
 @RunWith(ChromeJUnit4ClassRunner.class)
 @Batch(Batch.PER_CLASS)
 @CommandLineFlags.Add({
-    ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE,
     ContentSwitches.HOST_RESOLVER_RULES + "=MAP * 127.0.0.1",
     "ignore-certificate-errors"
 })
-@DisableFeatures({
-    ChromeFeatureList.EDGE_TO_EDGE_EVERYWHERE,
-    ChromeFeatureList.SETTINGS_MULTI_COLUMN,
-    ChromeFeatureList.ANDROID_ANIMATED_PROGRESS_BAR_IN_BROWSER
-})
+@DisableFeatures({ChromeFeatureList.ANDROID_ANIMATED_PROGRESS_BAR_IN_BROWSER})
 public class SiteSettingsTest {
 
     private static final String[] ANTI_ABUSE_PREF_KEYS = {
@@ -205,8 +202,7 @@ public class SiteSettingsTest {
     public AutoResetCtaTransitTestRule mActivityTestRule =
             ChromeTransitTestRules.autoResetCtaActivityRule();
 
-    public PermissionTestRule mPermissionTestRule =
-            new PermissionTestRule(mActivityTestRule.getActivityTestRule(), true);
+    public PermissionTestRule mPermissionTestRule = new PermissionTestRule(mActivityTestRule, true);
 
     @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
 
@@ -234,9 +230,7 @@ public class SiteSettingsTest {
         if (mPermissionUpdateWaiter != null) {
             ThreadUtils.runOnUiThreadBlocking(
                     () -> {
-                        mPermissionTestRule
-                                .getActivityTab()
-                                .removeObserver(mPermissionUpdateWaiter);
+                        mActivityTestRule.getActivityTab().removeObserver(mPermissionUpdateWaiter);
                     });
         }
         SiteSettingsTestHelper.cleanUpContentSettingsAndExceptions(new CallbackHelper());
@@ -252,16 +246,14 @@ public class SiteSettingsTest {
         if (mPermissionUpdateWaiter != null) {
             ThreadUtils.runOnUiThreadBlocking(
                     () -> {
-                        mPermissionTestRule
-                                .getActivityTab()
-                                .removeObserver(mPermissionUpdateWaiter);
+                        mActivityTestRule.getActivityTab().removeObserver(mPermissionUpdateWaiter);
                     });
         }
-        Tab tab = mPermissionTestRule.getActivityTab();
+        Tab tab = mActivityTestRule.getActivityTab();
 
         mPermissionUpdateWaiter =
                 new PermissionUpdateWaiter(
-                        expectGranted ? "Granted" : "Denied", mPermissionTestRule.getActivity());
+                        expectGranted ? "Granted" : "Denied", mActivityTestRule.getActivity());
         ThreadUtils.runOnUiThreadBlocking(() -> tab.addObserver(mPermissionUpdateWaiter));
     }
 
@@ -269,14 +261,14 @@ public class SiteSettingsTest {
         // Ignore notification request 4 times to enter embargo. 5th one ensures that notifications
         // are blocked by actually causing a deny-by-embargo.
         for (int i = 0; i < 5; i++) {
-            mPermissionTestRule.loadUrl(url);
-            mPermissionTestRule.runJavaScriptCodeInCurrentTab("requestPermissionAndRespond()");
+            mActivityTestRule.loadUrl(url);
+            mActivityTestRule.runJavaScriptCodeInCurrentTab("requestPermissionAndRespond()");
         }
     }
 
     private int getTabCount() {
         return ThreadUtils.runOnUiThreadBlocking(
-                () -> mPermissionTestRule.getActivity().getTabModelSelector().getTotalTabCount());
+                () -> mActivityTestRule.getActivity().getTabModelSelector().getTotalTabCount());
     }
 
     private void testTwoStateToggleDisabledByPolicy(@SiteSettingsCategory.Type int type) {
@@ -316,7 +308,7 @@ public class SiteSettingsTest {
 
         // Test that the popup doesn't open.
         mPermissionTestRule.setUpUrl("/chrome/test/data/android/popup.html");
-        mPermissionTestRule.runJavaScriptCodeInCurrentTab("openPopup();");
+        mActivityTestRule.runJavaScriptCodeInCurrentTab("openPopup();");
         InstrumentationRegistry.getInstrumentation().waitForIdleSync();
 
         Assert.assertEquals(1, getTabCount());
@@ -327,6 +319,7 @@ public class SiteSettingsTest {
     @SmallTest
     @Feature({"Preferences"})
     public void testPopupsNotBlocked() throws TimeoutException {
+        PopupCreatorImpl.setMoveTabToNewPopupResultForTesting(false);
         new SiteSettingsTestHelper.TwoStatePermissionTestCaseWithRadioButton(
                         "Popups",
                         SiteSettingsCategory.Type.POPUPS,
@@ -337,7 +330,7 @@ public class SiteSettingsTest {
 
         // Test that a popup opens.
         mPermissionTestRule.setUpUrl("/chrome/test/data/android/popup.html");
-        mPermissionTestRule.runJavaScriptCodeInCurrentTab("openPopup();");
+        mActivityTestRule.runJavaScriptCodeInCurrentTab("openPopup();");
         InstrumentationRegistry.getInstrumentation().waitForIdleSync();
 
         Assert.assertEquals(2, getTabCount());
@@ -1207,6 +1200,8 @@ public class SiteSettingsTest {
 
         SettingsNavigation settingsNavigation =
                 SettingsNavigationFactory.createSettingsNavigation();
+        // This test inspects the fragment through SettingsActivity, like SiteSettingsTestUtils.
+        settingsNavigation.setUseSettingsActivityForTesting(true); // crbug.com/521895796
         Context context = ApplicationProvider.getApplicationContext();
         Intent intent =
                 settingsNavigation.createSettingsIntent(
@@ -1233,6 +1228,7 @@ public class SiteSettingsTest {
     @Feature({"Preferences"})
     // Auto does not have actions to handle ACTION_CHANNEL_NOTIFICATION_SETTINGS
     @Restriction(DeviceRestriction.RESTRICTION_TYPE_NON_AUTO)
+    @DisabledTest(message = "https://crbug.com/566215097")
     public void testEmbargoedNotificationSiteSettings() throws Exception {
         final String url =
                 mPermissionTestRule.getURLWithHostName(
@@ -1242,6 +1238,8 @@ public class SiteSettingsTest {
 
         SettingsNavigation settingsNavigation =
                 SettingsNavigationFactory.createSettingsNavigation();
+        // This test inspects the fragment through SettingsActivity, like SiteSettingsTestUtils.
+        settingsNavigation.setUseSettingsActivityForTesting(true); // crbug.com/521895796
         Context context = ApplicationProvider.getApplicationContext();
         Intent intent =
                 settingsNavigation.createSettingsIntent(
@@ -1371,6 +1369,8 @@ public class SiteSettingsTest {
 
         SettingsNavigation settingsNavigation =
                 SettingsNavigationFactory.createSettingsNavigation();
+        // This test inspects the fragment through SettingsActivity, like SiteSettingsTestUtils.
+        settingsNavigation.setUseSettingsActivityForTesting(true); // crbug.com/521895796
         Context context = ApplicationProvider.getApplicationContext();
         Intent intent =
                 settingsNavigation.createSettingsIntent(
@@ -1411,6 +1411,7 @@ public class SiteSettingsTest {
     @Test
     @MediumTest
     @Feature({"Preferences"})
+    @DisabledTest(message = "https://crbug.com/564443226")
     public void testProtectedContentAskAllow() throws Exception {
         SiteSettingsTestHelper.setGlobalTriStateToggleForCategory(
                 SiteSettingsCategory.Type.PROTECTED_MEDIA, ContentSetting.ASK);
@@ -1427,6 +1428,7 @@ public class SiteSettingsTest {
     @Test
     @MediumTest
     @Feature({"Preferences"})
+    @DisabledTest(message = "https://crbug.com/564443226")
     public void testProtectedContentAskBlocked() throws Exception {
         SiteSettingsTestHelper.setGlobalTriStateToggleForCategory(
                 SiteSettingsCategory.Type.PROTECTED_MEDIA, ContentSetting.ASK);
@@ -1540,7 +1542,7 @@ public class SiteSettingsTest {
         final SettingsActivity settingsActivity = SiteSettingsTestUtils.startSiteSettingsMenu("");
 
         // Scroll to permission autorevocation preference and click it.
-        onView(withId(R.id.recycler_view))
+        onView(allOf(withId(R.id.recycler_view), isDescendantOfA(withId(R.id.preferences_detail))))
                 .perform(
                         RecyclerViewActions.scrollTo(
                                 hasDescendant(

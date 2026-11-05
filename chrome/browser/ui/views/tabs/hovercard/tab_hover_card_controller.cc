@@ -20,10 +20,11 @@
 #include "chrome/browser/ui/layout_constants.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/tabs/tab_style.h"
+#include "chrome/browser/ui/tabs/vertical_tab_strip_state.h"
 #include "chrome/browser/ui/tabs/vertical_tab_strip_state_controller.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/views/chrome_widget_sublevel.h"
-#include "chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h"
+#include "chrome/browser/ui/views/frame/tab_strip_region_view.h"
 #include "chrome/browser/ui/views/tabs/hovercard/hover_card_anchor_target.h"
 #include "chrome/browser/ui/views/tabs/hovercard/tab_hover_card_bubble_view.h"
 #include "chrome/browser/ui/views/tabs/hovercard/tab_hover_card_thumbnail_observer.h"
@@ -65,7 +66,7 @@ base::TimeDelta GetPreviewImageCaptureDelay(
       break;
     }
   }
-  DCHECK_GE(ms, 0);
+  CHECK_GE(ms, 0, base::NotFatalUntil::M162);
   return base::Milliseconds(ms);
 }
 
@@ -109,7 +110,7 @@ base::TimeDelta GetShowDelay(BrowserWindowInterface* browser,
     // the default uncollapsed width.
     tab_width = tab_strip->width();
 
-    tab_min_width = VerticalTabStripRegionView::kCollapsedWidth;
+    tab_min_width = tabs::kVerticalTabStripCollapsedWidth;
     tab_standard_width = tabs::kVerticalTabStripDefaultUncollapsedWidth;
   } else {
     // Use the largest tab in the tab strip when determining the delay so that
@@ -213,8 +214,7 @@ class TabHoverCardController::EventSniffer : public ui::EventObserver {
     }
 
     if (close_hover_card) {
-      controller_->UpdateHoverCard(
-          nullptr, TabSlotController::HoverCardUpdateType::kEvent);
+      controller_->UpdateHoverCard(nullptr, HoverCardUpdateType::kEvent);
     }
   }
 
@@ -298,10 +298,10 @@ bool TabHoverCardController::IsHoverCardShowingForTab(
 
 void TabHoverCardController::UpdateHoverCard(
     HoverCardAnchorTarget* anchor_target,
-    TabSlotController::HoverCardUpdateType update_type) {
+    HoverCardUpdateType update_type) {
   if (hide_hover_card_lock_count_ > 0) {
     anchor_target = nullptr;
-    update_type = TabSlotController::HoverCardUpdateType::kAnimating;
+    update_type = HoverCardUpdateType::kAnimating;
   }
 
   // Never display a hover card for an invalid tab.
@@ -333,24 +333,26 @@ void TabHoverCardController::UpdateHoverCard(
   }
 
   switch (update_type) {
-    case TabSlotController::HoverCardUpdateType::kSelectionChanged:
+    case HoverCardUpdateType::kSelectionChanged:
       ResetCardsSeenCount();
       break;
-    case TabSlotController::HoverCardUpdateType::kHover:
+    case HoverCardUpdateType::kHover:
       if (!anchor_target) {
         last_mouse_exit_timestamp_ = base::TimeTicks::Now();
       }
       break;
-    case TabSlotController::HoverCardUpdateType::kTabDataChanged:
+    case HoverCardUpdateType::kTabDataChanged:
+      // TODO(crbug.com/580580736): CHECK-exclusion: Convert to a CHECK once
+      // we are confident it won't be triggered.
       DCHECK(anchor_target && IsHoverCardShowingForTab(anchor_target));
       break;
-    case TabSlotController::HoverCardUpdateType::kTabRemoved:
-    case TabSlotController::HoverCardUpdateType::kAnimating:
+    case HoverCardUpdateType::kTabRemoved:
+    case HoverCardUpdateType::kAnimating:
       // Neither of these cases should have a tab associated.
-      DCHECK(!anchor_target);
+      CHECK(!anchor_target, base::NotFatalUntil::M162);
       break;
-    case TabSlotController::HoverCardUpdateType::kEvent:
-    case TabSlotController::HoverCardUpdateType::kFocus:
+    case HoverCardUpdateType::kEvent:
+    case HoverCardUpdateType::kFocus:
       // No special action taken for this type of even (yet).
       break;
   }
@@ -400,12 +402,11 @@ void TabHoverCardController::OnViewIsDeleting(views::View* observed_view) {
   if (hover_card_ == observed_view) {
     OnCardClosing();
   } else if (target_tab_ && target_tab_->GetView() == observed_view) {
-    UpdateHoverCard(nullptr,
-                    TabSlotController::HoverCardUpdateType::kTabRemoved);
+    UpdateHoverCard(nullptr, HoverCardUpdateType::kTabRemoved);
     // These postconditions should always be met after calling
     // UpdateHoverCard(nullptr, ...)
-    DCHECK(!target_tab_);
-    DCHECK(!target_tab_observation_.IsObserving());
+    CHECK(!target_tab_, base::NotFatalUntil::M162);
+    CHECK(!target_tab_observation_.IsObserving(), base::NotFatalUntil::M162);
   }
 }
 
@@ -425,8 +426,7 @@ void TabHoverCardController::OnViewVisibilityChanged(views::View* observed_view,
 
 void TabHoverCardController::OnTabResourceMetricsRefreshed() {
   if (hover_card_ && target_tab_) {
-    UpdateHoverCard(target_tab_,
-                    TabSlotController::HoverCardUpdateType::kTabDataChanged);
+    UpdateHoverCard(target_tab_, HoverCardUpdateType::kTabDataChanged);
   }
 }
 
@@ -588,8 +588,10 @@ void TabHoverCardController::StartThumbnailObservation(
     return;
   }
 
-  DCHECK(anchor_target);
-  DCHECK(hover_card_);
+  CHECK(anchor_target, base::NotFatalUntil::M162);
+  CHECK(hover_card_, base::NotFatalUntil::M162);
+  // TODO(crbug.com/584203133): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
   DCHECK(waiting_for_preview());
 
   const TabCardData& card_data = std::get<TabCardData>(anchor_target->data());
@@ -603,7 +605,7 @@ void TabHoverCardController::StartThumbnailObservation(
 
 void TabHoverCardController::UpdateOrShowCard(
     HoverCardAnchorTarget* anchor_target,
-    TabSlotController::HoverCardUpdateType update_type) {
+    HoverCardUpdateType update_type) {
   // Close is asynchronous, so make sure that if we're closing we clear out all
   // of our data *now* rather than waiting for the deletion message.
   if (hover_card_ && GetCardWidget()->IsClosed()) {
@@ -612,7 +614,7 @@ void TabHoverCardController::UpdateOrShowCard(
 
   // If a hover card is being updated because of a data change, the hover card
   // had better already be showing for the affected tab.
-  if (update_type == TabSlotController::HoverCardUpdateType::kTabDataChanged) {
+  if (update_type == HoverCardUpdateType::kTabDataChanged) {
     if (!IsHoverCardShowingForTab(anchor_target)) {
       return;
     }
@@ -683,7 +685,7 @@ void TabHoverCardController::UpdateOrShowCard(
     // since delayed capture only happens when the hover card already exists,
     // and this code is only invoked if there is no hover card yet.
     delayed_show_timer_.Stop();
-    DCHECK_EQ(target_tab_, anchor_target);
+    CHECK_EQ(target_tab_, anchor_target, base::NotFatalUntil::M162);
     ShowHoverCard(is_initial, anchor_target);
   }
 }
@@ -796,6 +798,8 @@ bool TabHoverCardController::TargetTabIsValid() const {
 }
 
 void TabHoverCardController::OnCardFullyVisible() {
+  // TODO(crbug.com/580142862): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
   DCHECK(target_tab_);
   if (target_tab_ == hover_card_last_seen_on_tab_.get()) {
     return;
@@ -864,7 +868,7 @@ void TabHoverCardController::OnSlideAnimationComplete(
 void TabHoverCardController::OnPreviewImageAvailable(
     TabHoverCardThumbnailObserver* observer,
     gfx::ImageSkia thumbnail_image) {
-  DCHECK_EQ(thumbnail_observer_.get(), observer);
+  CHECK_EQ(thumbnail_observer_.get(), observer, base::NotFatalUntil::M162);
 
   thumbnail_wait_state_ = ThumbnailWaitState::kNotWaiting;
 

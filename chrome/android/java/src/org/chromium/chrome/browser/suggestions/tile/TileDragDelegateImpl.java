@@ -11,6 +11,7 @@ import android.widget.HorizontalScrollView;
 
 import androidx.annotation.IntDef;
 import androidx.annotation.Px;
+import androidx.annotation.VisibleForTesting;
 
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
@@ -71,10 +72,10 @@ class TileDragDelegateImpl implements TileDragDelegate, TileDragSession.Delegate
     }
 
     // "Start duration": Delay (in ms) for triggering PREPARE -> START change.
-    private static final long START_DURATION_MS = 300;
+    @VisibleForTesting static final long START_DURATION_MS = 300;
 
     // Relative "dominate threshold": Multiplied by tile width to get "dominate threshold".
-    private static final float DOMINATE_TRESHOLD_RATIO = 0.4f;
+    @VisibleForTesting static final float DOMINATE_TRESHOLD_RATIO = 0.4f;
 
     // Parent container for dragged tiles.
     private final MostVisitedTilesLayout mMvTilesLayout;
@@ -117,15 +118,15 @@ class TileDragDelegateImpl implements TileDragDelegate, TileDragSession.Delegate
     public void onTileTouchDown(
             View view, MotionEvent event, TileDragSession.EventListener eventListener) {
         assert event.getAction() == MotionEvent.ACTION_DOWN;
-        if (!((TileView) view).isDraggable()) {
-            return;
-        }
-
         if (mPhase != DragPhase.NONE) {
             cancelActiveSession();
         } else {
             reset();
         }
+        if (!((TileView) view).isDraggable()) {
+            return;
+        }
+
         mPhase = DragPhase.PREPARE;
         mTileDragSession =
                 new TileDragSession(
@@ -149,7 +150,10 @@ class TileDragDelegateImpl implements TileDragDelegate, TileDragSession.Delegate
 
     @Override
     public void onSessionTileTouch(View view, MotionEvent event) {
-        assert ((TileView) view).isDraggable() && mTileDragSession != null;
+        if (mTileDragSession == null || !mTileDragSession.isFromView(view)) {
+            return;
+        }
+        assert ((TileView) view).isDraggable();
 
         if (event.getAction() == MotionEvent.ACTION_MOVE) {
             if (mPhase == DragPhase.START) {
@@ -227,7 +231,7 @@ class TileDragDelegateImpl implements TileDragDelegate, TileDragSession.Delegate
 
     @Override
     public boolean hasTileDragSession() {
-        return mPhase != DragPhase.NONE || mPendingChangeFinalizer != null;
+        return mPhase != DragPhase.NONE;
     }
 
     @Override
@@ -275,8 +279,8 @@ class TileDragDelegateImpl implements TileDragDelegate, TileDragSession.Delegate
                 cancelVisuals.run();
             }
         } else if (mPendingChangeFinalizer != null) {
-            // mPendingChangeFinalizer != null guarantees an active in-flight finalization
-            // animation is running (either for Drag Flow or Swap Flow).
+            // mPendingChangeFinalizer != null means a finalization callback is present (either
+            // actively in-flight or lingering from a completed Drag Flow prior to the next reset).
             if (mTileMovementForSwap == null) {
                 // Drag Flow: Runs the finish() runnable to stop animators and immediately restore
                 // visuals.

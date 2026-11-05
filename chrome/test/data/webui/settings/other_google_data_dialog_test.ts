@@ -8,7 +8,7 @@ import {webUIListenerCallback} from 'chrome://resources/js/cr.js';
 import {ClearBrowsingDataBrowserProxyImpl} from 'chrome://settings/lazy_load.js';
 import type {SettingsOtherGoogleDataDialogElement} from 'chrome://settings/lazy_load.js';
 import type {CrLinkRowElement} from 'chrome://settings/settings.js';
-import {loadTimeData, MetricsBrowserProxyImpl, OpenWindowProxyImpl, PasswordManagerImpl, PasswordManagerPage, SignedInState, SyncBrowserProxyImpl} from 'chrome://settings/settings.js';
+import {AiSettingsSection, loadTimeData, MetricsBrowserProxyImpl, OpenWindowProxyImpl, PasswordManagerImpl, PasswordManagerPage, SignedInState, SyncBrowserProxyImpl} from 'chrome://settings/settings.js';
 import {assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chai_assert.js';
 import {TestOpenWindowProxy} from 'chrome://webui-test/test_open_window_proxy.js';
 import {isChildVisible, isVisible, microtasksFinished} from 'chrome://webui-test/test_util.js';
@@ -45,7 +45,7 @@ suite('OtherGoogleDataDialog', function() {
         testClearBrowsingDataBrowserProxy);
 
     loadTimeData.overrideValues({
-      showGlicSettings: true,
+      aiSettingsSection: AiSettingsSection.GEMINI,
     });
     await createDialog();
   });
@@ -167,6 +167,12 @@ suite('OtherGoogleDataDialog', function() {
     setSignedInAndDseState(SignedInState.SIGNED_OUT, /*isGoogleDse=*/ true);
     await microtasksFinished();
     assertFalse(isChildVisible(dialog, '#myActivityLink'));
+
+    // Case 6: User has undefined signedInState (e.g. ChromeOS Guest mode),
+    // MyActivity link should be hidden.
+    webUIListenerCallback('sync-status-changed', {});
+    await microtasksFinished();
+    assertFalse(isChildVisible(dialog, '#myActivityLink'));
   });
 
   test('SearchHistoryVisibility', async function() {
@@ -217,6 +223,14 @@ suite('OtherGoogleDataDialog', function() {
     await microtasksFinished();
     assertFalse(isChildVisible(dialog, '#googleSearchHistoryLink'));
     assertFalse(isChildVisible(dialog, '#nonGoogleSearchHistoryLink'));
+
+    // Case 7: User has undefined signedInState (e.g. ChromeOS Guest mode) and
+    // has Google as their DSE, Google search history link and non-Google search
+    // history row should be hidden.
+    webUIListenerCallback('sync-status-changed', {});
+    await microtasksFinished();
+    assertFalse(isChildVisible(dialog, '#googleSearchHistoryLink'));
+    assertFalse(isChildVisible(dialog, '#nonGoogleSearchHistoryLink'));
   });
 
   test('DialogTitle', async function() {
@@ -264,8 +278,12 @@ suite('OtherGoogleDataDialog', function() {
     await microtasksFinished();
     assertFalse(isChildVisible(dialog, '#geminiAppsActivityLink'));
 
+    webUIListenerCallback('sync-status-changed', {});
+    await microtasksFinished();
+    assertFalse(isChildVisible(dialog, '#geminiAppsActivityLink'));
+
     loadTimeData.overrideValues({
-      showGlicSettings: false,
+      aiSettingsSection: AiSettingsSection.NONE,
     });
     await createDialog();
     setSignedInAndDseState(SignedInState.SIGNED_IN, /*isGoogleDse=*/ true);

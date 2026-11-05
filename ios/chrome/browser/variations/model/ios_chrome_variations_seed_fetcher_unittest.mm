@@ -8,7 +8,6 @@
 #import "base/strings/sys_string_conversions.h"
 #import "base/test/ios/wait_util.h"
 #import "base/test/metrics/histogram_tester.h"
-#import "base/test/scoped_feature_list.h"
 #import "base/time/time.h"
 #import "build/branding_buildflags.h"
 #import "components/variations/seed_response.h"
@@ -34,19 +33,19 @@ namespace {
 using variations::kDefaultServerUrl;
 using variations::switches::kFakeVariationsChannel;
 using variations::switches::kFakeVariationsPlatform;
-using variations::switches::kVariationsSeedCorpus;
 using variations::switches::kVariationsServerURL;
 
 // Histogram names for seed fetch time and result.
-const char kSeedFetchResultHistogram[] =
+constexpr char kSeedFetchResultHistogram[] =
     "IOS.Variations.FirstRun.SeedFetchResult";
-const char kSeedFetchTimeHistogram[] = "IOS.Variations.FirstRun.SeedFetchTime";
+constexpr char kSeedFetchTimeHistogram[] =
+    "IOS.Variations.FirstRun.SeedFetchTime";
 
 // Fake server url.
-const NSString* test_server = @"https://test.finch.server";
+NSString* const kTestServerUrl = @"https://test.finch.server";
 
 // Fake value for "Date" header for testing.
-const NSString* test_date_header_value = @"Tue, 15 Nov 1994 12:45:26 GMT";
+NSString* const kTestDateHeaderValue = @"Tue, 15 Nov 1994 12:45:26 GMT";
 
 // Type definition of a block that retrieves the value of an HTTP header from a
 // custom NSDictionary instead of actual NSURLHTTPRequest header.
@@ -112,10 +111,7 @@ TEST_F(IOSChromeVariationsSeedFetcherTest,
   // Instantiate mocks.
   BOOL (^request_matcher)(NSMutableURLRequest* request) =
       ^BOOL(NSMutableURLRequest* request) {
-        // The NSString method `hasPrefix` does not take parameter of type
-        // 'const NSString *__strong`.
-        NSString* prefix = [NSString stringWithFormat:@"%@", test_server];
-        return [request.URL.absoluteString hasPrefix:prefix] &&
+        return [request.URL.absoluteString hasPrefix:kTestServerUrl] &&
                [request.allHTTPHeaderFields[@"A-IM"] isEqualToString:@"gzip"];
       };
   id mock_url_session = OCMClassMock([NSURLSession class]);
@@ -128,7 +124,7 @@ TEST_F(IOSChromeVariationsSeedFetcherTest,
   NSString* argument =
       [NSString stringWithFormat:@"--%@=%@",
                                  base::SysUTF8ToNSString(kVariationsServerURL),
-                                 test_server];
+                                 kTestServerUrl];
   IOSChromeVariationsSeedFetcher* fetcher =
       [[IOSChromeVariationsSeedFetcher alloc] initWithArguments:@[ argument ]];
   [fetcher startSeedFetch];
@@ -154,82 +150,6 @@ TEST_F(IOSChromeVariationsSeedFetcherTest, TestDefaultVariationsURL) {
   // Fetch and check.
   IOSChromeVariationsSeedFetcher* fetcher =
       [[IOSChromeVariationsSeedFetcher alloc] initWithArguments:@[]];
-  [fetcher doActualFetch];
-  base::test::ios::SpinRunLoopWithMinDelay(base::Seconds(0.05));
-  EXPECT_OCMOCK_VERIFY(mock_url_session);
-}
-
-// Tests that the experimental variations url is correct.
-TEST_F(IOSChromeVariationsSeedFetcherTest, TestVariationsURLWithCorpus) {
-  NSString* test_channel = @"test_channel";
-
-  // Instantiate mocks and expectations.
-  BOOL (^request_matcher)(NSMutableURLRequest* request) =
-      ^BOOL(NSMutableURLRequest* request) {
-        NSString* expected_url_prefix = [NSString
-            stringWithFormat:@"%@?osname=ios&milestone=%@&channel=%@"
-                             @"&corpus=experimental",
-                             base::SysUTF8ToNSString(kDefaultServerUrl),
-                             base::SysUTF8ToNSString(
-                                 version_info::GetMajorVersionNumber()),
-                             test_channel];
-        return [request.URL.absoluteString hasPrefix:expected_url_prefix];
-      };
-  id mock_url_session = OCMClassMock([NSURLSession class]);
-  OCMStub([mock_url_session sharedSession]).andReturn(mock_url_session);
-  OCMExpect([mock_url_session
-      dataTaskWithRequest:[OCMArg checkWithBlock:request_matcher]
-        completionHandler:[OCMArg any]]);
-
-  // Pass both channel and corpus values to the fetcher. The matcher will make
-  // sure they are both represented in the URL.
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitAndEnableFeature(kVariationsExperimentalCorpus);
-  NSString* channel_argument = [NSString
-      stringWithFormat:@"--%@=%@",
-                       base::SysUTF8ToNSString(kFakeVariationsChannel),
-                       test_channel];
-  IOSChromeVariationsSeedFetcher* fetcher =
-      [[IOSChromeVariationsSeedFetcher alloc]
-          initWithArguments:@[ channel_argument ]];
-  [fetcher doActualFetch];
-  base::test::ios::SpinRunLoopWithMinDelay(base::Seconds(0.05));
-  EXPECT_OCMOCK_VERIFY(mock_url_session);
-}
-
-// Tests that the dogfood variations url is correct.
-TEST_F(IOSChromeVariationsSeedFetcherTest, TestVariationsURLWithDogfood) {
-  NSString* test_channel = @"test_channel";
-
-  // Instantiate mocks and expectations.
-  BOOL (^request_matcher)(NSMutableURLRequest* request) =
-      ^BOOL(NSMutableURLRequest* request) {
-        NSString* expected_url_prefix = [NSString
-            stringWithFormat:@"%@?osname=ios&milestone=%@&channel=%@"
-                             @"&restrict=dogfood",
-                             base::SysUTF8ToNSString(kDefaultServerUrl),
-                             base::SysUTF8ToNSString(
-                                 version_info::GetMajorVersionNumber()),
-                             test_channel];
-        return [request.URL.absoluteString hasPrefix:expected_url_prefix];
-      };
-  id mock_url_session = OCMClassMock([NSURLSession class]);
-  OCMStub([mock_url_session sharedSession]).andReturn(mock_url_session);
-  OCMExpect([mock_url_session
-      dataTaskWithRequest:[OCMArg checkWithBlock:request_matcher]
-        completionHandler:[OCMArg any]]);
-
-  // Pass both channel and corpus values to the fetcher. The matcher will make
-  // sure they are both represented in the URL.
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitAndEnableFeature(kVariationsRestrictDogfood);
-  NSString* channel_argument = [NSString
-      stringWithFormat:@"--%@=%@",
-                       base::SysUTF8ToNSString(kFakeVariationsChannel),
-                       test_channel];
-  IOSChromeVariationsSeedFetcher* fetcher =
-      [[IOSChromeVariationsSeedFetcher alloc]
-          initWithArguments:@[ channel_argument ]];
   [fetcher doActualFetch];
   base::test::ios::SpinRunLoopWithMinDelay(base::Seconds(0.05));
   EXPECT_OCMOCK_VERIFY(mock_url_session);
@@ -281,15 +201,16 @@ TEST_F(IOSChromeVariationsSeedFetcherTest,
        TestVariationsURLWithFakeChannelAndFakeServer) {
   NSString* test_channel = @"fake_channel";
   // Instantiate mocks.
-  BOOL (^request_matcher)(NSMutableURLRequest* request) = ^BOOL(
-      NSMutableURLRequest* request) {
-    NSString* expected_url = [NSString
-        stringWithFormat:@"%@?osname=ios&milestone=%@&channel=%@", test_server,
-                         base::SysUTF8ToNSString(
-                             version_info::GetMajorVersionNumber()),
-                         test_channel];
-    return [request.URL.absoluteString isEqualToString:expected_url];
-  };
+  BOOL (^request_matcher)(NSMutableURLRequest* request) =
+      ^BOOL(NSMutableURLRequest* request) {
+        NSString* expected_url = [NSString
+            stringWithFormat:@"%@?osname=ios&milestone=%@&channel=%@",
+                             kTestServerUrl,
+                             base::SysUTF8ToNSString(
+                                 version_info::GetMajorVersionNumber()),
+                             test_channel];
+        return [request.URL.absoluteString isEqualToString:expected_url];
+      };
   id mock_url_session = OCMClassMock([NSURLSession class]);
   OCMStub([mock_url_session sharedSession]).andReturn(mock_url_session);
   OCMExpect([mock_url_session
@@ -306,7 +227,7 @@ TEST_F(IOSChromeVariationsSeedFetcherTest,
   NSString* test_server_argument =
       [NSString stringWithFormat:@"--%@=%@",
                                  base::SysUTF8ToNSString(kVariationsServerURL),
-                                 test_server];
+                                 kTestServerUrl];
 
   IOSChromeVariationsSeedFetcher* fetcher =
       [[IOSChromeVariationsSeedFetcher alloc]
@@ -420,7 +341,7 @@ TEST_F(IOSChromeVariationsSeedFetcherTest,
 TEST_F(IOSChromeVariationsSeedFetcherTest, testNoIMHeader) {
   // Set up.
   NSDictionary<NSString*, NSString*>* header = @{
-    @"Date" : [NSString stringWithFormat:@"%@", test_date_header_value],
+    @"Date" : kTestDateHeaderValue,
     @"X-Seed-Signature" : [NSDate now].description,
     @"X-Country" : @"US",
   };
@@ -441,7 +362,7 @@ TEST_F(IOSChromeVariationsSeedFetcherTest, testNoIMHeader) {
 TEST_F(IOSChromeVariationsSeedFetcherTest, testBadIMHeader) {
   // Set up.
   NSDictionary<NSString*, NSString*>* header = @{
-    @"Date" : [NSString stringWithFormat:@"%@", test_date_header_value],
+    @"Date" : kTestDateHeaderValue,
     @"X-Seed-Signature" : [NSDate now].description,
     @"X-Country" : @"US",
     @"IM" : @"not_gzip"
@@ -463,7 +384,7 @@ TEST_F(IOSChromeVariationsSeedFetcherTest, testBadIMHeader) {
 TEST_F(IOSChromeVariationsSeedFetcherTest, tesMoreThanOneIMHeaders) {
   // Set up.
   NSDictionary<NSString*, NSString*>* header = @{
-    @"Date" : [NSString stringWithFormat:@"%@", test_date_header_value],
+    @"Date" : kTestDateHeaderValue,
     @"X-Seed-Signature" : [NSDate now].description,
     @"X-Country" : @"US",
     @"IM" : @"gzip,somethingelse"
@@ -488,10 +409,12 @@ TEST_F(IOSChromeVariationsSeedFetcherTest,
   base::HistogramTester histogram_tester;
   NSString* signature = [NSDate now].description;
   NSString* country = @"US";
+  NSString* geo_level1 = @"us-ca";
   NSDictionary<NSString*, NSString*>* headers = @{
-    @"Date" : [NSString stringWithFormat:@"%@", test_date_header_value],
+    @"Date" : kTestDateHeaderValue,
     @"X-Seed-Signature" : signature,
     @"X-Country" : country,
+    @"X-Geo-Level-1" : geo_level1,
     @"IM" : @" gzip"
   };
   id response = OCMClassMock([NSHTTPURLResponse class]);
@@ -519,6 +442,7 @@ TEST_F(IOSChromeVariationsSeedFetcherTest,
   ASSERT_NE(seed, nullptr);
   EXPECT_EQ(seed->signature, base::SysNSStringToUTF8(signature));
   EXPECT_EQ(seed->country, base::SysNSStringToUTF8(country));
+  EXPECT_EQ(seed->geo_level1, base::SysNSStringToUTF8(geo_level1));
   EXPECT_EQ(seed->data, "");
   base::Time::Exploded date_exploded;
   seed->date.UTCExplode(&date_exploded);
@@ -532,4 +456,27 @@ TEST_F(IOSChromeVariationsSeedFetcherTest,
                                       1);
   EXPECT_OCMOCK_VERIFY(response);
   EXPECT_OCMOCK_VERIFY(delegate);
+}
+
+// Tests that the seed is still created with an empty geo_level1 string when
+// the X-Geo-Level-1 header is omitted from the HTTP response.
+TEST_F(IOSChromeVariationsSeedFetcherTest,
+       testValidHTTPResponseWithoutGeoLevel1Header) {
+  NSDictionary<NSString*, NSString*>* headers = @{
+    @"Date" : kTestDateHeaderValue,
+    @"X-Seed-Signature" : @"signature",
+    @"X-Country" : @"US",
+    @"IM" : @"gzip"
+  };
+  id response = OCMClassMock([NSHTTPURLResponse class]);
+  OCMStub([response valueForHTTPHeaderField:[OCMArg any]])
+      .andDo(GetMockMethodWithHeader(headers));
+  IOSChromeVariationsSeedFetcher* fetcher =
+      [[IOSChromeVariationsSeedFetcher alloc] initWithArguments:@[]];
+  std::unique_ptr<variations::SeedResponse> seed =
+      [fetcher seedResponseForHTTPResponse:response data:nil];
+  ASSERT_NE(seed, nullptr);
+  EXPECT_EQ(seed->country, "US");
+  EXPECT_EQ(seed->geo_level1, "");
+  EXPECT_OCMOCK_VERIFY(response);
 }

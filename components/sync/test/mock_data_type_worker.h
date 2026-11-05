@@ -48,7 +48,8 @@ class MockDataTypeWorker : public CommitQueue {
   ~MockDataTypeWorker() override;
 
   // Callback when local changes are received from the processor.
-  void LocalChangesReceived(CommitRequestDataList&& commit_request);
+  void LocalChangesReceived(CommitRequestDataList&& commit_request,
+                            bool has_more_local_changes);
 
   // Implementation for CommitQueue.
   void NudgeForCommit() override;
@@ -56,6 +57,7 @@ class MockDataTypeWorker : public CommitQueue {
   // Getters to inspect the requests sent to this object.
   size_t GetNumPendingCommits() const;
   std::vector<const CommitRequestData*> GetNthPendingCommit(size_t n) const;
+  std::vector<const CommitRequestData*> WaitForPendingCommits();
   bool HasPendingCommitForHash(const ClientTagHash& tag_hash) const;
   const CommitRequestData* GetLatestPendingCommitForHash(
       const ClientTagHash& tag_hash) const;

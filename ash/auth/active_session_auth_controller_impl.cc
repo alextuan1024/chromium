@@ -19,6 +19,7 @@
 #include "ash/shell.h"
 #include "ash/strings/grit/ash_strings.h"
 #include "base/check.h"
+#include "base/check_deref.h"
 #include "base/check_op.h"
 #include "base/functional/bind.h"
 #include "base/i18n/time_formatting.h"
@@ -150,7 +151,9 @@ class ActiveSessionAuthControllerImpl::FingerprintAuthTracker {
 
   void OnAnimationFinished() {
     VLOG(1) << "OnAnimationFinished";
-    CHECK_EQ(animation_finished_, false);
+    if (animation_finished_) {
+      return;
+    }
     animation_finished_ = true;
     MaybeNotifyOwner();
   }
@@ -270,9 +273,9 @@ bool ActiveSessionAuthControllerImpl::ShowAuthDialog(
   fingerprint_animation_finished_ = false;
   fingerprint_authentication_finished_ = false;
 
-  user_manager::User* active_user =
-      user_manager::UserManager::Get()->GetActiveUser();
-  auto user_context = std::make_unique<UserContext>(*active_user);
+  const user_manager::User& user =
+      CHECK_DEREF(user_manager::UserManager::Get()->FindUser(account_id_));
+  auto user_context = std::make_unique<UserContext>(user);
 
   const bool ephemeral =
       user_manager::UserManager::Get()->IsUserCryptohomeDataEphemeral(
@@ -566,14 +569,17 @@ void ActiveSessionAuthControllerImpl::OnSessionStateChanged(
     case ActiveSessionAuthState::kInitialized:
       StartClose();
       return;
+    case ActiveSessionAuthState::kFingerprintAuthSucceeded:
+      CHECK(fp_auth_tracker_);
+      fp_auth_tracker_->OnAnimationFinished();
+      return;
     case ActiveSessionAuthState::kPasswordAuthStarted:
     case ActiveSessionAuthState::kPinAuthStarted:
+    case ActiveSessionAuthState::kFingerprintAuthSucceededWaiting:
       SetState(ActiveSessionAuthState::kCloseRequested);
       return;
     case ActiveSessionAuthState::kPasswordAuthSucceeded:
     case ActiveSessionAuthState::kPinAuthSucceeded:
-    case ActiveSessionAuthState::kFingerprintAuthSucceeded:
-    case ActiveSessionAuthState::kFingerprintAuthSucceededWaiting:
     case ActiveSessionAuthState::kCloseRequested:
     case ActiveSessionAuthState::kAuthNotAvailable:
       return;
@@ -726,7 +732,8 @@ void ActiveSessionAuthControllerImpl::SetState(ActiveSessionAuthState state) {
       break;
     case ActiveSessionAuthState::kCloseRequested:
       CHECK(state_ == ActiveSessionAuthState::kPasswordAuthStarted ||
-            state_ == ActiveSessionAuthState::kPinAuthStarted);
+            state_ == ActiveSessionAuthState::kPinAuthStarted ||
+            state_ == ActiveSessionAuthState::kFingerprintAuthSucceededWaiting);
       contents_view_->SetInputEnabled(false);
       break;
     case ActiveSessionAuthState::kAuthNotAvailable:

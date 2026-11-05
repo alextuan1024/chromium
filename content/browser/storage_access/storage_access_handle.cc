@@ -58,7 +58,7 @@ void StorageAccessHandle::Create(
         "an unrestricted frame context.");
     return;
   }
-  new StorageAccessHandle(*host, std::move(receiver));
+  base::MakeSelfDeleting<StorageAccessHandle>(*host, std::move(receiver));
 }
 
 void StorageAccessHandle::BindIndexedDB(
@@ -125,7 +125,6 @@ void StorageAccessHandle::Estimate(EstimateCallback callback) {
           blink::StorageKey::CreateFirstParty(
               render_frame_host().GetStorageKey().origin()),
           /*delete_expired=*/false,
-          base::SequencedTaskRunner::GetCurrentDefault(),
           base::BindOnce(&StorageAccessHandle::EstimateImpl,
                          weak_factory_.GetWeakPtr(), std::move(callback)));
 }
@@ -155,7 +154,7 @@ void StorageAccessHandle::EstimateImpl(
       .GetStoragePartition()
       ->GetQuotaManagerProxy()
       ->GetBucketUsageAndReportedQuota(
-          bucket_info.id, base::SequencedTaskRunner::GetCurrentDefault(),
+          bucket_info.id,
           base::BindOnce(&EstimateImplAfterGetBucketUsageAndQuota,
                          std::move(callback)));
 }
@@ -221,8 +220,9 @@ void StorageAccessHandle::BindSharedWorker(
 
 StorageAccessHandle::StorageAccessHandle(
     RenderFrameHost& host,
-    mojo::PendingReceiver<blink::mojom::StorageAccessHandle> receiver)
-    : DocumentService(host, std::move(receiver)) {}
+    mojo::PendingReceiver<blink::mojom::StorageAccessHandle> receiver,
+    base::SelfDeletingPassKey key)
+    : DocumentService(host, std::move(receiver), key) {}
 
 StorageAccessHandle::~StorageAccessHandle() = default;
 

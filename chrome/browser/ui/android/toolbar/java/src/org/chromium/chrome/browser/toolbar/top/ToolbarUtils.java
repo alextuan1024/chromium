@@ -4,13 +4,14 @@
 package org.chromium.chrome.browser.toolbar.top;
 
 import android.animation.ObjectAnimator;
+import android.view.View;
 
 import androidx.annotation.IntDef;
 
 import org.chromium.build.annotations.NullMarked;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.toolbar.R;
 import org.chromium.ui.interpolators.Interpolators;
+import org.chromium.ui.util.ValueUtils;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
@@ -27,10 +28,6 @@ public class ToolbarUtils {
                 : R.drawable.default_icon_background;
     }
 
-    public static boolean isToolbarTabletResizeRefactorEnabled() {
-        return ChromeFeatureList.sToolbarTabletResizeRefactor.isEnabled();
-    }
-
     public static final @ToolbarComponentId int[] RANKED_TOOLBAR_COMPONENTS =
             new int[] {
                 ToolbarComponentId.PADDING,
@@ -42,14 +39,17 @@ public class ToolbarUtils {
                 ToolbarComponentId.INCOGNITO_INDICATOR,
                 ToolbarComponentId.ADAPTIVE_BUTTON,
                 ToolbarComponentId.SIGNIN_BUTTON,
+                ToolbarComponentId.DOWNLOAD_BUTTON,
                 ToolbarComponentId.RELOAD,
                 ToolbarComponentId.FORWARD,
                 ToolbarComponentId.HOME,
                 ToolbarComponentId.EXTENSIONS_MENU_BUTTON,
                 ToolbarComponentId.EXTENSIONS_REQUEST_ACCESS_BUTTON,
                 ToolbarComponentId.EXTENSION_ACTION_LIST,
-                ToolbarComponentId.GLIC_PINNED_MOVED,
+                ToolbarComponentId.GLIC_ICON,
+                ToolbarComponentId.GLIC_TEXT,
                 ToolbarComponentId.AI_OVERLAY_MICROPHONE_BUTTON,
+                ToolbarComponentId.TTC_BUTTON,
                 ToolbarComponentId.OMNIBOX_BOOKMARK,
                 ToolbarComponentId.OMNIBOX_CHIP_COLLAPSED,
                 ToolbarComponentId.OMNIBOX_ZOOM,
@@ -89,12 +89,15 @@ public class ToolbarUtils {
         ToolbarComponentId.EXTENSIONS_MENU_BUTTON,
         ToolbarComponentId.EXTENSIONS_REQUEST_ACCESS_BUTTON,
         ToolbarComponentId.EXTENSION_ACTION_LIST,
-        ToolbarComponentId.GLIC_PINNED_MOVED,
+        ToolbarComponentId.GLIC_ICON,
+        ToolbarComponentId.GLIC_TEXT,
         ToolbarComponentId.TAB_SWITCHER,
         ToolbarComponentId.MENU,
         ToolbarComponentId.PADDING,
         ToolbarComponentId.SIGNIN_BUTTON,
+        ToolbarComponentId.DOWNLOAD_BUTTON,
         ToolbarComponentId.AI_OVERLAY_MICROPHONE_BUTTON,
+        ToolbarComponentId.TTC_BUTTON,
         ToolbarComponentId.COUNT
     })
     @Retention(RetentionPolicy.SOURCE)
@@ -121,9 +124,12 @@ public class ToolbarUtils {
         int PADDING = 19;
         int SIGNIN_BUTTON = 20;
         int EXTENSIONS_REQUEST_ACCESS_BUTTON = 21;
-        int GLIC_PINNED_MOVED = 22;
-        int AI_OVERLAY_MICROPHONE_BUTTON = 23;
-        int COUNT = 24;
+        int GLIC_ICON = 22;
+        int GLIC_TEXT = 23;
+        int AI_OVERLAY_MICROPHONE_BUTTON = 24;
+        int DOWNLOAD_BUTTON = 25;
+        int TTC_BUTTON = 26;
+        int COUNT = 27;
     }
 
     // LINT.ThenChange(//chrome/browser/ui/android/toolbar/java/res/layout/toolbar_tablet.xml:toolbar_tablet_components|//chrome/browser/ui/android/omnibox/java/res/layout/url_action_container.xml:toolbar_tablet_components)
@@ -147,5 +153,16 @@ public class ToolbarUtils {
         objectAnimator.setInterpolator(Interpolators.FAST_OUT_LINEAR_IN_INTERPOLATOR);
         objectAnimator.setDuration(ICON_FADE_ANIMATION_DURATION_MS);
         return objectAnimator;
+    }
+
+    /**
+     * Applies or clears the disabled alpha on {@code view} to visually indicate an unfocused or
+     * dimmed state without changing view enablement.
+     */
+    public static void setViewDimmed(View view, boolean isDimmed) {
+        float disabledAlpha =
+                ValueUtils.getFloat(
+                        view.getResources(), org.chromium.ui.R.dimen.default_disabled_alpha);
+        view.setAlpha(isDimmed ? disabledAlpha : 1.0f);
     }
 }

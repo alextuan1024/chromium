@@ -5,8 +5,6 @@
 #ifndef CHROME_BROWSER_GLIC_HOST_GLIC_WEB_CONTENTS_MANAGER_H_
 #define CHROME_BROWSER_GLIC_HOST_GLIC_WEB_CONTENTS_MANAGER_H_
 
-#include <memory>
-
 #include "base/callback_list.h"
 #include "base/functional/callback.h"
 #include "chrome/browser/glic/glic_enums.h"
@@ -20,6 +18,7 @@ class WebContents;
 namespace glic {
 class Host;
 class GlicWebClientManager;
+class ScopedModalDialogManagerDelegate;
 
 // Abstract interface managing the lifecycle, presentation, and client routing
 // of the WebContents backing a Glic panel instance.
@@ -35,12 +34,17 @@ class GlicWebContentsManager {
  public:
   using WebContentsChangedCallback =
       base::RepeatingCallback<void(content::WebContents*)>;
+  using NativeLoadingChangedCallback = base::RepeatingCallback<void(bool)>;
 
   virtual ~GlicWebContentsManager() = default;
 
   // Attaches this manager's WebContents to the provided Host. This must be
   // called exactly once when the manager is connected to a live panel host.
   virtual void AttachToHost(Host* host) = 0;
+
+  // Attaches `delegate` to all WebContents managed by this manager.
+  virtual void AttachModalDialogManagerDelegate(
+      ScopedModalDialogManagerDelegate& delegate) = 0;
 
   // Sets the visibility state of the managed WebContents.
   virtual void SetVisibility(content::Visibility visibility) = 0;
@@ -50,9 +54,31 @@ class GlicWebContentsManager {
   // loading/error overlay).
   //
   // Returns nullptr when no WebContents is currently active for display (i.e.
-  // while warming in the background pool, or when attached to a host but
-  // hidden). Once about to be shown or showing, this is guaranteed non-null.
+  // while warming in the background pool, when attached to a host but hidden,
+  // or while presenting the native loading placeholder).
   virtual content::WebContents* active_web_contents() const = 0;
+
+  // Returns whether the manager is currently presenting the native loading
+  // placeholder instead of an active `WebContents`.
+  virtual bool IsShowingNativeLoading() const;
+
+  // Registers a callback invoked whenever `IsShowingNativeLoading()` changes.
+  virtual base::CallbackListSubscription RegisterNativeLoadingChangedCallback(
+      NativeLoadingChangedCallback callback);
+
+  // Notifies the manager when `Host::IsShowingNativeLoading()` changes so it
+  // can synchronize `active_web_contents()` and guest mount state.
+  virtual void OnHostNativeLoadingChanged(bool is_showing);
+
+  // Returns the WebUI WebContents owned by this manager (e.g. `chrome://glic`
+  // in `<webview>` mode, or `chrome://glic/overlay` while allocated in
+  // NoWebview mode), or nullptr if no WebUI WebContents currently exists.
+  // Unlike `active_web_contents()`, never returns the guest WebContents.
+  virtual content::WebContents* webui_contents() const = 0;
+
+  // Returns the WebClient (guest) WebContents, or nullptr if none exists (e.g.
+  // before the guest is attached in WebUI mode).
+  virtual content::WebContents* guest_contents() const = 0;
 
   // Notifies the manager when actuation state changes.
   virtual void OnActuatingChanged(bool actuating) = 0;
@@ -78,9 +104,25 @@ class GlicWebContentsManager {
   // to the user rather than reloaded.
   virtual bool ShouldReloadOnShow() const = 0;
 
+  // Returns true if the manager or any of its managed WebContents has crashed
+  // (e.g. its renderer process terminated abnormally).
+  virtual bool IsCrashed() const = 0;
+
   // Performs a zoom action (ZoomIn, ZoomOut, Reset) on the managed guest
   // contents.
   virtual void Zoom(mojom::ZoomAction zoom_action, ZoomSource source) {}
+
+  // Waits for the client load to finish, or runs `callback` immediately if
+  // loading has already succeeded or failed.
+  virtual void WaitForLoad(base::OnceCallback<void(bool failed)> callback) = 0;
+
+  // Registers a callback invoked if the manager encounters an error requiring
+  // reload (i.e. ShouldReloadOnShow() becomes true). Used by the warming pool
+  // to discard failed background containers immediately.
+  //
+  // If ShouldReloadOnShow() is already true when this method is called, the
+  // callback is scheduled asynchronously via PostTask to avoid reentrancy.
+  virtual void SetErrorCallback(base::RepeatingClosure callback) {}
 };
 
 }  // namespace glic

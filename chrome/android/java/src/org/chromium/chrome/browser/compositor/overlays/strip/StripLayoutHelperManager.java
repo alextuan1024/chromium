@@ -28,10 +28,15 @@ import android.view.animation.Interpolator;
 import androidx.annotation.ColorInt;
 import androidx.annotation.VisibleForTesting;
 
+import org.jni_zero.JniPtr;
+
 import org.chromium.base.Callback;
 import org.chromium.base.DeviceInfo;
 import org.chromium.base.Log;
 import org.chromium.base.MathUtils;
+import org.chromium.base.TimeUtils;
+import org.chromium.base.TraceEvent;
+import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.base.metrics.RecordUserAction;
 import org.chromium.base.supplier.MonotonicObservableSupplier;
 import org.chromium.base.supplier.NonNullObservableSupplier;
@@ -63,7 +68,7 @@ import org.chromium.chrome.browser.compositor.overlays.strip.reorder.TabStripDra
 import org.chromium.chrome.browser.compositor.scene_layer.TabStripSceneLayer;
 import org.chromium.chrome.browser.data_sharing.DataSharingTabManager;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
-import org.chromium.chrome.browser.glic.GlicButtonDelegate;
+import org.chromium.chrome.browser.glic.toolbar_button.GlicButtonDelegate;
 import org.chromium.chrome.browser.layouts.EventFilter;
 import org.chromium.chrome.browser.layouts.LayoutStateProvider.LayoutStateObserver;
 import org.chromium.chrome.browser.layouts.LayoutType;
@@ -83,13 +88,13 @@ import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.share.ShareDelegate;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.Tab.LoadUrlResult;
-import org.chromium.chrome.browser.tab.TabClosingSource;
 import org.chromium.chrome.browser.tab.TabCreationState;
 import org.chromium.chrome.browser.tab.TabLaunchType;
 import org.chromium.chrome.browser.tab.TabObscuringHandler;
 import org.chromium.chrome.browser.tab.TabSelectionType;
 import org.chromium.chrome.browser.tab_ui.ActionConfirmationManager;
 import org.chromium.chrome.browser.tab_ui.TabContentManager;
+import org.chromium.chrome.browser.tabmodel.TabClosingSource;
 import org.chromium.chrome.browser.tabmodel.TabCreatorManager;
 import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.browser.tabmodel.TabModelObserver;
@@ -99,9 +104,13 @@ import org.chromium.chrome.browser.tabmodel.TabModelSelectorTabModelObserver;
 import org.chromium.chrome.browser.tabmodel.TabModelSelectorTabObserver;
 import org.chromium.chrome.browser.tabstrip.StripVisibilityState;
 import org.chromium.chrome.browser.tabstrip.TabStripSceneLayerHolder;
+import org.chromium.chrome.browser.tabwindow.TabWindowManager;
+import org.chromium.chrome.browser.tasks.tab_management.TabGroupHoverCardPresenter;
+import org.chromium.chrome.browser.tasks.tab_management.TabGroupHoverCardView;
 import org.chromium.chrome.browser.tasks.tab_management.TabGroupListBottomSheetCoordinator;
 import org.chromium.chrome.browser.tasks.tab_management.TabHoverCardView;
 import org.chromium.chrome.browser.tasks.tab_management.TabUiThemeUtil;
+import org.chromium.chrome.browser.toolbar.ControlContainer;
 import org.chromium.chrome.browser.toolbar.ToolbarFeatures;
 import org.chromium.chrome.browser.toolbar.ToolbarManager;
 import org.chromium.chrome.browser.ui.browser_window.ChromeAndroidTaskTrackerFactory;
@@ -113,6 +122,8 @@ import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
 import org.chromium.components.browser_ui.desktop_windowing.AppHeaderState;
 import org.chromium.components.browser_ui.desktop_windowing.DesktopWindowStateManager;
 import org.chromium.components.browser_ui.desktop_windowing.DesktopWindowStateManager.AppHeaderObserver;
+import org.chromium.components.browser_ui.widget.MenuOrKeyboardActionController;
+import org.chromium.components.browser_ui.widget.MenuOrKeyboardActionController.MenuOrKeyboardActionHandler;
 import org.chromium.components.browser_ui.widget.gesture.BackPressHandler;
 import org.chromium.components.tabs.TabAlert;
 import org.chromium.content_public.browser.LoadUrlParams;
@@ -144,7 +155,8 @@ public class StripLayoutHelperManager
                 TopResumedActivityChangedObserver,
                 AppHeaderObserver,
                 TabObscuringHandler.Observer,
-                MultiWindowModeObserver {
+                MultiWindowModeObserver,
+                MenuOrKeyboardActionHandler {
     /**
      * POD type that contains the necessary tab model info on startup. Used in the startup flicker
      * fix experiment where we create a placeholder tab strip on startup to mitigate jank as tabs
@@ -204,6 +216,8 @@ public class StripLayoutHelperManager
     private final LayoutUpdateHost mUpdateHost;
     private final LayoutRenderHost mRenderHost;
     private final TabObscuringHandler mTabObscuringHandler;
+    private final MenuOrKeyboardActionController mMenuOrKeyboardActionController;
+    private final long mActivityCreationUptimeMs;
     private @Nullable ResourceManager mResourceManager;
 
     // Event Filters
@@ -226,7 +240,7 @@ public class StripLayoutHelperManager
     private float mTopPadding; // in dp units
     private final float mDensity;
     private int mOrientation;
-    private final StripLayoutTrailingButtonsCoordinator mTrailingButtonsCoordinator;
+    private StripLayoutTrailingButtonsCoordinator mTrailingButtonsCoordinator;
     private final Context mContext;
     private float mStripTransitionScrimOpacity;
     private @Nullable Animator mFadeTransitionAnimator;
@@ -241,12 +255,15 @@ public class StripLayoutHelperManager
     private final TabSwitcherLayoutObserver mTabSwitcherLayoutObserver;
     private @Nullable Runnable mFadeTransitionThresholdChangedCallback;
     private final View mControlContainer;
+    // Non-null only when the WebUI new tab button is enabled.
+    private @Nullable NtbWebUiCoordinator mNtbWebUiCoordinator;
     private final ViewStub mTabHoverCardViewStub;
+    private final ViewStub mTabGroupHoverCardViewStub;
     private float mLastVisibleViewportOffsetY;
     private @Nullable OmniboxStub mOmniboxStub;
     private final Callback<String> mUrlTextChangeListener =
             (ignored) -> {
-                getActiveStripLayoutHelper().clearTabHoverState();
+                getActiveStripLayoutHelper().clearHoverState();
             };
     private float mSceneLayerYOffset;
     private float mSceneLayerVisibleHeight; // Used during height transition.
@@ -317,6 +334,7 @@ public class StripLayoutHelperManager
 
         @Override
         public void click(float x, float y, int buttons, int modifiers) {
+            // Keep getClickedViewForTesting() in sync.
             if (DragDropGlobalState.hasValue()) {
                 return;
             }
@@ -357,9 +375,12 @@ public class StripLayoutHelperManager
                 return;
             }
 
-            // Inflate the hover card ViewStub if not already inflated.
+            // Inflate the hover card ViewStubs if not already inflated.
             if (mTabHoverCardViewStub.getParent() != null) {
                 mTabHoverCardViewStub.inflate();
+            }
+            if (mTabGroupHoverCardViewStub.getParent() != null) {
+                mTabGroupHoverCardViewStub.inflate();
             }
 
             // Run whichever coordinator is losing hover before the one gaining hover so that
@@ -442,9 +463,7 @@ public class StripLayoutHelperManager
         }
     }
 
-    /**
-     * @return Returns layout observer for tab switcher.
-     */
+    /** Returns layout observer for tab switcher. */
     public LayoutStateObserver getTabSwitcherObserver() {
         return mTabSwitcherLayoutObserver;
     }
@@ -466,6 +485,7 @@ public class StripLayoutHelperManager
      *     tab drag and drop.
      * @param controlContainerView View passed to {@link TabStripDragHandler} for drag and drop.
      * @param tabHoverCardViewStub The ViewStub representing the strip tab hover card.
+     * @param tabGroupHoverCardViewStub The ViewStub representing the strip tab group hover card.
      * @param tabContentManagerSupplier Supplier of the manager providing tab thumbnail snapshots.
      * @param browserControlsStateProvider BrowserControlsStateProvider for drag drop.
      * @param windowAndroid The {@link WindowAndroid} instance to access Activity.
@@ -487,6 +507,11 @@ public class StripLayoutHelperManager
      * @param sideUiStateProviderSupplier Supplier of the {@link SideUiStateProvider}.
      * @param tabObscuringHandler The {@link TabObscuringHandler} to manage tab obscuring.
      * @param canActivateTabLayoutToggleMenuSupplier Whether the tab layout toggle menu can open.
+     * @param menuOrKeyboardActionController The {@link MenuOrKeyboardActionController} for
+     *     registering menu or keyboard action handlers.
+     * @param activityCreationUptimeMs The {@link SystemClock#uptimeMillis()} timestamp when the
+     *     hosting activity was created, or 0 if unavailable.
+     * @param tabWindowManagerSupplier Supplier for the {@link TabWindowManager}.
      */
     // TODO(crbug.com/484116872): Suppressing to observe SharedPreferences, which is discouraged;
     // should use another messaging channel instead.
@@ -503,6 +528,7 @@ public class StripLayoutHelperManager
             DragAndDropDelegate dragDropDelegate,
             View controlContainerView,
             ViewStub tabHoverCardViewStub,
+            ViewStub tabGroupHoverCardViewStub,
             MonotonicObservableSupplier<TabContentManager> tabContentManagerSupplier,
             BrowserControlsStateProvider browserControlsStateProvider,
             ActivityWindowAndroid windowAndroid,
@@ -524,7 +550,10 @@ public class StripLayoutHelperManager
             LeadingButtonDelegate leadingButtonDelegate,
             OneshotSupplier<SideUiStateProvider> sideUiStateProviderSupplier,
             TabObscuringHandler tabObscuringHandler,
-            @Nullable BooleanSupplier canActivateTabLayoutToggleMenuSupplier) {
+            @Nullable BooleanSupplier canActivateTabLayoutToggleMenuSupplier,
+            MenuOrKeyboardActionController menuOrKeyboardActionController,
+            long activityCreationUptimeMs,
+            Supplier<TabWindowManager> tabWindowManagerSupplier) {
         mContext = context;
         mWindowAndroid = windowAndroid;
         Resources res = context.getResources();
@@ -534,7 +563,8 @@ public class StripLayoutHelperManager
 
         mLayerTitleCacheSupplier = layerTitleCacheSupplier;
         mDensity = res.getDisplayMetrics().density;
-        mTabStripTreeProvider = new TabStripSceneLayer(mDensity);
+        mActivityCreationUptimeMs = activityCreationUptimeMs;
+        mTabStripTreeProvider = new TabStripSceneLayer(mDensity, mActivityCreationUptimeMs);
         if (UiAndroidFeatureList.sConnectedDisplayDensityDebugLogs.isEnabled()) {
             Log.i(
                     TAG,
@@ -546,6 +576,8 @@ public class StripLayoutHelperManager
         mTabSwitcherLayoutObserver = new TabSwitcherLayoutObserver();
         mLifecycleDispatcher = lifecycleDispatcher;
         mLifecycleDispatcher.register(this);
+        mMenuOrKeyboardActionController = menuOrKeyboardActionController;
+        mMenuOrKeyboardActionController.registerMenuOrKeyboardActionHandler(this);
         mBrowserControlsStateProvider = browserControlsStateProvider;
         mDefaultTitle = context.getString(R.string.tab_loading_default_title);
         mControlContainer = controlContainerView;
@@ -594,6 +626,7 @@ public class StripLayoutHelperManager
         }
         mStripVisibilityStateObserver =
                 state -> {
+                    updateNtbWebUiInteractive();
                     if (mEventFilter == null) return;
                     // Consume motion events only on a visible strip.
                     mEventFilter.setEventArea(
@@ -650,6 +683,7 @@ public class StripLayoutHelperManager
                         this::updateHelperEndMargins);
 
         mTabHoverCardViewStub = tabHoverCardViewStub;
+        mTabGroupHoverCardViewStub = tabGroupHoverCardViewStub;
 
         if (MultiWindowUtils.isMultiInstanceApi31Enabled()) {
             mTabStripDragHandler =
@@ -660,12 +694,12 @@ public class StripLayoutHelperManager
                                     getStripVisibilityStateSupplier().get()
                                             == StripVisibilityState.VISIBLE,
                             tabContentManagerSupplier,
-                            mLayerTitleCacheSupplier,
                             multiInstanceManager,
                             dragDropDelegate,
                             browserControlsStateProvider,
                             () -> windowAndroid.getActivity().get(),
-                            toolbarManager.getTabStripHeightSupplier());
+                            toolbarManager.getTabStripHeightSupplier(),
+                            tabWindowManagerSupplier);
 
             backPressManager.addHandler(
                     mTabStripDragHandler, BackPressHandler.Type.CANCEL_TAB_STRIP_DRAG);
@@ -687,8 +721,11 @@ public class StripLayoutHelperManager
                     }
 
                     @Override
-                    public void fadeCompositorButtons(boolean fade) {
-                        mTrailingButtonsCoordinator.fadeCompositorButtons(fade);
+                    public void fadeCompositorButtons(boolean visible) {
+                        mTrailingButtonsCoordinator.fadeCompositorButtons(visible);
+                        if (mNtbWebUiCoordinator != null) {
+                            mNtbWebUiCoordinator.setButtonVisible(visible);
+                        }
                     }
 
                     @Override
@@ -768,6 +805,14 @@ public class StripLayoutHelperManager
                     mNormalHelper.setTabHoverCardView(hoverCardView);
                     mIncognitoHelper.setTabHoverCardView(hoverCardView);
                 });
+        tabGroupHoverCardViewStub.setOnInflateListener(
+                (viewStub, view) -> {
+                    var hoverCardView = (TabGroupHoverCardView) view;
+                    var hoverCardPresenter =
+                            new TabGroupHoverCardPresenter(assumeNonNull(mTabModelSelector));
+                    mNormalHelper.setTabGroupHoverCardView(hoverCardView, hoverCardPresenter);
+                    mIncognitoHelper.setTabGroupHoverCardView(hoverCardView, hoverCardPresenter);
+                });
 
         if (tabModelStartupInfoSupplier != null) {
             var tabModelStartupInfo = tabModelStartupInfoSupplier.get();
@@ -841,12 +886,17 @@ public class StripLayoutHelperManager
             mOmniboxStub = null;
         }
         mTabObscuringHandler.removeObserver(this);
+        if (mNtbWebUiCoordinator != null) {
+            mNtbWebUiCoordinator.destroy();
+            mNtbWebUiCoordinator = null;
+        }
         if (mTabStripTreeProvider != null) {
             mTabStripTreeProvider.destroy();
             mTabStripTreeProvider = null;
         }
         mTrailingButtonsCoordinator.destroy();
         mLifecycleDispatcher.unregister(this);
+        mMenuOrKeyboardActionController.unregisterMenuOrKeyboardActionHandler(this);
         mBrowserControlsStateProvider.removeObserver(mBrowserControlsObserver);
         // Remove the observer to prevent any updates on a destroyed EventFilter.
         mStripVisibilityStateSupplier.removeObserver(mStripVisibilityStateObserver);
@@ -936,27 +986,26 @@ public class StripLayoutHelperManager
     @Override
     public SceneOverlayLayer getUpdatedSceneOverlayTree(
             RectF viewport, RectF visibleViewport, ResourceManager resourceManager) {
-        assert mTabStripTreeProvider != null;
-        mResourceManager = resourceManager;
+        try (TraceEvent e =
+                TraceEvent.scoped("StripLayoutHelperManager.getUpdatedSceneOverlayTree")) {
+            assert mTabStripTreeProvider != null;
+            mResourceManager = resourceManager;
 
-        pushAndUpdateStrip(mSceneLayerYOffset, mSceneLayerVisibleHeight);
-        return mTabStripTreeProvider;
+            pushAndUpdateStrip(mSceneLayerYOffset, mSceneLayerVisibleHeight);
+            return mTabStripTreeProvider;
+        }
     }
 
     private void pushAndUpdateStrip(float yOffsetDp, float visibleHeightDp) {
         if (mResourceManager == null) return;
 
-        Tab selectedTab =
+        Tab activeTab =
                 mTabModelSelector == null
                         ? null
                         : mTabModelSelector
                                 .getCurrentModel()
                                 .getTabAt(mTabModelSelector.getCurrentModel().index());
-        int selectedTabId = selectedTab == null ? TabModel.INVALID_TAB_INDEX : selectedTab.getId();
-        int hoveredTabId =
-                getActiveStripLayoutHelper().getLastHoveredTab() == null
-                        ? TabModel.INVALID_TAB_INDEX
-                        : getActiveStripLayoutHelper().getLastHoveredTab().getTabId();
+        int activeTabId = activeTab == null ? TabModel.INVALID_TAB_INDEX : activeTab.getId();
 
         // When tab strip is hiding, animation will trigger the toolbar moving up and tab strip
         // fade-out in place. We use the visible height to decide the transition progress then
@@ -977,13 +1026,62 @@ public class StripLayoutHelperManager
                 getActiveStripLayoutHelper().getStripLayoutTabsToRender(),
                 getActiveStripLayoutHelper().getStripLayoutGroupTitlesToRender(),
                 yOffsetDp,
-                selectedTabId,
-                hoveredTabId,
+                activeTabId,
                 getStripTransitionScrimColor(),
                 mStripTransitionScrimOpacity,
                 getActiveStripLayoutHelper().getLeftPaddingToDraw(),
                 getActiveStripLayoutHelper().getRightPaddingToDraw(),
                 mTopPadding);
+        maybeUpdateNtbWebUiBounds();
+    }
+
+    private void maybeCreateNtbWebUiCoordinator() {
+        if (mNtbWebUiCoordinator != null || mTabModelSelector == null) return;
+        if (!NtbWebUiCoordinator.isEnabled()) return;
+        assert mControlContainer instanceof ControlContainer;
+        TabModel tabModel = mTabModelSelector.getCurrentModel();
+        // The active model (and its delegate for incognito windows) is already initialized by
+        // TabModelSelectorImpl#onNativeLibraryReady before #setTabModelSelector is called.
+        assert tabModel.getProfile() != null;
+        mNtbWebUiCoordinator =
+                NtbWebUiCoordinator.create(
+                        mWindowAndroid,
+                        tabModel,
+                        (ControlContainer) mControlContainer,
+                        mActivityCreationUptimeMs);
+    }
+
+    @Nullable NtbWebUiCoordinator getNtbWebUiCoordinatorForTesting() {
+        return mNtbWebUiCoordinator;
+    }
+
+    private void maybeUpdateNtbWebUiBounds() {
+        if (mNtbWebUiCoordinator == null) return;
+        // The WebUI new tab button's position and size are decided natively by
+        // StripLayoutHelperManager, mirroring the touch target of the native new tab button.
+        RectF touchTarget = getNewTabButton().getTouchTargetBounds();
+        mNtbWebUiCoordinator.updateBounds(
+                touchTarget.left,
+                touchTarget.top,
+                touchTarget.width(),
+                touchTarget.height(),
+                mHeight);
+    }
+
+    private void updateNtbWebUiInteractive() {
+        if (mNtbWebUiCoordinator == null) return;
+        // Mirror the native strip's event area, which only consumes events while the strip is
+        // visible.
+        mNtbWebUiCoordinator.setStripInteractive(
+                mStripVisibilityStateSupplier.get() == StripVisibilityState.VISIBLE);
+    }
+
+    /**
+     * Returns the pointer to the native TabStripNtbWebUiHost if the WebUI new tab button is in use,
+     * or null otherwise.
+     */
+    public @Nullable JniPtr<NtbWebUiCoordinator.NativeTabStripNtbWebUiHost> getNtbWebUiNativePtr() {
+        return mNtbWebUiCoordinator == null ? null : mNtbWebUiCoordinator.getNativePtr();
     }
 
     @Override
@@ -1305,15 +1403,29 @@ public class StripLayoutHelperManager
         return getActiveStripLayoutHelper().shouldShowTabOutline(tab);
     }
 
-    /**
-     * @return The touch target offset to be applied to the new tab button.
-     */
+    /** Returns the touch target offset to be applied to the new tab button. */
     public float getNewTabBtnVisualOffset() {
         return getActiveStripLayoutHelper().getNewTabButtonVisualOffset();
     }
 
     public @Nullable TintedCompositorButton getModelSelectorButton() {
         return mTrailingButtonsCoordinator.getModelSelectorButton();
+    }
+
+    /**
+     * Returns the view that a touch click at ({@code x}, {@code y}) would reach, without clicking,
+     * or null if the click would reach nothing or a trailing button other than the model selector.
+     * Same order as TabStripEventHandler#click(), so tests can check that a target is clickable
+     * before simulating a click.
+     */
+    public @Nullable StripLayoutView getClickedViewForTesting(float x, float y) {
+        if (DragDropGlobalState.hasValue()) return null;
+        TintedCompositorButton modelSelectorButton = getModelSelectorButton();
+        if (modelSelectorButton != null && modelSelectorButton.checkClickedOrHovered(x, y)) {
+            return modelSelectorButton;
+        }
+        if (mTrailingButtonsCoordinator.checkClickedOrHovered(x, y)) return null;
+        return getActiveStripLayoutHelper().getClickedViewForTesting(x, y);
     }
 
     @Override
@@ -1423,16 +1535,12 @@ public class StripLayoutHelperManager
         mControlContainer.setSystemGestureExclusionRects(rects);
     }
 
-    /**
-     * @return The opacity to use for the fade on the left side of the tab strip.
-     */
+    /** Returns the opacity to use for the fade on the left side of the tab strip. */
     public float getLeftFadeOpacity() {
         return getActiveStripLayoutHelper().getLeftFadeOpacity();
     }
 
-    /**
-     * @return The opacity to use for the fade on the right side of the tab strip.
-     */
+    /** Returns the opacity to use for the fade on the right side of the tab strip. */
     public float getRightFadeOpacity() {
         return getActiveStripLayoutHelper().getRightFadeOpacity();
     }
@@ -1501,11 +1609,37 @@ public class StripLayoutHelperManager
                             @TabCreationState int creationState,
                             boolean markedForSelection) {
                         updateTitleForTab(tab);
+                        if (launchType == TabLaunchType.FROM_CHROME_UI) {
+                            Long interactionStartTimeMs =
+                                    mNtbWebUiCoordinator != null
+                                            ? mNtbWebUiCoordinator.takeLastInteractionTimeMs()
+                                            : getActiveStripLayoutHelper()
+                                                    .takeLastNtbInteractionTimeMs();
+                            if (interactionStartTimeMs != null) {
+                                long durationMs = TimeUtils.uptimeMillis() - interactionStartTimeMs;
+                                if (durationMs >= 0) {
+                                    RecordHistogram.recordTimesHistogram(
+                                            "Android.TabStrip.NewTabButton.InteractionToNewTab",
+                                            durationMs);
+                                }
+                            }
+                        }
                     }
                 };
         modelSelector.addObserverToAllModels(mTabModelObserver);
 
         mTabModelSelector = modelSelector;
+
+        // Create the WebUI as early as possible so that the renderer launch and page load
+        // overlap with the rest of the tab strip initialization.
+        maybeCreateNtbWebUiCoordinator();
+
+        if (getNtbWebUiNativePtr() == null) {
+            // The current model (and its Profile) is already initialized by
+            // TabModelSelectorImpl#onNativeLibraryReady before #setTabModelSelector is called.
+            mTabStripTreeProvider.setProfile(
+                    assertNonNull(mTabModelSelector.getCurrentModel().getProfile()));
+        }
 
         updateTitleCacheForInit();
 
@@ -1544,16 +1678,9 @@ public class StripLayoutHelperManager
 
         mTabModelSelectorTabModelObserver =
                 new TabModelSelectorTabModelObserver(modelSelector) {
-                    /**
-                     * @return The actual current time of the app in ms.
-                     */
+                    /** Returns the actual current time of the app in ms. */
                     public long time() {
                         return SystemClock.uptimeMillis();
-                    }
-
-                    @Override
-                    public void willCloseTab(Tab tab, boolean didCloseAlone) {
-                        getStripLayoutHelper(tab.isIncognitoBranded()).willCloseTab(tab);
                     }
 
                     @Override
@@ -1564,13 +1691,8 @@ public class StripLayoutHelperManager
 
                     @Override
                     public void didMoveTab(Tab tab, int newIndex, int curIndex) {
-                        // For right-direction move, layout helper re-ordering logic
-                        // expects destination index = position + 1
                         getStripLayoutHelper(tab.isIncognitoBranded())
-                                .tabMoved(
-                                        tab.getId(),
-                                        curIndex,
-                                        newIndex > curIndex ? newIndex + 1 : newIndex);
+                                .tabMoved(tab.getId(), curIndex, newIndex);
                     }
 
                     @Override
@@ -1607,12 +1729,6 @@ public class StripLayoutHelperManager
                     }
 
                     @Override
-                    public void willCloseAllTabs(boolean incognito) {
-                        getStripLayoutHelper(incognito).willCloseAllTabs();
-                        mTrailingButtonsCoordinator.updateTrailingButtons();
-                    }
-
-                    @Override
                     public void willCloseTabs(
                             List<Tab> tabs, boolean isAllTabs, boolean allowUndo) {
                         if (tabs.isEmpty()) return;
@@ -1627,7 +1743,7 @@ public class StripLayoutHelperManager
                     public void didSelectTab(Tab tab, @TabSelectionType int type, int lastId) {
                         if (tab.getId() == lastId) return;
                         getStripLayoutHelper(tab.isIncognitoBranded())
-                                .tabSelected(time(), tab.getId(), lastId, type);
+                                .tabSelected(time(), tab.getId(), lastId);
                     }
 
                     @Override
@@ -1640,6 +1756,15 @@ public class StripLayoutHelperManager
                         getStripLayoutHelper(tab.isIncognitoBranded())
                                 .tabCreated(
                                         time(), tab.getId(), markedForSelection, false, onStartup);
+                        // When all tabs are closed, trailing buttons like Glic are hidden because
+                        // side UI cannot be shown without a current tab. When the first tab is
+                        // added back, update trailing buttons to restore them. On startup, trailing
+                        // buttons are updated in onTabStateInitialized().
+                        if (!onStartup
+                                && mTabModelSelector.getModel(tab.isIncognitoBranded()).getCount()
+                                        == 1) {
+                            mTrailingButtonsCoordinator.updateTrailingButtons();
+                        }
                     }
                 };
 
@@ -1658,7 +1783,9 @@ public class StripLayoutHelperManager
 
                     @Override
                     public void onLoadStarted(Tab tab, boolean toDifferentDocument) {
-                        if (!isSpinnerFixEnabled() && !toDifferentDocument) return;
+                        // Same-document navigations (e.g. pushState/fragment changes) should not
+                        // show a spinner; doing so replaces the favicon and causes it to flash.
+                        if (!toDifferentDocument) return;
                         StripLayoutHelper helper = getStripLayoutHelper(tab.isIncognitoBranded());
                         helper.tabLoadStarted(tab.getId());
                     }
@@ -1831,7 +1958,8 @@ public class StripLayoutHelperManager
         mUpdateHost.requestUpdate();
     }
 
-    private void updateHelperEndMargins() {
+    @VisibleForTesting
+    void updateHelperEndMargins() {
         float trailingButtonsTouchTargetSize =
                 mTrailingButtonsCoordinator.getTrailingButtonsWidthWithPadding();
         mNormalHelper.updateEndMarginForStripButtons(trailingButtonsTouchTargetSize);
@@ -1851,9 +1979,7 @@ public class StripLayoutHelperManager
         return incognito ? mIncognitoHelper : mNormalHelper;
     }
 
-    /**
-     * @return The currently visible strip layout helper.
-     */
+    /** Returns the currently visible strip layout helper. */
     @VisibleForTesting
     public StripLayoutHelper getActiveStripLayoutHelper() {
         return getStripLayoutHelper(mIsIncognito);
@@ -1898,6 +2024,11 @@ public class StripLayoutHelperManager
         mTabStripTreeProvider = tabStripTreeProvider;
     }
 
+    void setTrailingButtonsCoordinatorForTesting(
+            StripLayoutTrailingButtonsCoordinator trailingButtonsCoordinator) {
+        mTrailingButtonsCoordinator = trailingButtonsCoordinator;
+    }
+
     ViewStub getTabHoverCardViewStubForTesting() {
         return mTabHoverCardViewStub;
     }
@@ -1924,19 +2055,26 @@ public class StripLayoutHelperManager
         mManagerHost.requestKeyboardFocus(this);
     }
 
-    /**
-     * @return Whether the tab strip contains keyboard focus.
-     */
+    /** Returns whether the tab strip contains keyboard focus. */
     public boolean containsKeyboardFocus() {
         return mManagerHost.containsKeyboardFocus(this);
     }
 
-    /**
-     * Opens the context menu for the currently keyboard-focused item, if applicable.
-     *
-     * @return Whether the context menu was successfully opened.
-     */
-    public boolean openKeyboardFocusedContextMenu() {
+    @Override
+    public boolean handleMenuOrKeyboardAction(int id, boolean fromMenu) {
+        if (id == R.id.open_tab_strip_context_menu) {
+            return openKeyboardFocusedContextMenu();
+        } else if (id == R.id.reorder_tab_strip_item_left) {
+            return reorderKeyboardFocusedItem(/* toLeft= */ true);
+        } else if (id == R.id.reorder_tab_strip_item_right) {
+            return reorderKeyboardFocusedItem(/* toLeft= */ false);
+        } else if (id == R.id.toggle_tab_strip_multiselect) {
+            return multiselectKeyboardFocusedItem();
+        }
+        return false;
+    }
+
+    private boolean openKeyboardFocusedContextMenu() {
         if (getActiveStripLayoutHelper().openKeyboardFocusedContextMenu()) {
             return true;
         }
@@ -1944,27 +2082,19 @@ public class StripLayoutHelperManager
         return mTrailingButtonsCoordinator.openKeyboardFocusedContextMenu(activity);
     }
 
-    /**
-     * Reorders the currently keyboard-focused item, if applicable.
-     *
-     * @param toLeft Whether the focused item should be reordered to the left (note: this is still
-     *     left in RTL).
-     * @return Whether the item was successfully reordered.
-     */
-    public boolean reorderKeyboardFocusedItem(boolean toLeft) {
+    private boolean reorderKeyboardFocusedItem(boolean toLeft) {
         return getActiveStripLayoutHelper().moveSelectedStripView(toLeft);
     }
 
-    /**
-     * Toggles multiselection on the keyboard focused tab.
-     *
-     * @return Whether the multiselect action was successfully performed.
-     */
-    public boolean multiselectKeyboardFocusedItem() {
+    private boolean multiselectKeyboardFocusedItem() {
         return getActiveStripLayoutHelper().multiselectKeyboardFocusedItem();
     }
 
     private boolean isActivityInXrFullSpaceModeNow() {
         return mXrSpaceModeObservableSupplier != null && mXrSpaceModeObservableSupplier.get();
+    }
+
+    @Nullable TabModelSelectorTabObserver getTabModelSelectorTabObserverForTesting() {
+        return mTabModelSelectorTabObserver;
     }
 }

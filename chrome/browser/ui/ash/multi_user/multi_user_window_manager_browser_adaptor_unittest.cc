@@ -33,11 +33,11 @@
 #include "ash/wm/wm_event.h"
 #include "base/check.h"
 #include "base/compiler_specific.h"
-#include "base/functional/bind.h"
 #include "base/memory/ptr_util.h"
 #include "base/memory/raw_ptr.h"
-#include "base/run_loop.h"
 #include "base/strings/string_util.h"
+#include "base/test/run_until.h"
+#include "base/test/scoped_run_loop_timeout.h"
 #include "base/time/time.h"
 #include "chrome/browser/ash/browser_delegate/browser_controller_impl.h"
 #include "chrome/browser/ash/login/users/scoped_account_id_annotator.h"
@@ -46,19 +46,11 @@
 #include "chrome/browser/ash/settings/device_settings_service.h"
 #include "chrome/browser/ui/ash/new_window/chrome_new_window_client.h"
 #include "chrome/browser/ui/ash/session/session_controller_client_impl.h"
-#include "chrome/browser/ui/ash/session/session_util.h"
-#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
-#include "chrome/browser/ui/browser_window/public/browser_window_interface_iterator.h"
-#include "chrome/browser/ui/browser_window/public/create_browser_window.h"
-#include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/test/base/chrome_ash_test_base.h"
-#include "chrome/test/base/test_browser_window_aura.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile.h"
 #include "chrome/test/base/testing_profile_manager.h"
-#include "chrome/test/base/ui_test_utils.h"
 #include "chromeos/ash/components/browser_context_helper/annotated_account_id.h"
-#include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
 #include "chromeos/ash/components/install_attributes/stub_install_attributes.h"
 #include "chromeos/ash/components/login/session/session_termination_manager.h"
 #include "chromeos/ash/components/settings/cros_settings.h"
@@ -101,43 +93,6 @@ const char kBAccountIdString[] =
 const char kArrowBAccountIdString[] =
     R"(->{"account_type":"google","email":"b","gaia_id":"gaia_b"})";
 
-const content::BrowserContext* GetActiveContext() {
-  const user_manager::UserManager* user_manager =
-      user_manager::UserManager::Get();
-  const user_manager::User* active_user = user_manager->GetActiveUser();
-  if (!active_user) {
-    return nullptr;
-  }
-  return ash::BrowserContextHelper::Get()->GetBrowserContextByUser(active_user);
-}
-
-class TestShellDelegateChromeOS : public ash::TestShellDelegate {
- public:
-  TestShellDelegateChromeOS() = default;
-
-  TestShellDelegateChromeOS(const TestShellDelegateChromeOS&) = delete;
-  TestShellDelegateChromeOS& operator=(const TestShellDelegateChromeOS&) =
-      delete;
-
-  bool CanShowWindowForUser(const aura::Window* window) const override {
-    return ::CanShowWindowForUser(window,
-                                  base::BindRepeating(&GetActiveContext));
-  }
-};
-
-std::unique_ptr<BrowserWindowInterface> CreateTestBrowser(
-    aura::Window* window,
-    const gfx::Rect& bounds,
-    BrowserWindowCreateParams params) {
-  if (!bounds.IsEmpty()) {
-    window->SetBounds(bounds);
-  }
-  std::unique_ptr<BrowserWindowInterface> browser =
-      chrome::CreateBrowserWithAuraTestWindowForParams(base::WrapUnique(window),
-                                                       std::move(params));
-  return browser;
-}
-
 }  // namespace
 
 namespace ash {
@@ -146,7 +101,7 @@ namespace ash {
 // various windows and instantiates the MultiUserWindowManager.
 class MultiUserWindowManagerBrowserAdaptorTest : public ChromeAshTestBase {
  public:
-  MultiUserWindowManagerBrowserAdaptorTest() { set_start_session(false); }
+  MultiUserWindowManagerBrowserAdaptorTest() = default;
 
   MultiUserWindowManagerBrowserAdaptorTest(
       const MultiUserWindowManagerBrowserAdaptorTest&) = delete;
@@ -154,6 +109,7 @@ class MultiUserWindowManagerBrowserAdaptorTest : public ChromeAshTestBase {
       const MultiUserWindowManagerBrowserAdaptorTest&) = delete;
 
   // ChromeAshTestBase:
+  void SetUpInitParams(ash::AshTestHelper::InitParams& init_params) override;
   void SetUp() override;
   void TearDown() override;
   void OnSubsystemsTornDown() override;
@@ -178,12 +134,10 @@ class MultiUserWindowManagerBrowserAdaptorTest : public ChromeAshTestBase {
     CHECK(user_manager_->FindUser(account_id));
     SwitchActiveUser(account_id);
 
-    base::TimeTicks now = base::TimeTicks::Now();
-    while (ash::MultiUserWindowManager::Get()->IsAnimationRunningForTest()) {
-      // This should never take longer then a second.
-      ASSERT_GE(1000, (base::TimeTicks::Now() - now).InMilliseconds());
-      base::RunLoop().RunUntilIdle();
-    }
+    base::test::ScopedRunLoopTimeout timeout(FROM_HERE, base::Seconds(1));
+    ASSERT_TRUE(base::test::RunUntil([] {
+      return !ash::MultiUserWindowManager::Get()->IsAnimationRunningForTest();
+    }));
   }
 
   // Return the window with the given index.
@@ -231,7 +185,9 @@ class MultiUserWindowManagerBrowserAdaptorTest : public ChromeAshTestBase {
         user->GetAccountId(), profile->GetPrefs());
 
     GetSessionControllerClient()->AddUserSession(
-        {user->GetDisplayEmail(), user->GetType()}, user->GetAccountId());
+        {.account_id = user->GetAccountId(),
+         .display_email = user->GetDisplayEmail(),
+         .user_type = user->GetType()});
     GetSessionControllerClient()->SetSessionState(
         session_manager::SessionState::ACTIVE);
 
@@ -362,6 +318,12 @@ class MultiUserWindowManagerBrowserAdaptorTest : public ChromeAshTestBase {
   std::optional<ash::BrowserControllerImpl> browser_controller_;
 };
 
+void MultiUserWindowManagerBrowserAdaptorTest::SetUpInitParams(
+    ash::AshTestHelper::InitParams& init_params) {
+  ChromeAshTestBase::SetUpInitParams(init_params);
+  init_params.users.clear();
+}
+
 void MultiUserWindowManagerBrowserAdaptorTest::SetUp() {
   ash::DeviceSettingsService::Initialize();
   cros_settings_holder_ = std::make_unique<ash::CrosSettingsHolder>(
@@ -374,7 +336,6 @@ void MultiUserWindowManagerBrowserAdaptorTest::SetUp() {
       std::make_unique<user_manager::FakeUserManagerDelegate>(),
       TestingBrowserProcess::GetGlobal()->GetTestingLocalState(),
       ash::CrosSettings::Get()));
-  set_shell_delegate(std::make_unique<TestShellDelegateChromeOS>());
 
   ChromeAshTestBase::SetUp();
   GetSessionControllerClient()->set_pref_service_must_exist(true);
@@ -626,6 +587,55 @@ TEST_F(MultiUserWindowManagerBrowserAdaptorTest, CloseWindowTests) {
                    .is_valid());
   EXPECT_FALSE(
       multi_user_window_manager()->GetWindowOwner(to_be_deleted).is_valid());
+}
+
+// Tests that ShowWindowForCurrentUser() teleports a window to the current
+// user session only if needed, without switching the active user.
+TEST_F(MultiUserWindowManagerBrowserAdaptorTest, ShowWindowForCurrentUser) {
+  AddLoggedInUsers({kAccountIdB, kAccountIdA});
+  SetUpForThisManyWindows(3);
+  ASSERT_EQ(kAccountIdA, multi_user_window_manager()->CurrentAccountId());
+
+  multi_user_window_manager()->SetWindowOwner(window(0), kAccountIdA);
+  multi_user_window_manager()->SetWindowOwner(window(1), kAccountIdB);
+  EXPECT_EQ("S[a], H[b], S[]", GetStatus());
+
+  // A window already shown in the current user session stays as is.
+  multi_user_window_manager()->ShowWindowForCurrentUser(window(0));
+  EXPECT_EQ("S[a], H[b], S[]", GetStatus());
+
+  // A window presented in another user session is teleported to the current
+  // user session, and the active user does not change.
+  multi_user_window_manager()->ShowWindowForCurrentUser(window(1));
+  EXPECT_EQ("S[a], S[b,a], S[]", GetStatus());
+  EXPECT_EQ(kAccountIdA, multi_user_window_manager()->CurrentAccountId());
+
+  // An unowned window is shown in every user session, so nothing changes.
+  multi_user_window_manager()->ShowWindowForCurrentUser(window(2));
+  EXPECT_EQ("S[a], S[b,a], S[]", GetStatus());
+
+  // After switching to B, the teleported window is hidden, and it can be
+  // brought back to B's session.
+  SwitchActiveUser(kAccountIdB);
+  EXPECT_EQ("H[a], H[b,a], S[]", GetStatus());
+  multi_user_window_manager()->ShowWindowForCurrentUser(window(1));
+  EXPECT_EQ("H[a], S[b], S[]", GetStatus());
+  EXPECT_EQ(kAccountIdB, multi_user_window_manager()->CurrentAccountId());
+}
+
+// Tests that ShowWindowForCurrentUser() is a no-op if there is no active user
+// yet.
+TEST_F(MultiUserWindowManagerBrowserAdaptorTest,
+       ShowWindowForCurrentUserWithoutActiveUser) {
+  std::unique_ptr<aura::Window> window = CreateTestWindowInShell({});
+  window->Show();
+  multi_user_window_manager()->SetWindowOwner(window.get(), kAccountIdA);
+  EXPECT_TRUE(window->IsVisible());
+
+  multi_user_window_manager()->ShowWindowForCurrentUser(window.get());
+  EXPECT_TRUE(window->IsVisible());
+  EXPECT_EQ(kAccountIdA,
+            multi_user_window_manager()->GetUserPresentingWindow(window.get()));
 }
 
 TEST_F(MultiUserWindowManagerBrowserAdaptorTest, SharedWindowTests) {
@@ -981,6 +991,31 @@ TEST_F(MultiUserWindowManagerBrowserAdaptorTest, TransientWindows) {
   ::wm::RemoveTransientChild(window(4), window(5));
   ::wm::RemoveTransientChild(window(7), window(8));
   ::wm::RemoveTransientChild(window(7), window(9));
+}
+
+// Tests that destroying a transient window while its owner is hidden by a user
+// switch doesn't try to show the window that is being destroyed.
+TEST_F(MultiUserWindowManagerBrowserAdaptorTest,
+       DeleteTransientWindowWhileOwnerIsHidden) {
+  AddLoggedInUsers({kAccountIdB, kAccountIdA});
+
+  SetUpForThisManyWindows(2);
+  multi_user_window_manager()->SetWindowOwner(window(0), kAccountIdA);
+  ::wm::AddTransientChild(window(0), window(1));
+  EXPECT_EQ("S[a], S[]", GetStatus());
+
+  // Switching to B hides A's window together with its transient child, while
+  // remembering that the transient child should be shown again for A.
+  SwitchActiveUser(kAccountIdB);
+  EXPECT_EQ("H[a], H[]", GetStatus());
+
+  // Destroying the hidden transient child removes it from its transient parent
+  // during its destruction. Its remembered visibility must not be restored.
+  delete_window_at(1);
+  EXPECT_EQ("H[a], D", GetStatus());
+
+  SwitchActiveUser(kAccountIdA);
+  EXPECT_EQ("S[a], D", GetStatus());
 }
 
 // Verifies duplicate observers are not added for transient dialog windows.
@@ -1808,6 +1843,46 @@ TEST_F(MultiUserWindowManagerBrowserAdaptorTest,
   EXPECT_TRUE(::wm::CanActivateWindow(window(1)));
 }
 
+// Tests CanShowWindowForCurrentUser() for owned, teleported and unowned
+// windows.
+TEST_F(MultiUserWindowManagerBrowserAdaptorTest, CanShowWindowForCurrentUser) {
+  AddLoggedInUsers({kAccountIdA, kAccountIdB});
+
+  SetUpForThisManyWindows(3);
+
+  // Window #2 is not owned by any user.
+  multi_user_window_manager()->SetWindowOwner(window(0), kAccountIdA);
+  multi_user_window_manager()->SetWindowOwner(window(1), kAccountIdB);
+
+  SwitchActiveUser(kAccountIdA);
+  EXPECT_TRUE(
+      multi_user_window_manager()->CanShowWindowForCurrentUser(window(0)));
+  EXPECT_FALSE(
+      multi_user_window_manager()->CanShowWindowForCurrentUser(window(1)));
+  EXPECT_TRUE(
+      multi_user_window_manager()->CanShowWindowForCurrentUser(window(2)));
+
+  // Teleport window #1 (owned by user B) to user A's desktop. It can now be
+  // shown for user A, since user A is presenting it.
+  ShowWindowForUserNoUserTransition(window(1), kAccountIdA);
+  EXPECT_TRUE(
+      multi_user_window_manager()->CanShowWindowForCurrentUser(window(0)));
+  EXPECT_TRUE(
+      multi_user_window_manager()->CanShowWindowForCurrentUser(window(1)));
+  EXPECT_TRUE(
+      multi_user_window_manager()->CanShowWindowForCurrentUser(window(2)));
+
+  // For user B, window #0 is neither owned by nor presented to user B. Window
+  // #1 is still owned by user B, even though it is presented to user A.
+  SwitchActiveUser(kAccountIdB);
+  EXPECT_FALSE(
+      multi_user_window_manager()->CanShowWindowForCurrentUser(window(0)));
+  EXPECT_TRUE(
+      multi_user_window_manager()->CanShowWindowForCurrentUser(window(1)));
+  EXPECT_TRUE(
+      multi_user_window_manager()->CanShowWindowForCurrentUser(window(2)));
+}
+
 // Test that teleported window has the kAvatarIconKey window property.
 TEST_F(MultiUserWindowManagerBrowserAdaptorTest,
        TeleportedWindowAvatarProperty) {
@@ -1877,40 +1952,6 @@ TEST_F(MultiUserWindowManagerBrowserAdaptorTest, WindowsOrderPreservedTests) {
   EXPECT_EQ(mru_list[0], window(0));
   EXPECT_EQ(mru_list[1], window(1));
   EXPECT_EQ(mru_list[2], window(2));
-}
-
-// Tests that GlobalBrowserCollection::GetActiveBrowser() works properly in
-// multi-user scenario, that is it should return the browser with active window
-// associated with it (crbug.com/40498682).
-TEST_F(MultiUserWindowManagerBrowserAdaptorTest, GetActiveBrowser) {
-  AddLoggedInUsers({kAccountIdA, kAccountIdB});
-
-  SetUpForThisManyWindows(1);
-
-  SwitchActiveUser(kAccountIdA);
-
-  multi_user_window_manager()->SetWindowOwner(window(0), kAccountIdA);
-  Profile* profile = Profile::FromBrowserContext(
-      ash::BrowserContextHelper::Get()->GetBrowserContextByAccountId(
-          kAccountIdA));
-  BrowserWindowCreateParams params(profile, true);
-  std::unique_ptr<BrowserWindowInterface> browser(
-      CreateTestBrowser(CreateTestWindowInShell({.window_id = 0}).release(),
-                        {16, 32, 640, 320}, std::move(params)));
-  browser->GetWindow()->Activate();
-  // Manually set last active browser in BrowserList for testing.
-  ui_test_utils::DeprecatedFakeActivateBrowser(browser.get());
-  EXPECT_EQ(browser.get(), GetLastActiveBrowserWindowInterfaceWithAnyProfile());
-  EXPECT_TRUE(browser->GetWindow()->IsActive());
-  EXPECT_EQ(browser.get(),
-            GlobalBrowserCollection::GetInstance()->GetActiveBrowser());
-
-  // Switch to another user's desktop with no active window.
-  SwitchActiveUser(kAccountIdB);
-  EXPECT_EQ(browser.get(), GetLastActiveBrowserWindowInterfaceWithAnyProfile());
-  EXPECT_FALSE(browser->GetWindow()->IsActive());
-  EXPECT_EQ(nullptr,
-            GlobalBrowserCollection::GetInstance()->GetActiveBrowser());
 }
 
 // Tests that a window's bounds get restored to their pre tablet mode bounds,

@@ -45,10 +45,7 @@ source_set("common") {
     "logging/stats_event_subscriber.h",
   ]
 
-  configs += [
-    "//build/config/compiler:wexit_time_destructors",
-    "//build/config/compiler:wglobal_constructors",
-  ]
+  configs += [ "//build/config/compiler:wglobal_constructors" ]
 
   deps = [
     "//media",
@@ -81,10 +78,7 @@ source_set("encoding") {
     "encoding/video_encoder.h",
   ]
 
-  configs += [
-    "//build/config/compiler:wexit_time_destructors",
-    "//build/config/compiler:wglobal_constructors",
-  ]
+  configs += [ "//build/config/compiler:wglobal_constructors" ]
 
   public_deps = [
     "//base",
@@ -119,16 +113,11 @@ source_set("sender") {
     "sender/openscreen_frame_sender.h",
     "sender/performance_metrics_overlay.cc",
     "sender/performance_metrics_overlay.h",
-    "sender/video_bitrate_suggester.cc",
-    "sender/video_bitrate_suggester.h",
     "sender/video_sender.cc",
     "sender/video_sender.h",
   ]
 
-  configs += [
-    "//build/config/compiler:wexit_time_destructors",
-    "//build/config/compiler:wglobal_constructors",
-  ]
+  configs += [ "//build/config/compiler:wglobal_constructors" ]
 
   deps = [
     ":common",
@@ -200,7 +189,6 @@ test("cast_unittests") {
     "logging/stats_event_subscriber_unittest.cc",
     "sender/audio_sender_unittest.cc",
     "sender/openscreen_frame_sender_unittest.cc",
-    "sender/video_bitrate_suggester_unittest.cc",
     "sender/video_sender_unittest.cc",
   ]
 

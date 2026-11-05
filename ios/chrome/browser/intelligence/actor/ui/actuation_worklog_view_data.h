@@ -7,6 +7,8 @@
 
 #import <UIKit/UIKit.h>
 
+@class ActorFormSuggestion;
+
 // Supported layout styles for the actuation worklog item.
 enum class ActuationWorklogItemStyle {
   // Simple style with a dot indicator on the left and a title.
@@ -16,6 +18,9 @@ enum class ActuationWorklogItemStyle {
   // Card style with an icon in a circle, and the title/subtitle inside a card
   // container. Optionally contains an `ActuationWorklogAccessoryItem`.
   kCard,
+  // Freeform text-only style (e.g. a question or clarification) spanning the
+  // full width, without any timeline decoration (no dot, icon or connector).
+  kFreeform,
 };
 
 // View data object describing a nested accessory card inside an actuation
@@ -112,6 +117,10 @@ enum class ActuationWorklogItemStyle {
                            active:(BOOL)active
                     accessoryItem:(ActuationWorklogAccessoryItem*)accessoryItem;
 
+// Creates a freeform text-only item without timeline decoration. `text` is
+// exposed through `title`.
++ (instancetype)freeformItemWithText:(NSString*)text;
+
 #pragma mark - Helpers
 
 // Returns a copy of the item with the active state updated.
@@ -131,6 +140,187 @@ enum class ActuationWorklogItemStyle {
 // Designated initializer.
 - (instancetype)initWithText:(NSString*)text
                         icon:(UIImage*)icon NS_DESIGNATED_INITIALIZER;
+
+- (instancetype)init NS_UNAVAILABLE;
+
+@end
+
+// Presentation modes of the actuation worklog.
+typedef NS_ENUM(NSInteger, ActuationWorklogDisplayMode) {
+  // Only the header is visible.
+  ActuationWorklogDisplayModeMinimized,
+  // The header and the current step are visible.
+  ActuationWorklogDisplayModeCompact,
+  // The header and the full timeline are visible.
+  ActuationWorklogDisplayModeExpanded,
+};
+
+// Visual layouts for an interactive intervention in the actuation worklog.
+enum class ActuationInterventionType {
+  // Card with `title`, optional `subtitle`, and a single action button.
+  kCard,
+  // Row of one or two action buttons, without `title` or `subtitle`.
+  kRow,
+  // Column of one to three action buttons, without `title` or `subtitle`.
+  kColumn,
+};
+
+// Identifiers of the actions of an `ActuationInterventionData`.
+enum class InterventionActionIdentifier : NSInteger {
+  // Continue the current task.
+  kContinue,
+  // "Allow this suggestion" action.
+  kAllow,
+  // "Manually enter" or "Manual sign in" action.
+  kManuallyEnter,
+};
+
+// View data object describing an action of an `ActuationInterventionData`.
+@interface ActuationInterventionAction : NSObject
+
+// Identifier passed back when the action is triggered.
+@property(nonatomic, assign, readonly) InterventionActionIdentifier identifier;
+
+// Title of the button triggering the action.
+@property(nonatomic, copy, readonly) NSString* title;
+
+// TODO(crbug.com/573964938): Add an optional `icon` for `columnItem`.
+
+// Designated initializer.
+- (instancetype)initWithIdentifier:(InterventionActionIdentifier)identifier
+                             title:(NSString*)title NS_DESIGNATED_INITIALIZER;
+
+- (instancetype)init NS_UNAVAILABLE;
+
+@end
+
+// View data object describing an intervention in the actuation worklog.
+@interface ActuationInterventionData : NSObject
+
+// The visual layout type of the intervention.
+@property(nonatomic, assign, readonly) ActuationInterventionType type;
+
+// Optional title text (mandatory if `type == kCard`).
+@property(nonatomic, copy, readonly) NSString* title;
+
+// Optional subtitle text (used if `type == kCard`).
+@property(nonatomic, copy, readonly) NSString* subtitle;
+
+// Actions of the intervention, in display order. Never empty.
+@property(nonatomic, copy, readonly)
+    NSArray<ActuationInterventionAction*>* actions;
+
+- (instancetype)init NS_UNAVAILABLE;
+
+#pragma mark - Factory Constructors
+
+// Creates a card layout intervention with a single `action`.
++ (instancetype)cardItemWithTitle:(NSString*)title
+                         subtitle:(NSString*)subtitle
+                           action:(ActuationInterventionAction*)action;
+
+// Creates an intervention with a row of one or two `actions`, in display order.
++ (instancetype)rowItemWithActions:
+    (NSArray<ActuationInterventionAction*>*)actions;
+
+// Creates an intervention with a column of one to three `actions`, in display
+// order.
++ (instancetype)columnItemWithActions:
+    (NSArray<ActuationInterventionAction*>*)actions;
+
+@end
+
+// View data object describing the text displayed in the actuation header.
+@interface ActuationHeaderContent : NSObject
+
+// Main title text.
+@property(nonatomic, copy, readonly) NSString* title;
+
+// Optional subtitle text displayed below `title`.
+@property(nonatomic, copy, readonly) NSString* subtitle;
+
+// Designated initializer.
+- (instancetype)initWithTitle:(NSString*)title
+                     subtitle:(NSString*)subtitle NS_DESIGNATED_INITIALIZER;
+
+- (instancetype)init NS_UNAVAILABLE;
+
+@end
+
+// View data object describing the header content to display in each
+// `ActuationWorklogDisplayMode`.
+@interface ActuationHeaderContentVariants : NSObject
+
+// Designated initializer.
+- (instancetype)initWithMinimizedContent:(ActuationHeaderContent*)minimized
+                          compactContent:(ActuationHeaderContent*)compact
+                         expandedContent:(ActuationHeaderContent*)expanded
+    NS_DESIGNATED_INITIALIZER;
+
+- (instancetype)init NS_UNAVAILABLE;
+
+// Returns the content to display in `mode`.
+- (ActuationHeaderContent*)contentForDisplayMode:
+    (ActuationWorklogDisplayMode)mode;
+
+@end
+
+// View data object describing an entry of the actuation worklog. The same
+// instance is kept across states, so views can find what changed by pointer.
+@interface ActuationWorklogEntry : NSObject
+
+// Item displayed for the entry.
+@property(nonatomic, strong, readonly) ActuationWorklogItem* item;
+
+// Chip of the tool executed for the entry, if any.
+@property(nonatomic, strong, readonly) ActuationWorklogChip* chip;
+
+// Designated initializer.
+- (instancetype)initWithItem:(ActuationWorklogItem*)item
+                        chip:(ActuationWorklogChip*)chip
+    NS_DESIGNATED_INITIALIZER;
+
+- (instancetype)init NS_UNAVAILABLE;
+
+@end
+
+// Immutable snapshot of the actuation worklog of a task, built once and
+// rendered by every UI observing the task.
+@interface ActuationWorklogState : NSObject
+
+// Whether actuation is actively executing.
+@property(nonatomic, assign, readonly, getter=isActuationActive)
+    BOOL actuationActive;
+
+// Header content to display in each display mode.
+@property(nonatomic, strong, readonly)
+    ActuationHeaderContentVariants* headerContent;
+
+// Entries of the worklog, in display order.
+@property(nonatomic, copy, readonly) NSArray<ActuationWorklogEntry*>* entries;
+
+// Pending intervention, if any.
+@property(nonatomic, strong, readonly) ActuationInterventionData* intervention;
+
+// Suggestions selectable for `suggestionsEntry`, if any.
+// TODO(crbug.com/584701116): Replace `ActorFormSuggestion` with a UI-layer
+// view data type so this header doesn't depend on `actor/tools/model/`.
+@property(nonatomic, copy, readonly) NSArray<ActorFormSuggestion*>* suggestions;
+
+// Entry for which `suggestions` are selectable. `nil` if `suggestions` is.
+@property(nonatomic, strong, readonly) ActuationWorklogEntry* suggestionsEntry;
+
+// Designated initializer. `headerContent` and `entries` must be set.
+// `suggestions` and `suggestionsEntry` must both be `nil` or both be set, and
+// `suggestions` must not be empty.
+- (instancetype)
+    initWithActuationActive:(BOOL)actuationActive
+              headerContent:(ActuationHeaderContentVariants*)headerContent
+                    entries:(NSArray<ActuationWorklogEntry*>*)entries
+               intervention:(ActuationInterventionData*)intervention
+                suggestions:(NSArray<ActorFormSuggestion*>*)suggestions
+           suggestionsEntry:(ActuationWorklogEntry*)suggestionsEntry
+    NS_DESIGNATED_INITIALIZER;
 
 - (instancetype)init NS_UNAVAILABLE;
 

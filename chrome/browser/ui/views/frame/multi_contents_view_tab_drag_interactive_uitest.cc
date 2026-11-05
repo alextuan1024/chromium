@@ -6,8 +6,6 @@
 #include "build/build_config.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
-#include "chrome/browser/ui/omnibox/omnibox_next_features.h"
-#include "chrome/browser/ui/tabs/features.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/multi_contents_drop_target_view.h"
@@ -27,14 +25,18 @@
 #include "content/public/test/browser_test.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/display/screen.h"
+#include "ui/gfx/animation/animation_test_api.h"
 #include "ui/views/interaction/interaction_test_util_views.h"
 #include "ui/views/view_utils.h"
 
+#if defined(USE_AURA)
+#include "ui/aura/env.h"
+#endif
+
 namespace {
 
-// TODO(crbug.com/414590951): Tab DnD tests not working on Mac.
 // TODO(crbug.com/500937645): Re-enable the test on Windows.
-#if !BUILDFLAG(IS_MAC) && !BUILDFLAG(IS_WIN)
+#if !BUILDFLAG(IS_WIN)
 
 DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kNewTab);
 DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kSecondTab);
@@ -52,17 +54,18 @@ class MultiContentsViewTabDragEntrypointsUiTest
   MultiContentsViewTabDragEntrypointsUiTest() = default;
   ~MultiContentsViewTabDragEntrypointsUiTest() override = default;
 
-  const std::vector<base::test::FeatureRefAndParams> GetEnabledFeatures()
-      override {
-    return std::vector<base::test::FeatureRefAndParams>{
-        {tabs::kSplitViewHorizontal, {}}};
-  }
-
-  const std::vector<base::test::FeatureRef> GetDisabledFeatures() override {
-    // TODO(crbug.com/452061489): Fix tests that fail when the WebUI Omnibox is
-    // enabled and then remove this.
-    return {omnibox::internal::kWebUIOmniboxPopup,
-            omnibox::internal::kWebUIOmniboxAimPopup};
+  void SetUp() override {
+#if defined(USE_AURA)
+    // While a child surface resizes, Aura holds mouse moves and dispatches the
+    // held move from a non-nestable task once the resize ends. These tests
+    // move the mouse once while the tab drag runs a nested move loop, so a
+    // held move would not be dispatched until the drag ends, and the drop
+    // target would never show. Disable the throttling, as
+    // TabDragControllerTest does.
+    aura::Env::set_initial_throttle_input_on_resize_for_testing(false);
+#endif
+    SplitViewInteractiveTestMixin<
+        TabStripInteractiveTestMixin<InteractiveBrowserTest>>::SetUp();
   }
 
   gfx::Point GetPointForDropSide(MultiContentsDropTargetView::DropSide side) {
@@ -74,9 +77,13 @@ class MultiContentsViewTabDragEntrypointsUiTest
                                  DropTargetConstants::GetHideWidth(),
                              0);
       case MultiContentsDropTargetView::DropSide::END:
+        // right() is exclusive, so step one pixel inside the window; otherwise
+        // on platforms where GetHideWidth() is 0 the point would land just
+        // outside the browser window.
         return bounds.right_center() -
                gfx::Vector2d(MultiContentsViewDropTargetController::
-                                 DropTargetConstants::GetHideWidth(),
+                                     DropTargetConstants::GetHideWidth() +
+                                 1,
                              0);
       case MultiContentsDropTargetView::DropSide::BOTTOM:
         return bounds.bottom_center() - gfx::Vector2d(0, 1);
@@ -135,8 +142,14 @@ class MultiContentsViewTabDragEntrypointsUiTest
 
  private:
   base::TimeTicks last_wait_start_;
-};
 
+  // TabStrip::MaybeStartDrag() refuses to start a drag while the strip is
+  // animating (e.g. the insertion of the tabs added at the start of each test),
+  // so disable animations to keep the mouse press from racing them.
+  gfx::AnimationTestApi::RenderModeResetter disable_animation_ =
+      gfx::AnimationTestApi::SetRichAnimationRenderMode(
+          gfx::Animation::RichAnimationRenderMode::FORCE_DISABLED);
+};
 
 class MultiContentsViewTabDragEntrypointsUiParamTest
     : public MultiContentsViewTabDragEntrypointsUiTest,
@@ -147,15 +160,8 @@ class MultiContentsViewTabDragEntrypointsUiParamTest
   ~MultiContentsViewTabDragEntrypointsUiParamTest() override = default;
 };
 
-// Flaky on Linux; other platforms running this test are green.
-// TODO(crbug.com/493612000): Deflake and re-enable.
-#if BUILDFLAG(IS_LINUX)
-#define MAYBE_DragAndDrop DISABLED_DragAndDrop
-#else
-#define MAYBE_DragAndDrop DragAndDrop
-#endif
 IN_PROC_BROWSER_TEST_P(MultiContentsViewTabDragEntrypointsUiParamTest,
-                       MAYBE_DragAndDrop) {
+                       DragAndDrop) {
   // TODO(crbug.com/448651072): Remove when Weston support is added.
 #if BUILDFLAG(IS_LINUX)
   if (views::test::InteractionTestUtilSimulatorViews::IsWayland()) {
@@ -195,15 +201,8 @@ IN_PROC_BROWSER_TEST_P(MultiContentsViewTabDragEntrypointsUiParamTest,
           true));
 }
 
-// Flaky on Linux; other platforms running this test are green.
-// TODO(crbug.com/493612000): Deflake and re-enable.
-#if BUILDFLAG(IS_LINUX)
-#define MAYBE_ShowAndHideDropTarget DISABLED_ShowAndHideDropTarget
-#else
-#define MAYBE_ShowAndHideDropTarget ShowAndHideDropTarget
-#endif
 IN_PROC_BROWSER_TEST_P(MultiContentsViewTabDragEntrypointsUiParamTest,
-                       MAYBE_ShowAndHideDropTarget) {
+                       ShowAndHideDropTarget) {
   // TODO(crbug.com/448651072): Remove when Weston support is added.
 #if BUILDFLAG(IS_LINUX)
   if (views::test::InteractionTestUtilSimulatorViews::IsWayland()) {
@@ -217,8 +216,7 @@ IN_PROC_BROWSER_TEST_P(MultiContentsViewTabDragEntrypointsUiParamTest,
   RunTestSequence(
       AddInstrumentedTab(kNewTab, chrome::ChromeUINewTabURLAsGURL(), 1),
       AddInstrumentedTab(kSecondTab, chrome::ChromeUINewTabURLAsGURL(), 2),
-      WaitForActiveTabChange(2),
-      NameTabViewAt("Tab to drag", 1),
+      WaitForActiveTabChange(2), NameTabViewAt("Tab to drag", 1),
       MoveMouseTo("Tab to drag"),
       DragMouseTo(kBrowserViewElementId, CenterPoint(), /*release=*/false),
       PollState(kBrowserCountPoller, GetBrowserCount()),
@@ -238,8 +236,7 @@ IN_PROC_BROWSER_TEST_P(MultiContentsViewTabDragEntrypointsUiParamTest,
       MoveMouseTo(kBrowserViewElementId),
       InAnyContext(WaitForHide(
           MultiContentsDropTargetView::kMultiContentsDropTargetElementId)),
-      ReleaseMouse(),
-      PollState(kDragStatePoller, GetDragActive()),
+      ReleaseMouse(), PollState(kDragStatePoller, GetDragActive()),
       WaitForState(kDragStatePoller, false));
 }
 
@@ -284,15 +281,8 @@ IN_PROC_BROWSER_TEST_P(MultiContentsViewTabDragEntrypointsUiParamTest,
           false));
 }
 
-// Flaky on Linux; other platforms running this test are green.
-// TODO(crbug.com/493612000): Deflake and re-enable.
-#if BUILDFLAG(IS_LINUX)
-#define MAYBE_DragAndDropDisabled DISABLED_DragAndDropDisabled
-#else
-#define MAYBE_DragAndDropDisabled DragAndDropDisabled
-#endif
 IN_PROC_BROWSER_TEST_F(MultiContentsViewTabDragEntrypointsUiTest,
-                       MAYBE_DragAndDropDisabled) {
+                       DragAndDropDisabled) {
   // TODO(crbug.com/448651072): Remove when Weston support is added.
 #if BUILDFLAG(IS_LINUX)
   if (views::test::InteractionTestUtilSimulatorViews::IsWayland()) {
@@ -308,18 +298,16 @@ IN_PROC_BROWSER_TEST_F(MultiContentsViewTabDragEntrypointsUiTest,
   RunTestSequence(
       AddInstrumentedTab(kNewTab, chrome::ChromeUINewTabURLAsGURL(), 1),
       AddInstrumentedTab(kSecondTab, chrome::ChromeUINewTabURLAsGURL(), 2),
-      WaitForActiveTabChange(2),
-      NameTabViewAt("Tab to drag", 1),
+      WaitForActiveTabChange(2), NameTabViewAt("Tab to drag", 1),
       MoveMouseTo("Tab to drag"),
       DragMouseTo(kBrowserViewElementId, CenterPoint(), /*release=*/false),
       PollState(kBrowserCountPoller, GetBrowserCount()),
       WaitForState(kBrowserCountPoller, 2u),
       MoveMouseTo(base::BindLambdaForTesting([&]() {
-        return GetPointForDropSide(MultiContentsDropTargetView::DropSide::START);
+        return GetPointForDropSide(
+            MultiContentsDropTargetView::DropSide::START);
       })),
-      WaitTime(base::Milliseconds(500)),
-      ReleaseMouse(),
-      Check([this]() {
+      WaitTime(base::Milliseconds(500)), ReleaseMouse(), Check([this]() {
         return !GetDropTargetView(GetBrowserView())->GetVisible();
       }),
       PollState(kDragStatePoller, GetDragActive()),
@@ -332,6 +320,6 @@ INSTANTIATE_TEST_SUITE_P(
     ::testing::Values(MultiContentsDropTargetView::DropSide::START,
                       MultiContentsDropTargetView::DropSide::END,
                       MultiContentsDropTargetView::DropSide::BOTTOM));
-#endif  // !BUILDFLAG(IS_MAC) && !BUILDFLAG(IS_WIN)
+#endif  // !BUILDFLAG(IS_WIN)
 
 }  // namespace

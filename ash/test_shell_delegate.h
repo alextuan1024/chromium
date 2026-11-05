@@ -16,7 +16,7 @@
 #include "base/memory/raw_ptr.h"
 #include "chromeos/ash/services/multidevice_setup/public/mojom/multidevice_setup.mojom.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
-#include "services/network/test/test_shared_url_loader_factory.h"
+#include "services/network/test/test_url_loader_factory.h"
 #include "url/gurl.h"
 
 class PrefService;
@@ -73,7 +73,6 @@ class TestShellDelegate : public ShellDelegate {
   }
 
   // Overridden from ShellDelegate:
-  bool CanShowWindowForUser(const aura::Window* window) const override;
   std::unique_ptr<CaptureModeDelegate> CreateCaptureModeDelegate(
       PrefService* local_state) const override;
   std::unique_ptr<ClipboardHistoryControllerDelegate>
@@ -103,7 +102,7 @@ class TestShellDelegate : public ShellDelegate {
       const override;
   std::unique_ptr<ash::ScannerDelegate> CreateScannerDelegate() const override;
   scoped_refptr<network::SharedURLLoaderFactory>
-  GetBrowserProcessUrlLoaderFactory() const override;
+  GetBrowserProcessUrlLoaderFactory() override;
   bool CanGoBack(gfx::NativeWindow window) const override;
   void SetTabScrubberEnabled(bool enabled) override;
   bool ShouldWaitForTouchPressAck(gfx::NativeWindow window) override;
@@ -165,7 +164,7 @@ class TestShellDelegate : public ShellDelegate {
   SendSpecializedFeatureFeedbackCallback
       send_specialized_feature_feedback_callback_;
 
-  scoped_refptr<network::TestSharedURLLoaderFactory> url_loader_factory_;
+  std::unique_ptr<network::TestURLLoaderFactory> url_loader_factory_;
 
   GURL last_committed_url_;
 

@@ -12,20 +12,20 @@ static_library("tpm") {
     "tpm_firmware_update_notification.h",
   ]
 
-  public_deps = [ "//chrome/browser:browser_public_dependencies" ]
-
   deps = [
     "//ash/constants",
     "//ash/public/cpp",
     "//base",
-    "//chrome/browser/profiles:profile",
-    "//chrome/common",
+    "//chrome/app:generated_resources",
     "//chromeos/ash/components/browser_context_helper",
     "//chromeos/ash/components/install_attributes",
     "//chromeos/ash/components/settings",
     "//chromeos/ash/experiences/settings_ui",
+    "//components/policy/proto",
     "//components/prefs",
     "//components/user_manager",
+    "//components/user_prefs",
+    "//content/public/browser",
     "//ui/base",
     "//ui/chromeos",
     "//ui/message_center",
@@ -39,6 +39,7 @@ source_set("unit_tests") {
 
   deps = [
     ":tpm",
+    "//ash/constants",
     "//base",
     "//base/test:test_support",
     "//chrome/browser/ash/policy/enrollment",

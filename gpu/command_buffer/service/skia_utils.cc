@@ -31,7 +31,6 @@
 #include "third_party/skia/include/gpu/graphite/Context.h"
 #include "third_party/skia/include/gpu/graphite/GraphiteTypes.h"
 #include "third_party/skia/include/gpu/graphite/Recorder.h"
-#include "ui/base/ui_base_features.h"
 #include "ui/gfx/color_space.h"
 #include "ui/gfx/geometry/size.h"
 #include "ui/gl/gl_bindings.h"
@@ -122,24 +121,21 @@ GrContextOptions GetDefaultGrContextOptions() {
       base::CommandLine::ForCurrentProcess()->HasSwitch(
           switches::kDisableMipmapGeneration);
 
-  // fSupportBilerpFromGlyphAtlas is needed for Raw Draw.
-  options.fSupportBilerpFromGlyphAtlas = features::IsUsingRawDraw();
-
   return options;
 }
 
 skgpu::graphite::ContextOptions GetDefaultGraphiteContextOptions(
     const GpuDriverBugWorkarounds& workarounds) {
-  // Use the default resource cache limits used for Ganesh which is 96 MB for
-  // the resource cache and 8 MB for the glyph cache. These same values also get
-  // used for the GPU main and Viz compositor recorders later and the resource
-  // caches are not shared so don't use the large default value of 256 MB.
-  size_t max_resource_cache_bytes;
+  // Limit the Graphite Context's resource cache (primarily MSAA and
+  // depth-stencil attachments) and glyph cache. The GPU main and Viz compositor
+  // recorders have separate unshared resource caches configured via
+  // DetermineGraphiteRecorderCacheLimits().
+  size_t max_context_resource_cache_bytes;
   size_t glyph_cache_max_texture_bytes;
-  DetermineGrCacheLimitsFromAvailableMemory(&max_resource_cache_bytes,
-                                            &glyph_cache_max_texture_bytes);
+  DetermineGraphiteContextCacheLimits(&max_context_resource_cache_bytes,
+                                      &glyph_cache_max_texture_bytes);
   skgpu::graphite::ContextOptions options;
-  options.fGpuBudgetInBytes = max_resource_cache_bytes;
+  options.fGpuBudgetInBytes = max_context_resource_cache_bytes;
   options.fGlyphCacheTextureMaximumBytes = glyph_cache_max_texture_bytes;
 
   // `msaa_is_slow` is true for all Intel GPUs, while `msaa_is_slow_2` is
@@ -460,9 +456,9 @@ CreateVulkanYcbcrConversionInfo(
             ? VK_SAMPLER_YCBCR_RANGE_ITU_FULL
             : VK_SAMPLER_YCBCR_RANGE_ITU_NARROW;
 
-    valid_ycbcr_info.emplace(format, 0, ycbcr_model, ycbcr_range,
-                             VK_CHROMA_LOCATION_COSITED_EVEN,
-                             VK_CHROMA_LOCATION_COSITED_EVEN, 0);
+    valid_ycbcr_info.emplace(
+        format, 0, ycbcr_model, ycbcr_range, VK_CHROMA_LOCATION_COSITED_EVEN,
+        VK_CHROMA_LOCATION_COSITED_EVEN, /*format_features=*/0);
   }
 
   VkFormat vk_format = static_cast<VkFormat>(valid_ycbcr_info->image_format);

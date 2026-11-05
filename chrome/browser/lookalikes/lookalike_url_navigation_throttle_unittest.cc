@@ -4,14 +4,20 @@
 
 #include "chrome/browser/lookalikes/lookalike_url_navigation_throttle.h"
 
+#include <string>
+
+#include "chrome/browser/lookalikes/lookalike_url_service.h"
+#include "chrome/browser/lookalikes/lookalike_url_service_factory.h"
 #include "chrome/test/base/chrome_render_view_host_test_harness.h"
 #include "components/lookalikes/core/safety_tip_test_utils.h"
+#include "components/lookalikes/core/safety_tips_config.h"
 #include "components/url_formatter/spoof_checks/idn_spoof_checker.h"
 #include "components/url_formatter/url_formatter.h"
 #include "content/public/test/mock_navigation_handle.h"
 #include "content/public/test/mock_navigation_throttle_registry.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/page_transition_types.h"
+#include "url/gurl.h"
 
 namespace lookalikes {
 
@@ -98,6 +104,186 @@ TEST_F(LookalikeThrottleTest, SpoofsBlocked) {
                 throttle->WillProcessResponse().action())
           << "Failed: " << test_case.hostname;
     }
+  }
+}
+
+// Verifies that `LookalikeUrlService::NeedsEngagedSitesForCheck()` returns
+// false for URLs that early-return in `CheckUrlForLookalikes()` before
+// consulting `engaged_sites`, and true for URLs that require `engaged_sites`.
+TEST_F(LookalikeThrottleTest, NeedsEngagedSitesForCheck) {
+  LookalikeUrlService* service =
+      LookalikeUrlServiceFactory::GetForProfile(profile());
+  ASSERT_TRUE(service);
+
+  const GURL kTopDomainUrl("https://www.google.com/search?q=test");
+  const GURL kNonTopUrl("https://non-top-example-domain.com/path");
+
+  // 1. Without a Safety Tips remote config proto, `CheckUrlForLookalikes()`
+  // fails safe and returns immediately without consulting `engaged_sites`.
+  lookalikes::SetSafetyTipsRemoteConfigProto(nullptr);
+  EXPECT_FALSE(service->NeedsEngagedSitesForCheck(kNonTopUrl));
+
+  // 2. Once the Safety Tips remote config proto is populated, top 500 domains,
+  // safe TLDs (.gov), localhost, and non-HTTP(S) URLs early-return without
+  // `engaged_sites`, whereas non-top domains require `engaged_sites`.
+  lookalikes::InitializeSafetyTipConfig();
+  EXPECT_FALSE(service->NeedsEngagedSitesForCheck(kTopDomainUrl));
+  EXPECT_FALSE(service->NeedsEngagedSitesForCheck(GURL("https://agency.gov/")));
+  EXPECT_FALSE(
+      service->NeedsEngagedSitesForCheck(GURL("http://localhost:8080/")));
+  EXPECT_FALSE(service->NeedsEngagedSitesForCheck(GURL("chrome://settings")));
+  EXPECT_TRUE(service->NeedsEngagedSitesForCheck(kNonTopUrl));
+
+  // 3. Once the user has dismissed a warning for `kNonTopUrl`, navigation
+  // throttle checks early-return without consulting `engaged_sites`.
+  service->SetUserIgnore(kNonTopUrl);
+  EXPECT_FALSE(service->NeedsEngagedSitesForCheck(kNonTopUrl));
+  service->ResetWarningDismissedETLDPlusOnesForTesting();
+  EXPECT_TRUE(service->NeedsEngagedSitesForCheck(kNonTopUrl));
+
+  // 4. Nested `blob:` URLs unwrap to their inner HTTP(S) origin for both
+  // `NeedsEngagedSitesForCheck()` and `SetUserIgnore()`/`IsIgnored()`.
+  const GURL kNonTopBlobUrl("blob:https://non-top-example-domain.com/1234");
+  EXPECT_FALSE(service->NeedsEngagedSitesForCheck(
+      GURL("blob:https://www.google.com/1234")));
+  EXPECT_FALSE(service->NeedsEngagedSitesForCheck(GURL("blob:null/1234-5678")));
+  EXPECT_TRUE(service->NeedsEngagedSitesForCheck(kNonTopBlobUrl));
+  service->SetUserIgnore(kNonTopBlobUrl);
+  EXPECT_TRUE(service->IsIgnored(kNonTopUrl));
+  EXPECT_TRUE(service->IsIgnored(kNonTopBlobUrl));
+  EXPECT_FALSE(service->NeedsEngagedSitesForCheck(kNonTopUrl));
+  EXPECT_FALSE(service->NeedsEngagedSitesForCheck(kNonTopBlobUrl));
+
+  // Calling `SetUserIgnore()` on a URL with no public eTLD+1 (e.g. an opaque
+  // `blob:null/...` URL) must not insert an empty eTLD+1 that matches other
+  // hostless URLs.
+  service->SetUserIgnore(GURL("blob:null/1234"));
+  EXPECT_FALSE(service->IsIgnored(GURL("blob:null/5678")));
+}
+
+// Verifies that `blob:` navigations with a spoofy inner HTTP(S) origin are
+// blocked by the throttle, while benign and opaque `blob:` URLs proceed.
+TEST_F(LookalikeThrottleTest, SpoofsBlockedForBlobUrls) {
+  lookalikes::InitializeSafetyTipConfig();
+
+  const struct TestCase {
+    const char* url;
+    bool expected_blocked;
+  } kTestCases[] = {
+      {"blob:http://xn--ook-ooa.com/52ef8006-dc23-4613-a7b8-c74cf80b3f34",
+       true},
+      {"blob:http://private.hostname/52ef8006-dc23-4613-a7b8-c74cf80b3f34",
+       false},
+      {"blob:null/52ef8006-dc23-4613-a7b8-c74cf80b3f34", false},
+  };
+
+  for (const TestCase& test_case : kTestCases) {
+    GURL url(test_case.url);
+    ::testing::NiceMock<content::MockNavigationHandle> handle(url, main_rfh());
+    handle.set_redirect_chain({url});
+    handle.set_page_transition(ui::PAGE_TRANSITION_LINK);
+    ::testing::NiceMock<content::MockNavigationThrottleRegistry> registry(
+        &handle,
+        content::MockNavigationThrottleRegistry::RegistrationMode::kHold);
+
+    LookalikeUrlNavigationThrottle::MaybeCreateAndAdd(registry);
+    ASSERT_EQ(1u, registry.throttles().size());
+    raw_ptr<LookalikeUrlNavigationThrottle> throttle =
+        static_cast<LookalikeUrlNavigationThrottle*>(
+            registry.throttles().back().get());
+    ASSERT_TRUE(throttle);
+    throttle->SetUseTestProfileForTesting();
+
+    EXPECT_EQ(content::NavigationThrottle::PROCEED,
+              throttle->WillStartRequest().action());
+    EXPECT_EQ(test_case.expected_blocked ? content::NavigationThrottle::CANCEL
+                                         : content::NavigationThrottle::PROCEED,
+              throttle->WillProcessResponse().action())
+        << "Failed: " << test_case.url;
+  }
+}
+
+// Verifies that when the first hop of a redirect chain triggers a weaker
+// lookalike action (metrics-only or safety tip) and the final hop triggers an
+// interstitial, the navigation is still blocked with an interstitial.
+// Regression test for crbug.com/573697949.
+TEST_F(LookalikeThrottleTest, RedirectFromWeakerLookalikeToInterstitial) {
+  lookalikes::InitializeSafetyTipConfig();
+  LookalikeUrlService* service =
+      LookalikeUrlServiceFactory::GetForProfile(profile());
+  ASSERT_TRUE(service);
+
+  const struct TestCase {
+    const char* first_hostname;
+    LookalikeActionType expected_first_action;
+    const char* last_hostname;
+    LookalikeActionType expected_last_action;
+    content::NavigationThrottle::ThrottleAction expected_throttle_action;
+  } kTestCases[] = {
+      // Edit distance (metrics-only) -> failed spoof checks (interstitial).
+      {"goooglé.com", LookalikeActionType::kRecordMetrics, "xn--ook-ooa.com",
+       LookalikeActionType::kShowInterstitial,
+       content::NavigationThrottle::CANCEL},
+      // Edit distance (metrics-only) -> target embedding (interstitial).
+      {"goooglé.com", LookalikeActionType::kRecordMetrics,
+       "google.com-test.com", LookalikeActionType::kShowInterstitial,
+       content::NavigationThrottle::CANCEL},
+      // Character swap (safety tip) -> skeleton match top 500 (interstitial).
+      {"goolge.com", LookalikeActionType::kShowSafetyTip, "googlé.com",
+       LookalikeActionType::kShowInterstitial,
+       content::NavigationThrottle::CANCEL},
+      // Skeleton match top 500 (interstitial) -> character swap (safety tip).
+      {"googlé.com", LookalikeActionType::kShowInterstitial, "goolge.com",
+       LookalikeActionType::kShowSafetyTip,
+       content::NavigationThrottle::CANCEL},
+      // Edit distance (metrics-only) -> benign domain (no interstitial).
+      {"goooglé.com", LookalikeActionType::kRecordMetrics, "example.com",
+       LookalikeActionType::kNone, content::NavigationThrottle::PROCEED},
+      // Character swap (safety tip) -> benign domain (no interstitial).
+      {"goolge.com", LookalikeActionType::kShowSafetyTip, "example.com",
+       LookalikeActionType::kNone, content::NavigationThrottle::PROCEED},
+  };
+
+  for (const TestCase& test_case : kTestCases) {
+    const GURL first_url(std::string("http://") + test_case.first_hostname);
+    const GURL last_url(std::string("http://") + test_case.last_hostname);
+
+    ASSERT_EQ(test_case.expected_first_action,
+              service
+                  ->CheckUrlForLookalikes(
+                      first_url, /*engaged_sites=*/{},
+                      /*stop_checking_on_allowlist_or_ignore=*/true)
+                  .action_type)
+        << test_case.first_hostname;
+    ASSERT_EQ(test_case.expected_last_action,
+              service
+                  ->CheckUrlForLookalikes(
+                      last_url, /*engaged_sites=*/{},
+                      /*stop_checking_on_allowlist_or_ignore=*/true)
+                  .action_type)
+        << test_case.last_hostname;
+
+    ::testing::NiceMock<content::MockNavigationHandle> handle(last_url,
+                                                              main_rfh());
+    handle.set_redirect_chain({first_url, last_url});
+    handle.set_page_transition(ui::PAGE_TRANSITION_TYPED);
+    ::testing::NiceMock<content::MockNavigationThrottleRegistry> registry(
+        &handle,
+        content::MockNavigationThrottleRegistry::RegistrationMode::kHold);
+
+    LookalikeUrlNavigationThrottle::MaybeCreateAndAdd(registry);
+    ASSERT_EQ(1u, registry.throttles().size());
+    auto* throttle = static_cast<LookalikeUrlNavigationThrottle*>(
+        registry.throttles().back().get());
+    ASSERT_TRUE(throttle);
+    throttle->SetUseTestProfileForTesting();
+
+    EXPECT_EQ(content::NavigationThrottle::PROCEED,
+              throttle->WillStartRequest().action());
+    EXPECT_EQ(test_case.expected_throttle_action,
+              throttle->WillProcessResponse().action())
+        << "Failed: " << test_case.first_hostname << " -> "
+        << test_case.last_hostname;
   }
 }
 

@@ -5,6 +5,7 @@
 import("//build/config/chromeos/args.gni")
 import("//build/config/ozone.gni")
 import("//extensions/buildflags/buildflags.gni")
+import("//media/media_options.gni")
 
 assert(is_win || is_mac || is_linux || is_chromeos || is_android)
 
@@ -56,6 +57,7 @@ source_set("exclusive_access") {
     "//components/safe_browsing/content/browser:safe_browsing_service",
     "//components/strings:components_strings",
     "//components/strings:components_strings_grit",
+    "//media:media_buildflags",
     "//services/metrics/public/cpp:gen_ukm_builders",
     "//services/metrics/public/cpp:metrics_cpp",
     "//services/metrics/public/cpp:ukm_builders",
@@ -69,10 +71,13 @@ source_set("exclusive_access") {
       "//extensions/common",
     ]
   }
+  if (enable_media_remoting) {
+    deps += [ "//chrome/browser/media" ]
+  }
   if (!is_android) {
-    public_deps += [ "//chrome/browser:browser_public_dependencies" ]
     deps += [
       "//chrome/browser:browser_process",
+      "//chrome/browser/ui:browser_command_controller",
       "//chrome/browser/ui/blocked_content",
       "//chrome/browser/ui/bookmarks",
     ]
@@ -97,9 +102,11 @@ if (!is_android) {
       "//content/test:test_support",
     ]
     deps = [
+      "//chrome/browser/ui:browser_commands",
       "//chrome/browser/ui:browser_window_header",
       "//chrome/browser/ui/browser_web_contents_delegate",
       "//chrome/browser/ui/views/exclusive_access",
+      "//chrome/browser/ui/views/frame:browser_view_header",
     ]
     if (!is_chromeos) {
       public_deps += [ "//chrome/browser:fullscreen" ]
@@ -117,6 +124,7 @@ if (!is_android) {
     deps = [
       ":test_support",
       "//chrome/test/base:chrome_render_view_host_test_harness",
+      "//chrome/test/base:testing_browser_process",
       "//components/fullscreen_control",
     ]
   }
@@ -133,6 +141,8 @@ if (!is_android) {
     deps = [
       ":test_support",
       "//chrome/browser/content_settings:content_settings_factory",
+      "//chrome/browser/ui:browser_commands",
+      "//chrome/browser/ui:browser_tabstrip",
       "//chrome/browser/ui:browser_window_header",
       "//chrome/browser/ui:ui_features",
       "//chrome/browser/ui/browser_window",
@@ -159,11 +169,14 @@ if (!is_android) {
         ":test_support",
         "//chrome/browser/content_settings:content_settings_factory",
         "//chrome/browser/preloading:test_support",
+        "//chrome/browser/ui:browser_commands",
+        "//chrome/browser/ui:browser_tabstrip",
         "//chrome/browser/ui:browser_window_header",
         "//chrome/browser/ui:test_support",
         "//chrome/browser/ui/browser_web_contents_delegate",
         "//chrome/browser/ui/browser_window",
         "//chrome/browser/ui/browser_window:create_browser_window",
+        "//chrome/browser/ui/dialogs:browser_dialogs",
         "//chrome/browser/ui/fullscreen",
         "//chrome/browser/ui/test:test_support",
         "//chrome/browser/ui/web_applications/test:test_support_ui",
@@ -173,6 +186,7 @@ if (!is_android) {
         "//chrome/test/base:interactive_test_utils",
         "//components/blocked_content",
         "//components/metrics:content",
+        "//components/permissions:permissions_common",
         "//components/permissions:test_support",
         "//net:test_support",
         "//ui/display:test_support",

@@ -7,20 +7,21 @@
 #include <memory>
 
 #include "base/functional/callback_helpers.h"
-#include "base/test/metrics/histogram_tester.h"
+#include "base/test/test_future.h"
+#include "chrome/browser/ui/actions/chrome_action_id.h"
 #include "chrome/browser/ui/autofill/payments/payments_churned_users_bubble_controller.h"
+#include "chrome/browser/ui/page_action/page_action_controller.h"
+#include "chrome/browser/ui/page_action/test_support/mock_page_action_controller.h"
 #include "chrome/test/base/chrome_render_view_host_test_harness.h"
 #include "components/autofill/content/browser/test_content_autofill_client.h"
-#include "components/autofill/core/browser/data_manager/payments/test_payments_data_manager.h"
-#include "components/autofill/core/browser/payments/payments_autofill_client.h"
-#include "components/autofill/core/browser/payments/payments_churned_users_metrics.h"
+#include "components/autofill/core/browser/ui/payments/payments_ui_closed_reasons.h"
 #include "components/signin/public/identity_manager/account_info.h"
-#include "components/signin/public/identity_manager/identity_manager.h"
-#include "components/signin/public/identity_manager/identity_test_utils.h"
 #include "components/tabs/public/mock_tab_interface.h"
 #include "components/tabs/public/tab_interface.h"
+#include "google_apis/gaia/gaia_id.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/base/unowned_user_data/scoped_unowned_user_data.h"
 #include "ui/base/unowned_user_data/unowned_user_data_host.h"
 
 namespace autofill::payments {
@@ -30,16 +31,13 @@ class MockPaymentsChurnedUsersBubbleController
     : public PaymentsChurnedUsersBubbleController {
  public:
   explicit MockPaymentsChurnedUsersBubbleController(
-      tabs::TabInterface& tab_interface,
-      content::WebContents* web_contents)
-      : PaymentsChurnedUsersBubbleController(tab_interface, web_contents) {}
+      tabs::TabInterface* tab_interface)
+      : PaymentsChurnedUsersBubbleController(tab_interface) {}
   ~MockPaymentsChurnedUsersBubbleController() override = default;
 
   MOCK_METHOD(void,
               Show,
-              (base::OnceClosure accept_callback,
-               base::OnceClosure cancel_callback,
-               base::OnceClosure closed_callback,
+              (base::OnceCallback<void(PaymentsUiClosedReason)> closed_callback,
                AccountInfo account_info),
               (override));
 };
@@ -56,12 +54,14 @@ class PaymentsChurnedUsersUiDelegateDesktopTest
 
     tabs::TabLookupFromWebContents::CreateForWebContents(web_contents(),
                                                          &mock_tab_interface_);
+    ON_CALL(mock_tab_interface_, GetContents())
+        .WillByDefault(testing::Return(web_contents()));
     ON_CALL(mock_tab_interface_, GetUnownedUserDataHost())
         .WillByDefault(testing::ReturnRef(tab_unowned_user_data_host_));
 
     bubble_controller_ =
         std::make_unique<MockPaymentsChurnedUsersBubbleController>(
-            mock_tab_interface_, web_contents());
+            &mock_tab_interface_);
 
     client_ = std::make_unique<TestContentAutofillClient>(web_contents());
     delegate_ =
@@ -80,7 +80,10 @@ class PaymentsChurnedUsersUiDelegateDesktopTest
   }
 
   PaymentsChurnedUsersUiDelegateDesktop& delegate() { return *delegate_; }
-  TestContentAutofillClient& client() { return *client_; }
+
+  ui::UnownedUserDataHost& tab_unowned_user_data_host() {
+    return tab_unowned_user_data_host_;
+  }
 
  private:
   ui::UnownedUserDataHost tab_unowned_user_data_host_;
@@ -91,42 +94,41 @@ class PaymentsChurnedUsersUiDelegateDesktopTest
   std::unique_ptr<PaymentsChurnedUsersUiDelegateDesktop> delegate_;
 };
 
-TEST_F(PaymentsChurnedUsersUiDelegateDesktopTest,
-       ShowPaymentsChurnedUsersUI_WithAccountInfo) {
-  signin::IdentityManager* identity_manager = client().GetIdentityManager();
-  AccountInfo account_info = signin::MakePrimaryAccountAvailable(
-      identity_manager, "test@example.com", signin::ConsentLevel::kSignin);
-  signin::UpdateAccountInfoForAccount(
-      identity_manager, signin::WithGeneratedUserInfo(account_info, "Test"));
-  static_cast<TestPaymentsDataManager&>(
-      client().GetPaymentsAutofillClient()->GetPaymentsDataManager())
-      .SetAccountInfoForPayments(account_info.GetCoreAccountInfo());
+TEST_F(PaymentsChurnedUsersUiDelegateDesktopTest, ShowPaymentsChurnedUsersUI) {
+  AccountInfo account_info =
+      AccountInfo::Builder(GaiaId("test_id"), "test@example.com").Build();
 
-  EXPECT_CALL(
-      bubble_controller(),
-      Show(testing::_, testing::_, testing::_,
-           testing::Property(&AccountInfo::GetEmail, "test@example.com")))
-      .Times(1);
+  EXPECT_CALL(bubble_controller(),
+              Show(testing::_, testing::Property(&AccountInfo::GetEmail,
+                                                 "test@example.com")));
 
-  delegate().ShowPaymentsChurnedUsersUI(base::DoNothing(), base::DoNothing(),
-                                        base::DoNothing());
+  delegate().ShowPaymentsChurnedUsersUI(account_info,
+                                        /*closed_callback=*/base::DoNothing());
 }
 
+// Tests that OnBubbleDiscarded() hides the page action and runs the callback.
 TEST_F(PaymentsChurnedUsersUiDelegateDesktopTest,
-       ShowPaymentsChurnedUsersUI_NoAccountInfo) {
-  base::HistogramTester histogram_tester;
+       OnBubbleDiscarded_HidesPageActionAndRunsCallback) {
+  page_actions::MockPageActionController mock_page_action_controller;
+  ui::ScopedUnownedUserData<page_actions::PageActionController>
+      scoped_page_action_controller(tab_unowned_user_data_host(),
+                                    mock_page_action_controller);
 
-  EXPECT_CALL(bubble_controller(), Show).Times(0);
+  AccountInfo account_info =
+      AccountInfo::Builder(GaiaId("test_id"), "test@example.com").Build();
+  base::test::TestFuture<PaymentsUiClosedReason> closed_future;
 
-  delegate().ShowPaymentsChurnedUsersUI(base::DoNothing(), base::DoNothing(),
-                                        base::DoNothing());
+  EXPECT_CALL(mock_page_action_controller,
+              Show(kActionShowPaymentsChurnedUsersBubble))
+      .Times(2);
+  bubble_controller().PaymentsChurnedUsersBubbleController::Show(
+      closed_future.GetCallback(), account_info);
+  ASSERT_FALSE(closed_future.IsReady());
 
-  histogram_tester.ExpectUniqueSample(
-      "Autofill.PaymentsChurnedUsersBubble.ShowResult",
-      /*sample=*/
-      autofill_metrics::PaymentsChurnedUsersBubbleShowResult::
-          kNoAccountInfoPresent,
-      /*expected_bucket_count=*/1);
+  EXPECT_CALL(mock_page_action_controller,
+              Hide(kActionShowPaymentsChurnedUsersBubble));
+  bubble_controller().OnBubbleDiscarded();
+  EXPECT_EQ(closed_future.Get(), PaymentsUiClosedReason::kNotInteracted);
 }
 
 }  // namespace

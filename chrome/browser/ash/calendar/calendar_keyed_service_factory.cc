@@ -4,7 +4,9 @@
 
 #include "chrome/browser/ash/calendar/calendar_keyed_service_factory.h"
 
+#include "base/check_is_test.h"
 #include "base/no_destructor.h"
+#include "chrome/browser/apps/app_service/app_service_proxy.h"
 #include "chrome/browser/apps/app_service/app_service_proxy_factory.h"
 #include "chrome/browser/ash/calendar/calendar_keyed_service.h"
 #include "chrome/browser/ash/profiles/profile_helper.h"
@@ -27,12 +29,8 @@ CalendarKeyedServiceFactory::CalendarKeyedServiceFactory()
           "CalendarKeyedService",
           ProfileSelections::Builder()
               .WithRegular(ProfileSelection::kOriginalOnly)
-              // TODO(crbug.com/40257657): Check if this service is needed in
-              // Guest mode.
-              .WithGuest(ProfileSelection::kOriginalOnly)
-              // TODO(crbug.com/41488885): Check if this service is needed for
-              // Ash Internals.
-              .WithAshInternals(ProfileSelection::kOriginalOnly)
+              .WithGuest(ProfileSelection::kNone)
+              .WithAshInternals(ProfileSelection::kNone)
               .Build()) {
   // LINT.IfChange(Deps)
   DependsOn(apps::AppServiceProxyFactory::GetInstance());
@@ -52,18 +50,20 @@ std::unique_ptr<KeyedService>
     content::BrowserContext* context) const {
   Profile* const profile = Profile::FromBrowserContext(context);
   user_manager::User* user = ProfileHelper::Get()->GetUserByProfile(profile);
-  if (!user)
+  if (!user) {
+    CHECK_IS_TEST();
     return nullptr;
+  }
 
-  if (!user->HasGaiaAccount())
+  if (!user->HasGaiaAccount()) {
     return nullptr;
+  }
 
-  apps::AppServiceProxy* app_service_proxy =
-      apps::AppServiceProxyFactory::IsAppServiceAvailableForProfile(profile)
-          ? apps::AppServiceProxyFactory::GetForProfile(profile)
-          : nullptr;
+  // The service is created only for the regular user's original Profile,
+  // so AppService is always available.
   return std::make_unique<CalendarKeyedService>(
-      user->GetAccountId(), profile->GetPrefs(), app_service_proxy,
+      user->GetAccountId(), profile->GetPrefs(),
+      &apps::AppServiceProxyFactory::GetForProfile(profile)->AppRegistryCache(),
       AshPolicyBlocklistServiceFactory::GetForBrowserContext(profile),
       IdentityManagerFactory::GetForProfile(profile),
       profile->GetURLLoaderFactory());

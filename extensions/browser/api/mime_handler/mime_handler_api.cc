@@ -5,21 +5,25 @@
 #include "extensions/browser/api/mime_handler/mime_handler_api.h"
 
 #include <algorithm>
+#include <optional>
+#include <string_view>
 
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_util.h"
 #include "base/types/expected.h"
+#include "base/values.h"
 #include "content/public/browser/render_frame_host.h"
 #include "extensions/browser/mime_handler/mime_handler_registry.h"
+#include "extensions/browser/mime_handler/mime_handler_stream_delegate.h"
 #include "extensions/browser/mime_handler/mime_handler_stream_manager.h"
 #include "extensions/browser/mime_handler/stream_container.h"
 #include "extensions/common/api/mime_handler.h"
+#include "extensions/common/error_utils.h"
 #include "extensions/common/extension_id.h"
 #include "extensions/common/manifest_handlers/mime_types_handler.h"
 #include "net/http/http_response_headers.h"
-#include "services/network/public/cpp/cors/cors.h"
 
 namespace extensions {
 
@@ -33,6 +37,30 @@ struct ResolvedStream {
   // the filtering decision of a different frame.
   bool should_filter_response_headers = true;
 };
+
+constexpr char kUnhandledMimeTypeError[] =
+    "This extension does not handle MIME type '*'.";
+
+// Removes `key` from `options` and returns true if its value is null. A null
+// member asks to restore the manifest value, which the generated
+// MimeHandlerOptions cannot represent.
+// TODO(crbug.com/584808448): Remove once the generated types support nullable
+// members.
+bool TakeNullOption(base::DictValue& options, std::string_view key) {
+  const base::Value* value = options.Find(key);
+  if (!value || !value->is_none()) {
+    return false;
+  }
+  options.Remove(key);
+  return true;
+}
+
+bool ExtensionHandlesMimeType(const Extension& extension,
+                              const std::string& mime_type) {
+  const MimeTypesHandler* handler = MimeTypesHandler::Get(extension);
+  return handler &&
+         std::ranges::contains(handler->GetSupportedMimeTypes(), mime_type);
+}
 
 // Validates that `extension_rfh` is a child frame whose embedder owns a
 // MIME handler stream belonging to `expected_extension_id`. On success
@@ -96,10 +124,10 @@ ExtensionFunction::ResponseAction MimeHandlerGetStreamInfoFunction::Run() {
       if (!base::IsStringASCII(name) || !base::IsStringASCII(value)) {
         continue;
       }
-      // Restrict a generic (third-party) MIME handler extension to the
-      // response headers that fetch() would expose to script cross-origin.
+      // Restrict a generic (third-party) MIME handler extension to explicitly
+      // allowed response headers.
       if (resolved->should_filter_response_headers &&
-          !network::cors::IsCorsSafelistedResponseHeaderName(name)) {
+          !IsResponseHeaderAllowedForHandler(name)) {
         continue;
       }
       const std::string* existing =
@@ -147,13 +175,38 @@ MimeHandlerSetMimeHandlerOptionsFunction::
 
 ExtensionFunction::ResponseAction
 MimeHandlerSetMimeHandlerOptionsFunction::Run() {
+  EXTENSION_FUNCTION_VALIDATE(args().size() == 2 && args()[1].is_dict());
+  base::DictValue& raw_options = GetMutableArgs()[1].GetDict();
+  const bool reset_enabled = TakeNullOption(raw_options, "enabled");
+  const bool reset_can_embed = TakeNullOption(raw_options, "canEmbed");
+
   auto params =
       api::mime_handler::SetMimeHandlerOptions::Params::Create(args());
   EXTENSION_FUNCTION_VALIDATE(params);
 
-  MimeHandlerRegistry::Get(browser_context())
-      ->SetEnabledForMimeType(extension_id(), params->mime_type,
-                              params->options.enabled);
+  const std::optional<bool>& enabled = params->options.enabled;
+  const std::optional<bool>& can_embed = params->options.can_embed;
+
+  if (!ExtensionHandlesMimeType(*extension(), params->mime_type)) {
+    return RespondNow(Error(ErrorUtils::FormatErrorMessage(
+        kUnhandledMimeTypeError, params->mime_type)));
+  }
+
+  MimeHandlerRegistry* registry = MimeHandlerRegistry::Get(browser_context());
+  if (reset_enabled) {
+    registry->ResetEnabledForMimeType(extension_id(), params->mime_type,
+                                      browser_context());
+  } else if (enabled.has_value()) {
+    registry->SetEnabledForMimeType(extension_id(), params->mime_type,
+                                    enabled.value(), browser_context());
+  }
+  if (reset_can_embed) {
+    registry->ResetCanEmbedForMimeType(extension_id(), params->mime_type,
+                                       browser_context());
+  } else if (can_embed.has_value()) {
+    registry->SetCanEmbedForMimeType(extension_id(), params->mime_type,
+                                     can_embed.value(), browser_context());
+  }
   return RespondNow(NoArguments());
 }
 
@@ -168,10 +221,17 @@ MimeHandlerGetMimeHandlerOptionsFunction::Run() {
       api::mime_handler::GetMimeHandlerOptions::Params::Create(args());
   EXTENSION_FUNCTION_VALIDATE(params);
 
+  if (!ExtensionHandlesMimeType(*extension(), params->mime_type)) {
+    return RespondNow(Error(ErrorUtils::FormatErrorMessage(
+        kUnhandledMimeTypeError, params->mime_type)));
+  }
+
+  MimeHandlerRegistry* registry = MimeHandlerRegistry::Get(browser_context());
   api::mime_handler::MimeHandlerOptions idl_options;
-  idl_options.enabled =
-      MimeHandlerRegistry::Get(browser_context())
-          ->IsEnabledForMimeType(extension_id(), params->mime_type);
+  idl_options.enabled = registry->IsEnabledForMimeType(
+      extension_id(), params->mime_type, browser_context());
+  idl_options.can_embed = registry->CanEmbedForMimeType(
+      extension_id(), params->mime_type, browser_context());
   return RespondNow(WithArguments(idl_options.ToValue()));
 }
 

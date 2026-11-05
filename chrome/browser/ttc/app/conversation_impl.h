@@ -11,13 +11,18 @@
 #include <string>
 #include <vector>
 
-#include "base/callback_list.h"
 #include "base/containers/span.h"
 #include "base/memory/raw_ref.h"
-#include "base/observer_list.h"
-#include "chrome/browser/ttc/app/audio_controller.h"
-#include "chrome/browser/ttc/app/public/conversation.h"
-#include "chrome/browser/ttc/app/ttc_backend.h"
+#include "base/memory/weak_ptr.h"
+#include "base/scoped_observation.h"
+#include "base/time/time.h"
+#include "chrome/browser/ttc/app/audio_logger.h"
+#include "chrome/browser/ttc/app/playback_status_reporter.h"
+#include "chrome/browser/ttc/app/public/audio_controller.h"
+#include "chrome/browser/ttc/app/speaker_tracker.h"
+#include "chrome/browser/ttc/core/states.h"
+#include "components/ttc/app/public/conversation.h"
+#include "components/ttc/app/ttc_backend.h"
 #include "url/gurl.h"
 
 namespace media {
@@ -32,15 +37,16 @@ namespace ttc {
 
 class SessionController;
 
-// Downsamples 48kHz 16-bit mono PCM to 16kHz using a 3:1 moving average filter.
-std::vector<uint8_t> Downsample48kHzTo16kHz(base::span<const uint8_t> pcm_data);
-
 // Manages a voice/multimodal conversation session with the TTC model.
 // Wires AudioController to TtcBackend for bidirectional streaming, handling
 // speech capture, audio playback, interruptions, transcripts, and tools.
-class ConversationImpl : public Conversation, public TtcBackend::Observer {
+class ConversationImpl : public Conversation,
+                         public AudioController::Observer,
+                         public TtcBackend::Observer {
  public:
-  explicit ConversationImpl(SessionController& session_controller);
+  // `backend` and `audio_controller` are required and provided to enable
+  // dependency injection in tests. Use MakeConversationImpl() to create a
+  // conversation using the production versions of these.
   ConversationImpl(std::unique_ptr<TtcBackend> backend,
                    std::unique_ptr<AudioController> audio_controller,
                    SessionController& session_controller);
@@ -50,50 +56,77 @@ class ConversationImpl : public Conversation, public TtcBackend::Observer {
   ConversationImpl& operator=(const ConversationImpl&) = delete;
 
   // Conversation implementation:
-  void AddObserver(Conversation::Observer* observer) override;
-  void RemoveObserver(Conversation::Observer* observer) override;
   void Start() override;
   void Stop() override;
-  bool is_connected() const override;
   void SendTextInput(const std::string& text) override;
   void SendContextUpdate(
       const GURL& url,
       const std::string& title,
       const optimization_guide::proto::AnnotatedPageContent& apc) override;
-  void SendToolSetUpdate(const std::vector<ToolDefinition>& tools) override;
-  void OnPageContextChanged() override;
+  void OnPageContextInvalidated() override;
+  void SetMicMuted(bool muted) override;
+  void SetHotlAudioSink(HotlAudioSinkCallback sink) override;
+  SessionJournal& GetJournal() override;
+
+  // AudioController::Observer implementation:
+  void OnCapturedAudio(base::span<const int16_t> pcm_data,
+                       const media::AudioParameters& params,
+                       float energy) override;
+  void OnCaptureStarted() override;
+  void OnCaptureStopped() override;
+  void OnCaptureMuted(bool muted, bool at_stream_start) override;
+  void OnModelAudioEnvelopeReady(const AudioEnvelope& envelope) override;
+  void OnPlaybackProgress(base::TimeDelta played_duration,
+                          bool did_fully_drain_queue) override;
+  void OnAudioError(ErrorCode error) override;
+  void OnPlaybackError() override;
 
   // TtcBackend::Observer implementation:
-  void OnStreamingStateChanged(bool connected,
-                               const std::string& session_id,
-                               const std::string& error_message) override;
+  void OnBackendInitialized() override;
+  void OnBackendClosed() override;
+  void OnBackendError(ErrorCode error) override;
   void OnTranscriptions(const std::string& input_transcription,
                         const std::string& output_transcription) override;
-  void OnAudioOutput(const std::vector<uint8_t>& audio_data,
+  void OnAudioOutput(base::span<const int16_t> audio_data,
                      int64_t sequence_number) override;
   void OnGenerationStateChanged(bool started,
                                 bool completed,
                                 bool interrupted) override;
+  void OnModelTurnStateUpdate(ModelTurnStateUpdate update,
+                              int64_t generation_id) override;
+  void OnUserTurnStateUpdate(UserTurnStateUpdate update) override;
   void OnToolCall(const ToolRequest& tool_request,
                   ToolResponseCallback response_callback) override;
+  void OnToolCallBatch(std::vector<PendingToolCall> tool_calls) override;
+  void OnJournalEvent(const ServerJournalEvent& journal_event) override;
 
   AudioController* audio_controller() { return audio_controller_.get(); }
   TtcBackend* backend() { return backend_.get(); }
+  Speaker speaker() const { return speaker_tracker_.speaker(); }
 
  private:
-  void OnCapturedAudio(const std::vector<uint8_t>& pcm_data,
-                       const media::AudioParameters& params);
-  void OnPlaybackCompleted(int64_t sequence_number);
+  void OnSpeakerChanged(Speaker old_speaker, Speaker new_speaker);
+  void SendPlaybackStatusReport(base::TimeDelta playback_progress,
+                                bool playback_complete,
+                                int64_t generation_id);
 
   std::unique_ptr<TtcBackend> backend_;
   std::unique_ptr<AudioController> audio_controller_;
 
+  // Buffers captured audio during the user's turn so it can be logged to the
+  // journal when the turn ends.
+  AudioLogger audio_logger_;
+
   // Safe because the SessionController owns this object.
   const raw_ref<SessionController> session_controller_;
 
-  base::CallbackListSubscription audio_capture_subscription_;
-  base::CallbackListSubscription playback_completion_subscription_;
-  base::ObserverList<Conversation::Observer> observers_;
+  SpeakerTracker speaker_tracker_;
+  std::unique_ptr<PlaybackStatusReporter> playback_status_reporter_;
+
+  HotlAudioSinkCallback hotl_audio_sink_;
+
+  base::ScopedObservation<AudioController, AudioController::Observer>
+      audio_controller_observation_{this};
 };
 
 }  // namespace ttc

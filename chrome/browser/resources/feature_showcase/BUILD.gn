@@ -10,6 +10,7 @@ build_webui("build") {
   grd_prefix = "feature_showcase"
 
   static_files = [
+    "animations/showcase_stepper.json",
     "animations/showcase_transition_bottom.json",
     "animations/showcase_transition_bottom_dark.json",
     "animations/showcase_transition_right.json",
@@ -17,8 +18,8 @@ build_webui("build") {
     "feature_showcase.html",
     "images/gemini_illustration_light.png",
     "images/gemini_illustration_dark.png",
-    "images/lens_overlay_illustration_light.png",
-    "images/lens_overlay_illustration_dark.png",
+    "images/lens_illustration_light.png",
+    "images/lens_illustration_dark.png",
     "images/password_manager_illustration_light.png",
     "images/password_manager_illustration_dark.png",
   ]

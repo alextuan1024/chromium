@@ -210,6 +210,12 @@ declare_args() {
   # away from the opt-in wexit_time_destructors config, and into the default
   # compiler config.
   is_wexit_time_destructors_default = build_with_chromium
+
+  # Enable Clang's -Wlifetime-safety-permissive warnings in chromium_code.
+  # https://clang.llvm.org/docs/LifetimeSafety.html
+  # TODO(crbug.com/570169685): Enable by default once baseline warnings are
+  # fixed.
+  enable_lifetime_safety_warnings = false
 }
 
 declare_args() {
@@ -682,29 +688,13 @@ config("compiler") {
   # C11/C++11 compiler flags setup.
   # ---------------------------
   if (is_linux || is_chromeos || is_android || current_os == "aix") {
-    if (is_clang) {
-      standard_prefix = "c"
+    # Since builds use -std=c* and not -std=gnu*, _GNU_SOURCE will not be
+    # defined by the compiler.  However, lots of code relies on the
+    # non-standard features that _GNU_SOURCE enables, so define it manually.
+    defines += [ "_GNU_SOURCE" ]
+  }
 
-      # Since we build with -std=c* and not -std=gnu*, _GNU_SOURCE will not be
-      # defined by the compiler.  However, lots of code relies on the
-      # non-standard features that _GNU_SOURCE enables, so define it manually.
-      defines += [ "_GNU_SOURCE" ]
-    } else {
-      # Gcc does not support ##__VA_ARGS__ when in standards-conforming mode,
-      # but we use this feature in several places in Chromium.
-      # TODO(thomasanderson): Replace usages of ##__VA_ARGS__ with the
-      # standard-compliant __VA_OPT__ added by C++20, and switch the gcc build
-      # to -std=c*.
-      standard_prefix = "gnu"
-    }
-
-    cflags_c += [ "-std=${standard_prefix}11" ]
-    if (use_cxx23) {
-      cflags_cc += [ "-std=${standard_prefix}++23" ]
-    } else {
-      cflags_cc += [ "-std=${standard_prefix}++20" ]
-    }
-  } else if (is_win) {
+  if (is_win) {
     cflags_c += [ "/std:c11" ]
     if (use_cxx23) {
       cflags_cc += [ "/std:c++23preview" ]
@@ -739,6 +729,9 @@ config("compiler") {
   }
 
   if (is_wasm) {
+    # WASM targets that link with -pthread (shared memory) require that every
+    # object file be compiled with atomics and bulk-memory enabled.
+    cflags += [ "-pthread" ]
     ldflags += [
       "-s",
       "ALLOW_MEMORY_GROWTH=1",
@@ -847,6 +840,8 @@ config("compiler") {
         # TODO(crbug.com/40219076): Investigate if we can get the > 6% perf win
         # of import_instr_limit 30 with a binary size hit smaller than ~2 MiB.
         import_instr_limit = 5
+      } else if (is_castos && optimize_for_size) {
+        import_instr_limit = 0
       }
 
       ldflags += [ "-Wl,-mllvm,-import-instr-limit=$import_instr_limit" ]
@@ -1051,6 +1046,15 @@ config("compiler") {
   # as NEON is a mandatory part of ARMv8 anyway.
   if (current_cpu == "arm64") {
     defines += [ "__ARM_NEON__=1" ]
+  }
+
+  # This reduces the core_runtime_starboard binary size by ~4.2MB uncompressed
+  # (~1.25MB compressed) on ARM32 embedded platforms.
+  if (enable_cast_receiver) {
+    cflags += [
+      "-mllvm",
+      "-inline-threshold=32",
+    ]
   }
 }
 
@@ -1312,7 +1316,11 @@ config("thinlto_optimize_default") {
 config("thinlto_optimize_max") {
   if (!is_debug && use_thin_lto && is_a_target_toolchain) {
     if (thin_lto_enable_optimizations) {
-      lto_opt_level = 2
+      if (is_castos && optimize_for_size) {
+        lto_opt_level = 1
+      } else {
+        lto_opt_level = 2
+      }
     } else {
       lto_opt_level = 0
     }
@@ -2108,6 +2116,7 @@ config("default_clippy_lints") {
     "-Wclippy::all",
 
     # Additional lints that we enable beyond the defaults
+    "-Wclippy::missing_safety_doc",
     "-Wclippy::undocumented_unsafe_blocks",
 
     # Lints disabled during the initial rollout period (when any objection
@@ -2117,7 +2126,7 @@ config("default_clippy_lints") {
     # TODO(crbug.com/534628766): Fix and re-enable.
     "-Aclippy::chunks_exact_to_as_chunks",
 
-    # TODO(crbug.com/556789085): Fix and re-enable.
+    # TODO(crbug.com/573308406): Fix and re-enable.
     "-Aclippy::needless_range_loop",
   ]
 }
@@ -2273,6 +2282,7 @@ config("chromium_code") {
 
   configs = [
     ":default_warnings",
+    ":lifetime_safety",
     ":noshadowing",
   ]
   if (treat_warnings_as_errors) {
@@ -2454,6 +2464,16 @@ config("no_exceptions") {
 config("wglobal_constructors") {
   if (is_clang) {
     cflags = [ "-Wglobal-constructors" ]
+  }
+}
+
+# Enables Clang's compile-time lifetime safety analysis
+# (-Wlifetime-safety-permissive).
+# See: https://clang.llvm.org/docs/LifetimeSafety.html
+config("lifetime_safety") {
+  if (is_clang && enable_lifetime_safety_warnings) {
+    cflags_cc = [ "-Wlifetime-safety-permissive" ]
+    cflags_objcc = cflags_cc
   }
 }
 

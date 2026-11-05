@@ -7,10 +7,12 @@
 #include <memory>
 
 #include "base/supports_user_data.h"
+#include "build/build_config.h"
+#include "chrome/browser/enterprise/connectors/connectors_service.h"
 #include "chrome/browser/safe_browsing/download_protection/download_protection_util.h"
-#include "chrome/browser/safe_browsing/safe_browsing_navigation_observer_manager_factory.h"
+#include "chrome/browser/safe_browsing/navigation_observer/safe_browsing_navigation_observer_manager_factory.h"
 #include "components/enterprise/connectors/core/reporting_utils.h"
-#include "components/safe_browsing/content/browser/safe_browsing_navigation_observer_manager.h"
+#include "components/safe_browsing/content/browser/navigation_observer/safe_browsing_navigation_observer_manager.h"
 #include "components/safe_browsing/core/common/proto/csd.pb.h"
 #include "components/sessions/content/session_tab_helper.h"
 #include "content/public/browser/download_item_utils.h"
@@ -56,6 +58,28 @@ safe_browsing::ReferrerChain GetSafeBrowsingReferrerChain(
 }
 
 }  // namespace
+
+bool IsReferrerChainNeededForEnterprise(
+    content::BrowserContext* browser_context) {
+  auto* service =
+      ConnectorsServiceFactory::GetForBrowserContext(browser_context);
+  if (!service) {
+    return false;
+  }
+  return service->IsConnectorEnabled(AnalysisConnector::BULK_DATA_ENTRY) ||
+         service->IsConnectorEnabled(AnalysisConnector::DATA_COPIED) ||
+         service->IsConnectorEnabled(AnalysisConnector::FILE_ATTACHED) ||
+         service->IsConnectorEnabled(AnalysisConnector::FILE_DOWNLOADED) ||
+#if BUILDFLAG(IS_CHROMEOS)
+         service->IsConnectorEnabled(AnalysisConnector::FILE_TRANSFER) ||
+#endif
+         service->IsConnectorEnabled(AnalysisConnector::PRINT) ||
+         service->IsConnectorEnabled(AnalysisConnector::NETWORK_REQUEST) ||
+         service->GetReportingSettings().has_value() ||
+         service->GetAppliedRealTimeUrlCheck() ==
+             EnterpriseRealTimeUrlCheckMode::
+                 REAL_TIME_CHECK_FOR_MAINFRAME_ENABLED;
+}
 
 safe_browsing::ReferrerChain GetReferrerChain(
     const GURL& url,

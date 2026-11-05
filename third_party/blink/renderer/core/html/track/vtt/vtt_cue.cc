@@ -90,14 +90,12 @@ static_assert(std::size(kDisplayAlignmentMap) == V8AlignSetting::kEnumSize,
               "displayAlignmentMap should have the same number of elements as "
               "VTTCue::NumberOfAlignments");
 
-const String& VerticalGrowingLeftKeyword() {
-  DEFINE_STATIC_LOCAL(const String, verticalrl, ("rl"));
-  return verticalrl;
+String VerticalGrowingLeftKeyword() {
+  return String::FromLiteral<"rl">();
 }
 
-const String& VerticalGrowingRightKeyword() {
-  DEFINE_STATIC_LOCAL(const String, verticallr, ("lr"));
-  return verticallr;
+String VerticalGrowingRightKeyword() {
+  return String::FromLiteral<"lr">();
 }
 
 bool IsInvalidPercentage(double value) {
@@ -774,6 +772,8 @@ VTTDisplayParameters VTTCue::CalculateDisplayParameters() const {
   display_parameters.snap_to_lines_position =
       snap_to_lines_ ? computed_line_position
                      : std::numeric_limits<float>::quiet_NaN();
+
+  display_parameters.line_align = line_align_;
 
   DCHECK(std::isfinite(display_parameters.size));
   DCHECK_NE(display_parameters.direction, CSSValueID::kNone);

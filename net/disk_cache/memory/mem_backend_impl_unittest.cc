@@ -38,13 +38,9 @@ class MemBackendImplTest : public testing::Test {
   }
 
  protected:
-  void SimulateMemoryLimitAndRelease(int percentage) {
-    test_memory_consumer_registry_.NotifyUpdateMemoryLimitAsync(
-        percentage, task_environment_.QuitClosure());
-    task_environment_.RunUntilQuit();
-
-    test_memory_consumer_registry_.NotifyReleaseMemoryAsync(
-        task_environment_.QuitClosure());
+  void SimulateMemoryLimitAndRelease(base::MemoryLimit memory_limit) {
+    test_memory_consumer_registry_.NotifyUpdateMemoryLimitAndReleaseAsync(
+        memory_limit, task_environment_.QuitClosure());
     task_environment_.RunUntilQuit();
   }
 
@@ -120,7 +116,7 @@ TEST_F(MemBackendImplTest, MemoryConsumer) {
   }
 
   // 3. Simulate critical memory pressure (10% limit).
-  SimulateMemoryLimitAndRelease(10);
+  SimulateMemoryLimitAndRelease(base::MemoryLimit::FromPercent(10));
 
   // Only the most recent entry (key9) should remain.
   for (int i = 0; i < 9; ++i) {

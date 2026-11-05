@@ -8,17 +8,16 @@
 #include <utility>
 
 #include "chrome/app/chrome_command_ids.h"
+#include "chrome/browser/feedback/show_feedback_page.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/accelerator_table.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
-#include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/webui/side_panel/read_anything/read_anything_untrusted_page_handler.h"
 #include "chrome/browser/ui/webui/theme_source.h"
 #include "chrome/common/webui_url_constants.h"
 #include "chrome/grit/generated_resources.h"
 #include "chrome/grit/side_panel_read_anything_resources.h"
 #include "chrome/grit/side_panel_read_anything_resources_map.h"
-#include "chrome/grit/side_panel_shared_resources.h"
 #include "chrome/grit/side_panel_shared_resources_map.h"
 #include "ui/webui/tracked_element/tracked_element_handler_document_singleton.h"
 #if BUILDFLAG(IS_MAC)
@@ -31,11 +30,9 @@
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_ui.h"
 #include "content/public/browser/web_ui_data_source.h"
-#include "ui/accessibility/accessibility_features.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/webui/web_ui_util.h"
 #include "ui/strings/grit/ui_strings.h"
-#include "ui/views/style/platform_style.h"
 #include "ui/webui/resources/grit/webui_resources.h"
 #include "ui/webui/webui_util.h"
 
@@ -55,6 +52,8 @@ ReadAnythingUntrustedUI::ReadAnythingUntrustedUI(content::WebUI* web_ui)
       {"readAnythingTabTitle", IDS_READING_MODE_TITLE},
       {"notSelectableHeader", IDS_READING_MODE_NOT_SELECTABLE_HEADER},
       {"emptyStateHeader", IDS_READING_MODE_EMPTY_STATE_HEADER},
+      {"emptyStateTranslationHeader",
+       IDS_READING_MODE_EMPTY_STATE_TRANSLATION_HEADER},
       {"emptyStateSubheader", IDS_READING_MODE_EMPTY_STATE_SUBHEADER},
       {"readAnythingLoadingMessage", IDS_READ_ANYTHING_LOADING},
       {"lineSpacingTitle", IDS_READING_MODE_LINE_SPACING_COMBOBOX_LABEL},
@@ -135,11 +134,13 @@ ReadAnythingUntrustedUI::ReadAnythingUntrustedUI(content::WebUI* web_ui)
       {"stopLabel", IDS_READING_MODE_STOP_SPEECH},
       {"playTooltip", IDS_READING_MODE_PLAY_TOOLTIP},
       {"previewTooltip", IDS_READING_MODE_PREVIEW_TOOLTIP},
+      {"previewVoiceLabel", IDS_READING_MODE_PREVIEW_VOICE_LABEL},
       {"pauseTooltip", IDS_READING_MODE_PAUSE_TOOLTIP},
       {"previousSentenceLabel", IDS_READING_MODE_NAVIGATE_PREVIOUS_SENTENCE},
       {"nextSentenceLabel", IDS_READING_MODE_NAVIGATE_NEXT_SENTENCE},
       {"settingsLabel", IDS_READING_MODE_SETTINGS},
       {"translateLabel", IDS_READING_MODE_TRANSLATE},
+      {"sendFeedbackLabel", IDS_READING_MODE_SEND_FEEDBACK_LABEL},
       {"voiceSpeedLabel", IDS_READING_MODE_VOICE_SPEED},
       {"voiceHighlightLabel", IDS_READING_MODE_VOICE_HIGHLIGHT},
       {"voiceSpeedWithRateLabel", IDS_READING_MODE_VOICE_SPEED_WITH_RATE},
@@ -216,9 +217,26 @@ ReadAnythingUntrustedUI::ReadAnythingUntrustedUI(content::WebUI* web_ui)
       {"linksLabel", IDS_READING_MODE_LINKS_LABEL},
       {"aiPlaybackTurnOn", IDS_READING_MODE_AI_PLAYBACK_TURN_ON},
       {"aiPlaybackTurnOff", IDS_READING_MODE_AI_PLAYBACK_TURN_OFF},
+      {"aiPlaybackFeedbackDialogTitle",
+       IDS_READING_MODE_AI_PLAYBACK_FEEDBACK_DIALOG_TITLE},
+      {"aiPlaybackFeedbackDialogSubtitle",
+       IDS_READING_MODE_AI_PLAYBACK_FEEDBACK_DIALOG_SUBTITLE},
+      {"aiPlaybackFeedbackSubmit",
+       IDS_READING_MODE_AI_PLAYBACK_FEEDBACK_SUBMIT},
+      {"aiPlaybackFeedbackReasonNotFactuallyCorrect",
+       IDS_READING_MODE_AI_PLAYBACK_FEEDBACK_REASON_NOT_FACTUALLY_CORRECT},
+      {"aiPlaybackFeedbackReasonBadVoice",
+       IDS_READING_MODE_AI_PLAYBACK_FEEDBACK_REASON_BAD_VOICE},
+      {"aiPlaybackFeedbackReasonNotEngaging",
+       IDS_READING_MODE_AI_PLAYBACK_FEEDBACK_REASON_NOT_ENGAGING},
+      {"aiPlaybackFeedbackReasonOffensive",
+       IDS_READING_MODE_AI_PLAYBACK_FEEDBACK_REASON_OFFENSIVE},
+      {"aiPlaybackFeedbackReasonTechnicalIssue",
+       IDS_READING_MODE_AI_PLAYBACK_FEEDBACK_REASON_TECHNICAL_ISSUE},
       {"voiceLabel", IDS_READING_MODE_VOICE_LABEL},
       {"accentMenuLabel", IDS_READING_MODE_ACCENT_MENU_LABEL},
       {"accentMenuClose", IDS_READING_MODE_ACCENT_MENU_CLOSE},
+      {"menuItemOpensDialogLabel", IDS_READING_MODE_MENU_ITEM_OPENS_DIALOG},
       {"cancel", IDS_CANCEL},
       {"save", IDS_SAVE},
   };
@@ -273,11 +291,12 @@ ReadAnythingUntrustedUI::ReadAnythingUntrustedUI(content::WebUI* web_ui)
       "chrome-untrusted://resources;");
   source->OverrideContentSecurityPolicy(
       network::mojom::CSPDirectiveName::TrustedTypes,
-      "trusted-types goog#html reader-mode-policy lit-html-desktop "
+      "trusted-types goog#html lit-html-desktop "
       "static-types "
       "parse-html-subset polymer-html-literal "
       "polymer-template-event-attribute-policy;");
   raw_ptr<Profile> profile = Profile::FromWebUI(web_ui);
+  source->AddBoolean("canShowFeedback", chrome::CanShowFeedback(profile));
 
   // If the ThemeSource isn't added here, since Read Anything is
   // chrome-untrusted, it will be unable to load stylesheets until a new tab
@@ -287,8 +306,9 @@ ReadAnythingUntrustedUI::ReadAnythingUntrustedUI(content::WebUI* web_ui)
 
   ui::TrackedElementHandlerDocumentSingleton::Register(
       this,
-      std::vector<ui::ElementIdentifier>{kReadAnythingViewModeElementId,
-                                         kReadAnythingSettingsButtonElementId});
+      std::vector<ui::ElementIdentifier>{
+          kReadAnythingViewModeElementId, kReadAnythingSettingsButtonElementId,
+          kReadAnythingAiPlaybackToggleElementId});
 }
 
 ReadAnythingUntrustedUI::~ReadAnythingUntrustedUI() = default;
@@ -337,7 +357,7 @@ void ReadAnythingUntrustedUI::CreateUntrustedPageHandler(
     mojo::PendingRemote<read_anything::mojom::UntrustedPage> page,
     mojo::PendingReceiver<read_anything::mojom::UntrustedPageHandler>
         receiver) {
-  DCHECK(page);
+  CHECK(page, base::NotFatalUntil::M162);
   read_anything_untrusted_page_handler_ =
       std::make_unique<ReadAnythingUntrustedPageHandler>(
           std::move(page), std::move(receiver), web_ui(),

@@ -14,6 +14,7 @@
 #include "partition_alloc/bucket_lookup.h"
 #include "partition_alloc/build_config.h"
 #include "partition_alloc/buildflags.h"
+#include "partition_alloc/debug_data_on_stack.h"
 #include "partition_alloc/in_slot_metadata.h"
 #include "partition_alloc/oom.h"
 #include "partition_alloc/page_allocator.h"
@@ -22,10 +23,12 @@
 #include "partition_alloc/partition_alloc_base/bits.h"
 #include "partition_alloc/partition_alloc_base/compiler_specific.h"
 #include "partition_alloc/partition_alloc_base/component_export.h"
+#include "partition_alloc/partition_alloc_base/containers/span.h"
 #include "partition_alloc/partition_alloc_base/thread_annotations.h"
 #include "partition_alloc/partition_alloc_check.h"
 #include "partition_alloc/partition_alloc_config.h"
 #include "partition_alloc/partition_alloc_constants.h"
+#include "partition_alloc/partition_alloc_public_constants.h"
 #include "partition_alloc/partition_bucket.h"
 #include "partition_alloc/partition_cookie.h"
 #include "partition_alloc/partition_oom.h"
@@ -239,14 +242,14 @@ void BeforeForkInParent() PA_NO_THREAD_SAFETY_ANALYSIS {
       LockRoot, false,
       internal::PartitionRootEnumerator::EnumerateOrder::kNormal);
 
-  internal::ThreadCacheRegistry::GetLock().Acquire();
+  internal::PartitionTlsRegistry::GetLock().Acquire();
   g_leak_size_map_lock.Acquire();
 }
 
 void ReleaseLocks(bool in_child) PA_NO_THREAD_SAFETY_ANALYSIS {
   UnlockOrReinit(g_leak_size_map_lock, in_child);
   // In reverse order, even though there are no lock ordering dependencies.
-  UnlockOrReinit(internal::ThreadCacheRegistry::GetLock(), in_child);
+  UnlockOrReinit(internal::PartitionTlsRegistry::GetLock(), in_child);
   internal::PartitionRootEnumerator::Instance().Enumerate(
       UnlockOrReinitRoot, in_child,
       internal::PartitionRootEnumerator::EnumerateOrder::kReverse);
@@ -270,8 +273,7 @@ void AfterForkInChild() {
   // If we don't reclaim this memory, it is lost forever. Note that this is only
   // really an issue if we fork() a multi-threaded process without calling
   // exec() right away, which is discouraged.
-  internal::ThreadCacheRegistry::Instance()
-      .ForcePurgeAllThreadAfterForkUnsafe();
+  internal::ThreadCache::ForcePurgeAllThreadAfterForkUnsafe();
 }
 #endif  // PA_CONFIG(HAS_ATFORK_HANDLER)
 
@@ -416,7 +418,7 @@ static size_t PartitionPurgeSlotSpan(PartitionRoot* root,
   // DiscardVirtualMemory makes the contents of discarded memory undefined.
   size_t last_slot = static_cast<size_t>(-1);
 #endif
-  std::fill_n(slot_usage.begin(), num_provisioned_slots, 1);
+  std::ranges::fill(base::span(slot_usage).first(num_provisioned_slots), 1);
   SlotSpanStart slot_span_start =
       internal::SlotSpanMetadata::ToSlotSpanStart(slot_span, root);
   // First, walk the freelist for this slot span and make a bitmap of which
@@ -1042,9 +1044,9 @@ void PartitionRoot::Init(PartitionOptions opts) {
     scheduler_loop_quarantine_.Configure(
         scheduler_loop_quarantine_root_,
         opts.scheduler_loop_quarantine_global_config);
-    scheduler_loop_quarantine_for_advanced_memory_safety_checks_.Configure(
+    scheduler_loop_quarantine_for_sanitized_object_.Configure(
         scheduler_loop_quarantine_root_,
-        opts.scheduler_loop_quarantine_for_advanced_memory_safety_checks_config);
+        opts.scheduler_loop_quarantine_for_sanitized_object_config);
     settings_.scheduler_loop_quarantine_thread_local_config =
         opts.scheduler_loop_quarantine_thread_local_config;
 
@@ -1094,14 +1096,25 @@ void PartitionRoot::Init(PartitionOptions opts) {
 #endif  // PA_BUILDFLAG(ENABLE_BACKUP_REF_PTR_SUPPORT)
 #endif  // PA_CONFIG(EXTRAS_REQUIRED)
 
-#if !PA_BUILDFLAG(ENABLE_BACKUP_REF_PTR_SUPPORT)
+    // AsanBackupRefPtr only needs `brp_enabled` or not. It doesn't need any
+    // extras.
+#if !PA_BUILDFLAG(ENABLE_BACKUP_REF_PTR_SUPPORT) && \
+    PA_BUILDFLAG(USE_ASAN_BACKUP_REF_PTR)
+    settings_.brp_enabled_ = opts.backup_ref_ptr == PartitionOptions::kEnabled;
+#endif  // !PA_BUILDFLAG(ENABLE_BACKUP_REF_PTR_SUPPORT) &&
+        // PA_BUILDFLAG(USE_ASAN_BACKUP_REF_PTR)
+
+#if !PA_BUILDFLAG(ENABLE_BACKUP_REF_PTR_SUPPORT) && \
+    !PA_BUILDFLAG(USE_ASAN_BACKUP_REF_PTR)
     PA_CHECK(opts.backup_ref_ptr == PartitionOptions::kDisabled);
-#endif  // !PA_BUILDFLAG(ENABLE_BACKUP_REF_PTR_SUPPORT)
+#endif  // !PA_BUILDFLAG(ENABLE_BACKUP_REF_PTR_SUPPORT) &&
+        // !PA_BUILDFLAG(USE_ASAN_BACKUP_REF_PTR)
 
     settings_.intended_leak = opts.intended_leak == PartitionOptions::kEnabled;
     if (settings_.intended_leak) {
       PA_CHECK(opts.thread_cache == PartitionOptions::kDisabled);
-#if PA_BUILDFLAG(ENABLE_BACKUP_REF_PTR_SUPPORT)
+#if PA_BUILDFLAG(ENABLE_BACKUP_REF_PTR_SUPPORT) || \
+    PA_BUILDFLAG(USE_ASAN_BACKUP_REF_PTR)
       PA_CHECK(!brp_enabled());
 #endif
     }
@@ -1161,8 +1174,8 @@ void PartitionRoot::Init(PartitionOptions opts) {
         internal::GetMetadataOffset(settings_.pool_handle);
 #endif  // PA_CONFIG(MOVE_METADATA_OUT_OF_GIGACAGE)
 
-    settings_.use_tighter_aligned_alloc_bound =
-        (opts.tighter_aligned_alloc_bound == PartitionOptions::kEnabled);
+    settings_.allow_giga_allocations =
+        (opts.allow_giga_allocations == PartitionOptions::kAllowed);
 
     initialized_ = true;
   }
@@ -1178,12 +1191,12 @@ PartitionRoot::Settings::Settings() = default;
 PartitionRoot::PartitionRoot()
     : scheduler_loop_quarantine_root_(*this),
       scheduler_loop_quarantine_(this),
-      scheduler_loop_quarantine_for_advanced_memory_safety_checks_(this) {}
+      scheduler_loop_quarantine_for_sanitized_object_(this) {}
 
 PartitionRoot::PartitionRoot(PartitionOptions opts)
     : scheduler_loop_quarantine_root_(*this),
       scheduler_loop_quarantine_(this),
-      scheduler_loop_quarantine_for_advanced_memory_safety_checks_(this) {
+      scheduler_loop_quarantine_for_sanitized_object_(this) {
   Init(opts);
 }
 
@@ -1425,6 +1438,12 @@ bool PartitionRoot::TryReallocInPlaceForNormalBuckets(
       // Important to note that DCHECKED_BRP implies BACKUP_REF_PTR_SUPPORT and
       // thus `ref_count` is always set above.
       PA_DCHECK(new_ref_count == ref_count);
+
+#if PA_BUILDFLAG(CHECKED_SPAN_HAS_METADATA_SUPPORT)
+      // By definition, slots that can store the raw size do not smuggle
+      // the requested size.
+      PA_DCHECK(!ref_count->IsSmuggledSizeAvailable());
+#endif  // PA_BUILDFLAG(CHECKED_SPAN_HAS_METADATA_SUPPORT)
     }
 #endif  // PARTITION_ALLOC_HAS_DCHECKED_BRP
 
@@ -1436,12 +1455,6 @@ bool PartitionRoot::TryReallocInPlaceForNormalBuckets(
           static_cast<unsigned char*>(object) + GetSlotUsableSize(slot_span)));
     }
 #endif  // PA_BUILDFLAG(USE_PARTITION_COOKIE)
-
-#if PA_BUILDFLAG(CHECKED_SPAN_HAS_METADATA_SUPPORT)
-    // By definition, slots that can store the raw size do not smuggle
-    // the requested size.
-    PA_DCHECK(!ref_count->IsSmuggledSizeAvailable());
-#endif  // PA_BUILDFLAG(CHECKED_SPAN_HAS_METADATA_SUPPORT)
 
   }
 #if PA_BUILDFLAG(CHECKED_SPAN_HAS_METADATA_SUPPORT)
@@ -1471,26 +1484,16 @@ bool PartitionRoot::TryReallocInPlaceForNormalBuckets(
   return object;
 }
 
-// static
-//
-// Returns the size available to the app. It can be equal or higher than the
-// requested size. If higher, the overage won't exceed what's actually usable
-// by the app without a risk of running out of an allocated region or into
-// PartitionAlloc's internal data. Used as malloc_usable_size and malloc_size.
-//
-// |ptr| should preferably point to the beginning of an object returned from
-// malloc() et al., but it doesn't have to. crbug.com/1292646 shows an example
-// where this isn't the case. Note, an inner object pointer won't work for
-// direct map, unless it is within the first partition page.
-size_t PartitionRoot::GetExternalUsableSize(const void* ptr) {
-  // malloc_usable_size() is expected to handle NULL gracefully and return 0.
-  if (!ptr) {
-    return 0;
-  }
+namespace {
+
+// What `PartitionRoot::GetExternalUsableSize()` does for a non-null `ptr`:
+// reads its usable size from its metadata.
+PA_ALWAYS_INLINE size_t GetExternalUsableSizeFromMetadata(const void* ptr) {
   const std::ptrdiff_t offset =
       internal::GetMetadataOffsetFromAddr(internal::ObjectInnerPtr2Addr(ptr));
-  auto* slot_span = SlotSpanMetadata::FromObjectInnerPtr(ptr, offset);
-  auto* root = FromSlotSpanMetadata(slot_span);
+  auto* slot_span =
+      PartitionRoot::SlotSpanMetadata::FromObjectInnerPtr(ptr, offset);
+  auto* root = PartitionRoot::FromSlotSpanMetadata(slot_span);
   size_t usable = root->GetSlotUsableSize(slot_span);
 #if PA_BUILDFLAG(CHECKED_SPAN_HAS_METADATA_SUPPORT)
   if (root->brp_enabled()) [[likely]] {
@@ -1516,6 +1519,27 @@ size_t PartitionRoot::GetExternalUsableSize(const void* ptr) {
   return usable;
 }
 
+}  // namespace
+
+// static
+//
+// Returns the size available to the app. It can be equal or higher than the
+// requested size. If higher, the overage won't exceed what's actually usable
+// by the app without a risk of running out of an allocated region or into
+// PartitionAlloc's internal data. Used as malloc_usable_size and malloc_size.
+//
+// |ptr| should preferably point to the beginning of an object returned from
+// malloc() et al., but it doesn't have to. crbug.com/1292646 shows an example
+// where this isn't the case. Note, an inner object pointer won't work for
+// direct map, unless it is within the first partition page.
+size_t PartitionRoot::GetExternalUsableSize(const void* ptr) {
+  // malloc_usable_size() is expected to handle NULL gracefully and return 0.
+  if (!ptr) {
+    return 0;
+  }
+  return GetExternalUsableSizeFromMetadata(ptr);
+}
+
 // Return the capacity of the underlying slot (adjusted for extras) that'd be
 // used to satisfy a request of |size|. This doesn't mean this capacity would be
 // readily available. It merely means that if an allocation happened with that
@@ -1533,7 +1557,8 @@ size_t PartitionRoot::AllocationCapacityFromRequestedSize(size_t size) const {
 
   if (!bucket.is_direct_mapped()) [[likely]] {
     size = bucket.slot_size;
-  } else if (size > MaxAllocationSize()) {
+  } else if (size > MaxAllocationSize() &&
+             (!allow_giga_allocations() || size > MaxGigaAllocationSize())) {
     // Too large to allocate => return the size unchanged.
   } else {
     size = GetDirectMapSlotSize(size);
@@ -1686,8 +1711,6 @@ void PartitionRoot::DumpStats(const char* partition_name,
 
   stats.total_intended_leak_bytes =
       intended_leak_size_.load(std::memory_order_relaxed);
-  stats.total_aligned_alloc_wasted_bytes =
-      total_aligned_alloc_wasted_bytes_.load(std::memory_order_relaxed);
 
   // Collect data with the lock held, cannot allocate or call third-party code
   // below.
@@ -1758,11 +1781,10 @@ void PartitionRoot::DumpStats(const char* partition_name,
 
     stats.has_thread_cache = settings_.with_thread_cache;
     if (stats.has_thread_cache) {
-      internal::ThreadCacheRegistry::Instance().DumpStats(
-          true, &stats.current_thread_cache_stats,
-          settings_.thread_cache_index);
-      internal::ThreadCacheRegistry::Instance().DumpStats(
-          false, &stats.all_thread_caches_stats, settings_.thread_cache_index);
+      internal::ThreadCache::DumpStats(true, &stats.current_thread_cache_stats,
+                                       settings_.thread_cache_index);
+      internal::ThreadCache::DumpStats(false, &stats.all_thread_caches_stats,
+                                       settings_.thread_cache_index);
     }
 
     stats.has_scheduler_loop_quarantine =
@@ -1843,7 +1865,7 @@ void PartitionRoot::ResetForTesting(bool allow_leaks) {
   // must explicitly purge them here before executing the teardown/leak
   // assertions.
   scheduler_loop_quarantine_.Purge();
-  scheduler_loop_quarantine_for_advanced_memory_safety_checks_.Purge();
+  scheduler_loop_quarantine_for_sanitized_object_.Purge();
 
   ::partition_alloc::internal::ScopedGuard guard{
       internal::PartitionRootLock(this)};
@@ -2049,6 +2071,11 @@ void PartitionRoot::SetSortActiveSlotSpansEnabled(bool new_value) {
   sort_active_slot_spans_ = new_value;
 }
 
+// static
+void PartitionRoot::SetMinProvisioningSize(size_t new_value) {
+  min_provisioning_size_.store(new_value, std::memory_order_relaxed);
+}
+
 void PartitionRoot::ReconfigureSchedulerLoopQuarantineForCurrentThread(
     const internal::SchedulerLoopQuarantineConfig& config) {
   internal::ThreadCache* thread_cache = this->EnsureThreadCache();
@@ -2058,6 +2085,16 @@ void PartitionRoot::ReconfigureSchedulerLoopQuarantineForCurrentThread(
 }
 
 #if PA_BUILDFLAG(ENABLE_BACKUP_REF_PTR_SUPPORT)
+namespace {
+
+// Zaps the object of a slot entering BackupRefPtr's quarantine.
+PA_ALWAYS_INLINE void ZapBrpQuarantinedObject(void* object,
+                                              size_t usable_size) {
+  internal::SecureMemset(object, internal::kQuarantinedByte, usable_size);
+}
+
+}  // namespace
+
 PA_NOINLINE void PartitionRoot::QuarantineForBrp(
     const internal::SlotSpanMetadata* slot_span,
     SlotStart slot_start) {
@@ -2066,8 +2103,7 @@ PA_NOINLINE void PartitionRoot::QuarantineForBrp(
   if (hook) [[unlikely]] {
     hook(slot_start.ToObject(), usable_size);
   } else {
-    internal::SecureMemset(slot_start.ToObject(), internal::kQuarantinedByte,
-                           usable_size);
+    ZapBrpQuarantinedObject(slot_start.ToObject(), usable_size);
   }
 }
 #endif  // PA_BUILDFLAG(ENABLE_BACKUP_REF_PTR_SUPPORT)
@@ -2132,21 +2168,14 @@ PA_NOINLINE void* PartitionRoot::Realloc(void* ptr,
 
 // After fixing all callers, this method will be `Free(void* object)` and
 // will invoke `FreeInline<flags>(object)`.
-template <FreeFlags flags>
-PA_NOINLINE void PartitionRoot::FreeInline(void* object) {
-  FreeInlineInternal<flags>(object);
+template <FreeFlags flags, FreeHint... Hint>
+PA_NOINLINE void PartitionRoot::FreeInline(void* object, Hint... hint) {
+  FreeInlineInternal<flags>(object, hint...);
 }
 
-template <FreeFlags flags>
-PA_NOINLINE void PartitionRoot::FreeInline(
-    void* object,
-    FreeHintType<FreeHintFlags(flags)> hint) {
-  FreeInlineInternal<flags>(object, hint);
-}
-
-template <FreeFlags flags>
-PA_NOINLINE void PartitionRoot::FreeInUnknownRoot(void* object) {
-  FreeInlineInUnknownRoot<flags>(object);
+template <FreeFlags flags, FreeHint... Hint>
+PA_NOINLINE void PartitionRoot::FreeInUnknownRoot(void* object, Hint... hint) {
+  FreeInlineInUnknownRoot<flags>(object, hint...);
 }
 
 template <FreeFlags flags>
@@ -2160,13 +2189,6 @@ PA_NOINLINE void PartitionRoot::AlignedFree(void* object) {
       FreeFlags::kNone;
 #endif  // PA_BUILDFLAG(MEMORY_TOOL_REPLACES_ALLOCATOR)
   FreeInline<flags | kMaybeAlignedFreeForMemoryTool>(object);
-}
-
-template <FreeFlags flags>
-PA_NOINLINE void PartitionRoot::FreeInUnknownRoot(
-    void* object,
-    FreeHintType<FreeHintFlags(flags)> hint) {
-  FreeInlineInUnknownRoot<flags>(object, hint);
 }
 
 #define DEFINE_PARTITION_ROOT_EXPORT_TEMPLATE 1

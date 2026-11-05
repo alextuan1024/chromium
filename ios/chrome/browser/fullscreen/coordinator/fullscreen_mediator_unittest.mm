@@ -29,14 +29,50 @@
 #import "testing/platform_test.h"
 #import "third_party/ocmock/OCMock/OCMock.h"
 
-// Test scroll view subclass allowing isDragging to be configured.
-@interface FullscreenTestScrollView : UIScrollView
-@property(nonatomic, assign) BOOL isDraggingOverride;
+// Test pan gesture recognizer subclass that stores translation without
+// requiring an active touch sequence.
+@interface FullscreenTestPanGestureRecognizer : UIPanGestureRecognizer
 @end
 
-@implementation FullscreenTestScrollView
+@implementation FullscreenTestPanGestureRecognizer {
+  CGPoint _translationOverride;
+}
+- (CGPoint)translationInView:(UIView*)view {
+  return _translationOverride;
+}
+- (void)setTranslation:(CGPoint)translation inView:(UIView*)view {
+  _translationOverride = translation;
+}
+@end
+
+// Test scroll view subclass allowing gesture state properties to be configured.
+@interface FullscreenTestScrollView : UIScrollView
+@property(nonatomic, assign) BOOL isDraggingOverride;
+@property(nonatomic, assign) BOOL isTrackingOverride;
+@property(nonatomic, assign) BOOL isDeceleratingOverride;
+@end
+
+@implementation FullscreenTestScrollView {
+  FullscreenTestPanGestureRecognizer* _testPanGestureRecognizer;
+}
+- (instancetype)initWithFrame:(CGRect)frame {
+  if ((self = [super initWithFrame:frame])) {
+    _testPanGestureRecognizer =
+        [[FullscreenTestPanGestureRecognizer alloc] init];
+  }
+  return self;
+}
+- (UIPanGestureRecognizer*)panGestureRecognizer {
+  return _testPanGestureRecognizer;
+}
 - (BOOL)isDragging {
   return _isDraggingOverride;
+}
+- (BOOL)isTracking {
+  return _isTrackingOverride;
+}
+- (BOOL)isDecelerating {
+  return _isDeceleratingOverride;
 }
 @end
 
@@ -45,17 +81,37 @@ namespace {
 // Observer to track calls to WillUpdateObscuredInsetRange.
 class FullscreenMediatorTestObserver : public FullscreenBrowserAgentObserver {
  public:
+  void WillUpdateState(FullscreenBrowserAgent* agent) override {
+    if (top_obscured_inset_ > 0) {
+      agent->AddObscuredInset(UIRectEdgeTop, top_obscured_inset_);
+    }
+    if (max_bottom_inset_ > 0) {
+      agent->AddObscuredInset(UIRectEdgeBottom,
+                              max_bottom_inset_ * agent->bottom_progress());
+    }
+  }
+
   void WillUpdateObscuredInsetRange(FullscreenBrowserAgent* agent) override {
     agent->AddObscuredInsetRange(UIRectEdgeTop, 0, 50);
+    if (max_bottom_inset_ > 0) {
+      agent->AddObscuredInsetRange(UIRectEdgeBottom, 0, max_bottom_inset_);
+    }
     will_update_obscured_inset_range_count_++;
   }
 
+  void set_top_obscured_inset(CGFloat inset) { top_obscured_inset_ = inset; }
+
+  void set_max_bottom_inset(CGFloat max_bottom_inset) {
+    max_bottom_inset_ = max_bottom_inset;
+  }
   int will_update_obscured_inset_range_count() const {
     return will_update_obscured_inset_range_count_;
   }
 
  private:
+  CGFloat max_bottom_inset_ = 0;
   int will_update_obscured_inset_range_count_ = 0;
+  CGFloat top_obscured_inset_ = 0;
 };
 
 }  // namespace
@@ -426,4 +482,162 @@ TEST_F(FullscreenMediatorTest, ExitsFullscreenOnSecondScrollToBottom) {
 
   EXPECT_EQ(agent_->State(), FullscreenState::kUIExpanded);
   EXPECT_EQ(agent_->top_progress(), 1.0);
+}
+
+// Tests that programmatic `contentOffset` adjustments (during `contentSize`
+// updates, active tracking, or momentum deceleration) are ignored and that
+// opposing adjustments during tracking or deceleration restore the previous
+// `contentOffset`.
+TEST_F(FullscreenMediatorTest, IgnoresAndRestoresProgrammaticScrolls) {
+  auto [scroll_view, scroll_view_proxy] = SetUpActiveWebStateWithScrollView();
+  scroll_view.isTrackingOverride = YES;
+  id<CRWWebViewScrollViewProxyObserver> observer =
+      static_cast<id<CRWWebViewScrollViewProxyObserver>>(mediator_);
+
+  [observer webViewScrollViewWillBeginDragging:scroll_view_proxy];
+
+  // Scroll accompanied by a `contentSize.height` change is ignored.
+  [scroll_view.panGestureRecognizer setTranslation:CGPointMake(0, -10.0)
+                                            inView:scroll_view];
+  scroll_view.contentSize = CGSizeMake(scroll_view.contentSize.width, 2100.0);
+  scroll_view.contentOffset = CGPointMake(0, 110.0);
+  EXPECT_EQ(agent_->top_progress(), 1.0);
+
+  // User drags finger up (`panTranslation.y` decreases), scrolling content down
+  // (`delta` > 0).
+  constexpr CGFloat kTrackedOffsetY = 125.0;
+  [scroll_view.panGestureRecognizer setTranslation:CGPointMake(0, -25.0)
+                                            inView:scroll_view];
+  scroll_view.contentOffset = CGPointMake(0, kTrackedOffsetY);
+  CGFloat progress_after_user_scroll = agent_->top_progress();
+  EXPECT_LT(progress_after_user_scroll, 1.0);
+
+  // Programmatic scroll snapping `contentOffset` backward without pan movement
+  // is ignored and restored.
+  scroll_view.contentOffset = CGPointMake(0, 112.0);
+  EXPECT_EQ(agent_->top_progress(), progress_after_user_scroll);
+  EXPECT_EQ(scroll_view.contentOffset.y, kTrackedOffsetY);
+
+  // Finger lifts into downward deceleration; momentum scroll proceeds, while an
+  // opposing programmatic adjustment is ignored and restored.
+  CGPoint target_offset = CGPointMake(0, 300.0);
+  [observer webViewScrollViewWillEndDragging:scroll_view_proxy
+                                withVelocity:CGPointMake(0, 1.5)
+                         targetContentOffset:&target_offset];
+  scroll_view.isTrackingOverride = NO;
+  scroll_view.isDeceleratingOverride = YES;
+
+  constexpr CGFloat kDecelerationOffsetY = 135.0;
+  scroll_view.contentOffset = CGPointMake(0, kDecelerationOffsetY);
+  CGFloat progress_after_deceleration = agent_->top_progress();
+  EXPECT_LT(progress_after_deceleration, progress_after_user_scroll);
+
+  scroll_view.contentOffset = CGPointMake(0, 120.0);
+  EXPECT_EQ(agent_->top_progress(), progress_after_deceleration);
+  EXPECT_EQ(scroll_view.contentOffset.y, kDecelerationOffsetY);
+}
+
+// Tests that forced fullscreen prevents scroll snapping from exiting
+// fullscreen.
+TEST_F(FullscreenMediatorTest, ForcedFullscreenIgnoresScrollSnap) {
+  auto [scroll_view, scroll_view_proxy] = SetUpActiveWebStateWithScrollView();
+  id<CRWWebViewScrollViewProxyObserver> scroll_observer =
+      static_cast<id<CRWWebViewScrollViewProxyObserver>>(mediator_);
+
+  [mediator_ forceFullscreen:YES feature:ForceFullscreenFeature::kKeyboard];
+  EXPECT_EQ(agent_->State(), FullscreenState::kUICollapsed);
+
+  // Dragging to the top of the page (`contentOffset == 0`) and ending the drag
+  // must not snap out of fullscreen while `kKeyboard` is active.
+  scroll_view.contentOffset = CGPointMake(0, 100);
+  [scroll_observer webViewScrollViewWillBeginDragging:scroll_view_proxy];
+  scroll_view.contentOffset = CGPointMake(0, 0);
+  [scroll_observer webViewScrollViewDidScroll:scroll_view_proxy];
+  [scroll_observer webViewScrollViewDidEndDragging:scroll_view_proxy
+                                    willDecelerate:NO];
+  EXPECT_EQ(agent_->State(), FullscreenState::kUICollapsed);
+
+  [mediator_ forceFullscreen:NO feature:ForceFullscreenFeature::kKeyboard];
+  EXPECT_EQ(agent_->State(), FullscreenState::kUIExpanded);
+}
+
+// Tests that `webState:didFinishNavigation:` forwards `obscuredInsets` to the
+// web view proxy even when `scrollViewProxy.contentInset` already matches the
+// unadjusted toolbar insets.
+TEST_F(FullscreenMediatorTest,
+       DidFinishNavigationForwardsObscuredInsetsWhenContentInsetMatches) {
+  const UIEdgeInsets expected_insets = UIEdgeInsetsMake(50, 0, 0, 0);
+  observer_.set_top_obscured_inset(expected_insets.top);
+  agent_->InvalidateInsetRange();
+  ASSERT_TRUE(UIEdgeInsetsEqualToEdgeInsets(agent_->insets(), expected_insets));
+
+  auto web_state = std::make_unique<web::FakeWebState>();
+  WebViewProxyTabHelper::CreateForWebState(web_state.get());
+
+  FullscreenTestScrollView* scroll_view = [[FullscreenTestScrollView alloc]
+      initWithFrame:CGRectMake(0, 0, 320, 480)];
+  scroll_view.contentInset = expected_insets;
+
+  CRWWebViewScrollViewProxy* scroll_view_proxy =
+      [[CRWWebViewScrollViewProxy alloc] init];
+  [scroll_view_proxy setScrollView:scroll_view];
+
+  id web_view_proxy_mock = OCMProtocolMock(@protocol(CRWWebViewProxy));
+  OCMStub([web_view_proxy_mock scrollViewProxy]).andReturn(scroll_view_proxy);
+  OCMStub([web_view_proxy_mock obscuredInsets]).andReturn(expected_insets);
+
+  WebViewProxyTabHelper::FromWebState(web_state.get())
+      ->SetOverridingWebViewProxy(web_view_proxy_mock);
+
+  web::FakeWebState* web_state_ptr = web_state.get();
+  browser_->GetWebStateList()->InsertWebState(
+      std::move(web_state),
+      WebStateList::InsertionParams::Automatic().Activate());
+
+  OCMExpect([web_view_proxy_mock setObscuredInsets:expected_insets
+                                   initialVelocity:0.0]);
+
+  id<CRWWebStateObserver> web_state_observer =
+      static_cast<id<CRWWebStateObserver>>(mediator_);
+  web::FakeNavigationContext context;
+  context.SetIsSameDocument(false);
+  [web_state_observer webState:web_state_ptr didFinishNavigation:&context];
+
+  [web_view_proxy_mock verify];
+}
+
+// Tests that setting the keyboard obscured inset updates the scroll view's
+// bottom content inset without modifying the web view's obscured insets or
+// viewport insets.
+TEST_F(FullscreenMediatorTest, KeyboardInsetUpdatesScrollViewContentInsetOnly) {
+  constexpr CGFloat kBottomToolbarHeight = 60.0;
+  constexpr CGFloat kKeyboardHeight = 300.0;
+
+  observer_.set_max_bottom_inset(kBottomToolbarHeight);
+  auto [scroll_view, scroll_view_proxy] = SetUpActiveWebStateWithScrollView();
+  agent_->InvalidateInsetRange();
+
+  CGFloat expected_resting_bottom_inset = 0.0;
+  CGFloat expected_keyboard_bottom_inset =
+      kKeyboardHeight - kBottomToolbarHeight;
+  if (@available(iOS 26, *)) {
+    expected_resting_bottom_inset = kBottomToolbarHeight;
+    expected_keyboard_bottom_inset = kKeyboardHeight;
+  }
+
+  // Initial toolbar bottom inset is `kBottomToolbarHeight`.
+  EXPECT_EQ(agent_->insets().bottom, kBottomToolbarHeight);
+  EXPECT_EQ(scroll_view.contentInset.bottom, expected_resting_bottom_inset);
+
+  // Set keyboard inset.
+  agent_->SetKeyboardObscuredInset(kKeyboardHeight);
+
+  // The scroll view's bottom content inset must expand for the keyboard.
+  EXPECT_EQ(scroll_view.contentInset.bottom, expected_keyboard_bottom_inset);
+  // Toolbar insets must not include the keyboard height.
+  EXPECT_EQ(agent_->insets().bottom, kBottomToolbarHeight);
+
+  // Hide the keyboard.
+  agent_->SetKeyboardObscuredInset(0.0);
+  EXPECT_EQ(scroll_view.contentInset.bottom, expected_resting_bottom_inset);
 }

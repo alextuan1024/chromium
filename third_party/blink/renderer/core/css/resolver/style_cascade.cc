@@ -6,8 +6,8 @@
 
 #include <bit>
 #include <optional>
+#include <ranges>
 
-#include "base/containers/adapters.h"
 #include "base/notreached.h"
 #include "third_party/blink/renderer/core/animation/css/css_animations.h"
 #include "third_party/blink/renderer/core/animation/css_interpolation_environment.h"
@@ -25,6 +25,7 @@
 #include "third_party/blink/renderer/core/css/css_numeric_literal_value.h"
 #include "third_party/blink/renderer/core/css/css_pending_substitution_value.h"
 #include "third_party/blink/renderer/core/css/css_primitive_value.h"
+#include "third_party/blink/renderer/core/css/css_private_bindings.h"
 #include "third_party/blink/renderer/core/css/css_syntax_string_parser.h"
 #include "third_party/blink/renderer/core/css/css_unparsed_declaration_value.h"
 #include "third_party/blink/renderer/core/css/css_unset_value.h"
@@ -67,9 +68,11 @@
 #include "third_party/blink/renderer/core/frame/web_feature.h"
 #include "third_party/blink/renderer/core/html/forms/html_select_element.h"
 #include "third_party/blink/renderer/core/html/html_element.h"
+#include "third_party/blink/renderer/core/html/shadow/shadow_element_names.h"
 #include "third_party/blink/renderer/core/layout/layout_view.h"
 #include "third_party/blink/renderer/core/style/computed_style.h"
 #include "third_party/blink/renderer/core/style_property_shorthand.h"
+#include "third_party/blink/renderer/platform/heap/heap_auto_reset.h"
 #include "third_party/blink/renderer/platform/instrumentation/use_counter.h"
 #include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/wtf/math_extras.h"
@@ -95,28 +98,6 @@ AtomicString ConsumeIfVariableName(CSSParserTokenStream& stream) {
     return g_null_atom;
   }
   return stream.ConsumeIncludingWhitespace().Value().ToAtomicString();
-}
-
-AtomicString ConsumeAndComputeVariableName(CSSParserTokenStream& stream,
-                                           const CSSParserContext& context,
-                                           StyleResolverState& state) {
-  stream.ConsumeWhitespace();
-  if (stream.Peek().GetType() == kIdentToken) {
-    // Note that CSSVariableParser has previously checked that the ident
-    // has a valid form.
-    return stream.ConsumeIncludingWhitespaceRaw().Value().ToAtomicString();
-  }
-  // ident()
-  DCHECK_EQ(stream.Peek().FunctionId(), CSSValueID::kIdent);
-  CSSFunctionValue* ident_function =
-      css_parsing_utils::ConsumeIdentFunction(stream, context);
-  DCHECK(ident_function);
-  AtomicString computed_ident = CSSCustomIdentValue::ComputeIdent(
-      *ident_function, state.CssToLengthConversionData());
-  if (!CSSVariableParser::IsValidVariableName(computed_ident)) {
-    return AtomicString("unknown");
-  }
-  return computed_ident;
 }
 
 bool ConsumeComma(CSSParserTokenStream& stream) {
@@ -163,6 +144,11 @@ const MixinParameterBindings* MixinParameterBindingsAt(
   const MatchedProperties& properties =
       result.GetMatchedProperties()[rule_index];
   return properties.mixin_parameter_bindings;
+}
+
+const CSSPrivateBindings* CSSPrivateBindingsAt(const MatchResult& result,
+                                               wtf_size_t rule_index) {
+  return result.GetMatchedProperties()[rule_index].css_private_bindings;
 }
 
 PropertyHandle ToPropertyHandle(const CSSProperty& property,
@@ -329,6 +315,35 @@ void StyleCascade::Apply(CascadeFilter filter) {
   ApplyUnresolvedEnv(resolver);
 }
 
+void StyleCascade::ApplyPrecomputedHover() {
+  SetApplyPrecomputeHoverRules(true);
+  ResetAndCollectAgain();
+
+  CascadeFilter filter;
+  // For performance avoid stack initialization on this large object.
+  STACK_UNINITIALIZED CascadeResolver resolver(filter);
+
+  // TODO: If the property value depends on the parent style, we cannot do the
+  // precomputation without also precomputing the ancestor chain :hover styles.
+  // That includes 'unset', color functions with currentcolor, etc.
+  if (map_.NativeBitset().Has(CSSPropertyID::kColor)) {
+    LookupAndApply(GetCSSPropertyColor(), resolver);
+  }
+  if (map_.NativeBitset().Has(CSSPropertyID::kTextDecorationColor)) {
+    LookupAndApply(GetCSSPropertyTextDecorationColor(), resolver);
+  }
+  if (map_.NativeBitset().Has(CSSPropertyID::kTextDecorationLine)) {
+    LookupAndApply(GetCSSPropertyTextDecorationLine(), resolver);
+  }
+  if (map_.NativeBitset().Has(CSSPropertyID::kTextDecorationStyle)) {
+    LookupAndApply(GetCSSPropertyTextDecorationStyle(), resolver);
+  }
+  if (map_.NativeBitset().Has(CSSPropertyID::kTextDecorationThickness)) {
+    LookupAndApply(GetCSSPropertyTextDecorationThickness(), resolver);
+  }
+  state_.StyleBuilder().SetStyleType(kPseudoIdPrecomputedHover);
+}
+
 std::unique_ptr<CSSBitset> StyleCascade::ReleaseImportantSet() {
   CollectDeclarationsIfNeeded();
   return map_.ReleaseImportantSet();
@@ -336,6 +351,7 @@ std::unique_ptr<CSSBitset> StyleCascade::ReleaseImportantSet() {
 
 void StyleCascade::Reset() {
   map_.Reset();
+  current_css_private_bindings_ = nullptr;
   match_result_.Reset();
   interpolations_.Reset();
   has_applied_ = false;
@@ -471,10 +487,23 @@ void StyleCascade::CollectFromMatchResult() {
   int index = 0;
   for (const MatchedProperties& properties :
        match_result_.GetMatchedProperties()) {
+    if (properties.data_.precompute_hover && !apply_precompute_hover_rules_) {
+      index++;
+      continue;
+    }
     ExpandCascade(
         properties, GetDocument(), index++,
-        [this](CascadePriority cascade_priority,
-               const AtomicString& custom_property_name) {
+        [this, &properties](CascadePriority cascade_priority,
+                            const AtomicString& custom_property_name) {
+          if (properties.css_private_bindings) {
+            if (const AtomicString& hygienic_name =
+                    properties.css_private_bindings->Lookup(
+                        custom_property_name);
+                !hygienic_name.IsNull()) {
+              map_.Add(hygienic_name, cascade_priority);
+              return;
+            }
+          }
           map_.Add(custom_property_name, cascade_priority);
         },
         [this](CascadePriority cascade_priority, CSSPropertyID property_id) {
@@ -909,7 +938,7 @@ void StyleCascade::ApplyInterpolation(
     To<TransitionInterpolation>(interpolation).Apply(environment);
   }
 
-  // Applying a color property interpolation will also unconditionally apply
+  // Applying a color property interpolation inside a link will also apply
   // the -internal-visited- counterpart (see CSSColorInterpolationType::
   // ApplyStandardPropertyValue). To make sure !important rules in :visited
   // selectors win over animations, we re-apply the -internal-visited property
@@ -988,6 +1017,10 @@ void StyleCascade::LookupAndApplyDeclaration(const CSSProperty& property,
   const TreeScope* tree_scope = GetTreeScope(*priority);
   const MixinParameterBindings* mixin_parameter_bindings =
       GetMixinParameterBindings(*priority);
+  // Make this declaration's in-scope @private variables visible to var() while
+  // resolving.
+  HeapAutoReset<const CSSPrivateBindings> reset_local_bindings(
+      &current_css_private_bindings_, GetCSSPrivateBindings(*priority));
   value = Resolve(property, *value, tree_scope, mixin_parameter_bindings,
                   *priority, origin, resolver);
   DCHECK(IsA<CustomProperty>(property) || !value->IsUnparsedDeclaration());
@@ -1253,64 +1286,33 @@ StyleCascade::MakeFunctionContextFromMixinAndResolveSubstitutions(
 
   const MixinParameterBindings* mixin_parameter_bindings =
       binding_chain[binding_index];
-  for (const auto& binding : mixin_parameter_bindings->GetBindings()) {
-    local_types.insert(binding.key, &binding.value.syntax);
-    ResolveFunctionParameter(binding.key, binding.value.value,
-                             binding.value.default_value, binding.value.syntax,
-                             tree_scope, resolver, *context, function_context,
-                             function_arguments, unresolved_defaults);
-  }
-
-  if (!ResolveUnresolvedFunctionDefaults(
-          unresolved_defaults, local_types, /*function=*/nullptr,
-          /*tree_scope=*/nullptr, function_context, resolver, context,
-          function_arguments)) {
-    return nullptr;
-  }
-
-  const auto& conditional_override_locals =
-      mixin_parameter_bindings->GetConditionalOverrideLocals();
-
-  // Avoid copying the base locals when there's nothing to override: point
-  // `unresolved_locals` straight at GetBaseLocals() in that case, since it
-  // outlives this call.
-  HeapHashMap<String, Member<CSSVariableData>> locals_after_cq;
-  const HeapHashMap<String, Member<CSSVariableData>>* unresolved_locals =
-      &mixin_parameter_bindings->GetBaseLocals();
-  if (!conditional_override_locals.empty()) {
-    locals_after_cq = mixin_parameter_bindings->GetBaseLocals();
-    for (const auto& [name, candidates] : conditional_override_locals) {
-      // Mark this as uncacheable in the MPC.
-      // TODO(sesse): Loosen this restriction, by including the CQ evaluation
-      // results in the MPC key (and also update operator== and GetHash() to
-      // include CQ-dependent locals).
-      state_.StyleBuilder().SetHasContainerRelativeValue();
-
-      // Find the last-declared value with a matching container query (if
-      // any), and apply it.
-      for (const MixinParameterBindings::CQDependentValue& candidate :
-           base::Reversed(candidates)) {
-        if (EvaluateContainerQueries(state_.GetElement(), state_.GetPseudoId(),
-                                     *candidate.container_queries,
-                                     state_.NearestSizeContainer(),
-                                     match_result_)) {
-          locals_after_cq.Set(name, candidate.data);
-          break;
-        }
-      }
+  {
+    HeapAutoReset<const CSSPrivateBindings> argument_scope(
+        &current_css_private_bindings_,
+        mixin_parameter_bindings->GetArgumentPrivateScope());
+    for (const auto& binding : mixin_parameter_bindings->GetBindings()) {
+      local_types.insert(binding.key, &binding.value.syntax);
+      ResolveFunctionParameter(
+          binding.key, binding.value.value, binding.value.default_value,
+          binding.value.syntax, tree_scope, resolver, *context,
+          function_context, function_arguments, unresolved_defaults);
     }
-    unresolved_locals = &locals_after_cq;
+
+    if (!ResolveUnresolvedFunctionDefaults(
+            unresolved_defaults, local_types, /*function=*/nullptr,
+            /*tree_scope=*/nullptr, function_context, resolver, context,
+            function_arguments)) {
+      return nullptr;
+    }
   }
 
   FunctionContext ctx = {
       .arguments = function_arguments,
-      .locals = {},  // Populated by ApplyLocalVariables.
-      .unresolved_locals = *unresolved_locals,
+      .locals = {},
+      .unresolved_locals = {},
       .local_types = local_types,
       .parent = function_context,
   };
-  ApplyLocalVariables(resolver, *context, ctx);
-
   return MakeFunctionContextFromMixinAndResolveSubstitutions(
       property, value, tree_scope, binding_chain, binding_index + 1, &ctx,
       resolver);
@@ -1694,7 +1696,7 @@ bool StyleCascade::ResolveTokensInto(CSSParserTokenStream& stream,
       success &= ResolveEnvInto(stream, tree_scope, resolver, context, out);
     } else if (token.FunctionId() == CSSValueID::kAttr) {
       CSSParserTokenStream::BlockGuard guard(stream);
-      state_.StyleBuilder().SetHasAttrFunction();
+      state_.SetHasAttrFunction();
       success &= ResolveAttrInto(stream, tree_scope, resolver, context,
                                  function_context, out);
     } else if (token.FunctionId() == CSSValueID::kInternalAutoBase) {
@@ -1744,13 +1746,7 @@ bool StyleCascade::ResolveVarInto(CSSParserTokenStream& stream,
                                   const CSSParserContext& context,
                                   FunctionContext* function_context,
                                   TokenSequence& out) {
-  AtomicString var_name =
-      ConsumeAndComputeVariableName(stream, context, state_);
-  // Note that `var_name` may be "unknown" when an ident() function
-  // didn't produce a valid variable name. Looking up this custom property
-  // name (which is unreachable for authors, and therefore never set)
-  // automatically gives the correct IACVT/fallback behavior without
-  // any explicit handling.
+  AtomicString var_name = ConsumeVariableName(stream);
   DCHECK(stream.AtEnd() || (stream.Peek().GetType() == kCommaToken));
 
   // Within a function context (i.e. when resolving values within the body of
@@ -1784,6 +1780,17 @@ bool StyleCascade::ResolveVarInto(CSSParserTokenStream& stream,
         return AppendDataWithFallback(argument.value(), stream, tree_scope,
                                       resolver, context, function_context, out);
       }
+    }
+  }
+
+  // An in-scope @private variable shadows a global custom property of the same
+  // name, so check for one first.
+  if ((!function_context || !function_context->function) &&
+      current_css_private_bindings_) {
+    if (const AtomicString& hygienic_name =
+            current_css_private_bindings_->Lookup(var_name);
+        !hygienic_name.IsNull()) {
+      var_name = hygienic_name;
     }
   }
 
@@ -1840,8 +1847,7 @@ bool StyleCascade::ResolveInheritInto(CSSParserTokenStream& stream,
   // then we need to explicitly find the inherited value. Note that since
   // we're depending on the already-finished ComputedStyle of the parent
   // element, cycles with properties on *this* element cannot happen.
-  AtomicString var_name =
-      ConsumeAndComputeVariableName(stream, context, state_);
+  AtomicString var_name = ConsumeVariableName(stream);
   if (!stream.AtEnd()) {
     DCHECK_EQ(stream.Peek().GetType(), kCommaToken);
   }
@@ -2539,11 +2545,13 @@ bool StyleCascade::ResolveAutoBaseInto(CSSParserTokenStream& stream,
     has_base_appearance = true;
   } else if (state_.StyleBuilder().InBaseAppearance()) {
     // Don't allow base appearance to be inherited to elements which actually
-    // support the appearance property.
+    // support the appearance property, other than for file selector buttons.
     bool could_support_base_appearance =
         element.SupportsBaseAppearance(AppearanceValue::kBase) ||
         element.SupportsBaseAppearance(AppearanceValue::kBaseSelect);
-    has_base_appearance = !could_support_base_appearance;
+    has_base_appearance = !could_support_base_appearance ||
+                          element.ShadowPseudoId() ==
+                              shadow_element_names::kPseudoFileUploadButton;
   }
 
   if (has_base_appearance) {
@@ -3122,6 +3130,21 @@ const MixinParameterBindings* StyleCascade::GetMixinParameterBindings(
     return MixinParameterBindingsAt(match_result_, priority.GetRuleIndex());
   }
   return nullptr;
+}
+
+const CSSPrivateBindings* StyleCascade::GetCSSPrivateBindings(
+    CascadePriority priority) const {
+  switch (priority.GetOrigin()) {
+    case CascadeOrigin::kUserAgent:
+    case CascadeOrigin::kUser:
+    case CascadeOrigin::kAuthor:
+      return CSSPrivateBindingsAt(match_result_, priority.GetRuleIndex());
+    case CascadeOrigin::kNone:
+    case CascadeOrigin::kAuthorPresentationalHint:
+    case CascadeOrigin::kAnimation:
+    case CascadeOrigin::kTransition:
+      return nullptr;
+  }
 }
 
 const CSSProperty& StyleCascade::ResolveSurrogate(const CSSProperty& property) {

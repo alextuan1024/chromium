@@ -114,7 +114,7 @@
 <translation id="1832073788765803750">Katakana polovičnej šírky</translation>
 <translation id="1834290891154666894">Neplatný vstup zhody alternatívneho názvu subjektu</translation>
 <translation id="1838709767668011582">Web Google</translation>
-<translation id="1853795129690976061">Tento priečinok je zdieľaný systémom Linux</translation>
+<translation id="1853795129690976061">Tento priečinok sa zdieľa s Linuxom</translation>
 <translation id="1864756863218646478">Súbor sa nepodarilo nájsť.</translation>
 <translation id="1877377730633446520">Vyžaduje to približne <ph name="REQUIRED_SPACE" />. Momentálne máte k dispozícii <ph name="FREE_SPACE" />.</translation>
 <translation id="18790189037341066">Nórska klávesnica</translation>
@@ -519,10 +519,10 @@
 <translation id="5045550434625856497">Nesprávne heslo</translation>
 <translation id="5059127710849015030">Nepálska klávesnica (prepis)</translation>
 <translation id="5068919226082848014">Pizza</translation>
+<translation id="5075336522277785691">Rozšírenie <ph name="EXTENSION_NAME" /> nastavilo pravidlá prepísania proxy servera</translation>
 <translation id="5081517858322016911">Počet odstraňovaných súborov: <ph name="TOTAL_FILE_SIZE" /></translation>
 <translation id="508423945471810158">Presúvajú sa položky (<ph name="NUMBER_OF_ITEMS" />) do priečinka <ph name="FOLDER_NAME" /></translation>
 <translation id="509429900233858213">Vyskytla sa chyba.</translation>
-<translation id="5102922915594634436">Spravovať synchronizované priečinky</translation>
 <translation id="5109254780565519649">Vyskytla sa chyba. Niektoré položky sa možno nepodarilo obnoviť.</translation>
 <translation id="5110329002213341433">Anglická (Kanada) klávesnica</translation>
 <translation id="5119780910075847424">Synchronizácia je pozastavená</translation>
@@ -558,7 +558,6 @@ s ostatnými, a to všetko na jednom mieste.<ph name="MARKUP_9" /></translatio
 <translation id="5305688511332277257">Žiadne nainštalované</translation>
 <translation id="5317780077021120954">Uložiť</translation>
 <translation id="5318819489018851358">Zdieľanie so systémom Linux</translation>
-<translation id="5330145655348521461">Tieto súbory sú otvorené na inej pracovnej ploche. Ak ich chcete zobraziť, prejdite do profilu <ph name="USER_NAME" /> (<ph name="MAIL_ADDRESS" />).</translation>
 <translation id="5330512191124428349">Získať informácie</translation>
 <translation id="535792325654997756">Osoba s mačkami</translation>
 <translation id="5358764674931277">Snímková frekvencia</translation>
@@ -699,7 +698,6 @@ s ostatnými, a to všetko na jednom mieste.<ph name="MARKUP_9" /></translatio
 <translation id="636254897931573416">Neplatná hodnota zhody prípony domény</translation>
 <translation id="6364301859968397756">Priestor organizácie je plný</translation>
 <translation id="6367976544441405720">Dodávka</translation>
-<translation id="637062427944097960">Tento súbor je otvorený na inej pracovnej ploche. Ak ho chcete zobraziť, prejdite do profilu <ph name="USER_NAME" /> (<ph name="MAIL_ADDRESS" />).</translation>
 <translation id="6394388407447716302">Iba na čítanie</translation>
 <translation id="6395575651121294044">Počet položiek: <ph name="NUMBER_OF_FILES" /></translation>
 <translation id="6407769893376380348">Súbor <ph name="FILE_NAME" /> sa nepodarilo presunúť, pretože je šifrovaný.</translation>

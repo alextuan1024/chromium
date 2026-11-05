@@ -15,6 +15,8 @@
 #include "chrome/browser/ui/webui/ash/arc_power_control/arc_power_control_handler.h"
 #include "chrome/grit/browser_resources.h"
 #include "components/application_locale_storage/application_locale_storage.h"
+#include "content/public/browser/browser_context.h"
+#include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_ui.h"
 #include "content/public/browser/web_ui_data_source.h"
 #include "content/public/common/url_constants.h"
@@ -50,16 +52,19 @@ std::unique_ptr<content::WebUIController>
 ArcPowerControlUIConfig::CreateWebUIController(content::WebUI* web_ui,
                                                const GURL& url) {
   return std::make_unique<ArcPowerControlUI>(
-      web_ui, application_locale_storage_->Get());
+      web_ui, std::string(application_locale_storage_->GetTag().tag_string()));
 }
 
 ArcPowerControlUI::ArcPowerControlUI(content::WebUI* web_ui,
                                      const std::string& application_locale)
     : WebUIController(web_ui) {
-  web_ui->AddMessageHandler(std::make_unique<ArcPowerControlHandler>());
+  content::BrowserContext* const browser_context =
+      web_ui->GetWebContents()->GetBrowserContext();
+  web_ui->AddMessageHandler(
+      std::make_unique<ArcPowerControlHandler>(browser_context));
 
   content::WebUIDataSource* const source =
-      content::WebUIDataSource::CreateAndAdd(Profile::FromWebUI(web_ui),
+      content::WebUIDataSource::CreateAndAdd(browser_context,
                                              ash::kChromeUIArcPowerControlHost);
   source->UseStringsJs();
   source->SetDefaultResource(IDR_ARC_POWER_CONTROL_HTML);

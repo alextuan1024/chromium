@@ -117,6 +117,7 @@
 #include "net/log/net_log_source_type.h"
 #include "net/log/net_log_with_source.h"
 #include "net/socket/client_socket_factory.h"
+#include "net/socket/socket_pool_additional_capacity.h"
 #include "net/url_request/url_request_context.h"
 #include "url/scheme_host_port.h"
 #include "url/url_constants.h"
@@ -127,11 +128,13 @@
 
 #if BUILDFLAG(IS_WIN)
 #include <Winsock2.h>
+
 #include "net/base/winsock_init.h"
 #endif
 
 #if BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
 #include <net/if.h>
+
 #include "net/base/sys_addrinfo.h"
 #if !BUILDFLAG(IS_ANDROID)
 #include <ifaddrs.h>
@@ -211,8 +214,13 @@ PrioritizedDispatcher::Limits GetDispatcherLimits(
   std::string group =
       base::FieldTrialList::FindFullName("HostResolverDispatch");
 
-  if (group.empty())
+  if (group.empty()) {
+    // Randomize the effective limit above `kDefaultMaxSystemTasks`, matching
+    // the socket pools, so that sites can't probe for a fixed global limit.
+    limits.additional_capacity =
+        SocketPoolAdditionalCapacity::Create(kDefaultMaxSystemTasks);
     return limits;
+  }
 
   // The format of the group name is a list of non-negative integers separated
   // by ':'. Each of the elements in the list corresponds to an element in
@@ -1062,7 +1070,7 @@ HostCache::Entry HostResolverManager::ResolveAsIP(DnsQueryTypeSet query_types,
                             HostCache::Entry::SOURCE_UNKNOWN);
   }
 
-  std::set<std::string> aliases;
+  base::flat_set<std::string> aliases;
   if (resolve_canonname) {
     aliases = {ip_address.ToString()};
   }
@@ -1110,8 +1118,7 @@ std::optional<HostCache::Entry> HostResolverManager::MaybeServeFromCache(
         cache_usage ==
             ResolveHostParameters::CacheUsage::STALE_ALLOWED_WHILE_REFRESHING);
     cache_result = cache->Lookup(effective_key, tick_clock_->NowTicks(),
-                                 ignore_secure, record_metrics);
-    staleness = HostCache::kNotStale;
+                                 ignore_secure, record_metrics, &staleness);
   }
   if (cache_result) {
     *out_stale_info = std::move(staleness);

@@ -23,7 +23,6 @@
 #include "components/signin/public/identity_manager/access_token_info.h"
 #include "components/signin/public/identity_manager/account_info.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
-#include "components/sync/base/features.h"
 #include "components/user_manager/user.h"
 #include "components/user_manager/user_manager.h"
 #include "content/public/browser/browser_task_traits.h"
@@ -68,6 +67,7 @@ const net::NetworkTrafficAnnotationTag kTrafficAnnotation =
         data:
           "The transmitted information is a sanitized pin."
         destination: GOOGLE_OWNED_SERVICE
+        api_service_name: "castedumessaging-pa.googleapis.com"
       }
         policy {
           cookies_allowed: NO
@@ -106,8 +106,8 @@ AccessCodeCastDiscoveryInterface::AccessCodeCastDiscoveryInterface(
       logger_(logger),
       identity_manager_(identity_manager),
       endpoint_fetcher_(CreateEndpointFetcher(access_code)) {
-  DCHECK(profile_);
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK(profile_, base::NotFatalUntil::M161);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
 }
 
 AccessCodeCastDiscoveryInterface::~AccessCodeCastDiscoveryInterface() = default;
@@ -243,14 +243,7 @@ void AccessCodeCastDiscoveryInterface::SetNetworkInfoField(
 std::unique_ptr<EndpointFetcher>
 AccessCodeCastDiscoveryInterface::CreateEndpointFetcher(
     const std::string& access_code) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-
-  // TODO(crbug.com/417950948): ConsentLevel::kSync is deprecated and should be
-  // removed. See ConsentLevel::kSync documentation for details.
-  const signin::ConsentLevel consent_level =
-      syncer::IsReplaceSyncPromosWithSignInPromosEnabled()
-          ? signin::ConsentLevel::kSignin
-          : signin::ConsentLevel::kSync;
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
 
   return std::make_unique<EndpointFetcher>(
       profile_->GetDefaultStoragePartition()
@@ -260,7 +253,7 @@ AccessCodeCastDiscoveryInterface::CreateEndpointFetcher(
           endpoint_fetcher::HttpMethod::kGet, kTrafficAnnotation)
           .SetAuthType(endpoint_fetcher::OAUTH)
           .SetOAuthConsumerId(signin::OAuthConsumerId::kAccessCodeCastDiscovery)
-          .SetConsentLevel(consent_level)
+          .SetConsentLevel(signin::ConsentLevel::kSignin)
           .SetContentType(kContentType)
           .SetTimeout(kTimeout)
           .SetUrl(GURL(base::StrCat({GetDiscoveryUrl(), "/", access_code})))
@@ -270,8 +263,8 @@ AccessCodeCastDiscoveryInterface::CreateEndpointFetcher(
 
 void AccessCodeCastDiscoveryInterface::ValidateDiscoveryAccessCode(
     DiscoveryDeviceCallback callback) {
-  DCHECK(!callback_);
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK(!callback_, base::NotFatalUntil::M161);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
   callback_ = std::move(callback);
 
   auto* const fetcher_ptr = endpoint_fetcher_.get();
@@ -329,8 +322,7 @@ void AccessCodeCastDiscoveryInterface::HandleServerError(
     case FetchErrorType::kAuthError:
       if (response->response == "No primary accounts found") {
         logger_->LogError(mojom::LogCategory::kDiscovery, kLoggerComponent,
-                          "The account needs to have sync enabled.", "", "",
-                          "");
+                          "The account needs to be signed in.", "", "", "");
         ReportErrorViaCallback(AddSinkResultCode::PROFILE_SYNC_ERROR);
       } else {
         logger_->LogError(

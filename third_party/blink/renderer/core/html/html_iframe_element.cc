@@ -24,7 +24,6 @@
 
 #include "third_party/blink/renderer/core/html/html_iframe_element.h"
 
-#include "base/metrics/histogram_macros.h"
 #include "components/viz/common/surfaces/tracked_element_rects.h"
 #include "services/network/public/cpp/connection_allowlist.h"
 #include "services/network/public/cpp/connection_allowlist_parser.h"
@@ -364,23 +363,6 @@ void HTMLIFrameElement::ParseAttribute(
         should_call_did_change_attributes = true;
       }
     }
-  } else if (name == html_names::kAdauctionheadersAttr &&
-             GetExecutionContext()) {
-    if (!GetExecutionContext()->IsSecureContext()) {
-      GetDocument().AddConsoleMessage(MakeGarbageCollected<ConsoleMessage>(
-          mojom::blink::ConsoleMessageSource::kOther,
-          mojom::blink::ConsoleMessageLevel::kError,
-          String("adAuctionHeaders: Protected Audience APIs "
-                 "are only available in secure contexts.")));
-    } else {
-      if (params.new_value.IsNull() != params.old_value.IsNull()) {
-        should_call_did_change_attributes = true;
-      }
-      if (!params.new_value.IsNull()) {
-        UseCounter::Count(GetDocument(),
-                          WebFeature::kSharedStorageAPI_Iframe_Attribute);
-      }
-    }
   } else if (name == html_names::kCredentiallessAttr &&
              RuntimeEnabledFeatures::AnonymousIframeEnabled()) {
     bool new_value = !value.IsNull();
@@ -479,13 +461,6 @@ DocumentPolicyFeatureState HTMLIFrameElement::ConstructRequiredPolicy() const {
         "Iframe policy attribute cannot specify reporting endpoint."));
   }
 
-  for (const auto& policy_entry : new_required_policy.feature_state) {
-    mojom::blink::DocumentPolicyFeature feature = policy_entry.first;
-    if (!GetDocument().DocumentPolicyFeatureObserved(feature)) {
-      UMA_HISTOGRAM_ENUMERATION(
-          "Blink.UseCounter.DocumentPolicy.PolicyAttribute", feature);
-    }
-  }
   return new_required_policy.feature_state;
 }
 
@@ -615,10 +590,9 @@ HTMLIFrameElement::ConstructTrustTokenParams() const {
     GetDocument().AddConsoleMessage(MakeGarbageCollected<ConsoleMessage>(
         mojom::blink::ConsoleMessageSource::kOther,
         mojom::blink::ConsoleMessageLevel::kError,
-        StrCat({"iframe trusttoken attribute was invalid JSON: ",
-                parse_error.message, " (line ",
-                String::Number(parse_error.line), ", col ",
-                String::Number(parse_error.column), ")"})));
+        Format("iframe trusttoken attribute was invalid JSON: {} (line {}, col "
+               "{})",
+               parse_error.message, parse_error.line, parse_error.column)));
     return nullptr;
   }
 
@@ -664,7 +638,7 @@ void HTMLIFrameElement::DidChangeAttributes() {
   // the subframe hasn't been created yet; or if we are in the middle of
   // swapping one frame for another, in which case the final state
   // will be propagated at the end of the swapping operation.
-  if (is_swapping_frames() || !ContentFrame()) {
+  if (IsSwappingFrames() || !ContentFrame()) {
     return;
   }
 
@@ -775,9 +749,6 @@ void HTMLIFrameElement::CheckPotentialPermissionsPolicyViolation() {
 
 void HTMLIFrameElement::NaturalSizingInfoChanged() {
   HTMLFrameOwnerElement::NaturalSizingInfoChanged();
-  if (!RuntimeEnabledFeatures::ResponsiveIframesEnabled()) {
-    return;
-  }
   if (auto* object = DynamicTo<LayoutIFrame>(GetLayoutObject())) {
     object->SetNeedsLayoutAndIntrinsicWidthsRecalcAndFullPaintInvalidation(
         layout_invalidation_reason::kSizeChanged);
@@ -786,9 +757,6 @@ void HTMLIFrameElement::NaturalSizingInfoChanged() {
 
 void HTMLIFrameElement::ClearLastNaturalSizingInfo() {
   HTMLFrameOwnerElement::ClearLastNaturalSizingInfo();
-  if (!RuntimeEnabledFeatures::ResponsiveIframesEnabled()) {
-    return;
-  }
   if (auto* object = DynamicTo<LayoutIFrame>(GetLayoutObject())) {
     object->SetNeedsLayoutAndIntrinsicWidthsRecalcAndFullPaintInvalidation(
         layout_invalidation_reason::kSizeChanged);

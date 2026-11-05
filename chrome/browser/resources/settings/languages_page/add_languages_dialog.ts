@@ -57,9 +57,9 @@ export class SettingsAddLanguagesDialogElement extends
   }
 
   accessor languages: chrome.languageSettingsPrivate.Language[] = [];
-  protected accessor languagesToAdd_: Set<string> = new Set();
+  private accessor languagesToAdd_: Set<string> = new Set();
   protected accessor disableActionButton_: boolean = true;
-  protected accessor filterValue_: string = '';
+  private accessor filterValue_: string = '';
 
   override connectedCallback() {
     super.connectedCallback();
@@ -129,6 +129,7 @@ export class SettingsAddLanguagesDialogElement extends
     } else {
       this.languagesToAdd_.delete(languageCode);
     }
+    this.requestUpdate();
 
     this.disableActionButton_ = !this.languagesToAdd_.size;
   }

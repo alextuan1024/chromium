@@ -6,16 +6,15 @@ import 'chrome://new-tab-page/lazy_load.js';
 import './ntp_promo_test_common.js';
 
 import type {IndividualPromosElement} from 'chrome://new-tab-page/lazy_load.js';
-import {getTrustedHTML} from 'chrome://new-tab-page/new_tab_page.js';
+import {getTrustedHTML, ntpPromoProxyFactory} from 'chrome://new-tab-page/new_tab_page.js';
 import type {NtpPromo as Promo} from 'chrome://new-tab-page/new_tab_page.js';
 import {assertDeepEquals, assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chai_assert.js';
-import {waitAfterNextRender} from 'chrome://webui-test/polymer_test_util.js';
-import {isVisible} from 'chrome://webui-test/test_util.js';
+import {isVisible, microtasksFinished} from 'chrome://webui-test/test_util.js';
 
-import {TestNtpPromoProxy} from './ntp_promo_test_common.js';
+import {TestNtpPromoHandler} from './ntp_promo_test_common.js';
 
 suite('IndividualPromosTest', () => {
-  let testProxy: TestNtpPromoProxy;
+  let testHandler: TestNtpPromoHandler;
   let individualPromos: IndividualPromosElement;
 
   const promo: Promo = {
@@ -24,19 +23,6 @@ suite('IndividualPromosTest', () => {
     bodyText: 'body text',
     buttonText: 'button text',
   };
-
-  /**
-   * Waits for the current frame to render, which queues intersection events,
-   * and then waits for the intersection events to propagate to listeners, which
-   * triggers visibility messages.
-   *
-   * This takes a total of two frames. A single frame will cause the layout to
-   * be updated, but will not actually propagate the events.
-   */
-  async function waitForVisibilityEvents() {
-    await waitAfterNextRender(individualPromos);
-    return waitAfterNextRender(individualPromos);
-  }
 
   function getContainer(): HTMLElement {
     return individualPromos.$.promos;
@@ -51,7 +37,9 @@ suite('IndividualPromosTest', () => {
   }
 
   setup(() => {
-    testProxy = TestNtpPromoProxy.install();
+    testHandler = new TestNtpPromoHandler();
+    const {instance} = ntpPromoProxyFactory.createForTest(testHandler);
+    ntpPromoProxyFactory.setInstance(instance);
 
     document.body.innerHTML = getTrustedHTML`
     <div id='container'>
@@ -64,7 +52,7 @@ suite('IndividualPromosTest', () => {
     document.querySelector<HTMLElement>('#container')!.insertBefore(
         individualPromos, document.querySelector<HTMLElement>('#bodyText'));
 
-    return waitForVisibilityEvents();
+    return microtasksFinished();
   });
 
   test('promo starts invisible', () => {
@@ -73,26 +61,24 @@ suite('IndividualPromosTest', () => {
 
   test('set no promos hides promo container', async () => {
     individualPromos.onSetPromo(null);
-    await waitForVisibilityEvents();
+    await microtasksFinished();
     assertFalse(isVisible(individualPromos));
   });
-
 
   // Check that the default number of showing promos.
   test('show single promo', async () => {
     individualPromos.onSetPromo(promo);
-    await waitForVisibilityEvents();
+    await microtasksFinished();
     assertTrue(
         isVisible(individualPromos), 'promo frame should become visible');
-    assertEquals(1, testProxy.getHandler().getCallCount('onPromoShown'));
-    assertDeepEquals(
-        [promo.id], testProxy.getHandler().getArgs('onPromoShown'));
+    assertEquals(1, testHandler.getCallCount('onPromoShown'));
+    assertDeepEquals([promo.id], testHandler.getArgs('onPromoShown'));
     assertEquals(1, getPromoCount());
   });
 
   test('promo details', async () => {
     individualPromos.onSetPromo(promo);
-    await waitForVisibilityEvents();
+    await microtasksFinished();
     const current = getPromoAt(0);
     assertEquals(
         current.querySelector<HTMLElement>('#bodyText')!.innerText,
@@ -102,23 +88,24 @@ suite('IndividualPromosTest', () => {
 
   test('press button', async () => {
     individualPromos.onSetPromo(promo);
-    await waitForVisibilityEvents();
+    await microtasksFinished();
     getPromoAt(0).click();
-    assertEquals(1, testProxy.getHandler().getCallCount('onPromoClicked'));
-    assertDeepEquals(
-        [promo.id], testProxy.getHandler().getArgs('onPromoClicked'));
+    assertEquals(1, testHandler.getCallCount('onPromoClicked'));
+    assertDeepEquals([promo.id], testHandler.getArgs('onPromoClicked'));
   });
 
   test('dismiss promo', async () => {
     individualPromos.onSetPromo(promo);
-    await waitForVisibilityEvents();
+    await microtasksFinished();
     const menuButton =
         individualPromos.shadowRoot.querySelector<HTMLElement>('#menuButton');
     assertTrue(!!menuButton);
     menuButton.click();
-    await waitForVisibilityEvents();
+    await microtasksFinished();
 
-    const actionMenu = individualPromos.$.actionMenu;
+    const actionMenu =
+        individualPromos.shadowRoot.querySelector('cr-action-menu');
+    assertTrue(!!actionMenu);
     assertTrue(actionMenu.open);
 
     const dismissOption =
@@ -126,9 +113,8 @@ suite('IndividualPromosTest', () => {
     assertTrue(!!dismissOption);
     dismissOption.click();
 
-    assertEquals(1, testProxy.getHandler().getCallCount('onPromoDismissed'));
-    assertDeepEquals(
-        [promo.id], testProxy.getHandler().getArgs('onPromoDismissed'));
+    assertEquals(1, testHandler.getCallCount('onPromoDismissed'));
+    assertDeepEquals([promo.id], testHandler.getArgs('onPromoDismissed'));
     assertFalse(actionMenu.open);
   });
 });

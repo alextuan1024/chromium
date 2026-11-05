@@ -6,6 +6,7 @@
 
 #include <map>
 #include <memory>
+#include <utility>
 
 #include "base/containers/span.h"
 #include "base/functional/bind.h"
@@ -17,14 +18,19 @@
 #include "chrome/browser/devtools/chrome_devtools_session_android.h"
 #include "chrome/browser/devtools/devtools_availability_checker.h"
 #include "chrome/browser/devtools/devtools_browser_context_manager.h"
+#include "chrome/browser/devtools/devtools_window.h"
+#include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/android/tab_model/tab_model.h"
 #include "chrome/browser/ui/android/tab_model/tab_model_list.h"
 #include "chrome/grit/browser_resources.h"
+#include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/devtools_agent_host.h"
 #include "content/public/browser/devtools_agent_host_client.h"
 #include "content/public/browser/devtools_external_agent_proxy.h"
 #include "content/public/browser/devtools_external_agent_proxy_delegate.h"
+#include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents.h"
+#include "content/public/browser/web_contents_delegate.h"
 #include "extensions/buildflags/buildflags.h"
 #include "ui/base/resource/resource_bundle.h"
 
@@ -124,11 +130,11 @@ class TabProxyDelegate : public content::DevToolsExternalAgentProxyDelegate {
   }
 
   bool Activate() override {
-    TabModel* model;
-    int index;
-    if (!FindTab(&model, &index))
+    auto [model, handle] = FindTab();
+    if (!model) {
       return false;
-    model->SetActiveIndex(index);
+    }
+    model->ActivateTab(handle);
     return true;
   }
 
@@ -139,11 +145,11 @@ class TabProxyDelegate : public content::DevToolsExternalAgentProxyDelegate {
   }
 
   bool Close() override {
-    TabModel* model;
-    int index;
-    if (!FindTab(&model, &index))
+    auto [model, handle] = FindTab();
+    if (!model) {
       return false;
-    model->CloseTabAt(index);
+    }
+    model->CloseTab(handle);
     return true;
   }
 
@@ -164,11 +170,15 @@ class TabProxyDelegate : public content::DevToolsExternalAgentProxyDelegate {
   void MaterializeAgentHost() {
     if (agent_host_)
       return;
-    TabModel* model;
-    int index;
-    if (!FindTab(&model, &index))
+    auto [model, handle] = FindTab();
+    if (!model) {
       return;
-    WebContents* web_contents = model->GetWebContentsAt(index);
+    }
+    tabs::TabInterface* tab = handle.Get();
+    if (!tab) {
+      return;
+    }
+    WebContents* web_contents = tab->GetContents();
     if (!web_contents)
       return;
     agent_host_ = use_tab_target_
@@ -176,18 +186,19 @@ class TabProxyDelegate : public content::DevToolsExternalAgentProxyDelegate {
                       : DevToolsAgentHost::GetOrCreateFor(web_contents);
   }
 
-  bool FindTab(TabModel** model_result, int* index_result) const {
-    for (TabModel* model : TabModelList::models()) {
+  std::pair<TabModel*, tabs::TabHandle> FindTab() const {
+    std::pair<TabModel*, tabs::TabHandle> result{nullptr, tabs::TabHandle()};
+    TabModelList::ForEachAll([this, &result](TabModel* model) {
       for (int i = 0; i < model->GetTabCount(); ++i) {
         TabAndroid* tab = model->GetTabAt(i);
         if (tab && tab->GetAndroidId() == tab_id_) {
-          *model_result = model;
-          *index_result = i;
-          return true;
+          result = {model, tab->GetHandle()};
+          return false;
         }
       }
-    }
-    return false;
+      return true;
+    });
+    return result;
   }
 
   const int tab_id_;
@@ -256,7 +267,7 @@ bool DevToolsManagerDelegateAndroid::IsCreatedByDevTools(
 
 void DevToolsManagerDelegateAndroid::MarkCreatedByDevTools(
     WebContents& web_contents) {
-  DCHECK(!IsCreatedByDevTools(web_contents));
+  CHECK(!IsCreatedByDevTools(web_contents), base::NotFatalUntil::M161);
   web_contents.SetUserData(kCreatedByDevTools,
                            std::make_unique<base::SupportsUserData::Data>());
 }
@@ -288,11 +299,13 @@ DevToolsAgentHost::List DevToolsManagerDelegateAndroid::RemoteDebuggingTargets(
   // Enumerate existing tabs, including the ones with no WebContents.
   DevToolsAgentHost::List result;
   std::set<WebContents*> tab_web_contents;
-  for (const TabModel* model : TabModelList::models()) {
+  TabModelList::ForEachAll([target_type, &result,
+                            &tab_web_contents](TabModel* model) {
     for (int i = 0; i < model->GetTabCount(); ++i) {
       TabAndroid* tab = model->GetTabAt(i);
-      if (!tab)
+      if (!tab) {
         continue;
+      }
 
       WebContents* wc = tab->web_contents();
       // For web contents created programmatically by CDP clients, do not create
@@ -306,7 +319,8 @@ DevToolsAgentHost::List DevToolsManagerDelegateAndroid::RemoteDebuggingTargets(
         }
       }
     }
-  }
+    return true;
+  });
 
   // Add descriptors for targets not associated with any tabs.
   DevToolsAgentHost::List agents = DevToolsAgentHost::GetOrCreateAll();
@@ -326,6 +340,17 @@ bool DevToolsManagerDelegateAndroid::IsBrowserTargetDiscoverable() {
   return true;
 }
 
+bool DevToolsManagerDelegateAndroid::AllowInspectingRenderFrameHost(
+    content::RenderFrameHost* rfh) {
+  // Resolve the profile owning the RenderFrameHost to evaluate DevTools
+  // availability policies on Android identically to desktop platforms.
+  Profile* profile = Profile::FromBrowserContext(rfh->GetBrowserContext());
+  if (!profile) {
+    return true;
+  }
+  return IsInspectionAllowed(profile, rfh);
+}
+
 bool DevToolsManagerDelegateAndroid::AllowInspectingTarget(
     content::DevToolsAgentHost* agent_host) {
   // For non-Android desktop platforms, we have the same implementation
@@ -336,6 +361,29 @@ bool DevToolsManagerDelegateAndroid::AllowInspectingTarget(
     return true;
   }
   return IsInspectionAllowed(profile, agent_host);
+}
+
+void DevToolsManagerDelegateAndroid::Activate(
+    content::DevToolsAgentHost* agent_host) {
+  auto* web_contents = agent_host->GetWebContents();
+  if (!web_contents) {
+    return;
+  }
+
+  // Brings the tab to foreground. We need to do this in case the devtools
+  // window is undocked and this is being called from another tab that is in
+  // the foreground.
+  if (auto* delegate = web_contents->GetDelegate()) {
+    delegate->ActivateContents(web_contents);
+  }
+
+  // Brings a undocked devtools window to the foreground.
+  DevToolsWindow* devtools_window =
+      DevToolsWindow::GetInstanceForInspectedWebContents(web_contents);
+  if (!devtools_window) {
+    return;
+  }
+  devtools_window->ActivateWindow();
 }
 
 void DevToolsManagerDelegateAndroid::HandleCommand(
@@ -353,7 +401,7 @@ void DevToolsManagerDelegateAndroid::HandleCommand(
 
 void DevToolsManagerDelegateAndroid::ClientAttached(
     content::DevToolsAgentHostClientChannel* channel) {
-  DCHECK(sessions_.find(channel) == sessions_.end());
+  CHECK(sessions_.find(channel) == sessions_.end(), base::NotFatalUntil::M161);
   sessions_.emplace(channel,
                     std::make_unique<ChromeDevToolsSessionAndroid>(channel));
 }

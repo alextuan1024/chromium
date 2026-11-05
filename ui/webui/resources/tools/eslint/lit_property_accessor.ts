@@ -6,7 +6,7 @@ import {AST_NODE_TYPES as Node, ESLintUtils} from '/third_party/node/node_module
 import type {TSESTree} from '/third_party/node/node_modules/@typescript-eslint/utils/dist/index.js';
 import assert from 'node:assert';
 
-import {getLitPropertyType, isCrLitElementSubclass, isIdentifier, isType} from './query_utils.js';
+import {getLitPropertyType, isCrLitElementSubclass, isIdentifier, isType, PROPERTIES_METHOD_PROPERTY_SELECTOR} from './query_utils.js';
 
 type Options = [];
 type MessageIds = 'missingAccessorKeyword'|'extraAccessorKeyword'|
@@ -50,7 +50,7 @@ export const litPropertyAccessorRule = ESLintUtils.RuleCreator.withoutDocs<
 
     return {
       'ClassDeclaration'(node: TSESTree.ClassDeclaration) {
-        isLitElement = isCrLitElementSubclass(node, context.sourceCode.ast);
+        isLitElement = isCrLitElementSubclass(node, context);
 
         if (!isLitElement) {
           currentClass = null;
@@ -63,7 +63,7 @@ export const litPropertyAccessorRule = ESLintUtils.RuleCreator.withoutDocs<
         seenProperties = new Set();
         currentClass = node;
       },
-      'ClassDeclaration > ClassBody > MethodDefinition[key.name="properties"] > FunctionExpression > BlockStatement > ReturnStatement > ObjectExpression > Property'(
+      [`ClassDeclaration > ${PROPERTIES_METHOD_PROPERTY_SELECTOR}`](
           node: TSESTree.Property) {
         if (!isLitElement) {
           return;

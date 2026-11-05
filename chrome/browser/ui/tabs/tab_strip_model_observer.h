@@ -54,7 +54,9 @@ class WebContents;
 ////////////////////////////////////////////////////////////////////////////////
 class TabStripModelChange {
  public:
+  // LINT.IfChange(Type)
   enum Type { kSelectionOnly, kInserted, kRemoved, kMoved, kReplaced };
+  // LINT.ThenChange(:Delta)
 
   struct RemovedTab {
     RemovedTab(tabs::TabInterface* tab,
@@ -80,6 +82,10 @@ class TabStripModelChange {
     raw_ptr<content::WebContents> contents = nullptr;
     int index;
 
+    void WriteIntoTrace(perfetto::TracedValue context) const;
+  };
+
+  struct SelectionOnly {
     void WriteIntoTrace(perfetto::TracedValue context) const;
   };
 
@@ -177,7 +183,7 @@ class TabStripModelChange {
     void WriteIntoTrace(perfetto::TracedValue context) const;
   };
 
-  TabStripModelChange();
+  explicit TabStripModelChange(SelectionOnly delta);
   explicit TabStripModelChange(Insert delta);
   explicit TabStripModelChange(Remove delta);
   explicit TabStripModelChange(Replace delta);
@@ -186,7 +192,7 @@ class TabStripModelChange {
   TabStripModelChange& operator=(const TabStripModelChange&) = delete;
   ~TabStripModelChange();
 
-  Type type() const { return type_; }
+  Type type() const { return static_cast<Type>(delta_.index()); }
   const Insert* GetInsert() const;
   const Remove* GetRemove() const;
   const Move* GetMove() const;
@@ -195,11 +201,9 @@ class TabStripModelChange {
   void WriteIntoTrace(perfetto::TracedValue context) const;
 
  private:
-  using Delta = std::variant<Insert, Remove, Move, Replace>;
-
-  TabStripModelChange(Type type, Delta delta);
-
-  const Type type_ = kSelectionOnly;
+  // LINT.IfChange(Delta)
+  using Delta = std::variant<SelectionOnly, Insert, Remove, Move, Replace>;
+  // LINT.ThenChange(:Type)
 
   Delta delta_;
 };
@@ -528,15 +532,15 @@ class TabStripModelObserver {
   // cancelling/completing a the drag before a tab is added during header drag.
   virtual void OnTabWillBeAdded();
 
-  // Notification that the tab at `index` will be removed from the
-  // TabStripModel, which allows an observer to react to an impending change to
-  // the TabStripModel. The only use case of this signal that is currently
-  // supported is the drag controller completing a drag before a tab is removed.
-  virtual void OnTabWillBeRemoved(tabs::TabInterface* tab, int index);
+  // Notification that `tab` will be removed from the TabStripModel, which
+  // allows an observer to react to an impending change to the TabStripModel.
+  // The only use case of this signal that is currently supported is the drag
+  // controller completing a drag before a tab is removed.
+  virtual void OnTabWillBeRemoved(tabs::TabHandle tab);
 
   // Called when a tab is attempted to be closed but the closure is not
   // permitted by the `TabStripModel::IsTabClosable` oracle.
-  virtual void OnTabCloseCancelled(const tabs::TabInterface* tab);
+  virtual void OnTabCloseCancelled(tabs::TabHandle tab);
 
   // The specified Tab changed in some way. `tab`
   // may be an entirely different object and the old value is no longer
@@ -547,16 +551,21 @@ class TabStripModelObserver {
                               TabChangeType change_type);
 
   // Invoked when the pinned state of a tab changes.
-  virtual void OnTabPinnedStateChanged(tabs::TabInterface* tab, int index);
+  virtual void OnTabPinnedStateChanged(tabs::TabHandle tab);
 
-  // Called when the tab at `index` is added to the group with id `new_group` or
-  // removed from a group with id `old_group`.
+  // Invoked when the blocked state of a tab changes.
+  virtual void OnTabBlockedStateChanged(tabs::TabInterface* tab);
+
+  // Invoked when the audio state of a tab changes.
+  virtual void OnTabAudioChanged(tabs::TabInterface* tab);
+
+  // Called when `tab` is added to the group with id `new_group` or removed
+  // from a group with id `old_group`.
   virtual void TabGroupedStateChanged(
       TabStripModel* tab_strip_model,
       std::optional<tab_groups::TabGroupId> old_group,
       std::optional<tab_groups::TabGroupId> new_group,
-      tabs::TabInterface* tab,
-      int index);
+      tabs::TabHandle tab);
 
   // `change` is a change in the Tab Group model or metadata. These
   // changes may cause repainting of some Tab Group UI. They are
@@ -569,8 +578,13 @@ class TabStripModelObserver {
       std::optional<tab_groups::TabGroupId> new_focused_group_id,
       std::optional<tab_groups::TabGroupId> old_focused_group_id);
 
-  // Notfies us when a Tab Group is added to the Tab Group Model.
+  // Notifies us when a non-ephemeral Tab Group is added to the Tab Group Model
+  // (either created as a regular group or promoted from an ephemeral group).
   virtual void OnTabGroupAdded(const tab_groups::TabGroupId& group_id);
+
+  // Called when the ephemeral Tab Group `group_id` is promoted to a regular
+  // group, immediately after `OnTabGroupAdded()`.
+  virtual void OnTabGroupPromoted(const tab_groups::TabGroupId& group_id);
 
   // Notfies us when a Tab Group will be removed from the Tab Group Model.
   virtual void OnTabGroupWillBeRemoved(const tab_groups::TabGroupId& group_id);

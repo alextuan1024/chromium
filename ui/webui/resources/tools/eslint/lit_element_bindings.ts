@@ -8,12 +8,158 @@ import ts from '/third_party/node/node_modules/typescript/lib/typescript.js';
 import assert from 'node:assert';
 import path from 'node:path';
 
-import {dashCaseToCamelCase, extractClassImport, extractPropertiesFromClass, getLitPropertyType, isIdentifier, isLiteral, isType, LIT_IMPORT_REGEX} from './query_utils.js';
+import {camelCaseToDashCase, dashCaseToCamelCase, extractClassImport, extractPropertiesFromClass, getLitPropertyType, getSourceFiles, isIdentifier, isLiteral, isType, LIT_IMPORT_REGEX} from './query_utils.js';
 
 type Options = [];
-type MessageIds = 'incorrectAttributeBinding'|'incorrectBooleanBinding'|
-    'noTrueBinding'|'noFalseBinding'|'propertyTypeMismatch'|
-    'bindingTypeMismatch'|'propertyNotFound'|'listenerNotCallable';
+type MessageIds = 'bindingTypeMismatch'|'booleanPropertyAttributeBinding'|
+    'camelCaseAttribute'|'incorrectAttributeBinding'|'incorrectBooleanBinding'|
+    'invalidBooleanAttributeExpression'|'invalidPropertyExpression'|
+    'listenerNotCallable'|'noFalseBinding'|'noStaticTrueBooleanAttribute'|
+    'noTrueBinding'|'propertyNotFound'|'propertyTypeMismatch';
+
+// HTML enumerated attributes whose corresponding DOM IDL properties are typed
+// as boolean in TypeScript's lib.dom.d.ts, but which require explicit "true" or
+// "false" attribute values in HTML markup rather than boolean attribute syntax.
+const ENUMERATED_BOOLEAN_IDL_ATTRIBUTES = new Set([
+  'autocorrect',
+  'draggable',
+  'spellcheck',
+  'translate',
+]);
+
+const LOCAL_TAG_REGEX = /<([a-zA-Z0-9-]+)[^>]*$/;
+const ID_ATTRIBUTE_REGEX = /\bid="([^\s"]+)"/;
+const STATIC_QUESTION_MARK_REGEX = /\s\?(?<boolName>[a-zA-Z0-9-]+)/g;
+const STATIC_TRUE_REGEX = /\s(?<attrName>[a-zA-Z0-9-]+)="true"/g;
+const CAMEL_CASE_ATTR_REGEX =
+    /\s(?<prefix>\??)(?<attrName>[a-z][a-zA-Z0-9-]*[A-Z][a-zA-Z0-9-]*)="/g;
+const STATIC_PROPERTY_REGEX = /\s\.(?<propName>[a-zA-Z0-9_-]+)="/g;
+const HTML_COMMENT_REGEX = /<!--[\s\S]*?-->/g;
+const BINDING_REGEX =
+    /(\?(?<boolName>[a-zA-Z0-9-]+)|@(?<eventName>[a-zA-Z0-9-]+))="$|(\s+(?<attrName>[a-zA-Z0-9\-]+)|\.(?<propName>[a-zA-Z0-9_-]+))="(?<prefix>[^"]*)$/;
+
+interface TagInfo {
+  tagName: string;
+  tagId: string;
+}
+
+function getTagAtOffset(
+    raw: string, offset: number, prevTagName: string,
+    prevTagId: string): TagInfo|null {
+  const before = raw.slice(0, offset);
+  const afterUntilClose = raw.slice(offset).split('>')[0]!;
+  const localTagMatch = LOCAL_TAG_REGEX.exec(before);
+  if (localTagMatch) {
+    const fullTagChunk = localTagMatch[0] + afterUntilClose;
+    const idMatch = ID_ATTRIBUTE_REGEX.exec(fullTagChunk);
+    return {
+      tagName: localTagMatch[1]!,
+      tagId: idMatch ? idMatch[1]! : '',
+    };
+  }
+  if (prevTagName !== '' && !before.includes('>') && !before.includes('<')) {
+    const fullTagChunk = before + afterUntilClose;
+    const idMatch = ID_ATTRIBUTE_REGEX.exec(fullTagChunk);
+    return {
+      tagName: prevTagName,
+      tagId: idMatch ? idMatch[1]! : prevTagId,
+    };
+  }
+  return null;
+}
+
+function getElementApparentType(
+    currentTagName: string, currentTagId: string, tsNode: ts.Node,
+    checker: ts.TypeChecker): ts.Type|null {
+  let elSymbol: ts.Symbol|undefined;
+
+  if (currentTagId !== '') {
+    // 1. Check for a context-specific TemplatizedDomNodes interface or type
+    // in the template file.
+    const templatizedSymbol = checker.resolveName(
+        'TemplatizedDomNodes', tsNode,
+        ts.SymbolFlags.Interface | ts.SymbolFlags.TypeAlias,
+        /* escapeGlobals= */ false);
+
+    if (templatizedSymbol) {
+      const templatizedType =
+          checker.getDeclaredTypeOfSymbol(templatizedSymbol);
+      elSymbol = templatizedType.getProperty(currentTagId);
+    }
+  }
+
+  // 2. Fallback to HTMLElementTagNameMap if no context-specific type was
+  // found.
+  if (!elSymbol) {
+    const mapSymbol = checker.resolveName(
+        'HTMLElementTagNameMap', tsNode, ts.SymbolFlags.Interface,
+        /* escapeGlobals= */ false);
+    assert.ok(mapSymbol && mapSymbol.members);
+    elSymbol = mapSymbol.members.get(currentTagName as ts.InternalSymbolName);
+  }
+
+  if (!elSymbol) {
+    return null;
+  }
+  const elementType = checker.getTypeOfSymbolAtLocation(elSymbol, tsNode);
+  return checker.getApparentType(elementType);
+}
+
+function getAttributePropertySymbol(
+    apparentType: ts.Type, attrName: string, tsNode: ts.Node,
+    checker: ts.TypeChecker): ts.Symbol|undefined {
+  const camelName = dashCaseToCamelCase(attrName);
+  const propSymbol = apparentType.getProperty(camelName);
+  if (propSymbol || attrName.includes('-')) {
+    return propSymbol;
+  }
+  // Handle native HTML boolean attributes whose DOM property is camelCased
+  // differently from a single-word attribute (e.g. readonly -> readOnly).
+  const candidate = apparentType.getProperties().find(
+      p => p.name.toLowerCase() === attrName.toLowerCase());
+  if (candidate &&
+      getLitPropertyType(
+          checker.getTypeOfSymbolAtLocation(candidate, tsNode), checker) ===
+          'Boolean') {
+    return candidate;
+  }
+  return undefined;
+}
+
+function isBooleanAttribute(
+    currentTagName: string, currentTagId: string, attrName: string,
+    tsNode: ts.Node, checker: ts.TypeChecker): boolean {
+  if (attrName.startsWith('aria-') || attrName.startsWith('data-') ||
+      ENUMERATED_BOOLEAN_IDL_ATTRIBUTES.has(attrName)) {
+    return false;
+  }
+
+  const apparentType =
+      getElementApparentType(currentTagName, currentTagId, tsNode, checker);
+  if (!apparentType) {
+    return false;
+  }
+
+  const propSymbol =
+      getAttributePropertySymbol(apparentType, attrName, tsNode, checker);
+  if (!propSymbol) {
+    return false;
+  }
+
+  const propType = checker.getTypeOfSymbolAtLocation(propSymbol, tsNode);
+  return getLitPropertyType(propType, checker) === 'Boolean';
+}
+
+function isCamelCaseProperty(
+    currentTagName: string, currentTagId: string, attrName: string,
+    tsNode: ts.Node, checker: ts.TypeChecker): boolean {
+  const apparentType =
+      getElementApparentType(currentTagName, currentTagId, tsNode, checker);
+  if (!apparentType) {
+    return false;
+  }
+  return Boolean(apparentType.getProperty(attrName));
+}
 
 export const litElementExpressions = ESLintUtils.RuleCreator.withoutDocs<
     Options, MessageIds>({
@@ -24,22 +170,32 @@ export const litElementExpressions = ESLintUtils.RuleCreator.withoutDocs<
           'Ensures that expressions in a Lit element\'s template are not used with incompatible properties',
     },
     messages: {
+      bindingTypeMismatch:
+          'Type mismatch in {{bindingType}} binding: Property \'{{propertyName}}\' on element \'{{tagName}}\' expects type \'{{expectedType}}\', but was provided \'{{providedType}}\'.',
+      booleanPropertyAttributeBinding:
+          'Boolean property \'{{propertyName}}\' on element \'{{tagName}}\' can\'t be bound using a plain Lit attribute expression \'{{attributeName}}="${...}"\'. Use either boolean attribute expression \'?{{attributeName}}="${...}"\' or property expression \'.{{propertyName}}="${...}"\' instead.',
+      camelCaseAttribute:
+          'Attribute \'{{attributeName}}\' uses camelCase. Use either \'.{{propertyName}}="${...}"\' or \'{{dashCaseName}}\' instead.',
       incorrectAttributeBinding:
           'Incorrect assignment to property \'{{propertyName}}\' using attribute expression \'{{attributeExpression}}\'. Object/Array Lit properties can only be initialized with property expressions. Change to \'{{propertyExpression}}\' instead, or update the property\'s type if Object/Array is not accurate.',
       incorrectBooleanBinding:
           'Incorrect assignment to property \'{{propertyName}}\' using boolean attribute expression \'{{attributeExpression}}\'. Boolean attribute expressions should only be assigned to boolean properties. To bind to the truthiness of \'{{propertyName}}\', convert it to a boolean using \'!!\'.',
-      noTrueBinding:
-          'Boolean attribute \'{{attributeName}}\' does not need to be bound to \'${true}\'. Use either \'{{attributeName}}\' or \'.{{propertyName}}="${true}"\' instead.',
-      noFalseBinding:
-          'Incorrect assignment to boolean attribute expression \'?{{attributeName}}=\' using \'${false}\'. Use property binding \'.{{propertyName}}="${false}"\' instead.',
-      propertyTypeMismatch:
-          'Property type mismatch: {{propertyName}} is declared as {{declaredType}} reactive property but is typed as {{tsType}}.',
-      bindingTypeMismatch:
-          'Type mismatch in property binding: Property \'{{propertyName}}\' on element \'{{tagName}}\' expects type \'{{expectedType}}\', but was provided \'{{providedType}}\'.',
-      propertyNotFound:
-          'Property \'{{propertyName}}\' was not found on element \'{{tagName}}\'.',
+      invalidBooleanAttributeExpression:
+          'Invalid boolean attribute expression: \'?{{attributeName}}=\' syntax only works with \'${...}\' rvalues. Use just \'{{dashCaseName}}\' if always `true` or \'?{{dashCaseName}}="${...}"\' for a dynamic binding.',
+      invalidPropertyExpression:
+          'Invalid property expression: \'.{{propertyName}}=\' only works with \'${...}\' rvalues. Use attribute expression \'{{dashCaseName}}="..."\' for a static value, or \'.{{propertyName}}="${...}"\' for a dynamic binding.',
       listenerNotCallable:
           'Event listener for \'@{{eventName}}\' must be callable.',
+      noFalseBinding:
+          'Incorrect assignment to boolean attribute expression \'?{{attributeName}}=\' using \'${false}\'. Use property binding \'.{{propertyName}}="${false}"\' instead.',
+      noStaticTrueBooleanAttribute:
+          'Boolean attribute \'{{attributeName}}\' does not need to be set to \'="true"\'. Use either \'{{dashCaseName}}\' or \'.{{propertyName}}="${true}"\' instead.',
+      noTrueBinding:
+          'Boolean attribute \'{{attributeName}}\' does not need to be bound to \'${true}\'. Use either \'{{attributeName}}\' or \'.{{propertyName}}="${true}"\' instead.',
+      propertyNotFound:
+          'Property \'{{propertyName}}\' was not found on element \'{{tagName}}\'.',
+      propertyTypeMismatch:
+          'Property type mismatch: \'{{propertyName}}\' is declared as \'{{declaredType}}\' reactive property but is typed as \'{{tsType}}\'.',
     },
     schema: [],
   },
@@ -52,37 +208,9 @@ export const litElementExpressions = ESLintUtils.RuleCreator.withoutDocs<
         expression: TSESTree.Expression, tsNode: ts.Node,
         expressionType: ts.Type, expressionTypeStr: string,
         checker: ts.TypeChecker) {
-      let elSymbol: ts.Symbol|undefined;
-
-      if (currentTagId) {
-        // 1. Check for a context-specific TemplatizedDomNodes interface or type
-        // in the template file.
-        const templatizedSymbol = checker.resolveName(
-            'TemplatizedDomNodes', tsNode,
-            ts.SymbolFlags.Interface | ts.SymbolFlags.TypeAlias,
-            /* escapeGlobals= */ false);
-
-        if (templatizedSymbol) {
-          const templatizedType =
-              checker.getDeclaredTypeOfSymbol(templatizedSymbol);
-          elSymbol = templatizedType.getProperty(currentTagId);
-        }
-      }
-
-      // 2. Fallback to HTMLElementTagNameMap if no context-specific type was
-      // found.
-      if (!elSymbol) {
-        const mapSymbol = checker.resolveName(
-            'HTMLElementTagNameMap', tsNode, ts.SymbolFlags.Interface,
-            /* escapeGlobals= */ false);
-        assert.ok(mapSymbol && mapSymbol.members);
-        elSymbol =
-            mapSymbol.members.get(currentTagName as ts.InternalSymbolName);
-      }
-
-      assert.ok(elSymbol);
-      const elementType = checker.getTypeOfSymbolAtLocation(elSymbol, tsNode);
-      const apparentType = checker.getApparentType(elementType);
+      const apparentType =
+          getElementApparentType(currentTagName, currentTagId, tsNode, checker);
+      assert.ok(apparentType);
 
       const propSymbol = apparentType.getProperty(propBinding);
       const expectedType = propSymbol ?
@@ -116,7 +244,8 @@ export const litElementExpressions = ESLintUtils.RuleCreator.withoutDocs<
       // Exception 1: Allow TrustedHTML to be assigned to string
       // properties (e.g. innerHTML) for compatibility with Chromium's
       // patch.
-      if (checker.typeToString(expressionType) === 'TrustedHTML' &&
+      if ((expressionTypeStr === 'TrustedHTML' ||
+           expressionTypeStr === 'string | TrustedHTML') &&
           checker.typeToString(expectedType) === 'string') {
         return;
       }
@@ -140,6 +269,7 @@ export const litElementExpressions = ESLintUtils.RuleCreator.withoutDocs<
         node: expression,
         messageId: 'bindingTypeMismatch',
         data: {
+          bindingType: 'property',
           propertyName: propBinding,
           tagName: currentTagName,
           expectedType: checker.typeToString(expectedType),
@@ -181,23 +311,204 @@ export const litElementExpressions = ESLintUtils.RuleCreator.withoutDocs<
       });
     }
 
-    // Ensure attribute bindings are never used to bind to objects/arrays.
-    function checkAttributeBindingForObjectsAndArrays(
-        attrName: string, expression: TSESTree.Expression,
-        isTsObjectOrArray: boolean, propName: string) {
-      if (!isTsObjectOrArray) {
+    function checkStaticAttributes(
+        quasi: TSESTree.TemplateElement, rawWithoutComments: string,
+        prevTagName: string, prevTagId: string, tsNode: ts.Node,
+        checker: ts.TypeChecker) {
+      // Check 1: ?attr attributes not followed by ="${...}".
+      for (const match of rawWithoutComments.matchAll(
+               STATIC_QUESTION_MARK_REGEX)) {
+        assert.ok(match.groups);
+        const boolName = match.groups['boolName']!;
+        const afterMatch =
+            rawWithoutComments.slice(match.index + match[0].length);
+        if (!quasi.tail && afterMatch === '="') {
+          // Dynamic boolean attribute binding ?attr="${...}".
+          continue;
+        }
+        const tagInfo = getTagAtOffset(
+            rawWithoutComments, match.index, prevTagName, prevTagId);
+        if (!tagInfo) {
+          continue;
+        }
+        context.report({
+          node: quasi,
+          messageId: 'invalidBooleanAttributeExpression',
+          data: {
+            attributeName: boolName,
+            dashCaseName: camelCaseToDashCase(boolName),
+          },
+        });
+      }
+
+      // Check 2: Static ="true" on boolean attributes.
+      for (const match of rawWithoutComments.matchAll(STATIC_TRUE_REGEX)) {
+        assert.ok(match.groups);
+        const attrName = match.groups['attrName']!;
+        const tagInfo = getTagAtOffset(
+            rawWithoutComments, match.index, prevTagName, prevTagId);
+        if (!tagInfo) {
+          continue;
+        }
+        if (isBooleanAttribute(
+                tagInfo.tagName, tagInfo.tagId, attrName, tsNode, checker)) {
+          context.report({
+            node: quasi,
+            messageId: 'noStaticTrueBooleanAttribute',
+            data: {
+              attributeName: attrName,
+              dashCaseName: camelCaseToDashCase(attrName),
+              propertyName: dashCaseToCamelCase(attrName),
+            },
+          });
+        }
+      }
+
+      // Check 3: CamelCase attributes matching a property on the element.
+      for (const match of rawWithoutComments.matchAll(CAMEL_CASE_ATTR_REGEX)) {
+        assert.ok(match.groups);
+        const prefix = match.groups['prefix']!;
+        const attrName = match.groups['attrName']!;
+        const tagInfo = getTagAtOffset(
+            rawWithoutComments, match.index, prevTagName, prevTagId);
+        if (!tagInfo) {
+          continue;
+        }
+        if (isCamelCaseProperty(
+                tagInfo.tagName, tagInfo.tagId, attrName, tsNode, checker)) {
+          context.report({
+            node: quasi,
+            messageId: 'camelCaseAttribute',
+            data: {
+              attributeName: `${prefix}${attrName}`,
+              propertyName: attrName,
+              dashCaseName: `${prefix}${camelCaseToDashCase(attrName)}`,
+            },
+          });
+        }
+      }
+
+      // Check 4: Static .prop="..." attributes not bound to a ${...}
+      // expression.
+      for (const match of rawWithoutComments.matchAll(STATIC_PROPERTY_REGEX)) {
+        assert.ok(match.groups);
+        const propName = match.groups['propName']!;
+        const afterMatch =
+            rawWithoutComments.slice(match.index + match[0].length);
+        if (!quasi.tail && !afterMatch.includes('"')) {
+          // Dynamic property binding .prop="...${...}...".
+          continue;
+        }
+        const tagInfo = getTagAtOffset(
+            rawWithoutComments, match.index, prevTagName, prevTagId);
+        if (!tagInfo) {
+          continue;
+        }
+        context.report({
+          node: quasi,
+          messageId: 'invalidPropertyExpression',
+          data: {
+            propertyName: propName,
+            dashCaseName: camelCaseToDashCase(propName),
+          },
+        });
+      }
+    }
+
+    function checkAttributeBinding(
+        currentTagName: string, currentTagId: string, attrName: string,
+        expression: TSESTree.Expression, tsNode: ts.Node,
+        expressionType: ts.Type, expressionTypeStr: string,
+        isTsObjectOrArray: boolean, propName: string, checker: ts.TypeChecker) {
+      // Check 1: Should not bind to object or array TS expressions.
+      if (isTsObjectOrArray) {
+        context.report({
+          node: expression,
+          messageId: 'incorrectAttributeBinding',
+          data: {
+            attributeExpression: `${attrName}=`,
+            propertyName: propName,
+            propertyExpression: `.${dashCaseToCamelCase(attrName)}=`,
+          },
+        });
         return;
       }
 
-      context.report({
-        node: expression,
-        messageId: 'incorrectAttributeBinding',
-        data: {
-          attributeExpression: `${attrName}=`,
-          propertyName: propName,
-          propertyExpression: `.${dashCaseToCamelCase(attrName)}=`,
-        },
-      });
+      if (attrName !== attrName.toLowerCase() || attrName.startsWith('aria-') ||
+          attrName.startsWith('data-') ||
+          ENUMERATED_BOOLEAN_IDL_ATTRIBUTES.has(attrName) ||
+          attrName === 'style') {
+        return;
+      }
+
+      const apparentType =
+          getElementApparentType(currentTagName, currentTagId, tsNode, checker);
+      if (!apparentType) {
+        return;
+      }
+
+      const propSymbol =
+          getAttributePropertySymbol(apparentType, attrName, tsNode, checker);
+      if (!propSymbol) {
+        return;
+      }
+
+      const targetPropName = propSymbol.name;
+      const expectedType =
+          checker.getTypeOfSymbolAtLocation(propSymbol, tsNode);
+      const targetLitType = getLitPropertyType(expectedType, checker);
+
+      // Check 2: Should not bind to an Object or Array property on the element.
+      if (targetLitType === 'Object' || targetLitType === 'Array') {
+        context.report({
+          node: expression,
+          messageId: 'incorrectAttributeBinding',
+          data: {
+            attributeExpression: `${attrName}=`,
+            propertyName: targetPropName,
+            propertyExpression: `.${targetPropName}=`,
+          },
+        });
+        return;
+      }
+
+      // Check 3: Should not bind to a Boolean property on the element using
+      // attribute expression syntax.
+      if (targetLitType === 'Boolean') {
+        context.report({
+          node: expression,
+          messageId: 'booleanPropertyAttributeBinding',
+          data: {
+            attributeName: attrName,
+            propertyName: targetPropName,
+            tagName: currentTagName,
+          },
+        });
+        return;
+      }
+
+      // Check 4: Ensure bindings to a Number property on the element are
+      // assignable to the property's type.
+      if (targetLitType === 'Number') {
+        const expressionText = context.sourceCode.getText(expression);
+        if (expressionText.endsWith('nothing')) {
+          return;
+        }
+
+        if (!checker.isTypeAssignableTo(expressionType, expectedType)) {
+          context.report({
+            node: expression,
+            messageId: 'bindingTypeMismatch',
+            data: {
+              bindingType: 'attribute',
+              propertyName: targetPropName,
+              tagName: currentTagName,
+              expectedType: checker.typeToString(expectedType),
+              providedType: expressionTypeStr,
+            },
+          });
+        }
+      }
     }
 
     function checkEventListenerBinding(
@@ -235,10 +546,7 @@ export const litElementExpressions = ESLintUtils.RuleCreator.withoutDocs<
     assert.ok(templateFilename.endsWith('.html.ts'));
 
     const services = ESLintUtils.getParserServices(context);
-    const compilerOptions = services.program.getCompilerOptions();
-
-    const sourceFiles = services.program.getSourceFiles().filter(
-        f => f.fileName.startsWith(compilerOptions.rootDir + '/'));
+    const sourceFiles = getSourceFiles(context);
 
     let hasLitImport = false;
     let className = '';
@@ -276,30 +584,37 @@ export const litElementExpressions = ESLintUtils.RuleCreator.withoutDocs<
 
         extractPropertiesFromClass(classDefinitionFile, className, context);
 
-        const bindingRegex =
-            /(\s+(?<attrName>[a-z0-9\-]+)|\?(?<boolName>[a-z0-9-]+)|\.(?<propName>[a-zA-Z0-9-]+)|@(?<eventName>[a-zA-Z0-9-]+))="$/;
+        const checker = services.program.getTypeChecker();
+        const templateTsNode = services.esTreeNodeToTSNodeMap.get(node);
+        assert.ok(templateTsNode);
         let currentTagName = '';
         let currentTagId = '';
 
         for (let i = 0; i < node.quasis.length; i++) {
-          // Extract the last tag name that was seen before an expression
-          // started. This is necessary because quasis and tags are not 1 to 1.
-          const tagMatch =
-              /<([a-zA-Z0-9-]+)[^>]*$/.exec(node.quasis[i]!.value.raw);
-          if (tagMatch) {
-            currentTagName = tagMatch[1]!;
-            // Try to extract an id for this tag. Note: This will only work for
-            // an id in the same quasi as the tag. If relying on the DOM id for
-            // type mapping in a TemplatizedDomNodes interface, the id should
-            // immediately follow the tag, e.g. <cr-lazy-list id="list" ...>
-            const idMatch = /\bid\s*=\s*"([^\s"]+)"/.exec(tagMatch[0]);
-            currentTagId = idMatch ? idMatch[1]! : '';
-          }
+          const quasi = node.quasis[i]!;
+          const rawWithoutComments =
+              quasi.value.raw.replace(HTML_COMMENT_REGEX, '');
 
-          const match = bindingRegex.exec(node.quasis[i]!.value.raw);
+          checkStaticAttributes(
+              quasi, rawWithoutComments, currentTagName, currentTagId,
+              templateTsNode, checker);
+
+          // Extract the enclosing opening tag (if any) before the next
+          // expression. `endTagInfo` is null for child/text expressions and the
+          // trailing tail quasi, but must be non-null when BINDING_REGEX
+          // matches an attribute, property, boolean, or event binding below.
+          const endTagInfo = getTagAtOffset(
+              rawWithoutComments, rawWithoutComments.length, currentTagName,
+              currentTagId);
+          currentTagName = endTagInfo ? endTagInfo.tagName : '';
+          currentTagId = endTagInfo ? endTagInfo.tagId : '';
+
+          const match = BINDING_REGEX.exec(rawWithoutComments);
           if (!match) {
             continue;
           }
+
+          assert.ok(currentTagName !== '');
 
           const expression = node.expressions[i];
           if (!expression) {
@@ -307,7 +622,6 @@ export const litElementExpressions = ESLintUtils.RuleCreator.withoutDocs<
           }
 
           // Determine the TypeScript type of the bound expression.
-          const checker = services.program.getTypeChecker();
           const tsNode = services.esTreeNodeToTSNodeMap.get(expression);
           assert.ok(tsNode);
           const expressionType = checker.getTypeAtLocation(tsNode);
@@ -329,11 +643,17 @@ export const litElementExpressions = ESLintUtils.RuleCreator.withoutDocs<
 
           // Validate property bindings
           assert.ok(match.groups);
+          const hasStaticPrefix = (match.groups['prefix'] ?? '') !== '';
+          const hasStaticSuffix =
+              !node.quasis[i + 1]?.value.raw.startsWith('"');
+          const isConcatenatedString = hasStaticPrefix || hasStaticSuffix;
+
           const propBinding = match.groups['propName'];
-          if (propBinding && currentTagName) {
+          if (propBinding) {
             checkPropertyBinding(
                 currentTagName, currentTagId, propBinding, expression, tsNode,
-                expressionType, expressionTypeStr, checker);
+                isConcatenatedString ? checker.getStringType() : expressionType,
+                isConcatenatedString ? 'string' : expressionTypeStr, checker);
             continue;
           }
 
@@ -357,9 +677,11 @@ export const litElementExpressions = ESLintUtils.RuleCreator.withoutDocs<
           const attrName = match.groups['attrName'];
           if (attrName) {
             const litType = getLitPropertyType(expressionType, checker);
-            checkAttributeBindingForObjectsAndArrays(
-                attrName, expression,
-                litType === 'Object' || litType === 'Array', propName);
+            checkAttributeBinding(
+                currentTagName, currentTagId, attrName, expression, tsNode,
+                isConcatenatedString ? checker.getStringType() : expressionType,
+                isConcatenatedString ? 'string' : expressionTypeStr,
+                litType === 'Object' || litType === 'Array', propName, checker);
           }
         }
       },

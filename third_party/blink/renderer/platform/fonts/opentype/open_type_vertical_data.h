@@ -50,8 +50,6 @@ class PLATFORM_EXPORT OpenTypeVerticalData
                                   float ascent,
                                   int height);
 
-  bool IsOpenType() const { return !advance_widths_.empty(); }
-  bool HasVerticalMetrics() const { return !advance_heights_.empty(); }
   float AdvanceHeight(Glyph) const;
 
   void GetVerticalTranslationsForGlyphs(const SkFont&,
@@ -60,7 +58,7 @@ class PLATFORM_EXPORT OpenTypeVerticalData
 
  private:
   void LoadMetrics(sk_sp<SkTypeface>);
-  bool HasVORG() const { return !vert_origin_y_.empty(); }
+  bool HasVorg() const { return !vert_origin_y_.empty(); }
 
   HashMap<Glyph, Glyph> vertical_glyph_map_;
   Vector<uint16_t> advance_widths_;

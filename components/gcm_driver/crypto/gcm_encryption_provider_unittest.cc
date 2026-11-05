@@ -23,8 +23,9 @@
 #include "base/task/single_thread_task_runner.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/task_environment.h"
+#include "base/test/test_future.h"
+#include "components/fcm/crypto/fcm_decryption_result.h"
 #include "components/gcm_driver/common/gcm_message.h"
-#include "components/gcm_driver/crypto/gcm_decryption_result.h"
 #include "components/gcm_driver/crypto/gcm_encryption_result.h"
 #include "components/gcm_driver/crypto/gcm_key_store.h"
 #include "components/gcm_driver/crypto/gcm_message_cryptographer.h"
@@ -147,7 +148,7 @@ class GCMEncryptionProviderTest : public ::testing::Test {
   }
 
   // Returns the result of the previous decryption operation.
-  GCMDecryptionResult decryption_result() { return decryption_result_; }
+  fcm::FcmDecryptionResult decryption_result() { return decryption_result_; }
 
   // Returns the result of the previous encryption operation.
   GCMEncryptionResult encryption_result() { return encryption_result_; }
@@ -175,7 +176,8 @@ class GCMEncryptionProviderTest : public ::testing::Test {
                             const std::string& authorized_entity);
 
  private:
-  void DidDecryptMessage(GCMDecryptionResult result, IncomingMessage message) {
+  void DidDecryptMessage(fcm::FcmDecryptionResult result,
+                         IncomingMessage message) {
     decryption_result_ = result;
     decrypted_message_ = std::move(message);
   }
@@ -191,7 +193,8 @@ class GCMEncryptionProviderTest : public ::testing::Test {
 
   std::unique_ptr<GCMEncryptionProvider> encryption_provider_;
 
-  GCMDecryptionResult decryption_result_ = GCMDecryptionResult::UNENCRYPTED;
+  fcm::FcmDecryptionResult decryption_result_ =
+      fcm::FcmDecryptionResult::UNENCRYPTED;
   GCMEncryptionResult encryption_result_ =
       GCMEncryptionResult::ENCRYPTION_FAILED;
 
@@ -240,7 +243,7 @@ TEST_F(GCMEncryptionProviderTest, VerifiesEncryptionHeaderParsing) {
   invalid_message.raw_data = "foo";
 
   ASSERT_NO_FATAL_FAILURE(Decrypt(invalid_message));
-  EXPECT_EQ(GCMDecryptionResult::INVALID_ENCRYPTION_HEADER,
+  EXPECT_EQ(fcm::FcmDecryptionResult::INVALID_ENCRYPTION_HEADER,
             decryption_result());
 
   IncomingMessage valid_message;
@@ -249,7 +252,7 @@ TEST_F(GCMEncryptionProviderTest, VerifiesEncryptionHeaderParsing) {
   valid_message.raw_data = "foo";
 
   ASSERT_NO_FATAL_FAILURE(Decrypt(valid_message));
-  EXPECT_NE(GCMDecryptionResult::INVALID_ENCRYPTION_HEADER,
+  EXPECT_NE(fcm::FcmDecryptionResult::INVALID_ENCRYPTION_HEADER,
             decryption_result());
 }
 
@@ -263,7 +266,7 @@ TEST_F(GCMEncryptionProviderTest, VerifiesCryptoKeyHeaderParsing) {
   invalid_message.raw_data = "foo";
 
   ASSERT_NO_FATAL_FAILURE(Decrypt(invalid_message));
-  EXPECT_EQ(GCMDecryptionResult::INVALID_CRYPTO_KEY_HEADER,
+  EXPECT_EQ(fcm::FcmDecryptionResult::INVALID_CRYPTO_KEY_HEADER,
             decryption_result());
 
   IncomingMessage valid_message;
@@ -272,7 +275,7 @@ TEST_F(GCMEncryptionProviderTest, VerifiesCryptoKeyHeaderParsing) {
   valid_message.raw_data = "foo";
 
   ASSERT_NO_FATAL_FAILURE(Decrypt(valid_message));
-  EXPECT_NE(GCMDecryptionResult::INVALID_CRYPTO_KEY_HEADER,
+  EXPECT_NE(fcm::FcmDecryptionResult::INVALID_CRYPTO_KEY_HEADER,
             decryption_result());
 }
 
@@ -286,7 +289,7 @@ TEST_F(GCMEncryptionProviderTest, VerifiesCryptoKeyHeaderParsingThirdValue) {
   valid_message.raw_data = "foo";
 
   ASSERT_NO_FATAL_FAILURE(Decrypt(valid_message));
-  EXPECT_NE(GCMDecryptionResult::INVALID_CRYPTO_KEY_HEADER,
+  EXPECT_NE(fcm::FcmDecryptionResult::INVALID_CRYPTO_KEY_HEADER,
             decryption_result());
 }
 
@@ -300,7 +303,7 @@ TEST_F(GCMEncryptionProviderTest, VerifiesCryptoKeyHeaderSingleDhEntry) {
   valid_message.raw_data = "foo";
 
   ASSERT_NO_FATAL_FAILURE(Decrypt(valid_message));
-  EXPECT_EQ(GCMDecryptionResult::INVALID_CRYPTO_KEY_HEADER,
+  EXPECT_EQ(fcm::FcmDecryptionResult::INVALID_CRYPTO_KEY_HEADER,
             decryption_result());
 }
 
@@ -314,7 +317,7 @@ TEST_F(GCMEncryptionProviderTest, VerifiesExistingKeys) {
   message.raw_data = "foo";
 
   ASSERT_NO_FATAL_FAILURE(Decrypt(message));
-  EXPECT_EQ(GCMDecryptionResult::NO_KEYS, decryption_result());
+  EXPECT_EQ(fcm::FcmDecryptionResult::NO_KEYS, decryption_result());
 
   std::string public_key, auth_secret;
   encryption_provider()->GetEncryptionInfo(
@@ -329,17 +332,18 @@ TEST_F(GCMEncryptionProviderTest, VerifiesExistingKeys) {
   ASSERT_GT(auth_secret.size(), 0u);
 
   ASSERT_NO_FATAL_FAILURE(Decrypt(message));
-  EXPECT_NE(GCMDecryptionResult::NO_KEYS, decryption_result());
+  EXPECT_NE(fcm::FcmDecryptionResult::NO_KEYS, decryption_result());
 }
 
 TEST_F(GCMEncryptionProviderTest, VerifiesKeyRemovalGCMRegistration) {
   // Removing encryption info for an InstanceID token shouldn't affect a
-  // non-InstanceID GCM registration.
+  // non-InstanceID GCM registration. Removing encryption info for the empty
+  // authorized entity, or with the "*" wildcard (as InstanceID::DeleteID()
+  // does), removes the encryption info of the non-InstanceID GCM registration.
 
   // Non-InstanceID callers pass an empty string for authorized_entity.
   std::string authorized_entity_gcm;
   std::string authorized_entity_1 = kExampleAuthorizedEntity + std::string("1");
-  std::string authorized_entity_2 = kExampleAuthorizedEntity + std::string("2");
 
   // Should create encryption info.
   std::string public_key, auth_secret;
@@ -374,17 +378,32 @@ TEST_F(GCMEncryptionProviderTest, VerifiesKeyRemovalGCMRegistration) {
 
   ASSERT_NO_FATAL_FAILURE(CheckHasKey(authorized_entity_gcm, true));
 
-  encryption_provider()->RemoveEncryptionInfo(kExampleAppId, "*",
-                                              base::DoNothing());
+  base::test::TestFuture<void> remove_gcm_future;
+  encryption_provider()->RemoveEncryptionInfo(
+      kExampleAppId, authorized_entity_gcm, remove_gcm_future.GetCallback());
+  ASSERT_TRUE(remove_gcm_future.Wait());
 
-  base::RunLoop().RunUntilIdle();
+  ASSERT_NO_FATAL_FAILURE(CheckHasKey(authorized_entity_gcm, false));
+
+  // Should create new encryption info.
+  base::test::TestFuture<std::string, std::string> encryption_info_future;
+  encryption_provider()->GetEncryptionInfo(
+      kExampleAppId, authorized_entity_gcm,
+      encryption_info_future.GetCallback());
+  auto [public_key_2, auth_secret_2] = encryption_info_future.Take();
+
+  EXPECT_GT(public_key_2.size(), 0u);
+  EXPECT_GT(auth_secret_2.size(), 0u);
+  EXPECT_NE(public_key, public_key_2);
+  EXPECT_NE(auth_secret, auth_secret_2);
 
   ASSERT_NO_FATAL_FAILURE(CheckHasKey(authorized_entity_gcm, true));
 
+  base::test::TestFuture<void> remove_wildcard_future;
   encryption_provider()->RemoveEncryptionInfo(
-      kExampleAppId, authorized_entity_gcm, base::DoNothing());
-
-  base::RunLoop().RunUntilIdle();
+      kExampleAppId, /*authorized_entity=*/"*",
+      remove_wildcard_future.GetCallback());
+  ASSERT_TRUE(remove_wildcard_future.Wait());
 
   ASSERT_NO_FATAL_FAILURE(CheckHasKey(authorized_entity_gcm, false));
 }
@@ -584,8 +603,8 @@ void GCMEncryptionProviderTest::TestEncryptionRoundTrip(
   // Decrypt the message, and expect everything to go wonderfully well.
   ASSERT_NO_FATAL_FAILURE(Decrypt(message));
   ASSERT_EQ(version == GCMMessageCryptographer::Version::DRAFT_03
-                ? GCMDecryptionResult::DECRYPTED_DRAFT_03
-                : GCMDecryptionResult::DECRYPTED_DRAFT_08,
+                ? fcm::FcmDecryptionResult::DECRYPTED_DRAFT_03
+                : fcm::FcmDecryptionResult::DECRYPTED_DRAFT_08,
             decryption_result());
 
   EXPECT_TRUE(decrypted_message().decrypted);

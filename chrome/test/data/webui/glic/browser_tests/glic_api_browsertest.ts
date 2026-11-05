@@ -4,12 +4,74 @@
 
 // cc_file_path: chrome/browser/glic/host/glic_api_browsertest.cc
 
-import {CancelActionsResult, ClientCapabilities, ExperimentalTriggeringUpdateType, FileUploadPolicyState, FormFactor, HostCapability, InvocationSource, MetricUserInputReactionType, PanelStateKind, Platform, PromptType, ResponseStopCause, SbThreatType, ScreenshotEncryptionScheme, ScrollToErrorReason, WebClientMode, WebUseCounter} from '/glic/glic_api/glic_api.js';
-import type {AdditionalContext, CounterAbuseVerdict, ExperimentalTriggeringUpdate, FocusedTabData, GetPinCandidatesOptions, GlicBrowserHost, GlicWebClient, InvokeOptions, Observable, Observable2, OpenPanelInfo, PageMetadata, PanelOpeningData, PanelState, ScrollToError, TabContextResult, TabData, UserConfirmationDialogRequest, UserProfileInfo} from '/glic/glic_api/glic_api.js';
-import type {GlicBrowserHostImpl} from '/glic/glic_api_impl/client/glic_api_client.js';
+import {                             //
+  ActuationTarget,                   //
+  CancelActionsResult,               //
+  ClientCapabilities,                //
+  DataTransferAction,                //
+  DataTransferActionsBlockedReason,  //
+  ExperimentalTriggeringUpdateType,  //
+  FileUploadPolicyState,             //
+  FormFactor,                        //
+  HostCapability,                    //
+  InvocationSource,                  //
+  MetricUserInputReactionType,       //
+  PanelStateKind,                    //
+  Platform,                          //
+  PromptType,                        //
+  ResponseStopCause,                 //
+  SbThreatType,                      //
+  ScreenshotEncryptionScheme,        //
+  ScrollToErrorReason,               //
+  TooltipImpressionType,             //
+  WebClientMode,                     //
+  WebUseCounter,                     //
+} from '/glic/glic_api/glic_api.js';
+import type {                                  //
+             AdditionalContext,                //
+             CounterAbuseVerdict,              //
+             DataTransferActionsBlockedNotice, //
+             ExperimentalTriggeringUpdate,     //
+             FocusedTabData,                   //
+             GetPinCandidatesOptions,          //
+             GlicBrowserHost,                  //
+             GlicWebClient,                    //
+             InvokeOptions,                    //
+             Observable,                       //
+             Observable2,                      //
+             OpenPanelInfo,                    //
+             PageMetadata,                     //
+             PanelOpeningData,                 //
+             PanelState,                       //
+             ScrollToError,                    //
+             TabContextResult,                 //
+             TabData,                          //
+             UserConfirmationDialogRequest,    //
+             UserProfileInfo,                  //
+} from '/glic/glic_api/glic_api.js';
+import type {GlicBrowserHostImpl} from '/glic/glic_api_impl/glic_api_client.js';
 import {Subject} from '/glic/observable.js';
 
-import {ApiTestError, ApiTestFixtureBase, assertDefined, assertEquals, assertFalse, assertNotEquals, assertRejects, assertTrue, assertUndefined, checkDefined, mapObservable, observeSequence, readStream, runUntil, sleep, testMain, waitFor, WebClient} from './browser_test_base.js';
+import {               //
+  ApiTestError,        //
+  ApiTestFixtureBase,  //
+  assertDefined,       //
+  assertEquals,        //
+  assertFalse,         //
+  assertNotEquals,     //
+  assertRejects,       //
+  assertTrue,          //
+  assertUndefined,     //
+  checkDefined,        //
+  mapObservable,       //
+  observeSequence,     //
+  readStream,          //
+  runUntil,            //
+  sleep,               //
+  testMain,            //
+  waitFor,             //
+  WebClient,           //
+} from './browser_test_base.js';
 import type {SequencedSubscriber} from './browser_test_base.js';
 
 class ApiTests extends ApiTestFixtureBase {
@@ -18,6 +80,36 @@ class ApiTests extends ApiTestFixtureBase {
   }
 
   async testDoNothing() {}
+
+  async testGetSendTabToSelfDevicesFeatureDisabled() {
+    assertDefined(this.host.getHostCapabilities);
+    const capabilities: Set<HostCapability> =
+        await this.host.getHostCapabilities();
+    assertFalse(capabilities.has(HostCapability.SEND_TAB_TO_SELF));
+    assertUndefined(this.host.getSendTabToSelfDevices);
+  }
+
+  async testGetSendTabToSelfDevicesFeatureEnabled() {
+    assertDefined(this.host.getHostCapabilities);
+    const capabilities: Set<HostCapability> =
+        await this.host.getHostCapabilities();
+    assertTrue(capabilities.has(HostCapability.SEND_TAB_TO_SELF));
+    assertDefined(this.host.getSendTabToSelfDevices);
+    const devices = await this.host.getSendTabToSelfDevices();
+    assertDefined(devices);
+    assertEquals(devices.length, 1);
+    assertEquals(devices[0]!.deviceGuid, 'device_guid_1');
+    assertEquals(devices[0]!.deviceName, 'My Phone');
+    assertEquals(devices[0]!.formFactor, FormFactor.PHONE);
+    assertEquals(devices[0]!.lastUpdatedTime?.getTime(), 1700000000000);
+  }
+
+  async testGetSendTabToSelfDevicesModelNotReady() {
+    assertDefined(this.host.getSendTabToSelfDevices);
+    const devices = await this.host.getSendTabToSelfDevices();
+    assertDefined(devices);
+    assertEquals(devices.length, 0);
+  }
 
   async testRecordUseCounter() {
     assertDefined(this.host.getMetrics);
@@ -366,7 +458,7 @@ class ApiTests extends ApiTestFixtureBase {
     const tabId: string = this.getFocusedTabId();
     await this.host.unpinTabs([tabId]);  // Unpin required for multi-instance.
     await assertRejects(this.host.getContextFromTab(tabId, {}), {
-      withErrorMessage: 'tabContext failed: permission denied:' +
+      withErrorMessage: 'getContextFromTab failed: permission denied:' +
           ' context permission not enabled',
     });
 
@@ -390,13 +482,13 @@ class ApiTests extends ApiTestFixtureBase {
 
     await this.host.setTabContextPermissionState(false);
     await assertRejects(this.host.getContextFromTab(tabId, {}), {
-      withErrorMessage: 'tabContext failed: permission denied:' +
+      withErrorMessage: 'getContextFromTab failed: permission denied:' +
           ' context permission not enabled',
     });
 
     await this.host.setTabContextPermissionState(true);
     await assertRejects(this.host.getContextFromTab(tabId, {}), {
-      withErrorMessage: 'tabContext failed: permission denied',
+      withErrorMessage: 'getContextFromTab failed: permission denied',
     });
   }
 
@@ -425,7 +517,7 @@ class ApiTests extends ApiTestFixtureBase {
     await this.host.unpinTabs([tabId]);
     await pinnedTabsUpdates.waitFor((tabs) => tabs.length === 1);
     await assertRejects(this.host.getContextFromTab(tabId, {}), {
-      withErrorMessage: 'tabContext failed: permission denied:' +
+      withErrorMessage: 'getContextFromTab failed: permission denied:' +
           ' context permission not enabled',
     });
   }
@@ -438,7 +530,7 @@ class ApiTests extends ApiTestFixtureBase {
 
     await assertRejects(
         this.host.getContextFromTab('not-exist', {}),
-        {withErrorMessage: 'tabContext failed: tab not found'},
+        {withErrorMessage: 'getContextFromTab failed: tab not found'},
     );
   }
 
@@ -494,22 +586,18 @@ class ApiTests extends ApiTestFixtureBase {
     });
   }
 
-  async testGetContextFromFocusedTabWithPdfFile() {
+  async testGetContextFromFocusedTabWithTopLevelPdf() {
     assertDefined(this.host.getContextFromFocusedTab);
     await this.host.setTabContextPermissionState(true);
 
-    // Pdf pages have two loads: one of the WebContents, and another of the
-    // element within an iframe that contains the actual pdf. We need to wait
-    // for both to be finished before running the test. The cpp side waits for
-    // the WebContents to be loaded, but we must still wait here.
-    const result: TabContextResult = await runUntil(async () => {
-      const result = await this.host.getContextFromFocusedTab!({pdfData: true});
-      if (!result || !result.pdfDocumentData ||
-          !result.pdfDocumentData.pdfData) {
-        return undefined;
-      }
-      return result;
-    });
+    // The C++ part of this browser test already ensures the PDF has been loaded
+    // by `pdf_extension_test_util::EnsurePDFHasLoaded`.
+    const result = await this.host.getContextFromFocusedTab({pdfData: true});
+    assertDefined(result);
+    assertDefined(result.pdfDocumentData);
+    assertDefined(result.pdfDocumentData.pdfData);
+    assertEquals(
+        result.pdfDocumentData.origin, new URL(result.tabData.url).origin);
 
     assertEquals(
         new URL(result.tabData.url).pathname, '/pdf/test.pdf',
@@ -527,6 +615,85 @@ class ApiTests extends ApiTestFixtureBase {
     assertFalse(result.pdfDocumentData!.pdfSizeLimitExceeded);
   }
 
+  async testGetContextFromFocusedTabWithEmbeddedPdf() {
+    assertDefined(this.host.getContextFromFocusedTab);
+    assertDefined(this.host.getHostCapabilities);
+    await this.host.setTabContextPermissionState(true);
+
+    const embeddedPdfExtractionSupported = this.host.getHostCapabilities().has(
+        HostCapability.EMBEDDED_PDF_BYTES_EXTRACTION);
+    const result = await this.host.getContextFromFocusedTab(
+        {pdfData: embeddedPdfExtractionSupported});
+
+    if (embeddedPdfExtractionSupported) {
+      // Embedded PDF bytes extraction should only be requested if the host has
+      // the capability.
+      // The C++ part of this browser test already ensures the PDF has been
+      // loaded by `pdf_extension_test_util::EnsurePDFHasLoaded`.
+      assertDefined(result);
+      assertDefined(result.pdfDocumentData);
+      assertDefined(result.pdfDocumentData.pdfData);
+      assertEquals(
+          result.pdfDocumentData.origin, this.testParams.expectedPdfOrigin);
+
+      assertEquals(
+          new URL(result.tabData.url).pathname, '/iframe.html',
+          `Tab data has unexpected url ${result.tabData.url}`);
+
+      // Original PDF size is 7984 bytes, because Chrome reserializes the PDF,
+      // the size can change, but it shouldn't be too small.
+      const pdfData: Uint8Array =
+          await readStream(result.pdfDocumentData!.pdfData!);
+      assertTrue(
+          pdfData.byteLength > 5000,
+          `PDF data is too short. length=${pdfData.byteLength}`);
+      assertEquals('%PDF', new TextDecoder().decode(pdfData.slice(0, 4)));
+      assertFalse(result.pdfDocumentData!.pdfSizeLimitExceeded);
+    } else {
+      // The host does not support embedded PDF bytes extraction, the context
+      // request should not request PDF data.
+      assertDefined(result);
+      assertEquals(
+          new URL(result.tabData.url).pathname, '/iframe.html',
+          `Tab data has unexpected url ${result.tabData.url}`);
+      assertUndefined(result.pdfDocumentData);
+    }
+  }
+
+  async testGetContextFromFocusedTabWithEmbeddedPdfFeatureDisabled() {
+    assertDefined(this.host.getContextFromFocusedTab);
+    assertDefined(this.host.getHostCapabilities);
+    await this.host.setTabContextPermissionState(true);
+
+    const result = await this.host.getContextFromFocusedTab({pdfData: true});
+
+    // The host does not support embedded PDF bytes extraction, the context
+    // request should not request PDF data.
+    assertDefined(result);
+    assertEquals(
+        new URL(result.tabData.url).pathname, '/iframe.html',
+        `Tab data has unexpected url ${result.tabData.url}`);
+    assertUndefined(result.pdfDocumentData);
+  }
+
+  async testGetContextFromFocusedTabWithoutPdf() {
+    assertDefined(this.host.getContextFromFocusedTab);
+    assertDefined(this.host.getHostCapabilities);
+    await this.host.setTabContextPermissionState(true);
+
+    const embeddedPdfExtractionSupported = this.host.getHostCapabilities().has(
+        HostCapability.EMBEDDED_PDF_BYTES_EXTRACTION);
+
+    const result = await this.host.getContextFromFocusedTab({
+      pdfData: embeddedPdfExtractionSupported,
+    });
+    assertDefined(result);
+    assertEquals(
+        new URL(result.tabData.url).pathname, '/iframe.html',
+        `Tab data has unexpected url ${result.tabData.url}`);
+    assertUndefined(result.pdfDocumentData);
+  }
+
   async testGetContextFromFocusedTabWithUnFocusablePage() {
     assertDefined(this.host.getFocusedTabStateV2);
     assertDefined(this.host.getContextFromFocusedTab);
@@ -542,7 +709,7 @@ class ApiTests extends ApiTestFixtureBase {
     // Focused tab extraction should fail for an un-focusable page.
     await this.host.setTabContextPermissionState(true);
     await assertRejects(this.host.getContextFromFocusedTab({}), {
-      withErrorMessage: 'tabContext failed: permission denied',
+      withErrorMessage: 'getContextFromFocusedTab failed: permission denied',
     });
   }
 
@@ -772,7 +939,7 @@ class ApiTests extends ApiTestFixtureBase {
 
     assertDefined(this.host.getContextFromFocusedTab);
     await assertRejects(this.host.getContextFromFocusedTab({}), {
-      withErrorMessage: 'tabContext failed: permission denied:' +
+      withErrorMessage: 'getContextFromFocusedTab failed: permission denied:' +
           ' context permission not enabled',
     });
   }
@@ -937,23 +1104,58 @@ class ApiTests extends ApiTestFixtureBase {
     {
       const tabId = this.testParams as string;
       const obs = this.host.getTabById(tabId);
-      assertUndefined(obs.getCurrentValue());
-      const sequence = observeSequence(obs);
-      const tabData = await sequence.next();
-      assertEquals(tabId, tabData.tabId);
       assertTrue(
-          tabData.url.endsWith('test.html'), `unexpected url: ${tabData.url}`);
+          obs === this.host.getTabById(tabId),
+          'Should return the same observable instance while active');
+      assertUndefined(obs.getCurrentValue());
+
+      // 1. First subscriber connects to source over Mojo.
+      const sequence1 = observeSequence(obs);
+      const tabData1 = await sequence1.next();
+      assertEquals(tabId, tabData1.tabId);
+      assertTrue(
+          tabData1.url.endsWith('test.html'),
+          `unexpected url: ${tabData1.url}`);
+      assertEquals(obs.getCurrentValue()?.url, tabData1.url);
+
+      // 2. Late subscriber immediately receives the current cached value.
+      const sequence2 = observeSequence(obs);
+      const tabData2 = await sequence2.next();
+      assertEquals(tabData1.url, tabData2.url);
+
+      // 3. Unsubscribing one subscriber leaves the second subscriber active
+      // and connected over Mojo (deduplication & ref-counting).
+      sequence1.unsubscribe();
 
       // Navigate the tab in C++.
       await this.advanceToNextStep();
-      await sequence.waitFor(tabData => tabData.url.endsWith('test.html?q=hi'));
+      const updatedData =
+          await sequence2.waitFor(t => t.url.endsWith('test.html?q=hi'));
+      assertEquals(obs.getCurrentValue()?.url, updatedData.url);
 
-      // Close the tab in C++.
+      // 4. Unsubscribing the last subscriber starts the unsubscription timer.
+      // Resubscribing to the same cached observable reconnects to source.
+      sequence2.unsubscribe();
+      const sequence3 = observeSequence(obs);
+      const tabData3 = await sequence3.next();
+      assertEquals(updatedData.url, tabData3.url);
+      assertTrue(
+          obs === this.host.getTabById(tabId),
+          'Cached observable should remain in set while tab is open');
+      assertFalse((obs as any).isStopped());
+
+      // 5. Close the tab in C++.
       await this.advanceToNextStep();
-      await sequence.waitForComplete();
+      await sequence3.waitForComplete();
+      assertTrue((obs as any).isStopped());
 
-      // A new subscription should complete without receiving anything.
-      const newSeq = observeSequence(this.host.getTabById(tabId));
+      // 6. A new request for the closed tab should return a fresh observable
+      // that completes without receiving anything.
+      const newObs = this.host.getTabById(tabId);
+      assertTrue(
+          obs !== newObs,
+          'Expected a new observable instance after the previous completed');
+      const newSeq = observeSequence(newObs);
       await newSeq.waitForComplete();
       assertTrue(newSeq.isEmpty());
     }
@@ -1033,10 +1235,14 @@ class ApiTests extends ApiTestFixtureBase {
   }
 
   async testErrorShownOnMojoPipeError() {
-    // Calling getModelQualityClientId triggers a mojo pipe error because the
-    // runtime feature is disabled.
-    (this.host as GlicBrowserHostImpl)
-        .clientRemote.requestWithResponse('getModelQualityClientId', undefined);
+    if (this.testParams?.triggerError) {
+      // Calling getModelQualityClientId triggers a mojo pipe error because the
+      // runtime feature is disabled.
+      (this.host as GlicBrowserHostImpl)
+          .getHandler()
+          .getModelQualityClientId()
+          .catch(() => {});
+    }
   }
 
   async testPanelActiveWithMicrophone() {
@@ -1048,6 +1254,8 @@ class ApiTests extends ApiTestFixtureBase {
     const rpcUrls: string[] = this.testParams.rpcUrls;
     await Promise.all(rpcUrls.map(url => fetch(url)));
   }
+
+  async testRequestHeaderFreNotStarted() {}
 
   async testDialogResponseCallOrder() {
     assertDefined(this.host.uninterruptActorTask);
@@ -1077,10 +1285,9 @@ class ApiTests extends ApiTestFixtureBase {
     request.onDialogClosed({response: {permissionGranted: false}});
 
     // TODO(b/477060111): This test fails without this. Because onDialogClosed
-    // resolves a promise, it doesn't actually postMessage the response until a
-    // yield to the event loop. It should probably return a promise which can be
-    // awaited. This await yields allowing the queued task that does the
-    // postMessage to schedule so that the response message is sent before
+    // resolves a promise, the Mojo response isn't sent until the promise's
+    // microtask runs. It should probably return a promise which can be
+    // awaited. This await yields so that the response message is sent before
     // uninterruptActorTask.
     await new Promise((resolve) => void setTimeout(resolve, 0));
 
@@ -1103,6 +1310,30 @@ class ApiTests extends ApiTestFixtureBase {
 
     document.body.appendChild(link);
     link.click();
+  }
+
+  async testWindowOpenOpensTab() {
+    const button = document.createElement('button');
+    button.addEventListener('click', () => {
+      window.open('https://www.chromium.org', '_blank');
+    });
+    document.body.appendChild(button);
+    button.click();
+  }
+
+  async testCtrlClickLinkOpensTab() {
+    const link = document.createElement('a');
+    link.setAttribute('href', 'https://www.chromium.org');
+    document.body.appendChild(link);
+    const isMac = (await this.host.getPlatform?.()) === Platform.MAC_OS ||
+        /Mac/.test(navigator.platform);
+    link.dispatchEvent(new MouseEvent('click', {
+      ctrlKey: !isMac,
+      metaKey: isMac,
+      bubbles: true,
+      cancelable: true,
+      view: window,
+    }));
   }
 
   async testOpenGlicSettingsPage() {
@@ -1176,14 +1407,24 @@ class ApiTests extends ApiTestFixtureBase {
     assertDefined(this.host.getPanelState);
     assertDefined(this.host.detachPanel);
     assertDefined(this.host.canAttachPanel);
+    const isGeic = Boolean((this.initData as any)?.isGeic);
     const link = document.createElement('a');
     link.setAttribute('href', 'https://www.chromium.org');
     link.setAttribute('target', '_blank');
     document.body.appendChild(link);
     link.click();
-    // The opened tab should be pinned.
-    await observeSequence(this.host.getPinnedTabs())
-        .waitFor(tabs => tabs.length === 2);
+    if (isGeic) {
+      // In GEiC, the opened tab is daisy-chained (bound) but not auto-pinned.
+      await observeSequence(this.host.getFocusedTabStateV2())
+          .waitFor(
+              state => state.hasNoFocus?.tabFocusCandidateData?.url ===
+                  'https://www.chromium.org/');
+      assertEquals(1, this.host.getPinnedTabs().getCurrentValue()?.length);
+    } else {
+      // The opened tab should be pinned.
+      await observeSequence(this.host.getPinnedTabs())
+          .waitFor(tabs => tabs.length === 2);
+    }
 
     // Detach panel
     this.host.detachPanel!();
@@ -1377,6 +1618,22 @@ class ApiTests extends ApiTestFixtureBase {
     assertEquals(fallbackCreated.url, fallbackUrl);
   }
 
+  async testActivateTabWithUrlAcrossWindows() {
+    assertDefined(this.host.createTab);
+    assertDefined(this.host.activateTabWithUrl);
+    const targetUrl = location.href + '#target_in_second_window';
+    const createdTab = await this.host.createTab(targetUrl, {});
+    assertEquals(createdTab.url, targetUrl);
+    assertTrue(await this.browser.navigateTab(createdTab.tabId, targetUrl));
+
+    await this.advanceToNextStep();
+
+    const activated = await this.host.activateTabWithUrl(targetUrl, {});
+    assertDefined(activated);
+    assertEquals(activated.tabId, createdTab.tabId);
+    assertEquals(activated.url, targetUrl);
+  }
+
   async testCreateTabFailsWithUnsupportedScheme() {
     assertDefined(this.host.createTab);
 
@@ -1425,14 +1682,24 @@ class ApiTests extends ApiTestFixtureBase {
   async testCreateTabByClickingOnLinkDaisyChains() {
     assertDefined(this.host.getFocusedTabStateV2);
     assertDefined(this.host.getPinnedTabs);
+    const isGeic = Boolean((this.initData as any)?.isGeic);
     const link = document.createElement('a');
     link.setAttribute('href', 'https://www.chromium.org');
     link.setAttribute('target', '_blank');
     document.body.appendChild(link);
     link.click();
-    // The opened tab should be pinned.
-    await observeSequence(this.host.getPinnedTabs())
-        .waitFor(tabs => tabs.length === 2);
+    if (isGeic) {
+      // In GEiC, the opened tab is daisy-chained (bound) but not auto-pinned.
+      await observeSequence(this.host.getFocusedTabStateV2())
+          .waitFor(
+              state => state.hasNoFocus?.tabFocusCandidateData?.url ===
+                  'https://www.chromium.org/');
+      assertEquals(1, this.host.getPinnedTabs().getCurrentValue()?.length);
+    } else {
+      // The opened tab should be pinned.
+      await observeSequence(this.host.getPinnedTabs())
+          .waitFor(tabs => tabs.length === 2);
+    }
   }
 
   async testFailureForCapturedApiTestError() {
@@ -1748,6 +2015,43 @@ class ApiTests extends ApiTestFixtureBase {
     await additionalContextPromise;
   }
 
+  async testDataTransferActionsBlockedNotices() {
+    assertDefined(this.host.getDataTransferActionsBlockedNotices);
+    const notices: DataTransferActionsBlockedNotice[] = [];
+    this.host.getDataTransferActionsBlockedNotices().subscribe(notice => {
+      notices.push(notice);
+    });
+    await this.advanceToNextStep();
+    await runUntil(() => notices.length === 3);
+    assertEquals(notices[0]!.action, DataTransferAction.PASTE);
+    assertEquals(
+        notices[0]!.reason,
+        DataTransferActionsBlockedReason.INELIGIBLE_PAGE_CONTEXT);
+    assertEquals(notices[1]!.action, DataTransferAction.PASTE);
+    assertEquals(
+        notices[1]!.reason, DataTransferActionsBlockedReason.CROSS_PROFILE);
+    assertEquals(notices[2]!.action, DataTransferAction.DROP);
+    assertEquals(
+        notices[2]!.reason,
+        DataTransferActionsBlockedReason.UNSUPPORTED_OR_EXPIRED_SOURCE);
+
+    // Late subscribers must not replay already-emitted notices, and only
+    // receive subsequent live emissions.
+    const lateNotices: DataTransferActionsBlockedNotice[] = [];
+    this.host.getDataTransferActionsBlockedNotices().subscribe(notice => {
+      lateNotices.push(notice);
+    });
+    assertEquals(lateNotices.length, 0);
+
+    await this.advanceToNextStep();
+    await runUntil(() => lateNotices.length === 1);
+    assertEquals(notices.length, 4);
+    assertEquals(lateNotices[0]!.action, DataTransferAction.DROP);
+    assertEquals(
+        lateNotices[0]!.reason,
+        DataTransferActionsBlockedReason.INELIGIBLE_PAGE_CONTEXT);
+  }
+
   async testCancelActions() {
     assertDefined(this.host.cancelActions);
     // Task with id 12345 does not exist.
@@ -1960,13 +2264,15 @@ class ApiTests extends ApiTestFixtureBase {
     // Test failures.
     // 1. Invalid DOM node ID.
     await assertRejects(
-        this.host.getImageBytesFromTab(tabId, documentId, 9999),
-        {withErrorMessage: 'getImageBytes failed: failed to get image bytes'});
+        this.host.getImageBytesFromTab(tabId, documentId, 9999), {
+          withErrorMessage:
+              'getImageBytesFromTab failed: failed to get image bytes',
+        });
 
     // 2. Invalid tab ID.
     await assertRejects(
         this.host.getImageBytesFromTab('99999', documentId, domNodeId),
-        {withErrorMessage: 'getImageBytes failed: tab not found'});
+        {withErrorMessage: 'getImageBytesFromTab failed: tab not found'});
   }
 
   // Test getPinCandidates() in some different scenarios where there is a single
@@ -2378,41 +2684,6 @@ class ApiTests extends ApiTestFixtureBase {
     assertDefined(err);
   }
 
-  async testGeminiEnterpriseSettings() {
-    assertDefined(this.host.getGeminiEnterpriseSettings);
-    const settingsObservable = this.host.getGeminiEnterpriseSettings();
-
-    const settings = settingsObservable.getCurrentValue();
-    assertDefined(settings);
-    assertEquals(settings.projectId, 'switch-project');
-    assertEquals(settings.appId, 'switch-engine');
-    assertEquals(settings.location, 'switch-location');
-  }
-
-  async testGeminiEnterpriseSettingsDisabled() {
-    assertDefined(this.host.getGeminiEnterpriseSettings);
-    const settingsObservable = this.host.getGeminiEnterpriseSettings();
-    const settings = settingsObservable.getCurrentValue();
-    assertUndefined(settings);
-  }
-
-  async testGeminiEnterpriseSettingsPolicy() {
-    assertDefined(this.host.getGeminiEnterpriseSettings);
-    const settingsObservable = this.host.getGeminiEnterpriseSettings();
-    const settings = settingsObservable.getCurrentValue();
-    assertDefined(settings);
-    assertEquals(settings.projectId, 'policy-project');
-    assertEquals(settings.appId, 'policy-engine');
-    assertEquals(settings.location, 'policy-location');
-  }
-
-  async testGeminiEnterpriseSettingsPolicyUnset() {
-    assertDefined(this.host.getGeminiEnterpriseSettings);
-    const settingsObservable = this.host.getGeminiEnterpriseSettings();
-    const settings = settingsObservable.getCurrentValue();
-    assertUndefined(settings);
-  }
-
   async testGetDisplayMedia() {
     async function waitForFirstFrame(track: MediaStreamVideoTrack):
         Promise<boolean> {
@@ -2478,6 +2749,16 @@ class ApiTests extends ApiTestFixtureBase {
 
     await this.advanceToNextStep();
     await waitFor(stopMicrophonePromise.promise);
+  }
+
+  // Android only: the browser window loses focus.
+  async testStopMicrophoneOnWindowDeactivated() {
+    await this.testStopMicrophone();
+  }
+
+  // Android only: the bottom sheet closes.
+  async testStopMicrophoneOnBottomSheetClosed() {
+    await this.testStopMicrophone();
   }
 
   async testSetSyntheticExperimentState() {
@@ -2662,6 +2943,8 @@ class ApiTests extends ApiTestFixtureBase {
     assertDefined(metrics.onResponseStopped);
     assertDefined(metrics.onSessionTerminated);
     assertDefined(metrics.onClosedCaptionsShown);
+    assertDefined(metrics.onTooltipImpression);
+    assertDefined(metrics.onTooltipHidden);
     metrics.onResponseRated(true);
     metrics.onUserInputSubmitted(WebClientMode.TEXT);
     metrics.onContextUploadStarted();
@@ -2671,6 +2954,8 @@ class ApiTests extends ApiTestFixtureBase {
     metrics.onResponseStopped({cause: ResponseStopCause.USER});
     metrics.onSessionTerminated();
     metrics.onClosedCaptionsShown();
+    metrics.onTooltipImpression(TooltipImpressionType.TOOLTIP1);
+    metrics.onTooltipHidden();
   }
 
   async testUserInputSubmittedPromptType() {
@@ -2733,6 +3018,51 @@ class ApiTests extends ApiTestFixtureBase {
   }
 
   async testHibernateAllOnMemoryPressure() {}
+
+  async testClientStorage() {
+    if (!this.testParams) {
+      assertUndefined(this.host.getClientStorage);
+      return;
+    }
+    assertDefined(this.host.getClientStorage);
+    const storage = this.host.getClientStorage();
+    assertDefined(storage);
+
+    // 1. Verify initial state populated before opening Glic.
+    assertEquals(1, storage.length);
+    assertEquals('initial_val', storage.getItem('initial_key'));
+    assertEquals('initial_key', storage.key(0));
+    assertEquals(null, storage.key(1));
+    assertEquals(null, storage.key(-1));
+    assertEquals(null, storage.getItem('missing'));
+
+    // 2. Test synchronous local mutations (setItem, removeItem).
+    storage.setItem('k1', 'v1');
+    storage.setItem('k2', 'v2');
+    assertEquals(3, storage.length);
+    assertEquals('v1', storage.getItem('k1'));
+    assertEquals('v2', storage.getItem('k2'));
+
+    storage.removeItem('initial_key');
+    assertEquals(2, storage.length);
+    assertEquals(null, storage.getItem('initial_key'));
+
+    // Let C++ verify prefs::kGlicClientDataStorage and mutate it externally.
+    await this.advanceToNextStep();
+
+    // 3. Wait for NotifyClientStorageChanged from C++ pref update.
+    await runUntil(() => storage.getItem('external_key') === 'ext_val');
+    assertEquals('v1_updated', storage.getItem('k1'));
+    assertEquals('v2', storage.getItem('k2'));
+    assertEquals(3, storage.length);
+
+    // 4. Test clear().
+    storage.clear();
+    assertEquals(0, storage.length);
+    assertEquals(null, storage.getItem('k1'));
+    assertEquals(null, storage.getItem('k2'));
+    assertEquals(null, storage.getItem('external_key'));
+  }
 }
 
 class DaisyChainApiTests extends ApiTestFixtureBase {
@@ -2926,12 +3256,14 @@ class FaviconTest extends ApiTests {
     const tab = tabs[0]!;
 
     assertDefined(this.host.getTabFaviconById);
-    const subscription =
-        this.host.getTabFaviconById(tab.tabId).subscribe(() => {});
+    const faviconObs = this.host.getTabFaviconById(tab.tabId);
+    const subscription = faviconObs.subscribe(() => {});
+    await runUntil(() => faviconObs.getCurrentValue() !== undefined);
 
     await this.advanceToNextStep();
 
     subscription.unsubscribe();
+    await runUntil(() => faviconObs.getCurrentValue() === undefined);
   }
 
   async testTabFaviconObserverTabWillClose() {
@@ -3022,6 +3354,42 @@ class InvokeTest extends ApiTests {
     assertEquals(
         client.lastInvokeOptions!.invocationSource,
         InvocationSource.TOP_CHROME_BUTTON);
+    assertUndefined(client.lastInvokeOptions!.payload);
+  }
+
+  async testInvokeWithCaptureRegionHandoff() {
+    const client = this.getInvokeClient();
+    await runUntil(() => {
+      return client.lastInvokeOptions !== null;
+    });
+    assertEquals(
+        InvocationSource.CAPTURE_REGION_HOTKEY,
+        client.lastInvokeOptions!.invocationSource);
+    assertTrue(
+        client.lastInvokeOptions!.payload?.captureRegion
+            ?.captureRegionHandoff === true);
+  }
+
+  // Waits for the client's invoke() call and returns its options.
+  async waitForInvokeOptions(): Promise<InvokeOptions> {
+    const client = this.getInvokeClient();
+    await runUntil(() => client.lastInvokeOptions !== null);
+    assertDefined(client.lastInvokeOptions);
+    return client.lastInvokeOptions;
+  }
+
+  async testInvokeWithActuationSurface() {
+    const options = await this.waitForInvokeOptions();
+    assertEquals(options.actuationTarget, ActuationTarget.TARGET_SURFACE);
+    // `testParams` is the headless surface ID sent by the C++ side.
+    assertEquals(options.actuationTabId, this.testParams);
+  }
+
+  async testInvokeWithTargetSurfaceSendsTabSurfaceId() {
+    const options = await this.waitForInvokeOptions();
+    assertEquals(options.actuationTarget, ActuationTarget.TARGET_SURFACE);
+    // `testParams` is the invoked tab's surface ID sent by the C++ side.
+    assertEquals(options.actuationTabId, this.testParams);
   }
 }
 
@@ -3251,13 +3619,29 @@ class DesktopOnlyApiTests extends ApiTests {
 
 class ContextCapturingClient extends WebClient {
   capturedContext: AdditionalContext[] = [];
+  calls: string[] = [];
+  blockNextPanelWillOpen = false;
+  panelWillOpenStarted: PromiseWithResolvers<void>|null = null;
+  panelWillOpenGate: PromiseWithResolvers<void>|null = null;
 
   override async initialize(glicBrowserHost: GlicBrowserHost): Promise<void> {
     await super.initialize(glicBrowserHost);
     glicBrowserHost.getAdditionalContext!
         ().subscribe((context: AdditionalContext) => {
+          this.calls.push('additionalContext');
           this.capturedContext.push(context);
         });
+  }
+
+  override async notifyPanelWillOpen(
+      panelOpeningData: PanelOpeningData&PanelState): Promise<OpenPanelInfo> {
+    this.calls.push('notifyPanelWillOpen');
+    if (this.blockNextPanelWillOpen) {
+      this.blockNextPanelWillOpen = false;
+      this.panelWillOpenStarted?.resolve();
+      await this.panelWillOpenGate!.promise;
+    }
+    return super.notifyPanelWillOpen!(panelOpeningData);
   }
 }
 
@@ -3269,6 +3653,8 @@ class AdditionalContextQueuedTest extends ApiTestFixtureBase {
   async testAdditionalContextQueued() {
     const client = this.client as ContextCapturingClient;
     await runUntil(() => client.capturedContext.length > 0);
+    assertEquals(
+        'notifyPanelWillOpen,additionalContext', client.calls.join(','));
     const context = client.capturedContext[0];
     assertDefined(context);
     assertEquals(context.name, 'queued part');
@@ -3278,6 +3664,36 @@ class AdditionalContextQueuedTest extends ApiTestFixtureBase {
     assertEquals(part1.data!.type, 'text/plain');
     const data1 = new Uint8Array(await part1.data!.arrayBuffer());
     assertEquals(new TextDecoder().decode(data1), 'queued');
+  }
+
+  async testAdditionalContextClearedOnAbortedOpen() {
+    const client = this.client as ContextCapturingClient;
+    await client.waitForFirstOpen();
+
+    // Step 1: Arm the client to pause the next notifyPanelWillOpen() call.
+    client.blockNextPanelWillOpen = true;
+    client.panelWillOpenStarted = Promise.withResolvers<void>();
+    client.panelWillOpenGate = Promise.withResolvers<void>();
+    await this.advanceToNextStep();
+
+    // Step 2: Confirm the second notifyPanelWillOpen() is in flight.
+    await client.panelWillOpenStarted.promise;
+    await this.advanceToNextStep();
+
+    // Step 3: Unblock the aborted notifyPanelWillOpen() after the panel has
+    // already closed.
+    client.panelWillOpenGate.resolve();
+    await this.advanceToNextStep();
+
+    // Step 4: Verify that stale contexts from the aborted open were not
+    // delivered, and only the fresh context from the subsequent open arrived.
+    await runUntil(() => client.capturedContext.length > 0);
+    assertEquals(1, client.capturedContext.length);
+    assertEquals('fresh context', client.capturedContext[0]!.name);
+    assertEquals(
+        'notifyPanelWillOpen,notifyPanelWillOpen,notifyPanelWillOpen,' +
+            'additionalContext',
+        client.calls.join(','));
   }
 }
 
@@ -3314,6 +3730,34 @@ class ScreenshotTests extends ApiTestFixtureBase {
   }
 }
 
+class ConfirmationResponseTests extends ApiTestFixtureBase {
+  async testSubmitConfirmationResponse() {
+    const payload =
+        new Uint8Array(await this.client.waitForConfirmationResponse());
+    // Must match kTestConfirmationResponsePayload in the .cc file.
+    assertEquals(payload.length, 4);
+    assertEquals(payload[0], 0xde);
+    assertEquals(payload[1], 0xad);
+    assertEquals(payload[2], 0xbe);
+    assertEquals(payload[3], 0xef);
+  }
+}
+
+// Uses a client which receives confirmation responses but never reports a
+// result, so that the C++ side can verify the reply is still delivered when
+// the client goes away with a request in flight.
+class ConfirmationResponseDroppedTests extends ApiTestFixtureBase {
+  override createWebClient(): WebClient {
+    const client = new WebClient();
+    client.completeConfirmationResponses = false;
+    return client;
+  }
+
+  async testConfirmationResponseNotAppliedOnDisconnect() {
+    await this.client.waitForConfirmationResponse();
+  }
+}
+
 class WebClientThatOpensOnce extends WebClient {
   notifyPanelWillOpenCallCount = 0;
   override async notifyPanelWillOpen(panelOpeningData: PanelOpeningData):
@@ -3339,6 +3783,29 @@ class NotifyPanelWillOpenTest extends ApiTestFixtureBase {
   }
 }
 
+class WebAuthnWarmingTest extends ApiTestFixtureBase {
+  override async setUpClient() {
+    await super.setUpClient();
+    if (window.location.hostname !== 'localhost') {
+      const url = new URL(window.location.href);
+      url.hostname = 'localhost';
+      window.location.href = url.href;
+      return;
+    }
+    navigator.credentials
+        .get({
+          publicKey: {
+            challenge: new Uint8Array([1, 2, 3, 4]),
+            rpId: 'localhost',
+            allowCredentials: [],
+          },
+        })
+        .catch(() => {});
+  }
+
+  async testWebAuthnInWarmedGuestCrash() {}
+}
+
 const TEST_FIXTURES: Array<typeof ApiTestFixtureBase> = [
   ApiTests,
   DaisyChainApiTests,
@@ -3349,7 +3816,10 @@ const TEST_FIXTURES: Array<typeof ApiTestFixtureBase> = [
   ApiTestFailsToInitialize,
   TriggeringUpdatesTest,
   ScreenshotTests,
+  ConfirmationResponseTests,
+  ConfirmationResponseDroppedTests,
   NotifyPanelWillOpenTest,
+  WebAuthnWarmingTest,
 ];
 
 // TODO(b/546606964): enable these tests on android.

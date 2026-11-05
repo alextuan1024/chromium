@@ -105,7 +105,9 @@ class RemoveUserButton : public PillButton {
       bubble_->Hide();
       // We explicitly move focus back to the dropdown button so the Tab
       // traversal works correctly.
-      bubble_->GetBubbleOpener()->RequestFocus();
+      if (LoginButton* bubble_opener = bubble_->GetBubbleOpener()) {
+        bubble_opener->RequestFocus();
+      }
     }
 
     if (event->key_code() == ui::VKEY_RETURN) {
@@ -145,7 +147,7 @@ LoginRemoveAccountDialog::LoginRemoveAccountDialog(
     base::RepeatingClosure on_remove_user_warning_shown,
     base::RepeatingClosure on_remove_user_requested)
     : LoginBaseBubbleView(std::move(anchor_view)),
-      bubble_opener_(bubble_opener),
+      bubble_opener_(bubble_opener ? bubble_opener->AsWeakPtr() : nullptr),
       on_remove_user_warning_shown_(on_remove_user_warning_shown),
       on_remove_user_requested_(on_remove_user_requested) {
   const std::u16string& email =
@@ -243,10 +245,14 @@ LoginRemoveAccountDialog::LoginRemoveAccountDialog(
   GetViewAccessibility().SetIsModal(true);
 }
 
-LoginRemoveAccountDialog::~LoginRemoveAccountDialog() = default;
+LoginRemoveAccountDialog::~LoginRemoveAccountDialog() {
+  if (bubble_opener_) {
+    bubble_opener_->GetViewAccessibility().SetIsCollapsed();
+  }
+}
 
 LoginButton* LoginRemoveAccountDialog::GetBubbleOpener() const {
-  return bubble_opener_;
+  return bubble_opener_.get();
 }
 
 void LoginRemoveAccountDialog::RequestFocus() {

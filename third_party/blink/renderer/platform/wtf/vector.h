@@ -49,6 +49,7 @@
 #include "third_party/blink/renderer/platform/wtf/forward.h"  // For default Vector template parameters.
 #include "third_party/blink/renderer/platform/wtf/gc_plugin.h"
 #include "third_party/blink/renderer/platform/wtf/hash_table_deleted_value_type.h"
+#include "third_party/blink/renderer/platform/wtf/sanitizers.h"
 #include "third_party/blink/renderer/platform/wtf/stack_util.h"
 #include "third_party/blink/renderer/platform/wtf/std_lib_extras.h"
 #include "third_party/blink/renderer/platform/wtf/type_traits.h"
@@ -80,10 +81,14 @@ inline constexpr bool kEnableVectorModificationChecks = false;
 
 // Whether modification checks are enabled for the Allocator.
 // Allows HeapVector and Vector checks to be toggled independently.
-template <typename Allocator>
+// In release builds, vectors with inline capacity opt out of modification
+// checks because they are typically short-lived stack buffers in hot loops and
+// rarely reallocate out-of-line.
+template <typename Allocator, bool kHasInlineCapacity>
 inline constexpr bool kEnableModificationChecks =
-    (Allocator::kIsGarbageCollected && kEnableHeapVectorModificationChecks) ||
-    (!Allocator::kIsGarbageCollected && kEnableVectorModificationChecks);
+    (DCHECK_IS_ON() || !kHasInlineCapacity) &&
+    ((Allocator::kIsGarbageCollected && kEnableHeapVectorModificationChecks) ||
+     (!Allocator::kIsGarbageCollected && kEnableVectorModificationChecks));
 
 #if PA_BUILDFLAG(MEMORY_TOOL_REPLACES_ALLOCATOR)
 // The allocation pool for nodes is one big chunk that ASAN has no insight
@@ -238,26 +243,33 @@ struct VectorTypeOperations {
       if constexpr (IsTraceable<T>::value) {
         static_assert(Allocator::kIsGarbageCollected);
         UNSAFE_TODO(AtomicWriteMemcpy(dst, src, bytes));
+        if (origin != VectorOperationOrigin::kConstruction) {
+          // SAFETY: TODO(359904345): VectorTypeOperations should operate on
+          // spans.
+          base::span<T> UNSAFE_BUFFERS(
+              elements(base::unchecked, dst,
+                       static_cast<wtf_size_t>(std::distance(src, src_end))));
+          ConstructTraits::NotifyNewElements(elements);
+        }
       } else {
         // NOLINTNEXTLINE(bugprone-undefined-memory-manipulation)
         UNSAFE_TODO(memcpy(dst, src, bytes));
       }
     } else {
+      if constexpr (IsTraceable<T>::value) {
+        static_assert(Allocator::kIsGarbageCollected);
+        if (origin != VectorOperationOrigin::kConstruction) {
+          UNSAFE_TODO(for (T* s = src, *d = dst; s != src_end; ++s, ++d) {
+            ConstructTraits::ConstructAndNotifyElement(d, std::move(*s));
+            s->~T();
+          });
+          return;
+        }
+      }
       UNSAFE_TODO(for (T* s = src, *d = dst; s != src_end; ++s, ++d) {
         ConstructTraits::Construct(d, std::move(*s));
         s->~T();
       });
-    }
-    if constexpr (IsTraceable<T>::value) {
-      static_assert(Allocator::kIsGarbageCollected);
-      if (origin != VectorOperationOrigin::kConstruction) {
-        // SAFETY: TODO(359904345): VectorTypeOperations should operate on
-        // spans.
-        base::span<T> UNSAFE_BUFFERS(
-            elements(base::unchecked, dst,
-                     static_cast<wtf_size_t>(std::distance(src, src_end))));
-        ConstructTraits::NotifyNewElements(elements);
-      }
     }
   }
 
@@ -284,6 +296,14 @@ struct VectorTypeOperations {
             AtomicWriteMemcpy<sizeof(T), alignof(T)>(d, s);
           }
         });
+        if (origin != VectorOperationOrigin::kConstruction) {
+          // SAFETY: TODO(359904345): VectorTypeOperations should operate on
+          // spans.
+          base::span<T> UNSAFE_BUFFERS(
+              elements(base::unchecked, dst,
+                       static_cast<wtf_size_t>(std::distance(src, src_end))));
+          ConstructTraits::NotifyNewElements(elements);
+        }
       } else {
         // NOLINTNEXTLINE(bugprone-undefined-memory-manipulation)
         UNSAFE_TODO(memmove(dst, src,
@@ -297,6 +317,20 @@ struct VectorTypeOperations {
         return;
       }
       DCHECK_GT(dst, src);
+      if constexpr (IsTraceable<T>::value) {
+        static_assert(Allocator::kIsGarbageCollected);
+        if (origin != VectorOperationOrigin::kConstruction) {
+          UNSAFE_TODO({
+            T* s = src_end - 1;
+            T* d = dst + (s - src);
+            for (; s >= src; --s, --d) {
+              ConstructTraits::ConstructAndNotifyElement(d, std::move(*s));
+              s->~T();
+            }
+          });
+          return;
+        }
+      }
       UNSAFE_TODO({
         T* s = src_end - 1;
         T* d = dst + (s - src);
@@ -305,17 +339,6 @@ struct VectorTypeOperations {
           s->~T();
         }
       });
-    }
-    if constexpr (IsTraceable<T>::value) {
-      static_assert(Allocator::kIsGarbageCollected);
-      if (origin != VectorOperationOrigin::kConstruction) {
-        // SAFETY: TODO(359904345): VectorTypeOperations should operate on
-        // spans.
-        base::span<T> UNSAFE_BUFFERS(
-            elements(base::unchecked, dst,
-                     static_cast<wtf_size_t>(std::distance(src, src_end))));
-        ConstructTraits::NotifyNewElements(elements);
-      }
     }
   }
 
@@ -334,16 +357,6 @@ struct VectorTypeOperations {
           AtomicWriteMemcpy<sizeof(T), alignof(T)>(d, s);
           AtomicWriteMemcpy<sizeof(T), alignof(T)>(s, buf);
         });
-        const wtf_size_t len = CheckedDistance(src, src_end);
-        if (src_origin != VectorOperationOrigin::kConstruction) {
-          // SAFETY: TODO(359904345): VectorTypeOperations should operate on
-          // spans.
-          base::span<T> UNSAFE_BUFFERS(elements(base::unchecked, src, len));
-          ConstructTraits::NotifyNewElements(elements);
-        }
-        // SAFETY: TODO(359904345): VectorTypeOperations should operate on spans.
-        base::span<T> UNSAFE_BUFFERS(elements(base::unchecked, dst, len));
-        ConstructTraits::NotifyNewElements(elements);
       } else {
         std::swap_ranges(reinterpret_cast<char*>(src),
                          reinterpret_cast<char*>(src_end),
@@ -351,6 +364,19 @@ struct VectorTypeOperations {
       }
     } else {
       std::swap_ranges(src, src_end, dst);
+    }
+    if constexpr (IsTraceable<T>::value) {
+      static_assert(Allocator::kIsGarbageCollected);
+      const wtf_size_t len = CheckedDistance(src, src_end);
+      if (src_origin != VectorOperationOrigin::kConstruction) {
+        // SAFETY: TODO(359904345): VectorTypeOperations should operate on
+        // spans.
+        base::span<T> UNSAFE_BUFFERS(elements(base::unchecked, src, len));
+        ConstructTraits::NotifyNewElements(elements);
+      }
+      // SAFETY: TODO(359904345): VectorTypeOperations should operate on spans.
+      base::span<T> UNSAFE_BUFFERS(elements(base::unchecked, dst, len));
+      ConstructTraits::NotifyNewElements(elements);
     }
   }
 
@@ -378,6 +404,16 @@ struct VectorTypeOperations {
         }
       }
     } else {
+      if constexpr (IsTraceable<T>::value) {
+        static_assert(Allocator::kIsGarbageCollected);
+        if (origin != VectorOperationOrigin::kConstruction) {
+          UNSAFE_TODO(for (const T* s = src; s != src_end; ++s, ++dst) {
+            *dst = *s;
+            ConstructTraits::NotifyNewElement(dst);
+          });
+          return;
+        }
+      }
       std::copy(src, src_end, dst);
     }
   }
@@ -405,25 +441,24 @@ struct VectorTypeOperations {
                                                    T* dst,
                                                    VectorOperationOrigin origin,
                                                    Proj proj) {
-    size_t size = 0;
-    T* dst_begin = dst;
+    if constexpr (IsTraceable<T>::value) {
+      static_assert(Allocator::kIsGarbageCollected);
+      if (origin != VectorOperationOrigin::kConstruction) {
+        UNSAFE_TODO(while (src != src_end) {
+          ConstructTraits::ConstructAndNotifyElement(
+              dst, std::invoke(proj, std::forward<decltype(*src)>(*src)));
+          ++dst;
+          ++src;
+        });
+        return;
+      }
+    }
     UNSAFE_TODO(while (src != src_end) {
       ConstructTraits::Construct(
           dst, std::invoke(proj, std::forward<decltype(*src)>(*src)));
       ++dst;
       ++src;
-      ++size;
     });
-    if constexpr (IsTraceable<T>::value) {
-      static_assert(Allocator::kIsGarbageCollected);
-      if (origin != VectorOperationOrigin::kConstruction) {
-        // SAFETY: TODO(359904345): VectorTypeOperations should operate on
-        // spans.
-        base::span<T> UNSAFE_BUFFERS(
-            elements(base::unchecked, dst_begin, size));
-        ConstructTraits::NotifyNewElements(elements);
-      }
-    }
   }
 
   ALWAYS_INLINE static void UninitializedFill(T* const dst,
@@ -439,20 +474,18 @@ struct VectorTypeOperations {
                     "memset is unsupported for garbage-collected vectors.");
       UNSAFE_TODO(memset(dst, static_cast<uint8_t>(val), dst_end - dst));
     } else {
-      UNSAFE_TODO(for (T* current = dst; current != dst_end; ++current) {
-        ConstructTraits::Construct(current, T(val));
-      });
       if constexpr (IsTraceable<T>::value) {
         static_assert(Allocator::kIsGarbageCollected);
         if (origin != VectorOperationOrigin::kConstruction) {
-          // SAFETY: TODO(359904345): VectorTypeOperations should operate on
-          // spans.
-          base::span<T> UNSAFE_BUFFERS(
-              elements(base::unchecked, dst,
-                       static_cast<wtf_size_t>(std::distance(dst, dst_end))));
-          ConstructTraits::NotifyNewElements(elements);
+          UNSAFE_TODO(for (T* current = dst; current != dst_end; ++current) {
+            ConstructTraits::ConstructAndNotifyElement(current, T(val));
+          });
+          return;
         }
       }
+      UNSAFE_TODO(for (T* current = dst; current != dst_end; ++current) {
+        ConstructTraits::Construct(current, T(val));
+      });
     }
   }
 
@@ -482,7 +515,7 @@ struct VectorTypeOperations {
 //
 // Not meant for general consumption.
 
-template <typename T, typename Allocator>
+template <typename T, typename Allocator, bool kHasInlineCapacity = false>
 class GC_PLUGIN_IGNORE("crbug.com/428987863") VectorBufferBase {
   DISALLOW_NEW();
 
@@ -497,8 +530,9 @@ class GC_PLUGIN_IGNORE("crbug.com/428987863") VectorBufferBase {
     }
   }
 
-  size_t AllocationSize(size_t capacity) const {
-    return Allocator::template QuantizedSize<T>(capacity);
+  wtf_size_t AllocationSize(wtf_size_t capacity) const {
+    return base::checked_cast<wtf_size_t>(
+        Allocator::template QuantizedSize<T>(capacity));
   }
 
   T* Buffer() { return buffer_; }
@@ -506,14 +540,14 @@ class GC_PLUGIN_IGNORE("crbug.com/428987863") VectorBufferBase {
   wtf_size_t capacity() const { return capacity_; }
 
   uint32_t Modifications() const {
-    if constexpr (kEnableModificationChecks<Allocator>) {
+    if constexpr (kEnableModificationChecks<Allocator, kHasInlineCapacity>) {
       return modification_state_.count;
     } else {
       return 0;
     }
   }
   ALWAYS_INLINE void RegisterModification() {
-    if constexpr (kEnableModificationChecks<Allocator>) {
+    if constexpr (kEnableModificationChecks<Allocator, kHasInlineCapacity>) {
       modification_state_.count++;
     }
   }
@@ -592,7 +626,7 @@ class GC_PLUGIN_IGNORE("crbug.com/428987863") VectorBufferBase {
     AtomicWriteSwap(buffer_, other.buffer_);
     std::swap(capacity_, other.capacity_);
     std::swap(size_, other.size_);
-    if constexpr (kEnableModificationChecks<Allocator>) {
+    if constexpr (kEnableModificationChecks<Allocator, kHasInlineCapacity>) {
       std::swap(modification_state_.count, other.modification_state_.count);
     }
     if (this_origin != VectorOperationOrigin::kConstruction) {
@@ -610,7 +644,7 @@ class GC_PLUGIN_IGNORE("crbug.com/428987863") VectorBufferBase {
   };
   struct NoModificationCounter {};
   NO_UNIQUE_ADDRESS
-  std::conditional_t<kEnableModificationChecks<Allocator>,
+  std::conditional_t<kEnableModificationChecks<Allocator, kHasInlineCapacity>,
                      ModificationCounter,
                      NoModificationCounter>
       modification_state_;
@@ -641,9 +675,10 @@ template <typename T,
 class VectorBuffer;
 
 template <typename T, typename Allocator>
-class VectorBuffer<T, 0, Allocator> : protected VectorBufferBase<T, Allocator> {
+class VectorBuffer<T, 0, Allocator>
+    : protected VectorBufferBase<T, Allocator, false> {
  private:
-  using Base = VectorBufferBase<T, Allocator>;
+  using Base = VectorBufferBase<T, Allocator, false>;
 
  public:
   using OffsetRange = typename Base::OffsetRange;
@@ -670,7 +705,7 @@ class VectorBuffer<T, 0, Allocator> : protected VectorBufferBase<T, Allocator> {
   }
 
   bool ExpandBuffer(wtf_size_t new_capacity) {
-    size_t size_to_allocate = AllocationSize(new_capacity);
+    wtf_size_t size_to_allocate = AllocationSize(new_capacity);
     if (buffer_ && Allocator::ExpandVectorBacking(buffer_, size_to_allocate)) {
       capacity_ = static_cast<wtf_size_t>(size_to_allocate / sizeof(T));
       return true;
@@ -681,7 +716,7 @@ class VectorBuffer<T, 0, Allocator> : protected VectorBufferBase<T, Allocator> {
   inline bool ShrinkBuffer(wtf_size_t new_capacity) {
     DCHECK(buffer_);
     DCHECK_LT(new_capacity, capacity());
-    size_t size_to_allocate = AllocationSize(new_capacity);
+    wtf_size_t size_to_allocate = AllocationSize(new_capacity);
 #ifdef ANNOTATE_CONTIGUOUS_CONTAINER
     UNSAFE_TODO(ANNOTATE_DELETE_BUFFER(buffer_, capacity_, size_));
 #endif
@@ -742,9 +777,9 @@ class VectorBuffer<T, 0, Allocator> : protected VectorBufferBase<T, Allocator> {
 };
 
 template <typename T, wtf_size_t kInlineCapacity, typename Allocator>
-class VectorBuffer : protected VectorBufferBase<T, Allocator> {
+class VectorBuffer : protected VectorBufferBase<T, Allocator, true> {
  private:
-  using Base = VectorBufferBase<T, Allocator>;
+  using Base = VectorBufferBase<T, Allocator, true>;
 
  public:
   using OffsetRange = typename Base::OffsetRange;
@@ -793,7 +828,7 @@ class VectorBuffer : protected VectorBufferBase<T, Allocator> {
     if (buffer_ == InlineBuffer())
       return false;
 
-    size_t size_to_allocate = AllocationSize(new_capacity);
+    wtf_size_t size_to_allocate = AllocationSize(new_capacity);
     if (buffer_ && Allocator::ExpandVectorBacking(buffer_, size_to_allocate)) {
       capacity_ = static_cast<wtf_size_t>(size_to_allocate / sizeof(T));
       return true;
@@ -810,7 +845,7 @@ class VectorBuffer : protected VectorBufferBase<T, Allocator> {
       return false;
     }
     DCHECK_NE(buffer_, InlineBuffer());
-    size_t new_size = AllocationSize(new_capacity);
+    wtf_size_t new_size = AllocationSize(new_capacity);
     bool succeeded = false;
 #ifdef ANNOTATE_CONTIGUOUS_CONTAINER
     UNSAFE_TODO(ANNOTATE_DELETE_BUFFER(buffer_, capacity_, size_));
@@ -840,7 +875,7 @@ class VectorBuffer : protected VectorBufferBase<T, Allocator> {
     }
   }
 
-  size_t AllocationSize(size_t capacity) const {
+  wtf_size_t AllocationSize(wtf_size_t capacity) const {
     if (capacity <= kInlineCapacity) {
       return kInlineBufferSize;
     }
@@ -872,7 +907,7 @@ class VectorBuffer : protected VectorBufferBase<T, Allocator> {
       return;
     }
 
-    if constexpr (kEnableModificationChecks<Allocator>) {
+    if constexpr (kEnableModificationChecks<Allocator, true>) {
       std::swap(this->modification_state_.count,
                 other.modification_state_.count);
     }
@@ -1059,9 +1094,11 @@ class VectorBuffer : protected VectorBufferBase<T, Allocator> {
   using Base::capacity_;
 
   static const wtf_size_t kInlineBufferSize = kInlineCapacity * sizeof(T);
-  T* InlineBuffer() { return unsafe_reinterpret_cast_ptr<T*>(inline_buffer_); }
-  const T* InlineBuffer() const {
-    return unsafe_reinterpret_cast_ptr<const T*>(inline_buffer_);
+  NO_SANITIZE_UNRELATED_CAST T* InlineBuffer() {
+    return reinterpret_cast<T*>(inline_buffer_);
+  }
+  NO_SANITIZE_UNRELATED_CAST const T* InlineBuffer() const {
+    return reinterpret_cast<const T*>(inline_buffer_);
   }
 
   void VerifyInlinedBuffer() {
@@ -1070,11 +1107,11 @@ class VectorBuffer : protected VectorBufferBase<T, Allocator> {
     // clear out the inlined buffer. The check reads uninitialized memory, so
     // don't do it if msan is on.
     if constexpr (Allocator::kIsGarbageCollected) {
-      const auto IsZeroed = [this] {
+      const auto is_zeroed = [this] {
         return std::ranges::all_of(inline_buffer_,
                                    [](char c) { return c == 0; });
       };
-      DCHECK(IsOnStack(inline_buffer_) || IsZeroed());
+      DCHECK(IsOnStack(inline_buffer_) || is_zeroed());
     }
   }
 
@@ -1083,9 +1120,10 @@ class VectorBuffer : protected VectorBufferBase<T, Allocator> {
   friend class Deque;
 };
 
-// UncheckedIterator<T> is just a wrapper of a T pointer with no bounds
-// checking, and the default iterator implementation of blink::Vector.
-template <typename T>
+// UncheckedIterator<T, kCheckModifications> is just a wrapper of a T pointer
+// with no bounds checking, and the default iterator implementation of
+// blink::Vector.
+template <typename T, bool kCheckModifications>
 class GC_PLUGIN_IGNORE("crbug.com/428987863") UncheckedIterator {
  public:
   using difference_type = std::ptrdiff_t;
@@ -1096,96 +1134,98 @@ class GC_PLUGIN_IGNORE("crbug.com/428987863") UncheckedIterator {
   using iterator_concept = std::contiguous_iterator_tag;
 
   constexpr UncheckedIterator() = default;
-  explicit UncheckedIterator(T* cur) : current_(cur) {}
-#if DCHECK_IS_ON() ||                                   \
-    BUILDFLAG(ENABLE_HEAP_VECTOR_MODIFICATION_CHECKS) || \
-    BUILDFLAG(ENABLE_VECTOR_MODIFICATION_CHECKS)
-  UncheckedIterator(T* cur, const uint32_t* modifications_ptr)
+  ALWAYS_INLINE explicit UncheckedIterator(T* cur) : current_(cur) {}
+  ALWAYS_INLINE UncheckedIterator(T* cur, const uint32_t* modifications_ptr)
+    requires(kCheckModifications)
       : current_(cur),
-        modifications_ptr_(modifications_ptr),
-        captured_modifications_(modifications_ptr ? *modifications_ptr : 0) {}
-#endif
+        modification_state_{modifications_ptr,
+                            modifications_ptr ? *modifications_ptr : 0} {}
   UncheckedIterator(const UncheckedIterator& other) = default;
   UncheckedIterator(UncheckedIterator&& other) = default;
   // Allow implicit conversion from a base::CheckedContiguousIterator<T>.
   // NOLINTNEXTLINE(google-explicit-constructor)
-  UncheckedIterator(const base::CheckedContiguousIterator<T>& other)
+  ALWAYS_INLINE UncheckedIterator(
+      const base::CheckedContiguousIterator<T>& other)
       : current_(base::to_address(other)) {}
   ~UncheckedIterator() = default;
 
   UncheckedIterator& operator=(const UncheckedIterator& other) = default;
   UncheckedIterator& operator=(UncheckedIterator&& other) = default;
 
-  friend constexpr bool operator==(const UncheckedIterator& lhs,
-                                   const UncheckedIterator& rhs) {
+  ALWAYS_INLINE friend constexpr bool operator==(const UncheckedIterator& lhs,
+                                                 const UncheckedIterator& rhs) {
     return lhs.current_ == rhs.current_;
   }
-  friend auto operator<=>(const UncheckedIterator& lhs,
-                          const UncheckedIterator& rhs) {
+  ALWAYS_INLINE friend auto operator<=>(const UncheckedIterator& lhs,
+                                        const UncheckedIterator& rhs) {
     return lhs.current_ <=> rhs.current_;
   }
 
-  UNSAFE_BUFFER_USAGE UncheckedIterator& operator++() {
-    CheckModifications();
+  UNSAFE_BUFFER_USAGE ALWAYS_INLINE UncheckedIterator& operator++() {
+    DCheckModifications();
     ++current_;
     return *this;
   }
-  UNSAFE_BUFFER_USAGE UncheckedIterator operator++(int) {
-    CheckModifications();
+  UNSAFE_BUFFER_USAGE ALWAYS_INLINE UncheckedIterator operator++(int) {
+    DCheckModifications();
     auto old = *this;
     ++current_;
     return old;
   }
-  UNSAFE_BUFFER_USAGE UncheckedIterator& operator--() {
-    CheckModifications();
+  UNSAFE_BUFFER_USAGE ALWAYS_INLINE UncheckedIterator& operator--() {
+    DCheckModifications();
     --current_;
     return *this;
   }
-  UNSAFE_BUFFER_USAGE UncheckedIterator operator--(int) {
-    CheckModifications();
+  UNSAFE_BUFFER_USAGE ALWAYS_INLINE UncheckedIterator operator--(int) {
+    DCheckModifications();
     auto old = *this;
     --current_;
     return old;
   }
-  UNSAFE_BUFFER_USAGE UncheckedIterator& operator+=(difference_type rhs) {
-    CheckModifications();
+  UNSAFE_BUFFER_USAGE ALWAYS_INLINE UncheckedIterator& operator+=(
+      difference_type rhs) {
+    DCheckModifications();
     current_ += rhs;
     return *this;
   }
-  UNSAFE_BUFFER_USAGE UncheckedIterator operator+(difference_type rhs) const {
+  UNSAFE_BUFFER_USAGE ALWAYS_INLINE UncheckedIterator
+  operator+(difference_type rhs) const {
     auto it = *this;
     it += rhs;
     return it;
   }
-  UNSAFE_BUFFER_USAGE friend UncheckedIterator operator+(
+  UNSAFE_BUFFER_USAGE ALWAYS_INLINE friend UncheckedIterator operator+(
       difference_type lhs,
       const UncheckedIterator& rhs) {
     return rhs + lhs;
   }
-  UNSAFE_BUFFER_USAGE UncheckedIterator& operator-=(difference_type rhs) {
-    CheckModifications();
+  UNSAFE_BUFFER_USAGE ALWAYS_INLINE UncheckedIterator& operator-=(
+      difference_type rhs) {
+    DCheckModifications();
     current_ -= rhs;
     return *this;
   }
-  UNSAFE_BUFFER_USAGE UncheckedIterator operator-(difference_type rhs) const {
+  UNSAFE_BUFFER_USAGE ALWAYS_INLINE UncheckedIterator
+  operator-(difference_type rhs) const {
     auto it = *this;
     it -= rhs;
     return it;
   }
-  friend difference_type operator-(const UncheckedIterator& lhs,
-                                   const UncheckedIterator& rhs) {
+  ALWAYS_INLINE friend difference_type operator-(const UncheckedIterator& lhs,
+                                                 const UncheckedIterator& rhs) {
     return lhs.current_ - rhs.current_;
   }
 
-  T& operator*() const {
+  ALWAYS_INLINE T& operator*() const {
     CheckModifications();
     return *current_;
   }
-  T* operator->() const {
+  ALWAYS_INLINE T* operator->() const {
     CheckModifications();
     return current_;
   }
-  UNSAFE_BUFFER_USAGE T& operator[](difference_type rhs) const {
+  UNSAFE_BUFFER_USAGE ALWAYS_INLINE T& operator[](difference_type rhs) const {
     CheckModifications();
     return current_[rhs];
   }
@@ -1196,33 +1236,37 @@ class GC_PLUGIN_IGNORE("crbug.com/428987863") UncheckedIterator {
   }
 
  private:
-  ALWAYS_INLINE void CheckModifications() const {
-#if DCHECK_IS_ON() ||                                   \
-    BUILDFLAG(ENABLE_HEAP_VECTOR_MODIFICATION_CHECKS) || \
-    BUILDFLAG(ENABLE_VECTOR_MODIFICATION_CHECKS)
-    if (modifications_ptr_) {
+  ALWAYS_INLINE void DCheckModifications() const {
 #if DCHECK_IS_ON()
-      DCHECK_EQ(captured_modifications_, *modifications_ptr_)
-          << "Vector modified while being iterated.";
-#else
-      CHECK_EQ(captured_modifications_, *modifications_ptr_)
-          << "Vector modified while being iterated.";
-#endif
-    }
+    CheckModifications();
 #endif
   }
 
-  // Allow current_ access from UncheckedIterator<U>.
-  template <typename>
+  ALWAYS_INLINE void CheckModifications() const {
+    if constexpr (kCheckModifications) {
+      if (modification_state_.modifications_ptr) {
+        CHECK_EQ(modification_state_.captured_modifications,
+                 *modification_state_.modifications_ptr)
+            << "Vector modified while being iterated.";
+      }
+    }
+  }
+
+  // Allow current_ access from UncheckedIterator<U, ...>.
+  template <typename, bool>
   friend class UncheckedIterator;
 
   T* current_ = nullptr;
-#if DCHECK_IS_ON() ||                                   \
-    BUILDFLAG(ENABLE_HEAP_VECTOR_MODIFICATION_CHECKS) || \
-    BUILDFLAG(ENABLE_VECTOR_MODIFICATION_CHECKS)
-  const uint32_t* modifications_ptr_ = nullptr;
-  uint32_t captured_modifications_ = 0;
-#endif
+  struct ModificationTrackingState {
+    const uint32_t* modifications_ptr = nullptr;
+    uint32_t captured_modifications = 0;
+  };
+  struct NoModificationTrackingState {};
+  NO_UNIQUE_ADDRESS
+  std::conditional_t<kCheckModifications,
+                     ModificationTrackingState,
+                     NoModificationTrackingState>
+      modification_state_;
 };
 
 //
@@ -1382,10 +1426,13 @@ class Vector : private VectorBuffer<T, INLINE_CAPACITY, Allocator> {
   using pointer = value_type*;
   using const_pointer = const value_type*;
 
+  static constexpr bool kCheckModifications =
+      kEnableModificationChecks<Allocator, INLINE_CAPACITY != 0>;
+
   // TODO(crbug.com/355003172): We should try using
   // base::CheckedContiguousIterator instead of UncheckedIterator.
-  using iterator = UncheckedIterator<T>;
-  using const_iterator = UncheckedIterator<const T>;
+  using iterator = UncheckedIterator<T, kCheckModifications>;
+  using const_iterator = UncheckedIterator<const T, kCheckModifications>;
   using reverse_iterator = std::reverse_iterator<iterator>;
   using const_reverse_iterator = std::reverse_iterator<const_iterator>;
 
@@ -1505,10 +1552,14 @@ class Vector : private VectorBuffer<T, INLINE_CAPACITY, Allocator> {
   // the requirements of UNSAFE_BUFFERS. See the macro definition in
   // https://source.chromium.org/chromium/chromium/src/+/main:base/compiler_specific.h
   // for more.
-  iterator begin() { return MakeIterator(data()); }
-  iterator end() { return MakeIterator(DataEnd()); }
-  const_iterator begin() const { return MakeConstIterator(data()); }
-  const_iterator end() const { return MakeConstIterator(DataEnd()); }
+  ALWAYS_INLINE iterator begin() { return MakeIterator(data()); }
+  ALWAYS_INLINE iterator end() { return MakeIterator(DataEnd()); }
+  ALWAYS_INLINE const_iterator begin() const {
+    return MakeConstIterator(data());
+  }
+  ALWAYS_INLINE const_iterator end() const {
+    return MakeConstIterator(DataEnd());
+  }
 
   reverse_iterator rbegin() { return reverse_iterator(end()); }
   reverse_iterator rend() { return reverse_iterator(begin()); }
@@ -1742,6 +1793,8 @@ class Vector : private VectorBuffer<T, INLINE_CAPACITY, Allocator> {
 
   // Swap two vectors quickly.
   void swap(Vector& other) {
+    this->RegisterModification();
+    other.RegisterModification();
     Base::SwapVectorBuffer(other, OffsetRange(), OffsetRange(),
                            VectorOperationOrigin::kRegularModification);
   }
@@ -1797,15 +1850,15 @@ class Vector : private VectorBuffer<T, INLINE_CAPACITY, Allocator> {
   const T* const* GetBufferSlot() const { return Base::BufferSlot(); }
 
  private:
-  iterator MakeIterator(T* ptr) {
-    if constexpr (kEnableModificationChecks<Allocator>) {
+  ALWAYS_INLINE iterator MakeIterator(T* ptr) {
+    if constexpr (kCheckModifications) {
       return iterator(ptr, &this->modification_state_.count);
     } else {
       return iterator(ptr);
     }
   }
-  const_iterator MakeConstIterator(const T* ptr) const {
-    if constexpr (kEnableModificationChecks<Allocator>) {
+  ALWAYS_INLINE const_iterator MakeConstIterator(const T* ptr) const {
+    if constexpr (kCheckModifications) {
       return const_iterator(ptr, &this->modification_state_.count);
     } else {
       return const_iterator(ptr);
@@ -1831,6 +1884,16 @@ class Vector : private VectorBuffer<T, INLINE_CAPACITY, Allocator> {
 
   // Returns a span including the unused part of the buffer.
   base::span<T> CapacitySpan() { return Base::BufferSpan(); }
+
+  // Returns a span of the elements of `vector`. `base::span(vector)` does the
+  // same, but it has to check at compile time that `vector` is a contiguous,
+  // sized range, which takes several milliseconds for every Vector type.
+  template <typename VectorType>
+  static auto ElementSpan(VectorType& vector) {
+    // SAFETY: `data()` points to `size()` elements.
+    return UNSAFE_BUFFERS(
+        base::span(base::unchecked, vector.data(), vector.size()));
+  }
 
   bool HasInlineBuffer() const {
     return INLINE_CAPACITY && !this->HasOutOfLineBuffer();
@@ -1909,12 +1972,12 @@ inline Vector<T, kInlineCapacity, Allocator>::Vector(wtf_size_t size,
 template <typename T, wtf_size_t kInlineCapacity, typename Allocator>
 Vector<T, kInlineCapacity, Allocator>::Vector(const Vector& other)
     : Base(other.capacity()) {
-  if constexpr (kEnableModificationChecks<Allocator>) {
-    this->modification_state_.count = other.modification_state_.count;
+  if constexpr (kCheckModifications) {
+    this->modification_state_.count = other.Modifications();
   }
   UNSAFE_TODO(ANNOTATE_NEW_BUFFER(data(), capacity(), other.size()));
   size_ = other.size();
-  TypeOperations::UninitializedCopy(base::span(other), base::span(*this),
+  TypeOperations::UninitializedCopy(ElementSpan(other), ElementSpan(*this),
                                     VectorOperationOrigin::kConstruction);
 }
 
@@ -1923,12 +1986,12 @@ template <wtf_size_t kOtherCapacity>
 Vector<T, kInlineCapacity, Allocator>::Vector(
     const Vector<T, kOtherCapacity, Allocator>& other)
     : Base(other.capacity()) {
-  if constexpr (kEnableModificationChecks<Allocator>) {
-    this->modification_state_.count = other.modification_state_.count;
+  if constexpr (kCheckModifications) {
+    this->modification_state_.count = other.Modifications();
   }
   UNSAFE_TODO(ANNOTATE_NEW_BUFFER(data(), capacity(), other.size()));
   size_ = other.size();
-  TypeOperations::UninitializedCopy(base::span(other), base::span(*this),
+  TypeOperations::UninitializedCopy(ElementSpan(other), ElementSpan(*this),
                                     VectorOperationOrigin::kConstruction);
 }
 
@@ -1938,7 +2001,7 @@ Vector<T, kInlineCapacity, Allocator>::Vector(base::span<const U> other)
     : Base(base::checked_cast<wtf_size_t>(other.size())) {
   UNSAFE_TODO(ANNOTATE_NEW_BUFFER(data(), capacity(), other.size()));
   size_ = base::checked_cast<wtf_size_t>(other.size());
-  TypeOperations::UninitializedCopy(other, base::span(*this),
+  TypeOperations::UninitializedCopy(other, ElementSpan(*this),
                                     VectorOperationOrigin::kConstruction);
 }
 
@@ -1982,7 +2045,7 @@ Vector<T, kInlineCapacity, Allocator>::operator=(
   TypeOperations::Copy(other.data(), UNSAFE_TODO(other.data() + size()), data(),
                        VectorOperationOrigin::kRegularModification);
   TypeOperations::UninitializedCopy(
-      base::span(other).subspan(size()), CapacitySpan().subspan(size()),
+      ElementSpan(other).subspan(size()), CapacitySpan().subspan(size()),
       VectorOperationOrigin::kRegularModification);
   size_ = other.size();
 
@@ -2017,7 +2080,7 @@ Vector<T, kInlineCapacity, Allocator>::operator=(
   TypeOperations::Copy(other.data(), UNSAFE_TODO(other.data() + size()), data(),
                        VectorOperationOrigin::kRegularModification);
   TypeOperations::UninitializedCopy(
-      base::span(other).subspan(size()), CapacitySpan().subspan(size()),
+      ElementSpan(other).subspan(size()), CapacitySpan().subspan(size()),
       VectorOperationOrigin::kRegularModification);
   size_ = other.size();
 
@@ -2083,7 +2146,7 @@ Vector<T, kInlineCapacity, Allocator>::Vector(std::initializer_list<T> elements)
     : Base(base::checked_cast<wtf_size_t>(elements.size())) {
   UNSAFE_TODO(ANNOTATE_NEW_BUFFER(data(), capacity(), elements.size()));
   size_ = static_cast<wtf_size_t>(elements.size());
-  TypeOperations::UninitializedCopy(base::span(elements), base::span(*this),
+  TypeOperations::UninitializedCopy(base::span(elements), ElementSpan(*this),
                                     VectorOperationOrigin::kConstruction);
 }
 
@@ -2231,6 +2294,9 @@ inline U* Vector<T, kInlineCapacity, Allocator>::ExpandCapacity(
 
 template <typename T, wtf_size_t kInlineCapacity, typename Allocator>
 inline void Vector<T, kInlineCapacity, Allocator>::resize(wtf_size_t size) {
+  if (size == size_) {
+    return;
+  }
   this->RegisterModification();
   if (size <= size_) {
     T* new_end = UNSAFE_TODO(data() + size);
@@ -2254,8 +2320,11 @@ inline void Vector<T, kInlineCapacity, Allocator>::resize(wtf_size_t size) {
 
 template <typename T, wtf_size_t kInlineCapacity, typename Allocator>
 void Vector<T, kInlineCapacity, Allocator>::Shrink(wtf_size_t size) {
-  this->RegisterModification();
+  if (size == size_) {
+    return;
+  }
   CHECK_LE(size, size_);
+  this->RegisterModification();
   T* new_end = UNSAFE_TODO(data() + size);
   TypeOperations::Destruct(new_end, DataEnd());
   // SAFETY: CHECK above ensures `new_end` is valid.
@@ -2781,8 +2850,7 @@ void Vector<T, kInlineCapacity, Allocator>::ReallocateBuffer(
     return;
   }
   // Shrinking/resizing to out-of-line buffer.
-  VectorBufferBase<T, Allocator> temp_buffer =
-      Base::AllocateTemporaryBuffer(new_capacity);
+  auto temp_buffer = Base::AllocateTemporaryBuffer(new_capacity);
   UNSAFE_TODO(
       ANNOTATE_NEW_BUFFER(temp_buffer.Buffer(), temp_buffer.capacity(), size_));
   // If there was a new out-of-line buffer allocated, there is no need in

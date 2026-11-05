@@ -4,6 +4,8 @@
 
 #include "third_party/blink/renderer/core/display_lock/display_lock_document_state.h"
 
+#include "base/check.h"
+#include "base/check_op.h"
 #include "base/trace_event/trace_event.h"
 #include "third_party/blink/renderer/core/css/style_engine.h"
 #include "third_party/blink/renderer/core/display_lock/display_lock_context.h"
@@ -184,16 +186,19 @@ void DisplayLockDocumentState::ScheduleAnimation() {
 }
 
 DisplayLockDocumentState::ScopedForceActivatableDisplayLocks
-DisplayLockDocumentState::GetScopedForceActivatableLocks() {
-  return ScopedForceActivatableDisplayLocks(this);
+DisplayLockDocumentState::GetScopedForceActivatableLocks(
+    bool include_auto_locks) {
+  return ScopedForceActivatableDisplayLocks(this, include_auto_locks);
 }
 
 bool DisplayLockDocumentState::HasActivatableLocks() const {
   return LockedDisplayLockCount() != DisplayLockBlockingAllActivationCount();
 }
 
-bool DisplayLockDocumentState::ActivatableDisplayLocksForced() const {
-  return activatable_display_locks_forced_;
+bool DisplayLockDocumentState::ActivatableDisplayLocksForced(
+    bool is_auto) const {
+  return is_auto ? auto_display_locks_forced_ > 0
+                 : non_auto_display_locks_forced_ > 0;
 }
 
 void DisplayLockDocumentState::ElementAddedToTopLayer(Element* element) {
@@ -267,8 +272,10 @@ void DisplayLockDocumentState::NotifyViewTransitionPseudoTreeChanged() {
   // Reset the view transition element flag.
   // TODO(vmpstr): This should be optimized to keep track of elements that
   // actually have this flag set.
-  for (auto context : display_lock_contexts_)
+  HeapVector<Member<DisplayLockContext>> contexts(display_lock_contexts_);
+  for (auto& context : contexts) {
     context->ResetDescendantIsViewTransitionElement();
+  }
 
   // Process the view transition elements to check if their ancestors are
   // locks that need to be made relevant.
@@ -293,8 +300,10 @@ void DisplayLockDocumentState::UpdateViewTransitionElementAncestorLocks() {
 }
 
 void DisplayLockDocumentState::NotifySelectionRemoved() {
-  for (auto context : display_lock_contexts_)
+  HeapVector<Member<DisplayLockContext>> contexts(display_lock_contexts_);
+  for (auto& context : contexts) {
     context->NotifySubtreeLostSelection();
+  }
 }
 
 void DisplayLockDocumentState::BeginNodeForcedScope(
@@ -371,10 +380,21 @@ void DisplayLockDocumentState::ForcedRangeInfo::ForceLockIfNeeded(
 
 // ScopedForcedActivatableDisplayLocks implementation -----------
 DisplayLockDocumentState::ScopedForceActivatableDisplayLocks::
-    ScopedForceActivatableDisplayLocks(DisplayLockDocumentState* state)
-    : state_(state) {
-  if (++state_->activatable_display_locks_forced_ == 1) {
-    for (auto context : state_->display_lock_contexts_) {
+    ScopedForceActivatableDisplayLocks() = default;
+
+DisplayLockDocumentState::ScopedForceActivatableDisplayLocks::
+    ScopedForceActivatableDisplayLocks(DisplayLockDocumentState* state,
+                                       bool include_auto_locks) {
+  CHECK(state);
+  states_.emplace_back(state, include_auto_locks);
+  bool is_newly_forced = ++state->non_auto_display_locks_forced_ == 1;
+  if (include_auto_locks) {
+    is_newly_forced |= ++state->auto_display_locks_forced_ == 1;
+  }
+  if (is_newly_forced) {
+    HeapVector<Member<DisplayLockContext>> contexts(
+        state->display_lock_contexts_);
+    for (auto& context : contexts) {
       if (context->HasElement()) {
         context->DidForceActivatableDisplayLocks();
       } else {
@@ -392,25 +412,25 @@ DisplayLockDocumentState::ScopedForceActivatableDisplayLocks::
 
 DisplayLockDocumentState::ScopedForceActivatableDisplayLocks::
     ScopedForceActivatableDisplayLocks(
-        ScopedForceActivatableDisplayLocks&& other)
-    : state_(other.state_) {
-  other.state_ = nullptr;
-}
+        ScopedForceActivatableDisplayLocks&& other) = default;
 
-DisplayLockDocumentState::ScopedForceActivatableDisplayLocks&
-DisplayLockDocumentState::ScopedForceActivatableDisplayLocks::operator=(
+void DisplayLockDocumentState::ScopedForceActivatableDisplayLocks::Add(
     ScopedForceActivatableDisplayLocks&& other) {
-  state_ = other.state_;
-  other.state_ = nullptr;
-  return *this;
+  CHECK_NE(&other, this);
+  states_.append_range(other.states_);
+  other.states_.clear();
 }
 
 DisplayLockDocumentState::ScopedForceActivatableDisplayLocks::
     ~ScopedForceActivatableDisplayLocks() {
-  if (!state_)
-    return;
-  DCHECK(state_->activatable_display_locks_forced_);
-  --state_->activatable_display_locks_forced_;
+  for (const auto& [state, include_auto_locks] : states_) {
+    if (include_auto_locks) {
+      CHECK_GT(state->auto_display_locks_forced_, 0);
+      --state->auto_display_locks_forced_;
+    }
+    CHECK_GT(state->non_auto_display_locks_forced_, 0);
+    --state->non_auto_display_locks_forced_;
+  }
 }
 
 void DisplayLockDocumentState::NotifyPrintingOrPreviewChanged() {
@@ -419,8 +439,10 @@ void DisplayLockDocumentState::NotifyPrintingOrPreviewChanged() {
   if (printing_ == was_printing)
     return;
 
-  for (auto& context : display_lock_contexts_)
+  HeapVector<Member<DisplayLockContext>> contexts(display_lock_contexts_);
+  for (auto& context : contexts) {
     context->SetShouldUnlockAutoForPrint(printing_);
+  }
 }
 
 void DisplayLockDocumentState::IssueForcedRenderWarning(Element* element) {

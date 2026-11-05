@@ -4,6 +4,7 @@
 
 package org.chromium.chrome.browser.customtabs.features.minimizedcustomtab;
 
+import static org.chromium.build.NullUtil.assertNonNull;
 import static org.chromium.chrome.browser.customtabs.features.minimizedcustomtab.MinimizedCardProperties.ALL_KEYS;
 import static org.chromium.chrome.browser.customtabs.features.minimizedcustomtab.MinimizedCardProperties.FAVICON;
 import static org.chromium.chrome.browser.customtabs.features.minimizedcustomtab.MinimizedCardProperties.TITLE;
@@ -42,8 +43,8 @@ import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabFavicon;
 import org.chromium.chrome.browser.tab.TabHidingType;
 import org.chromium.chrome.browser.tab.TabUtils;
-import org.chromium.components.dom_distiller.core.DomDistillerUrlUtils;
 import org.chromium.components.url_formatter.UrlFormatter;
+import org.chromium.components.web_distiller.core.WebDistillerUrlUtils;
 import org.chromium.content_public.common.ContentUrlConstants;
 import org.chromium.ui.modelutil.PropertyModel;
 import org.chromium.ui.widget.Toast;
@@ -104,7 +105,7 @@ public class CustomTabMinimizationManager
     private final Runnable mCloseTabRunnable;
     private final ObserverList<Observer> mObservers = new ObserverList<>();
     private final ActivityLifecycleDispatcher mLifecycleDispatcher;
-    private final Supplier<Bundle> mSavedInstanceStateSupplier;
+    private final Supplier<@Nullable Bundle> mSavedInstanceStateSupplier;
     private @Nullable MinimizedCardCoordinator mCoordinator;
     private @Nullable PropertyModel mModel;
     private boolean mMinimized;
@@ -127,7 +128,7 @@ public class CustomTabMinimizationManager
             Runnable closeTabRunnable,
             BrowserServicesIntentDataProvider intentData,
             ActivityLifecycleDispatcher lifecycleDispatcher,
-            Supplier<Bundle> savedInstanceStateSupplier) {
+            Supplier<@Nullable Bundle> savedInstanceStateSupplier) {
         mActivity = activity;
         mTabProvider = tabProvider;
         mFeatureEngagementDelegate = featureEngagementDelegate;
@@ -304,13 +305,12 @@ public class CustomTabMinimizationManager
 
     private void showMinimizedCard(boolean fromSavedState) {
         if (fromSavedState) {
-            assert mSavedInstanceStateSupplier.get() != null;
-            mModel = toModel(mSavedInstanceStateSupplier.get());
+            mModel = toModel(assertNonNull(mSavedInstanceStateSupplier.get()));
         } else {
             Tab tab = mTabProvider.get();
             if (tab == null) return;
             GURL url =
-                    DomDistillerUrlUtils.isDistilledPage(tab.getUrl())
+                    WebDistillerUrlUtils.isDistilledPage(tab.getUrl())
                             ? tab.getOriginalUrl()
                             : tab.getUrl();
             String host = UrlFormatter.formatUrlForDisplayOmitSchemePathAndTrivialSubdomains(url);

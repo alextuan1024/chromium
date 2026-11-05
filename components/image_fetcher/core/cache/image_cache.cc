@@ -5,8 +5,10 @@
 #include "components/image_fetcher/core/cache/image_cache.h"
 
 #include <algorithm>
+#include <optional>
 #include <utility>
 
+#include "base/barrier_closure.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/hash/sha1.h"
@@ -38,6 +40,9 @@ constexpr int kCacheResizeWhenFull = 48 * 1024 * 1024;  // 48mb.
 constexpr int kCacheItemsTimeToLiveDays = 7;
 constexpr int kImageCacheEvictionIntervalHours = 24;
 
+// Both the image data store and the metadata store must finish initialization.
+constexpr int kStoreCount = 2;
+
 void OnStartupEvictionQueued() {}
 
 }  // namespace
@@ -60,8 +65,7 @@ ImageCache::ImageCache(std::unique_ptr<ImageDataStore> data_store,
                        PrefService* pref_service,
                        base::Clock* clock,
                        scoped_refptr<base::SequencedTaskRunner> task_runner)
-    : initialization_attempted_(false),
-      data_store_(std::move(data_store)),
+    : data_store_(std::move(data_store)),
       metadata_store_(std::move(metadata_store)),
       pref_service_(pref_service),
       clock_(clock),
@@ -70,11 +74,11 @@ ImageCache::ImageCache(std::unique_ptr<ImageDataStore> data_store,
 ImageCache::~ImageCache() = default;
 
 void ImageCache::SaveImage(std::string url,
-                           std::string image_data,
+                           ImageData image_data,
                            bool needs_transcoding,
                            ExpirationInterval expiration_interval) {
   // If the image data is larger than the cache's max size, bail out.
-  if (image_data.length() > kCacheMaxSize) {
+  if (image_data->size() > kCacheMaxSize) {
     return;
   }
 
@@ -100,7 +104,7 @@ void ImageCache::DeleteImage(std::string url) {
 }
 
 void ImageCache::QueueOrStartRequest(base::OnceClosure request) {
-  if (!AreAllDependenciesInitialized()) {
+  if (!initialization_finished_) {
     queued_requests_.push_back(std::move(request));
     MaybeStartInitialization();
     return;
@@ -115,26 +119,43 @@ void ImageCache::MaybeStartInitialization() {
   }
 
   initialization_attempted_ = true;
-  data_store_->Initialize(base::BindOnce(&ImageCache::OnDependencyInitialized,
-                                         weak_ptr_factory_.GetWeakPtr()));
-  metadata_store_->Initialize(base::BindOnce(
-      &ImageCache::OnDependencyInitialized, weak_ptr_factory_.GetWeakPtr()));
+  base::RepeatingClosure on_initialized = base::BarrierClosure(
+      kStoreCount, base::BindOnce(&ImageCache::OnDependenciesInitialized,
+                                  weak_ptr_factory_.GetWeakPtr()));
+  data_store_->Initialize(on_initialized);
+  metadata_store_->Initialize(on_initialized);
 }
 
-bool ImageCache::AreAllDependenciesInitialized() const {
-  return data_store_->IsInitialized() && metadata_store_->IsInitialized();
-}
-
-void ImageCache::OnDependencyInitialized() {
-  if (!AreAllDependenciesInitialized()) {
-    return;
+void ImageCache::OnDependenciesInitialized() {
+  // A cache-miss callback may release the last external reference to this
+  // cache.
+  scoped_refptr<ImageCache> keep_alive(this);
+  initialization_finished_ = true;
+  const bool data_store_initialized = data_store_->IsInitialized();
+  const bool metadata_store_initialized = metadata_store_->IsInitialized();
+  cache_available_ = data_store_initialized && metadata_store_initialized;
+  if (!data_store_initialized) {
+    ImageFetcherMetricsReporter::ReportEvent(
+        ImageFetcherMetricsReporter::kCachedImageFetcherInternalUmaClientName,
+        ImageFetcherEvent::kCacheDataStoreInitializationFailed);
+  }
+  if (!metadata_store_initialized) {
+    ImageFetcherMetricsReporter::ReportEvent(
+        ImageFetcherMetricsReporter::kCachedImageFetcherInternalUmaClientName,
+        ImageFetcherEvent::kCacheMetadataStoreInitializationFailed);
   }
 
-  // Everything is initialized, take care of the queued requests.
-  for (base::OnceClosure& request : queued_requests_) {
+  // Complete queued requests even if a store failed. Loads will return cache
+  // misses and writes/deletions will be ignored without touching either store.
+  auto queued_requests = std::move(queued_requests_);
+  queued_requests_.clear();
+  for (base::OnceClosure& request : queued_requests) {
     std::move(request).Run();
   }
-  queued_requests_.clear();
+
+  if (!cache_available_) {
+    return;
+  }
 
   // TODO(wylieb): Consider delaying eviction as new requests come in via
   // separate weak pointers.
@@ -151,15 +172,18 @@ void ImageCache::OnDependencyInitialized() {
 }
 
 void ImageCache::SaveImageImpl(const std::string& url,
-                               std::string image_data,
+                               ImageData image_data,
                                bool needs_transcoding,
                                ExpirationInterval expiration_interval) {
+  if (!cache_available_) {
+    return;
+  }
   std::string key = ImageCache::HashUrlToKey(url);
 
   // If the cache is full, evict some stuff.
   RunEvictionWhenFull();
 
-  size_t length = image_data.length();
+  size_t length = image_data->size();
   data_store_->SaveImage(key, std::move(image_data), needs_transcoding);
   metadata_store_->SaveImageMetadata(key, length, needs_transcoding,
                                      std::move(expiration_interval));
@@ -168,6 +192,10 @@ void ImageCache::SaveImageImpl(const std::string& url,
 void ImageCache::LoadImageImpl(bool read_only,
                                const std::string& url,
                                ImageDataCallback callback) {
+  if (!cache_available_) {
+    std::move(callback).Run(/*needs_transcoding=*/false, std::string());
+    return;
+  }
   std::string key = ImageCache::HashUrlToKey(url);
   metadata_store_->LoadImageMetadata(
       key, base::BindOnce(&ImageCache::OnImageMetadataLoadedForLoadImage,
@@ -197,6 +225,9 @@ void ImageCache::OnImageMetadataLoadedForLoadImage(
 }
 
 void ImageCache::DeleteImageImpl(const std::string& url) {
+  if (!cache_available_) {
+    return;
+  }
   std::string key = ImageCache::HashUrlToKey(url);
 
   data_store_->DeleteImage(key);
@@ -263,21 +294,36 @@ void ImageCache::RunReconciliation() {
                                              weak_ptr_factory_.GetWeakPtr()));
 }
 
-void ImageCache::ReconcileMetadataKeys(std::vector<std::string> metadata_keys) {
+void ImageCache::ReconcileMetadataKeys(
+    std::optional<std::vector<std::string>> metadata_keys) {
+  if (!metadata_keys) {
+    ImageFetcherMetricsReporter::ReportEvent(
+        ImageFetcherMetricsReporter::kCachedImageFetcherInternalUmaClientName,
+        ImageFetcherEvent::kCacheStartupEvictionFinished);
+    return;
+  }
   data_store_->GetAllKeys(base::BindOnce(&ImageCache::ReconcileDataKeys,
                                          weak_ptr_factory_.GetWeakPtr(),
-                                         std::move(metadata_keys)));
+                                         std::move(*metadata_keys)));
 }
 
-void ImageCache::ReconcileDataKeys(std::vector<std::string> metadata_keys,
-                                   std::vector<std::string> data_keys) {
+void ImageCache::ReconcileDataKeys(
+    std::vector<std::string> metadata_keys,
+    std::optional<std::vector<std::string>> data_keys) {
+  if (!data_keys) {
+    ImageFetcherMetricsReporter::ReportEvent(
+        ImageFetcherMetricsReporter::kCachedImageFetcherInternalUmaClientName,
+        ImageFetcherEvent::kCacheStartupEvictionFinished);
+    return;
+  }
+
   std::sort(metadata_keys.begin(), metadata_keys.end());
-  std::sort(data_keys.begin(), data_keys.end());
+  std::sort(data_keys->begin(), data_keys->end());
 
   std::vector<std::string> diff;
   // Get the keys that should be removed from metadata.
   std::set_difference(metadata_keys.begin(), metadata_keys.end(),
-                      data_keys.begin(), data_keys.end(),
+                      data_keys->begin(), data_keys->end(),
                       std::inserter(diff, diff.begin()));
 
   for (const std::string& key : diff) {
@@ -286,8 +332,9 @@ void ImageCache::ReconcileDataKeys(std::vector<std::string> metadata_keys,
 
   diff.clear();
   // Get the keys that should be removed from data.
-  std::set_difference(data_keys.begin(), data_keys.end(), metadata_keys.begin(),
-                      metadata_keys.end(), std::inserter(diff, diff.begin()));
+  std::set_difference(data_keys->begin(), data_keys->end(),
+                      metadata_keys.begin(), metadata_keys.end(),
+                      std::inserter(diff, diff.begin()));
   for (const std::string& key : diff) {
     data_store_->DeleteImage(key);
   }

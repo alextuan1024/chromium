@@ -22,7 +22,7 @@
 #include "components/prefs/pref_service.h"
 #include "components/sync/service/sync_service.h"
 #include "google_apis/gaia/gaia_urls.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "url/gurl.h"
 
 namespace enterprise_signin {
@@ -88,9 +88,10 @@ void EnterpriseSigninService::OnStateChanged(syncer::SyncService* sync) {
 
 void EnterpriseSigninService::OnBrowserActivated(
     BrowserWindowInterface* browser) {
-  DCHECK(browser);
+  CHECK(browser, base::NotFatalUntil::M161);
   VLOG(2) << "Browser just became active.";
-  DCHECK(last_transport_state_ == TransportState::PAUSED);
+  CHECK(last_transport_state_ == TransportState::PAUSED,
+        base::NotFatalUntil::M161);
   OpenOrActivateGaiaReauthTab();
 }
 
@@ -142,7 +143,7 @@ void EnterpriseSigninService::OpenOrActivateGaiaReauthTab() {
     chrome::BrowserCommandController::From(browser)
         ->ExecuteCommandWithDisposition(
             IDC_SHOW_SIGNIN_WHEN_PAUSED,
-            WindowOpenDisposition::NEW_FOREGROUND_TAB);
+            ui::mojom::WindowOpenDisposition::kNewForegroundTab);
   }
 }
 

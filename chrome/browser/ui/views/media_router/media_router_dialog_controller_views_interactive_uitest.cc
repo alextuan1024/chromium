@@ -4,6 +4,7 @@
 
 #include "chrome/browser/ui/views/media_router/media_router_dialog_controller_views.h"
 
+#include "base/feature_list.h"
 #include "base/memory/raw_ptr.h"
 #include "base/run_loop.h"
 #include "build/build_config.h"
@@ -15,8 +16,10 @@
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/top_container_view.h"
 #include "chrome/browser/ui/views/global_media_controls/media_dialog_view.h"
+#include "chrome/browser/ui/views/global_media_controls/media_toolbar_button.h"
 #include "chrome/browser/ui/views/media_router/cast_dialog_coordinator.h"
 #include "chrome/browser/ui/views/media_router/cast_dialog_view.h"
+#include "chrome/browser/ui/views/toolbar/toolbar_view.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/media_router/browser/media_router_metrics.h"
@@ -25,14 +28,20 @@
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/blink/public/common/features.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/base/page_transition_types.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/views/bubble/bubble_border.h"
 #include "ui/views/test/widget_test.h"
 #include "ui/views/widget/native_widget_private.h"
 #include "ui/views/widget/widget.h"
 
 #if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_WIN)
 #include "chrome/browser/ui/views/global_media_controls/media_dialog_view.h"
+#endif
+
+#if BUILDFLAG(IS_MAC)
+#include "ui/base/test/scoped_fake_nswindow_fullscreen.h"
 #endif
 
 using content::WebContents;
@@ -65,9 +74,12 @@ class MediaRouterDialogControllerViewsTest : public InProcessBrowserTest {
 
  protected:
   void ShowDialogForPresentation() {
+    base::RunLoop run_loop;
+    dialog_controller_->SetDialogCreationCallbackForTesting(
+        run_loop.QuitClosure());
     dialog_controller_->ShowMediaRouterDialogForPresentation(
         CreateStartPresentationContext(initiator_));
-    base::RunLoop().RunUntilIdle();
+    run_loop.Run();
   }
 
   raw_ptr<WebContents, AcrossTasksDanglingUntriaged> initiator_;
@@ -92,6 +104,13 @@ void MediaRouterDialogControllerViewsTest::OpenMediaRouterDialog() {
   // Show the media router dialog for the initiator.
   dialog_controller_->ShowMediaRouterDialog(
       MediaRouterDialogActivationLocation::PAGE);
+  // Dialog creation is asynchronous when anchored to the WebUI toolbar.
+  if (!dialog_controller_->IsShowingMediaRouterDialog()) {
+    base::RunLoop run_loop;
+    dialog_controller_->SetDialogCreationCallbackForTesting(
+        run_loop.QuitClosure());
+    run_loop.Run();
+  }
   ASSERT_TRUE(dialog_controller_->IsShowingMediaRouterDialog());
 }
 
@@ -165,7 +184,13 @@ IN_PROC_BROWSER_TEST_F(GlobalMediaControlsDialogTest, OpenGMCDialog) {
   ShowDialogForPresentation();
   ASSERT_TRUE(MediaDialogView::IsShowing());
   auto* view = MediaDialogView::GetDialogViewForTesting();
-  ASSERT_TRUE(view->GetAnchorView());
+  MediaToolbarButton* const media_button =
+      BrowserView::GetBrowserViewForBrowser(browser())
+          ->toolbar()
+          ->media_button();
+  ASSERT_TRUE(media_button);
+  EXPECT_TRUE(view->IsSameAnchor(media_button->GetBubbleAnchor()));
+  EXPECT_EQ(views::BubbleBorder::TOP_RIGHT, view->arrow());
 }
 
 IN_PROC_BROWSER_TEST_F(GlobalMediaControlsDialogTest, OpenGMCDialogInWebApp) {
@@ -196,7 +221,7 @@ IN_PROC_BROWSER_TEST_F(GlobalMediaControlsDialogTest,
   // Create a new foreground tab that covers |web_contents|.
   GURL url = embedded_test_server()->GetURL("localhost", "/simple_page.html");
   ui_test_utils::NavigateToURLWithDisposition(
-      browser(), url, WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      browser(), url, ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
   ASSERT_NE(initiator_, browser()->GetTabStripModel()->GetActiveWebContents());
 
@@ -207,6 +232,11 @@ IN_PROC_BROWSER_TEST_F(GlobalMediaControlsDialogTest,
 
 IN_PROC_BROWSER_TEST_F(GlobalMediaControlsDialogTest,
                        FullscreenExitedOnGMCDialogOpen) {
+#if BUILDFLAG(IS_MAC)
+  // Real AppKit fullscreen transitions are asynchronous, so re-entering tab
+  // fullscreen below can race with the exit animation started by the dialog.
+  ui::test::ScopedFakeNSWindowFullscreen fake_fullscreen;
+#endif
   ASSERT_TRUE(ui_test_utils::NavigateToURL(
       browser(), embedded_test_server()->GetURL("/simple_page.html")));
   CreateDialogController();
@@ -229,6 +259,28 @@ IN_PROC_BROWSER_TEST_F(GlobalMediaControlsDialogTest,
   EXPECT_TRUE(MediaDialogView::IsShowing());
   EXPECT_FALSE(fullscreen_controller->IsTabFullscreen());
 
+  // The renderer learns about the fullscreen exit asynchronously (e.g. after
+  // the Wayland compositor acks the window state change). Until then, it
+  // resolves requestFullscreen() without asking the browser, so wait for the
+  // exit to reach the renderer. The initial enter `fullscreenchange` event may
+  // still be queued for the next animation frame here, so ignore events until
+  // `document.fullscreenElement` becomes null.
+  EXPECT_EQ(true, content::EvalJs(initiator_, R"(
+      new Promise(resolve => {
+        if (!document.fullscreenElement) {
+          resolve(true);
+          return;
+        }
+        const onFullscreenChange = () => {
+          if (!document.fullscreenElement) {
+            document.removeEventListener(
+                'fullscreenchange', onFullscreenChange);
+            resolve(true);
+          }
+        };
+        document.addEventListener('fullscreenchange', onFullscreenChange);
+      }))"));
+
   // While the dialog is showing, tab fullscreen cannot be entered.
   EXPECT_FALSE(content::ExecJs(initiator_,
                                "document.documentElement.requestFullscreen()"));
@@ -243,6 +295,9 @@ IN_PROC_BROWSER_TEST_F(GlobalMediaControlsDialogTest,
   EXPECT_FALSE(MediaDialogView::IsShowing());
 
   // Now we should be able to enter tab fullscreen again.
+  browser()->GetWindow()->Activate();
+  ui_test_utils::WaitUntilBrowserBecomeActive(browser());
+  initiator_->Focus();
   ui_test_utils::FullscreenWaiter reenter_waiter(browser(),
                                                  {.tab_fullscreen = true});
   EXPECT_TRUE(content::ExecJs(initiator_,

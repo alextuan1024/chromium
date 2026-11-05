@@ -5,6 +5,7 @@
         "args": [
           "--no-xvfb"
         ],
+        "ci_only": true,
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
@@ -15,8 +16,8 @@
           "containment_type": "AUTO",
           "dimensions": {
             "display_server": "x11",
-            "gpu": "10de:2184-535.183.01",
-            "os": "Ubuntu-22.04",
+            "gpu": "10de:2184-595.104.02",
+            "os": "Ubuntu-24.04",
             "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 1800,
@@ -34,6 +35,7 @@
           "--use-gpu-in-tests",
           "--no-xvfb"
         ],
+        "ci_only": true,
         "merge": {
           "script": "//testing/merge_scripts/standard_gtest_merge.py"
         },
@@ -44,8 +46,8 @@
           "containment_type": "AUTO",
           "dimensions": {
             "display_server": "x11",
-            "gpu": "10de:2184-535.183.01",
-            "os": "Ubuntu-22.04",
+            "gpu": "10de:2184-595.104.02",
+            "os": "Ubuntu-24.04",
             "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 1800,
@@ -62,6 +64,7 @@
           "--no-xvfb",
           "--git-revision=${got_revision}"
         ],
+        "ci_only": true,
         "merge": {
           "script": "//testing/merge_scripts/standard_gtest_merge.py"
         },
@@ -77,8 +80,8 @@
           "containment_type": "AUTO",
           "dimensions": {
             "display_server": "x11",
-            "gpu": "10de:2184-535.183.01",
-            "os": "Ubuntu-22.04",
+            "gpu": "10de:2184-595.104.02",
+            "os": "Ubuntu-24.04",
             "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 1800,
@@ -102,6 +105,7 @@
           "--enforce-browser-version",
           "--jobs=4"
         ],
+        "ci_only": true,
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
@@ -116,8 +120,8 @@
           "containment_type": "AUTO",
           "dimensions": {
             "display_server": "x11",
-            "gpu": "10de:2184-535.183.01",
-            "os": "Ubuntu-22.04",
+            "gpu": "10de:2184-595.104.02",
+            "os": "Ubuntu-24.04",
             "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 1800,
@@ -144,6 +148,7 @@
           "${buildername}",
           "--jobs=4"
         ],
+        "ci_only": true,
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
@@ -163,8 +168,8 @@
           "containment_type": "AUTO",
           "dimensions": {
             "display_server": "x11",
-            "gpu": "10de:2184-535.183.01",
-            "os": "Ubuntu-22.04",
+            "gpu": "10de:2184-595.104.02",
+            "os": "Ubuntu-24.04",
             "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 1800,
@@ -187,6 +192,7 @@
           "--enforce-browser-version",
           "--jobs=4"
         ],
+        "ci_only": true,
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
@@ -201,8 +207,8 @@
           "containment_type": "AUTO",
           "dimensions": {
             "display_server": "x11",
-            "gpu": "10de:2184-535.183.01",
-            "os": "Ubuntu-22.04",
+            "gpu": "10de:2184-595.104.02",
+            "os": "Ubuntu-24.04",
             "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 1800,
@@ -225,6 +231,7 @@
           "--enforce-browser-version",
           "--jobs=4"
         ],
+        "ci_only": true,
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
@@ -239,8 +246,8 @@
           "containment_type": "AUTO",
           "dimensions": {
             "display_server": "x11",
-            "gpu": "10de:2184-535.183.01",
-            "os": "Ubuntu-22.04",
+            "gpu": "10de:2184-595.104.02",
+            "os": "Ubuntu-24.04",
             "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 1800,
@@ -267,6 +274,7 @@
           "2184",
           "--jobs=4"
         ],
+        "ci_only": true,
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
@@ -281,8 +289,8 @@
           "containment_type": "AUTO",
           "dimensions": {
             "display_server": "x11",
-            "gpu": "10de:2184-535.183.01",
-            "os": "Ubuntu-22.04",
+            "gpu": "10de:2184-595.104.02",
+            "os": "Ubuntu-24.04",
             "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 1800,
@@ -309,6 +317,7 @@
           "${buildername}",
           "--jobs=4"
         ],
+        "ci_only": true,
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
@@ -328,8 +337,8 @@
           "containment_type": "AUTO",
           "dimensions": {
             "display_server": "x11",
-            "gpu": "10de:2184-535.183.01",
-            "os": "Ubuntu-22.04",
+            "gpu": "10de:2184-595.104.02",
+            "os": "Ubuntu-24.04",
             "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 1800,
@@ -353,6 +362,7 @@
           "--dont-restore-color-profile-after-test",
           "--jobs=4"
         ],
+        "ci_only": true,
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
@@ -367,8 +377,8 @@
           "containment_type": "AUTO",
           "dimensions": {
             "display_server": "x11",
-            "gpu": "10de:2184-535.183.01",
-            "os": "Ubuntu-22.04",
+            "gpu": "10de:2184-595.104.02",
+            "os": "Ubuntu-24.04",
             "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 1800,
@@ -391,6 +401,7 @@
           "--enforce-browser-version",
           "--jobs=4"
         ],
+        "ci_only": true,
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
@@ -405,8 +416,8 @@
           "containment_type": "AUTO",
           "dimensions": {
             "display_server": "x11",
-            "gpu": "10de:2184-535.183.01",
-            "os": "Ubuntu-22.04",
+            "gpu": "10de:2184-595.104.02",
+            "os": "Ubuntu-24.04",
             "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 1800,
@@ -430,6 +441,7 @@
           "--read-abbreviated-json-results-from=../../content/test/data/gpu/webgl1_conformance_linux_runtimes.json",
           "--jobs=4"
         ],
+        "ci_only": true,
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
@@ -444,8 +456,8 @@
           "containment_type": "AUTO",
           "dimensions": {
             "display_server": "x11",
-            "gpu": "10de:2184-535.183.01",
-            "os": "Ubuntu-22.04",
+            "gpu": "10de:2184-595.104.02",
+            "os": "Ubuntu-24.04",
             "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 1800,

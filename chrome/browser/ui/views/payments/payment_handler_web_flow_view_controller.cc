@@ -9,6 +9,7 @@
 #include <utility>
 
 #include "base/check_op.h"
+#include "base/containers/flat_set.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/metrics/histogram_functions.h"
@@ -26,6 +27,7 @@
 #include "chrome/browser/ui/browser_window/public/profile_browser_collection.h"
 #include "chrome/browser/ui/color/chrome_color_id.h"
 #include "chrome/browser/ui/layout_constants.h"
+#include "chrome/browser/ui/tabs/alert/child_tab_alert_helper.h"
 #include "chrome/browser/ui/views/bubble/webui_bubble_reopen_suppressor.h"
 #include "chrome/browser/ui/views/chrome_typography.h"
 #include "chrome/browser/ui/views/location_bar/location_icon_view.h"
@@ -42,6 +44,7 @@
 #include "chrome/grit/generated_resources.h"
 #include "components/omnibox/browser/location_bar_model_impl.h"
 #include "components/payments/content/payment_handler_navigation_throttle.h"
+#include "components/payments/content/payment_request_state.h"
 #include "components/payments/content/ssl_validity_checker.h"
 #include "components/payments/core/features.h"
 #include "components/payments/core/native_error_strings.h"
@@ -52,6 +55,7 @@
 #include "components/permissions/request_type.h"
 #include "components/security_state/core/security_state.h"
 #include "components/strings/grit/components_strings.h"
+#include "components/tabs/public/tab_alert.h"
 #include "components/tabs/public/tab_interface.h"
 #include "components/url_formatter/elide_url.h"
 #include "components/vector_icons/vector_icons.h"
@@ -65,11 +69,12 @@
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_user_data.h"
 #include "content/public/common/content_constants.h"
+#include "services/network/public/mojom/permissions_policy/permissions_policy_feature.mojom-shared.h"
 #include "third_party/blink/public/mojom/mediastream/media_stream.mojom.h"
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/models/image_model.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/color/color_provider.h"
 #include "ui/gfx/animation/animation.h"
 #include "ui/gfx/color_palette.h"
@@ -207,7 +212,6 @@ PaymentHandlerWebFlowViewController::PaymentHandlerWebFlowViewController(
     base::WeakPtr<PaymentRequestSpec> spec,
     base::WeakPtr<PaymentRequestState> state,
     base::WeakPtr<PaymentRequestDialogView> dialog,
-    content::WebContents* payment_request_web_contents,
     Profile* profile,
     GURL target,
     PaymentHandlerOpenWindowCallback first_navigation_complete_callback)
@@ -219,7 +223,7 @@ PaymentHandlerWebFlowViewController::PaymentHandlerWebFlowViewController(
                                                  content::kMaxURLDisplayChars)),
       first_navigation_complete_callback_(
           std::move(first_navigation_complete_callback)),
-      dialog_manager_delegate_(dialog.get(), payment_request_web_contents) {}
+      dialog_manager_delegate_(dialog.get()) {}
 
 PaymentHandlerWebFlowViewController::~PaymentHandlerWebFlowViewController() {
   if (web_contents()) {
@@ -295,9 +299,11 @@ void PaymentHandlerWebFlowViewController::FillContentView(
   PaymentHandlerWebFlowViewControllerWebContentsWrapper::CreateForWebContents(
       web_contents(), weak_ptr_factory_.GetWeakPtr());
   web_contents()->SetDelegate(this);
+  SetReferenceView(web_view);
+  SetAcceleratorHandling(views::WebContentsAcceleratorHandling::kEnabled);
   content::WebContents* parent_tab_web_contents = state()->GetWebContents();
 
-  DCHECK_NE(parent_tab_web_contents, web_contents());
+  CHECK_NE(parent_tab_web_contents, web_contents(), base::NotFatalUntil::M162);
   content::PaymentAppProvider::GetOrCreateForWebContents(
       /*payment_request_web_contents=*/parent_tab_web_contents)
       ->SetOpenedWindow(
@@ -307,7 +313,11 @@ void PaymentHandlerWebFlowViewController::FillContentView(
           payments::features::kPaymentHandlerDialogUseInitiatorInUrlLoad)) {
     content::NavigationController::LoadURLParams params(target_);
     params.initiator_origin =
-        url::Origin::Create(parent_tab_web_contents->GetLastCommittedURL());
+        base::FeatureList::IsEnabled(
+            payments::features::kPaymentHandlerDialogUseFrameOriginAsInitiator)
+            ? state()->GetFrameSecurityOrigin()
+            : url::Origin::Create(
+                  parent_tab_web_contents->GetLastCommittedURL());
     web_view->GetWebContents()->GetController().LoadURLWithParams(params);
   } else {
     web_view->LoadInitialURL(target_);
@@ -320,9 +330,6 @@ void PaymentHandlerWebFlowViewController::FillContentView(
   // permissions function within the Payment Handler window. Security state
   // is computed on demand by chrome_security_state (see
   // chrome/browser/ssl/chrome_security_state_util.h) and needs no helper.
-  //
-  // TODO(crbug.com/539998580): Restrict non-camera permission requests in
-  // Payment Handler windows via Permissions-Policy enforcement.
   if (base::FeatureList::IsEnabled(features::kPaymentHandlerCameraAccessUx)) {
     indicator_observation_.Reset();
     if (scoped_refptr<MediaStreamCaptureIndicator> indicator =
@@ -330,19 +337,21 @@ void PaymentHandlerWebFlowViewController::FillContentView(
                 ->GetMediaStreamCaptureIndicator()) {
       indicator_observation_.Observe(indicator.get());
     }
-    OneTimePermissionsTrackerHelper::CreateForWebContents(web_contents());
+    one_time_permissions_tracker_helper_ =
+        std::make_unique<OneTimePermissionsTrackerHelper>(web_contents());
     permissions::PermissionRequestManager::CreateForWebContents(web_contents());
     permissions::PermissionRecoverySuccessRateTracker::CreateForWebContents(
         web_contents());
     permission_indicators_tab_data_ =
         std::make_unique<permissions::PermissionIndicatorsTabData>(
             web_contents());
+    auto* permission_request_manager =
+        permissions::PermissionRequestManager::FromWebContents(web_contents());
+    permission_request_manager->set_allowlist_for_permission_requests(
+        base::flat_set<permissions::RequestType>{
+            permissions::RequestType::kCameraStream});
     permission_request_manager_observation_.Reset();
-    permission_request_manager_observation_.Observe(
-        permissions::PermissionRequestManager::FromWebContents(web_contents()));
-  } else if (base::FeatureList::IsEnabled(
-                 features::kPaymentHandlerCameraAccess)) {
-    OneTimePermissionsTrackerHelper::CreateForWebContents(web_contents());
+    permission_request_manager_observation_.Observe(permission_request_manager);
   }
 
   // Enable modal dialogs for web-based payment handlers.
@@ -362,14 +371,6 @@ void PaymentHandlerWebFlowViewController::FillContentView(
     DevToolsWindow::OpenDevToolsWindow(
         web_contents(), DevToolsOpenedByAction::kAutomaticForNewTarget);
   }
-
-  // The webview must get an explicitly set height otherwise the layout doesn't
-  // make it fill its container. This is likely because it has no content at the
-  // time of first layout (nothing has loaded yet). Because of this, set it to
-  // total_dialog_height - header_height. On the other hand, the width will be
-  // properly set so it can be 0 here.
-  web_view->SetPreferredSize(gfx::Size(
-      0, dialog()->GetActualPaymentHandlerDialogHeight() - GetHeaderHeight()));
 }
 
 bool PaymentHandlerWebFlowViewController::ShouldShowPrimaryButton() {
@@ -445,7 +446,13 @@ bool PaymentHandlerWebFlowViewController::CanContentViewBeScrollable() {
   return false;
 }
 
+bool PaymentHandlerWebFlowViewController::ShouldContentViewFillPane() {
+  // The webview fills the dialog below Chrome's header.
+  return true;
+}
+
 void PaymentHandlerWebFlowViewController::Stop() {
+  video_recording_tab_alert_.RunAndReset();
   chip_model_.reset();
   delay_prompt_timer_.Stop();
   indicator_chip_collapse_timer_.Stop();
@@ -464,7 +471,7 @@ PaymentHandlerWebFlowViewController::GetWeakPtr() {
 
 void PaymentHandlerWebFlowViewController::VisibleSecurityStateChanged(
     content::WebContents* source) {
-  DCHECK_EQ(source, web_contents());
+  CHECK_EQ(source, web_contents(), base::NotFatalUntil::M162);
   if (!SslValidityChecker::IsValidPageInPaymentHandlerWindow(source)) {
     AbortPayment();
   } else {
@@ -482,7 +489,7 @@ content::WebContents* PaymentHandlerWebFlowViewController::OpenURLFromTab(
   // Reject CURRENT_TAB to maintain existing behavior for internal navigations.
   // OpenURLFromTab is implemented so that external links (e.g. PageInfo "Learn
   // more") are routed to the parent tab.
-  if (params.disposition == WindowOpenDisposition::CURRENT_TAB) {
+  if (params.disposition == ui::mojom::WindowOpenDisposition::kCurrentTab) {
     return nullptr;
   }
   if (!state() || !state()->GetWebContents()) {
@@ -495,7 +502,7 @@ content::WebContents* PaymentHandlerWebFlowViewController::AddNewContents(
     content::WebContents* source,
     std::unique_ptr<content::WebContents> new_contents,
     const GURL& target_url,
-    WindowOpenDisposition disposition,
+    ui::mojom::WindowOpenDisposition disposition,
     const blink::mojom::WindowFeatures& window_features,
     bool user_gesture,
     bool* was_blocked) {
@@ -504,20 +511,12 @@ content::WebContents* PaymentHandlerWebFlowViewController::AddNewContents(
   BrowserWindowInterface* const browser =
       ProfileBrowserCollection::GetForProfile(profile_)->GetLastActiveBrowser();
   if (browser && user_gesture &&
-      (disposition == WindowOpenDisposition::NEW_FOREGROUND_TAB ||
-       disposition == WindowOpenDisposition::NEW_POPUP)) {
+      (disposition == ui::mojom::WindowOpenDisposition::kNewForegroundTab ||
+       disposition == ui::mojom::WindowOpenDisposition::kNewPopup)) {
     chrome::AddWebContents(browser, source, std::move(new_contents), target_url,
                            disposition, window_features);
   }
   return nullptr;
-}
-
-bool PaymentHandlerWebFlowViewController::HandleKeyboardEvent(
-    content::WebContents* source,
-    const input::NativeWebKeyboardEvent& event) {
-  return content_view() && content_view()->GetFocusManager() &&
-         unhandled_keyboard_event_handler_.HandleKeyboardEvent(
-             event, content_view()->GetFocusManager());
 }
 
 // We explicitly ignore close requests from the WebContents (e.g., via
@@ -529,12 +528,42 @@ void PaymentHandlerWebFlowViewController::CloseContents(
   // Do nothing.
 }
 
+// Handles window.resizeTo() from the payment handler's top-level page. Unlike
+// other consumers of resizeTo(), which apply `bounds` to their outer window,
+// this treats `bounds.size()` as the inner size, i.e. the size of the payment
+// handler WebContents.
+// This is experimental: window.resizeBy(), moveTo() and moveBy() also reach
+// here, but behave unexpectedly, because content builds `bounds` from the
+// outer window that hosts the payment handler.
+// TODO(crbug.com/573971229): Handle resizeBy(), moveTo() and moveBy() properly.
+void PaymentHandlerWebFlowViewController::SetContentsBounds(
+    content::WebContents* source,
+    const gfx::Rect& bounds) {
+  CHECK_EQ(source, web_contents());
+  if (!base::FeatureList::IsEnabled(
+          features::kPaymentHandlerDynamicCustomSize)) {
+    return;
+  }
+
+  // The payment handler page stays alive while it is covered, e.g. by the
+  // processing spinner after it responds. Only resize the dialog while the
+  // payment handler window is the visible sheet that the user can interact
+  // with.
+  if (!dialog() || !dialog()->IsShowingInteractivePaymentHandlerWindow()) {
+    return;
+  }
+
+  // No too-small-window check is needed for resizeTo(). Growing the dialog is
+  // capped by the browser size, and shrinking can only make it fit better, so
+  // a dialog that fits keeps fitting.
+  dialog()->ResizeToFitPaymentHandlerWebContents(bounds.size());
+}
+
 void PaymentHandlerWebFlowViewController::RequestMediaAccessPermission(
     content::WebContents* web_contents,
     const content::MediaStreamRequest& request,
     content::MediaResponseCallback callback) {
-  // Currently we allow only video camera access (no audio), behind a
-  // default-disabled flag until we have appropriate UX to inform the user.
+  // Only allow video camera access (no audio).
   //
   // Note that this check assumes that content::MediaStreamRequest will not add
   // new 'types' in the future, as they will not be blocked by default. That
@@ -543,9 +572,8 @@ void PaymentHandlerWebFlowViewController::RequestMediaAccessPermission(
   if (request.video_type !=
           blink::mojom::MediaStreamType::DEVICE_VIDEO_CAPTURE ||
       request.audio_type != blink::mojom::MediaStreamType::NO_SERVICE ||
-      !(base::FeatureList::IsEnabled(features::kPaymentHandlerCameraAccess) ||
-        base::FeatureList::IsEnabled(
-            features::kPaymentHandlerCameraAccessUx))) {
+      request.request_pan_tilt_zoom_permission ||
+      !base::FeatureList::IsEnabled(features::kPaymentHandlerCameraAccessUx)) {
     base::UmaHistogramBoolean("PaymentRequest.Camera.AccessRequested", false);
     std::move(callback).Run(
         blink::mojom::StreamDevicesSet(),
@@ -555,6 +583,22 @@ void PaymentHandlerWebFlowViewController::RequestMediaAccessPermission(
   }
 
   base::UmaHistogramBoolean("PaymentRequest.Camera.AccessRequested", true);
+
+  content::RenderFrameHost* render_frame_host =
+      content::RenderFrameHost::FromID(request.render_process_id,
+                                       request.render_frame_id);
+  if (!(render_frame_host &&
+        render_frame_host->IsFeatureEnabled(
+            network::mojom::PermissionsPolicyFeature::kCamera))) {
+    base::UmaHistogramEnumeration("PaymentRequest.Camera.RequestOutcome",
+                                  blink::mojom::MediaStreamRequestResult::
+                                      PERMISSION_DENIED_BY_CONTROLLER);
+    std::move(callback).Run(
+        blink::mojom::StreamDevicesSet(),
+        blink::mojom::MediaStreamRequestResult::PERMISSION_DENIED_BY_CONTROLLER,
+        /*ui=*/nullptr);
+    return;
+  }
 
   MediaCaptureDevicesDispatcher::GetInstance()->ProcessMediaAccessRequest(
       web_contents, request,
@@ -569,9 +613,7 @@ bool PaymentHandlerWebFlowViewController::CheckMediaAccessPermission(
     const url::Origin& security_origin,
     blink::mojom::MediaStreamType type) {
   if (type != blink::mojom::MediaStreamType::DEVICE_VIDEO_CAPTURE ||
-      !(base::FeatureList::IsEnabled(features::kPaymentHandlerCameraAccess) ||
-        base::FeatureList::IsEnabled(
-            features::kPaymentHandlerCameraAccessUx))) {
+      !base::FeatureList::IsEnabled(features::kPaymentHandlerCameraAccessUx)) {
     return false;
   }
   return MediaCaptureDevicesDispatcher::GetInstance()
@@ -771,8 +813,13 @@ void PaymentHandlerWebFlowViewController::OnIsCapturingVideoChanged(
   }
 
   if (is_capturing_video) {
+    video_recording_tab_alert_ =
+        tabs::ChildTabAlertHelper::From(
+            tabs::TabInterface::GetFromContents(state()->GetWebContents()))
+            ->CreateChildMediaAlert(tabs::TabAlert::kVideoRecording);
     ShowInUseCameraIndicator();
   } else {
+    video_recording_tab_alert_.RunAndReset();
     media_capture_stop_time_ = base::TimeTicks::Now();
     HideInUseCameraIndicator();
   }
@@ -978,8 +1025,7 @@ void PaymentHandlerWebFlowViewController::OnRequestsFinalized() {
 
 void PaymentHandlerWebFlowViewController::OnRequestDecided(
     permissions::PermissionAction action) {
-  base::UmaHistogramEnumeration("PaymentRequest.Camera.PromptAction", action,
-                                permissions::PermissionAction::NUM);
+  base::UmaHistogramEnumeration("PaymentRequest.Camera.PromptAction", action);
 
   if (!chip_model_ || !permission_dashboard_view()) {
     return;

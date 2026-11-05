@@ -11,11 +11,17 @@
 #include <utility>
 
 #include "base/check_deref.h"
+#include "base/containers/flat_map.h"
+#include "base/containers/map_util.h"
+#include "base/containers/span.h"
 #include "base/feature_list.h"
 #include "components/autofill/content/renderer/autofill_agent.h"
+#include "components/autofill/content/renderer/custom_form_control_script_executor.h"
+#include "components/autofill/content/renderer/custom_form_control_util.h"
 #include "components/autofill/content/renderer/form_autofill_util.h"
 #include "components/autofill/content/renderer/timing.h"
 #include "components/autofill/core/common/autofill_constants.h"
+#include "components/autofill/core/common/autofill_features.h"
 #include "components/strings/grit/components_strings.h"
 #include "third_party/blink/public/web/web_document.h"
 #include "third_party/blink/public/web/web_form_control_element.h"
@@ -101,12 +107,13 @@ FormCache::UpdateFormCacheResult FormCache::UpdateFormCache(
     // Store only forms that contain iframes or fields.
     if (IsFormInteresting(form)) {
       FormRendererId form_id = form.renderer_id();
-      auto it = old_extracted_forms.find(form_id);
-      // it->second may be null because the cache was cleared. In this case
+      const FormData* old_form =
+          base::FindPtrOrNull(old_extracted_forms, form_id);
+      // `old_form` may be null because the cache was cleared. In this case
       // we want to list the form as an updated form.
-      if (it == old_extracted_forms.end() || !it->second ||
+      if (!old_form ||
           !FormData::IdenticalAndEquivalentDomElements(
-              *it->second, form, {FormFieldData::Exclusion::kValue})) {
+              *old_form, form, {FormFieldData::Exclusion::kValue})) {
         r.updated_forms.push_back(form);
       }
       r.removed_forms.erase(form_id);
@@ -124,16 +131,30 @@ FormCache::UpdateFormCacheResult FormCache::UpdateFormCache(
   // Add a null WebFormElement to account for the form of unowned elements.
   form_elements.emplace_back();
 
+  base::flat_map<blink::WebFormElement, std::vector<CustomFormControl>>
+      custom_controls_by_form;
+  if (CustomFormControlScriptExecutor* executor =
+          agent_->custom_form_control_script_executor();
+      executor && base::FeatureList::IsEnabled(
+                      features::kAutofillCustomFormControlExtraction)) {
+    custom_controls_by_form =
+        GroupCustomFormControlsByForm(executor->DetectCustomFormControls());
+  }
+
   bool stop_extracting_forms = false;
   for (const blink::WebFormElement& form_element : form_elements) {
-    extracted_forms_[form_util::GetFormRendererId(form_element)] = nullptr;
+    FormRendererId form_id = form_util::GetFormRendererId(form_element);
+    extracted_forms_[form_id] = nullptr;
     if (stop_extracting_forms) {
       continue;
     }
+    const std::vector<CustomFormControl>* controls =
+        base::FindOrNull(custom_controls_by_form, form_element);
     if (std::optional<FormData> form = form_util::ExtractFormData(
-            document, form_element, field_data_manager,
+            document, form_id, field_data_manager,
             agent_->GetCallTimerState(kUpdateFormCache),
-            agent_->button_titles_cache())) {
+            agent_->button_titles_cache(),
+            controls ? *controls : base::span<const CustomFormControl>())) {
       if (!ProcessForm(std::move(*form))) {
         stop_extracting_forms = true;
       }

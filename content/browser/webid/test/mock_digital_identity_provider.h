@@ -24,7 +24,7 @@ class MockDigitalIdentityProvider : public DigitalIdentityProvider {
   MOCK_METHOD(bool,
               IsLastCommittedOriginLowRisk,
               (RenderFrameHost & render_frame_host),
-              (const override));
+              (const, override));
   MOCK_METHOD(DigitalIdentityInterstitialAbortCallback,
               ShowDigitalIdentityInterstitial,
               (WebContents & web_contents,
@@ -37,6 +37,7 @@ class MockDigitalIdentityProvider : public DigitalIdentityProvider {
               (WebContents*,
                const url::Origin& origin,
                base::ValueView request,
+               UiWarningLevel warning_level,
                DigitalIdentityCallback),
               (override));
   MOCK_METHOD(void,

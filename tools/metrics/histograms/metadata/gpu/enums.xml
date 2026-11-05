@@ -26,12 +26,6 @@ chromium-metrics-reviews@google.com.
 
 <enums>
 
-<enum name="BlockZeroSerialNumberType">
-  <int value="0" label="Normal serial number"/>
-  <int value="1" label="Repeating pattern in serial number"/>
-  <int value="2" label="Missing serial number"/>
-</enum>
-
 <enum name="BooleanANGLECanEmulateGLES3">
   <summary>Whether ANGLE can emulate GLES3.</summary>
   <int value="0" label="false"/>
@@ -386,6 +380,18 @@ chromium-metrics-reviews@google.com.
   <int value="3" label="Composition Failure"/>
 </enum>
 
+<!-- LINT.IfChange(EdidSerialNumberType) -->
+
+<enum name="EdidSerialNumberType">
+  <int value="0" label="Normal serial number"/>
+  <int value="1" label="Repeating pattern in serial number"/>
+  <int value="2" label="Missing serial number"/>
+  <int value="3" label="Sequential pattern in serial number"/>
+  <int value="4" label="Serial number too short"/>
+</enum>
+
+<!-- LINT.ThenChange(//ui/display/util/edid_parser.cc:EdidSerialNumberType) -->
+
 <enum name="EGLDisplayType">
   <int value="0" label="Default"/>
   <int value="1" label="SwiftShader"/>
@@ -430,6 +436,7 @@ chromium-metrics-reviews@google.com.
   <int value="5" label="kOnlyScrollBarFadeOut"/>
   <int value="6" label="kUserInputBoost"/>
   <int value="7" label="kSlowScrollThrottle"/>
+  <int value="8" label="kMixedFixedInterval"/>
 </enum>
 
 <enum name="GLImplementation">
@@ -529,14 +536,30 @@ chromium-metrics-reviews@google.com.
   <int value="75" label="Win/AMD_switchable/Texture_sharing"/>
 </enum>
 
+<!-- LINT.IfChange(GPUBlocklistFeatureTestResults) -->
+
 <enum name="GPUBlocklistFeatureTestResults">
   <summary>
     Results of testing against a GPU feature being allowed/blocklisted/disabled.
+    Values of gpu::GpuFeatureStatus.
   </summary>
-  <int value="0" label="Allowed"/>
-  <int value="1" label="Blocklisted"/>
-  <int value="2" label="User-disabled"/>
+  <int value="0" label="Allowed">The feature is enabled.</int>
+  <int value="1" label="Blocklisted">
+    The feature is disabled by the GPU blocklist.
+  </int>
+  <int value="2" label="Disabled">
+    The feature is disabled, e.g. via a command line flag or a disabled
+    base::Feature.
+  </int>
+  <int value="3" label="Software">
+    The feature is only available with software rendering.
+  </int>
+  <int value="4" label="Undefined">
+    The feature status is not determined yet.
+  </int>
 </enum>
+
+<!-- LINT.ThenChange(//gpu/config/gpu_feature_info.h:GpuFeatureStatus) -->
 
 <enum name="GpuDriverBugWorkaroundEntry">
 <!-- Generated from gpu/config/gpu_driver_bug_list.json.
@@ -1403,10 +1426,10 @@ Called by update_gpu_driver_bug_workaround_entries.py.-->
   <int value="3" label="EGLImageBacking"/>
   <int value="4" label="AHardwareBufferImageBacking"/>
   <int value="5" label="AngleVulkanImageBacking"/>
-  <int value="6" label="GLImageBacking"/>
+  <int value="6" label="(Obsolete) GLImageBacking. Removed in 2023/07."/>
   <int value="7" label="GLTextureImageBacking"/>
   <int value="8" label="OzoneImageBacking"/>
-  <int value="9" label="RawDrawImageBacking"/>
+  <int value="9" label="(Obsolete) RawDrawImageBacking. Removed in 2026/10."/>
   <int value="10" label="SharedMemoryImageBacking"/>
   <int value="11" label="VideoImageBacking"/>
   <int value="12" label="WrappedSkImageBacking"/>
@@ -1416,6 +1439,7 @@ Called by update_gpu_driver_bug_workaround_entries.py.-->
   <int value="16" label="DCompSurfaceImageBacking"/>
   <int value="17" label="DXGISwapChainImageBacking"/>
   <int value="18" label="WrappedGraphiteTextureBacking"/>
+  <int value="19" label="DawnImageBacking"/>
 </enum>
 
 <enum name="SharedImageFormatUMA">
@@ -1460,6 +1484,8 @@ Called by update_gpu_driver_bug_workaround_entries.py.-->
   <int value="35" label="YUV422P16"/>
   <int value="36" label="YUV444P16"/>
   <int value="37" label="Other"/>
+  <int value="38" label="Y410"/>
+  <int value="39" label="Y210"/>
 </enum>
 
 <!-- LINT.IfChange(SkiaBackendType) -->
@@ -1504,6 +1530,8 @@ Called by update_gpu_driver_bug_workaround_entries.py.-->
   <int value="4" label="Error"/>
 </enum>
 
+<!-- LINT.IfChange(WebGPUSupport) -->
+
 <enum name="WebGPUSupport">
   <int value="0" label="None"/>
   <int value="1" label="Core None, Compat Blocklisted"/>
@@ -1513,6 +1541,23 @@ Called by update_gpu_driver_bug_workaround_entries.py.-->
   <int value="5" label="Core Blocklisted, Compat Supported"/>
   <int value="6" label="Core Supported"/>
 </enum>
+
+<!-- LINT.ThenChange(//gpu/config/gpu_info_collector.cc:WebGPUSupport) -->
+
+<!-- LINT.IfChange(WindowServerEventPumpResult) -->
+
+<enum name="WindowServerEventPumpResult">
+  <summary>
+    The result of pumping WindowServer events for CADisplayLink on the
+    WindowServerEventPumpThread in the GPU process.
+  </summary>
+  <int value="0" label="Success"/>
+  <int value="1" label="Failed - Invalid connection"/>
+  <int value="2" label="Failed - Event port"/>
+  <int value="3" label="Failed - mach_msg"/>
+</enum>
+
+<!-- LINT.ThenChange(//ui/display/mac/ca_display_link_mac.h:WindowServerEventPumpResult) -->
 
 </enums>
 

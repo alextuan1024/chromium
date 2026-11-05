@@ -35,7 +35,6 @@ import org.chromium.base.test.params.ParameterProvider;
 import org.chromium.base.test.params.ParameterSet;
 import org.chromium.base.test.params.ParameterizedRunner;
 import org.chromium.base.test.util.CallbackHelper;
-import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.base.test.util.DisableIf;
 import org.chromium.base.test.util.DisabledTest;
@@ -46,7 +45,6 @@ import org.chromium.chrome.R;
 import org.chromium.chrome.browser.ChromeTabbedActivity;
 import org.chromium.chrome.browser.compositor.overlay_panel.OverlayPanel.StateChangeReason;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
-import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.payments.handler.PaymentHandlerContentFrameLayout;
 import org.chromium.chrome.browser.payments.handler.PaymentHandlerCoordinator;
 import org.chromium.chrome.browser.payments.handler.PaymentHandlerCoordinator.PaymentHandlerUiObserver;
@@ -64,6 +62,7 @@ import org.chromium.content_public.browser.NavigationHandle;
 import org.chromium.content_public.browser.WebContents;
 import org.chromium.content_public.browser.WebContentsObserver;
 import org.chromium.content_public.browser.test.util.DOMUtils;
+import org.chromium.content_public.browser.test.util.JavaScriptUtils;
 import org.chromium.content_public.browser.test.util.TestTouchUtils;
 import org.chromium.net.test.EmbeddedTestServer;
 import org.chromium.net.test.ServerCertificate;
@@ -77,7 +76,6 @@ import java.util.List;
 /** A test for the Expandable PaymentHandler {@link PaymentHandlerCoordinator}. */
 @RunWith(ParameterizedRunner.class)
 @ParameterAnnotations.UseRunnerDelegate(ChromeJUnit4RunnerDelegate.class)
-@CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
 @DisableFeatures(ChromeFeatureList.BOTTOM_SHEET_ON_DESKTOP_WINDOWING)
 public class ExpandablePaymentHandlerTest {
     private static final long IGNORED_INPUT_DELAY =
@@ -164,6 +162,7 @@ public class ExpandablePaymentHandlerTest {
                         paymentHandler.show(
                                 cta.getCurrentWebContents(),
                                 defaultPaymentAppUrl(),
+                                Origin.create(cta.getCurrentWebContents().getLastCommittedUrl()),
                                 defaultUiObserver()));
     }
 
@@ -606,10 +605,36 @@ public class ExpandablePaymentHandlerTest {
                             paymentHandler.show(
                                     mDefaultActivity.getCurrentWebContents(),
                                     defaultPaymentAppUrl(),
+                                    Origin.create(
+                                            mDefaultActivity
+                                                    .getCurrentWebContents()
+                                                    .getLastCommittedUrl()),
                                     defaultUiObserver()));
                     // When the return value is null, the caller needs to hide() manually.
                     paymentHandler.hide();
                 });
+        waitForUiClosed();
+    }
+
+    @Test
+    @SmallTest
+    @Feature({"Payments"})
+    public void testOriginNotSpoofedByAboutBlankNavigation() throws Throwable {
+        startDefaultServer();
+        PaymentHandlerCoordinator paymentHandler = createPaymentHandlerAndShow();
+        waitForTitleShown(paymentHandler.getWebContentsForTest(), "Max Pay");
+        onView(withId(R.id.origin)).check(matches(withText(getOrigin(mServer))));
+
+        JavaScriptUtils.executeJavaScriptAndWaitForResult(
+                paymentHandler.getWebContentsForTest(),
+                "document.open();"
+                        + "document.write('<title>Spoofed</title>');"
+                        + "document.close();"
+                        + "location.href = '#' + '%20'.repeat(200) + 'paypal.com';");
+        waitForTitleShown(paymentHandler.getWebContentsForTest(), "Spoofed");
+        onView(withId(R.id.origin)).check(matches(withText(getOrigin(mServer))));
+
+        ThreadUtils.runOnUiThreadBlocking(() -> paymentHandler.hide());
         waitForUiClosed();
     }
 }

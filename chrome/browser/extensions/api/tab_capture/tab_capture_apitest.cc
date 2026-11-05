@@ -4,11 +4,16 @@
 
 #include <algorithm>
 #include <memory>
+#include <optional>
 
+#include "base/callback_list.h"
 #include "base/command_line.h"
 #include "base/feature_list.h"
+#include "base/functional/bind.h"
+#include "base/functional/callback_helpers.h"
 #include "base/location.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/run_loop.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/stringprintf.h"
@@ -18,25 +23,29 @@
 #include "base/time/time.h"
 #include "build/build_config.h"
 #include "chrome/browser/extensions/api/tab_capture/tab_capture_api.h"
+#include "chrome/browser/extensions/api/tabs/tabs_constants.h"
 #include "chrome/browser/extensions/extension_apitest.h"
 #include "chrome/browser/extensions/extension_management_test_util.h"
 #include "chrome/browser/extensions/extension_tab_util.h"
 #include "chrome/browser/extensions/extension_with_management_policy_apitest.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/tabs/tab_change_type.h"
 #include "chrome/browser/ui/tabs/tab_utils.h"
 #include "chrome/common/chrome_switches.h"
+#include "chrome/common/pref_names.h"
+#include "components/prefs/pref_service.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/common/content_features.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/test_utils.h"
+#include "extensions/browser/api_test_utils.h"
 #include "extensions/browser/background_script_executor.h"
 #include "extensions/browser/extension_registry.h"
 #include "extensions/browser/permissions/active_tab_permission_granter.h"
 #include "extensions/browser/permissions_manager.h"
 #include "extensions/buildflags/buildflags.h"
+#include "extensions/common/extension_builder.h"
 #include "extensions/common/extension_features.h"
 #include "extensions/common/switches.h"
 #include "extensions/test/extension_test_message_listener.h"
@@ -45,16 +54,19 @@
 #include "net/base/filename_util.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "ui/gl/gl_switches.h"
+#include "url/gurl.h"
 #include "url/origin.h"
 #include "url/url_constants.h"
 
 #if BUILDFLAG(ENABLE_EXTENSIONS)
-#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/tabs/alert/tab_alert_controller.h"
-#include "chrome/browser/ui/tabs/tab_strip_model.h"
-#include "chrome/browser/ui/tabs/tab_strip_model_observer.h"
 #include "components/tabs/public/tab_alert.h"
+#include "components/tabs/public/tab_interface.h"
 #endif
+
+#if BUILDFLAG(IS_CHROMEOS)
+#include "chrome/browser/chromeos/policy/dlp/test/mock_dlp_content_manager.h"
+#endif  // BUILDFLAG(IS_CHROMEOS)
 
 static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
@@ -122,24 +134,6 @@ IN_PROC_BROWSER_TEST_F(TabCaptureApiTest, ApiTests) {
       << message_;
 }
 
-// Tests that tab capture video frames can be received in a VIDEO element.
-// TODO(crbug.com/216820236): This test is flaky.
-// Possible culprit:
-// The script uses a complicated animation loop to create frames, when simpler
-// CSS animations would be fine.
-IN_PROC_BROWSER_TEST_F(TabCaptureApiTest, DISABLED_EndToEndWithoutRemoting) {
-  AddExtensionToCommandLineAllowlist();
-  // Note: The range of acceptable colors is quite large because there's no way
-  // to know whether software compositing is being used for screen capture; and,
-  // if software compositing is being used, there is no color space management
-  // and color values can be off by a lot. That said, color accuracy is being
-  // tested by a suite of content_browsertests.
-  ASSERT_TRUE(RunExtensionTest(
-      "tab_capture/end_to_end",
-      {.extension_url = "end_to_end.html?method=local&colorDeviation=50"}))
-      << message_;
-}
-
 // Tests that getUserMedia() is NOT a way to start tab capture.
 IN_PROC_BROWSER_TEST_F(TabCaptureApiTest, GetUserMediaTest) {
   ExtensionTestMessageListener listener("ready", ReplyBehavior::kWillReply);
@@ -195,7 +189,7 @@ IN_PROC_BROWSER_TEST_F(TabCaptureApiTest, ActiveTabPermission) {
       web_contents->GetBrowserContext())->enabled_extensions().GetByID(
           kExtensionId);
   ActiveTabPermissionGranter::FromWebContents(web_contents)
-      ->GrantIfRequested(extension);
+      ->GrantIfRequested(extension, base::DoNothing());
   before_grant_permission.Reply("");
 
   // Open a new tab and make sure capture is denied.
@@ -262,7 +256,7 @@ IN_PROC_BROWSER_TEST_F(TabCaptureApiTest, GrantForChromePages) {
       web_contents->GetBrowserContext())->enabled_extensions().GetByID(
           kExtensionId);
   ActiveTabPermissionGranter::FromWebContents(web_contents)
-      ->GrantIfRequested(extension);
+      ->GrantIfRequested(extension, base::DoNothing());
   before_open_tab.Reply("");
 
   ResultCatcher catcher;
@@ -280,6 +274,158 @@ IN_PROC_BROWSER_TEST_F(TabCaptureApiTest, CaptureInSplitIncognitoMode) {
       << message_;
 }
 
+// Exercises the profile boundaries of tabCapture.getMediaStreamId() by
+// running the function directly, so the profile of the calling extension
+// context can be controlled precisely.
+class TabCaptureGetMediaStreamIdTest : public TabCaptureApiTest {
+ protected:
+  // Loads an extension with the tabCapture permission using the given
+  // `incognito_mode` ("split" or "spanning"), enabled in incognito.
+  const Extension* LoadTabCaptureExtension(const char* incognito_mode) {
+    extension_dir_.WriteManifest(base::StringPrintf(
+        R"({
+             "name": "Tab capture profile boundaries",
+             "version": "1",
+             "manifest_version": 3,
+             "incognito": "%s",
+             "permissions": ["tabCapture"]
+           })",
+        incognito_mode));
+    return LoadExtension(extension_dir_.UnpackedPath(),
+                         {.allow_in_incognito = true});
+  }
+
+  // Grants `extension` permission to capture the tab hosting `web_contents`,
+  // as an extension action invocation on that tab would.
+  void GrantCapturePermission(const Extension* extension,
+                              content::WebContents* web_contents) {
+    ActiveTabPermissionGranter::FromWebContents(web_contents)
+        ->GrantIfRequested(extension, base::DoNothing());
+  }
+
+  std::string BuildArgs(int target_tab_id, int consumer_tab_id) {
+    return base::StringPrintf(R"([{"targetTabId": %d, "consumerTabId": %d}])",
+                              target_tab_id, consumer_tab_id);
+  }
+
+  scoped_refptr<TabCaptureGetMediaStreamIdFunction> CreateFunction(
+      const Extension* extension) {
+    auto function = base::MakeRefCounted<TabCaptureGetMediaStreamIdFunction>();
+    function->set_extension(extension);
+    return function;
+  }
+
+ private:
+  TestExtensionDir extension_dir_;
+};
+
+// The regular-profile instance of a split-mode extension only sees tabs from
+// its own profile, so it cannot obtain a stream ID for an incognito tab.
+IN_PROC_BROWSER_TEST_F(TabCaptureGetMediaStreamIdTest,
+                       SplitModeRejectsIncognitoTargetTab) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  const GURL url = embedded_test_server()->GetURL("/simple.html");
+
+  const Extension* extension = LoadTabCaptureExtension("split");
+  ASSERT_TRUE(extension);
+
+  content::WebContents* consumer_contents = GetActiveWebContents();
+  ASSERT_TRUE(NavigateToURL(consumer_contents, url));
+
+  content::WebContents* incognito_contents =
+      PlatformOpenURLOffTheRecord(profile(), url);
+  ASSERT_TRUE(incognito_contents);
+  GrantCapturePermission(extension, incognito_contents);
+
+  EXPECT_EQ("Invalid tab specified.",
+            api_test_utils::RunFunctionAndReturnError(
+                CreateFunction(extension),
+                BuildArgs(ExtensionTabUtil::GetTabId(incognito_contents),
+                          ExtensionTabUtil::GetTabId(consumer_contents)),
+                profile()));
+}
+
+// The regular-profile instance of a split-mode extension cannot designate a
+// tab from the incognito profile as the consumer of a stream ID.
+IN_PROC_BROWSER_TEST_F(TabCaptureGetMediaStreamIdTest,
+                       SplitModeRejectsIncognitoConsumerTab) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  const GURL url = embedded_test_server()->GetURL("/simple.html");
+
+  const Extension* extension = LoadTabCaptureExtension("split");
+  ASSERT_TRUE(extension);
+
+  content::WebContents* target_contents = GetActiveWebContents();
+  ASSERT_TRUE(NavigateToURL(target_contents, url));
+  GrantCapturePermission(extension, target_contents);
+
+  content::WebContents* incognito_contents =
+      PlatformOpenURLOffTheRecord(profile(), url);
+  ASSERT_TRUE(incognito_contents);
+
+  EXPECT_EQ("Invalid tab specified.",
+            api_test_utils::RunFunctionAndReturnError(
+                CreateFunction(extension),
+                BuildArgs(ExtensionTabUtil::GetTabId(target_contents),
+                          ExtensionTabUtil::GetTabId(incognito_contents)),
+                profile()));
+}
+
+// The incognito-profile instance of a split-mode extension can obtain a
+// stream ID for a tab in its own profile.
+IN_PROC_BROWSER_TEST_F(TabCaptureGetMediaStreamIdTest,
+                       SplitModeIncognitoContextTargetsOwnProfileTab) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  const GURL url = embedded_test_server()->GetURL("/simple.html");
+
+  const Extension* extension = LoadTabCaptureExtension("split");
+  ASSERT_TRUE(extension);
+
+  content::WebContents* incognito_contents =
+      PlatformOpenURLOffTheRecord(profile(), url);
+  ASSERT_TRUE(incognito_contents);
+  GrantCapturePermission(extension, incognito_contents);
+
+  const int incognito_tab_id = ExtensionTabUtil::GetTabId(incognito_contents);
+  std::optional<base::Value> result =
+      api_test_utils::RunFunctionAndReturnSingleResult(
+          CreateFunction(extension),
+          BuildArgs(incognito_tab_id, incognito_tab_id),
+          incognito_contents->GetBrowserContext());
+  ASSERT_TRUE(result);
+  ASSERT_TRUE(result->is_string());
+  EXPECT_FALSE(result->GetString().empty());
+}
+
+// A spanning-mode extension with incognito access can obtain a stream ID for
+// an incognito tab.
+IN_PROC_BROWSER_TEST_F(TabCaptureGetMediaStreamIdTest,
+                       SpanningModeTargetsIncognitoTab) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  const GURL url = embedded_test_server()->GetURL("/simple.html");
+
+  const Extension* extension = LoadTabCaptureExtension("spanning");
+  ASSERT_TRUE(extension);
+
+  content::WebContents* consumer_contents = GetActiveWebContents();
+  ASSERT_TRUE(NavigateToURL(consumer_contents, url));
+
+  content::WebContents* incognito_contents =
+      PlatformOpenURLOffTheRecord(profile(), url);
+  ASSERT_TRUE(incognito_contents);
+  GrantCapturePermission(extension, incognito_contents);
+
+  std::optional<base::Value> result =
+      api_test_utils::RunFunctionAndReturnSingleResult(
+          CreateFunction(extension),
+          BuildArgs(ExtensionTabUtil::GetTabId(incognito_contents),
+                    ExtensionTabUtil::GetTabId(consumer_contents)),
+          profile(), api_test_utils::FunctionMode::kIncognito);
+  ASSERT_TRUE(result);
+  ASSERT_TRUE(result->is_string());
+  EXPECT_FALSE(result->GetString().empty());
+}
+
 IN_PROC_BROWSER_TEST_F(TabCaptureApiTest, Constraints) {
   AddExtensionToCommandLineAllowlist();
   ASSERT_TRUE(RunExtensionTest("tab_capture/constraints",
@@ -289,24 +435,25 @@ IN_PROC_BROWSER_TEST_F(TabCaptureApiTest, Constraints) {
 
 #if BUILDFLAG(ENABLE_EXTENSIONS)
 // Tests that the tab indicator (in the tab strip) is shown during tab capture.
-// TODO(crbug.com/427298135): Port this to BrowserWindowInterface after
-// TabListInterfaceObserver supports TabChangedAt().
 IN_PROC_BROWSER_TEST_F(TabCaptureApiTest, TabIndicator) {
   content::WebContents* const contents = GetActiveWebContents();
   ASSERT_THAT(GetTabAlertStatesForContents(contents), ::testing::IsEmpty());
 
-  // A TabStripModelObserver that quits the MessageLoop whenever the
-  // UI's model is sent an event that might change the indicator status.
-  class IndicatorChangeObserver : public TabStripModelObserver {
+  // A helper that quits the MessageLoop whenever the UI's model is sent an
+  // event that changes the indicator status.
+  class IndicatorChangeObserver {
    public:
-    explicit IndicatorChangeObserver(BrowserWindowInterface* browser)
-        : browser_(browser) {
-      browser_->GetTabStripModel()->AddObserver(this);
+    explicit IndicatorChangeObserver(tabs::TabInterface* tab) {
+      alert_subscription_ =
+          tabs::TabAlertController::From(tab)->AddAlertToShowChangedCallback(
+              base::BindRepeating(&IndicatorChangeObserver::OnAlertChanged,
+                                  base::Unretained(this)));
     }
 
-    void OnTabChangedAt(tabs::TabInterface* tab,
-                        TabChangeType change_type) override {
-      std::move(on_tab_changed_).Run();
+    void OnAlertChanged(std::optional<tabs::TabAlert> alert) {
+      if (on_tab_changed_) {
+        std::move(on_tab_changed_).Run();
+      }
     }
 
     void WaitForTabChange() {
@@ -316,8 +463,8 @@ IN_PROC_BROWSER_TEST_F(TabCaptureApiTest, TabIndicator) {
     }
 
    private:
-    const raw_ptr<BrowserWindowInterface> browser_;
     base::OnceClosure on_tab_changed_;
+    base::CallbackListSubscription alert_subscription_;
   };
 
   ASSERT_THAT(GetTabAlertStatesForContents(contents), ::testing::IsEmpty());
@@ -331,7 +478,8 @@ IN_PROC_BROWSER_TEST_F(TabCaptureApiTest, TabIndicator) {
 
   // Run the browser until the indicator turns on.
   const base::TimeTicks start_time = base::TimeTicks::Now();
-  IndicatorChangeObserver observer(browser());
+  IndicatorChangeObserver observer(
+      tabs::TabInterface::GetFromContents(contents));
   while (!std::ranges::contains(GetTabAlertStatesForContents(contents),
                                 tabs::TabAlert::kTabCapturing)) {
     if (base::TimeTicks::Now() - start_time >
@@ -377,7 +525,7 @@ IN_PROC_BROWSER_TEST_F(TabCaptureApiTest, MultipleExtensions) {
       ActiveTabPermissionGranter::FromWebContents(web_contents);
   // It doesn't seem to work to grant permissions for both extensions at the
   // same time. We start with extension_a.
-  perm_granter->GrantIfRequested(extension_a);
+  perm_granter->GrantIfRequested(extension_a, base::DoNothing());
 
   // Set up success listeners.
   ExtensionTestMessageListener extension_a_success("success");
@@ -390,7 +538,7 @@ IN_PROC_BROWSER_TEST_F(TabCaptureApiTest, MultipleExtensions) {
   extension_a_ready.Reset();
   ASSERT_TRUE(extension_a_ready.WaitUntilSatisfied());
 
-  perm_granter->GrantIfRequested(extension_b);
+  perm_granter->GrantIfRequested(extension_b, base::DoNothing());
 
   // To reproduce crbug.com/40869705, we have extension_b spam tab capture
   // requests until one or the other extension successfully captures the tab.
@@ -537,7 +685,7 @@ class TabCaptureApiPolicyTest : public ExtensionApiTestWithManagementPolicy {
     content::WebContents* const web_contents =
         content::WebContents::FromRenderFrameHost(main_frame);
     ActiveTabPermissionGranter::FromWebContents(web_contents)
-        ->GrantIfRequested(extension());
+        ->GrantIfRequested(extension(), base::DoNothing());
     return web_contents;
   }
 
@@ -628,7 +776,7 @@ IN_PROC_BROWSER_TEST_F(TabCaptureApiPolicyTest, FileUrlWithoutFileAccess) {
   content::WebContents* const web_contents =
       content::WebContents::FromRenderFrameHost(main_frame);
   ActiveTabPermissionGranter::FromWebContents(web_contents)
-      ->GrantIfRequested(extension());
+      ->GrantIfRequested(extension(), base::DoNothing());
 
   CaptureTab();
   EXPECT_EQ(tab_capture_errors::kCannotCapturePage, GetCaptureResult());
@@ -660,7 +808,7 @@ IN_PROC_BROWSER_TEST_F(TabCaptureApiPolicyTest,
   EXPECT_TRUE(content::WaitForLoadStop(popup_contents));
 
   ActiveTabPermissionGranter::FromWebContents(popup_contents)
-      ->GrantIfRequested(extension());
+      ->GrantIfRequested(extension(), base::DoNothing());
 
   CaptureTab();
   EXPECT_EQ(tab_capture_errors::kCannotCapturePage, GetCaptureResult());
@@ -687,6 +835,39 @@ IN_PROC_BROWSER_TEST_F(TabCaptureApiPolicyTest,
   ASSERT_TRUE(content::NavigateToURL(
       web_contents, embedded_test_server()->GetURL("a.test", "/simple.html")));
 
+  EXPECT_EQ("stopped", GetCaptureState());
+}
+
+// Tests that navigating a captured tab to a chrome:// URL aborts the active
+// capture session, while normal cross-origin web navigations maintain capture.
+IN_PROC_BROWSER_TEST_F(TabCaptureApiPolicyTest,
+                       ChromeUrlNavigationAbortsCapture) {
+  ASSERT_TRUE(StartEmbeddedTestServer());
+
+  // 1. Direct navigation from a tab with an activeTab grant (b.test) to a
+  // chrome:// URL should abort capture.
+  content::WebContents* const web_contents1 =
+      OpenNewTabAndGrantActiveTab("b.test");
+
+  StartCapture();
+  EXPECT_EQ("active", GetCaptureState());
+
+  ASSERT_TRUE(content::NavigateToURL(web_contents1, GURL(kValidChromeURL)));
+  EXPECT_EQ("stopped", GetCaptureState());
+
+  // 2. Navigating cross-origin to another web host (a.test) should maintain
+  // capture, and subsequently navigating to a chrome:// URL should abort it.
+  content::WebContents* const web_contents2 =
+      OpenNewTabAndGrantActiveTab("b.test");
+
+  StartCapture();
+  EXPECT_EQ("active", GetCaptureState());
+
+  ASSERT_TRUE(content::NavigateToURL(
+      web_contents2, embedded_test_server()->GetURL("a.test", "/simple.html")));
+  EXPECT_EQ("active", GetCaptureState());
+
+  ASSERT_TRUE(content::NavigateToURL(web_contents2, GURL(kValidChromeURL)));
   EXPECT_EQ("stopped", GetCaptureState());
 }
 
@@ -735,6 +916,73 @@ IN_PROC_BROWSER_TEST_F(TabCaptureApiUserHostRestrictionsTest,
   GetMediaStreamIdForTab(ExtensionTabUtil::GetTabId(web_contents));
   EXPECT_EQ(tab_capture_errors::kCannotCapturePage, GetCaptureResult());
 }
+
+IN_PROC_BROWSER_TEST_F(TabCaptureApiTest, ScreenshotsDisabledByPreferences) {
+  AddExtensionToCommandLineAllowlist();
+  scoped_refptr<const Extension> extension = ExtensionBuilder("TabCapture")
+                                                 .SetID(kExtensionId)
+                                                 .AddAPIPermission("tabCapture")
+                                                 .Build();
+
+  content::WebContents* web_contents = GetActiveWebContents();
+  ASSERT_TRUE(web_contents);
+
+  profile()->GetPrefs()->SetBoolean(prefs::kDisableScreenshots, true);
+
+  auto capture_function = base::MakeRefCounted<TabCaptureCaptureFunction>();
+  capture_function->set_extension(extension.get());
+  capture_function->SetRenderFrameHost(web_contents->GetPrimaryMainFrame());
+  EXPECT_EQ(tabs_constants::kScreenshotsDisabled,
+            api_test_utils::RunFunctionAndReturnError(
+                capture_function.get(), R"([{"video": true}])", profile()));
+
+  auto stream_id_function =
+      base::MakeRefCounted<TabCaptureGetMediaStreamIdFunction>();
+  stream_id_function->set_extension(extension.get());
+  stream_id_function->SetRenderFrameHost(web_contents->GetPrimaryMainFrame());
+  stream_id_function->set_source_process_id(
+      web_contents->GetPrimaryMainFrame()->GetProcess()->GetDeprecatedID());
+  EXPECT_EQ(tabs_constants::kScreenshotsDisabled,
+            api_test_utils::RunFunctionAndReturnError(stream_id_function.get(),
+                                                      "[{}]", profile()));
+}
+
+#if BUILDFLAG(IS_CHROMEOS)
+IN_PROC_BROWSER_TEST_F(TabCaptureApiTest, ScreenshotsRestrictedByDlp) {
+  AddExtensionToCommandLineAllowlist();
+  scoped_refptr<const Extension> extension = ExtensionBuilder("TabCapture")
+                                                 .SetID(kExtensionId)
+                                                 .AddAPIPermission("tabCapture")
+                                                 .Build();
+
+  content::WebContents* web_contents = GetActiveWebContents();
+  ASSERT_TRUE(web_contents);
+
+  policy::MockDlpContentManager mock_dlp_content_manager;
+  policy::ScopedDlpContentObserverForTesting scoped_dlp_content_observer(
+      &mock_dlp_content_manager);
+  EXPECT_CALL(mock_dlp_content_manager, IsScreenshotApiRestricted(web_contents))
+      .Times(2)
+      .WillRepeatedly(testing::Return(true));
+
+  auto capture_function = base::MakeRefCounted<TabCaptureCaptureFunction>();
+  capture_function->set_extension(extension.get());
+  capture_function->SetRenderFrameHost(web_contents->GetPrimaryMainFrame());
+  EXPECT_EQ(tabs_constants::kScreenshotsDisabledByDlp,
+            api_test_utils::RunFunctionAndReturnError(
+                capture_function.get(), R"([{"video": true}])", profile()));
+
+  auto stream_id_function =
+      base::MakeRefCounted<TabCaptureGetMediaStreamIdFunction>();
+  stream_id_function->set_extension(extension.get());
+  stream_id_function->SetRenderFrameHost(web_contents->GetPrimaryMainFrame());
+  stream_id_function->set_source_process_id(
+      web_contents->GetPrimaryMainFrame()->GetProcess()->GetDeprecatedID());
+  EXPECT_EQ(tabs_constants::kScreenshotsDisabledByDlp,
+            api_test_utils::RunFunctionAndReturnError(stream_id_function.get(),
+                                                      "[{}]", profile()));
+}
+#endif  // BUILDFLAG(IS_CHROMEOS)
 
 }  // namespace
 

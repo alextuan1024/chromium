@@ -19,6 +19,7 @@
 #include "base/containers/flat_map.h"
 #include "base/moving_window.h"
 #include "base/types/expected.h"
+#include "dc_commit_error.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "third_party/microsoft_dxheaders/src/include/experimental-composition/experimental-dcomp.h"
 #include "ui/gfx/geometry/size.h"
@@ -28,6 +29,7 @@
 #include "ui/gl/delegated_ink_point_renderer_gpu.h"
 #include "ui/gl/gl_export.h"
 #include "ui/gl/hdr_metadata_helper_win.h"
+#include "ui/gl/os_compositor_tree_base.h"
 
 namespace gfx {
 namespace mojom {
@@ -186,6 +188,10 @@ class GL_EXPORT DCLayerTree {
   // to get the corresponding HMONITOR.
   IDXGIOutput* current_output() const { return current_output_.Get(); }
 
+  EXPERIMENTAL_IDCompositionDevice7* dcomp_device7() const {
+    return dcomp_device_7_.Get();
+  }
+
   bool SupportsDelegatedInk();
 
   void SetDelegatedInkTrailStartPoint(
@@ -215,19 +221,7 @@ class GL_EXPORT DCLayerTree {
     base::expected<void, CommitError> BuildTree(
         const std::vector<DCLayerOverlayParams>& overlays);
 
-    void GetSwapChainVisualInfoForTesting(const gfx::OverlayLayerId& layer_id,
-                                          gfx::Transform* out_transform,
-                                          gfx::Point* out_offset,
-                                          gfx::Rect* out_clip_rect) const;
     size_t GetDcompLayerCountForTesting() const;
-    IDCompositionVisual2* GetContentVisualForTesting(
-        const gfx::OverlayLayerId& layer_id) const;
-    IUnknown* GetBackgroundColorContentForTesting(
-        const gfx::OverlayLayerId& layer_id) const;
-#if DCHECK_IS_ON()
-    bool DcompVisualContentChangedFromPreviousFrameForTesting(
-        const gfx::OverlayLayerId& layer_id) const;
-#endif  // DCHECK_IS_ON()
     // Maps the visual content to its corresponding subtree index.
     // This is used to find matching subtrees from the previous frame
     // that can be reused in the current frame.
@@ -249,6 +243,8 @@ class GL_EXPORT DCLayerTree {
 
       // Returns true if something was changed.
       bool Update(IDCompositionDevice3* dcomp_device,
+                  Microsoft::WRL::ComPtr<IDCompositionVisual> parent_visual,
+                  Microsoft::WRL::ComPtr<IDCompositionVisual> below_visual,
                   Microsoft::WRL::ComPtr<IUnknown> dcomp_visual_content,
                   uint64_t dcomp_surface_serial,
                   const gfx::Size& image_size,
@@ -266,7 +262,10 @@ class GL_EXPORT DCLayerTree {
       IDCompositionVisual2* container_visual() const {
         return clip_visual_.Get();
       }
-      IDCompositionVisual2* content_visual() const {
+      IDCompositionVisual2* layer_visual() const {
+        return transform_visual_.Get();
+      }
+      IDCompositionVisual2* content_visual_for_testing() const {
         return content_visual_.Get();
       }
       IUnknown* dcomp_visual_content() const {
@@ -297,6 +296,23 @@ class GL_EXPORT DCLayerTree {
         return clip_rect_in_root_;
       }
 
+      // Set the cached pointer to the below visual without actually updating
+      // the DComp tree. This is used to avoid extra work when e.g. when a
+      // sibling is externally inserted below this or the sibling below this is
+      // externally removed.
+      // Ensure that the value being set agrees with the DComp internal state,
+      // or else the tree may not update correctly in the future.
+      void unsafe_set_below_layer(const VisualSubtree* below_layer) {
+        below_visual_ = below_layer ? below_layer->container_visual() : nullptr;
+      }
+
+      // Returns `background_color_content_` if it's compatible with
+      // `new_background_color`. Else, returns an `IDCompositionColorBrush` set
+      // to `new_background_color`. This reuses the existing brush if possible.
+      Microsoft::WRL::ComPtr<IUnknown> GetOrCreateBackgroundColorContent(
+          EXPERIMENTAL_IDCompositionDevice7* dcomp_device,
+          SkColor4f new_background_color) const;
+
      private:
 #if DCHECK_IS_ON()
       friend class VisualTree;
@@ -322,6 +338,11 @@ class GL_EXPORT DCLayerTree {
       // |dcomp_visual_content_|.
       Microsoft::WRL::ComPtr<IDCompositionVisual2> content_visual_;
 
+      // The visual that `container_visual()` is a child of.
+      Microsoft::WRL::ComPtr<IDCompositionVisual> parent_visual_;
+      // The sibling to `container_visual()` that is immediately behind it.
+      Microsoft::WRL::ComPtr<IDCompositionVisual> below_visual_;
+
       // The content to be placed at a leaf of the visual subtree. Either an
       // IDCompositionSurface or an IDXGISwapChain.
       Microsoft::WRL::ComPtr<IUnknown> dcomp_visual_content_;
@@ -335,13 +356,11 @@ class GL_EXPORT DCLayerTree {
       gfx::RectF content_rect_;
 
       // The content for the background color fill to be placed at a leaf of
-      // the visual subtree. Since |SolidColorSurfacePool::GetSolidColorContent|
-      // returns content that is opaque, |background_color_visual_|'s opacity
-      // will be set to |background_color_.fA|. Must be present if
-      // |background_color_| is non-transparent. Must be re-updated from
-      // |SolidColorSurfacePool::GetSolidColorContent| every frame it is
-      // present. Either an IDCompositionSurface (D3D11 path) or an
-      // IDCompositionTexture (D3D12 path).
+      // the visual subtree. The content is opaque, so
+      // |background_color_visual_|'s opacity is set to |background_color_.fA|.
+      // Must be present if |background_color_| is non-transparent and updated
+      // every frame. Either a pooled IDCompositionSurface (D3D11 path) or
+      // IDCompositionTexture (D3D12 path), or an IDCompositionColorBrush.
       Microsoft::WRL::ComPtr<IUnknown> background_color_content_;
 
       // The color of |background_color_content_|.
@@ -373,11 +392,13 @@ class GL_EXPORT DCLayerTree {
       gfx::Size image_size_;
 
       // If false, force |transform_visual_| to use the hard border mode.
+      // TODO(crbug.com/324460866): Remove when we switch to `VisualTree2`.
       bool allow_antialiasing_ = true;
 
       // The order relative to the root surface. Positive values means the
       // visual appears in front of the root surface (i.e. overlay) and negative
       // values means the visual appears below the root surface (i.e. underlay).
+      // TODO(crbug.com/324460866): Remove when we switch to `VisualTree2`.
       int z_order_ = 0;
 
 #if DCHECK_IS_ON()
@@ -388,6 +409,10 @@ class GL_EXPORT DCLayerTree {
     };
 
     VisualSubtree* GetFrontMostVisualSubtreeForTesting() const;
+
+    // Get the first subtree in `visual_subtrees_` matching `layer_id`.
+    const VisualSubtree& GetSubtreeFromLayerIdForTesting(
+        const gfx::OverlayLayerId& layer_id) const;
 
    private:
     // This function is called as part of |BuildTreeOptimized|.
@@ -453,18 +478,21 @@ class GL_EXPORT DCLayerTree {
 
     // List of layer IDs in the frame, parallel to `visual_subtrees_`.
     std::vector<gfx::OverlayLayerId> layer_ids_for_testing_;
-    // Get the first subtree in `visual_subtrees_` matching `layer_id`.
-    const VisualSubtree* GetSubtreeFromLayerIdForTesting(
-        const gfx::OverlayLayerId& layer_id) const;
   };
 
-  VisualTree::VisualSubtree* GetFrontMostVideoVisualSubtreeForTesting() const;
+  const VisualTree::VisualSubtree* GetFrontMostVideoVisualSubtreeForTesting()
+      const;
 
  private:
   // Refreshes |current_output_| to match the monitor |window_| is currently
   // on. Invalidates the cache if the DXGI factory is stale or the window moved
   // to a different monitor, then re-enumerates adapters to find the new output.
   void UpdateCurrentOutput();
+
+  // If using D3D12 comp textures, submit pending fills and prepare for commit.
+  // No-op otherwise.
+  base::expected<void, CommitError> PrepareD3D12CompTexturesForCommit(
+      SolidColorPoolBase* solid_color_content_provider);
 
   const bool disable_nv12_dynamic_textures_;
   const bool disable_vp_auto_hdr_;
@@ -483,13 +511,15 @@ class GL_EXPORT DCLayerTree {
   Microsoft::WRL::ComPtr<IDCompositionTarget> dcomp_target_;
   // IDCompositionDevice6 enables support for D3D12 composition textures.
   Microsoft::WRL::ComPtr<EXPERIMENTAL_IDCompositionDevice6> dcomp_device_6_;
+  // IDCompositionDevice7 enables support for relative layout and brushes.
+  Microsoft::WRL::ComPtr<EXPERIMENTAL_IDCompositionDevice7> dcomp_device_7_;
   // A d3d12 command queue from Dawn that is used to present composition
   // textures prior to DComp commit.
   Microsoft::WRL::ComPtr<ID3D12CommandQueue> d3d12_command_queue_;
 
   // Resource pool that produces DComp content (`IDCompositionSurface` or
-  // `IDCompositionTexture`) for solid color overlays. This is needed since
-  // there is no way to procedurally fill a DComp visual.
+  // `IDCompositionTexture`) for solid color overlays when DComp brushes are
+  // not enabled. Null when using DComp brushes.
   std::unique_ptr<SolidColorPoolBase> solid_color_content_provider_;
 
   // Store the largest video processor for SDR and HDR content
@@ -523,6 +553,50 @@ class GL_EXPORT DCLayerTree {
   // A tree that owns all DCOMP visuals for overlays along with attributes
   // required to build DCOMP tree. It's updated for each frame.
   std::unique_ptr<VisualTree> visual_tree_;
+
+  // Owns and incrementally updates a hierarchy of `VisualSubtree`.
+  //
+  // This is intended to replace `VisualTree`.
+  class VisualTree2 : public OsCompositorTreeBase<DCLayerOverlayParams,
+                                                  VisualTree::VisualSubtree,
+                                                  CommitError> {
+   public:
+    VisualTree2(
+        DCLayerTree* dc_layer_tree,
+        std::unique_ptr<SolidColorPoolBase> solid_color_content_provider,
+        UpdateMode update_mode);
+    ~VisualTree2() override;
+
+    const SolidColorPoolBase* solid_color_content_provider_for_testing() const {
+      return solid_color_content_provider_.get();
+    }
+
+    const VisualTree::VisualSubtree* front_most_visual_for_testing() const {
+      return front_most_visual_for_testing_.get();
+    }
+
+   protected:
+    bool UpdateLayer(const DCLayerOverlayParams& overlay,
+                     const VisualTree::VisualSubtree* parent_layer,
+                     const VisualTree::VisualSubtree* below_layer,
+                     VisualTree::VisualSubtree& layer) override;
+    void DestroyLayer(
+        std::unique_ptr<VisualTree::VisualSubtree> layer) override;
+    base::expected<void, CommitError> CommitTree() override;
+
+   private:
+    const raw_ptr<DCLayerTree> dc_layer_tree_;
+    std::unique_ptr<SolidColorPoolBase> solid_color_content_provider_;
+    std::optional<CommitError> solid_color_content_provider_last_error_;
+
+    raw_ptr<VisualTree::VisualSubtree> front_most_visual_for_testing_ = nullptr;
+  };
+
+  // A tree that owns all DCOMP visuals for overlays along with attributes
+  // required to build DCOMP tree. It's updated for each frame.
+  //
+  // Mutually exclusive with `visual_tree_`.
+  std::unique_ptr<VisualTree2> visual_tree2_;
 
   // dealing with hdr metadata
   std::unique_ptr<HDRMetadataHelperWin> hdr_metadata_helper_;

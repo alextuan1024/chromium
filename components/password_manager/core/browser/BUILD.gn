@@ -78,10 +78,11 @@ static_library("browser") {
     "password_autofill_manager.h",
     "password_bubble_experiment.cc",
     "password_bubble_experiment.h",
+    "password_change/password_change_credentials_provider.h",
+    "password_change/password_change_service_interface.cc",
+    "password_change/password_change_service_interface.h",
     "password_change_backup_password_cleaner.cc",
     "password_change_backup_password_cleaner.h",
-    "password_change_service_interface.cc",
-    "password_change_service_interface.h",
     "password_check_referrer_android.h",
     "password_counter.cc",
     "password_counter.h",
@@ -165,7 +166,6 @@ static_library("browser") {
   ]
 
   all_dependent_configs = [ ":password_reuse_detection_config" ]
-  configs += [ "//build/config/compiler:wexit_time_destructors" ]
 
   public_deps = [
     ":metrics_util",
@@ -195,6 +195,7 @@ static_library("browser") {
     "//components/device_reauth",
     "//components/favicon/core",
     "//components/favicon_base",
+    "//components/google/core/common",
     "//components/metrics",
     "//components/os_crypt/browser",
     "//components/password_manager/core/browser:password_switches",
@@ -304,12 +305,14 @@ source_set("password_string") {
     "password_string.cc",
     "password_string.h",
   ]
-  public_deps = [ "//crypto" ]
+  public_deps = [
+    "//crypto",
+    "//third_party/abseil-cpp:absl",
+  ]
   deps = [
     "//base",
     "//components/password_manager/core/browser/features:password_features",
   ]
-  configs += [ "//build/config/compiler:wexit_time_destructors" ]
 }
 
 # PasswordForm is an extremely common struct used by many sub-components and
@@ -332,7 +335,6 @@ source_set("password_form") {
     "//components/signin/public/base",
     "//url",
   ]
-  configs += [ "//build/config/compiler:wexit_time_destructors" ]
 }
 
 source_set("passkey_credential") {
@@ -357,6 +359,9 @@ source_set("metrics_util") {
   sources = [
     "password_manager_metrics_util.cc",
     "password_manager_metrics_util.h",
+  ]
+  public_deps = [
+    "//components/password_manager/core/common:browser_assisted_login_type",
   ]
   deps = [
     ":password_form",
@@ -383,9 +388,9 @@ if (is_android) {
 
   java_cpp_enum("password_manager_java_enums_srcjar") {
     sources = [
+      "../common/browser_assisted_login_type.h",
       "manage_passwords_referrer.h",
       "password_check_referrer_android.h",
-      "password_manager_metrics_util.h",
       "password_manager_setting.h",
       "password_manager_util.h",
       "password_store/android_backend_error.h",
@@ -403,7 +408,6 @@ static_library("password_hash_data") {
     "//crypto",
     "//google_apis",
   ]
-  configs += [ "//build/config/compiler:wexit_time_destructors" ]
 }
 
 static_library("hash_password_manager") {
@@ -419,7 +423,6 @@ static_library("hash_password_manager") {
     "//components/password_manager/core/common",
     "//components/prefs",
   ]
-  configs += [ "//build/config/compiler:wexit_time_destructors" ]
 }
 
 static_library("test_support") {
@@ -635,12 +638,16 @@ source_set("unit_tests") {
     "//sql:test_support",
     "//testing/gmock",
     "//testing/gtest",
+    "//third_party/abseil-cpp:test_support",
     "//ui/base",
     "//ui/gfx:test_support",
   ]
 
   if (!is_android) {
-    deps += [ "//components/webauthn/core/browser:test_support" ]
+    deps += [
+      "//components/password_manager/core/browser/remote_actor:unit_tests",
+      "//components/webauthn/core/browser:test_support",
+    ]
   }
 
   if (is_ios) {

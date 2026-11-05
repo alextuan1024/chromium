@@ -16,6 +16,7 @@
 #include "base/lazy_instance.h"
 #include "base/location.h"
 #include "base/logging.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/metrics/histogram.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/notreached.h"
@@ -27,8 +28,10 @@
 #include "components/supervised_user/core/common/buildflags.h"
 #include "components/supervised_user/core/common/features.h"
 #include "content/public/browser/browser_context.h"
+#include "content/public/common/url_constants.h"
 #include "extensions/browser/api/extensions_api_client.h"
 #include "extensions/browser/api/management/management_api_constants.h"
+#include "extensions/browser/blocklist_extension_prefs.h"
 #include "extensions/browser/disable_reason.h"
 #include "extensions/browser/event_router.h"
 #include "extensions/browser/extension_dialog_auto_confirm.h"
@@ -44,8 +47,10 @@
 #include "extensions/buildflags/buildflags.h"
 #include "extensions/common/api/management.h"
 #include "extensions/common/error_utils.h"
+#include "extensions/common/event_args.h"
 #include "extensions/common/extension.h"
 #include "extensions/common/extension_id.h"
+#include "extensions/common/extension_set.h"
 #include "extensions/common/extension_urls.h"
 #include "extensions/common/icons/extension_icon_set.h"
 #include "extensions/common/manifest.h"
@@ -75,6 +80,8 @@ namespace extensions {
 namespace management = api::management;
 
 namespace {
+
+constexpr char kChromeUIExtensionsHost[] = "extensions";
 
 using ExtensionInfoList = std::vector<management::ExtensionInfo>;
 using IconInfoList = std::vector<management::IconInfo>;
@@ -476,13 +483,16 @@ ExtensionFunction::ResponseAction ManagementSetEnabledFunction::Run() {
   // Disable extension.
   if (!should_enable) {
     disable_reason::DisableReason reason = disable_reason::DISABLE_USER_ACTION;
-    if (extension() &&
-        (Manifest::IsPolicyLocation(extension()->location()) ||
-         Manifest::IsComponentLocation(extension()->location()))) {
-      reason = disable_reason::DISABLE_BLOCKED_BY_POLICY;
-    } else if (extension()) {
-      // If extension() is non-null, another extension is calling the API.
-      reason = disable_reason::DISABLE_BY_ANOTHER_EXTENSION;
+    if (extension()) {
+      // If a policy or component extension disables a policy-installed target
+      // extension, use DISABLE_BLOCKED_BY_POLICY so that the disable is
+      // permitted by ManagementPolicy and re-evaluated on startup/policy
+      // refresh. For all other target extensions, use
+      // DISABLE_BY_ANOTHER_EXTENSION so the disabled state persists across
+      // restarts and the user can still re-enable the extension.
+      reason = Manifest::IsPolicyLocation(target_extension->location())
+                   ? disable_reason::DISABLE_BLOCKED_BY_POLICY
+                   : disable_reason::DISABLE_BY_ANOTHER_EXTENSION;
     }
 
     const ManagementAPIDelegate* delegate = ManagementAPI::GetFactoryInstance()
@@ -498,6 +508,35 @@ ExtensionFunction::ResponseAction ManagementSetEnabledFunction::Run() {
   // Cannot enable policy disabled extensions.
   if (policy->MustRemainDisabled(target_extension, /*reason=*/nullptr)) {
     return RespondNow(Error(keys::kUserCantModifyError, extension_id_));
+  }
+
+  // Only chrome://extensions WebUI (`mojom::ContextType::kWebUi` with no
+  // calling `extension()` and `source_url()` on chrome://extensions) may
+  // re-enable greylisted extensions. All other callers are rejected regardless
+  // of `user_gesture()`.
+  ExtensionPrefs* prefs = ExtensionPrefs::Get(browser_context());
+  const bool is_greylisted =
+      !registry->blocklisted_extensions().Contains(extension_id_) &&
+      !blocklist_prefs::IsExtensionBlocklisted(extension_id_, prefs) &&
+      (prefs->HasDisableReason(extension_id_,
+                               disable_reason::DISABLE_GREYLIST) ||
+       blocklist_prefs::IsExtensionGreylisted(extension_id_, prefs));
+  const bool is_extensions_webui_caller =
+      !extension() && source_context_type() == mojom::ContextType::kWebUi &&
+      source_url().SchemeIs(content::kChromeUIScheme) &&
+      source_url().host() == kChromeUIExtensionsHost;
+  if (!is_extensions_webui_caller && is_greylisted) {
+    return RespondNow(
+        Error(keys::kCannotReEnableGreylistedError, extension_id_));
+  }
+
+  if (extension() &&
+      ExtensionPrefs::Get(browser_context())
+          ->HasDisableReason(extension_id_,
+                             disable_reason::DISABLE_NOT_ALLOWLISTED)) {
+    return RespondNow(
+        Error(keys::kCannotReEnableEnhancedSafeBrowsingDisallowedError,
+              extension_id_));
   }
 
   // Start the various checks needed before enabling an extension.
@@ -1142,11 +1181,11 @@ void ManagementEventRouter::BroadcastEvent(
   if (!ShouldExposeViaManagementAPI(*extension)) {
     return;
   }
-  base::ListValue args;
+  auto args = base::MakeRefCounted<EventArgs>();
   if (event_name == management::OnUninstalled::kEventName) {
-    args.Append(extension->id());
+    args->data.Append(extension->id());
   } else {
-    args.Append(
+    args->data.Append(
         CreateExtensionInfo(nullptr, *extension, browser_context_).ToValue());
   }
 

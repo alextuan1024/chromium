@@ -64,29 +64,6 @@
 
 namespace blink {
 
-namespace {
-mojom::blink::ScrollAlignment::Behavior ToBlinkScrollAlignmentBehavior(
-    ax::mojom::ScrollAlignment alignment) {
-  switch (alignment) {
-    case ax::mojom::ScrollAlignment::kNone:
-      return mojom::blink::ScrollAlignment::Behavior::kNoScroll;
-    case ax::mojom::ScrollAlignment::kScrollAlignmentCenter:
-      return mojom::blink::ScrollAlignment::Behavior::kCenter;
-    case ax::mojom::ScrollAlignment::kScrollAlignmentTop:
-      return mojom::blink::ScrollAlignment::Behavior::kTop;
-    case ax::mojom::ScrollAlignment::kScrollAlignmentBottom:
-      return mojom::blink::ScrollAlignment::Behavior::kBottom;
-    case ax::mojom::ScrollAlignment::kScrollAlignmentLeft:
-      return mojom::blink::ScrollAlignment::Behavior::kLeft;
-    case ax::mojom::ScrollAlignment::kScrollAlignmentRight:
-      return mojom::blink::ScrollAlignment::Behavior::kRight;
-    case ax::mojom::ScrollAlignment::kScrollAlignmentClosestEdge:
-      return mojom::blink::ScrollAlignment::Behavior::kClosestEdge;
-  }
-  NOTREACHED() << alignment;
-}
-}  // namespace
-
 // A utility class which uses the lifetime of this object to signify when
 // AXObjCache or AXObjectCacheImpl handles programmatic actions.
 class ScopedActionAnnotator {
@@ -569,14 +546,21 @@ void WebAXObject::Selection(bool& is_selection_backward,
   }
 }
 
-bool WebAXObject::SetSelection(const WebAXObject& anchor_object,
-                               int anchor_offset,
-                               const WebAXObject& focus_object,
-                               int focus_offset) const {
+bool WebAXObject::SetSelection(
+    const WebAXObject& anchor_object,
+    int anchor_offset,
+    std::optional<ax::mojom::blink::OffsetType> anchor_offset_type,
+    const WebAXObject& focus_object,
+    int focus_offset,
+    std::optional<ax::mojom::blink::OffsetType> focus_offset_type) const {
   if (IsDetached() || anchor_object.IsDetached() || focus_object.IsDetached()) {
     return false;
   }
 
+  // Annotate before the early-return clear path so clearing selection also
+  // marks the resulting selection event with EventFrom::kAction.
+  ScopedActionAnnotator annotater(*private_,
+                                  ax::mojom::blink::Action::kSetSelection);
   if (anchor_offset == ax::mojom::blink::kNoSelectionOffset) {
     DCHECK_EQ(anchor_object, *this);
     DCHECK_EQ(focus_object, *this);
@@ -590,8 +574,9 @@ bool WebAXObject::SetSelection(const WebAXObject& anchor_object,
       return true;
     }
   }
-  ScopedActionAnnotator annotater(*private_,
-                                  ax::mojom::blink::Action::kSetSelection);
+  // TODO(crbug.com/527726308): Add an Android-only CHECK that
+  // `anchor_offset_type` and `focus_offset_type` are not `std::nullopt`, and
+  // use them when constructing `ax_anchor` and `ax_focus`.
   AXPosition ax_anchor, ax_focus;
   if (static_cast<const AXObject*>(anchor_object)->IsTextObject() ||
       static_cast<const AXObject*>(anchor_object)->IsAtomicTextField()) {
@@ -988,7 +973,10 @@ void WebAXObject::GetRelativeBounds(WebAXObject& offset_container,
   bounds_in_container = bounds;
 }
 
-bool WebAXObject::ScrollToMakeVisible() const {
+bool WebAXObject::ScrollToMakeVisible(
+    ax::mojom::ScrollAlignment horizontal_scroll_alignment,
+    ax::mojom::ScrollAlignment vertical_scroll_alignment,
+    ax::mojom::ScrollBehavior scroll_behavior) const {
   if (IsDetached())
     return false;
 
@@ -996,6 +984,9 @@ bool WebAXObject::ScrollToMakeVisible() const {
       *private_, ax::mojom::blink::Action::kScrollToMakeVisible);
   ui::AXActionData action_data;
   action_data.action = ax::mojom::blink::Action::kScrollToMakeVisible;
+  action_data.horizontal_scroll_alignment = horizontal_scroll_alignment;
+  action_data.vertical_scroll_alignment = vertical_scroll_alignment;
+  action_data.scroll_behavior = scroll_behavior;
   return private_->PerformAction(action_data);
 }
 
@@ -1009,28 +1000,13 @@ bool WebAXObject::ScrollToMakeVisibleWithSubFocus(
 
   ScopedActionAnnotator annotater(
       *private_, ax::mojom::blink::Action::kScrollToMakeVisible);
-  auto horizontal_behavior =
-      ToBlinkScrollAlignmentBehavior(horizontal_scroll_alignment);
-  auto vertical_behavior =
-      ToBlinkScrollAlignmentBehavior(vertical_scroll_alignment);
-
-  mojom::blink::ScrollAlignment::Behavior visible_horizontal_behavior =
-      scroll_behavior == ax::mojom::ScrollBehavior::kScrollIfVisible
-          ? horizontal_behavior
-          : mojom::blink::ScrollAlignment::Behavior::kNoScroll;
-  mojom::blink::ScrollAlignment::Behavior visible_vertical_behavior =
-      scroll_behavior == ax::mojom::ScrollBehavior::kScrollIfVisible
-          ? vertical_behavior
-          : mojom::blink::ScrollAlignment::Behavior::kNoScroll;
-
-  blink::mojom::blink::ScrollAlignment blink_horizontal_scroll_alignment = {
-      visible_horizontal_behavior, horizontal_behavior, horizontal_behavior};
-  blink::mojom::blink::ScrollAlignment blink_vertical_scroll_alignment = {
-      visible_vertical_behavior, vertical_behavior, vertical_behavior};
-
-  return private_->RequestScrollToMakeVisibleWithSubFocusAction(
-      subfocus, blink_horizontal_scroll_alignment,
-      blink_vertical_scroll_alignment);
+  ui::AXActionData action_data;
+  action_data.action = ax::mojom::blink::Action::kScrollToMakeVisible;
+  action_data.target_rect = subfocus;
+  action_data.horizontal_scroll_alignment = horizontal_scroll_alignment;
+  action_data.vertical_scroll_alignment = vertical_scroll_alignment;
+  action_data.scroll_behavior = scroll_behavior;
+  return private_->PerformAction(action_data);
 }
 
 void WebAXObject::HandleAutofillSuggestionAvailabilityChanged(

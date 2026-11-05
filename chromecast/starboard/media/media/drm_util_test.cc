@@ -5,13 +5,18 @@
 #include "chromecast/starboard/media/media/drm_util.h"
 
 #include <array>
+#include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
 
+#include "base/compiler_specific.h"
 #include "base/containers/span.h"
 #include "base/memory/scoped_refptr.h"
+#include "base/test/gtest_util.h"
+#include "chromecast/media/cma/base/cast_decrypt_config_impl.h"
 #include "chromecast/media/cma/base/decoder_buffer_adapter.h"
 #include "chromecast/starboard/media/media/starboard_api_wrapper.h"
 #include "chromecast/starboard/media/media/test_matchers.h"
@@ -207,40 +212,174 @@ TEST(DrmUtilTest, HandlesEmptySubsampleMappings) {
               Pointee(MatchesDrmInfo(expected_drm_info)));
 }
 
+TEST(DrmUtilTest, EmptySubsamplesLargeBufferCrashes) {
+  constexpr size_t kLargeSize = size_t{0x80000000};  // 2 GiB
+  static_assert(kLargeSize > static_cast<size_t>(INT32_MAX));
+
+  constexpr std::string_view kId = "drm_id";
+  constexpr std::string_view kIv = "0123456789abcdef";
+  CHECK_EQ(kIv.size(),
+           static_cast<size_t>(::media::DecryptConfig::kDecryptionKeySize));
+
+  std::unique_ptr<::media::DecryptConfig> decrypt_config =
+      ::media::DecryptConfig::CreateCencConfig(std::string(kId),
+                                               std::string(kIv),
+                                               /*subsamples=*/{});
+  CHECK(decrypt_config);
+
+  class DummyExternalMemory : public ::media::DecoderBuffer::ExternalMemory {
+   public:
+    explicit DummyExternalMemory(size_t size) : size_(size) {}
+    ~DummyExternalMemory() override = default;
+    const base::span<const uint8_t> Span() const override {
+      return UNSAFE_BUFFERS(base::span<const uint8_t>(
+          reinterpret_cast<const uint8_t*>(0x1000), size_));
+    }
+
+   private:
+    size_t size_;
+  };
+
+  auto chromium_buffer = ::media::DecoderBuffer::FromExternalMemory(
+      std::make_unique<DummyExternalMemory>(kLargeSize));
+  CHECK_EQ(chromium_buffer->size(), kLargeSize);
+  chromium_buffer->set_decrypt_config(std::move(decrypt_config));
+
+  EXPECT_CHECK_DEATH(DrmInfoWrapper::Create(*chromium_buffer));
+}
+
+class FakeCastDecoderBuffer : public CastDecoderBuffer {
+ public:
+  FakeCastDecoderBuffer(base::span<const uint8_t> data,
+                        std::unique_ptr<CastDecryptConfig> decrypt_config)
+      : data_(data), decrypt_config_(std::move(decrypt_config)) {}
+  ~FakeCastDecoderBuffer() override = default;
+
+  StreamId stream_id() const override { return kPrimary; }
+  int64_t timestamp() const override { return 0; }
+  const uint8_t* data() const override { return data_.data(); }
+  size_t data_size() const override { return data_.size(); }
+  const CastDecryptConfig* decrypt_config() const override {
+    return decrypt_config_.get();
+  }
+  DecryptContext* decrypt_context() const override { return nullptr; }
+  bool end_of_stream() const override { return false; }
+  bool is_key_frame() const override { return true; }
+
+ private:
+  base::span<const uint8_t> data_;
+  std::unique_ptr<CastDecryptConfig> decrypt_config_;
+};
+
 TEST(DrmUtilTest, VerifySubsamplesMatchSizeDetectsInvalidSizes) {
   constexpr auto kBufferData = std::to_array<uint8_t>({1, 2, 3, 4, 5});
   constexpr std::string_view kId = "drm_id";
   constexpr std::string_view kIv = "0123456789abcdef";
 
   // Total size (3+3=6) > buffer size (5).
-  const ::media::SubsampleEntry invalid_subsample(3, 3);
-  std::unique_ptr<::media::DecryptConfig> decrypt_config =
-      ::media::DecryptConfig::CreateCencConfig(
-          std::string(kId), std::string(kIv), {invalid_subsample});
-  auto buffer = base::MakeRefCounted<DecoderBufferAdapter>(
-      CreateChromiumBuffer(std::move(decrypt_config), kBufferData));
+  FakeCastDecoderBuffer buffer(
+      kBufferData, std::make_unique<CastDecryptConfigImpl>(
+                       std::string(kId), std::string(kIv), EncryptionPattern(),
+                       std::vector<SubsampleEntry>{SubsampleEntry(3, 3)},
+                       EncryptionScheme::kAesCtr));
 
-  EXPECT_FALSE(DrmInfoWrapper::VerifySubsamplesMatchSize(*buffer));
+  EXPECT_FALSE(DrmInfoWrapper::VerifySubsamplesMatchSize(buffer));
 
   // Total size (1+1=2) < buffer size (5).
-  const ::media::SubsampleEntry invalid_subsample_2(1, 1);
-  std::unique_ptr<::media::DecryptConfig> decrypt_config_2 =
-      ::media::DecryptConfig::CreateCencConfig(
-          std::string(kId), std::string(kIv), {invalid_subsample_2});
-  auto buffer_2 = base::MakeRefCounted<DecoderBufferAdapter>(
-      CreateChromiumBuffer(std::move(decrypt_config_2), kBufferData));
+  FakeCastDecoderBuffer buffer_2(
+      kBufferData, std::make_unique<CastDecryptConfigImpl>(
+                       std::string(kId), std::string(kIv), EncryptionPattern(),
+                       std::vector<SubsampleEntry>{SubsampleEntry(1, 1)},
+                       EncryptionScheme::kAesCtr));
 
-  EXPECT_FALSE(DrmInfoWrapper::VerifySubsamplesMatchSize(*buffer_2));
+  EXPECT_FALSE(DrmInfoWrapper::VerifySubsamplesMatchSize(buffer_2));
 
   // Correct size (2+3=5) == buffer size (5).
   const ::media::SubsampleEntry valid_subsample(2, 3);
   std::unique_ptr<::media::DecryptConfig> decrypt_config_3 =
       ::media::DecryptConfig::CreateCencConfig(
           std::string(kId), std::string(kIv), {valid_subsample});
-  auto buffer_3 = base::MakeRefCounted<DecoderBufferAdapter>(
-      CreateChromiumBuffer(std::move(decrypt_config_3), kBufferData));
+  scoped_refptr<::media::DecoderBuffer> chromium_buffer_3 =
+      CreateChromiumBuffer(std::move(decrypt_config_3), kBufferData);
+  EXPECT_TRUE(DrmInfoWrapper::VerifySubsamplesMatchSize(*chromium_buffer_3));
+  auto buffer_3 = base::MakeRefCounted<DecoderBufferAdapter>(chromium_buffer_3);
 
   EXPECT_TRUE(DrmInfoWrapper::VerifySubsamplesMatchSize(*buffer_3));
+
+  // Empty explicit subsamples on a Chromium DecoderBuffer means the whole
+  // buffer is encrypted.
+  std::unique_ptr<::media::DecryptConfig> empty_subsamples_config =
+      ::media::DecryptConfig::CreateCencConfig(
+          std::string(kId), std::string(kIv), /*subsamples=*/{});
+  scoped_refptr<::media::DecoderBuffer> chromium_buffer_4 =
+      CreateChromiumBuffer(std::move(empty_subsamples_config), kBufferData);
+  EXPECT_TRUE(DrmInfoWrapper::VerifySubsamplesMatchSize(*chromium_buffer_4));
+
+  // Mismatched explicit subsamples on a Chromium DecoderBuffer must fail.
+  std::unique_ptr<::media::DecryptConfig> mismatched_config =
+      ::media::DecryptConfig::CreateCencConfig(
+          std::string(kId), std::string(kIv), {::media::SubsampleEntry(3, 3)});
+  scoped_refptr<::media::DecoderBuffer> chromium_buffer_5 =
+      CreateChromiumBuffer(std::move(mismatched_config), kBufferData);
+  EXPECT_FALSE(DrmInfoWrapper::VerifySubsamplesMatchSize(*chromium_buffer_5));
+
+  // Subsample counts exceeding INT32_MAX must fail cleanly rather than
+  // crashing in checked casts.
+  std::unique_ptr<::media::DecryptConfig> oversized_subsample_config =
+      ::media::DecryptConfig::CreateCencConfig(
+          std::string(kId), std::string(kIv),
+          {::media::SubsampleEntry(0x80000000u, 0)});
+  scoped_refptr<::media::DecoderBuffer> chromium_buffer_6 =
+      CreateChromiumBuffer(std::move(oversized_subsample_config), kBufferData);
+  EXPECT_FALSE(DrmInfoWrapper::VerifySubsamplesMatchSize(*chromium_buffer_6));
+}
+
+TEST(DrmUtilTest, VerifyWrapperSubsamplesMatchBufferSize) {
+  scoped_refptr<::media::DecoderBuffer> unencrypted_buffer =
+      CreateChromiumBuffer(nullptr);
+  DrmInfoWrapper unencrypted = DrmInfoWrapper::Create(*unencrypted_buffer);
+  EXPECT_TRUE(unencrypted.VerifySubsamplesMatchSize(kDefaultBufferData.size()));
+  EXPECT_TRUE(unencrypted.VerifySubsamplesMatchSize(0));
+
+  constexpr std::array<uint8_t, 24> kEncryptedData = {};
+  constexpr std::string_view kId = "drm_id";
+  constexpr std::string_view kIv = "0123456789abcdef";
+  std::unique_ptr<::media::DecryptConfig> decrypt_config =
+      ::media::DecryptConfig::CreateCencConfig(
+          std::string(kId), std::string(kIv), {::media::SubsampleEntry(8, 16)});
+  ASSERT_NE(decrypt_config, nullptr);
+  auto cast_buffer = base::MakeRefCounted<DecoderBufferAdapter>(
+      CreateChromiumBuffer(std::move(decrypt_config), kEncryptedData));
+  DrmInfoWrapper wrapper = DrmInfoWrapper::Create(*cast_buffer);
+  ASSERT_NE(wrapper.GetDrmSampleInfo(), nullptr);
+
+  EXPECT_TRUE(wrapper.VerifySubsamplesMatchSize(24));
+  EXPECT_FALSE(wrapper.VerifySubsamplesMatchSize(12));
+  EXPECT_FALSE(wrapper.VerifySubsamplesMatchSize(16));
+  EXPECT_FALSE(wrapper.VerifySubsamplesMatchSize(48));
+
+  wrapper.GetDrmSampleInfo()->subsample_mapping = {};
+  EXPECT_FALSE(wrapper.VerifySubsamplesMatchSize(0));
+
+  const StarboardDrmSubSampleMapping kNegativeClear = {
+      .clear_byte_count = -1, .encrypted_byte_count = 6};
+  wrapper.GetDrmSampleInfo()->subsample_mapping =
+      base::span_from_ref(kNegativeClear);
+  EXPECT_FALSE(wrapper.VerifySubsamplesMatchSize(5));
+
+  const StarboardDrmSubSampleMapping kNegativeEncrypted = {
+      .clear_byte_count = 6, .encrypted_byte_count = -1};
+  wrapper.GetDrmSampleInfo()->subsample_mapping =
+      base::span_from_ref(kNegativeEncrypted);
+  EXPECT_FALSE(wrapper.VerifySubsamplesMatchSize(5));
+
+  constexpr auto kOverflowMappings =
+      std::to_array<StarboardDrmSubSampleMapping>(
+          {{.clear_byte_count = 0x40000000, .encrypted_byte_count = 0x40000000},
+           {.clear_byte_count = 0x40000000,
+            .encrypted_byte_count = 0x40000005}});
+  wrapper.GetDrmSampleInfo()->subsample_mapping = kOverflowMappings;
+  EXPECT_FALSE(wrapper.VerifySubsamplesMatchSize(5));
 }
 
 }  // namespace

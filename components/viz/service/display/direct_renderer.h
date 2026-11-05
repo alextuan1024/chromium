@@ -28,6 +28,7 @@
 #include "ui/gfx/ca_layer_result.h"
 #include "ui/gfx/delegated_ink_metadata.h"
 #include "ui/gfx/display_color_spaces.h"
+#include "ui/gfx/frame_data.h"
 #include "ui/gfx/geometry/axis_transform2d.h"
 #include "ui/gfx/geometry/quad_f.h"
 #include "ui/gfx/geometry/rect.h"
@@ -75,7 +76,9 @@ class VIZ_SERVICE_EXPORT DirectRenderer {
   bool use_partial_swap() const { return use_partial_swap_; }
 
   void SetOutputSurfaceClipRect(const gfx::Rect& clip_rect);
-  void SetVisible(bool visible);
+  // Tells the renderer whether to retain or discard its compositing back
+  // buffers.
+  void SetHasBackBuffers(bool has_back_buffers);
   void ReallocatedFrameBuffers();
   void DecideRenderPassAllocationsForFrame(
       const AggregatedRenderPassList& render_passes_in_draw_order,
@@ -86,6 +89,12 @@ class VIZ_SERVICE_EXPORT DirectRenderer {
                  const gfx::DisplayColorSpaces& display_color_spaces,
                  SurfaceDamageRectList surface_damage_rect_list,
                  const TrackedElementRects& tracked_element_rects);
+
+  // Sets whether the page is in fullscreen mode (e.g. fullscreen video) for
+  // the frames drawn after this call.
+  void SetIsPageFullscreen(bool is_page_fullscreen) {
+    is_page_fullscreen_ = is_page_fullscreen;
+  }
 
   // The renderer might expand the damage (e.g: HW overlays were used,
   // invalidation rects on previous buffers). This function returns a
@@ -105,25 +114,11 @@ class VIZ_SERVICE_EXPORT DirectRenderer {
     SwapFrameData(const SwapFrameData&) = delete;
     SwapFrameData& operator=(const SwapFrameData&) = delete;
 
+    gfx::FrameData frame_data;
+
     std::vector<ui::LatencyInfo> latency_info;
-    int64_t seq = -1;
-
-    // The HDR headroom of the display that this frame is being swapped to.
-    // Propagated to the gl::Presenter via gfx::FrameData.
-    float display_hdr_headroom = 1.f;
-
-#if BUILDFLAG(IS_APPLE)
-    // The result of CoreAnimation delegated compositing from the overlay
-    // processor. Propagated to the gl::Presenter via gfx::FrameData for
-    // integration testing.
-    gfx::CALayerResult ca_layer_error_code = gfx::kCALayerSuccess;
-#endif
-
-    bool is_handling_interaction = false;
-    bool is_handling_animation = false;
 
     std::optional<int64_t> choreographer_vsync_id;
-    int64_t swap_trace_id = -1;
   };
   virtual void SwapBuffers(SwapFrameData swap_frame_data) = 0;
   virtual void SwapBuffersSkipped() {}
@@ -150,6 +145,12 @@ class VIZ_SERVICE_EXPORT DirectRenderer {
     gfx::AxisTransform2d target_to_device_transform;
 
     OverlayProcessorInterface::CandidateList overlay_list;
+
+    // If set, this quad of the root render pass is an HDR video whose HDR
+    // metadata is passed through to the system compositor with the primary
+    // plane, so the renderer must not tone map it. Only set on Ozone. See
+    // hdr_video_passthrough.h.
+    raw_ptr<const DrawQuad> hdr_passthrough_quad = nullptr;
   };
 
   void SetCurrentFrameForTesting(const DrawingFrame& frame);
@@ -221,6 +222,12 @@ class VIZ_SERVICE_EXPORT DirectRenderer {
     // this means a DComp surface.
     bool scanout_dcomp_surface = false;
   };
+
+#if BUILDFLAG(IS_OZONE)
+  // Enables HDR video metadata passthrough for the current frame if possible.
+  // Must be called after overlay processing. See hdr_video_passthrough.h.
+  void MaybeEnableHdrVideoPassthrough(const gfx::ColorSpace& frame_color_space);
+#endif
 
   // Returns a transform that maps the the draw rect (i.e. the render pass
   // output rect) to the device space (i.e. buffer space).
@@ -308,7 +315,7 @@ class VIZ_SERVICE_EXPORT DirectRenderer {
       const AggregatedRenderPass* pass,
       const RenderPassRequirements& requirements);
   virtual void EnsureScissorTestDisabled() = 0;
-  virtual void DidChangeVisibility() = 0;
+  virtual void DidChangeHasBackBuffers() = 0;
   virtual void CopyDrawnRenderPass(
       const copy_output::RenderPassGeometry& geometry,
       std::unique_ptr<CopyOutputRequest> request) = 0;
@@ -364,17 +371,19 @@ class VIZ_SERVICE_EXPORT DirectRenderer {
       render_pass_bypass_quads_;
   base::flat_map<AggregatedRenderPassId, std::optional<SkPath>>
       render_pass_backdrop_filter_bounds_;
-  base::flat_map<AggregatedRenderPassId, gfx::Rect>
-      backdrop_filter_output_rects_;
-
-  // Whether a render pass with foreground filters that move pixels is found in
-  // this frame.
-  bool has_pixel_moving_foreground_filters_ = false;
 
   // Track skipped non-root render passes in DrawRenderPass.
   base::flat_set<AggregatedRenderPassId> skipped_render_pass_ids_;
 
-  bool visible_ = false;
+#if BUILDFLAG(IS_OZONE)
+  // Whether HDR video metadata passthrough was used for the last frame.
+  bool last_frame_used_hdr_passthrough_ = false;
+#endif
+
+  // Whether the page is in fullscreen mode. See SetIsPageFullscreen().
+  bool is_page_fullscreen_ = false;
+
+  bool has_back_buffers_ = false;
   bool disable_color_checks_for_testing_ = false;
 
   DrawingFrame* current_frame() {

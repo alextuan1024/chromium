@@ -198,8 +198,6 @@ TEST(BookmarkUpdatePreprocessingTest, ShouldInferGuid) {
 
 TEST(BookmarkUpdatePreprocessingTest,
      ShouldNotInferGuidIfNoOriginatorInformation) {
-  const std::string kOriginatorClientItemId = "1";
-
   sync_pb::SyncEntity entity;
   entity.mutable_specifics()->mutable_bookmark();
 
@@ -255,25 +253,6 @@ TEST(BookmarkUpdatePreprocessingTest, ShouldUseTypeInSpecifics) {
   *specifics.mutable_bookmark() =
       sync_pb::BookmarkSpecifics::default_instance();
   specifics.mutable_bookmark()->set_type(sync_pb::BookmarkSpecifics::URL);
-  AdaptTypeForBookmark(entity, &specifics);
-  EXPECT_THAT(specifics.bookmark().type(), Eq(sync_pb::BookmarkSpecifics::URL));
-}
-
-TEST(BookmarkUpdatePreprocessingTest,
-     ShouldInferTypeFromFolderFieldInSyncEntity) {
-  sync_pb::SyncEntity entity;
-  sync_pb::EntitySpecifics specifics;
-
-  *specifics.mutable_bookmark() =
-      sync_pb::BookmarkSpecifics::default_instance();
-  entity.set_folder(true);
-  AdaptTypeForBookmark(entity, &specifics);
-  EXPECT_THAT(specifics.bookmark().type(),
-              Eq(sync_pb::BookmarkSpecifics::FOLDER));
-
-  *specifics.mutable_bookmark() =
-      sync_pb::BookmarkSpecifics::default_instance();
-  entity.set_folder(false);
   AdaptTypeForBookmark(entity, &specifics);
   EXPECT_THAT(specifics.bookmark().type(), Eq(sync_pb::BookmarkSpecifics::URL));
 }

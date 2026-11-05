@@ -56,11 +56,13 @@ constexpr LogTrimmingDefaults GetLogTrimmingDefaults() {
       .max_ongoing_log_size_bytes = 1024 * 1024,  // 1 MiB
   };
 #elif BUILDFLAG(IS_ANDROID)
+  // Note: This branch is also compiled into Android WebView, but WebView
+  // overrides GetStorageLimits() and does not read these values.
   return {
       .initial_log_count_trim_threshold = 40,
       .ongoing_log_count_trim_threshold = 16,
-      .log_bytes_trim_threshold = 600 * 1024,    // 600 KiB
-      .max_ongoing_log_size_bytes = 200 * 1024,  // 200 KiB
+      .log_bytes_trim_threshold = 3 * 1024 * 1024,  // 3 MiB
+      .max_ongoing_log_size_bytes = 1024 * 1024,    // 1 MiB
   };
 #else
   return {
@@ -138,10 +140,6 @@ ukm::UkmService* MetricsServiceClient::GetUkmService() {
 }
 
 metrics::dwa::DwaService* MetricsServiceClient::GetDwaService() {
-  return nullptr;
-}
-
-metrics::private_metrics::PumaService* MetricsServiceClient::GetPumaService() {
   return nullptr;
 }
 
@@ -283,6 +281,10 @@ void MetricsServiceClient::UpdateRunningServices() {
 
 bool MetricsServiceClient::IsMetricsReportingForceEnabled() const {
   return ::metrics::IsMetricsReportingForceEnabled();
+}
+
+bool MetricsServiceClient::IsUkmDebugDataAllowed() const {
+  return true;
 }
 
 #if BUILDFLAG(IS_CHROMEOS)

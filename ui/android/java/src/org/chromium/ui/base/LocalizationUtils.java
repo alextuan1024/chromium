@@ -9,6 +9,7 @@ import android.view.View;
 import org.jni_zero.CalledByNative;
 import org.jni_zero.CalledByNativeForTesting;
 import org.jni_zero.JNINamespace;
+import org.jni_zero.JniType;
 import org.jni_zero.NativeMethods;
 
 import org.chromium.base.ContextUtils;
@@ -30,31 +31,35 @@ public class LocalizationUtils {
     public static final int LEFT_TO_RIGHT = 2;
 
     private static @Nullable Boolean sIsLayoutRtlForTesting;
+    private static volatile boolean sHasNativeLayoutRtlCache;
 
     private LocalizationUtils() {
         /* cannot be instantiated */
     }
 
     @CalledByNative
-    static Locale getJavaLocaleForBcp47Tag(String bcp47tag) {
+    static Locale getJavaLocaleForBcp47Tag(@JniType("std::string_view") String bcp47tag) {
         return Locale.forLanguageTag(bcp47tag);
     }
 
     @CalledByNative
-    private static String getDisplayNameForLocale(Locale locale, Locale displayLocale) {
+    private static @JniType("std::u16string") String getDisplayNameForLocale(
+            Locale locale, Locale displayLocale) {
         return locale.getDisplayName(displayLocale);
     }
 
     /**
      * Returns whether the Android layout direction is RTL.
      *
-     * Note that the locale direction can be different from layout direction. Two known cases:
-     * - RTL languages on Android 4.1, due to the lack of RTL layout support on 4.1.
-     * - When user turned on force RTL layout option under developer options.
+     * <p>Note that the locale direction can be different from layout direction. Two known cases:
      *
-     * Therefore, only this function should be used to query RTL for layout purposes.
+     * <ul>
+     *   <li>RTL languages on Android 4.1, due to the lack of RTL layout support on 4.1.
+     *   <li>When user turned on force RTL layout option under developer options.
+     * </ul>
+     *
+     * <p>Therefore, only this function should be used to query RTL for layout purposes.
      */
-    @CalledByNative
     public static boolean isLayoutRtl() {
         if (sIsLayoutRtlForTesting != null) return sIsLayoutRtlForTesting;
 
@@ -65,10 +70,28 @@ public class LocalizationUtils {
                 == View.LAYOUT_DIRECTION_RTL;
     }
 
+    @CalledByNative
+    private static boolean isLayoutRtlForNative() {
+        sHasNativeLayoutRtlCache = true;
+        return isLayoutRtl();
+    }
+
     @CalledByNativeForTesting
     public static void setRtlForTesting(boolean shouldBeRtl) {
         sIsLayoutRtlForTesting = shouldBeRtl;
-        ResettersForTesting.register(() -> sIsLayoutRtlForTesting = null);
+        invalidateNativeLayoutRtlCache();
+        ResettersForTesting.register(
+                () -> {
+                    sIsLayoutRtlForTesting = null;
+                    invalidateNativeLayoutRtlCache();
+                });
+    }
+
+    private static void invalidateNativeLayoutRtlCache() {
+        if (sHasNativeLayoutRtlCache) {
+            sHasNativeLayoutRtlCache = false;
+            LocalizationUtilsJni.get().invalidateLayoutRtlCacheForTesting(); // IN-TEST
+        }
     }
 
     /** Returns whether navigation gestures should be mirrored due to the UI language. */
@@ -99,9 +122,9 @@ public class LocalizationUtils {
     /**
      * Return the asset split language associated with a given Chromium language.
      *
-     * This matches the directory used to store language-based assets in bundle APK splits.
-     * E.g. for Hebrew, known as 'he' by Chromium, this method should return 'iw' because
-     * the .pak file will be stored as /assets/locales#lang_iw/he.pak within the split.
+     * <p>This matches the directory used to store language-based assets, which bundletool puts into
+     * language splits. E.g. for Hebrew, known as 'he' by Chromium, this method should return 'iw'
+     * because the .pak file will be stored as /assets/locales#lang_iw/he.pak.
      *
      * @param language Chromium specific language name.
      * @return Matching Android specific language name.
@@ -109,6 +132,7 @@ public class LocalizationUtils {
     public static String getSplitLanguageForAndroid(String language) {
         // IMPORTANT: Keep in sync with the mapping found in:
         // build/android/gyp/util/resource_utils.py
+        // LINT.IfChange(SplitLanguageForAndroid)
         switch (language) {
             case "he":
                 return "iw"; // Hebrew
@@ -121,6 +145,7 @@ public class LocalizationUtils {
             default:
                 return language;
         }
+        // LINT.ThenChange(//chrome/android/BUILD.gn:SplitLanguageForAndroid)
     }
 
     /**
@@ -138,8 +163,11 @@ public class LocalizationUtils {
 
     @NativeMethods
     interface Natives {
-        int getFirstStrongCharacterDirection(String string);
+        int getFirstStrongCharacterDirection(@JniType("std::u16string") String string);
 
+        @JniType("std::string")
         String getNativeUiLocale();
+
+        void invalidateLayoutRtlCacheForTesting();
     }
 }

@@ -7,6 +7,8 @@
 #include "base/memory/ref_counted_memory.h"
 #include "base/strings/string_view_util.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/test/test_future.h"
+#include "content/browser/webui/url_data_manager_backend.h"
 #include "content/browser/webui/web_ui_data_source_impl.h"
 #include "content/public/common/buildflags.h"
 #include "content/public/test/browser_task_environment.h"
@@ -33,10 +35,17 @@ const char16_t kDummyString[] = u"foo";
 const char kDummyDefaultResource[] = "<html>foo</html>";
 const char kDummyResource[] = "<html>blah</html>";
 const char kDummyJSResource[] = "export const bar = 5;";
+const char kDummyCssJsResource[] =
+    ".icon-arrow-back { --cr-icon-image: "
+    "url(chrome://resources/images/icon_arrow_back.svg); }";
 
 class TestClient : public TestContentClient {
  public:
   ~TestClient() override {}
+
+  void set_css_js_resource_id(int resource_id) {
+    css_js_resource_id_ = resource_id;
+  }
 
   std::u16string GetLocalizedString(int message_id) override {
     if (message_id == kDummyStringId)
@@ -56,9 +65,15 @@ class TestClient : public TestContentClient {
     } else if (resource_id == kDummyJSResourceId) {
       bytes = base::MakeRefCounted<base::RefCountedStaticMemory>(
           base::byte_span_with_nul_from_cstring(kDummyJSResource));
+    } else if (resource_id == css_js_resource_id_) {
+      bytes = base::MakeRefCounted<base::RefCountedStaticMemory>(
+          base::byte_span_from_cstring(kDummyCssJsResource));
     }
     return bytes;
   }
+
+ private:
+  int css_js_resource_id_ = -1;
 };
 
 }  // namespace
@@ -92,7 +107,10 @@ class WebUIDataSourceTest : public testing::Test {
   TestClient client_;
 
   void CreateDataSource(std::string source_name) {
-    WebUIDataSourceImpl* source = new WebUIDataSourceImpl(source_name);
+    SetDataSource(new WebUIDataSourceImpl(source_name));
+  }
+
+  void SetDataSource(WebUIDataSourceImpl* source) {
     source->disable_load_time_data_defaults_for_testing();
     source_ = base::WrapRefCounted(source);
   }
@@ -233,7 +251,6 @@ TEST_F(WebUIDataSourceTest, NamedResourceWithUrlFragment) {
 
 void WebUIDataSourceTest::RequestFilterQueryStringCallback(
     scoped_refptr<base::RefCountedMemory> data) {
-  std::string result(base::as_string_view(*data));
   // Check that the query string is passed to the request filter (and not
   // trimmed).
   EXPECT_EQ("foobar?query?string", request_path_);
@@ -486,6 +503,38 @@ TEST_F(WebUIDataSourceTest, SetCrossOriginPolicyValues) {
   EXPECT_EQ("same-origin", url_data_source->GetCrossOriginResourcePolicy());
 }
 
+TEST_F(WebUIDataSourceTest, AccessControlAllowOrigin) {
+  URLDataSource* url_data_source = source()->source();
+
+  // Default is empty.
+  EXPECT_EQ("", url_data_source->GetAccessControlAllowOriginForOrigin(
+                    "chrome-untrusted://foo"));
+
+  // Add specific origin.
+  source()->AddAccessControlAllowOrigin(
+      url::Origin::Create(GURL("chrome-untrusted://foo")));
+  EXPECT_EQ("chrome-untrusted://foo",
+            url_data_source->GetAccessControlAllowOriginForOrigin(
+                "chrome-untrusted://foo"));
+  EXPECT_EQ("", url_data_source->GetAccessControlAllowOriginForOrigin(
+                    "chrome-untrusted://bar"));
+
+  // Set allow all origins.
+  source()->SetAllowAllOrigins(true);
+  EXPECT_EQ("*", url_data_source->GetAccessControlAllowOriginForOrigin(
+                     "chrome-untrusted://foo"));
+  EXPECT_EQ("*", url_data_source->GetAccessControlAllowOriginForOrigin(
+                     "chrome-untrusted://bar"));
+
+  // Disabling allow all origins falls back to explicitly added origins.
+  source()->SetAllowAllOrigins(false);
+  EXPECT_EQ("chrome-untrusted://foo",
+            url_data_source->GetAccessControlAllowOriginForOrigin(
+                "chrome-untrusted://foo"));
+  EXPECT_EQ("", url_data_source->GetAccessControlAllowOriginForOrigin(
+                    "chrome-untrusted://bar"));
+}
+
 TEST_F(WebUIDataSourceTest, GetOrigin) {
   CreateDataSource("host");
   EXPECT_EQ(source()->GetOrigin(), url::Origin::Create(GURL("chrome://host")));
@@ -501,10 +550,7 @@ TEST_F(WebUIDataSourceTest, ShouldServiceRequest) {
       chrome_source->ShouldServiceRequest(GURL("chrome://host/"), nullptr, -1));
   EXPECT_FALSE(chrome_source->ShouldServiceRequest(GURL("devtools://host/"),
                                                    nullptr, -1));
-  // TODO(https://crbug.com/562108905): URLDataSource currently allows both
-  // chrome: and chrome-untrusted: requests by default. We should tighten this
-  // to only allow the matching scheme.
-  EXPECT_TRUE(chrome_source->ShouldServiceRequest(
+  EXPECT_FALSE(chrome_source->ShouldServiceRequest(
       GURL("chrome-untrusted://host/"), nullptr, -1));
   EXPECT_FALSE(
       chrome_source->ShouldServiceRequest(GURL("https://host/"), nullptr, -1));
@@ -513,14 +559,48 @@ TEST_F(WebUIDataSourceTest, ShouldServiceRequest) {
   URLDataSource* untrusted_source = source()->source();
   EXPECT_TRUE(untrusted_source->ShouldServiceRequest(
       GURL("chrome-untrusted://host/"), nullptr, -1));
-  // TODO(https://crbug.com/562108905): Tighten this to only allow the matching
-  // scheme.
-  EXPECT_TRUE(untrusted_source->ShouldServiceRequest(GURL("chrome://host/"),
-                                                     nullptr, -1));
+  EXPECT_FALSE(untrusted_source->ShouldServiceRequest(GURL("chrome://host/"),
+                                                      nullptr, -1));
   EXPECT_FALSE(untrusted_source->ShouldServiceRequest(GURL("devtools://host/"),
                                                       nullptr, -1));
   EXPECT_FALSE(untrusted_source->ShouldServiceRequest(GURL("https://host/"),
                                                       nullptr, -1));
+}
+
+TEST_F(WebUIDataSourceTest, SharedResourcesRewritesUntrustedCssJsUrls) {
+  constexpr char kCssJsPath[] = "cr_elements/cr_icons_lit.css.js";
+  URLDataManagerBackend data_backend;
+
+  {
+    auto* trusted_source = static_cast<WebUIDataSourceImpl*>(
+        data_backend.GetDataSourceFromURL(GURL("chrome://resources/")));
+    ASSERT_TRUE(trusted_source);
+    SetDataSource(trusted_source);
+    client_.set_css_js_resource_id(source()->path_to_idr_map().at(kCssJsPath));
+
+    base::test::TestFuture<scoped_refptr<base::RefCountedMemory>> future;
+    StartDataRequest(kCssJsPath, future.GetSequenceBoundCallback());
+    scoped_refptr<base::RefCountedMemory> data = future.Get();
+    ASSERT_TRUE(data);
+    EXPECT_EQ(kDummyCssJsResource, base::as_string_view(*data));
+  }
+
+  {
+    auto* untrusted_source =
+        static_cast<WebUIDataSourceImpl*>(data_backend.GetDataSourceFromURL(
+            GURL("chrome-untrusted://resources/")));
+    ASSERT_TRUE(untrusted_source);
+    SetDataSource(untrusted_source);
+
+    base::test::TestFuture<scoped_refptr<base::RefCountedMemory>> future;
+    StartDataRequest(kCssJsPath, future.GetSequenceBoundCallback());
+    scoped_refptr<base::RefCountedMemory> data = future.Get();
+    ASSERT_TRUE(data);
+    EXPECT_EQ(
+        ".icon-arrow-back { --cr-icon-image: "
+        "url(//resources/images/icon_arrow_back.svg); }",
+        base::as_string_view(*data));
+  }
 }
 
 #if BUILDFLAG(LOAD_WEBUI_FROM_DISK)

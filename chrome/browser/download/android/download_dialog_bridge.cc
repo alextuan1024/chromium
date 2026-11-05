@@ -33,7 +33,7 @@ DownloadDialogBridge::DownloadDialogBridge() : is_dialog_showing_(false) {
   JNIEnv* env = base::android::AttachCurrentThread();
   java_obj_.Reset(env, Java_DownloadDialogBridge_create(
                            env, reinterpret_cast<intptr_t>(this)));
-  DCHECK(!java_obj_.is_null());
+  CHECK(!java_obj_.is_null(), base::NotFatalUntil::M161);
 }
 
 DownloadDialogBridge::~DownloadDialogBridge() {
@@ -51,8 +51,6 @@ void DownloadDialogBridge::ShowDialog(
     DialogCallback dialog_callback) {
   if (!native_window)
     return;
-
-  UMA_HISTOGRAM_ENUMERATION("MobileDownload.Location.Dialog.Type", dialog_type);
 
   dialog_callback_ = std::move(dialog_callback);
 

@@ -11,7 +11,8 @@ import org.chromium.build.annotations.Initializer;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.search_engines.settings.common.SearchEngineListPreference;
-import org.chromium.components.browser_ui.settings.SettingsCustomTabLauncher;
+import org.chromium.components.browser_ui.util.CustomTabLauncher;
+import org.chromium.components.search_engines.SearchEngineSettingsDataProvider;
 
 /** Interface for the extension search engine coordinator. */
 @NullMarked
@@ -21,5 +22,6 @@ public interface ExtensionSearchEngineCoordinator extends Destroyable {
             Context context,
             Profile profile,
             SearchEngineListPreference pref,
-            SettingsCustomTabLauncher settingsCustomTabLauncher);
+            CustomTabLauncher customTabLauncher,
+            SearchEngineSettingsDataProvider settingsDataProvider);
 }

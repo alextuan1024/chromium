@@ -191,7 +191,8 @@ bool ActionTap::InitByAddingNewAction(const gfx::Point& target_pos) {
 
 void ActionTap::InitByChangingActionType(Action* action) {
   Action::InitByChangingActionType(action);
-  auto dom_code = action->current_input()->keys()[0];
+  auto keys = action->current_input()->keys();
+  auto dom_code = keys.size() > 0 ? keys[0] : ui::DomCode::NONE;
   current_input_ = InputElement::CreateActionTapKeyElement(dom_code);
 }
 
@@ -336,7 +337,7 @@ bool ActionTap::RewriteMouseEvent(const ui::MouseEvent* mouse_event,
   CHECK(mouse_event, base::NotFatalUntil::M160);
 
   const auto type = mouse_event->type();
-  if (!current_input_->mouse_types().contains(type) ||
+  if (!current_input_->mouse_types().Has(type) ||
       (current_input_->mouse_flags() & mouse_event->changed_button_flags()) ==
           0) {
     return false;

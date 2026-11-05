@@ -18,21 +18,15 @@
 namespace media::video_toolbox {
 
 // Copy a H.264/HEVC frame stored in a CM sample buffer to an Annex B buffer.
-// Copies parameter sets for keyframes before the frame data as well.
-MEDIA_EXPORT bool CopySampleBufferToAnnexBBuffer(VideoCodec codec,
-                                                 CMSampleBufferRef sbuf,
-                                                 bool keyframe,
-                                                 std::string* annexb_buffer);
-
-// As above, but optionally inserts a complete Annex B `sei_nalu` after the
-// parameter sets and before the sample NAL units.
+// Copies parameter sets for keyframes before the frame data as well, and
+// optionally inserts a complete Annex B `sei_nalu` after the parameter sets
+// and before the sample NAL units.
 MEDIA_EXPORT bool CopySampleBufferToAnnexBBuffer(
     VideoCodec codec,
     CMSampleBufferRef sbuf,
     bool keyframe,
     base::span<const uint8_t> sei_nalu,
-    size_t annexb_buffer_size,
-    char* annexb_buffer,
+    base::span<char> annexb_buffer,
     size_t* used_buffer_size);
 
 struct ScopedVTCompressionSessionRefTraits {

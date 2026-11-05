@@ -35,13 +35,11 @@ import org.mockito.junit.MockitoRule;
 
 import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CallbackHelper;
-import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.DisableIf;
 import org.chromium.base.test.util.Feature;
 import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.base.test.util.HistogramWatcher;
-import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.ui.hats.SurveyClientFactory;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.chrome.test.transit.AutoResetCtaTransitTestRule;
@@ -59,7 +57,6 @@ import org.chromium.ui.base.DeviceFormFactor;
 /** Test the showing of the PWA Universal Install Bottom Sheet dialog. */
 @RunWith(ChromeJUnit4ClassRunner.class)
 @Batch(Batch.PER_CLASS)
-@CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
 public class PwaUniversalInstallBottomSheetIntegrationTest {
     @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
 
@@ -207,6 +204,19 @@ public class PwaUniversalInstallBottomSheetIntegrationTest {
 
     private void assertDialogShowsInstallable() {
         onView(withText("Install")).check(matches(isDisplayed()));
+        onView(withText("Create shortcut")).check(matches(isDisplayed()));
+        onView(withText("Shortcuts open in Chrome")).check(matches(isDisplayed()));
+
+        // The spinners should not be visible (not waiting on anything).
+        onView(withId(R.id.spinny_install)).check(matches(not(isDisplayed())));
+        onView(withId(R.id.spinny_shortcut)).check(matches(not(isDisplayed())));
+
+        // The arrow should be visible.
+        onView(withId(R.id.arrow_install)).check(matches(isDisplayed()));
+    }
+
+    private void assertDialogShowsInstallableDiy() {
+        onView(withText("Install page as app")).check(matches(isDisplayed()));
         onView(withText("Create shortcut")).check(matches(isDisplayed()));
         onView(withText("Shortcuts open in Chrome")).check(matches(isDisplayed()));
 
@@ -537,6 +547,7 @@ public class PwaUniversalInstallBottomSheetIntegrationTest {
         Pair<Bitmap, Boolean> testIcon = constructTestIconData();
         simulateAppCheckComplete(AppType.WEBAPK, testIcon.first, testIcon.second);
         assertDialogShowing(true);
+        assertDialogShowsInstallable();
 
         watcher.assertExpected();
     }
@@ -561,6 +572,7 @@ public class PwaUniversalInstallBottomSheetIntegrationTest {
         Pair<Bitmap, Boolean> testIcon = constructTestIconData();
         simulateAppCheckComplete(AppType.WEBAPK_DIY, testIcon.first, testIcon.second);
         assertDialogShowing(true);
+        assertDialogShowsInstallableDiy();
 
         watcher.assertExpected();
     }
@@ -626,6 +638,7 @@ public class PwaUniversalInstallBottomSheetIntegrationTest {
         Pair<Bitmap, Boolean> testIcon = constructTestIconData();
         simulateAppCheckComplete(AppType.WEBAPK, testIcon.first, testIcon.second);
         assertDialogShowing(true);
+        assertDialogShowsInstallable();
 
         watcher.assertExpected();
     }
@@ -691,6 +704,36 @@ public class PwaUniversalInstallBottomSheetIntegrationTest {
         Pair<Bitmap, Boolean> testIcon = constructTestIconData();
         simulateAppCheckComplete(AppType.WEBAPK_DIY, testIcon.first, testIcon.second);
         assertDialogShowing(true);
+        assertDialogShowsInstallableDiy();
+
+        watcher.assertExpected();
+    }
+
+    @Test
+    @SmallTest
+    @Feature({"PwaUniversalInstall"})
+    @EnableFeatures({WebappsFeatureMap.ANDROID_INSTALL_ANY_PAGE_AS_DIY_APP_STOPGAP})
+    // Test that a no-manifest page below the origin root (today: shortcut) shows the installable
+    // dialog as a DIY web app with the stopgap flag enabled.
+    public void testNoManifestLeafPageShowsInstallableDiyDialog_flagEnabled() throws Exception {
+        PwaUniversalInstallBottomSheetCoordinator.sEnableManualIconFetchingForTesting = false;
+
+        HistogramWatcher watcher =
+                HistogramWatcher.newBuilder()
+                        .expectNoRecords(HISTOGRAM_TIMOUT_WITH_APP_TYPE)
+                        .expectIntRecord(HISTOGRAM_DIALOG_TYPE, AppType.WEBAPK_DIY)
+                        .expectIntRecord(HISTOGRAM_DIALOG_ACTION, 0) // Dialog shown.
+                        .expectAnyRecord(HISTOGRAM_FETCH_TIME_HOMEBREW)
+                        .build();
+
+        EmbeddedTestServer testServer = mActivityTestRule.getTestServer();
+        mActivityTestRule.loadUrl(
+                testServer.getURL("/chrome/test/data/banners/no_manifest_test_page.html"));
+
+        showPwaUniversalInstallBottomSheet(
+                /* showBeforeAppTypeKnown= */ false, /* webAppAlreadyInstalled= */ false);
+        assertDialogShowing(true);
+        assertDialogShowsInstallableDiy();
 
         watcher.assertExpected();
     }

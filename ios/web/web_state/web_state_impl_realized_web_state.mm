@@ -55,6 +55,19 @@
 
 namespace web {
 
+// Converts a PermissionDecision to a WKPermissionDecision.
+WKPermissionDecision ConvertToWKPermissionDecision(
+    web::PermissionDecision decision) {
+  switch (decision) {
+    case web::PermissionDecisionShowDefaultPrompt:
+      return WKPermissionDecisionPrompt;
+    case web::PermissionDecisionGrant:
+      return WKPermissionDecisionGrant;
+    case web::PermissionDecisionDeny:
+      return WKPermissionDecisionDeny;
+  }
+}
+
 class WebStateImpl::RealizedWebState::PendingSession {
  public:
   PendingSession(proto::WebStateStorage storage,
@@ -275,9 +288,12 @@ void WebStateImpl::RealizedWebState::SetWebController(
 
 void WebStateImpl::RealizedWebState::OnNavigationStarted(
     NavigationContextImpl* context) {
-  // When a navigation starts, immediately close any visible dialogs to avoid
-  // confusion about the origin of a dialog.
-  ClearDialogs();
+  // When a non-same-document navigation starts, immediately close any visible
+  // dialogs to avoid confusion about the origin of a dialog. Same-document
+  // navigations cannot change the origin, so dialogs should remain open.
+  if (!context->IsSameDocument()) {
+    ClearDialogs();
+  }
 
   // Navigation manager loads internal URLs to create back-forward entries for
   // WebUI. Do not trigger external callbacks.
@@ -923,10 +939,12 @@ void WebStateImpl::RealizedWebState::TakeSnapshot(const CGRect rect,
                              }];
 }
 
-void WebStateImpl::RealizedWebState::CreateFullPagePdf(
+void WebStateImpl::RealizedWebState::CreatePdf(
+    const CreatePdfParams& params,
     base::OnceCallback<void(NSData*)> callback) {
-  [web_controller_ createFullPagePDFWithCompletion:base::CallbackToBlock(
-                                                       std::move(callback))];
+  [web_controller_
+      createPDFWithDocumentRect:params.document_rect
+                     completion:base::CallbackToBlock(std::move(callback))];
 }
 
 void WebStateImpl::RealizedWebState::CloseMediaPresentations() {
@@ -1001,22 +1019,29 @@ void WebStateImpl::RealizedWebState::RequestPermissionsWithDecisionHandler(
     return;
   }
   if (delegate_) {
-    WebStatePermissionDecisionHandler web_state_decision_handler =
-        ^(PermissionDecision decision) {
-          switch (decision) {
-            case PermissionDecisionShowDefaultPrompt:
-              web_view_decision_handler(WKPermissionDecisionPrompt);
-              break;
-            case PermissionDecisionGrant:
-              web_view_decision_handler(WKPermissionDecisionGrant);
-              break;
-            case PermissionDecisionDeny:
-              web_view_decision_handler(WKPermissionDecisionDeny);
-              break;
-          }
-        };
-    delegate_->HandlePermissionsDecisionRequest(owner_, permissions,
-                                                web_state_decision_handler);
+    delegate_->HandlePermissionsDecisionRequest(
+        owner_, permissions, ^(PermissionDecision decision) {
+          web_view_decision_handler(ConvertToWKPermissionDecision(decision));
+        });
+  } else {
+    web_view_decision_handler(WKPermissionDecisionPrompt);
+  }
+}
+
+void WebStateImpl::RealizedWebState::
+    RequestGeolocationPermissionWithDecisionHandler(
+        const GURL& origin,
+        PermissionDecisionHandler web_view_decision_handler) {
+  if (!security_state::IsSchemeCryptographic(origin) &&
+      !security_state::IsOriginLocalhostOrFile(origin)) {
+    web_view_decision_handler(WKPermissionDecisionDeny);
+    return;
+  }
+  if (delegate_) {
+    delegate_->RequestGeolocationPermission(
+        owner_, origin, ^(PermissionDecision decision) {
+          web_view_decision_handler(ConvertToWKPermissionDecision(decision));
+        });
   } else {
     web_view_decision_handler(WKPermissionDecisionPrompt);
   }

@@ -44,7 +44,6 @@
 #include "third_party/blink/public/platform/task_type.h"
 #include "third_party/blink/public/platform/web_source_buffer.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_promise_resolver.h"
-#include "third_party/blink/renderer/bindings/core/v8/v8_throw_dom_exception.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_audio_decoder_config.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_encoded_audio_chunk.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_encoded_video_chunk.h"
@@ -451,20 +450,16 @@ void SourceBuffer::SetTimestampOffset_Locked(
 }
 
 AudioTrackList& SourceBuffer::audioTracks() {
-  // TODO(https://crbug.com/878133): Complete the AudioVideoTracks function
-  // necessary to enable successful experimental usage of it when MSE is in
-  // worker. Note that if this is consulted as part of parent |source_|'s
-  // context destruction, then we cannot consult GetExecutionContext() here.
+  // Track switching is not supported for MSE in Workers:
+  // https://github.com/w3c/media-source/pull/376
   CHECK(IsMainThread());
 
   return *audio_tracks_;
 }
 
 VideoTrackList& SourceBuffer::videoTracks() {
-  // TODO(https://crbug.com/878133): Complete the AudioVideoTracks function
-  // necessary to enable successful experimental usage of it when MSE is in
-  // worker. Note that if this is consulted as part of parent |source_|'s
-  // context destruction, then we cannot consult GetExecutionContext() here.
+  // Track switching is not supported for MSE in Workers:
+  // https://github.com/w3c/media-source/pull/376
   CHECK(IsMainThread());
 
   return *video_tracks_;
@@ -895,9 +890,9 @@ void SourceBuffer::Remove_Locked(
   if (end <= start || std::isnan(end)) {
     MediaSource::LogAndThrowTypeError(
         *exception_state,
-        StrCat({"The end value provided (", String::Number(end),
-                ") must be greater than the start value provided (",
-                String::Number(start), ")."}));
+        Format("The end value provided ({:g}) must be greater than the start "
+               "value provided ({:g}).",
+               end, start));
     return;
   }
 
@@ -1123,8 +1118,7 @@ void SourceBuffer::AbortIfUpdating() {
     // TODO(crbug.com/1144908): Consider moving this verbosity to eventual
     // specification.
     DCHECK(append_encoded_chunks_resolver_);
-    append_encoded_chunks_resolver_->Reject(V8ThrowDOMException::CreateOrDie(
-        append_encoded_chunks_resolver_->GetScriptState()->GetIsolate(),
+    append_encoded_chunks_resolver_->Reject(MakeGarbageCollected<DOMException>(
         DOMExceptionCode::kAbortError, "Aborted by explicit abort()"));
     append_encoded_chunks_resolver_ = nullptr;
     TRACE_EVENT_END("media", /*SourceBuffer::appendEncodedChunks*/

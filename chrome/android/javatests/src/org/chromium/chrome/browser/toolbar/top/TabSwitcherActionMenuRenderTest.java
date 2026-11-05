@@ -33,26 +33,28 @@ import org.chromium.base.ThreadUtils;
 import org.chromium.base.supplier.ObservableSuppliers;
 import org.chromium.base.supplier.SettableMonotonicObservableSupplier;
 import org.chromium.base.test.BaseActivityTestRule;
-import org.chromium.base.test.params.ParameterAnnotations;
+import org.chromium.base.test.params.ParameterAnnotations.ClassParameter;
+import org.chromium.base.test.params.ParameterAnnotations.UseRunnerDelegate;
 import org.chromium.base.test.params.ParameterSet;
 import org.chromium.base.test.params.ParameterizedRunner;
 import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.base.test.util.Feature;
 import org.chromium.chrome.R;
-import org.chromium.chrome.browser.app.tabwindow.TabWindowManagerSingleton;
 import org.chromium.chrome.browser.incognito.IncognitoUtils;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.profiles.ProfileManager;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
+import org.chromium.chrome.browser.toolbar.top.TabSwitcherActionMenuCoordinator.TabGroupExistenceChecker;
 import org.chromium.chrome.test.ChromeJUnit4RunnerDelegate;
 import org.chromium.chrome.test.util.ChromeRenderTestRule;
 import org.chromium.chrome.test.util.browser.tabmodel.MockTabModel;
 import org.chromium.ui.listmenu.ListMenuButton;
 import org.chromium.ui.test.util.BlankUiTestActivity;
 import org.chromium.ui.test.util.NightModeTestUtils;
+import org.chromium.ui.test.util.NightModeTestUtils.NightModeParams;
 
 import java.io.IOException;
 import java.util.List;
@@ -60,12 +62,11 @@ import java.util.concurrent.TimeoutException;
 
 /** Render tests for tab switcher long-press menu popup. */
 @RunWith(ParameterizedRunner.class)
-@ParameterAnnotations.UseRunnerDelegate(ChromeJUnit4RunnerDelegate.class)
+@UseRunnerDelegate(ChromeJUnit4RunnerDelegate.class)
 @Batch(UNIT_TESTS)
 public class TabSwitcherActionMenuRenderTest {
-    @ParameterAnnotations.ClassParameter
-    private static final List<ParameterSet> sClassParams =
-            new NightModeTestUtils.NightModeParams().getParameters();
+    @ClassParameter
+    private static final List<ParameterSet> sClassParams = new NightModeParams().getParameters();
 
     @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
 
@@ -84,6 +85,7 @@ public class TabSwitcherActionMenuRenderTest {
     @Mock private TabModelSelector mTabModelSelector;
     @Mock private TabModel mIncognitoModel;
     @Mock private Tab mTab;
+    @Mock private TabGroupExistenceChecker mTabGroupExistenceChecker;
 
     private TabModel mCurrentModel;
     private SettableMonotonicObservableSupplier<TabModelSelector> mTabModelSelectorSupplier;
@@ -112,7 +114,7 @@ public class TabSwitcherActionMenuRenderTest {
         when(mIncognitoModel.getCount()).thenReturn(0);
         when(mTabModelSelector.getCurrentModel()).thenReturn(mCurrentModel);
         when(mTabModelSelector.isTabStateInitialized()).thenReturn(true);
-        doReturn(true).when(mCurrentModel).isTabModelRestored();
+        doReturn(true).when(mCurrentModel).isTabStateInitialized();
         when(mTabModelSelector.getCurrentTabSupplier()).thenReturn(mCurrentTabSupplier);
     }
 
@@ -146,7 +148,7 @@ public class TabSwitcherActionMenuRenderTest {
     @Feature({"RenderTest"})
     public void testRender_TabSwitcherActionMenu_TabGroupExists()
             throws TimeoutException, IOException {
-        doReturn(1).when(mCurrentModel).getTabGroupCount();
+        when(mTabGroupExistenceChecker.hasOtherTabGroups(mCurrentModel, null)).thenReturn(true);
         IncognitoUtils.setEnabledForTesting(true);
         showMenu();
         mRenderTestRule.render(mView, "tab_switcher_action_menu_with_add_tab_to_group");
@@ -157,7 +159,7 @@ public class TabSwitcherActionMenuRenderTest {
     @Feature({"RenderTest"})
     public void testRender_TabSwitcherActionMenu_TabGroupExists_IncognitoDisabled()
             throws TimeoutException, IOException {
-        doReturn(1).when(mCurrentModel).getTabGroupCount();
+        when(mTabGroupExistenceChecker.hasOtherTabGroups(mCurrentModel, null)).thenReturn(true);
         IncognitoUtils.setEnabledForTesting(false);
         showMenu();
         mRenderTestRule.render(
@@ -170,9 +172,7 @@ public class TabSwitcherActionMenuRenderTest {
                     Activity activity = mActivityTestRule.getActivity();
                     TabSwitcherActionMenuCoordinator coordinator =
                             new TabSwitcherActionMenuCoordinator(
-                                    mProfile,
-                                    mTabModelSelectorSupplier,
-                                    TabWindowManagerSingleton.getInstance());
+                                    mProfile, mTabModelSelectorSupplier, mTabGroupExistenceChecker);
 
                     coordinator.displayMenu(
                             activity,

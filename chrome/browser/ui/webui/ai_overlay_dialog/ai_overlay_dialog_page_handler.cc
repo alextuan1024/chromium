@@ -10,6 +10,7 @@
 
 #include "base/base64.h"
 #include "base/command_line.h"
+#include "base/containers/span.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/json/json_reader.h"
@@ -20,7 +21,12 @@
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/thread_pool.h"
+#include "base/unguessable_token.h"
 #include "base/values.h"
+#include "build/android_buildflags.h"
+#include "build/build_config.h"
+#include "chrome/browser/optimization_guide/optimization_guide_keyed_service.h"
+#include "chrome/browser/optimization_guide/optimization_guide_keyed_service_factory.h"
 #include "chrome/browser/ui/ai_overlay_dialog/ai_overlay_dialog_controller.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/ui_features.h"
@@ -28,19 +34,33 @@
 #include "chrome/browser/ui/webui/ai_overlay_dialog/page_context_monitor.h"
 #include "chrome/browser/ui/webui/ai_overlay_dialog/tools/generated_tool_definitions.h"
 #include "chrome/browser/ui/webui/ai_overlay_dialog/tools/tools.h"
+#include "chrome/common/actor.mojom.h"
+#include "chrome/common/actor/actor_constants.h"
+#include "chrome/common/chrome_render_frame.mojom.h"
 #include "chrome/common/chrome_switches.h"
 #include "components/optimization_guide/content/browser/page_content_image_extractor.h"
+#include "components/optimization_guide/content/browser/page_content_proto_provider.h"
 #include "components/optimization_guide/content/browser/page_content_proto_util.h"
 #include "components/tabs/public/tab_interface.h"
 #include "components/vector_icons/vector_icons.h"
 #include "components/viz/common/frame_sinks/copy_output_result.h"
+#include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_widget_host_view.h"
 #include "content/public/browser/web_contents.h"
+#include "mojo/public/cpp/bindings/message.h"
+#include "third_party/blink/public/common/associated_interfaces/associated_interface_provider.h"
 #include "third_party/blink/public/common/dom/dom_node_id.h"
-#include "ui/display/screen.h"
+#include "third_party/blink/public/common/tokens/tokens.h"
+#include "third_party/blink/public/mojom/frame/user_activation_notification_type.mojom-shared.h"
 #include "ui/gfx/codec/jpeg_codec.h"
 
-#if !BUILDFLAG(IS_ANDROID)
+#if BUILDFLAG(IS_ANDROID)
+#include "chrome/browser/tab_list/tab_list_interface.h"
+#endif
+
+#if BUILDFLAG(IS_DESKTOP_ANDROID)
+#include "chrome/browser/ui/android/ai_overlay_dialog/ai_overlay_dialog_bridge.h"
+#else
 #include "chrome/browser/ui/actions/chrome_action_id.h"
 #include "chrome/browser/ui/browser_actions.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
@@ -61,9 +81,16 @@ namespace {
 content::WebContents* GetActiveWebContentsFromBrowser(
     BrowserWindowInterface* browser) {
 #if !BUILDFLAG(IS_ANDROID)
-  return browser->GetTabStripModel()->GetActiveWebContents();
+  return browser ? browser->GetTabStripModel()->GetActiveWebContents()
+                 : nullptr;
 #else
-  return nullptr;
+  if (!browser) {
+    return nullptr;
+  }
+
+  TabListInterface* tab_list = TabListInterface::From(browser);
+  tabs::TabInterface* tab = tab_list ? tab_list->GetActiveTab() : nullptr;
+  return tab ? tab->GetContents() : nullptr;
 #endif
 }
 
@@ -113,6 +140,12 @@ class AnimatedIconSource : public gfx::CanvasImageSource {
 };
 #endif
 
+// Builds a failed ToolResponse from an AiOverlayTools error string.
+ttc::ToolResponse ToolFailure(std::string message) {
+  return ttc::ToolResponse::Error(message.empty()
+                                      ? std::string("Tool execution failed")
+                                      : std::move(message));
+}
 
 }  // namespace
 
@@ -171,7 +204,9 @@ void AiOverlayDialogPageHandler::GetMockAudioData(
 }
 
 void AiOverlayDialogPageHandler::UpdateAudioEnergy(float energy) {
-#if !BUILDFLAG(IS_ANDROID)
+#if BUILDFLAG(IS_DESKTOP_ANDROID)
+  ttc::UpdateAudioEnergyJni(browser_, energy);
+#else
   if (!overlay_action_item_) {
     overlay_action_item_ = actions::ActionManager::Get().FindAction(
         kActionShowAiOverlayDialog,
@@ -205,9 +240,9 @@ void AiOverlayDialogPageHandler::UpdateAudioEnergy(float energy) {
 
 void AiOverlayDialogPageHandler::Close() {
   if (auto* controller = AiOverlayDialogController::From(browser_)) {
-    // HideOverlay() turns off listening and closes the overlay WebUI dialog interface.
-    // TODO(crbug.com/540858790): Rename HideOverlay() to CloseOverlay() for clarity.
-    controller->HideOverlay();
+    // CloseOverlay() turns off listening and closes the overlay WebUI dialog
+    // interface.
+    controller->CloseOverlay();
   }
 }
 
@@ -230,7 +265,7 @@ void AiOverlayDialogPageHandler::DidChangePage(
                         : std::nullopt,
       content);
 
-  if (ttc_mes_client_ && ttc_mes_client_->is_connected()) {
+  if (ttc_mes_client_ && ttc_mes_client_->is_transport_connected()) {
     PageContextMonitor* pcm =
         untrusted_ui_ ? untrusted_ui_->page_context_monitor() : nullptr;
     if (pcm && pcm->last_page_content().has_value()) {
@@ -243,12 +278,14 @@ void AiOverlayDialogPageHandler::DidChangePage(
 
 void AiOverlayDialogPageHandler::UpdateCurrentPageContext(
     const std::u16string& title,
-    ai_overlay_dialog::mojom::PageContentNodePtr root_node) {
+    ai_overlay_dialog::mojom::PageContentNodePtr root_node,
+    std::vector<ai_overlay_dialog::mojom::WebMcpToolDefinitionPtr>
+        webmcp_tools) {
   VLOG(1) << "Update Current Page Context";
   VLOG(1) << "\tTitle: " << base::UTF16ToUTF8(title);
 
-  page_->UpdateCurrentPageContext(base::UTF16ToUTF8(title),
-                                  std::move(root_node));
+  page_->UpdateCurrentPageContext(
+      base::UTF16ToUTF8(title), std::move(root_node), std::move(webmcp_tools));
 }
 
 void AiOverlayDialogPageHandler::OnInputCaptionsVisibleChanged(bool visible) {
@@ -265,29 +302,13 @@ void AiOverlayDialogPageHandler::OnUsePersonaChanged(bool use_persona) {
 
 void AiOverlayDialogPageHandler::GetCursorPosition(
     GetCursorPositionCallback callback) {
-  display::Screen* screen = display::Screen::Get();
-  if (!screen) {
+  PageContextMonitor* monitor =
+      untrusted_ui_ ? untrusted_ui_->page_context_monitor() : nullptr;
+  if (!monitor) {
     std::move(callback).Run(std::nullopt);
     return;
   }
-  gfx::Point cursor_screen = screen->GetCursorScreenPoint();
-
-  content::WebContents* web_contents =
-      GetActiveWebContentsFromBrowser(browser_);
-
-  if (!web_contents) {
-    std::move(callback).Run(std::nullopt);
-    return;
-  }
-
-  gfx::Rect tab_bounds = web_contents->GetContainerBounds();
-  if (!tab_bounds.Contains(cursor_screen)) {
-    std::move(callback).Run(std::nullopt);
-    return;
-  }
-
-  gfx::Point cursor_local = cursor_screen - tab_bounds.OffsetFromOrigin();
-  std::move(callback).Run(cursor_local);
+  std::move(callback).Run(monitor->GetCursorPosition());
 }
 
 void AiOverlayDialogPageHandler::CaptureRawViewportRegion(
@@ -334,9 +355,9 @@ void AiOverlayDialogPageHandler::CaptureRawViewportRegion(
               return;
             }
 
-            std::string b64_data = base::Base64Encode(*jpeg_bytes);
             auto res = ai_overlay_dialog::mojom::RawViewportRegionResult::New();
-            res->jpeg_data_b64 = b64_data;
+            res->jpeg_bytes =
+                mojo_base::BigBuffer(base::as_byte_span(*jpeg_bytes));
             res->width = bitmap.width();
             res->height = bitmap.height();
             res->scale_factor = scale;
@@ -433,16 +454,133 @@ void AiOverlayDialogPageHandler::GetImageBytes(
           std::move(callback)));
 }
 
+void AiOverlayDialogPageHandler::ExecuteWebMcpTool(
+    const std::string& tool_name,
+    ::base::Value args,
+    ExecuteWebMcpToolCallback callback) {
+  if (!features::kAiOverlayDialogPageTools.Get()) {
+    std::move(callback).Run(base::unexpected("Page tools are not enabled."));
+    return;
+  }
+
+  content::WebContents* web_contents =
+      GetActiveWebContentsFromBrowser(browser_);
+  if (!web_contents || !web_contents->GetPrimaryMainFrame()) {
+    std::move(callback).Run(base::unexpected("No active browser tab."));
+    return;
+  }
+
+  content::RenderFrameHost* rfh = web_contents->GetPrimaryMainFrame();
+
+  PageContextMonitor* page_context_monitor =
+      untrusted_ui_ ? untrusted_ui_->page_context_monitor() : nullptr;
+
+  // 1. TOCTOU Check: Verify the primary main frame's DocumentIdentifier still
+  // matches the document snapshot from which PageContextMonitor extracted the
+  // tools.
+  auto current_doc_id = optimization_guide::DocumentIdentifierUserData::
+                            GetOrCreateForCurrentDocument(rfh)
+                                ->token();
+  if (!page_context_monitor ||
+      current_doc_id != page_context_monitor->active_document_id()) {
+    std::move(callback).Run(base::unexpected(
+        "The active page changed or navigated away since the tool was "
+        "discovered."));
+    return;
+  }
+
+  // 2. Verify tool exists on the current document and check consequential
+  // annotation.
+  const CachedWebMcpTool* tool_meta =
+      page_context_monitor->GetWebMcpTool(tool_name);
+  if (!tool_meta) {
+    std::move(callback).Run(base::unexpected(
+        "Unknown WebMCP tool on active document: " + tool_name));
+    return;
+  }
+
+  if (tool_meta->consequential) {
+    // TODO(gklassen): Require verbal confirmation from the user before
+    // executing consequential (state-mutating) WebMCP tools once verbal
+    // confirmation is implemented.
+    DVLOG(1)
+        << "Executing consequential WebMCP tool without verbal confirmation: "
+        << tool_name;
+  }
+
+  // 3. Construct ToolInvocation and invoke directly on ChromeRenderFrame.
+  std::string arguments_json;
+  if (args.is_string()) {
+    arguments_json = args.GetString();
+  } else if (!base::JSONWriter::Write(args, &arguments_json)) {
+    arguments_json = "{}";
+  }
+
+  auto invocation = actor::mojom::ToolInvocation::New();
+  invocation->task_id = actor::TaskId();
+  invocation->execution_id = blink::ToolInvocationToken();
+  auto script_action = actor::mojom::ScriptToolAction::New();
+  script_action->name = tool_name;
+  script_action->input_arguments = std::move(arguments_json);
+  invocation->action =
+      actor::mojom::ToolAction::NewScriptTool(std::move(script_action));
+  invocation->target =
+      actor::mojom::ToolTarget::NewDomNodeId(actor::kRootElementDomNodeId);
+
+  // Provide transient user activation to the frame so WebMCP navigations are
+  // permitted.
+  rfh->NotifyUserActivation(
+      blink::mojom::UserActivationNotificationType::kActorWebMCP);
+
+  mojo::AssociatedRemote<chrome::mojom::ChromeRenderFrame> render_frame;
+  rfh->GetRemoteAssociatedInterfaces()->GetInterface(&render_frame);
+  auto* raw_render_frame = render_frame.get();
+
+  raw_render_frame->InvokeTool(
+      std::move(invocation),
+      base::BindOnce(&AiOverlayDialogPageHandler::OnWebMcpToolInvoked,
+                     weak_factory_.GetWeakPtr(), std::move(render_frame),
+                     std::move(callback)));
+}
+
+void AiOverlayDialogPageHandler::OnWebMcpToolInvoked(
+    mojo::AssociatedRemote<chrome::mojom::ChromeRenderFrame> /*keep_alive*/,
+    ExecuteWebMcpToolCallback callback,
+    actor::mojom::ActionResultPtr result) {
+  constexpr size_t kMaxWebMcpResultBytes = 16 * 1024;  // 16 KB cap
+
+  if (!result || !result->script_tool_response ||
+      !result->script_tool_response->result.has_value()) {
+    std::move(callback).Run(base::unexpected(
+        "WebMCP tool execution failed or returned no result."));
+    return;
+  }
+
+  std::string output = result->script_tool_response->result.value();
+  if (output.size() > kMaxWebMcpResultBytes) {
+    output.resize(kMaxWebMcpResultBytes);
+  }
+
+  std::optional<base::Value> parsed =
+      base::JSONReader::Read(output, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
+  if (parsed.has_value()) {
+    std::move(callback).Run(base::ok(std::move(*parsed)));
+  } else {
+    std::move(callback).Run(base::ok(base::Value(std::move(output))));
+  }
+}
+
 void AiOverlayDialogPageHandler::StartStreamingSession() {
   if (!features::kAiOverlayDialogUseMes.Get()) {
     VLOG(1) << "StartStreamingSession called but use_mes is disabled";
     return;
   }
   if (!ttc_mes_client_) {
-    ttc_mes_client_ =
-        std::make_unique<TtcMesClient>(browser_->GetProfile(), this);
+    ttc_mes_client_ = std::make_unique<TtcMesClient>(
+        OptimizationGuideKeyedServiceFactory::GetForProfile(
+            browser_->GetProfile()));
   }
-  ttc_mes_client_->Connect();
+  ttc_mes_client_->Connect(this);
   SendToolSetUpdate();
 }
 
@@ -548,25 +686,29 @@ void AiOverlayDialogPageHandler::SendToolSetUpdate() {
 }
 
 void AiOverlayDialogPageHandler::SendAudioChunk(mojo_base::BigBuffer pcm_data) {
-  if (ttc_mes_client_ && ttc_mes_client_->is_connected()) {
-    auto span = base::span(pcm_data);
-    std::vector<uint8_t> data(span.begin(), span.end());
-    ttc_mes_client_->SendAudioChunk(data);
+  if (ttc_mes_client_ && ttc_mes_client_->is_transport_connected()) {
+    // The renderer sends signed PCM16 samples packed as little-endian bytes.
+    // The buffer length is renderer-controlled, so validate it holds a whole
+    // number of samples before reinterpreting; reinterpret_span() would
+    // otherwise CHECK-fail on a compromised renderer's input.
+    base::span<const uint8_t> bytes = base::span(pcm_data);
+    if (bytes.size() % sizeof(int16_t) != 0) {
+      mojo::ReportBadMessage("Audio chunk is not a whole number of samples");
+      return;
+    }
+    ttc_mes_client_->SendAudioChunk(
+        base::subtle::reinterpret_span<const int16_t>(bytes));
   }
 }
 
 void AiOverlayDialogPageHandler::SendTextInput(const std::string& text) {
-  if (ttc_mes_client_ && ttc_mes_client_->is_connected()) {
+  if (ttc_mes_client_ && ttc_mes_client_->is_transport_connected()) {
     ttc_mes_client_->SendTextInput(text);
   }
 }
 
 void AiOverlayDialogPageHandler::ReportPlaybackStatus(
-    int64_t last_played_sequence_number) {
-  if (ttc_mes_client_ && ttc_mes_client_->is_connected()) {
-    ttc_mes_client_->ReportPlaybackStatus(last_played_sequence_number);
-  }
-}
+    int64_t last_played_sequence_number) {}
 
 void AiOverlayDialogPageHandler::StopStreamingSession() {
   if (ttc_mes_client_) {
@@ -574,12 +716,28 @@ void AiOverlayDialogPageHandler::StopStreamingSession() {
   }
 }
 
-void AiOverlayDialogPageHandler::OnStreamingStateChanged(
-    bool connected,
-    const std::string& session_id,
-    const std::string& error_message) {
+void AiOverlayDialogPageHandler::OnBackendInitialized() {
   if (page_.is_bound()) {
-    page_->OnStreamingSessionStateChanged(connected, session_id, error_message);
+    page_->OnStreamingSessionStateChanged(/*connected=*/true,
+                                          /*session_id=*/"",
+                                          /*error_message=*/"");
+  }
+}
+
+void AiOverlayDialogPageHandler::OnBackendClosed() {
+  if (page_.is_bound()) {
+    page_->OnStreamingSessionStateChanged(/*connected=*/false,
+                                          /*session_id=*/"",
+                                          /*error_message=*/"");
+  }
+}
+
+void AiOverlayDialogPageHandler::OnBackendError(ErrorCode error) {
+  if (page_.is_bound()) {
+    page_->OnStreamingSessionStateChanged(
+        /*connected=*/false, /*session_id=*/"",
+        base::StrCat({"TTC error code ",
+                      base::NumberToString(static_cast<int>(error))}));
   }
 }
 
@@ -592,10 +750,10 @@ void AiOverlayDialogPageHandler::OnTranscriptions(
 }
 
 void AiOverlayDialogPageHandler::OnAudioOutput(
-    const std::vector<uint8_t>& audio_data,
+    base::span<const int16_t> audio_data,
     int64_t sequence_number) {
   if (page_.is_bound()) {
-    mojo_base::BigBuffer buffer(audio_data);
+    mojo_base::BigBuffer buffer(base::as_byte_span(audio_data));
     page_->OnAudioOutput(std::move(buffer), sequence_number);
   }
 }
@@ -608,6 +766,13 @@ void AiOverlayDialogPageHandler::OnGenerationStateChanged(bool started,
   }
 }
 
+void AiOverlayDialogPageHandler::OnModelTurnStateUpdate(
+    ModelTurnStateUpdate update,
+    int64_t generation_id) {}
+
+void AiOverlayDialogPageHandler::OnUserTurnStateUpdate(
+    UserTurnStateUpdate update) {}
+
 void AiOverlayDialogPageHandler::OnToolCall(
     const ToolRequest& tool_request,
     ToolResponseCallback response_callback) {
@@ -617,28 +782,20 @@ void AiOverlayDialogPageHandler::OnToolCall(
           << ", args=" << arguments;
 
   auto send_error = [&response_callback](std::string error_message) {
-    base::DictValue dict;
-    dict.Set("error", std::move(error_message));
-    std::move(response_callback).Run(std::move(dict));
+    std::move(response_callback).Run(ToolFailure(std::move(error_message)));
   };
 
   auto send_status_ok = [&response_callback]() {
-    base::DictValue dict;
-    dict.Set("status", "ok");
-    std::move(response_callback).Run(std::move(dict));
+    std::move(response_callback).Run(ToolResponse::Success());
   };
 
   auto make_status_cb = [](ToolResponseCallback callback) {
     return base::BindOnce(
         [](ToolResponseCallback cb,
            base::expected<std::monostate, std::string> result) {
-          base::DictValue dict;
-          if (result.has_value()) {
-            dict.Set("status", "ok");
-          } else {
-            dict.Set("error", result.error());
-          }
-          std::move(cb).Run(std::move(dict));
+          std::move(cb).Run(result.has_value()
+                                ? ToolResponse::Success()
+                                : ToolFailure(std::move(result.error())));
         },
         std::move(callback));
   };
@@ -662,7 +819,7 @@ void AiOverlayDialogPageHandler::OnToolCall(
     AiOverlayDialogController* controller =
         AiOverlayDialogController::From(browser_);
     if (controller) {
-      controller->HideOverlay();
+      controller->CloseOverlay();
     }
     send_status_ok();
     return;
@@ -755,17 +912,16 @@ void AiOverlayDialogPageHandler::OnToolCall(
             [](ToolResponseCallback cb,
                base::expected<ai_overlay_dialog::mojom::SwitchTabResultPtr,
                               std::string> result) {
-              base::DictValue dict;
-              if (result.has_value() && result.value()) {
-                dict.Set("status", "ok");
-                dict.Set("title", result.value()->title);
-                dict.Set("url", result.value()->url.spec());
-                dict.Set("tab_id", result.value()->tab_id);
-              } else {
-                dict.Set("error",
-                         result.has_value() ? "Null result" : result.error());
+              if (!result.has_value() || !result.value()) {
+                std::move(cb).Run(ToolFailure(
+                    result.has_value() ? "Null result" : result.error()));
+                return;
               }
-              std::move(cb).Run(std::move(dict));
+              base::DictValue dict;
+              dict.Set("title", result.value()->title);
+              dict.Set("url", result.value()->url.spec());
+              dict.Set("tab_id", result.value()->tab_id);
+              std::move(cb).Run(ToolResponse::Success(std::move(dict)));
             },
             std::move(response_callback)));
     return;
@@ -858,27 +1014,27 @@ void AiOverlayDialogPageHandler::OnToolCall(
       send_error("Missing query parameter");
       return;
     }
-    tools->OpenPage(*query,
-                    base::BindOnce(
-                        [](ToolResponseCallback cb,
-                           base::expected<std::string, std::string> result) {
-                          base::DictValue dict;
-                          if (result.has_value()) {
-                            std::optional<base::DictValue> parsed =
-                                base::JSONReader::ReadDict(
-                                    result.value(),
-                                    base::JSON_PARSE_CHROMIUM_EXTENSIONS);
-                            if (parsed) {
-                              dict = std::move(*parsed);
-                            } else {
-                              dict.Set("result", result.value());
-                            }
-                          } else {
-                            dict.Set("error", result.error());
-                          }
-                          std::move(cb).Run(std::move(dict));
-                        },
-                        std::move(response_callback)));
+    tools->OpenPage(
+        *query, base::BindOnce(
+                    [](ToolResponseCallback cb,
+                       base::expected<std::string, std::string> result) {
+                      if (!result.has_value()) {
+                        std::move(cb).Run(ToolFailure(result.error()));
+                        return;
+                      }
+                      std::optional<base::DictValue> parsed =
+                          base::JSONReader::ReadDict(
+                              result.value(),
+                              base::JSON_PARSE_CHROMIUM_EXTENSIONS);
+                      base::DictValue dict;
+                      if (parsed) {
+                        dict = std::move(*parsed);
+                      } else {
+                        dict.Set("result", result.value());
+                      }
+                      std::move(cb).Run(ToolResponse::Success(std::move(dict)));
+                    },
+                    std::move(response_callback)));
     return;
   }
 
@@ -928,23 +1084,53 @@ void AiOverlayDialogPageHandler::OnToolCall(
       return;
     }
     tools->OpenGeminiPanel(
-        *prompt, base::BindOnce(
-                     [](ToolResponseCallback cb,
-                        base::expected<std::string, std::string> result) {
-                       base::DictValue dict;
-                       if (result.has_value()) {
-                         dict.Set("status", "ok");
-                         dict.Set("message", result.value());
-                       } else {
-                         dict.Set("error", result.error());
-                       }
-                       std::move(cb).Run(std::move(dict));
-                     },
-                     std::move(response_callback)));
+        *prompt,
+        base::BindOnce(
+            [](ToolResponseCallback cb,
+               base::expected<std::string, std::string> result) {
+              if (!result.has_value()) {
+                std::move(cb).Run(ToolFailure(result.error()));
+                return;
+              }
+              base::DictValue dict;
+              dict.Set("message", result.value());
+              std::move(cb).Run(ToolResponse::Success(std::move(dict)));
+            },
+            std::move(response_callback)));
+    return;
+  }
+
+  if (base::StartsWith(name, "webmcp_")) {
+    std::string raw_tool_name = name.substr(7);
+    ExecuteWebMcpTool(
+        raw_tool_name, base::Value(arguments.Clone()),
+        base::BindOnce(
+            [](ToolResponseCallback cb,
+               base::expected<base::Value, std::string> result) {
+              if (!result.has_value()) {
+                std::move(cb).Run(ToolFailure(result.error()));
+                return;
+              }
+              base::DictValue dict;
+              dict.Set("status", "ok");
+              dict.Set("result", std::move(result.value()));
+              std::move(cb).Run(ToolResponse::Success(std::move(dict)));
+            },
+            std::move(response_callback)));
     return;
   }
 
   send_error(base::StrCat({"Unknown tool: ", name}));
 }
+
+void AiOverlayDialogPageHandler::OnToolCallBatch(
+    std::vector<PendingToolCall> tool_calls) {
+  for (PendingToolCall& tool_call : tool_calls) {
+    OnToolCall(tool_call.request, std::move(tool_call.callback));
+  }
+}
+
+void AiOverlayDialogPageHandler::OnJournalEvent(
+    const ServerJournalEvent& journal_event) {}
 
 }  // namespace ttc

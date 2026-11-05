@@ -7,6 +7,7 @@
 
 #include <memory>
 
+#include "base/test/scoped_feature_list.h"
 #include "base/test/scoped_run_loop_timeout.h"
 #include "chrome/browser/ui/animation/browser_animation_controller.h"
 #include "chrome/browser/ui/browser_actions.h"
@@ -88,8 +89,6 @@ class OrganizerPanelTestBase
 
   MultiStep HidePanel();
 
-  StepBuilder SetExclusion(int width, int height);
-
   OrganizerTrayView* tray_view() { return browser_view_->tray_view(); }
   FakeVerticalTabStrip* tab_strip() {
     return browser_view_->fake_vertical_tab_strip();
@@ -111,6 +110,7 @@ class OrganizerPanelTestBase
   raw_ptr<views::View> panel_;
   raw_ptr<actions::ActionItem> root_action_;
   std::unique_ptr<base::test::ScopedRunLoopTimeout> run_loop_timeout_;
+  base::test::ScopedFeatureList feature_list_;
 };
 
 }  // namespace organizer_panel::test

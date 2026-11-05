@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 
+#include "base/test/gtest_util.h"
 #include "cc/animation/animation.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_timeline_range_offset.h"
@@ -29,8 +30,12 @@
 #include "third_party/blink/renderer/core/css/cssom/css_numeric_value.h"
 #include "third_party/blink/renderer/core/css/post_style_update_scope.h"
 #include "third_party/blink/renderer/core/css/properties/computed_style_utils.h"
+#include "third_party/blink/renderer/core/css/properties/longhands.h"
+#include "third_party/blink/renderer/core/css/resolver/style_resolver.h"
+#include "third_party/blink/renderer/core/css/style_recalc_context.h"
 #include "third_party/blink/renderer/core/dom/dom_token_list.h"
 #include "third_party/blink/renderer/core/dom/pseudo_element.h"
+#include "third_party/blink/renderer/core/dom/shadow_root.h"
 #include "third_party/blink/renderer/core/frame/local_dom_window.h"
 #include "third_party/blink/renderer/core/html_names.h"
 #include "third_party/blink/renderer/core/layout/layout_object.h"
@@ -38,6 +43,8 @@
 #include "third_party/blink/renderer/core/layout/physical_box_fragment.h"
 #include "third_party/blink/renderer/core/page/page_animator.h"
 #include "third_party/blink/renderer/core/style/style_animated_sources.h"
+#include "third_party/blink/renderer/core/style/style_highlight_data.h"
+#include "third_party/blink/renderer/core/testing/color_scheme_helper.h"
 #include "third_party/blink/renderer/core/testing/core_unit_test_helper.h"
 #include "third_party/blink/renderer/platform/animation/compositor_animation.h"
 #include "third_party/blink/renderer/platform/animation/compositor_animation_delegate.h"
@@ -178,7 +185,7 @@ TEST_P(CSSAnimationsTest, RetargetedTransition) {
     </style>
     <div id='test'>TEST</div>
   )HTML");
-  Element* element = GetDocument().getElementById(AtomicString("test"));
+  Element* element = GetElementById("test");
   element->setAttribute(html_names::kClassAttr, AtomicString("contrast1"));
   UpdateAllLifecyclePhasesForTest();
   ElementAnimations* animations = element->GetElementAnimations();
@@ -212,7 +219,7 @@ TEST_P(CSSAnimationsTest, IncompatibleRetargetedTransition) {
     </style>
     <div id='test'>TEST</div>
   )HTML");
-  Element* element = GetDocument().getElementById(AtomicString("test"));
+  Element* element = GetElementById("test");
   element->setAttribute(html_names::kClassAttr, AtomicString("saturate"));
   UpdateAllLifecyclePhasesForTest();
   ElementAnimations* animations = element->GetElementAnimations();
@@ -252,7 +259,7 @@ TEST_P(CSSAnimationsTest, AnimationFlags_Transitions) {
     </style>
     <div id=test></div>
   )HTML");
-  Element* element = GetDocument().getElementById(AtomicString("test"));
+  Element* element = GetElementById("test");
   EXPECT_FALSE(element->ComputedStyleRef().HasCurrentFilterAnimation());
 
   // Newly created transition:
@@ -289,7 +296,7 @@ TEST_P(CSSAnimationsTest, AnimationFlags_Animations) {
     </style>
     <div id=test></div>
   )HTML");
-  Element* element = GetDocument().getElementById(AtomicString("test"));
+  Element* element = GetElementById("test");
   EXPECT_FALSE(element->ComputedStyleRef().HasCurrentOpacityAnimation());
   EXPECT_FALSE(element->ComputedStyleRef().HasCurrentTransformAnimation());
 
@@ -326,6 +333,366 @@ TEST_P(CSSAnimationsTest, AnimationFlags_Animations) {
   UpdateAllLifecyclePhasesForTest();
   EXPECT_FALSE(element->ComputedStyleRef().HasCurrentOpacityAnimation());
   EXPECT_TRUE(element->ComputedStyleRef().HasCurrentTransformAnimation());
+}
+
+// A backdrop-filter animation whose value can't change is still a current
+// backdrop-filter animation, but it isn't a dynamic one, so it doesn't get a
+// composited backdrop-filter effect, which would require render surfaces for
+// the element and for its backdrop root.
+TEST_P(CSSAnimationsTest, AnimationFlags_StaticBackdropFilter) {
+  SetBodyInnerHTML(R"HTML(
+    <style>
+      @keyframes from-none { from { backdrop-filter: none; } }
+      @keyframes none-to-none {
+        from { backdrop-filter: none; }
+        to { backdrop-filter: none; }
+      }
+      @keyframes blur-to-blur {
+        from { backdrop-filter: blur(5px); }
+        to { backdrop-filter: blur(5px); }
+      }
+      @keyframes from-blur { from { backdrop-filter: blur(10px); } }
+      #test.from-none { animation: from-none 1s; }
+      #test.none-to-none { animation: none-to-none 1s; }
+      #test.blur-to-blur { animation: blur-to-blur 1s; }
+      #test.from-blur { animation: from-blur 1s; }
+      #test.blur { backdrop-filter: blur(5px); }
+    </style>
+    <div id=test></div>
+  )HTML");
+  Element* element = GetElementById("test");
+  enum class Result { kNoAnimation, kStatic, kDynamic };
+  auto backdrop_filter_animation = [&](const char* classes) {
+    element->setAttribute(html_names::kClassAttr, AtomicString(classes));
+    UpdateAllLifecyclePhasesForTest();
+    const ComputedStyle& style = element->ComputedStyleRef();
+    if (!style.HasCurrentBackdropFilterAnimation()) {
+      EXPECT_FALSE(style.HasCurrentDynamicBackdropFilterAnimation());
+      return Result::kNoAnimation;
+    }
+    return style.HasCurrentDynamicBackdropFilterAnimation() ? Result::kDynamic
+                                                            : Result::kStatic;
+  };
+
+  EXPECT_EQ(Result::kNoAnimation, backdrop_filter_animation(""));
+  // New animations from `none` to the underlying value `none`.
+  EXPECT_EQ(Result::kStatic, backdrop_filter_animation("from-none"));
+  EXPECT_EQ(Result::kStatic, backdrop_filter_animation("none-to-none"));
+  // An animation with the same value throughout, other than `none`.
+  EXPECT_EQ(Result::kStatic, backdrop_filter_animation("blur-to-blur"));
+  // An animation whose value changes.
+  EXPECT_EQ(Result::kDynamic, backdrop_filter_animation("from-blur"));
+  // A running animation from `none`, after the underlying value changes.
+  EXPECT_EQ(Result::kStatic, backdrop_filter_animation("from-none"));
+  EXPECT_EQ(Result::kDynamic, backdrop_filter_animation("from-none blur"));
+  // A property found to be dynamic stays dynamic for the same keyframes, see
+  // KeyframeEffectModelBase::PropertySpecificKeyframeGroup::StaticCheckResult.
+  EXPECT_EQ(Result::kDynamic, backdrop_filter_animation("from-none"));
+
+  {
+    ScopedSkipCompositingStaticBackdropFilterAnimationForTest disabled(false);
+    EXPECT_EQ(Result::kDynamic, backdrop_filter_animation("none-to-none"));
+  }
+}
+
+// Per https://drafts.csswg.org/web-animations-1/#side-effects-section, an
+// element with a current backdrop-filter animation acts as if it had
+// `will-change: backdrop-filter`, which makes it a stacking context regardless
+// of the animated values.
+TEST_P(CSSAnimationsTest, NoneBackdropFilterAnimationIsStackingContext) {
+  SetBodyInnerHTML(R"HTML(
+    <style>
+      @keyframes none-to-none {
+        from { backdrop-filter: none; }
+        to { backdrop-filter: none; }
+      }
+      @keyframes from-none { from { backdrop-filter: none; } }
+      #test.none-to-none { animation: none-to-none 1s; }
+      #test.from-none { animation: from-none 1s; }
+    </style>
+    <div id=test></div>
+  )HTML");
+  Element* element = GetElementById("test");
+  auto is_stacking_context = [&](const char* classes) {
+    element->setAttribute(html_names::kClassAttr, AtomicString(classes));
+    UpdateAllLifecyclePhasesForTest();
+    return element->ComputedStyleRef().IsStackingContextWithoutContainment();
+  };
+
+  EXPECT_FALSE(is_stacking_context(""));
+  EXPECT_TRUE(is_stacking_context("none-to-none"));
+  EXPECT_FALSE(is_stacking_context(""));
+  EXPECT_TRUE(is_stacking_context("from-none"));
+}
+
+// StyleRecalcContext::has_animating_ancestor disables the transition: all
+// fast path for every descendant, so it must be set only while an ancestor
+// actually animates, not for as long as its ElementAnimations object exists.
+TEST_P(CSSAnimationsTest, AnimatingAncestorFlagFollowsRunningAnimations) {
+  SetBodyInnerHTML(R"HTML(
+    <style>
+      #ancestor { width: 100px; transition: width 1s linear; }
+      #ancestor.wide { width: 200px; }
+    </style>
+    <div id="ancestor"><div id="child"></div></div>
+  )HTML");
+  Element* ancestor = GetElementById("ancestor");
+  Element* child = GetElementById("child");
+  EXPECT_FALSE(
+      StyleRecalcContext::FromAncestors(*child).has_animating_ancestor);
+
+  // A CSS transition on the ancestor.
+  ancestor->setAttribute(html_names::kClassAttr, AtomicString("wide"));
+  UpdateAllLifecyclePhasesForTest();
+  ASSERT_TRUE(ancestor->GetElementAnimations());
+  EXPECT_TRUE(StyleRecalcContext::FromAncestors(*child).has_animating_ancestor);
+
+  AdvanceClockSeconds(1.5);
+  UpdateAllLifecyclePhasesForTest();
+  // The finished transition's Animation still waits to be collected.
+  EXPECT_TRUE(ancestor->GetElementAnimations());
+  EXPECT_FALSE(
+      StyleRecalcContext::FromAncestors(*child).has_animating_ancestor);
+
+  // A script animation on the ancestor. A main-thread property, so that the
+  // animation does not depend on a compositor start notification.
+  Timing timing;
+  timing.iteration_duration = ANIMATION_TIME_DELTA_FROM_SECONDS(1);
+  auto* effect = MakeGarbageCollected<KeyframeEffect>(
+      ancestor,
+      animation_test_helpers::CreateSimpleKeyframeEffectModelForTest(
+          CSSPropertyID::kColor, "red", "blue"),
+      timing);
+  Animation* animation = GetDocument().Timeline().Play(effect);
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_EQ(V8AnimationPlayState::Enum::kRunning,
+            animation->CalculateAnimationPlayState());
+  EXPECT_TRUE(StyleRecalcContext::FromAncestors(*child).has_animating_ancestor);
+
+  AdvanceClockSeconds(2);
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_EQ(V8AnimationPlayState::Enum::kFinished,
+            animation->CalculateAnimationPlayState());
+  EXPECT_TRUE(ancestor->GetElementAnimations());
+  EXPECT_FALSE(
+      StyleRecalcContext::FromAncestors(*child).has_animating_ancestor);
+}
+
+// A CSS animation that has finished is still named by the animation property,
+// so CSSAnimations keeps its (finished) animation object around. That must not
+// count as an active effect.
+TEST_P(CSSAnimationsTest, AnimatingAncestorFlagClearsWhenCssAnimationEnds) {
+  SetBodyInnerHTML(R"HTML(
+    <style>
+      @keyframes color { from { color: red; } }
+      #target { animation: color 100ms; color: lime; }
+    </style>
+    <div id="target"><div id="child"></div></div>
+  )HTML");
+  Element* child = GetElementById("child");
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_TRUE(StyleRecalcContext::FromAncestors(*child).has_animating_ancestor);
+
+  AdvanceClockSeconds(1);
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_FALSE(
+      StyleRecalcContext::FromAncestors(*child).has_animating_ancestor);
+
+  // Nor does a later restyle of the ancestor bring it back.
+  GetDocument().documentElement()->setAttribute(html_names::kStyleAttr,
+                                                AtomicString("--x: 1"));
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_FALSE(
+      StyleRecalcContext::FromAncestors(*child).has_animating_ancestor);
+}
+
+// The animation is applied in the effect stack when its timing is updated at
+// the start of the style update, before any style recalc that reads the flag,
+// so an animation started since the last frame is already counted.
+TEST_P(CSSAnimationsTest, AnimatingAncestorFlagSetForNewAnimationBeforeFrame) {
+  SetBodyInnerHTML(R"HTML(
+    <div id="ancestor"><div id="child"></div></div>
+  )HTML");
+  Element* ancestor = GetElementById("ancestor");
+  Element* child = GetElementById("child");
+  ASSERT_FALSE(
+      StyleRecalcContext::FromAncestors(*child).has_animating_ancestor);
+
+  Timing timing;
+  timing.iteration_duration = ANIMATION_TIME_DELTA_FROM_SECONDS(1);
+  auto* effect = MakeGarbageCollected<KeyframeEffect>(
+      ancestor,
+      animation_test_helpers::CreateSimpleKeyframeEffectModelForTest(
+          CSSPropertyID::kColor, "red", "blue"),
+      timing);
+  GetDocument().Timeline().Play(effect);
+  // No frame has run; this is what getComputedStyle() would do.
+  GetDocument().UpdateStyleAndLayoutTree();
+  EXPECT_TRUE(StyleRecalcContext::FromAncestors(*child).has_animating_ancestor);
+}
+
+// An animation that finished but fills forwards, or that is paused, still has
+// an effect on the ancestor's style, so descendants keep seeing it.
+TEST_P(CSSAnimationsTest, AnimatingAncestorFlagWhileEffectStillApplies) {
+  SetBodyInnerHTML(R"HTML(
+    <div id="ancestor"><div id="child"></div></div>
+  )HTML");
+  Element* ancestor = GetElementById("ancestor");
+  Element* child = GetElementById("child");
+  auto make_animation = [&](Timing::FillMode fill_mode) {
+    Timing timing;
+    timing.iteration_duration = ANIMATION_TIME_DELTA_FROM_SECONDS(1);
+    timing.fill_mode = fill_mode;
+    auto* effect = MakeGarbageCollected<KeyframeEffect>(
+        ancestor,
+        animation_test_helpers::CreateSimpleKeyframeEffectModelForTest(
+            CSSPropertyID::kColor, "red", "blue"),
+        timing);
+    return GetDocument().Timeline().Play(effect);
+  };
+
+  Animation* filling = make_animation(Timing::FillMode::FORWARDS);
+  UpdateAllLifecyclePhasesForTest();
+  AdvanceClockSeconds(2);
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_EQ(V8AnimationPlayState::Enum::kFinished,
+            filling->CalculateAnimationPlayState());
+  EXPECT_TRUE(StyleRecalcContext::FromAncestors(*child).has_animating_ancestor);
+
+  // Once it no longer fills, nothing applies.
+  filling->cancel();
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_FALSE(
+      StyleRecalcContext::FromAncestors(*child).has_animating_ancestor);
+
+  Animation* paused = make_animation(Timing::FillMode::NONE);
+  UpdateAllLifecyclePhasesForTest();
+  paused->pause();
+  UpdateAllLifecyclePhasesForTest();
+  AdvanceClockSeconds(5);
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_EQ(V8AnimationPlayState::Enum::kPaused,
+            paused->CalculateAnimationPlayState());
+  EXPECT_TRUE(StyleRecalcContext::FromAncestors(*child).has_animating_ancestor);
+
+  // Playing it again to the end, then cancelling, both stop applying.
+  paused->cancel();
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_FALSE(
+      StyleRecalcContext::FromAncestors(*child).has_animating_ancestor);
+}
+
+// Before its start delay has elapsed an animation has no effect on the style,
+// unless it fills backwards.
+TEST_P(CSSAnimationsTest, AnimatingAncestorFlagFollowsStartDelay) {
+  SetBodyInnerHTML(R"HTML(
+    <div id="ancestor"><div id="child"></div></div>
+  )HTML");
+  // The first advance of the clock moves the document timeline to the platform
+  // time; do that now so that the delays below are measured from the first
+  // frame of each animation.
+  AdvanceClockSeconds(1);
+  UpdateAllLifecyclePhasesForTest();
+  Element* ancestor = GetElementById("ancestor");
+  Element* child = GetElementById("child");
+  auto play = [&](Timing::FillMode fill_mode) {
+    Timing timing;
+    timing.iteration_duration = ANIMATION_TIME_DELTA_FROM_SECONDS(1);
+    timing.start_delay = Timing::Delay(ANIMATION_TIME_DELTA_FROM_SECONDS(2));
+    timing.fill_mode = fill_mode;
+    auto* effect = MakeGarbageCollected<KeyframeEffect>(
+        ancestor,
+        animation_test_helpers::CreateSimpleKeyframeEffectModelForTest(
+            CSSPropertyID::kColor, "red", "blue"),
+        timing);
+    return GetDocument().Timeline().Play(effect);
+  };
+
+  Animation* delayed = play(Timing::FillMode::NONE);
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_FALSE(
+      StyleRecalcContext::FromAncestors(*child).has_animating_ancestor);
+  AdvanceClockSeconds(2.5);
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_TRUE(StyleRecalcContext::FromAncestors(*child).has_animating_ancestor);
+  AdvanceClockSeconds(2);
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_FALSE(
+      StyleRecalcContext::FromAncestors(*child).has_animating_ancestor);
+  delayed->cancel();
+
+  Animation* backfilled = play(Timing::FillMode::BACKWARDS);
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_TRUE(StyleRecalcContext::FromAncestors(*child).has_animating_ancestor);
+  backfilled->cancel();
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_FALSE(
+      StyleRecalcContext::FromAncestors(*child).has_animating_ancestor);
+}
+
+// Only the ancestors of an element count: any of them, across a shadow
+// boundary too, but not the element itself and not its siblings.
+TEST_P(CSSAnimationsTest, AnimatingAncestorFlagOnlyForAncestors) {
+  SetBodyInnerHTML(R"HTML(
+    <div id="grandparent">
+      <div id="parent"><div id="child"></div></div>
+      <div id="sibling"></div>
+    </div>
+    <div id="host"></div>
+  )HTML");
+  Element* grandparent = GetElementById("grandparent");
+  Element* parent = GetElementById("parent");
+  Element* child = GetElementById("child");
+  Element* sibling = GetElementById("sibling");
+  Element* host = GetElementById("host");
+  ShadowRoot& shadow_root =
+      host->AttachShadowRootForTesting(ShadowRootMode::kOpen);
+  shadow_root.SetInnerHTMLWithoutTrustedTypes("<div id='in_shadow'></div>");
+  Element* in_shadow = shadow_root.getElementById(AtomicString("in_shadow"));
+  UpdateAllLifecyclePhasesForTest();
+
+  auto animate = [&](Element* element) {
+    Timing timing;
+    timing.iteration_duration = ANIMATION_TIME_DELTA_FROM_SECONDS(1);
+    auto* effect = MakeGarbageCollected<KeyframeEffect>(
+        element,
+        animation_test_helpers::CreateSimpleKeyframeEffectModelForTest(
+            CSSPropertyID::kColor, "red", "blue"),
+        timing);
+    return GetDocument().Timeline().Play(effect);
+  };
+  auto flag = [](Element* element) {
+    return StyleRecalcContext::FromAncestors(*element).has_animating_ancestor;
+  };
+
+  // Not the element itself, nor a sibling.
+  Animation* on_child = animate(child);
+  Animation* on_sibling = animate(sibling);
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_FALSE(flag(child));
+  EXPECT_FALSE(flag(parent));
+  EXPECT_FALSE(flag(in_shadow));
+  on_child->cancel();
+  on_sibling->cancel();
+
+  // A grandparent counts for its descendants.
+  Animation* on_grandparent = animate(grandparent);
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_TRUE(flag(parent));
+  EXPECT_TRUE(flag(child));
+  EXPECT_TRUE(flag(sibling));
+  EXPECT_FALSE(flag(grandparent));
+  EXPECT_FALSE(flag(in_shadow));
+  on_grandparent->cancel();
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_FALSE(flag(child));
+
+  // A shadow host counts for the content of its shadow tree.
+  Animation* on_host = animate(host);
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_TRUE(flag(in_shadow));
+  EXPECT_FALSE(flag(child));
+  on_host->cancel();
 }
 
 namespace {
@@ -449,7 +816,7 @@ TEST_P(CSSAnimationsTest, AllAnimationFlags_Transitions) {
     SCOPED_TRACE(html);
 
     SetBodyInnerHTML(html);
-    Element* element = GetDocument().getElementById(AtomicString("test"));
+    Element* element = GetElementById("test");
     ASSERT_TRUE(element);
     EXPECT_FALSE(data.get_flag(element->ComputedStyleRef()));
 
@@ -466,7 +833,7 @@ TEST_P(CSSAnimationsTest, AllAnimationFlags_Transitions_Compositor) {
     SCOPED_TRACE(html);
 
     SetBodyInnerHTML(html);
-    Element* element = GetDocument().getElementById(AtomicString("test"));
+    Element* element = GetElementById("test");
     ASSERT_TRUE(element);
     EXPECT_FALSE(data.get_flag(element->ComputedStyleRef()));
 
@@ -491,7 +858,7 @@ TEST_P(CSSAnimationsTest, AllAnimationFlags_CSSAnimations) {
     SCOPED_TRACE(html);
 
     SetBodyInnerHTML(html);
-    Element* element = GetDocument().getElementById(AtomicString("test"));
+    Element* element = GetElementById("test");
     ASSERT_TRUE(element);
     EXPECT_FALSE(data.get_flag(element->ComputedStyleRef()));
 
@@ -508,7 +875,7 @@ TEST_P(CSSAnimationsTest, AllAnimationFlags_CSSAnimations_Compositor) {
     SCOPED_TRACE(html);
 
     SetBodyInnerHTML(html);
-    Element* element = GetDocument().getElementById(AtomicString("test"));
+    Element* element = GetElementById("test");
     ASSERT_TRUE(element);
     EXPECT_FALSE(data.get_flag(element->ComputedStyleRef()));
 
@@ -532,7 +899,7 @@ TEST_P(CSSAnimationsTest, AllAnimationFlags_JSAnimations) {
     SCOPED_TRACE(data.property);
 
     SetBodyInnerHTML("<div id=test>Test</div>");
-    Element* element = GetDocument().getElementById(AtomicString("test"));
+    Element* element = GetElementById("test");
     ASSERT_TRUE(element);
     EXPECT_FALSE(data.get_flag(element->ComputedStyleRef()));
 
@@ -554,7 +921,7 @@ TEST_P(CSSAnimationsTest, AllAnimationFlags_JSAnimations_Compositor) {
     SCOPED_TRACE(data.property);
 
     SetBodyInnerHTML("<div id=test>Test</div>");
-    Element* element = GetDocument().getElementById(AtomicString("test"));
+    Element* element = GetElementById("test");
     ASSERT_TRUE(element);
     EXPECT_FALSE(data.get_flag(element->ComputedStyleRef()));
 
@@ -575,8 +942,6 @@ TEST_P(CSSAnimationsTest, AllAnimationFlags_JSAnimations_Compositor) {
 }
 
 TEST_P(CSSAnimationsTest, CompositedAnimationUpdateCausesPaintInvalidation) {
-  ScopedCompositeBGColorAnimationForTest scoped_feature(true);
-
   SetBodyInnerHTML(R"HTML(
     <style>
       @keyframes anim {
@@ -591,7 +956,7 @@ TEST_P(CSSAnimationsTest, CompositedAnimationUpdateCausesPaintInvalidation) {
     <div id=test>Test</div>
   )HTML");
 
-  Element* element = GetDocument().getElementById(AtomicString("test"));
+  Element* element = GetElementById("test");
   LayoutObject* lo = element->GetLayoutObject();
   ASSERT_TRUE(element);
 
@@ -673,7 +1038,7 @@ TEST_P(CSSAnimationsTest, UpdateAnimationFlags_AnimatingElement) {
     <div id=test>Test</div>
   )HTML");
 
-  Element* element = GetDocument().getElementById(AtomicString("test"));
+  Element* element = GetElementById("test");
   ASSERT_TRUE(element);
 
   Element* before = element->GetPseudoElement(kPseudoIdBefore);
@@ -771,7 +1136,7 @@ TEST_P(CSSAnimationsTest, CSSTransitionBlockedByAnimationUseCounter) {
     <div id=test class=animate>Test</div>
   )HTML");
 
-  Element* element = GetDocument().getElementById(AtomicString("test"));
+  Element* element = GetElementById("test");
   ASSERT_TRUE(element);
 
   // Verify that we see animation effects.
@@ -835,7 +1200,7 @@ class CSSAnimationsCompositorSyncTest : public CSSAnimationsTest {
       <div id='test'>TEST</div>
     )HTML");
 
-    element_ = GetDocument().getElementById(AtomicString("test"));
+    element_ = GetElementById("test");
     UpdateAllLifecyclePhasesForTest();
     ElementAnimations* animations = element_->GetElementAnimations();
     EXPECT_FALSE(animations);
@@ -1245,7 +1610,7 @@ TEST_P(CSSAnimationsTest, LingeringTimelineAttachments) {
     </div>
   )HTML");
 
-  Element* scroller = GetDocument().getElementById(AtomicString("scroller"));
+  Element* scroller = GetElementById("scroller");
   ASSERT_TRUE(scroller);
 
   ElementAnimations* element_animations = scroller->GetElementAnimations();
@@ -1662,7 +2027,7 @@ TEST_P(CSSAnimationsTest, OpacityUnchangedWhileDeferred) {
     <div id="target"></div>
   )HTML");
 
-  Element* target = GetDocument().getElementById(AtomicString("target"));
+  Element* target = GetElementById("target");
 
   // The animation must be waiting on a deferred start time.
   ElementAnimations* animations = target->GetElementAnimations();
@@ -1701,7 +2066,7 @@ TEST_P(CSSAnimationsTest, AnimationTriggerNames) {
     <div id="target"></div>
   )HTML");
 
-  Element* target = GetDocument().getElementById(AtomicString("target"));
+  Element* target = GetElementById("target");
 
   ElementAnimations* animations = target->GetElementAnimations();
   ASSERT_EQ(2u, animations->Animations().size());
@@ -1918,8 +2283,8 @@ TEST_P(CSSAnimationsTriggerTest, TimelineTriggerOnceOnly) {
     </div>
   )HTML");
 
-  Element* target = GetDocument().getElementById(AtomicString("target"));
-  Element* scroller = GetDocument().getElementById(AtomicString("scroller"));
+  Element* target = GetElementById("target");
+  Element* scroller = GetElementById("scroller");
 
   TimelineTrigger* trigger = DynamicTo<TimelineTrigger>(
       TestTriggerAssociations(*target, *scroller, AtomicString("--trigger")));
@@ -1958,7 +2323,7 @@ TEST_P(CSSAnimationsTriggerTest, TimelineTriggerAbsolutePositioned) {
   )HTML");
   UpdateAllLifecyclePhasesForTest();
 
-  Element* target = GetDocument().getElementById(AtomicString("triggered"));
+  Element* target = GetElementById("triggered");
   ASSERT_TRUE(target);
 
   ElementAnimations* animations = target->GetElementAnimations();
@@ -2002,8 +2367,8 @@ TEST_P(CSSAnimationsTriggerTest, TimelineTriggerViewOnly) {
     </div>
   )HTML");
 
-  Element* target = GetDocument().getElementById(AtomicString("target"));
-  Element* scroller = GetDocument().getElementById(AtomicString("scroller"));
+  Element* target = GetElementById("target");
+  Element* scroller = GetElementById("scroller");
 
   TimelineTrigger* trigger = DynamicTo<TimelineTrigger>(
       TestTriggerAssociations(*target, *scroller, AtomicString("--trigger")));
@@ -2050,8 +2415,8 @@ TEST_P(CSSAnimationsTriggerTest, TimelineTriggerScrollOnce) {
     </div>
   )HTML");
 
-  Element* target = GetDocument().getElementById(AtomicString("target"));
-  Element* scroller = GetDocument().getElementById(AtomicString("scroller"));
+  Element* target = GetElementById("target");
+  Element* scroller = GetElementById("scroller");
 
   TimelineTrigger* trigger = DynamicTo<TimelineTrigger>(
       TestTriggerAssociations(*target, *scroller, AtomicString("--trigger")));
@@ -2101,8 +2466,8 @@ TEST_P(CSSAnimationsTriggerTest, TimelineTriggerViewAlternate) {
     </div>
   )HTML");
 
-  Element* target = GetDocument().getElementById(AtomicString("target"));
-  Element* scroller = GetDocument().getElementById(AtomicString("scroller"));
+  Element* target = GetElementById("target");
+  Element* scroller = GetElementById("scroller");
 
   TimelineTrigger* trigger = DynamicTo<TimelineTrigger>(
       TestTriggerAssociations(*target, *scroller, AtomicString("--trigger")));
@@ -2153,8 +2518,8 @@ TEST_P(CSSAnimationsTriggerTest, TimelineTriggerViewRepeat) {
     </div>
   )HTML");
 
-  Element* target = GetDocument().getElementById(AtomicString("target"));
-  Element* scroller = GetDocument().getElementById(AtomicString("scroller"));
+  Element* target = GetElementById("target");
+  Element* scroller = GetElementById("scroller");
 
   TimelineTrigger* trigger = DynamicTo<TimelineTrigger>(
       TestTriggerAssociations(*target, *scroller, AtomicString("--trigger")));
@@ -2213,7 +2578,7 @@ TEST_P(CSSAnimationsTriggerTest, TimelineTriggerNamedTimeline) {
     </div>
   )HTML");
 
-  Element* target = GetDocument().getElementById(AtomicString("target"));
+  Element* target = GetElementById("target");
 
   TimelineTrigger* trigger = DynamicTo<TimelineTrigger>(GetTrigger(*target));
 
@@ -2268,7 +2633,7 @@ TEST_P(CSSAnimationsTriggerTest, TimelineTriggerChangeTimeline) {
     </div>
   )HTML");
 
-  Element* target = GetDocument().getElementById(AtomicString("target"));
+  Element* target = GetElementById("target");
 
   target->setAttribute(html_names::kClassAttr, AtomicString("view_trigger"));
   UpdateAllLifecyclePhasesForTest();
@@ -2363,7 +2728,7 @@ TEST_P(CSSAnimationsTriggerTest, TimelineTriggerChangeRangeStart) {
     </div>
   )HTML");
 
-  Element* target = GetDocument().getElementById(AtomicString("target"));
+  Element* target = GetElementById("target");
 
   const TimelineTrigger::RangeBoundary* normal =
       MakeGarbageCollected<TimelineTrigger::RangeBoundary>(String("normal"));
@@ -2442,7 +2807,7 @@ TEST_P(CSSAnimationsTriggerTest, NonTriggerChange) {
     </div>
   )HTML");
 
-  Element* target = GetDocument().getElementById(AtomicString("target"));
+  Element* target = GetElementById("target");
   ElementAnimations* animations = target->GetElementAnimations();
   CSSAnimation* animation =
       DynamicTo<CSSAnimation>((*animations->Animations().begin()).key.Get());
@@ -2512,7 +2877,7 @@ TEST_P(CSSAnimationsTriggerTest, DeviceScaleFactor) {
   )HTML");
   UpdateAllLifecyclePhasesForTest();
 
-  Element* target = GetDocument().getElementById(AtomicString("target"));
+  Element* target = GetElementById("target");
 
   TimelineTrigger* trigger = DynamicTo<TimelineTrigger>(GetTrigger(*target));
   const RangeBoundary* activation_range_start = trigger->ActivationRangeStart();
@@ -2577,8 +2942,8 @@ TEST_P(CSSAnimationsTriggerTest, ChangeTriggerName) {
       </div>
     </div>
   )HTML");
-  Element* target = GetDocument().getElementById(AtomicString("target"));
-  Element* scroller = GetDocument().getElementById(AtomicString("scroller"));
+  Element* target = GetElementById("target");
+  Element* scroller = GetElementById("scroller");
   ElementAnimations* animations = target->GetElementAnimations();
   CSSAnimation* animation =
       DynamicTo<CSSAnimation>((*animations->Animations().begin()).key.Get());
@@ -2678,11 +3043,11 @@ TEST_P(CSSAnimationsTriggerTest, ChangeTriggerAttachments) {
       </div>
     </div>
   )HTML");
-  Element* target = GetDocument().getElementById(AtomicString("target"));
+  Element* target = GetElementById("target");
 
-  Element* source1 = GetDocument().getElementById(AtomicString("source1"));
-  Element* source2 = GetDocument().getElementById(AtomicString("source2"));
-  Element* source3 = GetDocument().getElementById(AtomicString("source3"));
+  Element* source1 = GetElementById("source1");
+  Element* source2 = GetElementById("source2");
+  Element* source3 = GetElementById("source3");
 
   AnimationTrigger* trigger1 = source1->NamedTriggers()->begin()->value.Get();
   AnimationTrigger* trigger2 = source2->NamedTriggers()->begin()->value.Get();
@@ -2761,11 +3126,11 @@ TEST_P(CSSAnimationsTriggerTest, SameTriggerNameDifferentSource) {
         <div class="space"></div>
       </div>
   )HTML");
-  Element* target = GetDocument().getElementById(AtomicString("target"));
+  Element* target = GetElementById("target");
 
-  Element* subject1 = GetDocument().getElementById(AtomicString("subject1"));
-  Element* subject2 = GetDocument().getElementById(AtomicString("subject2"));
-  Element* subject3 = GetDocument().getElementById(AtomicString("subject3"));
+  Element* subject1 = GetElementById("subject1");
+  Element* subject2 = GetElementById("subject2");
+  Element* subject3 = GetElementById("subject3");
 
   ElementAnimations* animations = target->GetElementAnimations();
   CSSAnimation* animation =
@@ -2845,7 +3210,7 @@ TEST_P(CSSAnimationsTriggerTest, UnequalAnimationAttachments) {
     </div>
   )HTML");
 
-  Element* target = GetDocument().getElementById(AtomicString("target"));
+  Element* target = GetElementById("target");
   const CSSProperty& transform_property =
       CSSProperty::Get(CSSPropertyID::kTransform);
   const CSSProperty& opacity_property =
@@ -2946,7 +3311,7 @@ TEST_P(CSSAnimationsTriggerTest, CoordinatedTimelineTriggerDeclarations) {
     </div>
   )HTML");
 
-  Element* source = GetDocument().getElementById(AtomicString("source"));
+  Element* source = GetElementById("source");
 
   const auto test_timeline_type = [&](TimelineTrigger* trigger, bool is_view,
                                       bool is_scroll, bool is_document) {
@@ -3051,7 +3416,7 @@ TEST_P(CSSAnimationsTriggerTest, NestedScopeAvoidsTriggerUpdates) {
     <div id="target"></div>
   )HTML");
 
-  Element* target = GetDocument().getElementById(AtomicString("target"));
+  Element* target = GetElementById("target");
   EXPECT_EQ(target->NamedTriggers()->size(), 1);
   EXPECT_EQ(GetDocument()
                 .GetDocumentAnimations()
@@ -3222,6 +3587,87 @@ TEST_P(CSSAnimationsTest, CSSTimelineScopeAttachedMultiple_NoCount_One) {
   EXPECT_FALSE(IsUseCounted(WebFeature::kCSSTimelineScopeAttachedMultiple));
 }
 
+TEST_P(CSSAnimationsTest, CSSTimelineTreeScopeMismatch_Count) {
+  ScopedCSSTreeScopedScrollTimelineForTest scoped_feature(false);
+
+  SetBodyInnerHTML(R"HTML(
+    <style>
+      @keyframes --anim { to { opacity: 1; } }
+      #target {
+        animation: --anim 1s;
+        animation-timeline: --t;
+      }
+    </style>
+    <div id="host">
+      <div id="target"></div>
+    </div>
+  )HTML");
+
+  Element* host = GetElementById("host");
+  ShadowRoot& shadow_root =
+      host->AttachShadowRootForTesting(ShadowRootMode::kOpen);
+  shadow_root.SetInnerHTMLWithoutTrustedTypes(R"HTML(
+    <style>
+      :host { scroll-timeline: --t; }
+    </style>
+    <slot></slot>
+  )HTML");
+
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_TRUE(IsUseCounted(WebFeature::kCSSTimelineTreeScopeMismatch));
+}
+
+TEST_P(CSSAnimationsTest, CSSTimelineTreeScopeMismatch_CountWithFlag) {
+  ScopedCSSTreeScopedScrollTimelineForTest scoped_feature(true);
+
+  SetBodyInnerHTML(R"HTML(
+    <style>
+      @keyframes --anim { to { opacity: 1; } }
+      #target {
+        animation: --anim 1s;
+        animation-timeline: --t;
+      }
+    </style>
+    <div id="host">
+      <div id="target"></div>
+    </div>
+  )HTML");
+
+  Element* host = GetElementById("host");
+  ShadowRoot& shadow_root =
+      host->AttachShadowRootForTesting(ShadowRootMode::kOpen);
+  shadow_root.SetInnerHTMLWithoutTrustedTypes(R"HTML(
+    <style>
+      :host { scroll-timeline: --t; }
+    </style>
+    <slot></slot>
+  )HTML");
+
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_TRUE(IsUseCounted(WebFeature::kCSSTimelineTreeScopeMismatch));
+}
+
+TEST_P(CSSAnimationsTest, CSSTimelineTreeScopeMismatch_NoCount) {
+  ScopedCSSTreeScopedScrollTimelineForTest scoped_feature(true);
+
+  SetBodyInnerHTML(R"HTML(
+    <style>
+      @keyframes --anim { to { opacity: 1; } }
+      #scroller { scroll-timeline: --t; }
+      #target {
+        animation: --anim 1s;
+        animation-timeline: --t;
+      }
+    </style>
+    <div id="scroller">
+      <div id="target"></div>
+    </div>
+  )HTML");
+
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_FALSE(IsUseCounted(WebFeature::kCSSTimelineTreeScopeMismatch));
+}
+
 TEST_P(CSSAnimationsTest, SVGColorAnimationVisitedCurrentColor) {
   SetBodyInnerHTML(R"HTML(
     <style>
@@ -3267,18 +3713,12 @@ TEST_P(CSSAnimationsTest, SVGColorAnimationVisitedCurrentColor) {
   UpdateAllLifecyclePhasesForTest();
 
   auto* window = GetDocument().domWindow();
-  Element* flood_visited =
-      GetDocument().getElementById(AtomicString("flood_visited"));
-  Element* flood_unvisited =
-      GetDocument().getElementById(AtomicString("flood_unvisited"));
-  Element* lighting_visited =
-      GetDocument().getElementById(AtomicString("lighting_visited"));
-  Element* lighting_unvisited =
-      GetDocument().getElementById(AtomicString("lighting_unvisited"));
-  Element* stop_visited =
-      GetDocument().getElementById(AtomicString("stop_visited"));
-  Element* stop_unvisited =
-      GetDocument().getElementById(AtomicString("stop_unvisited"));
+  Element* flood_visited = GetElementById("flood_visited");
+  Element* flood_unvisited = GetElementById("flood_unvisited");
+  Element* lighting_visited = GetElementById("lighting_visited");
+  Element* lighting_unvisited = GetElementById("lighting_unvisited");
+  Element* stop_visited = GetElementById("stop_visited");
+  Element* stop_unvisited = GetElementById("stop_unvisited");
 
   EXPECT_EQ(
       window->getComputedStyle(flood_unvisited)
@@ -3361,18 +3801,12 @@ TEST_P(CSSAnimationsTest, SVGColorTransitionVisitedCurrentColor) {
 
   UpdateAllLifecyclePhasesForTest();
 
-  Element* flood_visited =
-      GetDocument().getElementById(AtomicString("flood_visited"));
-  Element* flood_unvisited =
-      GetDocument().getElementById(AtomicString("flood_unvisited"));
-  Element* lighting_visited =
-      GetDocument().getElementById(AtomicString("lighting_visited"));
-  Element* lighting_unvisited =
-      GetDocument().getElementById(AtomicString("lighting_unvisited"));
-  Element* stop_visited =
-      GetDocument().getElementById(AtomicString("stop_visited"));
-  Element* stop_unvisited =
-      GetDocument().getElementById(AtomicString("stop_unvisited"));
+  Element* flood_visited = GetElementById("flood_visited");
+  Element* flood_unvisited = GetElementById("flood_unvisited");
+  Element* lighting_visited = GetElementById("lighting_visited");
+  Element* lighting_unvisited = GetElementById("lighting_unvisited");
+  Element* stop_visited = GetElementById("stop_visited");
+  Element* stop_unvisited = GetElementById("stop_unvisited");
 
   flood_visited->classList().Add(AtomicString("transition_active"));
   flood_unvisited->classList().Add(AtomicString("transition_active"));
@@ -3408,10 +3842,15 @@ TEST_P(CSSAnimationsTest, SVGColorTransitionVisitedCurrentColor) {
       "rgb(0, 128, 128)");
 }
 
-class AnimatedSourceTest : public RenderingTest {
+class AnimatedSourceTest
+    : public RenderingTest,
+      private ScopedTrackAnimatedSourcesForTest,
+      private ScopedTrackAnimatedSourcesForInheritedPropertiesForTest {
  public:
   AnimatedSourceTest()
-      : RenderingTest(base::test::TaskEnvironment::TimeSource::MOCK_TIME) {}
+      : RenderingTest(base::test::TaskEnvironment::TimeSource::MOCK_TIME),
+        ScopedTrackAnimatedSourcesForTest(true),
+        ScopedTrackAnimatedSourcesForInheritedPropertiesForTest(true) {}
 
   void SetUp() override {
     RenderingTest::SetUp();
@@ -3440,9 +3879,6 @@ class AnimatedSourceTest : public RenderingTest {
   AnimatedSource SourceFor(Element* element, CSSPropertyID property) {
     return element->GetComputedStyle()->GetAnimatedSource(property);
   }
-
- private:
-  ScopedTrackAnimatedSourcesForTest enable_feature_{true};
 };
 
 // Behavior every property marked tracks_animated_source must satisfy.
@@ -3554,6 +3990,36 @@ TEST_P(AnimatedSourcePropertyTest, ImportantRuleWinsOverAnimation) {
   EXPECT_FALSE(SourceFor(target, GetParam()).animated_source.IsValid());
 }
 
+TEST_P(AnimatedSourcePropertyTest, InheritedSourcePropagatesIndependently) {
+  const CSSProperty& property = CSSProperty::Get(GetParam());
+  if (!property.IsIndependent()) {
+    GTEST_SKIP() << "Only applies to independent inherited properties";
+  }
+  SetBodyInnerHTML("<style>#declares { " + property.GetPropertyNameString() +
+                   ": " + Value() +
+                   " }</style>"
+                   "<div id=parent>"
+                   "  <div id=inherits></div>"
+                   "  <div id=declares></div>"
+                   "</div>");
+  Element* parent = GetElementById("parent");
+  Element* inherits = GetElementById("inherits");
+  Element* declares = GetElementById("declares");
+
+  unsigned count = GetStyleEngine().StyleForElementCount();
+  Animation* animation = Animate(parent, GetParam(), Value());
+  EXPECT_EQ(1u, GetStyleEngine().StyleForElementCount() - count);
+  EXPECT_TRUE(
+      SourceFor(inherits, GetParam()).animated_source.IsOwnedBy(*parent));
+  EXPECT_FALSE(SourceFor(declares, GetParam()).animated_source.IsValid());
+
+  count = GetStyleEngine().StyleForElementCount();
+  animation->cancel();
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_EQ(1u, GetStyleEngine().StyleForElementCount() - count);
+  EXPECT_FALSE(SourceFor(inherits, GetParam()).animated_source.IsValid());
+}
+
 // Transition coverage uses fixed properties: starting a transition requires
 // two distinct computed values, which cannot be derived generically for an
 // arbitrary property. The transition handling under test does not branch per
@@ -3612,6 +4078,99 @@ TEST_F(AnimatedSourceTest, RezoomedInheritHasUntrackedDependencies) {
   EXPECT_TRUE(source.has_untracked_dependencies);
 }
 
+// The style adjuster drops backdrop-filter on the root element.
+TEST_F(AnimatedSourceTest, RootElementBackdropFilterHasNoSource) {
+  Element* root = GetDocument().documentElement();
+  Animate(root, CSSPropertyID::kBackdropFilter, "invert(1)");
+  EXPECT_FALSE(SourceFor(root, CSSPropertyID::kBackdropFilter)
+                   .animated_source.IsValid());
+}
+
+TEST_F(AnimatedSourceTest, ColorInheritance) {
+  SetBodyInnerHTML(R"HTML(
+    <div id=animator>
+      <div id=inherited></div>
+      <div id=currentcolor style="color: currentColor"></div>
+      <div id=declared style="color: green"></div>
+      <div id=initial style="color: initial"></div>
+    </div>
+  )HTML");
+  Element* animator = GetElementById("animator");
+  Animate(animator, CSSPropertyID::kColor, "red");
+
+  // currentColor is treated as inherit; any other value replaces the parent's.
+  EXPECT_TRUE(SourceFor(GetElementById("inherited"), CSSPropertyID::kColor)
+                  .animated_source.IsOwnedBy(*animator));
+  EXPECT_TRUE(SourceFor(GetElementById("currentcolor"), CSSPropertyID::kColor)
+                  .animated_source.IsOwnedBy(*animator));
+  EXPECT_FALSE(SourceFor(GetElementById("declared"), CSSPropertyID::kColor)
+                   .animated_source.IsValid());
+  EXPECT_FALSE(SourceFor(GetElementById("initial"), CSSPropertyID::kColor)
+                   .animated_source.IsValid());
+}
+
+// Highlight styles resolve currentColor against the originating element, so
+// the source is not tracked on them.
+TEST_F(AnimatedSourceTest, HighlightCurrentColorIsNotTracked) {
+  SetBodyInnerHTML(R"HTML(
+    <style>#animator::selection { color: currentColor; }</style>
+    <div id=animator></div>
+  )HTML");
+  Element* animator = GetElementById("animator");
+  Animate(animator, CSSPropertyID::kColor, "red");
+  EXPECT_FALSE(animator->GetComputedStyle()
+                   ->HighlightData()
+                   .Selection()
+                   ->GetAnimatedSource(CSSPropertyID::kColor)
+                   .IsValid());
+}
+
+// currentColor inside a color function is resolved against the parent's
+// color, so the value is derived from the source's but not a copy of it.
+TEST_F(AnimatedSourceTest, ColorMixHasUntrackedDependencies) {
+  SetBodyInnerHTML(R"HTML(
+    <div id=animator>
+      <div id=child
+           style="color: color-mix(in srgb, currentColor, black)">
+        <div id=inherited></div>
+        <div id=explicit style="color: inherit"></div>
+      </div>
+    </div>
+  )HTML");
+  Element* animator = GetElementById("animator");
+  Animate(animator, CSSPropertyID::kColor, "red");
+
+  AnimatedSource source =
+      SourceFor(GetElementById("child"), CSSPropertyID::kColor);
+  EXPECT_TRUE(source.animated_source.IsOwnedBy(*animator));
+  EXPECT_TRUE(source.has_untracked_dependencies);
+
+  // Descendants inheriting the derived color keep its untracked dependencies.
+  EXPECT_EQ(source,
+            SourceFor(GetElementById("inherited"), CSSPropertyID::kColor));
+  EXPECT_EQ(source,
+            SourceFor(GetElementById("explicit"), CSSPropertyID::kColor));
+}
+
+// preserve-parent-color inherits the parent's used (forced) color rather than
+// its computed one.
+TEST_F(AnimatedSourceTest, PreserveParentColorHasUntrackedDependencies) {
+  ColorSchemeHelper color_scheme_helper(GetDocument());
+  color_scheme_helper.SetInForcedColors(GetDocument(), true);
+  SetBodyInnerHTML(R"HTML(
+    <div id=animator>
+      <div id=child style="forced-color-adjust: preserve-parent-color"></div>
+    </div>
+  )HTML");
+  Element* animator = GetElementById("animator");
+  Animate(animator, CSSPropertyID::kColor, "red");
+
+  AnimatedSource source =
+      SourceFor(GetElementById("child"), CSSPropertyID::kColor);
+  EXPECT_TRUE(source.animated_source.IsOwnedBy(*animator));
+  EXPECT_TRUE(source.has_untracked_dependencies);
+}
+
 TEST_P(CSSAnimationsTest, AttrTaintedRegisteredPropertyNeutralKeyframe) {
   SetBodyInnerHTML(R"HTML(
     <style>
@@ -3636,7 +4195,7 @@ TEST_P(CSSAnimationsTest, AttrTaintedRegisteredPropertyNeutralKeyframe) {
     <div id="control"></div>
   )HTML");
 
-  Element* target = GetDocument().getElementById(AtomicString("target"));
+  Element* target = GetElementById("target");
   EXPECT_TRUE(target);
   const CSSVariableData* target_data =
       target ? target->GetComputedStyle()->GetVariableData(AtomicString("--n"))
@@ -3646,7 +4205,7 @@ TEST_P(CSSAnimationsTest, AttrTaintedRegisteredPropertyNeutralKeyframe) {
     EXPECT_TRUE(target_data->IsAttrTainted());
   }
 
-  Element* control = GetDocument().getElementById(AtomicString("control"));
+  Element* control = GetElementById("control");
   EXPECT_TRUE(control);
   const CSSVariableData* control_data =
       control
@@ -3682,7 +4241,7 @@ TEST_P(CSSAnimationsTest, AttrTaintedRegisteredPropertyNeutralEndKeyframe) {
     <div id="control"></div>
   )HTML");
 
-  Element* target = GetDocument().getElementById(AtomicString("target"));
+  Element* target = GetElementById("target");
   EXPECT_TRUE(target);
   const CSSVariableData* target_data =
       target ? target->GetComputedStyle()->GetVariableData(AtomicString("--n"))
@@ -3692,7 +4251,7 @@ TEST_P(CSSAnimationsTest, AttrTaintedRegisteredPropertyNeutralEndKeyframe) {
     EXPECT_TRUE(target_data->IsAttrTainted());
   }
 
-  Element* control = GetDocument().getElementById(AtomicString("control"));
+  Element* control = GetElementById("control");
   EXPECT_TRUE(control);
   const CSSVariableData* control_data =
       control
@@ -3723,7 +4282,7 @@ TEST_P(CSSAnimationsTest, AttrTaintedRegisteredPropertyKeyframeValue) {
     <div id="target" data-value="42"></div>
   )HTML");
 
-  Element* target = GetDocument().getElementById(AtomicString("target"));
+  Element* target = GetElementById("target");
   EXPECT_TRUE(target);
   const CSSVariableData* data =
       target ? target->GetComputedStyle()->GetVariableData(AtomicString("--n"))
@@ -3755,7 +4314,7 @@ TEST_P(CSSAnimationsTest,
     <div id="target" data-value="42"></div>
   )HTML");
 
-  Element* target = GetDocument().getElementById(AtomicString("target"));
+  Element* target = GetElementById("target");
   EXPECT_TRUE(target);
   const CSSVariableData* data =
       target ? target->GetComputedStyle()->GetVariableData(AtomicString("--n"))
@@ -3787,7 +4346,7 @@ TEST_P(CSSAnimationsTest, AttrTaintedRegisteredPropertyCompositionAdd) {
     <div id="target" data-value="42"></div>
   )HTML");
 
-  Element* target = GetDocument().getElementById(AtomicString("target"));
+  Element* target = GetElementById("target");
   EXPECT_TRUE(target);
   const CSSVariableData* data =
       target ? target->GetComputedStyle()->GetVariableData(AtomicString("--n"))
@@ -3817,7 +4376,7 @@ TEST_P(CSSAnimationsTest, AttrTaintedRegisteredPropertyLength) {
     <div id="target" data-value="42px"></div>
   )HTML");
 
-  Element* target = GetDocument().getElementById(AtomicString("target"));
+  Element* target = GetElementById("target");
   EXPECT_TRUE(target);
   const CSSVariableData* data =
       target ? target->GetComputedStyle()->GetVariableData(AtomicString("--p"))
@@ -3852,7 +4411,7 @@ TEST_P(CSSAnimationsTest, AttrTaintedInheritedRegisteredProperty) {
     </div>
   )HTML");
 
-  Element* target = GetDocument().getElementById(AtomicString("target"));
+  Element* target = GetElementById("target");
   EXPECT_TRUE(target);
   const CSSVariableData* data =
       target ? target->GetComputedStyle()->GetVariableData(AtomicString("--n"))
@@ -3883,7 +4442,7 @@ TEST_P(CSSAnimationsTest, ReplaceAnimationWithoutAttrDoesNotTaint) {
     <div id="target" data-value="42"></div>
   )HTML");
 
-  Element* target = GetDocument().getElementById(AtomicString("target"));
+  Element* target = GetElementById("target");
   EXPECT_TRUE(target);
   const CSSVariableData* data =
       target ? target->GetComputedStyle()->GetVariableData(AtomicString("--n"))
@@ -3922,17 +4481,467 @@ TEST_P(CSSAnimationsTest, AttrTaintedStyleQueryUrlBlocking) {
     <div id="control"></div>
   )HTML");
 
-  Element* target = GetDocument().getElementById(AtomicString("target"));
+  Element* target = GetElementById("target");
   EXPECT_TRUE(target);
   if (target && target->GetComputedStyle()) {
     EXPECT_FALSE(target->GetComputedStyle()->HasBackgroundImage());
   }
 
-  Element* control = GetDocument().getElementById(AtomicString("control"));
+  Element* control = GetElementById("control");
   EXPECT_TRUE(control);
   if (control && control->GetComputedStyle()) {
     EXPECT_TRUE(control->GetComputedStyle()->HasBackgroundImage());
   }
+}
+
+TEST_P(CSSAnimationsTest, AttrTaintedRegisteredPropertyLengthPercentage) {
+  SetBodyInnerHTML(R"HTML(
+    <style>
+      @property --lp {
+        syntax: "<length-percentage>";
+        inherits: false;
+        initial-value: 0px;
+      }
+      @keyframes hold_lp {
+        to { --lp: 0px; }
+      }
+      @keyframes add_lp {
+        from { --lp: 0px; }
+        to { --lp: 0px; }
+      }
+      #target {
+        --lp: attr(data-value type(<length-percentage>));
+        animation: hold_lp 1000s linear paused;
+        background-image: if(style(--lp >= 40px):
+                            url(https://example.com/test.png); else: none);
+      }
+      #target_add {
+        --lp: attr(data-value type(<length-percentage>));
+        animation: add_lp 1000s linear paused;
+        animation-composition: add;
+      }
+      #control {
+        --lp: 42px;
+        animation: hold_lp 1000s linear paused;
+        background-image: if(style(--lp >= 40px):
+                            url(https://example.com/test.png); else: none);
+      }
+    </style>
+    <div id="target" data-value="42px"></div>
+    <div id="target_add" data-value="42px"></div>
+    <div id="control"></div>
+  )HTML");
+
+  Element* target = GetElementById("target");
+  ASSERT_TRUE(target);
+  ASSERT_TRUE(target->GetComputedStyle());
+  const CSSVariableData* target_data =
+      target->GetComputedStyle()->GetVariableData(AtomicString("--lp"));
+  ASSERT_TRUE(target_data);
+  EXPECT_TRUE(target_data->IsAttrTainted());
+  EXPECT_FALSE(target->GetComputedStyle()->HasBackgroundImage());
+
+  Element* target_add = GetElementById("target_add");
+  ASSERT_TRUE(target_add);
+  ASSERT_TRUE(target_add->GetComputedStyle());
+  const CSSVariableData* add_data =
+      target_add->GetComputedStyle()->GetVariableData(AtomicString("--lp"));
+  ASSERT_TRUE(add_data);
+  EXPECT_TRUE(add_data->IsAttrTainted());
+
+  Element* control = GetElementById("control");
+  ASSERT_TRUE(control);
+  ASSERT_TRUE(control->GetComputedStyle());
+  const CSSVariableData* control_data =
+      control->GetComputedStyle()->GetVariableData(AtomicString("--lp"));
+  ASSERT_TRUE(control_data);
+  EXPECT_FALSE(control_data->IsAttrTainted());
+  EXPECT_TRUE(control->GetComputedStyle()->HasBackgroundImage());
+}
+
+TEST_P(CSSAnimationsTest, AttrTaintedRegisteredPropertyTransform) {
+  SetBodyInnerHTML(R"HTML(
+    <style>
+      @property --t {
+        syntax: "<transform-list>";
+        inherits: false;
+        initial-value: translateX(0px);
+      }
+      @property --tf {
+        syntax: "<transform-function>";
+        inherits: false;
+        initial-value: translateX(0px);
+      }
+      @keyframes hold_transform {
+        to {
+          --t: translateX(0px);
+          --tf: translateX(0px);
+        }
+      }
+      #target {
+        --t: attr(data-value type(<transform-list>));
+        --tf: attr(data-value type(<transform-function>));
+        animation: hold_transform 1000s linear paused;
+      }
+      #control {
+        --t: translateX(42px);
+        --tf: translateX(42px);
+        animation: hold_transform 1000s linear paused;
+      }
+    </style>
+    <div id="target" data-value="translateX(42px)"></div>
+    <div id="control"></div>
+  )HTML");
+
+  Element* target = GetElementById("target");
+  ASSERT_TRUE(target);
+  ASSERT_TRUE(target->GetComputedStyle());
+  const CSSVariableData* target_t =
+      target->GetComputedStyle()->GetVariableData(AtomicString("--t"));
+  ASSERT_TRUE(target_t);
+  EXPECT_TRUE(target_t->IsAttrTainted());
+  const CSSVariableData* target_tf =
+      target->GetComputedStyle()->GetVariableData(AtomicString("--tf"));
+  ASSERT_TRUE(target_tf);
+  EXPECT_TRUE(target_tf->IsAttrTainted());
+
+  Element* control = GetElementById("control");
+  ASSERT_TRUE(control);
+  ASSERT_TRUE(control->GetComputedStyle());
+  const CSSVariableData* control_t =
+      control->GetComputedStyle()->GetVariableData(AtomicString("--t"));
+  ASSERT_TRUE(control_t);
+  EXPECT_FALSE(control_t->IsAttrTainted());
+  const CSSVariableData* control_tf =
+      control->GetComputedStyle()->GetVariableData(AtomicString("--tf"));
+  ASSERT_TRUE(control_tf);
+  EXPECT_FALSE(control_tf->IsAttrTainted());
+}
+
+TEST_P(CSSAnimationsTest, AttrTaintedRegisteredPropertyCustomList) {
+  SetBodyInnerHTML(R"HTML(
+    <style>
+      @property --l {
+        syntax: "<number>+";
+        inherits: false;
+        initial-value: 0;
+      }
+      @keyframes add_keyframe_attr {
+        from { --l: attr(data-value type(<number>+)); }
+        to { --l: attr(data-value type(<number>+)); }
+      }
+      @keyframes hold_list {
+        to { --l: 0; }
+      }
+      @keyframes add_untainted {
+        from { --l: 10; }
+        to { --l: 10; }
+      }
+      #target_keyframe {
+        --l: 1;
+        animation: add_keyframe_attr 1000s linear paused;
+        animation-composition: add;
+      }
+      #target_underlying {
+        --l: attr(data-value type(<number>+));
+        animation: hold_list 1000s linear paused;
+      }
+      #target_underlying_mismatch {
+        --l: attr(data-multi type(<number>+));
+        animation: add_untainted 1000s linear paused;
+        animation-composition: add;
+      }
+      #control {
+        --l: 1;
+        animation: add_untainted 1000s linear paused;
+        animation-composition: add;
+      }
+    </style>
+    <div id="target_keyframe" data-value="42"></div>
+    <div id="target_underlying" data-value="42"></div>
+    <div id="target_underlying_mismatch" data-multi="10 20"></div>
+    <div id="control" data-value="42"></div>
+  )HTML");
+
+  Element* target_keyframe = GetElementById("target_keyframe");
+  ASSERT_TRUE(target_keyframe);
+  ASSERT_TRUE(target_keyframe->GetComputedStyle());
+  const CSSVariableData* keyframe_data =
+      target_keyframe->GetComputedStyle()->GetVariableData(AtomicString("--l"));
+  ASSERT_TRUE(keyframe_data);
+  EXPECT_TRUE(keyframe_data->IsAttrTainted());
+
+  Element* target_underlying = GetElementById("target_underlying");
+  ASSERT_TRUE(target_underlying);
+  ASSERT_TRUE(target_underlying->GetComputedStyle());
+  const CSSVariableData* underlying_data =
+      target_underlying->GetComputedStyle()->GetVariableData(
+          AtomicString("--l"));
+  ASSERT_TRUE(underlying_data);
+  EXPECT_TRUE(underlying_data->IsAttrTainted());
+
+  Element* target_mismatch = GetElementById("target_underlying_mismatch");
+  ASSERT_TRUE(target_mismatch);
+  ASSERT_TRUE(target_mismatch->GetComputedStyle());
+  const CSSVariableData* mismatch_data =
+      target_mismatch->GetComputedStyle()->GetVariableData(AtomicString("--l"));
+  ASSERT_TRUE(mismatch_data);
+  EXPECT_TRUE(mismatch_data->IsAttrTainted());
+
+  Element* control = GetElementById("control");
+  ASSERT_TRUE(control);
+  ASSERT_TRUE(control->GetComputedStyle());
+  const CSSVariableData* control_data =
+      control->GetComputedStyle()->GetVariableData(AtomicString("--l"));
+  ASSERT_TRUE(control_data);
+  EXPECT_FALSE(control_data->IsAttrTainted());
+
+  // Dynamically updating the underlying list value to an attr()-tainted value
+  // of the same length must invalidate the conversion cache and mark the
+  // animated property as tainted.
+  control->setAttribute(html_names::kStyleAttr,
+                        AtomicString("--l: attr(data-value type(<number>+))"));
+  UpdateAllLifecyclePhasesForTest();
+  control_data =
+      control->GetComputedStyle()->GetVariableData(AtomicString("--l"));
+  ASSERT_TRUE(control_data);
+  EXPECT_TRUE(control_data->IsAttrTainted());
+
+  control->setAttribute(html_names::kStyleAttr, AtomicString("--l: 5"));
+  UpdateAllLifecyclePhasesForTest();
+  control_data =
+      control->GetComputedStyle()->GetVariableData(AtomicString("--l"));
+  ASSERT_TRUE(control_data);
+  EXPECT_FALSE(control_data->IsAttrTainted());
+}
+
+TEST_P(CSSAnimationsTest, AttrTaintedRegisteredPropertyFlipInterpolation) {
+  SetBodyInnerHTML(R"HTML(
+    <style>
+      @property --l {
+        syntax: "<number>+";
+        inherits: false;
+        initial-value: 0;
+      }
+      @property --m {
+        syntax: "<number> | <length>";
+        inherits: false;
+        initial-value: 0;
+      }
+      @keyframes flip_list {
+        from { --l: attr(data-value type(<number>+)); }
+        to { --l: 10 20; }
+      }
+      @keyframes flip_neutral {
+        to { --m: 100px; }
+      }
+      #target_list {
+        animation: flip_list 1000s steps(1, start) paused;
+      }
+      #target_multi {
+        --m: attr(data-value type(<number>));
+        animation: flip_neutral 1000s steps(1, start) paused;
+      }
+    </style>
+    <div id="target_list" data-value="42"></div>
+    <div id="target_multi" data-value="42"></div>
+  )HTML");
+
+  Element* target_list = GetElementById("target_list");
+  ASSERT_TRUE(target_list);
+  ASSERT_TRUE(target_list->GetComputedStyle());
+  const CSSVariableData* list_data =
+      target_list->GetComputedStyle()->GetVariableData(AtomicString("--l"));
+  ASSERT_TRUE(list_data);
+  EXPECT_TRUE(list_data->IsAttrTainted());
+
+  Element* target_multi = GetElementById("target_multi");
+  ASSERT_TRUE(target_multi);
+  ASSERT_TRUE(target_multi->GetComputedStyle());
+  const CSSVariableData* multi_data =
+      target_multi->GetComputedStyle()->GetVariableData(AtomicString("--m"));
+  ASSERT_TRUE(multi_data);
+  EXPECT_TRUE(multi_data->IsAttrTainted());
+}
+
+TEST_P(CSSAnimationsTest, ColorAnimationUsesIndependentInheritedFastPath) {
+  SetBodyInnerHTML(R"HTML(
+    <style>
+      @keyframes anim {
+        to {
+          color: rgb(200, 200, 200);
+        }
+      }
+      #animator {
+        animation: anim 10s linear paused;
+      }
+    </style>
+    <div id="animator">
+      <div id="child"></div>
+    </div>
+  )HTML");
+  Animation* animation = GetElementById("animator")->getAnimations()[0];
+
+  unsigned count = GetStyleEngine().StyleForElementCount();
+  animation->setCurrentTime(MakeGarbageCollected<V8CSSNumberish>(5000),
+                            ASSERT_NO_EXCEPTION);
+  UpdateAllLifecyclePhasesForTest();
+
+  // Only #animator resolves style; #child takes the fast path.
+  EXPECT_EQ(1u, GetStyleEngine().StyleForElementCount() - count);
+  const ComputedStyle* animator_style =
+      GetElementById("animator")->GetComputedStyle();
+  const ComputedStyle* child_style =
+      GetElementById("child")->GetComputedStyle();
+  EXPECT_EQ(animator_style->VisitedDependentColor(GetCSSPropertyColor()),
+            child_style->VisitedDependentColor(GetCSSPropertyColor()));
+}
+
+class CSSAnimationsDeathTest : public RenderingTest {
+ public:
+  CSSAnimationsDeathTest()
+      : RenderingTest(MakeGarbageCollected<SingleChildLocalFrameClient>()) {}
+};
+
+TEST_F(CSSAnimationsDeathTest, CancelForbiddenDuringApplyAnimatedStyle) {
+  SetBodyInnerHTML(R"HTML(
+    <style>
+      @keyframes anim {
+        from { opacity: 0; }
+        to { opacity: 1; }
+      }
+      #target {
+        scroll-timeline-name: --t1, --t2;
+        animation: anim 1s linear;
+      }
+    </style>
+    <div id="host">
+      <div id="slotted" slot="s">
+        <div id="target"></div>
+      </div>
+    </div>
+  )HTML");
+
+  Element* host = GetElementById("host");
+  ShadowRoot& shadow_root =
+      host->AttachShadowRootForTesting(ShadowRootMode::kOpen);
+  shadow_root.SetInnerHTMLWithoutTrustedTypes(
+      R"HTML(<slot name="s"></slot>)HTML");
+  UpdateAllLifecyclePhasesForTest();
+
+  Element* slotted = GetElementById("slotted");
+  Element* target = GetElementById("target");
+  ASSERT_TRUE(target->GetElementAnimations());
+  ASSERT_TRUE(target->GetElementAnimations()->CssAnimations().HasTimelines());
+
+  // Dirtying slot assignment before resolving animated style causes flat-tree
+  // timeline lookup in ForEachTimeline to trigger
+  // SlotAssignment::RecalcAssignment and detach #slotted/#target, calling
+  // CSSAnimations::Cancel() mid-iteration.
+  EXPECT_CHECK_DEATH_WITH(
+      {
+        slotted->setAttribute(html_names::kSlotAttr, AtomicString("other"));
+        GetDocument().GetStyleResolver().ResolveStyle(target,
+                                                      StyleRecalcContext());
+      },
+      "InApplyAnimatedStyle");
+}
+
+TEST_F(CSSAnimationsDeathTest, CancelForbiddenDuringApplyAnimationUpdate) {
+  SetBodyInnerHTML(R"HTML(
+    <style>
+      #scope {
+        timeline-scope: --t;
+      }
+      #first {
+        scroll-timeline-name: --t;
+      }
+    </style>
+    <div id="scope">
+      <div id="host">
+        <div id="first" slot="s"></div>
+        <div id="second" slot="s"></div>
+      </div>
+    </div>
+  )HTML");
+
+  Element* host = GetElementById("host");
+  ShadowRoot& shadow_root =
+      host->AttachShadowRootForTesting(ShadowRootMode::kOpen);
+  shadow_root.SetInnerHTMLWithoutTrustedTypes(
+      R"HTML(<slot name="s"></slot>)HTML");
+  UpdateAllLifecyclePhasesForTest();
+
+  Element* first = GetElementById("first");
+  Element* second = GetElementById("second");
+  ASSERT_TRUE(first->GetElementAnimations());
+  ASSERT_TRUE(first->GetElementAnimations()->CssAnimations().HasTimelines());
+
+  // Applying a pending timeline attachment compares flat-tree positions in
+  // DeferredTimeline::AttachTimeline; if a dirty slot assignment detaches
+  // slotted elements there, CSSAnimations::Cancel() must CHECK rather than
+  // clearing pending updates and attached timelines mid-application.
+  EXPECT_CHECK_DEATH_WITH(
+      {
+        PostStyleUpdateScope post_style_update_scope(GetDocument());
+        second->setAttribute(html_names::kStyleAttr,
+                             AtomicString("scroll-timeline-name: --t"));
+        GetDocument().GetStyleResolver().ResolveStyle(second,
+                                                      StyleRecalcContext());
+        first->setAttribute(html_names::kSlotAttr, AtomicString("other"));
+        second->setAttribute(html_names::kSlotAttr, AtomicString("other"));
+        post_style_update_scope.Apply();
+      },
+      "InApplyAnimationUpdate");
+}
+
+TEST_F(CSSAnimationsDeathTest,
+       CancelForbiddenDuringCrossDocumentApplyAnimationUpdate) {
+  SetBodyInnerHTML(R"HTML(<iframe></iframe>)HTML");
+  SetChildFrameHTML(R"HTML(
+    <style>
+      #scope {
+        timeline-scope: --t;
+      }
+      #first {
+        scroll-timeline-name: --t;
+      }
+    </style>
+    <div id="scope">
+      <div id="host">
+        <div id="first" slot="s"></div>
+        <div id="second" slot="s"></div>
+      </div>
+    </div>
+  )HTML");
+
+  Element* host = ChildDocument().getElementById(AtomicString("host"));
+  ShadowRoot& shadow_root =
+      host->AttachShadowRootForTesting(ShadowRootMode::kOpen);
+  shadow_root.SetInnerHTMLWithoutTrustedTypes(
+      R"HTML(<slot name="s"></slot>)HTML");
+  UpdateAllLifecyclePhasesForTest();
+
+  Element* first = ChildDocument().getElementById(AtomicString("first"));
+  Element* second = ChildDocument().getElementById(AtomicString("second"));
+  ASSERT_TRUE(first->GetElementAnimations());
+  ASSERT_TRUE(first->GetElementAnimations()->CssAnimations().HasTimelines());
+
+  // PostStyleUpdateScope::current_ is process-wide, so an outer document's
+  // PostStyleUpdateScope can apply pending updates belonging to a child
+  // document. Verify the child document's StyleEngine also forbids Cancel().
+  EXPECT_CHECK_DEATH_WITH(
+      {
+        PostStyleUpdateScope outer_scope(GetDocument());
+        second->setAttribute(html_names::kStyleAttr,
+                             AtomicString("scroll-timeline-name: --t"));
+        ChildDocument().GetStyleResolver().ResolveStyle(second,
+                                                        StyleRecalcContext());
+        first->setAttribute(html_names::kSlotAttr, AtomicString("other"));
+        second->setAttribute(html_names::kSlotAttr, AtomicString("other"));
+        outer_scope.Apply();
+      },
+      "InApplyAnimationUpdate");
 }
 
 }  // namespace blink

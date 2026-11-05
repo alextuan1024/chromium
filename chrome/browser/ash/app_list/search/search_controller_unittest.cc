@@ -20,6 +20,11 @@
 #include "base/test/bind.h"
 #include "base/test/test_future.h"
 #include "base/time/time.h"
+#include "chrome/browser/apps/app_service/app_service_proxy.h"
+#include "chrome/browser/apps/app_service/app_service_proxy_factory.h"
+#include "chrome/browser/ash/app_list/search/app_search_data_source.h"
+#include "chrome/browser/ash/app_list/search/app_search_provider.h"
+#include "chrome/browser/ash/app_list/search/app_zero_state_provider.h"
 #include "chrome/browser/ash/app_list/search/chrome_search_result.h"
 #include "chrome/browser/ash/app_list/search/common/types_util.h"
 #include "chrome/browser/ash/app_list/search/ranking/launch_data.h"
@@ -36,10 +41,14 @@
 #include "chrome/test/base/testing_profile.h"
 #include "components/prefs/pref_service.h"
 #include "components/prefs/scoped_user_pref_update.h"
+#include "components/services/app_service/public/cpp/app_types.h"
+#include "components/services/app_service/public/cpp/stub_icon_loader.h"
 #include "content/public/test/browser_task_environment.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/display/test/test_screen.h"
+#include "ui/gfx/image/image_skia.h"
+#include "ui/gfx/image/image_skia_rep.h"
 
 namespace app_list::test {
 
@@ -77,6 +86,62 @@ class FakeObserver : public SearchController::Observer {
 
  private:
   bool results_added_ = false;
+};
+
+class DeferredPlaceholderIconLoader : public apps::IconLoader {
+ public:
+  DeferredPlaceholderIconLoader() = default;
+  DeferredPlaceholderIconLoader(const DeferredPlaceholderIconLoader&) = delete;
+  DeferredPlaceholderIconLoader& operator=(
+      const DeferredPlaceholderIconLoader&) = delete;
+  ~DeferredPlaceholderIconLoader() override = default;
+
+  std::optional<apps::IconKey> GetIconKey(const std::string& id) override {
+    auto icon_key = std::make_optional<apps::IconKey>();
+    icon_key->update_version = 1;
+    return icon_key;
+  }
+
+  std::unique_ptr<Releaser> LoadIconFromIconKey(
+      const std::string& id,
+      const apps::IconKey& icon_key,
+      apps::IconType icon_type,
+      int32_t size_hint_in_dip,
+      bool allow_placeholder_icon,
+      apps::LoadIconCallback callback) override {
+    ++num_load_calls_;
+    if (allow_placeholder_icon) {
+      auto icon_value = std::make_unique<apps::IconValue>();
+      icon_value->icon_type = icon_type;
+      icon_value->uncompressed =
+          gfx::ImageSkia(gfx::ImageSkiaRep({1, 1}, 1.0f));
+      icon_value->is_placeholder_icon = true;
+      std::move(callback).Run(std::move(icon_value));
+      return nullptr;
+    }
+
+    pending_callback_ = std::move(callback);
+    pending_icon_type_ = icon_type;
+    return nullptr;
+  }
+
+  // Completes the pending non-placeholder load, if any.
+  void CompletePendingLoad() {
+    if (!pending_callback_) {
+      return;
+    }
+    auto icon_value = std::make_unique<apps::IconValue>();
+    icon_value->icon_type = pending_icon_type_;
+    icon_value->uncompressed = gfx::ImageSkia(gfx::ImageSkiaRep({1, 1}, 1.0f));
+    std::move(pending_callback_).Run(std::move(icon_value));
+  }
+
+  int num_load_calls() const { return num_load_calls_; }
+
+ private:
+  int num_load_calls_ = 0;
+  apps::IconType pending_icon_type_ = apps::IconType::kUnknown;
+  apps::LoadIconCallback pending_callback_;
 };
 
 }  // namespace
@@ -874,9 +939,9 @@ TEST_F(SearchControllerTest, ProviderIsFilteredWithSearchControl) {
       {ash::features::kFeatureManagementLocalImageSearch}, {});
 
   const std::array result_categories = {
-      Result::kAnswerCard, Result::kDriveSearch,    Result::kAppShortcutV2,
-      Result::kFileSearch, Result::kArcAppShortcut, Result::kImageSearch,
-      Result::kGames,      Result::kAssistantText,  Result::kArcAppShortcut,
+      Result::kAnswerCard,    Result::kDriveSearch,    Result::kAppShortcutV2,
+      Result::kFileSearch,    Result::kImageSearch,    Result::kHelpApp,
+      Result::kAssistantText, Result::kArcAppShortcut,
   };
 
   const std::array search_categories = {
@@ -884,7 +949,6 @@ TEST_F(SearchControllerTest, ProviderIsFilteredWithSearchControl) {
       SearchCategory::kApps,
       SearchCategory::kAppShortcuts,
       SearchCategory::kFiles,
-      SearchCategory::kGames,
       SearchCategory::kHelp,
       SearchCategory::kImages,
       SearchCategory::kPlayStore,
@@ -892,7 +956,7 @@ TEST_F(SearchControllerTest, ProviderIsFilteredWithSearchControl) {
   };
 
   std::vector<TestSearchProvider*> provider_ptrs;
-  for (int i = 0; i < 9; ++i) {
+  for (int i = 0; i < 8; ++i) {
     // The result type needs to be unique.
     auto provider = std::make_unique<TestSearchProvider>(
         result_categories[i], base::Milliseconds(20), search_categories[i]);
@@ -900,7 +964,7 @@ TEST_F(SearchControllerTest, ProviderIsFilteredWithSearchControl) {
     search_controller_->AddProvider(std::move(provider));
   }
 
-  ASSERT_EQ(provider_ptrs.size(), 9u);
+  ASSERT_EQ(provider_ptrs.size(), 8u);
 
   ScopedDictPrefUpdate pref_update(
       profile_.GetPrefs(), ash::prefs::kLauncherSearchCategoryControlStatus);
@@ -948,6 +1012,155 @@ TEST_F(SearchControllerTest, ProviderIsFilteredWithSearchControl) {
 
     search_controller_->ClearSearch();
   }
+}
+
+TEST_F(SearchControllerTest, InitializeProvidersOnLauncherOpen) {
+  auto provider = std::make_unique<TestSearchProvider>(Result::kHelpApp,
+                                                       base::Milliseconds(0));
+  auto* provider_ptr = provider.get();
+  search_controller_->AddProvider(std::move(provider));
+
+  EXPECT_EQ(provider_ptr->initialize_count(), 0);
+
+  // Closing the launcher before it is ever opened should not initialize
+  // providers.
+  search_controller_->AppListViewChanging(/*is_visible=*/false);
+  EXPECT_EQ(provider_ptr->initialize_count(), 0);
+
+  // Opening the launcher for the first time should initialize providers.
+  search_controller_->AppListViewChanging(/*is_visible=*/true);
+  EXPECT_EQ(provider_ptr->initialize_count(), 1);
+
+  // Closing and reopening the launcher should not re-initialize providers.
+  search_controller_->AppListViewChanging(/*is_visible=*/false);
+  search_controller_->AppListViewChanging(/*is_visible=*/true);
+  EXPECT_EQ(provider_ptr->initialize_count(), 1);
+}
+
+TEST_F(SearchControllerTest, SweepsAppSearchIconCache) {
+  apps::AppServiceProxy* proxy =
+      apps::AppServiceProxyFactory::GetForProfile(&profile_);
+  ASSERT_NE(proxy, nullptr);
+
+  apps::StubIconLoader stub_icon_loader;
+  apps::IconLoader* old_icon_loader =
+      proxy->OverrideInnerIconLoaderForTesting(&stub_icon_loader);
+
+  constexpr char kTestAppId[] = "test_app_id";
+  stub_icon_loader.update_version_by_app_id_[kTestAppId] = 1;
+
+  base::test::TestFuture<void> app_updates_future;
+  base::CallbackListSubscription subscription =
+      search_controller_->GetAppSearchDataSource()->SubscribeToAppUpdates(
+          app_updates_future.GetRepeatingCallback());
+
+  std::vector<apps::AppPtr> apps;
+  auto app = std::make_unique<apps::App>(apps::AppType::kChromeApp, kTestAppId);
+  app->readiness = apps::Readiness::kReady;
+  app->name = "Test App";
+  app->recommendable = true;
+  app->show_in_launcher = true;
+  app->show_in_search = true;
+  app->searchable = true;
+  apps.push_back(std::move(app));
+  proxy->OnApps(std::move(apps), apps::AppType::kChromeApp,
+                /*should_notify_initialized=*/false);
+  EXPECT_TRUE(app_updates_future.Wait());
+
+  search_controller_->AddProvider(std::make_unique<AppZeroStateProvider>(
+      search_controller_->GetAppSearchDataSource()));
+  search_controller_->AddProvider(std::make_unique<AppSearchProvider>(
+      search_controller_->GetAppSearchDataSource()));
+
+  // Zero-state app recommendations use AppListModel icons in RecentAppsView and
+  // should not load or pin icons in AppSearchDataSource's cache.
+  base::test::TestFuture<void> zero_state_future;
+  search_controller_->StartZeroState(zero_state_future.GetCallback(),
+                                     base::Seconds(1));
+  EXPECT_TRUE(zero_state_future.Wait());
+  EXPECT_EQ(stub_icon_loader.NumLoadIconFromIconKeyCalls(), 0);
+
+  // First matching query loads the icon into AppSearchDataSource's cache.
+  search_controller_->StartSearch(u"Test");
+  EXPECT_EQ(stub_icon_loader.NumLoadIconFromIconKeyCalls(), 1);
+
+  // Typing a non-matching query and re-typing a matching query during the same
+  // search session hits the cache without reloading.
+  search_controller_->StartSearch(u"zzzz");
+  search_controller_->StartSearch(u"Test");
+  EXPECT_EQ(stub_icon_loader.NumLoadIconFromIconKeyCalls(), 1);
+
+  // Clearing the search sweeps cached icons (without being pinned by zero-state
+  // recommendations), so the next matching query reloads the icon.
+  search_controller_->ClearSearch();
+  search_controller_->StartSearch(u"Test");
+  EXPECT_EQ(stub_icon_loader.NumLoadIconFromIconKeyCalls(), 2);
+
+  // Closing the launcher while a matching query is still active also sweeps the
+  // cache immediately, so reopening and searching reloads the icon.
+  search_controller_->AppListViewChanging(/*is_visible=*/false);
+  search_controller_->StartSearch(u"Test");
+  EXPECT_EQ(stub_icon_loader.NumLoadIconFromIconKeyCalls(), 3);
+
+  proxy->OverrideInnerIconLoaderForTesting(old_icon_loader);
+}
+
+TEST_F(SearchControllerTest, SweepsAppSearchIconCacheAfterAsyncIconLoad) {
+  apps::AppServiceProxy* proxy =
+      apps::AppServiceProxyFactory::GetForProfile(&profile_);
+  ASSERT_NE(proxy, nullptr);
+
+  DeferredPlaceholderIconLoader icon_loader;
+  apps::IconLoader* old_icon_loader =
+      proxy->OverrideInnerIconLoaderForTesting(&icon_loader);
+
+  constexpr char kTestAppId[] = "test_app_id";
+  base::test::TestFuture<void> app_updates_future;
+  base::CallbackListSubscription subscription =
+      search_controller_->GetAppSearchDataSource()->SubscribeToAppUpdates(
+          app_updates_future.GetRepeatingCallback());
+
+  std::vector<apps::AppPtr> apps;
+  auto app = std::make_unique<apps::App>(apps::AppType::kChromeApp, kTestAppId);
+  app->readiness = apps::Readiness::kReady;
+  app->name = "Test App";
+  app->show_in_search = true;
+  app->searchable = true;
+  apps.push_back(std::move(app));
+  proxy->OnApps(std::move(apps), apps::AppType::kChromeApp,
+                /*should_notify_initialized=*/false);
+  EXPECT_TRUE(app_updates_future.Wait());
+
+  search_controller_->AddProvider(std::make_unique<AppSearchProvider>(
+      search_controller_->GetAppSearchDataSource()));
+
+  // First query gets a synchronous placeholder (call 1) and starts an async
+  // non-placeholder load (call 2).
+  search_controller_->StartSearch(u"Test");
+  EXPECT_EQ(icon_loader.num_load_calls(), 2);
+
+  // Results do not hold icon releasers, so sweeping while the async load is in
+  // flight discards the cache entry. The icon just loaded is not cached, and
+  // the next query reloads it.
+  search_controller_->GetAppSearchDataSource()->SweepIconCache();
+  icon_loader.CompletePendingLoad();
+  search_controller_->StartSearch(u"Test");
+  EXPECT_EQ(icon_loader.num_load_calls(), 4);
+
+  // Without a sweep, the completed load is cached and the next query hits the
+  // cache.
+  icon_loader.CompletePendingLoad();
+  search_controller_->StartSearch(u"Test");
+  EXPECT_EQ(icon_loader.num_load_calls(), 4);
+
+  // Closing the launcher while the result is still alive sweeps the cached
+  // icon, and the next query reloads it.
+  search_controller_->AppListViewChanging(/*is_visible=*/false);
+  search_controller_->StartSearch(u"Test");
+  EXPECT_EQ(icon_loader.num_load_calls(), 6);
+
+  icon_loader.CompletePendingLoad();
+  proxy->OverrideInnerIconLoaderForTesting(old_icon_loader);
 }
 
 }  // namespace app_list::test

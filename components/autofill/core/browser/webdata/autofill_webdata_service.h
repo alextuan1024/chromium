@@ -124,11 +124,12 @@ class AutofillWebDataService : public WebDataServiceBase {
       base::OnceCallback<void(EntityInstanceChange)> on_success);
 
   // Overload of `AddOrUpdateEntityInstance` that accepts an optional
-  // `context_token`. The token is passed to the DB sequence and sync bridge to
-  // populate the sync specifics for pass upserts.
+  // `legal_message_token`. The token is persisted in `EntityTable` until the
+  // initial Sync commit completes and passed to the sync bridge to populate the
+  // sync specifics for pass upserts.
   void AddOrUpdateEntityInstance(
       EntityInstance entity,
-      std::optional<std::string> context_token,
+      std::optional<std::string> legal_message_token,
       base::OnceCallback<void(EntityInstanceChange)> on_success);
   void RemoveEntityInstance(
       EntityInstance entity,
@@ -154,6 +155,12 @@ class AutofillWebDataService : public WebDataServiceBase {
   WebDataServiceBase::Handle GetCountOfValuesContainedBetween(
       base::Time begin,
       base::Time end,
+      WebDataServiceRequestCallback consumer);
+
+  // Queries table-level statistics for the autocomplete table.
+  // The callback `consumer` will be called with a
+  // `WDResult<AutocompleteTableStats>`.
+  virtual WebDataServiceBase::Handle GetAutocompleteTableStats(
       WebDataServiceRequestCallback consumer);
 
   // Schedules a task to update autocomplete entries in the web database.

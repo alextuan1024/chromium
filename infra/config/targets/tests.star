@@ -49,6 +49,7 @@ targets.tests.isolated_script_test(
         "always",
         "--test-type",
         "wdspec",
+        "--timeout-multiplier=4",
     ],
     binary = "chrome_public_wpt",
 )
@@ -615,9 +616,6 @@ targets.tests.gtest_test(
     mixins = [
         "skia_gold_test",
     ],
-    args = [
-        "--annotation=Restriction=Desktop,Restriction=TabletOrDesktop,ImportantFormFactors=Desktop,ImportantFormFactors=TabletOrDesktop",
-    ],
     binary = "chrome_public_test_apk",
 )
 
@@ -696,6 +694,12 @@ targets.tests.isolated_script_test(
     ],
     args = [
         "--flag-specific=surface-embed",
+        "--no-virtual-tests",
+        "--skip-failing-tests",
+        "--skip-timeouts",
+        # TODO(https://crbug.com/575925048): Revisit wdspec test handling (e.g.,
+        # moving to a separate suite or filtering with --test-type).
+        "--inverted-test-launcher-filter-file=../../third_party/blink/web_tests/TestLists/content_shell.filter",
     ],
     binary = "chrome_wpt_tests",
 )
@@ -1028,12 +1032,40 @@ targets.tests.gtest_test(
     name = "device_realtarget_browsertests",
 )
 
+targets.tests.isolated_script_test(
+    name = "devtools_api_tests",
+    mixins = [
+        "has_native_resultdb_integration",
+    ],
+)
+
 targets.tests.gtest_test(
     name = "devtools_browser_tests",
     args = [
         "--gtest_filter=*DevTools*",
     ],
     binary = "browser_tests",
+)
+
+targets.tests.isolated_script_test(
+    name = "devtools_e2e_tests",
+    mixins = [
+        "has_native_resultdb_integration",
+    ],
+)
+
+targets.tests.isolated_script_test(
+    name = "devtools_node_unit_tests",
+    mixins = [
+        "has_native_resultdb_integration",
+    ],
+)
+
+targets.tests.isolated_script_test(
+    name = "devtools_unit_tests",
+    mixins = [
+        "has_native_resultdb_integration",
+    ],
 )
 
 targets.tests.gtest_test(
@@ -1544,6 +1576,10 @@ targets.tests.isolated_script_test(
 )
 
 targets.tests.isolated_script_test(
+    name = "ios_chrome_all_eg2tests_module",
+)
+
+targets.tests.isolated_script_test(
     name = "ios_chrome_bookmarks_eg2tests_module",
 )
 
@@ -1553,6 +1589,10 @@ targets.tests.isolated_script_test(
 
 targets.tests.isolated_script_test(
     name = "ios_chrome_settings_eg2tests_module",
+)
+
+targets.tests.isolated_script_test(
+    name = "ios_chrome_perf_benchmarks_eg2tests_module",
 )
 
 targets.tests.isolated_script_test(
@@ -1851,6 +1891,10 @@ targets.tests.gtest_test(
 )
 
 targets.tests.isolated_script_test(
+    name = "ondevice_api_scrape_tests",
+)
+
+targets.tests.isolated_script_test(
     name = "ondevice_stability_tests",
 )
 
@@ -1858,18 +1902,17 @@ targets.tests.isolated_script_test(
     name = "ondevice_stability_tests_light",
 )
 
-# TODO(b:484388901): Enable GPU backedn testing when the issue is fixed.
-# targets.tests.isolated_script_test(
-#     name = "litert_e2e_tests_gpu",
-#     mixins = [
-#         "has_native_resultdb_integration",
-#     ],
-#     args = [
-#         "--benchmark_binary_dir=./",
-#         "--backends=gpu",
-#     ],
-#     binary = "litert_e2e_tests",
-# )
+targets.tests.isolated_script_test(
+    name = "litert_e2e_tests_gpu",
+    mixins = [
+        "has_native_resultdb_integration",
+    ],
+    args = [
+        "--benchmark_binary_dir=./",
+        "--backends=gpu",
+    ],
+    binary = "litert_e2e_tests",
+)
 
 targets.tests.isolated_script_test(
     name = "litert_e2e_tests_cpu",
@@ -1895,18 +1938,17 @@ targets.tests.isolated_script_test(
     binary = "litert_lm_advanced_main_legacy_tests",
 )
 
-# TODO(b:484388901): Enable GPU backedn testing when the issue is fixed.
-# targets.tests.isolated_script_test(
-#     name = "litert_lm_advanced_main_legacy_tests_gpu",
-#     mixins = [
-#         "has_native_resultdb_integration",
-#     ],
-#     args = [
-#         "--benchmark_binary_dir=./",
-#         "--backends=gpu",
-#     ],
-#     binary = "litert_lm_advanced_main_legacy_tests",
-# )
+targets.tests.isolated_script_test(
+    name = "litert_lm_advanced_main_legacy_tests_gpu",
+    mixins = [
+        "has_native_resultdb_integration",
+    ],
+    args = [
+        "--benchmark_binary_dir=./",
+        "--backends=gpu_artisan",
+    ],
+    binary = "litert_lm_advanced_main_legacy_tests",
+)
 
 targets.tests.isolated_script_test(
     name = "chrome_ai_wpt_tests_manifest_gpu_high_tier",
@@ -1956,23 +1998,52 @@ targets.tests.isolated_script_test(
     binary = "chrome_ai_wpt_tests",
 )
 
-# The *_light variants below run the same tests against a pre-built chrome
-# that is downloaded at runtime, so they can be scheduled on bots that don't
-# build chrome (e.g. the google3 model validation integration tests).
 targets.tests.isolated_script_test(
-    name = "chrome_ai_wpt_tests_light_manifest_cpu",
+    name = "chrome_ai_wpt_tests_manifest_cpu_conversation",
     args = [
-        "--manifest-test-config=../../components/optimization_guide/internal/testing/configs/manifest_test_config_cpu.json",
+        "--manifest-test-config=../../components/optimization_guide/internal/testing/configs/manifest_test_config_cpu_conversation.json",
     ],
-    binary = "chrome_ai_wpt_tests_light",
+    binary = "chrome_ai_wpt_tests",
 )
 
 targets.tests.isolated_script_test(
-    name = "chrome_ai_wpt_tests_light_manifest_gpu_high_tier",
+    name = "chrome_ai_wpt_tests_manifest_gpu_high_tier_conversation",
     args = [
-        "--manifest-test-config=../../components/optimization_guide/internal/testing/configs/manifest_test_config_gpu_high_tier.json",
+        "--manifest-test-config=../../components/optimization_guide/internal/testing/configs/manifest_test_config_gpu_high_tier_conversation.json",
     ],
-    binary = "chrome_ai_wpt_tests_light",
+    binary = "chrome_ai_wpt_tests",
+)
+
+targets.tests.isolated_script_test(
+    name = "chrome_ai_wpt_tests_manifest_gpu_low_tier_conversation",
+    args = [
+        "--manifest-test-config=../../components/optimization_guide/internal/testing/configs/manifest_test_config_gpu_low_tier_conversation.json",
+    ],
+    binary = "chrome_ai_wpt_tests",
+)
+
+targets.tests.isolated_script_test(
+    name = "chrome_ai_wpt_tests_manifest_cpu_gemma4_conversation",
+    args = [
+        "--manifest-test-config=../../components/optimization_guide/internal/testing/configs/manifest_test_config_cpu_gemma4_conversation.json",
+    ],
+    binary = "chrome_ai_wpt_tests",
+)
+
+targets.tests.isolated_script_test(
+    name = "chrome_ai_wpt_tests_manifest_gpu_high_tier_gemma4_conversation",
+    args = [
+        "--manifest-test-config=../../components/optimization_guide/internal/testing/configs/manifest_test_config_gpu_high_tier_gemma4_conversation.json",
+    ],
+    binary = "chrome_ai_wpt_tests",
+)
+
+targets.tests.isolated_script_test(
+    name = "chrome_ai_wpt_tests_manifest_gpu_low_tier_gemma4_conversation",
+    args = [
+        "--manifest-test-config=../../components/optimization_guide/internal/testing/configs/manifest_test_config_gpu_low_tier_gemma4_conversation.json",
+    ],
+    binary = "chrome_ai_wpt_tests",
 )
 
 targets.tests.gtest_test(
@@ -2227,6 +2298,16 @@ targets.tests.gtest_test(
 
 targets.tests.gtest_test(
     name = "sbox_validation_tests",
+)
+
+targets.tests.gtest_test(
+    name = "screen_capture_kit_mac_tests",
+    binary = "content_browsertests",
+    args = [
+        "--use-gpu-in-tests",
+        "--gtest_filter=*ScreenCaptureKitRealCaptureTest.*",
+        "--test-launcher-jobs=1",
+    ],
 )
 
 targets.tests.gpu_telemetry_test(
@@ -2636,6 +2717,10 @@ targets.tests.isolated_script_test(
     binary = "variations_desktop_smoke_tests",
 )
 
+targets.tests.isolated_script_test(
+    name = "views_examples_mac_signing_tests",
+)
+
 targets.tests.gtest_test(
     name = "views_examples_unittests",
 )
@@ -2689,23 +2774,6 @@ targets.tests.gpu_telemetry_test(
         "skia_gold_test",
     ],
     module_scheme = "flat",
-)
-
-targets.tests.isolated_script_test(
-    name = "vulkan_swiftshader_blink_web_tests",
-    mixins = [
-        "has_native_resultdb_integration",
-        "blink_tests_write_run_histories",
-    ],
-    args = [
-        # layout test failures are retried 3 times when '--test-list' is not
-        # passed, but 0 times when '--test-list' is passed. We want to always
-        # retry 3 times, so we explicitly specify it.
-        "--num-retries=3",
-        "--skipped=always",
-        "--flag-specific=skia-vulkan-swiftshader",
-    ],
-    binary = "blink_web_tests",
 )
 
 targets.tests.gtest_test(
@@ -2950,6 +3018,24 @@ targets.tests.gpu_telemetry_test(
 )
 
 targets.tests.gpu_telemetry_test(
+    name = "webgl2_conformance_webgl_on_webgpu_tests",
+    telemetry_test_name = "webgl2_conformance",
+    mixins = [
+        "has_native_resultdb_integration",
+        "gpu_force_webgl_on_webgpu",
+        "gpu_force_high_performance_gpu",
+        "gpu_integration_test_webgl2_args",
+        "gpu_integration_test_common_args",
+        targets.mixin(
+            swarming = targets.swarming(
+                shards = 2,
+            ),
+        ),
+    ],
+    module_scheme = "flat",
+)
+
+targets.tests.gpu_telemetry_test(
     name = "webgl_conformance_d3d11_passthrough_tests",
     telemetry_test_name = "webgl1_conformance",
     mixins = [
@@ -3139,6 +3225,19 @@ targets.tests.gpu_telemetry_test(
         "has_native_resultdb_integration",
         "gpu_force_command_decoder_passthrough",
         "gpu_force_angle_vulkan",
+        "gpu_force_high_performance_gpu",
+        "gpu_integration_test_webgl1_args",
+        "gpu_integration_test_common_args",
+    ],
+    module_scheme = "flat",
+)
+
+targets.tests.gpu_telemetry_test(
+    name = "webgl_conformance_webgl_on_webgpu_tests",
+    telemetry_test_name = "webgl1_conformance",
+    mixins = [
+        "has_native_resultdb_integration",
+        "gpu_force_webgl_on_webgpu",
         "gpu_force_high_performance_gpu",
         "gpu_integration_test_webgl1_args",
         "gpu_integration_test_common_args",

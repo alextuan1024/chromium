@@ -12,19 +12,17 @@ static_library("extended_updates") {
     "extended_updates_notification.h",
   ]
 
-  public_deps = [ "//chrome/browser:browser_public_dependencies" ]
-
   deps = [
     "//ash",
     "//ash/constants",
     "//ash/public/cpp",
     "//base",
+    "//chrome/app:generated_resources",
     "//chrome/browser/apps/app_service",
     "//chrome/browser/ash/arc",
     "//chrome/browser/ash/arc:arc_util",
     "//chrome/browser/ash/ownership",
     "//chrome/browser/profiles:profile",
-    "//chrome/common",
     "//chromeos/ash/components/dbus/update_engine",
     "//chromeos/ash/components/settings",
     "//components/ownership",
@@ -72,5 +70,6 @@ source_set("unit_tests") {
 
     # Gather unit tests from subdirectories.
     "//chrome/browser/ash/extended_updates/test:unit_tests",
+    "//chrome/test/base:testing_browser_process",
   ]
 }

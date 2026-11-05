@@ -7,13 +7,25 @@
 
 #include <memory>
 
+#include "base/android/application_status_listener.h"
 #include "base/android/scoped_java_ref.h"
 #include "base/functional/callback_helpers.h"
 #include "chrome/browser/chrome_browser_main.h"
+#include "extensions/buildflags/buildflags.h"
+
+namespace base::android {
+class ScudoPurgeCoordinator;
+}  // namespace base::android
 
 namespace crash_reporter {
 class ChildExitObserver;
 }
+
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
+namespace extensions::image_writer {
+class AndroidUsbStorageProvider;
+}  // namespace extensions::image_writer
+#endif
 
 class ChromeBrowserMainPartsAndroid : public ChromeBrowserMainParts {
  public:
@@ -30,16 +42,33 @@ class ChromeBrowserMainPartsAndroid : public ChromeBrowserMainParts {
   int PreCreateThreads() override;
   void PostProfileInit(Profile* profile, bool is_initial_profile) override;
   int PreEarlyInitialization() override;
+  int PreMainMessageLoopRun() override;
+  void PostMainMessageLoopRun() override;
 
   // ChromeBrowserMainParts overrides.
   void PostBrowserStart() override;
   void ShowMissingLocaleMessageBox() override;
 
  private:
+  void OnApplicationStateChange(base::android::ApplicationState state);
+
   std::unique_ptr<crash_reporter::ChildExitObserver> child_exit_observer_;
   // Owns the Java ChromeBackupWatcher object and invokes destroy() on
   // destruction.
   base::ScopedClosureRunner backup_watcher_runner_;
+
+  // `scudo_purge_coordinator_` must be declared before `app_status_listener_`
+  // so that `app_status_listener_` is destroyed first during member teardown,
+  // preventing callbacks from firing during or after coordinator destruction.
+  std::unique_ptr<base::android::ScudoPurgeCoordinator>
+      scudo_purge_coordinator_;
+  std::unique_ptr<base::android::ApplicationStatusListener>
+      app_status_listener_;
+
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
+  std::unique_ptr<extensions::image_writer::AndroidUsbStorageProvider>
+      android_usb_storage_provider_;
+#endif
 };
 
 #endif  // CHROME_BROWSER_CHROME_BROWSER_MAIN_ANDROID_H_

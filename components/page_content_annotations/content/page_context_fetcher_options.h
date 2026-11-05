@@ -8,12 +8,18 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <utility>
 
 #include "base/compiler_specific.h"
+#include "base/functional/callback.h"
 #include "base/types/optional_ref.h"
 #include "components/page_content_annotations/core/page_content_annotations_enums.h"
 #include "third_party/blink/public/mojom/content_extraction/ai_page_content.mojom.h"
 #include "third_party/skia/include/core/SkColor.h"
+
+namespace content {
+class WebContents;
+}  // namespace content
 
 namespace page_content_annotations {
 
@@ -29,6 +35,15 @@ struct PaintPreviewOptions {
 
 class ScreenshotOptions {
  public:
+  using IsScreenshotAllowedCallback =
+      base::RepeatingCallback<bool(content::WebContents*)>;
+
+  ScreenshotOptions(const ScreenshotOptions&);
+  ScreenshotOptions& operator=(const ScreenshotOptions&);
+  ScreenshotOptions(ScreenshotOptions&&);
+  ScreenshotOptions& operator=(ScreenshotOptions&&);
+  ~ScreenshotOptions();
+
   // The format of the screenshot.
   // The default value is JPEG.
   enum class ScreenshotImageFormat {
@@ -94,6 +109,13 @@ class ScreenshotOptions {
   screenshot_collection_options() const {
     return screenshot_collection_options_;
   }
+  const IsScreenshotAllowedCallback& is_screenshot_allowed_callback() const {
+    return is_screenshot_allowed_callback_;
+  }
+  void set_is_screenshot_allowed_callback(
+      IsScreenshotAllowedCallback callback) {
+    is_screenshot_allowed_callback_ = std::move(callback);
+  }
 
  private:
   // Private constructor to force object creation through static methods.
@@ -112,12 +134,23 @@ class ScreenshotOptions {
   // Options for screenshot collection. If not set, the screenshot will be
   // captured with the default options.
   std::optional<ScreenshotCollectionOptions> screenshot_collection_options_;
+  // Optional callback re-evaluated while a fetch is in flight. When it returns
+  // false, the screenshot is dropped and reported as
+  // `ScreenshotCaptureStatus::kBlockedByEnterprisePolicy`.
+  IsScreenshotAllowedCallback is_screenshot_allowed_callback_;
 };
 
 class PdfOptions {
  public:
   enum class Format {
+    // Bytes extraction is supported on:
+    // - Top-level document PDF rendered in Chrome PDF viewer.
+    // - Embedded PDF rendered in Chrome PDF viewer, if feature
+    // `kGlicEmbeddedPdfBytesExtraction` is enabled.
     kBytes,
+
+    // Text extraction is supported on top-level document PDF rendered in Chrome
+    // PDF viewer.
     kText,
   };
 
@@ -142,6 +175,10 @@ struct FetchPageContextOptions {
   // Limit defining the number of bytes for inner text returned. A value
   // of 0 indicates no inner text should be returned.
   uint32_t inner_text_bytes_limit = 0;
+
+  // If true, the inner text includes the text of each frame's active
+  // EditContext. See `blink::mojom::InnerTextParams::include_edit_context`.
+  bool inner_text_include_edit_context = false;
 
   // Options for taking a screenshot. If not set, no screenshot will be taken.
   std::optional<ScreenshotOptions> screenshot_options = std::nullopt;

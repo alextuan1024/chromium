@@ -4,6 +4,8 @@
 
 #include "ui/ozone/platform/wayland/host/wayland_bubble.h"
 
+#include <utility>
+
 #include "ui/gfx/geometry/rect.h"
 #include "ui/ozone/platform/wayland/common/wayland_util.h"
 #include "ui/ozone/platform/wayland/host/wayland_buffer_manager_host.h"
@@ -25,6 +27,11 @@ WaylandBubble::WaylandBubble(PlatformWindowDelegate* delegate,
 
 WaylandBubble::~WaylandBubble() {
   if (parent_window()) {
+    if (root_surface()) {
+      set_shutting_down();
+      parent_window()->RemoveChildSubsurface(GetWidget(), TakeWaylandSurface(),
+                                             std::move(subsurface_));
+    }
     parent_window()->RemoveBubble(this);
   }
 }
@@ -39,6 +46,9 @@ void WaylandBubble::Show(bool inactive) {
   if (!weak_this) {
     return;
   }
+  if (parent_window()) {
+    parent_window()->RemoveChildSubsurface(GetWidget(), nullptr, {});
+  }
   AddToParentAsSubsurface();
   if (!weak_this) {
     return;
@@ -51,9 +61,18 @@ void WaylandBubble::Hide() {
     return;
   }
 
+  wl::Object<wl_subsurface> subsurface = std::move(subsurface_);
+  if (parent_window()) {
+    subsurface = parent_window()->RemoveChildSubsurface(GetWidget(), nullptr,
+                                                        std::move(subsurface));
+  }
   WaylandWindow::Hide();
+  subsurface.reset();
+  auto weak_this = AsWeakPtr();
   Deactivate();
-  subsurface_.reset();
+  if (!weak_this) {
+    return;
+  }
   connection()->Flush();
 }
 
@@ -90,14 +109,22 @@ void WaylandBubble::SetInputRegion(
 
 void WaylandBubble::Activate() {
   if (subsurface_ && activatable_ && parent_window()) {
+    auto weak_this = AsWeakPtr();
     parent_window()->ActivateBubble(this);
+    if (!weak_this) {
+      return;
+    }
   }
   WaylandWindow::Activate();
 }
 
 void WaylandBubble::Deactivate() {
   if (IsActive()) {
+    auto weak_this = AsWeakPtr();
     parent_window()->ActivateBubble(nullptr);
+    if (!weak_this) {
+      return;
+    }
   }
   WaylandWindow::Deactivate();
 }
@@ -150,7 +177,7 @@ void WaylandBubble::AddToParentAsSubsurface() {
 
   subsurface_ =
       root_surface()->CreateSubsurface(parent_window()->root_surface());
-  DCHECK(subsurface_);
+  CHECK(subsurface_, base::NotFatalUntil::M163);
 
   SetSubsurfacePosition();
 
@@ -187,7 +214,7 @@ void WaylandBubble::SetSubsurfacePosition() {
 
 bool WaylandBubble::OnInitialize(PlatformWindowInitProperties properties,
                                  PlatformWindowDelegate::State* state) {
-  DCHECK(parent_window());
+  CHECK(parent_window(), base::NotFatalUntil::M163);
 
   // `window_state` is always `kNormal` on WaylandBubble.
   state->window_state = PlatformWindowState::kNormal;

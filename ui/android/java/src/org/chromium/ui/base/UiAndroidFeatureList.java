@@ -4,6 +4,7 @@
 
 package org.chromium.ui.base;
 
+import org.chromium.base.MutableBooleanParamWithSafeDefault;
 import org.chromium.base.MutableFlagWithSafeDefault;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.components.cached_flags.BooleanCachedFeatureParam;
@@ -40,6 +41,14 @@ public class UiAndroidFeatureList {
     public static final MutableFlagWithSafeDefault sBottomSheetRemeasureFix =
             newMutableFlagWithSafeDefault(UiAndroidFeatures.BOTTOM_SHEET_REMEASURE_FIX, true);
 
+    public static final MutableFlagWithSafeDefault sCheckLocalNetworkPermissionRevokedCompat =
+            newMutableFlagWithSafeDefault(
+                    UiAndroidFeatures.CHECK_LOCAL_NETWORK_PERMISSION_REVOKED_COMPAT, true);
+
+    public static final MutableFlagWithSafeDefault sPointerLockMouseDensityCompensation =
+            newMutableFlagWithSafeDefault(
+                    UiAndroidFeatures.POINTER_LOCK_MOUSE_DENSITY_COMPENSATION, true);
+
     public static final MutableFlagWithSafeDefault sPointerLockMouseScaling =
             newMutableFlagWithSafeDefault(UiAndroidFeatures.POINTER_LOCK_MOUSE_SCALING, true);
 
@@ -55,11 +64,18 @@ public class UiAndroidFeatureList {
                     /* defaultValue= */ false,
                     /* defaultValueInTests= */ false);
 
+    // A CachedFlag because InsetObserver may receive insets before native is initialized.
+    public static final CachedFlag sAndroidPreserveStatusBarInsetsWhenUnfocused =
+            newCachedFlag(
+                    UiAndroidFeatures.ANDROID_PRESERVE_STATUS_BAR_INSETS_WHEN_UNFOCUSED,
+                    /* defaultValue= */ true,
+                    /* defaultValueInTests= */ true);
+
     public static final CachedFlag sAndroidWindowOcclusion =
             newCachedFlag(
                     UiAndroidFeatures.ANDROID_WINDOW_OCCLUSION,
                     /* defaultValue= */ false,
-                    /* defaultValueInTests= */ false);
+                    /* defaultValueInTests= */ true);
 
     // Whether to apply optimizations to the window when it is occluded. When false, occlusion
     // metrics will still be collected, but the actual behavior of the window remains unchanged.
@@ -110,12 +126,6 @@ public class UiAndroidFeatureList {
                     /* defaultValue= */ true,
                     /* defaultValueInTests= */ true);
 
-    public static final CachedFlag sUpdatePaddingForDisplayCalculation =
-            newCachedFlag(
-                    UiAndroidFeatures.UPDATE_PADDING_FOR_DISPLAY_CALCULATION,
-                    /* defaultValue= */ true,
-                    /* defaultValueInTests= */ true);
-
     public static final CachedFlag sReportBottomOverscrolls =
             newCachedFlag(
                     UiAndroidFeatures.REPORT_BOTTOM_OVERSCROLLS,
@@ -133,18 +143,20 @@ public class UiAndroidFeatureList {
             newMutableFlagWithSafeDefault(
                     UiAndroidFeatures.SUPPORT_KEYBOARD, /* defaultValue= */ true);
 
-    public static final MutableFlagWithSafeDefault sAndroidResourceMemoryOptimization =
+    public static final MutableFlagWithSafeDefault sSubmenuTypeOverride =
             newMutableFlagWithSafeDefault(
-                    UiAndroidFeatures.ANDROID_RESOURCE_MEMORY_OPTIMIZATION,
-                    /* defaultValue= */ false);
+                    UiAndroidFeatures.SUBMENU_TYPE_OVERRIDE, /* defaultValue= */ false);
+
+    public static final MutableBooleanParamWithSafeDefault sSubmenuTypeOverrideForceDrilldown =
+            sSubmenuTypeOverride.newBooleanParam("force_drilldown", false);
 
     public static final List<CachedFlag> sFlagsCachedUiAndroid =
             List.of(
+                    sAndroidPreserveStatusBarInsetsWhenUnfocused,
                     sAndroidUseDisplayTopology,
                     sAndroidWindowOcclusion,
                     sConnectedDisplayDensityDebugLogs,
                     sRefactorMinWidthContextOverride,
-                    sUpdatePaddingForDisplayCalculation,
                     sMaximumWindowForGestureNavDetection);
 
     public static final List<CachedFeatureParam<?>> sParamsCached =

@@ -33,10 +33,6 @@ namespace metrics::dwa {
 class DwaService;
 }
 
-namespace metrics::private_metrics {
-class PumaService;
-}
-
 namespace network_time {
 class NetworkTimeTracker;
 }
@@ -80,9 +76,6 @@ class MetricsServiceClient {
 
   // Returns the DwaService instance that this client is associated with.
   virtual metrics::dwa::DwaService* GetDwaService();
-
-  // Returns the PumaService instance that this client is associated with.
-  virtual metrics::private_metrics::PumaService* GetPumaService();
 
   // Returns the StructuredMetricsService instance that this client is
   // associated with.
@@ -231,6 +224,10 @@ class MetricsServiceClient {
 
   // Checks if the user has forced metrics collection on via the override flag.
   bool IsMetricsReportingForceEnabled() const;
+
+  // Returns whether UKM debug data (e.g., for chrome://ukm and
+  // chrome://metrics-internals) is allowed to be exposed.
+  virtual bool IsUkmDebugDataAllowed() const;
 
 // If expanding user-level metrics to other platforms, then, in addition to
 // implementing the functions below, remember to modify the callers of the

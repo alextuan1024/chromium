@@ -20,11 +20,11 @@
 #include "cc/paint/skia_paint_image_generator.h"
 #include "cc/paint/texture_backing.h"
 #include "third_party/skia/include/core/SkBitmap.h"
-#include "third_party/skia/include/core/SkCPURecorder.h"
 #include "third_party/skia/include/core/SkColorSpace.h"
 #include "third_party/skia/include/core/SkImage.h"
 #include "third_party/skia/include/core/SkImageInfo.h"
 #include "third_party/skia/include/core/SkPixmap.h"
+#include "third_party/skia/include/core/SkRecorder.h"
 #include "third_party/skia/include/core/SkRefCnt.h"
 #include "third_party/skia/include/core/SkSize.h"
 #include "third_party/skia/include/core/SkYUVAPixmaps.h"
@@ -33,6 +33,7 @@
 #include "ui/gfx/color_space.h"
 #include "ui/gfx/geometry/skia_conversions.h"
 #include "ui/gfx/hdr_metadata.h"
+#include "ui/gfx/tone_map_util.h"
 
 namespace cc {
 namespace {
@@ -149,28 +150,24 @@ sk_sp<SkImage> PaintImage::GetAcceleratedSkImage() const {
   return cached_sk_image_;
 }
 
-bool PaintImage::readPixels(const SkImageInfo& dst_info,
-                            void* dst_pixels,
-                            size_t dst_row_bytes,
+bool PaintImage::readPixels(const SkPixmap& dst_pixmap,
                             int src_x,
                             int src_y) const {
   if (texture_backing_) {
-    auto dst_info_adjusted = dst_info;
+    SkPixmap dst_pixmap_adjusted = dst_pixmap;
     if (reinterpret_as_srgb_) {
-      // To reinterpret the read pixels as sRGB, set `dst_info_adjusted`'s
+      // To reinterpret the read pixels as sRGB, set `dst_pixmap_adjusted`'s
       // color space to match the texture's space. This only works when the
       // caller expects sRGB pixels.
-      CHECK(!dst_info.colorSpace() ||
-            SkColorSpace::Equals(dst_info.colorSpace(),
+      CHECK(!dst_pixmap.colorSpace() ||
+            SkColorSpace::Equals(dst_pixmap.colorSpace(),
                                  SkColorSpace::MakeSRGB().get()));
-      dst_info_adjusted = dst_info.makeColorSpace(
+      dst_pixmap_adjusted.setColorSpace(
           texture_backing_->GetSkImageInfo().refColorSpace());
     }
-    return texture_backing_->readPixels(dst_info_adjusted, dst_pixels,
-                                        dst_row_bytes, src_x, src_y);
+    return texture_backing_->readPixels(dst_pixmap_adjusted, src_x, src_y);
   } else if (cached_sk_image_) {
-    return cached_sk_image_->readPixels(dst_info, dst_pixels, dst_row_bytes,
-                                        src_x, src_y);
+    return cached_sk_image_->readPixels(dst_pixmap, src_x, src_y);
   }
   return false;
 }
@@ -312,7 +309,7 @@ bool PaintImage::DecodeYuv(const SkYUVAPixmaps& pixmaps,
   // This function assumes that the color space being applied to `pixmaps`
   // is the same color space returned by `GetSkImageInfo()`.
   DCHECK(pixmaps.isValid());
-  const uint32_t lazy_pixel_ref = stable_id();
+  const uint64_t lazy_pixel_ref = stable_id();
   switch (aux_image) {
     case AuxImage::kDefault:
       DCHECK(paint_image_generator_);
@@ -332,7 +329,7 @@ bool PaintImage::DecodeFromSkImage(SkPixmap pixmap,
   auto image = GetSkImageForFrame(frame_index, client_id);
   DCHECK(image);
   if (color_space) {
-    image = image->makeColorSpace(skcpu::Recorder::TODO(), color_space, {});
+    image = image->makeColorSpace(SkRecorder::TODO(), color_space, {});
     if (!image)
       return false;
   }
@@ -371,34 +368,24 @@ gfx::Size PaintImage::GetSize(AuxImage aux_image) const {
   return gfx::SkISizeToSize(GetSkISize(aux_image));
 }
 
-gfx::ContentColorUsage PaintImage::GetContentColorUsage() const {
+void PaintImage::UnionColorVolumeInto(
+    gfx::ContentColorVolume& color_volume) const {
   // Right now, JS paint worklets can only be in sRGB
   if (IsPaintWorklet()) {
-    return gfx::ContentColorUsage::kSRGB;
+    return;
   }
 
-  // Gainmap images are always HDR.
-  if (HasGainmapInfo()) {
-    return gfx::ContentColorUsage::kHDR;
-  }
+  const auto* cs = color_space();
+  color_volume.UnionWith(gfx::ContentColorVolume{
+      .is_wide_color_gamut = cs && !cs->isSRGB(),
+      .hdr_headroom = GetMaximumRenderedHdrHeadroom(),
+  });
+}
 
-  const auto* color_space = GetSkImageInfo().colorSpace();
-
-  // Assume the image will be sRGB if we don't know yet.
-  if (!color_space || color_space->isSRGB()) {
-    return gfx::ContentColorUsage::kSRGB;
-  }
-
-  skcms_TransferFunction fn;
-  color_space->transferFn(&fn);
-  if (skcms_TransferFunction_isPQish(&fn) ||
-      skcms_TransferFunction_isHLGish(&fn) ||
-      skcms_TransferFunction_isPQ(&fn) || skcms_TransferFunction_isHLG(&fn)) {
-    return gfx::ContentColorUsage::kHDR;
-  }
-
-  // If it's not HDR and not SRGB, report it as WCG.
-  return gfx::ContentColorUsage::kWideColorGamut;
+gfx::ContentColorUsage PaintImage::GetContentColorUsage() const {
+  gfx::ContentColorVolume color_volume;
+  UnionColorVolumeInto(color_volume);
+  return color_volume.GetContentColorUsage();
 }
 
 const ImageHeaderMetadata* PaintImage::GetImageHeaderMetadata() const {
@@ -513,15 +500,27 @@ std::string PaintImage::FrameKey::ToString() const {
 float PaintImage::GetMaximumRenderedHdrHeadroom() const {
   if (HasGainmapInfo()) {
     const SkGainmapInfo& gainmap_info = GetGainmapInfo();
-    float max_ratio = std::max({gainmap_info.fGainmapRatioMax[0],
-                                gainmap_info.fGainmapRatioMax[1],
-                                gainmap_info.fGainmapRatioMax[2]});
-    return std::log2(max_ratio);
+    return std::log2(
+        std::max(gainmap_info.fDisplayRatioSdr, gainmap_info.fDisplayRatioHdr));
   }
-  if (color_space() && gfx::ColorSpace(*color_space()).IsHDR()) {
-    return std::log2(gfx::HdrMetadataExtendedRange::kDefaultHdrHeadroom);
+  return gfx::ToneMapUtil::GetMaxHdrHeadroom(color_space(), hdr_metadata_);
+}
+
+bool PaintImage::DecodeCacheColorConversionIsDestructive() const {
+  if (HasGainmapInfo()) {
+    return true;
   }
-  return 0.0f;
+  // An image may need tone mapping or white-level adjustment at draw time,
+  // even if its HDR headroom is 0.
+  if (gfx::ToneMapUtil::UseGlobalToneMapFilter(color_space(), hdr_metadata_)) {
+    return true;
+  }
+  // Extended-range images with a single headroom do not need tone mapping, but
+  // converting them to the target color space would clamp values above white.
+  if (gfx::ToneMapUtil::IsHDR(color_space(), hdr_metadata_)) {
+    return true;
+  }
+  return false;
 }
 
 }  // namespace cc

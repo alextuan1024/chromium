@@ -60,6 +60,7 @@ targets.settings_defaults.set(
 
 ci.builder(
     name = "Deterministic Fuchsia (dbg)",
+    description_html = "Verifies that Fuchsia x64 debug builds are deterministic.",
     executable = "recipe:swarming/deterministic_build",
     gn_args = gn_args.config(
         configs = [
@@ -69,6 +70,7 @@ ci.builder(
             "x64",
         ],
     ),
+    ssd = None,
     # Runs two builds, which can cause the builder to run out of disk space
     # with standard free space.
     free_space = free_space.high,
@@ -91,6 +93,7 @@ ci.builder(
 ci.builder(
     name = "fuchsia-arm64-cast-receiver-rel",
     branch_selector = branches.selector.FUCHSIA_BRANCHES,
+    description_html = "ARM64 release build of Fuchsia components with Cast Receiver.",
     builder_spec = builder_config.builder_spec(
         gclient_config = builder_config.gclient_config(
             config = "chromium",
@@ -132,9 +135,17 @@ ci.builder(
         mixins = [
             "arm64",
             "docker",
+            "fuchsia-arm64-large-device-spec",
             "linux-ubuntu",
         ],
         per_test_modifications = {
+            "content_browsertests": [
+                targets.mixin(
+                    swarming = targets.swarming(
+                        shards = 24,
+                    ),
+                ),
+            ],
             "context_lost_validating_tests": targets.remove(
                 reason = "crbug.com/42050042, crbug.com/42050537 this test does not work on swiftshader on arm64",
             ),
@@ -153,8 +164,14 @@ ci.builder(
             "screenshot_sync_validating_tests": targets.remove(
                 reason = "crbug.com/42050042, crbug.com/42050537 this test does not work on swiftshader on arm64",
             ),
+            "fuchsia_sizes": targets.per_test_modification(
+                remove_mixins = [
+                    "fuchsia-arm64-large-device-spec",
+                ],
+            ),
         },
     ),
+    ssd = None,
     console_view_entry = [
         consoles.console_view_entry(
             category = "cast-receiver",
@@ -213,8 +230,10 @@ ci.builder(
             "cast_test_lists",
         ],
         mixins = [
+            "fuchsia-large-device-spec",
             "isolate_profile_data",
-            "linux-jammy",
+            "linux-ubuntu",
+            "no_ssd",
             targets.mixin(
                 swarming = targets.swarming(
                     dimensions = {
@@ -253,6 +272,7 @@ ci.builder(
             ),
         },
     ),
+    ssd = None,
     free_space = free_space.high,
     console_view_entry = [
         consoles.console_view_entry(
@@ -273,6 +293,7 @@ ci.builder(
 ci.builder(
     name = "fuchsia-x64-cast-receiver-rel",
     branch_selector = branches.selector.FUCHSIA_BRANCHES,
+    description_html = "x64 release build of Fuchsia components with Cast Receiver.",
     builder_spec = builder_config.builder_spec(
         gclient_config = builder_config.gclient_config(
             config = "chromium",
@@ -317,7 +338,7 @@ ci.builder(
         mixins = [
             "fuchsia-large-device-spec",
             "isolate_profile_data",
-            "linux-jammy",
+            "linux-ubuntu",
             targets.mixin(
                 swarming = targets.swarming(
                     dimensions = {
@@ -354,6 +375,7 @@ ci.builder(
             ],
         },
     ),
+    ssd = None,
     console_view_entry = [
         consoles.console_view_entry(
             category = "cast-receiver",

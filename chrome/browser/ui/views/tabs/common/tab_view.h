@@ -16,6 +16,7 @@
 #include "chrome/browser/ui/tabs/tab_style.h"
 #include "chrome/browser/ui/tabs/vertical_tab_strip_state_controller.h"
 #include "chrome/browser/ui/views/tabs/hovercard/hover_card_anchor_target.h"
+#include "chrome/browser/ui/views/tabs/hovercard/hover_card_update_type.h"
 #include "chrome/browser/ui/views/tabs/shared/tab_strip_types.h"
 #include "chrome/browser/ui/views/tabs/tab/alert_indicator_button.h"
 #include "chrome/browser/ui/views/tabs/tab/tab_context_menu_controller.h"
@@ -93,6 +94,8 @@ class TabView : public views::View,
   void UpdateFocusFreezing();
 
   void UpdateHovered(bool hovered);
+  void ShowHover(TabStyle::ShowHoverStyle style);
+  void HideHover(TabStyle::HideHoverStyle style);
   bool IsHoverAnimationActive() const;
 
   std::optional<SkColor> GetBackgroundColor();
@@ -104,6 +107,7 @@ class TabView : public views::View,
   float radial_highlight_opacity() { return radial_highlight_opacity_; }
   const tabs::TabData& data() const { return tab_data_; }
   bool IsActive() const { return active_; }
+  bool IsHovering() const { return hovered_; }
   bool IsClosing() const { return !collection_node_; }
   bool split() const { return split_; }
   bool pinned() const { return pinned_; }
@@ -190,7 +194,7 @@ class TabView : public views::View,
   void RecordMousePressedInTab();
 
   void UpdateHoverCard(HoverCardAnchorTarget* target,
-                       int hover_card_update_type);
+                       HoverCardUpdateType hover_card_update_type);
 
   double GetHoverAnimationValue() const;
   float GetHoverOpacity() const;
@@ -206,6 +210,8 @@ class TabView : public views::View,
   bool IsInExpandOnHover(int width) const;
 
   SkScalar GetCornerRadius() const;
+
+  void UpdateClipPathAndRoundedCorners();
 
   // Applies rounded corners to the view's layer.
   void UpdateLayerRoundedCorners();

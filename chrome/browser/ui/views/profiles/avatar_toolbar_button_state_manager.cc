@@ -20,7 +20,6 @@
 #include "base/scoped_observation.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/supports_user_data.h"
-#include "base/task/single_thread_task_runner.h"
 #include "base/time/time.h"
 #include "base/timer/elapsed_timer.h"
 #include "base/timer/timer.h"
@@ -54,20 +53,17 @@
 #include "chrome/browser/ui/layout_constants.h"
 #include "chrome/browser/ui/profiles/profile_colors_util.h"
 #include "chrome/browser/ui/profiles/profile_view_utils.h"
-#include "chrome/browser/ui/signin/dice_migration_service.h"
 #include "chrome/browser/ui/user_education/browser_user_education_interface.h"
 #include "chrome/browser/ui/views/profiles/avatar_toolbar_button.h"
 #include "chrome/browser/ui/views/profiles/profile_menu_coordinator.h"
 #include "chrome/browser/ui/views/toolbar/avatar_toolbar_button_interface.h"
 #include "chrome/browser/ui/web_applications/app_browser_controller.h"
-#include "chrome/browser/user_education/user_education_service.h"
-#include "chrome/browser/user_education/user_education_service_factory.h"
+#include "chrome/browser/webauthn/passkey_unlock_error_strings.h"
 #include "chrome/browser/webauthn/passkey_unlock_manager.h"
 #include "chrome/browser/webauthn/passkey_unlock_manager_factory.h"
 #include "chrome/grit/branded_strings.h"
 #include "chrome/grit/generated_resources.h"
 #include "components/feature_engagement/public/feature_constants.h"
-#include "components/password_manager/content/common/web_ui_constants.h"
 #include "components/policy/core/common/management/management_service.h"
 #include "components/prefs/pref_service.h"
 #include "components/signin/public/base/consent_level.h"
@@ -78,11 +74,11 @@
 #include "components/signin/public/identity_manager/account_info.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/signin/public/identity_manager/primary_account_change_event.h"
-#include "components/sync/base/features.h"
+#include "components/subscription_eligibility/ai_subscription_tier_names.h"
 #include "components/sync/service/sync_service.h"
 #include "components/sync/service/sync_service_observer.h"
 #include "components/user_education/common/feature_promo/feature_promo_controller.h"
-#include "content/public/common/url_utils.h"
+#include "device/fido/public/features.h"
 #include "google_apis/gaia/gaia_id.h"
 #include "google_apis/gaia/google_service_auth_error.h"
 #include "ui/base/l10n/l10n_util.h"
@@ -107,19 +103,12 @@ std::optional<base::TimeDelta> g_show_signin_pending_text_delay_for_testing;
 
 constexpr base::TimeDelta kPromoDuration = base::Seconds(20);
 std::optional<base::TimeDelta> g_promo_duration_for_testing;
-
-std::optional<base::TimeDelta> g_signed_out_promo_trigger_delay_for_testing;
 #endif  // BUILDFLAG(ENABLE_DICE_SUPPORT)
 
 constexpr base::TimeDelta kOnSigninDuration = base::Seconds(20);
 std::optional<base::TimeDelta> g_on_signin_duration_for_testing;
 
 }  // namespace
-
-// static
-base::TimeDelta
-    AvatarToolbarButtonStateManager::g_iph_min_delay_after_creation =
-        base::Seconds(2);
 
 namespace {
 
@@ -442,9 +431,21 @@ class ExplicitStateProvider : public StateProvider {
     return accessibility_label_;
   }
 
-  std::optional<base::RepeatingCallback<void(bool)>> GetButtonActionOverride()
-      override {
-    return explicit_action_;
+  std::optional<ButtonAction> GetButtonActionOverride() override {
+    if (!explicit_action_) {
+      return std::nullopt;
+    }
+    // Explicit actions don't show bubbles anchored to the avatar button, so
+    // `keep_anchor_visible` can be released as soon as the action is run.
+    // TODO(crbug.com/556290451): Avoid waiting for the button to become visible
+    // before running explicit actions.
+    return base::BindRepeating(
+        [](const base::RepeatingCallback<void(bool)>& action,
+           bool is_source_accelerator,
+           base::ScopedClosureRunner keep_anchor_visible) {
+          action.Run(is_source_accelerator);
+        },
+        *explicit_action_);
   }
 
   // Used as the callback closure to the setter of the explicit state,
@@ -678,8 +679,7 @@ class OnSigninStateProvider : public StateProvider {
     return l10n_util::GetStringUTF16(IDS_AVATAR_BUTTON_MAKING_CHROME_YOURS);
   }
 
-  std::optional<base::RepeatingCallback<void(bool)>> GetButtonActionOverride()
-      override {
+  std::optional<ButtonAction> GetButtonActionOverride() override {
     return base::BindRepeating(
         &OnSigninStateProvider::OnButtonClick,
         // This is safe because `AvatarToolbarButtonDelegate`
@@ -690,8 +690,11 @@ class OnSigninStateProvider : public StateProvider {
   void ClearForTesting() override { coordinator_->Collapse(); }
 
  private:
-  void OnButtonClick(bool is_source_accelerator) {
-    ProfileMenuCoordinator::From(&browser_.get())->Show(is_source_accelerator);
+  void OnButtonClick(bool is_source_accelerator,
+                     base::ScopedClosureRunner keep_anchor_visible) {
+    ProfileMenuCoordinator::From(&browser_.get())
+        ->Show(is_source_accelerator, /*from_avatar_promo=*/false,
+               std::move(keep_anchor_visible));
     coordinator_->Collapse();
   }
 
@@ -724,7 +727,7 @@ class ShowIdentityNameStateProvider : public StateProvider,
   ~ShowIdentityNameStateProvider() override = default;
 
   // StateProvider:
-  bool IsActive() const override { return show_identity_request_count_ > 0; }
+  bool IsActive() const override { return active_; }
 
   void Init() override {
     if (IdentityManagerFactory::GetForProfile(&profile())
@@ -743,20 +746,9 @@ class ShowIdentityNameStateProvider : public StateProvider,
     return GetShortProfileName(profile());
   }
 
-  void ClearForTesting() override { OnIdentityAnimationTimeout(); }
+  void ClearForTesting() override { Clear(); }
 
   // IdentityManager::Observer:
-  // Needed if the first sync promo account should be displayed.
-  void OnPrimaryAccountChanged(
-      const signin::PrimaryAccountChangeEvent& event) override {
-    if (event.GetEventTypeFor(signin::ConsentLevel::kSignin) !=
-            signin::PrimaryAccountChangeEvent::Type::kSet ||
-        syncer::IsReplaceSyncPromosWithSignInPromosEnabled()) {
-      return;
-    }
-    OnUserIdentityChanged();
-  }
-
   void OnRefreshTokensLoaded() override {
     // TODO(b/324018028): This check can be removed as `OnRefreshTokensLoaded()`
     // is called when first observing and not as a result of
@@ -783,18 +775,16 @@ class ShowIdentityNameStateProvider : public StateProvider,
       return;
     }
 
-    if (syncer::IsReplaceSyncPromosWithSignInPromosEnabled()) {
-      // Prevents from showing the greetings if the user has signed in before
-      // the browser is created (on sign-in state should be shown instead).
-      const SigninDetectionService* signin_detection_service =
-          SigninDetectionServiceFactory::GetForProfile(&profile());
-      CHECK(signin_detection_service);
-      if (signin_detection_service->HasSignedInInCurrentSession()) {
-        return;
-      }
+    // Prevents from showing the greetings if the user has signed in before
+    // the browser is created (on sign-in state should be shown instead).
+    const SigninDetectionService* signin_detection_service =
+        SigninDetectionServiceFactory::GetForProfile(&profile());
+    CHECK(signin_detection_service);
+    if (signin_detection_service->HasSignedInInCurrentSession()) {
+      return;
     }
 
-    OnUserIdentityChanged();
+    WaitForImageAndShowIdentityName();
   }
 
   void OnIdentityManagerShutdown(signin::IdentityManager*) override {
@@ -811,6 +801,10 @@ class ShowIdentityNameStateProvider : public StateProvider,
     }
 
     has_in_product_help_promo_ = has_promo;
+    if (!IsActive()) {
+      return;
+    }
+
     // Trigger a new animation, even if the IPH is being removed. This keeps the
     // pill open a little more and avoids jankiness caused by the two animations
     // (IPH and identity pill) happening concurrently.
@@ -820,30 +814,23 @@ class ShowIdentityNameStateProvider : public StateProvider,
 
   void OnIconUpdated() override {
     // Try to show the name if we were waiting for an image.
-    MaybeShowIdentityName();
+    MaybeShowIdentityNameWhenImageReady();
   }
 
  private:
-  // Initiates showing the identity.
-  void OnUserIdentityChanged() {
+  // Initiates showing the identity once the account image is available.
+  void WaitForImageAndShowIdentityName() {
     signin_ui_util::RecordAnimatedIdentityTriggered(&profile());
     // On any following icon update the name will be attempted to be shown when
     // the image is ready.
     waiting_for_image_ = true;
-    MaybeShowIdentityName();
+    MaybeShowIdentityNameWhenImageReady();
   }
 
   // Should be called when the icon is updated. This may trigger the showing of
-  // the identity name.
-  void MaybeShowIdentityName() {
+  // the identity name if waiting for the account image.
+  void MaybeShowIdentityNameWhenImageReady() {
     if (!waiting_for_image_ || GetGaiaAccountImage(&profile()).IsEmpty()) {
-      return;
-    }
-
-    // Check that the user is still signed in. See https://crbug.com/40107959
-    if (!IdentityManagerFactory::GetForProfile(&profile())
-             ->HasPrimaryAccount(signin::ConsentLevel::kSignin)) {
-      Clear();
       return;
     }
 
@@ -853,28 +840,32 @@ class ShowIdentityNameStateProvider : public StateProvider,
   // Shows the name in the identity pill. If the name is already showing, this
   // extends the duration.
   void ShowIdentityName() {
-    ++show_identity_request_count_;
+    // Check that the user is still signed in. See https://crbug.com/40107959
+    if (!IdentityManagerFactory::GetForProfile(&profile())
+             ->HasPrimaryAccount(signin::ConsentLevel::kSignin)) {
+      Clear();
+      return;
+    }
+
+    active_ = true;
     waiting_for_image_ = false;
 
     RequestUpdate();
 
-    // Hide the pill after a while.
-    base::SingleThreadTaskRunner::GetCurrentDefault()->PostDelayedTask(
-        FROM_HERE,
+    // Hide the pill after a while. Starting the timer while it is already
+    // running resets it and extends the duration.
+    collapse_timer_.Start(
+        FROM_HERE, g_show_name_duration_for_testing.value_or(kShowNameDuration),
         base::BindOnce(
-            &ShowIdentityNameStateProvider::OnIdentityAnimationTimeout,
-            weak_ptr_factory_.GetWeakPtr()),
-        g_show_name_duration_for_testing.value_or(kShowNameDuration));
-  }
-
-  void OnIdentityAnimationTimeout() {
-    --show_identity_request_count_;
-    MaybeHideIdentityAnimation();
+            &ShowIdentityNameStateProvider::MaybeHideIdentityAnimation,
+            // This is safe because `ShowIdentityNameStateProvider` owns
+            // `collapse_timer_`.
+            base::Unretained(this)));
   }
 
   // Called after the user interacted with the button or after some timeout.
   void MaybeHideIdentityAnimation() {
-    if (show_identity_request_count_ > 0) {
+    if (!active_ || collapse_timer_.IsRunning()) {
       return;
     }
 
@@ -891,7 +882,8 @@ class ShowIdentityNameStateProvider : public StateProvider,
 
   // Clears the effects of the state being active.
   void Clear() {
-    show_identity_request_count_ = 0;
+    collapse_timer_.Stop();
+    active_ = false;
     waiting_for_image_ = false;
     has_in_product_help_promo_ = false;
 
@@ -900,11 +892,8 @@ class ShowIdentityNameStateProvider : public StateProvider,
 
   const raw_ref<AvatarToolbarButtonInterface> avatar_control_;
 
-  // Count of the show identity pill name timeouts that are currently scheduled.
-  // Multiple timeouts are scheduled when multiple show requests triggers happen
-  // in a quick sequence (before the first timeout passes). The identity pill
-  // tries to close when this reaches 0.
-  int show_identity_request_count_ = 0;
+  base::OneShotTimer collapse_timer_;
+  bool active_ = false;
   bool waiting_for_image_ = false;
   bool has_in_product_help_promo_ = false;
   bool refresh_tokens_loaded_ = false;
@@ -912,8 +901,6 @@ class ShowIdentityNameStateProvider : public StateProvider,
   base::ScopedObservation<signin::IdentityManager,
                           signin::IdentityManager::Observer>
       identity_manager_observation_{this};
-
-  base::WeakPtrFactory<ShowIdentityNameStateProvider> weak_ptr_factory_{this};
 };
 
 #if BUILDFLAG(ENABLE_DICE_SUPPORT)
@@ -955,8 +942,7 @@ class PromoStateProviderCoordinator
     }
   }
 
-  void MaybeStartSignedOutTriggerTimer() {
-    CHECK(base::FeatureList::IsEnabled(switches::kSigninPromoOnAvatarPill));
+  void MaybeTriggerSignedOutPromo() {
     CHECK(identity_manager_->AreRefreshTokensLoaded());
 
     if (base::CommandLine::ForCurrentProcess()->HasSwitch(
@@ -964,14 +950,8 @@ class PromoStateProviderCoordinator
       return;
     }
 
-    // Start a delayed timer to trigger the promo for signed out profiles.
-    if (!IsSignedIn() && !signed_out_trigger_delay_timer_.IsRunning()) {
-      signed_out_trigger_delay_timer_.Start(
-          FROM_HERE,
-          g_signed_out_promo_trigger_delay_for_testing.value_or(
-              switches::kSigninPromoOnAvatarPillStartupDelayForPromoShow.Get()),
-          base::BindOnce(&PromoStateProviderCoordinator::Trigger,
-                         base::Unretained(this)));
+    if (!IsSignedIn()) {
+      Trigger();
     }
   }
 
@@ -1000,17 +980,6 @@ class PromoStateProviderCoordinator
 
   void ForceShowingPromoForTesting() { Trigger(); }
 
-  // Returns whether the delay timer was running or not.
-  bool GetStateAndFireSignedOutTriggerDelayTimerForTesting() {
-    CHECK(base::FeatureList::IsEnabled(switches::kSigninPromoOnAvatarPill));
-    bool is_running = signed_out_trigger_delay_timer_.IsRunning();
-    if (is_running) {
-      signed_out_trigger_delay_timer_.FireNow();
-      signed_out_trigger_delay_timer_.Stop();
-    }
-    return is_running;
-  }
-
   // AvatarToolbarButtonStateManager::Observer:
   void OnButtonStateChanged(std::optional<ButtonState> old_state,
                             ButtonState new_state) override {
@@ -1034,7 +1003,7 @@ class PromoStateProviderCoordinator
 
     // Collapse the promo state on any button state change to ensure that promo
     // timers are stopped and promo state is cleaned up when higher-priority
-    // states (such as `kShowIdentityName` triggered by IPH) become active.
+    // states become active.
     Collapse();
     if (!old_state.has_value()) {
       return;
@@ -1072,22 +1041,14 @@ class PromoStateProviderCoordinator
         case signin::PrimaryAccountChangeEvent::Type::kSet: {
           // Setting any consent level should remove any promo that is showing.
           Collapse();
-          if (signed_out_trigger_delay_timer_.IsRunning()) {
-            signed_out_trigger_delay_timer_.Stop();
-          }
 
           std::optional<signin_metrics::AccessPoint> access_point =
               event_details.GetSetPrimaryAccountAccessPoint();
           CHECK(access_point.has_value());
           if (access_point ==
               signin_metrics::AccessPoint::kAvatarPillExpandPromo) {
-            CHECK(base::FeatureList::IsEnabled(
-                switches::kSigninPromoOnAvatarPill));
             // Enabling sync through this access point is not possible - so this
-            // cannot double record. Also
-            // `syncer::kReplaceSyncPromosWithSignInPromos` should be enabled,
-            // which does not allow turning on Sync.
-            CHECK(syncer::IsReplaceSyncPromosWithSignInPromosEnabled());
+            // cannot double record.
             // We need to use `last_gaia_id_promo_used_` here because since the
             // user is now signed in, we can no longer differentiate whether the
             // user was signed out or web signed in at the time of using the
@@ -1101,9 +1062,6 @@ class PromoStateProviderCoordinator
         case signin::PrimaryAccountChangeEvent::Type::kCleared:
           // Clearing any consent level should remove any promo that is showing.
           Collapse();
-          if (signed_out_trigger_delay_timer_.IsRunning()) {
-            signed_out_trigger_delay_timer_.Stop();
-          }
           break;
         case signin::PrimaryAccountChangeEvent::Type::kNone:
           break;
@@ -1123,11 +1081,7 @@ class PromoStateProviderCoordinator
     }
   }
 
-  void OnRefreshTokensLoaded() override {
-    if (base::FeatureList::IsEnabled(switches::kSigninPromoOnAvatarPill)) {
-      MaybeStartSignedOutTriggerTimer();
-    }
-  }
+  void OnRefreshTokensLoaded() override { MaybeTriggerSignedOutPromo(); }
 
   void OnIdentityManagerShutdown(
       signin::IdentityManager* identity_manager) override {
@@ -1323,7 +1277,6 @@ class PromoStateProviderCoordinator
   std::optional<base::ElapsedTimer> before_promo_used_elapsed_timer_;
 
   bool initialzed_ = false;
-  base::OneShotTimer signed_out_trigger_delay_timer_;
   bool waiting_sync_active_for_promo_computation_ = false;
   GaiaId last_gaia_id_promo_used_;
 
@@ -1379,9 +1332,6 @@ class PromoStateProvider : public StateProvider {
         // Note: Sync promo does not explicitly mention "sync" but invites the
         // user to back-up their data. It is fine to be used here.
         return l10n_util::GetStringUTF16(IDS_AVATAR_BUTTON_SYNC_PROMO);
-      case signin::ProfileMenuAvatarButtonPromoInfo::Type::kSyncPromo:
-        CHECK(switches::IsAvatarSyncPromoFeatureEnabled());
-        return l10n_util::GetStringUTF16(IDS_AVATAR_BUTTON_SYNC_PROMO);
       case signin::ProfileMenuAvatarButtonPromoInfo::Type::kSigninPromo:
         return l10n_util::GetStringUTF16(IDS_AVATAR_BUTTON_SIGNIN_PROMO);
     }
@@ -1398,8 +1348,7 @@ class PromoStateProvider : public StateProvider {
     }
   }
 
-  std::optional<base::RepeatingCallback<void(bool)>> GetButtonActionOverride()
-      override {
+  std::optional<ButtonAction> GetButtonActionOverride() override {
     return base::BindRepeating(
         &PromoStateProvider::OnButtonClick,
         // This is safe because `AvatarToolbarButtonStateManager`
@@ -1414,10 +1363,11 @@ class PromoStateProvider : public StateProvider {
   }
 
  private:
-  void OnButtonClick(bool is_source_accelerator) {
+  void OnButtonClick(bool is_source_accelerator,
+                     base::ScopedClosureRunner keep_anchor_visible) {
     ProfileMenuCoordinator::From(&browser_.get())
         ->Show(is_source_accelerator,
-               /*from_avatar_promo=*/true);
+               /*from_avatar_promo=*/true, std::move(keep_anchor_visible));
     coordinator_->PromoUsed();
   }
 
@@ -1432,10 +1382,10 @@ class PromoStateProvider : public StateProvider {
 };
 #endif  // BUILDFLAG(ENABLE_DICE_SUPPORT)
 
-// Observes passkey unlock manager to see if the passkeys are locked and the
-// error UI needs to be shown. If passkeys are locked, but could be unlocked, it
-// updates the profile avatar. It also updates the profile avatar after
-// unlocking passkeys.
+// Legacy provider for `ButtonState::kPasskeysLockedError`, selected when
+// `device::kPasskeyUnlockErrorUi` is enabled and
+// `device::kPasskeyUnlockIdentityErrorUi` is disabled. Observes
+// `PasskeyUnlockManager` to show or hide the passkey error pill.
 class PasskeyStateProvider : public StateProvider,
                              public webauthn::PasskeyUnlockManager::Observer {
  public:
@@ -1469,8 +1419,7 @@ class PasskeyStateProvider : public StateProvider,
   }
 
   std::u16string GetAvatarTooltipText() const final {
-    return passkey_manager_observation_.GetSource()
-        ->GetPasskeyErrorProfileMenuDetails();
+    return webauthn::GetPasskeyErrorProfileMenuDetails();
   }
 
   std::pair<ChromeColorIds, ChromeColorIds> GetInkdropColors() const override {
@@ -1478,8 +1427,7 @@ class PasskeyStateProvider : public StateProvider,
   }
 
   std::u16string GetText() const override {
-    return passkey_manager_observation_.GetSource()
-        ->GetPasskeyErrorProfilePillTitle();
+    return webauthn::GetPasskeyErrorProfilePillTitle();
   }
 
  private:
@@ -1538,10 +1486,8 @@ class AvatarToolbarButtonPasskeyStateChangeReporter
 
 // This provider observes sync errors (including transport mode). It can be
 // configured to listen to a specific error with `sync_error_type`, or to all
-// errors by passing nullopt. That way specific implementations of
-// `SyncErrorBaseStateProvider`s can handle a specific sync error, while an
-// implementation passing `std::nullopt` with lower priority can handle the
-// remaining errors.
+// remaining errors (excluding `kPasskeysLocked`, which is handled by
+// `PasskeysLockedSyncErrorStateProvider`) by passing `std::nullopt`.
 class SyncErrorBaseStateProvider : public StateProvider,
                                    public syncer::SyncServiceObserver {
  public:
@@ -1553,7 +1499,7 @@ class SyncErrorBaseStateProvider : public StateProvider,
     friend bool operator==(const AvatarError&, const AvatarError&) = default;
   };
 
-  explicit SyncErrorBaseStateProvider(
+  SyncErrorBaseStateProvider(
       Profile* profile,
       StateObserver* state_observer,
       std::optional<syncer::SyncService::UserActionableError> sync_error_type,
@@ -1655,22 +1601,24 @@ class SyncErrorBaseStateProvider : public StateProvider,
   }
 
   // Returns true if `avatar_sync_error` has a value and the value matches
-  // `sync_error_type_`. If `sync_error_type_` is std::nullopt then any
-  // non-nullopt `avatar_sync_error` is a match.
+  // `sync_error_type_`. If `sync_error_type_` is `std::nullopt`, matches any
+  // non-nullopt `avatar_sync_error` except `kPasskeysLocked` (which is handled
+  // by `PasskeysLockedSyncErrorStateProvider`, ranked below `kSyncError` in
+  // `AvatarToolbarButtonState`).
   bool HasError(const std::optional<AvatarError>& avatar_sync_error) const {
     if (!avatar_sync_error) {
       return false;  // No sync error.
     }
 
-    if (sync_error_type_.has_value() &&
-        avatar_sync_error->avatar_error != sync_error_type_) {
-      return false;  // Error has the wrong type.
+    if (sync_error_type_.has_value()) {
+      return avatar_sync_error->avatar_error == sync_error_type_;
     }
 
-    return true;
+    return avatar_sync_error->avatar_error !=
+           syncer::SyncService::UserActionableError::kPasskeysLocked;
   }
 
-  // std::nullopt to be active on all errors.
+  // `std::nullopt` to be active on all errors except `kPasskeysLocked`.
   const std::optional<syncer::SyncService::UserActionableError>
       sync_error_type_;
 
@@ -1751,6 +1699,37 @@ class BookmarksLimitExceededStateProvider : public SyncErrorBaseStateProvider {
   }
 };
 
+// Provider for `ButtonState::kPasskeysLockedError`, selected when
+// `device::kPasskeyUnlockIdentityErrorUi` is enabled.
+class PasskeysLockedSyncErrorStateProvider : public SyncErrorBaseStateProvider {
+ public:
+  PasskeysLockedSyncErrorStateProvider(Profile* profile,
+                                       StateObserver* state_observer)
+      : SyncErrorBaseStateProvider(
+            profile,
+            state_observer,
+            syncer::SyncService::UserActionableError::kPasskeysLocked) {}
+
+  ~PasskeysLockedSyncErrorStateProvider() override = default;
+
+  // StateProvider:
+  std::u16string GetText() const override {
+    return webauthn::GetPasskeyErrorProfilePillTitle();
+  }
+
+  std::optional<SkColor> GetHighlightColor(
+      const ui::ColorProvider& color_provider) const override {
+    return color_provider.GetColor(kColorAvatarButtonHighlightPasskeysLocked);
+  }
+};
+
+// Catch-all provider for `ButtonState::kSyncError`. Ignores
+// `UserActionableError::kPasskeysLocked` (via `SyncErrorBaseStateProvider` when
+// `sync_error_type` is `std::nullopt`) so
+// `PasskeysLockedSyncErrorStateProvider` (`ButtonState::kPasskeysLockedError`)
+// becomes active when `SyncService::GetUserActionableError()` returns
+// `kPasskeysLocked`, even though `kSyncError` precedes `kPasskeysLockedError`
+// in `AvatarToolbarButtonState`.
 class GenericSyncErrorStateProvider : public SyncErrorBaseStateProvider {
  public:
   explicit GenericSyncErrorStateProvider(Profile* profile,
@@ -2150,7 +2129,7 @@ bool StateProvider::ShouldShowGradientAvatarRing() const {
   if (!should_consider_avatar_ring_) {
     return false;
   }
-  return ShouldShowAvatarGradientRing(&profile());
+  return GetAvatarAiDecoration(&profile()).show_decoration;
 }
 
 std::u16string StateProvider::GetAvatarTooltipText() const {
@@ -2176,7 +2155,7 @@ std::optional<std::u16string> StateProvider::GetAccessibilityLabel() const {
   return std::nullopt;
 }
 
-std::optional<base::RepeatingCallback<void(bool)>>
+std::optional<StateProvider::ButtonAction>
 StateProvider::GetButtonActionOverride() {
   return std::nullopt;
 }
@@ -2224,8 +2203,7 @@ AvatarToolbarButtonStateManager::AvatarToolbarButtonStateManager(
     BrowserWindowInterface* browser)
     : avatar_control_(avatar_control),
       browser_(browser),
-      profile_(*browser->GetProfile()),
-      creation_time_(base::TimeTicks::Now()) {}
+      profile_(*browser->GetProfile()) {}
 
 AvatarToolbarButtonStateManager::~AvatarToolbarButtonStateManager() {
   // States should be cleared before the observer list is destroyed, since some
@@ -2325,7 +2303,8 @@ void AvatarToolbarButtonStateManager::RegisterObserver(Observer* observer) {
 }
 
 void AvatarToolbarButtonStateManager::HandleButtonPressed(
-    bool is_source_accelerator) {
+    bool is_source_accelerator,
+    base::ScopedClosureRunner keep_anchor_visible) {
 #if !BUILDFLAG(IS_CHROMEOS)
   if (browser_ &&
       BrowserUserEducationInterface::From(browser_)->IsFeaturePromoActive(
@@ -2336,8 +2315,14 @@ void AvatarToolbarButtonStateManager::HandleButtonPressed(
             FeaturePromoFeatureUsedAction::kClosePromoIfPresent);
   }
 
-  if (browser_ &&
-      webauthn::PasskeyUnlockManager::IsPasskeyUnlockErrorUiEnabled()) {
+  if (base::FeatureList::IsEnabled(device::kPasskeyUnlockIdentityErrorUi)) {
+    if (GetActiveState() == ButtonState::kPasskeysLockedError) {
+      webauthn::PasskeyUnlockManager::RecordErrorUIEventType(
+          webauthn::PasskeyUnlockManager::ErrorUIEventType::
+              kAvatarButtonPressed);
+    }
+  } else if (browser_ &&
+             webauthn::PasskeyUnlockManager::IsPasskeyUnlockErrorUiEnabled()) {
     webauthn::PasskeyUnlockManager* passkey_unlock_manager =
         webauthn::PasskeyUnlockManagerFactory::GetForProfile(
             browser_->GetProfile());
@@ -2355,16 +2340,18 @@ void AvatarToolbarButtonStateManager::HandleButtonPressed(
   NotifyButtonPressed();
 
   StateProvider* active_state_provider = GetActiveStateProvider();
-  std::optional<base::RepeatingCallback<void(bool)>> action_override =
+  std::optional<StateProvider::ButtonAction> action_override =
       active_state_provider->GetButtonActionOverride();
   if (action_override.has_value()) {
-    action_override->Run(is_source_accelerator);
+    action_override->Run(is_source_accelerator, std::move(keep_anchor_visible));
     return;
   }
 
   // By default, show the profile menu.
   if (browser_ && ProfileMenuCoordinator::From(browser_)) {
-    ProfileMenuCoordinator::From(browser_)->Show(is_source_accelerator);
+    ProfileMenuCoordinator::From(browser_)->Show(
+        is_source_accelerator, /*from_avatar_promo=*/false,
+        std::move(keep_anchor_visible));
   }
 }
 
@@ -2453,7 +2440,10 @@ void AvatarToolbarButtonStateManager::CreateStatesAndListeners(
   Profile* profile = browser->GetProfile();
 
   // Web app has limited toolbar space, thus always show kNormal state.
-  if (web_app::AppBrowserController::IsWebApp(browser)) {
+  // Also only create kNormal state when the avatar button cannot be shown for
+  // the profile (e.g. regular profiles on ChromeOS).
+  if (web_app::AppBrowserController::IsWebApp(browser) ||
+      !AvatarToolbarButtonInterface::CanShowForProfile(profile)) {
     // This state is always active.
     states_[ButtonState::kNormal] =
         std::make_unique<NormalStateProvider>(profile, /*state_observer=*/this);
@@ -2461,13 +2451,11 @@ void AvatarToolbarButtonStateManager::CreateStatesAndListeners(
   }
 
   if (profile->IsRegularProfile()) {
-    if (syncer::IsReplaceSyncPromosWithSignInPromosEnabled()) {
-      RegisterObserver(static_cast<Observer*>(
-          &OnSigninCoordinator::GetForProfile(*profile)));
-      states_[ButtonState::kOnSignin] =
-          std::make_unique<OnSigninStateProvider>(browser,
-                                                  /*state_observer=*/this);
-    }
+    RegisterObserver(
+        static_cast<Observer*>(&OnSigninCoordinator::GetForProfile(*profile)));
+    states_[ButtonState::kOnSignin] =
+        std::make_unique<OnSigninStateProvider>(browser,
+                                                /*state_observer=*/this);
     states_[ButtonState::kShowIdentityName] =
         std::make_unique<ShowIdentityNameStateProvider>(profile,
                                                         /*state_observer=*/this,
@@ -2499,15 +2487,11 @@ void AvatarToolbarButtonStateManager::CreateStatesAndListeners(
             /*state_observer=*/this);
 
 #if BUILDFLAG(ENABLE_DICE_SUPPORT)
-    if (syncer::IsReplaceSyncPromosWithSignInPromosEnabled() ||
-        switches::IsAvatarSyncPromoFeatureEnabled()) {
-      auto promo_state_provider =
-          std::make_unique<PromoStateProvider>(browser,
-                                               /*state_observer=*/this);
-      RegisterObserver(static_cast<Observer*>(
-          &PromoStateProviderCoordinator::GetOrCreateForProfile(*profile)));
-      states_[ButtonState::kPromo] = std::move(promo_state_provider);
-    }
+    RegisterObserver(static_cast<Observer*>(
+        &PromoStateProviderCoordinator::GetOrCreateForProfile(*profile)));
+    states_[ButtonState::kPromo] =
+        std::make_unique<PromoStateProvider>(browser,
+                                             /*state_observer=*/this);
 
     // Contains both Work and School.
     states_[ButtonState::kManagement] =
@@ -2521,10 +2505,21 @@ void AvatarToolbarButtonStateManager::CreateStatesAndListeners(
                                                      &avatar_control_.get());
 #endif  // BUILDFLAG(ENABLE_DICE_SUPPORT)
 
-    if (webauthn::PasskeyUnlockManager::IsPasskeyUnlockErrorUiEnabled()) {
+    // TODO(crbug.com/470338958): Remove `PasskeyStateProvider` once
+    // `kPasskeyUnlockIdentityErrorUi` launches.
+    std::unique_ptr<StateProvider> passkeys_locked_provider;
+    if (base::FeatureList::IsEnabled(device::kPasskeyUnlockIdentityErrorUi)) {
+      passkeys_locked_provider =
+          std::make_unique<PasskeysLockedSyncErrorStateProvider>(
+              profile, /*state_observer=*/this);
+    } else if (webauthn::PasskeyUnlockManager::
+                   IsPasskeyUnlockErrorUiEnabled()) {
+      passkeys_locked_provider = std::make_unique<PasskeyStateProvider>(
+          profile, /*state_observer=*/this);
+    }
+    if (passkeys_locked_provider) {
       states_[ButtonState::kPasskeysLockedError] =
-          std::make_unique<PasskeyStateProvider>(profile,
-                                                 /*state_observer=*/this);
+          std::move(passkeys_locked_provider);
       RegisterObserver(static_cast<Observer*>(
           &AvatarToolbarButtonPasskeyStateChangeReporter::GetOrCreateForProfile(
               *profile)));
@@ -2643,160 +2638,6 @@ void AvatarToolbarButtonStateManager::ComputeButtonActiveState() {
     }
   }
 }
-
-void AvatarToolbarButtonStateManager::MaybeShowProfileSwitchIPH() {
-  // Prevent showing the promo right when the browser was created. Wait a small
-  // delay for a smoother animation.
-  base::TimeDelta time_since_creation = base::TimeTicks::Now() - creation_time_;
-  if (time_since_creation < g_iph_min_delay_after_creation) {
-    base::SingleThreadTaskRunner::GetCurrentDefault()->PostDelayedTask(
-        FROM_HERE,
-        base::BindOnce(
-            &AvatarToolbarButtonStateManager::MaybeShowProfileSwitchIPH,
-            weak_ptr_factory_.GetWeakPtr()),
-        g_iph_min_delay_after_creation - time_since_creation);
-    return;
-  }
-
-  // This will show the promo only after the IPH system is properly initialized.
-  if (!web_app::AppBrowserController::IsWebApp(browser_)) {
-    BrowserUserEducationInterface::From(browser_)->MaybeShowStartupFeaturePromo(
-        feature_engagement::kIPHProfileSwitchFeature);
-  } else {
-    // Installable PasswordManager WebUI is the only web app that has an avatar
-    // toolbar button.
-    auto app_url =
-        web_app::AppBrowserController::From(browser_)->GetAppStartUrl();
-    CHECK(
-        content::HasWebUIScheme(app_url) &&
-        (app_url.GetHost() == password_manager::kChromeUIPasswordManagerHost));
-    BrowserUserEducationInterface::From(browser_)->MaybeShowStartupFeaturePromo(
-        feature_engagement::kIPHPasswordsWebAppProfileSwitchFeature);
-  }
-}
-
-#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
-void AvatarToolbarButtonStateManager::MaybeShowSupervisedUserSignInIPH() {
-  if (!base::FeatureList::IsEnabled(
-          feature_engagement::kIPHSupervisedUserProfileSigninFeature)) {
-    return;
-  }
-  if (!browser_) {
-    return;
-  }
-  signin::IdentityManager* const identity_manager =
-      IdentityManagerFactory::GetForProfile(browser_->GetProfile());
-  CHECK(identity_manager);
-  if (!identity_manager->HasPrimaryAccount(signin::ConsentLevel::kSignin)) {
-    return;
-  }
-
-  auto account_info = identity_manager->FindExtendedAccountInfoByAccountId(
-      identity_manager->GetPrimaryAccountId(signin::ConsentLevel::kSignin));
-  if (account_info.GetAccountCapabilities().is_subject_to_parental_controls() !=
-      signin::Tribool::kTrue) {
-    return;
-  }
-  if (account_info.IsEmpty()) {
-    return;
-  }
-
-  // Prevent showing the promo right when the browser was created.
-  // This is not just used for smoother animation, but it gives the anchor
-  // element enough time to become visible and display the IPH.
-  // TODO(crbug.com/372689164): investigate alternative rescheduling,
-  // using `WouldShowFeaturePromo`.
-  base::TimeDelta time_since_creation = base::TimeTicks::Now() - creation_time_;
-  if (time_since_creation < g_iph_min_delay_after_creation) {
-    base::SingleThreadTaskRunner::GetCurrentDefault()->PostDelayedTask(
-        FROM_HERE,
-        base::BindOnce(
-            &AvatarToolbarButtonStateManager::MaybeShowSupervisedUserSignInIPH,
-            weak_ptr_factory_.GetWeakPtr()),
-        g_iph_min_delay_after_creation - time_since_creation);
-    return;
-  }
-
-  user_education::FeaturePromoParams params(
-      feature_engagement::kIPHSupervisedUserProfileSigninFeature);
-  params.title_params =
-      base::UTF8ToUTF16(account_info.GetGivenName().value_or(""));
-  BrowserUserEducationInterface::From(browser_)->MaybeShowFeaturePromo(
-      std::move(params));
-}
-
-void AvatarToolbarButtonStateManager::MaybeShowSignInBenefitsIPH() {
-  const bool show_new_signin =
-      base::FeatureList::IsEnabled(
-          syncer::kReplaceSyncPromosWithSigninPromosNewSignin) &&
-      base::FeatureList::IsEnabled(
-          feature_engagement::kIPHSignInBenefitsNewSigninFeature);
-  const bool show_legacy = base::FeatureList::IsEnabled(
-                               syncer::kReplaceSyncPromosWithSignInPromos) &&
-                           base::FeatureList::IsEnabled(
-                               feature_engagement::kIPHSignInBenefitsFeature);
-
-  if (!show_new_signin && !show_legacy) {
-    return;
-  }
-
-  // Prevent showing the IPH bubble right when the browser was created. Wait a
-  // small delay for a smoother animation.
-  base::TimeDelta time_since_creation = base::TimeTicks::Now() - creation_time_;
-  if (time_since_creation < g_iph_min_delay_after_creation) {
-    base::SingleThreadTaskRunner::GetCurrentDefault()->PostDelayedTask(
-        FROM_HERE,
-        base::BindOnce(
-            &AvatarToolbarButtonStateManager::MaybeShowSignInBenefitsIPH,
-            weak_ptr_factory_.GetWeakPtr()),
-        g_iph_min_delay_after_creation - time_since_creation);
-    return;
-  }
-
-  Profile* profile = browser_->GetProfile();
-  CHECK(profile);
-
-  // The IPH only concerns signed-in, non-syncing profiles.
-  signin::IdentityManager* const identity_manager =
-      IdentityManagerFactory::GetForProfile(profile);
-  if (!identity_manager ||
-      !identity_manager->HasPrimaryAccount(signin::ConsentLevel::kSignin) ||
-      identity_manager->HasPrimaryAccount(signin::ConsentLevel::kSync)) {
-    return;
-  }
-
-  PrefService* prefs = profile->GetPrefs();
-  CHECK(prefs);
-
-  // Users who sign in after the migration and users migrated from DICe will be
-  // notified with other promos communicating sign-in benefits.
-  if (prefs->GetBoolean(prefs::kPrimaryAccountSetAfterSigninMigration) ||
-      prefs->GetBoolean(kDiceMigrationMigrated)) {
-    return;
-  }
-
-  if (show_new_signin && !show_legacy) {
-    auto* const edu_service =
-        UserEducationServiceFactory::GetForBrowserContext(profile);
-    if (edu_service) {
-      auto data = edu_service->user_education_storage_service().ReadPromoData(
-          feature_engagement::kIPHSignInBenefitsFeature);
-      if (data && data->show_count > 0) {
-        return;
-      }
-    }
-  }
-
-  // It should not matter in practice, but if both features are enabled, show
-  // the legacy IPH.
-  const base::Feature& feature_to_show =
-      show_legacy ? feature_engagement::kIPHSignInBenefitsFeature
-                  : feature_engagement::kIPHSignInBenefitsNewSigninFeature;
-
-  BrowserUserEducationInterface::From(browser_)->MaybeShowStartupFeaturePromo(
-      feature_to_show);
-}
-#endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
 
 void AvatarToolbarButtonStateManager::
     MaybeShowExplicitBrowserSigninPreferenceRememberedIPH(
@@ -2947,21 +2788,8 @@ AvatarToolbarButtonStateManager::CreateScopedInfiniteDelayOverrideForTesting(
     case AvatarDelayType::kPromo:
       return base::AutoReset<std::optional<base::TimeDelta>>(
           &g_promo_duration_for_testing, kInfiniteTimeForTesting);
-    case AvatarDelayType::kSignedOutPromo:
-      return base::AutoReset<std::optional<base::TimeDelta>>(
-          &g_signed_out_promo_trigger_delay_for_testing,
-          kInfiniteTimeForTesting);
-
 #endif  // BUILDFLAG(ENABLE_DICE_SUPPORT)
   }
-}
-
-// static
-base::AutoReset<base::TimeDelta> AvatarToolbarButtonStateManager::
-    SetScopedIPHMinDelayAfterCreationForTesting(  // IN-TEST
-        base::TimeDelta delay) {
-  return base::AutoReset<base::TimeDelta>(&g_iph_min_delay_after_creation,
-                                          delay);
 }
 
 #if BUILDFLAG(ENABLE_DICE_SUPPORT)
@@ -2981,18 +2809,6 @@ void AvatarToolbarButtonStateManager::ForceShowingPromoForTesting() {
       static_cast<PromoStateProvider*>(it->second.get());
   promo_state_provider->GetCoordinatorForTesting()
       .ForceShowingPromoForTesting();
-}
-
-bool AvatarToolbarButtonStateManager::
-    GetStateAndFireSignedOutTriggerDelayTimerForTesting() {
-  auto it = states_.find(ButtonState::kPromo);
-  if (it == states_.end() || !it->second) {
-    return false;
-  }
-  PromoStateProvider* promo_state_provider =
-      static_cast<PromoStateProvider*>(it->second.get());
-  return promo_state_provider->GetCoordinatorForTesting()
-      .GetStateAndFireSignedOutTriggerDelayTimerForTesting();
 }
 #endif  // BUILDFLAG(ENABLE_DICE_SUPPORT)
 

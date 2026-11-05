@@ -21,7 +21,7 @@
 #include "realbox_handler.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom-forward.h"
 #include "ui/gfx/geometry/size.h"
 
 #if !BUILDFLAG(IS_ANDROID)
@@ -87,7 +87,7 @@ class MockSearchboxPage : public searchbox::mojom::Page {
               StepSelection,
               (searchbox::mojom::SelectionDirection,
                searchbox::mojom::SelectionStep));
-  MOCK_METHOD(void, OpenCurrentSelection, (WindowOpenDisposition));
+  MOCK_METHOD(void, OpenCurrentSelection, (ui::mojom::WindowOpenDisposition));
   MOCK_METHOD(void, SetAimButtonVisible, (bool visible));
   MOCK_METHOD(void,
               SetAimButtonConfig,
@@ -99,7 +99,8 @@ class MockSearchboxPage : public searchbox::mojom::Page {
   MOCK_METHOD(void, SetKeywordSpaceTriggeringEnabled, (bool));
   MOCK_METHOD(void,
               SetAvailableKeywordModels,
-              (std::vector<searchbox::mojom::InputKeywordModelPtr>));
+              (std::vector<searchbox::mojom::InputKeywordModelPtr>,
+               const std::string&));
   MOCK_METHOD(void,
               SetThumbnail,
               (const std::string& thumbnail_url, bool is_deletable));
@@ -166,13 +167,23 @@ class MockOmniboxPopupPage : public omnibox_popup::mojom::Page {
               SetInputState,
               (omnibox_popup::mojom::OmniboxInputStatePtr state),
               (override));
-  MOCK_METHOD(void,
-              SetFocus,
-              (bool is_focused, bool query_zps, bool select_all),
-              (override));
+  MOCK_METHOD(
+      void,
+      SetFocus,
+      (bool is_focused, bool query_zps, bool select_all, bool show_full_url),
+      (override));
   MOCK_METHOD(void, ClearAutocompleteMatches, (), (override));
   MOCK_METHOD(void, ClearPopup, (ClearPopupCallback callback), (override));
-  MOCK_METHOD(void, SetDefaultSearchProvider, (const std::string&), (override));
+  MOCK_METHOD(void,
+              SetDefaultSearchProvider,
+              (const std::string& default_icon_path,
+               omnibox_popup::mojom::PlaceholderType placeholder_type,
+               const std::string& search_engine_name),
+              (override));
+  MOCK_METHOD(void,
+              FocusSearchWithDefaultSearchEngineKeywordMode,
+              (),
+              (override));
 };
 #endif
 
@@ -232,7 +243,7 @@ class MockLensSearchboxClient : public LensSearchboxClient {
   MOCK_METHOD(void, OnThumbnailRemoved, (), (override));
   MOCK_METHOD(void,
               OnSuggestionAccepted,
-              (const GURL&, AutocompleteMatchType::Type, bool),
+              (const GURL&, omnibox::AutocompleteMatchType, bool),
               (override));
   MOCK_METHOD(void, OnFocusChanged, (bool focused), (override));
   MOCK_METHOD(void, OnPageBound, (), (override));

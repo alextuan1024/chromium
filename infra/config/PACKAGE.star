@@ -32,7 +32,7 @@ pkg.depend(
         # Take revision from https://chromium.googlesource.com/infra/chromium/.
         # The @chromium-luci revision in targets/PACKAGE.star should also be
         # kept in sync with the revision here.
-        revision = "3c067cfcf061330718cee8a4c74d9cd7232595c6",
+        revision = "1ac486c7d3604e72ef386ec198865877529c342b",
     ),
 )
 
@@ -47,6 +47,7 @@ pkg.resources([
     "autoshard_exceptions.json",
     "dev/chromium-header.textpb",
     "lib/linux-default.json",
+    "lib/windows-default.json",
     "luci-analysis-dev.cfg",
     "luci-analysis.cfg",
     "luci-bisection-dev.cfg",

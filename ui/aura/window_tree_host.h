@@ -27,6 +27,7 @@
 #include "ui/display/display_observer.h"
 #include "ui/events/event_source.h"
 #include "ui/events/platform_event.h"
+#include "ui/gfx/geometry/insets.h"
 #include "ui/gfx/native_ui_types.h"
 #include "ui/gfx/overlay_transform.h"
 
@@ -58,6 +59,7 @@ class WindowTreeHostTestApi;
 }
 
 class ScopedKeyboardHook;
+class ScopedSimpleKeyboardHook;
 class WindowEventDispatcher;
 class WindowTreeHostObserver;
 
@@ -238,6 +240,12 @@ class AURA_EXPORT WindowTreeHost : public ui::ImeKeyEventDispatcher,
   // size smaller than GetBoundsInPixels().
   virtual gfx::Rect GetBoundsInAcceleratedWidgetPixelCoordinates();
 
+  // Returns the insets, in DIP, of the parts of the window that the window
+  // manager does not treat as part of the window, such as client-drawn shadows
+  // and resize borders advertised in _GTK_FRAME_EXTENTS on Linux X11. Window
+  // bounds exposed to web content exclude them.
+  virtual gfx::Insets GetInvisibleFrameInsetsInDIP() const;
+
   // Sets the OS capture to the root window.
   virtual void SetCapture() = 0;
 
@@ -254,6 +262,9 @@ class AURA_EXPORT WindowTreeHost : public ui::ImeKeyEventDispatcher,
   // system key events when destroyed.
   std::unique_ptr<ScopedKeyboardHook> CaptureSystemKeyEvents(
       std::optional<base::flat_set<ui::DomCode>> codes);
+
+  // True if `dom_code` is reserved for an active KeyboardLock request.
+  virtual bool IsKeyLocked(ui::DomCode dom_code);
 
   // Returns a map of KeyboardEvent code to KeyboardEvent key values.
   virtual base::flat_map<std::string, std::string> GetKeyboardLayoutMap() = 0;
@@ -333,8 +344,7 @@ class AURA_EXPORT WindowTreeHost : public ui::ImeKeyEventDispatcher,
   // this.
   void OnAcceleratedWidgetMadeVisible(bool value);
 
-  void CreateCompositor(bool force_software_compositor = false,
-                        bool use_external_begin_frame_control = false,
+  void CreateCompositor(bool use_external_begin_frame_control = false,
                         bool enable_compositing_based_throttling = false,
                         size_t memory_limit_when_visible_mb = 0);
 
@@ -380,9 +390,6 @@ class AURA_EXPORT WindowTreeHost : public ui::ImeKeyEventDispatcher,
 
   // Stops capturing system keyboard events.
   virtual void ReleaseSystemKeyEventCapture() = 0;
-
-  // True if |dom_code| is reserved for an active KeyboardLock request.
-  virtual bool IsKeyLocked(ui::DomCode dom_code) = 0;
 
   // Return root window size computed from given pixel size.
   virtual gfx::Rect GetTransformedRootWindowBoundsFromPixelSize(
@@ -511,6 +518,10 @@ class AURA_EXPORT WindowTreeHost : public ui::ImeKeyEventDispatcher,
   // Number of VideoCaptureLocks that have been created and not destroyed.
   // This is only used when occlusion tracking is always enabled.
   int video_capture_count_for_occlusion_tracking_ = 0;
+
+  // Used by IsKeyLocked() to check keyboard lock state when
+  // `features::kSystemKeyboardLock` is disabled (e.g. in tests).
+  base::WeakPtr<ScopedSimpleKeyboardHook> simple_keyboard_hook_;
 
   base::WeakPtrFactory<WindowTreeHost> weak_factory_{this};
 };

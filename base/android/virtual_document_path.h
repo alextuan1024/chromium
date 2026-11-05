@@ -9,11 +9,29 @@
 
 #include <optional>
 #include <string>
+#include <string_view>
 
 #include "base/android/scoped_java_ref.h"
 #include "base/containers/span.h"
+#include "base/files/file.h"
+#include "base/types/expected.h"
 
-namespace base::files_internal {
+namespace base {
+
+// MIME type for creating a document when the caller has no type information.
+// AOSP providers keep the requested display name unchanged for this type. For
+// any other type they append an extension when their own MIME map does not
+// associate the requested type with the name's extension, after which lookups
+// by the requested name fail.
+inline constexpr char kUnknownAndroidDocumentMimeType[] =
+    "application/octet-stream";
+
+namespace files_internal {
+
+struct ResolvedDocument {
+  std::string content_uri;
+  bool is_directory = false;
+};
 
 // Represents and operates on a virtual path for Android's Storage Access
 // Framework (SAF).
@@ -91,9 +109,12 @@ class VirtualDocumentPath {
   // https://developer.android.com/reference/android/provider/DocumentsContract
   // for more about document tree URIs.
   static std::optional<VirtualDocumentPath> Parse(const std::string& path);
-  // Resolves it to a content URI. If the file does not exist, it will return
-  // nullopt. If it returns a value, it will not be an empty string.
+  // Resolves it to a content URI, or returns nullopt if resolution fails. If
+  // it returns a value, it will not be an empty string.
   std::optional<std::string> ResolveToContentUri() const;
+  // Resolves the virtual path into a structured result with `File::Error`
+  // details and directory metadata.
+  base::expected<ResolvedDocument, base::File::Error> ResolveDocument() const;
   // Returns string representation of the instance. See the class level comment
   // for details.
   std::string ToString() const;
@@ -108,11 +129,20 @@ class VirtualDocumentPath {
   // has been successfully written, and false otherwise.
   bool WriteFile(span<const uint8_t> data) const;
 
-  // Creates an empty file if it does not exist and its parent directory exists.
+  // Allocates a new document of type `mime_type` in the parent directory via a
+  // single DocumentsContract.createDocument call and returns the
+  // provider-assigned content URI. `mime_type` must not be empty; pass
+  // kUnknownAndroidDocumentMimeType when the type is not known.
+  base::expected<std::string, base::File::Error> CreateDocument(
+      std::string_view mime_type) const;
+
+  // Creates an empty file of type `mime_type` if it does not exist and its
+  // parent directory exists.
   // If the file exists or created, it returns a pair of two values where the
   // first value is the content URI, and the second is a bool which is true if
   // the file has been created and false if the file already existed.
-  std::optional<std::pair<std::string, bool>> CreateOrOpen() const;
+  std::optional<std::pair<std::string, bool>> CreateOrOpen(
+      std::string_view mime_type) const;
 
  private:
   explicit VirtualDocumentPath(const base::android::JavaRef<jobject>& obj);
@@ -120,6 +150,8 @@ class VirtualDocumentPath {
   base::android::ScopedJavaGlobalRef<jobject> obj_;
 };
 
-}  // namespace base::files_internal
+}  // namespace files_internal
+
+}  // namespace base
 
 #endif  // BASE_ANDROID_VIRTUAL_DOCUMENT_PATH_H_

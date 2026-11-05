@@ -16,35 +16,18 @@
 # To disable on public builder only, modify chromeos/tast_control.gni.template
 # (for now)
 
-# https://crbug.com/1307940
-tast.policy.URLCheck.blocklist
-
 # http://crbug.com/1335213
 tast.arc.WindowState.clamshell
 
 # b/241122961
 tast.policy.BlockThirdPartyCookies
 
-# b/287525851
-tast.arc.AudioValidity.playback
-tast.arc.AudioValidity.record
-tast.arc.BuildProperties
-
 # https://crbug.com/1455848
 tast.arc.CheckAndroidVersion
 tast.arc.Downloads
 
-# b/338111076
-tast.crostini.AppAndroidStudio.bookworm_clamshell_stable@octopus
-
 # b/346793249, b/330290054
 tast.videoconferencing.OpenCLCacher
-
-# b/384060114
-tast.inputs.InputMethodShelfInputs@reven-vmtest
-tast.inputs.InputMethodShelfInputs@betty
-tast.inputs.VirtualKeyboardHandwriting.docked@reven-vmtest
-tast.inputs.VirtualKeyboardHandwriting.floating@reven-vmtest
 
 # b/394108883
 tast.security.NetworkListenersNonARC@jacuzzi
@@ -57,34 +40,18 @@ tast.ui.WebUIJSErrors.field_trial_on
 
 # b/394409115
 tast.network.AllowCACertificateManagement
-tast.network.AllowClientCertificateManagement
 
 # b/408102591
 tast.network.ARCEAPWifiProvisioning.eap_wifi_tls
 
 # b/409064294
 tast.apps.SystemWebAppsInstallGuest
-tast.peripherals.LaunchAppFromGuestSession.diagnostics
-tast.health.MonitorKeyboardDiagnosticEvent.tablet_mode_form_factors
-tast.health.MonitorKeyboardDiagnosticEvent.non_tablet_mode_form_factors
 
-# b/422132031
+# b/422132031, b/384060114
 tast.inputs.VirtualKeyboardHandwriting.docked
 tast.inputs.VirtualKeyboardHandwriting.floating
-tast.inputs.VirtualKeyboardJapaneseInputMode
-tast.inputs.VirtualKeyboardSpeech
-
-# b/424789710
-tast.apps.LaunchGalleryFromNotifications.stable
-
-# https://crbug.com/434741638
-apps.Sharesheet
-tast.apps.Sharesheet
 
 # https://crbug.com/437961311
-tast.bruschetta.AppEmacsWindowOperations.maximize@betty
-tast.bruschetta.AppEmacsWindowOperations.minimize@betty
-tast.bruschetta.AppEmacsWindowOperations.switch_tablet@betty
 tast.bruschetta.Basic.with_fieldtrial_config@betty
 tast.bruschetta.CommandVim@betty
 tast.bruschetta.CopyFilesToGuest@betty
@@ -96,17 +63,8 @@ tast.bruschetta.Toolkit.qt6_x11@betty
 # https://crbug.com/432304431
 tast.featured.FieldTrialEarlyBoot.active_trial
 
-# https://crbug.com/459929970
-tast.crostini.SyncTime.baguette_stable
-
-# https://crbug.com/460052469
-tast.apps.LaunchHelpAppFromShortcut.stable_guest
-
 # https://crbug.com/460054243
 tast.inputs.VirtualKeyboardTypingUserMode.guest
-
-# https://crbug.com/368606672
-tast.inputs.InputMethodManagement.guest
 
 # b/451624782
 tast.secagentd.NetworkEvents.relaxed_udp@chromeos-betty-cfi-thin-lto-chrome
@@ -114,7 +72,10 @@ tast.secagentd.NetworkEvents.relaxed_udp@chromeos-betty-cfi-thin-lto-chrome
 # b/488388275
 tast.health.RunCameraFrameAnalysisRoutine
 
-# b/559243046: Consistent failures with no obvious cause
-tast.crostini.AudioPlaybackConfigurations.bookworm_stable@brya
+# b/572833952
+# TODO(b/572833952): Re-enable tast.camera.CCAUISmoke.fake_hal and
+# tast.camera.CCAUISmoke.vivid.
+tast.camera.CCAUISmoke.fake_hal
+tast.camera.CCAUISmoke.vivid
 
 # READ COMMENT AT TOP BEFORE ADDING NEW TESTS HERE.

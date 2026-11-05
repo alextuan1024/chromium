@@ -26,15 +26,10 @@ import org.chromium.base.test.params.ParameterAnnotations.UseRunnerDelegate;
 import org.chromium.base.test.params.ParameterProvider;
 import org.chromium.base.test.params.ParameterSet;
 import org.chromium.base.test.params.ParameterizedRunner;
-import org.chromium.base.test.util.ApplicationTestUtils;
 import org.chromium.base.test.util.Batch;
-import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.base.test.util.Feature;
-import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.chrome.R;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
-import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.settings.SettingsActivity;
 import org.chromium.chrome.browser.site_settings.SiteSettingsTestUtils;
 import org.chromium.chrome.test.ChromeJUnit4RunnerDelegate;
@@ -59,13 +54,6 @@ import java.util.List;
 /** Tests for TrustedWebActivity functionality under Settings > Site Settings. */
 @RunWith(ParameterizedRunner.class)
 @UseRunnerDelegate(ChromeJUnit4RunnerDelegate.class)
-@CommandLineFlags.Add({
-    ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE,
-})
-@DisableFeatures({
-    ChromeFeatureList.SETTINGS_IN_TAB, // crbug.com/521895796
-    ChromeFeatureList.SETTINGS_IN_TAB_DESKTOP // crbug.com/556881398
-})
 @Batch(Batch.PER_CLASS)
 public class TrustedWebActivityPreferencesUiTest {
     @Rule
@@ -75,7 +63,6 @@ public class TrustedWebActivityPreferencesUiTest {
     private String mPackage;
     private String mSite;
     private Origin mOrigin;
-    private SettingsActivity mSettingsActivity;
 
     @Before
     public void setUp() throws Exception {
@@ -90,10 +77,6 @@ public class TrustedWebActivityPreferencesUiTest {
     public void tearDown() throws Exception {
         if (mOrigin != null) {
             runOnUiThreadBlocking(() -> InstalledWebappPermissionManager.unregister(mOrigin));
-        }
-        if (mSettingsActivity != null) {
-            ApplicationTestUtils.finishActivity(mSettingsActivity);
-            mSettingsActivity = null;
         }
     }
 
@@ -113,7 +96,7 @@ public class TrustedWebActivityPreferencesUiTest {
                                 ContentSettingsType.NOTIFICATIONS,
                                 ContentSetting.ALLOW));
 
-        mSettingsActivity =
+        SettingsActivity settingsActivity =
                 SiteSettingsTestUtils.startSiteSettingsCategory(
                         SiteSettingsCategory.Type.NOTIFICATIONS);
         final String groupName = "managed_group";
@@ -121,7 +104,7 @@ public class TrustedWebActivityPreferencesUiTest {
         CriteriaHelper.pollUiThread(
                 () -> {
                     final SingleCategorySettings preferences =
-                            (SingleCategorySettings) mSettingsActivity.getMainFragment();
+                            (SingleCategorySettings) settingsActivity.getMainFragment();
                     final ExpandablePreferenceGroup group =
                             (ExpandablePreferenceGroup) preferences.findPreference(groupName);
                     return group.isExpanded();
@@ -130,7 +113,7 @@ public class TrustedWebActivityPreferencesUiTest {
         runOnUiThreadBlocking(
                 () -> {
                     final SingleCategorySettings preferences =
-                            (SingleCategorySettings) mSettingsActivity.getMainFragment();
+                            (SingleCategorySettings) settingsActivity.getMainFragment();
                     final ExpandablePreferenceGroup group =
                             (ExpandablePreferenceGroup) preferences.findPreference(groupName);
                     Assert.assertEquals(1, group.getPreferenceCount());
@@ -173,13 +156,14 @@ public class TrustedWebActivityPreferencesUiTest {
 
         Website website = createWebsiteWithContentSettingException(contentSetting);
 
-        mSettingsActivity = SiteSettingsTestUtils.startSingleWebsitePreferences(website);
+        SettingsActivity settingsActivity =
+                SiteSettingsTestUtils.startSingleWebsitePreferences(website);
 
         runOnUiThreadBlocking(
                 () -> {
                     // Simulate the Page Info prompt flow.
                     final SingleWebsiteSettings websitePreferences =
-                            (SingleWebsiteSettings) mSettingsActivity.getMainFragment();
+                            (SingleWebsiteSettings) settingsActivity.getMainFragment();
                     websitePreferences.setHasRequestedNotificationsPermission(
                             contentSetting == ContentSetting.ASK);
                     websitePreferences.refreshSitePermissions();
@@ -215,12 +199,13 @@ public class TrustedWebActivityPreferencesUiTest {
 
         Website website = createWebsiteWithContentSettingException(ContentSetting.ASK);
 
-        mSettingsActivity = SiteSettingsTestUtils.startSingleWebsitePreferences(website);
+        SettingsActivity settingsActivity =
+                SiteSettingsTestUtils.startSingleWebsitePreferences(website);
 
         runOnUiThreadBlocking(
                 () -> {
                     final SingleWebsiteSettings websitePreferences =
-                            (SingleWebsiteSettings) mSettingsActivity.getMainFragment();
+                            (SingleWebsiteSettings) settingsActivity.getMainFragment();
                     final Preference preference =
                             websitePreferences.findPreference(
                                     SingleWebsiteSettings.getPreferenceKey(

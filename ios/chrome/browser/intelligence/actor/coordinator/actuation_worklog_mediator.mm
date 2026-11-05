@@ -4,194 +4,161 @@
 
 #import "ios/chrome/browser/intelligence/actor/coordinator/actuation_worklog_mediator.h"
 
-#import <optional>
-
-#import "base/memory/raw_ptr.h"
-#import "ios/chrome/browser/intelligence/actor/model/actor_service.h"
-#import "ios/chrome/browser/intelligence/actor/public/actor_types.h"
+#import "ios/chrome/browser/intelligence/actor/coordinator/actor_task_data_source.h"
+#import "ios/chrome/browser/intelligence/actor/coordinator/actuation_suggestions_consumer.h"
 #import "ios/chrome/browser/intelligence/actor/ui/actuation_worklog_consumer.h"
 #import "ios/chrome/browser/intelligence/actor/ui/actuation_worklog_view_data.h"
-#import "ios/chrome/browser/shared/ui/symbols/symbols.h"
-#import "ios/chrome/grit/ios_strings.h"
-#import "ui/base/l10n/l10n_util.h"
 
 namespace {
 
-// Icon size for SF symbols in chips and labeled items.
-constexpr CGFloat kIconSize = 16.0;
+// Returns the number of leading entries `entries` and `previousEntries` share.
+NSUInteger SharedPrefixLength(
+    NSArray<ActuationWorklogEntry*>* entries,
+    NSArray<ActuationWorklogEntry*>* previousEntries) {
+  NSUInteger length = 0;
+  NSUInteger maxLength = MIN(entries.count, previousEntries.count);
+  while (length < maxLength && entries[length] == previousEntries[length]) {
+    ++length;
+  }
+  return length;
+}
 
-// Generates an `ActuationWorklogChip` based on the executed tool type. Returns
-// `nil` for tool types that don't display a chip.
-ActuationWorklogChip* ChipForToolType(std::optional<actor::ToolType> toolType) {
-  if (!toolType) {
-    return nil;
-  }
-  switch (*toolType) {
-    case actor::ToolType::kClick:
-      return [[ActuationWorklogChip alloc]
-          initWithText:l10n_util::GetNSString(
-                           IDS_IOS_ACTOR_WORKLOG_CHIP_CLICKING)
-                  icon:SymbolWithPointSize(SymbolCursorArrowRays, kIconSize)];
-    case actor::ToolType::kType:
-    case actor::ToolType::kAttemptFormFilling:
-      return [[ActuationWorklogChip alloc]
-          initWithText:l10n_util::GetNSString(IDS_IOS_ACTOR_WORKLOG_CHIP_TYPING)
-                  icon:SymbolWithPointSize(SymbolKeyboard, kIconSize)];
-    case actor::ToolType::kScroll:
-    case actor::ToolType::kScrollTo:
-      return [[ActuationWorklogChip alloc]
-          initWithText:l10n_util::GetNSString(
-                           IDS_IOS_ACTOR_WORKLOG_CHIP_SCROLLING)
-                  icon:SymbolWithPointSize(SymbolCursorArrowMotionLines,
-                                           kIconSize)];
-    case actor::ToolType::kAttemptLogin:
-      return [[ActuationWorklogChip alloc]
-          initWithText:l10n_util::GetNSString(
-                           IDS_IOS_ACTOR_WORKLOG_CHIP_FILLING_PASSWORD)
-                  icon:SymbolWithPointSize(SymbolKey, kIconSize)];
-    case actor::ToolType::kNavigate:
-      return [[ActuationWorklogChip alloc]
-          initWithText:l10n_util::GetNSString(
-                           IDS_IOS_ACTOR_WORKLOG_CHIP_NAVIGATING)
-                  icon:SymbolWithPointSize(SymbolGlobe, kIconSize)];
-    case actor::ToolType::kWait:
-      return [[ActuationWorklogChip alloc]
-          initWithText:l10n_util::GetNSString(
-                           IDS_IOS_ACTOR_WORKLOG_CHIP_WAITING)
-                  icon:SymbolWithPointSize(SymbolHourglass, kIconSize)];
-    case actor::ToolType::kWaitZeroDuration:
-    case actor::ToolType::kUnknown:
-      return nil;
-    default:
-      return [[ActuationWorklogChip alloc]
-          initWithText:l10n_util::GetNSString(
-                           IDS_IOS_ACTOR_WORKLOG_CHIP_PROCESSING)
-                  icon:SymbolWithPointSize(SymbolCursorArrow, kIconSize)];
-  }
+// Returns whether `entries` can update `previousEntries` in place by
+// optionally replacing the last entry and appending the rest.
+BOOL CanUpdateEntriesInPlace(NSArray<ActuationWorklogEntry*>* entries,
+                             NSArray<ActuationWorklogEntry*>* previousEntries) {
+  NSUInteger previousCount = previousEntries.count;
+  return entries.count >= previousCount &&
+         SharedPrefixLength(entries, previousEntries) + 1 >= previousCount;
 }
 
 }  // namespace
 
+@interface ActuationWorklogMediator () <ActorTaskDataSourceObserver>
+@end
+
 @implementation ActuationWorklogMediator {
-  // Service tracking actor tasks and updates.
-  raw_ptr<actor::ActorService> _actorService;
-  // Currently observed task ID.
-  std::optional<actor::ActorTaskId> _currentTaskId;
-  // Latest emitted update, used to deduplicate consecutive identical updates.
-  NSString* _latestEmittedTaskUpdate;
+  // Whether a data source is observed. Tracked separately because
+  // `_dataSource` is weak.
+  BOOL _observing;
+  // Source of the worklog of the observed task.
+  __weak id<ActorTaskDataSource> _dataSource;
+  // Handler of the user actions on the worklog of the observed task.
+  __weak id<ActorTaskActionHandler> _actionHandler;
+  // Latest applied state.
+  ActuationWorklogState* _state;
 }
 
-- (instancetype)initWithActorService:(actor::ActorService*)actorService {
-  self = [super init];
-  if (self) {
-    _actorService = actorService;
+#pragma mark - Public
+
+- (void)startObservingDataSource:(id<ActorTaskDataSource>)dataSource
+                   actionHandler:(id<ActorTaskActionHandler>)actionHandler {
+  if (_observing && _dataSource == dataSource) {
+    return;
   }
-  return self;
+  [self stopObservingDataSource];
+
+  _observing = YES;
+  _actionHandler = actionHandler;
+  _dataSource = dataSource;
+  // Synchronously delivers the current state.
+  [_dataSource addObserver:self];
 }
 
-- (void)connect {
-  if (_actorService) {
-    _actorService->AddTaskUpdatesObserver(self);
+- (void)stopObservingDataSource {
+  if (!_observing) {
+    return;
   }
+  [_dataSource removeObserver:self];
+  _dataSource = nil;
+  _actionHandler = nil;
+  _observing = NO;
+  _state = nil;
+  [self.consumer setActuationActive:NO];
+  [self.consumer reset];
+  [self.suggestionsConsumer setSuggestions:nil forActiveWorklogItem:nil];
 }
 
 - (void)disconnect {
-  if (_actorService) {
-    _actorService->RemoveTaskUpdatesObserver(self);
-    _actorService = nullptr;
-  }
-  [_consumer reset];
-  _consumer = nil;
-  _currentTaskId.reset();
-  _latestEmittedTaskUpdate = nil;
+  [self stopObservingDataSource];
+  self.consumer = nil;
+  self.suggestionsConsumer = nil;
 }
 
 #pragma mark - Private
 
-// Emits a worklog item and tool chip, deduplicating consecutive updates.
-- (void)processUpdateWithTool:(std::optional<actor::ToolType>)toolType
-                   taskUpdate:(NSString*)taskUpdate {
-  // TODO(crbug.com/555839522): Support updating the tool chip even when the
-  // `taskUpdate` is nil.
-  if (!_consumer || taskUpdate.length == 0) {
-    return;
+// Sends `state` to consumers (which dedupe unchanged values). Diffs entries
+// since the worklog consumer only appends or replaces the last entry,
+// re-displaying from scratch when in-place updates aren't possible.
+- (void)applyState:(ActuationWorklogState*)state {
+  NSArray<ActuationWorklogEntry*>* displayedEntries = _state.entries;
+  // Replayed entries are not animated, as the compact view would otherwise play
+  // a transition for each past step.
+  BOOL animated = _state != nil;
+  if (!CanUpdateEntriesInPlace(state.entries, displayedEntries)) {
+    [self.consumer reset];
+    displayedEntries = nil;
+    animated = NO;
   }
+  _state = state;
 
-  // Deduplicate consecutive identical updates.
-  // TODO(crbug.com/555839522): Support updating the tool chip even when the
-  // `taskUpdate` is deduplicated.
-  if ([_latestEmittedTaskUpdate isEqualToString:taskUpdate]) {
-    return;
-  }
-  _latestEmittedTaskUpdate = [taskUpdate copy];
-
-  ActuationWorklogItem* item =
-      [ActuationWorklogItem simpleItemWithTitle:taskUpdate active:YES];
-  ActuationWorklogChip* chip = ChipForToolType(toolType);
-  [_consumer updateWorklogWithItem:item chip:chip animated:YES];
+  [self.consumer setActuationActive:state.actuationActive];
+  [self.consumer setHeaderContentVariants:state.headerContent];
+  [self updateEntries:state.entries
+      previousEntries:displayedEntries
+             animated:animated];
+  [self.consumer setIntervention:state.intervention];
+  [self.suggestionsConsumer setSuggestions:state.suggestions
+                      forActiveWorklogItem:state.suggestionsEntry.item];
 }
 
-#pragma mark - ActorTaskUpdatesObserver
-
-- (void)didRegisterAsObserverForTaskID:(actor::ActorTaskId)taskID
-                             taskTitle:(NSString*)taskTitle
-                            taskUpdate:(NSString*)taskUpdate
-                          currentState:(actor::ActorTaskState)state
-                             webStates:(NSArray<NSNumber*>*)webStatesIDs {
-  _currentTaskId = taskID;
-  ActuationWorklogItem* initialItem = [ActuationWorklogItem
-      labeledItemWithTitle:l10n_util::GetNSString(
-                               IDS_IOS_GEMINI_FIRST_ACTUATION_STEP_TITLE)
-                  subtitle:l10n_util::GetNSString(
-                               IDS_IOS_GEMINI_FIRST_ACTUATION_STEP_SUBTITLE)
-                      icon:SymbolWithPointSize(SymbolPlayFill, kIconSize)
-                    active:YES];
-  [_consumer setTaskTitle:taskTitle];
-  [_consumer setActuationActive:!actor::IsTerminalState(state)];
-  [_consumer updateWorklogWithItem:initialItem chip:nil animated:YES];
-
-  // Use the initial task update on top of our default start task update.
-  [self processUpdateWithTool:std::nullopt taskUpdate:taskUpdate];
+// Sends the entries that differ from `previousEntries` to the consumer: the
+// replaced last displayed entry, if any, then the appended ones.
+- (void)updateEntries:(NSArray<ActuationWorklogEntry*>*)entries
+      previousEntries:(NSArray<ActuationWorklogEntry*>*)previousEntries
+             animated:(BOOL)animated {
+  NSUInteger previousCount = previousEntries.count;
+  for (NSUInteger i = SharedPrefixLength(entries, previousEntries);
+       i < entries.count; ++i) {
+    ActuationWorklogEntry* entry = entries[i];
+    // The consumer only displays the chip of the latest entry.
+    ActuationWorklogChip* chip = entry == entries.lastObject ? entry.chip : nil;
+    if (i < previousCount) {
+      [self.consumer setLastItem:entry.item chip:chip];
+    } else {
+      [self.consumer updateWorklogWithItem:entry.item
+                                      chip:chip
+                                  animated:animated];
+    }
+  }
 }
 
-- (void)actorTaskWithID:(actor::ActorTaskId)taskID
-         didChangeState:(actor::ActorTaskState)newState
-              fromState:(actor::ActorTaskState)oldState {
-  if (_currentTaskId != taskID) {
-    return;
-  }
-  [_consumer setActuationActive:!actor::IsTerminalState(newState)];
-}
+#pragma mark - ActorTaskDataSourceObserver
 
-- (void)actorTaskWithID:(actor::ActorTaskId)taskID
-        willExecuteTool:(actor::ToolType)toolType
-             taskUpdate:(NSString*)taskUpdate
-             onWebState:(web::WebStateID)webStateID {
-  if (_currentTaskId != taskID) {
+- (void)taskDataSource:(id<ActorTaskDataSource>)dataSource
+        didUpdateState:(ActuationWorklogState*)state {
+  // Nothing is displayed until the task is registered.
+  if (!state) {
     return;
   }
-  [self processUpdateWithTool:toolType taskUpdate:taskUpdate];
-}
-
-- (void)actorTaskDidStopWithID:(actor::ActorTaskId)taskID
-                    finalState:(actor::ActorTaskState)finalState {
-  if (_currentTaskId != taskID) {
-    return;
-  }
-  _currentTaskId.reset();
-  _latestEmittedTaskUpdate = nil;
-  [_consumer setActuationActive:NO];
-  [_consumer reset];
+  [self applyState:state];
 }
 
 #pragma mark - ActuationWorklogMutator
 
 - (void)stopActuation {
-  if (!_actorService || !_currentTaskId) {
-    return;
-  }
-  _actorService->StopTask(*_currentTaskId,
-                          actor::ActorTaskStoppedReason::kStoppedByUser);
+  [_actionHandler stopTask];
+}
+
+- (void)didTriggerInterventionAction:(ActuationInterventionAction*)action {
+  [_actionHandler resolveInterventionWithAction:action];
+}
+
+#pragma mark - ActuationSuggestionsDelegate
+
+- (void)suggestionsCoordinator:(ActuationSuggestionsCoordinator*)coordinator
+           didSelectSuggestion:(ActorFormSuggestion*)suggestion {
+  [_actionHandler selectSuggestion:suggestion];
 }
 
 @end

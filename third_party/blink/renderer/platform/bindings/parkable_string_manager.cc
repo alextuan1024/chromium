@@ -13,6 +13,7 @@
 #include "base/memory_coordinator/utils.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/metrics/histogram_macros.h"
+#include "base/no_destructor.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/time/time.h"
 #include "base/trace_event/memory_allocator_dump.h"
@@ -25,10 +26,8 @@
 #include "third_party/blink/renderer/platform/scheduler/public/main_thread.h"
 #include "third_party/blink/renderer/platform/scheduler/public/main_thread_scheduler.h"
 #include "third_party/blink/renderer/platform/scheduler/public/post_cross_thread_task.h"
-#include "third_party/blink/renderer/platform/wtf/cross_thread_copier_base.h"
 #include "third_party/blink/renderer/platform/wtf/cross_thread_functional.h"
 #include "third_party/blink/renderer/platform/wtf/functional.h"
-#include "third_party/blink/renderer/platform/wtf/std_lib_extras.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
 #include "third_party/blink/renderer/platform/wtf/vector.h"
 #include "third_party/blink/renderer/platform/wtf/wtf.h"
@@ -54,10 +53,9 @@ constexpr char kConsumerName[] = "ParkableStringManager";
 constexpr base::MemoryConsumerTraits kMemoryConsumerTraits(
     // Parkable strings typically save tens of MBs across a renderer process.
     base::MemoryConsumerTraits::EstimatedMemoryUsage::kMedium,
-    // Compressing unparked strings iterates over existing memory allocations.
-    base::MemoryConsumerTraits::ReleaseMemoryCost::kRequiresTraversal,
-    // Parking compresses strings or writes them to disk without losing user
-    // data.
+    // Compressing a string reads its contents.
+    base::MemoryConsumerTraits::ReleaseMemoryDataAccess::kReads,
+    // Compressed strings are decompressed on access without losing user data.
     base::MemoryConsumerTraits::InformationRetention::kLossless,
     // Required because the consumer registers via
     // AsyncMemoryConsumerRegistration.
@@ -66,7 +64,9 @@ constexpr base::MemoryConsumerTraits kMemoryConsumerTraits(
     base::MemoryConsumerTraits::SupportsMemoryLimit::kNo,
     // Performs a one-time purge on critical pressure instead of maintaining a
     // lasting limit.
-    base::MemoryConsumerTraits::IsStateful::kNo);
+    base::MemoryConsumerTraits::IsStateful::kNo,
+    // Parking compresses strings.
+    base::MemoryConsumerTraits::ReleaseMemoryCpuCost::kExpensive);
 
 bool CompressionEnabled() {
   return base::FeatureList::IsEnabled(features::kCompressParkableStrings);
@@ -102,8 +102,8 @@ const base::TimeDelta ParkableStringManager::kFirstParkingDelay;
 // static
 ParkableStringManagerDumpProvider*
 ParkableStringManagerDumpProvider::Instance() {
-  DEFINE_STATIC_LOCAL(ParkableStringManagerDumpProvider, instance, ());
-  return &instance;
+  static base::NoDestructor<ParkableStringManagerDumpProvider> instance;
+  return instance.get();
 }
 
 bool ParkableStringManagerDumpProvider::OnMemoryDump(
@@ -118,8 +118,8 @@ ParkableStringManagerDumpProvider::ParkableStringManagerDumpProvider() =
     default;
 
 ParkableStringManager& ParkableStringManager::Instance() {
-  DEFINE_THREAD_SAFE_STATIC_LOCAL(ParkableStringManager, instance, ());
-  return instance;
+  static base::NoDestructor<ParkableStringManager> instance;
+  return *instance;
 }
 
 ParkableStringManager::~ParkableStringManager() = default;

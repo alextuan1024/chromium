@@ -27,6 +27,7 @@
 #include "third_party/perfetto/include/perfetto/test/traced_value_test_support.h"
 
 #if BUILDFLAG(IS_ANDROID)
+#include "base/files/file_android.h"
 #include "base/test/android/content_uri_test_utils.h"
 #endif  // BUILDFLAG(IS_ANDROID)
 
@@ -207,6 +208,141 @@ TEST(FileTest, CreateAndroid) {
   }
 
   EXPECT_TRUE(PathExists(file_path));
+}
+
+TEST(FileTest, ResolveAndCreateAndroidDocument) {
+  ScopedTempDir scoped_temp_dir;
+  ASSERT_TRUE(scoped_temp_dir.CreateUniqueTempDir());
+  FilePath dir_vp = *test::android::GetVirtualDocumentPathFromCacheDirDirectory(
+      scoped_temp_dir.GetPath());
+  FilePath file_vp = dir_vp.AppendASCII("doc.txt");
+
+  EXPECT_EQ(File::FILE_ERROR_NOT_FOUND,
+            ResolveAndroidDocument(file_vp).error());
+  EXPECT_EQ(File::FILE_ERROR_NOT_A_FILE,
+            ResolveAndroidDocument(dir_vp).error());
+  EXPECT_EQ(File::FILE_ERROR_INVALID_OPERATION,
+            ResolveAndroidDocument(scoped_temp_dir.GetPath()).error());
+  EXPECT_EQ(
+      File::FILE_ERROR_NOT_FOUND,
+      CreateAndroidDocument(dir_vp.AppendASCII("missing/doc.txt"), "text/plain")
+          .error());
+
+  auto created = CreateAndroidDocument(file_vp, "text/plain");
+  ASSERT_TRUE(created.has_value());
+  EXPECT_TRUE(created->IsContentUri());
+  EXPECT_EQ(*created, ResolveAndroidDocument(file_vp).value_or(FilePath()));
+  EXPECT_EQ(File::FILE_ERROR_NOT_A_DIRECTORY,
+            ResolveAndroidDocument(file_vp.AppendASCII("child")).error());
+
+  // A second creation with the same name gets a distinct provider-assigned
+  // document and leaves the first one untouched.
+  ASSERT_TRUE(WriteFile(scoped_temp_dir.GetPath().AppendASCII("doc.txt"), "a"));
+  auto second = CreateAndroidDocument(file_vp, "text/plain");
+  ASSERT_TRUE(second.has_value());
+  EXPECT_NE(*created, *second);
+  std::string contents;
+  ASSERT_TRUE(ReadFileToString(*created, &contents));
+  EXPECT_EQ("a", contents);
+}
+
+TEST(FileTest, AndroidDocumentOpenFailureKeepsCreatedDocument) {
+  ScopedTempDir scoped_temp_dir;
+  ASSERT_TRUE(scoped_temp_dir.CreateUniqueTempDir());
+  FilePath dir_vp = *test::android::GetVirtualDocumentPathFromCacheDirDirectory(
+      scoped_temp_dir.GetPath());
+  FilePath file_vp = dir_vp.AppendASCII("doc.txt");
+  FilePath backing_file = scoped_temp_dir.GetPath().AppendASCII("doc.txt");
+
+  auto created = CreateAndroidDocument(file_vp, "text/plain");
+  ASSERT_TRUE(created.has_value());
+
+  // Another writer saves to the new document before the creator opens it.
+  ASSERT_TRUE(WriteFile(file_vp, "second writer"));
+
+  // The provider rejects the creator's write open.
+  ASSERT_TRUE(
+      SetPosixFilePermissions(backing_file, FILE_PERMISSION_READ_BY_USER));
+  File file =
+      OpenAndroidDocument(*created, AndroidDocumentAccessMode::kOverwrite);
+  EXPECT_FALSE(file.IsValid());
+  ASSERT_TRUE(SetPosixFilePermissions(
+      backing_file,
+      FILE_PERMISSION_READ_BY_USER | FILE_PERMISSION_WRITE_BY_USER));
+
+  // The failed open neither deleted nor truncated the document.
+  EXPECT_EQ(*created, ResolveAndroidDocument(file_vp).value_or(FilePath()));
+  std::string contents;
+  ASSERT_TRUE(ReadFileToString(*created, &contents));
+  EXPECT_EQ("second writer", contents);
+}
+
+TEST(FileTest, OpenAndroidDocument) {
+  ScopedTempDir scoped_temp_dir;
+  ASSERT_TRUE(scoped_temp_dir.CreateUniqueTempDir());
+  FilePath file_path = scoped_temp_dir.GetPath().AppendASCII("doc.txt");
+  ASSERT_TRUE(WriteFile(file_path, "0123456789"));
+  FilePath content_uri =
+      *test::android::GetContentUriFromCacheDirFilePath(file_path);
+
+  EXPECT_EQ(File::FILE_ERROR_INVALID_OPERATION,
+            OpenAndroidDocument(file_path, AndroidDocumentAccessMode::kRead)
+                .error_details());
+
+  {
+    File file =
+        OpenAndroidDocument(content_uri, AndroidDocumentAccessMode::kRead);
+    ASSERT_TRUE(file.IsValid());
+    EXPECT_FALSE(file.created());
+    EXPECT_FALSE(file.async());
+    std::string contents(10, '\0');
+    ASSERT_TRUE(file.ReadAndCheck(0, as_writable_byte_span(contents)));
+    EXPECT_EQ("0123456789", contents);
+  }
+
+  {
+    File file = OpenAndroidDocument(
+        content_uri, AndroidDocumentAccessMode::kReadWrite, /*async=*/true);
+    ASSERT_TRUE(file.IsValid());
+    EXPECT_TRUE(file.async());
+    ASSERT_TRUE(file.WriteAndCheck(2, as_byte_span(std::string_view("ab"))));
+  }
+  std::string contents;
+  ASSERT_TRUE(ReadFileToString(file_path, &contents));
+  EXPECT_EQ("01ab456789", contents);
+
+  {
+    File file =
+        OpenAndroidDocument(content_uri, AndroidDocumentAccessMode::kAppend);
+    ASSERT_TRUE(file.IsValid());
+    EXPECT_EQ(0, file.Seek(File::FROM_BEGIN, 0));
+    ASSERT_TRUE(
+        file.WriteAtCurrentPosAndCheck(as_byte_span(std::string_view("X"))));
+  }
+  ASSERT_TRUE(ReadFileToString(file_path, &contents));
+  EXPECT_EQ("01ab456789X", contents);
+
+  {
+    File file =
+        OpenAndroidDocument(content_uri, AndroidDocumentAccessMode::kOverwrite);
+    ASSERT_TRUE(file.IsValid());
+    ASSERT_TRUE(file.WriteAtCurrentPosAndCheck(
+        as_byte_span(std::string_view("short"))));
+  }
+  ASSERT_TRUE(ReadFileToString(file_path, &contents));
+  EXPECT_EQ("short", contents);
+
+  {
+    File file = OpenAndroidDocument(
+        content_uri, AndroidDocumentAccessMode::kReadWriteOverwrite);
+    ASSERT_TRUE(file.IsValid());
+    EXPECT_EQ(0, file.GetLength());
+  }
+
+  ASSERT_TRUE(DeleteFile(file_path));
+  EXPECT_EQ(File::FILE_ERROR_NOT_FOUND,
+            OpenAndroidDocument(content_uri, AndroidDocumentAccessMode::kRead)
+                .error_details());
 }
 #endif  // BUILDFLAG(IS_ANDROID)
 
@@ -573,7 +709,7 @@ TEST(FileTest, Length) {
 }
 
 // Flakily fails: http://crbug.com/86494
-#if BUILDFLAG(IS_ANDROID)
+#if BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_IOS)
 TEST(FileTest, TouchGetInfo) {
 #else
 TEST(FileTest, DISABLED_TouchGetInfo) {
@@ -637,6 +773,41 @@ TEST(FileTest, DISABLED_TouchGetInfo) {
   EXPECT_EQ(info.creation_time.ToInternalValue(),
             creation_time.ToInternalValue());
 }
+
+#if BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
+TEST(FileTest, FromStatWithUnixEpochTimestamps) {
+  stat_wrapper_t stat_info = {};
+  File::Info info;
+  info.FromStat(stat_info);
+
+  EXPECT_EQ(Time::UnixEpoch(), info.last_modified);
+  EXPECT_EQ(Time::UnixEpoch(), info.last_accessed);
+  EXPECT_EQ(Time::UnixEpoch(), info.creation_time);
+}
+#endif  // BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
+
+#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_FUCHSIA) || \
+    BUILDFLAG(IS_APPLE)
+TEST(FileTest, FromStatWithTimestampsInFirstUnixSecond) {
+  stat_wrapper_t stat_info = {};
+#if BUILDFLAG(IS_APPLE)
+  stat_info.st_mtimespec.tv_nsec = 123456000;
+  stat_info.st_atimespec.tv_nsec = 234567000;
+  stat_info.st_birthtimespec.tv_nsec = 345678000;
+#else
+  stat_info.st_mtim.tv_nsec = 123456000;
+  stat_info.st_atim.tv_nsec = 234567000;
+  stat_info.st_ctim.tv_nsec = 345678000;
+#endif
+  File::Info info;
+  info.FromStat(stat_info);
+
+  EXPECT_EQ(Time::UnixEpoch() + Microseconds(123456), info.last_modified);
+  EXPECT_EQ(Time::UnixEpoch() + Microseconds(234567), info.last_accessed);
+  EXPECT_EQ(Time::UnixEpoch() + Microseconds(345678), info.creation_time);
+}
+#endif  // BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS) ||
+        // BUILDFLAG(IS_FUCHSIA) || BUILDFLAG(IS_APPLE)
 
 // Test we can retrieve the file's creation time through File::GetInfo().
 TEST(FileTest, GetInfoForCreationTime) {

@@ -36,17 +36,23 @@
 #include "components/autofill/core/browser/ui/popup_open_enums.h"
 #include "components/autofill/core/common/aliases.h"
 #include "components/autofill/core/common/unique_ids.h"
+#include "components/device_reauth/device_authenticator.h"
 #include "components/optimization_guide/core/model_execution/remote_model_executor.h"
 #include "components/personal_context/core/personal_context_types.h"
 #include "components/profile_metrics/browser_profile_type.h"
-#include "net/base/schemeful_site.h"
 #include "ui/gfx/geometry/rect_f.h"
+#include "url/origin.h"
+
+#if BUILDFLAG(IS_ANDROID)
+#include "components/autofill/core/browser/ui/autofill_tapjacking_protector.h"
+#endif
 
 namespace autofill {
 
 AutofillClient::PopupOpenArgs::PopupOpenArgs() = default;
 AutofillClient::PopupOpenArgs::PopupOpenArgs(
-    LocalFrameToken anchor_frame_token,
+    FormGlobalId form_id,
+    FieldGlobalId field_id,
     const gfx::RectF& element_bounds,
     base::i18n::TextDirection text_direction,
     std::vector<Suggestion> suggestions,
@@ -56,7 +62,8 @@ AutofillClient::PopupOpenArgs::PopupOpenArgs(
     bool show_tabbed_popup,
     bool prefer_prev_arrow_side_on_suggestions_update,
     std::u16string search_bar_initial_value)
-    : anchor_frame_token(std::move(anchor_frame_token)),
+    : form_id(std::move(form_id)),
+      field_id(std::move(field_id)),
       element_bounds(element_bounds),
       text_direction(text_direction),
       suggestions(std::move(suggestions)),
@@ -194,13 +201,15 @@ AutofillClient::GetAutofillAiPersonalContextAccessManager() const {
       ->GetAutofillAiPersonalContextAccessManager();
 }
 
-EntitySuppressionManager* AutofillClient::GetEntitySuppressionManager() {
+PersonalContextEntityMetadataManager*
+AutofillClient::GetPersonalContextEntityMetadataManager() {
   return nullptr;
 }
 
-const EntitySuppressionManager* AutofillClient::GetEntitySuppressionManager()
-    const {
-  return const_cast<AutofillClient*>(this)->GetEntitySuppressionManager();
+const PersonalContextEntityMetadataManager*
+AutofillClient::GetPersonalContextEntityMetadataManager() const {
+  return const_cast<AutofillClient*>(this)
+      ->GetPersonalContextEntityMetadataManager();
 }
 
 AutofillAiModelCache* AutofillClient::GetAutofillAiModelCache() {
@@ -285,12 +294,17 @@ const AutofillAblationStudy& AutofillClient::GetAblationStudy() const {
 }
 
 #if BUILDFLAG(IS_ANDROID)
-bool AutofillClient::ShowAmbientAutoFillNotice(
+bool AutofillClient::ShowAmbientAutofillNotice(
     base::WeakPtr<TouchToFillAutofillDelegate> delegate) {
   return false;
 }
 
-void AutofillClient::HideAmbientAutoFillNotice() {}
+bool AutofillClient::ShowPrivateInferenceNoticeBottomSheet(
+    base::WeakPtr<TouchToFillAutofillDelegate> delegate) {
+  return false;
+}
+
+void AutofillClient::HideTouchToFillAutofillNotice() {}
 
 AutofillSnackbarControllerImpl*
 AutofillClient::GetAutofillSnackbarController() {
@@ -304,26 +318,35 @@ void AutofillClient::ShowAutofillAiLoadingDialog() {
 void AutofillClient::DismissAutofillAiLoadingDialog() {
   NOTIMPLEMENTED();
 }
-#endif
 
-void AutofillClient::TriggerUserPerceptionOfAutofillSurvey(
-    FillingProduct filling_product,
-    const HatsSurveyStringData& field_filling_stats_data) {
+void AutofillClient::ShowTapjackingProtector(
+    AutofillTapjackingProtector::AuthorizationType authorization_type,
+    AutofillTapjackingProtector::AuthorizationCallback callback) {
   NOTIMPLEMENTED();
 }
+#endif
 
 void AutofillClient::TriggerDeclinedSaveAddressReasonSurvey() {
   NOTIMPLEMENTED();
 }
 
-void AutofillClient::TriggerAutofillAiFillingJourneySurvey(
-    bool suggestion_accepted,
-    EntityType entity_type,
-    const base::flat_set<EntityTypeName>& saved_entities,
-    const FieldTypeSet& triggering_field_types) {
+void AutofillClient::TriggerPersonalizationAndTrustSurveys(
+    FillingProduct filling_product,
+    const HatsSurveyStringData& field_filling_stats_data) {
   NOTIMPLEMENTED();
 }
 
+void AutofillClient::TriggerAtMemoryPersonalizationAndTrustSurvey(
+    bool is_dismissed,
+    const HatsSurveyStringData& product_specific_data) {
+  NOTIMPLEMENTED();
+}
+
+void AutofillClient::
+    TriggerOneTimePasswordDismissalPersonalizationAndTrustSurvey(
+        const HatsSurveyStringData& product_specific_data) {
+  NOTIMPLEMENTED();
+}
 
 bool AutofillClient::IsTabInActorMode() const {
   return false;
@@ -338,20 +361,8 @@ int64_t AutofillClient::GetNavigationId() const {
 }
 
 std::unique_ptr<device_reauth::DeviceAuthenticator>
-AutofillClient::GetDeviceAuthenticator(std::string histogram) const {
-  return nullptr;
-}
-
-std::unique_ptr<device_reauth::DeviceAuthenticator>
 AutofillClient::GetDeviceAuthenticator() const {
   return GetDeviceAuthenticator("");
-}
-
-bool AutofillClient::SupportsDeviceReauth() const {
-  std::unique_ptr<device_reauth::DeviceAuthenticator> authenticator =
-      GetDeviceAuthenticator();
-  return authenticator &&
-         authenticator->CanAuthenticateWithBiometricOrScreenLock();
 }
 
 bool AutofillClient::ShowAutofillFieldIphForFeature(
@@ -458,9 +469,31 @@ void AutofillClient::ShowAutofillAiPrivateInferenceNotice() {
   NOTIMPLEMENTED();
 }
 
+#if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
+void AutofillClient::ShowAutofillAiSuppressionConfirmationDialog(
+    const EntityInstance& entity,
+    base::OnceCallback<void(bool)> callback) {
+  NOTIMPLEMENTED();
+}
+#endif  // !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
+
+void AutofillClient::ShowAutofillAiSuggestionRemovedNotification(
+    const EntityInstance& entity,
+    base::OnceClosure on_undo_clicked) {
+  NOTIMPLEMENTED();
+}
+
+void AutofillClient::ShowAutofillAiAttributionVerification(
+    const EntityInstance& entity,
+    const GURL& source_url,
+    const gfx::RectF& field_bounds,
+    AutofillAiVerificationDecisionCallback decision_cb) {
+  NOTIMPLEMENTED();
+}
+
 void AutofillClient::ShowEmailVerificationPopup(
     const gfx::RectF& element_bounds,
-    const net::SchemefulSite& issuer_site,
+    const url::Origin& issuer_origin,
     const std::u16string& email,
     base::OnceCallback<void(EmailVerificationPermissionUiStatus)> callback) {
   NOTIMPLEMENTED();
@@ -471,7 +504,8 @@ void AutofillClient::HideEmailVerificationPopup() {
   NOTIMPLEMENTED();
 }
 
-void AutofillClient::ShowEmailVerificationLoadingToast() {
+void AutofillClient::ShowEmailVerificationLoadingToast(
+    base::OnceClosure cancel_callback) {
   NOTIMPLEMENTED();
 }
 
@@ -483,7 +517,17 @@ void AutofillClient::ShowEmailVerificationErrorToast() {
   NOTIMPLEMENTED();
 }
 
+void AutofillClient::ShowGmailOtpOptInBubble(
+    const std::u16string& account_email,
+    base::OnceCallback<void(GmailOtpOptInResult)> callback) {
+  NOTIMPLEMENTED();
+}
+
 OtpFieldDetector* AutofillClient::GetOtpFieldDetector() {
+  return nullptr;
+}
+
+OtpCoordinator* AutofillClient::GetOtpCoordinator() {
   return nullptr;
 }
 
@@ -495,8 +539,15 @@ FormPredictionsTracker* AutofillClient::GetFormPredictionsTracker() {
   return nullptr;
 }
 
-one_time_tokens::OneTimeTokenService* AutofillClient::GetOneTimeTokenService()
-    const {
+one_time_tokens::SmsOtpService* AutofillClient::GetSmsOtpService() const {
+  return nullptr;
+}
+
+one_time_tokens::GmailOtpService* AutofillClient::GetGmailOtpService() {
+  return nullptr;
+}
+
+one_time_tokens::GmailOtpBackend* AutofillClient::GetGmailOtpBackend() const {
   return nullptr;
 }
 
@@ -517,6 +568,8 @@ OtpPhishGuardDelegate* AutofillClient::GetOtpPhishGuardDelegate() {
   return nullptr;
 }
 
+void AutofillClient::OpenGmailForOtps() {}
+
 void AutofillClient::OpenGeminiInSidebar(const std::u16string& prompt) {
   // TODO(crbug.com/493824736): Implement opening Gemini in the sidebar.
   NOTIMPLEMENTED();
@@ -526,10 +579,19 @@ bool AutofillClient::IsGlicEnabled() const {
   return false;
 }
 
+bool AutofillClient::IsGlicConsented() const {
+  return false;
+}
+
 bool AutofillClient::IsAutofillTypeBlockedByPolicy(
     const GURL& url,
     AutofillPolicyDataCategory category) const {
   return false;
+}
+
+const CustomFormControlScriptIndex*
+AutofillClient::GetCustomFormControlScriptIndex() const {
+  return nullptr;
 }
 
 }  // namespace autofill

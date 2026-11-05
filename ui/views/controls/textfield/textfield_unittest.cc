@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "base/command_line.h"
+#include "base/containers/to_vector.h"
 #include "base/format_macros.h"
 #include "base/i18n/language_tag.h"
 #include "base/i18n/rtl.h"
@@ -1190,6 +1191,23 @@ TEST_F(TextfieldTest, MAYBE_KeysWithModifiersTest) {
   } else {
     EXPECT_EQ(u"TeTEx234", textfield_->GetText());
   }
+}
+
+TEST_F(TextfieldTest, ExtendSelectionAndDeleteWithReversedSelection) {
+  InitTextfield();
+
+  // Inline autocompletion selects the suggested suffix with the cursor after
+  // the typed text.
+  textfield_->SetText(u"example.com");
+  textfield_->SetSelectedRange(gfx::Range(11, 1));
+  textfield_->ExtendSelectionAndDelete(1, 0);
+  EXPECT_EQ(u"", textfield_->GetText());
+
+  textfield_->SetText(u"0123456789");
+  textfield_->SetSelectedRange(gfx::Range(6, 4));
+  textfield_->ExtendSelectionAndDelete(1, 2);
+  EXPECT_EQ(u"01289", textfield_->GetText());
+  EXPECT_EQ(3U, textfield_->GetCursorPosition());
 }
 
 TEST_F(TextfieldTest, AccessibleTextSelectBound) {
@@ -3509,7 +3527,6 @@ TEST_F(TextfieldTest, HitOutsideTextAreaInRTLTest) {
 TEST_F(TextfieldTest, MAYBE_OverflowTest) {
   InitTextfield();
 
-  std::u16string str;
   for (size_t i = 0; i < 500; ++i) {
     SendKeyEvent('a');
   }
@@ -3540,7 +3557,6 @@ TEST_F(TextfieldTest, MAYBE_OverflowInRTLTest) {
 
   InitTextfield();
 
-  std::u16string str;
   for (size_t i = 0; i < 500; ++i) {
     SendKeyEvent('a');
   }
@@ -5336,25 +5352,6 @@ TEST_F(TextfieldTest, SecureHasBeenAPasswordInput) {
   EXPECT_FALSE(ui::ScopedPasswordInputEnabler::IsPasswordInputEnabled());
 }
 
-TEST_F(TextfieldTest, SecureHasBeenACustomPasswordInput) {
-  InitTextfield();
-  ASSERT_FALSE(ui::ScopedPasswordInputEnabler::IsPasswordInputEnabled());
-
-  // Shouldn't enable secure input if it's not a password textfield.
-  textfield_->OnFocus();
-  EXPECT_FALSE(ui::ScopedPasswordInputEnabler::IsPasswordInputEnabled());
-
-  textfield_->SetTextInputFlags(textfield_->GetTextInputFlags() |
-                                ui::TEXT_INPUT_FLAG_HAS_BEEN_CUSTOM_PASSWORD);
-
-  // Single matched calls immediately update IsPasswordInputEnabled().
-  textfield_->OnFocus();
-  EXPECT_TRUE(ui::ScopedPasswordInputEnabler::IsPasswordInputEnabled());
-
-  textfield_->OnBlur();
-  EXPECT_FALSE(ui::ScopedPasswordInputEnabler::IsPasswordInputEnabled());
-}
-
 #endif  // BUILDFLAG(IS_MAC)
 
 TEST_F(TextfieldTest, AccessibilitySelectionEvents) {
@@ -5775,8 +5772,9 @@ TEST_F(TextfieldTest, AccessibleGraphemeOffsetsObscured) {
 
   ui::AXNodeData node_data;
   textfield_->GetViewAccessibility().GetAccessibleNodeData(&node_data);
-  std::vector<int32_t> non_obscured_offsets = node_data.GetIntListAttribute(
-      ax::mojom::IntListAttribute::kCharacterOffsets);
+  std::vector<int32_t> non_obscured_offsets =
+      base::ToVector(node_data.GetIntListAttribute(
+          ax::mojom::IntListAttribute::kCharacterOffsets));
 
   textfield_->SetTextInputType(ui::TEXT_INPUT_TYPE_PASSWORD);
   textfield_->GetViewAccessibility().GetAccessibleNodeData(&node_data);

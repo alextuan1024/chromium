@@ -3,24 +3,16 @@
 // found in the LICENSE file.
 
 #import "base/test/ios/wait_util.h"
-#import "components/password_manager/core/common/password_manager_pref_names.h"
-#import "components/safe_browsing/core/common/features.h"
 #import "components/safe_browsing/core/common/safe_browsing_prefs.h"
 #import "components/strings/grit/components_strings.h"
-#import "ios/chrome/browser/authentication/test/signin_earl_grey.h"
-#import "ios/chrome/browser/authentication/test/signin_earl_grey_ui_test_util.h"
-#import "ios/chrome/browser/authentication/test/signin_matchers.h"
 #import "ios/chrome/browser/infobars/ui_bundled/banners/infobar_banner_constants.h"
 #import "ios/chrome/browser/settings/ui_bundled/privacy/privacy_constants.h"
 #import "ios/chrome/browser/settings/ui_bundled/privacy/safe_browsing/safe_browsing_constants.h"
-#import "ios/chrome/browser/shared/public/features/features.h"
-#import "ios/chrome/browser/signin/model/fake_system_identity.h"
 #import "ios/chrome/common/string_util.h"
 #import "ios/chrome/common/ui/table_view/table_view_cells_constants.h"
 #import "ios/chrome/grit/ios_branded_strings.h"
 #import "ios/chrome/grit/ios_strings.h"
 #import "ios/chrome/test/earl_grey/chrome_actions.h"
-#import "ios/chrome/test/earl_grey/chrome_coordinator_app_interface.h"
 #import "ios/chrome/test/earl_grey/chrome_earl_grey.h"
 #import "ios/chrome/test/earl_grey/chrome_earl_grey_ui.h"
 #import "ios/chrome/test/earl_grey/chrome_matchers.h"
@@ -104,14 +96,6 @@ void PressInfoButtonForCell(NSString* cellId) {
 @end
 
 @implementation PrivacySafeBrowsingTestCase
-
-- (AppLaunchConfiguration)appConfigurationForTestCase {
-  AppLaunchConfiguration config = [super appConfigurationForTestCase];
-  // TODO: crbug.com/444244681 - Remove this and tests when fully deployed.
-  config.features_enabled.push_back(
-      safe_browsing::kMovePasswordLeakDetectionToggleIos);
-  return config;
-}
 
 - (void)setUp {
   [super setUp];
@@ -199,17 +183,9 @@ void PressInfoButtonForCell(NSString* cellId) {
 }
 
 // Tests UI and preference value updates between multiple windows.
-//
-//  TODO(crbug.com/485866589): The test is failign on all iOS versions,
-//  including iOS 26. Re-enable it once fixed.
-- (void)DISABLED_testPrivacySafeBrowsingMultiWindow {
+- (void)testPrivacySafeBrowsingMultiWindow {
   if (![ChromeEarlGrey areMultipleWindowsSupported]) {
     EARL_GREY_TEST_DISABLED(@"Multiple windows can't be opened.");
-  }
-  if (@available(iOS 26.0, *)) {
-    // TODO(crbug.com/427699033): Re-enable test on iOS 26.
-    // Fails to interact with second window.
-    EARL_GREY_TEST_DISABLED(@"Test disabled on iOS 26.");
   }
 
   OpenPrivacySafeBrowsingSettingsInWindowWithNumber(0);
@@ -338,90 +314,4 @@ void PressInfoButtonForCell(NSString* cellId) {
                   @"Failed to toggle-off Standard Safe Browsing");
 }
 
-@end
-
-@interface SafeBrowsingPasswordLeakCheckToggleMoveDisabled : ChromeTestCase
-@end
-@implementation SafeBrowsingPasswordLeakCheckToggleMoveDisabled
-- (AppLaunchConfiguration)appConfigurationForTestCase {
-  AppLaunchConfiguration config;
-  // TODO: crbug.com/444244681 - Remove when this is fully deployed.
-  config.features_disabled.push_back(
-      safe_browsing::kMovePasswordLeakDetectionToggleIos);
-  return config;
-}
-
-// Tests that the Password Leak detection toggle doesn't under Standard
-// Protection if the the feature is enabled.
-- (void)testPasswordLeakCheckToggle_PresentWhenFeatureFlagDisabled {
-  // Ensure that Safe Browsing and password leak detection opt-outs start in
-  // their default (opted-in) state.
-  [ChromeEarlGrey setBoolValue:YES forUserPref:prefs::kSafeBrowsingEnabled];
-  [ChromeEarlGrey
-      setBoolValue:YES
-       forUserPref:password_manager::prefs::kPasswordLeakDetectionEnabled];
-
-  // Sign in.
-  FakeSystemIdentity* fakeIdentity = [FakeSystemIdentity fakeIdentity1];
-  [SigninEarlGrey signinWithFakeIdentity:fakeIdentity];
-
-  // Open Privacy Safe Browsing settings.
-  [ChromeCoordinatorAppInterface startPrivacySafeBrowsingCoordinator];
-
-  // Open Standard Protection menu.
-  PressInfoButtonForCell(kSettingsSafeBrowsingStandardProtectionCellId);
-  [[EarlGrey
-      selectElementWithMatcher:grey_accessibilityID(
-                                   kSafeBrowsingStandardProtectionTableViewId)]
-      assertWithMatcher:grey_notNil()];
-
-  // Check that the password leak check toggle is both toggled on and enabled.
-  [ElementInteractionWithGreyMatcher(
-      chrome_test_util::TableViewSwitchCell(
-          kSafeBrowsingStandardProtectionPasswordLeakCellId,
-          /*is_toggled_on=*/YES,
-          /*enabled=*/YES),
-      grey_accessibilityID(kSafeBrowsingStandardProtectionTableViewId))
-      assertWithMatcher:grey_notNil()];
-}
-@end
-
-@interface SafeBrowsingPasswordLeakCheckToggleMoveEnabled : ChromeTestCase
-@end
-@implementation SafeBrowsingPasswordLeakCheckToggleMoveEnabled
-- (AppLaunchConfiguration)appConfigurationForTestCase {
-  AppLaunchConfiguration config;
-  // TODO: crbug.com/444244681 - Remove when this is fully deployed.
-  config.features_enabled.push_back(
-      safe_browsing::kMovePasswordLeakDetectionToggleIos);
-  // TODO(crbug.com/514608938): Fix test for Chrome Next.
-  if ([self isRunningTest:@selector
-            (testPasswordLeakCheckToggle_MissingWhenFeatureFlagEnabled)]) {
-    config.features_disabled.push_back(kChromeNextIa);
-  }
-  return config;
-}
-
-- (void)testPasswordLeakCheckToggle_MissingWhenFeatureFlagEnabled {
-  // Ensure that Safe Browsing and password leak detection opt-outs start in
-  // their default (opted-in) state.
-  [ChromeEarlGrey setBoolValue:YES forUserPref:prefs::kSafeBrowsingEnabled];
-  [ChromeEarlGrey
-      setBoolValue:YES
-       forUserPref:password_manager::prefs::kPasswordLeakDetectionEnabled];
-
-  // Sign in.
-  FakeSystemIdentity* fakeIdentity = [FakeSystemIdentity fakeIdentity1];
-  [SigninEarlGrey signinWithFakeIdentity:fakeIdentity];
-
-  // Open Privacy Safe Browsing settings.
-  OpenPrivacySafeBrowsingSettings();
-
-  [[EarlGrey
-      selectElementWithMatcher:
-          grey_allOf(grey_ancestor(grey_accessibilityID(
-                         kSettingsSafeBrowsingStandardProtectionCellId)),
-                     grey_accessibilityID(kTableViewCellInfoButtonViewId), nil)]
-      assertWithMatcher:grey_notVisible()];
-}
 @end

@@ -84,8 +84,7 @@ bool AudioFileReader::OpenDecoder() {
   }
 #endif
 
-  if (!decoder_ && config.codec() == AudioCodec::kOpus &&
-      base::FeatureList::IsEnabled(kDirectOpusAudioDecoding)) {
+  if (!decoder_ && config.codec() == AudioCodec::kOpus) {
     decoder_ = std::make_unique<OpusAudioDecoder>(
         nullptr, OpusAudioDecoder::ExecutionMode::kSynchronous);
   }
@@ -209,6 +208,11 @@ size_t AudioFileReader::Read(
         /*is_final_output=*/decode_success && !on_output_error_);
   }
 
+  // Note: On decoding failures or midstream configuration changes, we return
+  // whatever audio has been decoded up to this point rather than failing the
+  // entire read operation (which would reject WebAudio's decodeAudioData
+  // promise). Some web clients rely on this best-effort behavior for partially
+  // corrupt files.
   return std::accumulate(
       decoded_audio_packets->begin(), decoded_audio_packets->end(), 0,
       [](size_t total, const auto& bus) { return total + bus->frames(); });

@@ -5,6 +5,7 @@
 #import "ios/chrome/browser/first_run/default_browser/ui/default_browser_screen_view_controller.h"
 
 #import "base/feature_list.h"
+#import "ios/chrome/browser/first_run/default_browser/ui/default_browser_screen_view_controller+subclassing.h"
 #import "ios/chrome/browser/first_run/model/first_run_metrics.h"
 #import "ios/chrome/browser/first_run/public/first_run_constants.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
@@ -27,12 +28,7 @@
 - (void)viewDidLoad {
   self.view.accessibilityIdentifier =
       first_run::kFirstRunDefaultBrowserScreenAccessibilityIdentifier;
-  self.bannerSize = BannerImageSizeType::kStandard;
-#if BUILDFLAG(IOS_USE_BRANDED_ASSETS)
-  self.bannerName = kChromeDefaultBrowserScreenBannerImage;
-#else
-  self.bannerName = kChromiumDefaultBrowserScreenBannerImage;
-#endif
+  [self configureBanner];
   if (![self.titleText length] || ![self.subtitleText length]) {
     // Sets default promo text if title and subtitle text are not explicitly
     // set.
@@ -45,11 +41,7 @@
             l10n_util::GetNSString(
                 usesTablet ? IDS_IOS_FIRST_RUN_DEFAULT_BROWSER_SCREEN_TITLE_IPAD
                            : IDS_IOS_FIRST_RUN_DEFAULT_BROWSER_SCREEN_TITLE)];
-    [self setPromoSubtitle:
-              l10n_util::GetNSString(
-                  usesTablet
-                      ? IDS_IOS_FIRST_RUN_DEFAULT_BROWSER_SCREEN_SUBTITLE_IPAD
-                      : IDS_IOS_FIRST_RUN_DEFAULT_BROWSER_SCREEN_SUBTITLE)];
+    [self setPromoSubtitle:[self defaultSubtitleText]];
   }
   self.configuration.primaryActionString = l10n_util::GetNSString(
       IDS_IOS_FIRST_RUN_DEFAULT_BROWSER_SCREEN_PRIMARY_ACTION);
@@ -59,6 +51,61 @@
           ? IDS_IOS_FIRST_RUN_DEFAULT_BROWSER_SCREEN_SECONDARY_ACTION
           : IDS_IOS_FIRST_RUN_DEFAULT_BROWSER_SCREEN_SECONDARY_ACTION_DONT_MAKE_DEFAULT);
 
+  [self generateDisclaimer];
+
+  UIView* contentView = [self contentViewForPromo];
+  contentView.translatesAutoresizingMaskIntoConstraints = NO;
+
+  [self.specificContentView addSubview:contentView];
+
+  [NSLayoutConstraint activateConstraints:@[
+    [contentView.centerXAnchor
+        constraintEqualToAnchor:self.specificContentView.centerXAnchor],
+    [contentView.widthAnchor
+        constraintEqualToAnchor:self.specificContentView.widthAnchor],
+  ]];
+
+  // Top-align `contentView` to keep `subtitleBottomMargin` when a disclaimer
+  // is shown or requested; otherwise bottom-align it above the buttons.
+  if ([self.disclaimerText length] > 0 || [self shouldTopAlignContentView]) {
+    [NSLayoutConstraint activateConstraints:@[
+      [contentView.bottomAnchor
+          constraintLessThanOrEqualToAnchor:self.specificContentView
+                                                .bottomAnchor],
+      [contentView.topAnchor
+          constraintEqualToAnchor:self.specificContentView.topAnchor],
+    ]];
+  } else {
+    [NSLayoutConstraint activateConstraints:@[
+      [contentView.bottomAnchor
+          constraintEqualToAnchor:self.specificContentView.bottomAnchor],
+      [contentView.topAnchor
+          constraintGreaterThanOrEqualToAnchor:self.specificContentView
+                                                   .topAnchor],
+    ]];
+  }
+  [super viewDidLoad];
+}
+
+#pragma mark - Subclassing
+
+- (void)configureBanner {
+  self.bannerSize = BannerImageSizeType::kStandard;
+#if BUILDFLAG(IOS_USE_BRANDED_ASSETS)
+  self.bannerName = kChromeDefaultBrowserScreenBannerImage;
+#else
+  self.bannerName = kChromiumDefaultBrowserScreenBannerImage;
+#endif
+}
+
+- (NSString*)defaultSubtitleText {
+  BOOL usesTablet = ui::GetDeviceFormFactor() == ui::DEVICE_FORM_FACTOR_TABLET;
+  return l10n_util::GetNSString(
+      usesTablet ? IDS_IOS_FIRST_RUN_DEFAULT_BROWSER_SCREEN_SUBTITLE_IPAD
+                 : IDS_IOS_FIRST_RUN_DEFAULT_BROWSER_SCREEN_SUBTITLE);
+}
+
+- (UIView*)contentViewForPromo {
   NSMutableArray* defaultBrowserSteps = [[NSMutableArray alloc] init];
   if (IsDefaultAppsDestinationAvailable() &&
       IsUseDefaultAppsDestinationForPromosEnabled()) {
@@ -82,39 +129,11 @@
       addObject:l10n_util::GetNSString(
                     IDS_IOS_FIRST_RUN_DEFAULT_BROWSER_SCREEN_THIRD_STEP)];
 
-  [self generateDisclaimer];
+  return [[InstructionView alloc] initWithList:defaultBrowserSteps];
+}
 
-  UIView* instructionView =
-      [[InstructionView alloc] initWithList:defaultBrowserSteps];
-  instructionView.translatesAutoresizingMaskIntoConstraints = NO;
-
-  [self.specificContentView addSubview:instructionView];
-
-  [NSLayoutConstraint activateConstraints:@[
-    [instructionView.centerXAnchor
-        constraintEqualToAnchor:self.specificContentView.centerXAnchor],
-    [instructionView.widthAnchor
-        constraintEqualToAnchor:self.specificContentView.widthAnchor],
-  ]];
-
-  if ([self.disclaimerText length] > 0) {
-    [NSLayoutConstraint activateConstraints:@[
-      [instructionView.bottomAnchor
-          constraintLessThanOrEqualToAnchor:self.specificContentView
-                                                .bottomAnchor],
-      [instructionView.topAnchor
-          constraintEqualToAnchor:self.specificContentView.topAnchor],
-    ]];
-  } else {
-    [NSLayoutConstraint activateConstraints:@[
-      [instructionView.bottomAnchor
-          constraintEqualToAnchor:self.specificContentView.bottomAnchor],
-      [instructionView.topAnchor
-          constraintGreaterThanOrEqualToAnchor:self.specificContentView
-                                                   .topAnchor],
-    ]];
-  }
-  [super viewDidLoad];
+- (BOOL)shouldTopAlignContentView {
+  return NO;
 }
 
 #pragma mark - DefaultBrowserScreenConsumer
@@ -157,8 +176,13 @@
       break;
     }
   }
-  self.disclaimerText = [array componentsJoinedByString:@" "];
-  self.disclaimerURLs = urls;
+  // Avoid creating an empty `disclaimerView` in `PromoStyleViewController`
+  // when `contentView` is top-aligned, while preserving existing bottom spacing
+  // when bottom-aligned.
+  if (array.count > 0 || ![self shouldTopAlignContentView]) {
+    self.disclaimerText = [array componentsJoinedByString:@" "];
+    self.disclaimerURLs = urls;
+  }
 }
 
 @end

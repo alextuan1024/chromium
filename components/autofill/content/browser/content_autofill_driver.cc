@@ -9,12 +9,16 @@
 #include <type_traits>
 #include <utility>
 #include <variant>
+#include <vector>
 
 #include "base/barrier_callback.h"
+#include "base/feature_list.h"
 #include "base/functional/callback.h"
+#include "base/functional/callback_helpers.h"
 #include "base/logging.h"
 #include "components/autofill/content/browser/bad_message.h"
 #include "components/autofill/content/browser/content_autofill_driver_factory.h"
+#include "components/autofill/content/browser/renderer_data_validation.h"
 #include "components/autofill/core/browser/form_structure.h"
 #include "components/autofill/core/browser/foundations/autofill_client.h"
 #include "components/autofill/core/browser/foundations/autofill_driver_router.h"
@@ -25,8 +29,8 @@
 #include "components/autofill/core/common/form_data_predictions.h"
 #include "components/autofill/core/common/signatures.h"
 #include "components/autofill/core/common/unique_ids.h"
+#include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
-#include "content/public/browser/render_widget_host_view.h"
 #include "content/public/browser/web_contents.h"
 #include "mojo/public/cpp/bindings/message.h"
 #include "services/network/public/mojom/permissions_policy/permissions_policy_feature.mojom-shared.h"
@@ -34,7 +38,6 @@
 #include "third_party/abseil-cpp/absl/functional/overload.h"
 #include "third_party/blink/public/common/associated_interfaces/associated_interface_provider.h"
 #include "third_party/blink/public/common/tokens/tokens.h"
-#include "ui/gfx/geometry/quad_f.h"
 #include "ui/gfx/geometry/rect_conversions.h"
 #include "url/origin.h"
 
@@ -81,24 +84,7 @@ T&& Lift(ContentAutofillDriver& source, T&& x) {
 }
 
 gfx::RectF Lift(ContentAutofillDriver& source, gfx::RectF r) {
-  content::RenderWidgetHostView* view = source.render_frame_host()->GetView();
-  if (!view) {
-    return r;
-  }
-
-  // Intersect the coordinates with the view's bounds. This is to make it hard
-  // for a malicious frame to position an Autofill popup over a field from
-  // different frame (provided the attacker's and the victim's frames do not
-  // share the same local root).
-  r.InclusiveIntersect(gfx::RectF(view->GetViewBounds().size()));
-
-  // We transform all corners to handle CSS `transform: scale(...)` correctly
-  // (crbug.com/562177779).
-  return gfx::QuadF(view->TransformPointToRootCoordSpaceF(r.origin()),
-                    view->TransformPointToRootCoordSpaceF(r.top_right()),
-                    view->TransformPointToRootCoordSpaceF(r.bottom_right()),
-                    view->TransformPointToRootCoordSpaceF(r.bottom_left()))
-      .BoundingBox();
+  return TransformToRootCoordinates(*source.render_frame_host(), r);
 }
 
 gfx::Rect Lift(ContentAutofillDriver& source, gfx::Rect r) {
@@ -295,6 +281,18 @@ R RouteToAgent(AutofillDriverRouter& router,
       std::forward<ActualArgs>(args)...);
 }
 
+bool IsErrorDocument(content::RenderFrameHost* rfh) {
+  using enum content::RenderFrameHost::LifecycleState;
+  // RenderFrameHost::IsErrorDocument() CHECKs that `rfh` is not speculative and
+  // DCHECKs that it is not `kPendingCommit`. Note that IsInLifecycleState()
+  // returns false for all states when `rfh` is speculative.
+  const bool has_committed = rfh->IsInLifecycleState(kActive) ||
+                             rfh->IsInLifecycleState(kPrerendering) ||
+                             rfh->IsInLifecycleState(kInBackForwardCache) ||
+                             rfh->IsInLifecycleState(kPendingDeletion);
+  return has_committed && rfh->IsErrorDocument();
+}
+
 // Routes an event from the renderer to one or multiple AutofillManagers.
 //
 // Routing converts values and types: for example, renderer forms become browser
@@ -316,7 +314,8 @@ void RouteToManager(
                                          AutofillManager::RendererEventPassKey),
     ActualArgs&&... args) {
   if (!bad_message::CheckArgs(args...) ||
-      !bad_message::CheckFrameNotPrerendering(source.render_frame_host())) {
+      !bad_message::CheckFrameNotPrerendering(source.render_frame_host()) ||
+      IsErrorDocument(source.render_frame_host())) {
     return;
   }
   return (router.*router_fun)(
@@ -347,25 +346,30 @@ void ContentAutofillDriver::Reset(ContentAutofillDriverFactoryPassKey) {
 }
 
 void ContentAutofillDriver::TriggerFormExtractionInDriverFrame(
-    AutofillDriverRouterAndFormForestPassKey pass_key) {
+    AutofillDriverRouterAndFormForestPassKey pass_key,
+    bool force) {
   if (!IsActive()) {
     LOG(WARNING) << "Skipped Autofill message for inactive frame";
     return;
   }
-  GetAutofillAgent()->TriggerFormExtraction();
+  // TODO(crbug.com/581683357): Merge TriggerFormExtractionWithResponse() and
+  // TriggerFormExtraction() when the feature is cleaned up.
+  if (base::FeatureList::IsEnabled(
+          features::kAutofillMergeTriggerFormExtractionFunctions)) {
+    GetAutofillAgent()->TriggerFormExtractionWithResponse(force,
+                                                          base::DoNothing());
+  } else {
+    GetAutofillAgent()->TriggerFormExtraction(force);
+  }
 }
 
 void ContentAutofillDriver::TriggerFormExtractionInAllFrames(
+    bool force,
     base::OnceCallback<void(bool success)> form_extraction_finished_callback) {
-  std::vector<ContentAutofillDriver*> drivers;
-  render_frame_host()->GetMainFrame()->ForEachRenderFrameHost(
-      [&drivers](content::RenderFrameHost* rfh) {
-        if (rfh->IsActive()) {
-          if (auto* driver = GetForRenderFrameHost(rfh)) {
-            drivers.push_back(driver);
-          }
-        }
-      });
+  std::vector<autofill::AutofillDriver*> drivers = owner_->GetExistingDrivers();
+  std::erase_if(drivers, [](const autofill::AutofillDriver* driver) {
+    return !driver->IsActive();
+  });
   auto barrier_callback = base::BarrierCallback<bool>(
       drivers.size(),
       base::BindOnce(
@@ -376,21 +380,11 @@ void ContentAutofillDriver::TriggerFormExtractionInAllFrames(
                 .Run(std::ranges::all_of(successes, std::identity()));
           },
           std::move(form_extraction_finished_callback)));
-  for (ContentAutofillDriver* driver : drivers) {
-    driver->GetAutofillAgent()->TriggerFormExtractionWithResponse(
-        barrier_callback);
+  for (autofill::AutofillDriver* driver : drivers) {
+    static_cast<ContentAutofillDriver*>(driver)
+        ->GetAutofillAgent()
+        ->TriggerFormExtractionWithResponse(force, barrier_callback);
   }
-}
-
-void ContentAutofillDriver::ClearFormCacheInAllFrames() {
-  render_frame_host()->GetMainFrame()->ForEachRenderFrameHost(
-      [](content::RenderFrameHost* rfh) {
-        if (rfh->IsActive()) {
-          if (auto* driver = GetForRenderFrameHost(rfh)) {
-            driver->GetAutofillAgent()->ClearFormCache();
-          }
-        }
-      });
 }
 
 void ContentAutofillDriver::ObserveFieldVisibility(
@@ -433,6 +427,15 @@ void ContentAutofillDriver::ExtractLabeledTextNodeValue(
         value_regex, label_regex, number_of_ancestor_levels_to_search,
         std::move(response_callback));
   }
+}
+
+void ContentAutofillDriver::LoadCustomFormControlScript(
+    const std::string& script) {
+  if (!IsActive()) {
+    return;
+  }
+  GetCustomFormControlAgent()->LoadUnsafeScript(
+      render_frame_host_->GetDocumentToken(), script, base::DoNothing());
 }
 
 // static
@@ -506,7 +509,7 @@ std::optional<LocalFrameToken> ContentAutofillDriver::Resolve(
 
 ukm::SourceId ContentAutofillDriver::GetPageUkmSourceId() const {
   CHECK(!render_frame_host_->IsInLifecycleState(
-          content::RenderFrameHost::LifecycleState::kPrerendering));
+      content::RenderFrameHost::LifecycleState::kPrerendering));
   return render_frame_host_->GetPageUkmSourceId();
 }
 
@@ -802,6 +805,16 @@ ContentAutofillDriver::GetAutofillAgent() {
         &autofill_agent_);
   }
   return autofill_agent_;
+}
+
+const mojo::AssociatedRemote<mojom::CustomFormControlAgent>&
+ContentAutofillDriver::GetCustomFormControlAgent() {
+  // Here is a lazy binding, and will not reconnect after connection error.
+  if (!custom_form_control_agent_) {
+    render_frame_host_->GetRemoteAssociatedInterfaces()->GetInterface(
+        &custom_form_control_agent_);
+  }
+  return custom_form_control_agent_;
 }
 
 bool ContentAutofillDriver::IsSafeToFill(

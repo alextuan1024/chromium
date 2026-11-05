@@ -6,6 +6,7 @@
 
 #include <utility>
 
+#include "base/check_op.h"
 #include "base/command_line.h"
 #include "base/strings/utf_string_conversions.h"
 #include "build/build_config.h"
@@ -15,8 +16,8 @@
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/test_utils.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "ui/base/page_transition_types.h"
-#include "ui/base/window_open_disposition.h"
 
 #if BUILDFLAG(IS_ANDROID)
 #include "chrome/browser/ui/android/tab_model/tab_model.h"
@@ -71,12 +72,16 @@ class GlobalConfirmInfoBarTest : public PlatformBrowserTest {
 
   // Returns the number of tabs in the current window.
   int GetTabCount() {
-    for (const TabModel* model : TabModelList::models()) {
+    int count = -1;
+    TabModelList::ForEachAll([&count](TabModel* model) {
       if (model->IsActiveModel()) {
-        return model->GetTabCount();
+        count = model->GetTabCount();
+        return false;
       }
-    }
-    NOTREACHED() << "No active TabModel?";
+      return true;
+    });
+    CHECK_GE(count, 0) << "No active TabModel?";
+    return count;
   }
 #else
   // Adds an additional tab.
@@ -224,7 +229,7 @@ IN_PROC_BROWSER_TEST_F(GlobalConfirmInfoBarTest, ClickLink) {
   infobars::InfoBar* first_tab_infobar =
       GetInfoBarManagerFromTabIndex(0)->infobars()[0];
   EXPECT_FALSE(first_tab_infobar->delegate()->LinkClicked(
-      WindowOpenDisposition::NEW_BACKGROUND_TAB));
+      ui::mojom::WindowOpenDisposition::kNewBackgroundTab));
 
   // This should have opened a new tab.
   ASSERT_EQ(2, GetTabCount());

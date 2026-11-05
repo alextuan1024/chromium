@@ -4,12 +4,12 @@
 
 package org.chromium.chrome.browser;
 
-import static org.chromium.build.NullUtil.assumeNonNull;
-
 import android.annotation.SuppressLint;
 import android.content.Context;
 import android.content.Intent;
+import android.content.res.AssetManager;
 import android.content.res.Configuration;
+import android.content.res.Resources;
 import android.content.res.Resources.Theme;
 import android.net.Uri;
 import android.os.Build;
@@ -86,14 +86,6 @@ public class WarmupManager {
 
     /** Records stats, observes crashes, and cleans up spareTab object. */
     private class HiddenTabObserver implements TabObserver {
-        // This WindowAndroid is "owned" by the Tab and should be destroyed when it is no longer
-        // needed by the Tab or when the Tab is destroyed.
-        private WindowAndroid mOwnedWindowAndroid;
-
-        public HiddenTabObserver(WindowAndroid ownedWindowAndroid) {
-            mOwnedWindowAndroid = ownedWindowAndroid;
-        }
-
         @Override
         // Invoked when tab crashes, or when the associated renderer process is killed.
         public void onCrash(Tab tab) {
@@ -103,20 +95,13 @@ public class WarmupManager {
         }
 
         @Override
-        public void onDestroyed(Tab tab) {
-            destroyOwnedWindow(tab);
+        public void onActivityAttachmentChanged(Tab tab, @Nullable WindowAndroid window) {
+            // The tab was taken and attached, so it's no longer the spare tab.
+            tab.removeObserver(this);
         }
 
         @Override
-        public void onActivityAttachmentChanged(Tab tab, @Nullable WindowAndroid window) {
-            destroyOwnedWindow(tab);
-        }
-
-        @SuppressWarnings("NullAway")
-        private void destroyOwnedWindow(Tab tab) {
-            assert mOwnedWindowAndroid != null;
-            mOwnedWindowAndroid.destroy();
-            mOwnedWindowAndroid = null;
+        public void onDestroyed(Tab tab) {
             tab.removeObserver(this);
         }
     }
@@ -135,6 +120,23 @@ public class WarmupManager {
             // https://crbug.com/334755104
             Context target = mActivityContext != null ? mActivityContext : getBaseContext();
             target.startActivity(intent, options);
+        }
+
+        @Override
+        public AssetManager getAssets() {
+            return mActivityContext != null ? mActivityContext.getAssets() : super.getAssets();
+        }
+
+        @Override
+        public Resources getResources() {
+            return mActivityContext != null
+                    ? mActivityContext.getResources()
+                    : super.getResources();
+        }
+
+        @Override
+        public Theme getTheme() {
+            return mActivityContext != null ? mActivityContext.getTheme() : super.getTheme();
         }
     }
 
@@ -231,8 +233,8 @@ public class WarmupManager {
      *
      * <p>The tab's launch type will be set when the tab is used.
      *
-     * <p>* @param webContents The {@link WebContents} to use in the tab. If null the default is
-     * used.
+     * @param profile The profile associated with the spare Tab.
+     * @param webContents The {@link WebContents} to use in the tab. If null the default is used.
      */
     public void createRegularSpareTab(Profile profile, @Nullable WebContents webContents) {
         ThreadUtils.assertOnUiThread();
@@ -259,16 +261,15 @@ public class WarmupManager {
         }
 
         if (mSpareTab != null) {
-            WindowAndroid window = mSpareTab.getWindowAndroid();
-            assumeNonNull(window);
-            mSpareTab.addObserver(new HiddenTabObserver(window));
+            mSpareTab.addObserver(new HiddenTabObserver());
         }
     }
 
     /**
-     * Returns the spare Tab. Must only be called when a spare tab is available for |profile|.
+     * Returns the spare Tab. Must only be called when a spare tab is available for {@code profile}.
      *
      * @param profile the profile associated with the spare Tab.
+     * @param initiallyHidden Whether the tab should remain hidden; if false, the tab is shown.
      * @param type TabLaunchType of the requested tab.
      * @return the spare Tab.
      */
@@ -297,6 +298,7 @@ public class WarmupManager {
     }
 
     /**
+     * @param profile The profile to check the spare tab against.
      * @param targetsNetwork whether the activity/tab associated with this WebContents targets a
      *     network (supported only by multi-network CCT, see @{link
      *     BrowserServicesIntentDataProvider#getTargetNetwork).
@@ -335,9 +337,7 @@ public class WarmupManager {
         ResettersForTesting.register(() -> sWarmupManager = oldValue);
     }
 
-    /**
-     * @return The singleton instance for the WarmupManager, creating one if necessary.
-     */
+    /** Returns the singleton instance for the WarmupManager, creating one if necessary. */
     public static WarmupManager getInstance() {
         ThreadUtils.assertOnUiThread();
         if (sWarmupManager == null) sWarmupManager = new WarmupManager();

@@ -25,7 +25,7 @@
 #include "cc/animation/animation_timeline.h"
 #include "cc/animation/keyframe_effect.h"
 #include "cc/animation/keyframe_model.h"
-#include "cc/input/browser_controls_offset_manager.h"
+#include "cc/input/browser_controls_offset_manager_interface.h"
 #include "cc/layers/heads_up_display_layer_impl.h"
 #include "cc/layers/layer_impl.h"
 #include "cc/layers/mirror_layer_impl.h"
@@ -205,7 +205,6 @@ void ComputePropertyTreeNodeUpdate(
       old_node->hidden_by_backface_visibility ==
           new_node.hidden_by_backface_visibility &&
       old_node->double_sided == new_node.double_sided &&
-      old_node->trilinear_filtering == new_node.trilinear_filtering &&
       old_node->is_drawn == new_node.is_drawn &&
       old_node->only_draws_visible_content ==
           new_node.only_draws_visible_content &&
@@ -219,7 +218,7 @@ void ComputePropertyTreeNodeUpdate(
       old_node->has_masking_child == new_node.has_masking_child &&
       // Since |effect_changed| is transient, we only need to check for it's
       // current state instead of comparing to old one.
-      !new_node.effect_changed &&
+      !new_node.effect_changed() &&
       old_node->subtree_has_copy_request == new_node.subtree_has_copy_request &&
       old_node->is_fast_rounded_corner == new_node.is_fast_rounded_corner &&
       old_node->node_or_ancestor_has_fast_rounded_corner ==
@@ -284,7 +283,6 @@ void ComputePropertyTreeNodeUpdate(
 
   wire->cache_render_surface = new_node.cache_render_surface;
   wire->double_sided = new_node.double_sided;
-  wire->trilinear_filtering = new_node.trilinear_filtering;
   wire->subtree_hidden = new_node.subtree_hidden;
   wire->has_potential_filter_animation =
       new_node.has_potential_filter_animation;
@@ -292,7 +290,7 @@ void ComputePropertyTreeNodeUpdate(
       new_node.has_potential_backdrop_filter_animation;
   wire->has_potential_opacity_animation =
       new_node.has_potential_opacity_animation;
-  wire->effect_changed = new_node.effect_changed;
+  wire->effect_changed = new_node.effect_changed();
   wire->subtree_has_copy_request = new_node.subtree_has_copy_request;
   wire->is_fast_rounded_corner = new_node.is_fast_rounded_corner;
   wire->may_have_backdrop_effect = new_node.may_have_backdrop_effect;
@@ -1101,8 +1099,6 @@ void SerializeLayer(LayerImpl& layer,
             picture_layer.has_animated_image_update_rect();
         tile_display_extra->has_non_animated_image_update_rect =
             picture_layer.has_non_animated_image_update_rect();
-        tile_display_extra->content_color_usage =
-            picture_layer.GetContentColorUsage();
         tile_display_extra->recorded_bounds =
             picture_layer.GetRasterSource()->recorded_bounds();
         tile_display_extra->proposed_tiling_scales_for_deletion =
@@ -1479,7 +1475,8 @@ base::TimeTicks VizLayerContext::UpdateDisplayTreeFrom(
     bool frame_has_damage,
     bool is_flush,
     std::vector<ui::LatencyInfo> latency_info,
-    viz::TrackedElementRects tracked_element_rects) {
+    viz::TrackedElementRects tracked_element_rects,
+    std::optional<viz::FrameIntervalInputs> frame_interval_inputs) {
   TRACE_EVENT0("viz", "VizLayerContext::UpdateDisplayTreeFrom");
 
   auto& property_trees = *tree.property_trees();
@@ -1513,6 +1510,7 @@ base::TimeTicks VizLayerContext::UpdateDisplayTreeFrom(
 
   update->latency_info = std::move(latency_info);
   update->tracked_element_rects = std::move(tracked_element_rects);
+  update->frame_interval_inputs = std::move(frame_interval_inputs);
   update->device_viewport = tree.GetDeviceViewport();
   update->device_scale_factor = tree.device_scale_factor();
   DUMP_WILL_BE_CHECK_GT(update->device_scale_factor, 0.f);

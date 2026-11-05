@@ -24,7 +24,6 @@
 #import "ios/chrome/common/ui/util/chrome_button.h"
 #import "ios/chrome/grit/ios_strings.h"
 #import "ui/base/l10n/l10n_util.h"
-#import "url/gurl.h"
 
 namespace {
 
@@ -40,6 +39,7 @@ typedef NS_ENUM(NSInteger, SectionIdentifier) {
 typedef NS_ENUM(NSInteger, ItemType) {
   ItemTypeFooter = kItemTypeEnumZero,
 };
+
 }  // namespace
 
 @interface AutofillAIEntityEditTableViewController () <
@@ -57,8 +57,9 @@ typedef NS_ENUM(NSInteger, ItemType) {
   // Denotes the entity is saved in wallet.
   BOOL _isServerWalletItem;
 
-  // The user's email address to display in the footer.
-  NSString* _userEmail;
+  // Footer text and tappable link URLs pushed by the mediator.
+  NSString* _footerText;
+  NSArray<CrURL*>* _footerURLs;
 
   // The bottom save button displayed when creating a new entity.
   ChromeButton* _saveButton;
@@ -84,6 +85,9 @@ typedef NS_ENUM(NSInteger, ItemType) {
   // Guard to prevent re-entrant layout calls during date picker presentation
   // style transitions.
   BOOL _isTransitioningDatePickerStyle;
+
+  // The mode in which this view controller operates.
+  AutofillAIEntityEditMode _mode;
 }
 
 #pragma mark - UIViewController
@@ -95,7 +99,7 @@ typedef NS_ENUM(NSInteger, ItemType) {
   self.toolbarItems = @[];
   self.tableView.allowsSelectionDuringEditing = YES;
 
-  if (self.mode == AutofillAIEntityEditMode::kCreate) {
+  if (_mode == AutofillAIEntityEditMode::kCreate) {
     [self setEditing:YES animated:NO];
     self.shouldHideDoneButton = YES;
     self.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc]
@@ -152,20 +156,11 @@ typedef NS_ENUM(NSInteger, ItemType) {
     }
   }
 
-  TableViewLinkHeaderFooterItem* footer =
-      [[TableViewLinkHeaderFooterItem alloc] initWithType:ItemTypeFooter];
-
-  if (_isServerWalletItem && _userEmail.length > 0) {
-    footer.text = autofill::GetSaveEntityToWalletFooterText(_userEmail);
-    footer.urls =
-        @[ [[CrURL alloc] initWithGURL:autofill::GetManageYourInfoURL()] ];
-  } else {
-    footer.text =
-        l10n_util::GetNSString(IDS_IOS_AUTOFILL_AI_SAVED_LOCALLY_FOOTER);
+  if (![model hasSectionForSectionIdentifier:SectionIdentifierFooter]) {
+    [model addSectionWithIdentifier:SectionIdentifierFooter];
   }
-
-  [model addSectionWithIdentifier:SectionIdentifierFooter];
-  [model setFooter:footer forSectionWithIdentifier:SectionIdentifierFooter];
+  [model setFooter:[self createFooterItem]
+      forSectionWithIdentifier:SectionIdentifierFooter];
 }
 
 #pragma mark - Setup
@@ -198,7 +193,7 @@ typedef NS_ENUM(NSInteger, ItemType) {
 #pragma mark - SettingsRootTableViewController
 
 - (BOOL)shouldShowEditButton {
-  if (self.mode == AutofillAIEntityEditMode::kCreate) {
+  if (_mode == AutofillAIEntityEditMode::kCreate) {
     return NO;
   }
   return _editingAllowed || _isServerWalletItem;
@@ -206,17 +201,21 @@ typedef NS_ENUM(NSInteger, ItemType) {
 
 - (BOOL)shouldShowEditDoneButton {
   // Only show the top right Done button if we are editing an existing entity.
-  return self.mode == AutofillAIEntityEditMode::kViewAndEdit;
+  return _mode == AutofillAIEntityEditMode::kViewAndEdit;
 }
 
 #pragma mark - AutofillAIEntityEditConsumer
+
+- (void)setMode:(AutofillAIEntityEditMode)mode {
+  _mode = mode;
+}
 
 - (void)setTitle:(NSString*)title {
   // Store a copy to ensure we can regenerate the title if `_isServerWalletItem`
   // is set after this method is called.
   _titleText = [title copy];
   BOOL shouldUseBrandedTitle =
-      _isServerWalletItem && self.mode == AutofillAIEntityEditMode::kCreate;
+      _isServerWalletItem && _mode == AutofillAIEntityEditMode::kCreate;
   if (shouldUseBrandedTitle) {
     self.navigationItem.titleView =
         autofill::CreateBrandedTitleForWalletSave(title);
@@ -251,8 +250,20 @@ typedef NS_ENUM(NSInteger, ItemType) {
   }
 }
 
-- (void)setUserEmail:(NSString*)userEmail {
-  _userEmail = [userEmail copy];
+// Sets the footer text and URLs to be displayed in the footer.
+// Does not reload the footer once the view is on screen, preventing the footer
+// from changing mid-session.
+- (void)setFooterText:(NSString*)footerText urls:(NSArray<CrURL*>*)urls {
+  if ((footerText == _footerText || [_footerText isEqualToString:footerText]) &&
+      autofill::AreCrURLArraysEqual(_footerURLs, urls)) {
+    return;
+  }
+  if (self.view.window) {
+    return;
+  }
+  _footerText = [footerText copy];
+  _footerURLs = [urls copy];
+  [self reloadFooterIfNotVisible];
 }
 
 - (void)updateItem:(TableViewItem*)item {
@@ -296,7 +307,7 @@ typedef NS_ENUM(NSInteger, ItemType) {
 - (void)didFinishSavingWithLocalFallback:(BOOL)isLocalFallback {
   if (isLocalFallback) {
     [self.delegate showLocalSaveFallbackAlert];
-  } else if (self.mode == AutofillAIEntityEditMode::kCreate) {
+  } else if (_mode == AutofillAIEntityEditMode::kCreate) {
     [self.delegate dismissViewController:self];
   }
 }
@@ -382,7 +393,7 @@ typedef NS_ENUM(NSInteger, ItemType) {
 }
 
 - (void)didTapSaveNewEntity {
-  CHECK(self.mode == AutofillAIEntityEditMode::kCreate);
+  CHECK(_mode == AutofillAIEntityEditMode::kCreate);
   if (![self validateFields]) {
     return;
   }
@@ -671,7 +682,7 @@ typedef NS_ENUM(NSInteger, ItemType) {
   }
   BOOL isValid = missingFields.empty();
   BOOL buttonEnabled = isValid && !_loadingState;
-  if (self.mode == AutofillAIEntityEditMode::kCreate) {
+  if (_mode == AutofillAIEntityEditMode::kCreate) {
     if (_saveButton) {
       _saveButton.enabled = buttonEnabled;
     }
@@ -810,6 +821,42 @@ typedef NS_ENUM(NSInteger, ItemType) {
     }
   }
   _isTransitioningDatePickerStyle = NO;
+}
+
+// Rebuilds the footer so it reflects the latest footer inputs, without touching
+// the attributes section. Skipped before the view is loaded, since `loadModel`
+// builds the footer from the latest inputs anyway, and once the view is on
+// screen, so that the footer never changes under the user mid-session.
+- (void)reloadFooterIfNotVisible {
+  if (!self.isViewLoaded || self.view.window) {
+    return;
+  }
+
+  TableViewModel* model = self.tableViewModel;
+  if (![model hasSectionForSectionIdentifier:SectionIdentifierFooter]) {
+    return;
+  }
+
+  [model setFooter:[self createFooterItem]
+      forSectionWithIdentifier:SectionIdentifierFooter];
+  NSInteger footerSectionIndex =
+      [model sectionForSectionIdentifier:SectionIdentifierFooter];
+  [self.tableView
+        reloadSections:[NSIndexSet indexSetWithIndex:footerSectionIndex]
+      withRowAnimation:UITableViewRowAnimationNone];
+}
+
+// Creates and configures the footer item from `_footerText` and `_footerURLs`.
+- (TableViewLinkHeaderFooterItem*)createFooterItem {
+  if (_footerText.length == 0) {
+    return nil;
+  }
+
+  TableViewLinkHeaderFooterItem* footer =
+      [[TableViewLinkHeaderFooterItem alloc] initWithType:ItemTypeFooter];
+  footer.text = _footerText;
+  footer.urls = _footerURLs;
+  return footer;
 }
 
 @end

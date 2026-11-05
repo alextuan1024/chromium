@@ -12,6 +12,7 @@
 #include <utility>
 
 #include "base/containers/lru_cache.h"
+#include "base/containers/span.h"
 #include "base/memory/raw_ptr.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/gmock_callback_support.h"
@@ -72,6 +73,7 @@
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "url/gurl.h"
+#include "url/origin.h"
 
 #if BUILDFLAG(IS_ANDROID)
 #include "components/webauthn/android/cred_man_support.h"
@@ -258,9 +260,13 @@ class MockPasswordManagerClient : public StubPasswordManagerClient {
               (),
               (const, override));
   MOCK_METHOD(bool, IsActorTaskActive, (), (override));
+  MOCK_METHOD(void, OnPasswordFilled, (PasswordManagerDriver*), (override));
   MOCK_METHOD(void,
-              OnPasswordFilled,
-              (PasswordManagerDriver*, const GURL&),
+              PasswordWasAutofilled,
+              (base::span<const StoredCredential>,
+               const url::Origin&,
+               base::span<const StoredCredential>,
+               bool),
               (override));
 #if BUILDFLAG(IS_ANDROID)
   MOCK_METHOD(void,
@@ -1032,6 +1038,114 @@ TEST_P(PasswordFormManagerTest, ServerPredictionsWithinDelay) {
   // Expect no filling on receiving predictions again.
   EXPECT_CALL(driver_, PropagateFillDataOnParsingCompletion).Times(0);
   form_manager_->ProcessServerPredictions(predictions);
+}
+
+TEST_P(PasswordFormManagerTest,
+       TimeBetweenStoreAndServerUmaRecordedOnlyOncePerManager) {
+  PasswordFormManager::set_wait_for_server_predictions_for_filling(false);
+  base::HistogramTester histogram_tester;
+  CreateFormManager(observed_form_);
+
+  SetNonFederatedAndNotifyFetchCompleted({saved_match_});
+  histogram_tester.ExpectUniqueTimeSample(
+      "PasswordManager.TimeBetweenStoreAndServer2", base::Milliseconds(0), 1);
+
+  task_environment_.FastForwardBy(base::Milliseconds(100));
+  auto predictions = CreatePredictions(observed_form_,
+                                       {std::make_pair(2, autofill::PASSWORD)});
+  form_manager_->ProcessServerPredictions(predictions);
+  histogram_tester.ExpectUniqueTimeSample(
+      "PasswordManager.TimeBetweenStoreAndServer2", base::Milliseconds(0), 1);
+
+  // Fetching credentials again must not record another sample for this manager.
+  SetNonFederatedAndNotifyFetchCompleted({saved_match_});
+  histogram_tester.ExpectUniqueTimeSample(
+      "PasswordManager.TimeBetweenStoreAndServer2", base::Milliseconds(0), 1);
+  histogram_tester.ExpectTotalCount("PasswordManager.TimeBetweenStoreAndServer",
+                                    0);
+}
+
+TEST_P(PasswordFormManagerTest,
+       TimeBetweenStoreAndServerUmaRecordsWhenPredictionsArrive) {
+  base::HistogramTester histogram_tester;
+  CreateFormManager(observed_form_);
+
+  SetNonFederatedAndNotifyFetchCompleted({saved_match_});
+  histogram_tester.ExpectTotalCount(
+      "PasswordManager.TimeBetweenStoreAndServer2", 0);
+
+  task_environment_.FastForwardBy(base::Milliseconds(100));
+  auto predictions = CreatePredictions(observed_form_,
+                                       {std::make_pair(2, autofill::PASSWORD)});
+  form_manager_->ProcessServerPredictions(predictions);
+  histogram_tester.ExpectUniqueTimeSample(
+      "PasswordManager.TimeBetweenStoreAndServer2", base::Milliseconds(100), 1);
+
+  SetNonFederatedAndNotifyFetchCompleted({saved_match_});
+  histogram_tester.ExpectUniqueTimeSample(
+      "PasswordManager.TimeBetweenStoreAndServer2", base::Milliseconds(100), 1);
+}
+
+TEST_P(PasswordFormManagerTest,
+       TimeBetweenStoreAndServerUmaWaitsForStoredCredentials) {
+  base::HistogramTester histogram_tester;
+  CreateFormManager(observed_form_);
+
+  auto predictions = CreatePredictions(observed_form_,
+                                       {std::make_pair(2, autofill::PASSWORD)});
+  form_manager_->ProcessServerPredictions(predictions);
+  histogram_tester.ExpectTotalCount(
+      "PasswordManager.TimeBetweenStoreAndServer2", 0);
+
+  SetNonFederatedAndNotifyFetchCompleted({saved_match_});
+  histogram_tester.ExpectUniqueTimeSample(
+      "PasswordManager.TimeBetweenStoreAndServer2", base::Milliseconds(0), 1);
+
+  SetNonFederatedAndNotifyFetchCompleted({saved_match_});
+  histogram_tester.ExpectUniqueTimeSample(
+      "PasswordManager.TimeBetweenStoreAndServer2", base::Milliseconds(0), 1);
+}
+
+TEST_P(PasswordFormManagerTest,
+       TimeBetweenStoreAndServerUmaNotRecordedAgainForClone) {
+  base::HistogramTester histogram_tester;
+  CreateFormManager(observed_form_);
+  SetNonFederatedAndNotifyFetchCompleted({saved_match_});
+
+  task_environment_.FastForwardBy(base::Milliseconds(100));
+  auto predictions = CreatePredictions(observed_form_,
+                                       {std::make_pair(2, autofill::PASSWORD)});
+  form_manager_->ProcessServerPredictions(predictions);
+  histogram_tester.ExpectUniqueTimeSample(
+      "PasswordManager.TimeBetweenStoreAndServer2", base::Milliseconds(100), 1);
+
+  std::unique_ptr<PasswordFormManager> clone = form_manager_->Clone();
+  static_cast<FakeFormFetcher*>(clone->GetFormFetcher())
+      ->NotifyFetchCompleted();
+  histogram_tester.ExpectUniqueTimeSample(
+      "PasswordManager.TimeBetweenStoreAndServer2", base::Milliseconds(100), 1);
+
+  std::unique_ptr<PasswordFormManager> second_clone = clone->Clone();
+  static_cast<FakeFormFetcher*>(second_clone->GetFormFetcher())
+      ->NotifyFetchCompleted();
+  histogram_tester.ExpectUniqueTimeSample(
+      "PasswordManager.TimeBetweenStoreAndServer2", base::Milliseconds(100), 1);
+}
+
+TEST_P(PasswordFormManagerTest,
+       TimeBetweenStoreAndServerUmaRecordedForCloneIfNotYetRecorded) {
+  base::HistogramTester histogram_tester;
+  CreateFormManager(observed_form_);
+  SetNonFederatedAndNotifyFetchCompleted({saved_match_});
+  histogram_tester.ExpectTotalCount(
+      "PasswordManager.TimeBetweenStoreAndServer2", 0);
+
+  PasswordFormManager::set_wait_for_server_predictions_for_filling(false);
+  std::unique_ptr<PasswordFormManager> clone = form_manager_->Clone();
+  static_cast<FakeFormFetcher*>(clone->GetFormFetcher())
+      ->NotifyFetchCompleted();
+  histogram_tester.ExpectUniqueTimeSample(
+      "PasswordManager.TimeBetweenStoreAndServer2", base::Milliseconds(0), 1);
 }
 
 // Tests that PasswordFormManager does not adopt server predictions if they
@@ -2436,8 +2550,6 @@ TEST_P(PasswordFormManagerTest, RecordsGroupedAppMatch) {
 }
 
 TEST_P(PasswordFormManagerTest, RecordsGroupedWebSiteMatch) {
-  base::test::ScopedFeatureList feature_list(
-      password_manager::features::kPasswordFormGroupedAffiliations);
   PasswordFormManager::set_wait_for_server_predictions_for_filling(false);
   base::HistogramTester histogram_tester;
   CreateFormManager(observed_form_);
@@ -4875,6 +4987,51 @@ TEST_P(PasswordFormManagerTest,
   EXPECT_CALL(client_, ShowPasswordManagerErrorMessage).Times(0);
   fetcher_->NotifyFetchCompleted();
 }
+
+TEST_P(PasswordFormManagerTest,
+       ClientShouldShowErrorMessageWithSaveFlowForSignUpForm) {
+  // Make `observed_form_` a sign-up form.
+  test_api(observed_form_).field(-1).set_autocomplete_attribute("new-password");
+  CreateFormManager(observed_form_);
+
+  fetcher_->SetProfileStoreBackendError(PasswordStoreBackendError(
+      PasswordStoreBackendErrorType::kAuthErrorResolvable));
+
+  EXPECT_CALL(client_,
+              ShowPasswordManagerErrorMessage(
+                  password_manager::ErrorMessageFlowType::kSaveFlow,
+                  PasswordStoreBackendErrorType::kAuthErrorResolvable));
+  fetcher_->NotifyFetchCompleted();
+}
+
+TEST_P(PasswordFormManagerTest,
+       ClientShouldShowErrorMessageWithSaveFlowForChangePasswordForm) {
+  // Make `observed_form_` a change password form (current and new password).
+  test_api(observed_form_)
+      .field(-1)
+      .set_autocomplete_attribute("current-password");
+  FormFieldData new_password_field;
+  new_password_field.set_name(u"new-password");
+  new_password_field.set_id_attribute(new_password_field.name());
+  new_password_field.set_name_attribute(new_password_field.name());
+  new_password_field.set_form_control_type(
+      autofill::FormControlType::kInputPassword);
+  new_password_field.set_autocomplete_attribute("new-password");
+  const FieldRendererId new_password_renderer_id(
+      observed_form_.fields().back().renderer_id().value() + 1);
+  new_password_field.set_renderer_id(new_password_renderer_id);
+  test_api(observed_form_).Append(std::move(new_password_field));
+  CreateFormManager(observed_form_);
+
+  fetcher_->SetProfileStoreBackendError(PasswordStoreBackendError(
+      PasswordStoreBackendErrorType::kAuthErrorResolvable));
+
+  EXPECT_CALL(client_,
+              ShowPasswordManagerErrorMessage(
+                  password_manager::ErrorMessageFlowType::kSaveFlow,
+                  PasswordStoreBackendErrorType::kAuthErrorResolvable));
+  fetcher_->NotifyFetchCompleted();
+}
 #endif
 
 #if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
@@ -4984,6 +5141,18 @@ TEST_P(PasswordFormManagerTest,
   CreateFormManagerWithoutFetcher(observed_form_);
 }
 
+TEST_P(PasswordFormManagerTest, FillNowDestroysManagerFromOnFetchCompleted) {
+  PasswordFormManager::set_wait_for_server_predictions_for_filling(false);
+  CreateFormManager(observed_form_);
+
+  EXPECT_CALL(client_, PasswordWasAutofilled).WillOnce([this]() {
+    form_manager_.reset();
+  });
+
+  SetNonFederatedAndNotifyFetchCompleted({saved_match_});
+  EXPECT_FALSE(form_manager_);
+}
+
 INSTANTIATE_TEST_SUITE_P(All, PasswordFormManagerTest, testing::Bool());
 
 class MockPasswordSaveManager : public PasswordSaveManager {
@@ -5030,7 +5199,7 @@ class MockPasswordSaveManager : public PasswordSaveManager {
   MOCK_METHOD(PasswordForm::Store,
               GetPasswordStoreForSaving,
               (const PasswordForm& password_form),
-              (const override));
+              (const, override));
   MOCK_METHOD(void,
               UpdateDateLastFilled,
               (const PasswordForm& password_form),
@@ -5165,6 +5334,31 @@ TEST_F(PasswordFormManagerTestWithMockedSaver,
   EXPECT_CALL(client_, UpdateFormManagers());
   fetcher_->NotifyFetchCompleted();
   EXPECT_THAT(*form_manager_->GetSubmittedForm(), FormHasUniqueKey(saved_form));
+}
+
+TEST_F(PasswordFormManagerTestWithMockedSaver,
+       SaveStartedAfterFormFetcherIsReadyAndFillNowDestroysManager) {
+  PasswordFormManager::set_wait_for_server_predictions_for_filling(false);
+  FormData submitted_form = observed_form_;
+  std::u16string new_username = saved_match_.username_value + u"1";
+  std::u16string new_password = saved_match_.password_value.value() + u"1";
+  test_api(submitted_form).field(kUsernameFieldIndex).set_value(new_username);
+  test_api(submitted_form).field(kPasswordFieldIndex).set_value(new_password);
+  EXPECT_TRUE(form_manager_->ProvisionallySave(submitted_form, &driver_,
+                                               possible_usernames_));
+
+  fetcher_->Fetch();
+  form_manager_->Save();
+
+  EXPECT_CALL(*mock_password_save_manager(),
+              Save(Pointee(DeepEqualsWithoutUnserializedData(observed_form_)),
+                   FormHasPassword(new_password)));
+  EXPECT_CALL(client_, UpdateFormManagers());
+  EXPECT_CALL(client_, PasswordWasAutofilled).WillOnce([this]() {
+    ResetFormManager();
+  });
+  SetNonFederatedAndNotifyFetchCompleted({saved_match_});
+  EXPECT_FALSE(form_manager_);
 }
 
 TEST_F(PasswordFormManagerTestWithMockedSaver, UpdateUsernameEmptyStore) {
@@ -5427,11 +5621,29 @@ TEST_F(PasswordFormManagerTestWithMockedSaver, PasswordNoLongerGenerated) {
 }
 
 TEST_F(PasswordFormManagerTestWithMockedSaver,
+       OnGeneratedPasswordAccepted_PreservesProtectedPassword) {
+  const FormData& form_data = observed_form_only_password_fields_;
+  const PasswordString password(u"generated_password");
+  PasswordForm accepted_form;
+  EXPECT_CALL(*mock_password_save_manager(), GeneratedPasswordAccepted(_, _))
+      .WillOnce(SaveArg<0>(&accepted_form));
+
+  form_manager_->OnGeneratedPasswordAccepted(
+      form_data, form_data.fields()[0].renderer_id(), password);
+
+  EXPECT_EQ(accepted_form.password_value, password);
+  ASSERT_FALSE(accepted_form.form_data.fields().empty());
+  EXPECT_EQ(accepted_form.form_data.fields()[0].value(), u"generated_password");
+  EXPECT_EQ(password, u"generated_password");
+}
+
+TEST_F(PasswordFormManagerTestWithMockedSaver,
        OnGeneratedPasswordAccepted_InvalidField) {
   FormData form_data = observed_form_only_password_fields_;
   // A call with a non-existent password field should not crash.
-  form_manager_->OnGeneratedPasswordAccepted(
-      std::move(form_data), autofill::FieldRendererId(12345), u"new_password");
+  form_manager_->OnGeneratedPasswordAccepted(std::move(form_data),
+                                             autofill::FieldRendererId(12345),
+                                             PasswordString(u"new_password"));
 }
 
 TEST_F(PasswordFormManagerTestWithMockedSaver, SaveHttpAuthNoHttpAuthStored) {

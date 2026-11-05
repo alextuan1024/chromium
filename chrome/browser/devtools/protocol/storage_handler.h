@@ -36,13 +36,12 @@ class StorageHandler : public protocol::Storage::Backend,
   void RunBounceTrackingMitigations(
       std::unique_ptr<RunBounceTrackingMitigationsCallback> callback) override;
 
-  // Returns the effective Related Website Sets in use by this profile, which
-  // synchronously iterates over all the effective entries.
-  void GetRelatedWebsiteSets(
-      std::unique_ptr<GetRelatedWebsiteSetsCallback> callback) override;
-
   void GetPrivateVerificationTokens(
       std::unique_ptr<GetPrivateVerificationTokensCallback> callback) override;
+  protocol::Response GetPrivateVerificationTokensIssuerConfigs(
+      std::unique_ptr<protocol::Array<
+          protocol::Storage::PrivateVerificationTokensIssuerConfig>>*
+          out_configs) override;
   void ClearPrivateVerificationTokens(
       const std::string& in_issuerOrigin,
       std::unique_ptr<ClearPrivateVerificationTokensCallback> callback)

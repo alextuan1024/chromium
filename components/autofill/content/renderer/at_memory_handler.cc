@@ -21,9 +21,13 @@
 #include "components/autofill/content/renderer/timing.h"
 #include "components/autofill/core/common/autofill_features.h"
 #include "components/autofill/core/common/autofill_util.h"
+#include "components/autofill/core/common/field_data_manager.h"
 #include "components/autofill/core/common/signatures.h"
 #include "content/public/renderer/render_frame.h"
 #include "content/public/renderer/render_thread.h"
+#include "services/metrics/public/cpp/mojo_ukm_recorder.h"
+#include "services/metrics/public/cpp/ukm_builders.h"
+#include "services/metrics/public/cpp/ukm_recorder.h"
 #include "third_party/blink/public/common/input/web_keyboard_event.h"
 #include "third_party/blink/public/common/renderer_preferences/renderer_preferences.h"
 #include "third_party/blink/public/platform/web_string.h"
@@ -93,9 +97,21 @@ bool IsSingleCtrlKey(const WebKeyboardEvent& event) {
   }
 }
 
+// Beware of GetFrame() nullptrs. For example:
+//
+//   WebElement e = ...;
+//   WebLocalFrame* f = GetFrame(e);
+//   e.Focus();  // This may synchronously call JavaScript listeners.
+//   f->Foo();   // This may dereference a nullptr `f->frame_`.
+//
+// Therefore, callers should avoid storing the WebLocalFrame in variables.
+WebLocalFrame* GetFrame(const WebNode& node) {
+  return node ? node.GetDocument().GetFrame() : nullptr;
+}
+
 // Returns true if window-level focus is in the web content area, or more
 // precisely, in one of the frames of this renderer process.
-bool HasWindowFocus(const blink::WebLocalFrame& frame) {
+bool HasWindowFocus(const WebLocalFrame& frame) {
   blink::WebFrameWidget* widget = frame.LocalRoot()->FrameWidget();
   return widget && widget->HasFocus();
 }
@@ -133,14 +149,14 @@ AtMemoryHandler::~AtMemoryHandler() = default;
 
 bool AtMemoryHandler::DidReceiveKeyDown(const WebElement& field,
                                         const WebKeyboardEvent& event) {
+  // Runs before the `kAutofillAtMemory` check: the Autofill.DoubleCtrlPressed
+  // UKM event is recorded for all users, whether or not AtMemory is enabled.
+  DidReceiveKeyDownForDoubleCtrl(field, event);
+
   if (!base::FeatureList::IsEnabled(features::kAutofillAtMemory)) {
     return false;
   }
-  if (DidReceiveKeyDownForTriggerShortcut(field, event)) {
-    return true;
-  }
-  DidReceiveKeyDownForDoubleCtrl(field, event);
-  return false;
+  return DidReceiveKeyDownForTriggerShortcut(field, event);
 }
 
 bool AtMemoryHandler::DidReceiveKeyDownForTriggerShortcut(
@@ -191,18 +207,9 @@ bool AtMemoryHandler::DidReceiveKeyDownForTriggerShortcut(
 void AtMemoryHandler::DidReceiveKeyDownForDoubleCtrl(
     const WebElement& field,
     const WebKeyboardEvent& event) {
-  if (!base::FeatureList::IsEnabled(features::kAutofillAtMemoryDoubleCtrl)) {
-    return;
-  }
-
   if (!IsSingleCtrlKey(event) ||
       (event.GetModifiers() & blink::WebInputEvent::kIsAutoRepeat)) {
     ctrl_state_ = {};
-    return;
-  }
-
-  if (const RendererPreferences* prefs = GetRendererPreferences();
-      !prefs || !prefs->autofill_at_memory_double_ctrl_trigger_enabled) {
     return;
   }
 
@@ -224,8 +231,15 @@ void AtMemoryHandler::DidReceiveKeyDownForDoubleCtrl(
     return;
   }
 
-  // The double Ctrl sequence is complete. We trigger AtMemory suggestions.
+  // The double Ctrl sequence is complete.
   ctrl_state_ = {};
+
+  RecordDoubleCtrl(field);
+
+  // The UKM event above is unconditional; showing suggestions is not.
+  if (!IsDoubleCtrlTriggerEnabled()) {
+    return;
+  }
 
   if (auto form_control = field.DynamicTo<WebFormControlElement>()) {
     agent_->ShowSuggestions(
@@ -244,14 +258,14 @@ void AtMemoryHandler::FocusedElementChanged(
 }
 
 void AtMemoryHandler::DidReceiveLeftMouseDownOrGestureTapInNode(
-    const blink::WebNode& node) {
+    const WebNode& node) {
   ctrl_state_ = {};
 }
 
-void AtMemoryHandler::ReplaceSelectionForAtMemory(WebElement field,
+void AtMemoryHandler::ReplaceSelectionForAtMemory(FieldRendererId field_id,
                                                   const std::u16string& value) {
   const std::optional<AskForValuesToFillInfo> info =
-      ExtractAskForValuesToFill(field);
+      ExtractAskForValuesToFill(field_id);
   if (!info) {
     return;
   }
@@ -268,12 +282,8 @@ void AtMemoryHandler::WaitForFocusAndReplaceSelectionForAtMemory(
 
   WebElement field =
       WebNode::FromDomNodeId(*info.field_id).DynamicTo<WebElement>();
-  if (!field) {
-    return;
-  }
 
-  WebLocalFrame* frame = field.GetDocument().GetFrame();
-  if (!frame) {
+  if (!field || !GetFrame(field)) {
     return;
   }
 
@@ -283,7 +293,7 @@ void AtMemoryHandler::WaitForFocusAndReplaceSelectionForAtMemory(
   // The browser process steals the window-level focus to display the AtMemory
   // popup (which contains a text field) and returns it when the popup is
   // closed. We wait for the focus `kDelayBeforeRetry * kMaxRetries`.
-  if (!HasWindowFocus(*frame) && num_try < kMaxRetries) {
+  if (!HasWindowFocus(*GetFrame(field)) && num_try < kMaxRetries) {
     base::SequencedTaskRunner::GetCurrentDefault()->PostDelayedTask(
         FROM_HERE,
         base::BindOnce(
@@ -302,8 +312,8 @@ void AtMemoryHandler::WaitForFocusAndReplaceSelectionForAtMemory(
   }
 
   // Ensures that `field.GetDocument().FocusedElement() == field` and that
-  // SetEditableSelectionOffsets() and ExtendSelectionAndReplace() operate on
-  // that field (assuming no JavaScript `focus` listener moves it elsewhere).
+  // SetEditableSelectionOffsets() operates on that field (assuming no
+  // JavaScript `focus` listener moves it elsewhere).
   //
   // This is to handle the case where DOM-level focus moved out of the field.
   // That may happen especially when AtMemory has a high filling latency due to
@@ -313,30 +323,30 @@ void AtMemoryHandler::WaitForFocusAndReplaceSelectionForAtMemory(
   // the focus if no fill happens.
   field.Focus();
 
-  if (!info.selection_range.IsNull()) {
-    // Restores the text selection at the time of AskForValuesToFill() so that
-    // filling replaces the selected text.
-    frame->SetEditableSelectionOffsets(info.selection_range.StartOffset(),
-                                       info.selection_range.EndOffset());
+  // IsSupportedField() is checked only after window-level focus has returned
+  // and `field.Focus()` has been called because some pages disable
+  // `contenteditable` on blur and restore it from a `focus` listener (e.g., on
+  // the window, or on the element itself if it has `tabindex`).
+  if (!IsSupportedField(field)) {
+    return;
   }
 
-  if (base::FeatureList::IsEnabled(features::kAutofillAtMemoryPasteText)) {
-    field.PasteText(WebString::FromUtf16(value), /*replace_all=*/false,
-                    /*smart_replace=*/true);
-  } else {
-    frame->ExtendSelectionAndReplace(/*before=*/0,
-                                     /*after=*/0, WebString::FromUtf16(value));
+  if (!info.selection_range.IsNull()) {
+    if (WebLocalFrame* frame = GetFrame(field)) {
+      // Restores the text selection at the time of AskForValuesToFill() so that
+      // filling replaces the selected text.
+      frame->SetEditableSelectionOffsets(info.selection_range.StartOffset(),
+                                         info.selection_range.EndOffset());
+    }
   }
+
+  field.PasteText(WebString::FromUtf16(value), /*replace_all=*/false,
+                  /*smart_replace=*/true);
 }
 
 std::optional<AtMemoryHandler::AskForValuesToFillInfo>
-AtMemoryHandler::ExtractAskForValuesToFill(const WebElement& field) {
-  // This function is intended only for WebFormControlElements and for
-  // contenteditables that aren't WebFormElement. See
-  // form_util::GetFieldRendererId().
-  CHECK(!field.DynamicTo<WebFormElement>());
-  auto it = std::ranges::find(last_at_memory_ask_for_values_to_fills_,
-                              form_util::GetFieldRendererId(field),
+AtMemoryHandler::ExtractAskForValuesToFill(FieldRendererId field_id) {
+  auto it = std::ranges::find(last_at_memory_ask_for_values_to_fills_, field_id,
                               &AskForValuesToFillInfo::field_id);
   if (it == last_at_memory_ask_for_values_to_fills_.end()) {
     return std::nullopt;
@@ -357,21 +367,102 @@ void AtMemoryHandler::MaybeUpdateAskForValuesToFill(
     return;
   }
 
-  ExtractAskForValuesToFill(field);
+  const FieldRendererId field_id = form_util::GetFieldRendererId(field);
+  ExtractAskForValuesToFill(field_id);
 
   constexpr size_t kMaxSize = 10;
   while (last_at_memory_ask_for_values_to_fills_.size() >= kMaxSize) {
     last_at_memory_ask_for_values_to_fills_.pop_front();
   }
 
-  WebLocalFrame* frame = field.GetDocument().GetFrame();
+  WebLocalFrame* frame = GetFrame(field);
 
   last_at_memory_ask_for_values_to_fills_.push_back(AskForValuesToFillInfo{
-      .field_id = form_util::GetFieldRendererId(field),
+      .field_id = field_id,
       .value_hash = HashFieldValue(field),
       .selection_range =
           frame ? frame->GetInputMethodController()->GetSelectionOffsets()
                 : WebRange()});
+}
+
+ukm::UkmRecorder* AtMemoryHandler::GetUkmRecorder() {
+  if (!ukm_recorder_) {
+    mojo::Remote<ukm::mojom::UkmRecorderFactory> factory;
+    content::RenderThread::Get()->BindHostReceiver(
+        factory.BindNewPipeAndPassReceiver());
+    ukm_recorder_ = ukm::MojoUkmRecorder::Create(*factory);
+  }
+  return ukm_recorder_.get();
+}
+
+bool AtMemoryHandler::IsDoubleCtrlTriggerEnabled() const {
+  if (!base::FeatureList::IsEnabled(features::kAutofillAtMemory) ||
+      !base::FeatureList::IsEnabled(features::kAutofillAtMemoryDoubleCtrl)) {
+    return false;
+  }
+  const RendererPreferences* prefs = GetRendererPreferences();
+  return prefs && prefs->autofill_at_memory_double_ctrl_trigger_enabled;
+}
+
+void AtMemoryHandler::RecordDoubleCtrl(const WebElement& field) {
+  // This function is intended only for WebFormControlElements and for
+  // contenteditables that aren't WebFormElement. See
+  // form_util::GetFieldRendererId().
+  CHECK(!field.DynamicTo<WebFormElement>());
+  const ukm::SourceId source_id = field.GetDocument()
+                                      ? field.GetDocument().GetUkmSourceId()
+                                      : ukm::kInvalidSourceId;
+  ukm::UkmRecorder* recorder = GetUkmRecorder();
+  if (!recorder || source_id == ukm::kInvalidSourceId) {
+    return;
+  }
+
+  ukm::builders::Autofill_DoubleCtrlPressed builder(source_id);
+  builder.SetAtMemoryTriggerRequested(IsDoubleCtrlTriggerEnabled());
+
+  auto set_metrics = [&](const FormData& form_data,
+                         const FormFieldData& field_data) {
+    builder.SetFormSignature(
+        HashFormSignature(CalculateFormSignature(form_data)));
+    builder.SetFieldSignature(
+        HashFieldSignature(CalculateFieldSignatureForField(field_data)));
+    builder.SetFormControlType(
+        std::to_underlying(field_data.form_control_type()));
+    if (WebLocalFrame* frame = GetFrame(field)) {
+      const FieldRendererId field_id = field_data.renderer_id();
+      const blink::LocalFrameToken frame_token = frame->GetLocalFrameToken();
+      builder.SetFieldSessionIdentifier(StrToHash64Bit(
+          base::NumberToString(field_id.value()) + frame_token.ToString()));
+    }
+  };
+
+  if (WebFormControlElement form_control =
+          field.DynamicTo<WebFormControlElement>()) {
+    if (std::optional<form_util::FormAndField> form_and_field =
+            form_util::FindFormAndFieldForFormControlElement(
+                form_control, [&](const blink::WebDocument& document,
+                                  FormRendererId form_id) {
+                  // Custom form controls are not supported by AtMemory.
+                  return form_util::ExtractFormData(
+                      document, form_id, agent_->field_data_manager(),
+                      agent_->GetCallTimerState(
+                          CallTimerState::CallSite::kDidReceiveKeyDown),
+                      agent_->button_titles_cache(),
+                      /*custom_controls=*/{});
+                })) {
+      set_metrics(form_and_field->form, form_and_field->field);
+    }
+  } else {
+    DCHECK(field.IsContentEditable());
+    if (std::optional<FormData> form_data =
+            form_util::FindFormForContentEditable(field)) {
+      if (!form_data->fields().empty()) {
+        set_metrics(*form_data, form_data->fields().front());
+      }
+    }
+  }
+
+  builder.Record(recorder);
 }
 
 const RendererPreferences* AtMemoryHandler::GetRendererPreferences() const {

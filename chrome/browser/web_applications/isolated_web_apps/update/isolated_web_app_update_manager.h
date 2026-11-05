@@ -37,6 +37,7 @@
 #include "components/webapps/isolated_web_apps/types/update_channel.h"
 #include "components/webapps/isolated_web_apps/types/update_check_and_prepare_result.h"
 #include "net/base/backoff_entry.h"
+#include "ui/base/unowned_user_data/scoped_unowned_user_data.h"
 
 class GURL;
 class Profile;
@@ -53,10 +54,8 @@ class IsolatedWebAppUpdateNotificationService;
 #endif
 class WebAppProvider;
 
-namespace {
 inline constexpr base::TimeDelta kDefaultUpdateDiscoveryFrequency =
     base::Hours(5);
-}
 
 // This enum lists the error types that can occur during the update of an
 // isolated web apps.
@@ -100,10 +99,15 @@ struct IsolatedWebAppUpdateOptions {
   std::optional<IwaVersion> pinned_version;
 };
 
+using IwaBundleIdToUpdateOptionsMap =
+    base::flat_map<web_package::SignedWebBundleId, IsolatedWebAppUpdateOptions>;
+
 // The `IsolatedWebAppUpdateManager` is responsible for discovery, download, and
 // installation of Isolated Web App updates.
 class IsolatedWebAppUpdateManager : public WebAppInstallManagerObserver {
  public:
+  DECLARE_USER_DATA(IsolatedWebAppUpdateManager);
+
   class Observer : public base::CheckedObserver {
    public:
     virtual void OnUpdateDiscoveryCompleted(
@@ -122,10 +126,17 @@ class IsolatedWebAppUpdateManager : public WebAppInstallManagerObserver {
         IsolatedWebAppApplyUpdateCommandResult status) {}
   };
 
-  explicit IsolatedWebAppUpdateManager(
-      Profile& profile,
-      base::TimeDelta update_discovery_frequency =
-          kDefaultUpdateDiscoveryFrequency);
+  static IsolatedWebAppUpdateManager& From(WebAppProvider& provider);
+  static const IsolatedWebAppUpdateManager& From(
+      const WebAppProvider& provider);
+
+  IsolatedWebAppUpdateManager(Profile& profile,
+                              ui::UnownedUserDataHost& host,
+                              base::TimeDelta update_discovery_frequency =
+                                  kDefaultUpdateDiscoveryFrequency);
+  IsolatedWebAppUpdateManager(const IsolatedWebAppUpdateManager&) = delete;
+  IsolatedWebAppUpdateManager& operator=(const IsolatedWebAppUpdateManager&) =
+      delete;
   ~IsolatedWebAppUpdateManager() override;
 
   void SetProvider(base::PassKey<WebAppProvider>, WebAppProvider& provider);
@@ -155,8 +166,6 @@ class IsolatedWebAppUpdateManager : public WebAppInstallManagerObserver {
       const webapps::AppId& app_id,
       base::OnceCallback<void(IsolatedWebAppApplyUpdateCommandResult)>
           callback);
-
-  bool AreAutomaticUpdatesEnabled() const { return automatic_updates_enabled_; }
 
   void SetEnableAutomaticUpdatesForTesting(bool automatic_updates_enabled);
 
@@ -324,9 +333,8 @@ class IsolatedWebAppUpdateManager : public WebAppInstallManagerObserver {
   // the app is not an Isolated Web App.
   bool MaybeQueueUpdateDiscoverAndPrepareTask(
       const WebApp* web_app,
-      const base::flat_map<web_package::SignedWebBundleId,
-                           IsolatedWebAppUpdateOptions>&
-          id_to_update_options_map);
+      const IwaBundleIdToUpdateOptionsMap& id_to_update_options_map,
+      bool update_manifest_check_only);
 
   void MaybeScheduleUpdateDiscoveryCheck();
   void MaybeResetScheduledUpdateDiscoveryCheck();
@@ -334,11 +342,6 @@ class IsolatedWebAppUpdateManager : public WebAppInstallManagerObserver {
   void CreateUpdateApplyWaiter(
       const IsolatedWebAppUrlInfo& url_info,
       base::OnceClosure on_update_apply_task_created = base::DoNothing());
-
-  void PrioritizeUpdateAndWaitImpl(
-      const webapps::AppId& app_id,
-      base::OnceCallback<void(IsolatedWebAppApplyUpdateCommandResult)>
-          callback);
 
   void OnUpdateDiscoverAndPrepareTaskCompleted(
       std::unique_ptr<IsolatedWebAppUpdateCheckAndPrepareTask> task,
@@ -427,6 +430,8 @@ class IsolatedWebAppUpdateManager : public WebAppInstallManagerObserver {
   std::unique_ptr<IsolatedWebAppUpdateNotificationService>
       update_notification_service_;
 #endif
+
+  ui::ScopedUnownedUserData<IsolatedWebAppUpdateManager> scoped_data_holder_;
 
   base::WeakPtrFactory<IsolatedWebAppUpdateManager> weak_factory_{this};
 

@@ -168,39 +168,65 @@ IN_PROC_BROWSER_TEST_F(PermissionDelegationBrowserTest, DelegatedToTwoFrames) {
   EXPECT_EQ(1, prompt_factory()->TotalRequestCount());
 }
 
+IN_PROC_BROWSER_TEST_F(PermissionDelegationBrowserTest,
+                       PanTiltZoomPermissionsPolicyDelegation) {
+  // Main frame is on a.com, iframe 1 is on b.com without camera policy,
+  // and iframe 2 is on c.com with camera policy.
+  GURL main_frame_url =
+      embedded_https_test_server().GetURL("a.com", "/two_iframes_blank.html");
+  GURL iframe_url_1 =
+      embedded_https_test_server().GetURL("b.com", "/simple.html");
+  GURL iframe_url_2 =
+      embedded_https_test_server().GetURL("c.com", "/simple.html");
+
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), main_frame_url));
+  content::RenderFrameHost* main_frame =
+      GetWebContents()->GetPrimaryMainFrame();
+
+  // iframe 1 has no camera permissions policy.
+  // iframe 2 has camera permissions policy delegated to it.
+  EXPECT_TRUE(content::ExecJs(
+      main_frame, "document.getElementById('iframe2').allow = 'camera *';"));
+
+  // Load the iframes.
+  EXPECT_TRUE(
+      content::NavigateIframeToURL(GetWebContents(), "iframe1", iframe_url_1));
+  EXPECT_TRUE(
+      content::NavigateIframeToURL(GetWebContents(), "iframe2", iframe_url_2));
+
+  content::RenderFrameHost* frame_1 = content::FrameMatchingPredicate(
+      GetWebContents()->GetPrimaryPage(),
+      base::BindRepeating(&content::FrameMatchesName, "iframe1"));
+  ASSERT_NE(nullptr, frame_1);
+  content::RenderFrameHost* frame_2 = content::FrameMatchingPredicate(
+      GetWebContents()->GetPrimaryPage(),
+      base::BindRepeating(&content::FrameMatchesName, "iframe2"));
+  ASSERT_NE(nullptr, frame_2);
+
+  constexpr char kQueryPanTiltZoomScript[] =
+      "navigator.permissions.query({name: 'camera', panTiltZoom: true})"
+      "  .then(status => status.state);";
+
+  // Subframe without 'camera' policy must return "denied".
+  EXPECT_EQ("denied", content::EvalJs(frame_1, kQueryPanTiltZoomScript));
+
+  // Subframe with 'camera' policy must return "prompt".
+  EXPECT_EQ("prompt", content::EvalJs(frame_2, kQueryPanTiltZoomScript));
+}
+
 class ContextualTasksPermissionDelegationBrowserTest
     : public PermissionDelegationBrowserTest {
+ public:
+  ContextualTasksPermissionDelegationBrowserTest() {
+    feature_list_.InitWithFeatures(
+        {contextual_tasks::kContextualTasks},
+        {contextual_tasks::kContextualTasksRearchitecture,
+         contextual_tasks::kContextualTasksSidePanelRearchitecture});
+  }
+
  private:
-  base::test::ScopedFeatureList feature_list_{
-      contextual_tasks::kContextualTasks};
+  base::test::ScopedFeatureList feature_list_;
 };
-
-IN_PROC_BROWSER_TEST_F(ContextualTasksPermissionDelegationBrowserTest,
-                       GetEmbeddingOriginOverride) {
-  GURL contextual_tasks_url(chrome::kChromeUIContextualTasksURL);
-  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), contextual_tasks_url));
-  content::WebContents* outer_web_contents = GetWebContents();
-
-  // Wait for the WebUI to initialize and spawn the inner <webview> guest
-  // WebContents.
-  ASSERT_TRUE(base::test::RunUntil(
-      [&] { return !outer_web_contents->GetInnerWebContents().empty(); }));
-
-  content::WebContents* inner_web_contents =
-      outer_web_contents->GetInnerWebContents()[0];
-  ASSERT_TRUE(inner_web_contents);
-  EXPECT_EQ(outer_web_contents, inner_web_contents->GetOuterWebContents());
-
-  // Verify that GetEmbeddingOriginOverride correctly traverses from the inner
-  // <webview> guest WebContents up to the outer WebUI WebContents.
-  GURL requesting_origin("https://example.com");
-  std::optional<GURL> override_origin =
-      ChromePermissionsClient::GetInstance()->GetEmbeddingOriginOverride(
-          requesting_origin, inner_web_contents->GetPrimaryMainFrame());
-
-  ASSERT_TRUE(override_origin.has_value());
-  EXPECT_EQ(contextual_tasks_url, *override_origin);
-}
 
 IN_PROC_BROWSER_TEST_F(ContextualTasksPermissionDelegationBrowserTest,
                        RequestPermissionInWebView) {

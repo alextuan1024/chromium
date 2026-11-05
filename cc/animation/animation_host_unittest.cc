@@ -5,8 +5,10 @@
 #include "cc/animation/animation_host.h"
 
 #include <limits>
+#include <memory>
 #include <utility>
 
+#include "base/containers/flat_set.h"
 #include "base/memory/ptr_util.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/time/time.h"
@@ -15,6 +17,9 @@
 #include "cc/animation/scroll_timeline.h"
 #include "cc/animation/worklet_animation.h"
 #include "cc/base/features.h"
+#include "cc/paint/deferred_property_key.h"
+#include "cc/paint/deferred_value_map.h"
+#include "cc/paint/deferred_values.h"
 #include "cc/test/animation_test_common.h"
 #include "cc/test/animation_timelines_test_common.h"
 #include "cc/test/mock_layer_tree_mutator.h"
@@ -25,7 +30,6 @@
 #include "ui/gfx/animation/keyframe/keyframed_animation_curve.h"
 
 using ::testing::_;
-using ::testing::InvokeWithoutArgs;
 using ::testing::Mock;
 using ::testing::NiceMock;
 using ::testing::Return;
@@ -173,9 +177,9 @@ TEST_F(AnimationHostTest, FastLayerTreeMutatorUpdateTakesEffectInSameFrame) {
   host_impl_->SetLayerTreeMutator(
       base::WrapUnique<LayerTreeMutator>(mock_mutator));
   ON_CALL(*mock_mutator, HasMutators()).WillByDefault(Return(true));
-  ON_CALL(*mock_mutator, MutateRef(_))
-      .WillByDefault(InvokeWithoutArgs(
-          [this, local_time]() { this->SetOutputState(local_time); }));
+  ON_CALL(*mock_mutator, MutateRef(_)).WillByDefault([this, local_time]() {
+    this->SetOutputState(local_time);
+  });
 
   // Push the opacity animation to the impl thread.
   host_->PushPropertiesTo(host_impl_, delegate_.GetPropertyTrees());
@@ -343,12 +347,11 @@ TEST_F(AnimationHostTest,
 
   scoped_refptr<MockAnimation> mock_scroll_animation(
       new MockAnimation(animation_id1));
-  EXPECT_CALL(*mock_scroll_animation, Tick(_))
-      .WillOnce(InvokeWithoutArgs([&]() -> bool {
-        // Scroll to 20% of the max value.
-        SetScrollOffset(&property_trees, element_id, gfx::PointF(20, 20));
-        return true;
-      }));
+  EXPECT_CALL(*mock_scroll_animation, Tick(_)).WillOnce([&]() -> bool {
+    // Scroll to 20% of the max value.
+    SetScrollOffset(&property_trees, element_id, gfx::PointF(20, 20));
+    return true;
+  });
 
   // Ensure scroll animation is ticking.
   timeline_->AttachAnimation(mock_scroll_animation);
@@ -539,11 +542,10 @@ TEST_F(AnimationHostTest, TickScrollLinkedAnimationSmooth) {
 
   scoped_refptr<MockAnimation> mock_scroll_animation(
       new MockAnimation(scroll_animation_id));
-  EXPECT_CALL(*mock_scroll_animation, Tick(_))
-      .WillOnce(InvokeWithoutArgs([&]() -> bool {
-        SetScrollOffset(&property_trees, element_id, gfx::PointF(0, 50));
-        return true;
-      }));
+  EXPECT_CALL(*mock_scroll_animation, Tick(_)).WillOnce([&]() -> bool {
+    SetScrollOffset(&property_trees, element_id, gfx::PointF(0, 50));
+    return true;
+  });
   timeline_->AttachAnimation(mock_scroll_animation);
   host_impl_->AddToTicking(mock_scroll_animation);
 
@@ -587,12 +589,11 @@ TEST_F(AnimationHostTest, ScrollTimelineOffsetUpdatedByScrollAnimation) {
   int animation_id = 11;
   scoped_refptr<MockAnimation> mock_scroll_animation(
       new MockAnimation(animation_id));
-  EXPECT_CALL(*mock_scroll_animation, Tick(_))
-      .WillOnce(InvokeWithoutArgs([&]() -> bool {
-        // Scroll to 20% of the max value.
-        SetScrollOffset(&property_trees, element_id_, gfx::PointF(0, 20));
-        return true;
-      }));
+  EXPECT_CALL(*mock_scroll_animation, Tick(_)).WillOnce([&]() -> bool {
+    // Scroll to 20% of the max value.
+    SetScrollOffset(&property_trees, element_id_, gfx::PointF(0, 20));
+    return true;
+  });
 
   // Ensure scroll animation is ticking.
   timeline_->AttachAnimation(mock_scroll_animation);
@@ -824,6 +825,99 @@ TEST_F(AnimationHostTest, MinimumTickInterval_PlaybackRateScaling) {
   // Set invalid zero or non-finite rate -> returns 0 (continuous).
   model->set_playback_rate(0.0);
   EXPECT_EQ(host_impl_->MinimumTickInterval(), base::TimeDelta());
+}
+
+TEST_F(AnimationHostTest, InitClientAnimationStateRemovesStaleTimelines) {
+  delegate_.RegisterElementId(element_id_, ElementListType::ACTIVE);
+  AttachTimelineAnimationLayer();
+
+  animation_->AddKeyframeModel(KeyframeModel::Create(
+      std::make_unique<FakeTransformTransition>(1.0), 1, 1,
+      KeyframeModel::TargetPropertyId(TargetProperty::TRANSFORM)));
+
+  TestLayer* layer =
+      delegate_.FindTestLayer(element_id_, ElementListType::ACTIVE);
+  ASSERT_TRUE(layer);
+  EXPECT_TRUE(layer->is_currently_animating(TargetProperty::TRANSFORM));
+
+  // Detach the timeline while in a protected sequence (e.g. Document::Shutdown
+  // during an in-flight compositor commit). Removal is deferred into
+  // detached_timeline_map_.
+  delegate_.set_in_protected_sequence(true);
+  host_->DetachAnimationTimeline(timeline_);
+  EXPECT_TRUE(host_->GetTimelineById(timeline_id_));
+
+  // Simulate property tree rebuild for a new document resetting client
+  // animation state before CommitComplete or WillCommit has run.
+  delegate_.set_in_protected_sequence(false);
+  layer->set_is_currently_animating(TargetProperty::TRANSFORM, false);
+  layer->set_maximum_animation_scale(kInvalidScale);
+
+  // InitClientAnimationState() must flush stale detached timelines before
+  // initializing client animation state so animations from a detached timeline
+  // do not attempt to animate non-existent property tree nodes.
+  host_->InitClientAnimationState();
+
+  EXPECT_FALSE(host_->GetTimelineById(timeline_id_));
+  EXPECT_FALSE(timeline_->animation_host());
+  EXPECT_FALSE(layer->is_currently_animating(TargetProperty::TRANSFORM));
+}
+
+TEST_F(AnimationHostTest, SetDeferredValueGeneratorsRequestsPushOnlyOnChange) {
+  constexpr DeferredPropertyKey kKey{ElementId(1),
+                                     DeferredPropertyType::kBackgroundColor};
+
+  host_->SetDeferredValueGenerators({});
+  EXPECT_FALSE(host_->needs_push_properties());
+
+  DeferredValueGenerators generators;
+  generators.Set(kKey, std::make_unique<DeferredColorValueGenerator>(
+                           base::MakeRefCounted<TestColorCurve>()));
+  host_->SetDeferredValueGenerators(generators);
+  EXPECT_TRUE(host_->needs_push_properties());
+
+  // Re-submitting the same key and curve after a push is a no-op.
+  PushProperties();
+  EXPECT_FALSE(host_->needs_push_properties());
+  host_->SetDeferredValueGenerators(generators);
+  EXPECT_FALSE(host_->needs_push_properties());
+
+  // Replacing the curve requests another push.
+  generators.Set(kKey, std::make_unique<DeferredColorValueGenerator>(
+                           base::MakeRefCounted<TestColorCurve>(
+                               SkColors::kRed, SkColors::kBlue)));
+  host_->SetDeferredValueGenerators(generators);
+  EXPECT_TRUE(host_->needs_push_properties());
+}
+
+TEST_F(AnimationHostTest, PushAndUpdateDeferredValues) {
+  constexpr DeferredPropertyKey kKey1{ElementId(1),
+                                      DeferredPropertyType::kBackgroundColor};
+  constexpr DeferredPropertyKey kKey2{ElementId(2),
+                                      DeferredPropertyType::kBackgroundColor};
+  auto curve = base::MakeRefCounted<TestColorCurve>();
+
+  DeferredValueGenerators generators;
+  generators.Set(kKey1, std::make_unique<DeferredColorValueGenerator>(curve));
+  host_->SetDeferredValueGenerators(generators);
+  PushProperties();
+  EXPECT_EQ(1u, host_impl_->deferred_value_generators_for_testing().size());
+  EXPECT_TRUE(host_impl_->NeedsUpdateDeferredValues());
+
+  EXPECT_TRUE(host_impl_->SetDeferredValueGeneratorProgress(kKey1, 1.f));
+  DeferredValueMap values;
+  EXPECT_EQ(base::flat_set<DeferredPropertyKey>{kKey1},
+            host_impl_->UpdateDeferredValues(values));
+  EXPECT_FALSE(host_impl_->NeedsUpdateDeferredValues());
+  EXPECT_EQ(DeferredValueMap({{kKey1, SkColors::kWhite}}), values);
+
+  // Pushing an added key keeps `kKey1`'s sampled value without resampling.
+  generators.Set(kKey2, std::make_unique<DeferredColorValueGenerator>(curve));
+  host_->SetDeferredValueGenerators(generators);
+  PushProperties();
+  EXPECT_TRUE(host_impl_->UpdateDeferredValues(values).empty());
+  EXPECT_EQ(DeferredValueMap({{kKey1, SkColors::kWhite}}), values);
+  EXPECT_EQ(1, curve->samples());
 }
 
 }  // namespace

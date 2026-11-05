@@ -99,7 +99,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="BookmarkManager.ResultsRenderedTime" units="ms"
-    expires_after="2026-11-15">
+    expires_after="2027-03-28">
   <owner>johntlee@chromium.org</owner>
   <owner>dpapad@chromium.org</owner>
   <summary>
@@ -110,7 +110,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Bookmarks.AddBookmarkType" enum="BookmarkType"
-    expires_after="2027-01-24">
+    expires_after="2027-03-28">
   <owner>wylieb@google.com</owner>
   <owner>chrome-collections@google.com</owner>
   <summary>
@@ -120,7 +120,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Bookmarks.AddedPerProfileType" enum="BrowserProfileType"
-    expires_after="2027-01-17">
+    expires_after="2027-03-21">
   <owner>rhalavati@chromium.org</owner>
   <owner>chrome-privacy-core@google.com</owner>
   <summary>
@@ -132,7 +132,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Bookmarks.Android.BackendLoaded"
-    enum="JavaBookmarkBridgeBackends" expires_after="2026-11-22">
+    enum="JavaBookmarkBridgeBackends" expires_after="2027-09-14">
   <owner>wylieb@google.com</owner>
   <owner>chrome-collections@google.com</owner>
   <summary>Recorded when a bookmark bridge backend successfully loads.</summary>
@@ -159,7 +159,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Bookmarks.Android.LoadedState"
-    enum="JavaBookmarkBridgeLoadedState" expires_after="2026-11-22">
+    enum="JavaBookmarkBridgeLoadedState" expires_after="2027-09-14">
   <owner>wylieb@google.com</owner>
   <owner>chrome-collections@google.com</owner>
   <summary>
@@ -183,7 +183,8 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Bookmarks.AverageNodeSize.{EncryptionType}" units="Bytes"
-    expires_after="2027-02-24">
+    expires_after="2027-07-01">
+  <owner>arichiv@chromium.org</owner>
   <owner>plcoirier@google.com</owner>
   <owner>chrome-collections@google.com</owner>
   <summary>
@@ -195,7 +196,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Bookmarks.BookmarkBar.Android.ShownOnStartUp"
-    enum="BooleanShown" expires_after="2027-01-17">
+    enum="BooleanShown" expires_after="2027-03-21">
   <owner>mschillaci@google.com</owner>
   <owner>eleanorlee@google.com</owner>
   <owner>clank-app-team@google.com</owner>
@@ -218,7 +219,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Bookmarks.BookmarkBar.Android.ShownOnStartUpReason"
-    enum="BookmarkBarShownReason" expires_after="2027-02-14">
+    enum="BookmarkBarShownReason" expires_after="2027-04-18">
   <owner>mschillaci@google.com</owner>
   <owner>eleanorlee@google.com</owner>
   <owner>clank-app-team@google.com</owner>
@@ -237,7 +238,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Bookmarks.BookmarkBar.Click" enum="BookmarkBarClickType"
-    expires_after="2027-01-17">
+    expires_after="2027-03-21">
   <owner>mschillaci@google.com</owner>
   <owner>eleanorlee@google.com</owner>
   <owner>clank-app-team@google.com</owner>
@@ -245,6 +246,18 @@ chromium-metrics-reviews@google.com.
     Emitted when users click on an item that is part of the bookmark bar or its
     anchored pop-up menu. Emits an enum corresponding to the type of click that
     a user can make (folder vs. url, overflow, all bookmarks).
+  </summary>
+</histogram>
+
+<histogram name="Bookmarks.BookmarkBar.ClickModifier"
+    enum="BookmarkBarClickModifier" expires_after="2027-03-07">
+  <owner>wylieb@google.com</owner>
+  <owner>evanluo@google.com</owner>
+  <owner>chrome-collections@google.com</owner>
+  <summary>
+    Emitted when users click on a bookmark URL or folder on the bookmarks bar or
+    in its anchored pop-up menus. Emits an enum corresponding to the modifier
+    used (no modifier, Ctrl, middle-click, or Shift).
   </summary>
 </histogram>
 
@@ -270,7 +283,7 @@ chromium-metrics-reviews@google.com.
 
 <histogram
     name="Bookmarks.BookmarkBar.NavigationOrActivationToFirstContentfulPaint"
-    units="ms" expires_after="2027-02-07">
+    units="ms" expires_after="2027-04-11">
   <owner>robertlin@chromium.org</owner>
   <owner>chrome-prerendering@google.com</owner>
   <summary>
@@ -282,7 +295,7 @@ chromium-metrics-reviews@google.com.
 
 <histogram
     name="Bookmarks.BookmarkBar.NavigationOrActivationToFirstMeaningfulPaint"
-    units="ms" expires_after="2027-01-24">
+    units="ms" expires_after="2027-03-28">
   <owner>robertlin@chromium.org</owner>
   <owner>chrome-prerendering@google.com</owner>
   <summary>
@@ -295,7 +308,7 @@ chromium-metrics-reviews@google.com.
 
 <histogram
     name="Bookmarks.BookmarkBar.NavigationOrActivationToLargestContentfulPaint"
-    units="ms" expires_after="2027-02-07">
+    units="ms" expires_after="2027-04-11">
   <owner>robertlin@chromium.org</owner>
   <owner>chrome-prerendering@google.com</owner>
   <summary>
@@ -306,7 +319,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Bookmarks.BookmarkBar.PrerenderNavigationToActivation"
-    units="ms" expires_after="2026-12-16">
+    units="ms" expires_after="2027-04-25">
   <owner>robertlin@chromium.org</owner>
   <owner>chrome-prerendering@google.com</owner>
   <summary>
@@ -317,8 +330,8 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Bookmarks.BookmarkBar.Shown" enum="BooleanShown"
-    expires_after="2027-02-07">
-  <owner>amelies@google.com</owner>
+    expires_after="2027-04-11">
+  <owner>droger@chromium.org</owner>
   <owner>chrome-signin-team@google.com</owner>
   <summary>
     Records whether the bookmark bar is shown at startup or not.
@@ -334,7 +347,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Bookmarks.BookmarkBar.ToggledByKeyboardShortcut"
-    enum="BooleanEnabled" expires_after="2027-01-24">
+    enum="BooleanEnabled" expires_after="2027-03-28">
   <owner>mschillaci@google.com</owner>
   <owner>eleanorlee@google.com</owner>
   <owner>clank-app-team@google.com</owner>
@@ -346,7 +359,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Bookmarks.BookmarkBar.ToggledInSettings" enum="BooleanEnabled"
-    expires_after="2027-01-17">
+    expires_after="2027-03-21">
   <owner>mschillaci@google.com</owner>
   <owner>eleanorlee@google.com</owner>
   <owner>clank-app-team@google.com</owner>
@@ -387,7 +400,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Bookmarks.BookmarkBar.TriState.VisibilityStateOnStartUp"
-    enum="BookmarkBarVisibilityState" expires_after="2027-02-15">
+    enum="BookmarkBarVisibilityState" expires_after="2027-04-18">
   <owner>mschillaci@google.com</owner>
   <owner>clank-app-team@google.com</owner>
   <summary>
@@ -399,7 +412,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Bookmarks.BookmarkBar.TriState.VisibilityStateOnStartUpReason"
-    enum="BookmarkBarVisibilityStateOnStartUpReason" expires_after="2027-02-15">
+    enum="BookmarkBarVisibilityStateOnStartUpReason" expires_after="2027-04-18">
   <owner>mschillaci@google.com</owner>
   <owner>clank-app-team@google.com</owner>
   <summary>
@@ -409,7 +422,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Bookmarks.BookmarksBar.DragDropType"
-    enum="BookmarkBarDragDropType" expires_after="2027-02-07">
+    enum="BookmarkBarDragDropType" expires_after="2027-04-11">
   <owner>dfried@chromium.org</owner>
   <owner>top-chrome-desktop-ui@google.com</owner>
   <summary>
@@ -420,7 +433,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Bookmarks.BookmarksExistInStorageType.{SubtreeSelection}"
-    enum="BookmarksExistInStorageType" expires_after="2026-11-29">
+    enum="BookmarksExistInStorageType" expires_after="2027-05-29">
   <owner>rsult@google.com</owner>
   <owner>chrome-signin-team@google.com</owner>
   <summary>
@@ -437,7 +450,8 @@ chromium-metrics-reviews@google.com.
 
 <histogram
     name="Bookmarks.BookmarksFileLoadResult.{BookmarksFileType}.{EncryptionType}"
-    enum="BookmarksFileLoadResult" expires_after="2027-02-24">
+    enum="BookmarksFileLoadResult" expires_after="2027-07-01">
+  <owner>arichiv@chromium.org</owner>
   <owner>plcoirier@google.com</owner>
   <owner>chrome-collections@google.com</owner>
   <summary>
@@ -447,7 +461,8 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Bookmarks.BookmarksSerializationResult.{ImportantFileWriter}"
-    enum="BookmarksSerializationResult" expires_after="2027-02-24">
+    enum="BookmarksSerializationResult" expires_after="2027-07-01">
+  <owner>arichiv@chromium.org</owner>
   <owner>plcoirier@google.com</owner>
   <owner>chrome-collections@google.com</owner>
   <summary>
@@ -473,7 +488,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Bookmarks.Count.OnProfileLoad3" units="bookmarks"
-    expires_after="2027-01-17">
+    expires_after="2027-03-21">
   <owner>mamir@chromium.org</owner>
   <summary>
     The total number of bookmarks a user has saved, excluding folders. Recorded
@@ -489,7 +504,8 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Bookmarks.DeleteClearTextFile.{BookmarksFileType}"
-    enum="BooleanDeletedOrNot" expires_after="2027-02-24">
+    enum="BooleanDeletedOrNot" expires_after="2027-07-01">
+  <owner>arichiv@chromium.org</owner>
   <owner>plcoirier@google.com</owner>
   <owner>chrome-collections@google.com</owner>
   <summary>
@@ -555,7 +571,8 @@ chromium-metrics-reviews@google.com.
 
 <histogram
     name="Bookmarks.EncryptedBookmarksFileMatchesResult.{BookmarksFileType}"
-    enum="BooleanMatched" expires_after="2027-02-24">
+    enum="BooleanMatched" expires_after="2027-07-01">
+  <owner>arichiv@chromium.org</owner>
   <owner>plcoirier@google.com</owner>
   <owner>chrome-collections@google.com</owner>
   <summary>
@@ -565,14 +582,15 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Bookmarks.EntryPoint" enum="BookmarksEntryPoint"
-    expires_after="2027-02-07">
+    expires_after="2027-04-11">
   <owner>ianwen@chromium.org</owner>
   <summary>How users add a new bookmark.</summary>
 </histogram>
 
 <histogram
     name="Bookmarks.FallbackToClearTextFileOnLoadResult.{BookmarksFileType}"
-    enum="BookmarksFileLoadResult" expires_after="2027-02-24">
+    enum="BookmarksFileLoadResult" expires_after="2027-07-01">
+  <owner>arichiv@chromium.org</owner>
   <owner>plcoirier@google.com</owner>
   <owner>chrome-collections@google.com</owner>
   <summary>
@@ -648,7 +666,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Bookmarks.MobileBookmarkManager.OpenedURL" enum="Boolean"
-    expires_after="2027-01-17">
+    expires_after="2027-03-21">
   <owner>mschillaci@google.com</owner>
   <owner>eleanorlee@google.com</owner>
   <owner>clank-app-team@google.com</owner>
@@ -660,7 +678,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Bookmarks.MobileBookmarkManager.SortOptionUsed"
-    enum="MobileBookmarkManagerBookmarkRowSortOrder" expires_after="2026-10-11">
+    enum="MobileBookmarkManagerBookmarkRowSortOrder" expires_after="2027-10-11">
   <owner>wylieb@google.com</owner>
   <owner>chrome-collections@google.com</owner>
   <summary>
@@ -709,20 +727,8 @@ chromium-metrics-reviews@google.com.
   </summary>
 </histogram>
 
-<histogram name="Bookmarks.OpenBookmarkManager.PerProfileType"
-    enum="BrowserProfileType" expires_after="2025-07-13">
-  <owner>roagarwal@chromium.org</owner>
-  <owner>chrome-incognito@google.com</owner>
-  <summary>
-    This records the number of times the bookmark manager is opened from regular
-    or Incognito tab. This histogram only records the count from
-    ChromeTabbedActivity where we actually have the Bookmark manager UI.
-    Recorded when the bookmark menu item is clicked in Android.
-  </summary>
-</histogram>
-
 <histogram name="Bookmarks.OpenBookmarkTimeInterval2.{BookmarkType}" units="ms"
-    expires_after="2027-02-07">
+    expires_after="2027-04-11">
   <owner>wylieb@google.com</owner>
   <owner>chrome-collections@google.com</owner>
   <summary>
@@ -737,7 +743,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Bookmarks.OpenBookmarkType" enum="BookmarkType"
-    expires_after="2027-01-24">
+    expires_after="2027-03-28">
   <owner>wylieb@google.com</owner>
   <owner>chrome-collections@google.com</owner>
   <summary>
@@ -747,7 +753,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Bookmarks.Opened.TimeSinceAdded" units="days"
-    expires_after="2027-03-07">
+    expires_after="2027-05-09">
   <owner>wylieb@google.com</owner>
   <owner>chrome-collections@google.com</owner>
   <summary>
@@ -772,7 +778,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Bookmarks.ParentFolderType" enum="BookmarkFolderType"
-    expires_after="2027-02-14">
+    expires_after="2027-04-18">
   <owner>emshack@chromium.org</owner>
   <owner>top-chrome-desktop-ui@google.com</owner>
   <summary>
@@ -842,7 +848,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Bookmarks.ReorderDropTarget{ParentNode}"
-    enum="BookmarkReorderDropTarget" expires_after="2027-02-07">
+    enum="BookmarkReorderDropTarget" expires_after="2027-04-11">
   <owner>msalama@chromium.org</owner>
   <owner>chrome-signin-team@google.com</owner>
   <summary>
@@ -866,7 +872,8 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Bookmarks.Storage.EncryptedFileSizeAtStartup" units="KB"
-    expires_after="2027-02-24">
+    expires_after="2027-07-01">
+  <owner>arichiv@chromium.org</owner>
   <owner>plcoirier@google.com</owner>
   <owner>chrome-collections@google.com</owner>
   <summary>
@@ -879,7 +886,8 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Bookmarks.Storage.FileSizeAtStartup2" units="KB"
-    expires_after="2027-02-24">
+    expires_after="2027-07-01">
+  <owner>arichiv@chromium.org</owner>
   <owner>wylieb@google.com</owner>
   <owner>plcoirier@google.com</owner>
   <owner>chrome-collections@google.com</owner>
@@ -908,7 +916,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Bookmarks.Storage.TimeToLoadAtStartup2" units="ms"
-    expires_after="2027-02-24">
+    expires_after="2027-04-25">
   <owner>wylieb@google.com</owner>
   <owner>chrome-collections@google.com</owner>
   <summary>
@@ -923,7 +931,8 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Bookmarks.Storage.TimeToSerialize.{ImportantFileWriter}"
-    units="ms" expires_after="2027-02-24">
+    units="ms" expires_after="2027-07-01">
+  <owner>arichiv@chromium.org</owner>
   <owner>plcoirier@google.com</owner>
   <owner>chrome-collections@google.com</owner>
   <summary>
@@ -1029,7 +1038,8 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Bookmarks.TimeToReadFile.{BookmarksFileType}.{EncryptionType}"
-    units="ms" expires_after="2027-02-24">
+    units="ms" expires_after="2027-07-01">
+  <owner>arichiv@chromium.org</owner>
   <owner>plcoirier@google.com</owner>
   <owner>chrome-collections@google.com</owner>
   <summary>
@@ -1040,7 +1050,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Bookmarks.UsageCountPerProfileType" enum="BrowserProfileType"
-    expires_after="2027-01-17">
+    expires_after="2027-03-21">
   <owner>rhalavati@chromium.org</owner>
   <owner>chrome-privacy-core@google.com</owner>
   <summary>
@@ -1067,7 +1077,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Bookmarks.UserFolder.OnProfileLoad.Count" units="folders"
-    expires_after="2027-02-28">
+    expires_after="2027-05-02">
   <owner>yzshen@chromium.org</owner>
   <owner>chrome-collections@google.com</owner>
   <summary>
@@ -1080,7 +1090,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Bookmarks.UserFolder.OnProfileLoad.TopLevelCount"
-    units="folders" expires_after="2026-12-16">
+    units="folders" expires_after="2027-03-28">
   <owner>yzshen@chromium.org</owner>
   <owner>chrome-collections@google.com</owner>
   <summary>
@@ -1106,7 +1116,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Bookmarks.UserFolderDepth.UrlOpened" units="folders"
-    expires_after="2027-02-28">
+    expires_after="2027-05-02">
   <owner>yzshen@chromium.org</owner>
   <owner>chrome-collections@google.com</owner>
   <summary>
@@ -1119,7 +1129,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Bookmarks.Utilization.OnProfileLoad.PercentageUsed"
-    units="Percentage (0-100)" expires_after="2027-01-24">
+    units="Percentage (0-100)" expires_after="2027-03-28">
   <owner>wylieb@google.com</owner>
   <owner>chrome-collections@google.com</owner>
   <summary>
@@ -1129,7 +1139,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Bookmarks.Utilization.OnProfileLoad.TotalUnused"
-    units="Bookmarks" expires_after="2027-02-07">
+    units="Bookmarks" expires_after="2027-04-11">
   <owner>wylieb@google.com</owner>
   <owner>chrome-collections@google.com</owner>
   <summary>
@@ -1142,7 +1152,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Bookmarks.Utilization.OnProfileLoad.TotalUsed"
-    units="Bookmarks" expires_after="2027-01-24">
+    units="Bookmarks" expires_after="2027-03-28">
   <owner>wylieb@google.com</owner>
   <owner>chrome-collections@google.com</owner>
   <summary>
@@ -1152,7 +1162,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Bookmarks.UtilizationPerBookmark.OnProfileLoad.DaysSinceUsed"
-    units="Days" expires_after="2026-12-16">
+    units="Days" expires_after="2027-04-18">
   <owner>emshack@chromium.org</owner>
   <owner>chrome-collections@google.com</owner>
   <summary>
@@ -1161,28 +1171,8 @@ chromium-metrics-reviews@google.com.
   </summary>
 </histogram>
 
-<histogram name="PowerBookmarks.BookmarkManager.PriceTrackingEnabled"
-    enum="PriceTrackingState" expires_after="2025-03-02">
-  <owner>wylieb@google.com</owner>
-  <owner>chrome-collections@google.com</owner>
-  <summary>
-    Tracks the interactions with the price-tracking toggle present when viewing
-    previously saved products.
-  </summary>
-</histogram>
-
-<histogram name="PowerBookmarks.BookmarkSaveFlow.PriceTrackingEnabled"
-    enum="PriceTrackingState" expires_after="2025-03-02">
-  <owner>wylieb@google.com</owner>
-  <owner>chrome-collections@google.com</owner>
-  <summary>
-    Tracks the interactions with the price-tracking toggle present when
-    initially saving products.
-  </summary>
-</histogram>
-
 <histogram name="PowerBookmarks.SidePanel.BookmarksShown" units="Bookmarks"
-    expires_after="2027-02-14">
+    expires_after="2027-04-18">
   <owner>emshack@chromium.org</owner>
   <owner>chrome-desktop-sea@google.com</owner>
   <component>1457140</component>
@@ -1194,7 +1184,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="PowerBookmarks.SidePanel.Search.CTR"
-    enum="BookmarksSidePanelSearchCTREvent" expires_after="2026-12-16">
+    enum="BookmarksSidePanelSearchCTREvent" expires_after="2027-04-18">
   <owner>emshack@chromium.org</owner>
   <owner>chrome-desktop-sea@google.com</owner>
   <component>1457140</component>
@@ -1206,7 +1196,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="PowerBookmarks.SidePanel.SearchOrFilter.BookmarksShown"
-    units="Bookmarks" expires_after="2026-12-16">
+    units="Bookmarks" expires_after="2027-04-18">
   <owner>emshack@chromium.org</owner>
   <owner>chrome-desktop-sea@google.com</owner>
   <component>1457140</component>
@@ -1218,7 +1208,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="PowerBookmarks.SidePanel.SortTypeShown"
-    enum="BookmarksSidePanelSortType" expires_after="2026-12-16">
+    enum="BookmarksSidePanelSortType" expires_after="2027-04-18">
   <owner>emshack@chromium.org</owner>
   <owner>chrome-desktop-sea@google.com</owner>
   <component>1457140</component>
@@ -1229,7 +1219,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="PowerBookmarks.SidePanel.ViewTypeShown"
-    enum="BookmarksSidePanelViewType" expires_after="2026-12-16">
+    enum="BookmarksSidePanelViewType" expires_after="2027-04-18">
   <owner>emshack@chromium.org</owner>
   <owner>chrome-desktop-sea@google.com</owner>
   <component>1457140</component>
@@ -1240,7 +1230,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="PowerBookmarks.SuggestedSaveLocation.{FeatureName}"
-    enum="SuggestedSaveLocationState" expires_after="2026-12-08">
+    enum="SuggestedSaveLocationState" expires_after="2027-10-26">
   <owner>ayman@chromium.org</owner>
   <owner>mdjones@chromium.org</owner>
   <owner>chrome-shopping@google.com</owner>

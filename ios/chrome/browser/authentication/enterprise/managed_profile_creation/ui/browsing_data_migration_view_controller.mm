@@ -4,21 +4,16 @@
 
 #import "ios/chrome/browser/authentication/enterprise/managed_profile_creation/ui/browsing_data_migration_view_controller.h"
 
-#import "base/apple/foundation_util.h"
 #import "base/notreached.h"
 #import "base/strings/sys_string_conversions.h"
 #import "ios/chrome/browser/authentication/ui_bundled/signin/signin_constants.h"
 #import "ios/chrome/browser/shared/ui/list_model/list_model.h"
 #import "ios/chrome/browser/shared/ui/symbols/symbols.h"
 #import "ios/chrome/browser/shared/ui/table_view/cells/table_view_text_header_footer_item.h"
-#import "ios/chrome/browser/shared/ui/table_view/chrome_table_view_controller.h"
 #import "ios/chrome/browser/shared/ui/table_view/content_configuration/colorful_symbol_content_configuration.h"
 #import "ios/chrome/browser/shared/ui/table_view/content_configuration/table_view_cell_content_configuration.h"
 #import "ios/chrome/browser/shared/ui/table_view/table_view_utils.h"
-#import "ios/chrome/common/string_util.h"
 #import "ios/chrome/common/ui/colors/semantic_color_names.h"
-#import "ios/chrome/common/ui/util/constraints_ui_util.h"
-#import "ios/chrome/grit/ios_branded_strings.h"
 #import "ios/chrome/grit/ios_strings.h"
 #import "ui/base/l10n/l10n_util.h"
 
@@ -120,11 +115,14 @@ typedef NS_ENUM(NSInteger, ItemIdentifier) {
 #pragma mark - Private
 
 // Creates the Cell that allows the user to select how to handle browsing data.
-- (UITableViewCell*)createBrowsingDataMigrationCellItem:(NSString*)title
-                                                details:(NSString*)details
-                                               selected:(BOOL)selected
-                                accessibilityIdentifier:
-                                    (NSString*)accessibilityIdentifier {
+// `indexPath` is the index path of the cell, used to dequeue the existing cell
+// when the item is reconfigured.
+- (UITableViewCell*)
+    createBrowsingDataMigrationCellItem:(NSString*)title
+                                details:(NSString*)details
+                               selected:(BOOL)selected
+                accessibilityIdentifier:(NSString*)accessibilityIdentifier
+                              indexPath:(NSIndexPath*)indexPath {
   TableViewCellContentConfiguration* configuration =
       [[TableViewCellContentConfiguration alloc] init];
 
@@ -145,7 +143,8 @@ typedef NS_ENUM(NSInteger, ItemIdentifier) {
   configuration.leadingConfiguration = checkmarkConfig;
 
   UITableViewCell* cell =
-      [TableViewCellContentConfiguration dequeueTableViewCell:self.tableView];
+      [TableViewCellContentConfiguration dequeueTableViewCell:self.tableView
+                                                 forIndexPath:indexPath];
 
   cell.contentConfiguration = configuration;
 
@@ -203,7 +202,8 @@ typedef NS_ENUM(NSInteger, ItemIdentifier) {
           createBrowsingDataMigrationCellItem:title
                                       details:details
                                      selected:_browsingDataSeparate
-                      accessibilityIdentifier:kKeepBrowsingDataSeparateCellId];
+                      accessibilityIdentifier:kKeepBrowsingDataSeparateCellId
+                                    indexPath:indexPath];
     }
     case ItemIdentifierMergeBrowsingData: {
       auto title = l10n_util::GetNSString(
@@ -211,11 +211,11 @@ typedef NS_ENUM(NSInteger, ItemIdentifier) {
       auto details = l10n_util::GetNSStringF(
           IDS_IOS_ENTERPRISE_PROFILE_CREATION_ACCOUNT_MERGE_BROWSING_DATA_SUBTITLE,
           base::SysNSStringToUTF16(_userEmail));
-      return
-          [self createBrowsingDataMigrationCellItem:title
-                                            details:details
-                                           selected:!_browsingDataSeparate
-                            accessibilityIdentifier:kMergeBrowsingDataCellId];
+      return [self createBrowsingDataMigrationCellItem:title
+                                               details:details
+                                              selected:!_browsingDataSeparate
+                               accessibilityIdentifier:kMergeBrowsingDataCellId
+                                             indexPath:indexPath];
     }
   }
   NOTREACHED();

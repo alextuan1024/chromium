@@ -4,9 +4,13 @@
 
 #include "net/shared_dictionary/shared_dictionary_header_checker_source_stream.h"
 
+#include <array>
+#include <optional>
+
 #include "base/check_op.h"
 #include "base/containers/span.h"
 #include "base/functional/callback_helpers.h"
+#include "base/metrics/histogram_functions.h"
 #include "base/strings/string_number_conversions.h"
 #include "net/base/hash_value.h"
 #include "net/base/io_buffer.h"
@@ -16,30 +20,44 @@
 namespace net {
 namespace {
 
-static constexpr unsigned char kCompressionTypeBrotliSignature[] = {0xff, 0x44,
-                                                                    0x43, 0x42};
-static constexpr unsigned char kCompressionTypeZstdSignature[] = {
+static constexpr std::array<unsigned char, 4> kCompressionTypeBrotliSignature =
+    {0xff, 0x44, 0x43, 0x42};
+static constexpr std::array<unsigned char, 8> kCompressionTypeZstdSignature = {
     0x5e, 0x2a, 0x4d, 0x18, 0x20, 0x00, 0x00, 0x00};
-static constexpr size_t kCompressionTypeBrotliSignatureSize =
-    sizeof(kCompressionTypeBrotliSignature);
-static constexpr size_t kCompressionTypeZstdSignatureSize =
-    sizeof(kCompressionTypeZstdSignature);
 static constexpr size_t kCompressionDictionaryHashSize = 32;
 static_assert(sizeof(SHA256HashValue) == kCompressionDictionaryHashSize,
               "kCompressionDictionaryHashSize mismatch");
 static constexpr size_t kCompressionTypeBrotliHeaderSize =
-    kCompressionTypeBrotliSignatureSize + kCompressionDictionaryHashSize;
+    kCompressionTypeBrotliSignature.size() + kCompressionDictionaryHashSize;
 static constexpr size_t kCompressionTypeZstdHeaderSize =
-    kCompressionTypeZstdSignatureSize + kCompressionDictionaryHashSize;
+    kCompressionTypeZstdSignature.size() + kCompressionDictionaryHashSize;
+
+void RecordHeaderValidationFailure(
+    SharedDictionaryHeaderCheckerSourceStream::Type type,
+    SharedDictionaryHeaderCheckerSourceStream::HeaderValidationFailureReason
+        reason) {
+  switch (type) {
+    case SharedDictionaryHeaderCheckerSourceStream::Type::
+        kDictionaryCompressedBrotli:
+      base::UmaHistogramEnumeration(
+          "Net.SharedDictionary.HeaderValidationFailureReason.Dcb", reason);
+      return;
+    case SharedDictionaryHeaderCheckerSourceStream::Type::
+        kDictionaryCompressedZstd:
+      base::UmaHistogramEnumeration(
+          "Net.SharedDictionary.HeaderValidationFailureReason.Dcz", reason);
+      return;
+  }
+}
 
 size_t GetSignatureSize(SharedDictionaryHeaderCheckerSourceStream::Type type) {
   switch (type) {
     case SharedDictionaryHeaderCheckerSourceStream::Type::
         kDictionaryCompressedBrotli:
-      return kCompressionTypeBrotliSignatureSize;
+      return kCompressionTypeBrotliSignature.size();
     case SharedDictionaryHeaderCheckerSourceStream::Type::
         kDictionaryCompressedZstd:
-      return kCompressionTypeZstdSignatureSize;
+      return kCompressionTypeZstdSignature.size();
   }
 }
 
@@ -126,6 +144,10 @@ void SharedDictionaryHeaderCheckerSourceStream::OnReadCompleted(int result) {
   if (result <= 0) {
     // OK means the stream is closed before reading header.
     if (result == OK) {
+      RecordHeaderValidationFailure(
+          type_, head_read_buffer_->offset() == 0
+                     ? HeaderValidationFailureReason::kEmptyHeader
+                     : HeaderValidationFailureReason::kIncompleteHeader);
       result = ERR_UNEXPECTED_CONTENT_DICTIONARY_HEADER;
     }
     HeaderCheckCompleted(result);
@@ -136,19 +158,27 @@ void SharedDictionaryHeaderCheckerSourceStream::OnReadCompleted(int result) {
     ReadHeader();
     return;
   }
-  HeaderCheckCompleted(
-      CheckHeaderBuffer() ? OK : ERR_UNEXPECTED_CONTENT_DICTIONARY_HEADER);
+  std::optional<HeaderValidationFailureReason> failure_reason =
+      CheckHeaderBuffer();
+  if (failure_reason.has_value()) {
+    RecordHeaderValidationFailure(type_, *failure_reason);
+    HeaderCheckCompleted(ERR_UNEXPECTED_CONTENT_DICTIONARY_HEADER);
+    return;
+  }
+  HeaderCheckCompleted(OK);
 }
 
-bool SharedDictionaryHeaderCheckerSourceStream::CheckHeaderBuffer() const {
+std::optional<
+    SharedDictionaryHeaderCheckerSourceStream::HeaderValidationFailureReason>
+SharedDictionaryHeaderCheckerSourceStream::CheckHeaderBuffer() const {
   CHECK(head_read_buffer_->RemainingCapacity() == 0);
   if (GetSignatureInBuffer() != GetExpectedSignature(type_)) {
-    return false;
+    return HeaderValidationFailureReason::kSignatureMismatch;
   }
   if (GetHashInBuffer() != dictionary_hash_) {
-    return false;
+    return HeaderValidationFailureReason::kDictionaryHashMismatch;
   }
-  return true;
+  return std::nullopt;
 }
 
 void SharedDictionaryHeaderCheckerSourceStream::HeaderCheckCompleted(

@@ -4,18 +4,14 @@
 
 package org.chromium.chrome.browser.tasks.tab_management;
 
-import static androidx.test.espresso.Espresso.onView;
-import static androidx.test.espresso.action.ViewActions.click;
-import static androidx.test.espresso.assertion.ViewAssertions.matches;
-import static androidx.test.espresso.matcher.ViewMatchers.isDisplayed;
 import static androidx.test.espresso.matcher.ViewMatchers.withId;
 
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
+import static org.chromium.base.test.transit.ViewFinder.waitForView;
 import static org.chromium.chrome.browser.tasks.tab_management.UiTypeHelper.isMessageCard;
 import static org.chromium.chrome.browser.tasks.tab_management.UiTypeHelper.isValidUiType;
-import static org.chromium.ui.test.util.ViewUtils.onViewWaiting;
 
 import android.annotation.SuppressLint;
 import android.app.Activity;
@@ -35,7 +31,6 @@ import org.junit.runner.RunWith;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.BaseActivityTestRule;
 import org.chromium.base.test.util.Batch;
-import org.chromium.base.test.util.DisableIf;
 import org.chromium.chrome.browser.price_tracking.PriceDropNotificationManagerImpl;
 import org.chromium.chrome.browser.tasks.tab_management.MessageCardView.ServiceDismissActionProvider;
 import org.chromium.chrome.browser.tasks.tab_management.MessageService.Message;
@@ -45,7 +40,6 @@ import org.chromium.chrome.browser.tasks.tab_management.TabProperties.UiType;
 import org.chromium.chrome.browser.tasks.tab_management.TabSwitcherMessageManager.MessageType;
 import org.chromium.chrome.tab_ui.R;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
-import org.chromium.ui.base.DeviceFormFactor;
 import org.chromium.ui.modelutil.LayoutViewBuilder;
 import org.chromium.ui.modelutil.MVCListAdapter;
 import org.chromium.ui.modelutil.SimpleRecyclerViewAdapter;
@@ -98,6 +92,7 @@ public class MessageCardProviderTest {
                 () -> {
                     mModelList = new TabListModel();
                     ViewGroup view = new FrameLayout(sActivity);
+                    view.setFitsSystemWindows(true);
                     mAdapter = new SimpleRecyclerViewAdapter(mModelList);
 
                     sActivity.setContentView(view);
@@ -171,7 +166,7 @@ public class MessageCardProviderTest {
                     addMessageCards();
                 });
 
-        onViewWaiting(withId(R.id.large_message_card_item)).check(matches(isDisplayed()));
+        waitForView(withId(R.id.large_message_card_item));
     }
 
     @Test
@@ -183,17 +178,15 @@ public class MessageCardProviderTest {
                     addMessageCards();
                 });
 
-        onViewWaiting(withId(R.id.large_message_card_item)).check(matches(isDisplayed()));
+        waitForView(withId(R.id.large_message_card_item));
 
         assertFalse(mReviewed.get());
-        onView(withId(R.id.action_button)).perform(click());
+        waitForView(withId(R.id.action_button)).click();
         assertTrue(mReviewed.get());
     }
 
     @Test
     @SmallTest
-    @DisableIf.Device(
-            DeviceFormFactor.DESKTOP) // TODO(crbug.com/493814627): Test failing on Desktop bot
     public void testDismissPriceMessage() {
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
@@ -201,10 +194,10 @@ public class MessageCardProviderTest {
                     addMessageCards();
                 });
 
-        onViewWaiting(withId(R.id.large_message_card_item)).check(matches(isDisplayed()));
+        waitForView(withId(R.id.large_message_card_item));
 
         assertFalse(mDismissed.get());
-        onView(withId(R.id.close_button)).perform(click());
+        waitForView(withId(R.id.close_button)).click();
         assertTrue(mDismissed.get());
     }
 

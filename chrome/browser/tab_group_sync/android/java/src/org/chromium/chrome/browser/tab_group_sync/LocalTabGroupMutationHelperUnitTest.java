@@ -5,6 +5,8 @@
 package org.chromium.chrome.browser.tab_group_sync;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
@@ -13,6 +15,7 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doNothing;
+import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -35,11 +38,16 @@ import org.mockito.junit.MockitoRule;
 import org.chromium.base.Token;
 import org.chromium.base.UserDataHost;
 import org.chromium.base.test.BaseRobolectricTestRunner;
+import org.chromium.base.test.util.Features.EnableFeatures;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.tab.MockTab;
+import org.chromium.chrome.browser.tab.ScopedStorageBatch;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabCreationState;
 import org.chromium.chrome.browser.tab.TabLaunchType;
+import org.chromium.chrome.browser.tab.TabStateStorageService;
+import org.chromium.chrome.browser.tab.TabStateStorageServiceFactory;
 import org.chromium.chrome.browser.tab_group_sync.TabGroupSyncControllerImpl.TabCreationDelegate;
 import org.chromium.chrome.browser.tabmodel.TabGroupMergeNotificationType;
 import org.chromium.chrome.browser.tabmodel.TabRemover;
@@ -75,6 +83,8 @@ public class LocalTabGroupMutationHelperUnitTest {
     @Mock private TabRemover mTabRemover;
     @Mock private TabGroupSyncService mTabGroupSyncService;
     @Mock private TabGroupSyncUtilsJni mTabGroupSyncUtilsJni;
+    @Mock private TabStateStorageService mStorageService;
+    @Mock private ScopedStorageBatch mStorageBatch;
 
     @Captor private ArgumentCaptor<EventDetails> mEventDetailsCaptor;
 
@@ -87,6 +97,8 @@ public class LocalTabGroupMutationHelperUnitTest {
     @Before
     public void setUp() {
         TabGroupSyncUtilsJni.setInstanceForTesting(mTabGroupSyncUtilsJni);
+        when(mStorageService.createBatch()).thenReturn(mStorageBatch);
+        TabStateStorageServiceFactory.setForTesting(mStorageService);
         mTabModel = spy(new MockTabModel(mProfile, null));
         mTabModel.setTabRemoverForTesting(mTabRemover);
         mTabCreationDelegate = spy(new TestTabCreationDelegate());
@@ -94,9 +106,7 @@ public class LocalTabGroupMutationHelperUnitTest {
                 new LocalTabGroupMutationHelper(
                         mTabModel, mTabGroupSyncService, mTabCreationDelegate);
 
-        when(mTabModel.getGroupLastShownTabId(any())).thenReturn(Tab.INVALID_TAB_ID);
-        when(mTabModel.getGroupLastShownTabId(TOKEN_1)).thenReturn(TAB_ID_1);
-        when(mTabModel.tabGroupExists(TOKEN_1)).thenReturn(true);
+        when(mTabModel.containsTabGroup(TOKEN_1)).thenReturn(true);
 
         doNothing().when(mTabGroupSyncService).recordTabGroupEvent(mEventDetailsCaptor.capture());
 
@@ -112,7 +122,7 @@ public class LocalTabGroupMutationHelperUnitTest {
         tabs.add(mTab1);
         when(mTab1.getTabGroupId()).thenReturn(TOKEN_1);
         when(mTabModel.getTabsInGroup(eq(TOKEN_1))).thenReturn(tabs);
-        when(mTabModel.tabGroupExists(TOKEN_1)).thenReturn(true);
+        when(mTabModel.containsTabGroup(TOKEN_1)).thenReturn(true);
     }
 
     private Tab prepareTab(int tabId, Token tabGroupId) {
@@ -153,6 +163,43 @@ public class LocalTabGroupMutationHelperUnitTest {
                 .updateLocalTabGroupMapping(any(), any(), eq(OpeningSource.AUTO_OPENED_FROM_SYNC));
         verify(mTabGroupSyncService, times(2)).updateLocalTabId(any(), any(), anyInt());
         verify(mTabGroupSyncService).updateArchivalStatus(savedTabGroup.syncId, false);
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.TAB_STORAGE_SQLITE_PROTOTYPE)
+    public void testCreateNewTabGroup_batchesStorageUpdates() {
+        SavedTabGroup savedTabGroup = createOneSavedTabGroup(null, new Integer[] {null, null});
+        mLocalMutationHelper.createNewTabGroup(savedTabGroup, OpeningSource.AUTO_OPENED_FROM_SYNC);
+
+        InOrder inOrder = inOrder(mStorageService, mTabModel, mStorageBatch);
+        inOrder.verify(mStorageService).createBatch();
+        inOrder.verify(mTabModel).mergeListOfTabsToGroup(any(), any(), anyInt());
+        inOrder.verify(mStorageBatch).close();
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.TAB_STORAGE_SQLITE_PROTOTYPE)
+    public void testCreateNewTabGroup_nullProfile() {
+        doReturn(null).when(mTabModel).getProfile();
+        SavedTabGroup savedTabGroup = createOneSavedTabGroup(null, new Integer[] {null, null});
+        mLocalMutationHelper.createNewTabGroup(savedTabGroup, OpeningSource.AUTO_OPENED_FROM_SYNC);
+
+        verify(mStorageService, never()).createBatch();
+        verify(mStorageBatch, never()).close();
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.TAB_STORAGE_SQLITE_PROTOTYPE)
+    public void testReconcileGroup_batchesStorageUpdates() {
+        addOneTab();
+        SavedTabGroup savedTabGroup =
+                createOneSavedTabGroup(LOCAL_TAB_GROUP_ID_1, new Integer[] {null, null});
+        mLocalMutationHelper.updateTabGroup(savedTabGroup);
+
+        InOrder inOrder = inOrder(mStorageService, mTabModel, mStorageBatch);
+        inOrder.verify(mStorageService).createBatch();
+        inOrder.verify(mTabModel).mergeListOfTabsToGroup(any(), any(), anyInt());
+        inOrder.verify(mStorageBatch).close();
     }
 
     @Test
@@ -227,7 +274,7 @@ public class LocalTabGroupMutationHelperUnitTest {
         mLocalMutationHelper.updateTabGroup(savedTabGroup);
 
         // Collapsed must be re-set after the merge.
-        InOrder inOrder = inOrder(mTabModel, mTabModel, mTabGroupSyncService, mTabRemover);
+        InOrder inOrder = inOrder(mTabModel, mTabGroupSyncService, mTabRemover);
         verify(mTabCreationDelegate, times(2))
                 .createBackgroundTab(any(), anyString(), any(), anyInt());
         inOrder.verify(mTabModel, times(2))
@@ -294,7 +341,7 @@ public class LocalTabGroupMutationHelperUnitTest {
         addOneTab();
         UserDataHost userDataHost = new UserDataHost();
         when(mTab1.getUserDataHost()).thenReturn(userDataHost);
-        TabGroupSyncNavigationSuppression.suppress(mTab1);
+        TabGroupSyncPendingReconciliation.suppress(mTab1, Tab.INVALID_TAB_ID);
 
         // One saved group with one tab mapped to the local tab.
         SavedTabGroup savedTabGroup =
@@ -303,11 +350,68 @@ public class LocalTabGroupMutationHelperUnitTest {
         savedTab.url = TAB_URL_2;
         savedTab.title = TAB_TITLE_1;
 
-        when(mTabGroupSyncUtilsJni.isUrlInTabRedirectChain(
-                        any(), eq(LOCAL_TAB_GROUP_ID_1), eq(TAB_ID_1), eq(TAB_URL_2)))
-                .thenReturn(false);
         mLocalMutationHelper.updateTabGroup(savedTabGroup);
 
+        verify(mTabGroupSyncService)
+                .updateTab(eq(LOCAL_TAB_GROUP_ID_1), eq(TAB_ID_1), any(), any(), eq(0));
+        assertFalse(TabGroupSyncPendingReconciliation.isSuppressed(mTab1));
+        verify(mTabCreationDelegate, never())
+                .navigateToUrl(any(), any(), anyString(), anyBoolean());
+    }
+
+    @Test
+    public void testUpdateTabGroup_SuppressedReplacedTab_ReconcilesIdAndSyncsRestingUrl() {
+        int replacedPlaceholderId = TAB_ID_1;
+        int restoredTabId = TAB_ID_2;
+        when(mTab2.getTabGroupId()).thenReturn(TOKEN_1);
+        when(mTab2.getUrl()).thenReturn(TAB_URL_2);
+        when(mTab2.getTitle()).thenReturn("Restored Tab Title");
+        UserDataHost userDataHost = new UserDataHost();
+        when(mTab2.getUserDataHost()).thenReturn(userDataHost);
+        TabGroupSyncPendingReconciliation.suppress(mTab2, replacedPlaceholderId);
+        assertTrue(TabGroupSyncPendingReconciliation.isSuppressed(mTab2));
+
+        // Group in TabModel has only the restored tab (placeholder was already replaced).
+        List<Tab> tabs = new ArrayList<>();
+        tabs.add(mTab2);
+        when(mTabModel.getTabsInGroup(eq(TOKEN_1))).thenReturn(tabs);
+        when(mTabModel.containsTabGroup(TOKEN_1)).thenReturn(true);
+
+        // SavedTabGroup from sync still refers to the old placeholder tab ID.
+        SavedTabGroup savedTabGroup =
+                createOneSavedTabGroup(LOCAL_TAB_GROUP_ID_1, new Integer[] {replacedPlaceholderId});
+        SavedTabGroupTab savedTab = savedTabGroup.savedTabs.get(0);
+        savedTab.url = TAB_URL_1;
+        savedTab.title = TAB_TITLE_1;
+
+        // Perform reconcile.
+        mLocalMutationHelper.updateTabGroup(savedTabGroup);
+
+        // 1. savedTab.localId is updated upfront to localTab.getId().
+        assertEquals(Integer.valueOf(restoredTabId), savedTab.localId);
+        assertEquals(TAB_URL_2, savedTab.url);
+        assertEquals("Restored Tab Title", savedTab.title);
+
+        // 2. The tab is NOT closed by findLocalTabsNotInSyncPostStartup.
+        verify(mTabRemover, never()).forceCloseTabs(any());
+
+        // 3. updateLocalTabId is called with the new local ID.
+        verify(mTabGroupSyncService)
+                .updateLocalTabId(eq(LOCAL_TAB_GROUP_ID_1), eq(savedTab.syncId), eq(restoredTabId));
+
+        // 4. updateTab is called with the local tab's URL and title.
+        verify(mTabGroupSyncService)
+                .updateTab(
+                        eq(LOCAL_TAB_GROUP_ID_1),
+                        eq(restoredTabId),
+                        eq("Restored Tab Title"),
+                        eq(TAB_URL_2),
+                        eq(0));
+
+        // 5. TabGroupSyncPendingReconciliation.clear clears suppression.
+        assertFalse(TabGroupSyncPendingReconciliation.isSuppressed(mTab2));
+
+        // 6. maybeNavigateToUrl is NOT invoked (sync does not clobber URL).
         verify(mTabCreationDelegate, never())
                 .navigateToUrl(any(), any(), anyString(), anyBoolean());
     }

@@ -16,6 +16,7 @@
 #include "components/keyed_service/core/simple_key_map.h"
 #include "components/offline_pages/core/model/offline_page_model_utils.h"
 #include "components/offline_pages/core/offline_page_item.h"
+#include "components/tabs/public/mock_tab_interface.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/test/back_forward_cache_util.h"
@@ -23,7 +24,6 @@
 #include "content/public/test/test_renderer_host.h"
 #include "content/public/test/web_contents_tester.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "third_party/blink/public/common/features.h"
 #include "ui/base/page_transition_types.h"
 
 namespace {
@@ -59,28 +59,30 @@ class OfflinePageTabHelperTest : public content::RenderViewHostTestHarness {
                                base::Time mhtml_creation_time,
                                MHTMLLoadResult load_result);
 
-  OfflinePageTabHelper* tab_helper() const { return tab_helper_; }
+  OfflinePageTabHelper* tab_helper() const { return tab_helper_.get(); }
   content::NavigationSimulator* navigation_simulator() {
     return navigation_simulator_.get();
   }
 
  private:
-  raw_ptr<OfflinePageTabHelper> tab_helper_;  // Owned by WebContents.
+  tabs::MockTabInterface mock_tab_;
+  std::unique_ptr<OfflinePageTabHelper> tab_helper_;
   std::unique_ptr<content::NavigationSimulator> navigation_simulator_;
 
   base::WeakPtrFactory<OfflinePageTabHelperTest> weak_ptr_factory_{this};
 };
 
-OfflinePageTabHelperTest::OfflinePageTabHelperTest() : tab_helper_(nullptr) {}
+OfflinePageTabHelperTest::OfflinePageTabHelperTest() = default;
 
 void OfflinePageTabHelperTest::SetUp() {
   content::RenderViewHostTestHarness::SetUp();
 
-  OfflinePageTabHelper::CreateForWebContents(web_contents());
-  tab_helper_ = OfflinePageTabHelper::FromWebContents(web_contents());
+  tab_helper_ =
+      std::make_unique<OfflinePageTabHelper>(mock_tab_, web_contents());
 }
 
 void OfflinePageTabHelperTest::TearDown() {
+  tab_helper_.reset();
   content::RenderViewHostTestHarness::TearDown();
 }
 
@@ -337,60 +339,67 @@ TEST_F(OfflinePageTabHelperTest, OfflinePageIsNotStoredInBackForwardCache) {
           back_forward_cache::DisabledReasonId::kOfflinePage)));
 }
 
-class OfflinePageTabHelperFencedFrameTest : public OfflinePageTabHelperTest {
- public:
-  OfflinePageTabHelperFencedFrameTest() {
-    scoped_feature_list_.InitAndEnableFeatureWithParameters(
-        blink::features::kFencedFrames, {{"implementation_type", "mparch"}});
-  }
-  ~OfflinePageTabHelperFencedFrameTest() override = default;
+TEST_F(OfflinePageTabHelperTest, UntrustedMhtmlFileLoadOriginNotSpoofed) {
+  const GURL kFileUrl("file:///sdcard/Download/GoogleSignIn.mhtml");
+  const GURL kSpoofedUrl("https://accounts.google.com/signin");
 
-  content::RenderFrameHost* CreateFencedFrame(
-      content::RenderFrameHost* parent) {
-    content::RenderFrameHost* fenced_frame =
-        content::RenderFrameHostTester::For(parent)->AppendFencedFrame();
-    return fenced_frame;
-  }
+  tab_helper()->SetCurrentTargetFrameForTest(
+      web_contents()->GetPrimaryMainFrame());
 
- private:
-  base::test::ScopedFeatureList scoped_feature_list_;
-};
-
-TEST_F(OfflinePageTabHelperFencedFrameTest, DoNotRecordMetricsInFencedFrame) {
-  const GURL kTestUrl("http://mystery.site/foo.html");
-  CreateNavigationSimulator(kTestUrl);
+  CreateNavigationSimulator(kFileUrl);
   navigation_simulator()->Start();
 
-  // Simulate offline interceptor loading an offline page instead.
-  OfflinePageItem offlinePage(kTestUrl, 0, ClientId(), base::FilePath(), 0);
-  OfflinePageHeader offlineHeader;
-  tab_helper()->SetOfflinePage(
-      offlinePage, offlineHeader,
-      OfflinePageTrustedState::TRUSTED_AS_IN_INTERNAL_DIR,
-      true /* is_offline_preview */);
   navigation_simulator()->SetContentsMimeType("multipart/related");
+  tab_helper()->NotifyMhtmlPageLoadAttempted(
+      MHTMLLoadResult::kSuccess, kSpoofedUrl, kTestMhtmlCreationTime);
   navigation_simulator()->Commit();
 
-  // Ensure that the offline page exists via an offline preview item.
-  const OfflinePageItem* offline_page_item =
-      tab_helper()->GetOfflinePreviewItem();
-  EXPECT_NE(offline_page_item, nullptr);
+  ASSERT_NE(nullptr, tab_helper()->offline_page());
+  EXPECT_EQ(OfflinePageTrustedState::UNTRUSTED, tab_helper()->trusted_state());
+  EXPECT_FALSE(tab_helper()->IsShowingTrustedOfflinePage());
+  EXPECT_EQ(kTestMhtmlCreationTime,
+            tab_helper()->offline_page()->creation_time);
+  // Offline page URL must reflect the actual navigated file URL, preventing
+  // origin spoofing in Page Info and open-online reload.
+  EXPECT_EQ(kFileUrl, tab_helper()->offline_page()->url);
+}
 
-  // Create a fenced frame.
-  content::RenderFrameHostTester::For(main_rfh())
-      ->InitializeRenderFrameIfNeeded();
-  content::RenderFrameHost* fenced_frame_rfh = CreateFencedFrame(main_rfh());
-  GURL kFencedFrameUrl("https://fencedframe.com");
-  std::unique_ptr<content::NavigationSimulator> navigation_simulator =
-      content::NavigationSimulator::CreateRendererInitiated(kFencedFrameUrl,
-                                                            fenced_frame_rfh);
-  navigation_simulator->Commit();
-  EXPECT_TRUE(
-      navigation_simulator->GetFinalRenderFrameHost()->IsFencedFrameRoot());
+TEST_F(OfflinePageTabHelperTest, HttpMhtmlLoadMismatchedUrlRejected) {
+  const GURL kNavigatedUrl("https://example.com/page.html");
+  const GURL kMismatchedUrl("https://evil.com/phish.html");
 
-  // The offline preview item should not be cleared by the fenced frame's
-  // navigation and should be same as |offline_page_item|.
-  EXPECT_EQ(tab_helper()->GetOfflinePreviewItem(), offline_page_item);
+  tab_helper()->SetCurrentTargetFrameForTest(
+      web_contents()->GetPrimaryMainFrame());
+
+  CreateNavigationSimulator(kNavigatedUrl);
+  navigation_simulator()->Start();
+
+  navigation_simulator()->SetContentsMimeType("multipart/related");
+  tab_helper()->NotifyMhtmlPageLoadAttempted(
+      MHTMLLoadResult::kSuccess, kMismatchedUrl, kTestMhtmlCreationTime);
+  navigation_simulator()->Commit();
+
+  // Mismatched renderer-reported URL for HTTP/HTTPS navigation must be
+  // rejected.
+  EXPECT_EQ(nullptr, tab_helper()->offline_page());
+}
+
+TEST_F(OfflinePageTabHelperTest, HttpMhtmlLoadMatchingUrlAccepted) {
+  const GURL kNavigatedUrl("https://example.com/page.html");
+
+  tab_helper()->SetCurrentTargetFrameForTest(
+      web_contents()->GetPrimaryMainFrame());
+
+  CreateNavigationSimulator(kNavigatedUrl);
+  navigation_simulator()->Start();
+
+  navigation_simulator()->SetContentsMimeType("multipart/related");
+  tab_helper()->NotifyMhtmlPageLoadAttempted(
+      MHTMLLoadResult::kSuccess, kNavigatedUrl, kTestMhtmlCreationTime);
+  navigation_simulator()->Commit();
+
+  ASSERT_NE(nullptr, tab_helper()->offline_page());
+  EXPECT_EQ(kNavigatedUrl, tab_helper()->offline_page()->url);
 }
 
 }  // namespace

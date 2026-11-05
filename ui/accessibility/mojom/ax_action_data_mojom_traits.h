@@ -7,6 +7,7 @@
 
 #include <stdint.h>
 
+#include <optional>
 #include <string>
 
 #include "ui/accessibility/ax_action_data.h"
@@ -41,16 +42,25 @@ struct StructTraits<ax::mojom::AXActionDataDataView, ui::AXActionData> {
   static int32_t anchor_offset(const ui::AXActionData& a) {
     return a.anchor_offset;
   }
+  static std::optional<ax::mojom::OffsetType> anchor_offset_type(
+      const ui::AXActionData& a) {
+    return a.anchor_offset_type;
+  }
   static int32_t focus_node_id(const ui::AXActionData& a) {
     return a.focus_node_id;
   }
   static int32_t focus_offset(const ui::AXActionData& a) {
     return a.focus_offset;
   }
+  static std::optional<ax::mojom::OffsetType> focus_offset_type(
+      const ui::AXActionData& a) {
+    return a.focus_offset_type;
+  }
   static int32_t custom_action_id(const ui::AXActionData& a) {
     return a.custom_action_id;
   }
-  static const gfx::Rect& target_rect(const ui::AXActionData& a) {
+  static const std::optional<gfx::Rect>& target_rect(
+      const ui::AXActionData& a) {
     return a.target_rect;
   }
   static const gfx::Point& target_point(const ui::AXActionData& a) {

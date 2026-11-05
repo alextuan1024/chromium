@@ -10,11 +10,10 @@
 #include "ash/public/cpp/ash_public_export.h"
 #include "base/observer_list_types.h"
 #include "ui/base/metadata/metadata_header_macros.h"
+#include "ui/base/mojom/window_open_disposition.mojom-forward.h"
 #include "ui/gfx/geometry/rounded_corners_f.h"
 #include "ui/views/view.h"
 #include "url/gurl.h"
-
-enum class WindowOpenDisposition;
 
 namespace base {
 class UnguessableToken;
@@ -57,12 +56,8 @@ class ASH_PUBLIC_EXPORT AshWebView : public views::View {
     // Observer::DidSuppressNavigation() will be invoked.
     bool suppress_navigation = false;
 
-    // If enabled, AshWebView can be minimized once we received a ash
-    // synthesized back event when we're at the bottom of the stack.
-    bool minimize_on_back_key = false;
-
     // If enabled, AshWebView can record media based on the permissions
-    // requested from `MediaCaptureDevicesDispatcher`.
+    // requested from `webrtc::MediaCaptureDispatcher`.
     // When disabled, no media recording is allowed. It is set to `false` by
     // default as recording media is a privacy sensitive operation.
     bool can_record_media = false;
@@ -91,9 +86,10 @@ class ASH_PUBLIC_EXPORT AshWebView : public views::View {
     virtual void DidStopLoading() {}
 
     // Invoked when the embedded WebContents has suppressed navigation.
-    virtual void DidSuppressNavigation(const GURL& url,
-                                       WindowOpenDisposition disposition,
-                                       bool from_user_gesture) {}
+    virtual void DidSuppressNavigation(
+        const GURL& url,
+        ui::mojom::WindowOpenDisposition disposition,
+        bool from_user_gesture) {}
 
     // Invoked when the embedded WebContents' ability to go back has changed.
     virtual void DidChangeCanGoBack(bool can_go_back) {}

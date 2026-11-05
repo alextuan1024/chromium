@@ -4,13 +4,20 @@
 
 #include "chrome/browser/glic/service/glic_invoke_handler.h"
 
+#include <algorithm>
+#include <string>
+#include <string_view>
 #include <utility>
+#include <variant>
+#include <vector>
 
 #include "base/barrier_closure.h"
 #include "base/check.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
-#include "base/notimplemented.h"
+#include "base/notreached.h"
+#include "base/strings/strcat.h"
+#include "base/strings/string_util.h"
 #include "base/task/sequenced_task_runner.h"
 #include "build/build_config.h"
 #include "chrome/browser/glic/host/host.h"
@@ -31,6 +38,7 @@
 #include "chrome/common/url_constants.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/web_contents.h"
+#include "third_party/abseil-cpp/absl/functional/overload.h"
 #include "ui/base/base_window.h"
 
 namespace glic {
@@ -41,28 +49,145 @@ constexpr base::TimeDelta kDefaultTimeout = base::Minutes(1);
 ShowOptions CreateShowOptions(
     const GlicInvokeHandler::ResolvedTarget& resolved_target,
     const GlicInvokeOptions& options) {
+  // A floating panel can be asked to come up in text mode, e.g. to take a
+  // conversation out of live mode. The browser can only request it; leaving
+  // live mode is up to the web client.
+  const mojom::WebClientMode floating_initial_mode =
+      options.target.live_mode_behavior ==
+              LiveModeBehavior::kForceFloatingTextMode
+          ? mojom::WebClientMode::kText
+          : mojom::WebClientMode::kUnknown;
   ShowOptions show_options = std::visit(
-      absl::Overload{[&](const GlicInvokeHandler::TabSurface& tab_surface) {
-                       SidePanelShowOptions side_panel_options{
-                           *tab_surface.tab};
-                       // TODO(b/562983414): Infer a more specific pin trigger
-                       // from the invocation source.
-                       side_panel_options.pin_trigger =
-                           GlicPinTrigger::kInstanceCreation;
-                       side_panel_options.pin_on_bind = options.pin_on_bind;
-                       return ShowOptions(side_panel_options);
-                     },
-                     [&](Floating) {
-                       return ShowOptions::ForFloating(
-                           /*source_tab=*/tabs::TabHandle::Null());
-                     }},
+      absl::Overload{
+          [&](const GlicInvokeHandler::TabSurface& tab_surface) {
+            SidePanelShowOptions side_panel_options{*tab_surface.tab};
+            // TODO(b/562983414): Infer a more specific pin trigger
+            // from the invocation source.
+            side_panel_options.pin_trigger = GlicPinTrigger::kInstanceCreation;
+            side_panel_options.pin_on_bind = options.pin_on_bind;
+            return ShowOptions(side_panel_options);
+          },
+          [&](Floating) {
+            return ShowOptions::ForFloating(
+                /*source_tab=*/tabs::TabHandle::Null(), floating_initial_mode);
+          }},
       resolved_target);
   show_options.invocation_source = options.GetInvocationSource();
   show_options.focus_on_show = options.focus_on_show;
   return show_options;
 }
 
+GlicInvokeError ToInvokeError(InstanceRemovalReason reason) {
+  switch (reason) {
+    case InstanceRemovalReason::kBlankInstanceClosed:
+      return GlicInvokeError::kInstanceDestroyedBlankInstanceClosed;
+    case InstanceRemovalReason::kUnbound:
+      return GlicInvokeError::kInstanceDestroyedUnbound;
+    case InstanceRemovalReason::kArchived:
+      return GlicInvokeError::kInstanceDestroyedArchived;
+    case InstanceRemovalReason::kSignedOut:
+      return GlicInvokeError::kInstanceDestroyedSignedOut;
+    case InstanceRemovalReason::kShutdown:
+      return GlicInvokeError::kInstanceDestroyedShutdown;
+  }
+  NOTREACHED();
+}
+
+// Returns the mojom::ActuationTarget that `target` maps to. An actor surface
+// maps to kTargetSurface.
+mojom::ActuationTarget GetMojoActuationTarget(const Target& target) {
+  return std::visit(
+      absl::Overload{[](mojom::ActuationTarget actuation_target) {
+                       return actuation_target;
+                     },
+                     [](const actor::ActorSurfaceHandle&) {
+                       return mojom::ActuationTarget::kTargetSurface;
+                     }},
+      target.actuation_target);
+}
+
+// LINT.IfChange(ClientLoadStateToDiagnosticString)
+std::string_view ClientLoadStateToDiagnosticString(ClientLoadState state) {
+  switch (state) {
+    case ClientLoadState::kLoading:
+      return "LOADING";
+    case ClientLoadState::kReady:
+      return "READY";
+    case ClientLoadState::kError:
+      return "ERROR";
+  }
+  NOTREACHED();
+}
+// LINT.ThenChange(//chrome/browser/glic/glic_enums.h:ClientLoadState)
+
+// LINT.IfChange(ClientLoadErrorReasonToDiagnosticString)
+std::string_view ClientLoadErrorReasonToDiagnosticString(
+    ClientLoadErrorReason reason) {
+  switch (reason) {
+    case ClientLoadErrorReason::kUnknown:
+      return "UNKNOWN";
+    case ClientLoadErrorReason::kUnavailable:
+      return "UNAVAILABLE";
+    case ClientLoadErrorReason::kIneligibleAccount:
+      return "INELIGIBLE_ACCOUNT";
+    case ClientLoadErrorReason::kLocationMismatch:
+      return "LOCATION_MISMATCH";
+    case ClientLoadErrorReason::kDisabledByAdmin:
+      return "DISABLED_BY_ADMIN";
+    case ClientLoadErrorReason::kOffline:
+      return "OFFLINE";
+    case ClientLoadErrorReason::kSignIn:
+      return "SIGN_IN";
+    case ClientLoadErrorReason::kCookieSyncFailed:
+      return "COOKIE_SYNC_FAILED";
+    case ClientLoadErrorReason::kGuestLoadFailed:
+      return "GUEST_LOAD_FAILED";
+    case ClientLoadErrorReason::kGuestProcessGone:
+      return "GUEST_PROCESS_GONE";
+    case ClientLoadErrorReason::kClientError:
+      return "CLIENT_ERROR";
+    case ClientLoadErrorReason::kClientLoadTimeout:
+      return "CLIENT_LOAD_TIMEOUT";
+    case ClientLoadErrorReason::kWarmedTimeout:
+      return "WARMED_TIMEOUT";
+    case ClientLoadErrorReason::kGuestOriginBlocked:
+      return "GUEST_ORIGIN_BLOCKED";
+    case ClientLoadErrorReason::kGuestApiNotAllowed:
+      return "GUEST_API_NOT_ALLOWED";
+    case ClientLoadErrorReason::kPendingProviderChange:
+      return "PENDING_PROVIDER_CHANGE";
+    case ClientLoadErrorReason::kGuestHttpClientError:
+      return "GUEST_HTTP_CLIENT_ERROR";
+    case ClientLoadErrorReason::kGuestHttpServerError:
+      return "GUEST_HTTP_SERVER_ERROR";
+  }
+  NOTREACHED();
+}
+// LINT.ThenChange(//chrome/browser/glic/glic_enums.h:ClientLoadErrorReason)
+
 }  // namespace
+
+std::string FormatInvokeDiagnosticInfo(
+    std::optional<GlicTaskType> last_active_task,
+    std::optional<ClientLoadState> client_load_state_at_start,
+    std::optional<ClientLoadErrorReason> client_load_error_reason) {
+  std::vector<std::string> parts;
+  if (last_active_task.has_value()) {
+    parts.push_back(base::StrCat(
+        {"stage=", GlicTaskTypeToDiagnosticString(*last_active_task)}));
+  }
+  if (client_load_state_at_start.has_value()) {
+    parts.push_back(base::StrCat(
+        {"load_state_at_start=",
+         ClientLoadStateToDiagnosticString(*client_load_state_at_start)}));
+  }
+  if (client_load_error_reason.has_value()) {
+    parts.push_back(base::StrCat(
+        {"load_error=",
+         ClientLoadErrorReasonToDiagnosticString(*client_load_error_reason)}));
+  }
+  return base::JoinString(parts, ";");
+}
 
 #if !BUILDFLAG(IS_ANDROID)
 static tabs::TabInterface* CreateBrowserAndGetActiveTab(Profile* profile) {
@@ -143,11 +268,14 @@ GlicInvokeHandler::ResolvedTarget GlicInvokeHandler::ResolveTargetSurface(
     tabs::TabInterface* tab = tab_handle->Get();
     if (tab) {
       BrowserWindowInterface* browser = tab->GetBrowserWindowInterface();
-      // Allow detached / background tabs for actuation, reject non-normal browser windows.
+      // Allow detached / background tabs for actuation, reject non-normal
+      // browser windows.
       bool is_background_actuation =
-        !browser && target.actuation_target == mojom::ActuationTarget::kTargetSurface;
+          !browser && GetMojoActuationTarget(target) ==
+                          mojom::ActuationTarget::kTargetSurface;
       bool is_normal_browser =
-        browser && browser->GetType() == BrowserWindowInterface::Type::TYPE_NORMAL;
+          browser &&
+          browser->GetType() == BrowserWindowInterface::Type::TYPE_NORMAL;
 
       if (is_background_actuation || is_normal_browser) {
         return {TabSurface{tab, /*is_new=*/false}};
@@ -157,6 +285,16 @@ GlicInvokeHandler::ResolvedTarget GlicInvokeHandler::ResolveTargetSurface(
   }
 
   return {TabSurface{/*tab=*/nullptr, /*is_new=*/false}};
+}
+
+// static
+EmbedderType GlicInvokeHandler::GetEmbedderType(
+    const ResolvedTarget& resolved_target) {
+  // A tab target is shown in that tab's side panel.
+  return std::visit(
+      absl::Overload{[](const TabSurface&) { return EmbedderType::kSidePanel; },
+                     [](const Floating&) { return EmbedderType::kFloaty; }},
+      resolved_target);
 }
 
 bool GlicInvokeHandler::IsFloatingTarget() const {
@@ -209,12 +347,6 @@ GlicInvokeHandler::GlicInvokeHandler(
         base::BindRepeating(&GlicInvokeHandler::OnTabWillDetach,
                             weak_ptr_factory_.GetWeakPtr()));
   }
-
-  // As the handler holds a raw pointer to GlicInstanceImpl, it must listen to
-  // its destruction.
-  instance_destruction_subscription_ = instance_->RegisterWillBeDestroyed(
-      base::BindOnce(&GlicInvokeHandler::OnInstanceWillBeDestroyed,
-                     weak_ptr_factory_.GetWeakPtr()));
 }
 
 GlicInvokeHandler::~GlicInvokeHandler() = default;
@@ -228,6 +360,8 @@ bool GlicInvokeHandler::RequiresClientInvoke(const GlicInvokeOptions& options,
   // already covered below.
   const auto* payload =
       std::get_if<mojom::InvocationPayloadPtr>(&options.source_or_payload);
+  const mojom::ActuationTarget actuation_target =
+      GetMojoActuationTarget(options.target);
   return options.GetInvocationSource() ==
              mojom::InvocationSource::kCaptureRegionHotkey ||
          has_auto_submit_passkey || (payload && !payload->is_null()) ||
@@ -236,18 +370,21 @@ bool GlicInvokeHandler::RequiresClientInvoke(const GlicInvokeOptions& options,
           !options.additional_context->context.is_null()) ||
          options.feature_mode.value_or(mojom::FeatureMode::kUnspecified) !=
              mojom::FeatureMode::kUnspecified ||
-         (options.target.actuation_target != mojom::ActuationTarget::kUnknown &&
-          options.target.actuation_target !=
-              mojom::ActuationTarget::kAgentDecides) ||
+         (actuation_target != mojom::ActuationTarget::kUnknown &&
+          actuation_target != mojom::ActuationTarget::kAgentDecides) ||
          options.disable_zss || options.skill_id.has_value() ||
          options.zss_config.has_value();
 }
 
 void GlicInvokeHandler::Invoke() {
+  // Ensure the invocation source is set so that any following events are
+  // properly logged to the corresponding source.
+  instance_->instance_metrics().MaybeSetInitialInvocationSource(
+      options_.GetInvocationSource());
+
   timeout_timer_.Start(FROM_HERE, options_.timeout.value_or(kDefaultTimeout),
-                       base::BindOnce(&GlicInvokeHandler::OnError,
-                                      weak_ptr_factory_.GetWeakPtr(),
-                                      GlicInvokeError::kTimeout));
+                       base::BindOnce(&GlicInvokeHandler::OnTimeout,
+                                      weak_ptr_factory_.GetWeakPtr()));
 
   if (auto_submit_options_.on_conversation_id_ready) {
     if (auto conv_id = instance_->conversation_id()) {
@@ -260,26 +397,33 @@ void GlicInvokeHandler::Invoke() {
     }
   }
 
-  if (!options_.tab_sharing.tabs_to_pin.empty()) {
-    CHECK(options_.tab_sharing.pin_trigger != GlicPinTrigger::kUnknown);
-    instance_->GetSharingManagerInternal().PinTabs(
-        options_.tab_sharing.tabs_to_pin, options_.tab_sharing.pin_trigger);
-  }
-
   std::vector<std::unique_ptr<GlicInvokeTask>> tasks;
+
+  // A clipboard policy task checks a single payload, so only one of prompts and
+  // additional context can request a check.
+  const bool context_policy_check =
+      options_.RequiresContextClipboardPolicyCheck();
+  const bool prompt_policy_check =
+      options_.RequiresPromptClipboardPolicyCheck();
+  CHECK(!(context_policy_check && prompt_policy_check),
+        base::NotFatalUntil::M163);
+  const bool needs_clipboard_policy_check =
+      context_policy_check || prompt_policy_check;
 
   // The copy check task must come first so that it is started immediately. This
   // ensures that data needed for the check is cached immediately, removing the
   // need to observe navigations that may disrupt the check.
-  if (options_.additional_context.has_value() &&
-      options_.additional_context->policy_check == PolicyCheck::kClipboard) {
+  if (needs_clipboard_policy_check) {
     tasks.push_back(std::make_unique<CopyPolicyTask>(
         &*instance_, options_,
         base::BindOnce(&GlicInvokeHandler::OnError,
                        weak_ptr_factory_.GetWeakPtr())));
   }
 
-  if (IsActuatingFeatureMode() && IsTabTarget()) {
+  // Mark the invoked tab as pending only when actuation is not explicitly
+  // directed to a different surface.
+  if (IsActuatingFeatureMode() && IsTabTarget() &&
+      !GetActuationSurface().differs_from_invoked_tab) {
     tasks.push_back(std::make_unique<SetTabPendingActuationTask>(
         instance_->profile(), GetTab().GetHandle()));
   }
@@ -307,17 +451,74 @@ void GlicInvokeHandler::Invoke() {
     show_options.fre_override = options_.fre_override;
   }
 
-  if (!auto_submit_passkey_.has_value() || auto_submit_options_.show_panel) {
-    tasks.push_back(
-        std::make_unique<ShowInstanceTask>(*instance_, show_options));
+  if (!options_.tab_sharing.tabs_to_pin.empty()) {
+    CHECK(options_.tab_sharing.pin_trigger != GlicPinTrigger::kUnknown);
+    // When `tabs_to_pin` includes the target tab, bind it before `PinTabs`
+    // (after capturing `show_options` above) so `OnTabPinningStatusEvent` sees
+    // it bound to `instance_` and skips creating an inactive side-panel
+    // embedder for the foreground target tab.
+    if (IsTabTarget() && std::ranges::contains(options_.tab_sharing.tabs_to_pin,
+                                               GetTab().GetHandle())) {
+      instance_->BindTabWithoutShowing(&GetTab(),
+                                       options_.tab_sharing.pin_trigger,
+                                       /*pin_on_bind=*/false);
+    }
+    instance_->GetSharingManagerInternal().PinTabs(
+        options_.tab_sharing.tabs_to_pin, options_.tab_sharing.pin_trigger);
+  }
+
+  const bool should_show_panel =
+      !auto_submit_passkey_.has_value() || auto_submit_options_.show_panel;
+  const bool wait_for_panel_stabilization =
+      should_show_panel && options_.wait_for_panel_open && IsTabTarget();
+  auto maybe_enqueue_on_panel_opened = [&]() {
+    if (!options_.on_panel_opened) {
+      return;
+    }
+    tasks.push_back(std::make_unique<PostCallbackTask>(
+        base::BindOnce(
+            [](base::WeakPtr<GlicInstanceImpl> instance, base::OnceClosure cb) {
+              if (instance) {
+                std::move(cb).Run();
+              }
+            },
+            instance_->GetWeakPtr(), std::move(options_.on_panel_opened)),
+        base::BindOnce(
+            [](base::WeakPtr<GlicInvokeHandler> self) {
+              return self && self->WasPanelOpened();
+            },
+            weak_ptr_factory_.GetWeakPtr())));
+  };
+
+  if (should_show_panel) {
+    tasks.push_back(std::make_unique<ShowInstanceTask>(
+        *instance_, show_options,
+        base::BindOnce(&GlicInvokeHandler::OnShowInstanceCompleted,
+                       weak_ptr_factory_.GetWeakPtr())));
+    if (!wait_for_panel_stabilization) {
+      maybe_enqueue_on_panel_opened();
+    }
   } else if (IsTabTarget()) {
-    tasks.push_back(
-        std::make_unique<SetupHiddenPanelTask>(*instance_, GetTab()));
+    tasks.push_back(std::make_unique<SetupHiddenPanelTask>(
+        *instance_, GetTab().GetHandle()));
   }
   tasks.push_back(std::make_unique<MaybeInitializeHiddenClientTask>(
       &*instance_, options_.GetInvocationSource(), options_.fre_override));
-  tasks.push_back(
-      std::make_unique<WaitForClientConnectedTask>(instance_->host()));
+  // Waiting for the client to be ready subsumes waiting for it to connect:
+  // `client_load_state()` is `kReady` exactly while the client is connected and
+  // responsive. Unlike a bare connection wait, this fails the invocation if the
+  // client never loads instead of hanging until the invocation times out.
+  //
+  // A client stopped on the sign-in panel is the exception: an invocation
+  // that only shows the panel is done at that point, while one that needs the
+  // client waits for the user to sign in while the panel is visible (see
+  // SignInBehavior and OnTimeout()).
+  tasks.push_back(std::make_unique<WaitForClientReadyTask>(
+      instance_->host(),
+      requires_client_invoke_ ? SignInBehavior::kWaits
+                              : SignInBehavior::kCompletes,
+      base::BindOnce(&GlicInvokeHandler::OnError,
+                     weak_ptr_factory_.GetWeakPtr())));
   if (options_.on_client_connected) {
     tasks.push_back(std::make_unique<PostCallbackTask>(base::BindOnce(
         [](base::WeakPtr<GlicInstanceImpl> instance,
@@ -330,19 +531,13 @@ void GlicInvokeHandler::Invoke() {
   }
   // TODO(b/505086089): Handle client disconnects.
 
-  if (options_.wait_for_panel_open && IsTabTarget()) {
+  if (wait_for_panel_stabilization) {
     tasks.push_back(
         std::make_unique<StabilizationTask>(GetTab().GetContents()));
+    maybe_enqueue_on_panel_opened();
   }
 
-  if (options_.on_panel_opened) {
-    tasks.push_back(std::make_unique<PostCallbackTask>(
-        std::move(options_.on_panel_opened)));
-  }
-
-  if (options_.additional_context.has_value() &&
-      options_.additional_context->policy_check == PolicyCheck::kClipboard &&
-      IsTabTarget()) {
+  if (needs_clipboard_policy_check) {
     tasks.push_back(std::make_unique<PastePolicyTask>(
         &*instance_, options_,
         base::BindOnce(&GlicInvokeHandler::OnError,
@@ -351,11 +546,9 @@ void GlicInvokeHandler::Invoke() {
 
   mojom::InvokeOptionsPtr mojo_options = CreateMojoOptions();
 
-  if (options_.fre_completion_wait_mode == FreCompletionWaitMode::kAlways ||
-      (options_.fre_completion_wait_mode == FreCompletionWaitMode::kDefault &&
-       requires_client_invoke_)) {
-    tasks.push_back(std::make_unique<WaitForFreCompletionTask>(
-        instance_->profile(), options_.fre_override));
+  if (NeedsFreCompletion()) {
+    tasks.push_back(
+        std::make_unique<WaitForFreCompletionTask>(instance_->profile()));
   }
 
   if (requires_client_invoke_) {
@@ -391,18 +584,21 @@ void GlicInvokeHandler::Invoke() {
           },
           weak_ptr_factory_.GetWeakPtr()));
 
-  int target_embedder_type = -1;
-  if (std::holds_alternative<TabSurface>(resolved_target_)) {
-    target_embedder_type = 0;
-  } else if (std::holds_alternative<Floating>(resolved_target_)) {
-    target_embedder_type = 1;
-  } else {
-    NOTIMPLEMENTED();
-  }
-
-  metrics_->RecordStarted(
-      options_.feature_mode.value_or(mojom::FeatureMode::kUnspecified),
-      target_embedder_type);
+  // The feature mode and embedder type were set on `metrics_` by the
+  // coordinator while resolving this invocation. The client load state and
+  // FRE state are captured here, before any task has run, so they reflect
+  // what the invocation inherited rather than what it caused.
+  client_load_state_at_start_ = instance_->host().client_load_state();
+  metrics_->SetClientLoadStateAtStart(*client_load_state_at_start_);
+  metrics_->SetFreStateAtStart(GlicInvokeFreState{
+      .preexisting_fre_status =
+          GlicEnabling::GetCompletedFre(instance_->profile()),
+      .fre_override = options_.fre_override,
+      .wait_mode = options_.fre_completion_wait_mode,
+      .requires_client_invoke = requires_client_invoke_,
+      .waits_for_fre = NeedsFreCompletion(),
+  });
+  metrics_->RecordStarted();
   instance_->instance_metrics().SetActiveInvocationId(
       metrics_->GetInvocationId());
   main_task_->Start(base::BindOnce(&GlicInvokeHandler::OnSuccess,
@@ -424,16 +620,16 @@ void GlicInvokeHandler::Cancel(GlicInvokeError error) {
   OnError(error);
 }
 
+void GlicInvokeHandler::CancelForInstanceRemoval(InstanceRemovalReason reason) {
+  OnError(ToInvokeError(reason));
+}
+
 void GlicInvokeHandler::OnTabWillDetach(
     tabs::TabInterface* tab,
     tabs::TabInterface::DetachReason reason) {
   if (reason == tabs::TabInterface::DetachReason::kDelete) {
     OnError(GlicInvokeError::kTabClosed);
   }
-}
-
-void GlicInvokeHandler::OnInstanceWillBeDestroyed(GlicInstance* instance) {
-  OnError(GlicInvokeError::kInstanceDestroyed);
 }
 
 void GlicInvokeHandler::OnConversationInfoChanged(
@@ -443,6 +639,14 @@ void GlicInvokeHandler::OnConversationInfoChanged(
         .Run(info.conversation_id);
   }
   conversation_subscription_ = {};
+}
+
+void GlicInvokeHandler::OnShowInstanceCompleted(bool panel_opened) {
+  panel_opened_by_show_ = panel_opened;
+}
+
+bool GlicInvokeHandler::WasPanelOpened() const {
+  return panel_opened_by_show_ || instance_->IsShowing();
 }
 
 void GlicInvokeHandler::OnSuccess() {
@@ -463,6 +667,20 @@ void GlicInvokeHandler::OnSuccess() {
   }
 }
 
+void GlicInvokeHandler::OnTimeout() {
+  // An invocation that needed the client and spent its time on a visible
+  // sign-in panel (SignInBehavior::kWaits) did not run out of time for anything
+  // the product did; the user did not sign in. Report that rather than a
+  // timeout.
+  const Host& host = instance_->host();
+  OnError(instance_->IsShowing() &&
+                  host.client_load_state() == ClientLoadState::kError &&
+                  host.client_load_error_reason() ==
+                      ClientLoadErrorReason::kSignIn
+              ? GlicInvokeError::kSignInRequired
+              : GlicInvokeError::kTimeout);
+}
+
 void GlicInvokeHandler::OnError(GlicInvokeError error) {
   timeout_timer_.Stop();
   instance_->SuppressShowOnNextTabAddedToTask(false);
@@ -470,12 +688,25 @@ void GlicInvokeHandler::OnError(GlicInvokeError error) {
     main_task_->NotifySequenceCompleted(/*success=*/false);
   }
 
-  metrics_->RecordError(error, GetLastActiveTaskType());
+  const std::optional<GlicTaskType> last_active_task = GetLastActiveTaskType();
+  metrics_->RecordError(error, last_active_task);
   instance_->instance_metrics().SetActiveInvocationId(std::nullopt);
 
   if (options_.on_error) {
     base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
         FROM_HERE, base::BindOnce(std::move(options_.on_error), error));
+  }
+  if (options_.on_error_with_diagnostics_) {
+    const std::optional<ClientLoadErrorReason> client_load_error_reason =
+        instance_->host().client_load_state() == ClientLoadState::kError
+            ? instance_->host().client_load_error_reason()
+            : std::nullopt;
+    base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE,
+        base::BindOnce(std::move(options_.on_error_with_diagnostics_), error,
+                       FormatInvokeDiagnosticInfo(last_active_task,
+                                                  client_load_state_at_start_,
+                                                  client_load_error_reason)));
   }
 
   // The completion callback deletes `this`.
@@ -495,6 +726,21 @@ bool GlicInvokeHandler::IsActuatingFeatureMode() const {
     default:
       return false;
   }
+}
+
+GlicInvokeHandler::ActuationSurface GlicInvokeHandler::GetActuationSurface()
+    const {
+  const auto* handle =
+      std::get_if<actor::ActorSurfaceHandle>(&options_.target.actuation_target);
+  if (!handle || handle->is_null()) {
+    return {};
+  }
+  // A headless surface has no tab, so GetTabHandle() returns
+  // TabHandle::Null(), which never equals GetTab().GetHandle().
+  const bool is_invoked_tab_surface =
+      IsTabTarget() && handle->GetTabHandle() == GetTab().GetHandle();
+  return {.handle = *handle,
+          .differs_from_invoked_tab = !is_invoked_tab_surface};
 }
 
 mojom::InvokeOptionsPtr GlicInvokeHandler::CreateMojoOptions() {
@@ -517,18 +763,27 @@ mojom::InvokeOptionsPtr GlicInvokeHandler::CreateMojoOptions() {
   mojo_options->auto_submit = auto_submit_passkey_.has_value();
   mojo_options->feature_mode =
       options_.feature_mode.value_or(mojom::FeatureMode::kUnspecified);
-  mojo_options->actuation_target = options_.target.actuation_target;
   mojo_options->disable_zero_state_suggestions = options_.disable_zss;
 
-  if (mojo_options->actuation_target ==
-      mojom::ActuationTarget::kTargetSurface) {
-    // If the target surface is not a tab, no specific tab ID is passed to the
-    // client. The actuation will still happen, but it won't be targeted at a
-    // specific tab.
-    if (IsTabTarget()) {
-      mojo_options->actuation_tab_id = GetTab().GetHandle().raw_value();
-    }
-  }
+  std::visit(absl::Overload{
+                 [&](mojom::ActuationTarget target) {
+                   mojo_options->actuation_target = target;
+                   if (target == mojom::ActuationTarget::kTargetSurface &&
+                       IsTabTarget()) {
+                     const actor::ActorSurfaceHandle surface =
+                         actor::ActorSurfaceHandle::From(GetTab().GetHandle());
+                     if (!surface.is_null()) {
+                       mojo_options->actuation_tab_id = surface.raw_value();
+                     }
+                   }
+                 },
+                 [&](const actor::ActorSurfaceHandle& surface) {
+                   CHECK(!surface.is_null());
+                   mojo_options->actuation_target =
+                       mojom::ActuationTarget::kTargetSurface;
+                   mojo_options->actuation_tab_id = surface.raw_value();
+                 }},
+             options_.target.actuation_target);
 
   if (options_.skill_id) {
     mojo_options->skill_id = *options_.skill_id;
@@ -549,6 +804,24 @@ std::optional<GlicTaskType> GlicInvokeHandler::GetLastActiveTaskType() const {
     return std::nullopt;
   }
   return main_task_->GetLastActiveTaskType();
+}
+
+bool GlicInvokeHandler::NeedsFreCompletion() const {
+  if (GlicEnabling::HasConsentedForProfile(instance_->profile())) {
+    return false;
+  }
+  // kNativeFre waits like kUnspecified: the native FRE card blocks the panel
+  // until the user accepts, so invocations that send a client invoke must not
+  // reach the web client before consent.
+  if (options_.fre_override != mojom::FreOverride::kTrustFirstClick &&
+      options_.fre_override != mojom::FreOverride::kUnspecified &&
+      options_.fre_override != mojom::FreOverride::kNativeFre) {
+    return false;
+  }
+  return options_.fre_completion_wait_mode == FreCompletionWaitMode::kAlways ||
+         (options_.fre_completion_wait_mode ==
+              FreCompletionWaitMode::kDefault &&
+          requires_client_invoke_);
 }
 
 }  // namespace glic

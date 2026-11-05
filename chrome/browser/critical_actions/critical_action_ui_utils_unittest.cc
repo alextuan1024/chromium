@@ -4,6 +4,9 @@
 
 #include "chrome/browser/critical_actions/critical_action_ui_utils.h"
 
+#include <optional>
+#include <string>
+
 #include "base/strings/strcat.h"
 #include "chrome/browser/ui/passwords/ui_utils.h"
 #include "chrome/common/webui_url_constants.h"
@@ -70,6 +73,10 @@ TEST(CriticalActionUiUtilsTest, LinkoutsForActionTypes) {
                                   GURL("https://www.example.com/otp")),
       base::StrCat({GetGooglePasswordManagerSubPageURLStr(), "/example.com"}));
 
+  EXPECT_EQ(GetCriticalActionLinkoutUrl(ActionType::kWebMcpTool,
+                                        GURL("https://www.example.com/tool")),
+            std::nullopt);
+
   EXPECT_EQ(GetCriticalActionLinkoutUrl(ActionType::kUnknown,
                                         GURL("https://www.example.com/")),
             chrome::kChromeUISettingsURL);
@@ -79,7 +86,7 @@ TEST(CriticalActionUiUtilsTest, LinkoutsForActionTypes) {
 // the literal string "null". Without a guard this produces a site details page
 // for a site that does not exist.
 TEST(CriticalActionUiUtilsTest, SettingChangeWithEmptyUrlDoesNotLinkToNull) {
-  const std::string linkout =
+  const std::optional<std::string> linkout =
       GetCriticalActionLinkoutUrl(ActionType::kSettingChange, GURL());
 
   EXPECT_EQ(linkout, chrome::kChromeUISettingsURL);

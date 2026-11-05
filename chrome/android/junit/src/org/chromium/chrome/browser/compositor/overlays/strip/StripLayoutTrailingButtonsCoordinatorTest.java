@@ -28,6 +28,7 @@ import android.view.View;
 
 import androidx.annotation.ColorInt;
 
+import org.jni_zero.JniPtr;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
@@ -59,21 +60,24 @@ import org.chromium.chrome.browser.compositor.layouts.components.TintedComposito
 import org.chromium.chrome.browser.compositor.layouts.components.TintedCompositorTextButton;
 import org.chromium.chrome.browser.compositor.overlays.strip.StripLayoutTrailingButtonsCoordinator.StripLayoutTrailingButtonsObserver;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
-import org.chromium.chrome.browser.glic.ActorTaskRowData;
-import org.chromium.chrome.browser.glic.GlicButtonDelegate;
 import org.chromium.chrome.browser.glic.GlicEnabling;
 import org.chromium.chrome.browser.glic.GlicKeyedService;
 import org.chromium.chrome.browser.glic.GlicKeyedServiceFactory;
 import org.chromium.chrome.browser.glic.GlicPrefNames;
-import org.chromium.chrome.browser.glic.GlicSplitButtonDelegate;
-import org.chromium.chrome.browser.glic.GlicSplitButtonDelegateBridge;
-import org.chromium.chrome.browser.glic.GlicSplitButtonDelegateBridgeJni;
+import org.chromium.chrome.browser.glic.GlicUtils;
+import org.chromium.chrome.browser.glic.SecondaryAction;
+import org.chromium.chrome.browser.glic.toolbar_button.ActorTaskRowData;
+import org.chromium.chrome.browser.glic.toolbar_button.GlicButtonDelegate;
+import org.chromium.chrome.browser.glic.toolbar_button.GlicSplitButtonDelegate;
+import org.chromium.chrome.browser.glic.toolbar_button.GlicSplitButtonDelegateBridge;
+import org.chromium.chrome.browser.glic.toolbar_button.GlicSplitButtonDelegateBridgeJni;
 import org.chromium.chrome.browser.incognito.IncognitoUtils;
 import org.chromium.chrome.browser.layouts.animation.CompositorAnimationHandler;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
 import org.chromium.chrome.browser.ui.browser_window.ChromeAndroidTask;
+import org.chromium.chrome.browser.ui.browser_window.ChromeAndroidTask.NativeBrowserWindowInterface;
 import org.chromium.chrome.browser.ui.browser_window.ChromeAndroidTaskFeature;
 import org.chromium.chrome.browser.ui.browser_window.ChromeAndroidTaskFeature.InitInfo;
 import org.chromium.chrome.browser.ui.browser_window.ChromeAndroidTaskTracker;
@@ -92,6 +96,7 @@ import org.chromium.ui.base.LocalizationUtils;
 import java.lang.ref.WeakReference;
 import java.util.Collections;
 import java.util.List;
+import java.util.Set;
 import java.util.function.Supplier;
 
 @RunWith(BaseRobolectricTestRunner.class)
@@ -106,7 +111,6 @@ public class StripLayoutTrailingButtonsCoordinatorTest {
     @Mock private LayerTitleCache mLayerTitleCache;
     @Mock private GlicKeyedService mGlicKeyedService;
     @Mock private GlicButtonDelegate mGlicClickHandler;
-    @Mock private View mToolbarContainerView;
     @Mock private ActivityWindowAndroid mWindowAndroid;
     @Mock private Profile mProfile;
     @Mock private UserPrefs.Natives mUserPrefsJniMock;
@@ -120,6 +124,7 @@ public class StripLayoutTrailingButtonsCoordinatorTest {
     @Mock private GlicSplitButtonDelegateBridge.Natives mGlicSplitButtonDelegateBridgeJniMock;
     @Mock private SideUiStateProvider mSideUiStateProvider;
     @Mock private Callback<Boolean> mGlicPanelStateObserver;
+    @Mock private JniPtr<NativeBrowserWindowInterface> mBrowserWindow;
 
     @Captor private ArgumentCaptor<List<Animator>> mAnimatorsListCaptor;
 
@@ -128,6 +133,7 @@ public class StripLayoutTrailingButtonsCoordinatorTest {
     private final long mBwiPtr = 123L;
 
     private Activity mActivity;
+    private View mToolbarContainerView;
     private StripLayoutTrailingButtonsCoordinator mCoordinator;
     private TintedCompositorButton mModelSelectorButton;
     private TintedCompositorTextButton mGlicButton;
@@ -140,9 +146,10 @@ public class StripLayoutTrailingButtonsCoordinatorTest {
     @Before
     public void setUp() {
         GlicEnabling.setEnabledForTesting(ChromeFeatureList.isEnabled(ChromeFeatureList.GLIC));
+        GlicUtils.setIsSidePanelFormFactorForTesting(true);
         GlicSplitButtonDelegateBridgeJni.setInstanceForTesting(
                 mGlicSplitButtonDelegateBridgeJniMock);
-        when(mGlicSplitButtonDelegateBridgeJniMock.create(anyLong(), any())).thenReturn(1L);
+        when(mGlicSplitButtonDelegateBridgeJniMock.create(any(), any())).thenReturn(1L);
         CompositorAnimationHandler.setTestingMode(true);
         when(mUpdateHost.getAnimationHandler())
                 .thenReturn(new CompositorAnimationHandler(CallbackUtils.emptyRunnable()));
@@ -160,8 +167,7 @@ public class StripLayoutTrailingButtonsCoordinatorTest {
         mActivity.setTheme(R.style.Theme_BrowserUI_DayNight);
         when(mWindowAndroid.getActivity()).thenReturn(new WeakReference<>(mActivity));
         when(mWindowAndroid.getUnownedUserDataHost()).thenReturn(new UnownedUserDataHost());
-        when(mToolbarContainerView.getRootView()).thenReturn(mToolbarContainerView);
-        when(mToolbarContainerView.getResources()).thenReturn(mActivity.getResources());
+        mToolbarContainerView = new View(mActivity);
         when(mTaskTracker.get(anyInt())).thenReturn(mTask);
         when(mTask.getNativeBrowserWindowPtr(any(), any())).thenReturn(mBwiPtr);
         doAnswer(
@@ -171,6 +177,7 @@ public class StripLayoutTrailingButtonsCoordinatorTest {
                             InitInfo info =
                                     new InitInfo(
                                             mBwiPtr,
+                                            mBrowserWindow,
                                             /* isVisible= */ true,
                                             new Rect(),
                                             new Rect(),
@@ -658,6 +665,42 @@ public class StripLayoutTrailingButtonsCoordinatorTest {
                 mCoordinator.shouldGlicActorBeVisible());
         assertFalse(
                 "Actor nudge should not be showing after hide.",
+                delegate.getIsShowingGlicActorTaskIconNudge());
+    }
+
+    @Test
+    public void testGlicSplitButtonDelegate_UpdateSplitButtonUi() {
+        GlicSplitButtonDelegate delegate = mCoordinator.getGlicSplitButtonDelegateForTesting();
+        assertNotNull("Glic split button delegate should be created.", delegate);
+
+        // TEXT with label shows actor button with nudge text.
+        delegate.updateSplitButtonUi(SecondaryAction.TEXT, "Acting on 1 tab");
+        assertTrue(
+                "Actor button should be visible for SecondaryAction.TEXT.",
+                mCoordinator.shouldGlicActorBeVisible());
+        assertTrue("Actor nudge should be showing.", delegate.getIsShowingGlicActorTaskIconNudge());
+        assertEquals(
+                "Actor button text should match label.",
+                "Acting on 1 tab",
+                mGlicActorButton.getText());
+
+        // CHEVRON keeps actor button visible and clears the nudge label.
+        delegate.updateSplitButtonUi(SecondaryAction.CHEVRON, "");
+        assertTrue(
+                "Actor button should remain visible for SecondaryAction.CHEVRON.",
+                mCoordinator.shouldGlicActorBeVisible());
+        assertFalse(
+                "Actor nudge should be cleared for SecondaryAction.CHEVRON.",
+                delegate.getIsShowingGlicActorTaskIconNudge());
+        assertNull("Actor button text should be cleared.", mGlicActorButton.getText());
+
+        // NONE hides the actor button and clears the nudge.
+        delegate.updateSplitButtonUi(SecondaryAction.NONE, "");
+        assertFalse(
+                "Actor button should be hidden for SecondaryAction.NONE.",
+                mCoordinator.shouldGlicActorBeVisible());
+        assertFalse(
+                "Actor nudge should not be showing for SecondaryAction.NONE.",
                 delegate.getIsShowingGlicActorTaskIconNudge());
     }
 
@@ -1355,7 +1398,7 @@ public class StripLayoutTrailingButtonsCoordinatorTest {
         observerCaptor
                 .getValue()
                 .onShowableSideUisUpdated(
-                        new SideUiShowability(List.of(), List.of(SideUiId.SIDE_PANEL)));
+                        new SideUiShowability(Set.of(), Set.of(SideUiId.SIDE_PANEL)));
 
         assertFalse(
                 "Glic button should be hidden when side panel is not showable.",
@@ -1487,6 +1530,39 @@ public class StripLayoutTrailingButtonsCoordinatorTest {
                         + " opacity).",
                 2,
                 mAnimatorsListCaptor.getValue().size());
+    }
+
+    @Test
+    public void testGlicButtonCheckClickedOrHovered_OnDismissButton() {
+        showGlicButton();
+        mGlicDismissButton.setVisible(true);
+        mGlicDismissButton.setOpacity(1.0f);
+
+        // Configure positions of the Glic button and its nested close button
+        mGlicButton.setDrawX(100.f);
+        mGlicButton.setDrawY(0.f);
+        mGlicButton.setWidth(100.f);
+        mGlicButton.setHeight(40.f);
+
+        mGlicDismissButton.setDrawX(180.f);
+        mGlicDismissButton.setDrawY(10.f);
+        mGlicDismissButton.setWidth(20.f);
+        mGlicDismissButton.setHeight(20.f);
+
+        // 1. Verify that a touch on the close button returns false for the main Glic button
+        assertFalse(
+                "Glic button should not claim touch inside the close button boundaries.",
+                mGlicButton.checkClickedOrHovered(190.f, 20.f));
+
+        // 2. Verify that a touch outside the close button but inside the Glic button returns true
+        assertTrue(
+                "Glic button should claim touch inside its main body boundaries.",
+                mGlicButton.checkClickedOrHovered(120.f, 20.f));
+
+        // 3. Verify that the coordinator still registers a hover when touching the close button
+        assertTrue(
+                "Coordinator should register hover when touching the close button.",
+                mCoordinator.checkClickedOrHovered(190.f, 20.f));
     }
 
     @Test

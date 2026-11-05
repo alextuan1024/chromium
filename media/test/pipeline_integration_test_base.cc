@@ -38,6 +38,10 @@
 #include "media/filters/dav1d_video_decoder.h"
 #endif
 
+#if BUILDFLAG(ENABLE_DAV2D_DECODER)
+#include "media/filters/dav2d_video_decoder.h"
+#endif
+
 #include "media/filters/opus_audio_decoder.h"
 
 #if BUILDFLAG(ENABLE_FFMPEG)
@@ -130,6 +134,8 @@ class CrossOriginFileDataSourceWrapper : public CrossOriginDataSource {
   }
   bool DidRedirect() const override { return file_data_source_.DidRedirect(); }
   GURL GetUrlAfterRedirects() const override { return url_; }
+  GURL GetUrlDataOrigin() const override { return origin_; }
+  void SetUrlOrigin(GURL uri) { origin_ = std::move(uri); }
   void StopPreloading() override { file_data_source_.StopPreloading(); }
   void OnMediaPlaybackRateChanged(double playback_rate) override {
     file_data_source_.OnMediaPlaybackRateChanged(playback_rate);
@@ -160,6 +166,7 @@ class CrossOriginFileDataSourceWrapper : public CrossOriginDataSource {
   }
 
  private:
+  GURL origin_;
   GURL url_;
   FileDataSource file_data_source_;
 };
@@ -174,13 +181,16 @@ class TestDataSourceFactory : public CrossOriginDataSource::Factory {
                   callback) override {
     auto file_data_source =
         std::make_unique<CrossOriginFileDataSourceWrapper>();
+    file_data_source->SetUrlOrigin(uri);
     base::FilePath file_path(
 #if BUILDFLAG(IS_WIN)
         // Windows file paths can't start with '/' the way unix file paths can,
-        // So we have to strip the leading one which comes from GetContent().
-        base::UTF8ToWide(uri.GetContent().erase(0, 1))
+        // So we have to strip the leading `media.com/` from GetContent().
+        base::UTF8ToWide(uri.GetContent().erase(0, 10))
 #else
-        uri.GetContent()
+        // Linux/Mac file paths can start with '/' so we have to strip only the
+        // leading `media.com`.
+        uri.GetContent().erase(0, 9)
 #endif
     );
     CHECK(file_data_source->Initialize(file_path))
@@ -210,6 +220,13 @@ std::vector<std::unique_ptr<VideoDecoder>> CreateVideoDecodersForTest(
       std::make_unique<OffloadingDav1dVideoDecoder>(media_log->Clone()));
 #endif
 
+#if BUILDFLAG(ENABLE_DAV2D_DECODER)
+  if (base::FeatureList::IsEnabled(kDav2dVideoDecoder)) {
+    video_decoders.push_back(
+        std::make_unique<OffloadingDav2dVideoDecoder>(media_log->Clone()));
+  }
+#endif
+
 #if BUILDFLAG(ENABLE_FFMPEG_VIDEO_DECODERS)
   video_decoders.push_back(
       std::make_unique<FFmpegVideoDecoder>(media_log->Clone()));
@@ -228,10 +245,8 @@ std::vector<std::unique_ptr<AudioDecoder>> CreateAudioDecodersForTest(
     DCHECK(!audio_decoders.empty());
   }
 
-  if (base::FeatureList::IsEnabled(kDirectOpusAudioDecoding)) {
-    audio_decoders.push_back(
-        std::make_unique<OpusAudioDecoder>(media_task_runner));
-  }
+  audio_decoders.push_back(
+      std::make_unique<OpusAudioDecoder>(media_task_runner));
 
 #if BUILDFLAG(ENABLE_IAMF_TOOLS)
   if (base::FeatureList::IsEnabled(kIamfAudioDecoding)) {
@@ -394,8 +409,8 @@ PipelineStatus PipelineIntegrationTestBase::StartPipelineWithHlsManifest(
   hashing_enabled_ = true;
 
   auto full_path = GetTestDataFilePath(filename);
-  std::string file_url = "file://" + full_path.MaybeAsASCII();
-  GURL manifest_root{file_url};
+  std::string file_url = full_path.MaybeAsASCII();
+  GURL manifest_root{"https://media.com/" + file_url};
 
   auto multibuffer_factory = std::make_unique<TestDataSourceFactory>();
   // HlsManifestDemuxerEngine requires a SequenceBound data source provider,

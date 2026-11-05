@@ -7,34 +7,14 @@
 #include "base/byte_size.h"
 #include "base/feature_list.h"
 #include "base/metrics/field_trial_params.h"
-#include "base/no_destructor.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/system/sys_info.h"
 #include "base/task/current_thread.h"
 #include "build/build_config.h"
 #include "mojo/public/cpp/bindings/direct_receiver.h"
 #include "net/base/mime_sniffer.h"
-#include "url/gurl.h"
-#include "url/origin.h"
 
 namespace network::features {
-
-// Enables the Accept-CH support disabler. If this feature is activated, Chrome
-// ignore Accept-CH response headers for a site that is specified in the
-// following kBlockAcceptClientHintsBlockedSite. This is used to compare Chrome
-// performance with a dedicated site.
-BASE_FEATURE(kBlockAcceptClientHints, base::FEATURE_DISABLED_BY_DEFAULT);
-const base::FeatureParam<std::string> kBlockAcceptClientHintsBlockedSite{
-    &kBlockAcceptClientHints, /*name=*/"BlockedSite", /*default_value=*/""};
-
-bool ShouldBlockAcceptClientHintsFor(const url::Origin& origin) {
-  // Check if the Accept-CH support is disabled for a specified site.
-  static const bool block_accept_ch =
-      base::FeatureList::IsEnabled(features::kBlockAcceptClientHints);
-  static const base::NoDestructor<url::Origin> blocked_site(url::Origin::Create(
-      GURL(features::kBlockAcceptClientHintsBlockedSite.Get())));
-  return block_accept_ch && blocked_site->IsSameOriginWith(origin);
-}
 
 BASE_FEATURE(kNetworkErrorLogging, base::FEATURE_ENABLED_BY_DEFAULT);
 
@@ -199,36 +179,14 @@ BASE_FEATURE(kCorsNonWildcardRequestHeadersSupport,
 BASE_FEATURE(kCorsPreflightCacheKeyTaintedOrigin,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
+// When enabled, the network service will disallow treating 'Intervention' as a
+// CORS-safelisted header, aligning with the WHATWG Fetch specification.
+BASE_FEATURE(kDisallowInterventionInCorsSafelistedHeaders,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+
 // Do not send TLS client certificates in CORS preflight. Omit all client certs
 // and continue the handshake without sending one if requested.
 BASE_FEATURE(kOmitCorsClientCert, base::FEATURE_DISABLED_BY_DEFAULT);
-
-// Enables support for the `Variants` response header and reduce
-// accept-language. https://github.com/Tanych/accept-language
-BASE_FEATURE(kReduceAcceptLanguage, base::FEATURE_DISABLED_BY_DEFAULT);
-
-BASE_FEATURE_PARAM(base::TimeDelta,
-                   kReduceAcceptLanguageCacheDuration,
-                   &kReduceAcceptLanguage,
-                   "reduce-accept-language-cache-duration",
-                   base::Days(30));
-
-// Enables support for the `Variants` response header and reduce
-// Accept-Language HTTP header only.
-BASE_FEATURE(kReduceAcceptLanguageHTTP, base::FEATURE_DISABLED_BY_DEFAULT);
-
-// When enabled this feature will limit the total number of languages for
-// Accept-Language to enhance privacy. See details in
-// https://datatracker.ietf.org/doc/html/rfc7231#section-9.7.
-BASE_FEATURE(kReduceAcceptLanguageCount, base::FEATURE_ENABLED_BY_DEFAULT);
-
-// When non-zero, the number of Accept-Language of this size will return as the
-// HTTP header and JavaScript getter.
-BASE_FEATURE_PARAM(int,
-                   kMaxAcceptLanguage,
-                   &kReduceAcceptLanguageCount,
-                   /*name=*/"MaxAcceptLanguage",
-                   /*default_value=*/10);
 
 // Enables Local Network Access checks.
 // Blocks local network requests without user permission to prevent exploitation
@@ -371,7 +329,7 @@ BASE_FEATURE(kCloneDevToolsConnectionOnlyIfRequested,
 
 // Enables unload handler deprecation via Permissions-Policy.
 // https://crbug.com/1324111
-BASE_FEATURE(kDeprecateUnload, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kDeprecateUnload, base::FEATURE_ENABLED_BY_DEFAULT);
 // If < 100, each user experiences the deprecation on this % of origins. Which
 // origins varies by which bucket the user is in. This parameter only takes
 // effect if DeprecateUnloadByBucket is enabled. They are are separated so that
@@ -401,7 +359,7 @@ BASE_FEATURE_PARAM(std::string,
 // another study to control what fraction of users experience a specific value
 // of `kDeprecateUnloadPercent`. Doing both in one study greatly complicates the
 // study because we must deal in 100 1% groups.
-BASE_FEATURE(kDeprecateUnloadByBucket, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kDeprecateUnloadByBucket, base::FEATURE_ENABLED_BY_DEFAULT);
 // This buckets users, with users in each bucket having a consistent experience
 // of the unload deprecation rollout.
 BASE_FEATURE_PARAM(int,
@@ -423,10 +381,12 @@ BASE_FEATURE(kUpdateRequestForCorsRedirect, base::FEATURE_ENABLED_BY_DEFAULT);
 BASE_FEATURE(kAvoidCorsURLLoaderRestartOnRedirect,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
+BASE_FEATURE(kAllowSameOriginCredentialsWithDisableWebSecurity,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+
 // https://github.com/patcg-individual-drafts/topics
 // Kill switch for the Topics API.
-BASE_FEATURE(kBrowsingTopics, base::FEATURE_ENABLED_BY_DEFAULT);
-
+BASE_FEATURE(kBrowsingTopics, base::FEATURE_DISABLED_BY_DEFAULT);
 
 BASE_FEATURE(kIncreaseCookieAccessCacheSize, base::FEATURE_ENABLED_BY_DEFAULT);
 
@@ -448,10 +408,13 @@ BASE_FEATURE(kCSPScriptSrcHashesInV1,
              "ScriptSrcHashesV1",
              base::FEATURE_ENABLED_BY_DEFAULT);
 
+BASE_FEATURE(kCSPEmbeddedEnforcementTrustedTypes,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
 BASE_FEATURE(kCacheSharingForPervasiveResources,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
-BASE_FEATURE(kPervasiveSharedDictionaries, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kPervasiveSharedDictionaries, base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kSendSameSiteLaxForFedCM, base::FEATURE_DISABLED_BY_DEFAULT);
 
@@ -542,7 +505,7 @@ BASE_FEATURE(kReportingApiEnableVariationsHeaders,
 BASE_FEATURE(kNetworkContextDirectReceiver, base::FEATURE_DISABLED_BY_DEFAULT);
 
 bool ShouldBindNetworkContextDirectReceiver() {
-  return base::CurrentIOThread::IsSet() &&
+  return mojo::IsDirectReceiverSupported() && base::CurrentIOThread::IsSet() &&
          base::FeatureList::IsEnabled(features::kNetworkContextDirectReceiver);
 }
 
@@ -569,5 +532,28 @@ BASE_FEATURE(kBindURLLoaderFactoryToHighPriorityTaskRunner,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
 BASE_FEATURE(kEnforceIsolatedWorldOriginLock, base::FEATURE_ENABLED_BY_DEFAULT);
+
+BASE_FEATURE(kForwardProxyAuthWithoutPrompt, base::FEATURE_ENABLED_BY_DEFAULT);
+
+BASE_FEATURE(kPrewarmCryptbase, base::FEATURE_ENABLED_BY_DEFAULT);
+
+BASE_FEATURE(kRateLimitProxyConfigPolls, base::FEATURE_DISABLED_BY_DEFAULT);
+
+// Minimum interval between consecutive `OnLazyProxyConfigPoll()` Mojo IPCs sent
+// by `ProxyConfigServiceMojo`. Kept well below `PollingProxyConfigService`'s
+// 10-second `kPollIntervalSec` so IPC/queuing jitter cannot delay an eligible
+// browser-side poll window while still coalescing subresource request bursts.
+BASE_FEATURE_PARAM(base::TimeDelta,
+                   kRateLimitProxyConfigPollsInterval,
+                   &kRateLimitProxyConfigPolls,
+                   base::Seconds(1));
+
+BASE_FEATURE(kDnsHostMappingExperiment, base::FEATURE_DISABLED_BY_DEFAULT);
+
+BASE_FEATURE_PARAM(std::string,
+                   kDnsHostMappingExperimentRules,
+                   &kDnsHostMappingExperiment,
+                   /*name=*/"rules",
+                   /*default_value=*/"");
 
 }  // namespace network::features

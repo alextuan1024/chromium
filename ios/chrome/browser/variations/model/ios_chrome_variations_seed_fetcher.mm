@@ -8,10 +8,10 @@
 #import <string_view>
 
 #import "base/containers/fixed_flat_set.h"
-#import "base/feature_list.h"
 #import "base/logging.h"
 #import "base/metrics/histogram_functions.h"
 #import "base/notreached.h"
+#import "base/numerics/safe_conversions.h"
 #import "base/strings/escape.h"
 #import "base/strings/strcat.h"
 #import "base/strings/string_util.h"
@@ -52,8 +52,8 @@ static BOOL g_seed_fetching_in_progress = NO;
 std::string GetOsName(const std::string& forced_platform) {
   if (!forced_platform.empty()) {
     static constexpr auto kPlatforms = base::MakeFixedFlatSet<std::string_view>(
-        {"android", "android_webview", "chromeos", "fuchsia", "ios", "linux",
-         "mac", "win"});
+        {"android", "android_desktop", "android_webview", "chromeos", "fuchsia",
+         "ios", "linux", "mac", "win"});
     if (kPlatforms.contains(forced_platform)) {
       return forced_platform;
     } else {
@@ -71,9 +71,6 @@ std::string GetEscapedValue(std::string_view value) {
 }
 
 }  // namespace
-
-BASE_FEATURE(kVariationsExperimentalCorpus, base::FEATURE_DISABLED_BY_DEFAULT);
-BASE_FEATURE(kVariationsRestrictDogfood, base::FEATURE_DISABLED_BY_DEFAULT);
 
 @implementation IOSChromeVariationsSeedFetcher {
   // Whether the current binary should fetch Finch seed for experiment purpose.
@@ -175,9 +172,8 @@ BASE_FEATURE(kVariationsRestrictDogfood, base::FEATURE_DISABLED_BY_DEFAULT);
 // "*.first_run_variations_seed_manager".
 - (NSURL*)variationsURL {
   // Construct the variations seed request URL. The URL contains the "osname",
-  // "milestone", "channel" and "corpus" as parameters. Dogfood experimenting
-  // is not supported on Chrome iOS, therefore we do not need the "restrict"
-  // parameter.
+  // "milestone", and "channel" as parameters. Dogfood experimenting is not
+  // supported on Chrome iOS, therefore we do not need the "restrict" parameter.
   const std::string channel =
       _forcedChannel.empty()
           ? (GetChannel() != version_info::Channel::UNKNOWN ? GetChannelString()
@@ -188,12 +184,6 @@ BASE_FEATURE(kVariationsRestrictDogfood, base::FEATURE_DISABLED_BY_DEFAULT);
                     "&milestone=", version_info::GetMajorVersionNumber()});
   if (!channel.empty()) {
     base::StrAppend(&url, {"&channel=", channel});
-  }
-  if (base::FeatureList::IsEnabled(kVariationsExperimentalCorpus)) {
-    base::StrAppend(&url, {"&corpus=experimental"});
-  }
-  if (base::FeatureList::IsEnabled(kVariationsRestrictDogfood)) {
-    base::StrAppend(&url, {"&restrict=dogfood"});
   }
 
   return [NSURL URLWithString:base::SysUTF8ToNSString(url)];
@@ -280,10 +270,19 @@ BASE_FEATURE(kVariationsRestrictDogfood, base::FEATURE_DISABLED_BY_DEFAULT);
   NSString* signature =
       [httpResponse valueForHTTPHeaderField:@"X-Seed-Signature"];
   NSString* country = [httpResponse valueForHTTPHeaderField:@"X-Country"];
+  NSString* geoLevel1 = [httpResponse valueForHTTPHeaderField:@"X-Geo-Level-1"];
   NSString* dateString = [httpResponse valueForHTTPHeaderField:@"Date"];
   base::Time date;
   BOOL dateParsed = base::Time::FromUTCString(
       base::SysNSStringToUTF8(dateString).c_str(), &date);
+  base::UmaHistogramBoolean("Variations.SeedDateMissing", !dateParsed);
+  if (dateParsed) {
+    base::UmaHistogramCustomCounts(
+        "Variations.SeedDateClockSkew",
+        base::saturated_cast<int>(
+            (base::Time::Now() - date).magnitude().InSeconds()),
+        1, base::checked_cast<int>(base::Days(30).InSeconds()), 50);
+  }
 
   // Returned seed should have been gzip compressed.
   NSCharacterSet* whitespace = [NSCharacterSet whitespaceCharacterSet];
@@ -310,6 +309,7 @@ BASE_FEATURE(kVariationsRestrictDogfood, base::FEATURE_DISABLED_BY_DEFAULT);
     }
     seed->signature = base::SysNSStringToUTF8(signature);
     seed->country = base::SysNSStringToUTF8(country);
+    seed->geo_level1 = base::SysNSStringToUTF8(geoLevel1);
     seed->is_gzip_compressed = YES;
     return seed;
   }

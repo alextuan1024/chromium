@@ -37,6 +37,54 @@ export enum CloseSignInTabResult {
   NO_SIGN_IN_TAB = 3,
 }
 
+export enum AuthTabPurpose {
+  // Unknown or unsupported purpose (e.g. sent by a newer web client). Always
+  // rejected.
+  UNKNOWN = 0,
+  // GEiC sign-in. The URL must be on the GAIA or configured guest origin.
+  SIGN_IN = 1,
+  // 3P connector OAuth consent. The URL must be the GE OAuth redirector
+  // (path `/oauth-redirect`) on the default GE redirector origin
+  // (vertexaisearch.cloud.google.com) or the configured guest origin. The 3P
+  // provider URL (`continue_uri`) is intentionally not validated.
+  CONNECTOR_OAUTH = 2,
+}
+
+export enum OpenAuthTabResult {
+  UNKNOWN = 0,
+  // The auth tab was opened (or an existing one for the same purpose reused).
+  SUCCESS = 1,
+  // No URL was provided in options.
+  ERROR_NO_URL = 2,
+  // The provided URL was disallowed for the requested purpose.
+  ERROR_DISALLOWED_URL = 3,
+  // Failed to open the tab (e.g. off-the-record profile, no browser window).
+  ERROR_FAILURE = 4,
+  // The requested purpose is unknown or unsupported.
+  ERROR_INVALID_PURPOSE = 5,
+}
+
+export enum CloseAuthTabResult {
+  UNKNOWN = 0,
+  // The active auth tab was found and closed, and focus was restored to the
+  // originating tab.
+  CLOSED_ACTIVE = 1,
+  // The auth tab was closed, but it was not the active tab when closed, so
+  // focus was left undisturbed.
+  CLOSED_INACTIVE = 2,
+  // An auth tab was previously opened for this purpose, but had already been
+  // closed.
+  ALREADY_CLOSED = 3,
+  // No auth tab was open or tracked for this purpose.
+  NO_AUTH_TAB = 4,
+  // The requested purpose is unknown or unsupported.
+  ERROR_INVALID_PURPOSE = 5,
+  // The tab opened for this purpose was navigated away from the flow by the
+  // user (e.g. to an unrelated site), so it was left open and is no longer
+  // tracked.
+  NAVIGATED_AWAY = 6,
+}
+
 export enum FileUploadPolicyState {
   ENABLED = 0,
   DISABLED = 1,
@@ -301,6 +349,20 @@ export enum CancelActionsResult {
   FAILED = 3,
 }
 
+// Types of multi-tab sharing tooltip impressions.
+export enum TooltipImpressionType {
+  // Default value for unknown or unrecognized tooltip variants.
+  UNKNOWN = 0,
+  // Step 1: Initial contextual tooltip shown when a tab is first shared.
+  TOOLTIP1 = 1,
+  // Step 2 (Copy A): Follow-up tooltip highlighting multi-tab comparison.
+  TOOLTIP2A = 2,
+  // Step 2 (Copy B): Follow-up tooltip highlighting managing shared tabs.
+  TOOLTIP2B = 3,
+  // Step 3: Tooltip shown inside the tab picker guiding multi-tab selection.
+  TOOLTIP3 = 4,
+}
+
 // Reason for failure when switching a conversation.
 export enum SwitchConversationErrorReason {
   UNKNOWN = 0,
@@ -379,6 +441,29 @@ export enum AdditionalContextSource {
   TEXT_SELECTION = 3,
   WEB_DRAG_DROP = 4,
   EXPERIMENTAL_TRIGGERING = 5,
+}
+
+// The user data-transfer action that attempted to send input into Glic.
+// Note: New actions may be added over time; callers switching on this enum
+// should handle unknown/default values gracefully.
+export enum DataTransferAction {
+  UNKNOWN = 0,
+  PASTE = 1,
+  DROP = 2,
+}
+
+// The reason a data-transfer action into Glic was blocked by product or context
+// eligibility checks.
+// Note: New reasons may be added over time; callers switching on this enum
+// should handle unknown/default values gracefully.
+export enum DataTransferActionsBlockedReason {
+  UNKNOWN = 0,
+  // The source page's context is ineligible for sharing with Glic.
+  INELIGIBLE_PAGE_CONTEXT = 1,
+  // The source belongs to a different browser profile (e.g., Incognito).
+  CROSS_PROFILE = 2,
+  // The source is not a supported tab or was invalidated before completion.
+  UNSUPPORTED_OR_EXPIRED_SOURCE = 3,
 }
 
 // Types of updates that may be relayed back by the web client.
@@ -482,6 +567,10 @@ export enum HostCapability {
   // Indicates that the host supports bytes extraction of embedded PDF rendered
   // in the Chrome PDF viewer.
   EMBEDDED_PDF_BYTES_EXTRACTION = 18,
+  // Indicates that the host operates in NoWebview mode.
+  NO_WEBVIEW = 19,
+  // Indicates that the host supports Send Tab to Self APIs.
+  SEND_TAB_TO_SELF = 20,
 }
 
 // Lists capabilities that the glic web client may support.
@@ -577,6 +666,11 @@ export enum FreOverride {
   TRUST_FIRST_CLICK = 2,
   // Variation that starts with full client unlocked and shows inline consent.
   TRUST_FIRST_INLINE = 3,
+  // The host shows a native FRE overlay above the client. The client must not
+  // show its own FRE or consent UI. The overlay blocks the client until the
+  // user accepts. On accept, the host marks the FRE as completed. On decline,
+  // the host closes the panel.
+  NATIVE_FRE = 4,
 }
 
 // Entry points that can trigger the opening of the panel.
@@ -628,6 +722,8 @@ export enum InvocationSource {
   // User clicked an anchored contextual cue chip.
   ANCHORED_CONTEXTUAL_CUE = 22,
   // From the context menu.
+  // Deprecated. Split into kWebContentsContextMenuLink,
+  // kWebContentsContextMenuPage and kWebContentsContextMenuTextSelection.
   WEB_CONTENTS_CONTEXT_MENU = 23,
   // User clicked on text selection nudge.
   TEXT_SELECTION_NUDGE = 24,
@@ -671,6 +767,23 @@ export enum InvocationSource {
   WEB_CONTINUITY = 42,
   // From the history page chat linkout.
   HISTORY_PAGE_CHAT_LINKOUT = 43,
+  // From the Context Hub topics UI.
+  CONTEXT_HUB_TOPICS = 44,
+  // From the Context Hub AutoTodos UI.
+  CONTEXT_HUB_AUTO_TODOS = 45,
+  // User clicked "Ask Gemini" on a link in the context menu. Android only;
+  // desktop has no link-specific item.
+  WEB_CONTENTS_CONTEXT_MENU_LINK = 46,
+  // User clicked "Ask Gemini" in the context menu with no text selected. On
+  // desktop, this includes clicks on a link.
+  WEB_CONTENTS_CONTEXT_MENU_PAGE = 47,
+  // User clicked "Ask Gemini" on selected text, from the context menu on
+  // desktop or the text selection menu on Android.
+  WEB_CONTENTS_CONTEXT_MENU_TEXT_SELECTION = 48,
+  // Invoked by the actor GeminiPanelTool.
+  ACTOR_TOOL = 49,
+  // User clicked a conversation row in the activity list bubble.
+  ACTIVITY_LIST_BUBBLE = 50,
 }
 
 // Target for actuation.
@@ -692,14 +805,47 @@ export enum ActuationTarget {
 
 // Options for opening the sign-in tab.
 export declare interface OpenSignInTabOptions {
-  // The URL to navigate to for sign-in.
+  // The URL to navigate to. If not provided or empty, the openSignInTab
+  // method will return `kErrorNoUrl`.
   signinUrl?: string;
 }
 
 // Options for closing the sign-in tab.
 export declare interface CloseSignInTabOptions {}
 
-// Settings for Gemini Enterprise.
+// Options for opening an auth tab.
+export declare interface OpenAuthTabOptions {
+  // The use case for the tab; selects the URL allowlist and tracked tab.
+  purpose: AuthTabPurpose;
+  // The URL to navigate to. If not provided or empty, the openAuthTab
+  // method will return `kErrorNoUrl`.
+  url?: string;
+}
+
+// Options for closing an auth tab.
+export declare interface CloseAuthTabOptions {
+  // The use case whose tab should be closed.
+  purpose: AuthTabPurpose;
+}
+
+// Response for `OpenAuthTab`. A struct (rather than a bare enum) so that
+// fields can be added later without breaking the glic API's backwards
+// compatibility.
+export declare interface OpenAuthTabResponse {
+  // The result of attempting to open the auth tab.
+  result: OpenAuthTabResult;
+}
+
+// Response for `CloseAuthTab`. A struct (rather than a bare enum) so that
+// fields can be added later without breaking the glic API's backwards
+// compatibility.
+export declare interface CloseAuthTabResponse {
+  // The result of attempting to close the auth tab.
+  result: CloseAuthTabResult;
+}
+
+// TODO(b/570016708): Remove once web client usages are eliminated.
+// Deprecated: Formerly settings for Gemini Enterprise as a Tool.
 export declare interface GeminiEnterpriseSettings {
   projectId: string;
   appId: string;
@@ -1006,6 +1152,10 @@ export declare interface CreateActorTabOptions {
 export declare interface CaptureRegionParams {
   tabId: string;
   options: TabContextOptions;
+  // Set when this capture answers an invoke that asked the panel to take over
+  // the user's selection (see InvocationPayload). Lets the browser tell it
+  // apart from the user starting a capture.
+  captureRegionHandoff?: boolean;
 }
 
 // Holds optional parameters for GlicBrowserHost#activateTabWithUrl.
@@ -1024,6 +1174,19 @@ export declare interface CreateTabOptions {
   openInBackground?: boolean;
   // The windowId of the window where the new tab should be created at.
   windowId?: string;
+}
+
+// A device that can receive tabs sent via Send Tab to Self.
+export declare interface SendTabToSelfDevice {
+  // A unique identifier for the device. Pass this as the target device when
+  // sending a tab.
+  deviceGuid: string;
+  // The user-visible name of the device.
+  deviceName: string;
+  // The form factor of the device.
+  formFactor: FormFactor;
+  // The time when the device last updated its sync metadata.
+  lastUpdatedTime?: Date;
 }
 
 // Information about a conversation.
@@ -1103,6 +1266,22 @@ export declare interface UniversalCartPayload {
   serializedMetadata: ArrayBuffer;
 }
 
+// Payload for Experimental Triggering invocation.
+export declare interface ExperimentalTriggeringPayload {
+  // Opaque payment metadata received from the server as part of the request
+  // that triggered this invocation. Passed through verbatim; opaque to the
+  // browser. May be empty.
+  paymentMetadata: ArrayBuffer;
+}
+
+// Payload for invoking region capture.
+export declare interface CaptureRegionPayload {
+  // Set when the browser asks the client to start a capture so the panel can
+  // take over a region selection the user already started on the page. Pass
+  // it back in CaptureRegionParams when starting that capture.
+  captureRegionHandoff: boolean;
+}
+
 // Options for invoking Glic.
 export declare interface InvokeOptions {
   // Source that triggered this invocation.
@@ -1126,7 +1305,10 @@ export declare interface InvokeOptions {
   zssConfig?: ZssConfig;
   // Source-specific payload for the invocation.
   payload?: InvocationPayload;
-  // The ID of the tab to actuate on, if actuationTarget is kTargetSurface.
+  // TODO(b/582448011): Replace actuation_target and actuation_tab_id with one
+  // union that matches Target::actuation_target in glic_invoke_options.h.
+  // The ID of the ActorSurface (which can be a tab or a headless surface), to
+  // actuate on, if actuation_target == kTargetSurface.
   actuationTabId?: string;
 }
 
@@ -1159,6 +1341,13 @@ export declare interface AdditionalContext {
   frameUrl?: string;
   // The parts of the context.
   parts: AdditionalContextPart[];
+}
+
+// Notice emitted when a data-transfer action into Glic is blocked by
+// eligibility checks.
+export declare interface DataTransferActionsBlockedNotice {
+  action: DataTransferAction;
+  reason: DataTransferActionsBlockedReason;
 }
 
 // An update event sent to the browser by the web client.
@@ -1312,8 +1501,7 @@ export declare interface Screenshot {
   widthPixels: number;
   heightPixels: number;
   // Encoded image data. If `encryption_scheme` is not `kNone`, this contains
-  // the encrypted ciphertext payload. ArrayBuffer is transferable, so it should
-  // be copied more efficiently over postMessage.
+  // the encrypted ciphertext payload.
   data: ArrayBuffer;
   // The unencrypted source image format represented as a MIME type (e.g.,
   // "image/jpeg").
@@ -1359,7 +1547,10 @@ export declare interface TaskOptions {
   duration?: TaskDuration;
   // The feature mode for the task.
   featureMode?: FeatureMode;
-  // The initial target tab to actuate on.
+  // The actor surface ID of the initial target to actuate on, such as a tab's
+  // surface or a headless surface. A tab's actor surface ID matches its tab ID
+  // only while kUseTabHandleAsSurfaceHandle is enabled. The field name
+  // predates actor surfaces.
   actuationTabId?: string;
 }
 

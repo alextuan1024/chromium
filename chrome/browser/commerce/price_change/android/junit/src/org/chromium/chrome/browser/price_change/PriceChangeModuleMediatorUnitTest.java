@@ -112,7 +112,7 @@ public class PriceChangeModuleMediatorUnitTest {
         doReturn(true).when(mTabModelSelector).isTabStateInitialized();
         ShoppingPersistedTabDataService.setServiceForTesting(mService);
 
-        mContext = RuntimeEnvironment.application;
+        mContext = RuntimeEnvironment.getApplication();
         mModel = new PropertyModel(PriceChangeModuleProperties.ALL_KEYS);
         mMediator =
                 new PriceChangeModuleMediator(
@@ -215,7 +215,7 @@ public class PriceChangeModuleMediatorUnitTest {
 
         // Check onClickListener setup.
         OnClickListener listener = mModel.get(PriceChangeModuleProperties.MODULE_ON_CLICK_LISTENER);
-        listener.onClick(mock(View.class));
+        listener.onClick(new View(mContext));
         verify(mModuleDelegate).onTabClicked(eq(123), eq(ModuleType.PRICE_CHANGE));
     }
 

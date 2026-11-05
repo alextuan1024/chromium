@@ -7,10 +7,12 @@
 #include "third_party/blink/renderer/core/dom/document.h"
 #include "third_party/blink/renderer/core/dom/range.h"
 #include "third_party/blink/renderer/core/dom/text.h"
+#include "third_party/blink/renderer/core/editing/ephemeral_range.h"
 #include "third_party/blink/renderer/core/editing/frame_selection.h"
 #include "third_party/blink/renderer/core/editing/position.h"
 #include "third_party/blink/renderer/core/editing/selection_template.h"
 #include "third_party/blink/renderer/core/editing/testing/selection_sample.h"
+#include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/core/frame/local_frame_view.h"
 #include "third_party/blink/renderer/core/html/html_element.h"
 #include "third_party/blink/renderer/core/testing/dummy_page_holder.h"
@@ -20,6 +22,10 @@ namespace blink {
 EditingTestBase::EditingTestBase() = default;
 
 EditingTestBase::~EditingTestBase() = default;
+
+Editor& EditingTestBase::GetEditor() const {
+  return GetFrame().GetEditor();
+}
 
 Position EditingTestBase::SetCaretTextToBody(
     const std::string& selection_text) {
@@ -50,6 +56,16 @@ std::string EditingTestBase::GetSelectionTextFromBody(
 
 std::string EditingTestBase::GetSelectionTextFromBody() const {
   return GetSelectionTextFromBody(Selection().GetSelectionInDomTree());
+}
+
+std::string EditingTestBase::GetRangeTextFromBody(
+    const EphemeralRange& range) const {
+  return GetSelectionTextFromBody(
+      SelectionInDomTree::Builder().SetAsForwardSelection(range).Build());
+}
+
+std::string EditingTestBase::GetRangeTextFromBody(const Range* range) const {
+  return GetRangeTextFromBody(EphemeralRange(range));
 }
 
 std::string EditingTestBase::GetSelectionTextInFlatTreeFromBody(

@@ -14,7 +14,9 @@
 #include "build/buildflag.h"
 #include "chrome/browser/devtools/devtools_window.h"
 #include "chrome/browser/history_clusters/history_clusters_tab_helper.h"
+#include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/color/chrome_color_id.h"
 #include "chrome/browser/ui/omnibox/chrome_omnibox_client.h"
 #include "chrome/browser/ui/omnibox/omnibox_controller.h"
 #include "chrome/browser/ui/omnibox/omnibox_edit_model.h"
@@ -22,27 +24,28 @@
 #include "chrome/browser/ui/omnibox/omnibox_popup_view.h"
 #include "chrome/browser/ui/omnibox/omnibox_view.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
+#include "chrome/browser/ui/views/omnibox/omnibox_placeholder_util.h"
 #include "chrome/browser/ui/views/omnibox/omnibox_view_views.h"
+#include "chrome/browser/ui/webui/cr_components/searchbox/searchbox_handler.h"
+#include "chrome/browser/ui/webui/omnibox_popup/omnibox_dogfood_feedback.h"
+#include "chrome/browser/ui/webui/omnibox_popup/omnibox_popup_web_contents_helper.h"
+#include "chrome/browser/ui/webui/top_chrome/top_chrome_webui_user_profile.h"
+#include "components/bookmarks/browser/bookmark_model.h"
+#include "components/omnibox/browser/omnibox_logging_utils.h"
 #include "components/omnibox/browser/omnibox_popup_selection.h"
+#include "components/omnibox/browser/suggest_template_info_mojo_utils.h"
 #include "components/search/search.h"
 #include "components/search_engines/template_url.h"
 #include "components/search_engines/template_url_service.h"
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/browser_context.h"
-#include "third_party/metrics_proto/omnibox_event.pb.h"
 #include "ui/base/clipboard/scoped_clipboard_writer.h"
+#include "ui/base/ime/text_input_type.h"
 #include "ui/base/models/menu_model.h"
 #include "ui/base/ui_base_features.h"
-
-namespace {
-
-void LogHistogramMediumTimes(const std::string& histogram_name,
-                             base::TimeDelta elapsed) {
-  base::UmaHistogramCustomTimes(histogram_name, elapsed, base::Milliseconds(10),
-                                base::Minutes(3), 50);
-}
-
-}  // namespace
+#include "ui/color/color_provider.h"
+#include "ui/gfx/color_utils.h"
+#include "ui/views/widget/widget.h"
 
 OmniboxPopupHandler::OmniboxPopupHandler(
     mojo::PendingReceiver<omnibox_popup::mojom::PageHandler> receiver,
@@ -59,17 +62,25 @@ OmniboxPopupHandler::OmniboxPopupHandler(
     }
   }
   NotifyDefaultSearchProviderChanged();
-
-  if (controller_ && controller_->edit_model()) {
-    if (auto* popup_view = controller_->edit_model()->popup_view()) {
-      // Notify the popup view that the WebUI page handler is ready to process
-      // input and display suggestions.
-      popup_view->OnPopupHandlerReady();
-    }
-  }
 }
 
 OmniboxPopupHandler::~OmniboxPopupHandler() = default;
+
+void OmniboxPopupHandler::DetachFromOmniboxController() {
+  controller_ = nullptr;
+  // These describe the text in the old window's omnibox. The page reports new
+  // values on its next edit in the new window.
+  latest_selection_ = gfx::Range();
+  show_full_url_ = false;
+  can_undo_ = false;
+  can_redo_ = false;
+}
+
+void OmniboxPopupHandler::AttachToOmniboxController(
+    OmniboxController* controller) {
+  CHECK(controller);
+  controller_ = controller;
+}
 
 void OmniboxPopupHandler::ShowContextMenu(const gfx::Point& point) {
   if (embedder_) {
@@ -117,6 +128,17 @@ void OmniboxPopupHandler::Revert(uint32_t sequence_number) {
     }
   }
   latest_selection_ = gfx::Range(0, 0);
+  show_full_url_ = false;
+}
+
+void OmniboxPopupHandler::RevertTemporaryText(uint32_t sequence_number) {
+  if (sequence_number < current_sequence_number_) {
+    return;
+  }
+  if (controller_ && controller_->edit_model() &&
+      controller_->edit_model()->has_temporary_text()) {
+    controller_->edit_model()->RevertTemporaryTextAndPopup();
+  }
 }
 
 void OmniboxPopupHandler::OnInputCleared(uint32_t sequence_number) {
@@ -136,6 +158,15 @@ void OmniboxPopupHandler::OnInputCleared(uint32_t sequence_number) {
           /*text=*/std::u16string(), /*caret_pos=*/0, /*update_popup=*/false,
           /*notify_text_changed=*/false);
     }
+  }
+}
+
+void OmniboxPopupHandler::StartUserInput(uint32_t sequence_number) {
+  if (sequence_number < current_sequence_number_) {
+    return;
+  }
+  if (controller_ && controller_->edit_model()) {
+    controller_->edit_model()->SetInputInProgress(true);
   }
 }
 
@@ -196,7 +227,8 @@ void OmniboxPopupHandler::RequestInputState() {
   auto* edit_model = controller_ ? controller_->edit_model() : nullptr;
   auto* popup_view = edit_model ? edit_model->popup_view() : nullptr;
   if (popup_view) {
-    popup_view->SyncNativeStateToWebUI(/*query_zps=*/false);
+    popup_view->SyncNativeStateToWebUI(/*query_zps=*/false,
+                                       /*show_full_url=*/false);
   }
 }
 
@@ -216,7 +248,7 @@ void OmniboxPopupHandler::SetInputState(
     bool is_focused,
     const std::string& permanent_display_text,
     bool show_full_url,
-    bool query_zps,
+    omnibox_popup::mojom::MatchesUpdate matches_update,
     searchbox::mojom::InputKeywordModelPtr keyword_model,
     bool is_tab_switch) {
   current_sequence_number_++;
@@ -236,9 +268,51 @@ void OmniboxPopupHandler::SetInputState(
   state->is_focused = is_focused;
   state->permanent_display_text = permanent_display_text;
   state->show_full_url = show_full_url;
-  state->query_zps = query_zps;
+  state->matches_update = matches_update;
   state->keyword_model = std::move(keyword_model);
   state->is_tab_switch = is_tab_switch;
+  state->url_emphasis = ComputeUrlEmphasis(text);
+  state->unelided_url_emphasis = ComputeUrlEmphasis(full_url);
+  if (is_tab_switch && user_input_in_progress && controller_ &&
+      controller_->edit_model()) {
+    AutocompleteMatch current_match = controller_->edit_model()->CurrentMatch();
+    auto mojom_match = searchbox::mojom::AutocompleteMatch::New();
+    mojom_match->suggest_template =
+        suggest_template_info::CreateSuggestTemplateInfo(current_match);
+    mojom_match->destination_url = current_match.destination_url;
+    mojom_match->fill_into_edit = current_match.fill_into_edit;
+    mojom_match->inline_autocompletion = current_match.inline_autocompletion;
+    mojom_match->is_search_type =
+        AutocompleteMatch::IsSearchType(current_match.type);
+    mojom_match->type =
+        omnibox::AutocompleteMatchTypeToString(current_match.type);
+    mojom_match->allowed_to_be_default_match =
+        current_match.allowed_to_be_default_match;
+    mojom_match->icon_url = current_match.icon_url;
+    const bookmarks::BookmarkModel* bookmark_model =
+        controller_->client()->GetBookmarkModel();
+    const bool is_bookmarked =
+        bookmark_model &&
+        bookmark_model->IsBookmarked(current_match.destination_url);
+    const TemplateURLService* turl_service =
+        controller_->client()->GetTemplateURLService();
+    const TemplateURL* associated_keyword_turl =
+        (turl_service && !current_match.associated_keyword.empty())
+            ? turl_service->GetTemplateURLForKeyword(
+                  current_match.associated_keyword)
+            : nullptr;
+    mojom_match->icon_path = SearchboxHandler::VectorIconToResourceName(
+        current_match.GetVectorIcon(is_bookmarked, associated_keyword_turl));
+    state->current_match = std::move(mojom_match);
+  }
+  // The input language is the same for all widgets.
+  views::Widget* widget = web_contents_
+                              ? views::Widget::GetTopLevelWidgetForNativeView(
+                                    web_contents_->GetNativeView())
+                              : nullptr;
+  state->prefers_url_input = OmniboxViewViews::GetPreferredTextInputType(
+                                 widget ? widget->GetInputMethod() : nullptr) ==
+                             ui::TEXT_INPUT_TYPE_URL;
   // Extract active tab ID if in a Chrome browser window context.
   if (controller_ && controller_->client()->IsChromeOmniboxClient()) {
     auto* chrome_client =
@@ -255,8 +329,15 @@ void OmniboxPopupHandler::SetInputState(
 
 void OmniboxPopupHandler::SetFocus(bool is_focused,
                                    bool query_zps,
-                                   bool select_all) {
-  page_->SetFocus(is_focused, query_zps, select_all);
+                                   bool select_all,
+                                   bool show_full_url) {
+  page_->SetFocus(is_focused, query_zps, select_all, show_full_url);
+}
+
+void OmniboxPopupHandler::FocusSearchWithDefaultSearchEngineKeywordMode() {
+  if (page_.is_bound()) {
+    page_->FocusSearchWithDefaultSearchEngineKeywordMode();
+  }
 }
 
 void OmniboxPopupHandler::ClearAutocompleteMatches() {
@@ -276,7 +357,8 @@ void OmniboxPopupHandler::OnTemplateURLServiceShuttingDown() {
 }
 
 std::string GetDefaultSearchProviderIcon(
-    const TemplateURLService* template_url_service) {
+    const TemplateURLService* template_url_service,
+    bool is_dark_mode) {
   std::string default_icon_path =
       features::IsRoundedIconsEnabled()
           ? "//resources/cr_components/searchbox/icons/search_cr23.svg"
@@ -287,8 +369,14 @@ std::string GetDefaultSearchProviderIcon(
     is_google = search::DefaultSearchProviderIsGoogle(template_url_service);
 #endif
     if (is_google) {
+      // In dark mode, match steady-state omnibox
+      // (`OmniboxEditModel::GetSuperGIcon()`) by using the monochrome Super G
+      // icon rather than the 4-color gradient icon.
       default_icon_path =
-          "//resources/cr_components/searchbox/icons/google_g_gradient.svg";
+          is_dark_mode
+              ? "//resources/cr_components/searchbox/icons/google_g_cr23.svg"
+              : "//resources/cr_components/searchbox/icons/"
+                "google_g_gradient.svg";
     } else if (const auto* default_provider =
                    template_url_service->GetDefaultSearchProvider();
                default_provider &&
@@ -307,8 +395,31 @@ void OmniboxPopupHandler::NotifyDefaultSearchProviderChanged() {
   if (!page_.is_bound()) {
     return;
   }
-  page_->SetDefaultSearchProvider(GetDefaultSearchProviderIcon(
-      template_url_service_observation_.GetSource()));
+  const bool is_dark_mode =
+      web_contents_ &&
+      color_utils::IsDark(web_contents_->GetColorProvider().GetColor(
+          kColorOmniboxIconBackground));
+  const TemplateURLService* template_url_service =
+      template_url_service_observation_.GetSource();
+  const TemplateURL* default_provider =
+      template_url_service ? template_url_service->GetDefaultSearchProvider()
+                           : nullptr;
+  auto placeholder_type = omnibox_popup::mojom::PlaceholderType::kNone;
+  std::string search_engine_name;
+  if (default_provider) {
+    // Use the user profile, since the popup can be in TopChromeWebUIProfile,
+    // which is shared by the windows of all profiles.
+    Profile* profile =
+        web_contents_ ? webui::GetUserProfile(web_contents_) : nullptr;
+    placeholder_type =
+        omnibox::ShouldUseAskPlaceholderText(profile, template_url_service)
+            ? omnibox_popup::mojom::PlaceholderType::kAskOrTypeUrl
+            : omnibox_popup::mojom::PlaceholderType::kSearchOrTypeUrl;
+    search_engine_name = base::UTF16ToUTF8(default_provider->short_name());
+  }
+  page_->SetDefaultSearchProvider(
+      GetDefaultSearchProviderIcon(template_url_service, is_dark_mode),
+      placeholder_type, search_engine_name);
 }
 
 void OmniboxPopupHandler::LogEscapeAction(
@@ -319,8 +430,9 @@ void OmniboxPopupHandler::LogEscapeAction(
 void OmniboxPopupHandler::OpenAimPopup(bool via_keyboard) {
   if (controller_) {
     controller_->edit_model()->OpenSelection(
-        OmniboxPopupSelection(OmniboxPopupSelection::kNoMatch,
-                              OmniboxPopupSelection::FOCUSED_BUTTON_AIM),
+        OmniboxPopupSelection(
+            OmniboxPopupSelection::kNoMatch,
+            OmniboxPopupSelection::LineState::kFocusedButtonAim),
         via_keyboard);
   }
 }
@@ -362,41 +474,11 @@ void OmniboxPopupHandler::OnCutOrCopy(uint32_t sequence_number,
     const auto last_omnibox_focus =
         controller_->edit_model()->last_omnibox_focus();
     if (!last_omnibox_focus.is_null()) {
-      const base::TimeDelta elapsed =
-          base::TimeTicks::Now() - last_omnibox_focus;
-      bool is_zero_suggest =
+      omnibox::LogFocusToCutOrCopyAllTextTime(
+          base::TimeTicks::Now() - last_omnibox_focus,
           controller_->autocomplete_controller() &&
-          controller_->autocomplete_controller()->input().IsZeroSuggest();
-      auto page_classification =
-          controller_->edit_model()->GetPageClassification();
-
-      LogHistogramMediumTimes("Omnibox.FocusToCutOrCopyAllTextTime", elapsed);
-
-      const std::string page_context =
-          metrics::OmniboxEventProto::PageClassification_Name(
-              page_classification);
-      LogHistogramMediumTimes(
-          base::StrCat({"Omnibox.FocusToCutOrCopyAllTextTime.ByPageContext.",
-                        page_context}),
-          elapsed);
-
-      if (is_zero_suggest) {
-        LogHistogramMediumTimes(
-            "Omnibox.FocusToCutOrCopyAllTextTime.ZeroSuggest", elapsed);
-        LogHistogramMediumTimes(
-            base::StrCat({"Omnibox.FocusToCutOrCopyAllTextTime.ZeroSuggest."
-                          "ByPageContext.",
-                          page_context}),
-            elapsed);
-      } else {
-        LogHistogramMediumTimes(
-            "Omnibox.FocusToCutOrCopyAllTextTime.TypedSuggest", elapsed);
-        LogHistogramMediumTimes(
-            base::StrCat({"Omnibox.FocusToCutOrCopyAllTextTime.TypedSuggest."
-                          "ByPageContext.",
-                          page_context}),
-            elapsed);
-      }
+              controller_->autocomplete_controller()->input().IsZeroSuggest(),
+          controller_->edit_model()->GetPageClassification());
     }
 
     if (web_contents_) {
@@ -412,7 +494,10 @@ void OmniboxPopupHandler::OnCutOrCopy(uint32_t sequence_number,
   bool is_cut_or_copy_allowed = !selection.is_empty();
   if (is_cut_or_copy_allowed) {
     ui::ScopedClipboardWriter writer(ui::ClipboardBuffer::kCopyPaste);
-    if (web_contents_ && web_contents_->GetBrowserContext()->IsOffTheRecord()) {
+    // Use the user profile, since the popup can be in TopChromeWebUIProfile,
+    // which is shared by the windows of all profiles.
+    if (web_contents_ &&
+        webui::GetUserProfile(web_contents_)->IsOffTheRecord()) {
       writer.MarkAsOffTheRecord();
     }
     writer.WriteText(u16_selected_text);
@@ -462,4 +547,35 @@ void OmniboxPopupHandler::OpenDevTools() {
     DevToolsWindow::OpenDevToolsWindow(web_contents_,
                                        DevToolsOpenedByAction::kUnknown);
   }
+}
+
+void OmniboxPopupHandler::OpenDogfoodFeedback() {
+  if (!omnibox::kWebUIOmniboxFullPopupDogfoodFeedback.Get() || !controller_ ||
+      !controller_->client()->IsChromeOmniboxClient()) {
+    return;
+  }
+  auto* browser =
+      static_cast<ChromeOmniboxClient*>(controller_->client())->browser();
+  if (!browser) {
+    return;
+  }
+  omnibox_dogfood_feedback::ShowFeedbackForm(browser);
+}
+
+void OmniboxPopupHandler::AdvanceFocus(bool reverse) {
+  if (auto* helper =
+          OmniboxPopupWebContentsHelper::FromWebContents(web_contents_)) {
+    helper->AdvanceFocus(reverse);
+  }
+}
+
+searchbox::mojom::UrlEmphasisPtr OmniboxPopupHandler::ComputeUrlEmphasis(
+    const std::string& text) const {
+  const auto* edit_model = controller_ ? controller_->edit_model() : nullptr;
+  const bool text_is_url = edit_model && edit_model->CurrentTextIsURL();
+  const bool is_user_input = edit_model && edit_model->user_input_in_progress();
+  return SearchboxHandler::ComputeUrlEmphasis(
+      base::UTF8ToUTF16(text), text_is_url,
+      /*include_security_style=*/!is_user_input,
+      controller_ ? controller_->client() : nullptr);
 }

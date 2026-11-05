@@ -19,23 +19,14 @@
 #import "components/sync_sessions/open_tabs_ui_delegate.h"
 #import "components/sync_sessions/session_sync_service.h"
 #import "components/sync_sessions/synced_session.h"
-#import "ios/chrome/browser/default_browser/model/default_browser_interest_signals.h"
 #import "ios/chrome/browser/favicon/model/favicon_loader.h"
-#import "ios/chrome/browser/favicon/model/ios_chrome_favicon_loader_factory.h"
 #import "ios/chrome/browser/net/model/crurl.h"
 #import "ios/chrome/browser/recent_tabs/ui/recent_tabs_consumer.h"
 #import "ios/chrome/browser/recent_tabs/ui/sessions_sync_user_state.h"
-#import "ios/chrome/browser/sessions/model/ios_chrome_tab_restore_service_factory.h"
-#import "ios/chrome/browser/shared/model/browser/browser.h"
-#import "ios/chrome/browser/shared/model/browser/browser_provider.h"
-#import "ios/chrome/browser/shared/model/browser/browser_provider_interface.h"
-#import "ios/chrome/browser/shared/model/web_state_list/web_state_list.h"
-#import "ios/chrome/browser/shared/model/web_state_list/web_state_list_observer_bridge.h"
 #import "ios/chrome/browser/signin/model/authentication_service.h"
 #import "ios/chrome/browser/signin/model/authentication_service_observer_bridge.h"
-#import "ios/chrome/browser/signin/model/identity_manager_factory.h"
-#import "ios/chrome/browser/sync/model/session_sync_service_factory.h"
 #import "ios/chrome/browser/sync/model/sync_observer_bridge.h"
+#import "ios/chrome/browser/synced_sessions/model/synced_sessions.h"
 #import "ios/chrome/common/ui/favicon/favicon_constants.h"
 #import "url/gurl.h"
 
@@ -108,6 +99,8 @@ bool UserActionIsRequiredToHaveTabSyncWork(syncer::SyncService* sync_service) {
       base::ScopedObservation<sessions::TabRestoreService,
                               recent_tabs::ClosedTabsObserverBridge>>
       _restoreServiceObserver;
+  // The authentication service.
+  raw_ptr<AuthenticationService> _authService;
 }
 
 // Return the user's current sign-in and chrome-sync state.
@@ -142,6 +135,7 @@ bool UserActionIsRequiredToHaveTabSyncWork(syncer::SyncService* sync_service) {
     CHECK(syncService, base::NotFatalUntil::M155);
     _sessionSyncService = sessionSyncService;
     _identityManager = identityManager;
+    _authService = authService;
     _authServiceObserverBridge =
         std::make_unique<AuthenticationServiceObserverBridge>(authService,
                                                               self);
@@ -184,6 +178,8 @@ bool UserActionIsRequiredToHaveTabSyncWork(syncer::SyncService* sync_service) {
   _authServiceObserverBridge.reset();
   _faviconLoader = nullptr;
   _syncService = nullptr;
+  _consumer = nil;
+  _authService = nullptr;
 }
 
 - (void)setConsumer:(id<RecentTabsConsumer>)consumer {
@@ -201,7 +197,13 @@ bool UserActionIsRequiredToHaveTabSyncWork(syncer::SyncService* sync_service) {
   // opt-in screen is dismissed.
   // The 2 latter calls are necessary because they can happen much more
   // immediately than the former call.
-  [self.consumer refreshUserState:[self userSignedInState]];
+  auto syncedSessions =
+      std::make_unique<synced_sessions::SyncedSessions>(_sessionSyncService);
+  [self.consumer refreshUserState:[self userSignedInState]
+                   syncedSessions:std::move(syncedSessions)
+      syncDisabledByAdministrator:[self isSyncDisabledByAdministrator]
+           signinDisabledByPolicy:[self isSigninDisabledByPolicy]
+             signinDisabledByUser:[self isSigninDisabledByUserOrInternal]];
 }
 
 #pragma mark - SyncedSessionsObserver
@@ -264,6 +266,38 @@ bool UserActionIsRequiredToHaveTabSyncWork(syncer::SyncService* sync_service) {
       });
 }
 
+// Returns YES if the user cannot turn on sync for enterprise policy reasons.
+- (BOOL)isSyncDisabledByAdministrator {
+  if (_syncService->HasDisableReason(
+          syncer::SyncService::DISABLE_REASON_ENTERPRISE_POLICY)) {
+    return YES;
+  }
+  if (_syncService->GetUserSettings()->IsTypeManagedByPolicy(
+          syncer::UserSelectableType::kTabs) ||
+      _syncService->GetUserSettings()->IsTypeManagedByPolicy(
+          syncer::UserSelectableType::kHistory)) {
+    return YES;
+  }
+  return _authService->GetServiceStatus() ==
+         AuthenticationService::ServiceStatus::SigninDisabledByPolicy;
+}
+
+// Returns YES if sign-in is disabled by policy.
+- (BOOL)isSigninDisabledByPolicy {
+  return _authService->GetServiceStatus() ==
+         AuthenticationService::ServiceStatus::SigninDisabledByPolicy;
+}
+
+// Returns YES if sign-in is disabled through user settings or internal reasons.
+- (BOOL)isSigninDisabledByUserOrInternal {
+  const AuthenticationService::ServiceStatus authServiceStatus =
+      _authService->GetServiceStatus();
+  return authServiceStatus ==
+             AuthenticationService::ServiceStatus::SigninDisabledByUser ||
+         authServiceStatus ==
+             AuthenticationService::ServiceStatus::SigninDisabledByInternal;
+}
+
 #pragma mark - Private
 
 // Returns whether this profile has any foreign sessions to sync.
@@ -285,7 +319,9 @@ bool UserActionIsRequiredToHaveTabSyncWork(syncer::SyncService* sync_service) {
 
   std::vector<raw_ptr<const sync_sessions::SyncedSession, VectorExperimental>>
       sessions;
-  return delegate->GetAllForeignSessions(&sessions)
+  return delegate->GetAllForeignSessions(&sessions,
+                                         sync_sessions::OpenTabsUIDelegate::
+                                             ForeignSessionFilter::kPresentable)
              ? SessionsSyncUserState::USER_SIGNED_IN_SYNC_ON_WITH_SESSIONS
              : SessionsSyncUserState::USER_SIGNED_IN_SYNC_ON_NO_SESSIONS;
 }

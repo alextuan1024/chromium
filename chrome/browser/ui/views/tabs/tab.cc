@@ -101,6 +101,7 @@
 
 #if BUILDFLAG(IS_CHROMEOS)
 #include "chrome/browser/ash/boca/on_task/on_task_locked_controller.h"
+#include "chrome/browser/ui/chromeos/locked_state/locked_state_controller.h"
 #endif
 
 using base::UserMetricsAction;
@@ -141,10 +142,16 @@ int Center(int size, int item_size) {
 #if BUILDFLAG(IS_CHROMEOS)
 // Returns true if the tab should be locked for the task and false otherwise.
 bool IsLockedForOnTask(BrowserWindowInterface* browser_window_interface) {
-  return browser_window_interface
-             ? ash::boca::OnTaskLockedController::From(browser_window_interface)
-                   ->is_locked_for_on_task()
-             : false;
+  if (!browser_window_interface) {
+    return false;
+  }
+  if (features::IsUseUnifiedLockedStateControllerEnabled()) {
+    return !chromeos::LockedStateController::From(browser_window_interface)
+                ->GetCapabilities()
+                .allow_tab_modification;
+  }
+  return ash::boca::OnTaskLockedController::From(browser_window_interface)
+      ->is_locked_for_on_task();
 }
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
@@ -293,21 +300,21 @@ class Tab::TabCloseButtonObserver : public views::ViewObserver {
                                   views::View* close_button,
                                   TabSlotController* controller)
       : tab_(tab), close_button_(close_button), controller_(controller) {
-    DCHECK(close_button_);
+    CHECK(close_button_, base::NotFatalUntil::M162);
     tab_close_button_observation_.Observe(close_button_.get());
   }
   TabCloseButtonObserver(const TabCloseButtonObserver&) = delete;
   TabCloseButtonObserver& operator=(const TabCloseButtonObserver&) = delete;
 
   ~TabCloseButtonObserver() override {
-    DCHECK(tab_close_button_observation_.IsObserving());
+    CHECK(tab_close_button_observation_.IsObserving(),
+          base::NotFatalUntil::M162);
     tab_close_button_observation_.Reset();
   }
 
  private:
   void OnViewFocused(views::View* observed_view) override {
-    controller_->UpdateHoverCard(
-        tab_, TabSlotController::HoverCardUpdateType::kFocus);
+    controller_->UpdateHoverCard(tab_, HoverCardUpdateType::kFocus);
     if (features::IsTabStripDeclutterEnabled()) {
       tab_->InvalidateLayout();
     }
@@ -316,8 +323,7 @@ class Tab::TabCloseButtonObserver : public views::ViewObserver {
   void OnViewBlurred(views::View* observed_view) override {
     // Only hide hover card if not keyboard navigating.
     if (!controller_->IsFocusInTabStrip()) {
-      controller_->UpdateHoverCard(
-          nullptr, TabSlotController::HoverCardUpdateType::kFocus);
+      controller_->UpdateHoverCard(nullptr, HoverCardUpdateType::kFocus);
     }
     if (features::IsTabStripDeclutterEnabled()) {
       tab_->InvalidateLayout();
@@ -348,7 +354,7 @@ Tab::Tab(tabs::TabHandle handle, TabSlotController* controller)
                             : nullptr),
       title_(new TabTitle()),
       title_animation_(this) {
-  DCHECK(controller);
+  CHECK(controller, base::NotFatalUntil::M162);
 
   tab_style_views_ = TabStyleViews::Create(CreateStyleDelegate(this),
                                            TabStripOrientation::kHorizontal);
@@ -449,8 +455,7 @@ Tab::~Tab() {
   // Observer must be unregistered before child views are destroyed.
   tab_close_button_observer_.reset();
   if (controller_->HoverCardIsShowing(this)) {
-    controller_->UpdateHoverCard(
-        nullptr, TabSlotController::HoverCardUpdateType::kTabRemoved);
+    controller_->UpdateHoverCard(nullptr, HoverCardUpdateType::kTabRemoved);
   }
 }
 
@@ -466,12 +471,12 @@ bool Tab::IsActive() const {
 }
 
 void Tab::AnimationEnded(const gfx::Animation* animation) {
-  DCHECK_EQ(animation, &title_animation_);
+  CHECK_EQ(animation, &title_animation_, base::NotFatalUntil::M162);
   title_->SetBoundsRect(target_title_bounds_);
 }
 
 void Tab::AnimationProgressed(const gfx::Animation* animation) {
-  DCHECK_EQ(animation, &title_animation_);
+  CHECK_EQ(animation, &title_animation_, base::NotFatalUntil::M162);
   title_->SetBoundsRect(gfx::Tween::RectValueBetween(
       gfx::Tween::CalculateValue(gfx::Tween::FAST_OUT_SLOW_IN,
                                  animation->GetCurrentValue()),
@@ -521,7 +526,7 @@ void Tab::Layout(PassKey) {
       MaybeAdjustLeftForPinnedTab(&favicon_bounds, gfx::kFaviconSize);
     }
     icon_->ResizeDiscardIndicatorRadiusForWidth(
-        width() - 2 * tab_style()->GetBottomCornerRadius());
+        width() - 2 * tab_style()->GetBottomExtensionWidth());
 
     // Add space for insets outside the favicon bounds.
     favicon_bounds.Inset(-icon_->GetInsets());
@@ -655,6 +660,25 @@ bool Tab::OnKeyPressed(const ui::KeyEvent& event) {
     return true;
   }
 #endif
+  if (std::optional<event_utils::ExtendSelectionDirection> direction =
+          event_utils::GetExtendSelectionCommandForKeyboardEvent(event)) {
+    const int offset =
+        (*direction == event_utils::ExtendSelectionDirection::kNext) ? 1 : -1;
+    if (Tab* adjacent_tab = controller_->GetAdjacentTab(this, offset)) {
+      if (!IsSelected()) {
+        controller_->SelectTab(this, event);
+      }
+      controller_->ExtendSelectionTo(adjacent_tab);
+      base::RecordAction(UserMetricsAction("TabMultiSelect_ExtendSelectionTo"));
+      if (views::FocusManager* focus_manager = GetFocusManager()) {
+        focus_manager->SetFocusedViewWithReason(
+            adjacent_tab,
+            views::FocusManager::FocusChangeReason::kFocusTraversal);
+      }
+    }
+    return true;
+  }
+
   if (event.key_code() == ui::VKEY_RETURN && !IsSelected()) {
     controller_->SelectTab(this, event);
     return true;
@@ -709,8 +733,7 @@ bool IsSelectionModifierDown(const ui::MouseEvent& event) {
 
 bool Tab::OnMousePressed(const ui::MouseEvent& event) {
   shift_pressed_on_mouse_down_ = event.IsShiftDown();
-  controller_->UpdateHoverCard(nullptr,
-                               TabSlotController::HoverCardUpdateType::kEvent);
+  controller_->UpdateHoverCard(nullptr, HoverCardUpdateType::kEvent);
   controller_->OnMouseEventInTab(this, event);
 
   // Allow a right click from touch to drag, which corresponds to a long click.
@@ -838,12 +861,11 @@ void Tab::OnMouseExited(const ui::MouseEvent& event) {
 }
 
 void Tab::OnGestureEvent(ui::GestureEvent* event) {
-  controller_->UpdateHoverCard(nullptr,
-                               TabSlotController::HoverCardUpdateType::kEvent);
+  controller_->UpdateHoverCard(nullptr, HoverCardUpdateType::kEvent);
   switch (event->type()) {
     case ui::EventType::kGestureTapDown: {
       // TAP_DOWN is only dispatched for the first touch point.
-      DCHECK_EQ(1, event->details().touch_points());
+      CHECK_EQ(1, event->details().touch_points(), base::NotFatalUntil::M162);
 
       // See comment in OnMousePressed() as to why we copy the event.
       ui::GestureEvent event_in_parent(*event, views::AsViewClass<View>(this),
@@ -932,8 +954,7 @@ void Tab::OnFocus() {
   // Update the accessible name so that screen reader announce the correct
   // memory usage that will be shown on hover card.
   UpdateAccessibleName();
-  controller_->UpdateHoverCard(this,
-                               TabSlotController::HoverCardUpdateType::kFocus);
+  controller_->UpdateHoverCard(this, HoverCardUpdateType::kFocus);
   if (features::IsTabStripDeclutterEnabled()) {
     InvalidateLayout();
   }
@@ -945,8 +966,7 @@ void Tab::OnBlur() {
   controller_->TabKeyboardFocusChangedTo(nullptr);
 
   if (!controller_->IsFocusInTabStrip()) {
-    controller_->UpdateHoverCard(
-        nullptr, TabSlotController::HoverCardUpdateType::kFocus);
+    controller_->UpdateHoverCard(nullptr, HoverCardUpdateType::kFocus);
   }
   if (features::IsTabStripDeclutterEnabled()) {
     InvalidateLayout();
@@ -1071,8 +1091,7 @@ bool Tab::IsApparentlyActive() const {
 
 void Tab::AlertStateChanged() {
   if (controller_->HoverCardIsShowing(this)) {
-    controller_->UpdateHoverCard(
-        this, TabSlotController::HoverCardUpdateType::kTabDataChanged);
+    controller_->UpdateHoverCard(this, HoverCardUpdateType::kTabDataChanged);
   }
   DeprecatedLayoutImmediately();
 }
@@ -1221,8 +1240,8 @@ float Tab::GetZValue() const {
     sort_value += 2.f;
   }
 
-  DCHECK_GE(sort_value, 0.0f);
-  DCHECK_LE(sort_value, TabStyle::kMaximumZValue);
+  CHECK_GE(sort_value, 0.0f, base::NotFatalUntil::M162);
+  CHECK_LE(sort_value, TabStyle::kMaximumZValue, base::NotFatalUntil::M162);
 
   return sort_value;
 }
@@ -1302,7 +1321,8 @@ void Tab::UpdateIconVisibility() {
       alert_indicator_button_->showing_alert_state();
   if (glic_tab_underline_view_ &&
       (current_alert_state == tabs::TabAlert::kGlicAccessing ||
-       current_alert_state == tabs::TabAlert::kGlicSharing)) {
+       current_alert_state == tabs::TabAlert::kGlicSharing ||
+       current_alert_state == tabs::TabAlert::kAiModeSharing)) {
     // Tab underlines for glic multitab replace `alert_indicator_button` as the
     // UI indicator for sharing. In this case, ensure the alert indicator is
     // hidden.
@@ -1355,7 +1375,10 @@ void Tab::UpdateIconVisibility() {
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
   if (IsActive()) {
-    if (!declutter_eligible) {
+    const bool active_tab_declutter_eligible =
+        declutter_eligible &&
+        features::kTabStripDeclutterActiveTabCloseHideEnabled.Get();
+    if (!active_tab_declutter_eligible) {
       // Close button is shown on active tabs regardless of the size.
       showing_close_button_ = should_show_close_button;
       if (showing_close_button_) {
@@ -1374,7 +1397,7 @@ void Tab::UpdateIconVisibility() {
       available_width -= favicon_width;
     }
 
-    if (declutter_eligible) {
+    if (active_tab_declutter_eligible) {
       showing_close_button_ =
           should_show_close_button && ((!has_alert_icon && !has_favicon) ||
                                        close_button_width <= available_width);
@@ -1397,8 +1420,9 @@ void Tab::UpdateIconVisibility() {
     showing_close_button_ =
         should_show_close_button && large_enough_for_close_button &&
         !(declutter_eligible &&
+          features::kTabStripDeclutterInactiveTabCloseHideEnabled.Get() &&
           available_width <=
-              TabStyle::kTabStripDeclutterMaxTabWidthForCloseHide);
+              features::kTabStripDeclutterMaxTabWidthForCloseHide.Get());
     if (showing_close_button_) {
       available_width -= close_button_width;
     }
@@ -1498,8 +1522,7 @@ void Tab::MaybeUpdateHoverStatus(const ui::MouseEvent& event) {
   mouse_hovered_ = true;
   controller_->ShowHover(this, TabStyle::ShowHoverStyle::kSubtle);
   if (g_show_hover_card_on_mouse_hover) {
-    controller_->UpdateHoverCard(
-        this, TabSlotController::HoverCardUpdateType::kHover);
+    controller_->UpdateHoverCard(this, HoverCardUpdateType::kHover);
   }
 }
 
@@ -1550,8 +1573,7 @@ void Tab::OnTabDataChanged(TabChangeType tab_change_type,
 
   tabs::TabData old(std::move(data_));
   data_ = tab_data;
-  icon_->SetData(data_);
-  icon_->SetCanPaintToLayer(controller_->CanPaintThrobberToLayer());
+  icon_->SetData(data_, controller_->CanPaintThrobberToLayer());
   UpdateTabIconAttention();
   if (tabs::ShouldUpdateAccessibleName(old, data_)) {
     UpdateAccessibleName();
@@ -1596,8 +1618,7 @@ void Tab::OnTabDataChanged(TabChangeType tab_change_type,
   }
   SetHoverCardDataFrom(data_);
   if (controller_->HoverCardIsShowing(this)) {
-    controller_->UpdateHoverCard(
-        this, TabSlotController::HoverCardUpdateType::kTabDataChanged);
+    controller_->UpdateHoverCard(this, HoverCardUpdateType::kTabDataChanged);
   }
 
   // Since tab group naming can be based on the name of the first tab in the

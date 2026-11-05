@@ -71,6 +71,8 @@
 #include "net/http/http_response_headers.h"
 #include "services/network/public/mojom/cross_origin_embedder_policy.mojom.h"
 #include "services/network/public/mojom/network_context.mojom.h"
+#include "third_party/blink/public/common/features.h"
+#include "third_party/blink/public/common/features_generated.h"
 #include "third_party/blink/public/common/origin_trials/trial_token_validator.h"
 #include "third_party/blink/public/common/service_worker/service_worker_type_converters.h"
 #include "third_party/blink/public/common/storage_key/storage_key.h"
@@ -449,12 +451,17 @@ void ServiceWorkerVersion::SetStatus(Status status) {
   if (status == INSTALLED) {
     embedded_worker_->OnWorkerVersionInstalled();
   } else if (status == ACTIVATED) {
-#if !BUILDFLAG(IS_ANDROID)
     // Notify the hid delegate observer if the active service worker has any hid
     // event handlers.
-    context_->hid_delegate_observer()->UpdateHasEventHandlers(
-        registration_id_, has_hid_event_handlers_);
-#endif  // !BUILDFLAG(IS_ANDROID)
+#if BUILDFLAG(IS_ANDROID)
+    if (base::FeatureList::IsEnabled(blink::features::kWebHID) &&
+        base::FeatureList::IsEnabled(
+            features::kWebHidOnDesktopAndroidServiceWorkers))
+#endif  // BUILDFLAG(IS_ANDROID)
+    {
+      context_->hid_delegate_observer()->UpdateHasEventHandlers(
+          registration_id_, has_hid_event_handlers_);
+    }
 
 #if !BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_DESKTOP_ANDROID)
     // Notify the usb delegate observer if the active service worker has any usb
@@ -835,6 +842,7 @@ ServiceWorkerExternalRequestResult ServiceWorkerVersion::StartExternalRequest(
   // Idle timer will be scheduled when request finishes, if there is no other
   // requests and events.
   ++latest_external_keepalive_sequence_number_;
+  has_external_keepalive_ = true;
   endpoint()->AddKeepAlive(latest_external_keepalive_sequence_number_);
 
   return ServiceWorkerExternalRequestResult::kOk;
@@ -963,21 +971,6 @@ ServiceWorkerExternalRequestResult ServiceWorkerVersion::FinishExternalRequest(
     int request_id = iter->second;
     external_request_uuid_to_request_id_.erase(iter);
     bool ok = FinishRequest(request_id, /*was_handled=*/true);
-
-    // If an request is finished and there is no other requests, we ask event
-    // queue to check if idle timeout should be scheduled. Event queue may
-    // schedule idle timeout if there is no events at the time.
-    // Also checks running status. Idle timeout is not meaningful if the worker
-    // is stopping or stopped.
-    if (ok && !HasWorkInBrowser() &&
-        running_status() == blink::EmbeddedWorkerStatus::kRunning) {
-      // If SW event queue request termination at this very moment, then SW can
-      // be terminated before waiting for the next idle timeout. Details are
-      // described in crbug/1399324.
-      // TODO(richardzh): Complete crbug/1399324 which would resolve this issue.
-      endpoint()->ClearKeepAlive();
-    }
-
     return ok ? ServiceWorkerExternalRequestResult::kOk
               : ServiceWorkerExternalRequestResult::kBadRequestId;
   }
@@ -1895,6 +1888,7 @@ void ServiceWorkerVersion::OpenNewTab(const GURL& url,
 
 void ServiceWorkerVersion::OpenPaymentHandlerWindow(
     const GURL& url,
+    blink::mojom::PaymentHandlerOpenWindowOptionsPtr options,
     OpenPaymentHandlerWindowCallback callback) {
   // Just respond failure if we are shutting down.
   if (!context_) {
@@ -1926,6 +1920,28 @@ void ServiceWorkerVersion::OpenPaymentHandlerWindow(
         "PaymentRequestEvent.");
     receiver_.reset();
     return;
+  }
+
+  // The renderer sends a preferred size only when the
+  // PaymentHandlerStaticCustomSize feature is enabled, and only if both
+  // dimensions are greater than 0.
+  if (options->preferred_inner_size.has_value()) {
+    if (!base::FeatureList::IsEnabled(
+            blink::features::kPaymentHandlerStaticCustomSize)) {
+      associated_interface_receiver_.ReportBadMessage(
+          "Received PaymentRequestEvent#openWindow() request with a preferred "
+          "size while PaymentHandlerStaticCustomSize is disabled.");
+      receiver_.reset();
+      return;
+    }
+    if (options->preferred_inner_size->width() <= 0 ||
+        options->preferred_inner_size->height() <= 0) {
+      associated_interface_receiver_.ReportBadMessage(
+          "Received PaymentRequestEvent#openWindow() request with a "
+          "non-positive preferred size.");
+      receiver_.reset();
+      return;
+    }
   }
 
   // `PaymentHandlerSupport::ShowPaymentHandlerWindow` implements API
@@ -1961,7 +1977,7 @@ void ServiceWorkerVersion::OpenPaymentHandlerWindow(
   }
 
   PaymentHandlerSupport::ShowPaymentHandlerWindow(
-      url, context_.get(),
+      url, options->preferred_inner_size, context_.get(),
       base::BindOnce(&ServiceWorkerVersion::DidShowPaymentHandlerWindow,
                      weak_factory_.GetWeakPtr(), url, key_, context_),
       base::BindOnce(
@@ -2101,23 +2117,37 @@ void ServiceWorkerVersion::PostMessageToClient(
     return;
   }
 
-  if (IsBackForwardCacheEnabled()) {
-    // When |PostMessageToClient| is called on a client that is in bfcache,
-    // evict the bfcache entry.
-    if (service_worker_client->IsInBackForwardCache()) {
-      EvictBackForwardCachedControllee(
-          service_worker_client, BackForwardCacheMetrics::NotRestoredReason::
-                                     kServiceWorkerPostMessage);
-      return;
-    }
-  }
-
   if (service_worker_client->key() != key_) {
     associated_interface_receiver_.ReportBadMessage(
         "Received Client#postMessage() request for a cross-origin client.");
     receiver_.reset();
     return;
   }
+
+  if (IsBackForwardCacheEnabled()) {
+    // When |PostMessageToClient| is called on a client that is in bfcache,
+    // evict the bfcache entry.
+    if (service_worker_client->IsInBackForwardCache()) {
+      // The client may be controlled by another service worker: this one can
+      // hold it from clients.matchAll({includeUncontrolled: true}) or as the
+      // source of a message. Only the controller has the client in its
+      // `bfcached_controllee_map_`, so evict it through the controller.
+      // Without a controller, nothing will Uncontrol() the client later, so
+      // evict it directly like ServiceWorkerRegistration::ClaimClients().
+      if (ServiceWorkerVersion* controller =
+              service_worker_client->controller()) {
+        controller->EvictBackForwardCachedControllee(
+            service_worker_client, BackForwardCacheMetrics::NotRestoredReason::
+                                       kServiceWorkerPostMessage);
+      } else {
+        service_worker_client->EvictFromBackForwardCache(
+            BackForwardCacheMetrics::NotRestoredReason::
+                kServiceWorkerPostMessage);
+      }
+      return;
+    }
+  }
+
   if (!service_worker_client->is_execution_ready()) {
     // It's subtle why this ReportBadMessage is correct. Consider the
     // sequence:
@@ -3024,11 +3054,11 @@ void ServiceWorkerVersion::OnTimeoutTimer() {
     return;
   }
 
-  // If an request is expired and there is no other requests, we ask event
-  // queue to check if idle timeout should be scheduled. Event queue may
-  // schedule idle timeout if there is no events at the time.
+  // If a CONTINUE_ON_TIMEOUT request expired and no other browser requests
+  // remain, run no-work handling (including clearing any external keepalive so
+  // the renderer can schedule its idle timer).
   if (has_continue_on_timeout && !HasWorkInBrowser()) {
-    endpoint()->ClearKeepAlive();
+    OnNoWorkInBrowser();
   }
 
   // Check ping status.
@@ -3187,10 +3217,6 @@ ServiceWorkerVersion::DeduceStartWorkerFailureReason(
   return default_code;
 }
 
-net::Error ServiceWorkerVersion::GetMainScriptNetError() {
-  return net::Error(script_cache_map()->main_script_net_error());
-}
-
 void ServiceWorkerVersion::MarkIfStale() {
   if (!context_) {
     return;
@@ -3242,10 +3268,11 @@ void ServiceWorkerVersion::OnStoppedInternal(
     protect = this;
   }
 
-  // |start_callbacks_| can be non-empty if a start worker request arrived while
-  // the worker was stopping. The worker must be restarted to fulfill the
-  // request.
+  // |start_callbacks_| can be non-empty if the worker was stopped while
+  // starting, or if a start worker request arrived while the worker was
+  // stopping. The worker must be restarted to fulfill the request.
   bool should_restart = !start_callbacks_.empty();
+  bool is_restart_disallowed = false;
   if (is_redundant() || in_dtor_) {
     // This worker will be destroyed soon.
     should_restart = false;
@@ -3261,6 +3288,11 @@ void ServiceWorkerVersion::OnStoppedInternal(
     // This worker is stopped while warmed-up or warming-up. Such workers don't
     // need to restart.
     should_restart = false;
+  } else if (should_restart && context_ && !IsStartWorkerAllowed()) {
+    // Starting may have been disallowed since it was requested, e.g. because
+    // the worker's extension was disabled (crbug.com/531900625).
+    should_restart = false;
+    is_restart_disallowed = true;
   }
 
   if (!stop_time_.is_null()) {
@@ -3283,8 +3315,11 @@ void ServiceWorkerVersion::OnStoppedInternal(
 
   if (!should_restart) {
     // Let all start callbacks fail.
-    FinishStartWorker(DeduceStartWorkerFailureReason(
-        blink::ServiceWorkerStatusCode::kErrorStartWorkerFailed));
+    FinishStartWorker(
+        is_restart_disallowed
+            ? blink::ServiceWorkerStatusCode::kErrorDisallowed
+            : DeduceStartWorkerFailureReason(
+                  blink::ServiceWorkerStatusCode::kErrorStartWorkerFailed));
   }
 
   // TODO(crbug.com/40864997): remove the following DCHECK when the cause
@@ -3315,6 +3350,7 @@ void ServiceWorkerVersion::OnStoppedInternal(
   request_timeouts_.clear();
   external_request_uuid_to_request_id_.clear();
   latest_external_keepalive_sequence_number_ = 0;
+  has_external_keepalive_ = false;
   for (auto& callback : error_callbacks) {
     std::move(callback).Run(blink::ServiceWorkerStatusCode::kErrorFailed);
   }
@@ -3371,6 +3407,15 @@ void ServiceWorkerVersion::CleanUpExternalRequest(
 
 void ServiceWorkerVersion::OnNoWorkInBrowser() {
   DCHECK(!HasWorkInBrowser());
+  // StartExternalRequest() calls AddKeepAlive(), which cancels the renderer's
+  // idle timer. Once all browser requests finish, notify the renderer once to
+  // reschedule its idle timer for the external keepalive.
+  if (has_external_keepalive_) {
+    has_external_keepalive_ = false;
+    if (running_status() == blink::EmbeddedWorkerStatus::kRunning) {
+      endpoint()->ClearKeepAlive();
+    }
+  }
   if (context_ && worker_is_idle_on_renderer_) {
     scoped_refptr<ServiceWorkerRegistration> registration =
         context_->GetLiveRegistration(registration_id());

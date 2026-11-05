@@ -14,8 +14,6 @@ import static org.mockito.Mockito.verifyNoMoreInteractions;
 
 import android.graphics.Bitmap;
 
-import jp.tomorrowkey.android.gifplayer.BaseGifImage;
-
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Rule;
@@ -29,6 +27,7 @@ import org.mockito.junit.MockitoRule;
 
 import org.chromium.base.Callback;
 import org.chromium.base.test.BaseRobolectricTestRunner;
+import org.chromium.net.NetError;
 import org.chromium.ui.test.util.MockitoHelper;
 
 /** Test for NetworkImageFetcher.java. */
@@ -46,7 +45,6 @@ public class NetworkImageFetcherTest {
 
     NetworkImageFetcher mImageFetcher;
     Bitmap mBitmap;
-    BaseGifImage mGif;
     ImageDataFetchResult mGifFetchResult;
 
     @Before
@@ -54,12 +52,11 @@ public class NetworkImageFetcherTest {
         mImageFetcher = new NetworkImageFetcher(mBridge);
 
         mBitmap = Bitmap.createBitmap(WIDTH_PX, HEIGHT_PX, Bitmap.Config.ARGB_8888);
-        // This gif won't be valid, but we're only using the address in these tests.
-        mGif = new BaseGifImage(new byte[] {});
         mGifFetchResult =
                 new ImageDataFetchResult(
-                        mGif.getData(),
-                        new RequestMetadata("image/gif", 200, "test_content_location_header"));
+                        new byte[] {},
+                        new RequestMetadata(
+                                "image/gif", 200, NetError.OK, "test_content_location_header"));
 
         ArgumentCaptor<Callback<Bitmap>> bitmapCallbackCaptor = MockitoHelper.callbackCaptor();
         doAnswer(

@@ -21,6 +21,10 @@
 #include "third_party/blink/renderer/core/dom/events/event.h"
 #include "third_party/blink/renderer/core/dom/events/native_event_listener.h"
 #include "third_party/blink/renderer/core/dom/focusgroup_flags.h"
+#include "third_party/blink/renderer/core/dom/id_target_observer.h"
+#include "third_party/blink/renderer/core/dom/id_target_observer_registry.h"
+#include "third_party/blink/renderer/core/dom/scroll_marker_group_pseudo_element.h"
+#include "third_party/blink/renderer/core/dom/scroll_marker_pseudo_element.h"
 #include "third_party/blink/renderer/core/dom/shadow_root.h"
 #include "third_party/blink/renderer/core/editing/testing/editing_test_base.h"
 #include "third_party/blink/renderer/core/event_type_names.h"
@@ -30,6 +34,7 @@
 #include "third_party/blink/renderer/core/frame/visual_viewport.h"
 #include "third_party/blink/renderer/core/geometry/dom_rect.h"
 #include "third_party/blink/renderer/core/html/forms/html_select_element.h"
+#include "third_party/blink/renderer/core/html/html_document.h"
 #include "third_party/blink/renderer/core/html/html_html_element.h"
 #include "third_party/blink/renderer/core/html/html_plugin_element.h"
 #include "third_party/blink/renderer/core/layout/layout_box_model_object.h"
@@ -50,6 +55,134 @@ class ElementTest : public EditingTestBase {
  private:
   ScopedFocusgroupForTest focusgroup_enabled{true};
 };
+
+TEST_F(ElementTest, ParserClassDataReuse) {
+  GetDocument().SetParsingState(Document::kParsing);
+  Vector<Attribute, kAttributePrealloc> attributes;
+  attributes.emplace_back(html_names::kClassAttr,
+                          AtomicString("alpha beta alpha"));
+  Element* first = GetDocument().CreateElementForBinding(AtomicString("div"));
+  Element* second = GetDocument().CreateElementForBinding(AtomicString("div"));
+  first->ParserSetAttributes(attributes);
+  second->ParserSetAttributes(attributes);
+  ASSERT_TRUE(first->SharesSameElementData(*second));
+  EXPECT_EQ(2u, second->ClassNames().size());
+  EXPECT_EQ(AtomicString("alpha"), second->ClassNames()[0]);
+  EXPECT_EQ(AtomicString("beta"), second->ClassNames()[1]);
+  EXPECT_TRUE(second->CouldHaveClass(AtomicString("alpha")));
+  EXPECT_TRUE(second->CouldHaveClass(AtomicString("beta")));
+  EXPECT_TRUE(second->classList().contains(AtomicString("alpha")));
+
+  GetDocument().body()->AppendChild(first);
+  GetDocument().body()->AppendChild(second);
+  second->setAttribute(html_names::kClassAttr, AtomicString("gamma"));
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_FALSE(first->SharesSameElementData(*second));
+  EXPECT_TRUE(second->ClassNames().Contains(AtomicString("gamma")));
+  EXPECT_FALSE(second->ClassNames().Contains(AtomicString("alpha")));
+  EXPECT_TRUE(first->ClassNames().Contains(AtomicString("alpha")));
+  EXPECT_TRUE(GetDocument().body()->CouldHaveClass(AtomicString("gamma")));
+  EXPECT_EQ(second,
+            GetDocument().body()->QuerySelector(AtomicString(".gamma")));
+}
+
+TEST_F(ElementTest, ParserClassDataAfterCompatibilityModeChange) {
+  GetDocument().SetCompatibilityMode(Document::kQuirksMode);
+  GetDocument().SetParsingState(Document::kParsing);
+  Vector<Attribute, kAttributePrealloc> attributes;
+  attributes.emplace_back(html_names::kClassAttr, AtomicString("Alpha"));
+  Element* first = GetDocument().CreateElementForBinding(AtomicString("div"));
+  Element* second = GetDocument().CreateElementForBinding(AtomicString("div"));
+  first->ParserSetAttributes(attributes);
+  second->ParserSetAttributes(attributes);
+  ASSERT_TRUE(first->SharesSameElementData(*second));
+  ASSERT_TRUE(second->ClassNames().Contains(AtomicString("alpha")));
+  EXPECT_TRUE(second->classList().contains(AtomicString("Alpha")));
+
+  GetDocument().SetCompatibilityMode(Document::kNoQuirksMode);
+  GetDocument().SetParsingState(Document::kParsing);
+  Element* third = GetDocument().CreateElementForBinding(AtomicString("div"));
+  third->ParserSetAttributes(attributes);
+  ASSERT_TRUE(first->SharesSameElementData(*third));
+  EXPECT_TRUE(third->ClassNames().Contains(AtomicString("Alpha")));
+  EXPECT_FALSE(third->ClassNames().Contains(AtomicString("alpha")));
+}
+
+TEST_F(ElementTest, ClonedClassDataReuse) {
+  Element* source = GetDocument().CreateElementForBinding(AtomicString("div"));
+  source->setAttribute(html_names::kClassAttr, AtomicString("alpha beta"));
+  Element* clone = To<Element>(source->cloneNode(false));
+  ASSERT_TRUE(source->SharesSameElementData(*clone));
+  EXPECT_TRUE(clone->ClassNames().Contains(AtomicString("alpha")));
+  EXPECT_TRUE(clone->CouldHaveClass(AtomicString("alpha")));
+  EXPECT_TRUE(clone->classList().contains(AtomicString("alpha")));
+  clone->setAttribute(html_names::kClassAttr, AtomicString("gamma"));
+  EXPECT_TRUE(source->ClassNames().Contains(AtomicString("alpha")));
+  EXPECT_TRUE(clone->ClassNames().Contains(AtomicString("gamma")));
+}
+
+TEST_F(ElementTest, ClonedClassDataAfterCompatibilityModeChange) {
+  Element* source = GetDocument().CreateElementForBinding(AtomicString("div"));
+  source->setAttribute(html_names::kClassAttr, AtomicString("Alpha"));
+  GetDocument().SetCompatibilityMode(Document::kQuirksMode);
+  Element* clone = To<Element>(source->cloneNode(false));
+  EXPECT_TRUE(clone->ClassNames().Contains(AtomicString("alpha")));
+  EXPECT_FALSE(clone->ClassNames().Contains(AtomicString("Alpha")));
+  EXPECT_TRUE(clone->CouldHaveClass(AtomicString("alpha")));
+
+  GetDocument().SetCompatibilityMode(Document::kNoQuirksMode);
+  Element* second_clone = To<Element>(clone->cloneNode(false));
+  EXPECT_TRUE(second_clone->ClassNames().Contains(AtomicString("Alpha")));
+  EXPECT_FALSE(second_clone->ClassNames().Contains(AtomicString("alpha")));
+}
+
+TEST_F(ElementTest, BloomFilterRemovalScansNonElementChildren) {
+  SetBodyContent(R"HTML(
+    <div>
+      <span class="removed"></span>
+      text
+      <span class="remaining"></span>
+    </div>
+  )HTML");
+
+  Element* parent = GetDocument().body()->firstElementChild();
+  Element* removed = parent->firstElementChild();
+  const AtomicString removed_class("removed");
+  const AtomicString remaining_class("remaining");
+  ASSERT_NE(Element::FilterForString(removed_class) &
+                Element::FilterForString(remaining_class),
+            Element::FilterForString(removed_class));
+
+  parent->RemoveChild(removed);
+
+  EXPECT_FALSE(parent->CouldHaveClass(removed_class));
+  EXPECT_TRUE(parent->CouldHaveClass(remaining_class));
+}
+
+TEST_F(ElementTest, BloomFilterRemovalFindsMultipleElementChildren) {
+  SetBodyContent(R"HTML(
+    <div>
+      <span class="removed"></span>
+      text
+      <span class="first"></span>
+      text
+      <span class="second"></span>
+    </div>
+  )HTML");
+
+  Element* parent = GetDocument().body()->firstElementChild();
+  Element* removed = parent->firstElementChild();
+  const AtomicString first_class("first");
+  const AtomicString second_class("second");
+  ASSERT_NE(Element::FilterForString(first_class) &
+                Element::FilterForString(second_class),
+            Element::FilterForString(second_class));
+
+  parent->RemoveChild(removed);
+
+  EXPECT_TRUE(parent->CouldHaveClass(first_class));
+  EXPECT_TRUE(parent->CouldHaveClass(second_class));
+}
 
 TEST_F(ElementTest, FocusableDesignMode) {
   Document& document = GetDocument();
@@ -344,12 +477,12 @@ TEST_F(ElementTest, StickySubtreesAreTrackedCorrectly) {
       document.getElementById(AtomicString("greatGrandchild"))
           ->GetLayoutObject();
 
-  EXPECT_FALSE(ancestor->StyleRef().SubtreeIsSticky());
-  EXPECT_TRUE(outer_sticky->StyleRef().SubtreeIsSticky());
-  EXPECT_TRUE(child->StyleRef().SubtreeIsSticky());
-  EXPECT_TRUE(grandchild->StyleRef().SubtreeIsSticky());
-  EXPECT_TRUE(inner_sticky->StyleRef().SubtreeIsSticky());
-  EXPECT_TRUE(great_grandchild->StyleRef().SubtreeIsSticky());
+  EXPECT_FALSE(ancestor->Style().SubtreeIsSticky());
+  EXPECT_TRUE(outer_sticky->Style().SubtreeIsSticky());
+  EXPECT_TRUE(child->Style().SubtreeIsSticky());
+  EXPECT_TRUE(grandchild->Style().SubtreeIsSticky());
+  EXPECT_TRUE(inner_sticky->Style().SubtreeIsSticky());
+  EXPECT_TRUE(great_grandchild->Style().SubtreeIsSticky());
 
   // This forces 'child' to fork it's StyleRareInheritedData, so that we can
   // ensure that the sticky subtree update behavior survives forking.
@@ -359,19 +492,18 @@ TEST_F(ElementTest, StickySubtreesAreTrackedCorrectly) {
   UpdateAllLifecyclePhasesForTest();
   EXPECT_EQ(DocumentLifecycle::kPaintClean, document.Lifecycle().GetState());
 
-  EXPECT_EQ(RubyPosition::kOver, outer_sticky->StyleRef().GetRubyPosition());
-  EXPECT_EQ(RubyPosition::kUnder, child->StyleRef().GetRubyPosition());
-  EXPECT_EQ(RubyPosition::kUnder, grandchild->StyleRef().GetRubyPosition());
-  EXPECT_EQ(RubyPosition::kUnder, inner_sticky->StyleRef().GetRubyPosition());
-  EXPECT_EQ(RubyPosition::kUnder,
-            great_grandchild->StyleRef().GetRubyPosition());
+  EXPECT_EQ(RubyPosition::kOver, outer_sticky->Style().GetRubyPosition());
+  EXPECT_EQ(RubyPosition::kUnder, child->Style().GetRubyPosition());
+  EXPECT_EQ(RubyPosition::kUnder, grandchild->Style().GetRubyPosition());
+  EXPECT_EQ(RubyPosition::kUnder, inner_sticky->Style().GetRubyPosition());
+  EXPECT_EQ(RubyPosition::kUnder, great_grandchild->Style().GetRubyPosition());
 
   // Setting -webkit-ruby value shouldn't have affected the sticky subtree bit.
-  EXPECT_TRUE(outer_sticky->StyleRef().SubtreeIsSticky());
-  EXPECT_TRUE(child->StyleRef().SubtreeIsSticky());
-  EXPECT_TRUE(grandchild->StyleRef().SubtreeIsSticky());
-  EXPECT_TRUE(inner_sticky->StyleRef().SubtreeIsSticky());
-  EXPECT_TRUE(great_grandchild->StyleRef().SubtreeIsSticky());
+  EXPECT_TRUE(outer_sticky->Style().SubtreeIsSticky());
+  EXPECT_TRUE(child->Style().SubtreeIsSticky());
+  EXPECT_TRUE(grandchild->Style().SubtreeIsSticky());
+  EXPECT_TRUE(inner_sticky->Style().SubtreeIsSticky());
+  EXPECT_TRUE(great_grandchild->Style().SubtreeIsSticky());
 
   // Now switch 'outerSticky' back to being non-sticky - all descendents between
   // it and the 'innerSticky' should be updated, and the 'innerSticky' should
@@ -381,11 +513,11 @@ TEST_F(ElementTest, StickySubtreesAreTrackedCorrectly) {
   UpdateAllLifecyclePhasesForTest();
   EXPECT_EQ(DocumentLifecycle::kPaintClean, document.Lifecycle().GetState());
 
-  EXPECT_FALSE(outer_sticky->StyleRef().SubtreeIsSticky());
-  EXPECT_FALSE(child->StyleRef().SubtreeIsSticky());
-  EXPECT_FALSE(grandchild->StyleRef().SubtreeIsSticky());
-  EXPECT_TRUE(inner_sticky->StyleRef().SubtreeIsSticky());
-  EXPECT_TRUE(great_grandchild->StyleRef().SubtreeIsSticky());
+  EXPECT_FALSE(outer_sticky->Style().SubtreeIsSticky());
+  EXPECT_FALSE(child->Style().SubtreeIsSticky());
+  EXPECT_FALSE(grandchild->Style().SubtreeIsSticky());
+  EXPECT_TRUE(inner_sticky->Style().SubtreeIsSticky());
+  EXPECT_TRUE(great_grandchild->Style().SubtreeIsSticky());
 }
 
 TEST_F(ElementTest, GetElementsByClassNameCrash) {
@@ -705,11 +837,11 @@ TEST_F(ElementTest, IsFocusableForInertInContentVisibility) {
   // Mark the element as inert. Due to content-visibility, the LayoutObject
   // will still think that it's not inert.
   target->SetBooleanAttribute(html_names::kInertAttr, true);
-  ASSERT_FALSE(target->GetLayoutObject()->StyleRef().IsInert());
+  ASSERT_FALSE(target->GetLayoutObject()->Style().IsInert());
 
   // IsFocusable() should update the LayoutObject and notice that it's inert.
   ASSERT_FALSE(target->IsFocusable());
-  ASSERT_TRUE(target->GetLayoutObject()->StyleRef().IsInert());
+  ASSERT_TRUE(target->GetLayoutObject()->Style().IsInert());
 }
 
 TEST_F(ElementTest, ParseFocusgroupAttrDefaultValuesWhenEmptyValue) {
@@ -931,17 +1063,18 @@ TEST_F(ElementTest, ParseFocusgroupAttrGrid) {
     <div id=e1 focusgroup=grid></div>
     <table id=e2 focusgroup=grid></table>
     <table id=e3 focusgroup="grid wrap"></table>
-    <table id=e4 focusgroup="grid row-wrap"></table>
-    <table id=e5 focusgroup="grid col-wrap"></table>
-    <table id=e6 focusgroup="grid row-wrap col-wrap"></table>
+    <table id=e4 focusgroup="grid rowwrap"></table>
+    <table id=e5 focusgroup="grid colwrap"></table>
+    <table id=e6 focusgroup="grid rowwrap colwrap"></table>
     <table id=e7 focusgroup="grid flow"></table>
-    <table id=e8 focusgroup="grid row-flow"></table>
-    <table id=e9 focusgroup="grid col-flow"></table>
-    <table id=e10 focusgroup="grid row-flow col-flow"></table>
-    <table id=e11 focusgroup="grid row-wrap row-flow"></table>
-    <table id=e12 focusgroup="grid row-wrap col-flow"></table>
-    <table id=e13 focusgroup="grid col-wrap col-flow"></table>
-    <table id=e14 focusgroup="grid col-wrap row-flow"></table>
+    <table id=e8 focusgroup="grid rowflow"></table>
+    <table id=e9 focusgroup="grid colflow"></table>
+    <table id=e10 focusgroup="grid rowflow colflow"></table>
+    <table id=e11 focusgroup="grid rowwrap rowflow"></table>
+    <table id=e12 focusgroup="grid rowwrap colflow"></table>
+    <table id=e13 focusgroup="grid colwrap colflow"></table>
+    <table id=e14 focusgroup="grid colwrap rowflow"></table>
+    <div id=e16 focusgroup="grid manual noitemcontrols"></div>
     <table focusgroup=grid></table>
     <div id=e15 focusgroup="flow"></div> <!-- Error -->
   )HTML");
@@ -961,6 +1094,7 @@ TEST_F(ElementTest, ParseFocusgroupAttrGrid) {
   auto* e13 = document.getElementById(AtomicString("e13"));
   auto* e14 = document.getElementById(AtomicString("e14"));
   auto* e15 = document.getElementById(AtomicString("e15"));
+  auto* e16 = document.getElementById(AtomicString("e16"));
   ASSERT_TRUE(e1);
   ASSERT_TRUE(e2);
   ASSERT_TRUE(e3);
@@ -976,6 +1110,7 @@ TEST_F(ElementTest, ParseFocusgroupAttrGrid) {
   ASSERT_TRUE(e13);
   ASSERT_TRUE(e14);
   ASSERT_TRUE(e15);
+  ASSERT_TRUE(e16);
 
   FocusgroupData e1_data = e1->GetFocusgroupData();
   FocusgroupData e2_data = e2->GetFocusgroupData();
@@ -992,46 +1127,59 @@ TEST_F(ElementTest, ParseFocusgroupAttrGrid) {
   FocusgroupData e13_data = e13->GetFocusgroupData();
   FocusgroupData e14_data = e14->GetFocusgroupData();
   FocusgroupData e15_data = e15->GetFocusgroupData();
+  FocusgroupData e16_data = e16->GetFocusgroupData();
 
-  EXPECT_EQ(e1_data,
-            FocusgroupData(FocusgroupBehavior::kGrid, FocusgroupFlags::kNone));
-  EXPECT_EQ(e2_data,
-            FocusgroupData(FocusgroupBehavior::kGrid, FocusgroupFlags::kNone));
+  EXPECT_EQ(e1_data, FocusgroupData(FocusgroupBehavior::kGrid,
+                                    FocusgroupFlags::kItemControls));
+  EXPECT_EQ(e2_data, FocusgroupData(FocusgroupBehavior::kGrid,
+                                    FocusgroupFlags::kItemControls));
   EXPECT_EQ(e3_data, FocusgroupData(FocusgroupBehavior::kGrid,
                                     FocusgroupFlags::kWrapInline |
-                                        FocusgroupFlags::kWrapBlock));
+                                        FocusgroupFlags::kWrapBlock |
+                                        FocusgroupFlags::kItemControls));
   EXPECT_EQ(e4_data, FocusgroupData(FocusgroupBehavior::kGrid,
-                                    FocusgroupFlags::kWrapInline));
+                                    FocusgroupFlags::kWrapInline |
+                                        FocusgroupFlags::kItemControls));
   EXPECT_EQ(e5_data, FocusgroupData(FocusgroupBehavior::kGrid,
-                                    FocusgroupFlags::kWrapBlock));
+                                    FocusgroupFlags::kWrapBlock |
+                                        FocusgroupFlags::kItemControls));
   EXPECT_EQ(e6_data, FocusgroupData(FocusgroupBehavior::kGrid,
                                     FocusgroupFlags::kWrapInline |
-                                        FocusgroupFlags::kWrapBlock));
+                                        FocusgroupFlags::kWrapBlock |
+                                        FocusgroupFlags::kItemControls));
   EXPECT_EQ(e7_data, FocusgroupData(FocusgroupBehavior::kGrid,
                                     FocusgroupFlags::kRowFlow |
-                                        FocusgroupFlags::kColFlow));
+                                        FocusgroupFlags::kColFlow |
+                                        FocusgroupFlags::kItemControls));
   EXPECT_EQ(e8_data, FocusgroupData(FocusgroupBehavior::kGrid,
-                                    FocusgroupFlags::kRowFlow));
+                                    FocusgroupFlags::kRowFlow |
+                                        FocusgroupFlags::kItemControls));
   EXPECT_EQ(e9_data, FocusgroupData(FocusgroupBehavior::kGrid,
-                                    FocusgroupFlags::kColFlow));
+                                    FocusgroupFlags::kColFlow |
+                                        FocusgroupFlags::kItemControls));
   EXPECT_EQ(e10_data, FocusgroupData(FocusgroupBehavior::kGrid,
                                      FocusgroupFlags::kRowFlow |
-                                         FocusgroupFlags::kColFlow));
-  // e11 has conflicting wrap/flow for row axis, so should be invalid.
-  EXPECT_EQ(e11_data, FocusgroupData(FocusgroupBehavior::kNoBehavior,
-                                     FocusgroupFlags::kNone));
+                                         FocusgroupFlags::kColFlow |
+                                         FocusgroupFlags::kItemControls));
+  // Conflicting modifiers fall back to a hard edge (non-wrapping) only on that
+  // axis.
+  EXPECT_EQ(e11_data, FocusgroupData(FocusgroupBehavior::kGrid,
+                                     FocusgroupFlags::kItemControls));
   EXPECT_EQ(e12_data, FocusgroupData(FocusgroupBehavior::kGrid,
                                      FocusgroupFlags::kWrapInline |
-                                         FocusgroupFlags::kColFlow));
-  // e13 has conflicting wrap/flow for column axis, so should be invalid.
-  EXPECT_EQ(e13_data, FocusgroupData(FocusgroupBehavior::kNoBehavior,
-                                     FocusgroupFlags::kNone));
+                                         FocusgroupFlags::kColFlow |
+                                         FocusgroupFlags::kItemControls));
+  EXPECT_EQ(e13_data, FocusgroupData(FocusgroupBehavior::kGrid,
+                                     FocusgroupFlags::kItemControls));
   EXPECT_EQ(e14_data, FocusgroupData(FocusgroupBehavior::kGrid,
                                      FocusgroupFlags::kWrapBlock |
-                                         FocusgroupFlags::kRowFlow));
+                                         FocusgroupFlags::kRowFlow |
+                                         FocusgroupFlags::kItemControls));
   // e15 should be invalid since "flow" isn't a behavior token
   EXPECT_EQ(e15_data, FocusgroupData(FocusgroupBehavior::kNoBehavior,
                                      FocusgroupFlags::kNone));
+  EXPECT_EQ(e16_data, FocusgroupData(FocusgroupBehavior::kGrid,
+                                     FocusgroupFlags::kManual));
 }
 
 TEST_F(ElementTest, ParseFocusgroupAttrOptOutNone) {
@@ -1215,7 +1363,7 @@ TEST_F(ElementTest, FocusgroupFlagsToString) {
       static_cast<FocusgroupFlags>(FocusgroupFlags::kInline |
                                    FocusgroupFlags::kWrapInline)};
   EXPECT_EQ(
-      "toolbar:(inline|wrap|row-wrap)",
+      "toolbar:(inline|wrap|rowwrap)",
       focusgroup::FocusgroupDataToStringForTesting(toolbar_wrap_inline_data));
 
   // Grid basic.
@@ -1227,20 +1375,19 @@ TEST_F(ElementTest, FocusgroupFlagsToString) {
   // Grid with row wrap only.
   FocusgroupData grid_wrap_inline_data{FocusgroupBehavior::kGrid,
                                        FocusgroupFlags::kWrapInline};
-  EXPECT_EQ(
-      "grid:(wrap|row-wrap)",
-      focusgroup::FocusgroupDataToStringForTesting(grid_wrap_inline_data));
+  EXPECT_EQ("grid:(wrap|rowwrap)", focusgroup::FocusgroupDataToStringForTesting(
+                                       grid_wrap_inline_data));
 
   // Grid with row flow only.
   FocusgroupData grid_row_flow_data{FocusgroupBehavior::kGrid,
                                     FocusgroupFlags::kRowFlow};
-  EXPECT_EQ("grid:(flow|row-flow)",
+  EXPECT_EQ("grid:(flow|rowflow)",
             focusgroup::FocusgroupDataToStringForTesting(grid_row_flow_data));
 
   // Grid with column flow only.
   FocusgroupData grid_col_flow_data{FocusgroupBehavior::kGrid,
                                     FocusgroupFlags::kColFlow};
-  EXPECT_EQ("grid:(flow|col-flow)",
+  EXPECT_EQ("grid:(flow|colflow)",
             focusgroup::FocusgroupDataToStringForTesting(grid_col_flow_data));
 
   // Opt-out.
@@ -1550,6 +1697,205 @@ TEST_F(ElementTest, GenerateScrollMarkerGroup) {
       non_scroller->GetPseudoElement(kPseudoIdScrollMarkerGroupBefore));
 }
 
+TEST_F(ElementTest, ChangeScrollMarkerGroupPosition) {
+  SetBodyContent(R"HTML(
+    <style>
+      #scroller {
+        scroll-marker-group: before;
+        overflow: auto;
+      }
+      #item::scroll-marker {
+        content: 'a';
+      }
+    </style>
+    <div id="scroller"><div id="item"></div></div>
+  )HTML");
+
+  Element* scroller = GetElementById("scroller");
+  Element* item = GetElementById("item");
+  UpdateAllLifecyclePhasesForTest();
+
+  PseudoElement* group_before =
+      scroller->GetPseudoElement(kPseudoIdScrollMarkerGroupBefore);
+  PseudoElement* marker = item->GetPseudoElement(kPseudoIdScrollMarker);
+  ASSERT_TRUE(group_before);
+  ASSERT_TRUE(marker);
+  ASSERT_TRUE(group_before->GetLayoutObject());
+  ASSERT_TRUE(marker->GetLayoutObject());
+  EXPECT_TRUE(marker->GetLayoutObject()->IsDescendantOf(
+      group_before->GetLayoutObject()));
+
+  // Switch to 'after'.
+  scroller->SetInlineStyleProperty(CSSPropertyID::kScrollMarkerGroup,
+                                   CSSValueID::kAfter);
+  UpdateAllLifecyclePhasesForTest();
+
+  EXPECT_FALSE(scroller->GetPseudoElement(kPseudoIdScrollMarkerGroupBefore));
+  PseudoElement* group_after =
+      scroller->GetPseudoElement(kPseudoIdScrollMarkerGroupAfter);
+  ASSERT_TRUE(group_after);
+  ASSERT_TRUE(group_after->GetLayoutObject());
+  ASSERT_TRUE(marker->GetLayoutObject());
+  EXPECT_TRUE(marker->GetLayoutObject()->IsDescendantOf(
+      group_after->GetLayoutObject()));
+
+  // Switch back to 'before'.
+  scroller->SetInlineStyleProperty(CSSPropertyID::kScrollMarkerGroup,
+                                   CSSValueID::kBefore);
+  UpdateAllLifecyclePhasesForTest();
+
+  EXPECT_FALSE(scroller->GetPseudoElement(kPseudoIdScrollMarkerGroupAfter));
+  group_before = scroller->GetPseudoElement(kPseudoIdScrollMarkerGroupBefore);
+  ASSERT_TRUE(group_before);
+  ASSERT_TRUE(group_before->GetLayoutObject());
+  ASSERT_TRUE(marker->GetLayoutObject());
+  EXPECT_TRUE(marker->GetLayoutObject()->IsDescendantOf(
+      group_before->GetLayoutObject()));
+
+  // Switch to 'none'.
+  scroller->SetInlineStyleProperty(CSSPropertyID::kScrollMarkerGroup,
+                                   CSSValueID::kNone);
+  UpdateAllLifecyclePhasesForTest();
+
+  EXPECT_FALSE(scroller->GetPseudoElement(kPseudoIdScrollMarkerGroupBefore));
+  EXPECT_FALSE(scroller->GetPseudoElement(kPseudoIdScrollMarkerGroupAfter));
+  EXPECT_FALSE(item->GetPseudoElement(kPseudoIdScrollMarker));
+}
+
+TEST_F(ElementTest, ChangeScrollMarkerGroupMode) {
+  SetBodyContent(R"HTML(
+    <style>
+      #scroller {
+        scroll-marker-group: before tabs;
+        overflow: auto;
+      }
+      #item::scroll-marker {
+        content: 'a';
+      }
+    </style>
+    <div id="scroller"><div id="item"></div></div>
+  )HTML");
+
+  Element* scroller = GetElementById("scroller");
+  UpdateAllLifecyclePhasesForTest();
+
+  auto* group = DynamicTo<ScrollMarkerGroupPseudoElement>(
+      scroller->GetPseudoElement(kPseudoIdScrollMarkerGroupBefore));
+  ASSERT_TRUE(group);
+  EXPECT_EQ(ScrollMarkerGroup::ScrollMarkerMode::kTabs,
+            group->ScrollMarkerGroupMode());
+  LayoutObject* old_layout_object = group->GetLayoutObject();
+  ASSERT_TRUE(old_layout_object);
+
+  scroller->SetInlineStyleProperty(CSSPropertyID::kScrollMarkerGroup,
+                                   "before links");
+  UpdateAllLifecyclePhasesForTest();
+
+  // Ensure a mode change keeps the same pseudo-element.
+  ASSERT_EQ(group,
+            scroller->GetPseudoElement(kPseudoIdScrollMarkerGroupBefore));
+  EXPECT_EQ(ScrollMarkerGroup::ScrollMarkerMode::kLinks,
+            group->ScrollMarkerGroupMode());
+
+  // The layout tree is reattached, so the group gets a new layout object.
+  EXPECT_TRUE(group->GetLayoutObject());
+  EXPECT_NE(old_layout_object, group->GetLayoutObject());
+}
+
+TEST_F(ElementTest, ChangeScrollMarkerGroupScrollContainer) {
+  SetBodyContent(R"HTML(
+    <style>
+      #scroller {
+        scroll-marker-group: before;
+        overflow: visible;
+      }
+      #item::scroll-marker {
+        content: 'a';
+      }
+    </style>
+    <div id="scroller"><div id="item"></div></div>
+  )HTML");
+
+  Element* scroller = GetElementById("scroller");
+  Element* item = GetElementById("item");
+  UpdateAllLifecyclePhasesForTest();
+
+  EXPECT_FALSE(scroller->GetPseudoElement(kPseudoIdScrollMarkerGroupBefore));
+  EXPECT_FALSE(item->GetPseudoElement(kPseudoIdScrollMarker));
+
+  // Make #scroller a scroll container.
+  scroller->SetInlineStyleProperty(CSSPropertyID::kOverflow, CSSValueID::kAuto);
+  UpdateAllLifecyclePhasesForTest();
+
+  PseudoElement* group =
+      scroller->GetPseudoElement(kPseudoIdScrollMarkerGroupBefore);
+  PseudoElement* marker = item->GetPseudoElement(kPseudoIdScrollMarker);
+  ASSERT_TRUE(group);
+  ASSERT_TRUE(marker);
+  ASSERT_TRUE(group->GetLayoutObject());
+  ASSERT_TRUE(marker->GetLayoutObject());
+  EXPECT_TRUE(
+      marker->GetLayoutObject()->IsDescendantOf(group->GetLayoutObject()));
+
+  // Make #scroller no longer a scroll container.
+  scroller->SetInlineStyleProperty(CSSPropertyID::kOverflow,
+                                   CSSValueID::kVisible);
+  UpdateAllLifecyclePhasesForTest();
+
+  EXPECT_FALSE(scroller->GetPseudoElement(kPseudoIdScrollMarkerGroupBefore));
+  EXPECT_FALSE(item->GetPseudoElement(kPseudoIdScrollMarker));
+}
+
+TEST_F(ElementTest, TransferScrollMarkerBetweenNestedGroups) {
+  SetBodyContent(R"HTML(
+    <style>
+      #outer {
+        scroll-marker-group: before;
+        overflow: auto;
+      }
+      #inner {
+        scroll-marker-group: before;
+        overflow: visible;
+      }
+      #item::scroll-marker {
+        content: 'a';
+      }
+    </style>
+    <div id="outer"><div id="inner"><div id="item"></div></div></div>
+  )HTML");
+
+  Element* outer = GetElementById("outer");
+  Element* inner = GetElementById("inner");
+  Element* item = GetElementById("item");
+
+  auto expect_marker_in = [&](Element* scroller) {
+    auto* group = DynamicTo<ScrollMarkerGroupPseudoElement>(
+        scroller->GetPseudoElement(kPseudoIdScrollMarkerGroupBefore));
+    auto* marker = DynamicTo<ScrollMarkerPseudoElement>(
+        item->GetPseudoElement(kPseudoIdScrollMarker));
+    ASSERT_TRUE(group);
+    ASSERT_TRUE(marker);
+    ASSERT_TRUE(group->GetLayoutObject());
+    ASSERT_TRUE(marker->GetLayoutObject());
+    EXPECT_EQ(group, marker->ScrollMarkerGroup());
+    EXPECT_TRUE(
+        marker->GetLayoutObject()->IsDescendantOf(group->GetLayoutObject()));
+  };
+
+  UpdateAllLifecyclePhasesForTest();
+  expect_marker_in(outer);
+
+  // Make #inner a scroll container. #item's marker moves to #inner's group.
+  inner->SetInlineStyleProperty(CSSPropertyID::kOverflow, CSSValueID::kAuto);
+  UpdateAllLifecyclePhasesForTest();
+  expect_marker_in(inner);
+
+  // Make #inner no longer a scroll container. #item's marker moves back.
+  inner->SetInlineStyleProperty(CSSPropertyID::kOverflow, CSSValueID::kVisible);
+  UpdateAllLifecyclePhasesForTest();
+  expect_marker_in(outer);
+}
+
 TEST_F(ElementTest, NestedMarkerInheritsFromPseudoParent) {
   ScopedCSSNestedPseudoElementsForTest feature(false);
   GetDocument().body()->SetInnerHTMLWithoutTrustedTypes(R"HTML(
@@ -1772,7 +2118,7 @@ TEST_F(ElementTest, TrackPasswordTrackingElementRectCSSHeuristic) {
 
   GetDocument().body()->SetInnerHTMLWithoutTrustedTypes(
       "<div id=test>abc</div>");
-  auto* div = To<Element>(GetDocument().getElementById(AtomicString("test")));
+  auto* div = To<Element>(GetElementById("test"));
   GetDocument().UpdateStyleAndLayoutTree();
   EXPECT_FALSE(div->GetTrackedElementSubRect(tracking_feature));
 
@@ -1790,12 +2136,11 @@ TEST_F(ElementTest, TrackPasswordTrackingElementRectCSSHeuristic) {
 
 TEST_F(ElementTest, OverscrollBackdropPseudoElement) {
   {
-    ScopedOverscrollGesturesForTest enabled(true);
+    ScopedOverscrollAreasForTest enabled(true);
 
     GetDocument().body()->SetInnerHTMLWithoutTrustedTypes(R"HTML(
       <style>
       #menu::backdrop { display: block; }
-      #menu::overscroll-backdrop { display: block; }
       </style>
       <div id="container" overscrollcontainer>
         <div id="menu" overscrollarea></div>
@@ -1808,21 +2153,24 @@ TEST_F(ElementTest, OverscrollBackdropPseudoElement) {
     Element* menu = GetElementById("menu");
     ASSERT_NE(menu, nullptr);
 
-    // ::overscroll-backdrop should be generated.
-    EXPECT_NE(menu->GetPseudoElement(PseudoId::kPseudoIdOverscrollBackdrop),
-              nullptr);
-
-    // ::backdrop should NOT be generated.
-    EXPECT_EQ(menu->GetPseudoElement(PseudoId::kPseudoIdBackdrop), nullptr);
+    // ::backdrop should be generated under ::-internal-overscroll-area-parent.
+    PseudoElement* backdrop =
+        menu->GetPseudoElement(PseudoId::kPseudoIdBackdrop);
+    ASSERT_NE(backdrop, nullptr);
+    PseudoElement* overscroll_parent =
+        menu->GetPseudoElement(PseudoId::kPseudoIdOverscrollAreaParent);
+    ASSERT_NE(overscroll_parent, nullptr);
+    ASSERT_NE(backdrop->GetLayoutObject(), nullptr);
+    EXPECT_EQ(backdrop->GetLayoutObject()->Parent(),
+              overscroll_parent->GetLayoutObject());
   }
 
   {
-    ScopedOverscrollGesturesForTest disabled(false);
+    ScopedOverscrollAreasForTest disabled(false);
 
     GetDocument().body()->SetInnerHTMLWithoutTrustedTypes(R"HTML(
       <style>
       #menu::backdrop { display: block; }
-      #menu::overscroll-backdrop { display: block; }
       </style>
       <div id="container" overscrollcontainer>
         <div id="menu" overscrollarea></div>
@@ -1835,9 +2183,7 @@ TEST_F(ElementTest, OverscrollBackdropPseudoElement) {
     Element* menu = GetElementById("menu");
     ASSERT_NE(menu, nullptr);
 
-    // Neither should be generated when disabled.
-    EXPECT_EQ(menu->GetPseudoElement(PseudoId::kPseudoIdOverscrollBackdrop),
-              nullptr);
+    // ::backdrop should NOT be generated when OverscrollAreas is disabled.
     EXPECT_EQ(menu->GetPseudoElement(PseudoId::kPseudoIdBackdrop), nullptr);
   }
 }
@@ -1857,11 +2203,11 @@ class DetachOriginatingElementListener : public NativeEventListener {
 };
 
 TEST_F(ElementTest, OverscrollBackdropClickDisposeCrash) {
-  ScopedOverscrollGesturesForTest enabled(true);
+  ScopedOverscrollAreasForTest enabled(true);
 
   GetDocument().body()->SetInnerHTMLWithoutTrustedTypes(R"HTML(
     <style>
-    #menu::overscroll-backdrop { display: block; }
+    #menu::backdrop { display: block; }
     </style>
     <div id="container" overscrollcontainer>
       <div id="menu" overscrollarea></div>
@@ -1874,8 +2220,7 @@ TEST_F(ElementTest, OverscrollBackdropClickDisposeCrash) {
   Element* menu = GetElementById("menu");
   ASSERT_NE(menu, nullptr);
 
-  PseudoElement* backdrop =
-      menu->GetPseudoElement(PseudoId::kPseudoIdOverscrollBackdrop);
+  PseudoElement* backdrop = menu->GetPseudoElement(PseudoId::kPseudoIdBackdrop);
   ASSERT_NE(backdrop, nullptr);
 
   auto* listener = MakeGarbageCollected<DetachOriginatingElementListener>(menu);
@@ -1920,6 +2265,159 @@ TEST_F(ElementTest, DelegatesFocusWasLastFocusFromUserGesture) {
                           mojom::blink::FocusType::kMouse, nullptr));
   EXPECT_EQ(probe, GetDocument().FocusedElement());
   EXPECT_TRUE(probe->WasLastFocusFromUserGesture());
+}
+
+TEST_F(ElementTest, FreezeHoverForOpenPopup) {
+  SetBodyContent("<select id=owner><option>One</option></select>");
+  auto* owner = To<HTMLSelectElement>(GetElementById("owner"));
+  ASSERT_NE(owner, nullptr);
+
+  GetDocument().UpdateHoverActiveState(/*is_active=*/false,
+                                       /*update_active_chain=*/true, owner);
+  EXPECT_TRUE(owner->IsHovered());
+
+  owner->SetFreezeHoverForOpenPopup(true);
+
+  // The cursor moves off the owner (e.g. over the owner window next to the
+  // popup); the frozen hover state must survive.
+  GetDocument().UpdateHoverActiveState(/*is_active=*/false,
+                                       /*update_active_chain=*/true,
+                                       GetDocument().body());
+  EXPECT_TRUE(owner->IsHovered());
+
+  // Closing the popup re-syncs with the document's hover chain, which no
+  // longer contains the owner.
+  owner->SetFreezeHoverForOpenPopup(false);
+  EXPECT_FALSE(owner->IsHovered());
+}
+
+// If the cursor is still over the owner when the popup closes, the hover state
+// must be preserved rather than cleared by the re-sync.
+TEST_F(ElementTest, FreezeHoverForOpenPopupKeepsHoverWhenStillHovered) {
+  SetBodyContent("<input id=owner type=color>");
+  auto* owner = To<HTMLFormControlElement>(GetElementById("owner"));
+  ASSERT_NE(owner, nullptr);
+
+  GetDocument().UpdateHoverActiveState(/*is_active=*/false,
+                                       /*update_active_chain=*/true, owner);
+  owner->SetFreezeHoverForOpenPopup(true);
+  owner->SetFreezeHoverForOpenPopup(false);
+  EXPECT_TRUE(owner->IsHovered());
+}
+
+TEST_F(ElementTest,
+       FreezeHoverForOpenPopupKeepsHoverWhenStillHoveredDateInput) {
+  SetBodyContent("<input id=owner type=date>");
+  auto* owner = To<HTMLFormControlElement>(GetElementById("owner"));
+  ASSERT_NE(owner, nullptr);
+
+  GetDocument().UpdateHoverActiveState(/*is_active=*/false,
+                                       /*update_active_chain=*/true, owner);
+  owner->SetFreezeHoverForOpenPopup(true);
+  owner->SetFreezeHoverForOpenPopup(false);
+  EXPECT_TRUE(owner->IsHovered());
+}
+
+namespace {
+
+// Helper observer used in unit tests to simulate re-entrant script execution
+// that mutates another element's attributes while an attribute update is
+// in-flight (simulating what can happen when pausing at a DOM breakpoint in the
+// DevTools debugger).
+class AttributeReallocatingIdObserver final : public IdTargetObserver {
+ public:
+  AttributeReallocatingIdObserver(IdTargetObserverRegistry& registry,
+                                  const AtomicString& id,
+                                  Element* element)
+      : IdTargetObserver(registry, id), element_(element) {}
+
+  void IdTargetChanged() override {
+    for (unsigned i = 0; i < 8; ++i) {
+      element_->setAttribute(
+          QualifiedName(g_null_atom, AtomicString(String::Number(i) + "pad"),
+                        g_null_atom),
+          AtomicString("1"));
+    }
+  }
+
+  void Trace(Visitor* visitor) const override {
+    visitor->Trace(element_);
+    IdTargetObserver::Trace(visitor);
+  }
+
+ private:
+  Member<Element> element_;
+};
+
+}  // namespace
+
+TEST_F(ElementTest, AppendAttributeInternalWithAliasedAttributeValue) {
+  SetBodyContent(
+      "<div class=init a=1 b=2 c=3 d=4></div>"
+      "<img name=named-img>");
+  auto* source = To<Element>(GetDocument().body()->firstChild());
+  auto* target = To<Element>(source->nextSibling());
+  ASSERT_NE(source, nullptr);
+  ASSERT_NE(target, nullptr);
+
+  // Appending an attribute from another element's FastGetAttribute() without
+  // reallocation preserves the attribute value.
+  target->setAttribute(html_names::kTitleAttr,
+                       source->FastGetAttribute(html_names::kClassAttr));
+  EXPECT_EQ(AtomicString("init"), target->getAttribute(html_names::kTitleAttr));
+
+  // 1. Self-aliased inline-to-heap reallocation (4 -> 8) and heap-to-heap
+  // reallocation (8 -> 16) during `Attributes().Append()`.
+  Element* element = GetDocument().CreateElementForBinding(AtomicString("div"));
+  GetDocument().body()->AppendChild(element);
+  element->setAttribute(html_names::kTitleAttr, AtomicString("sample-id"));
+  for (const char* name : {"data-a0", "data-a1", "data-a2"}) {
+    element->setAttribute(
+        QualifiedName(g_null_atom, AtomicString(name), g_null_atom),
+        AtomicString("0"));
+  }
+  ASSERT_EQ(4u, element->AttributesWithoutUpdate().size());
+
+  // Appending `id` from `element->FastGetAttribute(kTitleAttr)` reallocates the
+  // 4-element inline buffer to an 8-element heap buffer before
+  // `DidAddAttribute()` runs.
+  element->setAttribute(html_names::kIdAttr,
+                        element->FastGetAttribute(html_names::kTitleAttr));
+  EXPECT_EQ(AtomicString("sample-id"), element->GetIdAttribute());
+  EXPECT_EQ(AtomicString("sample-id"), element->IdForStyleResolution());
+  EXPECT_EQ(element, GetDocument().getElementById(AtomicString("sample-id")));
+
+  for (const char* name : {"data-a3", "data-a4", "data-a5"}) {
+    element->setAttribute(
+        QualifiedName(g_null_atom, AtomicString(name), g_null_atom),
+        AtomicString("1"));
+  }
+  ASSERT_EQ(8u, element->AttributesWithoutUpdate().size());
+
+  // Appending `class` from `element->FastGetAttribute(kTitleAttr)` reallocates
+  // and frees the 8-element heap buffer before `DidAddAttribute()` runs.
+  element->setAttribute(html_names::kClassAttr,
+                        element->FastGetAttribute(html_names::kTitleAttr));
+  EXPECT_EQ(AtomicString("sample-id"),
+            element->getAttribute(html_names::kClassAttr));
+  EXPECT_TRUE(element->ClassNames().Contains(AtomicString("sample-id")));
+
+  // 2. Cross-element aliased value when an IdTargetObserver reallocates
+  // `source`'s heap-allocated UniqueElementData (size == capacity == 5) during
+  // `DidAddAttribute()` before named item registration completes.
+  // This simulates an in-flight mutation of `source`'s attributes (as can occur
+  // when pausing in the DevTools debugger) without requiring a DevTools
+  // session.
+  MakeGarbageCollected<AttributeReallocatingIdObserver>(
+      GetDocument().EnsureIdTargetObserverRegistry(),
+      AtomicString("observed-id"), source);
+  source->setAttribute(html_names::kClassAttr, AtomicString("observed-id"));
+  target->setAttribute(html_names::kIdAttr,
+                       source->FastGetAttribute(html_names::kClassAttr));
+  EXPECT_EQ(AtomicString("observed-id"), target->GetIdAttribute());
+  EXPECT_EQ(target, GetDocument().getElementById(AtomicString("observed-id")));
+  EXPECT_TRUE(To<HTMLDocument>(GetDocument())
+                  .HasNamedItem(AtomicString("observed-id")));
 }
 
 }  // namespace blink

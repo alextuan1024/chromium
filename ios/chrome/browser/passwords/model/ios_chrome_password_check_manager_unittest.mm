@@ -187,8 +187,9 @@ TEST_F(IOSChromePasswordCheckManagerTest, NoLeakedFound) {
   RunUntilIdle();
 
   static_cast<BulkLeakCheckServiceInterface::Observer*>(&manager())
-      ->OnCredentialDone(LeakCheckCredential(kUsername116, kPassword116),
-                         IsLeaked(false));
+      ->OnCredentialDone(
+          LeakCheckCredential(kUsername116, PasswordString(kPassword116)),
+          IsLeaked(false));
   RunUntilIdle();
 
   EXPECT_THAT(manager().GetInsecureCredentials(), IsEmpty());
@@ -203,8 +204,9 @@ TEST_F(IOSChromePasswordCheckManagerTest, OnLeakFoundCreatesCredential) {
   RunUntilIdle();
 
   static_cast<BulkLeakCheckServiceInterface::Observer*>(&manager())
-      ->OnCredentialDone(LeakCheckCredential(kUsername116, kPassword116),
-                         IsLeaked(true));
+      ->OnCredentialDone(
+          LeakCheckCredential(kUsername116, PasswordString(kPassword116)),
+          IsLeaked(true));
   RunUntilIdle();
 
   AddIssueToCredential(&cred, InsecureType::kLeaked, base::Minutes(0));
@@ -417,6 +419,8 @@ TEST_F(IOSChromePasswordCheckManagerTest, WeakCredentialsAreReturned) {
       password_manager::LeakDetectionInitiator::kIosProactivePasswordCheckup);
   RunUntilIdle();
 
+  weak_form.password_issues.insert(
+      {InsecureType::kWeak, password_manager::InsecurityMetadata()});
   EXPECT_THAT(manager().GetInsecureCredentials(),
               ElementsAre(CredentialUIEntry(
                   password_manager::ToPasswordForm(weak_form))));
@@ -439,6 +443,10 @@ TEST_F(IOSChromePasswordCheckManagerTest, ReusedCredentialsAreReturned) {
       password_manager::LeakDetectionInitiator::kIosProactivePasswordCheckup);
   RunUntilIdle();
 
+  form_with_same_password_1.password_issues.insert(
+      {InsecureType::kReused, password_manager::InsecurityMetadata()});
+  form_with_same_password_2.password_issues.insert(
+      {InsecureType::kReused, password_manager::InsecurityMetadata()});
   std::vector<CredentialUIEntry> insecure_credentials =
       manager().GetInsecureCredentials();
 

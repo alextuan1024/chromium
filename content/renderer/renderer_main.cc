@@ -13,7 +13,9 @@
 #include "base/debug/debugger.h"
 #include "base/debug/leak_annotations.h"
 #include "base/feature_list.h"
-#include "base/i18n/rtl.h"
+#include "base/i18n/icubridge/default_icu_locale.h"
+#include "base/i18n/language_tag.h"
+#include "base/i18n/tag_converters.h"
 #include "base/message_loop/message_pump.h"
 #include "base/message_loop/message_pump_type.h"
 #include "base/message_loop/message_pump_wakeup_counter.h"
@@ -54,7 +56,6 @@
 #include "mojo/public/cpp/bindings/mojo_buildflags.h"
 #include "sandbox/policy/switches.h"
 #include "services/tracing/public/cpp/trace_startup.h"
-#include "services/webnn/public/cpp/webnn_sandbox_init.h"
 #include "skia/ext/font_utils.h"
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/platform/platform.h"
@@ -167,7 +168,11 @@ int RendererMain(MainFunctionParams parameters) {
   if (command_line.HasSwitch(switches::kLang)) {
     const std::string locale =
         command_line.GetSwitchValueASCII(switches::kLang);
-    base::i18n::SetICUDefaultLocale(locale);
+    std::optional<base::i18n::LanguageTag> lang_tag =
+        base::i18n::GetLanguageTagFromString(locale);
+    CHECK(lang_tag.has_value()) << "Invalid language tag: " << locale;
+    base::i18n::SetDefaultIcuLocale(base::i18n::DefaultIcuLocaleSetterKey(),
+                                    *lang_tag);
   }
 
   // When we start the renderer on ChromeOS if the system has core scheduling
@@ -205,6 +210,14 @@ int RendererMain(MainFunctionParams parameters) {
   // can install observers.
   performance_scenarios::ScopedScenarioObserverList scenario_observer_list;
 
+#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
+  // Thread type delegate of the process should be registered before the first
+  // thread type change, which `main_thread_scheduler` makes for the main thread
+  // when it is created. It also needs to be registered before the process has
+  // multiple threads, which may race with application of the sandbox.
+  SandboxedProcessThreadTypeHandler::Create();
+#endif
+
   // This scope is used to reduce the number of stack frames needed to be
   // scanned during conservative stack scanning in cppgc. It allows us to skip
   // scanning the caller frames of this function.
@@ -220,7 +233,6 @@ int RendererMain(MainFunctionParams parameters) {
   // zygote_main_linux.cc.  However, calling multiple times from the same thread
   // is OK.
   InitializeWebRtcModuleBeforeSandbox();
-  webnn::PreSandboxWebNNInitialization(/*is_gpu_process=*/false);
 
   std::optional<LastResortGCPolicy> last_resort_gc_policy;
   if (base::FeatureList::IsEnabled(kMemoryCoordinatorLastResortGC)) {
@@ -252,14 +264,6 @@ int RendererMain(MainFunctionParams parameters) {
         client->PostSandboxInitialized();
       }
     }
-#endif
-
-#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
-    // Thread type delegate of the process should be registered before
-    // first thread type change in ChildProcess constructor.
-    // It also needs to be registered before the process has multiple threads,
-    // which may race with application of the sandbox.
-    SandboxedProcessThreadTypeHandler::Create();
 #endif
 
     // Startup tracing creates a tracing thread, which is incompatible on

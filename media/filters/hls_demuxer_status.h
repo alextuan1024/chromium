@@ -14,6 +14,7 @@ struct HlsDemuxerStatusTraits {
   // WARNING: These values are reported to metrics. Entries should not be
   // renumbered and numeric values should not be reused. When adding new
   // entries, tools/metrics/histograms/enums.xml.
+  // LINT.IfChange(Codes)
   enum class Codes : StatusCodeType {
     kOk = 0,
 
@@ -76,9 +77,13 @@ struct HlsDemuxerStatusTraits {
     // error during initialization.
     kNoDataEverAppended = 18,
 
+    // the file:// data scheme is not allowed in HLS.
+    kInvalidContentScheme = 19,
+
     // Keep this at the end and equal to the highest value ever used.
-    kMaxValue = kNoDataEverAppended,
+    kMaxValue = kInvalidContentScheme,
   };
+  // LINT.ThenChange(//tools/metrics/histograms/enums.xml:HlsDemuxerStatus)
 
   static constexpr StatusGroupType Group() { return "HlsDemuxerStatus"; }
 
@@ -122,6 +127,8 @@ struct HlsDemuxerStatusTraits {
         return "Could not append data to ChunkDemuxer";
       case Codes::kNoDataEverAppended:
         return "Segment queue never had any data";
+      case Codes::kInvalidContentScheme:
+        return "The content scheme is disallowed in HLS.";
     }
   }
 };
@@ -129,7 +136,8 @@ struct HlsDemuxerStatusTraits {
 using HlsDemuxerStatus = TypedStatus<HlsDemuxerStatusTraits>;
 
 template <typename T>
-using HlsDemuxerStatusCb = base::OnceCallback<void(HlsDemuxerStatus::Or<T>)>;
+using HlsDemuxerStatusCb =
+    base::OnceCallback<void(base::expected<T, HlsDemuxerStatus>)>;
 
 using HlsDemuxerStatusCallback = base::OnceCallback<void(HlsDemuxerStatus)>;
 

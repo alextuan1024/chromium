@@ -5,6 +5,7 @@
 #include "chrome/browser/glic/host/context/glic_share_image_handler.h"
 
 #include "base/feature_list.h"
+#include "base/metrics/histogram_functions.h"
 #include "build/build_config.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/enterprise/data_protection/data_protection_clipboard_utils.h"
@@ -67,7 +68,7 @@ std::optional<content::ClipboardEndpoint> CreateSourceClipboardEndpoint(
     return std::nullopt;
   }
 
-  return content::ClipboardEndpoint(
+  return content::ClipboardEndpoint::ForFrame(
       ui::DataTransferEndpoint(
           rfh->GetMainFrame()->GetLastCommittedURL(),
           {.off_the_record = rfh->GetBrowserContext()->IsOffTheRecord()}),
@@ -94,13 +95,13 @@ void GlicShareImageHandler::ShareContextImage(
     content::RenderFrameHost* render_frame_host,
     const GURL& src_url) {
   if (!tab) {
-    service_->metrics()->OnShareImageComplete(ShareImageResult::kFailedNoTab);
+    RecordShareImageComplete(ShareImageResult::kFailedNoTab);
     return;
   }
 
   if (!render_frame_host) {
     MaybeShowErrorToast(tab);
-    service_->metrics()->OnShareImageComplete(ShareImageResult::kFailedNoFrame);
+    RecordShareImageComplete(ShareImageResult::kFailedNoFrame);
     return;
   }
 
@@ -111,7 +112,7 @@ void GlicShareImageHandler::ShareContextImage(
 
   Reset();
   is_share_in_progress_ = true;
-  service_->metrics()->OnShareImageStarted();
+  share_image_start_time_ = base::TimeTicks::Now();
 
   tab_handle_ = tab->GetHandle();
   src_url_ = src_url;
@@ -220,10 +221,7 @@ void GlicShareImageHandler::OnReceivedImage(
   PolicyCheck policy_check =
       do_policy_checks ? PolicyCheck::kClipboard : PolicyCheck::kNone;
 
-  Target target =
-      base::FeatureList::IsEnabled(features::kGlicShareImageNoNewConversation)
-          ? Target(*tab, DefaultConversation())
-          : Target(*tab, NewConversation());
+  Target target = Target(*tab, DefaultConversation());
   GlicInvokeOptions invoke_options(std::move(target),
                                    mojom::InvocationSource::kSharedImage);
   invoke_options.additional_context = AdditionalTabContext(
@@ -254,9 +252,6 @@ void GlicShareImageHandler::OnInvokeError(GlicInvokeError error) {
       break;
     case GlicInvokeError::kTabClosed:
       ShareComplete(ShareImageResult::kFailedNoTab);
-      break;
-    case GlicInvokeError::kInstanceDestroyed:
-      ShareComplete(ShareImageResult::kFailedLostInstance);
       break;
     case GlicInvokeError::kInvokeInProgress:
       ShareComplete(ShareImageResult::kFailedInvokeInProgress);
@@ -294,6 +289,26 @@ void GlicShareImageHandler::OnInvokeError(GlicInvokeError error) {
     case GlicInvokeError::kSuperseded:
       ShareComplete(ShareImageResult::kFailedSuperseded);
       break;
+    case GlicInvokeError::kLiveModeActive:
+      ShareComplete(ShareImageResult::kFailedLiveModeActive);
+      break;
+    case GlicInvokeError::kClientLoadError:
+      ShareComplete(ShareImageResult::kFailedUnknown);
+      break;
+    case GlicInvokeError::kSignInRequired:
+      // The invocation timed out waiting for the user to sign in.
+      ShareComplete(ShareImageResult::kFailedTimedOut);
+      break;
+    case GlicInvokeError::kInstanceDestroyedBlankInstanceClosed:
+    case GlicInvokeError::kInstanceDestroyedUnbound:
+    case GlicInvokeError::kInstanceDestroyedArchived:
+    case GlicInvokeError::kInstanceDestroyedSignedOut:
+    case GlicInvokeError::kInstanceDestroyedShutdown:
+      ShareComplete(ShareImageResult::kFailedLostInstance);
+      break;
+    case GlicInvokeError::kPanelClosed:
+      ShareComplete(ShareImageResult::kFailedCancelled);
+      break;
   }
 }
 
@@ -308,8 +323,22 @@ void GlicShareImageHandler::ShareComplete(ShareImageResult result) {
     // Policy checks already show UI when they fail and don't need a toast.
     MaybeShowErrorToast(tab_handle_.Get());
   }
-  service_->metrics()->OnShareImageComplete(result);
+  RecordShareImageComplete(result);
   Reset();
+}
+
+void GlicShareImageHandler::RecordShareImageComplete(ShareImageResult result) {
+  if (!share_image_start_time_.is_null() &&
+      result == ShareImageResult::kSentImageToClient) {
+    // Justification: Existing unsplit ShareImage histogram moved from
+    // GlicMetrics.
+    base::UmaHistogramMediumTimes(
+        "Glic.TabContext.ShareImageDuration",
+        base::TimeTicks::Now() - share_image_start_time_);
+  }
+  // Justification: Existing unsplit ShareImage histogram moved from
+  // GlicMetrics.
+  base::UmaHistogramEnumeration("Glic.TabContext.ShareImageResult", result);
 }
 
 void GlicShareImageHandler::MaybeShowErrorToast(tabs::TabInterface* tab) {
@@ -350,13 +379,14 @@ bool GlicShareImageHandler::AreClipboardPolicyChecksRequired(
   bool copy_check_required =
       enterprise_data_protection::IsCopyPolicyCheckRequired(*source, metadata);
 
-  ui::DataTransferEndpoint dte(glic::GetGuestURL());
-  content::ClipboardEndpoint paste_destination(
-      dte, base::BindRepeating(
-               [](GlicKeyedService* service) -> content::BrowserContext* {
-                 return service->profile();
-               },
-               base::Unretained(&service_.get())));
+  ui::DataTransferEndpoint dte(glic::GetGuestURL(service_->profile()));
+  content::ClipboardEndpoint paste_destination =
+      content::ClipboardEndpoint::ForUnloadedTab(
+          dte, base::BindRepeating(
+                   [](GlicKeyedService* service) -> content::BrowserContext* {
+                     return service->profile();
+                   },
+                   base::Unretained(&service_.get())));
 
   bool paste_check_required =
       enterprise_data_protection::IsPastePolicyCheckRequired(
@@ -441,6 +471,7 @@ void GlicShareImageHandler::Reset() {
   weak_ptr_factory_.InvalidateWeakPtrs();
 
   is_share_in_progress_ = false;
+  share_image_start_time_ = base::TimeTicks();
 }
 
 }  // namespace glic

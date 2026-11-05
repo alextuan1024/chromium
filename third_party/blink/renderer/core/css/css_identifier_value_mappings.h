@@ -936,16 +936,16 @@ template <>
 inline CSSIdentifierValue::CSSIdentifierValue(FontSmoothingMode smoothing)
     : CSSValue(kIdentifierClass) {
   switch (smoothing) {
-    case kAutoSmoothing:
+    case FontSmoothingMode::kAuto:
       value_id_ = CSSValueID::kAuto;
       return;
-    case kNoSmoothing:
+    case FontSmoothingMode::kNone:
       value_id_ = CSSValueID::kNone;
       return;
-    case kAntialiased:
+    case FontSmoothingMode::kAntialiased:
       value_id_ = CSSValueID::kAntialiased;
       return;
-    case kSubpixelAntialiased:
+    case FontSmoothingMode::kSubpixelAntialiased:
       value_id_ = CSSValueID::kSubpixelAntialiased;
       return;
   }
@@ -957,13 +957,13 @@ template <>
 inline FontSmoothingMode CSSIdentifierValue::ConvertTo() const {
   switch (value_id_) {
     case CSSValueID::kAuto:
-      return kAutoSmoothing;
+      return FontSmoothingMode::kAuto;
     case CSSValueID::kNone:
-      return kNoSmoothing;
+      return FontSmoothingMode::kNone;
     case CSSValueID::kAntialiased:
-      return kAntialiased;
+      return FontSmoothingMode::kAntialiased;
     case CSSValueID::kSubpixelAntialiased:
-      return kSubpixelAntialiased;
+      return FontSmoothingMode::kSubpixelAntialiased;
     default:
       break;
   }
@@ -975,16 +975,16 @@ template <>
 inline CSSIdentifierValue::CSSIdentifierValue(FontVariantEmoji variant_emoji)
     : CSSValue(kIdentifierClass) {
   switch (variant_emoji) {
-    case kNormalVariantEmoji:
+    case FontVariantEmoji::kNormal:
       value_id_ = CSSValueID::kNormal;
       return;
-    case kTextVariantEmoji:
+    case FontVariantEmoji::kText:
       value_id_ = CSSValueID::kText;
       return;
-    case kEmojiVariantEmoji:
+    case FontVariantEmoji::kEmoji:
       value_id_ = CSSValueID::kEmoji;
       return;
-    case kUnicodeVariantEmoji:
+    case FontVariantEmoji::kUnicode:
       value_id_ = CSSValueID::kUnicode;
       return;
   }
@@ -996,13 +996,13 @@ template <>
 inline FontVariantEmoji CSSIdentifierValue::ConvertTo() const {
   switch (value_id_) {
     case CSSValueID::kNormal:
-      return kNormalVariantEmoji;
+      return FontVariantEmoji::kNormal;
     case CSSValueID::kText:
-      return kTextVariantEmoji;
+      return FontVariantEmoji::kText;
     case CSSValueID::kEmoji:
-      return kEmojiVariantEmoji;
+      return FontVariantEmoji::kEmoji;
     case CSSValueID::kUnicode:
-      return kUnicodeVariantEmoji;
+      return FontVariantEmoji::kUnicode;
     default:
       break;
   }
@@ -1014,16 +1014,16 @@ template <>
 inline CSSIdentifierValue::CSSIdentifierValue(TextRenderingMode e)
     : CSSValue(kIdentifierClass) {
   switch (e) {
-    case kAutoTextRendering:
+    case TextRenderingMode::kAuto:
       value_id_ = CSSValueID::kAuto;
       break;
-    case kOptimizeSpeed:
+    case TextRenderingMode::kOptimizeSpeed:
       value_id_ = CSSValueID::kOptimizespeed;
       break;
-    case kOptimizeLegibility:
+    case TextRenderingMode::kOptimizeLegibility:
       value_id_ = CSSValueID::kOptimizelegibility;
       break;
-    case kGeometricPrecision:
+    case TextRenderingMode::kGeometricPrecision:
       value_id_ = CSSValueID::kGeometricprecision;
       break;
   }
@@ -1033,13 +1033,13 @@ template <>
 inline TextRenderingMode CSSIdentifierValue::ConvertTo() const {
   switch (value_id_) {
     case CSSValueID::kAuto:
-      return kAutoTextRendering;
+      return TextRenderingMode::kAuto;
     case CSSValueID::kOptimizespeed:
-      return kOptimizeSpeed;
+      return TextRenderingMode::kOptimizeSpeed;
     case CSSValueID::kOptimizelegibility:
-      return kOptimizeLegibility;
+      return TextRenderingMode::kOptimizeLegibility;
     case CSSValueID::kGeometricprecision:
-      return kGeometricPrecision;
+      return TextRenderingMode::kGeometricPrecision;
     default:
       break;
   }
@@ -1661,6 +1661,37 @@ inline cc::SnapAlignment CSSIdentifierValue::ConvertTo() const {
 }
 
 template <>
+inline CSSIdentifierValue::CSSIdentifierValue(cc::SnapStop stop)
+    : CSSValue(kIdentifierClass) {
+  switch (stop) {
+    case cc::SnapStop::kNormal:
+      value_id_ = CSSValueID::kNormal;
+      break;
+    case cc::SnapStop::kAlways:
+      value_id_ = CSSValueID::kAlways;
+      break;
+    case cc::SnapStop::kBefore:
+      value_id_ = CSSValueID::kBefore;
+      break;
+  }
+}
+
+template <>
+inline cc::SnapStop CSSIdentifierValue::ConvertTo() const {
+  switch (GetValueID()) {
+    case CSSValueID::kNormal:
+      return cc::SnapStop::kNormal;
+    case CSSValueID::kAlways:
+      return cc::SnapStop::kAlways;
+    case CSSValueID::kBefore:
+      return cc::SnapStop::kBefore;
+    default:
+      break;
+  }
+  NOTREACHED();
+}
+
+template <>
 inline Containment CSSIdentifierValue::ConvertTo() const {
   switch (GetValueID()) {
     case CSSValueID::kNone:
@@ -2264,9 +2295,14 @@ inline CSSIdentifierValue::CSSIdentifierValue(PositionVisibility visibility)
     case PositionVisibility::kAlways:
       value_id_ = CSSValueID::kAlways;
       break;
-    // TODO(crbug.com/332933527): Support kAnchorsValid.
-    case PositionVisibility::kAnchorsVisible:
-      value_id_ = CSSValueID::kAnchorsVisible;
+    case PositionVisibility::kAnchorValid:
+      value_id_ = CSSValueID::kAnchorValid;
+      break;
+    case PositionVisibility::kAnchorVisible:
+      value_id_ =
+          RuntimeEnabledFeatures::PositionVisibilitySingularValuesEnabled()
+              ? CSSValueID::kAnchorVisible
+              : CSSValueID::kAnchorsVisible;
       break;
     case PositionVisibility::kNoOverflow:
       value_id_ = CSSValueID::kNoOverflow;
@@ -2279,9 +2315,11 @@ inline PositionVisibility CSSIdentifierValue::ConvertTo() const {
   switch (GetValueID()) {
     case CSSValueID::kAlways:
       return PositionVisibility::kAlways;
-    // TODO(crbug.com/332933527): Support kAnchorsValid.
+    case CSSValueID::kAnchorValid:
+      return PositionVisibility::kAnchorValid;
+    case CSSValueID::kAnchorVisible:
     case CSSValueID::kAnchorsVisible:
-      return PositionVisibility::kAnchorsVisible;
+      return PositionVisibility::kAnchorVisible;
     case CSSValueID::kNoOverflow:
       return PositionVisibility::kNoOverflow;
     default:

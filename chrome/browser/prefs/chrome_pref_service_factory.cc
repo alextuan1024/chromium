@@ -115,6 +115,14 @@ bool g_disable_domain_check_for_testing = false;
 // histogram enum. Each tracked preference must be given a unique reporting ID.
 // See CleanupDeprecatedTrackedPreferences() in pref_hash_filter.cc to remove a
 // deprecated tracked preference.
+//
+// WARNING: Adding an existing (untracked or NO_ENFORCEMENT) preference here as
+// ENFORCE_ON_LOAD, or switching an existing entry to ENFORCE_ON_LOAD, will
+// RESET its value for existing users on their next startup. Values are not
+// migrated from Preferences to Secure Preferences outside of first run (see
+// https://crbug.com/574078135 for context). To protect an existing pref without
+// losing data, register a new protected pref and migrate the value through the
+// PrefService. See services/preferences/tracked/README.md.
 const auto kTrackedPrefs = std::to_array<prefs::TrackedPreferenceMetadata>({
     {0, prefs::kShowHomeButton, EnforcementLevel::ENFORCE_ON_LOAD,
      PrefTrackingStrategy::ATOMIC, ValueType::IMPERSONAL},
@@ -238,7 +246,7 @@ GetTrackingConfiguration() {
   const SettingsEnforcementGroup enforcement_group =
       GetSettingsEnforcementGroup();
 
-  browser_sync::ChromeSyncablePrefsDatabase syncable_prefs_db;
+  ChromeSyncablePrefsDatabase syncable_prefs_db;
   std::vector<prefs::mojom::TrackedPreferenceMetadataPtr> result;
   for (size_t i = 0; i < std::size(kTrackedPrefs); ++i) {
     prefs::mojom::TrackedPreferenceMetadataPtr data =
@@ -348,7 +356,8 @@ void PrepareFactory(
   scoped_refptr<PrefStore> supervised_user_prefs =
       base::MakeRefCounted<SupervisedUserPrefStore>(
           family_link_settings_service, device_parental_controls);
-  DCHECK(async || supervised_user_prefs->IsInitializationComplete());
+  CHECK(async || supervised_user_prefs->IsInitializationComplete(),
+        base::NotFatalUntil::M163);
   factory->set_supervised_user_prefs(supervised_user_prefs);
 }
 
@@ -578,8 +587,9 @@ void HandlePersistentPrefStoreReadError(
   // The error callback is always invoked back on the main thread (which is
   // BrowserThread::UI unless called during early initialization before the main
   // thread is promoted to BrowserThread::UI).
-  DCHECK(BrowserThread::CurrentlyOn(BrowserThread::UI) ||
-         !BrowserThread::IsThreadInitialized(BrowserThread::UI));
+  CHECK(BrowserThread::CurrentlyOn(BrowserThread::UI) ||
+            !BrowserThread::IsThreadInitialized(BrowserThread::UI),
+        base::NotFatalUntil::M163);
 
   if (error != PersistentPrefStore::PREF_READ_ERROR_NONE) {
 #if !BUILDFLAG(IS_CHROMEOS)

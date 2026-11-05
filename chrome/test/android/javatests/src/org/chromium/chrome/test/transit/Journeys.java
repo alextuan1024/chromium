@@ -10,32 +10,39 @@ import static org.chromium.base.ThreadUtils.runOnUiThreadBlocking;
 import static org.chromium.base.test.transit.Triggers.noopTo;
 import static org.chromium.chrome.test.util.ChromeTabUtils.getTabCountOnUiThread;
 
+import android.content.Intent;
 import android.util.Pair;
 
 import org.chromium.base.Log;
 import org.chromium.base.Token;
 import org.chromium.base.test.transit.TravelException;
 import org.chromium.base.test.transit.TripBuilder;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.ChromeTabbedActivity;
+import org.chromium.chrome.browser.IntentHandler;
 import org.chromium.chrome.browser.incognito.IncognitoUtils;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabLaunchType;
+import org.chromium.chrome.browser.tabmodel.TabGroupMergeNotificationType;
 import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
 import org.chromium.chrome.browser.tabmodel.TabModelUtils;
 import org.chromium.chrome.test.transit.hub.NewTabGroupDialogFacility;
+import org.chromium.chrome.test.transit.hub.RegularTabSwitcherStation;
 import org.chromium.chrome.test.transit.hub.TabSwitcherGroupCardFacility;
 import org.chromium.chrome.test.transit.hub.TabSwitcherListEditorFacility;
 import org.chromium.chrome.test.transit.hub.TabSwitcherStation;
 import org.chromium.chrome.test.transit.page.BasePageStation;
 import org.chromium.chrome.test.transit.page.CtaPageStation;
 import org.chromium.chrome.test.transit.page.WebPageStation;
+import org.chromium.chrome.test.transit.tabmodel.TabGroupExistsCondition;
 import org.chromium.chrome.test.transit.tabmodel.TabThumbnailCondition;
 import org.chromium.chrome.test.util.TabBinningUtil;
 import org.chromium.chrome.test.util.tabmodel.TabBinList;
 import org.chromium.chrome.test.util.tabmodel.TabBinList.TabBinPosition;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
 import java.util.function.Supplier;
@@ -46,7 +53,9 @@ public class Journeys {
 
     /**
      * Make Chrome have {@code numRegularTabs} of regular Tabs and {@code numIncognitoTabs} of
-     * incognito tabs with {@code url} loaded. Incognito tabs are opened in the same window.
+     * incognito tabs with {@code url}. Intermediate tabs are created lazily without renderer
+     * initialization (except the first tab on a cross-model switch), and the final tab of each
+     * model is loaded in the foreground. Incognito tabs are opened in the same window.
      *
      * @param <T> specific type of {@link CtaPageStation} for all opened tabs.
      * @param startingStation The current active station.
@@ -99,8 +108,8 @@ public class Journeys {
     }
 
     /**
-     * Same as {@link #prepareTabs(CtaPageStation, int, int, String, Supplier)}, but ensures tab
-     * thumbnails are captured to disk.
+     * Same as {@link #prepareTabs(CtaPageStation, int, int, String, Supplier)}, but loads all tabs
+     * and ensures tab thumbnails are captured to disk.
      */
     public static <T extends CtaPageStation> T prepareTabsWithThumbnails(
             CtaPageStation startingStation,
@@ -222,7 +231,9 @@ public class Journeys {
 
     /**
      * Create multiple tabs fast by executing all {@link TabCreator#launchUrl} calls in a single UI
-     * thread block, completing in one single Public Transit trip.
+     * thread block, completing in one single Public Transit trip. Intermediate tabs are created
+     * lazily in the background without renderer initialization (except the first tab on a
+     * cross-model switch), and the final tab is opened and loaded in the foreground.
      *
      * @param <T> specific type of {@link CtaPageStation} for all opened tabs.
      * @param startingPage The current active station.
@@ -252,16 +263,36 @@ public class Journeys {
                 .runOnUiThreadTo(
                         () -> {
                             var tabCreator = startingPage.getActivity().getTabCreator(isIncognito);
-                            for (String url : urls) {
-                                tabCreator.launchUrl(url, TabLaunchType.FROM_LINK);
+                            boolean isCrossModel = isIncognito != startingPage.isIncognito();
+                            Intent noRendererIntent = new Intent();
+                            noRendererIntent.putExtra(
+                                    IntentHandler.EXTRA_DISABLE_INITIALIZE_RENDERER, true);
+                            // Use FROM_CHROME_UI without EXTRA_DISABLE_INITIALIZE_RENDERER on a
+                            // cross-model first tab (where willOpenInForeground is true, so a
+                            // frozen lazy-load tab would have initiallyHidden=false and skip
+                            // loadIfNeeded() in TabImpl.show()) and on the final tab (so
+                            // !shouldOpenAdjacent appends at the end rather than currentIndex + 1).
+                            for (int i = 0; i < numTabsToOpen - 1; i++) {
+                                if (i == 0 && isCrossModel) {
+                                    tabCreator.launchUrl(urls.get(0), TabLaunchType.FROM_CHROME_UI);
+                                } else {
+                                    tabCreator.launchUrl(
+                                            urls.get(i),
+                                            TabLaunchType.FROM_BOOKMARK_BAR_BACKGROUND,
+                                            noRendererIntent,
+                                            /* intentTimestamp= */ 0);
+                                }
                             }
+                            tabCreator.launchUrl(lastUrl, TabLaunchType.FROM_CHROME_UI);
                         })
                 .arriveAt(builder.build());
     }
 
     /**
      * Make Chrome have {@code numRegularTabs} of regular Tabs and {@code numIncognitoTabs} of
-     * incognito tabs with {@code url} loaded fast in a minimal number of Public Transit trips.
+     * incognito tabs with {@code url} fast in a minimal number of Public Transit trips.
+     * Intermediate tabs are created lazily without renderer initialization (except the first tab on
+     * a cross-model switch), and the final tab of each model is loaded in the foreground.
      *
      * @param <T> specific type of {@link CtaPageStation} for all opened tabs.
      * @param startingStation The current active station.
@@ -454,6 +485,19 @@ public class Journeys {
      */
     public static TabSwitcherGroupCardFacility mergeTabsToNewGroup(
             TabSwitcherStation tabSwitcher, List<Tab> tabs) {
+        return mergeTabsToNewGroup(tabSwitcher, tabs, /* groupTitle= */ null);
+    }
+
+    /**
+     * Merges a list of tabs into a new tab group with an optional custom title.
+     *
+     * @param tabSwitcher the TabSwitcherStation we will be merging tabs for.
+     * @param tabs a list of tabs to be merged.
+     * @param groupTitle optional custom title to input in the NewTabGroupDialogFacility.
+     * @return the facility representing the tab group card created as a result of merging tabs.
+     */
+    public static TabSwitcherGroupCardFacility mergeTabsToNewGroup(
+            TabSwitcherStation tabSwitcher, List<Tab> tabs, @Nullable String groupTitle) {
         assert !tabs.isEmpty();
         TabModel currentModel = tabSwitcher.tabModelElement.value();
         TabSwitcherListEditorFacility editor = tabSwitcher.openAppMenu().clickSelectTabs();
@@ -469,11 +513,56 @@ public class Journeys {
             editor = editor.addTabToSelection(tabCardIndex, tabId);
         }
 
-        TabSwitcherGroupCardFacility groupCard =
-                editor.openAppMenuWithEditor().groupTabs().pressDone();
+        NewTabGroupDialogFacility<?> dialog = editor.openAppMenuWithEditor().groupTabs();
+        if (groupTitle != null) {
+            dialog = dialog.inputName(groupTitle);
+        }
+        TabSwitcherGroupCardFacility groupCard = dialog.pressDone();
 
         verifyTabGroupMergeSuccessful(tabs, currentModel);
         return groupCard;
+    }
+
+    /**
+     * Merges {@code sourceTab} (or its whole tab group) into {@code destinationTab}'s tab group
+     * programmatically, without going through the UI, and waits for the merged group to exist.
+     *
+     * <p>Use this for tests where grouping tabs is only setup. Use {@link
+     * #mergeTabsToNewGroup(TabSwitcherStation, List)} to group tabs through the tab switcher UI.
+     *
+     * @param page The current active station.
+     * @param sourceTab Source tab (or group) to merge.
+     * @param destinationTab Destination tab (or group) to merge into.
+     */
+    public static void mergeTabsToGroupProgrammatically(
+            CtaPageStation page, Tab sourceTab, Tab destinationTab) {
+        assert sourceTab.isIncognitoBranded() == destinationTab.isIncognitoBranded();
+        TabModel tabModel = page.getTabModel();
+        List<Tab> tabsToMerge =
+                runOnUiThreadBlocking(() -> getTabsInGroupOrSelf(tabModel, sourceTab));
+        List<Tab> destinationTabs =
+                runOnUiThreadBlocking(() -> getTabsInGroupOrSelf(tabModel, destinationTab));
+        List<Integer> expectedTabIds = new ArrayList<>();
+        for (Tab tab : tabsToMerge) {
+            expectedTabIds.add(tab.getId());
+        }
+        for (Tab tab : destinationTabs) {
+            expectedTabIds.add(tab.getId());
+        }
+        Collections.sort(expectedTabIds);
+
+        page.runOnUiThreadTo(
+                        () ->
+                                tabModel.mergeListOfTabsToGroup(
+                                        tabsToMerge,
+                                        destinationTab,
+                                        TabGroupMergeNotificationType.NOTIFY_IF_NOT_NEW_GROUP))
+                .waitFor(new TabGroupExistsCondition(page.tabModelElement, expectedTabIds));
+    }
+
+    private static List<Tab> getTabsInGroupOrSelf(TabModel tabModel, Tab tab) {
+        Token tabGroupId = tab.getTabGroupId();
+        return tabGroupId != null ? tabModel.getTabsInGroup(tabGroupId) : List.of(tab);
     }
 
     /**
@@ -490,6 +579,33 @@ public class Journeys {
                 new NewTabGroupDialogFacility<>(softKeyboard);
         tripBuilder.enterFacilities(dialog, softKeyboard);
         return dialog;
+    }
+
+    /**
+     * Creates a tab group of {@code numTabs} new tabs with the given title and closes (hides) it so
+     * it remains saved in {@code TabGroupSyncService} with no local tab group ID.
+     *
+     * @param startPage The starting {@link CtaPageStation}.
+     * @param groupTitle The title to assign to the saved tab group.
+     * @param numTabs The number of tabs to create and merge into the group.
+     * @return The {@link RegularTabSwitcherStation} after the group closure has been committed.
+     */
+    public static RegularTabSwitcherStation createAndHideSavedTabGroup(
+            CtaPageStation startPage, String groupTitle, int numTabs) {
+        assert numTabs >= 1;
+        CtaPageStation currentPage = startPage;
+        List<Tab> tabsToGroup = new ArrayList<>(numTabs);
+        for (int i = 0; i < numTabs; i++) {
+            currentPage = currentPage.openNewTabFast();
+            tabsToGroup.add(currentPage.loadedTabElement.value());
+        }
+
+        RegularTabSwitcherStation tabSwitcher = currentPage.openRegularTabSwitcher();
+        TabSwitcherGroupCardFacility groupCard =
+                mergeTabsToNewGroup(tabSwitcher, tabsToGroup, groupTitle);
+        groupCard.openAppMenu().closeRegularTabGroup().dismissProgrammatically();
+
+        return tabSwitcher;
     }
 
     /**

@@ -6,6 +6,7 @@
 
 #include <utility>
 
+#include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/test_future.h"
 #include "build/build_config.h"
@@ -16,9 +17,11 @@
 #include "chrome/browser/glic/host/glic_ui.h"
 #include "chrome/browser/glic/host/glic_web_client_manager.h"
 #include "chrome/browser/glic/host/glic_web_contents_manager.h"
+#include "chrome/browser/glic/public/features.h"
 #include "chrome/browser/glic/public/glic_keyed_service.h"
 #include "chrome/browser/glic/service/glic_instance_coordinator_impl.h"
 #include "chrome/browser/glic/test_support/glic_browser_test.h"
+#include "chrome/browser/glic/test_support/scoped_geic_test_features.h"
 #include "chrome/browser/policy/profile_policy_connector_builder.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/common/chrome_features.h"
@@ -30,6 +33,7 @@
 #include "components/policy/policy_constants.h"
 #include "components/prefs/pref_service.h"
 #include "content/public/test/browser_test.h"
+#include "content/public/test/memory_coordinator_browsertest_util.h"
 #include "net/base/network_change_notifier.h"
 
 #if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_CHROMEOS)
@@ -118,16 +122,12 @@ IN_PROC_BROWSER_TEST_F(GlicWarmingPoolBrowserTest, MAYBE_BackfillWarming) {
 // Test fixture for verifying that a warmed container can properly load the
 // guest WebUI client and connect.
 //
-// When `features::kGlicWarming` is enabled, warming begins automatically
-// during profile initialization at browser startup, before
+// Automatic startup warming (`features::kGlicWarming`) is disabled so that
+// tests control when warming starts. With it enabled, the warmed container
+// would be created during profile initialization, before
 // `GlicBrowserTestMixin::SetUpOnMainThread()` starts the embedded test server
-// and sets the `--glic-guest-url` command line switch. As a result, the early
-// warmed container attempts to load the default production URL and fails in
-// tests.
-//
-// This fixture leaves automatic startup warming disabled, allowing the test
-// to manually trigger warming via `MaybeStartInitialWarming()` after
-// `SetUpOnMainThread()` has configured the embedded test server and guest URL.
+// accepting connections. Tests instead call `MaybeStartWarming()` once the
+// server is running.
 class GlicManualWarmingPoolBrowserTest
     : public GlicBrowserTestMixin<PlatformBrowserTest> {
  public:
@@ -210,9 +210,13 @@ IN_PROC_BROWSER_TEST_F(GlicManualWarmingPoolBrowserTest,
         return warming_pool.HasWarmedContainerForTesting();
       },
       "Wait for initial cold warming"));
-  auto* warmed_container = warming_pool.GetWarmedContainerForTesting();
-  ASSERT_TRUE(warmed_container);
-  content::WaitForLoadStop(warmed_container->active_web_contents());
+  {
+    auto warmed_contents = warming_pool.GetWarmedWebContents();
+    ASSERT_TRUE(warmed_contents);
+    content::WaitForLoadStop(warmed_contents->guest_contents
+                                 ? warmed_contents->guest_contents.get()
+                                 : warmed_contents->webui_contents.get());
+  }
 
   ProfileDestructionWaiter profile_destruction_waiter(new_profile);
   profile_manager->GetDeleteProfileHelper().MaybeScheduleProfileForDeletion(
@@ -299,8 +303,10 @@ IN_PROC_BROWSER_TEST_F(GlicWarmingPoolBrowserTest,
                "Wait for initial preload"));
 
   // Simulate critical memory pressure.
-  base::MemoryPressureListener::SimulatePressureNotification(
-      base::MEMORY_PRESSURE_LEVEL_CRITICAL);
+  content::test::ScopedMemoryLimitOverride scoped_memory_limit_override(
+      GlicInstanceCoordinatorImpl::kMemoryConsumerName);
+  scoped_memory_limit_override.SetLimit(base::kCriticalMemoryPressureThreshold);
+  scoped_memory_limit_override.NotifyReleaseMemory();
 
   // Verify it is cleared immediately by the coordinator.
   EXPECT_FALSE(pool().HasWarmedContainerForTesting());
@@ -343,4 +349,26 @@ IN_PROC_BROWSER_TEST_F(GlicWarmingDisabledBrowserTest, NoWarming) {
   EXPECT_FALSE(pool().HasWarmedContainerForTesting());
 }
 
+class GlicWarmingPoolGeicBrowserTest : public GlicWarmingPoolBrowserTest {
+ private:
+  ScopedGeicTestFeatures geic_features_;
+};
+
+// TODO(b/496609005): Skip on ChromeOS due to profile ineligibility timeouts.
+#if BUILDFLAG(IS_CHROMEOS)
+#define MAYBE_TakeContainerRecordsEnterpriseMetrics \
+  DISABLED_TakeContainerRecordsEnterpriseMetrics
+#else
+#define MAYBE_TakeContainerRecordsEnterpriseMetrics \
+  TakeContainerRecordsEnterpriseMetrics
+#endif
+IN_PROC_BROWSER_TEST_F(GlicWarmingPoolGeicBrowserTest,
+                       MAYBE_TakeContainerRecordsEnterpriseMetrics) {
+  base::HistogramTester histogram_tester;
+  std::unique_ptr<GlicWebContentsManager> container = pool().TakeContainer();
+  EXPECT_TRUE(container);
+  histogram_tester.ExpectTotalCount("Glic.WarmingPool.HitStatus", 1);
+  histogram_tester.ExpectTotalCount("Glic.Enterprise.WarmingPool.HitStatus", 1);
+  histogram_tester.ExpectTotalCount("Glic.Consumer.WarmingPool.HitStatus", 0);
+}
 }  // namespace glic

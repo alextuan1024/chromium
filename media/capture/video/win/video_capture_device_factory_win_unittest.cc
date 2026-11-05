@@ -30,9 +30,12 @@
 #include "base/run_loop.h"
 #include "base/strings/sys_string_conversions.h"
 #include "base/test/bind.h"
+#include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
 #include "media/base/media_switches.h"
+#include "media/capture/capture_switches.h"
+#include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace media {
@@ -1227,6 +1230,13 @@ class FakeVideoCaptureDeviceFactoryWin : public VideoCaptureDeviceFactoryWin {
     device_source_native_formats_[device_id].push_back(format);
   }
 
+  int create_device_source_count() const { return create_device_source_count_; }
+
+  MOCK_METHOD(bool,
+              CreateDeviceFilterDirectShow,
+              (const std::string& device_id, IBaseFilter** capture_filter),
+              (override));
+
  protected:
   bool CreateDeviceEnumMonikerDirectShow(IEnumMoniker** enum_moniker) override {
     auto stub_enum_moniker = base::MakeRefCounted<StubEnumMoniker>(
@@ -1251,6 +1261,7 @@ class FakeVideoCaptureDeviceFactoryWin : public VideoCaptureDeviceFactoryWin {
       const bool banned_for_d3d11,
       scoped_refptr<DXGIDeviceManager> dxgi_device_manager,
       IMFMediaSource** source) override {
+    ++create_device_source_count_;
     UINT32 length;
     if (FAILED(attributes->GetStringLength(
             MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_SYMBOLIC_LINK,
@@ -1341,9 +1352,19 @@ class FakeVideoCaptureDeviceFactoryWin : public VideoCaptureDeviceFactoryWin {
   }
 
   bool disable_get_supported_formats_mf_mocking_ = false;
+  int create_device_source_count_ = 0;
   std::map<std::wstring, std::vector<VideoPixelFormat>>
       device_source_native_formats_;
 };
+
+// Returns the expected ID of a device that is listed in MediaFoundation but
+// only reports supported formats in DirectShow.
+std::string GetDirectShowFallbackDeviceId() {
+  return base::SysWideToUTF8(
+      switches::IsWinDeviceEnumerationWithoutActivationEnabled()
+          ? kMFDeviceId5
+          : kDirectShowDeviceId5);
+}
 
 }  // namespace
 
@@ -1382,6 +1403,7 @@ TEST_P(VideoCaptureDeviceFactoryMFWinTest, GetDevicesInfo) {
   const bool use_d3d11 = GetParam();
   factory_.set_use_d3d11_with_media_foundation_for_testing(use_d3d11);
 
+  base::HistogramTester histogram_tester;
   std::vector<VideoCaptureDeviceInfo> devices_info;
   base::RunLoop run_loop;
   factory_.GetDevicesInfo(base::BindLambdaForTesting(
@@ -1390,6 +1412,13 @@ TEST_P(VideoCaptureDeviceFactoryMFWinTest, GetDevicesInfo) {
         run_loop.Quit();
       }));
   run_loop.Run();
+
+  histogram_tester.ExpectTotalCount(
+      "Media.VideoCapture.Win.DeviceEnumeration.Duration."
+      "DevicesWithCapabilities",
+      1);
+  histogram_tester.ExpectTotalCount(
+      "Media.VideoCapture.Win.DeviceEnumeration.Duration.DevicesOnly", 0);
 
   EXPECT_EQ(devices_info.size(), 6U);
   for (auto it = devices_info.begin(); it != devices_info.end(); it++) {
@@ -1444,7 +1473,7 @@ TEST_P(VideoCaptureDeviceFactoryMFWinTest, GetDevicesInfo) {
   // formats in DirectShow are expected to get enumerated with
   // VideoCaptureApi::WIN_DIRECT_SHOW
   it = FindDeviceInRange(devices_info.begin(), devices_info.end(),
-                         base::SysWideToUTF8(kDirectShowDeviceId5));
+                         GetDirectShowFallbackDeviceId());
   ASSERT_NE(it, devices_info.end());
   EXPECT_EQ(it->descriptor.capture_api, VideoCaptureApi::WIN_DIRECT_SHOW);
   EXPECT_EQ(it->descriptor.display_name(),
@@ -1466,6 +1495,263 @@ TEST_P(VideoCaptureDeviceFactoryMFWinTest, GetDevicesInfo) {
   EXPECT_TRUE(it->descriptor.control_support().pan);
   EXPECT_TRUE(it->descriptor.control_support().tilt);
   EXPECT_TRUE(it->descriptor.control_support().zoom);
+}
+
+TEST_P(VideoCaptureDeviceFactoryMFWinTest,
+       DevicePresentInBothAPIsKeepsIdAcrossModes) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitFromCommandLine(
+      /*enable_features=*/"WinDeviceEnumerationWithoutActivation",
+      /*disable_features=*/"");
+  if (ShouldSkipMFTest()) {
+    return;
+  }
+
+  factory_.set_use_d3d11_with_media_foundation_for_testing(GetParam());
+
+  std::vector<VideoCaptureDeviceInfo> initial_devices_only;
+  base::RunLoop initial_devices_only_run_loop;
+  factory_.GetDevicesInfo(
+      mojom::VideoCaptureDeviceEnumerationMode::kDevicesOnly,
+      base::BindLambdaForTesting(
+          [&initial_devices_only, &initial_devices_only_run_loop](
+              std::vector<VideoCaptureDeviceInfo> result) {
+            initial_devices_only = std::move(result);
+            initial_devices_only_run_loop.Quit();
+          }));
+  initial_devices_only_run_loop.Run();
+
+  iterator initial_devices_only_device_it = FindDeviceInRange(
+      initial_devices_only.begin(), initial_devices_only.end(),
+      base::SysWideToUTF8(kMFDeviceId5));
+  ASSERT_NE(initial_devices_only_device_it, initial_devices_only.end());
+  EXPECT_EQ(initial_devices_only_device_it->descriptor.capture_api,
+            VideoCaptureApi::WIN_MEDIA_FOUNDATION);
+
+  std::vector<VideoCaptureDeviceInfo> devices_with_capabilities;
+  base::RunLoop capabilities_run_loop;
+  factory_.GetDevicesInfo(base::BindLambdaForTesting(
+      [&devices_with_capabilities,
+       &capabilities_run_loop](std::vector<VideoCaptureDeviceInfo> result) {
+        devices_with_capabilities = std::move(result);
+        capabilities_run_loop.Quit();
+      }));
+  capabilities_run_loop.Run();
+
+  iterator capabilities_device_it = FindDeviceInRange(
+      devices_with_capabilities.begin(), devices_with_capabilities.end(),
+      base::SysWideToUTF8(kMFDeviceId5));
+  ASSERT_NE(capabilities_device_it, devices_with_capabilities.end());
+  EXPECT_EQ(capabilities_device_it->descriptor.capture_api,
+            VideoCaptureApi::WIN_DIRECT_SHOW);
+  EXPECT_EQ(capabilities_device_it->descriptor.device_id,
+            initial_devices_only_device_it->descriptor.device_id);
+
+  // The factory does not cache device lists, so this triggers a new
+  // devices-only enumeration.
+  std::vector<VideoCaptureDeviceInfo> devices_only;
+  base::RunLoop devices_only_run_loop;
+  factory_.GetDevicesInfo(
+      mojom::VideoCaptureDeviceEnumerationMode::kDevicesOnly,
+      base::BindLambdaForTesting(
+          [&devices_only,
+           &devices_only_run_loop](std::vector<VideoCaptureDeviceInfo> result) {
+            devices_only = std::move(result);
+            devices_only_run_loop.Quit();
+          }));
+  devices_only_run_loop.Run();
+
+  iterator devices_only_device_it =
+      FindDeviceInRange(devices_only.begin(), devices_only.end(),
+                        base::SysWideToUTF8(kMFDeviceId5));
+  ASSERT_NE(devices_only_device_it, devices_only.end());
+  EXPECT_EQ(devices_only_device_it->descriptor.capture_api,
+            VideoCaptureApi::WIN_MEDIA_FOUNDATION);
+  EXPECT_EQ(capabilities_device_it->descriptor.device_id,
+            devices_only_device_it->descriptor.device_id);
+
+  // The devices-only enumeration must not clear the mapping created by the
+  // preceding capabilities enumeration.
+  EXPECT_CALL(factory_,
+              CreateDeviceFilterDirectShow(
+                  base::SysWideToUTF8(kDirectShowDeviceId5), testing::_))
+      .WillOnce(testing::Return(false));
+  VideoCaptureErrorOrDevice direct_show_fallback_create_result =
+      factory_.CreateDevice(capabilities_device_it->descriptor);
+  EXPECT_EQ(direct_show_fallback_create_result.error(),
+            VideoCaptureError::kWinDirectShowDeviceFilterCreationFailed);
+
+  iterator direct_show_only_device_it =
+      FindDeviceInRange(devices_only.begin(), devices_only.end(),
+                        base::SysWideToUTF8(kDirectShowDeviceId3));
+  ASSERT_NE(direct_show_only_device_it, devices_only.end());
+  EXPECT_EQ(direct_show_only_device_it->descriptor.capture_api,
+            VideoCaptureApi::WIN_DIRECT_SHOW);
+
+  EXPECT_CALL(factory_,
+              CreateDeviceFilterDirectShow(
+                  base::SysWideToUTF8(kDirectShowDeviceId3), testing::_))
+      .WillOnce(testing::Return(false));
+  VideoCaptureErrorOrDevice direct_show_only_create_result =
+      factory_.CreateDevice(direct_show_only_device_it->descriptor);
+  EXPECT_EQ(direct_show_only_create_result.error(),
+            VideoCaptureError::kWinDirectShowDeviceFilterCreationFailed);
+}
+
+TEST_P(VideoCaptureDeviceFactoryMFWinTest,
+       DevicePresentInBothAPIsKeepsPositionAcrossModes) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitFromCommandLine(
+      /*enable_features=*/"WinDeviceEnumerationWithoutActivation",
+      /*disable_features=*/"");
+  if (ShouldSkipMFTest()) {
+    return;
+  }
+
+  factory_.set_use_d3d11_with_media_foundation_for_testing(GetParam());
+
+  std::vector<VideoCaptureDeviceInfo> devices_only;
+  base::RunLoop devices_only_run_loop;
+  factory_.GetDevicesInfo(
+      mojom::VideoCaptureDeviceEnumerationMode::kDevicesOnly,
+      base::BindLambdaForTesting(
+          [&](std::vector<VideoCaptureDeviceInfo> result) {
+            devices_only = std::move(result);
+            devices_only_run_loop.Quit();
+          }));
+  devices_only_run_loop.Run();
+
+  std::vector<VideoCaptureDeviceInfo> devices_with_capabilities;
+  base::RunLoop capabilities_run_loop;
+  factory_.GetDevicesInfo(
+      mojom::VideoCaptureDeviceEnumerationMode::kDevicesWithCapabilities,
+      base::BindLambdaForTesting(
+          [&](std::vector<VideoCaptureDeviceInfo> result) {
+            devices_with_capabilities = std::move(result);
+            capabilities_run_loop.Quit();
+          }));
+  capabilities_run_loop.Run();
+
+  ASSERT_GT(devices_only.size(), 1u);
+  ASSERT_EQ(devices_only.size(), devices_with_capabilities.size());
+  for (size_t i = 0; i < devices_only.size(); ++i) {
+    SCOPED_TRACE(i);
+    EXPECT_EQ(devices_only[i].descriptor.device_id,
+              devices_with_capabilities[i].descriptor.device_id);
+  }
+}
+
+TEST_P(VideoCaptureDeviceFactoryMFWinTest, GetDevicesOnly) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitFromCommandLine(
+      /*enable_features=*/"WinDeviceEnumerationWithoutActivation",
+      /*disable_features=*/"");
+  if (ShouldSkipMFTest()) {
+    return;
+  }
+
+  factory_.set_use_d3d11_with_media_foundation_for_testing(GetParam());
+
+  base::HistogramTester histogram_tester;
+  std::vector<VideoCaptureDeviceInfo> devices_info;
+  base::RunLoop run_loop;
+  factory_.GetDevicesInfo(
+      mojom::VideoCaptureDeviceEnumerationMode::kDevicesOnly,
+      base::BindLambdaForTesting(
+          [&devices_info,
+           &run_loop](std::vector<VideoCaptureDeviceInfo> result) {
+            devices_info = std::move(result);
+            run_loop.Quit();
+          }));
+  run_loop.Run();
+
+  histogram_tester.ExpectTotalCount(
+      "Media.VideoCapture.Win.DeviceEnumeration.Duration.DevicesOnly", 1);
+  histogram_tester.ExpectTotalCount(
+      "Media.VideoCapture.Win.DeviceEnumeration.Duration."
+      "DevicesWithCapabilities",
+      0);
+
+  // Return the complete list without creating Media Foundation device sources.
+  EXPECT_EQ(devices_info.size(), 6U);
+  EXPECT_EQ(factory_.create_device_source_count(), 0);
+  // Each device ID should appear only once.
+  for (auto it = devices_info.begin(); it != devices_info.end(); ++it) {
+    EXPECT_EQ(
+        FindDeviceInRange(devices_info.begin(), it, it->descriptor.device_id),
+        it);
+  }
+  // Include the expected Media Foundation and DirectShow descriptors.
+  for (const wchar_t* device_id :
+       {kMFDeviceId0, kMFDeviceId1, kMFDeviceId5, kDirectShowDeviceId3,
+        kDirectShowDeviceId4, kDirectShowDeviceId6}) {
+    EXPECT_NE(FindDeviceInRange(devices_info.begin(), devices_info.end(),
+                                base::SysWideToUTF8(device_id)),
+              devices_info.end());
+  }
+  // Keep the Media Foundation descriptor for Dazzle, which both APIs report.
+  EXPECT_EQ(FindDeviceInRange(devices_info.begin(), devices_info.end(),
+                              base::SysWideToUTF8(kDirectShowDeviceId5)),
+            devices_info.end());
+  for (const auto& device_info : devices_info) {
+    EXPECT_TRUE(device_info.supported_formats.empty());
+    EXPECT_FALSE(device_info.descriptor.control_support().pan);
+    EXPECT_FALSE(device_info.descriptor.control_support().tilt);
+    EXPECT_FALSE(device_info.descriptor.control_support().zoom);
+  }
+}
+
+TEST_P(VideoCaptureDeviceFactoryMFWinTest,
+       DisabledActivationFreeEnumerationUsesFull) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitFromCommandLine(
+      /*enable_features=*/"",
+      /*disable_features=*/"WinDeviceEnumerationWithoutActivation");
+  if (ShouldSkipMFTest()) {
+    return;
+  }
+
+  factory_.set_use_d3d11_with_media_foundation_for_testing(GetParam());
+
+  base::HistogramTester histogram_tester;
+  std::vector<VideoCaptureDeviceInfo> devices_info;
+  base::RunLoop run_loop;
+  factory_.GetDevicesInfo(
+      mojom::VideoCaptureDeviceEnumerationMode::kDevicesOnly,
+      base::BindLambdaForTesting(
+          [&devices_info,
+           &run_loop](std::vector<VideoCaptureDeviceInfo> result) {
+            devices_info = std::move(result);
+            run_loop.Quit();
+          }));
+  run_loop.Run();
+
+  histogram_tester.ExpectTotalCount(
+      "Media.VideoCapture.Win.DeviceEnumeration.Duration."
+      "DevicesWithCapabilities",
+      1);
+  histogram_tester.ExpectTotalCount(
+      "Media.VideoCapture.Win.DeviceEnumeration.Duration.DevicesOnly", 0);
+
+  EXPECT_GT(factory_.create_device_source_count(), 0);
+  iterator it = FindDeviceInRange(devices_info.begin(), devices_info.end(),
+                                  base::SysWideToUTF8(kDirectShowDeviceId5));
+  // Both APIs report the same Dazzle device, but only DirectShow has formats.
+  // With the feature disabled, its descriptor keeps the DirectShow ID.
+  ASSERT_NE(it, devices_info.end());
+  EXPECT_EQ(it->descriptor.capture_api, VideoCaptureApi::WIN_DIRECT_SHOW);
+  EXPECT_EQ(FindDeviceInRange(devices_info.begin(), devices_info.end(),
+                              base::SysWideToUTF8(kMFDeviceId5)),
+            devices_info.end());
+
+  EXPECT_CALL(factory_,
+              CreateDeviceFilterDirectShow(
+                  base::SysWideToUTF8(kDirectShowDeviceId5), testing::_))
+      .WillOnce(testing::Return(false));
+  VideoCaptureErrorOrDevice create_result =
+      factory_.CreateDevice(it->descriptor);
+  EXPECT_EQ(create_result.error(),
+            VideoCaptureError::kWinDirectShowDeviceFilterCreationFailed);
 }
 
 TEST_P(VideoCaptureDeviceFactoryMFWinTest, GetDevicesInfo_IncludeIRCameras) {
@@ -1550,7 +1836,7 @@ TEST_P(VideoCaptureDeviceFactoryMFWinTest, GetDevicesInfo_IncludeIRCameras) {
   // formats in DirectShow are expected to get enumerated with
   // VideoCaptureApi::WIN_DIRECT_SHOW
   it = FindDeviceInRange(devices_info.begin(), devices_info.end(),
-                         base::SysWideToUTF8(kDirectShowDeviceId5));
+                         GetDirectShowFallbackDeviceId());
   ASSERT_NE(it, devices_info.end());
   EXPECT_EQ(it->descriptor.capture_api, VideoCaptureApi::WIN_DIRECT_SHOW);
   EXPECT_EQ(it->descriptor.display_name(),

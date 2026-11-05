@@ -1,0 +1,72 @@
+// Copyright 2026 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+#include "components/sync_tab_context/build_container_access_token.h"
+
+#include <cstdint>
+#include <optional>
+#include <string>
+#include <utility>
+
+#include "base/check.h"
+#include "base/containers/span.h"
+#include "base/time/time.h"
+#include "base/uuid.h"
+#include "components/sync/model/crypto/agile_symmetric_key_set.h"
+#include "components/sync/protocol/encryption.pb.h"
+#include "components/sync/protocol/tab_context_container_access_token.pb.h"
+#include "components/sync_tab_context/container_id.h"
+#include "google_apis/gaia/gaia_id.h"
+
+namespace sync_tab_context {
+
+namespace {
+
+google::protobuf::Timestamp TimeToGoogleTimestampProto(base::Time time) {
+  google::protobuf::Timestamp timestamp;
+  const int64_t seconds = (time - base::Time::UnixEpoch()).InSeconds();
+  const int64_t nanos =
+      ((time - base::Time::UnixEpoch()) - base::Seconds(seconds))
+          .InNanoseconds();
+  timestamp.set_seconds(seconds);
+  timestamp.set_nanos(static_cast<int32_t>(nanos));
+  return timestamp;
+}
+
+}  // namespace
+
+std::optional<std::string> BuildContainerAccessToken(
+    const syncer::AgileSymmetricKeySet& container_key_set,
+    const GaiaId& gaia_id,
+    const ContainerId& container_id,
+    EphemeralKeyFetcher::Result ephemeral_key_result) {
+  CHECK(!gaia_id.empty());
+  CHECK(container_id.value().is_valid());
+  CHECK(ephemeral_key_result.ephemeral_key);
+
+  sync_pb::TabContextContainerAccessToken::Payload payload;
+  *payload.mutable_container_key() = container_key_set.ToProto();
+  payload.set_obfuscated_gaia_id(gaia_id.ToString());
+  payload.set_container_id(container_id.value().AsLowercaseString());
+
+  const std::string payload_bytes = payload.SerializeAsString();
+  const std::optional<sync_pb::EncryptedData> encrypted_payload =
+      ephemeral_key_result.ephemeral_key->Encrypt(
+          base::as_byte_span(payload_bytes));
+  if (!encrypted_payload) {
+    return std::nullopt;
+  }
+
+  sync_pb::TabContextContainerAccessToken token_proto;
+  token_proto.set_name(std::move(ephemeral_key_result.name));
+  token_proto.set_encrypted_payload(encrypted_payload->SerializeAsString());
+  if (!ephemeral_key_result.expire_time.is_null()) {
+    *token_proto.mutable_expire_time() =
+        TimeToGoogleTimestampProto(ephemeral_key_result.expire_time);
+  }
+
+  return token_proto.SerializeAsString();
+}
+
+}  // namespace sync_tab_context

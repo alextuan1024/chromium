@@ -10,7 +10,7 @@
 #include "base/test/gmock_callback_support.h"
 #include "base/test/task_environment.h"
 #include "chromeos/ash/components/disks/mock_disk_mount_manager.h"
-#include "mojo/public/cpp/system/platform_handle.h"
+#include "mojo/public/cpp/platform/platform_handle.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -90,13 +90,12 @@ TEST_F(SmbFsHostTest, UnmountOnDestruction) {
   EXPECT_CALL(mock_disk_mount_manager_, UnmountPath(kMountPath, _))
       .WillOnce(base::test::RunOnceCallback<1>(ash::MountError::kSuccess));
 
-  base::RunLoop run_loop;
   std::unique_ptr<SmbFsHost> host = std::make_unique<SmbFsHost>(
       std::make_unique<ash::disks::MountPoint>(base::FilePath(kMountPath),
                                                &mock_disk_mount_manager_),
       &mock_delegate_, std::move(smbfs_remote_),
       std::move(delegate_pending_receiver_));
-  run_loop.RunUntilIdle();
+  delegate_remote_.FlushForTesting();
   host.reset();
 }
 
@@ -123,9 +122,7 @@ TEST_F(SmbFsHostTest, RequestCredentials_ProvideCredentials) {
         EXPECT_EQ(credentials->password->length,
                   static_cast<int32_t>(strlen(kPassword)));
         std::string password_buf(credentials->password->length, 'a');
-        base::ScopedFD fd =
-            mojo::UnwrapPlatformHandle(std::move(credentials->password->fd))
-                .TakeFD();
+        base::ScopedFD fd = credentials->password->fd.TakeFD();
         EXPECT_TRUE(base::ReadFromFD(fd.get(), password_buf));
         EXPECT_EQ(password_buf, kPassword);
         run_loop.Quit();

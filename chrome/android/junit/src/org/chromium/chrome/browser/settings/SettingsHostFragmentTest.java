@@ -13,7 +13,9 @@ import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import android.content.Context;
@@ -25,6 +27,8 @@ import android.util.TypedValue;
 import android.view.View;
 
 import androidx.fragment.app.Fragment;
+import androidx.fragment.app.FragmentManager;
+import androidx.lifecycle.Lifecycle;
 import androidx.preference.Preference;
 import androidx.preference.PreferenceFragmentCompat;
 import androidx.preference.PreferenceScreen;
@@ -42,6 +46,10 @@ import org.robolectric.shadows.ShadowLooper;
 import org.chromium.base.ActivityState;
 import org.chromium.base.ApplicationStatus;
 import org.chromium.base.DeviceInfo;
+import org.chromium.base.supplier.MonotonicObservableSupplier;
+import org.chromium.base.supplier.OneshotSupplier;
+import org.chromium.base.supplier.OneshotSupplierImpl;
+import org.chromium.base.supplier.SupplierUtils;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.Features.EnableFeatures;
@@ -54,16 +62,23 @@ import org.chromium.chrome.browser.search_engines.TemplateUrlServiceFactory;
 import org.chromium.chrome.browser.signin.services.IdentityServicesProvider;
 import org.chromium.chrome.browser.signin.services.SigninManager;
 import org.chromium.chrome.browser.sync.SyncServiceFactory;
+import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
+import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
 import org.chromium.components.browser_ui.settings.PaddedItemDecorationWithDivider;
 import org.chromium.components.browser_ui.settings.SettingsNavigation;
 import org.chromium.components.browser_ui.site_settings.BaseSiteSettingsFragment;
 import org.chromium.components.search_engines.TemplateUrlService;
 import org.chromium.components.sync.SyncService;
+import org.chromium.ui.base.ActivityResultTracker;
+import org.chromium.ui.base.WindowAndroid;
+import org.chromium.ui.modaldialog.ModalDialogManager;
+
+import java.util.function.Supplier;
 
 /** Unit tests for {@link SettingsHostFragment}. */
 @RunWith(BaseRobolectricTestRunner.class)
 @Config(qualifiers = "w720dp-h1024dp")
-@EnableFeatures({ChromeFeatureList.SETTINGS_IN_TAB, ChromeFeatureList.SETTINGS_MULTI_COLUMN})
+@EnableFeatures(ChromeFeatureList.SETTINGS_IN_TAB)
 public class SettingsHostFragmentTest {
     @Rule
     public ActivityScenarioRule<TestChromeBaseAppCompatActivity> mActivityScenarios =
@@ -356,6 +371,61 @@ public class SettingsHostFragmentTest {
         assertEquals(0, multiColumnSettings.getChildFragmentManager().getBackStackEntryCount());
     }
 
+    /**
+     * Regression test for crbug.com/571768954: showing a detail fragment while the activity's
+     * FragmentManager has already saved its state (e.g. during post-native tab restoration while
+     * the activity is stopped) must defer the transaction until onResume() instead of crashing in
+     * FragmentManager.checkStateLoss().
+     */
+    @Test
+    public void testShowFragment_WhenStateSaved_DefersUntilResume() {
+        mSettingsHostFragment = new TestMultiColumnSettingsHostFragment();
+        mActivity
+                .getSupportFragmentManager()
+                .beginTransaction()
+                .add(
+                        android.R.id.content,
+                        mSettingsHostFragment,
+                        SettingsHostFragment.SETTINGS_NATIVE_PAGE_TAG)
+                .commitNow();
+
+        MultiColumnSettings multiColumnSettings =
+                (MultiColumnSettings) mSettingsHostFragment.getActiveFragment();
+        assertNotNull(multiColumnSettings);
+
+        mActivityScenarios.getScenario().moveToState(Lifecycle.State.CREATED);
+        assertTrue(multiColumnSettings.getChildFragmentManager().isStateSaved());
+
+        Bundle args = new Bundle();
+        args.putString("test_key", "test_value");
+        SecondFakeSettingsFragment fragment = new SecondFakeSettingsFragment();
+        fragment.setArguments(args);
+        boolean shown =
+                mSettingsHostFragment.showFragment(
+                        fragment, /* addToBackStack= */ true, /* tag= */ "test_tag");
+        assertTrue("showFragment should succeed when state is saved", shown);
+        assertEquals(
+                "Transaction should be deferred while state is saved",
+                0,
+                multiColumnSettings.getChildFragmentManager().getBackStackEntryCount());
+
+        mActivityScenarios.getScenario().moveToState(Lifecycle.State.RESUMED);
+        multiColumnSettings.getChildFragmentManager().executePendingTransactions();
+
+        Fragment detail =
+                multiColumnSettings
+                        .getChildFragmentManager()
+                        .findFragmentById(R.id.preferences_detail);
+        assertTrue(
+                "Deferred detail fragment should be shown after resuming",
+                detail instanceof SecondFakeSettingsFragment);
+        assertEquals("test_value", detail.getArguments().getString("test_key"));
+        assertEquals(1, multiColumnSettings.getChildFragmentManager().getBackStackEntryCount());
+        assertEquals(
+                "test_tag",
+                multiColumnSettings.getChildFragmentManager().getBackStackEntryAt(0).getName());
+    }
+
     @Test
     @Config(qualifiers = "w320dp")
     public void testShowFragment_NullFragment_SingleColumn_RemovesDetailFragment() {
@@ -395,6 +465,68 @@ public class SettingsHostFragmentTest {
                 multiColumnSettings
                         .getChildFragmentManager()
                         .findFragmentById(R.id.preferences_detail));
+    }
+
+    /**
+     * Regression test for the root settings counterpart of crbug.com/571768954: showing main
+     * settings in single-column mode pops the detail back stack, which FragmentManager refuses
+     * while its state is saved (e.g. during post-native tab restoration while the activity is
+     * stopped). The request must be deferred until onResume() instead of crashing in
+     * FragmentManager.checkStateLoss(), and must supersede a detail page deferred before it.
+     */
+    @Test
+    @Config(qualifiers = "w320dp")
+    public void testShowFragment_NullFragment_SingleColumn_WhenStateSaved_DefersUntilResume() {
+        DeviceInfo.setIsDesktopForTesting(true);
+        mSettingsHostFragment = new TestSingleColumnMultiColumnSettingsHostFragment();
+        mActivity
+                .getSupportFragmentManager()
+                .beginTransaction()
+                .add(
+                        android.R.id.content,
+                        mSettingsHostFragment,
+                        SettingsHostFragment.SETTINGS_NATIVE_PAGE_TAG)
+                .commitNow();
+
+        MultiColumnSettings multiColumnSettings =
+                (MultiColumnSettings) mSettingsHostFragment.getActiveFragment();
+        assertNotNull(multiColumnSettings);
+        FragmentManager fragmentManager = multiColumnSettings.getChildFragmentManager();
+
+        // Open a detail page on the back stack, as a page opened from search is.
+        multiColumnSettings.showDetailFragment(
+                new SecondFakeSettingsFragment(), /* addToBackStack= */ true, /* tag= */ null);
+        fragmentManager.executePendingTransactions();
+        assertEquals(1, fragmentManager.getBackStackEntryCount());
+
+        mActivityScenarios.getScenario().moveToState(Lifecycle.State.CREATED);
+        assertTrue(fragmentManager.isStateSaved());
+
+        // A detail page requested while state is saved is deferred until onResume(). A later
+        // request for main settings must win over it.
+        multiColumnSettings.showDetailFragment(
+                new FirstFakeSettingsFragment(), /* addToBackStack= */ false, /* tag= */ null);
+        boolean shown =
+                mSettingsHostFragment.showFragment(
+                        null, /* addToBackStack= */ false, /* tag= */ null);
+        assertTrue("showFragment should succeed when state is saved", shown);
+        assertEquals(
+                "Back stack should be left alone while state is saved",
+                1,
+                fragmentManager.getBackStackEntryCount());
+
+        mActivityScenarios.getScenario().moveToState(Lifecycle.State.RESUMED);
+        fragmentManager.executePendingTransactions();
+        ShadowLooper.idleMainLooper();
+        fragmentManager.executePendingTransactions();
+
+        assertEquals(
+                "Back stack should be cleared after resuming",
+                0,
+                fragmentManager.getBackStackEntryCount());
+        assertNull(
+                "Detail fragment should be removed when returning to root settings",
+                fragmentManager.findFragmentById(R.id.preferences_detail));
     }
 
     @Test
@@ -758,17 +890,136 @@ public class SettingsHostFragmentTest {
 
     @Test
     public void testSetDependencyProvider_appliesDependenciesToExistingChildFragments() {
+        // A host attached before native is initialized cannot make a pending provider in
+        // onAttach(), so its children get dependencies when the real provider arrives.
+        ProfileManager.resetForTesting();
+        attachHostFragment();
+        assertNull(mSettingsHostFragment.getDependencyProviderForTesting());
+        TestMainSettings mainSettings = new TestMainSettings();
+        mSettingsHostFragment.showFragment(
+                mainSettings, /* addToBackStack= */ false, /* tag= */ null);
+        mSettingsHostFragment.getChildFragmentManager().executePendingTransactions();
+        assertEquals(0, mainSettings.getSetDependenciesCount());
+
+        ProfileManager.setLastUsedProfileForTesting(mock(Profile.class));
+        FragmentDependencyProvider provider =
+                spy(
+                        createDependencyProvider(
+                                new OneshotSupplierImpl<>(),
+                                new OneshotSupplierImpl<>(),
+                                new OneshotSupplierImpl<>()));
+        mSettingsHostFragment.setDependencyProvider(provider);
+
+        verify(provider)
+                .attachDependencies(mSettingsHostFragment.getChildFragmentManager(), mainSettings);
+        assertSame(provider, mSettingsHostFragment.getDependencyProviderForTesting());
+    }
+
+    @Test
+    public void testSetDependencyProvider_keepsPendingProviderAndPopulatesIt() {
+        // Attaching without a dependency provider makes the host create a pending one, as when
+        // the FragmentManager restores the host after an activity recreation. Children added
+        // under it, like restored ones, capture its suppliers before the real provider exists.
+        attachHostFragment();
+        FragmentDependencyProvider pending =
+                mSettingsHostFragment.getDependencyProviderForTesting();
+        assertNotNull(pending);
+        TestMainSettings mainSettings = new TestMainSettings();
+        mSettingsHostFragment.showFragment(
+                mainSettings, /* addToBackStack= */ false, /* tag= */ null);
+        mSettingsHostFragment.getChildFragmentManager().executePendingTransactions();
+        assertEquals(1, mainSettings.getSetDependenciesCount());
+        Supplier<@Nullable SnackbarManager> captured = mainSettings.getSnackbarManagerSupplier();
+        assertNotNull(captured);
+        assertNull(captured.get());
+
+        SnackbarManager snackbarManager = mock(SnackbarManager.class);
+        mSettingsHostFragment.setDependencyProvider(
+                createDependencyProvider(
+                        oneshotOf(mock(WindowAndroid.class)),
+                        oneshotOf(snackbarManager),
+                        oneshotOf(mock(BottomSheetController.class))));
+
+        // The host keeps the pending provider and resolves what the child captured, rather than
+        // providing dependencies a second time.
+        assertSame(pending, mSettingsHostFragment.getDependencyProviderForTesting());
+        assertSame(snackbarManager, captured.get());
+        assertEquals(1, mainSettings.getSetDependenciesCount());
+
+        // A later provider, e.g. from a new SettingsPage adopting this host, changes nothing.
+        mSettingsHostFragment.setDependencyProvider(
+                createDependencyProvider(
+                        oneshotOf(mock(WindowAndroid.class)),
+                        oneshotOf(mock(SnackbarManager.class)),
+                        oneshotOf(mock(BottomSheetController.class))));
+        assertSame(pending, mSettingsHostFragment.getDependencyProviderForTesting());
+        assertSame(snackbarManager, captured.get());
+        assertEquals(1, mainSettings.getSetDependenciesCount());
+    }
+
+    @Test
+    public void testSetDependencyProvider_populatesPendingProviderWhenRealSuppliersResolve() {
         attachHostFragment();
         TestMainSettings mainSettings = new TestMainSettings();
         mSettingsHostFragment.showFragment(
                 mainSettings, /* addToBackStack= */ false, /* tag= */ null);
         mSettingsHostFragment.getChildFragmentManager().executePendingTransactions();
+        Supplier<@Nullable SnackbarManager> captured = mainSettings.getSnackbarManagerSupplier();
+        assertNotNull(captured);
 
-        FragmentDependencyProvider mockProvider = mock(FragmentDependencyProvider.class);
-        mSettingsHostFragment.setDependencyProvider(mockProvider);
+        OneshotSupplierImpl<SnackbarManager> snackbarManagerSupplier = new OneshotSupplierImpl<>();
+        mSettingsHostFragment.setDependencyProvider(
+                createDependencyProvider(
+                        new OneshotSupplierImpl<>(),
+                        snackbarManagerSupplier,
+                        new OneshotSupplierImpl<>()));
+        assertNull(captured.get());
 
-        verify(mockProvider)
-                .attachDependencies(mSettingsHostFragment.getChildFragmentManager(), mainSettings);
+        SnackbarManager snackbarManager = mock(SnackbarManager.class);
+        snackbarManagerSupplier.set(snackbarManager);
+        ShadowLooper.idleMainLooper();
+        assertSame(snackbarManager, captured.get());
+    }
+
+    @Test
+    public void testSetDependencyProvider_beforeAttach_createsNoPendingProvider() {
+        SettingsHostFragment fragment = new TestSettingsHostFragment();
+        FragmentDependencyProvider provider =
+                createDependencyProvider(
+                        new OneshotSupplierImpl<>(),
+                        new OneshotSupplierImpl<>(),
+                        new OneshotSupplierImpl<>());
+        fragment.setDependencyProvider(provider);
+
+        mActivity
+                .getSupportFragmentManager()
+                .beginTransaction()
+                .add(android.R.id.content, fragment, SettingsHostFragment.SETTINGS_NATIVE_PAGE_TAG)
+                .commitNow();
+
+        assertSame(provider, fragment.getDependencyProviderForTesting());
+    }
+
+    private FragmentDependencyProvider createDependencyProvider(
+            OneshotSupplier<WindowAndroid> windowAndroidSupplier,
+            OneshotSupplier<SnackbarManager> snackbarManagerSupplier,
+            OneshotSupplier<BottomSheetController> bottomSheetControllerSupplier) {
+        return new FragmentDependencyProvider(
+                mActivity,
+                /* shownInTab= */ true,
+                ProfileManager.getLastUsedRegularProfile(),
+                windowAndroidSupplier,
+                mActivity.getActivityResultTracker(),
+                snackbarManagerSupplier,
+                bottomSheetControllerSupplier,
+                mActivity.getModalDialogManagerSupplier(),
+                SupplierUtils.ofNull());
+    }
+
+    private static <T> OneshotSupplier<T> oneshotOf(T value) {
+        OneshotSupplierImpl<T> supplier = new OneshotSupplierImpl<>();
+        supplier.set(value);
+        return supplier;
     }
 
     @Test
@@ -915,6 +1166,29 @@ public class SettingsHostFragmentTest {
     }
 
     @Test
+    @EnableFeatures(ChromeFeatureList.SETTINGS_IN_TAB_URL_NAV)
+    public void testOnPreferenceStartFragment_SearchOpen_UsesFragmentBackStack() {
+        attachHostFragment();
+        SettingsNavigation mockNavigation = mock(SettingsNavigation.class);
+        mSettingsHostFragment.setSettingsNavigation(mockNavigation);
+        mSettingsHostFragment.setSearchOpenSupplier(() -> true);
+
+        Preference preference = mock(Preference.class);
+        when(preference.getFragment()).thenReturn(SecondFakeSettingsFragment.class.getName());
+        when(preference.getExtras()).thenReturn(new Bundle());
+
+        PreferenceFragmentCompat caller = mock(PreferenceFragmentCompat.class);
+        boolean handled = mSettingsHostFragment.onPreferenceStartFragment(caller, preference);
+
+        // The page belongs to the search rather than to the tab, so it goes on the back stack
+        // search is holding its own pages on, and the tab stays where it is.
+        assertTrue("Preference start fragment should be handled", handled);
+        verifyNoInteractions(mockNavigation);
+        mSettingsHostFragment.getChildFragmentManager().executePendingTransactions();
+        assertEquals(1, mSettingsHostFragment.getChildFragmentManager().getBackStackEntryCount());
+    }
+
+    @Test
     public void testSaveAndRestoreInstanceState_invokesCallbackAndStoresBundle() {
         attachHostFragment();
         mSettingsHostFragment.setSaveInstanceStateCallback(
@@ -975,6 +1249,8 @@ public class SettingsHostFragmentTest {
     /** Subclass of MainSettings to inject dependencies and avoid native calls. */
     public static class TestMainSettings extends MainSettings {
         private final Profile mMockProfile = mock(Profile.class);
+        private int mSetDependenciesCount;
+        private @Nullable Supplier<@Nullable SnackbarManager> mSnackbarManagerSupplier;
 
         public TestMainSettings() {
             setProfile(mMockProfile);
@@ -984,6 +1260,33 @@ public class SettingsHostFragmentTest {
         @Override
         public Profile getProfile() {
             return mMockProfile;
+        }
+
+        @Override
+        public void setDependencies(
+                MonotonicObservableSupplier<ModalDialogManager> modalDialogManagerSupplier,
+                Supplier<@Nullable WindowAndroid> windowAndroidSupplier,
+                ActivityResultTracker activityResultTracker,
+                Supplier<@Nullable BottomSheetController> bottomSheetControllerSupplier,
+                Supplier<@Nullable SnackbarManager> snackbarManagerSupplier) {
+            super.setDependencies(
+                    modalDialogManagerSupplier,
+                    windowAndroidSupplier,
+                    activityResultTracker,
+                    bottomSheetControllerSupplier,
+                    snackbarManagerSupplier);
+            mSetDependenciesCount++;
+            mSnackbarManagerSupplier = snackbarManagerSupplier;
+        }
+
+        /** Returns how many times the host has provided dependencies to this fragment. */
+        public int getSetDependenciesCount() {
+            return mSetDependenciesCount;
+        }
+
+        /** Returns the snackbar supplier this fragment was given, as it would pass it on. */
+        public @Nullable Supplier<@Nullable SnackbarManager> getSnackbarManagerSupplier() {
+            return mSnackbarManagerSupplier;
         }
 
         @Override

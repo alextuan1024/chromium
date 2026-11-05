@@ -13,7 +13,7 @@ export function getHtml(this: HistorySyncPromoElement) {
 ${this.shown_ ? html`
   <div id="promo" role="dialog">
     <cr-icon-button id="close" iron-icon="cr:close"
-        aria-label="$i18n{historyEmbeddingsPromoClose}"
+        aria-label="$i18n{historyPromoClose}"
         @click="${this.onCloseClick_}">
     </cr-icon-button>
 
@@ -36,7 +36,7 @@ ${this.shown_ ? html`
       ${this.isSignInState_(HistorySignInState.WEB_ONLY_SIGNED_IN) ? html`
         <div id="web-only-signed-in-description"
             class="web-only-signed-in-description">
-          $i18n{historySyncPromoBodySignedOut}
+          $i18n{historySyncPromoBodyWebOnlySignedIn}
         </div>
       ` : ''}
 
@@ -83,7 +83,8 @@ ${this.shown_ ? html`
                 this.isHistorySyncTurnedOn_() ?
             html`
           <cr-button id="verify-its-you-button" class="action-button"
-              @click="${this.onTurnOnHistorySyncClick_}">$i18n{verifyItsYou}
+              @click="${this.onTurnOnHistorySyncClick_}">
+            $i18n{verifyItsYou}
           </cr-button>
         ` : html`
           <cr-button id="sync-history-button" class="action-button"

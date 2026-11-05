@@ -4,21 +4,13 @@
 
 #include "chrome/browser/glic/public/widget/glic_side_panel_coordinator_android.h"
 
-#include <climits>
 #include <utility>
 
-#include "base/android/jni_android.h"
-#include "base/android/scoped_java_ref.h"
+#include "base/check.h"
 #include "base/functional/bind.h"
-#include "base/logging.h"
-#include "base/rand_util.h"
-#include "chrome/browser/android/tab_android.h"
-#include "chrome/browser/context_sharing/tab_bottom_sheet/android/co_browse_views_bridge.h"
 #include "chrome/browser/context_sharing/tab_bottom_sheet/android/tab_bottom_sheet_bridge.h"
-#include "chrome/browser/glic/android/jni_headers/GlicBottomSheetComponentProvider_jni.h"
+#include "chrome/browser/glic/widget/glic_co_browse_views.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
-#include "chrome/browser/ui/color/chrome_color_id.h"
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/web_contents.h"
 #include "ui/android/window_android.h"
@@ -38,13 +30,6 @@ GlicSidePanelCoordinatorAndroid::GlicSidePanelCoordinatorAndroid(
       base::BindRepeating(&GlicSidePanelCoordinatorAndroid::OnTabWillDetach,
                           base::Unretained(this)));
 
-  views_bridge_ = std::make_unique<context_sharing::CoBrowseViewsBridge>(
-      *tab, context_sharing::TabBottomSheetClientType::kGlic,
-      context_sharing::CoBrowseContainerType::kBottomSheet,
-      CreateBottomSheetContentProvider(),
-      /*enable_pinch_to_zoom=*/false, kColorGlicBackground);
-  tab_bottom_sheet_bridge_ =
-      std::make_unique<context_sharing::TabBottomSheetBridge>(this, tab);
   manager_initialized_subscription_ =
       context_sharing::TabBottomSheetBridge::RegisterManagerInitializedCallback(
           base::BindRepeating(
@@ -54,14 +39,20 @@ GlicSidePanelCoordinatorAndroid::GlicSidePanelCoordinatorAndroid(
 
 GlicSidePanelCoordinatorAndroid::~GlicSidePanelCoordinatorAndroid() = default;
 
-void GlicSidePanelCoordinatorAndroid::Show(const ShowOptions& options) {
-  if (options.initial_state == ShowOptions::InitialState::kExpanded &&
-      state_ == State::kShown) {
-    return;
-  }
+void GlicSidePanelCoordinatorAndroid::SetCoBrowseViews(
+    std::unique_ptr<GlicCoBrowseViews> co_browse_views) {
+  co_browse_views_ = std::move(co_browse_views);
+}
 
-  if (options.initial_state == ShowOptions::InitialState::kPeeked &&
-      state_ == State::kPeek) {
+GlicCoBrowseViews* GlicSidePanelCoordinatorAndroid::GetCoBrowseViews() const {
+  return co_browse_views_.get();
+}
+
+void GlicSidePanelCoordinatorAndroid::Show(const ShowOptions& options) {
+  if ((options.initial_state == ShowOptions::InitialState::kExpanded &&
+       state_ == State::kShown) ||
+      (options.initial_state == ShowOptions::InitialState::kPeeked &&
+       state_ == State::kPeek)) {
     return;
   }
 
@@ -70,17 +61,29 @@ void GlicSidePanelCoordinatorAndroid::Show(const ShowOptions& options) {
     return;
   }
 
+  EnsureBottomSheetBridgeCreated();
+
   // If the Java bottom sheet manager layout infrastructure is not ready yet
   // (e.g. during startup or activity recreation before layout inflation
   // completes), defer showing Glic until OnManagerInitialized.
   if (!tab_bottom_sheet_bridge_->IsManagerReady()) {
+    bool keep_expanded = pending_show_options_.has_value() &&
+                         pending_show_options_->initial_state ==
+                             ShowOptions::InitialState::kExpanded;
     pending_show_options_ = options;
+    if (keep_expanded) {
+      pending_show_options_->initial_state =
+          ShowOptions::InitialState::kExpanded;
+    }
     return;
   }
 
-  views_bridge_->SetWebContents(web_contents_.get(), /*request_focus=*/false);
+  base::android::ScopedJavaLocalRef<jobject> java_views;
+  if (co_browse_views_) {
+    java_views = co_browse_views_->GetOrCreateJavaCoBrowseViews();
+  }
   bool shown = tab_bottom_sheet_bridge_->Show(
-      views_bridge_->GetCoBrowseViews(),
+      java_views,
       /*animate=*/!options.suppress_animations,
       /*starts_expanded=*/options.initial_state ==
           ShowOptions::InitialState::kExpanded);
@@ -96,23 +99,21 @@ void GlicSidePanelCoordinatorAndroid::Show(const ShowOptions& options) {
     // Java layer will NOT fire the onBottomSheetClosed callback. We must
     // immediately transition to closed so we don't leak state and deadlock
     // future Close() calls.
+    if (co_browse_views_) {
+      co_browse_views_->OnPanelClosed();
+    }
     SetState(State::kClosed);
   }
   pending_show_options_.reset();
-}
-
-void GlicSidePanelCoordinatorAndroid::SetWebContents(
-    content::WebContents* web_contents) {
-  if (web_contents) {
-    web_contents_ = web_contents->GetWeakPtr();
-  } else {
-    web_contents_.reset();
-  }
-  views_bridge_->SetWebContents(web_contents, /*request_focus=*/false);
+  restore_expanded_on_recreation_ = false;
 }
 
 void GlicSidePanelCoordinatorAndroid::Close(const CloseOptions& options) {
   pending_show_options_.reset();
+  restore_expanded_on_recreation_ = false;
+  if (co_browse_views_) {
+    co_browse_views_->OnPanelClosed();
+  }
   if (state_ == State::kClosed) {
     return;
   }
@@ -122,17 +123,23 @@ void GlicSidePanelCoordinatorAndroid::Close(const CloseOptions& options) {
     return;
   }
 
-  tab_bottom_sheet_bridge_->Close(/* animate= */ !options.suppress_animations);
+  CHECK(tab_bottom_sheet_bridge_);
+  tab_bottom_sheet_bridge_->Close(/*animate=*/!options.suppress_animations);
 }
 
-void GlicSidePanelCoordinatorAndroid::SuppressBottomSheetForTesting(  // IN-TEST
+void GlicSidePanelCoordinatorAndroid::SuppressBottomSheetForTesting(
     bool suppress) {
+  EnsureBottomSheetBridgeCreated();
   tab_bottom_sheet_bridge_->SuppressBottomSheetForTesting(suppress);  // IN-TEST
 }
 
-std::optional<GlicSidePanelCoordinator::ShowOptions::InitialState>
-GlicSidePanelCoordinatorAndroid::GetInitialStateOverrideForTesting() const {
-  return initial_state_override_for_activity_recreation_;
+bool GlicSidePanelCoordinatorAndroid::GetRestoreExpandedOnRecreationForTesting()
+    const {
+  return restore_expanded_on_recreation_;
+}
+
+bool GlicSidePanelCoordinatorAndroid::HasBottomSheetBridgeForTesting() const {
+  return tab_bottom_sheet_bridge_ != nullptr;
 }
 
 bool GlicSidePanelCoordinatorAndroid::IsShowing() const {
@@ -161,68 +168,15 @@ bool GlicSidePanelCoordinatorAndroid::IsGlicSidePanelActive() {
   return state_ != State::kClosed;
 }
 
-void GlicSidePanelCoordinatorAndroid::SetState(State state) {
-  if (state_ == state) {
-    return;
-  }
-  state_ = state;
-  state_callbacks_.Notify(state_);
-}
-
-void GlicSidePanelCoordinatorAndroid::SaveStateBeforeDeactivation() {
-  if (state_ == State::kShown) {
-    initial_state_override_for_activity_recreation_ =
-        ShowOptions::InitialState::kExpanded;
-  } else if (state_ == State::kPeek) {
-    initial_state_override_for_activity_recreation_ =
-        ShowOptions::InitialState::kPeeked;
-  }
-}
-
-void GlicSidePanelCoordinatorAndroid::OnTabDidActivate(
-    tabs::TabInterface* tab) {
-  if (state_ == State::kClosed) {
-    return;
-  }
-
-  ShowOptions options;
-  options.suppress_animations = true;
-  options.initial_state = ShowOptions::InitialState::kPeeked;
-  Show(options);
-}
-
-void GlicSidePanelCoordinatorAndroid::OnTabWillDeactivate(
-    tabs::TabInterface* tab) {
-  pending_show_options_.reset();
-  if (state_ == State::kClosed) {
-    return;
-  }
-  SaveStateBeforeDeactivation();
-  SetState(State::kBackgrounded);
-
-  tab_bottom_sheet_bridge_->Close(/* animate= */ false);
-}
-
-void GlicSidePanelCoordinatorAndroid::OnTabWillDetach(
-    tabs::TabInterface* tab,
-    tabs::TabInterface::DetachReason detach_reason) {
-  // Set the state to backgrounded and close the bottom sheet bridge when
-  // detaching, so that Glic is correctly deactivated. This handles cases where
-  // the tab is being deleted, or moved to another window (such as during a
-  // foldable fold/unfold).
-  pending_show_options_.reset();
-  if (state_ != State::kClosed) {
-    SaveStateBeforeDeactivation();
-    SetState(State::kBackgrounded);
-    tab_bottom_sheet_bridge_->Close(/* animate= */ false);
-  }
-}
-
 void GlicSidePanelCoordinatorAndroid::OnClosed() {
   pending_show_options_.reset();
   if (state_ == State::kBackgrounded) {
     return;
   }
+  if (co_browse_views_) {
+    co_browse_views_->OnPanelClosed();
+  }
+  restore_expanded_on_recreation_ = false;
   SetState(State::kClosed);
 }
 
@@ -245,27 +199,83 @@ void GlicSidePanelCoordinatorAndroid::OnManagerInitialized(
       web_contents ? web_contents->GetTopLevelNativeWindow() : nullptr;
 
   if (tab_window == window) {
-    // Rebuild CoBrowseViews now that TabBottomSheetManager is registered on the
-    // window, ensuring the PeekViewManager is instantiated non-null.
-    views_bridge_->CreateCoBrowseViews(web_contents_.get(),
-                                       /*request_focus=*/false);
+    EnsureBottomSheetBridgeCreated();
+    if (co_browse_views_) {
+      co_browse_views_->RecreateJavaCoBrowseViews();
+    }
     ShowOptions options = std::exchange(pending_show_options_, std::nullopt)
                               .value_or(ShowOptions());
-    if (initial_state_override_for_activity_recreation_.has_value()) {
-      options.initial_state =
-          std::exchange(initial_state_override_for_activity_recreation_,
-                        std::nullopt)
-              .value();
+    if (std::exchange(restore_expanded_on_recreation_, false)) {
+      options.initial_state = ShowOptions::InitialState::kExpanded;
     }
     Show(options);
   }
 }
 
-base::android::ScopedJavaLocalRef<jobject>
-GlicSidePanelCoordinatorAndroid::CreateBottomSheetContentProvider() {
-  JNIEnv* env = base::android::AttachCurrentThread();
-  return Java_GlicBottomSheetComponentProvider_createProvider(
-      env, tab_->GetProfile()->GetJavaObject());
+void GlicSidePanelCoordinatorAndroid::EnsureBottomSheetBridgeCreated() {
+  if (!tab_bottom_sheet_bridge_) {
+    tab_bottom_sheet_bridge_ =
+        std::make_unique<context_sharing::TabBottomSheetBridge>(this, &*tab_);
+  }
+}
+
+void GlicSidePanelCoordinatorAndroid::SetState(State state) {
+  if (state_ == state) {
+    return;
+  }
+  state_ = state;
+  state_callbacks_.Notify(state_);
+}
+
+void GlicSidePanelCoordinatorAndroid::SaveStateBeforeDeactivation() {
+  if (state_ == State::kBackgrounded) {
+    return;
+  }
+  restore_expanded_on_recreation_ = state_ == State::kShown;
+}
+
+void GlicSidePanelCoordinatorAndroid::OnTabDidActivate(
+    tabs::TabInterface* tab) {
+  if (state_ == State::kClosed) {
+    return;
+  }
+
+  ShowOptions options;
+  options.suppress_animations = true;
+  options.initial_state = ShowOptions::InitialState::kPeeked;
+  Show(options);
+}
+
+void GlicSidePanelCoordinatorAndroid::OnTabWillDeactivate(
+    tabs::TabInterface* tab) {
+  pending_show_options_.reset();
+  if (state_ == State::kClosed) {
+    return;
+  }
+
+  SaveStateBeforeDeactivation();
+  SetState(State::kBackgrounded);
+
+  if (tab_bottom_sheet_bridge_) {
+    tab_bottom_sheet_bridge_->Close(/*animate=*/false);
+  }
+}
+
+void GlicSidePanelCoordinatorAndroid::OnTabWillDetach(
+    tabs::TabInterface* tab,
+    tabs::TabInterface::DetachReason detach_reason) {
+  // Set the state to backgrounded and close the bottom sheet bridge when
+  // detaching, so that Glic is correctly deactivated. This handles cases where
+  // the tab is being deleted, or moved to another window (such as during a
+  // foldable fold/unfold).
+  pending_show_options_.reset();
+  if (state_ != State::kClosed) {
+    SaveStateBeforeDeactivation();
+    SetState(State::kBackgrounded);
+    if (tab_bottom_sheet_bridge_) {
+      tab_bottom_sheet_bridge_->Close(/*animate=*/false);
+    }
+  }
 }
 
 }  // namespace glic

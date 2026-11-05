@@ -8,7 +8,6 @@
 
 #import "base/apple/foundation_util.h"
 #import "base/strings/sys_string_conversions.h"
-#import "ios/chrome/browser/autofill/autofill_ai/public/autofill_ai_ui_util.h"
 #import "ios/chrome/browser/net/model/crurl.h"
 #import "ios/chrome/browser/settings/autofill/autofill_ai/ui/autofill_ai_date_picker_input_view.h"
 #import "ios/chrome/browser/settings/autofill/autofill_ai/ui/autofill_ai_entity_country_item.h"
@@ -22,11 +21,13 @@
 #import "ios/chrome/browser/shared/ui/table_view/cells/table_view_link_header_footer_item.h"
 #import "ios/chrome/browser/shared/ui/table_view/legacy_chrome_table_view_controller_test.h"
 #import "ios/chrome/grit/ios_strings.h"
+#import "ios/chrome/test/scoped_key_window.h"
 #import "testing/gtest/include/gtest/gtest.h"
 #import "testing/gtest_mac.h"
 #import "third_party/ocmock/OCMock/OCMock.h"
 #import "third_party/ocmock/gtest_support.h"
 #import "ui/base/l10n/l10n_util.h"
+#import "url/gurl.h"
 
 @interface FakeMutator : NSObject <AutofillAIEntityEditMutator>
 @property(nonatomic, assign) autofill::DenseSet<autofill::AttributeType>
@@ -78,7 +79,7 @@ class AutofillAIEntityEditTableViewControllerTest
         test_name == "TestDidFinishSavingWithLocalFallbackTrue" ||
         test_name == "TestDidFinishSavingWithLocalFallbackFalse" ||
         test_name == "TestSaveButtonState") {
-      controller.mode = AutofillAIEntityEditMode::kCreate;
+      [controller setMode:AutofillAIEntityEditMode::kCreate];
     }
 
     return controller;
@@ -221,7 +222,9 @@ TEST_F(AutofillAIEntityEditTableViewControllerTest, TestFooterForLocalItem) {
       base::apple::ObjCCastStrict<AutofillAIEntityEditTableViewController>(
           controller());
 
-  [view_controller setIsServerWalletItem:NO];
+  NSString* expectedText =
+      l10n_util::GetNSString(IDS_IOS_AUTOFILL_AI_FOOTER_SAVE_TO_DEVICE);
+  [view_controller setFooterText:expectedText urls:@[]];
   [view_controller loadModel];
 
   TableViewLinkHeaderFooterItem* footer =
@@ -229,8 +232,7 @@ TEST_F(AutofillAIEntityEditTableViewControllerTest, TestFooterForLocalItem) {
           [view_controller.tableViewModel footerForSectionIndex:1]);
 
   EXPECT_TRUE(footer);
-  EXPECT_NSEQ(footer.text,
-              l10n_util::GetNSString(IDS_IOS_AUTOFILL_AI_SAVED_LOCALLY_FOOTER));
+  EXPECT_NSEQ(footer.text, expectedText);
 }
 
 TEST_F(AutofillAIEntityEditTableViewControllerTest,
@@ -239,9 +241,10 @@ TEST_F(AutofillAIEntityEditTableViewControllerTest,
       base::apple::ObjCCastStrict<AutofillAIEntityEditTableViewController>(
           controller());
 
-  NSString* test_email = @"test@gmail.com";
-  [view_controller setIsServerWalletItem:YES];
-  [view_controller setUserEmail:test_email];
+  NSString* footerText = @"Test wallet footer with BEGIN_LINKlinkEND_LINK";
+  NSArray<CrURL*>* urls =
+      @[ [[CrURL alloc] initWithGURL:GURL("https://example.com")] ];
+  [view_controller setFooterText:footerText urls:urls];
   [view_controller loadModel];
 
   TableViewLinkHeaderFooterItem* footer =
@@ -249,8 +252,9 @@ TEST_F(AutofillAIEntityEditTableViewControllerTest,
           [view_controller.tableViewModel footerForSectionIndex:1]);
 
   EXPECT_TRUE(footer);
-  EXPECT_EQ(1U, footer.urls.count);
-  EXPECT_EQ(autofill::GetManageYourInfoURL(), footer.urls[0].gurl);
+  EXPECT_NSEQ(footerText, footer.text);
+  ASSERT_EQ(1U, footer.urls.count);
+  EXPECT_EQ(GURL("https://example.com"), footer.urls[0].gurl);
 }
 
 TEST_F(AutofillAIEntityEditTableViewControllerTest,
@@ -398,6 +402,115 @@ TEST_F(AutofillAIEntityEditTableViewControllerTest, TestSelectDateItem) {
   if (ShouldUsePopoverForDatePicker(view_controller.view)) {
     [mock_view_controller verify];
   }
+}
+
+// Tests that no footer item is created when `setFooterText:urls:` has not been
+// called (or is called with nil/empty text).
+TEST_F(AutofillAIEntityEditTableViewControllerTest,
+       TestDefaultFooterWhenNotSet) {
+  AutofillAIEntityEditTableViewController* view_controller =
+      base::apple::ObjCCastStrict<AutofillAIEntityEditTableViewController>(
+          controller());
+
+  [view_controller loadModel];
+
+  EXPECT_EQ(nil, [view_controller.tableViewModel footerForSectionIndex:1]);
+}
+
+// Tests that setting the footer after the view is loaded, but before it is on
+// screen, updates the footer without requiring `loadModel` or `setEditItems:`.
+// This mirrors the mediator, which may update the footer after the view loads.
+TEST_F(AutofillAIEntityEditTableViewControllerTest,
+       TestSetFooterAfterViewLoadedUpdatesFooter) {
+  AutofillAIEntityEditTableViewController* view_controller =
+      base::apple::ObjCCastStrict<AutofillAIEntityEditTableViewController>(
+          controller());
+
+  [view_controller loadViewIfNeeded];
+  ASSERT_FALSE(view_controller.view.window);
+
+  NSString* footerText =
+      @"Saved in BEGIN_LINKGoogle WalletEND_LINK for test@gmail.com";
+  CrURL* url = [[CrURL alloc] initWithGURL:GURL("https://wallet.google.com")];
+  [view_controller setFooterText:footerText urls:@[ url ]];
+
+  TableViewLinkHeaderFooterItem* footerItem =
+      base::apple::ObjCCastStrict<TableViewLinkHeaderFooterItem>(
+          [view_controller.tableViewModel footerForSectionIndex:1]);
+  EXPECT_NSEQ(footerText, footerItem.text);
+  ASSERT_EQ(1U, footerItem.urls.count);
+  EXPECT_EQ(GURL("https://wallet.google.com"), footerItem.urls[0].gurl);
+}
+
+// Tests that setting the footer with identical content does not update the
+// footer even if new CrURL instances are supplied.
+TEST_F(AutofillAIEntityEditTableViewControllerTest,
+       TestSetFooterWithIdenticalContentDoesNotUpdate) {
+  AutofillAIEntityEditTableViewController* view_controller =
+      base::apple::ObjCCastStrict<AutofillAIEntityEditTableViewController>(
+          controller());
+
+  [view_controller loadViewIfNeeded];
+  NSString* footerText = @"Saved in BEGIN_LINKGoogle WalletEND_LINK";
+  NSArray<CrURL*>* originalURLs =
+      @[ [[CrURL alloc] initWithGURL:GURL("https://wallet.google.com")] ];
+  [view_controller setFooterText:footerText urls:originalURLs];
+
+  TableViewLinkHeaderFooterItem* originalItem =
+      base::apple::ObjCCastStrict<TableViewLinkHeaderFooterItem>(
+          [view_controller.tableViewModel footerForSectionIndex:1]);
+
+  NSArray<CrURL*>* distinctURLs =
+      @[ [[CrURL alloc] initWithGURL:GURL("https://wallet.google.com")] ];
+  [view_controller setFooterText:footerText urls:distinctURLs];
+
+  TableViewLinkHeaderFooterItem* currentItem =
+      base::apple::ObjCCastStrict<TableViewLinkHeaderFooterItem>(
+          [view_controller.tableViewModel footerForSectionIndex:1]);
+  EXPECT_EQ(originalItem, currentItem);
+}
+
+// Tests that setting the footer while the view is on screen does not mutate the
+// footer, so disclosures never appear mid-session.
+TEST_F(AutofillAIEntityEditTableViewControllerTest,
+       TestSetFooterWhileVisibleDoesNotMutateFooter) {
+  AutofillAIEntityEditTableViewController* view_controller =
+      base::apple::ObjCCastStrict<AutofillAIEntityEditTableViewController>(
+          controller());
+
+  NSString* initialText =
+      l10n_util::GetNSString(IDS_IOS_AUTOFILL_AI_FOOTER_SAVE_TO_DEVICE);
+  [view_controller setFooterText:initialText urls:@[]];
+
+  ScopedKeyWindow scopedWindow;
+  [scopedWindow.Get() addSubview:view_controller.view];
+  ASSERT_TRUE(view_controller.view.window);
+
+  CrURL* url =
+      [[CrURL alloc] initWithGURL:GURL("https://policies.google.com/privacy")];
+  [view_controller setFooterText:@"Updated BEGIN_LINKPrivacy PolicyEND_LINK"
+                            urls:@[ url ]];
+
+  TableViewLinkHeaderFooterItem* footerItem =
+      base::apple::ObjCCastStrict<TableViewLinkHeaderFooterItem>(
+          [view_controller.tableViewModel footerForSectionIndex:1]);
+  EXPECT_NSEQ(initialText, footerItem.text);
+  EXPECT_EQ(0U, footerItem.urls.count);
+
+  [view_controller.view removeFromSuperview];
+}
+
+// Tests that tapping a link in the footer notifies the delegate.
+TEST_F(AutofillAIEntityEditTableViewControllerTest, TestDidTapLinkWithURL) {
+  AutofillAIEntityEditTableViewController* view_controller =
+      base::apple::ObjCCastStrict<AutofillAIEntityEditTableViewController>(
+          controller());
+
+  CrURL* url =
+      [[CrURL alloc] initWithGURL:GURL("https://policies.google.com/terms")];
+  OCMExpect([mock_delegate_ didTapLinkWithURL:url]);
+  [view_controller view:nil didTapLinkURL:url];
+  [mock_delegate_ verify];
 }
 
 }  // namespace

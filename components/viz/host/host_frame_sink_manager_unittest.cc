@@ -37,6 +37,7 @@ namespace {
 constexpr FrameSinkId kFrameSinkParent1(1, 1);
 constexpr FrameSinkId kFrameSinkParent2(2, 1);
 constexpr FrameSinkId kFrameSinkChild1(3, 1);
+constexpr FrameSinkId kFrameSinkChild2(4, 1);
 
 // Holds the four interface objects needed to create a RootCompositorFrameSink.
 struct RootCompositorFrameSinkData {
@@ -81,6 +82,10 @@ class MockFrameSinkManagerImpl : public TestFrameSinkManagerImpl {
     }
   }
   MOCK_METHOD1(MockInvalidateFrameSinkId,
+               void(const FrameSinkId& frame_sink_id));
+  MOCK_METHOD1(RequestNonEmptyFrameNotification,
+               void(const FrameSinkId& frame_sink_id));
+  MOCK_METHOD1(CancelNonEmptyFrameNotification,
                void(const FrameSinkId& frame_sink_id));
   MOCK_METHOD2(SetFrameSinkDebugLabel,
                void(const FrameSinkId& frame_sink_id,
@@ -169,6 +174,15 @@ class HostFrameSinkManagerTest : public testing::Test {
   void FlushHostAndVerifyExpectations() {
     host_manager_.frame_sink_manager_remote_.FlushForTesting();
     testing::Mock::VerifyAndClearExpectations(&impl());
+  }
+
+  // RequestNonEmptyFrameNotification() requires a registered FrameSinkId.
+  void RegisterFrameSinkIdForNonEmptyFrame(const FrameSinkId& frame_sink_id) {
+    EXPECT_CALL(impl(), RegisterFrameSinkId(frame_sink_id,
+                                            false /* report_activation */));
+    RegisterFrameSinkIdWithFakeClient(frame_sink_id,
+                                      ReportFirstSurfaceActivation::kNo);
+    FlushHostAndVerifyExpectations();
   }
 
   // Destroys FrameSinkManagerImpl which kills the message pipes.
@@ -349,6 +363,85 @@ TEST_F(HostFrameSinkManagerTest, HierarchyMultipleParents) {
 
   EXPECT_CALL(impl(), UnregisterFrameSinkHierarchy(id_parent1, id_child));
   host().UnregisterFrameSinkHierarchy(id_parent1, id_child);
+  FlushHostAndVerifyExpectations();
+}
+
+// Verify that a frame sink can't be registered as its own parent.
+TEST_F(HostFrameSinkManagerTest, HierarchyRejectsSelfEdge) {
+  EXPECT_CALL(impl(), RegisterFrameSinkId(kFrameSinkParent1,
+                                          true /* report_activation */));
+  RegisterFrameSinkIdWithFakeClient(kFrameSinkParent1,
+                                    ReportFirstSurfaceActivation::kYes);
+
+  // The StrictMock fails the test if the edge is sent to Viz.
+  EXPECT_FALSE(
+      host().RegisterFrameSinkHierarchy(kFrameSinkParent1, kFrameSinkParent1));
+  FlushHostAndVerifyExpectations();
+}
+
+// Verify that edges which would close a cycle in the hierarchy are rejected.
+TEST_F(HostFrameSinkManagerTest, HierarchyRejectsCycle) {
+  const FrameSinkId& id_root = kFrameSinkParent1;
+  const FrameSinkId& id_middle = kFrameSinkParent2;
+  const FrameSinkId& id_leaf = kFrameSinkChild1;
+  for (const FrameSinkId& frame_sink_id : {id_root, id_middle, id_leaf}) {
+    EXPECT_CALL(impl(), RegisterFrameSinkId(frame_sink_id,
+                                            true /* report_activation */));
+    RegisterFrameSinkIdWithFakeClient(frame_sink_id,
+                                      ReportFirstSurfaceActivation::kYes);
+  }
+
+  // Build the chain root -> middle -> leaf.
+  EXPECT_CALL(impl(), RegisterFrameSinkHierarchy(id_root, id_middle));
+  EXPECT_TRUE(host().RegisterFrameSinkHierarchy(id_root, id_middle));
+  EXPECT_CALL(impl(), RegisterFrameSinkHierarchy(id_middle, id_leaf));
+  EXPECT_TRUE(host().RegisterFrameSinkHierarchy(id_middle, id_leaf));
+  FlushHostAndVerifyExpectations();
+
+  // Each of these would close a cycle, so none are sent to Viz. The StrictMock
+  // fails the test if one is.
+  EXPECT_FALSE(host().RegisterFrameSinkHierarchy(id_middle, id_root));
+  EXPECT_FALSE(host().RegisterFrameSinkHierarchy(id_leaf, id_middle));
+  EXPECT_FALSE(host().RegisterFrameSinkHierarchy(id_leaf, id_root));
+  FlushHostAndVerifyExpectations();
+
+  // Once middle -> leaf is gone, leaf -> root no longer closes a cycle.
+  EXPECT_CALL(impl(), UnregisterFrameSinkHierarchy(id_middle, id_leaf));
+  host().UnregisterFrameSinkHierarchy(id_middle, id_leaf);
+  EXPECT_CALL(impl(), RegisterFrameSinkHierarchy(id_leaf, id_root));
+  EXPECT_TRUE(host().RegisterFrameSinkHierarchy(id_leaf, id_root));
+  FlushHostAndVerifyExpectations();
+}
+
+// Verify that a frame sink can have two parents that share an ancestor (a
+// diamond), and that a cycle through the diamond is still rejected.
+TEST_F(HostFrameSinkManagerTest, HierarchyAllowsDiamond) {
+  const FrameSinkId& id_top = kFrameSinkParent1;
+  const FrameSinkId& id_left = kFrameSinkParent2;
+  const FrameSinkId& id_right = kFrameSinkChild1;
+  const FrameSinkId& id_bottom = kFrameSinkChild2;
+  for (const FrameSinkId& frame_sink_id :
+       {id_top, id_left, id_right, id_bottom}) {
+    EXPECT_CALL(impl(), RegisterFrameSinkId(frame_sink_id,
+                                            true /* report_activation */));
+    RegisterFrameSinkIdWithFakeClient(frame_sink_id,
+                                      ReportFirstSurfaceActivation::kYes);
+  }
+
+  // Build top -> {left, right} -> bottom. The last edge gives bottom a second
+  // parent without creating a cycle, so it's allowed.
+  EXPECT_CALL(impl(), RegisterFrameSinkHierarchy(id_top, id_left));
+  EXPECT_TRUE(host().RegisterFrameSinkHierarchy(id_top, id_left));
+  EXPECT_CALL(impl(), RegisterFrameSinkHierarchy(id_top, id_right));
+  EXPECT_TRUE(host().RegisterFrameSinkHierarchy(id_top, id_right));
+  EXPECT_CALL(impl(), RegisterFrameSinkHierarchy(id_left, id_bottom));
+  EXPECT_TRUE(host().RegisterFrameSinkHierarchy(id_left, id_bottom));
+  EXPECT_CALL(impl(), RegisterFrameSinkHierarchy(id_right, id_bottom));
+  EXPECT_TRUE(host().RegisterFrameSinkHierarchy(id_right, id_bottom));
+  FlushHostAndVerifyExpectations();
+
+  // bottom -> top would close a cycle through both sides of the diamond.
+  EXPECT_FALSE(host().RegisterFrameSinkHierarchy(id_bottom, id_top));
   FlushHostAndVerifyExpectations();
 }
 
@@ -599,6 +692,164 @@ TEST_F(HostFrameSinkManagerTest, OnConnectionLostResetsVizTouchState) {
 
   // The mapping should now be invalid.
   EXPECT_FALSE(host().GetVizTouchStatePtr());
+}
+
+// Verifies that the request is forwarded to Viz and that the callback runs when
+// Viz reports the first non-empty frame, at most once.
+TEST_F(HostFrameSinkManagerTest, NonEmptyFrameNotification) {
+  RegisterFrameSinkIdForNonEmptyFrame(kFrameSinkChild1);
+
+  bool callback_called = false;
+  EXPECT_CALL(impl(), RequestNonEmptyFrameNotification(kFrameSinkChild1));
+  host().RequestNonEmptyFrameNotification(
+      kFrameSinkChild1,
+      base::BindLambdaForTesting([&]() { callback_called = true; }));
+  FlushHostAndVerifyExpectations();
+  EXPECT_FALSE(callback_called);
+
+  // The callback runs synchronously when Viz reports the non-empty frame.
+  GetFrameSinkManagerClient()->OnFirstNonEmptyFrame(kFrameSinkChild1);
+  EXPECT_TRUE(callback_called);
+
+  // Any further notification for the same FrameSinkId is ignored.
+  callback_called = false;
+  GetFrameSinkManagerClient()->OnFirstNonEmptyFrame(kFrameSinkChild1);
+  EXPECT_FALSE(callback_called);
+}
+
+// Verifies that a notification for a FrameSinkId with no pending request (e.g.
+// one that was cancelled while the notification was in flight) is dropped.
+TEST_F(HostFrameSinkManagerTest, NonEmptyFrameNotificationWithoutRequest) {
+  GetFrameSinkManagerClient()->OnFirstNonEmptyFrame(kFrameSinkChild1);
+}
+
+// Verifies that a callback which requests another notification for the same
+// FrameSinkId does not corrupt the pending callback map.
+TEST_F(HostFrameSinkManagerTest, NonEmptyFrameNotificationReentrantRequest) {
+  RegisterFrameSinkIdForNonEmptyFrame(kFrameSinkChild1);
+
+  int first_count = 0;
+  int second_count = 0;
+  EXPECT_CALL(impl(), RequestNonEmptyFrameNotification(kFrameSinkChild1))
+      .Times(2);
+  host().RequestNonEmptyFrameNotification(
+      kFrameSinkChild1, base::BindLambdaForTesting([&]() {
+        ++first_count;
+        host().RequestNonEmptyFrameNotification(
+            kFrameSinkChild1,
+            base::BindLambdaForTesting([&]() { ++second_count; }));
+      }));
+
+  GetFrameSinkManagerClient()->OnFirstNonEmptyFrame(kFrameSinkChild1);
+  EXPECT_EQ(1, first_count);
+  EXPECT_EQ(0, second_count);
+
+  GetFrameSinkManagerClient()->OnFirstNonEmptyFrame(kFrameSinkChild1);
+  EXPECT_EQ(1, first_count);
+  EXPECT_EQ(1, second_count);
+
+  FlushHostAndVerifyExpectations();
+}
+
+TEST_F(HostFrameSinkManagerTest, CancelNonEmptyFrameNotification) {
+  RegisterFrameSinkIdForNonEmptyFrame(kFrameSinkChild1);
+
+  bool callback_called = false;
+  EXPECT_CALL(impl(), RequestNonEmptyFrameNotification(kFrameSinkChild1));
+  host().RequestNonEmptyFrameNotification(
+      kFrameSinkChild1,
+      base::BindLambdaForTesting([&]() { callback_called = true; }));
+  FlushHostAndVerifyExpectations();
+
+  EXPECT_CALL(impl(), CancelNonEmptyFrameNotification(kFrameSinkChild1));
+  host().CancelNonEmptyFrameNotification(kFrameSinkChild1);
+  FlushHostAndVerifyExpectations();
+
+  // A notification that was already in flight is dropped.
+  GetFrameSinkManagerClient()->OnFirstNonEmptyFrame(kFrameSinkChild1);
+  EXPECT_FALSE(callback_called);
+
+  // Cancelling again is a no-op. The StrictMock fails the test if another
+  // message is sent to Viz.
+  host().CancelNonEmptyFrameNotification(kFrameSinkChild1);
+  FlushHostAndVerifyExpectations();
+}
+
+// Once Viz has reported a non-empty frame the callback has already run, so a
+// later cancellation has nothing left to cancel.
+TEST_F(HostFrameSinkManagerTest, CancelAfterNonEmptyFrameIsNoOp) {
+  RegisterFrameSinkIdForNonEmptyFrame(kFrameSinkChild1);
+
+  bool callback_called = false;
+  EXPECT_CALL(impl(), RequestNonEmptyFrameNotification(kFrameSinkChild1));
+  host().RequestNonEmptyFrameNotification(
+      kFrameSinkChild1,
+      base::BindLambdaForTesting([&]() { callback_called = true; }));
+  FlushHostAndVerifyExpectations();
+
+  GetFrameSinkManagerClient()->OnFirstNonEmptyFrame(kFrameSinkChild1);
+  EXPECT_TRUE(callback_called);
+
+  // The request is already gone, so this does not reach Viz. The StrictMock
+  // fails the test if it does.
+  host().CancelNonEmptyFrameNotification(kFrameSinkChild1);
+  FlushHostAndVerifyExpectations();
+}
+
+TEST_F(HostFrameSinkManagerTest,
+       InvalidateFrameSinkIdDropsNonEmptyFrameRequest) {
+  EXPECT_CALL(impl(), RegisterFrameSinkId(kFrameSinkChild1,
+                                          true /* report_activation */));
+  RegisterFrameSinkIdWithFakeClient(kFrameSinkChild1,
+                                    ReportFirstSurfaceActivation::kYes);
+
+  bool callback_called = false;
+  EXPECT_CALL(impl(), RequestNonEmptyFrameNotification(kFrameSinkChild1));
+  host().RequestNonEmptyFrameNotification(
+      kFrameSinkChild1,
+      base::BindLambdaForTesting([&]() { callback_called = true; }));
+  FlushHostAndVerifyExpectations();
+
+  // Viz drops its own request as part of invalidation, so no cancel message is
+  // expected. The StrictMock fails the test if one is sent.
+  EXPECT_CALL(impl(), MockInvalidateFrameSinkId(kFrameSinkChild1));
+  host().InvalidateFrameSinkId(kFrameSinkChild1, &host_client_, {});
+  FlushHostAndVerifyExpectations();
+
+  GetFrameSinkManagerClient()->OnFirstNonEmptyFrame(kFrameSinkChild1);
+  EXPECT_FALSE(callback_called);
+}
+
+// Verifies that a pending request is re-sent to a new Viz instance, which has
+// no knowledge of requests made to the previous one.
+TEST_F(HostFrameSinkManagerTest, NonEmptyFrameNotificationSurvivesGpuRestart) {
+  RegisterFrameSinkIdForNonEmptyFrame(kFrameSinkChild1);
+
+  bool callback_called = false;
+  EXPECT_CALL(impl(), RequestNonEmptyFrameNotification(kFrameSinkChild1));
+  host().RequestNonEmptyFrameNotification(
+      kFrameSinkChild1,
+      base::BindLambdaForTesting([&]() { callback_called = true; }));
+  FlushHostAndVerifyExpectations();
+
+  KillGpu();
+  {
+    base::RunLoop connection_lost_run_loop;
+    host().SetConnectionLostCallback(connection_lost_run_loop.QuitClosure());
+    connection_lost_run_loop.Run();
+  }
+
+  // RegisterAfterConnectionLoss() re-registers the FrameSinkId and re-arms the
+  // request, in that order, so the client still cannot paint before Viz is
+  // watching.
+  ConnectToGpu();
+  EXPECT_CALL(impl(), RegisterFrameSinkId(kFrameSinkChild1,
+                                          false /* report_activation */));
+  EXPECT_CALL(impl(), RequestNonEmptyFrameNotification(kFrameSinkChild1));
+  FlushHostAndVerifyExpectations();
+
+  GetFrameSinkManagerClient()->OnFirstNonEmptyFrame(kFrameSinkChild1);
+  EXPECT_TRUE(callback_called);
 }
 
 }  // namespace viz

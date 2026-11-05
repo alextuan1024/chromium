@@ -31,7 +31,8 @@
 #include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/web_contents.h"
 #include "third_party/jni_zero/default_conversions.h"
-#include "ui/base/window_open_disposition.h"
+#include "third_party/jni_zero/jni_zero.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "url/android/gurl_android.h"
 
 // Must come after all headers that specialize FromJniType() / ToJniType().
@@ -83,8 +84,9 @@ static void JNI_ForeignSessionHelper_CopyTabToJava(
     const sessions::SessionTab& tab,
     ScopedJavaLocalRef<jobject>& j_window) {
   int selected_index = tab.normalized_navigation_index();
-  DCHECK_GE(selected_index, 0);
-  DCHECK_LT(selected_index, static_cast<int>(tab.navigations.size()));
+  CHECK_GE(selected_index, 0, base::NotFatalUntil::M161);
+  CHECK_LT(selected_index, static_cast<int>(tab.navigations.size()),
+           base::NotFatalUntil::M161);
 
   const sessions::SerializedNavigationEntry& current_navigation =
       tab.navigations.at(selected_index);
@@ -179,10 +181,9 @@ bool ForeignSessionHelper::ShouldSkipSession(
   return true;
 }
 
-static int64_t JNI_ForeignSessionHelper_Init(Profile* profile) {
-  ForeignSessionHelper* foreign_session_helper =
-      new ForeignSessionHelper(profile);
-  return reinterpret_cast<intptr_t>(foreign_session_helper);
+static jni_zero::JniUniquePtr<ForeignSessionHelper> JNI_ForeignSessionHelper_Init(
+    Profile* profile) {
+  return jni_zero::MakeUnique<ForeignSessionHelper>(profile);
 }
 
 ForeignSessionHelper::ForeignSessionHelper(Profile* profile)
@@ -203,10 +204,6 @@ ForeignSessionHelper::ForeignSessionHelper(Profile* profile)
 
 ForeignSessionHelper::~ForeignSessionHelper() = default;
 
-void ForeignSessionHelper::Destroy() {
-  delete this;
-}
-
 bool ForeignSessionHelper::IsTabSyncEnabled() {
   sync_sessions::SessionSyncService* service =
       SessionSyncServiceFactory::GetInstance()->GetForProfile(profile_);
@@ -225,9 +222,8 @@ void ForeignSessionHelper::TriggerSessionSync() {
 }
 
 void ForeignSessionHelper::SetOnForeignSessionCallback(
-    JNIEnv* env,
     const JavaRef<jobject>& callback) {
-  callback_.Reset(env, callback);
+  callback_.Reset(callback);
 }
 
 void ForeignSessionHelper::FireForeignSessionCallback() {
@@ -247,7 +243,8 @@ bool ForeignSessionHelper::GetForeignSessions(JNIEnv* env,
   }
 
   std::vector<raw_ptr<const SyncedSession, VectorExperimental>> sessions;
-  if (!open_tabs->GetAllForeignSessions(&sessions)) {
+  if (!open_tabs->GetAllForeignSessions(
+          &sessions, OpenTabsUIDelegate::ForeignSessionFilter::kPresentable)) {
     return false;
   }
 
@@ -298,7 +295,8 @@ bool ForeignSessionHelper::GetMobileAndTabletForeignSessions(
   }
 
   std::vector<raw_ptr<const SyncedSession, VectorExperimental>> sessions;
-  if (!open_tabs->GetAllForeignSessions(&sessions)) {
+  if (!open_tabs->GetAllForeignSessions(
+          &sessions, OpenTabsUIDelegate::ForeignSessionFilter::kPresentable)) {
     return false;
   }
 
@@ -355,8 +353,8 @@ bool ForeignSessionHelper::OpenForeignSessionTab(TabAndroid* tab_android,
     return false;
   }
 
-  WindowOpenDisposition disposition =
-      static_cast<WindowOpenDisposition>(j_disposition);
+  ui::mojom::WindowOpenDisposition disposition =
+      static_cast<ui::mojom::WindowOpenDisposition>(j_disposition);
   SessionRestore::RestoreForeignSessionTab(web_contents, *session_tab,
                                            disposition);
 
@@ -449,7 +447,7 @@ content::WebContents* ForeignSessionHelper::RestoreTabWithRenderer(
 
   return SessionRestore::RestoreForeignSessionTab(
       web_contents, *foreground_session_tab,
-      WindowOpenDisposition::CURRENT_TAB);
+      ui::mojom::WindowOpenDisposition::kCurrentTab);
 }
 
 bool ForeignSessionHelper::RestoreTabNoRenderer(
@@ -465,7 +463,7 @@ bool ForeignSessionHelper::RestoreTabNoRenderer(
 
   SessionRestore::RestoreForeignSessionTab(
       web_contents, *background_session_tab,
-      WindowOpenDisposition::NEW_BACKGROUND_TAB,
+      ui::mojom::WindowOpenDisposition::kNewBackgroundTab,
       /*skip_renderer_creation=*/true);
   return true;
 }

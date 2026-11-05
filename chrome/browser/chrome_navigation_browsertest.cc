@@ -72,7 +72,6 @@
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/download_test_observer.h"
-#include "content/public/test/fenced_frame_test_util.h"
 #include "content/public/test/navigation_handle_observer.h"
 #include "content/public/test/test_navigation_observer.h"
 #include "content/public/test/url_loader_interceptor.h"
@@ -91,8 +90,8 @@
 #include "third_party/blink/public/common/page_state/page_state.h"
 #include "third_party/blink/public/mojom/context_menu/context_menu.mojom.h"
 #include "third_party/blink/public/mojom/use_counter/metrics/web_feature.mojom-shared.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "ui/base/page_transition_types.h"
-#include "ui/base/window_open_disposition.h"
 
 using ::testing::IsEmpty;
 using ::testing::UnorderedElementsAre;
@@ -2330,6 +2329,10 @@ IN_PROC_BROWSER_TEST_F(NavigationConsumingTest,
   content::WebContents* contents =
       browser()->tab_strip_model()->GetActiveWebContents();
 
+  // Fullscreen requests from unfocused views are rejected, and browser tests
+  // that run in parallel can't rely on OS-level window activation.
+  contents->GetRenderWidgetHostView()->SetHasFocusForTesting(true);
+
   // Normally, fullscreen should work, as long as there is a user gesture.
   EXPECT_EQ(true, content::EvalJs(contents,
                                   "document.body.webkitRequestFullscreen();"
@@ -2426,7 +2429,8 @@ IN_PROC_BROWSER_TEST_F(HistoryManipulationInterventionBrowserTest,
   // Create a new tab to avoid confusion from having a NTP navigation entry.
   GURL skippable_url(embedded_test_server()->GetURL("/title1.html"));
   ui_test_utils::NavigateToURLWithDisposition(
-      browser(), skippable_url, WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      browser(), skippable_url,
+      ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
 
   content::WebContents* main_contents =
@@ -2446,7 +2450,7 @@ IN_PROC_BROWSER_TEST_F(HistoryManipulationInterventionBrowserTest,
 
   // Attempting to go back should do nothing.
   ASSERT_FALSE(chrome::CanGoBack(browser()));
-  chrome::GoBack(browser(), WindowOpenDisposition::CURRENT_TAB);
+  chrome::GoBack(browser(), ui::mojom::WindowOpenDisposition::kCurrentTab);
   ASSERT_EQ(redirected_url, main_contents->GetLastCommittedURL());
   EXPECT_EQ(main_contents->GetController().GetLastCommittedEntryIndex(), 1);
 
@@ -2483,7 +2487,7 @@ IN_PROC_BROWSER_TEST_F(HistoryManipulationInterventionBrowserTest,
   // Attempting to go back should skip |skippable_url| and go to about:blank.
   ASSERT_TRUE(chrome::CanGoBack(browser()));
   content::TestNavigationObserver observer(main_contents);
-  chrome::GoBack(browser(), WindowOpenDisposition::CURRENT_TAB);
+  chrome::GoBack(browser(), ui::mojom::WindowOpenDisposition::kCurrentTab);
   observer.Wait();
   ASSERT_EQ(GURL("about:blank"), main_contents->GetLastCommittedURL());
 }
@@ -2515,7 +2519,7 @@ IN_PROC_BROWSER_TEST_F(HistoryManipulationInterventionBrowserTest,
   ASSERT_TRUE(chrome::CanGoBack(browser()));
 
   content::TestNavigationObserver go_back_observer(main_contents);
-  chrome::GoBack(browser(), WindowOpenDisposition::CURRENT_TAB);
+  chrome::GoBack(browser(), ui::mojom::WindowOpenDisposition::kCurrentTab);
   go_back_observer.WaitForNavigationFinished();
   ASSERT_EQ(pdf_url, main_contents->GetLastCommittedURL());
 }
@@ -2546,7 +2550,7 @@ IN_PROC_BROWSER_TEST_F(HistoryManipulationInterventionBrowserTest,
 
   ASSERT_TRUE(chrome::CanGoBack(browser()));
   content::TestNavigationObserver go_back_observer(main_contents);
-  chrome::GoBack(browser(), WindowOpenDisposition::CURRENT_TAB);
+  chrome::GoBack(browser(), ui::mojom::WindowOpenDisposition::kCurrentTab);
   go_back_observer.WaitForNavigationFinished();
   ASSERT_EQ(GURL("about:blank"), main_contents->GetLastCommittedURL());
 }

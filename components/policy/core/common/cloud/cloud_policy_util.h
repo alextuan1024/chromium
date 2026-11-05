@@ -8,6 +8,8 @@
 #include <memory>
 #include <string>
 
+#include "base/feature_list.h"
+#include "build/build_config.h"
 #include "components/policy/policy_export.h"
 #include "components/version_info/channel.h"
 
@@ -21,6 +23,26 @@ enum Channel : int;
 }  // namespace enterprise_management
 
 namespace policy {
+
+#if BUILDFLAG(IS_ANDROID)
+// Enables reporting the Android device name (falling back to the hardware model
+// name when unset) in `policy::GetMachineName()`. Used as a kill switch.
+POLICY_EXPORT BASE_DECLARE_FEATURE(kReportAndroidMachineName);
+#endif  // BUILDFLAG(IS_ANDROID)
+
+#if BUILDFLAG(IS_IOS)
+// When enabled, the machine name reported by Chrome on iOS (e.g. in enterprise
+// reports) is the device name configured by the MDM administrator in the
+// Managed App Configuration (falling back to the Vendor ID when unset). Used as
+// a kill switch.
+POLICY_EXPORT BASE_DECLARE_FEATURE(kIOSReportMachineName);
+#endif  // BUILDFLAG(IS_IOS)
+
+// When enabled, `BrowserPolicyConnector` creates a `NetworkNameCache`, which
+// queries the name of the network the device is connected to on a background
+// sequence, so that it can be reported without blocking the calling thread.
+// Used as a kill switch.
+POLICY_EXPORT BASE_DECLARE_FEATURE(kUseCachedNetworkName);
 
 // Returns the name of the machine. This function is platform specific.
 POLICY_EXPORT std::string GetMachineName();
@@ -55,7 +77,11 @@ GetBrowserDeviceIdentifier();
 // Returns the fully qualified domain name of the device.
 POLICY_EXPORT std::string GetDeviceFqdn();
 
-// Returns the name of the network the device is connected to.
+// Returns the name of the network the device is connected to. Always returns
+// an empty string on Windows 11 24H2+ to avoid hangs in synchronous WLAN API
+// queries.
+// TODO(crbug.com/585174438): Update this comment once the network name query is
+// made asynchronous on Windows.
 POLICY_EXPORT std::string GetNetworkName();
 
 #if BUILDFLAG(IS_WIN)
@@ -87,10 +113,11 @@ POLICY_EXPORT bool IsMachineLevelPolicyType(const std::string& policy_type);
 // Returns true if the given policy type is a user-level policy type.
 POLICY_EXPORT bool IsUserLevelPolicyType(const std::string& policy_type);
 
-// Returns a log prefix for the given policy type and settings entity id. This is
-// used for logging purposes only.
-POLICY_EXPORT std::string PolicyTypeLogPrefix(std::string_view policy_type,
-                                              std::string_view settings_entity_id);
+// Returns a log prefix for the given policy type and settings entity id. This
+// is used for logging purposes only.
+POLICY_EXPORT std::string PolicyTypeLogPrefix(
+    std::string_view policy_type,
+    std::string_view settings_entity_id);
 }  // namespace policy
 
 #endif  // COMPONENTS_POLICY_CORE_COMMON_CLOUD_CLOUD_POLICY_UTIL_H_

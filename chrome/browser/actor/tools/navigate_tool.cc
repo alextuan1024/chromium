@@ -4,11 +4,20 @@
 
 #include "chrome/browser/actor/tools/navigate_tool.h"
 
+#include <memory>
+#include <utility>
+
 #include "base/feature_list.h"
+#include "base/functional/bind.h"
+#include "chrome/browser/actor/actor_surface.h"
 #include "chrome/browser/actor/actor_task.h"
 #include "chrome/browser/actor/site_policy.h"
+#include "chrome/browser/actor/tools/navigate_tool_request.h"
 #include "chrome/browser/actor/tools/observation_delay_controller.h"
+#include "chrome/browser/actor/tools/tab_management_tool.h"
 #include "chrome/browser/actor/tools/tool_callbacks.h"
+#include "chrome/browser/actor/tools/tool_delegate.h"
+#include "chrome/browser/actor/tools/tool_result.h"
 #include "chrome/browser/actor/tools/validate_url_util.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/common/actor.mojom.h"
@@ -16,31 +25,35 @@
 #include "components/actor/core/actor_features.h"
 #include "components/actor/core/journal_details_builder.h"
 #include "components/actor/public/mojom/actor_types.mojom.h"
-#include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/web_contents.h"
 #include "third_party/abseil-cpp/absl/strings/str_format.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "ui/base/page_transition_types.h"
-#include "ui/base/window_open_disposition.h"
 #include "url/gurl.h"
 #include "url/origin.h"
 
 using content::NavigationHandle;
 using content::WebContents;
-using tabs::TabInterface;
 
 namespace actor {
 
 NavigateTool::NavigateTool(TaskId task_id,
                            ToolDelegate& tool_delegate,
-                           TabInterface& tab,
+                           ActorSurface& actor_surface,
                            const GURL& url)
     : Tool(task_id, tool_delegate),
-      WebContentsObserver(tab.GetContents()),
+      WebContentsObserver(actor_surface.GetWebContents()),
       url_(url),
-      tab_handle_(tab.GetHandle()) {}
+      actor_surface_handle_(actor_surface.GetHandle()) {}
+
+NavigateTool::NavigateTool(TaskId task_id,
+                           ToolDelegate& tool_delegate,
+                           SessionID window_id,
+                           const GURL& url)
+    : Tool(task_id, tool_delegate), url_(url), window_id_(window_id) {}
 
 NavigateTool::~NavigateTool() = default;
 
@@ -49,7 +62,25 @@ void NavigateTool::Validate(ToolCallback callback) {
                                                std::move(callback));
 }
 
+mojom::ActionResultPtr NavigateTool::TimeOfUseValidation(
+    const optimization_guide::proto::AnnotatedPageContent* last_observation) {
+  if (window_id_.has_value()) {
+    return ValidateWindowId(*window_id_);
+  }
+  return MakeOkResult();
+}
+
 void NavigateTool::Invoke(ToolCallback callback) {
+  if (window_id_.has_value()) {
+    create_tab_tool_ = std::make_unique<TabManagementTool>(
+        task_id(), tool_delegate(), window_id_->id(),
+        ::ui::mojom::WindowOpenDisposition::kNewForegroundTab);
+    create_tab_tool_->Invoke(base::BindOnce(&NavigateTool::OnTabCreated,
+                                            weak_ptr_factory_.GetWeakPtr(),
+                                            std::move(callback)));
+    return;
+  }
+
   CHECK(web_contents());
   invoke_callback_ = std::move(callback);
 
@@ -79,7 +110,7 @@ void NavigateTool::Invoke(ToolCallback callback) {
   // NavigateUsingLoadURL path lands safely.
   content::OpenURLParams params =
       content::OpenURLParams::CreateBrowserInitiated(
-          url_, WindowOpenDisposition::CURRENT_TAB,
+          url_, ::ui::mojom::WindowOpenDisposition::kCurrentTab,
           ::ui::PageTransition::PAGE_TRANSITION_AUTO_TOPLEVEL);
 
   // TODO(b/460113906): Alternate to the NavigateUsingLoadURL path to fix for
@@ -98,6 +129,35 @@ void NavigateTool::Invoke(ToolCallback callback) {
                              weak_ptr_factory_.GetWeakPtr()));
 }
 
+void NavigateTool::UpdateTaskAfterInvoke(ActorTask& task,
+                                         ToolResult result,
+                                         ToolResultCallback callback) const {
+  if (!window_id_.has_value() || !result.Ok()) {
+    Tool::UpdateTaskAfterInvoke(task, std::move(result), std::move(callback));
+    return;
+  }
+  CHECK(!actor_surface_handle_.is_null());
+  // Note: This runs before the follow-up navigation action starts.
+  task.AddActorSurface(actor_surface_handle_, /*stop_task_on_detach=*/true,
+                       base::BindOnce(&ToolResult::FromDeprecatedActionResult)
+                           .Then(std::move(callback)));
+}
+
+void NavigateTool::OnTabCreated(ToolCallback callback,
+                                mojom::ActionResultPtr result) {
+  if (!IsOk(*result)) {
+    std::move(callback).Run(std::move(result));
+    return;
+  }
+
+  actor_surface_handle_ = create_tab_tool_->GetTargetActorSurface();
+  CHECK(!actor_surface_handle_.is_null());
+
+  tool_delegate().EnqueueFollowupAction(
+      std::make_unique<NavigateToolRequest>(actor_surface_handle_, url_));
+  std::move(callback).Run(MakeOkResult(/*requires_page_stabilization=*/false));
+}
+
 std::string NavigateTool::DebugString() const {
   return absl::StrFormat("NavigateTool[%s]", url_.spec());
 }
@@ -108,18 +168,17 @@ std::string NavigateTool::JournalEvent() const {
 
 std::unique_ptr<ObservationDelayController> NavigateTool::GetObservationDelayer(
     ObservationDelayController::PageStabilityConfig page_stability_config) {
+  if (window_id_.has_value()) {
+    // The follow-up `NavigateTool` waits for the page to settle.
+    return nullptr;
+  }
   return std::make_unique<ObservationDelayController>(
       *web_contents()->GetPrimaryMainFrame(), task_id(), journal(),
       page_stability_config);
 }
 
-void NavigateTool::UpdateTaskBeforeInvoke(ActorTask& task,
-                                          ToolCallback callback) const {
-  task.AddTab(tab_handle_, /*stop_task_on_detach=*/true, std::move(callback));
-}
-
-tabs::TabHandle NavigateTool::GetTargetTab() const {
-  return tab_handle_;
+ActorSurfaceHandle NavigateTool::GetTargetActorSurface() const {
+  return actor_surface_handle_;
 }
 
 void NavigateTool::DidFinishNavigation(NavigationHandle* navigation_handle) {

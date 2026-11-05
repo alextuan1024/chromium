@@ -42,6 +42,7 @@ source_set("formats") {
     "//media/filters",
     "//media/muxers",
     "//media/muxers:unit_tests",
+    "//media/video:openh264rs_video_encoder",
   ]
 
   sources = [
@@ -106,8 +107,6 @@ source_set("formats") {
     "webm/webm_tracks_parser.h",
     "webm/webm_video_client.cc",
     "webm/webm_video_client.h",
-    "webm/webm_webvtt_parser.cc",
-    "webm/webm_webvtt_parser.h",
   ]
 
   deps = [
@@ -335,7 +334,6 @@ source_set("unit_tests") {
     "webm/webm_stream_parser_unittest.cc",
     "webm/webm_tracks_parser_unittest.cc",
     "webm/webm_video_client_unittest.cc",
-    "webm/webm_webvtt_parser_unittest.cc",
   ]
 
   deps = [
@@ -428,10 +426,6 @@ source_set("unit_tests") {
     "hls/types_unittest.cc",
     "hls/variable_dictionary_unittest.cc",
   ]
-
-  # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
-  # enable the diagnostic by removing this line.
-  configs += [ "//build/config/compiler:no_exit_time_destructors" ]
 }
 
 # TODO(crbug.com/40057824): This should be gated behind `enable_hls_demuxer`,
@@ -510,4 +504,21 @@ test("ac3_util_fuzzer") {
     "//media",
     "//third_party/fuzztest:fuzztest_gtest_main",
   ]
+}
+
+if (enable_dav2d_decoder) {
+  test("mp4_av2_box_fuzzer") {
+    sources = [ "mp4/mp4_av2_box_fuzzer.cc" ]
+    fuzztests = [
+      "Mp4Av2BoxFuzzTest.ParseOutOfBandConfig",
+      "Mp4Av2BoxFuzzTest.ParseInBandConfig",
+      "Mp4Av2BoxFuzzTest.ParseVideoSampleEntry",
+    ]
+    deps = [
+      "//base",
+      "//media",
+      "//testing/gtest",
+      "//third_party/fuzztest:fuzztest_gtest_main",
+    ]
+  }
 }

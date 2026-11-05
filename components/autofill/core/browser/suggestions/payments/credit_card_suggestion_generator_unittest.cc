@@ -10,6 +10,7 @@
 #include <variant>
 #include <vector>
 
+#include "base/containers/span.h"
 #include "base/memory/raw_ptr.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
@@ -30,6 +31,7 @@
 #include "components/autofill/core/browser/data_model/payments/iban.h"
 #include "components/autofill/core/browser/field_type_util.h"
 #include "components/autofill/core/browser/field_types.h"
+#include "components/autofill/core/browser/filling/filling_product.h"
 #include "components/autofill/core/browser/foundations/autofill_client.h"
 #include "components/autofill/core/browser/foundations/test_autofill_client.h"
 #include "components/autofill/core/browser/foundations/test_autofill_driver.h"
@@ -1285,10 +1287,11 @@ TEST_F(CreditCardSuggestionGeneratorTest,
       form_bundle.trigger_field.origin());
   payments_data().AddVirtualCardUsageData(virtual_card_usage_data);
 
+  std::vector<std::string> four_digit_combinations_in_dom = {"4444"};
   std::vector<Suggestion> suggestions = GetSuggestionsForCreditCards(
       form_bundle.form, *form_bundle.form_structure, form_bundle.trigger_field,
       *form_bundle.trigger_autofill_field, autofill_client(),
-      /*four_digit_combinations_in_dom=*/{"4444"},
+      base::span(four_digit_combinations_in_dom),
       /*amount_extraction_manager=*/nullptr, /*bnpl_manager=*/nullptr,
       credit_card_form_event_logger(),
       AutofillMetrics::PaymentsSigninState::kUnknown,
@@ -4810,10 +4813,11 @@ TEST_F(
            {.role = FieldType::CREDIT_CARD_STANDALONE_VERIFICATION_CODE,
             .origin = virtual_card_usage_data.merchant_origin()},
        }});
+  std::vector<std::string> four_digit_combinations_in_dom = {"1234"};
   std::vector<Suggestion> suggestions = GetSuggestionsForCreditCards(
       form_bundle.form, *form_bundle.form_structure, form_bundle.trigger_field,
       *form_bundle.trigger_autofill_field, autofill_client(),
-      /*four_digit_combinations_in_dom=*/{"1234"},
+      base::span(four_digit_combinations_in_dom),
       /*amount_extraction_manager=*/nullptr, /*bnpl_manager=*/nullptr,
       credit_card_form_event_logger(),
       AutofillMetrics::PaymentsSigninState::kUnknown,
@@ -4854,10 +4858,11 @@ TEST_F(
             .origin = virtual_card_usage_data.merchant_origin()},
        }});
 
+  std::vector<std::string> four_digit_combinations_in_dom = {"1234"};
   std::vector<Suggestion> suggestions = GetSuggestionsForCreditCards(
       form_bundle.form, *form_bundle.form_structure, form_bundle.trigger_field,
       *form_bundle.trigger_autofill_field, autofill_client(),
-      /*four_digit_combinations_in_dom=*/{"1234"},
+      base::span(four_digit_combinations_in_dom),
       /*amount_extraction_manager=*/nullptr, /*bnpl_manager=*/nullptr,
       credit_card_form_event_logger(),
       AutofillMetrics::PaymentsSigninState::kUnknown,
@@ -4867,7 +4872,7 @@ TEST_F(
   suggestions = GetSuggestionsForCreditCards(
       form_bundle.form, *form_bundle.form_structure, form_bundle.trigger_field,
       *form_bundle.trigger_autofill_field, autofill_client(),
-      /*four_digit_combinations_in_dom=*/{"1234"},
+      base::span(four_digit_combinations_in_dom),
       /*amount_extraction_manager=*/nullptr, /*bnpl_manager=*/nullptr,
       credit_card_form_event_logger(),
       AutofillMetrics::PaymentsSigninState::kUnknown,
@@ -5385,10 +5390,10 @@ TEST_P(CvcStorageAndFillingStandaloneFormEnhancementTest,
   trigger_autofill_field.SetTypeTo(
       AutofillType(FieldType::CREDIT_CARD_STANDALONE_VERIFICATION_CODE),
       AutofillPredictionSource::kHeuristics);
+  std::vector<std::string> four_digit_combinations_in_dom = {"1111", "1113"};
   std::vector<Suggestion> suggestions = GetSuggestionsForCreditCards(
       form, FormStructure(form), trigger_field, trigger_autofill_field,
-      autofill_client(),
-      /*four_digit_combinations_in_dom=*/{"1111", "1113"},
+      autofill_client(), base::span(four_digit_combinations_in_dom),
       /*amount_extraction_manager=*/nullptr, /*bnpl_manager=*/nullptr,
       credit_card_form_event_logger(),
       AutofillMetrics::PaymentsSigninState::kUnknown,
@@ -5426,16 +5431,19 @@ TEST_P(CvcStorageAndFillingStandaloneFormEnhancementTest,
                    .autocomplete_attribute = "cc-number",
                    .is_autofilled_according_to_renderer = true}}});
 
+  FormStructure form_structure(form);
+  form_structure.field(0)->AddFieldModifier(FieldModifier::kAutofill);
+
   FormFieldData trigger_field;
   AutofillField trigger_autofill_field(trigger_field);
   trigger_autofill_field.SetTypeTo(
       AutofillType(FieldType::CREDIT_CARD_VERIFICATION_CODE),
       AutofillPredictionSource::kHeuristics);
 
+  std::vector<std::string> four_digit_combinations_in_dom = {"1113"};
   std::vector<Suggestion> suggestions = GetSuggestionsForCreditCards(
-      form, FormStructure(form), trigger_field, trigger_autofill_field,
-      autofill_client(),
-      /*four_digit_combinations_in_dom=*/{"1113"},
+      form, form_structure, trigger_field, trigger_autofill_field,
+      autofill_client(), base::span(four_digit_combinations_in_dom),
       /*amount_extraction_manager=*/nullptr, /*bnpl_manager=*/nullptr,
       credit_card_form_event_logger(),
       AutofillMetrics::PaymentsSigninState::kUnknown,
@@ -5488,10 +5496,10 @@ TEST_P(CvcStorageAndFillingStandaloneFormEnhancementTest,
   trigger_autofill_field.SetTypeTo(
       AutofillType(FieldType::CREDIT_CARD_STANDALONE_VERIFICATION_CODE),
       AutofillPredictionSource::kHeuristics);
+  std::vector<std::string> four_digit_combinations_in_dom = {"0000", "9999"};
   std::vector<Suggestion> suggestions = GetSuggestionsForCreditCards(
       form, FormStructure(form), trigger_field, trigger_autofill_field,
-      autofill_client(),
-      /*four_digit_combinations_in_dom=*/{"0000", "9999"},
+      autofill_client(), base::span(four_digit_combinations_in_dom),
       /*amount_extraction_manager=*/nullptr, /*bnpl_manager=*/nullptr,
       credit_card_form_event_logger(),
       AutofillMetrics::PaymentsSigninState::kUnknown,
@@ -5516,10 +5524,10 @@ TEST_P(CvcStorageAndFillingStandaloneFormEnhancementTest,
   trigger_autofill_field.SetTypeTo(
       AutofillType(FieldType::CREDIT_CARD_STANDALONE_VERIFICATION_CODE),
       AutofillPredictionSource::kHeuristics);
+  std::vector<std::string> four_digit_combinations_in_dom = {"1234"};
   std::vector<Suggestion> suggestions = GetSuggestionsForCreditCards(
       form, FormStructure(form), trigger_field, trigger_autofill_field,
-      autofill_client(),
-      /*four_digit_combinations_in_dom=*/{"1234"},
+      autofill_client(), base::span(four_digit_combinations_in_dom),
       /*amount_extraction_manager=*/nullptr, /*bnpl_manager=*/nullptr,
       credit_card_form_event_logger(),
       AutofillMetrics::PaymentsSigninState::kUnknown,
@@ -5555,10 +5563,10 @@ TEST_P(CvcStorageAndFillingStandaloneFormEnhancementTest,
       AutofillType(FieldType::CREDIT_CARD_STANDALONE_VERIFICATION_CODE),
       AutofillPredictionSource::kHeuristics);
 
+  std::vector<std::string> four_digit_combinations_in_dom = {"1234"};
   std::vector<Suggestion> suggestions = GetSuggestionsForCreditCards(
       form, FormStructure(form), trigger_field, trigger_autofill_field,
-      autofill_client(),
-      /*four_digit_combinations_in_dom=*/{"1234"},
+      autofill_client(), base::span(four_digit_combinations_in_dom),
       /*amount_extraction_manager=*/nullptr, /*bnpl_manager=*/nullptr,
       credit_card_form_event_logger(),
       AutofillMetrics::PaymentsSigninState::kUnknown,
@@ -6822,6 +6830,208 @@ TEST_F(CreditCardSuggestionGeneratorTest,
   EXPECT_EQ(suggestions[suggestions.size() - 2].type,
             SuggestionType::kSeparator);
   EXPECT_EQ(suggestions.back().type, SuggestionType::kManageCreditCard);
+}
+
+// Tests that payment swapping does not bypass prefix/non-empty filtering on a
+// field that was autofilled by `FillingProduct::kAddress`.
+TEST_F(CreditCardSuggestionGeneratorTest,
+       PaymentsSwappingDoesNotTriggerOnAddressAutofilledField) {
+  base::test::ScopedFeatureList scoped_feature_list{
+      features::kAutofillPaymentsFieldSwapping};
+
+  CreditCard other_name_card;
+  test::SetCreditCardInfo(&other_name_card, /*name_on_card=*/"Elvis Presley",
+                          /*card_number=*/"4111111111111111",
+                          /*expiration_month=*/"05",
+                          /*expiration_year=*/"2999",
+                          /*billing_address_id=*/"");
+  payments_data().AddCreditCard(other_name_card);
+
+  FormBundle form_bundle = GetFormWithTypes(
+      {.fields = {{.role = CREDIT_CARD_NAME_FULL,
+                   .value = u"John Doe",
+                   .is_autofilled_according_to_renderer = true},
+                  {.role = CREDIT_CARD_NUMBER}}});
+  form_bundle.trigger_autofill_field->AddFieldModifier(
+      FieldModifier::kAutofill);
+
+  for (FillingProduct non_card_product :
+       {FillingProduct::kAddress, FillingProduct::kAutocomplete,
+        FillingProduct::kNone}) {
+    form_bundle.trigger_autofill_field->set_filling_product(non_card_product);
+    std::vector<Suggestion> suggestions = GetSuggestionsForCreditCards(
+        form_bundle.form, *form_bundle.form_structure,
+        form_bundle.trigger_field, *form_bundle.trigger_autofill_field,
+        autofill_client(),
+        /*four_digit_combinations_in_dom=*/{},
+        /*amount_extraction_manager=*/nullptr, /*bnpl_manager=*/nullptr,
+        credit_card_form_event_logger(),
+        AutofillMetrics::PaymentsSigninState::kUnknown,
+        /*exclude_virtual_cards=*/false);
+    EXPECT_TRUE(suggestions.empty());
+  }
+
+  form_bundle.trigger_autofill_field->set_filling_product(
+      FillingProduct::kCreditCard);
+  std::vector<Suggestion> suggestions = GetSuggestionsForCreditCards(
+      form_bundle.form, *form_bundle.form_structure, form_bundle.trigger_field,
+      *form_bundle.trigger_autofill_field, autofill_client(),
+      /*four_digit_combinations_in_dom=*/{},
+      /*amount_extraction_manager=*/nullptr, /*bnpl_manager=*/nullptr,
+      credit_card_form_event_logger(),
+      AutofillMetrics::PaymentsSigninState::kUnknown,
+      /*exclude_virtual_cards=*/false);
+  EXPECT_FALSE(suggestions.empty());
+}
+
+// Tests that `CreditCardSuggestionGenerator` relies on
+// `AutofillField::last_modifier()` rather than
+// `FormFieldData::is_autofilled_according_to_renderer()` when deciding whether
+// payment swapping is allowed:
+// - If JS reformats an autofilled field (clearing
+//   `is_autofilled_according_to_renderer` while `last_modifier()` remains
+//   `FieldModifier::kAutofill`), payment swapping suggestions are still shown.
+// - If the user subsequently edits the field (`FieldModifier::kUser`), payment
+//   swapping is no longer enabled even though `filling_product()` stays
+//   `FillingProduct::kCreditCard`.
+TEST_F(CreditCardSuggestionGeneratorTest,
+       PaymentsSwappingUsesLastModifierWhenJsReformatsField) {
+  base::test::ScopedFeatureList scoped_feature_list{
+      features::kAutofillPaymentsFieldSwapping};
+
+  CreditCard other_card;
+  test::SetCreditCardInfo(&other_card, /*name_on_card=*/"Elvis Presley",
+                          /*card_number=*/"4111111111111111",
+                          /*expiration_month=*/"05",
+                          /*expiration_year=*/"2999",
+                          /*billing_address_id=*/"");
+  payments_data().AddCreditCard(other_card);
+
+  // Simulate an autofilled expiration field that the website's JS reformatted
+  // from "04/2998" to "04 / 2998", clearing Blink's autofill state.
+  FormBundle form_bundle = GetFormWithTypes(
+      {.fields = {{.role = CREDIT_CARD_EXP_DATE_4_DIGIT_YEAR,
+                   .value = u"04 / 2998",
+                   .is_autofilled_according_to_renderer = false},
+                  {.role = CREDIT_CARD_NUMBER}}});
+  form_bundle.trigger_autofill_field->AddFieldModifier(
+      FieldModifier::kAutofill);
+  form_bundle.trigger_autofill_field->set_filling_product(
+      FillingProduct::kCreditCard);
+
+  std::vector<Suggestion> suggestions = GetSuggestionsForCreditCards(
+      form_bundle.form, *form_bundle.form_structure, form_bundle.trigger_field,
+      *form_bundle.trigger_autofill_field, autofill_client(),
+      /*four_digit_combinations_in_dom=*/{},
+      /*amount_extraction_manager=*/nullptr, /*bnpl_manager=*/nullptr,
+      credit_card_form_event_logger(),
+      AutofillMetrics::PaymentsSigninState::kUnknown,
+      /*exclude_virtual_cards=*/false);
+  EXPECT_FALSE(suggestions.empty());
+
+  // Once the user edits the field, `last_modifier()` becomes `kUser` and
+  // non-prefix-matching swap suggestions are suppressed.
+  form_bundle.trigger_autofill_field->AddFieldModifier(FieldModifier::kUser);
+  suggestions = GetSuggestionsForCreditCards(
+      form_bundle.form, *form_bundle.form_structure, form_bundle.trigger_field,
+      *form_bundle.trigger_autofill_field, autofill_client(),
+      /*four_digit_combinations_in_dom=*/{},
+      /*amount_extraction_manager=*/nullptr, /*bnpl_manager=*/nullptr,
+      credit_card_form_event_logger(),
+      AutofillMetrics::PaymentsSigninState::kUnknown,
+      /*exclude_virtual_cards=*/false);
+  EXPECT_TRUE(suggestions.empty());
+}
+
+// Tests that payment swapping is not offered on a field that Autofill filled
+// but site JavaScript cleared afterwards (e.g. via `form.reset()`). In that
+// case `last_modifier()` remains `FieldModifier::kAutofill`, but the field
+// holds no card value to swap, so suggestions are filtered as on any empty
+// field: cards without a value for the field (here: a nameless card on
+// `cc-name`) are not suggested, because selecting them would fill nothing into
+// the field.
+TEST_F(CreditCardSuggestionGeneratorTest,
+       PaymentsSwappingNotOfferedOnFieldClearedByJavaScript) {
+  base::test::ScopedFeatureList scoped_feature_list{
+      features::kAutofillPaymentsFieldSwapping};
+
+  CreditCard card_with_name;
+  test::SetCreditCardInfo(&card_with_name, /*name_on_card=*/"Elvis Presley",
+                          /*card_number=*/"4111111111111111",
+                          /*expiration_month=*/"05",
+                          /*expiration_year=*/"2999",
+                          /*billing_address_id=*/"");
+  payments_data().AddCreditCard(card_with_name);
+  CreditCard nameless_card;
+  test::SetCreditCardInfo(&nameless_card, /*name_on_card=*/"",
+                          /*card_number=*/"5454545454545454",
+                          /*expiration_month=*/"06",
+                          /*expiration_year=*/"2998",
+                          /*billing_address_id=*/"");
+  payments_data().AddCreditCard(nameless_card);
+
+  FormBundle form_bundle = GetFormWithTypes(
+      {.fields = {{.role = CREDIT_CARD_NAME_FULL,
+                   .value = u"",
+                   .is_autofilled_according_to_renderer = false},
+                  {.role = CREDIT_CARD_NUMBER}}});
+  form_bundle.trigger_autofill_field->AddFieldModifier(
+      FieldModifier::kAutofill);
+  form_bundle.trigger_autofill_field->set_filling_product(
+      FillingProduct::kCreditCard);
+
+  std::vector<Suggestion> suggestions = GetSuggestionsForCreditCards(
+      form_bundle.form, *form_bundle.form_structure, form_bundle.trigger_field,
+      *form_bundle.trigger_autofill_field, autofill_client(),
+      /*four_digit_combinations_in_dom=*/{},
+      /*amount_extraction_manager=*/nullptr, /*bnpl_manager=*/nullptr,
+      credit_card_form_event_logger(),
+      AutofillMetrics::PaymentsSigninState::kUnknown,
+      /*exclude_virtual_cards=*/false);
+  EXPECT_EQ(std::ranges::count(suggestions, SuggestionType::kCreditCardEntry,
+                               &Suggestion::type),
+            1);
+}
+
+// Tests that `is_card_number_autofilled` checks
+// `AutofillField::last_modifier() == FieldModifier::kAutofill` rather than
+// `FormFieldData::is_autofilled_according_to_renderer()`, so a JS-reformatted
+// card number field still permits expiration-field suggestions until the user
+// edits the card number field.
+TEST_F(CreditCardSuggestionGeneratorTest,
+       ExpirationSuggestionsUseLastModifierForCardNumberField) {
+  payments_data().AddCreditCard(CreateLocalCard());
+
+  FormBundle form_bundle = GetFormWithTypes(
+      {.fields = {{.role = CREDIT_CARD_EXP_MONTH},
+                  {.role = CREDIT_CARD_NUMBER,
+                   .value = u"4111 1111 1111 1111",
+                   .is_autofilled_according_to_renderer = false}}});
+  form_bundle.form_structure->field(1)->AddFieldModifier(
+      FieldModifier::kAutofill);
+
+  std::vector<Suggestion> suggestions = GetSuggestionsForCreditCards(
+      form_bundle.form, *form_bundle.form_structure, form_bundle.trigger_field,
+      *form_bundle.trigger_autofill_field, autofill_client(),
+      /*four_digit_combinations_in_dom=*/{},
+      /*amount_extraction_manager=*/nullptr, /*bnpl_manager=*/nullptr,
+      credit_card_form_event_logger(),
+      AutofillMetrics::PaymentsSigninState::kUnknown,
+      /*exclude_virtual_cards=*/false);
+  EXPECT_FALSE(suggestions.empty());
+
+  // If the card number was user-edited (`last_modifier() == kUser`),
+  // suggestions on the expiration field are suppressed.
+  form_bundle.form_structure->field(1)->AddFieldModifier(FieldModifier::kUser);
+  suggestions = GetSuggestionsForCreditCards(
+      form_bundle.form, *form_bundle.form_structure, form_bundle.trigger_field,
+      *form_bundle.trigger_autofill_field, autofill_client(),
+      /*four_digit_combinations_in_dom=*/{},
+      /*amount_extraction_manager=*/nullptr, /*bnpl_manager=*/nullptr,
+      credit_card_form_event_logger(),
+      AutofillMetrics::PaymentsSigninState::kUnknown,
+      /*exclude_virtual_cards=*/false);
+  EXPECT_TRUE(suggestions.empty());
 }
 
 }  // namespace

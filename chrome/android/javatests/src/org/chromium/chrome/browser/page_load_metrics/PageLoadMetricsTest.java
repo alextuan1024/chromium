@@ -15,17 +15,14 @@ import org.junit.runner.RunWith;
 
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.util.Batch;
-import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.Criteria;
 import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.base.test.util.CriteriaNotSatisfiedException;
-import org.chromium.base.test.util.DisableIf;
 import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.base.test.util.ScalableTimeout;
 import org.chromium.blink_public.common.BlinkFeatures;
 import org.chromium.build.annotations.Nullable;
-import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.chrome.test.transit.ChromeTransitTestRules;
 import org.chromium.chrome.test.transit.FreshCtaTransitTestRule;
@@ -33,7 +30,6 @@ import org.chromium.chrome.test.transit.page.WebPageStation;
 import org.chromium.content_public.browser.WebContents;
 import org.chromium.content_public.browser.test.util.JavaScriptUtils;
 import org.chromium.net.test.EmbeddedTestServer;
-import org.chromium.ui.base.DeviceFormFactor;
 
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -44,7 +40,6 @@ import java.util.concurrent.TimeoutException;
 @Batch(Batch.PER_CLASS)
 @EnableFeatures(BlinkFeatures.PRERENDER2)
 @DisableFeatures(BlinkFeatures.PRERENDER2_MEMORY_CONTROLS)
-@CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
 public class PageLoadMetricsTest {
     @Rule
     public FreshCtaTransitTestRule mActivityTestRule =
@@ -88,7 +83,11 @@ public class PageLoadMetricsTest {
                                     });
                     try {
                         String script =
-                                "performance.getEntriesByName('first-contentful-paint').length > 0"
+                                "(window.location.href === '"
+                                        + url
+                                        + "' && document.readyState === 'complete'"
+                                        + " && performance.getEntriesByName("
+                                        + "'first-contentful-paint').length > 0)"
                                         + " ? 'true' : (window._fcpRafPending"
                                         + " || (window._fcpRafPending = true,"
                                         + " requestAnimationFrame(() => {"
@@ -366,7 +365,6 @@ public class PageLoadMetricsTest {
 
     @Test
     @SmallTest
-    @DisableIf.Device(DeviceFormFactor.DESKTOP) // https://crbug.com/481445205
     public void testPageLoadMetricNavigationIdSetCorrectly() throws Exception {
         PageLoadMetricsTestObserver metricsObserver =
                 new PageLoadMetricsTestObserver(mActivityTestRule.getWebContents());
@@ -402,7 +400,6 @@ public class PageLoadMetricsTest {
 
     @Test
     @SmallTest
-    @DisableIf.Device(DeviceFormFactor.DESKTOP) // https://crbug.com/481445205
     public void testPageLoadMetricForPrerendering() throws Exception {
         Assert.assertFalse(
                 "Tab shouldn't be loading anything before we add observer",

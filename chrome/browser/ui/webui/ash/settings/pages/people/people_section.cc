@@ -41,15 +41,14 @@
 #include "chrome/browser/ui/webui/ash/settings/search/search_tag_registry.h"
 #include "chrome/browser/ui/webui/settings/people_handler.h"
 #include "chrome/browser/ui/webui/settings/profile_info_handler.h"
-#include "chrome/browser/ui/webui/settings/shared_settings_localized_strings_provider.h"
-#include "chrome/grit/branded_strings.h"
 #include "chrome/grit/browser_resources.h"
 #include "chrome/grit/generated_resources.h"
 #include "chromeos/ash/components/account_manager/account_manager_factory.h"
 #include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
 #include "chromeos/ash/components/dbus/userdataauth/userdataauth_client.h"
-#include "components/account_manager_core/pref_names.h"
+#include "chromeos/ash/experiences/settings_ui/resources/grit/ash_settings_strings.h"
 #include "components/omnibox/common/omnibox_features.h"
+#include "components/policy/core/common/policy_pref_names.h"
 #include "components/prefs/pref_service.h"
 #include "components/strings/grit/components_strings.h"
 #include "components/user_manager/user.h"
@@ -182,7 +181,7 @@ void AddAccountManagerPageStrings(content::WebUIDataSource* html_source,
       "accountListDescription", IDS_SETTINGS_ACCOUNT_MANAGER_LIST_DESCRIPTION);
 
   user_manager::User* user = ProfileHelper::Get()->GetUserByProfile(profile);
-  DCHECK(user);
+  CHECK(user, base::NotFatalUntil::M162);
   html_source->AddString(
       "accountListChildDescription",
       l10n_util::GetStringFUTF16(
@@ -206,13 +205,7 @@ void AddAccountManagerPageStrings(content::WebUIDataSource* html_source,
 void AddLockScreenPageStrings(content::WebUIDataSource* html_source,
                               Profile* profile) {
   static constexpr webui::LocalizedString kLocalizedStrings[] = {
-      {"lockScreenNotificationTitle",
-       IDS_ASH_SETTINGS_LOCK_SCREEN_NOTIFICATION_TITLE},
-      {"lockScreenNotificationHideSensitive",
-       IDS_ASH_SETTINGS_LOCK_SCREEN_NOTIFICATION_HIDE_SENSITIVE},
       {"enableScreenlock", IDS_SETTINGS_PEOPLE_ENABLE_SCREENLOCK},
-      {"lockScreenNotificationShow",
-       IDS_ASH_SETTINGS_LOCK_SCREEN_NOTIFICATION_SHOW},
       {"lockScreenPinOrPassword",
        IDS_SETTINGS_PEOPLE_LOCK_SCREEN_PIN_OR_PASSWORD},
       {"lockScreenPinOnly", IDS_SETTINGS_PEOPLE_LOCK_SCREEN_PIN_ONLY},
@@ -229,8 +222,6 @@ void AddLockScreenPageStrings(content::WebUIDataSource* html_source,
        IDS_SETTINGS_PEOPLE_LOCK_SCREEN_PIN_AUTOSUBMIT},
       {"lockScreenSetupFingerprintButton",
        IDS_SETTINGS_PEOPLE_LOCK_SCREEN_FINGERPRINT_SETUP_BUTTON},
-      {"lockScreenNotificationHide",
-       IDS_ASH_SETTINGS_LOCK_SCREEN_NOTIFICATION_HIDE},
       {"lockScreenEditFingerprints",
        IDS_SETTINGS_PEOPLE_LOCK_SCREEN_EDIT_FINGERPRINTS},
       {"lockScreenPasswordOnly", IDS_SETTINGS_PEOPLE_LOCK_SCREEN_PASSWORD_ONLY},
@@ -490,6 +481,17 @@ void AddGraduationStrings(content::WebUIDataSource* html_source,
                           features::IsGraduationEnabled());
 }
 
+void AddPasswordPromptDialogStrings(content::WebUIDataSource* html_source) {
+  static constexpr webui::LocalizedString kLocalizedStrings[] = {
+      {"passwordPromptTitle", IDS_SETTINGS_PEOPLE_PASSWORD_PROMPT_TITLE},
+      {"passwordPromptInvalidPassword",
+       IDS_SETTINGS_PEOPLE_PASSWORD_PROMPT_INVALID_PASSWORD},
+      {"passwordPromptPasswordLabel",
+       IDS_SETTINGS_PEOPLE_PASSWORD_PROMPT_PASSWORD_LABEL},
+  };
+  html_source->AddLocalizedStrings(kLocalizedStrings);
+}
+
 bool IsSameAccount(const ::account_manager::AccountKey& account_key,
                    const AccountId& account_id) {
   // Currently, we only support `kGaia` account type. Should a new type be added
@@ -528,11 +530,11 @@ PeopleSection::PeopleSection(Profile* profile,
     // Some Account Manager search tags are added/removed dynamically.
     account_manager_ = AccountManagerFactory::Get()->GetAccountManager(
         profile->GetPath().value());
-    DCHECK(account_manager_);
+    CHECK(account_manager_, base::NotFatalUntil::M162);
     account_manager_facade_ =
         AccountManagerFactory::Get()->GetAccountManagerFacade(
             profile->GetPath().value());
-    DCHECK(account_manager_facade_);
+    CHECK(account_manager_facade_, base::NotFatalUntil::M162);
     account_manager_observation_.Observe(account_manager_.get());
     account_apps_availability_ =
         AccountAppsAvailabilityFactory::GetForProfile(profile);
@@ -557,8 +559,6 @@ void PeopleSection::AddLoadTimeData(content::WebUIDataSource* html_source) {
       {"osPeoplePageTitle", IDS_OS_SETTINGS_PEOPLE_V2},
       {"accountsMenuItemDescription",
        IDS_OS_SETTINGS_ACCOUNTS_MENU_ITEM_DESCRIPTION},
-      {"accountManagerSubMenuLabel",
-       IDS_SETTINGS_ACCOUNT_MANAGER_SUBMENU_LABEL},
       {"accountManagerPageTitle", IDS_SETTINGS_ACCOUNT_MANAGER_PAGE_TITLE},
       {"lockScreenFingerprintTitle",
        IDS_SETTINGS_PEOPLE_LOCK_SCREEN_FINGERPRINT_SUBPAGE_TITLE},
@@ -567,7 +567,7 @@ void PeopleSection::AddLoadTimeData(content::WebUIDataSource* html_source) {
   html_source->AddLocalizedStrings(kLocalizedStrings);
 
   user_manager::User* user = ProfileHelper::Get()->GetUserByProfile(profile());
-  DCHECK(user);
+  CHECK(user, base::NotFatalUntil::M162);
 
   html_source->AddString(
       "osProfileName", l10n_util::GetStringFUTF16(IDS_OS_SETTINGS_PROFILE_NAME,
@@ -586,7 +586,7 @@ void PeopleSection::AddLoadTimeData(content::WebUIDataSource* html_source) {
   html_source->AddBoolean(
       "secondaryGoogleAccountSigninAllowed",
       pref_service_->GetBoolean(
-          ::account_manager::prefs::kSecondaryGoogleAccountSigninAllowed));
+          policy::policy_prefs::kSecondaryGoogleAccountSigninAllowed));
 
   html_source->AddBoolean(
       "driveSuggestAvailable",
@@ -603,7 +603,7 @@ void PeopleSection::AddLoadTimeData(content::WebUIDataSource* html_source) {
                             ShouldShowParentalControlSettings(profile()));
   AddGraduationStrings(html_source, profile());
 
-  ::settings::AddPasswordPromptDialogStrings(html_source);
+  AddPasswordPromptDialogStrings(html_source);
 }
 
 void PeopleSection::AddHandlers(content::WebUI* web_ui) {
@@ -688,14 +688,14 @@ void PeopleSection::OnAccountRemoved(
 
 void PeopleSection::UpdateAccountManagerSearchTags(
     const std::vector<::account_manager::Account>& accounts) {
-  DCHECK(IsAccountManagerAvailable(profile()));
+  CHECK(IsAccountManagerAvailable(profile()), base::NotFatalUntil::M162);
 
   // Start with no Account Manager search tags.
   SearchTagRegistry::ScopedTagUpdater updater = registry()->StartUpdate();
   updater.RemoveSearchTags(GetRemoveAccountSearchConcepts());
 
   user_manager::User* user = ProfileHelper::Get()->GetUserByProfile(profile());
-  DCHECK(user);
+  CHECK(user, base::NotFatalUntil::M162);
 
   for (const ::account_manager::Account& account : accounts) {
     if (IsSameAccount(account.key, user->GetAccountId())) {

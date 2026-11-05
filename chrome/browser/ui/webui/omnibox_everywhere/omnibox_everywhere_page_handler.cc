@@ -24,9 +24,23 @@ void OmniboxEverywherePageHandler::ShowContextActionMenu(
   }
 }
 
+void OmniboxEverywherePageHandler::ShowOverflowMenu(
+    const gfx::Rect& anchor_rect,
+    ui::mojom::MenuSourceType source_type) {
+  if (web_ui_controller_) {
+    web_ui_controller_->ShowOverflowMenu(anchor_rect, source_type);
+  }
+}
+
 void OmniboxEverywherePageHandler::SetIsComposebox(bool is_composebox) {
   if (web_ui_controller_) {
     web_ui_controller_->SetIsComposebox(is_composebox);
+  }
+}
+
+void OmniboxEverywherePageHandler::OnDismissMostVisited() {
+  if (web_ui_controller_) {
+    web_ui_controller_->OnDismissMostVisited();
   }
 }
 
@@ -36,9 +50,33 @@ void OmniboxEverywherePageHandler::OnContextMenuClosed() {
   }
 }
 
+void OmniboxEverywherePageHandler::OnOverflowMenuClosed() {
+  if (page_) {
+    page_->OnOverflowMenuClosed();
+  }
+}
+
 void OmniboxEverywherePageHandler::OpenComposebox(
     omnibox_everywhere::mojom::ComposeboxInitialStatePtr initial_state) {
   if (page_) {
     page_->OpenComposebox(std::move(initial_state));
+  }
+}
+
+void OmniboxEverywherePageHandler::OnScreenshotCaptureCancelled() {
+  if (page_) {
+    page_->OnScreenshotCaptureCancelled();
+  }
+}
+
+void OmniboxEverywherePageHandler::FocusInput() {
+  if (page_) {
+    page_->FocusInput();
+  }
+}
+
+void OmniboxEverywherePageHandler::OnDemoted() {
+  if (page_) {
+    page_->OnDemoted();
   }
 }

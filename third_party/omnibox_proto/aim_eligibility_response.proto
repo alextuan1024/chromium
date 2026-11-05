@@ -13,6 +13,7 @@ option java_outer_classname = 'AimEligibilityResponseProto';
 
 package omnibox;
 
+import "lhs_rail_config.proto";
 import "model_mode.proto";
 import "searchbox_config.proto";
 
@@ -20,7 +21,7 @@ import "searchbox_config.proto";
 // DO NOT include any sensitive data in this proto.
 
 // Configuration for AIM eligibility response.
-// Next ID: 16
+// Next ID: 17
 message AimEligibilityResponse {
   // True if the user is eligible for AIM. This is false for users in any AIM
   // holdback.
@@ -100,11 +101,14 @@ message AimEligibilityResponse {
 
   // Query parameters that, if present in the URL, will prevent the browser
   // from entering Co-Browse mode (bypassing interception).
-  repeated QueryParam no_cobrowse_params = 13;
+  repeated QueryParam no_cobrowse_params = 13 [deprecated = true];
 
   // Controls whether the user is eligible for the Contextual Searchbox.
   optional bool is_contextual_searchbox_eligible = 14;
 
   // Controls whether the user is eligible for the Contextual Omnibox.
   optional bool is_contextual_omnibox_eligible = 15;
+
+  // Configuration for the native folded LHS rail in Chrome NTP.
+  LhsRailConfig lhs_rail_config = 16;
 }

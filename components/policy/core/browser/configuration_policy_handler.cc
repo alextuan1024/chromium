@@ -52,6 +52,8 @@ void ConfigurationPolicyHandler::ApplyPolicySettingsWithParameters(
   ApplyPolicySettings(policies, prefs);
 }
 
+void ConfigurationPolicyHandler::OnPolicySettingsNotApplied() {}
+
 // NamedPolicyHandler implementation -------------------------------------------
 NamedPolicyHandler::NamedPolicyHandler(const char* policy_name)
     : policy_name_(policy_name) {}
@@ -484,7 +486,6 @@ bool SchemaValidatingPolicyHandler::CheckPolicySettings(
 
   PolicyErrorPath error_path;
   std::string error;
-  std::vector<PolicyMap::PolicyMapType::value_type> errors_with_path;
   bool result = schema_.Validate(*value, strategy_, &error_path, &error);
 
   if (errors && !error.empty()) {

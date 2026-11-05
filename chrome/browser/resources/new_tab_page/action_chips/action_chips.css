@@ -6,7 +6,6 @@
  * #type=style-lit
  * #import=chrome://resources/cr_elements/cr_shared_style_lit.css.js
  * #import=chrome://resources/cr_elements/cr_icons_lit.css.js
- * #scheme=relative
  * #include=cr-shared-style-lit cr-icons-lit
  * #css_wrapper_metadata_end */
 
@@ -50,68 +49,10 @@
 }
 
 
-.action-chip-icon-container:not(.icon-type-favicon):not(.icon-type-banana) {
-  background-color: var(--color-new-tab-page-action-chip-text-body);
-}
-
-.icon-type-sub-arrow-right {
-  -webkit-mask-image: url(chrome://new-tab-page/icons/suggestion_old.svg);
-}
-
-.icon-type-globe-with-search-loop {
-  -webkit-mask-image: url(chrome://new-tab-page/icons/deep_search_old.svg);
-}
-
-.icon-type-draft-spark {
-  -webkit-mask-image: url(chrome://new-tab-page/icons/canvas_old.svg);
-}
-
-:host-context([webui-rounded-icons]) .icon-type-sub-arrow-right {
-  -webkit-mask-image: url(chrome://new-tab-page/icons/suggestion.svg);
-}
-
-:host-context([webui-rounded-icons]) .icon-type-globe-with-search-loop {
-  -webkit-mask-image: url(chrome://new-tab-page/icons/deep_search.svg);
-}
-
-:host-context([webui-rounded-icons]) .icon-type-draft-spark {
-  -webkit-mask-image: url(chrome://new-tab-page/icons/canvas.svg);
-}
-
-.icon-type-banana {
-  background-image: url(chrome://new-tab-page/icons/banana.svg);
-}
-
-.icon-type-search-spark {
-  -webkit-mask-image: url(chrome://new-tab-page/icons/search_spark.svg);
-}
-
-.icon-type-lightbulb {
-  -webkit-mask-image: url(chrome://new-tab-page/icons/lightbulb.svg);
-}
-
-.icon-type-attach-file {
-  -webkit-mask-image: url(chrome://new-tab-page/icons/attach_file.svg);
-}
-
-.icon-type-school {
-  -webkit-mask-image: url(chrome://new-tab-page/icons/school.svg);
-}
-
-.icon-type-ink-pen {
-  -webkit-mask-image: url(chrome://new-tab-page/icons/ink_pen.svg);
-}
-
-.icon-type-bolt {
-  -webkit-mask-image: url(chrome://new-tab-page/icons/bolt.svg);
-}
-
-.icon-type-photo-spark {
-  -webkit-mask-image: url(chrome://new-tab-page/icons/photo_spark.svg);
-}
-
-.icon-type-tab {
-  -webkit-mask-image: url(chrome://new-tab-page/icons/tab.svg);
+.action-chip-icon-container cr-icon {
+  --iron-icon-fill-color: var(--color-new-tab-page-action-chip-text-body);
+  --iron-icon-height: 18px;
+  --iron-icon-width: 18px;
 }
 
 .action-chip {
@@ -134,6 +75,10 @@
   transform: translateY(-56px);
   transition: max-height 350ms ease;
   width: 240px;
+}
+
+:host([small-chips-enabled]) .action-chips-wrapper {
+  max-width: none;
 }
 
 :host([small-chips-enabled]) .action-chips-container {
@@ -168,6 +113,11 @@
 :host([small-chips-enabled]) .action-chip .chip-title {
   font-weight: 400;
   max-width: 150px;
+}
+
+:host([uncapped-width-enabled]) .action-chip,
+:host([uncapped-width-enabled]) .action-chip .chip-title {
+  max-width: unset;
 }
 
 .chip-button-wrapper {
@@ -222,26 +172,20 @@
 }
 
 .action-chip-icon-container {
+  align-items: center;
   align-self: flex-start;
-  background-position: center;
-  background-repeat: no-repeat;
-  background-size: 100%;
   border-radius: 100%;
+  display: flex;
   height: 24px;
+  justify-content: center;
   margin-top: 8px;
-  mask-position: center;
-  mask-repeat: no-repeat;
-  mask-size: 100%;
-  -webkit-mask-position: center;
-  -webkit-mask-repeat: no-repeat;
-  -webkit-mask-size: 100%;
   width: 24px;
 }
 
 .action-chip-recent-tab-favicon {
   border-radius: 2px;
-  height: 24px;
-  width: 24px;
+  height: 16px;
+  width: 16px;
 }
 
 .action-chip-text-container {
@@ -265,7 +209,7 @@
   font-weight: 500;
   line-height: 20px;
   overflow: hidden;
-  text-align: left;
+  text-align: start;
   text-overflow: ellipsis;
   white-space: nowrap;
   width: 100%;
@@ -314,8 +258,8 @@
   --cr-icon-image: url('chrome://resources/images/icon_clear_old.svg');
   align-self: center;
   display: none;
+  inset-inline-end: 16px;
   position: absolute;
-  right: 16px;
 }
 
 :host-context([webui-rounded-icons]) .chip-remove-button {
@@ -323,7 +267,11 @@
 }
 
 
-/* Responsive container widths and reserved min-heights:
+/* Responsive container widths and reserved min-heights. Breakpoints are
+ * measured against the NTP's main column (the rhsWrapper query container
+ * declared on #rhsWrapper in app.css) instead of the window, so standard chips
+ * keep their side margins when the column is narrower than the window (e.g.
+ * when the LHS panel is shown).
  * - Standard chips: height 56px, gap 14px, margin-bottom 40px.
  *   - >=900px (1 row):  56px + 40px = 96px.
  *   - >=672px (2 rows): (56px * 2) + 14px + 40px = 166px.
@@ -335,7 +283,7 @@
  *   - >=560px (3 rows): (40px * 3) + (8px * 2) + 40px = 176px.
  *   - <560px (3 rows): (40px * 3) + (8px * 2) + 40px = 176px.
  */
-@media (min-width: 560px) {
+@container rhsWrapper (min-width: 560px) {
   :host {
     --ntp-chips-container-width: 449px;
     min-height: 236px;
@@ -346,7 +294,7 @@
   }
 }
 
-@media (min-width: 672px) {
+@container rhsWrapper (min-width: 672px) {
   :host {
     --ntp-chips-container-width: 561px;
     min-height: 166px;
@@ -357,7 +305,7 @@
   }
 }
 
-@media (min-width: 900px) {
+@container rhsWrapper (min-width: 900px) {
   :host {
     --ntp-chips-container-width: 746px;
     min-height: 96px;
@@ -369,7 +317,7 @@
 }
 
 /* Unset reserved min-height once small chips are rendered so the container
- * adapts naturally to 1, 2, or 3 rows without hardcoded geometry
+ * adapts naturally to the number of rows without hardcoded geometry
  * calculations. */
 :host([small-chips-enabled][has-chips]) {
   min-height: unset;
@@ -385,5 +333,36 @@ cr-button>span {
     animation: none;
     opacity: 1;
     transform: none;
+  }
+}
+
+@media (forced-colors: active) {
+  .action-chip {
+    border: 1px solid ButtonBorder;
+  }
+
+  .action-chip-icon-container cr-icon {
+    --iron-icon-fill-color: ButtonText;
+    forced-color-adjust: none;
+  }
+
+  .action-chip:hover,
+  .action-chip:focus-visible {
+    background-color: Highlight;
+    border-color: Highlight;
+    color: HighlightText;
+    forced-color-adjust: none;
+  }
+
+  .action-chip:hover .chip-title,
+  .action-chip:hover .chip-body,
+  .action-chip:focus-visible .chip-title,
+  .action-chip:focus-visible .chip-body {
+    color: HighlightText;
+  }
+
+  .action-chip:hover .action-chip-icon-container cr-icon,
+  .action-chip:focus-visible .action-chip-icon-container cr-icon {
+    --iron-icon-fill-color: HighlightText;
   }
 }

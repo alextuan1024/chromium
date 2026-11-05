@@ -8,6 +8,7 @@
 #include "chrome/browser/ui/browser_element_identifiers.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/test/test_browser_ui.h"
+#include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/views/frame/app_menu_button_observer.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/toolbar_button_provider.h"
@@ -39,10 +40,13 @@ enum class AppType { kRegular, kTabbed, kIsolated };
 AppType AppTypeFromTestName() {
   const std::string name = base::TestNameWithoutDisabledPrefix(
       testing::UnitTest::GetInstance()->current_test_info()->name());
-  size_t underscore = name.rfind('_');
+  size_t slash = name.find('/');
+  std::string base_name =
+      slash == std::string::npos ? name : name.substr(0, slash);
+  size_t underscore = base_name.rfind('_');
   std::string suffix = underscore == std::string::npos
                            ? std::string()
-                           : name.substr(underscore + 1);
+                           : base_name.substr(underscore + 1);
   if (suffix == "tabbed") {
     return AppType::kTabbed;
   } else if (suffix == "isolated") {
@@ -54,13 +58,20 @@ AppType AppTypeFromTestName() {
 }  // namespace
 
 class WebAppMenuBrowserTest
-    : public SupportsTestUi<IsolatedWebAppBrowserTestHarness, TestBrowserUi> {
+    : public SupportsTestUi<IsolatedWebAppBrowserTestHarness, TestBrowserUi>,
+      public testing::WithParamInterface<bool> {
  public:
   WebAppMenuBrowserTest() {
-    scoped_feature_list_.InitWithFeatures(
-        {blink::features::kDesktopPWAsTabStrip,
-         blink::features::kDesktopPWAsTabStripCustomizations},
-        {});
+    std::vector<base::test::FeatureRef> enabled_features = {
+        blink::features::kDesktopPWAsTabStrip,
+        blink::features::kDesktopPWAsTabStripCustomizations};
+    std::vector<base::test::FeatureRef> disabled_features;
+    if (GetParam()) {
+      enabled_features.push_back(features::kAppMenuGlowUp);
+    } else {
+      disabled_features.push_back(features::kAppMenuGlowUp);
+    }
+    scoped_feature_list_.InitWithFeatures(enabled_features, disabled_features);
   }
 
   void SetUpOnMainThread() override {
@@ -127,14 +138,15 @@ class WebAppMenuBrowserTest
 
 void WebAppMenuBrowserTest::ShowUi(const std::string& name) {
   // Include mnemonics in screenshots so that we detect changes to them.
-  menu_button()->ShowMenu(views::MenuRunner::SHOULD_SHOW_MNEMONICS);
+  menu_button()->ShowMenuWithFlags(views::MenuRunner::SHOULD_SHOW_MNEMONICS);
 }
 
 bool WebAppMenuBrowserTest::VerifyUi() {
   if (!menu_button()->IsMenuShowing()) {
     return false;
   }
-  views::MenuItemView* menu_item = menu_button()->app_menu()->root_menu_item();
+  views::MenuItemView* menu_item =
+      menu_button()->GetRootMenuItemViewForTesting();
 
   const auto* const test_info =
       testing::UnitTest::GetInstance()->current_test_info();
@@ -163,11 +175,11 @@ void WebAppMenuBrowserTest::WaitForUserDismissal() {
   run_loop.Run();
 }
 
-IN_PROC_BROWSER_TEST_F(WebAppMenuBrowserTest, InvokeUi_main) {
+IN_PROC_BROWSER_TEST_P(WebAppMenuBrowserTest, InvokeUi_main) {
   ShowAndVerifyUi();
 }
 
-IN_PROC_BROWSER_TEST_F(WebAppMenuBrowserTest, InvokeUi_main_pending_update) {
+IN_PROC_BROWSER_TEST_P(WebAppMenuBrowserTest, InvokeUi_main_pending_update) {
   {
     ScopedRegistryUpdate update = provider().sync_bridge_unsafe().BeginUpdate();
     proto::PendingUpdateInfo update_info;
@@ -179,7 +191,7 @@ IN_PROC_BROWSER_TEST_F(WebAppMenuBrowserTest, InvokeUi_main_pending_update) {
   ShowAndVerifyUi();
 }
 
-IN_PROC_BROWSER_TEST_F(WebAppMenuBrowserTest, InvokeUi_main_pending_migration) {
+IN_PROC_BROWSER_TEST_P(WebAppMenuBrowserTest, InvokeUi_main_pending_migration) {
   {
     ScopedRegistryUpdate update = provider().sync_bridge_unsafe().BeginUpdate();
     PendingMigrationInfo migration_info(
@@ -192,12 +204,14 @@ IN_PROC_BROWSER_TEST_F(WebAppMenuBrowserTest, InvokeUi_main_pending_migration) {
   ShowAndVerifyUi();
 }
 
-IN_PROC_BROWSER_TEST_F(WebAppMenuBrowserTest, InvokeUi_main_tabbed) {
+IN_PROC_BROWSER_TEST_P(WebAppMenuBrowserTest, InvokeUi_main_tabbed) {
   ShowAndVerifyUi();
 }
 
-IN_PROC_BROWSER_TEST_F(WebAppMenuBrowserTest, InvokeUi_main_isolated) {
+IN_PROC_BROWSER_TEST_P(WebAppMenuBrowserTest, InvokeUi_main_isolated) {
   ShowAndVerifyUi();
 }
+
+INSTANTIATE_TEST_SUITE_P(All, WebAppMenuBrowserTest, testing::Bool());
 
 }  // namespace web_app

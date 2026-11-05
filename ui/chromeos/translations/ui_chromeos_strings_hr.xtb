@@ -519,10 +519,10 @@
 <translation id="5045550434625856497">Pogrešna zaporka</translation>
 <translation id="5059127710849015030">transliteracija za nepalski</translation>
 <translation id="5068919226082848014">Pizza</translation>
+<translation id="5075336522277785691">Proširenje <ph name="EXTENSION_NAME" /> postavilo je pravila za nadjačavanje proxyja</translation>
 <translation id="5081517858322016911">Izbrisat će se datoteke ukupne veličine <ph name="TOTAL_FILE_SIZE" /></translation>
 <translation id="508423945471810158">Premještanje stavki (<ph name="NUMBER_OF_ITEMS" />) u mapu <ph name="FOLDER_NAME" /></translation>
 <translation id="509429900233858213">Došlo je do pogreške.</translation>
-<translation id="5102922915594634436">Upravljanje sinkroniziranim mapama</translation>
 <translation id="5109254780565519649">Došlo je do pogreške. Neke stavke možda nisu vraćene.</translation>
 <translation id="5110329002213341433">engleski (Kanada)</translation>
 <translation id="5119780910075847424">Sinkronizacija je pauzirana</translation>
@@ -558,7 +558,6 @@
 <translation id="5305688511332277257">Nijedan nije instaliran</translation>
 <translation id="5317780077021120954">Spremi</translation>
 <translation id="5318819489018851358">Dijeli s Linuxom</translation>
-<translation id="5330145655348521461">Ove su datoteke otvorene na drugoj radnoj površini. Prebacite se na korisnika <ph name="USER_NAME" /> (<ph name="MAIL_ADDRESS" />) da biste ih vidjeli.</translation>
 <translation id="5330512191124428349">Informacije</translation>
 <translation id="535792325654997756">Osoba s mačkama</translation>
 <translation id="5358764674931277">Brzina kadrova u sekundi</translation>
@@ -699,7 +698,6 @@
 <translation id="636254897931573416">Nevažeća vrijednost podudaranja domenskog nastavka</translation>
 <translation id="6364301859968397756">Pohrana organizacije je puna</translation>
 <translation id="6367976544441405720">Kombi</translation>
-<translation id="637062427944097960">Ova je datoteka otvorena na drugoj radnoj površini. Prebacite se na korisnika <ph name="USER_NAME" /> (<ph name="MAIL_ADDRESS" />) da biste je vidjeli.</translation>
 <translation id="6394388407447716302">Samo za čitanje</translation>
 <translation id="6395575651121294044">Broj stavki: <ph name="NUMBER_OF_FILES" /></translation>
 <translation id="6407769893376380348">Premještanje datoteke <ph name="FILE_NAME" /> nije uspjelo jer je šifrirana.</translation>

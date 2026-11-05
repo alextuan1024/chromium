@@ -31,6 +31,7 @@
 #include "components/autofill/core/browser/strike_databases/autofill_ai/autofill_ai_save_strike_database_by_host.h"
 #include "components/autofill/core/browser/strike_databases/autofill_ai/autofill_ai_update_strike_database.h"
 #include "components/autofill/core/browser/studies/hats_surveys_util.h"
+#include "components/autofill/core/browser/ui/autofill_suggestion_delegate.h"
 #include "components/autofill/core/common/dense_set.h"
 #include "components/autofill/core/common/form_data.h"
 #include "components/autofill/core/common/unique_ids.h"
@@ -80,6 +81,7 @@ class AutofillAiManager
       const FormStructure& form,
       const AutofillField& field,
       base::span<const Suggestion> shown_suggestions,
+      const AutofillSuggestionDelegate::SuggestionUiMetadata& metadata,
       ukm::SourceId ukm_source_id,
       UpdateSuggestionsCallback update_suggestions_callback);
   virtual void OnFormSeen(const FormStructure& form);
@@ -221,13 +223,13 @@ class AutofillAiManager
       AutofillClient::AutofillAiBubbleResult result,
       std::optional<EntityInstance> edited_entity,
       const AutofillClient::EntityImportUIContext& ui_context,
-      std::optional<std::string> context_token);
+      std::optional<std::string> legal_message_token);
 
   // Handles the response of `GetDetailsForUpsertPass`. If the request
   // succeeded, `ShowEntityImportBubble` is called with the retrieved legal
-  // disclosure details and `context_token`. If the request failed, the entity
-  // falls back to a local save (`EntityInstance::RecordType::kLocal`) and
-  // `ShowEntityImportBubble` is called without details.
+  // disclosure details and `legal_message_token`. If the request failed, the
+  // entity falls back to a local save (`EntityInstance::RecordType::kLocal`)
+  // and `ShowEntityImportBubble` is called without details.
   void OnGetDetailsForUpsertPassResponse(
       const FormData& form,
       ukm::SourceId ukm_source_id,
@@ -240,7 +242,7 @@ class AutofillAiManager
 
   // Displays the entity import bubble on `client_`. If `public_passes_notice`
   // is present, its legal disclosure messages will be shown in the prompt.
-  // `context_token` is forwarded to `HandlePromptResult` upon acceptance.
+  // `legal_message_token` is forwarded to `HandlePromptResult` upon acceptance.
   void ShowEntityImportBubble(
       const FormData& form,
       ukm::SourceId ukm_source_id,
@@ -249,7 +251,7 @@ class AutofillAiManager
       std::optional<EntityInstance> old_entity,
       bool is_save_synchronous,
       LegalMessageLines public_passes_notice,
-      std::optional<std::string> context_token);
+      std::optional<std::string> legal_message_token);
 
   // Handles the fallback UI and storage logic when a Wallet save is
   // accepted but the user is no longer eligible. This can happen if eligibility

@@ -45,11 +45,10 @@
   AppLaunchConfiguration config = [super appConfigurationForTestCase];
 
   // Enable flags for rich inline autocomplete tests.
-  if ([self isRunningTest:@selector(testRichInlineDefaultSuggestion)]) {
-    config.features_enabled.push_back(omnibox::kRichAutocompletion);
-  }
+  config.features_enabled.push_back(omnibox::kRichAutocompletion);
 
-  // Disable AutocompleteProvider types: TYPE_SEARCH and TYPE_ON_DEVICE_HEAD.
+  // Disable AutocompleteProvider types: AutocompleteProvider::Type::kSearch and
+  // AutocompleteProvider::Type::kOnDeviceHead.
   omnibox::DisableAutocompleteProviders(config, 1056);
 
   return config;
@@ -97,12 +96,6 @@
 
 // Tests navigating to a shortcut as a default match.
 - (void)testRichInlineDefaultSuggestion {
-// TODO(crbug.com/482376763): Test fails on iphone device.
-#if !TARGET_IPHONE_SIMULATOR
-  if (![ChromeEarlGrey isIPadIdiom]) {
-    EARL_GREY_TEST_DISABLED(@"Fails on iPhone device.");
-  }
-#endif
   // Add 2 shortcuts Page(1) and Page(2).
   [OmniboxEarlGrey addShorcuts:2 toTestServer:self.testServer];
 

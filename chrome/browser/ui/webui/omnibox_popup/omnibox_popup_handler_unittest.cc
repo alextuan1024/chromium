@@ -6,10 +6,14 @@
 
 #include <memory>
 
+#include "base/functional/bind.h"
 #include "base/memory/raw_ptr.h"
+#include "base/strings/utf_string_conversions.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/test_future.h"
+#include "build/branding_buildflags.h"
 #include "chrome/browser/autocomplete/chrome_autocomplete_scheme_classifier.h"
+#include "chrome/browser/search_engines/template_url_service_factory.h"
 #include "chrome/browser/ui/omnibox/omnibox_controller.h"
 #include "chrome/browser/ui/omnibox/omnibox_edit_model.h"
 #include "chrome/browser/ui/omnibox/test_omnibox_view.h"
@@ -20,13 +24,19 @@
 #include "components/omnibox/browser/omnibox_prefs.h"
 #include "components/omnibox/browser/test_omnibox_client.h"
 #include "components/prefs/testing_pref_service.h"
+#include "components/search_engines/template_url.h"
+#include "components/search_engines/template_url_data.h"
+#include "components/search_engines/template_url_service.h"
+#include "components/security_state/core/security_state.h"
 #include "components/variations/scoped_variations_ids_provider.h"
 #include "content/public/test/test_web_ui.h"
+#include "net/cert/cert_status_flags.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/clipboard/clipboard.h"
 #include "ui/base/clipboard/test/test_clipboard.h"
 #include "ui/base/models/menu_model.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/gfx/geometry/point.h"
 
 namespace {
@@ -74,25 +84,32 @@ TEST_F(OmniboxPopupHandlerTest, OnShow) {
 }
 
 TEST_F(OmniboxPopupHandlerTest, SetFocus) {
-  EXPECT_CALL(page_, SetFocus(true, false, false));
+  EXPECT_CALL(page_, SetFocus(true, false, false, false));
   handler_->SetFocus(true);
   page_.FlushForTesting();
 }
 
 TEST_F(OmniboxPopupHandlerTest, SetFocusWithQueryZps) {
-  EXPECT_CALL(page_, SetFocus(true, true, false));
+  EXPECT_CALL(page_, SetFocus(true, true, false, false));
   handler_->SetFocus(true, /*query_zps=*/true);
   page_.FlushForTesting();
 }
 
 TEST_F(OmniboxPopupHandlerTest, SetFocusWithSelectAll) {
-  EXPECT_CALL(page_, SetFocus(true, true, true));
+  EXPECT_CALL(page_, SetFocus(true, true, true, false));
   handler_->SetFocus(true, /*query_zps=*/true, /*select_all=*/true);
   page_.FlushForTesting();
 }
 
+TEST_F(OmniboxPopupHandlerTest, SetFocusWithShowFullUrl) {
+  EXPECT_CALL(page_, SetFocus(true, true, true, true));
+  handler_->SetFocus(true, /*query_zps=*/true, /*select_all=*/true,
+                     /*show_full_url=*/true);
+  page_.FlushForTesting();
+}
+
 TEST_F(OmniboxPopupHandlerTest, SetFocusWithoutQueryZps) {
-  EXPECT_CALL(page_, SetFocus(false, false, false));
+  EXPECT_CALL(page_, SetFocus(false, false, false, false));
   handler_->SetFocus(false, /*query_zps=*/false);
   page_.FlushForTesting();
 }
@@ -119,7 +136,8 @@ TEST_F(OmniboxPopupHandlerTest, SetInputState) {
   std::string full_url = "test.com";
   std::string permanent_display_text = "permanent.com";
   bool show_full_url = true;
-  bool query_zps = true;
+  omnibox_popup::mojom::MatchesUpdate matches_update =
+      omnibox_popup::mojom::MatchesUpdate::kPreserveMatches;
   EXPECT_CALL(page_, SetInputState(testing::_))
       .WillOnce([&](omnibox_popup::mojom::OmniboxInputStatePtr state) {
         EXPECT_EQ(state->text, test_text);
@@ -129,26 +147,114 @@ TEST_F(OmniboxPopupHandlerTest, SetInputState) {
         EXPECT_TRUE(state->is_focused);
         EXPECT_EQ(state->permanent_display_text, permanent_display_text);
         EXPECT_TRUE(state->show_full_url);
-        EXPECT_TRUE(state->query_zps);
+        EXPECT_EQ(state->matches_update, matches_update);
         EXPECT_TRUE(state->is_tab_switch);
+        EXPECT_TRUE(state->url_emphasis);
+        EXPECT_TRUE(state->unelided_url_emphasis);
+        EXPECT_TRUE(state->prefers_url_input);
       });
   handler_->SetInputState(test_text, test_selection,
                           /*user_input_in_progress=*/true, full_url,
                           /*is_focused=*/true, permanent_display_text,
-                          show_full_url, query_zps,
+                          show_full_url, matches_update,
                           /*keyword_model=*/nullptr,
                           /*is_tab_switch=*/true);
   page_.FlushForTesting();
 }
 
 TEST_F(OmniboxPopupHandlerTest, SyncsDefaultSearchProvider) {
-  EXPECT_CALL(page_, SetDefaultSearchProvider(testing::_));
+  EXPECT_CALL(page_,
+              SetDefaultSearchProvider(testing::_, testing::_, testing::_));
   handler_->OnTemplateURLServiceChanged();
   page_.FlushForTesting();
 
-  EXPECT_CALL(page_, SetDefaultSearchProvider(testing::_));
+  EXPECT_CALL(page_,
+              SetDefaultSearchProvider(testing::_, testing::_, testing::_));
   handler_->RequestInputState();
   page_.FlushForTesting();
+
+  EXPECT_CALL(page_,
+              SetDefaultSearchProvider(testing::_, testing::_, testing::_));
+  handler_->NotifyDefaultSearchProviderChanged();
+  page_.FlushForTesting();
+}
+
+// The handler is constructed without an `OmniboxController` in this fixture,
+// so it observes no `TemplateURLService` and there is no DSE placeholder.
+TEST_F(OmniboxPopupHandlerTest,
+       SyncsNoPlaceholderWithoutDefaultSearchProvider) {
+  EXPECT_CALL(
+      page_, SetDefaultSearchProvider(
+                 testing::_, omnibox_popup::mojom::PlaceholderType::kNone, ""));
+  handler_->NotifyDefaultSearchProviderChanged();
+  page_.FlushForTesting();
+}
+
+TEST_F(OmniboxPopupHandlerTest, SyncsDefaultSearchProviderPlaceholder) {
+  auto omnibox_controller = std::make_unique<OmniboxController>(
+      std::make_unique<TestOmniboxClient>());
+  const TemplateURL* default_provider = omnibox_controller->client()
+                                            ->GetTemplateURLService()
+                                            ->GetDefaultSearchProvider();
+  ASSERT_TRUE(default_provider);
+
+  // The handler syncs the DSE placeholder type and search engine name on
+  // construction. The AIM popup isn't enabled for the test profile, so it's
+  // the "Search <search engine> or type a URL" placeholder.
+  testing::NiceMock<MockOmniboxPopupPage> local_page;
+  EXPECT_CALL(
+      local_page,
+      SetDefaultSearchProvider(
+          testing::_, omnibox_popup::mojom::PlaceholderType::kSearchOrTypeUrl,
+          base::UTF16ToUTF8(default_provider->short_name())));
+  handler_ = std::make_unique<OmniboxPopupHandler>(
+      mojo::PendingReceiver<omnibox_popup::mojom::PageHandler>(),
+      local_page.BindAndGetRemote(), web_contents(), omnibox_controller.get());
+  local_page.FlushForTesting();
+
+  // Reset the handler to avoid dangling raw_ptr to the local
+  // omnibox_controller.
+  handler_.reset();
+}
+
+TEST_F(OmniboxPopupHandlerTest, GetDefaultSearchProviderIcon) {
+  const std::string search_loupe =
+      features::IsRoundedIconsEnabled()
+          ? "//resources/cr_components/searchbox/icons/search_cr23.svg"
+          : "//resources/cr_components/searchbox/icons/search_cr23_old.svg";
+  EXPECT_EQ(GetDefaultSearchProviderIcon(nullptr, /*is_dark_mode=*/false),
+            search_loupe);
+  EXPECT_EQ(GetDefaultSearchProviderIcon(nullptr, /*is_dark_mode=*/true),
+            search_loupe);
+
+  // `TemplateURLServiceFactory` returns null in unit tests unless a testing
+  // factory is set, so build a real service with Google as the DSE.
+  TemplateURLServiceFactory::GetInstance()->SetTestingFactoryAndUse(
+      profile(),
+      base::BindRepeating(&TemplateURLServiceFactory::BuildInstanceFor));
+  auto* turl_service = TemplateURLServiceFactory::GetForProfile(profile());
+  ASSERT_TRUE(turl_service);
+  turl_service->Load();
+  TemplateURLData data;
+  data.SetShortName(u"Google");
+  data.SetKeyword(u"google.com");
+  data.SetURL("https://www.google.com/search?q={searchTerms}");
+  turl_service->SetUserSelectedDefaultSearchProvider(
+      turl_service->Add(std::make_unique<TemplateURL>(data)));
+
+#if BUILDFLAG(GOOGLE_CHROME_BRANDING)
+  EXPECT_EQ(GetDefaultSearchProviderIcon(turl_service, /*is_dark_mode=*/false),
+            "//resources/cr_components/searchbox/icons/google_g_gradient.svg");
+  EXPECT_EQ(GetDefaultSearchProviderIcon(turl_service, /*is_dark_mode=*/true),
+            "//resources/cr_components/searchbox/icons/google_g_cr23.svg");
+#else
+  // Non-branded builds don't use the Google G icons, and this DSE has no
+  // favicon, so the search loupe is used.
+  EXPECT_EQ(GetDefaultSearchProviderIcon(turl_service, /*is_dark_mode=*/false),
+            search_loupe);
+  EXPECT_EQ(GetDefaultSearchProviderIcon(turl_service, /*is_dark_mode=*/true),
+            search_loupe);
+#endif
 }
 
 TEST_F(OmniboxPopupHandlerTest, OnSelectionChanged) {
@@ -167,7 +273,8 @@ TEST_F(OmniboxPopupHandlerTest, OnSelectionChangedSequenceGuard) {
   handler_->SetInputState("test", gfx::Range(0, 0),
                           /*user_input_in_progress=*/false, /*full_url=*/"",
                           /*is_focused=*/true, /*permanent_display_text=*/"",
-                          /*show_full_url=*/false, /*query_zps=*/false,
+                          /*show_full_url=*/false,
+                          omnibox_popup::mojom::MatchesUpdate::kDefault,
                           /*keyword_model=*/nullptr, /*is_tab_switch=*/false);
 
   // A call with stale sequence number 0 should be discarded.
@@ -228,7 +335,8 @@ TEST_F(OmniboxPopupHandlerTest, OnInputClearedSequenceGuard) {
   handler_->SetInputState("test", gfx::Range(0, 0),
                           /*user_input_in_progress=*/false, /*full_url=*/"",
                           /*is_focused=*/true, /*permanent_display_text=*/"",
-                          /*show_full_url=*/false, /*query_zps=*/false,
+                          /*show_full_url=*/false,
+                          omnibox_popup::mojom::MatchesUpdate::kDefault,
                           /*keyword_model=*/nullptr, /*is_tab_switch=*/false);
   omnibox_controller->edit_model()->SetUserText(u"some text");
   test_omnibox_view->SetWindowTextAndCaretPos(u"some text", 0, false, false);
@@ -258,7 +366,8 @@ TEST_F(OmniboxPopupHandlerTest, RevertSequenceGuard) {
   handler_->SetInputState("test", gfx::Range(0, 0),
                           /*user_input_in_progress=*/false, /*full_url=*/"",
                           /*is_focused=*/true, /*permanent_display_text=*/"",
-                          /*show_full_url=*/false, /*query_zps=*/false,
+                          /*show_full_url=*/false,
+                          omnibox_popup::mojom::MatchesUpdate::kDefault,
                           /*keyword_model=*/nullptr, /*is_tab_switch=*/false);
   omnibox_controller->edit_model()->SetUserText(u"draft text");
 
@@ -290,7 +399,8 @@ TEST_F(OmniboxPopupHandlerTest, OnPasteSequenceGuard) {
   handler_->SetInputState("test", gfx::Range(0, 0),
                           /*user_input_in_progress=*/false, /*full_url=*/"",
                           /*is_focused=*/true, /*permanent_display_text=*/"",
-                          /*show_full_url=*/false, /*query_zps=*/false,
+                          /*show_full_url=*/false,
+                          omnibox_popup::mojom::MatchesUpdate::kDefault,
                           /*keyword_model=*/nullptr, /*is_tab_switch=*/false);
 
   // A call with stale sequence number 0 should be discarded.
@@ -321,7 +431,8 @@ TEST_F(OmniboxPopupHandlerTest, OnPasteUpdatesEditModel) {
   handler_->SetInputState("test", gfx::Range(0, 0),
                           /*user_input_in_progress=*/false, /*full_url=*/"",
                           /*is_focused=*/true, /*permanent_display_text=*/"",
-                          /*show_full_url=*/false, /*query_zps=*/false,
+                          /*show_full_url=*/false,
+                          omnibox_popup::mojom::MatchesUpdate::kDefault,
                           /*keyword_model=*/nullptr, /*is_tab_switch=*/false);
 
   // OnPaste with valid sequence number 1 should:
@@ -366,7 +477,8 @@ TEST_F(OmniboxPopupHandlerTest, OnCutOrCopySequenceGuard) {
   handler_->SetInputState("https://example.com/", gfx::Range(0, 0),
                           /*user_input_in_progress=*/false, /*full_url=*/"",
                           /*is_focused=*/true, /*permanent_display_text=*/"",
-                          /*show_full_url=*/false, /*query_zps=*/false,
+                          /*show_full_url=*/false,
+                          omnibox_popup::mojom::MatchesUpdate::kDefault,
                           /*keyword_model=*/nullptr, /*is_tab_switch=*/false);
 
   // Stale call (sequence 0) discarded.
@@ -401,7 +513,8 @@ TEST_F(OmniboxPopupHandlerTest, OnCutUpdatesEditModel) {
   handler_->SetInputState("https://example.com/", gfx::Range(0, 0),
                           /*user_input_in_progress=*/false, /*full_url=*/"",
                           /*is_focused=*/true, /*permanent_display_text=*/"",
-                          /*show_full_url=*/false, /*query_zps=*/false,
+                          /*show_full_url=*/false,
+                          omnibox_popup::mojom::MatchesUpdate::kDefault,
                           /*keyword_model=*/nullptr, /*is_tab_switch=*/false);
 
   // OnCut (is_cut = true) cutting "example" (range 8-15) from
@@ -452,7 +565,8 @@ TEST_F(OmniboxPopupHandlerTest, OnCopyUpdatesEditModel) {
   handler_->SetInputState("https://example.com/", gfx::Range(0, 0),
                           /*user_input_in_progress=*/false, /*full_url=*/"",
                           /*is_focused=*/true, /*permanent_display_text=*/"",
-                          /*show_full_url=*/false, /*query_zps=*/false,
+                          /*show_full_url=*/false,
+                          omnibox_popup::mojom::MatchesUpdate::kDefault,
                           /*keyword_model=*/nullptr, /*is_tab_switch=*/false);
 
   // Set focus on edit model to record last_omnibox_focus timestamp.
@@ -512,7 +626,8 @@ TEST_F(OmniboxPopupHandlerTest, OnCopyZeroSuggestUpdatesEditModel) {
   handler_->SetInputState("https://example.com/", gfx::Range(0, 0),
                           /*user_input_in_progress=*/false, /*full_url=*/"",
                           /*is_focused=*/true, /*permanent_display_text=*/"",
-                          /*show_full_url=*/false, /*query_zps=*/true,
+                          /*show_full_url=*/false,
+                          omnibox_popup::mojom::MatchesUpdate::kQueryZps,
                           /*keyword_model=*/nullptr, /*is_tab_switch=*/false);
 
   // Set focus on edit model to record last_omnibox_focus timestamp.
@@ -568,6 +683,188 @@ TEST_F(OmniboxPopupHandlerTest, SetEditHistoryState) {
   handler_->SetEditHistoryState(/*can_undo=*/true, /*can_redo=*/true);
   EXPECT_TRUE(handler_->can_undo());
   EXPECT_TRUE(handler_->can_redo());
+}
+
+TEST_F(OmniboxPopupHandlerTest, SetInputStateUrlEmphasisWithNullController) {
+  omnibox_popup::mojom::OmniboxInputStatePtr captured_state;
+  EXPECT_CALL(page_, SetInputState(testing::_))
+      .WillOnce([&](omnibox_popup::mojom::OmniboxInputStatePtr state) {
+        captured_state = std::move(state);
+      });
+  handler_->SetInputState(
+      "example.com/path", gfx::Range(0, 0),
+      /*user_input_in_progress=*/false, "https://example.com/path",
+      /*is_focused=*/true, "example.com/path",
+      /*show_full_url=*/false, omnibox_popup::mojom::MatchesUpdate::kDefault,
+      /*keyword_model=*/nullptr, /*is_tab_switch=*/false);
+  page_.FlushForTesting();
+  ASSERT_TRUE(captured_state);
+  ASSERT_TRUE(captured_state->url_emphasis);
+  EXPECT_FALSE(captured_state->url_emphasis->text_is_url);
+  EXPECT_EQ(captured_state->url_emphasis->deemphasis_mode,
+            searchbox::mojom::UrlDeemphasisMode::kNothing);
+  ASSERT_TRUE(captured_state->unelided_url_emphasis);
+  EXPECT_FALSE(captured_state->unelided_url_emphasis->text_is_url);
+  EXPECT_EQ(captured_state->unelided_url_emphasis->deemphasis_mode,
+            searchbox::mojom::UrlDeemphasisMode::kNothing);
+}
+
+TEST_F(OmniboxPopupHandlerTest, SetInputStateUrlEmphasisWithController) {
+  auto omnibox_controller = std::make_unique<OmniboxController>(
+      std::make_unique<TestOmniboxClient>());
+  testing::NiceMock<MockOmniboxPopupPage> local_page;
+  auto handler = std::make_unique<OmniboxPopupHandler>(
+      mojo::PendingReceiver<omnibox_popup::mojom::PageHandler>(),
+      local_page.BindAndGetRemote(), web_contents(), omnibox_controller.get());
+
+  auto set_input_state_and_take = [&](const std::string& text,
+                                      const std::string& full_url,
+                                      bool user_input_in_progress) {
+    omnibox_popup::mojom::OmniboxInputStatePtr captured_state;
+    EXPECT_CALL(local_page, SetInputState(testing::_))
+        .WillOnce([&](omnibox_popup::mojom::OmniboxInputStatePtr state) {
+          captured_state = std::move(state);
+        });
+    handler->SetInputState(text, gfx::Range(0, 0), user_input_in_progress,
+                           full_url,
+                           /*is_focused=*/true, text, /*show_full_url=*/false,
+                           omnibox_popup::mojom::MatchesUpdate::kDefault,
+                           /*keyword_model=*/nullptr,
+                           /*is_tab_switch=*/false);
+    local_page.FlushForTesting();
+    return captured_state;
+  };
+
+  {
+    // When user input is in progress, search text is not classified as a URL.
+    omnibox_controller->edit_model()->SetUserText(u"search query");
+    auto state = set_input_state_and_take("search query", "",
+                                          /*user_input_in_progress=*/true);
+    ASSERT_TRUE(state);
+    ASSERT_TRUE(state->url_emphasis);
+    EXPECT_FALSE(state->url_emphasis->text_is_url);
+    EXPECT_EQ(state->url_emphasis->deemphasis_mode,
+              searchbox::mojom::UrlDeemphasisMode::kNothing);
+  }
+
+  {
+    // Elided and unelided web URLs both compute precomputed URL emphasis in
+    // OmniboxInputState.
+    omnibox_controller->edit_model()->SetInputInProgress(false);
+    auto state = set_input_state_and_take("example.com/path?query=1",
+                                          "https://example.com/path?query=1",
+                                          /*user_input_in_progress=*/false);
+    ASSERT_TRUE(state);
+    ASSERT_TRUE(state->url_emphasis);
+    EXPECT_TRUE(state->url_emphasis->text_is_url);
+    EXPECT_EQ(state->url_emphasis->deemphasis_mode,
+              searchbox::mojom::UrlDeemphasisMode::kAllButHost);
+    EXPECT_FALSE(state->url_emphasis->scheme_range);
+    ASSERT_TRUE(state->url_emphasis->host_range);
+    EXPECT_EQ(state->url_emphasis->host_range->start(), 0u);
+    EXPECT_EQ(state->url_emphasis->host_range->end(), 11u);
+
+    ASSERT_TRUE(state->unelided_url_emphasis);
+    EXPECT_TRUE(state->unelided_url_emphasis->text_is_url);
+    EXPECT_EQ(state->unelided_url_emphasis->deemphasis_mode,
+              searchbox::mojom::UrlDeemphasisMode::kAllButHost);
+    ASSERT_TRUE(state->unelided_url_emphasis->scheme_range);
+    EXPECT_EQ(state->unelided_url_emphasis->scheme_range->start(), 0u);
+    EXPECT_EQ(state->unelided_url_emphasis->scheme_range->end(), 5u);
+    ASSERT_TRUE(state->unelided_url_emphasis->host_range);
+    EXPECT_EQ(state->unelided_url_emphasis->host_range->start(), 8u);
+    EXPECT_EQ(state->unelided_url_emphasis->host_range->end(), 19u);
+  }
+
+  {
+    // Data URL deemphasizes all but scheme (ALL_BUT_SCHEME) when not in user
+    // input.
+    omnibox_controller->edit_model()->SetInputInProgress(false);
+    auto state =
+        set_input_state_and_take("data:text/html,hello", "data:text/html,hello",
+                                 /*user_input_in_progress=*/false);
+    ASSERT_TRUE(state);
+    ASSERT_TRUE(state->url_emphasis);
+    EXPECT_TRUE(state->url_emphasis->text_is_url);
+    EXPECT_EQ(state->url_emphasis->deemphasis_mode,
+              searchbox::mojom::UrlDeemphasisMode::kAllButScheme);
+    ASSERT_TRUE(state->url_emphasis->scheme_range);
+    EXPECT_EQ(state->url_emphasis->scheme_range->start(), 0u);
+    EXPECT_EQ(state->url_emphasis->scheme_range->end(), 4u);
+  }
+
+  {
+    // URL with certificate error has scheme strike-through and dangerous
+    // styling.
+    auto* client =
+        static_cast<TestOmniboxClient*>(omnibox_controller->client());
+    client->location_bar_model()->set_url(GURL("https://expired.badssl.com/"));
+    client->location_bar_model()->set_cert_status(
+        net::CERT_STATUS_DATE_INVALID);
+    client->location_bar_model()->set_security_level(security_state::DANGEROUS);
+    omnibox_controller->edit_model()->SetInputInProgress(false);
+
+    auto state = set_input_state_and_take("https://expired.badssl.com",
+                                          "https://expired.badssl.com/",
+                                          /*user_input_in_progress=*/false);
+    ASSERT_TRUE(state);
+    ASSERT_TRUE(state->url_emphasis);
+    EXPECT_TRUE(state->url_emphasis->text_is_url);
+    EXPECT_EQ(state->url_emphasis->deemphasis_mode,
+              searchbox::mojom::UrlDeemphasisMode::kAllButHost);
+    ASSERT_TRUE(state->url_emphasis->scheme_range);
+    EXPECT_EQ(state->url_emphasis->scheme_range->start(), 0u);
+    EXPECT_EQ(state->url_emphasis->scheme_range->end(), 5u);
+    EXPECT_TRUE(state->url_emphasis->scheme_strike_through);
+    EXPECT_TRUE(state->url_emphasis->scheme_dangerous);
+
+    // Match URL emphasis (include_security_style=false) omits cert security
+    // styling even when the current navigation entry has a cert error.
+    auto match_emphasis = SearchboxHandler::ComputeUrlEmphasis(
+        u"https://expired.badssl.com", /*text_is_url=*/true,
+        /*include_security_style=*/false, omnibox_controller->client());
+    ASSERT_TRUE(match_emphasis);
+    EXPECT_TRUE(match_emphasis->text_is_url);
+    EXPECT_EQ(match_emphasis->deemphasis_mode,
+              searchbox::mojom::UrlDeemphasisMode::kAllButHost);
+    EXPECT_FALSE(match_emphasis->scheme_strike_through);
+    EXPECT_FALSE(match_emphasis->scheme_dangerous);
+  }
+}
+
+TEST_F(OmniboxPopupHandlerTest, SetInputStatePopulatesCurrentMatch) {
+  auto omnibox_controller = std::make_unique<OmniboxController>(
+      std::make_unique<TestOmniboxClient>());
+  testing::NiceMock<MockOmniboxPopupPage> local_page;
+  auto handler = std::make_unique<OmniboxPopupHandler>(
+      mojo::PendingReceiver<omnibox_popup::mojom::PageHandler>(),
+      local_page.BindAndGetRemote(), web_contents(), omnibox_controller.get());
+
+  omnibox_popup::mojom::OmniboxInputStatePtr captured_state;
+  EXPECT_CALL(local_page, SetInputState(testing::_))
+      .WillOnce([&](omnibox_popup::mojom::OmniboxInputStatePtr state) {
+        captured_state = std::move(state);
+      });
+
+  omnibox_controller->edit_model()->SetUserText(u"espn.com");
+  handler->SetInputState("espn.com", gfx::Range(0, 0),
+                         /*user_input_in_progress=*/true,
+                         /*full_url=*/"https://google.com/",
+                         /*is_focused=*/true,
+                         /*permanent_display_text=*/"https://google.com/",
+                         /*show_full_url=*/false,
+                         omnibox_popup::mojom::MatchesUpdate::kDefault,
+                         /*keyword_model=*/nullptr, /*is_tab_switch=*/true);
+  local_page.FlushForTesting();
+
+  ASSERT_TRUE(captured_state);
+  ASSERT_TRUE(captured_state->current_match);
+  EXPECT_FALSE(captured_state->current_match->destination_url.is_empty());
+  ASSERT_TRUE(captured_state->current_match->suggest_template);
+  ASSERT_TRUE(captured_state->current_match->suggest_template->primary_text);
+  EXPECT_FALSE(captured_state->current_match->suggest_template->primary_text
+                   ->text.empty());
+  EXPECT_FALSE(captured_state->current_match->icon_path.empty());
 }
 
 }  // namespace

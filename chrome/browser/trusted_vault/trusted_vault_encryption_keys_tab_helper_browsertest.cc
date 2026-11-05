@@ -3,15 +3,18 @@
 // found in the LICENSE file.
 #include "chrome/browser/trusted_vault/trusted_vault_encryption_keys_tab_helper.h"
 
+#include <optional>
 #include <string>
 #include <tuple>
 #include <vector>
 
 #include "base/feature_list.h"
 #include "base/path_service.h"
+#include "base/scoped_observation.h"
 #include "base/strings/stringprintf.h"
 #include "base/test/bind.h"
 #include "base/test/metrics/histogram_tester.h"
+#include "base/test/test_future.h"
 #include "build/build_config.h"
 #include "chrome/browser/preloading/scoped_prewarm_feature_list.h"
 #include "chrome/browser/trusted_vault/trusted_vault_service_factory.h"
@@ -23,7 +26,6 @@
 #include "chrome/test/base/platform_browser_test.h"
 #include "components/metrics/content/subprocess_metrics_provider.h"
 #include "components/signin/public/identity_manager/account_info.h"
-#include "components/sync/base/features.h"
 #include "components/trusted_vault/features.h"
 #include "components/trusted_vault/trusted_vault_client.h"
 #include "components/trusted_vault/trusted_vault_server_constants.h"
@@ -31,7 +33,6 @@
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
-#include "content/public/test/fenced_frame_test_util.h"
 #include "content/public/test/prerender_test_util.h"
 #include "device/fido/public/features.h"
 #include "google_apis/gaia/gaia_id.h"
@@ -315,16 +316,6 @@ class TrustedVaultEncryptionKeysTabHelperBrowserTest
     return prerender_helper_;
   }
 
-  content::test::FencedFrameTestHelper& fenced_frame_test_helper() {
-    return fenced_frame_test_helper_;
-  }
-
-  signin::ConsentLevel GetConsentLevel() const {
-    return syncer::IsReplaceSyncPromosWithSignInPromosEnabled()
-               ? signin::ConsentLevel::kSignin
-               : signin::ConsentLevel::kSync;
-  }
-
   bool HasEncryptionKeysApi(content::RenderFrameHost* rfh) {
     auto* tab_helper =
         TrustedVaultEncryptionKeysTabHelper::FromWebContents(web_contents());
@@ -361,7 +352,6 @@ class TrustedVaultEncryptionKeysTabHelperBrowserTest
 
   base::test::ScopedFeatureList feature_list_;
   net::EmbeddedTestServer https_server_;
-  content::test::FencedFrameTestHelper fenced_frame_test_helper_;
   content::test::PrerenderTestHelper prerender_helper_;
 };
 
@@ -572,6 +562,41 @@ IN_PROC_BROWSER_TEST_F(TrustedVaultEncryptionKeysTabHelperBrowserTest,
 // (crbug.com/40240570).
 #if !defined(MEMORY_SANITIZER) && \
     (BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC))
+void ExecJsSetClientEncryptionKeysForMultipleSecurityDomains(
+    content::RenderFrameHost* render_frame_host,
+    const char* security_domain_name1,
+    const std::vector<uint8_t>& key1,
+    const char* security_domain_name2,
+    const std::vector<uint8_t>& key2,
+    std::string gaia_id = kFakeGaiaId.ToString()) {
+  DCHECK_EQ(key1.size(), 1u);
+  DCHECK_EQ(key2.size(), 1u);
+  const std::string script = base::StringPrintf(
+      R"(
+      if (chrome.setClientEncryptionKeys === undefined) {
+        console.log('%s');
+      } else {
+        let key1 = new ArrayBuffer(1);
+        let view1 = new Uint8Array(key1);
+        view1[0] = %d;
+        let key2 = new ArrayBuffer(1);
+        let view2 = new Uint8Array(key2);
+        view2[0] = %d;
+        chrome.setClientEncryptionKeys(
+            () => {console.log('%s');},
+            "%s",
+            new Map([
+                ['%s', [{epoch: 0, key: key1}]],
+                ['%s', [{epoch: 0, key: key2}]]
+            ]));
+      }
+    )",
+      kConsoleFailureMessage, key1[0], key2[0], kConsoleSuccessMessage, gaia_id,
+      security_domain_name1, security_domain_name2);
+
+  std::ignore = content::ExecJs(render_frame_host, script);
+}
+
 // For testing opportunistic retrieval of passkey secrets we need a special
 // infrastructure setup like the sync server, fake enclave, service fakes, and
 // platform fakes. This setup is being performed by the
@@ -579,19 +604,6 @@ IN_PROC_BROWSER_TEST_F(TrustedVaultEncryptionKeysTabHelperBrowserTest,
 // signed-in user with a Gaia-id: `kSyncGaiaId`.
 class TrustedVaultEncryptionKeysTabHelperBrowserTestWithEnclaveAuthenticator
     : public EnclaveAuthenticatorTestBase {
- public:
-  TrustedVaultEncryptionKeysTabHelperBrowserTestWithEnclaveAuthenticator() {
-    feature_list_.InitWithFeatures(
-        /*enabled_features=*/
-        {// This flag is needed for enabling the logic of storing
-         // opportunistically retrieved passkey secrets.
-         device::kWebAuthnOpportunisticRetrieval,
-         // This flag is needed for enabling the logic of storing
-         // opportunistically retrieved passkey secrets.
-         device::kWebAuthnDoNotAlwaysTerminateStateMachineDuringIdentityChange},
-        /*disabled_features=*/{});
-  }
-
  protected:
   void SetUpCommandLine(base::CommandLine* command_line) override {
     // Override the sign-in URL so that it includes correct port from the test
@@ -615,7 +627,10 @@ class TrustedVaultEncryptionKeysTabHelperBrowserTestWithEnclaveAuthenticator
   }
 
  private:
-  base::test::ScopedFeatureList feature_list_;
+  // This flag is needed for enabling the logic of storing
+  // opportunistically retrieved passkey secrets.
+  base::test::ScopedFeatureList feature_list_{
+      device::kWebAuthnDoNotAlwaysTerminateStateMachineDuringIdentityChange};
 };
 
 IN_PROC_BROWSER_TEST_F(
@@ -691,6 +706,228 @@ IN_PROC_BROWSER_TEST_F(
                   browser()->GetProfile(),
                   trusted_vault::SecurityDomainId::kChromeSync, FakeAccount()),
               IsEmpty());
+}
+
+class TrustedVaultEncryptionKeysTabHelperBrowserTestWithLocalGpmPasskeys
+    : public TrustedVaultEncryptionKeysTabHelperBrowserTestWithEnclaveAuthenticator {
+ public:
+  TrustedVaultEncryptionKeysTabHelperBrowserTestWithLocalGpmPasskeys() {
+    feature_list_.InitWithFeatures(
+        {device::kWebAuthnLocalGpmPasskeys,
+         trusted_vault::kTrustedVaultSharedRecoveryFactorsAndEncryption},
+        {});
+  }
+
+ protected:
+  CoreAccountInfo SyncAccount() {
+    CoreAccountInfo account;
+    account.gaia = kSyncGaiaId;
+    return account;
+  }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+};
+
+IN_PROC_BROWSER_TEST_F(
+    TrustedVaultEncryptionKeysTabHelperBrowserTestWithLocalGpmPasskeys,
+    SetPasskeysKeyInTrustedVaultClientWhenEnclaveNotRegistered) {
+  EnableUVKeySupport();
+  ASSERT_FALSE(enclave_manager().IsLoaded());
+
+  const GURL initial_url =
+      https_server()->GetURL("accounts.google.com", "/title1.html");
+  ASSERT_TRUE(content::NavigateToURL(web_contents(), initial_url));
+  EXPECT_TRUE(HasEncryptionKeysApi(web_contents()->GetPrimaryMainFrame()));
+
+  content::WebContentsConsoleObserver console_observer(web_contents());
+  console_observer.SetPattern(kConsoleSuccessMessage);
+
+  const std::vector<uint8_t> kEncryptionKey = {7};
+  ExecJsSetClientEncryptionKeysForSecurityDomain(
+      web_contents()->GetPrimaryMainFrame(),
+      trusted_vault::kPasskeysSecurityDomainName, kEncryptionKey,
+      kSyncGaiaId.ToString());
+  ASSERT_TRUE(console_observer.Wait());
+  EXPECT_EQ(console_observer.messages().size(), 1u);
+
+  // EnclaveManager should have been loaded to check registration status, and
+  // since it is not registered, keys should be routed to the passkeys
+  // TrustedVaultClient instead of EnclaveManager.
+  EXPECT_TRUE(enclave_manager().IsLoaded());
+  EXPECT_FALSE(enclave_manager().IsRegistered());
+  EXPECT_EQ(enclave_manager().store_keys_count(), 0u);
+
+  EXPECT_THAT(FetchTrustedVaultKeysForProfile(
+                  browser()->GetProfile(),
+                  trusted_vault::SecurityDomainId::kPasskeys, SyncAccount()),
+              ElementsAre(kEncryptionKey));
+  EXPECT_THAT(FetchTrustedVaultKeysForProfile(
+                  browser()->GetProfile(),
+                  trusted_vault::SecurityDomainId::kChromeSync, SyncAccount()),
+              IsEmpty());
+}
+
+IN_PROC_BROWSER_TEST_F(
+    TrustedVaultEncryptionKeysTabHelperBrowserTestWithLocalGpmPasskeys,
+    SetPasskeysKeyInEnclaveManagerWhenEnclaveRegistered) {
+  EnableUVKeySupport();
+  SimulateSuccessfulGpmPinCreation("123456");
+  ASSERT_TRUE(enclave_manager().IsRegistered());
+
+  const GURL initial_url =
+      https_server()->GetURL("accounts.google.com", "/title1.html");
+  ASSERT_TRUE(content::NavigateToURL(web_contents(), initial_url));
+  EXPECT_TRUE(HasEncryptionKeysApi(web_contents()->GetPrimaryMainFrame()));
+
+  content::WebContentsConsoleObserver console_observer(web_contents());
+  console_observer.SetPattern(kConsoleSuccessMessage);
+
+  EnclaveKeysWaiter enclave_keys_waiter(&enclave_manager());
+
+  const std::vector<uint8_t> kEncryptionKey = {7};
+  ExecJsSetClientEncryptionKeysForSecurityDomain(
+      web_contents()->GetPrimaryMainFrame(),
+      trusted_vault::kPasskeysSecurityDomainName, kEncryptionKey,
+      kSyncGaiaId.ToString());
+  ASSERT_TRUE(console_observer.Wait());
+  EXPECT_EQ(console_observer.messages().size(), 1u);
+
+  EXPECT_EQ(enclave_keys_waiter.Wait(),
+            EnclaveManager::OutOfContextRecoveryOutcome::
+                kStoreKeysFromOpportunisticFlowIgnoredRedundant);
+  EXPECT_THAT(FetchTrustedVaultKeysForProfile(
+                  browser()->GetProfile(),
+                  trusted_vault::SecurityDomainId::kPasskeys, SyncAccount()),
+              IsEmpty());
+}
+
+IN_PROC_BROWSER_TEST_F(
+    TrustedVaultEncryptionKeysTabHelperBrowserTestWithLocalGpmPasskeys,
+    SetPasskeysKeyInEnclaveManagerWhenStoreKeysLockHeld) {
+  EnableUVKeySupport();
+  base::test::TestFuture<void> load_future;
+  enclave_manager().Load(load_future.GetCallback());
+  ASSERT_TRUE(load_future.Wait());
+  ASSERT_FALSE(enclave_manager().IsRegistered());
+
+  const GURL initial_url =
+      https_server()->GetURL("accounts.google.com", "/title1.html");
+  ASSERT_TRUE(content::NavigateToURL(web_contents(), initial_url));
+  EXPECT_TRUE(HasEncryptionKeysApi(web_contents()->GetPrimaryMainFrame()));
+
+  content::WebContentsConsoleObserver console_observer(web_contents());
+  console_observer.SetPattern(kConsoleSuccessMessage);
+
+  auto store_keys_lock = enclave_manager().GetStoreKeysLock();
+  ASSERT_TRUE(enclave_manager().has_store_keys_lock());
+
+  const std::vector<uint8_t> kEncryptionKey = {7};
+  ExecJsSetClientEncryptionKeysForSecurityDomain(
+      web_contents()->GetPrimaryMainFrame(),
+      trusted_vault::kPasskeysSecurityDomainName, kEncryptionKey,
+      kSyncGaiaId.ToString());
+  ASSERT_TRUE(console_observer.Wait());
+  EXPECT_EQ(console_observer.messages().size(), 1u);
+
+  EXPECT_EQ(enclave_manager().store_keys_count(), 1u);
+  EXPECT_TRUE(enclave_manager().has_pending_keys());
+  EXPECT_THAT(FetchTrustedVaultKeysForProfile(
+                  browser()->GetProfile(),
+                  trusted_vault::SecurityDomainId::kPasskeys, SyncAccount()),
+              IsEmpty());
+}
+
+IN_PROC_BROWSER_TEST_F(
+    TrustedVaultEncryptionKeysTabHelperBrowserTestWithLocalGpmPasskeys,
+    SetKeysForMultipleSecurityDomains) {
+  EnableUVKeySupport();
+  ASSERT_FALSE(enclave_manager().IsLoaded());
+
+  const GURL initial_url =
+      https_server()->GetURL("accounts.google.com", "/title1.html");
+  ASSERT_TRUE(content::NavigateToURL(web_contents(), initial_url));
+  EXPECT_TRUE(HasEncryptionKeysApi(web_contents()->GetPrimaryMainFrame()));
+
+  content::WebContentsConsoleObserver console_observer(web_contents());
+  console_observer.SetPattern(kConsoleSuccessMessage);
+
+  base::HistogramTester histogram_tester;
+
+  const std::vector<uint8_t> kSyncKey = {7};
+  const std::vector<uint8_t> kPasskeysKey = {8};
+  ExecJsSetClientEncryptionKeysForMultipleSecurityDomains(
+      web_contents()->GetPrimaryMainFrame(),
+      trusted_vault::kSyncSecurityDomainName, kSyncKey,
+      trusted_vault::kPasskeysSecurityDomainName, kPasskeysKey,
+      kSyncGaiaId.ToString());
+  ASSERT_TRUE(console_observer.Wait());
+  EXPECT_EQ(console_observer.messages().size(), 1u);
+
+  metrics::SubprocessMetricsProvider::MergeHistogramDeltasForTesting();
+  histogram_tester.ExpectBucketCount(
+      "TrustedVault.SetEncryptionKeysForSecurityDomain.AllProfiles",
+      1 /*Chrome Sync*/, 1);
+  histogram_tester.ExpectBucketCount(
+      "TrustedVault.SetEncryptionKeysForSecurityDomain.AllProfiles",
+      2 /*Passkeys*/, 1);
+
+  EXPECT_TRUE(enclave_manager().IsLoaded());
+  EXPECT_FALSE(enclave_manager().IsRegistered());
+  EXPECT_EQ(enclave_manager().store_keys_count(), 0u);
+
+  EXPECT_THAT(FetchTrustedVaultKeysForProfile(
+                  browser()->GetProfile(),
+                  trusted_vault::SecurityDomainId::kChromeSync, SyncAccount()),
+              ElementsAre(kSyncKey));
+  EXPECT_THAT(FetchTrustedVaultKeysForProfile(
+                  browser()->GetProfile(),
+                  trusted_vault::SecurityDomainId::kPasskeys, SyncAccount()),
+              ElementsAre(kPasskeysKey));
+}
+
+class TrustedVaultEncryptionKeysTabHelperBrowserTestWithLocalGpmPasskeysAllUsers
+    : public TrustedVaultEncryptionKeysTabHelperBrowserTestWithLocalGpmPasskeys {
+ public:
+  TrustedVaultEncryptionKeysTabHelperBrowserTestWithLocalGpmPasskeysAllUsers() {
+    feature_list_.InitAndEnableFeatureWithParameters(
+        device::kWebAuthnLocalGpmPasskeys, {{"mode", "all_users"}});
+  }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+};
+
+IN_PROC_BROWSER_TEST_F(
+    TrustedVaultEncryptionKeysTabHelperBrowserTestWithLocalGpmPasskeysAllUsers,
+    SetPasskeysKeyInTrustedVaultClientEvenWhenEnclaveRegistered) {
+  EnableUVKeySupport();
+  base::test::TestFuture<bool> setup_future;
+  enclave_manager().SetupWithPIN("123456", setup_future.GetCallback());
+  ASSERT_TRUE(setup_future.Get());
+  ASSERT_TRUE(enclave_manager().IsRegistered());
+
+  const GURL initial_url =
+      https_server()->GetURL("accounts.google.com", "/title1.html");
+  ASSERT_TRUE(content::NavigateToURL(web_contents(), initial_url));
+  EXPECT_TRUE(HasEncryptionKeysApi(web_contents()->GetPrimaryMainFrame()));
+
+  content::WebContentsConsoleObserver console_observer(web_contents());
+  console_observer.SetPattern(kConsoleSuccessMessage);
+
+  const std::vector<uint8_t> kEncryptionKey = {7};
+  ExecJsSetClientEncryptionKeysForSecurityDomain(
+      web_contents()->GetPrimaryMainFrame(),
+      trusted_vault::kPasskeysSecurityDomainName, kEncryptionKey,
+      kSyncGaiaId.ToString());
+  ASSERT_TRUE(console_observer.Wait());
+  EXPECT_EQ(console_observer.messages().size(), 1u);
+
+  EXPECT_EQ(enclave_manager().store_keys_count(), 0u);
+  EXPECT_THAT(FetchTrustedVaultKeysForProfile(
+                  browser()->GetProfile(),
+                  trusted_vault::SecurityDomainId::kPasskeys, SyncAccount()),
+              ElementsAre(kEncryptionKey));
 }
 #endif  // !defined(MEMORY_SANITIZER) && (BUILDFLAG(IS_LINUX) ||
         // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC))
@@ -775,79 +1012,6 @@ IN_PROC_BROWSER_TEST_F(TrustedVaultEncryptionKeysTabHelperBrowserTest,
           browser()->GetProfile(), trusted_vault::SecurityDomainId::kChromeSync,
           FakeAccount());
   EXPECT_THAT(actual_keys, IsEmpty());
-}
-
-// Tests that chrome.setSyncEncryptionKeys() works in a fenced frame.
-IN_PROC_BROWSER_TEST_F(TrustedVaultEncryptionKeysTabHelperBrowserTest,
-                       ShouldBindSyncEncryptionKeysApiInFencedFrame) {
-  const GURL initial_url =
-      https_server()->GetURL("accounts.google.com", "/title1.html");
-  ASSERT_TRUE(content::NavigateToURL(web_contents(), initial_url));
-  // EncryptionKeysApi is created for the primary page as the origin is allowed.
-  ASSERT_TRUE(HasEncryptionKeysApi(web_contents()->GetPrimaryMainFrame()));
-
-  const GURL main_url = https_server()->GetURL("accounts.google.com",
-                                               "/fenced_frames/title1.html");
-  auto* fenced_frame_host = fenced_frame_test_helper().CreateFencedFrame(
-      web_contents()->GetPrimaryMainFrame(), main_url);
-  // EncryptionKeysApi is also created for a fenced frame since it's a main
-  // frame as well.
-  EXPECT_TRUE(HasEncryptionKeysApi(fenced_frame_host));
-
-  content::WebContentsConsoleObserver console_observer(web_contents());
-  console_observer.SetPattern(kConsoleSuccessMessage);
-
-  // Calling setSyncEncryptionKeys() in the fenced frame works and it gets
-  // the callback by setSyncEncryptionKeys().
-  const std::vector<uint8_t> kEncryptionKey = {7};
-  const int kEncryptionKeyVersion = 24;
-  ExecJsSetSyncEncryptionKeys(fenced_frame_host, kEncryptionKey,
-                              kEncryptionKeyVersion);
-  ASSERT_TRUE(console_observer.Wait());
-  EXPECT_EQ(1u, console_observer.messages().size());
-
-  std::vector<std::vector<uint8_t>> actual_keys =
-      FetchTrustedVaultKeysForProfile(
-          browser()->GetProfile(), trusted_vault::SecurityDomainId::kChromeSync,
-          FakeAccount());
-  EXPECT_THAT(actual_keys, ElementsAre(kEncryptionKey));
-  EXPECT_THAT(FetchLastTrustedVaultKeyVersionForProfile(
-                  browser()->GetProfile(),
-                  trusted_vault::SecurityDomainId::kChromeSync, FakeAccount()),
-              Eq(kEncryptionKeyVersion));
-}
-
-// Tests that chrome.setClientEncryptionKeys() works in a fenced frame.
-IN_PROC_BROWSER_TEST_F(TrustedVaultEncryptionKeysTabHelperBrowserTest,
-                       ShouldBindClientEncryptionKeysApiInFencedFrame) {
-  const GURL initial_url =
-      https_server()->GetURL("accounts.google.com", "/title1.html");
-  ASSERT_TRUE(content::NavigateToURL(web_contents(), initial_url));
-  // EncryptionKeysApi is created for the primary page as the origin is allowed.
-  ASSERT_TRUE(HasEncryptionKeysApi(web_contents()->GetPrimaryMainFrame()));
-
-  const GURL main_url = https_server()->GetURL("accounts.google.com",
-                                               "/fenced_frames/title1.html");
-  auto* fenced_frame_host = fenced_frame_test_helper().CreateFencedFrame(
-      web_contents()->GetPrimaryMainFrame(), main_url);
-  // EncryptionKeysApi is also created for a fenced frame since it's a main
-  // frame as well.
-  EXPECT_TRUE(HasEncryptionKeysApi(fenced_frame_host));
-
-  content::WebContentsConsoleObserver console_observer(web_contents());
-  console_observer.SetPattern(kConsoleSuccessMessage);
-
-  // Calling setClientEncryptionKeys() in the fenced frame works.
-  const std::vector<uint8_t> kEncryptionKey = {7};
-  ExecJsSetClientEncryptionKeys(fenced_frame_host, kEncryptionKey);
-  ASSERT_TRUE(console_observer.Wait());
-  EXPECT_EQ(1u, console_observer.messages().size());
-
-  std::vector<std::vector<uint8_t>> actual_keys =
-      FetchTrustedVaultKeysForProfile(
-          browser()->GetProfile(), trusted_vault::SecurityDomainId::kChromeSync,
-          FakeAccount());
-  EXPECT_THAT(actual_keys, ElementsAre(kEncryptionKey));
 }
 
 IN_PROC_BROWSER_TEST_F(TrustedVaultEncryptionKeysTabHelperBrowserTest,
@@ -1040,6 +1204,94 @@ IN_PROC_BROWSER_TEST_F(TrustedVaultEncryptionKeysTabHelperBrowserTest,
               IsEmpty());
 }
 
+// Regression test for crbug.com/581913835: ensure that page-defined setters or
+// Proxy traps on `window.chrome` are not invoked synchronously during
+// `TrustedVaultEncryptionKeysExtension::Install()` (which could otherwise
+// detach the frame and destroy `TrustedVaultEncryptionKeysExtension` while
+// `Install()` is still on the stack).
+IN_PROC_BROWSER_TEST_F(TrustedVaultEncryptionKeysTabHelperBrowserTest,
+                       ShouldNotRunScriptDuringInstall) {
+  const GURL initial_url =
+      https_server()->GetURL("accounts.google.com", "/title1.html");
+  ASSERT_TRUE(content::NavigateToURL(web_contents(), initial_url));
+
+  constexpr std::string_view kScript = R"(
+    (async () => {
+      let setterCalls = 0;
+
+      async function runCase(makeHook) {
+        const target = document.createElement('iframe');
+        target.setAttribute('sandbox', 'allow-same-origin');
+        target.srcdoc =
+            '<iframe srcdoc="<iframe name=below></iframe>"></iframe>';
+        await new Promise(r => {
+          target.onload = r;
+          document.body.appendChild(target);
+        });
+
+        const child = window.open('', 'below').parent;
+        child.name = 'chrome';
+        Object.defineProperty(child, 'loadTimes', {
+          configurable: true,
+          set() {
+            const hook = makeHook(target);
+            Object.defineProperty(target.contentWindow, 'chrome', {
+              configurable: true,
+              value: hook,
+            });
+          },
+        });
+
+        // Trigger lazy main-world initialization of `target`.
+        void target.contentWindow;
+        target.remove();
+      }
+
+      // Case 1: Foreign-realm object with a `setSyncEncryptionKeys` setter.
+      await runCase((target) => {
+        const hook = {};
+        Object.defineProperty(hook, 'setSyncEncryptionKeys', {
+          configurable: true,
+          set() {
+            setterCalls++;
+            target.remove();
+          },
+        });
+        return hook;
+      });
+
+      // Case 2: Same-realm object with a `setSyncEncryptionKeys` setter.
+      await runCase((target) => {
+        const hook = new target.contentWindow.Object();
+        target.contentWindow.Object.defineProperty(
+            hook, 'setSyncEncryptionKeys', {
+              configurable: true,
+              set() {
+                setterCalls++;
+                target.remove();
+              },
+            });
+        return hook;
+      });
+
+      // Case 3: Same-realm Proxy with a `defineProperty` trap.
+      await runCase((target) => {
+        return new target.contentWindow.Proxy({}, {
+          defineProperty() {
+            setterCalls++;
+            target.remove();
+            return true;
+          },
+        });
+      });
+
+      return setterCalls;
+    })()
+  )";
+
+  EXPECT_EQ(0, content::EvalJs(web_contents(), kScript));
+}
+
 IN_PROC_BROWSER_TEST_F(TrustedVaultEncryptionKeysTabHelperBrowserTest,
                        ShouldPropagateUserActionTriggerForMetrics) {
   const GURL initial_url =
@@ -1066,9 +1318,13 @@ IN_PROC_BROWSER_TEST_F(TrustedVaultEncryptionKeysTabHelperBrowserTest,
   ASSERT_TRUE(HasEncryptionKeysApi(web_contents()->GetPrimaryMainFrame()));
 
   testing::NiceMock<MockTrustedVaultClientObserver> mock_observer;
-  TrustedVaultServiceFactory::GetForProfile(browser()->GetProfile())
-      ->GetTrustedVaultClient(trusted_vault::SecurityDomainId::kChromeSync)
-      ->AddObserver(&mock_observer);
+  base::ScopedObservation<trusted_vault::TrustedVaultClient,
+                          trusted_vault::TrustedVaultClient::Observer>
+      observation(&mock_observer);
+  observation.Observe(
+      TrustedVaultServiceFactory::GetForProfile(browser()->GetProfile())
+          ->GetTrustedVaultClient(
+              trusted_vault::SecurityDomainId::kChromeSync));
   EXPECT_CALL(
       mock_observer,
       OnTrustedVaultKeysChanged(std::make_optional(
@@ -1084,6 +1340,13 @@ IN_PROC_BROWSER_TEST_F(TrustedVaultEncryptionKeysTabHelperBrowserTest,
                                 kEncryptionKey);
   ASSERT_TRUE(console_observer.Wait());
   EXPECT_EQ(1u, console_observer.messages().size());
+  // `FetchTrustedVaultKeysForProfile()` also flushes the asynchronous
+  // `OnTrustedVaultKeysChanged()` notification posted from the backend sequence
+  // to the UI thread before `mock_observer` goes out of scope.
+  EXPECT_THAT(FetchTrustedVaultKeysForProfile(
+                  browser()->GetProfile(),
+                  trusted_vault::SecurityDomainId::kChromeSync, FakeAccount()),
+              ElementsAre(kEncryptionKey));
 }
 #endif  // BUILDFLAG(IS_ANDROID)
 
@@ -1098,7 +1361,7 @@ IN_PROC_BROWSER_TEST_F(TrustedVaultEncryptionKeysTabHelperBrowserTest,
 #if !BUILDFLAG(IS_ANDROID)
   signin::MakePrimaryAccountAvailable(
       IdentityManagerFactory::GetForProfile(browser()->GetProfile()),
-      "testusername", GetConsentLevel());
+      "testusername", signin::ConsentLevel::kSignin);
 #endif  // !BUILDFLAG(IS_ANDROID)
 
   const GURL initial_url =
@@ -1150,7 +1413,7 @@ IN_PROC_BROWSER_TEST_F(TrustedVaultEncryptionKeysTabHelperBrowserTest,
 #if !BUILDFLAG(IS_ANDROID)
   signin::MakePrimaryAccountAvailable(
       IdentityManagerFactory::GetForProfile(browser()->GetProfile()),
-      "testusername", GetConsentLevel());
+      "testusername", signin::ConsentLevel::kSignin);
 #endif  // !BUILDFLAG(IS_ANDROID)
 
   base::HistogramTester histogram_tester;

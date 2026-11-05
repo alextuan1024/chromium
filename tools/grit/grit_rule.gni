@@ -77,6 +77,9 @@
 #       List of additional configs to be applied to the generated target.
 #
 #   deps  (optional)
+#       Dependencies for the action that runs grit.
+#   public_deps (optional)
+#       Dependencies for the linkable target that compiles generated code.
 #   testonly (optional)
 #   visibility  (optional)
 #       Normal meaning.
@@ -191,8 +194,8 @@ template("grit") {
     _grit_custom_target = invoker.grit_action_name_override
   }
 
-  action_with_pydeps(_grit_custom_target) {
-    script = "//tools/grit/grit.py"
+  python_action(_grit_custom_target) {
+    python_binary = "//tools/grit"
     inputs = [ invoker.source ]
 
     testonly = defined(invoker.testonly) && invoker.testonly
@@ -391,12 +394,14 @@ template("grit") {
     # action publicly so other scripts can take the outputs from the grit
     # script as inputs.
     public_deps = [ ":$_grit_custom_target" ]
+    if (defined(invoker.public_deps)) {
+      public_deps += invoker.public_deps
+    }
 
     if (defined(invoker.public_configs)) {
       public_configs = invoker.public_configs
     }
 
-    configs += [ "//build/config/compiler:wexit_time_destructors" ]
     if (defined(invoker.configs)) {
       configs += invoker.configs
     }

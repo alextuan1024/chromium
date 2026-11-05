@@ -48,6 +48,7 @@ class ElementInternals;
 class ElementIntersectionObserverData;
 class ExplicitlySetAttrElementsMap;
 class FlatTreeNodeData;
+class FloatClipRect;
 class HTMLElement;
 class InlineStylePropertyMap;
 class InterestInvokerTargetData;
@@ -270,7 +271,8 @@ class CORE_EXPORT NodeRareData final : public GarbageCollected<NodeRareData> {
   const ElementInternals* GetElementInternals() const;
   RareDataUpdate<ElementInternals> EnsureElementInternals(HTMLElement& target);
 
-  RareDataUpdate<DisplayLockContext> EnsureDisplayLockContext(Element* element);
+  RareDataUpdate<DisplayLockContext> SetDisplayLockContext(
+      DisplayLockContext& context);
   DisplayLockContext* GetDisplayLockContext() const;
 
   RareDataUpdate<ContainerQueryData> EnsureContainerQueryData();
@@ -522,6 +524,10 @@ class CORE_EXPORT NodeRareData final : public GarbageCollected<NodeRareData> {
       const gfx::Transform& transform);
   void ClearCanvasTransform();
 
+  const FloatClipRect* GetCanvasClip() const;
+  [[nodiscard]] RareDataUpdate<void> SetCanvasClip(const FloatClipRect& clip);
+  void ClearCanvasClip();
+
   bool WasLastFocusFromUserGesture() const {
     return flags_.was_last_focus_from_user_gesture;
   }
@@ -607,7 +613,8 @@ class CORE_EXPORT NodeRareData final : public GarbageCollected<NodeRareData> {
     kLastSentUnboundedBounds = 51,
     kUnboundedEventTask = 52,
     kCanvasTransform = 53,
-    kNumFields = 54,
+    kCanvasClip = 54,
+    kNumFields = 55,
   };
 
   inline const Member<NodeRareDataField>* ArrayBase() const {

@@ -41,7 +41,7 @@ public class RadioButtonGroupThemePreference extends ContainedRadioButtonGroupPr
     private @ThemeType int mSetting;
     private @MonotonicNonNull RadioButtonWithDescription mSettingRadioButton;
     private @MonotonicNonNull RadioButtonWithDescriptionLayout mGroup;
-    private final ArrayList<RadioButtonWithDescription> mButtons;
+    private final ArrayList<@Nullable RadioButtonWithDescription> mButtons;
 
     // Additional view that darkens website contents.
     private @MonotonicNonNull LinearLayout mCheckboxContainer;
@@ -59,7 +59,10 @@ public class RadioButtonGroupThemePreference extends ContainedRadioButtonGroupPr
     }
 
     /**
-     * @param setting The initial setting for this Preference
+     * Initializes the state of this Preference.
+     *
+     * @param setting The initial theme setting for this Preference. See {@link ThemeType}.
+     * @param darkenWebsitesEnabled Whether the darken websites checkbox is initially checked.
      */
     public void initialize(@ThemeType int setting, boolean darkenWebsitesEnabled) {
         mSetting = setting;

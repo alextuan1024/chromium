@@ -11,6 +11,7 @@ import traceback
 import warnings
 from absl import app
 from absl import flags
+import celab_env  # noqa: F401
 import chrome_ent_test.infra.controller as controller
 
 FLAGS = flags.FLAGS
@@ -107,7 +108,7 @@ def main(argv):
     FLAGS([''] + FLAGS.test_arg)
 
   success = False
-  should_write_logs = FLAGS.error_logs_dir != None
+  should_write_logs = FLAGS.error_logs_dir != None  # noqa: E711
   try:
     if FLAGS.deploy:
       c.DeployNewEnvironment()

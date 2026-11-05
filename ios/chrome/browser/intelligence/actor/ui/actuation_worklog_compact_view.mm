@@ -216,9 +216,13 @@ const CGFloat kCompactBottomBufferHeight = kToolChipHeight + kSpacingMedium;
   BOOL animated = transition.animated;
   BOOL visibilityChanged = (_chipContainer.hidden != !show);
   if (!animated) {
-    [self setChipVisible:show];
+    [UIView performWithoutAnimation:^{
+      // This is a synchronous call.
+      [self setChipVisible:show];
+      [self transitionDidComplete];
+      [self layoutIfNeeded];
+    }];
     [self notifyHeight];
-    [self transitionDidComplete];
     return;
   }
 
@@ -294,6 +298,7 @@ const CGFloat kCompactBottomBufferHeight = kToolChipHeight + kSpacingMedium;
     addViewWithItem:(ActuationWorklogItem*)item
           connector:(ActuationWorklogConnectorVisibility)connector {
   ActuationWorklogItemView* view = [[ActuationWorklogItemView alloc] init];
+  view.delegate = self.itemDelegate;
   view.translatesAutoresizingMaskIntoConstraints = NO;
   [_stepsView addSubview:view];
 

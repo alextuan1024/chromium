@@ -5,7 +5,9 @@
 #include "chrome/browser/ui/views/extensions/extension_install_dialog_view.h"
 
 #include <memory>
+#include <string>
 #include <utility>
+#include <vector>
 
 #include "base/files/file_path.h"
 #include "base/functional/callback_helpers.h"
@@ -18,6 +20,7 @@
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/metrics/histogram_tester.h"
+#include "base/test/run_until.h"
 #include "build/build_config.h"
 #include "chrome/browser/extensions/chrome_test_extension_loader.h"
 #include "chrome/browser/extensions/extension_browsertest.h"
@@ -38,6 +41,7 @@
 #include "chrome/browser/ui/tabs/tab_enums.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/test/test_browser_dialog.h"
+#include "chrome/browser/ui/views/extensions/expandable_container_view.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/common/chrome_paths.h"
 #include "chrome/common/extensions/extension_test_util.h"
@@ -65,20 +69,32 @@
 #include "ui/accessibility/ax_enums.mojom.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/mojom/dialog_button.mojom.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/events/event.h"
 #include "ui/events/event_utils.h"
 #include "ui/gfx/native_ui_types.h"
 #include "ui/views/accessibility/view_accessibility.h"
+#include "ui/views/bubble/bubble_dialog_delegate_view.h"
 #include "ui/views/controls/button/md_text_button.h"
+#include "ui/views/controls/button/radio_button.h"
 #include "ui/views/controls/scroll_view.h"
+#include "ui/views/controls/scrollbar/scroll_bar.h"
+#include "ui/views/layout/layout_provider.h"
 #include "ui/views/metrics.h"
 #include "ui/views/test/button_test_api.h"
+#include "ui/views/test/views_test_utils.h"
 #include "ui/views/test/widget_test.h"
 #include "ui/views/view.h"
+#include "ui/views/view_utils.h"
 #include "ui/views/widget/any_widget_observer.h"
 #include "ui/views/widget/widget.h"
 #include "ui/views/widget/widget_observer.h"
+#include "ui/views/window/dialog_delegate.h"
+#include "ui/views/window/non_client_view.h"
+
+#if BUILDFLAG(IS_OZONE)
+#include "ui/ozone/public/ozone_platform.h"
+#endif
 
 using extensions::InstallPromptData;
 using extensions::PermissionIDSet;
@@ -219,10 +235,18 @@ class ScrollbarTest : public ExtensionInstallDialogViewTestBase {
  protected:
   ScrollbarTest() = default;
 
+  ExtensionInstallDialogView* ShowDialog(
+      std::unique_ptr<InstallPromptData> prompt);
   bool IsScrollbarVisible(std::unique_ptr<InstallPromptData> prompt);
+  std::unique_ptr<InstallPromptData> CreatePromptWithDetails(
+      size_t detail_count);
+  ExpandableContainerView* FindExpandableContainerView(views::View* root);
+  [[nodiscard]] bool ToggleDetailsAndWaitForLayout(
+      ExtensionInstallDialogView* dialog,
+      ExpandableContainerView* expandable);
 };
 
-bool ScrollbarTest::IsScrollbarVisible(
+ExtensionInstallDialogView* ScrollbarTest::ShowDialog(
     std::unique_ptr<InstallPromptData> prompt) {
   auto dialog = std::make_unique<ExtensionInstallDialogView>(
       std::make_unique<ExtensionInstallPromptShowParams>(web_contents()),
@@ -234,9 +258,62 @@ bool ScrollbarTest::IsScrollbarVisible(
       std::move(dialog), web_contents()->GetTopLevelNativeWindow());
   modal->Show();
   content::RunAllTasksUntilIdle();
+  views::test::RunScheduledLayout(modal);
 
-  // Check if the vertical scrollbar is visible.
-  return dialog_ptr->scroll_view()->vertical_scroll_bar()->GetVisible();
+  return dialog_ptr;
+}
+
+bool ScrollbarTest::IsScrollbarVisible(
+    std::unique_ptr<InstallPromptData> prompt) {
+  ExtensionInstallDialogView* dialog = ShowDialog(std::move(prompt));
+  const bool is_visible =
+      dialog->scroll_view()->vertical_scroll_bar()->GetVisible();
+  CloseAndWait(dialog->GetWidget());
+  return is_visible;
+}
+
+std::unique_ptr<InstallPromptData> ScrollbarTest::CreatePromptWithDetails(
+    size_t detail_count) {
+  std::vector<std::u16string> details;
+  details.reserve(detail_count);
+  for (size_t i = 0; i < detail_count; ++i) {
+    details.push_back(u"Detailed permission " + base::NumberToString16(i));
+  }
+  PermissionMessages permissions;
+  permissions.emplace_back(u"Permission with details", PermissionIDSet(),
+                           std::move(details));
+  std::unique_ptr<InstallPromptData> prompt =
+      CreatePrompt(InstallPromptData::PERMISSIONS_PROMPT);
+  prompt->AddPermissionMessages(permissions);
+  return prompt;
+}
+
+ExpandableContainerView* ScrollbarTest::FindExpandableContainerView(
+    views::View* root) {
+  if (auto* expandable = views::AsViewClass<ExpandableContainerView>(root)) {
+    return expandable;
+  }
+  for (views::View* child : root->children()) {
+    if (auto* expandable = FindExpandableContainerView(child)) {
+      return expandable;
+    }
+  }
+  return nullptr;
+}
+
+bool ScrollbarTest::ToggleDetailsAndWaitForLayout(
+    ExtensionInstallDialogView* dialog,
+    ExpandableContainerView* expandable) {
+  views::Widget* widget = dialog->GetWidget();
+  expandable->ToggleDetailLevelForTest();
+  const gfx::Size expected_size = widget->non_client_view()->GetPreferredSize();
+  if (!base::test::RunUntil([&]() {
+        return widget->GetWindowBoundsInScreen().size() == expected_size;
+      })) {
+    return false;
+  }
+  views::test::RunScheduledLayout(widget);
+  return true;
 }
 
 // Tests that a scrollbar _is_ shown for an excessively long extension
@@ -271,6 +348,119 @@ IN_PROC_BROWSER_TEST_F(ScrollbarTest, MAYBE_ScrollbarRegression) {
       CreatePrompt(InstallPromptData::PERMISSIONS_PROMPT);
   prompt->AddPermissionMessages(permissions);
   ASSERT_FALSE(IsScrollbarVisible(std::move(prompt))) << "Scrollbar is visible";
+}
+
+// Tests that permissions taller than the legacy 192dp dialog scroll height but
+// within the 448dp modal dialog maximum scroll height expand the dialog without
+// showing a vertical scrollbar.
+IN_PROC_BROWSER_TEST_F(ScrollbarTest,
+                       PromptWithinModalMaxHeightHasNoScrollbar) {
+  PermissionMessages permissions;
+  for (int i = 0; i < 10; ++i) {
+    permissions.emplace_back(u"Test", PermissionIDSet());
+  }
+  std::unique_ptr<InstallPromptData> prompt =
+      CreatePrompt(InstallPromptData::PERMISSIONS_PROMPT);
+  prompt->AddPermissionMessages(permissions);
+
+  ExtensionInstallDialogView* dialog = ShowDialog(std::move(prompt));
+  const views::LayoutProvider* provider = views::LayoutProvider::Get();
+  const int legacy_max_height = provider->GetDistanceMetric(
+      views::DISTANCE_DIALOG_SCROLLABLE_AREA_MAX_HEIGHT);
+  const int modal_max_height = provider->GetDistanceMetric(
+      views::DISTANCE_MODAL_DIALOG_SCROLLABLE_AREA_MAX_HEIGHT);
+
+  EXPECT_GT(dialog->scroll_view()->height(), legacy_max_height);
+  EXPECT_LE(dialog->scroll_view()->height(), modal_max_height);
+  EXPECT_EQ(dialog->scroll_view()->height(),
+            dialog->scroll_view()->contents()->height());
+  EXPECT_FALSE(dialog->scroll_view()->vertical_scroll_bar()->GetVisible());
+
+  CloseAndWait(dialog->GetWidget());
+}
+
+// Tests that expanding and collapsing permission details dynamically grows and
+// shrinks the outer dialog widget without showing a scrollbar while within the
+// 448dp modal maximum scroll height.
+IN_PROC_BROWSER_TEST_F(ScrollbarTest,
+                       ExpandAndCollapseDetailsResizesDialogWithoutScrollbar) {
+  ExtensionInstallDialogView* dialog = ShowDialog(CreatePromptWithDetails(10));
+  ExpandableContainerView* expandable = FindExpandableContainerView(dialog);
+  ASSERT_TRUE(expandable);
+
+  const views::LayoutProvider* provider = views::LayoutProvider::Get();
+  const int legacy_max_height = provider->GetDistanceMetric(
+      views::DISTANCE_DIALOG_SCROLLABLE_AREA_MAX_HEIGHT);
+  const int modal_max_height = provider->GetDistanceMetric(
+      views::DISTANCE_MODAL_DIALOG_SCROLLABLE_AREA_MAX_HEIGHT);
+
+  const int initial_widget_height =
+      dialog->GetWidget()->GetWindowBoundsInScreen().height();
+  const int initial_scroll_height = dialog->scroll_view()->height();
+  ASSERT_LT(initial_scroll_height, modal_max_height);
+  EXPECT_FALSE(dialog->scroll_view()->vertical_scroll_bar()->GetVisible());
+
+  // Expand "Show all": both the scroll view and outer widget should grow by the
+  // same delta without showing a scrollbar.
+  ASSERT_TRUE(ToggleDetailsAndWaitForLayout(dialog, expandable));
+  const int expanded_widget_height =
+      dialog->GetWidget()->GetWindowBoundsInScreen().height();
+  const int expanded_scroll_height = dialog->scroll_view()->height();
+  EXPECT_GT(expanded_scroll_height, initial_scroll_height);
+  EXPECT_GT(expanded_scroll_height, legacy_max_height);
+  EXPECT_LE(expanded_scroll_height, modal_max_height);
+  EXPECT_EQ(expanded_widget_height - initial_widget_height,
+            expanded_scroll_height - initial_scroll_height);
+  EXPECT_FALSE(dialog->scroll_view()->vertical_scroll_bar()->GetVisible());
+
+  // Collapse "Show less": both should shrink back to their initial heights.
+  ASSERT_TRUE(ToggleDetailsAndWaitForLayout(dialog, expandable));
+  EXPECT_EQ(dialog->GetWidget()->GetWindowBoundsInScreen().height(),
+            initial_widget_height);
+  EXPECT_EQ(dialog->scroll_view()->height(), initial_scroll_height);
+  EXPECT_FALSE(dialog->scroll_view()->vertical_scroll_bar()->GetVisible());
+
+  CloseAndWait(dialog->GetWidget());
+}
+
+// Tests that expanding permission details past the 448dp modal maximum scroll
+// height caps the scroll view and outer widget height and shows a vertical
+// scrollbar, then shrinks back down when collapsed.
+IN_PROC_BROWSER_TEST_F(
+    ScrollbarTest,
+    ExpandDetailsBeyondModalMaxHeightCapsHeightAndShowsScrollbar) {
+  ExtensionInstallDialogView* dialog = ShowDialog(CreatePromptWithDetails(30));
+  ExpandableContainerView* expandable = FindExpandableContainerView(dialog);
+  ASSERT_TRUE(expandable);
+
+  const int modal_max_height = views::LayoutProvider::Get()->GetDistanceMetric(
+      views::DISTANCE_MODAL_DIALOG_SCROLLABLE_AREA_MAX_HEIGHT);
+
+  const int initial_widget_height =
+      dialog->GetWidget()->GetWindowBoundsInScreen().height();
+  const int initial_scroll_height = dialog->scroll_view()->height();
+  ASSERT_LT(initial_scroll_height, modal_max_height);
+  EXPECT_FALSE(dialog->scroll_view()->vertical_scroll_bar()->GetVisible());
+
+  // Expand "Show all" past 448dp: scroll view caps at 448dp with a visible
+  // vertical scrollbar, and outer widget grows only up to the cap.
+  ASSERT_TRUE(ToggleDetailsAndWaitForLayout(dialog, expandable));
+  const int expanded_widget_height =
+      dialog->GetWidget()->GetWindowBoundsInScreen().height();
+  EXPECT_EQ(dialog->scroll_view()->height(), modal_max_height);
+  EXPECT_GT(dialog->scroll_view()->contents()->height(), modal_max_height);
+  EXPECT_EQ(expanded_widget_height - initial_widget_height,
+            modal_max_height - initial_scroll_height);
+  EXPECT_TRUE(dialog->scroll_view()->vertical_scroll_bar()->GetVisible());
+
+  // Collapse "Show less": outer widget shrinks back and scrollbar hides.
+  ASSERT_TRUE(ToggleDetailsAndWaitForLayout(dialog, expandable));
+  EXPECT_EQ(dialog->GetWidget()->GetWindowBoundsInScreen().height(),
+            initial_widget_height);
+  EXPECT_EQ(dialog->scroll_view()->height(), initial_scroll_height);
+  EXPECT_FALSE(dialog->scroll_view()->vertical_scroll_bar()->GetVisible());
+
+  CloseAndWait(dialog->GetWidget());
 }
 
 class ExtensionInstallDialogViewTest
@@ -494,7 +684,7 @@ class ExtensionInstallDialogViewInteractiveBrowserTest
  public:
   ExtensionInstallDialogViewInteractiveBrowserTest() {
     feature_list_.InitAndEnableFeature(
-        extensions_features::kAllowWithholdingExtensionPermissionsOnInstall);
+        extensions_features::kExtensionInstallSiteAccessOptions);
   }
 
   ExtensionInstallDialogViewInteractiveBrowserTest(
@@ -615,7 +805,8 @@ IN_PROC_BROWSER_TEST_F(ExtensionInstallDialogViewInteractiveBrowserTest,
   AddPermissionWithDetails("Example header permission",
                            {u"Detailed permission 1", u"Detailed permission 2",
                             u"Very very very very very very long detailed "
-                            u"permission that wraps to a new line"});
+                            u"permission that wraps to a new line",
+                            u"Detailed permission 4"});
   ShowAndVerifyUi();
 }
 
@@ -797,12 +988,50 @@ IN_PROC_BROWSER_TEST_F(ExtensionInstallDialogRatingsSectionTest,
   TestRatingsSectionA11y(0, 0.0, "Not yet rated by any users.");
 }
 
-class ExtensionInstallDialogWithWithholdPermissionsUI
+class ExtensionInstallDialogSiteAccessTestBase
     : public ExtensionInstallDialogViewTestBase {
+ public:
+  ExtensionInstallDialogSiteAccessTestBase() = default;
+  ExtensionInstallDialogSiteAccessTestBase(
+      const ExtensionInstallDialogSiteAccessTestBase&) = delete;
+  ExtensionInstallDialogSiteAccessTestBase& operator=(
+      const ExtensionInstallDialogSiteAccessTestBase&) = delete;
+
+ protected:
+  ExtensionInstallDialogView* CreateAndShowPrompt(
+      ExtensionInstallPromptTestHelper* helper,
+      bool with_host_permissions = true) {
+    std::unique_ptr<InstallPromptData> prompt =
+        CreatePrompt(InstallPromptData::INSTALL_PROMPT);
+    if (with_host_permissions) {
+      PermissionSet permissions(
+          extensions::APIPermissionSet(), extensions::ManifestPermissionSet(),
+          extensions::URLPatternSet(
+              {URLPattern(extensions::Extension::kValidHostPermissionSchemes,
+                          "http://example.com/*")}),
+          extensions::URLPatternSet());
+      prompt->AddPermissionSet(permissions);
+    }
+    auto dialog = std::make_unique<ExtensionInstallDialogView>(
+        std::make_unique<ExtensionInstallPromptShowParams>(web_contents()),
+        helper->GetCallback(), std::move(prompt));
+    ExtensionInstallDialogView* delegate_view = dialog.get();
+
+    views::Widget* modal_dialog = views::DialogDelegate::CreateDialogWidget(
+        dialog.release(), gfx::NativeWindow(),
+        platform_util::GetViewForWindow(
+            browser()->GetWindow()->GetNativeWindow()));
+    modal_dialog->Show();
+    return delegate_view;
+  }
+};
+
+class ExtensionInstallDialogWithWithholdPermissionsUI
+    : public ExtensionInstallDialogSiteAccessTestBase {
  public:
   ExtensionInstallDialogWithWithholdPermissionsUI() {
     scoped_feature_list_.InitAndEnableFeature(
-        extensions_features::kAllowWithholdingExtensionPermissionsOnInstall);
+        extensions_features::kExtensionInstallSiteAccessOptions);
   }
 
   ExtensionInstallDialogWithWithholdPermissionsUI(
@@ -814,35 +1043,111 @@ class ExtensionInstallDialogWithWithholdPermissionsUI
   base::test::ScopedFeatureList scoped_feature_list_;
 };
 
-// Verifies that some UI is displayed in the extra view when withholding
+// Verifies that site access radio buttons are displayed when withholding
 // permissions on installation.
 IN_PROC_BROWSER_TEST_F(ExtensionInstallDialogWithWithholdPermissionsUI,
                        ShowsWithholdUI) {
   ExtensionInstallPromptTestHelper helper;
-  std::unique_ptr<InstallPromptData> prompt =
-      CreatePrompt(InstallPromptData::INSTALL_PROMPT);
-  // Add a permission to the prompt with example.com as an explicit pattern.
-  PermissionSet permissions(
-      extensions::APIPermissionSet(), extensions::ManifestPermissionSet(),
-      extensions::URLPatternSet(
-          {URLPattern(extensions::Extension::kValidHostPermissionSchemes,
-                      "http://example.com/*")}),
-      extensions::URLPatternSet());
-  prompt->AddPermissionSet(permissions);
-  auto dialog = std::make_unique<ExtensionInstallDialogView>(
-      std::make_unique<ExtensionInstallPromptShowParams>(web_contents()),
-      helper.GetCallback(), std::move(prompt));
-  views::BubbleDialogDelegateView* delegate_view = dialog.get();
+  ExtensionInstallDialogView* delegate_view = CreateAndShowPrompt(&helper);
 
-  views::Widget* modal_dialog = views::DialogDelegate::CreateDialogWidget(
-      dialog.release(), gfx::NativeWindow(),
-      platform_util::GetViewForWindow(
-          browser()->GetWindow()->GetNativeWindow()));
-  modal_dialog->Show();
+  ASSERT_TRUE(delegate_view->on_click_radio_button_for_testing());
+  ASSERT_TRUE(delegate_view->always_all_sites_radio_button_for_testing());
+  EXPECT_TRUE(delegate_view->on_click_radio_button_for_testing()->GetChecked());
+  EXPECT_FALSE(
+      delegate_view->always_all_sites_radio_button_for_testing()->GetChecked());
 
-  const views::View* const extra_view = delegate_view->GetExtraView();
-  EXPECT_TRUE(extra_view);
-  EXPECT_EQ("Checkbox", extra_view->GetClassName());
+  views::View* radio_group =
+      delegate_view->on_click_radio_button_for_testing()->parent();
+  ASSERT_TRUE(radio_group);
+  ui::AXNodeData group_node_data;
+  radio_group->GetViewAccessibility().GetAccessibleNodeData(&group_node_data);
+  EXPECT_EQ(ax::mojom::Role::kRadioGroup, group_node_data.role);
+  EXPECT_EQ(
+      l10n_util::GetStringUTF16(IDS_EXTENSION_PROMPT_ALLOW_SITE_ACCESS_TITLE),
+      group_node_data.GetString16Attribute(ax::mojom::StringAttribute::kName));
+
+  CloseAndWait(delegate_view->GetWidget());
+}
+
+// Verifies that accepting the dialog with the "on click" radio button selected
+// withholds permissions.
+IN_PROC_BROWSER_TEST_F(ExtensionInstallDialogWithWithholdPermissionsUI,
+                       AcceptWithOnClickSelectedWithholdsPermissions) {
+  ExtensionInstallDialogView::SetInstallButtonDelayForTesting(0);
+  ExtensionInstallPromptTestHelper helper;
+  ExtensionInstallDialogView* delegate_view = CreateAndShowPrompt(&helper);
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return delegate_view->IsDialogButtonEnabled(ui::mojom::DialogButton::kOk);
+  }));
+
+  ASSERT_TRUE(delegate_view->on_click_radio_button_for_testing());
+  EXPECT_TRUE(delegate_view->on_click_radio_button_for_testing()->GetChecked());
+
+  delegate_view->AcceptDialog();
+  EXPECT_EQ(ExtensionInstallPrompt::Result::ACCEPTED_WITH_WITHHELD_PERMISSIONS,
+            helper.result());
+}
+
+// Verifies that accepting the dialog with the "always on all sites" radio
+// button selected grants permissions.
+IN_PROC_BROWSER_TEST_F(ExtensionInstallDialogWithWithholdPermissionsUI,
+                       AcceptWithAlwaysAllSitesSelectedGrantsPermissions) {
+  ExtensionInstallDialogView::SetInstallButtonDelayForTesting(0);
+  ExtensionInstallPromptTestHelper helper;
+  ExtensionInstallDialogView* delegate_view = CreateAndShowPrompt(&helper);
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return delegate_view->IsDialogButtonEnabled(ui::mojom::DialogButton::kOk);
+  }));
+
+  ASSERT_TRUE(delegate_view->always_all_sites_radio_button_for_testing());
+  delegate_view->always_all_sites_radio_button_for_testing()->SetChecked(true);
+
+  delegate_view->AcceptDialog();
+  EXPECT_EQ(ExtensionInstallPrompt::Result::ACCEPTED, helper.result());
+}
+
+// Verifies that site access radio buttons are not shown when no host
+// permissions are requested, even if the feature is enabled.
+IN_PROC_BROWSER_TEST_F(ExtensionInstallDialogWithWithholdPermissionsUI,
+                       DoesNotShowWhenNoHostPermissions) {
+  ExtensionInstallPromptTestHelper helper;
+  ExtensionInstallDialogView* delegate_view =
+      CreateAndShowPrompt(&helper, /*with_host_permissions=*/false);
+
+  EXPECT_EQ(nullptr, delegate_view->on_click_radio_button_for_testing());
+  EXPECT_EQ(nullptr,
+            delegate_view->always_all_sites_radio_button_for_testing());
+
+  CloseAndWait(delegate_view->GetWidget());
+}
+
+class ExtensionInstallDialogWithoutWithholdPermissionsUI
+    : public ExtensionInstallDialogSiteAccessTestBase {
+ public:
+  ExtensionInstallDialogWithoutWithholdPermissionsUI() {
+    scoped_feature_list_.InitAndDisableFeature(
+        extensions_features::kExtensionInstallSiteAccessOptions);
+  }
+
+  ExtensionInstallDialogWithoutWithholdPermissionsUI(
+      const ExtensionInstallDialogWithoutWithholdPermissionsUI&) = delete;
+  ExtensionInstallDialogWithoutWithholdPermissionsUI& operator=(
+      const ExtensionInstallDialogWithoutWithholdPermissionsUI&) = delete;
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_;
+};
+
+// Verifies that site access radio buttons are not shown when the feature is
+// disabled.
+IN_PROC_BROWSER_TEST_F(ExtensionInstallDialogWithoutWithholdPermissionsUI,
+                       DoesNotShowWithholdUI) {
+  ExtensionInstallPromptTestHelper helper;
+  ExtensionInstallDialogView* delegate_view = CreateAndShowPrompt(&helper);
+
+  EXPECT_EQ(nullptr, delegate_view->on_click_radio_button_for_testing());
+  EXPECT_EQ(nullptr,
+            delegate_view->always_all_sites_radio_button_for_testing());
 
   CloseAndWait(delegate_view->GetWidget());
 }
@@ -999,6 +1304,19 @@ class ExtensionInstallDialogPictureInPictureInputProtectorTest
         second_widget->GetWindowBoundsInScreen());
   }
 
+  // Returns false on platforms (e.g. Wayland) that don't expose the position
+  // of top-level windows. There, the occlusion tracker can't tell whether
+  // separate top-level windows overlap, so it never reports them as occluding.
+  static bool PlatformSupportsGlobalScreenCoordinates() {
+#if BUILDFLAG(IS_OZONE)
+    return ui::OzonePlatform::GetInstance()
+        ->GetPlatformProperties()
+        .supports_global_screen_coordinates;
+#else
+    return true;
+#endif
+  }
+
   void ResizeWidgetAndWaitIfNeeded(
       views::Widget* widget,
       const gfx::Rect& target_bounds,
@@ -1085,9 +1403,12 @@ IN_PROC_BROWSER_TEST_F(ExtensionInstallDialogPictureInPictureInputProtectorTest,
       WidgetsOverlap(delegate_view->GetWidget(), browser_view->GetWidget()));
 
   // Verify that button pressed events are ignored, since the extension install
-  // dialog is occluded.
-  EXPECT_TRUE(delegate_view->ShouldIgnoreButtonPressedEventHandlingForTesting(
-      nullptr, mouse_event));
+  // dialog is occluded. Without global screen coordinates, the dialog and the
+  // picture-in-picture window are separate top-level windows whose relative
+  // position is unknown, so the dialog is not considered occluded.
+  EXPECT_EQ(PlatformSupportsGlobalScreenCoordinates(),
+            delegate_view->ShouldIgnoreButtonPressedEventHandlingForTesting(
+                nullptr, mouse_event));
   CloseAndWait(delegate_view->GetWidget());
 }
 
@@ -1223,7 +1544,7 @@ IN_PROC_BROWSER_TEST_F(WebstoreReinstallerDialogViewTest,
   // tab.
   ui_test_utils::NavigateToURLWithDisposition(
       browser(), GURL("https://www.google.com/"),
-      WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
   base::RunLoop run_loop;
   views::AnyWidgetObserver install_dialog_observer(

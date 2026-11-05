@@ -9,9 +9,9 @@
 #include <vector>
 
 #include "base/component_export.h"
-#include "base/gtest_prod_util.h"
+#include "base/containers/span.h"
 #include "base/memory/aligned_memory.h"
-#include "base/memory/raw_ptr.h"
+#include "base/time/time.h"
 #include "media/webrtc/voice_isolation/voice_isolation_component.h"
 #include "third_party/pffft/src/pffft.h"
 
@@ -37,6 +37,10 @@ class COMPONENT_EXPORT(MEDIA_WEBRTC) StftVoiceIsolation
 
   size_t FramesPerSecond() const override;
 
+  void ClearBuffers() override;
+
+  base::TimeDelta AlgorithmicDelay() const override;
+
  private:
   const size_t fft_size_;
   std::unique_ptr<VoiceIsolationComponent> internal_voice_isolation_;
@@ -56,8 +60,18 @@ class COMPONENT_EXPORT(MEDIA_WEBRTC) WindowedFft {
 
   void ForwardTransform(base::span<const float> input_audio,
                         base::span<float> output_dfts);
-  void InverseTransform(base::span<float> input_dfts,
+  void InverseTransform(base::span<const float> input_dfts,
                         base::span<float> output_audio);
+
+  // Clears the internal state.
+  void Clear();
+
+  size_t DelayFrames() const;
+
+  base::span<const float> fft_window_for_testing() const { return fft_window_; }
+  base::span<const float> inv_fft_window_for_testing() const {
+    return inv_fft_window_;
+  }
 
  private:
   const unsigned int fft_size_;
@@ -69,7 +83,6 @@ class COMPONENT_EXPORT(MEDIA_WEBRTC) WindowedFft {
   std::unique_ptr<PFFFT_Setup, decltype(&pffft_destroy_setup)> fft_state_;
   // pffft requires memory to work to avoid using the stack.
   base::AlignedHeapArray<float> fft_workplace_;
-  FRIEND_TEST_ALL_PREFIXES(VoiceIsolationWindowedFftTest, WindowOlaProperty);
 };
 
 }  // namespace media

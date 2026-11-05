@@ -58,6 +58,7 @@
 #include "ui/base/mojom/ui_base_types.mojom-shared.h"
 #include "ui/base/mojom/window_show_state.mojom.h"
 #include "ui/compositor/layer.h"
+#include "ui/decoration/decoration.h"
 #include "ui/decoration/shadow.h"
 #include "ui/display/display.h"
 #include "ui/display/screen.h"
@@ -73,7 +74,7 @@
 #include "ui/views/widget/tooltip_manager.h"
 #include "ui/views/widget/widget.h"
 #include "ui/views/window/client_view.h"
-#include "ui/wm/core/shadow_controller.h"
+#include "ui/wm/core/decoration_controller.h"
 #include "ui/wm/core/shadow_types.h"
 #include "ui/wm/core/window_animations.h"
 #include "ui/wm/core/window_properties.h"
@@ -467,7 +468,7 @@ ShellSurfaceBase::~ShellSurfaceBase() {
 
   // If the surface was TrustedPinned, we have to unpin first as this might have
   // locked down some system functions.
-  if (current_pinned_state_ == chromeos::WindowPinType::kLockedFullscreen) {
+  if (current_pinned_state_ == chromeos::WindowPinType::kTrustedPinned) {
     pending_pinned_state_ = chromeos::WindowPinType::kNone;
     UpdatePinned();
   }
@@ -802,7 +803,7 @@ void ShellSurfaceBase::SetInitialWorkspace(const char* initial_workspace) {
 }
 
 void ShellSurfaceBase::Pin(bool trusted) {
-  pending_pinned_state_ = trusted ? chromeos::WindowPinType::kLockedFullscreen
+  pending_pinned_state_ = trusted ? chromeos::WindowPinType::kTrustedPinned
                                   : chromeos::WindowPinType::kPinned;
   UpdatePinned();
 }
@@ -829,7 +830,7 @@ void ShellSurfaceBase::UpdatePinned() {
       ash::WindowState::Get(window)->Restore();
     } else {
       bool trusted_pinned =
-          pending_pinned_state_ == chromeos::WindowPinType::kLockedFullscreen;
+          pending_pinned_state_ == chromeos::WindowPinType::kTrustedPinned;
       ash::window_util::PinWindow(window,
                                   /*trusted=*/trusted_pinned);
     }
@@ -2141,8 +2142,9 @@ void ShellSurfaceBase::UpdateShadow() {
 
   // A window may not have a shadow object if the window was created in
   // maximized/fullscreen state.
-  ui::Shadow* shadow = wm::ShadowController::GetShadowForWindow(window);
-  if (shadow && shadow_elevation != wm::kShadowElevationNone) {
+  ui::Decoration* decoration =
+      wm::DecorationController::GetDecorationForWindow(window);
+  if (decoration && shadow_elevation != wm::kShadowElevationNone) {
     gfx::Rect shadow_bounds = GetShadowBounds();
     gfx::Point origin = GetClientViewBounds().origin();
 
@@ -2167,13 +2169,23 @@ void ShellSurfaceBase::UpdateShadow() {
       }
     }
 
-    shadow->SetContentBounds(shadow_bounds);
+    decoration->SetContentBounds(shadow_bounds);
 
     // Surfaces that can't be activated are usually menus and tooltips. Use a
     // small style shadow for them.
-    if (!CanActivate())
-      shadow->SetElevation(wm::kShadowElevationMenuOrTooltip);
+    if (!CanActivate()) {
+      if (auto* shadow = wm::DecorationController::GetShadowForWindow(window)) {
+        shadow->SetElevation(wm::kShadowElevationMenuOrTooltip);
+      }
+    }
 
+    UpdateShadowRoundedCorners();
+  } else if (wm::DecorationController::GetHighlightBorderForWindow(window)) {
+    if (!window->GetProperty(aura::client::kUseWindowBoundsForShadow)) {
+      decoration->SetContentBounds(shadow_bounds_.has_value()
+                                       ? GetShadowBounds()
+                                       : gfx::Rect(window->bounds().size()));
+    }
     UpdateShadowRoundedCorners();
   }
 
@@ -2206,9 +2218,10 @@ void ShellSurfaceBase::UpdateShadowRoundedCorners() {
   shadow_corners_radii_dp_ = pending_shadow_corners_radii_dp_;
 
   aura::Window* window = widget_->GetNativeWindow();
-  ui::Shadow* shadow = wm::ShadowController::GetShadowForWindow(window);
+  ui::Decoration* decoration =
+      wm::DecorationController::GetDecorationForWindow(window);
 
-  if (!shadow) {
+  if (!decoration) {
     return;
   }
 
@@ -2227,7 +2240,8 @@ void ShellSurfaceBase::UpdateShadowRoundedCorners() {
   }
 
   // TODO(crbug.com/40256581): Support shadow with variable radius corners.
-  shadow->SetRoundedCorners(gfx::RoundedCornersF(shadow_radii.upper_left()));
+  decoration->SetRoundedCorners(
+      gfx::RoundedCornersF(shadow_radii.upper_left()));
 }
 
 void ShellSurfaceBase::UpdateFrameType() {

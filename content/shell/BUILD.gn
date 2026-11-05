@@ -331,6 +331,7 @@ static_library("content_shell_lib") {
     ":shell_controller_mojom",
     "//base",
     "//base:base_static",
+    "//base:i18n",
     "//components/cdm/renderer",
     "//components/custom_handlers",
     "//components/custom_handlers:test_support",
@@ -425,6 +426,7 @@ static_library("content_shell_lib") {
 
   if (is_ios) {
     deps += [
+      "//components/application_locale_storage",
       "//components/permissions",
       "//components/strings:components_strings",
       "//services/tracing/public/cpp",
@@ -493,10 +495,6 @@ static_library("content_shell_lib") {
   if (use_ozone) {
     deps += [ "//ui/ozone" ]
   }
-
-  # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
-  # enable the diagnostic by removing this line.
-  configs += [ "//build/config/compiler:no_exit_time_destructors" ]
 }
 
 grit("content_shell_resources_grit") {
@@ -862,6 +860,7 @@ if (is_apple) {
       }
       if (!use_v8_context_snapshot || include_both_v8_snapshots) {
         sources += [ "$root_out_dir/snapshot_blob.bin" ]
+        public_deps += [ "//v8:run_mksnapshot_default" ]
       }
     }
 

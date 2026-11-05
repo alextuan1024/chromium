@@ -13,6 +13,7 @@
 #import "base/metrics/histogram_functions.h"
 #import "base/metrics/user_metrics.h"
 #import "base/strings/sys_string_conversions.h"
+#import "base/time/time.h"
 #import "components/download/public/background_service/background_download_service.h"
 #import "components/signin/public/identity_manager/identity_manager.h"
 #import "ios/chrome/app/application_delegate/app_state.h"
@@ -34,7 +35,6 @@
 #import "ios/chrome/browser/shared/coordinator/scene/scene_delegate.h"
 #import "ios/chrome/browser/shared/coordinator/scene/scene_state.h"
 #import "ios/chrome/browser/shared/model/browser/browser.h"
-#import "ios/chrome/browser/shared/model/browser/browser_provider.h"
 #import "ios/chrome/browser/shared/model/browser/browser_provider_interface.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
@@ -98,7 +98,7 @@ constexpr base::TimeDelta kMainIntentCheckDelay = base::Seconds(1);
       [UNUserNotificationCenter currentNotificationCenter];
   center.delegate = _pushNotificationDelegate;
 
-  _appState.startupInformation.didFinishLaunchingTime = base::TimeTicks::Now();
+  _appState.startupInformation.didFinishLaunchingTime = base::LiveTicks::Now();
   NSUserDefaults* defaults = [NSUserDefaults standardUserDefaults];
   [defaults
       setInteger:[defaults integerForKey:
@@ -191,6 +191,8 @@ constexpr base::TimeDelta kMainIntentCheckDelay = base::Seconds(1);
     didReceiveRemoteNotification:(NSDictionary*)userInfo
           fetchCompletionHandler:
               (void (^)(UIBackgroundFetchResult result))completionHandler {
+  [_appState.startupInformation
+      maybeSetLaunchReason:IOSLaunchReason::kBackgroundSilentNotification];
   // This method is invoked by iOS to process an incoming remote push
   // notification for the application and fetch any additional data.
   //
@@ -240,6 +242,8 @@ constexpr base::TimeDelta kMainIntentCheckDelay = base::Seconds(1);
 - (void)application:(UIApplication*)application
     handleEventsForBackgroundURLSession:(NSString*)identifier
                       completionHandler:(void (^)())completionHandler {
+  [_appState.startupInformation
+      maybeSetLaunchReason:IOSLaunchReason::kBackgroundURLSession];
   if (![identifier
           hasPrefix:base::SysUTF8ToNSString(
                         download::kBackgroundDownloadIdentifierPrefix)]) {
@@ -248,11 +252,11 @@ constexpr base::TimeDelta kMainIntentCheckDelay = base::Seconds(1);
   }
   // TODO(crbug.com/325613461) Remove this Browser dependency, ideally by
   // refactoring into a dedicated agent.
-  Browser* browser = _mainController.browserProviderInterfaceDoNotUse
-                         .mainBrowserProvider.browser;
+  Browser* browser =
+      _mainController.browserProviderInterfaceDoNotUse.mainBrowser;
   if (!browser) {
     // TODO(crbug.com/40240359): We should store the completionHandler and wait
-    // for mainBrowserProvider creation.
+    // for mainBrowser creation.
     completionHandler();
     return;
   }
@@ -375,8 +379,8 @@ constexpr base::TimeDelta kMainIntentCheckDelay = base::Seconds(1);
 - (void)handleAPNSDeviceRegistration:(NSData*)deviceToken {
   // TODO(crbug.com/341906612) Remove use of
   // browserProviderInterfaceDoNotUse.
-  Browser* browser = self.mainController.browserProviderInterfaceDoNotUse
-                         .mainBrowserProvider.browser;
+  Browser* browser =
+      self.mainController.browserProviderInterfaceDoNotUse.mainBrowser;
   if (browser) {
     [self.pushNotificationDelegate
         applicationDidRegisterWithAPNS:deviceToken

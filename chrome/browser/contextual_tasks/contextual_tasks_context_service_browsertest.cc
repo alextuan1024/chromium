@@ -7,6 +7,7 @@
 #include "base/command_line.h"
 #include "base/files/file_util.h"
 #include "base/path_service.h"
+#include "base/strings/stringprintf.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/simple_test_tick_clock.h"
@@ -51,7 +52,7 @@
 #include "content/public/test/browser_test_utils.h"
 #include "net/dns/mock_host_resolver.h"
 #include "testing/gmock/include/gmock/gmock.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 
 namespace contextual_tasks {
 
@@ -80,7 +81,7 @@ class FakeEmbedderMetadataProvider
   void NotifyObservers() {
     observer_list_.Notify(
         &passage_embeddings::EmbedderMetadataObserver::EmbedderMetadataUpdated,
-        passage_embeddings::EmbedderMetadata(1, 3));
+        passage_embeddings::EmbedderMetadata(1, 3, 512));
   }
 
  private:
@@ -515,7 +516,7 @@ IN_PROC_BROWSER_TEST_F(ContextualTasksContextServicePreviousTabSignalTest,
   // Open invalid tab.
   GURL ntp_url("chrome://new-tab-page/");
   ui_test_utils::NavigateToURLWithDisposition(
-      browser(), ntp_url, WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      browser(), ntp_url, ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
 
   tabs::TabInterface* tab_b = TabListInterface::From(browser())->GetActiveTab();
@@ -669,13 +670,14 @@ IN_PROC_BROWSER_TEST_F(ContextualTasksContextServiceTest,
   GURL search_url =
       embedded_test_server()->GetURL("www.google.com", "/search?q=test");
   ui_test_utils::NavigateToURLWithDisposition(
-      browser(), search_url, WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      browser(), search_url,
+      ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
 
   // 3. Open another new tab and navigate to Google Home Page.
   GURL home_url = embedded_test_server()->GetURL("www.google.com", "/");
   ui_test_utils::NavigateToURLWithDisposition(
-      browser(), home_url, WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      browser(), home_url, ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
 
   NotifyEmbedderMetadata();
@@ -718,7 +720,7 @@ IN_PROC_BROWSER_TEST_F(ContextualTasksContextServiceTest,
   GURL url_b = embedded_test_server()->GetURL(
       kValidUrlDomain, "/optimization_guide/hello.html?b");
   ui_test_utils::NavigateToURLWithDisposition(
-      browser(), url_b, WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      browser(), url_b, ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
 
   browser()->tab_strip_model()->ActivateTabAt(0);
@@ -1334,14 +1336,8 @@ IN_PROC_BROWSER_TEST_F(ContextualTasksContextServiceTest,
       ContextDeterminationStatus::kTimedOut, 1);
 }
 
-// TODO(crbug.com/540697591): Flaky on ChromeOS MSan.
-#if BUILDFLAG(IS_CHROMEOS) && defined(MEMORY_SANITIZER)
-#define MAYBE_NotValidForServerUpload DISABLED_NotValidForServerUpload
-#else
-#define MAYBE_NotValidForServerUpload NotValidForServerUpload
-#endif
 IN_PROC_BROWSER_TEST_F(ContextualTasksContextServiceTest,
-                       MAYBE_NotValidForServerUpload) {
+                       NotValidForServerUpload) {
   base::HistogramTester histogram_tester;
 
   NavigateToValidURL();
@@ -1828,7 +1824,7 @@ IN_PROC_BROWSER_TEST_F(ContextualTasksContextServiceTest,
   // Set up an NTP as the active foreground tab.
   GURL ntp_url("chrome://newtab/");
   ui_test_utils::NavigateToURLWithDisposition(
-      browser(), ntp_url, WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      browser(), ntp_url, ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
 
   NotifyEmbedderMetadata();
@@ -1939,7 +1935,7 @@ IN_PROC_BROWSER_TEST_F(ContextualTasksContextServiceTest,
   GURL url2 = embedded_test_server()->GetURL("b.test",
                                              "/optimization_guide/hello.html");
   ui_test_utils::NavigateToURLWithDisposition(
-      browser(), url2, WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      browser(), url2, ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
 
   NotifyEmbedderMetadata();
@@ -2057,19 +2053,19 @@ IN_PROC_BROWSER_TEST_F(ContextualTasksContextServiceTest,
   GURL url2 = embedded_test_server()->GetURL("B.test",
                                              "/optimization_guide/hello.html");
   ui_test_utils::NavigateToURLWithDisposition(
-      browser(), url2, WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      browser(), url2, ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
 
   GURL url3 = embedded_test_server()->GetURL("c.test",
                                              "/optimization_guide/hello.html");
   ui_test_utils::NavigateToURLWithDisposition(
-      browser(), url3, WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      browser(), url3, ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
 
   GURL url4 = embedded_test_server()->GetURL("en.c.test",
                                              "/optimization_guide/hello.html");
   ui_test_utils::NavigateToURLWithDisposition(
-      browser(), url4, WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      browser(), url4, ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
 
   NotifyEmbedderMetadata();
@@ -2172,7 +2168,8 @@ IN_PROC_BROWSER_TEST_F(ContextualTasksContextServiceTest, SuccessWithMlModel) {
 
   // Open a second tab.
   ui_test_utils::NavigateToURLWithDisposition(
-      browser(), valid_url(), WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      browser(), valid_url(),
+      ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
 
   NotifyEmbedderMetadata();
@@ -2228,14 +2225,15 @@ IN_PROC_BROWSER_TEST_F(ContextualTasksContextServiceDeduplicateTest,
 
   // Open a second tab with the same URL.
   ui_test_utils::NavigateToURLWithDisposition(
-      browser(), valid_url(), WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      browser(), valid_url(),
+      ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
 
   // Open a third tab with a different URL.
   GURL url2 = embedded_test_server()->GetURL("b.test",
                                              "/optimization_guide/hello.html");
   ui_test_utils::NavigateToURLWithDisposition(
-      browser(), url2, WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      browser(), url2, ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
 
   NotifyEmbedderMetadata();

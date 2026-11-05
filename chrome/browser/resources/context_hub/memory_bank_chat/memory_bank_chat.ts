@@ -2,6 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+import '//resources/cr_elements/cr_auto_img/cr_auto_img.js';
 import '//resources/cr_elements/cr_button/cr_button.js';
 import '//resources/cr_elements/cr_icon_button/cr_icon_button.js';
 import '//resources/cr_elements/cr_input/cr_input.js';
@@ -14,7 +15,7 @@ import type {PropertyValues} from '//resources/lit/v3_0/lit.rollup.js';
 import {CrLitElement} from '//resources/lit/v3_0/lit.rollup.js';
 
 import {browserProxyFactory, ChatRole} from '../context_hub.mojom-webui.js';
-import type {ChatMessage, MemoryBankEntry} from '../context_hub.mojom-webui.js';
+import type {ChatReference, MemoryBankChatMessage, MemoryBankEntry} from '../context_hub.mojom-webui.js';
 import type {SearchSuggestion} from '../memory_banks/memory_banks_search.js';
 import {computeSuggestions, hasEnumerableValues, matchesMemoryBankEntry, parseSearchQuery} from '../memory_banks/memory_banks_search.js';
 
@@ -141,7 +142,7 @@ export class MemoryBankChatElement extends CrLitElement {
 
   protected accessor attachedChips_: Map<bigint, AttachedContextChip> =
       new Map();
-  protected accessor chatHistory_: ChatMessage[] = [];
+  protected accessor chatHistory_: MemoryBankChatMessage[] = [];
   protected accessor highlightedMentionIndex_: number = 0;
   protected accessor inputValue_: string = '';
   protected accessor isLoading_: boolean = false;
@@ -211,7 +212,8 @@ export class MemoryBankChatElement extends CrLitElement {
     }
   }
 
-  private trimChatHistory_(history: ChatMessage[]): ChatMessage[] {
+  private trimChatHistory_(history: MemoryBankChatMessage[]):
+      MemoryBankChatMessage[] {
     if (this.maxChatHistoryTurns_ > 0 &&
         history.length > this.maxChatHistoryTurns_) {
       return history.slice(-this.maxChatHistoryTurns_);
@@ -219,10 +221,11 @@ export class MemoryBankChatElement extends CrLitElement {
     return history;
   }
 
-  private appendChatTurn_(role: ChatRole, content: string) {
+  private appendChatTurn_(
+      role: ChatRole, content: string, references: ChatReference[] = []) {
     this.chatHistory_ = this.trimChatHistory_([
       ...this.chatHistory_,
-      {role, content},
+      {role, content, references},
     ]);
     this.scrollToBottom_();
   }
@@ -534,11 +537,12 @@ export class MemoryBankChatElement extends CrLitElement {
     try {
       const {response} =
           await browserProxyFactory.getInstance().handler.askGeminiWithContext(
-              command, attachedEntryIds);
+              command, attachedEntryIds, /*save_to_history=*/ true);
 
       const assistantContent =
-          response?.content.trim() || 'No response from Gemini.';
-      this.appendChatTurn_(ChatRole.kAssistant, assistantContent);
+          response.content.trim() || 'No response from Gemini.';
+      this.appendChatTurn_(
+          ChatRole.kAssistant, assistantContent, response.references);
     } catch (e) {
       console.error('Failed to process request with Gemini:', e);
       this.appendChatTurn_(
@@ -560,6 +564,10 @@ export class MemoryBankChatElement extends CrLitElement {
     this.chatHistory_ = [];
     this.attachedChips_ = new Map();
     this.inputValue_ = '';
+  }
+
+  protected onBackClick_() {
+    this.fire('back-click');
   }
 
   private async scrollToBottom_() {

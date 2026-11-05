@@ -265,6 +265,13 @@ class MEDIA_EXPORT AudioParameters {
     bool require_encapsulation = false;
     // Require audio processing offload.
     bool require_audio_offload = false;
+    // Total channels the device exposes in this direction, which may exceed
+    // the preferred layout's `channels()` (e.g. 16 for 7.1.4 on a 16-channel
+    // interface); clamped to `limits::kMaxChannels`, 0 when the backend does
+    // not report it (only macOS output does so far). Backends setting
+    // `total_channels > channels()` must accept `CHANNEL_LAYOUT_DISCRETE` up to
+    // that count.
+    int total_channels = 0;
     bool operator==(const HardwareCapabilities& other) const = default;
   };
 
@@ -328,8 +335,9 @@ class MEDIA_EXPORT AudioParameters {
   void set_format(Format format) { format_ = format; }
   Format format() const { return format_; }
 
-  void SetChannelLayoutConfig(ChannelLayout layout, int channels);
-
+  void set_channel_layout_config(ChannelLayoutConfig config) {
+    channel_layout_config_ = config;
+  }
   const ChannelLayoutConfig& channel_layout_config() const {
     return channel_layout_config_;
   }

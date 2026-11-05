@@ -58,9 +58,9 @@ import org.chromium.chrome.browser.tab.TabArchiveSettings;
 import org.chromium.chrome.browser.tab_group_sync.TabGroupSyncFeatures;
 import org.chromium.chrome.browser.tab_group_sync.TabGroupSyncFeaturesJni;
 import org.chromium.components.browser_ui.settings.ChromeSwitchPreference;
-import org.chromium.components.browser_ui.settings.SettingsCustomTabLauncher;
 import org.chromium.components.browser_ui.settings.TextMessagePreference;
 import org.chromium.components.browser_ui.settings.search.SettingsIndexData;
+import org.chromium.components.browser_ui.util.CustomTabLauncher;
 import org.chromium.components.prefs.PrefService;
 import org.chromium.components.user_prefs.UserPrefs;
 import org.chromium.components.user_prefs.UserPrefsJni;
@@ -84,7 +84,7 @@ public class TabsSettingsUnitTest {
     @Mock private PrefService mPrefServiceMock;
     @Mock private TabGroupSyncFeatures.Natives mTabGroupSyncFeaturesJniMock;
     @Mock private HomeModulesRankingHelper.Natives mHomeModulesRankingHelperJniMock;
-    @Mock private SettingsCustomTabLauncher mCustomTabLauncher;
+    @Mock private CustomTabLauncher mCustomTabLauncher;
     @Mock private SettingsIndexData mSearchIndexDataMock;
     @Mock private AuxiliarySearchHooks mAuxiliarySearchHooksMock;
 
@@ -178,8 +178,7 @@ public class TabsSettingsUnitTest {
 
     @Test
     public void testArchiveSettingsTitleAndSummary() {
-        TabArchiveSettings archiveSettings =
-                new TabArchiveSettings(ChromeSharedPreferences.getInstance());
+        TabArchiveSettings archiveSettings = TabArchiveSettings.getInstance();
         archiveSettings.setArchiveEnabled(true);
         archiveSettings.setArchiveTimeDeltaHours((int) TimeUnit.DAYS.toHours(14));
 
@@ -197,8 +196,7 @@ public class TabsSettingsUnitTest {
             ChromeFeatureList.ANDROID_TAB_DECLUTTER_ARCHIVE_ON_DESKTOP + ":force_disable/true")
     public void testArchiveSettings_ForceDisabledOnDesktop() {
         DeviceInfo.setIsDesktopForTesting(true);
-        TabArchiveSettings archiveSettings =
-                new TabArchiveSettings(ChromeSharedPreferences.getInstance());
+        TabArchiveSettings archiveSettings = TabArchiveSettings.getInstance();
         archiveSettings.setArchiveEnabled(true);
 
         TabsSettings tabsSettings = launchFragment();
@@ -209,12 +207,10 @@ public class TabsSettingsUnitTest {
 
     @Test
     @EnableFeatures(
-            ChromeFeatureList.ANDROID_TAB_DECLUTTER_ARCHIVE_ON_DESKTOP
-                    + ":disable_by_default/true")
+            ChromeFeatureList.ANDROID_TAB_DECLUTTER_ARCHIVE_ON_DESKTOP + ":disable_by_default/true")
     public void testArchiveSettings_DisableByDefaultOnDesktop() {
         DeviceInfo.setIsDesktopForTesting(true);
-        TabArchiveSettings archiveSettings =
-                new TabArchiveSettings(ChromeSharedPreferences.getInstance());
+        TabArchiveSettings archiveSettings = TabArchiveSettings.getInstance();
         archiveSettings.resetSettingsForTesting();
 
         TabsSettings tabsSettings = launchFragment();
@@ -344,7 +340,7 @@ public class TabsSettingsUnitTest {
         assertTrue(shareTitlesAndUrlsWithOsSwitch.isVisible());
         assertTrue(learnMoreTextMessagePreference.isVisible());
 
-        View view = Mockito.mock(View.class);
+        View view = new View(mActivity);
         tabsSettings.onLearnMoreClicked(view);
         verify(mCustomTabLauncher).openUrlInCct(eq(mActivity), eq(TabsSettings.LEARN_MORE_URL));
     }

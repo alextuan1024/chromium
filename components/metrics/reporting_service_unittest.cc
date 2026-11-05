@@ -64,7 +64,7 @@ class TestLogStore : public LogStore {
   std::optional<uint64_t> staged_log_user_id() const override {
     return logs_.front().user_id;
   }
-  const LogMetadata staged_log_metadata() const override {
+  const LogMetadata& staged_log_metadata() const override {
     return logs_.front().log_metadata;
   }
   const std::string& staged_log_signature() const override {
@@ -244,6 +244,34 @@ TEST_F(ReportingServiceTest, ForceDiscard) {
   client_.uploader()->CompleteUpload(500, /*force_discard=*/true);
   // Verify that the log was discarded, and that |service| is not uploading
   // anymore since there are no more logs.
+  EXPECT_FALSE(service.HasUnsentLogs());
+  EXPECT_EQ(task_environment_.GetPendingMainThreadTaskCount(), 0U);
+  EXPECT_FALSE(client_.uploader()->is_uploading());
+}
+
+TEST_F(ReportingServiceTest, BadRequestDoesNotBackoff) {
+  TestReportingService service(&client_, GetLocalState());
+  service.AddLog(TestLog("log1"));
+  service.AddLog(TestLog("log2"));
+
+  service.EnableReporting();
+  task_environment_.FastForwardBy(
+      base::Seconds(MetricsScheduler::GetInitialIntervalSeconds()));
+  EXPECT_TRUE(client_.uploader()->is_uploading());
+
+  // Simulate the server returning a 400 error, which indicates a problem with
+  // the log rather than with the server.
+  client_.uploader()->CompleteUpload(400);
+
+  // Verify that the bad log was discarded, and that the next upload is
+  // scheduled with the normal interval rather than the backoff interval.
+  ASSERT_EQ(task_environment_.GetPendingMainThreadTaskCount(), 1U);
+  ASSERT_EQ(task_environment_.NextMainThreadPendingTaskDelay(),
+            MetricsUploadScheduler::GetUnsentLogsInterval());
+  task_environment_.FastForwardBy(
+      MetricsUploadScheduler::GetUnsentLogsInterval());
+  EXPECT_TRUE(client_.uploader()->is_uploading());
+  client_.uploader()->CompleteUpload(200);
   EXPECT_FALSE(service.HasUnsentLogs());
   EXPECT_EQ(task_environment_.GetPendingMainThreadTaskCount(), 0U);
   EXPECT_FALSE(client_.uploader()->is_uploading());

@@ -30,20 +30,41 @@ import org.chromium.content_public.browser.WebContents;
  *   <li>Created by {@link ReadAloudController} when audio playback is requested on an active tab.
  *   <li>Reuses a single anonymous {@link PlaybackListener.PlaybackData} instance across
  *       high-frequency progress notifications ({@code notifyPlaybackProgressUpdated}) to guarantee
- *       zero heap allocations and prevent GC pauses.
+ *       zero heap allocations and prevent GC pauses. The same applies to the {@link
+ *       PlaybackListener.PhraseTiming} instance reused across word highlight notifications ({@code
+ *       notifyWordHighlightUpdated}).
  *   <li>Delegates native control commands and pointer safety to {@link ReadAloudNativeBridge}.
  * </ul>
  */
 @NullMarked
 class NativePlayback implements Playback {
+    /** A word position in the native timeline: chunk index and character offset in the chunk. */
+    static final class WordPosition {
+        public final int chunkIndex;
+        public final int charOffset;
+
+        WordPosition(int chunkIndex, int charOffset) {
+            this.chunkIndex = chunkIndex;
+            this.charOffset = charOffset;
+        }
+    }
+
     private final ObserverList<PlaybackListener> mListeners = new ObserverList<>();
     private final NativeMetadata mMetadata;
     private final @Nullable WebContents mWebContents;
     private final PlaybackListener.PlaybackData mPlaybackData;
+    private final PlaybackListener.PhraseTiming mPhraseTiming;
     private final ReadAloudNativeBridge mNativeBridge;
-    private @PlaybackListener.State int mState = PlaybackListener.State.BUFFERING;
+    private @PlaybackListener.State int mState = PlaybackListener.State.PLAYBACK_CREATION;
     private long mAbsolutePositionNanos;
     private long mTotalDurationNanos;
+    private int mPhraseAbsoluteStartIndex;
+    private int mPhraseAbsoluteEndIndex;
+    // True once mPhraseAbsoluteStartIndex/EndIndex hold a word from the current text content.
+    private boolean mHasCurrentWordPosition;
+    // False once the native service reports that the current content can't be highlighted
+    // (e.g. an overview, whose text isn't on the page).
+    private boolean mHighlightingSupported = true;
 
     NativePlayback(
             ReadAloudNativeBridge nativeBridge,
@@ -97,6 +118,41 @@ class NativePlayback implements Playback {
                         return mTotalDurationNanos;
                     }
                 };
+        // Reused across word highlight updates to prevent heap allocations and GC pauses.
+        // Listeners must read it synchronously in onPhraseChanged().
+        mPhraseTiming =
+                new PlaybackListener.PhraseTiming() {
+                    @Override
+                    public int absoluteStartIndex() {
+                        return mPhraseAbsoluteStartIndex;
+                    }
+
+                    @Override
+                    public int absoluteEndIndex() {
+                        return mPhraseAbsoluteEndIndex;
+                    }
+
+                    // The native service doesn't report times or paragraph-relative offsets.
+                    @Override
+                    public long startTimeMillis() {
+                        return 0;
+                    }
+
+                    @Override
+                    public long endTimeMillis() {
+                        return 0;
+                    }
+
+                    @Override
+                    public int relativeStartIndex() {
+                        return 0;
+                    }
+
+                    @Override
+                    public int relativeEndIndex() {
+                        return 0;
+                    }
+                };
     }
 
     /**
@@ -116,6 +172,8 @@ class NativePlayback implements Playback {
      */
     void onTextChunked(@Nullable String @Nullable [] chunks) {
         ThreadUtils.assertOnUiThread();
+        // Highlight offsets from previous text content no longer apply.
+        mHasCurrentWordPosition = false;
         if (chunks == null || chunks.length == 0) {
             mMetadata.setFullText("");
             mMetadata.setParagraphs(null);
@@ -181,6 +239,39 @@ class NativePlayback implements Playback {
         notifyPlaybackDataChanged();
     }
 
+    /**
+     * Called by {@link ReadAloudController} when the C++ service dispatches {@code
+     * OnHighlightingSupported} via JNI.
+     */
+    void setHighlightingSupported(boolean supported) {
+        ThreadUtils.assertOnUiThread();
+        mHighlightingSupported = supported;
+    }
+
+    /** Returns false if the native service reported that the content can't be highlighted. */
+    boolean isHighlightingSupported() {
+        ThreadUtils.assertOnUiThread();
+        return mHighlightingSupported;
+    }
+
+    /**
+     * Called by {@link ReadAloudController} when the C++ service dispatches {@code
+     * OnWordHighlightUpdated} via JNI. The offsets are in the same space as the metadata's full
+     * text and paragraphs. Dropped if highlighting isn't supported for the current content.
+     */
+    void notifyWordHighlightUpdated(int absoluteStartIndex, int absoluteEndIndex) {
+        ThreadUtils.assertOnUiThread();
+        if (!mHighlightingSupported) {
+            return;
+        }
+        mPhraseAbsoluteStartIndex = absoluteStartIndex;
+        mPhraseAbsoluteEndIndex = absoluteEndIndex;
+        mHasCurrentWordPosition = true;
+        for (PlaybackListener listener : mListeners) {
+            listener.onPhraseChanged(mPhraseTiming);
+        }
+    }
+
     private void notifyPlaybackDataChanged() {
         for (PlaybackListener listener : mListeners) {
             listener.onPlaybackDataChanged(mPlaybackData);
@@ -196,6 +287,36 @@ class NativePlayback implements Playback {
     void initializeSession() {
         ThreadUtils.assertOnUiThread();
         mNativeBridge.initializeSession(mWebContents);
+    }
+
+    /**
+     * Returns the position of the word currently being read, or null if it is unknown (no word
+     * highlight received yet, or highlighting is unsupported, e.g. for an overview).
+     */
+    @Nullable WordPosition getCurrentWordPosition() {
+        ThreadUtils.assertOnUiThread();
+        if (!mHighlightingSupported || !mHasCurrentWordPosition) {
+            return null;
+        }
+        // Highlight offsets are in full text space, where chunks are joined by a separator. Map
+        // the start of the word back to the chunk that contains it.
+        Playback.PlaybackTextPart[] paragraphs = mMetadata.paragraphs();
+        for (int i = paragraphs.length - 1; i >= 0; --i) {
+            Playback.PlaybackTextPart part = paragraphs[i];
+            if (part.getLength() > 0 && part.getOffset() <= mPhraseAbsoluteStartIndex) {
+                return new WordPosition(i, mPhraseAbsoluteStartIndex - part.getOffset());
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Starts playback from {@code position} instead of the beginning. Safe to call before the text
+     * content is loaded: the native service keeps the request and applies it before synthesizing.
+     */
+    void resumeFromWord(WordPosition position) {
+        ThreadUtils.assertOnUiThread();
+        mNativeBridge.seekToWord(position.chunkIndex, position.charOffset);
     }
 
     @Override
@@ -246,13 +367,16 @@ class NativePlayback implements Playback {
     @Override
     public void seekToParagraph(int paragraphIndex, long offsetNanos) {
         ThreadUtils.assertOnUiThread();
-        // TODO(b/522834235): Implement paragraph seeking in the native service.
+        // No-op: the native service has no paragraph model. paragraphIndex() is always 0 and
+        // positionInParagraphNanos() is the absolute time, so this request can't be honored.
+        // Restoring a position goes through resumeFromWord() instead.
+        // TODO(b/522838540): Rename or remove when the legacy Playback interface is cleaned up.
     }
 
     @Override
     public void seekToWord(int paragraphIndex, int wordIndex) {
         ThreadUtils.assertOnUiThread();
-        // TODO(b/522834235): Implement word seeking in the native service.
+        mNativeBridge.seekToWord(paragraphIndex, wordIndex);
     }
 
     @Override

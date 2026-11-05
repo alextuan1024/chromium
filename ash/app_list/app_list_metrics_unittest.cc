@@ -36,6 +36,7 @@
 #include "ash/shell.h"
 #include "ash/test/ash_test_base.h"
 #include "ash/wm/tablet_mode/tablet_mode_controller.h"
+#include "base/strings/stringprintf.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
 #include "ui/display/display_observer.h"
@@ -109,12 +110,17 @@ int64_t GetPrimaryDisplayId() {
 // Used to test that app launched metrics are properly recorded.
 class AppListMetricsTest : public AshTestBase {
  public:
-  AppListMetricsTest() { set_add_default_shelf_icon(false); }
+  AppListMetricsTest() = default;
 
   AppListMetricsTest(const AppListMetricsTest&) = delete;
   AppListMetricsTest& operator=(const AppListMetricsTest&) = delete;
 
   ~AppListMetricsTest() override = default;
+
+  void SetUpInitParams(AshTestHelper::InitParams& init_params) override {
+    AshTestBase::SetUpInitParams(init_params);
+    init_params.add_default_shelf_icon = false;
+  }
 
   void SetUp() override {
     AshTestBase::SetUp();

@@ -5,11 +5,17 @@
 #include "chrome/browser/ui/tabs/recent_tabs_builder.h"
 
 #include <algorithm>
+#include <iterator>
+#include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include "base/containers/span.h"
+#include "base/feature_list.h"
+#include "base/memory/raw_ptr.h"
 #include "base/notreached.h"
 #include "base/strings/utf_string_conversions.h"
 #include "build/build_config.h"
@@ -18,32 +24,32 @@
 #include "chrome/browser/favicon/favicon_utils.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/sessions/tab_restore_service_factory.h"
-#include "chrome/browser/signin/identity_manager_factory.h"
-#include "chrome/browser/signin/signin_util.h"
 #include "chrome/browser/sync/session_sync_service_factory.h"
-#include "chrome/browser/sync/sync_service_factory.h"
 #include "chrome/browser/ui/accelerator_table.h"
 #include "chrome/browser/ui/actions/chrome_action_id.h"
 #include "chrome/browser/ui/side_panel/side_panel_ui.h"
 #include "chrome/browser/ui/tabs/recent_tabs_sub_menu_model.h"
+#include "chrome/browser/ui/tabs/remote_tabs_menu_util.h"
 #include "chrome/browser/ui/tabs/tab_group_theme.h"
 #include "chrome/browser/ui/toolbar/app_menu_model.h"
 #include "chrome/browser/ui/ui_features.h"
+#include "chrome/browser/ui/views/side_panel/history/history_side_panel_coordinator.h"
 #include "chrome/browser/ui/views/side_panel/history_clusters/history_clusters_side_panel_coordinator.h"
 #include "chrome/browser/ui/views/side_panel/tabs_from_other_devices/tabs_from_other_devices_side_panel_coordinator.h"
 #include "chrome/grit/generated_resources.h"
 #include "components/history/core/common/pref_names.h"
 #include "components/prefs/pref_service.h"
+#include "components/sessions/core/session_types.h"
 #include "components/sessions/core/tab_restore_service.h"
-#include "components/signin/public/identity_manager/identity_manager.h"
+#include "components/split_tabs/split_tab_id.h"
 #include "components/split_tabs/split_tab_visual_data.h"
 #include "components/strings/grit/components_strings.h"
 #include "components/sync/base/features.h"
-#include "components/sync/base/user_selectable_type.h"
 #include "components/sync_device_info/device_info.h"
 #include "components/sync_sessions/open_tabs_ui_delegate.h"
 #include "components/sync_sessions/session_sync_service.h"
 #include "components/sync_sessions/synced_session.h"
+#include "components/tab_groups/tab_group_id.h"
 #include "components/vector_icons/vector_icons.h"
 #include "content/public/browser/navigation_entry.h"
 #include "ui/base/l10n/l10n_util.h"
@@ -55,6 +61,14 @@ namespace {
 
 constexpr int kMaxLocalEntries = 8;
 constexpr size_t kMaxSessionsToShow = 8;
+// Tab caps per device in the "Other device tabs" menu depending on the number
+// of remote devices.
+constexpr size_t kMaxInlineTabsSingleDevice = 10;
+constexpr size_t kMaxInlineTabsFewDevices = 5;
+constexpr size_t kMaxInlineTabsManyDevices = 3;
+
+using TabIterator =
+    std::vector<std::unique_ptr<sessions::tab_restore::Tab>>::const_iterator;
 
 bool SortSessionsByRecency(const sync_sessions::SyncedSession* s1,
                            const sync_sessions::SyncedSession* s2) {
@@ -76,36 +90,27 @@ std::u16string GetGroupItemLabel(const std::u16string& title, size_t num_tabs) {
   return base::ReplaceStringPlaceholders(item_label, title, nullptr);
 }
 
-const gfx::VectorIcon& GetDeviceIcon(
-    syncer::DeviceInfo::FormFactor device_form_factor) {
-  switch (device_form_factor) {
-    case syncer::DeviceInfo::FormFactor::kPhone:
-      return features::IsRoundedIconsEnabled() ? kMobileIcon
-                                               : kSmartphoneOldIcon;
-    case syncer::DeviceInfo::FormFactor::kTablet:
-      return features::IsRoundedIconsEnabled() ? kTabletFilledIcon
-                                               : kTabletOldIcon;
-    default:
-      return features::IsRoundedIconsEnabled() ? kLaptopWindowsIcon
-                                               : kLaptopOldIcon;
-  }
+// Returns the title to show for a tab, falling back to the URL.
+std::u16string GetTabTitle(
+    const sessions::SerializedNavigationEntry& current_navigation) {
+  return current_navigation.title().empty()
+             ? base::UTF8ToUTF16(current_navigation.virtual_url().spec())
+             : current_navigation.title();
 }
 
-RecentTabItem BuildTabItem(const sessions::tab_restore::Tab& tab) {
+RecentTabItem BuildTabItem(const sessions::tab_restore::Tab& tab,
+                           bool show_group_minor_icon = false) {
   const sessions::SerializedNavigationEntry& current_navigation =
       tab.navigations.at(tab.normalized_navigation_index());
-  std::u16string title =
-      current_navigation.title().empty()
-          ? base::UTF8ToUTF16(current_navigation.virtual_url().spec())
-          : current_navigation.title();
 
-  RecentTabItem item(RecentTabItem::Type::kTab, title);
+  RecentTabItem item(RecentTabItem::Type::kTab,
+                     GetTabTitle(current_navigation));
   item.set_session_id(tab.id);
   item.set_url(current_navigation.virtual_url());
   item.set_icon(favicon::GetDefaultFaviconModel());
   item.set_is_local(true);
 
-  if (tab.group_visual_data.has_value()) {
+  if (show_group_minor_icon && tab.group_visual_data.has_value()) {
     const ui::ColorId color_id =
         GetTabGroupContextMenuColorId(tab.group_visual_data.value().color());
     constexpr int kIconSize = 12;
@@ -116,6 +121,152 @@ RecentTabItem BuildTabItem(const sessions::tab_restore::Tab& tab) {
   }
 
   return item;
+}
+
+RecentTabItem BuildForeignTabItem(const std::string& session_tag,
+                                  const sessions::SessionTab& tab) {
+  const sessions::SerializedNavigationEntry& current_navigation =
+      tab.navigations.at(tab.normalized_navigation_index());
+
+  RecentTabItem item(RecentTabItem::Type::kTab,
+                     GetTabTitle(current_navigation));
+  item.set_session_tag(session_tag);
+  item.set_session_id(tab.tab_id);
+  item.set_url(current_navigation.virtual_url());
+  item.set_icon(favicon::GetDefaultFaviconModel());
+  item.set_is_local(false);
+  return item;
+}
+
+RecentTabItem BuildDeviceItem(const sync_sessions::SyncedSession& session) {
+  RecentTabItem device_item(RecentTabItem::Type::kDevice,
+                            base::UTF8ToUTF16(session.GetSessionName()));
+  device_item.set_session_tag(session.GetSessionTag());
+  device_item.set_device_form_factor(session.GetDeviceFormFactor());
+  device_item.set_icon(remote_tabs_menu_util::GetDeviceFormFactorIcon(
+      session.GetDeviceFormFactor()));
+  return device_item;
+}
+
+RecentTabItem BuildSplitItem(const sessions::tab_restore::Split& split) {
+  std::u16string item_label =
+      l10n_util::GetStringUTF16(IDS_RECENTLY_CLOSED_SPLIT);
+
+  const gfx::VectorIcon* icon = nullptr;
+  if (split.visual_data.split_layout() ==
+      split_tabs::SplitTabLayout::kStacked) {
+    icon = &kSplitScene2Icon;
+  } else {
+    icon = &(features::IsRoundedIconsEnabled() ? kSplitSceneIcon
+                                               : kSplitSceneOldIcon);
+  }
+
+  RecentTabItem split_item(RecentTabItem::Type::kSplit, item_label);
+  split_item.set_session_id(split.id);
+  split_item.set_icon(CreateFavicon(*icon));
+
+  RecentTabItem restore_cmd(RecentTabItem::Type::kSplit,
+                            l10n_util::GetStringUTF16(IDS_RESTORE_SPLIT));
+  restore_cmd.set_session_id(split.id);
+  restore_cmd.set_icon(ui::ImageModel::FromVectorIcon(
+      features::IsRoundedIconsEnabled() ? vector_icons::kOpenInNewFlippableIcon
+                                        : vector_icons::kLaunchOldIcon,
+      ui::kColorMenuIcon, gfx::kFaviconSize));
+  split_item.add_child(std::move(restore_cmd));
+  split_item.add_child(RecentTabItem(RecentTabItem::Type::kDivider, u""));
+
+  for (const auto& tab : split.tabs) {
+    split_item.add_child(BuildTabItem(*tab));
+  }
+
+  return split_item;
+}
+
+void BuildAndAddSplit(
+    RecentTabItem& parent,
+    TabIterator& it,
+    TabIterator end,
+    const std::map<split_tabs::SplitTabId,
+                   std::unique_ptr<sessions::tab_restore::Split>>& split_tabs) {
+  const split_tabs::SplitTabId split_id = (*it)->split_id.value();
+  auto split_run_end = std::find_if(it, end, [&](const auto& t) {
+    return !t->split_id.has_value() || t->split_id.value() != split_id;
+  });
+  CHECK(split_tabs.contains(split_id));
+  const sessions::tab_restore::Split& split = *split_tabs.at(split_id);
+  RecentTabItem split_item = BuildSplitItem(split);
+  while (it != split_run_end) {
+    split_item.add_child(BuildTabItem(**it));
+    ++it;
+  }
+  parent.add_child(std::move(split_item));
+}
+
+RecentTabItem BuildStandaloneGroupItem(
+    const sessions::tab_restore::Group& group,
+    std::optional<size_t> tab_count_override = std::nullopt) {
+  const size_t num_tabs = tab_count_override.value_or(group.tabs.size());
+  std::u16string item_label =
+      GetGroupItemLabel(group.visual_data.title(), num_tabs);
+  const ui::ColorId color_id =
+      GetTabGroupContextMenuColorId(group.visual_data.color());
+  ui::ImageModel group_icon = ui::ImageModel::FromVectorIcon(
+      features::IsRoundedIconsEnabled() ? kCircleFilledIcon : kTabGroupOldIcon,
+      color_id, gfx::kFaviconSize);
+
+  RecentTabItem group_item(RecentTabItem::Type::kGroup, item_label);
+  group_item.set_session_id(group.id);
+  group_item.set_icon(group_icon);
+
+  RecentTabItem restore_cmd(RecentTabItem::Type::kCommand,
+                            l10n_util::GetStringUTF16(IDS_RESTORE_GROUP));
+  restore_cmd.set_session_id(group.id);
+  restore_cmd.set_icon(ui::ImageModel::FromVectorIcon(
+      features::IsRoundedIconsEnabled() ? vector_icons::kOpenInNewFlippableIcon
+                                        : vector_icons::kLaunchOldIcon,
+      ui::kColorMenuIcon, gfx::kFaviconSize));
+  group_item.add_child(std::move(restore_cmd));
+  group_item.add_child(RecentTabItem(RecentTabItem::Type::kDivider, u""));
+
+  auto it = group.tabs.begin();
+  const auto end = group.tabs.end();
+  while (it != end) {
+    if ((*it)->split_id.has_value()) {
+      BuildAndAddSplit(group_item, it, end, group.split_tabs);
+    } else {
+      group_item.add_child(BuildTabItem(**it));
+      ++it;
+    }
+  }
+
+  return group_item;
+}
+
+void BuildAndAddWindowGroup(
+    RecentTabItem& parent,
+    TabIterator& it,
+    TabIterator end,
+    const std::map<tab_groups::TabGroupId,
+                   std::unique_ptr<sessions::tab_restore::Group>>& tab_groups,
+    const std::map<split_tabs::SplitTabId,
+                   std::unique_ptr<sessions::tab_restore::Split>>& split_tabs) {
+  const tab_groups::TabGroupId group_id = (*it)->group.value();
+  auto group_run_end = std::find_if(it, end, [&](const auto& t) {
+    return !t->group.has_value() || t->group.value() != group_id;
+  });
+  CHECK(tab_groups.contains(group_id));
+  const sessions::tab_restore::Group& group = *tab_groups.at(group_id);
+  const size_t num_tabs = static_cast<size_t>(std::distance(it, group_run_end));
+  RecentTabItem group_item = BuildStandaloneGroupItem(group, num_tabs);
+  while (it != group_run_end) {
+    if ((*it)->split_id.has_value()) {
+      BuildAndAddSplit(group_item, it, group_run_end, split_tabs);
+    } else {
+      group_item.add_child(BuildTabItem(**it));
+      ++it;
+    }
+  }
+  parent.add_child(std::move(group_item));
 }
 
 RecentTabItem BuildWindowItem(const sessions::tab_restore::Window& window) {
@@ -137,87 +288,33 @@ RecentTabItem BuildWindowItem(const sessions::tab_restore::Window& window) {
   window_item.add_child(std::move(restore_cmd));
   window_item.add_child(RecentTabItem(RecentTabItem::Type::kDivider, u""));
 
-  for (const auto& tab : window.tabs) {
-    window_item.add_child(BuildTabItem(*tab));
+  auto it = window.tabs.begin();
+  const auto end = window.tabs.end();
+  while (it != end) {
+    if ((*it)->group.has_value()) {
+      BuildAndAddWindowGroup(window_item, it, end, window.tab_groups,
+                             window.split_tabs);
+    } else if ((*it)->split_id.has_value()) {
+      BuildAndAddSplit(window_item, it, end, window.split_tabs);
+    } else {
+      window_item.add_child(BuildTabItem(**it));
+      ++it;
+    }
   }
 
   return window_item;
 }
 
-RecentTabItem BuildGroupItem(const sessions::tab_restore::Group& group) {
-  std::u16string item_label =
-      GetGroupItemLabel(group.visual_data.title(), group.tabs.size());
-  const ui::ColorId color_id =
-      GetTabGroupContextMenuColorId(group.visual_data.color());
-  ui::ImageModel group_icon = ui::ImageModel::FromVectorIcon(
-      features::IsRoundedIconsEnabled() ? kCircleFilledIcon : kTabGroupOldIcon,
-      color_id, gfx::kFaviconSize);
-
-  RecentTabItem group_item(RecentTabItem::Type::kGroup, item_label);
-  group_item.set_session_id(group.id);
-  group_item.set_icon(group_icon);
-
-  RecentTabItem restore_cmd(RecentTabItem::Type::kCommand,
-                            l10n_util::GetStringUTF16(IDS_RESTORE_GROUP));
-  restore_cmd.set_session_id(group.id);
-  restore_cmd.set_icon(ui::ImageModel::FromVectorIcon(
-      features::IsRoundedIconsEnabled() ? vector_icons::kOpenInNewFlippableIcon
-                                        : vector_icons::kLaunchOldIcon,
-      ui::kColorMenuIcon, gfx::kFaviconSize));
-  group_item.add_child(std::move(restore_cmd));
-  group_item.add_child(RecentTabItem(RecentTabItem::Type::kDivider, u""));
-
-  for (const auto& tab : group.tabs) {
-    group_item.add_child(BuildTabItem(*tab));
-  }
-
-  return group_item;
-}
-
-RecentTabItem BuildSplitItem(const sessions::tab_restore::Split& split) {
-  std::u16string item_label =
-      l10n_util::GetStringUTF16(IDS_RECENTLY_CLOSED_SPLIT);
-
-  const gfx::VectorIcon* icon = nullptr;
-  if (split.visual_data.split_layout() ==
-      split_tabs::SplitTabLayout::kStacked) {
-    icon = &kSplitScene2Icon;
-  } else {
-    icon = &(features::IsRoundedIconsEnabled() ? kSplitSceneIcon
-                                               : kSplitSceneOldIcon);
-  }
-
-  RecentTabItem split_item(RecentTabItem::Type::kSplit, item_label);
-  split_item.set_session_id(split.id);
-  split_item.set_icon(CreateFavicon(*icon));
-
-  RecentTabItem restore_cmd(RecentTabItem::Type::kCommand,
-                            l10n_util::GetStringUTF16(IDS_RESTORE_SPLIT));
-  restore_cmd.set_session_id(split.id);
-  restore_cmd.set_icon(ui::ImageModel::FromVectorIcon(
-      features::IsRoundedIconsEnabled() ? vector_icons::kOpenInNewFlippableIcon
-                                        : vector_icons::kLaunchOldIcon,
-      ui::kColorMenuIcon, gfx::kFaviconSize));
-  split_item.add_child(std::move(restore_cmd));
-  split_item.add_child(RecentTabItem(RecentTabItem::Type::kDivider, u""));
-
-  for (const auto& tab : split.tabs) {
-    split_item.add_child(BuildTabItem(*tab));
-  }
-
-  return split_item;
-}
-
 RecentTabItem BuildEntryItem(const sessions::tab_restore::Entry& entry) {
   switch (entry.type) {
     case sessions::tab_restore::Type::TAB:
-      return BuildTabItem(
-          static_cast<const sessions::tab_restore::Tab&>(entry));
+      return BuildTabItem(static_cast<const sessions::tab_restore::Tab&>(entry),
+                          /*show_group_minor_icon=*/true);
     case sessions::tab_restore::Type::WINDOW:
       return BuildWindowItem(
           static_cast<const sessions::tab_restore::Window&>(entry));
     case sessions::tab_restore::Type::GROUP:
-      return BuildGroupItem(
+      return BuildStandaloneGroupItem(
           static_cast<const sessions::tab_restore::Group&>(entry));
     case sessions::tab_restore::Type::SPLIT:
       return BuildSplitItem(
@@ -290,7 +387,8 @@ std::vector<RecentTabItem> RecentTabsBuilder::BuildHistoryEntries(
   items.push_back(std::move(history));
 
   if (SidePanelUI::From(browser)) {
-    if (HistoryClustersSidePanelCoordinator::IsSupported(profile)) {
+    if (HistoryClustersSidePanelCoordinator::IsSupported(profile) &&
+        !HistorySidePanelCoordinator::IsSupported()) {
       RecentTabItem clusters(
           RecentTabItem::Type::kCommand,
           l10n_util::GetStringUTF16(IDS_HISTORY_CLUSTERS_SHOW_SIDE_PANEL));
@@ -301,6 +399,17 @@ std::vector<RecentTabItem> RecentTabsBuilder::BuildHistoryEntries(
               : vector_icons::kHistoryChromeRefreshOldIcon,
           ui::kColorMenuIcon, gfx::kFaviconSize));
       items.push_back(std::move(clusters));
+    } else if (HistorySidePanelCoordinator::IsSupported()) {
+      RecentTabItem history_side_panel(
+          RecentTabItem::Type::kCommand,
+          l10n_util::GetStringUTF16(IDS_HISTORY_SHOW_SIDE_PANEL));
+      history_side_panel.set_action_id(kActionSidePanelShowHistory);
+      history_side_panel.set_icon(ui::ImageModel::FromVectorIcon(
+          features::IsRoundedIconsEnabled()
+              ? vector_icons::kHistoryIcon
+              : vector_icons::kHistoryChromeRefreshOldIcon,
+          ui::kColorMenuIcon, gfx::kFaviconSize));
+      items.push_back(std::move(history_side_panel));
     }
 
     if (TabsFromOtherDevicesSidePanelCoordinator::IsSupported(profile)) {
@@ -380,37 +489,13 @@ std::vector<RecentTabItem> RecentTabsBuilder::BuildLocalEntries(
 std::vector<RecentTabItem> RecentTabsBuilder::BuildRemoteEntries(
     Profile* profile) {
   std::vector<RecentTabItem> items;
-  if (!profile) {
+  // With kCrossDeviceTabsInAppMenu, tabs from other devices are listed in a
+  // dedicated app menu entry instead of the History submenu.
+  if (base::FeatureList::IsEnabled(syncer::kCrossDeviceTabsInAppMenu) ||
+      !profile ||
+      !remote_tabs_menu_util::ShouldShowTabsFromOtherDevices(profile)) {
     return items;
   }
-
-#if !BUILDFLAG(IS_CHROMEOS)
-  if (syncer::IsReplaceSyncPromosWithSignInPromosEnabled()) {
-    syncer::SyncService* sync_service =
-        SyncServiceFactory::GetForProfile(profile);
-    if (!sync_service ||
-        !signin_util::IsSyncingUserSelectableTypesAllowedByPolicy(
-            sync_service, {syncer::UserSelectableType::kTabs})) {
-      return items;
-    }
-    signin::IdentityManager* identity_manager =
-        IdentityManagerFactory::GetForProfile(profile);
-    switch (signin_util::GetSignedInState(identity_manager)) {
-      case signin_util::SignedInState::kSignedIn:
-      case signin_util::SignedInState::kSignInPending:
-        if (signin_util::HasExplicitlyDisabledHistorySync(sync_service,
-                                                          identity_manager)) {
-          return items;
-        }
-        break;
-      case signin_util::SignedInState::kSignedOut:
-      case signin_util::SignedInState::kWebOnlySignedIn:
-      case signin_util::SignedInState::kSyncing:
-      case signin_util::SignedInState::kSyncPaused:
-        break;
-    }
-  }
-#endif
 
   items.emplace_back(RecentTabItem::Type::kHeader,
                      l10n_util::GetStringUTF16(IDS_YOUR_DEVICES));
@@ -423,14 +508,16 @@ std::vector<RecentTabItem> RecentTabsBuilder::BuildRemoteEntries(
 
   std::vector<raw_ptr<const sync_sessions::SyncedSession, VectorExperimental>>
       sessions;
-  if (!open_tabs || !open_tabs->GetAllForeignSessions(&sessions)) {
+  if (!open_tabs || !open_tabs->GetAllForeignSessions(
+                        &sessions, sync_sessions::OpenTabsUIDelegate::
+                                       ForeignSessionFilter::kPresentable)) {
     if (open_tabs) {
       RecentTabItem no_tabs(
           RecentTabItem::Type::kCommand,
           l10n_util::GetStringUTF16(IDS_RECENT_TABS_NO_DEVICE_TABS));
       no_tabs.set_enabled(false);
       items.push_back(std::move(no_tabs));
-    } else if (syncer::IsReplaceSyncPromosWithSignInPromosEnabled()) {
+    } else {
       RecentTabItem see_tabs(
           RecentTabItem::Type::kCommand,
           l10n_util::GetStringUTF16(IDS_RECENT_TABS_SEE_DEVICE_TABS));
@@ -440,16 +527,6 @@ std::vector<RecentTabItem> RecentTabsBuilder::BuildRemoteEntries(
                                             : kSyncRefreshOldIcon,
           ui::kColorMenuIcon, gfx::kFaviconSize));
       items.push_back(std::move(see_tabs));
-    } else {
-      RecentTabItem login_tabs(
-          RecentTabItem::Type::kCommand,
-          l10n_util::GetStringUTF16(IDS_RECENT_TABS_LOGIN_FOR_DEVICE_TABS));
-      login_tabs.set_action_id(kActionRecentTabsLoginForDeviceTabs);
-      login_tabs.set_icon(ui::ImageModel::FromVectorIcon(
-          features::IsRoundedIconsEnabled() ? vector_icons::kSyncIcon
-                                            : kSyncRefreshOldIcon,
-          ui::kColorMenuIcon, gfx::kFaviconSize));
-      items.push_back(std::move(login_tabs));
     }
     return items;
   }
@@ -468,34 +545,78 @@ std::vector<RecentTabItem> RecentTabsBuilder::BuildRemoteEntries(
       continue;
     }
 
-    RecentTabItem device_item(RecentTabItem::Type::kDevice,
-                              base::UTF8ToUTF16(session->GetSessionName()));
-    device_item.set_session_tag(session_tag);
-    device_item.set_device_form_factor(session->GetDeviceFormFactor());
-    device_item.set_icon(
-        CreateFavicon(GetDeviceIcon(session->GetDeviceFormFactor())));
-
+    RecentTabItem device_item = BuildDeviceItem(*session);
     for (const auto* tab : tabs_in_session) {
-      const sessions::SerializedNavigationEntry& current_navigation =
-          tab->navigations.at(tab->normalized_navigation_index());
-      std::u16string title =
-          current_navigation.title().empty()
-              ? base::UTF8ToUTF16(current_navigation.virtual_url().spec())
-              : current_navigation.title();
-
-      RecentTabItem foreign_tab(RecentTabItem::Type::kTab, title);
-      foreign_tab.set_session_tag(session_tag);
-      foreign_tab.set_session_id(tab->tab_id);
-      foreign_tab.set_url(current_navigation.virtual_url());
-      foreign_tab.set_icon(favicon::GetDefaultFaviconModel());
-      foreign_tab.set_is_local(false);
-
-      device_item.add_child(std::move(foreign_tab));
+      device_item.add_child(BuildForeignTabItem(session_tag, *tab));
     }
 
     items.push_back(std::move(device_item));
     ++num_sessions_added;
   }
 
+  return items;
+}
+
+// static
+std::vector<RecentTabItem> RecentTabsBuilder::BuildOtherDeviceTabs(
+    Profile* profile) {
+  std::vector<RecentTabItem> items;
+  // Re-check eligibility in case profile state changed after menu creation, or
+  // when called outside the app menu.
+  if (!remote_tabs_menu_util::ShouldShowOtherDeviceTabsMenuItem(profile)) {
+    return items;
+  }
+
+  sync_sessions::SessionSyncService* session_sync_service =
+      SessionSyncServiceFactory::GetForProfile(profile);
+  sync_sessions::OpenTabsUIDelegate* open_tabs =
+      session_sync_service ? session_sync_service->GetOpenTabsUIDelegate()
+                           : nullptr;
+  std::vector<raw_ptr<const sync_sessions::SyncedSession, VectorExperimental>>
+      sessions;
+  if (!open_tabs || !open_tabs->GetAllRawForeignSessions(&sessions)) {
+    return items;
+  }
+
+  // `sessions` is already ordered by recency.
+  // The more devices are listed, the fewer tabs each shows inline.
+  const size_t max_inline_tabs =
+      sessions.size() == 1 ? kMaxInlineTabsSingleDevice
+                           : (sessions.size() <= 3 ? kMaxInlineTabsFewDevices
+                                                   : kMaxInlineTabsManyDevices);
+  for (const sync_sessions::SyncedSession* session : sessions) {
+    const std::string& session_tag = session->GetSessionTag();
+    if (!items.empty()) {
+      items.emplace_back(RecentTabItem::Type::kDivider, u"");
+    }
+    std::vector<const sessions::SessionTab*> tabs;
+    if (!open_tabs->GetForeignSessionTabs(session_tag, &tabs) || tabs.empty()) {
+      items.emplace_back(RecentTabItem::Type::kHeader,
+                         l10n_util::GetStringFUTF16(
+                             IDS_OTHER_DEVICE_TABS_NO_OPEN_TABS,
+                             base::UTF8ToUTF16(session->GetSessionName())));
+      continue;
+    }
+    items.emplace_back(RecentTabItem::Type::kHeader,
+                       base::UTF8ToUTF16(session->GetSessionName()));
+    const auto [inline_tabs, more_tabs] =
+        base::span(tabs).split_at(std::min(tabs.size(), max_inline_tabs));
+    for (const sessions::SessionTab* tab : inline_tabs) {
+      items.push_back(BuildForeignTabItem(session_tag, *tab));
+    }
+    if (more_tabs.empty()) {
+      continue;
+    }
+    RecentTabItem more_tabs_item(
+        RecentTabItem::Type::kMoreTabs,
+        l10n_util::GetPluralStringFUTF16(IDS_OTHER_DEVICE_TABS_SEE_MORE_TABS,
+                                         static_cast<int>(more_tabs.size())));
+    more_tabs_item.set_icon(remote_tabs_menu_util::GetDeviceFormFactorIcon(
+        session->GetDeviceFormFactor()));
+    for (const sessions::SessionTab* tab : more_tabs) {
+      more_tabs_item.add_child(BuildForeignTabItem(session_tag, *tab));
+    }
+    items.push_back(std::move(more_tabs_item));
+  }
   return items;
 }

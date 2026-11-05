@@ -7,6 +7,7 @@ package org.chromium.chrome.browser.toolbar.top;
 import static androidx.test.espresso.assertion.ViewAssertions.matches;
 
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -25,23 +26,21 @@ import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 
 import org.chromium.base.Callback;
-import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.Restriction;
 import org.chromium.chrome.browser.feature_engagement.TrackerFactory;
-import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.chrome.test.transit.ChromeTransitTestRules;
 import org.chromium.chrome.test.transit.FreshCtaTransitTestRule;
 import org.chromium.chrome.test.transit.page.WebPageStation;
 import org.chromium.components.feature_engagement.EventConstants;
 import org.chromium.components.feature_engagement.FeatureConstants;
+import org.chromium.components.feature_engagement.FeatureProperties;
 import org.chromium.components.feature_engagement.Tracker;
 import org.chromium.components.feature_engagement.TriggerDetails;
 import org.chromium.ui.base.DeviceFormFactor;
 
 /** Integration tests for showing IPH bubbles on the toolbar. */
 @RunWith(ChromeJUnit4ClassRunner.class)
-@CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
 public class ToolbarButtonIphTest {
     @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
 
@@ -89,11 +88,15 @@ public class ToolbarButtonIphTest {
     public void testTabSwitcherButtonIph() {
         when(mTracker.shouldTriggerHelpUi(FeatureConstants.TAB_SWITCHER_BUTTON_FEATURE))
                 .thenReturn(true);
+        when(mTracker.shouldTriggerHelpUi(
+                        eq(FeatureConstants.TAB_SWITCHER_BUTTON_FEATURE),
+                        any(FeatureProperties.class)))
+                .thenReturn(true);
         when(mTracker.shouldTriggerHelpUiWithSnooze(FeatureConstants.TAB_SWITCHER_BUTTON_FEATURE))
                 .thenReturn(new TriggerDetails(true, false));
 
         mPage = mPage.loadAboutBlank();
-        mPage.tabSwitcherButtonElement.check(matches(withHighlight(true)));
+        mPage.toolbar.tabSwitcherButtonElement.check(matches(withHighlight(true)));
         mPage.openRegularTabSwitcher();
     }
 }

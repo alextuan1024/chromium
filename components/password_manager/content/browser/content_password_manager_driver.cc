@@ -27,6 +27,7 @@
 #include "components/password_manager/core/browser/password_manager.h"
 #include "components/password_manager/core/browser/password_manager_client.h"
 #include "components/password_manager/core/browser/password_manager_metrics_recorder.h"
+#include "components/password_manager/core/browser/password_string.h"
 #include "components/password_manager/core/browser/password_suggestion_generator.h"
 #include "components/password_manager/core/common/password_manager_features.h"
 #include "components/safe_browsing/buildflags.h"
@@ -56,6 +57,11 @@ void LogSiteIsolationMetricsForSubmittedForm(
       render_frame_host->GetSiteInstance()->RequiresDedicatedProcess());
 }
 
+DriverId GenerateDriverId() {
+  static DriverId::Generator id_generator;
+  return id_generator.GenerateNextId();
+}
+
 }  // namespace
 
 ContentPasswordManagerDriver::ContentPasswordManagerDriver(
@@ -69,8 +75,7 @@ ContentPasswordManagerDriver::ContentPasswordManagerDriver(
           autofill::ContentAutofillClient::FromWebContents(
               content::WebContents::FromRenderFrameHost(render_frame_host)),
           client) {
-  static DriverId::Generator id_generator;
-  id_ = id_generator.GenerateNextId();
+  id_ = GenerateDriverId();
 
   render_frame_host_->GetRemoteAssociatedInterfaces()->GetInterface(
       &password_autofill_agent_);
@@ -119,6 +124,20 @@ void ContentPasswordManagerDriver::DidNavigate() {
   if (!IsRenderFrameHostSupported()) {
     password_manager_receiver_.reset();
   }
+}
+
+void ContentPasswordManagerDriver::ResetForNewDocument() {
+  // Objects created for the previous document (most importantly
+  // `PasswordFormManager`s in the `PasswordManager`'s form cache) identify
+  // this driver by its weak pointers and its ID. Invalidate both, so they
+  // treat this driver as a different one, as if a new RenderFrameHost, and
+  // hence a new driver, had been created for the new document. Otherwise, e.g.
+  // a form manager with credentials fetched for the previous document's origin
+  // could be matched with a form of the new document (see crbug.com/561039723).
+  weak_factory_.InvalidateWeakPtrs();
+  id_ = GenerateDriverId();
+  password_generation_helper_.DidNavigateFrame();
+  password_autofill_manager_.DidNavigateFrame();
 }
 
 bool ContentPasswordManagerDriver::HasValidURL(bool may_kill_renderer) {
@@ -220,17 +239,18 @@ void ContentPasswordManagerDriver::FormEligibleForGenerationFound(
 }
 
 void ContentPasswordManagerDriver::GeneratedPasswordAccepted(
-    const std::u16string& password) {
+    const PasswordString& password) {
   // Same check as in PasswordGenerationAgent::GeneratedPasswordAccepted. The
   // generated password can't be too short.
   CHECK_LE(4u, password.size());
-  GetPasswordGenerationAgent()->GeneratedPasswordAccepted(password);
+  // Mojo boundary: serialize the password as plaintext for the renderer.
+  GetPasswordGenerationAgent()->GeneratedPasswordAccepted(password.value());
 }
 
 void ContentPasswordManagerDriver::GeneratedPasswordAccepted(
     const autofill::FormData& raw_form,
     autofill::FieldRendererId generation_element_id,
-    const std::u16string& password) {
+    const PasswordString& password) {
   // In case we can't obtain a valid URL or a frame isn't allowed to perform an
   // operation with generated URL, don't forward anything to password manager.
   // TODO(crbug.com/40191770): Test that PasswordManager doesn't receive url
@@ -281,14 +301,16 @@ void ContentPasswordManagerDriver::FillChangePasswordForm(
     autofill::FieldRendererId password_element_id,
     autofill::FieldRendererId new_password_element_id,
     autofill::FieldRendererId confirm_password_element_id,
-    const std::u16string& old_password,
-    const std::u16string& new_password,
+    const PasswordString& old_password,
+    const PasswordString& new_password,
     base::OnceCallback<void(const std::optional<autofill::FormData>&)>
         form_data_callback) {
   if (const auto& agent = GetPasswordAutofillAgent()) {
+    // Mojo boundary: send the old and new passwords as plaintext to the
+    // renderer so it can fill the form.
     agent->FillChangePasswordForm(
         password_element_id, new_password_element_id,
-        confirm_password_element_id, old_password, new_password,
+        confirm_password_element_id, old_password.value(), new_password.value(),
         base::BindOnce(
             &ContentPasswordManagerDriver::OnChangePasswordFormFilled,
             weak_factory_.GetWeakPtr(), std::move(form_data_callback)));
@@ -355,8 +377,9 @@ void ContentPasswordManagerDriver::PreviewSuggestionById(
 }
 
 void ContentPasswordManagerDriver::PreviewGenerationSuggestion(
-    const std::u16string& password) {
-  GetAutofillAgent()->PreviewPasswordGenerationSuggestion(password);
+    const PasswordString& password) {
+  // Mojo boundary: serialize the password as plaintext for the renderer.
+  GetAutofillAgent()->PreviewPasswordGenerationSuggestion(password.value());
 }
 
 void ContentPasswordManagerDriver::ClearPreviewedForm() {
@@ -648,6 +671,13 @@ void ContentPasswordManagerDriver::UserModifiedNonPasswordField(
     bool autocomplete_attribute_has_username,
     bool is_likely_otp) {
   if (!CheckFrameActiveAndNotPrerendering(render_frame_host_)) {
+    return;
+  }
+  // Frames that can't access password data for their URL's origin (e.g.
+  // sandboxed iframes, whose URL refers to the precursor origin) must not
+  // record username candidates. Legitimate renderers send this message from
+  // such frames too, so don't kill the renderer.
+  if (!HasValidURL(/*may_kill_renderer=*/false)) {
     return;
   }
   GetPasswordManager()->OnUserModifiedNonPasswordField(

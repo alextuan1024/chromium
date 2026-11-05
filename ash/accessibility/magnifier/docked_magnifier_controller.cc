@@ -9,6 +9,7 @@
 
 #include "ash/accessibility/accessibility_controller.h"
 #include "ash/accessibility/magnifier/magnifier_utils.h"
+#include "ash/constants/ash_constants.h"
 #include "ash/constants/ash_pref_names.h"
 #include "ash/display/cursor_window_controller.h"
 #include "ash/display/window_tree_host_manager.h"
@@ -420,10 +421,11 @@ float DockedMagnifierController::GetMinimumPointOfInterestHeightForTesting()
   return minimum_point_of_interest_height_;
 }
 
-void DockedMagnifierController::MaybeSetCursorSize(ui::CursorSize cursor_size) {
+void DockedMagnifierController::MaybeSetCustomCursorSize(
+    std::optional<int> custom_cursor_size) {
   if (Shell::Get()->accessibility_controller()->large_cursor().enabled())
     return;
-  Shell::Get()->cursor_manager()->SetCursorSize(cursor_size);
+  Shell::Get()->cursor_manager()->SetCustomCursorSize(custom_cursor_size);
 }
 
 void DockedMagnifierController::MaybePerformViewportResizing(
@@ -443,7 +445,7 @@ void DockedMagnifierController::MaybePerformViewportResizing(
   // If cursor is over separator, change to north/south resize, move on top.
   // Reset once the cursor is not over separator, and user isn't resizing.
   if (cursor_is_over_resizer && !is_cursor_locked_) {
-    MaybeSetCursorSize(ui::CursorSize::kLarge);
+    MaybeSetCustomCursorSize(kDefaultLargeCursorSize);
     cursor_manager->SetCursor(ui::mojom::CursorType::kNorthSouthResize);
     cursor_manager->LockCursor();
     cursor_window_controller->OnDockedMagnifierResizingStateChanged(true);
@@ -496,7 +498,7 @@ void DockedMagnifierController::MaybeResetResizingCursor() {
     return;
   }
 
-  MaybeSetCursorSize(ui::CursorSize::kNormal);
+  MaybeSetCustomCursorSize(std::nullopt);
   Shell::Get()->cursor_manager()->UnlockCursor();
   Shell::Get()
       ->window_tree_host_manager()
@@ -683,6 +685,7 @@ void DockedMagnifierController::CreateMagnifierViewport() {
   // 2- Create the separator layer right below the viwport widget, parented to
   //    the layer of the root window.
   separator_layer_ = std::make_unique<ui::LayerSolidColor>();
+  separator_layer_->SetName("DockedMagnifier:Separator");
   separator_layer_->SetColor(SkColors::kBlack);
   separator_layer_->SetBounds(
       SeparatorBoundsFromViewportBounds(viewport_bounds));
@@ -693,6 +696,7 @@ void DockedMagnifierController::CreateMagnifierViewport() {
   // 3- Create a background layer that will show a dark gray color behind the
   //    magnifier layer. It has the same bounds as the viewport.
   viewport_background_layer_ = std::make_unique<ui::LayerSolidColor>();
+  viewport_background_layer_->SetName("DockedMagnifier:Background");
   viewport_background_layer_->SetColor(SkColors::kDkGray);
   viewport_background_layer_->SetBounds(viewport_bounds);
   aura::Window* viewport_window = viewport_widget_->GetNativeView();
@@ -702,6 +706,7 @@ void DockedMagnifierController::CreateMagnifierViewport() {
   // 4- Create the layer in which the contents of the screen will be mirrored
   //    and magnified.
   viewport_magnifier_layer_ = std::make_unique<ui::LayerSolidColor>();
+  viewport_magnifier_layer_->SetName("DockedMagnifier:Viewport");
   // There are situations that the content rect for the magnified container gets
   // larger than its bounds (e.g. shelf stretches beyond the screen to allow it
   // being dragged up, or contents of mouse pointer might go beyond screen when

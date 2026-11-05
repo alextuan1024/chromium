@@ -19,12 +19,14 @@ import org.chromium.base.supplier.OneshotSupplierImpl;
 import org.chromium.base.supplier.SettableMonotonicObservableSupplier;
 import org.chromium.base.supplier.SupplierUtils;
 import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.cc.input.BrowserControlsState;
 import org.chromium.chrome.browser.browser_controls.BottomControlsStacker;
 import org.chromium.chrome.browser.browser_controls.BottomControlsStacker.LayerType;
 import org.chromium.chrome.browser.browser_controls.BrowserStateBrowserControlsVisibilityDelegate;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.fullscreen.FullscreenManager;
+import org.chromium.chrome.browser.layouts.CompositorModelChangeProcessor;
 import org.chromium.chrome.browser.layouts.LayoutManager;
 import org.chromium.chrome.browser.layouts.LayoutStateProvider;
 import org.chromium.chrome.browser.overlay_panel.PanelState;
@@ -57,6 +59,8 @@ public class BottomControlsCoordinator implements BackPressHandler {
     /** Interface for the BottomControls component to hide and show itself. */
     public interface BottomControlsVisibilityController {
         void setBottomControlsVisible(boolean isVisible);
+
+        default void setBottomControlsHeight(@Px int height) {}
     }
 
     /** The mediator that handles events from outside the bottom controls. */
@@ -78,6 +82,7 @@ public class BottomControlsCoordinator implements BackPressHandler {
 
     private final ScrollingBottomViewResourceFrameLayout mRootFrameLayout;
     private final ScrollingBottomViewSceneLayer mSceneLayer;
+    private final @Nullable CompositorModelChangeProcessor mCompositorMCP;
     private final ResourceManager mResourceManager;
 
     private boolean mIsDestroyed;
@@ -134,12 +139,15 @@ public class BottomControlsCoordinator implements BackPressHandler {
                         ? Set.of(
                                 BottomControlsProperties.ANDROID_VIEW_VISIBLE,
                                 BottomControlsProperties.Y_OFFSET,
-                                BottomControlsProperties.OFFSET_TAG,
                                 BottomControlsProperties.ANDROID_VIEW_TRANSLATE_Y,
                                 BottomControlsProperties.SHOW_SHADOW)
                         : Set.of(BottomControlsProperties.ANDROID_VIEW_VISIBLE);
-        layoutManager.createCompositorMCPWithExclusions(
-                model, mSceneLayer, BottomControlsViewBinder::bindCompositorMCP, exclusions);
+        mCompositorMCP =
+                layoutManager.createCompositorMCPWithExclusions(
+                        model,
+                        mSceneLayer,
+                        BottomControlsViewBinder::bindCompositorMCP,
+                        exclusions);
 
         View container = root.findViewById(R.id.bottom_container_slot);
         ViewGroup.LayoutParams params = container.getLayoutParams();
@@ -160,7 +168,8 @@ public class BottomControlsCoordinator implements BackPressHandler {
                         overlayPanelStateSupplier,
                         edgeToEdgeControllerSupplier,
                         tabSupplier,
-                        readAloudRestoringSupplier);
+                        readAloudRestoringSupplier,
+                        layoutManager::requestUpdate);
         mResourceManager
                 .getDynamicResourceLoader()
                 .registerResource(root.getId(), root.getResourceAdapter());
@@ -187,6 +196,11 @@ public class BottomControlsCoordinator implements BackPressHandler {
                                 @Override
                                 public void setBottomControlsVisible(boolean isVisible) {
                                     mMediator.setBottomControlsVisible(isVisible);
+                                }
+
+                                @Override
+                                public void setBottomControlsHeight(@Px int height) {
+                                    mMediator.setBottomControlsHeight(height);
                                 }
                             },
                             root::onModelTokenChange);
@@ -238,6 +252,8 @@ public class BottomControlsCoordinator implements BackPressHandler {
         BottomControlsContentDelegate contentDelegate = mContentDelegateSupplier.get();
         if (contentDelegate != null) contentDelegate.destroy();
         mMediator.destroy();
+        if (mCompositorMCP != null) mCompositorMCP.destroy();
+        mSceneLayer.destroy();
     }
 
     public void simulateEdgeToEdgeChangeForTesting(

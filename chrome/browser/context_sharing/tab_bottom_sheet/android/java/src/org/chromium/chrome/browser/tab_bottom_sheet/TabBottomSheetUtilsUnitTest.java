@@ -6,15 +6,18 @@ package org.chromium.chrome.browser.tab_bottom_sheet;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
-import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 import android.app.Activity;
 import android.content.Context;
 import android.content.res.Configuration;
 import android.content.res.Resources;
+import android.view.LayoutInflater;
+import android.view.View;
+import android.view.ViewGroup;
 
 import org.junit.Before;
 import org.junit.Rule;
@@ -23,12 +26,15 @@ import org.junit.runner.RunWith;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
+import org.robolectric.Robolectric;
 
 import org.chromium.base.ActivityState;
+import org.chromium.base.ContextUtils;
 import org.chromium.base.UnownedUserDataHost;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.Features.EnableFeatures;
+import org.chromium.chrome.browser.context_sharing.R;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.ui.base.WindowAndroid;
 
@@ -81,6 +87,36 @@ public class TabBottomSheetUtilsUnitTest {
     @DisableFeatures(ChromeFeatureList.TAB_BOTTOM_SHEET_RESIZE_WEBVIEW)
     public void testCanResizeWebView_ResizeDisabled() {
         assertFalse(TabBottomSheetUtils.canResizeWebView());
+    }
+
+    @Test
+    @EnableFeatures({
+        ChromeFeatureList.TAB_BOTTOM_SHEET,
+        ChromeFeatureList.TAB_BOTTOM_SHEET_RESIZE_WEBVIEW,
+        ChromeFeatureList.TAB_BOTTOM_SHEET_SMOOTH_KEYBOARD_RESIZE
+    })
+    public void testIsSmoothKeyboardResizeEnabled_Enabled() {
+        assertTrue(TabBottomSheetUtils.isSmoothKeyboardResizeEnabled());
+    }
+
+    @Test
+    @EnableFeatures({
+        ChromeFeatureList.TAB_BOTTOM_SHEET,
+        ChromeFeatureList.TAB_BOTTOM_SHEET_RESIZE_WEBVIEW
+    })
+    @DisableFeatures(ChromeFeatureList.TAB_BOTTOM_SHEET_SMOOTH_KEYBOARD_RESIZE)
+    public void testIsSmoothKeyboardResizeEnabled_SmoothResizeDisabled() {
+        assertFalse(TabBottomSheetUtils.isSmoothKeyboardResizeEnabled());
+    }
+
+    @Test
+    @DisableFeatures(ChromeFeatureList.TAB_BOTTOM_SHEET_RESIZE_WEBVIEW)
+    @EnableFeatures({
+        ChromeFeatureList.TAB_BOTTOM_SHEET,
+        ChromeFeatureList.TAB_BOTTOM_SHEET_SMOOTH_KEYBOARD_RESIZE
+    })
+    public void testIsSmoothKeyboardResizeEnabled_ResizeWebViewDisabled() {
+        assertFalse(TabBottomSheetUtils.isSmoothKeyboardResizeEnabled());
     }
 
     @Test
@@ -242,20 +278,17 @@ public class TabBottomSheetUtilsUnitTest {
         when(mWindowAndroid.getActivity()).thenReturn(new WeakReference<>(null));
         assertTrue(TabBottomSheetUtils.isActivityFinishingOrDestroyed(mWindowAndroid));
 
-        Activity activity = mock(Activity.class);
+        Activity activity = Robolectric.buildActivity(Activity.class).get();
         when(mWindowAndroid.getActivity()).thenReturn(new WeakReference<>(activity));
-
-        when(activity.isFinishing()).thenReturn(true);
-        when(activity.isDestroyed()).thenReturn(false);
-        assertTrue(TabBottomSheetUtils.isActivityFinishingOrDestroyed(mWindowAndroid));
-
-        when(activity.isFinishing()).thenReturn(false);
-        when(activity.isDestroyed()).thenReturn(true);
-        assertTrue(TabBottomSheetUtils.isActivityFinishingOrDestroyed(mWindowAndroid));
-
-        when(activity.isFinishing()).thenReturn(false);
-        when(activity.isDestroyed()).thenReturn(false);
         assertFalse(TabBottomSheetUtils.isActivityFinishingOrDestroyed(mWindowAndroid));
+
+        activity.finish();
+        assertTrue(TabBottomSheetUtils.isActivityFinishingOrDestroyed(mWindowAndroid));
+
+        Activity destroyedActivity =
+                Robolectric.buildActivity(Activity.class).create().destroy().get();
+        when(mWindowAndroid.getActivity()).thenReturn(new WeakReference<>(destroyedActivity));
+        assertTrue(TabBottomSheetUtils.isActivityFinishingOrDestroyed(mWindowAndroid));
     }
 
     @Test
@@ -273,5 +306,17 @@ public class TabBottomSheetUtilsUnitTest {
 
         when(mWindowAndroid.getActivityState()).thenReturn(ActivityState.CREATED);
         assertFalse(TabBottomSheetUtils.isActivityInactive(mWindowAndroid));
+    }
+
+    @Test
+    public void testGetExpandedContentGroupAndWebUiContainer() {
+        View sheetView =
+                LayoutInflater.from(ContextUtils.getApplicationContext())
+                        .inflate(R.layout.tab_bottom_sheet, null);
+        ViewGroup expandedGroup = TabBottomSheetUtils.getExpandedContentGroup(sheetView);
+        assertNotNull(expandedGroup);
+        View webUiContainer = TabBottomSheetUtils.getWebUiContainer(sheetView);
+        assertNotNull(webUiContainer);
+        assertEquals(expandedGroup, webUiContainer.getParent());
     }
 }

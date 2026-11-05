@@ -5,7 +5,9 @@
 #include "content/browser/worker_host/shared_worker_host.h"
 
 #include <memory>
+#include <optional>
 #include <string>
+#include <tuple>
 #include <utility>
 
 #include "base/functional/callback_helpers.h"
@@ -36,6 +38,9 @@
 #include "content/public/test/test_utils.h"
 #include "mojo/public/cpp/bindings/self_owned_receiver.h"
 #include "mojo/public/cpp/test_support/test_utils.h"
+#include "net/base/schemeful_site.h"
+#include "net/cookies/cookie_partition_key.h"
+#include "net/cookies/site_for_cookies.h"
 #include "services/network/public/cpp/cross_origin_embedder_policy.h"
 #include "services/network/public/cpp/features.h"
 #include "services/network/public/cpp/not_implemented_url_loader_factory.h"
@@ -46,6 +51,7 @@
 #include "third_party/blink/public/common/messaging/message_port_channel.h"
 #include "third_party/blink/public/common/messaging/message_port_descriptor.h"
 #include "third_party/blink/public/common/storage_key/storage_key.h"
+#include "third_party/blink/public/mojom/blob/blob_url_store.mojom.h"
 #include "third_party/blink/public/mojom/worker/shared_worker_exception_details.mojom.h"
 #include "url/origin.h"
 
@@ -99,25 +105,29 @@ class SharedWorkerHostTest : public testing::Test {
 
   base::WeakPtr<SharedWorkerHost> CreateHostWithParams(
       blink::mojom::SharedWorkerSameSiteCookies same_site_cookies,
-      bool extended_lifetime) {
+      bool extended_lifetime,
+      PolicyContainerPolicies creator_policies = PolicyContainerPolicies(),
+      std::optional<GURL> script_url_override = std::nullopt) {
+    const GURL script_url = script_url_override.value_or(kWorkerUrl);
     blink::StorageKey creator_storage_key =
         blink::StorageKey::CreateFirstParty(url::Origin::Create(kWorkerUrl));
     bool is_opaque_origin_enabled = base::FeatureList::IsEnabled(
         blink::features::kDataUrlWorkerOpaqueOrigin);
     blink::StorageKey worker_storage_key = CalculateWorkerStorageKey(
-        kWorkerUrl, creator_storage_key, is_opaque_origin_enabled);
+        script_url, creator_storage_key, is_opaque_origin_enabled);
     url::Origin renderer_origin = CalculateWorkerRendererOrigin(
-        kWorkerUrl, worker_storage_key, is_opaque_origin_enabled);
+        script_url, worker_storage_key, is_opaque_origin_enabled);
     SharedWorkerInstance instance(
-        kWorkerUrl, blink::mojom::ScriptType::kClassic,
+        script_url, blink::mojom::ScriptType::kClassic,
         network::mojom::CredentialsMode::kSameOrigin, "name",
         creator_storage_key, worker_storage_key, renderer_origin,
         blink::mojom::SharedWorkerCreationContextType::kSecure,
-        same_site_cookies, extended_lifetime);
+        same_site_cookies, extended_lifetime,
+        network::PermissionsPolicyFeaturesBitset());
     auto host = std::make_unique<SharedWorkerHost>(
         &service_, instance, site_instance_,
         std::vector<network::mojom::ContentSecurityPolicyPtr>(),
-        base::MakeRefCounted<PolicyContainerHost>());
+        base::MakeRefCounted<PolicyContainerHost>(std::move(creator_policies)));
     auto weak_host = host->AsWeakPtr();
     service_.worker_hosts_.insert(std::move(host));
     return weak_host;
@@ -165,22 +175,25 @@ class SharedWorkerHostTest : public testing::Test {
     host->SetServiceWorkerHandle(std::move(service_worker_handle));
 
     TestContentBrowserClient client;
-    host->Start(std::move(factory),
-                blink::mojom::FetchClientSettingsObject::New(
-                    []() {
-                      auto policies =
-                          blink::mojom::PolicyContainerPolicies::New();
-                      policies->referrer_policy =
-                          network::mojom::ReferrerPolicy::kDefault;
-                      return policies;
-                    }(),
-                    /*outgoing_referrer=*/GURL(),
-                    blink::mojom::InsecureRequestsPolicy::kDoNotUpgrade),
-                &client,
-                WorkerScriptFetcherResult(
-                    std::move(subresource_loader_factories),
-                    std::move(main_script_load_params),
-                    PolicyContainerPolicies(), final_response_url));
+    PolicyContainerPolicies policies =
+        WorkerScriptFetcher::ComputePolicyContainerPoliciesForTesting(
+            final_response_url, main_script_load_params->response_head.get(),
+            &host->creator_policies());
+    host->Start(
+        std::move(factory),
+        blink::mojom::FetchClientSettingsObject::New(
+            []() {
+              auto policies = blink::mojom::PolicyContainerPolicies::New();
+              policies->referrer_policy =
+                  network::mojom::ReferrerPolicy::kDefault;
+              return policies;
+            }(),
+            /*outgoing_referrer=*/GURL(),
+            blink::mojom::InsecureRequestsPolicy::kDoNotUpgrade),
+        /*outside_settings_reporter=*/mojo::NullRemote(), &client,
+        WorkerScriptFetcherResult(std::move(subresource_loader_factories),
+                                  std::move(main_script_load_params),
+                                  std::move(policies), final_response_url));
   }
 
   MessagePortChannel AddClient(
@@ -195,6 +208,10 @@ class SharedWorkerHostTest : public testing::Test {
     host->AddClient(std::move(client), dummy_render_frame_host_id,
                     std::move(remote_port));
     return local_port;
+  }
+
+  bool HasServiceWorkerHandle(SharedWorkerHost* host) const {
+    return host->service_worker_handle_ != nullptr;
   }
 
   void RunNormalTest(bool extended_lifetime) {
@@ -418,6 +435,83 @@ TEST_F(SharedWorkerHostTest, CreateNetworkFactoryParamsForSubresources) {
   EXPECT_EQ(host->GetWorkerStorageKey().origin(),
             params->isolation_info.frame_origin());
   EXPECT_FALSE(params->isolation_info.nonce().has_value());
+  EXPECT_TRUE(
+      params->isolation_info.site_for_cookies().IsFirstParty(kWorkerUrl));
+  EXPECT_EQ(params->isolation_info.GetNetworkIsolationPartition(),
+            net::NetworkIsolationPartition::kGeneral);
+  EXPECT_EQ(net::CookiePartitionKey::FromNetworkIsolationKey(
+                params->isolation_info.network_isolation_key(),
+                params->isolation_info.site_for_cookies(),
+                net::SchemefulSite(kWorkerUrl),
+                /*main_frame_navigation=*/false),
+            net::CookiePartitionKey::FromWire(
+                net::SchemefulSite(kWorkerUrl),
+                net::CookiePartitionKey::AncestorChainBit::kSameSite));
+}
+
+TEST_F(SharedWorkerHostTest,
+       CreateNetworkFactoryParamsForSubresources_CrossSiteCookieRestrictions) {
+  // Create a SharedWorkerHost with a first-party storage key and
+  // SharedWorkerSameSiteCookies::kNone (e.g. created in a third-party context
+  // via the Storage Access API or with `sameSiteCookies: 'none'`).
+  base::WeakPtr<SharedWorkerHost> host = CreateHostWithSameSiteCookies(
+      blink::mojom::SharedWorkerSameSiteCookies::kNone);
+
+  // Start the worker.
+  mojo::PendingRemote<blink::mojom::SharedWorkerFactory> factory;
+  MockSharedWorkerFactory factory_impl(
+      factory.InitWithNewPipeAndPassReceiver());
+  StartWorker(host.get(), std::move(factory));
+
+  network::mojom::URLLoaderFactoryParamsPtr params =
+      host->CreateNetworkFactoryParamsForSubresources();
+  EXPECT_EQ(host->GetWorkerStorageKey().origin(),
+            params->isolation_info.top_frame_origin());
+  EXPECT_EQ(host->GetWorkerStorageKey().origin(),
+            params->isolation_info.frame_origin());
+  // SiteForCookies must be null so that subresource requests do not derive a
+  // first-party (kSameSite) CHIPS cookie partition key.
+  EXPECT_TRUE(params->isolation_info.site_for_cookies().IsNull());
+  EXPECT_EQ(params->isolation_info.GetNetworkIsolationPartition(),
+            net::NetworkIsolationPartition::kSharedWorkerSameSiteCookiesNone);
+  EXPECT_EQ(net::CookiePartitionKey::FromNetworkIsolationKey(
+                params->isolation_info.network_isolation_key(),
+                params->isolation_info.site_for_cookies(),
+                net::SchemefulSite(kWorkerUrl),
+                /*main_frame_navigation=*/false),
+            net::CookiePartitionKey::FromWire(
+                net::SchemefulSite(kWorkerUrl),
+                net::CookiePartitionKey::AncestorChainBit::kCrossSite));
+}
+
+TEST_F(SharedWorkerHostTest, CreateBlobUrlStoreProvider) {
+  base::WeakPtr<SharedWorkerHost> host = CreateHost();
+  mojo::Remote<blink::mojom::BlobURLStore> remote;
+  host->CreateBlobUrlStoreProvider(remote.BindNewPipeAndPassReceiver());
+  EXPECT_TRUE(remote.is_bound());
+}
+
+TEST_F(SharedWorkerHostTest, CreateBlobUrlStoreProviderOpaqueOrigin) {
+  const GURL kDataWorkerUrl("data:text/javascript,");
+  blink::StorageKey creator_storage_key =
+      blink::StorageKey::CreateFirstParty(url::Origin());
+  blink::StorageKey worker_storage_key =
+      blink::StorageKey::CreateFirstParty(url::Origin());
+  url::Origin renderer_origin = url::Origin();
+  SharedWorkerInstance instance(
+      kDataWorkerUrl, blink::mojom::ScriptType::kClassic,
+      network::mojom::CredentialsMode::kSameOrigin, "name", creator_storage_key,
+      worker_storage_key, renderer_origin,
+      blink::mojom::SharedWorkerCreationContextType::kSecure,
+      blink::mojom::SharedWorkerSameSiteCookies::kNone,
+      /*extended_lifetime=*/false, network::PermissionsPolicyFeaturesBitset());
+  auto host = std::make_unique<SharedWorkerHost>(
+      &service_, instance, site_instance_,
+      std::vector<network::mojom::ContentSecurityPolicyPtr>(),
+      base::MakeRefCounted<PolicyContainerHost>());
+  mojo::Remote<blink::mojom::BlobURLStore> remote;
+  host->CreateBlobUrlStoreProvider(remote.BindNewPipeAndPassReceiver());
+  EXPECT_TRUE(remote.is_bound());
 }
 
 TEST_F(SharedWorkerHostTest,
@@ -438,7 +532,7 @@ TEST_F(SharedWorkerHostTest,
       worker_storage_key, renderer_origin,
       blink::mojom::SharedWorkerCreationContextType::kSecure,
       blink::mojom::SharedWorkerSameSiteCookies::kNone,
-      /*extended_lifetime=*/false);
+      /*extended_lifetime=*/false, network::PermissionsPolicyFeaturesBitset());
   auto host = std::make_unique<SharedWorkerHost>(
       &service_, instance, site_instance_,
       std::vector<network::mojom::ContentSecurityPolicyPtr>(),
@@ -490,7 +584,7 @@ TEST_F(SharedWorkerHostTestWithLNAEnabled,
       worker_storage_key, renderer_origin,
       blink::mojom::SharedWorkerCreationContextType::kSecure,
       blink::mojom::SharedWorkerSameSiteCookies::kAll,
-      /*extended_lifetime=*/false);
+      /*extended_lifetime=*/false, network::PermissionsPolicyFeaturesBitset());
   PolicyContainerPolicies policies;
   policies.cross_origin_embedder_policy.value =
       network::mojom::CrossOriginEmbedderPolicyValue::kRequireCorp;
@@ -599,7 +693,7 @@ TEST_F(SharedWorkerHostTest, CreateWebSocketConnector_SameOrigin) {
       worker_storage_key, worker_origin,
       blink::mojom::SharedWorkerCreationContextType::kSecure,
       blink::mojom::SharedWorkerSameSiteCookies::kAll,
-      /*extended_lifetime=*/false);
+      /*extended_lifetime=*/false, network::PermissionsPolicyFeaturesBitset());
 
   auto host = std::make_unique<SharedWorkerHost>(
       &service_, instance, site_instance_,
@@ -609,9 +703,13 @@ TEST_F(SharedWorkerHostTest, CreateWebSocketConnector_SameOrigin) {
       network::mojom::ClientSecurityState::New());
 
   base::HistogramTester histogram_tester;
-  net::IsolationInfo isolation_info = host->ComputeIsolationInfoForWebSocket();
+  net::IsolationInfo isolation_info =
+      host->ComputeIsolationInfoForNetworkRequest(
+          /*is_websocket_request=*/true);
   // SiteForCookies should NOT be null for same-origin workers.
   EXPECT_FALSE(isolation_info.site_for_cookies().IsNull());
+  EXPECT_EQ(isolation_info.GetNetworkIsolationPartition(),
+            net::NetworkIsolationPartition::kGeneral);
 
   histogram_tester.ExpectUniqueSample(
       "Content.SharedWorker.WebSocket.DoesRequireCrossSiteRequestForCookies",
@@ -637,7 +735,7 @@ TEST_F(SharedWorkerHostTest,
       worker_storage_key, worker_origin,
       blink::mojom::SharedWorkerCreationContextType::kSecure,
       blink::mojom::SharedWorkerSameSiteCookies::kNone,
-      /*extended_lifetime=*/false);
+      /*extended_lifetime=*/false, network::PermissionsPolicyFeaturesBitset());
 
   auto host = std::make_unique<SharedWorkerHost>(
       &service_, instance, site_instance_,
@@ -646,39 +744,19 @@ TEST_F(SharedWorkerHostTest,
   host->set_client_security_state_for_testing(
       network::mojom::ClientSecurityState::New());
 
-  {
-    // Case 1: The feature flag is disabled. The UMA should still be recorded,
-    // but the SiteForCookies should NOT be cleared.
-    base::test::ScopedFeatureList feature_list;
-    feature_list.InitAndDisableFeature(
-        features::kRestrictSharedWorkerWebSocketCrossSiteCookies);
-    base::HistogramTester histogram_tester;
+  // The SiteForCookies should be cleared.
+  base::HistogramTester histogram_tester;
 
-    net::IsolationInfo isolation_info =
-        host->ComputeIsolationInfoForWebSocket();
-    EXPECT_FALSE(isolation_info.site_for_cookies().IsNull());
+  net::IsolationInfo isolation_info =
+      host->ComputeIsolationInfoForNetworkRequest(
+          /*is_websocket_request=*/true);
+  EXPECT_TRUE(isolation_info.site_for_cookies().IsNull());
+  EXPECT_EQ(isolation_info.GetNetworkIsolationPartition(),
+            net::NetworkIsolationPartition::kSharedWorkerSameSiteCookiesNone);
 
-    histogram_tester.ExpectUniqueSample(
-        "Content.SharedWorker.WebSocket.DoesRequireCrossSiteRequestForCookies",
-        true, 1);
-  }
-
-  {
-    // Case 2: The feature flag is enabled. The SiteForCookies SHOULD be
-    // cleared.
-    base::test::ScopedFeatureList feature_list;
-    feature_list.InitAndEnableFeature(
-        features::kRestrictSharedWorkerWebSocketCrossSiteCookies);
-    base::HistogramTester histogram_tester;
-
-    net::IsolationInfo isolation_info =
-        host->ComputeIsolationInfoForWebSocket();
-    EXPECT_TRUE(isolation_info.site_for_cookies().IsNull());
-
-    histogram_tester.ExpectUniqueSample(
-        "Content.SharedWorker.WebSocket.DoesRequireCrossSiteRequestForCookies",
-        true, 1);
-  }
+  histogram_tester.ExpectUniqueSample(
+      "Content.SharedWorker.WebSocket.DoesRequireCrossSiteRequestForCookies",
+      true, 1);
 }
 
 TEST_F(SharedWorkerHostTest, NetworkIsolationPartitionForSameSiteCookies) {
@@ -712,6 +790,160 @@ TEST_F(SharedWorkerHostTest, NetworkIsolationPartitionForSameSiteCookies) {
       net::NetworkIsolationPartition::kSharedWorkerSameSiteCookiesNone);
   EXPECT_NE(host_all->GetNetworkAnonymizationKey(),
             host_none->GetNetworkAnonymizationKey());
+
+  net::IsolationInfo isolation_info_all =
+      host_all->ComputeIsolationInfoForNetworkRequest(
+          /*is_websocket_request=*/false);
+  net::IsolationInfo isolation_info_none =
+      host_none->ComputeIsolationInfoForNetworkRequest(
+          /*is_websocket_request=*/false);
+  EXPECT_EQ(isolation_info_all.GetNetworkIsolationPartition(),
+            net::NetworkIsolationPartition::kGeneral);
+  EXPECT_EQ(isolation_info_none.GetNetworkIsolationPartition(),
+            net::NetworkIsolationPartition::kSharedWorkerSameSiteCookiesNone);
+  EXPECT_NE(isolation_info_all.network_isolation_key().ToCacheKeyString(),
+            isolation_info_none.network_isolation_key().ToCacheKeyString());
+
+  // When a worker with `sameSiteCookies: 'none'` is in a cross-site embed
+  // `A(B)` (where `top_level_site` and `origin` are cross-site), the NIK
+  // already captures the cross-site relationship, so it should use `kGeneral`.
+  const url::Origin kWorkerOrigin = url::Origin::Create(kWorkerUrl);
+  const net::SchemefulSite kCrossSiteTopLevel(
+      GURL("https://cross-site.example.test/"));
+  blink::StorageKey cross_site_storage_key =
+      blink::StorageKey::Create(kWorkerOrigin, kCrossSiteTopLevel,
+                                blink::mojom::AncestorChainBit::kCrossSite);
+  SharedWorkerInstance cross_site_instance(
+      kWorkerUrl, blink::mojom::ScriptType::kClassic,
+      network::mojom::CredentialsMode::kSameOrigin, "name",
+      cross_site_storage_key, cross_site_storage_key, kWorkerOrigin,
+      blink::mojom::SharedWorkerCreationContextType::kSecure,
+      blink::mojom::SharedWorkerSameSiteCookies::kNone,
+      /*extended_lifetime=*/false, network::PermissionsPolicyFeaturesBitset());
+  auto host_cross_site = std::make_unique<SharedWorkerHost>(
+      &service_, cross_site_instance, site_instance_,
+      std::vector<network::mojom::ContentSecurityPolicyPtr>(),
+      base::MakeRefCounted<PolicyContainerHost>());
+  EXPECT_EQ(host_cross_site->GetNetworkIsolationPartition(),
+            net::NetworkIsolationPartition::kGeneral);
+
+  // In an `A(B(A))` embed (where `top_level_site` and `origin` are same-site
+  // despite a cross-site ancestor chain), it must use
+  // `kSharedWorkerSameSiteCookiesNone`.
+  blink::StorageKey aba_storage_key = blink::StorageKey::Create(
+      kWorkerOrigin, net::SchemefulSite(kWorkerOrigin),
+      blink::mojom::AncestorChainBit::kCrossSite);
+  SharedWorkerInstance aba_instance(
+      kWorkerUrl, blink::mojom::ScriptType::kClassic,
+      network::mojom::CredentialsMode::kSameOrigin, "name", aba_storage_key,
+      aba_storage_key, kWorkerOrigin,
+      blink::mojom::SharedWorkerCreationContextType::kSecure,
+      blink::mojom::SharedWorkerSameSiteCookies::kNone,
+      /*extended_lifetime=*/false, network::PermissionsPolicyFeaturesBitset());
+  auto host_aba = std::make_unique<SharedWorkerHost>(
+      &service_, aba_instance, site_instance_,
+      std::vector<network::mojom::ContentSecurityPolicyPtr>(),
+      base::MakeRefCounted<PolicyContainerHost>());
+  EXPECT_EQ(host_aba->GetNetworkIsolationPartition(),
+            net::NetworkIsolationPartition::kSharedWorkerSameSiteCookiesNone);
+}
+
+TEST_F(SharedWorkerHostTest, ServiceWorkerHandleDroppedWhenCSPSandboxed) {
+  base::WeakPtr<SharedWorkerHost> host = CreateHost();
+  mojo::PendingRemote<blink::mojom::SharedWorkerFactory> factory;
+  MockSharedWorkerFactory factory_impl(
+      factory.InitWithNewPipeAndPassReceiver());
+
+  auto response_head = network::mojom::URLResponseHead::New();
+  response_head->parsed_headers = network::mojom::ParsedHeaders::New();
+  auto csp = network::mojom::ContentSecurityPolicy::New();
+  csp->self_origin = network::mojom::CSPSource::New();
+  csp->header = network::mojom::ContentSecurityPolicyHeader::New();
+  csp->sandbox = network::mojom::WebSandboxFlags::kOrigin;
+  response_head->parsed_headers->content_security_policy.push_back(
+      std::move(csp));
+  std::ignore = response_head->cache_storage_side_data_writer
+                    .InitWithNewPipeAndPassReceiver();
+
+  StartWorker(host.get(), std::move(factory),
+              GURL("https://www.example.com/w.js"), std::move(response_head));
+  EXPECT_FALSE(HasServiceWorkerHandle(host.get()));
+
+  MockSharedWorkerClient client;
+  mojo::PendingRemote<blink::mojom::SharedWorkerClient> remote_client;
+  client.Bind(remote_client.InitWithNewPipeAndPassReceiver());
+  AddClient(host.get(), std::move(remote_client));
+  base::RunLoop().RunUntilIdle();
+
+  mojo::Remote<blink::mojom::SharedWorkerHost> worker_host;
+  mojo::PendingReceiver<blink::mojom::SharedWorker> worker_receiver;
+  blink::mojom::WorkerMainScriptLoadParamsPtr main_script_load_params;
+  EXPECT_TRUE(factory_impl.CheckReceivedCreateSharedWorker(
+      host->instance().url(), host->instance().name(),
+      host->content_security_policies(), &worker_host, &worker_receiver,
+      &main_script_load_params));
+  ASSERT_TRUE(main_script_load_params);
+  ASSERT_TRUE(main_script_load_params->response_head);
+  EXPECT_FALSE(main_script_load_params->response_head
+                   ->cache_storage_side_data_writer.is_valid());
+}
+
+// Tests that a shared worker whose StorageKey origin is opaque (here, a data:
+// URL worker) drops the ServiceWorkerMainResourceHandle and the
+// CacheStorageSideDataWriter even though its script response carries no CSP
+// sandbox header.
+TEST_F(SharedWorkerHostTest,
+       ServiceWorkerHandleDroppedWhenWorkerOriginIsOpaque) {
+  const GURL kDataWorkerUrl("data:text/javascript,");
+  base::WeakPtr<SharedWorkerHost> host = CreateHostWithParams(
+      blink::mojom::SharedWorkerSameSiteCookies::kAll,
+      /*extended_lifetime=*/false, PolicyContainerPolicies(), kDataWorkerUrl);
+  ASSERT_TRUE(host->GetWorkerStorageKey().origin().opaque());
+  mojo::PendingRemote<blink::mojom::SharedWorkerFactory> factory;
+  MockSharedWorkerFactory factory_impl(
+      factory.InitWithNewPipeAndPassReceiver());
+
+  auto response_head = network::mojom::URLResponseHead::New();
+  response_head->parsed_headers = network::mojom::ParsedHeaders::New();
+  std::ignore = response_head->cache_storage_side_data_writer
+                    .InitWithNewPipeAndPassReceiver();
+
+  StartWorker(host.get(), std::move(factory), kDataWorkerUrl,
+              std::move(response_head));
+  EXPECT_FALSE(HasServiceWorkerHandle(host.get()));
+
+  MockSharedWorkerClient client;
+  mojo::PendingRemote<blink::mojom::SharedWorkerClient> remote_client;
+  client.Bind(remote_client.InitWithNewPipeAndPassReceiver());
+  AddClient(host.get(), std::move(remote_client));
+  base::RunLoop().RunUntilIdle();
+
+  mojo::Remote<blink::mojom::SharedWorkerHost> worker_host;
+  mojo::PendingReceiver<blink::mojom::SharedWorker> worker_receiver;
+  blink::mojom::WorkerMainScriptLoadParamsPtr main_script_load_params;
+  EXPECT_TRUE(factory_impl.CheckReceivedCreateSharedWorker(
+      host->instance().url(), host->instance().name(),
+      host->content_security_policies(), &worker_host, &worker_receiver,
+      &main_script_load_params));
+  ASSERT_TRUE(main_script_load_params);
+  ASSERT_TRUE(main_script_load_params->response_head);
+  EXPECT_FALSE(main_script_load_params->response_head
+                   ->cache_storage_side_data_writer.is_valid());
+}
+
+TEST_F(SharedWorkerHostTest, NetworkResponseDoesNotInheritCreatorSandboxFlags) {
+  PolicyContainerPolicies creator_policies;
+  creator_policies.sandbox_flags = network::mojom::WebSandboxFlags::kOrigin;
+  base::WeakPtr<SharedWorkerHost> host = CreateHostWithParams(
+      blink::mojom::SharedWorkerSameSiteCookies::kAll,
+      /*extended_lifetime=*/false, std::move(creator_policies));
+  mojo::PendingRemote<blink::mojom::SharedWorkerFactory> factory;
+  MockSharedWorkerFactory factory_impl(
+      factory.InitWithNewPipeAndPassReceiver());
+
+  StartWorker(host.get(), std::move(factory),
+              GURL("https://www.example.com/w.js"));
+  EXPECT_TRUE(HasServiceWorkerHandle(host.get()));
 }
 
 }  // namespace content

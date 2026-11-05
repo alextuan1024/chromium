@@ -5,6 +5,8 @@
 package org.chromium.chrome.browser.omnibox.styles;
 
 import android.content.Context;
+import android.content.res.Resources;
+import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.Path;
@@ -20,6 +22,9 @@ import androidx.annotation.IntDef;
 import androidx.appcompat.content.res.AppCompatResources;
 
 import org.chromium.base.Callback;
+import org.chromium.base.MemoryPressureLevel;
+import org.chromium.base.MemoryPressureListener;
+import org.chromium.base.memory.MemoryPressureCallback;
 import org.chromium.base.task.PostTask;
 import org.chromium.base.task.TaskTraits;
 import org.chromium.build.annotations.NullMarked;
@@ -33,6 +38,7 @@ import org.chromium.components.favicon.LargeIconBridge;
 import org.chromium.components.image_fetcher.ImageFetcher;
 import org.chromium.components.image_fetcher.ImageFetcherConfig;
 import org.chromium.components.image_fetcher.ImageFetcherFactory;
+import org.chromium.components.omnibox.AutocompleteMatch;
 import org.chromium.url.GURL;
 
 import java.lang.annotation.Retention;
@@ -49,6 +55,9 @@ public class OmniboxImageSupplier {
     private static final String TAG = "OmniboxImageSupplier";
     private static final int MAX_IMAGE_CACHE_SIZE = 500 * ConversionUtils.BYTES_PER_KILOBYTE;
 
+    /** Format keeping vector icon entries in {@link #mDrawableCache} apart from letter shapes. */
+    private static final String VECTOR_ICON_CACHE_KEY_FORMAT = "vector:%s@%d";
+
     @IntDef({FallbackIconType.ROUNDED_LETTER, FallbackIconType.GLOBE})
     @Retention(RetentionPolicy.SOURCE)
     public @interface FallbackIconType {
@@ -59,6 +68,13 @@ public class OmniboxImageSupplier {
     private final Context mContext;
     private final Map<GURL, List<Callback<Drawable>>> mPendingImageRequests;
     private final Map<String, Drawable.ConstantState> mDrawableCache;
+    private final MemoryPressureCallback mMemoryPressureCallback =
+            pressure -> {
+                if (pressure == MemoryPressureLevel.MODERATE
+                        || pressure == MemoryPressureLevel.CRITICAL) {
+                    resetCache();
+                }
+            };
     private Drawable.@Nullable ConstantState mBackgroundDrawableState;
     private final int mDesiredFaviconWidthPx;
     private final int mFallbackIconSize;
@@ -86,10 +102,13 @@ public class OmniboxImageSupplier {
                 context.getResources().getDimensionPixelSize(R.dimen.tile_view_icon_text_size);
         mPendingImageRequests = new HashMap<>();
         mDrawableCache = new HashMap<>();
+        MemoryPressureListener.addCallback(mMemoryPressureCallback);
     }
 
     /** Release any resources and deregister any callbacks created by this class. */
     public void destroy() {
+        MemoryPressureListener.removeCallback(mMemoryPressureCallback);
+
         if (mIconBridge != null) {
             mIconBridge.destroy();
             mIconBridge = null;
@@ -148,8 +167,8 @@ public class OmniboxImageSupplier {
             return;
         }
 
-        // Note: LargeIconBridge will serve <null> right away if a fetch was previously made and was
-        // unsuccessful.
+        // Note: LargeIconBridge will serve <null> right away if a fetch was previously made and
+        // was unsuccessful.
         mIconBridge.getLargeIconForUrl(
                 url,
                 mDesiredFaviconWidthPx / 2,
@@ -288,11 +307,16 @@ public class OmniboxImageSupplier {
         return path;
     }
 
+    /** Clear all pending in-flight image request callbacks without evicting cached images. */
+    public void clearPendingRequests() {
+        mPendingImageRequests.clear();
+    }
+
     /** Clear all cached entries. */
     public void resetCache() {
         if (mIconBridge != null) mIconBridge.createCache(MAX_IMAGE_CACHE_SIZE);
         if (mImageFetcher != null) mImageFetcher.clear();
-        mPendingImageRequests.clear();
+        clearPendingRequests();
         // Intentionally not re-setting vector shape cache.
     }
 
@@ -334,6 +358,55 @@ public class OmniboxImageSupplier {
                         pendingCallbacks.get(i).onResult(drawable);
                     }
                 });
+    }
+
+    /**
+     * Returns the native vector icon associated with the supplied match, rasterized at the
+     * requested size, or {@code null} if native is not ready or the match has no vector icon.
+     * Rasterized icons are cached per icon name and size for the lifetime of this supplier, so
+     * repeated requests for the same icon are served without a native round trip.
+     *
+     * @param match The match to retrieve the vector icon for.
+     * @param isBookmark Whether the match destination is bookmarked.
+     * @param sizeDp Requested edge length of the (square) icon, in dp.
+     */
+    public @Nullable Drawable getVectorIcon(
+            AutocompleteMatch match, boolean isBookmark, int sizeDp) {
+        if (!mNativeInitialized || sizeDp <= 0) return null;
+
+        String iconName = match.getVectorIconName(isBookmark);
+        if (TextUtils.isEmpty(iconName)) return null;
+
+        Resources resources = mContext.getResources();
+        String cacheKey = String.format(Locale.US, VECTOR_ICON_CACHE_KEY_FORMAT, iconName, sizeDp);
+        Drawable.ConstantState cachedState = mDrawableCache.get(cacheKey);
+        if (cachedState != null) return cachedState.newDrawable(resources);
+
+        Bitmap bitmap =
+                match.getVectorIconBitmap(
+                        isBookmark, sizeDp, resources.getDisplayMetrics().density);
+        return cacheVectorIcon(cacheKey, bitmap);
+    }
+
+    /**
+     * Wraps a rasterized vector icon in a Drawable and caches its constant state under the supplied
+     * key.
+     *
+     * @param cacheKey The key to cache the drawable under.
+     * @param bitmap The rasterized vector icon, or {@code null} if rasterization failed.
+     * @return The drawable to hand out to the caller, or {@code null} if there is no bitmap.
+     */
+    private @Nullable Drawable cacheVectorIcon(String cacheKey, @Nullable Bitmap bitmap) {
+        if (bitmap == null) return null;
+
+        Resources resources = mContext.getResources();
+        // The bitmap is rasterized at the display density; mark it as such so the drawable
+        // reports an intrinsic size equal to the requested dp.
+        bitmap.setDensity(resources.getDisplayMetrics().densityDpi);
+        Drawable drawable = new BitmapDrawable(resources, bitmap);
+        Drawable.ConstantState state = drawable.getConstantState();
+        if (state != null) mDrawableCache.put(cacheKey, state);
+        return drawable;
     }
 
     /** Overrides ImageFetcher instance for testing. */

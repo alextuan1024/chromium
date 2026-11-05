@@ -76,7 +76,6 @@ class PeriodicWave;
 class PeriodicWaveConstraints;
 class ScriptProcessorNode;
 class ScriptState;
-class SecurityOrigin;
 class StereoPannerNode;
 class WaveShaperNode;
 class WorkerThread;
@@ -195,7 +194,6 @@ class MODULES_EXPORT BaseAudioContext
 
   void Dispose();
 
-
   size_t CurrentSampleFrame() const {
     return destination_handler_->CurrentSampleFrame();
   }
@@ -290,9 +288,6 @@ class MODULES_EXPORT BaseAudioContext
   //  - it has been stopped by its execution context.
   virtual bool IsContextCleared() const { return is_cleared_; }
 
-  // Get the security origin for this audio context.
-  const SecurityOrigin* GetSecurityOrigin() const;
-
   // Get the PeriodicWave for the specified oscillator type.  The table is
   // initialized internally if necessary.
   PeriodicWave* GetPeriodicWave(int type);
@@ -351,12 +346,25 @@ class MODULES_EXPORT BaseAudioContext
   // When the context goes away, reject any pending script promise resolvers.
   virtual void RejectPendingResolvers();
 
+  // Detaches all pending script promise resolvers when the context is being
+  // disposed by the garbage collector. This is called from Dispose() (a
+  // pre-finalizer), where allocating new objects (like DOMExceptions for
+  // rejecting promises) is prohibited. Detaching the resolvers ensures they
+  // don't attempt to access the context during their own disposal and avoids
+  // crashes from forbidden allocations.
+  virtual void DetachPendingResolvers();
+
   // Returns the window with which the instance is associated.
   LocalDOMWindow* GetWindow() const;
 
   void AddPendingPromiseResolver(ScriptPromiseResolver<IDLUndefined>*);
-  void ResolvePendingPromiseResolvers();
-  void RejectPendingPromiseResolversWithException(const String& message);
+  void ResolvePendingPromiseResolver(ScriptPromiseResolver<IDLUndefined>*);
+  virtual void RejectPendingPromiseResolversWithException(
+      const String& message);
+  void RemovePendingPromiseResolver(ScriptPromiseResolver<IDLUndefined>*);
+  void RemovePendingPromiseResolvers(
+      const HeapVector<Member<ScriptPromiseResolver<IDLUndefined>>>&);
+  bool HasPendingPromiseResolver(ScriptPromiseResolver<IDLUndefined>*) const;
 
   Member<AudioDestinationNode> destination_node_;
 

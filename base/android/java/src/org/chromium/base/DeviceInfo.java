@@ -60,7 +60,12 @@ public final class DeviceInfo {
     private static @Nullable Boolean sIsRetailDemoModeForTesting;
     private static @Nullable Boolean sIsDesktopForTesting;
     private static @Nullable Boolean sIsFoldableForTesting;
+    // Test override for Settings.Global.DEVICE_NAME used by native and Robolectric unit tests.
+    private static @Nullable String sDeviceNameForTesting;
     private final IDeviceInfo mIDeviceInfo;
+    // Test builds only: value of --force-desktop-android when this instance was created, used
+    // to detect switches added after creation (see getInstance()). Always false otherwise.
+    private final boolean mForceDesktopSwitchForTesting;
     private @Nullable Boolean mIsRetailDemoMode;
 
     // This is the minimum width in DP that defines a large display device
@@ -220,10 +225,15 @@ public final class DeviceInfo {
 
     public static void setIsAutomotiveForTesting(boolean isAutomotive) {
         sIsAutomotiveForTesting = isAutomotive;
-        ResettersForTesting.register(() -> sIsAutomotiveForTesting = null);
+        ResettersForTesting.register(
+                () -> {
+                    sIsAutomotiveForTesting = null;
+                    resetInstance();
+                });
         if (isAutomotive) {
             setExclusiveFormFactorForTesting(FormFactor.AUTOMOTIVE);
         }
+        resetInstance();
         if (sIsNativeLoaded) {
             sendToNative(getInstance().mIDeviceInfo);
         }
@@ -231,10 +241,15 @@ public final class DeviceInfo {
 
     public static void setIsTVForTesting(boolean isTV) {
         sIsTVForTesting = isTV;
-        ResettersForTesting.register(() -> sIsTVForTesting = null);
+        ResettersForTesting.register(
+                () -> {
+                    sIsTVForTesting = null;
+                    resetInstance();
+                });
         if (isTV) {
             setExclusiveFormFactorForTesting(FormFactor.TV);
         }
+        resetInstance();
         if (sIsNativeLoaded) {
             sendToNative(getInstance().mIDeviceInfo);
         }
@@ -309,8 +324,38 @@ public final class DeviceInfo {
 
     @CalledByNative
     public static @JniType("std::string") @Nullable String getDeviceName() {
-        return Settings.Global.getString(
-                ContextUtils.getApplicationContext().getContentResolver(), "device_name");
+        if (sDeviceNameForTesting != null) {
+            return sDeviceNameForTesting;
+        }
+        try {
+            return Settings.Global.getString(
+                    ContextUtils.getApplicationContext().getContentResolver(),
+                    Settings.Global.DEVICE_NAME);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /**
+     * Overrides the value returned by {@link #getDeviceName()} in unit tests so tests can simulate
+     * custom or unset device names without modifying global system settings.
+     *
+     * @param deviceName The test device name override to return from {@link #getDeviceName()}, or
+     *     {@code null} to clear the override.
+     * @return The previous test override value, or {@code null} if none was set.
+     */
+    @CalledByNativeForTesting
+    public static @JniType("std::optional<std::string>") @Nullable String setDeviceNameForTesting(
+            @JniType("std::optional<std::string>") @Nullable String deviceName) {
+        String prev = sDeviceNameForTesting;
+        sDeviceNameForTesting = deviceName;
+        ResettersForTesting.register(() -> sDeviceNameForTesting = prev);
+        return prev;
+    }
+
+    /** Clears the test override set by {@link #setDeviceNameForTesting(String)}. */
+    public static void resetDeviceNameForTesting() {
+        sDeviceNameForTesting = null;
     }
 
     public static boolean isInitializedForTesting() {
@@ -334,10 +379,15 @@ public final class DeviceInfo {
     @CalledByNativeForTesting
     public static void setIsXrForTesting(boolean value) {
         sIsXrForTesting = value;
-        ResettersForTesting.register(() -> sIsXrForTesting = null);
+        ResettersForTesting.register(
+                () -> {
+                    sIsXrForTesting = null;
+                    resetInstance();
+                });
         if (value) {
             setExclusiveFormFactorForTesting(FormFactor.XR);
         }
+        resetInstance();
         if (sIsNativeLoaded) {
             sendToNative(getInstance().mIDeviceInfo);
         }
@@ -346,20 +396,31 @@ public final class DeviceInfo {
     @CalledByNativeForTesting
     public static void resetIsXrForTesting() {
         sIsXrForTesting = null;
+        resetInstance();
     }
 
     public static void setIsRetailDemoModeForTesting(boolean value) {
         sIsRetailDemoModeForTesting = value;
-        ResettersForTesting.register(() -> sIsRetailDemoModeForTesting = null);
+        ResettersForTesting.register(
+                () -> {
+                    sIsRetailDemoModeForTesting = null;
+                    resetInstance();
+                });
+        resetInstance();
     }
 
     @CalledByNativeForTesting
     public static void setIsDesktopForTesting(boolean isDesktop) {
         sIsDesktopForTesting = isDesktop;
-        ResettersForTesting.register(() -> sIsDesktopForTesting = null);
+        ResettersForTesting.register(
+                () -> {
+                    sIsDesktopForTesting = null;
+                    resetInstance();
+                });
         if (isDesktop) {
             setExclusiveFormFactorForTesting(FormFactor.DESKTOP);
         }
+        resetInstance();
         if (sIsNativeLoaded) {
             sendToNative(getInstance().mIDeviceInfo);
         }
@@ -368,6 +429,7 @@ public final class DeviceInfo {
     @CalledByNativeForTesting
     public static void resetIsDesktopForTesting() {
         sIsDesktopForTesting = null;
+        resetInstance();
         if (sIsNativeLoaded) {
             sendToNative(getInstance().mIDeviceInfo);
         }
@@ -376,7 +438,12 @@ public final class DeviceInfo {
     @CalledByNativeForTesting
     public static void setIsFoldableForTesting(boolean value) {
         sIsFoldableForTesting = value;
-        ResettersForTesting.register(() -> sIsFoldableForTesting = null);
+        ResettersForTesting.register(
+                () -> {
+                    sIsFoldableForTesting = null;
+                    resetInstance();
+                });
+        resetInstance();
         if (sIsNativeLoaded) {
             sendToNative(getInstance().mIDeviceInfo);
         }
@@ -385,18 +452,46 @@ public final class DeviceInfo {
     @CalledByNativeForTesting
     public static void resetIsFoldableForTesting() {
         sIsFoldableForTesting = null;
+        resetInstance();
+    }
+
+    public static void resetInstanceForTesting() {
+        resetInstance();
+    }
+
+    private static void resetInstance() {
+        synchronized (CREATION_LOCK) {
+            sInstance = null;
+        }
+    }
+
+    private static boolean hasForceDesktopSwitch() {
+        return CommandLine.getInstance().hasSwitch(BaseSwitches.FORCE_DESKTOP_ANDROID);
     }
 
     private static DeviceInfo getInstance() {
-        // Some tests mock out things DeviceInfo is based on, so disable caching in tests to ensure
-        // such mocking is not defeated by caching.
-        if (BuildConfig.IS_FOR_TEST) {
-            return new DeviceInfo();
-        }
-
+        // Tests that mock out things DeviceInfo is based on must call resetInstanceForTesting()
+        // so that cached values are invalidated. The *ForTesting setters in this class do this
+        // automatically.
         synchronized (CREATION_LOCK) {
+            // In test builds, --force-desktop-android can be added after the instance was created
+            // (e.g. native browser tests read flags from a command-line file after the Java
+            // CommandLine was initialized, and ResettersForTesting does not run there). Rebuild
+            // the instance if the switch changed so that isDesktop() reflects it.
+            if (BuildConfig.IS_FOR_TEST
+                    && sInstance != null
+                    && sInstance.mForceDesktopSwitchForTesting != hasForceDesktopSwitch()) {
+                sInstance = null;
+            }
             if (sInstance == null) {
                 sInstance = new DeviceInfo();
+                // Robolectric resets shadow state (e.g. ShadowPackageManager system features)
+                // between tests, so the cached instance must be dropped too. On devices the
+                // underlying values do not change between tests, and the *ForTesting setters
+                // register their own resetters.
+                if (BuildConfig.IS_ROBOLECTRIC) {
+                    ResettersForTesting.register(DeviceInfo::resetInstance);
+                }
             }
             return sInstance;
         }
@@ -430,8 +525,8 @@ public final class DeviceInfo {
     }
 
     /**
-     * @return CPU architecture name, see "arch:" in:
-     *     https://chromium.googlesource.com/chromium/src.git/+/master/docs/updater/protocol_3_1.md
+     * Returns CPU architecture name, see "arch:" in:
+     * https://chromium.googlesource.com/chromium/src.git/+/master/docs/updater/protocol_3_1.md
      */
     public static String getArch() {
         boolean is64Bit = Process.is64Bit();
@@ -443,9 +538,7 @@ public final class DeviceInfo {
         return "";
     }
 
-    /**
-     * @return The device's screen width in density-independent pixels (dp).
-     */
+    /** Returns the device's screen width in density-independent pixels (dp). */
     private static int getDeviceWidthInDp() {
         DisplayMetrics displayMetrics =
                 ContextUtils.getApplicationContext().getResources().getDisplayMetrics();
@@ -518,6 +611,7 @@ public final class DeviceInfo {
             mIDeviceInfo.isAutomotive = sIsAutomotiveForTesting;
         }
 
+        mForceDesktopSwitchForTesting = BuildConfig.IS_FOR_TEST && hasForceDesktopSwitch();
         mIDeviceInfo.isDesktop =
                 (sIsDesktopForTesting != null)
                         ? sIsDesktopForTesting
@@ -564,20 +658,37 @@ public final class DeviceInfo {
     private static void setExclusiveFormFactorForTesting(@FormFactor int activeFormFactor) {
         if (activeFormFactor != FormFactor.TV) {
             sIsTVForTesting = false;
-            ResettersForTesting.register(() -> sIsTVForTesting = null);
+            ResettersForTesting.register(
+                    () -> {
+                        sIsTVForTesting = null;
+                        resetInstance();
+                    });
         }
         if (activeFormFactor != FormFactor.AUTOMOTIVE) {
             sIsAutomotiveForTesting = false;
-            ResettersForTesting.register(() -> sIsAutomotiveForTesting = null);
+            ResettersForTesting.register(
+                    () -> {
+                        sIsAutomotiveForTesting = null;
+                        resetInstance();
+                    });
         }
         if (activeFormFactor != FormFactor.DESKTOP) {
             sIsDesktopForTesting = false;
-            ResettersForTesting.register(() -> sIsDesktopForTesting = null);
+            ResettersForTesting.register(
+                    () -> {
+                        sIsDesktopForTesting = null;
+                        resetInstance();
+                    });
         }
         if (activeFormFactor != FormFactor.XR) {
             sIsXrForTesting = false;
-            ResettersForTesting.register(() -> sIsXrForTesting = null);
+            ResettersForTesting.register(
+                    () -> {
+                        sIsXrForTesting = null;
+                        resetInstance();
+                    });
         }
+        resetInstance();
     }
 
     @NativeMethods

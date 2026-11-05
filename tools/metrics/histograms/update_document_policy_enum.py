@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # Copyright 2020 The Chromium Authors
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
@@ -14,6 +14,7 @@ import os
 import sys
 
 import setup_modules  # pylint: disable=unused-import
+
 
 from chromium_src.tools.metrics.histograms.update_histogram_enum import (
   UpdateHistogramEnum,

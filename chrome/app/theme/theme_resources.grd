@@ -76,10 +76,6 @@
       <if expr="not is_android">
         <structure type="chrome_scaled_image" name="IDR_CLOSE_BUTTON_MASK" file="common/close_button_mask.png" />
       </if>
-      <if expr="toolkit_views">
-        <structure type="chrome_scaled_image" name="IDR_COMPOSEBOX_DRIVE_SIGNIN_PROMO_LIGHT" file="common/composebox_drive_signin_promo_light.png" />
-        <structure type="chrome_scaled_image" name="IDR_COMPOSEBOX_DRIVE_SIGNIN_PROMO_DARK" file="common/composebox_drive_signin_promo_dark.png" />
-      </if>
       <if expr="is_win">
         <structure type="chrome_scaled_image" name="IDR_CONFLICT_FAVICON" file="common/favicon_conflicts.png" />
       </if>
@@ -107,6 +103,7 @@
       <if expr="not is_android">
         <structure type="chrome_scaled_image" name="IDR_INCOGNITO_DATA_NOT_SAVED_HEADER_DARK" file="common/incognito_data_not_saved_header_dark.png" />
         <structure type="chrome_scaled_image" name="IDR_INCOGNITO_DATA_NOT_SAVED_HEADER_LIGHT" file="common/incognito_data_not_saved_header_light.png" />
+        <structure type="chrome_scaled_image" name="IDR_ISOLATED_DATA_NOT_SAVED_HEADER" file="common/isolated_data_not_saved_header.png" />
       </if>
       <structure type="chrome_scaled_image" name="IDR_INCOGNITO_WHITE_CIRCLE" file="common/incognito_white_circle.png" />
       <structure type="chrome_scaled_image" name="IDR_MANAGEMENT_FAVICON" file="common/favicon_management.png" />
@@ -127,7 +124,6 @@
       </if>
       <if expr="not is_android">
         <if expr="_google_chrome">
-            <structure type="chrome_scaled_image" name="IDR_LENS_PERMISSION_MODAL_IMAGE" file="google_chrome/lens_permission_modal_image.png" />
             <structure type="chrome_scaled_image" name="IDR_LENS_PERMISSION_MODAL_IMAGE_ALT" file="google_chrome/lens_permission_modal_image_alt.png" />
             <structure type="chrome_scaled_image" name="IDR_LENS_ON_IOS_ICON" file="google_chrome/lens_on_ios_icon.png" />
             <structure type="chrome_scaled_image" name="IDR_FEATURE_SHOWCASE_GOOGLE_LENS_ILLUSTRATION_LIGHT" file="google_chrome/google_lens_illustration_light.png" />
@@ -150,6 +146,7 @@
             </if> <!-- _is_chrome_for_testing_branded -->
           </else>
         </if>
+        <structure type="chrome_scaled_image" name="IDR_PASSWORD_MANAGER_HEADER_BACKGROUND" file="common/password_manager_header_background.png" />
       </if>
       <structure type="chrome_scaled_image" name="IDR_PLUGINS_FAVICON" file="common/favicon_plugins.png" />
       <structure type="chrome_scaled_image" name="IDR_PRERENDER" file="common/prerender_succeed_icon.png" />
@@ -200,9 +197,6 @@
           </if> <!-- _is_chrome_for_testing_branded -->
         </else>
       </if> <!-- _google_chrome -->
-      <if expr="_google_chrome">
-        <structure type="chrome_scaled_image" name="IDR_REMOTE_ACTOR_SHARING_ILLUSTRATION" file="google_chrome/remote_actor_sharing_illustration.png" />
-      </if>
       <if expr="is_chromeos">
         <structure type="chrome_scaled_image" name="IDR_RESET_WARNING" file="cros/reset_warning.png" />
       </if>

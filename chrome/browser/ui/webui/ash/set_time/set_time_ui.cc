@@ -30,6 +30,8 @@
 #include "chromeos/ash/components/settings/cros_settings.h"
 #include "chromeos/ash/components/settings/timezone_settings.h"
 #include "components/prefs/pref_service.h"
+#include "components/session_manager/core/session.h"
+#include "components/session_manager/core/session_manager.h"
 #include "components/strings/grit/components_strings.h"
 #include "components/user_manager/user_manager.h"
 #include "content/public/browser/url_data_source.h"
@@ -125,7 +127,7 @@ class SetTimeMessageHandler : public content::WebUIMessageHandler,
     std::string timezone_id = args[0].GetString();
 
     Profile* profile = Profile::FromWebUI(web_ui());
-    DCHECK(profile);
+    CHECK(profile, base::NotFatalUntil::M162);
     system::SetTimezoneFromUI(local_state_.get(), profile, timezone_id);
   }
 
@@ -141,7 +143,9 @@ class SetTimeMessageHandler : public content::WebUIMessageHandler,
     bool is_user_logged_in = user_manager::UserManager::Get()->IsUserLoggedIn();
     if (is_user_logged_in) {
       account_id =
-          user_manager::UserManager::Get()->GetActiveUser()->GetAccountId();
+          CHECK_DEREF(
+              session_manager::SessionManager::Get()->GetActiveSession())
+              .account_id();
     }
     ParentAccessController::Get()->ShowWidget(
         account_id,

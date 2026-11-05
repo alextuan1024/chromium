@@ -5,16 +5,48 @@
 #include "chrome/browser/ui/views/permissions/chip/webui_permission_chip.h"
 
 #include <memory>
+#include <optional>
 #include <string>
+#include <string_view>
 
+#include "base/base_paths.h"
+#include "base/files/file_path.h"
+#include "base/files/file_util.h"
+#include "base/functional/callback_helpers.h"
 #include "base/memory/raw_ptr.h"
+#include "base/path_service.h"
+#include "base/strings/strcat.h"
+#include "base/strings/string_util.h"
+#include "base/test/bind.h"
+#include "base/test/scoped_feature_list.h"
+#include "base/test/task_environment.h"
+#include "base/test/test_future.h"
+#include "base/threading/thread_restrictions.h"
+#include "base/time/time.h"
+#include "chrome/browser/ui/browser_element_identifiers.h"
+#include "chrome/browser/ui/browser_window/test/mock_browser_window_interface.h"
+#include "chrome/browser/ui/interaction/browser_elements.h"
+#include "chrome/browser/ui/passwords/ui_utils.h"
 #include "chrome/browser/ui/views/location_bar/webui_location_bar.h"
+#include "chrome/browser/ui/views/permissions/chip/permission_chip_view.h"
+#include "chrome/browser/ui/views/permissions/chip/webui_permission_dashboard.h"
 #include "chrome/browser/ui/views/toolbar/mock_webui_toolbar_control_delegate.h"
+#include "chrome/browser/ui/webauthn/ambient/ambient_login_permission_request.h"
 #include "chrome/test/base/testing_profile.h"
+#include "components/browser_apis/ui_controllers/toolbar/toolbar_ui_api_data_model.mojom.h"
 #include "components/omnibox/browser/test_location_bar_model.h"
+#include "components/permissions/permission_request.h"
+#include "components/permissions/permission_request_data.h"
+#include "components/permissions/permission_uma_constants.h"
+#include "components/permissions/request_type.h"
 #include "content/public/test/browser_task_environment.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/base/interaction/element_identifier.h"
+#include "ui/base/interaction/element_test_util.h"
+#include "ui/base/ui_base_features.h"
+#include "ui/gfx/vector_icon_types.h"
+#include "url/gurl.h"
 
 namespace {
 
@@ -36,10 +68,39 @@ class TestLocationBarViewDelegate : public LocationBarView::Delegate {
   raw_ptr<LocationBarModel> model_;
 };
 
+// Reports a fixed element context for the browser it's attached to, so that
+// elements shown in that context can be found through BrowserElements.
+class TestBrowserElements : public BrowserElements {
+ public:
+  DECLARE_SAFE_CAST_TARGET()
+  TestBrowserElements(BrowserWindowInterface& browser,
+                      ui::ElementContext context)
+      : BrowserElements(browser), context_(context) {}
+  ui::ElementContext GetContext() override { return context_; }
+
+ private:
+  const ui::ElementContext context_;
+};
+
+DEFINE_SAFE_CAST_TARGET(TestBrowserElements)
+
+constexpr ui::ElementContext kTestContext =
+    ui::ElementContext::CreateFakeContextForTesting(1);
+
 }  // namespace
 
 class WebUIPermissionChipTest : public testing::Test {
  protected:
+  // Only this fixture is a friend of WebUIPermissionChip, so tests read its
+  // private timeout through here.
+  static constexpr base::TimeDelta kAnchorFallbackTimeout =
+      WebUIPermissionChip::kAnchorFallbackTimeout;
+
+  // Just short of the timeout after which a pending `WaitForAnchor()` callback
+  // runs anyway, leaving `GetAnchor()` to fall back.
+  static constexpr base::TimeDelta kJustBeforeAnchorFallback =
+      kAnchorFallbackTimeout - base::Milliseconds(1);
+
   void SetUp() override {
     location_bar_model_ = std::make_unique<TestLocationBarModel>();
     delegate_ = std::make_unique<TestLocationBarViewDelegate>(
@@ -53,17 +114,31 @@ class WebUIPermissionChipTest : public testing::Test {
         .WillByDefault(testing::Return(&dummy_view_));
   }
 
-  content::BrowserTaskEnvironment browser_threads_;
+  // Makes `location_bar_` return `browser` from GetBrowser(), without running
+  // Init() which needs a valid Browser.
+  void SetBrowser(BrowserWindowInterface* browser) {
+    location_bar_->browser_ = browser;
+  }
+
+  static void InvalidateStateToken(WebUIPermissionChip& chip) {
+    chip.InvalidateStateToken();
+  }
+
+  content::BrowserTaskEnvironment browser_threads_{
+      base::test::TaskEnvironment::TimeSource::MOCK_TIME};
   TestingProfile profile_;
   views::View dummy_view_;
   testing::NiceMock<MockWebUIToolbarControlDelegate> mock_toolbar_delegate_;
+  // Declared before `location_bar_` so that it outlives `location_bar_`.
+  testing::NiceMock<MockBrowserWindowInterface> mock_browser_;
   std::unique_ptr<TestLocationBarModel> location_bar_model_;
   std::unique_ptr<TestLocationBarViewDelegate> delegate_;
   std::unique_ptr<WebUILocationBar> location_bar_;
 };
 
 TEST_F(WebUIPermissionChipTest, DoesNotAnnounceAlertOnExpandEnded) {
-  WebUIPermissionChip chip(location_bar_.get());
+  WebUIPermissionChip chip(location_bar_.get(),
+                           PermissionChipView::kPermissionRequestChipElementId);
   const std::u16string message = u"Test Announcement";
   chip.SetMessage(message);
 
@@ -80,7 +155,8 @@ TEST_F(WebUIPermissionChipTest, DoesNotAnnounceAlertOnExpandEnded) {
 }
 
 TEST_F(WebUIPermissionChipTest, AnnounceAlertAndText) {
-  WebUIPermissionChip chip(location_bar_.get());
+  WebUIPermissionChip chip(location_bar_.get(),
+                           PermissionChipView::kPermissionRequestChipElementId);
   const std::u16string message = u"Direct Announcement";
 
   EXPECT_CALL(mock_toolbar_delegate_, AnnounceAlert(message)).Times(2);
@@ -100,7 +176,8 @@ class TestPermissionChipObserver : public PermissionChipInterface::Observer {
 };
 
 TEST_F(WebUIPermissionChipTest, CollapseAnimationEndedReentrancy) {
-  WebUIPermissionChip chip(location_bar_.get());
+  WebUIPermissionChip chip(location_bar_.get(),
+                           PermissionChipView::kPermissionRequestChipElementId);
   chip.SetVisible(true);
   TestPermissionChipObserver observer(&chip);
   chip.AddObserver(&observer);
@@ -115,7 +192,8 @@ TEST_F(WebUIPermissionChipTest, CollapseAnimationEndedReentrancy) {
 }
 
 TEST_F(WebUIPermissionChipTest, GetThemeForTesting) {
-  WebUIPermissionChip chip(location_bar_.get());
+  WebUIPermissionChip chip(location_bar_.get(),
+                           PermissionChipView::kPermissionRequestChipElementId);
   EXPECT_EQ(chip.GetThemeForTesting(), PermissionChipTheme::kNormalVisibility);
 
   chip.SetTheme(PermissionChipTheme::kInUseActivityIndicator);
@@ -124,7 +202,8 @@ TEST_F(WebUIPermissionChipTest, GetThemeForTesting) {
 }
 
 TEST_F(WebUIPermissionChipTest, GetTextForTesting) {
-  WebUIPermissionChip chip(location_bar_.get());
+  WebUIPermissionChip chip(location_bar_.get(),
+                           PermissionChipView::kPermissionRequestChipElementId);
   EXPECT_TRUE(chip.GetTextForTesting().empty());
 
   const std::u16string message = u"Camera in use";
@@ -132,8 +211,28 @@ TEST_F(WebUIPermissionChipTest, GetTextForTesting) {
   EXPECT_EQ(chip.GetTextForTesting(), message);
 }
 
+// Like Views' `LabelButton::SetText()`, `SetMessage()` resets the accessible
+// name to the message, so a name set by `SetAccessibilityName()` only lasts
+// until the next message. Otherwise the indicator chip's aria-label would go
+// stale when its text changes (e.g. camera -> camera and microphone) or when
+// the shared chip switches tabs.
+TEST_F(WebUIPermissionChipTest, SetMessageResetsAccessibilityName) {
+  WebUIPermissionChip chip(location_bar_.get(),
+                           PermissionChipView::kIndicatorChipElementId);
+  chip.SetMessage(u"Camera in use");
+  EXPECT_EQ(chip.GetState()->accessibility_name, u"Camera in use");
+
+  chip.SetAccessibilityName(u"This page is accessing your camera.");
+  EXPECT_EQ(chip.GetState()->accessibility_name,
+            u"This page is accessing your camera.");
+
+  chip.SetMessage(u"Camera & microphone in use");
+  EXPECT_EQ(chip.GetState()->accessibility_name, u"Camera & microphone in use");
+}
+
 TEST_F(WebUIPermissionChipTest, GetIsRequestForTesting) {
-  WebUIPermissionChip chip(location_bar_.get());
+  WebUIPermissionChip chip(location_bar_.get(),
+                           PermissionChipView::kPermissionRequestChipElementId);
   EXPECT_TRUE(chip.GetIsRequestForTesting());
 
   chip.SetTheme(PermissionChipTheme::kLowVisibility);
@@ -148,3 +247,380 @@ TEST_F(WebUIPermissionChipTest, GetIsRequestForTesting) {
   chip.SetTheme(PermissionChipTheme::kOnSystemBlockedActivityIndicator);
   EXPECT_FALSE(chip.GetIsRequestForTesting());
 }
+
+TEST_F(WebUIPermissionChipTest, SetUserDecision) {
+  WebUIPermissionChip chip(location_bar_.get(),
+                           PermissionChipView::kPermissionRequestChipElementId);
+  EXPECT_EQ(chip.GetState()->user_decision,
+            toolbar_ui_api::mojom::PermissionAction::kUnspecified);
+
+  chip.SetUserDecision(permissions::PermissionAction::GRANTED);
+  EXPECT_EQ(chip.GetState()->user_decision,
+            toolbar_ui_api::mojom::PermissionAction::kGranted);
+
+  chip.SetUserDecision(std::nullopt);
+  EXPECT_EQ(chip.GetState()->user_decision,
+            toolbar_ui_api::mojom::PermissionAction::kUnspecified);
+}
+
+TEST_F(WebUIPermissionChipTest, OnClickedIfCurrentDropsStaleTokens) {
+  WebUIPermissionChip chip(location_bar_.get(),
+                           PermissionChipView::kPermissionRequestChipElementId);
+  int pressed_count = 0;
+  bool pressed_with_pointer = false;
+  chip.SetPressedCallback(base::BindLambdaForTesting(
+      [&pressed_count, &pressed_with_pointer](bool is_pointer_interaction) {
+        ++pressed_count;
+        pressed_with_pointer = is_pointer_interaction;
+      }));
+
+  const uint32_t stale_token = chip.state_token();
+  InvalidateStateToken(chip);
+  ASSERT_NE(chip.state_token(), stale_token);
+
+  EXPECT_FALSE(
+      chip.OnClickedIfCurrent(/*is_pointer_interaction=*/true, stale_token));
+  EXPECT_EQ(pressed_count, 0);
+
+  EXPECT_TRUE(chip.OnClickedIfCurrent(/*is_pointer_interaction=*/true,
+                                      chip.state_token()));
+  EXPECT_EQ(pressed_count, 1);
+  EXPECT_TRUE(pressed_with_pointer);
+}
+
+TEST_F(WebUIPermissionChipTest, GetAnchorPrefersChipElementOverLocationBar) {
+  SetBrowser(&mock_browser_);
+  TestBrowserElements browser_elements(mock_browser_, kTestContext);
+  ui::test::TestElement location_bar_element(kLocationBarElementId,
+                                             kTestContext);
+  ui::test::TestElement chip_element(
+      PermissionChipView::kPermissionRequestChipElementId, kTestContext);
+  WebUIPermissionChip chip(location_bar_.get(),
+                           PermissionChipView::kPermissionRequestChipElementId);
+
+  // Falls back to the location bar while the chip is not tracked.
+  location_bar_element.Show();
+  EXPECT_EQ(chip.GetAnchor().GetIfElement(), &location_bar_element);
+
+  // Anchors to the chip once it is tracked.
+  chip_element.Show();
+  EXPECT_EQ(chip.GetAnchor().GetIfElement(), &chip_element);
+}
+
+// The chip element is looked up only in the location bar's element context,
+// so a chip with the same ID in another context (e.g. another window, or a
+// different WebUI toolbar) is never used as the anchor.
+TEST_F(WebUIPermissionChipTest, GetAnchorIgnoresChipElementInOtherContext) {
+  constexpr ui::ElementContext kOtherContext =
+      ui::ElementContext::CreateFakeContextForTesting(2);
+  SetBrowser(&mock_browser_);
+  TestBrowserElements browser_elements(mock_browser_, kTestContext);
+  ui::test::TestElement location_bar_element(kLocationBarElementId,
+                                             kTestContext);
+  location_bar_element.Show();
+  ui::test::TestElement other_context_chip_element(
+      PermissionChipView::kPermissionRequestChipElementId, kOtherContext);
+  other_context_chip_element.Show();
+  WebUIPermissionChip chip(location_bar_.get(),
+                           PermissionChipView::kPermissionRequestChipElementId);
+
+  EXPECT_EQ(chip.GetAnchor().GetIfElement(), &location_bar_element);
+}
+
+TEST_F(WebUIPermissionChipTest,
+       WaitForAnchorRunsImmediatelyIfElementIsTracked) {
+  SetBrowser(&mock_browser_);
+  TestBrowserElements browser_elements(mock_browser_, kTestContext);
+  ui::test::TestElement chip_element(
+      PermissionChipView::kPermissionRequestChipElementId, kTestContext);
+  chip_element.Show();
+  WebUIPermissionChip chip(location_bar_.get(),
+                           PermissionChipView::kPermissionRequestChipElementId);
+
+  base::test::TestFuture<void> future;
+  chip.WaitForAnchor(future.GetCallback());
+  EXPECT_TRUE(future.IsReady());
+  EXPECT_EQ(chip.GetAnchor().GetIfElement(), &chip_element);
+}
+
+TEST_F(WebUIPermissionChipTest, WaitForAnchorWaitsForElementToBeShown) {
+  SetBrowser(&mock_browser_);
+  TestBrowserElements browser_elements(mock_browser_, kTestContext);
+  ui::test::TestElement location_bar_element(kLocationBarElementId,
+                                             kTestContext);
+  location_bar_element.Show();
+  ui::test::TestElement indicator_chip_element(
+      PermissionChipView::kIndicatorChipElementId, kTestContext);
+  ui::test::TestElement chip_element(
+      PermissionChipView::kPermissionRequestChipElementId, kTestContext);
+  WebUIPermissionChip chip(location_bar_.get(),
+                           PermissionChipView::kPermissionRequestChipElementId);
+
+  base::test::TestFuture<void> future;
+  chip.WaitForAnchor(future.GetCallback());
+  // Waits for the chip even though the location bar is already tracked.
+  browser_threads_.FastForwardBy(kJustBeforeAnchorFallback);
+  EXPECT_FALSE(future.IsReady());
+
+  // Another chip being shown doesn't resolve the request.
+  indicator_chip_element.Show();
+  EXPECT_FALSE(future.IsReady());
+
+  chip_element.Show();
+  EXPECT_TRUE(future.IsReady());
+  EXPECT_EQ(chip.GetAnchor().GetIfElement(), &chip_element);
+}
+
+TEST_F(WebUIPermissionChipTest, WaitForAnchorFallsBackAfterTimeout) {
+  SetBrowser(&mock_browser_);
+  TestBrowserElements browser_elements(mock_browser_, kTestContext);
+  ui::test::TestElement location_bar_element(kLocationBarElementId,
+                                             kTestContext);
+  location_bar_element.Show();
+  WebUIPermissionChip chip(location_bar_.get(),
+                           PermissionChipView::kPermissionRequestChipElementId);
+
+  base::test::TestFuture<void> future;
+  chip.WaitForAnchor(future.GetCallback());
+  browser_threads_.FastForwardBy(kJustBeforeAnchorFallback);
+  EXPECT_FALSE(future.IsReady());
+
+  browser_threads_.FastForwardBy(base::Milliseconds(1));
+  EXPECT_TRUE(future.IsReady());
+  EXPECT_EQ(chip.GetAnchor().GetIfElement(), &location_bar_element);
+}
+
+TEST_F(WebUIPermissionChipTest, WaitForAnchorFallsBackWhenChipIsHidden) {
+  SetBrowser(&mock_browser_);
+  TestBrowserElements browser_elements(mock_browser_, kTestContext);
+  ui::test::TestElement location_bar_element(kLocationBarElementId,
+                                             kTestContext);
+  location_bar_element.Show();
+  WebUIPermissionChip chip(location_bar_.get(),
+                           PermissionChipView::kPermissionRequestChipElementId);
+  chip.SetVisible(true);
+
+  base::test::TestFuture<void> future;
+  chip.WaitForAnchor(future.GetCallback());
+  EXPECT_FALSE(future.IsReady());
+
+  // The callback is run rather than dropped when the chip is hidden.
+  chip.SetVisible(false);
+  EXPECT_TRUE(future.IsReady());
+  EXPECT_EQ(chip.GetAnchor().GetIfElement(), &location_bar_element);
+}
+
+TEST_F(WebUIPermissionChipTest, WaitForAnchorDropsCallbackIfChipIsDestroyed) {
+  SetBrowser(&mock_browser_);
+  TestBrowserElements browser_elements(mock_browser_, kTestContext);
+  ui::test::TestElement chip_element(
+      PermissionChipView::kPermissionRequestChipElementId, kTestContext);
+  auto chip = std::make_unique<WebUIPermissionChip>(
+      location_bar_.get(), PermissionChipView::kPermissionRequestChipElementId);
+
+  base::test::TestFuture<void> future;
+  chip->WaitForAnchor(future.GetCallback());
+  chip.reset();
+
+  // Neither the element being shown nor the fallback timeout should reach the
+  // destroyed chip.
+  chip_element.Show();
+  browser_threads_.FastForwardBy(kAnchorFallbackTimeout);
+  EXPECT_FALSE(future.IsReady());
+}
+
+// Like `GetAnchor()`, `WaitForAnchor()` only considers the chip element in the
+// location bar's element context.
+TEST_F(WebUIPermissionChipTest, WaitForAnchorIgnoresChipElementInOtherContext) {
+  constexpr ui::ElementContext kOtherContext =
+      ui::ElementContext::CreateFakeContextForTesting(2);
+  SetBrowser(&mock_browser_);
+  TestBrowserElements browser_elements(mock_browser_, kTestContext);
+  ui::test::TestElement other_context_chip_element(
+      PermissionChipView::kPermissionRequestChipElementId, kOtherContext);
+  other_context_chip_element.Show();
+  ui::test::TestElement chip_element(
+      PermissionChipView::kPermissionRequestChipElementId, kTestContext);
+  WebUIPermissionChip chip(location_bar_.get(),
+                           PermissionChipView::kPermissionRequestChipElementId);
+
+  base::test::TestFuture<void> future;
+  chip.WaitForAnchor(future.GetCallback());
+  // Already-shown element in another context doesn't count.
+  EXPECT_FALSE(future.IsReady());
+
+  // Nor does showing another one there.
+  ui::test::TestElement second_other_context_chip_element(
+      PermissionChipView::kPermissionRequestChipElementId, kOtherContext);
+  second_other_context_chip_element.Show();
+  EXPECT_FALSE(future.IsReady());
+
+  chip_element.Show();
+  EXPECT_TRUE(future.IsReady());
+  EXPECT_EQ(chip.GetAnchor().GetIfElement(), &chip_element);
+}
+
+// The element context may not be available yet (e.g. the location bar isn't
+// attached to a browser or its WebUI isn't loaded), so `WaitForAnchor()` waits
+// for the chip element to be shown in the context the location bar has by then.
+TEST_F(WebUIPermissionChipTest, WaitForAnchorWaitsForContext) {
+  WebUIPermissionChip chip(location_bar_.get(),
+                           PermissionChipView::kPermissionRequestChipElementId);
+
+  base::test::TestFuture<void> future;
+  chip.WaitForAnchor(future.GetCallback());
+  EXPECT_FALSE(future.IsReady());
+
+  // The context becomes available, then the chip element is shown in it.
+  SetBrowser(&mock_browser_);
+  TestBrowserElements browser_elements(mock_browser_, kTestContext);
+  ui::test::TestElement chip_element(
+      PermissionChipView::kPermissionRequestChipElementId, kTestContext);
+  chip_element.Show();
+  EXPECT_TRUE(future.IsReady());
+  EXPECT_EQ(chip.GetAnchor().GetIfElement(), &chip_element);
+}
+
+// Without a context, a chip element shown in another context doesn't count, and
+// `WaitForAnchor()` still falls back after the timeout.
+TEST_F(WebUIPermissionChipTest,
+       WaitForAnchorWithoutContextFallsBackAfterTimeout) {
+  constexpr ui::ElementContext kOtherContext =
+      ui::ElementContext::CreateFakeContextForTesting(2);
+  WebUIPermissionChip chip(location_bar_.get(),
+                           PermissionChipView::kPermissionRequestChipElementId);
+
+  base::test::TestFuture<void> future;
+  chip.WaitForAnchor(future.GetCallback());
+  ui::test::TestElement other_context_chip_element(
+      PermissionChipView::kPermissionRequestChipElementId, kOtherContext);
+  other_context_chip_element.Show();
+  browser_threads_.FastForwardBy(kJustBeforeAnchorFallback);
+  EXPECT_FALSE(future.IsReady());
+
+  browser_threads_.FastForwardBy(base::Milliseconds(1));
+  EXPECT_TRUE(future.IsReady());
+}
+
+TEST_F(WebUIPermissionChipTest, DashboardChipsAnchorToTheirOwnElements) {
+  SetBrowser(&mock_browser_);
+  TestBrowserElements browser_elements(mock_browser_, kTestContext);
+  // Show both chips, so that a chip looking up the wrong element ID is caught.
+  ui::test::TestElement request_chip_element(
+      PermissionChipView::kPermissionRequestChipElementId, kTestContext);
+  request_chip_element.Show();
+  ui::test::TestElement indicator_chip_element(
+      PermissionChipView::kIndicatorChipElementId, kTestContext);
+  indicator_chip_element.Show();
+  WebUIPermissionDashboard dashboard(location_bar_.get());
+
+  EXPECT_EQ(dashboard.GetRequestChip()->GetAnchor().GetIfElement(),
+            &request_chip_element);
+  // The dashboard's anchor is used for page info, which opens from the
+  // indicator chip.
+  EXPECT_EQ(dashboard.GetAnchor().GetIfElement(), &indicator_chip_element);
+}
+
+// Checks that every icon the permission chip can be given resolves to an icon
+// in the `webui-toolbar-shared` iconset, for both the rounded and the old
+// icons. Without this the WebUI chip silently drops the icon.
+class WebUIPermissionChipIconTest : public WebUIPermissionChipTest,
+                                    public testing::WithParamInterface<bool> {
+ protected:
+  WebUIPermissionChipIconTest() {
+    feature_list_.InitWithFeatureStates({{features::kRoundedIcons, GetParam()},
+                                         {features::kDesktopGlowUp, false}});
+  }
+
+  void SetUp() override {
+    WebUIPermissionChipTest::SetUp();
+    base::FilePath icons_path;
+    ASSERT_TRUE(
+        base::PathService::Get(base::DIR_SRC_TEST_DATA_ROOT, &icons_path));
+    icons_path = icons_path.AppendASCII(
+        "chrome/browser/resources/webui_toolbar_shared/icons.ts");
+    base::ScopedAllowBlockingForTesting allow_blocking;
+    ASSERT_TRUE(base::ReadFileToString(icons_path, &iconset_source_));
+  }
+
+  // Sets `icon` on a chip and checks that the chip sends an id registered in
+  // the `webui-toolbar-shared` iconset (webui_toolbar_shared/icons.ts).
+  void ExpectMapped(const gfx::VectorIcon& icon) {
+    SCOPED_TRACE(icon.name ? icon.name : "(unnamed icon)");
+    WebUIPermissionChip chip(
+        location_bar_.get(),
+        PermissionChipView::kPermissionRequestChipElementId);
+    chip.SetChipIcon(icon);
+    const std::string icon_name = chip.GetState()->icon_name;
+    constexpr std::string_view kPrefix = "webui-toolbar-shared:";
+    ASSERT_TRUE(base::StartsWith(icon_name, kPrefix)) << icon_name;
+    const std::string_view id =
+        std::string_view(icon_name).substr(kPrefix.size());
+    EXPECT_NE(iconset_source_.find(base::StrCat({"'", id, "': () =>"})),
+              std::string::npos)
+        << id << " is not registered in webui_toolbar_shared/icons.ts";
+  }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+  std::string iconset_source_;
+};
+
+// Checks that every request type that can show a request chip (the ones with
+// request chip text, see `ShouldUseChip()` in permission_prompt_factory.cc)
+// resolves its icon and blocked icon to an icon in the `webui-toolbar-shared`
+// iconset. Types without chip text always use a prompt bubble, so they're
+// skipped.
+TEST_P(WebUIPermissionChipIconTest, ChipRequestTypeIconsMapped) {
+  using permissions::RequestType;
+  int chip_types = 0;
+  for (int i = 0; i <= static_cast<int>(RequestType::kMaxValue); ++i) {
+    const RequestType type = static_cast<RequestType>(i);
+    SCOPED_TRACE(permissions::PermissionKeyForRequestType(type));
+    // Ambient login requests provide their own icons, which are covered
+    // below.
+    if (type == RequestType::kAmbientLogin) {
+      continue;
+    }
+    permissions::PermissionRequest request(
+        std::make_unique<permissions::PermissionRequestData>(
+            type, /*user_gesture=*/true, GURL("https://example.test")),
+        base::DoNothing());
+    if (!request
+             .GetRequestChipText(
+                 permissions::PermissionRequest::ChipTextType::LOUD_REQUEST)
+             .has_value()) {
+      continue;
+    }
+    ++chip_types;
+    ExpectMapped(request.GetIconForChip());
+    ExpectMapped(request.GetBlockedIconForChip());
+  }
+  EXPECT_GT(chip_types, 0);
+}
+
+TEST_P(WebUIPermissionChipIconTest, AmbientLoginIconsMapped) {
+  using ambient_signin::AmbientLoginPermissionRequest;
+  using ambient_signin::CredentialType;
+  ExpectMapped(AmbientLoginPermissionRequest::GetCredentialIcon(
+      CredentialType::kPasskey));
+  ExpectMapped(AmbientLoginPermissionRequest::GetCredentialIcon(
+      CredentialType::kPassword));
+  ExpectMapped(GooglePasswordManagerVectorIcon());
+}
+
+// The identity provider request has no blocked icon, so the chip shows none.
+TEST_P(WebUIPermissionChipIconTest, EmptyIconMapsToNoIcon) {
+  WebUIPermissionChip chip(location_bar_.get(),
+                           PermissionChipView::kPermissionRequestChipElementId);
+  chip.SetChipIcon(permissions::GetBlockedIconId(
+      permissions::RequestType::kIdentityProvider));
+  EXPECT_EQ(chip.GetState()->icon_name, "");
+}
+
+INSTANTIATE_TEST_SUITE_P(All,
+                         WebUIPermissionChipIconTest,
+                         testing::Bool(),
+                         [](const testing::TestParamInfo<bool>& info) {
+                           return info.param ? "RoundedIcons" : "OldIcons";
+                         });

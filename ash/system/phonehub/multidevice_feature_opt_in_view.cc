@@ -16,6 +16,7 @@
 #include "ash/system/phonehub/phone_hub_tray.h"
 #include "ash/system/phonehub/phone_hub_view_ids.h"
 #include "ash/system/status_area_widget.h"
+#include "base/strings/stringprintf.h"
 #include "chromeos/ash/components/multidevice/logging/logging.h"
 #include "chromeos/ash/components/phonehub/multidevice_feature_access_manager.h"
 #include "chromeos/ash/components/phonehub/util/histogram_util.h"
@@ -46,7 +47,6 @@ PermissionsOnboardingSetUpMode GetPermissionSetupMode(
       phonehub::MultideviceFeatureAccessManager::AccessStatus::
           kAvailableButNotGranted;
   bool can_request_apps_acess =
-      features::IsEcheSWAEnabled() &&
       multidevice_feature_access_manager->IsAccessRequestAllowed(
           Feature::kEche) &&
       multidevice_feature_access_manager->GetAppsAccessStatus() ==

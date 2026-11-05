@@ -32,10 +32,7 @@ source_set("save_to_drive") {
     "time_remaining_calculator.cc",
   ]
 
-  configs += [
-    "//build/config/compiler:wexit_time_destructors",
-    "//build/config/compiler:wglobal_constructors",
-  ]
+  configs += [ "//build/config/compiler:wglobal_constructors" ]
 
   deps = [
     "//base",
@@ -58,6 +55,7 @@ source_set("save_to_drive") {
     "//extensions/browser/mime_handler",
     "//extensions/browser/mime_handler:stream_container",
     "//pdf:features",
+    "//url",
   ]
 }
 
@@ -77,6 +75,7 @@ source_set("browser_tests") {
     "//chrome/browser/ui/save_to_drive",
     "//chrome/common/extensions/api",
     "//chrome/test:test_support",
+    "//chrome/test/base:chrome_test_path_utils",
     "//content/test:test_support",
     "//extensions/browser",
     "//extensions/browser:test_support",
@@ -107,6 +106,7 @@ source_set("unit_tests") {
     "//chrome/browser/ui/save_to_drive",
     "//chrome/common/extensions/api",
     "//chrome/test:test_support",
+    "//chrome/test/base:chrome_render_view_host_test_harness",
     "//content/test:test_support",
     "//extensions/browser",
     "//extensions/browser:test_support",

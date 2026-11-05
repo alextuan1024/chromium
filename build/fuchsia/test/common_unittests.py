@@ -16,7 +16,6 @@ import common
 
 # Tests should use their names to explain the meaning of the tests rather than
 # relying on the extra docstrings.
-# pylint: disable=missing-function-docstring
 @unittest.skipIf(os.name == 'nt', 'Fuchsia tests not supported on Windows')
 class CommonTest(unittest.TestCase):
     """Test common.py methods."""
@@ -72,6 +71,30 @@ class CommonTest(unittest.TestCase):
         # Avoid the logic being bypassed.
         self.assertIsNone(os.environ.get('FUCHSIA_INTERNAL_IMAGES_ROOT'))
         self.assertFalse(common.IMAGES_ROOT.endswith(os.path.sep))
+
+    def test_find_orchestrate_config_defaults_to_host_arch(self):
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop('FUCHSIA_ORCHESTRATE_CONFIG', None)
+            with mock.patch('common.get_host_arch', return_value='x64'):
+                self.assertTrue(
+                    common._find_orchestrate_config().endswith(
+                        'orchestrate_x64.json'
+                    )
+                )
+            with mock.patch('common.get_host_arch', return_value='arm64'):
+                self.assertTrue(
+                    common._find_orchestrate_config().endswith(
+                        'orchestrate_arm64.json'
+                    )
+                )
+
+    def test_find_orchestrate_config_uses_env_override(self):
+        with mock.patch.dict(
+            os.environ, {'FUCHSIA_ORCHESTRATE_CONFIG': '/tmp/custom.json'}
+        ):
+            self.assertEqual(
+                common._find_orchestrate_config(), '/tmp/custom.json'
+            )
 
     @mock.patch('common.run_ffx_command')
     def test_get_system_info_parse_version_and_product(self, ffx_mock):

@@ -50,6 +50,10 @@ void IftSubsetDefinition::Union(const IftSubsetDefinition& other) {
   subset_.union_(other.subset_);
 }
 
+void IftSubsetDefinition::Clear() {
+  subset_.clear();
+}
+
 IftPatcher::IftPatcher(ift_patcher_rs::IftPatcher patcher)
     : patcher_(std::move(patcher)) {}
 
@@ -58,6 +62,10 @@ IftPatcher::~IftPatcher() = default;
 IftPatcher::IftPatcher(IftPatcher&&) = default;
 
 IftPatcher& IftPatcher::operator=(IftPatcher&&) = default;
+
+std::unique_ptr<IftPatcher> IftPatcher::Clone() const {
+  return base::WrapUnique(new IftPatcher(ift_patcher_rs::IftPatcher(patcher_)));
+}
 
 std::unique_ptr<IftPatcher> IftPatcher::Create(
     base::span<const uint8_t> font_data) {
@@ -72,13 +80,34 @@ std::unique_ptr<IftPatcher> IftPatcher::Create(
 }
 
 base::span<const uint8_t> IftPatcher::GetFontData() const {
-  rs_std::SliceRef<const ::std::uint8_t> font_data = patcher_.font_data();
+  rs::SliceRef<const ::std::uint8_t> font_data = patcher_.font_data();
   return base::span(font_data.to_span());
 }
 
-Vector<String> IftPatcher::RequestPatches(const IftSubsetDefinition& subset) {
-  rs_std::Vec<::rs::alloc::string::String> urls =
+bool IftPatcher::RenderedFontRequiresPatches(
+    const IftSubsetDefinition& subset) const {
+  return patcher_.rendered_font_requires_patches(subset.subset_);
+}
+
+bool IftPatcher::HasUnrenderedChanges() const {
+  return patcher_.has_unrendered_changes();
+}
+
+void IftPatcher::MarkFontDataRendered() {
+  patcher_.mark_rendered();
+}
+
+void IftPatcher::BeginExtension() {
+  patcher_.begin_extension();
+}
+
+base::expected<Vector<String>, IftPatcher::RequestError>
+IftPatcher::RequestPatches(const IftSubsetDefinition& subset) {
+  rs::Vec<::rs::alloc::string::String> urls =
       patcher_.request_patches(subset.subset_);
+  if (patcher_.patch_limit_exceeded()) {
+    return base::unexpected(RequestError::kPatchLimitExceeded);
+  }
   Vector<String> ret;
   ret.ReserveInitialCapacity(base::checked_cast<wtf_size_t>(urls.size()));
   for (const ::rs::alloc::string::String& url : urls) {
@@ -90,7 +119,7 @@ Vector<String> IftPatcher::RequestPatches(const IftSubsetDefinition& subset) {
 void IftPatcher::AddPatchData(const String& url,
                               base::span<const uint8_t> data) {
   std::string utf8_url = url.Utf8();
-  patcher_.add_patch_data(rs_std::StrRef::FromUtf8Unchecked(utf8_url), data);
+  patcher_.add_patch_data(rs::StrRef::FromUtf8Unchecked(utf8_url), data);
 }
 
 IftPatcher::ApplyStatus IftPatcher::ApplyPatches(
@@ -108,11 +137,18 @@ IftPatcher::ApplyStatus IftPatcher::ApplyPatches(
       return ApplyStatus::kPatchError;
     case ift_patcher_rs::IftApplyStatus::Tag::MissingPatches:
       return ApplyStatus::kMissingPatches;
+    case ift_patcher_rs::IftApplyStatus::Tag::PatchLimitExceeded:
+      return ApplyStatus::kPatchLimitExceeded;
   }
 }
 
 bool IftPatcher::HasPendingPatchRequests() const {
   return patcher_.has_pending_patch_requests();
+}
+
+void IftPatcher::SetPatchLimitsForTesting(uint32_t max_invalidating_patches,
+                                          uint32_t max_total_patches) {
+  patcher_.set_patch_limits(max_invalidating_patches, max_total_patches);
 }
 
 }  // namespace blink

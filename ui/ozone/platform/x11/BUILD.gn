@@ -29,8 +29,6 @@ source_set("x11") {
     "x11_canvas_surface.h",
     "x11_clipboard_ozone.cc",
     "x11_clipboard_ozone.h",
-    "x11_global_shortcut_listener_ozone.cc",
-    "x11_global_shortcut_listener_ozone.h",
     "x11_keyboard_hook.cc",
     "x11_keyboard_hook.h",
     "x11_menu_utils.cc",
@@ -47,6 +45,8 @@ source_set("x11") {
     "x11_window.h",
     "x11_window_manager.cc",
     "x11_window_manager.h",
+    "x11_wm_move_loop.cc",
+    "x11_wm_move_loop.h",
   ]
 
   deps = [
@@ -87,6 +87,7 @@ source_set("x11") {
     "//ui/gfx/x",
     "//ui/gl",
     "//ui/ozone:ozone_base",
+    "//ui/ozone:platform_headers",
     "//ui/ozone/common",
     "//ui/platform_window",
     "//ui/platform_window/common",
@@ -97,6 +98,8 @@ source_set("x11") {
     sources += [
       "linux_ui_delegate_x11.cc",
       "linux_ui_delegate_x11.h",
+      "x11_global_shortcut_listener_ozone.cc",
+      "x11_global_shortcut_listener_ozone.h",
     ]
     deps += [
       "//components/dbus",
@@ -146,6 +149,7 @@ source_set("x11_unittests") {
     "x11_clipboard_ozone_unittest.cc",
     "x11_screen_ozone_unittest.cc",
     "x11_window_ozone_unittest.cc",
+    "x11_wm_move_loop_unittest.cc",
   ]
 
   deps = [
@@ -172,6 +176,7 @@ source_set("x11_unittests") {
     "//ui/ozone:platform",
     "//ui/ozone:test_support",
     "//ui/ozone/common",
+    "//ui/platform_window/wm",
   ]
 
   if (!is_chromeos) {
@@ -196,6 +201,8 @@ source_set("test_support") {
     "x11_ozone_ui_controls_test_helper.cc",
     "x11_ozone_ui_controls_test_helper.h",
   ]
+
+  public_deps = [ "//ui/ozone:ui_test_support_headers" ]
 
   deps = [
     "//ui/aura",

@@ -21,6 +21,7 @@ namespace blink {
 
 class BlockNode;
 class BoxFragmentBuilder;
+class ComputedStyle;
 class ConstraintSpace;
 class GapGeometry;
 class GridLayoutData;
@@ -362,6 +363,26 @@ void InitializeTrackCollection(const SubgriddedItemData& opt_subgrid_data,
 // sizing.
 bool HasBlockSizeDependentGridItem(const GridItems& grid_items);
 
+LayoutUnit ComputeBlockSizeForSubgrid(const GridSizingSubtree& sizing_subtree,
+                                      const GridItemData& subgrid_data,
+                                      const ConstraintSpace& space,
+                                      SizingConstraint sizing_constraint);
+
+MinMaxSizesResult ComputeMinMaxSizesForSubgrid(
+    const BlockNode& node,
+    const GridSizingSubtree& sizing_subtree,
+    const ConstraintSpace& space);
+
+// Computes a virtual item's contribution for the requested track-sizing step
+// using its group's cached measurements and the tracks it spans.
+// `track_baseline` is the shared baseline for the track that `virtual_item`
+// participates in, or `LayoutUnit::Min()` if the item is not baseline-aligned.
+LayoutUnit ContributionSizeForVirtualItem(
+    const GridLayoutTrackCollection& track_collection,
+    LayoutUnit track_baseline,
+    GridItemContributionType contribution_type,
+    GridItemData* virtual_item);
+
 // Appends items from any subgridded children to `grid_items`.
 template <typename NodeType>
 void AppendSubgriddedItems(const NodeType& node, GridItems* grid_items) {
@@ -523,6 +544,17 @@ LayoutUnit LargestAutoPlacedSubgridContribution(LayoutUnit start_extra_margin,
 void AccommodateSubgridExtraMargins(const GridSizingSubtree& sizing_subtree,
                                     GridSizingTrackCollection& track_collection,
                                     GridTrackSizingDirection track_direction);
+
+// Determines whether an item *may* grow to encompass content pushed down by
+// fragmentation (lines pushed down by a fragmentation line, etc).
+// `opt_row_track_collection` should be nullptr if there is no row track
+// collection available in the given layout algorithm (for example, grid lanes
+// column containers).
+bool MinBlockSizeShouldEncompassIntrinsicSize(
+    const GridItemData& grid_item,
+    const ComputedStyle& container_style,
+    bool has_descendant_that_depends_on_percentage_block_size,
+    const GridLayoutTrackCollection* opt_row_track_collection);
 
 }  // namespace blink
 

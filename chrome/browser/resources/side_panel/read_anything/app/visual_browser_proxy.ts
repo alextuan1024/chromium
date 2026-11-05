@@ -6,6 +6,11 @@ import type {ChromeEvent} from '/tools/typescript/definitions/chrome_event.js';
 
 import {EventForwarder} from '../content/read_anything_types.js';
 
+export interface OriginalPageMetrics {
+  hasMathML: boolean;
+  maybeHasKeyPoints: boolean;
+}
+
 // Interface for accessing and updating visual presentation, layout, and theme
 // settings (such as fonts, line and letter spacing, color themes, line focus,
 // and presentation states) in Read Anything.
@@ -20,6 +25,9 @@ export interface VisualBrowserProxy {
   getActivePresentationState(): number;
   isReadAnythingImprovedUiEnabled(): boolean;
   isReadAnythingReadAloudExperimentalPlaybackUiEnabled(): boolean;
+  // TODO(crbug.com/564944081): Move the translation methods (this and
+  // onTranslationRequested()) to ContentBrowserProxy, with the other
+  // translation methods.
   isReadAnythingTranslateEntryPointEnabled(): boolean;
   isImagesEnabled(): boolean;
   isLinksEnabled(): boolean;
@@ -38,6 +46,8 @@ export interface VisualBrowserProxy {
   getVeryLooseLineSpacing(): number;
   getLineSpacing(): number;
   getLineSpacingValue(lineSpacing: number): number;
+  getMinFontSize(): number;
+  getMaxFontSize(): number;
   getDefaultFontSize(): number;
   getFontSize(): number;
 
@@ -57,12 +67,11 @@ export interface VisualBrowserProxy {
   getLowContrastDarkTheme(): number;
   getColorTheme(): number;
 
-  maybeHasKeyPointsSection(): boolean;
+  getOriginalPageMetrics(): OriginalPageMetrics;
   getKeyPointsRegex(): string;
 
   requestImageData(nodeId: number): void;
 
-  isLineFocusEnabled(): boolean;
   isLineFocusOn(): boolean;
   getLastNonDisabledLineFocus(): number;
   getLineFocusOff(): number;
@@ -89,7 +98,6 @@ export interface VisualBrowserProxy {
   togglePresentation(): void;
   togglePinState(): void;
   sendPinStateRequest(): void;
-  sendGetPresentationStateRequest(): void;
   close(): void;
 }
 
@@ -187,6 +195,16 @@ export class VisualBrowserProxyImpl implements VisualBrowserProxy {
     return chrome.readingMode.getLineSpacingValue(lineSpacing);
   }
 
+  // LINT.IfChange(FontScale)
+  getMinFontSize(): number {
+    return 0.5;
+  }
+
+  getMaxFontSize(): number {
+    return 4.5;
+  }
+  // LINT.ThenChange(/chrome/common/read_anything/read_anything_util.cc:FontScale)
+
   getDefaultFontSize(): number {
     return 2.0;
   }
@@ -251,8 +269,8 @@ export class VisualBrowserProxyImpl implements VisualBrowserProxy {
     return chrome.readingMode.colorTheme;
   }
 
-  maybeHasKeyPointsSection(): boolean {
-    return chrome.readingMode.maybeHasKeyPointsSection();
+  getOriginalPageMetrics(): OriginalPageMetrics {
+    return chrome.readingMode.getOriginalPageMetrics();
   }
 
   getKeyPointsRegex(): string {
@@ -261,10 +279,6 @@ export class VisualBrowserProxyImpl implements VisualBrowserProxy {
 
   requestImageData(nodeId: number): void {
     chrome.readingMode.requestImageData(nodeId);
-  }
-
-  isLineFocusEnabled(): boolean {
-    return chrome.readingMode.isLineFocusEnabled;
   }
 
   getLineFocusOff(): number {
@@ -365,10 +379,6 @@ export class VisualBrowserProxyImpl implements VisualBrowserProxy {
 
   sendPinStateRequest(): void {
     chrome.readingMode.sendPinStateRequest();
-  }
-
-  sendGetPresentationStateRequest(): void {
-    chrome.readingMode.sendGetPresentationStateRequest();
   }
 
   shouldShowUi(): boolean {

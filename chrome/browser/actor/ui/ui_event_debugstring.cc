@@ -30,6 +30,11 @@ constexpr absl::Overload UiEventToDebugStringFn{
       return absl::StrFormat("TaskStateChanged[task_id=%d, state=%s]",
                              e.task_id.value(), ToString(e.state));
     },
+    [](const TaskStepProgressUpdated& e) -> std::string {
+      return absl::StrFormat(
+          "TaskStepProgressUpdated[task_id=%d, step_progress=%s]",
+          e.task_id.value(), e.step_progress);
+    },
     [](const StartingToActOnTab& e) -> std::string {
       return absl::StrFormat("StartingToActOnTab[task_id=%d, tab=%d]",
                              e.task_id.value(), e.tab_handle.raw_value());
@@ -48,6 +53,9 @@ constexpr absl::Overload UiEventToDebugStringFn{
           "MouseMove[target=%s target_source=%s]",
           e.target.transform(&gfx::Point::ToString).value_or("null"),
           DebugString(e.target_source));
+    },
+    [](const TaskActRequested& e) -> std::string {
+      return absl::StrFormat("TaskActRequested[task_id=%d]", e.task_id.value());
     },
 };
 }  // namespace

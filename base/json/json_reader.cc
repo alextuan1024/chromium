@@ -7,10 +7,9 @@
 #include <string_view>
 #include <utility>
 
-#include "base/logging.h"
+#include "base/check_op.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
-#include "build/build_config.h"
 #include "base/strings/string_view_rust.h"
 #include "third_party/rust/serde_json_lenient/v0_2/wrapper/functions.h"
 #include "third_party/rust/serde_json_lenient/v0_2/wrapper/lib.rs.h"
@@ -46,7 +45,7 @@ void list_append_f64(base::ListValue& ctx, double val) {
 }
 
 void list_append_str(base::ListValue& ctx, rust::Str val) {
-  ctx.Append(std::string(val));
+  ctx.Append(base::RustStrToStringView(val));
 }
 
 base::ListValue& dict_set_list(base::DictValue& ctx, rust::Str key) {
@@ -78,7 +77,7 @@ void dict_set_f64(base::DictValue& ctx, rust::Str key, double val) {
 }
 
 void dict_set_str(base::DictValue& ctx, rust::Str key, rust::Str val) {
-  ctx.Set(base::RustStrToStringView(key), std::string(val));
+  ctx.Set(base::RustStrToStringView(key), base::RustStrToStringView(val));
 }
 
 namespace {
@@ -86,6 +85,8 @@ namespace {
 base::JSONReader::Result DecodeJSONInRust(std::string_view json,
                                           int options,
                                           size_t max_depth) {
+  CHECK_GT(max_depth, 0u);
+  CHECK_LE(max_depth, base::json_internal::kAbsoluteMaxDepth);
   const JsonOptions rust_options = {
       .allow_trailing_commas =
           (options & base::JSON_ALLOW_TRAILING_COMMAS) != 0,
@@ -163,7 +164,7 @@ JSONReader::Result JSONReader::ReadAndReturnValueWithError(
     std::string_view json,
     int options) {
   return serde_json_lenient::DecodeJSONInRust(json, options,
-                                              internal::kAbsoluteMaxDepth);
+                                              json_internal::kAbsoluteMaxDepth);
 }
 
 }  // namespace base

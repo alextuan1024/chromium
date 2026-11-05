@@ -22,6 +22,7 @@
 #include "third_party/blink/renderer/core/origin_trials/origin_trial_context.h"
 #include "third_party/blink/renderer/core/script/script.h"
 #include "third_party/blink/renderer/core/workers/global_scope_creation_params.h"
+#include "third_party/blink/renderer/core/workers/outside_settings_csp_violation_reporter.h"
 #include "third_party/blink/renderer/core/workers/threaded_worklet_object_proxy.h"
 #include "third_party/blink/renderer/core/workers/worker_clients.h"
 #include "third_party/blink/renderer/core/workers/worklet_global_scope.h"
@@ -30,8 +31,6 @@
 #include "third_party/blink/renderer/platform/loader/fetch/fetch_client_settings_object_snapshot.h"
 #include "third_party/blink/renderer/platform/loader/fetch/worker_resource_timing_notifier.h"
 #include "third_party/blink/renderer/platform/scheduler/public/post_cross_thread_task.h"
-#include "third_party/blink/renderer/platform/wtf/cross_thread_copier_base.h"
-#include "third_party/blink/renderer/platform/wtf/cross_thread_copier_std.h"
 #include "third_party/blink/renderer/platform/wtf/cross_thread_functional.h"
 
 namespace blink {
@@ -86,10 +85,8 @@ void ThreadedWorkletMessagingProxy::Initialize(
         /*web_worker_fetch_context=*/nullptr,
         /*outside_content_security_policies=*/
         Vector<network::mojom::blink::ContentSecurityPolicyPtr>(),
-        /*response_content_security_policies=*/
-        Vector<network::mojom::blink::ContentSecurityPolicyPtr>(),
+        /*outside_settings_reporter=*/mojo::NullRemote(),
         /*referrer_policy=*/network::mojom::ReferrerPolicy::kDefault,
-        /*document_policy=*/DocumentPolicy::DocumentPolicyBundle{},
         client_provided_global_scope_creation_params->starter_origin.get(),
         starter_secure_context,
         /*starter_https_state=*/HttpsState::kNone,
@@ -141,10 +138,9 @@ void ThreadedWorkletMessagingProxy::Initialize(
           frame_client->UserAgent(), frame_client->UserAgentMetadata(),
           frame_client->CreateWorkletFetchContext(),
           mojo::Clone(csp->GetParsedPolicies()),
-          Vector<network::mojom::blink::ContentSecurityPolicyPtr>(),
-          window->GetReferrerPolicy(), DocumentPolicy::DocumentPolicyBundle{},
-          window->GetSecurityOrigin(), window->IsSecureContext(),
-          window->GetHttpsState(), worker_clients,
+          OutsideSettingsCSPViolationReporter::BindNewRemote(*window),
+          window->GetReferrerPolicy(), window->GetSecurityOrigin(),
+          window->IsSecureContext(), window->GetHttpsState(), worker_clients,
           frame_client->CreateWorkerContentSettingsClient(),
           OriginTrialContext::GetInheritedTrialFeatures(window).get(),
           base::UnguessableToken::Create(),

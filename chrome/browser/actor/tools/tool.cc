@@ -4,12 +4,17 @@
 
 #include "chrome/browser/actor/tools/tool.h"
 
+#include <utility>
+
+#include "base/functional/bind.h"
+#include "base/notreached.h"
 #include "build/build_config.h"
+#include "chrome/browser/actor/tools/tool_result.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface_iterator.h"
 #include "chrome/common/actor/action_result.h"
 #include "components/actor/core/aggregated_journal.h"
-#include "components/tabs/public/tab_interface.h"
 
 namespace actor {
 
@@ -22,6 +27,15 @@ mojom::ActionResultPtr Tool::TimeOfUseValidation(
   return MakeOkResult();
 }
 
+void Tool::Invoke(DeprecatedToolCallback callback) {
+  NOTREACHED();
+}
+
+void Tool::Invoke(ToolResultCallback callback) {
+  Invoke(base::BindOnce(&ToolResult::FromDeprecatedActionResult)
+             .Then(std::move(callback)));
+}
+
 void Tool::Cancel() {}
 
 void Tool::NotifyPaused() {}
@@ -31,19 +45,31 @@ GURL Tool::JournalURL() const {
 }
 
 void Tool::UpdateTaskBeforeInvoke(ActorTask& task,
-                                  ToolCallback callback) const {
+                                  DeprecatedToolCallback callback) const {
   // Do nothing by default, just trigger the callback.
   std::move(callback).Run(MakeOkResult());
 }
 
 void Tool::UpdateTaskAfterInvoke(ActorTask& task,
-                                 mojom::ActionResultPtr result,
-                                 ToolCallback callback) const {
+                                 ToolResult result,
+                                 ToolResultCallback callback) const {
   // Do nothing by default, just trigger the callback.
   std::move(callback).Run(std::move(result));
 }
 
-#if !BUILDFLAG(IS_ANDROID)
+BrowserWindowInterface* Tool::FindBrowserWindow(SessionID window_id) const {
+  BrowserWindowInterface* result = nullptr;
+  ForEachCurrentBrowserWindowInterfaceOrderedByActivation(
+      [&](BrowserWindowInterface* browser) {
+        if (browser->GetSessionID() == window_id) {
+          result = browser;
+          return false;  // stop iterating
+        }
+        return true;  // continue iterating
+      });
+  return result;
+}
+
 mojom::ActionResultPtr Tool::ValidateBrowserWindow(
     const BrowserWindowInterface* browser) const {
   if (!browser) {
@@ -60,9 +86,7 @@ mojom::ActionResultPtr Tool::ValidateBrowserWindow(
 }
 
 mojom::ActionResultPtr Tool::ValidateWindowId(SessionID window_id) const {
-  return ValidateBrowserWindow(
-      BrowserWindowInterface::FromSessionID(window_id));
+  return ValidateBrowserWindow(FindBrowserWindow(window_id));
 }
-#endif
 
 }  // namespace actor

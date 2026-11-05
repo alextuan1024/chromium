@@ -9,7 +9,6 @@
 #include "base/i18n/rtl.h"
 #include "base/memory/raw_ptr.h"
 #include "base/test/mock_callback.h"
-#include "base/test/scoped_feature_list.h"
 #include "base/values.h"
 #include "build/build_config.h"
 #include "chrome/browser/profiles/profile.h"
@@ -17,22 +16,26 @@
 #include "chrome/browser/ui/animation/browser_animation_controller.h"
 #include "chrome/browser/ui/browser_actions.h"
 #include "chrome/browser/ui/browser_window/test/mock_browser_window_interface.h"
+#include "chrome/browser/ui/tabs/mock_vertical_tab_strip_state_controller.h"
 #include "chrome/browser/ui/tabs/organizer/organizer_panel_controller.h"
 #include "chrome/browser/ui/views/animations/organizer_panel_animations.h"
-#include "chrome/browser/ui/views/tabs/organizer/organizer_panel_utils.h"
+#include "chrome/browser/ui/views/tabs/organizer/layout_constants.h"
 #include "chrome/test/base/testing_profile.h"
 #include "chrome/test/views/chrome_views_test_base.h"
 #include "components/keyed_service/content/browser_context_dependency_manager.h"
+#include "content/public/browser/web_contents.h"
+#include "content/public/browser/web_contents_delegate.h"
 #include "content/public/test/test_renderer_host.h"
-#include "extensions/buildflags/buildflags.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/blink/public/mojom/page/draggable_region.mojom.h"
 #include "ui/actions/actions.h"
 #include "ui/base/unowned_user_data/unowned_user_data_host.h"
 #include "ui/compositor/layer.h"
 #include "ui/gfx/animation/animation.h"
 #include "ui/gfx/animation/slide_animation.h"
 #include "ui/views/controls/button/label_button.h"
+#include "ui/views/controls/webview/webview.h"
 #include "ui/views/interaction/element_tracker_views.h"
 #include "ui/views/test/views_test_utils.h"
 #include "ui/views/view_utils.h"
@@ -62,16 +65,23 @@ class OrganizerPanelViewTest : public ChromeViewsTestBase {
         mock_browser_window_interface_);
     animation_controller_->AddAnimationProvider(
         std::make_unique<OrganizerPanelAnimations>());
+    vertical_tab_strip_controller_ = std::make_unique<
+        testing::NiceMock<tabs::test::MockVerticalTabStripStateController>>(
+        mock_browser_window_interface_);
+    ON_CALL(*vertical_tab_strip_controller_, ShouldDisplayVerticalTabs)
+        .WillByDefault(testing::Return(false));
     state_controller_ = std::make_unique<OrganizerPanelController>(
         mock_browser_window_interface_, root_action_item_.get());
   }
 
-  void CreateView() {
+  void CreateView(bool show_widget = true) {
     auto view = OrganizerPanelView::Create(mock_browser_window_interface_);
     widget_ = CreateTestWidget(views::Widget::InitParams::CLIENT_OWNS_WIDGET);
     view_ = widget_->SetContentsView(std::move(view));
     widget_->SetBounds(gfx::Rect(0, 0, 800, 600));
-    widget_->Show();
+    if (show_widget) {
+      widget_->Show();
+    }
   }
 
   void TearDown() override {
@@ -84,6 +94,7 @@ class OrganizerPanelViewTest : public ChromeViewsTestBase {
     widget_.reset();
 
     state_controller_.reset();
+    vertical_tab_strip_controller_.reset();
     animation_controller_.reset();
     if (browser_actions_) {
       browser_actions_->set_root_action_item_for_testing(nullptr);
@@ -101,6 +112,12 @@ class OrganizerPanelViewTest : public ChromeViewsTestBase {
   }
 
   OrganizerPanelView* organizer_panel_view() { return view_; }
+  views::Widget* widget() { return widget_.get(); }
+
+  tabs::test::MockVerticalTabStripStateController*
+  vertical_tab_strip_controller() {
+    return vertical_tab_strip_controller_.get();
+  }
 
   views::View* GetWebView() {
     auto* const tracker = views::ElementTrackerViews::GetInstance();
@@ -119,6 +136,9 @@ class OrganizerPanelViewTest : public ChromeViewsTestBase {
   std::unique_ptr<actions::ActionItem> root_action_item_;
   std::unique_ptr<BrowserActions> browser_actions_;
   std::unique_ptr<BrowserAnimationController> animation_controller_;
+  std::unique_ptr<
+      testing::NiceMock<tabs::test::MockVerticalTabStripStateController>>
+      vertical_tab_strip_controller_;
   std::unique_ptr<OrganizerPanelController> state_controller_;
 
   // Widget owns the view.
@@ -126,26 +146,170 @@ class OrganizerPanelViewTest : public ChromeViewsTestBase {
   raw_ptr<OrganizerPanelView> view_ = nullptr;
 };
 
-TEST_F(OrganizerPanelViewTest, NoWebViewWhenExtensionSidePanelFlagEnabled) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndEnableFeature(
-      organizer_panel::kShowExtensionsSidePanelUiInOrganizerPanel);
-
+TEST_F(OrganizerPanelViewTest, DraggableRegionsInWindowCaption) {
   CreateView();
-  EXPECT_EQ(GetWebView(), nullptr);
-#if BUILDFLAG(ENABLE_EXTENSIONS)
-  EXPECT_TRUE(organizer_panel_view()->IsInExtensionModeForTesting());
-#else
-  EXPECT_FALSE(organizer_panel_view()->IsInExtensionModeForTesting());
-#endif
+  state_controller()->SetOrganizerVisible(true);
+  views::WebView* web_view = views::AsViewClass<views::WebView>(GetWebView());
+  ASSERT_NE(web_view, nullptr);
+  content::WebContents* web_contents = web_view->web_contents();
+  ASSERT_NE(web_contents, nullptr);
+
+  // Initially no draggable regions.
+  EXPECT_FALSE(
+      organizer_panel_view()->IsPositionInWindowCaption(gfx::Point(10, 10)));
+
+  // Simulate draggable regions update from renderer.
+  std::vector<blink::mojom::DraggableRegionPtr> regions;
+  auto region = blink::mojom::DraggableRegion::New();
+  region->bounds = gfx::Rect(0, 100, 200, 300);
+  region->draggable = true;
+  regions.push_back(std::move(region));
+
+  web_contents->GetDelegate()->DraggableRegionsChanged(regions, web_contents);
+
+  gfx::Point point_in_view = gfx::Point(50, 150);
+  views::View::ConvertPointToTarget(web_view, organizer_panel_view(),
+                                    &point_in_view);
+
+  // When vertical tabs is disabled, this is not a caption area.
+  EXPECT_CALL(*vertical_tab_strip_controller(), ShouldDisplayVerticalTabs)
+      .WillRepeatedly(testing::Return(false));
+  EXPECT_FALSE(
+      organizer_panel_view()->IsPositionInWindowCaption(point_in_view));
+
+  // When vertical tabs is enabled but embedded panel is not supported (e.g.
+  // width is too narrow, so it renders in the tray), this is not caption.
+  EXPECT_CALL(*vertical_tab_strip_controller(), ShouldDisplayVerticalTabs)
+      .WillRepeatedly(testing::Return(true));
+  EXPECT_CALL(*vertical_tab_strip_controller(), GetUncollapsedWidth)
+      .WillRepeatedly(testing::Return(0));
+  EXPECT_FALSE(
+      organizer_panel_view()->IsPositionInWindowCaption(point_in_view));
+
+  // When vertical tabs is enabled and embedded panel is supported, point inside
+  // draggable region is caption.
+  EXPECT_CALL(*vertical_tab_strip_controller(), GetUncollapsedWidth)
+      .WillRepeatedly(
+          testing::Return(organizer_panel::kOrganizerPanelMinWidth));
+  EXPECT_TRUE(organizer_panel_view()->IsPositionInWindowCaption(point_in_view));
+
+  // Point outside draggable region should not be caption even with vertical
+  // tabs.
+  gfx::Point outside_point = gfx::Point(50, 50);
+  views::View::ConvertPointToTarget(web_view, organizer_panel_view(),
+                                    &outside_point);
+  EXPECT_FALSE(
+      organizer_panel_view()->IsPositionInWindowCaption(outside_point));
 }
 
-TEST_F(OrganizerPanelViewTest, DefaultWebViewCreatedWhenFlagDisabled) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndDisableFeature(
-      organizer_panel::kShowExtensionsSidePanelUiInOrganizerPanel);
-
+TEST_F(OrganizerPanelViewTest, VisibilityChangedRestoresFocusWhenWidgetActive) {
   CreateView();
-  EXPECT_NE(GetWebView(), nullptr);
-  EXPECT_FALSE(organizer_panel_view()->IsInExtensionModeForTesting());
+  state_controller()->SetOrganizerVisible(true);
+  views::View* web_view = GetWebView();
+  ASSERT_NE(web_view, nullptr);
+
+  views::View* initial_view =
+      widget()->GetRootView()->AddChildView(std::make_unique<views::View>());
+  initial_view->SetFocusBehavior(views::View::FocusBehavior::ALWAYS);
+
+  web_view->SetVisible(false);
+  initial_view->RequestFocus();
+  EXPECT_EQ(widget()->GetFocusManager()->GetFocusedView(), initial_view);
+
+  web_view->SetVisible(true);
+  EXPECT_EQ(widget()->GetFocusManager()->GetFocusedView(), web_view);
+
+  EXPECT_TRUE(widget()->IsActive());
+  web_view->SetVisible(false);
+  EXPECT_EQ(widget()->GetFocusManager()->GetFocusedView(), initial_view);
+}
+
+TEST_F(OrganizerPanelViewTest,
+       VisibilityChangedDoesNotStealFocusWhenWidgetInactive) {
+  CreateView();
+  state_controller()->SetOrganizerVisible(true);
+  views::View* web_view = GetWebView();
+  ASSERT_NE(web_view, nullptr);
+
+  views::View* initial_view =
+      widget()->GetRootView()->AddChildView(std::make_unique<views::View>());
+  initial_view->SetFocusBehavior(views::View::FocusBehavior::ALWAYS);
+
+  web_view->SetVisible(false);
+  initial_view->RequestFocus();
+  EXPECT_EQ(widget()->GetFocusManager()->GetFocusedView(), initial_view);
+
+  web_view->SetVisible(true);
+  EXPECT_EQ(widget()->GetFocusManager()->GetFocusedView(), web_view);
+
+  auto other_widget =
+      CreateTestWidget(views::Widget::InitParams::CLIENT_OWNS_WIDGET);
+  other_widget->Show();
+  EXPECT_FALSE(widget()->IsActive());
+
+  web_view->SetVisible(false);
+  EXPECT_NE(widget()->GetFocusManager()->GetFocusedView(), initial_view);
+  EXPECT_EQ(widget()->GetFocusManager()->GetStoredFocusView(), initial_view);
+}
+
+TEST_F(OrganizerPanelViewTest, WidgetHideDoesNotRestoreFocus) {
+  CreateView();
+  state_controller()->SetOrganizerVisible(true);
+  views::View* web_view = GetWebView();
+  ASSERT_NE(web_view, nullptr);
+
+  views::View* initial_view =
+      widget()->GetRootView()->AddChildView(std::make_unique<views::View>());
+  initial_view->SetFocusBehavior(views::View::FocusBehavior::ALWAYS);
+
+  web_view->SetVisible(false);
+  initial_view->RequestFocus();
+  EXPECT_EQ(widget()->GetFocusManager()->GetFocusedView(), initial_view);
+
+  web_view->SetVisible(true);
+  EXPECT_EQ(widget()->GetFocusManager()->GetFocusedView(), web_view);
+
+  widget()->Hide();
+  EXPECT_NE(widget()->GetFocusManager()->GetFocusedView(), initial_view);
+  EXPECT_NE(widget()->GetFocusManager()->GetStoredFocusView(), initial_view);
+}
+
+TEST_F(OrganizerPanelViewTest, LazyWebContentsInitialization) {
+  CreateView(/*show_widget=*/false);
+  views::WebView* web_view = views::AsViewClass<views::WebView>(GetWebView());
+  ASSERT_NE(web_view, nullptr);
+  // WebContents should not be created eagerly before being shown.
+  EXPECT_EQ(web_view->web_contents(), nullptr);
+
+  // Opening the organizer panel requests and initializes the WebContents.
+  state_controller()->SetOrganizerVisible(true);
+  EXPECT_NE(web_view->web_contents(), nullptr);
+  EXPECT_EQ(web_view->web_contents(), state_controller()->web_contents());
+}
+
+TEST_F(OrganizerPanelViewTest, ClosesOnEscapeOnlyWhenFocused) {
+  CreateView();
+  views::View* web_view = GetWebView();
+  ASSERT_NE(web_view, nullptr);
+
+  views::View* outside_view =
+      widget()->GetRootView()->AddChildView(std::make_unique<views::View>());
+  outside_view->SetFocusBehavior(views::View::FocusBehavior::ALWAYS);
+
+  state_controller()->SetOrganizerVisible(true, /*immediate=*/true);
+  ASSERT_TRUE(state_controller()->IsOrganizerPanelVisible());
+
+  const ui::Accelerator escape(ui::VKEY_ESCAPE, ui::EF_NONE);
+
+  // Pressing Escape when focus is outside the panel should not close it.
+  outside_view->RequestFocus();
+  EXPECT_EQ(widget()->GetFocusManager()->GetFocusedView(), outside_view);
+  EXPECT_FALSE(widget()->GetFocusManager()->ProcessAccelerator(escape));
+  EXPECT_TRUE(state_controller()->IsOrganizerPanelVisible());
+
+  // Pressing Escape when focus is inside the panel should close it.
+  web_view->RequestFocus();
+  EXPECT_EQ(widget()->GetFocusManager()->GetFocusedView(), web_view);
+  EXPECT_TRUE(widget()->GetFocusManager()->ProcessAccelerator(escape));
+  EXPECT_FALSE(state_controller()->IsOrganizerPanelVisible());
 }

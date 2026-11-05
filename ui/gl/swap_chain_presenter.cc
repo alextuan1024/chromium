@@ -11,10 +11,12 @@
 #include "base/memory/raw_ptr.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/metrics/histogram_macros.h"
+#include "base/power_monitor/power_monitor.h"
 #include "base/synchronization/waitable_event.h"
 #include "base/trace_event/trace_event.h"
 #include "base/types/expected.h"
 #include "base/types/expected_macros.h"
+#include "third_party/microsoft_dxheaders/src/include/experimental-composition/experimental-dcomp.h"
 #include "ui/gfx/color_space_win.h"
 #include "ui/gfx/geometry/axis_transform2d.h"
 #include "ui/gfx/geometry/rect_conversions.h"
@@ -71,20 +73,6 @@ gfx::ColorSpace GetOutputColorSpace(const gfx::ColorSpace& input_color_space,
 
 bool IsProtectedVideo(gfx::ProtectedVideoType protected_video_type) {
   return protected_video_type != gfx::ProtectedVideoType::kClear;
-}
-
-const char* ProtectedVideoTypeToString(gfx::ProtectedVideoType type) {
-  switch (type) {
-    case gfx::ProtectedVideoType::kClear:
-      return "Clear";
-    case gfx::ProtectedVideoType::kSoftwareProtected:
-      if (DirectCompositionOverlaysSupported())
-        return "SoftwareProtected.HasOverlaySupport";
-      else
-        return "SoftwareProtected.NoOverlaySupport";
-    case gfx::ProtectedVideoType::kHardwareProtected:
-      return "HardwareProtected";
-  }
 }
 
 base::win::ScopedHandle CreateDCompSurfaceHandle() {
@@ -351,18 +339,15 @@ bool TryDisableDesktopPlane(IDXGIDecodeSwapChain* decode_swap_chain,
                             const gfx::Rect& target_rect) {
   // Get the original dest size in case of restoring.
   uint32_t original_dest_width, original_dest_height;
-  HRESULT hr = decode_swap_chain->GetDestSize(&original_dest_width,
-                                              &original_dest_height);
-  if (FAILED(hr)) {
-    DLOG(ERROR) << "GetDestSize failed: "
-                << logging::SystemErrorCodeToString(hr);
-    return false;
-  }
+  CHECK_EQ(decode_swap_chain->GetDestSize(&original_dest_width,
+                                          &original_dest_height),
+           S_OK);
 
   // Set the destination surface size if necessary.
   if (dest_size.width() != static_cast<int>(original_dest_width) ||
       dest_size.height() != static_cast<int>(original_dest_height)) {
-    hr = decode_swap_chain->SetDestSize(dest_size.width(), dest_size.height());
+    HRESULT hr =
+        decode_swap_chain->SetDestSize(dest_size.width(), dest_size.height());
     if (FAILED(hr)) {
       DLOG(ERROR) << "SetDestSize failed: "
                   << logging::SystemErrorCodeToString(hr);
@@ -372,18 +357,12 @@ bool TryDisableDesktopPlane(IDXGIDecodeSwapChain* decode_swap_chain,
 
   // Get the original target rect in case of restoring.
   RECT original_target_rect;
-  hr = decode_swap_chain->GetTargetRect(&original_target_rect);
-  if (FAILED(hr)) {
-    DLOG(ERROR) << "GetTargetRect failed: "
-                << logging::SystemErrorCodeToString(hr);
-    decode_swap_chain->SetDestSize(original_dest_width, original_dest_height);
-    return false;
-  }
+  CHECK_EQ(decode_swap_chain->GetTargetRect(&original_target_rect), S_OK);
 
   // Set the target region to the specified rectangle if necessary.
   RECT target_region = target_rect.ToRECT();
   if (target_region != original_target_rect) {
-    hr = decode_swap_chain->SetTargetRect(&target_region);
+    HRESULT hr = decode_swap_chain->SetTargetRect(&target_region);
     if (FAILED(hr)) {
       DLOG(ERROR) << "SetTargetRect failed: "
                   << logging::SystemErrorCodeToString(hr);
@@ -482,18 +461,13 @@ SwapChainPresenter::SwapChainPresenter(
       swap_chain_buffer_count_(BufferCount(
           layer_tree->force_dcomp_triple_buffer_video_swap_chain())),
       switched_to_BGRA8888_time_tick_(base::TimeTicks::Now()),
-      d3d11_device_(d3d11_device),
-      is_on_battery_power_(
-          base::PowerMonitor::GetInstance()
-              ->AddPowerStateObserverAndReturnBatteryPowerStatus(this) ==
-          base::PowerStateObserver::BatteryPowerStatus::kBatteryPower) {
+      d3d11_device_(d3d11_device) {
   DVLOG(1) << __func__ << "(" << this << ")";
   CHECK_EQ(dcomp_device.As(&dcomp_device_), S_OK);
 }
 
 SwapChainPresenter::~SwapChainPresenter() {
   DVLOG(1) << __func__ << "(" << this << ")";
-  base::PowerMonitor::GetInstance()->RemovePowerStateObserver(this);
 }
 
 DXGI_FORMAT SwapChainPresenter::GetSwapChainFormat(
@@ -555,7 +529,7 @@ DXGI_FORMAT SwapChainPresenter::GetSwapChainFormat(
     return DXGI_FORMAT_B8G8R8A8_UNORM;
   }
 
-  if (!presentation_history_.Valid() || IsSwapChainYuvFormatForced()) {
+  if (!presentation_history_.Valid()) {
     // Prefer P010 swapchain when playing P010 SDR content on SDR system with
     // P010 MPO supported.
     return sdr_yuv_overlay_format;
@@ -592,13 +566,11 @@ SwapChainPresenter::UploadVideoImage(const gfx::Size& texture_size,
                                      base::span<const uint8_t> shm_video_pixmap,
                                      size_t pixmap_stride) {
   if (!shm_video_pixmap.data()) {
-    DLOG(ERROR) << "Invalid NV12 pixmap data.";
     return base::unexpected(
         CommitError{CommitError::Reason::kUploadVideoImageInvalidPixmapData});
   }
 
   if (texture_size.width() % 2 != 0 || texture_size.height() % 2 != 0) {
-    DLOG(ERROR) << "Invalid NV12 pixmap size.";
     return base::unexpected(
         CommitError{CommitError::Reason::kUploadVideoImageInvalidPixmapSize});
   }
@@ -606,7 +578,6 @@ SwapChainPresenter::UploadVideoImage(const gfx::Size& texture_size,
   const auto cols = static_cast<size_t>(texture_size.width());
   const auto rows = static_cast<size_t>(texture_size.height());
   if (pixmap_stride < cols) {
-    DLOG(ERROR) << "Invalid NV12 pixmap stride.";
     return base::unexpected(
         CommitError{CommitError::Reason::kUploadVideoImageInvalidPixmapStride});
   }
@@ -637,8 +608,6 @@ SwapChainPresenter::UploadVideoImage(const gfx::Size& texture_size,
     HRESULT hr =
         d3d11_device_->CreateTexture2D(&desc, nullptr, &staging_texture_);
     if (FAILED(hr)) {
-      DLOG(ERROR) << "Creating D3D11 video staging texture failed: "
-                  << logging::SystemErrorCodeToString(hr);
       DisableDirectCompositionOverlays();
       return base::unexpected(CommitError{
           CommitError::Reason::kUploadVideoImageCreateStagingTexture, hr});
@@ -662,8 +631,6 @@ SwapChainPresenter::UploadVideoImage(const gfx::Size& texture_size,
   HRESULT hr =
       context->Map(staging_texture_.Get(), 0, map_type, 0, &mapped_resource);
   if (FAILED(hr)) {
-    DLOG(ERROR) << "Mapping D3D11 video staging texture failed: "
-                << logging::SystemErrorCodeToString(hr);
     return base::unexpected(CommitError{
         CommitError::Reason::kUploadVideoImageMapStagingTexture, hr});
   }
@@ -706,8 +673,6 @@ SwapChainPresenter::UploadVideoImage(const gfx::Size& texture_size,
     desc.CPUAccessFlags = 0;
     hr = d3d11_device_->CreateTexture2D(&desc, nullptr, &copy_texture_);
     if (FAILED(hr)) {
-      DLOG(ERROR) << "Creating D3D11 video upload texture failed: "
-                  << logging::SystemErrorCodeToString(hr);
       DisableDirectCompositionOverlays();
       return base::unexpected(CommitError{
           CommitError::Reason::kUploadVideoImageCreateCopyTexture, hr});
@@ -904,8 +869,7 @@ bool SwapChainPresenter::PresentToDecodeSwapChain(
     hr = dxgi_device->GetAdapter(&dxgi_adapter);
     CHECK_EQ(hr, S_OK);
     Microsoft::WRL::ComPtr<IDXGIFactoryMedia> media_factory;
-    dxgi_adapter->GetParent(IID_PPV_ARGS(&media_factory));
-    DCHECK(media_factory);
+    CHECK_EQ(dxgi_adapter->GetParent(IID_PPV_ARGS(&media_factory)), S_OK);
 
     DXGI_DECODE_SWAP_CHAIN_DESC desc = {};
     // Set the DXGI_SWAP_CHAIN_FLAG_FULLSCREEN_VIDEO flag to mark this surface
@@ -925,18 +889,11 @@ bool SwapChainPresenter::PresentToDecodeSwapChain(
     DVLOG(2) << "Update visual's content. " << __func__ << "(" << this << ")";
     SetSwapChainPresentDuration();
 
-    Microsoft::WRL::ComPtr<IDCompositionDesktopDevice> desktop_device;
-    dcomp_device_.As(&desktop_device);
-    DCHECK(desktop_device);
-
-    hr = desktop_device->CreateSurfaceFromHandle(swap_chain_handle.Get(),
-                                                 &decode_surface_);
-    if (FAILED(hr)) {
-      DLOG(ERROR) << "CreateSurfaceFromHandle failed: "
-                  << logging::SystemErrorCodeToString(hr);
-      return false;
-    }
-    DCHECK(decode_surface_);
+    // We own `swap_chain_handle` and created it with all access rights, so it
+    // is always usable as a surface.
+    CHECK_EQ(dcomp_device_->CreateSurfaceFromHandle(swap_chain_handle.Get(),
+                                                    &decode_surface_),
+             S_OK);
 
     content_ = decode_surface_.Get();
   }
@@ -1001,6 +958,8 @@ base::expected<DCLayerOverlayImage, CommitError>
 SwapChainPresenter::PresentToSwapChain(
     DCLayerOverlayParams& overlay,
     std::optional<OverlayPositionAdjustment>& overlay_position_adjustment) {
+  is_on_battery_power_ = base::PowerMonitor::GetInstance()->IsOnBatteryPower();
+
   RETURN_IF_ERROR(SetupPresentToSwapChain(overlay));
 
   if (overlay.video_params.is_full_screen_video) {
@@ -1192,18 +1151,14 @@ base::expected<void, CommitError> SwapChainPresenter::SetupPresentToSwapChain(
       // Ignore DXGI_STATUS_OCCLUDED since that's not an error but only
       // indicates that the window is occluded and we can stop rendering.
       if (FAILED(hr) && hr != DXGI_STATUS_OCCLUDED) {
-        LOG(ERROR) << "Present failed: "
-                   << logging::SystemErrorCodeToString(hr);
         return base::unexpected(CommitError{
             CommitError::Reason::kPresentToSwapChainFirstPresent, hr});
       }
 
       Microsoft::WRL::ComPtr<ID3D11Texture2D> dest_texture;
-      swap_chain_->GetBuffer(0, IID_PPV_ARGS(&dest_texture));
-      DCHECK(dest_texture);
+      CHECK_EQ(swap_chain_->GetBuffer(0, IID_PPV_ARGS(&dest_texture)), S_OK);
       Microsoft::WRL::ComPtr<ID3D11Texture2D> src_texture;
-      hr = swap_chain_->GetBuffer(1, IID_PPV_ARGS(&src_texture));
-      DCHECK(src_texture);
+      CHECK_EQ(swap_chain_->GetBuffer(1, IID_PPV_ARGS(&src_texture)), S_OK);
       Microsoft::WRL::ComPtr<ID3D11DeviceContext> context;
       d3d11_device_->GetImmediateContext(&context);
       DCHECK(context);
@@ -1298,8 +1253,6 @@ SwapChainPresenter::FinishPresentToSwapChain() {
       // Ignore DXGI_STATUS_OCCLUDED since that's not an error but only
       // indicates that the window is occluded and we can stop rendering.
       if (FAILED(hr) && hr != DXGI_STATUS_OCCLUDED) {
-        LOG(ERROR) << "PresentBuffer failed: "
-                   << logging::SystemErrorCodeToString(hr);
         return base::unexpected(CommitError{
             CommitError::Reason::kPresentToSwapChainPresentBuffer, hr});
       }
@@ -1318,8 +1271,6 @@ SwapChainPresenter::FinishPresentToSwapChain() {
       // indicates that the window is occluded and we can stop rendering.
       HRESULT hr = swap_chain_->Present(interval, flags);
       if (FAILED(hr) && hr != DXGI_STATUS_OCCLUDED) {
-        LOG(ERROR) << "Present failed: "
-                   << logging::SystemErrorCodeToString(hr);
         return base::unexpected(
             CommitError{CommitError::Reason::kPresentToSwapChainPresent, hr});
       }
@@ -1451,7 +1402,15 @@ base::expected<void, CommitError> SwapChainPresenter::PresentDCOMPSurface(
   }
 
   pending_dcomp_surface_rect_in_window_ = mapped_rect;
-  content_size_ = mapped_rect.size();
+
+  if (layer_tree_->dcomp_device7()) {
+    // Report the quad size so that the DCLayerTree's content-to-quad transform
+    // is identity so the video will not be doubly scaled when placed in a
+    // `IDCompositionSurfaceBrush` below.
+    content_size_ = params.quad_rect.size();
+  } else {
+    content_size_ = mapped_rect.size();
+  }
 
   // If |dcomp_surface_proxy| size is {1, 1}, the texture was initialized
   // without knowledge of output size; reset |content_| so it's not added to the
@@ -1477,13 +1436,20 @@ base::expected<void, CommitError> SwapChainPresenter::PresentDCOMPSurface(
     const HRESULT hr =
         dcomp_device_->CreateSurfaceFromHandle(surface_handle, &dcomp_surface);
     if (FAILED(hr)) {
-      LOG(ERROR) << "CreateSurfaceFromHandle failed: "
-                 << logging::SystemErrorCodeToString(hr);
       return base::unexpected(CommitError{
           CommitError::Reason::kPresentToSwapChainCreateSurfaceFromHandle, hr});
     }
 
-    content_ = dcomp_surface.Get();
+    if (auto* dcomp_device7 = layer_tree_->dcomp_device7()) {
+      // A DComp surface brush scales its contents to its container. This lets
+      // us avoid jank when the internal MF swap chain asynchronously resizes.
+      Microsoft::WRL::ComPtr<IDCompositionSurfaceBrush> surface_brush;
+      CHECK_EQ(S_OK, dcomp_device7->CreateSurfaceBrush(&surface_brush));
+      CHECK_EQ(S_OK, surface_brush->SetSurface(dcomp_surface.Get()));
+      content_ = std::move(surface_brush);
+    } else {
+      content_ = dcomp_surface.Get();
+    }
     // Don't take ownership of handle as the DCOMPSurfaceProxy instance owns it.
     dcomp_surface_handle_ = surface_handle;
   }
@@ -1591,8 +1557,6 @@ base::expected<void, CommitError> SwapChainPresenter::VideoProcessorBlt(
         input_texture.Get(), video_processor_enumerator.Get(), &input_desc,
         &input_view);
     if (FAILED(hr)) {
-      LOG(ERROR) << "CreateVideoProcessorInputView failed: "
-                 << logging::SystemErrorCodeToString(hr);
       return base::unexpected(CommitError{
           CommitError::Reason::kPresentToSwapChainCreateVideoProcessorInputView,
           hr});
@@ -1616,7 +1580,8 @@ base::expected<void, CommitError> SwapChainPresenter::VideoProcessorBlt(
 
     if (!output_view_) {
       Microsoft::WRL::ComPtr<ID3D11Texture2D> swap_chain_buffer;
-      swap_chain_->GetBuffer(0, IID_PPV_ARGS(&swap_chain_buffer));
+      CHECK_EQ(swap_chain_->GetBuffer(0, IID_PPV_ARGS(&swap_chain_buffer)),
+               S_OK);
 
       D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC output_desc = {};
       output_desc.ViewDimension = D3D11_VPOV_DIMENSION_TEXTURE2D;
@@ -1626,8 +1591,6 @@ base::expected<void, CommitError> SwapChainPresenter::VideoProcessorBlt(
           swap_chain_buffer.Get(), video_processor_enumerator.Get(),
           &output_desc, &output_view_);
       if (FAILED(hr)) {
-        LOG(ERROR) << "CreateVideoProcessorOutputView failed: "
-                   << logging::SystemErrorCodeToString(hr);
         return base::unexpected(
             CommitError{CommitError::Reason::
                             kPresentToSwapChainCreateVideoProcessorOutputView,
@@ -1717,9 +1680,6 @@ base::expected<void, CommitError> SwapChainPresenter::VideoProcessorBlt(
     }
 
     if (FAILED(hr)) {
-      LOG(ERROR) << "VideoProcessorBlt failed: "
-                 << logging::SystemErrorCodeToString(hr);
-
       // To prevent it from failing in all coming frames, disable overlay if
       // VideoProcessorBlt is not implemented in the GPU driver.
       if (hr == E_NOTIMPL) {
@@ -1776,8 +1736,7 @@ base::expected<void, CommitError> SwapChainPresenter::ReallocateSwapChain(
   hr = dxgi_device->GetAdapter(&dxgi_adapter);
   CHECK_EQ(hr, S_OK);
   Microsoft::WRL::ComPtr<IDXGIFactoryMedia> media_factory;
-  dxgi_adapter->GetParent(IID_PPV_ARGS(&media_factory));
-  DCHECK(media_factory);
+  CHECK_EQ(dxgi_adapter->GetParent(IID_PPV_ARGS(&media_factory)), S_OK);
 
   // The composition surface handle is only used to create YUV swap chains since
   // CreateSwapChainForComposition can't do that.
@@ -1793,7 +1752,8 @@ base::expected<void, CommitError> SwapChainPresenter::ReallocateSwapChain(
   desc.SampleDesc.Count = 1;
   desc.BufferCount = swap_chain_buffer_count_;
   desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
-  desc.Scaling = DXGI_SCALING_STRETCH;
+  desc.Scaling = ShouldUseDirectCompositionBrushes() ? DXGI_SCALING_NONE
+                                                     : DXGI_SCALING_STRETCH;
   desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
   desc.Flags =
       DXGI_SWAP_CHAIN_FLAG_YUV_VIDEO | DXGI_SWAP_CHAIN_FLAG_FULLSCREEN_VIDEO;
@@ -1811,10 +1771,6 @@ base::expected<void, CommitError> SwapChainPresenter::ReallocateSwapChain(
   }
   desc.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
 
-  const std::string kSwapChainCreationResultByVideoTypeUmaPrefix =
-      "GPU.DirectComposition.SwapChainCreationResult3.";
-  const std::string protected_video_type_string =
-      ProtectedVideoTypeToString(protected_video_type);
   Microsoft::WRL::ComPtr<IDXGISwapChain3> swap_chain;
 
   if (use_yuv_swap_chain) {
@@ -1825,10 +1781,6 @@ base::expected<void, CommitError> SwapChainPresenter::ReallocateSwapChain(
         d3d11_device_.Get(), swap_chain_handle.Get(), &desc, nullptr,
         &swap_chain1);
     failed_to_create_yuv_swapchain_ = FAILED(hr);
-
-    base::UmaHistogramSparse(kSwapChainCreationResultByVideoTypeUmaPrefix +
-                                 protected_video_type_string,
-                             hr);
 
     if (failed_to_create_yuv_swapchain_) {
       DLOG(ERROR) << "Failed to create "
@@ -1870,17 +1822,12 @@ base::expected<void, CommitError> SwapChainPresenter::ReallocateSwapChain(
         d3d11_device_.Get(), swap_chain_handle.Get(), &desc, nullptr,
         &swap_chain1);
 
-    base::UmaHistogramSparse(kSwapChainCreationResultByVideoTypeUmaPrefix +
-                                 protected_video_type_string,
-                             hr);
-
     if (FAILED(hr)) {
       // Disable overlay support so dc_layer_overlay will stop sending down
       // overlay frames here and uses GL Composition instead.
       DisableDirectCompositionOverlays();
       LOG(ERROR) << "Failed to create " << DxgiFormatToString(swap_chain_format)
-                 << " swap chain of size " << swap_chain_size.ToString() << ": "
-                 << logging::SystemErrorCodeToString(hr)
+                 << " swap chain of size " << swap_chain_size.ToString()
                  << ". Disable overlay swap chains";
       return base::unexpected(CommitError{
           CommitError::Reason::
@@ -1909,26 +1856,14 @@ base::expected<void, CommitError> SwapChainPresenter::ReallocateSwapChain(
   SetSwapChainPresentDuration();
 
   DXGI_ADAPTER_DESC adapter_desc;
-  hr = dxgi_adapter->GetDesc(&adapter_desc);
-  if (SUCCEEDED(hr)) {
-    gpu_vendor_id_ = adapter_desc.VendorId;
-  } else {
-    DLOG(ERROR) << "Failed to get adapter desc: "
-                << logging::SystemErrorCodeToString(hr);
-  }
+  CHECK_EQ(dxgi_adapter->GetDesc(&adapter_desc), S_OK);
+  gpu_vendor_id_ = adapter_desc.VendorId;
 
   enable_vp_auto_hdr_ =
       !layer_tree_->disable_vp_auto_hdr() && IsVpAutoHDREnabled(gpu_vendor_id_);
   enable_vp_super_resolution_ = !layer_tree_->disable_vp_super_resolution();
 
   return base::ok();
-}
-
-void SwapChainPresenter::OnBatteryPowerStatusChange(
-    base::PowerStateObserver::BatteryPowerStatus battery_power_status) {
-  is_on_battery_power_ =
-      (battery_power_status ==
-       base::PowerStateObserver::BatteryPowerStatus::kBatteryPower);
 }
 
 bool SwapChainPresenter::ShouldUseVideoProcessorScaling() {
@@ -1991,7 +1926,7 @@ base::expected<void, CommitError> SwapChainPresenter::RevertSwapChainToSDR(
                   });
 
   Microsoft::WRL::ComPtr<ID3D11Texture2D> swap_chain_buffer;
-  swap_chain_->GetBuffer(0, IID_PPV_ARGS(&swap_chain_buffer));
+  CHECK_EQ(swap_chain_->GetBuffer(0, IID_PPV_ARGS(&swap_chain_buffer)), S_OK);
   D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC output_desc = {};
   output_desc.ViewDimension = D3D11_VPOV_DIMENSION_TEXTURE2D;
   output_desc.Texture2D.MipSlice = 0;
@@ -1999,8 +1934,6 @@ base::expected<void, CommitError> SwapChainPresenter::RevertSwapChainToSDR(
       swap_chain_buffer.Get(), video_processor_enumerator.Get(), &output_desc,
       &output_view_);
   if (FAILED(hr)) {
-    LOG(ERROR) << "CreateVideoProcessorOutputView failed: "
-               << logging::SystemErrorCodeToString(hr);
     return base::unexpected(CommitError{
         CommitError::Reason::
             kPresentToSwapChainSdrRevertCreateVideoProcessorOutputView,
@@ -2017,13 +1950,9 @@ base::expected<void, CommitError> SwapChainPresenter::RevertSwapChainToSDR(
                                             is_yuv_swapchain);
   context1->VideoProcessorSetOutputColorSpace1(video_processor.Get(),
                                                output_dxgi_color_space);
-  hr = swap_chain_->SetColorSpace1(output_dxgi_color_space);
-  if (FAILED(hr)) {
-    LOG(ERROR) << "SetColorSpace1 failed: "
-               << logging::SystemErrorCodeToString(hr);
-    return base::unexpected(CommitError{
-        CommitError::Reason::kPresentToSwapChainSdrRevertSetColorSpace, hr});
-  }
+  // The color space matches the format of the swap chain that was just
+  // reallocated, so it is always supported.
+  CHECK_EQ(swap_chain_->SetColorSpace1(output_dxgi_color_space), S_OK);
 
   return base::ok();
 }

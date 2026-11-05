@@ -104,8 +104,9 @@ public class AutocompleteInput implements UserData {
         /**
          * Active input session retaining draft text, but disengaged (no keyboard/focus ring, and
          * text selection is not drawn). Entered when focus is lost due to clicking on the content
-         * area while modifications to the url text are present. While a selection should be saved,
-         * it will not be drawn.
+         * area while modifications to the url text are present, or when an input session begins
+         * without focus ({@link AutocompleteState#STANDBY_NO_FOCUS}, e.g. the NTP Plus button or
+         * gallery chips). While a selection should be saved, it will not be drawn.
          */
         int DRAFTING_NO_FOCUS = 1;
 
@@ -273,7 +274,11 @@ public class AutocompleteInput implements UserData {
                     PageClassification.NTP_OMNIBOX_COMPOSEBOX;
             case PageClassification.SEARCH_RESULT_PAGE_NO_SEARCH_TERM_REPLACEMENT ->
                     PageClassification.SRP_OMNIBOX_COMPOSEBOX;
-            case PageClassification.OTHER -> PageClassification.OTHER_OMNIBOX_COMPOSEBOX;
+            case PageClassification.BLANK,
+                    PageClassification.HOME_PAGE,
+                    PageClassification.OTHER,
+                    PageClassification.ANDROID_SHORTCUTS_WIDGET ->
+                    PageClassification.OTHER_OMNIBOX_COMPOSEBOX;
             // LINT.ThenChange(/chrome/browser/ui/android/omnibox/java/src/org/chromium/chrome/browser/omnibox/fusebox/FuseboxCoordinator.java:FuseboxSupportedPageClassifications)
             default -> {
                 // TODO(crbug.com/474808407): address the issue with top resumed activity change and
@@ -631,23 +636,11 @@ public class AutocompleteInput implements UserData {
 
     /** Returns whether current context enables suggestions caching. */
     public boolean isInCacheableContext() {
+        if (!OmniboxFeatures.sServeJavaCachedZeroSuggest.isEnabled()) return false;
         if (!isInZeroPrefixContext()) return false;
 
-        switch (mPageClassification) {
-            case PageClassification.ANDROID_SEARCH_WIDGET:
-            case PageClassification.ANDROID_SHORTCUTS_WIDGET:
-                return true;
-
-            case PageClassification.INSTANT_NTP_WITH_OMNIBOX_AS_STARTING_FOCUS:
-                return OmniboxFeatures.isJumpStartOmniboxEnabled();
-
-            case PageClassification.SEARCH_RESULT_PAGE_NO_SEARCH_TERM_REPLACEMENT:
-            case PageClassification.OTHER:
-                return OmniboxFeatures.sJumpStartOmniboxCoverRecentlyVisitedPage.getValue();
-
-            default:
-                return false;
-        }
+        return mPageClassification == PageClassification.ANDROID_SEARCH_WIDGET
+                || mPageClassification == PageClassification.ANDROID_SHORTCUTS_WIDGET;
     }
 
     public void setHasAttachments(boolean hasAttachments) {

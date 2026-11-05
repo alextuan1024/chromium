@@ -28,7 +28,6 @@ import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.base.test.util.UrlUtils;
-import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.offlinepages.OfflinePageBridge.OfflinePageModelObserver;
 import org.chromium.chrome.browser.offlinepages.OfflinePageBridge.SavePageCallback;
 import org.chromium.chrome.browser.profiles.Profile;
@@ -41,20 +40,20 @@ import org.chromium.chrome.test.transit.AutoResetCtaTransitTestRule;
 import org.chromium.chrome.test.transit.ChromeTransitTestRules;
 import org.chromium.components.browser_ui.share.ShareParams;
 import org.chromium.components.offlinepages.SavePageResult;
+import org.chromium.content_public.browser.test.util.JavaScriptUtils;
 import org.chromium.net.ConnectionType;
 import org.chromium.net.NetworkChangeNotifier;
 import org.chromium.net.test.EmbeddedTestServer;
 
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 /** Instrumentation tests for {@link OfflinePageUtils}. */
 @RunWith(ChromeJUnit4ClassRunner.class)
-@CommandLineFlags.Add({
-    "enable-features=OfflinePagesSharing",
-    ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE
-})
+@CommandLineFlags.Add("enable-features=OfflinePagesSharing")
 @Batch(Batch.PER_CLASS)
 public class OfflinePageUtilsTest {
     @Rule
@@ -63,6 +62,7 @@ public class OfflinePageUtilsTest {
 
     private static final String TEST_PAGE = "/chrome/test/data/android/about.html";
     private static final int TIMEOUT_MS = 5000;
+    private static final AtomicInteger sTitleCounter = new AtomicInteger();
     private static final ClientId BOOKMARK_ID =
             new ClientId(OfflinePageBridge.BOOKMARK_NAMESPACE, "1234");
     private static final ClientId ASYNC_ID =
@@ -396,7 +396,7 @@ public class OfflinePageUtilsTest {
                                             .getWebContents()));
                 });
 
-        Assert.assertEquals("http://www.example.com/", offlinePageItem.get().getUrl());
+        Assert.assertEquals(testUrl, offlinePageItem.get().getUrl());
         Assert.assertEquals(1321901946000L, offlinePageItem.get().getCreationTimeMs());
     }
 
@@ -523,9 +523,28 @@ public class OfflinePageUtilsTest {
         mActivityTestRule.loadUrl(mTestPage);
     }
 
+    /**
+     * Gives the current page a unique title. Saved pages are published to the Downloads
+     * collection under their title, so a fixed title collides with leftovers from earlier runs
+     * on reused devices and the save fails with FILE_MOVE_FAILED (b/575823388).
+     */
+    private void makeTitleUnique() {
+        final String title = "About-" + System.nanoTime() + "-" + sTitleCounter.incrementAndGet();
+        try {
+            JavaScriptUtils.executeJavaScriptAndWaitForResult(
+                    mActivityTestRule.getWebContents(), "document.title = '" + title + "';");
+        } catch (TimeoutException e) {
+            throw new AssertionError("Timed out setting the page title.", e);
+        }
+        CriteriaHelper.pollUiThread(
+                () -> title.equals(mActivityTestRule.getWebContents().getTitle()),
+                "Page title was not updated.");
+    }
+
     // Save an offline copy of the current page in the tab.
     private void savePage(final int expectedResult, final String expectedUrl, ClientId clientId)
             throws InterruptedException {
+        makeTitleUnique();
         final Semaphore semaphore = new Semaphore(0);
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {

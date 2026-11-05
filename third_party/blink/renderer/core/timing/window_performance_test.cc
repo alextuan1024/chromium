@@ -4,6 +4,7 @@
 
 #include "third_party/blink/renderer/core/timing/window_performance.h"
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <type_traits>
@@ -45,6 +46,8 @@
 #include "third_party/blink/renderer/core/testing/mock_policy_container_host.h"
 #include "third_party/blink/renderer/core/timing/dom_window_performance.h"
 #include "third_party/blink/renderer/core/timing/event_timing.h"
+#include "third_party/blink/renderer/core/timing/performance_container_timing.h"
+#include "third_party/blink/renderer/core/timing/performance_element_timing.h"
 #include "third_party/blink/renderer/core/timing/performance_event_timing.h"
 #include "third_party/blink/renderer/platform/bindings/exception_state.h"
 #include "third_party/blink/renderer/platform/heap/collection_support/heap_vector.h"
@@ -1575,12 +1578,15 @@ TEST_P(WindowPerformanceTest, ElementTimingTraceEvent) {
   using trace_analyzer::Query;
   trace_analyzer::Start("*");
   // |element| needs to be non-null to prevent a crash.
-  performance_->AddElementTiming(
+  PerformanceElementTiming* entry = PerformanceElementTiming::Create(
       AtomicString("image-paint"), "url", gfx::RectF(10, 20, 30, 40),
-      DOMPaintTimingInfo{2000, 2000},
-      GetTimeOrigin() + base::Milliseconds(1000), AtomicString("identifier"),
-      gfx::Size(200, 300), AtomicString("id"),
-      /*element*/ page_holder_->GetDocument().documentElement());
+      /*load_time=*/1000, AtomicString("identifier"), 200, 300,
+      AtomicString("id"),
+      /*element=*/page_holder_->GetDocument().documentElement(),
+      performance_->DomWindow());
+  entry->FinalizeEntry(DOMPaintTimingInfo{2000, 2000},
+                       performance_->NavigationId().web_exposed_id);
+  performance_->AddElementTiming(entry);
   auto analyzer = trace_analyzer::Stop();
   trace_analyzer::TraceEventVector events;
   Query q = Query::EventNameIs("PerformanceElementTiming");
@@ -1888,11 +1894,14 @@ TEST_P(WindowPerformanceTest, EventTimingCombinedTraceEvents) {
 TEST_P(WindowPerformanceTest, ContainerTimingTraceEvent) {
   using trace_analyzer::Query;
   trace_analyzer::Start("*");
-  performance_->AddContainerTiming(
-      DOMPaintTimingInfo{.paint_time = 2000, .presentation_time = 2000},
-      gfx::Rect(10, 20, 30, 40), 1200, nullptr, AtomicString("identifier"),
-      /*element*/ nullptr,
-      DOMPaintTimingInfo{.paint_time = 1000, .presentation_time = 1000});
+  PerformanceContainerTiming* entry = PerformanceContainerTiming::Create(
+      gfx::Rect(10, 20, 30, 40), 1200, /*root_element=*/nullptr,
+      AtomicString("identifier"), /*last_painted_element=*/nullptr,
+      performance_->DomWindow());
+  entry->FinalizeEntry(DOMPaintTimingInfo{2000, 2000},
+                       performance_->NavigationId().web_exposed_id,
+                       /*first_render_time=*/1000);
+  performance_->AddContainerTiming(entry);
   auto analyzer = trace_analyzer::Stop();
   trace_analyzer::TraceEventVector events;
   Query q = Query::EventNameIs("PerformanceContainerTiming");
@@ -1917,6 +1926,26 @@ TEST_P(WindowPerformanceTest, ContainerTimingTraceEvent) {
   std::string* identifier = arg_dict.FindString("identifier");
   ASSERT_TRUE(identifier);
   EXPECT_EQ(*identifier, "identifier");
+}
+
+TEST_P(WindowPerformanceTest, ContainerTimingDroppedEntriesCount) {
+  // Matches kDefaultContainerTimingBufferSize in performance.cc.
+  constexpr wtf_size_t kBufferSize = 150;
+  for (wtf_size_t i = 0; i <= kBufferSize; ++i) {
+    PerformanceContainerTiming* entry = PerformanceContainerTiming::Create(
+        gfx::Rect(10, 20, 30, 40), 1200, /*root_element=*/nullptr,
+        AtomicString("identifier"), /*last_painted_element=*/nullptr,
+        performance_->DomWindow());
+    entry->FinalizeEntry(DOMPaintTimingInfo{2000, 2000},
+                         performance_->NavigationId().web_exposed_id,
+                         /*first_render_time=*/1000);
+    performance_->AddContainerTiming(entry);
+  }
+  EXPECT_EQ(
+      kBufferSize,
+      performance_->getBufferedEntriesByType(AtomicString("container")).size());
+  EXPECT_EQ(1, performance_->GetDroppedEntriesForTypesForTesting(
+                   PerformanceEntry::kContainer));
 }
 
 TEST_P(WindowPerformanceTest, InteractionID) {
@@ -2476,16 +2505,18 @@ TEST_F(WindowPerformanceNavigationIdTest, NavigationIdHardNavigations) {
     EXPECT_EQ(performance->NavigationId().non_web_exposed_id, 1u);
     ids.push_back(performance->NavigationId().web_exposed_id);
   }
-  // We allow 10 collisions, since the IDs are randomly generated between 100
-  // and 10000.
-  auto last = std::unique(ids.begin(), ids.end());
-  auto num_collisions = std::distance(last, ids.end());
-  EXPECT_LT(num_collisions, 10u);
-  ids.erase(last, ids.end());
   // The IDs are not in sorted order.
   std::vector<uint64_t> sorted_ids(ids.begin(), ids.end());
   std::sort(sorted_ids.begin(), sorted_ids.end());
   EXPECT_NE(sorted_ids, ids);
+
+  // We allow 10 collisions, since the IDs are randomly generated between 100
+  // and 10000.
+  std::sort(ids.begin(), ids.end());
+  auto last = std::unique(ids.begin(), ids.end());
+  auto num_collisions = std::distance(last, ids.end());
+  EXPECT_LT(num_collisions, 10u);
+  ids.erase(last, ids.end());
 }
 
 TEST_F(WindowPerformanceNavigationIdTest, NavigationIdSoftNavigations) {

@@ -4,6 +4,7 @@
 
 #include "content/browser/file_system/file_system_manager_impl.h"
 
+#include <string>
 #include <utility>
 
 #include "base/check_op.h"
@@ -11,6 +12,8 @@
 #include "base/functional/bind.h"
 #include "base/memory/raw_ptr.h"
 #include "base/notreached.h"
+#include "base/strings/escape.h"
+#include "base/strings/string_util.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/time/time.h"
 #include "base/uuid.h"
@@ -24,9 +27,11 @@
 #include "content/public/common/child_process_id.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "mojo/public/cpp/bindings/receiver_set.h"
+#include "mojo/public/cpp/bindings/self_owned_receiver.h"
 #include "storage/browser/blob/blob_data_builder.h"
 #include "storage/browser/blob/blob_impl.h"
 #include "storage/browser/blob/blob_storage_context.h"
+#include "storage/browser/blob/scoped_file.h"
 #include "storage/browser/blob/shareable_file_reference.h"
 #include "storage/browser/file_system/copy_or_move_hook_delegate.h"
 #include "storage/browser/file_system/file_observers.h"
@@ -41,6 +46,7 @@
 #include "storage/common/file_system/file_system_util.h"
 #include "third_party/blink/public/common/storage_key/storage_key.h"
 #include "third_party/blink/public/mojom/blob/blob.mojom.h"
+#include "third_party/blink/public/mojom/blob/file_backed_blob_factory.mojom.h"
 #include "third_party/blink/public/mojom/blob/serialized_blob.mojom.h"
 #include "url/gurl.h"
 #include "url/origin.h"
@@ -56,6 +62,18 @@ namespace content {
 
 namespace {
 
+class SnapshotPermissionTokenImpl
+    : public blink::mojom::SnapshotPermissionToken {
+ public:
+  explicit SnapshotPermissionTokenImpl(
+      scoped_refptr<storage::ShareableFileReference> file_ref)
+      : file_ref_(std::move(file_ref)) {}
+  ~SnapshotPermissionTokenImpl() override = default;
+
+ private:
+  const scoped_refptr<storage::ShareableFileReference> file_ref_;
+};
+
 void RevokeFilePermission(ChildProcessId child_id, const base::FilePath& path) {
   // This call happens on the IO thread, where there is no guarantee that the
   // corresponding ProcessState is still modifiable, because the
@@ -63,6 +81,87 @@ void RevokeFilePermission(ChildProcessId child_id, const base::FilePath& path) {
   // effect.
   ChildProcessSecurityPolicyImpl::GetInstance()->RevokeAllPermissionsForFile(
       child_id, path);
+}
+
+bool IsUncrackedTopLevelSiblingInIsolatedFileSystem(
+    const FileSystemURL& source,
+    const GURL& destination,
+    const blink::StorageKey& storage_key) {
+  if (source.mount_type() != storage::kFileSystemTypeIsolated ||
+      source.virtual_path().GetComponents().size() != 2) {
+    return false;
+  }
+
+  // A new top-level entry in an isolated file system cannot be cracked until
+  // it is registered, so it appears to have an invalid URL before the write
+  // permission check. Check the uncracked URL to distinguish this from a
+  // malformed destination URL.
+  GURL origin;
+  storage::FileSystemType type;
+  base::FilePath virtual_path;
+  if (!storage::ParseFileSystemSchemeURL(destination, &origin, &type,
+                                         &virtual_path) ||
+      !storage_key.origin().IsSameOriginWith(origin) ||
+      type != storage::kFileSystemTypeIsolated ||
+      virtual_path.GetComponents().size() != 2 ||
+      virtual_path.DirName() != source.virtual_path().DirName()) {
+    return false;
+  }
+
+  // The parsed path can hide encoded separators or a NUL (which FilePath
+  // truncates). Require a valid single sibling name in the same mount.
+  // GURL keeps the mount type ("/isolated") in destination.inner_url()->path();
+  // destination.path() contains only "/<filesystem_id>/<name>".
+  const std::string path(destination.path());
+  const std::string mount_prefix = "/" + source.mount_filesystem_id() + "/";
+  if (!base::StartsWith(path, mount_prefix, base::CompareCase::SENSITIVE)) {
+    return false;
+  }
+  const std::string name =
+      base::UnescapeBinaryURLComponent(path.substr(mount_prefix.size()));
+  return !name.empty() && base::IsStringUTF8(name) &&
+         name.find('/') == std::string::npos &&
+         name.find('\0') == std::string::npos &&
+         name.find('\\') == std::string::npos;
+}
+
+using CopyOrMovePermissionCheck =
+    bool (ChildProcessSecurityPolicyImpl::Handle::*)(const FileSystemURL&,
+                                                     const FileSystemURL&);
+
+void ReplyToInvalidCopyOrMoveDestination(
+    const FileSystemURL& source_url,
+    const FileSystemURL& destination_url,
+    const GURL& destination_path,
+    const blink::StorageKey& storage_key,
+    ChildProcessSecurityPolicyImpl::Handle& security_policy_handle,
+    CopyOrMovePermissionCheck permission_check,
+    base::File::Error error,
+    base::OnceCallback<void(base::File::Error)> callback) {
+  if (destination_url.is_valid() ||
+      !IsUncrackedTopLevelSiblingInIsolatedFileSystem(
+          source_url, destination_path, storage_key)) {
+    std::move(callback).Run(error);
+    return;
+  }
+
+  // Isolated file system permissions are granted per file system. Check the
+  // source URL as the destination so an uncrackable sibling can still use the
+  // same write grant.
+  GetUIThreadTaskRunner({})->PostTaskAndReplyWithResult(
+      FROM_HERE,
+      base::BindOnce(permission_check,
+                     std::make_unique<ChildProcessSecurityPolicyImpl::Handle>(
+                         security_policy_handle.Duplicate()),
+                     source_url, source_url),
+      base::BindOnce(
+          [](base::OnceCallback<void(base::File::Error)> callback,
+             bool has_permission) {
+            std::move(callback).Run(has_permission
+                                        ? base::File::FILE_ERROR_INVALID_URL
+                                        : base::File::FILE_ERROR_SECURITY);
+          },
+          std::move(callback)));
 }
 
 storage::FileSystemType ToStorageFileSystemType(
@@ -102,7 +201,6 @@ blink::mojom::FileSystemType ToMojoFileSystemType(
     case storage::FileSystemType::kFileSystemTypeSyncable:
     case storage::FileSystemType::kFileSystemTypeSyncableForInternalSync:
     case storage::FileSystemType::kFileSystemTypeLocalForPlatformApp:
-    case storage::FileSystemType::kFileSystemTypeForTransientFile:
     case storage::FileSystemType::kFileSystemTypeProvided:
     case storage::FileSystemType::kFileSystemTypeDeviceMediaAsFileStorage:
     case storage::FileSystemType::kFileSystemTypeArcContent:
@@ -110,6 +208,7 @@ blink::mojom::FileSystemType ToMojoFileSystemType(
     case storage::FileSystemType::kFileSystemTypeDriveFs:
     case storage::FileSystemType::kFileSystemTypeSmbFs:
     case storage::FileSystemType::kFileSystemTypeFuseBox:
+    case storage::FileSystemType::kFileSystemTypeInMemory:
     case storage::FileSystemType::kFileSystemInternalTypeEnumEnd:
       NOTREACHED();
   }
@@ -141,25 +240,6 @@ class FileSystemManagerImpl::FileSystemCancellableOperationImpl
   }
 
   const OperationID id_;
-  // |file_system_manager_impl| owns |this| through a UniqueReceiverSet.
-  const raw_ptr<FileSystemManagerImpl> file_system_manager_impl_;
-};
-
-class FileSystemManagerImpl::ReceivedSnapshotListenerImpl
-    : public blink::mojom::ReceivedSnapshotListener {
- public:
-  ReceivedSnapshotListenerImpl(int snapshot_id,
-                               FileSystemManagerImpl* file_system_manager_impl)
-      : snapshot_id_(snapshot_id),
-        file_system_manager_impl_(file_system_manager_impl) {}
-  ~ReceivedSnapshotListenerImpl() override = default;
-
- private:
-  void DidReceiveSnapshotFile() override {
-    file_system_manager_impl_->DidReceiveSnapshotFile(snapshot_id_);
-  }
-
-  const int snapshot_id_;
   // |file_system_manager_impl| owns |this| through a UniqueReceiverSet.
   const raw_ptr<FileSystemManagerImpl> file_system_manager_impl_;
 };
@@ -305,11 +385,16 @@ void FileSystemManagerImpl::Move(const GURL& src_path,
       context_->CrackURL(src_path, receivers_.current_context()));
   FileSystemURL dest_url(
       context_->CrackURL(dest_path, receivers_.current_context()));
-  std::optional<base::File::Error> opt_error = ValidateFileSystemURL(src_url);
-  if (!opt_error)
-    opt_error = ValidateFileSystemURL(dest_url);
-  if (opt_error) {
-    std::move(callback).Run(opt_error.value());
+  if (auto error = ValidateFileSystemURL(src_url)) {
+    std::move(callback).Run(*error);
+    return;
+  }
+  if (auto error = ValidateFileSystemURL(dest_url)) {
+    ReplyToInvalidCopyOrMoveDestination(
+        src_url, dest_url, dest_path, receivers_.current_context(),
+        security_policy_handle_,
+        &ChildProcessSecurityPolicyImpl::Handle::CanMoveFileSystemFile, *error,
+        std::move(callback));
     return;
   }
   // Run the access check on the UI thread using a duplicated
@@ -361,11 +446,16 @@ void FileSystemManagerImpl::Copy(const GURL& src_path,
       context_->CrackURL(src_path, receivers_.current_context()));
   FileSystemURL dest_url(
       context_->CrackURL(dest_path, receivers_.current_context()));
-  std::optional<base::File::Error> opt_error = ValidateFileSystemURL(src_url);
-  if (!opt_error)
-    opt_error = ValidateFileSystemURL(dest_url);
-  if (opt_error) {
-    std::move(callback).Run(opt_error.value());
+  if (auto error = ValidateFileSystemURL(src_url)) {
+    std::move(callback).Run(*error);
+    return;
+  }
+  if (auto error = ValidateFileSystemURL(dest_url)) {
+    ReplyToInvalidCopyOrMoveDestination(
+        src_url, dest_url, dest_path, receivers_.current_context(),
+        security_policy_handle_,
+        &ChildProcessSecurityPolicyImpl::Handle::CanCopyFileSystemFile, *error,
+        std::move(callback));
     return;
   }
 
@@ -1112,7 +1202,7 @@ void FileSystemManagerImpl::ContinueRegisterBlob(
   } else {
     std::unique_ptr<storage::BlobDataHandle> handle =
         blob_storage_context_->context()->AddBrokenBlob(
-            uuid, content_type, "",
+            uuid, content_type,
             storage::BlobStatus::ERR_REFERENCED_FILE_UNAVAILABLE);
     storage::BlobImpl::Create(std::move(handle), std::move(blob_receiver));
   }
@@ -1130,15 +1220,9 @@ void FileSystemManagerImpl::Cancel(
                             std::move(callback)));
 }
 
-void FileSystemManagerImpl::DidReceiveSnapshotFile(int snapshot_id) {
-  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M159);
-  in_transit_snapshot_files_.Remove(snapshot_id);
-}
-
 void FileSystemManagerImpl::OnConnectionError() {
   CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M159);
   if (receivers_.empty()) {
-    in_transit_snapshot_files_.Clear();
     operation_runner_.reset();
     cancellable_operations_.Clear();
   }
@@ -1275,8 +1359,9 @@ void FileSystemManagerImpl::DidCreateSnapshot(
     base::File::Error result,
     const base::File::Info& info,
     const base::FilePath& platform_path,
-    scoped_refptr<storage::ShareableFileReference> /* unused */) {
+    storage::ScopedFile temp_file) {
   CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M159);
+  CHECK(temp_file.path().empty());
   if (result != base::File::FILE_OK) {
     std::move(callback).Run(base::File::Info(), base::FilePath(), result,
                             mojo::NullRemote());
@@ -1346,14 +1431,11 @@ void FileSystemManagerImpl::ContinueDidCreateSnapshot(
   }
 
   if (file_ref.get()) {
-    // This ref is held until DidReceiveSnapshotFile is called.
-    int request_id = in_transit_snapshot_files_.Add(file_ref);
-    mojo::PendingRemote<blink::mojom::ReceivedSnapshotListener> listener;
-    snapshot_listeners_.Add(
-        std::make_unique<ReceivedSnapshotListenerImpl>(request_id, this),
-        listener.InitWithNewPipeAndPassReceiver());
-    // Return the file info and platform_path.
-    std::move(callback).Run(info, platform_path, result, std::move(listener));
+    mojo::PendingRemote<blink::mojom::SnapshotPermissionToken> token;
+    mojo::MakeSelfOwnedReceiver(
+        std::make_unique<SnapshotPermissionTokenImpl>(std::move(file_ref)),
+        token.InitWithNewPipeAndPassReceiver());
+    std::move(callback).Run(info, platform_path, result, std::move(token));
     return;
   }
 

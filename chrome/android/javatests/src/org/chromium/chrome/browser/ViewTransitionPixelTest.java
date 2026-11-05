@@ -35,7 +35,6 @@ import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.MinAndroidSdkLevel;
 import org.chromium.base.test.util.Restriction;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
-import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.chrome.test.transit.ChromeTransitTestRules;
 import org.chromium.chrome.test.transit.FreshCtaTransitTestRule;
@@ -63,7 +62,6 @@ import java.util.concurrent.atomic.AtomicReference;
  */
 @RunWith(ChromeJUnit4ClassRunner.class)
 @CommandLineFlags.Add({
-    ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE,
     // Resampling can make scroll offsets non-deterministic so turn it off to ensure hiding browser
     // controls works reliably;
     // Disable edge to edge as part of the test is measuring the keyboard's height, which differs
@@ -82,6 +80,8 @@ public class ViewTransitionPixelTest {
     public ChromeRenderTestRule mRenderTestRule =
             ChromeRenderTestRule.Builder.withPublicCorpus()
                     .setBugComponent(RenderTestRule.Component.BLINK_VIEW_TRANSITIONS)
+                    .setRevision(1)
+                    .setDescription("Ligatures and contextual alternates disabled in UI text")
                     .build();
 
     private static final String TEXTFIELD_DOM_ID = "inputElement";
@@ -126,7 +126,7 @@ public class ViewTransitionPixelTest {
                     boolean isKeyboardShowing =
                             mActivityTestRule
                                     .getKeyboardDelegate()
-                                    .isKeyboardShowing(
+                                    .isKeyboardObscuring(
                                             mActivityTestRule
                                                     .getActivity()
                                                     .getTabsViewForTesting());
@@ -423,6 +423,7 @@ public class ViewTransitionPixelTest {
     @Test
     @MediumTest
     @Feature({"RenderTest"})
+    @DisabledTest(message = "https://crbug.com/562983036")
     public void testPageWiderThanICB() throws Throwable {
         String url = "/chrome/test/data/android/view_transition_wider_than_icb.html";
         mActivityTestRule.startOnTestServerUrl(url);

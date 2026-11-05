@@ -38,8 +38,8 @@
 #include "ash/multi_user/multi_user_window_manager.h"
 #include "ash/shell.h"
 #include "chrome/browser/ash/boca/on_task/on_task_locked_controller.h"
-#include "chrome/browser/ui/ash/multi_user/multi_user_util.h"
 #include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/chromeos/locked_state/locked_state_controller.h"
 #include "chrome/browser/ui/settings_window_manager_chromeos.h"
 #include "chromeos/strings/grit/chromeos_strings.h"
 #include "chromeos/ui/frame/desks/move_to_desks_menu_delegate.h"
@@ -73,6 +73,18 @@ void AddItemWithIconMaybe(ui::SimpleMenuModel* model,
   }
 }
 #endif  // !BUILDFLAG(IS_MAC)
+
+#if BUILDFLAG(IS_CHROMEOS)
+// Returns true if the browser is locked for OnTask. Only relevant for non-web
+// browser scenarios.
+bool IsLockedForOnTask(BrowserWindowInterface* browser) {
+  if (features::IsUseUnifiedLockedStateControllerEnabled()) {
+    return chromeos::LockedStateController::From(browser)->IsLockedForOnTask();
+  }
+  return ash::boca::OnTaskLockedController::From(browser)
+      ->is_locked_for_on_task();
+}
+#endif  // BUILDFLAG(IS_CHROMEOS)
 
 }  // namespace
 
@@ -224,6 +236,16 @@ void SystemMenuModelBuilder::BuildSystemMenuForBrowserWindow(
       model->SetElementIdentifierAt(
           model->GetIndexOfCommandId(IDC_TOGGLE_VERTICAL_TABS_COLLAPSE).value(),
           kToggleVerticalTabsCollapseElementId);
+
+      model->AddItemWithStringId(
+          IDC_TOGGLE_VERTICAL_TABS_EXPAND_ON_HOVER,
+          controller->IsExpandOnHoverEnabled()
+              ? IDS_VERTICAL_TABS_DISABLE_EXPAND_ON_HOVER
+              : IDS_VERTICAL_TABS_ENABLE_EXPAND_ON_HOVER);
+      model->SetElementIdentifierAt(
+          model->GetIndexOfCommandId(IDC_TOGGLE_VERTICAL_TABS_EXPAND_ON_HOVER)
+              .value(),
+          kToggleVerticalTabsExpandOnHoverElementId);
     } else {
       model->AddItemWithStringId(IDC_TOGGLE_VERTICAL_TABS,
                                  switch_to_vertical_id);
@@ -237,21 +259,6 @@ void SystemMenuModelBuilder::BuildSystemMenuForBrowserWindow(
     model->SetElementIdentifierAt(
         model->GetIndexOfCommandId(IDC_TOGGLE_VERTICAL_TABS).value(),
         kToggleVerticalTabsElementId);
-
-    const bool show_expand_on_hover =
-        tabs::IsVerticalTabsExpandOnHoverFeatureEnabled() &&
-        controller->ShouldDisplayVerticalTabs();
-    if (show_expand_on_hover) {
-      model->AddItemWithStringId(
-          IDC_TOGGLE_VERTICAL_TABS_EXPAND_ON_HOVER,
-          controller->IsExpandOnHoverEnabled()
-              ? IDS_VERTICAL_TABS_DISABLE_EXPAND_ON_HOVER
-              : IDS_VERTICAL_TABS_ENABLE_EXPAND_ON_HOVER);
-      model->SetElementIdentifierAt(
-          model->GetIndexOfCommandId(IDC_TOGGLE_VERTICAL_TABS_EXPAND_ON_HOVER)
-              .value(),
-          kToggleVerticalTabsExpandOnHoverElementId);
-    }
 
     model->AddItemWithStringId(IDC_VERTICAL_TABS_SEND_FEEDBACK,
                                IDS_VERTICAL_TABS_SEND_FEEDBACK);
@@ -346,8 +353,7 @@ void SystemMenuModelBuilder::BuildSystemMenuForAppOrPopupWindow(
 #if BUILDFLAG(IS_CHROMEOS)
   // Hide TaskManager option for the app if it is locked for OnTask. Only
   // relevant for non-web browser scenarios.
-  if (ash::boca::OnTaskLockedController::From(browser())
-          ->is_locked_for_on_task()) {
+  if (IsLockedForOnTask(browser())) {
     should_show_task_manager = false;
   }
 #endif
@@ -376,8 +382,7 @@ void SystemMenuModelBuilder::AppendMoveToDesksMenu(ui::SimpleMenuModel* model) {
   auto* const browser = menu_delegate_.browser();
   // Do not show the move to desks menu if the app is locked for OnTask. Only
   // relevant for non-web browser scenarios.
-  if (ash::boca::OnTaskLockedController::From(browser)
-          ->is_locked_for_on_task() ||
+  if (IsLockedForOnTask(browser) ||
       !chromeos::MoveToDesksMenuDelegate::ShouldShowMoveToDesksMenu()) {
     return;
   }
@@ -395,7 +400,7 @@ void SystemMenuModelBuilder::AppendMoveToDesksMenu(ui::SimpleMenuModel* model) {
 
 void SystemMenuModelBuilder::AppendTeleportMenu(ui::SimpleMenuModel* model) {
 #if BUILDFLAG(IS_CHROMEOS)
-  DCHECK(browser()->GetWindow());
+  CHECK(browser()->GetWindow(), base::NotFatalUntil::M162);
 
   // Avoid appending the teleport menu for the settings window.  This window's
   // presentation is unique: it's a normal browser window with an app-like
@@ -420,14 +425,12 @@ void SystemMenuModelBuilder::AppendTeleportMenu(ui::SimpleMenuModel* model) {
     return;
   }
 
-  // If this does not belong to a profile or there is no window, or the window
-  // is not owned by anyone, we don't show the menu addition.
+  // If there is no window, or the window is not owned by anyone, we don't show
+  // the menu addition. Note that the window owner is set only for browsers
+  // whose AccountId is valid.
   auto* window_manager = ash::Shell::Get()->multi_user_window_manager();
-  const AccountId account_id =
-      multi_user_util::GetAccountIdFromProfile(browser()->GetProfile());
   aura::Window* window = browser()->GetWindow()->GetNativeWindow();
-  if (!account_id.is_valid() || !window ||
-      !window_manager->GetWindowOwner(window).is_valid()) {
+  if (!window || !window_manager->GetWindowOwner(window).is_valid()) {
     return;
   }
 

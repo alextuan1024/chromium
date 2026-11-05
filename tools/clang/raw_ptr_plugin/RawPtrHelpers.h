@@ -5,13 +5,15 @@
 #ifndef TOOLS_CLANG_RAW_PTR_PLUGIN_RAWPTRHELPERS_H_
 #define TOOLS_CLANG_RAW_PTR_PLUGIN_RAWPTRHELPERS_H_
 
-#include <optional>
+#include <string>
+#include <vector>
 
 #include "RawPtrCastingUnsafeChecker.h"
 #include "StackAllocatedChecker.h"
 #include "Util.h"
 #include "clang/ASTMatchers/ASTMatchers.h"
 #include "clang/ASTMatchers/ASTMatchersMacros.h"
+#include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringSet.h"
 #include "llvm/Support/CommandLine.h"
 
@@ -49,20 +51,13 @@ class FilterFile {
 
  private:
   void ParseInputFile(const std::string& filepath, const std::string& arg_name);
+  bool ContainsSubstringOfUncached(llvm::StringRef string_to_match) const;
 
   // Stores all file lines (after stripping comments and blank lines).
   llvm::StringSet<> file_lines_;
 
-  // |file_lines_| is partitioned based on whether the line starts with a !
-  // (exclusion line) or not (inclusion line). Inclusion lines specify things to
-  // be matched by the filter. The exclusion lines specify what to force exclude
-  // from the filter. Lazily-constructed regex that matches strings that contain
-  // any of the inclusion lines in |file_lines_|.
-  mutable std::optional<llvm::Regex> inclusion_substring_regex_;
-
-  // Lazily-constructed regex that matches strings that contain any of the
-  // exclusion lines in |file_lines_|.
-  mutable std::optional<llvm::Regex> exclusion_substring_regex_;
+  // Cache for  of ContainsSubstringOf().
+  mutable llvm::StringMap<bool> contains_substring_of_cache_;
 };
 
 // Represents an exclusion rules for raw pointers/references errors.
@@ -195,29 +190,7 @@ AST_MATCHER(clang::Decl, isInExternCContext) {
   return Node.getLexicalDeclContext()->isExternCContext();
 }
 
-// Given:
-//   template <typename T, typename T2> class MyTemplate {};  // Node1 and Node4
-//   template <typename T2> class MyTemplate<int, T2> {};     // Node2
-//   template <> class MyTemplate<int, char> {};              // Node3
-//   void foo() {
-//     // This creates implicit template specialization (Node4) out of the
-//     // explicit template definition (Node1).
-//     MyTemplate<bool, double> v;
-//   }
-// with the following AST nodes:
-//   ClassTemplateDecl MyTemplate                                       - Node1
-//   | |-CXXRecordDecl class MyTemplate definition
-//   | `-ClassTemplateSpecializationDecl class MyTemplate definition    - Node4
-//   ClassTemplatePartialSpecializationDecl class MyTemplate definition - Node2
-//   ClassTemplateSpecializationDecl class MyTemplate definition        - Node3
-//
-// Matches AST node 4, but not AST node2 nor node3.
-AST_MATCHER(clang::ClassTemplateSpecializationDecl,
-            isImplicitClassTemplateSpecialization) {
-  return !Node.isExplicitSpecialization();
-}
-
-static bool IsAnnotated(const clang::Decl* decl,
+inline bool IsAnnotated(const clang::Decl* decl,
                         llvm::StringRef expected_annotation) {
   for (const auto* attr : decl->specific_attrs<clang::AnnotateAttr>()) {
     if (attr->getAnnotation() == expected_annotation) {
@@ -251,40 +224,59 @@ AST_MATCHER(clang::CXXRecordDecl, isAnonymousStructOrUnion) {
   return Node.getName().empty();
 }
 
-// Given:
-//   template <typename T, typename T2> void foo(T t, T2 t2) {};  // N1 and N4
-//   template <typename T2> void foo<int, T2>(int t, T2 t) {};    // N2
-//   template <> void foo<int, char>(int t, char t2) {};          // N3
-//   void foo() {
-//     // This creates implicit template specialization (N4) out of the
-//     // explicit template definition (N1).
-//     foo<bool, double>(true, 1.23);
-//   }
-// with the following AST nodes:
-//   FunctionTemplateDecl foo
-//   |-FunctionDecl 0x191da68 foo 'void (T, T2)'         // N1
-//   `-FunctionDecl 0x194bf08 foo 'void (bool, double)'  // N4
-//   FunctionTemplateDecl foo
-//   `-FunctionDecl foo 'void (int, T2)'                 // N2
-//   FunctionDecl foo 'void (int, char)'                 // N3
-//
-// Matches AST node N4, but not AST nodes N1, N2 nor N3.
-AST_MATCHER(clang::FunctionDecl, isImplicitFunctionTemplateSpecialization) {
-  switch (Node.getTemplateSpecializationKind()) {
-    case clang::TSK_ImplicitInstantiation:
-      return true;
-    case clang::TSK_Undeclared:
-    case clang::TSK_ExplicitSpecialization:
-    case clang::TSK_ExplicitInstantiationDeclaration:
-    case clang::TSK_ExplicitInstantiationDefinition:
-      return false;
-  }
-}
-
 // Matches Objective-C @synthesize field declaration.
 AST_MATCHER(clang::Decl, isObjCSynthesize) {
   const auto* ivar_decl = clang::dyn_cast<clang::ObjCIvarDecl>(&Node);
   return ivar_decl && ivar_decl->getSynthesize();
+}
+
+// The pointer types listed in `excluded_pointer_types` (see
+// `RawPtrContainerConfig`), by their fully-qualified names.
+class ExcludedPointerTypeSet {
+ public:
+  explicit ExcludedPointerTypeSet(
+      const std::vector<std::string>& qualified_names);
+
+  ExcludedPointerTypeSet(const ExcludedPointerTypeSet&) = delete;
+  ExcludedPointerTypeSet& operator=(const ExcludedPointerTypeSet&) = delete;
+
+  bool empty() const { return qualified_names_.empty(); }
+
+  // Returns true if `type`, as spelled in the source, is a listed typedef. Only
+  // the outermost name is compared, e.g. `HANDLE` for `HANDLE`, not `void*`;
+  // so a type must be listed under every alias it is used with.
+  bool Contains(clang::QualType type) const;
+
+ private:
+  llvm::StringSet<> qualified_names_;
+};
+
+// Matches a field whose type, as written in the source, is a template
+// specialization with a type template argument listed in `ExcludedTypes`, e.g.
+// `std::vector<HANDLE>` or `std::tuple<HANDLE, T*>`.
+//
+// The canonical type based matchers strip the typedef sugar, which is needed
+// to tell `std::vector<HANDLE>` apart from `std::vector<void*>`. Typedefs of
+// the container (e.g. `using HandleList = std::vector<HANDLE>;`) are looked
+// through, but only the outermost written specialization is inspected, e.g.
+// `flat_set<HANDLE>` for `base::flat_set<HANDLE>`; alias templates aren't
+// expanded.
+AST_MATCHER_P(clang::FieldDecl,
+              hasExcludedPointerTemplateArgument,
+              const ExcludedPointerTypeSet*,
+              ExcludedTypes) {
+  if (ExcludedTypes->empty()) {
+    return false;
+  }
+  const auto* tst = Node.getType()->getAs<clang::TemplateSpecializationType>();
+  if (!tst) {
+    return false;
+  }
+  return llvm::any_of(tst->template_arguments(),
+                      [&](const clang::TemplateArgument& arg) {
+                        return arg.getKind() == clang::TemplateArgument::Type &&
+                               ExcludedTypes->Contains(arg.getAsType());
+                      });
 }
 
 // Matches field declarations that do not explicitly appear in the source

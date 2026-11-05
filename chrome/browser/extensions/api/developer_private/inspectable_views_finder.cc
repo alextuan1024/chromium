@@ -83,7 +83,8 @@ api::developer_private::ViewType ConvertViewType(const mojom::ViewType type) {
     case mojom::ViewType::kInvalid:
       NOTREACHED();
   }
-  DCHECK(developer_private_type != api::developer_private::ViewType::kNone);
+  CHECK(developer_private_type != api::developer_private::ViewType::kNone,
+        base::NotFatalUntil::M161);
   return developer_private_type;
 }
 
@@ -162,7 +163,7 @@ void InspectableViewsFinder::GetViewsForExtensionForProfile(
         false, api::developer_private::ViewType::kExtensionBackgroundPage));
   }
   if (BackgroundInfo::IsServiceWorkerBased(&extension) &&
-      process_manager->GetServiceWorkersForExtension(extension.id()).empty()) {
+      !process_manager->HasServiceWorkerForExtension(extension.id())) {
     result->push_back(ConstructView(
         BackgroundInfo::GetBackgroundServiceWorkerScriptURL(&extension), -1, -1,
         is_incognito, false,

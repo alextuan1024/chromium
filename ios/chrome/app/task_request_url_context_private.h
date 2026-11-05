@@ -7,20 +7,34 @@
 
 #import <UIKit/UIKit.h>
 
+#import "base/ios/block_types.h"
 #import "ios/chrome/app/application_delegate/tab_opening.h"
 #import "ios/chrome/app/startup/app_launch_metrics.h"
 #import "ios/chrome/app/task_request_url_context.h"
 
-class GURL;
 @class SceneState;
+struct UrlLoadParams;
 
 // Class extension declaring private properties and methods of
 // TaskRequestForURLContext for use by its subclasses.
 @interface TaskRequestForURLContext ()
 
+// The URL opening context associated with this task request.
 @property(nonatomic, strong, readonly) UIOpenURLContext* URLContext;
 
-- (void)recordStartupMetrics;
+// Initializes the task request with the given URL context, scene state, and
+// cold start status.
+- (instancetype)initWithURLContext:(UIOpenURLContext*)URLContext
+                        sceneState:(SceneState*)sceneState
+                       isColdStart:(BOOL)isColdStart;
+
+// Records metrics for the URL context.
+- (void)recordMetrics;
+
+// Returns the bundle ID of the app that requested the task, when it is known
+// from a trusted source rather than from `UIOpenURLContext`. Returns nil by
+// default.
+- (NSString*)secureSourceApplication;
 
 // Handles the command associated with the request using the given scene state.
 - (void)handleCommandWithSceneState:(SceneState*)sceneState;
@@ -31,13 +45,15 @@ class GURL;
     targetModeForSceneState:(SceneState*)sceneState
                 defaultMode:(ApplicationModeForTabOpening)defaultMode;
 
-// Opens a tab with the specified parameters and dismisses modals.
+// Opens a tab loading `urlLoadParams` and dismisses modals. At most one of
+// `postOpeningAction` (other than `NO_ACTION`) and `postOpeningCompletion` may
+// be provided. If `postOpeningCompletion` is non-nil, it is executed after
+// opening; otherwise `postOpeningAction` is resolved via `TabOpening`.
 - (void)openTabWithSceneState:(SceneState*)sceneState
-                  externalURL:(const GURL&)externalURL
-                   virtualURL:(const GURL&)virtualURL
+                urlLoadParams:(const UrlLoadParams&)urlLoadParams
                    targetMode:(ApplicationModeForTabOpening)targetMode
             postOpeningAction:(TabOpeningPostOpeningAction)postOpeningAction
-             fromWidgetOrSiri:(BOOL)fromWidgetOrSiri;
+        postOpeningCompletion:(ProceduralBlock)postOpeningCompletion;
 
 @end
 

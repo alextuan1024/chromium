@@ -34,7 +34,6 @@
 #include "third_party/blink/renderer/platform/graphics/image_decoder_wrapper.h"
 #include "third_party/blink/renderer/platform/graphics/image_decoding_store.h"
 #include "third_party/blink/renderer/platform/image-decoders/image_decoder.h"
-#include "third_party/blink/renderer/platform/instrumentation/histogram.h"
 #include "third_party/blink/renderer/platform/instrumentation/tracing/trace_event.h"
 #include "third_party/skia/include/core/SkData.h"
 
@@ -64,12 +63,12 @@ static bool UpdateYUVAInfoSubsamplingAndWidthBytes(
     ImageDecoder* decoder,
     SkYUVAInfo::Subsampling* subsampling,
     base::span<size_t, SkYUVAInfo::kMaxPlanes> component_width_bytes) {
-  SkYUVAInfo::Subsampling tempSubsampling =
+  SkYUVAInfo::Subsampling temp_subsampling =
       SubsamplingToSkiaSubsampling(decoder->GetYUVSubsampling());
-  if (tempSubsampling == SkYUVAInfo::Subsampling::kUnknown) {
+  if (temp_subsampling == SkYUVAInfo::Subsampling::kUnknown) {
     return false;
   }
-  *subsampling = tempSubsampling;
+  *subsampling = temp_subsampling;
   component_width_bytes[0] = decoder->DecodedYUVWidthBytes(cc::YUVIndex::kY);
   component_width_bytes[1] = decoder->DecodedYUVWidthBytes(cc::YUVIndex::kU);
   component_width_bytes[2] = decoder->DecodedYUVWidthBytes(cc::YUVIndex::kV);
@@ -112,10 +111,6 @@ bool ImageFrameGenerator::DecodeAndScale(
     cc::PaintImage::GeneratorClientId client_id) {
   if (decode_failed_.load()) {
     return false;
-  }
-  {
-    base::AutoLock lock(generator_lock_);
-    RecordWhetherMultiDecoded(client_id);
   }
 
   TRACE_EVENT1("blink", "ImageFrameGenerator::decodeAndScale", "generator",
@@ -169,8 +164,6 @@ bool ImageFrameGenerator::DecodeToYUV(
     cc::PaintImage::GeneratorClientId client_id) {
   base::AutoLock lock(generator_lock_);
   DCHECK_EQ(index, 0u);
-
-  RecordWhetherMultiDecoded(client_id);
 
   // TODO (scroggo): The only interesting thing this uses from the
   // ImageFrameGenerator is |decode_failed_|. Move this into
@@ -234,27 +227,6 @@ void ImageFrameGenerator::SetHasAlpha(wtf_size_t index, bool has_alpha) {
   has_alpha_[index] = has_alpha;
 }
 
-void ImageFrameGenerator::RecordWhetherMultiDecoded(
-    cc::PaintImage::GeneratorClientId client_id) {
-  generator_lock_.AssertAcquired();
-
-  if (client_id == cc::PaintImage::kDefaultGeneratorClientId)
-    return;
-
-  if (last_client_id_ == cc::PaintImage::kDefaultGeneratorClientId) {
-    DCHECK(!has_logged_multi_clients_);
-    last_client_id_ = client_id;
-    UMA_HISTOGRAM_ENUMERATION(
-        "Blink.ImageDecoders.ImageHasMultipleGeneratorClientIds",
-        DecodeTimesType::kRequestByAtLeastOneClient);
-  } else if (last_client_id_ != client_id && !has_logged_multi_clients_) {
-    has_logged_multi_clients_ = true;
-    UMA_HISTOGRAM_ENUMERATION(
-        "Blink.ImageDecoders.ImageHasMultipleGeneratorClientIds",
-        DecodeTimesType::kRequestByMoreThanOneClient);
-  }
-}
-
 bool ImageFrameGenerator::HasAlpha(wtf_size_t index) const {
   base::AutoLock lock(has_alpha_lock_);
   if (index < has_alpha_.size())
@@ -290,26 +262,26 @@ bool ImageFrameGenerator::GetYUVAInfo(
   }
   SkYUVAInfo yuva_info(full_size_, SkYUVAInfo::PlaneConfig::kY_U_V, subsampling,
                        decoder->GetYUVColorSpace());
-  SkYUVAPixmapInfo::DataType dataType;
+  SkYUVAPixmapInfo::DataType data_type;
   if (decoder->GetYUVBitDepth() > 8) {
     if (supported_data_types.supported(SkYUVAInfo::PlaneConfig::kY_U_V,
                                        SkYUVAPixmapInfo::DataType::kUnorm16)) {
-      dataType = SkYUVAPixmapInfo::DataType::kUnorm16;
+      data_type = SkYUVAPixmapInfo::DataType::kUnorm16;
     } else if (supported_data_types.supported(
                    SkYUVAInfo::PlaneConfig::kY_U_V,
                    SkYUVAPixmapInfo::DataType::kFloat16)) {
-      dataType = SkYUVAPixmapInfo::DataType::kFloat16;
+      data_type = SkYUVAPixmapInfo::DataType::kFloat16;
     } else {
       return false;
     }
   } else if (supported_data_types.supported(
                  SkYUVAInfo::PlaneConfig::kY_U_V,
                  SkYUVAPixmapInfo::DataType::kUnorm8)) {
-    dataType = SkYUVAPixmapInfo::DataType::kUnorm8;
+    data_type = SkYUVAPixmapInfo::DataType::kUnorm8;
   } else {
     return false;
   }
-  *info = SkYUVAPixmapInfo(yuva_info, dataType, width_bytes.data());
+  *info = SkYUVAPixmapInfo(yuva_info, data_type, width_bytes.data());
   DCHECK(info->isSupported(supported_data_types));
 
   return true;

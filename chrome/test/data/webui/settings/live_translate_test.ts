@@ -4,11 +4,11 @@
 
 import 'chrome://settings/lazy_load.js';
 
-import {flush} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
 import {CaptionsBrowserProxyImpl, getLanguageHelperInstance, LanguageHelperImpl} from 'chrome://settings/lazy_load.js';
 import type {SettingsLiveTranslateElement} from 'chrome://settings/lazy_load.js';
-import {CrSettingsPrefs, loadTimeData, PrefsBrowserProxy, PrefService} from 'chrome://settings/settings.js';
+import {loadTimeData, PrefsBrowserProxy, PrefService} from 'chrome://settings/settings.js';
 import {assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chai_assert.js';
+import {microtasksFinished} from 'chrome://webui-test/test_util.js';
 
 import {getFakeLanguagePrefs} from './fake_language_settings_private.js';
 import {TestCaptionsBrowserProxy} from './test_captions_browser_proxy.js';
@@ -52,11 +52,6 @@ suite('LiveTranslateSection', function() {
     prefService = PrefService.getInstance();
     await prefService.whenInitialized();
 
-    const settingsPrefs = document.createElement('settings-prefs');
-    settingsPrefs.initialize(prefsBrowserProxy.fakeApi);
-    document.body.appendChild(settingsPrefs);
-    await CrSettingsPrefs.initialized;
-
     LanguageHelperImpl.resetInstanceForTesting();
     const languageHelper = getLanguageHelperInstance();
     await languageHelper.whenReady();
@@ -67,15 +62,11 @@ suite('LiveTranslateSection', function() {
 
     liveTranslateSection = document.createElement('settings-live-translate');
     document.body.appendChild(liveTranslateSection);
-
-    flush();
+    await microtasksFinished();
   });
 
   test('translate.enable toggle', function() {
-    const settingsToggle =
-        liveTranslateSection.shadowRoot.querySelector<HTMLElement>(
-            '#liveTranslateToggleButton');
-    assertTrue(!!settingsToggle);
+    const settingsToggle = liveTranslateSection.$.liveTranslateToggleButton;
 
     // Clicking on the toggle switches it to true.
     settingsToggle.click();
@@ -94,10 +85,10 @@ suite('LiveTranslateSection', function() {
     assertFalse(newToggleValue);
   });
 
-  test('aria label for the target language dropdown menu', function() {
+  test('aria label for the target language dropdown menu', async function() {
     prefService.setPrefValue(
         'accessibility.captions.live_translate_enabled', true);
-    flush();
+    await microtasksFinished();
 
     const dropdown = liveTranslateSection.shadowRoot.querySelector(
         '#targetLanguageDropdown')!;

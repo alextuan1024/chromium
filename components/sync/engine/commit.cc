@@ -6,6 +6,7 @@
 
 #include <utility>
 
+#include "base/containers/map_util.h"
 #include "base/logging.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/metrics/histogram_macros.h"
@@ -78,6 +79,7 @@ Commit::~Commit() = default;
 std::unique_ptr<Commit> Commit::Init(
     DataTypeSet enabled_types,
     size_t max_entries,
+    size_t max_target_specifics_bytes,
     const std::string& account_name,
     const std::string& cache_guid,
     bool cookie_jar_mismatch,
@@ -85,8 +87,8 @@ std::unique_ptr<Commit> Commit::Init(
     CommitProcessor* commit_processor,
     ExtensionsActivity* extensions_activity) {
   // Gather per-type contributions.
-  ContributionMap contributions =
-      commit_processor->GatherCommitContributions(max_entries);
+  ContributionMap contributions = commit_processor->GatherCommitContributions(
+      max_entries, max_target_specifics_bytes);
 
   // Give up if no one had anything to commit.
   if (contributions.empty()) {
@@ -106,8 +108,9 @@ std::unique_ptr<Commit> Commit::Init(
   // Set extensions activity if bookmark commits are present.
   ExtensionsActivity::Records extensions_activity_buffer;
   if (extensions_activity != nullptr) {
-    ContributionMap::const_iterator it = contributions.find(BOOKMARKS);
-    if (it != contributions.end() && it->second->GetNumEntries() != 0) {
+    CommitContribution* bookmark_contribution =
+        base::FindPtrOrNull(contributions, BOOKMARKS);
+    if (bookmark_contribution && bookmark_contribution->GetNumEntries() != 0) {
       commit_util::AddExtensionsActivityToMessage(
           extensions_activity, &extensions_activity_buffer, commit_message);
     }

@@ -5,7 +5,6 @@
 #include "media/ffmpeg/ffmpeg_common.h"
 
 #include "base/containers/span.h"
-#include "base/feature_list.h"
 #include "base/hash/sha1.h"
 #include "base/logging.h"
 #include "base/no_destructor.h"
@@ -42,9 +41,6 @@
 namespace media {
 
 namespace {
-
-// TODO(crbug.com/379418979): Remove after M133 is stable.
-BASE_FEATURE(kStrictFFmpegCodecs, base::FEATURE_ENABLED_BY_DEFAULT);
 
 EncryptionScheme GetEncryptionScheme(const AVStream* stream) {
   AVDictionaryEntry* key =
@@ -88,9 +84,7 @@ void ApplyCodecContextSecuritySettings(AVCodecContext* codec_context) {
 
   // Note: This is security sensitive. FFmpeg may not always continue safely
   // in the presence of errors. See https://crbug.com/379418979
-  if (base::FeatureList::IsEnabled(kStrictFFmpegCodecs)) {
-    codec_context->err_recognition |= AV_EF_EXPLODE;
-  }
+  codec_context->err_recognition |= AV_EF_EXPLODE;
 }
 
 template <typename T>
@@ -347,9 +341,26 @@ SampleFormat AVSampleFormatToSampleFormat(AVSampleFormat sample_format,
     case AV_SAMPLE_FMT_FLTP:
       return kSampleFormatPlanarF32;
     default:
+      switch (codec_id) {
+        case AV_CODEC_ID_PCM_U8:
+          return kSampleFormatU8;
+        case AV_CODEC_ID_PCM_S16LE:
+          return kSampleFormatS16;
+        case AV_CODEC_ID_PCM_S24LE:
+          return kSampleFormatS24;
+        case AV_CODEC_ID_PCM_S32LE:
+          return kSampleFormatS32;
+        case AV_CODEC_ID_PCM_F32LE:
+          return kSampleFormatF32;
+        default:
+      }
       DVLOG(1) << "Unknown AVSampleFormat: " << sample_format;
   }
-  return kUnknownSampleFormat;
+  // In all cases except for PCM and bitstream formats, this value doesn't
+  // matter. All current decoders will try to decode to float planar. As
+  // such we just return float planar for unknown values. When ffmpeg is
+  // configured without parsers and decoders, it will always return unknown.
+  return kSampleFormatPlanarF32;
 }
 
 static AVSampleFormat SampleFormatToAVSampleFormat(SampleFormat sample_format) {
@@ -486,10 +497,6 @@ bool AVCodecContextToAudioDecoderConfig(const AVCodecContext* codec_context,
   }
 #endif
 
-  // Verify that AudioConfig.bytes_per_channel was calculated correctly for
-  // codecs that have |sample_fmt| set by FFmpeg.
-  DCHECK_EQ(av_get_bytes_per_sample(codec_context->sample_fmt),
-            config->bytes_per_channel());
   return true;
 }
 
@@ -944,9 +951,7 @@ bool AVStreamToVideoDecoderConfig(const AVStream* stream,
   config->set_aspect_ratio(aspect_ratio);
   config->set_spatial_format(spatial_format);
 
-  if (hdr_metadata.IsValid()) {
-    config->set_hdr_metadata(hdr_metadata);
-  }
+  config->set_hdr_metadata(hdr_metadata);
 
   return true;
 }

@@ -8,6 +8,7 @@
 
 #include "base/base_paths.h"
 #include "base/files/file.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/path_service.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/task/thread_pool.h"
@@ -16,8 +17,8 @@
 #include "base/test/protobuf_matchers.h"
 #include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
-#include "chrome/browser/safe_browsing/chrome_safe_browsing_blocking_page_factory.h"
-#include "chrome/browser/safe_browsing/chrome_ui_manager_delegate.h"
+#include "chrome/browser/safe_browsing/interstitials/chrome_safe_browsing_blocking_page_factory.h"
+#include "chrome/browser/safe_browsing/interstitials/chrome_ui_manager_delegate.h"
 #include "chrome/common/webui_url_constants.h"
 #include "chrome/test/base/testing_profile.h"
 #include "components/prefs/testing_pref_service.h"
@@ -121,7 +122,8 @@ class NotificationTelemetryServiceTest : public ::testing::TestWithParam<bool> {
                                                          ui_manager_);
 
     } else {
-      database_manager_ = new MockSafeBrowsingDatabaseManager();
+      database_manager_ =
+          base::MakeRefCounted<MockSafeBrowsingDatabaseManager>();
       // Create service.
       notification_telemetry_service_ =
           std::make_unique<NotificationTelemetryService>(

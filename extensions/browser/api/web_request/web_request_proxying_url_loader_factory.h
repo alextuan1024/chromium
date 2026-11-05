@@ -11,6 +11,7 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "base/callback_list.h"
@@ -135,6 +136,8 @@ class WebRequestProxyingURLLoaderFactory
 
     void OnLoaderCreated(
         mojo::PendingReceiver<network::mojom::TrustedHeaderClient> receiver);
+    void OnLoaderFailedWithRemoteEndpoint(
+        const net::IPEndPoint& remote_endpoint);
 
     // network::mojom::TrustedHeaderClient:
     void OnBeforeSendHeaders(const GURL& request_url,
@@ -168,7 +171,9 @@ class WebRequestProxyingURLLoaderFactory
       kRejectedByOnHeadersReceivedForAuth,
       kRejectedByOnAuthRequired,
       kCompleted,
-      kMaxValue = kCompleted,
+      // The client's FollowRedirect() violated the URLLoader contract.
+      kRejectedByUnexpectedFollowRedirect,
+      kMaxValue = kRejectedByUnexpectedFollowRedirect,
     };
     // These two methods combined form the implementation of Restart().
     void UpdateRequestInfo();
@@ -202,6 +207,14 @@ class WebRequestProxyingURLLoaderFactory
         net::CompletionOnceCallback continuation);
     void OnRequestError(const network::URLLoaderCompletionStatus& status,
                         State state);
+
+    // Terminates a request whose client violated the URLLoader contract for
+    // FollowRedirect(), and reports `reason` as a bad message if the client is
+    // a renderer process. Deletes `this`.
+    void RejectFollowRedirect(
+        std::string_view reason,
+        net::Error error_code = net::ERR_INVALID_ARGUMENT);
+
     void OnNetworkError(const network::URLLoaderCompletionStatus& status);
     void OnClientDisconnected();
     void OnLoaderDisconnected(uint32_t custom_reason,
@@ -252,7 +265,16 @@ class WebRequestProxyingURLLoaderFactory
     mojo::ScopedDataPipeConsumerHandle current_body_;
     std::optional<mojo_base::BigBuffer> current_cached_metadata_;
     scoped_refptr<net::HttpResponseHeaders> override_headers_;
+
+    // A redirect *requested by an extension*, which this class then
+    // synthesizes. Empty if no extension asked to redirect the current hop.
+    // Not to be confused with `deferred_redirect_url_` below.
     GURL redirect_url_;
+
+    // The target of a redirect already forwarded to the `target_client_` via
+    // OnReceiveRedirect(), but not yet followed. Must be set for a legitimate
+    // call to `FollowRedirect()`.
+    std::optional<GURL> deferred_redirect_url_;
 
     // Holds any provided auth credentials through the extent of the request's
     // lifetime.
@@ -301,8 +323,15 @@ class WebRequestProxyingURLLoaderFactory
     // called at most once. It is added to debug crbug.com/463388771.
     bool has_forwarded_response_ = false;
 
-    // A task runner that should be used for the request when non-null. Non-null
-    // when this was created for a navigation request.
+    // A task runner that should be used for the request's Mojo receivers when
+    // non-null. Non-null for non-CORS-preflight requests created on navigation
+    // factories or on document subresource factories whose creator opted in to
+    // running this proxy off the UI thread's default task queue (see content's
+    // `kSubresourceLoaderProxyTaskQueue`).
+    // TODO(crbug.com/578355574): Rename `navigation_response_task_runner_` (and
+    // `WillCreateURLLoaderFactory`'s `navigation_response_task_runner`
+    // parameter) to reflect that it is also used for `kDocumentSubResource`
+    // proxies.
     scoped_refptr<base::SequencedTaskRunner> navigation_response_task_runner_;
 
     base::WeakPtrFactory<InProgressRequest> weak_factory_{this};
@@ -368,6 +397,9 @@ class WebRequestProxyingURLLoaderFactory
       const network::ResourceRequest& request,
       mojo::PendingReceiver<network::mojom::TrustedHeaderClient> receiver)
       override;
+  void OnLoaderFailedWithRemoteEndpoint(
+      int32_t request_id,
+      const net::IPEndPoint& remote_endpoint) override;
 
   // WebRequestAPI::Proxy:
   void HandleAuthRequest(
@@ -394,6 +426,17 @@ class WebRequestProxyingURLLoaderFactory
   void RemoveRequest(int32_t request_id_for_network_service,
                      uint64_t profile_request_id);
   void MaybeRemoveProxy();
+
+  // Returns `navigation_response_task_runner_` for receivers that historically
+  // fell back to the UI thread's default task queue (`Clone()`d factory
+  // receivers and per-request `TrustedHeaderClient` receivers): enabled for
+  // `kDocumentSubResource` factories (when `navigation_response_task_runner_`
+  // is populated under `features::kSubresourceLoaderProxyTaskQueue`) and for
+  // `kNavigation` factories when
+  // `extensions_features::kWebRequestProxyNavigationResponseTaskRunner` is
+  // enabled.
+  scoped_refptr<base::SequencedTaskRunner> GetTaskRunnerForSecondaryReceivers()
+      const;
 
   const raw_ptr<content::BrowserContext> browser_context_;
   const int render_process_id_;
@@ -425,8 +468,21 @@ class WebRequestProxyingURLLoaderFactory
   // Notifies the proxy that the browser context has been shutdown.
   base::CallbackListSubscription shutdown_notifier_subscription_;
 
-  // A task runner that should be used for requests when non-null. Non-null when
-  // this was created for a navigation request.
+  // Task runner used to bind Mojo receivers for this factory and its
+  // `InProgressRequest`s when non-null:
+  // - For `kNavigation` factories, carries the `kNavigationNetworkResponse`
+  //   task runner. Secondary receivers (`Clone()` and per-request
+  //   `TrustedHeaderClient`) also bind to it when
+  //   `extensions_features::kWebRequestProxyNavigationResponseTaskRunner` is
+  //   enabled.
+  // - For `kDocumentSubResource` factories, carries the main frame's
+  //   `kSubresourceLoaderProxy` task runner when
+  //   `features::kSubresourceLoaderProxyTaskQueue` is enabled; all factory and
+  //   per-request receivers (including `Clone()` and `TrustedHeaderClient`)
+  //   bind to it.
+  // TODO(crbug.com/578355574): Rename `navigation_response_task_runner_` (and
+  // `WillCreateURLLoaderFactory`'s `navigation_response_task_runner` parameter)
+  // to reflect that it is also used for `kDocumentSubResource` proxies.
   scoped_refptr<base::SequencedTaskRunner> navigation_response_task_runner_;
 
   base::WeakPtrFactory<WebRequestProxyingURLLoaderFactory> weak_factory_{this};

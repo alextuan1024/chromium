@@ -4,6 +4,7 @@
 
 package org.chromium.chrome.browser.customtabs;
 
+import static org.chromium.build.NullUtil.assertNonNull;
 import static org.chromium.build.NullUtil.assumeNonNull;
 import static org.chromium.chrome.browser.url_constants.UrlConstantResolver.getOriginalNativeNtpUrl;
 
@@ -52,6 +53,7 @@ import org.chromium.chrome.browser.fullscreen.FullscreenManager;
 import org.chromium.chrome.browser.init.ChromeActivityNativeDelegate;
 import org.chromium.chrome.browser.native_page.NativePageFactory;
 import org.chromium.chrome.browser.pdf.PdfInfo;
+import org.chromium.chrome.browser.printing.PrintingDelegate;
 import org.chromium.chrome.browser.share.ShareDelegate;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabAssociatedApp;
@@ -97,7 +99,7 @@ public class CustomTabDelegateFactory implements TabDelegateFactory {
         private final Verifier mVerifier;
         private final @ActivityType int mActivityType;
         private final @Nullable BrowserServicesIntentDataProvider mIntentDataProvider;
-        private final AuthTabVerifier mAuthTabVerifier;
+        private final @Nullable AuthTabVerifier mAuthTabVerifier;
 
         /** Constructs a new instance of {@link CustomTabNavigationDelegate}. */
         CustomTabNavigationDelegate(
@@ -105,7 +107,7 @@ public class CustomTabDelegateFactory implements TabDelegateFactory {
                 Verifier verifier,
                 @ActivityType int activityType,
                 @Nullable BrowserServicesIntentDataProvider intentDataProvider,
-                AuthTabVerifier authTabVerifier) {
+                @Nullable AuthTabVerifier authTabVerifier) {
             super(tab);
             mClientPackageName = TabAssociatedApp.from(tab).getAppId();
             mVerifier = verifier;
@@ -200,7 +202,7 @@ public class CustomTabDelegateFactory implements TabDelegateFactory {
         public boolean shouldReturnAsActivityResult(GURL url) {
             if (mActivityType != ActivityType.AUTH_TAB) return false;
 
-            var authTabVerifier = mAuthTabVerifier;
+            var authTabVerifier = assumeNonNull(mAuthTabVerifier);
             return authTabVerifier.isCustomScheme(url)
                     || authTabVerifier.shouldRedirectHttpsAuthUrl(url);
         }
@@ -209,16 +211,17 @@ public class CustomTabDelegateFactory implements TabDelegateFactory {
         public void returnAsActivityResult(GURL url) {
             assert mIntentDataProvider != null;
             assert mIntentDataProvider.isAuthTab();
-            mAuthTabVerifier.returnAsActivityResult(url);
+            assumeNonNull(mAuthTabVerifier).returnAsActivityResult(url);
         }
 
         @Override
-        public boolean allowExternalNavigationForHttpProtocols(GURL url) {
+        public boolean allowExternalNavigationForHttpProtocols(
+                GURL url, Supplier<List<ResolveInfo>> resolveInfoSupplier) {
             return true;
         }
 
         public void resumeDelayedVerificationForTesting() {
-            mAuthTabVerifier.onFinishNativeInitialization();
+            assumeNonNull(mAuthTabVerifier).onFinishNativeInitialization();
         }
     }
 
@@ -252,7 +255,7 @@ public class CustomTabDelegateFactory implements TabDelegateFactory {
                 BrowserControlsStateProvider browserControlsStateProvider,
                 FullscreenManager fullscreenManager,
                 TabCreatorManager tabCreatorManager,
-                Supplier<TabModelSelector> tabModelSelectorSupplier,
+                Supplier<@Nullable TabModelSelector> tabModelSelectorSupplier,
                 Supplier<@Nullable CompositorViewHolder> compositorViewHolderSupplier,
                 Supplier<@Nullable ModalDialogManager> modalDialogManagerSupplier,
                 Supplier<SnackbarManager> snackbarManagerSupplier,
@@ -516,22 +519,22 @@ public class CustomTabDelegateFactory implements TabDelegateFactory {
     private final FullscreenManager mFullscreenManager;
     private final TabCreatorManager mTabCreatorManager;
     private final BrowserControlsManager mBrowserControlsManager;
-    private final Supplier<TabModelSelector> mTabModelSelectorSupplier;
+    private final Supplier<@Nullable TabModelSelector> mTabModelSelectorSupplier;
     private final Supplier<@Nullable CompositorViewHolder> mCompositorViewHolderSupplier;
     private final Supplier<@Nullable ModalDialogManager> mModalDialogManagerSupplier;
     // Should only be used after inflation.
     private final Supplier<SnackbarManager> mSnackbarManager;
     private final Supplier<@Nullable ShareDelegate> mShareDelegateSupplier;
     // Should only be used after inflation.
-    private final Supplier<BottomSheetController> mBottomSheetController;
-    private final AuthTabVerifier mAuthTabVerifier;
+    private final Supplier<@Nullable BottomSheetController> mBottomSheetController;
+    private final @Nullable AuthTabVerifier mAuthTabVerifier;
     private final boolean mContextMenuEnabled;
     private final Supplier<Boolean> mHeaderControlsVisibilitySupplier;
     private final Supplier<Boolean> mHeaderAsOverlaySupplier;
 
     private @Nullable TabWebContentsDelegateAndroid mWebContentsDelegateAndroid;
     private @Nullable ExternalNavigationDelegateImpl mNavigationDelegate;
-    private @Nullable Supplier<EphemeralTabCoordinator> mEphemeralTabCoordinatorSupplier;
+    private @Nullable Supplier<@Nullable EphemeralTabCoordinator> mEphemeralTabCoordinatorSupplier;
     private final @Nullable ExclusiveAccessManager mExclusiveAccessManager;
     private final @Nullable DesktopWindowStateManager mDesktopWindowStateManager;
 
@@ -572,14 +575,14 @@ public class CustomTabDelegateFactory implements TabDelegateFactory {
             BrowserControlsStateProvider browserControlsStateProvider,
             FullscreenManager fullscreenManager,
             TabCreatorManager tabCreatorManager,
-            Supplier<TabModelSelector> tabModelSelectorSupplier,
+            Supplier<@Nullable TabModelSelector> tabModelSelectorSupplier,
             Supplier<@Nullable CompositorViewHolder> compositorViewHolderSupplier,
             Supplier<@Nullable ModalDialogManager> modalDialogManagerSupplier,
             Supplier<SnackbarManager> snackbarManager,
             Supplier<@Nullable ShareDelegate> shareDelegateSupplier,
             @ActivityType int activityType,
-            Supplier<BottomSheetController> bottomSheetController,
-            AuthTabVerifier authTabVerifier,
+            Supplier<@Nullable BottomSheetController> bottomSheetController,
+            @Nullable AuthTabVerifier authTabVerifier,
             BrowserControlsManager browserControlsManager,
             Supplier<Boolean> headerControlsVisibilitySupplier,
             Supplier<Boolean> headerAsOverlaySupplier,
@@ -721,7 +724,7 @@ public class CustomTabDelegateFactory implements TabDelegateFactory {
 
     @VisibleForTesting
     TabContextMenuItemDelegate createTabContextMenuItemDelegate(Tab tab) {
-        TabModelSelector tabModelSelector = mTabModelSelectorSupplier.get();
+        TabModelSelector tabModelSelector = assertNonNull(mTabModelSelectorSupplier.get());
         return new TabContextMenuItemDelegate(
                 mActivity,
                 mActivityType,
@@ -730,7 +733,8 @@ public class CustomTabDelegateFactory implements TabDelegateFactory {
                 () -> assumeNonNull(mEphemeralTabCoordinatorSupplier).get(),
                 CallbackUtils.emptyRunnable(),
                 mSnackbarManager,
-                mBottomSheetController);
+                mBottomSheetController,
+                PrintingDelegate.getInstance());
     }
 
     @Override
@@ -766,7 +770,8 @@ public class CustomTabDelegateFactory implements TabDelegateFactory {
                 mActivity);
     }
 
-    public void setEphemeralTabCoordinatorSupplier(Supplier<EphemeralTabCoordinator> supplier) {
+    public void setEphemeralTabCoordinatorSupplier(
+            Supplier<@Nullable EphemeralTabCoordinator> supplier) {
         mEphemeralTabCoordinatorSupplier = supplier;
     }
 

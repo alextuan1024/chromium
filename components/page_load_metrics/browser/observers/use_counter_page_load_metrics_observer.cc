@@ -179,11 +179,9 @@ void UseCounterMetricsRecorder::RecordOrDeferUseCounterFeature(
 
         // For any WebFeature use counters that are mapped to a WebDXFeature,
         // record the WebDXFeature use counter as well.
-        auto map = blink::GetWebFeatureToWebDXFeatureMap();
-        auto entry = map.find(web_feature);
-
-        if (entry != map.end()) {
-          uma_webdx_features_.RecordOrDefer(entry->second);
+        if (std::optional<WebDXFeature> webdx_feature =
+                blink::MapWebFeatureToWebDXFeature(web_feature)) {
+          uma_webdx_features_.RecordOrDefer(*webdx_feature);
         }
       }
     } break;
@@ -207,12 +205,11 @@ void UseCounterMetricsRecorder::RecordOrDeferUseCounterFeature(
         if (!uma_css_properties_->IsRecordedOrDeferred(css_property)) {
           uma_css_properties_->RecordOrDefer(css_property);
 
-          auto map = blink::GetCSSPropertiesToWebDXFeatureMap();
-          auto entry = map.find(css_property);
-
-          if (entry != map.end() &&
-              !uma_webdx_features_.IsRecordedOrDeferred(entry->second)) {
-            uma_webdx_features_.RecordOrDefer(entry->second);
+          if (std::optional<WebDXFeature> webdx_feature =
+                  blink::MapCSSPropertyToWebDXFeature(css_property);
+              webdx_feature &&
+              !uma_webdx_features_.IsRecordedOrDeferred(*webdx_feature)) {
+            uma_webdx_features_.RecordOrDefer(*webdx_feature);
           }
         }
       }
@@ -225,12 +222,12 @@ void UseCounterMetricsRecorder::RecordOrDeferUseCounterFeature(
                 animated_css_property)) {
           uma_animated_css_properties_->RecordOrDefer(animated_css_property);
 
-          auto map = blink::GetAnimatedCSSPropertiesToWebDXFeatureMap();
-          auto entry = map.find(animated_css_property);
-
-          if (entry != map.end() &&
-              !uma_webdx_features_.IsRecordedOrDeferred(entry->second)) {
-            uma_webdx_features_.RecordOrDefer(entry->second);
+          if (std::optional<WebDXFeature> webdx_feature =
+                  blink::MapAnimatedCSSPropertyToWebDXFeature(
+                      animated_css_property);
+              webdx_feature &&
+              !uma_webdx_features_.IsRecordedOrDeferred(*webdx_feature)) {
+            uma_webdx_features_.RecordOrDefer(*webdx_feature);
           }
         }
       }
@@ -289,6 +286,22 @@ void UseCounterMetricsRecorder::RecordWebFeatures(ukm::SourceId ukm_source_id) {
             uma_main_frame_features_.IsRecordedOrDeferred(web_feature))
         .Record(ukm::UkmRecorder::Get());
   }
+  RecordAutofillSyntheticSelect(ukm_source_id);
+}
+
+void UseCounterMetricsRecorder::RecordAutofillSyntheticSelect(
+    ukm::SourceId ukm_source_id) {
+  const bool has_synthetic_select =
+      uma_features_.IsRecordedOrDeferred(WebFeature::kAutofillSyntheticSelect);
+  const bool has_maybe_synthetic_select = uma_features_.IsRecordedOrDeferred(
+      WebFeature::kAutofillMaybeSyntheticSelect);
+  if (!has_synthetic_select && !has_maybe_synthetic_select) {
+    return;
+  }
+  ukm::builders::Autofill_SyntheticSelect(ukm_source_id)
+      .SetSyntheticSelect(has_synthetic_select)
+      .SetMaybeSyntheticSelect(has_maybe_synthetic_select)
+      .Record(ukm::UkmRecorder::Get());
 }
 
 void UseCounterMetricsRecorder::RecordWebDXFeatures(

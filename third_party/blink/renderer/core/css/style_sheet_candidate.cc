@@ -48,10 +48,6 @@ bool StyleSheetCandidate::IsXSL() const {
          To<ProcessingInstruction>(GetNode()).IsXSL();
 }
 
-bool StyleSheetCandidate::IsCSSStyle() const {
-  return type_ == kHTMLStyle || type_ == kSVGStyle;
-}
-
 bool StyleSheetCandidate::IsEnabledViaScript() const {
   auto* html_link_element = DynamicTo<HTMLLinkElement>(GetNode());
   return html_link_element && html_link_element->IsEnabledViaScript();
@@ -59,7 +55,12 @@ bool StyleSheetCandidate::IsEnabledViaScript() const {
 
 bool StyleSheetCandidate::IsEnabledAndLoading() const {
   auto* html_link_element = DynamicTo<HTMLLinkElement>(GetNode());
-  return html_link_element && !html_link_element->IsDisabled() &&
+  // Callers exclude loading candidates from stylesheet lists and activation.
+  // Module links can expose a cached sheet synchronously while their completion
+  // callback is still pending, so do not exclude them here. Uncached module
+  // links have no sheet to collect until the fetch completes.
+  return html_link_element && !html_link_element->HasStyleModuleResource() &&
+         !html_link_element->IsDisabled() &&
          html_link_element->StyleSheetIsLoading();
 }
 

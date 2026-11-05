@@ -29,6 +29,7 @@
 #include "base/test/task_environment.h"
 #include "base/test/test_file_util.h"
 #include "base/time/time.h"
+#include "components/os_crypt/async/browser/test_key_provider.h"
 #include "components/os_crypt/async/browser/test_utils.h"
 #include "components/os_crypt/async/common/algorithm.mojom.h"
 #include "components/os_crypt/async/common/encryptor.h"
@@ -75,7 +76,7 @@ class CommandStorageBackendTest : public testing::Test {
   CommandStorageBackendTest() : os_crypt_(CreateOSCryptAsync()) {}
 
  protected:
-  using ReadStatus = CommandStorageBackend::ReadStatus;
+  using ReadStatus = CommandStorageReadStatus;
   using WriteStatus = CommandStorageBackend::WriteStatus;
   using ReadCommandsResult = CommandStorageBackend::ReadCommandsResult;
 
@@ -222,31 +223,14 @@ class CommandStorageBackendTest : public testing::Test {
     std::vector<uint8_t> key_data(key_string.begin(), key_string.end());
     std::vector<std::pair<size_t, std::unique_ptr<os_crypt_async::KeyProvider>>>
         providers;
-    providers.emplace_back(/*precedence=*/10u,
-                           std::make_unique<TestKeyProvider>("k1", key_data));
+    providers.emplace_back(
+        /*precedence=*/10u,
+        std::make_unique<os_crypt_async::TestKeyProvider>(
+            "k1", /*use_for_encryption=*/true,
+            os_crypt_async::Encryptor::Key(
+                key_data, os_crypt_async::mojom::Algorithm::kAES256GCM)));
     return std::make_unique<os_crypt_async::OSCryptAsync>(std::move(providers));
   }
-
-  // A test key provider that takes a fixed key.
-  // TODO(crbug.com/492549013): Refactor to share code with other tests.
-  class TestKeyProvider : public os_crypt_async::KeyProvider {
-   public:
-    explicit TestKeyProvider(const std::string& tag,
-                             base::span<const uint8_t> key)
-        : tag_(tag), key_(key.begin(), key.end()) {}
-
-   private:
-    void GetKey(KeyCallback callback) final {
-      std::move(callback).Run(
-          tag_, os_crypt_async::Encryptor::Key(
-                    key_, os_crypt_async::mojom::Algorithm::kAES256GCM));
-    }
-
-    bool UseForEncryption() final { return true; }
-
-    const std::string tag_;
-    const std::vector<uint8_t> key_;
-  };
 
   base::test::TaskEnvironment task_environment_;
   base::FilePath init_path_;  // Passed to CommandStorageBackend constructor.
@@ -275,7 +259,7 @@ TEST_F(CommandStorageBackendTest, ReadSessionFileV1) {
   ASSERT_FALSE(backend->IsValidFileForTest(
       sessions_dir(false).AppendASCII("Session_1234")));
   ReadCommandsResult result = backend->ReadLastSessionCommands();
-  ASSERT_TRUE(result.error_reading);
+  ASSERT_TRUE(IsCommandStorageReadError(result.status));
   ASSERT_TRUE(result.commands.empty());
   histogram_tester.ExpectUniqueSample(
       "Session.CommandStorageBackend.SessionRestore.Cleartext."
@@ -298,7 +282,7 @@ TEST_F(CommandStorageBackendTest, ReadSessionFileV2) {
       sessions_dir(false).AppendASCII("Session_1234")));
   ReadCommandsResult result = backend->ReadLastSessionCommands();
   ASSERT_TRUE(result.commands.empty());
-  ASSERT_TRUE(result.error_reading);
+  ASSERT_TRUE(IsCommandStorageReadError(result.status));
   histogram_tester.ExpectUniqueSample(
       "Session.CommandStorageBackend.SessionRestore.Cleartext."
       "ReadLastSessionCommands.Status",
@@ -317,7 +301,7 @@ TEST_F(CommandStorageBackendTest, ReadSessionFileV3) {
       CreateBackend(SessionType::kSessionRestore, /*encrypted=*/false);
   ReadCommandsResult result = backend->ReadLastSessionCommands();
   ASSERT_EQ(1u, result.commands.size());
-  ASSERT_FALSE(result.error_reading);
+  ASSERT_FALSE(IsCommandStorageReadError(result.status));
   AssertCommandEqualsData(TestData({1, "a"}), result.commands[0].get());
   histogram_tester.ExpectUniqueSample(
       "Session.CommandStorageBackend.SessionRestore.Cleartext."
@@ -379,7 +363,7 @@ TEST_F(CommandStorageBackendTest, ReadSessionFileV3With2Appends) {
       CreateBackend(SessionType::kSessionRestore, /*encrypted=*/false);
   ReadCommandsResult result = backend->ReadLastSessionCommands();
 
-  ASSERT_FALSE(result.error_reading);
+  ASSERT_FALSE(IsCommandStorageReadError(result.status));
   ASSERT_EQ(4u, result.commands.size());
   AssertCommandEqualsData(TestData({1, "apple"}), result.commands[0].get());
   AssertCommandEqualsData(TestData({2, "banana"}), result.commands[1].get());
@@ -436,7 +420,7 @@ TEST_F(CommandStorageBackendTest, ReadSessionFileV3WithEncryptorAvailable) {
       CreateBackend(SessionType::kSessionRestore, /*encrypted=*/true);
   ReadCommandsResult result = backend->ReadLastSessionCommands();
   ASSERT_EQ(1u, result.commands.size());
-  ASSERT_FALSE(result.error_reading);
+  ASSERT_FALSE(IsCommandStorageReadError(result.status));
   AssertCommandEqualsData(TestData({1, "a"}), result.commands[0].get());
   histogram_tester.ExpectUniqueSample(
       "Session.CommandStorageBackend.SessionRestore.Encrypted."
@@ -458,7 +442,7 @@ TEST_F(CommandStorageBackendTest, ReadSessionFileV4) {
       sessions_dir(false).AppendASCII("Session_1234")));
   ReadCommandsResult result = backend->ReadLastSessionCommands();
 
-  ASSERT_TRUE(result.error_reading);
+  ASSERT_TRUE(IsCommandStorageReadError(result.status));
   ASSERT_TRUE(result.commands.empty());
   histogram_tester.ExpectUniqueSample(
       "Session.CommandStorageBackend.SessionRestore.Cleartext."
@@ -508,7 +492,7 @@ TEST_F(CommandStorageBackendTest, ReadSessionFileV5FailsWithoutEncryptor) {
       CreateBackend(SessionType::kSessionRestore, /*encrypted=*/false);
   ReadCommandsResult result = backend->ReadLastSessionCommands();
   ASSERT_TRUE(result.commands.empty());
-  ASSERT_TRUE(result.error_reading);
+  ASSERT_TRUE(IsCommandStorageReadError(result.status));
   histogram_tester.ExpectUniqueSample(
       "Session.CommandStorageBackend.SessionRestore.Cleartext."
       "ReadLastSessionCommands.Status",
@@ -1001,7 +985,7 @@ TEST_P(CommandStorageBackendParamTest, DeleteLastSession) {
   backend = CreateBackend();  // Necessary to recognize the file we just wrote.
   backend->DeleteLastSession();
   ReadCommandsResult result = backend->ReadLastSessionCommands();
-  ASSERT_FALSE(result.error_reading);
+  ASSERT_FALSE(IsCommandStorageReadError(result.status));
   ASSERT_TRUE(result.commands.empty());
   histogram_tester.ExpectUniqueSample(
       GetHistogramName("ReadLastSessionCommands", "", "Status"),
@@ -1010,7 +994,7 @@ TEST_P(CommandStorageBackendParamTest, DeleteLastSession) {
   // Also confirm deletion with a new backend.
   backend = CreateBackend();
   result = backend->ReadLastSessionCommands();
-  ASSERT_FALSE(result.error_reading);
+  ASSERT_FALSE(IsCommandStorageReadError(result.status));
   ASSERT_TRUE(result.commands.empty());
   histogram_tester.ExpectBucketCount(
       GetHistogramName("ReadLastSessionCommands", "", "Status"),
@@ -1026,7 +1010,7 @@ TEST_P(CommandStorageBackendParamTest, ReadEmptyCommands) {
 
   ReadCommandsResult result = backend->ReadLastSessionCommands();
 
-  ASSERT_FALSE(result.error_reading);
+  ASSERT_FALSE(IsCommandStorageReadError(result.status));
   ASSERT_EQ(0U, result.commands.size());
   histogram_tester.ExpectUniqueSample(
       GetHistogramName("ReadLastSessionCommands", "", "Status"),
@@ -1043,7 +1027,7 @@ TEST_P(CommandStorageBackendParamTest, ReadErrorWithEmptyFile) {
 
   ReadCommandsResult result = backend->ReadLastSessionCommands();
 
-  ASSERT_TRUE(result.error_reading);
+  ASSERT_TRUE(IsCommandStorageReadError(result.status));
   ASSERT_EQ(0U, result.commands.size());
   histogram_tester.ExpectUniqueSample(
       GetHistogramName("ReadLastSessionCommands", "", "Status"),
@@ -1061,7 +1045,7 @@ TEST_P(CommandStorageBackendParamTest, ReadErrorWithInvalidHeader) {
 
   ReadCommandsResult result = backend->ReadLastSessionCommands();
 
-  ASSERT_TRUE(result.error_reading);
+  ASSERT_TRUE(IsCommandStorageReadError(result.status));
   ASSERT_EQ(0U, result.commands.size());
   histogram_tester.ExpectUniqueSample(
       GetHistogramName("ReadLastSessionCommands", "", "Status"),
@@ -1091,7 +1075,7 @@ TEST_P(CommandStorageBackendParamTest, ReadErrorWithCommandSizeZero) {
   backend = CreateBackend();
   ReadCommandsResult result = backend->ReadLastSessionCommands();
 
-  ASSERT_TRUE(result.error_reading);
+  ASSERT_TRUE(IsCommandStorageReadError(result.status));
   histogram_tester.ExpectUniqueSample(
       GetHistogramName("ReadLastSessionCommands", "", "Status"),
       ReadStatus::kInvalidCommand, 1);
@@ -1121,7 +1105,7 @@ TEST_P(CommandStorageBackendParamTest, ReadErrorWithIncompleteCommand) {
   backend = CreateBackend();
   ReadCommandsResult result = backend->ReadLastSessionCommands();
 
-  ASSERT_TRUE(result.error_reading);
+  ASSERT_TRUE(IsCommandStorageReadError(result.status));
   ASSERT_EQ(0U, result.commands.size());
   histogram_tester.ExpectUniqueSample(
       GetHistogramName("ReadLastSessionCommands", "", "Status"),
@@ -1342,7 +1326,7 @@ TEST_P(CommandStorageBackendParamTest,
   base::HistogramTester histogram_tester;
   backend = CreateBackend(&test_clock);
   ReadCommandsResult result = backend->ReadLastSessionCommands();
-  EXPECT_FALSE(result.error_reading);
+  EXPECT_FALSE(IsCommandStorageReadError(result.status));
   ASSERT_EQ(1u, result.commands.size());
   AssertCommandEqualsData({1, "older_session"}, result.commands[0].get());
 
@@ -1384,7 +1368,7 @@ TEST_P(CommandStorageBackendParamTest,
 
   // The files were read, but no valid marker was found, so the result is an
   // error.
-  EXPECT_TRUE(result.error_reading);
+  EXPECT_TRUE(IsCommandStorageReadError(result.status));
   EXPECT_TRUE(result.commands.empty());
 
   histogram_tester.ExpectUniqueSample(

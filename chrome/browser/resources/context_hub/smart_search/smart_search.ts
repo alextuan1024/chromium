@@ -2,12 +2,14 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import '//resources/cr_elements/cr_icon/cr_icon.js';
 import '//resources/cr_elements/cr_button/cr_button.js';
+import '//resources/cr_elements/cr_checkbox/cr_checkbox.js';
+import '//resources/cr_elements/cr_icon/cr_icon.js';
 import '//resources/cr_elements/icons.html.js';
 import './smart_search_card.js';
 
 import {loadTimeData} from '//resources/js/load_time_data.js';
+import {OpenWindowProxyImpl} from '//resources/js/open_window_proxy.js';
 import {CrLitElement} from '//resources/lit/v3_0/lit.rollup.js';
 
 import {browserProxyFactory} from '../context_hub.mojom-webui.js';
@@ -16,7 +18,7 @@ import {getCss} from './smart_search.css.js';
 import {getHtml} from './smart_search.html.js';
 import type {SmartSearchResult} from './smart_search_card.js';
 
-export type {SmartSearchResult} from './smart_search_card.js';
+const MAX_URLS_TO_OPEN = 10;
 
 export class SmartSearchElement extends CrLitElement {
   static get is() {
@@ -43,7 +45,7 @@ export class SmartSearchElement extends CrLitElement {
   }
 
   protected accessor searchQuery_: string = '';
-  protected accessor results_: SmartSearchResult[] = [];
+  private accessor results_: SmartSearchResult[] = [];
   protected accessor selectedIds_: Set<string> = new Set();
   protected accessor isSearching_: boolean = false;
   protected accessor hasSearched_: boolean = false;
@@ -119,6 +121,33 @@ export class SmartSearchElement extends CrLitElement {
     }
   }
 
+  protected isAllSelected_(): boolean {
+    const filtered = this.getFilteredResults_();
+    return filtered.length > 0 &&
+        filtered.every(item => this.selectedIds_.has(item.id));
+  }
+
+  protected isSomeSelected_(): boolean {
+    if (this.selectedIds_.size === 0) {
+      return false;
+    }
+    const filtered = this.getFilteredResults_();
+    const filteredSelected =
+        filtered.filter(item => this.selectedIds_.has(item.id));
+    return filteredSelected.length > 0 &&
+        filteredSelected.length < filtered.length;
+  }
+
+  protected onSelectAllChange_(e: Event) {
+    const checkbox = e.target as HTMLElement & {checked: boolean};
+    if (checkbox.checked) {
+      this.selectedIds_ =
+          new Set(this.getFilteredResults_().map(item => item.id));
+    } else {
+      this.selectedIds_ = new Set();
+    }
+  }
+
   protected onCardSelectionChange_(
       e: CustomEvent<{id: string, selected: boolean}>) {
     const {id, selected} = e.detail;
@@ -130,11 +159,50 @@ export class SmartSearchElement extends CrLitElement {
     this.selectedIds_ = new Set(this.selectedIds_);
   }
 
-  protected onOpenSelectedClick_() {
-    const selectedItems =
-        this.results_.filter(r => this.selectedIds_.has(r.id));
-    for (const item of selectedItems) {
-      window.open(item.url, '_blank');
+  // Only web pages are openable, matching the browser-side filter in
+  // `PageHandler::OpenUrlsInTabGroup()`. This also covers the `window.open`
+  // fallback, which would otherwise bypass that filter.
+  protected isValidUrl_(urlStr: string): boolean {
+    if (!urlStr) {
+      return false;
+    }
+    try {
+      const {protocol} = new URL(urlStr);
+      return protocol === 'https:' || protocol === 'http:';
+    } catch {
+      return false;
+    }
+  }
+
+  protected async onOpenSelectedClick_() {
+    const urls = this.results_.filter(r => this.selectedIds_.has(r.id))
+                     .map(r => r.url)
+                     .filter(url => this.isValidUrl_(url));
+    if (urls.length === 0) {
+      return;
+    }
+
+    if (this.smartSearchEnabled_) {
+      try {
+        // TODO(crbug.com/552048073): Generate a shorter tab group name in the
+        // search response instead of using the raw query when the query is
+        // long.
+        const {success} =
+            await browserProxyFactory.getInstance().handler.openUrlsInTabGroup(
+                this.searchQuery_.trim(), urls);
+        if (success) {
+          return;
+        }
+      } catch (e) {
+        // Fallback if backend method call fails or is not supported.
+        console.error('Failed to open tabs in group:', e);
+      }
+    }
+
+    // Fallback: open capped URLs in new tabs. Note that opening multiple tabs
+    // via window.open is best-effort and may be throttled by popup blockers.
+    for (const url of urls.slice(0, MAX_URLS_TO_OPEN)) {
+      OpenWindowProxyImpl.getInstance().openUrl(url);
     }
   }
 }

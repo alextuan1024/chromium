@@ -22,10 +22,7 @@
 #include "chrome/browser/ash/login/smart_lock/smart_lock_notification_controller.h"
 #include "chrome/browser/ash/login/smart_lock/smart_lock_service_factory.h"
 #include "chrome/browser/ash/login/users/fake_chrome_user_manager.h"
-#include "chrome/browser/prefs/browser_prefs.h"
-#include "chrome/browser/signin/identity_test_environment_profile_adaptor.h"
 #include "chrome/browser/ui/webui/ash/multidevice_setup/multidevice_setup_dialog.h"
-#include "chrome/common/pref_names.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile.h"
 #include "chromeos/ash/components/dbus/dbus_thread_manager.h"
@@ -36,6 +33,7 @@
 #include "chromeos/ash/services/device_sync/proto/cryptauth_api.pb.h"
 #include "chromeos/ash/services/device_sync/public/cpp/fake_device_sync_client.h"
 #include "chromeos/ash/services/multidevice_setup/public/cpp/fake_multidevice_setup_client.h"
+#include "chromeos/ash/services/multidevice_setup/public/cpp/prefs.h"
 #include "chromeos/ash/services/secure_channel/public/cpp/client/fake_secure_channel_client.h"
 #include "chromeos/dbus/power/fake_power_manager_client.h"
 #include "chromeos/dbus/power/power_manager_client.h"
@@ -275,7 +273,8 @@ class SmartLockServiceTest : public testing::Test {
 
   void SetSmartLockAllowedPolicy(bool allowed) {
     profile_->GetTestingPrefService()->SetManagedPref(
-        prefs::kEasyUnlockAllowed, std::make_unique<base::Value>(allowed));
+        multidevice_setup::kSmartLockAllowedPrefName,
+        std::make_unique<base::Value>(allowed));
   }
 
   void SetScreenLockState(bool is_locked) {

@@ -55,9 +55,18 @@
 #include "content/public/test/test_navigation_observer.h"
 #include "content/public/test/url_loader_monitor.h"
 #include "content/shell/browser/shell.h"
+#include "mojo/public/cpp/bindings/receiver.h"
+#include "mojo/public/cpp/bindings/remote.h"
 #include "net/base/load_flags.h"
 #include "net/base/net_errors.h"
 #include "net/dns/mock_host_resolver.h"
+#include "net/net_buildflags.h"
+#include "net/traffic_annotation/network_traffic_annotation_test_helper.h"
+#if BUILDFLAG(ENABLE_REPORTING)
+#include "net/reporting/reporting_endpoint.h"
+#include "net/reporting/reporting_report.h"
+#include "services/network/public/mojom/reporting_service.mojom.h"
+#endif  // BUILDFLAG(ENABLE_REPORTING)
 #include "net/test/embedded_test_server/connection_tracker.h"
 #include "net/test/embedded_test_server/controllable_http_response.h"
 #include "net/test/embedded_test_server/default_handlers.h"
@@ -67,7 +76,10 @@
 #include "net/test/embedded_test_server/install_default_websocket_handlers.h"
 #include "services/network/public/cpp/connection_allowlist_metrics.h"
 #include "services/network/public/cpp/features.h"
+#include "services/network/public/cpp/network_switches.h"
 #include "services/network/public/cpp/resource_request.h"
+#include "services/network/public/mojom/url_loader_factory.mojom.h"
+#include "services/network/test/test_url_loader_client.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/abseil-cpp/absl/container/flat_hash_map.h"
@@ -1318,6 +1330,88 @@ IN_PROC_BROWSER_TEST_F(ConnectionAllowlistTest,
       fetch($1).then(() => 'allowed').catch(() => 'blocked');
     )",
                                                                denied_url)));
+}
+
+IN_PROC_BROWSER_TEST_F(
+    ConnectionAllowlistTest,
+    RetainedURLLoaderFactoryRemainsRestrictedAfterDocumentCleanup) {
+  RegisterResponse("/allow.js", ResponseEntry("console.log('allow');"));
+  RegisterResponse("/deny.js", ResponseEntry("console.log('deny');"));
+  RegisterResponse("/replacement.html",
+                   ResponseEntry("<html><body>Replacement</body></html>", {}));
+  RegisterResponse(
+      kSameOriginAllowlistedPage,
+      ResponseEntry("<html><body>Hello</body></html>",
+                    {{"Connection-Allowlist", "(response-origin)"}}));
+  ASSERT_TRUE(embedded_https_test_server().Start());
+
+  GURL main_url =
+      embedded_https_test_server().GetURL("a.test", kSameOriginAllowlistedPage);
+  GURL replacement_url =
+      embedded_https_test_server().GetURL("a.test", "/replacement.html");
+  GURL allowed_url = embedded_https_test_server().GetURL("a.test", "/allow.js");
+  GURL denied_url = embedded_https_test_server().GetURL("b.test", "/deny.js");
+
+  auto* storage_partition =
+      static_cast<StoragePartitionImpl*>(shell()
+                                             ->web_contents()
+                                             ->GetBrowserContext()
+                                             ->GetDefaultStoragePartition());
+  storage_partition->SetClearNetworkRestrictionsParamsForTesting(
+      base::TimeDelta(), base::DoNothing());
+
+  EXPECT_TRUE(NavigateToURL(shell(), main_url));
+
+  RenderFrameHostImpl* rfh = static_cast<RenderFrameHostImpl*>(
+      shell()->web_contents()->GetPrimaryMainFrame());
+  const url::Origin initiator_origin = rfh->GetLastCommittedOrigin();
+
+  mojo::Remote<network::mojom::URLLoaderFactory> default_factory;
+  rfh->CreateNetworkServiceDefaultFactory(
+      default_factory.BindNewPipeAndPassReceiver());
+  mojo::Remote<network::mojom::URLLoaderFactory> retained_factory;
+  default_factory->Clone(retained_factory.BindNewPipeAndPassReceiver());
+  default_factory.FlushForTesting();
+  default_factory.reset();
+
+  auto fetch_with_retained_factory = [&](const GURL& url) {
+    network::ResourceRequest request;
+    request.url = url;
+    request.method = "GET";
+    request.mode = network::mojom::RequestMode::kNoCors;
+    request.credentials_mode = network::mojom::CredentialsMode::kOmit;
+    request.request_initiator = initiator_origin;
+
+    network::TestURLLoaderClient client;
+    mojo::PendingRemote<network::mojom::URLLoader> loader;
+    retained_factory->CreateLoaderAndStart(
+        loader.InitWithNewPipeAndPassReceiver(), /*request_id=*/0,
+        network::mojom::kURLLoadOptionNone, request, client.CreateRemote(),
+        net::MutableNetworkTrafficAnnotationTag(TRAFFIC_ANNOTATION_FOR_TESTS));
+    client.RunUntilComplete();
+    return client.completion_status().error_code;
+  };
+
+  EXPECT_EQ(net::ERR_NETWORK_ACCESS_REVOKED,
+            fetch_with_retained_factory(denied_url));
+  EXPECT_EQ(net::OK, fetch_with_retained_factory(allowed_url));
+
+  base::test::TestFuture<void> restrictions_cleared;
+  storage_partition->SetClearNetworkRestrictionsParamsForTesting(
+      base::TimeDelta(), restrictions_cleared.GetRepeatingCallback());
+
+  // Navigate to a replacement document and flush the BackForwardCache so the
+  // initial document is destroyed and its network restriction cleanup runs.
+  EXPECT_TRUE(NavigateToURL(shell(), replacement_url));
+  shell()->web_contents()->GetController().GetBackForwardCache().Flush();
+  EXPECT_TRUE(restrictions_cleared.Wait());
+  storage_partition->FlushNetworkInterfaceForTesting();
+
+  // The retained factory from the previous document must still enforce the
+  // initial document's Connection-Allowlist restrictions.
+  EXPECT_EQ(net::ERR_NETWORK_ACCESS_REVOKED,
+            fetch_with_retained_factory(denied_url));
+  EXPECT_EQ(net::OK, fetch_with_retained_factory(allowed_url));
 }
 
 // SpeculationRules API allows specifying the rules in a JSON using the response
@@ -5485,11 +5579,29 @@ class ConnectionAllowlistEmailVerificationTest
  public:
   ConnectionAllowlistEmailVerificationTest() {
     email_verification_feature_list_.InitWithFeatures(
-        {features::kEmailVerificationProtocol,
-         features::kFedCmPreservePortsForTesting},
-        {});
+        {features::kEmailVerificationProtocol}, {});
   }
   ~ConnectionAllowlistEmailVerificationTest() override = default;
+
+  // The issuer is identified by a bare host name, so its endpoints have to be
+  // served on the default HTTPS port. The test server cannot listen there, so
+  // it listens on an ephemeral port and the host resolver maps the issuer's
+  // `:443` onto it. The port has to be known before the browser starts, hence
+  // the early InitializeAndListen().
+  void SetUpCommandLine(base::CommandLine* command_line) override {
+    ConnectionAllowlistDevToolsTest::SetUpCommandLine(command_line);
+
+    issuer_server_.SetSSLConfig(net::EmbeddedTestServer::CERT_TEST_NAMES);
+    issuer_server_.RegisterRequestHandler(base::BindRepeating(
+        &ConnectionAllowlistEmailVerificationTest::ServeResponses,
+        base::Unretained(this)));
+    CHECK(issuer_server_.InitializeAndListen());
+
+    command_line->AppendSwitchASCII(
+        network::switches::kHostResolverRules,
+        absl::StrFormat("MAP %s:443 127.0.0.1:%d", kIdpHost,
+                        issuer_server_.port()));
+  }
 
   void SetUpOnMainThread() override {
     ConnectionAllowlistDevToolsTest::SetUpOnMainThread();
@@ -5500,26 +5612,24 @@ class ConnectionAllowlistEmailVerificationTest
 
   void RegisterEmailVerificationResponses() {
     ASSERT_TRUE(embedded_https_test_server().Start());
+    issuer_server_.StartAcceptingConnections();
 
     test_browser_client_->SetDnsTxtResolverUrlPrefix(
-        embedded_https_test_server()
-            .GetURL(kIdpHost, std::string(kDnsPath) + "?name=")
-            .spec());
+        IssuerURL(std::string(kDnsPath) + "?name=").spec());
 
-    RegisterResponse(
-        kDnsPath,
-        ResponseEntry(absl::StrFormat(R"(
+    RegisterResponse(kDnsPath,
+                     ResponseEntry(absl::StrFormat(R"(
           {
             "Status": 0,
             "Answer": [
               {
                 "type": 16,
-                "data": "iss=b.test:%d"
+                "data": "iss=%s"
               }
             ]
           })",
-                                      embedded_https_test_server().port()),
-                      {{"Content-Type", "application/json"}}));
+                                                   kIdpHost),
+                                   {{"Content-Type", "application/json"}}));
 
     RegisterResponse(
         kEmailVerificationWellKnownPath,
@@ -5561,36 +5671,35 @@ class ConnectionAllowlistEmailVerificationTest
                                                kSameOriginAllowlistedPage);
   }
 
+  // The issuer's endpoints live on its port-less origin, which the host
+  // resolver rule installed in SetUpCommandLine() points at
+  // `issuer_server_`.
+  net::EmbeddedTestServer& issuer_server() { return issuer_server_; }
+
+  GURL IssuerURL(std::string_view relative_url) const {
+    return GURL(base::StrCat({"https://", kIdpHost})).Resolve(relative_url);
+  }
+
   GURL DnsURL() const {
-    return embedded_https_test_server().GetURL(
-        kIdpHost,
-        std::string(kDnsPath) + "?name=_email-verification.example.com");
+    return IssuerURL(std::string(kDnsPath) +
+                     "?name=_email-verification.example.com");
   }
 
   GURL EmailVerificationWellKnownURL() const {
-    return embedded_https_test_server().GetURL(kIdpHost,
-                                               kEmailVerificationWellKnownPath);
+    return IssuerURL(kEmailVerificationWellKnownPath);
   }
 
-  GURL WebIdentityWellKnownURL() const {
-    return embedded_https_test_server().GetURL(kIdpHost, kWellKnownPath);
-  }
+  GURL WebIdentityWellKnownURL() const { return IssuerURL(kWellKnownPath); }
 
-  GURL AccountsURL() const {
-    return embedded_https_test_server().GetURL(kIdpHost, kAccountPath);
-  }
+  GURL AccountsURL() const { return IssuerURL(kAccountPath); }
 
-  GURL TokenURL() const {
-    return embedded_https_test_server().GetURL(kIdpHost, kTokenPath);
-  }
+  GURL TokenURL() const { return IssuerURL(kTokenPath); }
 
   // The JWKS (JSON Web Key Set) URI (`jwks_uri`) endpoint (`/jwks`) returns
   // the public keys of the email verification issuer, which are used to verify
   // the signature of the issued Email Verification Token during
   // `EmailVerifier::Verify()`.
-  GURL JwksURL() const {
-    return embedded_https_test_server().GetURL(kIdpHost, kJwksPath);
-  }
+  GURL JwksURL() const { return IssuerURL(kJwksPath); }
 
   void RegisterConnectionAllowlistResponse(std::string_view allowlist) {
     RegisterResponse(
@@ -5647,6 +5756,7 @@ class ConnectionAllowlistEmailVerificationTest
   }
 
  private:
+  net::EmbeddedTestServer issuer_server_{net::EmbeddedTestServer::TYPE_HTTPS};
   base::test::ScopedFeatureList email_verification_feature_list_;
   std::unique_ptr<EmailVerificationTestContentBrowserClient>
       test_browser_client_;
@@ -5727,7 +5837,7 @@ IN_PROC_BROWSER_TEST_F(ConnectionAllowlistEmailVerificationTest,
 IN_PROC_BROWSER_TEST_F(ConnectionAllowlistEmailVerificationTest,
                        DnsRequestRedirectAllowed) {
   net::test_server::ControllableHttpResponse controllable_response(
-      &embedded_https_test_server(), kDnsPath, /*relative_url_is_prefix=*/true);
+      &issuer_server(), kDnsPath, /*relative_url_is_prefix=*/true);
 
   RegisterConnectionAllowlistResponse(R"(
                (
@@ -5747,25 +5857,23 @@ IN_PROC_BROWSER_TEST_F(ConnectionAllowlistEmailVerificationTest,
   // a response that redirects the request, which uses the
   // `ControllableHttpResponse`.
   UnregisterResponse(kDnsPath);
-  RegisterResponse(
-      "/another/dns",
-      ResponseEntry(absl::StrFormat(R"(
+  RegisterResponse("/another/dns",
+                   ResponseEntry(absl::StrFormat(R"(
                     {
                       "Status": 0,
                       "Answer": [
                       {
                         "type": 16,
-                        "data": "iss=b.test:%d"
+                        "data": "iss=%s"
                       }
                     ]
                   })",
-                                    embedded_https_test_server().port()),
-                    {{"Content-Type", "application/json"}}));
+                                                 kIdpHost),
+                                 {{"Content-Type", "application/json"}}));
 
   EXPECT_TRUE(NavigateToURL(shell(), MainURL()));
 
-  GURL target_url =
-      embedded_https_test_server().GetURL(kIdpHost, "/another/dns");
+  GURL target_url = IssuerURL("/another/dns");
   URLLoaderMonitor monitor(ToSet(GetCheckIfVerifiableURLs()));
 
   // Check if the email address is verifiable, which initiates requests to the
@@ -5797,7 +5905,7 @@ IN_PROC_BROWSER_TEST_F(ConnectionAllowlistEmailVerificationTest,
 IN_PROC_BROWSER_TEST_F(ConnectionAllowlistEmailVerificationTest,
                        DnsRequestRedirectBlocked) {
   net::test_server::ControllableHttpResponse controllable_response(
-      &embedded_https_test_server(), kDnsPath, /*relative_url_is_prefix=*/true);
+      &issuer_server(), kDnsPath, /*relative_url_is_prefix=*/true);
 
   RegisterConnectionAllowlistResponse(R"(
                (
@@ -5817,25 +5925,23 @@ IN_PROC_BROWSER_TEST_F(ConnectionAllowlistEmailVerificationTest,
   // a response that redirects the request, which uses the
   // `ControllableHttpResponse`.
   UnregisterResponse(kDnsPath);
-  RegisterResponse(
-      "/another/dns",
-      ResponseEntry(absl::StrFormat(R"(
+  RegisterResponse("/another/dns",
+                   ResponseEntry(absl::StrFormat(R"(
                     {
                       "Status": 0,
                       "Answer": [
                       {
                         "type": 16,
-                        "data": "iss=b.test:%d"
+                        "data": "iss=%s"
                       }
                     ]
                   })",
-                                    embedded_https_test_server().port()),
-                    {{"Content-Type", "application/json"}}));
+                                                 kIdpHost),
+                                 {{"Content-Type", "application/json"}}));
 
   EXPECT_TRUE(NavigateToURL(shell(), MainURL()));
 
-  GURL target_url =
-      embedded_https_test_server().GetURL(kIdpHost, "/another/dns");
+  GURL target_url = IssuerURL("/another/dns");
   URLLoaderMonitor monitor(ToSet(GetCheckIfVerifiableURLs()));
 
   base::test::TestFuture<std::optional<webid::EmailVerifier::Result>,
@@ -6646,6 +6752,292 @@ IN_PROC_BROWSER_TEST_F(ConnectionAllowlistEmbeddedEnforcementTest,
   EXPECT_TRUE(manager.WaitForNavigationFinished());
   EXPECT_TRUE(manager.was_successful());
 }
+
+#if BUILDFLAG(ENABLE_REPORTING)
+class TestReportingApiObserver : public network::mojom::ReportingApiObserver {
+ public:
+  explicit TestReportingApiObserver(
+      network::mojom::NetworkContext* network_context) {
+    mojo::PendingRemote<network::mojom::ReportingApiObserver> remote;
+    receiver_.Bind(remote.InitWithNewPipeAndPassReceiver());
+    network_context->AddReportingApiObserver(std::move(remote));
+  }
+
+  ~TestReportingApiObserver() override = default;
+
+  void OnReportAdded(const net::ReportingReport& report) override {
+    if (report.type == "connection-allowlist") {
+      report_bodies_.push_back(report.body.Clone());
+    }
+  }
+
+  void OnReportUpdated(const net::ReportingReport& report) override {}
+
+  void OnEndpointsUpdatedForOrigin(
+      const std::vector<net::ReportingEndpoint>& endpoints) override {}
+
+  const std::vector<base::DictValue>& report_bodies() const {
+    return report_bodies_;
+  }
+
+ private:
+  std::vector<base::DictValue> report_bodies_;
+  mojo::Receiver<network::mojom::ReportingApiObserver> receiver_{this};
+};
+
+IN_PROC_BROWSER_TEST_F(ConnectionAllowlistTest,
+                       HistoryNavigationDoesNotQueueReport) {
+  AlwaysPreconnectContentBrowserClient client;
+
+  RegisterResponse("/first_page.html?query=sample_data",
+                   ResponseEntry("<html><body>First page</body></html>", {}));
+  RegisterResponse(
+      kSameOriginAllowlistedPage,
+      ResponseEntry(
+          R"(<html><body><iframe id="sub" sandbox="allow-scripts"></iframe></body></html>)",
+          {{"Connection-Allowlist", "(response-origin); report-to=default"},
+           {"Connection-Allowlist-Report-Only",
+            "(response-origin); report-to=default"}}));
+  RegisterResponse("/other_page.html",
+                   ResponseEntry("<html><body>Other page</body></html>", {}));
+
+  auto server_handle = embedded_https_test_server().StartAndReturnHandle();
+  ASSERT_TRUE(server_handle);
+
+  auto* network_context = shell()
+                              ->web_contents()
+                              ->GetBrowserContext()
+                              ->GetDefaultStoragePartition()
+                              ->GetNetworkContext();
+  TestReportingApiObserver reporting_observer(network_context);
+
+  // 1. Navigate to b.test with a query parameter.
+  GURL first_url = embedded_https_test_server().GetURL(
+      "b.test", "/first_page.html?query=sample_data");
+  ASSERT_TRUE(NavigateToURL(shell(), first_url));
+  RenderFrameHostImpl* rfh_b = static_cast<RenderFrameHostImpl*>(
+      shell()->web_contents()->GetPrimaryMainFrame());
+  RenderFrameDeletedObserver delete_observer_rfh_b(rfh_b);
+
+  // 2. Navigate to a.test with enforced and report-only Connection-Allowlist.
+  GURL allowlist_url =
+      embedded_https_test_server().GetURL("a.test", kSameOriginAllowlistedPage);
+  ASSERT_TRUE(NavigateToURL(shell(), allowlist_url));
+
+  // Flush the BackForwardCache so history navigations are not served from it.
+  shell()->web_contents()->GetController().GetBackForwardCache().Flush();
+  delete_observer_rfh_b.WaitUntilDeleted();
+
+  // 3. Attempt a history traversal from a sandboxed iframe without
+  // allow-top-navigation. The traversal is discarded, and preconnect checking
+  // must not queue any Connection-Allowlist report.
+  RenderFrameHost* sandboxed_subframe =
+      ChildFrameAt(shell()->web_contents()->GetPrimaryMainFrame(), 0);
+  ASSERT_TRUE(sandboxed_subframe);
+  EXPECT_TRUE(ExecJs(sandboxed_subframe, "history.go(-1);"));
+  EXPECT_EQ(allowlist_url, shell()->web_contents()->GetLastCommittedURL());
+
+  // 4. Attempt a history.back() navigation from the main frame. It should be
+  // blocked by the enforced Connection-Allowlist, and must not queue any
+  // violation report disclosing the previous history entry's URL.
+  TestNavigationObserver history_observer(shell()->web_contents());
+  EXPECT_TRUE(ExecJs(shell()->web_contents(), "history.back();"));
+  history_observer.Wait();
+  EXPECT_FALSE(history_observer.last_navigation_succeeded());
+  ASSERT_TRUE(shell()->web_contents()->GetController().GetLastCommittedEntry());
+  EXPECT_EQ(PAGE_TYPE_ERROR, shell()
+                                 ->web_contents()
+                                 ->GetController()
+                                 .GetLastCommittedEntry()
+                                 ->GetPageType());
+
+  // 5. Navigate back to `allowlist_url` and perform a normal renderer-initiated
+  // iframe navigation to a disallowed URL to confirm that reporting is active
+  // (and not duplicated by preconnect checks) and synchronize on delivery.
+  ASSERT_TRUE(NavigateToURL(shell(), allowlist_url));
+  GURL disallowed_url =
+      embedded_https_test_server().GetURL("c.test", "/other_page.html");
+  EXPECT_TRUE(ExecJs(shell()->web_contents(), JsReplace(R"(
+        const frame = document.createElement('iframe');
+        frame.src = $1;
+        document.body.appendChild(frame);
+      )",
+                                                        disallowed_url)));
+  ASSERT_TRUE(base::test::RunUntil(
+      [&]() { return reporting_observer.report_bodies().size() >= 2u; }));
+
+  // Only the reports for `disallowed_url` (1 report-only + 1 enforce) should
+  // have been queued; `first_url` from session history must never be reported.
+  EXPECT_EQ(reporting_observer.report_bodies().size(), 2u);
+  for (const auto& body : reporting_observer.report_bodies()) {
+    const std::string* connection = body.FindString("connection");
+    ASSERT_TRUE(connection);
+    EXPECT_EQ(*connection, disallowed_url.spec());
+    EXPECT_NE(*connection, first_url.spec());
+  }
+}
+
+IN_PROC_BROWSER_TEST_F(ConnectionAllowlistTest,
+                       HistoryNavigationReportOnlyDoesNotQueueReport) {
+  AlwaysPreconnectContentBrowserClient client;
+
+  RegisterResponse("/first_page.html?query=sample_data",
+                   ResponseEntry("<html><body>First page</body></html>", {}));
+  RegisterResponse("/report_only_page.html",
+                   ResponseEntry("<html><body>Report only</body></html>",
+                                 {{"Connection-Allowlist-Report-Only",
+                                   "(response-origin); report-to=default"}}));
+  RegisterResponse("/other_page.html",
+                   ResponseEntry("<html><body>Other page</body></html>", {}));
+
+  auto server_handle = embedded_https_test_server().StartAndReturnHandle();
+  ASSERT_TRUE(server_handle);
+
+  auto* network_context = shell()
+                              ->web_contents()
+                              ->GetBrowserContext()
+                              ->GetDefaultStoragePartition()
+                              ->GetNetworkContext();
+  TestReportingApiObserver reporting_observer(network_context);
+
+  // 1. Navigate to b.test with a query parameter.
+  GURL first_url = embedded_https_test_server().GetURL(
+      "b.test", "/first_page.html?query=sample_data");
+  ASSERT_TRUE(NavigateToURL(shell(), first_url));
+  RenderFrameHostImpl* rfh_b = static_cast<RenderFrameHostImpl*>(
+      shell()->web_contents()->GetPrimaryMainFrame());
+  RenderFrameDeletedObserver delete_observer_rfh_b(rfh_b);
+
+  // 2. Navigate to a.test with Connection-Allowlist-Report-Only.
+  GURL report_only_url =
+      embedded_https_test_server().GetURL("a.test", "/report_only_page.html");
+  ASSERT_TRUE(NavigateToURL(shell(), report_only_url));
+
+  // Flush the BackForwardCache so history.back() performs a network load.
+  shell()->web_contents()->GetController().GetBackForwardCache().Flush();
+  delete_observer_rfh_b.WaitUntilDeleted();
+
+  // 3. Navigate back via history.back(). The navigation should succeed and
+  // must not queue a report-only violation report for `first_url`.
+  TestNavigationObserver history_observer(shell()->web_contents());
+  EXPECT_TRUE(ExecJs(shell()->web_contents(), "history.back();"));
+  history_observer.Wait();
+  EXPECT_TRUE(history_observer.last_navigation_succeeded());
+  EXPECT_EQ(first_url, shell()->web_contents()->GetLastCommittedURL());
+
+  // 4. Navigate to `report_only_url` and trigger a normal cross-origin iframe
+  // navigation to verify report-only reporting is active and synchronize.
+  ASSERT_TRUE(NavigateToURL(shell(), report_only_url));
+  GURL other_url =
+      embedded_https_test_server().GetURL("c.test", "/other_page.html");
+  EXPECT_TRUE(ExecJs(shell()->web_contents(), JsReplace(R"(
+        const frame = document.createElement('iframe');
+        frame.src = $1;
+        document.body.appendChild(frame);
+      )",
+                                                        other_url)));
+  ASSERT_TRUE(base::test::RunUntil(
+      [&]() { return !reporting_observer.report_bodies().empty(); }));
+
+  EXPECT_EQ(reporting_observer.report_bodies().size(), 1u);
+  const std::string* connection =
+      reporting_observer.report_bodies()[0].FindString("connection");
+  ASSERT_TRUE(connection);
+  EXPECT_EQ(*connection, other_url.spec());
+  EXPECT_NE(*connection, first_url.spec());
+}
+
+// Same as above, but the session history entry's URL redirects when it is
+// loaded again, exercising the redirect check in
+// NavigationRequest::OnRequestRedirected().
+IN_PROC_BROWSER_TEST_F(ConnectionAllowlistTest,
+                       HistoryRedirectNavigationReportOnlyDoesNotQueueReport) {
+  net::test_server::ControllableHttpResponse redirect_response(
+      &embedded_https_test_server(), "/redirect_page.html?query=sample_data");
+
+  RegisterResponse("/first_page.html",
+                   ResponseEntry("<html><body>First page</body></html>", {}));
+  RegisterResponse("/final_page.html?query=sample_data",
+                   ResponseEntry("<html><body>Final page</body></html>", {}));
+  RegisterResponse("/report_only_page.html",
+                   ResponseEntry("<html><body>Report only</body></html>",
+                                 {{"Connection-Allowlist-Report-Only",
+                                   "(response-origin); report-to=default"}}));
+  RegisterResponse("/other_page.html",
+                   ResponseEntry("<html><body>Other page</body></html>", {}));
+
+  auto server_handle = embedded_https_test_server().StartAndReturnHandle();
+  ASSERT_TRUE(server_handle);
+
+  auto* network_context = shell()
+                              ->web_contents()
+                              ->GetBrowserContext()
+                              ->GetDefaultStoragePartition()
+                              ->GetNetworkContext();
+  TestReportingApiObserver reporting_observer(network_context);
+
+  // 1. Navigate to b.test and replace the session history entry's URL with one
+  // that redirects when loaded.
+  GURL first_url =
+      embedded_https_test_server().GetURL("b.test", "/first_page.html");
+  GURL redirecting_url = embedded_https_test_server().GetURL(
+      "b.test", "/redirect_page.html?query=sample_data");
+  GURL final_url = embedded_https_test_server().GetURL(
+      "b.test", "/final_page.html?query=sample_data");
+  ASSERT_TRUE(NavigateToURL(shell(), first_url));
+  EXPECT_TRUE(
+      ExecJs(shell()->web_contents(),
+             JsReplace("history.replaceState({}, '', $1);", redirecting_url)));
+  EXPECT_EQ(redirecting_url, shell()->web_contents()->GetLastCommittedURL());
+  RenderFrameHostImpl* rfh_b = static_cast<RenderFrameHostImpl*>(
+      shell()->web_contents()->GetPrimaryMainFrame());
+  RenderFrameDeletedObserver delete_observer_rfh_b(rfh_b);
+
+  // 2. Navigate to a.test with Connection-Allowlist-Report-Only.
+  GURL report_only_url =
+      embedded_https_test_server().GetURL("a.test", "/report_only_page.html");
+  ASSERT_TRUE(NavigateToURL(shell(), report_only_url));
+
+  // Flush the BackForwardCache so history.back() performs a network load.
+  shell()->web_contents()->GetController().GetBackForwardCache().Flush();
+  delete_observer_rfh_b.WaitUntilDeleted();
+
+  // 3. Navigate back via history.back(). The history entry's URL redirects to
+  // `final_url`. The navigation should succeed and must not queue a report-only
+  // violation report for either URL.
+  TestNavigationObserver history_observer(shell()->web_contents());
+  EXPECT_TRUE(ExecJs(shell()->web_contents(), "history.back();"));
+  redirect_response.WaitForRequest();
+  redirect_response.Send(
+      "HTTP/1.1 302 Found\r\n"
+      "Location: " +
+      final_url.spec() + "\r\n\r\n");
+  redirect_response.Done();
+  history_observer.Wait();
+  EXPECT_TRUE(history_observer.last_navigation_succeeded());
+  EXPECT_EQ(final_url, shell()->web_contents()->GetLastCommittedURL());
+
+  // 4. Navigate to `report_only_url` and trigger a normal cross-origin iframe
+  // navigation to verify report-only reporting is active and synchronize.
+  ASSERT_TRUE(NavigateToURL(shell(), report_only_url));
+  GURL other_url =
+      embedded_https_test_server().GetURL("c.test", "/other_page.html");
+  EXPECT_TRUE(ExecJs(shell()->web_contents(), JsReplace(R"(
+        const frame = document.createElement('iframe');
+        frame.src = $1;
+        document.body.appendChild(frame);
+      )",
+                                                        other_url)));
+  ASSERT_TRUE(base::test::RunUntil(
+      [&]() { return !reporting_observer.report_bodies().empty(); }));
+
+  EXPECT_EQ(reporting_observer.report_bodies().size(), 1u);
+  const std::string* connection =
+      reporting_observer.report_bodies()[0].FindString("connection");
+  ASSERT_TRUE(connection);
+  EXPECT_EQ(*connection, other_url.spec());
+}
+#endif  // BUILDFLAG(ENABLE_REPORTING)
 
 }  // namespace
 

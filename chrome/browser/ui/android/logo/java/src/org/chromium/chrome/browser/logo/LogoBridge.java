@@ -9,7 +9,10 @@ import android.graphics.Bitmap;
 import androidx.annotation.VisibleForTesting;
 
 import org.jni_zero.CalledByNative;
+import org.jni_zero.JniPtr;
 import org.jni_zero.JniType;
+import org.jni_zero.JniTypeToken;
+import org.jni_zero.JniUniquePtr;
 import org.jni_zero.NativeMethods;
 
 import org.chromium.build.annotations.NullMarked;
@@ -19,6 +22,11 @@ import org.chromium.chrome.browser.profiles.Profile;
 /** Provides access to the search provider's logo via the C++ LogoService. */
 @NullMarked
 public class LogoBridge {
+    private final JniUniquePtr<NativeLogoBridge> mNativeLogoBridge;
+
+    @JniType("::LogoBridge")
+    interface NativeLogoBridge extends JniTypeToken {}
+
     /** A logo for a search provider (e.g. the Yahoo! logo or Google doodle). */
     public static class Logo {
         /** The logo image. Non-null. */
@@ -94,8 +102,6 @@ public class LogoBridge {
         void onLogoAvailable(Logo logo, boolean fromCache);
     }
 
-    private long mNativeLogoBridge;
-
     /**
      * Creates a LogoBridge for getting the logo of the default search provider.
      *
@@ -110,9 +116,7 @@ public class LogoBridge {
      * getCurrentLogo() will no longer receive updates.
      */
     void destroy() {
-        assert mNativeLogoBridge != 0;
-        LogoBridgeJni.get().destroy(mNativeLogoBridge);
-        mNativeLogoBridge = 0;
+        mNativeLogoBridge.destroy();
     }
 
     /**
@@ -132,23 +136,23 @@ public class LogoBridge {
      * @param logUrl The URL to ping to record the impression.
      */
     public void recordImpression(@Nullable String logUrl) {
-        if (mNativeLogoBridge != 0 && logUrl != null) {
+        if (logUrl != null) {
             LogoBridgeJni.get().recordImpression(mNativeLogoBridge, logUrl);
         }
     }
 
     @CalledByNative
     private static Logo createLogo(
-            Bitmap image,
-            @Nullable Bitmap darkImage,
-            @Nullable String onClickUrl,
-            @Nullable String altText,
-            @Nullable String gifUrl,
-            @Nullable String darkGifUrl,
-            @Nullable String logUrl,
-            @Nullable String darkLogUrl,
-            @Nullable String ctaLogUrl,
-            @Nullable String darkCtaLogUrl) {
+            @JniType("SkBitmap") Bitmap image,
+            @JniType("SkBitmap") @Nullable Bitmap darkImage,
+            @JniType("std::optional<std::string>") @Nullable String onClickUrl,
+            @JniType("std::optional<std::string>") @Nullable String altText,
+            @JniType("std::optional<std::string>") @Nullable String gifUrl,
+            @JniType("std::optional<std::string>") @Nullable String darkGifUrl,
+            @JniType("std::optional<std::string>") @Nullable String logUrl,
+            @JniType("std::optional<std::string>") @Nullable String darkLogUrl,
+            @JniType("std::optional<std::string>") @Nullable String ctaLogUrl,
+            @JniType("std::optional<std::string>") @Nullable String darkCtaLogUrl) {
         return new Logo(
                 image,
                 darkImage,
@@ -163,13 +167,11 @@ public class LogoBridge {
     }
 
     @NativeMethods
-    public interface Natives {
-        long init(@JniType("Profile*") Profile profile);
+    interface Natives {
+        JniUniquePtr<NativeLogoBridge> init(@JniType("Profile*") Profile profile);
 
-        void getCurrentLogo(long nativeLogoBridge, LogoObserver logoObserver);
+        void getCurrentLogo(JniPtr<NativeLogoBridge> self, LogoObserver logoObserver);
 
-        void recordImpression(long nativeLogoBridge, @JniType("std::string") String logUrl);
-
-        void destroy(long nativeLogoBridge);
+        void recordImpression(JniPtr<NativeLogoBridge> self, @JniType("std::string") String logUrl);
     }
 }

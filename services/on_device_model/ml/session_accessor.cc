@@ -12,9 +12,9 @@
 #include "base/json/json_writer.h"
 #include "base/logging.h"
 #include "base/memory/ref_counted_delete_on_sequence.h"
+#include "base/metrics/field_trial_params.h"
 #include "base/trace_event/trace_event.h"
 #include "base/values.h"
-#include "components/optimization_guide/core/optimization_guide_features.h"
 #include "services/on_device_model/ml/chrome_ml.h"
 #include "services/on_device_model/ml/chrome_ml_types.h"
 #include "services/on_device_model/ml/constraint_factory.h"
@@ -37,7 +37,7 @@ float GetTemperature(std::optional<float> temperature) {
 
 uint32_t GetTopK(std::optional<uint32_t> top_k) {
   return std::min(static_cast<uint32_t>(
-                      optimization_guide::features::GetOnDeviceModelMaxTopK()),
+                      on_device_model::features::GetOnDeviceModelMaxTopK()),
                   std::max(kMinTopK, top_k.value_or(kMinTopK)));
 }
 
@@ -186,9 +186,11 @@ SessionAccessor::Ptr SessionAccessor::Create(
     ChromeMLModel model,
     on_device_model::mojom::SessionParamsPtr params,
     on_device_model::mojom::LoadAdaptationParamsPtr adaptation_params,
-    std::optional<uint32_t> adaptation_id) {
-  Ptr handle(new SessionAccessor(chrome_ml, task_runner, model),
-             base::OnTaskRunnerDeleter(task_runner));
+    std::optional<uint32_t> adaptation_id,
+    ChromeMLModel postprocessor_model) {
+  Ptr handle(
+      new SessionAccessor(chrome_ml, task_runner, model, postprocessor_model),
+      base::OnTaskRunnerDeleter(task_runner));
   // SessionAccessor is deleted on `task_runner_` so base::Unretained is safe.
   task_runner->PostTask(
       FROM_HERE,
@@ -209,14 +211,17 @@ SessionAccessor::~SessionAccessor() {
 SessionAccessor::SessionAccessor(
     const ChromeML& chrome_ml,
     scoped_refptr<base::SequencedTaskRunner> task_runner,
-    ChromeMLModel model)
+    ChromeMLModel model,
+    ChromeMLModel postprocessor_model)
     : chrome_ml_(chrome_ml),
       task_runner_(std::move(task_runner)),
-      model_(model) {}
+      model_(model),
+      postprocessor_model_(postprocessor_model) {}
 
 SessionAccessor::Ptr SessionAccessor::Clone() {
   TRACE_EVENT("optimization_guide", "SessionAccessor::Clone");
-  Ptr handle(new SessionAccessor(chrome_ml_.get(), task_runner_, model_),
+  Ptr handle(new SessionAccessor(chrome_ml_.get(), task_runner_, model_,
+                                 postprocessor_model_),
              base::OnTaskRunnerDeleter(task_runner_));
   // SessionAccessor is deleted on `task_runner_` so base::Unretained is safe.
   task_runner_->PostTask(
@@ -361,10 +366,6 @@ void SessionAccessor::CreateInternal(
           on_device_model::CapabilityFlags::kImageInput),
       .enable_audio_input = params->capabilities.Has(
           on_device_model::CapabilityFlags::kAudioInput),
-      .enable_speculative_decoding =
-          base::FeatureList::IsEnabled(
-              on_device_model::features::kOnDeviceModelSpeculativeDecoding) &&
-          (params->top_k <= 1 || params->temperature == 0.0f),
       .allow_speculative_decoding = base::FeatureList::IsEnabled(
           on_device_model::features::kOnDeviceModelSpeculativeDecoding),
   };
@@ -468,6 +469,8 @@ void SessionAccessor::GenerateInternal(
       .max_output_tokens = generate_options->max_output_tokens,
       .constraint = constraint,
       .output_fn = &output_fn,
+      .enable_thinking = generate_options->enable_thinking,
+      .thinking_token_budget = generate_options->thinking_token_budget,
   };
   chrome_ml_->SessionGenerate(session_, &options, canceler->get());
 }
@@ -533,11 +536,49 @@ std::optional<odmm::AsrError> SessionAccessor::CreateAsrStreamInternal(
       .decoder_prefill_backoff = -1,
       .language =
           asr_options->language ? asr_options->language->c_str() : nullptr,
+      .polisher_model = postprocessor_model_,
+      .enable_token_stability = false,
+      .interim_token_holdback = -1,
+      .interim_release_silence_ms = -1,
+      .interim_stability_steps = -1,
+      .enable_draft_verification = false,
+      .final_decoder_prefill_backoff = -2,
   };
-  if (base::FeatureList::IsEnabled(
-          on_device_model::features::kOnDeviceModelAsrDecoderPrefill)) {
+  const bool decoder_prefill_enabled = base::FeatureList::IsEnabled(
+      on_device_model::features::kOnDeviceModelAsrDecoderPrefill);
+  if (decoder_prefill_enabled) {
     options.decoder_prefill_backoff =
         on_device_model::features::kOnDeviceModelAsrDecoderPrefillBackoff.Get();
+  }
+  if (base::FeatureList::IsEnabled(
+          on_device_model::features::kOnDeviceModelAsrTokenStability)) {
+    options.enable_token_stability = true;
+    options.interim_token_holdback =
+        on_device_model::features::kOnDeviceModelAsrInterimTokenHoldback.Get();
+    options.interim_release_silence_ms =
+        on_device_model::features::kOnDeviceModelAsrInterimReleaseSilenceMs
+            .Get();
+    options.interim_stability_steps =
+        on_device_model::features::kOnDeviceModelAsrInterimStabilitySteps.Get();
+  }
+  if (base::FeatureList::IsEnabled(
+          on_device_model::features::kOnDeviceModelAsrSpeculativeDecoding)) {
+    options.enable_draft_verification =
+        on_device_model::features::kOnDeviceModelAsrEnableDraftVerification
+            .Get();
+    options.final_decoder_prefill_backoff =
+        on_device_model::features::kOnDeviceModelAsrFinalDecoderPrefillBackoff
+            .Get();
+    if (!decoder_prefill_enabled ||
+        !base::GetFieldTrialParamValueByFeature(
+             on_device_model::features::kOnDeviceModelAsrSpeculativeDecoding,
+             on_device_model::features::
+                 kOnDeviceModelAsrInterimDecoderPrefillBackoff.name)
+             .empty()) {
+      options.decoder_prefill_backoff =
+          on_device_model::features::
+              kOnDeviceModelAsrInterimDecoderPrefillBackoff.Get();
+    }
   }
   asr_stream_ = chrome_ml_->ASRCreateStream(session_, &options);
   if (asr_stream_ == 0) {

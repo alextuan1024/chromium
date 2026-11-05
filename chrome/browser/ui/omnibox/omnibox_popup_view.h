@@ -18,13 +18,18 @@
 #include "base/memory/raw_ptr.h"
 #include "base/time/time.h"
 #include "components/omnibox/browser/omnibox_popup_selection.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/menu_source_type.mojom-forward.h"
+#include "ui/base/mojom/window_open_disposition.mojom-forward.h"
 
 class OmniboxController;
+class OmniboxPopupHost;
 class OmniboxPopupPresenterBase;
 class OmniboxResultView;
 class OmniboxSuggestionButtonRowView;
 class OmniboxPopupViewBrowserView;
+namespace gfx {
+class Point;
+}
 namespace ui {
 struct AXNodeData;
 }
@@ -39,6 +44,10 @@ class OmniboxPopupView {
   virtual ~OmniboxPopupView();
 
   virtual OmniboxPopupPresenterBase* presenter();
+
+  // Returns the OmniboxPopupHost that shows the popup's WebUI, or null if the
+  // popup has none.
+  virtual OmniboxPopupHost* popup_host() const;
 
   // Returns true if the popup is currently open.
   virtual bool IsOpen() const = 0;
@@ -72,26 +81,51 @@ class OmniboxPopupView {
                              OmniboxPopupSelection::Step step) {}
 
   // Informs the popup of user intent to open its current selection.
-  virtual void OpenCurrentSelection(WindowOpenDisposition disposition) {}
+  virtual void OpenCurrentSelection(
+      ui::mojom::WindowOpenDisposition disposition) {}
 
   // Saves state to the given tab.
   virtual void SaveStateToTab(content::WebContents* contents) {}
 
   // Syncs the text and selection state from the native location bar to the
   // WebUI omnibox.
-  virtual void SyncNativeStateToWebUI(bool query_zps) {}
+  virtual void SyncNativeStateToWebUI(bool query_zps, bool show_full_url) {}
+
+  // Like `SyncNativeStateToWebUI(/*query_zps=*/false)`, but the WebUI omnibox
+  // keeps showing its current autocomplete matches (stopping any in-flight
+  // query) instead of clearing them. Used to hand off a selection made by a
+  // later click of a multi-click gesture whose first click opened the dropdown.
+  virtual void SyncNativeStateToWebUIPreservingMatches() {}
 
   // Called when the active tab changes.
   virtual void OnTabChanged(content::WebContents* contents) {}
 
+  // Reopens the popup if the edit model kept a draft while the popup was closed
+  // for reasons other than the user dismissing it, e.g. while the location bar
+  // wasn't drawn.
+  virtual void ReshowPopup() {}
+
   // Called when the omnibox gains focus.
-  virtual void OnFocus(bool query_zps, bool select_all = false) {}
+  virtual void OnFocus(bool query_zps, bool select_all, bool show_full_url) {}
+
+  // Focuses the searchbox and enters keyword mode for the default search
+  // provider.
+  virtual void FocusSearchWithDefaultSearchEngineKeywordMode() {}
 
   // Called when the omnibox loses focus.
   virtual void OnBlur() {}
 
+  // Blurs the omnibox, collapsing the dropdown and keeping the popup open only
+  // for a draft, like clicking into the page, but leaves nothing focused.
+  virtual void Blur() {}
+
   // Called when the WebUI omnibox reports a manual blur.
   virtual void OnManualBlur() {}
+
+  // Asks the popup to show its context menu at `screen_point` once ready.
+  // Returns false if the caller should fall back to its own menu.
+  virtual bool RequestWebUIContextMenu(const gfx::Point& screen_point,
+                                       ui::mojom::MenuSourceType source_type);
 
   // Notifies the popup view that its WebUI page handler is ready.
   virtual void OnPopupHandlerReady() {}
@@ -105,6 +139,9 @@ class OmniboxPopupView {
   // Returns true if the popup is currently processing a revert/Escape action.
   virtual bool IsReverting() const;
   virtual void SetIsReverting(bool reverting);
+
+  // Called when a browser fullscreen transition starts, in either direction.
+  virtual void OnFullscreenTransitionStarting() {}
 
   // Safe downcasting to the BrowserView-embedded implementation.
   virtual OmniboxPopupViewBrowserView* AsOmniboxPopupViewBrowserView();

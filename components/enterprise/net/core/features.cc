@@ -4,12 +4,39 @@
 
 #include "components/enterprise/net/core/features.h"
 
+#include "build/build_config.h"
+
 #if BUILDFLAG(ENTERPRISE_PROXY)
 
 namespace enterprise_net {
 
-BASE_FEATURE(kEnableDynamicRouteFetching, base::FEATURE_DISABLED_BY_DEFAULT);
-BASE_FEATURE(kEnterpriseProxyErrorHandling, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kEnableDynamicRouteFetching,
+#if BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_IOS)
+             base::FEATURE_ENABLED_BY_DEFAULT
+#else
+             base::FEATURE_DISABLED_BY_DEFAULT
+#endif
+);
+
+BASE_FEATURE(kEnterpriseProxyErrorHandling,
+#if BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_IOS)
+             base::FEATURE_ENABLED_BY_DEFAULT
+#else
+             base::FEATURE_DISABLED_BY_DEFAULT
+#endif
+);
+
+// Enabled by default on Android and iOS, where user-scoped enterprise proxy
+// policies have not launched yet. Disabled by default elsewhere because
+// enabling it stops applying user-scoped and extension-set proxy override rules
+// on existing AD- or MDM-managed devices that are not enrolled in CBCM.
+BASE_FEATURE(kEnforceProxyAffiliationOnPlatformManagedDevices,
+#if BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_IOS)
+             base::FEATURE_ENABLED_BY_DEFAULT
+#else
+             base::FEATURE_DISABLED_BY_DEFAULT
+#endif
+);
 
 constexpr size_t kDefaultPvdConfigMaxSizeBytes = 3 * 1024 * 1024;
 
@@ -17,8 +44,14 @@ const base::FeatureParam<int> kPvdConfigMaxSizeBytesParam{
     &kEnableDynamicRouteFetching, "pvd_config_max_size_bytes",
     static_cast<int>(kDefaultPvdConfigMaxSizeBytes)};
 
+const base::FeatureParam<std::string> kAllowedAuthDomainsParam{
+    &kEnableDynamicRouteFetching, kAllowedAuthDomainsParamName, ""};
+
 const base::FeatureParam<int> kForcedDisguisedErrorCodeParam{
     &kEnterpriseProxyErrorHandling, kForcedDisguisedErrorCodeParamName, 0};
+
+const base::FeatureParam<bool> kForceSignInRequiredParam{
+    &kEnterpriseProxyErrorHandling, kForceSignInRequiredParamName, false};
 
 bool IsDynamicRouteFetchingEnabled() {
   return base::FeatureList::IsEnabled(kEnableDynamicRouteFetching);
@@ -37,6 +70,13 @@ std::optional<int> GetForcedDisguisedErrorCode() {
     return code;
   }
   return std::nullopt;
+}
+
+bool ShouldForceSignInRequired() {
+  if (!IsEnterpriseProxyErrorHandlingEnabled()) {
+    return false;
+  }
+  return kForceSignInRequiredParam.Get();
 }
 
 size_t GetPvdConfigMaxSizeBytes() {

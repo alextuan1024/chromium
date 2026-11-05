@@ -71,7 +71,7 @@ std::optional<int> GetPerMonitorDPI(HMONITOR monitor) {
     return std::nullopt;
   }
 
-  DCHECK_EQ(dpi_x, dpi_y);
+  CHECK_EQ(dpi_x, dpi_y, base::NotFatalUntil::M163);
   return static_cast<int>(dpi_x);
 }
 
@@ -96,7 +96,7 @@ ScaleFactors GetScaleFactorsForDPI(int dpi, bool include_accessibility) {
 // scale factor if per-monitor DPI is not supported.
 ScaleFactors GetMonitorScaleFactors(HMONITOR monitor,
                                     bool include_accessibility = true) {
-  DCHECK(monitor);
+  CHECK(monitor, base::NotFatalUntil::M163);
   if (Display::HasForceDeviceScaleFactor()) {
     return {Display::GetForcedDeviceScaleFactor(), 1.0f};
   }
@@ -444,18 +444,22 @@ std::optional<MONITORINFOEX> GetMonitorInfoFromHMONITOR(HMONITOR monitor) {
   return monitor_info;
 }
 
-std::optional<gfx::Vector2dF> GetPixelsPerInchForPointerDevice(
+std::optional<gfx::Vector2dF> GetPixelsPerInchForPointerDeviceImpl(
     HANDLE source_device) {
   static const auto get_pointer_device_rects =
       reinterpret_cast<decltype(&::GetPointerDeviceRects)>(
           base::win::GetUser32FunctionPointer("GetPointerDeviceRects"));
   RECT device_rect, screen_rect;
-  if (!get_pointer_device_rects ||
-      !get_pointer_device_rects(source_device, &device_rect, &screen_rect))
+  if (!source_device || !get_pointer_device_rects ||
+      !get_pointer_device_rects(source_device, &device_rect, &screen_rect)) {
     return std::nullopt;
+  }
 
   const gfx::RectF device{gfx::Rect(device_rect)};
   const gfx::RectF screen{gfx::Rect(screen_rect)};
+  if (device.IsEmpty() || screen.IsEmpty()) {
+    return std::nullopt;
+  }
   constexpr float kHimetricPerInch = 2540.0f;
   const float himetric_per_pixel_x = device.width() / screen.width();
   const float himetric_per_pixel_y = device.height() / screen.height();
@@ -477,7 +481,7 @@ std::optional<gfx::Vector2dF> GetMonitorPixelsPerInch(HMONITOR monitor) {
     for (const auto& device : *pointer_devices) {
       if (device.pointerDeviceType == POINTER_DEVICE_TYPE_TOUCH &&
           device.monitor == monitor) {
-        return GetPixelsPerInchForPointerDevice(device.device);
+        return GetPixelsPerInchForPointerDeviceImpl(device.device);
       }
     }
   }
@@ -514,11 +518,12 @@ std::vector<internal::DisplayInfo> GetDisplayInfosFromSystem() {
     const gfx::Vector2dF pixels_per_inch =
         GetMonitorPixelsPerInch(monitor).value_or(
             GetDefaultMonitorPhysicalPixelsPerInch());
-    const auto path_info = GetDisplayConfigPathInfo(monitor);
+    const auto path_info = GetDisplayConfigPathInfo(*monitor_info);
     display_infos.emplace_back(
-        monitor, *monitor_info, scale_factors.device, scale_factors.text,
-        Display::kDefaultBitsPerPixel, GetSDRWhiteLevel(path_info),
-        display_settings.rotation, display_settings.frequency, pixels_per_inch,
+        monitor, *monitor_info, path_info, scale_factors.device,
+        scale_factors.text, Display::kDefaultBitsPerPixel,
+        GetSDRWhiteLevel(path_info), display_settings.rotation,
+        display_settings.frequency, pixels_per_inch,
         GetOutputTechnology(path_info), GetFriendlyDeviceName(path_info));
 
     // Gauge ids derived from DISPLAY_DEVICE's DeviceID and DeviceKey.
@@ -634,7 +639,8 @@ ScreenWinDisplay CreateFallbackPrimaryScreenDisplay() {
                                   ? Display::GetForcedDeviceScaleFactor()
                                   : 1.0;
   internal::DisplayInfo display_info(
-      std::nullopt, monitor_info, device_scale_factor,
+      std::nullopt, monitor_info, /*config_path=*/std::nullopt,
+      device_scale_factor,
       /*text_scale_multiplier*/ 1.0f, Display::kDefaultBitsPerPixel,
       /*sdr_white_level=*/1.0f, Display::ROTATE_0,
       /*display_frequency=*/60.0f, gfx::Vector2dF(),
@@ -797,6 +803,11 @@ gfx::Vector2dF ScreenWin::GetPixelsPerInch(const gfx::PointF& point) const {
       GetScreenWinDisplayVia(&ScreenWin::GetScreenWinDisplayNearestDIPPoint,
                              gfx::ToFlooredPoint(point));
   return screen_win_display.pixels_per_inch();
+}
+
+std::optional<gfx::Vector2dF> ScreenWin::GetPixelsPerInchForPointerDevice(
+    HANDLE source_device) const {
+  return GetPixelsPerInchForPointerDeviceImpl(source_device);
 }
 
 int ScreenWin::GetSystemMetricsForMonitor(HMONITOR monitor, int metric) const {

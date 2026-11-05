@@ -5,15 +5,20 @@
 #import "ios/chrome/browser/application_context/model/application_context_impl.h"
 
 #import <algorithm>
+#import <optional>
+#import <utility>
 #import <vector>
 
 #import "base/base_paths.h"
+#import "base/check_deref.h"
 #import "base/check_op.h"
 #import "base/command_line.h"
 #import "base/feature_list.h"
 #import "base/files/file_path.h"
 #import "base/functional/bind.h"
 #import "base/functional/callback_helpers.h"
+#import "base/i18n/language_tag.h"
+#import "base/i18n/tag_converters.h"
 #import "base/memory/ptr_util.h"
 #import "base/metrics/histogram_functions.h"
 #import "base/path_service.h"
@@ -34,7 +39,6 @@
 #import "components/gcm_driver/gcm_desktop_utils.h"
 #import "components/gcm_driver/gcm_driver.h"
 #import "components/history/core/browser/history_service.h"
-#import "components/keyed_service/core/service_access_type.h"
 #import "components/metrics/metrics_features.h"
 #import "components/metrics/metrics_service.h"
 #import "components/metrics_services_manager/metrics_services_manager.h"
@@ -64,6 +68,7 @@
 #import "ios/chrome/browser/gcm/model/ios_chrome_gcm_profile_service_factory.h"
 #import "ios/chrome/browser/history/model/history_service_factory.h"
 #import "ios/chrome/browser/metrics/model/ios_chrome_metrics_services_manager_client.h"
+#import "ios/chrome/browser/omaha/model/omaha_service.h"
 #import "ios/chrome/browser/optimization_guide/model/optimization_guide_global_state.h"
 #import "ios/chrome/browser/policy/model/browser_policy_connector_ios.h"
 #import "ios/chrome/browser/policy/model/configuration_policy_handler_list_factory.h"
@@ -104,6 +109,7 @@
 
 #if !BUILDFLAG(USE_BLINK)
 #import "base/memory/memory_pressure_listener_registry.h"
+#import "base/memory_coordinator/memory_pressure_source.h"
 #endif
 
 ApplicationContextImpl::ApplicationContextImpl(
@@ -115,6 +121,7 @@ ApplicationContextImpl::ApplicationContextImpl(
       local_state_task_runner_(local_state_task_runner)
 #if !BUILDFLAG(USE_BLINK)
       ,
+      memory_pressure_source_(std::make_unique<base::MemoryPressureSource>()),
       memory_pressure_listener_registry_(
           std::make_unique<base::MemoryPressureListenerRegistry>())
 #endif
@@ -122,7 +129,10 @@ ApplicationContextImpl::ApplicationContextImpl(
   DCHECK(!GetApplicationContext());
   SetApplicationContext(this);
 
-  application_locale_storage_->Set(locale);
+  if (std::optional<base::i18n::LanguageTag> locale_tag =
+          base::i18n::GetLanguageTagFromString(locale)) {
+    application_locale_storage_->SetTag(*std::move(locale_tag));
+  }
   application_country_ = country;
 
   update_client::UpdateQueryParams::SetDelegate(
@@ -219,6 +229,7 @@ void ApplicationContextImpl::StartTearDown() {
   CHECK_EQ(profile_manager_->GetLoadedProfiles().size(), 0u);
 
   account_profile_mapper_.reset();
+  push_notification_service_.reset();
   profile_manager_.reset();
 
   // The policy providers managed by `browser_policy_connector_` need to shut
@@ -649,6 +660,14 @@ ApplicationContextImpl::GetDeviceParentalControls() {
   return *device_parental_controls_;
 }
 
+OmahaService& ApplicationContextImpl::GetOmahaService() {
+  if (!omaha_service_) {
+    omaha_service_ = std::make_unique<OmahaService>(
+        CHECK_DEREF(GetLocalState()), GetApplicationLocaleStorage()->GetTag());
+  }
+  return *omaha_service_;
+}
+
 optimization_guide::OptimizationGuideGlobalState*
 ApplicationContextImpl::GetOptimizationGuideGlobalState() {
   if (!optimization_guide_global_state_) {
@@ -741,8 +760,7 @@ void ApplicationContextImpl::OnAppEnterState(AppState app_state) {
 
         case AppState::kBackgroundFromActive:
           if (history::HistoryService* history_service =
-                  ios::HistoryServiceFactory::GetForProfile(
-                      profile, ServiceAccessType::EXPLICIT_ACCESS)) {
+                  ios::HistoryServiceFactory::GetForProfile(profile)) {
             history_service->HandleBackgrounding();
           }
           break;
@@ -810,7 +828,7 @@ void ApplicationContextImpl::CreateGCMDriver() {
            base::TaskShutdownBehavior::SKIP_ON_SHUTDOWN}));
 
   gcm_driver_ = gcm::CreateGCMDriverDesktop(
-      std::make_unique<gcm::GCMClientFactory>(), GetLocalState(), store_path,
+      std::make_unique<gcm::GCMClientFactory>(), store_path,
       // This callback may be invoked on a background sequence, but it calls a
       // method of ApplicationContextImpl which is a sequence-affine object,
       // so wrap the call in BindPostTask(...) to ensure the method happens on

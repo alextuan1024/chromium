@@ -43,6 +43,7 @@
 #import "ios/testing/earl_grey/app_launch_configuration.h"
 #import "ios/testing/earl_grey/app_launch_manager.h"
 #import "ios/testing/earl_grey/earl_grey_test.h"
+#import "ios/testing/test_tag_registry.h"
 #import "net/base/apple/url_conversions.h"
 #import "net/test/embedded_test_server/embedded_test_server.h"
 #import "net/test/embedded_test_server/http_request.h"
@@ -221,6 +222,13 @@ id<GREYMatcher> CloseOtherTabsButton() {
       IDS_IOS_CONTENT_CONTEXT_CLOSEOTHERTABS);
 }
 
+// Matcher for the context menu scroll view.
+id<GREYMatcher> ContextMenuScrollView() {
+  return grey_allOf(
+      grey_kindOfClassName(@"UIScrollView"),
+      grey_ancestor(grey_kindOfClassName(@"_UIContextMenuContainerView")), nil);
+}
+
 // Type `text` into the TabGridSearchBar and press enter.
 void PerformTabGridSearch(NSString* text) {
   [[EarlGrey selectElementWithMatcher:TabGridSearchBar()]
@@ -343,6 +351,7 @@ std::unique_ptr<net::test_server::HttpResponse> HandleRequest(
 }
 
 // Tests entering and leaving the tab grid.
+TAG_SMOKE_TEST(TabGridTestCase, testEnteringAndLeavingTabGrid);
 - (void)testEnteringAndLeavingTabGrid {
   [ChromeEarlGreyUI openTabGrid];
   [[EarlGrey selectElementWithMatcher:chrome_test_util::TabGridDoneButton()]
@@ -387,6 +396,7 @@ std::unique_ptr<net::test_server::HttpResponse> HandleRequest(
 }
 
 // Tests that closing the cell shows no tabs, and displays the empty state.
+TAG_SMOKE_TEST(TabGridTestCase, testClosingFirstCell);
 - (void)testClosingFirstCell {
   [ChromeEarlGreyUI openTabGrid];
   [[EarlGrey selectElementWithMatcher:chrome_test_util::
@@ -401,6 +411,7 @@ std::unique_ptr<net::test_server::HttpResponse> HandleRequest(
 
 // Tests that tapping Close All shows no tabs and displays the empty state,
 // and ensures that it doesn't affect the other tab grid.
+TAG_SMOKE_TEST(TabGridTestCase, testCloseAll);
 - (void)testCloseAll {
   // Also add a tab in incognito.
   [ChromeEarlGrey openNewIncognitoTab];
@@ -642,8 +653,11 @@ std::unique_ptr<net::test_server::HttpResponse> HandleRequest(
   [self longPressTabWithTitle:kTitle2];
 
   // Tap "Close Other Tabs" in the context menu.
-  [[EarlGrey selectElementWithMatcher:CloseOtherTabsButton()]
-      performAction:grey_tap()];
+  [[[EarlGrey
+      selectElementWithMatcher:grey_allOf(CloseOtherTabsButton(),
+                                          grey_sufficientlyVisible(), nil)]
+         usingSearchAction:grey_scrollInDirection(kGREYDirectionDown, 100)
+      onElementWithMatcher:ContextMenuScrollView()] performAction:grey_tap()];
 
   // Wait for the context menu to disappear.
   [self waitForContextMenuToDisappear];
@@ -903,8 +917,9 @@ std::unique_ptr<net::test_server::HttpResponse> HandleRequest(
   [self longPressTabWithTitle:kTitle1];
 
   // Close Tab.
-  [[EarlGrey selectElementWithMatcher:CloseTabMenuButton()]
-      performAction:grey_tap()];
+  [[[EarlGrey selectElementWithMatcher:CloseTabMenuButton()]
+         usingSearchAction:grey_scrollInDirection(kGREYDirectionDown, 100)
+      onElementWithMatcher:ContextMenuScrollView()] performAction:grey_tap()];
 
   // Make sure that the tab is no longer present.
   [[EarlGrey selectElementWithMatcher:TabWithTitle(kTitle1)]
@@ -967,11 +982,6 @@ std::unique_ptr<net::test_server::HttpResponse> HandleRequest(
     EARL_GREY_TEST_SKIPPED(@"Multiple windows can't be opened.");
   }
 
-  // TODO(crbug.com/40752508): Test is failing on iPad devices and simulator.
-  if ([ChromeEarlGrey isIPadIdiom]) {
-    EARL_GREY_TEST_DISABLED(@"This test is failing.");
-  }
-
   [ChromeEarlGrey loadURL:_URL1];
   [ChromeEarlGrey waitForWebStateContainingText:kResponse1];
   [ChromeEarlGrey loadURL:_URL3];
@@ -1020,11 +1030,6 @@ std::unique_ptr<net::test_server::HttpResponse> HandleRequest(
   if (![ChromeEarlGrey areMultipleWindowsSupported]) {
     EARL_GREY_TEST_SKIPPED(@"Multiple windows can't be opened.");
   }
-  if (@available(iOS 26.0, *)) {
-    // TODO(crbug.com/427699033): Re-enable test on iOS 26.
-    // Drag creates new window, but test fails to interact with it.
-    EARL_GREY_TEST_DISABLED(@"Test disabled on iOS 26.");
-  }
 
   [ChromeEarlGrey closeAllNormalTabs];
   [ChromeEarlGrey openNewIncognitoTab];
@@ -1071,8 +1076,7 @@ std::unique_ptr<net::test_server::HttpResponse> HandleRequest(
 }
 
 // Tests dragging all tab grid items to another window.
-// TODO(crbug.com/431223435): Re-enable test.
-- (void)DISABLED_testDragAndDropAllItemsToOtherWindow {
+- (void)testDragAndDropAllItemsToOtherWindow {
   if (![ChromeEarlGrey areMultipleWindowsSupported]) {
     EARL_GREY_TEST_SKIPPED(@"Multiple windows can't be opened.");
   }
@@ -1148,8 +1152,7 @@ std::unique_ptr<net::test_server::HttpResponse> HandleRequest(
 }
 
 // Tests dragging tab grid item as URL between windows.
-// TODO(crbug.com/40864920): Re-enable this test.
-- (void)DISABLED_testDragAndDropURLBetweenWindows {
+- (void)testDragAndDropURLBetweenWindows {
   if (![ChromeEarlGrey areMultipleWindowsSupported]) {
     EARL_GREY_TEST_SKIPPED(@"Multiple windows can't be opened.");
   }
@@ -1215,11 +1218,6 @@ std::unique_ptr<net::test_server::HttpResponse> HandleRequest(
     EARL_GREY_TEST_SKIPPED(@"Multiple windows can't be opened.");
   }
 
-  // TODO(crbug.com/40868899): Test is failing on iPad devices and simulator.
-  if ([ChromeEarlGrey isIPadIdiom]) {
-    EARL_GREY_TEST_DISABLED(@"Test disabled on iPad.");
-  }
-
   // Setup first window with one incognito tab 1.
   [ChromeEarlGrey closeAllNormalTabs];
   [ChromeEarlGrey openNewIncognitoTab];
@@ -1279,8 +1277,7 @@ std::unique_ptr<net::test_server::HttpResponse> HandleRequest(
 }
 
 // Tests dragging tab grid main item as URL to an incognito windows.
-// TODO(crbug.com/40240640): Re-enable this test.
-- (void)DISABLED_testDragAndDropMainURLInIncognitoWindow {
+- (void)testDragAndDropMainURLInIncognitoWindow {
   if (![ChromeEarlGrey areMultipleWindowsSupported]) {
     EARL_GREY_TEST_SKIPPED(@"Multiple windows can't be opened.");
   }
@@ -1551,8 +1548,7 @@ std::unique_ptr<net::test_server::HttpResponse> HandleRequest(
 }
 
 // Tests adding items to the Reading List from the tab grid edit mode.
-// TODO(crbug.com/40900596): Test flakes.
-- (void)FLAKY_testTabGridBulkActionAddToReadingList {
+- (void)testTabGridBulkActionAddToReadingList {
   [ChromeEarlGrey loadURL:_URL1];
   [ChromeEarlGrey waitForWebStateContainingText:kResponse1];
 
@@ -1741,8 +1737,7 @@ std::unique_ptr<net::test_server::HttpResponse> HandleRequest(
 
 // Tests that searching in open tabs in the regular mode will filter the tabs
 // correctly.
-// TODO(crbug.com/332714545): Test is flaky.
-- (void)FLAKY_testSearchRegularOpenTabs {
+- (void)testSearchRegularOpenTabs {
   [self loadTestURLsInNewTabs];
   [ChromeEarlGreyUI openTabGrid];
 
@@ -2485,8 +2480,7 @@ std::unique_ptr<net::test_server::HttpResponse> HandleRequest(
 
 // Ensures that when users tap on a tab from tab search result and this tab is
 // in another window currently displaying tab grid, the tab is opened.
-// TODO(crbug.com/448400563): Re-enable this test.
-- (void)DISABLED_testOpenSearchedTabFromAnotherWindowWhenTabGridIsVisible {
+- (void)testOpenSearchedTabFromAnotherWindowWhenTabGridIsVisible {
   if (![ChromeEarlGrey areMultipleWindowsSupported]) {
     EARL_GREY_TEST_DISABLED(@"Multiple windows can't be opened.");
   }

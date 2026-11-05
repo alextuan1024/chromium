@@ -6,6 +6,7 @@
 
 #include <optional>
 
+#include "base/check_op.h"
 #include "base/debug/crash_logging.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
@@ -15,6 +16,7 @@
 #include "base/metrics/histogram_functions.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/notreached.h"
+#include "base/numerics/safe_conversions.h"
 #include "base/strings/strcat.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/timer/elapsed_timer.h"
@@ -26,6 +28,7 @@
 #include "content/public/common/content_features.h"
 #include "content/renderer/service_worker/controller_service_worker_connector.h"
 #include "mojo/public/cpp/bindings/self_owned_receiver.h"
+#include "mojo/public/cpp/system/data_pipe_drainer.h"
 #include "net/base/net_errors.h"
 #include "net/url_request/redirect_util.h"
 #include "net/url_request/url_request.h"
@@ -33,6 +36,7 @@
 #include "services/network/public/cpp/record_ontransfersizeupdate_utils.h"
 #include "services/network/public/cpp/resource_request.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
+#include "services/network/public/cpp/sri_message_signatures.h"
 #include "services/network/public/cpp/timing_allow_origin_parser.h"
 #include "services/network/public/mojom/early_hints.mojom.h"
 #include "services/network/public/mojom/service_worker_router_info.mojom.h"
@@ -187,6 +191,73 @@ blink::mojom::ServiceWorkerFetchEventTimingPtr AdjustTimingIfNeededCrBug1342408(
 
 }  // namespace
 
+class ServiceWorkerSubresourceLoader::CachedMetadataReader
+    : public mojo::DataPipeDrainer::Client {
+ public:
+  using Callback =
+      base::OnceCallback<void(std::optional<mojo_base::BigBuffer>)>;
+
+  CachedMetadataReader(blink::mojom::SerializedBlobPtr blob, Callback callback)
+      : blob_(std::move(blob->blob)),
+        data_(base::checked_cast<size_t>(blob->size)),
+        callback_(std::move(callback)) {
+    CHECK_GT(data_.size(), 0u);
+  }
+
+  void Start() {
+    mojo::ScopedDataPipeConsumerHandle consumer;
+    int result = blink::ServiceWorkerLoaderHelpers::ReadBlobResponseBody(
+        &blob_, data_.size(),
+        base::BindOnce(&CachedMetadataReader::OnReadComplete,
+                       weak_factory_.GetWeakPtr()),
+        &consumer);
+    if (result != net::OK) {
+      OnReadComplete(result);
+      return;
+    }
+    drainer_ =
+        std::make_unique<mojo::DataPipeDrainer>(this, std::move(consumer));
+  }
+
+ private:
+  void OnDataAvailable(base::span<const uint8_t> data) override {
+    CHECK_LE(data.size(), data_.size() - bytes_read_);
+    base::span(data_).subspan(bytes_read_, data.size()).copy_from(data);
+    bytes_read_ += data.size();
+  }
+
+  void OnDataComplete() override {
+    data_complete_ = true;
+    MaybeComplete();
+  }
+
+  void OnReadComplete(int result) {
+    result_ = result;
+    MaybeComplete();
+  }
+
+  void MaybeComplete() {
+    if (!callback_ || !result_ || (*result_ == net::OK && !data_complete_)) {
+      return;
+    }
+    std::optional<mojo_base::BigBuffer> metadata;
+    if (*result_ == net::OK && bytes_read_ == data_.size()) {
+      metadata = std::move(data_);
+    }
+    std::move(callback_).Run(std::move(metadata));
+    // `this` is deleted.
+  }
+
+  mojo::Remote<blink::mojom::Blob> blob_;
+  mojo_base::BigBuffer data_;
+  size_t bytes_read_ = 0;
+  bool data_complete_ = false;
+  std::optional<int> result_;
+  Callback callback_;
+  std::unique_ptr<mojo::DataPipeDrainer> drainer_;
+  base::WeakPtrFactory<CachedMetadataReader> weak_factory_{this};
+};
+
 // A ServiceWorkerStreamCallback implementation which waits for completion of
 // a stream response for subresource loading. It calls
 // ServiceWorkerSubresourceLoader::CommitCompleted() upon completion of the
@@ -313,7 +384,6 @@ ServiceWorkerSubresourceLoader::ServiceWorkerSubresourceLoader(
       controller_connector_(std::move(controller_connector)),
       fetch_request_restarted_(false),
       body_reading_complete_(false),
-      side_data_reading_complete_(false),
       request_id_(request_id),
       options_(options),
       traffic_annotation_(traffic_annotation),
@@ -403,9 +473,10 @@ void ServiceWorkerSubresourceLoader::DispatchFetchEvent() {
 
     base::ElapsedTimer router_evaluation_timer;
     response_head_->load_timing.service_worker_router_evaluation_start =
-        base::TimeTicks::Now();
+        router_evaluation_timer.start_time();
     const auto eval_result = EvaluateRouterConditions();
-    router_info->router_evaluation_time = router_evaluation_timer.Elapsed();
+    base::TimeTicks now;
+    router_info->router_evaluation_time = router_evaluation_timer.Elapsed(&now);
     if (eval_result) {  // matched the rule.
       const auto& sources = eval_result->sources;
       auto source_type = sources[0].type;
@@ -419,8 +490,8 @@ void ServiceWorkerSubresourceLoader::DispatchFetchEvent() {
           // Network fallback is requested.
           {
             auto timing = blink::mojom::ServiceWorkerFetchEventTiming::New();
-            timing->dispatch_event_time = base::TimeTicks::Now();
-            timing->respond_with_settled_time = base::TimeTicks::Now();
+            timing->dispatch_event_time = now;
+            timing->respond_with_settled_time = now;
             OnFallback(std::nullopt, std::move(timing), /*errors=*/nullptr);
           }
           return;
@@ -866,6 +937,8 @@ void ServiceWorkerSubresourceLoader::StartResponse(
 
   blink::ServiceWorkerLoaderHelpers::SaveResponseInfo(*response,
                                                       response_head_.get());
+  cache_storage_side_data_writer_ =
+      std::move(response->cache_storage_side_data_writer);
   response_head_->response_start = base::TimeTicks::Now();
   response_head_->load_timing.receive_headers_start = base::TimeTicks::Now();
   response_head_->load_timing.receive_headers_end =
@@ -885,10 +958,8 @@ void ServiceWorkerSubresourceLoader::StartResponse(
     response_head_->timing_allow_passed = response->timing_allow_passed;
   } else if (response->timing_allow_passed &&
              resource_request_.request_initiator &&
-             response_head_->parsed_headers &&
-             network::TimingAllowOriginCheck(
-                 response_head_->parsed_headers->timing_allow_origin,
-                 *resource_request_.request_initiator)) {
+             PassesTimingAllowOriginCheck(
+                 *response, *resource_request_.request_initiator)) {
     response_head_->timing_allow_passed = true;
   }
 
@@ -907,6 +978,16 @@ void ServiceWorkerSubresourceLoader::StartResponse(
                                                              *response_head_);
   if (redirect_info) {
     HandleRedirect(*redirect_info, response_head_);
+    return;
+  }
+
+  // SRI verification applies to the final response, not redirect hops.
+  if (std::optional<network::mojom::BlockedByResponseReason> blocked_reason =
+          network::MaybeBlockResponseForSRIMessageSignature(
+              resource_request_, *response_head_,
+              resource_request_.expected_public_keys)) {
+    CommitCompleted(net::ERR_BLOCKED_BY_RESPONSE,
+                    "SRI message signature mismatch", blocked_reason);
     return;
   }
 
@@ -950,23 +1031,25 @@ void ServiceWorkerSubresourceLoader::StartResponse(
   DCHECK(data_pipe.is_valid());
 
   // Read side data if necessary.  We only do this if both the
-  // |side_data_blob| is available to read and the request is destined
+  // `cached_metadata` is available to read and the request is destined
   // for a script.
   auto request_destination = resource_request_.destination;
-  if (response->side_data_blob &&
+  if (response->cached_metadata &&
       (request_destination == network::mojom::RequestDestination::kScript ||
        response->mime_type == "application/wasm")) {
-    side_data_as_blob_.Bind(std::move(response->side_data_blob->blob));
-    side_data_as_blob_->ReadSideData(base::BindOnce(
-        &ServiceWorkerSubresourceLoader::OnSideDataReadingComplete,
-        weak_factory_.GetWeakPtr(), std::move(data_pipe)));
+    cached_metadata_reader_ = std::make_unique<CachedMetadataReader>(
+        std::move(response->cached_metadata),
+        base::BindOnce(
+            &ServiceWorkerSubresourceLoader::OnCachedMetadataReadingComplete,
+            weak_factory_.GetWeakPtr(), std::move(data_pipe)));
+    cached_metadata_reader_->Start();
     return;
   }
 
   // Otherwise we can immediately complete side data reading so that the
   // entire resource completes when the main body is read.
-  OnSideDataReadingComplete(std::move(data_pipe),
-                            std::optional<mojo_base::BigBuffer>());
+  OnCachedMetadataReadingComplete(std::move(data_pipe),
+                                  std::optional<mojo_base::BigBuffer>());
 }
 
 void ServiceWorkerSubresourceLoader::CommitResponseBody(
@@ -992,10 +1075,14 @@ void ServiceWorkerSubresourceLoader::CommitResponseBody(
     }
   }
   ValidateResponseSentToClient();
+  auto head = response_head.Clone();
+  if (response_head_.get() == response_head.get()) {
+    head->cache_storage_side_data_writer =
+        std::move(cache_storage_side_data_writer_);
+  }
   // TODO(kinuko): Fill the ssl_info.
-  url_loader_client_->OnReceiveResponse(response_head.Clone(),
-                                        std::move(response_body),
-                                        std::move(cached_metadata));
+  url_loader_client_->OnReceiveResponse(
+      std::move(head), std::move(response_body), std::move(cached_metadata));
 }
 
 void ServiceWorkerSubresourceLoader::CommitEmptyResponseAndComplete() {
@@ -1013,8 +1100,11 @@ void ServiceWorkerSubresourceLoader::CommitEmptyResponseAndComplete() {
   CommitCompleted(net::OK, "No body exists");
 }
 
-void ServiceWorkerSubresourceLoader::CommitCompleted(int error_code,
-                                                     const char* reason) {
+void ServiceWorkerSubresourceLoader::CommitCompleted(
+    int error_code,
+    const char* reason,
+    std::optional<network::mojom::BlockedByResponseReason>
+        blocked_by_response_reason) {
   TRACE_EVENT("ServiceWorker",
               "ServiceWorkerSubresourceLoader::CommitCompleted",
               perfetto::TerminatingFlow::Global(
@@ -1040,10 +1130,12 @@ void ServiceWorkerSubresourceLoader::CommitCompleted(int error_code,
 
   DCHECK(url_loader_client_.is_bound());
   body_as_blob_.reset();
+  cached_metadata_reader_.reset();
   stream_waiter_.reset();
   network::URLLoaderCompletionStatus status;
   status.error_code = error_code;
   status.completion_time = base::TimeTicks::Now();
+  status.blocked_by_response_reason = blocked_by_response_reason;
   url_loader_client_->OnComplete(status);
 
   // Invalidate weak pointers to prevent callbacks after commit.  This can
@@ -1306,17 +1398,18 @@ int ServiceWorkerSubresourceLoader::StartBlobReading(
       body_pipe);
 }
 
-void ServiceWorkerSubresourceLoader::OnSideDataReadingComplete(
+void ServiceWorkerSubresourceLoader::OnCachedMetadataReadingComplete(
     mojo::ScopedDataPipeConsumerHandle data_pipe,
     std::optional<mojo_base::BigBuffer> metadata) {
   TRACE_EVENT("ServiceWorker",
-              "ServiceWorkerSubresourceLoader::OnSideDataReadingComplete",
+              "ServiceWorkerSubresourceLoader::OnCachedMetadataReadingComplete",
               perfetto::Flow::ProcessScoped(
                   request_id_, kServiceWorkerSubresourceLoaderScope),
               "metadata size", (metadata ? metadata->size() : 0));
   DCHECK(url_loader_client_);
-  DCHECK(!side_data_reading_complete_);
-  side_data_reading_complete_ = true;
+  DCHECK(!cached_metadata_reading_complete_);
+  cached_metadata_reading_complete_ = true;
+  cached_metadata_reader_.reset();
 
   DCHECK(data_pipe.is_valid());
   CommitResponseBody(response_head_, std::move(data_pipe), std::move(metadata));
@@ -1326,8 +1419,7 @@ void ServiceWorkerSubresourceLoader::OnSideDataReadingComplete(
   if (body_reading_complete_) {
     OnBodyReadingComplete(net::OK);
   }
-
-  // Otherwise we asyncly continue in OnBlobReadingComplete().
+  // Otherwise we asyncly continue in `OnBodyReadingComplete()`.
 }
 
 void ServiceWorkerSubresourceLoader::OnBodyReadingComplete(int net_error) {
@@ -1338,10 +1430,11 @@ void ServiceWorkerSubresourceLoader::OnBodyReadingComplete(int net_error) {
   body_reading_complete_ = true;
   // If the side data has not completed reading yet, then we need to delay
   // calling CommitCompleted.  This method will be called again from
-  // OnSideDataReadingComplete().  Only delay for successful reads, though.
+  // OnCachedMetadataReadingComplete(). Only delay for successful reads, though.
   // Abort immediately on error.
-  if (!side_data_reading_complete_ && net_error == net::OK)
+  if (!cached_metadata_reading_complete_ && net_error == net::OK) {
     return;
+  }
   CommitCompleted(net_error, "Body reading completed");
 }
 

@@ -216,11 +216,6 @@ const int kMaxNumberOfAttemptsAtTypingTextInOmnibox = 3;
   [self tapToolsMenuButton:SettingsDestinationButton()];
 }
 
-- (void)openSettingsMenuInWindowWithNumber:(int)windowNumber {
-  [self openToolsMenuInWindowWithNumber:windowNumber];
-  [self tapToolsMenuButton:SettingsDestinationButton()];
-}
-
 - (void)openNewTabMenu {
   // TODO(crbug.com/41271107): Add logic to ensure the app is in the correct
   // state, for example DCHECK if no tabs are displayed.
@@ -339,24 +334,6 @@ const int kMaxNumberOfAttemptsAtTypingTextInOmnibox = 3;
       performAction:grey_tap()];
 }
 
-- (void)tapTrackingPriceMenuButton:(id<GREYMatcher>)buttonMatcher {
-  ScopedDisableTimerTracking disabler;
-  id<GREYMatcher> interactableButtonMatcher =
-      grey_allOf(buttonMatcher, grey_interactable(), nil);
-  [[[EarlGrey selectElementWithMatcher:interactableButtonMatcher]
-         usingSearchAction:ScrollDown()
-      onElementWithMatcher:chrome_test_util::SettingsTrackingPriceTableView()]
-      performAction:grey_tap()];
-}
-
-- (void)tapAccountsMenuButton:(id<GREYMatcher>)buttonMatcher {
-  ScopedDisableTimerTracking disabler;
-  [[[EarlGrey selectElementWithMatcher:buttonMatcher]
-         usingSearchAction:ScrollDown()
-      onElementWithMatcher:chrome_test_util::SettingsAccountsCollectionView()]
-      performAction:grey_tap()];
-}
-
 - (void)focusOmniboxAndType:(NSString*)text {
   [self focusOmnibox];
 
@@ -398,20 +375,14 @@ const int kMaxNumberOfAttemptsAtTypingTextInOmnibox = 3;
         performAction:grey_tap()];
   } else {
     [self openToolsMenu];
-    id<GREYMatcher> newTabButtonMatcher =
-        grey_accessibilityID(kToolsMenuNewTabId);
-    [[EarlGrey selectElementWithMatcher:newTabButtonMatcher]
-        performAction:grey_tap()];
+    [self tapToolsMenuAction:grey_accessibilityID(kToolsMenuNewTabId)];
   }
   [self waitForAppToIdle];
 }
 
 - (void)openNewIncognitoTab {
   [self openToolsMenu];
-  id<GREYMatcher> newIncognitoTabMatcher =
-      grey_accessibilityID(kToolsMenuNewIncognitoTabId);
-  [[EarlGrey selectElementWithMatcher:newIncognitoTabMatcher]
-      performAction:grey_tap()];
+  [self tapToolsMenuAction:grey_accessibilityID(kToolsMenuNewIncognitoTabId)];
   [self waitForAppToIdle];
 }
 

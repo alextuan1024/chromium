@@ -11,21 +11,31 @@
 #include "base/no_destructor.h"
 #include "ios/web/public/js_messaging/java_script_feature.h"
 
+namespace url {
+class Origin;
+}  // namespace url
+
+class GURL;
+
 namespace web {
 class ScriptMessage;
 class WebFrame;
 class WebState;
 }  // namespace web
 
-// JavaScriptFeature that loads the Device Trust support script,
-// installs the public API on native request, and receives
-// `getAttestation()` requests.
+// JavaScriptFeature that receives `getAttestation()` requests from the
+// `window.chrome.enterprise.deviceTrust` API. The script implementing the API
+// is not injected into every page: it is executed on browser-side request in
+// the main frame of pages allowlisted by the Device Trust policies.
 class DeviceTrustJavaScriptFeature : public web::JavaScriptFeature {
  public:
   static DeviceTrustJavaScriptFeature* GetInstance();
 
-  // Attaches the `window.chrome.enterprise.deviceTrust` API to `web_frame`.
-  void SetupDeviceTrustAPI(web::WebFrame* web_frame);
+  // Executes the script installing the `window.chrome.enterprise.deviceTrust`
+  // API in `web_frame`, which must be a main frame. Executing it more than
+  // once in the same window has no effect. Returns true if the execution was
+  // requested.
+  bool SetupDeviceTrustAPI(web::WebFrame* web_frame);
 
   DeviceTrustJavaScriptFeature(const DeviceTrustJavaScriptFeature&) = delete;
   DeviceTrustJavaScriptFeature& operator=(const DeviceTrustJavaScriptFeature&) =
@@ -39,25 +49,18 @@ class DeviceTrustJavaScriptFeature : public web::JavaScriptFeature {
       const web::ScriptMessage& message,
       ScriptMessageReplyCallback callback) override;
 
-  // Handles a validated attestation request. Virtual for test interception.
-  virtual void HandleAttestationRequest(web::WebState* web_state,
-                                        const std::string& challenge_request,
-                                        ScriptMessageReplyCallback callback);
-
-  // Resolves the originating JS promise with the signed payload.
-  void ResolveAttestationRequest(ScriptMessageReplyCallback callback,
-                                 const std::string& signed_payload);
-
-  // Rejects the originating JS promise with an error code and message.
-  void RejectAttestationRequest(ScriptMessageReplyCallback callback,
-                                const std::string& error_message,
-                                const std::string& error_code);
-
   DeviceTrustJavaScriptFeature();
   ~DeviceTrustJavaScriptFeature() override;
 
  private:
   friend class base::NoDestructor<DeviceTrustJavaScriptFeature>;
+
+  // Handles a validated attestation request.
+  void HandleAttestationRequest(web::WebState* web_state,
+                                const url::Origin& security_origin,
+                                const std::optional<GURL>& request_url,
+                                const std::string& challenge_request,
+                                ScriptMessageReplyCallback callback);
 };
 
 #endif  // IOS_CHROME_BROWSER_ENTERPRISE_CONNECTORS_DEVICE_TRUST_MODEL_DEVICE_TRUST_JAVA_SCRIPT_FEATURE_H_

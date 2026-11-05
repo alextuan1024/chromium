@@ -226,6 +226,9 @@ class AutofillDriver {
   // necessary when a form is seen in a child frame and it is not known which
   // form is its parent.
   //
+  // If `force` is true, the form cache is cleared before extracting forms so
+  // that all forms are re-extracted.
+  //
   // Unlike other events, this is *not* be routed or broadcast to other frames;
   // it refers to the frame associated with the driver.
   //
@@ -241,18 +244,20 @@ class AutofillDriver {
   // the child frame, it is not known *which form* in the parent frame is its
   // parent form. In this scenario, a form extraction should be triggered.
   virtual void TriggerFormExtractionInDriverFrame(
-      AutofillDriverRouterAndFormForestPassKey pass_key) = 0;
+      AutofillDriverRouterAndFormForestPassKey pass_key,
+      bool force) = 0;
 
   // Triggers a form_extraction on all frames of the same frame tree. Calls
   // `form_extraction_finished_callback` when all frames reported back
   // being done. `success == false` indicates that in some frame, a
   // form_extraction was triggered while another form_extraction was ongoing.
+  //
+  // If `force` is true, the form cache in all frames is cleared before
+  // extracting forms so that all forms are re-extracted.
   virtual void TriggerFormExtractionInAllFrames(
+      bool force,
       base::OnceCallback<void(bool success)>
           form_extraction_finished_callback) = 0;
-
-  // Clears the form cache in all frames of the same frame tree.
-  virtual void ClearFormCacheInAllFrames() = 0;
 
   // Response handler for ExtractForm(). The `host_frame_driver` manages `form`,
   // i.e., `form.host_frame == host_frame_driver->GetFrameToken()`. The form is
@@ -399,6 +404,10 @@ class AutofillDriver {
   // Scrolls the page containing the field corresponding to `field_id` until it
   // becomes visible on the user's display.
   virtual void ScrollFieldIntoView(FieldGlobalId field_id) = 0;
+
+  // Loads `script` in this driver's frame's current document to detect, read
+  // and fill custom form controls.
+  virtual void LoadCustomFormControlScript(const std::string& script) = 0;
 
   // Returns whether a value of type `filled_type` can be filled into `field`
   // from a fill operation triggered on `trigger_origin`, according to the

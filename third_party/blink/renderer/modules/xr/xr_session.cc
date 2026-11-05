@@ -52,6 +52,7 @@
 #include "third_party/blink/renderer/modules/xr/xr_image_tracking_result.h"
 #include "third_party/blink/renderer/modules/xr/xr_input_source_event.h"
 #include "third_party/blink/renderer/modules/xr/xr_input_sources_change_event.h"
+#include "third_party/blink/renderer/modules/xr/xr_layer.h"
 #include "third_party/blink/renderer/modules/xr/xr_light_probe.h"
 #include "third_party/blink/renderer/modules/xr/xr_mesh_manager.h"
 #include "third_party/blink/renderer/modules/xr/xr_plane_manager.h"
@@ -94,6 +95,10 @@ const char kBaseLayerAndLayers[] =
 
 const char kMultiLayersNotEnabled[] =
     "This session does not support multiple layers.";
+
+const char kNonProjectionLayerNotEnabled[] =
+    "Non-projection layers are not allowed when layers feature is not "
+    "enabled.";
 
 const char kDuplicateLayer[] = "All layers in render state must be unique.";
 
@@ -316,9 +321,10 @@ void XRSession::MetricsReporter::ReportFeatureUsed(
   using device::mojom::blink::XRSessionFeature;
 
   // If we've already reported using this feature, no need to report again.
-  if (!reported_features_.insert(feature).is_new_entry) {
+  if (reported_features_.Has(feature)) {
     return;
   }
+  reported_features_.Put(feature);
 
   switch (feature) {
     case XRSessionFeature::REF_SPACE_VIEWER:
@@ -392,7 +398,7 @@ XRSession::XRSession(
       sensorless_session_(sensorless_session),
       trace_id_(trace_id) {
   FrozenArray<IDLString>::VectorType enabled_features;
-  for (const auto& feature : enabled_feature_set_) {
+  for (device::mojom::XRSessionFeature feature : enabled_feature_set_) {
     enabled_features.push_back(XRSessionFeatureToString(feature).ToString());
   }
   enabled_features_ =
@@ -456,8 +462,8 @@ XRSession::XRSession(
 
 void XRSession::SetDOMOverlayElement(Element* element) {
   DVLOG(2) << __func__ << ": element=" << element;
-  DCHECK(enabled_feature_set_.Contains(
-      device::mojom::XRSessionFeature::DOM_OVERLAY));
+  DCHECK(
+      enabled_feature_set_.Has(device::mojom::XRSessionFeature::DOM_OVERLAY));
   DCHECK(element);
 
   overlay_element_ = element;
@@ -560,22 +566,6 @@ void XRSession::updateRenderState(XRRenderStateInit* init,
       return;
     }
 
-    // Validate that the session was created with the layers feature enabled
-    // when the user wishes to render multiple layers at once.
-    if (init->layers()->size() > 1 &&
-        !IsFeatureEnabled(device::mojom::XRSessionFeature::LAYERS)) {
-      exception_state.ThrowDOMException(DOMExceptionCode::kNotSupportedError,
-                                        kMultiLayersNotEnabled);
-      return;
-    }
-
-    // Validate that the number of layers is allowed.
-    if (init->layers()->size() > maxRenderLayers()) {
-      exception_state.ThrowDOMException(DOMExceptionCode::kNotSupportedError,
-                                        kTooManyLayers);
-      return;
-    }
-
     HeapHashSet<Member<const XRLayer>> unique_layers;
     for (const XRLayer* layer : *init->layers()) {
       // Check for duplicate layers.
@@ -589,6 +579,32 @@ void XRSession::updateRenderState(XRRenderStateInit* init,
         exception_state.ThrowTypeError(kIncompatibleLayer);
         return;
       }
+    }
+
+    // Validate that the session was created with the layers feature enabled
+    // when the user wishes to render multiple layers at once or non-projection
+    // layers.
+    if (!IsFeatureEnabled(device::mojom::XRSessionFeature::LAYERS)) {
+      if (init->layers()->size() > 1) {
+        exception_state.ThrowDOMException(DOMExceptionCode::kNotSupportedError,
+                                          kMultiLayersNotEnabled);
+        return;
+      }
+      for (const XRLayer* layer : *init->layers()) {
+        if (layer->LayerType() != XRLayerType::kProjectionLayer) {
+          exception_state.ThrowDOMException(
+              DOMExceptionCode::kNotSupportedError,
+              kNonProjectionLayerNotEnabled);
+          return;
+        }
+      }
+    }
+
+    // Validate that the number of layers is allowed.
+    if (init->layers()->size() > maxRenderLayers()) {
+      exception_state.ThrowDOMException(DOMExceptionCode::kNotSupportedError,
+                                        kTooManyLayers);
+      return;
     }
   }
 
@@ -2199,7 +2215,7 @@ void XRSession::UpdateWorldUnderstandingStateForFrame(
 
 bool XRSession::IsFeatureEnabled(
     device::mojom::XRSessionFeature feature) const {
-  return enabled_feature_set_.Contains(feature);
+  return enabled_feature_set_.Has(feature);
 }
 
 void XRSession::SetMetricsReporter(std::unique_ptr<MetricsReporter> reporter) {
@@ -2264,7 +2280,8 @@ void XRSession::OnFrame(double timestamp,
     auto* transport_delegate = render_state_->GetTransportDelegate();
     CHECK(transport_delegate);
 
-    if (shared_images.empty() && layers_enabled_) {
+    if (shared_images.empty() &&
+        (layers_enabled_ || !render_state_->layers().empty())) {
       DVLOG(2) << __func__ << ": there is no shared images.";
       xr_->frameProvider()->SubmitFrame(transport_delegate);
       return;
@@ -2282,7 +2299,6 @@ void XRSession::OnFrame(double timestamp,
         // allow the layer sequence to be updated by the backend compositor
         // without dropping the current frame.
         render_state_->UpdateLayersBackend(LayerManager());
-        render_state_->OnLayersUpdated();
 
         // Submit this animation frame without changes and request a new one
         // immediately.
@@ -2292,8 +2308,8 @@ void XRSession::OnFrame(double timestamp,
       }
     }
 
-    // If LayerManager is not available, the shared image lacks an associated
-    // layer ID. The shared image must then be bound to the first layer.
+    // If baseLayer is used or LayerManager is not available, bind the shared
+    // image with the first layer's ID.
     layer_shared_image_manager_.SetSharedImages(
         LayerManager() ? render_state_->baseLayer()
                        : render_state_->GetFirstLayer(),
@@ -2357,7 +2373,7 @@ void XRSession::OnFrame(double timestamp,
 
     auto shared_image =
         LayerSharedImageManager().CameraSharedImage().shared_image;
-    if (shared_image && !camera_sync_tokens.empty()) {
+    if (shared_image) {
       gpu::SharedImageExportResult camera_export_result =
           shared_image->EndImport(std::move(camera_sync_tokens));
       // Submit frame with cached layers data.

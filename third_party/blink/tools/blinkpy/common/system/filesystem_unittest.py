@@ -33,11 +33,12 @@
 
 import os
 import stat
+import subprocess
 import sys
 import tempfile
 import unittest
 
-from blinkpy.common.system.filesystem import FileSystem
+from blinkpy.common.system.filesystem import FileLockError, FileSystem
 
 
 class GenericFileSystemTests(object):
@@ -64,7 +65,8 @@ class GenericFileSystemTests(object):
     def test_glob__trailing_asterisk(self):
         self.fs.chdir(self.generic_test_dir)
         self.assertEqual(
-            set(self.fs.glob('fo*')), set(['foo.txt', 'foobar', 'foodir']))
+            set(self.fs.glob('fo*')), set(['foo.txt', 'foobar', 'foodir'])
+        )
 
     def test_glob__leading_asterisk(self):
         self.fs.chdir(self.generic_test_dir)
@@ -91,8 +93,7 @@ class GenericFileSystemTests(object):
         self.assertEqual(self.fs.relpath('aaa/./ccc', 'aaa/bbb'), '../ccc')
         self.assertEqual(self.fs.relpath('aaa/../ccc', 'aaa/bbb'), '../../ccc')
         self.assertEqual(self.fs.relpath('aaa/bbb', 'aaa/ccc'), '../bbb')
-        self.assertEqual(
-            self.fs.relpath('aaa/bbb', 'ccc/ddd'), '../../aaa/bbb')
+        self.assertEqual(self.fs.relpath('aaa/bbb', 'ccc/ddd'), '../../aaa/bbb')
         self.assertEqual(self.fs.relpath('aaa/bbb', 'aaa/b'), '../bbb')
         self.assertEqual(self.fs.relpath('aaa/bbb', 'a/bbb'), '../../aaa/bbb')
 
@@ -108,13 +109,16 @@ class GenericFileSystemTests(object):
         self.assertEqual(self.fs.relpath('aaa\\bbb\\ccc', 'aaa\\bbb'), 'ccc')
         self.assertEqual(self.fs.relpath('aaa\\.\\ccc', 'aaa\\bbb'), '..\\ccc')
         self.assertEqual(
-            self.fs.relpath('aaa\\..\\ccc', 'aaa\\bbb'), '..\\..\\ccc')
+            self.fs.relpath('aaa\\..\\ccc', 'aaa\\bbb'), '..\\..\\ccc'
+        )
         self.assertEqual(self.fs.relpath('aaa\\bbb', 'aaa\\ccc'), '..\\bbb')
         self.assertEqual(
-            self.fs.relpath('aaa\\bbb', 'ccc\\ddd'), '..\\..\\aaa\\bbb')
+            self.fs.relpath('aaa\\bbb', 'ccc\\ddd'), '..\\..\\aaa\\bbb'
+        )
         self.assertEqual(self.fs.relpath('aaa\\bbb', 'aaa\\b'), '..\\bbb')
         self.assertEqual(
-            self.fs.relpath('aaa\\bbb', 'a\\bbb'), '..\\..\\aaa\\bbb')
+            self.fs.relpath('aaa\\bbb', 'a\\bbb'), '..\\..\\aaa\\bbb'
+        )
 
     def test_rmtree(self):
         self.fs.chdir(self.generic_test_dir)
@@ -154,11 +158,26 @@ class GenericFileSystemTests(object):
     def test_sanitize_filename(self):
         self.assertEqual(self.fs.sanitize_filename('test.html'), 'test.html')
         self.assertEqual(
-            self.fs.sanitize_filename('test.html?wss&run'),
-            'test.html_wss_run')
+            self.fs.sanitize_filename('test.html?wss&run'), 'test.html_wss_run'
+        )
         self.assertEqual(
             self.fs.sanitize_filename('test.html?wss&run', replacement='-'),
-            'test.html-wss-run')
+            'test.html-wss-run',
+        )
+
+    def test_lock_file_exclusive_and_release(self):
+        lock_path = self.fs.join(self.generic_test_dir, 'subdir', 'test.lock')
+        with self.fs.lock_file(lock_path):
+            with self.assertRaises(FileLockError):
+                with self.fs.lock_file(lock_path):
+                    pass
+
+        with self.assertRaises(RuntimeError):
+            with self.fs.lock_file(lock_path):
+                raise RuntimeError('boom')
+
+        with self.fs.lock_file(lock_path):
+            pass
 
 
 class RealFileSystemTest(unittest.TestCase, GenericFileSystemTests):
@@ -168,8 +187,7 @@ class RealFileSystemTest(unittest.TestCase, GenericFileSystemTests):
 
         self._this_dir = os.path.dirname(os.path.abspath(__file__))
         self._missing_file = os.path.join(self._this_dir, 'missing_file.py')
-        self._this_file = os.path.join(self._this_dir,
-                                       'filesystem_unittest.py')
+        self._this_file = os.path.join(self._this_dir, 'filesystem_unittest.py')
 
     def tearDown(self):
         self.teardown_generic_test_dir()
@@ -283,7 +301,7 @@ class RealFileSystemTest(unittest.TestCase, GenericFileSystemTests):
         fs = FileSystem()
         text_path = None
 
-        unicode_text_string = '\u016An\u012Dc\u014Dde\u033D'
+        unicode_text_string = '\u016an\u012dc\u014dde\u033d'
         try:
             text_path = tempfile.mktemp(prefix='tree_unittest_')
             file = fs.open_text_file_for_writing(text_path)
@@ -304,8 +322,8 @@ class RealFileSystemTest(unittest.TestCase, GenericFileSystemTests):
         text_path = None
         binary_path = None
 
-        unicode_text_string = '\u016An\u012Dc\u014Dde\u033D'
-        hex_equivalent = b'\xC5\xAA\x6E\xC4\xAD\x63\xC5\x8D\x64\x65\xCC\xBD'
+        unicode_text_string = '\u016an\u012dc\u014dde\u033d'
+        hex_equivalent = b'\xc5\xaa\x6e\xc4\xad\x63\xc5\x8d\x64\x65\xcc\xbd'
         try:
             text_path = tempfile.mktemp(prefix='tree_unittest_')
             binary_path = tempfile.mktemp(prefix='tree_unittest_')
@@ -357,8 +375,9 @@ class RealFileSystemTest(unittest.TestCase, GenericFileSystemTests):
         # This mostly tests UNC paths on Windows for path names > 260 chars.
         # Currently, only makedirs, copyfile, and various open methods are
         # verified to support UNC paths.
-        long_path = self.fs.join(self.generic_test_dir, 'x' * 100, 'y' * 100,
-                                 'z' * 100)
+        long_path = self.fs.join(
+            self.generic_test_dir, 'x' * 100, 'y' * 100, 'z' * 100
+        )
         self.fs.maybe_make_directory(long_path)
         file1 = self.fs.join(long_path, 'foo')
         file2 = self.fs.join(long_path, 'bar')
@@ -371,8 +390,9 @@ class RealFileSystemTest(unittest.TestCase, GenericFileSystemTests):
 
         # On Windows, rmtree can handle trees containing long paths as long as
         # the root is not a long path.
-        long_path1 = self.fs.join(self.generic_test_dir, 'a' * 100,
-                                  'b' * 100 + " 'b")
+        long_path1 = self.fs.join(
+            self.generic_test_dir, 'a' * 100, 'b' * 100 + " 'b"
+        )
         long_path2 = self.fs.join(long_path1, 'c' * 100)
         self.fs.maybe_make_directory(long_path2)
         file1 = self.fs.join(long_path2, 'foo')
@@ -383,3 +403,43 @@ class RealFileSystemTest(unittest.TestCase, GenericFileSystemTests):
         else:
             self.fs.rmtree(long_path2, ignore_errors=False)
         self.fs.rmtree(long_path1, ignore_errors=False)
+
+    def test_lock_file_across_processes_and_crash_release(self):
+        lock_path = self.fs.join(self.generic_test_dir, 'cross_proc.lock')
+        blink_tools_dir = os.path.abspath(
+            os.path.join(self._this_dir, '..', '..', '..')
+        )
+        script = (
+            'import sys; '
+            'sys.path.insert(0, %r); '
+            'from blinkpy.common.system.filesystem import FileSystem; '
+            'fs = FileSystem();\n'
+            'with fs.lock_file(%r):\n'
+            '    sys.stdout.write("LOCKED\\n"); sys.stdout.flush();\n'
+            '    sys.stdin.readline()\n'
+        ) % (blink_tools_dir, lock_path)
+        proc = subprocess.Popen(
+            [sys.executable, '-c', script],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            self.assertEqual(proc.stdout.readline().strip(), 'LOCKED')
+            with self.assertRaises(FileLockError):
+                with self.fs.lock_file(lock_path):
+                    pass
+
+            # Abruptly killing the holder must immediately release the OS lock.
+            proc.kill()
+            proc.wait(timeout=5)
+            with self.fs.lock_file(lock_path):
+                pass
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=5)
+            for pipe in (proc.stdin, proc.stdout, proc.stderr):
+                if pipe:
+                    pipe.close()

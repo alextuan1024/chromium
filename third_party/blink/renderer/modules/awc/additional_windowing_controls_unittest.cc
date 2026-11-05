@@ -314,24 +314,6 @@ TEST_P(AdditionalWindowingControlsTest, RejectsInIframe) {
             "API is only supported in primary top-level browsing contexts.");
 }
 
-TEST_P(AdditionalWindowingControlsTest, RejectsInFencedFrame) {
-  GetDocument().GetPage()->SetIsMainFrameFencedFrameRoot();
-
-  ASSERT_TRUE(GetDocument().GetFrame()->IsMainFrame());
-  ASSERT_FALSE(GetDocument().GetFrame()->IsOutermostMainFrame());
-
-  ScriptState::Scope scope(GetScriptState());
-  DummyExceptionStateForTesting exception_state;
-
-  RunAwcApiCall(GetScriptState(), GetWindow(), exception_state);
-
-  EXPECT_TRUE(exception_state.HadException());
-  EXPECT_EQ(exception_state.CodeAs<DOMExceptionCode>(),
-            DOMExceptionCode::kInvalidStateError);
-  EXPECT_EQ(exception_state.Message(),
-            "API is only supported in primary top-level browsing contexts.");
-}
-
 TEST_P(AdditionalWindowingControlsTest, RejectsIfNotInWebAppScope) {
   ScriptState::Scope scope(GetScriptState());
   DummyExceptionStateForTesting exception_state;
@@ -514,8 +496,10 @@ class AdditionalWindowingControlsExecutionTest
  protected:
   void SetUp() override {
     mock_chrome_client_ = MakeGarbageCollected<MockChromeClient>();
-    page_holder_ = std::make_unique<DummyPageHolder>(gfx::Size(800, 600),
-                                                     mock_chrome_client_);
+    // Commit a navigation so the window has a tuple (non-opaque) origin;
+    // opaque-origin windows are never isolated contexts.
+    page_holder_ = DummyPageHolder::CreateAndCommitNavigation(
+        KURL("https://example.com"), gfx::Size(800, 600), mock_chrome_client_);
 
     if (GetParam().initial_state.has_value()) {
       if (auto* widget = page_holder_->GetFrame().GetWidgetForLocalRoot()) {

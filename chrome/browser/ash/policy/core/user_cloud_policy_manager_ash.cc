@@ -4,6 +4,7 @@
 
 #include "chrome/browser/ash/policy/core/user_cloud_policy_manager_ash.h"
 
+#include <functional>
 #include <memory>
 #include <set>
 #include <utility>
@@ -35,17 +36,12 @@
 #include "chrome/browser/ash/policy/skyvault/local_files_cleanup.h"
 #include "chrome/browser/enterprise/reporting/report_scheduler_desktop.h"
 #include "chrome/browser/enterprise/reporting/reporting_delegate_factory_desktop.h"
-#include "chrome/browser/enterprise/reporting/saas_usage/saas_usage_reporting_delegate_factory_impl.h"
 #include "chrome/browser/invalidation/profile_invalidation_provider_factory.h"
-#include "chrome/browser/net/system_network_context_manager.h"
 #include "chrome/browser/policy/cloud/user_fm_registration_token_uploader_factory.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/common/chrome_content_client.h"
 #include "components/enterprise/browser/reporting/real_time_report_controller.h"
 #include "components/enterprise/browser/reporting/report_generator.h"
 #include "components/enterprise/browser/reporting/report_scheduler.h"
-#include "components/enterprise/browser/reporting/reporting_features.h"
-#include "components/enterprise/browser/reporting/saas_usage/saas_usage_report_scheduler.h"
 #include "components/invalidation/invalidation_listener.h"
 #include "components/invalidation/profile_invalidation_provider.h"
 #include "components/keyed_service/content/browser_context_keyed_service_shutdown_notifier_factory.h"
@@ -220,7 +216,9 @@ void UserCloudPolicyManagerAsh::ConnectManagementService(
   std::unique_ptr<CloudPolicyClient> cloud_policy_client =
       std::make_unique<CloudPolicyClient>(
           device_management_service, shared_url_loader_factory_,
-          ash::GetDeviceDMTokenForUserPolicyGetter(account_id_));
+          base::BindRepeating(&ash::GetDeviceDMTokenIfAffiliated,
+                              std::cref(browser_policy_connector_ash_.get()),
+                              account_id_));
   CreateComponentCloudPolicyService(
       dm_protocol::kChromeExtensionPolicyType, component_policy_cache_path_,
       cloud_policy_client.get(), schema_registry());
@@ -339,7 +337,6 @@ void UserCloudPolicyManagerAsh::Shutdown() {
   local_files_cleanup_.reset();
 
   report_scheduler_.reset();
-  saas_usage_report_scheduler_.reset();
   observed_cloud_policy_client_.Reset();
   observed_cloud_policy_service_.Reset();
   token_fetcher_.reset();
@@ -498,10 +495,9 @@ void UserCloudPolicyManagerAsh::OnUserProfileLoaded(
 
 void UserCloudPolicyManagerAsh::OnStoreLoaded(
     CloudPolicyStore* cloud_policy_store) {
-  CloudPolicyManager::OnStoreLoaded(cloud_policy_store);
-
   if (cloud_policy_store == extension_install_store()) {
     // Extension Install policies do not affect affiliation.
+    CloudPolicyManager::OnStoreLoaded(cloud_policy_store);
     return;
   }
 
@@ -529,6 +525,13 @@ void UserCloudPolicyManagerAsh::OnStoreLoaded(
 
   user_manager::UserManager::Get()->SetUserPolicyStatus(account_id_, is_managed,
                                                         is_affiliated);
+
+  // Publish the policy only now that the User carries its policy status. The
+  // first publish completes the profile's PolicyService and with it the
+  // profile prefs, and in some login flows the rest of the profile
+  // initialization then runs synchronously from here, so code in it that
+  // reads user_manager::User::is_managed() must already see the loaded state.
+  CloudPolicyManager::OnStoreLoaded(cloud_policy_store);
 }
 
 void UserCloudPolicyManagerAsh::SetPolicyRequired(bool policy_required) {
@@ -767,14 +770,6 @@ void UserCloudPolicyManagerAsh::StartReportSchedulerIfReady(
 
   report_scheduler_ = std::make_unique<enterprise_reporting::ReportScheduler>(
       std::move(params));
-
-  if (base::FeatureList::IsEnabled(enterprise_reporting::kSaasUsageReporting)) {
-    auto saas_usage_reporting_delegate_factory = enterprise_reporting::
-        SaasUsageReportingDelegateFactoryImpl::CreateForProfile(profile_);
-    saas_usage_report_scheduler_ =
-        enterprise_reporting::SaasUsageReportScheduler::Create(
-            "profile", saas_usage_reporting_delegate_factory.get());
-  }
 
   report_scheduler_->OnDMTokenUpdated();
 }

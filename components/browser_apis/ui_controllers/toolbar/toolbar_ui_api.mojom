@@ -4,6 +4,7 @@
 
 module toolbar_ui_api.mojom;
 
+import "components/browser_apis/ui_controllers/toolbar/extensions_bar_data_model.mojom";
 import "components/browser_apis/ui_controllers/toolbar/toolbar_ui_api_data_model.mojom";
 import "components/browser_apis/ui_controllers/toolbar/icon_handle.mojom";
 import "components/content_settings/core/common/content_settings_types.mojom";
@@ -16,28 +17,31 @@ import "mojo/public/mojom/base/error.mojom";
 import "mojo/public/mojom/base/string16.mojom";
 import "url/mojom/url.mojom";
 
-// Used by Toolbar UI to observe navigation controls state changes.
+// Used by Toolbar UI to observe toolbar state changes.
 interface ToolbarUIObserver {
-  // Observes events for navigation controls (e.g. back, forward, reload
-  // buttons). |state| contains the state for all navigation controls
-  // so that they can update together to avoid visual flicker.
-  OnNavigationControlsStateChanged(
+  // Observes toolbar state changes. |state| contains the state for all
+  // toolbar controls (e.g. back, forward, reload buttons, location bar) so
+  // that they can update together to avoid visual flicker.
+  OnToolbarStateChanged(
     array<IconUpdate> icons,
-    NavigationControlsState state);
+    ToolbarState state);
 
   // Called to focus an element in the WebUI, with `target` specifying
   // which one.
   OnFocusRequested(FocusRequestTarget target);
 
   // Requests that JavaScript show the split tabs menu. Although the browser
-  // process is responsivle for showing the menu, only the WebUI can determine
+  // process is responsible for showing the menu, only the WebUI can determine
   // the button's location and ensure it's visible before anchoring.
   ShowSplitTabsContextMenu();
 };
 
+// Initial state returned by ToolbarUIService.GetInitialState(). Contains the
+// toolbar state snapshot and an observer update stream which the client can
+// subscribe to for all updates since the snapshot.
 struct InitialState {
     array<IconUpdate> icons;
-    NavigationControlsState state;
+    ToolbarState state;
     pending_receiver<ToolbarUIObserver> update_stream;
 };
 
@@ -69,10 +73,17 @@ struct OverflowMenuItem {
 // ToolbarUIService defines methods to be called from the WebUI to the
 // browser-side to drive UI logic.
 interface ToolbarUIService {
-  // Binds an observer to the service. This is a synchronization point between
-  // the client and the browser. All subsequent updates after the initial
-  // data will be associated receiver.
-  Bind() => result<InitialState, mojo_base.mojom.Error>;
+  // Returns a snapshot of the current toolbar state together with an update
+  // stream which the client can subscribe to for all updates since the
+  // snapshot.
+  //
+  // This is a synchronization point between the client and the browser:
+  // because `update_stream` arrives in the same response as the snapshot, and
+  // updates sent before the client binds it are queued in the pipe, the client
+  // never observes an update before the snapshot it follows. Each call creates
+  // a new update stream; not calling it only means the client receives neither
+  // the initial state nor any updates.
+  GetInitialState() => result<InitialState, mojo_base.mojom.Error>;
 
   // Displays the context menu with the provided menu type at the provided
   // bounding rectangle in CSS pixels relative to the WebUIToolbarWebView's
@@ -124,12 +135,6 @@ interface ToolbarUIService {
                             bool is_pointer_interaction)
       => result<mojo_base.mojom.Empty, mojo_base.mojom.Error>;
 
-  // Called when the content setting icon animation finishes.
-  OnContentSettingImageAnimationEnded(ContentSettingImageType type);
-
-  // Called when a page action chip is pressed (e.g. pointerdown).
-  OnPageActionPointerDown(PageActionId action_id);
-
   // Called after an interaction with the page action identified by `action_id`.
   // `trigger` specifies the input modality (mouse, keyboard, or gesture).
   OnPageActionClick(PageActionId action_id, PageActionTrigger trigger)
@@ -144,7 +149,7 @@ interface ToolbarUIService {
   // Invoke the pinned toolbar action for `action_id`. It's expected that the
   // corresponding pinned toolbar action button is visible and enabled, i.e.
   // `action_id` is one of the `PinnedToolbarActionState.action`'s that's
-  // passed to `OnNavigationControlsStateChanged()`.
+  // passed to `OnToolbarStateChanged()`.
   InvokePinnedToolbarAction(PinnedToolbarAction action_id);
 
   // Called when whether the focus is inside or outside the location bar is
@@ -204,23 +209,33 @@ interface ToolbarUIService {
   // Called when a drag gesture is detected on an LHS chip.
   OnLhsChipDrag(LhsChipIdentifier identifier, ui.mojom.DragEventSource source);
 
-  // Sets the home page to the currently dragged url, if any, and displays the
-  // home page undo bubble.
-  OnHomeButtonDropUrl(url.mojom.Url url);
+  // Called when a URL (`text/uri-list`) is dropped on the home button. Sets
+  // the home page to the URL the browser captured from the drag, if any, and
+  // displays the home page undo bubble.
+  OnHomeButtonDropUrl();
 
   // Sets the home page to the currently dragged file, if any, and displays the
   // home page undo bubble.
   OnHomeButtonDropFile(gfx.mojom.PointF drop_position);
 
+  // Called when plain text (`text/plain` without `text/uri-list`) is dropped
+  // on the home button.
+  OnHomeButtonDropText(string text);
+
+  // Called when a URL (`text/uri-list`) is dropped on the toolbar. Navigates
+  // the current tab to the URL the browser captured from the drag, if any.
+  OnToolbarDropUrl();
+
+  // Called when plain text (`text/plain` without `text/uri-list`) is dropped
+  // on the toolbar. Navigates the current tab to the query URL if `text` is a
+  // search query, or to `text` itself if it is a valid URL.
+  OnToolbarDropText(string text);
+
   // Navigates the current tab to the currently dragged file at `drop_position`.
   OnToolbarDropFile(gfx.mojom.PointF drop_position);
 
   // Shows the avatar menu bubble.
-  ShowAvatarMenu(bool is_pointer_interaction) =>
-      result<mojo_base.mojom.Empty, mojo_base.mojom.Error>;
-
-  // Notifies the browser that a mouse press occurred on the avatar button.
-  OnAvatarButtonMousePressed();
+  ShowAvatarMenu() => result<mojo_base.mojom.Empty, mojo_base.mojom.Error>;
 
   // Notifies the browser of the hover state of the avatar button.
   SetAvatarButtonHovered(bool hovered) =>
@@ -237,16 +252,14 @@ interface ToolbarUIService {
   // Called when the app menu button focus state changes.
   OnAppMenuFocusChanged(bool focused);
 
-  // Executes the user action for the extension with the given ID.
-  // `is_pointer_interaction` is true if the action was triggered by a pointer
-  // interaction (mouse, touch, etc.) rather than a keyboard interaction.
-  ExecuteExtensionAction(string extension_id, bool is_pointer_interaction);
+  // Executes the user action for the extensions toolbar button with the given
+  // ID.
+  ExecuteExtensionAction(extensions_bar.mojom.ExtensionActionId id);
 
-  // Called when an extension action button is pressed (e.g. pointerdown).
-  OnExtensionActionPointerDown(string extension_id);
-
-  // Displays the context menu for the extension with the given ID.
-  ShowExtensionContextMenu(string extension_id, ui.mojom.MenuSourceType source);
+  // Displays the context menu for the extensions toolbar button with the given
+  // ID.
+  ShowExtensionContextMenu(extensions_bar.mojom.ExtensionActionId id,
+                           ui.mojom.MenuSourceType source);
 
   // Adjusts the copied or dragged text and returns the adjusted text,
   // the adjusted URL, and whether a URL should be written to the payload.
@@ -254,16 +267,14 @@ interface ToolbarUIService {
       => result<AdjustOmniboxTextForCopyResult, mojo_base.mojom.Error>;
 
   // Called when the performance intervention button is clicked.
-  // `is_mouse_interaction` is true if the click was triggered by a mouse event.
-  OnPerformanceInterventionButtonClicked(bool is_mouse_interaction);
-
-  // Called when the performance intervention button is pressed
-  // (e.g. pointerdown).
-  OnPerformanceInterventionButtonMousePressed();
+  OnPerformanceInterventionButtonClicked();
 
   // Called when the media button is clicked.
-  OnMediaButtonClicked(bool is_mouse_interaction);
+  OnMediaButtonClicked();
 
-  // Called when the media button is pressed (e.g. pointerdown).
-  OnMediaButtonMousePressed();
+  // Called when the Glic button is clicked to toggle or open the Glic panel.
+  OnGlicButtonClicked();
+
+  // Called when the Glic actor task icon is clicked.
+  OnGlicActorTaskIconClicked();
 };

@@ -20,6 +20,7 @@
 #include "extensions/browser/extensions_browser_client.h"
 #include "extensions/browser/kiosk/kiosk_delegate.h"
 #include "extensions/buildflags/buildflags.h"
+#include "extensions/common/event_args.h"
 #include "extensions/common/extension_id.h"
 #include "extensions/common/mojom/view_type.mojom.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
@@ -116,6 +117,8 @@ class ChromeExtensionsBrowserClient : public ExtensionsBrowserClient {
   bool IsActiveContext(content::BrowserContext* browser_context) const override;
 #endif
   bool IsGuestSession(content::BrowserContext* context) const override;
+  bool IsolatedModeReplacesIncognito(
+      content::BrowserContext* context) const override;
   bool IsExtensionIncognitoEnabled(
       const ExtensionId& extension_id,
       content::BrowserContext* context) const override;
@@ -125,6 +128,7 @@ class ChromeExtensionsBrowserClient : public ExtensionsBrowserClient {
   bool CanExtensionCrossIncognito(
       const Extension* extension,
       content::BrowserContext* context) const override;
+  BrowserContextLifetimeTracker* GetBrowserContextLifetimeTracker() override;
   base::FilePath GetBundleResourcePath(
       const network::ResourceRequest& request,
       const base::FilePath& extension_resources_path,
@@ -176,7 +180,7 @@ class ChromeExtensionsBrowserClient : public ExtensionsBrowserClient {
   void BroadcastEventToRenderers(
       events::HistogramValue histogram_value,
       const std::string& event_name,
-      base::ListValue args,
+      scoped_refptr<const EventArgs> args,
       bool dispatch_to_off_the_record_profiles) override;
   ExtensionCache* GetExtensionCache() override;
   bool IsBackgroundUpdateAllowed() override;
@@ -344,6 +348,8 @@ class ChromeExtensionsBrowserClient : public ExtensionsBrowserClient {
   gfx::NativeWindow GetNativeWindowForFunction(
       ExtensionFunction& function) override;
   bool IsLazyKeyedServiceInstantiationEnabled() const override;
+  bool IsLazySocketAndUsbKeyedServiceInstantiationEnabled() const override;
+  bool IsLazyChromeOSResourceKeyedServiceInstantiationEnabled() const override;
 
   void SetAPIClientForTest(std::unique_ptr<ExtensionsAPIClient> client);
 

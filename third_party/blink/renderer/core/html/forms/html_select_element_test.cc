@@ -252,6 +252,36 @@ TEST_F(HTMLSelectElementTest,
   EXPECT_EQ(initial_client_width, select->clientWidth());
 }
 
+TEST_F(HTMLSelectElementTest,
+       OptionRemovalClearsSuggestedOptionUnconditionally) {
+  SetHtmlInnerHTML(R"HTML(
+    <!DOCTYPE HTML>
+    <select id='sel' size='4'>
+      <option id='o0' value='v0'>o0</option>
+      <option id='o1' value='v1'>o1</option>
+      <option id='o2' value='v2'>o2</option>
+    </select>
+  )HTML");
+  test::RunPendingTasks();
+  UpdateAllLifecyclePhasesForTest();
+
+  auto* select = To<HTMLSelectElement>(GetElementById("sel"));
+  auto* opt0 = To<HTMLOptionElement>(GetElementById("o0"));
+
+  select->SetSuggestedValue("v2");
+  ASSERT_TRUE(select->IsPreviewed());
+  EXPECT_EQ("v2", select->SuggestedValue());
+  EXPECT_TRUE(select->matches(AtomicString(":autofill"), ASSERT_NO_EXCEPTION));
+
+  // Removing a non-previewed option must still tear down the autofill preview
+  // so that page scripts cannot probe which option is previewed by removing
+  // options one by one and observing when :autofill stops matching.
+  opt0->remove();
+  EXPECT_FALSE(select->IsPreviewed());
+  EXPECT_EQ("", select->SuggestedValue());
+  EXPECT_FALSE(select->matches(AtomicString(":autofill"), ASSERT_NO_EXCEPTION));
+}
+
 TEST_F(HTMLSelectElementTest, SaveRestoreSelectSingleFormControlState) {
   SetHtmlInnerHTML(
       "<!DOCTYPE HTML><select id='sel'>"
@@ -372,6 +402,36 @@ TEST_F(HTMLSelectElementTest, PopupIsVisible) {
   EXPECT_TRUE(select->PopupIsVisible());
   GetDocument().Shutdown();
   EXPECT_FALSE(select->PopupIsVisible());
+}
+
+// crbug.com/40774159: while the native popup is showing, hover updates on
+// the owner document must not clear the select's :hover state. Otherwise the
+// hover style flickers depending on whether the mouse re-enters the popup
+// window or the owner window.
+TEST_F(HTMLSelectElementTest, KeepsHoverWhileNativePopupIsVisible) {
+  SetHtmlInnerHTML("<select><option>o1</option></select>");
+  auto* select = To<HTMLSelectElement>(GetDocument().body()->firstChild());
+  ASSERT_NE(select, nullptr);
+
+  // Simulate the mouse hovering the select.
+  GetDocument().UpdateHoverActiveState(/*is_active=*/false,
+                                       /*update_active_chain=*/true, select);
+  EXPECT_TRUE(select->IsHovered());
+
+  select->ShowPopup();
+  ASSERT_TRUE(select->PopupIsVisible());
+
+  // The mouse moves off the select (over the owner window next to the popup).
+  GetDocument().UpdateHoverActiveState(/*is_active=*/false,
+                                       /*update_active_chain=*/true,
+                                       GetDocument().body());
+  EXPECT_TRUE(select->IsHovered());
+
+  // Once the popup hides, the hover state re-syncs with the document's hover
+  // chain, which no longer contains the select.
+  select->PopupDidHide();
+  EXPECT_FALSE(select->PopupIsVisible());
+  EXPECT_FALSE(select->IsHovered());
 }
 
 TEST_F(HTMLSelectElementTest, FirstSelectableOption) {
@@ -840,9 +900,9 @@ TEST_F(HTMLSelectElementTest, ChangeRenderingCrash3) {
     <div id="green">Green</div>
   )HTML");
 
-  auto* host = GetDocument().getElementById(AtomicString("host"));
-  auto* select = GetDocument().getElementById(AtomicString("select"));
-  auto* green = GetDocument().getElementById(AtomicString("green"));
+  auto* host = GetElementById("host");
+  auto* select = GetElementById("select");
+  auto* green = GetElementById("green");
 
   // Make sure the select is outside the flat tree.
   host->AttachShadowRootForTesting(ShadowRootMode::kOpen);
@@ -937,6 +997,8 @@ TEST_F(HTMLSelectElementTest, DialogModeDefault) {
 
   auto* select = To<HTMLSelectElement>(GetElementById("target"));
   ASSERT_FALSE(select->IsInDialogMode());
+  EXPECT_FALSE(GetDocument().IsUseCounted(
+      WebFeature::kCustomizableSelectBadContentModel));
 }
 
 TEST_F(HTMLSelectElementTest, DialogModeBaseSelectDefault) {
@@ -953,6 +1015,8 @@ TEST_F(HTMLSelectElementTest, DialogModeBaseSelectDefault) {
 
   auto* select = To<HTMLSelectElement>(GetElementById("target"));
   ASSERT_FALSE(select->IsInDialogMode());
+  EXPECT_FALSE(GetDocument().IsUseCounted(
+      WebFeature::kCustomizableSelectBadContentModel));
 }
 
 TEST_F(HTMLSelectElementTest, DialogModeBaseSelectAllowedDescendant) {
@@ -971,6 +1035,8 @@ TEST_F(HTMLSelectElementTest, DialogModeBaseSelectAllowedDescendant) {
 
   auto* select = To<HTMLSelectElement>(GetElementById("target"));
   ASSERT_FALSE(select->IsInDialogMode());
+  EXPECT_FALSE(GetDocument().IsUseCounted(
+      WebFeature::kCustomizableSelectBadContentModel));
 }
 
 TEST_F(HTMLSelectElementTest, DialogModeBaseSelectButtonDescendant) {
@@ -989,6 +1055,8 @@ TEST_F(HTMLSelectElementTest, DialogModeBaseSelectButtonDescendant) {
 
   auto* select = To<HTMLSelectElement>(GetElementById("target"));
   ASSERT_FALSE(select->IsInDialogMode());
+  EXPECT_FALSE(GetDocument().IsUseCounted(
+      WebFeature::kCustomizableSelectBadContentModel));
 }
 
 TEST_F(HTMLSelectElementTest, DialogModeBaseSelectButtonAndOption) {
@@ -1008,6 +1076,8 @@ TEST_F(HTMLSelectElementTest, DialogModeBaseSelectButtonAndOption) {
 
   auto* select = To<HTMLSelectElement>(GetElementById("target"));
   ASSERT_FALSE(select->IsInDialogMode());
+  EXPECT_FALSE(GetDocument().IsUseCounted(
+      WebFeature::kCustomizableSelectBadContentModel));
 }
 
 TEST_F(HTMLSelectElementTest, DialogModeBaseSelectDisallowedButton) {
@@ -1027,6 +1097,8 @@ TEST_F(HTMLSelectElementTest, DialogModeBaseSelectDisallowedButton) {
 
   auto* select = To<HTMLSelectElement>(GetElementById("target"));
   ASSERT_TRUE(select->IsInDialogMode());
+  EXPECT_TRUE(GetDocument().IsUseCounted(
+      WebFeature::kCustomizableSelectBadContentModel));
 }
 
 TEST_F(HTMLSelectElementTest,
@@ -1048,6 +1120,8 @@ TEST_F(HTMLSelectElementTest,
 
   auto* select = To<HTMLSelectElement>(GetElementById("target"));
   ASSERT_TRUE(select->IsInDialogMode());
+  EXPECT_TRUE(GetDocument().IsUseCounted(
+      WebFeature::kCustomizableSelectBadContentModel));
 }
 
 TEST_F(HTMLSelectElementTest, DialogModeBaseSelectDisallowedTabIndexElement) {
@@ -1068,6 +1142,8 @@ TEST_F(HTMLSelectElementTest, DialogModeBaseSelectDisallowedTabIndexElement) {
 
   auto* select = To<HTMLSelectElement>(GetElementById("target"));
   ASSERT_TRUE(select->IsInDialogMode());
+  EXPECT_TRUE(GetDocument().IsUseCounted(
+      WebFeature::kCustomizableSelectBadContentModel));
 }
 
 TEST_F(HTMLSelectElementTest,
@@ -1089,6 +1165,8 @@ TEST_F(HTMLSelectElementTest,
 
   auto* select = To<HTMLSelectElement>(GetElementById("target"));
   ASSERT_TRUE(select->IsInDialogMode());
+  EXPECT_TRUE(GetDocument().IsUseCounted(
+      WebFeature::kCustomizableSelectBadContentModel));
 }
 
 TEST_F(HTMLSelectElementTest,
@@ -1108,6 +1186,8 @@ TEST_F(HTMLSelectElementTest,
 
   auto* select = To<HTMLSelectElement>(GetElementById("target"));
   ASSERT_TRUE(select->IsInDialogMode());
+  EXPECT_TRUE(GetDocument().IsUseCounted(
+      WebFeature::kCustomizableSelectBadContentModel));
 }
 
 namespace {
@@ -1446,8 +1526,7 @@ TEST_F(HTMLSelectElementSimTest, DialogModeBaseSelectAddAllowedButton) {
   test::RunPendingTasks();
   Compositor().BeginFrame();
 
-  auto* select = To<HTMLSelectElement>(
-      GetDocument().getElementById(AtomicString("target")));
+  auto* select = To<HTMLSelectElement>(GetElementById("target"));
   ASSERT_FALSE(select->IsInDialogMode());
 
   auto* button = MakeGarbageCollected<HTMLButtonElement>(GetDocument());
@@ -1483,11 +1562,10 @@ TEST_F(HTMLSelectElementSimTest, DialogModeBaseSelectRemoveDisallowedButton) {
   test::RunPendingTasks();
   Compositor().BeginFrame();
 
-  auto* select = To<HTMLSelectElement>(
-      GetDocument().getElementById(AtomicString("target")));
+  auto* select = To<HTMLSelectElement>(GetElementById("target"));
   ASSERT_TRUE(select->IsInDialogMode());
 
-  auto* button = GetDocument().getElementById(AtomicString("target-button"));
+  auto* button = GetElementById("target-button");
   select->removeChild(button);
 
   test::RunPendingTasks();
@@ -1516,15 +1594,13 @@ TEST_F(HTMLSelectElementSimTest, DialogModeBaseSelectNestedButton) {
   test::RunPendingTasks();
   Compositor().BeginFrame();
 
-  auto* select = To<HTMLSelectElement>(
-      GetDocument().getElementById(AtomicString("target")));
+  auto* select = To<HTMLSelectElement>(GetElementById("target"));
   ASSERT_FALSE(select->IsInDialogMode());
 
   auto* div = MakeGarbageCollected<HTMLDivElement>(GetDocument());
   auto* first_button = MakeGarbageCollected<HTMLButtonElement>(GetDocument());
   auto* second_button = MakeGarbageCollected<HTMLButtonElement>(GetDocument());
-  auto* option = To<HTMLOptionElement>(
-      GetDocument().getElementById(AtomicString("option")));
+  auto* option = To<HTMLOptionElement>(GetElementById("option"));
 
   div->appendChild(first_button);
   option->appendChild(div);
@@ -1553,8 +1629,7 @@ TEST_F(HTMLSelectElementTest,
       <option>one</option>
     </select>
   )HTML");
-  auto* select = To<HTMLSelectElement>(
-      GetDocument().getElementById(AtomicString("select")));
+  auto* select = To<HTMLSelectElement>(GetElementById("select"));
   GetDocument().UpdateStyleAndLayout(DocumentUpdateReason::kTest);
   ASSERT_TRUE(HasDescendantsObserver(*select));
 
@@ -1643,6 +1718,52 @@ TEST_F(HTMLSelectElementTest, SelectedcontentClonesFromUnownedOption) {
   // Cloning directly from the now-unowned option must not crash.
   selectedcontent->CloneContentsFromOptionElement(option);
   EXPECT_EQ(selectedcontent->textContent(), "Second");
+}
+
+TEST_F(HTMLSelectElementTest, SetSelectedForBindingNoOpPreservesAutofillState) {
+  SetHtmlInnerHTML(R"HTML(
+    <select id=menulist>
+      <button><selectedcontent id=sc></selectedcontent></button>
+      <option id=o1 value=first>First</option>
+      <option id=o2 value=second>Second</option>
+    </select>
+    <select id=listbox size=2>
+      <option id=l1 value=first>First</option>
+      <option id=l2 value=second>Second</option>
+    </select>
+  )HTML");
+  auto* menulist = To<HTMLSelectElement>(GetElementById("menulist"));
+  auto* selectedcontent = To<HTMLSelectedContentElement>(GetElementById("sc"));
+  auto* option1 = To<HTMLOptionElement>(GetElementById("o1"));
+  auto* option2 = To<HTMLOptionElement>(GetElementById("o2"));
+
+  menulist->SetAutofillOption(option2, WebAutofillState::kAutofilled);
+  ASSERT_EQ(menulist->SelectedOption(), option2);
+  ASSERT_TRUE(menulist->IsAutofilled());
+  EXPECT_EQ(selectedcontent->textContent(), "Second");
+
+  // Setting selected=false on an already-unselected option or selected=true on
+  // the already-selected option must preserve the autofilled state and not
+  // update <selectedcontent>.
+  option1->setSelectedForBinding(false);
+  EXPECT_TRUE(menulist->IsAutofilled());
+  option2->setTextContent("Second modified");
+  option2->setSelectedForBinding(true);
+  EXPECT_TRUE(menulist->IsAutofilled());
+  EXPECT_EQ(selectedcontent->textContent(), "Second");
+
+  auto* listbox = To<HTMLSelectElement>(GetElementById("listbox"));
+  auto* listbox_option1 = To<HTMLOptionElement>(GetElementById("l1"));
+  auto* listbox_option2 = To<HTMLOptionElement>(GetElementById("l2"));
+
+  listbox->SetAutofillOption(listbox_option2, WebAutofillState::kAutofilled);
+  ASSERT_EQ(listbox->SelectedOption(), listbox_option2);
+  ASSERT_TRUE(listbox->IsAutofilled());
+
+  listbox_option1->setSelectedForBinding(false);
+  EXPECT_TRUE(listbox->IsAutofilled());
+  listbox_option2->setSelectedForBinding(true);
+  EXPECT_TRUE(listbox->IsAutofilled());
 }
 
 }  // namespace blink

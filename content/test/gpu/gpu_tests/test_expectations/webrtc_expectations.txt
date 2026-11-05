@@ -61,7 +61,12 @@
 #         angle-swiftshader
 #         angle-vulkan ]
 # Skia Renderer
-# tags: [ renderer-skia-gl
+# tags: [ renderer-graphite-dawn-d3d11
+#         renderer-graphite-dawn-d3d12
+#         renderer-graphite-dawn-gl
+#         renderer-graphite-dawn-metal
+#         renderer-graphite-dawn-vulkan
+#         renderer-skia-gl
 #         renderer-skia-vulkan
 #         renderer-software ]
 # Driver
@@ -90,6 +95,8 @@
 #         webgpu-shared-worker ]
 # WebGPU Compat context
 # tags: [ compat-default compat-min-es31 ]
+# WebGPU default features
+# tags: [ unsafe-webgpu-disabled unsafe-webgpu-enabled ]
 # Clang coverage
 # tags: [ clang-coverage no-clang-coverage ]
 # Skia Graphite
@@ -156,6 +163,8 @@ crbug.com/525087041 [ mac intel-0x3e9b ] WebRTC_Hardware_Encode_Loopback_H265 [ 
 crbug.com/542268655 [ linux amd-0x7480 ] WebRTC_Hardware_Decode_Loopback_AV1 [ Failure ]
 crbug.com/542268655 [ linux amd-0x7480 ] WebRTC_Hardware_Decode_Loopback_H264 [ Failure ]
 crbug.com/542268655 [ linux amd-0x7480 ] WebRTC_Hardware_Decode_Loopback_VP9 [ Failure ]
+
+crbug.com/567498726 [ mac asan apple-angle-metal-renderer:-apple-m2 ] WebRTC_Hardware_Decode_Loopback_H265 [ Failure ]
 
 #######################################################################
 # Automated Entries After This Point - Do Not Manually Add Below Here #

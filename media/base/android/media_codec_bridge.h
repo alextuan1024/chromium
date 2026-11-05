@@ -92,7 +92,7 @@ enum MediaCodecStatus {
 
   MEDIA_CODEC_MAX = MEDIA_CODEC_STORAGE_WRITE,
 };
-// LINT.ThenChange(tools/metrics/histograms/metadata/media/enums.xml:MediaCodecError)
+// LINT.ThenChange(//tools/metrics/histograms/metadata/media/enums.xml:MediaCodecError)
 
 struct MediaCodecResultTraits {
   enum class Codes : StatusCodeType {
@@ -222,10 +222,6 @@ class MEDIA_EXPORT MediaCodecBridge {
   // Changes the output surface for the MediaCodec. May only be used on API
   // level 23 and higher (Marshmallow).
   virtual bool SetSurface(const base::android::JavaRef<jobject>& surface) = 0;
-
-  // When the MediaCodec has been configured in async mode, this is called when
-  // input or output buffers are available.
-  virtual void OnBuffersAvailable(JNIEnv* env) = 0;
 
   // Returns the CodecType this codec was created with.
   virtual CodecType GetCodecType() const = 0;

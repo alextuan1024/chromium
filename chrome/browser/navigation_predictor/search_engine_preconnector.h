@@ -12,6 +12,7 @@
 #include "base/numerics/clamped_math.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/timer/timer.h"
+#include "chrome/browser/navigation_predictor/search_engine_dictionary_prewarmer.h"
 #include "components/keyed_service/core/keyed_service.h"
 #include "content/public/browser/preconnect_manager.h"
 #include "mojo/public/cpp/bindings/receiver.h"
@@ -173,7 +174,37 @@ class SearchEnginePreconnector
   bool HasDeviceBoundSessionPrewarmerForTesting() const {
     return !!device_bound_session_prewarmer_;
   }
+
+  GURL GetDeviceBoundSessionPrewarmerUrlForTesting() const {
+    return device_bound_session_prewarmer_
+               ? device_bound_session_prewarmer_->prewarm_url()
+               : GURL();
+  }
 #endif
+
+  using SearchEnginePrewarmDictionaryEvent =
+      SearchEngineDictionaryPrewarmer::SearchEnginePrewarmDictionaryEvent;
+
+  bool HasPrewarmedDictionaryForTesting() const {
+    return dictionary_prewarmer_ &&
+           dictionary_prewarmer_->HasPrewarmedDictionaryForTesting();
+  }
+
+  bool IsPrewarmedDictionaryTimerRunningForTesting() const {
+    return dictionary_prewarmer_ &&
+           dictionary_prewarmer_->IsTimerRunningForTesting();
+  }
+
+  GURL GetPrewarmedDictionaryURLForTesting() const {
+    return dictionary_prewarmer_ ? dictionary_prewarmer_->prewarm_url()
+                                 : GURL();
+  }
+
+  void SimulatePrewarmedDictionaryDisconnectedForTesting() {
+    if (dictionary_prewarmer_) {
+      dictionary_prewarmer_->SimulateDisconnectForTesting();
+    }
+  }
 
  private:
   FRIEND_TEST_ALL_PREFIXES(
@@ -210,6 +241,19 @@ class SearchEnginePreconnector
   // Preconnects to the default search engine synchronously. Preconnects in
   // uncredentialed mode.
   void PreconnectDSE(bool is_startup);
+
+#if BUILDFLAG(ENABLE_DEVICE_BOUND_SESSIONS)
+  // Creates and starts `device_bound_session_prewarmer_` for `prewarm_url` if
+  // the DSE prewarmer feature is enabled and `prewarm_url` is a valid HTTPS
+  // URL. An existing prewarmer for the same URL is kept as is. Returns true if
+  // a prewarmer for `prewarm_url` exists after the call.
+  bool MaybeCreateDeviceBoundSessionPrewarmer(const GURL& prewarm_url,
+                                              bool is_startup);
+
+  // Creates the prewarmer for the current DSE if the prewarmer mode is sticky
+  // and, depending on the mode, the user settings allow it.
+  void MaybeCreateStickyDeviceBoundSessionPrewarmer(bool is_startup);
+#endif
 
   // Runs `PreconnectDSE` after the `delay`.
   void StartPreconnectWithDelay(base::TimeDelta delay,
@@ -272,6 +316,13 @@ class SearchEnginePreconnector
 #if BUILDFLAG(ENABLE_DEVICE_BOUND_SESSIONS)
   std::unique_ptr<DeviceBoundSessionPrewarmer> device_bound_session_prewarmer_;
 #endif
+
+  // Prewarms compression dictionary metadata for `url` via
+  // SearchEngineDictionaryPrewarmer. Returns true if prewarming was initiated
+  // or refreshed.
+  bool MaybePrewarmDictionary(const GURL& url);
+
+  std::unique_ptr<SearchEngineDictionaryPrewarmer> dictionary_prewarmer_;
 
   base::WeakPtrFactory<SearchEnginePreconnector> weak_factory_{this};
 };

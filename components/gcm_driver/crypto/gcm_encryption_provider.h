@@ -21,9 +21,12 @@ class FilePath;
 class SequencedTaskRunner;
 }  // namespace base
 
+namespace fcm {
+enum class FcmDecryptionResult;
+}  // namespace fcm
+
 namespace gcm {
 
-enum class GCMDecryptionResult;
 enum class GCMEncryptionResult;
 class GCMKeyStore;
 struct IncomingMessage;
@@ -40,7 +43,7 @@ class GCMEncryptionProvider {
   // by the |result|. The |message| contains the dispatchable message in success
   // cases, or will be initialized to an empty, default state for failure.
   using DecryptMessageCallback =
-      base::OnceCallback<void(GCMDecryptionResult result,
+      base::OnceCallback<void(fcm::FcmDecryptionResult result,
                               IncomingMessage message)>;
 
   // Callback to be invoked when a message may have been encrypted, as indicated
@@ -76,10 +79,11 @@ class GCMEncryptionProvider {
                          const std::string& authorized_entity,
                          EncryptionInfoCallback callback);
 
-  // Removes all encryption information associated with the |app_id| +
-  // |authorized_entity| pair, then invokes |callback|. |authorized_entity|
-  // should be the InstanceID token's authorized entity, or "*" to remove for
-  // all InstanceID tokens, or "" for non-InstanceID GCM registrations.
+  // Removes all encryption information associated with the `app_id` +
+  // `authorized_entity` pair, then invokes `callback`. `authorized_entity`
+  // should be the InstanceID token's authorized entity, or "" for
+  // non-InstanceID GCM registrations, or "*" to remove the encryption
+  // information for all authorized entities of the `app_id`, including "".
   void RemoveEncryptionInfo(const std::string& app_id,
                             const std::string& authorized_entity,
                             base::OnceClosure callback);
@@ -135,9 +139,7 @@ class GCMEncryptionProvider {
                              std::optional<crypto::keypair::PrivateKey> key,
                              const std::string& auth_secret);
 
-  void EncryptMessageWithKey(const std::string& app_id,
-                             const std::string& authorized_entity,
-                             const std::string& p256dh,
+  void EncryptMessageWithKey(const std::string& p256dh,
                              const std::string& auth_secret,
                              const std::string& message,
                              EncryptMessageCallback callback,

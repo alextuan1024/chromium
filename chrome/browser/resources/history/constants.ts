@@ -33,7 +33,6 @@ export enum SyncState {
 }
 // LINT.ThenChange(/chrome/browser/ui/webui/history/history_identity_state_watcher.h:HistoryIdentityState.SyncState)
 
-
 /**
  * Histogram buckets for UMA tracking of which view is being shown to the user.
  * Keep this in sync with the HistoryPageView enum in histograms.xml.
@@ -71,7 +70,8 @@ export enum SyncedTabsHistogram {
   HAS_FOREIGN_DATA = 9,
   HIDE_FOR_NOW = 10,
   OPENED_LINK_VIA_CONTEXT_MENU = 11,
-  LIMIT = 12  // Should always be the last one.
+  OPEN_WINDOW = 12,
+  LIMIT = 13  // Should always be the last one.
 }
 
 /**

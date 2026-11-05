@@ -61,7 +61,7 @@ class CORE_EXPORT LayoutReplaced : public LayoutBox {
   // or underflow the final content box by 1px.
   static PhysicalRect PreSnappedRectForPersistentSizing(const PhysicalRect&);
 
-  void RecalcVisualOverflow() override;
+  void RecalcVisualOverflow() final;
 
   // These values are specified to be 300 and 150 pixels in the CSS 2.1 spec.
   // http://www.w3.org/TR/CSS2/visudet.html#inline-replaced-width
@@ -81,12 +81,6 @@ class CORE_EXPORT LayoutReplaced : public LayoutBox {
   }
 
   PhysicalRect LocalSelectionVisualRect() const final;
-
-  bool HasObjectFit() const {
-    NOT_DESTROYED();
-    return StyleRef().GetObjectFit() !=
-           ComputedStyleInitialValues::InitialObjectFit();
-  }
 
   bool NodeAtPoint(HitTestResult&,
                    const HitTestLocation&,
@@ -116,11 +110,16 @@ class CORE_EXPORT LayoutReplaced : public LayoutBox {
   // properties like 'zoom' or 'image-orientation'.
   virtual void NaturalSizeChanged();
 
-  bool RespectsCSSOverflow() const override;
+  bool RespectsCSSOverflow() const override {
+    NOT_DESTROYED();
+    return true;
+  }
 
   // Returns true if the content is guarenteed to be clipped to the element's
   // content box.
   bool ClipsToContentBox() const;
+
+  virtual PhysicalRect ComputeContentsVisualOverflow() const;
 
  protected:
   virtual bool ShouldApplyObjectViewBox() const {
@@ -138,12 +137,10 @@ class CORE_EXPORT LayoutReplaced : public LayoutBox {
 
   bool IsInSelfHitTestingPhase(HitTestPhase phase) const override {
     NOT_DESTROYED();
-    if (LayoutBox::IsInSelfHitTestingPhase(phase))
+    if (LayoutBox::IsInSelfHitTestingPhase(phase)) {
       return true;
-
-    auto* element = DynamicTo<Element>(GetNode());
-    return element && element->IsReplacedElementRespectingCSSOverflow() &&
-           phase == HitTestPhase::kSelfBlockBackground;
+    }
+    return phase == HitTestPhase::kSelfBlockBackground && RespectsCSSOverflow();
   }
 
   // This function calculates the placement of the replaced contents. It takes
@@ -180,9 +177,6 @@ class CORE_EXPORT LayoutReplaced : public LayoutBox {
   gfx::Size ComputeSpeculativeDecodeSize() const override;
 
  private:
-  void AddVisualEffectOverflow();
-  PhysicalBoxStrut ComputeVisualEffectOverflowOutsets();
-
   // Computes a rect, relative to the element's content's natural size, that
   // should be used as the content source when rendering this element. This
   // value is used as the input for object-fit/object-position during painting.

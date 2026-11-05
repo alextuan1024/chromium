@@ -31,6 +31,9 @@ COMPONENT_EXPORT(UI_BASE_FEATURES) BASE_DECLARE_FEATURE(kFocusFollowsCursor);
 COMPONENT_EXPORT(UI_BASE_FEATURES)
 BASE_DECLARE_FEATURE(kDragDropOnlySynthesizeHttpOrHttpsUrlsFromText);
 
+COMPONENT_EXPORT(UI_BASE_FEATURES)
+BASE_DECLARE_FEATURE(kDarkModeTranslucentDisabledControls);
+
 #if BUILDFLAG(IS_CHROMEOS)
 COMPONENT_EXPORT(UI_BASE_FEATURES)
 BASE_DECLARE_FEATURE(kSettingsShowsPerKeyboardSettings);
@@ -61,6 +64,8 @@ BASE_DECLARE_FEATURE(kAlwaysTrackNativeWindowOcclusionForTest);
 COMPONENT_EXPORT(UI_BASE_FEATURES)
 BASE_DECLARE_FEATURE(kRecalculateNativeWinOcclusionOnWindowDestroy);
 COMPONENT_EXPORT(UI_BASE_FEATURES)
+BASE_DECLARE_FEATURE(kFilterNativeWinOcclusionLocationChanges);
+COMPONENT_EXPORT(UI_BASE_FEATURES)
 extern const base::FeatureParam<std::string>
     kApplyNativeOcclusionToCompositorType;
 COMPONENT_EXPORT(UI_BASE_FEATURES)
@@ -78,14 +83,16 @@ BASE_DECLARE_FEATURE(kHideCursorWhileTyping);
 COMPONENT_EXPORT(UI_BASE_FEATURES)
 BASE_DECLARE_FEATURE(kOnlyUseWindowResizeHelperOnResize);
 
-COMPONENT_EXPORT(UI_BASE_FEATURES) BASE_DECLARE_FEATURE(kCATransactionV2);
-inline constexpr base::FeatureParam<size_t> kCAContextMaxFencePorts{
-    &kCATransactionV2, "ca_context_max_fence_ports", 4};
+COMPONENT_EXPORT(UI_BASE_FEATURES)
+BASE_DECLARE_FEATURE(kCAContextFenceOnResize);
 
 COMPONENT_EXPORT(UI_BASE_FEATURES) BASE_DECLARE_FEATURE(kAsyncLiveResize);
 
 COMPONENT_EXPORT(UI_BASE_FEATURES)
 BASE_DECLARE_FEATURE(kAlphaInsteadOfCATransaction);
+
+COMPONENT_EXPORT(UI_BASE_FEATURES)
+BASE_DECLARE_FEATURE(kDetectSpaceChangeViaOcclusion);
 #endif  // BUILDFLAG(IS_MAC)
 
 #if BUILDFLAG(IS_CHROMEOS)
@@ -226,12 +233,6 @@ COMPONENT_EXPORT(UI_BASE_FEATURES) BASE_DECLARE_FEATURE(kUIDebugTools);
 
 COMPONENT_EXPORT(UI_BASE_FEATURES) bool IsSwipeToMoveCursorEnabled();
 
-// Enables Raw Draw.
-COMPONENT_EXPORT(UI_BASE_FEATURES) BASE_DECLARE_FEATURE(kRawDraw);
-COMPONENT_EXPORT(UI_BASE_FEATURES) bool IsUsingRawDraw();
-COMPONENT_EXPORT(UI_BASE_FEATURES) double RawDrawTileSizeFactor();
-COMPONENT_EXPORT(UI_BASE_FEATURES) bool IsRawDrawUsingMSAA();
-
 // This feature indicates that this device should have variable refresh rates
 // enabled by default if available. This overrides the default value of
 // |kEnableVariableRefreshRate|. This flag is added by cros-config and not
@@ -335,6 +336,8 @@ BASE_DECLARE_FEATURE(kGlassFrame);
 COMPONENT_EXPORT(UI_BASE_FEATURES)
 BASE_DECLARE_FEATURE_PARAM(bool, kGlassExpandOnHoverEnabled);
 COMPONENT_EXPORT(UI_BASE_FEATURES)
+BASE_DECLARE_FEATURE_PARAM(bool, kGlassFrameEnabledByDefault);
+COMPONENT_EXPORT(UI_BASE_FEATURES)
 BASE_DECLARE_FEATURE(kRoundedIcons);
 COMPONENT_EXPORT(UI_BASE_FEATURES)
 BASE_DECLARE_FEATURE(kWebUIRoundedIcons);
@@ -360,6 +363,12 @@ BASE_DECLARE_FEATURE(kUsePortalAccentColor);
 COMPONENT_EXPORT(UI_BASE_FEATURES)
 BASE_DECLARE_FEATURE(kThemeChangeOptimization);
 
+// Enables additional performance optimizations for theme and color changes,
+// including `ColorProvider` lookup caching, `ColorMixer` intermediate result
+// memoization, and scoped theme invalidation.
+COMPONENT_EXPORT(UI_BASE_FEATURES)
+BASE_DECLARE_FEATURE(kThemeChangeOptimizationV2);
+
 // Kill switch for removing
 // RenderFrameHostManager::EnsureRenderFrameHostVisibilityConsistent.
 //
@@ -372,6 +381,9 @@ COMPONENT_EXPORT(UI_BASE_FEATURES)
 BASE_DECLARE_FEATURE(kColorIdCssStyleSheetOptimization);
 
 COMPONENT_EXPORT(UI_BASE_FEATURES)
+BASE_DECLARE_FEATURE(kOmitNativeFrameOnShadowlessMenus);
+
+COMPONENT_EXPORT(UI_BASE_FEATURES)
 bool IsGlassFrameEnabled();
 COMPONENT_EXPORT(UI_BASE_FEATURES)
 bool IsRoundedIconsEnabled();
@@ -379,6 +391,8 @@ COMPONENT_EXPORT(UI_BASE_FEATURES)
 bool IsWebUIRoundedIconsEnabled();
 COMPONENT_EXPORT(UI_BASE_FEATURES)
 bool IsColorIdCssStyleSheetOptimizationEnabled();
+COMPONENT_EXPORT(UI_BASE_FEATURES)
+bool IsThemeChangeOptimizationV2Enabled();
 
 }  // namespace features
 

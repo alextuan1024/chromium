@@ -15,6 +15,7 @@
 #include "ash/constants/ash_login_pref_names.h"
 #include "ash/constants/ash_pref_names.h"
 #include "ash/constants/ash_switches.h"
+#include "ash/constants/chrome_pref_names.h"
 #include "ash/constants/geolocation_access_level.h"
 #include "ash/display/cros_display_config.h"
 #include "ash/public/cpp/ash_prefs.h"
@@ -49,10 +50,7 @@
 #include "chrome/browser/ash/system/input_device_settings.h"
 #include "chrome/browser/ash/system/timezone_resolver_manager.h"
 #include "chrome/browser/ash/system/timezone_util.h"
-#include "chrome/browser/download/download_prefs.h"
-#include "chrome/browser/prefs/pref_service_syncable_util.h"
 #include "chrome/browser/ui/ash/system/system_tray_client_impl.h"
-#include "chrome/common/pref_names.h"
 #include "chromeos/ash/components/dbus/pciguard/pciguard_client.h"
 #include "chromeos/ash/components/dbus/update_engine/update_engine.pb.h"
 #include "chromeos/ash/components/dbus/update_engine/update_engine_client.h"
@@ -167,7 +165,6 @@ void Preferences::RegisterPrefs(PrefRegistrySimple* registry) {
   registry->RegisterIntegerPref(
       ash::prefs::kSystemTimezoneAutomaticDetectionPolicy,
       enterprise_management::SystemTimezoneProto::USERS_DECIDE);
-  registry->RegisterStringPref(::prefs::kMinimumAllowedChromeVersion, "");
   registry->RegisterBooleanPref(prefs::kDeviceSystemWideTracingEnabled, true);
   registry->RegisterBooleanPref(
       prefs::kLocalStateDevicePeripheralDataAccessEnabled, false);
@@ -214,10 +211,10 @@ void Preferences::RegisterProfilePrefs(
   registry->RegisterBooleanPref(prefs::kEnableTouchpadThreeFingerClick, false);
   // This preference can only be set to true by policy or command_line flag
   // and it should not carry over to sessions were neither of these is set.
-  registry->RegisterBooleanPref(::prefs::kUnifiedDesktopEnabledByDefault, false,
+  registry->RegisterBooleanPref(prefs::kUnifiedDesktopEnabledByDefault, false,
                                 PrefRegistry::NO_REGISTRATION_FLAGS);
-  registry->RegisterBooleanPref(::prefs::kAllowExcludeDisplayInMirrorMode,
-                                false, PrefRegistry::NO_REGISTRATION_FLAGS);
+  registry->RegisterBooleanPref(prefs::kAllowExcludeDisplayInMirrorMode, false,
+                                PrefRegistry::NO_REGISTRATION_FLAGS);
 
   // TODO(anasalazar): Finish moving this to ash.
   registry->RegisterBooleanPref(
@@ -253,10 +250,7 @@ void Preferences::RegisterProfilePrefs(
   registry->RegisterBooleanPref(
       prefs::kTouchpadHapticFeedback, true,
       user_prefs::PrefRegistrySyncable::SYNCABLE_OS_PRIORITY_PREF);
-  registry->RegisterBooleanPref(::prefs::kLabsMediaplayerEnabled, false);
   registry->RegisterBooleanPref(::ash::prefs::kLabsAdvancedFilesystemEnabled,
-                                false);
-  registry->RegisterBooleanPref(::prefs::kAppReinstallRecommendationEnabled,
                                 false);
 
   registry->RegisterIntegerPref(
@@ -398,7 +392,7 @@ void Preferences::RegisterProfilePrefs(
   // Initially all existing users would see "What's new" for current version
   // after update.
   registry->RegisterStringPref(
-      ::prefs::kChromeOSReleaseNotesVersion, "0.0.0.0",
+      prefs::kChromeOSReleaseNotesVersion, "0.0.0.0",
       user_prefs::PrefRegistrySyncable::SYNCABLE_OS_PREF);
 
   ::disks::prefs::RegisterProfilePrefs(registry);
@@ -461,35 +455,15 @@ void Preferences::RegisterProfilePrefs(
 
   registry->RegisterBooleanPref(ash::prefs::kHatsDeviceIsSelected, false);
 
-  registry->RegisterInt64Pref(ash::prefs::kHatsOnboardingSurveyCycleEndTs, 0);
-
-  registry->RegisterBooleanPref(ash::prefs::kHatsOnboardingDeviceIsSelected,
-                                false);
-
-  registry->RegisterInt64Pref(ash::prefs::kHatsArcGamesSurveyCycleEndTs, 0);
-
-  registry->RegisterBooleanPref(ash::prefs::kHatsArcGamesDeviceIsSelected,
-                                false);
-
   registry->RegisterInt64Pref(ash::prefs::kHatsAudioSurveyCycleEndTs, 0);
 
   registry->RegisterBooleanPref(ash::prefs::kHatsAudioDeviceIsSelected, false);
-
-  registry->RegisterInt64Pref(ash::prefs::kHatsAudioOutputProcSurveyCycleEndTs,
-                              0);
-
-  registry->RegisterBooleanPref(
-      ash::prefs::kHatsAudioOutputProcDeviceIsSelected, false);
 
   registry->RegisterInt64Pref(ash::prefs::kHatsBluetoothAudioSurveyCycleEndTs,
                               0);
 
   registry->RegisterBooleanPref(ash::prefs::kHatsBluetoothAudioDeviceIsSelected,
                                 false);
-
-  registry->RegisterInt64Pref(ash::prefs::kHatsEntSurveyCycleEndTs, 0);
-
-  registry->RegisterBooleanPref(ash::prefs::kHatsEntDeviceIsSelected, false);
 
   registry->RegisterInt64Pref(ash::prefs::kHatsStabilitySurveyCycleEndTs, 0);
 
@@ -522,11 +496,6 @@ void Preferences::RegisterProfilePrefs(
       ash::prefs::kHatsGeneralCameraPrioritizedLastInteractionTimestamp,
       base::Time());
 
-  registry->RegisterInt64Pref(ash::prefs::kHatsBluetoothRevampCycleEndTs, 0);
-
-  registry->RegisterBooleanPref(ash::prefs::kHatsBluetoothRevampIsSelected,
-                                false);
-
   registry->RegisterInt64Pref(ash::prefs::kHatsBatteryLifeCycleEndTs, 0);
 
   registry->RegisterBooleanPref(ash::prefs::kHatsBatteryLifeIsSelected, false);
@@ -535,42 +504,11 @@ void Preferences::RegisterProfilePrefs(
 
   registry->RegisterBooleanPref(ash::prefs::kHatsPeripheralsIsSelected, false);
 
-  // Personalization HaTS survey prefs for avatar, screensaver, and wallpaper
-  // features.
-  registry->RegisterInt64Pref(
-      ash::prefs::kHatsPersonalizationAvatarSurveyCycleEndTs, 0);
-  registry->RegisterBooleanPref(
-      ash::prefs::kHatsPersonalizationAvatarSurveyIsSelected, false);
-  registry->RegisterInt64Pref(
-      ash::prefs::kHatsPersonalizationScreensaverSurveyCycleEndTs, 0);
-  registry->RegisterBooleanPref(
-      ash::prefs::kHatsPersonalizationScreensaverSurveyIsSelected, false);
-  registry->RegisterInt64Pref(
-      ash::prefs::kHatsPersonalizationWallpaperSurveyCycleEndTs, 0);
-  registry->RegisterBooleanPref(
-      ash::prefs::kHatsPersonalizationWallpaperSurveyIsSelected, false);
-
-  // MediaApp HaTS prefs for Pdf and Photos experiences.
-  registry->RegisterInt64Pref(ash::prefs::kHatsMediaAppPdfCycleEndTs, 0);
-  registry->RegisterBooleanPref(ash::prefs::kHatsMediaAppPdfIsSelected, false);
-  registry->RegisterInt64Pref(ash::prefs::kHatsPhotosExperienceCycleEndTs, 0);
-  registry->RegisterBooleanPref(ash::prefs::kHatsPhotosExperienceIsSelected,
-                                false);
-
-  // Office HaTS prefs.
-  registry->RegisterInt64Pref(ash::prefs::kHatsOfficeSurveyCycleEndTs, 0);
-  registry->RegisterBooleanPref(ash::prefs::kHatsOfficeSurveyIsSelected, false);
-
   // Slow and Laggy Deep Dive HaTS prefs.
   registry->RegisterInt64Pref(
       ash::prefs::kHatsSlowAndLaggyDeepDiveSurveyCycleEndTs, 0);
   registry->RegisterBooleanPref(
       ash::prefs::kHatsSlowAndLaggyDeepDiveSurveyIsSelected, false);
-
-  registry->RegisterBooleanPref(::prefs::kPinUnlockFeatureNotificationShown,
-                                false);
-  registry->RegisterBooleanPref(
-      ::prefs::kFingerprintUnlockFeatureNotificationShown, false);
 
   // We don't sync EOL related prefs because they are device specific.
   registry->RegisterBooleanPref(ash::prefs::kEolNotificationDismissed, false);
@@ -582,23 +520,22 @@ void Preferences::RegisterProfilePrefs(
   registry->RegisterBooleanPref(prefs::kExtendedUpdatesNotificationDismissed,
                                 false);
 
-  registry->RegisterBooleanPref(::prefs::kCastReceiverEnabled, false);
-  registry->RegisterBooleanPref(::prefs::kShowArcSettingsOnSessionStart, false);
+  registry->RegisterBooleanPref(prefs::kCastReceiverEnabled, false);
   registry->RegisterBooleanPref(::ash::prefs::kShowSyncSettingsOnSessionStart,
                                 false);
 
   // Text-to-speech prefs.
   registry->RegisterDictionaryPref(
-      ::prefs::kTextToSpeechLangToVoiceName,
+      prefs::kTextToSpeechLangToVoiceName,
       user_prefs::PrefRegistrySyncable::SYNCABLE_OS_PREF);
   registry->RegisterDoublePref(
-      ::prefs::kTextToSpeechRate, blink::mojom::kSpeechSynthesisDefaultRate,
+      prefs::kTextToSpeechRate, blink::mojom::kSpeechSynthesisDefaultRate,
       user_prefs::PrefRegistrySyncable::SYNCABLE_OS_PREF);
   registry->RegisterDoublePref(
-      ::prefs::kTextToSpeechPitch, blink::mojom::kSpeechSynthesisDefaultPitch,
+      prefs::kTextToSpeechPitch, blink::mojom::kSpeechSynthesisDefaultPitch,
       user_prefs::PrefRegistrySyncable::SYNCABLE_OS_PREF);
   registry->RegisterDoublePref(
-      ::prefs::kTextToSpeechVolume, blink::mojom::kSpeechSynthesisDefaultVolume,
+      prefs::kTextToSpeechVolume, blink::mojom::kSpeechSynthesisDefaultVolume,
       user_prefs::PrefRegistrySyncable::SYNCABLE_OS_PREF);
 
   registry->RegisterBooleanPref(prefs::kSyncOobeCompleted, false);
@@ -608,15 +545,11 @@ void Preferences::RegisterProfilePrefs(
   registry->RegisterBooleanPref(
       ::ash::prefs::kTPMFirmwareUpdateCleanupDismissed, false);
 
-  registry->RegisterBooleanPref(::prefs::kStartupBrowserWindowLaunchSuppressed,
+  registry->RegisterBooleanPref(prefs::kStartupBrowserWindowLaunchSuppressed,
                                 false);
 
   registry->RegisterBooleanPref(prefs::kLoginDisplayPasswordButtonEnabled,
                                 true);
-
-  registry->RegisterBooleanPref(
-      prefs::kSuggestedContentEnabled, true,
-      user_prefs::PrefRegistrySyncable::SYNCABLE_OS_PREF);
 
   registry->RegisterBooleanPref(prefs::kMagicBoostEnabled, true);
 
@@ -665,12 +598,6 @@ void Preferences::RegisterProfilePrefs(
 
   registry->RegisterBooleanPref(prefs::kShowTouchpadScrollScreenEnabled, true);
 
-  // Settings HaTS survey prefs for Settings and Settings Search features.
-  registry->RegisterInt64Pref(ash::prefs::kHatsOsSettingsSearchSurveyCycleEndTs,
-                              0);
-  registry->RegisterBooleanPref(
-      ash::prefs::kHatsOsSettingsSearchSurveyIsSelected, false);
-
   registry->RegisterBooleanPref(prefs::kShowDisplaySizeScreenEnabled, true);
 
   registry->RegisterDictionaryPref(ash::prefs::kTotalUniqueOsSettingsChanged);
@@ -716,7 +643,7 @@ void Preferences::InitUserPrefs(sync_preferences::PrefServiceSyncable* prefs) {
   three_finger_click_enabled_.Init(prefs::kEnableTouchpadThreeFingerClick,
                                    prefs, callback);
   unified_desktop_enabled_by_default_.Init(
-      ::prefs::kUnifiedDesktopEnabledByDefault, prefs, callback);
+      prefs::kUnifiedDesktopEnabledByDefault, prefs, callback);
   // TODO(anasalazar): Finish moving this to ash.
   natural_scroll_.Init(prefs::kNaturalScroll, prefs, callback);
   mouse_reverse_scroll_.Init(prefs::kMouseReverseScroll, prefs, callback);
@@ -745,8 +672,8 @@ void Preferences::InitUserPrefs(sync_preferences::PrefServiceSyncable* prefs) {
                                  callback);
   touchpad_haptic_click_sensitivity_.Init(
       prefs::kTouchpadHapticClickSensitivity, prefs, callback);
-  download_default_directory_.Init(::prefs::kDownloadDefaultDirectory, prefs,
-                                   callback);
+  download_default_directory_.Init(ash::chrome_prefs::kDownloadDefaultDirectory,
+                                   prefs, callback);
   preload_engines_.Init(ash::prefs::kLanguagePreloadEngines, prefs, callback);
   enabled_imes_.Init(ash::prefs::kLanguageEnabledImes, prefs, callback);
   current_input_method_.Init(ash::prefs::kLanguageCurrentInputMethod, prefs,
@@ -802,11 +729,12 @@ void Preferences::InitUserPrefs(sync_preferences::PrefServiceSyncable* prefs) {
                      weak_ptr_factory_.GetWeakPtr()));
 }
 
-void Preferences::Init(Profile* profile, const user_manager::User* user) {
-  CHECK(profile, base::NotFatalUntil::M160);
+void Preferences::Init(const user_manager::User* user,
+                       Profile* profile,
+                       sync_preferences::PrefServiceSyncable* prefs) {
   CHECK(user, base::NotFatalUntil::M160);
-  sync_preferences::PrefServiceSyncable* prefs =
-      PrefServiceSyncableFromProfile(profile);
+  CHECK(profile, base::NotFatalUntil::M160);
+  CHECK(prefs, base::NotFatalUntil::M160);
   // This causes OnIsSyncingChanged to be called when the value of
   // PrefService::IsSyncing() changes.
   prefs->AddObserver(this);
@@ -989,7 +917,7 @@ void Preferences::ApplyPreferences(ApplyReason reason,
     }
   }
   if (reason != REASON_PREF_CHANGED ||
-      pref_name == ::prefs::kUnifiedDesktopEnabledByDefault) {
+      pref_name == prefs::kUnifiedDesktopEnabledByDefault) {
     // "Unified Desktop" is a per-user policy setting which will not be applied
     // until a user logs in.
     if (ash::Shell::HasInstance()) {
@@ -1150,7 +1078,7 @@ void Preferences::ApplyPreferences(ApplyReason reason,
     }
   }
   if (reason != REASON_PREF_CHANGED ||
-      pref_name == ::prefs::kDownloadDefaultDirectory) {
+      pref_name == ash::chrome_prefs::kDownloadDefaultDirectory) {
     const bool default_download_to_drive = drive::util::IsUnderDriveMountPoint(
         download_default_directory_.GetValue());
     ReportBooleanPrefApplication(
@@ -1229,7 +1157,7 @@ void Preferences::ApplyPreferences(ApplyReason reason,
     }
     if (ImeController::Get()) {  // Can be null in tests.
       ImeController::Get()->SetImesManagedByPolicy(
-          success && allowed_input_methods_force_enabled);
+          allowed_by_policy && success && allowed_input_methods_force_enabled);
     } else {
       CHECK_IS_TEST();
     }

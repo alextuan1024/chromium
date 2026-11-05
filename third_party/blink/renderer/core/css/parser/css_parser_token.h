@@ -7,6 +7,7 @@
 
 #include "base/check_op.h"
 #include "base/compiler_specific.h"
+#include "base/memory/raw_ptr_exclusion.h"
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/core/css/css_primitive_value.h"
 #include "third_party/blink/renderer/core/css/parser/at_rule_descriptors.h"
@@ -167,8 +168,6 @@ class CORE_EXPORT CSSParserToken {
     return static_cast<CSSValueID>(id_);
   }
 
-  bool HasStringBacking() const;
-
   CSSPropertyID ParseAsUnresolvedCSSPropertyID(
       const ExecutionContext* execution_context,
       CSSParserMode mode = kHTMLStandardMode) const;
@@ -176,27 +175,12 @@ class CORE_EXPORT CSSParserToken {
 
   void Serialize(StringBuilder&) const;
 
-  CSSParserToken CopyWithUpdatedString(const StringView&) const;
   CSSParserToken CopyWithoutValue() const {
     CSSParserToken token = *this;
     token.value_is_inline_ = false;
     token.value_length_ = 0;
     token.value_data_char_raw_ = nullptr;
     return token;
-  }
-
-  static CSSParserTokenType ClosingTokenType(CSSParserTokenType opening_type) {
-    switch (opening_type) {
-      case kFunctionToken:
-      case kLeftParenthesisToken:
-        return kRightParenthesisToken;
-      case kLeftBracketToken:
-        return kRightBracketToken;
-      case kLeftBraceToken:
-        return kRightBraceToken;
-      default:
-        NOTREACHED();
-    }
   }
 
   // For debugging/logging only.
@@ -263,8 +247,8 @@ class CORE_EXPORT CSSParserToken {
   unsigned numeric_sign_ : 2;        // NumericSign
   unsigned unit_ : 7;                // CSSPrimitiveValue::UnitType
 
-  // The variables below are only used if the token type is string-backed
-  // (which depends on type_; see HasStringBacking() for the list).
+  // The variables below are only used if the token type is string-backed,
+  // i.e. an ident, function, at-keyword, hash, url, dimension or string token.
 
   // Short strings (eight bytes or fewer) may be stored directly into the
   // CSSParserToken, freeing us from allocating a backing string for the
@@ -290,7 +274,9 @@ class CORE_EXPORT CSSParserToken {
   unsigned value_length_;
   union {
     char value_data_char_inline_[8];   // If value_is_inline_ is true.
-    const void* value_data_char_raw_;  // Either LChar* or UChar*.
+    // RAW_PTR_EXCLUSION: #union
+    RAW_PTR_EXCLUSION const void*
+        value_data_char_raw_;  // Either LChar* or UChar*.
   };
 
   union {

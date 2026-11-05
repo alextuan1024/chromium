@@ -16,11 +16,14 @@
 
 #include "base/byte_size.h"
 #include "base/callback_list.h"
+#include "base/command_line.h"
 #include "base/containers/span.h"
 #include "base/feature_list.h"
+#include "base/files/file_enumerator.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/functional/bind.h"
+#include "base/functional/callback.h"
 #include "base/logging.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
@@ -40,13 +43,14 @@
 #include "components/component_updater/component_updater_paths.h"
 #include "components/component_updater/component_updater_service.h"
 #include "components/crx_file/id_util.h"
-#include "components/optimization_guide/core/model_execution/manifest_broker/manifest_asset_manager.h"
-#include "components/optimization_guide/core/optimization_guide_switches.h"
+#include "components/optimization_guide/core/model_execution/manifest_broker/manifest.h"
+#include "components/optimization_guide/core/model_execution/manifest_broker/manifest_asset_manager_delegate.h"
+#include "components/optimization_guide/core/model_execution/manifest_provider.h"
 #include "components/update_client/crx_update_item.h"
 #include "components/update_client/update_client.h"
 #include "components/update_client/update_client_errors.h"
 #include "content/public/browser/browser_thread.h"
-#include "crypto/sha2.h"
+#include "crypto/hash.h"
 
 namespace component_updater {
 
@@ -78,7 +82,10 @@ constexpr uint8_t kLegacyBaseModelPublicKeySHA256[32] = {
     0x4a, 0x80, 0xf5, 0x52, 0x90, 0x74, 0xea, 0x87, 0x3a, 0xf9, 0x91,
     0x00, 0x26, 0x43, 0x86, 0x03, 0x36, 0xa6, 0x38, 0x86, 0x63};
 static_assert(std::size(kLegacyBaseModelPublicKeySHA256) ==
-              crypto::kSHA256Length);
+              crypto::hash::kSha256Size);
+
+constexpr base::FilePath::CharType kManifestModelDirName[] =
+    FILE_PATH_LITERAL("OptGuideManifestModel");
 
 // Extension id is ceofaddefefcbblgcgnibnonglccbfja.
 constexpr char kOptimizationGuideModelsManifestName[] =
@@ -89,7 +96,7 @@ constexpr uint8_t kManifestPublicKeySHA256[32] = {
     0x24, 0xe5, 0x03, 0x34, 0x54, 0x52, 0x11, 0xb6, 0x26, 0xd8, 0x1d,
     0xed, 0x6b, 0x22, 0x15, 0x90, 0x9a, 0x44, 0xf0, 0x88, 0xdc, 0x19,
     0xfa, 0x5d, 0xd4, 0x55, 0xf7, 0x95, 0x88, 0xff, 0xfd, 0x8a};
-static_assert(std::size(kManifestPublicKeySHA256) == crypto::kSHA256Length);
+static_assert(std::size(kManifestPublicKeySHA256) == crypto::hash::kSha256Size);
 
 BASE_FEATURE(kModelManifestChannelFeature,
              "ModelManifestChannel",
@@ -126,11 +133,81 @@ bool GetPublicKeyHashFromHex(const std::string& public_key_hex,
   return public_key_hash->size() == 32;
 }
 
+std::string GenerateIdFromPublicKeyHex(const std::string& public_key_hex) {
+  return optimization_guide::GetCrxIdFromPublicKeyHex(public_key_hex)
+      .value_or(std::string());
+}
+
 base::FilePath GetComponentInstallDirectory() {
   base::FilePath local_install_path;
   base::PathService::Get(component_updater::DIR_COMPONENT_USER,
                          &local_install_path);
   return local_install_path;
+}
+
+// Heuristic to infer the installed version of a component from its directory
+// structure on disk. If this matches the version that `ManifestAssetManager`
+// wants to keep installed, it will register it with component updater (this may
+// cause component updater to finish an install / reinstall if it's not actually
+// installed, but this should be unlikely). If this does not match the target
+// version, `ManifestAssetManager` will take an action to clean it up (either
+// uninstalling it, or registering the component if we want to download a
+// different version).
+std::optional<base::Version> InferInstalledComponentVersion(
+    const base::FilePath& component_base_dir) {
+  base::FileEnumerator enumerator(component_base_dir, /*recursive=*/false,
+                                  base::FileEnumerator::DIRECTORIES);
+  std::optional<base::Version> inferred_version;
+  for (base::FilePath path = enumerator.Next(); !path.empty();
+       path = enumerator.Next()) {
+    base::Version version(path.BaseName().MaybeAsASCII());
+    if (!version.IsValid()) {
+      continue;
+    }
+    if (inferred_version) {
+      // Multiple version directories are present; return nullopt so it is
+      // guaranteed not to match any target version and `ManifestAssetManager`
+      // cleans it up.
+      return std::nullopt;
+    }
+    inferred_version = std::move(version);
+  }
+  return inferred_version;
+}
+
+std::vector<optimization_guide::ManifestAssetManagerDelegate::InstalledAsset>
+FindInstalledAssetsOnDisk(const base::FilePath& component_install_dir) {
+  std::vector<optimization_guide::ManifestAssetManagerDelegate::InstalledAsset>
+      installed_assets;
+  if (component_install_dir.empty()) {
+    return installed_assets;
+  }
+
+  base::FilePath legacy_dir =
+      component_install_dir.Append(kLegacyBaseModelPath);
+  if (base::DirectoryExists(legacy_dir)) {
+    installed_assets.push_back({
+        .public_key_hex = base::HexEncodeLower(kLegacyBaseModelPublicKeySHA256),
+        .version = InferInstalledComponentVersion(legacy_dir),
+    });
+  }
+
+  base::FileEnumerator enumerator(
+      component_install_dir.Append(kManifestModelDirName),
+      /*recursive=*/false, base::FileEnumerator::DIRECTORIES);
+  for (base::FilePath path = enumerator.Next(); !path.empty();
+       path = enumerator.Next()) {
+    std::string filename = path.BaseName().MaybeAsASCII();
+    std::vector<uint8_t> hash;
+    if (!GetPublicKeyHashFromHex(filename, &hash)) {
+      continue;
+    }
+    installed_assets.push_back({
+        .public_key_hex = std::move(filename),
+        .version = InferInstalledComponentVersion(path),
+    });
+  }
+  return installed_assets;
 }
 
 void GetComponentFreeDiskSpace(
@@ -147,8 +224,8 @@ void GetComponentFreeDiskSpace(
   base::ThreadPool::PostTaskAndReplyWithResult(
       FROM_HERE,
       {base::MayBlock(),
-       optimization_guide::switches::
-               ShouldGetFreeDiskSpaceWithUserVisiblePriorityTask()
+       base::CommandLine::ForCurrentProcess()->HasSwitch(
+           optimization_guide::kGetFreeDiskSpaceWithUserVisiblePriorityTaskSwitch)
            ? base::TaskPriority::USER_VISIBLE
            : base::TaskPriority::BEST_EFFORT},
       base::BindOnce(
@@ -176,7 +253,9 @@ class ManifestAssetInstallerPolicy final : public ComponentInstallerPolicy {
       std::string public_key_hex,
       std::string target_version,
       std::string component_name,
-      base::WeakPtr<optimization_guide::ManifestAssetManager> asset_manager)
+      base::WeakPtr<
+          optimization_guide::ManifestAssetManagerDelegate::AssetManager>
+          asset_manager)
       : public_key_hex_(std::move(public_key_hex)),
         target_version_(std::move(target_version)),
         component_name_(std::move(component_name)),
@@ -225,16 +304,16 @@ class ManifestAssetInstallerPolicy final : public ComponentInstallerPolicy {
 
   bool VerifyInstallation(const base::DictValue& manifest,
                           const base::FilePath& install_dir) const override {
-    return optimization_guide::ManifestAssetManager::VerifyInstallation(
+    return optimization_guide::ManifestAssetManagerDelegate::VerifyInstallation(
         install_dir, manifest);
   }
 
   void OnCustomUninstall() override {
     content::GetUIThreadTaskRunner({})->PostTask(
         FROM_HERE,
-        base::BindOnce(
-            &optimization_guide::ManifestAssetManager::OnAssetUninstalled,
-            asset_manager_, public_key_hex_));
+        base::BindOnce(&optimization_guide::ManifestAssetManagerDelegate::
+                           AssetManager::OnAssetUninstalled,
+                       asset_manager_, public_key_hex_));
   }
 
   base::FilePath GetRelativeInstallDir() const override {
@@ -242,7 +321,7 @@ class ManifestAssetInstallerPolicy final : public ComponentInstallerPolicy {
     return std::ranges::equal(public_key_hash_,
                               base::span(kLegacyBaseModelPublicKeySHA256))
                ? base::FilePath(kLegacyBaseModelPath)
-               : base::FilePath(FILE_PATH_LITERAL("OptGuideManifestModel"))
+               : base::FilePath(kManifestModelDirName)
                      .AppendASCII(public_key_hex_);
   }
 
@@ -272,15 +351,19 @@ class ManifestAssetInstallerPolicy final : public ComponentInstallerPolicy {
   const std::string target_version_;
   const std::string component_name_;
   // The manifest asset manager should be accessed in the UI thread.
-  base::WeakPtr<optimization_guide::ManifestAssetManager> asset_manager_;
+  base::WeakPtr<optimization_guide::ManifestAssetManagerDelegate::AssetManager>
+      asset_manager_;
 };
 
 // Installer policy for the component that contains the model manifest config.
 class ManifestConfigInstallerPolicy final : public ComponentInstallerPolicy {
+  using ReadyCallback = optimization_guide::ManifestProvider::ReadyCallback;
+
  public:
-  explicit ManifestConfigInstallerPolicy(
-      base::RepeatingCallback<void(base::FilePath)> on_ready_callback)
-      : on_ready_callback_(std::move(on_ready_callback)) {}
+  explicit ManifestConfigInstallerPolicy(ReadyCallback on_ready_callback,
+                                         base::FilePath required_file_name)
+      : on_ready_callback_(std::move(on_ready_callback)),
+        required_file_name_(std::move(required_file_name)) {}
 
   ManifestConfigInstallerPolicy(const ManifestConfigInstallerPolicy&) = delete;
   ManifestConfigInstallerPolicy& operator=(
@@ -317,8 +400,7 @@ class ManifestConfigInstallerPolicy final : public ComponentInstallerPolicy {
 
   bool VerifyInstallation(const base::DictValue& manifest,
                           const base::FilePath& install_dir) const override {
-    return base::PathExists(
-        install_dir.Append(optimization_guide::kManifestFileName));
+    return base::PathExists(install_dir.Append(required_file_name_));
   }
 
   base::FilePath GetRelativeInstallDir() const override {
@@ -347,21 +429,90 @@ class ManifestConfigInstallerPolicy final : public ComponentInstallerPolicy {
         FROM_HERE, base::BindOnce(on_ready_callback_, install_dir));
   }
 
-  base::RepeatingCallback<void(base::FilePath)> on_ready_callback_;
+  ReadyCallback on_ready_callback_;
+  // The file expected in the component installation directory. Verification
+  // policy rejects the installation if this path does not exist.
+  const base::FilePath required_file_name_;
+};
+
+class ManifestProviderImpl final : public optimization_guide::ManifestProvider {
+ public:
+  ManifestProviderImpl(
+      base::FilePath required_file_name,
+      base::TaskPriority task_priority,
+      std::optional<OnDemandUpdater::Priority> on_demand_priority)
+      : required_file_name_(std::move(required_file_name)),
+        task_priority_(task_priority),
+        on_demand_priority_(on_demand_priority) {}
+
+  base::CallbackListSubscription ListenForManifestReady(
+      ReadyCallback on_ready) override {
+    CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
+    if (!manifest_dir_.empty()) {
+      on_ready.Run(manifest_dir_);
+    }
+    auto subscription = manifest_ready_callbacks_.Add(std::move(on_ready));
+    MaybeRegisterManifestComponent();
+    return subscription;
+  }
+
+ private:
+  void MaybeRegisterManifestComponent() {
+    if (manifest_registered_ || !g_browser_process) {
+      return;
+    }
+
+    ComponentUpdateService* cus = g_browser_process->component_updater();
+    if (!cus) {
+      return;
+    }
+
+    manifest_registered_ = true;
+    auto installer = base::MakeRefCounted<ComponentInstaller>(
+        std::make_unique<ManifestConfigInstallerPolicy>(
+            base::BindRepeating(&ManifestProviderImpl::OnManifestReady,
+                                weak_ptr_factory_.GetWeakPtr()),
+            required_file_name_),
+        /*action_handler=*/nullptr, task_priority_);
+    installer->Register(
+        cus, base::BindOnce(
+                 [](std::optional<OnDemandUpdater::Priority> priority) {
+                   if (priority) {
+                     OnDeviceModelUpdater::OnDemandInstall(
+                         crx_file::id_util::GenerateIdFromHash(
+                             kManifestPublicKeySHA256),
+                         *priority);
+                   }
+                 },
+                 on_demand_priority_));
+  }
+
+  void OnManifestReady(base::FilePath install_dir) {
+    manifest_dir_ = std::move(install_dir);
+    manifest_ready_callbacks_.Notify(manifest_dir_);
+  }
+
+  const base::FilePath required_file_name_;
+  const base::TaskPriority task_priority_;
+  const std::optional<OnDemandUpdater::Priority> on_demand_priority_;
+  bool manifest_registered_ = false;
+  base::FilePath manifest_dir_;
+  base::RepeatingCallbackList<void(base::FilePath)> manifest_ready_callbacks_;
+  base::WeakPtrFactory<ManifestProviderImpl> weak_ptr_factory_{this};
 };
 
 class ManifestAssetManagerDelegateImpl final
-    : public optimization_guide::ManifestAssetManager::Delegate {
+    : public optimization_guide::ManifestAssetManagerDelegate {
  public:
+  ManifestAssetManagerDelegateImpl()
+      : manifest_provider_(
+            base::FilePath(optimization_guide::kManifestFileName),
+            base::TaskPriority::USER_VISIBLE,
+            OnDemandUpdater::Priority::FOREGROUND) {}
+
   base::CallbackListSubscription ListenForManifestReady(
-      base::RepeatingCallback<void(base::FilePath)> on_ready) override {
-    DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-    auto subscription = manifest_ready_callbacks_.Add(std::move(on_ready));
-    if (!manifest_dir_.empty()) {
-      manifest_ready_callbacks_.Notify(manifest_dir_);
-    }
-    MaybeRegisterManifestComponent();
-    return subscription;
+      ReadyCallback on_ready) override {
+    return manifest_provider_.ListenForManifestReady(std::move(on_ready));
   }
 
   void GetFreeDiskSpace(base::OnceCallback<void(std::optional<base::ByteSize>)>
@@ -370,13 +521,22 @@ class ManifestAssetManagerDelegateImpl final
                               std::move(callback));
   }
 
-  void RegisterOnDemandComponent(
-      const std::string& public_key_hex,
-      const std::string& target_version,
-      const std::string& component_name,
-      base::WeakPtr<optimization_guide::ManifestAssetManager> manager)
-      override {
-    DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  void GetInstalledAssets(
+      base::OnceCallback<void(std::vector<InstalledAsset>)> callback)
+      const override {
+    CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
+    base::ThreadPool::PostTaskAndReplyWithResult(
+        FROM_HERE, {base::MayBlock(), base::TaskPriority::BEST_EFFORT},
+        base::BindOnce(&FindInstalledAssetsOnDisk,
+                       GetComponentInstallDirectory()),
+        std::move(callback));
+  }
+
+  void RegisterOnDemandComponent(const std::string& public_key_hex,
+                                 const std::string& target_version,
+                                 const std::string& component_name,
+                                 base::WeakPtr<AssetManager> manager) override {
+    CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
     if (!g_browser_process) {
       return;
     }
@@ -388,20 +548,15 @@ class ManifestAssetManagerDelegateImpl final
             public_key_hex, target_version, component_name, manager));
 
     auto register_callback = base::BindOnce(
-        [](base::WeakPtr<optimization_guide::ManifestAssetManager> manager,
-           ComponentUpdateService* cus, const std::string& public_key_hex,
+        [](base::WeakPtr<AssetManager> manager, ComponentUpdateService* cus,
+           const std::string& public_key_hex,
            const std::string& target_version) {
-          std::vector<uint8_t> public_key_hash;
-          std::string extension_id;
-          if (GetPublicKeyHashFromHex(public_key_hex, &public_key_hash)) {
-            extension_id =
-                crx_file::id_util::GenerateIdFromHash(public_key_hash);
-          }
-
           if (manager) {
             manager->InstallerRegistered(
                 public_key_hex, target_version,
-                IsModelAlreadyInstalled(cus, extension_id, target_version));
+                IsModelAlreadyInstalled(
+                    cus, GenerateIdFromPublicKeyHex(public_key_hex),
+                    target_version));
           }
         },
         manager, cus, public_key_hex, target_version);
@@ -410,9 +565,15 @@ class ManifestAssetManagerDelegateImpl final
   }
 
   void Uninstall(const std::string& public_key_hex,
-                 base::WeakPtr<optimization_guide::ManifestAssetManager>
-                     manager) override {
-    DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+                 base::WeakPtr<AssetManager> manager) override {
+    CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
+
+    std::string crx_id = GenerateIdFromPublicKeyHex(public_key_hex);
+    if (!crx_id.empty() && g_browser_process &&
+        g_browser_process->component_updater() &&
+        g_browser_process->component_updater()->UnregisterComponent(crx_id)) {
+      return;
+    }
 
     base::MakeRefCounted<ComponentInstaller>(
         std::make_unique<ManifestAssetInstallerPolicy>(
@@ -423,65 +584,29 @@ class ManifestAssetManagerDelegateImpl final
 
   void RequestUpdate(const std::string& public_key_hex,
                      bool is_background) override {
-    DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+    CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
     if (!g_browser_process) {
       return;
     }
-    std::vector<uint8_t> public_key_hash;
-    if (!GetPublicKeyHashFromHex(public_key_hex, &public_key_hash)) {
+    std::string crx_id = GenerateIdFromPublicKeyHex(public_key_hex);
+    if (crx_id.empty()) {
       LOG(ERROR) << "Invalid public key hex in RequestUpdate: ["
                  << public_key_hex << "]";
       return;
     }
 
     OnDeviceModelUpdater::OnDemandInstall(
-        crx_file::id_util::GenerateIdFromHash(public_key_hash),
-        is_background ? OnDemandUpdater::Priority::BACKGROUND
-                      : OnDemandUpdater::Priority::FOREGROUND);
+        crx_id, is_background ? OnDemandUpdater::Priority::BACKGROUND
+                              : OnDemandUpdater::Priority::FOREGROUND);
   }
 
  private:
-  void MaybeRegisterManifestComponent() {
-    if (manifest_registered_) {
-      return;
-    }
-    manifest_registered_ = true;
-    if (!g_browser_process) {
-      return;
-    }
-
-    ComponentUpdateService* cus = g_browser_process->component_updater();
-    if (!cus) {
-      return;
-    }
-
-    auto installer = base::MakeRefCounted<ComponentInstaller>(
-        std::make_unique<ManifestConfigInstallerPolicy>(base::BindRepeating(
-            &ManifestAssetManagerDelegateImpl::OnManifestReady,
-            weak_ptr_factory_.GetWeakPtr())));
-    installer->Register(
-        cus, base::BindOnce([] {
-          OnDeviceModelUpdater::OnDemandInstall(
-              crx_file::id_util::GenerateIdFromHash(kManifestPublicKeySHA256),
-              OnDemandUpdater::Priority::FOREGROUND);
-        }));
-  }
-
-  void OnManifestReady(base::FilePath install_dir) {
-    manifest_dir_ = std::move(install_dir);
-    manifest_ready_callbacks_.Notify(manifest_dir_);
-  }
-
-  base::FilePath manifest_dir_;
-  bool manifest_registered_ = false;
-  base::RepeatingCallbackList<void(base::FilePath)> manifest_ready_callbacks_;
-  base::WeakPtrFactory<ManifestAssetManagerDelegateImpl> weak_ptr_factory_{
-      this};
+  ManifestProviderImpl manifest_provider_;
 };
 
 }  // namespace
 
-std::unique_ptr<optimization_guide::ManifestAssetManager::Delegate>
+std::unique_ptr<optimization_guide::ManifestAssetManagerDelegate>
 CreateManifestAssetManagerDelegate() {
   return std::make_unique<ManifestAssetManagerDelegateImpl>();
 }

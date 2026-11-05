@@ -21,6 +21,7 @@ import androidx.fragment.app.FragmentActivity;
 
 import org.jni_zero.CalledByNative;
 
+import org.chromium.base.ContentUriOwner;
 import org.chromium.base.ContentUriUtils;
 import org.chromium.base.ContextUtils;
 import org.chromium.base.Log;
@@ -97,6 +98,8 @@ public class PdfUtils {
         PdfToolbarAction.SINGLE_PAGE_VIEW,
         PdfToolbarAction.DOCUMENT_PROPERTIES,
         PdfToolbarAction.ANNOTATION,
+        PdfToolbarAction.DOWNLOAD_ORIGINAL,
+        PdfToolbarAction.DOWNLOAD_EDITED,
         PdfToolbarAction.NUM_ENTRIES
     })
     @Retention(RetentionPolicy.SOURCE)
@@ -112,9 +115,12 @@ public class PdfUtils {
         int SINGLE_PAGE_VIEW = 8;
         int DOCUMENT_PROPERTIES = 9;
         int ANNOTATION = 10;
+        int DOWNLOAD_ORIGINAL = 11;
+        int DOWNLOAD_EDITED = 12;
 
-        int NUM_ENTRIES = 11;
+        int NUM_ENTRIES = 13;
     }
+
     // LINT.ThenChange(//tools/metrics/histograms/metadata/android/enums.xml:AndroidPdfToolbarAction)
 
     // LINT.IfChange(PdfSelectionMenuItem)
@@ -157,6 +163,26 @@ public class PdfUtils {
     }
 
     // LINT.ThenChange(//tools/metrics/histograms/metadata/android/enums.xml:AndroidPdfHyperlinkClickResult)
+
+    // LINT.IfChange(AndroidPdfFrozenStateWhenDisplayed)
+    // These values are persisted to logs. Entries should not be renumbered and
+    // numeric values should never be reused.
+    @IntDef({
+        AndroidPdfFrozenStateWhenDisplayed.NOT_FROZEN,
+        AndroidPdfFrozenStateWhenDisplayed.FROZEN_NO_UNSAVED_CHANGES,
+        AndroidPdfFrozenStateWhenDisplayed.FROZEN_WITH_UNSAVED_CHANGES,
+        AndroidPdfFrozenStateWhenDisplayed.NUM_ENTRIES
+    })
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface AndroidPdfFrozenStateWhenDisplayed {
+        int NOT_FROZEN = 0;
+        int FROZEN_NO_UNSAVED_CHANGES = 1;
+        int FROZEN_WITH_UNSAVED_CHANGES = 2;
+
+        int NUM_ENTRIES = 3;
+    }
+
+    // LINT.ThenChange(//tools/metrics/histograms/metadata/android/enums.xml:AndroidPdfFrozenStateWhenDisplayed)
 
     private static final String TAG = "PdfUtils";
     private static final String PDF_LAUNCHER_ACTIVITY_ALIAS =
@@ -284,7 +310,8 @@ public class PdfUtils {
         return new PdfInfo(
                 nativePage.getTitle(),
                 nativePage.getCanonicalFilepath(),
-                nativePage.isDownloadSafe());
+                nativePage.isDownloadSafe(),
+                nativePage.getInitiatorOrigin());
     }
 
     static String getFileNameFromUrl(@Nullable String url, String defaultTitle) {
@@ -407,26 +434,37 @@ public class PdfUtils {
                 return null;
             }
         } catch (IllegalArgumentException | NullPointerException e) {
-            Log.e(TAG, "Couldn't generate Uri: " + e);
+            Log.e(TAG, "Couldn't generate Uri", e);
             return null;
         }
     }
 
     /**
-     * Record boolean histogram Android.Pdf.IsFrozenWhenDisplayed.
+     * Records the enumerated histogram Android.Pdf.FrozenStateWhenDisplayed for a native page that
+     * is about to be displayed, e.g. when its tab is selected from the tab switcher or tab strip.
      *
-     * @param nativePage When the native page is a pdf page, record whether it is frozen before the
-     *     tab is displayed.
+     * <p>Nothing is recorded for pages that are not PDF pages. For a frozen PDF page the unsaved
+     * changes state is the one captured when the page was frozen.
+     *
+     * @param nativePage The native page being displayed, or null if the tab has none.
      */
-    public static void recordIsPdfFrozen(@Nullable NativePage nativePage) {
-        if (nativePage == null) {
+    public static void recordPdfFrozenStateWhenDisplayed(@Nullable NativePage nativePage) {
+        if (nativePage == null || !nativePage.isPdf()) {
             return;
         }
-        if (!nativePage.isPdf()) {
-            return;
+        @AndroidPdfFrozenStateWhenDisplayed int state;
+        if (!nativePage.isFrozen()) {
+            state = AndroidPdfFrozenStateWhenDisplayed.NOT_FROZEN;
+        } else {
+            state =
+                    nativePage.hasUnsavedChanges()
+                            ? AndroidPdfFrozenStateWhenDisplayed.FROZEN_WITH_UNSAVED_CHANGES
+                            : AndroidPdfFrozenStateWhenDisplayed.FROZEN_NO_UNSAVED_CHANGES;
         }
-        RecordHistogram.recordBooleanHistogram(
-                "Android.Pdf.IsFrozenWhenDisplayed", nativePage.isFrozen());
+        RecordHistogram.recordEnumeratedHistogram(
+                "Android.Pdf.FrozenStateWhenDisplayed",
+                state,
+                AndroidPdfFrozenStateWhenDisplayed.NUM_ENTRIES);
     }
 
     /**
@@ -445,7 +483,7 @@ public class PdfUtils {
             return pdfPageUrl;
         } catch (UnsupportedEncodingException e) {
             recordIsPdfDownloadUrlEncoded(false);
-            Log.e(TAG, "Unsupported encoding: " + e.getMessage());
+            Log.e(TAG, "Unsupported encoding", e);
             return null;
         }
     }
@@ -473,8 +511,69 @@ public class PdfUtils {
             // #getQueryParameter has already decoded the url.
             return uri.getQueryParameter(UrlConstants.PDF_URL_QUERY_PARAM);
         } catch (UnsupportedOperationException | NullPointerException e) {
-            Log.e(TAG, "Unsupported encoding: " + e.getMessage());
+            Log.e(TAG, "Unsupported encoding", e);
             return null;
+        }
+    }
+
+    /**
+     * Parse the page number from the "#page=N" fragment in the url, e.g.
+     * "https://example.com/a.pdf#page=3". This is the de-facto way to link to a specific page of a
+     * PDF and is supported by Chrome on other platforms. Returns the 1-based page number, or 0 if
+     * the url has no valid "page" fragment.
+     *
+     * @param url The pdf url, which may be a wrapped pdf page url, a content/file uri, or an
+     *     http(s) url.
+     * @return The 1-based page number, or 0 if not specified.
+     */
+    public static int getPageNumberFromUrl(@Nullable String url) {
+        if (url == null) {
+            return 0;
+        }
+        // The fragment may live on the url directly, or on the original download url that is
+        // encoded inside a wrapped pdf page url. Check the url first, then the decoded
+        // download url.
+        int pageNumber = parsePageNumberFromFragment(url);
+        if (pageNumber == 0) {
+            String decodedUrl = decodePdfPageUrl(url);
+            if (decodedUrl != null) {
+                pageNumber = parsePageNumberFromFragment(decodedUrl);
+            }
+        }
+        return pageNumber;
+    }
+
+    private static int parsePageNumberFromFragment(String url) {
+        String encodedFragment;
+        try {
+            encodedFragment = Uri.parse(url).getEncodedFragment();
+        } catch (Exception e) {
+            return 0;
+        }
+        if (TextUtils.isEmpty(encodedFragment)) {
+            return 0;
+        }
+        // The fragment uses the same "key=value&..." syntax as a query string, e.g.
+        // "nameddest=chapter1&page=3&zoom=100", so reuse Uri's query parser instead of
+        // splitting it manually.
+        String page;
+        try {
+            page =
+                    new Uri.Builder()
+                            .encodedQuery(encodedFragment)
+                            .build()
+                            .getQueryParameter("page");
+        } catch (UnsupportedOperationException e) {
+            return 0;
+        }
+        if (page == null) {
+            return 0;
+        }
+        try {
+            int pageNumber = Integer.parseInt(page.trim());
+            return pageNumber > 0 ? pageNumber : 0;
+        } catch (NumberFormatException e) {
+            return 0;
         }
     }
 
@@ -513,6 +612,38 @@ public class PdfUtils {
         }
 
         return null;
+    }
+
+    /**
+     * Returns the URL to load to re-download the PDF for a committed navigation that did not show a
+     * native page, or {@code null} if no re-download is needed.
+     *
+     * @param url The URL that was loaded.
+     * @param isPdf Whether the navigation is for PDF content.
+     */
+    public static @Nullable String getPdfReDownloadUrlForNavigation(GURL url, boolean isPdf) {
+        String urlSpec = url.getSpec();
+        // This is restricted to HTTP(S) URLs specifically, as these are the only schemes that
+        // necessitate a PDF re-download.
+        if (isPdf) return getPdfReDownloadUrl(urlSpec);
+
+        if (!UrlConstants.CHROME_NATIVE_SCHEME.equals(url.getScheme())
+                || !UrlConstants.PDF_HOST.equals(url.getHost())) {
+            return null;
+        }
+
+        String downloadUrl = getPdfReDownloadUrl(urlSpec);
+        if (downloadUrl != null) return downloadUrl;
+
+        // getPdfReDownloadUrl restricts to HTTP(S). Explicitly allow blob schemes since they are
+        // ephemeral and require re-load.
+        if (!ChromeFeatureList.sAndroidHandlePdfInIframe.isEnabled()) return null;
+
+        String decodedUrl = decodePdfPageUrl(urlSpec);
+        if (decodedUrl == null || !decodedUrl.startsWith(UrlConstants.BLOB_SCHEME + ":")) {
+            return null;
+        }
+        return decodedUrl;
     }
 
     /**
@@ -689,11 +820,6 @@ public class PdfUtils {
                 "Android.Pdf.AssistContent.IsWorkProfile", isWorkProfile);
     }
 
-    public static void recordGetAssistantPackageResult(boolean success) {
-        RecordHistogram.recordBooleanHistogram(
-                "Android.Pdf.AssistContent.GetAssistantPackageResult", success);
-    }
-
     private static void recordIsPdfDownloadUrlEncoded(boolean encodeResult) {
         RecordHistogram.recordBooleanHistogram("Android.Pdf.DownloadUrlEncoded", encodeResult);
     }
@@ -736,8 +862,20 @@ public class PdfUtils {
             return false;
         }
 
-        if (!ContentUriUtils.isUriFromThisApp(uri, context)) {
+        @ContentUriOwner int owner = ContentUriUtils.resolveContentUriOwner(uri);
+        if (owner != ContentUriOwner.EXPORTED_FROM_CURRENT_APP
+                && owner != ContentUriOwner.NON_EXPORTED_FROM_CURRENT_APP) {
             return true;
+        }
+
+        // Legitimate Chrome-generated provider URIs never contain percent-encoding or userinfo
+        // in their authority. Rejecting these blocks forged URIs that used encoding (such as %2E)
+        // to bypass upstream string-based authority checks.
+        String encodedAuthority = uri.getEncodedAuthority();
+        if (TextUtils.isEmpty(encodedAuthority)
+                || encodedAuthority.indexOf('%') >= 0
+                || encodedAuthority.indexOf('@') >= 0) {
+            return false;
         }
 
         // Chrome's main FileProvider (uses file_paths.xml). We only allow sharing from the
@@ -745,8 +883,13 @@ public class PdfUtils {
         // Sensitive directories like "passwords" or "cache" (net-export) are blocked.
         if (authority.endsWith(".FileProvider")) {
             List<String> pathSegments = uri.getPathSegments();
-            if (pathSegments == null || pathSegments.isEmpty()) {
+            if (pathSegments == null || pathSegments.size() < 2) {
                 return false;
+            }
+            for (String segment : pathSegments) {
+                if (TextUtils.isEmpty(segment) || ".".equals(segment) || "..".equals(segment)) {
+                    return false;
+                }
             }
             String firstSegment = pathSegments.get(0);
             return "pdfs".equals(firstSegment) || "downloads".equals(firstSegment);
@@ -758,7 +901,14 @@ public class PdfUtils {
         // (legacy SD card), and "external_volume" (Android R+ SD card).
         if (authority.endsWith(".DownloadFileProvider")) {
             List<String> pathSegments = uri.getPathSegments();
-            if (pathSegments == null || pathSegments.isEmpty()) {
+            if (pathSegments == null || pathSegments.size() != 1) {
+                return false;
+            }
+            String fileParam = uri.getQueryParameter("file");
+            if (TextUtils.isEmpty(fileParam)
+                    || fileParam.equals("..")
+                    || fileParam.contains("../")
+                    || fileParam.contains("/..")) {
                 return false;
             }
             String firstSegment = pathSegments.get(0);
@@ -776,5 +926,37 @@ public class PdfUtils {
         // Fallback: block any other internal Chrome providers to prevent accidental exposure of
         // sensitive data (e.g. ChromeBrowserProvider).
         return false;
+    }
+
+    /**
+     * Deletes the transient PDF file if the PDF is from a downloadable web URL.
+     *
+     * <p>Content URIs (e.g. incognito PDFs wrapped by PdfContentProvider) cannot be deleted
+     * directly as files; their lifecycle is managed separately (see PdfPage#destroy()). We don't
+     * check for "file://" because: 1. Transient files we download always use raw file paths. 2.
+     * Local files (which may use "file://" or "content://") have a null redownloadUrl and are
+     * skipped below.
+     *
+     * @param filepath The filepath of the transient PDF file.
+     * @param url The native page URL or download URL of the PDF.
+     */
+    public static void maybeDeleteTransientFile(@Nullable String filepath, @Nullable String url) {
+        if (filepath != null && !filepath.startsWith(UrlConstants.CONTENT_URL_PREFIX)) {
+            String redownloadUrl = url != null ? getPdfReDownloadUrl(url) : null;
+            if (redownloadUrl != null) {
+                PostTask.postTask(
+                        TaskTraits.BEST_EFFORT_MAY_BLOCK,
+                        () -> {
+                            try {
+                                File file = new File(filepath);
+                                if (file.exists()) {
+                                    file.delete();
+                                }
+                            } catch (SecurityException ignored) {
+                                // Ignore exceptions if the transient file cannot be deleted.
+                            }
+                        });
+            }
+        }
     }
 }

@@ -3,7 +3,7 @@
 // found in the LICENSE file.
 
 import type {TSESLint, TSESTree} from '/third_party/node/node_modules/@typescript-eslint/utils/dist/index.js';
-import {AST_NODE_TYPES as Node} from '/third_party/node/node_modules/@typescript-eslint/utils/dist/index.js';
+import {AST_NODE_TYPES as Node, ESLintUtils} from '/third_party/node/node_modules/@typescript-eslint/utils/dist/index.js';
 import esquery from '/third_party/node/node_modules/esquery/dist/esquery.esm.min.js';
 import ts from '/third_party/node/node_modules/typescript/lib/typescript.js';
 import assert from 'node:assert';
@@ -17,44 +17,106 @@ import path from 'node:path';
 export const LIT_IMPORT_REGEX =
     ['resources', 'lit', 'v3_0', 'lit.rollup.js$'].join('\\u002F');
 
-export const CR_LIT_ELEMENT_EXTENDS_MIXIN_SELECTOR =
-    'CallExpression[callee.name=/Mixin(Lit)?$/][arguments.0.name="CrLitElement"]';
-
 export const POLYMER_ELEMENT_EXTENDS_MIXIN_SELECTOR =
     'CallExpression[callee.name=/Mixin(Polymer)?$/][arguments.0.name="PolymerElement"]';
 
+export const PROPERTIES_METHOD_PROPERTY_SELECTOR =
+    'ClassBody > MethodDefinition[key.name="properties"] > FunctionExpression > BlockStatement > ReturnStatement > ObjectExpression > Property';
+
+export const THIS_MEMBER_EXPRESSION_QUERY = esquery.parse(
+    'MemberExpression[object.type="ThisExpression"], ' +
+    'MemberExpression[object.type="Identifier"][object.name="this"]');
+
+export function isCrLitElementType(
+    type: ts.Type, checker: ts.TypeChecker,
+    visited: Set<ts.Type> = new Set()): boolean {
+  const nonNullableType = checker.getNonNullableType(type);
+  if (visited.has(nonNullableType)) {
+    return false;
+  }
+  visited.add(nonNullableType);
+
+  if (nonNullableType.symbol?.name === 'CrLitElement') {
+    return true;
+  }
+
+  if ((nonNullableType.flags &
+       (ts.TypeFlags.Any | ts.TypeFlags.Unknown | ts.TypeFlags.Never)) !== 0) {
+    return false;
+  }
+
+  if ((nonNullableType.flags & ts.TypeFlags.TypeParameter) !== 0) {
+    const constraint = checker.getBaseConstraintOfType(nonNullableType);
+    return !!constraint && isCrLitElementType(constraint, checker, visited);
+  }
+
+  if ((nonNullableType.flags & ts.TypeFlags.Union) !== 0) {
+    const union = nonNullableType as ts.UnionType;
+    return union.types.length > 0 &&
+        union.types.every(
+            (t: ts.Type) => isCrLitElementType(t, checker, visited));
+  }
+
+  if ((nonNullableType.flags & ts.TypeFlags.Intersection) !== 0) {
+    const intersection = nonNullableType as ts.IntersectionType;
+    return intersection.types.some(
+        (t: ts.Type) => isCrLitElementType(t, checker, visited));
+  }
+
+  if ((nonNullableType.flags & ts.TypeFlags.Object) !== 0 &&
+      ((nonNullableType as ts.ObjectType).objectFlags &
+       ts.ObjectFlags.ClassOrInterface) !== 0) {
+    const baseTypes = checker.getBaseTypes(nonNullableType as ts.InterfaceType);
+    return baseTypes.some(
+        (baseType: ts.BaseType) =>
+            isCrLitElementType(baseType, checker, visited));
+  }
+
+  return false;
+}
+
 export function isCrLitElementSubclass(
-    node: TSESTree.ClassDeclaration, programNode: TSESTree.Program): boolean {
+    node: TSESTree.ClassDeclaration,
+    context: TSESLint.RuleContext<string, readonly unknown[]>): boolean {
+  assert.ok(isType(node, Node.ClassDeclaration));
+
+  if (!node.superClass || node.id?.name === 'CrLitElement') {
+    return false;
+  }
+
+  const services = ESLintUtils.getParserServices(context);
+  const checker = services.program.getTypeChecker();
+  const tsNode = services.esTreeNodeToTSNodeMap.get(node);
+  assert.ok(tsNode);
+  const type = checker.getTypeAtLocation(tsNode);
+  return isCrLitElementType(type, checker);
+}
+
+function hasTypeParameter(type: ts.Type): boolean {
+  if ((type.flags & ts.TypeFlags.TypeParameter) !== 0) {
+    return true;
+  }
+  if ((type.flags & ts.TypeFlags.Intersection) !== 0) {
+    return (type as ts.IntersectionType).types.some(hasTypeParameter);
+  }
+  return false;
+}
+
+export function isMixinClass(
+    node: TSESTree.ClassDeclaration,
+    context: TSESLint.RuleContext<string, readonly unknown[]>): boolean {
   assert.ok(isType(node, Node.ClassDeclaration));
 
   if (!node.superClass) {
     return false;
   }
 
-  if (isType(node.superClass, Node.Identifier)) {
-    if (node.superClass.name === 'CrLitElement') {
-      // Case1: 'MyElement extends CrLitElement {...}'
-      return true;
-    }
-
-    // Case2:
-    // const MyElementBase = SomeMixin(CrLitElement);
-    // MyElement extends MyElementBase {...}'
-    const baseClassSelector = esquery.parse(
-        `Program > VariableDeclaration > VariableDeclarator[id.name="${
-            node.superClass.name}"] ${CR_LIT_ELEMENT_EXTENDS_MIXIN_SELECTOR}`);
-    const matchingNodes = esquery.match(programNode, baseClassSelector);
-    return matchingNodes.length > 0;
-  }
-
-  if (isType(node.superClass, Node.CallExpression)) {
-    // Case3: 'MyElement extends SomeMixin(SomeOtherMixin(CrLitElement)) {...}'
-    const selector = esquery.parse(CR_LIT_ELEMENT_EXTENDS_MIXIN_SELECTOR);
-    const matchingNodes = esquery.match(node.superClass, selector);
-    return matchingNodes.length > 0;
-  }
-
-  return false;
+  const services = ESLintUtils.getParserServices(context);
+  const checker = services.program.getTypeChecker();
+  const superClassTsNode = services.esTreeNodeToTSNodeMap.get(node.superClass);
+  assert.ok(superClassTsNode);
+  const superClassType = checker.getTypeAtLocation(superClassTsNode);
+  return hasTypeParameter(superClassType);
 }
 
 export function isPolymerElementSubclass(
@@ -103,6 +165,10 @@ export function isLiteral(node: TSESTree.Node) {
 export function isType<T extends Node>(
     node: TSESTree.Node, type: T): node is Extract<TSESTree.Node, {type: T}> {
   return node.type === type;
+}
+
+export function camelCaseToDashCase(string: string): string {
+  return string.replace(/([a-z0-9])([A-Z])/g, '$1-$2').toLowerCase();
 }
 
 export function dashCaseToCamelCase(string: string): string {
@@ -157,7 +223,9 @@ export function extractClassImport(
 }
 
 function isObjectType(type: ts.Type, typeStr: string): boolean {
-  if ((type.flags & (ts.TypeFlags.Object | ts.TypeFlags.Intersection)) !== 0) {
+  if ((type.flags &
+       (ts.TypeFlags.Object | ts.TypeFlags.Intersection |
+        ts.TypeFlags.TypeParameter)) !== 0) {
     return true;
   }
   return typeStr.startsWith('Record<') || typeStr.startsWith('{') ||
@@ -206,16 +274,32 @@ export function getLitPropertyType(
   return null;
 }
 
-export function extractPropertiesFromClass(
-    file: ts.SourceFile, className: string,
-    context: TSESLint.RuleContext<string, readonly unknown[]>) {
+export function getSourceFiles(
+    context: TSESLint.RuleContext<string, readonly unknown[]>):
+    ts.SourceFile[] {
+  const services = ESLintUtils.getParserServices(context);
+  const compilerOptions = services.program.getCompilerOptions();
+  return services.program.getSourceFiles().filter(
+      f => f.fileName.startsWith(compilerOptions.rootDir + '/'));
+}
+
+export function parseSourceFile(
+    file: ts.SourceFile,
+    context: TSESLint.RuleContext<string, readonly unknown[]>):
+    TSESTree.Program {
   const parser = context.languageOptions.parser as TSESLint.Parser.ParserModule;
   const parserOptions = context.languageOptions.parserOptions;
   assert.ok(parser && 'parse' in parser);
-  const ast = parser.parse(file.text, {
+  return parser.parse(file.text, {
     ...parserOptions,
     filePath: file.fileName,
   }) as TSESTree.Program;
+}
+
+export function extractPropertiesFromClass(
+    file: ts.SourceFile, className: string,
+    context: TSESLint.RuleContext<string, readonly unknown[]>) {
+  const ast = parseSourceFile(file, context);
 
   // Handle case where `className` points to a TSTypeAliasDeclaration in the
   // same file. For example className='FooBarElement' and the code is as follows
@@ -235,6 +319,46 @@ export function extractPropertiesFromClass(
 
   // Match on class name suffix as well because some UIs use aliasing.
   const propertiesQuery = esquery.parse(`ClassDeclaration[id.name=/${
-      className}/] > ClassBody > MethodDefinition[key.name="properties"] > FunctionExpression > BlockStatement > ReturnStatement > ObjectExpression > Property`);
+      className}/] > ${PROPERTIES_METHOD_PROPERTY_SELECTOR}`);
   return esquery.match(ast, propertiesQuery);
+}
+
+export function extractTemplateFromFile(
+    templateFile: ts.SourceFile,
+    context: TSESLint.RuleContext<string, readonly unknown[]>):
+    TSESTree.BlockStatement|null {
+  return extractTemplatesFromFile(templateFile, context)[0] || null;
+}
+
+export function extractTemplatesFromFile(
+    templateFile: ts.SourceFile,
+    context: TSESLint.RuleContext<string, readonly unknown[]>,
+    sourceFiles: ts.SourceFile[] = []): TSESTree.BlockStatement[] {
+  const templateAst = parseSourceFile(templateFile, context);
+  const blocks: TSESTree.BlockStatement[] = [];
+  const templateDir = path.posix.dirname(templateFile.fileName);
+  for (const statement of templateAst.body) {
+    if (isType(statement, Node.ImportDeclaration) &&
+        statement.importKind === 'value' && statement.specifiers.length > 0 &&
+        statement.source.value.endsWith('.html.js')) {
+      const subTemplateFilename = path.posix.join(
+          templateDir,
+          statement.source.value.replace(/\.html\.js$/, '.html.ts'));
+      const subTemplateFile =
+          sourceFiles.find(f => f.fileName === subTemplateFilename);
+      if (subTemplateFile) {
+        blocks.push(
+            ...extractTemplatesFromFile(subTemplateFile, context, sourceFiles));
+      }
+      continue;
+    }
+    const decl = isType(statement, Node.ExportNamedDeclaration) ?
+        statement.declaration :
+        statement;
+    if (decl && isType(decl, Node.FunctionDeclaration) &&
+        decl.id?.name === 'getHtml') {
+      blocks.push(decl.body);
+    }
+  }
+  return blocks;
 }

@@ -12,21 +12,27 @@
 #import "base/apple/scoped_objc_class_swizzler.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
+#include "base/functional/callback_helpers.h"
 #include "base/mac/mac_util.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
+#include "base/memory/weak_ptr.h"
 #include "base/run_loop.h"
 #include "base/scoped_observation.h"
 #include "base/strings/sys_string_conversions.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/single_thread_task_runner.h"
+#include "base/test/bind.h"
 #include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/test_timeouts.h"
+#include "base/timer/timer.h"
 #include "build/build_config.h"
 #import "components/remote_cocoa/app_shim/bridged_content_view.h"
+#include "components/remote_cocoa/app_shim/features.h"
 #import "components/remote_cocoa/app_shim/native_widget_mac_nswindow.h"
 #import "components/remote_cocoa/app_shim/native_widget_ns_window_bridge.h"
+#import "components/remote_cocoa/app_shim/window_occlusion_checker_mac.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #import "testing/gtest_mac.h"
 #include "third_party/skia/include/core/SkBitmap.h"
@@ -38,19 +44,24 @@
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/mojom/dialog_button.mojom.h"
 #include "ui/base/mojom/ui_base_types.mojom-shared.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/base/mojom/window_show_state.mojom.h"
 #import "ui/base/test/scoped_fake_full_keyboard_access.h"
 #import "ui/base/test/windowed_nsnotification_observer.h"
 #include "ui/base/ui_base_features.h"
 #include "ui/compositor/layer.h"
 #include "ui/compositor/recyclable_compositor_mac.h"
+#include "ui/display/screen.h"
 #import "ui/events/test/cocoa_test_event_utils.h"
 #include "ui/events/test/event_generator.h"
 #import "ui/gfx/mac/coordinate_conversion.h"
 #include "ui/gfx/native_ui_types.h"
+#include "ui/native_theme/mock_os_settings_provider.h"
 #include "ui/native_theme/native_theme.h"
 #include "ui/native_theme/native_theme_observer.h"
+#include "ui/native_theme/os_settings_provider_mac.h"
 #include "ui/views/bubble/bubble_dialog_delegate_view.h"
+#include "ui/views/cocoa/immersive_mode_reveal_client.h"
 #include "ui/views/cocoa/native_widget_mac_event_monitor.h"
 #include "ui/views/cocoa/native_widget_mac_ns_window_host.h"
 #include "ui/views/controls/button/label_button.h"
@@ -93,7 +104,9 @@ class WidgetModalVisibilityObserver : public views::WidgetObserver {
 // Test NSWindow that provides hooks via method overrides to verify behavior.
 @interface NativeWidgetMacTestWindow : NativeWidgetMacNSWindow
 @property(readonly, nonatomic) int invalidateShadowCount;
+@property(readonly, nonatomic) int setStyleMaskCount;
 @property(assign, nonatomic) BOOL fakeOnInactiveSpace;
+@property(assign, nonatomic) BOOL fakeOcclusionStateVisible;
 @property(assign, nonatomic) bool* deallocFlag;
 @end
 
@@ -281,6 +294,36 @@ class NativeWidgetMacTest : public WidgetTest {
   }
 };
 
+// TODO(crbug.com/567908586): Remove this test with the guard in
+// ApplyNSWindowSizeConstraints().
+TEST_F(NativeWidgetMacTest, SizeConstraintsAvoidRedundantStyleMaskChanges) {
+  NativeWidgetMacTestWindow* window;
+  Widget* widget = CreateWidgetWithTestWindow(
+      CreateParams(Widget::InitParams::TYPE_WINDOW), &window);
+  auto* bridge = BridgedNativeWidgetTestApi(widget).bridge();
+
+  bridge->SetSizeConstraints(gfx::Size(100, 100), gfx::Size(500, 500), true,
+                             true);
+  const NSWindowStyleMask resizable_style_mask = window.styleMask;
+  EXPECT_TRUE(resizable_style_mask & NSWindowStyleMaskResizable);
+  const int style_mask_count = window.setStyleMaskCount;
+
+  bridge->SetSizeConstraints(gfx::Size(120, 130), gfx::Size(600, 700), true,
+                             true);
+  EXPECT_EQ(style_mask_count, window.setStyleMaskCount);
+  EXPECT_EQ(resizable_style_mask, window.styleMask);
+  EXPECT_TRUE(NSEqualSizes(NSMakeSize(120, 130), window.contentMinSize));
+  EXPECT_TRUE(NSEqualSizes(NSMakeSize(600, 700), window.contentMaxSize));
+
+  bridge->SetSizeConstraints(gfx::Size(120, 130), gfx::Size(600, 700), false,
+                             true);
+  EXPECT_GT(window.setStyleMaskCount, style_mask_count);
+  EXPECT_EQ(resizable_style_mask & ~NSWindowStyleMaskResizable,
+            window.styleMask);
+
+  widget->CloseNow();
+}
+
 TEST_F(NativeWidgetMacTest, ScreenshotProtectionTracksWindowSize) {
   struct CaptureExclusionCall {
     NSRect frame;
@@ -325,6 +368,118 @@ TEST_F(NativeWidgetMacTest, ScreenshotProtectionTracksWindowSize) {
   EXPECT_EQ(3u, calls.size());
 
   widget->CloseNow();
+}
+
+TEST_F(NativeWidgetMacTest, ExcludeOwnedWindowsFromCapture) {
+  struct CaptureExclusionCall {
+    NSRect frame;
+    bool allow;
+  };
+
+  NativeWidgetMacTestWindow* parent_window = nil;
+  Widget::InitParams parent_params =
+      CreateParams(Widget::InitParams::TYPE_WINDOW);
+  parent_params.bounds = gfx::Rect(100, 100, 400, 300);
+  Widget* parent_widget =
+      CreateWidgetWithTestWindow(std::move(parent_params), &parent_window);
+
+  std::vector<CaptureExclusionCall> parent_calls;
+  BridgedNativeWidgetTestApi(parent_widget).SetCaptureExclusionApplier(
+      base::BindRepeating(
+          [](std::vector<CaptureExclusionCall>* calls, NSWindow* window,
+             bool allow) { calls->push_back({window.frame, allow}); },
+          &parent_calls));
+
+  // Exclude parent from capture.
+  parent_widget->SetAllowScreenshots(false);
+  EXPECT_FALSE(parent_widget->AreScreenshotsAllowed());
+  ASSERT_EQ(1u, parent_calls.size());
+  EXPECT_FALSE(parent_calls.back().allow);
+
+  // Create a child widget and install a capture exclusion test applier.
+  NativeWidgetMacTestWindow* child_window = nil;
+  Widget::InitParams child_params =
+      CreateParams(Widget::InitParams::TYPE_WINDOW_FRAMELESS);
+  child_params.bounds = gfx::Rect(150, 150, 200, 150);
+  Widget* child_widget =
+      CreateWidgetWithTestWindow(std::move(child_params), &child_window);
+
+  std::vector<CaptureExclusionCall> child_calls;
+  BridgedNativeWidgetTestApi(child_widget).SetCaptureExclusionApplier(
+      base::BindRepeating(
+          [](std::vector<CaptureExclusionCall>* calls, NSWindow* window,
+             bool allow) { calls->push_back({window.frame, allow}); },
+          &child_calls));
+
+  NativeWidgetMacNSWindowHost* child_host =
+      NativeWidgetMacNSWindowHost::GetFromNativeWindow(
+          child_widget->GetNativeWindow());
+  NativeWidgetMacNSWindowHost* parent_host =
+      NativeWidgetMacNSWindowHost::GetFromNativeWindow(
+          parent_widget->GetNativeWindow());
+  ASSERT_TRUE(child_host);
+  ASSERT_TRUE(parent_host);
+
+  // When attached to the excluded parent, the child window should inherit
+  // screenshot exclusion at the bridge level.
+  child_host->SetParent(parent_host);
+  EXPECT_EQ(parent_host, child_host->parent());
+  ASSERT_EQ(1u, child_calls.size());
+  EXPECT_FALSE(child_calls.back().allow);
+  EXPECT_TRUE(NSEqualRects(child_window.frame, child_calls.back().frame));
+
+  // Resizing the child while exclusion is active updates the exclusion shape to
+  // the new frame.
+  const NSRect child_initial_frame = child_window.frame;
+  const NSRect child_expanded_frame =
+      NSMakeRect(child_initial_frame.origin.x, child_initial_frame.origin.y,
+                 child_initial_frame.size.width + 50,
+                 child_initial_frame.size.height + 50);
+  [child_window setFrame:child_expanded_frame display:NO];
+  ASSERT_EQ(2u, child_calls.size());
+  EXPECT_FALSE(child_calls.back().allow);
+  EXPECT_TRUE(NSEqualRects(child_window.frame, child_calls.back().frame));
+
+  // Setting parent to true propagates to child.
+  parent_widget->SetAllowScreenshots(true);
+  EXPECT_TRUE(parent_widget->AreScreenshotsAllowed());
+  ASSERT_EQ(2u, parent_calls.size());
+  EXPECT_TRUE(parent_calls.back().allow);
+  ASSERT_EQ(3u, child_calls.size());
+  EXPECT_TRUE(child_calls.back().allow);
+
+  // Reparenting when both parent and child allow screenshots does not trigger
+  // capture exclusion updates.
+  child_host->SetParent(nullptr);
+  child_host->SetParent(parent_host);
+  EXPECT_EQ(3u, child_calls.size());
+
+  // Setting parent to false sets child to false as well.
+  parent_widget->SetAllowScreenshots(false);
+  EXPECT_FALSE(parent_widget->AreScreenshotsAllowed());
+  ASSERT_EQ(3u, parent_calls.size());
+  EXPECT_FALSE(parent_calls.back().allow);
+  ASSERT_EQ(4u, child_calls.size());
+  EXPECT_FALSE(child_calls.back().allow);
+
+  // A child that is false still is false once removed from a true parent.
+  child_widget->SetAllowScreenshots(false);
+  EXPECT_FALSE(child_widget->AreScreenshotsAllowed());
+  ASSERT_EQ(5u, child_calls.size());
+  EXPECT_FALSE(child_calls.back().allow);
+
+  parent_widget->SetAllowScreenshots(true);
+  ASSERT_EQ(4u, parent_calls.size());
+  EXPECT_TRUE(parent_calls.back().allow);
+  ASSERT_EQ(6u, child_calls.size());
+  EXPECT_FALSE(child_calls.back().allow);
+
+  child_host->SetParent(nullptr);
+  ASSERT_EQ(7u, child_calls.size());
+  EXPECT_FALSE(child_calls.back().allow);
+
+  child_widget->CloseNow();
+  parent_widget->CloseNow();
 }
 
 class WidgetChangeObserver : public TestWidgetObserver {
@@ -552,9 +707,9 @@ TEST_F(NativeWidgetMacTest, NotImplemented) {
           gfx::NativeWindow(native_parent));
 
   EXPECT_FALSE(window_host->native_widget_mac()->WillExecuteCommand(
-      5001, WindowOpenDisposition::CURRENT_TAB, true));
+      5001, ui::mojom::WindowOpenDisposition::kCurrentTab, true));
   EXPECT_FALSE(window_host->native_widget_mac()->ExecuteCommand(
-      5001, WindowOpenDisposition::CURRENT_TAB, true));
+      5001, ui::mojom::WindowOpenDisposition::kCurrentTab, true));
 
   [native_parent close];
 }
@@ -648,9 +803,46 @@ class PaintCountView : public View {
 BEGIN_METADATA(PaintCountView)
 END_METADATA
 
+namespace {
+
+// Records the visibility changes a widget reports to its observers.
+class VisibilityRecordingWidgetObserver : public WidgetObserver {
+ public:
+  explicit VisibilityRecordingWidgetObserver(Widget* widget) {
+    observation_.Observe(widget);
+  }
+
+  const std::vector<bool>& visibility_changes() const {
+    return visibility_changes_;
+  }
+  const std::vector<bool>& on_screen_changes() const {
+    return on_screen_changes_;
+  }
+
+  // WidgetObserver:
+  void OnWidgetVisibilityChanged(Widget* widget, bool visible) override {
+    visibility_changes_.push_back(visible);
+  }
+  void OnWidgetVisibilityOnScreenChanged(Widget* widget,
+                                         bool visible) override {
+    on_screen_changes_.push_back(visible);
+  }
+  void OnWidgetDestroying(Widget* widget) override { observation_.Reset(); }
+
+ private:
+  std::vector<bool> visibility_changes_;
+  std::vector<bool> on_screen_changes_;
+  base::ScopedObservation<Widget, WidgetObserver> observation_{this};
+};
+
+}  // namespace
+
 // Test that a child widget is only added to its parent NSWindow when the
-// parent is on the active space. Otherwise, it may cause a space transition.
-// See https://crbug.com/866760.
+// parent is on the active space. Otherwise, it may cause a space transition
+// or order an unattached transient child window onto the currently active
+// space. The child only becomes visible, and tells its observers, once it is
+// added. See https://crbug.com/866760, http://b/565454675 and
+// http://b/584370453.
 TEST_F(NativeWidgetMacTest, ChildWidgetOnInactiveSpace) {
   NativeWidgetMacTestWindow* parent_window;
   NativeWidgetMacTestWindow* child_window;
@@ -664,13 +856,33 @@ TEST_F(NativeWidgetMacTest, ChildWidgetOnInactiveSpace) {
   parent_window.fakeOnInactiveSpace = YES;
 
   init_params.parent = parent->GetNativeView();
-  CreateWidgetWithTestWindow(std::move(init_params), &child_window);
+  Widget* child =
+      CreateWidgetWithTestWindow(std::move(init_params), &child_window);
+  VisibilityRecordingWidgetObserver visibility_observer(child);
 
   EXPECT_EQ(nil, child_window.parentWindow);
+  EXPECT_FALSE([child_window isVisible]);
+  EXPECT_FALSE(child->IsVisible());
+
+  child->Activate();
+  EXPECT_EQ(nil, child_window.parentWindow);
+  EXPECT_FALSE([child_window isVisible]);
+  EXPECT_FALSE(child->IsVisible());
+  EXPECT_TRUE(visibility_observer.visibility_changes().empty());
+  EXPECT_TRUE(visibility_observer.on_screen_changes().empty());
 
   parent_window.fakeOnInactiveSpace = NO;
-  parent->Show();
+  [NSWorkspace.sharedWorkspace.notificationCenter
+      postNotificationName:NSWorkspaceActiveSpaceDidChangeNotification
+                    object:NSWorkspace.sharedWorkspace];
   EXPECT_EQ(parent_window, child_window.parentWindow);
+  EXPECT_TRUE([child_window isVisible]);
+  EXPECT_TRUE(child->IsVisible());
+  EXPECT_THAT(visibility_observer.visibility_changes(),
+              testing::ElementsAre(true));
+  // OmniboxPopupFullPresenter relies on this to focus a deferred popup.
+  EXPECT_THAT(visibility_observer.on_screen_changes(),
+              testing::ElementsAre(true));
 
   parent->CloseNow();
 }
@@ -1056,6 +1268,553 @@ TEST_F(NativeWidgetMacTest, CloseWhileMinimized) {
   widget->CloseNow();
 }
 
+// Tests that switching to an inactive space hides the compositor, and
+// that the window becoming visible via occlusion notifications (e.g. during a
+// swipe gesture before the active space finishes changing) wakes up the
+// compositor early and resumes painting.
+TEST_F(NativeWidgetMacTest, CompositorVisibilityOnSpaceChange) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitWithFeatures(
+      /*enabled_features=*/
+      {features::kNotifyCompositorOfSpaceVisibilityOnMacOs,
+       ::features::kDetectSpaceChangeViaOcclusion},
+      /*disabled_features=*/{});
+
+  NativeWidgetMacTestWindow* test_window;
+  Widget::InitParams init_params =
+      CreateParams(Widget::InitParams::TYPE_WINDOW);
+  init_params.bounds = gfx::Rect(100, 100, 300, 300);
+  Widget* widget =
+      CreateWidgetWithTestWindow(std::move(init_params), &test_window);
+
+  auto* view = widget->GetContentsView()->AddChildView(
+      std::make_unique<PaintCountView>());
+  view->WaitForPaintCount(1);
+  ASSERT_NE(nullptr, widget->GetCompositor());
+  EXPECT_TRUE(widget->GetCompositor()->IsVisible());
+
+  // 1. Move to inactive space -> compositor becomes invisible.
+  test_window.fakeOnInactiveSpace = YES;
+  [NSWorkspace.sharedWorkspace.notificationCenter
+      postNotificationName:NSWorkspaceActiveSpaceDidChangeNotification
+                    object:NSWorkspace.sharedWorkspace];
+  EXPECT_FALSE(widget->GetCompositor()->IsVisible());
+
+  // 2. Window gestures into view during a swipe (occlusion state becomes
+  // visible before the active space transition commits).
+  test_window.fakeOcclusionStateVisible = YES;
+  [NSNotificationCenter.defaultCenter
+      postNotificationName:NSWindowDidChangeOcclusionStateNotification
+                    object:test_window];
+  EXPECT_TRUE(widget->GetCompositor()->IsVisible());
+  view->WaitForPaintCount(2);
+
+  // 3. Reset fake occlusion state, then complete space transition.
+  test_window.fakeOcclusionStateVisible = NO;
+  [NSNotificationCenter.defaultCenter
+      postNotificationName:NSWindowDidChangeOcclusionStateNotification
+                    object:test_window];
+  EXPECT_FALSE(widget->GetCompositor()->IsVisible());
+
+  test_window.fakeOnInactiveSpace = NO;
+  [NSWorkspace.sharedWorkspace.notificationCenter
+      postNotificationName:NSWorkspaceActiveSpaceDidChangeNotification
+                    object:NSWorkspace.sharedWorkspace];
+  EXPECT_TRUE(widget->GetCompositor()->IsVisible());
+  view->WaitForPaintCount(3);
+
+  widget->CloseNow();
+}
+
+// Tests for compositor visibility driven by window occlusion
+// (`features::kNotifyCompositorOfWindowOcclusionOnMacOs`). Occlusion is
+// injected through the bridge, as WindowOcclusionCheckerMac would.
+class NativeWidgetMacOcclusionTest : public NativeWidgetMacTest {
+ public:
+  NativeWidgetMacOcclusionTest()
+      : NativeWidgetMacOcclusionTest(
+            {features::kNotifyCompositorOfWindowOcclusionOnMacOs}) {}
+
+  explicit NativeWidgetMacOcclusionTest(
+      const std::vector<base::test::FeatureRef>& enabled_features) {
+    // Unless specified otherwise, only the occlusion feature is enabled:
+    // window and space visibility notifications are off by default, and
+    // automatic window registration with `WindowOcclusionCheckerMac` is
+    // disabled so tests can manually inject occlusion state.
+    feature_list_.InitWithFeatures(
+        enabled_features,
+        {remote_cocoa::features::kTrackAllTopLevelWindowsForOcclusion});
+  }
+
+  void SetUp() override {
+    NativeWidgetMacTest::SetUp();
+    [WindowOcclusionCheckerMac resetSharedInstanceForTesting];
+    Widget::InitParams init_params =
+        CreateParams(Widget::InitParams::TYPE_WINDOW);
+    init_params.bounds = gfx::Rect(100, 100, 300, 300);
+    NativeWidgetMacTestWindow* window = nil;
+    widget_ = CreateWidgetWithTestWindow(std::move(init_params), &window);
+    window_ = window;
+    view_ = widget_->GetContentsView()->AddChildView(
+        std::make_unique<PaintCountView>());
+    view_->WaitForPaintCount(1);
+    ASSERT_NE(nullptr, widget_->GetCompositor());
+    ASSERT_TRUE(widget_->GetCompositor()->IsVisible());
+  }
+
+  void TearDown() override {
+    view_ = nullptr;
+    if (widget_) {
+      widget_.ExtractAsDangling()->CloseNow();
+    }
+    window_ = nil;
+    NativeWidgetMacTest::TearDown();
+  }
+
+ protected:
+  NativeWidgetMacNSWindowHost* host() {
+    return NativeWidgetMacNSWindowHost::GetFromNativeWindow(
+        widget_->GetNativeWindow());
+  }
+
+  void SetOccluded(bool occluded) {
+    remote_cocoa::NativeWidgetNSWindowBridge::GetFromNSWindow(window_)
+        ->OnWindowOcclusionChanged(occluded);
+  }
+
+  base::OneShotTimer& hide_timer() {
+    return host()->occlusion_hide_timer_for_testing();
+  }
+
+  // Reports the window as occluded and skips the hide delay. Callers should
+  // wrap this in ASSERT_NO_FATAL_FAILURE().
+  void SetOccludedAndApply() {
+    SetOccluded(true);
+    ASSERT_TRUE(hide_timer().IsRunning());
+    hide_timer().FireNow();
+    ASSERT_FALSE(CompositorVisible());
+  }
+
+  // Runs `action`, then waits for the view to be painted again.
+  void ExpectRepaintAfter(base::OnceClosure action) {
+    const int paint_count = view_->paint_count();
+    std::move(action).Run();
+    view_->WaitForPaintCount(paint_count + 1);
+  }
+
+  bool CompositorVisible() { return widget_->GetCompositor()->IsVisible(); }
+
+  raw_ptr<Widget> widget_ = nullptr;
+  raw_ptr<PaintCountView> view_ = nullptr;
+  NativeWidgetMacTestWindow* __strong window_ = nil;
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+};
+
+// Tests that occlusion hides the compositor after the hide delay, and that
+// becoming unoccluded makes it visible again immediately and repaints.
+TEST_F(NativeWidgetMacOcclusionTest, CompositorVisibilityOnOcclusion) {
+  SetOccluded(true);
+  // Debounced: still visible until the timer fires.
+  EXPECT_TRUE(hide_timer().IsRunning());
+  EXPECT_TRUE(CompositorVisible());
+
+  hide_timer().FireNow();
+  EXPECT_FALSE(CompositorVisible());
+
+  // Redundant updates (the checker reports the state on every pass) are
+  // ignored.
+  SetOccluded(true);
+  EXPECT_FALSE(hide_timer().IsRunning());
+  EXPECT_FALSE(CompositorVisible());
+
+  ExpectRepaintAfter(base::BindLambdaForTesting([&] {
+    SetOccluded(false);
+    EXPECT_TRUE(CompositorVisible());
+  }));
+}
+
+// Tests that a brief occlusion never hides the compositor.
+TEST_F(NativeWidgetMacOcclusionTest, Debounce) {
+  SetOccluded(true);
+  EXPECT_TRUE(hide_timer().IsRunning());
+
+  // Repeated occluded notifications don't restart or duplicate the timer.
+  SetOccluded(true);
+  EXPECT_TRUE(hide_timer().IsRunning());
+
+  SetOccluded(false);
+  EXPECT_FALSE(hide_timer().IsRunning());
+  EXPECT_TRUE(CompositorVisible());
+}
+
+// Tests that occlusion only toggles compositor visibility: the root layer stays
+// visible and the compositor is not suspended.
+TEST_F(NativeWidgetMacOcclusionTest, RootLayerUnchanged) {
+  ASSERT_NO_FATAL_FAILURE(SetOccludedAndApply());
+  EXPECT_TRUE(host()->layer()->visible());
+  EXPECT_FALSE(widget_->GetCompositor()->IsLocked());
+  // Occlusion does not affect on-screen visibility.
+  EXPECT_TRUE(host()->IsVisibleOnScreen());
+}
+
+// Tests that an active video capture keeps the compositor visible while
+// occluded.
+TEST_F(NativeWidgetMacOcclusionTest, VideoCaptureKeepsCompositorVisible) {
+  base::ScopedClosureRunner lock = host()->CreateVideoCaptureLock();
+  SetOccluded(true);
+  hide_timer().FireNow();
+  EXPECT_TRUE(CompositorVisible());
+
+  lock.RunAndReset();
+  EXPECT_FALSE(CompositorVisible());
+
+  SetOccluded(false);
+  EXPECT_TRUE(CompositorVisible());
+}
+
+// Tests that occlusion and inactive space must both clear before the
+// compositor becomes visible again.
+class NativeWidgetMacOcclusionWithSpaceTest
+    : public NativeWidgetMacOcclusionTest {
+ public:
+  NativeWidgetMacOcclusionWithSpaceTest()
+      : NativeWidgetMacOcclusionTest(
+            {features::kNotifyCompositorOfWindowOcclusionOnMacOs,
+             features::kNotifyCompositorOfSpaceVisibilityOnMacOs}) {}
+};
+
+TEST_F(NativeWidgetMacOcclusionWithSpaceTest, CombinedWithSpaceVisibility) {
+  ASSERT_NO_FATAL_FAILURE(SetOccludedAndApply());
+
+  window_.fakeOnInactiveSpace = YES;
+  [NSWorkspace.sharedWorkspace.notificationCenter
+      postNotificationName:NSWorkspaceActiveSpaceDidChangeNotification
+                    object:NSWorkspace.sharedWorkspace];
+  EXPECT_FALSE(CompositorVisible());
+
+  SetOccluded(false);
+  EXPECT_FALSE(CompositorVisible());
+
+  ExpectRepaintAfter(base::BindLambdaForTesting([&] {
+    window_.fakeOnInactiveSpace = NO;
+    [NSWorkspace.sharedWorkspace.notificationCenter
+        postNotificationName:NSWorkspaceActiveSpaceDidChangeNotification
+                      object:NSWorkspace.sharedWorkspace];
+    EXPECT_TRUE(CompositorVisible());
+  }));
+}
+
+// Tests that showing the window clears a stale occlusion state, without
+// waiting for an unoccluded notification, and that a later occluded report
+// (the checker reports the state on every pass) hides it again.
+TEST_F(NativeWidgetMacOcclusionTest, ResetOnShow) {
+  ASSERT_NO_FATAL_FAILURE(SetOccludedAndApply());
+
+  // Hiding keeps the applied occlusion state.
+  widget_->Hide();
+  EXPECT_FALSE(CompositorVisible());
+
+  ExpectRepaintAfter(base::BindLambdaForTesting([&] {
+    widget_->Show();
+    EXPECT_TRUE(CompositorVisible());
+    EXPECT_FALSE(hide_timer().IsRunning());
+  }));
+
+  // The window is still covered: the checker's next pass re-occludes it.
+  ASSERT_NO_FATAL_FAILURE(SetOccludedAndApply());
+}
+
+// Tests that a hide that is pending when the window is hidden is cancelled, and
+// that occluded reports are ignored while the window is hidden.
+TEST_F(NativeWidgetMacOcclusionTest, PendingHideCancelledOnHide) {
+  SetOccluded(true);
+  EXPECT_TRUE(hide_timer().IsRunning());
+
+  widget_->Hide();
+  EXPECT_FALSE(hide_timer().IsRunning());
+
+  SetOccluded(true);
+  EXPECT_FALSE(hide_timer().IsRunning());
+
+  widget_->Show();
+  EXPECT_FALSE(hide_timer().IsRunning());
+  EXPECT_TRUE(CompositorVisible());
+}
+
+// Tests that occluded reports for a minimized window (the checker reports
+// minimized windows as occluded on every pass) are ignored.
+TEST_F(NativeWidgetMacOcclusionTest, MinimizedIgnoresOcclusion) {
+  [window_ performMiniaturize:nil];
+  WaitForMinimized(widget_);
+
+  SetOccluded(true);
+  EXPECT_FALSE(hide_timer().IsRunning());
+
+  [window_ deminiaturize:nil];
+  WaitForMinimized(widget_, /*minimized=*/false);
+  EXPECT_TRUE(CompositorVisible());
+}
+
+// Tests that restoring a minimized window clears a stale occlusion state.
+TEST_F(NativeWidgetMacOcclusionTest, ResetOnDeminiaturize) {
+  ASSERT_NO_FATAL_FAILURE(SetOccludedAndApply());
+
+  [window_ performMiniaturize:nil];
+  WaitForMinimized(widget_);
+  [window_ deminiaturize:nil];
+  WaitForMinimized(widget_, /*minimized=*/false);
+
+  EXPECT_TRUE(CompositorVisible());
+}
+
+// Tests that destroying the widget while a hide is pending cancels the timer
+// cleanly.
+TEST_F(NativeWidgetMacOcclusionTest, DestroyWithPendingHide) {
+  SetOccluded(true);
+  ASSERT_TRUE(hide_timer().IsRunning());
+
+  view_ = nullptr;
+  widget_.ExtractAsDangling()->CloseNow();
+}
+
+// Tests that occlusion has no effect when the feature is disabled.
+TEST_F(NativeWidgetMacTest, CompositorOcclusionFeatureDisabled) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndDisableFeature(
+      features::kNotifyCompositorOfWindowOcclusionOnMacOs);
+
+  NativeWidgetMacTestWindow* window;
+  Widget::InitParams init_params =
+      CreateParams(Widget::InitParams::TYPE_WINDOW);
+  init_params.bounds = gfx::Rect(100, 100, 300, 300);
+  WidgetAutoclosePtr widget(
+      CreateWidgetWithTestWindow(std::move(init_params), &window));
+  ASSERT_NE(nullptr, widget->GetCompositor());
+  EXPECT_TRUE(widget->GetCompositor()->IsVisible());
+
+  remote_cocoa::NativeWidgetNSWindowBridge::GetFromNSWindow(window)
+      ->OnWindowOcclusionChanged(true);
+  NativeWidgetMacNSWindowHost* host =
+      NativeWidgetMacNSWindowHost::GetFromNativeWindow(
+          widget->GetNativeWindow());
+  EXPECT_FALSE(host->occlusion_hide_timer_for_testing().IsRunning());
+  EXPECT_TRUE(widget->GetCompositor()->IsVisible());
+}
+
+// End-to-end integration tests for the real `WindowOcclusionCheckerMac` ->
+// `NativeWidgetNSWindowBridge` -> `NativeWidgetMacNSWindowHost` ->
+// `ui::Compositor` pipeline on pure-Views windows.
+class NativeWidgetMacOcclusionCheckerIntegrationTest
+    : public NativeWidgetMacTest {
+ public:
+  NativeWidgetMacOcclusionCheckerIntegrationTest() {
+    feature_list_.InitWithFeatures(
+        {remote_cocoa::features::kTrackAllTopLevelWindowsForOcclusion,
+         features::kNotifyCompositorOfWindowOcclusionOnMacOs},
+        {});
+  }
+
+  void SetUp() override {
+    NativeWidgetMacTest::SetUp();
+    if (![WindowOcclusionCheckerMac
+            manualOcclusionDetectionSupportedForCurrentMacOSVersion]) {
+      GTEST_SKIP()
+          << "Manual window occlusion detection is broken on macOS 13.0-13.2.";
+    }
+    [WindowOcclusionCheckerMac resetSharedInstanceForTesting];
+  }
+
+  void TearDown() override {
+    NativeWidgetMacTest::TearDown();
+    [WindowOcclusionCheckerMac resetSharedInstanceForTesting];
+  }
+
+ protected:
+  // Creates a shown top-level test window with `fakeOcclusionStateVisible =
+  // YES` and simulates an initial compositor frame swap so its `alphaValue` is
+  // restored to `1.0` under `kAlphaInsteadOfCATransaction`.
+  Widget* CreateOpaqueShownTestWidget(const gfx::Rect& bounds,
+                                      NativeWidgetMacTestWindow** out_window) {
+    Widget* widget = new Widget;
+    Widget::InitParams init_params =
+        CreateParams(Widget::InitParams::TYPE_WINDOW);
+    init_params.bounds = bounds;
+    init_params.native_widget = new TestWindowNativeWidgetMac(widget);
+    widget->Init(std::move(init_params));
+
+    NativeWidgetMacTestWindow* window =
+        base::apple::ObjCCastStrict<NativeWidgetMacTestWindow>(
+            widget->GetNativeWindow().GetNativeNSWindow());
+    window.fakeOcclusionStateVisible = YES;
+
+    widget->Show();
+    BridgedNativeWidgetTestApi(widget).SimulateFrameSwap(
+        widget->GetClientAreaBoundsInScreen().size());
+    EXPECT_EQ(1.0, window.alphaValue);
+
+    *out_window = window;
+    return widget;
+  }
+
+  void FlushOcclusionUpdates() {
+    ASSERT_TRUE(base::test::RunUntil([] {
+      return ![[WindowOcclusionCheckerMac sharedInstance]
+          occlusionStateUpdatesAreScheduledForTesting];
+    }));
+  }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+};
+
+TEST_F(NativeWidgetMacOcclusionCheckerIntegrationTest,
+       SameSizeWindowOcclusionEndToEnd) {
+  const gfx::Rect kBounds(100, 100, 300, 300);
+  NativeWidgetMacTestWindow* window_a = nil;
+  WidgetAutoclosePtr widget_a(CreateOpaqueShownTestWidget(kBounds, &window_a));
+  auto* view_a = widget_a->GetContentsView()->AddChildView(
+      std::make_unique<PaintCountView>());
+  view_a->WaitForPaintCount(1);
+
+  WindowOcclusionCheckerMac* checker =
+      [WindowOcclusionCheckerMac sharedInstance];
+  ASSERT_TRUE(checker);
+  EXPECT_TRUE([checker isTrackingWindow:window_a]);
+
+  FlushOcclusionUpdates();
+  NativeWidgetMacNSWindowHost* host_a =
+      NativeWidgetMacNSWindowHost::GetFromNativeWindow(
+          widget_a->GetNativeWindow());
+  EXPECT_FALSE([window_a isOccluded]);
+  EXPECT_FALSE(host_a->occlusion_hide_timer_for_testing().IsRunning());
+  EXPECT_TRUE(widget_a->GetCompositor()->IsVisible());
+
+  // Stack an opaque pure-Views window of the exact same frame in front of
+  // `window_a`.
+  NativeWidgetMacTestWindow* window_b = nil;
+  WidgetAutoclosePtr widget_b(CreateOpaqueShownTestWidget(kBounds, &window_b));
+  EXPECT_TRUE([checker isTrackingWindow:window_b]);
+  ASSERT_TRUE(NSEqualRects(window_a.frame, window_b.frame));
+
+  FlushOcclusionUpdates();
+  EXPECT_TRUE([window_a isOccluded]);
+  EXPECT_FALSE([window_b isOccluded]);
+  ASSERT_TRUE(host_a->occlusion_hide_timer_for_testing().IsRunning());
+  EXPECT_TRUE(widget_a->GetCompositor()->IsVisible());
+
+  host_a->occlusion_hide_timer_for_testing().FireNow();
+  EXPECT_FALSE(widget_a->GetCompositor()->IsVisible());
+
+  // Hiding the covering window un-occludes `window_a` on the next checker pass
+  // and immediately restores compositor visibility + triggers a repaint.
+  const int paint_count_before_unocclude = view_a->paint_count();
+  widget_b->Hide();
+  FlushOcclusionUpdates();
+  EXPECT_FALSE([window_a isOccluded]);
+  EXPECT_TRUE(widget_a->GetCompositor()->IsVisible());
+  view_a->WaitForPaintCount(paint_count_before_unocclude + 1);
+}
+
+TEST_F(NativeWidgetMacOcclusionCheckerIntegrationTest,
+       ChildAndTooltipWidgetsIgnored) {
+  const gfx::Rect kBounds(100, 100, 300, 300);
+  NativeWidgetMacTestWindow* parent_window = nil;
+  WidgetAutoclosePtr parent_widget(
+      CreateOpaqueShownTestWidget(kBounds, &parent_window));
+
+  WindowOcclusionCheckerMac* checker =
+      [WindowOcclusionCheckerMac sharedInstance];
+  ASSERT_TRUE(checker);
+  EXPECT_TRUE([checker isTrackingWindow:parent_window]);
+
+  // A child bubble widget is not registered as a tracked top-level window.
+  Widget::InitParams child_params =
+      CreateParams(Widget::InitParams::TYPE_BUBBLE);
+  child_params.parent = parent_widget->GetNativeView();
+  child_params.bounds = kBounds;
+  NativeWidgetMacTestWindow* child_window = nil;
+  WidgetAutoclosePtr child_widget(
+      CreateWidgetWithTestWindow(std::move(child_params), &child_window));
+  EXPECT_FALSE([checker isTrackingWindow:child_window]);
+
+  // Dynamically detaching the child widget makes it a tracked top-level window,
+  // and re-attaching it to `parent_widget` unregisters it again.
+  Widget::ReparentNativeView(child_widget->GetNativeView(), gfx::NativeView());
+  EXPECT_TRUE([checker isTrackingWindow:child_window]);
+  Widget::ReparentNativeView(child_widget->GetNativeView(),
+                             parent_widget->GetNativeView());
+  EXPECT_FALSE([checker isTrackingWindow:child_window]);
+
+  // A tooltip widget is also excluded even without a parent.
+  Widget::InitParams tooltip_params =
+      CreateParams(Widget::InitParams::TYPE_TOOLTIP);
+  tooltip_params.bounds = gfx::Rect(120, 120, 80, 30);
+  NativeWidgetMacTestWindow* tooltip_window = nil;
+  WidgetAutoclosePtr tooltip_widget(
+      CreateWidgetWithTestWindow(std::move(tooltip_params), &tooltip_window));
+  EXPECT_FALSE([checker isTrackingWindow:tooltip_window]);
+
+  // Closing the child/tooltip widgets and then the top-level widget unregisters
+  // `parent_window` cleanly (note: closing `parent_widget` first would destroy
+  // `child_widget` before `WidgetAutoclosePtr` runs).
+  child_widget.reset();
+  tooltip_widget.reset();
+  parent_widget.reset();
+  EXPECT_FALSE([checker isTrackingWindow:parent_window]);
+}
+
+TEST_F(NativeWidgetMacTest,
+       OcclusionCheckerInertWhenTrackAllTopLevelWindowsDisabled) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitWithFeatures(
+      /*enabled_features=*/{features::
+                                kNotifyCompositorOfWindowOcclusionOnMacOs},
+      /*disabled_features=*/{
+          remote_cocoa::features::kTrackAllTopLevelWindowsForOcclusion});
+  [WindowOcclusionCheckerMac resetSharedInstanceForTesting];
+  WindowOcclusionCheckerMac* checker =
+      [WindowOcclusionCheckerMac sharedInstance];
+  ASSERT_TRUE(checker);
+
+  const gfx::Rect kBounds(100, 100, 300, 300);
+  Widget::InitParams params_a = CreateParams(Widget::InitParams::TYPE_WINDOW);
+  params_a.bounds = kBounds;
+  NativeWidgetMacTestWindow* window_a = nil;
+  WidgetAutoclosePtr widget_a(
+      CreateWidgetWithTestWindow(std::move(params_a), &window_a));
+  window_a.fakeOcclusionStateVisible = YES;
+  BridgedNativeWidgetTestApi(widget_a.get())
+      .SimulateFrameSwap(widget_a->GetClientAreaBoundsInScreen().size());
+
+  Widget::InitParams params_b = CreateParams(Widget::InitParams::TYPE_WINDOW);
+  params_b.bounds = kBounds;
+  NativeWidgetMacTestWindow* window_b = nil;
+  WidgetAutoclosePtr widget_b(
+      CreateWidgetWithTestWindow(std::move(params_b), &window_b));
+  window_b.fakeOcclusionStateVisible = YES;
+  BridgedNativeWidgetTestApi(widget_b.get())
+      .SimulateFrameSwap(widget_b->GetClientAreaBoundsInScreen().size());
+
+  EXPECT_FALSE([checker isTrackingWindow:window_a]);
+  EXPECT_FALSE([checker isTrackingWindow:window_b]);
+
+  ASSERT_TRUE(base::test::RunUntil([checker] {
+    return ![checker occlusionStateUpdatesAreScheduledForTesting];
+  }));
+  NativeWidgetMacNSWindowHost* host_a =
+      NativeWidgetMacNSWindowHost::GetFromNativeWindow(
+          widget_a->GetNativeWindow());
+  EXPECT_FALSE([window_a isOccluded]);
+  EXPECT_FALSE(host_a->occlusion_hide_timer_for_testing().IsRunning());
+  EXPECT_TRUE(widget_a->GetCompositor()->IsVisible());
+
+  widget_b.reset();
+  widget_a.reset();
+  [WindowOcclusionCheckerMac resetSharedInstanceForTesting];
+}
+
 TEST_F(NativeWidgetMacTest, MiniaturizeFramelessWindow) {
   // Create a widget without a minimize button.
   Widget* widget = CreateTopLevelFramelessPlatformWidget();
@@ -1330,6 +2089,60 @@ TEST_F(NativeWidgetMacTest, KeyStatusChangeWithNoTopLevelDoesNotCrash) {
   // The child is detached from `native_parent`, so close it directly.
   [child->GetNativeWindow().GetNativeNSWindow() close];
   [native_parent close];
+}
+
+// Tests that when a widget's window becomes key, its stored focused View is
+// restored before activation observers are notified, like on Aura, so that a
+// View that requested focus while the widget was inactive (see
+// FocusManager::SetFocusedViewWithReason()) isn't overridden by observers that
+// also restore focus on activation.
+TEST_F(NativeWidgetMacTest, KeyStatusChangeRestoresFocusBeforeObservers) {
+  WidgetAutoclosePtr widget(CreateTopLevelPlatformWidget());
+  View* view =
+      widget->GetContentsView()->AddChildView(std::make_unique<View>());
+  view->SetFocusBehavior(View::FocusBehavior::ALWAYS);
+
+  FocusManager* focus_manager = widget->GetFocusManager();
+  focus_manager->SetStoredFocusView(view);
+  ASSERT_FALSE(focus_manager->GetFocusedView());
+
+  // Records the focused View when the widget is activated.
+  class FocusOnActivationObserver : public WidgetObserver {
+   public:
+    void OnWidgetActivationChanged(Widget* widget, bool active) override {
+      if (active) {
+        notified_ = true;
+        focused_view_ = widget->GetFocusManager()->GetFocusedView();
+      }
+    }
+
+    bool notified() const { return notified_; }
+    View* focused_view() const { return focused_view_; }
+
+   private:
+    bool notified_ = false;
+    raw_ptr<View> focused_view_ = nullptr;
+  };
+  FocusOnActivationObserver observer;
+  base::ScopedObservation<Widget, WidgetObserver> observation(&observer);
+  observation.Observe(widget.get());
+
+  // Simulate the window becoming key.
+  remote_cocoa::mojom::NativeWidgetNSWindowHost* host =
+      NativeWidgetMacNSWindowHost::GetFromNativeWindow(
+          widget->GetNativeWindow());
+  ASSERT_TRUE(host);
+  host->OnWindowKeyStatusChanged(/*is_key=*/true,
+                                 /*is_content_first_responder=*/true,
+                                 /*full_keyboard_access_enabled=*/false);
+
+  ASSERT_TRUE(observer.notified());
+  EXPECT_EQ(view, observer.focused_view());
+  EXPECT_EQ(view, focus_manager->GetFocusedView());
+
+  host->OnWindowKeyStatusChanged(/*is_key=*/false,
+                                 /*is_content_first_responder=*/true,
+                                 /*full_keyboard_access_enabled=*/false);
 }
 
 // Tests that CloseAllWidgets behaves in various configurations.
@@ -1901,15 +2714,7 @@ TEST_F(NativeWidgetMacTest, ShowAnimationControl) {
 }
 
 // Tests behavior of window-modal dialogs, displayed as sheets.
-#if defined(ARCH_CPU_ARM64) || BUILDFLAG(IS_MAC)
-// Bulk-disabled as part of arm64 bot stabilization: https://crbug.com/1154345
-// Disabled on Mac 10.15 and 10.11 failing ([parent_close_button isEnabled])
-// crbug.com/1473423
-#define MAYBE_WindowModalSheet DISABLED_WindowModalSheet
-#else
-#define MAYBE_WindowModalSheet WindowModalSheet
-#endif
-TEST_F(NativeWidgetMacTest, MAYBE_WindowModalSheet) {
+TEST_F(NativeWidgetMacTest, WindowModalSheet) {
   NSWindow* native_parent = MakeClosableTitledNativeParent();
 
   Widget* sheet_widget = views::DialogDelegate::CreateDialogWidget(
@@ -1939,6 +2744,8 @@ TEST_F(NativeWidgetMacTest, MAYBE_WindowModalSheet) {
   EXPECT_TRUE(parent_close_button);
   EXPECT_TRUE([parent_close_button isEnabled]);
 
+  base::RunLoop run_loop;
+  base::RepeatingClosure quit_closure = run_loop.QuitClosure();
   bool did_observe = false;
   bool* did_observe_ptr = &did_observe;
   id observer = [[NSNotificationCenter defaultCenter]
@@ -1951,6 +2758,7 @@ TEST_F(NativeWidgetMacTest, MAYBE_WindowModalSheet) {
                 EXPECT_TRUE(sheet_widget->IsVisible());
                 EXPECT_TRUE(sheet_widget->GetLayer()->IsVisible());
                 *did_observe_ptr = true;
+                quit_closure.Run();
               }];
 
   Widget::Widgets children =
@@ -1958,6 +2766,7 @@ TEST_F(NativeWidgetMacTest, MAYBE_WindowModalSheet) {
   ASSERT_EQ(2u, children.size());
 
   sheet_widget->Show();  // Should run the above block, then animate the sheet.
+  run_loop.Run();
   EXPECT_TRUE(did_observe);
   [[NSNotificationCenter defaultCenter] removeObserver:observer];
 
@@ -2174,6 +2983,38 @@ TEST_F(NativeWidgetMacTest, CloseWindowModalSheetWithoutSheetParent) {
   // Now there is still a task to end the sheet in the message queue, which
   // should not crash.
   base::RunLoop().RunUntilIdle();
+  [native_parent close];
+}
+
+// Regression test for https://crbug.com/572474546. Calling Show() and
+// Activate() on a window-modal sheet before the posted beginSheet: task runs
+// must not invoke -[NSWindow beginSheet:completionHandler:] twice on the same
+// sheet, which would corrupt AppKit's sheet state and leave a dangling sheet
+// with a nil documentWindow after closing.
+TEST_F(NativeWidgetMacTest, ShowAndActivateWindowModalSheet) {
+  NSWindow* native_parent = MakeClosableTitledNativeParent();
+
+  Widget* sheet_widget = views::DialogDelegate::CreateDialogWidget(
+      MakeModalDialog(ui::mojom::ModalType::kWindow), gfx::NativeWindow(),
+      gfx::NativeView(native_parent.contentView));
+  NSWindow* sheet_window = sheet_widget->GetNativeWindow().GetNativeNSWindow();
+
+  WidgetChangeObserver widget_observer(sheet_widget);
+  sheet_widget->Show();
+  sheet_widget->Activate();
+  EXPECT_TRUE(base::test::RunUntil([&]() { return [sheet_window isVisible]; }));
+
+  // Ensure any second task posted by Activate() has also executed.
+  base::RunLoop flush_loop;
+  base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
+      FROM_HERE, flush_loop.QuitClosure());
+  flush_loop.Run();
+
+  sheet_widget->Close();
+  EXPECT_TRUE(
+      base::test::RunUntil([&]() { return widget_observer.widget_closed(); }));
+  EXPECT_FALSE([native_parent attachedSheet]);
+
   [native_parent close];
 }
 
@@ -2522,113 +3363,6 @@ TEST_F(NativeWidgetMacTest, ChangeOpacity) {
   widget->CloseNow();
 }
 
-// Test that hiding and showing a window with kAlphaInsteadOfCATransaction
-// restores the configured opacity when hidden, and triggers opacity fix on
-// subsequent show only when `prevent_stale_content_after_hide` is set.
-TEST_F(NativeWidgetMacTest, HideAndShowOpacityWithAlphaFeature) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndEnableFeature(::features::kAlphaInsteadOfCATransaction);
-
-  // Case 1: Window without prevent_stale_content_after_hide (default).
-  // Once the first frame arrives, subsequent hide-then-show does not reset
-  // alpha.
-  {
-    Widget* widget = CreateTopLevelPlatformWidget();
-    NSWindow* ns_window = widget->GetNativeWindow().GetNativeNSWindow();
-
-    widget->SetOpacity(0.7f);
-    EXPECT_FLOAT_EQ(0.7f, [ns_window alphaValue]);
-
-    // Showing the widget should set alphaValue to 0 until a compositor frame
-    // arrives.
-    widget->Show();
-    EXPECT_FLOAT_EQ(0.0f, [ns_window alphaValue]);
-
-    // Frame arrives, restoring opacity.
-    BridgedNativeWidgetTestApi(widget).SimulateFrameSwap(
-        widget->GetClientAreaBoundsInScreen().size());
-    EXPECT_FLOAT_EQ(0.7f, [ns_window alphaValue]);
-
-    // Hiding the widget.
-    widget->Hide();
-    EXPECT_FLOAT_EQ(0.7f, [ns_window alphaValue]);
-
-    // Showing it again does not reset alpha to 0 since
-    // prevent_stale_content_after_hide is false and frame size didn't change.
-    widget->Show();
-    EXPECT_FLOAT_EQ(0.7f, [ns_window alphaValue]);
-
-    widget->CloseNow();
-  }
-
-  // Case 2: Window with prevent_stale_content_after_hide = true.
-  // Hide-then-show sets alpha to 0 until a new compositor frame arrives.
-  {
-    auto widget = std::make_unique<Widget>();
-    Widget::InitParams params =
-        CreateParams(Widget::InitParams::CLIENT_OWNS_WIDGET,
-                     Widget::InitParams::TYPE_WINDOW);
-    params.prevent_stale_content_after_hide = true;
-    params.native_widget = new TestWindowNativeWidgetMac(widget.get());
-    widget->Init(std::move(params));
-    NSWindow* ns_window = widget->GetNativeWindow().GetNativeNSWindow();
-
-    widget->SetOpacity(0.7f);
-    EXPECT_FLOAT_EQ(0.7f, [ns_window alphaValue]);
-
-    // Showing the widget should set alphaValue to 0 until a compositor frame
-    // arrives.
-    widget->Show();
-    EXPECT_FLOAT_EQ(0.0f, [ns_window alphaValue]);
-
-    // Initial frame arrives.
-    BridgedNativeWidgetTestApi(widget.get())
-        .SimulateFrameSwap(widget->GetClientAreaBoundsInScreen().size());
-    EXPECT_FLOAT_EQ(0.7f, [ns_window alphaValue]);
-
-    // Hiding the widget.
-    widget->Hide();
-    EXPECT_FLOAT_EQ(0.7f, [ns_window alphaValue]);
-
-    // Showing it again sets alphaValue to 0 because
-    // prevent_stale_content_after_hide is true.
-    widget->Show();
-    EXPECT_FLOAT_EQ(0.0f, [ns_window alphaValue]);
-
-    // Fresh frame arrives, restoring opacity.
-    BridgedNativeWidgetTestApi(widget.get())
-        .SimulateFrameSwap(widget->GetClientAreaBoundsInScreen().size());
-    EXPECT_FLOAT_EQ(0.7f, [ns_window alphaValue]);
-
-    widget->CloseNow();
-  }
-
-  // Case 3: Window hidden before initial frame arrives.
-  {
-    Widget* widget = CreateTopLevelPlatformWidget();
-    NSWindow* ns_window = widget->GetNativeWindow().GetNativeNSWindow();
-
-    widget->SetOpacity(0.7f);
-    EXPECT_FLOAT_EQ(0.7f, [ns_window alphaValue]);
-
-    widget->Show();
-    EXPECT_FLOAT_EQ(0.0f, [ns_window alphaValue]);
-
-    // Hide before any frame arrives.
-    widget->Hide();
-    EXPECT_FLOAT_EQ(0.0f, [ns_window alphaValue]);
-
-    // Showing it again and receiving a frame restores opacity.
-    widget->Show();
-    EXPECT_FLOAT_EQ(0.0f, [ns_window alphaValue]);
-
-    BridgedNativeWidgetTestApi(widget).SimulateFrameSwap(
-        widget->GetClientAreaBoundsInScreen().size());
-    EXPECT_FLOAT_EQ(0.7f, [ns_window alphaValue]);
-
-    widget->CloseNow();
-  }
-}
 
 // Ensure traversing NSView focus correctly updates the views::FocusManager.
 TEST_F(NativeWidgetMacTest, ChangeFocusOnChangeFirstResponder) {
@@ -3227,6 +3961,25 @@ TEST_F(NativeWidgetMacTest, CenterWindowClampsToScreen) {
   parent->CloseNow();
 }
 
+// Tests that CenterWindow centers a window without a parent in the work area of
+// its display, and sizes its content area to the requested size.
+TEST_F(NativeWidgetMacTest, CenterWindowWithoutParent) {
+  Widget* widget = CreateTopLevelPlatformWidget();
+  const gfx::Size content_size(300, 200);
+  widget->CenterWindow(content_size);
+  EXPECT_EQ(content_size, widget->GetClientAreaBoundsInScreen().size());
+
+  const gfx::Rect bounds = widget->GetWindowBoundsInScreen();
+  EXPECT_EQ(gfx::ScreenRectFromNSRect(
+                widget->GetNativeWindow().GetNativeNSWindow().frame),
+            bounds);
+  const gfx::Rect work_area =
+      display::Screen::Get()->GetDisplayMatching(bounds).work_area();
+  EXPECT_EQ(work_area.CenterPoint(), bounds.CenterPoint());
+
+  widget->CloseNow();
+}
+
 namespace {
 
 class NoopEventMonitorClient : public NativeWidgetMacEventMonitor::Client {
@@ -3310,11 +4063,21 @@ class TestNativeThemeObserver : public ui::NativeThemeObserver {
 TEST_F(NativeWidgetMacTest, OnWindowNativeThemeChangedScopesToTargetWidget) {
   base::test::ScopedFeatureList feature_list(
       ::features::kThemeChangeOptimization);
+  ui::MockOsSettingsProvider os_settings_provider;
 
   Widget* widget1 = CreateTopLevelPlatformWidget();
   widget1->Show();
+  widget1->ThemeChanged();
   Widget* widget2 = CreateTopLevelPlatformWidget();
   widget2->Show();
+  widget2->ThemeChanged();
+
+  {
+    base::RunLoop run_loop;
+    base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE, run_loop.QuitClosure());
+    run_loop.Run();
+  }
 
   ThemeChangeCountingWidgetObserver observer1(widget1);
   ThemeChangeCountingWidgetObserver observer2(widget2);
@@ -3322,14 +4085,55 @@ TEST_F(NativeWidgetMacTest, OnWindowNativeThemeChangedScopesToTargetWidget) {
       ui::NativeTheme::GetInstanceForNativeUi());
 
   BridgedNativeWidgetTestApi(widget1).OnSystemColorsChanged();
+  {
+    base::RunLoop run_loop;
+    base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE, run_loop.QuitClosure());
+    run_loop.Run();
+  }
 
-  // Widget2 and process-wide NativeTheme should NOT have received
-  // notifications.
+  // Widget1 should have received a theme change, while Widget2 and process-wide
+  // NativeTheme should NOT have received notifications.
+  EXPECT_EQ(1, observer1.theme_changed_count());
   EXPECT_EQ(0, observer2.theme_changed_count());
   EXPECT_EQ(0, global_theme_observer.theme_updated_count());
 
+  // Subsequent OnSystemColorsChanged() should also trigger a theme change on
+  // widget1 even after last_color_provider_key_ is populated.
+  BridgedNativeWidgetTestApi(widget1).OnSystemColorsChanged();
+  {
+    base::RunLoop run_loop;
+    base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE, run_loop.QuitClosure());
+    run_loop.Run();
+  }
+  EXPECT_EQ(2, observer1.theme_changed_count());
+
   widget1->CloseNow();
   widget2->CloseNow();
+}
+
+TEST_F(NativeWidgetMacTest,
+       SystemColorsNotificationUpdatesGlobalThemeWhenEnabled) {
+  base::test::ScopedFeatureList feature_list(
+      ::features::kThemeChangeOptimization);
+  {
+    ui::OsSettingsProviderMac os_settings_provider(
+        ui::OsSettingsProvider::PriorityLevel::kTesting);
+
+    auto* const native_theme = ui::NativeTheme::GetInstanceForNativeUi();
+    TestNativeThemeObserver global_theme_observer(native_theme);
+    const size_t initial_version = native_theme->system_color_version();
+
+    [[NSNotificationCenter defaultCenter]
+        postNotificationName:NSSystemColorsDidChangeNotification
+                      object:nil];
+
+    EXPECT_GT(global_theme_observer.theme_updated_count(), 0);
+    EXPECT_GT(native_theme->system_color_version(), initial_version);
+  }
+  // Restore default test settings on NativeTheme for subsequent tests.
+  ui::MockOsSettingsProvider reset_settings_provider;
 }
 
 TEST_F(NativeWidgetMacTest,
@@ -3377,6 +4181,60 @@ TEST_F(NativeWidgetMacTest, SizeChangeNotifiedBeforeMoveChange) {
   widget->CloseNow();
 }
 
+namespace {
+
+class TestImmersiveModeRevealClient : public ImmersiveModeRevealClient {
+ public:
+  void OnImmersiveModeToolbarRevealChanged(bool is_revealed) override {}
+  void OnImmersiveModeMenuBarRevealChanged(double reveal_amount) override {}
+  void OnAutohidingMenuBarHeightChanged(int menu_bar_height) override {}
+  void OnImmersiveModeTitlebarFrameChanged(const gfx::Rect& frame) override {
+    titlebar_frames.push_back(frame);
+  }
+
+  base::WeakPtr<TestImmersiveModeRevealClient> GetWeakPtr() {
+    return weak_ptr_factory_.GetWeakPtr();
+  }
+
+  std::vector<gfx::Rect> titlebar_frames;
+
+ private:
+  base::WeakPtrFactory<TestImmersiveModeRevealClient> weak_ptr_factory_{this};
+};
+
+}  // namespace
+
+// Immersive fullscreen v2: enabling it adds the transparent titlebar accessory,
+// disabling it removes it, and titlebar frame changes reach the reveal client.
+TEST_F(NativeWidgetMacTest, ImmersiveFullscreenWithTransparentTitlebar) {
+  Widget* widget = CreateTopLevelPlatformWidget();
+  widget->Show();
+  NativeWidgetMacNSWindowHost* host =
+      NativeWidgetMacNSWindowHost::GetFromNativeWindow(
+          widget->GetNativeWindow());
+  remote_cocoa::NativeWidgetNSWindowBridge* bridge =
+      host->GetInProcessNSWindowBridge();
+  NSWindow* window = widget->GetNativeWindow().GetNativeNSWindow();
+  const NSUInteger accessory_count =
+      window.titlebarAccessoryViewControllers.count;
+
+  bridge->EnableImmersiveFullscreenWithTransparentTitlebar();
+  EXPECT_TRUE(bridge->ImmersiveFullscreenEnabled());
+  EXPECT_EQ(accessory_count + 1, window.titlebarAccessoryViewControllers.count);
+
+  TestImmersiveModeRevealClient reveal_client;
+  host->set_immersive_mode_reveal_client(reveal_client.GetWeakPtr());
+  const gfx::Rect frame(0, -32, 400, 32);
+  bridge->OnImmersiveFullscreenTitlebarFrameChanged(frame);
+  EXPECT_THAT(reveal_client.titlebar_frames, testing::ElementsAre(frame));
+
+  bridge->DisableImmersiveFullscreen();
+  EXPECT_FALSE(bridge->ImmersiveFullscreenEnabled());
+  EXPECT_EQ(accessory_count, window.titlebarAccessoryViewControllers.count);
+
+  widget->CloseNow();
+}
+
 }  // namespace views::test
 
 @implementation TestStopAnimationWaiter
@@ -3388,7 +4246,9 @@ TEST_F(NativeWidgetMacTest, SizeChangeNotifiedBeforeMoveChange) {
 @implementation NativeWidgetMacTestWindow
 
 @synthesize invalidateShadowCount = _invalidateShadowCount;
+@synthesize setStyleMaskCount = _setStyleMaskCount;
 @synthesize fakeOnInactiveSpace = _fakeOnInactiveSpace;
+@synthesize fakeOcclusionStateVisible = _fakeOcclusionStateVisible;
 @synthesize deallocFlag = _deallocFlag;
 
 - (void)dealloc {
@@ -3403,8 +4263,23 @@ TEST_F(NativeWidgetMacTest, SizeChangeNotifiedBeforeMoveChange) {
   [super invalidateShadow];
 }
 
+- (void)setStyleMask:(NSWindowStyleMask)styleMask {
+  ++_setStyleMaskCount;
+  [super setStyleMask:styleMask];
+}
+
 - (BOOL)isOnActiveSpace {
   return !_fakeOnInactiveSpace;
+}
+
+- (NSWindowOcclusionState)occlusionState {
+  if (_fakeOcclusionStateVisible) {
+    return [super occlusionState] | NSWindowOcclusionStateVisible;
+  }
+  if (_fakeOnInactiveSpace) {
+    return [super occlusionState] & ~NSWindowOcclusionStateVisible;
+  }
+  return [super occlusionState];
 }
 
 @end

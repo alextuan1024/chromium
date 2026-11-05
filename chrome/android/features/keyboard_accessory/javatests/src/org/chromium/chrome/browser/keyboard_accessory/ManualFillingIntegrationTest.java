@@ -6,7 +6,6 @@ package org.chromium.chrome.browser.keyboard_accessory;
 
 import static androidx.test.espresso.Espresso.onView;
 import static androidx.test.espresso.action.ViewActions.click;
-import static androidx.test.espresso.assertion.ViewAssertions.doesNotExist;
 import static androidx.test.espresso.assertion.ViewAssertions.matches;
 import static androidx.test.espresso.contrib.RecyclerViewActions.actionOnItem;
 import static androidx.test.espresso.contrib.RecyclerViewActions.scrollTo;
@@ -43,7 +42,6 @@ import org.chromium.base.ThreadUtils;
 import org.chromium.base.task.PostTask;
 import org.chromium.base.task.TaskTraits;
 import org.chromium.base.test.util.Batch;
-import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.base.test.util.DisableIf;
 import org.chromium.base.test.util.DisabledTest;
@@ -51,7 +49,6 @@ import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.Restriction;
 import org.chromium.chrome.browser.ChromeWindow;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
-import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.keyboard_accessory.button_group_component.KeyboardAccessoryButtonGroupView;
 import org.chromium.chrome.browser.layouts.LayoutTestUtils;
 import org.chromium.chrome.browser.layouts.LayoutType;
@@ -68,7 +65,6 @@ import java.util.concurrent.atomic.AtomicReference;
 /** Integration tests for keyboard accessory and accessory sheet with other Chrome components. */
 // TODO(crbug.com/447076444): Enable Keyboard Accessory revamp flag
 @RunWith(ChromeJUnit4ClassRunner.class)
-@CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
 @DisableFeatures({
     ChromeFeatureList.AUTOFILL_ANDROID_DESKTOP_KEYBOARD_ACCESSORY_REVAMP,
     ChromeFeatureList.AUTOFILL_ANDROID_DESKTOP_SUPPRESS_ACCESSORY_ON_EMPTY
@@ -113,13 +109,13 @@ public class ManualFillingIntegrationTest {
         mHelper.startAtTestPage(/* isRtl= */ false);
 
         // Focus the field to bring up the accessory.
-        onView(withId(R.id.keyboard_accessory)).check(doesNotExist());
+        waitToBeHidden(withId(R.id.keyboard_accessory));
         mHelper.focusPasswordField();
         mHelper.waitForKeyboardAccessoryToBeShown();
 
         // Check that ONLY the accessory is there but the sheet is still hidden.
         whenDisplayed(withId(R.id.keyboard_accessory));
-        onView(withChild(withId(R.id.keyboard_accessory_sheet_frame))).check(doesNotExist());
+        waitToBeHidden(withChild(withId(R.id.keyboard_accessory_sheet_frame)));
     }
 
     @Test
@@ -151,7 +147,7 @@ public class ManualFillingIntegrationTest {
 
         // Check that ONLY the accessory is there but the sheet is still hidden.
         whenDisplayed(withId(R.id.keyboard_accessory));
-        onView(withChild(withId(R.id.keyboard_accessory_sheet_frame))).check(doesNotExist());
+        waitToBeHidden(withChild(withId(R.id.keyboard_accessory_sheet_frame)));
 
         // Trigger the sheet and wait for it to open and the keyboard to disappear.
         whenDisplayed(withId(R.id.bar_items_view))
@@ -204,7 +200,7 @@ public class ManualFillingIntegrationTest {
                                     accessoryMargins.get().bottomMargin,
                                     is(0)); // Attached to keyboard.
                         });
-        onView(withChild(withId(R.id.keyboard_accessory_sheet_frame))).check(doesNotExist());
+        waitToBeHidden(withChild(withId(R.id.keyboard_accessory_sheet_frame)));
 
         // Trigger the sheet and wait for it to open and the keyboard to disappear.
         whenDisplayed(withId(R.id.bar_items_view))

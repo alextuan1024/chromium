@@ -30,10 +30,10 @@
 #include "ui/base/models/table_model.h"
 #include "ui/base/mojom/dialog_button.mojom.h"
 #include "ui/base/mojom/ui_base_types.mojom-shared.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/base/page_transition_types.h"
 #include "ui/base/resource/resource_bundle.h"
 #include "ui/base/ui_base_features.h"
-#include "ui/base/window_open_disposition.h"
 #include "ui/base/window_open_disposition_utils.h"
 #include "ui/gfx/favicon_size.h"
 #include "ui/gfx/image/image_skia.h"
@@ -61,7 +61,7 @@ class DeprecatedAppsDialogView::DeprecatedAppsTableModel
       const extensions::Extension* extension =
           extensions::ExtensionRegistry::Get(browser_context)
               ->GetInstalledExtension(app_id);
-      DCHECK(extension);
+      CHECK(extension, base::NotFatalUntil::M162);
       const gfx::ImageSkia default_icon = gfx::CreateVectorIcon(
           features::IsRoundedIconsEnabled() ? vector_icons::kExtensionFilledIcon
                                             : vector_icons::kExtensionOldIcon,
@@ -88,7 +88,7 @@ class DeprecatedAppsDialogView::DeprecatedAppsTableModel
   size_t RowCount() const override { return rows_.size(); }
 
   std::u16string GetText(size_t index, int column_id) const override {
-    DCHECK(index < RowCount());
+    CHECK(index < RowCount(), base::NotFatalUntil::M162);
     return base::UTF8ToUTF16(rows_[index].app_name);
   }
 
@@ -117,7 +117,7 @@ class DeprecatedAppsDialogView::DeprecatedAppsTableModel
 };
 
 DeprecatedAppsDialogView::~DeprecatedAppsDialogView() {
-  deprecated_apps_table_view_->SetModel(nullptr);
+  deprecated_apps_table_view_->ClearModel();
 }
 
 // static
@@ -169,7 +169,7 @@ DeprecatedAppsDialogView::DeprecatedAppsDialogView(
     const extensions::Extension* extension =
         extensions::ExtensionRegistry::Get(web_contents_->GetBrowserContext())
             ->GetInstalledExtension(*deprecated_app_ids_.begin());
-    DCHECK(extension);
+    CHECK(extension, base::NotFatalUntil::M162);
     single_app_name_ = extensions::ui_util::GetFixupExtensionNameForUIDisplay(
         extension->name());
   }
@@ -220,7 +220,8 @@ void DeprecatedAppsDialogView::InitDialog() {
             content::OpenURLParams::CreateBrowserInitiated(
                 GURL(chrome::kChromeAppsDeprecationLearnMoreURL),
                 ui::DispositionFromEventFlags(
-                    event.flags(), WindowOpenDisposition::NEW_FOREGROUND_TAB),
+                    event.flags(),
+                    ui::mojom::WindowOpenDisposition::kNewForegroundTab),
                 ui::PAGE_TRANSITION_LINK),
             /*navigation_handle_callback=*/{});
       },
@@ -243,7 +244,7 @@ void DeprecatedAppsDialogView::InitDialog() {
       views::TableView::CreateScrollViewWithTable(std::move(table)));
 
   // Set up the scroll view to display a maximum of 8 items before scrolling.
-  DCHECK(scroll_view);
+  CHECK(scroll_view, base::NotFatalUntil::M162);
   constexpr int kMaxRowsInTableView = 8;
   scroll_view->ClipHeightTo(
       0, deprecated_apps_table_view_->GetRowHeight() * kMaxRowsInTableView);

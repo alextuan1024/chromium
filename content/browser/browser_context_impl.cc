@@ -12,7 +12,9 @@
 #include "base/functional/callback_helpers.h"
 #include "base/location.h"
 #include "base/memory/ref_counted.h"
+#include "base/metrics/histogram_functions.h"
 #include "base/task/sequenced_task_runner.h"
+#include "base/timer/elapsed_timer.h"
 #include "base/trace_event/trace_event.h"
 #include "build/build_config.h"
 #include "components/content_settings/core/common/features.h"
@@ -20,7 +22,6 @@
 #include "content/browser/browsing_data/browsing_data_remover_impl.h"
 #include "content/browser/btm/btm_service_impl.h"
 #include "content/browser/download/download_manager_impl.h"
-#include "content/browser/in_memory_federated_permission_context.h"
 #include "content/browser/permissions/permission_controller_impl.h"
 #include "content/browser/preloading/prefetch/prefetch_service.h"
 #include "content/browser/renderer_host/initiator_navigation_state_impl.h"
@@ -31,6 +32,8 @@
 #include "content/browser/speech/tts_controller_impl.h"
 #include "content/browser/storage_partition_impl.h"
 #include "content/browser/storage_partition_impl_map.h"
+#include "content/browser/webid/in_memory_federated_permission_context.h"
+#include "content/common/content_navigation_policy.h"
 #include "content/public/browser/back_forward_transition_animation_manager.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/browser_thread.h"
@@ -38,10 +41,12 @@
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/shared_worker_service.h"
 #include "content/public/common/content_client.h"
+#include "content/public/common/content_features.h"
 #include "media/capabilities/webrtc_video_stats_db_impl.h"
 #include "media/mojo/services/video_decode_perf_history.h"
 #include "media/mojo/services/webrtc_video_perf_history.h"
 #include "third_party/perfetto/include/perfetto/tracing/track.h"
+#include "url/gurl.h"
 
 #if BUILDFLAG(IS_ANDROID)
 #include "content/browser/renderer_host/navigation_transitions/navigation_transition_config.h"
@@ -201,6 +206,10 @@ void BrowserContextImpl::NotifyWillBeDestroyed() {
   // BrowserContext.
   ChildProcessSecurityPolicyImpl::GetInstance()->RemoveStateForBrowserContext(
       *self_);
+
+  if (permission_controller_) {
+    permission_controller_->Shutdown();
+  }
 }
 
 StoragePartitionImplMap* BrowserContextImpl::GetOrCreateStoragePartitionMap() {
@@ -310,6 +319,10 @@ void BrowserContextImpl::SetDownloadManagerForTesting(
 PermissionController* BrowserContextImpl::GetPermissionController() {
   CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M159);
 
+  if (permission_controller_for_testing_) {
+    return permission_controller_for_testing_.get();
+  }
+
   if (!permission_controller_) {
     permission_controller_ = std::make_unique<PermissionControllerImpl>(self_);
   }
@@ -320,7 +333,11 @@ PermissionController* BrowserContextImpl::GetPermissionController() {
 void BrowserContextImpl::SetPermissionControllerForTesting(
     std::unique_ptr<PermissionController> permission_controller) {
   CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M159);
-  permission_controller_ = std::move(permission_controller);
+  if (permission_controller_) {
+    permission_controller_->Shutdown();
+    permission_controller_.reset();
+  }
+  permission_controller_for_testing_ = std::move(permission_controller);
 }
 
 storage::ExternalMountPoints* BrowserContextImpl::GetMountPoints() {
@@ -342,17 +359,21 @@ storage::ExternalMountPoints* BrowserContextImpl::GetMountPoints() {
 
 PrefetchService* BrowserContextImpl::GetPrefetchService() {
   if (!prefetch_service_) {
+    base::ElapsedTimer timer;
     prefetch_service_ = std::make_unique<PrefetchService>(self_);
+    base::UmaHistogramMicrosecondsTimes(
+        "Preloading.Prefetch.PrefetchService.ServiceCreationTime",
+        timer.Elapsed());
   }
 
   return prefetch_service_.get();
 }
 
-InMemoryFederatedPermissionContext*
+webid::InMemoryFederatedPermissionContext*
 BrowserContextImpl::GetFederatedPermissionContext() {
   if (!federated_permission_context_) {
     federated_permission_context_ =
-        std::make_unique<InMemoryFederatedPermissionContext>();
+        std::make_unique<webid::InMemoryFederatedPermissionContext>();
   }
   return federated_permission_context_.get();
 }
@@ -462,6 +483,71 @@ void BrowserContextImpl::RemoveInitiatorNavigationStateFromMap(
     CHECK(it->second == initiator_navigation_state);
     initiator_navigation_state_map_.erase(it);
   }
+}
+
+void BrowserContextImpl::SetSitesForEmbedderShard(
+    const base::flat_set<net::SchemefulSite>& sites) {
+  CHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK(CanSetSitesForEmbedderShard())
+      << "Not in a valid state to call SetSitesForEmbedderShard().";
+  CHECK(!sites.empty()) << "SetSitesForEmbedderShard() requires sites.";
+  for (const net::SchemefulSite& site : sites) {
+    // Only HTTP(S) sites are supported, since other schemes either always
+    // require a dedicated process (e.g. WebUI), or don't have sites that are
+    // computed consistently with SiteInfo (e.g. file:).
+    CHECK(!site.opaque()) << "Opaque sites can't be put in a shard.";
+    CHECK(site.GetURL().SchemeIsHTTPOrHTTPS())
+        << "Only HTTP(S) sites can be put in a shard: " << site;
+  }
+  embedder_shard_sites_ = sites;
+}
+
+bool BrowserContextImpl::CanSetSitesForEmbedderShard() const {
+  CHECK_CURRENTLY_ON(BrowserThread::UI);
+  // TODO(crbug.com/576113096): Support shards with default SiteInstanceGroups,
+  // e.g. by having one default SiteInstanceGroup per shard.
+  if (ShouldUseDefaultSiteInstanceGroup()) {
+    return false;
+  }
+  // In single-process mode there is only one renderer, so content from
+  // different shards can't be kept apart.
+  if (RenderProcessHost::run_renderer_in_process()) {
+    return false;
+  }
+  // TODO(crbug.com/576113096): Support shards in the Rust implementation of
+  // ChildProcessSecurityPolicy's ProcessState, which doesn't track shards yet.
+  if (base::FeatureList::IsEnabled(
+          features::kChildProcessSecurityPolicyRustProcessState)) {
+    return false;
+  }
+  // SetSitesForEmbedderShard() may only be called once.
+  if (!embedder_shard_sites_.empty()) {
+    return false;
+  }
+  // Shards must be set before any RenderProcessHost in this BrowserContext is
+  // used, so that the shard of content never changes after it is loaded.
+  // Enforce this by checking that no process in this BrowserContext has been
+  // used yet. Unused processes (e.g. spare renderers) are allowed, since they
+  // can still be used for any shard.
+  for (RenderProcessHost::iterator it = RenderProcessHost::AllHostsIterator();
+       !it.IsAtEnd(); it.Advance()) {
+    RenderProcessHost* host = it.GetCurrentValue();
+    if (host->GetBrowserContext() == self_ && !host->IsUnused()) {
+      return false;
+    }
+  }
+  return true;
+}
+
+SiteShard BrowserContextImpl::GetShardForSite(
+    const net::SchemefulSite& site) const {
+  CHECK_CURRENTLY_ON(BrowserThread::UI);
+  return embedder_shard_sites_.contains(site) ? SiteShard::kEmbedderSites
+                                              : SiteShard::kDefault;
+}
+
+bool BrowserContextImpl::HasShards() const {
+  return !embedder_shard_sites_.empty();
 }
 
 }  // namespace content

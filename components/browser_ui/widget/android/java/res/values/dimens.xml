@@ -157,6 +157,7 @@ found in the LICENSE file.
     <dimen name="tile_view_icon_margin_top_modern">19dp</dimen>
     <dimen name="tile_view_monogram_margin_top_modern">18dp</dimen>
     <dimen name="tile_view_icon_background_margin_top_modern">8dp</dimen>
+    <dimen name="tile_view_icon_background_corner_radius">16dp</dimen>
     <dimen name="tile_view_offline_badge_size_modern">16dp</dimen>
     <dimen name="tile_view_offline_badge_margin_top_modern">7dp</dimen>
     <dimen name="tile_view_offline_badge_margin_end_modern">9dp</dimen>
@@ -288,4 +289,18 @@ found in the LICENSE file.
     <dimen name="search_box_view_padding_end_default">0dp</dimen>
     <dimen name="search_box_view_padding_horizontal_desktop">16dp</dimen>
     <dimen name="search_box_view_padding_start">16dp</dimen>
+
+    <!-- Floating pill -->
+    <dimen name="floating_pill_height">56dp</dimen>
+    <dimen name="floating_pill_corner_radius">100dp</dimen>
+    <dimen name="floating_pill_padding_horizontal">16dp</dimen>
+    <dimen name="floating_pill_button_size">48dp</dimen>
+    <dimen name="floating_pill_margin_top">16dp</dimen>
+    <dimen name="floating_pill_glow_padding">20dp</dimen>
+    <dimen name="floating_pill_glow_soft_blur">8dp</dimen>
+    <dimen name="floating_pill_glow_soft_spread_x">3.0dp</dimen>
+    <dimen name="floating_pill_glow_soft_spread_y">0.2dp</dimen>
+    <dimen name="floating_pill_glow_strong_blur">2dp</dimen>
+    <dimen name="floating_pill_glow_strong_spread_x">1.2dp</dimen>
+    <dimen name="floating_pill_glow_vertical_offset">0.8dp</dimen>
 </resources>

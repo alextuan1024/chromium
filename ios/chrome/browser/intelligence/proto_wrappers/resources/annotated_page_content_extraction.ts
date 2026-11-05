@@ -2,11 +2,12 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import {HAS_BEEN_PASSWORD_SYMBOL, ID_SYMBOL} from '//components/autofill/ios/form_util/resources/fill_constants.js';
+import {HAS_BEEN_PASSWORD_SYMBOL} from '//components/autofill/ios/form_util/resources/fill_constants.js';
+import {safeOwnerDocument} from '//components/autofill/ios/form_util/resources/unique_node_id.js';
 import {APC_NODE_DEPTH_COST, getRemoteFrameRemoteToken, NONCE_ATTR} from '//ios/chrome/browser/intelligence/proto_wrappers/resources/common.js';
-import {getNodeId, getOrCreateNodeId, safeOwnerDocument} from '//ios/chrome/browser/intelligence/proto_wrappers/resources/dom_node_ids.js';
+import {getNodeId, getOrCreateNodeId} from '//ios/chrome/browser/intelligence/proto_wrappers/resources/dom_node_ids.js';
 import {AxRole, FormControlType, PageContentAnchorRel, PageContentAnnotatedRole, PageContentAttributeType, PageContentClickabilityReason, PageContentCssPosition, PageContentInteractionDisabledReason, PageContentMediaType, PageContentRedactionDecision, PageContentTableRowType, PageContentTextSize} from '//ios/chrome/browser/intelligence/proto_wrappers/resources/page_content_types.js';
-import type {PageContent, PageContentAttributes, PageContentFormControlData, PageContentFormData, PageContentFrameData, PageContentFrameInteractionInfo, PageContentGeometry, PageContentMediaData, PageContentNode, PageContentNodeInteractionInfo, PageContentPageInteractionInfo, PageContentScrollerInfo, PageContentTableData, Point, Rect as BasicRect} from '//ios/chrome/browser/intelligence/proto_wrappers/resources/page_content_types.js';
+import type {PageContent, PageContentAttributes, PageContentFormControlData, PageContentFormData, PageContentFrameData, PageContentFrameInteractionInfo, PageContentGeometry, PageContentMediaData, PageContentNode, PageContentNodeInteractionInfo, PageContentPageInteractionInfo, PageContentScrollerInfo, PageContentTableData, Point, Rect} from '//ios/chrome/browser/intelligence/proto_wrappers/resources/page_content_types.js';
 
 // TODO(crbug.com/504261632): Report metrics from here down to the native
 // browser side so they can be uma-reported.
@@ -25,12 +26,6 @@ interface HtmlElementWithDisabled extends HTMLElement {
 // it has been a password field.
 interface PasswordTrackedElement extends HTMLInputElement {
   [HAS_BEEN_PASSWORD_SYMBOL]?: boolean;
-}
-
-// An HTMLInputElement that can hold an Autofill node id via the designated
-// symbol property.
-interface HtmlElementWithAutofillId extends HTMLElement {
-  [ID_SYMBOL]?: number;
 }
 
 // Safe getters for prototype properties to prevent DOM stomping/clobbering.
@@ -61,6 +56,7 @@ const getRootNodeMethod = Node.prototype.getRootNode;
 
 const getBoundingClientRectMethod = Element.prototype.getBoundingClientRect;
 const getClientRectsMethod = Element.prototype.getClientRects;
+const createRangeMethod = Document.prototype.createRange;
 
 const clientHeightGetter =
     Object.getOwnPropertyDescriptor(Element.prototype, 'clientHeight')?.get;
@@ -81,6 +77,7 @@ const getAttributeMethod = Element.prototype.getAttribute;
 const hasAttributeMethod = Element.prototype.hasAttribute;
 const setAttributeMethod = Element.prototype.setAttribute;
 const matchesMethod = Element.prototype.matches;
+const closestMethod = Element.prototype.closest;
 
 // These safe getters prevent DOM stomping/clobbering by calling the getter
 // on the prototype instead of directly on the element.
@@ -175,6 +172,20 @@ function safeMatches(element: Element, selector: string): boolean {
   return matchesMethod.call(element, selector);
 }
 
+// Returns the equivalent of `element.closest(selector)` but directly calls the
+// `Element` prototype to prevent clobbering.
+function safeClosest(element: Element, selector: string): Element|null {
+  if (typeof element.closest === 'function') {
+    return element.closest(selector);
+  }
+  return closestMethod.call(element, selector);
+}
+
+// Returns whether an element is marked inert or within an inert subtree.
+function isElementInert(element: Element): boolean {
+  return safeClosest(element, '[inert]') !== null;
+}
+
 // Returns the equivalent of `element.isContentEditable` but directly calls the
 // `HTMLElement` prototype to prevent DOM clobbering. Non-HTMLElement nodes
 // (e.g. SVGElement) do not inherit from HTMLElement and calling the prototype
@@ -239,6 +250,15 @@ function safeGetClientRects(element: Element): DOMRectList {
     return element.getClientRects();
   }
   return getClientRectsMethod.call(element);
+}
+
+// Returns the equivalent of `document.createRange()` but directly calls the
+// `Document` prototype to prevent clobbering.
+function safeCreateRange(document: Document): Range {
+  if (typeof document.createRange === 'function') {
+    return document.createRange();
+  }
+  return createRangeMethod.call(document);
 }
 
 // Returns the equivalent of `element.clientHeight` but directly calls the
@@ -317,6 +337,12 @@ interface StyleCache {
 
   // The window object.
   window?: Window;
+
+  // Reusable Range for measuring text node bounding boxes in actionable mode.
+  textRange?: Range;
+
+  // Cached scrollable document bounds in viewport coordinates for the document.
+  docReachableBounds?: Rect;
 }
 
 // Tags that we fundamentally do not support or that contain non-content data.
@@ -487,6 +513,10 @@ const URL_TYPE = 'url';
 const WEEK_TYPE = 'week';
 const TEXT_TYPE = 'text';
 
+// Default button labels matching Blink when the `value` attribute is omitted.
+const DEFAULT_SUBMIT_LABEL = 'Submit';
+const DEFAULT_RESET_LABEL = 'Reset';
+
 // Attribute keys.
 const ATTR_KEY_ARIA_DISABLED = 'aria-disabled';
 const ATTR_KEY_ARIA_HASPOPUP = 'aria-haspopup';
@@ -505,6 +535,7 @@ const ATTR_KEY_ONKEYPRESS = 'onkeypress';
 const ATTR_KEY_HREF = 'href';
 const ATTR_KEY_ACTION = 'action';
 const ATTR_KEY_NAME = 'name';
+const ATTR_KEY_VALUE = 'value';
 
 // Attribute and style values.
 const ATTR_VALUE_TRUE = 'true';
@@ -512,6 +543,7 @@ const ATTR_VALUE_FALSE = 'false';
 const ATTR_VALUE_CURSOR_AUTO = 'auto';
 const ATTR_VALUE_CURSOR_NOT_ALLOWED = 'not-allowed';
 const ATTR_VALUE_CURSOR_POINTER = 'pointer';
+const ATTR_VALUE_POINTER_EVENTS_NONE = 'none';
 const ATTR_VALUE_ROLE_BUTTON = 'button';
 const ATTR_VALUE_ROLE_LINK = 'link';
 const ATTR_VALUE_ROLE_CHECKBOX = 'checkbox';
@@ -534,6 +566,7 @@ const ATTR_VALUE_ROLE_REGION = 'region';
 const ATTR_VALUE_ROLE_COMPLEMENTARY = 'complementary';
 const ATTR_VALUE_ROLE_CONTENT_INFO = 'contentinfo';
 const ATTR_VALUE_ROLE_NONE = 'none';
+const ATTR_VALUE_ROLE_PRESENTATION = 'presentation';
 
 // Style values.
 const ATTR_POSITION_ABSOLUTE = 'absolute';
@@ -618,6 +651,11 @@ const MAX_TABLE_ANCESTOR_LOOKUP_DEPTH = 100;
 const MAX_CAPTION_CHILD_SEARCH_COUNT = 50;
 
 /**
+ * `CSS.supports()` query for CSS anchor positioning.
+ */
+const ANCHOR_POSITIONING_SUPPORT_QUERY = 'anchor-name: --a';
+
+/**
  * Returns true if page context actionable optimization is enabled.
  */
 function isPageContextActionableOptimizationEnabled() {
@@ -625,7 +663,19 @@ function isPageContextActionableOptimizationEnabled() {
       false;
 }
 
-
+/**
+ * Whether `filter` creates a containing block for fixed- and absolute-position
+ * descendants in WebKit.
+ *
+ * In iOS 18 and earlier, `filter` does not create a containing block, causing
+ * those descendants to be laid out relative to an outer containing block, such
+ * as the viewport. Detecting this layout fix
+ * (https://commits.webkit.org/295958) directly would require a layout probe, so
+ * support for CSS anchor positioning (`anchor-name`) is used as an iOS version
+ * proxy: both features debuted together in iOS 26.
+ */
+const FILTER_FORMS_CONTAINING_BLOCK =
+    CSS.supports(ANCHOR_POSITIONING_SUPPORT_QUERY);
 
 /**
  * Maps a tag name to its corresponding PageContentAnnotatedRole.
@@ -748,6 +798,7 @@ function getAXRoleForAriaRole(roleString: string): AxRole {
       case ATTR_VALUE_ROLE_CONTENT_INFO:
         return AxRole.AX_ROLE_CONTENT_INFO;
       case ATTR_VALUE_ROLE_NONE:
+      case ATTR_VALUE_ROLE_PRESENTATION:
         return AxRole.AX_ROLE_NONE;
       default:
         continue;
@@ -1332,11 +1383,53 @@ function getComputedStyleForElement(
  * @return The viewport rectangle.
  */
 function getViewportRect(doc: Document): Rect {
-  // Using documentElement.clientWidth/Height instead of
-  // window.innerWidth/Height to exclude scrollbars, which is more consistent
-  // with how Blink calculates the viewport area.
+  // On WebKit iOS, `getBoundingClientRect()` and the tab screenshot reflect the
+  // visual viewport, while `clientWidth` and `clientHeight` reflect the
+  // unzoomed layout viewport. Use `window.visualViewport` for the main frame so
+  // the viewport rectangle matches the visible area and screenshot when zoomed.
+  const visualViewport = (doc === document && window === window.top) ?
+      window.visualViewport :
+      null;
+  const visualViewportWidth = visualViewport?.width;
+  const visualViewportHeight = visualViewport?.height;
+  if (typeof visualViewportWidth === 'number' &&
+      Number.isFinite(visualViewportWidth) && visualViewportWidth > 0 &&
+      typeof visualViewportHeight === 'number' &&
+      Number.isFinite(visualViewportHeight) && visualViewportHeight > 0) {
+    return createRect(0, 0, visualViewportWidth, visualViewportHeight);
+  }
+  // Using clientWidth/Height instead of window.innerWidth/Height to exclude
+  // scrollbars, which is more consistent with how Blink calculates the
+  // viewport area. In quirks mode ('BackCompat'), the layout viewport is the
+  // client size of `body` rather than `documentElement`, which is the whole
+  // `<html>` box.
+  const viewportElement = doc.compatMode === 'BackCompat' ?
+      (doc.body ?? doc.documentElement) :
+      doc.documentElement;
   return createRect(
-      0, 0, doc.documentElement.clientWidth, doc.documentElement.clientHeight);
+      0, 0, safeClientWidth(viewportElement),
+      safeClientHeight(viewportElement));
+}
+
+/**
+ * Returns the geometry of a node that stands for the viewport, like Blink's
+ * `LayoutView` root node.
+ *
+ * @param viewportBox The enclosing rect of the viewport.
+ * @return The geometry covering the viewport.
+ */
+function createViewportGeometry(viewportBox: Rect): PageContentGeometry {
+  // Blink's viewport style is always `position: absolute`, whatever the
+  // position of `body`.
+  const geometry: PageContentGeometry = {
+    outerBoundingBox: {...viewportBox},
+    cssPosition: PageContentCssPosition.ABSOLUTE,
+  };
+  // Like `addNodeGeometry()`, empty visible boxes are omitted.
+  if (viewportBox.width > 0 && viewportBox.height > 0) {
+    geometry.visibleBoundingBox = {...viewportBox};
+  }
+  return geometry;
 }
 
 /**
@@ -1388,9 +1481,21 @@ function isGenericContainer(
     return false;
   }
 
-  // Treat as container if we extracted interaction info (e.g. it's scrollable).
+  // Treat as container if we extracted interaction info (e.g. it's scrollable,
+  // clickable, focusable, or has explicit disabled semantics like
+  // aria-disabled, cursor: not-allowed, or disabled). Elements with only
+  // pointer-events: none without other semantics should not be preserved as
+  // generic containers.
   if (interactionInfo) {
-    return true;
+    const hasOtherDisabledReasons =
+        interactionInfo.interactionDisabledReasons.some(
+            reason => reason !==
+                PageContentInteractionDisabledReason.POINTER_EVENTS_NONE);
+    if (interactionInfo.scrollerInfo ||
+        interactionInfo.clickabilityReasons.length > 0 ||
+        interactionInfo.isFocusable || hasOtherDisabledReasons) {
+      return true;
+    }
   }
 
   const style = getComputedStyleForElement(element, styleCache);
@@ -1459,16 +1564,8 @@ function getScrollerInfo(
   // Make sure to call element.clientWidth before element.scrollWidth.
   // This will guide the layout engine to perform the shallow layout first
   // and then the deep layout calculation.
-  const visibleArea = {
-    x: scrollLeft,
-    y: scrollTop,
-    width: clientWidth,
-    height: clientHeight,
-    top: scrollTop,
-    right: scrollLeft + clientWidth,
-    bottom: scrollTop + clientHeight,
-    left: scrollLeft,
-  };
+  const visibleArea =
+      createRect(scrollLeft, scrollTop, clientWidth, clientHeight);
 
   // Populate bounds.
   // Scrolling bounds = whole content size.
@@ -1593,7 +1690,23 @@ function getNodeInteractionInfo(
     interactionDisabledReasons.push(
         PageContentInteractionDisabledReason.CURSOR_NOT_ALLOWED);
   }
+  // Check pointer-events: none and inert subtrees.
+  const isPointerEventsNone =
+      style?.pointerEvents === ATTR_VALUE_POINTER_EVENTS_NONE ||
+      isElementInert(element);
+  if (isPointerEventsNone) {
+    interactionDisabledReasons.push(
+        PageContentInteractionDisabledReason.POINTER_EVENTS_NONE);
+  }
   interactionInfo.isDisabled = isDisabled;
+
+  // Early return if pointer-events: none blocks input interaction, matching
+  // Blink. Skipping positive clickability computation avoids computing signals
+  // that can never be dispatched, and prevents unspecialized containers from
+  // surviving.
+  if (isPointerEventsNone) {
+    return interactionDisabledReasons.length > 0 ? interactionInfo : undefined;
+  }
 
   const clickabilityReasons = interactionInfo.clickabilityReasons;
 
@@ -1613,9 +1726,11 @@ function getNodeInteractionInfo(
       safeHasAttribute(element, ATTR_KEY_ONMOUSEUP)) {
     clickabilityReasons.push(PageContentClickabilityReason.MOUSE_CLICK);
   }
-  if (safeHasAttribute(element, ATTR_KEY_ONMOUSEOVER) ||
-      safeHasAttribute(element, ATTR_KEY_ONMOUSEENTER)) {
-    clickabilityReasons.push(PageContentClickabilityReason.MOUSE_HOVER);
+  if (safeHasAttribute(element, ATTR_KEY_ONMOUSEENTER)) {
+    clickabilityReasons.push(PageContentClickabilityReason.MOUSE_ENTER);
+  }
+  if (safeHasAttribute(element, ATTR_KEY_ONMOUSEOVER)) {
+    clickabilityReasons.push(PageContentClickabilityReason.MOUSE_OVER);
   }
   if (safeHasAttribute(element, ATTR_KEY_ONKEYDOWN) ||
       safeHasAttribute(element, ATTR_KEY_ONKEYUP) ||
@@ -2113,32 +2228,22 @@ function applyTextTransformAndMasking(
 }
 
 /**
- * Generates attributes for a text node.
+ * Generates text attributes for `textContent` styled by `stylingElement`.
  *
- * @param domNode The text node to process.
+ * @param textContent The raw text string to process.
+ * @param stylingElement The element providing computed text styles.
  * @param styleCache The style cache to use for computing styles.
- * @return The populated PageContentAttributes or null if content is empty.
+ * @return The populated PageContentAttributes or null if content is empty or
+ *     collapsible whitespace.
  */
-function getAttributesForTextNode(
-    domNode: Node, styleCache?: StyleCache): PageContentAttributes|null {
-  const textContent = domNode.textContent;
+function getTextAttributes(
+    textContent: string, stylingElement: Element,
+    styleCache?: StyleCache): PageContentAttributes|null {
   if (!textContent) {
     return null;
   }
 
-  const parentElement = safeParentElement(domNode);
-  if (!parentElement) {
-    // Can't compute the attributes for a text node that doesn't have a parent
-    // which is unexpected.
-    return null;
-  }
-
-  // TODO(crbug.com/507100154): Avoid cache thrashing when accessing
-  // the parent element style.
-  // The parent element must match the latest walked node for the
-  // style cache to work. The parent and latest walked node can
-  // differ when text nodes have siblings.
-  const style = getComputedStyleForElement(parentElement, styleCache);
+  const style = getComputedStyleForElement(stylingElement, styleCache);
   if (!style) {
     return null;
   }
@@ -2176,6 +2281,36 @@ function getAttributesForTextNode(
   };
 }
 
+/**
+ * Generates attributes for a text node.
+ *
+ * @param domNode The text node to process.
+ * @param styleCache The style cache to use for computing styles.
+ * @return The populated PageContentAttributes or null if content is empty or
+ *     collapsible whitespace.
+ */
+function getAttributesForTextNode(
+    domNode: Node, styleCache?: StyleCache): PageContentAttributes|null {
+  const textContent = domNode.textContent;
+  if (!textContent) {
+    return null;
+  }
+
+  const parentElement = safeParentElement(domNode);
+  if (!parentElement) {
+    // Can't compute the attributes for a text node that doesn't have a parent
+    // which is unexpected.
+    return null;
+  }
+
+  // TODO(crbug.com/507100154): Avoid cache thrashing when accessing
+  // the parent element style.
+  // The parent element must match the latest walked node for the
+  // style cache to work. The parent and latest walked node can
+  // differ when text nodes have siblings.
+  return getTextAttributes(textContent, parentElement, styleCache);
+}
+
 // TODO(crbug.com/476341187): Carry status information when the max depth is
 // reached.
 /**
@@ -2195,7 +2330,9 @@ function getContentForIframeNode(
     paidContentContext: PaidContentExtractionContext,
     includeSensitivePaymentsForRedaction: boolean,
     extractAutofillOtpRedactions: boolean,
-    extractPasswordScreenshotRedactions: boolean): PageContentNode|null {
+    extractPasswordScreenshotRedactions: boolean,
+    isInsideUnreachableOverflowContainer: boolean = false): PageContentNode|
+    null {
   const attributes: PageContentAttributes = {
     attributeType: PageContentAttributeType.IFRAME,
     annotatedRoles: [],
@@ -2225,7 +2362,8 @@ function getContentForIframeNode(
           actionableMode, paidContentContext.extractPaidContent,
           paidContentContext.attemptPaidContentJsonFixing,
           includeSensitivePaymentsForRedaction, extractAutofillOtpRedactions,
-          extractPasswordScreenshotRedactions);
+          extractPasswordScreenshotRedactions,
+          isInsideUnreachableOverflowContainer);
       if (pageContent) {
         childTree = pageContent.rootNode;
         localFrameData = pageContent.frameData;
@@ -2533,20 +2671,6 @@ function getCustomPasswordRedactionDecision(
 }
 
 /**
- * Gets the autofill node ID for the `element` if one is available.
- *
- * @param element The DOM element to process.
- * @return The autofill node ID, or undefined if there is no ID.
- */
-function getAutofillNodeId(element: HTMLElement): number|undefined {
-  const id = (element as HtmlElementWithAutofillId)[ID_SYMBOL];
-  if (Number.isFinite(id)) {
-    return id;
-  }
-  return undefined;
-}
-
-/**
  * Extracts form control specific content attributes from a given DOM element.
  * Handles inputs, textareas, selects, and buttons.
  *
@@ -2642,8 +2766,6 @@ function getFormControlData(
       });
     }
   }
-
-  formControlData.autofillNodeId = getAutofillNodeId(domNode);
 
   return formControlData as PageContentFormControlData;
 }
@@ -2765,16 +2887,24 @@ function getBasicContentForNonGenericElement(
     includeSensitivePaymentsForRedaction: boolean,
     extractAutofillOtpRedactions: boolean,
     extractPasswordScreenshotRedactions: boolean,
-    styleCache?: StyleCache): PageContentNode|null {
+    parentContext?: ClippingContext, styleCache?: StyleCache): PageContentNode|
+    null {
   const tagName = getStandardTagName(domNode);
 
   switch (tagName) {
     // 1. Complex Elements.
-    case TAG_IFRAME:
+    case TAG_IFRAME: {
+      const isInsideUnreachableOverflowContainer = Boolean(
+          parentContext?.isInsideUnreachableOverflowContainer &&
+          !isElementFixedToView(
+              domNode, getComputedStyleForElement(domNode, styleCache),
+              parentContext));
       return getContentForIframeNode(
           domNode as HTMLIFrameElement, nonce, depth, maxDepth, actionableMode,
           paidContentContext, includeSensitivePaymentsForRedaction,
-          extractAutofillOtpRedactions, extractPasswordScreenshotRedactions);
+          extractAutofillOtpRedactions, extractPasswordScreenshotRedactions,
+          isInsideUnreachableOverflowContainer);
+    }
     case TAG_IMG:
       return {
         childrenNodes: [],
@@ -2891,12 +3021,48 @@ function getBasicContentForNonGenericElement(
     case TAG_SELECT:
     case TAG_BUTTON:
     case TAG_FIELDSET: {
+      const formControlData = getFormControlData(domNode, tagName, styleCache);
+      const childrenNodes: PageContentNode[] = [];
+      // Synthesize a child text node for button/submit/reset inputs to match
+      // Blink. WebKit draws their label as an anonymous render text with no
+      // DOM node, so the tree walk never sees it. `getFormControlData()` omits
+      // `fieldValue` only for password-redacted fields, so the `fieldValue`
+      // check also skips the label of redacted inputs.
+      if (tagName === TAG_INPUT && depth + APC_NODE_DEPTH_COST <= maxDepth &&
+          formControlData.fieldValue !== undefined &&
+          (formControlData.formControlType === FormControlType.INPUT_SUBMIT ||
+           formControlData.formControlType === FormControlType.INPUT_BUTTON ||
+           formControlData.formControlType === FormControlType.INPUT_RESET)) {
+        let defaultLabel = '';
+        if (formControlData.formControlType === FormControlType.INPUT_SUBMIT) {
+          // TODO(crbug.com/540909383): WebKit chooses and localizes the default
+          // label, and page JS cannot read it (`value` is empty and the label
+          // has no DOM node). Determine whether to match the localized string
+          // instead of this English fallback.
+          defaultLabel = DEFAULT_SUBMIT_LABEL;
+        } else if (
+            formControlData.formControlType === FormControlType.INPUT_RESET) {
+          defaultLabel = DEFAULT_RESET_LABEL;
+        }
+
+        const labelText = safeHasAttribute(domNode, ATTR_KEY_VALUE) ?
+            formControlData.fieldValue :
+            defaultLabel;
+        const textAttributes =
+            getTextAttributes(labelText, domNode, styleCache);
+        if (textAttributes) {
+          childrenNodes.push({
+            childrenNodes: [],
+            contentAttributes: textAttributes,
+          });
+        }
+      }
       return {
-        childrenNodes: [],
+        childrenNodes: childrenNodes,
         contentAttributes: {
           ...BASIC_CONTENT_ATTRIBUTES,
           attributeType: PageContentAttributeType.FORM_CONTROL,
-          formControlData: getFormControlData(domNode, tagName, styleCache),
+          formControlData: formControlData,
         },
       };
     }
@@ -3072,14 +3238,10 @@ function getContentForCustomTableElement(
  * @param styleCache The style cache to use for computing styles.
  */
 function populateCommonAttributes(
-    element: HTMLElement,
-    attributes: PageContentAttributes,
-    interactionInfo: PageContentNodeInteractionInfo | undefined,
-    paidContentContext: PaidContentExtractionContext,
-    actionableMode: boolean,
-    annotatedRoles?: PageContentAnnotatedRole[],
-    styleCache?: StyleCache) {
-
+    element: HTMLElement, attributes: PageContentAttributes,
+    interactionInfo: PageContentNodeInteractionInfo|undefined,
+    paidContentContext: PaidContentExtractionContext, actionableMode: boolean,
+    annotatedRoles?: PageContentAnnotatedRole[], styleCache?: StyleCache) {
   if (interactionInfo) {
     attributes.nodeInteractionInfo = interactionInfo;
   }
@@ -3095,8 +3257,13 @@ function populateCommonAttributes(
   }
   if (actionableMode) {
     const roleStr = safeGetAttribute(element, ATTR_KEY_ROLE);
-    attributes.ariaRole =
+    const ariaRole =
         roleStr ? getAXRoleForAriaRole(roleStr) : AxRole.AX_ROLE_UNKNOWN;
+    // Match Blink: omit missing, empty, or invalid roles, but preserve explicit
+    // presentational roles as AX_ROLE_NONE.
+    if (ariaRole !== AxRole.AX_ROLE_UNKNOWN) {
+      attributes.ariaRole = ariaRole;
+    }
   }
 
   const ariaLabel = getAriaLabel(element, styleCache);
@@ -3129,7 +3296,8 @@ function getContentForElementNode(
     includeSensitivePaymentsForRedaction: boolean,
     extractAutofillOtpRedactions: boolean,
     extractPasswordScreenshotRedactions: boolean,
-    styleCache?: StyleCache): PageContentNode|null {
+    parentContext?: ClippingContext, styleCache?: StyleCache): PageContentNode|
+    null {
   let labelForDOMNodeID: number | undefined = undefined;
   if (actionableMode && getStandardTagName(domNode) === TAG_LABEL) {
     labelForDOMNodeID = getAssociatedControlDOMNodeID(
@@ -3142,7 +3310,7 @@ function getContentForElementNode(
   contentNode = getBasicContentForNonGenericElement(
       domNode, nonce, depth, maxDepth, actionableMode, paidContentContext,
       includeSensitivePaymentsForRedaction, extractAutofillOtpRedactions,
-      extractPasswordScreenshotRedactions, styleCache);
+      extractPasswordScreenshotRedactions, parentContext, styleCache);
 
   // 2. Try to get content for custom table elements (CSS display or ARIA
   // roles).
@@ -3234,18 +3402,6 @@ function addAnnotatedRoles(
   }
 }
 
-// Defines a rectangle compatible with DOMRectReadOnly.
-interface Rect {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-  top: number;
-  right: number;
-  bottom: number;
-  left: number;
-}
-
 /**
  * Computes the intersection of two rectangles.
  * Returns a 0-size rectangle at (0,0) if they do not intersect,
@@ -3258,8 +3414,8 @@ function intersection(r1: Rect, r2: Rect): Rect {
 
   const x = Math.max(r1.x, r2.x);
   const y = Math.max(r1.y, r2.y);
-  const right = Math.min(r1.right, r2.right);
-  const bottom = Math.min(r1.bottom, r2.bottom);
+  const right = Math.min(r1.x + r1.width, r2.x + r2.width);
+  const bottom = Math.min(r1.y + r1.height, r2.y + r2.height);
 
   // TODO(crbug.com/499496584): Double check that a 0-size rectangle and no
   // rectangle are semantically the same for fully clipped rectangles.
@@ -3279,17 +3435,13 @@ function createRect(x: number, y: number, width: number, height: number): Rect {
     y,
     width,
     height,
-    top: y,
-    right: x + width,
-    bottom: y + height,
-    left: x,
   };
 }
 
 /**
  * Calculates the center point of a given rectangle.
  */
-function getCenterPoint(rect: BasicRect): Point {
+function getCenterPoint(rect: Rect): Point {
   return {
     x: rect.x + (rect.width / 2),
     y: rect.y + (rect.height / 2),
@@ -3307,8 +3459,8 @@ function toEnclosingRect(rect: Rect): Rect {
   }
   const x = Math.floor(rect.x);
   const y = Math.floor(rect.y);
-  const right = Math.ceil(rect.right);
-  const bottom = Math.ceil(rect.bottom);
+  const right = Math.ceil(rect.x + rect.width);
+  const bottom = Math.ceil(rect.y + rect.height);
   return createRect(x, y, right - x, bottom - y);
 }
 
@@ -3388,7 +3540,8 @@ function populateFragmentsIfNeeded(
  * Per CSS Transforms, CSS Filter Effects, and CSS Containment specifications,
  * elements with properties such as transform, translate, rotate, scale,
  * perspective, filter, backdrop-filter, or contain: paint/layout/strict/content
- * create a containing block for fixed descendants.
+ * create a containing block for fixed descendants. `filter` only does so on
+ * WebKit versions that implement it (see `FILTER_FORMS_CONTAINING_BLOCK`).
  *
  * @param style The computed style of the element.
  * @return True if the element forms a containing block for fixed elements.
@@ -3397,27 +3550,25 @@ function formsContainingBlockForFixed(style?: CSSStyleDeclaration): boolean {
   if (!style) {
     return false;
   }
-  if (style.transform && style.transform !== STYLE_VALUE_NONE) {
+
+  // Each computed style property is read exactly once into a local, and the
+  // properties that WebKit doesn't treat as layout-dependent are checked first
+  // so that the layout-dependent ones (see below) are only read when none of
+  // the others apply.
+  const translate = style.translate;
+  if (translate && translate !== STYLE_VALUE_NONE) {
     return true;
   }
-  if (style.translate && style.translate !== STYLE_VALUE_NONE) {
+  const rotate = style.rotate;
+  if (rotate && rotate !== STYLE_VALUE_NONE) {
     return true;
   }
-  if (style.rotate && style.rotate !== STYLE_VALUE_NONE) {
+  const scale = style.scale;
+  if (scale && scale !== STYLE_VALUE_NONE) {
     return true;
   }
-  if (style.scale && style.scale !== STYLE_VALUE_NONE) {
-    return true;
-  }
-  if (style.perspective && style.perspective !== STYLE_VALUE_NONE) {
-    return true;
-  }
-  if (style.filter && style.filter !== STYLE_VALUE_NONE) {
-    return true;
-  }
-  const backdropFilter = style.backdropFilter ||
-      (style as {webkitBackdropFilter?: string}).webkitBackdropFilter;
-  if (backdropFilter && backdropFilter !== STYLE_VALUE_NONE) {
+  const perspective = style.perspective;
+  if (perspective && perspective !== STYLE_VALUE_NONE) {
     return true;
   }
   const contain = style.contain;
@@ -3436,7 +3587,230 @@ function formsContainingBlockForFixed(style?: CSSStyleDeclaration): boolean {
       return true;
     }
   }
+
+  // In WebKit (`Source/WebCore/style/StyleExtractor.cpp`), reading computed
+  // `transform`, `filter`, `backdrop-filter`, or `-webkit-backdrop-filter` is
+  // treated as layout-dependent by `isLayoutDependent()`.
+  //
+  // When read on an element inside a `content-visibility` skipped subtree,
+  // `Extractor::computeStyle()` forces a layout update with
+  // `LayoutOptions::TreatContentVisibilityHiddenAsVisible`, which invokes
+  // `runForcedLayoutOnSkippedContentIfNeeded()` and walks all descendants of
+  // the skipped subtree on every read.
+  //
+  // Reading these is deferred until after all non-layout-dependent properties
+  // have been checked, and each is read at most once.
+  const transform = style.transform;
+  if (transform && transform !== STYLE_VALUE_NONE) {
+    return true;
+  }
+  if (FILTER_FORMS_CONTAINING_BLOCK) {
+    const filter = style.filter;
+    if (filter && filter !== STYLE_VALUE_NONE) {
+      return true;
+    }
+  }
+  const backdropFilter = style.backdropFilter ||
+      (style as {webkitBackdropFilter?: string}).webkitBackdropFilter;
+  if (backdropFilter && backdropFilter !== STYLE_VALUE_NONE) {
+    return true;
+  }
   return false;
+}
+
+/**
+ * Returns the clipping rectangle in effect at an unemitted DOM ancestor
+ * strictly between `element` and `context.domNode` if that ancestor
+ * establishes a fixed-position containing block; otherwise returns `null`.
+ *
+ * Every element that clips overflow (`isClippedStyle`) is emitted as a
+ * container onto `ancestorStack`, so no unemitted ancestor between `element`
+ * and `context.domNode` introduces an overflow clip of its own.
+ *
+ * @param element The element to start walking up from.
+ * @param context The inherited clipping context of the nearest emitted
+ *     ancestor.
+ * @return The clipping rectangle of the unemitted fixed containing block, or
+ *     `null`.
+ */
+function getUnemittedFixedContainingBlockClip(
+    element: HTMLElement, context: ClippingContext): Rect|null {
+  if (!context.domNode) {
+    return null;
+  }
+  let ancestor = safeParentElement(element);
+  while (ancestor && ancestor !== context.domNode) {
+    const ancestorStyle = getComputedStyleForElement(ancestor);
+    if (formsContainingBlockForFixed(ancestorStyle)) {
+      return ancestorStyle?.position === ATTR_POSITION_ABSOLUTE ?
+          (context.absoluteClip ?? context.normalClip) :
+          context.normalClip;
+    }
+    ancestor = safeParentElement(ancestor);
+  }
+  return null;
+}
+
+/**
+ * Checks whether `element` has `position: fixed` and is anchored directly to
+ * the viewport rather than to an ancestor that establishes a fixed-position
+ * containing block (e.g., via `transform` or `filter`).
+ *
+ * Mirrors Blink's `LayoutBox::IsFixedToView()`.
+ *
+ * @param element The element to check.
+ * @param style The computed style of `element`.
+ * @param context The inherited clipping context.
+ * @return True if `element` is fixed to the viewport.
+ */
+function isElementFixedToView(
+    element: HTMLElement, style: CSSStyleDeclaration|undefined,
+    context: ClippingContext): boolean {
+  return style?.position === ATTR_POSITION_FIXED &&
+      context.fixedClip === null &&
+      getUnemittedFixedContainingBlockClip(element, context) === null;
+}
+
+/**
+ * Computes the full scrollable bounds of `doc` mapped into viewport space.
+ *
+ * Mirrors Blink's `ComputeDocumentBoundsInViewport()`.
+ *
+ * @param doc The document to measure.
+ * @param viewportRect The viewport rectangle of `doc`.
+ * @return The scrollable document bounds in viewport coordinates.
+ */
+function getDocumentReachableBoundsInViewport(
+    doc: Document, viewportRect: Rect): Rect {
+  const docElement = doc.documentElement;
+  const body = doc.body;
+  const win = doc.defaultView;
+  const scrollLeft = win?.scrollX ||
+      (docElement ? safeScrollLeft(docElement) : 0) ||
+      (body ? safeScrollLeft(body) : 0);
+  const scrollTop = win?.scrollY ||
+      (docElement ? safeScrollTop(docElement) : 0) ||
+      (body ? safeScrollTop(body) : 0);
+  const docWidth = Math.max(
+      docElement ? safeScrollWidth(docElement) : 0,
+      body ? safeScrollWidth(body) : 0, viewportRect.width);
+  const docHeight = Math.max(
+      docElement ? safeScrollHeight(docElement) : 0,
+      body ? safeScrollHeight(body) : 0, viewportRect.height);
+  return toEnclosingRect(
+      createRect(-scrollLeft, -scrollTop, docWidth, docHeight));
+}
+
+/**
+ * Computes the reachable rectangle (in viewport coordinates) for descendants
+ * of an overflow-clipping `container`. For axes that are user-scrollable
+ * (`overflow: scroll` or `overflow: auto` with `scrollSize > clientSize`), the
+ * bounds expand from `-scrollOffset` across the full `scrollSize`; for
+ * non-scrollable axes (e.g., `overflow: hidden` or `overflow: clip`), the
+ * bounds remain clamped to the container's visible client box.
+ *
+ * Mirrors Blink's `IsReachableInOverflowContainer()`.
+ *
+ * @param container The overflow container element.
+ * @param containerRect The container's bounding client rect in viewport space.
+ * @param overflowX The computed `overflowX` value.
+ * @param overflowY The computed `overflowY` value.
+ * @return The reachable rectangle in viewport coordinates.
+ */
+function getOverflowContainerReachableRect(
+    container: HTMLElement, containerRect: Rect, overflowX: string,
+    overflowY: string): Rect {
+  const isScrollableX =
+      overflowX === STYLE_VALUE_SCROLL || overflowX === STYLE_VALUE_AUTO;
+  const isScrollableY =
+      overflowY === STYLE_VALUE_SCROLL || overflowY === STYLE_VALUE_AUTO;
+  if (!isScrollableX && !isScrollableY) {
+    return toEnclosingRect(containerRect);
+  }
+  const clientWidth = safeClientWidth(container);
+  const clientHeight = safeClientHeight(container);
+  const scrollWidth = safeScrollWidth(container);
+  const scrollHeight = safeScrollHeight(container);
+  const canScrollX = isScrollableX && scrollWidth > clientWidth;
+  const canScrollY = isScrollableY && scrollHeight > clientHeight;
+  const reachableX = canScrollX ? containerRect.x - safeScrollLeft(container) :
+                                  containerRect.x;
+  const reachableWidth = canScrollX ?
+      Math.max(scrollWidth, containerRect.width) :
+      containerRect.width;
+  const reachableY =
+      canScrollY ? containerRect.y - safeScrollTop(container) : containerRect.y;
+  const reachableHeight = canScrollY ?
+      Math.max(scrollHeight, containerRect.height) :
+      containerRect.height;
+  return toEnclosingRect(
+      createRect(reachableX, reachableY, reachableWidth, reachableHeight));
+}
+
+/**
+ * Determines whether an element is anchored off-screen and cannot be scrolled
+ * into view by the user.
+ *
+ * Mirrors Blink's `IsAnchoredOffscreen()` in `ai_page_content_agent.cc`.
+ *
+ * @param geometry The computed geometry of the element.
+ * @param elementDoc The owner document of the element.
+ * @param isInFixedPosSubtree Whether the element is in a viewport-fixed
+ *     subtree.
+ * @param nearestOverflowContainerReachableRect The reachable bounds of the
+ *     nearest ancestor overflow container, if any.
+ * @param isInsideUnreachableOverflowContainer Whether an ancestor overflow
+ *     container is itself unreachable.
+ * @return True if the element is permanently unreachable via scrolling.
+ */
+function isAnchoredOffscreen(
+    geometry: PageContentGeometry, elementDoc: Document|null,
+    isInFixedPosSubtree: boolean,
+    nearestOverflowContainerReachableRect: Rect|null,
+    isInsideUnreachableOverflowContainer: boolean,
+    styleCache?: StyleCache): boolean {
+  // 1. Visible in viewport -> Not offscreen.
+  if (geometry.visibleBoundingBox) {
+    return false;
+  }
+
+  // 2. Inside an unreachable overflow container -> Anchored offscreen.
+  if (isInsideUnreachableOverflowContainer) {
+    return true;
+  }
+
+  // 3. Zero-sized elements -> Let them through (often degenerate wrappers).
+  const outerBox = geometry.outerBoundingBox;
+  if (outerBox.width <= 0 || outerBox.height <= 0) {
+    return false;
+  }
+
+  // 4. Inside a reachable overflow container -> Check if reachable within it.
+  if (nearestOverflowContainerReachableRect) {
+    const overlap =
+        intersection(outerBox, nearestOverflowContainerReachableRect);
+    return overlap.width <= 0 || overlap.height <= 0;
+  }
+
+  // 5. Fallback: Check against viewport (if fixed) or document bounds (if
+  // scrollable).
+  if (!elementDoc) {
+    return false;
+  }
+  const viewportRect = getViewportRect(elementDoc);
+  let reachableBounds: Rect;
+  if (isInFixedPosSubtree) {
+    reachableBounds = viewportRect;
+  } else if (styleCache) {
+    styleCache.docReachableBounds ??=
+        getDocumentReachableBoundsInViewport(elementDoc, viewportRect);
+    reachableBounds = styleCache.docReachableBounds;
+  } else {
+    reachableBounds =
+        getDocumentReachableBoundsInViewport(elementDoc, viewportRect);
+  }
+  const overlap = intersection(outerBox, reachableBounds);
+  return overlap.width <= 0 || overlap.height <= 0;
 }
 
 /**
@@ -3472,15 +3846,23 @@ function addNodeGeometry(
   const style = getComputedStyleForElement(element, styleCache);
   const position = style?.position;
 
+  let unemittedFixedClip: Rect|null|undefined;
+  const getUnemittedFixedClip = () => unemittedFixedClip === undefined ?
+      (unemittedFixedClip =
+           getUnemittedFixedContainingBlockClip(element, context)) :
+      unemittedFixedClip;
+
   // Select the appropriate clip rect based on position.
   const elementDoc = safeOwnerDocument(element);
   let clipToUse: Rect|null = null;
+  let isFixedToView = false;
 
   if (position === ATTR_POSITION_FIXED) {
     // Fixed positioned elements are relative to the viewport, bypassing parent
     // clips, unless an ancestor established a containing block for fixed
     // elements.
-    clipToUse = context.fixedClip;
+    clipToUse = getUnemittedFixedClip() ?? context.fixedClip;
+    isFixedToView = clipToUse === null;
   } else if (position === ATTR_POSITION_ABSOLUTE) {
     clipToUse = context.absoluteClip;
   } else {
@@ -3529,70 +3911,183 @@ function addNodeGeometry(
 
   attributes.geometry = geometry;
 
-  // Match Blink's IsAnchoredOffscreen logic: if an interactive node is
-  // clipped completely offscreen inside an overflow container, drop
-  // nodeInteractionInfo so offscreen carousel items are not retained.
-  if (!geometry.visibleBoundingBox && attributes.nodeInteractionInfo &&
-      context.hasOverflowClip) {
-    delete attributes.nodeInteractionInfo;
-  }
-
-  // Determine the new clip context to pass down to children.
-  let newNormalClip = context.normalClip;
-  let newAbsoluteClip = context.absoluteClip;
-  let newFixedClip = context.fixedClip;
-  let newHasOverflowClip = context.hasOverflowClip;
-
+  // Determine the new clip context to pass down to children. An element that
+  // clips its overflow becomes the clip for its normal flow descendants and for
+  // descendants for which it forms a containing block.
   const overflowX = style?.overflowX || '';
   const overflowY = style?.overflowY || '';
-  const isFixedContainingBlock = formsContainingBlockForFixed(style);
-  const isAbsoluteContainingBlock =
-      (position && position !== ATTR_POSITION_STATIC) || isFixedContainingBlock;
+  const clipsOverflow = isClippedStyle(overflowX) || isClippedStyle(overflowY);
 
-  if (isClippedStyle(overflowX) || isClippedStyle(overflowY)) {
-    newHasOverflowClip = true;
-    const visibleRectForClip = visibleRect;
-
-    // If the element actively clips its children, its own visible bounds become
-    // the new boundary for normal flow descendants.
-    newNormalClip = visibleRectForClip;
-
-    // Absolute descendants are only clipped if this element forms a containing
-    // block.
-    if (isAbsoluteContainingBlock) {
-      newAbsoluteClip = visibleRectForClip;
-    }
-
-    // Fixed descendants are only clipped if this element forms a containing
-    // block for fixed-position elements.
-    if (isFixedContainingBlock) {
-      newFixedClip = visibleRectForClip;
+  // Mirror Blink's WalkChildren recursion state: an element fixed to the
+  // viewport escapes ancestor overflow containers, while a fixed element
+  // anchored to a transformed ancestor only respects overflow containers at or
+  // outside that fixed containing block.
+  const isInFixedPosSubtree =
+      Boolean(context.isInFixedPosSubtree || isFixedToView);
+  let nearestOverflowContainerReachableRect: Rect|null;
+  let isInsideUnreachableOverflowContainer: boolean;
+  if (position === ATTR_POSITION_FIXED) {
+    if (isFixedToView) {
+      nearestOverflowContainerReachableRect = null;
+      isInsideUnreachableOverflowContainer = false;
+    } else if (getUnemittedFixedClip() !== null) {
+      nearestOverflowContainerReachableRect =
+          context.nearestOverflowContainerReachableRect ?? null;
+      isInsideUnreachableOverflowContainer =
+          Boolean(context.isInsideUnreachableOverflowContainer);
+    } else {
+      nearestOverflowContainerReachableRect =
+          context.fixedOverflowContainerReachableRect ?? null;
+      isInsideUnreachableOverflowContainer =
+          Boolean(context.fixedIsInsideUnreachableOverflowContainer);
     }
   } else {
-    if (position === ATTR_POSITION_ABSOLUTE ||
-        position === ATTR_POSITION_FIXED) {
-      newNormalClip = clipToUse;
-    }
-    if (isAbsoluteContainingBlock) {
-      // Since this element forms an absolute containing block but doesn't clip,
-      // reset the absolute clip to match the clip applied to this containing
-      // block.
-      newAbsoluteClip = clipToUse;
-    }
-    if (isFixedContainingBlock) {
-      // Since this element forms a fixed containing block but doesn't clip,
-      // reset the fixed clip to match the clip applied to this containing
-      // block.
-      newFixedClip = clipToUse;
+    nearestOverflowContainerReachableRect =
+        context.nearestOverflowContainerReachableRect ?? null;
+    isInsideUnreachableOverflowContainer =
+        Boolean(context.isInsideUnreachableOverflowContainer);
+  }
+
+  const anchoredOffscreen = actionableMode &&
+      (Boolean(attributes.nodeInteractionInfo) || clipsOverflow) &&
+      isAnchoredOffscreen(geometry, elementDoc, isInFixedPosSubtree,
+                          nearestOverflowContainerReachableRect,
+                          isInsideUnreachableOverflowContainer, styleCache);
+
+  // Match Blink's IsAnchoredOffscreen logic: if an interactive node is
+  // anchored offscreen (unreachable via scrolling), drop positive interaction
+  // signals and retain explicit disabled reasons (adding VISUALLY_UNREACHABLE)
+  // so downstream consumers know why it was disabled.
+  if (anchoredOffscreen && attributes.nodeInteractionInfo) {
+    const existingDisabledReasons =
+        attributes.nodeInteractionInfo.interactionDisabledReasons || [];
+    const isDisabled = attributes.nodeInteractionInfo.isDisabled;
+    attributes.nodeInteractionInfo = {
+      clickabilityReasons: [],
+      isDisabled: isDisabled,
+      interactionDisabledReasons: existingDisabledReasons,
+      isFocusable: false,
+    };
+    if (!attributes.nodeInteractionInfo.interactionDisabledReasons.includes(
+            PageContentInteractionDisabledReason.VISUALLY_UNREACHABLE)) {
+      attributes.nodeInteractionInfo.interactionDisabledReasons.push(
+          PageContentInteractionDisabledReason.VISUALLY_UNREACHABLE);
     }
   }
 
+  let newNearestOverflowContainerReachableRect =
+      nearestOverflowContainerReachableRect;
+  let newIsInsideUnreachableOverflowContainer =
+      isInsideUnreachableOverflowContainer;
+  if (clipsOverflow && element !== elementDoc?.body) {
+    newIsInsideUnreachableOverflowContainer =
+        isInsideUnreachableOverflowContainer || anchoredOffscreen;
+    newNearestOverflowContainerReachableRect =
+        newIsInsideUnreachableOverflowContainer ?
+        null :
+        getOverflowContainerReachableRect(
+            element, elementRect, overflowX, overflowY);
+  }
+
+  const containingBlockClip = clipsOverflow ? visibleRect : clipToUse;
+  let normalClip = context.normalClip;
+  if (clipsOverflow) {
+    normalClip = visibleRect;
+  } else if (
+      (position === ATTR_POSITION_ABSOLUTE ||
+       position === ATTR_POSITION_FIXED) &&
+      clipToUse) {
+    normalClip = clipToUse;
+  }
+
+  // Lazily evaluate `formsContainingBlockForFixed()` at most once.
+  let isFixedContainingBlock: boolean|undefined;
+  const formsFixedContainingBlock = () => isFixedContainingBlock ??=
+      formsContainingBlockForFixed(style);
+  let absoluteClip: Rect|null|undefined;
+  let fixedClip: Rect|null|undefined;
+  const isPositioned = !!position && position !== ATTR_POSITION_STATIC;
+
   return {
-    normalClip: newNormalClip,
-    absoluteClip: newAbsoluteClip,
-    fixedClip: newFixedClip,
-    hasOverflowClip: newHasOverflowClip,
+    domNode: element,
+    normalClip,
+    get absoluteClip() {
+      if (absoluteClip === undefined) {
+        absoluteClip = isPositioned || formsFixedContainingBlock() ?
+            containingBlockClip :
+            context.absoluteClip;
+      }
+      return absoluteClip;
+    },
+    get fixedClip() {
+      if (fixedClip === undefined) {
+        fixedClip = formsFixedContainingBlock() ?
+            containingBlockClip :
+            (getUnemittedFixedClip() ?? context.fixedClip);
+      }
+      return fixedClip;
+    },
+    get fixedOverflowContainerReachableRect() {
+      if (formsFixedContainingBlock()) {
+        return newNearestOverflowContainerReachableRect;
+      }
+      if (getUnemittedFixedClip() !== null) {
+        return nearestOverflowContainerReachableRect;
+      }
+      return context.fixedOverflowContainerReachableRect ?? null;
+    },
+    get fixedIsInsideUnreachableOverflowContainer() {
+      if (formsFixedContainingBlock()) {
+        return newIsInsideUnreachableOverflowContainer;
+      }
+      if (getUnemittedFixedClip() !== null) {
+        return isInsideUnreachableOverflowContainer;
+      }
+      return Boolean(context.fixedIsInsideUnreachableOverflowContainer);
+    },
+    isInFixedPosSubtree,
+    nearestOverflowContainerReachableRect:
+        newNearestOverflowContainerReachableRect,
+    isInsideUnreachableOverflowContainer:
+        newIsInsideUnreachableOverflowContainer,
   };
+}
+
+/**
+ * Calculates and adds geometry information to a text node's content attributes.
+ *
+ * @param textNode The DOM text node to calculate geometry for.
+ * @param attributes The attributes object where geometry will be stored.
+ * @param context The clipping context inherited from parent elements.
+ * @param range A reusable DOM Range used to measure the text node's bounds.
+ */
+function addTextNodeGeometry(
+    textNode: Node, attributes: PageContentAttributes, context: ClippingContext,
+    range: Range): void {
+  range.selectNodeContents(textNode);
+  const domRect = range.getBoundingClientRect();
+
+  const geometry: PageContentGeometry = {
+    outerBoundingBox: toEnclosingRect(domRect),
+    cssPosition: PageContentCssPosition.STATIC,
+  };
+
+  const clipRect = context.normalClip;
+  if (domRect.width > 0 && domRect.height > 0 && clipRect.width > 0 &&
+      clipRect.height > 0) {
+    const left = Math.max(domRect.x, clipRect.x);
+    const top = Math.max(domRect.y, clipRect.y);
+    const right = Math.min(domRect.right, clipRect.x + clipRect.width);
+    const bottom = Math.min(domRect.bottom, clipRect.y + clipRect.height);
+    if (left < right && top < bottom) {
+      const x = Math.floor(left);
+      const y = Math.floor(top);
+      geometry.visibleBoundingBox =
+          createRect(x, y, Math.ceil(right) - x, Math.ceil(bottom) - y);
+    }
+  }
+
+  attributes.geometry = geometry;
 }
 
 // TODO(crbug.com/476341187): Carry status information when the max depth is
@@ -3611,7 +4106,12 @@ function addNodeGeometry(
  * @param actionableMode Whether to extract actionable interaction info.
  * @param paidContentContext Context regarding paid content.
  * @param hasCanvas Whether there is a canvas element on the page.
- * @param parentClipRect The clipping rectangle of the parent.
+ * @param parentContext The clipping context inherited from parent elements.
+ * @param includeSensitivePaymentsForRedaction Whether sensitive payments
+ *     redaction is enabled.
+ * @param extractAutofillOtpRedactions Whether OTP redaction is enabled.
+ * @param extractPasswordScreenshotRedactions Whether password screenshot
+ *     redaction is enabled.
  * @param styleCache The style cache to use for computing styles.
  * @return A new PageContentNode if valid content was found, null otherwise.
  */
@@ -3634,8 +4134,12 @@ function maybeGenerateContentNode(
       if (domNodeId !== null) {
         contentAttributes.domNodeId = domNodeId;
       }
+      if (actionableMode && styleCache?.textRange) {
+        addTextNodeGeometry(
+            domNode, contentAttributes, parentContext, styleCache.textRange);
+      }
       // Text nodes don't have children, so they don't need a clip rect passed
-      // down. Explicit geometry for text nodes isn't currently extracted.
+      // down.
       return {
         node: {
           childrenNodes: [],
@@ -3653,7 +4157,7 @@ function maybeGenerateContentNode(
         element, nonce, depth, maxDepth, interactionInfo, actionableMode,
         interactiveNodeIds, paidContentContext,
         includeSensitivePaymentsForRedaction, extractAutofillOtpRedactions,
-        extractPasswordScreenshotRedactions, styleCache);
+        extractPasswordScreenshotRedactions, parentContext, styleCache);
     if (contentNode) {
       const domNodeId = getOrCreateNodeId(domNode);
       if (domNodeId !== null) {
@@ -3665,6 +4169,31 @@ function maybeGenerateContentNode(
           element, contentNode.contentAttributes, parentContext, actionableMode,
           includeSensitivePaymentsForRedaction, extractAutofillOtpRedactions,
           extractPasswordScreenshotRedactions, styleCache);
+      // Synthesized button <input> label TEXT nodes have no DOM node for
+      // TreeWalker to visit, so copy the host <input>'s geometry here.
+      if (actionableMode && contentNode.childrenNodes.length > 0 &&
+          contentNode.contentAttributes.attributeType ===
+              PageContentAttributeType.FORM_CONTROL &&
+          contentNode.contentAttributes.geometry) {
+        const parentGeometry = contentNode.contentAttributes.geometry;
+        for (const child of contentNode.childrenNodes) {
+          if (child.contentAttributes.attributeType ===
+                  PageContentAttributeType.TEXT &&
+              !child.contentAttributes.geometry) {
+            // WebKit draws the button label as an anonymous render text that
+            // page JS cannot measure; approximate the synthesized label's
+            // bounds with the host <input>'s boxes.
+            child.contentAttributes.geometry = {
+              outerBoundingBox: {...parentGeometry.outerBoundingBox},
+              ...(parentGeometry.visibleBoundingBox ? {
+                visibleBoundingBox: {...parentGeometry.visibleBoundingBox},
+              } :
+                                                      {}),
+              cssPosition: PageContentCssPosition.STATIC,
+            };
+          }
+        }
+      }
       return {node: contentNode, nextClippingContext};
     }
   }
@@ -3729,10 +4258,17 @@ function shouldAcceptNode(node: Node, styleCache?: StyleCache): number {
 /**
  * Tracks inherited clipping rectangles separately for normal flow elements,
  * absolute positioned elements, and fixed positioned elements.
+ *
+ * `absoluteClip` and `fixedClip` are implemented as lazy getters that defer
+ * reading layout-dependent styles until a positioned descendant is encountered.
+ * Contexts must be consumed synchronously during the walk; copying them
+ * triggers eager evaluation.
  */
 interface ClippingContext {
+  /** The emitted DOM element that produced this clipping context. */
+  domNode?: HTMLElement;
   /** Clipping rectangle applied to static and relative positioned elements. */
-  normalClip: Rect|null;
+  normalClip: Rect;
   /** Clipping rectangle applied to absolute positioned elements. */
   absoluteClip: Rect|null;
   /**
@@ -3740,8 +4276,31 @@ interface ClippingContext {
    * forms a containing block for fixed elements.
    */
   fixedClip: Rect|null;
-  /** Whether an ancestor element has an overflow clipping style. */
-  hasOverflowClip?: boolean;
+  /**
+   * The reachable rectangle (in viewport coordinates) of the nearest ancestor
+   * overflow container at or outside the fixed-position containing block.
+   */
+  fixedOverflowContainerReachableRect?: Rect|null;
+  /**
+   * Whether the fixed-position containing block is inside an unreachable
+   * ancestor overflow container.
+   */
+  fixedIsInsideUnreachableOverflowContainer?: boolean;
+  /**
+   * Whether the element is inside a subtree with `position: fixed` relative to
+   * the viewport.
+   */
+  isInFixedPosSubtree?: boolean;
+  /**
+   * The reachable rectangle (in viewport coordinates) of the nearest ancestor
+   * overflow container, or null/undefined if not inside an overflow container.
+   */
+  nearestOverflowContainerReachableRect?: Rect|null;
+  /**
+   * Whether the element is inside an ancestor overflow container that is itself
+   * anchored offscreen and unreachable.
+   */
+  isInsideUnreachableOverflowContainer?: boolean;
 }
 
 // Item in the ancestor stack.
@@ -4006,6 +4565,10 @@ function computeZOrder(rootNode: PageContentNode, rootDoc: Document) {
       });
       nodeCounter++;
     }
+    if (node.contentAttributes.attributeType ===
+        PageContentAttributeType.IFRAME) {
+      return;
+    }
     for (const child of node.childrenNodes) {
       traverse(child);
     }
@@ -4072,9 +4635,16 @@ function computeZOrder(rootNode: PageContentNode, rootDoc: Document) {
 
   const sweepPoints: SweepPoint[] = [];
   for (const node of actionableNodes) {
+    // `ROOT` spans the full viewport and represents the background canvas
+    // (always Z-order 1 in Blink), so overlap checks against it are redundant.
+    if (node.apcNode.contentAttributes.attributeType ===
+        PageContentAttributeType.ROOT) {
+      continue;
+    }
     const box = node.visibleBox;
     sweepPoints.push({top: box.y, pointType: SWEEP_POINT_START, node});
-    sweepPoints.push({top: box.bottom, pointType: SWEEP_POINT_END, node});
+    sweepPoints.push(
+        {top: box.y + box.height, pointType: SWEEP_POINT_END, node});
   }
 
   // Sort sweep points from lowest to highest Y.
@@ -4103,8 +4673,8 @@ function computeZOrder(rootNode: PageContentNode, rootDoc: Document) {
       for (const activeNode of activeSet) {
         const activeNodeBox = activeNode.visibleBox;
         // X-overlap check
-        if (newNodeBox.x < activeNodeBox.right &&
-            newNodeBox.right > activeNodeBox.x) {
+        if (newNodeBox.x < activeNodeBox.x + activeNodeBox.width &&
+            newNodeBox.x + newNodeBox.width > activeNodeBox.x) {
           // True 2D overlap occurs. Calculate intersection rectangle.
           const intersectionRect = intersection(newNodeBox, activeNodeBox);
 
@@ -4157,7 +4727,13 @@ function computeZOrder(rootNode: PageContentNode, rootDoc: Document) {
   const graph = new Map<ActionableNode, Set<ActionableNode>>();
 
   for (const node of actionableNodes) {
-    domNodeIdToNode.set(node.domNodeId, node);
+    // Negative `z-index` elements paint behind `<body>`; without hit-testing
+    // `ROOT` against all nodes, ranking `ROOT` above a negative `z-index`
+    // element would raise `ROOT`'s score above unrelated non-overlapping nodes.
+    if (node.apcNode.contentAttributes.attributeType !==
+        PageContentAttributeType.ROOT) {
+      domNodeIdToNode.set(node.domNodeId, node);
+    }
     graph.set(node, new Set<ActionableNode>());
   }
 
@@ -4296,7 +4872,8 @@ export function extractAnnotatedPageContent(
     attemptPaidContentJsonFixing: boolean,
     includeSensitivePaymentsForRedaction: boolean,
     extractAutofillOtpRedactions: boolean,
-    extractPasswordScreenshotRedactions: boolean): PageContent|null {
+    extractPasswordScreenshotRedactions: boolean,
+    isInsideUnreachableOverflowContainer: boolean = false): PageContent|null {
   if (depth > maxDepth) {
     return null;
   }
@@ -4311,6 +4888,7 @@ export function extractAnnotatedPageContent(
     lastStyledNode: null,
     lastComputedStyle: undefined,
     window: documentWindow,
+    textRange: actionableMode ? safeCreateRange(document) : undefined,
   };
 
   // Pre-calculate root font size.
@@ -4365,6 +4943,13 @@ export function extractAnnotatedPageContent(
       root, rootNode.contentAttributes, rootInteractionInfo, paidContentContext,
       actionableMode, undefined, styleCache);
 
+  const viewportRect = getViewportRect(document);
+  const viewportGeometry = toEnclosingRect(viewportRect);
+  const initialClip = isInsideUnreachableOverflowContainer ?
+      createRect(0, 0, 0, 0) :
+      viewportRect;
+  let initialFixedClip: Rect|null|undefined;
+
   // Stack to track the current ancestry chain. At this point it is known that
   // that there is at least a root node that is walkable.
   // We use this to find the correct parent for the current node without
@@ -4376,14 +4961,35 @@ export function extractAnnotatedPageContent(
     isVisible: true,
     clippingContext: addNodeGeometry(
         root, rootNode.contentAttributes, {
-          normalClip: getViewportRect(document),
-          absoluteClip: getViewportRect(document),
-          fixedClip: null,
+          normalClip: initialClip,
+          absoluteClip: initialClip,
+          get fixedClip() {
+            if (initialFixedClip === undefined) {
+              initialFixedClip = (isInsideUnreachableOverflowContainer ||
+                                  formsContainingBlockForFixed(rootStyle)) ?
+                  initialClip :
+                  null;
+            }
+            return initialFixedClip;
+          },
+          fixedIsInsideUnreachableOverflowContainer:
+              isInsideUnreachableOverflowContainer,
+          isInsideUnreachableOverflowContainer,
         },
         actionableMode, includeSensitivePaymentsForRedaction,
         extractAutofillOtpRedactions, extractPasswordScreenshotRedactions,
         styleCache),
   }];
+
+  // Matching Blink's `LayoutView`, the root node of each frame should stand for
+  // that frame's viewport because consumers use the main frame root's visible
+  // box as the reference frame of the tab screenshot (e.g. server-side
+  // Set-of-Marks). `body` geometry still clips its descendants through the
+  // clipping context above.
+  if (actionableMode) {
+    rootNode.contentAttributes.geometry =
+        createViewportGeometry(viewportGeometry);
+  }
 
   // Collect interactive nodes (focused element, selection start/end).
   const interactiveNodeIds = getInteractiveNodeIds(document);
@@ -4395,13 +5001,6 @@ export function extractAnnotatedPageContent(
       extractPasswordScreenshotRedactions, styleCache);
 
   const pageInteractionInfo = extractPageInteractionInfo(document);
-
-  // Start the viewport at (0, 0) as it represents the entire page surface which
-  // is the root surface. This deliberately extracts the layout viewport bounds,
-  // rather than accounting for visual viewport offsets (e.g., pinch-to-zoom),
-  // to maintain parity with Blink's ConvertViewportGeometry in
-  // components/optimization_guide/content/browser/page_content_proto_provider.cc.
-  const viewportGeometry = toEnclosingRect(getViewportRect(document));
 
   if (actionableMode) {
     computeZOrder(rootNode, document);

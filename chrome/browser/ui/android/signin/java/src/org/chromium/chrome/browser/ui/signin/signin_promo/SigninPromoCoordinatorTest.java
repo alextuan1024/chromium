@@ -29,6 +29,7 @@ import static org.mockito.Mockito.when;
 
 import android.app.Activity;
 import android.content.Context;
+import android.view.Gravity;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
@@ -161,7 +162,7 @@ public class SigninPromoCoordinatorTest {
     @Rule
     public final RenderTestRule mRenderTestRule =
             RenderTestRule.Builder.withPublicCorpus()
-                    .setRevision(1)
+                    .setRevision(2)
                     .setBugComponent(RenderTestRule.Component.SERVICES_SIGN_IN)
                     .build();
 
@@ -187,7 +188,6 @@ public class SigninPromoCoordinatorTest {
     private PersonalizedSigninPromoView mPromoView;
     private SigninPromoCoordinator mPromoCoordinator;
     private SigninPromoDelegate mDelegate;
-    private boolean mIsSetupListActive;
     private boolean mIsActivityStarted;
     private boolean mIsNativeInitialized;
 
@@ -287,7 +287,7 @@ public class SigninPromoCoordinatorTest {
                         TestAccounts.ACCOUNT2.getGaiaId(),
                         new int[0],
                         SyncEnums.DeviceFormFactor.DEVICE_FORM_FACTOR_UNSPECIFIED);
-        when(mAccountPreviewDataServiceMock.getPreferredAccountForPromo()).thenReturn(preference);
+        when(mAccountPreviewDataServiceMock.getPreferredAccountForSignin()).thenReturn(preference);
         setUpSignInPromo(accessPoint);
 
         // Since the flag is enabled and Account2 is preferred, the promo should show Account2.
@@ -323,7 +323,7 @@ public class SigninPromoCoordinatorTest {
                                 .getString(
                                         R.string.sync_promo_continue_as,
                                         TestAccounts.ACCOUNT1.getGivenName())));
-        verify(mAccountPreviewDataServiceMock, never()).getPreferredAccountForPromo();
+        verify(mAccountPreviewDataServiceMock, never()).getPreferredAccountForSignin();
     }
 
     private void testPrimaryButtonClickHelper(@SigninAccessPoint int accessPoint) {
@@ -469,31 +469,17 @@ public class SigninPromoCoordinatorTest {
         BottomSheetSigninAndHistorySyncConfig config = configCaptor.getValue();
 
         // Verify bottom sheet strings.
+        var activity = mActivityTestRule.getActivity();
+        String title = activity.getString(R.string.signin_account_picker_bottom_sheet_title);
         AccountPickerBottomSheetStrings expectedStrings;
         if (accessPoint == SigninAccessPoint.HISTORY_PAGE) {
+            int subtitleId = R.string.signin_account_picker_bottom_sheet_benefits_subtitle;
             expectedStrings =
-                    new AccountPickerBottomSheetStrings.Builder(
-                                    mActivityTestRule
-                                            .getActivity()
-                                            .getString(
-                                                    R.string
-                                                            .signin_account_picker_bottom_sheet_title))
-                            .setSubtitleString(
-                                    mActivityTestRule
-                                            .getActivity()
-                                            .getString(
-                                                    R.string
-                                                            .signin_account_picker_bottom_sheet_benefits_subtitle))
+                    new AccountPickerBottomSheetStrings.Builder(title)
+                            .setSubtitleString(activity.getString(subtitleId))
                             .build();
         } else {
-            expectedStrings =
-                    new AccountPickerBottomSheetStrings.Builder(
-                                    mActivityTestRule
-                                            .getActivity()
-                                            .getString(
-                                                    R.string
-                                                            .signin_account_picker_bottom_sheet_title))
-                            .build();
+            expectedStrings = new AccountPickerBottomSheetStrings.Builder(title).build();
         }
         assertEquals(expectedStrings, config.bottomSheetStrings);
     }
@@ -691,6 +677,7 @@ public class SigninPromoCoordinatorTest {
             ThreadUtils.runOnUiThreadBlocking(() -> mPromoCoordinator.onSigninUndone());
         } else {
             // Dismiss the promo via [x] dismiss button.
+            ViewUtils.waitForVisibleView(withId(dismissButtonId));
             onView(withId(dismissButtonId)).perform(click());
         }
 
@@ -1023,6 +1010,11 @@ public class SigninPromoCoordinatorTest {
                     Activity activity = mActivityTestRule.getActivity();
                     View promoView = LayoutInflater.from(activity).inflate(layoutResId, null);
                     LinearLayout content = new LinearLayout(activity);
+                    content.setLayoutParams(
+                            new LinearLayout.LayoutParams(
+                                    ViewGroup.LayoutParams.MATCH_PARENT,
+                                    ViewGroup.LayoutParams.MATCH_PARENT));
+                    content.setGravity(Gravity.CENTER);
                     content.addView(
                             promoView,
                             new LinearLayout.LayoutParams(
@@ -1062,12 +1054,7 @@ public class SigninPromoCoordinatorTest {
                             mOnPromoStateChange,
                             /* isCreatedInCct= */ false);
             case SigninAccessPoint.NTP_FEED_TOP_PROMO ->
-                    new NtpSigninPromoDelegate(
-                            activity,
-                            mProfile,
-                            mLauncher,
-                            mOnPromoStateChange,
-                            () -> mIsSetupListActive);
+                    new NtpSigninPromoDelegate(activity, mProfile, mLauncher, mOnPromoStateChange);
             case SigninAccessPoint.RECENT_TABS ->
                     new RecentTabsSigninPromoDelegate(
                             activity, mProfile, mLauncher, mOnPromoStateChange);

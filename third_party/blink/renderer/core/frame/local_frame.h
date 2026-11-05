@@ -35,7 +35,6 @@
 #include "base/callback_list.h"
 #include "base/gtest_prod_util.h"
 #include "base/memory/raw_ptr.h"
-#include "base/time/default_tick_clock.h"
 #include "base/time/time.h"
 #include "base/unguessable_token.h"
 #include "build/build_config.h"
@@ -126,7 +125,6 @@ class ScriptInitiationMonitor;
 class AssociatedInterfaceProvider;
 class AuditsIssue;
 class BackgroundColorPaintImageGenerator;
-class BoxShadowPaintImageGenerator;
 class ClipPathPaintImageGenerator;
 class Color;
 class ContentCaptureManager;
@@ -207,18 +205,16 @@ class CORE_EXPORT LocalFrame final
 
   // For a description of |inheriting_agent_factory| go see the comment on the
   // Frame constructor.
-  LocalFrame(
-      LocalFrameClient*,
-      Page&,
-      FrameOwner*,
-      Frame* parent,
-      Frame* previous_sibling,
-      FrameInsertType insert_type,
-      const LocalFrameToken& frame_token,
-      WindowAgentFactory* inheriting_agent_factory,
-      InterfaceRegistry*,
-      mojo::PendingRemote<mojom::blink::BrowserInterfaceBroker>,
-      const base::TickClock* clock = base::DefaultTickClock::GetInstance());
+  LocalFrame(LocalFrameClient*,
+             Page&,
+             FrameOwner*,
+             Frame* parent,
+             Frame* previous_sibling,
+             FrameInsertType insert_type,
+             const LocalFrameToken& frame_token,
+             WindowAgentFactory* inheriting_agent_factory,
+             InterfaceRegistry*,
+             mojo::PendingRemote<mojom::blink::BrowserInterfaceBroker>);
 
   // Initialize the LocalFrame, creating and initializing its LocalDOMWindow. It
   // starts from the initial empty document.
@@ -255,6 +251,10 @@ class CORE_EXPORT LocalFrame final
   void SetView(LocalFrameView*);
   void CreateView(const gfx::Size&, const Color&);
 
+  // Registers the LocalFrameView as the EmbeddedContentView of this frame's
+  // HTMLFrameOwnerElement, if the owner has a layout object.
+  void AttachViewToOwner();
+
   // Frame overrides:
   ~LocalFrame() override;
   void Trace(Visitor*) const override;
@@ -262,7 +262,6 @@ class CORE_EXPORT LocalFrame final
   bool ShouldClose() override;
   const SecurityContext* GetSecurityContext() const override;
   void PrintNavigationErrorMessage(const Frame&, const String& reason);
-  void PrintNavigationWarning(const String&);
   bool DetachDocument() override;
   void CheckCompleted() override;
   void DidChangeVisibilityState() override;
@@ -321,7 +320,6 @@ class CORE_EXPORT LocalFrame final
   SpellChecker& GetSpellChecker() const;
   FrameConsole& Console() const;
   BackgroundColorPaintImageGenerator* GetBackgroundColorPaintImageGenerator();
-  BoxShadowPaintImageGenerator* GetBoxShadowPaintImageGenerator();
   ClipPathPaintImageGenerator* GetClipPathPaintImageGenerator();
   void SetClipPathPaintImageGeneratorForTesting(ClipPathPaintImageGenerator*);
   LCPCriticalPathPredictor* GetLCPP();
@@ -351,7 +349,8 @@ class CORE_EXPORT LocalFrame final
   // The |notification_type| parameter is used for histograms only.
   static void NotifyUserActivation(
       LocalFrame*,
-      mojom::blink::UserActivationNotificationType notification_type);
+      mojom::blink::UserActivationNotificationType notification_type,
+      bool need_browser_verification = false);
 
   // Returns the transient user activation state of the |LocalFrame|, provided
   // it is non-null.  Otherwise returns |false|.
@@ -362,8 +361,8 @@ class CORE_EXPORT LocalFrame final
   // activation.  Returns |true| if successfully consumed the state.
   static bool ConsumeTransientUserActivation(
       LocalFrame*,
-      UserActivationUpdateSource update_source =
-          UserActivationUpdateSource::kRenderer);
+      UserActivationUpdateScope update_scope =
+          UserActivationUpdateScope::kDefault);
 
   bool IsHistoryUserActivationActive() const {
     return history_user_activation_state_.IsActive();
@@ -413,6 +412,14 @@ class CORE_EXPORT LocalFrame final
   void NetworkBecameIdle(base::TimeDelta idle_start_time);
   [[nodiscard]] base::CallbackListSubscription RequestNetworkIdleCallback(
       base::OnceClosure callback);
+
+  void AddAdTaskTime(base::TimeDelta time);
+  base::TimeDelta UnreportedAdTaskTime() const {
+    return unreported_ad_task_time_;
+  }
+  void SetUnreportedAdTaskTime(base::TimeDelta time) {
+    unreported_ad_task_time_ = time;
+  }
 
   // =========================================================================
   // All public functions below this point are candidates to move out of
@@ -476,7 +483,8 @@ class CORE_EXPORT LocalFrame final
   String SelectedTextForClipboard() const;
   void TextSelectionChanged(const String& selection_text,
                             uint32_t offset,
-                            const gfx::Range& range) const;
+                            const gfx::Range& range,
+                            bool has_selection) const;
 
   PositionWithAffinityTemplate<EditingAlgorithm<NodeTraversal>>
   PositionForPoint(const PhysicalOffset& frame_point);
@@ -646,13 +654,6 @@ class CORE_EXPORT LocalFrame final
   // be removed.
   bool IsProvisional() const;
 
-  // Returns the Page's `previous_main_frame_for_local_swap_` if set, or the
-  // LocalFrame for which `provisional_frame_ == this`. The LocalFrame returned
-  // will be swapped out in place of `this` as part of a
-  // LocalFrame <-> LocalFrame swap during navigation commit. This function may
-  // only be called on a provisional frame.
-  LocalFrame* GetPreviousLocalFrameForLocalSwap();
-
   // Whether the frame is considered to be a root ad frame by Ad Tagging.
   bool IsAdRoot() const;
 
@@ -721,12 +722,6 @@ class CORE_EXPORT LocalFrame final
   // main frame.
   void SetNavigationConfidence(double randomized_trigger_rate,
                                mojom::blink::ConfidenceLevel confidence);
-
-  const AtomicString& GetReducedAcceptLanguage() const {
-    return reduced_accept_language_;
-  }
-
-  void SetReducedAcceptLanguage(const AtomicString& reduced_accept_language);
 
   // Overlays a color on top of this LocalFrameView.
   void SetFrameColorOverlay(SkColor color);
@@ -799,7 +794,8 @@ class CORE_EXPORT LocalFrame final
   void ShowCaptionSettings();
 
   void NotifyUserActivation(
-      mojom::blink::UserActivationNotificationType notification_type);
+      mojom::blink::UserActivationNotificationType notification_type,
+      bool need_browser_verification = false);
   void AddInspectorIssue(AuditsIssue issue);
   void SaveImageAt(const gfx::Point& window_point);
   void AdvanceFocusForIME(mojom::blink::FocusType focus_type);
@@ -811,6 +807,7 @@ class CORE_EXPORT LocalFrame final
 
   void SetScaleFactor(float scale);
   void ClosePageForTesting();
+  void FlushLocalFrameHostForTesting();
   void SetInitialFocus(bool reverse);
 
 #if BUILDFLAG(IS_MAC)
@@ -965,6 +962,8 @@ class CORE_EXPORT LocalFrame final
   // This is called after all other position-visibility conditions have been
   // checked.
   void CheckPositionAnchorsForChainedVisibilityChanges();
+  void NotifyScrollEndForAnchorPositioning(
+      CompositorElementId scroll_element_id);
 
   using BlockingDetailsList = Vector<mojom::blink::BlockingDetailsPtr>;
   static BlockingDetailsList ConvertFeatureAndLocationToMojomStruct(
@@ -1074,7 +1073,7 @@ class CORE_EXPORT LocalFrame final
 
   // Consumes and returns the transient user activation state this frame, after
   // updating all other frames in the frame tree.
-  bool ConsumeTransientUserActivation(UserActivationUpdateSource update_source);
+  bool ConsumeTransientUserActivation(UserActivationUpdateScope update_scope);
 
   void DidFreeze();
   void DidResume();
@@ -1207,13 +1206,6 @@ class CORE_EXPORT LocalFrame final
   Member<BackgroundColorPaintImageGenerator>
       background_color_paint_image_generator_;
 
-  // TODO(crbug.com/1264553) : use a map from property id to
-  // NativePaintImageGenerator, then we could avoid needing to switch on the
-  // property in compositor_animations.cc
-  // Access to box shadow paint image
-  // generator. Initialized per local root and reused among sub frames.
-  Member<BoxShadowPaintImageGenerator> box_shadow_paint_image_generator_;
-
   // Access to clip-path paint image generator. Initialized per local root and
   // reused among sub frames.
   Member<ClipPathPaintImageGenerator> clip_path_paint_image_generator_;
@@ -1270,9 +1262,6 @@ class CORE_EXPORT LocalFrame final
   bool notified_initial_network_almost_idle_ = false;
   bool notified_initial_network_idle_ = false;
 
-  // Reduced accept language for top-level frame.
-  AtomicString reduced_accept_language_;
-
   Member<v8_compile_hints::V8LocalCompileHintsProducer>
       v8_local_compile_hints_producer_;
 
@@ -1299,6 +1288,10 @@ class CORE_EXPORT LocalFrame final
   // when the frame or any of its ancestors is not rendered (e.g. display:none,
   // visibility:hidden, or zero-area layout on the iframe element).
   std::optional<bool> is_hidden_for_media_playback_;
+
+  // CPU (wall) time spent executing ad scripts in this frame that has not yet
+  // been reported via DidChangeCpuTiming.
+  base::TimeDelta unreported_ad_task_time_;
 };
 
 inline FrameLoader& LocalFrame::Loader() const {

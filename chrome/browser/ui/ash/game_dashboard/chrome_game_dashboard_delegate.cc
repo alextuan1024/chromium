@@ -6,17 +6,21 @@
 
 #include "ash/multi_user/multi_user_window_manager.h"
 #include "ash/shell.h"
+#include "base/check.h"
 #include "base/functional/callback_helpers.h"
 #include "chrome/browser/apps/app_service/metrics/app_platform_metrics.h"
 #include "chrome/browser/ash/app_list/arc/arc_app_list_prefs.h"
-#include "chrome/browser/profiles/profile_manager.h"
+#include "chrome/browser/profiles/profile.h"
+#include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
 #include "chromeos/ash/components/growth/campaigns_constants.h"
 #include "chromeos/ash/components/growth/campaigns_manager.h"
 #include "chromeos/ash/experiences/arc/arc_util.h"
 #include "chromeos/ash/experiences/arc/compat_mode/arc_resize_lock_manager.h"
 #include "chromeos/ash/experiences/arc/compat_mode/compat_mode_button_controller.h"
 #include "chromeos/ash/experiences/arc/session/connection_holder.h"
-#include "components/user_manager/user_manager.h"
+#include "components/session_manager/core/session.h"
+#include "components/session_manager/core/session_manager.h"
+#include "content/public/browser/browser_context.h"
 
 ChromeGameDashboardDelegate::ChromeGameDashboardDelegate() = default;
 
@@ -25,9 +29,14 @@ ChromeGameDashboardDelegate::~ChromeGameDashboardDelegate() = default;
 void ChromeGameDashboardDelegate::GetIsGame(const std::string& app_id,
                                             IsGameCallback callback) {
   // Get the app category from ArcAppListPrefs.
-  auto* profile = ProfileManager::GetPrimaryUserProfile();
-  CHECK(profile);
-  auto* arc_app_list_prefs = ArcAppListPrefs::Get(profile);
+  const session_manager::Session* primary_session =
+      session_manager::SessionManager::Get()->GetPrimarySession();
+  CHECK(primary_session);
+  content::BrowserContext* browser_context =
+      ash::BrowserContextHelper::Get()->GetBrowserContextByAccountId(
+          primary_session->account_id());
+  CHECK(browser_context);
+  auto* arc_app_list_prefs = ArcAppListPrefs::Get(browser_context);
   if (!arc_app_list_prefs) {
     // If there's no ArcAppListPrefs, assume the app is not a game.
     std::move(callback).Run(/*is_game=*/false);
@@ -58,10 +67,15 @@ void ChromeGameDashboardDelegate::GetIsGame(const std::string& app_id,
 std::string ChromeGameDashboardDelegate::GetArcAppName(
     const std::string& app_id) const {
   // Get the app category from ArcAppListPrefs.
-  auto* profile = ProfileManager::GetPrimaryUserProfile();
-  CHECK(profile);
+  const session_manager::Session* primary_session =
+      session_manager::SessionManager::Get()->GetPrimarySession();
+  CHECK(primary_session);
+  content::BrowserContext* browser_context =
+      ash::BrowserContextHelper::Get()->GetBrowserContextByAccountId(
+          primary_session->account_id());
+  CHECK(browser_context);
 
-  auto app_info = ArcAppListPrefs::Get(profile)->GetApp(app_id);
+  auto app_info = ArcAppListPrefs::Get(browser_context)->GetApp(app_id);
   if (!app_info) {
     LOG(ERROR) << "Failed to get app info: " << app_id << ".";
     return std::string();
@@ -77,9 +91,10 @@ void ChromeGameDashboardDelegate::RecordGameWindowOpenedEvent(
         growth::kGrowthCampaignsEventGameWindowOpened);
   }
 
-  user_manager::UserManager* user_manager = user_manager::UserManager::Get();
-  CHECK(user_manager);
-  if (user_manager->GetActiveUser() != user_manager->GetPrimaryUser()) {
+  auto* session_manager = session_manager::SessionManager::Get();
+  CHECK(session_manager);
+  const auto* primary_session = session_manager->GetPrimarySession();
+  if (session_manager->GetActiveSession() != primary_session) {
     return;
   }
 
@@ -90,8 +105,7 @@ void ChromeGameDashboardDelegate::RecordGameWindowOpenedEvent(
     // returns an invalid account id.
     const AccountId& account_id =
         multi_user_window_manager->GetWindowOwner(window);
-    if (account_id.is_valid() &&
-        user_manager->GetPrimaryUser()->GetAccountId() != account_id) {
+    if (account_id.is_valid() && primary_session->account_id() != account_id) {
       return;
     }
   }
@@ -107,19 +121,31 @@ void ChromeGameDashboardDelegate::ShowResizeToggleMenu(aura::Window* window) {
 ukm::SourceId ChromeGameDashboardDelegate::GetUkmSourceId(
     const std::string& app_id) {
   // Get the ukm source id from apps::AppPlatformMetrics.
-  auto* profile = ProfileManager::GetPrimaryUserProfile();
-  CHECK(profile);
-  return apps::AppPlatformMetrics::GetSourceId(profile, app_id);
+  const session_manager::Session* primary_session =
+      session_manager::SessionManager::Get()->GetPrimarySession();
+  CHECK(primary_session);
+  content::BrowserContext* browser_context =
+      ash::BrowserContextHelper::Get()->GetBrowserContextByAccountId(
+          primary_session->account_id());
+  CHECK(browser_context);
+  return apps::AppPlatformMetrics::GetSourceId(
+      Profile::FromBrowserContext(browser_context), app_id);
 }
 
 arc::CompatModeButtonController*
 ChromeGameDashboardDelegate::GetCompatModeButtonController() {
   if (!compat_mode_button_controller_) {
-    auto* profile = ProfileManager::GetPrimaryUserProfile();
-    CHECK(profile) << "Cannot retrieve the CompatModeButtonController without "
-                      "a valid user profile.";
+    const session_manager::Session* primary_session =
+        session_manager::SessionManager::Get()->GetPrimarySession();
+    CHECK(primary_session);
+    content::BrowserContext* browser_context =
+        ash::BrowserContextHelper::Get()->GetBrowserContextByAccountId(
+            primary_session->account_id());
+    CHECK(browser_context)
+        << "Cannot retrieve the CompatModeButtonController without "
+           "a valid user profile.";
     auto* resize_lock_manager =
-        arc::ArcResizeLockManager::GetForBrowserContext(profile);
+        arc::ArcResizeLockManager::GetForBrowserContext(browser_context);
     CHECK(resize_lock_manager) << "Received a null ArcResizeLockManager.";
     compat_mode_button_controller_ =
         resize_lock_manager->compat_mode_button_controller()->GetWeakPtr();

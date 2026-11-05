@@ -86,11 +86,6 @@ chromium-metrics-reviews@google.com.
   <int value="1" label="coalesced"/>
 </enum>
 
-<enum name="BooleanConfirmed">
-  <int value="0" label="Not Confirmed"/>
-  <int value="1" label="Confirmed"/>
-</enum>
-
 <enum name="BooleanExceeded">
   <int value="0" label="Not exceeded"/>
   <int value="1" label="Exceeded"/>
@@ -142,6 +137,18 @@ chromium-metrics-reviews@google.com.
   <int value="0" label="Trust"/>
   <int value="1" label="Client Cert"/>
 </enum>
+
+<!-- LINT.IfChange(CertificateViewerEntrypoint) -->
+
+<enum name="CertificateViewerEntrypoint">
+  <int value="0" label="Page Info"/>
+  <int value="1" label="SSL interstitial"/>
+  <int value="2" label="DevTools"/>
+  <int value="3" label="Certificate Manager"/>
+  <int value="4" label="Client certificate selector"/>
+</enum>
+
+<!-- LINT.ThenChange(//chrome/browser/certificate_viewer.h:CertificateViewerEntrypoint) -->
 
 <enum name="ConnectionInfo">
   <summary>
@@ -630,6 +637,31 @@ historical analysis. -->
 
 <!-- LINT.ThenChange(//services/network/public/mojom/device_bound_sessions.mojom:DeviceBoundSessionDeletionReason) -->
 
+<!-- LINT.IfChange(DeviceBoundSessionFederatedRegistrationRedirect) -->
+
+<enum name="DeviceBoundSessionFederatedRegistrationRedirect">
+  <int value="0" label="No redirect"/>
+  <int value="1" label="Same origin"/>
+  <int value="2" label="Cross origin"/>
+</enum>
+
+<!-- LINT.ThenChange(//net/device_bound_sessions/registration_fetcher.cc:FederatedRegistrationRedirect) -->
+
+<!-- LINT.IfChange(DeviceBoundSessionPrewarmTrigger) -->
+
+<enum name="DeviceBoundSessionPrewarmTrigger">
+  <int value="0" label="Pre-warmer started"/>
+  <int value="1" label="Scheduled refresh"/>
+  <int value="2" label="Retry after transient error"/>
+  <int value="3" label="Reconnected after unreachable pre-warm"/>
+  <int value="4" label="Reconnected during unreachable pre-warm"/>
+  <int value="5" label="Session created"/>
+  <int value="6" label="Network service disconnected"/>
+  <int value="7" label="Retry after network service unavailable"/>
+</enum>
+
+<!-- LINT.ThenChange(//chrome/browser/net/device_bound_session_prewarmer.h:PrewarmTrigger) -->
+
 <!-- LINT.IfChange(DeviceBoundSessionProactiveRefreshAttempt) -->
 
 <enum name="DeviceBoundSessionProactiveRefreshAttempt">
@@ -657,6 +689,7 @@ historical analysis. -->
   <int value="7" label="Refreshed as waiter"/>
   <int value="8" label="Transient signing error"/>
   <int value="9" label="In-scope refresh not yet needed"/>
+  <int value="10" label="Canceled (deferred requests destroyed)"/>
 </enum>
 
 <!-- LINT.ThenChange(//net/device_bound_sessions/refresh_result.h:DeviceBoundSessionRefreshResult) -->
@@ -777,6 +810,40 @@ historical analysis. -->
       label="DNS Config with local nameservers (including loopback)"/>
 </enum>
 
+<!-- LINT.IfChange(DnsJobKeptAliveResult) -->
+
+<enum name="DnsJobKeptAliveResult">
+  <int value="0" label="Cached">
+    The DnsTask succeeded and the results were stored in the HostCache.
+  </int>
+  <int value="1" label="Failed">The DnsTask failed. Nothing was cached.</int>
+  <int value="2" label="CapExpired">
+    The hard cap expired before the DnsTask completed. Nothing was cached.
+  </int>
+  <int value="3" label="Aborted">
+    The Job was aborted (e.g. network change, DNS config change or resolver
+    shutdown). The DnsTask results were not cached.
+  </int>
+  <int value="4" label="RequestRejoined">
+    A new request joined the Job, which then continued as a regular Job.
+  </int>
+</enum>
+
+<!-- LINT.ThenChange(//net/dns/host_resolver_manager_job.h:DnsJobKeptAliveResult) -->
+
+<!-- LINT.IfChange(DnsUsedAnswerFreshnessStatus) -->
+
+<enum name="DnsUsedAnswerFreshnessStatus">
+  <int value="0" label="Fresh from network"/>
+  <int value="1" label="Valid (non-expired) from HostCache"/>
+  <int value="2" label="Expired in HostCache, confirmed by fresh DNS"/>
+  <int value="3" label="Expired in HostCache, finished before fresh DNS"/>
+  <int value="4" label="Expired in HostCache, used after fresh DNS failed"/>
+  <int value="5" label="Expired in HostCache, diverged from fresh DNS"/>
+</enum>
+
+<!-- LINT.ThenChange(//net/dns/host_cache.h:DnsUsedAnswerFreshnessStatus) -->
+
 <enum name="DohServerAutoupgradeStatus">
   <int value="0" label="SuccessWithNoPriorFailures"/>
   <int value="1" label="SuccessWithSomePriorFailures"/>
@@ -892,6 +959,11 @@ historical analysis. -->
   <int value="9" label="SpdyProxy Reject (Deprecated)"/>
 </enum>
 
+<enum name="HttpAuthSchemeAllowedTarget">
+  <int value="0" label="AUTH_PROXY"/>
+  <int value="1" label="AUTH_SERVER"/>
+</enum>
+
 <enum name="HttpAuthTarget">
   <int value="0" label="Basic Proxy"/>
   <int value="1" label="Basic Secure Proxy"/>
@@ -1003,6 +1075,36 @@ historical analysis. -->
   <int value="18" label="QuicProtocolError"/>
 </enum>
 
+<!-- LINT.IfChange(HttpNetworkTransactionTerminalState) -->
+
+<enum name="HttpNetworkTransactionTerminalState">
+  <int value="0" label="Aborted">
+    The transaction was aborted before a response was received, or after a
+    restart.
+  </int>
+  <int value="1" label="NetworkChangedBeforeSendingRequest">
+    The transaction failed with ERR_NETWORK_CHANGED before sending the request.
+  </int>
+  <int value="2" label="OtherErrorBeforeSendingRequest">
+    The transaction failed with an error other than ERR_NETWORK_CHANGED before
+    sending the request.
+  </int>
+  <int value="3" label="NetworkChangedAfterSendingRequest">
+    The transaction failed with ERR_NETWORK_CHANGED after sending the request.
+  </int>
+  <int value="4" label="OtherErrorAfterSendingRequest">
+    The transaction failed with an error other than ERR_NETWORK_CHANGED after
+    sending the request.
+  </int>
+  <int value="5" label="ResponseOk">
+    There was no network error but the body was not completely read. Either the
+    request was aborted or the response body was not needed.
+  </int>
+  <int value="6" label="Success">The response body was read to the end.</int>
+</enum>
+
+<!-- LINT.ThenChange(//net/http/http_network_transaction.h:TerminalState) -->
+
 <!-- LINT.IfChange(HttpsNotAttemptedReason) -->
 
 <enum name="HttpsNotAttemptedReason">
@@ -1077,6 +1179,19 @@ historical analysis. -->
   <int value="4" label="CryptoConnectFailedSync"/>
   <int value="5" label="CryptoConnectFailedAsync"/>
 </enum>
+
+<!-- LINT.IfChange(LinuxProxyResolutionStatus) -->
+
+<enum name="LinuxProxyResolutionStatus">
+  <int value="0" label="Ok"/>
+  <int value="1" label="PortalUnavailable"/>
+  <int value="2" label="DBusError"/>
+  <int value="3" label="EmptyProxyList"/>
+  <int value="4" label="InvalidResponse"/>
+  <int value="5" label="Aborted"/>
+</enum>
+
+<!-- LINT.ThenChange(//net/proxy_resolution/linux/linux_proxy_resolution_status.h:LinuxProxyResolutionStatus) -->
 
 <!-- LINT.IfChange(LogicalInvalidationStoreLoadResult) -->
 
@@ -1166,6 +1281,37 @@ historical analysis. -->
   <int value="2" label="Normalized Names"/>
   <int value="3" label="Chain contained only one certificate"/>
 </enum>
+
+<!-- LINT.IfChange(NetCertificatePrintableStringParseMode) -->
+
+<enum name="NetCertificatePrintableStringParseMode">
+  <int value="0" label="Default (valid PrintableString)"/>
+  <int value="1" label="Allow ASCII"/>
+  <int value="2" label="UTF-8 hack (non-ASCII)"/>
+</enum>
+
+<!-- LINT.ThenChange(//net/cert/x509_certificate.h:PrintableStringParseMode) -->
+
+<!-- LINT.IfChange(NetCertificateRdnAttributeOrder) -->
+
+<enum name="NetCertificateRdnAttributeOrder">
+  <int value="0" label="All RDNs are single-valued"/>
+  <int value="1" label="Multi-valued RDNs, all sorted"/>
+  <int value="2" label="Some RDN unsorted"/>
+</enum>
+
+<!-- LINT.ThenChange(//net/cert/x509_util.h:RdnAttributeOrder) -->
+
+<!-- LINT.IfChange(NetCertificateSerialNumberType) -->
+
+<enum name="NetCertificateSerialNumberType">
+  <int value="0" label="Positive"/>
+  <int value="1" label="Zero"/>
+  <int value="2" label="Negative"/>
+  <int value="3" label="Invalid"/>
+</enum>
+
+<!-- LINT.ThenChange(//net/cert/x509_util.h:SerialNumberType) -->
 
 <!-- LINT.IfChange(NetCertVerifier1QwacResult) -->
 
@@ -1364,18 +1510,6 @@ historical analysis. -->
   <int value="8" label="Queued"/>
   <int value="9" label="Discarded: include_subdomains without DNS error"/>
   <int value="10" label="Discarded: IP address mismatch"/>
-</enum>
-
-<enum name="NetReportingHeaderType">
-  <int value="0" label="Report-To"/>
-  <int value="1" label="Invalid Report-To"/>
-  <int value="2" label="Reporting-Endpoints"/>
-  <int value="3" label="Invalid Reporting-Endpoints"/>
-</enum>
-
-<enum name="NetReportingUploadHeaderType">
-  <int value="0" label="ReportTo"/>
-  <int value="1" label="ReportingEndpoints"/>
 </enum>
 
 <enum name="NetTrustAnchors">
@@ -2729,6 +2863,15 @@ Called by update_net_trust_anchors.py.-->
   <int value="36" label="WorkerScriptLoader (Proxy)"/>
 </enum>
 
+<!-- LINT.IfChange(OptimisticDnsSslConnectionOutcome) -->
+
+<enum name="OptimisticDnsSslConnectionOutcome">
+  <int value="0" label="Succeeded over stale DNS"/>
+  <int value="1" label="Failed over stale DNS and retried with fresh DNS"/>
+</enum>
+
+<!-- LINT.ThenChange(//net/dns/host_cache.h:OptimisticDnsSslConnectionOutcome) -->
+
 <enum name="PathValidationReason">
   <int value="0" label="Reason unknown"/>
   <int value="1" label="Multi port"/>
@@ -2775,29 +2918,6 @@ Called by update_net_trust_anchors.py.-->
   <int value="3" label="THREE_PACKETS_LOST"/>
   <int value="4" label="FOUR_PACKETS_LOST"/>
   <int value="5" label="FIVE_PACKETS_LOST"/>
-</enum>
-
-<enum name="QuicConnectionMigrationStatus">
-  <int value="0" label="No stream to migrate"/>
-  <int value="1" label="Already migrated"/>
-  <int value="2" label="Internal error"/>
-  <int value="3" label="Too many migrations"/>
-  <int value="4" label="Success"/>
-  <int value="5" label="Disabled by non-migratable stream"/>
-  <int value="6" label="Migration not enabled"/>
-  <int value="7" label="No alternate network"/>
-  <int value="8" label="Disabled by too many path degradings"/>
-  <int value="9" label="Disabled by config"/>
-  <int value="10" label="Path degrading not enabled"/>
-  <int value="11" label="Timeout with no new network"/>
-  <int value="12"
-      label="Exceeding maximum number of migrations on write error"/>
-  <int value="13" label="Path degrading before handshake confirmed"/>
-  <int value="14" label="Idle migration period exceeded"/>
-  <int value="15" label="Migration fails due to lack of connection ID"/>
-  <int value="16" label="Migration Probe received Stateless Reset"/>
-  <int value="17" label="Migration aborted due to session close"/>
-  <int value="18" label="Path validation aborted because of newer validation"/>
 </enum>
 
 <enum name="QuicDisabledReason">
@@ -3134,6 +3254,9 @@ Called by update_net_trust_anchors.py.-->
   <int value="7" label="New network connected post path degrading (probing)"/>
   <int value="8" label="On server preferred address available (probing)"/>
   <int value="9" label="Multi-port path"/>
+  <int value="10"
+      label="Wait for new network post network disconnected (direct)"/>
+  <int value="11" label="Wait for new network post write error (direct)"/>
 </enum>
 
 <!-- LINT.ThenChange(//net/quic/quic_migration_attempt_context.h:QuicMigrationAttemptCause) -->
@@ -3145,7 +3268,8 @@ Called by update_net_trust_anchors.py.-->
   <int value="1" label="Probe timeout"/>
   <int value="2" label="No unused Connection ID"/>
   <int value="3" label="Stateless reset received"/>
-  <int value="4" label="Probe failed"/>
+  <int value="4" label="Unknown probe failure"/>
+  <int value="5" label="Probing socket write error"/>
 </enum>
 
 <!-- LINT.ThenChange(//net/quic/quic_migration_attempt_context.h:QuicMigrationAttemptFailureReason) -->
@@ -3330,6 +3454,18 @@ Called by update_net_trust_anchors.py.-->
 
 <!-- LINT.ThenChange(//net/quic/quic_session_pool_async_dns_job.h:QuicSessionPoolAsyncDnsJobSuccessSource) -->
 
+<!-- LINT.IfChange(QuicSocketConfigStep) -->
+
+<enum name="QuicSocketConfigStep">
+  <int value="0" label="Connect"/>
+  <int value="1" label="Set receive buffer size"/>
+  <int value="2" label="Set do not fragment"/>
+  <int value="3" label="Set receive ECN"/>
+  <int value="4" label="Set send buffer size"/>
+</enum>
+
+<!-- LINT.ThenChange(//net/quic/quic_socket_config_step.h:QuicSocketConfigStep) -->
+
 <enum name="QuicTransportErrorCodes">
   <int value="0" label="NO_ERROR"/>
   <int value="1" label="INTERNAL_ERROR"/>
@@ -3429,7 +3565,7 @@ Called by update_net_trust_anchors.py.-->
 <enum name="SCTOrigin">
   <int value="0" label="SCT_EMBEDDED"/>
   <int value="1" label="SCT_FROM_TLS_EXTENSION"/>
-  <int value="2" label="SCT_FROM_OCSP_RESPONSE"/>
+  <int value="2" label="(Obsolete) SCT_FROM_OCSP_RESPONSE"/>
 </enum>
 
 <!-- LINT.IfChange(SecureDnsModeDetails) -->
@@ -3453,16 +3589,16 @@ Called by update_net_trust_anchors.py.-->
 
 <!-- LINT.ThenChange(//chrome/browser/net/stub_resolver_config_reader.h:SecureDnsModeDetailsForHistogram) -->
 
-<!-- LINT.IfChange(SetSocketOptionGroResult) -->
+<!-- LINT.IfChange(SharedDictionaryHeaderValidationFailureReason) -->
 
-<enum name="SetSocketOptionGroResult">
-  <int value="0" label="Success"/>
-  <int value="1"
-      label="Unsupported Kernel Fallback (ENOPROTOOPT, EOPNOTSUPP, or ENOPKG)"/>
-  <int value="2" label="Other Error"/>
+<enum name="SharedDictionaryHeaderValidationFailureReason">
+  <int value="0" label="Empty header"/>
+  <int value="1" label="Incomplete header"/>
+  <int value="2" label="Signature mismatch"/>
+  <int value="3" label="Dictionary hash mismatch"/>
 </enum>
 
-<!-- LINT.ThenChange(//net/socket/udp_socket_posix.h:SetSocketOptionGroResult) -->
+<!-- LINT.ThenChange(//net/shared_dictionary/shared_dictionary_header_checker_source_stream.h:SharedDictionaryHeaderValidationFailureReason) -->
 
 <!-- LINT.IfChange(SharedDictionaryStorageEvictionReason) -->
 
@@ -3725,6 +3861,24 @@ Called by update_net_trust_anchors.py.-->
 
 <!-- LINT.ThenChange(//net/disk_cache/sql/sql_shared_cache_index_database.h:SqlSharedCacheIndexDatabaseResult) -->
 
+<!-- LINT.IfChange(SSLConnectJobOutcome) -->
+
+<enum name="SSLConnectJobOutcome">
+  <int value="0" label="Succeeded on initial attempt"/>
+  <int value="1" label="Succeeded after stale DNS retry"/>
+  <int value="2" label="Succeeded after legacy crypto retry"/>
+  <int value="3" label="Succeeded after ECH retry"/>
+  <int value="4" label="Failed before TCP attempt"/>
+  <int value="5" label="Failed during TCP connect"/>
+  <int value="6" label="Failed during SSL handshake"/>
+  <int value="7" label="Canceled at host resolution for HTTP/2 IP pooling"/>
+  <int value="8" label="Canceled during DNS resolution"/>
+  <int value="9" label="Canceled during TCP connect"/>
+  <int value="10" label="Canceled during SSL handshake"/>
+</enum>
+
+<!-- LINT.ThenChange(//net/socket/ssl_connect_job.h:SSLConnectJobOutcome) -->
+
 <enum name="SSLECHResult">
   <summary>The result of a TLS connection that offered ECH</summary>
   <int value="0" label="The connection succeeded on the initial connection"/>
@@ -3814,48 +3968,6 @@ Called by update_net_trust_anchors.py.-->
   <int value="7" label="QUIC"/>
 </enum>
 
-<enum name="SSLTrustAnchorIDsResult">
-  <summary>
-    Whether a TLS connection relied on the trust anchor ID retry.
-  </summary>
-  <int value="0"
-      label="There was a DNS hint, and the connection succeeded on the
-             initial connection"/>
-  <int value="1"
-      label="There was a DNS hint, and the connection failed on the initial
-             connection, without retrying"/>
-  <int value="2"
-      label="There was a DNS hint, and the connection succeeded after
-             retrying with fresh Trust Anchor IDs"/>
-  <int value="3"
-      label="There was a DNS hint, and the connection failed after retrying
-             with fresh Trust Anchor IDs"/>
-  <int value="4"
-      label="There was no DNS hint, and the connection succeeded on the
-             initial connection"/>
-  <int value="5"
-      label="There was no DNS hint, and the connection failed on the initial
-             connection, without retrying"/>
-  <int value="6"
-      label="There was no DNS hint, and the connection succeeded after
-             retrying with fresh Trust Anchor IDs"/>
-  <int value="7"
-      label="There was no DNS hint, and the connection failed after retrying
-             with fresh Trust Anchor IDs"/>
-  <int value="8"
-      label="There was a DNS hint, and the connection succeeded after
-             retrying with the MTC fallback"/>
-  <int value="9"
-      label="There was a DNS hint, and the connection failed after retrying
-             with the MTC fallback"/>
-  <int value="10"
-      label="There was no DNS hint, and the connection succeeded after
-             retrying with the MTC fallback"/>
-  <int value="11"
-      label="There was no DNS hint, and the connection failed after retrying
-             with the MTC fallback"/>
-</enum>
-
 <!-- LINT.IfChange(StreamSocketCloseReason) -->
 
 <enum name="StreamSocketCloseReason">
@@ -3873,6 +3985,18 @@ Called by update_net_trust_anchors.py.-->
 </enum>
 
 <!-- LINT.ThenChange(//net/socket/stream_socket_close_reason.h:StreamSocketCloseReason) -->
+
+<!-- LINT.IfChange(TcpConnectJobSuccessSource) -->
+
+<enum name="TcpConnectJobSuccessSource">
+  <int value="0" label="Initial connector, first attempt"/>
+  <int value="1" label="Initial connector, later attempt"/>
+  <int value="2" label="Slow timer connector"/>
+  <int value="3" label="Stale DNS connector"/>
+  <int value="4" label="Promoted or fresh-validated stale DNS"/>
+</enum>
+
+<!-- LINT.ThenChange(//net/socket/tcp_connect_job.h:TcpConnectJobSuccessSource) -->
 
 <enum name="TrafficAnnotationUniqueIdHash">
   <int value="29693511" label="loading_predictor_preconnect"/>

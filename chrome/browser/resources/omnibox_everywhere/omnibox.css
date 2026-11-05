@@ -27,13 +27,11 @@
   --cr-searchbox-voice-search-button-width: 0px;
   --cr-compose-button-width: 104px;
   --cr-searchbox-icon-spacing: 11px;
-  --color-searchbox-foreground: #1f1f1f;
-  --color-searchbox-border: #dadce0;
-  --color-searchbox-results-typed-prefix: var(
-      --color-searchbox-results-foreground, #1f1f1f);
-  --color-searchbox-selection-background: rgba(26, 115, 232, 0.2);
-  --color-searchbox-selection-foreground: #1f1f1f;
   --cr-composebox-background-color: var(--color-searchbox-background);
+  /* Easing and duration tokens for expand/collapse animations (300ms
+   * when expanded, overridden to 220ms when collapsed). */
+  --loomnibox-animation-duration: 300ms;
+  --loomnibox-animation-easing: cubic-bezier(0.2, 0, 0, 1);
   border: var(--cr-searchbox-border, 2px solid transparent);
   box-sizing: border-box;
 
@@ -41,6 +39,8 @@
   font-size: var(--cr-searchbox-font-size, 16px);
   height: auto;
   min-height: var(--cr-searchbox-height);
+  transition: border-radius var(--loomnibox-animation-duration)
+      var(--loomnibox-animation-easing);
   width: var(--cr-searchbox-width);
   z-index: 99;
 }
@@ -67,13 +67,6 @@
   --cr-searchbox-secondary-side-display: block;
 }
 
-:host([is-dark]) {
-  --color-searchbox-foreground: #fff;
-  --color-searchbox-border: #3c4043;
-  --color-searchbox-selection-foreground: #fff;
-  --cr-searchbox-shadow: 0 2px 6px 0 var(--color-searchbox-shadow);
-}
-
 :host-context([energy-effect-enabled_]) {
   --cr-searchbox-shadow: 0 4px 18px -2px rgba(60, 64, 67, 0.12);
 }
@@ -88,6 +81,9 @@
 
 @media (forced-colors: active) {
   :host {
+    border: 1px solid ActiveBorder;
+  }
+  #inputWrapper {
     border: 1px solid ActiveBorder;
   }
 }
@@ -109,6 +105,8 @@
   min-height: var(--cr-searchbox-height);
   padding-top: 6px;
   position: relative;
+  transition: border-radius var(--loomnibox-animation-duration)
+      var(--loomnibox-animation-easing);
   width: 100%;
 }
 
@@ -134,27 +132,50 @@
   width: 100%;
 }
 
+/* Reserve trailing profile-icon clearance on the cr-searchbox-input host rather
+ * than part(searchbox-input) so overriding Writing Direction on the inner
+ * <input> never flips trailing icon clearance to the inline start. */
+cr-searchbox-input {
+  box-sizing: border-box;
+  padding-inline-end: 64px;
+}
+
+#inputWrapper:has(#profileIcon[is-enterprise-profile]):not(:has(#composeButton))
+    cr-searchbox-input {
+  padding-inline-end: 88px;
+}
+
+:host([compose-button-enabled]) cr-searchbox-input {
+  padding-inline-end: 0;
+}
+
+cr-searchbox-input::part(searchbox-input),
+#lensPlaceholder {
+  padding-inline: 7px;
+}
+
 cr-searchbox-input::part(searchbox-input) {
   align-self: center;
-  padding-inline-end: 64px;
-  padding-inline-start: 7px;
   padding-top: 2px;
 }
 
-:host([compose-button-enabled]) cr-searchbox-input::part(searchbox-input) {
-  padding-inline-end: 8px;
-}
-
-:host([multi-line-enabled][is-fusebox-enabled])
-    cr-searchbox-input::part(searchbox-input) {
+:host([multi-line-enabled])
+    cr-searchbox-input::part(searchbox-input),
+:host([multi-line-enabled]) #lensPlaceholder {
   padding-bottom: 10px;
-  padding-top: 16px;
+  padding-top: 12px;
 }
 
-:host([searchbox-chrome-refresh-theming])
-    cr-searchbox-input::part(searchbox-input)::selection {
+:host([multi-line-enabled]) #lensPlaceholder {
+  align-content: start;
+  line-height: 24px;
+}
+
+cr-searchbox-input::part(searchbox-input)::selection {
   background-color: var(--color-searchbox-selection-background);
-  color: var(--color-searchbox-selection-foreground);
+  color: var(
+      --color-searchbox-selection-foreground,
+      var(--color-searchbox-foreground));
 }
 
 :host(:not([is-fusebox-enabled])) cr-searchbox-input::part(icon) {
@@ -176,7 +197,8 @@ cr-searchbox-input::part(searchbox-input) {
       var(--cr-searchbox-icon-width) + var(--cr-compose-button-width));
 }
 
-cr-searchbox-input::part(searchbox-input)::placeholder {
+cr-searchbox-input::part(searchbox-input)::placeholder,
+#lensPlaceholder {
   color: var(--cr-composebox-input-placeholder-color,
       var(--color-composebox-type-ahead));
   font-weight: 400;
@@ -187,8 +209,49 @@ cr-searchbox-input::part(searchbox-input):focus::placeholder {
   visibility: visible;
 }
 
+/* Visually hide the native input/textarea placeholder text while the rich Lens
+ * placeholder overlay (with inline Google Lens icon) is displayed. Using
+ * visibility: hidden (matching searchbox_input.css) keeps inputEl.placeholder
+ * in the accessibility tree for screen readers without Forced Colors Mode
+ * overriding color: transparent back to GrayText. */
+cr-searchbox-input:has(#lensPlaceholder:not([hidden]))::part(
+    searchbox-input)::placeholder {
+  visibility: hidden;
+}
+
+#lensPlaceholder:not([hidden]) {
+  align-content: center;
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#lensPlaceholder span {
+  -webkit-mask-image: url(//resources/cr_components/searchbox/icons/camera.svg);
+  -webkit-mask-position: center;
+  -webkit-mask-repeat: no-repeat;
+  -webkit-mask-size: 18px 18px;
+  background-color: currentColor;
+  display: inline-block;
+  height: 16px;
+  margin-inline-end: 4px;
+  vertical-align: -3px;
+  width: 16px;
+}
+
+@media (forced-colors: active) {
+  #lensPlaceholder {
+    color: GrayText;
+  }
+
+  #lensPlaceholder span {
+    background-color: GrayText;
+    forced-color-adjust: none;
+  }
+}
+
 :host([is-fusebox-enabled]) {
-  --cr-searchbox-border-radius: 16px;
   --cr-searchbox-dropdown-padding-bottom: 10px;
   --cr-searchbox-dropdown-padding-top: 10px;
   --cr-searchbox-height: 48px;
@@ -204,12 +267,11 @@ cr-searchbox-input::part(searchbox-input):focus::placeholder {
   --cr-searchbox-match-padding-inline-start: 16px;
 
   /* Used in search-animated-glow-element. */
-  --search-animated-glow-drag-drop-placeholder-top: 16px;
+  --search-animated-glow-drag-drop-placeholder-top: 18px;
   --omnibox-everywhere-top-actions-top: 16px;
 }
 
 :host-context([energy-effect-enabled_]):host([is-fusebox-enabled]) {
-  --cr-searchbox-border-radius: 16px;
   --cr-searchbox-border: 1px solid var(--color-searchbox-border);
 }
 
@@ -259,7 +321,10 @@ cr-composebox-contextual-entrypoint-and-menu,
 }
 
 :host([is-fusebox-enabled]) .searchbox-icon-button-container.lens:hover,
-:host([is-fusebox-enabled]) .searchbox-icon-button-container.voice:hover {
+:host([is-fusebox-enabled]) .searchbox-icon-button-container.voice:hover,
+:host([is-fusebox-enabled]) .searchbox-icon-button-container.lens.menu-open,
+:host([is-fusebox-enabled])
+    .searchbox-icon-button-container.lens.help-bubble-open {
   background-color: var(--color-new-tab-page-realbox-next-icon-hover);
   border-radius: 50%;
 }
@@ -278,18 +343,6 @@ cr-composebox-contextual-entrypoint-and-menu,
   top: 10px;
 }
 
-:host([is-fusebox-enabled][compose-button-enabled]
-    [searchbox-lens-search-enabled_]) .searchbox-icon-button-container.lens {
-  inset-inline-end: calc(
-      var(--cr-searchbox-icon-spacing) + var(--cr-compose-button-width));
-}
-
-:host([is-fusebox-enabled][compose-button-enabled]
-    [searchbox-lens-search-enabled_]) .searchbox-icon-button-container.voice {
-  inset-inline-end: calc(var(--cr-searchbox-voice-lens-size)
-      + var(--cr-searchbox-icon-spacing) + var(--cr-compose-button-width));
-}
-
 :host([is-fusebox-enabled][is-dragging-file]) {
   --cr-searchbox-compose-button-z-index: 99;
 }
@@ -298,10 +351,17 @@ cr-composebox-contextual-entrypoint-and-menu,
     cr-searchbox-input::part(searchbox-input),
 :host([is-fusebox-enabled][is-dragging-file])
     cr-searchbox-input::part(icon),
+:host([is-fusebox-enabled][is-dragging-file]) #lensPlaceholder,
 :host([is-fusebox-enabled][is-dragging-file])
     .searchbox-icon-button-container,
 :host([is-fusebox-enabled][is-dragging-file]) .searchbox-icon-button {
   opacity: 0;
+}
+
+#composeButton::part(compose-button) {
+  --cr-hover-background-color: transparent;
+  background-color: var(--color-composebox-context-entrypoint-background);
+  color: var(--color-sys-on-surface);
 }
 
 :host([is-fusebox-enabled]) #composeButton {
@@ -345,6 +405,10 @@ cr-composebox-contextual-entrypoint-and-menu,
   top: 0;
 }
 
+#overflowMenuButton {
+  -webkit-mask-image: url(//resources/images/icon_more_vert.svg);
+}
+
 /* TODO(crbug.com/532200145): Refine the selectors. New interactive elements
  * must be added to this list because the root container has
  * '-webkit-app-region: drag' enabled; otherwise, clicks will be swallowed by
@@ -364,16 +428,15 @@ cr-composebox-contextual-entrypoint-button,
   -webkit-app-region: no-drag;
 }
 
+cr-searchbox-input,
+cr-searchbox-input::part(searchbox-input) {
+  cursor: text;
+}
+
 cr-searchbox-input::part(icon),
 #composeButton {
   -webkit-app-region: drag;
   -webkit-user-drag: none;
-}
-
-:host(:not([is-active])),
-:host(:not([is-active])) cr-searchbox-input::part(icon),
-:host(:not([is-active])) #composeButton {
-  -webkit-app-region: no-drag;
 }
 
 :host([multi-line-enabled]) cr-searchbox-input::part(icon) {
@@ -381,3 +444,117 @@ cr-searchbox-input::part(icon),
   height: var(--cr-searchbox-height, 48px);
 }
 
+/* Overrides the defaults on :host when collapsed to a single-line pill. */
+:host(:not([dropdown-is-visible]):not([has-user-input])) {
+  --cr-searchbox-border-radius: calc(var(--cr-searchbox-height, 48px) / 2);
+  --enterprise-profile-clearance: 24px;
+  --loomnibox-animation-duration: 220ms;
+  --omnibox-everywhere-top-actions-top: 10px;
+  --search-animated-glow-drag-drop-placeholder-top: 12px;
+}
+
+:host(:not([dropdown-is-visible]):not([has-user-input])) #inputWrapper {
+  margin-top: 6px;
+  padding-top: 0;
+}
+
+/* 48px profile offset + 3x28px buttons + 2x4px gaps + 8px clearance. */
+:host(:not([dropdown-is-visible]):not([has-user-input])) cr-searchbox-input {
+  padding-inline-end: 148px;
+}
+
+:host(:not([dropdown-is-visible]):not([has-user-input]))
+    #inputWrapper:has(#profileIcon[is-enterprise-profile]) cr-searchbox-input {
+  padding-inline-end: calc(148px + var(--enterprise-profile-clearance));
+}
+
+:host(:not([dropdown-is-visible]):not([has-user-input]))
+    cr-searchbox-input::part(searchbox-input) {
+  height: var(--cr-searchbox-height, 48px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+:host(:not([dropdown-is-visible]):not([has-user-input])) #composeButton,
+:host(:not([dropdown-is-visible]):not([has-user-input]))
+    .contextualEntrypointContainer {
+  display: none;
+}
+
+/* Pill-only; a focused button stays so ArrowDown on it doesn't drop focus. */
+:host(:is([dropdown-is-visible], [has-user-input]))
+    .searchbox-icon-button-container.overflow:not(:focus-within) {
+  display: none;
+}
+
+:host(:not([dropdown-is-visible]):not([has-user-input])) #bottomControls {
+  inset-inline-end: 48px;
+  padding: 0;
+  position: absolute;
+  top: var(--omnibox-everywhere-top-actions-top, 10px);
+  width: auto;
+}
+
+:host(:not([dropdown-is-visible]):not([has-user-input]))
+    #inputWrapper:has(#profileIcon[is-enterprise-profile]) #bottomControls {
+  inset-inline-end: calc(48px + var(--enterprise-profile-clearance));
+}
+
+:host(:not([dropdown-is-visible]):not([has-user-input]))
+    #bottomControls .searchbox-icon-button-container {
+  height: 28px;
+  width: 28px;
+}
+
+:host([dropdown-is-visible]) cr-searchbox-dropdown {
+  animation: loomniboxDropdownExpand var(--loomnibox-animation-duration)
+      var(--loomnibox-animation-easing);
+  /* Custom elements default to display: inline, which ignores CSS
+   * transforms. */
+  display: block;
+}
+
+:host([has-expanded]:not([dropdown-is-visible]):not([has-user-input]))
+    #bottomControls,
+:host(:is([dropdown-is-visible], [has-user-input])) #composeButton {
+  animation: loomniboxTopControlsEnter var(--loomnibox-animation-duration)
+      var(--loomnibox-animation-easing);
+}
+
+:host(:is([dropdown-is-visible], [has-user-input])) #bottomControls {
+  animation: loomniboxBottomControlsExpand var(--loomnibox-animation-duration)
+      var(--loomnibox-animation-easing);
+}
+
+@keyframes loomniboxDropdownExpand {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+}
+
+/* Fades and slides controls up into the top row (#composeButton when expanding,
+ * #bottomControls when collapsing back to the 1-line pill). */
+@keyframes loomniboxTopControlsEnter {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+}
+
+/* Counter-animates the vertical shift when #bottomControls moves from the
+ * inline 1-line pill position to the 2-line expanded bottom row. */
+@keyframes loomniboxBottomControlsExpand {
+  from {
+    opacity: 0;
+    transform: translateY(-16px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :host,
+  :host(:not([dropdown-is-visible]):not([has-user-input])) {
+    --loomnibox-animation-duration: 0ms;
+  }
+}

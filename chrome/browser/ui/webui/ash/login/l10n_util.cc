@@ -16,11 +16,14 @@
 #include <utility>
 
 #include "ash/login/resources/grit/ash_login_strings.h"
+#include "base/check_deref.h"
 #include "base/check_op.h"
 #include "base/functional/bind.h"
-#include "base/i18n/legacy_language_tag_helpers.h"
+#include "base/i18n/language_tag.h"
 #include "base/i18n/rtl.h"
+#include "base/i18n/tag_converters.h"
 #include "base/location.h"
+#include "base/logging.h"
 #include "base/memory/ref_counted.h"
 #include "base/notreached.h"
 #include "base/strings/stringprintf.h"
@@ -31,7 +34,6 @@
 #include "base/values.h"
 #include "chrome/browser/ash/customization/customization_document.h"
 #include "chrome/browser/ash/login/fjord_oobe/fjord_oobe_util.h"
-#include "chrome/browser/browser_process.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chromeos/ash/components/browser_context_helper/browser_context_types.h"
 #include "content/public/browser/browser_thread.h"
@@ -86,7 +88,7 @@ base::DictValue CreateLanguageEntry(
   std::u16string display_name = language_display_name;
   const bool markup_removal =
       base::i18n::UnadjustStringForLocaleDirection(&display_name);
-  DCHECK(markup_removal);
+  CHECK(markup_removal, base::NotFatalUntil::M162);
 
   const bool has_rtl_chars =
       base::i18n::StringContainsStrongRTLChars(display_name);
@@ -105,10 +107,10 @@ base::DictValue CreateLanguageEntry(
 // kMostRelevantLanguagesDivider is placed between the most relevant languages
 // and all others.
 base::ListValue GetLanguageList(
-    const std::string& app_locale,
+    const base::i18n::LanguageTag& app_locale,
     const input_method::InputMethodDescriptors& descriptors,
     const std::vector<std::string>& base_language_codes,
-    const std::vector<std::string>& most_relevant_language_codes,
+    const std::vector<base::i18n::LanguageTag>& most_relevant_language_codes,
     bool insert_divider) {
   std::set<std::string> language_codes;
   // Collect the language codes from the supported input methods.
@@ -118,10 +120,11 @@ base::ListValue GetLanguageList(
     }
   }
 
-  // Language sort order.
-  std::map<std::string, int /* index */> language_index;
+  // Language sort order, keyed by the tag strings of
+  // `most_relevant_language_codes`.
+  std::map<std::string_view, int /* index */> language_index;
   for (size_t i = 0; i < most_relevant_language_codes.size(); ++i) {
-    language_index[most_relevant_language_codes[i]] = i;
+    language_index[most_relevant_language_codes[i].tag_string()] = i;
   }
 
   // Map of display name -> {language code, native_display_name}.
@@ -147,15 +150,12 @@ base::ListValue GetLanguageList(
   // base_language_codes. If there are unsupported language variants,
   // but they resolve to backup locale within base_language_codes, also
   // add them to the list.
-  for (std::map<std::string, int>::const_iterator it = language_index.begin();
-       it != language_index.end(); ++it) {
-    const std::string& language_id = it->first;
-
-    const std::string lang =
-        base::i18n::GetLanguageSubtagUsingLanguageTag(language_id);
+  for (const auto& [language_id, index] : language_index) {
+    const base::i18n::LanguageTag& language_tag =
+        most_relevant_language_codes[index];
 
     // Ignore non-specific codes.
-    if (lang.empty() || lang == language_id) {
+    if (language_tag.language_subtag() == language_id) {
       continue;
     }
 
@@ -175,14 +175,14 @@ base::ListValue GetLanguageList(
     }
 
     const std::u16string display_name =
-        l10n_util::GetDisplayNameForLocale(language_id, app_locale, true);
+        l10n_util::GetDisplayNameForLocale(language_tag, app_locale, true);
     const std::u16string native_display_name =
-        l10n_util::GetDisplayNameForLocale(language_id, language_id, true);
+        l10n_util::GetDisplayNameForLocale(language_tag, language_tag, true);
 
     language_map[display_name] =
-        std::make_pair(language_id, native_display_name);
+        std::make_pair(std::string(language_id), native_display_name);
 
-    most_relevant_locales_display_names[it->second] = display_name;
+    most_relevant_locales_display_names[index] = display_name;
     ++most_relevant_locales_count;
   }
 
@@ -194,16 +194,15 @@ base::ListValue GetLanguageList(
       continue;
     }
 
-    const std::u16string display_name =
-        l10n_util::GetDisplayNameForLocale(language_code, app_locale, true);
+    const std::u16string display_name = l10n_util::GetDisplayNameForLocale(
+        language_code, app_locale.tag_string(), true);
     const std::u16string native_display_name =
         l10n_util::GetDisplayNameForLocale(language_code, language_code, true);
 
     language_map[display_name] =
         std::make_pair(language_code, native_display_name);
 
-    const std::map<std::string, int>::const_iterator index_pos =
-        language_index.find(language_code);
+    const auto index_pos = language_index.find(language_code);
     if (index_pos != language_index.end()) {
       std::u16string& stored_display_name =
           most_relevant_locales_display_names[index_pos->second];
@@ -215,8 +214,8 @@ base::ListValue GetLanguageList(
       display_names.push_back(display_name);
     }
   }
-  DCHECK_EQ(display_names.size() + most_relevant_locales_count,
-            language_map.size());
+  CHECK_EQ(display_names.size() + most_relevant_locales_count,
+           language_map.size(), base::NotFatalUntil::M162);
 
   // Build the list of display names, and build the language map.
   for (const auto& base_language_code : base_language_codes) {
@@ -226,14 +225,13 @@ base::ListValue GetLanguageList(
     }
 
     std::u16string display_name = l10n_util::GetDisplayNameForLocale(
-        base_language_code, app_locale, false);
+        base_language_code, app_locale.tag_string(), false);
     std::u16string native_display_name = l10n_util::GetDisplayNameForLocale(
         base_language_code, base_language_code, false);
     language_map[display_name] =
         std::make_pair(base_language_code, native_display_name);
 
-    const std::map<std::string, int>::const_iterator index_pos =
-        language_index.find(base_language_code);
+    const auto index_pos = language_index.find(base_language_code);
     if (index_pos != language_index.end()) {
       most_relevant_locales_display_names[index_pos->second] = display_name;
       ++most_relevant_locales_count;
@@ -243,7 +241,8 @@ base::ListValue GetLanguageList(
   }
 
   // Sort display names using locale specific sorter.
-  l10n_util::SortStrings16(app_locale, &display_names);
+  l10n_util::SortStrings16(std::string(app_locale.tag_string()),
+                           &display_names);
   // Concatenate most_relevant_locales_display_names and display_names.
   // Insert special divider in between.
   std::vector<std::u16string> out_display_names;
@@ -296,8 +295,7 @@ void GetAndMergeKeyboardLayoutsForLocale(input_method::InputMethodUtil* util,
   layouts->insert(layouts->end(), layouts_from_locale.begin(),
                   layouts_from_locale.end());
   if (selected_locale->empty() && !layouts_from_locale.empty()) {
-    *selected_locale =
-        util->GetInputMethodDescriptorFromId(layouts_from_locale[0])->id();
+    *selected_locale = layouts_from_locale[0];
   }
 }
 
@@ -318,6 +316,18 @@ void GetKeyboardLayoutsForResolvedLocale(
                                       &layouts);
   GetAndMergeKeyboardLayoutsForLocale(util, resolved_locale, &selected,
                                       &layouts);
+  // `GetAndMergeKeyboardLayoutsForLocale` only considers XKB keyboard layouts.
+  // For locales whose input methods are exclusively non-XKB IMEs (e.g. "hi",
+  // "km", "zh-CN"), `selected` remains empty, so fall back to the first
+  // hardware keyboard layout.
+  if (selected.empty()) {
+    CHECK(!layouts.empty());
+    LOG(WARNING) << "No XKB keyboard layout found for requested_locale='"
+                 << requested_locale << "', resolved_locale='"
+                 << resolved_locale << "'; falling back to '" << layouts[0]
+                 << "'";
+    selected = layouts[0];
+  }
 
   base::ListValue input_methods_list;
   std::set<std::string> input_methods_added;
@@ -354,10 +364,10 @@ std::string CalculateSelectedLanguage(const std::string& requested_locale,
 }
 
 void ResolveLanguageListInThreadPool(
-    const std::string& locale,
+    const base::i18n::LanguageTag& locale,
     std::unique_ptr<locale_util::LanguageSwitchResult> language_switch_result,
     const scoped_refptr<base::TaskRunner> task_runner,
-    input_method::InputMethodManager* input_method_manager,
+    input_method::InputMethodDescriptors descriptors,
     UILanguageListResolvedCallback resolved_callback) {
   base::ScopedBlockingCall scoped_blocking_call(FROM_HERE,
                                                 base::BlockingType::MAY_BLOCK);
@@ -377,18 +387,20 @@ void ResolveLanguageListInThreadPool(
       selected_language = language_switch_result->loaded_locale;
     }
   } else {
-    selected_language = !locale.empty()
-                            ? locale
-                            : StartupCustomizationDocument::GetInstance()
-                                  ->initial_locale_default();
+    selected_language = locale.tag_string();
   }
-  const std::string selected_code =
-      selected_language.empty() ? locale : selected_language;
+  // TODO(crbug.com/542711615): Keep using base::i18n::LanguageTag for the
+  // locales below once GetUILanguageList() and UILanguageListResolvedCallback
+  // take it.
+  const std::string selected_code = selected_language.empty()
+                                        ? std::string(locale.tag_string())
+                                        : selected_language;
 
-  const std::string list_locale =
-      language_switch_result ? language_switch_result->loaded_locale : locale;
+  const std::string list_locale = language_switch_result
+                                      ? language_switch_result->loaded_locale
+                                      : std::string(locale.tag_string());
   base::ListValue language_list(
-      GetUILanguageList(locale, nullptr, selected_code, input_method_manager));
+      GetUILanguageList(locale, nullptr, selected_code, descriptors));
 
   task_runner->PostTask(
       FROM_HERE,
@@ -433,18 +445,22 @@ void AdjustUILanguageList(std::string_view selected,
 }  // namespace
 
 void ResolveUILanguageList(
+    const base::i18n::LanguageTag& application_locale,
     std::unique_ptr<locale_util::LanguageSwitchResult> language_switch_result,
-    input_method::InputMethodManager* input_method_manager,
+    input_method::InputMethodManager& input_method_manager,
     UILanguageListResolvedCallback callback) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
+
+  input_method::InputMethodDescriptors descriptors =
+      CHECK_DEREF(input_method_manager.GetComponentExtensionIMEManager())
+          .GetXkbIMEAsInputMethodDescriptor();
 
   base::ThreadPool::PostTask(
       FROM_HERE, {base::MayBlock()},
-      base::BindOnce(&ResolveLanguageListInThreadPool,
-                     g_browser_process->GetApplicationLocale(),
+      base::BindOnce(&ResolveLanguageListInThreadPool, application_locale,
                      std::move(language_switch_result),
                      base::SequencedTaskRunner::GetCurrentDefault(),
-                     input_method_manager, std::move(callback)));
+                     std::move(descriptors), std::move(callback)));
 }
 
 base::ListValue GetMinimalUILanguageList(std::string_view application_locale) {
@@ -461,14 +477,10 @@ base::ListValue GetMinimalUILanguageList(std::string_view application_locale) {
 }
 
 base::ListValue GetUILanguageList(
-    const std::string& app_locale,
-    const std::vector<std::string>* most_relevant_language_codes,
+    const base::i18n::LanguageTag& app_locale,
+    const std::vector<base::i18n::LanguageTag>* most_relevant_language_codes,
     const std::string& selected,
-    input_method::InputMethodManager* input_method_manager) {
-  ComponentExtensionIMEManager* component_extension_ime_manager =
-      input_method_manager->GetComponentExtensionIMEManager();
-  input_method::InputMethodDescriptors descriptors =
-      component_extension_ime_manager->GetXkbIMEAsInputMethodDescriptor();
+    const input_method::InputMethodDescriptors& descriptors) {
   base::ListValue languages_list(GetLanguageList(
       app_locale, descriptors, l10n_util::GetUserFacingUILocaleList(),
       most_relevant_language_codes
@@ -492,10 +504,10 @@ base::ListValue GetUILanguageList(
   return languages_list;
 }
 
-std::string FindMostRelevantLocale(
-    const std::vector<std::string>& most_relevant_language_codes,
+base::i18n::LanguageTag FindMostRelevantLocale(
+    const std::vector<base::i18n::LanguageTag>& most_relevant_language_codes,
     const base::ListValue& available_locales,
-    const std::string& fallback_locale) {
+    const base::i18n::LanguageTag& fallback_locale) {
   for (const auto& most_relevant : most_relevant_language_codes) {
     for (const auto& entry : available_locales) {
       const std::string* available_locale = nullptr;
@@ -507,7 +519,7 @@ std::string FindMostRelevantLocale(
         NOTREACHED();
       }
 
-      if (*available_locale == most_relevant) {
+      if (*available_locale == most_relevant.tag_string()) {
         return most_relevant;
       }
     }
@@ -527,9 +539,12 @@ base::ListValue GetAndActivateOobeInputMethods(
   const std::vector<std::string>& hardware_input_methods =
       util->GetHardwareInputMethodIds();
 
-  DCHECK(IsSigninBrowserContext(ProfileManager::GetActiveUserProfile()));
+  CHECK(IsSigninBrowserContext(ProfileManager::GetActiveUserProfile()),
+        base::NotFatalUntil::M162);
   input_method_manager->GetActiveIMEState()->EnableOobeInputMethods(
-      locale, hardware_input_methods);
+      base::i18n::GetLanguageTagFromString(locale).value_or(
+          base::i18n::GetKnownLanguageTag("und")),
+      hardware_input_methods);
 
   input_method::InputMethodDescriptors input_methods(
       input_method_manager->GetActiveIMEState()->GetEnabledInputMethods());
@@ -568,7 +583,7 @@ base::ListValue GetAndActivateOobeInputMethods(
   if (input_methods_added.find(us_keyboard_id) == input_methods_added.end()) {
     const input_method::InputMethodDescriptor* us_eng_descriptor =
         util->GetInputMethodDescriptorFromId(us_keyboard_id);
-    DCHECK(us_eng_descriptor);
+    CHECK(us_eng_descriptor, base::NotFatalUntil::M162);
     if (!optgroup_added) {
       optgroup_added = true;
       AddOptgroupOtherLayouts(input_methods_list);

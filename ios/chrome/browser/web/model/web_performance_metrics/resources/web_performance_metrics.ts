@@ -16,7 +16,6 @@ const FIRST_CONTENTFUL_PAINT = 'first-contentful-paint';
 const WEB_PERFORMANCE_METRICS_HANDLER_NAME = 'WebPerformanceMetricsHandler';
 
 let loadedFromCache = false;
-let inpObserver: PerformanceObserver|null = null;
 
 // Placeholder replaced at script injection time based on the state of
 // `kIOSWebPerformanceMetricsINP`.
@@ -66,19 +65,25 @@ function processINPEvents(eventEntries: PerformanceObserverEntryList): void {
   }
 }
 
-// Sends INP data for the frame upon page unload/hide.
-// Note that the INP metric will be calculated later when the WebState is
-// destroyed or the page is navigated away from. This only sends to the browser
-// the data needed to calculate the metric.
+// Sends INP data for the frame.
+// Note that the INP metric will be calculated later in the browser.
+// This only sends the data needed to calculate the metric.
 function sendINPData(): void {
-  if (!isWebPerformanceMetricsINPEnabled() ||
-      interactionManager.totalCount === 0) {
+  if (!isWebPerformanceMetricsINPEnabled()) {
+    return;
+  }
+  // `performance.interactionCount` is undefined on WebKit versions prior to iOS
+  // 26.2. Note that this property counts interactions under 16ms which
+  // `PerformanceObserver` ignores, so `durations` may be empty when
+  // `interactionCount > 0`.
+  const interactionCount = performance.interactionCount ?? 0;
+  if (interactionCount === 0) {
     return;
   }
   const response = {
     'metric': 'InteractionToNextPaint',
     'durations': interactionManager.getLongestDurations(),
-    'interactionCount': interactionManager.totalCount,
+    'interactionCount': interactionCount,
     'frameId': gCrWeb.getFrameId(),
   };
   sendWebKitMessage(WEB_PERFORMANCE_METRICS_HANDLER_NAME, response);
@@ -117,16 +122,21 @@ function processPageShowEvent(pageshow: PageTransitionEvent): void {
   }
 }
 
-// Unregisters passive event listeners and flushes metrics on pagehide.
+// Unregisters passive event listeners on pagehide.
 function processPageHideEvent(): void {
-  // Sends the INP data for the frame on pagehide, so we don't
-  // send the data on every interaction.
-  sendINPData();
-
   EVENT_TYPES.forEach((type) => {
     window.removeEventListener(type, processInputEvent, { capture: true });
   });
   loadedFromCache = false;
+}
+
+// Sends INP data when the page visibility changes to hidden
+// (navigation, switching tabs, app backgrounding).
+function processVisibilityChangeEvent(): void {
+  if (document.visibilityState !== 'hidden') {
+    return;
+  }
+  sendINPData();
 }
 
 // Register PerformanceObserver to observe 'paint' events
@@ -143,14 +153,12 @@ function registerINPObserver(): void {
   if (!isWebPerformanceMetricsINPEnabled()) {
     return;
   }
-  try {
-    inpObserver = new PerformanceObserver(processINPEvents);
-    inpObserver.observe(
-        {type: 'event', buffered: true, durationThreshold: 16} as
-        PerformanceObserverInit);
-  } catch (e) {
-    inpObserver = null;
-  }
+
+  // Observing 'event' is a no-op on WebKit versions prior to iOS 26.2.
+  const observer = new PerformanceObserver(processINPEvents);
+  observer.observe(
+      {type: 'event', buffered: true, durationThreshold: 16} as
+      PerformanceObserverInit);
 }
 
 // Registers a passive event listener for each predefined
@@ -166,8 +174,8 @@ function registerInputEventListeners(): void {
   });
 }
 
-// Registers passive event listeners for the pageshow
-// and pagehide events
+// Registers passive event listeners for the pageshow,
+// pagehide and visibilitychange events
 function registerPageCacheListeners(): void {
   window.addEventListener('pageshow',
                            processPageShowEvent,
@@ -177,6 +185,10 @@ function registerPageCacheListeners(): void {
   window.addEventListener('pagehide',
                            processPageHideEvent,
                            { capture: true, passive: true});
+
+  document.addEventListener(
+      'visibilitychange', processVisibilityChangeEvent,
+      {capture: true, passive: true});
 }
 
 registerPerformanceObserver();

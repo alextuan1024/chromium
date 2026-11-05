@@ -44,9 +44,7 @@ import org.chromium.base.test.util.DisableIf;
 import org.chromium.base.test.util.DisabledTest;
 import org.chromium.base.test.util.DoNotBatch;
 import org.chromium.base.test.util.Feature;
-import org.chromium.base.test.util.Features;
 import org.chromium.base.test.util.Features.EnableFeatures;
-import org.chromium.base.test.util.MaxAndroidSdkLevel;
 import org.chromium.base.test.util.MinAndroidSdkLevel;
 import org.chromium.base.test.util.Restriction;
 import org.chromium.blink.mojom.DisplayMode;
@@ -68,8 +66,10 @@ import org.chromium.chrome.test.util.browser.contextmenu.ContextMenuUtils;
 import org.chromium.chrome.test.util.browser.webapps.WebappTestPage;
 import org.chromium.components.browser_ui.styles.ChromeColors;
 import org.chromium.components.permissions.PermissionDialogController;
+import org.chromium.content_public.browser.WebContents;
 import org.chromium.content_public.browser.test.NativeLibraryTestUtils;
 import org.chromium.content_public.browser.test.util.DOMUtils;
+import org.chromium.content_public.browser.test.util.WebContentsUtils;
 import org.chromium.content_public.common.ContentSwitches;
 import org.chromium.net.test.EmbeddedTestServer;
 import org.chromium.ui.base.DeviceFormFactor;
@@ -86,6 +86,10 @@ import java.util.concurrent.TimeoutException;
 @CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
 @DisableIf.Device(DeviceFormFactor.TABLET_OR_DESKTOP) // crbug.com/463649037
 public class WebappNavigationTest {
+    /** Opts standalone webapps into the short-edges cutout mode, which is off by default. */
+    private static final String SHORT_EDGES_CUTOUT_MODE_STANDALONE =
+            ChromeFeatureList.WEB_APP_SHORT_EDGES_CUTOUT_MODE + ":enable_standalone/true";
+
     public final WebappActivityTestRule mActivityTestRule = new WebappActivityTestRule();
 
     public MockCertVerifierRuleAndroid mCertVerifierRule =
@@ -198,27 +202,12 @@ public class WebappNavigationTest {
         assertEquals(Color.CYAN, activity.getToolbarManager().getPrimaryColor());
     }
 
-    /**
-     * Test that navigating off-origin while the short-edges cutout feature is enabled and the page
-     * is drawing edge-to-edge (viewport-fit=cover): - Shows a CCT-like webapp toolbar. - Restores
-     * the default cutout mode and releases the page-driven edge-to-edge state.
-     */
     @Test
     @SmallTest
     @Feature({"Webapps"})
     @Restriction(DeviceFormFactor.PHONE)
-    // Keep testing this flow without E2E everywhere after its feature flag is cleaned up.
-    @MaxAndroidSdkLevel(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
-    @Features.DisableFeatures({ChromeFeatureList.EDGE_TO_EDGE_EVERYWHERE})
-    @EnableFeatures(ChromeFeatureList.WEB_APP_SHORT_EDGES_CUTOUT_MODE)
-    public void testRegularLinkOffOriginShortEdgesCutoutMode() throws Exception {
-        runOffOriginShortEdgesCutoutModeTest(DisplayMode.STANDALONE);
-    }
-
-    @Test
-    @SmallTest
-    @Feature({"Webapps"})
-    @Restriction(DeviceFormFactor.PHONE)
+    // The coordinated cutout path requires edge-to-edge everywhere, unsupported pre-R.
+    @MinAndroidSdkLevel(Build.VERSION_CODES.R)
     @EnableFeatures(ChromeFeatureList.WEB_APP_SHORT_EDGES_CUTOUT_MODE)
     public void testRegularLinkOffOriginFullscreenShortEdgesCutoutMode() throws Exception {
         runOffOriginShortEdgesCutoutModeTest(DisplayMode.FULLSCREEN);
@@ -294,11 +283,8 @@ public class WebappNavigationTest {
     @Feature({"Webapps"})
     @Restriction(DeviceFormFactor.PHONE)
     @MinAndroidSdkLevel(Build.VERSION_CODES.VANILLA_ICE_CREAM)
-    @EnableFeatures({
-        ChromeFeatureList.WEB_APP_SHORT_EDGES_CUTOUT_MODE,
-        ChromeFeatureList.EDGE_TO_EDGE_EVERYWHERE
-    })
-    public void testRegularLinkOffOriginShortEdgesCutoutMode_EdgeToEdgeEverywhere()
+    @EnableFeatures({SHORT_EDGES_CUTOUT_MODE_STANDALONE})
+    public void testRegularLinkOffOriginShortEdgesCutoutMode()
             throws Exception {
         WebappActivity activity = runWebappActivityAndWaitForIdle(mActivityTestRule.createIntent());
         assertEquals(
@@ -457,9 +443,14 @@ public class WebappNavigationTest {
     public void testOpenInChromeFromContextMenuTabbedChrome() throws Exception {
         // Needed to get full context menu.
         FirstRunStatus.setFirstRunFlowComplete(true);
-        runWebappActivityAndWaitForIdle(mActivityTestRule.createIntent());
+        WebappActivity activity = runWebappActivityAndWaitForIdle(mActivityTestRule.createIntent());
+        CriteriaHelper.pollUiThread(
+                () -> !activity.getCompositorViewHolderForTesting().controlsResizeView());
 
         addAnchor("myTestAnchorId", offOriginUrl(), "_self");
+        WebContents webContents = mActivityTestRule.getWebContents();
+        DOMUtils.waitForNonZeroNodeBounds(webContents, "myTestAnchorId");
+        WebContentsUtils.waitForCopyableViewInWebContents(webContents);
 
         IntentFilter filter = new IntentFilter(Intent.ACTION_VIEW);
         filter.addDataScheme("https");

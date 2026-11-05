@@ -11,6 +11,7 @@ from typing import Dict, Iterable, List, Set
 
 import setup_modules  # pylint: disable=unused-import
 
+
 import chromium_src.tools.metrics.common.path_util as path_util
 import chromium_src.tools.metrics.python_support.dependency_solver as dependency_solver
 
@@ -32,6 +33,10 @@ TEST_DIRECTORIES_RELATIVE_TO_SRC = [
 
 _EXPECTED_TEST_FILES_SUFFIXES = ['test.py', 'tests.py']
 
+# The script running all the tests matches the suffixes above, but it is not a
+# test itself.
+_TEST_RUNNER_PATH = path_util.METRICS_TOOLS_PATH / 'metrics_python_tests.py'
+
 
 def _get_temp_path(prefix=''):
   fd, path = tempfile.mkstemp(prefix=prefix)
@@ -52,15 +57,20 @@ class TestableScript:
   # Full cmd to run with args included
   cmd: List[str]
 
+  # Text to pass to the script on stdin, for inputs that may be too long for
+  # a command line
+  stdin: str = ''
+
   @classmethod
   def CreatePythonScript(
-    cls, file_path: pathlib.Path, flags: List[str] = []
+    cls, file_path: pathlib.Path, flags: List[str] = [], stdin: str = ''
   ) -> 'TestableScript':
     """Creates TestableScript object for python script
 
     Args:
       file_path - a path to python script relative to src/
       flags - a list of flags to pass to the script
+      stdin - text to pass to the script on stdin
 
     Returns:
       TestableScript object set up to run using vpython3
@@ -69,6 +79,7 @@ class TestableScript:
       identifiable_name=str(file_path),
       file_path=file_path,
       cmd=['vpython3', str(file_path), *flags],
+      stdin=stdin,
     )
 
 
@@ -86,6 +97,9 @@ _TESTABLE_SCRIPTS: List[TestableScript] = [
   ),
   TestableScript.CreatePythonScript(
     file_path=pathlib.Path('tools/metrics/actions/print_action_names.py')
+  ),
+  TestableScript.CreatePythonScript(
+    file_path=pathlib.Path('tools/metrics/histograms/histogram_ownership.py')
   ),
   TestableScript.CreatePythonScript(
     file_path=pathlib.Path('tools/metrics/histograms/merge_xml.py'),
@@ -133,13 +147,6 @@ _TESTABLE_SCRIPTS: List[TestableScript] = [
   TestableScript.CreatePythonScript(
     file_path=pathlib.Path('tools/metrics/ukm/validate_format.py')
   ),
-  # TODO(crbug.com/488367077): Fix this script.
-  # TestableScript.CreatePythonScript(
-  #   file_path='tools/metrics/histograms/histogram_ownership.py'
-  # ),
-  # TODO(crbug.com/488362727): Fix the unmapped histograms.
-  # TestableScript.CreatePythonScript(file_path=pathlib.Path(
-  #      'tools/metrics/histograms/find_unmapped_histograms.py')),
 ]
 
 
@@ -149,11 +156,13 @@ def _find_all_tests_in(directory_path: pathlib.Path) -> Iterable[pathlib.Path]:
 
 
 def find_all_tests() -> Iterable[pathlib.Path]:
-  """Finds all python tests in all directories listed in DIRECTORIES_TO_SCAN"""
-  all_test_files: List[pathlib.Path] = []
-  for dir in TEST_DIRECTORIES_RELATIVE_TO_SRC:
-    all_test_files.extend(_find_all_tests_in(dir))
-  return all_test_files
+  """Finds all python tests in TEST_DIRECTORIES_RELATIVE_TO_SRC."""
+  return [
+    path
+    for directory in TEST_DIRECTORIES_RELATIVE_TO_SRC
+    for path in _find_all_tests_in(directory)
+    if path != _TEST_RUNNER_PATH
+  ]
 
 
 def validate_gn_sources(target_group: str) -> set[str]:

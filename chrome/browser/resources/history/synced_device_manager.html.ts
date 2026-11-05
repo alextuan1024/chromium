@@ -8,6 +8,9 @@ import {html} from '//resources/lit/v3_0/lit.rollup.js';
 import {HistorySignInState} from './constants.js';
 // </if>
 
+// <if expr="is_android">
+import {getHtml as getIllustrationHtml} from './empty_state_illustration.html.js';
+// </if>
 import type {HistorySyncedDeviceManagerElement} from './synced_device_manager.js';
 
 export function getHtml(this: HistorySyncedDeviceManagerElement) {
@@ -18,16 +21,17 @@ export function getHtml(this: HistorySyncedDeviceManagerElement) {
   ${this.syncedDevices_.map((syncedDevice, index) => html`
     <history-synced-device-card .device="${syncedDevice.device}"
         .lastUpdateTime="${syncedDevice.lastUpdateTime}"
-        .tabs="${syncedDevice.tabs}"
-        .separatorIndexes="${syncedDevice.separatorIndexes}"
-        .searchTerm="${this.searchTerm}" .sessionTag="${syncedDevice.tag}"
-        ?opened="${syncedDevice.opened}"
+        .windows="${syncedDevice.windows}" .searchTerm="${this.searchTerm}"
+        .sessionTag="${syncedDevice.tag}" ?opened="${syncedDevice.opened}"
         @opened-changed="${this.onCardOpenedChanged_}" data-index="${index}">
     </history-synced-device-card>
   `)}
 </div>
 <div id="noSyncedTabs" class="centered-message"
     ?hidden="${!this.showNoSyncedMessage_()}">
+<if expr="is_android">
+  ${this.fetchingSyncedTabs_ ? '' : getIllustrationHtml()}
+</if>
   ${this.noSyncedTabsMessage_()}
 </div>
 
@@ -53,10 +57,18 @@ ${this.shouldShowHistorySyncOptIn_() ? html`
         <img class="sync-history-illustration" alt="">
       </div>
       <h1 class="sync-history-promo">$i18n{turnOnSyncHistoryPromo}</h1>
-      <div id="signed-out-sync-history-promo-desc"
-          class="sync-history-promo-desc">
-        $i18n{syncHistoryPromoBodySignedOut}
-      </div>
+      ${this.isSignInState_(HistorySignInState.SIGNED_OUT) ? html`
+        <div id="signed-out-sync-history-promo-desc"
+            class="sync-history-promo-desc">
+          $i18n{syncHistoryPromoBodySignedOut}
+        </div>
+      ` : ''}
+      ${this.isSignInState_(HistorySignInState.WEB_ONLY_SIGNED_IN) ? html`
+        <div id="web-only-signed-in-sync-history-promo-desc"
+            class="sync-history-promo-desc">
+          $i18n{syncHistoryPromoBodyWebOnlySignedIn}
+        </div>
+      ` : ''}
     ` : ''}
 
     ${this.isSignInState_(HistorySignInState.WEB_ONLY_SIGNED_IN) &&
@@ -67,9 +79,11 @@ ${this.shouldShowHistorySyncOptIn_() ? html`
             src="${this.accountInfo_.accountImageSrc}">
         <div class="account-info-container">
           <div id="account-name" class="account-name">
-            ${this.accountInfo_.name}</div>
+            ${this.accountInfo_.name}
+          </div>
           <div id="account-email" class="account-email">
-            ${this.accountInfo_.email}</div>
+            ${this.accountInfo_.email}
+          </div>
         </div>
       </div>
     ` : ''}
@@ -119,7 +133,8 @@ ${this.shouldShowHistorySyncOptIn_() ? html`
             this.isTabsSyncTurnedOn_() ?
         html`
       <cr-button id="verify-its-you-button" class="action-button"
-          @click="${this.onTurnOnHistorySyncClick_}">$i18n{verifyItsYou}
+          @click="${this.onTurnOnHistorySyncClick_}">
+        $i18n{verifyItsYou}
       </cr-button>
     ` : html`
       <cr-button id="sync-history-button" class="action-button"
@@ -138,10 +153,17 @@ ${this.shouldShowHistorySyncOptIn_() ? html`
             @click="${this.onOpenAllClick_}">
           $i18n{openAll}
         </button>
-        <button id="menuDeleteButton" class="dropdown-item"
-            @click="${this.onDeleteSessionClick_}">
-          $i18n{deleteSession}
-        </button>
+        ${this.enableDeviceTabVisibilitySettings_ ? html`
+          <button id="menuManageVisibilityButton" class="dropdown-item"
+              @click="${this.onManageVisibilityClick_}">
+            $i18n{manageDeviceTabVisibility}
+          </button>
+        ` : html`
+          <button id="menuDeleteButton" class="dropdown-item"
+              @click="${this.onDeleteSessionClick_}">
+            $i18n{deleteSession}
+          </button>
+        `}
       </cr-action-menu>
     `}">
 </cr-lazy-render-lit>

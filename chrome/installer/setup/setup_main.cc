@@ -604,8 +604,6 @@ installer::InstallStatus RenameChromeExecutables(
       google_update::kRegCriticalVersionField);
   installer::AppCommand(installer::kCmdRenameChromeExe, {})
       .AddDeleteAppCommandWorkItems(reg_root, install_list.get());
-  installer::AppCommand(installer::kCmdAlternateRenameChromeExe, {})
-      .AddDeleteAppCommandWorkItems(reg_root, install_list.get());
 
   if (!installer_state->system_install()) {
     install_list->AddDeleteRegValueWorkItem(
@@ -1257,9 +1255,19 @@ bool HandleNonInstallCmdLineOptions(installer::ModifyParams& modify_params,
     }
 #endif
   } else if (cmd_line.HasSwitch(installer::switches::kInstallComponent)) {
-    const base::FilePath source_file =
-        cmd_line.GetSwitchValuePath(installer::switches::kInstallComponent);
-    *exit_code = installer::InstallComponent(source_file, *installer_state);
+    // Hold the singleton so that component installation cannot race with an
+    // update or uninstall or with another component installation.
+    std::unique_ptr<installer::SetupSingleton> setup_singleton(
+        installer::SetupSingleton::Acquire(cmd_line, prefs, original_state,
+                                           installer_state));
+    if (!setup_singleton) {
+      *exit_code = installer::SETUP_SINGLETON_ACQUISITION_FAILED;
+    } else {
+      const base::FilePath source_file =
+          cmd_line.GetSwitchValuePath(installer::switches::kInstallComponent);
+      *exit_code =
+          installer::InstallComponent(source_file, *installer_state, cmd_line);
+    }
   } else if (cmd_line.HasSwitch(installer::switches::kCreateShortcuts)) {
     std::string install_op_arg =
         cmd_line.GetSwitchValueASCII(installer::switches::kCreateShortcuts);
@@ -1337,6 +1345,9 @@ InstallStatus InstallProductsHelper(InstallationState& original_state,
     return TEMP_DIR_FAILED;
   }
 
+  const base::FilePath prefs_source_path = CopyInitialPreferencesToTempDir(
+      cmd_line.GetSwitchValuePath(switches::kInstallerData), temp_path.path());
+
   RETURN_IF_ERROR(
       UnpackChromeArchive(unpack_path, setup_exe, cmd_line, installer_state));
 
@@ -1370,9 +1381,6 @@ InstallStatus InstallProductsHelper(InstallationState& original_state,
     }
 
     if (proceed_with_installation) {
-      base::FilePath prefs_source_path(
-          cmd_line.GetSwitchValueNative(switches::kInstallerData));
-
       const base::Version current_version(
           installer_state.GetCurrentVersion(original_state));
       src_size_kb = base::saturated_cast<uint32_t>(

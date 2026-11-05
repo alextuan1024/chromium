@@ -246,7 +246,9 @@ std::vector<CredentialUIEntry> PasswordsGrouper::GetBlockedSites() const {
                            return CredentialUIEntry(key_value.second.front());
                          });
   // Sort blocked sites.
-  std::sort(results.begin(), results.end());
+  std::ranges::sort(results, {}, [](const CredentialUIEntry& entry) {
+    return CreateCredentialSortKey(entry);
+  });
   return results;
 }
 
@@ -314,6 +316,9 @@ std::vector<StoredCredential> PasswordsGrouper::GetStoredCredentialsFor(
 
 std::optional<PasskeyCredential> PasswordsGrouper::GetPasskeyFor(
     const CredentialUIEntry& credential) {
+  if (!credential.IsPasskey()) {
+    return std::nullopt;
+  }
   // Find the group id based on the sign on realm.
   auto group_id_iterator = map_signon_realm_to_group_id_.find(
       SignonRealm(credential.GetFirstSignonRealm()));
@@ -324,7 +329,7 @@ std::optional<PasskeyCredential> PasswordsGrouper::GetPasskeyFor(
   const std::vector<PasskeyCredential>& passkeys =
       map_group_id_to_credentials_[group_id_iterator->second].passkeys;
   const auto passkey_it =
-      std::ranges::find(passkeys, credential.passkey_credential_id,
+      std::ranges::find(passkeys, credential.passkey_info->credential_id,
                         &PasskeyCredential::credential_id);
   if (passkey_it == passkeys.end()) {
     return std::nullopt;
@@ -401,16 +406,12 @@ std::map<std::string, PasswordsGrouper::GroupId>
 PasswordsGrouper::MapFacetsToGroupId(const std::vector<GroupedFacets>& groups) {
   int group_id_int = 1;
   std::map<std::string, GroupId> map_facet_to_group_id;
-  std::set<std::string> facet_uri_in_groups;
 
   for (const GroupedFacets& grouped_facets : groups) {
     GroupId unique_group_id(group_id_int);
     for (const affiliations::Facet& facet : grouped_facets.facets) {
       std::string facet_uri_str = facet.uri.potentially_invalid_spec();
       map_facet_to_group_id[facet_uri_str] = unique_group_id;
-
-      // Keep track of facet URI (sign-on realm) that are already in a group.
-      facet_uri_in_groups.insert(facet_uri_str);
     }
 
     // Store branding information for the affiliated group.

@@ -2,45 +2,13 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import {ExtensionPageCallbackRouter, ExtensionPageHandlerFactory, ExtensionPageHandlerRemote, PageCallbackRouter, PageHandlerFactory, PageHandlerRemote} from './contextual_tasks.mojom-webui.js';
-import type {ExtensionPageHandlerInterface, PageHandlerInterface} from './contextual_tasks.mojom-webui.js';
-
-let instance: BrowserProxy|null = null;
-
-export interface BrowserProxy {
-  callbackRouter: PageCallbackRouter;
-  handler: PageHandlerInterface;
-}
-
-export class BrowserProxyImpl implements BrowserProxy {
-  callbackRouter: PageCallbackRouter;
-  handler: PageHandlerInterface;
-
-  constructor() {
-    this.callbackRouter = new PageCallbackRouter();
-    this.handler = new PageHandlerRemote();
-
-    const factory = PageHandlerFactory.getRemote();
-    factory.createPageHandler(
-        this.callbackRouter.$.bindNewPipeAndPassRemote(),
-        (this.handler as PageHandlerRemote).$.bindNewPipeAndPassReceiver());
-  }
-
-  static getInstance(): BrowserProxy {
-    return instance || (instance = new BrowserProxyImpl());
-  }
-
-  static setInstance(proxy: BrowserProxy) {
-    instance = proxy;
-  }
-}
+import {ExtensionPageCallbackRouter, ExtensionPageHandlerFactory, ExtensionPageHandlerRemote} from './contextual_tasks.mojom-webui.js';
+import type {ExtensionPageHandlerInterface} from './contextual_tasks.mojom-webui.js';
 
 export interface ExtensionBrowserProxy {
   callbackRouter: ExtensionPageCallbackRouter;
   handler: ExtensionPageHandlerInterface;
 }
-
-let extensionInstance: ExtensionBrowserProxy|null = null;
 
 declare global {
   interface Window {
@@ -64,12 +32,12 @@ export class ExtensionBrowserProxyImpl implements ExtensionBrowserProxy {
   }
 
   static getInstance(): ExtensionBrowserProxy {
-    return window.__extensionBrowserProxyInstance || extensionInstance ||
-        (extensionInstance = new ExtensionBrowserProxyImpl());
+    return window.__extensionBrowserProxyInstance ||
+        (window.__extensionBrowserProxyInstance =
+             new ExtensionBrowserProxyImpl());
   }
 
   static setInstance(proxy: ExtensionBrowserProxy) {
     window.__extensionBrowserProxyInstance = proxy;
-    extensionInstance = proxy;
   }
 }

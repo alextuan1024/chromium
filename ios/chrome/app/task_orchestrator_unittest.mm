@@ -6,21 +6,61 @@
 
 #import <UIKit/UIKit.h>
 
+#import <memory>
+
+#import "base/apple/foundation_util.h"
 #import "base/ios/block_types.h"
+#import "base/memory/raw_ptr.h"
 #import "base/test/metrics/histogram_tester.h"
+#import "base/test/run_until.h"
 #import "base/test/scoped_feature_list.h"
+#import "base/test/test_future.h"
+#import "google_apis/gaia/gaia_id.h"
+#import "ios/chrome/app/application_delegate/app_init_stage.h"
+#import "ios/chrome/app/application_delegate/app_state.h"
+#import "ios/chrome/app/change_profile_commands.h"
+#import "ios/chrome/app/profile/profile_state.h"
 #import "ios/chrome/app/task_request+testing.h"
 #import "ios/chrome/app/task_scheduling_outcome.h"
+#import "ios/chrome/app/test/fake_change_profile_commands.h"
+#import "ios/chrome/browser/shared/coordinator/scene/scene_delegate.h"
 #import "ios/chrome/browser/shared/coordinator/scene/scene_state.h"
+#import "ios/chrome/browser/shared/model/application_context/application_context.h"
+#import "ios/chrome/browser/shared/model/browser/browser_provider_interface.h"
+#import "ios/chrome/browser/shared/model/browser/test/test_browser.h"
+#import "ios/chrome/browser/shared/model/profile/test/test_profile_ios.h"
+#import "ios/chrome/browser/shared/model/profile/test/test_profile_manager_ios.h"
+#import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
+#import "ios/chrome/browser/signin/model/authentication_service.h"
+#import "ios/chrome/browser/signin/model/authentication_service_factory.h"
+#import "ios/chrome/browser/signin/model/fake_system_identity.h"
+#import "ios/chrome/browser/signin/model/fake_system_identity_manager.h"
+#import "ios/chrome/browser/sync/model/sync_service_factory.h"
+#import "ios/chrome/browser/sync/model/test_sync_service_utils.h"
+#import "ios/chrome/test/ios_chrome_scoped_testing_local_state.h"
 #import "ios/web/public/test/web_task_environment.h"
 #import "testing/gtest_mac.h"
 #import "testing/platform_test.h"
 #import "third_party/ocmock/OCMock/OCMock.h"
 #import "third_party/ocmock/gtest_support.h"
 
+// `SceneDelegate` whose `sceneState` can be detached, as when the scene
+// disconnects.
+@interface TaskOrchestratorTestSceneDelegate : SceneDelegate
+// The `SceneState` returned by `sceneState`.
+@property(nonatomic, strong) SceneState* testSceneState;
+@end
+
+@implementation TaskOrchestratorTestSceneDelegate
+- (SceneState*)sceneState {
+  return self.testSceneState;
+}
+@end
+
 namespace {
-// Creates a new SceneState with the given `persistentIdentifier`.
+// Creates a new SceneState with the given `persistentIdentifier`, whose scene
+// delegate allows detaching it.
 SceneState* CreateFakeSceneState(NSString* persistent_identifier) {
   id fake_scene = OCMClassMock([UIWindowScene class]);
   id fake_scene_session = OCMClassMock([UISceneSession class]);
@@ -29,6 +69,10 @@ SceneState* CreateFakeSceneState(NSString* persistent_identifier) {
   OCMStub([fake_scene session]).andReturn(fake_scene_session);
   SceneState* scene_state = [[SceneState alloc] init];
   scene_state.scene = fake_scene;
+  TaskOrchestratorTestSceneDelegate* scene_delegate =
+      [[TaskOrchestratorTestSceneDelegate alloc] init];
+  scene_delegate.testSceneState = scene_state;
+  OCMStub([fake_scene delegate]).andReturn(scene_delegate);
   return scene_state;
 }
 }  // namespace
@@ -60,23 +104,31 @@ class TaskOrchestratorTest : public PlatformTest {
 TEST_F(TaskOrchestratorTest, TestAddTaskRequestExecuteImmediately) {
   NSString* scene_id = @"scene1";
   SceneState* scene_state = CreateFakeSceneState(scene_id);
+  EXPECT_FALSE(scene_state.hasPendingIntent);
   __block BOOL taskWasExecuted = NO;
+  __block BOOL hasPendingIntentDuringExecution = NO;
 
-  TaskRequest* task = [TaskRequest taskForTestingWithScene:scene_state.scene
-                                              executeBlock:^{
-                                                taskWasExecuted = YES;
-                                              }];
+  TaskRequest* task =
+      [TaskRequest taskForTestingWithScene:scene_state.scene
+                              executeBlock:^{
+                                taskWasExecuted = YES;
+                                hasPendingIntentDuringExecution =
+                                    scene_state.hasPendingIntent;
+                              }];
   task.minimumStage = TaskExecutionStage::TaskExecutionStageNone;
 
   [orchestrator_ addTaskRequest:task];
 
   EXPECT_TRUE(taskWasExecuted);
+  EXPECT_TRUE(hasPendingIntentDuringExecution);
+  EXPECT_FALSE(scene_state.hasPendingIntent);
 }
 
 // Tests that a task is queued if the stage is not met, and executed when it is.
 TEST_F(TaskOrchestratorTest, TestAddTaskRequestQueueAndExecuteLater) {
   NSString* scene_id = @"scene1";
   SceneState* scene_state = CreateFakeSceneState(scene_id);
+  EXPECT_FALSE(scene_state.hasPendingIntent);
   __block BOOL taskWasExecuted = NO;
 
   TaskRequest* task = [TaskRequest taskForTestingWithScene:scene_state.scene
@@ -86,17 +138,20 @@ TEST_F(TaskOrchestratorTest, TestAddTaskRequestQueueAndExecuteLater) {
   task.minimumStage = TaskExecutionStage::TaskExecutionUIReady;
 
   [orchestrator_ addTaskRequest:task];
+  EXPECT_TRUE(scene_state.hasPendingIntent);
 
   // Make sure that block is not run.
   [orchestrator_ updateToStage:TaskExecutionStage::TaskExecutionProfileLoaded
                       forScene:scene_state];
   EXPECT_FALSE(taskWasExecuted);
+  EXPECT_TRUE(scene_state.hasPendingIntent);
 
   // Update executionBlock to check that it's correctly called when updating to
   // the correct stage.
   [orchestrator_ updateToStage:TaskExecutionStage::TaskExecutionUIReady
                       forScene:scene_state];
   EXPECT_TRUE(taskWasExecuted);
+  EXPECT_FALSE(scene_state.hasPendingIntent);
 }
 
 // Tests that tasks for different scenes are handled independently.
@@ -121,17 +176,22 @@ TEST_F(TaskOrchestratorTest, TestMultipleScenes) {
 
   [orchestrator_ addTaskRequest:task1];
   [orchestrator_ addTaskRequest:task2];
+  EXPECT_TRUE(scene_state1.hasPendingIntent);
+  EXPECT_TRUE(scene_state2.hasPendingIntent);
 
   // Check that only task1 is executed.
   [orchestrator_ updateToStage:TaskExecutionStage::TaskExecutionUIReady
                       forScene:scene_state1];
   EXPECT_TRUE(task1WasExecuted);
+  EXPECT_FALSE(scene_state1.hasPendingIntent);
   EXPECT_FALSE(task2WasExecuted);
+  EXPECT_TRUE(scene_state2.hasPendingIntent);
 
   // Check that only task2 is executed.
   [orchestrator_ updateToStage:TaskExecutionStage::TaskExecutionUIReady
                       forScene:scene_state2];
   EXPECT_TRUE(task2WasExecuted);
+  EXPECT_FALSE(scene_state2.hasPendingIntent);
 }
 
 // Tests that multiple tasks for the same scene with different stages are
@@ -156,17 +216,20 @@ TEST_F(TaskOrchestratorTest, TestMultipleStagesSameScene) {
 
   [orchestrator_ addTaskRequest:task1];
   [orchestrator_ addTaskRequest:task2];
+  EXPECT_TRUE(scene_state.hasPendingIntent);
 
   // Transition to ProfileLoaded. Check that only task1 is executed.
   [orchestrator_ updateToStage:TaskExecutionStage::TaskExecutionProfileLoaded
                       forScene:scene_state];
   EXPECT_TRUE(task1WasExecuted);
   EXPECT_FALSE(task2WasExecuted);
+  EXPECT_TRUE(scene_state.hasPendingIntent);
 
   // Transition to UIReady. Check that task2 is executed.
   [orchestrator_ updateToStage:TaskExecutionStage::TaskExecutionUIReady
                       forScene:scene_state];
   EXPECT_TRUE(task2WasExecuted);
+  EXPECT_FALSE(scene_state.hasPendingIntent);
 }
 
 // Tests that a task is dropped if there is already a pending task for the same
@@ -195,6 +258,7 @@ TEST_F(TaskOrchestratorTest, TestDropTaskRequestWithDifferentGaiaID) {
 
   [orchestrator_ addTaskRequest:task1];
   [orchestrator_ addTaskRequest:task2];
+  EXPECT_TRUE(scene_state.hasPendingIntent);
 
   [orchestrator_ updateToStage:TaskExecutionStage::TaskExecutionUIReady
                       forScene:scene_state];
@@ -202,6 +266,7 @@ TEST_F(TaskOrchestratorTest, TestDropTaskRequestWithDifferentGaiaID) {
   // task1 should be executed, task2 should be dropped.
   EXPECT_TRUE(task1WasExecuted);
   EXPECT_FALSE(task2WasExecuted);
+  EXPECT_FALSE(scene_state.hasPendingIntent);
 
   // Make sure histogram is correctly updated.
   histogram_tester_.ExpectBucketCount(
@@ -237,6 +302,7 @@ TEST_F(TaskOrchestratorTest, TestNotDropTaskRequestWithSameGaiaID) {
 
   [orchestrator_ addTaskRequest:task1];
   [orchestrator_ addTaskRequest:task2];
+  EXPECT_TRUE(scene_state.hasPendingIntent);
 
   [orchestrator_ updateToStage:TaskExecutionStage::TaskExecutionUIReady
                       forScene:scene_state];
@@ -244,6 +310,7 @@ TEST_F(TaskOrchestratorTest, TestNotDropTaskRequestWithSameGaiaID) {
   // Both tasks should be executed.
   EXPECT_TRUE(task1WasExecuted);
   EXPECT_TRUE(task2WasExecuted);
+  EXPECT_FALSE(scene_state.hasPendingIntent);
 
   // Make sure histogram is correctly updated.
   histogram_tester_.ExpectUniqueSample(
@@ -278,4 +345,491 @@ TEST_F(TaskOrchestratorTest, TestGaiaIDForScene) {
 
   // Now no tasks are pending, returns nil.
   EXPECT_NSEQ(nil, [orchestrator_ gaiaIDForScene:scene_state]);
+}
+
+// Test fixture for tasks requiring a profile or account switch, with a signed
+// out profile and a scene whose app state dispatches `ChangeProfileCommands`.
+class TaskOrchestratorProfileSwitchTest : public TaskOrchestratorTest {
+ protected:
+  void SetUp() override {
+    TaskOrchestratorTest::SetUp();
+
+    TestProfileIOS::Builder builder;
+    builder.AddTestingFactory(
+        AuthenticationServiceFactory::GetInstance(),
+        AuthenticationServiceFactory::GetDefaultFactory());
+    builder.AddTestingFactory(SyncServiceFactory::GetInstance(),
+                              base::BindRepeating(&CreateTestSyncService));
+    profile_ = profile_manager_.AddProfileWithBuilder(std::move(builder));
+
+    identity_ = [FakeSystemIdentity fakeIdentity1];
+    FakeSystemIdentityManager::FromSystemIdentityManager(
+        GetApplicationContext()->GetSystemIdentityManager())
+        ->AddIdentity(identity_);
+
+    CommandDispatcher* dispatcher = [[CommandDispatcher alloc] init];
+    change_profile_handler_ = [[FakeChangeProfileCommands alloc] init];
+    [dispatcher startDispatchingToTarget:change_profile_handler_
+                             forProtocol:@protocol(ChangeProfileCommands)];
+
+    mock_app_state_ = OCMClassMock([AppState class]);
+    OCMStub([mock_app_state_ initStage]).andReturn(AppInitStage::kFinal);
+    OCMStub([mock_app_state_ appCommandDispatcher]).andReturn(dispatcher);
+
+    profile_state_ = [[ProfileState alloc] initWithAppState:mock_app_state_];
+    profile_state_.profile = profile_;
+
+    scene_state_ = CreateFakeSceneState(@"scene_switch");
+    scene_state_.profileState = profile_state_;
+
+    browser_ = std::make_unique<TestBrowser>(profile_, scene_state_);
+    id mock_provider_interface =
+        OCMProtocolMock(@protocol(BrowserProviderInterface));
+    OCMStub([mock_provider_interface mainBrowser]).andReturn(browser_.get());
+    partial_scene_state_ = OCMPartialMock(scene_state_);
+    OCMStub([partial_scene_state_ browserProviderInterface])
+        .andReturn(mock_provider_interface);
+  }
+
+  void TearDown() override {
+    [change_profile_handler_ shutdown];
+    [partial_scene_state_ stopMocking];
+    browser_.reset();
+    TaskOrchestratorTest::TearDown();
+  }
+
+  // Returns a task, ready at `TaskExecutionUIReady`, requesting a switch to
+  // `identity_`. `execute_block` is run when the task is executed.
+  TaskRequest* CreateSwitchingTask(ProceduralBlock execute_block) {
+    TaskRequest* task = [TaskRequest taskForTestingWithScene:scene_state_.scene
+                                                executeBlock:execute_block];
+    task.minimumStage = TaskExecutionStage::TaskExecutionUIReady;
+    task.gaiaID = identity_.gaiaId.ToNSString();
+    return task;
+  }
+
+  // Returns a task, ready at `TaskExecutionUIReady`, that does not require any
+  // switch. `execute_block` is run when the task is executed.
+  TaskRequest* CreateNonSwitchingTask(ProceduralBlock execute_block) {
+    TaskRequest* task = [TaskRequest taskForTestingWithScene:scene_state_.scene
+                                                executeBlock:execute_block];
+    task.minimumStage = TaskExecutionStage::TaskExecutionUIReady;
+    return task;
+  }
+
+  // Starts the switch requested by `switching_task` and returns once
+  // `ChangeProfileCommands` holds its continuation.
+  void StartSwitch(TaskRequest* switching_task) {
+    [orchestrator_ addTaskRequest:switching_task];
+    [orchestrator_ updateToStage:TaskExecutionStage::TaskExecutionUIReady
+                        forScene:scene_state_];
+    [change_profile_handler_ waitForChangeProfile];
+    ASSERT_TRUE(change_profile_handler_.hasContinuation);
+  }
+
+  // Sets the `SceneState` returned by the scene's delegate, which is nil once
+  // the scene is disconnected.
+  void SetDelegateSceneState(SceneState* scene_state) {
+    base::apple::ObjCCastStrict<TaskOrchestratorTestSceneDelegate>(
+        scene_state_.scene.delegate)
+        .testSceneState = scene_state;
+  }
+
+  // Moves the scene to `TaskExecutionUIReady` again, as a `SceneState`
+  // recreated by a profile switch does.
+  void ReachUIReadyAgain() {
+    [orchestrator_ updateToStage:TaskExecutionStage::TaskExecutionProfileLoaded
+                        forScene:scene_state_];
+    [orchestrator_ updateToStage:TaskExecutionStage::TaskExecutionUIReady
+                        forScene:scene_state_];
+  }
+
+  IOSChromeScopedTestingLocalState scoped_testing_local_state_;
+  TestProfileManagerIOS profile_manager_;
+  raw_ptr<TestProfileIOS> profile_;
+  FakeSystemIdentity* identity_;
+  FakeChangeProfileCommands* change_profile_handler_;
+  // Kept alive for the whole test, as `SceneState` and `ProfileState` don't
+  // retain their profile and app states, and partial mocks stop stubbing once
+  // released.
+  id mock_app_state_;
+  ProfileState* profile_state_;
+  id partial_scene_state_;
+  SceneState* scene_state_;
+  std::unique_ptr<TestBrowser> browser_;
+};
+
+// Tests that a task requiring a profile or account switch does not trigger
+// ChangeProfileCommands while in background (TaskExecutionProfileLoaded) and
+// only initiates the switch once TaskExecutionUIReady is reached.
+TEST_F(TaskOrchestratorProfileSwitchTest,
+       TestProfileSwitchWaitsForUIReadyAndContinuation) {
+  base::test::TestFuture<void> future;
+  TaskRequest* task =
+      CreateSwitchingTask(base::CallbackToBlock(future.GetCallback()));
+
+  [orchestrator_ addTaskRequest:task];
+  EXPECT_TRUE(scene_state_.hasPendingIntent);
+  EXPECT_FALSE(change_profile_handler_.lastChangeProfileParams.has_value());
+  EXPECT_FALSE(future.IsReady());
+
+  // At TaskExecutionProfileLoaded (e.g. while backgrounded on warm start),
+  // changeProfile: must not be triggered yet.
+  [orchestrator_ updateToStage:TaskExecutionStage::TaskExecutionProfileLoaded
+                      forScene:scene_state_];
+  EXPECT_FALSE(change_profile_handler_.lastChangeProfileParams.has_value());
+  EXPECT_FALSE(future.IsReady());
+  EXPECT_TRUE(scene_state_.hasPendingIntent);
+
+  // Reaching TaskExecutionUIReady initiates changeProfile: and defers task
+  // execution until the continuation completes.
+  [orchestrator_ updateToStage:TaskExecutionStage::TaskExecutionUIReady
+                      forScene:scene_state_];
+  ASSERT_TRUE(change_profile_handler_.lastChangeProfileParams.has_value());
+  EXPECT_EQ(ChangeProfileReason::kSwitchAccountsFromWidget,
+            change_profile_handler_.lastChangeProfileParams->reason);
+  EXPECT_FALSE(future.IsReady());
+  EXPECT_TRUE(scene_state_.hasPendingIntent);
+
+  // Running the ChangeProfileContinuation completes the switch and executes the
+  // ready task.
+  ASSERT_TRUE(change_profile_handler_.hasContinuation);
+  [change_profile_handler_ runContinuationForSceneState:scene_state_];
+  EXPECT_TRUE(future.Wait());
+  EXPECT_FALSE(scene_state_.hasPendingIntent);
+}
+
+// Tests that if the ChangeProfileContinuation is destroyed without being
+// invoked, the switching state is reset and the task requiring the switch is
+// dropped so subsequent tasks on the same scene can still execute.
+TEST_F(TaskOrchestratorProfileSwitchTest,
+       TestDroppedContinuationResetsSwitchingAndDropsGaiaTasks) {
+  __block BOOL dropped_task_executed = NO;
+  ASSERT_NO_FATAL_FAILURE(StartSwitch(CreateSwitchingTask(^{
+    dropped_task_executed = YES;
+  })));
+  EXPECT_TRUE(scene_state_.hasPendingIntent);
+
+  [change_profile_handler_ dropContinuation];
+  EXPECT_FALSE(dropped_task_executed);
+  EXPECT_FALSE(scene_state_.hasPendingIntent);
+
+  // Subsequent tasks on the same scene execute instead of being permanently
+  // blocked by `is_switching`.
+  base::test::TestFuture<void> next_task_future;
+  [orchestrator_ addTaskRequest:CreateNonSwitchingTask(base::CallbackToBlock(
+                                    next_task_future.GetCallback()))];
+  EXPECT_TRUE(next_task_future.IsReady());
+  EXPECT_FALSE(dropped_task_executed);
+}
+
+// Tests that tasks not requiring a switch, queued while the dropped switch was
+// in progress, run right away if the scene is still UI-ready, without
+// restarting the switch.
+TEST_F(TaskOrchestratorProfileSwitchTest,
+       TestDroppedContinuationRunsReadyTasksWithoutGaiaID) {
+  __block BOOL gaia_task_executed = NO;
+  ASSERT_NO_FATAL_FAILURE(StartSwitch(CreateSwitchingTask(^{
+    gaia_task_executed = YES;
+  })));
+  base::test::TestFuture<void> future;
+  [orchestrator_ addTaskRequest:CreateNonSwitchingTask(base::CallbackToBlock(
+                                    future.GetCallback()))];
+  EXPECT_FALSE(future.IsReady());
+
+  [change_profile_handler_ dropContinuation];
+  EXPECT_TRUE(future.IsReady());
+  EXPECT_FALSE(gaia_task_executed);
+  EXPECT_FALSE(scene_state_.hasPendingIntent);
+  EXPECT_FALSE(change_profile_handler_.lastChangeProfileParams.has_value());
+}
+
+// Tests that tasks not requiring a switch are kept when the switch is dropped
+// while the scene's UI is torn down, as when another profile switch replaces
+// its `SceneState`, and run once the scene is UI-ready again.
+TEST_F(TaskOrchestratorProfileSwitchTest,
+       TestDroppedContinuationKeepsTasksWithoutGaiaID) {
+  __block BOOL gaia_task_executed = NO;
+  ASSERT_NO_FATAL_FAILURE(StartSwitch(CreateSwitchingTask(^{
+    gaia_task_executed = YES;
+  })));
+  base::test::TestFuture<void> future;
+  [orchestrator_ addTaskRequest:CreateNonSwitchingTask(base::CallbackToBlock(
+                                    future.GetCallback()))];
+  [orchestrator_ updateToStage:TaskExecutionStage::TaskExecutionStageNone
+                      forScene:scene_state_];
+
+  [change_profile_handler_ dropContinuation];
+  EXPECT_FALSE(future.IsReady());
+  EXPECT_TRUE(scene_state_.hasPendingIntent);
+
+  ReachUIReadyAgain();
+  EXPECT_TRUE(future.IsReady());
+  EXPECT_FALSE(gaia_task_executed);
+  EXPECT_FALSE(scene_state_.hasPendingIntent);
+  EXPECT_FALSE(change_profile_handler_.lastChangeProfileParams.has_value());
+}
+
+// Tests that all the tasks of a scene disconnected during the switch are
+// dropped once its continuation is destroyed, as `clearTasksForScene:` only
+// kept them for the switch, and that the scene is no longer blocked.
+TEST_F(TaskOrchestratorProfileSwitchTest,
+       TestDroppedContinuationAfterSceneDisconnectDropsAllTasks) {
+  __block BOOL stale_task_executed = NO;
+  ASSERT_NO_FATAL_FAILURE(StartSwitch(CreateSwitchingTask(^{
+    stale_task_executed = YES;
+  })));
+  [orchestrator_ addTaskRequest:CreateNonSwitchingTask(^{
+                   stale_task_executed = YES;
+                 })];
+
+  [orchestrator_ clearTasksForScene:scene_state_];
+  SetDelegateSceneState(nil);
+  [change_profile_handler_ dropContinuation];
+
+  // Reconnecting the same scene session runs new tasks but not the stale ones.
+  SetDelegateSceneState(scene_state_);
+  ReachUIReadyAgain();
+  EXPECT_FALSE(stale_task_executed);
+  EXPECT_NSEQ(nil, [orchestrator_ gaiaIDForScene:scene_state_]);
+  base::test::TestFuture<void> new_task_future;
+  [orchestrator_ addTaskRequest:CreateNonSwitchingTask(base::CallbackToBlock(
+                                    new_task_future.GetCallback()))];
+  EXPECT_TRUE(new_task_future.IsReady());
+  EXPECT_FALSE(stale_task_executed);
+  EXPECT_FALSE(change_profile_handler_.lastChangeProfileParams.has_value());
+}
+
+// Tests that the switch is attributed to the share extension when the task
+// reports it was requested by the share extension, without relying on the App
+// Group command still being in the shared defaults.
+TEST_F(TaskOrchestratorProfileSwitchTest, TestProfileSwitchFromShareExtension) {
+  TaskRequest* task = CreateSwitchingTask(^{
+  });
+  id partial_task = OCMPartialMock(task);
+  OCMStub([partial_task isFromShareExtension]).andReturn(YES);
+
+  [orchestrator_ addTaskRequest:task];
+  [orchestrator_ updateToStage:TaskExecutionStage::TaskExecutionUIReady
+                      forScene:scene_state_];
+
+  ASSERT_TRUE(change_profile_handler_.lastChangeProfileParams.has_value());
+  EXPECT_EQ(ChangeProfileReason::kSwitchAccountsFromShareExtension,
+            change_profile_handler_.lastChangeProfileParams->reason);
+  // The orchestrator keeps the task alive after the test body.
+  [partial_task stopMocking];
+}
+
+// Tests that clearTasksForScene: drops the pending tasks of the scene.
+TEST_F(TaskOrchestratorTest, TestClearTasksForSceneDropsPendingTasks) {
+  SceneState* scene_state = CreateFakeSceneState(@"scene1");
+  __block BOOL task_was_executed = NO;
+  TaskRequest* task = [TaskRequest taskForTestingWithScene:scene_state.scene
+                                              executeBlock:^{
+                                                task_was_executed = YES;
+                                              }];
+  task.minimumStage = TaskExecutionStage::TaskExecutionUIReady;
+  task.gaiaID = @"test_gaia_id";
+  [orchestrator_ addTaskRequest:task];
+  ASSERT_TRUE(scene_state.hasPendingIntent);
+
+  [orchestrator_ clearTasksForScene:scene_state];
+
+  EXPECT_FALSE(scene_state.hasPendingIntent);
+  EXPECT_NSEQ(nil, [orchestrator_ gaiaIDForScene:scene_state]);
+
+  // The dropped task must not run if the scene reaches the required stage.
+  [orchestrator_ updateToStage:TaskExecutionStage::TaskExecutionUIReady
+                      forScene:scene_state];
+  EXPECT_FALSE(task_was_executed);
+}
+
+// Tests that clearTasksForScene: doesn't drop the pending tasks of other
+// scenes.
+TEST_F(TaskOrchestratorTest, TestClearTasksForSceneKeepsOtherScenesTasks) {
+  SceneState* cleared_scene_state = CreateFakeSceneState(@"scene1");
+  SceneState* other_scene_state = CreateFakeSceneState(@"scene2");
+  __block BOOL other_task_was_executed = NO;
+
+  TaskRequest* cleared_task =
+      [TaskRequest taskForTestingWithScene:cleared_scene_state.scene
+                              executeBlock:^{
+                              }];
+  cleared_task.minimumStage = TaskExecutionStage::TaskExecutionUIReady;
+  TaskRequest* other_task =
+      [TaskRequest taskForTestingWithScene:other_scene_state.scene
+                              executeBlock:^{
+                                other_task_was_executed = YES;
+                              }];
+  other_task.minimumStage = TaskExecutionStage::TaskExecutionUIReady;
+  [orchestrator_ addTaskRequest:cleared_task];
+  [orchestrator_ addTaskRequest:other_task];
+
+  [orchestrator_ clearTasksForScene:cleared_scene_state];
+
+  EXPECT_FALSE(cleared_scene_state.hasPendingIntent);
+  EXPECT_TRUE(other_scene_state.hasPendingIntent);
+  [orchestrator_ updateToStage:TaskExecutionStage::TaskExecutionUIReady
+                      forScene:other_scene_state];
+  EXPECT_TRUE(other_task_was_executed);
+}
+
+// Tests that clearTasksForScene: keeps the pending tasks while a profile or
+// account switch started by the orchestrator is in progress, as the switch
+// disconnects and reconnects the scene.
+TEST_F(TaskOrchestratorTest, TestClearTasksForSceneDuringProfileSwitch) {
+  IOSChromeScopedTestingLocalState scoped_testing_local_state;
+  TestProfileManagerIOS profile_manager;
+
+  TestProfileIOS::Builder builder;
+  builder.AddTestingFactory(AuthenticationServiceFactory::GetInstance(),
+                            AuthenticationServiceFactory::GetDefaultFactory());
+  builder.AddTestingFactory(SyncServiceFactory::GetInstance(),
+                            base::BindRepeating(&CreateTestSyncService));
+  TestProfileIOS* profile =
+      profile_manager.AddProfileWithBuilder(std::move(builder));
+
+  FakeSystemIdentity* identity = [FakeSystemIdentity fakeIdentity1];
+  FakeSystemIdentityManager::FromSystemIdentityManager(
+      GetApplicationContext()->GetSystemIdentityManager())
+      ->AddIdentity(identity);
+
+  CommandDispatcher* dispatcher = [[CommandDispatcher alloc] init];
+  FakeChangeProfileCommands* change_profile_handler =
+      [[FakeChangeProfileCommands alloc] init];
+  [dispatcher startDispatchingToTarget:change_profile_handler
+                           forProtocol:@protocol(ChangeProfileCommands)];
+
+  id mock_app_state = OCMClassMock([AppState class]);
+  OCMStub([mock_app_state initStage]).andReturn(AppInitStage::kFinal);
+  OCMStub([mock_app_state appCommandDispatcher]).andReturn(dispatcher);
+
+  ProfileState* profile_state =
+      [[ProfileState alloc] initWithAppState:mock_app_state];
+  profile_state.profile = profile;
+
+  SceneState* scene_state = CreateFakeSceneState(@"scene_switch");
+  scene_state.profileState = profile_state;
+
+  TestBrowser browser(profile, scene_state);
+  id mock_provider_interface =
+      OCMProtocolMock(@protocol(BrowserProviderInterface));
+  OCMStub([mock_provider_interface mainBrowser]).andReturn(&browser);
+  id partial_scene_state = OCMPartialMock(scene_state);
+  OCMStub([partial_scene_state browserProviderInterface])
+      .andReturn(mock_provider_interface);
+
+  bool task_was_executed = false;
+  bool* task_was_executed_ptr = &task_was_executed;
+  TaskRequest* task = [TaskRequest taskForTestingWithScene:scene_state.scene
+                                              executeBlock:^{
+                                                *task_was_executed_ptr = true;
+                                              }];
+  task.minimumStage = TaskExecutionStage::TaskExecutionUIReady;
+  task.gaiaID = identity.gaiaId.ToNSString();
+  [orchestrator_ addTaskRequest:task];
+
+  // Reaching TaskExecutionUIReady starts the profile switch.
+  [orchestrator_ updateToStage:TaskExecutionStage::TaskExecutionUIReady
+                      forScene:scene_state];
+  ASSERT_TRUE(change_profile_handler.lastChangeProfileParams.has_value());
+
+  // The switch disconnects the scene; its tasks must be kept.
+  [orchestrator_ clearTasksForScene:scene_state];
+  EXPECT_TRUE(scene_state.hasPendingIntent);
+
+  // Completing the switch runs the task.
+  ASSERT_TRUE(change_profile_handler.hasContinuation);
+  [change_profile_handler runContinuationForSceneState:scene_state];
+  EXPECT_TRUE(base::test::RunUntil([&]() { return task_was_executed; }));
+  EXPECT_FALSE(scene_state.hasPendingIntent);
+  [change_profile_handler shutdown];
+}
+
+namespace {
+
+// Google One deep link opened by the task requiring an account switch.
+NSString* const kGoogleOneDeepLinkURL = @"https://one.google.com/deeplink";
+
+// Adds a Google One deep link task requiring an account switch to
+// `orchestrator`, then reaches `TaskExecutionUIReady`. Returns the handler that
+// received the resulting `ChangeProfileCommands` call.
+FakeChangeProfileCommands* SwitchProfileForGoogleOneDeepLinkTask(
+    TaskOrchestrator* orchestrator) {
+  IOSChromeScopedTestingLocalState scoped_testing_local_state;
+  TestProfileManagerIOS profile_manager;
+
+  TestProfileIOS::Builder builder;
+  builder.AddTestingFactory(AuthenticationServiceFactory::GetInstance(),
+                            AuthenticationServiceFactory::GetDefaultFactory());
+  builder.AddTestingFactory(SyncServiceFactory::GetInstance(),
+                            base::BindRepeating(&CreateTestSyncService));
+  TestProfileIOS* profile =
+      profile_manager.AddProfileWithBuilder(std::move(builder));
+
+  FakeSystemIdentity* identity = [FakeSystemIdentity fakeIdentity1];
+  FakeSystemIdentityManager::FromSystemIdentityManager(
+      GetApplicationContext()->GetSystemIdentityManager())
+      ->AddIdentity(identity);
+
+  CommandDispatcher* dispatcher = [[CommandDispatcher alloc] init];
+  FakeChangeProfileCommands* change_profile_handler =
+      [[FakeChangeProfileCommands alloc] init];
+  [dispatcher startDispatchingToTarget:change_profile_handler
+                           forProtocol:@protocol(ChangeProfileCommands)];
+
+  id mock_app_state = OCMClassMock([AppState class]);
+  OCMStub([mock_app_state initStage]).andReturn(AppInitStage::kFinal);
+  OCMStub([mock_app_state appCommandDispatcher]).andReturn(dispatcher);
+
+  ProfileState* profile_state =
+      [[ProfileState alloc] initWithAppState:mock_app_state];
+  profile_state.profile = profile;
+
+  SceneState* scene_state = CreateFakeSceneState(@"scene_google_one");
+  scene_state.profileState = profile_state;
+
+  TaskRequest* task = [TaskRequest
+      taskForTestingWithScene:scene_state.scene
+                       gaiaID:identity.gaiaId.ToNSString()
+                          URL:[NSURL URLWithString:kGoogleOneDeepLinkURL]];
+  task.minimumStage = TaskExecutionStage::TaskExecutionUIReady;
+
+  [orchestrator addTaskRequest:task];
+  [orchestrator updateToStage:TaskExecutionStage::TaskExecutionUIReady
+                     forScene:scene_state];
+
+  return change_profile_handler;
+}
+
+}  // namespace
+
+// Tests that a Google One deep link task requiring an account switch triggers
+// `ChangeProfileCommands` with `ChangeProfileReason::kForGoogleOneSettings`.
+TEST_F(TaskOrchestratorTest, TestProfileSwitchForGoogleOneDeepLink) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(kSupportGoogleOneDeepLink);
+
+  FakeChangeProfileCommands* change_profile_handler =
+      SwitchProfileForGoogleOneDeepLinkTask(orchestrator_);
+
+  ASSERT_TRUE(change_profile_handler.lastChangeProfileParams.has_value());
+  EXPECT_EQ(ChangeProfileReason::kForGoogleOneSettings,
+            change_profile_handler.lastChangeProfileParams->reason);
+  [change_profile_handler shutdown];
+}
+
+// Tests that a task with a Google One deep link URL and a `gaiaID` does not use
+// `ChangeProfileReason::kForGoogleOneSettings` when the feature is disabled.
+TEST_F(TaskOrchestratorTest, TestProfileSwitchForGoogleOneDeepLinkDisabled) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndDisableFeature(kSupportGoogleOneDeepLink);
+
+  FakeChangeProfileCommands* change_profile_handler =
+      SwitchProfileForGoogleOneDeepLinkTask(orchestrator_);
+
+  ASSERT_TRUE(change_profile_handler.lastChangeProfileParams.has_value());
+  EXPECT_EQ(ChangeProfileReason::kSwitchAccountsFromWidget,
+            change_profile_handler.lastChangeProfileParams->reason);
+  [change_profile_handler shutdown];
 }

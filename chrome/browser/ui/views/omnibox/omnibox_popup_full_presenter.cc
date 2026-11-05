@@ -6,40 +6,51 @@
 
 #include <algorithm>
 #include <memory>
+#include <utility>
 
 #include "base/feature_list.h"
+#include "base/functional/bind.h"
 #include "base/metrics/histogram_functions.h"
+#include "base/scoped_multi_source_observation.h"
 #include "base/scoped_observation.h"
 #include "base/strings/strcat.h"
 #include "base/task/sequenced_task_runner.h"
+#include "base/task/single_thread_task_runner.h"
+#include "build/build_config.h"
+#include "chrome/browser/ui/layout_constants.h"
 #include "chrome/browser/ui/location_bar/location_bar.h"
 #include "chrome/browser/ui/omnibox/omnibox_controller.h"
 #include "chrome/browser/ui/omnibox/omnibox_edit_model.h"
 #include "chrome/browser/ui/omnibox/omnibox_next_features.h"
 #include "chrome/browser/ui/omnibox/omnibox_popup_state_manager.h"
 #include "chrome/browser/ui/omnibox/omnibox_popup_view.h"
-#include "chrome/browser/ui/omnibox/omnibox_view.h"
+#include "chrome/browser/ui/tabs/organizer/organizer_panel_controller.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
+#include "chrome/browser/ui/views/frame/contents_web_view.h"
 #include "chrome/browser/ui/views/frame/toolbar_button_provider.h"
 #include "chrome/browser/ui/views/frame/top_container_view.h"
+#include "chrome/browser/ui/views/interaction/browser_elements_views.h"
 #include "chrome/browser/ui/views/location_bar/location_bar_view.h"
 #include "chrome/browser/ui/views/omnibox/full_webui_omnibox_frame.h"
 #include "chrome/browser/ui/views/omnibox/omnibox_full_popup_webui_content.h"
 #include "chrome/browser/ui/views/omnibox/omnibox_popup_presenter_base.h"
 #include "chrome/browser/ui/views/omnibox/omnibox_popup_presenter_delegate.h"
+#include "chrome/browser/ui/views/omnibox/omnibox_popup_view_full_webui.h"
 #include "chrome/browser/ui/views/omnibox/omnibox_popup_webui_base_content.h"
-#include "chrome/browser/ui/views/omnibox/omnibox_view_views.h"
 #include "chrome/browser/ui/views/omnibox/rounded_omnibox_results_frame.h"
+#include "chrome/browser/ui/views/tab_contents/chrome_web_contents_view_focus_helper.h"
+#include "chrome/browser/ui/views/tabs/organizer/organizer_panel_host.h"
+#include "chrome/browser/ui/views/tabs/organizer/organizer_tray_view.h"
 #include "chrome/browser/ui/views/toolbar/app_menu_control.h"
 #include "chrome/browser/ui/webui/omnibox_popup/omnibox_popup_handler.h"
 #include "chrome/browser/ui/webui/omnibox_popup/omnibox_popup_ui.h"
-#include "chrome/browser/ui/webui/searchbox/webui_omnibox_handler.h"
 #include "chrome/browser/ui/webui/top_chrome/webui_contents_preload_manager.h"
 #include "chrome/browser/ui/webui/top_chrome/webui_contents_wrapper.h"
-#include "components/omnibox/common/omnibox_features.h"
 #include "components/permissions/permission_request_manager.h"
 #include "content/public/browser/render_widget_host_view.h"
+#include "ui/base/interaction/element_tracker.h"
+#include "ui/compositor/layer.h"
 #include "ui/display/screen.h"
 #include "ui/events/event.h"
 #include "ui/views/controls/menu/menu_controller.h"
@@ -48,15 +59,21 @@
 #include "ui/views/view_class_properties.h"
 #include "ui/views/view_utils.h"
 
+#if BUILDFLAG(IS_CHROMEOS)
+#include "ash/ash_element_identifiers.h"
+#endif
+
 OmniboxPopupFullPresenter::OmniboxPopupFullPresenter(
     LocationBar* location_bar,
     OmniboxPopupPresenterDelegate& presenter_delegate,
     OmniboxController* controller)
-    : OmniboxPopupPresenterBase(location_bar, presenter_delegate, controller) {
-  // `location_bar` may be null in unit tests.
+    : OmniboxPopupPresenterBase(location_bar,
+                                presenter_delegate,
+                                controller,
+                                OmniboxPopupContentConfig::ForFull()) {
+  // `location_bar` may be null in unit tests, which run without content.
   if (location_bar) {
-    SetWebUIContent(std::make_unique<OmniboxFullPopupWebUIContent>(
-        this, this->location_bar(), controller));
+    ApplyWebUIContentCreationStrategy(WebUIContentCreationStrategy::kEager);
   }
 }
 
@@ -99,64 +116,118 @@ void OmniboxPopupFullPresenter::Show() {
     }
   }
 
-  auto* controller =
-      GetWebUIContent()->contents_wrapper()->GetWebUIController();
-  auto* handler = controller ? controller->omnibox_handler() : nullptr;
-  auto* omnibox_view = location_bar()->GetOmniboxView();
-  if (handler && omnibox_view) {
-    handler->SetAimButtonVisible(omnibox_view->AimButtonVisible());
-  }
+  GetWebUIContent()->UpdateAimButtonVisibility();
 
-  views::Widget* parent_widget = delegate().GetLocationBarWidget();
-  if (parent_widget && !parent_widget_observation_.IsObserving()) {
-    parent_widget_observation_.Observe(parent_widget);
+  views::Widget* browser_widget = GetBrowserWidget();
+  if (browser_widget && !browser_widget_observation_.IsObserving()) {
+    browser_widget_observation_.Observe(browser_widget);
   }
-
+  if (views::FocusManager* focus_manager = GetBrowserFocusManager();
+      focus_manager && !browser_focus_manager_observation_.IsObserving()) {
+    browser_focus_manager_observation_.Observe(focus_manager);
+  }
   if (GetWidget() && !popup_widget_observation_.IsObserving()) {
     popup_widget_observation_.Observe(GetWidget());
   }
 
-  if (parent_widget && !event_monitor_) {
+  if (browser_widget && !event_monitor_) {
     event_monitor_ = views::EventMonitor::CreateWindowMonitor(
-        this, parent_widget->GetNativeWindow(), {ui::EventType::kMousePressed});
+        this, browser_widget->GetNativeWindow(),
+        {ui::EventType::kMousePressed, ui::EventType::kTouchPressed});
   }
 
-  if (parent_widget) {
+  if (browser_widget) {
     if (auto* browser_view = BrowserView::GetBrowserViewForNativeWindow(
-            parent_widget->GetNativeWindow())) {
+            browser_widget->GetNativeWindow())) {
       if (browser_view->toolbar_button_provider() &&
           browser_view->toolbar_button_provider()->GetAppMenuControl() &&
           !app_menu_control_observation_.IsObserving()) {
         app_menu_control_observation_.Observe(
             browser_view->toolbar_button_provider()->GetAppMenuControl());
       }
+#if BUILDFLAG(IS_CHROMEOS)
+      if (browser_view->top_container() &&
+          !top_container_observation_.IsObserving()) {
+        top_container_observation_.Observe(browser_view->top_container());
+      }
+#endif
+      if (auto* elements =
+              BrowserElementsViews::From(browser_view->browser())) {
+        for (views::View* view :
+             {elements->RetrieveView(kVerticalTabStripRegionRetrievalId),
+              elements->GetView(OrganizerTrayView::kTrayElementId,
+                                /*require_visible=*/false)}) {
+          if (view && !occluding_view_observations_.IsObservingSource(view)) {
+            occluding_view_observations_.AddObservation(view);
+          }
+        }
+      }
+      UpdatePopupOcclusion();
     }
   }
 }
 
 void OmniboxPopupFullPresenter::Hide() {
   pending_focus_task_.Cancel();
-  parent_widget_observation_.Reset();
+  refocus_on_activation_ = false;
+  // The popup stops being observed before it's hidden.
+  KeepBrowserPaintingAsActiveAcrossHandoff();
+  // Keep observing the browser window while waiting to refocus the omnibox
+  // after a modal dialog closes, as blurring the omnibox for the dialog hides
+  // the popup. See `RestoreFocusAfterModalDialog()`.
+  if (!focus_state_before_modal_dialog_) {
+    browser_widget_observation_.Reset();
+  }
+  browser_focus_manager_observation_.Reset();
+  // Cancel any pending context menu request, since the base `Hide()` only
+  // clears the content (which also cancels it) when it closes the widget. A
+  // request left pending could show the menu on a later activation.
+  if (auto* content = GetWebUIContent()) {
+    content->CancelPendingContextMenuRequest();
+  }
   app_menu_control_observation_.Reset();
+  occluding_view_observations_.RemoveAllObservations();
+#if BUILDFLAG(IS_CHROMEOS)
+  top_container_observation_.Reset();
+#endif
+  UpdatePopupOcclusion();
+
   event_monitor_.reset();
   forward_events_timer_.Stop();
   StopForwardingEvents();
   popup_widget_observation_.Reset();
-  if (auto* widget = delegate().GetLocationBarWidget()) {
-    if (auto* focus_manager = widget->GetFocusManager()) {
-      views::View* restore_view = delegate().GetLocationBarFocusRestoreView();
-      views::View* stored_view = focus_manager->GetStoredFocusView();
-      if (stored_view == restore_view) {
-        focus_manager->SetStoredFocusView(nullptr);
-      }
+  if (auto* focus_manager = GetBrowserFocusManager()) {
+    views::View* restore_view = delegate().GetLocationBarFocusRestoreView();
+    views::View* stored_view = focus_manager->GetStoredFocusView();
+    if (stored_view == restore_view) {
+      focus_manager->SetStoredFocusView(nullptr);
     }
   }
   OmniboxPopupPresenterBase::Hide();
-  if (ShouldApplyHeightWorkarounds()) {
+  if (config().height_workarounds) {
     // Reset the cached height to force a layout update when the popup is
     // reshown. This prevents the popup from temporarily using a stale size
     // from its previous state.
     content_height_ = 1;
+  }
+}
+
+void OmniboxPopupFullPresenter::OnOmniboxFocused() {
+  OmniboxPopupPresenterBase::OnOmniboxFocused();
+
+  // The popup is its own widget, so its focus never reaches the tray's focus
+  // listener. The panel embedded in the vertical tab strip has no such
+  // listener and stays open, as it does for the Views omnibox.
+  if (views::Widget* browser_widget = GetBrowserWidget()) {
+    if (auto* browser_view = BrowserView::GetBrowserViewForNativeWindow(
+            browser_widget->GetNativeWindow())) {
+      if (auto* controller =
+              OrganizerPanelController::From(browser_view->browser());
+          controller && controller->GetCurrentOrganizerPanelLocation() ==
+                            OrganizerPanelLocation::kOrganizerTray) {
+        controller->SetOrganizerVisible(false);
+      }
+    }
   }
 }
 
@@ -172,17 +243,36 @@ void OmniboxPopupFullPresenter::RequestFocus() {
     return;
   }
 
-  // If the popup widget is already active, focus the WebUI content and its
-  // underlying WebContents immediately without deferral.
+  // Don't take focus in a browser window the user has left. Activating the
+  // popup would pull the window back in front of the one the user switched to.
+  if (!CanTakeFocus()) {
+    // The omnibox stays focused, e.g. on the NTP of a new window that a
+    // window-modal dialog took activation from before the omnibox was focused,
+    // as no deactivation blurred it. Hand focus to the popup once the window is
+    // activated again, as the Views omnibox's `FocusManager` does, so that its
+    // caret shows and key presses reach it. See `OnWidgetActivationChanged()`.
+    refocus_on_activation_ = true;
+    return;
+  }
+  refocus_on_activation_ = false;
+
+  // If the popup widget is already active, focus the WebUI content now so the
+  // caret and selection are correct within this event loop turn. Do NOT return
+  // here: the activation seen at this instant can be torn down later in the
+  // same tab-switch sequence, leaving the popup looking focused while keys go
+  // to the browser widget. See crbug.com/558761131.
   if (GetWidget()->IsActive()) {
     FocusPopupContent();
-    return;
   }
 
   // Defer activation to the next event loop cycle to avoid re-entrant window
   // activation in Aura FocusController during tab switches or startup.
+  // A request made while the browser window is active must not take
+  // activation from a bubble that opens before the task runs.
+  const bool was_browser_or_popup_active = IsBrowserOrPopupActive();
   pending_focus_task_.Reset(base::BindOnce(
-      [](base::WeakPtr<OmniboxPopupFullPresenter> presenter) {
+      [](base::WeakPtr<OmniboxPopupFullPresenter> presenter,
+         bool was_browser_or_popup_active) {
         // Activation is deferred asynchronously. Re-verify that the presenter,
         // widget, and popup state remain valid, and that focus was not lost
         // (e.g., user clicked away into the web page or opened a menu) while
@@ -198,6 +288,13 @@ void OmniboxPopupFullPresenter::RequestFocus() {
         if (views::MenuController::GetActiveInstance()) {
           return;
         }
+        // The browser window may have been deactivated while this task was
+        // queued (e.g. a bubble opened). Only a request made while a bubble
+        // already held activation may take activation from it.
+        if (was_browser_or_popup_active ? !presenter->IsBrowserOrPopupActive()
+                                        : !presenter->CanTakeFocus()) {
+          return;
+        }
         if (auto* focus_manager = presenter->GetWidget()->GetFocusManager()) {
           // Ensure activating the container restores focus to the WebUI view.
           focus_manager->SetStoredFocusView(presenter->GetWebUIContent());
@@ -207,7 +304,7 @@ void OmniboxPopupFullPresenter::RequestFocus() {
         }
         presenter->FocusPopupContent();
       },
-      weak_factory_.GetWeakPtr()));
+      weak_factory_.GetWeakPtr(), was_browser_or_popup_active));
   base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
       FROM_HERE, pending_focus_task_.callback());
 }
@@ -216,40 +313,8 @@ std::string_view OmniboxPopupFullPresenter::GetPopupMetricPrefix() const {
   return OmniboxPopupPresenterBase::kFullWebUIPopupMetricPrefix;
 }
 
-std::optional<base::TimeDelta>
-OmniboxPopupFullPresenter::ShouldDeferUntilVisualStateReady() const {
-  if (!base::FeatureList::IsEnabled(
-          omnibox::kOmniboxFullWebUIDeferShowUntilVisualStateReady)) {
-    return std::nullopt;
-  }
-  return base::Milliseconds(
-      omnibox::kOmniboxFullWebUIDeferShowUntilVisualStateReadyTimeoutMs.Get());
-}
-
-bool OmniboxPopupFullPresenter::ShouldDebounceResize() const {
-  return base::FeatureList::IsEnabled(omnibox::kOmniboxFullWebUIDebounceResize);
-}
-
-bool OmniboxPopupFullPresenter::ShouldApplyHeightWorkarounds() const {
-  return base::FeatureList::IsEnabled(omnibox::kOmniboxFullWebUIHeightWorkarounds);
-}
-
-bool OmniboxPopupFullPresenter::ShouldDetachWebContentsOnHide() const {
-  return base::FeatureList::IsEnabled(
-      omnibox::kOmniboxFullWebUIDetachWebContentsOnHide);
-}
-
-bool OmniboxPopupFullPresenter::ShouldEvictOnHide() const {
-  return base::FeatureList::IsEnabled(omnibox::kOmniboxFullWebUIEvictOnHide);
-}
-
-bool OmniboxPopupFullPresenter::ShouldSizeWebViewToPreferredHeight() const {
-  return base::FeatureList::IsEnabled(
-      omnibox::kOmniboxFullWebUISizeWebViewToPreferredHeight);
-}
-
-bool OmniboxPopupFullPresenter::ShouldHideForInitialLayout() const {
-  return false;
+void OmniboxPopupFullPresenter::DeactivateAndKillFocus() {
+  DeactivatePopupAndKillFocus(FocusAfterBlur::kNone);
 }
 
 std::unique_ptr<RoundedOmniboxResultsFrame>
@@ -265,15 +330,31 @@ bool OmniboxPopupFullPresenter::ShouldPreserveRequestedFocus() const {
   return true;
 }
 
-bool OmniboxPopupFullPresenter::IsDeactivating() const {
-  return is_deactivating_;
-}
-
 bool OmniboxPopupFullPresenter::ShouldReceiveFocus() const {
   if (views::MenuController::GetActiveInstance()) {
     return false;
   }
   return OmniboxPopupPresenterBase::ShouldReceiveFocus();
+}
+
+gfx::Insets OmniboxPopupFullPresenter::GetShadowMargin() const {
+  gfx::Insets margin = RoundedOmniboxResultsFrame::GetShadowInsets();
+  // While collapsed nothing is painted below the location bar, so drop the
+  // bottom margin to keep the widget from covering the UI directly beneath it
+  // (e.g. the bookmarks bar or the top of the web contents).
+  if (IsPopupCollapsed()) {
+    margin.set_bottom(0);
+  }
+  return margin;
+}
+
+bool OmniboxPopupFullPresenter::IsPopupCollapsed() const {
+  const int location_bar_height =
+      location_bar() ? location_bar()->BoundsInScreen().height()
+                     : GetLayoutConstant(LayoutConstant::kLocationBarHeight);
+  return content_height_ <=
+         location_bar_height +
+             FullWebUIOmniboxFrame::GetLocationBarAlignmentInsets().height();
 }
 
 void OmniboxPopupFullPresenter::SynchronizePopupBounds() {
@@ -294,21 +375,27 @@ void OmniboxPopupFullPresenter::SynchronizePopupBounds() {
   // Calculate the bounds of the "content area" which includes the location bar
   // and any results, plus the alignment insets to cover the focus ring.
   gfx::Rect widget_bounds = location_bar()->BoundsInScreen();
-  widget_bounds.Inset(
-      -RoundedOmniboxResultsFrame::GetLocationBarAlignmentInsets());
+  widget_bounds.Inset(-FullWebUIOmniboxFrame::GetLocationBarAlignmentInsets());
 
   const int default_height = widget_bounds.height();
-  bool has_results = content_height_ > default_height;
-  int target_elevation =
-      has_results ? RoundedOmniboxResultsFrame::kDefaultElevation : 0;
 
   auto* results_frame =
       views::AsViewClass<FullWebUIOmniboxFrame>(GetResultsFrame());
   CHECK(results_frame);
-  results_frame->SetElevation(target_elevation);
+  const gfx::Insets shadow_margin = GetShadowMargin();
+  results_frame->SetShadowMargin(shadow_margin);
+  const bool shadow_in_webui = config().draw_shadow_in_webui;
+  if (!shadow_in_webui) {
+    const bool has_results = content_height_ > default_height;
+    results_frame->SetElevation(
+        has_results ? RoundedOmniboxResultsFrame::kDefaultElevation : 0);
+  }
 
-  widget_bounds.set_height(content_height_ > 1 ? content_height_
-                                               : default_height);
+  // Never size the popup shorter than the location bar. While collapsed the
+  // WebView is clipped by the dropped bottom shadow margin, so a height seeded
+  // from its view bounds (see `OmniboxPopupWebUIBaseContent::Show()`) can
+  // under-report by that margin.
+  widget_bounds.set_height(std::max(content_height_, default_height));
 
   // Set width and height to at least their minimums (e.g. for permission
   // prompts).
@@ -317,8 +404,16 @@ void OmniboxPopupFullPresenter::SynchronizePopupBounds() {
   widget_bounds.set_height(
       std::max(get_minimum_size().height(), widget_bounds.height()));
 
-  widget_bounds.Inset(-results_frame->GetInsets());
+  // Normally the frame's border supplies the shadow margin. When the page
+  // paints the shadow the frame has no border, so add the margin here; the
+  // WebView covers it and the page paints the shadow into it. While collapsed
+  // the bottom margin is dropped, which clips the page's (transparent) bottom
+  // shadow padding.
+  widget_bounds.Inset(
+      -(shadow_in_webui ? shadow_margin : results_frame->GetInsets()));
   GetWidget()->SetBounds(widget_bounds);
+
+  UpdatePopupOcclusion();
 }
 
 void OmniboxPopupFullPresenter::NotifyEscapeKeyPressed() {
@@ -327,13 +422,60 @@ void OmniboxPopupFullPresenter::NotifyEscapeKeyPressed() {
 
 void OmniboxPopupFullPresenter::OnWidgetActivationChanged(views::Widget* widget,
                                                           bool active) {
+  if (active && refocus_on_activation_) {
+    // A focus request couldn't take activation (see `RequestFocus()`), and the
+    // browser window or the popup is now active, e.g. after the window-modal
+    // dialog that held activation closed. Depending on the window manager,
+    // either may be activated, and neither focuses the WebUI content by
+    // itself. Refocus once activation settles.
+    refocus_on_activation_ = false;
+    base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE,
+        base::BindOnce(&OmniboxPopupFullPresenter::RequestFocusIfOmniboxFocused,
+                       weak_factory_.GetWeakPtr()));
+  }
+
+  if (active && focus_state_before_modal_dialog_) {
+    // The browser window may have been reactivated after a modal dialog
+    // closed. Check once activation settles. When it restores focus to the
+    // location bar, the omnibox is refocused before this runs.
+    base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE,
+        base::BindOnce(&OmniboxPopupFullPresenter::RestoreFocusAfterModalDialog,
+                       weak_factory_.GetWeakPtr()));
+  }
+
+  // In immersive fullscreen on macOS, the popup's parent is an overlay, so
+  // activating the popup doesn't lock the browser window.
+  if (active && widget == GetWidget() && !browser_paint_as_active_lock_) {
+    if (views::Widget* browser_widget = GetBrowserWidget()) {
+      browser_paint_as_active_lock_ = browser_widget->LockPaintAsActive();
+    }
+  }
+
+  if (!active) {
+    KeepBrowserPaintingAsActiveAcrossHandoff();
+
+    // The browser or popup widget deactivating may mean another window, such
+    // as a bubble, took activation. Check once activation settles, since
+    // handoffs between the browser and the popup deactivate one widget before
+    // activating the next. See `IsBrowserOrPopupActive()`.
+    //
+    // Must be posted before the stored focus view task below, so that the
+    // omnibox is blurred by the time that task runs and it does nothing.
+    base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE,
+        base::BindOnce(&OmniboxPopupFullPresenter::BlurIfBrowserOrPopupInactive,
+                       weak_factory_.GetWeakPtr()));
+  }
+
   // If the widget that changed is the browser window.
-  if (widget == delegate().GetLocationBarWidget()) {
+  if (widget == GetBrowserWidget()) {
     if (!active) {
       // When the browser window deactivates (e.g. due to focusing the WebUI
-      // popup or opening a bubble), we must cache the Omnibox view
-      // as the stored focus view. This ensures that when the browser window
-      // reactivates, the FocusManager restores focus to the Omnibox.
+      // popup), we must cache the Omnibox view as the stored focus view. This
+      // ensures that when the browser window reactivates, the FocusManager
+      // restores focus to the Omnibox.
       //
       // We must post this as a task because on macOS, native deactivation
       // events run *before* the FocusManager processes
@@ -347,13 +489,10 @@ void OmniboxPopupFullPresenter::OnWidgetActivationChanged(views::Widget* widget,
               [](base::WeakPtr<OmniboxPopupFullPresenter> presenter) {
                 if (presenter && presenter->IsShown() &&
                     presenter->controller()->edit_model()->has_focus()) {
-                  if (auto* widget =
-                          presenter->delegate().GetLocationBarWidget()) {
-                    if (auto* focus_manager = widget->GetFocusManager()) {
-                      focus_manager->SetStoredFocusView(
-                          presenter->delegate()
-                              .GetLocationBarFocusRestoreView());
-                    }
+                  if (auto* focus_manager =
+                          presenter->GetBrowserFocusManager()) {
+                    focus_manager->SetStoredFocusView(
+                        presenter->delegate().GetLocationBarFocusRestoreView());
                   }
                 }
               },
@@ -365,6 +504,26 @@ void OmniboxPopupFullPresenter::OnWidgetActivationChanged(views::Widget* widget,
   if (widget == GetWidget()) {
     if (active) {
       OnWidgetActivated();
+#if BUILDFLAG(IS_MAC)
+      // On macOS, the popup is a separate window that only becomes key when
+      // the user returns to it (e.g. swiping back to the Space), so treat that
+      // as returning to the omnibox. Skip when a mouse button is down: AppKit
+      // makes the popup window key before dispatching `mouseDown:`, so focusing
+      // here would reveal UI (such as the AIM button) under the cursor before
+      // Blink hit-tests the press; the click itself will focus the input. On
+      // Aura, the popup can become active when the browser window deactivates,
+      // so its activation isn't a reliable signal.
+      if (IsShown() && !controller()->edit_model()->has_focus() &&
+          !widget->IsMouseButtonDown()) {
+        if (auto* popup_view = location_bar()->GetOmniboxPopupView()) {
+          popup_view->OnFocus(/*query_zps=*/false, /*select_all=*/false,
+                              /*show_full_url=*/false);
+        }
+      }
+#endif  // BUILDFLAG(IS_MAC)
+      if (auto* content = GetWebUIContent()) {
+        content->OnPopupWidgetActivationChanged(/*active=*/true);
+      }
       return;
     }
 
@@ -378,6 +537,10 @@ void OmniboxPopupFullPresenter::OnWidgetActivationChanged(views::Widget* widget,
           FROM_HERE, base::BindOnce(&OmniboxPopupFullPresenter::RequestFocus,
                                     weak_factory_.GetWeakPtr()));
       return;
+    }
+
+    if (auto* content = GetWebUIContent()) {
+      content->OnPopupWidgetActivationChanged(/*active=*/false);
     }
 
 #if BUILDFLAG(IS_MAC)
@@ -408,33 +571,413 @@ void OmniboxPopupFullPresenter::OnWidgetActivationChanged(views::Widget* widget,
               },
               weak_factory_.GetWeakPtr()));
     }
-#else
-    // If neither the popup nor the browser window is active (e.g. clicking
-    // another browser window or application), deactivate popup and reset focus
-    // without focusing this window's WebContents.
-    views::Widget* parent_widget = delegate().GetLocationBarWidget();
-    if (parent_widget && !parent_widget->IsActive()) {
-      DeactivatePopupAndKillFocus(/*focus_web_contents=*/false);
-    }
-#endif
+#endif  // BUILDFLAG(IS_MAC)
   }
 }
 
+void OmniboxPopupFullPresenter::OnWidgetBoundsChanged(
+    views::Widget* widget,
+    const gfx::Rect& new_bounds) {
+  // Only the browser widget. The popup widget is observed too, and
+  // `SynchronizePopupBounds()` changes its bounds.
+  if (widget != GetBrowserWidget() || !IsShown()) {
+    return;
+  }
+  SynchronizePopupBounds();
+}
+
+void OmniboxPopupFullPresenter::OnWidgetVisibilityOnScreenChanged(
+    views::Widget* widget,
+    bool visible) {
+  if (widget != GetWidget() || !visible) {
+    return;
+  }
+  // The popup may have been opened while it couldn't appear on screen, e.g. on
+  // macOS in a new window entering a fullscreen Space before macOS switched to
+  // it. `RequestFocus()` gave up then, as the popup wasn't shown, and the
+  // location bar may have moved since.
+  SynchronizePopupBounds();
+  RequestFocusIfOmniboxFocused();
+}
+
+void OmniboxPopupFullPresenter::RequestFocusIfOmniboxFocused() {
+  // Only refocus if the omnibox is still focused with the popup open. If the
+  // window was deactivated again in the meantime, `RequestFocus()` waits for
+  // the next activation.
+  if (!IsShown() ||
+      controller()->popup_state_manager()->popup_state() !=
+          OmniboxPopupState::kFull ||
+      !controller()->edit_model()->has_focus()) {
+    return;
+  }
+  RequestFocus();
+}
+
+void OmniboxPopupFullPresenter::OnWidgetDestroying(views::Widget* widget) {
+  if (browser_widget_observation_.IsObservingSource(widget)) {
+    browser_widget_observation_.Reset();
+  }
+}
+
+void OmniboxPopupFullPresenter::OnWidgetWindowModalVisibilityChanged(
+    views::Widget* widget,
+    bool visible) {
+  // A window-modal dialog opened over the browser window or the popup. On
+  // macOS, that includes native file dialogs, which are sheets, so one opened
+  // from the "+" menu is reported both here and through `OnFileDialogOpened()`
+  // and `OnFileDialogClosed()`. While it's open, `OnModalDialogClosed()` waits
+  // for the latter, which tells whether a file was selected.
+  if (widget != GetBrowserWidget() && widget != GetWidget()) {
+    return;
+  }
+  if (visible) {
+    OnModalDialogShown();
+  } else {
+    OnModalDialogClosed();
+  }
+}
+
+void OmniboxPopupFullPresenter::BlurIfBrowserOrPopupInactive() {
+  if (IsBrowserOrPopupActive()) {
+    return;
+  }
+#if BUILDFLAG(IS_CHROMEOS)
+  // The system emoji picker took activation, e.g. from the Emoji item of the
+  // omnibox's context menu. Once an emoji is picked, it closes and inserts the
+  // emoji into the text input that is focused when its window is reactivated,
+  // as the Views omnibox's `FocusManager` restores focus to it. Keep the
+  // omnibox focused with the popup open, hand focus back to the popup once
+  // the browser window or popup is reactivated, and check again once the
+  // picker closes, in case the user left the browser window instead.
+  if (IsEmojiPickerShown() &&
+      controller()->popup_state_manager()->popup_state() ==
+          OmniboxPopupState::kFull &&
+      controller()->edit_model()->has_focus()) {
+    refocus_on_activation_ = true;
+    if (!emoji_picker_hidden_subscription_) {
+      emoji_picker_hidden_subscription_ =
+          ui::ElementTracker::GetElementTracker()
+              ->AddElementHiddenInAnyContextCallback(
+                  ash::kEmojiPickerElementId,
+                  base::BindRepeating(
+                      &OmniboxPopupFullPresenter::OnEmojiPickerHidden,
+                      base::Unretained(this)));
+    }
+    return;
+  }
+#endif  // BUILDFLAG(IS_CHROMEOS)
+  BlurForWindowDeactivation();
+}
+
+#if BUILDFLAG(IS_CHROMEOS)
+// static
+bool OmniboxPopupFullPresenter::IsEmojiPickerShown() {
+  return !!ui::ElementTracker::GetElementTracker()->GetElementInAnyContext(
+      ash::kEmojiPickerElementId);
+}
+
+void OmniboxPopupFullPresenter::OnEmojiPickerHidden(
+    ui::TrackedElement* element) {
+  emoji_picker_hidden_subscription_ = {};
+  // Check once activation has moved to the next window.
+  base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+      FROM_HERE,
+      base::BindOnce(&OmniboxPopupFullPresenter::BlurIfBrowserOrPopupInactive,
+                     weak_factory_.GetWeakPtr()));
+}
+#endif  // BUILDFLAG(IS_CHROMEOS)
+
+void OmniboxPopupFullPresenter::BlurForWindowDeactivation() {
+  if (controller()->popup_state_manager()->popup_state() !=
+      OmniboxPopupState::kFull) {
+    return;
+  }
+  if (!controller()->edit_model()->has_focus()) {
+    // A draft keeps the popup open while the omnibox isn't focused. If a modal
+    // dialog took activation, close the popup too, as below, and reopen it once
+    // the dialog closes. See `RestoreFocusAfterModalDialog()`.
+    if (focus_state_before_modal_dialog_) {
+      controller()->popup_state_manager()->SetPopupState(
+          OmniboxPopupState::kNone);
+    }
+    return;
+  }
+
+  DeactivatePopupAndKillFocus(FocusAfterBlur::kNone);
+
+  // A modal dialog, such as a native file dialog, took activation. Close the
+  // popup even if a draft would keep it open, as the classic omnibox's popup
+  // closes, so that it can't be used while the dialog is open: on macOS the
+  // popup is a separate window, which the dialog's sheet doesn't block. The
+  // draft stays in the edit model, and refocusing the omnibox once the dialog
+  // closes reopens the popup with it.
+  if (focus_state_before_modal_dialog_ &&
+      controller()->popup_state_manager()->popup_state() ==
+          OmniboxPopupState::kFull) {
+    controller()->popup_state_manager()->SetPopupState(
+        OmniboxPopupState::kNone);
+  }
+  // Set the browser window's stored focus view, which the `FocusManager`
+  // restores whenever the window is reactivated. Do this after deactivating,
+  // so that nothing run during it (closing the popup, `Hide()`) clears it, and
+  // after activation has settled, so that the `FocusManager`'s own
+  // `StoreFocusedView()` doesn't overwrite it.
+  views::FocusManager* focus_manager = GetBrowserFocusManager();
+  if (!focus_manager) {
+    return;
+  }
+  // A modal dialog took activation. Once it closes, reactivating the window
+  // restores the location bar, which hands focus back to the popup with the
+  // selection it had (see `OnModalDialogShown()`).
+  // Unlike below, this is done on all platforms, as the window is reactivated
+  // by the dialog closing rather than by a click into it.
+  // A native file dialog opened from the "+" menu may reactivate the window
+  // before telling its listener whether a file was selected. Selecting a file
+  // opens AI Mode, so don't restore anything then, and let
+  // `OnFileDialogClosed()` decide whether to refocus the omnibox.
+  if (focus_state_before_modal_dialog_) {
+    focus_manager->SetStoredFocusView(
+        file_dialog_open_ ? nullptr
+                          : delegate().GetLocationBarFocusRestoreView());
+    return;
+  }
+#if BUILDFLAG(IS_MAC)
+  // On macOS, reactivating a window restores its previous focus, so restore
+  // the location bar, which hands focus back to the popup via
+  // `RequestFocus()`.
+  focus_manager->SetStoredFocusView(
+      delegate().GetLocationBarFocusRestoreView());
+  delegate().SetRestoreFocusOnWindowReactivation(true);
+#else
+  // TODO(b/567944511): Restore omnibox focus when the window is reactivated
+  // without clicking into it (e.g. Alt+Tab) or by clicking top chrome, to
+  // match the Views omnibox. On Aura, the stored focus view is restored before
+  // the reactivating click is dispatched, so restoring the location bar here
+  // would flash the popup open when the user clicks the page.
+  if (auto* browser_view = BrowserView::GetBrowserViewForNativeWindow(
+          GetBrowserWidget()->GetNativeWindow())) {
+    focus_manager->SetStoredFocusView(browser_view->GetActiveContentsWebView());
+  }
+#endif  // BUILDFLAG(IS_MAC)
+}
+
 void OmniboxPopupFullPresenter::AppMenuClosed() {
-  if (IsShown() && controller()->popup_state_manager()->popup_state() ==
-                       OmniboxPopupState::kFull) {
-    if (auto* widget = delegate().GetLocationBarWidget()) {
-      if (auto* focus_manager = widget->GetFocusManager()) {
-        if (auto* restore_view = delegate().GetLocationBarFocusRestoreView()) {
-          focus_manager->SetFocusedView(restore_view);
-        }
+  // The menu command runs before this is called, and may have activated
+  // another window (e.g. "New window"). If so, blur as if the user left the
+  // window. Don't refocus here, since `FocusManager::SetFocusedView()`
+  // activates an inactive widget on non-Mac platforms and would steal
+  // activation back.
+  if (!IsBrowserOrPopupActive()) {
+    BlurForWindowDeactivation();
+    return;
+  }
+  // Only refocus if the omnibox still has focus. The command may have moved
+  // focus to another view in the window (e.g. "Find" focuses the find bar),
+  // which blurred the omnibox, while a draft kept the popup open.
+  if (IsShown() &&
+      controller()->popup_state_manager()->popup_state() ==
+          OmniboxPopupState::kFull &&
+      controller()->edit_model()->has_focus()) {
+    if (auto* focus_manager = GetBrowserFocusManager()) {
+      if (auto* restore_view = delegate().GetLocationBarFocusRestoreView()) {
+        focus_manager->SetFocusedView(restore_view);
       }
     }
     RequestFocus();
     if (auto* popup_view = location_bar()->GetOmniboxPopupView()) {
-      popup_view->OnFocus(/*query_zps=*/false);
+      popup_view->OnFocus(/*query_zps=*/false, /*select_all=*/false,
+                          /*show_full_url=*/false);
     }
   }
+}
+
+void OmniboxPopupFullPresenter::OnFileDialogOpened() {
+  file_dialog_open_ = true;
+  OnModalDialogShown();
+}
+
+void OmniboxPopupFullPresenter::OnFileDialogClosed(bool file_selected) {
+  file_dialog_open_ = false;
+  if (!file_selected) {
+    OnModalDialogClosed();
+    return;
+  }
+  // Selecting files opens AI Mode with them once they're read. Don't refocus
+  // the omnibox in the meantime, as that would reopen this popup first.
+  ClearFocusStateBeforeModalDialog();
+}
+
+void OmniboxPopupFullPresenter::OnModalDialogShown() {
+  // Leave any state recorded for this dialog alone: it may be reported more
+  // than once (see `OnWidgetWindowModalVisibilityChanged()`), after it closed
+  // the popup.
+  if (focus_state_before_modal_dialog_ || !IsShown() ||
+      controller()->popup_state_manager()->popup_state() !=
+          OmniboxPopupState::kFull) {
+    return;
+  }
+  // A draft keeps the popup open while the omnibox isn't focused.
+  if (!controller()->edit_model()->has_focus()) {
+    focus_state_before_modal_dialog_.emplace();
+    BlurIfBrowserOrPopupInactiveSoon();
+    return;
+  }
+  auto* content = GetWebUIContent();
+  auto* popup_handler = content ? content->popup_handler() : nullptr;
+  if (!popup_handler) {
+    return;
+  }
+  // The dialog blurs the omnibox when it takes activation, like any other
+  // window (see `BlurForWindowDeactivation()`). The WebUI input may already
+  // have lost DOM focus, e.g. to the "+" button, but keeps reporting the last
+  // selection the input had. Clicking or arrowing in an elided URL unelides it
+  // without starting an edit, and the selection is then in the full URL.
+  const bool show_full_url =
+      !controller()->edit_model()->user_input_in_progress() &&
+      popup_handler->show_full_url();
+  focus_state_before_modal_dialog_ = FocusStateBeforeModalDialog{
+      .had_focus = true,
+      .text = GetOmniboxText(show_full_url),
+      .selection = popup_handler->latest_selection(),
+      .show_full_url = show_full_url};
+  BlurIfBrowserOrPopupInactiveSoon();
+}
+
+void OmniboxPopupFullPresenter::BlurIfBrowserOrPopupInactiveSoon() {
+  // The dialog normally takes activation from the browser window or the popup,
+  // which then calls `BlurIfBrowserOrPopupInactive()`. If another window, such
+  // as a bubble, already held activation, neither is deactivated, so check once
+  // activation settles. If the dialog never takes activation, e.g. a file
+  // dialog blocked by policy, the browser window stays active and this does
+  // nothing.
+  base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+      FROM_HERE,
+      base::BindOnce(&OmniboxPopupFullPresenter::BlurIfBrowserOrPopupInactive,
+                     weak_factory_.GetWeakPtr()));
+}
+
+void OmniboxPopupFullPresenter::OnModalDialogClosed() {
+  // Wait for `OnFileDialogClosed()` to tell whether a file was selected.
+  if (!focus_state_before_modal_dialog_ || file_dialog_open_) {
+    return;
+  }
+  // The dialog didn't blur the omnibox, or it has already been refocused.
+  if (controller()->edit_model()->has_focus()) {
+    ClearFocusStateBeforeModalDialog();
+    return;
+  }
+  // Some platforms reactivate the browser window before notifying that the
+  // dialog closed. Otherwise, the omnibox is refocused once the window is
+  // reactivated.
+  base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+      FROM_HERE,
+      base::BindOnce(&OmniboxPopupFullPresenter::RestoreFocusAfterModalDialog,
+                     weak_factory_.GetWeakPtr()));
+}
+
+std::optional<OmniboxPopupFullPresenter::FocusStateToRestore>
+OmniboxPopupFullPresenter::TakeFocusStateToRestoreAfterModalDialog() {
+  // Only a refocus restores the selection. Refocusing an already focused
+  // omnibox, e.g. while the dialog is opening, leaves it to be restored later.
+  if (!focus_state_before_modal_dialog_ ||
+      controller()->edit_model()->has_focus()) {
+    return std::nullopt;
+  }
+  const FocusStateBeforeModalDialog state = *focus_state_before_modal_dialog_;
+  ClearFocusStateBeforeModalDialog();
+  if (!state.had_focus || state.text != GetOmniboxText(state.show_full_url) ||
+      state.selection.GetMax() > state.text.length()) {
+    return std::nullopt;
+  }
+  return FocusStateToRestore{.text = state.text,
+                             .selection = state.selection,
+                             .show_full_url = state.show_full_url};
+}
+
+void OmniboxPopupFullPresenter::OnTabChanged() {
+  if (!focus_state_before_modal_dialog_) {
+    return;
+  }
+  ClearFocusStateBeforeModalDialog();
+  // Unless the new tab's omnibox is focused, don't restore the location bar
+  // when the window is reactivated either. See `BlurForWindowDeactivation()`.
+  if (controller()->edit_model()->has_focus()) {
+    return;
+  }
+  if (auto* focus_manager = GetBrowserFocusManager()) {
+    if (focus_manager->GetStoredFocusView() ==
+        delegate().GetLocationBarFocusRestoreView()) {
+      focus_manager->SetStoredFocusView(nullptr);
+    }
+  }
+}
+
+void OmniboxPopupFullPresenter::RestoreFocusAfterModalDialog() {
+  // While the omnibox is focused, the dialog hasn't blurred it yet, or it has
+  // already been refocused. While a file dialog from the "+" menu is open, wait
+  // for `OnFileDialogClosed()`, which runs this again if no file was selected.
+  if (!focus_state_before_modal_dialog_ ||
+      controller()->edit_model()->has_focus() || file_dialog_open_) {
+    return;
+  }
+  // Something else opened a popup since, such as AI Mode.
+  if (controller()->popup_state_manager()->popup_state() !=
+      OmniboxPopupState::kNone) {
+    ClearFocusStateBeforeModalDialog();
+    return;
+  }
+  if (!location_bar() || !IsBrowserOrPopupActive() ||
+      views::MenuController::GetActiveInstance()) {
+    return;
+  }
+  // The omnibox wasn't focused, but a draft kept the popup open. Reopen it,
+  // still unfocused.
+  if (!focus_state_before_modal_dialog_->had_focus) {
+    ClearFocusStateBeforeModalDialog();
+    if (auto* popup_view = location_bar()->GetOmniboxPopupView()) {
+      popup_view->ReshowPopup();
+    }
+    return;
+  }
+  // Focus the location bar, as `FocusManager` does when it restores focus on
+  // window reactivation. This hands focus to the popup, which takes the
+  // selection to restore.
+  if (auto* focus_manager = GetBrowserFocusManager()) {
+    if (auto* restore_view = delegate().GetLocationBarFocusRestoreView()) {
+      focus_manager->SetFocusedView(restore_view);
+    }
+  }
+  // Refocus the popup directly if focusing the location bar didn't, e.g. if it
+  // already had Views focus.
+  if (focus_state_before_modal_dialog_) {
+    if (auto* popup_view = location_bar()->GetOmniboxPopupView()) {
+      popup_view->OnFocus(/*query_zps=*/false, /*select_all=*/false,
+                          /*show_full_url=*/false);
+    }
+  }
+  ClearFocusStateBeforeModalDialog();
+}
+
+void OmniboxPopupFullPresenter::ClearFocusStateBeforeModalDialog() {
+  focus_state_before_modal_dialog_.reset();
+  // Stop observing the browser window if `Hide()` kept observing it.
+  if (!IsShown()) {
+    browser_widget_observation_.Reset();
+  }
+}
+
+std::u16string OmniboxPopupFullPresenter::GetOmniboxText(bool show_full_url) {
+  OmniboxEditModel* edit_model = controller()->edit_model();
+  if (edit_model->user_input_in_progress()) {
+    return edit_model->user_text();
+  }
+  if (show_full_url) {
+    if (std::u16string full_url = controller()->client()->GetFormattedFullURL();
+        !full_url.empty()) {
+      return full_url;
+    }
+  }
+  return edit_model->GetPermanentDisplayText();
 }
 
 void OmniboxPopupFullPresenter::FocusPopupContent() {
@@ -446,67 +989,140 @@ void OmniboxPopupFullPresenter::FocusPopupContent() {
   }
 }
 
+void OmniboxPopupFullPresenter::OnDidChangeFocus(views::View* focused_before,
+                                                 views::View* focused_now) {
+  // Focus being cleared is the browser window deactivating or the omnibox
+  // being blurred, not another view taking focus.
+  if (!focused_now || !controller()->edit_model()->has_focus()) {
+    return;
+  }
+
+  // Focusing the location bar is how the omnibox itself gets focus, see
+  // `LocationBarView::OnFocus()`. Focus moving within it is left alone too.
+  views::View* restore_view = delegate().GetLocationBarFocusRestoreView();
+  if (restore_view && restore_view->Contains(focused_now)) {
+    return;
+  }
+
+  // Focus moving to the page is left alone. Clicks on the page are handled by
+  // `OnEvent()`, and `BrowserView` can focus the page while switching tabs,
+  // before `OmniboxPopupViewFullWebUI::OnTabChanged()` applies the new tab's
+  // omnibox state, which must not blur the omnibox.
+  if (views::IsViewClass<ContentsWebView>(focused_now)) {
+    return;
+  }
+
+  // The popup holds activation, so the browser widget is inactive and
+  // focusing `focused_now` usually activated it first (see
+  // `FocusManager::SetFocusedViewWithReason()`). This runs while that
+  // activation is handled, and `BrowserView::OnWidgetActivationChanged()`
+  // runs right after. If a tab was switched while the widget was inactive,
+  // `BrowserView::OnActiveTabChanged()` deferred restoring the new tab's
+  // focus to this activation, so `BrowserView` is about to focus the view that
+  // tab last stored (e.g. the omnibox), taking focus back from `focused_now`.
+  // Store `focused_now` as the tab's focus so that the restore is a no-op.
+  if (content::WebContents* web_contents = location_bar()->GetWebContents()) {
+    if (auto* focus_helper =
+            ChromeWebContentsViewFocusHelper::FromWebContents(web_contents)) {
+      focus_helper->SetStoredFocusView(focused_now);
+    }
+  }
+
+  // Tabbing out of the popup also gets here, as
+  // `OmniboxPopupWebUIBaseContent::AdvanceFocus()` moves focus to the next
+  // view before running its own blur steps, which are safe to repeat.
+  DeactivatePopupAndKillFocus(FocusAfterBlur::kCurrent);
+
+  // Key presses go to the active window. On macOS the popup is the key
+  // window while the omnibox is focused, and stays so if a draft keeps it
+  // open. Focusing a view in an inactive window usually activates the window
+  // first, as on Aura, and then this does nothing. When macOS focuses the
+  // view without activating (see
+  // `NativeWidgetMac::ShouldActivateOnFocusRequest()`), activate the browser
+  // window for the view that took focus. Its `FocusManager` already has that
+  // view as its focused view, so activating restores nothing else. Skip this
+  // if the user has left the browser window, as activating it would pull it
+  // in front of the window they switched to.
+  if (views::Widget* browser_widget = GetBrowserWidget();
+      browser_widget && !browser_widget->IsActive() &&
+      IsBrowserOrPopupActive()) {
+    browser_widget->Activate();
+  }
+}
+
 void OmniboxPopupFullPresenter::DeactivatePopupAndKillFocus(
-    bool focus_web_contents) {
+    FocusAfterBlur focus_after_blur) {
   pending_focus_task_.Cancel();
+  refocus_on_activation_ = false;
   ResetPermissionPromptShowingState();
-  is_deactivating_ = true;
-  OmniboxEditModel* edit_model = controller()->edit_model();
+  OmniboxPopupViewFullWebUI::BlurOmnibox(*controller(), [&] {
+    if (auto* focus_manager = GetBrowserFocusManager()) {
+          views::View* restore_view =
+              delegate().GetLocationBarFocusRestoreView();
+          views::View* stored_view = focus_manager->GetStoredFocusView();
+          if (stored_view == restore_view) {
+            focus_manager->SetStoredFocusView(nullptr);
+          }
+          switch (focus_after_blur) {
+            case FocusAfterBlur::kWebContents:
+              focus_manager->ClearFocus();
+              break;
+            case FocusAfterBlur::kNone:
+              // Another window, such as a bubble, took activation. Only clear
+              // Views focus here as `ClearFocus()` also clears native focus,
+              // which on Windows calls `::SetFocus()` on the browser HWND and
+              // reactivates it, stealing activation back from that window.
+              focus_manager->SetFocusedView(nullptr);
+              break;
+            case FocusAfterBlur::kCurrent:
+              // Another view took focus. Leave it there.
+              break;
+          }
+        }
 
-  // If the view is showing text that's not user-text, revert the text to the
-  // permanent display text. This usually occurs if Steady State Elisions is on
-  // and the user has unelided, but not edited the URL.
-  // Also revert if the text has been edited but currently exactly matches
-  // the permanent text. An example of this scenario is someone typing on the
-  // new tab page and then deleting everything using backspace/delete.
-  if ((!edit_model->user_input_in_progress() &&
-       edit_model->user_text() != edit_model->GetPermanentDisplayText()) ||
-      (edit_model->user_input_in_progress() &&
-       (edit_model->user_text() == edit_model->GetPermanentDisplayText() ||
-        edit_model->user_text() ==
-            controller()->client()->GetFormattedFullURL()))) {
-    edit_model->Revert();
+        if (focus_after_blur == FocusAfterBlur::kWebContents) {
+          controller()->client()->FocusWebContents();
+        }
+      });
+}
+
+void OmniboxPopupFullPresenter::OnWidgetPresentedChanged(bool presented) {
+  if (auto* content = GetWebUIContent()) {
+    content->OnPopupWidgetPresentedChanged(presented);
   }
+}
 
-  if (auto* popup_view = location_bar()->GetOmniboxPopupView()) {
-    popup_view->OnBlur();
+std::unique_ptr<OmniboxPopupWebUIBaseContent>
+OmniboxPopupFullPresenter::CreateWebUIContent(
+    std::unique_ptr<WebUIContentsWrapperT<OmniboxPopupUI>> contents) {
+  return std::make_unique<OmniboxFullPopupWebUIContent>(
+      /*content_delegate=*/this, /*sizer=*/this, /*config=*/config(),
+      location_bar(), controller(), std::move(contents));
+}
+
+void OmniboxPopupFullPresenter::OnWebUIContentsAdopted() {
+  // The page may have painted in its previous window, which told only that
+  // window's delegate.
+  if (CompletedFirstVisuallyNonEmptyPaint()) {
+    delegate().OnPopupFirstVisuallyNonEmptyPaint();
   }
+  // Posted so that the focus hand-off to WebUI that this triggers doesn't run
+  // inside the `Show()` or focus change that adopted the page.
+  base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
+      FROM_HERE,
+      base::BindOnce(&OmniboxPopupFullPresenter::NotifyPopupHandlerReadyIfBound,
+                     weak_factory_.GetWeakPtr()));
+}
 
-  views::Widget* parent_widget = delegate().GetLocationBarWidget();
-  if (parent_widget && parent_widget->GetFocusManager()) {
-    views::View* restore_view = delegate().GetLocationBarFocusRestoreView();
-    views::View* stored_view =
-        parent_widget->GetFocusManager()->GetStoredFocusView();
-    if (stored_view == restore_view) {
-      parent_widget->GetFocusManager()->SetStoredFocusView(nullptr);
-    }
-    parent_widget->GetFocusManager()->ClearFocus();
-  }
-
-  if (focus_web_contents) {
-    controller()->client()->FocusWebContents();
-  }
-  edit_model->OnKillFocus();
-
-  // Close the popup unless the user has an uncommitted draft.
-  // NOTE: Query values directly from edit model, as they are not guaranteed to
-  // remain consistent after calling `Revert()` or `OnKillFocus()`.
-  if (!edit_model->user_input_in_progress() ||
-      edit_model->user_text().empty()) {
-    if (controller()->popup_state_manager()->popup_state() ==
-        OmniboxPopupState::kFull) {
-      controller()->popup_state_manager()->SetPopupState(
-          OmniboxPopupState::kNone);
-    }
-  }
-
-  is_deactivating_ = false;
+void OmniboxPopupFullPresenter::OnWebUIContentsReleased() {
+  delegate().OnPopupWebUIContentsReleased();
 }
 
 void OmniboxPopupFullPresenter::WidgetDestroyed() {
   event_monitor_.reset();
   forward_events_timer_.Stop();
   popup_widget_observation_.Reset();
+  KeepBrowserPaintingAsActiveAcrossHandoff();
   // Update the popup state manager if widget was destroyed externally, e.g., by
   // the OS. This ensures the popup state manager stays in sync. Skip this when
   // `Hide()` is discarding the widget on purpose, since clearing the state here
@@ -528,54 +1144,94 @@ void OmniboxPopupFullPresenter::StopForwardingEvents() {
   }
 }
 
+void OmniboxPopupFullPresenter::NotifyPopupHandlerReadyIfBound() {
+  OmniboxPopupView* popup_view = controller()->edit_model()->popup_view();
+  if (popup_view && popup_view->IsPopupHandlerReady()) {
+    popup_view->OnPopupHandlerReady();
+  }
+}
+
 void OmniboxPopupFullPresenter::OnEvent(const ui::Event& event) {
-  // TODO(b/543851644): Figure out how to handle touch events.
-  if (!event.IsMouseEvent()) {
-    return;
-  }
-  const ui::MouseEvent* mouse_event = event.AsMouseEvent();
-  if (mouse_event->type() != ui::EventType::kMousePressed) {
+  if (event.type() != ui::EventType::kMousePressed &&
+      event.type() != ui::EventType::kTouchPressed) {
     return;
   }
 
-  // Right-clicks (context menu triggers) should never clear focus.
-  if (mouse_event->IsRightMouseButton()) {
+  const bool is_right_click =
+      event.IsMouseEvent() && event.AsMouseEvent()->IsRightMouseButton();
+
+#if !defined(USE_AURA)
+  // Right-clicks (context menu triggers) don't clear focus. On Aura they blur
+  // the omnibox like other clicks on the page; see the end of this method.
+  if (is_right_click) {
     return;
   }
+#endif  // !defined(USE_AURA)
 
-  views::Widget* parent_widget = delegate().GetLocationBarWidget();
-  if (!parent_widget) {
+  views::Widget* browser_widget = GetBrowserWidget();
+  if (!browser_widget) {
     return;
   }
 
   // If neither this window nor its popup is currently active, ignore the click.
-  if (!parent_widget->IsActive() && !(GetWidget() && GetWidget()->IsActive())) {
+  if (!IsBrowserOrPopupActive()) {
     return;
   }
 
   BrowserView* browser_view = BrowserView::GetBrowserViewForNativeWindow(
-      parent_widget->GetNativeWindow());
+      browser_widget->GetNativeWindow());
   if (!browser_view) {
     return;
   }
 
-  gfx::Point cursor_point = display::Screen::Get()->GetCursorScreenPoint();
+  gfx::Point event_screen_point;
+  if (event.IsTouchEvent()) {
+    // The event monitor already reports `root_location()` in screen
+    // coordinates.
+    event_screen_point = event.AsTouchEvent()->root_location();
+  } else {
+    event_screen_point = display::Screen::Get()->GetCursorScreenPoint();
+  }
+
   bool contains_top_container = false;
 
   if (browser_view->top_container()) {
     gfx::Rect top_container_bounds =
         browser_view->top_container()->GetBoundsInScreen();
-    gfx::Rect window_bounds = parent_widget->GetWindowBoundsInScreen();
-    contains_top_container = cursor_point.x() >= window_bounds.x() &&
-                             cursor_point.x() < window_bounds.right() &&
-                             cursor_point.y() >= window_bounds.y() &&
-                             cursor_point.y() < top_container_bounds.bottom();
+    gfx::Rect window_bounds = browser_widget->GetWindowBoundsInScreen();
+    contains_top_container =
+        event_screen_point.x() >= window_bounds.x() &&
+        event_screen_point.x() < window_bounds.right() &&
+        event_screen_point.y() >= window_bounds.y() &&
+        event_screen_point.y() < top_container_bounds.bottom();
+  }
+
+  // Treat vertical tabs and the organizer tray, outside the top container,
+  // like horizontal tabs. Otherwise clicking a tab blurs the omnibox before
+  // the tab switch saves its state (see crbug.com/580059964), and clicking
+  // the tray focuses the web contents and closes the tray.
+  for (views::View* view : occluding_view_observations_.sources()) {
+    if (view->IsDrawn() &&
+        view->GetBoundsInScreen().Contains(event_screen_point)) {
+      contains_top_container = true;
+      break;
+    }
   }
 
   bool contains_popup = false;
   if (IsShown()) {
-    contains_popup =
-        GetWidget()->GetWindowBoundsInScreen().Contains(cursor_point);
+    // Exclude the transparent shadow margin and the part clipped off under the
+    // vertical tab strip: on Aura the window targeter lets clicks there pass
+    // through to the browser window, so they are outside.
+    const gfx::Rect window_bounds = GetWidget()->GetWindowBoundsInScreen();
+    gfx::Rect popup_bounds = window_bounds;
+    popup_bounds.Inset(GetShadowMargin());
+    if (const ui::Layer* layer = GetWidget()->GetLayer();
+        layer && !layer->clip_rect().IsEmpty()) {
+      popup_bounds.Intersect(layer->clip_rect() +
+                             window_bounds.OffsetFromOrigin());
+    }
+    contains_popup = popup_bounds.Contains(event_screen_point);
   }
 
   if (contains_popup) {
@@ -583,6 +1239,11 @@ void OmniboxPopupFullPresenter::OnEvent(const ui::Event& event) {
   }
 
   if (contains_top_container) {
+    // Right-clicks on top chrome open its context menus, e.g. the omnibox's
+    // own, which hands focus to the popup, so they leave the omnibox alone.
+    if (is_right_click) {
+      return;
+    }
     // Clear autocomplete matches and reset `activeQueryId_` on WebUI only if
     // click is outside of the popup and in the top container while popup is
     // shown.
@@ -596,10 +1257,171 @@ void OmniboxPopupFullPresenter::OnEvent(const ui::Event& event) {
     return;
   }
 
-  DeactivatePopupAndKillFocus(/*focus_web_contents=*/true);
+  // A click on the page blurs the omnibox. On Aura this includes right-clicks,
+  // as with the Views omnibox, since the window system moves focus to the page
+  // on any mouse press. Blurring also cancels any pending focus request, which
+  // a right-click would otherwise make when it activates the browser window
+  // (restoring the location bar as its stored focus view). That request would
+  // reactivate the popup before the asynchronously shown page context menu
+  // opens, and the menu would then be cancelled as soon as a click on it
+  // reactivated the browser window (b/580819291).
+  DeactivatePopupAndKillFocus(FocusAfterBlur::kWebContents);
 }
 
 OmniboxFullPopupWebUIContent* OmniboxPopupFullPresenter::GetWebUIContent() {
   return static_cast<OmniboxFullPopupWebUIContent*>(
       OmniboxPopupPresenterBase::GetWebUIContent());
+}
+
+bool OmniboxPopupFullPresenter::IsBrowserOrPopupActive() {
+  views::Widget* browser_widget = GetBrowserWidget();
+  if (!browser_widget) {
+    return false;
+  }
+  return browser_widget->IsActive() ||
+         (GetWidget() && GetWidget()->IsActive());
+}
+
+bool OmniboxPopupFullPresenter::CanTakeFocus() {
+  if (IsBrowserOrPopupActive()) {
+    return true;
+  }
+#if BUILDFLAG(IS_MAC)
+  // A focus request can arrive while a bubble anchored to the browser window
+  // still holds activation, e.g. one that doesn't move Views focus and so
+  // doesn't activate the browser window first. The user hasn't left the
+  // window, and paint-as-active stays true while such a child widget is active.
+  views::Widget* browser_widget = GetBrowserWidget();
+  return browser_widget && browser_widget->ShouldPaintAsActive();
+#else
+  return false;
+#endif  // BUILDFLAG(IS_MAC)
+}
+
+views::Widget* OmniboxPopupFullPresenter::GetBrowserWidget() {
+  views::Widget* widget = delegate().GetLocationBarWidget();
+  return widget ? widget->GetTopLevelWidget() : nullptr;
+}
+
+views::FocusManager* OmniboxPopupFullPresenter::GetBrowserFocusManager() {
+  views::Widget* browser_widget = GetBrowserWidget();
+  return browser_widget ? browser_widget->GetFocusManager() : nullptr;
+}
+
+void OmniboxPopupFullPresenter::OnViewVisibilityChanged(
+    views::View* observed_view,
+    views::View* starting_view,
+    bool visible) {
+  UpdatePopupOcclusion();
+}
+
+void OmniboxPopupFullPresenter::OnViewBoundsChanged(
+    views::View* observed_view) {
+#if BUILDFLAG(IS_CHROMEOS)
+  // Keep the popup over the location bar as the immersive fullscreen reveal
+  // slides top chrome in or out.
+  if (top_container_observation_.IsObservingSource(observed_view) &&
+      IsShown()) {
+    SynchronizePopupBounds();
+  }
+#endif
+  UpdatePopupOcclusion();
+}
+
+void OmniboxPopupFullPresenter::OnViewHierarchyChanged(
+    views::View* observed_view,
+    const views::ViewHierarchyChangedDetails& details) {
+  // Immersive fullscreen moves the top container into an overlay and back,
+  // which changes whether the occluding views draw above the location bar.
+  if (details.is_add && details.child == observed_view) {
+    UpdatePopupOcclusion();
+  }
+}
+
+void OmniboxPopupFullPresenter::OnViewIsDeleting(views::View* observed_view) {
+#if BUILDFLAG(IS_CHROMEOS)
+  if (top_container_observation_.IsObservingSource(observed_view)) {
+    top_container_observation_.Reset();
+  }
+#endif
+  if (occluding_view_observations_.IsObservingSource(observed_view)) {
+    occluding_view_observations_.RemoveObservation(observed_view);
+  }
+  UpdatePopupOcclusion();
+}
+
+void OmniboxPopupFullPresenter::UpdatePopupOcclusion() {
+  // `GetLayer()` is null if the native window is already closing.
+  ui::Layer* layer = GetWidget() ? GetWidget()->GetLayer() : nullptr;
+  if (!layer) {
+    return;
+  }
+  gfx::Rect clip;
+  // Only clip while the popup is collapsed. Once suggestions open, the strip
+  // collapses and the popup should paint in full. The occluding views are
+  // children of the browser view, so they only draw above the location bar
+  // while the top container is there too. Immersive fullscreen moves it into
+  // an overlay above them (an overlay view on ChromeOS, an overlay widget on
+  // macOS).
+  if (IsPopupCollapsed() && IsTopContainerInBrowserView()) {
+    const gfx::Rect popup_bounds = GetWidget()->GetWindowBoundsInScreen();
+    gfx::Rect covered;
+    for (views::View* view : occluding_view_observations_.sources()) {
+      if (view->IsDrawn()) {
+        gfx::Rect intersection = view->GetBoundsInScreen();
+        intersection.Intersect(popup_bounds);
+        covered.Union(intersection);
+      }
+    }
+    if (!covered.IsEmpty()) {
+      // `clip` is the uncovered portion of the popup.
+      clip = gfx::Rect(popup_bounds.size());
+      clip.Inset(covered.x() == popup_bounds.x()
+                     ? gfx::Insets::TLBR(0, covered.width(), 0, 0)
+                     : gfx::Insets::TLBR(0, 0, 0, covered.width()));
+      if (clip.IsEmpty()) {
+        // Nothing is left uncovered (`covered.width() ==
+        // popup_bounds.width()`). `SetClipRect()` treats an empty rect as "no
+        // clip", so clip to a 1px rect outside the window instead.
+        clip = gfx::Rect(-1, -1, 1, 1);
+      }
+    }
+  }
+  // Ensure events in the covered part reach the view beneath (via
+  // `aura::WindowTargeter::GetHitTestRects()` on Aura and
+  // `ResultsViewTargeterDelegate::TargetForRect()` on macOS).
+  layer->SetClipRect(clip);
+}
+
+bool OmniboxPopupFullPresenter::IsTopContainerInBrowserView() {
+  views::Widget* browser_widget = GetBrowserWidget();
+  if (!browser_widget) {
+    return false;
+  }
+  BrowserView* browser_view = BrowserView::GetBrowserViewForNativeWindow(
+      browser_widget->GetNativeWindow());
+  return browser_view && browser_view->top_container() &&
+         browser_view->top_container()->parent() == browser_view;
+}
+
+void OmniboxPopupFullPresenter::KeepBrowserPaintingAsActiveAcrossHandoff() {
+  views::Widget* browser_widget = GetBrowserWidget();
+  if (!browser_widget || !browser_widget->ShouldPaintAsActive()) {
+    return;
+  }
+  if (!browser_paint_as_active_lock_) {
+    browser_paint_as_active_lock_ = browser_widget->LockPaintAsActive();
+  }
+  base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+      FROM_HERE,
+      base::BindOnce(&OmniboxPopupFullPresenter::
+                         ReleaseBrowserPaintAsActiveLockIfPopupInactive,
+                     weak_factory_.GetWeakPtr()));
+}
+
+void OmniboxPopupFullPresenter::
+    ReleaseBrowserPaintAsActiveLockIfPopupInactive() {
+  if (!GetWidget() || !GetWidget()->IsActive()) {
+    browser_paint_as_active_lock_.reset();
+  }
 }

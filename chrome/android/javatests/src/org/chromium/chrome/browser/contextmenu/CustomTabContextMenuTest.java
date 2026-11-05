@@ -23,9 +23,7 @@ import org.chromium.base.ContextUtils;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CommandLineFlags;
-import org.chromium.base.test.util.DisableIf;
 import org.chromium.base.test.util.Features.DisableFeatures;
-import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.base.test.util.Restriction;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.customtabs.CustomTabActivityTestRule;
@@ -56,7 +54,9 @@ import java.util.concurrent.TimeoutException;
 @CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
 @Batch(Batch.PER_CLASS)
 @Restriction(DeviceRestriction.RESTRICTION_TYPE_NON_AUTO)
-@DisableIf.Device(DeviceFormFactor.DESKTOP) // https://crbug.com/481445755
+// "Ask Gemini" is gated on the side panel, which is enabled by default on Desktop Android. Pin it
+// off so the expected menu contents are the same on every form factor.
+@DisableFeatures(ChromeFeatureList.CLANK_GLIC_CONTEXT_MENU)
 public class CustomTabContextMenuTest {
 
     private static final String TEST_PATH =
@@ -104,8 +104,7 @@ public class CustomTabContextMenuTest {
 
     @Test
     @SmallTest
-    @EnableFeatures(ChromeFeatureList.CCT_CONTEXTUAL_MENU_ITEMS)
-    public void testCustomItemPresent_WhenFeatureEnabled() throws TimeoutException {
+    public void testCustomItemPresent() throws TimeoutException {
         Tab tab = mCustomTabActivityTestRule.getActivity().getActivityTab();
 
         ContextMenuCoordinator menuCoordinator = ContextMenuUtils.openContextMenu(tab, "testLink");
@@ -119,28 +118,6 @@ public class CustomTabContextMenuTest {
             R.id.contextmenu_read_later,
             R.id.contextmenu_share_link,
             ChromeContextMenuPopulator.getCustomMenuItemIdStartForTesting()
-        };
-        expectedItems = maybeAddInspectElementItem(expectedItems);
-
-        assertMenuItemsAreEqual(menuCoordinator, expectedItems);
-    }
-
-    @Test
-    @SmallTest
-    @DisableFeatures(ChromeFeatureList.CCT_CONTEXTUAL_MENU_ITEMS)
-    public void testCustomItemNotPresent_WhenFeatureDisabled() throws TimeoutException {
-        Tab tab = mCustomTabActivityTestRule.getActivity().getActivityTab();
-
-        ContextMenuCoordinator menuCoordinator = ContextMenuUtils.openContextMenu(tab, "testLink");
-
-        Integer[] expectedItems = {
-            R.id.contextmenu_open_in_browser_id,
-            R.id.contextmenu_open_in_ephemeral_tab,
-            R.id.contextmenu_copy_link_address,
-            R.id.contextmenu_copy_link_text,
-            R.id.contextmenu_save_link_as,
-            R.id.contextmenu_read_later,
-            R.id.contextmenu_share_link,
         };
         expectedItems = maybeAddInspectElementItem(expectedItems);
 

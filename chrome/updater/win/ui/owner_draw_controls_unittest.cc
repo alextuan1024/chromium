@@ -6,13 +6,19 @@
 
 #include <windows.h>
 
+#include <stdint.h>
+
+#include <bitset>
 #include <iterator>
 #include <memory>
 #include <optional>
 #include <string>
 #include <vector>
 
+#include "base/location.h"
+#include "base/test/bind.h"
 #include "base/test/test_reg_util_win.h"
+#include "base/threading/thread.h"
 #include "base/win/registry.h"
 #include "base/win/scoped_gdi_object.h"
 #include "base/win/scoped_hdc.h"
@@ -219,11 +225,11 @@ COLORREF GlyphColor(const CaptionButton& button) {
 bool IsDarkMode(const CaptionButton& button) {
   return test::CaptionButtonTestApi(button).is_dark_mode();
 }
-bool IsMouseHovering(const CaptionButton& button) {
-  return test::CaptionButtonTestApi(button).is_mouse_hovering();
+bool IsMouseHovering(const TrackedButton& button) {
+  return test::TrackedButtonTestApi(button).is_mouse_hovering();
 }
-bool IsTrackingMouseEvents(const CaptionButton& button) {
-  return test::CaptionButtonTestApi(button).is_tracking_mouse_events();
+bool IsTrackingMouseEvents(const TrackedButton& button) {
+  return test::TrackedButtonTestApi(button).is_tracking_mouse_events();
 }
 
 // The caption button behavior under test never reaches the event sink, so the
@@ -317,6 +323,15 @@ class CaptionButtonThemeTest : public CaptionButtonTest {
   registry_util::RegistryOverrideManager registry_override_;
 };
 
+// Position of `paint_state` in the 16 entry space spanned by the four flags
+// `ResolveGlyphColor()` reads. Defined once so that the enumeration below and
+// its exhaustiveness check cannot disagree about the encoding.
+int StateIndex(const test::CaptionButtonTestApi::PaintState& paint_state) {
+  return (paint_state.is_enabled ? 1 : 0) | (paint_state.is_hovered ? 2 : 0) |
+         (paint_state.is_dark_mode ? 4 : 0) |
+         (paint_state.is_high_contrast ? 8 : 0);
+}
+
 // Every state the glyph color is resolved from, enumerated. This is possible
 // because `ResolveGlyphColor()` is static and total, so no window, no message
 // pump and no particular host theme is needed. The fixtured tests below cover
@@ -336,6 +351,12 @@ TEST(CaptionButtonGlyphColorTest, EveryState) {
       {"light hovered",
        {.is_enabled = true, .is_hovered = true},
        kCaptionForegroundColor},
+      {"light disabled",
+       {.is_enabled = false, .is_hovered = false},
+       kCaptionForegroundColorDisabled},
+      {"light disabled hovered",
+       {.is_enabled = false, .is_hovered = true},
+       kCaptionForegroundColorDisabled},
 
       // Dark mode.
       {"dark",
@@ -344,6 +365,12 @@ TEST(CaptionButtonGlyphColorTest, EveryState) {
       {"dark hovered",
        {.is_enabled = true, .is_hovered = true, .is_dark_mode = true},
        kCaptionForegroundColorDark},
+      {"dark disabled",
+       {.is_enabled = false, .is_hovered = false, .is_dark_mode = true},
+       kCaptionForegroundColorDisabledDark},
+      {"dark disabled hovered",
+       {.is_enabled = false, .is_hovered = true, .is_dark_mode = true},
+       kCaptionForegroundColorDisabledDark},
 
       // High contrast replaces the tokens with system colors, and is the only
       // mode in which hover changes the glyph. Dark mode must not affect it.
@@ -353,6 +380,16 @@ TEST(CaptionButtonGlyphColorTest, EveryState) {
       {"high contrast hovered",
        {.is_enabled = true, .is_hovered = true, .is_high_contrast = true},
        ::GetSysColor(COLOR_HIGHLIGHTTEXT)},
+      {"high contrast disabled",
+       {.is_enabled = false, .is_hovered = false, .is_high_contrast = true},
+       ::GetSysColor(COLOR_GRAYTEXT)},
+      // Disabled outranks hover, so this stays COLOR_GRAYTEXT rather than
+      // becoming COLOR_HIGHLIGHTTEXT: `paints_hover()` is false while disabled
+      // and `DrawItem()` therefore does not paint the COLOR_HIGHLIGHT
+      // background that COLOR_HIGHLIGHTTEXT exists to sit on.
+      {"high contrast disabled hovered",
+       {.is_enabled = false, .is_hovered = true, .is_high_contrast = true},
+       ::GetSysColor(COLOR_GRAYTEXT)},
       {"high contrast dark",
        {.is_enabled = true,
         .is_hovered = false,
@@ -365,10 +402,36 @@ TEST(CaptionButtonGlyphColorTest, EveryState) {
         .is_dark_mode = true,
         .is_high_contrast = true},
        ::GetSysColor(COLOR_HIGHLIGHTTEXT)},
+      {"high contrast dark disabled",
+       {.is_enabled = false,
+        .is_hovered = false,
+        .is_dark_mode = true,
+        .is_high_contrast = true},
+       ::GetSysColor(COLOR_GRAYTEXT)},
+      {"high contrast dark disabled hovered",
+       {.is_enabled = false,
+        .is_hovered = true,
+        .is_dark_mode = true,
+        .is_high_contrast = true},
+       ::GetSysColor(COLOR_GRAYTEXT)},
   };
-  ASSERT_EQ(std::size(kCases), 8u)
-      << "One case per combination of hover, dark mode and high contrast, "
-         "with `is_enabled` held true; the disabled case is pinned separately";
+  ASSERT_EQ(std::size(kCases), 16u)
+      << "One case per combination of enabled, hover, dark mode and high "
+         "contrast";
+
+  // The size check alone would accept a duplicated row paired with a missing
+  // one, which would quietly drop a state from a test whose whole premise is
+  // that it covers all of them. Together, 16 rows and 16 distinct bit patterns
+  // prove the enumeration is exhaustive.
+  uint32_t covered = 0;
+  for (const auto& test_case : kCases) {
+    covered |= 1u << StateIndex(test_case.paint_state);
+  }
+  ASSERT_EQ(covered, 0xFFFFu)
+      << "The rows are not the 16 distinct states. Missing indices are the set "
+         "bits of "
+      << std::bitset<16>(~covered & 0xFFFFu)
+      << " (bit 0 is enabled, 1 hover, 2 dark mode, 3 high contrast)";
 
   for (const auto& test_case : kCases) {
     SCOPED_TRACE(test_case.name);
@@ -376,18 +439,6 @@ TEST(CaptionButtonGlyphColorTest, EveryState) {
         test::CaptionButtonTestApi::ResolveGlyphColor(test_case.paint_state),
         test_case.expected);
   }
-}
-
-// A disabled control never paints the hover treatment, so the glyph must not
-// resolve to COLOR_HIGHLIGHTTEXT even if a stale hover flag reaches the paint.
-// High contrast is the only mode where this is observable, because it is the
-// only one whose glyph color depends on hover. `DrawItem()` gates the
-// background on the same predicate, so the two cannot disagree.
-TEST(CaptionButtonGlyphColorTest, DisabledNeverResolvesTheHoverGlyph) {
-  EXPECT_EQ(
-      test::CaptionButtonTestApi::ResolveGlyphColor(
-          {.is_enabled = false, .is_hovered = true, .is_high_contrast = true}),
-      ::GetSysColor(COLOR_BTNTEXT));
 }
 
 // The caption buttons report and paint the accent color in light mode.
@@ -425,6 +476,93 @@ TEST_F(CaptionButtonThemeTest, DarkMode) {
               Optional(Gt(0)));
 }
 
+// `GlyphColor()` reads the live WS_DISABLED bit, which is the path taken
+// outside a draw cycle. The pixel test below covers the other direction, the
+// ODS_DISABLED bit the system puts in `DRAWITEMSTRUCT::itemState`.
+TEST_F(CaptionButtonThemeTest, DisabledReportsTheDisabledGlyphColor) {
+  ASSERT_NO_FATAL_FAILURE(CreateTestDialog(/*dark=*/false));
+
+  // Both caption buttons resolve the glyph the same way, so both are
+  // exercised, even though only the close button is disabled in production.
+  CaptionButton* const buttons[] = {&close_button(), &minimize_button()};
+  for (CaptionButton* button : buttons) {
+    ::EnableWindow(button->hwnd(), FALSE);
+    EXPECT_EQ(GlyphColor(*button), kCaptionForegroundColorDisabled);
+    ::EnableWindow(button->hwnd(), TRUE);
+    EXPECT_EQ(GlyphColor(*button), kCaptionForegroundColor);
+  }
+}
+
+// A disabled button paints the disabled token and never the accent token, so
+// it is visually distinguishable from an enabled one.
+TEST_F(CaptionButtonThemeTest, DisabledGlyphPixels) {
+  ASSERT_NO_FATAL_FAILURE(CreateTestDialog(/*dark=*/false));
+
+  // ODS_DISABLED is passed directly, exactly as the sibling tests do with
+  // ODS_FOCUS.
+  EXPECT_THAT(CountRenderedPixels(close_button(), ODS_DISABLED,
+                                  kCaptionForegroundColorDisabled),
+              Optional(Gt(0)));
+  EXPECT_THAT(CountRenderedPixels(close_button(), ODS_DISABLED,
+                                  kCaptionForegroundColor),
+              Optional(0));
+
+  EXPECT_THAT(CountRenderedPixels(minimize_button(), ODS_DISABLED,
+                                  kCaptionForegroundColorDisabled),
+              Optional(Gt(0)));
+  EXPECT_THAT(CountRenderedPixels(minimize_button(), ODS_DISABLED,
+                                  kCaptionForegroundColor),
+              Optional(0));
+
+  ASSERT_NO_FATAL_FAILURE(SetDarkMode(true));
+  ::SendMessage(close_button().hwnd(), WM_THEMECHANGED, 0, 0);
+  ::SendMessage(minimize_button().hwnd(), WM_THEMECHANGED, 0, 0);
+  // Pin the switch itself: a theme change that did not take effect would
+  // otherwise surface below as a zero count for the dark token, which reads as
+  // a color bug rather than the setup failure it is.
+  ASSERT_TRUE(IsDarkMode(close_button()));
+  ASSERT_TRUE(IsDarkMode(minimize_button()));
+
+  EXPECT_THAT(CountRenderedPixels(close_button(), ODS_DISABLED,
+                                  kCaptionForegroundColorDisabledDark),
+              Optional(Gt(0)));
+  EXPECT_THAT(CountRenderedPixels(close_button(), ODS_DISABLED,
+                                  kCaptionForegroundColorDark),
+              Optional(0));
+
+  EXPECT_THAT(CountRenderedPixels(minimize_button(), ODS_DISABLED,
+                                  kCaptionForegroundColorDisabledDark),
+              Optional(Gt(0)));
+  EXPECT_THAT(CountRenderedPixels(minimize_button(), ODS_DISABLED,
+                                  kCaptionForegroundColorDark),
+              Optional(0));
+}
+
+// A disabled control takes neither the hover background nor the hover glyph,
+// even while `is_mouse_hovering_` is set.
+//
+// `OnEnable()` clears `is_mouse_hovering_` when the control is disabled, so a
+// live control does not reach this state, and
+// `CaptionButtonTest.DisablingClearsHoverAndCancelsTracking` pins that. But
+// `SnapshotPaintState()` mixes the paint time ODS_DISABLED bit with the live
+// `is_mouse_hovering_` member, so the two can still disagree within a single
+// draw. `paints_hover()` is what keeps that disagreement off the screen.
+TEST_F(CaptionButtonThemeTest, DisabledIgnoresStaleHover) {
+  ASSERT_NO_FATAL_FAILURE(CreateTestDialog(/*dark=*/false));
+
+  ::SendMessage(close_button().hwnd(), WM_MOUSEMOVE, 0, 0);
+  ASSERT_TRUE(IsMouseHovering(close_button()));
+
+  // Asserted as a non match rather than against a named token: the background
+  // painted here is the parent's, blitted in by `DrawParentBackground()`.
+  EXPECT_NE(SampleRenderedPixel(close_button(), ODS_DISABLED,
+                                SamplePoint::kBackground),
+            kCaptionBkHover);
+  EXPECT_THAT(CountRenderedPixels(close_button(), ODS_DISABLED,
+                                  kCaptionForegroundColorDisabled),
+              Optional(Gt(0)));
+}
+
 // The hover background and the focus frame use their own tokens, neither of
 // which is reachable through the reported glyph color.
 TEST_F(CaptionButtonThemeTest, HoverAndFocusPixels) {
@@ -450,14 +588,15 @@ TEST_F(CaptionButtonThemeTest, HoverAndFocusPixels) {
 }
 
 // A control too small for a glyph region still paints its background and its
-// focus frame. `GetButtonRgn` returns null below a few pixels, and because
-// BS_OWNERDRAW suppresses the stock focus rectangle, skipping the frame here
-// would leave the button with no keyboard focus indicator at all.
+// focus frame. `GetButtonRgn` returns an invalid region below a few pixels, and
+// because BS_OWNERDRAW suppresses the stock focus rectangle, skipping the frame
+// here would leave the button with no keyboard focus indicator at all.
 TEST_F(CaptionButtonThemeTest, DegenerateSizeStillDrawsFocusFrame) {
   ASSERT_NO_FATAL_FAILURE(CreateTestDialog(/*dark=*/false));
 
   // 2x2 is below the glyph threshold: the region is sized at 12/31 of the
-  // control, which floors to zero, and `GetButtonRgn` returns null.
+  // control, which floors to zero, and `GetButtonRgn` returns an invalid
+  // region.
   ASSERT_TRUE(::SetWindowPos(close_button().hwnd(), nullptr, 0, 0, 2, 2,
                              SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE));
 
@@ -541,131 +680,248 @@ TEST_F(CaptionButtonThemeTest, SysColorChangeIsForwardedToChildren) {
   EXPECT_TRUE(IsDarkMode(minimize_button()));
 }
 
+// The mouse-tracking contract `TrackedButton` implements for every subclass.
+// Shared rather than duplicated per control: the point of the base class is
+// that `CaptionButton` and `FlatButton` behave identically here, so two copies
+// of these assertions would only be free to drift apart.
+//
+// Callers must keep the control parked off screen and must not pump between
+// the sends and the expectations, otherwise a physical cursor can deliver a
+// WM_MOUSELEAVE that perturbs the state.
+void ExpectHoverIgnoresPointsOutsideTheClientRect(const TrackedButton& button) {
+  const HWND hwnd = button.hwnd();
+
+  // A move over the control highlights it and arms tracking so that the
+  // highlight can be cleared again.
+  ::SendMessage(hwnd, WM_MOUSEMOVE, 0, 0);
+  EXPECT_TRUE(IsMouseHovering(button));
+  EXPECT_TRUE(IsTrackingMouseEvents(button));
+
+  ::SendMessage(hwnd, WM_MOUSELEAVE, 0, 0);
+  EXPECT_FALSE(IsMouseHovering(button));
+  EXPECT_FALSE(IsTrackingMouseEvents(button));
+
+  // `BUTTON` captures the mouse while pressed, so WM_MOUSEMOVE for points
+  // outside the client rect is still delivered to the control. Such moves must
+  // not apply the hover highlight.
+  ::SendMessage(hwnd, WM_MOUSEMOVE, 0, MAKELPARAM(-1, -1));
+  EXPECT_FALSE(IsMouseHovering(button));
+  EXPECT_FALSE(IsTrackingMouseEvents(button));
+
+  // ::PtInRect is inclusive on left/top and exclusive on right/bottom, and a
+  // real drag exits across an edge, so pin both sides of that boundary.
+  RECT client_rect = {};
+  ASSERT_TRUE(::GetClientRect(hwnd, &client_rect));
+  const int width = client_rect.right - client_rect.left;
+  const int height = client_rect.bottom - client_rect.top;
+  ASSERT_GT(width, 0);
+  ASSERT_GT(height, 0);
+
+  ::SendMessage(hwnd, WM_MOUSEMOVE, 0, MAKELPARAM(width - 1, height - 1));
+  EXPECT_TRUE(IsMouseHovering(button)) << "the last inside pixel";
+  ::SendMessage(hwnd, WM_MOUSEMOVE, 0, MAKELPARAM(width, height));
+  EXPECT_FALSE(IsMouseHovering(button)) << "right/bottom are exclusive";
+
+  ::SendMessage(hwnd, WM_MOUSELEAVE, 0, 0);
+
+  // Dragging back inside restores the hover highlight, and dragging back out
+  // clears it again.
+  ::SendMessage(hwnd, WM_MOUSEMOVE, 0, 0);
+  EXPECT_TRUE(IsMouseHovering(button));
+  ::SendMessage(hwnd, WM_MOUSEMOVE, 0, MAKELPARAM(-1, -1));
+  EXPECT_FALSE(IsMouseHovering(button));
+
+  ::SendMessage(hwnd, WM_MOUSELEAVE, 0, 0);
+  EXPECT_FALSE(IsMouseHovering(button));
+  EXPECT_FALSE(IsTrackingMouseEvents(button));
+}
+
+void ExpectDisablingClearsHoverAndCancelsTracking(const TrackedButton& button) {
+  const HWND hwnd = button.hwnd();
+
+  // A disabled control does not enter the hover highlight state.
+  ::EnableWindow(hwnd, FALSE);
+  ::SendMessage(hwnd, WM_MOUSEMOVE, 0, 0);
+  EXPECT_FALSE(IsMouseHovering(button));
+  EXPECT_FALSE(IsTrackingMouseEvents(button));
+
+  // Re-enabling allows the hover state again, and arms mouse tracking so that
+  // WM_MOUSELEAVE can clear the highlight.
+  ::EnableWindow(hwnd, TRUE);
+  ::SendMessage(hwnd, WM_MOUSEMOVE, 0, 0);
+  EXPECT_TRUE(IsMouseHovering(button));
+  EXPECT_TRUE(IsTrackingMouseEvents(button));
+
+  // Disabling while hovered clears the highlight via WM_ENABLE and cancels
+  // tracking, since a disabled window never receives WM_MOUSELEAVE.
+  ::EnableWindow(hwnd, FALSE);
+  EXPECT_FALSE(IsMouseHovering(button));
+  EXPECT_FALSE(IsTrackingMouseEvents(button));
+
+  // As with a stock `BUTTON`, the pointer has to move again.
+  ::EnableWindow(hwnd, TRUE);
+  EXPECT_FALSE(IsMouseHovering(button));
+  EXPECT_FALSE(IsTrackingMouseEvents(button));
+
+  ::SendMessage(hwnd, WM_MOUSEMOVE, 0, 0);
+  EXPECT_TRUE(IsMouseHovering(button));
+  EXPECT_TRUE(IsTrackingMouseEvents(button));
+
+  ::SendMessage(hwnd, WM_MOUSELEAVE, 0, 0);
+  EXPECT_FALSE(IsMouseHovering(button));
+  EXPECT_FALSE(IsTrackingMouseEvents(button));
+}
+
+void ExpectHidingClearsHoverAndCancelsTracking(const TrackedButton& button) {
+  const HWND hwnd = button.hwnd();
+
+  ::SendMessage(hwnd, WM_MOUSEMOVE, 0, 0);
+  EXPECT_TRUE(IsMouseHovering(button));
+  EXPECT_TRUE(IsTrackingMouseEvents(button));
+
+  // Hiding while hovered clears the highlight via WM_SHOWWINDOW and cancels
+  // tracking, since a hidden window never receives WM_MOUSELEAVE.
+  ::ShowWindow(hwnd, SW_HIDE);
+  EXPECT_FALSE(IsMouseHovering(button));
+  EXPECT_FALSE(IsTrackingMouseEvents(button));
+
+  // Re-showing does not automatically restore hover; the pointer must move
+  // again.
+  ::ShowWindow(hwnd, SW_SHOW);
+  EXPECT_FALSE(IsMouseHovering(button));
+  EXPECT_FALSE(IsTrackingMouseEvents(button));
+
+  ::SendMessage(hwnd, WM_MOUSEMOVE, 0, 0);
+  EXPECT_TRUE(IsMouseHovering(button));
+  EXPECT_TRUE(IsTrackingMouseEvents(button));
+
+  ::SendMessage(hwnd, WM_MOUSELEAVE, 0, 0);
+  EXPECT_FALSE(IsMouseHovering(button));
+  EXPECT_FALSE(IsTrackingMouseEvents(button));
+}
+
+// Both caption buttons share the state machine, so both are exercised, even
+// though only the close button is disabled in production.
 TEST_F(CaptionButtonTest, HoverIgnoresPointsOutsideTheClientRect) {
   ASSERT_NO_FATAL_FAILURE(CreateTestDialog());
 
-  // Nothing pumps between the sends and the expectations, and the window is
-  // parked off screen, so no WM_MOUSELEAVE can slip in.
-  //
-  // Both caption buttons share the state machine, so both are exercised, even
-  // though only the close button is disabled in production.
-  CaptionButton* const buttons[] = {&close_button(), &minimize_button()};
-  for (CaptionButton* button : buttons) {
-    // A move over the control highlights it and arms tracking so that the
-    // highlight can be cleared again.
-    ::SendMessage(button->hwnd(), WM_MOUSEMOVE, 0, 0);
-    EXPECT_TRUE(IsMouseHovering(*button));
-    EXPECT_TRUE(IsTrackingMouseEvents(*button));
-
-    ::SendMessage(button->hwnd(), WM_MOUSELEAVE, 0, 0);
-    EXPECT_FALSE(IsMouseHovering(*button));
-    EXPECT_FALSE(IsTrackingMouseEvents(*button));
-
-    // `BUTTON` captures the mouse while pressed, so WM_MOUSEMOVE for points
-    // outside the client rect is still delivered to the control. Such moves
-    // must not apply the hover highlight.
-    ::SendMessage(button->hwnd(), WM_MOUSEMOVE, 0, MAKELPARAM(-1, -1));
-    EXPECT_FALSE(IsMouseHovering(*button));
-    EXPECT_FALSE(IsTrackingMouseEvents(*button));
-
-    // ::PtInRect is inclusive on left/top and exclusive on right/bottom, and
-    // a real drag exits across an edge, so pin both sides of that boundary.
-    RECT client_rect = {};
-    ASSERT_TRUE(::GetClientRect(button->hwnd(), &client_rect));
-    const int width = client_rect.right - client_rect.left;
-    const int height = client_rect.bottom - client_rect.top;
-    ASSERT_GT(width, 0);
-    ASSERT_GT(height, 0);
-
-    ::SendMessage(button->hwnd(), WM_MOUSEMOVE, 0,
-                  MAKELPARAM(width - 1, height - 1));
-    EXPECT_TRUE(IsMouseHovering(*button)) << "the last inside pixel";
-    ::SendMessage(button->hwnd(), WM_MOUSEMOVE, 0, MAKELPARAM(width, height));
-    EXPECT_FALSE(IsMouseHovering(*button)) << "right/bottom are exclusive";
-
-    ::SendMessage(button->hwnd(), WM_MOUSELEAVE, 0, 0);
-
-    // Dragging back inside restores the hover highlight, and dragging back out
-    // clears it again.
-    ::SendMessage(button->hwnd(), WM_MOUSEMOVE, 0, 0);
-    EXPECT_TRUE(IsMouseHovering(*button));
-    ::SendMessage(button->hwnd(), WM_MOUSEMOVE, 0, MAKELPARAM(-1, -1));
-    EXPECT_FALSE(IsMouseHovering(*button));
-
-    ::SendMessage(button->hwnd(), WM_MOUSELEAVE, 0, 0);
-    EXPECT_FALSE(IsMouseHovering(*button));
-    EXPECT_FALSE(IsTrackingMouseEvents(*button));
+  {
+    SCOPED_TRACE("close");
+    ASSERT_NO_FATAL_FAILURE(
+        ExpectHoverIgnoresPointsOutsideTheClientRect(close_button()));
+  }
+  {
+    SCOPED_TRACE("minimize");
+    ASSERT_NO_FATAL_FAILURE(
+        ExpectHoverIgnoresPointsOutsideTheClientRect(minimize_button()));
   }
 }
 
 TEST_F(CaptionButtonTest, DisablingClearsHoverAndCancelsTracking) {
   ASSERT_NO_FATAL_FAILURE(CreateTestDialog());
 
-  CaptionButton* const buttons[] = {&close_button(), &minimize_button()};
-  for (CaptionButton* button : buttons) {
-    // A disabled control does not enter the hover highlight state.
-    ::EnableWindow(button->hwnd(), FALSE);
-    ::SendMessage(button->hwnd(), WM_MOUSEMOVE, 0, 0);
-    EXPECT_FALSE(IsMouseHovering(*button));
-    EXPECT_FALSE(IsTrackingMouseEvents(*button));
-
-    // Re-enabling allows the hover state again, and arms mouse tracking so
-    // that WM_MOUSELEAVE can clear the highlight.
-    ::EnableWindow(button->hwnd(), TRUE);
-    ::SendMessage(button->hwnd(), WM_MOUSEMOVE, 0, 0);
-    EXPECT_TRUE(IsMouseHovering(*button));
-    EXPECT_TRUE(IsTrackingMouseEvents(*button));
-
-    // Disabling while hovered clears the highlight via WM_ENABLE and cancels
-    // tracking, since a disabled window never receives WM_MOUSELEAVE.
-    ::EnableWindow(button->hwnd(), FALSE);
-    EXPECT_FALSE(IsMouseHovering(*button));
-    EXPECT_FALSE(IsTrackingMouseEvents(*button));
-
-    // As with a stock `BUTTON`, the pointer has to move again.
-    ::EnableWindow(button->hwnd(), TRUE);
-    EXPECT_FALSE(IsMouseHovering(*button));
-    EXPECT_FALSE(IsTrackingMouseEvents(*button));
-
-    ::SendMessage(button->hwnd(), WM_MOUSEMOVE, 0, 0);
-    EXPECT_TRUE(IsMouseHovering(*button));
-    EXPECT_TRUE(IsTrackingMouseEvents(*button));
-
-    ::SendMessage(button->hwnd(), WM_MOUSELEAVE, 0, 0);
-    EXPECT_FALSE(IsMouseHovering(*button));
-    EXPECT_FALSE(IsTrackingMouseEvents(*button));
+  {
+    SCOPED_TRACE("close");
+    ASSERT_NO_FATAL_FAILURE(
+        ExpectDisablingClearsHoverAndCancelsTracking(close_button()));
+  }
+  {
+    SCOPED_TRACE("minimize");
+    ASSERT_NO_FATAL_FAILURE(
+        ExpectDisablingClearsHoverAndCancelsTracking(minimize_button()));
   }
 }
 
 TEST_F(CaptionButtonTest, HidingClearsHoverAndCancelsTracking) {
   ASSERT_NO_FATAL_FAILURE(CreateTestDialog());
 
-  CaptionButton* const buttons[] = {&close_button(), &minimize_button()};
-  for (CaptionButton* button : buttons) {
-    ::SendMessage(button->hwnd(), WM_MOUSEMOVE, 0, 0);
-    EXPECT_TRUE(IsMouseHovering(*button));
-    EXPECT_TRUE(IsTrackingMouseEvents(*button));
-
-    // Hiding while hovered clears the highlight via WM_SHOWWINDOW and cancels
-    // tracking, since a hidden window never receives WM_MOUSELEAVE.
-    ::ShowWindow(button->hwnd(), SW_HIDE);
-    EXPECT_FALSE(IsMouseHovering(*button));
-    EXPECT_FALSE(IsTrackingMouseEvents(*button));
-
-    // Re-showing does not automatically restore hover; the pointer must move
-    // again.
-    ::ShowWindow(button->hwnd(), SW_SHOW);
-    EXPECT_FALSE(IsMouseHovering(*button));
-    EXPECT_FALSE(IsTrackingMouseEvents(*button));
-
-    ::SendMessage(button->hwnd(), WM_MOUSEMOVE, 0, 0);
-    EXPECT_TRUE(IsMouseHovering(*button));
-    EXPECT_TRUE(IsTrackingMouseEvents(*button));
-
-    ::SendMessage(button->hwnd(), WM_MOUSELEAVE, 0, 0);
-    EXPECT_FALSE(IsMouseHovering(*button));
-    EXPECT_FALSE(IsTrackingMouseEvents(*button));
+  {
+    SCOPED_TRACE("close");
+    ASSERT_NO_FATAL_FAILURE(
+        ExpectHidingClearsHoverAndCancelsTracking(close_button()));
   }
+  {
+    SCOPED_TRACE("minimize");
+    ASSERT_NO_FATAL_FAILURE(
+        ExpectHidingClearsHoverAndCancelsTracking(minimize_button()));
+  }
+}
+
+// `FlatButton` subclasses a bare `BUTTON` rather than living in a dialog, so
+// the control is created directly here.
+class FlatButtonTest : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    // WS_VISIBLE is required: `SW_HIDE` only produces WM_SHOWWINDOW for a
+    // window that is currently visible, which is what
+    // `HidingClearsHoverAndCancelsTracking` drives. The window is parked off
+    // screen so that a physical cursor still cannot reach it, which is the
+    // same precaution `CaptionButtonTest` takes by not showing its dialog.
+    hwnd_ = ::CreateWindowExW(
+        0, L"BUTTON", L"TestFlatButton", WS_POPUP | WS_VISIBLE | BS_PUSHBUTTON,
+        -10000, -10000, 100, 30, nullptr, nullptr, nullptr, nullptr);
+    ASSERT_NE(hwnd_, nullptr);
+    ASSERT_TRUE(button_.SubclassWindow(hwnd_));
+  }
+
+  void TearDown() override {
+    if (hwnd_ && ::IsWindow(hwnd_)) {
+      ::DestroyWindow(hwnd_);
+    }
+  }
+
+  HWND hwnd_ = nullptr;
+  FlatButton button_;
+};
+
+TEST_F(FlatButtonTest, HoverIgnoresPointsOutsideTheClientRect) {
+  ASSERT_NO_FATAL_FAILURE(
+      ExpectHoverIgnoresPointsOutsideTheClientRect(button_));
+}
+
+TEST_F(FlatButtonTest, DisablingClearsHoverAndCancelsTracking) {
+  ASSERT_NO_FATAL_FAILURE(
+      ExpectDisablingClearsHoverAndCancelsTracking(button_));
+}
+
+TEST_F(FlatButtonTest, HidingClearsHoverAndCancelsTracking) {
+  ASSERT_NO_FATAL_FAILURE(ExpectHidingClearsHoverAndCancelsTracking(button_));
+}
+
+// A `WS_CHILD` window without a parent makes `::CreateWindowExW` fail
+// deterministically; the button must report that it is absent, not crash.
+TEST(CaptionButtonCreateTest, ReportsFailureWithoutAParent) {
+  CloseButton button;
+  EXPECT_EQ(button.Create(/*parent=*/nullptr, {0, 0, 30, 30},
+                          OwnerDrawTitleBarWindow::kButtonClose),
+            nullptr);
+  EXPECT_FALSE(button.IsWindow());
+  EXPECT_EQ(button.hwnd(), nullptr);
+}
+
+// `::SetWindowSubclass()` refuses to subclass a window owned by another
+// thread, which is the one way to make it fail on demand. `hwnd()` must stay
+// null after a failure; `CaptionButton::Create()` relies on this. `FlatButton`
+// is used only as a concrete `SubclassedWindow`.
+TEST(SubclassedWindowTest, FailedSubclassLeavesHwndNull) {
+  HWND hwnd = ::CreateWindowExW(0, L"BUTTON", L"", WS_POPUP, -10000, -10000,
+                                100, 30, nullptr, nullptr, nullptr, nullptr);
+  ASSERT_NE(hwnd, nullptr);
+
+  base::Thread other_thread("SubclassedWindowTest");
+  ASSERT_TRUE(other_thread.Start());
+  other_thread.task_runner()->PostTask(
+      FROM_HERE, base::BindLambdaForTesting([&] {
+        FlatButton button;
+        EXPECT_FALSE(button.SubclassWindow(hwnd));
+        EXPECT_EQ(button.hwnd(), nullptr);
+        EXPECT_FALSE(button.IsWindow());
+      }));
+  other_thread.Stop();
+
+  // `button` has been destroyed without touching the window.
+  EXPECT_TRUE(::IsWindow(hwnd));
+  EXPECT_TRUE(::DestroyWindow(hwnd));
 }
 
 }  // namespace

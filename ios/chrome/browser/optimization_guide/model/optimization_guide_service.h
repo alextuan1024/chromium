@@ -21,10 +21,10 @@
 #include "components/optimization_guide/core/model_execution/model_execution_features_controller.h"
 #include "components/optimization_guide/core/model_execution/model_execution_manager.h"
 #include "components/optimization_guide/core/model_execution/remote_model_executor.h"
-#import "components/optimization_guide/optimization_guide_buildflags.h"
 #include "components/optimization_guide/proto/hints.pb.h"
 #include "ios/chrome/browser/download/model/background_service/background_download_service_factory.h"
 #import "ios/chrome/browser/optimization_guide/model/optimization_guide_global_state.h"
+#include "services/network/public/cpp/network_context_getter.h"
 #include "url/gurl.h"
 
 namespace leveldb_proto {
@@ -34,10 +34,6 @@ class ProtoDatabaseProvider;
 namespace network {
 class SharedURLLoaderFactory;
 }  // namespace network
-
-namespace network::mojom {
-class NetworkContext;
-}  // namespace network::mojom
 
 namespace optimization_guide {
 class HintsManager;
@@ -72,9 +68,6 @@ class OptimizationGuideService
       public optimization_guide::RemoteModelExecutor,
       public optimization_guide::OptimizationGuideModelProvider {
  public:
-  using NetworkContextGetter =
-      base::RepeatingCallback<network::mojom::NetworkContext*()>;
-
   OptimizationGuideService(
       leveldb_proto::ProtoDatabaseProvider* proto_db_provider,
       const base::FilePath& profile_path,
@@ -87,7 +80,7 @@ class OptimizationGuideService
       signin::IdentityManager* identity_manager,
       std::unique_ptr<optimization_guide::ModelExecutionManager::Delegate>
           delegate,
-      NetworkContextGetter network_context_getter);
+      network::NetworkContextGetter network_context_getter);
   ~OptimizationGuideService() override;
 
   OptimizationGuideService(const OptimizationGuideService&) = delete;
@@ -124,6 +117,8 @@ class OptimizationGuideService
       const optimization_guide::StreamingModelExecutionOptions& options,
       optimization_guide::OptimizationGuideModelExecutionStreamingCallback
           callback) override;
+  void PrewarmModelExecution(
+      optimization_guide::ModelBasedCapabilityKey feature) override;
 
   // optimization_guide::OptimizationGuideModelProvider implementation:
   void AddObserverForOptimizationTargetModel(
@@ -237,7 +232,7 @@ class OptimizationGuideService
   const raw_ptr<PrefService> pref_service_ = nullptr;
 
   // Function that returns the current network context.
-  const NetworkContextGetter network_context_getter_;
+  const network::NetworkContextGetter network_context_getter_;
 
   // IdentityManager of the profile this service is linked to.
   const raw_ptr<signin::IdentityManager> identity_manager_ = nullptr;

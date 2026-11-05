@@ -7,6 +7,7 @@
 
 #include <algorithm>
 
+#include "base/memory/raw_ptr_exclusion.h"
 #include "third_party/blink/renderer/core/style/gap_data.h"
 #include "third_party/blink/renderer/platform/geometry/length.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_builder_stream.h"
@@ -18,9 +19,6 @@ namespace blink {
 // specified. These values can be an auto repeater, an integer repeater, or a
 // single value. The value could be a color, style or width. See:
 // https://drafts.csswg.org/css-gaps-1/#color-style-width
-// TODO(crbug.com/357648037): Consider removing the template and instead having
-// concrete subclasses
-// for StyleColor, EBorderStyle, and int.
 template <typename T>
 class CORE_EXPORT GapDataList {
   DISALLOW_NEW();
@@ -301,7 +299,10 @@ class CORE_EXPORT GapDataListValueAccessor {
                            repeated_values.size()];
   }
 
-  const GapDataVector& gap_data_list_;
+  // RAW_PTR_EXCLUSION: Excluded for performance reasons: this accessor is
+  // short-lived, so BRP ref-count churn would cost more than the protection is
+  // worth.
+  RAW_PTR_EXCLUSION const GapDataVector& gap_data_list_;
   // Usually the container's total gap count. For grid-lanes, this may instead
   // be the number of gaps in one lane.
   wtf_size_t gap_slot_count_;

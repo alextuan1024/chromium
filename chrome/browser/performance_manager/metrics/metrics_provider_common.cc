@@ -9,8 +9,17 @@
 #include "base/metrics/histogram_macros.h"
 #include "base/process/process_metrics.h"
 #include "base/system/sys_info.h"
+#include "build/build_config.h"
 #include "content/public/browser/browser_accessibility_state.h"
 #include "ui/accessibility/ax_mode.h"
+
+#if BUILDFLAG(IS_MAC)
+#include <sys/sysctl.h>
+
+#include <string_view>
+
+#include "base/numerics/safe_conversions.h"
+#endif
 
 namespace performance_manager {
 
@@ -55,7 +64,119 @@ void MaybeRecordAccessibilityModeFlags(const ui::AXMode& mode,
     }
   }
 }
+
+#if BUILDFLAG(IS_MAC)
+int PercentOf(uint64_t part, uint64_t whole) {
+  return static_cast<int>(part * 100 / whole);
+}
+
+// Records a breakdown of system memory as seen by the Mach VM subsystem, plus
+// disk swap usage.
+void RecordMacSystemMemoryMetrics(const base::SystemMemoryInfo& info) {
+  const uint64_t total = info.total.InBytes();
+  if (total == 0) {
+    return;
+  }
+
+  base::UmaHistogramMemoryLargeMB("Memory.Experimental.MacFileBackedMemoryMB2",
+                                  info.file_backed);
+  base::UmaHistogramPercentage("Memory.Experimental.MacFileBackedMemoryPercent",
+                               PercentOf(info.file_backed.InBytes(), total));
+
+  base::UmaHistogramMemoryLargeMB("Memory.Experimental.MacFreeMemoryMB",
+                                  info.free);
+  base::UmaHistogramPercentage("Memory.Experimental.MacFreeMemoryPercent",
+                               PercentOf(info.free.InBytes(), total));
+
+  base::UmaHistogramMemoryLargeMB("Memory.Experimental.MacSpeculativeMemoryMB",
+                                  info.speculative);
+  base::UmaHistogramMemoryLargeMB("Memory.Experimental.MacPurgeableMemoryMB",
+                                  info.purgeable);
+
+  const uint64_t wired = info.wired.InBytes();
+  base::UmaHistogramMemoryLargeMB("Memory.Experimental.MacWiredMemoryMB",
+                                  info.wired);
+  base::UmaHistogramPercentage("Memory.Experimental.MacWiredMemoryPercent",
+                               PercentOf(wired, total));
+
+  const uint64_t compressor = info.compressor.InBytes();
+  base::UmaHistogramMemoryLargeMB("Memory.Experimental.MacCompressorMemoryMB",
+                                  info.compressor);
+  base::UmaHistogramPercentage(
+      "Memory.Experimental.MacCompressorPercentOfTotal",
+      PercentOf(compressor, total));
+
+  // Unwired memory is the pool the compressor and user memory compete for.
+  if (total > wired) {
+    const uint64_t unwired = total - wired;
+    base::UmaHistogramMemoryLargeMB("Memory.Experimental.MacUnwiredMemoryMB",
+                                    base::ByteSize(unwired));
+    base::UmaHistogramPercentage(
+        "Memory.Experimental.MacCompressorPercentOfUnwired",
+        PercentOf(compressor, unwired));
+  }
+
+  base::UmaHistogramMemoryLargeMB(
+      "Memory.Experimental.MacCompressorUncompressedMemoryMB",
+      info.compressor_uncompressed);
+  base::UmaHistogramMemoryLargeMB(
+      "Memory.Experimental.MacCompressorSwappedMemoryMB",
+      info.compressor_swapped);
+
+  // SystemMemoryInfo does not report swap on Apple platforms; ask the kernel
+  // directly. xsu_total grows and shrinks as macOS adds and removes swap files.
+  xsw_usage swap = {};
+  size_t size = sizeof(swap);
+  if (sysctlbyname("vm.swapusage", &swap, &size, nullptr, 0) == 0) {
+    base::UmaHistogramMemoryLargeMB("Memory.Experimental.MacSwapUsedMB",
+                                    base::ByteSize(swap.xsu_used));
+    base::UmaHistogramMemoryLargeMB("Memory.Experimental.MacSwapTotalMB",
+                                    base::ByteSize(swap.xsu_total));
+  }
+}
+
+void RecordMacChurnRateHistogram(std::string_view name,
+                                 base::ByteSize prev,
+                                 base::ByteSize cur,
+                                 base::TimeDelta elapsed) {
+  if (cur < prev) {
+    return;
+  }
+  const int kib_per_sec =
+      base::saturated_cast<int>((cur - prev).InKiBF() / elapsed.InSecondsF());
+  base::UmaHistogramCustomCounts(name, kib_per_sec, 1, 10'000'000, 100);
+}
+#endif  // BUILDFLAG(IS_MAC)
 }  // namespace
+
+#if BUILDFLAG(IS_MAC)
+void RecordMacSystemMemoryChurnMetrics(const base::SystemMemoryInfo& prev,
+                                       const base::SystemMemoryInfo& cur,
+                                       base::TimeDelta elapsed) {
+  if (!elapsed.is_positive()) {
+    return;
+  }
+  RecordMacChurnRateHistogram(
+      "Memory.Experimental.MacReactivationRateKBPerSecond", prev.reactivations,
+      cur.reactivations, elapsed);
+  RecordMacChurnRateHistogram("Memory.Experimental.MacPageInRateKBPerSecond",
+                              prev.pageins, cur.pageins, elapsed);
+  RecordMacChurnRateHistogram("Memory.Experimental.MacPageOutRateKBPerSecond",
+                              prev.pageouts, cur.pageouts, elapsed);
+  RecordMacChurnRateHistogram("Memory.Experimental.MacPurgeRateKBPerSecond",
+                              prev.purges, cur.purges, elapsed);
+  RecordMacChurnRateHistogram(
+      "Memory.Experimental.MacCompressionRateKBPerSecond", prev.compressions,
+      cur.compressions, elapsed);
+  RecordMacChurnRateHistogram(
+      "Memory.Experimental.MacDecompressionRateKBPerSecond",
+      prev.decompressions, cur.decompressions, elapsed);
+  RecordMacChurnRateHistogram("Memory.Experimental.MacSwapInRateKBPerSecond",
+                              prev.swapins, cur.swapins, elapsed);
+  RecordMacChurnRateHistogram("Memory.Experimental.MacSwapOutRateKBPerSecond",
+                              prev.swapouts, cur.swapouts, elapsed);
+}
+#endif  // BUILDFLAG(IS_MAC)
 
 MetricsProviderCommon::MetricsProviderCommon() {
   available_memory_metrics_timer_.Start(
@@ -78,8 +199,14 @@ void MetricsProviderCommon::RecordAvailableMemoryMetrics() {
 #if BUILDFLAG(IS_MAC)
   base::SystemMemoryInfo info;
   if (base::GetSystemMemoryInfo(&info)) {
-    base::UmaHistogramMemoryLargeMB(
-        "Memory.Experimental.MacFileBackedMemoryMB2", info.file_backed.InMiB());
+    RecordMacSystemMemoryMetrics(info);
+    const base::TimeTicks now = base::TimeTicks::Now();
+    if (prev_mac_churn_sample_.has_value()) {
+      RecordMacSystemMemoryChurnMetrics(
+          prev_mac_churn_sample_->memory_info, info,
+          now - prev_mac_churn_sample_->sample_ticks);
+    }
+    prev_mac_churn_sample_ = {info, now};
   }
 #endif
 }

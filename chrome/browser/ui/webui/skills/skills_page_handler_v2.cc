@@ -7,17 +7,18 @@
 #include <optional>
 
 #include "base/check_deref.h"
+#include "base/command_line.h"
 #include "base/supports_user_data.h"
+#include "build/build_config.h"
 #include "chrome/browser/glic/host/glic_cookie_synchronizer.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/signin/signin_ui_util.h"
 #include "chrome/browser/skills/skills_service_factory.h"
 #include "chrome/browser/skills/skills_ui_tab_controller_interface.h"
-#include "chrome/browser/skills/skills_ui_window_controller.h"
+#include "chrome/browser/tab_list/tab_list_interface.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
-#include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
-#include "chrome/browser/ui/toasts/api/toast_id.h"
 #include "chrome/browser/ui/webui/skills/skills_dialog_delegate.h"
+#include "chrome/common/chrome_switches.h"
 #include "chrome/common/webui_url_constants.h"
 #include "components/signin/public/base/signin_buildflags.h"
 #include "components/signin/public/base/signin_metrics.h"
@@ -28,7 +29,7 @@
 #include "content/public/browser/storage_partition_config.h"
 #include "content/public/browser/web_contents.h"
 #include "mojo/public/cpp/bindings/callback_helpers.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "url/gurl.h"
 
 namespace skills {
@@ -154,72 +155,50 @@ void SkillsPageHandlerV2::OnSkillUpdated(
 }
 
 void SkillsPageHandlerV2::SyncCookies(SyncCookiesCallback callback) {
+  if (base::CommandLine::ForCurrentProcess()->HasSwitch(
+          switches::kSkillsV2Origin)) {
+    std::move(callback).Run(true);
+    return;
+  }
   cookie_synchronizer_->CopyCookiesToWebviewStoragePartition(
       std::move(callback));
 }
 
 void SkillsPageHandlerV2::ShowSaveToast() {
-  BrowserWindowInterface* browser = GetBrowserWindow();
-  if (!browser) {
+  if (delegate_) {
+    delegate_->OnSkillSaved("");
     return;
   }
-
-  auto* window_controller = SkillsUiWindowController::From(browser);
-  if (!window_controller) {
-    return;
+  if (auto* controller = GetHostTabController()) {
+    controller->OnSkillSaved("");
   }
-
-  window_controller->ShowToast(ToastId::kSkillSavedWithoutInvokeButton);
 }
 
 void SkillsPageHandlerV2::ShowSaveAndInvokeToast(
     const std::string& skill_id,
     const std::string& skill_name,
     const std::string& skill_icon) {
-  BrowserWindowInterface* browser = GetBrowserWindow();
-  if (!browser) {
+  if (delegate_) {
+    delegate_->OnSkillSaved(skill_id, skill_name, skill_icon);
+    CloseDialog(nullptr);
     return;
   }
-
-  auto* window_controller = SkillsUiWindowController::From(browser);
-  if (!window_controller) {
-    return;
+  if (auto* controller = GetHostTabController()) {
+    controller->OnSkillSaved(skill_id, skill_name, skill_icon);
   }
-
-  bool is_skills_page = false;
-  if (auto* active_tab = browser->GetActiveTabInterface()) {
-    is_skills_page =
-        active_tab->GetContents()->GetVisibleURL().spec().starts_with(
-            chrome::kChromeUISkillsURL);
-  }
-
-  // If we are on the skills page we don't want to show the invoke button.
-  if (is_skills_page) {
-    window_controller->ShowToast(ToastId::kSkillSavedWithoutInvokeButton);
-  } else {
-    window_controller->StoreLastSavedSkillMetadata(skill_id, skill_name,
-                                                   skill_icon);
-    window_controller->ShowToast(ToastId::kSkillSaved);
-  }
-
-  CloseDialog(nullptr);
 }
 
 void SkillsPageHandlerV2::ShowDeleteToast(const std::string& skill_id,
                                           ShowDeleteToastCallback callback) {
   auto wrapped_callback =
       mojo::WrapCallbackWithDefaultInvokeIfNotRun(std::move(callback), false);
-  BrowserWindowInterface* browser = GetBrowserWindow();
-  if (!browser) {
+  if (delegate_) {
+    delegate_->OnSkillDeleted(skill_id, std::move(wrapped_callback));
     return;
   }
-
-  auto* window_controller = SkillsUiWindowController::From(browser);
-  if (!window_controller) {
-    return;
+  if (auto* controller = GetHostTabController()) {
+    controller->OnSkillDeleted(skill_id, std::move(wrapped_callback));
   }
-  window_controller->ShowToast(ToastId::kSkillDeleted, skill_id,
-                               std::move(wrapped_callback));
 }
 
 void SkillsPageHandlerV2::InvokeSkill(const std::string& skill_id,
@@ -228,43 +207,53 @@ void SkillsPageHandlerV2::InvokeSkill(const std::string& skill_id,
   if (!SkillsServiceFactory::IsSkillsEnabledForProfile(&profile_.get())) {
     return;
   }
-  tabs::TabInterface* tab =
-      tabs::TabInterface::MaybeGetFromContents(&web_contents_.get());
-  if (!tab) {
+  if (delegate_) {
+    delegate_->InvokeSkill(skill_id, skill_name, skill_icon,
+                           /*auto_submit=*/true);
     return;
   }
-  if (auto* tab_controller = SkillsUiTabControllerInterface::From(tab)) {
-    tab_controller->InvokeSkill(skill_id, skill_name, skill_icon,
-                                /*auto_submit=*/true);
+  if (auto* controller = GetHostTabController()) {
+    controller->InvokeSkill(skill_id, skill_name, skill_icon,
+                            /*auto_submit=*/true);
   }
 }
 
 void SkillsPageHandlerV2::SendPrompt(const std::string& prompt) {
-  tabs::TabInterface* tab =
-      tabs::TabInterface::MaybeGetFromContents(&web_contents_.get());
-  if (!tab) {
+  if (delegate_) {
+    delegate_->SendPrompt(prompt);
     return;
   }
-  if (auto* tab_controller = SkillsUiTabControllerInterface::From(tab)) {
-    tab_controller->SendPrompt(prompt);
+  if (auto* controller = GetHostTabController()) {
+    controller->SendPrompt(prompt);
   }
 }
 
 void SkillsPageHandlerV2::CloseDialog(
     skills::mojom::PendingEditorDataPtr data) {
-  if (!delegate_) {
-    return;
-  }
   // First store any data in user data, then proceed with dialog and handler
   // destruction.
   if (data) {
     PendingEditorDataHandler::GetOrCreateForProfile(&profile_.get())
         ->StoreData(std::move(data));
-    delegate_->GetBrowserWindowInterface()->OpenGURL(
-        GURL("chrome://skills/editor"),
-        WindowOpenDisposition::NEW_FOREGROUND_TAB);
+    if (delegate_) {
+      if (BrowserWindowInterface* browser =
+              delegate_->GetBrowserWindowInterface()) {
+        if (auto* tab_list = TabListInterface::From(browser)) {
+          tab_list->OpenTab(GURL("chrome://skills/editor"), -1,
+                            /*foreground=*/true);
+#if !BUILDFLAG(IS_ANDROID)
+        } else {
+          browser->OpenGURL(
+              GURL("chrome://skills/editor"),
+              ui::mojom::WindowOpenDisposition::kNewForegroundTab);
+#endif
+        }
+      }
+    }
   }
-  delegate_->CloseDialog();
+  if (delegate_) {
+    delegate_->CloseDialog();
+  }
 }
 
 void SkillsPageHandlerV2::GetPendingEditorData(
@@ -298,12 +287,9 @@ void SkillsPageHandlerV2::SignIn() {
 #endif
 }
 
-BrowserWindowInterface* SkillsPageHandlerV2::GetBrowserWindow() {
-  if (delegate_) {
-    return delegate_->GetBrowserWindowInterface();
-  }
-  return GlobalBrowserCollection::GetInstance()->FindBrowserWithTab(
-      &web_contents_.get());
+SkillsUiTabControllerInterface* SkillsPageHandlerV2::GetHostTabController() {
+  return SkillsUiTabControllerInterface::From(
+      tabs::TabInterface::MaybeGetFromContents(&web_contents_.get()));
 }
 
 }  // namespace skills

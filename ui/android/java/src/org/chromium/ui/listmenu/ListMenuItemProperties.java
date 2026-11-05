@@ -37,6 +37,10 @@ public class ListMenuItemProperties {
     public static final ReadableBooleanPropertyKey IS_SUBTITLE_ELLIPSIZED_AT_END =
             new ReadableBooleanPropertyKey();
 
+    /** The keyboard shortcut hint text displayed at the end of the menu item. */
+    public static final WritableObjectPropertyKey<@Nullable CharSequence> SHORTCUT_TEXT =
+            new WritableObjectPropertyKey<>();
+
     // A11y content description of menu item
     public static final WritableObjectPropertyKey<@Nullable String> CONTENT_DESCRIPTION =
             new WritableObjectPropertyKey<>();
@@ -83,6 +87,8 @@ public class ListMenuItemProperties {
             new WritableObjectPropertyKey<>();
     public static final WritableBooleanPropertyKey IS_HIGHLIGHTED =
             new WritableBooleanPropertyKey();
+    public static final WritableBooleanPropertyKey IS_IPH_HIGHLIGHTED =
+            new WritableBooleanPropertyKey();
     public static final WritableObjectPropertyKey<@Nullable Intent> INTENT =
             new WritableObjectPropertyKey<>();
     public static final WritableBooleanPropertyKey ENABLED = new WritableBooleanPropertyKey();
@@ -92,6 +98,10 @@ public class ListMenuItemProperties {
 
     /** The {@link StyleRes} ID for the subtitle text appearance of the menu item. */
     public static final ReadableIntPropertyKey SUBTITLE_TEXT_APPEARANCE_ID =
+            new ReadableIntPropertyKey();
+
+    /** The {@link StyleRes} ID for the shortcut text appearance of the menu item. */
+    public static final ReadableIntPropertyKey SHORTCUT_TEXT_APPEARANCE_ID =
             new ReadableIntPropertyKey();
 
     /** The vertical padding in pixels to apply to the menu item view. */
@@ -129,6 +139,7 @@ public class ListMenuItemProperties {
         TITLE,
         SUBTITLE,
         IS_SUBTITLE_ELLIPSIZED_AT_END,
+        SHORTCUT_TEXT,
         CONTENT_DESCRIPTION,
         TOOLTIP,
         START_ICON_ID,
@@ -143,11 +154,13 @@ public class ListMenuItemProperties {
         CLICK_LISTENER,
         HOVER_LISTENER,
         IS_HIGHLIGHTED,
+        IS_IPH_HIGHLIGHTED,
         INTENT,
         ENABLED,
         ICON_TINT_COLOR_STATE_LIST_ID,
         TEXT_APPEARANCE_ID,
         SUBTITLE_TEXT_APPEARANCE_ID,
+        SHORTCUT_TEXT_APPEARANCE_ID,
         VERTICAL_PADDING,
         IS_TEXT_ELLIPSIZED_AT_END,
         KEEP_START_ICON_SPACING_WHEN_HIDDEN,

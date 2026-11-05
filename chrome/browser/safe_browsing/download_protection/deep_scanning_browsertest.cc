@@ -37,7 +37,6 @@
 #include "chrome/browser/safe_browsing/download_protection/download_protection_service.h"
 #include "chrome/browser/safe_browsing/test_safe_browsing_service.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
-#include "chrome/browser/ui/omnibox/omnibox_next_features.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/file_system_access/file_system_access_test_utils.h"
 #include "chrome/common/chrome_paths.h"
@@ -56,7 +55,7 @@
 #include "components/policy/core/common/cloud/mock_cloud_policy_client.h"
 #include "components/policy/core/common/policy_pref_names.h"
 #include "components/prefs/pref_service.h"
-#include "components/safe_browsing/content/common/file_type_policies_test_util.h"
+#include "components/safe_browsing/content/common/file_type_policies/file_type_policies_test_util.h"
 #include "components/safe_browsing/core/browser/db/test_database_manager.h"
 #include "components/safe_browsing/core/common/features.h"
 #include "components/safe_browsing/core/common/proto/csd.pb.h"
@@ -74,7 +73,16 @@
 #include "services/network/public/cpp/data_element.h"
 #include "services/network/public/mojom/data_pipe_getter.mojom.h"
 #include "services/network/test/test_utils.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
+
+#if BUILDFLAG(IS_CHROMEOS)
+#include "ash/constants/ash_pref_names.h"
+#include "base/functional/callback_helpers.h"
+#include "base/test/test_future.h"
+#include "chrome/browser/ash/file_manager/open_util.h"
+#include "chrome/browser/platform_util.h"
+#include "storage/browser/file_system/external_mount_points.h"
+#endif
 
 namespace safe_browsing {
 
@@ -163,10 +171,6 @@ class DownloadDeepScanningBrowserTestBase
                          enterprise_obfuscation::kEnterpriseFileObfuscation)
                    : disabled_features_.push_back(
                          enterprise_obfuscation::kEnterpriseFileObfuscation);
-    // TODO(crbug.com/452061489): Fix tests that fail when the WebUI Omnibox is
-    // is enabled and then remove these two Features.
-    disabled_features_.push_back(omnibox::internal::kWebUIOmniboxPopup);
-    disabled_features_.push_back(omnibox::internal::kWebUIOmniboxAimPopup);
   }
 
   void OnDownloadCreated(content::DownloadManager* manager,
@@ -238,6 +242,9 @@ class DownloadDeepScanningBrowserTestBase
     SetBinaryUploadServiceTestFactory();
     SetUrlLoaderInterceptor();
     ObserveDownloadManager();
+    test_sb_factory_->test_safe_browsing_service()
+        ->download_protection_service()
+        ->SetDownloadRequestTimeoutForTesting(base::Seconds(60));
 
     if (!is_consumer_) {
       AuthorizeForDeepScanning();
@@ -469,10 +476,11 @@ class DownloadDeepScanningBrowserTestBase
                                                    data_pipe_consumer));
     data_pipe_getter_->Read(
         std::move(data_pipe_producer),
-        base::BindLambdaForTesting([&run_loop](int32_t status, uint64_t size) {
-          EXPECT_EQ(net::OK, status);
-          run_loop.Quit();
-        }));
+        base::BindLambdaForTesting(
+            [&run_loop](network::mojom::DataPipeGetter::ReadResult size) {
+              EXPECT_TRUE(size.has_value());
+              run_loop.Quit();
+            }));
     data_pipe_getter_.FlushForTesting();
     run_loop.Run();
 
@@ -602,7 +610,7 @@ IN_PROC_BROWSER_TEST_F(ConsumerDeepScanningBrowserTest, ErrorIndicatesFailure) {
   GURL url = embedded_test_server()->GetURL(
       "/safe_browsing/download_protection/zipfile_two_archives.zip");
   ui_test_utils::NavigateToURLWithDisposition(
-      browser(), url, WindowOpenDisposition::CURRENT_TAB,
+      browser(), url, ui::mojom::WindowOpenDisposition::kCurrentTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
 
   ExpectContentAnalysisUploadFailure(net::HTTP_INTERNAL_SERVER_ERROR, {});
@@ -664,7 +672,7 @@ IN_PROC_BROWSER_TEST_P(DownloadDeepScanningBrowserTest,
   GURL url = embedded_test_server()->GetURL(
       "/safe_browsing/download_protection/zipfile_two_archives.zip");
   ui_test_utils::NavigateToURLWithDisposition(
-      browser(), url, WindowOpenDisposition::CURRENT_TAB,
+      browser(), url, ui::mojom::WindowOpenDisposition::kCurrentTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
 
   WaitForDeepScanRequest();
@@ -682,6 +690,196 @@ IN_PROC_BROWSER_TEST_P(DownloadDeepScanningBrowserTest,
       download::DownloadDangerType::DOWNLOAD_DANGER_TYPE_DEEP_SCANNED_SAFE);
   EXPECT_EQ(item->GetState(), download::DownloadItem::COMPLETE);
 }
+
+#if BUILDFLAG(IS_CHROMEOS)
+IN_PROC_BROWSER_TEST_P(DownloadDeepScanningBrowserTest,
+                       SkyvaultGoogleDriveDownloadRelocated) {
+  base::ScopedAllowBlockingForTesting allow_blocking;
+
+  if (!std::get<1>(GetParam())) {
+    return;
+  }
+
+  base::ScopedTempDir virtual_fs_dir;
+  ASSERT_TRUE(virtual_fs_dir.CreateUniqueTempDir());
+  base::FilePath drive_download_dir =
+      virtual_fs_dir.GetPath().AppendASCII("${google_drive}");
+  ASSERT_TRUE(base::CreateDirectory(drive_download_dir));
+
+  static constexpr char kMountName[] = "test_virtual_fs_drive";
+  base::ScopedClosureRunner cleanup_overrides(base::BindOnce([]() {
+    storage::ExternalMountPoints::GetSystemInstance()->RevokeFileSystem(
+        kMountName);
+    enterprise_obfuscation::SetVirtualFilesystemPathForTesting(
+        base::FilePath());
+    g_browser_process->local_state()->SetBoolean(
+        ash::prefs::kLocalUserFilesAllowed, true);
+  }));
+
+  enterprise_obfuscation::SetVirtualFilesystemPathForTesting(
+      drive_download_dir);
+
+  // Register the virtual filesystem directory in `ExternalMountPoints` so
+  // `file_manager::util::ShowItemInFolder()` can resolve the relocated path
+  // just like a mounted DriveFS or Fusebox volume on ChromeOS.
+  storage::ExternalMountPoints* mount_points =
+      storage::ExternalMountPoints::GetSystemInstance();
+  mount_points->RevokeFileSystem(kMountName);
+  ASSERT_TRUE(mount_points->RegisterFileSystem(
+      kMountName, storage::kFileSystemTypeLocal,
+      storage::FileSystemMountOption(), drive_download_dir));
+
+  DownloadPrefs::FromDownloadManager(
+      browser()->GetProfile()->GetDownloadManager())
+      ->SkipSanitizeDownloadTargetPathForTesting();
+
+  // Configure SkyVault: disallow local user files and set default download
+  // directory to the virtual Google Drive mount.
+  g_browser_process->local_state()->SetBoolean(
+      ash::prefs::kLocalUserFilesAllowed, false);
+  browser()->GetProfile()->GetPrefs()->SetFilePath(
+      prefs::kDownloadDefaultDirectory, drive_download_dir);
+
+  ASSERT_TRUE(enterprise_obfuscation::IsVirtualFilesystem(drive_download_dir));
+  base::FilePath expected_final_path =
+      drive_download_dir.AppendASCII("zipfile_two_archives.zip");
+
+  ClientDownloadResponse metadata_response;
+  metadata_response.set_verdict(ClientDownloadResponse::SAFE);
+  ExpectMetadataResponse(metadata_response);
+
+  enterprise_connectors::ContentAnalysisResponse sync_response;
+  auto* dlp_result = sync_response.add_results();
+  dlp_result->set_tag("dlp");
+  dlp_result->set_status(
+      enterprise_connectors::ContentAnalysisResponse::Result::SUCCESS);
+
+  auto* malware_result = sync_response.add_results();
+  malware_result->set_tag("malware");
+  malware_result->set_status(
+      enterprise_connectors::ContentAnalysisResponse::Result::SUCCESS);
+
+  ExpectContentAnalysisResumableMetadataResponse({"dlp", "malware"});
+  ExpectContentAnalysisResumableContentResponse(sync_response);
+
+  GURL url = embedded_test_server()->GetURL(
+      "/safe_browsing/download_protection/zipfile_two_archives.zip");
+  ui_test_utils::NavigateToURLWithDisposition(
+      browser(), url, WindowOpenDisposition::kCurrentTab,
+      ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
+
+  WaitForDeepScanRequest();
+  WaitForDownloadToFinish();
+
+  ASSERT_EQ(download_items().size(), 1u);
+  download::DownloadItem* item = *download_items().begin();
+  EXPECT_EQ(item->GetState(), download::DownloadItem::COMPLETE);
+  EXPECT_EQ(item->GetTargetFilePath(), expected_final_path);
+  EXPECT_EQ(item->GetFullPath(), expected_final_path);
+  EXPECT_TRUE(base::PathExists(expected_final_path));
+
+  file_manager::util::DisableShellOperationsForTesting();
+  base::test::TestFuture<platform_util::OpenOperationResult>
+      show_in_folder_future;
+  file_manager::util::ShowItemInFolder(browser()->GetProfile(),
+                                       item->GetTargetFilePath(),
+                                       show_in_folder_future.GetCallback());
+  EXPECT_EQ(show_in_folder_future.Get(), platform_util::OPEN_SUCCEEDED);
+}
+
+IN_PROC_BROWSER_TEST_P(DownloadDeepScanningBrowserTest,
+                       SkyvaultOneDriveDownloadRelocated) {
+  base::ScopedAllowBlockingForTesting allow_blocking;
+
+  if (!std::get<1>(GetParam())) {
+    return;
+  }
+
+  base::ScopedTempDir virtual_fs_dir;
+  ASSERT_TRUE(virtual_fs_dir.CreateUniqueTempDir());
+  base::FilePath onedrive_download_dir =
+      virtual_fs_dir.GetPath().AppendASCII("${microsoft_onedrive}");
+  ASSERT_TRUE(base::CreateDirectory(onedrive_download_dir));
+
+  static constexpr char kMountName[] = "test_virtual_fs_onedrive";
+  base::ScopedClosureRunner cleanup_overrides(base::BindOnce([]() {
+    storage::ExternalMountPoints::GetSystemInstance()->RevokeFileSystem(
+        kMountName);
+    enterprise_obfuscation::SetVirtualFilesystemPathForTesting(
+        base::FilePath());
+    g_browser_process->local_state()->SetBoolean(
+        ash::prefs::kLocalUserFilesAllowed, true);
+  }));
+
+  enterprise_obfuscation::SetVirtualFilesystemPathForTesting(
+      onedrive_download_dir);
+
+  storage::ExternalMountPoints* mount_points =
+      storage::ExternalMountPoints::GetSystemInstance();
+  mount_points->RevokeFileSystem(kMountName);
+  ASSERT_TRUE(mount_points->RegisterFileSystem(
+      kMountName, storage::kFileSystemTypeLocal,
+      storage::FileSystemMountOption(), onedrive_download_dir));
+
+  DownloadPrefs::FromDownloadManager(
+      browser()->GetProfile()->GetDownloadManager())
+      ->SkipSanitizeDownloadTargetPathForTesting();
+
+  // Configure SkyVault: disallow local user files and set default download
+  // directory to the virtual Microsoft OneDrive mount.
+  g_browser_process->local_state()->SetBoolean(
+      ash::prefs::kLocalUserFilesAllowed, false);
+  browser()->GetProfile()->GetPrefs()->SetFilePath(
+      prefs::kDownloadDefaultDirectory, onedrive_download_dir);
+
+  ASSERT_TRUE(
+      enterprise_obfuscation::IsVirtualFilesystem(onedrive_download_dir));
+  base::FilePath expected_final_path =
+      onedrive_download_dir.AppendASCII("zipfile_two_archives.zip");
+
+  ClientDownloadResponse metadata_response;
+  metadata_response.set_verdict(ClientDownloadResponse::SAFE);
+  ExpectMetadataResponse(metadata_response);
+
+  enterprise_connectors::ContentAnalysisResponse sync_response;
+  auto* dlp_result = sync_response.add_results();
+  dlp_result->set_tag("dlp");
+  dlp_result->set_status(
+      enterprise_connectors::ContentAnalysisResponse::Result::SUCCESS);
+
+  auto* malware_result = sync_response.add_results();
+  malware_result->set_tag("malware");
+  malware_result->set_status(
+      enterprise_connectors::ContentAnalysisResponse::Result::SUCCESS);
+
+  ExpectContentAnalysisResumableMetadataResponse({"dlp", "malware"});
+  ExpectContentAnalysisResumableContentResponse(sync_response);
+
+  GURL url = embedded_test_server()->GetURL(
+      "/safe_browsing/download_protection/zipfile_two_archives.zip");
+  ui_test_utils::NavigateToURLWithDisposition(
+      browser(), url, WindowOpenDisposition::kCurrentTab,
+      ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
+
+  WaitForDeepScanRequest();
+  WaitForDownloadToFinish();
+
+  ASSERT_EQ(download_items().size(), 1u);
+  download::DownloadItem* item = *download_items().begin();
+  EXPECT_EQ(item->GetState(), download::DownloadItem::COMPLETE);
+  EXPECT_EQ(item->GetTargetFilePath(), expected_final_path);
+  EXPECT_EQ(item->GetFullPath(), expected_final_path);
+  EXPECT_TRUE(base::PathExists(expected_final_path));
+
+  file_manager::util::DisableShellOperationsForTesting();
+  base::test::TestFuture<platform_util::OpenOperationResult>
+      show_in_folder_future;
+  file_manager::util::ShowItemInFolder(browser()->GetProfile(),
+                                       item->GetTargetFilePath(),
+                                       show_in_folder_future.GetCallback());
+  EXPECT_EQ(show_in_folder_future.Get(), platform_util::OPEN_SUCCEEDED);
+}
+#endif  // BUILDFLAG(IS_CHROMEOS)
 
 IN_PROC_BROWSER_TEST_P(DownloadDeepScanningBrowserTest, DataURLDownloadIsTruncated) {
   base::ScopedAllowBlockingForTesting allow_blocking;
@@ -710,7 +908,7 @@ IN_PROC_BROWSER_TEST_P(DownloadDeepScanningBrowserTest, DataURLDownloadIsTruncat
   GURL url(data_url_string);
 
   ui_test_utils::NavigateToURLWithDisposition(
-      browser(), url, WindowOpenDisposition::CURRENT_TAB,
+      browser(), url, ui::mojom::WindowOpenDisposition::kCurrentTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
 
   WaitForDeepScanRequest();
@@ -771,7 +969,7 @@ IN_PROC_BROWSER_TEST_P(DownloadDeepScanningBrowserTest, FailedScanFailsOpen) {
   GURL url = embedded_test_server()->GetURL(
       "/safe_browsing/download_protection/zipfile_two_archives.zip");
   ui_test_utils::NavigateToURLWithDisposition(
-      browser(), url, WindowOpenDisposition::CURRENT_TAB,
+      browser(), url, ui::mojom::WindowOpenDisposition::kCurrentTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
 
   WaitForDeepScanRequest();
@@ -822,7 +1020,7 @@ IN_PROC_BROWSER_TEST_P(DownloadDeepScanningBrowserTest,
   GURL url = embedded_test_server()->GetURL(
       "/safe_browsing/download_protection/zipfile_two_archives.zip");
   ui_test_utils::NavigateToURLWithDisposition(
-      browser(), url, WindowOpenDisposition::CURRENT_TAB,
+      browser(), url, ui::mojom::WindowOpenDisposition::kCurrentTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
 
   WaitForDeepScanRequest();
@@ -873,7 +1071,7 @@ IN_PROC_BROWSER_TEST_P(DownloadDeepScanningBrowserTest,
   GURL url = embedded_test_server()->GetURL(
       "/safe_browsing/download_protection/zipfile_two_archives.zip");
   ui_test_utils::NavigateToURLWithDisposition(
-      browser(), url, WindowOpenDisposition::CURRENT_TAB,
+      browser(), url, ui::mojom::WindowOpenDisposition::kCurrentTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
 
   WaitForDeepScanRequest();
@@ -914,7 +1112,7 @@ IN_PROC_BROWSER_TEST_P(DownloadDeepScanningBrowserTest,
   GURL url = embedded_test_server()->GetURL(
       "/safe_browsing/download_protection/encrypted_txt.zip");
   ui_test_utils::NavigateToURLWithDisposition(
-      browser(), url, WindowOpenDisposition::CURRENT_TAB,
+      browser(), url, ui::mojom::WindowOpenDisposition::kCurrentTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
 
   WaitForDownloadToFinish();
@@ -942,7 +1140,7 @@ IN_PROC_BROWSER_TEST_P(DownloadDeepScanningBrowserTest,
   GURL url = embedded_test_server()->GetURL(
       "/safe_browsing/download_protection/zipfile_two_archives.zip");
   ui_test_utils::NavigateToURLWithDisposition(
-      browser(), url, WindowOpenDisposition::CURRENT_TAB,
+      browser(), url, ui::mojom::WindowOpenDisposition::kCurrentTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
 
   // The DLP scan finishes synchronously and find a violation. Malware scanning
@@ -1095,7 +1293,7 @@ IN_PROC_BROWSER_TEST_P(DownloadRestrictionsDeepScanningBrowserTest,
   GURL url = embedded_test_server()->GetURL(
       "/safe_browsing/download_protection/zipfile_two_archives.zip");
   ui_test_utils::NavigateToURLWithDisposition(
-      browser(), url, WindowOpenDisposition::CURRENT_TAB,
+      browser(), url, ui::mojom::WindowOpenDisposition::kCurrentTab,
       ui_test_utils::BROWSER_TEST_NO_WAIT);
 
   base::FilePath main_file = DownloadPrefs(browser()->GetProfile())
@@ -1213,7 +1411,7 @@ IN_PROC_BROWSER_TEST_P(AllowlistedUrlDeepScanningBrowserTest,
   GURL url = embedded_test_server()->GetURL(
       "/safe_browsing/download_protection/zipfile_two_archives.zip");
   ui_test_utils::NavigateToURLWithDisposition(
-      browser(), url, WindowOpenDisposition::CURRENT_TAB,
+      browser(), url, ui::mojom::WindowOpenDisposition::kCurrentTab,
       ui_test_utils::BROWSER_TEST_NO_WAIT);
 
   WaitForDeepScanRequest();
@@ -1383,7 +1581,6 @@ IN_PROC_BROWSER_TEST_F(SavePackageDeepScanningBrowserTest, Blocked) {
   base::RunLoop validator_run_loop;
   enterprise_connectors::test::EventReportValidator validator(client());
   validator.SetDoneClosure(validator_run_loop.QuitClosure());
-  std::set<std::string> mimetypes = {"text/plain"};
 
   chrome::cros::reporting::proto::DlpSensitiveDataEvent expected_event;
   expected_event.set_url(url.spec());
@@ -1471,7 +1668,6 @@ IN_PROC_BROWSER_TEST_F(SavePackageDeepScanningBrowserTest, KeepAfterWarning) {
   base::RunLoop validator_run_loop;
   enterprise_connectors::test::EventReportValidator validator(client());
   validator.SetDoneClosure(validator_run_loop.QuitClosure());
-  std::set<std::string> mimetypes = {"text/plain"};
 
   chrome::cros::reporting::proto::DlpSensitiveDataEvent expected_event;
   expected_event.set_url(url.spec());
@@ -1618,7 +1814,6 @@ IN_PROC_BROWSER_TEST_F(SavePackageDeepScanningBrowserTest,
   base::RunLoop validator_run_loop;
   enterprise_connectors::test::EventReportValidator validator(client());
   validator.SetDoneClosure(validator_run_loop.QuitClosure());
-  std::set<std::string> mimetypes = {"text/plain"};
 
   chrome::cros::reporting::proto::DlpSensitiveDataEvent expected_event;
   expected_event.set_url(url.spec());
@@ -1700,7 +1895,6 @@ IN_PROC_BROWSER_TEST_F(SavePackageDeepScanningBrowserTest, OpenNow) {
   base::RunLoop validator_run_loop;
   enterprise_connectors::test::EventReportValidator validator(client());
   validator.SetDoneClosure(validator_run_loop.QuitClosure());
-  std::set<std::string> mimetypes = {"text/plain"};
 
   ExpectContentAnalysisResumableMetadataResponse({"dlp"});
   ExpectContentAnalysisResumableContentResponse(response);
@@ -1868,7 +2062,6 @@ IN_PROC_BROWSER_TEST_F(FileSystemAccessDeepScanningBrowserTest, BlockedWrite) {
   WaitForDeepScanRequest();
 
   GURL url = embedded_test_server()->GetURL("/title1.html");
-  std::set<std::string> mimetypes = {"text/plain"};
 
   chrome::cros::reporting::proto::DlpSensitiveDataEvent expected_event;
   expected_event.set_url(url.spec());
@@ -2007,7 +2200,6 @@ IN_PROC_BROWSER_TEST_F(FileSystemAccessDeepScanningBrowserTest, WarnedWrite) {
   WaitForDeepScanRequest();
 
   GURL url = embedded_test_server()->GetURL("/title1.html");
-  std::set<std::string> mimetypes = {"text/plain"};
 
   chrome::cros::reporting::proto::DlpSensitiveDataEvent expected_event;
   expected_event.set_url(url.spec());

@@ -4,6 +4,7 @@
 
 #include "chrome/updater/mac/keystone/ksadmin.h"
 
+#include <stddef.h>
 #include <sys/stat.h>
 
 #include <algorithm>
@@ -21,6 +22,7 @@
 #include "base/command_line.h"
 #include "base/compiler_specific.h"
 #include "base/containers/fixed_flat_map.h"
+#include "base/containers/span.h"
 #include "base/files/file.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
@@ -30,7 +32,6 @@
 #include "base/logging.h"
 #include "base/memory/ref_counted.h"
 #include "base/message_loop/message_pump_type.h"
-#include "base/no_destructor.h"
 #include "base/notreached.h"
 #include "base/path_service.h"
 #include "base/process/launch.h"
@@ -132,30 +133,42 @@ constexpr char kCommandWriteBrandFile[] = "write-brand-file";
 constexpr char kCommandBrandValue[] = "brand-value";
 constexpr char kCommandTaggedPkgPath[] = "tagged-pkg-path";
 
-bool HasSwitch(const std::string& arg,
+bool HasSwitch(std::string_view arg,
                const std::map<std::string, std::string>& switches) {
-  if (switches.contains(arg)) {
+  if (switches.contains(std::string(arg))) {
     return true;
   }
-  static const base::NoDestructor<
-      std::map<std::string, std::vector<std::string>>>
-      aliases{{
-          {kCommandDelete, {"d"}},
-          {kCommandInstall, {"i"}},
-          {kCommandList, {"l"}},
-          {kCommandKsadminVersion, {"k"}},
-          {kCommandPrintTag, {"G"}},
-          {kCommandPrintTickets, {"print", "p"}},
-          {kCommandRegister, {"r"}},
-          {kCommandSystemStore, {"S"}},
-          {kCommandUserInitiated, {"F"}},
-          {kCommandUserStore, {"U"}},
-      }};
-  if (!aliases->contains(arg)) {
+  static constexpr std::string_view kDeleteAliases[] = {"d"};
+  static constexpr std::string_view kInstallAliases[] = {"i"};
+  static constexpr std::string_view kListAliases[] = {"l"};
+  static constexpr std::string_view kKsadminVersionAliases[] = {"k"};
+  static constexpr std::string_view kPrintTagAliases[] = {"G"};
+  static constexpr std::string_view kPrintTicketsAliases[] = {"print", "p"};
+  static constexpr std::string_view kRegisterAliases[] = {"r"};
+  static constexpr std::string_view kSystemStoreAliases[] = {"S"};
+  static constexpr std::string_view kUserInitiatedAliases[] = {"F"};
+  static constexpr std::string_view kUserStoreAliases[] = {"U"};
+  static constexpr auto kAliases =
+      base::MakeFixedFlatMap<std::string_view,
+                             base::span<const std::string_view>>({
+          {kCommandDelete, kDeleteAliases},
+          {kCommandInstall, kInstallAliases},
+          {kCommandList, kListAliases},
+          {kCommandKsadminVersion, kKsadminVersionAliases},
+          {kCommandPrintTag, kPrintTagAliases},
+          {kCommandPrintTickets, kPrintTicketsAliases},
+          {kCommandRegister, kRegisterAliases},
+          {kCommandSystemStore, kSystemStoreAliases},
+          {kCommandUserInitiated, kUserInitiatedAliases},
+          {kCommandUserStore, kUserStoreAliases},
+      });
+
+  auto it = kAliases.find(arg);
+  if (it == kAliases.end()) {
     return false;
   }
-  for (const auto& alias : aliases->at(arg)) {
-    if (switches.contains(alias)) {
+  for (std::string_view alias : it->second) {
+    if (switches.contains(std::string(alias))) {
       return true;
     }
   }
@@ -164,8 +177,9 @@ bool HasSwitch(const std::string& arg,
 
 std::string SwitchValue(const std::string& arg,
                         const std::map<std::string, std::string>& switches) {
-  if (switches.contains(arg)) {
-    return switches.at(arg);
+  auto switches_it = switches.find(arg);
+  if (switches_it != switches.end()) {
+    return switches_it->second;
   }
   static constexpr auto kAliases =
       base::MakeFixedFlatMap<std::string_view, std::string_view>(
@@ -179,11 +193,13 @@ std::string SwitchValue(const std::string& arg,
            {kCommandVersionKey, "e"},
            {kCommandVersionPath, "a"},
            {kCommandXCPath, "x"}});
-  if (!kAliases.contains(arg)) {
+  auto alias_it = kAliases.find(arg);
+  if (alias_it == kAliases.end()) {
     return "";
   }
-  const std::string alias{kAliases.at(arg)};
-  return switches.contains(alias) ? switches.at(alias) : "";
+  const std::string alias{alias_it->second};
+  switches_it = switches.find(alias);
+  return switches_it != switches.end() ? switches_it->second : "";
 }
 
 enum class WriteBrandFileOption {
@@ -365,7 +381,7 @@ class KSAdminApp : public App {
       const std::vector<updater::UpdateService::AppState>& states) const;
   void MaybeInstallUpdater(UpdaterScope scope) const;
 
-  bool HasSwitch(const std::string& arg) const;
+  bool HasSwitch(std::string_view arg) const;
   std::string SwitchValue(const std::string& arg) const;
 
   NSDictionary<NSString*, KSTicket*>* LoadTicketStore(UpdaterScope) const;
@@ -811,7 +827,7 @@ void KSAdminApp::DoListAppUpdate(UpdaterScope scope) {
           update_check_result, base::BindOnce(&KSAdminApp::Shutdown, this)));
 }
 
-bool KSAdminApp::HasSwitch(const std::string& arg) const {
+bool KSAdminApp::HasSwitch(std::string_view arg) const {
   return updater::HasSwitch(arg, switches_);
 }
 
@@ -1026,18 +1042,19 @@ void KSAdminApp::FirstTaskRun() {
       return;
     }
   }
-  const std::map<std::string, void (KSAdminApp::*)()> commands = {
-      {kCommandDelete, &KSAdminApp::Delete},
-      {kCommandInstall, &KSAdminApp::UpdateApp},
-      {kCommandList, &KSAdminApp::ListAppUpdate},
-      {kCommandKsadminVersion, &KSAdminApp::PrintVersion},
-      {kCommandPrintTag, &KSAdminApp::PrintTag},
-      {kCommandPrintTickets, &KSAdminApp::PrintTickets},
-      {kCommandRegister, &KSAdminApp::Register},
-      {kCommandXattrTagBrand, &KSAdminApp::PrintXattrTagBrand},
-      {kCommandReadPkgTag, &KSAdminApp::ReadPkgTag},
-  };
-  for (const auto& [command, method] : commands) {
+  static constexpr auto kCommands =
+      base::MakeFixedFlatMap<std::string_view, void (KSAdminApp::*)()>({
+          {kCommandDelete, &KSAdminApp::Delete},
+          {kCommandInstall, &KSAdminApp::UpdateApp},
+          {kCommandList, &KSAdminApp::ListAppUpdate},
+          {kCommandKsadminVersion, &KSAdminApp::PrintVersion},
+          {kCommandPrintTag, &KSAdminApp::PrintTag},
+          {kCommandPrintTickets, &KSAdminApp::PrintTickets},
+          {kCommandRegister, &KSAdminApp::Register},
+          {kCommandXattrTagBrand, &KSAdminApp::PrintXattrTagBrand},
+          {kCommandReadPkgTag, &KSAdminApp::ReadPkgTag},
+      });
+  for (const auto& [command, method] : kCommands) {
     if (HasSwitch(command)) {
       (this->*method)();
       return;
@@ -1046,7 +1063,7 @@ void KSAdminApp::FirstTaskRun() {
 
   // Fallbacks to Register: if none of the above exist, these switches signal
   // an intent to register.
-  for (const std::string& command :
+  for (std::string_view command :
        {kCommandTag, kCommandTagKey, kCommandTagPath, kCommandBrandKey,
         kCommandBrandPath, kCommandVersion, kCommandVersionKey,
         kCommandVersionPath, kCommandXCPath}) {

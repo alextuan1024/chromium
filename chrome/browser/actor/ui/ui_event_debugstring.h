@@ -23,6 +23,9 @@ inline constexpr absl::Overload UiEventNameFn{
     [](const TaskStateChanged&) -> std::string_view {
       return "TaskStateChanged";
     },
+    [](const TaskStepProgressUpdated&) -> std::string_view {
+      return "TaskStepProgressUpdated";
+    },
     [](const StartingToActOnTab&) -> std::string_view {
       return "StartingToActOnTab";
     },
@@ -31,6 +34,9 @@ inline constexpr absl::Overload UiEventNameFn{
     },
     [](const MouseClick&) -> std::string_view { return "MouseClick"; },
     [](const MouseMove&) -> std::string_view { return "MouseMove"; },
+    [](const TaskActRequested&) -> std::string_view {
+      return "TaskActRequested";
+    },
 };
 
 template <typename T>

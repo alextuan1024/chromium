@@ -27,6 +27,7 @@
 #include "media/mojo/mojom/speech_recognition_result.mojom.h"
 #include "mojo/public/cpp/bindings/remote.h"
 #include "net/base/net_errors.h"
+#include "net/base/url_util.h"
 #include "net/http/http_response_headers.h"
 #include "net/http/http_util.h"
 #include "services/network/public/cpp/url_loader_completion_status.h"
@@ -92,6 +93,9 @@ class NetworkSpeechRecognitionEngineImplTest
   void ProvideMockResponseStartDownstreamIfNeeded();
   void ProvideMockProtoResultDownstream(
       const proto::SpeechRecognitionEvent& result);
+  // Writes |response_string| (already length-prefixed) to the downstream pipe
+  // in one go.
+  void ProvideMockRawDataDownstream(const std::string& response_string);
   void ProvideMockResultDownstream(
       const media::mojom::WebSpeechRecognitionResultPtr& result);
   void ExpectResultsReceived(
@@ -368,6 +372,34 @@ TEST_F(NetworkSpeechRecognitionEngineImplTest, NetworkError) {
   ASSERT_EQ(0U, results_.size());
 }
 
+// An error status aborts recognition. Any chunks that arrived in the same
+// network read after the error must be dropped rather than dispatched.
+TEST_F(NetworkSpeechRecognitionEngineImplTest, ChunksAfterErrorAreDropped) {
+  StartMockRecognition();
+  ASSERT_TRUE(GetUpstreamRequest());
+  ASSERT_EQ("", ConsumeChunkedUploadData());
+
+  InjectDummyAudioChunk();
+  ASSERT_NE("", ConsumeChunkedUploadData());
+
+  proto::SpeechRecognitionEvent error_event;
+  error_event.set_status(proto::SpeechRecognitionEvent::STATUS_NO_SPEECH);
+  proto::SpeechRecognitionEvent result_event;
+  result_event.set_status(proto::SpeechRecognitionEvent::STATUS_SUCCESS);
+  proto::SpeechRecognitionResult* result = result_event.add_result();
+  result->set_final(true);
+  result->add_alternative()->set_transcript("ignored");
+
+  // Write both chunks at once so they are delivered in a single read.
+  ProvideMockRawDataDownstream(SerializeProtobufResponse(error_event) +
+                               SerializeProtobufResponse(result_event));
+
+  ASSERT_FALSE(engine_under_test_->IsRecognitionPending());
+  EXPECT_EQ(media::mojom::SpeechRecognitionErrorCode::kNoSpeech, error_);
+  EXPECT_EQ(0U, results_.size());
+  EndMockRecognition();
+}
+
 TEST_F(NetworkSpeechRecognitionEngineImplTest, Stability) {
   StartMockRecognition();
   ASSERT_TRUE(GetUpstreamRequest());
@@ -490,6 +522,65 @@ TEST_F(NetworkSpeechRecognitionEngineImplTest, SendPreamble) {
   ASSERT_EQ(0U, results_.size());
 }
 
+TEST_F(NetworkSpeechRecognitionEngineImplTest, SendsRoutingParams) {
+  NetworkSpeechRecognitionEngineImpl::Config config;
+  config.routing_params = {
+      {"client", "chrome-ntp"},
+      {"condition", "search"},
+  };
+  engine_under_test_->SetConfig(config);
+
+  StartMockRecognition();
+  const network::TestURLLoaderFactory::PendingRequest* upstream_request =
+      GetUpstreamRequest();
+  ASSERT_TRUE(upstream_request);
+  std::string value;
+  EXPECT_TRUE(net::GetValueForKeyInQuery(upstream_request->request.url,
+                                         "client", &value));
+  EXPECT_EQ("chrome-ntp", value);
+  EXPECT_TRUE(net::GetValueForKeyInQuery(upstream_request->request.url,
+                                         "condition", &value));
+  EXPECT_EQ("search", value);
+  EndMockRecognition();
+}
+
+TEST_F(NetworkSpeechRecognitionEngineImplTest, NoRoutingParamsByDefault) {
+  engine_under_test_->SetConfig(NetworkSpeechRecognitionEngineImpl::Config());
+
+  StartMockRecognition();
+  const network::TestURLLoaderFactory::PendingRequest* upstream_request =
+      GetUpstreamRequest();
+  ASSERT_TRUE(upstream_request);
+  std::string value;
+  EXPECT_FALSE(net::GetValueForKeyInQuery(upstream_request->request.url,
+                                          "client", &value));
+  EXPECT_FALSE(net::GetValueForKeyInQuery(upstream_request->request.url,
+                                          "condition", &value));
+  EndMockRecognition();
+}
+
+TEST_F(NetworkSpeechRecognitionEngineImplTest, OwnParamsOverrideRoutingParams) {
+  NetworkSpeechRecognitionEngineImpl::Config config;
+  config.language = "en-US";
+  config.routing_params = {{"lang", "fr-FR"}};
+  engine_under_test_->SetConfig(config);
+
+  StartMockRecognition();
+  const network::TestURLLoaderFactory::PendingRequest* upstream_request =
+      GetUpstreamRequest();
+  ASSERT_TRUE(upstream_request);
+  std::vector<std::string> languages;
+  for (net::QueryIterator it(upstream_request->request.url); !it.IsAtEnd();
+       it.Advance()) {
+    if (it.GetKey() == "lang") {
+      languages.push_back(it.GetUnescapedValue());
+    }
+  }
+  ASSERT_EQ(1u, languages.size());
+  EXPECT_EQ("en-US", languages[0]);
+  EndMockRecognition();
+}
+
 void NetworkSpeechRecognitionEngineImplTest::SetUp() {
   engine_under_test_ = std::make_unique<NetworkSpeechRecognitionEngineImpl>(
       base::MakeRefCounted<network::WeakWrapperSharedURLLoaderFactory>(
@@ -582,11 +673,15 @@ void NetworkSpeechRecognitionEngineImplTest::
 
 void NetworkSpeechRecognitionEngineImplTest::ProvideMockProtoResultDownstream(
     const proto::SpeechRecognitionEvent& result) {
+  ProvideMockRawDataDownstream(SerializeProtobufResponse(result));
+}
+
+void NetworkSpeechRecognitionEngineImplTest::ProvideMockRawDataDownstream(
+    const std::string& response_string) {
   ProvideMockResponseStartDownstreamIfNeeded();
   ASSERT_TRUE(downstream_data_pipe_.get());
   ASSERT_TRUE(downstream_data_pipe_.is_valid());
 
-  std::string response_string = SerializeProtobufResponse(result);
   response_buffer_.append(response_string);
   base::span<const uint8_t> bytes_to_write =
       base::as_byte_span(response_string);
@@ -707,7 +802,6 @@ void NetworkSpeechRecognitionEngineImplTest::ExpectFramedChunk(
 }
 
 std::string NetworkSpeechRecognitionEngineImplTest::ConsumeChunkedUploadData() {
-  std::string result;
   base::RunLoop().RunUntilIdle();
 
   if (!upstream_data_pipe_.get()) {

@@ -7,6 +7,7 @@
 
 #include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory/weak_ptr.h"
 #include "base/observer_list.h"
 #include "base/scoped_observation.h"
 #include "components/account_settings/account_setting_service.h"
@@ -24,12 +25,17 @@ class PersonalContextEligibilityServiceImpl
       public signin::IdentityManager::Observer,
       public account_settings::AccountSettingService::Observer {
  public:
-  explicit PersonalContextEligibilityServiceImpl(
+  // `is_supported_glic_provider` is true if the profile's Gemini in Chrome
+  // provider supports Personal Context (false for Gemini Enterprise). When
+  // false, the profile is ineligible (`kUnsupportedGlicProvider`). The provider
+  // is fixed for the lifetime of the profile.
+  PersonalContextEligibilityServiceImpl(
       account_settings::AccountSettingService* account_settings_service,
       signin::IdentityManager* identity_manager,
       PrefService* pref_service,
       GeoIpCountryCode country_code,
-      std::string locale);
+      std::string locale,
+      bool is_supported_glic_provider = true);
   PersonalContextEligibilityServiceImpl(
       const PersonalContextEligibilityServiceImpl&) = delete;
   PersonalContextEligibilityServiceImpl& operator=(
@@ -41,13 +47,16 @@ class PersonalContextEligibilityServiceImpl
       PersonalContextEligibilityService::Observer* observer) override;
   void RemoveObserver(
       PersonalContextEligibilityService::Observer* observer) override;
+  bool IsInitialized() const override;
   PersonalContextEligibilityState GetEligibilityState() override;
+  bool IsEligibleForEncryption() const override;
   std::optional<PersonalContextNonEligibilityReason> GetNonEligibilityReason()
       const override;
 
   // signin::IdentityManager::Observer:
   void OnPrimaryAccountChanged(
       const signin::PrimaryAccountChangeEvent& event_details) override;
+  void OnRefreshTokensLoaded() override;
   void OnIdentityManagerShutdown(
       signin::IdentityManager* identity_manager) override;
   void OnExtendedAccountInfoUpdated(const AccountInfo& info) override;
@@ -59,10 +68,14 @@ class PersonalContextEligibilityServiceImpl
  private:
   friend class PersonalContextEligibilityServiceImplTestApi;
 
+  bool AreDependentServicesInitialized() const;
+  void OnPrefsInitialized(bool success);
   std::pair<PersonalContextEligibilityState,
             std::optional<PersonalContextNonEligibilityReason>>
   ComputeEligibilityState();
+  bool ComputeEligibilityForEncryption() const;
   void UpdateEligibilityState();
+  void UpdateContextSourcesState();
 
   const raw_ptr<account_settings::AccountSettingService>
       account_settings_service_;
@@ -70,6 +83,7 @@ class PersonalContextEligibilityServiceImpl
   const raw_ptr<PrefService> pref_service_;
   const GeoIpCountryCode country_code_;
   const std::string locale_;
+  const bool is_supported_glic_provider_;
   base::ObserverList<PersonalContextEligibilityService::Observer> observers_;
   base::ScopedObservation<signin::IdentityManager,
                           signin::IdentityManager::Observer>
@@ -78,12 +92,19 @@ class PersonalContextEligibilityServiceImpl
                           account_settings::AccountSettingService::Observer>
       account_settings_observation_{this};
   PrefChangeRegistrar pref_registrar_;
+  bool is_initialized_ = false;
   // Cached last eligibility state.
   PersonalContextEligibilityState eligibility_state_ =
       PersonalContextEligibilityState::kDisabledNotEligible;
+  bool is_eligible_for_encryption_ = false;
+  bool is_workspace_enabled_ = false;
+  bool is_photos_enabled_ = false;
   // Cached last non-eligibility reason for logging.
   std::optional<PersonalContextNonEligibilityReason>
       last_non_eligibility_reason_;
+
+  base::WeakPtrFactory<PersonalContextEligibilityServiceImpl> weak_ptr_factory_{
+      this};
 };
 
 }  // namespace personal_context

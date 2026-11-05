@@ -9,11 +9,13 @@
 #include <stdint.h>
 
 #include <memory>
+#include <optional>
 #include <set>
 #include <string>
 #include <string_view>
 #include <vector>
 
+#include "base/feature_list.h"
 #include "base/functional/callback.h"
 #include "base/gtest_prod_util.h"
 #include "base/memory/raw_ptr.h"
@@ -22,6 +24,7 @@
 #include "base/time/time.h"
 #include "build/build_config.h"
 #include "cc/layers/deadline_policy.h"
+#include "components/input/input_router_client.h"
 #include "components/viz/common/frame_sinks/begin_frame_args.h"
 #include "components/viz/common/frame_sinks/begin_frame_source.h"
 #include "content/browser/compositor/image_transport_factory.h"
@@ -50,6 +53,7 @@
 #include "ui/wm/public/activation_delegate.h"
 
 #if BUILDFLAG(IS_WIN)
+#include "base/containers/flat_map.h"
 #include "content/browser/renderer_host/virtual_keyboard_controller_win.h"
 #include "ui/events/win/stylus_handwriting_properties_win.h"
 #endif
@@ -101,6 +105,8 @@ inline constexpr char16_t kArabicIndicZero = u'\u0660';
 #if BUILDFLAG(IS_WIN)
 CONTENT_EXPORT void ResetArabicIndicDigitInputStateForTesting();
 #endif  // BUILDFLAG(IS_WIN)
+
+CONTENT_EXPORT BASE_DECLARE_FEATURE(kPreventReentrantInternalSetBounds);
 
 // RenderWidgetHostView class hierarchy described in render_widget_host_view.h.
 class CONTENT_EXPORT RenderWidgetHostViewAura
@@ -169,9 +175,10 @@ class CONTENT_EXPORT RenderWidgetHostViewAura
                                  const gfx::Rect& bounds) override;
   void ClearKeyboardTriggeredTooltip() override;
   bool IsSurfaceAvailableForCopy() override;
-  void CopyFromSurface(
+  void CopyFromSurfaceImpl(
       const gfx::Rect& src_rect,
       const gfx::Size& output_size,
+      bool is_copy_request_secure,
       base::TimeDelta timeout,
       base::OnceCallback<void(const content::CopyFromSurfaceResult&)> callback)
       override;
@@ -230,12 +237,16 @@ class CONTENT_EXPORT RenderWidgetHostViewAura
                           const gfx::Rect& node_bounds_in_screen) override;
 #if BUILDFLAG(IS_WIN)
   bool ShouldInitiateStylusWriting() override;
-  void OnStartStylusWriting() override;
+  std::optional<ui::StylusHandwritingPropertiesWin>
+  TakeStylusHandwritingProperties(uint32_t touch_start_event_id) override;
+  void OnStartStylusWriting(
+      const std::optional<input::StylusWritingProperties>& properties) override;
   void OnEditElementFocusedForStylusWriting(
       blink::mojom::StylusWritingFocusResultPtr focus_result) override;
   void StartStylusWritingFromChildHostView(
       RenderWidgetHostViewBase* view,
-      OnFocusHandwritingTargetCallback callback) override;
+      OnFocusHandwritingTargetCallback callback,
+      const std::optional<input::StylusWritingProperties>& properties) override;
 #endif  // BUILDFLAG(IS_WIN)
   void OnSynchronizedDisplayPropertiesChanged(bool rotation = false) override;
   viz::ScopedSurfaceIdAllocator DidUpdateVisualProperties(
@@ -244,10 +255,7 @@ class CONTENT_EXPORT RenderWidgetHostViewAura
 
   // Unbounded element API overrides:
   void CreateUnboundedSurface(
-      mojo::PendingAssociatedReceiver<blink::mojom::UnboundedSurfaceHost> host,
-      mojo::PendingAssociatedRemote<blink::mojom::UnboundedSurfaceClient>
-          client,
-      const gfx::Rect& bounds_in_dips,
+      const gfx::Rect& bounds_in_screen,
       base::WeakPtr<RenderWidgetHostViewBase> subframe_view) override;
 
   void TakeFallbackContentFrom(RenderWidgetHostView* view) override;
@@ -339,20 +347,15 @@ class CONTENT_EXPORT RenderWidgetHostViewAura
       const gfx::Range& range,
       const std::u16string& active_composition_text,
       bool is_composition_committed) override;
-#endif
 
-#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_CHROMEOS)
   // Returns the editing context of the active web content.
-  // This is currently used by TSF and ChromeOS to fetch the URL of the active
-  // web content.
+  // This is currently used by TSF to fetch the URL of the active web content.
   // https://docs.microsoft.com/en-us/windows/win32/tsf/predefined-properties
   ui::TextInputClient::EditingContext GetTextEditingContext() override;
-#endif
 
-#if BUILDFLAG(IS_WIN)
   // Notify TSF (via text store) when URL of the frame in focus changes.
   void NotifyOnFrameFocusChanged() override;
-#endif
+#endif  // BUILDFLAG(IS_WIN)
 
   // Overridden from display::DisplayObserver:
   void OnDisplayMetricsChanged(const display::Display& display,
@@ -615,6 +618,8 @@ class CONTENT_EXPORT RenderWidgetHostViewAura
                            ScrollOOPIFEditableElement);
   FRIEND_TEST_ALL_PREFIXES(RenderWidgetHostViewAuraTest, OcclusionHidesTooltip);
   FRIEND_TEST_ALL_PREFIXES(RenderWidgetHostViewAuraTest,
+                           SetBoundsDoesNotReenterInternalSetBounds);
+  FRIEND_TEST_ALL_PREFIXES(RenderWidgetHostViewAuraTest,
                            UpdateInsetsWithVirtualKeyboardEnabled);
 
   class WindowObserver;
@@ -633,6 +638,17 @@ class CONTENT_EXPORT RenderWidgetHostViewAura
 
   void CreateDelegatedFrameHostClient();
 
+  // Returns the native window of the active unbounded surface, or null when
+  // there is no surface or it has no native window (e.g. mid-destruction).
+  aura::Window* GetUnboundedSurfaceNativeWindow() const;
+
+  // Returns true if the pointer is over `window_` or over the unbounded
+  // surface spawned by this view. The surface may live in its own root
+  // window, so it is hit-tested in that root.
+  bool IsPointerOverSelfOrUnboundedSurface() const;
+
+  // Updates the root window's cursor client if the pointer is over `window_`
+  // or the active unbounded surface spawned by this view.
   void UpdateCursorIfOverSelf();
 
   bool SynchronizeVisualProperties(
@@ -762,8 +778,10 @@ class CONTENT_EXPORT RenderWidgetHostViewAura
       const gfx::Rect& focus_screen_rect_in_dips,
       const gfx::Size& tolerance_screen_distance_in_dips);
 
-  void StartStylusWritingImpl(RenderWidgetHostViewBase* initiating_view,
-                              OnFocusHandwritingTargetCallback callback);
+  void StartStylusWritingImpl(
+      RenderWidgetHostViewBase* initiating_view,
+      OnFocusHandwritingTargetCallback callback,
+      const std::optional<input::StylusWritingProperties>& properties);
 
   void ForwardArabicIndicCharEventWithLatencyInfo(const ui::KeyEvent& event,
                                                   char16_t ascii_char);
@@ -785,8 +803,22 @@ class CONTENT_EXPORT RenderWidgetHostViewAura
   // again while inside shutdown, causing a double-free.
   bool in_shutdown_;
 
-  // True if in the process of handling a window bounds changed notification.
-  bool in_bounds_changed_;
+  // Prevents mutual recursion between `InternalSetBounds()` and
+  // `OnBoundsChanged()`:
+  //
+  // 1. Bounds set via `RenderWidgetHostViewAura::SetBounds()` / `SetSize()`:
+  //    - `InternalSetBounds()` (sets `is_setting_bounds_ = true`)
+  //    - `aura::Window::SetBounds()`
+  //    - ...
+  //    - `OnBoundsChanged()` (skips `SetSize()`)
+  //
+  // 2. Bounds set directly on `window_` via `aura::Window::SetBounds()`:
+  //    - `aura::Window::SetBounds()`
+  //    - ...
+  //    - `OnBoundsChanged()` (sets `is_setting_bounds_ = true`)
+  //    - `SetSize()`
+  //    - `InternalSetBounds()` (skips `window_->SetBounds()`)
+  bool is_setting_bounds_ = false;
 
   // Our parent host view, if this is a popup.  NULL otherwise.
   //
@@ -881,6 +913,9 @@ class CONTENT_EXPORT RenderWidgetHostViewAura
   ui::EventPointerType last_pointer_type_before_focus_ =
       ui::EventPointerType::kUnknown;
 
+  // Tracks the last text input type notified to the InputMethod.
+  ui::TextInputType last_text_input_type_ = ui::TEXT_INPUT_TYPE_NONE;
+
   bool is_first_navigation_ = true;
   viz::LocalSurfaceId inset_surface_id_;
 
@@ -909,8 +944,14 @@ class CONTENT_EXPORT RenderWidgetHostViewAura
 
   // Stores last stylus handwriting specific details including a handwriting
   // pointer id and a handwriting stroke id.
+  // TODO(crbug.com/355578906): Remove this and the legacy start path when the
+  // kStylusHandwritingWinSmallGestures flag is no longer needed.
   std::optional<ui::StylusHandwritingPropertiesWin>
       last_stylus_handwriting_properties_;
+
+  // Caches native properties by touchstart ID until the handler takes them.
+  base::flat_map<uint32_t, ui::StylusHandwritingPropertiesWin>
+      pending_stylus_handwriting_properties_;
 #endif  // BUILDFLAG(IS_WIN)
 
   std::optional<display::ScopedDisplayObserver> display_observer_;

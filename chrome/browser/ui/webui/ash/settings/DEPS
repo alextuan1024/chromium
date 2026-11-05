@@ -1,14 +1,15 @@
 include_rules = [
-  # Existing dependencies within //chrome. There is an active effort to
-  # refactor //chrome/browser/ui/ash to break these dependencies; see b/332804822.
-  # Whenever possible, avoid adding new //chrome dependencies to this list.
+  # Other ash directories in //chrome.
   "+chrome/browser/ash/app_restore",
   "+chrome/browser/ash/arc",
   "+chrome/browser/ash/drive",
   "+chrome/browser/ash/login/quick_unlock",
   "+chrome/browser/ash/login/users",
   "+chrome/browser/ash/system_web_apps/apps/personalization_app",
-  "+chrome/browser/enterprise/browser_management",
+
+  # Existing dependencies within //chrome. There is an active effort to
+  # refactor //chrome/browser/ui/ash to break these dependencies; see b/332804822.
+  # Whenever possible, avoid adding new //chrome dependencies to this list.
   "+chrome/browser/nearby_sharing",
   "+chrome/browser/policy",
   "+chrome/browser/profiles",
@@ -43,11 +44,9 @@ specific_include_rules = {
     '+ash/shell_observer.h',
     "+ash/display/cros_display_config.h",
     "+ash/display/display_prefs.h",
-    "+ash/display/display_performance_mode_controller.h",
   ],
   'display_settings_provider_unittest\\.cc': [
     '+ash/shell.h',
-    "+ash/display/display_performance_mode_controller.h",
   ],
   'fast_pair_.*': [
     "+ash/quick_pair",
@@ -60,6 +59,10 @@ specific_include_rules = {
   ],
   'os_settings_features_util\\.cc' : [
     "+ash/edusumer/graduation_utils.h",
+  ],
+  'os_settings_features_util_unittest\\.cc' : [
+    "+chrome/browser/ash/login/test/chrome_user_session_test_environment_delegate.h",
+    "+chrome/browser/ash/settings/scoped_cros_settings_test_helper.h",
   ],
   'power_section\\.(cc|h)' : [
     '+ash/shell.h',

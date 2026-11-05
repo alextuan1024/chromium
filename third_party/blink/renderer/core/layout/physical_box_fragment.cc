@@ -16,6 +16,8 @@
 #include "third_party/blink/renderer/core/layout/geometry/box_strut.h"
 #include "third_party/blink/renderer/core/layout/geometry/physical_rect.h"
 #include "third_party/blink/renderer/core/layout/geometry/writing_mode_converter.h"
+#include "third_party/blink/renderer/core/layout/hit_test_location.h"
+#include "third_party/blink/renderer/core/layout/hit_test_result.h"
 #include "third_party/blink/renderer/core/layout/inline/fragment_item.h"
 #include "third_party/blink/renderer/core/layout/inline/inline_cursor.h"
 #include "third_party/blink/renderer/core/layout/inline/inline_item.h"
@@ -24,6 +26,7 @@
 #include "third_party/blink/renderer/core/layout/layout_inline.h"
 #include "third_party/blink/renderer/core/layout/layout_object.h"
 #include "third_party/blink/renderer/core/layout/layout_object_inlines.h"
+#include "third_party/blink/renderer/core/layout/layout_replaced.h"
 #include "third_party/blink/renderer/core/layout/layout_text_combine.h"
 #include "third_party/blink/renderer/core/layout/layout_view.h"
 #include "third_party/blink/renderer/core/layout/outline_utils.h"
@@ -54,6 +57,7 @@ struct SameSizeAsPhysicalBoxFragment : PhysicalFragment {
   LayoutUnit baseline;
   LayoutUnit last_baseline;
   Member<void*> rare;
+  Member<void*> used_position_insets;
   InkOverflow ink_overflow;
   HeapVector<PhysicalFragmentLink> children;
 };
@@ -87,7 +91,7 @@ bool ShouldUsePositionForPointInBlockFlowDirection(
       !IsFlexibleBoxWithSingleChildElement(layout_object)) {
     return false;
   }
-  if (layout_object.StyleRef().SpecifiesColumns()) {
+  if (layout_object.Style().SpecifiesColumns()) {
     // Columns are laid out in inline direction.
     return false;
   }
@@ -117,7 +121,7 @@ void ApplyOverflowClip(OverflowClipAxes overflow_clip_axes,
 }
 
 int MaxGapDecorationsWidth(const GapDataList<int>& width_value) {
-  const auto widths = width_value.GetGapDataList();
+  const auto& widths = width_value.GetGapDataList();
   CHECK(!widths.empty());
 
   const auto& first_width = widths[0];
@@ -214,8 +218,8 @@ const PhysicalBoxFragment* PhysicalBoxFragment::Create(
         scrollbar, padding, physical_size, writing_direction);
 
     if (FragmentItemsBuilder* items_builder = builder->ItemsBuilder()) {
-      calculator.AddItems(builder->GetLayoutObject(),
-                          items_builder->Items(physical_size));
+      items_builder->ConvertToPhysical(physical_size);
+      calculator.AddItems(builder->GetLayoutObject(), items_builder->Items());
     }
 
     for (auto& child : builder->children_) {
@@ -244,7 +248,7 @@ const PhysicalBoxFragment* PhysicalBoxFragment::Create(
   FragmentItemsBuilder* items_builder = builder->ItemsBuilder();
   bool has_fragment_items = items_builder && items_builder->Size();
 
-  size_t byte_size = AdditionalByteSize(has_fragment_items);
+  uint32_t byte_size = AdditionalByteSize(has_fragment_items);
 
   // We store the children list inline in the fragment as a flexible
   // array. Therefore, we need to make sure to allocate enough space for
@@ -263,7 +267,7 @@ const PhysicalBoxFragment* PhysicalBoxFragment::Create(
 const PhysicalBoxFragment* PhysicalBoxFragment::Clone(
     const PhysicalBoxFragment& other) {
   // The size of the new fragment shouldn't differ from the old one.
-  size_t byte_size = AdditionalByteSize(other.HasItems());
+  uint32_t byte_size = AdditionalByteSize(other.HasItems());
 
   return MakeGarbageCollected<PhysicalBoxFragment>(
       AdditionalBytes(byte_size), PassKey(), other,
@@ -272,12 +276,15 @@ const PhysicalBoxFragment* PhysicalBoxFragment::Clone(
 
 // static
 const PhysicalBoxFragment* PhysicalBoxFragment::CloneWithPostLayoutFragments(
-    const PhysicalBoxFragment& other) {
-  PhysicalRect scrollable_overflow = other.ScrollableOverflow();
-  bool has_scrollable_overflow = other.HasScrollableOverflow();
+    const PhysicalBoxFragment& other,
+    const std::optional<PhysicalRect> new_scrollable_overflow) {
+  const PhysicalRect scrollable_overflow =
+      new_scrollable_overflow.value_or(other.ScrollableOverflow());
+  const bool has_scrollable_overflow =
+      scrollable_overflow != PhysicalRect({}, other.Size());
 
   // The size of the new fragment shouldn't differ from the old one.
-  size_t byte_size = AdditionalByteSize(other.HasItems());
+  uint32_t byte_size = AdditionalByteSize(other.HasItems());
 
   const auto* cloned_fragment = MakeGarbageCollected<PhysicalBoxFragment>(
       AdditionalBytes(byte_size), PassKey(), other, has_scrollable_overflow,
@@ -336,16 +343,16 @@ const PhysicalBoxFragment* PhysicalBoxFragment::CloneWithPostLayoutFragments(
 
 namespace {
 template <typename T>
-constexpr void AccountSizeAndPadding(size_t& current_size) {
-  const size_t current_size_with_padding =
-      base::bits::AlignUp(current_size, alignof(T));
+constexpr void AccountSizeAndPadding(uint32_t& current_size) {
+  const uint32_t current_size_with_padding =
+      base::bits::AlignUp(current_size, static_cast<uint32_t>(alignof(T)));
   current_size = current_size_with_padding + sizeof(T);
 }
 }  // namespace
 
 // static
-size_t PhysicalBoxFragment::AdditionalByteSize(bool has_fragment_items) {
-  size_t additional_size = 0;
+uint32_t PhysicalBoxFragment::AdditionalByteSize(bool has_fragment_items) {
+  uint32_t additional_size = 0;
   if (has_fragment_items) {
     AccountSizeAndPadding<FragmentItems>(additional_size);
   }
@@ -415,7 +422,7 @@ PhysicalBoxFragment::PhysicalBoxFragment(
       inflow_bounds.has_value() + !!builder->Style().MayHaveMargin();
 
   if (rare_fields_size > 0 || !builder->table_column_geometries_.empty() ||
-      !builder->reading_flow_nodes_.empty() || builder->gap_geometry_) {
+      builder->reading_flow_nodes_ || builder->gap_geometry_) {
     rare_data_ = MakeGarbageCollected<PhysicalFragmentRareData>(
         has_scrollable_overflow ? &scrollable_overflow : nullptr, borders,
         scrollbar, padding, inflow_bounds, *builder, rare_fields_size);
@@ -469,6 +476,7 @@ PhysicalBoxFragment::PhysicalBoxFragment(
       bit_field_(other.bit_field_),
       first_baseline_(other.first_baseline_),
       last_baseline_(other.last_baseline_),
+      used_position_insets_(other.used_position_insets_),
       ink_overflow_(other.InkOverflowType(), other.ink_overflow_),
       children_(other.children_) {
   SetInkOverflowType(other.InkOverflowType());
@@ -479,6 +487,12 @@ PhysicalBoxFragment::PhysicalBoxFragment(
   if (other.rare_data_) {
     rare_data_ =
         MakeGarbageCollected<PhysicalFragmentRareData>(*other.rare_data_);
+  }
+  if (has_scrollable_overflow) {
+    EnsureRareField(FieldId::kScrollableOverflow).scrollable_overflow =
+        scrollable_overflow;
+  } else if (GetRareField(FieldId::kScrollableOverflow)) {
+    rare_data_->RemoveField(FieldId::kScrollableOverflow);
   }
 }
 
@@ -515,7 +529,8 @@ const LayoutBox* PhysicalBoxFragment::OwnerLayoutBox() const {
     }
   } else {
     // Check |this| and the |LayoutBox| that produced it are in sync.
-    DCHECK(owner_box->PhysicalFragments().Contains(*this));
+    DCHECK(std::ranges::contains(owner_box->PhysicalFragments(), this,
+                                 [](const auto& f) { return &f; }));
     DCHECK_EQ(IsFirstForNode(), this == owner_box->GetPhysicalFragment(0));
   }
 #endif
@@ -536,15 +551,15 @@ PhysicalOffset PhysicalBoxFragment::OffsetFromOwnerLayoutBox() const {
 
   const LayoutBox* owner_box = OwnerLayoutBox();
   DCHECK(owner_box);
-  DCHECK(owner_box->PhysicalFragments().Contains(*this));
+  DCHECK(std::ranges::contains(owner_box->PhysicalFragments(), this,
+                               [](const auto& f) { return &f; }));
   if (owner_box->PhysicalFragmentCount() <= 1)
     return PhysicalOffset();
 
   // When LTR, compute the offset from the first fragment. The first fragment is
   // at the left top of the |LayoutBox| regardless of the writing mode.
-  const auto* containing_block = owner_box->ContainingBlock();
-  const ComputedStyle& containing_block_style = containing_block->StyleRef();
-  if (IsLtr(containing_block_style.Direction())) {
+  const ComputedStyle& container_style = owner_box->ContainingBox()->Style();
+  if (IsLtr(container_style.Direction())) {
     DCHECK_EQ(IsFirstForNode(), this == owner_box->GetPhysicalFragment(0));
     if (IsFirstForNode())
       return PhysicalOffset();
@@ -641,31 +656,18 @@ void PhysicalBoxFragment::SetChildrenInvalid() const {
 }
 
 PhysicalRect PhysicalBoxFragment::SelfInkOverflowRect() const {
-  if (!CanUseFragmentsForInkOverflow()) [[unlikely]] {
-    const auto* owner_box = DynamicTo<LayoutBox>(GetLayoutObject());
-    return owner_box->SelfVisualOverflowRect();
-  }
   if (!HasInkOverflow())
     return LocalRect();
   return ink_overflow_.Self(InkOverflowType(), Size());
 }
 
 PhysicalRect PhysicalBoxFragment::ContentsInkOverflowRect() const {
-  if (!CanUseFragmentsForInkOverflow()) [[unlikely]] {
-    const auto* owner_box = DynamicTo<LayoutBox>(GetLayoutObject());
-    return owner_box->ContentsVisualOverflowRect();
-  }
   if (!HasInkOverflow())
     return LocalRect();
   return ink_overflow_.Contents(InkOverflowType(), Size());
 }
 
 PhysicalRect PhysicalBoxFragment::InkOverflowRect() const {
-  if (!CanUseFragmentsForInkOverflow()) [[unlikely]] {
-    const auto* owner_box = DynamicTo<LayoutBox>(GetLayoutObject());
-    return owner_box->VisualOverflowRect();
-  }
-
   if (!HasInkOverflow())
     return LocalRect();
 
@@ -775,11 +777,27 @@ bool PhysicalBoxFragment::MayIntersect(
     const HitTestResult& result,
     const HitTestLocation& hit_test_location,
     const PhysicalOffset& accumulated_offset) const {
-  if (const auto* box = DynamicTo<LayoutBox>(GetLayoutObject()))
+  const auto* box = DynamicTo<LayoutBox>(GetLayoutObject());
+  if (!box) {
+    // TODO(kojii): (!IsCSSBox() || IsInlineBox()) is not supported yet.
+    // Implement if needed. For now, just return |true| not to do early return.
+    return true;
+  }
+  if (IsOnlyForNode() ||
+      !RuntimeEnabledFeatures::FragmentedBoxVisualOverflowEnabled()) {
     return box->MayIntersect(result, hit_test_location, accumulated_offset);
-  // TODO(kojii): (!IsCSSBox() || IsInlineBox()) is not supported yet. Implement
-  // if needed. For now, just return |true| not to do early return.
-  return true;
+  }
+  PhysicalRect overflow_box;
+  if (result.GetHitTestRequest().IsHitTestVisualOverflow() ||
+      (HasInkOverflow() && (!ShouldClipOverflowAlongBothAxis() ||
+                            (ShouldApplyOverflowClipMargin() &&
+                             Style().OverflowClipMargin()->GetMargin() > 0)))) {
+    overflow_box = InkOverflowRect();
+  } else {
+    overflow_box = LocalRect();
+  }
+  overflow_box.Move(accumulated_offset);
+  return hit_test_location.Intersects(overflow_box);
 }
 
 PhysicalSize PhysicalBoxFragment::ScrollSize() const {
@@ -829,34 +847,6 @@ PhysicalFragmentRareData::RareField& PhysicalBoxFragment::EnsureRareField(
   return rare_data_->EnsureField(id);
 }
 
-PhysicalBoxFragment::MutableForStyleRecalc::MutableForStyleRecalc(
-    base::PassKey<PhysicalBoxFragment>,
-    PhysicalBoxFragment& fragment)
-    : fragment_(fragment) {}
-
-void PhysicalBoxFragment::MutableForStyleRecalc::SetScrollableOverflow(
-    const PhysicalRect& scrollable_overflow) {
-  bool has_scrollable_overflow =
-      scrollable_overflow != PhysicalRect({}, fragment_.Size());
-  if (has_scrollable_overflow) {
-    // This can be called even without rare_data_.
-    fragment_.EnsureRareField(FieldId::kScrollableOverflow)
-        .scrollable_overflow = scrollable_overflow;
-  } else if (fragment_.HasScrollableOverflow()) {
-    fragment_.rare_data_->RemoveField(FieldId::kScrollableOverflow);
-  }
-}
-
-PhysicalBoxFragment::MutableForStyleRecalc
-PhysicalBoxFragment::GetMutableForStyleRecalc() const {
-  DCHECK(layout_object_->GetDocument().Lifecycle().GetState() ==
-             DocumentLifecycle::kInStyleRecalc ||
-         layout_object_->GetDocument().Lifecycle().GetState() ==
-             DocumentLifecycle::kInPerformLayout);
-  return MutableForStyleRecalc(base::PassKey<PhysicalBoxFragment>(),
-                               const_cast<PhysicalBoxFragment&>(*this));
-}
-
 PhysicalBoxFragment::MutableForContainerLayout::MutableForContainerLayout(
     base::PassKey<PhysicalBoxFragment>,
     PhysicalBoxFragment& fragment)
@@ -864,6 +854,9 @@ PhysicalBoxFragment::MutableForContainerLayout::MutableForContainerLayout(
 
 void PhysicalBoxFragment::MutableForContainerLayout::SetMargins(
     const PhysicalBoxStrut& margins) {
+  if (margins.IsZero() && !fragment_.GetRareField(FieldId::kMargins)) {
+    return;
+  }
   // This can be called even without rare_data_.
   fragment_.EnsureRareField(FieldId::kMargins).margins = margins;
 }
@@ -880,7 +873,6 @@ void PhysicalBoxFragment::MutableForContainerLayout::
 
 PhysicalBoxFragment::MutableForContainerLayout
 PhysicalBoxFragment::GetMutableForContainerLayout() const {
-  DCHECK(layout_object_->GetFrameView()->IsInPerformLayout());
   return MutableForContainerLayout(base::PassKey<PhysicalBoxFragment>(),
                                    const_cast<PhysicalBoxFragment&>(*this));
 }
@@ -954,10 +946,18 @@ void PhysicalBoxFragment::MutableForOofFragmentation::Merge(
 }
 
 void PhysicalBoxFragment::MutableForOofFragmentation::UpdateOverflow() {
-  PhysicalRect overflow =
+  const PhysicalRect scrollable_overflow =
       ScrollableOverflowCalculator::RecalculateScrollableOverflowForFragment(
           fragment_, /* has_block_fragmentation */ true);
-  fragment_.GetMutableForStyleRecalc().SetScrollableOverflow(overflow);
+  bool has_scrollable_overflow =
+      scrollable_overflow != PhysicalRect({}, fragment_.Size());
+  if (has_scrollable_overflow) {
+    // This can be called even without rare_data_.
+    fragment_.EnsureRareField(FieldId::kScrollableOverflow)
+        .scrollable_overflow = scrollable_overflow;
+  } else if (fragment_.HasScrollableOverflow()) {
+    fragment_.rare_data_->RemoveField(FieldId::kScrollableOverflow);
+  }
 }
 
 void PhysicalBoxFragment::SetInkOverflow(const PhysicalRect& self,
@@ -972,15 +972,22 @@ void PhysicalBoxFragment::RecalcInkOverflow(const PhysicalRect& contents) {
 }
 
 void PhysicalBoxFragment::RecalcInkOverflow() {
-  DCHECK(CanUseFragmentsForInkOverflow());
   const LayoutObject* layout_object = GetSelfOrContainerLayoutObject();
   DCHECK(layout_object);
   DCHECK(
       !DisplayLockUtilities::LockedAncestorPreventingPrePaint(*layout_object));
 
   PhysicalRect contents_rect;
-  if (!layout_object->ChildPrePaintBlockedByDisplayLock())
+  if (!layout_object->ChildPrePaintBlockedByDisplayLock()) {
     contents_rect = RecalcContentsInkOverflow();
+
+    // Replaced content generates leaf fragments in a tree, but there may be new
+    // fragment trees inside, such as SVG text.
+    if (auto* layout_replaced =
+            DynamicTo<LayoutReplaced>(GetMutableLayoutObject())) {
+      layout_replaced->RecalcVisualOverflowForChildren();
+    }
+  }
   RecalcInkOverflow(contents_rect);
 
   // Copy the computed values to the |OwnerBox| if |this| is the last fragment.
@@ -1004,7 +1011,8 @@ void PhysicalBoxFragment::RecalcInkOverflow() {
   DCHECK_EQ(MutableOwnerLayoutBox(), GetMutableLayoutObject());
   LayoutBox* owner_box = To<LayoutBox>(GetMutableLayoutObject());
   DCHECK(owner_box);
-  DCHECK(owner_box->PhysicalFragments().Contains(*this));
+  DCHECK(std::ranges::contains(owner_box->PhysicalFragments(), this,
+                               [](const auto& f) { return &f; }));
   owner_box->CopyVisualOverflowFromFragments();
 }
 
@@ -1016,6 +1024,10 @@ PhysicalRect PhysicalBoxFragment::RecalcContentsInkOverflow() {
       *GetSelfOrContainerLayoutObject()));
   DCHECK(
       !GetSelfOrContainerLayoutObject()->ChildPrePaintBlockedByDisplayLock());
+
+  if (auto* layout_replaced = DynamicTo<LayoutReplaced>(layout_object_.Get())) {
+    return layout_replaced->ComputeContentsVisualOverflow();
+  }
 
   PhysicalRect contents_rect;
   if (const FragmentItems* items = Items()) {
@@ -1050,17 +1062,8 @@ PhysicalRect PhysicalBoxFragment::RecalcContentsInkOverflow() {
       continue;
     DCHECK(!child_fragment->IsOutOfFlowPositioned());
 
-    PhysicalRect child_rect;
-    if (child_fragment->CanUseFragmentsForInkOverflow()) {
-      child_fragment->GetMutableForPainting().RecalcInkOverflow();
-      child_rect = child_fragment->InkOverflowRect();
-    } else {
-      LayoutBox* child_layout_object = child_fragment->MutableOwnerLayoutBox();
-      DCHECK(child_layout_object);
-      DCHECK(!child_layout_object->CanUseFragmentsForVisualOverflow());
-      child_layout_object->RecalcVisualOverflow();
-      child_rect = child_layout_object->VisualOverflowRect();
-    }
+    child_fragment->GetMutableForPainting().RecalcInkOverflow();
+    PhysicalRect child_rect = child_fragment->InkOverflowRect();
     child_rect.offset += child.offset;
     contents_rect.Unite(child_rect);
   }
@@ -1084,11 +1087,7 @@ PhysicalRect PhysicalBoxFragment::ComputeSelfInkOverflow() const {
           To<LayoutTableCell>(child_fragment.GetLayoutObject());
       if (child_layout_object->ComputedRowSpan() == 1)
         continue;
-      PhysicalRect child_rect;
-      if (child_fragment.CanUseFragmentsForInkOverflow())
-        child_rect = child_fragment.InkOverflowRect();
-      else
-        child_rect = child_layout_object->VisualOverflowRect();
+      PhysicalRect child_rect = child_fragment.InkOverflowRect();
       child_rect.offset += child.offset;
       ink_overflow.Unite(child_rect);
     }
@@ -1808,7 +1807,7 @@ void PhysicalBoxFragment::CheckSameForSimplifiedLayout(
   DCHECK_EQ(type_, other.type_);
   DCHECK_EQ(sub_type_, other.sub_type_);
   DCHECK_EQ(style_variant_, other.style_variant_);
-  DCHECK_EQ(is_hidden_for_paint_, other.is_hidden_for_paint_);
+  DCHECK_EQ(is_hidden_due_to_layout_, other.is_hidden_due_to_layout_);
   DCHECK_EQ(is_opaque_, other.is_opaque_);
   DCHECK_EQ(is_block_in_inline_, other.is_block_in_inline_);
   DCHECK_EQ(is_math_fraction_, other.is_math_fraction_);
@@ -1871,6 +1870,8 @@ void PhysicalBoxFragment::CheckSameForSimplifiedLayout(
   if (IsTableCell()) {
     DCHECK_EQ(TableCellColumnIndex(), other.TableCellColumnIndex());
   }
+
+  DCHECK_EQ(ReadingFlowNodes(), other.ReadingFlowNodes());
 
   DCHECK(Borders() == other.Borders());
   DCHECK(Padding() == other.Padding());
@@ -1967,6 +1968,7 @@ void PhysicalBoxFragment::AssertFragmentTreeChildren(
 void PhysicalBoxFragment::TraceAfterDispatch(Visitor* visitor) const {
   visitor->Trace(children_);
   visitor->Trace(rare_data_);
+  visitor->Trace(used_position_insets_);
   // |HasItems()| and |ConstHasRareData()| are const and set
   // in ctor so they do not cause TOCTOU.
   if (HasItems())

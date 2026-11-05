@@ -8,8 +8,8 @@
 #include <memory>
 #include <optional>
 
-#include "base/containers/flat_map.h"
 #include "base/time/time.h"
+#include "base/types/expected.h"
 #include "media/base/video_codecs.h"
 #include "media/base/video_color_space.h"
 #include "media/base/video_decoder_config.h"
@@ -21,6 +21,7 @@
 #include "third_party/blink/renderer/modules/webcodecs/encoder_base.h"
 #include "third_party/blink/renderer/modules/webcodecs/hardware_preference.h"
 #include "third_party/blink/renderer/modules/webcodecs/video_frame.h"
+#include "third_party/blink/renderer/platform/wtf/vector.h"
 #include "ui/gfx/color_space.h"
 
 namespace media {
@@ -131,9 +132,11 @@ class MODULES_EXPORT VideoEncoder : public EncoderBase<VideoEncoderTraits> {
   // This will execute shortly after the async readback completes.
   void OnReadbackDone(Request* request,
                       scoped_refptr<media::VideoFrame> txt_frame,
+                      media::VideoEncoder::EncodeOptions encode_options,
                       media::VideoEncoder::EncoderStatusCB done_callback,
                       scoped_refptr<media::VideoFrame> result_frame);
-  static media::EncoderStatus::Or<std::unique_ptr<media::VideoEncoder>>
+  static base::expected<std::unique_ptr<media::VideoEncoder>,
+                        media::EncoderStatus>
   CreateSoftwareVideoEncoder(VideoEncoder* self,
                              bool fallback,
                              media::VideoCodec codec);
@@ -144,7 +147,8 @@ class MODULES_EXPORT VideoEncoder : public EncoderBase<VideoEncoderTraits> {
 
   // Virtual for UTs.
   // Returns the VideoEncoder.
-  virtual media::EncoderStatus::Or<std::unique_ptr<media::VideoEncoder>>
+  virtual base::expected<std::unique_ptr<media::VideoEncoder>,
+                         media::EncoderStatus>
   CreateMediaVideoEncoder(const ParsedConfig& config,
                           media::GpuVideoAcceleratorFactories* gpu_factories,
                           bool& is_platform_encoder);
@@ -155,7 +159,7 @@ class MODULES_EXPORT VideoEncoder : public EncoderBase<VideoEncoderTraits> {
       Request* request,
       media::GpuVideoAcceleratorFactories* gpu_factories);
   void ContinueConfigureAfterFlush(Request* request);
-  media::EncoderStatus::Or<std::unique_ptr<media::VideoEncoder>>
+  base::expected<std::unique_ptr<media::VideoEncoder>, media::EncoderStatus>
   CreateAcceleratedVideoEncoder(
       media::VideoCodecProfile profile,
       const media::VideoEncoder::Options& options,
@@ -185,19 +189,25 @@ class MODULES_EXPORT VideoEncoder : public EncoderBase<VideoEncoderTraits> {
   // True if a running video encoder is hardware accelerated.
   bool is_platform_encoder_ = false;
 
-  // Per-frame metadata to be applied to outputs, linked by timestamp.
+  // Per-frame metadata to be applied to outputs, ordered by input sequence.
   struct FrameMetadata {
+    base::TimeDelta timestamp;
     base::TimeDelta duration;
     media::VideoTransformation transformation;
   };
-  base::flat_map<base::TimeDelta, FrameMetadata> frame_metadata_;
+  Vector<FrameMetadata> frame_metadata_;
 
   // Buffers returned by getAllFrameBuffers()
   HeapVector<Member<VideoEncoderBuffer>> frame_reference_buffers_;
 
+  // The transformation corresponding to the first input received by
+  // OnNewEncode() after configure(). Used to reject inputs with mismatched
+  // orientations.
+  std::optional<media::VideoTransformation> first_input_transformation_;
+
   // The transformation corresponding to the last input received by
   // ProcessEncode(). Used to request a key frame.
-  std::optional<media::VideoTransformation> first_input_transformation_;
+  std::optional<media::VideoTransformation> last_input_transformation_;
 
   // Latest VideoEncoderInfo reported by encoder
   media::VideoEncoderInfo encoder_info_;

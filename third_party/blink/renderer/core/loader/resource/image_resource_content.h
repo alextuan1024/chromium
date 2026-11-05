@@ -6,9 +6,9 @@
 #define THIRD_PARTY_BLINK_RENDERER_CORE_LOADER_RESOURCE_IMAGE_RESOURCE_CONTENT_H_
 
 #include <cstddef>
+#include <optional>
 
 #include "base/auto_reset.h"
-#include "base/dcheck_is_on.h"
 #include "base/memory/scoped_refptr.h"
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/core/loader/resource/image_resource_observer.h"
@@ -149,7 +149,7 @@ class CORE_EXPORT ImageResourceContent final
   base::TimeTicks LoadStart() const override;
   base::TimeTicks LoadEnd() const override;
   AtomicString MediaType() const override;
-  bool IsCorsSameOrigin() const;
+  bool IsCorsSameOrigin() const override;
   const ResourceResponse& GetResponse() const;
   std::optional<ResourceError> GetResourceError() const;
 
@@ -203,8 +203,7 @@ class CORE_EXPORT ImageResourceContent final
 
   // Returns priority information to be used for setting the Resource's
   // priority. This is NOT the current Resource's priority.
-  std::pair<std::optional<ResourcePriority>, std::optional<ResourcePriority>>
-  PriorityFromObservers() const;
+  std::optional<ResourcePriority> PriorityFromObservers() const;
   // Returns the current Resource's priority used by MediaTiming.
   std::optional<WebURLRequest::Priority> RequestPriority() const override;
   scoped_refptr<const SharedBuffer> ResourceBuffer() const;
@@ -217,6 +216,10 @@ class CORE_EXPORT ImageResourceContent final
   }
   bool CanBeSpeculativelyDecoded() const;
   ImageDecoder::CompressionFormat GetCompressionFormat() const;
+
+  // Returns the number of bytes of image data as held by the contained
+  // Image. Returns std::nullopt if there's no image, or the image has no data.
+  std::optional<size_t> ImageDataSize() const;
 
   // Returns the number of bytes of image data which should be used for entropy
   // calculations. Ideally this should exclude metadata from within the image
@@ -283,7 +286,6 @@ class CORE_EXPORT ImageResourceContent final
   // when layout is clean and cached for use when layout may not be clean.
   struct {
     std::optional<ResourcePriority> priority_;
-    std::optional<ResourcePriority> priority_excluding_image_loader_;
     gfx::Size max_size_;
     InterpolationQuality max_interpolation_quality_;
   } cached_info_;
@@ -300,9 +302,7 @@ class CORE_EXPORT ImageResourceContent final
 
   bool is_broken_ = false;
 
-#if DCHECK_IS_ON()
   bool is_update_image_being_called_ = false;
-#endif
 };
 
 template <>

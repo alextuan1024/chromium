@@ -129,7 +129,6 @@ static_library("update_client") {
     "pipeline.h",
     "pipeline_util.cc",
     "pipeline_util.h",
-    "protocol_definition.cc",
     "protocol_definition.h",
     "protocol_handler.cc",
     "protocol_handler.h",
@@ -201,6 +200,8 @@ static_library("update_client") {
     sources += [
       "background_downloader_win.cc",
       "background_downloader_win.h",
+      "delivery_optimization_downloader_win.cc",
+      "delivery_optimization_downloader_win.h",
     ]
   }
 }
@@ -336,7 +337,10 @@ source_set("unit_tests") {
     ]
 
     if (is_win) {
-      sources += [ "background_downloader_win_unittest.cc" ]
+      sources += [
+        "background_downloader_win_unittest.cc",
+        "delivery_optimization_downloader_win_unittest.cc",
+      ]
     }
 
     if (is_mac) {
@@ -362,6 +366,7 @@ source_set("unit_tests") {
     "//components/services/patch/public/mojom",
     "//components/services/unzip:in_process",
     "//components/version_info",
+    "//crypto",
     "//net:test_support",
     "//services/network:test_support",
     "//services/network/public/cpp",

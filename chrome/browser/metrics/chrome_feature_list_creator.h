@@ -30,6 +30,10 @@ namespace network_time {
 class NetworkTimeTracker;
 }  // namespace network_time
 
+namespace variations {
+struct SeedResponse;
+}  // namespace variations
+
 class ChromeMetricsServicesManagerClient;
 
 // The ChromeFeatureListCreator creates the FeatureList and classes required for
@@ -51,8 +55,14 @@ class ChromeFeatureListCreator {
   ~ChromeFeatureListCreator();
 
   // Initializes all necessary parameters to create the feature list and calls
-  // base::FeatureList::SetInstance() to set the global instance.
+  // base::FeatureList::SetInstance() to set the global instance. Calls
+  // CreatePrefService() if it has not already been called.
   void CreateFeatureList();
+
+  // Creates Local State. On Android, this may be called before
+  // CreateFeatureList() so that Local State is available while the FeatureList
+  // waits for the first-run variations seed.
+  void CreatePrefService();
 
   // Sets the application locale and verifies (via a CHECK) that it matches
   // what was used when creating field trials.
@@ -79,6 +89,10 @@ class ChromeFeatureListCreator {
 #if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_CHROMEOS)
   std::unique_ptr<installer::InitialPreferences> TakeInitialPrefs();
 #endif
+
+  // Passes ownership of the initial variations seed to the caller. Returns
+  // nullptr if there is no seed.
+  std::unique_ptr<variations::SeedResponse> TakeInitialSeed();
 
   PrefService* local_state() { return local_state_.get(); }
   policy::ChromeBrowserPolicyConnector* browser_policy_connector() {
@@ -108,7 +122,6 @@ class ChromeFeatureListCreator {
 
   ChromeFeatureListCreator();
 
-  void CreatePrefService();
   void ConvertFlagsToSwitches();
   void CreateNetworkTimeTracker();
 
@@ -118,9 +131,8 @@ class ChromeFeatureListCreator {
 
   void CreateMetricsServices();
 
-  // Imports variations initial preference any preferences (to local state)
-  // needed for first run. This is always called and early outs if not
-  // first-run.
+  // Loads the initial preferences and the initial variations seed needed for
+  // first run. This is always called and early outs if not first-run.
   void SetupInitialPrefs();
 
   // Must be destroyed after |local_state_|.
@@ -149,6 +161,7 @@ class ChromeFeatureListCreator {
 #if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_CHROMEOS)
   std::unique_ptr<installer::InitialPreferences> installer_initial_prefs_;
 #endif
+  std::unique_ptr<variations::SeedResponse> initial_seed_;
 
 #if BUILDFLAG(IS_CHROMEOS)
   // On ChromeOS, the platform needs to be able to access the

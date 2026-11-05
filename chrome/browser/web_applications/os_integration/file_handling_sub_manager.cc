@@ -23,6 +23,7 @@
 #include "chrome/browser/web_applications/web_app_registrar.h"
 #include "chrome/browser/web_applications/web_app_registry_update.h"
 #include "components/services/app_service/public/cpp/file_handler.h"
+#include "third_party/blink/public/common/manifest/manifest_util.h"
 
 #if BUILDFLAG(IS_MAC)
 #include "chrome/browser/web_applications/os_integration/os_integration_manager.h"
@@ -38,10 +39,13 @@ apps::FileHandlers ConvertFileHandlingProtoToFileHandlers(
   for (const auto& file_handler_proto : file_handling_proto.file_handlers()) {
     apps::FileHandler file_handler;
     file_handler.action = GURL(file_handler_proto.action());
-    DCHECK(file_handler.action.is_valid());
+    CHECK(file_handler.action.is_valid(), base::NotFatalUntil::M162);
     file_handler.display_name =
         base::UTF8ToUTF16(file_handler_proto.display_name());
     for (const auto& accept_entry_proto : file_handler_proto.accept()) {
+      if (!blink::IsValidFileHandlerMimeType(accept_entry_proto.mimetype())) {
+        continue;
+      }
       apps::FileHandler::AcceptEntry accept_entry;
       accept_entry.mime_type = accept_entry_proto.mimetype();
       for (const auto& file_extension : accept_entry_proto.file_extensions()) {
@@ -49,7 +53,9 @@ apps::FileHandlers ConvertFileHandlingProtoToFileHandlers(
       }
       file_handler.accept.push_back(std::move(accept_entry));
     }
-    file_handlers.push_back(std::move(file_handler));
+    if (!file_handler.accept.empty()) {
+      file_handlers.push_back(std::move(file_handler));
+    }
   }
   return file_handlers;
 }
@@ -60,12 +66,6 @@ bool HasFileHandling(
           os_integration_state.file_handling().file_handlers_size() > 0);
 }
 
-bool IsSchemeHandlerMimeType(std::string_view mime_type) {
-  return base::EqualsCaseInsensitiveASCII(mime_type, "x-scheme-handler") ||
-         base::StartsWith(mime_type, "x-scheme-handler/",
-                          base::CompareCase::INSENSITIVE_ASCII);
-}
-
 }  // namespace
 
 std::set<std::string> GetFileExtensionsFromFileHandlingProto(
@@ -73,6 +73,9 @@ std::set<std::string> GetFileExtensionsFromFileHandlingProto(
   std::set<std::string> file_extensions;
   for (const auto& file_handler : file_handling.file_handlers()) {
     for (const auto& accept_entry : file_handler.accept()) {
+      if (!blink::IsValidFileHandlerMimeType(accept_entry.mimetype())) {
+        continue;
+      }
       for (const auto& extension : accept_entry.file_extensions()) {
         file_extensions.insert(extension);
       }
@@ -87,10 +90,11 @@ std::set<std::string> GetMimeTypesFromFileHandlingProto(
   std::set<std::string> mime_types;
   for (const auto& file_handler : file_handling.file_handlers()) {
     for (const auto& accept_entry : file_handler.accept()) {
-      // "x-scheme-handler/*" is a FreeDesktop pseudo-MIME type used for URL
-      // scheme associations, not a media type for file handling. Exclude it
-      // when extracting file handling MIME types.
-      if (!IsSchemeHandlerMimeType(accept_entry.mimetype())) {
+      // Only include valid standard IANA top-level MIME types. FreeDesktop
+      // pseudo-MIME types (such as "x-scheme-handler/*", "x-content/*",
+      // "x-directory/*", and "x-special/*") and other "x-*" top-level types
+      // are excluded when extracting file handling MIME types.
+      if (blink::IsValidFileHandlerMimeType(accept_entry.mimetype())) {
         mime_types.insert(accept_entry.mimetype());
       }
     }
@@ -109,7 +113,7 @@ void FileHandlingSubManager::Configure(
     const webapps::AppId& app_id,
     proto::os_state::WebAppOsIntegration& desired_state,
     base::OnceClosure configure_done) {
-  DCHECK(!desired_state.has_file_handling());
+  CHECK(!desired_state.has_file_handling(), base::NotFatalUntil::M162);
   const bool is_user_disallowed =
       provider_->registrar_unsafe().GetAppFileHandlerUserApprovalState(
           app_id) == ApiApprovalState::kDisallowed;
@@ -135,16 +139,17 @@ void FileHandlingSubManager::Configure(
   for (const auto& file_handler :
        *provider_->registrar_unsafe().GetAppFileHandlers(app_id)) {
     proto::os_state::FileHandling::FileHandler file_handler_proto;
-    DCHECK(file_handler.action.is_valid());
+    CHECK(file_handler.action.is_valid(), base::NotFatalUntil::M162);
     file_handler_proto.set_action(file_handler.action.spec());
     file_handler_proto.set_display_name(
         base::UTF16ToUTF8(file_handler.display_name));
 
     for (const auto& accept_entry : file_handler.accept) {
-      // Exclude "x-scheme-handler/*" pseudo-MIME types so that URL scheme
-      // registrations cannot be injected via file handlers into OS file
-      // handling integration.
-      if (IsSchemeHandlerMimeType(accept_entry.mime_type)) {
+      // Exclude invalid and "x-*" top-level pseudo-MIME types (such as
+      // "x-scheme-handler/*", "x-content/*", "x-directory/*", and
+      // "x-special/*") so non-file associations cannot be injected via file
+      // handlers into OS file handling integration.
+      if (!blink::IsValidFileHandlerMimeType(accept_entry.mime_type)) {
         continue;
       }
       auto* accept_entry_proto = file_handler_proto.add_accept();
@@ -243,6 +248,13 @@ void FileHandlingSubManager::Register(
     return;
   }
 
+  apps::FileHandlers file_handlers =
+      ConvertFileHandlingProtoToFileHandlers(desired_state.file_handling());
+  if (file_handlers.empty()) {
+    std::move(callback).Run();
+    return;
+  }
+
   ResultCallback metrics_callback =
       base::BindOnce([](Result result) {
         base::UmaHistogramBoolean("WebApp.FileHandlersRegistration.Result",
@@ -251,9 +263,7 @@ void FileHandlingSubManager::Register(
 
   RegisterFileHandlersWithOs(
       app_id, provider_->registrar_unsafe().GetAppShortName(app_id),
-      profile_path_,
-      ConvertFileHandlingProtoToFileHandlers(desired_state.file_handling()),
-      std::move(metrics_callback));
+      profile_path_, std::move(file_handlers), std::move(metrics_callback));
 }
 
 }  // namespace web_app

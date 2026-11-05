@@ -267,19 +267,6 @@
           'isolated_scripts': 'linux_chromeos_isolated_scripts',
         },
       },
-      'mac-chrome': {
-        'additional_compile_targets': [
-          'chrome',
-          'chrome/installer/mac',
-        ],
-        'mixins': [
-          'chrome-swarming-pool',
-          'mac_14_x64',
-        ],
-        'test_suites': {
-          'isolated_scripts': 'chrome_isolated_script_tests',
-        },
-      },
       'win-branded-rel': {
         'additional_compile_targets': [
           'chrome',
@@ -594,52 +581,34 @@
     'name': 'client.openscreen.chromium',
     'machines': {
       'chromium_linux_x64': {
+        'use_swarming': False,
         'additional_compile_targets': [
           'chrome/browser/media/router',
-          'chrome/browser/media/router:openscreen_unittests',
           'chrome/browser/media/router:unittests',
-          'components/media_router/common/providers/cast/channel',
-          'components/media_router/common/providers/cast/channel:unit_tests',
-          'components/media_router/common/providers/cast/certificate',
-          'components/media_router/common/providers/cast/certificate:unit_tests',
-          'components/mirroring/browser',
-          'components/mirroring/service:mirroring_service',
-          'components/mirroring:mirroring_tests',
-          'components/mirroring:mirroring_unittests',
-          'components/openscreen_platform',
         ],
+        'test_suites': {
+          'gtest_tests': 'openscreen_chromium_gtests',
+        },
       },
       'chromium_mac_arm64': {
+        'use_swarming': False,
         'additional_compile_targets': [
           'chrome/browser/media/router',
-          'chrome/browser/media/router:openscreen_unittests',
           'chrome/browser/media/router:unittests',
-          'components/media_router/common/providers/cast/channel',
-          'components/media_router/common/providers/cast/channel:unit_tests',
-          'components/media_router/common/providers/cast/certificate',
-          'components/media_router/common/providers/cast/certificate:unit_tests',
-          'components/mirroring/browser',
-          'components/mirroring/service:mirroring_service',
-          'components/mirroring:mirroring_tests',
-          'components/mirroring:mirroring_unittests',
-          'components/openscreen_platform',
         ],
+        'test_suites': {
+          'gtest_tests': 'openscreen_chromium_gtests',
+        },
       },
       'chromium_win_x64': {
+        'use_swarming': False,
         'additional_compile_targets': [
           'chrome/browser/media/router',
-          'chrome/browser/media/router:openscreen_unittests',
           'chrome/browser/media/router:unittests',
-          'components/media_router/common/providers/cast/channel',
-          'components/media_router/common/providers/cast/channel:unit_tests',
-          'components/media_router/common/providers/cast/certificate',
-          'components/media_router/common/providers/cast/certificate:unit_tests',
-          'components/mirroring/browser',
-          'components/mirroring/service:mirroring_service',
-          'components/mirroring:mirroring_tests',
-          'components/mirroring:mirroring_unittests',
-          'components/openscreen_platform',
         ],
+        'test_suites': {
+          'gtest_tests': 'openscreen_chromium_gtests',
+        },
       },
     },
   },
@@ -977,7 +946,7 @@
       'model_validation-linux': {
         'mixins': [
           'chrome-intelligence-swarming-pool',
-          'linux-jammy',
+          'linux-ubuntu',
           'x86-64',
         ],
         'test_suites': {
@@ -1090,7 +1059,7 @@
         ],
         'mixins': [
           'chrome-intelligence-swarming-pool',
-          'linux-jammy',
+          'linux-ubuntu',
           'x86-64',
         ],
         'test_suites': {
@@ -1147,7 +1116,6 @@
         ],
         'mixins': [
           'chrome-intelligence-swarming-pool',
-          'win10',
         ],
         'test_suites': {
            'gtest_tests': 'optimization_guide_win_gtests',
@@ -1161,7 +1129,6 @@
         ],
         'mixins': [
           'chrome-intelligence-swarming-pool',
-          'win10',
         ],
         'test_suites': {
            'gtest_tests': 'optimization_guide_win_gtests',
@@ -1176,7 +1143,7 @@
         'mixins': [
           'chrome-intelligence-swarming-pool',
           'nvidia_geforce_gtx_1660',
-          'linux-jammy',
+          'linux-ubuntu',
         ],
         'test_suites': {
            'gtest_tests': 'optimization_guide_gpu_gtests',

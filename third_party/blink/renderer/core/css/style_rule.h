@@ -26,11 +26,11 @@
 
 #include "base/bits.h"
 #include "base/compiler_specific.h"
+#include "base/numerics/safe_conversions.h"
 #include "base/types/pass_key.h"
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/core/css/container_query.h"
 #include "third_party/blink/renderer/core/css/container_query_set.h"
-#include "third_party/blink/renderer/core/css/css_private_variable.h"
 #include "third_party/blink/renderer/core/css/css_property_value_set.h"
 #include "third_party/blink/renderer/core/css/css_selector_list.h"
 #include "third_party/blink/renderer/core/css/css_syntax_definition.h"
@@ -52,6 +52,7 @@ class CSSStyleSheet;
 class MixinParameterBindings;
 class ExecutionContext;
 class NavigationQuery;
+class ResourceFetcher;
 
 class CORE_EXPORT StyleRuleBase : public GarbageCollected<StyleRuleBase> {
  public:
@@ -83,7 +84,6 @@ class CORE_EXPORT StyleRuleBase : public GarbageCollected<StyleRuleBase> {
     kViewTransition,
     kFunction,
     kMixin,
-    kResult,
     kPrivate,
     kApplyMixin,
     kContents,
@@ -140,7 +140,6 @@ class CORE_EXPORT StyleRuleBase : public GarbageCollected<StyleRuleBase> {
   }
   bool IsFunctionRule() const { return GetType() == kFunction; }
   bool IsMixinRule() const { return GetType() == kMixin; }
-  bool IsResultRule() const { return GetType() == kResult; }
   bool IsPrivateRule() const { return GetType() == kPrivate; }
   bool IsApplyMixinRule() const { return GetType() == kApplyMixin; }
   bool IsContentsRule() const { return GetType() == kContents; }
@@ -181,25 +180,26 @@ class CORE_EXPORT StyleRuleBase : public GarbageCollected<StyleRuleBase> {
 
 // A single rule from a stylesheet. Contains a selector list (one or more
 // complex selectors) and a collection of style properties to be applied where
-// those selectors match. These are output by CSSParserImpl.
+// those selectors match. These are output by CSSParserImpl. A kPrivate
+// StyleRule (@private) has no selectors.
 //
 // Note that since this we generate so many StyleRule objects, and all of them
-// have at least one selector, the selector list is not allocated separately as
-// on a CSSSelectorList. Instead, we put the CSSSelectors immediately after the
-// StyleRule object. This both saves memory (since we don't need the pointer,
-// or any of the extra allocation overhead), and makes it likely that the
-// CSSSelectors are on the same cache line as the StyleRule. (On the flip side,
-// it makes it unlikely that the CSSSelector's RareData is on the same cache
-// line as the CSSSelector itself, but it is still overall a good tradeoff
-// for us.) StyleRule provides an API that is a subset of CSSSelectorList,
-// partially implemented using its static member functions.
+// have at least one selector except for private rules, the selector list is not
+// allocated separately as on a CSSSelectorList. Instead, we put the
+// CSSSelectors immediately after the StyleRule object. This both saves memory
+// (since we don't need the pointer, or any of the extra allocation overhead),
+// and makes it likely that the CSSSelectors are on the same cache line as the
+// StyleRule. (On the flip side, it makes it unlikely that the CSSSelector's
+// RareData is on the same cache line as the CSSSelector itself, but it is still
+// overall a good tradeoff for us.) StyleRule provides an API that is a subset
+// of CSSSelectorList, partially implemented using its static member functions.
 class CORE_EXPORT StyleRule : public StyleRuleBase {
   static AdditionalBytes AdditionalBytesForSelectors(size_t flattened_size) {
     constexpr size_t padding_bytes =
         base::bits::AlignUp(sizeof(StyleRule), alignof(CSSSelector)) -
         sizeof(StyleRule);
-    return AdditionalBytes{(sizeof(CSSSelector) * flattened_size) +
-                           padding_bytes};
+    return AdditionalBytes{base::checked_cast<uint32_t>(
+        (sizeof(CSSSelector) * flattened_size) + padding_bytes)};
   }
 
  public:
@@ -239,6 +239,11 @@ class CORE_EXPORT StyleRule : public StyleRuleBase {
         base::PassKey<StyleRule>(), selectors, std::move(other));
   }
 
+  static StyleRule* CreatePrivateRule(CSSPropertyValueSet* properties) {
+    return MakeGarbageCollected<StyleRule>(
+        AdditionalBytesForSelectors(0), base::PassKey<StyleRule>(), properties);
+  }
+
   // Constructors. Note that these expect that the StyleRule has been
   // allocated on the Oilpan heap, with <flattened_size> * sizeof(CSSSelector)
   // additional bytes after the StyleRule (flattened_size is the number of
@@ -259,6 +264,7 @@ class CORE_EXPORT StyleRule : public StyleRuleBase {
   StyleRule(base::PassKey<StyleRule>,
             base::span<CSSSelector> selector_vector,
             StyleRule&&);
+  StyleRule(base::PassKey<StyleRule>, CSSPropertyValueSet*);
   StyleRule(const StyleRule&) = delete;
   ~StyleRule();
 
@@ -268,7 +274,9 @@ class CORE_EXPORT StyleRule : public StyleRuleBase {
   }
 
   // Partial subset of the CSSSelector API.
-  const CSSSelector* FirstSelector() const { return SelectorArray(); }
+  const CSSSelector* FirstSelector() const {
+    return IsPrivateRule() ? nullptr : SelectorArray();
+  }
   const CSSSelector& SelectorAt(wtf_size_t index) const {
     return UNSAFE_BUFFERS(SelectorArray()[index]);
   }
@@ -287,7 +295,8 @@ class CORE_EXPORT StyleRule : public StyleRuleBase {
     return SelectorIndex(*next);
   }
   String SelectorsText() const {
-    return CSSSelectorList::SelectorsText(FirstSelector());
+    return IsPrivateRule() ? String()
+                           : CSSSelectorList::SelectorsText(FirstSelector());
   }
 
   const CSSPropertyValueSet& Properties() const;
@@ -296,7 +305,7 @@ class CORE_EXPORT StyleRule : public StyleRuleBase {
   static unsigned AverageSizeInBytes();
 
   // Helper function to avoid parsing lazy properties when not needed.
-  bool PropertiesHaveFailedOrCanceledSubresources() const;
+  bool PropertiesHaveFailedOrCanceledSubresources(ResourceFetcher*) const;
 
   void TraceAfterDispatch(blink::Visitor*) const;
 
@@ -693,6 +702,7 @@ class CORE_EXPORT StyleRuleMixin : public StyleRuleGroup {
  public:
   StyleRuleMixin(AtomicString name,
                  HeapVector<StyleRuleFunction::Parameter> parameters,
+                 PrivateNameMap authored_private_names,
                  HeapVector<Member<StyleRuleBase>> child_rules);
   StyleRuleMixin(const StyleRuleMixin&) = delete;
   StyleRuleMixin(const StyleRuleMixin&,
@@ -702,41 +712,18 @@ class CORE_EXPORT StyleRuleMixin : public StyleRuleGroup {
   const HeapVector<StyleRuleFunction::Parameter>& GetParameters() const {
     return parameters_;
   }
+  // Maps the hygienic name of each @private variable declared in the mixin,
+  // including in nested rules, to its authored name.
+  const PrivateNameMap& GetAuthoredPrivateNames() const {
+    return authored_private_names_;
+  }
 
   void TraceAfterDispatch(blink::Visitor*) const;
 
  private:
   AtomicString name_;
   HeapVector<StyleRuleFunction::Parameter> parameters_;
-};
-
-// A @result rule, representing the applied result of a mixin.
-// (May be within @media and similar.)
-class CORE_EXPORT StyleRuleResult : public StyleRuleGroup {
- public:
-  explicit StyleRuleResult(HeapVector<Member<StyleRuleBase>> child_rules);
-  StyleRuleResult(const StyleRuleResult&) = delete;
-  StyleRuleResult(const StyleRuleResult&,
-                  HeapVector<Member<StyleRuleBase>> child_rules);
-
-  void TraceAfterDispatch(blink::Visitor*) const;
-};
-
-class CORE_EXPORT StyleRulePrivate : public StyleRuleBase {
- public:
-  explicit StyleRulePrivate(
-      HeapVector<Member<const CSSPrivateVariable>> private_variables);
-  StyleRulePrivate(const StyleRulePrivate&);
-
-  const HeapVector<Member<const CSSPrivateVariable>>& GetPrivateVariables()
-      const {
-    return private_variables_;
-  }
-
-  void TraceAfterDispatch(blink::Visitor*) const;
-
- private:
-  HeapVector<Member<const CSSPrivateVariable>> private_variables_;
+  PrivateNameMap authored_private_names_;
 };
 
 // An @apply rule, representing applying a mixin. Its declaration block, if
@@ -860,7 +847,7 @@ static wtf_size_t ReplaceStyleRuleInVector(const StyleRuleBase* old_rule,
 template <>
 struct DowncastTraits<StyleRule> {
   static bool AllowFrom(const StyleRuleBase& rule) {
-    return rule.IsStyleRule();
+    return rule.IsStyleRule() || rule.IsPrivateRule();
   }
 };
 
@@ -912,8 +899,7 @@ struct DowncastTraits<StyleRuleGroup> {
            rule.IsScopeRule() || rule.IsStartingStyleRule() ||
            rule.IsFunctionRule() || rule.IsPageRule() ||
            rule.IsNavigationRule() || rule.IsMixinRule() ||
-           rule.IsResultRule() || rule.IsApplyMixinRule() ||
-           rule.IsContentsRule();
+           rule.IsApplyMixinRule() || rule.IsContentsRule();
   }
 };
 
@@ -977,20 +963,6 @@ template <>
 struct DowncastTraits<StyleRuleMixin> {
   static bool AllowFrom(const StyleRuleBase& rule) {
     return rule.IsMixinRule();
-  }
-};
-
-template <>
-struct DowncastTraits<StyleRuleResult> {
-  static bool AllowFrom(const StyleRuleBase& rule) {
-    return rule.IsResultRule();
-  }
-};
-
-template <>
-struct DowncastTraits<StyleRulePrivate> {
-  static bool AllowFrom(const StyleRuleBase& rule) {
-    return rule.IsPrivateRule();
   }
 };
 

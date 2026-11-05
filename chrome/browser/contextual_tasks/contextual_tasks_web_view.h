@@ -5,28 +5,41 @@
 #ifndef CHROME_BROWSER_CONTEXTUAL_TASKS_CONTEXTUAL_TASKS_WEB_VIEW_H_
 #define CHROME_BROWSER_CONTEXTUAL_TASKS_CONTEXTUAL_TASKS_WEB_VIEW_H_
 
+#include <optional>
+
 #include "base/memory/raw_ptr.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
+#include "base/time/time.h"
+#include "components/infobars/core/infobar_container.h"
 #include "components/web_modal/web_contents_modal_dialog_manager_delegate.h"
 #include "content/public/browser/media_stream_request.h"
 #include "content/public/browser/web_contents_delegate.h"
 #include "content/public/browser/web_contents_observer.h"
+#include "third_party/skia/include/core/SkColor.h"
 #include "ui/base/metadata/metadata_header_macros.h"
-#include "ui/views/controls/webview/unhandled_keyboard_event_handler.h"
-#include "ui/views/controls/webview/webview.h"
+#include "ui/views/controls/webview/web_contents_delegate_views.h"
 #include "ui/views/view.h"
 
+namespace blink::mojom {
+class FileChooserParams;
+}  // namespace blink::mojom
+
 namespace content {
+class FileSelectListener;
 class NavigationHandle;
+class RenderFrameHost;
 class WebContents;
 struct OpenURLParams;
 }  // namespace content
 
 class BrowserWindowInterface;
+class InfoBarContainerView;
+class Profile;
 
-namespace input {
-struct NativeWebKeyboardEvent;
-}  // namespace input
+namespace views {
+class WebView;
+}
 
 namespace web_modal {
 class WebContentsModalDialogHost;
@@ -34,17 +47,30 @@ class WebContentsModalDialogHost;
 
 namespace contextual_tasks {
 
-class ContextualTasksGhostLoaderView;
+class ContextualTasksScrimView;
+class ContextualTasksUIBase;
 
 class ContextualTasksWebView
     : public views::View,
+      public infobars::InfoBarContainer::Delegate,
       public web_modal::WebContentsModalDialogManagerDelegate,
-      public content::WebContentsDelegate,
+      public views::WebContentsDelegateViews<ContextualTasksWebView>,
       public content::WebContentsObserver {
   METADATA_HEADER(ContextualTasksWebView, views::View)
 
  public:
-  explicit ContextualTasksWebView(BrowserWindowInterface* browser_window);
+  // Configures a transparent base background and the theme-appropriate
+  // preferred color scheme on `wc` for hosting in the Contextual Tasks side
+  // panel, allowing the side panel's solid background to show through before
+  // page styles load without triggering Blink's #121212 dark color-adjust
+  // fallback.
+  static void ConfigureWebContentsBackground(content::WebContents* wc,
+                                             Profile* profile);
+
+  explicit ContextualTasksWebView(
+      BrowserWindowInterface* browser_window,
+      content::WebContents* toolbar_web_contents = nullptr,
+      content::WebContents* scrim_web_contents = nullptr);
   ~ContextualTasksWebView() override;
 
   base::WeakPtr<ContextualTasksWebView> GetWeakPtr();
@@ -55,24 +81,40 @@ class ContextualTasksWebView
   // Returns the WebContents currently displayed in the content WebView.
   content::WebContents* web_contents() const;
 
+  // Focuses the main content WebView.
+  void RequestContentViewFocus();
+
   // Toggles the visibility of the ghost loader overlay.
   void SetGhostLoaderVisible(bool visible);
 
   // Returns whether the ghost loader overlay is currently visible.
   bool IsGhostLoaderVisible() const;
 
+  // Toggles the visibility of the protected page error scrim overlay.
+  void SetErrorPageVisible(bool visible);
+
+  // Returns whether the protected page error scrim overlay is currently
+  // visible.
+  bool IsErrorPageVisible() const;
+
+  // views::View:
+  void AddedToWidget() override;
+  void OnThemeChanged() override;
+
   // content::WebContentsDelegate:
   void RequestMediaAccessPermission(
       content::WebContents* web_contents,
       const content::MediaStreamRequest& request,
       content::MediaResponseCallback callback) override;
-  bool HandleKeyboardEvent(content::WebContents* source,
-                           const input::NativeWebKeyboardEvent& event) override;
   content::WebContents* OpenURLFromTab(
       content::WebContents* source,
       const content::OpenURLParams& params,
       base::OnceCallback<void(content::NavigationHandle&)>
           navigation_handle_callback) override;
+  void RunFileChooser(content::RenderFrameHost* render_frame_host,
+                      scoped_refptr<content::FileSelectListener> listener,
+                      const blink::mojom::FileChooserParams& params) override;
+  std::optional<gfx::Rect> GetWindowBoundsInScreen() override;
 
   // content::WebContentsObserver:
   void DidStartNavigation(
@@ -88,17 +130,21 @@ class ContextualTasksWebView
   web_modal::WebContentsModalDialogHost* GetWebContentsModalDialogHost(
       content::WebContents* web_contents) override;
 
+  // infobars::InfoBarContainer::Delegate:
+  void InfoBarContainerStateChanged(bool is_animating) override;
+
   // Returns the toolbar WebView, which is used for the header UI in the
   // rearchitected side panel.
   views::WebView* toolbar_web_view() { return toolbar_web_view_; }
 
+  // Returns the infobar container view hosted below the toolbar.
+  InfoBarContainerView* infobar_container() { return infobar_container_; }
+
   // Returns the main content WebView.
   views::WebView* content_web_view() { return content_web_view_; }
 
-  // Returns the ghost loader view overlaying the main content.
-  ContextualTasksGhostLoaderView* ghost_loader_view() {
-    return ghost_loader_view_;
-  }
+  // Returns the scrim view overlaying the main content.
+  ContextualTasksScrimView* scrim_view() { return scrim_view_; }
 
  private:
   // Attach a modal dialog manager to a WebContents so that dialogs can be
@@ -109,6 +155,28 @@ class ContextualTasksWebView
   // happen when the contents is detached from the side panel.
   void DetachWebContentsModalDialogManager(content::WebContents* web_contents);
 
+  // Returns whether the task associated with the current WebContents is waiting
+  // for its initial thread URL to be generated.
+  bool IsTaskWaitingForUrl() const;
+
+  // Returns the toolbar WebUI controller, or nullptr if unavailable.
+  ContextualTasksUIBase* GetToolbarUI() const;
+
+  // Synchronizes the toolbar WebUI's AI page status, thread title, and profile
+  // indicator with `wc`.
+  void UpdateToolbarStateFromWebContents(content::WebContents* wc,
+                                         bool use_last_committed_url = false);
+
+  // Synchronizes `scrim_view_` mode and visibility with
+  // `is_ghost_loader_visible_` and `is_error_page_visible_`.
+  void UpdateScrimVisibility();
+
+  // Consumes and returns whether `source_rfh` has a valid transient user
+  // activation or a recent unconsumed browser-verified user interaction (when
+  // Blink already consumed the transient activation before sending `OpenURL()`,
+  // e.g. for Cmd+Click).
+  bool ConsumeUserActivation(content::RenderFrameHost* source_rfh);
+
   // The browser window interface associated with this view.
   raw_ptr<BrowserWindowInterface> browser_window_ = nullptr;
 
@@ -116,15 +184,36 @@ class ContextualTasksWebView
   // rearchitecture feature is enabled).
   raw_ptr<views::WebView> toolbar_web_view_ = nullptr;
 
+  // Container view for displaying infobars (such as the reload prompt after
+  // modifying site data or permissions) below the toolbar.
+  raw_ptr<InfoBarContainerView> infobar_container_ = nullptr;
+
+  // Container view hosting `content_web_view_` and `scrim_view_` under
+  // the side panel rearchitecture.
+  raw_ptr<views::View> content_container_ = nullptr;
+
   // The WebView used for the main content.
   raw_ptr<views::WebView> content_web_view_ = nullptr;
 
-  // The placeholder ghost loader view overlaying the content WebView.
-  raw_ptr<ContextualTasksGhostLoaderView> ghost_loader_view_ = nullptr;
+  // The placeholder scrim view overlaying the content WebView.
+  raw_ptr<ContextualTasksScrimView> scrim_view_ = nullptr;
 
-  // A handler to handle unhandled keyboard messages coming back from the
-  // renderer process.
-  views::UnhandledKeyboardEventHandler unhandled_keyboard_event_handler_;
+  // Whether this view created and owns the toolbar / scrim `WebContents`.
+  bool owns_toolbar_web_contents_ = false;
+  bool owns_scrim_web_contents_ = false;
+
+  // Whether the next DidStopLoading() corresponds to an initial or aborted
+  // about:blank navigation that should not dismiss the ghost loader.
+  bool ignore_next_stop_loading_for_about_blank_ = false;
+
+  // Desired visibility states for the ghost loader and protected page error
+  // scrims hosted in `scrim_view_`.
+  bool is_ghost_loader_visible_ = false;
+  bool is_error_page_visible_ = false;
+
+  // Timestamp of the last browser-verified user interaction consumed by
+  // `ConsumeUserActivation()` to prevent replay.
+  base::TimeTicks last_consumed_interaction_time_;
 
   base::WeakPtrFactory<ContextualTasksWebView> weak_ptr_factory_{this};
 };

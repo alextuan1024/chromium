@@ -35,6 +35,7 @@
 #include "services/viz/privileged/mojom/compositing/features.mojom-features.h"
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/common/features_generated.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/gfx/geometry/size.h"
 
 namespace content {
@@ -434,7 +435,7 @@ IN_PROC_BROWSER_TEST_P(ViewTransitionBrowserTestTraverse,
   std::unique_ptr<WebContents> new_tab = shell()->web_contents()->Clone();
   WebContentsImpl* new_tab_impl = static_cast<WebContentsImpl*>(new_tab.get());
   shell()->AddNewContents(nullptr, std::move(new_tab), url_b,
-                          WindowOpenDisposition::NEW_FOREGROUND_TAB,
+                          ui::mojom::WindowOpenDisposition::kNewForegroundTab,
                           blink::mojom::WindowFeatures(), false, nullptr);
   NavigationController& new_controller = new_tab_impl->GetController();
 
@@ -471,8 +472,7 @@ class ViewTransitionCaptureTest
     EnablePixelOutput(1.f);
     feature_list_.InitWithFeatures(
         /*enabled_features=*/
-        {viz::mojom::EnableVizTestApis,
-         features::kViewTransitionCaptureAndDisplay},
+        {viz::mojom::EnableVizTestApis},
         /*disabled_features=*/
         {blink::features::kPaintHolding});
   }

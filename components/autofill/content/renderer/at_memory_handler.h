@@ -27,6 +27,11 @@ class WebNode;
 struct RendererPreferences;
 }  // namespace blink
 
+namespace ukm {
+class MojoUkmRecorder;
+class UkmRecorder;
+}  // namespace ukm
+
 namespace autofill {
 
 class AutofillAgent;
@@ -67,9 +72,13 @@ class AtMemoryHandler {
 
   void DidReceiveLeftMouseDownOrGestureTapInNode(const blink::WebNode& node);
 
-  // Tries to fill `value` into `field` at the location where AtMemory was
-  // last triggered on `field`.
-  void ReplaceSelectionForAtMemory(blink::WebElement field,
+  // Tries to fill `value` into the field identified by `field_id`, at the
+  // location where AtMemory was last triggered on that field.
+  //
+  // Checks whether the field is fillable only after window-level focus has
+  // returned and the field has been re-focused, because some pages make the
+  // field non-editable while the AtMemory popup holds the focus.
+  void ReplaceSelectionForAtMemory(FieldRendererId field_id,
                                    const std::u16string& value);
 
   // Stores metadata for an AskForValuesToFill() on `field` if `trigger_source`
@@ -99,9 +108,19 @@ class AtMemoryHandler {
                                                   int num_try);
 
   // Finds the metadata for the last AtMemory-related AskForValuesToFill() on
-  // `field` and removes the entry, if one was found.
+  // `field_id` and removes the entry, if one was found.
   std::optional<AskForValuesToFillInfo> ExtractAskForValuesToFill(
-      const blink::WebElement& field);
+      FieldRendererId field_id);
+
+  // Returns true if a completed double Ctrl sequence actually triggers
+  // AtMemory, i.e. both features and the user's preference are enabled.
+  bool IsDoubleCtrlTriggerEnabled() const;
+
+  // Records a UKM event when the user pressed Ctrl (or Cmd on macOS) twice in
+  // quick succession.
+  void RecordDoubleCtrl(const blink::WebElement& field);
+
+  ukm::UkmRecorder* GetUkmRecorder();
 
   const raw_ref<AutofillAgent> agent_;
   base::circular_deque<AskForValuesToFillInfo>
@@ -120,6 +139,8 @@ class AtMemoryHandler {
     // The target of the last keydown event.
     FieldRendererId last_field_id{};
   } ctrl_state_;
+
+  std::unique_ptr<ukm::MojoUkmRecorder> ukm_recorder_;
 
   base::WeakPtrFactory<AtMemoryHandler> weak_ptr_factory_{this};
 };

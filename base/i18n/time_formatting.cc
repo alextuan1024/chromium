@@ -7,7 +7,10 @@
 #include <string>
 #include <string_view>
 
+#include "base/features.h"
+#include "base/i18n/icu4c_tag_converter.h"
 #include "base/i18n/icubridge/date_time_formatter.h"
+#include "base/i18n/icubridge/default_icu_locale.h"
 #include "base/i18n/icubridge/icu_bridge.h"
 #include "base/i18n/language_tag.h"
 #include "base/i18n/timezone.h"
@@ -131,6 +134,13 @@ std::u16string TimeFormatFriendlyDate(Time time) {
 }
 
 std::string TimeFormatAsIso8601(Time time) {
+  if (features::IsI18nOptimizationsEnabled()) {
+    Time::Exploded exploded;
+    time.UTCExplode(&exploded);
+    return StringPrintf("%04d-%02d-%02dT%02d:%02d:%02d.%03dZ", exploded.year,
+                        exploded.month, exploded.day_of_month, exploded.hour,
+                        exploded.minute, exploded.second, exploded.millisecond);
+  }
   return TimeFormatAsIso8601(
       time, i18n::TimeZone::GMT(),
       i18n::DateTimeFormatterOptions::TimePrecision::kSubsecond_3,
@@ -153,7 +163,10 @@ std::string TimeFormatAsIso8601(
 
   std::string offset_suffix;
   if (include_offset_suffix) {
-    if (time_zone == i18n::TimeZone::GMT()) {
+    const bool is_gmt = features::IsI18nOptimizationsEnabled()
+                            ? (time_zone.GetID() == "GMT")
+                            : (time_zone == i18n::TimeZone::GMT());
+    if (is_gmt) {
       offset_suffix = "Z";
     } else {
       int total_minutes = total_offset.InMinutes();
@@ -237,10 +250,12 @@ std::string TimeFormatHTTP(Time time) {
   // (e.g. "Sat, 01 Apr" for a Sunday, May 1 GMT instant).
   const base::i18n::TimeZone gmt = base::i18n::TimeZone::GMT();
   static constexpr i18n::LanguageTag en_us = i18n::GetKnownLanguageTag("en-US");
-  std::string day_of_week = base::UTF16ToUTF8(GetDateTimeFormatter().Format(
-      time, en_us, i18n::datetime_options::E::Medium().with_time_zone(gmt)));
-  std::string month_long = base::UTF16ToUTF8(GetDateTimeFormatter().Format(
-      time, en_us, i18n::datetime_options::M::Medium().with_time_zone(gmt)));
+  const i18n::IcuBridge::DateTimeFormatter& en_us_formatter =
+      i18n::IcuBridge::GetInstance().date_time_formatter(en_us);
+  std::string day_of_week = base::UTF16ToUTF8(en_us_formatter.Format(
+      time, i18n::datetime_options::E::Medium().with_time_zone(gmt)));
+  std::string month_long = base::UTF16ToUTF8(en_us_formatter.Format(
+      time, i18n::datetime_options::M::Medium().with_time_zone(gmt)));
   Time::Exploded exploded;
   time.UTCExplode(&exploded);
   // This is mimic the skeleton: "E, dd MMM yyyy HH:mm:ss 'GMT'"
@@ -263,7 +278,10 @@ bool TimeDurationFormat(TimeDelta time,
   const icu::Measure measures[] = {
       icu::Measure(hours, icu::MeasureUnit::createHour(status), status),
       icu::Measure(minutes, icu::MeasureUnit::createMinute(status), status)};
-  icu::MeasureFormat measure_format(icu::Locale::getDefault(), u_width, status);
+  icu::MeasureFormat measure_format(
+      i18n::IcuLocaleConverter::GetInstance().FromLanguageTag(
+          i18n::GetDefaultIcuLocale()),
+      u_width, status);
   icu::UnicodeString formatted;
   icu::FieldPosition ignore(icu::FieldPosition::DONT_CARE);
   measure_format.formatMeasures(measures, 2, formatted, ignore, status);
@@ -288,7 +306,10 @@ bool TimeDurationFormatWithSeconds(TimeDelta time,
       icu::Measure(hours, icu::MeasureUnit::createHour(status), status),
       icu::Measure(minutes, icu::MeasureUnit::createMinute(status), status),
       icu::Measure(seconds, icu::MeasureUnit::createSecond(status), status)};
-  icu::MeasureFormat measure_format(icu::Locale::getDefault(), u_width, status);
+  icu::MeasureFormat measure_format(
+      i18n::IcuLocaleConverter::GetInstance().FromLanguageTag(
+          i18n::GetDefaultIcuLocale()),
+      u_width, status);
   icu::UnicodeString formatted;
   icu::FieldPosition ignore(icu::FieldPosition::DONT_CARE);
   measure_format.formatMeasures(measures, 3, formatted, ignore, status);
@@ -314,7 +335,10 @@ bool TimeDurationCompactFormatWithSeconds(TimeDelta time,
       icu::Measure(minutes, icu::MeasureUnit::createMinute(status), status);
   const icu::Measure seconds_measure =
       icu::Measure(seconds, icu::MeasureUnit::createSecond(status), status);
-  icu::MeasureFormat measure_format(icu::Locale::getDefault(), u_width, status);
+  icu::MeasureFormat measure_format(
+      i18n::IcuLocaleConverter::GetInstance().FromLanguageTag(
+          i18n::GetDefaultIcuLocale()),
+      u_width, status);
   icu::UnicodeString formatted;
   icu::FieldPosition ignore(icu::FieldPosition::DONT_CARE);
   if (hours != 0 || width == DurationFormatWidth::DURATION_WIDTH_NUMERIC) {

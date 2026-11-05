@@ -26,8 +26,9 @@ import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.search_engines.ExtensionControlHandler;
 import org.chromium.chrome.browser.search_engines.TemplateUrlServiceFactory;
 import org.chromium.chrome.browser.search_engines.settings.common.SearchEngineListPreference;
-import org.chromium.components.browser_ui.settings.SettingsCustomTabLauncher;
+import org.chromium.components.browser_ui.util.CustomTabLauncher;
 import org.chromium.components.favicon.LargeIconBridgeJni;
+import org.chromium.components.search_engines.SearchEngineSettingsDataProvider;
 import org.chromium.components.search_engines.TemplateUrlService;
 
 /** Unit tests for {@link ExtensionSearchEngineCoordinatorImpl}. */
@@ -38,10 +39,11 @@ public class ExtensionSearchEngineCoordinatorUnitTest {
     private Context mContext;
     @Mock private Profile mProfile;
     @Mock private SearchEngineListPreference mPreference;
-    @Mock private SettingsCustomTabLauncher mSettingsCustomTabLauncher;
+    @Mock private CustomTabLauncher mCustomTabLauncher;
     @Mock private TemplateUrlService mTemplateUrlService;
     @Mock private LargeIconBridgeJni mLargeIconBridgeJni;
     @Mock private ExtensionControlHandler mMockExtensionControlHandler;
+    @Mock private SearchEngineSettingsDataProvider mSettingsDataProvider;
 
     private ExtensionSearchEngineCoordinatorImpl mCoordinator;
 
@@ -66,13 +68,15 @@ public class ExtensionSearchEngineCoordinatorUnitTest {
 
     @Test
     public void testInitialization() {
-        mCoordinator.initialize(mContext, mProfile, mPreference, mSettingsCustomTabLauncher);
+        mCoordinator.initialize(
+                mContext, mProfile, mPreference, mCustomTabLauncher, mSettingsDataProvider);
         verify(mPreference).setAdapter(any(ExtensionSearchEngineAdapter.class));
     }
 
     @Test
     public void testDestroy() {
-        mCoordinator.initialize(mContext, mProfile, mPreference, mSettingsCustomTabLauncher);
+        mCoordinator.initialize(
+                mContext, mProfile, mPreference, mCustomTabLauncher, mSettingsDataProvider);
         mCoordinator.destroy();
 
         verify(mPreference).setAdapter(eq(null));

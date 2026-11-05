@@ -65,6 +65,9 @@ void RecordShownEntryPoint(IndigoPageActionEntryPoint entry_point) {
       break;
     case IndigoPageActionEntryPoint::kErrorToast:
       break;
+    case IndigoPageActionEntryPoint::kContextMenu:
+      base::RecordAction(base::UserMetricsAction(kContextMenuShowAction));
+      break;
   }
   base::UmaHistogramEnumeration(kShownEntryPointHistogram, entry_point);
 }
@@ -83,7 +86,7 @@ void RecordClickedEntryPoint(
     case EntryPoint::kAnchoredMessage:
       base::RecordAction(base::UserMetricsAction(kAnchoredMessageClickAction));
       if (last_anchored_message_priority ==
-          page_actions::PageActionPriorityCategory::kContextualCue) {
+          page_actions::PageActionPriorityCategory::kProactiveSuggestion) {
         base::UmaHistogramEnumeration(
             kClickedEntryPointHistogram,
             IndigoPageActionEntryPoint::kProactiveAnchoredMessage);
@@ -99,7 +102,16 @@ void RecordClickedEntryPoint(
       base::UmaHistogramEnumeration(kClickedEntryPointHistogram,
                                     IndigoPageActionEntryPoint::kErrorToast);
       break;
+    case EntryPoint::kContextMenu:
+      base::RecordAction(base::UserMetricsAction(kContextMenuClickAction));
+      base::UmaHistogramEnumeration(kClickedEntryPointHistogram,
+                                    IndigoPageActionEntryPoint::kContextMenu);
+      break;
   }
+}
+
+void RecordContextMenuTargetType(IndigoContextMenuTargetType target_type) {
+  base::UmaHistogramEnumeration(kContextMenuTargetTypeHistogram, target_type);
 }
 
 void RecordApiHttpResponse(IndigoApiEndpoint endpoint,
@@ -143,7 +155,7 @@ void RecordTransformationResult(IndigoTransformationResult result) {
 
 void RecordTransformationResultCannotGenerateImage(
     const CombinedEligibility& eligibility) {
-  DCHECK(!eligibility.CanGenerateImage());
+  CHECK(!eligibility.CanGenerateImage(), base::NotFatalUntil::M161);
   IndigoTransformationResult result = IndigoTransformationResult::kUnknown;
 
   switch (eligibility.local_eligibility) {

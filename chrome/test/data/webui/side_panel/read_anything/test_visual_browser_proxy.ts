@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import type {VisualBrowserProxy} from 'chrome-untrusted://read-anything-side-panel.top-chrome/read_anything.js';
+import type {OriginalPageMetrics, VisualBrowserProxy} from 'chrome-untrusted://read-anything-side-panel.top-chrome/read_anything.js';
 import {FakeChromeEvent} from 'chrome-untrusted://webui-test/fake_chrome_event.js';
 import {TestBrowserProxy} from 'chrome-untrusted://webui-test/test_browser_proxy.js';
 
@@ -32,13 +32,14 @@ export class TestVisualBrowserProxy extends TestBrowserProxy implements
   highContrastTheme: number = 5;
   lowContrastLightTheme: number = 6;
   lowContrastDarkTheme: number = 7;
+  minFontSize: number = 1;
+  maxFontSize: number = 20;
   defaultFontSize: number = 10;
   fontSize: number = 10;
   lineSpacing: number = 0;
   activeDistillationMethod: number = 0;
   distillationTypeScreen2x: number = 0;
   distillationTypeReadability: number = 1;
-  lineFocusEnabled: boolean = true;
   lineFocusOn: boolean = false;
   lineFocusOff: number = 50;
   lineFocusSmallStaticWindow: number = 51;
@@ -53,7 +54,10 @@ export class TestVisualBrowserProxy extends TestBrowserProxy implements
   lineFocusLastNonDisabledValue: number = 50;
   activePresentationState: number = 1;
   pdf: boolean = false;
-  keyPointsSection: boolean = false;
+  originalPageMetrics: OriginalPageMetrics = {
+    hasMathML: false,
+    maybeHasKeyPoints: false,
+  };
   keyPointsRegex: string = 'key points|summary|the bottom line|why it matters';
   maxLineWidth: number = 60;
   letterSpacing: number = 0;
@@ -80,6 +84,8 @@ export class TestVisualBrowserProxy extends TestBrowserProxy implements
       'getVeryLooseLineSpacing',
       'getLineSpacing',
       'getLineSpacingValue',
+      'getMinFontSize',
+      'getMaxFontSize',
       'getDefaultFontSize',
       'getFontSize',
       'getStandardLetterSpacing',
@@ -97,7 +103,6 @@ export class TestVisualBrowserProxy extends TestBrowserProxy implements
       'getLowContrastDarkTheme',
       'getColorTheme',
       'requestImageData',
-      'isLineFocusEnabled',
       'getLineFocusOff',
       'getLineFocusSmallStaticWindow',
       'getLineFocusMediumStaticWindow',
@@ -119,7 +124,6 @@ export class TestVisualBrowserProxy extends TestBrowserProxy implements
       'togglePresentation',
       'togglePinState',
       'sendPinStateRequest',
-      'sendGetPresentationStateRequest',
       'shouldShowUi',
       'getLastNonDisabledLineFocus',
       'isLineFocusOn',
@@ -130,7 +134,7 @@ export class TestVisualBrowserProxy extends TestBrowserProxy implements
       'getActivePresentationState',
       'isPdf',
       'getMaxLineWidth',
-      'maybeHasKeyPointsSection',
+      'getOriginalPageMetrics',
       'getKeyPointsRegex',
       'onLinksEnabledToggled',
       'onImagesEnabledToggled',
@@ -180,6 +184,16 @@ export class TestVisualBrowserProxy extends TestBrowserProxy implements
   getLineSpacingValue(lineSpacing: number): number {
     this.methodCalled('getLineSpacingValue', lineSpacing);
     return lineSpacing + 1;
+  }
+
+  getMinFontSize(): number {
+    this.methodCalled('getMinFontSize');
+    return this.minFontSize;
+  }
+
+  getMaxFontSize(): number {
+    this.methodCalled('getMaxFontSize');
+    return this.maxFontSize;
   }
 
   getDefaultFontSize(): number {
@@ -277,11 +291,6 @@ export class TestVisualBrowserProxy extends TestBrowserProxy implements
     this.fetchedImages.push(nodeId);
   }
 
-  isLineFocusEnabled(): boolean {
-    this.methodCalled('isLineFocusEnabled');
-    return this.lineFocusEnabled;
-  }
-
   getLineFocusOff(): number {
     this.methodCalled('getLineFocusOff');
     return this.lineFocusOff;
@@ -377,9 +386,9 @@ export class TestVisualBrowserProxy extends TestBrowserProxy implements
     return this.pdf;
   }
 
-  maybeHasKeyPointsSection(): boolean {
-    this.methodCalled('maybeHasKeyPointsSection');
-    return this.keyPointsSection;
+  getOriginalPageMetrics(): OriginalPageMetrics {
+    this.methodCalled('getOriginalPageMetrics');
+    return this.originalPageMetrics;
   }
 
   getKeyPointsRegex(): string {
@@ -450,10 +459,6 @@ export class TestVisualBrowserProxy extends TestBrowserProxy implements
 
   sendPinStateRequest(): void {
     this.methodCalled('sendPinStateRequest');
-  }
-
-  sendGetPresentationStateRequest(): void {
-    this.methodCalled('sendGetPresentationStateRequest');
   }
 
   shouldShowUi(): boolean {

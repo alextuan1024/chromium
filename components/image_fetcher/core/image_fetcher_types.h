@@ -5,9 +5,9 @@
 #ifndef COMPONENTS_IMAGE_FETCHER_CORE_IMAGE_FETCHER_TYPES_H_
 #define COMPONENTS_IMAGE_FETCHER_CORE_IMAGE_FETCHER_TYPES_H_
 
-#include <string>
-
 #include "base/functional/callback.h"
+#include "base/memory/ref_counted_memory.h"
+#include "base/memory/scoped_refptr.h"
 
 namespace gfx {
 class Image;
@@ -25,16 +25,21 @@ using ImageFetcherCallback =
     base::OnceCallback<void(const gfx::Image& image,
                             const RequestMetadata& request_metadata)>;
 
-// TODO(wylieb): Use RefCountedBytes to avoid copying.
+// Shared, read-only encoded image data, independent of its backing storage.
+using ImageData = scoped_refptr<base::RefCountedMemory>;
+
+// Callbacks receive a non-null buffer, which is empty when no image data is
+// available. Retaining the buffer keeps its contents alive after the callback.
 using ImageDataFetcherCallback =
-    base::OnceCallback<void(const std::string& image_data,
+    base::OnceCallback<void(ImageData image_data,
                             const RequestMetadata& request_metadata)>;
 
 #if defined(__OBJC__)
 
 // Callback that informs of the download of an image encoded in `data` and the
 // associated metadata. If an error prevented a http response,
-// `metadata.http_response_code` will be RESPONSE_CODE_INVALID.
+// `metadata.http_response_code` will be RESPONSE_CODE_INVALID; the underlying
+// network or download error is available in `metadata.net_error`.
 using ImageDataFetcherBlock = void (^)(NSData* data,
                                        const RequestMetadata& metadata);
 

@@ -29,9 +29,10 @@
 
 namespace net::features {
 
-BASE_FEATURE(kAlpsForHttp2, base::FEATURE_ENABLED_BY_DEFAULT);
-
 BASE_FEATURE(kAsyncRetryOnTooManyConnectionErrors,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+
+BASE_FEATURE(kClearAuthControllersOnProxyChange,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kDeriveConnectionTypeFromCapabilities,
@@ -52,7 +53,13 @@ const base::FeatureParam<bool> kUseStaleConnectorsForOptimisticDns{
 
 BASE_FEATURE(kOptimisticDnsForQuic, base::FEATURE_DISABLED_BY_DEFAULT);
 
-BASE_FEATURE(kAddressSorterConnectCache, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kAddressSorterConnectCache,
+#if BUILDFLAG(IS_ANDROID)
+             base::FEATURE_ENABLED_BY_DEFAULT
+#else
+             base::FEATURE_DISABLED_BY_DEFAULT
+#endif
+);
 
 BASE_FEATURE_PARAM(size_t,
                    kAddressSorterConnectCacheMaxNetworks,
@@ -79,6 +86,12 @@ const base::FeatureParam<base::TimeDelta> kDnsMinTransactionTimeout{
 BASE_FEATURE(kDnsPlatformFailFastAndRetry, base::FEATURE_DISABLED_BY_DEFAULT);
 const base::FeatureParam<bool> kDnsPlatformCancelPreviousAttemptOnRetry{
     &kDnsPlatformFailFastAndRetry, "cancel_previous_attempt_on_retry", false};
+
+BASE_FEATURE(kDnsTaskAllowPartialAddressResults,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
+BASE_FEATURE(kDnsHttpsDontAppendToMultiLabelName,
+             base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kUseDnsHttpsSvcb, base::FEATURE_ENABLED_BY_DEFAULT);
 
@@ -131,6 +144,13 @@ BASE_FEATURE_PARAM(bool,
                    &kEnableIntermediateDnsResults,
                    true);
 
+BASE_FEATURE(kKeepHostResolverJobAliveForCache,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE_PARAM(base::TimeDelta,
+                   kKeepHostResolverJobAliveForCacheTimeout,
+                   &kKeepHostResolverJobAliveForCache,
+                   base::Seconds(2));
+
 BASE_FEATURE(kAdjustIPv6FallbackTime, base::FEATURE_DISABLED_BY_DEFAULT);
 
 BASE_FEATURE_PARAM(base::TimeDelta,
@@ -162,9 +182,9 @@ BASE_FEATURE_PARAM(base::TimeDelta,
 
 BASE_FEATURE(kCacheControlImmutable, base::FEATURE_DISABLED_BY_DEFAULT);
 
-BASE_FEATURE(kHttpCacheZstdDecompression, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kHttpCacheZstdDecompression, base::FEATURE_ENABLED_BY_DEFAULT);
 
-BASE_FEATURE(kHttpCacheZstdCompression, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kHttpCacheZstdCompression, base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kRendererAccessibleHttpCache, base::FEATURE_DISABLED_BY_DEFAULT);
 BASE_FEATURE_PARAM(bool,
@@ -264,6 +284,55 @@ BASE_FEATURE_PARAM(bool,
 
 BASE_FEATURE(kConnectionKeepAliveForHttp2, base::FEATURE_DISABLED_BY_DEFAULT);
 
+BASE_FEATURE(kQuicPreconnectInitialRtt, base::FEATURE_DISABLED_BY_DEFAULT);
+
+BASE_FEATURE_PARAM(base::TimeDelta,
+                   kQuicPreconnectInitialRttParam,
+                   &kQuicPreconnectInitialRtt,
+                   base::Milliseconds(25));
+
+std::optional<base::TimeDelta> GetQuicPreconnectInitialRtt() {
+  if (!base::FeatureList::IsEnabled(kQuicPreconnectInitialRtt)) {
+    return std::nullopt;
+  }
+  const base::TimeDelta initial_rtt = kQuicPreconnectInitialRttParam.Get();
+  if (!initial_rtt.is_positive() || initial_rtt.is_inf()) {
+    return std::nullopt;
+  }
+  return initial_rtt;
+}
+
+BASE_FEATURE(kPreconnectPriorityBoost, base::FEATURE_DISABLED_BY_DEFAULT);
+
+constexpr base::FeatureParam<RequestPriority>::Option
+    kPreconnectInitialPriorityOptions[] = {
+        {RequestPriority::IDLE, "idle"},
+        {RequestPriority::LOW, "low"},
+        {RequestPriority::MEDIUM, "medium"},
+};
+
+BASE_FEATURE_ENUM_PARAM(RequestPriority,
+                        kPreconnectInitialPriority,
+                        &kPreconnectPriorityBoost,
+                        RequestPriority::IDLE,
+                        &kPreconnectInitialPriorityOptions);
+
+BASE_FEATURE_PARAM(bool,
+                   kPromoteActiveQuicJobPriorityOnAttach,
+                   &kPreconnectPriorityBoost,
+                   true);
+
+std::optional<RequestPriority> GetPreconnectInitialPriority() {
+  if (!base::FeatureList::IsEnabled(kPreconnectPriorityBoost)) {
+    return std::nullopt;
+  }
+  const RequestPriority priority = kPreconnectInitialPriority.Get();
+  if (priority <= RequestPriority::IDLE) {
+    return std::nullopt;
+  }
+  return priority;
+}
+
 BASE_FEATURE(kShortLaxAllowUnsafeThreshold, base::FEATURE_DISABLED_BY_DEFAULT);
 
 BASE_FEATURE(kSameSiteDefaultChecksMethodRigorously,
@@ -293,13 +362,13 @@ BASE_FEATURE(kStaticKeyPinningEnforcement, base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kCookieDomainRejectNonASCII, base::FEATURE_DISABLED_BY_DEFAULT);
 
+BASE_FEATURE(kCookieRequireCompliantHost, base::FEATURE_DISABLED_BY_DEFAULT);
+
 // Enables partitioning of third party storage (IndexedDB, CacheStorage, etc.)
 // by the top level site to reduce fingerprinting.
 BASE_FEATURE(kThirdPartyStoragePartitioning, base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kAlpsParsing, base::FEATURE_ENABLED_BY_DEFAULT);
-
-BASE_FEATURE(kAlpsClientHintParsing, base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kEnableWebsocketsOverHttp3, base::FEATURE_DISABLED_BY_DEFAULT);
 
@@ -324,14 +393,14 @@ BASE_FEATURE(kDeferConnectionTypeAtStartup, base::FEATURE_DISABLED_BY_DEFAULT);
 #endif
 
 #if BUILDFLAG(IS_MAC)
-BASE_FEATURE(kTcpPortRandomizationMac, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kTcpPortRandomizationMac, base::FEATURE_ENABLED_BY_DEFAULT);
 BASE_FEATURE_PARAM(int,
                    kTcpPortRandomizationReuseDelaySec,
                    &kTcpPortRandomizationMac,
                    "reuse_delay_sec",
                    120);
 BASE_FEATURE_PARAM(bool,
-                   kTcpPortRandomizationMacForLoopback,
+                   kTcpPortRandomizationMacForPrivateRoutes,
                    &kTcpPortRandomizationMac,
                    false);
 #endif
@@ -356,6 +425,10 @@ BASE_FEATURE(kAsyncDnsQuicJob, base::FEATURE_DISABLED_BY_DEFAULT);
 BASE_FEATURE_PARAM(bool, kAsyncDnsQuicJobFastFail, &kAsyncDnsQuicJob, false);
 BASE_FEATURE_PARAM(bool,
                    kAsyncDnsQuicJobSortTransactionsIndividually,
+                   &kAsyncDnsQuicJob,
+                   true);
+BASE_FEATURE_PARAM(bool,
+                   kAsyncDnsQuicJobKeepHostResolverJobAliveForCache,
                    &kAsyncDnsQuicJob,
                    true);
 
@@ -437,12 +510,6 @@ BASE_FEATURE(kEnableWebTransportDraft07, base::FEATURE_DISABLED_BY_DEFAULT);
 BASE_FEATURE(kWebTransportFineGrainedThrottling,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
-// When enabled, partitioned storage will be allowed even if third-party cookies
-// are disabled by default. Partitioned storage will not be allowed if
-// third-party cookies are disabled due to a specific rule.
-BASE_FEATURE(kThirdPartyPartitionedStorageAllowedByDefault,
-             base::FEATURE_ENABLED_BY_DEFAULT);
-
 BASE_FEATURE(kSpdyHeadersToHttpResponseUseBuilder,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
@@ -503,8 +570,16 @@ BASE_FEATURE_PARAM(bool,
                    "CheckWellKnown",
                    true);
 
+BASE_FEATURE(kDeviceBoundSessionsFederatedRegistrationBlockRedirects,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+
 BASE_FEATURE(kDeviceBoundSessionsForRestrictedSites,
-             base::FEATURE_DISABLED_BY_DEFAULT);
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
+             base::FEATURE_ENABLED_BY_DEFAULT
+#else
+             base::FEATURE_DISABLED_BY_DEFAULT
+#endif
+);
 
 BASE_FEATURE(kDeviceBoundSessionsClientCertSelection,
              base::FEATURE_ENABLED_BY_DEFAULT);
@@ -517,6 +592,9 @@ BASE_FEATURE(kDeviceBoundSessionsPersistExpiryOnRefresh,
 
 BASE_FEATURE(kDeviceBoundSessionsIncludeAudienceClaim,
              base::FEATURE_DISABLED_BY_DEFAULT);
+
+BASE_FEATURE(kDeviceBoundSessionsDrainDeferredOnAllCanceled,
+             base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kSpdySessionForProxyAdditionalChecks,
              base::FEATURE_ENABLED_BY_DEFAULT);
@@ -544,9 +622,6 @@ BASE_FEATURE(kNoVarySearchIgnoreUnrecognizedKeys,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kEnforceOneRfc6962CtPolicy, base::FEATURE_DISABLED_BY_DEFAULT);
-
-BASE_FEATURE(kCertificateTransparencyIgnoreOcspScts,
-             base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kDiskCacheBackendExperiment, base::FEATURE_DISABLED_BY_DEFAULT);
 constexpr base::FeatureParam<DiskCacheBackend>::Option
@@ -679,6 +754,8 @@ BASE_FEATURE_PARAM(bool,
 
 BASE_FEATURE(kIgnoreHSTSForLocalhost, base::FEATURE_ENABLED_BY_DEFAULT);
 
+BASE_FEATURE(kRejectNonCompliantHttpHosts, base::FEATURE_ENABLED_BY_DEFAULT);
+
 BASE_FEATURE(kSimpleCachePrioritizedCaching, base::FEATURE_ENABLED_BY_DEFAULT);
 
 const base::FeatureParam<int>
@@ -723,9 +800,6 @@ BASE_FEATURE_PARAM(bool,
                    "persistence_enabled",
                    true);
 
-BASE_FEATURE(kHttpNoVarySearchDataUseNewAreEquivalent,
-             base::FEATURE_ENABLED_BY_DEFAULT);
-
 BASE_FEATURE(kHttpCacheSkipUnusableEntry, base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kReportingApiCorsOriginHeader, base::FEATURE_ENABLED_BY_DEFAULT);
@@ -739,7 +813,7 @@ BASE_FEATURE(kSelfSignedLocalNetworkInterstitial,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
 #if BUILDFLAG(CHROME_ROOT_STORE_SUPPORTED)
-BASE_FEATURE(kVerifyQWACs, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kVerifyQWACs, base::FEATURE_ENABLED_BY_DEFAULT);
 #endif  // BUILDFLAG(CHROME_ROOT_STORE_SUPPORTED)
 
 BASE_FEATURE(kRestrictAbusePorts, base::FEATURE_DISABLED_BY_DEFAULT);
@@ -750,9 +824,7 @@ BASE_FEATURE(kTLSTrustAnchorIDs, base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kNonMtcTrustAnchorIDs, base::FEATURE_ENABLED_BY_DEFAULT);
 
-#if BUILDFLAG(CHROME_ROOT_STORE_SUPPORTED)
 BASE_FEATURE(kVerifyMTCs, base::FEATURE_DISABLED_BY_DEFAULT);
-#endif
 
 BASE_FEATURE(kTcpSocketPoolLimitRandomization,
              base::FEATURE_ENABLED_BY_DEFAULT);
@@ -864,10 +936,22 @@ BASE_FEATURE_PARAM(base::TimeDelta,
                    base::Seconds(quic::kInitialIdleTimeoutSecs));
 
 BASE_FEATURE(kQuicIgnoreRedundantOnNetworkMadeDefault,
-             base::FEATURE_DISABLED_BY_DEFAULT);
+             base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kQuicLongerIdleConnectionTimeout,
              base::FEATURE_DISABLED_BY_DEFAULT);
+
+BASE_FEATURE(kQuicAlwaysCancelPreExistingProbingOnMigration,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
+BASE_FEATURE(kQuicEnablePortMigration, base::FEATURE_ENABLED_BY_DEFAULT);
+
+BASE_FEATURE(kQuicWaitForNewNetworkTimeout, base::FEATURE_ENABLED_BY_DEFAULT);
+BASE_FEATURE_PARAM(base::TimeDelta,
+                   kQuicWaitForNewNetworkTimeoutParam,
+                   &kQuicWaitForNewNetworkTimeout,
+                   "timeout",
+                   base::Seconds(10));
 
 BASE_FEATURE(kLowerQuicMaxPacketSize, base::FEATURE_DISABLED_BY_DEFAULT);
 BASE_FEATURE_PARAM(size_t,
@@ -876,9 +960,18 @@ BASE_FEATURE_PARAM(size_t,
                    "mtu",
                    quic::kDefaultMaxPacketSize);
 
-BASE_FEATURE(kQuicUseReadMultiple, base::FEATURE_DISABLED_BY_DEFAULT);
-
-BASE_FEATURE(kEnableUdpGro, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kQuicUseReadMultiple,
+#if (BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS) || \
+     BUILDFLAG(IS_ANDROID)) &&                        \
+    !BUILDFLAG(CRONET_BUILD)
+             // Only Linux, ChromeOS, and Android implement batched recvmmsg()
+             // in UDPSocketPosix::ReadMultiple(). Cronet is still running its
+             // own experiment and will launch it separately.
+             base::FEATURE_ENABLED_BY_DEFAULT
+#else
+             base::FEATURE_DISABLED_BY_DEFAULT
+#endif
+);
 
 BASE_FEATURE(kConfigureQuicHints, base::FEATURE_DISABLED_BY_DEFAULT);
 BASE_FEATURE_PARAM(std::string,
@@ -943,6 +1036,8 @@ BASE_FEATURE(kEnableBootstrapIPRandomizationForDoh,
 
 #if BUILDFLAG(IS_APPLE)
 BASE_FEATURE(kUseNSURLDataForGURLConversion, base::FEATURE_ENABLED_BY_DEFAULT);
+
+BASE_FEATURE(kAsyncProxyResolverApple, base::FEATURE_DISABLED_BY_DEFAULT);
 #endif  // BUILDFLAG(IS_APPLE)
 
 BASE_FEATURE(kDrainSpdySessionSynchronouslyOnRemoteEndpointDisconnect,
@@ -973,7 +1068,7 @@ BASE_FEATURE(kPermitTcpSocketPoolConnectBackupJobs,
 BASE_FEATURE(kLocalNetworkPermissionCheck, base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kIgnoreQuicCryptoConfigMemoryPressure,
-             base::FEATURE_DISABLED_BY_DEFAULT);
+             base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kIgnoreQuicCryptoConfigMemoryPressureForDoh,
              base::FEATURE_ENABLED_BY_DEFAULT);
@@ -1036,8 +1131,6 @@ BASE_FEATURE_PARAM(int,
                    &kCacheCertVerification,
                    1800);
 
-BASE_FEATURE(kTlsGreaseSigalgs, base::FEATURE_ENABLED_BY_DEFAULT);
-
 BASE_FEATURE(kEnableBackendCleanupTrackerOnHttpCache,
 #if BUILDFLAG(CRONET_BUILD)
              // Disable for Cronet because when a CronetContext is shut down,
@@ -1055,21 +1148,31 @@ BASE_FEATURE(kPartitionWebSocketEndpointLocksByNetworkAnonymizationKey,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kInitialDelayForBrokenAlternativeService,
+#if BUILDFLAG(CRONET_BUILD)
+             // Cronet is running its own experiment and will launch separately.
              base::FEATURE_DISABLED_BY_DEFAULT);
+#else   // BUILDFLAG(CRONET_BUILD)
+             base::FEATURE_ENABLED_BY_DEFAULT);
+#endif  // BUILDFLAG(CRONET_BUILD)
 BASE_FEATURE_PARAM(base::TimeDelta,
                    kInitialDelayForBrokenAlternativeServiceParam,
                    &kInitialDelayForBrokenAlternativeService,
-                   base::Seconds(300));
+                   base::Seconds(10));
 
 BASE_FEATURE(kPersistBrokenAlternativeServices,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kMaxDelayForBrokenAlternativeService,
+#if BUILDFLAG(CRONET_BUILD)
+             // Cronet is running its own experiment and will launch separately.
              base::FEATURE_DISABLED_BY_DEFAULT);
+#else   // BUILDFLAG(CRONET_BUILD)
+             base::FEATURE_ENABLED_BY_DEFAULT);
+#endif  // BUILDFLAG(CRONET_BUILD)
 BASE_FEATURE_PARAM(base::TimeDelta,
                    kMaxDelayForBrokenAlternativeServiceParam,
                    &kMaxDelayForBrokenAlternativeService,
-                   base::Days(2));
+                   base::Minutes(30));
 
 #if BUILDFLAG(IS_WIN)
 BASE_FEATURE(kEnableWindowsTcpLoopbackFastFail,
@@ -1082,5 +1185,54 @@ BASE_FEATURE_PARAM(int,
                    &kQuicSocketSendBufferSize,
                    -1);
 
-}  // namespace net::features
+BASE_FEATURE(kShaderDiskCacheBackendExperiment,
+             base::FEATURE_DISABLED_BY_DEFAULT);
 
+constexpr base::FeatureParam<DiskCacheBackend>::Option
+    kShaderDiskCacheBackendTypeOptions[] = {
+        {DiskCacheBackend::kDefault, "default"},
+        {DiskCacheBackend::kSimple, "simple"},
+};
+
+BASE_FEATURE_ENUM_PARAM(DiskCacheBackend,
+                        kShaderDiskCacheBackendType,
+                        &kShaderDiskCacheBackendExperiment,
+                        "type",
+                        DiskCacheBackend::kSimple,
+                        &kShaderDiskCacheBackendTypeOptions);
+
+BASE_FEATURE(kCookieMonsterPerKeyDelete, base::FEATURE_DISABLED_BY_DEFAULT);
+
+BASE_FEATURE(kCookieProcessBoundEncryptOnlyImportant,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE_PARAM(bool,
+                   kCookieProcessBoundEncryptHttpOnly,
+                   &kCookieProcessBoundEncryptOnlyImportant,
+                   false);
+
+BASE_FEATURE(kHttpChunkedDecoderInRust, base::FEATURE_DISABLED_BY_DEFAULT);
+
+BASE_FEATURE(kPostHandshakeIpPoolingAllEndpoints,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
+BASE_FEATURE(kProactiveIpPoolingForInFlightJobs,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
+BASE_FEATURE(kPosixUdpEmulatedConnect, base::FEATURE_DISABLED_BY_DEFAULT);
+
+BASE_FEATURE_PARAM(bool,
+                   kPosixUdpEmulatedConnectForDns,
+                   &kPosixUdpEmulatedConnect,
+                   false);
+
+BASE_FEATURE_PARAM(bool,
+                   kPosixUdpEmulatedConnectForQuic,
+                   &kPosixUdpEmulatedConnect,
+                   false);
+
+BASE_FEATURE(kClearBrokenAlternativeServicesOnDefaultNetworkChange,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
+BASE_FEATURE(kRustBrotliInNet, base::FEATURE_DISABLED_BY_DEFAULT);
+
+}  // namespace net::features

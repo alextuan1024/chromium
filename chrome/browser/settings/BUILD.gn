@@ -80,7 +80,6 @@ android_library("settings_in_tab_java") {
 
 android_library("java") {
   sources = [
-    "android/java/src/org/chromium/chrome/browser/settings/ActivityUtil.java",
     "android/java/src/org/chromium/chrome/browser/settings/ChromeBaseSettingsFragment.java",
     "android/java/src/org/chromium/chrome/browser/settings/ChromeManagedPreferenceDelegate.java",
     "android/java/src/org/chromium/chrome/browser/settings/FaviconLoader.java",
@@ -107,6 +106,7 @@ android_library("java") {
     "//components/browser_ui/settings/android:java",
     "//components/browser_ui/settings/android:managed_prefs_java_resources",
     "//components/browser_ui/styles/android:java",
+    "//components/browser_ui/util/android:java",
     "//components/browser_ui/widget/android:java",
     "//components/embedder_support/android:util_java",
     "//components/favicon/android:java",
@@ -130,6 +130,7 @@ android_library("test_support_java") {
   sources = [
     "android/java/src/org/chromium/chrome/browser/settings/SettingsActivityTestRule.java",
     "android/java/src/org/chromium/chrome/browser/settings/SettingsInTabTestActivity.java",
+    "android/java/src/org/chromium/chrome/browser/settings/SettingsTestFragmentFinder.java",
     "android/java/src/org/chromium/chrome/browser/settings/SettingsTestRule.java",
   ]
 
@@ -151,6 +152,7 @@ android_library("test_support_java") {
     "//components/browser_ui/modaldialog/android:java",
     "//components/browser_ui/settings/android:java",
     "//components/browser_ui/widget/android:java",
+    "//content/public/android:content_java",
     "//third_party/androidx:androidx_activity_activity_java",
     "//third_party/androidx:androidx_annotation_annotation_java",
     "//third_party/androidx:androidx_fragment_fragment_java",
@@ -160,6 +162,7 @@ android_library("test_support_java") {
     "//third_party/junit",
     "//ui/android:ui_java",
     "//ui/android:ui_no_recycler_view_java",
+    "//url:gurl_java",
   ]
 }
 

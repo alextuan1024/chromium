@@ -17,6 +17,7 @@ class ChromeAccountManagerService;
 @protocol FullscreenSigninScreenMediatorDelegate;
 class PrefService;
 namespace signin {
+class AccountPreviewDataService;
 class IdentityManager;
 }  // namespace signin
 namespace signin_metrics {
@@ -45,8 +46,6 @@ class SyncService;
 @property(nonatomic, assign) BOOL TOSLinkWasTapped;
 // Whether the user tapped on the UMA link.
 @property(nonatomic, assign) BOOL UMALinkWasTapped;
-// Whether an account has been added. Must be set externally.
-@property(nonatomic, assign) BOOL addedAccount;
 // Whether dismiss gestures should be ignored (e.g. swipe away).
 @property(nonatomic, assign, readonly) BOOL ignoreDismissGesture;
 // Delegate of the mediator.
@@ -54,17 +53,20 @@ class SyncService;
 @property(nonatomic, assign, readonly) BOOL signinInProgress;
 
 // The designated initializer.
-// `accountManagerService` account manager service.
-// `authenticationService` authentication service.
-// `localPrefService` application local pref.
-// `prefService` user pref.
-// `syncService` sync service.
+// - `accountManagerService` account manager service.
+// - `authenticationService` authentication service.
+// - `accountPreviewDataService` for fetching the preferred account preference.
+// May be `nullptr`.
+// - `localPrefService` application local pref.
+// - `prefService` user pref. `syncService` sync service.
 - (instancetype)
         initWithAccountManagerService:
             (ChromeAccountManagerService*)accountManagerService
                 authenticationService:
                     (AuthenticationService*)authenticationService
                       identityManager:(signin::IdentityManager*)identityManager
+            accountPreviewDataService:
+                (signin::AccountPreviewDataService*)accountPreviewDataService
                      localPrefService:(PrefService*)localPrefService
                           prefService:(PrefService*)prefService
                           syncService:(syncer::SyncService*)syncService
@@ -92,6 +94,9 @@ class SyncService;
 // User attempted to sign-in by either add an account or by tapping on sing-in
 // button.
 - (void)userAttemptedToSignin;
+
+// Records when an identity is added during the sign-in flow.
+- (void)systemIdentityAdded:(id<SystemIdentity>)identity;
 
 // Called when the coordinator is finished.
 - (void)finishPresentingWithSignIn:(BOOL)signIn;

@@ -15,11 +15,17 @@ import android.widget.TextView;
 
 import org.jni_zero.CalledByNative;
 import org.jni_zero.JNINamespace;
+import org.jni_zero.JniPtr;
+import org.jni_zero.JniRawPtr;
+import org.jni_zero.JniType;
+import org.jni_zero.JniTypeToken;
 import org.jni_zero.NativeMethods;
 
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.ui.autofill.internal.R;
+import org.chromium.components.autofill.AutofillFeatures;
 import org.chromium.ui.base.WindowAndroid;
 import org.chromium.ui.modaldialog.DialogDismissalCause;
 import org.chromium.ui.modaldialog.ModalDialogManager;
@@ -36,7 +42,11 @@ import org.chromium.ui.modelutil.PropertyModel;
 @JNINamespace("autofill")
 @NullMarked
 public class AutofillErrorDialogBridge {
-    private final long mNativeAutofillErrorDialogView;
+    @JniType("::autofill::AutofillErrorDialogViewAndroid")
+    interface NativeAutofillErrorDialogViewAndroid extends JniTypeToken {}
+
+    private @Nullable JniRawPtr<NativeAutofillErrorDialogViewAndroid>
+            mNativeAutofillErrorDialogView;
     private final ModalDialogManager mModalDialogManager;
     private final Context mContext;
     private @Nullable PropertyModel mDialogModel;
@@ -51,12 +61,16 @@ public class AutofillErrorDialogBridge {
 
                 @Override
                 public void onDismiss(PropertyModel model, int dismissalCause) {
-                    AutofillErrorDialogBridgeJni.get().onDismissed(mNativeAutofillErrorDialogView);
+                    if (mNativeAutofillErrorDialogView != null) {
+                        AutofillErrorDialogBridgeJni.get()
+                                .onDismissed(mNativeAutofillErrorDialogView);
+                        clearNativePtr();
+                    }
                 }
             };
 
     public AutofillErrorDialogBridge(
-            long nativeAutofillErrorDialogView,
+            @Nullable JniRawPtr<NativeAutofillErrorDialogViewAndroid> nativeAutofillErrorDialogView,
             ModalDialogManager modalDialogManager,
             Context context) {
         this.mNativeAutofillErrorDialogView = nativeAutofillErrorDialogView;
@@ -66,7 +80,8 @@ public class AutofillErrorDialogBridge {
 
     @CalledByNative
     public static AutofillErrorDialogBridge create(
-            long nativeAutofillErrorDialogView, WindowAndroid windowAndroid) {
+            JniRawPtr<NativeAutofillErrorDialogViewAndroid> nativeAutofillErrorDialogView,
+            @JniType("ui::WindowAndroid*") WindowAndroid windowAndroid) {
         return new AutofillErrorDialogBridge(
                 nativeAutofillErrorDialogView,
                 assertNonNull(windowAndroid.getModalDialogManager()),
@@ -81,7 +96,10 @@ public class AutofillErrorDialogBridge {
      * @param buttonLabel Label for the positive button which acts as a cancel button.
      */
     @CalledByNative
-    public void show(String title, String description, String buttonLabel) {
+    public void show(
+            @JniType("std::u16string") String title,
+            @JniType("std::u16string") String description,
+            @JniType("std::u16string") String buttonLabel) {
         View errorDialogContentView =
                 LayoutInflater.from(mContext).inflate(R.layout.autofill_error_dialog, null);
         ((TextView) errorDialogContentView.findViewById(R.id.error_message)).setText(description);
@@ -92,11 +110,15 @@ public class AutofillErrorDialogBridge {
         TextView titleView = errorDialogContentView.findViewById(R.id.title);
         titleView.setText(title);
         ImageView iconView = errorDialogContentView.findViewById(R.id.title_icon);
-        iconView.setImageResource(R.drawable.google_pay);
+        iconView.setImageResource(
+                ChromeFeatureList.isEnabled(AutofillFeatures.AUTOFILL_ENABLE_GRADIENT_GOOGLE_LOGOS)
+                        ? R.drawable.googlepay_with_gradient
+                        : R.drawable.google_pay);
         PropertyModel.Builder builder =
                 new PropertyModel.Builder(ModalDialogProperties.ALL_KEYS)
                         .with(ModalDialogProperties.CONTROLLER, mModalDialogController)
                         .with(ModalDialogProperties.CUSTOM_VIEW, errorDialogContentView)
+                        .with(ModalDialogProperties.CONTENT_DESCRIPTION, title)
                         .with(ModalDialogProperties.NEGATIVE_BUTTON_DISABLED, true)
                         .with(ModalDialogProperties.POSITIVE_BUTTON_TEXT, buttonLabel);
         mDialogModel = builder.build();
@@ -109,8 +131,16 @@ public class AutofillErrorDialogBridge {
         mModalDialogManager.dismissDialog(mDialogModel, DialogDismissalCause.DISMISSED_BY_NATIVE);
     }
 
+    @CalledByNative
+    void clearNativePtr() {
+        if (mNativeAutofillErrorDialogView != null) {
+            mNativeAutofillErrorDialogView.release();
+            mNativeAutofillErrorDialogView = null;
+        }
+    }
+
     @NativeMethods
     interface Natives {
-        void onDismissed(long nativeAutofillErrorDialogViewAndroid);
+        void onDismissed(JniPtr<NativeAutofillErrorDialogViewAndroid> self);
     }
 }

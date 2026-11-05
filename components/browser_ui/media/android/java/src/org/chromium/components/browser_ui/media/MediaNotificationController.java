@@ -14,7 +14,6 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.pm.ServiceInfo;
-import android.graphics.Bitmap;
 import android.os.Handler;
 import android.os.Looper;
 import android.support.v4.media.MediaMetadataCompat;
@@ -31,6 +30,7 @@ import org.chromium.base.CollectionUtil;
 import org.chromium.base.ContextUtils;
 import org.chromium.base.IntentUtils;
 import org.chromium.base.Log;
+import org.chromium.base.ThreadUtils;
 import org.chromium.base.TimeUtils;
 import org.chromium.build.annotations.EnsuresNonNull;
 import org.chromium.build.annotations.NullMarked;
@@ -123,14 +123,15 @@ public class MediaNotificationController {
 
     @VisibleForTesting public @Nullable NotificationWrapperBuilder mNotificationBuilder;
 
-    @VisibleForTesting public @Nullable Bitmap mDefaultNotificationLargeIcon;
-
     // |mMediaNotificationInfo| should be not null if and only if the notification is showing.
     @VisibleForTesting public @Nullable MediaNotificationInfo mMediaNotificationInfo;
 
     @VisibleForTesting public long mTimeOfLastPauseMs = -1;
 
     private boolean mIsForeground;
+
+    // Number of in-flight BaseNotificationManagerProxy#notify() calls for this controller.
+    private int mPendingNotifyCount;
 
     @VisibleForTesting public @Nullable MediaSessionCompat mMediaSession;
 
@@ -425,6 +426,9 @@ public class MediaNotificationController {
             return false;
         }
         try {
+            // Binds `service` in Android OS to `notification.getMetadata().id` and marks that
+            // notification with `FLAG_FOREGROUND_SERVICE` (ignoring `cancel(id)` until
+            // `stopForeground()` is called), without updating any controller's `mIsForeground`.
             ForegroundServiceUtils.getInstance()
                     .startForeground(
                             service,
@@ -622,27 +626,34 @@ public class MediaNotificationController {
         if (shouldBeForeground() && !mIsForeground) {
             promote(/* shouldLogNotification= */ true);
         } else {
-            // Android O+ requires startForeground() after startForegroundService() even if the
-            // media
-            // is now paused/inactive. Start FGS then immediately demote to a background
-            // notification.
+            // Android O+ requires startForeground() after startForegroundService(), even if this
+            // controller is now paused or another tab took over as the active FGS owner while the
+            // service was starting.
             updateMediaSession();
             updateNotificationBuilder();
             NotificationWrapper notification = mNotificationBuilder.buildNotificationWrapper();
             finishStartingForegroundServiceOnO(mService, notification);
 
-            boolean stopFgs = true;
-            if (MediaNotificationManager.isMultipleMediaNotificationsEnabled()) {
-                stopFgs = !MediaNotificationManager.hasPlayingController(getMediaTypeId());
-            }
-            demoteInternal(stopFgs);
+            // Detach immediately so this notification doesn't stay stuck with
+            // FLAG_FOREGROUND_SERVICE while mIsForeground is false (which would prevent
+            // clearNotification() from canceling it).
+            demoteInternal();
             updateNotification(/* shouldLogNotification= */ true);
+
+            // If there was an active controller that got detached above, we need to attach it now.
+            MediaNotificationController activeController =
+                    MediaNotificationManager.getActiveOrFallbackControllerByMediaTypeId(
+                            getMediaTypeId());
+            if (activeController != null && activeController.isForeground()) {
+                activeController.updateNotification(/* shouldLogNotification= */ false);
+            }
         }
     }
 
     /** Handles the service destruction. */
     public void onServiceDestroyed() {
         mService = null;
+        mIsForeground = false;
         MediaNotificationManager.setService(getMediaTypeId(), null);
     }
 
@@ -653,8 +664,18 @@ public class MediaNotificationController {
             // The intent comes from  {@link AppHooks#startForegroundService}.
             onServiceStarted(service);
         } else {
-            // The intent comes from the notification. In this case, {@link onServiceStarted()}
-            // does need to be called.
+            // In multiple-notification mode, a paused notification outlives its service when
+            // Android stops the idle background service (onServiceDestroyed() nulls mService
+            // without hiding the notification). When the user later triggers a notification
+            // action (e.g. Play or Swipe), PendingIntent.getService() launches a new service
+            // instance with a non-null action, bypassing onServiceStarted(). Re-bind mService
+            // and the shared service map when null or stale so stopListenerService() can stop
+            // it on Swipe/Stop and showNotification() can directly promote it on Play without
+            // a redundant startForegroundService() call.
+            if (mService != service) {
+                mService = service;
+                MediaNotificationManager.setService(getMediaTypeId(), service);
+            }
             processAction(intent.getAction());
         }
         return true;
@@ -774,6 +795,9 @@ public class MediaNotificationController {
                 // This is not allowed from the background, and there is no workaround on S+. If it
                 // fails, `mService` will remain null for us to try again later.
                 try {
+                    // Do not set an action on this intent: processIntent() and
+                    // ListenerServiceImpl.onStartCommand() rely on a null action to distinguish a
+                    // startForegroundService() launch from a notification action PendingIntent.
                     Intent intent = assertNonNull(mDelegate.createServiceIntent());
                     intent.putExtra(EXTRA_NOTIFICATION_ID, mediaNotificationInfo.id);
                     ForegroundServiceUtils.getInstance().startForegroundService(intent);
@@ -906,6 +930,17 @@ public class MediaNotificationController {
 
         if (MediaNotificationManager.isServiceNeeded(
                 getMediaTypeId(), mDelegate.getNotificationId())) {
+            if (mIsForeground) {
+                ForegroundServiceUtils.getInstance()
+                        .stopForeground(mService, Service.STOP_FOREGROUND_REMOVE);
+                // Clear mIsForeground before handleFallbackOnStop() so
+                // tryFallbackPromotion() -> oldController.demote() is a no-op and does not
+                // call stopForeground(STOP_FOREGROUND_DETACH) or re-post the notification via
+                // updateNotification().
+                mIsForeground = false;
+                MediaNotificationManager.handleFallbackOnStop(
+                        getMediaTypeId(), mDelegate.getNotificationId());
+            }
             mService = null;
             return;
         }
@@ -915,6 +950,7 @@ public class MediaNotificationController {
         mService.stopSelf();
         mService = null;
         mIsForeground = false;
+        MediaNotificationManager.onServiceDestroyed(getMediaTypeId());
     }
 
     @VisibleForTesting
@@ -968,14 +1004,16 @@ public class MediaNotificationController {
 
         boolean success = false;
         if (mIsForeground && useForegroundService) {
+            // promoteInternal() calls startForeground() synchronously. Only enqueue an async
+            // notify() if a prior notify() (e.g. from demote()) is still in flight, so the
+            // promoted notification runs last and wins once the async queue drains.
+            boolean hasPendingNotify = mPendingNotifyCount > 0;
             success = promoteInternal(notification);
-            if (success) {
-                BaseNotificationManagerProxy manager = BaseNotificationManagerProxyFactory.create();
-                manager.notify(notification);
+            if (success && hasPendingNotify) {
+                notifyNotificationManager(notification);
             }
         } else {
-            BaseNotificationManagerProxy manager = BaseNotificationManagerProxyFactory.create();
-            manager.notify(notification);
+            notifyNotificationManager(notification);
             success = true;
         }
         if (!useForegroundService) mServicelessNotificationShown = true;
@@ -1326,12 +1364,10 @@ public class MediaNotificationController {
      * Internal helper to detach FGS status and update state without re-entering
      * updateNotification().
      */
-    private void demoteInternal(boolean stopFgs) {
+    private void demoteInternal() {
         if (mService == null) return;
-        if (stopFgs) {
-            ForegroundServiceUtils.getInstance()
-                    .stopForeground(mService, Service.STOP_FOREGROUND_DETACH);
-        }
+        ForegroundServiceUtils.getInstance()
+                .stopForeground(mService, Service.STOP_FOREGROUND_DETACH);
         mIsForeground = false;
     }
 
@@ -1354,10 +1390,21 @@ public class MediaNotificationController {
             // exception if trying to start a foreground service from the background. Fall back to
             // showing a normal background notification so media controls remain visible.
             mIsForeground = false;
-            BaseNotificationManagerProxy manager = BaseNotificationManagerProxyFactory.create();
-            manager.notify(notification);
+            notifyNotificationManager(notification);
             return false;
         }
+    }
+
+    /**
+     * Posts the notification via {@link BaseNotificationManagerProxy} and tracks in-flight calls.
+     * This should be the only way {@code notify()} is called in this class to avoid a stale {@link
+     * #mPendingNotifyCount}.
+     */
+    private void notifyNotificationManager(NotificationWrapper notification) {
+        ThreadUtils.assertOnUiThread();
+        mPendingNotifyCount++;
+        BaseNotificationManagerProxy manager = BaseNotificationManagerProxyFactory.create();
+        manager.notify(notification, () -> mPendingNotifyCount--);
     }
 
     /**
@@ -1382,19 +1429,16 @@ public class MediaNotificationController {
     }
 
     /**
-     * Demotes this controller's notification from the Foreground Service (FGS). This transitions
-     * the shared service to the background, making this notification a normal background
-     * notification that the user can swipe away.
-     *
-     * @param stopFgs If true, stops the Foreground Service FGS status entirely. If false, keeps the
-     *     service running in the background.
+     * Demotes this controller's notification from the Foreground Service (FGS). This detaches the
+     * notification from the shared foreground service, making it a normal background notification
+     * that the user can swipe away or cancel.
      */
-    public void demote(boolean stopFgs) {
-        if (mService == null) return;
+    public void demote() {
         if (!mIsForeground) return;
-
         mIsForeground = false;
-        demoteInternal(stopFgs);
+        if (mService == null) return;
+
+        demoteInternal();
         updateNotification(/* shouldLogNotification= */ false);
     }
 

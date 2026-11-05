@@ -6,18 +6,26 @@
 #include <vector>
 
 #include "base/base64.h"
+#include "base/command_line.h"
+#include "base/files/file_path.h"
 #include "base/metrics/statistics_recorder.h"
+#include "base/run_loop.h"
 #include "base/test/bind.h"
 #include "base/test/metrics/histogram_tester.h"
+#include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
 #include "build/build_config.h"
 #include "chrome/browser/browser_process.h"
+#include "chrome/browser/extensions/api/tabs/windows_api.h"
 #include "chrome/browser/page_load_metrics/page_load_metrics_initialize.h"
 #include "chrome/browser/prefs/session_startup_pref.h"
 #include "chrome/browser/profiles/keep_alive/profile_keep_alive_types.h"
 #include "chrome/browser/profiles/keep_alive/scoped_profile_keep_alive.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/profiles/profile_test_util.h"
+#include "chrome/browser/sessions/session_restore.h"
+#include "chrome/browser/themes/theme_service.h"
+#include "chrome/browser/themes/theme_service_factory.h"
 #include "chrome/browser/ui/browser_command_controller.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_window.h"
@@ -25,17 +33,30 @@
 #include "chrome/browser/ui/browser_window/public/create_browser_window.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/browser_window/public/profile_browser_collection.h"
+#include "chrome/browser/ui/color/chrome_color_id.h"
+#include "chrome/browser/ui/omnibox/omnibox_controller.h"
+#include "chrome/browser/ui/startup/startup_browser_creator_impl.h"
+#include "chrome/browser/ui/startup/startup_types.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
+#include "chrome/browser/ui/ui_features.h"
+#include "chrome/browser/ui/views/frame/toolbar_button_provider.h"
+#include "chrome/browser/ui/views/toolbar/webui_toolbar_web_view.h"
+#include "chrome/browser/ui/waap/initial_webui_metrics_dispatcher.h"
 #include "chrome/browser/ui/waap/initial_webui_profile_service.h"
 #include "chrome/browser/ui/waap/initial_webui_profile_service_factory.h"
 #include "chrome/browser/ui/waap/initial_webui_window_metrics_manager.h"
 #include "chrome/browser/ui/waap/waap_utils.h"
+#include "chrome/browser/ui/waap/window_creation.h"
+#include "chrome/browser/ui/webui/top_chrome/top_chrome_webui_profile.h"
+#include "chrome/browser/ui/webui/top_chrome/top_chrome_webui_user_profile.h"
+#include "chrome/browser/ui/webui/top_chrome/webui_contents_prerenderer.h"
 #include "chrome/browser/ui/webui/webui_embedding_context.h"
-#include "chrome/browser/ui/webui/webui_toolbar/adapters/navigation_controls_state_fetcher_impl.h"
+#include "chrome/browser/ui/webui/webui_toolbar/adapters/toolbar_state_fetcher_impl.h"
 #include "chrome/browser/ui/webui/webui_toolbar/webui_toolbar_test_utils.h"
 #include "chrome/browser/ui/webui/webui_toolbar/webui_toolbar_ui.h"
 #include "chrome/common/chrome_features.h"
 #include "chrome/common/chrome_switches.h"
+#include "chrome/common/pref_names.h"
 #include "chrome/common/webui_url_constants.h"
 #include "chrome/common/webui_url_utils.h"
 #include "chrome/test/base/in_process_browser_test.h"
@@ -46,6 +67,7 @@
 #include "components/metrics/content/subprocess_metrics_provider.h"
 #include "components/metrics/mapping/metrics_mapping_features.h"
 #include "components/metrics/mapping/metrics_name_mapping.pb.h"
+#include "components/prefs/pref_service.h"
 #include "components/startup_metric_utils/browser/startup_metric_utils.h"
 #include "components/ukm/gmock_matchers.h"
 #include "components/ukm/test_ukm_recorder.h"
@@ -56,18 +78,31 @@
 #include "content/public/browser/spare_render_process_host_manager.h"
 #include "content/public/common/content_features.h"
 #include "content/public/common/content_switches.h"
+#include "content/public/common/result_codes.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
+#include "content/public/test/no_renderer_crashes_assertion.h"
 #include "content/public/test/test_navigation_observer.h"
 #include "content/public/test/test_utils.h"
 #include "content/public/test/web_ui_browsertest_util.h"
+#include "extensions/browser/api_test_utils.h"
+#include "extensions/common/extension_builder.h"
 #include "services/metrics/public/cpp/ukm_builders.h"
 #include "services/metrics/public/cpp/ukm_source.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/common/features.h"
+#include "third_party/blink/public/common/renderer_preferences/renderer_preferences.h"
+#include "third_party/blink/public/common/web_preferences/web_preferences.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "ui/base/mojom/window_show_state.mojom.h"
+#include "ui/base/pointer/touch_ui_controller.h"
+#include "ui/color/color_provider.h"
+#include "ui/color/color_provider_key.h"
+#include "ui/color/color_provider_utils.h"
+#include "ui/native_theme/mock_os_settings_provider.h"
 #include "url/gurl.h"
+#include "url/url_constants.h"
 
 namespace waap {
 namespace {
@@ -125,11 +160,10 @@ class ToolbarDependencyProvider : public WebUIToolbarUI::DependencyProvider {
     return nullptr;
   }
 
-  std::unique_ptr<toolbar_ui_api::NavigationControlsStateFetcher>
-  GetNavigationControlsStateFetcher() override {
-    return std::make_unique<toolbar_ui_api::NavigationControlsStateFetcherImpl>(
-        base::BindLambdaForTesting(
-            []() { return CreateValidNavigationControlsState(); }));
+  std::unique_ptr<toolbar_ui_api::ToolbarStateFetcher> GetToolbarStateFetcher()
+      override {
+    return std::make_unique<toolbar_ui_api::ToolbarStateFetcherImpl>(
+        base::BindLambdaForTesting([]() { return CreateValidToolbarState(); }));
   }
 
   std::unique_ptr<toolbar_ui_api::IconTableFetcher> GetIconTableFetcher()
@@ -167,12 +201,9 @@ class WebUIToolbarInitializer : public WebUIControllerInitalizer {
 
 class InitialWebUIBrowserTestBase : public InProcessBrowserTest {
  public:
-  InitialWebUIBrowserTestBase()
-      : InitialWebUIBrowserTestBase(
-            std::vector<base::test::FeatureRefAndParams>{}) {}
-
   explicit InitialWebUIBrowserTestBase(
-      std::vector<base::test::FeatureRefAndParams> additional_features) {
+      std::vector<base::test::FeatureRefAndParams> additional_features = {},
+      std::vector<base::test::FeatureRef> disabled_features = {}) {
     std::vector<base::test::FeatureRefAndParams> base_features = {
         {features::kInitialWebUI, {{"use_separate_process", "true"}}},
         {features::kWebUIReloadButton, {}},
@@ -199,7 +230,8 @@ class InitialWebUIBrowserTestBase : public InProcessBrowserTest {
       features.push_back(add_f);
     }
 
-    scoped_feature_list_.InitWithFeaturesAndParameters(features, {});
+    scoped_feature_list_.InitWithFeaturesAndParameters(features,
+                                                       disabled_features);
   }
 
   void SetUpOnMainThread() override {
@@ -256,7 +288,7 @@ class InitialWebUIBrowserTestBase : public InProcessBrowserTest {
   std::unique_ptr<ukm::TestAutoSetUkmRecorder> ukm_recorder_;
 };
 
-class InitialWebUINavigationBrowserTest : public InitialWebUIBrowserTestBase {};
+using InitialWebUINavigationBrowserTest = InitialWebUIBrowserTestBase;
 
 // TopChrome WebUI flag should be correctly set even if a non-TopChrome WebUI is
 // created first.
@@ -285,6 +317,63 @@ IN_PROC_BROWSER_TEST_F(InitialWebUINavigationBrowserTest,
   EXPECT_TRUE(initial_webui_web_contents->GetPrimaryMainFrame()
                   ->GetProcess()
                   ->IsForTopChromeWebUI());
+
+  // Non-Initial WebUI populates default web-content generic font family maps
+  // (e.g. "Times New Roman"), whereas Initial WebUI clears them to avoid
+  // prewarming or loading unused default web fonts during startup.
+  const blink::web_pref::WebPreferences& non_initial_prefs =
+      non_initial_webui_web_contents->GetOrCreateWebPreferences();
+  EXPECT_FALSE(non_initial_prefs.standard_font_family_map.empty());
+  EXPECT_FALSE(non_initial_prefs.serif_font_family_map.empty());
+
+  const blink::web_pref::WebPreferences& initial_prefs =
+      initial_webui_web_contents->GetOrCreateWebPreferences();
+  EXPECT_TRUE(initial_prefs.standard_font_family_map.empty());
+  EXPECT_TRUE(initial_prefs.fixed_font_family_map.empty());
+  EXPECT_TRUE(initial_prefs.serif_font_family_map.empty());
+  EXPECT_TRUE(initial_prefs.sans_serif_font_family_map.empty());
+  EXPECT_TRUE(initial_prefs.cursive_font_family_map.empty());
+  EXPECT_TRUE(initial_prefs.fantasy_font_family_map.empty());
+  EXPECT_TRUE(initial_prefs.math_font_family_map.empty());
+
+  EXPECT_EQ("flex",
+            content::EvalJs(initial_webui_web_contents.get(),
+                            "getComputedStyle(document.querySelector("
+                            "'toolbar-app')).display"));
+}
+
+// Verifies that when only `WebUIReloadButton` is enabled (the `InitialWebUI`
+// startup configuration), chrome://webui-toolbar.top-chrome/ only defines
+// `<toolbar-app>` and the main-bundle navigation buttons without loading or
+// defining non-navigation toolbar custom elements from `lazy_load.js`.
+IN_PROC_BROWSER_TEST_F(InitialWebUINavigationBrowserTest,
+                       ReloadOnlyToolbarSkipsLazyControls) {
+  GURL url(chrome::kChromeUIWebUIToolbarURL);
+  WebUIToolbarInitializer initializer(browser());
+  std::unique_ptr<content::WebContents> web_contents =
+      CreateAndNavigateWebContents(url, &initializer);
+  ASSERT_TRUE(content::WaitForLoadStop(web_contents.get()));
+
+  EXPECT_EQ(true, content::EvalJs(web_contents.get(), R"(
+      customElements.whenDefined('toolbar-app').then(
+          () => !!customElements.get('reload-button') &&
+                !!customElements.get('back-forward-button') &&
+                !!customElements.get('home-button') &&
+                !!customElements.get('split-tabs-button') &&
+                !!document.querySelector('toolbar-app').shadowRoot))"));
+  // `lazy_load.js` would be requested from an idle callback registered by
+  // `<toolbar-app>`, so wait for a later idle callback before checking that
+  // it was never requested.
+  EXPECT_EQ(false, content::EvalJs(web_contents.get(), R"(
+      new Promise(resolve => requestIdleCallback(resolve, {timeout: 1000}))
+          .then(() =>
+              !!document.querySelector('script[src$="lazy_load.js"]') ||
+              !!customElements.get('location-bar') ||
+              !!customElements.get('readonly-omnibox') ||
+              !!customElements.get('app-menu-button') ||
+              !!customElements.get('avatar-button') ||
+              !!customElements.get('webui-toolbar-extensions') ||
+              !!customElements.get('pinned-toolbar-actions')))"));
 }
 
 // Initial WebUI process should not be shared with non-Initial WebUI per
@@ -582,17 +671,16 @@ IN_PROC_BROWSER_TEST_F(InitialWebUINavigationBrowserTest,
   // Create a new browser window without actively showing/painting it yet.
   BrowserWindowCreateParams params(browser()->GetProfile(),
                                    /*from_user_gesture=*/true);
-  BrowserWindowInterface* new_browser = CreateBrowserWindow(std::move(params));
+  BrowserWindowInterface* new_browser =
+      waap::CreateBrowserWindowAndRecordCreationSource(
+          std::move(params), waap::NewWindowCreationSource::kNewEmptyWindow);
 
   if (auto* manager = InitialWebUIWindowMetricsManager::From(new_browser)) {
     manager->SkipStartupForTesting();
-    manager->SetWindowCreationInfo(
-        waap::NewWindowCreationSource::kBrowserInitiated,
-        base::TimeTicks::Now());
 
     base::TimeTicks t1 = base::TimeTicks::Now();
     manager->OnBrowserWindowFirstPresentation(t1);
-    manager->OnReloadButtonFirstPaint(t1 + base::Milliseconds(50));
+    manager->GetMetricsDispatcher().OnFirstPaint(t1 + base::Milliseconds(50));
   }
 
   AddBlankTabAndShow(new_browser);
@@ -603,9 +691,134 @@ IN_PROC_BROWSER_TEST_F(InitialWebUINavigationBrowserTest,
       "BrowserWindowToReloadButton.FirstPaintGap2",
       1);
   histogram_tester.ExpectTotalCount(
-      "InitialWebUI.NewWindow.BrowserInitiated.WithExistingWindow."
+      "InitialWebUI.NewWindow.NewEmptyWindow.WithExistingWindow."
       "BrowserWindowToReloadButton.FirstPaintGap2",
       1);
+}
+
+// Verifies that the WebUI toolbar records the reload button creation exactly
+// once for a new normal browser window.
+IN_PROC_BROWSER_TEST_F(InitialWebUINavigationBrowserTest,
+                       RecordsReloadButtonCreationForNewWindow) {
+  ASSERT_TRUE(features::IsWebUIReloadButtonEnabled());
+  base::HistogramTester histogram_tester;
+
+  BrowserWindowCreateParams params(browser()->GetProfile(),
+                                   /*from_user_gesture=*/true);
+  BrowserWindowInterface* new_browser = CreateBrowserWindow(std::move(params));
+  ASSERT_TRUE(InitialWebUIWindowMetricsManager::From(new_browser));
+  AddBlankTabAndShow(new_browser);
+
+  // The same histogram also records the browser window creation (bucket 0);
+  // bucket 1 corresponds to `InitialWebUIView::kReloadButton`.
+  histogram_tester.ExpectBucketCount("InitialWebUI.View.Creation",
+                                     /*sample=*/1, 1);
+}
+
+// Verifies the `NewWindowCreationSource` that each window creation entry point
+// assigns to the window it creates.
+class InitialWebUIWindowCreationSourceBrowserTest
+    : public InitialWebUIBrowserTestBase {
+ protected:
+  static waap::NewWindowCreationSource GetCreationSource(
+      BrowserWindowInterface* browser) {
+    auto* manager = InitialWebUIWindowMetricsManager::From(browser);
+    CHECK(manager);
+    return manager->GetCreationSourceForTesting();
+  }
+};
+
+IN_PROC_BROWSER_TEST_F(InitialWebUIWindowCreationSourceBrowserTest,
+                       NewEmptyWindow) {
+  chrome::NewEmptyWindow(browser()->GetProfile(),
+                         /*should_trigger_session_restore=*/false);
+
+  BrowserWindowInterface* const new_browser =
+      ui_test_utils::GetBrowserNotInSet({browser()});
+  ASSERT_TRUE(new_browser);
+  EXPECT_EQ(GetCreationSource(new_browser),
+            waap::NewWindowCreationSource::kNewEmptyWindow);
+}
+
+IN_PROC_BROWSER_TEST_F(InitialWebUIWindowCreationSourceBrowserTest,
+                       MoveTabsToNewWindow) {
+  ASSERT_TRUE(ui_test_utils::NavigateToURLWithDisposition(
+      browser(), GURL(url::kAboutBlankURL),
+      ui::mojom::WindowOpenDisposition::kNewForegroundTab,
+      ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP));
+  ASSERT_EQ(browser()->tab_strip_model()->count(), 2);
+
+  chrome::MoveTabsToNewWindow(browser(), {1});
+
+  BrowserWindowInterface* const new_browser =
+      ui_test_utils::GetBrowserNotInSet({browser()});
+  ASSERT_TRUE(new_browser);
+  EXPECT_EQ(GetCreationSource(new_browser),
+            waap::NewWindowCreationSource::kMoveTabsToNewWindow);
+}
+
+// Non-process-startup browser launches don't happen on ChromeOS.
+#if !BUILDFLAG(IS_CHROMEOS)
+IN_PROC_BROWSER_TEST_F(InitialWebUIWindowCreationSourceBrowserTest, Launch) {
+  // Simulate a launch handled by the already running browser process, e.g.
+  // from an OS shortcut.
+  base::CommandLine command_line(base::CommandLine::NO_PROGRAM);
+  StartupBrowserCreatorImpl launch(base::FilePath(), command_line,
+                                   chrome::startup::IsFirstRun::kNo);
+  launch.Launch(browser()->GetProfile(), chrome::startup::IsProcessStartup::kNo,
+                /*restore_tabbed_browser=*/true);
+
+  BrowserWindowInterface* const new_browser =
+      ui_test_utils::GetBrowserNotInSet({browser()});
+  ASSERT_TRUE(new_browser);
+  EXPECT_EQ(GetCreationSource(new_browser),
+            waap::NewWindowCreationSource::kLaunch);
+}
+#endif  // !BUILDFLAG(IS_CHROMEOS)
+
+IN_PROC_BROWSER_TEST_F(InitialWebUIWindowCreationSourceBrowserTest,
+                       SessionRestoreFallback) {
+  // Nothing has been saved for this profile yet, so the restore finds no
+  // tabbed window and opens a fallback window instead.
+  BrowserWindowInterface* const new_browser = SessionRestore::RestoreSession(
+      browser()->GetProfile(), /*browser=*/nullptr,
+      SessionRestore::SYNCHRONOUS | SessionRestore::RESTORE_BROWSER |
+          SessionRestore::ALWAYS_CREATE_TABBED_BROWSER,
+      /*startup_tabs=*/{});
+  ASSERT_TRUE(new_browser);
+  ASSERT_NE(new_browser, browser());
+  EXPECT_EQ(GetCreationSource(new_browser),
+            waap::NewWindowCreationSource::kSessionRestoreFallback);
+}
+
+IN_PROC_BROWSER_TEST_F(InitialWebUIWindowCreationSourceBrowserTest,
+                       Navigation) {
+  ASSERT_TRUE(ui_test_utils::NavigateToURLWithDisposition(
+      browser(), GURL(url::kAboutBlankURL),
+      ui::mojom::WindowOpenDisposition::kNewWindow,
+      ui_test_utils::BROWSER_TEST_WAIT_FOR_BROWSER |
+          ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP));
+
+  BrowserWindowInterface* const new_browser =
+      ui_test_utils::GetBrowserNotInSet({browser()});
+  ASSERT_TRUE(new_browser);
+  EXPECT_EQ(GetCreationSource(new_browser),
+            waap::NewWindowCreationSource::kNavigation);
+}
+
+IN_PROC_BROWSER_TEST_F(InitialWebUIWindowCreationSourceBrowserTest, Extension) {
+  auto function = base::MakeRefCounted<extensions::WindowsCreateFunction>();
+  scoped_refptr<const extensions::Extension> extension =
+      extensions::ExtensionBuilder("Test").Build();
+  function->set_extension(extension.get());
+  ASSERT_TRUE(extensions::api_test_utils::RunFunction(function.get(), "[]",
+                                                      browser()->GetProfile()));
+
+  BrowserWindowInterface* const new_browser =
+      ui_test_utils::GetBrowserNotInSet({browser()});
+  ASSERT_TRUE(new_browser);
+  EXPECT_EQ(GetCreationSource(new_browser),
+            waap::NewWindowCreationSource::kExtension);
 }
 
 // TODO(crbug.com/490810407): Verify that `NavigationTimeline` UKM is recorded.
@@ -665,8 +878,10 @@ IN_PROC_BROWSER_TEST_F(InitialWebUIMetricsMappingBrowserTest,
   EXPECT_GE(total_webium_count, 1);
 }
 
-// TODO(crbug.com/491012584): Flaky on ChromeOS MSan and Win.
-#if (BUILDFLAG(IS_CHROMEOS) && defined(MEMORY_SANITIZER)) || \
+// TODO(crbug.com/491012584, crbug.com/540625890): Flaky on ChromeOS MSan/ASan,
+// Win, and Mac.
+#if (BUILDFLAG(IS_CHROMEOS) &&                                     \
+     (defined(MEMORY_SANITIZER) || defined(ADDRESS_SANITIZER))) || \
     BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
 #define MAYBE_NormalRendererMetricsAreNotMapped \
   DISABLED_NormalRendererMetricsAreNotMapped
@@ -858,13 +1073,12 @@ IN_PROC_BROWSER_TEST_F(InitialWebUISurfaceSyncBrowserTest,
   // Create a new window.
   BrowserWindowCreateParams params(browser()->GetProfile(),
                                    /*from_user_gesture=*/true);
-  BrowserWindowInterface* new_browser = CreateBrowserWindow(std::move(params));
+  BrowserWindowInterface* new_browser =
+      waap::CreateBrowserWindowAndRecordCreationSource(
+          std::move(params), waap::NewWindowCreationSource::kNewEmptyWindow);
 
   if (auto* manager = InitialWebUIWindowMetricsManager::From(new_browser)) {
     manager->SkipStartupForTesting();
-    manager->SetWindowCreationInfo(
-        waap::NewWindowCreationSource::kBrowserInitiated,
-        base::TimeTicks::Now());
   }
 
   AddBlankTabAndShow(new_browser);
@@ -900,13 +1114,12 @@ IN_PROC_BROWSER_TEST_F(InitialWebUIMinimizedWindowBrowserTest,
   BrowserWindowCreateParams params(browser()->GetProfile(),
                                    /*from_user_gesture=*/true);
   params.initial_show_state = ui::mojom::WindowShowState::kMinimized;
-  BrowserWindowInterface* new_browser = CreateBrowserWindow(std::move(params));
+  BrowserWindowInterface* new_browser =
+      waap::CreateBrowserWindowAndRecordCreationSource(
+          std::move(params), waap::NewWindowCreationSource::kNewEmptyWindow);
 
   if (auto* manager = InitialWebUIWindowMetricsManager::From(new_browser)) {
     manager->SkipStartupForTesting();
-    manager->SetWindowCreationInfo(
-        waap::NewWindowCreationSource::kBrowserInitiated,
-        base::TimeTicks::Now());
   }
 
   // Show the window which should be shown minimized, and verify it.
@@ -922,13 +1135,13 @@ IN_PROC_BROWSER_TEST_F(InitialWebUIMinimizedWindowBrowserTest,
   if (auto* manager = InitialWebUIWindowMetricsManager::From(new_browser)) {
     base::TimeTicks t1 = base::TimeTicks::Now();
     manager->OnBrowserWindowFirstPresentation(t1);
-    manager->OnReloadButtonFirstPaint(t1 + base::Milliseconds(50));
+    manager->GetMetricsDispatcher().OnFirstPaint(t1 + base::Milliseconds(50));
   }
 
   // Verify ShowRequestedToFirstPaint was not recorded.
   histogram_tester.ExpectTotalCount(
       "InitialWebUI.NewWindow.AllSources.WithoutExistingWindow.BrowserWindow."
-      "ShowRequestedToFirstPaint.FromConstructor2",
+      "ShowRequestedToFirstPaint2",
       0);
 
   // Verify FirstPaintGap was not recorded.
@@ -983,7 +1196,7 @@ IN_PROC_BROWSER_TEST_F(InitialWebUIMinimizedWindowBrowserTest,
           InitialWebUIWindowMetricsManager::From(restored_browser)) {
     base::TimeTicks t1 = base::TimeTicks::Now();
     manager->OnBrowserWindowFirstPresentation(t1);
-    manager->OnReloadButtonFirstPaint(t1 + base::Milliseconds(50));
+    manager->GetMetricsDispatcher().OnFirstPaint(t1 + base::Milliseconds(50));
   }
 
   // Verify no metrics were recorded, since it is treated as startup as we
@@ -997,6 +1210,9 @@ IN_PROC_BROWSER_TEST_F(InitialWebUIMinimizedWindowBrowserTest,
       "InitialWebUI.Startup.SessionRestore.BrowserWindowToReloadButton."
       "FirstPaintGap",
       0);
+
+  histogram_tester.ExpectTotalCount(
+      "InitialWebUI.Startup.SessionRestore.ReloadButton.FirstPaint", 0);
 
   keep_alive.reset();
   profile_keep_alive.reset();
@@ -1073,7 +1289,8 @@ IN_PROC_BROWSER_TEST_F(InitialWebUISameStartupPopupBrowserTest,
   normal_manager->OnBrowserWindowShowRequested(t0);
   normal_manager->OnBrowserWindowFirstPresentation(t0 +
                                                    base::Milliseconds(100));
-  normal_manager->OnReloadButtonFirstPaint(t0 + base::Milliseconds(150));
+  normal_manager->GetMetricsDispatcher().OnFirstPaint(t0 +
+                                                      base::Milliseconds(150));
 
   // Verify histograms.
   // We expect all startup metrics to be recorded from the normal window.
@@ -1088,6 +1305,74 @@ IN_PROC_BROWSER_TEST_F(InitialWebUISameStartupPopupBrowserTest,
 
   histogram_tester.ExpectTotalCount(
       "InitialWebUI.Startup.BrowserWindow.ShowRequestedToFirstPaint", 1);
+}
+
+namespace {
+
+// Returns the WebUI toolbar WebContents of `browser` once it has loaded.
+content::WebContents* GetLoadedToolbarWebContents(
+    BrowserWindowInterface* browser) {
+  auto* toolbar_button_provider = ToolbarButtonProvider::From(browser);
+  if (!toolbar_button_provider ||
+      !toolbar_button_provider->GetWebUIToolbarViewForTesting()) {
+    return nullptr;
+  }
+  content::WebContents* web_contents =
+      toolbar_button_provider->GetWebUIToolbarViewForTesting()->web_contents();
+  if (web_contents) {
+    EXPECT_TRUE(content::WaitForLoadStop(web_contents));
+  }
+  return web_contents;
+}
+
+}  // namespace
+
+class InitialWebUISharedRendererBrowserTest
+    : public InitialWebUIBrowserTestBase {
+ public:
+  InitialWebUISharedRendererBrowserTest()
+      : InitialWebUIBrowserTestBase(
+            {{features::kTopChromeWebUISharedRenderer, {}}}) {}
+};
+
+// Verifies that the WebUI toolbar of each window is created in
+// TopChromeWebUIProfile, with the profile of the window as its user profile.
+IN_PROC_BROWSER_TEST_F(InitialWebUISharedRendererBrowserTest,
+                       ToolbarIsInTopChromeWebUIProfile) {
+  Profile* top_chrome_webui_profile = webui::GetTopChromeWebUIProfile();
+  ASSERT_TRUE(top_chrome_webui_profile);
+
+  content::WebContents* toolbar = GetLoadedToolbarWebContents(browser());
+  ASSERT_TRUE(toolbar);
+  EXPECT_EQ(top_chrome_webui_profile, toolbar->GetBrowserContext());
+  EXPECT_EQ(browser()->GetProfile(), webui::GetUserProfile(toolbar));
+  ASSERT_TRUE(toolbar->GetWebUI());
+  EXPECT_TRUE(toolbar->GetWebUI()->GetController()->GetAs<WebUIToolbarUI>());
+
+  // The toolbar of an incognito window is in the same TopChromeWebUIProfile.
+  BrowserWindowInterface* incognito_browser = CreateIncognitoBrowser();
+  content::WebContents* incognito_toolbar =
+      GetLoadedToolbarWebContents(incognito_browser);
+  ASSERT_TRUE(incognito_toolbar);
+  EXPECT_EQ(top_chrome_webui_profile, incognito_toolbar->GetBrowserContext());
+  EXPECT_EQ(incognito_browser->GetProfile(),
+            webui::GetUserProfile(incognito_toolbar));
+  // The toolbars share a renderer process.
+  EXPECT_EQ(toolbar->GetPrimaryMainFrame()->GetProcess(),
+            incognito_toolbar->GetPrimaryMainFrame()->GetProcess());
+}
+
+// Verifies that the renderer preferences of the WebUI toolbar follow the prefs
+// of its user profile.
+IN_PROC_BROWSER_TEST_F(InitialWebUISharedRendererBrowserTest,
+                       ToolbarRendererPreferencesFollowUserProfilePrefs) {
+  content::WebContents* toolbar = GetLoadedToolbarWebContents(browser());
+  ASSERT_TRUE(toolbar);
+  ASSERT_FALSE(toolbar->GetMutableRendererPrefs()->enable_do_not_track);
+
+  browser()->GetProfile()->GetPrefs()->SetBoolean(prefs::kEnableDoNotTrack,
+                                                  true);
+  EXPECT_TRUE(toolbar->GetMutableRendererPrefs()->enable_do_not_track);
 }
 
 // Profile creation and destruction without a full ChromeOS user session is not
@@ -1130,6 +1415,822 @@ IN_PROC_BROWSER_TEST_F(InitialWebUIProfileServiceShutdownBrowserTest,
   profile_manager->ClearFirstBrowserWindowKeepAlive(&secondary_profile);
   waiter.Wait();
 }
+
+class InitialWebUIProfilePrewarmOmniboxBrowserTest
+    : public InitialWebUIBrowserTestBase {
+ public:
+  InitialWebUIProfilePrewarmOmniboxBrowserTest()
+      : InitialWebUIBrowserTestBase(
+            {{features::kWebUILocationBar, {}},
+             {features::kWebUIReloadButton,
+              {{"WebUIReloadButtonPrewarmWebUI", "true"},
+               {"WebUIReloadButtonProfilePrewarming", "true"},
+               {"WebUIReloadButtonPrewarmWebUIPreNavigate", "true"}}}}) {}
+};
+
+// Verifies that when a profile-prewarmed WebUI toolbar has finished navigation
+// before the first browser window is created, the WebUIToolbarUI is properly
+// initialized with a valid OmniboxController after WebUILocationBar::Init()
+// runs, rather than race-initializing prematurely in the WebUIToolbarWebView
+// constructor with a null controller (b/563226016).
+IN_PROC_BROWSER_TEST_F(InitialWebUIProfilePrewarmOmniboxBrowserTest,
+                       PrewarmedToolbarInitializesOmniboxController) {
+  ProfileManager* profile_manager = g_browser_process->profile_manager();
+  base::FilePath new_path =
+      profile_manager->user_data_dir().Append(FILE_PATH_LITERAL("Secondary"));
+  Profile& secondary_profile =
+      profiles::testing::CreateProfileSync(profile_manager, new_path);
+
+  auto* service =
+      InitialWebUIProfileServiceFactory::GetForProfile(&secondary_profile);
+  ASSERT_TRUE(service);
+  ASSERT_TRUE(service->has_toolbar_contents_for_testing());
+
+  content::WebContents* prewarmed_contents =
+      service->toolbar_web_contents_for_testing();
+  ASSERT_TRUE(prewarmed_contents);
+
+  // Wait for the background prewarm navigation to commit.
+  content::TestNavigationObserver observer(prewarmed_contents);
+  observer.Wait();
+  ASSERT_TRUE(observer.last_navigation_succeeded());
+
+  // Create the first browser window for this profile, which will consume the
+  // prewarmed toolbar contents.
+  BrowserWindowInterface* new_browser = CreateBrowser(&secondary_profile);
+  ASSERT_TRUE(new_browser);
+
+  auto* toolbar_button_provider = ToolbarButtonProvider::From(new_browser);
+  ASSERT_TRUE(toolbar_button_provider);
+  auto* webview = toolbar_button_provider->GetWebUIToolbarViewForTesting();
+  ASSERT_TRUE(webview);
+  content::WebContents* web_contents = webview->web_contents();
+  ASSERT_TRUE(web_contents);
+  content::WebUI* web_ui = web_contents->GetWebUI();
+  ASSERT_TRUE(web_ui);
+  auto* webui = web_ui->GetController()->GetAs<WebUIToolbarUI>();
+  ASSERT_TRUE(webui);
+
+  // Verify that the OmniboxController was properly wired up and is non-null.
+  EXPECT_NE(nullptr, webui->omnibox_controller_for_testing());
+  EXPECT_TRUE(webui->is_initialized());
+  EXPECT_EQ(webview->GetOmniboxController(),
+            webui->omnibox_controller_for_testing());
+}
+
+class InitialWebUISharedRendererProfilePrewarmingBrowserTest
+    : public InitialWebUIBrowserTestBase {
+ public:
+  InitialWebUISharedRendererProfilePrewarmingBrowserTest()
+      : InitialWebUIBrowserTestBase(
+            {{features::kTopChromeWebUISharedRenderer, {}},
+             {features::kWebUIReloadButton,
+              {{"WebUIReloadButtonPrewarmWebUI", "true"},
+               {"WebUIReloadButtonProfilePrewarming", "true"}}}}) {}
+};
+
+// Verifies that a new profile doesn't prewarm a toolbar WebContents with
+// TopChromeWebUISharedRenderer, and that the toolbar of its first window is
+// created in TopChromeWebUIProfile instead, in the same renderer process as
+// the toolbar of the other profile.
+IN_PROC_BROWSER_TEST_F(InitialWebUISharedRendererProfilePrewarmingBrowserTest,
+                       ProfilePrewarmingIsSkipped) {
+  ProfileManager* profile_manager = g_browser_process->profile_manager();
+  base::FilePath new_path =
+      profile_manager->user_data_dir().Append(FILE_PATH_LITERAL("Secondary"));
+  Profile& secondary_profile =
+      profiles::testing::CreateProfileSync(profile_manager, new_path);
+
+  EXPECT_FALSE(
+      InitialWebUIProfileServiceFactory::GetForProfile(&secondary_profile));
+
+  BrowserWindowInterface* new_browser = CreateBrowser(&secondary_profile);
+  content::WebContents* toolbar = GetLoadedToolbarWebContents(new_browser);
+  ASSERT_TRUE(toolbar);
+  EXPECT_EQ(webui::GetTopChromeWebUIProfile(), toolbar->GetBrowserContext());
+  EXPECT_EQ(&secondary_profile, webui::GetUserProfile(toolbar));
+
+  content::WebContents* first_toolbar = GetLoadedToolbarWebContents(browser());
+  ASSERT_TRUE(first_toolbar);
+  EXPECT_EQ(first_toolbar->GetPrimaryMainFrame()->GetProcess(),
+            toolbar->GetPrimaryMainFrame()->GetProcess());
+}
 #endif  // !BUILDFLAG(IS_CHROMEOS)
+
+namespace {
+
+constexpr char kTakeResultHistogram[] =
+    "InitialWebUI.Toolbar.ProfilePrewarmTakeResult";
+using TakeResult = WebUIContentsPrerenderer::TakeResult;
+
+// Returns `additional_features` plus profile prewarming and prerendering, where
+// the refill builds the next toolbar as soon as the taken one paints. The
+// paint deadline is short, so that refills after windows that built their own
+// toolbar, such as the startup window, do not keep tests idle.
+std::vector<base::test::FeatureRefAndParams> GetRefillFeatures(
+    std::vector<base::test::FeatureRefAndParams> additional_features,
+    bool unbound = false) {
+  additional_features.emplace_back(
+      features::kWebUIReloadButton,
+      base::FieldTrialParams{
+          {"WebUIReloadButtonPrewarmWebUI", "true"},
+          {"WebUIReloadButtonPrewarmWebUIPreNavigate", "true"},
+          {"WebUIReloadButtonProfilePrewarming", "true"}});
+  base::FieldTrialParams prerendering_params{
+      {"TopChromeWebUIPrerenderingDelay", "0s"},
+      {"TopChromeWebUIPrerenderingPaintDeadline", "100ms"}};
+  if (unbound) {
+    prerendering_params["TopChromeWebUIPrerenderingUnbound"] = "true";
+  }
+  additional_features.emplace_back(features::kTopChromeWebUIPrerendering,
+                                   std::move(prerendering_params));
+  return additional_features;
+}
+
+}  // namespace
+
+// Turns on profile prewarming and prerendering.
+class InitialWebUIProfilePrewarmRefillBrowserTest
+    : public InitialWebUIBrowserTestBase {
+ public:
+  InitialWebUIProfilePrewarmRefillBrowserTest()
+      : InitialWebUIProfilePrewarmRefillBrowserTest(
+            /*additional_features=*/{},
+            /*disabled_features=*/{features::kTopChromeWebUISharedRenderer}) {}
+
+ protected:
+  explicit InitialWebUIProfilePrewarmRefillBrowserTest(
+      std::vector<base::test::FeatureRefAndParams> additional_features,
+      std::vector<base::test::FeatureRef> disabled_features,
+      bool unbound = false)
+      : InitialWebUIBrowserTestBase(
+            GetRefillFeatures(std::move(additional_features), unbound),
+            std::move(disabled_features)) {}
+
+  InitialWebUIProfileService* GetService() {
+    return InitialWebUIProfileServiceFactory::GetForProfile(
+        browser()->GetProfile());
+  }
+
+  // Waits until `service` holds a prewarmed toolbar and returns it. Returns
+  // null if none arrives before the wait times out.
+  content::WebContents* WaitForPrewarmedToolbar(
+      InitialWebUIProfileService* service) {
+    if (!base::test::RunUntil(
+            [&]() { return service->has_toolbar_contents_for_testing(); })) {
+      return nullptr;
+    }
+    return service->toolbar_web_contents_for_testing();
+  }
+
+  content::WebContents* GetToolbarContents(BrowserWindowInterface* browser) {
+    WebUIToolbarWebView* webview =
+        ToolbarButtonProvider::From(browser)->GetWebUIToolbarViewForTesting();
+    return webview ? webview->web_contents() : nullptr;
+  }
+};
+
+// Verifies that every new window of a profile adopts a prewarmed toolbar, not
+// only the first one: after a window takes the prewarmed toolbar, the profile
+// service builds the next one.
+IN_PROC_BROWSER_TEST_F(InitialWebUIProfilePrewarmRefillBrowserTest,
+                       EveryNewWindowAdoptsPrewarmedToolbar) {
+  Profile* profile = browser()->GetProfile();
+  InitialWebUIProfileService* service = GetService();
+  ASSERT_TRUE(service);
+
+  // The startup window took no prewarmed contents during startup and scheduled
+  // the first refill. Verify this from the global StatisticsRecorder snapshot.
+  base::HistogramBase* histogram =
+      base::StatisticsRecorder::FindHistogram(kTakeResultHistogram);
+  ASSERT_TRUE(histogram);
+  EXPECT_EQ(
+      1, histogram->SnapshotSamples()->GetCount(
+             static_cast<base::HistogramBase::Sample32>(TakeResult::kNoSpare)));
+
+  // The startup window built its own toolbar and scheduled the first refill.
+  // Wait for the refilled toolbar.
+  content::WebContents* prewarmed_toolbar = WaitForPrewarmedToolbar(service);
+  ASSERT_TRUE(prewarmed_toolbar);
+
+  base::HistogramTester histogram_tester;
+  BrowserWindowInterface* second_browser = CreateBrowser(profile);
+  ASSERT_TRUE(second_browser);
+  EXPECT_EQ(prewarmed_toolbar, GetToolbarContents(second_browser));
+
+  // The next window gets a prewarmed toolbar of its own.
+  content::WebContents* next_toolbar = WaitForPrewarmedToolbar(service);
+  ASSERT_TRUE(next_toolbar);
+  EXPECT_NE(prewarmed_toolbar, next_toolbar);
+  BrowserWindowInterface* third_browser = CreateBrowser(profile);
+  ASSERT_TRUE(third_browser);
+  EXPECT_EQ(next_toolbar, GetToolbarContents(third_browser));
+  histogram_tester.ExpectUniqueSample(kTakeResultHistogram,
+                                      TakeResult::kAdopted, 2);
+}
+
+// Verifies that the refill runs once the taken toolbar paints, without waiting
+// for the deadline.
+#if !BUILDFLAG(IS_CHROMEOS)
+// In ChromeOS browser test environments, background window composition is
+// deferred until display activation, so DidFirstVisuallyNonEmptyPaint() does
+// not reliably fire without explicit window activation; on ChromeOS, the
+// deadline fallback ensures refill completes.
+IN_PROC_BROWSER_TEST_F(InitialWebUIProfilePrewarmRefillBrowserTest,
+                       RefillsAfterToolbarPaints) {
+  InitialWebUIProfileService* service = GetService();
+  ASSERT_TRUE(service);
+  // Get the first spare under the short startup deadline.
+  ASSERT_TRUE(WaitForPrewarmedToolbar(service));
+
+  // Install the long deadline before creating the window that takes the spare,
+  // since the deadline is read at ScheduleRefill time.
+  service->toolbar_prerenderer_for_testing()->set_paint_deadline_for_testing(
+      base::Days(1));
+  ASSERT_TRUE(CreateBrowser(browser()->GetProfile()));
+  EXPECT_TRUE(WaitForPrewarmedToolbar(service));
+}
+#endif  // !BUILDFLAG(IS_CHROMEOS)
+
+// Verifies that when multiple windows open simultaneously (back to back without
+// waiting for paints), at most one window adopts the prewarmed spare while the
+// others build inline, take results are recorded once per window (one adopted,
+// others no prewarmed contents or dropped), exactly one new spare exists after
+// refill, the next window adopts it, and no crash occurs.
+IN_PROC_BROWSER_TEST_F(InitialWebUIProfilePrewarmRefillBrowserTest,
+                       SimultaneousNewWindowsAdoptAtMostOneSpare) {
+  Profile* profile = browser()->GetProfile();
+  InitialWebUIProfileService* service = GetService();
+  ASSERT_TRUE(service);
+
+  content::WebContents* spare = WaitForPrewarmedToolbar(service);
+  ASSERT_TRUE(spare);
+
+  base::HistogramTester histogram_tester;
+  // Create 3 normal windows back to back without waiting for paints.
+  BrowserWindowInterface* w1 = CreateBrowserWindow(
+      BrowserWindowCreateParams(profile, /*from_user_gesture=*/true));
+  BrowserWindowInterface* w2 = CreateBrowserWindow(
+      BrowserWindowCreateParams(profile, /*from_user_gesture=*/true));
+  BrowserWindowInterface* w3 = CreateBrowserWindow(
+      BrowserWindowCreateParams(profile, /*from_user_gesture=*/true));
+  ASSERT_TRUE(w1);
+  ASSERT_TRUE(w2);
+  ASSERT_TRUE(w3);
+
+  int adopted_count = 0;
+  if (GetToolbarContents(w1) == spare) {
+    ++adopted_count;
+  }
+  if (GetToolbarContents(w2) == spare) {
+    ++adopted_count;
+  }
+  if (GetToolbarContents(w3) == spare) {
+    ++adopted_count;
+  }
+  EXPECT_EQ(adopted_count, 1);
+
+  histogram_tester.ExpectBucketCount(kTakeResultHistogram, TakeResult::kAdopted,
+                                     1);
+  histogram_tester.ExpectBucketCount(kTakeResultHistogram, TakeResult::kNoSpare,
+                                     2);
+  EXPECT_FALSE(service->has_toolbar_contents_for_testing());
+  EXPECT_TRUE(service->toolbar_prerenderer_for_testing()
+                  ->is_refill_pending_for_testing());
+
+  AddBlankTabAndShow(w1);
+  AddBlankTabAndShow(w2);
+  AddBlankTabAndShow(w3);
+
+  content::WebContents* next_spare = WaitForPrewarmedToolbar(service);
+  ASSERT_TRUE(next_spare);
+  EXPECT_NE(next_spare, spare);
+  EXPECT_TRUE(service->has_toolbar_contents_for_testing());
+
+  base::HistogramTester next_histogram_tester;
+  BrowserWindowInterface* fourth_browser = CreateBrowser(profile);
+  ASSERT_TRUE(fourth_browser);
+  EXPECT_EQ(next_spare, GetToolbarContents(fourth_browser));
+  next_histogram_tester.ExpectUniqueSample(kTakeResultHistogram,
+                                           TakeResult::kAdopted, 1);
+}
+
+// Verifies that a window builds its own toolbar instead of adopting a
+// prewarmed one that read the colors before they changed, and that the
+// refill builds with the new colors which the next window adopts.
+IN_PROC_BROWSER_TEST_F(InitialWebUIProfilePrewarmRefillBrowserTest,
+                       DropsStaleToolbarAfterColorSchemeChange) {
+  Profile* profile = browser()->GetProfile();
+  InitialWebUIProfileService* service = GetService();
+  ASSERT_TRUE(service);
+  ASSERT_TRUE(WaitForPrewarmedToolbar(service));
+
+  const ui::ColorProviderKey old_key =
+      PrewarmHelper::GetColorProviderKey(profile);
+  ThemeServiceFactory::GetForProfile(profile)->SetBrowserColorScheme(
+      old_key.color_mode == ui::ColorProviderKey::ColorMode::kDark
+          ? ThemeService::BrowserColorScheme::kLight
+          : ThemeService::BrowserColorScheme::kDark);
+  const ui::ColorProviderKey new_key =
+      PrewarmHelper::GetColorProviderKey(profile);
+  ASSERT_NE(old_key, new_key);
+
+  base::HistogramTester histogram_tester;
+  BrowserWindowInterface* second_browser = CreateBrowser(profile);
+  ASSERT_TRUE(second_browser);
+  EXPECT_TRUE(GetToolbarContents(second_browser));
+  histogram_tester.ExpectUniqueSample(kTakeResultHistogram,
+                                      TakeResult::kDroppedStale, 1);
+
+  content::WebContents* refilled_toolbar = WaitForPrewarmedToolbar(service);
+  ASSERT_TRUE(refilled_toolbar);
+  EXPECT_EQ(new_key.color_mode, refilled_toolbar->GetColorMode());
+
+  BrowserWindowInterface* third_browser = CreateBrowser(profile);
+  ASSERT_TRUE(third_browser);
+  EXPECT_EQ(refilled_toolbar, GetToolbarContents(third_browser));
+  histogram_tester.ExpectBucketCount(kTakeResultHistogram, TakeResult::kAdopted,
+                                     1);
+}
+
+// Verifies that a window builds its own toolbar instead of adopting a
+// prewarmed one that read the touch mode, and so its layout constants, before
+// the touch mode changed.
+IN_PROC_BROWSER_TEST_F(InitialWebUIProfilePrewarmRefillBrowserTest,
+                       DropsStaleToolbarAfterTouchModeChange) {
+  InitialWebUIProfileService* service = GetService();
+  ASSERT_TRUE(service);
+  ASSERT_TRUE(WaitForPrewarmedToolbar(service));
+
+  ui::TouchUiController::TouchUiScoperForTesting touch_ui_scoper(
+      !ui::TouchUiController::Get()->touch_ui());
+
+  base::HistogramTester histogram_tester;
+  BrowserWindowInterface* new_browser = CreateBrowser(browser()->GetProfile());
+  ASSERT_TRUE(new_browser);
+  EXPECT_TRUE(GetToolbarContents(new_browser));
+  histogram_tester.ExpectUniqueSample(kTakeResultHistogram,
+                                      TakeResult::kDroppedStale, 1);
+}
+
+// Verifies that a toolbar prewarmed while the profile shows the home button
+// has the button in its initial state, so it shows from the first frame, and
+// that turning the button on drops a toolbar prewarmed without it.
+IN_PROC_BROWSER_TEST_F(InitialWebUIProfilePrewarmRefillBrowserTest,
+                       PrewarmedToolbarStartsWithHomeButton) {
+  Profile* profile = browser()->GetProfile();
+  InitialWebUIProfileService* service = GetService();
+  ASSERT_TRUE(service);
+  ASSERT_TRUE(WaitForPrewarmedToolbar(service));
+  ASSERT_FALSE(profile->GetPrefs()->GetBoolean(prefs::kShowHomeButton));
+
+  profile->GetPrefs()->SetBoolean(prefs::kShowHomeButton, true);
+  base::HistogramTester histogram_tester;
+  ASSERT_TRUE(CreateBrowser(profile));
+  histogram_tester.ExpectUniqueSample(kTakeResultHistogram,
+                                      TakeResult::kDroppedStale, 1);
+
+  // The refill builds the next toolbar with the home button. Wait for it to
+  // commit, so that it reads its initial state before a window adopts it.
+  content::WebContents* prewarmed_toolbar = WaitForPrewarmedToolbar(service);
+  ASSERT_TRUE(prewarmed_toolbar);
+  ASSERT_TRUE(content::WaitForLoadStop(prewarmed_toolbar));
+  BrowserWindowInterface* new_browser = CreateBrowser(profile);
+  ASSERT_TRUE(new_browser);
+  ASSERT_EQ(prewarmed_toolbar, GetToolbarContents(new_browser));
+  histogram_tester.ExpectBucketCount(kTakeResultHistogram, TakeResult::kAdopted,
+                                     1);
+  EXPECT_EQ(true, content::EvalJs(
+                      prewarmed_toolbar,
+                      "JSON.parse(chrome.getVariableValue('initialState'))"
+                      ".homeButtonShouldBeShown"));
+}
+
+// Verifies that a window builds its own toolbar instead of adopting a
+// prewarmed one whose renderer is gone, which the window would not recover.
+IN_PROC_BROWSER_TEST_F(InitialWebUIProfilePrewarmRefillBrowserTest,
+                       DropsToolbarWithCrashedRenderer) {
+  InitialWebUIProfileService* service = GetService();
+  ASSERT_TRUE(service);
+  content::WebContents* prewarmed_toolbar = WaitForPrewarmedToolbar(service);
+  ASSERT_TRUE(prewarmed_toolbar);
+
+  content::RenderProcessHost* process =
+      prewarmed_toolbar->GetPrimaryMainFrame()->GetProcess();
+  content::ScopedAllowRendererCrashes allow_renderer_crashes(process);
+  content::RenderProcessHostWatcher exit_observer(
+      process, content::RenderProcessHostWatcher::WATCH_FOR_PROCESS_EXIT);
+  process->Shutdown(content::RESULT_CODE_KILLED);
+  exit_observer.Wait();
+  ASSERT_TRUE(
+      base::test::RunUntil([&]() { return prewarmed_toolbar->IsCrashed(); }));
+
+  base::HistogramTester histogram_tester;
+  BrowserWindowInterface* new_browser = CreateBrowser(browser()->GetProfile());
+  ASSERT_TRUE(new_browser);
+  WebUIToolbarWebView* webview =
+      ToolbarButtonProvider::From(new_browser)->GetWebUIToolbarViewForTesting();
+  ASSERT_TRUE(webview);
+  ASSERT_TRUE(webview->web_contents());
+  EXPECT_FALSE(webview->web_contents()->IsCrashed());
+  histogram_tester.ExpectUniqueSample(kTakeResultHistogram,
+                                      TakeResult::kDroppedCrashed, 1);
+
+  // The window's own toolbar paints.
+  if (!webview->web_contents()->CompletedFirstVisuallyNonEmptyPaint()) {
+    base::RunLoop first_paint_loop;
+    webview->SetDidFirstNonEmptyPaintCallbackForTesting(
+        first_paint_loop.QuitClosure());
+    first_paint_loop.Run();
+  }
+}
+
+// Verifies that an incognito window does not take the profile's prewarmed
+// toolbar, and runs its own.
+IN_PROC_BROWSER_TEST_F(InitialWebUIProfilePrewarmRefillBrowserTest,
+                       IncognitoWindowDoesNotTakePrewarmedToolbar) {
+  InitialWebUIProfileService* service = GetService();
+  ASSERT_TRUE(service);
+  content::WebContents* prewarmed_toolbar = WaitForPrewarmedToolbar(service);
+  ASSERT_TRUE(prewarmed_toolbar);
+
+  base::HistogramTester histogram_tester;
+  BrowserWindowInterface* incognito_browser = CreateIncognitoBrowser();
+  ASSERT_TRUE(incognito_browser);
+  EXPECT_EQ(prewarmed_toolbar, service->toolbar_web_contents_for_testing());
+  histogram_tester.ExpectTotalCount(kTakeResultHistogram, 0);
+  content::WebContents* incognito_toolbar =
+      GetToolbarContents(incognito_browser);
+  ASSERT_TRUE(incognito_toolbar);
+  EXPECT_EQ(browser()->GetProfile()->GetPrimaryOTRProfile(
+                /*create_if_needed=*/false),
+            incognito_toolbar->GetBrowserContext());
+}
+
+class InitialWebUIProfilePrewarmRefillOmniboxBrowserTest
+    : public InitialWebUIProfilePrewarmRefillBrowserTest {
+ public:
+  InitialWebUIProfilePrewarmRefillOmniboxBrowserTest()
+      : InitialWebUIProfilePrewarmRefillBrowserTest(
+            /*additional_features=*/{{features::kWebUILocationBar, {}}},
+            /*disabled_features=*/{features::kTopChromeWebUISharedRenderer}) {}
+};
+
+// Verifies that a window that adopts a refilled toolbar, whose WebUI committed
+// before the window existed, wires the toolbar to the window's omnibox
+// controller (b/563226016).
+IN_PROC_BROWSER_TEST_F(InitialWebUIProfilePrewarmRefillOmniboxBrowserTest,
+                       RefilledToolbarInitializesOmniboxController) {
+  InitialWebUIProfileService* service = GetService();
+  ASSERT_TRUE(service);
+  // The startup window built its own toolbar; this is the first refill.
+  content::WebContents* refilled_toolbar = WaitForPrewarmedToolbar(service);
+  ASSERT_TRUE(refilled_toolbar);
+  ASSERT_TRUE(content::WaitForLoadStop(refilled_toolbar));
+
+  base::HistogramTester histogram_tester;
+  BrowserWindowInterface* new_browser = CreateBrowser(browser()->GetProfile());
+  ASSERT_TRUE(new_browser);
+  histogram_tester.ExpectUniqueSample(kTakeResultHistogram,
+                                      TakeResult::kAdopted, 1);
+  WebUIToolbarWebView* webview =
+      ToolbarButtonProvider::From(new_browser)->GetWebUIToolbarViewForTesting();
+  ASSERT_TRUE(webview);
+  ASSERT_EQ(refilled_toolbar, webview->web_contents());
+  auto* webui =
+      refilled_toolbar->GetWebUI()->GetController()->GetAs<WebUIToolbarUI>();
+  ASSERT_TRUE(webui);
+  ASSERT_TRUE(base::test::RunUntil([&]() { return webui->is_initialized(); }));
+  EXPECT_NE(nullptr, webui->omnibox_controller_for_testing());
+  EXPECT_EQ(webview->GetOmniboxController(),
+            webui->omnibox_controller_for_testing());
+}
+
+// Profile keep-alives behave differently on ChromeOS (Ash), and profile
+// creation and destruction need a full ChromeOS user session there.
+#if !BUILDFLAG(IS_CHROMEOS)
+// Verifies that a profile kept alive without windows, as in background mode,
+// keeps no prewarmed toolbar, and that its next window restarts the refill.
+IN_PROC_BROWSER_TEST_F(InitialWebUIProfilePrewarmRefillBrowserTest,
+                       DropsToolbarWhenLastWindowCloses) {
+  Profile* profile = browser()->GetProfile();
+  InitialWebUIProfileService* service = GetService();
+  ASSERT_TRUE(service);
+  ASSERT_TRUE(WaitForPrewarmedToolbar(service));
+
+  ScopedKeepAlive keep_alive(KeepAliveOrigin::BACKGROUND_MODE_MANAGER,
+                             KeepAliveRestartOption::DISABLED);
+  ScopedProfileKeepAlive profile_keep_alive(
+      profile, ProfileKeepAliveOrigin::kBackgroundMode);
+  CloseBrowserSynchronously(browser());
+  EXPECT_FALSE(service->has_toolbar_contents_for_testing());
+
+  ASSERT_TRUE(CreateBrowser(profile));
+  EXPECT_TRUE(WaitForPrewarmedToolbar(service));
+}
+
+// Verifies that a profile whose last window closes while it holds a refilled
+// toolbar is destroyed cleanly, and that another profile keeps its own
+// prewarmed toolbar.
+IN_PROC_BROWSER_TEST_F(InitialWebUIProfilePrewarmRefillBrowserTest,
+                       DestroysProfileWithRefilledToolbar) {
+  InitialWebUIProfileService* default_service = GetService();
+  ASSERT_TRUE(default_service);
+  ASSERT_TRUE(WaitForPrewarmedToolbar(default_service));
+
+  ProfileManager* profile_manager = g_browser_process->profile_manager();
+  Profile& profile = profiles::testing::CreateProfileSync(
+      profile_manager,
+      profile_manager->user_data_dir().Append(FILE_PATH_LITERAL("Secondary")));
+  InitialWebUIProfileService* service =
+      InitialWebUIProfileServiceFactory::GetForProfile(&profile);
+  ASSERT_TRUE(service);
+  BrowserWindowInterface* secondary_browser = CreateBrowser(&profile);
+  ASSERT_TRUE(secondary_browser);
+  // The refill builds the next toolbar while the window is open.
+  ASSERT_TRUE(WaitForPrewarmedToolbar(service));
+
+  ProfileDestructionWaiter waiter(&profile);
+  CloseBrowserSynchronously(secondary_browser);
+  waiter.Wait();
+
+  EXPECT_TRUE(default_service->has_toolbar_contents_for_testing());
+}
+#endif  // !BUILDFLAG(IS_CHROMEOS)
+
+class InitialWebUISharedRendererProfilePrewarmRefillBrowserTest
+    : public InitialWebUIProfilePrewarmRefillBrowserTest {
+ public:
+  InitialWebUISharedRendererProfilePrewarmRefillBrowserTest()
+      : InitialWebUIProfilePrewarmRefillBrowserTest(
+            {{features::kTopChromeWebUISharedRenderer, {}}},
+            /*disabled_features=*/{}) {}
+};
+
+// Verifies that with kTopChromeWebUISharedRenderer and prerendering enabled,
+// window 2 adopts the spare in TopChromeWebUIProfile with its user profile, and
+// a new spare appears.
+IN_PROC_BROWSER_TEST_F(
+    InitialWebUISharedRendererProfilePrewarmRefillBrowserTest,
+    SharedRendererSpareAdoptedAndRefilled) {
+  Profile* profile = browser()->GetProfile();
+  InitialWebUIProfileService* service = GetService();
+  ASSERT_TRUE(service);
+
+  // With prerendering enabled, no toolbar is built at profile creation. The
+  // startup window finds no spare, builds its own toolbar, and refill builds
+  // the first spare once that window paints or hits the deadline.
+  content::WebContents* spare = WaitForPrewarmedToolbar(service);
+  ASSERT_TRUE(spare);
+
+  // Window 2 of the same profile adopts the spare.
+  BrowserWindowInterface* second_browser = CreateBrowser(profile);
+  ASSERT_TRUE(second_browser);
+  content::WebContents* second_toolbar = GetToolbarContents(second_browser);
+  ASSERT_TRUE(second_toolbar);
+  EXPECT_EQ(spare, second_toolbar);
+  EXPECT_EQ(webui::GetTopChromeWebUIProfile(),
+            second_toolbar->GetBrowserContext());
+  EXPECT_EQ(profile, webui::GetUserProfile(second_toolbar));
+
+  // A new spare appears after window 2 adopts the previous one.
+  content::WebContents* next_spare = WaitForPrewarmedToolbar(service);
+  ASSERT_TRUE(next_spare);
+  EXPECT_NE(spare, next_spare);
+  EXPECT_EQ(webui::GetTopChromeWebUIProfile(), next_spare->GetBrowserContext());
+  EXPECT_EQ(profile, webui::GetUserProfile(next_spare));
+}
+
+// Creating and destroying a profile needs a full user session on ChromeOS.
+#if !BUILDFLAG(IS_CHROMEOS)
+// Verifies that with kTopChromeWebUISharedRenderer and prerendering enabled, a
+// window of a second regular profile never adopts the first profile's spare,
+// and that the second profile is destroyed cleanly while TopChromeWebUIProfile
+// holds its spare.
+IN_PROC_BROWSER_TEST_F(
+    InitialWebUISharedRendererProfilePrewarmRefillBrowserTest,
+    SharedRendererSpareIsolatedAcrossProfiles) {
+  InitialWebUIProfileService* service = GetService();
+  ASSERT_TRUE(service);
+  content::WebContents* spare = WaitForPrewarmedToolbar(service);
+  ASSERT_TRUE(spare);
+
+  ProfileManager* profile_manager = g_browser_process->profile_manager();
+  base::FilePath secondary_path = profile_manager->user_data_dir().Append(
+      FILE_PATH_LITERAL("SecondarySharedRefill"));
+  Profile& secondary_profile =
+      profiles::testing::CreateProfileSync(profile_manager, secondary_path);
+
+  InitialWebUIProfileService* secondary_service =
+      InitialWebUIProfileServiceFactory::GetForProfile(&secondary_profile);
+  ASSERT_TRUE(secondary_service);
+
+  BrowserWindowInterface* secondary_browser = CreateBrowser(&secondary_profile);
+  ASSERT_TRUE(secondary_browser);
+  content::WebContents* secondary_toolbar =
+      GetToolbarContents(secondary_browser);
+  ASSERT_TRUE(secondary_toolbar);
+
+  // The first profile's service still holds its own spare after the second
+  // profile's window opens.
+  EXPECT_EQ(spare, service->toolbar_web_contents_for_testing());
+  EXPECT_EQ(webui::GetTopChromeWebUIProfile(),
+            secondary_toolbar->GetBrowserContext());
+  EXPECT_EQ(&secondary_profile, webui::GetUserProfile(secondary_toolbar));
+
+  // The refill builds the second profile's spare while its window is open.
+  ASSERT_TRUE(WaitForPrewarmedToolbar(secondary_service));
+  ProfileDestructionWaiter waiter(&secondary_profile);
+  CloseBrowserSynchronously(secondary_browser);
+  waiter.Wait();
+
+  EXPECT_EQ(spare, service->toolbar_web_contents_for_testing());
+}
+#endif  // !BUILDFLAG(IS_CHROMEOS)
+
+class InitialWebUIUnboundPrerenderBrowserTest
+    : public InitialWebUIProfilePrewarmRefillBrowserTest {
+ public:
+  InitialWebUIUnboundPrerenderBrowserTest()
+      : InitialWebUIProfilePrewarmRefillBrowserTest(
+            {{features::kTopChromeWebUISharedRenderer, {}},
+             {features::kWebUIToolbar, {}},
+             {features::kGlic, {}}},
+            /*disabled_features=*/{},
+            /*unbound=*/true) {}
+
+ protected:
+#if BUILDFLAG(IS_CHROMEOS)
+  // On ChromeOS, `chromeos::features::kFeatureManagementGlic` is off by default
+  // and `AvatarToolbarButtonInterface::CanShowForProfile()` hides `#avatar` on
+  // regular windows while showing it on Incognito windows (`false -> true`).
+  static constexpr bool kRegularHasGlic = false;
+  static constexpr bool kRegularHasAvatar = false;
+#else
+  // On Win/Mac/Linux, regular profiles show both `#glic-button` and `#avatar`,
+  // and Incognito hides `#glic-button` (`true -> false`).
+  static constexpr bool kRegularHasGlic = true;
+  static constexpr bool kRegularHasAvatar = true;
+#endif
+  static constexpr bool kIncognitoHasGlic = false;
+  static constexpr bool kIncognitoHasAvatar = true;
+
+  InitialWebUIProfileService* service() {
+    return InitialWebUIProfileService::GetForTopChromeWebUIProfile();
+  }
+
+  content::WebContents* WaitForUnboundSpare() {
+    if (!base::test::RunUntil([&]() {
+          return service() && service()->has_toolbar_contents_for_testing();
+        })) {
+      return nullptr;
+    }
+    return service()->toolbar_web_contents_for_testing();
+  }
+
+  void WaitForUnboundSpareToolbarReady(content::WebContents* spare) {
+    ASSERT_TRUE(base::test::RunUntil([&]() {
+      return content::EvalJs(
+                 spare,
+                 "!!document.querySelector('toolbar-app') && "
+                 "!!document.querySelector('toolbar-app').shadowRoot && "
+                 "!!document.querySelector('toolbar-app').shadowRoot"
+                 ".querySelector('#reload')")
+          .ExtractBool();
+    }));
+    EXPECT_EQ(
+        kRegularHasGlic,
+        content::EvalJs(spare,
+                        "!!document.querySelector('toolbar-app').shadowRoot"
+                        ".querySelector('#glic-button')"));
+    EXPECT_EQ(
+        kRegularHasAvatar,
+        content::EvalJs(spare,
+                        "!!document.querySelector('toolbar-app').shadowRoot"
+                        ".querySelector('#avatar')"));
+  }
+
+  bool CssColorsMatch(content::WebContents* contents,
+                      const std::string& css_a,
+                      const std::string& css_b) {
+    return content::EvalJs(contents, content::JsReplace(R"(
+      (() => {
+        const normalize = c => {
+          const el = document.createElement('div');
+          el.style.color = c;
+          document.body.appendChild(el);
+          const out = getComputedStyle(el).color;
+          el.remove();
+          return out;
+        };
+        return !!$1 && !!$2 && normalize($1) === normalize($2);
+      })()
+    )",
+                                                        css_a, css_b))
+        .ExtractBool();
+  }
+
+ private:
+  ui::MockOsSettingsProvider os_settings_provider_;  // Forces light mode.
+};
+
+// Verifies that no per-profile service is created in unbound mode, and that an
+// Incognito window adopts the light regular-seeded spare, receives the explicit
+// button-eligibility diff and dark `colorsCss`, and renders Incognito's button
+// state and toolbar color.
+IN_PROC_BROWSER_TEST_F(InitialWebUIUnboundPrerenderBrowserTest,
+                       IncognitoWindowAdoptsUnboundSpareWithColors) {
+  ASSERT_TRUE(InitialWebUIProfileService::IsUnboundPrerenderingEnabled());
+  Profile* regular_profile = browser()->GetProfile();
+  EXPECT_FALSE(
+      InitialWebUIProfileServiceFactory::GetForProfile(regular_profile));
+  const auto regular_eligibility =
+      WebUIToolbarUI::GetProfileButtonEligibility(regular_profile);
+  ASSERT_EQ(kRegularHasGlic, regular_eligibility.is_profile_eligible_for_glic);
+  ASSERT_EQ(kRegularHasAvatar, regular_eligibility.can_show_avatar_for_profile);
+
+  content::WebContents* spare = WaitForUnboundSpare();
+  ASSERT_TRUE(spare);
+  ASSERT_TRUE(content::WaitForLoadStop(spare));
+  EXPECT_FALSE(webui::GetUserProfile(spare));
+  EXPECT_EQ(ui::ColorProviderKey::ColorMode::kLight, spare->GetColorMode());
+  WaitForUnboundSpareToolbarReady(spare);
+  const std::string unbound_toolbar_color =
+      content::EvalJs(spare,
+                      "getComputedStyle(document.documentElement)"
+                      ".getPropertyValue('--color-toolbar').trim()")
+          .ExtractString();
+
+  base::HistogramTester histogram_tester;
+  BrowserWindowInterface* incognito = CreateIncognitoBrowser();
+  ASSERT_TRUE(incognito);
+  ASSERT_EQ(spare, GetToolbarContents(incognito));
+  histogram_tester.ExpectUniqueSample(kTakeResultHistogram,
+                                      TakeResult::kAdopted, 1);
+  EXPECT_EQ(incognito->GetProfile(), webui::GetUserProfile(spare));
+  const auto incognito_eligibility =
+      WebUIToolbarUI::GetProfileButtonEligibility(incognito->GetProfile());
+  ASSERT_EQ(kIncognitoHasGlic,
+            incognito_eligibility.is_profile_eligible_for_glic);
+  ASSERT_EQ(kIncognitoHasAvatar,
+            incognito_eligibility.can_show_avatar_for_profile);
+  ASSERT_NE(regular_eligibility, incognito_eligibility);
+
+  // Wait for the bound diff to update the toolbar buttons and apply Incognito's
+  // toolbar color (once attached to `WebUIToolbarWebView`, `ColorChangeUpdater`
+  // may also finish refreshing `<link href="chrome://theme/colors.css">` and
+  // retire the temporary sheet, so `BoundProfileAppliedBeforeFirstPaint`
+  // checks the first frame while this test asserts the steady-state computed
+  // color).
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return content::EvalJs(spare,
+                           "!!document.querySelector('toolbar-app').shadowRoot"
+                           ".querySelector('#glic-button')")
+                   .ExtractBool() == kIncognitoHasGlic &&
+           content::EvalJs(spare,
+                           "!!document.querySelector('toolbar-app').shadowRoot"
+                           ".querySelector('#avatar')")
+                   .ExtractBool() == kIncognitoHasAvatar;
+  }));
+  EXPECT_EQ(true,
+            content::EvalJs(spare,
+                            "document.querySelector('toolbar-app').shadowRoot"
+                            ".querySelector('#home').hidden"));
+
+  const std::string expected_incognito_css = ui::ConvertSkColorToCSSColor(
+      spare->GetColorProvider().GetColor(kColorToolbar));
+  content::WebContents* regular_toolbar = GetToolbarContents(browser());
+  const std::string regular_css = ui::ConvertSkColorToCSSColor(
+      regular_toolbar->GetColorProvider().GetColor(kColorToolbar));
+  ASSERT_NE(expected_incognito_css, regular_css);
+
+  const std::string actual_toolbar_color =
+      content::EvalJs(spare,
+                      "getComputedStyle(document.documentElement)"
+                      ".getPropertyValue('--color-toolbar').trim()")
+          .ExtractString();
+  EXPECT_FALSE(
+      CssColorsMatch(spare, actual_toolbar_color, unbound_toolbar_color));
+  EXPECT_TRUE(
+      CssColorsMatch(spare, actual_toolbar_color, expected_incognito_css));
+}
+
+// Verifies that closing the last normal window drops the unbound spare, and
+// opening a new window restarts the refill.
+IN_PROC_BROWSER_TEST_F(InitialWebUIUnboundPrerenderBrowserTest,
+                       DropsUnboundSpareWhenLastWindowCloses) {
+  Profile* profile = browser()->GetProfile();
+  ASSERT_TRUE(WaitForUnboundSpare());
+
+  ScopedKeepAlive keep_alive(KeepAliveOrigin::BACKGROUND_MODE_MANAGER,
+                             KeepAliveRestartOption::DISABLED);
+  ScopedProfileKeepAlive profile_keep_alive(
+      profile, ProfileKeepAliveOrigin::kBackgroundMode);
+  CloseBrowserSynchronously(browser());
+  EXPECT_FALSE(service()->has_toolbar_contents_for_testing());
+
+  ASSERT_TRUE(CreateBrowser(profile));
+  EXPECT_TRUE(WaitForUnboundSpare());
+}
 
 }  // namespace waap

@@ -4,7 +4,6 @@
 
 #include "ash/system/notification_center/notification_center_controller.h"
 
-#include "ash/constants/ash_features.h"
 #include "ash/public/cpp/ash_view_ids.h"
 #include "ash/system/notification_center/message_center_constants.h"
 #include "ash/system/notification_center/message_center_utils.h"
@@ -28,8 +27,6 @@ constexpr gfx::Insets NotificationListDefaultMargins =
 }  // namespace
 
 NotificationCenterController::NotificationCenterController() {
-  CHECK(features::IsNotificationCenterControllerEnabled());
-
   auto* message_center = message_center::MessageCenter::Get();
   CHECK(message_center);
   message_center->AddObserver(this);
@@ -60,11 +57,6 @@ void NotificationCenterController::InitNotificationCenterView() {
 
   auto notifications =
       message_center_utils::GetSortedNotificationsWithOwnView();
-
-  if (!features::AreOngoingProcessesEnabled()) {
-    notification_center_view_->Init(notifications);
-    return;
-  }
 
   // Ongoing processes include pinned system notifications exclusively.
   // Any other type of notifications, including non-pinned or non-system
@@ -129,7 +121,7 @@ NotificationCenterController::GetOngoingProcessMessageViewContainerById(
 }
 
 void NotificationCenterController::OnNotificationAdded(const std::string& id) {
-  if (!features::AreOngoingProcessesEnabled() || !notification_center_view_) {
+  if (!notification_center_view_) {
     return;
   }
 
@@ -171,10 +163,6 @@ void NotificationCenterController::OnNotificationRemoved(const std::string& id,
 
   notification_center_view_->OnNotificationRemoved(id, by_user);
 
-  if (!features::AreOngoingProcessesEnabled()) {
-    return;
-  }
-
   // TODO(b/322835713): Also create and manage other notification views from
   // this controller instead of from `NotificationListView`.
   if (!ongoing_process_list_view_) {
@@ -193,7 +181,7 @@ void NotificationCenterController::OnNotificationRemoved(const std::string& id,
 
 void NotificationCenterController::OnNotificationUpdated(
     const std::string& id) {
-  if (!features::AreOngoingProcessesEnabled() || !notification_center_view_) {
+  if (!notification_center_view_) {
     return;
   }
 
@@ -249,7 +237,6 @@ void NotificationCenterController::UpdateListViewBorders(
 std::unique_ptr<message_center::MessageView>
 NotificationCenterController::CreateMessageView(
     const message_center::Notification& notification) {
-  CHECK(features::AreOngoingProcessesEnabled());
 
   auto message_view =
       MessageViewFactory::Create(notification, /*shown_in_popup=*/false);

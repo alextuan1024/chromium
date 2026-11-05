@@ -481,6 +481,7 @@
   "chrome/installer/mac": {
     "label": "//chrome/installer/mac:mac",
     "type": "additional_compile_target",
+    "skip_usage_check": True,
   },
   "chrome/updater:all": {
     "label": "//chrome/updater:all",
@@ -489,15 +490,6 @@
   },
   "chrome_ai_wpt_tests": {
     "label": "//components/optimization_guide/internal/testing:chrome_ai_wpt_tests",
-    "type": "generated_script",
-    "module_scheme": "webtest",
-    "args": [
-      "--results-directory",
-      "${ISOLATED_OUTDIR}",
-    ],
-  },
-  "chrome_ai_wpt_tests_light": {
-    "label": "//components/optimization_guide/internal/testing:chrome_ai_wpt_tests_light",
     "type": "generated_script",
     "module_scheme": "webtest",
     "args": [
@@ -1026,6 +1018,30 @@
     "type": "console_test_launcher",
     "module_scheme": "gtest",
   },
+  "devtools_api_tests": {
+    "label": "//third_party/devtools-frontend/src/test/api:devtools_api_tests",
+    "type": "generated_script",
+    "module_scheme": "mocha",
+    "skip_usage_check": True,
+  },
+  "devtools_e2e_tests": {
+    "label": "//third_party/devtools-frontend/src/test/e2e:devtools_e2e_tests",
+    "type": "generated_script",
+    "module_scheme": "mocha",
+    "skip_usage_check": True,
+  },
+  "devtools_node_unit_tests": {
+    "label": "//third_party/devtools-frontend/src/test/unit:devtools_node_unit_tests",
+    "type": "generated_script",
+    "module_scheme": "mocha",
+    "skip_usage_check": True,
+  },
+  "devtools_unit_tests": {
+    "label": "//third_party/devtools-frontend/src/test/unit:devtools_unit_tests",
+    "type": "generated_script",
+    "module_scheme": "mocha",
+    "skip_usage_check": True,
+  },
   "disk_usage_tast_test": {
     "label": "//chromeos:disk_usage_tast_test",
     "type": "generated_script",
@@ -1295,6 +1311,12 @@
     "type": "additional_compile_target",
     "skip_usage_check": True,
   },
+  "ios_chrome_all_eg2tests_module": {
+    "label": "//ios/chrome/test/earl_grey2:ios_chrome_all_eg2tests_module",
+    "type": "generated_script",
+    "module_scheme": "xctest",
+    "skip_usage_check": True,
+  },
   "ios_chrome_bookmarks_eg2tests_module": {
     "label": "//ios/chrome/test/earl_grey2:ios_chrome_bookmarks_eg2tests_module",
     "type": "generated_script",
@@ -1311,6 +1333,11 @@
     "type": "generated_script",
     "module_scheme": "xctest",
     "skip_usage_check": True,
+  },
+  "ios_chrome_perf_benchmarks_eg2tests_module": {
+    "label": "//ios/chrome/test/earl_grey2:ios_chrome_perf_benchmarks_eg2tests_module",
+    "type": "generated_script",
+    "module_scheme": "xctest",
   },
   "ios_chrome_settings_eg2tests_module": {
     "label": "//ios/chrome/test/earl_grey2:ios_chrome_settings_eg2tests_module",
@@ -1649,7 +1676,6 @@
     "label": "//components/optimization_guide/internal/testing:ondevice_api_scrape_tests",
     "type": "generated_script",
     "module_scheme": "flat",
-    "skip_usage_check": True,
   },
   "ondevice_model_benchmark": {
     "label": "//components/optimization_guide/internal:ondevice_model_benchmark",
@@ -1675,7 +1701,6 @@
     "label": "//chrome/browser/media/router:openscreen_unittests",
     "type": "console_test_launcher",
     "module_scheme": "gtest",
-    "skip_usage_check": True,
   },
   "optimization_guide_gpu_unittests": {
     "label": "//components/optimization_guide/internal:optimization_guide_gpu_unittests",
@@ -1709,7 +1734,7 @@
     "skip_usage_check": True,
   },
   "partition_alloc_perftests": {
-    "label": "//base/allocator/partition_allocator/src/partition_alloc:partition_alloc_perftests",
+    "label": "//base:partition_alloc_perftests",
     "type": "script",
     "script": "//testing/scripts/run_performance_tests.py",
     "skip_usage_check": True,
@@ -1767,7 +1792,7 @@
       "--ui-test-action-timeout=60000",
       "--ui-test-action-max-timeout=60000",
       "--test-launcher-timeout=60000",
-      "--gtest_filter=*/TabCapturePerformanceTest.*:*/CastV2PerformanceTest.*",
+      "--gtest_filter=*/TabCapturePerformanceTest.*",
     ],
   },
   "performance_test_suite": {
@@ -2261,6 +2286,12 @@
     "label": "//media/gpu/test:video_encode_accelerator_tests",
     "type": "console_test_launcher",
     "module_scheme": "gtest",
+    "skip_usage_check": True,
+  },
+  "views_examples_mac_signing_tests": {
+    "label": "//chrome/views_examples/mac/signing:views_examples_mac_signing_tests",
+    "type": "generated_script",
+    "module_scheme": "pyunit",
     "skip_usage_check": True,
   },
   "views_examples_unittests": {

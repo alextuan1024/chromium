@@ -22,7 +22,6 @@
 #import "ios/chrome/browser/fullscreen/ui_bundled/test/fullscreen_app_interface.h"
 #import "ios/chrome/browser/metrics/model/metrics_app_interface.h"
 #import "ios/chrome/browser/popup_menu/public/popup_menu_constants.h"
-#import "ios/chrome/browser/reader_mode/model/features.h"
 #import "ios/chrome/browser/reader_mode/test/reader_mode_app_interface.h"
 #import "ios/chrome/browser/reader_mode/ui/constants.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
@@ -37,12 +36,12 @@
 #import "ios/chrome/test/earl_grey/chrome_xcui_actions.h"
 #import "ios/chrome/test/earl_grey/scoped_block_popups_pref.h"
 #import "ios/chrome/test/scoped_eg_synchronization_disabler.h"
-#import "ios/components/enterprise/analysis/features.h"
 #import "ios/components/enterprise/data_controls/clipboard_enums.h"
 #import "ios/testing/earl_grey/app_launch_configuration.h"
 #import "ios/testing/earl_grey/app_launch_manager.h"
 #import "ios/testing/earl_grey/disabled_test_macros.h"
 #import "ios/testing/earl_grey/earl_grey_test.h"
+#import "ios/testing/test_tag_registry.h"
 #import "ios/web/common/features.h"
 #import "ios/web/public/test/element_selector.h"
 #import "net/base/apple/url_conversions.h"
@@ -351,7 +350,10 @@ void ClearContextMenu() {
 
 // Taps on `context_menu_item_button` context menu item.
 void TapOnContextMenuButton(id<GREYMatcher> context_menu_item_button) {
-  [ChromeEarlGrey waitForUIElementToAppearWithMatcher:context_menu_item_button];
+  // Waits for the item to be visible, so the menu has finished animating in
+  // before the tap is issued.
+  [ChromeEarlGrey
+      waitForSufficientlyVisibleElementWithMatcher:context_menu_item_button];
   [[EarlGrey selectElementWithMatcher:context_menu_item_button]
       performAction:grey_tap()];
 }
@@ -364,13 +366,13 @@ void RelaunchApp() {
 
 #if BUILDFLAG(IOS_CHROME_ENABLE_PROFILE_ALTERING_TESTS)
 // Allows system permission if shown on Springboard without using eDO calls.
-void CheckAndAcceptSystemDialog() {
+void CheckAndAcceptSystemDialog(base::TimeDelta timeout) {
   XCUIApplication* springboardApp = [[XCUIApplication alloc]
       initWithBundleIdentifier:@"com.apple.springboard"];
   XCUIElement* alert = [[springboardApp
       descendantsMatchingType:XCUIElementTypeAlert] firstMatch];
-  if ([alert waitForExistenceWithTimeout:1]) {
-    XCUIElement* allowButton = alert.buttons[@"Allow"];
+  if ([alert waitForExistenceWithTimeout:timeout.InSecondsF()]) {
+    XCUIElement* allowButton = alert.buttons[@"Allow"].firstMatch;
     if (![allowButton exists]) {
       allowButton = [alert.buttons elementBoundByIndex:1];
     }
@@ -403,11 +405,6 @@ void CheckAndAcceptSystemDialog() {
     config.features_disabled.push_back(kIOSWebContextMenuNewTitle);
   }
 
-  if ([self isRunningTest:@selector(testSaveImageBlockByDownloadProtection)]) {
-    config.features_enabled.push_back(
-        enterprise_connectors::kEnableFileDownloadConnectorIOS);
-  }
-
   return config;
 }
 
@@ -427,6 +424,9 @@ void CheckAndAcceptSystemDialog() {
 }
 
 - (void)tearDownHelper {
+#if BUILDFLAG(IOS_CHROME_ENABLE_PROFILE_ALTERING_TESTS)
+  CheckAndAcceptSystemDialog(base::Seconds(1));
+#endif  // BUILDFLAG(IOS_CHROME_ENABLE_PROFILE_ALTERING_TESTS)
   if (_setUpHistogramTesterCalled) {
     chrome_test_util::GREYAssertErrorNil(
         [MetricsAppInterface releaseHistogramTester]);
@@ -575,6 +575,7 @@ void CheckAndAcceptSystemDialog() {
 
 // Tests that selecting "Copy Link" from the context menu properly copies the
 // link in the pasteboard.
+TAG_SMOKE_TEST(ContextMenuTestCase, testCopyLink);
 - (void)testCopyLink {
   [self setUpHistogramTester];
   [ChromeEarlGrey clearPasteboard];
@@ -984,10 +985,9 @@ void CheckAndAcceptSystemDialog() {
 
 // Checks that "open in new window" shows up on a long press of a url link
 // and that it actually opens in a new window.
-// TODO(crbug.com/441761691): Re-enable the test.
-- (void)DISABLED_testOpenLinkInNewWindow {
+- (void)testOpenLinkInNewWindow {
   if (![ChromeEarlGrey areMultipleWindowsSupported]) {
-    EARL_GREY_TEST_DISABLED(@"Multiple windows can't be opened.");
+    EARL_GREY_TEST_SKIPPED(@"Multiple windows can't be opened.");
   }
 
   // Loads url in first window.
@@ -1016,17 +1016,9 @@ void CheckAndAcceptSystemDialog() {
 // Checks that "open in new window" shows up on a long press of a url link
 // and that it actually opens in a new window, and that when the link is in an
 // incognito webstate, the newly opened webstate is also incognito.
-// TODO(crbug.com/441761691): Test is flaky on iPad simulator.
-#if TARGET_OS_SIMULATOR
-#define MAYBE_testOpenIncognitoLinkInNewWindow \
-  FLAKY_testOpenIncognitoLinkInNewWindow
-#else
-#define MAYBE_testOpenIncognitoLinkInNewWindow \
-  testOpenIncognitoLinkInNewWindow
-#endif
-- (void)MAYBE_testOpenIncognitoLinkInNewWindow {
+- (void)testOpenIncognitoLinkInNewWindow {
   if (![ChromeEarlGrey areMultipleWindowsSupported]) {
-    EARL_GREY_TEST_DISABLED(@"Multiple windows can't be opened.");
+    EARL_GREY_TEST_SKIPPED(@"Multiple windows can't be opened.");
   }
 
   [ChromeEarlGrey openNewIncognitoTab];
@@ -1482,8 +1474,6 @@ void CheckAndAcceptSystemDialog() {
 - (void)testSaveImageToAlbumOptionsBlockByDownloadProtection {
   // Relaunch the app with the Download Connector enabled.
   AppLaunchConfiguration config = [self appConfigurationForTestCase];
-  config.features_enabled.push_back(
-      enterprise_connectors::kEnableFileDownloadConnectorIOS);
   config.relaunch_policy = RelaunchPolicy::ForceRelaunchByKilling;
   [[AppLaunchManager sharedManager] ensureAppLaunchedWithConfiguration:config];
 
@@ -1571,7 +1561,7 @@ void CheckAndAcceptSystemDialog() {
 
   TapOnContextMenuButton(SaveImageButton());
 
-  CheckAndAcceptSystemDialog();
+  CheckAndAcceptSystemDialog(base::test::ios::kWaitForUIElementTimeout);
 
   // Verify that the error alert is presented when saving invalid image data.
   [ChromeEarlGrey waitForUIElementToAppearWithMatcher:

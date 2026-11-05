@@ -26,8 +26,8 @@ enum class IOSPageActionMenuFeatureType {
   kPopupBlocker = 1,
   kCameraPermission = 2,
   kMicrophonePermission = 3,
-  kPriceTracking = 4,
-  kMaxValue = kPriceTracking,
+  // kPriceTracking = 4,  // Obsolete.
+  kMaxValue = kMicrophonePermission,
 };
 // LINT.ThenChange(/tools/metrics/histograms/metadata/ios/enums.xml:IOSPageActionMenuFeatureType)
 
@@ -49,12 +49,15 @@ void RecordPageActionMenuFeatureRowSettingsOpened(
     IOSPageActionMenuFeatureType feature_type);
 
 // Enum for the IOS.PageActionMenu.Footer.RowShown histogram.
+// These values are persisted to logs. Entries should not be renumbered and
+// numeric values should never be reused.
 // LINT.IfChange(IOSPageActionMenuFooterReason)
 enum class IOSPageActionMenuFooterReason {
   kGeminiEnterprise = 0,
   kLensEnterprise = 1,
   kLensSearchEngine = 2,
-  kMaxValue = kLensSearchEngine,
+  kGeminiIncognito = 3,
+  kMaxValue = kGeminiIncognito,
 };
 // LINT.ThenChange(//tools/metrics/histograms/metadata/ios/enums.xml:IOSPageActionMenuFooterReason)
 

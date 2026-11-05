@@ -29,6 +29,8 @@ extern const base::FeatureParam<double> kShoppingClassifierThreshold;
 // If true, discard shopping PDFs from being eligible for cues.
 extern const base::FeatureParam<bool> kDiscardShoppingPdfs;
 extern const base::FeatureParam<int> kMaxNumBackgroundTabs;
+extern const base::FeatureParam<int> kMaxNumHistoricalTabs;
+extern const base::FeatureParam<base::TimeDelta> kHistoricalTabsTimeWindow;
 
 // If true, disable the cue backoff logic.
 extern const base::FeatureParam<bool> kDisableCueBackoff;
@@ -93,6 +95,9 @@ extern const base::FeatureParam<bool> kShouldShowCueInSplitView;
 
 // If true, logs telemetry events to the Private Insights Service.
 extern const base::FeatureParam<bool> kEnablePrivateInsightsLogging;
+
+// Happiness Tracking Survey (HaTS) feature for contextual cueing dismissals.
+BASE_DECLARE_FEATURE(kHappinessTrackingSurveysForContextualCueingDismissed);
 
 }  // namespace contextual_cueing
 

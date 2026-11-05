@@ -11,25 +11,32 @@
 
 @class BackgroundContinuedProcessingTaskConfiguration;
 @class BackgroundContinuedProcessingTaskContext;
+@protocol BackgroundContinuedProcessingTaskProvider;
 
 // An app agent that manages background continued processing tasks.
 // Coordinates scheduling with `BGTaskScheduler` and provides context handles
 // to callers for tracking progress, system-provided Live Activity updates, and
-// expiration handling. `requestTaskWithIdentifier:configuration:` must be
-// called from an active foreground state.
-@interface BackgroundContinuedProcessingAppAgent : ObservingAppAgent
+// expiration handling. When the app enters the background, it requests the
+// tasks of its registered providers.
+@interface BackgroundContinuedProcessingAppAgent : SceneObservingAppAgent
+
+// Adds or removes a task provider. Providers are held weakly.
+- (void)addTaskProvider:(id<BackgroundContinuedProcessingTaskProvider>)provider;
+- (void)removeTaskProvider:
+    (id<BackgroundContinuedProcessingTaskProvider>)provider;
 
 // Requests a continued processing task with the given identifier and
-// configuration. MUST be invoked while the application is in an active
-// foreground (`UIApplicationStateActive`) state. Returns a handle immediately,
-// or nil if background continued processing is disabled, running on iOS < 26,
-// or submission fails (such as on simulator without runtime support).
+// configuration. Returns a handle immediately, or nil if background continued
+// processing is disabled, running on iOS < 26, or submission fails for any
+// other reason (such as on simulator without runtime support).
+//
 // Requesting a task and receiving a handle does not guarantee the task will be
 // executed right away, or at all. The app agent retains the context handle for
 // the duration of the background operation until task completion or expiration.
-// Callers are responsible for using the returned handle for driving progres and
-// explicitly signaling task completion via `setTaskCompletedWithSuccess:` once
-// work finishes to prevent the task from lingering until system expiration.
+// Callers are responsible for using the returned handle to manage the progress
+// and explicitly signaling task completion via `setTaskCompletedWithSuccess:`
+// once work finishes to prevent the task from lingering until system
+// expiration.
 - (BackgroundContinuedProcessingTaskContext*)
     requestTaskWithIdentifier:(NSString*)identifier
                 configuration:(BackgroundContinuedProcessingTaskConfiguration*)

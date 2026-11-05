@@ -1097,6 +1097,7 @@ bool IsCreditCardFooterSuggestion(
     case SuggestionType::kAtMemoryOpenGemini:
     case SuggestionType::kAtMemorySearchAffordance:
     case SuggestionType::kAtMemorySearchResult:
+    case SuggestionType::kAtMemoryShortcutSettingsPromo:
     case SuggestionType::kAtMemorySourceAttribution:
     case SuggestionType::kAutocompleteAtMemoryButton:
     case SuggestionType::kAutocompleteEntry:
@@ -1143,10 +1144,10 @@ bool IsCreditCardFooterSuggestion(
     case SuggestionType::kPasswordEntry:
     case SuggestionType::kPasswordFieldByFieldFilling:
     case SuggestionType::kPendingStateSignin:
+    case SuggestionType::kPendingStateTrustedVaultError:
     case SuggestionType::kPersonalContextNotice:
     case SuggestionType::kRemoveAutofillAi:
     case SuggestionType::kSaveAndFillCreditCardEntry:
-    case SuggestionType::kSeePromoCodeDetails:
     case SuggestionType::kTitle:
     case SuggestionType::kTroubleSigningInEntry:
     case SuggestionType::kViewPasswordDetails:
@@ -1418,7 +1419,7 @@ base::flat_map<std::string, VirtualCardUsageData::VirtualCardLastFour>
 GetVirtualCreditCardsForStandaloneCvcField(
     const PaymentsDataManager& data_manager,
     const url::Origin& origin,
-    const std::vector<std::string>& four_digit_combinations_in_dom) {
+    base::span<const std::string> four_digit_combinations_in_dom) {
   base::flat_map<std::string, VirtualCardUsageData::VirtualCardLastFour>
       virtual_card_guid_to_last_four_map;
 

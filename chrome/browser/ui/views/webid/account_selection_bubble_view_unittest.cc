@@ -16,6 +16,7 @@
 #include "base/test/bind.h"
 #include "base/test/scoped_feature_list.h"
 #include "build/build_config.h"
+#include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/views/controls/hover_button.h"
 #include "chrome/browser/ui/views/webid/account_selection_view_base.h"
 #include "chrome/browser/ui/views/webid/account_selection_view_test_base.h"
@@ -41,6 +42,7 @@
 #include "ui/events/base_event_utils.h"
 #include "ui/events/event.h"
 #include "ui/gfx/image/image_unittest_util.h"
+#include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/bubble/bubble_dialog_delegate_view.h"
 #include "ui/views/controls/button/checkbox.h"
 #include "ui/views/controls/button/md_text_button.h"
@@ -451,6 +453,10 @@ class AccountSelectionBubbleViewTest : public ChromeViewsTestBase,
     ASSERT_TRUE(button);
     EXPECT_EQ(button->GetText(),
               l10n_util::GetStringUTF16(IDS_SIGNIN_CONTINUE));
+    EXPECT_EQ(
+        button->GetViewAccessibility().GetCachedName(),
+        l10n_util::GetStringUTF16(IDS_SIGNIN_CONTINUE) + u", " +
+            l10n_util::GetStringUTF16(IDS_ACCOUNT_SELECTION_OPENS_IN_NEW_TAB));
   }
 
   void TestErrorDialog(const std::u16string expected_title,
@@ -608,6 +614,25 @@ TEST_F(AccountSelectionBubbleViewTest, SingleAccount) {
   TestSingleAccount(kTitleSignIn,
                     /*expected_icon_visibility=*/true,
                     /*has_display_identifier=*/true);
+}
+
+// Tests that with `kFedCmIdpLinks`, the single account bubble for a new account
+// doesn't show disclosure text, since permission is requested through the modal
+// dialog instead.
+TEST_F(AccountSelectionBubbleViewTest, SingleAccountSignUpWithIdpLinks) {
+  base::test::ScopedFeatureList feature_list(features::kFedCmIdpLinks);
+  CreateAndShowSingleAccountPicker(/*has_display_identifier=*/true,
+                                   LoginState::kSignUp);
+
+  std::vector<raw_ptr<views::View, VectorExperimental>> children =
+      dialog()->children();
+  ASSERT_EQ(children.size(), 3u);
+  views::View* single_account_chooser = children[2];
+  // Order: Account row, "Continue as" button.
+  ASSERT_EQ(single_account_chooser->children().size(), 2u);
+  views::View* account_row = single_account_chooser->children()[0];
+  CheckNonHoverableAccountRow(account_row, kAccountSuffix,
+                              /*has_display_identifier=*/true);
 }
 
 TEST_F(AccountSelectionBubbleViewTest, SingleAccountNoTermsOfService) {
@@ -776,7 +801,7 @@ TEST_F(AccountSelectionBubbleViewTest,
   views::MdTextButton* button =
       static_cast<views::MdTextButton*>(chooser_children[1]);
   ASSERT_TRUE(button);
-  EXPECT_EQ(*(button->GetBgColorOverrideDeprecated()), bg_color);
+  EXPECT_EQ(button->GetBgColorOverride(), bg_color);
 }
 
 TEST_F(AccountSelectionBubbleViewTest,
@@ -813,7 +838,7 @@ TEST_F(AccountSelectionBubbleViewTest,
       static_cast<views::MdTextButton*>(chooser_children[1]);
   ASSERT_TRUE(button);
   // The button color is not customized by the IDP.
-  EXPECT_FALSE(button->GetBgColorOverrideDeprecated());
+  EXPECT_FALSE(button->GetBgColorOverride());
 }
 
 TEST_F(AccountSelectionBubbleViewTest, Verifying) {
@@ -1148,10 +1173,6 @@ TEST_F(AccountSelectionBubbleViewTest, MultipleReturningAccounts) {
 
 TEST_F(AccountSelectionBubbleViewTest,
        MultipleReturningAccountsWithTimestamps) {
-  const std::vector<std::string> kAccountSuffixes1 = {"new1", "returning1",
-                                                      "returning2"};
-  const std::vector<std::string> kAccountSuffixes2 = {"new2", "returning3",
-                                                      "returning4"};
   std::vector<IdentityProviderDataPtr> idp_list = {
       base::MakeRefCounted<content::IdentityProviderData>(
           kIdpForDisplay, content::IdentityProviderMetadata(),

@@ -316,6 +316,21 @@ Try waiting a few minutes before switching accounts. If you switch accounts now,
       <message name="IDS_IOS_DEFAULT_BROWSER_NON_MODAL_1P_APP_DESCRIPTION" desc="Description for the non-modal default browser promotion banner when Chrome is opened from a first-party app.">
         Open links from Gmail, Maps, Youtube and other apps in Chrome
       </message>
+      <message name="IDS_IOS_DEFAULT_BROWSER_NON_MODAL_1P_APP_DESCRIPTION_EXP1" desc="Description for the non-modal default browser promotion banner when Chrome is opened from a first-party app (Google Ecosystem Integration experiment) [iOS only].">
+        Open links directly in Chrome.
+      </message>
+      <message name="IDS_IOS_DEFAULT_BROWSER_NON_MODAL_1P_APP_DESCRIPTION_EXP3" desc="Description for the non-modal default browser promotion banner when Chrome is opened from a first-party app (Primary Destination experiment) [iOS only].">
+        Ensure all links always open in Chrome.
+      </message>
+      <message name="IDS_IOS_DEFAULT_BROWSER_NON_MODAL_1P_APP_DESCRIPTION_EXP4" desc="Description for the non-modal default browser promotion banner when Chrome is opened from a first-party app (Convenience experiment) [iOS only].">
+        Set Chrome as default to make app transitions faster and easier.
+      </message>
+      <message name="IDS_IOS_DEFAULT_BROWSER_NON_MODAL_1P_APP_DESCRIPTION_EXP5" desc="Description for the non-modal default browser promotion banner when Chrome is opened from a first-party app (Productivity experiment) [iOS only].">
+        Open external links in Chrome by default.
+      </message>
+      <message name="IDS_IOS_DEFAULT_BROWSER_NON_MODAL_1P_APP_TITLE_EXP2" desc="Title for the non-modal default browser promotion banner when Chrome is opened from a first-party app (Zero Friction Transition experiment) [iOS only].">
+        Jump straight to Chrome
+      </message>
       <message name="IDS_IOS_DEFAULT_BROWSER_NON_MODAL_OMNIBOX_NAVIGATION_DESCRIPTION" desc="Description for the non-modal default browser promotion banner after Omnibox URL copy/paste and navigation.">
         Open Chrome anytime you tap on links in other apps
       </message>
@@ -403,7 +418,7 @@ Try waiting a few minutes before switching accounts. If you switch accounts now,
       <message name="IDS_IOS_DEFAULT_PAGE_MODE_MOBILE_SUBTITLE" desc="The subtitle explaining what the choosen mode (here mobile, the other possible state is desktop) will do in the browser">
         This means Chrome will request the mobile site every time.
       </message>
-      <message name="IDS_IOS_DELETE_BROWSING_DATA_IN_PROGRESS_NOTICE" desc="VoiceOver text that informs the user that the deletion of Chrome's browsing data is in progress.">
+      <message name="IDS_IOS_DELETE_BROWSING_DATA_IN_PROGRESS_NOTICE" is_accessibility_with_no_ui="true" desc="VoiceOver text that informs the user that the deletion of Chrome's browsing data is in progress.">
         Deleting Chrome data…
       </message>
       <message name="IDS_IOS_DISCONNECT_DIALOG_TITLE" desc="The title of the disconnect dialog [Length: 30em].">
@@ -510,6 +525,9 @@ Things to consider:
       <message name="IDS_IOS_GEMINI_SUGGESTIONS_TURNING_OFF_DESCRIPTION" desc="Description explaining that turning off suggestions does not affect processing for other features and points to sync settings.">
         Turning off suggestions doesn't control Chrome's processing of page titles and URLs for other features. You can manage access to this data in your <ph name="BEGIN_LINK">BEGIN_LINK</ph>sync settings<ph name="END_LINK">END_LINK</ph>.
       </message>
+      <message name="IDS_IOS_GEOLOCATION_SYSTEM_PERMISSION_INFOBAR_BANNER_MESSAGE" desc="Body text for the banner infobar explaining that Chrome needs location access to satisfy a website's permission request. [iOS only]">
+        Chrome needs location permission for this site
+      </message>
       <message name="IDS_IOS_GOOGLE_SERVICES_SETTINGS_ALLOW_SIGNIN_DETAIL" desc="Feature detail text in the Google services Settings for the user to enable/disable Chrome express sign-in from the web [iOS only]">
         Shows prompts to sign in to Chrome.
       </message>
@@ -549,11 +567,6 @@ Things to consider:
           {THRESHOLD, plural,
             =1 {This happens when Chrome isn't used for {THRESHOLD} minute. This could include history and autofill.}
             other {This happens when Chrome isn't used for {THRESHOLD} minutes. This could include history and autofill.}}
-      </message>
-      <message name="IDS_IOS_IDLE_TIMEOUT_SUBTITLE_WITH_CLEAR_DATA_ON_SIGNOUT" desc="Subtitle of the idle timeout policy dialog explaining when the idle action usually happens. It also informs the user that data will be cleared when they are signed out.">
-          {THRESHOLD, plural,
-            =1 {This happens when Chrome isn't used for {THRESHOLD} minute. Data saved only to this device while you were signed in will be deleted. This could include history and passwords.}
-            other {This happens when Chrome isn't used for {THRESHOLD} minutes. Data saved only to this device while you were signed in will be deleted. This could include history and passwords.}}
       </message>
       <message name="IDS_IOS_IMPORT_INVALID_PASSKEY_LIST_DESCRIPTION" desc="Descriptive text showing under the title on the view that lists all invalid passkeys. [iOS only]">
         The following passkeys were not imported to Google Password Manager, because they don't match with the requirements.
@@ -764,6 +777,9 @@ Things to consider:
       </message>
       <message name="IDS_IOS_MAGIC_STACK_TIP_SET_UP_COMPLETION_DESCRIPTION" desc="The description of the Set Up List completion for the Magic Stack.">
         Check back here for more useful tips to get the most out of Chrome.
+      </message>
+      <message name="IDS_IOS_MAGIC_STACK_TIP_TIPS_NOTIFICATION_TITLE" desc="The title of the Tips Notification tip for the Magic Stack.">
+        Get Chrome Tips
       </message>
       <message name="IDS_IOS_MAGIC_STACK_TIP_TITLE" desc="The name of the Chrome Tips Magic Stack.">
         Chrome Tips
@@ -1060,17 +1076,8 @@ For more settings that use data to improve your Chrome experience, go to <ph nam
       <message name="IDS_IOS_SAFE_BROWSING_ENHANCED_PROTECTION_INLINE_PROMO_DESCRIPTION" desc="The Enhanced Safe Browsing inline promo's description.">
           Get Chrome's strongest security from dangerous sites
       </message>
-      <message name="IDS_IOS_SAFE_BROWSING_STANDARD_PROTECTION_BULLET_TWO" desc="Second bullet point under the Safe Browsing standard protection mode.">
-        Checks URLs with a list of unsafe sites stored in Chrome. If a site tries to steal your password, or when you download a harmful file, Chrome may also send URLs, including bits of page content, to Safe Browsing.
-      </message>
-      <message name="IDS_IOS_SAFE_BROWSING_STANDARD_PROTECTION_BULLET_TWO_PROXY" desc="Second bullet point under the Safe Browsing standard protection mode.">
-        Sends an obfuscated portion of the URL to Google through a privacy server that hides your IP address. If a site tries to steal your password, or when you download a harmful file, Chrome may also send URLs, including bits of page content, to Google.
-      </message>
       <message name="IDS_IOS_SAFE_BROWSING_STANDARD_PROTECTION_LEAK_CHECK_FRIENDLIER_SUMMARY" desc="Friendlier summary for the switch toggling whether Chrome should check that entered credentials have been part of a leak.">
         When you use a password, Chrome warns you if it has been published online. When doing this, your passwords and usernames are encrypted, so they can’t be read by anyone, including Google.
-      </message>
-      <message name="IDS_IOS_SAFE_BROWSING_STANDARD_PROTECTION_LEAK_CHECK_SUMMARY" desc="Summary for the switch toggling whether Chrome should check that entered credentials have been part of a leak.">
-        Chrome periodically checks your passwords against lists that have been published online. When doing this, your passwords and usernames are encrypted, so they can’t be read by anyone, including Google.
       </message>
       <message name="IDS_IOS_SAFE_MODE_NAMED_TWEAKS_FOUND" desc="The message indicating a 3rd party tweak has been found that is known to crash Chrome.  After the ':', we will list the names of the libraries. [Length: 140em]">
         Some add-ons cause Chrome to crash. Please uninstall:
@@ -1359,11 +1366,26 @@ Your data was encrypted with your passphrase on <ph name="TIME">$2<ex>Sept 1, 20
       <message name="IDS_IOS_YOUTUBE_INCOGNITO_SNACKBAR_MESSAGE" desc="The message displayed in the left corner of the snackbar">
           Opened in Chrome Incognito
       </message>
-      <message name="IDS_SEND_TAB_TO_SELF_NO_TARGET_DEVICE_LABEL" desc="Text shown when a user with no available target devices attempts to use send-tab-to-self.">
-        To send this tab to another device, sign in to Chrome there.
-      </message>
       <message name="IDS_SEND_TAB_TO_SELF_SIGN_IN_PROMO_LABEL" desc="Text when a signed out user attempts to use send-tab-to-self, then sees a sign-in promo.">
         To send this tab to another device, sign in to Chrome on both devices.
+      </message>
+      <message name="IDS_SIGNIN_ACCOUNT_PICKER_BOTTOM_SHEET_SUBTITLE_FOR_WEB_SIGNIN_DEVICE_TYPE_BOOKMARKS" desc="This string is on a sign-in page, after the user taps to sign in to a website with their Google Account. It offers to sign the user in to both the website and to Chrome with the account. It highlights the user benefit of signing in to Chrome to get data from their other device. We want users to understand why signing in is beneficial, and click 'Continue as name' to sign in to their Google Account. The tone should be informative and lightweight.">
+        Sign in to this site and Chrome to get your bookmarks and more from <ph name="DEVICE_TYPE">$1<ex>your phone</ex></ph>
+      </message>
+      <message name="IDS_SIGNIN_ACCOUNT_PICKER_BOTTOM_SHEET_SUBTITLE_FOR_WEB_SIGNIN_DEVICE_TYPE_PASSWORDS" desc="This string is on a sign-in page, after the user taps to sign in to a website with their Google Account. It offers to sign the user in to both the website and to Chrome with the account. It highlights the user benefit of signing in to Chrome to get data from their other device. We want users to understand why signing in is beneficial, and click 'Continue as name' to sign in to their Google Account. The tone should be informative and lightweight.">
+        Sign in to this site and Chrome to get your passwords and more from <ph name="DEVICE_TYPE">$1<ex>your phone</ex></ph>
+      </message>
+      <message name="IDS_SIGNIN_ACCOUNT_PICKER_BOTTOM_SHEET_SUBTITLE_FOR_WEB_SIGNIN_DEVICE_TYPE_SAVED_INFO" desc="This string is on a sign-in page, after the user taps to sign in to a website with their Google Account. It offers to sign the user in to both the website and to Chrome with the account. It highlights the user benefit of signing in to Chrome to get data from their other device. We want users to understand why signing in is beneficial, and click 'Continue as name' to sign in to their Google Account. The tone should be informative and lightweight.">
+        Sign in to this site and Chrome to get your saved info and more from <ph name="DEVICE_TYPE">$1<ex>your phone</ex></ph>
+      </message>
+      <message name="IDS_SIGNIN_ACCOUNT_PICKER_BOTTOM_SHEET_SUBTITLE_FOR_WEB_SIGNIN_ON_ALL_DEVICES_BOOKMARKS" desc="This string is on a sign-in page, after the user taps to sign in to a website with their Google Account. It offers to sign the user in to both the website and to Chrome with the account. It highlights the overarching user benefit of signing in to Chrome to get data on all devices. We want users to understand why signing in is beneficial, and click 'Continue as name' to sign in to their Google Account. The tone should be informative and lightweight.">
+        Sign in to this site and Chrome to get your bookmarks and more on all your devices
+      </message>
+      <message name="IDS_SIGNIN_ACCOUNT_PICKER_BOTTOM_SHEET_SUBTITLE_FOR_WEB_SIGNIN_ON_ALL_DEVICES_PASSWORDS" desc="This string is on a sign-in page, after the user taps to sign in to a website with their Google Account. It offers to sign the user in to both the website and to Chrome with the account. It highlights the overarching user benefit of signing in to Chrome to get data on all devices. We want users to understand why signing in is beneficial, and click 'Continue as name' to sign in to their Google Account. The tone should be informative and lightweight.">
+        Sign in to this site and Chrome to get your passwords and more on all your devices
+      </message>
+      <message name="IDS_SIGNIN_ACCOUNT_PICKER_BOTTOM_SHEET_SUBTITLE_FOR_WEB_SIGNIN_ON_ALL_DEVICES_SAVED_INFO" desc="This string is on a sign-in page, after the user taps to sign in to a website with their Google Account. It offers to sign the user in to both the website and to Chrome with the account. It highlights the overarching user benefit of signing in to Chrome to get data on all devices. We want users to understand why signing in is beneficial, and click 'Continue as name' to sign in to their Google Account. The tone should be informative and lightweight.">
+        Sign in to this site and Chrome to get your saved info and more on all your devices
       </message>
       </messages>
   </release>

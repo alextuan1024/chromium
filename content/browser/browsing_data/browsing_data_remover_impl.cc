@@ -485,13 +485,15 @@ void BrowsingDataRemoverImpl::RemoveImpl(
     storage_partition_remove_mask |=
         StoragePartition::REMOVE_DATA_MASK_INTEREST_GROUPS_USER_CLEAR;
   }
-  if (remove_mask & DATA_TYPE_SHARED_STORAGE) {
-    storage_partition_remove_mask |=
-        StoragePartition::REMOVE_DATA_MASK_SHARED_STORAGE;
-  }
   if (remove_mask & DATA_TYPE_DEVICE_BOUND_SESSIONS) {
-    storage_partition_remove_mask |=
-        StoragePartition::REMOVE_DATA_MASK_DEVICE_BOUND_SESSIONS;
+    // Device bound sessions are not partitioned, so only trigger their
+    // deletion if unpartitioned data is being deleted.
+    if (!filter_builder->PartitionedCookiesOnly() &&
+        (!filter_builder->GetStorageKey().has_value() ||
+         filter_builder->GetStorageKey()->IsFirstPartyContext())) {
+      storage_partition_remove_mask |=
+          StoragePartition::REMOVE_DATA_MASK_DEVICE_BOUND_SESSIONS;
+    }
   }
 
   if ((remove_mask & DATA_TYPE_COOKIES) || (remove_mask & DATA_TYPE_CACHE)) {
@@ -677,13 +679,17 @@ void BrowsingDataRemoverImpl::RemoveImpl(
             TracingDataType::kNetworkErrorLogging));
 
     // Clears the BFCache entries that are loaded with "Cache-Control: no-store"
-    // header and match the removal filter for the current browser context.
-    auto storage_key_filter = filter_builder->BuildStorageKeyFilter();
-    for (WebContentsImpl* web_contents : WebContentsImpl::GetAllWebContents()) {
-      if (web_contents->GetBrowserContext() == browser_context_) {
-        web_contents->GetController()
-            .GetBackForwardCache()
-            .FlushCacheControlNoStoreEntries(storage_key_filter);
+    // header and match the removal filter for the current browser context when
+    // unpartitioned cookies are removed.
+    if (!filter_builder->PartitionedCookiesOnly()) {
+      auto storage_key_filter = filter_builder->BuildStorageKeyFilter();
+      for (WebContentsImpl* web_contents :
+           WebContentsImpl::GetAllWebContents()) {
+        if (web_contents->GetBrowserContext() == browser_context_) {
+          web_contents->GetController()
+              .GetBackForwardCache()
+              .FlushCacheControlNoStoreEntries(storage_key_filter);
+        }
       }
     }
   }
@@ -951,8 +957,6 @@ const char* BrowsingDataRemoverImpl::GetHistogramSuffix(TracingDataType task) {
       return "NetworkErrorLogging";
     case TracingDataType::kTrustTokens:
       return "TrustTokens";
-    case TracingDataType::kSharedStorage:
-      return "SharedStorage";
     case TracingDataType::kPreflightCache:
       return "PreflightCache";
     case TracingDataType::kSharedDictionary:

@@ -12,6 +12,7 @@ import org.jni_zero.JNINamespace;
 import org.jni_zero.JniType;
 import org.jni_zero.NativeMethods;
 
+import org.chromium.base.Callback;
 import org.chromium.base.ThreadUtils;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
@@ -32,12 +33,43 @@ public class AccountPreviewDataService {
         mNativeAccountPreviewDataService = nativeAccountPreviewDataService;
     }
 
-    /** Returns the preferred account and preferred data types for promos. */
+    /**
+     * Returns the preferred account and preferred data types when offering signed-out users to sign
+     * in.
+     */
     @MainThread
-    public @Nullable AccountPreviewPreference getPreferredAccountForPromo() {
+    public @Nullable AccountPreviewPreference getPreferredAccountForSignin() {
         ThreadUtils.assertOnUiThread();
         return AccountPreviewDataServiceJni.get()
-                .getPreferredAccountForPromo(mNativeAccountPreviewDataService);
+                .getPreferredAccountForSignin(mNativeAccountPreviewDataService);
+    }
+
+    /**
+     * Asynchronous version of {@link #getPreferredAccountForSignin()}, which returns the stored
+     * preferred account if available, or triggers a fetch and waits for the preferred account
+     * computation to complete.
+     *
+     * <p>{@code callback} is always run asynchronously once, with the preferred account or {@code
+     * null} if unavailable or if the computation does not complete within {@code timeoutMs}
+     * milliseconds.
+     */
+    @MainThread
+    public void getPreferredAccountForSigninAsync(
+            Callback<@Nullable AccountPreviewPreference> callback, long timeoutMs) {
+        ThreadUtils.assertOnUiThread();
+        AccountPreviewDataServiceJni.get()
+                .getPreferredAccountForSigninAsync(
+                        mNativeAccountPreviewDataService, callback, timeoutMs);
+    }
+
+    /**
+     * Returns the maximum duration in milliseconds the FRE waits for an ongoing preferred account
+     * computation to update the selected account.
+     */
+    @MainThread
+    public long getPreferredAccountFREFetchTimeoutMs() {
+        ThreadUtils.assertOnUiThread();
+        return AccountPreviewDataServiceJni.get().getPreferredAccountFREFetchTimeoutMs();
     }
 
     /** Updates the account currently used by the external app. */
@@ -51,8 +83,16 @@ public class AccountPreviewDataService {
     @NativeMethods
     interface Natives {
         @JniType("std::optional<signin::AccountPreviewDataService::AccountPreviewPreference>")
-        @Nullable AccountPreviewPreference getPreferredAccountForPromo(
+        @Nullable AccountPreviewPreference getPreferredAccountForSignin(
                 @JniType("AccountPreviewDataService*") long nativeAccountPreviewDataService);
+
+        void getPreferredAccountForSigninAsync(
+                long accountPreviewDataServicePtr,
+                @JniType("signin::AccountPreviewPreferenceCallback")
+                        Callback<@Nullable AccountPreviewPreference> callback,
+                long timeoutMs);
+
+        long getPreferredAccountFREFetchTimeoutMs();
 
         void updateExternalAppAccount(
                 @JniType("AccountPreviewDataService*") long nativeAccountPreviewDataService,

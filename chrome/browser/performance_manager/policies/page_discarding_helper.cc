@@ -161,7 +161,7 @@ PageDiscardingHelper::DiscardMultiplePagesImpl(
 
   DiscardEligibilityPolicy* eligiblity_policy =
       DiscardEligibilityPolicy::GetFromGraph(GetOwningGraph());
-  DCHECK(eligiblity_policy);
+  CHECK(eligiblity_policy, base::NotFatalUntil::M163);
 
   std::vector<PageNodeSortProxy> candidates;
   for (const PageNode* page_node : GetOwningGraph()->GetAllPageNodes()) {
@@ -180,9 +180,11 @@ PageDiscardingHelper::DiscardMultiplePagesImpl(
         !discard_protected_tabs) {
       continue;
     }
+    auto [is_visible, last_visibility_change_time] =
+        page_node->GetVisibilityState();
     candidates.emplace_back(page_node->GetWeakPtr(), can_discard_result,
-                            page_node->IsVisible(), page_node->IsFocused(),
-                            page_node->GetLastVisibilityChangeTime());
+                            is_visible, page_node->IsFocused(),
+                            last_visibility_change_time);
   }
 
   // Sorts with descending importance.
@@ -300,12 +302,22 @@ bool PageDiscardingHelper::ImmediatelyDiscardMultiplePages(
     bool ignore_recent_visibility) {
   DiscardEligibilityPolicy* eligibility_policy =
       DiscardEligibilityPolicy::GetFromGraph(GetOwningGraph());
-  DCHECK(eligibility_policy);
+  CHECK(eligibility_policy, base::NotFatalUntil::M163);
+  return ImmediatelyDiscardMultiplePages(
+      page_nodes, discard_reason, ignore_recent_visibility, eligibility_policy);
+}
+
+bool PageDiscardingHelper::ImmediatelyDiscardMultiplePages(
+    const std::vector<const PageNode*>& page_nodes,
+    DiscardEligibilityPolicy::DiscardReason discard_reason,
+    bool ignore_recent_visibility,
+    DiscardEligibilityPolicy* eligibility_policy) {
   std::vector<base::WeakPtr<const PageNode>> eligible_nodes;
   for (const PageNode* node : page_nodes) {
-    if (eligibility_policy->CanDiscard(node, discard_reason,
+    if (!eligibility_policy ||
+        eligibility_policy->CanDiscard(node, discard_reason,
                                        ignore_recent_visibility) ==
-        CanDiscardResult::kEligible) {
+            CanDiscardResult::kEligible) {
       eligible_nodes.emplace_back(node->GetWeakPtr());
     }
   }
@@ -317,6 +329,9 @@ bool PageDiscardingHelper::ImmediatelyDiscardMultiplePages(
     if (!node) {
       continue;
     }
+
+    DiscardEligibilityPolicy::AddDiscardAttemptMarker(
+        PageNodeImpl::FromNode(node.get()));
 
     had_successful_discard |=
         page_discarder_->DiscardPageNode(node.get(), discard_reason)

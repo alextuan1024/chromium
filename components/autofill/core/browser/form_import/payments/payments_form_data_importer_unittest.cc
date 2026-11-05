@@ -88,6 +88,10 @@ class MockCreditCardSaveManager : public TestCreditCardSaveManager {
        bool is_credit_card_upstream_enabled,
        ukm::SourceId ukm_source_id),
       (override));
+  MOCK_METHOD(bool,
+              AttemptToOfferCardholderNameUpdate,
+              (const CreditCard& card),
+              (override));
 };
 
 class MockWalletReminderNoticeManager : public WalletReminderNoticeManager {
@@ -122,7 +126,8 @@ class PaymentsFormDataImporterTest
     payments_client().set_virtual_card_enrollment_manager(
         std::move(virtual_card_enrollment_manager));
     auto credit_card_save_manager =
-        std::make_unique<MockCreditCardSaveManager>(&autofill_client());
+        std::make_unique<testing::NiceMock<MockCreditCardSaveManager>>(
+            &autofill_client());
     test_api(form_data_importer().GetPaymentsFormDataImporter())
         .set_credit_card_save_manager(std::move(credit_card_save_manager));
     auto wallet_reminder_notice_manager =
@@ -226,7 +231,6 @@ class PaymentsFormDataImporterTest
   }
 
  private:
-  base::test::ScopedFeatureList feature_list_{features::kAutofillFixCvcImport};
   base::test::TaskEnvironment task_environment_;
   test::AutofillUnitTestEnvironment autofill_test_environment_;
   syncer::TestSyncService sync_service_;
@@ -273,9 +277,9 @@ TEST_F(PaymentsFormDataImporterTest, ExtractCreditCard_InvalidCardNumber) {
 }
 
 // Tests that FormFieldData::user_input is preferred over FormFieldData::value
-// for credit card numbers.
+// for credit card numbers and CVCs.
 // Using FormFieldData::user_input enables showing the save-card prompt for
-// sites which use JavaScript to set the credit-card <input> to '***'.
+// sites which use JavaScript to set the credit-card or CVC <input> to '***'.
 TEST_F(PaymentsFormDataImporterTest, ExtractCreditCard_PreferUserInput) {
   FormData form = CreateFullCreditCardForm("Jim Johansen", "••••••••••••••••",
                                            "02", "2999");
@@ -1439,6 +1443,106 @@ TEST_F(PaymentsFormDataImporterTest, DuplicateMaskedServerCard) {
   ASSERT_TRUE(extracted_data.extracted_credit_card);
 }
 
+// Tests that when an extracted card matches an existing masked server card that
+// is missing a cardholder name, the valid cardholder name extracted from the
+// form is copied onto the returned card while the stored server card remains
+// unchanged.
+TEST_F(PaymentsFormDataImporterTest,
+       DuplicateMaskedServerCard_MissingCardholderName_CopiesValidName) {
+  base::test::ScopedFeatureList scoped_feature_list(
+      features::kAutofillEnableCardholderNameFixFlow);
+
+  CreditCard server_card(CreditCard::RecordType::kMaskedServerCard, "a123");
+  test::SetCreditCardInfo(&server_card, /*name_on_card=*/"", "1881" /* Visa */,
+                          "01", "2999", "");
+  server_card.SetNetworkForMaskedCard(kVisaCard);
+  payments_data_manager().AddServerCreditCard(server_card);
+
+  std::unique_ptr<FormStructure> form_structure =
+      ConstructFormStructureFromFormData(CreateFullCreditCardForm(
+          "John Dillinger", "4012888888881881", "01", "2999"));
+  std::optional<CreditCard> extracted_credit_card =
+      ExtractCreditCard(*form_structure);
+  ASSERT_TRUE(extracted_credit_card);
+  EXPECT_EQ(extracted_credit_card->record_type(),
+            CreditCard::RecordType::kMaskedServerCard);
+  EXPECT_EQ(extracted_credit_card->GetInfo(CREDIT_CARD_NAME_FULL, kLocale),
+            u"John Dillinger");
+  EXPECT_FALSE(payments_data_manager().GetCreditCards()[0]->HasNameOnCard());
+}
+
+// Tests that when an extracted card matches an existing masked server card that
+// already has a cardholder name, the existing name is preserved and not
+// overwritten by a different name from the form.
+TEST_F(PaymentsFormDataImporterTest,
+       DuplicateMaskedServerCard_ExistingCardholderName_DoesNotOverwrite) {
+  base::test::ScopedFeatureList scoped_feature_list(
+      features::kAutofillEnableCardholderNameFixFlow);
+
+  CreditCard server_card(CreditCard::RecordType::kMaskedServerCard, "a123");
+  test::SetCreditCardInfo(&server_card, "Clyde Barrow", "1881" /* Visa */, "01",
+                          "2999", "");
+  server_card.SetNetworkForMaskedCard(kVisaCard);
+  payments_data_manager().AddServerCreditCard(server_card);
+
+  std::unique_ptr<FormStructure> form_structure =
+      ConstructFormStructureFromFormData(CreateFullCreditCardForm(
+          "John Dillinger", "4012888888881881", "01", "2999"));
+  std::optional<CreditCard> extracted_credit_card =
+      ExtractCreditCard(*form_structure);
+  ASSERT_TRUE(extracted_credit_card);
+  EXPECT_EQ(extracted_credit_card->GetInfo(CREDIT_CARD_NAME_FULL, kLocale),
+            u"Clyde Barrow");
+}
+
+// Tests that an invalid cardholder name (e.g. containing digits or prohibited
+// punctuation) is not copied onto a matched server card that is missing a
+// cardholder name.
+TEST_F(PaymentsFormDataImporterTest,
+       DuplicateMaskedServerCard_MissingCardholderName_IgnoresInvalidName) {
+  base::test::ScopedFeatureList scoped_feature_list(
+      features::kAutofillEnableCardholderNameFixFlow);
+
+  CreditCard server_card(CreditCard::RecordType::kMaskedServerCard, "a123");
+  test::SetCreditCardInfo(&server_card, /*name_on_card=*/"", "1881" /* Visa */,
+                          "01", "2999", "");
+  server_card.SetNetworkForMaskedCard(kVisaCard);
+  payments_data_manager().AddServerCreditCard(server_card);
+
+  for (const char* invalid_name : {"John 123", "John@Doe", "John(Doe)"}) {
+    std::unique_ptr<FormStructure> form_structure =
+        ConstructFormStructureFromFormData(CreateFullCreditCardForm(
+            invalid_name, "4012888888881881", "01", "2999"));
+    std::optional<CreditCard> extracted_credit_card =
+        ExtractCreditCard(*form_structure);
+    ASSERT_TRUE(extracted_credit_card);
+    EXPECT_FALSE(extracted_credit_card->HasNameOnCard());
+  }
+}
+
+// Tests that when `kAutofillEnableCardholderNameFixFlow` is disabled, a
+// cardholder name from the form is not copied onto a matched server card.
+TEST_F(PaymentsFormDataImporterTest,
+       DuplicateMaskedServerCard_MissingCardholderName_FeatureDisabled) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndDisableFeature(
+      features::kAutofillEnableCardholderNameFixFlow);
+
+  CreditCard server_card(CreditCard::RecordType::kMaskedServerCard, "a123");
+  test::SetCreditCardInfo(&server_card, /*name_on_card=*/"", "1881" /* Visa */,
+                          "01", "2999", "");
+  server_card.SetNetworkForMaskedCard(kVisaCard);
+  payments_data_manager().AddServerCreditCard(server_card);
+
+  std::unique_ptr<FormStructure> form_structure =
+      ConstructFormStructureFromFormData(CreateFullCreditCardForm(
+          "John Dillinger", "4012888888881881", "01", "2999"));
+  std::optional<CreditCard> extracted_credit_card =
+      ExtractCreditCard(*form_structure);
+  ASSERT_TRUE(extracted_credit_card);
+  EXPECT_FALSE(extracted_credit_card->HasNameOnCard());
+}
+
 // Tests that a credit card form that is hidden after receiving input still
 // imports the card.
 TEST_F(PaymentsFormDataImporterTest,
@@ -2248,6 +2352,257 @@ TEST_F(PaymentsFormDataImporterTest,
   test_api(payments_form_data_importer())
       .ProcessExtractedCreditCard(*form_structure, card,
                                   /*is_credit_card_upstream_enabled=*/false,
+                                  ukm_source_id());
+}
+
+// Sets the cardholder name update feature state. Inherited before
+// `PaymentsFormDataImporterTest` so the state is set before its TaskEnvironment
+// starts threads that read features, and reset after they are stopped.
+class CardholderNameUpdateFeatureState {
+ public:
+  explicit CardholderNameUpdateFeatureState(bool is_feature_enabled) {
+    scoped_feature_list_.InitWithFeatureState(
+        features::kAutofillEnableCardholderNameFixFlow, is_feature_enabled);
+  }
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_;
+};
+
+class PaymentsFormDataImporterCardholderNameUpdateTest
+    : private CardholderNameUpdateFeatureState,
+      public PaymentsFormDataImporterTest {
+ public:
+  explicit PaymentsFormDataImporterCardholderNameUpdateTest(
+      bool is_feature_enabled = true)
+      : CardholderNameUpdateFeatureState(is_feature_enabled) {}
+
+  void SetUp() override {
+    PaymentsFormDataImporterTest::SetUp();
+    CreditCard server_card(CreditCard::RecordType::kMaskedServerCard, "a123");
+    test::SetCreditCardInfo(&server_card, /*name_on_card=*/"",
+                            "1881" /* Visa */, "01", "2999", "");
+    server_card.SetNetworkForMaskedCard(kVisaCard);
+    server_card.set_instrument_id(1111);
+    payments_data_manager().AddServerCreditCard(server_card);
+
+    extracted_card_ = server_card;
+    extracted_card_.SetInfo(CREDIT_CARD_NAME_FULL, u"John Dillinger", kLocale);
+    extracted_card_.set_cvc(u"123");
+    form_structure_ = ConstructDefaultCreditCardFormStructure();
+    test_api(payments_form_data_importer())
+        .set_credit_card_import_type(
+            PaymentsFormDataImporter::CreditCardImportType::kServerCard);
+  }
+
+  bool ProcessExtractedCreditCard(bool is_credit_card_upstream_enabled = true) {
+    return test_api(payments_form_data_importer())
+        .ProcessExtractedCreditCard(*form_structure_, extracted_card_,
+                                    is_credit_card_upstream_enabled,
+                                    ukm_source_id());
+  }
+
+ protected:
+  CreditCard extracted_card_;
+  std::unique_ptr<FormStructure> form_structure_;
+};
+
+class PaymentsFormDataImporterCardholderNameUpdateFlagDisabledTest
+    : public PaymentsFormDataImporterCardholderNameUpdateTest {
+ public:
+  PaymentsFormDataImporterCardholderNameUpdateFlagDisabledTest()
+      : PaymentsFormDataImporterCardholderNameUpdateTest(
+            /*is_feature_enabled=*/false) {}
+};
+
+// Tests that the cardholder name update is offered instead of card or CVC save
+// when eligible.
+TEST_F(PaymentsFormDataImporterCardholderNameUpdateTest, Offered) {
+  EXPECT_CALL(credit_card_save_manager(),
+              AttemptToOfferCardholderNameUpdate(extracted_card_))
+      .WillOnce(Return(true));
+  EXPECT_CALL(credit_card_save_manager(), ProceedWithSavingIfApplicable)
+      .Times(0);
+
+  EXPECT_TRUE(ProcessExtractedCreditCard());
+}
+
+// Tests that card or CVC save is attempted if the cardholder name update can't
+// be offered, e.g. because it is blocked by strikes.
+TEST_F(PaymentsFormDataImporterCardholderNameUpdateTest,
+       AttemptFails_ProceedsWithSaving) {
+  EXPECT_CALL(credit_card_save_manager(), AttemptToOfferCardholderNameUpdate)
+      .WillOnce(Return(false));
+  EXPECT_CALL(credit_card_save_manager(), ProceedWithSavingIfApplicable);
+
+  ProcessExtractedCreditCard();
+}
+
+TEST_F(PaymentsFormDataImporterCardholderNameUpdateFlagDisabledTest,
+       NotOffered) {
+  EXPECT_CALL(credit_card_save_manager(), AttemptToOfferCardholderNameUpdate)
+      .Times(0);
+  EXPECT_CALL(credit_card_save_manager(), ProceedWithSavingIfApplicable);
+
+  ProcessExtractedCreditCard();
+}
+
+TEST_F(PaymentsFormDataImporterCardholderNameUpdateTest,
+       NotOffered_UpstreamDisabled) {
+  EXPECT_CALL(credit_card_save_manager(), AttemptToOfferCardholderNameUpdate)
+      .Times(0);
+  EXPECT_CALL(credit_card_save_manager(), ProceedWithSavingIfApplicable);
+
+  ProcessExtractedCreditCard(/*is_credit_card_upstream_enabled=*/false);
+}
+
+TEST_F(PaymentsFormDataImporterCardholderNameUpdateTest,
+       NotOffered_NotMaskedServerCard) {
+  extracted_card_ = test::WithCvc(test::GetCreditCard(), u"123");
+  test_api(payments_form_data_importer())
+      .set_credit_card_import_type(
+          PaymentsFormDataImporter::CreditCardImportType::kLocalCard);
+  EXPECT_CALL(credit_card_save_manager(), AttemptToOfferCardholderNameUpdate)
+      .Times(0);
+  EXPECT_CALL(credit_card_save_manager(), ProceedWithSavingIfApplicable);
+
+  ProcessExtractedCreditCard();
+}
+
+TEST_F(PaymentsFormDataImporterCardholderNameUpdateTest,
+       NotOffered_ServerCardHasName) {
+  CreditCard server_card = *payments_data_manager().GetCreditCardByInstrumentId(
+      extracted_card_.instrument_id());
+  server_card.SetInfo(CREDIT_CARD_NAME_FULL, u"Clyde Barrow", kLocale);
+  payments_data_manager().ClearCreditCards();
+  payments_data_manager().AddServerCreditCard(server_card);
+  EXPECT_CALL(credit_card_save_manager(), AttemptToOfferCardholderNameUpdate)
+      .Times(0);
+  EXPECT_CALL(credit_card_save_manager(), ProceedWithSavingIfApplicable);
+
+  ProcessExtractedCreditCard();
+}
+
+TEST_F(PaymentsFormDataImporterCardholderNameUpdateTest,
+       NotOffered_NoExtractedName) {
+  extracted_card_.SetInfo(CREDIT_CARD_NAME_FULL, u"", kLocale);
+  EXPECT_CALL(credit_card_save_manager(), AttemptToOfferCardholderNameUpdate)
+      .Times(0);
+  EXPECT_CALL(credit_card_save_manager(), ProceedWithSavingIfApplicable);
+
+  ProcessExtractedCreditCard();
+}
+
+TEST_F(PaymentsFormDataImporterCardholderNameUpdateTest,
+       NotOffered_InvalidName) {
+  extracted_card_.SetRawInfo(CREDIT_CARD_NAME_FULL, u"J0hn Dillinger");
+  EXPECT_CALL(credit_card_save_manager(), AttemptToOfferCardholderNameUpdate)
+      .Times(0);
+  EXPECT_CALL(credit_card_save_manager(), ProceedWithSavingIfApplicable);
+
+  ProcessExtractedCreditCard();
+}
+
+TEST_F(PaymentsFormDataImporterCardholderNameUpdateTest,
+       NotOffered_InvalidCvc) {
+  extracted_card_.set_cvc(u"12");
+  EXPECT_CALL(credit_card_save_manager(), AttemptToOfferCardholderNameUpdate)
+      .Times(0);
+  EXPECT_CALL(credit_card_save_manager(), ProceedWithSavingIfApplicable);
+
+  ProcessExtractedCreditCard();
+}
+
+// Tests that the cardholder name update is not offered if the form has an
+// updated expiration date for the server card, so that card save can update the
+// expiration date instead.
+TEST_F(PaymentsFormDataImporterCardholderNameUpdateTest,
+       NotOffered_ExpirationDateUpdated) {
+  std::unique_ptr<FormStructure> form_structure =
+      ConstructFormStructureFromFormData(CreateFullCreditCardForm(
+          "John Dillinger", "4012888888881881", "02", "2999"));
+  std::optional<CreditCard> extracted_card = ExtractCreditCard(*form_structure);
+  ASSERT_TRUE(extracted_card);
+  EXPECT_CALL(credit_card_save_manager(), AttemptToOfferCardholderNameUpdate)
+      .Times(0);
+  EXPECT_CALL(credit_card_save_manager(), ProceedWithSavingIfApplicable);
+
+  test_api(payments_form_data_importer())
+      .ProcessExtractedCreditCard(*form_structure, extracted_card,
+                                  /*is_credit_card_upstream_enabled=*/true,
+                                  ukm_source_id());
+}
+
+// Tests that the cardholder name update is not offered if virtual card
+// enrollment is offered.
+TEST_F(PaymentsFormDataImporterCardholderNameUpdateTest,
+       NotOffered_VirtualCardEnrollmentOffered) {
+  extracted_card_.set_virtual_card_enrollment_state(
+      CreditCard::VirtualCardEnrollmentState::kUnenrolledAndEligible);
+  payments_form_data_importer()
+      .fetched_payments_data_context()
+      .fetched_card_instrument_id = extracted_card_.instrument_id();
+  EXPECT_CALL(virtual_card_enrollment_manager(), InitVirtualCardEnroll);
+  EXPECT_CALL(credit_card_save_manager(), AttemptToOfferCardholderNameUpdate)
+      .Times(0);
+
+  EXPECT_TRUE(ProcessExtractedCreditCard());
+}
+
+// Tests that the cardholder name update is offered for a duplicate local and
+// server card when the submitted form includes a valid cardholder name.
+TEST_F(PaymentsFormDataImporterCardholderNameUpdateTest,
+       Offered_DuplicateLocalAndServerCardWithNameInForm) {
+  payments_data_manager().AddCreditCard(test::CreateCreditCardWithInfo(
+      "Clyde Barrow", "4012888888881881", "01", "2999", ""));
+  FormData form = CreateFullCreditCardForm("John Dillinger", "4012888888881881",
+                                           "01", "2999");
+  test_api(form).Append(
+      CreateTestFormField("CVC:", "cvc", "123", FormControlType::kInputText));
+  std::unique_ptr<FormStructure> form_structure =
+      ConstructFormStructureFromFormData(form);
+  std::optional<CreditCard> extracted_card = ExtractCreditCard(*form_structure);
+  ASSERT_TRUE(extracted_card);
+  ASSERT_EQ(test_api(payments_form_data_importer()).credit_card_import_type(),
+            PaymentsFormDataImporter::CreditCardImportType::
+                kDuplicateLocalServerCard);
+  EXPECT_CALL(credit_card_save_manager(),
+              AttemptToOfferCardholderNameUpdate(extracted_card_))
+      .WillOnce(Return(true));
+  EXPECT_CALL(credit_card_save_manager(), ProceedWithSavingIfApplicable)
+      .Times(0);
+
+  EXPECT_TRUE(
+      test_api(payments_form_data_importer())
+          .ProcessExtractedCreditCard(*form_structure, extracted_card,
+                                      /*is_credit_card_upstream_enabled=*/true,
+                                      ukm_source_id()));
+}
+
+// Tests that the cardholder name update is not offered when the submitted form
+// has no cardholder name field, even if a matching local card has a name.
+TEST_F(PaymentsFormDataImporterCardholderNameUpdateTest,
+       NotOffered_DuplicateLocalAndServerCardWithoutNameInForm) {
+  payments_data_manager().AddCreditCard(test::CreateCreditCardWithInfo(
+      "Clyde Barrow", "4012888888881881", "01", "2999", ""));
+  FormData form = CreateFullCreditCardForm(
+      /*name=*/nullptr, "4012888888881881", "01", "2999");
+  test_api(form).Append(
+      CreateTestFormField("CVC:", "cvc", "123", FormControlType::kInputText));
+  std::unique_ptr<FormStructure> form_structure =
+      ConstructFormStructureFromFormData(form);
+  std::optional<CreditCard> extracted_card = ExtractCreditCard(*form_structure);
+  ASSERT_TRUE(extracted_card);
+  ASSERT_EQ(test_api(payments_form_data_importer()).credit_card_import_type(),
+            PaymentsFormDataImporter::CreditCardImportType::
+                kDuplicateLocalServerCard);
+  EXPECT_CALL(credit_card_save_manager(), AttemptToOfferCardholderNameUpdate)
+      .Times(0);
+  EXPECT_CALL(credit_card_save_manager(), ProceedWithSavingIfApplicable);
+
+  test_api(payments_form_data_importer())
+      .ProcessExtractedCreditCard(*form_structure, extracted_card,
+                                  /*is_credit_card_upstream_enabled=*/true,
                                   ukm_source_id());
 }
 

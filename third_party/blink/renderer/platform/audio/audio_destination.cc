@@ -32,9 +32,11 @@
 #include <memory>
 #include <utility>
 
+#include "base/check_op.h"
 #include "base/feature_list.h"
 #include "base/metrics/histogram.h"
 #include "base/metrics/histogram_functions.h"
+#include "base/not_fatal_until.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/threading/thread_restrictions.h"
@@ -55,10 +57,9 @@
 #include "third_party/blink/renderer/platform/instrumentation/tracing/trace_event.h"
 #include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/scheduler/public/post_cross_thread_task.h"
-#include "third_party/blink/renderer/platform/wtf/cross_thread_copier_base.h"
-#include "third_party/blink/renderer/platform/wtf/cross_thread_copier_media.h"
 #include "third_party/blink/renderer/platform/wtf/cross_thread_functional.h"
 #include "third_party/blink/renderer/platform/wtf/text/format.h"
+#include "third_party/blink/renderer/platform/wtf/wtf.h"
 
 namespace blink {
 
@@ -466,10 +467,8 @@ void AudioDestination::SetDetectSilence(bool detect_silence) {
   DCHECK(IsMainThread());
   TRACE_EVENT1("webaudio", "AudioDestination::SetDetectSilence",
                "detect_silence", detect_silence);
-  SendLogMessage(
-      __func__,
-      StrCat({"({detect_silence=",
-              String::Number(static_cast<int>(detect_silence)), "})"}));
+  SendLogMessage(__func__, Format("({{detect_silence={}}})",
+                                  static_cast<int>(detect_silence)));
 
   web_audio_device_->SetDetectSilence(detect_silence);
 }
@@ -526,15 +525,11 @@ AudioDestination::AudioDestination(
   }
 
   SendLogMessage(__func__,
-                 StrCat({"({output_channels=",
-                         String::Number(number_of_output_channels), "})"}));
-  SendLogMessage(
-      __func__,
-      StrCat({"=> (FIFO size=", String::Number(fifo_->length()), " bytes)"}));
+                 Format("({{output_channels={}}})", number_of_output_channels));
+  SendLogMessage(__func__, Format("=> (FIFO size={} bytes)", fifo_->length()));
 
-  SendLogMessage(__func__,
-                 StrCat({"=> (device callback buffer size=",
-                         String::Number(callback_buffer_size_), " frames)"}));
+  SendLogMessage(__func__, Format("=> (device callback buffer size={} frames)",
+                                  callback_buffer_size_));
   SendLogMessage(__func__, Format("=> (device sample rate={:.0f} Hz)",
                                   web_audio_device_->SampleRate()));
   if (is_output_buffer_bypassed_) {
@@ -604,15 +599,6 @@ AudioDestination::AudioDestination(
                context_sample_rate_));
   }
 
-  // Record the sizes if we successfully created an output device.
-  // Histogram for audioHardwareBufferSize
-  base::UmaHistogramSparse(
-      "WebAudio.AudioDestination.HardwareBufferSize",
-      static_cast<int>(Platform::Current()->AudioHardwareBufferSize()));
-
-  // Histogram for the actual callback size used.  Typically, this is the same
-  // as audioHardwareBufferSize, but can be adjusted depending on some
-  // heuristics below.
   base::UmaHistogramSparse("WebAudio.AudioDestination.CallbackBufferSize",
                            callback_buffer_size_);
 
@@ -733,7 +719,7 @@ bool AudioDestination::RequestRender(
     uma_reporter_.IncreaseFifoUnderrunCount();
   }
 
-  delay_to_report_ = delay + fifo_delay;
+  const base::TimeDelta first_quantum_delay = delay + fifo_delay;
   glitch_info_to_report_.Add(glitch_info);
 
   output_position_.position =
@@ -762,6 +748,12 @@ bool AudioDestination::RequestRender(
     if (output_position_.position < 0.0) {
       output_position_.position = 0.0;
     }
+
+    // Later quanta are pushed behind earlier ones, so they play out later. We
+    // compute this from `pushed_frames` to avoid accumulating rounding errors.
+    delay_to_report_ = first_quantum_delay +
+                       media::AudioTimestampHelper::FramesToTime(
+                           pushed_frames, web_audio_device_->SampleRate());
 
     // Process WebAudio graph and push the rendered output to FIFO.
     if (resampler_) {
@@ -843,7 +835,15 @@ void AudioDestination::TransferElapsedFramesFrom(
     const scoped_refptr<AudioDestination> previous_platform_destination) {
   DCHECK(IsMainThread());
   DCHECK(!IsPlaying() && !previous_platform_destination->IsPlaying());
-  frames_elapsed_ += previous_platform_destination->FramesElapsed();
+  CHECK_GT(web_audio_device_->SampleRate(), 0.0, base::NotFatalUntil::M163);
+  CHECK_GT(previous_platform_destination->web_audio_device_->SampleRate(), 0.0,
+           base::NotFatalUntil::M163);
+  // `frames_elapsed_` counts frames at the device sample rate, which differs
+  // between sinks when either one resamples from the context rate.
+  frames_elapsed_ += base::ClampRound<size_t>(
+      previous_platform_destination->FramesElapsed() *
+      web_audio_device_->SampleRate() /
+      previous_platform_destination->web_audio_device_->SampleRate());
 }
 
 void AudioDestination::SendLogMessage(const String& function_name,

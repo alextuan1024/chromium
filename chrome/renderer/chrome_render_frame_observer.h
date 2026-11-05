@@ -24,6 +24,7 @@
 #include "pdf/buildflags.h"
 #include "services/service_manager/public/cpp/binder_registry.h"
 #include "third_party/blink/public/common/associated_interfaces/associated_interface_registry.h"
+#include "third_party/blink/public/web/web_local_frame_observer.h"
 
 class SkBitmap;
 
@@ -59,6 +60,7 @@ class WebCacheImpl;
 // This class holds the Chrome specific parts of RenderFrame, and has the same
 // lifetime.
 class ChromeRenderFrameObserver : public content::RenderFrameObserver,
+                                  public blink::WebLocalFrameObserver,
                                   public chrome::mojom::ChromeRenderFrame {
  public:
   ChromeRenderFrameObserver(content::RenderFrame* render_frame,
@@ -108,6 +110,9 @@ class ChromeRenderFrameObserver : public content::RenderFrameObserver,
   void OnDestruct() override;
   void WillDetach(blink::DetachReason detach_reason) override;
 
+  // blink::WebLocalFrameObserver:
+  void OnFrameDetached() override;
+
   // chrome::mojom::ChromeRenderFrame:
   void SetWindowFeatures(
       blink::mojom::WindowFeaturesPtr window_features) override;
@@ -146,7 +151,7 @@ class ChromeRenderFrameObserver : public content::RenderFrameObserver,
       mojo::PendingAssociatedRemote<actor::mojom::JournalClient> client)
       override;
   void GetCrossDocumentScriptToolResult(
-      const base::UnguessableToken& execution_id,
+      const blink::ToolInvocationToken& execution_id,
       GetCrossDocumentScriptToolResultCallback callback) override;
   // Multiple calls will clobber a PageStabilityMonitor previously created and
   // it's the caller's responsibility to ensure the monitor is unneeded before

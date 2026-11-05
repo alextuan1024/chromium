@@ -19,6 +19,7 @@
 #include "content/browser/notifications/notification_database.h"
 #include "content/browser/notifications/notification_trigger_constants.h"
 #include "content/browser/notifications/platform_notification_service_proxy.h"
+#include "content/browser/notifications/platform_notification_service_routing.h"
 #include "content/browser/service_worker/service_worker_context_wrapper.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/browser_task_traits.h"
@@ -128,7 +129,7 @@ void PlatformNotificationContextImpl::Initialize() {
       service_worker_context_, browser_context_);
 
   PlatformNotificationService* service =
-      browser_context_->GetPlatformNotificationService();
+      GetPlatformNotificationServiceFor(browser_context_);
   if (!service) {
     std::set<std::string> displayed_notifications;
     DidGetNotifications(std::move(displayed_notifications),
@@ -228,6 +229,9 @@ void PlatformNotificationContextImpl::DoHandleSyncNotification(
     const NotificationDatabaseData& data) {
   CHECK(task_runner_->RunsTasksInCurrentSequence(), base::NotFatalUntil::M159);
   CHECK(close_notification_ids, base::NotFatalUntil::M159);
+  if (data.notification_id.empty() || !data.origin.is_valid()) {
+    return;
+  }
 
   // Handle pending notifications.
   if (CanTrigger(data)) {
@@ -292,6 +296,18 @@ void PlatformNotificationContextImpl::CreateService(
     RenderProcessHost::NotificationServiceCreatorType creator_type,
     mojo::PendingReceiver<blink::mojom::NotificationService> receiver) {
   CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M159);
+
+  // The BrowserContext is going away: Shutdown() has already cleared
+  // `browser_context_` and destroyed the services owned by this context.
+  // Requests can still arrive here because renderer pipes stay connected until
+  // the `RenderProcessHost` instances are torn down, which happens *after*
+  // storage partition shutdown (see
+  // BrowserContextImpl::NotifyWillBeDestroyed()). Drop the receiver; the
+  // renderer treats the closed pipe as "notifications unavailable".
+  if (has_shutdown_.load(std::memory_order_relaxed)) {
+    return;
+  }
+
   services_.push_back(std::make_unique<BlinkNotificationServiceImpl>(
       this, browser_context_, service_worker_context_, render_process_host,
       storage_key, document_url, weak_document_ptr, creator_type,
@@ -334,7 +350,9 @@ void PlatformNotificationContextImpl::DoReadAllNotificationOrigins(
   NotificationDatabase::Status status =
       database_->ForEachNotificationData(base::BindRepeating(
           [](std::set<GURL>* origins, const NotificationDatabaseData& data) {
-            origins->insert(data.origin);
+            if (data.origin.is_valid()) {
+              origins->insert(data.origin);
+            }
           },
           &origins));
 
@@ -468,7 +486,7 @@ void PlatformNotificationContextImpl::DoReadNotificationData(
     ReadResultCallback callback,
     bool initialized) {
   CHECK(task_runner_->RunsTasksInCurrentSequence(), base::NotFatalUntil::M159);
-  if (!initialized) {
+  if (!initialized || notification_id.empty() || !origin.is_valid()) {
     GetUIThreadTaskRunner({})->PostTask(
         FROM_HERE, base::BindOnce(std::move(callback), /* success= */ false,
                                   NotificationDatabaseData()));
@@ -573,6 +591,9 @@ void PlatformNotificationContextImpl::DoWriteNotificationResources(
 
   NotificationDatabase::Status status = NotificationDatabase::STATUS_OK;
   for (auto& data : resource_data) {
+    if (data.notification_id.empty() || !data.origin.is_valid()) {
+      continue;
+    }
     NotificationDatabaseData notification_data;
     status = database_->ReadNotificationData(data.notification_id, data.origin,
                                              &notification_data);
@@ -644,8 +665,10 @@ void PlatformNotificationContextImpl::DoReDisplayNotifications(
       break;
 
     for (const auto& data : datas) {
-      if (CanTrigger(data))
+      if (CanTrigger(data) || data.notification_id.empty() ||
+          !data.origin.is_valid()) {
         continue;
+      }
       blink::NotificationResources resources;
       status = database_->ReadNotificationResources(data.notification_id,
                                                     data.origin, &resources);
@@ -705,7 +728,7 @@ void PlatformNotificationContextImpl::DoWriteNotificationMetadata(
     WriteResourcesResultCallback callback,
     bool initialized) {
   CHECK(task_runner_->RunsTasksInCurrentSequence(), base::NotFatalUntil::M159);
-  if (!initialized) {
+  if (!initialized || notification_id.empty() || !origin.is_valid()) {
     GetUIThreadTaskRunner({})->PostTask(
         FROM_HERE, base::BindOnce(std::move(callback), /* success= */ false));
     return;
@@ -766,7 +789,7 @@ void PlatformNotificationContextImpl::DoReadNotificationResources(
     ReadResourcesResultCallback callback,
     bool initialized) {
   CHECK(task_runner_->RunsTasksInCurrentSequence(), base::NotFatalUntil::M159);
-  if (!initialized) {
+  if (!initialized || notification_id.empty() || !origin.is_valid()) {
     GetUIThreadTaskRunner({})->PostTask(
         FROM_HERE, base::BindOnce(std::move(callback), /* success= */ false,
                                   blink::NotificationResources()));
@@ -809,7 +832,7 @@ void PlatformNotificationContextImpl::TryGetDisplayedNotifications(
   CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M159);
 
   PlatformNotificationService* service =
-      browser_context_->GetPlatformNotificationService();
+      GetPlatformNotificationServiceFor(browser_context_);
 
   if (!service) {
     // Rely on the database only
@@ -866,7 +889,7 @@ void PlatformNotificationContextImpl::
         bool supports_synchronization,
         bool initialized) {
   CHECK(task_runner_->RunsTasksInCurrentSequence(), base::NotFatalUntil::M159);
-  if (!initialized) {
+  if (!initialized || !origin.is_valid()) {
     GetUIThreadTaskRunner({})->PostTask(
         FROM_HERE, base::BindOnce(std::move(callback), /* success= */ false,
                                   std::vector<NotificationDatabaseData>()));
@@ -889,12 +912,12 @@ void PlatformNotificationContextImpl::
     if (supports_synchronization) {
       for (auto it = notification_datas.begin();
            it != notification_datas.end();) {
-        // The database is only used for persistent notifications.
-        CHECK(NotificationIdGenerator::IsPersistentNotification(
-                  it->notification_id),
-              base::NotFatalUntil::M159);
-        if (displayed_notifications.count(it->notification_id) ||
-            CanTrigger(*it) || it->creation_time_millis >= start_time) {
+        // The database is only used for persistent notifications. Treat any
+        // other ID as corrupted and purge it rather than returning it.
+        if (NotificationIdGenerator::IsPersistentNotification(
+                it->notification_id) &&
+            (displayed_notifications.count(it->notification_id) ||
+             CanTrigger(*it) || it->creation_time_millis >= start_time)) {
           ++it;
         } else {
           obsolete_notifications.push_back(it->notification_id);
@@ -1122,31 +1145,28 @@ void PlatformNotificationContextImpl::DeleteNotificationData(
   if (has_shutdown_.load(std::memory_order_relaxed)) {
     return;
   }
-
-  // Close notification as we're about to delete its data.
-  if (close_notification) {
-    std::set<std::string> notification_ids = {notification_id};
-    GetUIThreadTaskRunner({base::TaskPriority::USER_VISIBLE})
-        ->PostTask(
-            FROM_HERE,
-            base::BindOnce(&PlatformNotificationContextImpl::CloseNotifications,
-                           this, notification_ids));
+  if (notification_id.empty() || !origin.is_valid()) {
+    GetUIThreadTaskRunner({})->PostTask(
+        FROM_HERE, base::BindOnce(std::move(callback), /* success= */ false));
+    return;
   }
 
   bool should_log_close = service_proxy_->ShouldLogClose(origin);
-  InitializeDatabase(base::BindOnce(
-      &PlatformNotificationContextImpl::DoDeleteNotificationData, this,
-      notification_id, origin, std::move(callback), should_log_close));
+  InitializeDatabase(
+      base::BindOnce(&PlatformNotificationContextImpl::DoDeleteNotificationData,
+                     this, notification_id, origin, close_notification,
+                     std::move(callback), should_log_close));
 }
 
 void PlatformNotificationContextImpl::DoDeleteNotificationData(
     const std::string& notification_id,
     const GURL& origin,
+    bool close_notification,
     DeleteResultCallback callback,
     bool should_log_close,
     bool initialized) {
   CHECK(task_runner_->RunsTasksInCurrentSequence(), base::NotFatalUntil::M159);
-  if (!initialized) {
+  if (!initialized || notification_id.empty() || !origin.is_valid()) {
     GetUIThreadTaskRunner({})->PostTask(
         FROM_HERE, base::BindOnce(std::move(callback), false));
     return;
@@ -1178,6 +1198,15 @@ void PlatformNotificationContextImpl::DoDeleteNotificationData(
   if (status == NotificationDatabase::STATUS_ERROR_CORRUPTED) {
     DestroyDatabase();
     success = true;
+  }
+
+  if (close_notification) {
+    std::set<std::string> notification_ids = {notification_id};
+    GetUIThreadTaskRunner({})->PostTask(
+        FROM_HERE,
+        base::BindOnce(&PlatformNotificationContextImpl::CloseNotifications,
+                       base::WrapRefCounted(this),
+                       std::move(notification_ids)));
   }
 
   GetUIThreadTaskRunner({})->PostTask(

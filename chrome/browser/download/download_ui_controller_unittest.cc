@@ -385,7 +385,6 @@ TEST_F(DownloadUIControllerTest, DownloadUIController_HistoryDownload) {
   history_downloads.push_back(history::DownloadRow());
   history_downloads.front().id = 1;
 
-  std::vector<GURL> url_chain;
   GURL url;
   std::unique_ptr<MockDownloadItem> item = CreateMockInProgressDownload();
 
@@ -416,10 +415,9 @@ TEST_F(DownloadUIControllerTest, DownloadUIController_HistoryDownload) {
     MockDownloadItem* download_item = item.get();
     EXPECT_CALL(*manager(), MockCreateDownloadItem(_))
         .WillOnce(testing::DoAll(
-            testing::InvokeWithoutArgs(
-                [observer, download_manager, download_item]() {
-                  observer->OnDownloadCreated(download_manager, download_item);
-                }),
+            [observer, download_manager, download_item]() {
+              observer->OnDownloadCreated(download_manager, download_item);
+            },
             Return(item.get())));
     EXPECT_CALL(mock_function, Call());
 

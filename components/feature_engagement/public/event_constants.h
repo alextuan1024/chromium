@@ -70,6 +70,9 @@ extern const char kExtensionsRequestAccessButtonClicked[];
 // The user has accepted the Glic onboarding.
 extern const char kGlicOnboardingCompleted[];
 
+// The user invoked Dictation on a field, starting a session.
+extern const char kDictationInvoked[];
+
 #endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_APPLE) || BUILDFLAG(IS_LINUX) ||
         // BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_FUCHSIA)
 
@@ -190,6 +193,9 @@ extern const char kLensButtonKeyboardUsed[];
 // The user has triggered the Lens button in the Composebox.
 extern const char kIOSLensButtonComposeboxUsed[];
 
+// Event fired when the Level Up promo is used once.
+extern const char kIOSLevelUpPromoUsed[];
+
 // The user has more than one gesture to refresh a page in iOS. This includes
 // but not limited to re-typing the URL in omnibox and refreshing from context
 // menu.
@@ -292,21 +298,15 @@ extern const char kDefaultBrowserPromoTriggerCriteriaConditionsMet[];
 // sample model info.
 extern const char kIOSContextualPanelSampleModelEntrypointUsed[];
 
-// The user has tapped the contextual panel entrypoint when it was branded with
-// price insights infoblock.
-extern const char kIOSContextualPanelPriceInsightsEntrypointUsed[];
-
-// The user has explicitly dismissed the Price Insights branded Contextual Panel
-// entrypoint in-product help.
-extern const char
-    kIOSContextualPanelPriceInsightsEntrypointExplicitlyDismissed[];
-
 // The user has tapped the Home customization menu's entrypoint.
 extern const char kHomeCustomizationMenuUsed[];
 
 // The user has opened the Home customization menu with background customization
 // enabled..
 extern const char kHomeBackgroundCustomizationMenuUsed[];
+
+// The user has opened the Home customization menu with ephemeral theme enabled.
+extern const char kEphemeralThemePromoUsed[];
 
 // The user has seen the `kIPHHomeCustomizationMenuFeature` iph.
 extern const char kHomeCustomizationPromoTriggered[];
@@ -340,12 +340,6 @@ extern const char kIOSScrolledOnFeed[];
 
 // The user has taken action on the feed.
 extern const char kIOSActionOnFeed[];
-
-// The Welcome Back promo was triggered.
-extern const char kIOSWelcomeBackPromoTrigger[];
-
-// The Welcome Back promo was used.
-extern const char kIOSWelcomeBackPromoUsed[];
 
 // The BWG promo was triggered.
 extern const char kIOSBWGPromoTrigger[];
@@ -463,6 +457,20 @@ extern const char kDefaultBrowserPromoContextualGeminiUsed[];
 // Event fired when a Gemini session terminates or disappears.
 extern const char kGeminiSessionTerminated[];
 
+// Event fired when the omnibox is moved to the bottom position.
+extern const char kIOSBottomOmniboxUsed[];
+
+// Event fired when the Account Switching promo is ignored without an explicit
+// accept or cancel action.
+extern const char kIOSAccountSwitchingPromoIgnored[];
+
+// Event fired when the Account Switching promo is explicitly dismissed via
+// the secondary action button ("Not now").
+extern const char kIOSAccountSwitchingPromoExplicitlyDismissed[];
+
+// Event fired when the user signs into or switches the primary account.
+extern const char kIOSAccountSwitchingPrimaryAccountChanged[];
+
 #endif  // BUILDFLAG(IS_IOS)
 
 // Android.
@@ -474,8 +482,6 @@ extern const char kPwaInstallMenuSelected[];
 // The user clicked on the Send Tab to Self entry point in the omnibox
 // long-press menu.
 extern const char kSendTabToSelfOmniboxUsed[];
-
-extern const char kTabSearchComboButtonUsed[];
 
 }  // namespace events
 

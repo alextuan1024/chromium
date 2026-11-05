@@ -823,7 +823,11 @@ bool XkbKeyboardLayoutEngine::Lookup(DomCode dom_code,
   }
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
+  const int kNonShiftlikeModifiers =
+      EF_CONTROL_DOWN | EF_ALT_DOWN | EF_COMMAND_DOWN;
+
   // Classify the keysym and convert to DOM and VKEY representations.
+  bool control_transformed_to_nul = false;
   if (dom_code != DomCode::DIGIT2 || (flags & EF_CONTROL_DOWN) == 0) {
     // Non-character key. (We only support NUL as ^@ and ^2.)
     *dom_key = NonPrintableXKeySymToDomKey(xkb_keysym);
@@ -834,9 +838,15 @@ bool XkbKeyboardLayoutEngine::Lookup(DomCode dom_code,
       return true;
     }
     if (character == 0) {
-      *dom_key = DomKey::UNIDENTIFIED;
-      *key_code = DomCodeToUsLayoutNonLocatedKeyboardCode(dom_code);
-      return true;
+      if ((flags & kNonShiftlikeModifiers) == 0) {
+        *dom_key = DomKey::UNIDENTIFIED;
+        *key_code = DomCodeToUsLayoutNonLocatedKeyboardCode(dom_code);
+        return true;
+      }
+      // XKB's Control transformation maps some printable keys to NUL (e.g.
+      // Ctrl+Space and Ctrl+`). Let the fallback below find the character
+      // without the modifier.
+      control_transformed_to_nul = true;
     }
   }
 
@@ -844,8 +854,6 @@ bool XkbKeyboardLayoutEngine::Lookup(DomCode dom_code,
   // non-printable and a non-shiftlike modifier is down, we preferentially
   // return a printable key as if the modifier were not down.
   // https://w3c.github.io/uievents/#keys-guidelines
-  const int kNonShiftlikeModifiers =
-      EF_CONTROL_DOWN | EF_ALT_DOWN | EF_COMMAND_DOWN;
   if ((flags & kNonShiftlikeModifiers) && IsControlCharacter(character)) {
     int normal_ui_flags = flags & ~kNonShiftlikeModifiers;
     xkb_mod_mask_t normal_xkb_flags = EventFlagsToXkbFlags(normal_ui_flags);
@@ -859,6 +867,12 @@ bool XkbKeyboardLayoutEngine::Lookup(DomCode dom_code,
       character = normal_character;
       xkb_keysym = normal_keysym;
     }
+  }
+
+  if (control_transformed_to_nul && character == 0) {
+    *dom_key = DomKey::UNIDENTIFIED;
+    *key_code = DomCodeToUsLayoutNonLocatedKeyboardCode(dom_code);
+    return true;
   }
 
   *dom_key = DomKey::FromCharacter(character);
@@ -883,11 +897,10 @@ void XkbKeyboardLayoutEngine::SetInitCallbackForTest(
 }
 
 bool XkbKeyboardLayoutEngine::SetCurrentLayoutFromBuffer(
-    const char* keymap_string,
-    size_t size) {
+    std::string_view keymap_string) {
   xkb_keymap* keymap = xkb_keymap_new_from_buffer(
-      xkb_context_.get(), keymap_string, size, XKB_KEYMAP_FORMAT_TEXT_V1,
-      XKB_KEYMAP_COMPILE_NO_FLAGS);
+      xkb_context_.get(), keymap_string.data(), keymap_string.size(),
+      XKB_KEYMAP_FORMAT_TEXT_V1, XKB_KEYMAP_COMPILE_NO_FLAGS);
   if (!keymap)
     return false;
 
@@ -966,6 +979,14 @@ int XkbKeyboardLayoutEngine::UpdateModifiers(uint32_t depressed,
                                              uint32_t latched,
                                              uint32_t locked,
                                              uint32_t group) {
+  if (!xkb_state_) {
+    // The first XKB keymap may arrive after GTK IM events that depend on
+    // modifier state (e.g. fcitx5 firing on first input activation).
+    // Guard like XkbLookup does to avoid xkb_state_update_mask(NULL).
+    LOG(ERROR) << "No current XKB state";
+    return 0;
+  }
+
   auto* state = xkb_state_.get();
   xkb_state_update_mask(state, depressed, latched, locked, 0, 0, group);
   auto component = static_cast<xkb_state_component>(XKB_STATE_MODS_DEPRESSED |
@@ -985,6 +1006,11 @@ int XkbKeyboardLayoutEngine::UpdateModifiers(uint32_t depressed,
 DomCode XkbKeyboardLayoutEngine::GetDomCodeByKeysym(
     uint32_t keysym,
     const std::optional<std::vector<std::string_view>>& modifiers) const {
+  if (!xkb_state_) {
+    LOG(ERROR) << "No current XKB state";
+    return DomCode::NONE;
+  }
+
   // Look up all candidates.
   auto range = std::equal_range(
       xkb_keysym_map_.begin(), xkb_keysym_map_.end(), XkbKeysymMapEntry{keysym},
@@ -1059,8 +1085,8 @@ KeyboardCode XkbKeyboardLayoutEngine::DifficultKeyboardCode(
   // active, because it changes the function of the keypad keys (e.g. from
   // navigation keys to numeric/decimal keys) rather than being a shortcut
   // modifier.
-  xkb_mod_mask_t num_lock_flags = xkb_modifier_converter_.MaskFromUiFlags(
-      ui_flags & ui::EF_NUM_LOCK_ON);
+  xkb_mod_mask_t num_lock_flags =
+      xkb_flags & xkb_modifier_converter_.MaskFromUiFlags(ui::EF_NUM_LOCK_ON);
   xkb_keysym_t plain_keysym;
   uint32_t plain_character;
   if (!XkbLookup(xkb_keycode, num_lock_flags, &plain_keysym, &plain_character))

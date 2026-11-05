@@ -35,8 +35,8 @@ bool GetControllerFromWindowID(ExtensionFunction* function,
                                extensions::WindowController::TypeFilter filter,
                                extensions::WindowController** out_controller,
                                std::string* error) {
-  DCHECK(out_controller);
-  DCHECK(error);
+  CHECK(out_controller, base::NotFatalUntil::M161);
+  CHECK(error, base::NotFatalUntil::M161);
 
   *out_controller = nullptr;
   if (window_id == extension_misc::kCurrentWindowId) {
@@ -82,8 +82,7 @@ bool CanOperateOnWindow(const ExtensionFunction* function,
 
   // TODO(crbug.com/41367902): Remove this.
   bool allow_dev_tools_windows = !!filter;
-  if (function->extension() &&
-      !controller->IsVisibleToTabsAPIForExtension(function->extension(),
+  if (!controller->IsVisibleToTabsAPIForExtension(function->extension(),
                                                   allow_dev_tools_windows)) {
     return false;
   }

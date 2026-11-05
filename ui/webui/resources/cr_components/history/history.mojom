@@ -4,6 +4,7 @@
 
 module history.mojom;
 
+import "mojo/public/mojom/base/time.mojom";
 import "url/mojom/url.mojom";
 
 /**
@@ -16,6 +17,13 @@ enum FilteringBehavior {
   // Deprecated, kWarn = 1.
   kBlock = 2,
   kInvalid = 3,
+};
+
+// Represents a synced device.
+struct Device {
+  string name;
+  bool is_local_device;
+  array<string> ids;
 };
 
 // Represents the possible states of the query process.
@@ -37,6 +45,13 @@ struct QueryState {
 
   // Whether actor visits should be shown.
   bool include_actor_visits;
+
+  // Client IDs of selected device to filter visits by.
+  array<string> client_ids;
+
+  // The selected predefined time period to filter visits by. kAllTime means
+  // no time period filtering is applied.
+  TimePeriodOptionId time_period_option_id;
 };
 
 
@@ -146,6 +161,7 @@ enum CriticalActionType {
   kGooglePasswordManager = 5,
   kFederatedLogin = 6,
   kCredentialsOtp = 7,
+  kWebMcpTool = 8,
 };
 // LINT.ThenChange(//tools/metrics/histograms/metadata/critical_actions/enums.xml:CriticalActionType)
 
@@ -160,8 +176,9 @@ struct CriticalAction {
   // Tooltip describing the action category.
   string tooltip;
 
-  // Destination management URL for the action.
-  string linkout_url;
+  // Destination management URL for the action. Null if the action has no
+  // linkout, in which case the UI renders the action as a plain label.
+  string? linkout_url;
 
   // Category type of the critical action.
   CriticalActionType action_type;
@@ -203,19 +220,55 @@ enum OpenConversationResult {
 };
 // LINT.ThenChange(//tools/metrics/histograms/metadata/critical_actions/enums.xml:OpenConversationResult)
 
+// Represents the entry point from which the user turns on history sync.
+enum AccessPoint {
+  kRecentTabs = 0,
+  kHistoryPage = 1,
+};
+
+// Identifies a predefined time period option for the history time filter.
+// Must be kept in sync with `history::TimePeriodOptionId` in
+// components/history/core/browser/time_period_filter_utils.h.
+// LINT.IfChange(TimePeriodOptionId)
+enum TimePeriodOptionId {
+  kAllTime = 0,
+  kYesterday = 1,
+  kEarlierThisWeek = 2,
+  kLastWeek = 3,
+  kTwoWeeksAgo = 4,
+};
+// LINT.ThenChange(//components/history/core/browser/time_period_filter_utils.h:TimePeriodOptionId)
+
+// A predefined time period option for the history page's time filter.
+struct TimePeriodOption {
+  TimePeriodOptionId id;
+
+  // The localized label shown to the user in the filter UI.
+  string label;
+
+  // The start of the time period (inclusive). Null if unbounded.
+  mojo_base.mojom.Time? begin_time;
+
+  // The end of the time period (exclusive). Null if unbounded.
+  mojo_base.mojom.Time? end_time;
+};
+
 // Browser-side handler for requests from WebUI page.
 interface PageHandler {
   // The BrowserProxy singleton calls this when it's first initialized.
   SetPage(pending_remote<Page> page);
 
   // Queries for entries matching the query term. Returns a promise of a
-  // result object.
+  // result object. `begin_time` (inclusive) and `end_time` (exclusive)
+  // restrict the visit time; null means unbounded.
   QueryHistory(
       string query,
       int32 max_results,
-      double? begin_time,
+      mojo_base.mojom.Time? begin_time,
+      mojo_base.mojom.Time? end_time,
       bool include_user_visits,
-      bool include_actor_visits) => (QueryResult results);
+      bool include_actor_visits,
+      array<string> client_ids) => (QueryResult results);
 
   // Completes continuation of ongoing query. Returns a promise of a result
   // object.
@@ -242,12 +295,19 @@ interface PageHandler {
   RequestAccountInfo() => (AccountInfo account_info);
 
   // The user turns on the history sync by clicking the "Sync history" button.
-  TurnOnHistorySync();
+  TurnOnHistorySync(AccessPoint access_point);
 
   // Opens the conversation associated with the given critical action in
   // split view.
   OpenCriticalActionConversation(string critical_action_id)
       => (OpenConversationResult result);
+
+  // Fetches the list of known synced devices.
+  GetSyncedDevicesForFiltering() => (array<Device> devices);
+
+  // Returns the predefined time period options for the history page's time
+  // filter. Returns an empty list if the time filter is disabled.
+  GetTimePeriodOptions() => (array<TimePeriodOption> options);
 
   // Checks if the history sync promo should be shown on the history page.
   [EnableIfNot=is_chromeos]

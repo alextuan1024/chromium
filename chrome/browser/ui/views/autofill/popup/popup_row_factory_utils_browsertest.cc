@@ -91,6 +91,15 @@ Suggestion CreateFreeformFooter() {
   return suggestion;
 }
 
+Suggestion CreatePendingStateTrustedVaultErrorSuggestion() {
+  const std::u16string kMainText =
+      u"To use saved passwords on this device, verify it's you";
+  Suggestion suggestion(kMainText,
+                        SuggestionType::kPendingStateTrustedVaultError);
+  suggestion.icon = Suggestion::Icon::kGooglePasswordManager;
+  return suggestion;
+}
+
 Suggestion CreateSuggestionWithChildren(const std::u16string& main_text,
                                         SuggestionType type,
                                         std::vector<Suggestion> children) {
@@ -149,10 +158,6 @@ const Suggestion kSuggestions[] = {
                u"label",
                Suggestion::Icon::kMagic,
                SuggestionType::kComposeResumeNudge),
-    Suggestion(u"Promo_code",
-               u"label",
-               Suggestion::Icon::kGlobe,
-               SuggestionType::kSeePromoCodeDetails),
     Suggestion(u"Remove_this_info",
                u"",
                Suggestion::Icon::kClose,
@@ -541,14 +546,30 @@ IN_PROC_BROWSER_TEST_F(CreatePopupRowViewTest, FreeformFooter) {
   ShowAndVerifyUi();
 }
 
+IN_PROC_BROWSER_TEST_F(CreatePopupRowViewTest, PendingStateTrustedVaultError) {
+  CreateRowView(CreatePendingStateTrustedVaultErrorSuggestion(),
+                /*selected_cell=*/std::nullopt,
+                /*filter_match=*/std::nullopt);
+  ShowAndVerifyUi();
+}
+
+IN_PROC_BROWSER_TEST_F(CreatePopupRowViewTest,
+                       PendingStateTrustedVaultErrorSelected) {
+  CreateRowView(CreatePendingStateTrustedVaultErrorSuggestion(),
+                /*selected_cell=*/PopupRowView::CellType::kContent,
+                /*filter_match=*/std::nullopt);
+  ShowAndVerifyUi();
+}
+
 IN_PROC_BROWSER_TEST_F(CreatePopupRowViewTest, AutofillAiSourceAttribution) {
-  Suggestion suggestion(u"Suggested by Gemini · Photos\u00A0[1]",
+  Suggestion suggestion(u"From Gemini and connected apps · Photos\u00A0[1]",
                         SuggestionType::kAutofillAiSourceAttribution);
   suggestion.icon = Suggestion::Icon::kSpark;
   suggestion.payload = Suggestion::AutofillAiPayload(
       autofill::EntityInstance::EntityId("test-guid"),
       {Suggestion::PersonalContextSourceCitation(
-          GURL("https://photos.google.com/test"), gfx::Range(29, 32))});
+          GURL("https://photos.google.com/test"), gfx::Range(40, 43),
+          u"Photos source 1")});
   CreateRowView(std::move(suggestion), /*selected_cell=*/std::nullopt,
                 /*filter_match=*/std::nullopt);
   ShowAndVerifyUi();

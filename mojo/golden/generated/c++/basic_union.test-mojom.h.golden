@@ -215,6 +215,9 @@ class  BasicUnion {
   // Construct an instance holding |enum_value|.
   static BasicUnionPtr NewEnumValue(
       EnumInUnion value);
+  // Construct an instance holding |extensible_enum_value|.
+  static BasicUnionPtr NewExtensibleEnumValue(
+      ExtensibleEnumInUnion value);
   // Construct an instance holding |struct_value|.
   static BasicUnionPtr NewStructValue(
       StructInUnionPtr value);
@@ -273,6 +276,13 @@ class  BasicUnion {
   }
   void set_enum_value(EnumInUnion enum_value);
 
+  bool is_extensible_enum_value() const { return tag_ == Tag::kExtensibleEnumValue; }
+  ExtensibleEnumInUnion get_extensible_enum_value() const {
+    CHECK(tag_ == Tag::kExtensibleEnumValue);
+    return data_.extensible_enum_value;
+  }
+  void set_extensible_enum_value(ExtensibleEnumInUnion extensible_enum_value);
+
   bool is_struct_value() const { return tag_ == Tag::kStructValue; }
   const StructInUnionPtr& get_struct_value() const {
     CHECK(tag_ == Tag::kStructValue);
@@ -311,6 +321,9 @@ class  BasicUnion {
         std::in_place_index_t<static_cast<size_t>(Tag::kEnumValue)>,
         EnumInUnion value);
     Union_(
+        std::in_place_index_t<static_cast<size_t>(Tag::kExtensibleEnumValue)>,
+        ExtensibleEnumInUnion value);
+    Union_(
         std::in_place_index_t<static_cast<size_t>(Tag::kStructValue)>,
         StructInUnionPtr value);
     // The contents of the union are explicitly destroyed by `DestroyActive()`.
@@ -318,6 +331,7 @@ class  BasicUnion {
 
     int32_t numeric_value;
     EnumInUnion enum_value;
+    ExtensibleEnumInUnion extensible_enum_value;
     StructInUnionPtr struct_value;
   };
 
@@ -328,13 +342,136 @@ class  BasicUnion {
       std::in_place_index_t<static_cast<size_t>(Tag::kEnumValue)>,
       EnumInUnion value);
   BasicUnion(
+      std::in_place_index_t<static_cast<size_t>(Tag::kExtensibleEnumValue)>,
+      ExtensibleEnumInUnion value);
+  BasicUnion(
       std::in_place_index_t<static_cast<size_t>(Tag::kStructValue)>,
       StructInUnionPtr value);
 
   static bool Validate(const void* data,
                        mojo::internal::ValidationContext* validation_context);
-
   void DestroyActive();
+  Tag tag_;
+  Union_ data_;
+};
+
+
+
+class  TrivialUnion {
+ public:
+  using DataView = TrivialUnionDataView;
+  using Data_ = internal::TrivialUnion_Data;
+  using Tag = Data_::TrivialUnion_Tag;
+
+  template <typename... Args>
+  static TrivialUnionPtr New(Args&&... args) {
+    static_assert(
+        sizeof...(args) < 0,
+        "Do not use Union::New(); to create a union of a given subtype, use "
+        "New<SubType>(), not New() followed by set_<sub_type>(). To represent "
+        "an empty union, mark the field or parameter as nullable in the mojom "
+        "definition.");
+    return nullptr;
+  }
+
+  // Construct an instance holding |numeric_value|.
+  static TrivialUnionPtr NewNumericValue(
+      int32_t value);
+  // Construct an instance holding |enum_value|.
+  static TrivialUnionPtr NewEnumValue(
+      EnumInUnion value);
+
+  template <typename U>
+  static TrivialUnionPtr From(const U& u) {
+    return mojo::TypeConverter<TrivialUnionPtr, U>::Convert(u);
+  }
+
+  template <typename U>
+  U To() const {
+    return mojo::TypeConverter<U, TrivialUnion>::Convert(*this);
+  }
+  ~TrivialUnion() = default;
+
+
+  // Clone() is a template so it is only instantiated if it is used. Thus, the
+  // bindings generator does not need to know whether Clone() or copy
+  // constructor/assignment are available for members.
+  template <typename UnionPtrType = TrivialUnionPtr>
+  TrivialUnionPtr Clone() const;
+
+  // Equals() is a template so it is only instantiated if it is used. Thus, the
+  // bindings generator does not need to know whether Equals() or == operator
+  // are available for members.
+  template <typename T,
+            typename std::enable_if<std::is_same<
+                T, TrivialUnion>::value>::type* = nullptr>
+  bool Equals(const T& other) const;
+
+  template <typename T,
+            typename std::enable_if<std::is_same<
+                T, TrivialUnion>::value>::type* = nullptr>
+  bool operator==(const T& rhs) const { return Equals(rhs); }
+  size_t Hash(size_t seed) const;
+
+  Tag which() const {
+    return tag_;
+  }
+
+  bool is_numeric_value() const { return tag_ == Tag::kNumericValue; }
+  int32_t get_numeric_value() const {
+    CHECK(tag_ == Tag::kNumericValue);
+    return data_.numeric_value;
+  }
+  void set_numeric_value(int32_t numeric_value);
+
+  bool is_enum_value() const { return tag_ == Tag::kEnumValue; }
+  EnumInUnion get_enum_value() const {
+    CHECK(tag_ == Tag::kEnumValue);
+    return data_.enum_value;
+  }
+  void set_enum_value(EnumInUnion enum_value);
+
+  template <typename UserType>
+  static mojo::Message SerializeAsMessage(UserType* input) {
+    return mojo::internal::SerializeAsMessageImpl<
+        TrivialUnion::DataView>(input);
+  }
+
+  template <typename UserType>
+  static bool DeserializeFromMessage(mojo::Message input,
+                                     UserType* output) {
+    return mojo::internal::DeserializeImpl<TrivialUnion::DataView>(
+        input, input.payload(), input.payload_num_bytes(), output, Validate);
+  }
+
+ private:
+  template <typename T>
+  friend class ::mojo::InlinedStructPtr;
+  template <typename T>
+  friend class ::mojo::StructPtr;
+
+  union Union_ {
+    Union_(
+        std::in_place_index_t<static_cast<size_t>(Tag::kNumericValue)>,
+        int32_t value);
+    Union_(
+        std::in_place_index_t<static_cast<size_t>(Tag::kEnumValue)>,
+        EnumInUnion value);
+    ~Union_() = default;
+
+    int32_t numeric_value;
+    EnumInUnion enum_value;
+  };
+
+  TrivialUnion(
+      std::in_place_index_t<static_cast<size_t>(Tag::kNumericValue)>,
+      int32_t value);
+  TrivialUnion(
+      std::in_place_index_t<static_cast<size_t>(Tag::kEnumValue)>,
+      EnumInUnion value);
+
+  static bool Validate(const void* data,
+                       mojo::internal::ValidationContext* validation_context);
   Tag tag_;
   Union_ data_;
 };
@@ -349,6 +486,9 @@ BasicUnionPtr BasicUnion::Clone() const {
     case Tag::kEnumValue:
       return NewEnumValue(
           mojo::Clone(data_.enum_value));
+    case Tag::kExtensibleEnumValue:
+      return NewExtensibleEnumValue(
+          mojo::Clone(data_.extensible_enum_value));
     case Tag::kStructValue:
       return NewStructValue(
           mojo::Clone(data_.struct_value));
@@ -368,8 +508,39 @@ bool BasicUnion::Equals(const T& other) const {
       return mojo::Equals(data_.numeric_value, other.data_.numeric_value);
     case Tag::kEnumValue:
       return mojo::Equals(data_.enum_value, other.data_.enum_value);
+    case Tag::kExtensibleEnumValue:
+      return mojo::Equals(data_.extensible_enum_value, other.data_.extensible_enum_value);
     case Tag::kStructValue:
       return mojo::Equals(data_.struct_value, other.data_.struct_value);
+  }
+
+  return false;
+}
+template <typename UnionPtrType>
+TrivialUnionPtr TrivialUnion::Clone() const {
+  switch (tag_) {
+    case Tag::kNumericValue:
+      return NewNumericValue(
+          mojo::Clone(data_.numeric_value));
+    case Tag::kEnumValue:
+      return NewEnumValue(
+          mojo::Clone(data_.enum_value));
+  }
+  return nullptr;
+}
+
+template <typename T,
+          typename std::enable_if<std::is_same<
+              T, TrivialUnion>::value>::type*>
+bool TrivialUnion::Equals(const T& other) const {
+  if (tag_ != other.which())
+    return false;
+
+  switch (tag_) {
+    case Tag::kNumericValue:
+      return mojo::Equals(data_.numeric_value, other.data_.numeric_value);
+    case Tag::kEnumValue:
+      return mojo::Equals(data_.enum_value, other.data_.enum_value);
   }
 
   return false;
@@ -448,11 +619,37 @@ struct  UnionTraits<::golden::BasicUnion::DataView,
     return input->get_enum_value();
   }
 
+  static  ::golden::ExtensibleEnumInUnion extensible_enum_value(const ::golden::BasicUnionPtr& input) {
+    return input->get_extensible_enum_value();
+  }
+
   static const ::golden::StructInUnionPtr& struct_value(const ::golden::BasicUnionPtr& input) {
     return input->get_struct_value();
   }
 
   static bool Read(::golden::BasicUnion::DataView input, ::golden::BasicUnionPtr* output);
+};
+
+
+template <>
+struct  UnionTraits<::golden::TrivialUnion::DataView,
+                                        ::golden::TrivialUnionPtr> {
+  static bool IsNull(const ::golden::TrivialUnionPtr& input) { return !input; }
+  static void SetToNull(::golden::TrivialUnionPtr* output) { output->reset(); }
+
+  static ::golden::TrivialUnion::Tag GetTag(const ::golden::TrivialUnionPtr& input) {
+    return input->which();
+  }
+
+  static  int32_t numeric_value(const ::golden::TrivialUnionPtr& input) {
+    return input->get_numeric_value();
+  }
+
+  static  ::golden::EnumInUnion enum_value(const ::golden::TrivialUnionPtr& input) {
+    return input->get_enum_value();
+  }
+
+  static bool Read(::golden::TrivialUnion::DataView input, ::golden::TrivialUnionPtr* output);
 };
 
 }  // namespace mojo

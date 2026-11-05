@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "chrome/browser/payments/web_payments_observer.h"
+#include "components/payments/content/web_payments_observer.h"
 
 #include <string>
 #include <string_view>
@@ -14,6 +14,7 @@
 #include "chrome/test/base/chrome_test_utils.h"
 #include "chrome/test/base/platform_browser_test.h"
 #include "components/payments/core/features.h"
+#include "components/payments/core/web_payments_telemetry.h"
 #include "components/ukm/test_ukm_recorder.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/test/browser_test.h"

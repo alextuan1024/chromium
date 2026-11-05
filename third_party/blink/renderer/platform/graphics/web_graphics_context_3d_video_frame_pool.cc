@@ -22,9 +22,9 @@
 #include "gpu/command_buffer/common/shared_image_usage.h"
 #include "media/base/simple_sync_token_client.h"
 #include "media/base/video_frame.h"
-#include "media/renderers/video_frame_rgba_to_yuva_converter.h"
+#include "media/gfx/renderable_mappable_shared_image_video_frame_pool.h"
+#include "media/gfx/video_frame_rgba_to_yuva_converter.h"
 #include "media/video/gpu_video_accelerator_factories.h"
-#include "media/video/renderable_mappable_shared_image_video_frame_pool.h"
 #include "perfetto/tracing/track_event_args.h"
 #include "third_party/blink/public/common/switches.h"
 #include "third_party/blink/public/platform/platform.h"
@@ -173,7 +173,6 @@ void CopyToGpuMemoryBuffer(
 
   const bool use_async_copy =
       base::FeatureList::IsEnabled(kUseCopyToGpuMemoryBufferAsync);
-  const auto mailbox = dst_frame->shared_image()->mailbox();
   if (use_async_copy) {
     auto copy_to_gmb_done_lambda = [](base::OnceClosure callback,
                                       bool success) {
@@ -184,12 +183,11 @@ void CopyToGpuMemoryBuffer(
       std::move(callback).Run();
     };
 
-    sii->CopyToGpuMemoryBufferAsync(
-        blit_done_sync_token, mailbox,
-        base::BindOnce(std::move(copy_to_gmb_done_lambda),
-                       std::move(callback)));
+    dst_frame->shared_image()->CopyToGpuMemoryBufferAsync(
+        blit_done_sync_token, base::BindOnce(std::move(copy_to_gmb_done_lambda),
+                                             std::move(callback)));
   } else {
-    sii->CopyToGpuMemoryBuffer(blit_done_sync_token, mailbox);
+    dst_frame->shared_image()->CopyToGpuMemoryBuffer(blit_done_sync_token);
   }
 
   // Synchronize RasterInterface with SharedImageInterface.

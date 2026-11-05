@@ -31,12 +31,14 @@ class FakeProxy : public Proxy {
   void ReleaseLayerTreeFrameSink() override {}
   void SetShouldWarmUp() override {}
   void SetVisible(bool visible) override {}
+  void NotifyOutOfBandFrame() override {}
   void SetNeedsAnimate(BeginMainFrameReason, bool urgent) override {}
   void SetNeedsUpdateLayers() override {}
   void SetNeedsCommit(bool urgent) override {}
   void SetNeedsRedraw(const gfx::Rect& damage_rect) override {}
   void SetTargetLocalSurfaceId(
       const viz::LocalSurfaceId& target_local_surface_id) override {}
+  void SetMemoryPolicy(const ManagedMemoryPolicy& policy) override {}
   void DetachInputDelegateAndRenderFrameObserver() override {}
   bool RequestedAnimatePending() override;
   void SetDeferMainFrameUpdate(bool defer_main_frame_update) override {}

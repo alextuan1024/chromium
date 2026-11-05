@@ -104,29 +104,52 @@ class ProtocolHandlerRegistry : public KeyedService {
 
   void SetDelegateForTesting(std::unique_ptr<Delegate> delegate);
 
+  // Returns true if a request to register the given handler needs no action:
+  // the handler is empty or already registered, the user refused an equivalent
+  // one, the registry is disabled, or the scheme can't be overridden. Never
+  // modifies the registry.
+  bool IsNoOpRegisterHandlerRequest(const ProtocolHandler& handler) const;
+
   // Called when a site tries to register as a protocol handler. If the request
   // can be handled silently by the registry - either to ignore the request
   // or to update an existing handler - the request will succeed. If this
   // function returns false the user needs to be prompted for confirmation.
+  // Requests made through navigator.registerProtocolHandler() without a user
+  // gesture must not update anything, so they are checked with
+  // IsNoOpRegisterHandlerRequest() alone.
   bool SilentlyHandleRegisterHandlerRequest(const ProtocolHandler& handler);
 
-  // Called when the user accepts the registration of a given protocol handler.
+  // Called when the user accepts the registration of a given protocol handler,
+  // which becomes the default one for its protocol.
+  // TODO(crbug.com/553146562): Revoke an earlier refusal here
+  // (RemoveIgnoredHandler()) once the registration succeeded, instead of
+  // leaving that to the content setting bubble; "Set as default" in
+  // chrome://settings/handlers reaches this too.
   void OnAcceptRegisterProtocolHandler(const ProtocolHandler& handler);
 
-  // Called when the user denies the registration of a given protocol handler.
+  // Registers the given protocol handler without making it the default: the
+  // user allowed it as an option to pick later in settings. Despite its name
+  // this is a grant, not a refusal; the refusal is
+  // OnIgnoreRegisterProtocolHandler().
+  // TODO(crbug.com/553146562): Rename it after what it does, e.g.
+  // OnAcceptRegisterProtocolHandlerAsCandidate(), and stop content shell from
+  // calling it for requests made without a user gesture, which nobody granted;
+  // those should be refused.
   void OnDenyRegisterProtocolHandler(const ProtocolHandler& handler);
 
-  // Called when the user indicates that they don't want to be asked about the
-  // given protocol handler again.
+  // Called when the user refuses the registration of a given protocol handler
+  // and doesn't want to be asked about it again. A registration the handler
+  // already had, e.g. from an earlier choice in the same bubble, is removed.
   void OnIgnoreRegisterProtocolHandler(const ProtocolHandler& handler);
 
-  // Removes all handlers that have the same origin and protocol as the given
-  // one and installs the given handler. Returns true if any protocol handlers
-  // were replaced.
+  // Removes all handlers that have the same origin, owner (the registering
+  // extension, or none for web handlers) and protocol as the given one, and
+  // that the user has confirmed, and installs the given handler, which must not
+  // be registered yet. Returns true if any protocol handlers were replaced.
   bool AttemptReplace(const ProtocolHandler& handler);
 
   // Returns a list of protocol handlers that can be replaced by the given
-  // handler.
+  // handler: the confirmed ones with the same origin, owner and protocol.
   ProtocolHandlerList GetReplacedHandlers(const ProtocolHandler& handler) const;
 
   // Clears the default for the provided protocol.

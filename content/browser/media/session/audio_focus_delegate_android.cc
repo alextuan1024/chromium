@@ -9,6 +9,7 @@
 #include "content/browser/media/session/media_session_impl.h"
 #include "media/base/media_switches.h"
 #include "services/media_session/public/mojom/audio_focus.mojom.h"
+#include "third_party/jni_zero/jni_zero.h"
 
 // Must come after all headers that specialize FromJniType() / ToJniType().
 #include "content/public/android/content_jni_headers/AudioFocusDelegate_jni.h"
@@ -35,7 +36,7 @@ void AudioFocusDelegateAndroid::Initialize() {
   JNIEnv* env = base::android::AttachCurrentThread();
   CHECK(env, base::NotFatalUntil::M160);
   j_media_session_delegate_.Reset(
-      Java_AudioFocusDelegate_create(env, reinterpret_cast<intptr_t>(this)));
+      Java_AudioFocusDelegate_create(env, jni_zero::MakeRaw(this)));
 }
 
 AudioFocusDelegate::AudioFocusResult
@@ -92,6 +93,7 @@ void AudioFocusDelegateAndroid::OnSuspend(JNIEnv*) {
   }
 
   media_session_->Suspend(MediaSession::SuspendType::kSystem);
+  suspended_for_focus_loss_ = media_session_->IsSuspended();
 }
 
 void AudioFocusDelegateAndroid::OnResume(JNIEnv*) {
@@ -99,7 +101,23 @@ void AudioFocusDelegateAndroid::OnResume(JNIEnv*) {
     return;
   }
 
+  // Only resume media that OnSuspend() paused for an audio focus loss.
+  if (!suspended_for_focus_loss_ &&
+      base::FeatureList::IsEnabled(
+          media::kFocusGainResumesOnlyFocusLossPauses)) {
+    return;
+  }
+
   media_session_->Resume(MediaSession::SuspendType::kSystem);
+}
+
+void AudioFocusDelegateAndroid::MediaSessionInfoChanged(
+    const media_session::mojom::MediaSessionInfoPtr&) {
+  // A focus loss pause is over once the session is no longer suspended,
+  // whether it was resumed or stopped.
+  if (!media_session_->IsSuspended()) {
+    suspended_for_focus_loss_ = false;
+  }
 }
 
 void AudioFocusDelegateAndroid::OnStartDucking(JNIEnv*) {

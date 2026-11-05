@@ -22,10 +22,12 @@
 #include "net/http/http_request_headers.h"
 #include "net/http/http_status_code.h"
 #include "net/traffic_annotation/network_traffic_annotation.h"
+#include "services/network/public/cpp/is_potentially_trustworthy.h"
 #include "services/network/public/cpp/resource_request.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "services/network/public/cpp/simple_url_loader.h"
 #include "services/network/public/mojom/client_security_state.mojom.h"
+#include "url/origin.h"
 
 namespace content::webid {
 
@@ -34,9 +36,23 @@ namespace {
 constexpr char kWellKnownPath[] = "/.well-known/email-verification";
 
 // Well-known file JSON keys
+constexpr char kIssuerKey[] = "issuer";
 constexpr char kIssuanceEndpointKey[] = "issuance_endpoint";
 constexpr char kJwksUriKey[] = "jwks_uri";
 constexpr char kSigningAlgValuesSupportedKey[] = "signing_alg_values_supported";
+// Optional issuer branding, in the same format as the FedCM config file's
+// `branding` dictionary.
+constexpr char kBrandingKey[] = "branding";
+constexpr char kBrandingIconsKey[] = "icons";
+
+// Size constraints, in pixels, for selecting the issuer logo from
+// `branding.icons`. The desktop permission popup renders the logo at 20x20
+// DIPs: prefer an icon that is crisp on 2x displays, but accept any icon that
+// covers at least 1x.
+// TODO(crbug.com/576739997): Let the embedder provide these sizes once the
+// Android bottom sheet (32dp) also shows the logo.
+constexpr int kBrandIconIdealSize = 40;
+constexpr int kBrandIconMinimumSize = 20;
 
 // Shared between the well-known files and config files
 constexpr char kIssuanceTokenKey[] = "issuance_token";
@@ -53,6 +69,22 @@ void OnWellKnownParsed(
     return;
   }
 
+  // The document must name the issuer it was fetched under, compared
+  // byte-for-byte, so that a document served at one identity cannot claim
+  // another.
+  //
+  // TODO(crbug.com/565774086): also reject a document that omits `issuer`.
+  // It is required, but Google's issuer does not publish it yet.
+  const base::Value* issuer = result->Find(kIssuerKey);
+  if (issuer && (!issuer->is_string() ||
+                 issuer->GetString() !=
+                     url::Origin::Create(well_known_url).Serialize())) {
+    std::move(callback).Run(
+        {ParseStatus::kInvalidResponseError, fetch_status.response_code},
+        std::move(well_known));
+    return;
+  }
+
   well_known.issuance_endpoint =
       ExtractEndpoint(well_known_url, *result, kIssuanceEndpointKey);
   well_known.jwks_uri = ExtractEndpoint(well_known_url, *result, kJwksUriKey);
@@ -65,6 +97,19 @@ void OnWellKnownParsed(
         well_known.signing_alg_values_supported.push_back(value.GetString());
       }
     }
+  }
+
+  // A missing or malformed `branding` is not an error.
+  if (const base::DictValue* branding = result->FindDict(kBrandingKey)) {
+    if (const base::ListValue* icons = branding->FindList(kBrandingIconsKey)) {
+      well_known.brand_icon_url = FindBestMatchingIconUrl(
+          icons, kBrandIconIdealSize, kBrandIconMinimumSize, well_known_url);
+    }
+  }
+  // The logo is shown in browser UI, so don't fetch it over an insecure
+  // connection.
+  if (!network::IsUrlPotentiallyTrustworthy(well_known.brand_icon_url)) {
+    well_known.brand_icon_url = GURL();
   }
 
   if (well_known.issuance_endpoint.is_empty()) {

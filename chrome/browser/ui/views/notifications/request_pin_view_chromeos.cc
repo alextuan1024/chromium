@@ -6,17 +6,15 @@
 
 #include <stddef.h>
 
-#include <utility>
-
 #include "base/functional/bind.h"
 #include "base/i18n/number_formatting.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
-#include "chrome/browser/notifications/passphrase_textfield.h"
 #include "chrome/browser/ui/views/chrome_layout_provider.h"
 #include "chrome/browser/ui/views/chrome_typography.h"
 #include "chrome/grit/generated_resources.h"
 #include "chromeos/components/security_token_pin/error_generator.h"
+#include "ui/base/ime/text_input_type.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/mojom/dialog_button.mojom.h"
@@ -38,14 +36,11 @@ constexpr int kDefaultTextWidthChars = 36;
 
 }  // namespace
 
-RequestPinView::RequestPinView(
-    const std::string& extension_name,
-    chromeos::security_token_pin::CodeType code_type,
-    int attempts_left,
-    const PinEnteredCallback& pin_entered_callback,
-    ViewDestructionCallback view_destruction_callback)
-    : pin_entered_callback_(pin_entered_callback),
-      view_destruction_callback_(std::move(view_destruction_callback)) {
+RequestPinView::RequestPinView(const std::string& extension_name,
+                               chromeos::security_token_pin::CodeType code_type,
+                               int attempts_left,
+                               const PinEnteredCallback& pin_entered_callback)
+    : pin_entered_callback_(pin_entered_callback) {
   Init();
   SetExtensionName(extension_name);
   const bool accept_input = (attempts_left != 0);
@@ -58,9 +53,7 @@ RequestPinView::RequestPinView(
       views::DISTANCE_MODAL_DIALOG_PREFERRED_WIDTH));
 }
 
-RequestPinView::~RequestPinView() {
-  std::move(view_destruction_callback_).Run();
-}
+RequestPinView::~RequestPinView() = default;
 
 void RequestPinView::ContentsChanged(views::Textfield* sender,
                                      const std::u16string& new_contents) {
@@ -71,8 +64,8 @@ bool RequestPinView::Accept() {
   if (!textfield_->GetEnabled()) {
     return true;
   }
-  DCHECK(!textfield_->GetText().empty());
-  DCHECK(!locked_);
+  CHECK(!textfield_->GetText().empty(), base::NotFatalUntil::M162);
+  CHECK(!locked_, base::NotFatalUntil::M162);
 
   error_label_->SetVisible(true);
   error_label_->SetText(
@@ -83,9 +76,9 @@ bool RequestPinView::Accept() {
   // The |textfield_| and OK button become disabled, but the user still can
   // close the dialog.
   SetAcceptInput(false);
-  pin_entered_callback_.Run(base::UTF16ToUTF8(textfield_->GetText()));
   locked_ = true;
   DialogModelChanged();
+  pin_entered_callback_.Run(base::UTF16ToUTF8(textfield_->GetText()));
 
   return false;
 }
@@ -181,7 +174,8 @@ void RequestPinView::Init() {
                              views::LayoutAlignment::kStart);
 
   // Textfield to enter the PIN/PUK.
-  textfield_ = AddChildView(std::make_unique<chromeos::PassphraseTextfield>());
+  textfield_ = AddChildView(std::make_unique<views::Textfield>());
+  textfield_->SetTextInputType(ui::TEXT_INPUT_TYPE_PASSWORD);
   textfield_->set_controller(this);
   textfield_->SetEnabled(true);
   textfield_->GetViewAccessibility().SetName(*header_label_);

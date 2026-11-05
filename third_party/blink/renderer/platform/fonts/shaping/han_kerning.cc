@@ -6,6 +6,7 @@
 
 #include <unicode/uchar.h>
 
+#include "base/no_destructor.h"
 #include "third_party/blink/renderer/platform/fonts/opentype/open_type_features.h"
 #include "third_party/blink/renderer/platform/fonts/shaping/font_features.h"
 #include "third_party/blink/renderer/platform/fonts/shaping/harfbuzz_shaper.h"
@@ -33,9 +34,8 @@ HashSet<uint32_t> ExclusiveFeatures() {
 }
 
 bool IsExclusiveFeature(uint32_t tag) {
-  DEFINE_THREAD_SAFE_STATIC_LOCAL(HashSet<uint32_t>, tags,
-                                  (ExclusiveFeatures()));
-  return tags.Contains(tag);
+  static base::NoDestructor<HashSet<uint32_t>> tags(ExclusiveFeatures());
+  return tags->Contains(tag);
 }
 
 inline float GetAdvance(const HarfBuzzShaper::GlyphData& glyph,
@@ -75,7 +75,7 @@ HanKerning::CharType CharTypeFromBounds(float half_em,
 HanKerning::CharType CharTypeFromBounds(
     base::span<HarfBuzzShaper::GlyphData> glyphs,
     base::span<SkRect> bounds,
-    unsigned index,
+    wtf_size_t index,
     bool is_horizontal) {
   const HarfBuzzShaper::GlyphData& glyph = glyphs[index];
   if (!glyph.glyph) [[unlikely]] {
@@ -95,7 +95,7 @@ HanKerning::CharType CharTypeFromBounds(
   float advance0;
   float half_advance0;
   HanKerning::CharType type0 = HanKerning::CharType::kOther;
-  unsigned i = 0;
+  wtf_size_t i = 0;
   for (;; ++i) {
     if (i >= glyphs.size()) [[unlikely]] {
       return HanKerning::CharType::kOther;
@@ -141,7 +141,7 @@ HanKerning::CharType CharTypeFromBounds(
 // https://drafts.csswg.org/css-text-4/#text-spacing-classes
 HanKerning::CharType HanKerning::GetCharType(UChar ch,
                                              const FontData& font_data) {
-  const CharType type = Character::GetHanKerningCharType(ch);
+  const CharType type = unicode::GetHanKerningCharType(ch);
   switch (type) {
     case CharType::kOther:
     case CharType::kOpen:
@@ -171,7 +171,6 @@ HanKerning::CharType HanKerning::GetCharTypeWithCache(const String& text,
                                                       wtf_size_t index,
                                                       const FontData& font_data,
                                                       Priority priority) {
-  DCHECK(RuntimeEnabledFeatures::TextSpacingTrimFallbackEnabled());
   DCHECK(!char_types_.empty());
   const CharType cached_type = char_types_[index];
   if (priority == Priority::kCache && cached_type != CharType::kInvalid) {
@@ -337,7 +336,6 @@ bool HanKerning::AppendFontFeatures(const String& text,
 }
 
 void HanKerning::PrepareFallback(const String& text) {
-  DCHECK(RuntimeEnabledFeatures::TextSpacingTrimFallbackEnabled());
   if (char_types_.empty()) {
     char_types_.Grow(text.length());
     char_types_.Fill(CharType::kInvalid);
@@ -443,10 +441,10 @@ HanKerning::FontData::FontData(const SimpleFontData& font,
       // in Japanese, but fullwidth in Chinese.
       uchar::kLeftDoubleQuotationMark, uchar::kLeftSingleQuotationMark,
       uchar::kRightDoubleQuotationMark, uchar::kRightSingleQuotationMark};
-  constexpr unsigned kDotSize = 4;
-  constexpr unsigned kColonIndex = 4;
-  constexpr unsigned kSemicolonIndex = 5;
-  constexpr unsigned kQuoteStartIndex = 6;
+  constexpr wtf_size_t kDotSize = 4;
+  constexpr wtf_size_t kColonIndex = 4;
+  constexpr wtf_size_t kSemicolonIndex = 5;
+  constexpr wtf_size_t kQuoteStartIndex = 6;
   static_assert(kDotSize <= std::size(kChars));
   static_assert(kColonIndex < std::size(kChars));
   static_assert(kSemicolonIndex < std::size(kChars));
@@ -470,7 +468,7 @@ HanKerning::FontData::FontData(const SimpleFontData& font,
   }
 
   Vector<Glyph, 256> glyphs;
-  unsigned cluster = 0;
+  wtf_size_t cluster = 0;
   for (const HarfBuzzShaper::GlyphData& glyph_data : glyph_data_list) {
     if (glyph_data.cluster != cluster) [[unlikely]] {
       has_alternate_spacing = false;

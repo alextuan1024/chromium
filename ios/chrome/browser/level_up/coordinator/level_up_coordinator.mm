@@ -4,22 +4,38 @@
 
 #import "ios/chrome/browser/level_up/coordinator/level_up_coordinator.h"
 
+#import <memory>
+#import <string>
+#import <utility>
+
+#import "base/metrics/histogram_functions.h"
+#import "components/feature_engagement/public/event_constants.h"
+#import "components/feature_engagement/public/feature_constants.h"
+#import "components/feature_engagement/public/tracker.h"
+#import "components/prefs/ios/pref_observer_bridge.h"
+#import "components/prefs/pref_change_registrar.h"
 #import "components/prefs/pref_service.h"
 #import "components/signin/public/base/signin_metrics.h"
 #import "components/strings/grit/components_strings.h"
+#import "ios/chrome/browser/authentication/ui_bundled/signin/signin_constants.h"
+#import "ios/chrome/browser/feature_engagement/model/tracker_factory.h"
 #import "ios/chrome/browser/level_up/coordinator/level_up_mediator.h"
+#import "ios/chrome/browser/level_up/model/level_up_metrics.h"
 #import "ios/chrome/browser/level_up/model/level_up_service.h"
 #import "ios/chrome/browser/level_up/model/level_up_service_factory.h"
 #import "ios/chrome/browser/level_up/model/task_info.h"
 #import "ios/chrome/browser/level_up/ui/level_up_all_tasks_view_controller.h"
 #import "ios/chrome/browser/level_up/ui/level_up_promo_view_controller.h"
 #import "ios/chrome/browser/level_up/ui/level_up_view_controller.h"
+#import "ios/chrome/browser/promos_manager/model/constants.h"
+#import "ios/chrome/browser/promos_manager/model/promos_manager.h"
+#import "ios/chrome/browser/promos_manager/model/promos_manager_factory.h"
 #import "ios/chrome/browser/shared/model/browser/browser.h"
 #import "ios/chrome/browser/shared/model/prefs/pref_names.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
 #import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
 #import "ios/chrome/browser/shared/public/commands/level_up_commands.h"
-#import "ios/chrome/browser/shared/public/commands/scene_commands.h"
+#import "ios/chrome/browser/shared/public/commands/scene_sign_in_commands.h"
 #import "ios/chrome/browser/shared/public/commands/show_signin_command.h"
 #import "ios/chrome/browser/shared/public/commands/snackbar_commands.h"
 #import "ios/chrome/browser/shared/public/snackbar/snackbar_message.h"
@@ -32,6 +48,7 @@
 #import "ios/chrome/common/ui/colors/semantic_color_names.h"
 #import "ios/chrome/common/ui/confirmation_alert/confirmation_alert_action_handler.h"
 #import "ios/chrome/common/ui/confirmation_alert/confirmation_alert_view_controller.h"
+#import "ios/chrome/common/ui/promo_style/constants.h"
 #import "ios/chrome/common/ui/promo_style/promo_style_view_controller_delegate.h"
 #import "ios/chrome/common/ui/util/chrome_button.h"
 #import "ios/chrome/grit/ios_strings.h"
@@ -71,6 +88,7 @@ void RunPendingAction(TaskInfo::NavigationAction pending_action,
                                   LevelUpAllTasksViewControllerDelegate,
                                   LevelUpMediatorDelegate,
                                   LevelUpViewControllerDelegate,
+                                  PrefObserverDelegate,
                                   PromoStyleViewControllerDelegate,
                                   UIAdaptivePresentationControllerDelegate>
 
@@ -85,27 +103,40 @@ void RunPendingAction(TaskInfo::NavigationAction pending_action,
   ConfirmationAlertViewController* _optOutConfirmationViewController;
   raw_ptr<PrefService> _prefService;
   raw_ptr<AuthenticationService> _authService;
+  // Registrar for Pref changes notifications from any window or device.
+  PrefChangeRegistrar _prefChangeRegistrar;
+  // Bridge to listen to PrefService changes.
+  std::unique_ptr<PrefObserverBridge> _prefObserverBridge;
 }
 
 - (void)start {
   [super start];
-  _authService =
-      AuthenticationServiceFactory::GetForProfile(self.browser->GetProfile());
-  if (!_authService->HasPrimaryIdentity()) {
-    [self showSignedOutSnackbarAndDismiss];
-    return;
-  }
-  _prefService = self.browser->GetProfile()->GetPrefs();
-  // Display level up promo if user has not opted in.
+  ProfileIOS* profile = self.browser->GetProfile()->GetOriginalProfile();
+  // Updates the kIOSLevelUpPromoUsed event to prevent PromosManager
+  // from triggering Level Up promo before it is deregistered.
+  feature_engagement::Tracker* tracker =
+      feature_engagement::TrackerFactory::GetForProfile(profile);
+  CHECK(tracker);
+  tracker->NotifyEvent(feature_engagement::events::kIOSLevelUpPromoUsed);
+  PromosManagerFactory::GetForProfile(profile)->DeregisterPromo(
+      promos_manager::Promo::LevelUp);
+  _authService = AuthenticationServiceFactory::GetForProfile(profile);
+  _prefService = profile->GetPrefs();
+  _prefChangeRegistrar.Init(_prefService);
+  _prefObserverBridge = std::make_unique<PrefObserverBridge>(self);
+  _prefObserverBridge->ObserveChangesForPreference(prefs::kLevelUpOptIn,
+                                                   &_prefChangeRegistrar);
+
   if (!_prefService->GetBoolean(prefs::kLevelUpOptIn)) {
     [self showLevelUpPromo];
     return;
   }
-
   [self showLevelUp];
 }
 
 - (void)stop {
+  _prefObserverBridge.reset();
+  _prefChangeRegistrar.Reset();
   if (_optOutConfirmationViewController) {
     [_optOutConfirmationViewController dismissViewControllerAnimated:NO
                                                           completion:nil];
@@ -272,6 +303,11 @@ void RunPendingAction(TaskInfo::NavigationAction pending_action,
 
 - (void)presentationControllerDidDismiss:
     (UIPresentationController*)presentationController {
+  // Logs the dismiss the promo sheet via swipe down.
+  if ([self.viewController isKindOfClass:[LevelUpPromoViewController class]]) {
+    base::UmaHistogramEnumeration("IOS.LevelUpPromo.Action",
+                                  PromoStyleSheetAction::kDismissViaSwipe);
+  }
   [HandlerForProtocol(self.browser->GetCommandDispatcher(), LevelUpCommands)
       dismissLevelUp];
 }
@@ -279,11 +315,17 @@ void RunPendingAction(TaskInfo::NavigationAction pending_action,
 #pragma mark - PromoStyleViewControllerDelegate
 
 - (void)didTapPrimaryActionButton {
-  _prefService->SetBoolean(prefs::kLevelUpOptIn, true);
-  __weak __typeof(self) weakSelf = self;
-  [self stopLevelUpNavigationController:^{
-    [weakSelf showLevelUp];
-  }];
+  base::UmaHistogramEnumeration("IOS.LevelUpPromo.Action",
+                                PromoStyleSheetAction::kPrimaryButtonTapped);
+
+  // `kLevelUpOptIn` is account-scoped pref; signed-out users opt in via
+  // `handleSignInResult:` instead.
+  if (_authService->HasPrimaryIdentity()) {
+    _prefService->SetBoolean(prefs::kLevelUpOptIn, true);
+    RecordLevelUpOptInStateChanged(true);
+  } else {
+    [self transitionFromPromoToLevelUp];
+  }
 }
 
 - (void)didTapSecondaryActionButton {
@@ -291,16 +333,38 @@ void RunPendingAction(TaskInfo::NavigationAction pending_action,
 }
 
 - (void)didTapDismissButton {
+  base::UmaHistogramEnumeration("IOS.LevelUpPromo.Action",
+                                PromoStyleSheetAction::kDismissButtonTapped);
   id<LevelUpCommands> handler =
       HandlerForProtocol(self.browser->GetCommandDispatcher(), LevelUpCommands);
   [handler dismissLevelUp];
 }
 
+#pragma mark - PrefObserverDelegate
+
+- (void)onPreferenceChanged:(const std::string&)preferenceName {
+  if (preferenceName != prefs::kLevelUpOptIn ||
+      !_prefService->GetBoolean(prefs::kLevelUpOptIn)) {
+    return;
+  }
+  [self transitionFromPromoToLevelUp];
+}
+
 #pragma mark - Private
+
+// Dismisses the promo and displays the main Level Up screen.
+- (void)transitionFromPromoToLevelUp {
+  __weak __typeof(self) weakSelf = self;
+  [self stopLevelUpNavigationController:^{
+    [weakSelf showLevelUp];
+  }];
+}
 
 // Handles a task tap by closing the level up screen and preparing to navigate
 // to the beginning of the tapped task.
 - (void)didTapTask:(LevelUpTask*)task {
+  RecordLevelUpTaskStarted(task.taskInfo->GetTaskType());
+
   // Save the task so it can be executed once the level up view is closed.
   _pendingNavigationAction = task.taskInfo->GetNavigationAction();
 
@@ -308,41 +372,6 @@ void RunPendingAction(TaskInfo::NavigationAction pending_action,
   id<LevelUpCommands> levelUpHandler =
       HandlerForProtocol(dispatcher, LevelUpCommands);
   [levelUpHandler dismissLevelUp];
-}
-
-// Shows a snackbar prompting the user to sign in and dismisses the Level Up
-// view.
-- (void)showSignedOutSnackbarAndDismiss {
-  id<SnackbarCommands> snackbarHandler = HandlerForProtocol(
-      self.browser->GetCommandDispatcher(), SnackbarCommands);
-  NSString* messageText =
-      l10n_util::GetNSString(IDS_IOS_LEVEL_UP_SIGNED_OUT_SNACKBAR);
-  NSString* buttonText =
-      l10n_util::GetNSString(IDS_IOS_LEVEL_UP_SIGNED_OUT_SNACKBAR_ACTION);
-  SnackbarMessage* message =
-      [[SnackbarMessage alloc] initWithTitle:messageText];
-  SnackbarMessageAction* action = [[SnackbarMessageAction alloc] init];
-  action.title = buttonText;
-  __weak id<SceneCommands> weakSceneHandler =
-      HandlerForProtocol(self.browser->GetCommandDispatcher(), SceneCommands);
-  __weak UIViewController* weakBaseViewController = self.baseViewController;
-  action.handler = ^{
-    ShowSigninCommand* command = [[ShowSigninCommand alloc]
-        initWithOperation:AuthenticationOperation::kSigninOnly
-                 identity:nil
-              accessPoint:signin_metrics::AccessPoint::kLevelUp
-              promoAction:signin_metrics::PromoAction::
-                              PROMO_ACTION_NO_SIGNIN_PROMO
-               completion:nil];
-    [weakSceneHandler showSignin:command
-              baseViewController:weakBaseViewController];
-  };
-  message.action = action;
-  [snackbarHandler showSnackbarMessage:message];
-
-  id<LevelUpCommands> handler =
-      HandlerForProtocol(self.browser->GetCommandDispatcher(), LevelUpCommands);
-  [handler dismissLevelUp];
 }
 
 // Displays the viewController in the navigationController.
@@ -361,15 +390,20 @@ void RunPendingAction(TaskInfo::NavigationAction pending_action,
 
 // Displays the Level Up main UIpage.
 - (void)showLevelUp {
+  if (!_authService->HasPrimaryIdentity()) {
+    [self showSignInSheet];
+    return;
+  }
   LevelUpViewController* viewController = [[LevelUpViewController alloc] init];
   viewController.handler =
       HandlerForProtocol(self.browser->GetCommandDispatcher(), LevelUpCommands);
   viewController.delegate = self;
 
+  ProfileIOS* profile = self.browser->GetProfile()->GetOriginalProfile();
   signin::IdentityManager* identityManager =
-      IdentityManagerFactory::GetForProfile(self.browser->GetProfile());
+      IdentityManagerFactory::GetForProfile(profile);
   LevelUpService* levelUpService =
-      LevelUpServiceFactory::GetForProfile(self.browser->GetProfile());
+      LevelUpServiceFactory::GetForProfile(profile);
 
   self.mediator =
       [[LevelUpMediator alloc] initWithAuthenticationService:_authService
@@ -403,6 +437,36 @@ void RunPendingAction(TaskInfo::NavigationAction pending_action,
                          completion:completion];
   self.navigationController = nil;
   self.viewController = nil;
+}
+
+// Presents the sign-in bottom sheet and signs user in.
+- (void)showSignInSheet {
+  __weak __typeof(self) weakSelf = self;
+  ShowSigninCommand* command = [[ShowSigninCommand alloc]
+      initWithOperation:AuthenticationOperation::kSigninOnly
+               identity:nil
+            accessPoint:signin_metrics::AccessPoint::kLevelUp
+            promoAction:signin_metrics::PromoAction::
+                            PROMO_ACTION_NO_SIGNIN_PROMO
+             completion:^(SigninCoordinator* coordinator,
+                          SigninCoordinatorResultOrIdentity result) {
+               [weakSelf handleSignInResult:std::move(result)];
+             }];
+  id<SceneSignInCommands> sceneSignInHandler = HandlerForProtocol(
+      self.browser->GetCommandDispatcher(), SceneSignInCommands);
+  [sceneSignInHandler showSignin:command
+              baseViewController:self.baseViewController];
+}
+
+// Handles completed sign in request after non-signed in user accepts Level Up.
+- (void)handleSignInResult:(SigninCoordinatorResultOrIdentity)result {
+  if (result.has_value()) {
+    _prefService->SetBoolean(prefs::kLevelUpOptIn, true);
+    RecordLevelUpOptInStateChanged(true);
+    [self showLevelUp];
+  } else {
+    [self didTapDismissButton];
+  }
 }
 
 @end

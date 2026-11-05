@@ -6,6 +6,7 @@
 
 #import <WebKit/WebKit.h>
 
+#import <optional>
 #import <string_view>
 
 #import "base/apple/foundation_util.h"
@@ -24,6 +25,7 @@
 #import "base/trace_event/trace_event.h"
 #import "build/branding_buildflags.h"
 #import "build/config/ios/buildflags.h"
+#import "ios/public/provider/web/zoom_api.h"
 #import "ios/web/common/annotations_utils.h"
 #import "ios/web/common/crw_edit_menu_builder.h"
 #import "ios/web/common/crw_input_view_provider.h"
@@ -52,9 +54,11 @@
 #import "ios/web/public/content_type_util.h"
 #import "ios/web/public/find_in_page/crw_find_interaction.h"
 #import "ios/web/public/js_messaging/web_frames_manager.h"
+#import "ios/web/public/navigation/referrer.h"
 #import "ios/web/public/permissions/permissions.h"
 #import "ios/web/public/ui/crw_web_view_scroll_view_proxy.h"
 #import "ios/web/public/web_client.h"
+#import "ios/web/public/web_state.h"
 #import "ios/web/security/crw_cert_verification_controller.h"
 #import "ios/web/security/crw_ssl_status_updater.h"
 #import "ios/web/util/wk_web_view_util.h"
@@ -74,6 +78,7 @@
 #import "ios/web/web_state/web_view_pass_key.h"
 #import "net/base/apple/url_conversions.h"
 #import "services/metrics/public/cpp/ukm_builders.h"
+#import "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #import "url/gurl.h"
 #import "url/origin.h"
 
@@ -216,6 +221,9 @@ JavaScriptCompletionBlock WrapCompletionBlock(
   BOOL _webUsageEnabled;
   // Default URL (about:blank).
   GURL _defaultURL;
+
+  // Obscured content insets set by caller.
+  std::optional<UIEdgeInsets> _obscuredContentInsets;
 
   // Updates SSLStatus for current navigation item.
   CRWSSLStatusUpdater* _SSLStatusUpdater;
@@ -436,6 +444,39 @@ JavaScriptCompletionBlock WrapCompletionBlock(
   self.webView.allowsLinkPreview = allowsLinkPreview;
 }
 
+- (UIEdgeInsets)obscuredContentInsets {
+  if (@available(iOS 26.0, *)) {
+    if (self.webView) {
+      return self.webView.obscuredContentInsets;
+    }
+    if (_obscuredContentInsets.has_value()) {
+      return *_obscuredContentInsets;
+    }
+  }
+  return UIEdgeInsetsZero;
+}
+
+- (void)setObscuredContentInsets:(UIEdgeInsets)obscuredContentInsets {
+  if (@available(iOS 26.0, *)) {
+    // Store it to an optional instance variable as well as
+    // self.webView.obscuredContentInsets because self.webView may be nil. When
+    // self.webView is nil, it will be set later in -setWebView:. Storing as
+    // std::optional ensures -setWebView: never overwrites
+    // _webView.obscuredContentInsets if this setter is never called.
+    _obscuredContentInsets = obscuredContentInsets;
+    self.webView.obscuredContentInsets = obscuredContentInsets;
+  }
+}
+
+- (void)setShouldSuppressInputViews:(BOOL)shouldSuppressInputViews {
+  // Store it to an instance variable as well as
+  // `self.webView.shouldSuppressInputViews` because `self.webView` may be
+  // `nil`. When `self.webView` is `nil`, it will be set later in
+  // `-setWebView:`.
+  _shouldSuppressInputViews = shouldSuppressInputViews;
+  self.webView.shouldSuppressInputViews = shouldSuppressInputViews;
+}
+
 #pragma mark - Private properties accessors
 
 - (void)setWebView:(CRWWebView*)webView {
@@ -486,6 +527,12 @@ JavaScriptCompletionBlock WrapCompletionBlock(
     _webView.allowsBackForwardNavigationGestures =
         _allowsBackForwardNavigationGestures;
     _webView.allowsLinkPreview = _allowsLinkPreview;
+    if (@available(iOS 26.0, *)) {
+      if (_obscuredContentInsets.has_value()) {
+        _webView.obscuredContentInsets = *_obscuredContentInsets;
+      }
+    }
+    _webView.shouldSuppressInputViews = _shouldSuppressInputViews;
   }
   self.webViewNavigationObserver.webView = _webView;
 
@@ -883,9 +930,12 @@ JavaScriptCompletionBlock WrapCompletionBlock(
                   }];
 }
 
-- (void)createFullPagePDFWithCompletion:(void (^)(NSData*))completionBlock {
-  // Invoke the `completionBlock` with nil rather than a blank PDF for certain
-  // URLs or if there is a javascript dialog running.
+- (void)createPDFWithDocumentRect:(std::optional<CGRect>)documentRect
+                       completion:
+                           (void (^)(NSData* PDFDocumentData))completion {
+  CHECK(completion, base::NotFatalUntil::M160);
+  // Invoke `completion` with nil rather than a blank PDF for certain URLs or if
+  // there is a JavaScript dialog running.
   const std::string& mimeType = self.webState->GetContentsMimeType();
   const bool contentSupported =
       web::IsContentTypeHtml(mimeType) || web::IsContentTypePdf(mimeType);
@@ -894,11 +944,12 @@ JavaScriptCompletionBlock WrapCompletionBlock(
       web::GetWebClient()->IsAppSpecificURL(URL) ||
       self.webStateImpl->IsJavaScriptDialogRunning()) {
     dispatch_async(dispatch_get_main_queue(), ^{
-      completionBlock(nil);
+      completion(nil);
     });
     return;
   }
-  web::CreateFullPagePdf(self.webView, base::BindOnce(completionBlock));
+
+  web::CreatePdf(self.webView, documentRect, base::BindOnce(completion));
 }
 
 - (void)closeMediaPresentations {
@@ -1039,6 +1090,26 @@ JavaScriptCompletionBlock WrapCompletionBlock(
                                   currentURL:self.currentURL];
 }
 
+// Starts downloading `url` to `destination` using `source` to track the
+// extraction mechanism in metrics.
+- (void)startDownloadUsingURL:(const GURL&)url
+            toDestinationPath:(NSString*)destination
+             extractionSource:(web::IOSDownloadWebViewExtractionSource)source
+                     delegate:(id<CRWWebViewDownloadDelegate>)delegate
+                      handler:(void (^)(id<CRWWebViewDownload>))handler {
+  NSURLRequest* request = [NSURLRequest requestWithURL:net::NSURLWithGURL(url)];
+  CRWWebViewDownload* download =
+      [[CRWWebViewDownload alloc] initWithPath:destination
+                                       request:request
+                                       webview:self.webView
+                                      delegate:delegate
+                                        source:source];
+  [download startDownload];
+  if (handler) {
+    handler(download);
+  }
+}
+
 - (void)downloadCurrentPageToDestinationPath:(NSString*)destination
                                     delegate:
                                         (id<CRWWebViewDownloadDelegate>)delegate
@@ -1049,17 +1120,15 @@ JavaScriptCompletionBlock WrapCompletionBlock(
                  ? navigationManager->GetLastCommittedItem()->GetURL()
                  : [self currentURL];
 
-  NSURLRequest* request = [NSURLRequest requestWithURL:net::NSURLWithGURL(url)];
-
-  CRWWebViewDownload* download =
-      [[CRWWebViewDownload alloc] initWithPath:destination
-                                       request:request
-                                       webview:self.webView
-                                      delegate:delegate];
-  [download startDownload];
-  if (handler) {
-    handler(download);
-  }
+  // TODO(crbug.com/578364927): Fetch current document content using a blob URL
+  // to avoid secondary network requests, and fall back to WKDownload if
+  // extraction fails.
+  [self
+      startDownloadUsingURL:url
+          toDestinationPath:destination
+           extractionSource:web::IOSDownloadWebViewExtractionSource::kWKDownload
+                   delegate:delegate
+                    handler:handler];
 }
 
 - (BOOL)findInteractionSupported {
@@ -1108,6 +1177,10 @@ JavaScriptCompletionBlock WrapCompletionBlock(
 
 - (UIColor*)underPageBackgroundColor {
   return self.webView.underPageBackgroundColor;
+}
+
+- (BOOL)setZoomSize:(int)size {
+  return web::provider::SetZoomForWebView(self.webView, size);
 }
 
 #pragma mark - JavaScript
@@ -2028,12 +2101,17 @@ CrFullscreenState CrFullscreenStateFromWKFullscreenState(
 }
 
 - (void)loadUrlObjectsCompletion:(NSArray<NSURL*>*)objects {
-  GURL URL = net::GURLWithNSURL([objects firstObject]);
-  if (!_isBeingDestroyed && URL.is_valid() && URL.SchemeIsHTTPOrHTTPS()) {
-    web::NavigationManager::WebLoadParams params(URL);
-    params.transition_type = ui::PAGE_TRANSITION_TYPED;
-    self.webStateImpl->GetNavigationManager()->LoadURLWithParams(params);
+  if (_isBeingDestroyed || !self.webStateImpl) {
+    return;
   }
+  GURL URL = net::GURLWithNSURL([objects firstObject]);
+  if (!URL.is_valid() || !URL.SchemeIsHTTPOrHTTPS()) {
+    return;
+  }
+  web::WebState::OpenURLParams params(
+      URL, web::Referrer(), ui::mojom::WindowOpenDisposition::kNewForegroundTab,
+      ui::PAGE_TRANSITION_LINK, /*is_renderer_initiated=*/false);
+  self.webStateImpl->OpenURL(params);
 }
 
 #pragma mark - Testing-Only Methods

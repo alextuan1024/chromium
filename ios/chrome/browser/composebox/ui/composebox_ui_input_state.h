@@ -11,9 +11,9 @@
 
 #import "ios/chrome/browser/composebox/coordinator/composebox_constants.h"
 #import "ios/chrome/browser/composebox/public/composebox_attachment_option.h"
-#import "ios/chrome/browser/composebox/public/composebox_model_option.h"
 
 @class ComposeboxMenuSharedTab;
+@class ComposeboxModelItem;
 @class ComposeboxUIConfig;
 
 // State object containing all UI input state for the composebox.
@@ -39,13 +39,9 @@
 /// The set of tools that should be disabled.
 @property(nonatomic, assign) std::unordered_set<ComposeboxMode> disabledTools;
 
-/// The set of models that are allowed to be shown in the picker.
-@property(nonatomic, assign) std::unordered_set<ComposeboxModelOption>
-    allowedModels;
-
-/// The set of models that should be disabled in the picker.
-@property(nonatomic, assign) std::unordered_set<ComposeboxModelOption>
-    disabledModels;
+/// The model items to display in the picker, in server order. Models without a
+/// label are excluded.
+@property(nonatomic, copy) NSArray<ComposeboxModelItem*>* modelItems;
 
 /// The composebox UI config (strings, headers, and icons).
 @property(nonatomic, strong) ComposeboxUIConfig* uiConfig;
@@ -59,14 +55,8 @@
 /// The absolute maximum number of tabs allowed to be attached.
 @property(nonatomic, assign) NSUInteger maxTabAttachmentCount;
 
-/// Whether the model picker is allowed to be shown.
-@property(nonatomic, assign) BOOL allowModelPicker;
-
 /// The currently active tool.
 @property(nonatomic, assign) ComposeboxMode activeTool;
-
-/// The currently active model.
-@property(nonatomic, assign) ComposeboxModelOption activeModel;
 
 /// Whether the given attachment option should be hidden.
 - (BOOL)isAttachmentHidden:(ComposeboxAttachmentOption)option;
@@ -86,22 +76,6 @@
 
 /// Whether the given tool is available (allowed and not disabled).
 - (BOOL)isToolAvailable:(ComposeboxMode)option;
-
-/// Whether the given model should be hidden.
-- (BOOL)isModelHidden:(ComposeboxModelOption)option;
-
-/// Whether the given model should be disabled.
-- (BOOL)isModelDisabled:(ComposeboxModelOption)option;
-
-/// Whether the given model is available (allowed and not disabled).
-- (BOOL)isModelAvailable:(ComposeboxModelOption)option;
-
-/// Returns whether global testing mode for making all tools accessible is
-/// active.
-+ (BOOL)allToolsEnabled;
-
-/// Switches the global accessibility override status.
-+ (void)setAllToolsEnabled:(BOOL)enabled;
 
 @end
 

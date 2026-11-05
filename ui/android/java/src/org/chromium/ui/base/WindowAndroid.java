@@ -28,6 +28,7 @@ import android.os.SystemClock;
 import android.util.ArraySet;
 import android.util.TypedValue;
 import android.view.Display;
+import android.view.FrameRateVelocityPoint;
 import android.view.KeyEvent;
 import android.view.Surface;
 import android.view.View;
@@ -42,6 +43,7 @@ import androidx.annotation.VisibleForTesting;
 import org.jni_zero.CalledByNative;
 import org.jni_zero.CalledByNativeForTesting;
 import org.jni_zero.JNINamespace;
+import org.jni_zero.JniPtr;
 import org.jni_zero.JniType;
 import org.jni_zero.NativeMethods;
 
@@ -75,6 +77,7 @@ import org.chromium.ui.gfx.OverlayTransform;
 import org.chromium.ui.insets.InsetObserver;
 import org.chromium.ui.insets.InsetObserver.WindowInsetObserver;
 import org.chromium.ui.modaldialog.ModalDialogManager;
+import org.chromium.ui.modaldialog.ModalDialogManagerBridge.NativeModalDialogManagerBridge;
 import org.chromium.ui.permissions.AndroidPermissionDelegate;
 import org.chromium.ui.permissions.PermissionCallback;
 import org.chromium.ui.widget.Toast;
@@ -276,9 +279,11 @@ public class WindowAndroid
          * Called before a keyboard event is dispatched to the page.
          *
          * @param event The KeyEvent to handle.
-         * @return true if the event was handled and should be consumed.
+         * @return The {@link KeyEventPreHandleResult} indicating whether the event was handled, not
+         *     handled, or is a non-reserved shortcut.
          */
-        boolean preHandleKeyboardEvent(KeyEvent event);
+        @KeyEventPreHandleResult
+        int preHandleKeyboardEvent(KeyEvent event);
 
         /**
          * Called to handle a keyboard event if it wasn't handled by the page.
@@ -449,12 +454,12 @@ public class WindowAndroid
 
     private boolean shouldTrackOcclusionWithTrustedPresentationApi() {
         AconfigFlaggedApiDelegate delegate = AconfigFlaggedApiDelegate.getInstance();
+        String mode = UiAndroidFeatureList.sAndroidWindowOcclusionTrackingMode.getValue();
         return mOcclusionTrackingAllowed
-                && UiAndroidFeatureList.sAndroidWindowOcclusion.isEnabled()
-                && "trusted_presentation_strict_mode"
-                        .equals(UiAndroidFeatureList.sAndroidWindowOcclusionTrackingMode.getValue())
                 && delegate != null
-                && delegate.isStrictOcclusionAvailable();
+                && delegate.isStrictOcclusionAvailable()
+                && UiAndroidFeatureList.sAndroidWindowOcclusion.isEnabled()
+                && ("trusted_presentation_strict_mode".equals(mode) || "auto".equals(mode));
     }
 
     private void maybeTrackOcclusionWithTrustedPresentationApi() {
@@ -491,6 +496,7 @@ public class WindowAndroid
                 new Consumer<>() {
                     @Override
                     public void accept(Boolean visible) {
+                        if (mTrustedPresentationOcclusionObserver != this) return;
                         updateOcclusionState(!visible, null);
                     }
                 };
@@ -516,11 +522,19 @@ public class WindowAndroid
         wm.unregisterTrustedPresentationListener(mTrustedPresentationOcclusionObserver);
 
         mTrustedPresentationOcclusionObserver = null;
+        updateOcclusionState(false, null);
     }
 
     /** A supplier that returns whether the window is occluded or not. */
     public NonNullObservableSupplier<Boolean> getOcclusionSupplier() {
         return mOcclusionSupplier;
+    }
+
+    @CalledByNative
+    /* package */ boolean isOccluded() {
+        return mIsOcclusionTracked
+                && mIsOccluded
+                && UiAndroidFeatureList.sAndroidWindowOcclusionOptimizations.getValue();
     }
 
     /** Returns whether occlusion tracking is allowed for this window. */
@@ -536,6 +550,9 @@ public class WindowAndroid
     public void setIsOcclusionTracked(boolean isOcclusionTracked) {
         ThreadUtils.assertOnUiThread();
         assert !shouldTrackOcclusionWithTrustedPresentationApi();
+        if (!isOcclusionTracked && mIsOccluded) {
+            setOccluded(false, null, null);
+        }
         mIsOcclusionTracked = isOcclusionTracked;
     }
 
@@ -555,7 +572,9 @@ public class WindowAndroid
             boolean isOccluded, @Nullable Rect windowBounds, @Nullable Region visibleRegion) {
         ThreadUtils.assertOnUiThread();
         // If the Trusted Presentation API is already tracking occlusion, it takes precedence.
-        if (!mOcclusionTrackingAllowed || shouldTrackOcclusionWithTrustedPresentationApi()) {
+        if (!mOcclusionTrackingAllowed
+                || !mIsOcclusionTracked
+                || shouldTrackOcclusionWithTrustedPresentationApi()) {
             return;
         }
 
@@ -567,7 +586,7 @@ public class WindowAndroid
         updateOcclusionState(isOccluded, windowBounds);
     }
 
-    private void onOccluded(@Nullable Rect windowBounds) {
+    private void updateMetricsOnOccluded(@Nullable Rect windowBounds) {
         updateAccumulatedPixelMilliseconds();
 
         mOccludedPixels =
@@ -577,7 +596,7 @@ public class WindowAndroid
         sOccludedCount++;
     }
 
-    private void onUnoccluded() {
+    private void updateMetricsOnUnoccluded() {
         // The window wasn't occluded to begin with. Nothing to do.
         if (mOcclusionStartTimeMs == 0) return;
 
@@ -604,12 +623,15 @@ public class WindowAndroid
         // optimizations to the window. Only set the supplier if the optimizations are enabled.
         if (UiAndroidFeatureList.sAndroidWindowOcclusionOptimizations.getValue()) {
             mOcclusionSupplier.set(isOccluded);
+            if (mNativeWindowAndroid != 0) {
+                WindowAndroidJni.get().onOcclusionChanged(mNativeWindowAndroid, isOccluded);
+            }
         }
 
         if (isOccluded) {
-            onOccluded(windowBounds);
+            updateMetricsOnOccluded(windowBounds);
         } else {
-            onUnoccluded();
+            updateMetricsOnUnoccluded();
         }
     }
 
@@ -1148,10 +1170,10 @@ public class WindowAndroid
     }
 
     @CalledByNative
-    private long getNativeModalDialogManagerBridge() {
+    private @Nullable JniPtr<NativeModalDialogManagerBridge> getNativeModalDialogManagerBridge() {
         ModalDialogManager manager = getModalDialogManager();
         if (manager == null) {
-            return 0;
+            return null;
         }
         return manager.getOrCreateNativeBridge();
     }
@@ -1183,7 +1205,7 @@ public class WindowAndroid
     public void destroy() {
         long now = SystemClock.uptimeMillis();
         // This is safe to call even if the window was not occluded before destruction.
-        onUnoccluded();
+        updateMetricsOnUnoccluded();
         if (mWindowAndroidOcclusionMetrics != null) {
             mWindowAndroidOcclusionMetrics.onDestroy();
         }
@@ -1521,16 +1543,17 @@ public class WindowAndroid
     @Override
     public void onAdaptiveRefreshRateInfoChanged(DisplayAndroid.AdaptiveRefreshRateInfo arrInfo) {
         if (mNativeWindowAndroid == 0) return;
-        int velocityArraySize =
-                arrInfo.velocityMapping == null ? 0 : arrInfo.velocityMapping.size();
+        List<FrameRateVelocityPoint> velocityMapping = arrInfo.velocityMapping;
+        int velocityArraySize = velocityMapping == null ? 0 : velocityMapping.size();
         float[] framePerSecondArray = new float[velocityArraySize];
         float[] dpPerSecondArray = new float[velocityArraySize];
-        if (arrInfo.velocityMapping != null) {
-            int index = 0;
-            for (AconfigFlaggedApiDelegate.FrameRateVelocityPoint point : arrInfo.velocityMapping) {
-                framePerSecondArray[index] = point.getFramePerSecond();
-                dpPerSecondArray[index] = point.getDpPerSecond();
-                ++index;
+
+        // getFramePerSecond() added in CINNAMON_BUN. Check needed for Android Lint.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.CINNAMON_BUN && velocityMapping != null) {
+            for (int i = 0; i < velocityArraySize; ++i) {
+                FrameRateVelocityPoint point = velocityMapping.get(i);
+                framePerSecondArray[i] = point.getFramePerSecond();
+                dpPerSecondArray[i] = point.getDpPerSecond();
             }
         }
         WindowAndroidJni.get()
@@ -1779,9 +1802,13 @@ public class WindowAndroid
     }
 
     private void removePointerLockViews() {
-        var decorView = getDecorView();
-        if (mPointerLockChangeView != null && decorView instanceof ViewGroup decorViewGroup) {
-            decorViewGroup.removeView(mPointerLockChangeView);
+        // Remove the view from its actual parent rather than from getDecorView(), which returns
+        // null once the activity is finishing. The window can still receive pointer capture
+        // changes at that point, which would be delivered to a leaked view after the lock state
+        // below has been cleared.
+        if (mPointerLockChangeView != null
+                && mPointerLockChangeView.getParent() instanceof ViewGroup parent) {
+            parent.removeView(mPointerLockChangeView);
         }
         if (mPointerLockingView != null) {
             assert mPointerLockingViewFocusChangeListener != null;
@@ -1885,6 +1912,8 @@ public class WindowAndroid
                 boolean windowIsWideColorGamut);
 
         void onVisibilityChanged(long nativeWindowAndroid, boolean visible);
+
+        void onOcclusionChanged(long nativeWindowAndroid, boolean occluded);
 
         void onActivityStopped(long nativeWindowAndroid);
 

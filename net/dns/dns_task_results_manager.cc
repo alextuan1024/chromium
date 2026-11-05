@@ -5,13 +5,17 @@
 #include "net/dns/dns_task_results_manager.h"
 
 #include <algorithm>
+#include <iterator>
 #include <map>
 #include <memory>
-#include <set>
 #include <string>
+#include <string_view>
+#include <utility>
 #include <variant>
 #include <vector>
 
+#include "base/containers/flat_set.h"
+#include "base/containers/map_util.h"
 #include "base/memory/raw_ptr.h"
 #include "base/metrics/field_trial_params.h"
 #include "base/metrics/histogram_functions.h"
@@ -168,13 +172,12 @@ void DnsTaskResultsManager::ProcessDnsTransactionResults(
     }
   }
 
-  // Track whether new aliases are added.
-  bool aliases_updated = false;
+  std::vector<std::string_view> new_aliases;
 
   for (const auto& result : results) {
-    const bool updated_domain_name =
-        aliases_.insert(result->domain_name()).second;
-    aliases_updated |= updated_domain_name;
+    if (!aliases_.contains(result->domain_name())) {
+      new_aliases.emplace_back(result->domain_name());
+    }
 
     switch (result->type()) {
       case HostResolverInternalResult::Type::kData: {
@@ -243,9 +246,9 @@ void DnsTaskResultsManager::ProcessDnsTransactionResults(
         break;
       }
       case net::HostResolverInternalResult::Type::kAlias: {
-        const bool updated_alias =
-            aliases_.insert(result->AsAlias().alias_target()).second;
-        aliases_updated |= updated_alias;
+        if (!aliases_.contains(result->AsAlias().alias_target())) {
+          new_aliases.emplace_back(result->AsAlias().alias_target());
+        }
 
         break;
       }
@@ -269,9 +272,19 @@ void DnsTaskResultsManager::ProcessDnsTransactionResults(
     }
   }
 
-  // Only fix up aliases if new ones were added.
-  if (aliases_updated) {
-    aliases_ = dns_alias_utility::FixUpDnsAliases(aliases_);
+  // Only fix up and insert aliases if new ones were added.
+  if (!new_aliases.empty()) {
+    base::flat_set<std::string> fixed_up_aliases =
+        dns_alias_utility::FixUpDnsAliases(
+            base::flat_set<std::string_view>(std::move(new_aliases)));
+    if (aliases_.empty()) {
+      aliases_ = std::move(fixed_up_aliases);
+    } else if (!fixed_up_aliases.empty()) {
+      std::vector<std::string> extracted_aliases =
+          std::move(fixed_up_aliases).extract();
+      aliases_.insert(std::make_move_iterator(extracted_aliases.begin()),
+                      std::make_move_iterator(extracted_aliases.end()));
+    }
   }
 
   should_update_endpoints |= (has_new_ipv4_hints && Ipv4HintsUsable()) ||
@@ -334,7 +347,7 @@ const std::vector<ServiceEndpoint>& DnsTaskResultsManager::GetCurrentEndpoints()
   return current_endpoints_;
 }
 
-const std::set<std::string>& DnsTaskResultsManager::GetAliases() const {
+const base::flat_set<std::string>& DnsTaskResultsManager::GetAliases() const {
   return aliases_;
 }
 
@@ -345,12 +358,8 @@ bool DnsTaskResultsManager::IsMetadataReady() const {
 DnsTaskResultsManager::PerDomainResult&
 DnsTaskResultsManager::GetOrCreatePerDomainResult(
     const std::string& domain_name) {
-  auto it = per_domain_results_.find(domain_name);
-  if (it == per_domain_results_.end()) {
-    it = per_domain_results_.try_emplace(it, domain_name,
-                                         std::make_unique<PerDomainResult>());
-  }
-  return *it->second;
+  return *base::GetOrCreate(per_domain_results_, domain_name,
+                            [] { return std::make_unique<PerDomainResult>(); });
 }
 
 void DnsTaskResultsManager::OnAaaaResolutionTimedout() {
@@ -399,41 +408,42 @@ void DnsTaskResultsManager::UpdateEndpoints() {
       continue;
     }
 
-    if (per_domain_result->metadatas.empty()) {
+    for (const auto& [priority, metadata] : per_domain_result->metadatas) {
       ServiceEndpoint endpoint;
       endpoint.ipv4_endpoints = ipv4_endpoints;
       endpoint.ipv6_endpoints = ipv6_endpoints;
+      // TODO(crbug.com/41493696): Just adding per-domain metadata does not
+      // work properly when the target name of HTTPS is an alias, e.g:
+      //   example.com.     60 IN CNAME svc.example.com.
+      //   svc.example.com. 60 IN AAAA  2001:db8::1
+      //   svc.example.com. 60 IN HTTPS 1 example.com alpn="h2"
+      // In this case, svc.example.com should have metadata with alpn="h2" but
+      // the current logic doesn't do that. To handle it correctly we need to
+      // go though an alias tree for the domain name.
+      endpoint.metadata = metadata;
       new_endpoints.push_back(
           {std::move(endpoint), ipv4_from_hints, ipv6_from_hints});
-    } else {
-      for (const auto& [priority, metadata] : per_domain_result->metadatas) {
-        ServiceEndpoint endpoint;
-        endpoint.ipv4_endpoints = ipv4_endpoints;
-        endpoint.ipv6_endpoints = ipv6_endpoints;
-        // TODO(crbug.com/41493696): Just adding per-domain metadata does not
-        // work properly when the target name of HTTPS is an alias, e.g:
-        //   example.com.     60 IN CNAME svc.example.com.
-        //   svc.example.com. 60 IN AAAA  2001:db8::1
-        //   svc.example.com. 60 IN HTTPS 1 example.com alpn="h2"
-        // In this case, svc.example.com should have metadata with alpn="h2" but
-        // the current logic doesn't do that. To handle it correctly we need to
-        // go though an alias tree for the domain name.
-        endpoint.metadata = metadata;
-        new_endpoints.push_back(
-            {std::move(endpoint), ipv4_from_hints, ipv6_from_hints});
-      }
+    }
+
+    // Append non-SVCB endpoints for fallback. Ignore hint endpoints since they
+    // are part of SVCB/HTTPS records.
+    // See https://datatracker.ietf.org/doc/html/rfc9460#section-3-8 and
+    // HostCache::Entry::ConvertToServiceEndpoints().
+    if (!per_domain_result->ipv4_endpoints.empty() ||
+        !per_domain_result->ipv6_endpoints.empty()) {
+      ServiceEndpoint non_alternative_endpoint;
+      non_alternative_endpoint.ipv4_endpoints =
+          per_domain_result->ipv4_endpoints;
+      non_alternative_endpoint.ipv6_endpoints =
+          per_domain_result->ipv6_endpoints;
+      new_endpoints.push_back({std::move(non_alternative_endpoint),
+                               /*ipv4_from_hints=*/false,
+                               /*ipv6_from_hints=*/false});
     }
   }
 
-  // TODO(crbug.com/41493696): Determine how to handle non-SVCB connection
-  // fallback. See https://datatracker.ietf.org/doc/html/rfc9460#section-3-8
-  // HostCache::Entry::GetEndpoints() appends a final non-alternative endpoint
-  // at the end to ensure that the connection layer can fall back to non-SVCB
-  // connection. For ServiceEndpoint request API, the current plan is to handle
-  // non-SVCB connection fallback in the connection layer. The approach might
-  // not work when Chrome tries to support HTTPS follow-up queries and aliases.
-
-  // Stable sort preserves metadata priorities.
+  // Stable sort preserves metadata priorities and places endpoints with
+  // metadata before non-SVCB fallback endpoints.
   std::ranges::stable_sort(new_endpoints, CompareServiceEndpoint,
                            &EndpointAndProvenance::endpoint);
   const bool had_endpoints = !current_endpoints_.empty();

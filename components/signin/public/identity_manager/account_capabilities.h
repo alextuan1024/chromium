@@ -80,11 +80,6 @@ class AccountCapabilities {
   // Chrome can override the account info for accounts with this capability.
   signin::Tribool can_override_account_info() const;
 
-#if !BUILDFLAG(IS_IOS)
-  // Chrome can run privacy sandbox trials for accounts with this capability.
-  signin::Tribool can_run_chrome_privacy_sandbox_trials() const;
-#endif
-
   // Chrome can show history sync opt in screens without minor mode
   // restrictions with this capability.
   signin::Tribool
@@ -159,11 +154,6 @@ class AccountCapabilities {
   // with accounts with this capability.
   signin::Tribool is_subject_to_account_level_enterprise_policies() const;
 
-  // Chrome must show the notice before using the privacy sandbox restricted
-  // measurement API
-  signin::Tribool
-  is_subject_to_chrome_privacy_sandbox_restricted_measurement_notice() const;
-
   // Chrome applies enterprise features to accounts with this capability.
   // This capability returns true all managed accounts and does not reflect
   // whether the account will receive account level enterprise policies or not
@@ -187,10 +177,25 @@ class AccountCapabilities {
   signin::Tribool must_fetch_apple_age_range_in_chrome() const;
 #endif
 
+  // Whether Autofill must show equally weighted buttons when offering to save
+  // Wallet private passes.
+  signin::Tribool
+  must_show_equally_weighted_buttons_for_private_passes_in_chrome_autofill()
+      const;
+
 #if BUILDFLAG(IS_IOS)
   // Whether the client must skip Apple's age range check in Chrome.
   signin::Tribool must_skip_apple_age_range_in_chrome() const;
 #endif
+
+  // The user should be addressed in feminine grammatical gender.
+  signin::Tribool should_be_addressed_in_feminine_grammatical_gender() const;
+
+  // The user should be addressed in masculine grammatical gender.
+  signin::Tribool should_be_addressed_in_masculine_grammatical_gender() const;
+
+  // The user should be addressed in neuter grammatical gender.
+  signin::Tribool should_be_addressed_in_neuter_grammatical_gender() const;
 
   // Whether the account may fill and save Wallet private passes in Autofill.
   signin::Tribool supports_wallet_private_passes_in_autofill() const;

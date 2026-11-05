@@ -11,7 +11,6 @@
 #include "third_party/blink/renderer/core/animation/animation_trigger.h"
 #include "third_party/blink/renderer/core/animation/css/css_timeline_map.h"
 #include "third_party/blink/renderer/core/animation/deferred_timeline.h"
-#include "third_party/blink/renderer/core/animation/effect_stack.h"
 #include "third_party/blink/renderer/core/animation/inert_effect.h"
 #include "third_party/blink/renderer/core/animation/interpolation.h"
 #include "third_party/blink/renderer/core/animation/keyframe_effect_model.h"
@@ -395,8 +394,6 @@ class CORE_EXPORT CSSAnimationUpdate final {
   ActiveInterpolationsMap active_interpolations_for_transitions_;
 
   bool needs_named_trigger_update_ = false;
-
-  friend class PendingAnimationUpdate;
 };
 
 }  // namespace blink

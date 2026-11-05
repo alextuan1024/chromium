@@ -12,7 +12,9 @@ import static androidx.test.espresso.matcher.ViewMatchers.withId;
 
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.not;
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doReturn;
 
@@ -29,7 +31,7 @@ import androidx.test.filters.MediumTest;
 import androidx.test.filters.SmallTest;
 
 import org.hamcrest.Matchers;
-import org.junit.Assert;
+import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
@@ -42,13 +44,11 @@ import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.CriteriaHelper;
-import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.base.test.util.Restriction;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.ChromeTabbedActivity;
 import org.chromium.chrome.browser.app.ChromeActivity;
-import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.lens.LensController;
 import org.chromium.chrome.browser.locale.LocaleManager;
 import org.chromium.chrome.browser.locale.LocaleManagerDelegate;
@@ -76,7 +76,6 @@ import java.util.Set;
 /** Instrumentation tests for the LocationBar component. */
 @RunWith(ChromeJUnit4ClassRunner.class)
 @CommandLineFlags.Add({
-    ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE,
     ContentSwitches.HOST_RESOLVER_RULES + "=MAP * 127.0.0.1",
     "ignore-certificate-errors"
 })
@@ -113,11 +112,24 @@ public class LocationBarTest {
                     TemplateUrlServiceFactory.setInstanceForTesting(mTemplateUrlService);
                     LocaleManager.getInstance().setDelegateForTest(mLocaleManagerDelegate);
                 });
-        mHostUrl =
-                mActivityTestRule
-                        .getEmbeddedTestServerRule()
-                        .getServer()
-                        .getURLWithHostName(HOSTNAME, "/");
+    }
+
+    @After
+    public void tearDown() {
+        if (mOmnibox != null && mOmnibox.getFocus()) {
+            mOmnibox.clearFocus();
+        }
+    }
+
+    private String getHostUrl() {
+        if (mHostUrl == null) {
+            mHostUrl =
+                    mActivityTestRule
+                            .getEmbeddedTestServerRule()
+                            .getServer()
+                            .getURLWithHostName(HOSTNAME, "/");
+        }
+        return mHostUrl;
     }
 
     private WebPageStation startActivityNormally() {
@@ -195,7 +207,7 @@ public class LocationBarTest {
             errorMsg.append(' ');
         }
         errorMsg.append(']');
-        Assert.assertEquals(errorMsg.toString(), expectedIds, actualIds);
+        assertEquals(errorMsg.toString(), expectedIds, actualIds);
     }
 
     @Test
@@ -214,8 +226,9 @@ public class LocationBarTest {
     }
 
     private void testEditingText(boolean expectDesktopMode) {
+        String hostUrl = getHostUrl();
         startActivityNormally();
-        mActivityTestRule.loadUrl(mHostUrl);
+        mActivityTestRule.loadUrl(hostUrl);
 
         // Select the omnibox and confirm expected ready state:
         // - Mobile devices show (by default) no text
@@ -241,7 +254,7 @@ public class LocationBarTest {
         // Now, type some text and confirm cursor placement again.
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
-                    mLocationBarCoordinator.setOmniboxEditingText(mHostUrl);
+                    mLocationBarCoordinator.setOmniboxEditingText(hostUrl);
                 });
 
         CriteriaHelper.pollUiThread(
@@ -250,7 +263,7 @@ public class LocationBarTest {
                     checkThat(
                             "No characters are dropped during typing",
                             text,
-                            Matchers.startsWith(mHostUrl));
+                            Matchers.startsWith(hostUrl));
                     checkThat(
                             "No text selection",
                             mUrlBar.getSelectionStart(),
@@ -265,7 +278,7 @@ public class LocationBarTest {
     public void testFocusLogic_buttonVisibilityPhone() {
         startActivityNormally();
         doReturn(true).when(mVoiceRecognitionHandler).isVoiceSearchEnabled();
-        mActivityTestRule.loadUrl(mHostUrl);
+        mActivityTestRule.loadUrl(UrlConstants.ABOUT_URL);
 
         onView(withId(R.id.mic_button))
                 .check(matches(withEffectiveVisibility(ViewMatchers.Visibility.GONE)));
@@ -286,7 +299,7 @@ public class LocationBarTest {
 
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
-                    mLocationBarCoordinator.setOmniboxEditingText(mHostUrl);
+                    mLocationBarCoordinator.setOmniboxEditingText(UrlConstants.ABOUT_URL);
                 });
 
         onView(withId(R.id.mic_button))
@@ -312,7 +325,7 @@ public class LocationBarTest {
         startActivityNormally();
         doReturn(true).when(mVoiceRecognitionHandler).isVoiceSearchEnabled();
         doReturn(false).when(mLensController).isLensEnabled(any());
-        mActivityTestRule.loadUrl(mHostUrl);
+        mActivityTestRule.loadUrl(UrlConstants.ABOUT_URL);
 
         onView(withId(R.id.lens_camera_button)).check(matches(not(isDisplayed())));
         onView(withId(R.id.delete_button)).check(matches(not(isDisplayed())));
@@ -329,7 +342,7 @@ public class LocationBarTest {
 
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
-                    mLocationBarCoordinator.setOmniboxEditingText(mHostUrl);
+                    mLocationBarCoordinator.setOmniboxEditingText(UrlConstants.ABOUT_URL);
                 });
 
         onView(withId(R.id.lens_camera_button)).check(matches(not(isDisplayed())));
@@ -350,7 +363,7 @@ public class LocationBarTest {
         startActivityNormally();
         doReturn(true).when(mVoiceRecognitionHandler).isVoiceSearchEnabled();
         doReturn(true).when(mLensController).isLensEnabled(any());
-        mActivityTestRule.loadUrl(mHostUrl);
+        mActivityTestRule.loadUrl(UrlConstants.ABOUT_URL);
 
         onView(withId(R.id.lens_camera_button)).check(matches(not(isDisplayed())));
         onView(withId(R.id.delete_button)).check(matches(not(isDisplayed())));
@@ -367,7 +380,7 @@ public class LocationBarTest {
 
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
-                    mLocationBarCoordinator.setOmniboxEditingText(mHostUrl);
+                    mLocationBarCoordinator.setOmniboxEditingText(UrlConstants.ABOUT_URL);
                 });
 
         onView(withId(R.id.lens_camera_button)).check(matches(not(isDisplayed())));
@@ -383,60 +396,27 @@ public class LocationBarTest {
 
     @Test
     @MediumTest
-    @DisableFeatures(SigninFeatures.PROFILE_DISC_ON_ALL_PAGES)
+    @EnableFeatures(SigninFeatures.SIGNIN_LEVEL_UP_BUTTON)
     @Restriction(DeviceFormFactor.TABLET_OR_DESKTOP)
-    public void testFocusLogic_buttonVisibilityTablet_ProfileDiscDisabled_DesktopDisabled() {
+    public void testFocusLogic_buttonVisibilityTablet_DesktopDisabled() {
         OmniboxCapabilities.setHasDesktopExperienceForTesting(false);
         DeviceInput.setSupportsAlphabeticKeyboardForTesting(false);
         DeviceInput.setSupportsPrecisionPointerForTesting(false);
-        testFocusLogic_buttonVisibilityTablet(
-                /* expectDesktopMode= */ false, /* profileDiscEnabled= */ false);
+        testFocusLogic_buttonVisibilityTablet(/* expectDesktopMode= */ false);
     }
 
     @Test
     @MediumTest
-    @EnableFeatures({
-        SigninFeatures.PROFILE_DISC_ON_ALL_PAGES,
-        SigninFeatures.SIGNIN_LEVEL_UP_BUTTON
-    })
+    @EnableFeatures(SigninFeatures.SIGNIN_LEVEL_UP_BUTTON)
     @Restriction(DeviceFormFactor.TABLET_OR_DESKTOP)
-    public void testFocusLogic_buttonVisibilityTablet_ProfileDiscEnabled_DesktopDisabled() {
-        OmniboxCapabilities.setHasDesktopExperienceForTesting(false);
-        DeviceInput.setSupportsAlphabeticKeyboardForTesting(false);
-        DeviceInput.setSupportsPrecisionPointerForTesting(false);
-        testFocusLogic_buttonVisibilityTablet(
-                /* expectDesktopMode= */ false, /* profileDiscEnabled= */ true);
-    }
-
-    @Test
-    @MediumTest
-    @DisableFeatures(SigninFeatures.PROFILE_DISC_ON_ALL_PAGES)
-    @Restriction(DeviceFormFactor.TABLET_OR_DESKTOP)
-    public void testFocusLogic_buttonVisibilityTablet_ProfileDiscDisabled_DesktopEnabled() {
+    public void testFocusLogic_buttonVisibilityTablet_DesktopEnabled() {
         OmniboxCapabilities.setHasDesktopExperienceForTesting(true);
         DeviceInput.setSupportsAlphabeticKeyboardForTesting(true);
         DeviceInput.setSupportsPrecisionPointerForTesting(true);
-        testFocusLogic_buttonVisibilityTablet(
-                /* expectDesktopMode= */ true, /* profileDiscEnabled= */ false);
+        testFocusLogic_buttonVisibilityTablet(/* expectDesktopMode= */ true);
     }
 
-    @Test
-    @MediumTest
-    @EnableFeatures({
-        SigninFeatures.PROFILE_DISC_ON_ALL_PAGES,
-        SigninFeatures.SIGNIN_LEVEL_UP_BUTTON
-    })
-    @Restriction(DeviceFormFactor.TABLET_OR_DESKTOP)
-    public void testFocusLogic_buttonVisibilityTablet_ProfileDiscEnabled_DesktopEnabled() {
-        OmniboxCapabilities.setHasDesktopExperienceForTesting(true);
-        DeviceInput.setSupportsAlphabeticKeyboardForTesting(true);
-        DeviceInput.setSupportsPrecisionPointerForTesting(true);
-        testFocusLogic_buttonVisibilityTablet(
-                /* expectDesktopMode= */ true, /* profileDiscEnabled= */ true);
-    }
-
-    private void testFocusLogic_buttonVisibilityTablet(
-            boolean expectDesktopMode, boolean profileDiscEnabled) {
+    private void testFocusLogic_buttonVisibilityTablet(boolean expectDesktopMode) {
         OmniboxCapabilities.setIsDesktopPlatformForTesting(expectDesktopMode);
         OmniboxCapabilities.setHasDesktopExperienceForTesting(expectDesktopMode);
         startActivityNormally();
@@ -444,7 +424,7 @@ public class LocationBarTest {
         doReturn(true).when(mVoiceRecognitionHandler).isVoiceSearchEnabled();
         doReturn(true).when(mLensController).isLensEnabled(any());
 
-        mActivityTestRule.loadUrl(mHostUrl);
+        mActivityTestRule.loadUrl(UrlConstants.ABOUT_URL);
 
         onView(withId(R.id.mic_button))
                 .check(matches(withEffectiveVisibility(ViewMatchers.Visibility.GONE)));
@@ -468,8 +448,8 @@ public class LocationBarTest {
         } else {
             onView(withId(R.id.mic_button))
                     .check(matches(withEffectiveVisibility(ViewMatchers.Visibility.VISIBLE)));
-            // With profileDiscEnabled a Signin button appears with priority over the lens button.
-            onView(withId(profileDiscEnabled ? R.id.signin_button : R.id.lens_camera_button))
+            // A Signin button appears with priority over the lens button.
+            onView(withId(R.id.signin_button))
                     .check(matches(withEffectiveVisibility(ViewMatchers.Visibility.VISIBLE)));
             onView(withId(R.id.delete_button))
                     .check(matches(withEffectiveVisibility(ViewMatchers.Visibility.GONE)));
@@ -477,7 +457,7 @@ public class LocationBarTest {
 
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
-                    mLocationBarCoordinator.setOmniboxEditingText(mHostUrl);
+                    mLocationBarCoordinator.setOmniboxEditingText(UrlConstants.ABOUT_URL);
                 });
 
         onView(withId(R.id.mic_button))
@@ -506,9 +486,10 @@ public class LocationBarTest {
     @MediumTest
     public void testFocusLogic_keyboardVisibility() {
         startActivityNormally();
-        assertFalse(mKeyboardDelegate.isKeyboardShowing(mUrlBar));
+        assertFalse(mKeyboardDelegate.isKeyboardObscuring(mUrlBar));
 
         mOmnibox.requestFocus();
+        mOmnibox.waitAnimationsComplete();
         mOmnibox.checkFocus(true);
         mOmnibox.clearFocus();
         mOmnibox.checkFocus(false);
@@ -522,6 +503,7 @@ public class LocationBarTest {
         startActivityNormally();
 
         mOmnibox.requestFocus();
+        mOmnibox.waitAnimationsComplete();
         mOmnibox.checkFocus(true);
         ThreadUtils.runOnUiThreadBlocking(
                 () -> mActivity.getOnBackPressedDispatcher().onBackPressed());
@@ -558,6 +540,7 @@ public class LocationBarTest {
 
         mActivityTestRule.loadUrl(getOriginalNativeNtpUrl());
         mOmnibox.requestFocus();
+        mOmnibox.waitAnimationsComplete();
         onView(withId(R.id.location_bar_status_icon)).check(matches(isDisplayed()));
     }
 
@@ -595,9 +578,9 @@ public class LocationBarTest {
         // Force desktop experience on desktop form factor.
         OmniboxCapabilities.setHasDesktopExperienceForTesting(true);
         startActivityNormally();
-        mActivityTestRule.loadUrl(mHostUrl);
+        mActivityTestRule.loadUrl(UrlConstants.ABOUT_URL);
 
-        Assert.assertFalse(mLocationBarMediator.isUrlBarFocused());
+        assertFalse(mLocationBarMediator.isUrlBarFocused());
 
         // Set unfocused selection
         ThreadUtils.runOnUiThreadBlocking(() -> mUrlBar.setSelection(2, 5));
@@ -608,9 +591,9 @@ public class LocationBarTest {
         // Verify focus and that selection is preserved.
         CriteriaHelper.pollUiThread(
                 () -> {
-                    Assert.assertTrue(mLocationBarMediator.isUrlBarFocused());
-                    Assert.assertEquals(2, mUrlBar.getSelectionStart());
-                    Assert.assertEquals(5, mUrlBar.getSelectionEnd());
+                    assertTrue(mLocationBarMediator.isUrlBarFocused());
+                    assertEquals(2, mUrlBar.getSelectionStart());
+                    assertEquals(5, mUrlBar.getSelectionEnd());
                 });
     }
 }

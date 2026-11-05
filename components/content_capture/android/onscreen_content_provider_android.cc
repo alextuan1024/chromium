@@ -11,6 +11,7 @@
 #include "base/android/jni_string.h"
 #include "components/content_capture/common/content_capture_features.h"
 #include "content/public/browser/web_contents.h"
+#include "third_party/jni_zero/jni_zero.h"
 
 // Must come after all headers that specialize FromJniType() / ToJniType().
 #include "components/content_capture/android/jni_headers/ContentCaptureData_jni.h"
@@ -32,18 +33,18 @@ ScopedJavaLocalRef<jobject> ToJavaObjectOfContentCaptureData(
     JNIEnv* env,
     const ContentCaptureData& data,
     const JavaRef<jobject>& parent,
-    int offset_y) {
+    int content_offset_top) {
   ScopedJavaLocalRef<jstring> jvalue =
       ConvertUTF16ToJavaString(env, data.value);
   ScopedJavaLocalRef<jobject> jdata =
       Java_ContentCaptureData_createContentCaptureData(
           env, parent, data.id, jvalue, data.bounds.x(),
-          data.bounds.y() + offset_y, data.bounds.width(),
+          data.bounds.y() + content_offset_top, data.bounds.width(),
           data.bounds.height());
   if (jdata.is_null())
     return jdata;
   for (const auto& child : data.children) {
-    ToJavaObjectOfContentCaptureData(env, child, jdata, offset_y);
+    ToJavaObjectOfContentCaptureData(env, child, jdata, content_offset_top);
   }
   return jdata;
 }
@@ -51,7 +52,7 @@ ScopedJavaLocalRef<jobject> ToJavaObjectOfContentCaptureData(
 ScopedJavaLocalRef<jobject> ToJavaObjectOfContentCaptureFrame(
     JNIEnv* env,
     const ContentCaptureFrame& data,
-    int offset_y) {
+    int content_offset_top) {
   ScopedJavaLocalRef<jstring> jurl = ConvertUTF16ToJavaString(env, data.url);
   ScopedJavaLocalRef<jstring> jtitle;
   if (!data.title.empty())
@@ -63,12 +64,13 @@ ScopedJavaLocalRef<jobject> ToJavaObjectOfContentCaptureFrame(
 
   ScopedJavaLocalRef<jobject> jdata =
       Java_ContentCaptureFrame_createContentCaptureFrame(
-          env, data.id, jurl, data.bounds.x(), data.bounds.y() + offset_y,
-          data.bounds.width(), data.bounds.height(), jtitle, jfavicon);
+          env, data.id, jurl, data.bounds.x(),
+          data.bounds.y() + content_offset_top, data.bounds.width(),
+          data.bounds.height(), jtitle, jfavicon);
   if (jdata.is_null())
     return jdata;
   for (const auto& child : data.children) {
-    ToJavaObjectOfContentCaptureData(env, child, jdata, offset_y);
+    ToJavaObjectOfContentCaptureData(env, child, jdata, content_offset_top);
   }
   return jdata;
 }
@@ -76,14 +78,14 @@ ScopedJavaLocalRef<jobject> ToJavaObjectOfContentCaptureFrame(
 ScopedJavaLocalRef<jobjectArray> ToJavaArrayOfContentCaptureFrame(
     JNIEnv* env,
     const ContentCaptureSession& session,
-    int offset_y) {
+    int content_offset_top) {
   jobjectArray joa =
       env->NewObjectArray(session.size(), jni_zero::g_object_class, nullptr);
   base::android::CheckException(env);
 
   for (size_t i = 0; i < session.size(); ++i) {
     ScopedJavaLocalRef<jobject> item =
-        ToJavaObjectOfContentCaptureFrame(env, session[i], offset_y);
+        ToJavaObjectOfContentCaptureFrame(env, session[i], content_offset_top);
     env->SetObjectArrayElement(joa, i, item.obj());
   }
   return jni_zero::AdoptRef(env, joa);
@@ -91,15 +93,15 @@ ScopedJavaLocalRef<jobjectArray> ToJavaArrayOfContentCaptureFrame(
 
 }  // namespace
 
-static int64_t JNI_OnscreenContentProvider_Init(
+static jni_zero::JniUniquePtr<OnscreenContentProviderAndroid>
+JNI_OnscreenContentProvider_Init(
     JNIEnv* env,
     const base::android::JavaRef<jobject>& obj,
     const base::android::JavaRef<jobject>& jweb_contents) {
   auto* web_contents = content::WebContents::FromJavaWebContents(jweb_contents);
   DCHECK(web_contents);
-  auto* provider = new content_capture::OnscreenContentProviderAndroid(
+  return jni_zero::MakeUnique<content_capture::OnscreenContentProviderAndroid>(
       env, obj, web_contents);
-  return reinterpret_cast<intptr_t>(provider);
 }
 
 OnscreenContentProviderAndroid::OnscreenContentProviderAndroid(
@@ -110,7 +112,9 @@ OnscreenContentProviderAndroid::OnscreenContentProviderAndroid(
   AttachToWebContents(web_contents);
 }
 
-OnscreenContentProviderAndroid::~OnscreenContentProviderAndroid() = default;
+OnscreenContentProviderAndroid::~OnscreenContentProviderAndroid() {
+  DetachFromWebContents();
+}
 
 void OnscreenContentProviderAndroid::FlushCaptureContent(
     const ContentCaptureSession& parent_session,
@@ -120,16 +124,18 @@ void OnscreenContentProviderAndroid::FlushCaptureContent(
 
   auto* web_contents = GetWebContents();
   DCHECK(web_contents);
-  const int offset_y = Java_OnscreenContentProvider_getOffsetY(
-      env, java_ref_, web_contents->GetJavaWebContents());
+  const int content_offset_top =
+      Java_OnscreenContentProvider_getContentOffsetTop(
+          env, java_ref_, web_contents->GetJavaWebContents());
   ScopedJavaLocalRef<jobject> jdata =
-      ToJavaObjectOfContentCaptureFrame(env, data, offset_y);
+      ToJavaObjectOfContentCaptureFrame(env, data, content_offset_top);
   if (jdata.is_null()) {
     return;
   }
   Java_OnscreenContentProvider_flushCaptureContent(
       env, java_ref_,
-      ToJavaArrayOfContentCaptureFrame(env, parent_session, offset_y), jdata);
+      ToJavaArrayOfContentCaptureFrame(env, parent_session, content_offset_top),
+      jdata);
 }
 
 void OnscreenContentProviderAndroid::DidCaptureContent(
@@ -140,15 +146,17 @@ void OnscreenContentProviderAndroid::DidCaptureContent(
 
   auto* web_contents = GetWebContents();
   DCHECK(web_contents);
-  const int offset_y = Java_OnscreenContentProvider_getOffsetY(
-      env, java_ref_, web_contents->GetJavaWebContents());
+  const int content_offset_top =
+      Java_OnscreenContentProvider_getContentOffsetTop(
+          env, java_ref_, web_contents->GetJavaWebContents());
   ScopedJavaLocalRef<jobject> jdata =
-      ToJavaObjectOfContentCaptureFrame(env, data, offset_y);
+      ToJavaObjectOfContentCaptureFrame(env, data, content_offset_top);
   if (jdata.is_null())
     return;
   Java_OnscreenContentProvider_didCaptureContent(
       env, java_ref_,
-      ToJavaArrayOfContentCaptureFrame(env, parent_session, offset_y), jdata);
+      ToJavaArrayOfContentCaptureFrame(env, parent_session, content_offset_top),
+      jdata);
 }
 
 void OnscreenContentProviderAndroid::DidUpdateContent(
@@ -159,15 +167,17 @@ void OnscreenContentProviderAndroid::DidUpdateContent(
 
   auto* web_contents = GetWebContents();
   DCHECK(web_contents);
-  const int offset_y = Java_OnscreenContentProvider_getOffsetY(
-      env, java_ref_, web_contents->GetJavaWebContents());
+  const int content_offset_top =
+      Java_OnscreenContentProvider_getContentOffsetTop(
+          env, java_ref_, web_contents->GetJavaWebContents());
   ScopedJavaLocalRef<jobject> jdata =
-      ToJavaObjectOfContentCaptureFrame(env, data, offset_y);
+      ToJavaObjectOfContentCaptureFrame(env, data, content_offset_top);
   if (jdata.is_null())
     return;
   Java_OnscreenContentProvider_didUpdateContent(
       env, java_ref_,
-      ToJavaArrayOfContentCaptureFrame(env, parent_session, offset_y), jdata);
+      ToJavaArrayOfContentCaptureFrame(env, parent_session, content_offset_top),
+      jdata);
 }
 
 void OnscreenContentProviderAndroid::DidRemoveContent(
@@ -178,10 +188,12 @@ void OnscreenContentProviderAndroid::DidRemoveContent(
 
   auto* web_contents = GetWebContents();
   DCHECK(web_contents);
-  const int offset_y = Java_OnscreenContentProvider_getOffsetY(
-      env, java_ref_, web_contents->GetJavaWebContents());
+  const int content_offset_top =
+      Java_OnscreenContentProvider_getContentOffsetTop(
+          env, java_ref_, web_contents->GetJavaWebContents());
   Java_OnscreenContentProvider_didRemoveContent(
-      env, java_ref_, ToJavaArrayOfContentCaptureFrame(env, session, offset_y),
+      env, java_ref_,
+      ToJavaArrayOfContentCaptureFrame(env, session, content_offset_top),
       ToJavaLongArray(env, data));
 }
 
@@ -192,10 +204,12 @@ void OnscreenContentProviderAndroid::DidRemoveSession(
 
   auto* web_contents = GetWebContents();
   DCHECK(web_contents);
-  const int offset_y = Java_OnscreenContentProvider_getOffsetY(
-      env, java_ref_, web_contents->GetJavaWebContents());
+  const int content_offset_top =
+      Java_OnscreenContentProvider_getContentOffsetTop(
+          env, java_ref_, web_contents->GetJavaWebContents());
   Java_OnscreenContentProvider_didRemoveSession(
-      env, java_ref_, ToJavaArrayOfContentCaptureFrame(env, session, offset_y));
+      env, java_ref_,
+      ToJavaArrayOfContentCaptureFrame(env, session, content_offset_top));
 }
 
 void OnscreenContentProviderAndroid::DidUpdateTitle(
@@ -205,10 +219,11 @@ void OnscreenContentProviderAndroid::DidUpdateTitle(
 
   auto* web_contents = GetWebContents();
   DCHECK(web_contents);
-  const int offset_y = Java_OnscreenContentProvider_getOffsetY(
-      env, java_ref_, web_contents->GetJavaWebContents());
+  const int content_offset_top =
+      Java_OnscreenContentProvider_getContentOffsetTop(
+          env, java_ref_, web_contents->GetJavaWebContents());
   ScopedJavaLocalRef<jobject> jdata =
-      ToJavaObjectOfContentCaptureFrame(env, main_frame, offset_y);
+      ToJavaObjectOfContentCaptureFrame(env, main_frame, content_offset_top);
   if (jdata.is_null())
     return;
   Java_OnscreenContentProvider_didUpdateTitle(env, java_ref_, jdata);
@@ -221,10 +236,11 @@ void OnscreenContentProviderAndroid::DidUpdateFavicon(
 
   auto* web_contents = GetWebContents();
   DCHECK(web_contents);
-  const int offset_y = Java_OnscreenContentProvider_getOffsetY(
-      env, java_ref_, web_contents->GetJavaWebContents());
+  const int content_offset_top =
+      Java_OnscreenContentProvider_getContentOffsetTop(
+          env, java_ref_, web_contents->GetJavaWebContents());
   ScopedJavaLocalRef<jobject> jdata =
-      ToJavaObjectOfContentCaptureFrame(env, main_frame, offset_y);
+      ToJavaObjectOfContentCaptureFrame(env, main_frame, content_offset_top);
   if (jdata.is_null())
     return;
   Java_OnscreenContentProvider_didUpdateFavicon(env, java_ref_, jdata);
@@ -278,15 +294,16 @@ ScopedJavaLocalRef<jobject> OnscreenContentProviderAndroid::GetJavaObject() {
 void OnscreenContentProviderAndroid::OnWebContentsChanged(
     JNIEnv* env,
     const base::android::JavaRef<jobject>& jweb_contents) {
-  if (auto* web_contents =
-          content::WebContents::FromJavaWebContents(jweb_contents)) {
-    AttachToWebContents(web_contents);
-  }
+  content::WebContents* web_contents =
+      content::WebContents::FromJavaWebContents(jweb_contents);
+  AttachToWebContents(web_contents);
 }
 
 void OnscreenContentProviderAndroid::AttachToWebContents(
     content::WebContents* web_contents) {
   DetachFromWebContents();
+  if (!web_contents)
+    return;
   OnscreenContentProvider* provider =
       OnscreenContentProvider::FromWebContents(web_contents);
   if (!provider)
@@ -298,11 +315,7 @@ void OnscreenContentProviderAndroid::AttachToWebContents(
 void OnscreenContentProviderAndroid::DetachFromWebContents() {
   if (auto* provider = onscreen_content_provider_.get())
     provider->RemoveConsumer(*this);
-}
-
-void OnscreenContentProviderAndroid::Destroy(JNIEnv* env) {
-  DetachFromWebContents();
-  delete this;
+  onscreen_content_provider_.reset();
 }
 
 content::WebContents* OnscreenContentProviderAndroid::GetWebContents() {

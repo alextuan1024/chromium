@@ -21,8 +21,6 @@
 #include "chromecast/media/base/media_codec_support.h"
 #include "chromecast/media/base/supported_codec_profile_levels_memo.h"
 #include "chromecast/public/media/media_capabilities_shlib.h"
-#include "chromecast/renderer/cast_url_loader_throttle_provider.h"
-#include "chromecast/renderer/cast_websocket_handshake_throttle_provider.h"
 #include "chromecast/renderer/media/key_systems_cast.h"
 #include "chromecast/renderer/media/media_caps_observer_impl.h"
 #include "components/cast_receiver/renderer/public/content_renderer_client_mixins.h"
@@ -44,7 +42,11 @@
 #include "services/network/public/cpp/is_potentially_trustworthy.h"
 #include "third_party/blink/public/platform/browser_interface_broker_proxy.h"
 #include "third_party/blink/public/platform/web_runtime_features.h"
+#include "third_party/blink/public/platform/web_string.h"
+#include "third_party/blink/public/web/web_css_origin.h"
+#include "third_party/blink/public/web/web_document.h"
 #include "third_party/blink/public/web/web_frame_widget.h"
+#include "third_party/blink/public/web/web_local_frame.h"
 #include "third_party/blink/public/web/web_security_policy.h"
 #include "third_party/blink/public/web/web_settings.h"
 #include "third_party/blink/public/web/web_view.h"
@@ -90,9 +92,7 @@ CastContentRendererClient::CastContentRendererClient()
     : cast_receiver_mixins_(cast_receiver::ContentRendererClientMixins::Create(
           base::BindRepeating(&IsCorsExemptHeader))),
       supported_profiles_(
-          std::make_unique<media::SupportedCodecProfileLevelsMemo>()),
-      activity_url_filter_manager_(
-          std::make_unique<CastActivityUrlFilterManager>()) {
+          std::make_unique<media::SupportedCodecProfileLevelsMemo>()) {
 #if BUILDFLAG(IS_ANDROID)
   // Registers a custom content::AudioDeviceFactory
   cast_audio_device_factory_ =
@@ -148,12 +148,16 @@ void CastContentRendererClient::RenderFrameCreated(
     app_media_capabilities->AddObserver(
         app_media_capabilities_observer_receiver_.BindNewPipeAndPassRemote());
   }
-
-  activity_url_filter_manager_->OnRenderFrameCreated(render_frame);
 }
 
 void CastContentRendererClient::RunScriptsAtDocumentStart(
-    content::RenderFrame* render_frame) {}
+    content::RenderFrame* render_frame) {
+  // Cast receiver apps draw their own focus indication. Don't draw the default
+  // focus ring, e.g. around a focused full-screen element.
+  render_frame->GetWebFrame()->GetDocument().InsertStyleSheet(
+      blink::WebString::FromAscii(":focus { outline: none; }"),
+      /*key=*/nullptr, blink::WebCssOrigin::kUser);
+}
 
 void CastContentRendererClient::RunScriptsAtDocumentEnd(
     content::RenderFrame* render_frame) {}
@@ -170,7 +174,7 @@ CastContentRendererClient::GetSupportedKeySystems(
   ::media::KeySystemInfos key_systems;
   media::AddChromecastKeySystems(&key_systems,
                                  false /* enable_persistent_license_support */);
-  std::move(cb).Run(std::move(key_systems));
+  std::move(cb).Run(std::move(key_systems), /*pending_key_systems=*/{});
   return nullptr;
 #endif  // BUILDFLAG(IS_ANDROID)
 }
@@ -324,19 +328,10 @@ void CastContentRendererClient::OnSupportedBitstreamAudioCodecsChanged(
 #endif  // BUILDFLAG(IS_ANDROID)
 }
 
-std::unique_ptr<blink::WebSocketHandshakeThrottleProvider>
-CastContentRendererClient::CreateWebSocketHandshakeThrottleProvider() {
-  return std::make_unique<CastWebSocketHandshakeThrottleProvider>(
-      activity_url_filter_manager_.get());
-}
-
 std::unique_ptr<blink::URLLoaderThrottleProvider>
 CastContentRendererClient::CreateURLLoaderThrottleProvider(
     blink::URLLoaderThrottleProviderType type) {
-  auto throttle_provider = std::make_unique<CastURLLoaderThrottleProvider>(
-      type, activity_url_filter_manager());
-  return cast_receiver_mixins_->ExtendURLLoaderThrottleProvider(
-      std::move(throttle_provider));
+  return cast_receiver_mixins_->CreateURLLoaderThrottleProvider();
 }
 
 std::optional<::media::AudioRendererAlgorithmParameters>

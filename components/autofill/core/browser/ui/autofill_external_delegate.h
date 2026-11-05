@@ -36,14 +36,18 @@
 #include "components/autofill/core/common/mojom/autofill_types.mojom-shared.h"
 #include "components/autofill/core/common/unique_ids.h"
 
+class GURL;
+
 namespace gfx {
 class Rect;
+class RectF;
 }  // namespace gfx
 
 namespace autofill {
 
 class AddressDataManager;
 class AutofillDriver;
+class AutofillField;
 class BrowserAutofillManager;
 class FormStructure;
 
@@ -79,9 +83,13 @@ class AutofillExternalDelegate : public AutofillSuggestionDelegate {
   bool OnFilterChanged(const std::u16string& filter) override;
   bool OnSearchSubmitted(const std::u16string& filter) override;
   bool IsSearching() const override;
-  void DidSelectSuggestion(const Suggestion& suggestion) override;
+  void DidSelectSuggestion(const Suggestion& suggestion,
+                           const FormGlobalId& form_id,
+                           const FieldGlobalId& field_id) override;
   void DidAcceptSuggestion(const Suggestion& suggestion,
-                           const SuggestionMetadata& metadata) override;
+                           const SuggestionMetadata& metadata,
+                           const FormGlobalId& form_id,
+                           const FieldGlobalId& field_id) override;
   bool RemoveSuggestion(const Suggestion& suggestion) override;
   void ClearPreviewedForm() override;
 
@@ -179,20 +187,21 @@ class AutofillExternalDelegate : public AutofillSuggestionDelegate {
 
   // Private handler for DidAcceptSuggestions for address related suggestions.
   void DidAcceptAddressSuggestion(const Suggestion& suggestion,
-                                  const SuggestionMetadata& metadata);
+                                  const SuggestionMetadata& metadata,
+                                  const FormGlobalId& form_id,
+                                  const FieldGlobalId& field_id);
 
   // Private handler for DidAcceptSuggestions for payments related suggestions.
   void DidAcceptPaymentsSuggestion(const Suggestion& suggestion,
-                                   const SuggestionMetadata& metadata);
+                                   const SuggestionMetadata& metadata,
+                                   const FormGlobalId& form_id,
+                                   const FieldGlobalId& field_id);
 
-  // Returns the last Autofill triggering field. Derived from the `form` and
-  // `field` parameters of `OnQuery(). Returns nullptr if called before
-  // `OnQuery()` or if the `form` becomes outdated, see crbug.com/1117028.
-  const AutofillField* GetQueriedField() const;
-
-  // Returns the last Autofill triggering field and its form.
-  std::pair<const FormStructure*, const AutofillField*> GetQueriedFormAndField()
-      const;
+  // Logs metrics when a suggestion is accepted.
+  void LogSuggestionAcceptedMetrics(const Suggestion& suggestion,
+                                    const SuggestionMetadata& metadata,
+                                    const FormStructure* form_structure,
+                                    const AutofillField* autofill_field) const;
 
   AutofillTriggerSource GetTriggerSource() const;
 
@@ -204,12 +213,16 @@ class AutofillExternalDelegate : public AutofillSuggestionDelegate {
                     const Suggestion::Payload& payload,
                     std::optional<SuggestionMetadata> metadata,
                     bool is_preview,
-                    AutofillTriggerSource trigger_source);
+                    AutofillTriggerSource trigger_source,
+                    const FormGlobalId& form_id,
+                    const FieldGlobalId& field_id);
 
   // Previews the value from `profile` specified in the `suggestion`.
   void PreviewAddressFieldByFieldFillingSuggestion(
       const AutofillProfile& profile,
-      const Suggestion& suggestion);
+      const Suggestion& suggestion,
+      const FormGlobalId& form_id,
+      const FieldGlobalId& field_id);
 
   // Fills the value from `profile` specified in the `suggestion`. Emits
   // necessary metrics based on the
@@ -217,7 +230,9 @@ class AutofillExternalDelegate : public AutofillSuggestionDelegate {
   void FillAddressFieldByFieldFillingSuggestion(
       const AutofillProfile& profile,
       const Suggestion& suggestion,
-      const SuggestionMetadata& metadata);
+      const SuggestionMetadata& metadata,
+      const FormGlobalId& form_id,
+      const FieldGlobalId& field_id);
 
   // Handle applying any Autofill option listings to the Autofill popup.
   // This function should only get called when there is at least one
@@ -239,6 +254,47 @@ class AutofillExternalDelegate : public AutofillSuggestionDelegate {
 
   // Returns if the Pay Now Pay Later tabs should be shown.
   virtual bool ShouldShowPayNowPayLaterTabs();
+
+  // Suppresses the Autofill AI personal-context entity behind `suggestion` and
+  // offers to undo that. Does nothing if suppression is disabled.
+  // - On Desktop, where this is triggered by the "Remove this info" entry or by
+  //   Shift+Delete, the user is first asked to confirm in a dialog. The entity
+  //   is only suppressed once they confirm; if they decline, nothing happens.
+  // - On Android, the keyboard accessory asks the user to confirm before it
+  //   calls the delegate, so the entity is suppressed right away.
+  // - iOS does not call this: `FormInputAccessoryCoordinator` asks for
+  //   confirmation and suppresses the entity itself.
+  // Returns whether the entity is suppressed when this function returns, i.e.
+  // always false on Desktop, where the user has not confirmed yet.
+  bool SuppressAutofillAiEntity(const Suggestion& suggestion);
+
+  // Suppresses `entity` and, if it was not suppressed before, lets the client
+  // notify the user and offer an undo, which runs
+  // `OnAutofillAiSuppressionUndone()`. Returns true if the entity is
+  // suppressed.
+  bool SuppressEntityAndOfferUndo(EntityInstance entity,
+                                  FieldGlobalId field_id);
+
+  // Unsuppresses `entity_id` and re-triggers Autofill suggestions on
+  // `field_id`.
+  void OnAutofillAiSuppressionUndone(EntityInstance::EntityId entity_id,
+                                     FieldGlobalId field_id);
+
+  // Context bound into the verification UI callback for a filled Personal
+  // Context entity.
+  struct PendingVerification;
+  using Decision = AutofillClient::AutofillAiVerificationDecision;
+
+  // Asks the client to show the SPII verification UI for `filled_entity`.
+  void ShowAttributionVerification(const FormGlobalId& form_id,
+                                   const FieldGlobalId& field_id,
+                                   const gfx::RectF& field_bounds,
+                                   const GURL& source_url,
+                                   const EntityInstance& filled_entity);
+
+  // Handles the user decision returned by the SPII verification UI.
+  void ApplyVerificationDecision(const PendingVerification& v,
+                                 Decision decision);
 
   base::WeakPtr<AutofillExternalDelegate> GetWeakPtr();
 

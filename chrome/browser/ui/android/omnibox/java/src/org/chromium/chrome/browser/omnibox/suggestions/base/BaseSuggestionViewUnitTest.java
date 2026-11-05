@@ -8,14 +8,15 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
-import static org.mockito.Mockito.any;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.anyInt;
 import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.eq;
 import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
 
@@ -43,11 +44,28 @@ import org.chromium.chrome.browser.omnibox.suggestions.RecyclerViewSelectionCont
 /** Tests for {@link BaseSuggestionView}. */
 @RunWith(BaseRobolectricTestRunner.class)
 public class BaseSuggestionViewUnitTest {
+    private static class TestBaseSuggestionView extends BaseSuggestionView<View> {
+        private final Callback<Integer> mOnSuperKeyDown;
+
+        TestBaseSuggestionView(View view, Callback<Integer> onSuperKeyDown) {
+            super(view);
+            mOnSuperKeyDown = onSuperKeyDown;
+        }
+
+        @Override
+        boolean super_onKeyDown(int keyCode, KeyEvent event) {
+            mOnSuperKeyDown.onResult(keyCode);
+            return super.super_onKeyDown(keyCode, event);
+        }
+    }
+
     @Rule
     public final MockitoRule mMockitoRule = MockitoJUnit.rule().strictness(Strictness.STRICT_STUBS);
 
     @Mock private Callback<Integer> mOnActivateListener;
+    @Mock private Callback<Integer> mOnSuperKeyDown;
     @Mock private View.OnLongClickListener mOnLongClickListener;
+    @Mock private View.OnClickListener mChipClickListener;
     @Mock private RecyclerViewSelectionController mRecyclerViewSelectionController;
     @Mock private Runnable mRunnable;
 
@@ -61,7 +79,7 @@ public class BaseSuggestionViewUnitTest {
                 new ContextThemeWrapper(
                         ContextUtils.getApplicationContext(), R.style.Theme_BrowserUI_DayNight);
         mInnerView = new View(mContext);
-        mView = spy(new BaseSuggestionView<>(mInnerView));
+        mView = new TestBaseSuggestionView(mInnerView, mOnSuperKeyDown);
         mView.setOnActivateListener(mOnActivateListener);
         mView.setOnLongClickListener(mOnLongClickListener);
     }
@@ -69,6 +87,25 @@ public class BaseSuggestionViewUnitTest {
     private boolean sendKey(int keyCode) {
         var event = new KeyEvent(KeyEvent.ACTION_DOWN, keyCode);
         return mView.onKeyDown(keyCode, event);
+    }
+
+    @Test
+    public void actionChipsView_lazilyCreatedOnDemand() {
+        assertNull(mView.actionChipsView);
+
+        mView.setActionChipLeadInSpacing(42);
+        assertNull(mView.actionChipsView);
+
+        ActionChipsView chipsView = mView.ensureActionChipsView();
+        assertNotNull(chipsView);
+        assertSame(chipsView, mView.actionChipsView);
+        assertSame(chipsView, mView.ensureActionChipsView());
+        assertEquals(mView, chipsView.getParent());
+        assertEquals(1, chipsView.getItemDecorationCount());
+        assertEquals(
+                42,
+                ((SpacingRecyclerViewItemDecoration) chipsView.getItemDecorationAt(0))
+                        .getLeadInSpace());
     }
 
     @Test
@@ -80,7 +117,7 @@ public class BaseSuggestionViewUnitTest {
         assertTrue(sendKey(KeyEvent.KEYCODE_ENTER));
         verify(mOnActivateListener).onResult(eq(0));
         verifyNoMoreInteractions(mOnActivateListener, mOnLongClickListener);
-        verify(mView, never()).super_onKeyDown(anyInt(), any());
+        verify(mOnSuperKeyDown, never()).onResult(anyInt());
     }
 
     @Test
@@ -115,24 +152,43 @@ public class BaseSuggestionViewUnitTest {
 
     @Test
     public void onKeyDown_actionButtonKeysAreConsumedIfActionsArePresent() {
-        mView.actionChipsView.setSelectionControllerForTesting(mRecyclerViewSelectionController);
+        mView.ensureActionChipsView()
+                .setSelectionControllerForTesting(mRecyclerViewSelectionController);
 
         // Simulate Actions consuming key stroke.
         doReturn(true).when(mRecyclerViewSelectionController).selectNextItem();
         assertTrue(sendKey(KeyEvent.KEYCODE_TAB));
-        verify(mView, never()).super_onKeyDown(anyInt(), any());
+        verify(mOnSuperKeyDown, never()).onResult(anyInt());
 
         // Simulate Actions rejecting key stroke.
         doReturn(false).when(mRecyclerViewSelectionController).selectNextItem();
         assertFalse(sendKey(KeyEvent.KEYCODE_TAB));
-        verify(mView).super_onKeyDown(anyInt(), any());
+        verify(mOnSuperKeyDown).onResult(KeyEvent.KEYCODE_TAB);
+    }
+
+    @Test
+    public void onKeyDown_tabAndEnterActivatesSelectedActionChip() {
+        mView.ensureActionChipsView()
+                .setSelectionControllerForTesting(mRecyclerViewSelectionController);
+        View selectedChip = new View(mContext);
+        selectedChip.setOnClickListener(mChipClickListener);
+
+        doReturn(true).when(mRecyclerViewSelectionController).selectNextItem();
+        assertTrue(sendKey(KeyEvent.KEYCODE_TAB));
+        verify(mRecyclerViewSelectionController).selectNextItem();
+
+        doReturn(selectedChip).when(mRecyclerViewSelectionController).getSelectedView();
+        assertTrue(sendKey(KeyEvent.KEYCODE_ENTER));
+        verify(mChipClickListener).onClick(selectedChip);
+        verify(mOnActivateListener, never()).onResult(any());
+        verify(mOnLongClickListener, never()).onLongClick(any());
     }
 
     @Test
     public void onKeyDown_unrecognizedKeysPassedToSuper() {
         assertFalse(sendKey(KeyEvent.KEYCODE_A));
         verifyNoMoreInteractions(mOnActivateListener, mOnLongClickListener);
-        verify(mView).super_onKeyDown(eq(KeyEvent.KEYCODE_A), any());
+        verify(mOnSuperKeyDown).onResult(KeyEvent.KEYCODE_A);
     }
 
     @Test

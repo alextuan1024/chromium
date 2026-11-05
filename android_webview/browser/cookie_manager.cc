@@ -195,6 +195,7 @@ CookieManager::CookieManager(AwBrowserContext* const parent_context)
       cookie_store_client_thread_("CookieMonsterClient"),
       cookie_store_backend_thread_("CookieMonsterBackend"),
       setting_new_mojo_cookie_manager_(false) {
+  TRACE_EVENT("android_webview", "CookieManager::CookieManager");
   // Apps can specify a list of Profiles (BrowserContexts) to be initialized at
   // startup, meaning this can be called after thread restrictions are applied.
   base::ScopedAllowBlocking scoped_allow_blocking;
@@ -639,7 +640,8 @@ std::vector<std::string> CookieManager::GetCookieInfo(const std::string& url) {
                                     base::Unretained(this), host,
                                     &cookie_list));
   std::vector<std::string> cookie_attributes;
-  for (net::CanonicalCookie cookie : cookie_list) {
+  cookie_attributes.reserve(cookie_list.size());
+  for (const net::CanonicalCookie& cookie : cookie_list) {
     cookie_attributes.push_back(
         net::CanonicalCookie::BuildCookieAttributesLine(cookie));
   }

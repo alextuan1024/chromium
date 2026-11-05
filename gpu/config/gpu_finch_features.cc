@@ -77,6 +77,16 @@ void InitSkiaGraphiteFeatureParams(const base::Feature* feature) {
           feature, "max_pending_recordings",
           g_skia_graphite_feature_params.max_pending_recordings)
           .Get();
+  g_skia_graphite_feature_params.max_pending_commands =
+      base::FeatureParam<int>(
+          feature, "max_pending_commands",
+          g_skia_graphite_feature_params.max_pending_commands)
+          .Get();
+  g_skia_graphite_feature_params.max_time_between_submits =
+      base::FeatureParam<base::TimeDelta>(
+          feature, "max_time_between_submits",
+          g_skia_graphite_feature_params.max_time_between_submits)
+          .Get();
   g_skia_graphite_feature_params.enable_deferred_submit =
       base::FeatureParam<bool>(
           feature, "enable_deferred_submit",
@@ -142,6 +152,10 @@ BASE_FEATURE(kAggressiveShaderCacheLimits, base::FEATURE_DISABLED_BY_DEFAULT);
 // and using overlays on Android. Also used by webview to disable surface
 // SurfaceControl.
 BASE_FEATURE(kAndroidSurfaceControl, base::FEATURE_ENABLED_BY_DEFAULT);
+
+// Launches the GPU process using SandboxedGpuProcessService.
+BASE_FEATURE(kEnableAndroidSandboxedGpuProcess,
+             base::FEATURE_DISABLED_BY_DEFAULT);
 
 // Hardware Overlays for WebView.
 BASE_FEATURE(kWebViewSurfaceControl, base::FEATURE_DISABLED_BY_DEFAULT);
@@ -233,11 +247,26 @@ BASE_FEATURE(kNoUndamagedOverlayPromotion, base::FEATURE_DISABLED_BY_DEFAULT);
 BASE_FEATURE(kAdjustGpuProcessPriority, base::FEATURE_DISABLED_BY_DEFAULT);
 #endif
 
+// When enabled, caps the initial GPU scheduler priority boost during
+// synchronous command buffer waits (WaitForTokenInRange /
+// WaitForGetOffsetInRange) at kNormal so routine per-frame waits cannot
+// preempt kHigh Viz display tasks, and escalates to kHigh if the wait remains
+// unresolved after `kCommandBufferWaitHighPriorityDelay`.
+BASE_FEATURE(kCapCommandBufferWaitPriority, base::FEATURE_DISABLED_BY_DEFAULT);
+
+const base::FeatureParam<base::TimeDelta> kCommandBufferWaitHighPriorityDelay{
+    &kCapCommandBufferWaitPriority, "high_priority_delay",
+    base::Milliseconds(100)};
+
 // When enabled, Grshader disk cache will be cleared on startup if any cache
 // entry prefix does not match with the current prefix. prefix is made up of
 // various parameters like chrome version, driver version etc.
 BASE_FEATURE(kClearGrShaderDiskCacheOnInvalidPrefix,
              base::FEATURE_DISABLED_BY_DEFAULT);
+
+// When enabled, the GPU process initializes through GpuInit2. GpuInit2 is where
+// GPU startup optimizations are being developed.
+BASE_FEATURE(kGpuInitOptimization, base::FEATURE_DISABLED_BY_DEFAULT);
 
 // When enabled, Chrome will use the shader disk cache. This feature provides a
 // kill-switch for working around issues with the disk cache and assessing the
@@ -252,18 +281,6 @@ bool IsShaderDiskCacheEnabled(const base::CommandLine* command_line) {
 
   return base::FeatureList::IsEnabled(kGpuShaderDiskCache);
 }
-
-// Enable Vulkan graphics backend for compositing and rasterization. Defaults to
-// native implementation if --use-vulkan flag is not used. Otherwise
-// --use-vulkan will be followed.
-// Note Android WebView uses kWebViewDrawFunctorUsesVulkan instead of this.
-BASE_FEATURE(kVulkan,
-#if BUILDFLAG(IS_ANDROID)
-             base::FEATURE_ENABLED_BY_DEFAULT
-#else
-             base::FEATURE_DISABLED_BY_DEFAULT
-#endif
-);
 
 // Force enable WebGPU interop when enabled. When disabled the webgpu interop
 // mechanism will default to auto detection in 'GetWebGPUOnVulkanViaGLInterop'
@@ -330,11 +347,12 @@ BASE_FEATURE(kWebGPUEnableRangeAnalysisForRobustness,
 
 BASE_FEATURE(kWebGPUUseSpirv14, base::FEATURE_ENABLED_BY_DEFAULT);
 
-BASE_FEATURE(kWebGPUDecomposeUniformBuffers, base::FEATURE_ENABLED_BY_DEFAULT);
-
 BASE_FEATURE(kWebGPUUseHLSL2021, base::FEATURE_ENABLED_BY_DEFAULT);
 
-BASE_FEATURE(kWebGPUUseSpirvReconvergenceMode,
+// Enables the use of dedicated shared memory transfer buffers for mapped WebGPU
+// buffers. Only takes effect when explicitly enabled (e.g. via
+// --enable-features=WebGPUUseDedicatedTransferBuffer).
+BASE_FEATURE(kWebGPUUseDedicatedTransferBuffer,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
 #if BUILDFLAG(IS_ANDROID)
@@ -376,7 +394,7 @@ const base::FeatureParam<std::string> kDrDcBlockListByAndroidBuildFP{
 // --disable-skia-graphite which take precedence over the feature flag, and the
 // Dawn backend can be overridden with the --skia-graphite-dawn-backend flag.
 BASE_FEATURE(kSkiaGraphite,
-#if BUILDFLAG(IS_APPLE)
+#if BUILDFLAG(IS_APPLE) || BUILDFLAG(IS_WIN)
              base::FEATURE_ENABLED_BY_DEFAULT
 #else
              base::FEATURE_DISABLED_BY_DEFAULT
@@ -393,7 +411,7 @@ BASE_FEATURE(kSkiaGraphiteWinIntel,
 
 // Allows CompoundImageBacking to allocate backings during runtime if a
 // compatible backing to serve clients requested usage is not already present.
-BASE_FEATURE(kUseDynamicBackingAllocations, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kUseDynamicBackingAllocations, base::FEATURE_ENABLED_BY_DEFAULT);
 
 // When enabled, this feature allows ClientSharedImage to store and use a
 // scoped_refptr to SharedImageInterface, instead of the raw_ptr as used in
@@ -487,6 +505,9 @@ BASE_FEATURE(kGpuPersistentCacheMetadata, base::FEATURE_DISABLED_BY_DEFAULT);
 const base::FeatureParam<int> kGpuPersistentCacheMetadataPreloadCount{
     &kGpuPersistentCacheMetadata, "preload_count", 50};
 
+BASE_FEATURE(kGpuPersistentCacheAsyncInitialize,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
 // Use a 100-command limit before forcing context switch per command buffer
 // instead of 20.
 BASE_FEATURE(kIncreasedCmdBufferParseSlice, base::FEATURE_DISABLED_BY_DEFAULT);
@@ -524,31 +545,6 @@ bool IsForceEnableWebGpuInterop() {
 }
 #endif
 
-bool IsUsingVulkan() {
-#if BUILDFLAG(IS_ANDROID)
-  // Force on if Vulkan feature is enabled from command line.
-  base::FeatureList* feature_list = base::FeatureList::GetInstance();
-  if (feature_list &&
-      feature_list->IsFeatureOverriddenFromCommandLine(
-          features::kVulkan.name, base::FeatureList::OVERRIDE_ENABLE_FEATURE)) {
-    return true;
-  }
-
-  // WebView checks, which do not use (and disables) kVulkan.
-  // Do this above the Android version check because there are test devices
-  if (base::CommandLine::ForCurrentProcess()->HasSwitch(
-          switches::kWebViewDrawFunctorUsesVulkan)) {
-    return true;
-  }
-#endif
-
-#if BUILDFLAG(ENABLE_VULKAN)
-  return base::FeatureList::IsEnabled(kVulkan);
-#else
-  return false;
-#endif
-}
-
 bool IsUsingThreadSafeMediaForWebView() {
 #if BUILDFLAG(IS_ANDROID)
   // Thread safe media code currently
@@ -578,15 +574,8 @@ bool NeedThreadSafeAndroidMedia() {
 namespace {
 bool IsSkiaGraphiteSupportedByDevice() {
 #if BUILDFLAG(IS_APPLE)
-  return UsePassthroughCommandDecoder();
+  return true;
 #elif BUILDFLAG(IS_ANDROID)
-  // Desktop Android isn't ready to pick up the fieldtrial_testing_config.json
-  // change that enables graphite. However, it's the same platform as regular
-  // Android and does. Skip enabling the feature there for now.
-  if (base::android::device_info::is_desktop()) {
-    return false;
-  }
-
   // Graphite on Android uses the Dawn Vulkan backend. Only enable Graphite if
   // device would already be using Ganesh/Vulkan.
   return IsUsingVulkan();
@@ -783,6 +772,10 @@ bool IsAndroidSurfaceControlEnabled() {
   return base::FeatureList::IsEnabled(kAndroidSurfaceControl);
 }
 
+bool IsAndroidSandboxedGpuProcessEnabled() {
+  return base::FeatureList::IsEnabled(kEnableAndroidSandboxedGpuProcess);
+}
+
 // Many devices do not support more than 1 image to be acquired from the
 // AImageReader.(crbug.com/1051705). This method returns true for those
 // devices. Currently the list of device model names are sent from server side
@@ -867,6 +860,11 @@ bool IsSyncPointGraphValidationEnabled() {
 
 BASE_FEATURE(kANGLEPerContextBlobCache, base::FEATURE_DISABLED_BY_DEFAULT);
 
+BASE_FEATURE(kANGLETrimMemory, base::FEATURE_ENABLED_BY_DEFAULT);
+
+// Controls whether WebGL contexts trim their ANGLE memory caches when idle.
+BASE_FEATURE(kANGLETrimMemoryOnIdle, base::FEATURE_DISABLED_BY_DEFAULT);
+
 // Support thread safety for graphite::context by sharing the same
 // graphite::context as well as its wrapper class GraphiteSharedContext between
 // GpuMain and CompositorGpuThread. Note: When this feature is disabled,
@@ -904,5 +902,12 @@ BASE_FEATURE(kSendGPUChannelEarly, base::FEATURE_DISABLED_BY_DEFAULT);
 // renderers.
 const base::FeatureParam<bool> kSendGPUChannelEarlyTopChromeOnly{
     &kSendGPUChannelEarly, "for_topchrome_webui_only", false};
+
+// Enables Ganesh/Vulkan MSAA support on Imagination (PowerVR) GPUs.
+BASE_FEATURE(kVulkanImaginationMSAA, base::FEATURE_DISABLED_BY_DEFAULT);
+
+// Kill switch for enforcing exclusive write access.
+BASE_FEATURE(kWrappedSkiaBackingExclusiveAccess,
+             base::FEATURE_DISABLED_BY_DEFAULT);
 
 }  // namespace features

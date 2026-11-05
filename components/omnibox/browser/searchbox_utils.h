@@ -15,10 +15,11 @@
 #include "components/search_engines/template_url.h"
 #include "components/search_engines/template_url_service.h"
 #include "third_party/metrics_proto/omnibox_event.pb.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom-forward.h"
 #include "ui/gfx/vector_icon_types.h"
 
 class AutocompleteController;
+class AutocompleteProviderClient;
 class OmniboxClient;
 
 namespace searchbox {
@@ -144,18 +145,18 @@ AutocompleteMatch GenerateDotComMatch(
     const std::u16string& text_for_desired_tld_navigation,
     AutocompleteInput* generated_input = nullptr);
 
-// Handles opening a match (called by AcceptInput).
+// Handles opening a match (called by AcceptInput). `snapshot` is the input and
+// result the match was activated from; see `MakeAutocompleteSnapshot()`.
 void OpenMatch(AutocompleteController* autocomplete_controller,
                OmniboxClient* client,
-               const AutocompleteInput& input,
+               const AutocompleteSnapshot& snapshot,
                OmniboxPopupSelection selection,
                AutocompleteMatch match,
-               WindowOpenDisposition disposition,
+               ui::mojom::WindowOpenDisposition disposition,
                const InteractionMetricsTracker& metrics_tracker,
                metrics::OmniboxEventProto::KeywordModeEntryMethod
                    keyword_mode_entry_method,
-               const std::u16string& pasted_text,
-               const AutocompleteSnapshot* snapshot = nullptr);
+               const std::u16string& pasted_text);
 
 // Classifies `text` using the AutocompleteClassifier to generate a match and an
 // optional alternate navigation URL.
@@ -189,7 +190,7 @@ void EmitAcceptedKeywordSuggestionHistogram(
     const TemplateURL* turl);
 void RecordSuggestionUsedMetrics(const AutocompleteMatch& match);
 
-WindowOpenDisposition ComputeOpenDispositionFromModifiersAndLogToUma(
+ui::mojom::WindowOpenDisposition ComputeOpenDispositionFromModifiersAndLogToUma(
     bool shift,
     bool control,
     bool alt,
@@ -197,6 +198,41 @@ WindowOpenDisposition ComputeOpenDispositionFromModifiersAndLogToUma(
 
 // Returns the correct VectorIcon for a given TemplateURL (Keyword provider).
 const gfx::VectorIcon& GetKeywordVectorIcon(const TemplateURL& turl);
+
+// Returns the screen reader label for `selection` within `result`. This is an
+// extended version of AutocompleteMatchType::ToAccessibilityLabel() which also
+// narrates any focused secondary button and the controls available on the
+// match. Shared by the omnibox edit model and the WebUI searchbox handler so
+// that all omnibox UIs announce the same text.
+//   - `header_text` is the suggestion group header text for the match.
+//   - `match_text` is the text narrated for the match, i.e. the text shown in
+//     the input when the match is selected (typically `fill_into_edit`).
+//   - `include_positional_info` controls whether "n of m" is appended. It is
+//     always omitted when a button is focused.
+//   - `client` is used to check whether the match shows the "Opens in side
+//     panel" description, which is then also narrated.
+// `selection.line` must not be kNoMatch.
+std::u16string GetAccessibilityLabelForSelection(
+    const AutocompleteResult& result,
+    const OmniboxPopupSelection& selection,
+    const std::u16string& header_text,
+    const std::u16string& match_text,
+    bool include_positional_info,
+    const TemplateURLService* template_url_service,
+    const AutocompleteProviderClient* client,
+    int* label_prefix_length = nullptr);
+
+// The IPH message that sometimes appears at the bottom of the omnibox is
+// informational only and cannot be selected/focused. Its a11y label therefore
+// has to be read at the end of the preceding suggestion. Returns the label for
+// the IPH row if `selection` is right before the IPH row. Otherwise, returns
+// an empty string. `selection.line` must not be kNoMatch.
+std::u16string GetAccessibilityLabelForFollowingIphSuggestion(
+    const AutocompleteInput& input,
+    const AutocompleteResult& result,
+    const OmniboxPopupSelection& selection,
+    TemplateURLService* template_url_service,
+    bool aim_button_visible);
 
 }  // namespace searchbox
 

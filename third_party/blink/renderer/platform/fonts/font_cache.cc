@@ -37,6 +37,7 @@
 #include "base/byte_size.h"
 #include "base/debug/alias.h"
 #include "base/feature_list.h"
+#include "base/no_destructor.h"
 #include "base/notreached.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/strings/escape.h"
@@ -109,8 +110,8 @@ void FontCache::PrewarmFamily(const AtomicString& family_name) {
     return;
   }
 
-  DEFINE_STATIC_LOCAL(HashSet<AtomicString>, prewarmed_families, ());
-  const auto result = prewarmed_families.insert(family_name);
+  static base::NoDestructor<HashSet<AtomicString>> prewarmed_families;
+  const auto result = prewarmed_families->insert(family_name);
   if (!result.is_new_entry) {
     return;
   }
@@ -160,7 +161,7 @@ const FontPlatformData* FontCache::GetFontPlatformData(
   TRACE_EVENT0("fonts", "FontCache::GetFontPlatformData");
 
 #if !BUILDFLAG(IS_MAC)
-  if (creation_params.CreationType() == kCreateFontByFamily &&
+  if (creation_params.CreationType() == FontFaceCreationType::kFamily &&
       creation_params.Family() == font_family_names::kSystemUi) {
     return SystemFontPlatformData(font_description);
   }
@@ -240,9 +241,10 @@ const SimpleFontData* FontCache::FallbackFontForCharacter(
   // http://www.unicode.org/faq/private_use.html#nonchar1 - See also
   // crbug.com/862352 where performing fallback for U+FFFE causes a memory
   // regression.
-  if (Character::IsPrivateUse(lookup_char) ||
-      Character::IsNonCharacter(lookup_char))
+  if (unicode::IsPrivateUse(lookup_char) ||
+      unicode::IsNonCharacter(lookup_char)) {
     return nullptr;
+  }
   base::ElapsedTimer timer;
   const SimpleFontData* result = PlatformFallbackFontForCharacter(
       description, lookup_char, font_data_to_substitute, fallback_priority);
@@ -269,6 +271,7 @@ void FontCache::Invalidate() {
   font_data_cache_.Clear();
   unique_name_typeface_cache_.clear();
 #if BUILDFLAG(IS_MAC)
+  character_fallback_cache_.clear();
   unavailable_font_families_.clear();
 #endif
 
@@ -353,9 +356,14 @@ FontCache::Bcp47Vector FontCache::GetBcp47LocaleForRequest(
           LayoutLocale::LocaleForHan(content_locale)) {
     result.push_back(han_locale->LocaleForHanForSkFontMgr());
   }
-  result.push_back(LayoutLocale::GetDefault().LocaleForSkFontMgr());
-  if (content_locale)
-    result.push_back(content_locale->LocaleForSkFontMgr());
+  if (RuntimeEnabledFeatures::FontFallbackPreferContentLocaleEnabled()) {
+    result.push_back(font_description.LocaleOrDefault().LocaleForSkFontMgr());
+  } else {
+    result.push_back(LayoutLocale::GetDefault().LocaleForSkFontMgr());
+    if (content_locale) {
+      result.push_back(content_locale->LocaleForSkFontMgr());
+    }
+  }
 
   if (IsEmojiPresentationEmoji(fallback_priority)) {
     result.push_back(kColorEmojiLocale);

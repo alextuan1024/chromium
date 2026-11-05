@@ -134,6 +134,9 @@ class COMPOSITOR_EXPORT ContextFactory {
 
   // Gets the frame sink manager host instance.
   virtual viz::HostFrameSinkManager* GetHostFrameSinkManager() = 0;
+
+  // Gets the task runner used by a compositor created with this factory.
+  virtual scoped_refptr<base::SingleThreadTaskRunner> GetCompositorTaskRunner();
 };
 
 // Factory object to create a ExternalBeginFrameControllerClient on demand.
@@ -164,7 +167,6 @@ class COMPOSITOR_EXPORT Compositor
              scoped_refptr<base::SingleThreadTaskRunner> task_runner,
              bool enable_pixel_canvas,
              bool use_external_begin_frame_control = false,
-             bool force_software_compositor = false,
              bool enable_compositing_based_throttling = false,
              size_t memory_limit_when_visible_mb = 0);
 
@@ -311,14 +313,6 @@ class COMPOSITOR_EXPORT Compositor
   // The compositor must be set to invisible when taking away a widget.
   gfx::AcceleratedWidget ReleaseAcceleratedWidget();
   gfx::AcceleratedWidget widget() const;
-
-  // This flag is used to force a compositor into software compositing even tho
-  // in general chrome is using gpu compositing. This allows the compositor to
-  // be created without a gpu context, and does not go through the gpu path at
-  // all. This flag can not be used with a compositor that embeds any external
-  // content via a SurfaceLayer, as they would not agree on what compositing
-  // mode to use for resources, but may be used eg for tooltip windows.
-  bool force_software_compositor() { return force_software_compositor_; }
 
   // Returns the main thread task runner this compositor uses. Users of the
   // compositor generally shouldn't use this.
@@ -542,13 +536,13 @@ class COMPOSITOR_EXPORT Compositor
   const cc::PropertyTrees* property_trees() const;
 
   ExternalBeginFrameControllerClientFactory*
-  external_begin_frame_controler_client_factory() {
-    return external_begin_frame_controler_client_factory_.get();
+  external_begin_frame_controller_client_factory() {
+    return external_begin_frame_controller_client_factory_.get();
   }
 
   void SetExternalBeginFrameControllerClientFactory(
       ExternalBeginFrameControllerClientFactory* factory) {
-    external_begin_frame_controler_client_factory_ = factory;
+    external_begin_frame_controller_client_factory_ = factory;
   }
 
   // Sets wait_for_all_frame_sinks in RootCompositorFrameSinkParams.
@@ -601,8 +595,8 @@ class COMPOSITOR_EXPORT Compositor
   mojo::AssociatedRemote<viz::mojom::DisplayPrivate> display_private_;
   mojo::AssociatedRemote<viz::mojom::ExternalBeginFrameController>
       external_begin_frame_controller_;
-  raw_ptr<ExternalBeginFrameControllerClientFactory, DanglingUntriaged>
-      external_begin_frame_controler_client_factory_;
+  raw_ptr<ExternalBeginFrameControllerClientFactory>
+      external_begin_frame_controller_client_factory_;
   bool wait_for_all_frame_sinks_ = true;
 
   // Used to hold on to IssueExternalBeginFrame(NoAck) arguments if
@@ -673,7 +667,6 @@ class COMPOSITOR_EXPORT Compositor
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
   const bool use_external_begin_frame_control_;
-  const bool force_software_compositor_;
 
   // The device scale factor of the monitor that this compositor is compositing
   // layers on.

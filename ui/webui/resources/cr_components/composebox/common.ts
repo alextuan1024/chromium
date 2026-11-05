@@ -7,7 +7,7 @@ import {assertNotReachedCase} from '//resources/js/assert.js';
 import {loadTimeData} from '//resources/js/load_time_data.js';
 import type {FuseboxAction, SuggestInventory} from '//resources/mojo/components/omnibox/browser/fusebox_action.mojom-webui.js';
 import {TabAttachmentSource} from '//resources/mojo/components/omnibox/browser/searchbox.mojom-webui.js';
-import type {DriveUploadError, SearchContextAttachment, SelectedFileInfo, TabInfo} from '//resources/mojo/components/omnibox/browser/searchbox.mojom-webui.js';
+import type {DriveUploadError, SelectedFileInfo, TabInfo} from '//resources/mojo/components/omnibox/browser/searchbox.mojom-webui.js';
 import type {UnguessableToken} from '//resources/mojo/mojo/public/mojom/base/unguessable_token.mojom-webui.js';
 import type {Url} from '//resources/mojo/url/mojom/url.mojom-webui.js';
 
@@ -57,11 +57,12 @@ export enum ProcessFilesError {
   NONE = 0,
   INVALID_TYPE = 1,
   FILE_TOO_LARGE = 2,
-  FILE_EMPTY = 3,
-  MAX_FILES_EXCEEDED = 4,
-  MAX_IMAGES_EXCEEDED = 5,
-  MAX_PDFS_EXCEEDED = 6,
-  FILE_UPLOAD_NOT_ALLOWED = 7,
+  IMAGE_TOO_LARGE = 3,
+  FILE_EMPTY = 4,
+  MAX_FILES_EXCEEDED = 5,
+  MAX_IMAGES_EXCEEDED = 6,
+  MAX_PDFS_EXCEEDED = 7,
+  FILE_UPLOAD_NOT_ALLOWED = 8,
 }
 
 export enum TabSuggestionsState {
@@ -133,12 +134,9 @@ export class ComposeboxFile {
   supportsUnimodal: boolean;
   thumbnailUrl?: string|null;
   iconUrl?: Url|null;
-  origin?: TabUploadOrigin;
-  // True if this is a placeholder ("ghost") entry created from an upload
-  // status update for a token the frontend does not know about yet. Its
-  // metadata, including `inputType`, is not yet known and must not be relied
-  // on until the entry is replaced by a fully hydrated one.
-  isGhost?: boolean;
+  origin?: TabAttachmentSource;
+  delayUpload?: boolean;
+  singleTabType?: SingleTabType;
 
   constructor(
       uuid: UnguessableToken, name: string, type: string, inputType: InputType,
@@ -158,7 +156,8 @@ export class ComposeboxFile {
     this.thumbnailUrl = options?.thumbnailUrl ?? null;
     this.iconUrl = options?.iconUrl ?? null;
     this.origin = options?.origin;
-    this.isGhost = options?.isGhost ?? false;
+    this.delayUpload = options?.delayUpload ?? false;
+    this.singleTabType = options?.singleTabType;
   }
 
   static createFromFile(
@@ -203,6 +202,9 @@ export interface ComposeboxState {
   error?: DriveUploadError;
   mode: ToolMode;
   model: ModelMode;
+  // Whether to open in AI Mode (e.g. from the AI Mode button), which selects
+  // the default model. Only matters with dynamic AIM fulfillment.
+  enterAimMode?: boolean;
   suggestInventory?: SuggestInventory;
   // <if expr="not is_android">
   smartTabSharingActive: boolean;
@@ -221,46 +223,9 @@ export interface DriveUpload {
   iconUrl: Url|null;
 }
 
-export enum TabUploadOrigin {
-  CONTEXT_MENU = 0,
-  CURRENT_TAB_CHIP = 1,
-  ACTION_CHIP = 2,
-  AUTO_ACTIVE = 3,
-  OTHER = 4,
-  AUTO_ADDED = 5,
-}
-
-// TODO (crbug.com/542691701): Consolidate the two enums if possible
-// to avoid duplication.
-const ORIGIN_TO_MOJO: Record<TabUploadOrigin, TabAttachmentSource> = {
-  [TabUploadOrigin.CONTEXT_MENU]: TabAttachmentSource.kContextMenu,
-  [TabUploadOrigin.CURRENT_TAB_CHIP]: TabAttachmentSource.kCurrentTabChip,
-  [TabUploadOrigin.ACTION_CHIP]: TabAttachmentSource.kActionChip,
-  [TabUploadOrigin.AUTO_ACTIVE]: TabAttachmentSource.kAutoActive,
-  [TabUploadOrigin.AUTO_ADDED]: TabAttachmentSource.kAutoAdded,
-  [TabUploadOrigin.OTHER]: TabAttachmentSource.kOther,
-};
-
-export function mapOriginToMojoSource(origin?: TabUploadOrigin): TabAttachmentSource {
-  return origin === undefined ? TabAttachmentSource.kOther : ORIGIN_TO_MOJO[origin];
-}
-
-const MOJO_TO_ORIGIN: Record<TabAttachmentSource, TabUploadOrigin> = {
-  [TabAttachmentSource.kContextMenu]: TabUploadOrigin.CONTEXT_MENU,
-  [TabAttachmentSource.kCurrentTabChip]: TabUploadOrigin.CURRENT_TAB_CHIP,
-  [TabAttachmentSource.kActionChip]: TabUploadOrigin.ACTION_CHIP,
-  [TabAttachmentSource.kAutoActive]: TabUploadOrigin.AUTO_ACTIVE,
-  [TabAttachmentSource.kAutoAdded]: TabUploadOrigin.AUTO_ADDED,
-  [TabAttachmentSource.kOther]: TabUploadOrigin.OTHER,
-};
-
-export function mapMojoSourceToOrigin(source: TabAttachmentSource): TabUploadOrigin {
-  return MOJO_TO_ORIGIN[source];
-}
-
-export function isAutoAddedOrigin(origin?: TabUploadOrigin): boolean {
-  return origin === TabUploadOrigin.AUTO_ADDED ||
-      origin === TabUploadOrigin.CURRENT_TAB_CHIP;
+export function isAutoAddedOrigin(origin?: TabAttachmentSource): boolean {
+  return origin === TabAttachmentSource.kAutoAdded ||
+      origin === TabAttachmentSource.kCurrentTabChip;
 }
 
 export function hasOnlyAutoAddedTabs(
@@ -336,11 +301,20 @@ export class ComposeboxInputModel {
                tabId: file.tabId!,
                title: file.name,
                url: file.url!,
+               // A tab coin is "loading" while its context upload is still in
+               // flight. This mirrors `pendingUploads`, which gates the submit
+               // button, so the skeleton and the disabled submit button agree.
+               isLoading: !isContextUploadStatusTerminal(file.status),
+               recentTab: false,
              } as TabInfo));
   }
 
   hasFiles(): boolean {
     return this.attachedContext.size > 0;
+  }
+
+  hasMultipleFiles(): boolean {
+    return this.attachedContext.size > 1 || this.smartTabSharingActive;
   }
 
   hasOnlyAutoAddedTabs(): boolean {
@@ -375,21 +349,9 @@ export class ComposeboxInputModel {
   }
 }
 
-export function hasOnlyAutoAddedTabAttachments(
-    attachments: SearchContextAttachment[]): boolean {
-  if (attachments.length === 0) {
-    return false;
-  }
-  for (const attachment of attachments) {
-    if (!attachment.tabAttachment) {
-      return false;
-    }
-    const origin = mapMojoSourceToOrigin(attachment.tabAttachment.source);
-    if (!isAutoAddedOrigin(origin)) {
-      return false;
-    }
-  }
-  return true;
+export enum SingleTabType {
+  RECENT_TAB = 'RecentTab',
+  CURRENT_TAB = 'CurrentTab',
 }
 
 export interface TabUpload {
@@ -397,7 +359,8 @@ export interface TabUpload {
   url: Url;
   title: string;
   delayUpload: boolean;
-  origin: TabUploadOrigin;
+  origin: TabAttachmentSource;
+  singleTabType?: SingleTabType;
 }
 
 export interface BrowserFileUpload {
@@ -423,6 +386,16 @@ export enum GlifAnimationState {
   FINISHED = 'finished',
 }
 
+export enum VoiceSearchAction {
+  ACTIVATE = 0,
+  QUERY_SUBMITTED = 1,
+}
+
+export enum SubmitButtonIconType {
+  FORWARD = 'forward',
+  UPWARD = 'upward',
+}
+
 // LINT.IfChange(ContextualSearchInputStateDeletionType)
 export enum ContextualSearchInputStateDeletionType {
   FILE = 0,
@@ -431,6 +404,40 @@ export enum ContextualSearchInputStateDeletionType {
   MAX_VALUE = 2,
 }
 // LINT.ThenChange(//tools/metrics/histograms/metadata/contextual_search/enums.xml:ContextualSearchInputStateDeletionType)
+
+// LINT.IfChange(SingleTabMenuItemAction)
+
+// These values are persisted to logs. Entries should not be renumbered and
+// numeric values should never be reused.
+export enum SingleTabMenuItemAction {
+  RECENT_TAB_SELECTED = 0,
+  RECENT_TAB_DESELECTED = 1,
+  RECENT_TAB_SUBMITTED = 2,
+  CURRENT_TAB_SELECTED = 3,
+  CURRENT_TAB_DESELECTED = 4,
+  CURRENT_TAB_SUBMITTED = 5,
+  MAX_VALUE = CURRENT_TAB_SUBMITTED,
+}
+
+// LINT.ThenChange(//components/omnibox/common/omnibox_metrics_utils.h:SingleTabMenuItemAction,
+// //tools/metrics/histograms/metadata/contextual_search/enums.xml:ContextualSearchSingleTabMenuItemAction)
+
+export function recordSingleTabMenuItemAction(
+    action: SingleTabMenuItemAction, composeboxSource: string) {
+  recordEnumerationValue(
+      `ContextualSearch.SingleTabMenuItem.Action.${composeboxSource}`, action,
+      SingleTabMenuItemAction.MAX_VALUE + 1);
+}
+
+// LINT.IfChange(RichImageSuggestBatchLoadStatus)
+export enum RichImageSuggestBatchLoadStatus {
+  CACHED = 0,
+  LOADED = 1,
+  TIMED_OUT = 2,
+  SUPERSEDED = 3,
+  MAX_VALUE = SUPERSEDED,
+}
+// LINT.ThenChange(//tools/metrics/histograms/metadata/contextual_search/enums.xml:RichImageSuggestBatchLoadStatus)
 
 export function recordEnumerationValue(
     metricName: string, value: number, enumSize: number) {
@@ -454,6 +461,42 @@ export function recordBoolean(metricName: string, value: boolean) {
   }
 }
 
+export function recordCount(metricName: string, value: number) {
+  const metricsService = chrome.histograms || chrome.metricsPrivate;
+  if (metricsService) {
+    metricsService.recordCount(metricName, value);
+  }
+}
+
+export function recordTime(metricName: string, value: number) {
+  const metricsService = chrome.histograms || chrome.metricsPrivate;
+  if (metricsService) {
+    metricsService.recordTime(metricName, value);
+  }
+}
+
+export function recordRichImageSuggestBatchLoadStatus(
+    status: RichImageSuggestBatchLoadStatus, composeboxSource: string) {
+  recordEnumerationValue(
+      `ContextualSearch.RichImageSuggest.BatchLoadStatus.${composeboxSource}`,
+      status, RichImageSuggestBatchLoadStatus.MAX_VALUE + 1);
+}
+
+export function recordRichImageSuggestBatchLoadLatency(
+    latencyMs: number, composeboxSource: string) {
+  recordTime(
+      `ContextualSearch.RichImageSuggest.BatchLoadLatency.${composeboxSource}`,
+      Math.round(latencyMs));
+}
+
+export function recordRichImageSuggestClicked(composeboxSource: string) {
+  recordCount(
+      `ContextualSearch.RichImageSuggest.Clicked.${composeboxSource}`, 1);
+}
+
+export function recordRichImageSuggestShown(composeboxSource: string) {
+  recordCount(`ContextualSearch.RichImageSuggest.Shown.${composeboxSource}`, 1);
+}
 // TODO(crbug.com/468329884): Consider making this a new contextual entry
 // source so the realbox and composebox don't both get logged as NTP.
 export function recordContextAdditionMethod(
@@ -642,6 +685,44 @@ export function getLoadTimeBoolean(id: string, defaultValue: boolean): boolean {
                                         defaultValue;
 }
 
+export function getLoadTimeInteger(id: string, defaultValue: number): number {
+  return loadTimeData.valueExists(id) ? loadTimeData.getInteger(id) :
+                                        defaultValue;
+}
+
+// MIME types of HEIC/HEIF images, keyed by lowercase file extension.
+const HEIF_MIME_TYPES_BY_EXTENSION = new Map<string, string>([
+  ['heic', 'image/heic'],
+  ['heif', 'image/heif'],
+]);
+
+function getLowercaseExtension(fileName?: string): string {
+  if (!fileName) {
+    return '';
+  }
+  const dotIndex = fileName.lastIndexOf('.');
+  return dotIndex === -1 ? '' : fileName.slice(dotIndex + 1).toLowerCase();
+}
+
+// Returns the MIME type of `file`. Some platforms do not report a MIME type
+// for HEIC/HEIF files (e.g. uppercase `.HEIC` on Linux, or Windows without the
+// HEIF extension installed), so infer it from the file extension in that case.
+export function getFileMimeType(file: {name?: string, type?: string}): string {
+  if (file.type) {
+    return file.type;
+  }
+  return HEIF_MIME_TYPES_BY_EXTENSION.get(getLowercaseExtension(file.name)) ??
+      '';
+}
+
+// Returns true if `file` is a HEIC/HEIF image, which Chrome cannot render in
+// an <img> element.
+export function isHeifImage(file: {name?: string, type?: string}): boolean {
+  const type = (file.type ?? '').toLowerCase();
+  return type === 'image/heic' || type === 'image/heif' ||
+      HEIF_MIME_TYPES_BY_EXTENSION.has(getLowercaseExtension(file.name));
+}
+
 export function isContextUploadStatusTerminal(status: ContextUploadStatus):
     boolean {
   switch (status) {
@@ -696,4 +777,94 @@ export enum SmartTabSharingSurface {
   OMNIBOX_COMPOSEBOX = 0,
   CONTEXTUAL_SEARCHBOX = 1,
   MAX_VALUE = CONTEXTUAL_SEARCHBOX,
+}
+
+// LINT.IfChange(TabPickerSurface)
+
+// Histogram name suffix identifying which tab picker implementation recorded
+// the sample.
+export enum TabPickerSurface {
+  // The tab picker page served by the Contextual Tasks component extension
+  // (tab_picker.html, a web-accessible resource the AIM web page embeds).
+  CONTEXTUAL_TASKS_EXTENSION = 'ContextualTasksExtension',
+  // The tab picker flyout embedded in the in-WebUI composebox action menu in
+  // Contextual Tasks.
+  CONTEXTUAL_TASKS_WEB_UI = 'ContextualTasksWebUi',
+  // The tab picker flyout embedded in the in-WebUI composebox action menu on
+  // the New Tab Page.
+  NEW_TAB_PAGE = 'NewTabPage',
+  // The tab picker flyout embedded in the in-WebUI composebox action menu in
+  // the Omnibox.
+  OMNIBOX = 'Omnibox',
+}
+
+// LINT.ThenChange(//tools/metrics/histograms/metadata/contextual_search/histograms.xml:TabPickerSurface)
+
+export function mapMetricsSourceToTabPickerSurface(metricsSource: string):
+    TabPickerSurface|null {
+  switch (metricsSource) {
+    case 'ContextualTasks':
+      return TabPickerSurface.CONTEXTUAL_TASKS_WEB_UI;
+    case 'NewTabPage':
+      return TabPickerSurface.NEW_TAB_PAGE;
+    case 'Omnibox':
+    case 'OmniboxEverywhere':
+      return TabPickerSurface.OMNIBOX;
+    default:
+      return null;
+  }
+}
+
+// Largest position the tab picker position histogram records explicitly; higher
+// positions land in the overflow bucket. This is a histogram bound, not a limit
+// on the suggestion list -- that is driven by the
+// NtpComposeboxContextMenuMaxTabSuggestions Finch param, which currently
+// defaults to 3. The bound is deliberately generous so that raising the param
+// does not require changing the histogram.
+const TAB_PICKER_POSITION_HISTOGRAM_MAX = 20;
+
+/**
+ * Records which tab the user attached from the tab picker, along two
+ * independent axes.
+ *
+ * These are deliberately separate histograms rather than one enum, because the
+ * two properties are orthogonal and frequently co-occur:
+ *  - `isActiveTab` comes from TabInfo.showInCurrentTabChip, which the browser
+ *    computes by comparing the tab's URL against the active tab's URL.
+ *  - `index` is the tab's position in the suggestion list, which the browser
+ *    sorts by descending recency. Index 0 is the most recently active eligible
+ *    tab, and is the entry the UI badges as "Recent".
+ *
+ * `SelectedTabIsActive` is only recorded when an active tab candidate is
+ * present in the suggestion list (`hasActiveTabCandidate` is true, or
+ * `isActiveTab` is true). In full tab mode or on the New Tab Page, the active
+ * tab is an internal chrome:// page and is excluded from the list, so no sample
+ * is recorded to avoid skewing the metric.
+ */
+export function recordTabPickerTabSelected(
+    surface: TabPickerSurface, isActiveTab: boolean, index: number,
+    hasActiveTabCandidate: boolean = false) {
+  if (hasActiveTabCandidate || isActiveTab) {
+    recordBoolean(
+        `ContextualSearch.TabPicker.SelectedTabIsActive.${surface}`,
+        isActiveTab);
+  }
+  if (index < 0) {
+    // The tab is no longer in the suggestion list; position is meaningless.
+    return;
+  }
+  recordEnumerationValue(
+      `ContextualSearch.TabPicker.SelectedTabPosition.${surface}`,
+      Math.min(index, TAB_PICKER_POSITION_HISTOGRAM_MAX),
+      TAB_PICKER_POSITION_HISTOGRAM_MAX + 1);
+}
+
+// Returns a CSP-safe image URL using Chrome's SanitizedImageSource
+// (//image?...).
+export function computeImageUrl(url: string|undefined): string {
+  if (!url) {
+    return '';
+  }
+  return `//image?staticEncode=true&encodeType=webp&url=${
+      encodeURIComponent(url)}`;
 }

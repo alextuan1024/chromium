@@ -68,6 +68,7 @@
 #include "base/location.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
+#include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/time/time.h"
@@ -1463,7 +1464,8 @@ void CaptureModeSession::OnPerformCaptureForSearchStarting(
 }
 
 void CaptureModeSession::OnPerformCaptureForSearchEnded(
-    PerformCaptureType capture_type) {
+    PerformCaptureType capture_type,
+    bool capture_succeeded) {
   is_capturing_for_search_ = false;
   // Repaint the layer to reveal the capture region border and affordance
   // circles.
@@ -1473,6 +1475,11 @@ void CaptureModeSession::OnPerformCaptureForSearchEnded(
     return;
   }
   ShowAllWidgets();
+
+  if (!capture_succeeded) {
+    MaybeRemoveGlowAnimation();
+    return;
+  }
 
   if (active_behavior_->ShouldShowGlowWhileProcessingCaptureType(
           capture_type)) {
@@ -3808,9 +3815,18 @@ void CaptureModeSession::RefreshGlowRegion() {
 }
 
 void CaptureModeSession::InvalidateImageSearch() {
+  const bool was_capturing_for_search = is_capturing_for_search_;
+  is_capturing_for_search_ = false;
   weak_token_factory_.InvalidateWeakPtrs();
   image_search_request_timer_.Stop();
   MaybeRemoveGlowAnimation();
+
+  // If capture was in-flight, restore the region border, affordance circles,
+  // and selection widgets that were hidden when capture started.
+  if (was_capturing_for_search && !is_shutting_down_) {
+    ShowAllWidgets();
+    RepaintRegion();
+  }
 }
 
 void CaptureModeSession::InitInternal() {

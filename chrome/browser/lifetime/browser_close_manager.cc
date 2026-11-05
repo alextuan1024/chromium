@@ -37,6 +37,10 @@
 #include "chrome/browser/notifications/notification_ui_manager.h"
 #endif
 
+#if BUILDFLAG(IS_MAC)
+#include "chrome/browser/chrome_browser_application_mac.h"
+#endif
+
 namespace {
 
 // Navigates a browser window for |profile|, creating one if necessary, to the
@@ -78,10 +82,16 @@ void BrowserCloseManager::CancelBrowserClose() {
     close_timer_.reset();
   }
 
+#if BUILDFLAG(IS_MAC)
+  // Must be called BEFORE SetTryingToQuit(false) so that AppController's
+  // stopTryingToTerminateApplication sees IsTryingToQuit() == true and calls
+  // cancelConfirmQuitPanel to restore window alpha via FadeAllWindowsAnimation.
+  chrome_browser_application_mac::CancelTerminate();
+#endif
   browser_shutdown::SetTryingToQuit(false);
   GlobalBrowserCollection::GetInstance()->ForEach(
       [](BrowserWindowInterface* browser) {
-        UnloadController::From(browser)->ResetTryToCloseWindow();
+        UnloadController::From(browser)->ResetBeforeUnloadForShutdown();
         return true;
       },
       BrowserCollection::Order::kCreation);
@@ -96,7 +106,7 @@ void BrowserCloseManager::TryToCloseBrowsers() {
   bool should_stop = false;
   GlobalBrowserCollection::GetInstance()->ForEach(
       [this, &should_stop](BrowserWindowInterface* browser) {
-        if (UnloadController::From(browser)->TryToCloseWindow(
+        if (UnloadController::From(browser)->RunBeforeUnloadForShutdown(
                 false,
                 base::BindRepeating(
                     &BrowserCloseManager::OnBrowserReportCloseable, this))) {

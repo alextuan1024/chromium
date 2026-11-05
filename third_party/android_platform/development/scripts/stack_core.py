@@ -50,9 +50,11 @@ _PROCESS_INFO_LINE = re.compile(r'(pid: [0-9]+, tid: [0-9]+.*)')
 _PROCESS_INFO_PID = re.compile(r'pid: ([0-9]+)')
 _SIGNAL_LINE = re.compile(r'(signal [0-9]+ \(.*\).*)')
 _REGISTER_LINE = re.compile(r'(([ ]*[0-9a-z]{2} [0-9a-f]{8}){4})')
-_THREAD_LINE = re.compile(r'(.*)(\-\-\- ){15}\-\-\-')
-_DALVIK_JNI_THREAD_LINE = re.compile(r"(\".*\" prio=[0-9]+ tid=[0-9]+ NATIVE.*)")
-_DALVIK_NATIVE_THREAD_LINE = re.compile(r"(\".*\" sysTid=[0-9]+ nice=[0-9]+.*)")
+_THREAD_LINE = re.compile(r'^(.*)(\-\-\- ){15}\-\-\-')
+_DALVIK_JNI_THREAD_LINE = re.compile(
+    r'^[^\"]*(\".*\" prio=[0-9]+ tid=[0-9]+ NATIVE.*)')
+_DALVIK_NATIVE_THREAD_LINE = re.compile(
+    r'^[^\"]*(\".*\" sysTid=[0-9]+ nice=[0-9]+.*)')
 _JAVA_STDERR_LINE = re.compile(r"([0-9]+)\s+[0-9]+\s+.\s+System.err:\s*(.+)")
 _MISC_HEADER = re.compile(
     r'(?:Tombstone written to:|Abort message:|Revision:|Build fingerprint:).*')
@@ -76,14 +78,15 @@ _LOG_FATAL_LINE = re.compile(r'(\[FATAL\:.*\].*)$')
 #   03-25 00:51:05.520 I/DEBUG ( 65): #00 pc 001cf42e /data/data/com.my.project/lib/libmyproject.so
 # Please note the spacing differences.
 _TRACE_LINE = re.compile(
-    r'(.*)\#(?P<frame>[0-9]+)[ \t]+(..)[ \t]+(0x)?(?P<address>[0-9a-f]{0,16})[ \t]+(?P<lib>[^\r\n \t]*)(?P<symbol_present> \((?P<symbol_name>.*)\))?'
+    r'^(.*)\#(?P<frame>[0-9]+)[ \t]+(..)[ \t]+(0x)?(?P<address>[0-9a-f]{0,16})'
+    r'[ \t]+(?P<lib>[^\r\n \t]*)(?P<symbol_present> \((?P<symbol_name>.*)\))?'
 )
 
 # Matches lines emitted by src/base/debug/stack_trace_android.cc, like:
 #   #00 0x7324d92d /data/app-lib/org.chromium.native_test-1/libbase.cr.so+0x0006992d
 # This pattern includes the unused named capture groups <symbol_present> and
 # <symbol_name> so that it can interoperate with the |_TRACE_LINE| regex.
-_DEBUG_TRACE_LINE = re.compile(r'(.*)#(?P<frame>[0-9]+) 0x[0-9a-f]{8,16} '
+_DEBUG_TRACE_LINE = re.compile(r'^(.*)#(?P<frame>[0-9]+) 0x[0-9a-f]{8,16} '
                                r'(?P<lib>[^+]+)\+0x(?P<address>[0-9a-f]{8,16})'
                                r'(?P<symbol_present>)(?P<symbol_name>)')
 
@@ -93,7 +96,7 @@ _DEBUG_TRACE_LINE = re.compile(r'(.*)#(?P<frame>[0-9]+) 0x[0-9a-f]{8,16} '
 #   03-25 00:51:05.530 I/DEBUG ( 65): bea4170c 8018e4e9 /data/data/com.my.project/lib/libmyproject.so
 # Again, note the spacing differences.
 _VALUE_LINE = re.compile(
-    r'(.*)([0-9a-f]{8,16})[ \t]+([0-9a-f]{8,16})[ \t]+([^\r\n \t]*)( \((.*)\))?')
+    r'^(.*)([0-9a-f]{8,16})[ \t]+([0-9a-f]{8,16})[ \t]+([^\r\n \t]*)( \((.*)\))?')
 # Lines from 'code around' sections of the output will be matched before
 # value lines because otheriwse the 'code around' sections will be confused as
 # value lines.
@@ -101,9 +104,9 @@ _VALUE_LINE = re.compile(
 # Examples include:
 #   801cf40c ffffc4cc 00b2f2c5 00b2f1c7 00c1e1a8
 #   03-25 00:51:05.530 I/DEBUG ( 65): 801cf40c ffffc4cc 00b2f2c5 00b2f1c7 00c1e1a8
-_CODE_LINE = re.compile(r'(.*)[ \t]*[a-f0-9]{8,16}[ \t]*[a-f0-9]{8,16}' +
-                        r'[ \t]*[a-f0-9]{8,16}[ \t]*[a-f0-9]{8,16}' +
-                        r'[ \t]*[a-f0-9]{8,16}[ \t]*[ \r\n]')
+_CODE_LINE = re.compile(r'^(.*)[ \t]*[a-f0-9]{8,16}[ \t]+[a-f0-9]{8,16}' +
+                        r'[ \t]+[a-f0-9]{8,16}[ \t]+[a-f0-9]{8,16}' +
+                        r'[ \t]+[a-f0-9]{8,16}[ \t]*(?:[ \r\n]|$)')
 
 # This pattern is used to find shared library offset in APK.
 # Example:
@@ -111,6 +114,35 @@ _CODE_LINE = re.compile(r'(.*)[ \t]*[a-f0-9]{8,16}[ \t]*[a-f0-9]{8,16}' +
 _SHARED_LIB_OFFSET_IN_APK = re.compile(r' \(offset 0x(?P<offset>[0-9a-f]{0,16})\)')
 
 # pylint: enable=line-too-long
+
+
+def IsTraceLine(line):
+  """Returns True if |line| is a native backtrace frame (#00 pc ...)."""
+  return bool(_TRACE_LINE.match(line) or _DEBUG_TRACE_LINE.search(line))
+
+
+def _IsHeaderOrDebugLine(line):
+  return bool(_PROCESS_INFO_LINE.search(line)
+              or _SIGNAL_LINE.search(line)
+              or _REGISTER_LINE.search(line)
+              or _THREAD_LINE.search(line)
+              or _DALVIK_JNI_THREAD_LINE.search(line)
+              or _DALVIK_NATIVE_THREAD_LINE.search(line)
+              or _LOG_FATAL_LINE.search(line)
+              or _DEBUG_TRACE_LINE.search(line)
+              or _ABI_LINE.search(line)
+              or _JAVA_STDERR_LINE.search(line)
+              or _MISC_HEADER.search(line)
+              or _GENERIC_USEFUL_LOG_HEADER.search(line))
+
+
+def IsStackContinuationLine(line):
+  """Returns True if |line| is kept by PreProcessLog during a stack dump."""
+  if _CODE_LINE.match(line):
+    return False
+  return bool(_IsHeaderOrDebugLine(line)
+              or _TRACE_LINE.match(line)
+              or _VALUE_LINE.match(line))
 
 def _BuildIdFromElf(elf_path):
   """Returns the Build ID for the given binary."""
@@ -218,8 +250,8 @@ def StreamingConvertTrace(_, load_vaddrs, more_info, fallback_so_file,
         useful_lines = []
         in_stack = False
     else:
-      if _TRACE_LINE.match(line) or _DEBUG_TRACE_LINE.match(line) or \
-          _VALUE_LINE.match(line) or _CODE_LINE.match(line):
+      if (IsTraceLine(line) or _VALUE_LINE.match(line)
+          or _CODE_LINE.match(line)):
         in_stack = True
     if pass_through:
       sys.stdout.write(line)
@@ -350,18 +382,7 @@ class PreProcessLog:
       else:
         line = ln.decode(encoding='utf8', errors='ignore')
 
-      if (_PROCESS_INFO_LINE.search(line)
-          or _SIGNAL_LINE.search(line)
-          or _REGISTER_LINE.search(line)
-          or _THREAD_LINE.search(line)
-          or _DALVIK_JNI_THREAD_LINE.search(line)
-          or _DALVIK_NATIVE_THREAD_LINE.search(line)
-          or _LOG_FATAL_LINE.search(line)
-          or _DEBUG_TRACE_LINE.search(line)
-          or _ABI_LINE.search(line)
-          or _JAVA_STDERR_LINE.search(line)
-          or _MISC_HEADER.search(line)
-          or _GENERIC_USEFUL_LOG_HEADER.search(line)):
+      if _IsHeaderOrDebugLine(line):
         useful_log.append(line)
         continue
 

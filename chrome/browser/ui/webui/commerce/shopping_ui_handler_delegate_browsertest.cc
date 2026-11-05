@@ -9,7 +9,6 @@
 #include "chrome/browser/bookmarks/bookmark_model_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
-#include "chrome/browser/sync/local_or_syncable_bookmark_sync_service_factory.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/webui/feedback/feedback_dialog.h"
@@ -23,11 +22,9 @@
 #include "components/signin/public/base/consent_level.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/signin/public/identity_manager/identity_test_utils.h"
-#include "components/sync/base/features.h"
-#include "components/sync_bookmarks/bookmark_sync_service.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/test_navigation_observer.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 
 namespace {
 const char kExampleUrl[] = "https://example.com/";
@@ -40,26 +37,13 @@ class ShoppingUiHandlerDelegateBrowserTest : public InProcessBrowserTest {
     InProcessBrowserTest::SetUpOnMainThread();
 
     profile_ = Profile::FromBrowserContext(web_contents()->GetBrowserContext());
-    signin::ConsentLevel consent_level =
-        syncer::IsReplaceSyncPromosWithSignInPromosEnabled()
-            ? signin::ConsentLevel::kSignin
-            : signin::ConsentLevel::kSync;
     signin::MakePrimaryAccountAvailable(
         IdentityManagerFactory::GetForProfile(profile_), "test@email.com",
-        consent_level);
+        signin::ConsentLevel::kSignin);
 
     bookmark_model_ = BookmarkModelFactory::GetForBrowserContext(profile_);
     bookmarks::test::WaitForBookmarkModelToLoad(bookmark_model_);
-
-    // If we are not syncing, we need to add account nodes in order to use the
-    // handler. If we are, we need to pretend sync is on for bookmarks.
-    if (consent_level == signin::ConsentLevel::kSignin) {
-      bookmark_model_->CreateAccountPermanentFolders();
-    } else {
-      LocalOrSyncableBookmarkSyncServiceFactory::GetForProfile(
-          browser()->GetProfile())
-          ->SetIsTrackingMetadataForTesting();
-    }
+    bookmark_model_->CreateAccountPermanentFolders();
   }
 
  protected:
@@ -69,7 +53,7 @@ class ShoppingUiHandlerDelegateBrowserTest : public InProcessBrowserTest {
 
   void NavigateToURL(const GURL& url) {
     ui_test_utils::NavigateToURLWithDisposition(
-        browser(), url, WindowOpenDisposition::CURRENT_TAB,
+        browser(), url, ui::mojom::WindowOpenDisposition::kCurrentTab,
         ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
     base::PlatformThread::Sleep(base::Seconds(2));
     base::RunLoop().RunUntilIdle();
@@ -77,7 +61,7 @@ class ShoppingUiHandlerDelegateBrowserTest : public InProcessBrowserTest {
 
   void OpenURLInNewTab(const GURL& url) {
     ui_test_utils::NavigateToURLWithDisposition(
-        browser(), url, WindowOpenDisposition::NEW_FOREGROUND_TAB,
+        browser(), url, ui::mojom::WindowOpenDisposition::kNewForegroundTab,
         ui_test_utils::BROWSER_TEST_WAIT_FOR_TAB |
             ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
     base::PlatformThread::Sleep(base::Seconds(2));
@@ -86,10 +70,6 @@ class ShoppingUiHandlerDelegateBrowserTest : public InProcessBrowserTest {
 
   raw_ptr<Profile, DanglingUntriaged> profile_;
   raw_ptr<bookmarks::BookmarkModel, DanglingUntriaged> bookmark_model_;
-#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN)
-  base::test::ScopedFeatureList feature_list_{
-      syncer::kReplaceSyncPromosWithSignInPromos};
-#endif
 };
 
 IN_PROC_BROWSER_TEST_F(ShoppingUiHandlerDelegateBrowserTest,
@@ -110,10 +90,7 @@ IN_PROC_BROWSER_TEST_F(ShoppingUiHandlerDelegateBrowserTest,
   const GURL url = GURL(kExampleUrl);
   NavigateToURL(url);
 
-  const bookmarks::BookmarkNode* parent =
-      syncer::IsReplaceSyncPromosWithSignInPromosEnabled()
-          ? bookmark_model_->account_other_node()
-          : bookmark_model_->other_node();
+  const bookmarks::BookmarkNode* parent = bookmark_model_->account_other_node();
   auto* existing_node = bookmark_model_->AddNewURL(
       parent, parent->children().size(), u"test", url);
   size_t bookmark_count = parent->children().size();
@@ -130,10 +107,7 @@ IN_PROC_BROWSER_TEST_F(ShoppingUiHandlerDelegateBrowserTest,
   const GURL url = GURL(kExampleUrl);
   NavigateToURL(url);
 
-  const bookmarks::BookmarkNode* parent =
-      syncer::IsReplaceSyncPromosWithSignInPromosEnabled()
-          ? bookmark_model_->account_other_node()
-          : bookmark_model_->other_node();
+  const bookmarks::BookmarkNode* parent = bookmark_model_->account_other_node();
   size_t bookmark_count = parent->children().size();
 
   auto* node = delegate->GetOrAddBookmarkForCurrentUrl();

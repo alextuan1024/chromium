@@ -15,7 +15,9 @@
 #include "base/memory/raw_ptr.h"
 #include "base/memory/ref_counted.h"
 #include "base/memory/weak_ptr.h"
+#include "base/memory_coordinator/memory_limit.h"
 #include "base/observer_list.h"
+#include "base/threading/thread_checker.h"
 #include "base/time/time.h"
 #include "base/timer/timer.h"
 #include "base/trace_event/memory_dump_provider.h"
@@ -138,6 +140,7 @@ class GPU_GLES2_EXPORT SharedContextState
   bool IsGraphiteDawnD3D12() const;
   bool IsGraphiteDawnVulkan() const;
   bool IsGraphiteDawnVulkanSwiftShader() const;
+  bool IsGraphiteVulkan() const;
 
   bool InitializeGL(const GpuPreferences& gpu_preferences,
                     const GpuDriverBugWorkarounds& gpu_driver_bug_workarounds,
@@ -183,11 +186,11 @@ class GPU_GLES2_EXPORT SharedContextState
 
   // Immediately evicts unlocked resources (scratch resources under moderate
   // pressure, or all resources under critical pressure) down to `memory_limit`.
-  void PurgeMemory(int memory_limit);
+  void PurgeMemory(base::MemoryLimit memory_limit);
 
   // Updates internal memory target budgets non-destructively without forcing
   // immediate resource purges.
-  void OnUpdateMemoryLimit(int memory_limit);
+  void OnUpdateMemoryLimit(base::MemoryLimit memory_limit);
 
   void UpdateSkiaOwnedMemorySize();
   uint64_t GetMemoryUsage();
@@ -325,6 +328,7 @@ class GPU_GLES2_EXPORT SharedContextState
   void ScheduleSkiaCleanup();
 
   int32_t GetMaxTextureSize();
+  int32_t GetMaxArrayTextureLayers();
 
 #if BUILDFLAG(IS_WIN)
   // Get the D3D device and command queue used for compositing.
@@ -360,8 +364,8 @@ class GPU_GLES2_EXPORT SharedContextState
 
   std::optional<error::ContextLostReason> GetResetStatus(bool needs_gl);
 
-  void PurgeGaneshMemory(int memory_limit);
-  void PurgeGraphiteMemory(int memory_limit);
+  void PurgeGaneshMemory(base::MemoryLimit memory_limit);
+  void PurgeGraphiteMemory(base::MemoryLimit memory_limit);
 
   // gpu::GLContextVirtualDelegate implementation.
   bool initialized() const override;
@@ -460,7 +464,12 @@ class GPU_GLES2_EXPORT SharedContextState
       viz_compositor_graphite_cache_controller_;
 
   std::optional<int> max_texture_size_;
+  std::optional<int> max_array_texture_layers_;
   size_t max_resource_cache_bytes_ = 0;
+
+  // A SharedContextState is created on, and used from, a single gpu thread
+  // (the gpu main thread, or the CompositorGpuThread when DrDc is enabled).
+  THREAD_CHECKER(context_thread_checker_);
 
   base::WeakPtrFactory<SharedContextState> weak_ptr_factory_{this};
 };

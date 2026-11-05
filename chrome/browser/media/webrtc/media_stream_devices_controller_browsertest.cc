@@ -10,7 +10,6 @@
 #include "base/metrics/field_trial.h"
 #include "base/metrics/field_trial_params.h"
 #include "base/run_loop.h"
-#include "base/test/scoped_feature_list.h"
 #include "chrome/browser/content_settings/host_content_settings_map_factory.h"
 #include "chrome/browser/media/webrtc/media_capture_devices_dispatcher.h"
 #include "chrome/browser/media/webrtc/media_stream_capture_indicator.h"
@@ -26,7 +25,6 @@
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/content_settings/browser/page_specific_content_settings.h"
 #include "components/content_settings/core/browser/host_content_settings_map.h"
-#include "components/content_settings/core/common/features.h"
 #include "components/permissions/content_setting_permission_context_base.h"
 #include "components/permissions/contexts/camera_pan_tilt_zoom_permission_context.h"
 #include "components/permissions/permission_manager.h"
@@ -36,6 +34,7 @@
 #include "components/permissions/request_type.h"
 #include "components/permissions/test/mock_permission_prompt_factory.h"
 #include "components/prefs/pref_service.h"
+#include "content/public/browser/media_request_state.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
@@ -45,7 +44,7 @@
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/common/mediastream/media_stream_request.h"
 #include "third_party/blink/public/mojom/mediastream/media_stream.mojom.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 
 using ::blink::mojom::MediaStreamRequestResult;
 using ::content_settings::PageSpecificContentSettings;
@@ -54,13 +53,7 @@ class MediaStreamDevicesControllerTest : public WebRtcTestBase {
  public:
   MediaStreamDevicesControllerTest()
       : example_audio_id_("fake_audio_dev"),
-        example_video_id_("fake_video_dev") {
-    // `kLeftHandSideActivityIndicators` should be disabled as it changes the UI
-    // of the camera/mic activity indicator. The new UI will be tested
-    // separately.
-    scoped_feature_list_.InitWithFeatures(
-        {}, {content_settings::features::kLeftHandSideActivityIndicators});
-  }
+        example_video_id_("fake_video_dev") {}
 
   void OnMediaStreamResponse(
       const blink::mojom::StreamDevicesSet& stream_devices_set,
@@ -287,7 +280,6 @@ class MediaStreamDevicesControllerTest : public WebRtcTestBase {
 
   std::unique_ptr<PermissionBubbleMediaAccessHandler>
       permission_bubble_media_access_handler_;
-  base::test::ScopedFeatureList scoped_feature_list_;
 };
 
 class MediaStreamDevicesControllerPtzTest
@@ -575,20 +567,22 @@ IN_PROC_BROWSER_TEST_F(MediaStreamDevicesControllerTest,
   EXPECT_TRUE(GetContentSettings()->IsContentBlocked(
       ContentSettingsType::MEDIASTREAM_MIC));
 
-  // Cam should still be included in the state.
+  // Cam should still be included in the state, and blocked mic does not
+  // override the active camera indicator.
   EXPECT_TRUE(GetContentSettings()->IsContentAllowed(
       ContentSettingsType::MEDIASTREAM_CAMERA));
   EXPECT_FALSE(GetContentSettings()->IsContentBlocked(
       ContentSettingsType::MEDIASTREAM_CAMERA));
-  EXPECT_TRUE(GetContentSettings()->GetMicrophoneCameraState().HasAll(
+  EXPECT_TRUE(GetContentSettings()->GetMicrophoneCameraState().Has(
+      PageSpecificContentSettings::kCameraAccessed));
+  EXPECT_FALSE(GetContentSettings()->GetMicrophoneCameraState().HasAny(
       {PageSpecificContentSettings::kMicrophoneAccessed,
-       PageSpecificContentSettings::kMicrophoneBlocked,
-       PageSpecificContentSettings::kCameraAccessed}));
+       PageSpecificContentSettings::kMicrophoneBlocked}));
 
-  // After ending the camera capture, the camera permission is no longer
-  // relevant, so it should no be included in the mic/cam state.
+  // After ending the camera capture, verify that the blocked mic state was not
+  // retained.
   video_stream_ui.reset();
-  EXPECT_TRUE(GetContentSettings()->GetMicrophoneCameraState().HasAll(
+  EXPECT_FALSE(GetContentSettings()->GetMicrophoneCameraState().HasAny(
       {PageSpecificContentSettings::kMicrophoneAccessed,
        PageSpecificContentSettings::kMicrophoneBlocked}));
 }
@@ -830,27 +824,6 @@ IN_PROC_BROWSER_TEST_F(MediaStreamDevicesControllerTest,
   VerifyResultState(MediaStreamRequestResult::OK, true, true);
 }
 
-IN_PROC_BROWSER_TEST_F(MediaStreamDevicesControllerTest,
-                       PepperRequestInsecure) {
-  InitWithUrl(GURL("http://www.example.com"));
-
-  prompt_factory()->set_response_type(
-      permissions::PermissionRequestManager::ACCEPT_ALL);
-
-  content::MediaStreamRequest request =
-      CreateRequestWithType(example_audio_id(), example_video_id(), false,
-                            blink::MEDIA_OPEN_DEVICE_PEPPER_ONLY);
-  // Explicitly mismatch the origin to ensure the permissions are requested with
-  // a different URL than the one its initiated from.
-  request.security_origin = GURL("http://www.not_init_example.com");
-
-  RequestPermissions(GetWebContents(), request);
-  ASSERT_EQ(0, prompt_factory()->TotalRequestCount());
-
-  VerifyResultState(MediaStreamRequestResult::INVALID_SECURITY_ORIGIN, false,
-                    false);
-}
-
 IN_PROC_BROWSER_TEST_F(MediaStreamDevicesControllerTest, WebContentsDestroyed) {
   InitWithUrl(embedded_test_server()->GetURL("/simple.html"));
 
@@ -875,7 +848,8 @@ IN_PROC_BROWSER_TEST_F(MediaStreamDevicesControllerTest,
                        WebContentsDestroyedDuringRequest) {
   InitWithUrl(embedded_test_server()->GetURL("/simple.html"));
   ui_test_utils::NavigateToURLWithDisposition(
-      browser(), GURL("about:blank"), WindowOpenDisposition::NEW_BACKGROUND_TAB,
+      browser(), GURL("about:blank"),
+      ui::mojom::WindowOpenDisposition::kNewBackgroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_TAB);
 
   prompt_factory()->set_response_type(
@@ -993,28 +967,6 @@ IN_PROC_BROWSER_TEST_F(MediaStreamDevicesControllerTest,
   VerifyResultState(MediaStreamRequestResult::PERMISSION_DENIED_BY_CONTROLLER,
                     false, false);
   EXPECT_TRUE(GetContentSettings()->GetMicrophoneCameraState().empty());
-}
-
-IN_PROC_BROWSER_TEST_F(MediaStreamDevicesControllerTest,
-                       PepperAudioRequestNoCamera) {
-  MediaCaptureDevicesDispatcher::GetInstance()->SetTestVideoCaptureDevices({});
-  InitWithUrl(GURL(chrome::kChromeUIVersionURL));
-  RequestPermissions(
-      GetWebContents(),
-      CreateRequestWithType(example_audio_id(), std::string(), false,
-                            blink::MEDIA_OPEN_DEVICE_PEPPER_ONLY));
-  VerifyResultState(MediaStreamRequestResult::OK, true, false);
-}
-
-IN_PROC_BROWSER_TEST_F(MediaStreamDevicesControllerTest,
-                       PepperVideoRequestNoMic) {
-  MediaCaptureDevicesDispatcher::GetInstance()->SetTestAudioCaptureDevices({});
-  InitWithUrl(GURL(chrome::kChromeUIVersionURL));
-  RequestPermissions(
-      GetWebContents(),
-      CreateRequestWithType(std::string(), example_video_id(), false,
-                            blink::MEDIA_OPEN_DEVICE_PEPPER_ONLY));
-  VerifyResultState(MediaStreamRequestResult::OK, false, true);
 }
 
 IN_PROC_BROWSER_TEST_F(MediaStreamDevicesControllerTest,
@@ -1803,4 +1755,219 @@ IN_PROC_BROWSER_TEST_F(
   // Total prompt request count remains 2 (1 from audio dismissal + 1 from video
   // dismissal).
   EXPECT_EQ(2, prompt_factory()->TotalRequestCount());
+}
+
+IN_PROC_BROWSER_TEST_F(MediaStreamDevicesControllerTest,
+                       CancelledRequestThenPromptDismissed) {
+  InitWithUrl(embedded_test_server()->GetURL("/simple.html"));
+
+  int render_process_id =
+      GetWebContents()->GetPrimaryMainFrame()->GetProcess()->GetDeprecatedID();
+  int render_frame_id = GetWebContents()->GetPrimaryMainFrame()->GetRoutingID();
+
+  // First request (A)
+  content::MediaStreamRequest request1(
+      render_process_id, render_frame_id, 0, url::Origin::Create(example_url()),
+      false, blink::MEDIA_DEVICE_ACCESS,
+      /*requested_audio_device_ids=*/{},
+      /*requested_video_device_ids=*/{},
+      blink::mojom::MediaStreamType::DEVICE_AUDIO_CAPTURE,
+      blink::mojom::MediaStreamType::NO_SERVICE,
+      /*disable_local_echo=*/false, /*request_pan_tilt_zoom_permission=*/false,
+      /*captured_surface_control_active=*/false);
+
+  // Second request (B) - same frame, different page_request_id (1)
+  content::MediaStreamRequest request2(
+      render_process_id, render_frame_id, 1, url::Origin::Create(example_url()),
+      false, blink::MEDIA_DEVICE_ACCESS,
+      /*requested_audio_device_ids=*/{},
+      /*requested_video_device_ids=*/{},
+      blink::mojom::MediaStreamType::DEVICE_AUDIO_CAPTURE,
+      blink::mojom::MediaStreamType::NO_SERVICE,
+      /*disable_local_echo=*/false, /*request_pan_tilt_zoom_permission=*/false,
+      /*captured_surface_control_active=*/false);
+
+  base::RunLoop run_loop1;
+  int callbacks_run = 0;
+
+  auto callback1 = base::BindOnce(
+      [](int* callbacks_run, base::OnceClosure quit_closure,
+         permissions::MockPermissionPromptFactory* prompt_factory,
+         const blink::mojom::StreamDevicesSet& stream_devices_set,
+         MediaStreamRequestResult result,
+         std::unique_ptr<content::MediaStreamUI> ui) {
+        EXPECT_EQ(MediaStreamRequestResult::OK, result);
+        EXPECT_TRUE(ui);
+        (*callbacks_run)++;
+        // Prevent the second request from auto-responding when it starts.
+        prompt_factory->set_response_type(
+            permissions::PermissionRequestManager::NONE);
+        std::move(quit_closure).Run();
+      },
+      base::Unretained(&callbacks_run), run_loop1.QuitClosure(),
+      prompt_factory());
+
+  auto callback2 = base::BindOnce(
+      [](const blink::mojom::StreamDevicesSet& stream_devices_set,
+         MediaStreamRequestResult result,
+         std::unique_ptr<content::MediaStreamUI> ui) {
+        ADD_FAILURE()
+            << "Callback for request 2 should not run after cancellation";
+      });
+
+  // The first request should be allowed immediately.
+  prompt_factory()->set_response_type(
+      permissions::PermissionRequestManager::ACCEPT_ALL);
+
+  // Start the first request.
+  permission_bubble_media_access_handler_->HandleRequest(
+      GetWebContents(), request1, std::move(callback1), nullptr);
+
+  // Wait for the first request to complete.
+  run_loop1.Run();
+
+  EXPECT_EQ(1, callbacks_run);
+
+  // Reset permission to ASK for the second request, so it triggers a prompt
+  // instead of auto-resolving.
+  HostContentSettingsMapFactory::GetForProfile(
+      Profile::FromBrowserContext(GetWebContents()->GetBrowserContext()))
+      ->SetContentSettingDefaultScope(example_url(), example_url(),
+                                      ContentSettingsType::MEDIASTREAM_MIC,
+                                      CONTENT_SETTING_ASK);
+
+  // Start the second request. It will hang because prompt factory is now NONE.
+  permission_bubble_media_access_handler_->HandleRequest(
+      GetWebContents(), request2, std::move(callback2), nullptr);
+
+  // Wait for the prompt for the second request to be shown.
+  prompt_factory()->WaitForPermissionBubble();
+
+  // Cancel the second request by simulating MEDIA_REQUEST_STATE_CLOSING.
+  permission_bubble_media_access_handler_->UpdateMediaRequestState(
+      render_process_id, render_frame_id, 1,
+      blink::mojom::MediaStreamType::DEVICE_AUDIO_CAPTURE,
+      content::MEDIA_REQUEST_STATE_CLOSING);
+
+  // The second request is now erased from the handler's map.
+  // The permission prompt for the second request is still active.
+  permissions::PermissionRequestManager* manager =
+      permissions::PermissionRequestManager::FromWebContents(GetWebContents());
+  ASSERT_TRUE(manager->IsRequestInProgress());
+
+  // Dismiss the prompt. This will trigger OnMediaStreamRequestResponse ->
+  // OnAccessRequestResponse. If the DCHECK is present, it will crash here. If
+  // the DCHECK is removed, it should return early safely.
+  manager->Dismiss(std::monostate());
+
+  // Verify that callback2 was not run (it was cancelled and early returned).
+  EXPECT_EQ(1, callbacks_run);
+}
+
+IN_PROC_BROWSER_TEST_F(MediaStreamDevicesControllerTest,
+                       CancelledActiveRequestDoesNotCrash) {
+  InitWithUrl(embedded_test_server()->GetURL("/simple.html"));
+
+  int render_process_id =
+      GetWebContents()->GetPrimaryMainFrame()->GetProcess()->GetDeprecatedID();
+  int render_frame_id = GetWebContents()->GetPrimaryMainFrame()->GetRoutingID();
+
+  // First request (A)
+  content::MediaStreamRequest request1(
+      render_process_id, render_frame_id, 0, url::Origin::Create(example_url()),
+      false, blink::MEDIA_DEVICE_ACCESS,
+      /*requested_audio_device_ids=*/{},
+      /*requested_video_device_ids=*/{},
+      blink::mojom::MediaStreamType::DEVICE_AUDIO_CAPTURE,
+      blink::mojom::MediaStreamType::NO_SERVICE,
+      /*disable_local_echo=*/false, /*request_pan_tilt_zoom_permission=*/false,
+      /*captured_surface_control_active=*/false);
+
+  // Second request (B) - same frame, different page_request_id (1)
+  content::MediaStreamRequest request2(
+      render_process_id, render_frame_id, 1, url::Origin::Create(example_url()),
+      false, blink::MEDIA_DEVICE_ACCESS,
+      /*requested_audio_device_ids=*/{},
+      /*requested_video_device_ids=*/{},
+      blink::mojom::MediaStreamType::DEVICE_AUDIO_CAPTURE,
+      blink::mojom::MediaStreamType::NO_SERVICE,
+      /*disable_local_echo=*/false, /*request_pan_tilt_zoom_permission=*/false,
+      /*captured_surface_control_active=*/false);
+
+  base::RunLoop run_loop1;
+  int callbacks_run = 0;
+
+  auto callback1 = base::BindOnce(
+      [](int* callbacks_run, base::OnceClosure quit_closure,
+         permissions::MockPermissionPromptFactory* prompt_factory,
+         const blink::mojom::StreamDevicesSet& stream_devices_set,
+         MediaStreamRequestResult result,
+         std::unique_ptr<content::MediaStreamUI> ui) {
+        EXPECT_EQ(MediaStreamRequestResult::OK, result);
+        EXPECT_TRUE(ui);
+        (*callbacks_run)++;
+        // Prevent the second request from auto-responding when it starts.
+        prompt_factory->set_response_type(
+            permissions::PermissionRequestManager::NONE);
+        std::move(quit_closure).Run();
+      },
+      base::Unretained(&callbacks_run), run_loop1.QuitClosure(),
+      prompt_factory());
+
+  auto callback2 = base::BindOnce(
+      [](const blink::mojom::StreamDevicesSet& stream_devices_set,
+         MediaStreamRequestResult result,
+         std::unique_ptr<content::MediaStreamUI> ui) {
+        ADD_FAILURE()
+            << "Callback for request 2 should not run after cancellation";
+      });
+
+  // The first request should be allowed immediately.
+  prompt_factory()->set_response_type(
+      permissions::PermissionRequestManager::ACCEPT_ALL);
+
+  // Start the first request.
+  permission_bubble_media_access_handler_->HandleRequest(
+      GetWebContents(), request1, std::move(callback1), nullptr);
+
+  // Wait for the first request to complete.
+  run_loop1.Run();
+
+  EXPECT_EQ(1, callbacks_run);
+
+  // Reset permission to ASK for the second request, so it triggers a prompt
+  // instead of auto-resolving.
+  HostContentSettingsMapFactory::GetForProfile(
+      Profile::FromBrowserContext(GetWebContents()->GetBrowserContext()))
+      ->SetContentSettingDefaultScope(example_url(), example_url(),
+                                      ContentSettingsType::MEDIASTREAM_MIC,
+                                      CONTENT_SETTING_ASK);
+
+  // Start the second request. It will hang because prompt factory is now NONE.
+  permission_bubble_media_access_handler_->HandleRequest(
+      GetWebContents(), request2, std::move(callback2), nullptr);
+
+  // Wait for the prompt for the second request to be shown.
+  prompt_factory()->WaitForPermissionBubble();
+
+  // Cancel the second request by simulating MEDIA_REQUEST_STATE_CLOSING.
+  permission_bubble_media_access_handler_->UpdateMediaRequestState(
+      render_process_id, render_frame_id, 1,
+      blink::mojom::MediaStreamType::DEVICE_AUDIO_CAPTURE,
+      content::MEDIA_REQUEST_STATE_CLOSING);
+
+  // The second request is now erased from the handler's map.
+  // The permission prompt for the second request is still active in
+  // PermissionRequestManager.
+  permissions::PermissionRequestManager* manager =
+      permissions::PermissionRequestManager::FromWebContents(GetWebContents());
+  ASSERT_TRUE(manager->IsRequestInProgress());
+
+  // Accept the prompt. This will trigger OnMediaStreamRequestResponse ->
+  // OnAccessRequestResponse. If the DCHECK is present, it will crash here. If
+  // the DCHECK is removed, it should return early safely.
+  manager->Accept(std::monostate());
+
+  // Verify that callback2 was not run (it was cancelled and early returned).
+  EXPECT_EQ(1, callbacks_run);
 }

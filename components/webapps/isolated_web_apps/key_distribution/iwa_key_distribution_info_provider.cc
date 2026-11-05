@@ -23,11 +23,10 @@
 #include "base/types/expected_macros.h"
 #include "base/types/optional_ref.h"
 #include "build/build_config.h"
-#include "build/chromeos_buildflags.h"
+#include "components/webapps/isolated_web_apps/key_distribution/iwa_entitlements.h"
 #include "components/webapps/isolated_web_apps/key_distribution/iwa_key_distribution_histograms.h"
+#include "components/webapps/isolated_web_apps/key_distribution/iwa_runtime_data_provider.h"
 #include "components/webapps/isolated_web_apps/key_distribution/proto/key_distribution.pb.h"
-#include "components/webapps/isolated_web_apps/public/iwa_entitlements.h"
-#include "components/webapps/isolated_web_apps/public/iwa_runtime_data_provider.h"
 
 namespace web_app {
 
@@ -88,13 +87,6 @@ base::OneShotEvent& AlreadySignalled() {
   return *kEvent;
 }
 
-base::TaskPriority GetLoadTaskPriority() {
-#if BUILDFLAG(IS_CHROMEOS)
-  return base::TaskPriority::USER_VISIBLE;
-#else
-  return base::TaskPriority::BEST_EFFORT;
-#endif
-}
 void SignalIfNeeded(base::OneShotEvent& event) {
   if (!event.is_signaled()) {
     event.Signal();
@@ -217,7 +209,7 @@ void IwaKeyDistributionInfoProvider::LoadKeyDistributionData(
   // `base::Unretained(this)` is fine as this is a singleton that never goes
   // away.
   base::ThreadPool::PostTaskAndReplyWithResult(
-      FROM_HERE, {base::MayBlock(), GetLoadTaskPriority()},
+      FROM_HERE, {base::MayBlock(), base::TaskPriority::USER_VISIBLE},
       base::BindOnce(&LoadKeyDistributionDataFile, file_path),
       base::BindOnce(
           &IwaKeyDistributionInfoProvider::OnKeyDistributionDataFileLoaded,
@@ -615,7 +607,6 @@ IwaKeyDistributionInfoProvider::Component::Component(const Component&) =
 
 #if BUILDFLAG(IS_CHROMEOS)
 BASE_FEATURE(kIsolatedWebAppBypassManagedAllowlist,
-             "IsolatedWebAppBypassManagedAllowlist",
              base::FEATURE_DISABLED_BY_DEFAULT);
 #endif  // BUILDFLAG(IS_CHROMEOS)
 

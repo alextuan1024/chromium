@@ -210,6 +210,10 @@ class TestRenderFrameObserver : public RenderFrameObserver {
     }
   }
 
+  void DidFinishLoadForPrinting() override {
+    test_runner_->DidFinishLoadForPrinting(*frame_proxy());
+  }
+
   void DidHandleOnloadEvents() override {
     if (test_runner_->ShouldDumpFrameLoadCallbacks()) {
       std::string description = frame_proxy()->GetFrameDescriptionForWebTests();
@@ -280,14 +284,18 @@ void WebFrameTestProxy::ResetRendererAfterWebTest() {
   // So the steps in this method need to be audited piecemeal for redundancy.
   CHECK(IsMainFrame());
 
+  accessibility_controller_.Reset();
+  spell_check_->Reset();
+  test_runner_->Reset();
+
   if (IsMainFrame()) {
     GetWebFrame()->ClearActiveFindMatchForTesting();
     GetWebFrame()->SetName(blink::WebString());
     GetWebFrame()->ClearOpener();
 
     blink::WebTestingSupport::ResetMainFrame(GetWebFrame());
-    // Resetting the internals object also overrides the WebPreferences, so we
-    // have to sync them to WebKit again.
+    // Resetting the internals object and runtime features also overrides the
+    // WebPreferences, so we have to sync them to WebKit again.
     blink::WebView* web_view = GetWebFrame()->View();
     web_view->SetWebPreferences(web_view->GetWebPreferences());
 
@@ -298,10 +306,23 @@ void WebFrameTestProxy::ResetRendererAfterWebTest() {
     test_runner()->ResetWebFrameWidget(GetLocalRootWebFrameWidget());
     GetLocalRootFrameWidgetTestHelper()->Reset();
   }
+}
 
-  accessibility_controller_.Reset();
-  spell_check_->Reset();
+void WebFrameTestProxy::ResetTestRunnerForNewWebTest() {
+  // This process may have been reused from a previous test without receiving
+  // ResetRendererAfterWebTest(), which is only sent to the process hosting the
+  // main window's main frame. Frames it hosts for the new test are freshly
+  // created, so only the process-global TestRunner state (such as
+  // |did_notify_done_|, runtime flags and the set of loading frames) can be
+  // stale. Resetting it again in a process that did receive
+  // ResetRendererAfterWebTest() is harmless.
   test_runner_->Reset();
+  // Resetting runtime features in TestRunner::Reset() also overrides
+  // RuntimeEnabledFeatures controlled by WebPreferences (such as
+  // Accelerated2dCanvas), so sync WebPreferences to the WebView again.
+  if (blink::WebView* web_view = GetWebFrame()->View()) {
+    web_view->SetWebPreferences(web_view->GetWebPreferences());
+  }
 }
 
 std::string WebFrameTestProxy::GetFrameNameForWebTests() {
@@ -461,8 +482,7 @@ std::optional<blink::WebURL> WebFrameTestProxy::WillSendRequest(
         !HostIsUsedBySomeTestsToGenerateError(host) &&
         ((site_for_cookies.scheme() != url::kHttpScheme &&
           site_for_cookies.scheme() != url::kHttpsScheme) ||
-         IsLocalHost(site_for_cookies.registrable_domain())) &&
-        !test_runner_->TestConfig().allow_external_pages) {
+         IsLocalHost(site_for_cookies.registrable_domain()))) {
       GetWebTestControlHostRemote()->PrintMessage(
           std::string("Blocked access to external URL ") +
           url.possibly_invalid_spec() + "\n");
@@ -773,6 +793,9 @@ void WebFrameTestProxy::DidCommitNavigation(
     should_block_parsing_in_next_commit_ = false;
     GetWebFrame()->BlockParserForTesting();
   }
+  // Words added through the SpellCheckCustomDictionary web API belong to the
+  // outgoing document.
+  spell_check_->ClearDocumentCustomWords();
   RenderFrameImpl::DidCommitNavigation(
       commit_type, should_reset_browser_interface_broker,
       permissions_policy_header, document_policy_header);
@@ -806,6 +829,10 @@ void WebFrameTestProxy::StartTest() {
 
         web_frame->ResumeParserForTesting();
 
+        // Start loading nested documents that are only displayed when
+        // printing early enough for their normal frame load to be tracked.
+        // TestRunner performs a second call before capture to discover any
+        // print resources that were not available until parsing completed.
         if (test_runner->IsPrinting()) {
           web_frame->WillPrintSoon();
         }

@@ -78,6 +78,7 @@ def linux_memory_builder(*, name, **kwargs):
 linux_memory_builder(
     name = "Linux ASan LSan Builder",
     branch_selector = branches.selector.LINUX_BRANCHES,
+    description_html = "Compiles a Linux x64 release build with AddressSanitizer and LeakSanitizer.",
     builder_spec = builder_config.builder_spec(
         gclient_config = builder_config.gclient_config(
             config = "chromium",
@@ -94,11 +95,20 @@ linux_memory_builder(
         ),
     ),
     gn_args = gn_args.config(
+        args = {
+            # ASan test binary links are too large to run many concurrently.
+            "concurrent_links": 2,
+        },
         configs = [
             "asan",
             "lsan",
             "fail_on_san_warnings",
-            "release_try_builder",
+            # Sanitizer builds set enable_fuzztest_fuzz by default, which adds
+            # coverage instrumentation to all code. CI never uses --fuzz, so
+            # disable it to reduce test runtime.
+            "no_fuzztest_fuzz",
+            "release_builder",
+            "dcheck_always_on",
             "minimal_symbols",
             "remoteexec",
             "linux",
@@ -121,6 +131,7 @@ linux_memory_builder(
 linux_memory_builder(
     name = "Linux ASan LSan Tests (1)",
     branch_selector = branches.selector.LINUX_BRANCHES,
+    description_html = "Runs tests against a Linux x64 AddressSanitizer and LeakSanitizer build.",
     parent = "ci/Linux ASan LSan Builder",
     builder_spec = builder_config.builder_spec(
         execution_mode = builder_config.execution_mode.TEST,
@@ -157,18 +168,20 @@ linux_memory_builder(
                     "--gtest_filter=-AXPlatformNodeAuraLinuxTest.AtkComponentScrollTo:AtkUtilAuraLinuxTest.*",
                 ],
             ),
-            "blink_unittests": targets.mixin(
-                # These are very slow on the ASAN trybot for some reason.
-                # crbug.com/1257927
-                swarming = targets.swarming(
-                    shards = 5,
+            "blink_unittests": [
+                targets.mixin(
+                    # These are very slow on the ASAN trybot for some reason.
+                    # crbug.com/1257927
+                    swarming = targets.swarming(
+                        shards = 5,
+                    ),
                 ),
-            ),
+                # TODO(crbug.com/579036960): Remove once e4 failures are fixed.
+                "e2-standard-8",
+            ],
             "browser_tests": targets.mixin(
                 args = [
                     "--test-launcher-filter-file=../../testing/buildbot/filters/linux.asan.browser_tests.filter",
-                    # TODO(crbug.com/542347163): Re-enable when the runtime regression is fixed.
-                    "--disable-features=WebUIOmniboxPopup,WebUIOmniboxAimPopup",
                 ],
                 ci_only = True,
                 # These are very slow on the ASAN trybot for some reason.
@@ -182,6 +195,7 @@ linux_memory_builder(
                 ci_only = True,
             ),
             "components_unittests": targets.mixin(
+                enable_rts_filtering = True,
                 # These are very slow on the ASAN trybot for some reason.
                 # crbug.com/1257927
                 swarming = targets.swarming(
@@ -189,6 +203,7 @@ linux_memory_builder(
                 ),
             ),
             "content_browsertests": targets.mixin(
+                enable_rts_filtering = True,
                 swarming = targets.swarming(
                     shards = 24,
                 ),
@@ -215,10 +230,6 @@ linux_memory_builder(
                 "linux_nvidia_gtx_1660_stable",
             ],
             "interactive_ui_tests": targets.mixin(
-                args = [
-                    # TODO(crbug.com/542347163): Re-enable when the runtime regression is fixed.
-                    "--disable-features=WebUIOmniboxPopup,WebUIOmniboxAimPopup",
-                ],
                 # These are slow on the ASan trybot for some reason, crbug.com/1257927
                 swarming = targets.swarming(
                     # Move to faster machine types to reduce capacity impact.
@@ -240,10 +251,7 @@ linux_memory_builder(
                 ),
             ),
             "sync_integration_tests": targets.mixin(
-                args = [
-                    # TODO(crbug.com/542347163): Re-enable when the runtime regression is fixed.
-                    "--disable-features=WebUIOmniboxPopup,WebUIOmniboxAimPopup",
-                ],
+                enable_rts_filtering = True,
                 swarming = targets.swarming(
                     shards = 8,
                 ),
@@ -257,6 +265,7 @@ linux_memory_builder(
             ),
         },
     ),
+    ssd = None,
     console_view_entry = consoles.console_view_entry(
         category = "linux|asan lsan",
         short_name = "tst",
@@ -268,6 +277,7 @@ linux_memory_builder(
 linux_memory_builder(
     name = "Linux TSan Builder",
     branch_selector = branches.selector.LINUX_BRANCHES,
+    description_html = "Compiles a Linux x64 release build with ThreadSanitizer.",
     builder_spec = builder_config.builder_spec(
         gclient_config = builder_config.gclient_config(
             config = "chromium",
@@ -294,6 +304,7 @@ linux_memory_builder(
             "x64",
         ],
     ),
+    ssd = None,
     console_view_entry = consoles.console_view_entry(
         category = "linux|TSan v2",
         short_name = "bld",
@@ -303,6 +314,7 @@ linux_memory_builder(
 
 linux_memory_builder(
     name = "Linux CFI",
+    description_html = "Builds and runs tests on Linux x64 release builds with Control Flow Integrity (CFI) enabled.",
     builder_spec = builder_config.builder_spec(
         gclient_config = builder_config.gclient_config(
             config = "chromium",
@@ -340,10 +352,6 @@ linux_memory_builder(
         ],
         per_test_modifications = {
             "browser_tests": targets.mixin(
-                args = [
-                    # TODO(crbug.com/542347163): Re-enable when the runtime regression is fixed.
-                    "--disable-features=WebUIOmniboxPopup,WebUIOmniboxAimPopup",
-                ],
                 swarming = targets.swarming(
                     shards = 94,
                 ),
@@ -361,20 +369,12 @@ linux_memory_builder(
                 "linux_nvidia_gtx_1660_stable",
             ],
             "interactive_ui_tests": targets.mixin(
-                args = [
-                    # TODO(crbug.com/542347163): Re-enable when the runtime regression is fixed.
-                    "--disable-features=WebUIOmniboxPopup,WebUIOmniboxAimPopup",
-                ],
                 # Slow on certain debug builders, see crbug.com/1513713.
                 swarming = targets.swarming(
                     shards = 26,
                 ),
             ),
             "sync_integration_tests": targets.mixin(
-                args = [
-                    # TODO(crbug.com/542347163): Re-enable when the runtime regression is fixed.
-                    "--disable-features=WebUIOmniboxPopup,WebUIOmniboxAimPopup",
-                ],
                 swarming = targets.swarming(
                     shards = 6,
                 ),
@@ -393,6 +393,7 @@ linux_memory_builder(
 
 linux_memory_builder(
     name = "Linux Chromium OS ASan LSan Builder",
+    description_html = "Compiles an Ash Chrome (linux-chromeos) x64 release build with AddressSanitizer and LeakSanitizer.",
     builder_spec = builder_config.builder_spec(
         gclient_config = builder_config.gclient_config(
             config = "chromium",
@@ -416,7 +417,8 @@ linux_memory_builder(
             "asan",
             "lsan",
             "chromeos",
-            "release_try_builder",
+            "release_builder",
+            "dcheck_always_on",
             "minimal_symbols",
             "remoteexec",
             "x64",
@@ -436,6 +438,7 @@ linux_memory_builder(
 
 linux_memory_builder(
     name = "Linux Chromium OS ASan LSan Tests (1)",
+    description_html = "Runs tests against an Ash Chrome (linux-chromeos) x64 AddressSanitizer and LeakSanitizer build.",
     parent = "Linux Chromium OS ASan LSan Builder",
     builder_spec = builder_config.builder_spec(
         execution_mode = builder_config.execution_mode.TEST,
@@ -527,6 +530,7 @@ linux_memory_builder(
             ),
         },
     ),
+    ssd = None,
     console_view_entry = consoles.console_view_entry(
         category = "cros|asan",
         short_name = "tst",
@@ -536,6 +540,7 @@ linux_memory_builder(
 
 linux_memory_builder(
     name = "Linux ChromiumOS MSan Builder",
+    description_html = "Compiles an Ash Chrome (linux-chromeos) x64 release build with MemorySanitizer.",
     builder_spec = builder_config.builder_spec(
         gclient_config = builder_config.gclient_config(
             config = "chromium",
@@ -575,6 +580,7 @@ linux_memory_builder(
 
 linux_memory_builder(
     name = "Linux ChromiumOS MSan Tests",
+    description_html = "Runs tests against an Ash Chrome (linux-chromeos) x64 MemorySanitizer build.",
     parent = "Linux ChromiumOS MSan Builder",
     builder_spec = builder_config.builder_spec(
         execution_mode = builder_config.execution_mode.TEST,
@@ -613,14 +619,12 @@ linux_memory_builder(
             "browser_tests": targets.mixin(
                 args = [
                     "--test-launcher-filter-file=../../testing/buildbot/filters/chromeos.msan.browser_tests.oobe_negative.filter",
-                    # TODO(crbug.com/542347163): Re-enable when the runtime regression is fixed.
-                    "--disable-features=WebUIOmniboxPopup,WebUIOmniboxAimPopup",
                 ],
                 # These are very slow on the Chrome OS MSAN trybot, most likely because browser_tests on cros has ~40% more tests. Also, these tests
                 # run on ash, which means every test starts and shuts down ash, which most likely explains why it takes longer than on other platforms.
                 # crbug.com/40585695 and crbug.com/326621525
                 swarming = targets.swarming(
-                    shards = 100,
+                    shards = 150,
                 ),
             ),
             "content_unittests": targets.mixin(
@@ -634,14 +638,10 @@ linux_memory_builder(
                 reason = "Can't run on MSAN because gl_unittests_ozone uses the hardware driver, which isn't instrumented.",
             ),
             "interactive_ui_tests": targets.mixin(
-                args = [
-                    # TODO(crbug.com/542347163): Re-enable when the runtime regression is fixed.
-                    "--disable-features=WebUIOmniboxPopup,WebUIOmniboxAimPopup",
-                ],
                 # These are very slow on the Chrome OS MSAN trybot for some reason.
                 # crbug.com/865455
                 swarming = targets.swarming(
-                    shards = 8,
+                    shards = 14,
                 ),
             ),
             "net_unittests": targets.mixin(
@@ -668,6 +668,7 @@ linux_memory_builder(
             ),
         },
     ),
+    ssd = None,
     console_view_entry = consoles.console_view_entry(
         category = "cros|msan",
         short_name = "tst",
@@ -678,6 +679,7 @@ linux_memory_builder(
 
 linux_memory_builder(
     name = "Linux MSan Builder",
+    description_html = "Compiles a Linux x64 release build with MemorySanitizer.",
     builder_spec = builder_config.builder_spec(
         gclient_config = builder_config.gclient_config(
             config = "chromium",
@@ -716,6 +718,7 @@ linux_memory_builder(
 
 linux_memory_builder(
     name = "Linux MSan Tests",
+    description_html = "Runs tests against a Linux x64 MemorySanitizer build.",
     parent = "Linux MSan Builder",
     builder_spec = builder_config.builder_spec(
         execution_mode = builder_config.execution_mode.TEST,
@@ -749,10 +752,6 @@ linux_memory_builder(
         ],
         per_test_modifications = {
             "browser_tests": targets.mixin(
-                args = [
-                    # TODO(crbug.com/542347163): Re-enable when the runtime regression is fixed.
-                    "--disable-features=WebUIOmniboxPopup,WebUIOmniboxAimPopup",
-                ],
                 swarming = targets.swarming(
                     shards = 119,
                 ),
@@ -770,28 +769,21 @@ linux_memory_builder(
                 reason = "Can't run on MSAN because gl_unittests uses the hardware driver, which isn't instrumented.",
             ),
             "interactive_ui_tests": targets.mixin(
-                args = [
-                    # TODO(crbug.com/542347163): Re-enable when the runtime regression is fixed.
-                    "--disable-features=WebUIOmniboxPopup,WebUIOmniboxAimPopup",
-                ],
                 swarming = targets.swarming(
-                    shards = 43,
+                    shards = 51,
                 ),
             ),
             "services_unittests": targets.remove(
                 reason = "https://crbug.com/831676",
             ),
             "sync_integration_tests": targets.mixin(
-                args = [
-                    # TODO(crbug.com/542347163): Re-enable when the runtime regression is fixed.
-                    "--disable-features=WebUIOmniboxPopup,WebUIOmniboxAimPopup",
-                ],
                 swarming = targets.swarming(
                     shards = 6,
                 ),
             ),
         },
     ),
+    ssd = None,
     console_view_entry = consoles.console_view_entry(
         category = "linux|msan",
         short_name = "tst",
@@ -801,6 +793,7 @@ linux_memory_builder(
 
 ci.builder(
     name = "Mac ASan 64 Builder",
+    description_html = "Compiles a Mac x64 release build with AddressSanitizer.",
     triggering_policy = scheduler.greedy_batching(
         max_concurrent_invocations = 2,
     ),
@@ -842,6 +835,7 @@ ci.builder(
 linux_memory_builder(
     name = "Linux TSan Tests",
     branch_selector = branches.selector.LINUX_BRANCHES,
+    description_html = "Runs tests against a Linux x64 ThreadSanitizer build.",
     parent = "ci/Linux TSan Builder",
     builder_spec = builder_config.builder_spec(
         execution_mode = builder_config.execution_mode.TEST,
@@ -915,10 +909,6 @@ linux_memory_builder(
                 ),
             ],
             "interactive_ui_tests": targets.mixin(
-                args = [
-                    # TODO(crbug.com/542347163): Re-enable when the runtime regression is fixed.
-                    "--disable-features=WebUIOmniboxPopup,WebUIOmniboxAimPopup",
-                ],
                 # https://crbug.com/1498240
                 ci_only = True,
                 # These are slow on the TSan bots for some reason, crbug.com/1257927
@@ -933,10 +923,6 @@ linux_memory_builder(
                 ),
             ),
             "sync_integration_tests": targets.mixin(
-                args = [
-                    # TODO(crbug.com/542347163): Re-enable when the runtime regression is fixed.
-                    "--disable-features=WebUIOmniboxPopup,WebUIOmniboxAimPopup",
-                ],
                 # https://crbug.com/1498240
                 ci_only = True,
                 swarming = targets.swarming(
@@ -950,6 +936,7 @@ linux_memory_builder(
             ),
         },
     ),
+    ssd = None,
     console_view_entry = consoles.console_view_entry(
         category = "linux|TSan v2",
         short_name = "tst",
@@ -978,9 +965,17 @@ linux_memory_builder(
         ),
     ),
     gn_args = gn_args.config(
+        args = {
+            # UBSan test binary links are too large to run many concurrently.
+            "concurrent_links": 4,
+        },
         configs = [
             "ubsan_no_recover",
             "fail_on_san_warnings",
+            # Sanitizer builds set enable_fuzztest_fuzz by default, which adds
+            # coverage instrumentation to all code. CI never uses --fuzz, so
+            # disable it to reduce test runtime.
+            "no_fuzztest_fuzz",
             "release_builder",
             "remoteexec",
             "linux",
@@ -989,6 +984,7 @@ linux_memory_builder(
     ),
     builderless = True,
     cores = 32,
+    ssd = None,
     console_view_entry = consoles.console_view_entry(
         category = "linux|ubsan",
         short_name = "bld",
@@ -1031,10 +1027,6 @@ linux_memory_builder(
                 ),
             ),
             "browser_tests": targets.mixin(
-                args = [
-                    # TODO(crbug.com/542347163): Re-enable when the runtime regression is fixed.
-                    "--disable-features=WebUIOmniboxPopup,WebUIOmniboxAimPopup",
-                ],
                 swarming = targets.swarming(
                     shards = 34,
                 ),
@@ -1045,12 +1037,8 @@ linux_memory_builder(
                 ),
             ),
             "interactive_ui_tests": targets.mixin(
-                args = [
-                    # TODO(crbug.com/542347163): Re-enable when the runtime regression is fixed.
-                    "--disable-features=WebUIOmniboxPopup,WebUIOmniboxAimPopup",
-                ],
                 swarming = targets.swarming(
-                    shards = 6,
+                    shards = 12,
                 ),
             ),
             "unit_tests": targets.mixin(
@@ -1060,6 +1048,7 @@ linux_memory_builder(
             ),
         },
     ),
+    ssd = None,
     console_view_entry = consoles.console_view_entry(
         category = "linux|ubsan",
         short_name = "tst",
@@ -1070,6 +1059,7 @@ linux_memory_builder(
 
 ci.builder(
     name = "Mac ASan 64 Tests (1)",
+    description_html = "Runs tests against a Mac x64 AddressSanitizer build.",
     parent = "Mac ASan 64 Builder",
     builder_spec = builder_config.builder_spec(
         execution_mode = builder_config.execution_mode.TEST,
@@ -1216,6 +1206,7 @@ ci.builder(
             ),
         },
     ),
+    ssd = None,
     console_view_entry = consoles.console_view_entry(
         category = "linux|blink",
         short_name = "asn",
@@ -1299,6 +1290,7 @@ ci.builder(
             ),
         },
     ),
+    ssd = None,
     console_view_entry = consoles.console_view_entry(
         category = "linux|blink",
         short_name = "lk",
@@ -1384,6 +1376,7 @@ ci.builder(
             ),
         },
     ),
+    ssd = None,
     console_view_entry = consoles.console_view_entry(
         category = "linux|blink",
         short_name = "msn",
@@ -1392,6 +1385,7 @@ ci.builder(
 
 ci.builder(
     name = "win-asan",
+    description_html = "Builds and runs tests on Windows x64 release builds with AddressSanitizer.",
     builder_spec = builder_config.builder_spec(
         gclient_config = builder_config.gclient_config(
             config = "chromium",
@@ -1443,7 +1437,7 @@ ci.builder(
                 # These are very slow on the ASAN trybot for some reason.
                 # crbug.com/1257927
                 swarming = targets.swarming(
-                    shards = 120,
+                    shards = 190,
                 ),
             ),
             "components_unittests": targets.mixin(
@@ -1474,7 +1468,7 @@ ci.builder(
                     "--test-launcher-jobs=3",
                 ],
                 swarming = targets.swarming(
-                    shards = 24,
+                    shards = 35,
                 ),
             ),
             "net_unittests": targets.mixin(

@@ -17,6 +17,7 @@
 #import "ios/chrome/test/earl_grey/chrome_matchers.h"
 #import "ios/chrome/test/earl_grey/chrome_test_case.h"
 #import "ios/testing/earl_grey/earl_grey_test.h"
+#import "ios/testing/test_tag_registry.h"
 #import "net/test/embedded_test_server/default_handlers.h"
 #import "net/test/embedded_test_server/embedded_test_server.h"
 #import "ui/base/l10n/l10n_util_mac.h"
@@ -91,6 +92,7 @@ void WaitForEmpyOmnibox() {
 }
 
 // Verifies opening a new tab from the tools menu.
+TAG_SMOKE_TEST(LegacyToolbarTestCase, testNewTabFromMenu);
 - (void)testNewTabFromMenu {
   [ChromeEarlGrey waitForMainTabCount:1];
 
@@ -148,12 +150,6 @@ void WaitForEmpyOmnibox() {
 // button and asserts it doesn't commit the omnibox contents if the input is
 // canceled.
 - (void)testToolbarOmniboxHideKeyboard {
-  // TODO(crbug.com/41272886): Enable the test for iPad when typing bug is
-  // fixed.
-  if ([ChromeEarlGrey isIPadIdiom]) {
-    EARL_GREY_TEST_DISABLED(@"Disabled for iPad due to a simulator bug.");
-  }
-
   // Tablet only (handset keyboard does not have "hide keyboard" button).
   if (![ChromeEarlGrey isIPadIdiom]) {
     EARL_GREY_TEST_SKIPPED(@"Test not support on iPhone");
@@ -242,9 +238,7 @@ void WaitForEmpyOmnibox() {
 }
 
 // Verifies that copying and pasting a URL includes the hidden protocol prefix.
-// TODO(crbug.com/40572353): Enable this test when long press on the steady
-// location bar is supported.
-- (void)DISABLED_testCopyPasteURL {
+- (void)testCopyPasteURL {
   // Clear generalPasteboard before and after the test.
   [UIPasteboard generalPasteboard].string = @"";
   [self setTearDownHandler:^{
@@ -303,6 +297,7 @@ void WaitForEmpyOmnibox() {
 }
 
 // Verifies that the clear text button clears any text in the omnibox.
+TAG_SMOKE_TEST(LegacyToolbarTestCase, testOmniboxClearTextButton);
 - (void)testOmniboxClearTextButton {
   const GURL URL = self.testServer->GetURL("/echo");
 
@@ -355,8 +350,7 @@ void WaitForEmpyOmnibox() {
 }
 
 // Tests typing in the omnibox.
-// TODO(crbug.com/519981855): Flaky
-- (void)FLAKY_testToolbarOmniboxTyping {
+- (void)testToolbarOmniboxTyping {
   [[EarlGrey selectElementWithMatcher:chrome_test_util::FakeOmnibox()]
       performAction:grey_tap()];
 

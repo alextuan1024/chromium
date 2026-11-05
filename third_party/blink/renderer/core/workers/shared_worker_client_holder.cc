@@ -50,6 +50,7 @@
 #include "third_party/blink/renderer/core/fetch/request.h"
 #include "third_party/blink/renderer/core/frame/csp/content_security_policy.h"
 #include "third_party/blink/renderer/core/script/script.h"
+#include "third_party/blink/renderer/core/workers/outside_settings_csp_violation_reporter.h"
 #include "third_party/blink/renderer/core/workers/shared_worker.h"
 #include "third_party/blink/renderer/core/workers/shared_worker_client.h"
 #include "third_party/blink/renderer/platform/loader/fetch/fetch_client_settings_object_snapshot.h"
@@ -92,7 +93,8 @@ void SharedWorkerClientHolder::Connect(
     mojom::blink::SharedWorkerSameSiteCookies same_site_cookies,
     const HeapMojoRemote<mojom::blink::SharedWorkerConnector>*
         connector_override,
-    bool extended_lifetime) {
+    bool extended_lifetime,
+    const network::PermissionsPolicyFeaturesBitset& permissions_policy) {
   DCHECK(IsMainThread());
   DCHECK(options);
 
@@ -124,7 +126,9 @@ void SharedWorkerClientHolder::Connect(
               .Clone(),
           KURL(outside_fetch_client_settings_object->GetOutgoingReferrer()),
           insecure_requests_policy),
-      same_site_cookies, extended_lifetime);
+      OutsideSettingsCSPViolationReporter::BindNewRemote(
+          *worker->GetExecutionContext()),
+      same_site_cookies, extended_lifetime, permissions_policy);
 
   const HeapMojoRemote<mojom::blink::SharedWorkerConnector>& connector =
       connector_override ? *connector_override : connector_;

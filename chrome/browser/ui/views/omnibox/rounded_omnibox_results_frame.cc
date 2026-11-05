@@ -7,13 +7,15 @@
 #include <memory>
 #include <utility>
 
+#include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/memory/raw_ptr.h"
 #include "build/build_config.h"
 #include "chrome/browser/themes/theme_service.h"
 #include "chrome/browser/ui/color/chrome_color_id.h"
 #include "chrome/browser/ui/layout_constants.h"
-#include "chrome/browser/ui/omnibox/omnibox_next_features.h"
+#include "chrome/browser/ui/ui_features.h"
+#include "chrome/browser/ui/views/chrome_layout_provider.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/location_bar/location_bar_view.h"
 #include "chrome/browser/ui/views/omnibox/omnibox_aim_popup_webui_content.h"
@@ -128,7 +130,7 @@ WidgetEventPair GetParentWidgetAndEvent(views::View* this_view,
       parent_widget->GetNativeView());
 #endif
 
-  DCHECK_NE(this_widget, top_level);
+  CHECK_NE(this_widget, top_level, base::NotFatalUntil::M162);
   if (!top_level) {
     return {nullptr, std::move(event)};
   }
@@ -236,21 +238,34 @@ RoundedOmniboxResultsFrame::RoundedOmniboxResultsFrame(
     bool forward_mouse_events)
     : contents_(contents), forward_mouse_events_(forward_mouse_events) {
   const int corner_radius = views::LayoutProvider::Get()->GetCornerRadiusMetric(
-      views::ShapeContextTokens::kOmniboxExpandedRadius);
+      ChromeShapeContextTokens::kOmniboxExpandedRadius);
   auto* webui_content = GetOmniboxPopupWebUIBaseContent();
+  // When the page paints the popup's shadow, this frame must not paint a
+  // background, rounded corners or a shadow: the renderer draws all of them,
+  // including transparent shadow pixels in the margin around the content.
+  draw_shadow_in_webui_ =
+      webui_content && webui_content->ShouldDrawShadowInWebUI();
   const bool masks_to_bounds =
       webui_content && webui_content->ShouldSizeWebViewToPreferredHeight();
+  // Skipped entirely when the WebUI paints the background itself.
+  std::unique_ptr<views::Background> background;
+  if (!draw_shadow_in_webui_) {
+    background = views::CreateSolidBackground(kColorOmniboxResultsBackground);
+  }
   // Host the contents in its own View to simplify layout and customization.
   auto contents_host_builder =
       views::Builder<views::View>()
           .CopyAddressTo(&contents_host_)
-          .SetBackground(
-              views::CreateSolidBackground(kColorOmniboxResultsBackground))
+          .SetBackground(std::move(background))
           .SetPaintToLayer()
           .CustomConfigure(base::BindOnce(
               [](const int corner_radius, const bool masks_to_bounds,
-                 views::View* view) {
+                 const bool draw_shadow_in_webui, views::View* view) {
                 view->layer()->SetFillsBoundsOpaquely(false);
+                if (draw_shadow_in_webui) {
+                  // Rounded corners would clip the WebUI-drawn shadow.
+                  return;
+                }
                 if (masks_to_bounds) {
                   view->layer()->SetMasksToBounds(true);
                 }
@@ -259,7 +274,7 @@ RoundedOmniboxResultsFrame::RoundedOmniboxResultsFrame(
                     gfx::RoundedCornersF(corner_radius));
                 view->layer()->SetIsFastRoundedCorner(true);
               },
-              corner_radius, masks_to_bounds))
+              corner_radius, masks_to_bounds, draw_shadow_in_webui_))
           .AddChild(views::Builder<TopBackgroundView>(
                         std::make_unique<TopBackgroundView>(location_bar))
                         .CopyAddressTo(&top_background_));
@@ -267,8 +282,9 @@ RoundedOmniboxResultsFrame::RoundedOmniboxResultsFrame(
   auto contents_host = std::move(contents_host_builder).Build();
   contents_host->AddChildViewRaw(contents_.get());
 
-  // Initialize the shadow.
-  SetElevation(kDefaultElevation);
+  if (!draw_shadow_in_webui_) {
+    SetElevation(kDefaultElevation);
+  }
 
   AddChildView(std::move(contents_host));
 }
@@ -280,14 +296,13 @@ void RoundedOmniboxResultsFrame::OnBeforeWidgetInit(
     views::Widget::InitParams* params,
     views::Widget* widget) {
 #if BUILDFLAG(IS_WIN)
-  // On Windows, use an Aura window instead of a native window, because the
-  // native window does not support clicking through translucent shadows to the
-  // underyling content. Linux and ChromeOS do not need this because they
-  // already use Aura for the suggestions dropdown.
-  //
-  // TODO(sdy): Mac does not support Aura at the moment, and needs a different
-  // platform-specific solution.
-  params->native_widget = new views::NativeWidgetAura(widget);
+  if (!base::FeatureList::IsEnabled(features::kOmniboxPopupDesktopWidget)) {
+    // On Windows, use an Aura window instead of a native window, because the
+    // native window does not support clicking through translucent shadows to
+    // the underlying content. Linux and ChromeOS do not need this because they
+    // already use Aura for the suggestions dropdown.
+    params->native_widget = new views::NativeWidgetAura(widget);
+  }
 #endif
   params->name = "RoundedOmniboxResultsFrameWindow";
 
@@ -309,32 +324,16 @@ gfx::Insets RoundedOmniboxResultsFrame::GetLocationBarAlignmentInsets() {
   if (ui::TouchUiController::Get()->touch_ui()) {
     return gfx::Insets::TLBR(6, 1, 5, 1);
   }
-#if BUILDFLAG(IS_MAC)
-  // On macOS, the popup is hosted in a separate native window. Differences in
-  // visual border rendering thickness (1px CSS outline in WebUI vs 0.5px native
-  // retina border) require a slightly tighter horizontal fit (5px instead of
-  // 6px).
-  //
-  // When WebUIOmniboxFullPopup is enabled:
-  // - Top inset is kept at 5px so the widget anchors flush with the bottom of
-  //   the tab line (y = LocationBar_y - 5 = 0).
-  // - Horizontal insets are 5px (1px tighter) to align visual boundaries with
-  //   the native location bar.
-  // - Bottom inset is 4px to accommodate the 32px WebUI searchbox.
-  // When disabled, we fall back to standard (5, 6) insets.
-  if (omnibox::IsWebUIOmniboxFullPopupEnabled()) {
-    return gfx::Insets::TLBR(5, 5, 4, 5);
-  }
   return gfx::Insets::VH(5, 6);
-#else
-  return gfx::Insets::VH(5, 6);
-#endif
 }
 
 // static
+// Popups that paint their own shadow reserve this margin as `body` padding.
+// LINT.IfChange(ShadowInsets)
 gfx::Insets RoundedOmniboxResultsFrame::GetShadowInsets() {
   return views::BubbleBorder::GetBorderAndShadowInsets(kDefaultElevation);
 }
+// LINT.ThenChange(//chrome/browser/resources/omnibox_popup/omnibox_popup_document_style.css:ShadowMargin)
 
 std::unique_ptr<views::View> RoundedOmniboxResultsFrame::ExtractContents() {
   auto contents = std::exchange(contents_, nullptr);
@@ -362,11 +361,14 @@ void RoundedOmniboxResultsFrame::SetCutoutVisibility(bool visible) {
     return;
   }
   top_background_->SetVisible(visible);
+#if defined(USE_AURA)
+  UpdateWindowTargeter();
+#endif  // USE_AURA
 }
 
 void RoundedOmniboxResultsFrame::SetElevation(int elevation) {
   const int corner_radius = views::LayoutProvider::Get()->GetCornerRadiusMetric(
-      views::ShapeContextTokens::kOmniboxExpandedRadius);
+      ChromeShapeContextTokens::kOmniboxExpandedRadius);
   auto border = std::make_unique<views::BubbleBorder>(
       views::BubbleBorder::Arrow::NONE,
       elevation == 0 ? views::BubbleBorder::Shadow::NO_SHADOW
@@ -376,6 +378,9 @@ void RoundedOmniboxResultsFrame::SetElevation(int elevation) {
     border->set_md_shadow_elevation(elevation);
   }
   SetBorder(std::move(border));
+#if defined(USE_AURA)
+  UpdateWindowTargeter();
+#endif  // USE_AURA
 }
 
 void RoundedOmniboxResultsFrame::Layout(PassKey) {
@@ -402,6 +407,12 @@ void RoundedOmniboxResultsFrame::Layout(PassKey) {
   }
 
   gfx::Rect results_bounds(contents_host_->GetContentsBounds());
+  if (draw_shadow_in_webui_) {
+    // The WebUI paints the shadow, so the WebView must cover the whole widget,
+    // shadow margin included. There is also no location bar cutout to skip.
+    contents_->SetBoundsRect(results_bounds);
+    return;
+  }
   results_bounds.Inset(GetContentInsets());
 
   // Align webview horizontal bounds and positioning with the outer view.
@@ -433,16 +444,40 @@ void RoundedOmniboxResultsFrame::Layout(PassKey) {
 
 void RoundedOmniboxResultsFrame::AddedToWidget() {
 #if defined(USE_AURA)
-  if (!forward_mouse_events_) {
-    return;
-  }
-  // Use a ui::EventTargeter that allows mouse and touch events in the top
-  // portion of the Widget to pass through to the omnibox beneath it.
-  auto results_targeter = std::make_unique<aura::WindowTargeter>();
-  results_targeter->SetInsets(GetContentInsets());
-  GetWidget()->GetNativeWindow()->SetEventTargeter(std::move(results_targeter));
+  UpdateWindowTargeter();
 #endif  // USE_AURA
 }
+
+#if defined(USE_AURA)
+void RoundedOmniboxResultsFrame::UpdateWindowTargeter() {
+  if (!GetWidget() || GetWidget()->GetClientContentsView() != this ||
+      !GetWidget()->GetNativeWindow()) {
+    return;
+  }
+  const gfx::Insets insets = GetWindowTargeterInsets();
+  auto* window = GetWidget()->GetNativeWindow();
+  if (window->targeter()) {
+    window->targeter()->SetInsets(insets);
+  } else {
+    auto results_targeter = std::make_unique<aura::WindowTargeter>();
+    results_targeter->SetInsets(insets);
+    window->SetEventTargeter(std::move(results_targeter));
+  }
+}
+
+gfx::Insets RoundedOmniboxResultsFrame::GetWindowTargeterInsets() const {
+  // Mouse and touch events in the shadow margin of the Widget pass through to
+  // the browser window beneath it.
+  gfx::Insets insets = draw_shadow_in_webui_ ? GetShadowInsets() : GetInsets();
+  if (forward_mouse_events_) {
+    // Also pass through events over the location bar cutout.
+    // `GetContentInsets()` is the cutout's height, or 0 when the cutout is
+    // hidden.
+    insets += GetContentInsets();
+  }
+  return insets;
+}
+#endif  // USE_AURA
 
 // Note: The OnMouseMoved function is only called for the shadow area, as mouse-
 // moved events are not dispatched through the view hierarchy but are direct-
@@ -471,7 +506,7 @@ void RoundedOmniboxResultsFrame::OnMouseEvent(ui::MouseEvent* event) {
 #endif  // !USE_AURA
 
 // Insets used to position |contents_| within |contents_host_|.
-gfx::Insets RoundedOmniboxResultsFrame::GetContentInsets() {
+gfx::Insets RoundedOmniboxResultsFrame::GetContentInsets() const {
   return gfx::Insets::TLBR(
       GetNonResultSectionHeight(top_background_->GetVisible()), 0, 0, 0);
 }

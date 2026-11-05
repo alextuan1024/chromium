@@ -19,6 +19,7 @@
 #include "base/base64url.h"
 #include "base/byte_size.h"
 #include "base/compiler_specific.h"
+#include "base/containers/flat_set.h"
 #include "base/containers/heap_array.h"
 #include "base/containers/span.h"
 #include "base/files/file_path.h"
@@ -101,6 +102,7 @@
 #include "net/dns/mock_host_resolver.h"
 #include "net/dns/public/host_resolver_results.h"
 #include "net/dns/public/secure_dns_policy.h"
+#include "net/filter/source_stream_type.h"
 #include "net/http/http_byte_range.h"
 #include "net/http/http_cache.h"
 #include "net/http/http_connection_info.h"
@@ -188,6 +190,10 @@
 #if BUILDFLAG(ENABLE_WEBSOCKETS)
 #include "net/websockets/websocket_test_util.h"
 #endif  // BUILDFLAG(ENABLE_WEBSOCKETS)
+
+#if BUILDFLAG(CHROME_KEY_PINNING_SUPPORTED)
+#include "net/cert/key_pinning_state_chrome_test_util.h"
+#endif
 
 using net::test::IsError;
 using net::test::IsOk;
@@ -5063,7 +5069,6 @@ class AsyncDelegateLogger : public base::RefCounted<AsyncDelegateLogger> {
       ADD_FAILURE() << "Not enough log entries";
       return entries.size();
     }
-    std::string delegate_info;
     EXPECT_EQ(NetLogEventType::DELEGATE_INFO, entries[log_position].type);
     EXPECT_EQ(NetLogEventPhase::BEGIN, entries[log_position].phase);
     EXPECT_EQ(
@@ -6130,20 +6135,11 @@ TEST_F(URLRequestTestHTTP, ProcessSTS) {
 
   TransportSecurityState* security_state = context->transport_security_state();
   TransportSecurityState::STSState sts_state;
-  TransportSecurityState::PKPState pkp_state;
   EXPECT_TRUE(
       security_state->GetDynamicSTSState(test_server_hostname, &sts_state));
-  EXPECT_FALSE(
-      security_state->GetDynamicPKPState(test_server_hostname, &pkp_state));
   EXPECT_EQ(TransportSecurityState::STSState::MODE_FORCE_HTTPS,
             sts_state.upgrade_mode);
   EXPECT_TRUE(sts_state.include_subdomains);
-  EXPECT_FALSE(pkp_state.include_subdomains);
-#if BUILDFLAG(IS_ANDROID)
-  // Android's CertVerifyProc does not (yet) handle pins.
-#else
-  EXPECT_FALSE(pkp_state.HasPublicKeyPins());
-#endif
 }
 
 TEST_F(URLRequestTestHTTP, STSNotProcessedOnIP) {
@@ -6219,9 +6215,18 @@ TEST_F(URLRequestTestHTTP, STSProcessedOnLocalhostWhenFeatureDisabled) {
   EXPECT_TRUE(security_state->GetDynamicSTSState("localhost", &sts_state));
 }
 
+// The PKP tests depend on ScopedKeyPinningStateChromeDefaults and
+// KeyPinningStateChrome which are only available when the builtin pin list is
+// compiled in. We could also make a separate version of these tests that use
+// the dynamic PKP path for testing on cronet, but it's not really worth the
+// effort, especially since this is only a temporary state. Once PKP refactor
+// is complete and pinning is only done in cert verification, then these tests
+// can just configure the mock cert verifier to test the desired pkp results.
+#if BUILDFLAG(CHROME_KEY_PINNING_SUPPORTED)
 TEST_F(URLRequestTestHTTP, PKPBypassRecorded) {
   AddScopedFeatureList().InitAndEnableFeature(
       net::features::kStaticKeyPinningEnforcement);
+  ScopedKeyPinningStateChromeDefaults scoped_key_pinning_enable;
   EmbeddedTestServer https_test_server(net::EmbeddedTestServer::TYPE_HTTPS);
   https_test_server.SetSSLConfig(
       net::EmbeddedTestServer::CERT_COMMON_NAME_IS_DOMAIN);
@@ -6244,14 +6249,9 @@ TEST_F(URLRequestTestHTTP, PKPBypassRecorded) {
 
   std::string test_server_hostname = "www.example.org";
 
-  ScopedTransportSecurityStateSource scoped_transport_security_state_source;
-
   auto context_builder = CreateTestURLRequestContextBuilder();
   context_builder->SetCertVerifier(std::move(cert_verifier));
   auto context = context_builder->Build();
-  context->transport_security_state()->EnableStaticPinsForTesting();
-  context->transport_security_state()->SetPinningListAlwaysTimelyForTesting(
-      true);
 
   TestDelegate d;
   std::unique_ptr<URLRequest> request(context->CreateRequest(
@@ -6266,11 +6266,12 @@ TEST_F(URLRequestTestHTTP, PKPBypassRecorded) {
   // Check that the request succeeded and that PKP was bypassed.
   EXPECT_EQ(OK, d.request_status());
   TransportSecurityState::PKPState pkp_state;
-  EXPECT_TRUE(context->transport_security_state()->GetStaticPKPState(
+  EXPECT_TRUE(context->transport_security_state()->GetPKPState(
       test_server_hostname, &pkp_state));
   EXPECT_TRUE(pkp_state.HasPublicKeyPins());
   EXPECT_TRUE(request->ssl_info().pkp_bypassed);
 }
+#endif  // BUILDFLAG(CHROME_KEY_PINNING_SUPPORTED)
 
 TEST_F(URLRequestTestHTTP, ProcessSTSOnce) {
   EmbeddedTestServer https_test_server(net::EmbeddedTestServer::TYPE_HTTPS);
@@ -8796,7 +8797,7 @@ TEST_F(URLRequestTestHTTP, DefaultAcceptEncodingOverridden) {
   ASSERT_TRUE(http_test_server()->Start());
 
   struct {
-    base::flat_set<SourceStreamType> accepted_types;
+    SourceStreamTypeSet accepted_types;
     const char* expected_accept_encoding;
   } tests[] = {
       {{SourceStreamType::kDeflate}, "deflate"},
@@ -9600,8 +9601,6 @@ TEST_F(HTTPSRequestTest, HTTPSPreloadedHSTSTest) {
 // This tests that cached HTTPS page loads do not cause any updates to the
 // TransportSecurityState.
 TEST_F(HTTPSRequestTest, HTTPSErrorsNoClobberTSSTest) {
-  AddScopedFeatureList().InitAndEnableFeature(
-      net::features::kStaticKeyPinningEnforcement);
   ScopedTransportSecurityStateSource scoped_transport_security_state_source;
 
   // The actual problem -- CERT_MISMATCHED_NAME in this case -- doesn't
@@ -9626,22 +9625,14 @@ TEST_F(HTTPSRequestTest, HTTPSErrorsNoClobberTSSTest) {
   TransportSecurityState& transport_security_state =
       *context->transport_security_state();
 
-  transport_security_state.EnableStaticPinsForTesting();
-  transport_security_state.SetPinningListAlwaysTimelyForTesting(true);
-
   TransportSecurityState::STSState static_sts_state;
-  TransportSecurityState::PKPState static_pkp_state;
   EXPECT_TRUE(transport_security_state.GetStaticSTSState(
       "hsts-hpkp-preloaded.test", &static_sts_state));
-  EXPECT_TRUE(transport_security_state.GetStaticPKPState(
-      "hsts-hpkp-preloaded.test", &static_pkp_state));
 
   TransportSecurityState::STSState dynamic_sts_state;
   TransportSecurityState::PKPState dynamic_pkp_state;
   EXPECT_FALSE(transport_security_state.GetDynamicSTSState(
       "hsts-hpkp-preloaded.test", &dynamic_sts_state));
-  EXPECT_FALSE(transport_security_state.GetDynamicPKPState(
-      "hsts-hpkp-preloaded.test", &dynamic_pkp_state));
 
   TestDelegate d;
   std::unique_ptr<URLRequest> r(context->CreateRequest(
@@ -9662,26 +9653,15 @@ TEST_F(HTTPSRequestTest, HTTPSErrorsNoClobberTSSTest) {
 
   // Get a fresh copy of the states, and check that they haven't changed.
   TransportSecurityState::STSState new_static_sts_state;
-  TransportSecurityState::PKPState new_static_pkp_state;
   EXPECT_TRUE(transport_security_state.GetStaticSTSState(
       "hsts-hpkp-preloaded.test", &new_static_sts_state));
-  EXPECT_TRUE(transport_security_state.GetStaticPKPState(
-      "hsts-hpkp-preloaded.test", &new_static_pkp_state));
   TransportSecurityState::STSState new_dynamic_sts_state;
-  TransportSecurityState::PKPState new_dynamic_pkp_state;
   EXPECT_FALSE(transport_security_state.GetDynamicSTSState(
       "hsts-hpkp-preloaded.test", &new_dynamic_sts_state));
-  EXPECT_FALSE(transport_security_state.GetDynamicPKPState(
-      "hsts-hpkp-preloaded.test", &new_dynamic_pkp_state));
 
   EXPECT_EQ(new_static_sts_state.upgrade_mode, static_sts_state.upgrade_mode);
   EXPECT_EQ(new_static_sts_state.include_subdomains,
             static_sts_state.include_subdomains);
-  EXPECT_EQ(new_static_pkp_state.include_subdomains,
-            static_pkp_state.include_subdomains);
-  EXPECT_EQ(new_static_pkp_state.spki_hashes, static_pkp_state.spki_hashes);
-  EXPECT_EQ(new_static_pkp_state.bad_spki_hashes,
-            static_pkp_state.bad_spki_hashes);
 }
 
 // Make sure HSTS preserves a POST request's method and body.
@@ -11598,9 +11578,6 @@ TEST_F(HTTPSLocalCRLSetTest, InterceptionBlockedAllowOverrideOnHSTS) {
 
   // Enable preloaded HSTS for |kHSTSHost|.
   ASSERT_TRUE(context->transport_security_state());
-  TransportSecurityState& security_state = *context->transport_security_state();
-  security_state.EnableStaticPinsForTesting();
-  security_state.SetPinningListAlwaysTimelyForTesting(true);
   ScopedTransportSecurityStateSource scoped_transport_security_state_source;
 
   // Connect to the test server and see the certificate error flagged, but
@@ -12815,7 +12792,8 @@ TEST_F(URLRequestDnsAliasTest, WithDnsAliases) {
 TEST_F(URLRequestDnsAliasTest, NoAdditionalDnsAliases) {
   GURL url(test_server_.GetURL("www.example.test", "/echo"));
   host_resolver().rules()->AddIPLiteralRuleWithDnsAliases(
-      "www.example.test", "127.0.0.1", /*dns_aliases=*/std::set<std::string>());
+      "www.example.test", "127.0.0.1",
+      /*dns_aliases=*/base::flat_set<std::string>());
 
   std::unique_ptr<URLRequest> request(context().CreateRequest(
       url, DEFAULT_PRIORITY, &test_delegate_, TRAFFIC_ANNOTATION_FOR_TESTS,
@@ -12911,6 +12889,38 @@ TEST_F(URLRequestTest, SetIsolationInfoFromNak) {
   d.RunUntilComplete();
 }
 
+TEST_F(URLRequestTest,
+       SetIsolationInfoFromNakPreservesNetworkIsolationPartition) {
+  TestDelegate d;
+  SchemefulSite site_a(GURL("https://a.test/"));
+  base::UnguessableToken nak_nonce = base::UnguessableToken::Create();
+  NetworkAnonymizationKey partitioned_nak =
+      NetworkAnonymizationKey::CreateFromParts(
+          site_a, /*is_cross_site=*/false, nak_nonce,
+          NetworkIsolationPartition::kDnsOverHttps);
+  NetworkAnonymizationKey empty_partitioned_nak =
+      NetworkAnonymizationKey::CreateEmptyWithPartition(
+          NetworkIsolationPartition::kDnsOverHttps);
+
+  std::unique_ptr<URLRequest> r(default_context().CreateRequest(
+      GURL("http://localhost"), DEFAULT_PRIORITY, &d,
+      TRAFFIC_ANNOTATION_FOR_TESTS, net::handles::kInvalidNetworkHandle));
+  r->SetLoadFlags(LOAD_DISABLE_CACHE);
+  r->set_disallow_credentials();
+
+  r->set_isolation_info_from_network_anonymization_key(partitioned_nak);
+  EXPECT_EQ(r->isolation_info().network_anonymization_key(), partitioned_nak);
+  EXPECT_EQ(r->isolation_info().GetNetworkIsolationPartition(),
+            NetworkIsolationPartition::kDnsOverHttps);
+
+  r->set_isolation_info_from_network_anonymization_key(empty_partitioned_nak);
+  EXPECT_EQ(r->isolation_info().network_anonymization_key(),
+            empty_partitioned_nak);
+  EXPECT_TRUE(r->isolation_info().IsEmpty());
+  EXPECT_EQ(r->isolation_info().GetNetworkIsolationPartition(),
+            NetworkIsolationPartition::kDnsOverHttps);
+}
+
 TEST_F(URLRequestTest, CookiePartitionKey) {
   const url::Origin kOrigin = url::Origin::Create(GURL("http://foo.test/"));
   const url::Origin kCrossSiteOrigin =
@@ -12976,89 +12986,6 @@ TEST_F(URLRequestTest, CookiePartitionKey) {
               tc.expected_third_party);
   }
 }
-
-class URLRequestMaybeAsyncFirstPartySetsTest
-    : public URLRequestTest,
-      public testing::WithParamInterface<bool> {
- public:
-  URLRequestMaybeAsyncFirstPartySetsTest() { CHECK(test_server_.Start()); }
-
-  std::unique_ptr<CookieStore> CreateCookieStore() {
-    auto cookie_monster = std::make_unique<CookieMonster>(/*store=*/nullptr,
-                                                          /*net_log=*/nullptr);
-    auto cookie_access_delegate = std::make_unique<TestCookieAccessDelegate>();
-    cookie_access_delegate->set_invoke_callbacks_asynchronously(
-        invoke_callbacks_asynchronously());
-    cookie_monster->SetCookieAccessDelegate(std::move(cookie_access_delegate));
-    return cookie_monster;
-  }
-
-  bool invoke_callbacks_asynchronously() { return GetParam(); }
-
-  HttpTestServer& test_server() { return test_server_; }
-
- private:
-  HttpTestServer test_server_;
-};
-
-TEST_P(URLRequestMaybeAsyncFirstPartySetsTest, SimpleRequest) {
-  const std::string kHost = "example.test";
-  const url::Origin kOrigin =
-      url::Origin::Create(test_server().GetURL(kHost, "/"));
-  const SiteForCookies kSiteForCookies = SiteForCookies::FromOrigin(kOrigin);
-
-  auto context_builder = CreateTestURLRequestContextBuilder();
-  context_builder->SetCookieStore(CreateCookieStore());
-  auto context = context_builder->Build();
-
-  TestDelegate d;
-  std::unique_ptr<URLRequest> req(context->CreateRequest(
-      test_server().GetURL(kHost, "/echo"), DEFAULT_PRIORITY, &d,
-      TRAFFIC_ANNOTATION_FOR_TESTS, net::handles::kInvalidNetworkHandle));
-  req->set_isolation_info(
-      IsolationInfo::Create(IsolationInfo::RequestType::kMainFrame, kOrigin,
-                            kOrigin, kSiteForCookies));
-  req->Start();
-  d.RunUntilComplete();
-
-  EXPECT_EQ(d.data_received(), "Echo");
-  EXPECT_THAT(d.request_status(), IsOk());
-  EXPECT_EQ(req->GetResponseCode(), 200);
-}
-
-TEST_P(URLRequestMaybeAsyncFirstPartySetsTest, SingleRedirect) {
-  const std::string kHost = "example.test";
-  const url::Origin kOrigin =
-      url::Origin::Create(test_server().GetURL(kHost, "/"));
-  const SiteForCookies kSiteForCookies = SiteForCookies::FromOrigin(kOrigin);
-
-  auto context_builder = CreateTestURLRequestContextBuilder();
-  context_builder->SetCookieStore(CreateCookieStore());
-  auto context = context_builder->Build();
-
-  TestDelegate d;
-  std::unique_ptr<URLRequest> req(context->CreateRequest(
-      test_server().GetURL(kHost,
-                           base::StrCat({
-                               "/server-redirect?",
-                               test_server().GetURL(kHost, "/echo").spec(),
-                           })),
-      DEFAULT_PRIORITY, &d, TRAFFIC_ANNOTATION_FOR_TESTS,
-      net::handles::kInvalidNetworkHandle));
-  req->set_isolation_info(
-      IsolationInfo::Create(IsolationInfo::RequestType::kMainFrame, kOrigin,
-                            kOrigin, kSiteForCookies));
-  req->Start();
-  d.RunUntilComplete();
-
-  EXPECT_EQ(d.data_received(), "Echo");
-  EXPECT_THAT(d.request_status(), IsOk());
-  EXPECT_EQ(req->GetResponseCode(), 200);
-}
-
-INSTANTIATE_TEST_SUITE_P(,
-                         URLRequestMaybeAsyncFirstPartySetsTest,
-                         testing::Bool());
 
 class PartitionConnectionsByNetworkAnonymizationKey : public URLRequestTest {
  public:

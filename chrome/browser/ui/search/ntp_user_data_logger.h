@@ -19,21 +19,26 @@
 #include "components/ntp_tiles/constants.h"
 #include "components/ntp_tiles/ntp_tile_impression.h"
 
-// This enum must match the numbering for NewTabPageLogoShown in enums.xml.
+// This enum must match the numbering for NewTabPageLogoShown in enums.xml and
+// LogoShownId in LogoMediator.java, which records the same histograms from the
+// Android native NTP and must therefore use an identical bucket layout.
 // Do not reorder or remove items, and only add new items before
 // LOGO_IMPRESSION_TYPE_MAX.
 // LINT.IfChange(LogoImpressionType)
 enum LogoImpressionType {
   // Static Doodle image.
   LOGO_IMPRESSION_TYPE_STATIC = 0,
-  // (Deprecated) Call-to-action Doodle image.
+  // Call-to-action Doodle image. No longer recorded by the WebUI NTP, but still
+  // recorded by the Android native NTP for the static preview of an animated
+  // Doodle.
   LOGO_IMPRESSION_TYPE_CTA = 1,
   // Animated Doodle image.
   LOGO_IMPRESSION_TYPE_ANIMATED = 2,
 
   LOGO_IMPRESSION_TYPE_MAX
 };
-// LINT.ThenChange(//tools/metrics/histograms/metadata/new_tab_page/enums.xml:NewTabPageLogoShown)
+// LINT.ThenChange(//tools/metrics/histograms/metadata/new_tab_page/enums.xml:NewTabPageLogoShown,
+// //chrome/browser/ui/android/logo/java/src/org/chromium/chrome/browser/logo/LogoMediator.java:LogoShownId)
 
 // This enum must match the numbering for NewTabPageLogoClick in enums.xml.
 // Do not reorder or remove items, and only add new items before
@@ -55,11 +60,7 @@ enum LogoClickType {
 class NTPUserDataLogger : public MostVisitedMetricsLogger {
  public:
   // Creates a NTPUserDataLogger. MUST be called only when the NTP is active.
-  // `ntp_navigation_start_time_ticks` is the monotonic-clock timestamp of the
-  // NTP navigation start; it is used directly as the anchor for trace events.
-  NTPUserDataLogger(Profile* profile,
-                    const GURL& ntp_url,
-                    base::TimeTicks ntp_navigation_start_time_ticks);
+  NTPUserDataLogger(Profile* profile, const GURL& ntp_url);
 
   NTPUserDataLogger(const NTPUserDataLogger&) = delete;
   NTPUserDataLogger& operator=(const NTPUserDataLogger&) = delete;
@@ -125,9 +126,6 @@ class NTPUserDataLogger : public MostVisitedMetricsLogger {
 
   // The profile in which this New Tab Page was loaded.
   raw_ptr<Profile> profile_;
-
-  // Keeps the starting time of NTP navigation.
-  const base::TimeTicks ntp_navigation_start_time_;
 };
 
 #endif  // CHROME_BROWSER_UI_SEARCH_NTP_USER_DATA_LOGGER_H_

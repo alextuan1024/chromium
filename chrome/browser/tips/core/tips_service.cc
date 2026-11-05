@@ -13,13 +13,21 @@
 #include "base/check.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
+#include "base/metrics/field_trial_params.h"
+#include "build/build_config.h"
 #include "components/prefs/pref_service.h"
 #include "components/segmentation_platform/internal/metadata/metadata_writer.h"
 #include "components/segmentation_platform/public/constants.h"
 #include "components/segmentation_platform/public/database_client.h"
+#include "components/segmentation_platform/public/features.h"
 #include "components/segmentation_platform/public/model_provider.h"
 #include "components/segmentation_platform/public/proto/model_metadata.pb.h"
 #include "components/segmentation_platform/public/segmentation_platform_service.h"
+
+#if BUILDFLAG(IS_ANDROID)
+#include "chrome/browser/flags/android/chrome_feature_list.h"
+#include "chrome/browser/tips/core/tips_utils.h"
+#endif
 
 namespace tips {
 
@@ -56,8 +64,43 @@ void TipsService::RegisterFeature(std::unique_ptr<TipsFeature> feature) {
   registered_features_.push_back(std::move(feature));
 }
 
-void TipsService::DetermineBestTip(OnBestTipChosen callback) {
-  if (!segmentation_service_ || registered_features_.empty()) {
+bool TipsService::HasBeenShown(const TipsFeature& feature) const {
+#if BUILDFLAG(IS_ANDROID)
+  return pref_service_->GetBoolean(
+      GetFeatureTypePref(feature.GetFeatureType()));
+#else
+  return false;
+#endif
+}
+
+std::vector<raw_ptr<TipsFeature>> TipsService::GetFeaturesNotYetShown() const {
+  std::vector<raw_ptr<TipsFeature>> features;
+  for (const std::unique_ptr<TipsFeature>& feature : registered_features_) {
+    if (!HasBeenShown(*feature)) {
+      features.push_back(feature.get());
+    }
+  }
+  return features;
+}
+
+bool TipsService::HasRemainingTips() const {
+  return std::ranges::any_of(
+      registered_features_,
+      [this](const std::unique_ptr<TipsFeature>& feature) {
+        return !HasBeenShown(*feature);
+      });
+}
+
+void TipsService::DetermineBestTip(std::map<std::string, float> custom_signals,
+                                   OnBestTipChosen callback) {
+  if (!segmentation_service_) {
+    std::move(callback).Run(std::nullopt);
+    return;
+  }
+
+  // Skip the database query entirely once every tip has been shown.
+  std::vector<raw_ptr<TipsFeature>> features = GetFeaturesNotYetShown();
+  if (features.empty()) {
     std::move(callback).Run(std::nullopt);
     return;
   }
@@ -79,10 +122,15 @@ void TipsService::DetermineBestTip(OnBestTipChosen callback) {
   // Min signal collection length 0, 28 days TTL.
   writer.SetDefaultSegmentationMetadataConfig(0, 28);
 
+  // Add the global 7-day cooldown signal (tracks if any tips were shown).
+  writer.AddFeatures({SignalToFeature(
+      HistogramEnum(kGlobalTipsShownSignal, kGlobalCooldownDays,
+                    {kNotificationLifeCycleEventShown}))});
+
   // Add feature signals to the metadata writer. The features are added
   // sequentially and in OnFeaturesProcessed, will be returned as inputs in the
   // same sequential order that they were added.
-  for (const std::unique_ptr<TipsFeature>& feature : registered_features_) {
+  for (TipsFeature* feature : features) {
     for (const SignalDefinition& signal : feature->GetRequiredSignals()) {
       writer.AddFeatures({SignalToFeature(signal)});
     }
@@ -91,14 +139,30 @@ void TipsService::DetermineBestTip(OnBestTipChosen callback) {
   db_client->ProcessFeatures(
       metadata, base::Time::Now(),
       base::BindOnce(&TipsService::OnFeaturesProcessed,
-                     weak_ptr_factory_.GetWeakPtr(), std::move(callback)));
+                     weak_ptr_factory_.GetWeakPtr(), std::move(features),
+                     std::move(custom_signals), std::move(callback)));
 }
 
 void TipsService::OnFeaturesProcessed(
+    std::vector<raw_ptr<TipsFeature>> features,
+    std::map<std::string, float> custom_signals,
     OnBestTipChosen callback,
     ResultStatus status,
     const segmentation_platform::ModelProvider::Request& inputs) {
-  if (status != ResultStatus::kSuccess) {
+  if (status != ResultStatus::kSuccess || inputs.empty()) {
+    std::move(callback).Run(std::nullopt);
+    return;
+  }
+
+  // Check global 7-day cooldown. If any tips notification was shown recently,
+  // suppress all tips unless cooldown bypass is enabled.
+  bool bypass_global_cooldown = false;
+#if BUILDFLAG(IS_ANDROID)
+  bypass_global_cooldown = kTipsSelfServiceInstantScheduling.Get();
+#endif
+
+  float global_tips_shown_count = inputs[0];
+  if (global_tips_shown_count > 0 && !bypass_global_cooldown) {
     std::move(callback).Run(std::nullopt);
     return;
   }
@@ -108,37 +172,51 @@ void TipsService::OnFeaturesProcessed(
   // signal name in reference to its emitted value. Inputs are returned in the
   // same order as they were added sequentially above.
   std::map<TipsFeature*, std::map<std::string, float>> feature_signals_map;
-  size_t input_index = 0;
+  // `input_index` starts at 1 because index 0 contains the global cooldown
+  // signal (kGlobalTipsShownSignal) evaluated above.
+  size_t input_index = 1;
 
-  for (const std::unique_ptr<TipsFeature>& feature : registered_features_) {
+  for (TipsFeature* feature : features) {
+    // Ensure an entry exists for every queried feature even if it has no
+    // required or custom signals.
+    auto& signals_map = feature_signals_map[feature];
     for (const SignalDefinition& signal : feature->GetRequiredSignals()) {
       if (input_index < inputs.size()) {
-        feature_signals_map[feature.get()][signal.name] = inputs[input_index];
+        signals_map[signal.name] = inputs[input_index];
         input_index++;
       }
     }
+    // Merge all custom / runtime signals that need to be retrieved in Java
+    // into each feature's signal map.
+    for (const auto& [signal_name, signal_val] : custom_signals) {
+      signals_map[signal_name] = signal_val;
+    }
   }
 
-  std::optional<TipsNotificationsFeatureType> best_tip;
+  TipsFeature* best_feature = nullptr;
   std::optional<TipFeatureRank> best_rank;
 
-  // Evaluate eligibility for each registered feature and apply the centralized
+  // Evaluate eligibility for each queried feature and apply the centralized
   // global ranking order.
-  for (const std::unique_ptr<TipsFeature>& feature : registered_features_) {
-    auto it = feature_signals_map.find(feature.get());
+  for (TipsFeature* feature : features) {
+    auto it = feature_signals_map.find(feature);
     if (it != feature_signals_map.end()) {
       if (feature->IsEligible(it->second, *pref_service_)) {
         TipFeatureRank rank = feature->GetRank();
         if (!best_rank ||
             static_cast<int>(rank) < static_cast<int>(*best_rank)) {
           best_rank = rank;
-          best_tip = feature->GetFeatureType();
+          best_feature = feature;
         }
       }
     }
   }
 
-  std::move(callback).Run(best_tip);
+  if (best_feature) {
+    std::move(callback).Run(best_feature->GetNotificationData());
+  } else {
+    std::move(callback).Run(std::nullopt);
+  }
 }
 
 }  // namespace tips

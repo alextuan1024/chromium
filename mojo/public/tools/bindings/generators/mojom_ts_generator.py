@@ -6,9 +6,7 @@
 import mojom.generate.generator as generator
 import mojom.generate.module as mojom
 import mojom.generate.pack as pack
-import itertools
 import os
-import sys
 import urllib.request
 from mojom.generate.template_expander import UseJinja
 from pathlib import Path
@@ -186,13 +184,16 @@ def _GetWebUiModulePath(module):
   """Returns the path to a WebUI module, from the perspective of a WebUI page
   that makes it available. This is based on the corresponding mojom target's
   webui_module_path value. Returns None if the target specifies no module
-  path. Otherwise, returned paths always end in a '/' and begin with either
+  path, or 'REPO_PATHS' if the target opts into repository-relative module
+  paths. Otherwise, returned paths always end in a '/' and begin with either
   `chrome://resources/` or a '/'."""
   path = module.metadata.get('webui_module_path')
   if path is None:
     return None
   if path == '' or path == '/':
     return '/'
+  if path == 'REPO_PATHS':
+    return path
   if _IsAbsoluteChromeResourcesPath(path):
     return path.rstrip('/') + '/'
   return '/{}/'.format(path.strip('/'))
@@ -353,7 +354,7 @@ class Generator(generator.Generator):
     )
 
   def _TypescriptType(self, kind, maybe_nullable=False):
-    typemap = self._TypeMappedStructs()
+    typemap = self._TypeMappedStructs()  # noqa: F841
 
     def recurse_nullable(kind):
       return self._TypescriptType(kind, maybe_nullable=True)
@@ -499,7 +500,7 @@ class Generator(generator.Generator):
       imports = [make_import(kind.name, 'Spec')]
       # if the type is typemapped, the typemap import will replace the
       # mojo type, so no need to import it here.
-      if not kind.qualified_name in self.typemap:
+      if kind.qualified_name not in self.typemap:
         imports += [make_import(kind.name)]
       return imports
     if mojom.IsInterfaceKind(kind):
@@ -739,12 +740,26 @@ class Generator(generator.Generator):
 
   def _GetJsModuleImports(self):
     imports = dict()
+    this_module_path = _GetWebUiModulePath(self.module)
 
     for spec, kind in self.module.imported_kinds.items():
       base_path = _GetWebUiModulePath(kind.module)
       assert base_path is not None, (
         "No WebUI bindings found for dependency {0!r} imported by {1!r}".format(
           kind.module, self.module
+        )
+      )
+      if this_module_path == 'REPO_PATHS':
+        dep_path = "{}-webui.js".format(kind.module.path)
+        if dep_path not in imports:
+          imports[dep_path] = []
+        imports[dep_path].append(kind)
+        continue
+      assert base_path != 'REPO_PATHS', (
+        'Module {!r} (webui_module_path={!r}) imports {!r} which uses '
+        'webui_module_path = "REPO_PATHS". Update the importing mojom target '
+        'to also use webui_module_path = "REPO_PATHS".'.format(
+          self.module.path, this_module_path, kind.module.path
         )
       )
       import_full_path = '{}{}-webui.js'.format(
@@ -777,6 +792,7 @@ class Generator(generator.Generator):
       for method in interface.methods:
         router_kind = None
         handler_kind = None
+        receiver_first = False
 
         if len(method.parameters) == 2:
           p1 = method.parameters[0]
@@ -786,6 +802,12 @@ class Generator(generator.Generator):
           ):
             router_kind = p1.kind.kind
             handler_kind = p2.kind.kind
+          elif mojom.IsPendingReceiverKind(
+            p1.kind
+          ) and mojom.IsPendingRemoteKind(p2.kind):
+            handler_kind = p1.kind.kind
+            router_kind = p2.kind.kind
+            receiver_first = True
         elif len(method.parameters) == 1:
           p1 = method.parameters[0]
           if mojom.IsPendingReceiverKind(p1.kind):
@@ -816,6 +838,7 @@ class Generator(generator.Generator):
                 router_kind, 'PendingReceiver'
               ),
               'router_router': get_ts_identifier(router_kind, 'CallbackRouter'),
+              'receiver_first': receiver_first,
             }
           )
         return webui_factory
@@ -921,7 +944,7 @@ class Generator(generator.Generator):
           qualified = field.kind.qualified_name
           type_import = qualified_type_to_import[qualified]
           # We should have an entry for all non-primitive types
-          assert type_import != None
+          assert type_import != None  # noqa: E711
 
           imports.setdefault(type_import.path, []).append(
             type_import.import_name()

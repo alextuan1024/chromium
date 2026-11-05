@@ -9,6 +9,7 @@
 #include "base/command_line.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
+#include "base/numerics/safe_conversions.h"
 #include "base/strings/strcat.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/trace_event/trace_event.h"
@@ -31,6 +32,7 @@
 #include "chrome/browser/glic/public/glic_enabling.h"
 #include "chrome/browser/glic/public/glic_keyed_service.h"
 #include "chrome/browser/glic/public/glic_keyed_service_factory.h"
+#include "chrome/browser/glic/public/glic_provider_spec.h"
 #include "chrome/browser/glic/resources/glic_resources.h"
 #include "chrome/browser/glic/resources/grit/glic_browser_resources.h"
 #include "chrome/browser/profiles/profile.h"
@@ -63,7 +65,7 @@
 #endif  // !BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 
 #if !BUILDFLAG(IS_ANDROID) || BUILDFLAG(ENABLE_EXTENSIONS_CORE)
-#include "chrome/browser/ui/webui/theme_source.h"
+#include "chrome/browser/ui/webui/theme_source.h"  // nogncheck
 #endif
 
 namespace glic {
@@ -104,6 +106,9 @@ class GlicPreloadHandler : public glic::mojom::GlicPreloadHandler,
                         bool is_initial_commit) override {
     preload_page_->OnGuestNavigated(url, is_api_allowed, page_type,
                                     is_initial_commit);
+  }
+  void OnGuestMainPageLoaded() override {
+    preload_page_->OnGuestMainPageLoaded();
   }
   void OnGuestProcessGone(base::TerminationStatus status) override {
     preload_page_->OnGuestProcessGone();
@@ -217,6 +222,12 @@ GlicUI::GlicUI(content::WebUI* web_ui)
       {"locationMismatchNoticeHeader",
        IDS_GLIC_LOCATION_MISMATCH_NOTICE_HEADER},
       {"locationMismatchNotice", IDS_GLIC_LOCATION_MISMATCH_NOTICE},
+      {"relaunchRequiredGeminiToGeicNoticeHeader",
+       IDS_GLIC_RELAUNCH_REQUIRED_GEMINI_TO_GEIC_HEADER},
+      {"relaunchRequiredGeminiToGeicNotice",
+       IDS_GLIC_RELAUNCH_REQUIRED_GEMINI_TO_GEIC_BODY},
+      {"relaunchRequiredNoticeActionButton",
+       IDS_GLIC_RELAUNCH_REQUIRED_ACTION_BUTTON},
       {"getHelp", IDS_GLIC_GET_HELP},
   };
 
@@ -238,6 +249,16 @@ GlicUI::GlicUI(content::WebUI* web_ui)
   source->AddString("chromeVersion", version_info::GetVersionNumber());
   source->AddString("chromeChannel",
                     version_info::GetChannelString(chrome::GetChannel()));
+  const bool supports_ssr = GetGlicProviderSpec(profile).SupportsSsr();
+  source->AddBoolean("glicSsr", supports_ssr);
+  source->AddBoolean("onboardingCompleted",
+                     GlicEnabling::HasConsentedForProfile(profile));
+  if (std::optional<std::string> onboarding_arm = GetOnboardingArm(profile);
+      onboarding_arm.has_value()) {
+    source->AddString("onboardingArm", *onboarding_arm);
+  } else {
+    source->AddString("onboardingArm", "");
+  }
 
   auto* command_line = base::CommandLine::ForCurrentProcess();
   const bool is_glic_dev = command_line->HasSwitch(::switches::kGlicDev);
@@ -247,12 +268,9 @@ GlicUI::GlicUI(content::WebUI* web_ui)
   // Set up loading notice timeout values.
   source->AddInteger("preLoadingTimeMs", features::kGlicPreLoadingTimeMs.Get());
   source->AddInteger("minLoadingTimeMs", features::kGlicMinLoadingTimeMs.Get());
-  int max_loading_time_ms = features::kGlicMaxLoadingTimeMs.Get();
-  if (is_glic_dev) {
-    // Bump up timeout value, as dev server may be slow.
-    max_loading_time_ms *= 100;
-  }
-  source->AddInteger("maxLoadingTimeMs", max_loading_time_ms);
+  source->AddInteger(
+      "maxLoadingTimeMs",
+      base::saturated_cast<int>(GetMaxLoadingTime().InMilliseconds()));
 
   source->AddString("glicHeaderRequestTypes",
                     base::FeatureList::IsEnabled(features::kGlicHeader)
@@ -293,9 +311,10 @@ GlicUI::GlicUI(content::WebUI* web_ui)
       IdentityManagerFactory::GetForProfile(profile);
   const bool is_internal_google_account =
       identity_manager && IsPrimaryAccountGoogleInternal(*identity_manager);
-  source->AddBoolean("showErrorAllowed", is_internal_google_account ||
-                                             profile->GetPrefs()->GetBoolean(
-                                                 prefs::kGlicShowErrorAllowed));
+  source->AddBoolean(
+      "showErrorAllowed",
+      is_internal_google_account || is_glic_dev ||
+          profile->GetPrefs()->GetBoolean(prefs::kGlicShowErrorAllowed));
   const bool completed_fre = GlicEnabling::HasConsentedForProfile(profile);
   source->AddBoolean("completedFre", completed_fre);
 #if BUILDFLAG(IS_ANDROID)
@@ -314,12 +333,14 @@ GlicUI::GlicUI(content::WebUI* web_ui)
       base::FeatureList::IsEnabled(kGlicSendResponsesForAllRequests));
 
   // Set up guest URL via cli flag or default to finch param value.
-  const GURL guest_url = GetGuestURL();
+  const GURL guest_url = GetGuestURL(Profile::FromWebUI(web_ui));
   source->AddString("glicGuestURL", guest_url.spec());
   net_log::LogDummyNetworkRequestForTrafficAnnotation(guest_url);
   source->AddBoolean("simulateNoConnection", simulate_no_connection_);
 
   source->AddResourcePath("glic_logo.svg", GetResourceID(IDR_GLIC_LOGO));
+  source->AddResourcePath("geic_spark.png",
+                          GetResourceID(IDR_GEIC_BUTTON_ICON));
 
   // Set up guest api source.
   // This comes from 'glic_api_injection' in
@@ -338,7 +359,10 @@ GlicUI::GlicUI(content::WebUI* web_ui)
                      base::FeatureList::IsEnabled(features::kGlicDebugWebview));
 
   source->AddBoolean(
-      "noLoader", base::FeatureList::IsEnabled(features::kGlicNoWebUiLoader));
+      "noLoader", base::FeatureList::IsEnabled(features::kGlicNoWebUiLoader) ||
+                      features::IsGlicNativeLoadingPlaceholderEnabled() ||
+                      (supports_ssr &&
+                       !features::kGlicShowLoaderUntilMainPageOnload.Get()));
 
   source->AddBoolean("enableWebClientUnresponsiveMetrics",
                      base::FeatureList::IsEnabled(
@@ -355,8 +379,6 @@ GlicUI::GlicUI(content::WebUI* web_ui)
   source->AddString("adminBlockedRedirectPatterns",
                     admin_blocked_redirect_patterns);
 
-  source->AddInteger("reloadMaxLoadingTimeMs",
-                     features::kGlicReloadMaxLoadingTimeMs.Get());
   source->AddBoolean("caaGuestError", base::FeatureList::IsEnabled(
                                           features::kGlicCaaGuestError));
   source->AddBoolean(
@@ -402,7 +424,6 @@ void GlicUI::BindInterface(
   }
 }
 
-
 void GlicUI::BindInterface(
     mojo::PendingReceiver<glic::mojom::GlicPreloadHandlerFactory> receiver) {
   preload_factory_receiver_.reset();
@@ -412,7 +433,8 @@ void GlicUI::BindInterface(
 void GlicUI::AttachToHost(Host* host) {
   // GlicUI should not be attached to Host in NoWebview mode, where
   // GlicNoWebviewContentsManager owns and manages the web client.
-  CHECK(!features::IsGlicNoWebviewEnabled());
+  CHECK(!GlicKeyedService::Get(Profile::FromWebUI(web_ui()))
+             ->IsNoWebviewEnabled());
   if (host_) {
     // This might be called multiple times, but it's not allowed to change the
     // attached host.
@@ -457,7 +479,6 @@ void GlicUI::CreateInternalsPageHandler(
   internals_page_handler_ = std::make_unique<GlicInternalsPageHandler>(
       web_ui()->GetWebContents(), std::move(receiver));
 }
-
 
 void GlicUI::CreatePreloadHandler(
     mojo::PendingReceiver<glic::mojom::GlicPreloadHandler> receiver,

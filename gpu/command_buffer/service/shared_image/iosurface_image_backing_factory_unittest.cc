@@ -315,9 +315,6 @@ TEST_F(IOSurfaceImageBackingFactoryTest, CreateGpuMemoryBuffer) {
            viz::SinglePlaneFormat::kBGRA_8888,
            viz::SinglePlaneFormat::kBGRX_8888,
            viz::SinglePlaneFormat::kR_8,
-           viz::SinglePlaneFormat::kRG_88,
-           viz::SinglePlaneFormat::kR_16,
-           viz::SinglePlaneFormat::kRG_1616,
            viz::SinglePlaneFormat::kRGBA_F16,
            viz::SinglePlaneFormat::kBGRA_1010102,
            viz::MultiPlaneFormat::kNV12,
@@ -809,7 +806,7 @@ TEST_P(IOSurfaceImageBackingFactoryDawnTest, Dawn_SamplingVideoTexture) {
   const auto format = viz::MultiPlaneFormat::kNV12;
   const auto color_space = gfx::ColorSpace::CreateSRGB();
   GrSurfaceOrigin surface_origin = kTopLeft_GrSurfaceOrigin;
-  SkAlphaType alpha_type = kPremul_SkAlphaType;
+  SkAlphaType alpha_type = GetAlphaType(format);
   const SharedImageUsageSet usage = {SHARED_IMAGE_USAGE_SCANOUT,
                                      SHARED_IMAGE_USAGE_WEBGPU_READ};
   const gpu::SurfaceHandle surface_handle = gpu::kNullSurfaceHandle;
@@ -922,6 +919,78 @@ TEST_F(IOSurfaceImageBackingFactoryTest, SkiaAccessFirstFails) {
   // Expect BeginScopedReadAccess to fail because sharedImage is uninitialized
   EXPECT_EQ(scoped_read_access, nullptr);
 }
+
+struct VideoUsageParam {
+  const char* name;
+  SharedImageUsageSet usage;
+};
+
+class IOSurfaceImageBackingFactoryVideoTest
+    : public IOSurfaceImageBackingFactoryTest,
+      public testing::WithParamInterface<VideoUsageParam> {};
+
+// Test that the video representation exposes the backing IOSurface for a
+// MACOS_VIDEO_TOOLBOX-only image (e.g. a 2D OffscreenCanvas handed to the
+// VideoToolbox encoder) and for a SCANOUT | MACOS_VIDEO_TOOLBOX image (e.g.
+// camera capture or video decoder output).
+TEST_P(IOSurfaceImageBackingFactoryVideoTest, ProduceVideo) {
+  const SharedImageUsageSet usage = GetParam().usage;
+  auto mailbox = Mailbox::Generate();
+  const auto format = viz::SinglePlaneFormat::kBGRA_8888;
+  const gfx::Size size(4, 4);
+  const auto color_space = gfx::ColorSpace::CreateSRGB();
+  GrSurfaceOrigin surface_origin = kTopLeft_GrSurfaceOrigin;
+  SkAlphaType alpha_type = kOpaque_SkAlphaType;
+  const gpu::SurfaceHandle surface_handle = gpu::kNullSurfaceHandle;
+  ASSERT_TRUE(backing_factory_->CanCreateSharedImage(
+      usage, format, size, /*thread_safe=*/false, gfx::EMPTY_BUFFER,
+      GrContextType::kGL, /*pixel_data=*/{}));
+  auto backing = backing_factory_->CreateSharedImage(
+      mailbox,
+      {format, size, color_space, surface_origin, alpha_type, usage,
+       "TestLabel"},
+      surface_handle, /*is_thread_safe=*/false);
+  ASSERT_NE(backing, nullptr);
+  backing->SetCleared();
+  const gfx::ScopedIOSurface expected_io_surface =
+      backing->GetGpuMemoryBufferHandle().io_surface();
+  ASSERT_TRUE(expected_io_surface);
+
+  std::unique_ptr<SharedImageRepresentationFactoryRef> factory_ref =
+      shared_image_manager_.Register(std::move(backing), &memory_type_tracker_);
+
+  auto video_representation = shared_image_manager_.ProduceVideo(
+      /*device=*/nullptr, mailbox, &memory_type_tracker_);
+  ASSERT_NE(video_representation, nullptr);
+  EXPECT_EQ(video_representation->size(), size);
+
+  // The encoder only reads; writes are not supported.
+  EXPECT_EQ(video_representation->BeginScopedWriteAccess(), nullptr);
+
+  auto scoped_read_access = video_representation->BeginScopedReadAccess();
+  ASSERT_NE(scoped_read_access, nullptr);
+  EXPECT_EQ(scoped_read_access->GetIOSurface().get(),
+            expected_io_surface.get());
+  scoped_read_access.reset();
+
+  // A second read access after the first ended must succeed too.
+  scoped_read_access = video_representation->BeginScopedReadAccess();
+  EXPECT_NE(scoped_read_access, nullptr);
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    ,
+    IOSurfaceImageBackingFactoryVideoTest,
+    testing::Values(VideoUsageParam{"VideoToolbox",
+                                    {SHARED_IMAGE_USAGE_DISPLAY_READ,
+                                     SHARED_IMAGE_USAGE_MACOS_VIDEO_TOOLBOX}},
+                    VideoUsageParam{"ScanoutVideoToolbox",
+                                    {SHARED_IMAGE_USAGE_DISPLAY_READ,
+                                     SHARED_IMAGE_USAGE_SCANOUT,
+                                     SHARED_IMAGE_USAGE_MACOS_VIDEO_TOOLBOX}}),
+    [](const testing::TestParamInfo<VideoUsageParam>& info) {
+      return std::string(info.param.name);
+    });
 
 class MockProgressReporter : public gl::ProgressReporter {
  public:
@@ -1063,7 +1132,7 @@ TEST_P(IOSurfaceImageBackingFactoryScanoutTest, Basic) {
   gfx::Size size(256, 256);
   auto color_space = gfx::ColorSpace::CreateSRGB();
   GrSurfaceOrigin surface_origin = kTopLeft_GrSurfaceOrigin;
-  SkAlphaType alpha_type = kPremul_SkAlphaType;
+  SkAlphaType alpha_type = GetAlphaType(format);
   SharedImageUsageSet usage{SHARED_IMAGE_USAGE_SCANOUT,
                             SHARED_IMAGE_USAGE_RASTER_READ,
                             SHARED_IMAGE_USAGE_RASTER_WRITE};
@@ -1231,7 +1300,7 @@ TEST_P(IOSurfaceImageBackingFactoryScanoutTest, InitialData) {
   gfx::Size size(256, 256);
   auto color_space = gfx::ColorSpace::CreateSRGB();
   GrSurfaceOrigin surface_origin = kTopLeft_GrSurfaceOrigin;
-  SkAlphaType alpha_type = kPremul_SkAlphaType;
+  SkAlphaType alpha_type = GetAlphaType(format);
   SharedImageUsageSet usage = {SHARED_IMAGE_USAGE_SCANOUT};
   auto gr_context_type = get_gr_context_type();
   if (gr_context_type == GrContextType::kGL) {
@@ -1316,7 +1385,7 @@ TEST_P(IOSurfaceImageBackingFactoryScanoutTest, InitialDataImage) {
   gfx::Size size(256, 256);
   auto color_space = gfx::ColorSpace::CreateSRGB();
   GrSurfaceOrigin surface_origin = kTopLeft_GrSurfaceOrigin;
-  SkAlphaType alpha_type = kPremul_SkAlphaType;
+  SkAlphaType alpha_type = GetAlphaType(format);
   SharedImageUsageSet usage = {SHARED_IMAGE_USAGE_SCANOUT};
   auto gr_context_type = get_gr_context_type();
   if (gr_context_type == GrContextType::kGL) {
@@ -1396,7 +1465,7 @@ TEST_P(IOSurfaceImageBackingFactoryScanoutTest, InitialDataWrongSize) {
   gfx::Size size(256, 256);
   auto color_space = gfx::ColorSpace::CreateSRGB();
   GrSurfaceOrigin surface_origin = kTopLeft_GrSurfaceOrigin;
-  SkAlphaType alpha_type = kPremul_SkAlphaType;
+  SkAlphaType alpha_type = GetAlphaType(format);
   SharedImageUsageSet usage = {SHARED_IMAGE_USAGE_SCANOUT};
   const size_t expected_size = format.EstimatedSizeInBytes(size);
   std::vector<uint8_t> initial_data_small(expected_size / 2);
@@ -1424,7 +1493,7 @@ TEST_P(IOSurfaceImageBackingFactoryScanoutTest,
   gfx::Size size(256, 256);
   auto color_space = gfx::ColorSpace::CreateSRGB();
   GrSurfaceOrigin surface_origin = kTopLeft_GrSurfaceOrigin;
-  SkAlphaType alpha_type = kPremul_SkAlphaType;
+  SkAlphaType alpha_type = GetAlphaType(format);
   SharedImageUsageSet usage = {SHARED_IMAGE_USAGE_SCANOUT};
   std::vector<uint8_t> initial_data(format.EstimatedSizeInBytes(size));
   auto backing = backing_factory_->CreateSharedImage(
@@ -1441,7 +1510,7 @@ TEST_P(IOSurfaceImageBackingFactoryScanoutTest, InvalidSize) {
   gfx::Size size(0, 0);
   auto color_space = gfx::ColorSpace::CreateSRGB();
   GrSurfaceOrigin surface_origin = kTopLeft_GrSurfaceOrigin;
-  SkAlphaType alpha_type = kPremul_SkAlphaType;
+  SkAlphaType alpha_type = GetAlphaType(format);
   gpu::SurfaceHandle surface_handle = gpu::kNullSurfaceHandle;
   SharedImageUsageSet usage = {SHARED_IMAGE_USAGE_SCANOUT};
   auto backing = backing_factory_->CreateSharedImage(
@@ -1470,7 +1539,7 @@ TEST_P(IOSurfaceImageBackingFactoryScanoutTest, EstimatedSize) {
   gfx::Size size(256, 256);
   auto color_space = gfx::ColorSpace::CreateSRGB();
   GrSurfaceOrigin surface_origin = kTopLeft_GrSurfaceOrigin;
-  SkAlphaType alpha_type = kPremul_SkAlphaType;
+  SkAlphaType alpha_type = GetAlphaType(format);
   gpu::SurfaceHandle surface_handle = gpu::kNullSurfaceHandle;
   SharedImageUsageSet usage = {SHARED_IMAGE_USAGE_SCANOUT};
 
@@ -1545,7 +1614,7 @@ TEST_P(IOSurfaceImageBackingFactoryScanoutTest, TexImageTexStorageEquivalence) {
       EXPECT_EQ(image_gl_type, storage_gl_type);
     }
 
-    // confirm that we support TexStorage2D only if we support TexImage2D:
+    // Confirm that we support TexStorage2D iff we support TexImage2D:
     int image_internal_format = format_desc.image_internal_format;
     bool supports_tex_image =
         validators->texture_internal_format.IsValid(image_internal_format) &&
@@ -1553,9 +1622,7 @@ TEST_P(IOSurfaceImageBackingFactoryScanoutTest, TexImageTexStorageEquivalence) {
         validators->pixel_type.IsValid(image_gl_type);
     bool supports_tex_storage =
         validators->texture_internal_format_storage.IsValid(storage_format);
-    if (supports_tex_storage) {
-      EXPECT_TRUE(supports_tex_image);
-    }
+    EXPECT_EQ(supports_tex_image, supports_tex_storage) << format.ToString();
   }
 }
 
@@ -1581,7 +1648,7 @@ class IOSurfaceImageBackingFactoryGMBTest
     const bool should_succeed = can_create_gmb_shared_image(get_format());
     auto mailbox = Mailbox::Generate();
     GrSurfaceOrigin surface_origin = kTopLeft_GrSurfaceOrigin;
-    SkAlphaType alpha_type = kPremul_SkAlphaType;
+    SkAlphaType alpha_type = GetAlphaType(format);
     bool override_rgba_to_bgra = get_gr_context_type() == GrContextType::kGL;
 
     gfx::GpuMemoryBufferHandle handle(gfx::CreateIOSurface(
@@ -1617,7 +1684,7 @@ TEST_P(IOSurfaceImageBackingFactoryGMBTest, InconsistentPlaneSize) {
   gfx::Size size(256, 256);
   auto color_space = gfx::ColorSpace::CreateSRGB();
   GrSurfaceOrigin surface_origin = kTopLeft_GrSurfaceOrigin;
-  SkAlphaType alpha_type = kPremul_SkAlphaType;
+  SkAlphaType alpha_type = GetAlphaType(format);
   SharedImageUsageSet usage = {SHARED_IMAGE_USAGE_GLES2_READ};
 
   // Create an IOSurface with inconsistent plane height. For NV12, the UV plane
@@ -1648,7 +1715,7 @@ TEST_P(IOSurfaceImageBackingFactoryGMBTest, InconsistentPlaneStride) {
   gfx::Size size(256, 256);
   auto color_space = gfx::ColorSpace::CreateSRGB();
   GrSurfaceOrigin surface_origin = kTopLeft_GrSurfaceOrigin;
-  SkAlphaType alpha_type = kPremul_SkAlphaType;
+  SkAlphaType alpha_type = GetAlphaType(format);
   SharedImageUsageSet usage = {SHARED_IMAGE_USAGE_GLES2_READ};
 
   // Create an IOSurface with correct plane dimensions but an explicitly

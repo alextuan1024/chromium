@@ -14,6 +14,9 @@ group("web_tests") {
   data = [
     "VirtualTestSuites",
 
+    # Shared helpers used by legacy tests in webaudio/.
+    "external/wpt/webaudio/resources/",
+
     # === List Test Cases folders here ===
     "accessibility/",
     "animations/",
@@ -108,6 +111,13 @@ group("wpt_tests") {
   testonly = true
   data = [
     "VirtualTestSuites",
+
+    # Shared fixtures loaded by wpt_internal/images/ico-natural-size.html.
+    "images/resources/2entries.ico",
+    "images/resources/rust-ico-full-canvas.ico",
+    "images/resources/rust-ico-mixed-aspect-256x2.ico",
+    "images/resources/rust-ico-mixed-aspect-256x64.ico",
+    "images/resources/rust-ico-mixed-aspect-4x2.ico",
 
     # === List Test Cases folders here ===
     "external/",

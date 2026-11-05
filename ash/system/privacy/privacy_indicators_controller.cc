@@ -38,7 +38,8 @@ inline constexpr char kChromeUIGlicURL[] = "chrome://glic/";
 
 bool ShouldUsePrivacyIndicators(std::string_view app_id) {
   // TODO: Check URL instead.
-  return !features::IsVideoConferenceEnabled() || app_id == kChromeUIGlicURL;
+  return !features::IsVideoConferenceEnabled() || app_id == kChromeUIGlicURL ||
+         app_id == kTtcPrivacyIndicatorsAppId;
 }
 
 // Create a notification with the customized metadata for privacy indicators.
@@ -78,13 +79,9 @@ CreatePrivacyIndicatorsNotification(
 
   if (delegate->launch_settings_callback()) {
     optional_fields.buttons.emplace_back(
-        features::AreOngoingProcessesEnabled()
-            ? message_center::ButtonInfo(
-                  /*vector_icon=*/&kSettingsIcon,
-                  /*accessible_name=*/l10n_util::GetStringUTF16(
-                      IDS_PRIVACY_NOTIFICATION_BUTTON_APP_SETTINGS))
-            : message_center::ButtonInfo(l10n_util::GetStringUTF16(
-                  IDS_PRIVACY_NOTIFICATION_BUTTON_APP_SETTINGS)));
+        /*vector_icon=*/&kSettingsIcon,
+        /*accessible_name=*/l10n_util::GetStringUTF16(
+            IDS_PRIVACY_NOTIFICATION_BUTTON_APP_SETTINGS));
   }
 
   auto notification = CreateSystemNotificationPtr(

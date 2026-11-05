@@ -20,6 +20,7 @@
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/render_widget_host_view.h"
+#include "content/public/browser/user_browser_context.h"
 #include "content/public/browser/web_contents.h"
 #include "services/network/public/cpp/is_potentially_trustworthy.h"
 #include "third_party/blink/public/common/permissions/permission_utils.h"
@@ -88,7 +89,7 @@ void MediaStreamDevicesController::RequestPermissions(
   std::vector<blink::mojom::PermissionDescriptorPtr> permission_types;
 
   content::PermissionController* permission_controller =
-      web_contents->GetBrowserContext()->GetPermissionController();
+      content::GetUserBrowserContext(*web_contents)->GetPermissionController();
 
   std::vector<std::string> requested_audio_capture_device_ids;
   std::vector<std::string> requested_video_capture_device_ids;
@@ -173,8 +174,7 @@ void MediaStreamDevicesController::RequestPermissions(
   }
 
   content::PermissionRequestDescription permission_request_description{
-      std::move(permission_types), request.user_gesture,
-      request.security_origin};
+      std::move(permission_types), request.user_gesture};
   permission_request_description.requested_audio_capture_device_ids =
       requested_audio_capture_device_ids;
   permission_request_description.requested_video_capture_device_ids =
@@ -185,13 +185,11 @@ void MediaStreamDevicesController::RequestPermissions(
   // `AUDIO_CAPTURE` and `VIDEO_CAPTURE`.
   // `render_frame_host->GetMainFrame()->GetLastCommittedOrigin()` will be used
   // instead.
-  rfh->GetBrowserContext()
-      ->GetPermissionController()
-      ->RequestPermissionsFromCurrentDocument(
-          rfh, permission_request_description,
-          base::BindOnce(
-              &MediaStreamDevicesController::PromptAnsweredGroupedRequest,
-              std::move(controller)));
+  permission_controller->RequestPermissionsFromCurrentDocument(
+      rfh, permission_request_description,
+      base::BindOnce(
+          &MediaStreamDevicesController::PromptAnsweredGroupedRequest,
+          std::move(controller)));
 }
 
 MediaStreamDevicesController::~MediaStreamDevicesController() {
@@ -212,8 +210,7 @@ MediaStreamDevicesController::MediaStreamDevicesController(
       enumerator_(enumerator),
       request_(request),
       callback_(std::move(callback)) {
-  DCHECK(network::IsUrlPotentiallyTrustworthy(request_.security_origin) ||
-         request_.request_type == blink::MEDIA_OPEN_DEVICE_PEPPER_ONLY);
+  DCHECK(network::IsUrlPotentiallyTrustworthy(request_.security_origin));
 
   if (!enumerator_)
     enumerator_ = &owned_enumerator_;
@@ -252,51 +249,25 @@ blink::mojom::StreamDevicesSetPtr MediaStreamDevicesController::GetDevices(
   if (!audio_allowed && !video_allowed)
     return nullptr;
 
+  content::BrowserContext* browser_context =
+      content::GetUserBrowserContext(*web_contents_);
+
   // TODO(crbug.com/40216442): Generalize to multiple streams.
   stream_devices_set->stream_devices.emplace_back(
       blink::mojom::StreamDevices::New());
   blink::mojom::StreamDevices& devices = *stream_devices_set->stream_devices[0];
   switch (request_.request_type) {
-    case blink::MEDIA_OPEN_DEVICE_PEPPER_ONLY: {
-      // For open device request, when requested device_id is empty, pick
-      // the first available of the given type. If requested device_id is
-      // not empty, return the desired device if it's available. Otherwise,
-      // return no device.
-      if (audio_allowed &&
-          request_.audio_type ==
-              blink::mojom::MediaStreamType::DEVICE_AUDIO_CAPTURE) {
-        DCHECK_EQ(blink::mojom::MediaStreamType::NO_SERVICE,
-                  request_.video_type);
-        devices.audio_device =
-            enumerator_->GetPreferredAudioDeviceForBrowserContext(
-                web_contents_->GetBrowserContext(),
-                request_.requested_audio_device_ids);
-      } else if (video_allowed &&
-                 request_.video_type ==
-                     blink::mojom::MediaStreamType::DEVICE_VIDEO_CAPTURE) {
-        DCHECK_EQ(blink::mojom::MediaStreamType::NO_SERVICE,
-                  request_.audio_type);
-        // Pepper API opens only one device at a time.
-        devices.video_device =
-            enumerator_->GetPreferredVideoDeviceForBrowserContext(
-                web_contents_->GetBrowserContext(),
-                request_.requested_video_device_ids);
-      }
-      break;
-    }
     case blink::MEDIA_GENERATE_STREAM: {
       // Get the exact audio or video device if an id is specified.
       if (audio_allowed && !request_.requested_audio_device_ids.empty()) {
         devices.audio_device =
             enumerator_->GetPreferredAudioDeviceForBrowserContext(
-                web_contents_->GetBrowserContext(),
-                request_.requested_audio_device_ids);
+                browser_context, request_.requested_audio_device_ids);
       }
       if (video_allowed && !request_.requested_video_device_ids.empty()) {
         devices.video_device =
             enumerator_->GetPreferredVideoDeviceForBrowserContext(
-                web_contents_->GetBrowserContext(),
-                request_.requested_video_device_ids);
+                browser_context, request_.requested_video_device_ids);
       }
 
       break;
@@ -315,7 +286,7 @@ blink::mojom::StreamDevicesSetPtr MediaStreamDevicesController::GetDevices(
         CHECK(request_.requested_audio_device_ids.empty());
         devices.audio_device =
             enumerator_->GetPreferredAudioDeviceForBrowserContext(
-                web_contents_->GetBrowserContext(), {});
+                browser_context, {});
       }
       // MEDIA_DEVICE_ACCESS is only used for speech recognition, so it never
       // requests video access.
@@ -367,8 +338,7 @@ ContentSetting MediaStreamDevicesController::GetContentSetting(
   DCHECK(permission == blink::PermissionType::AUDIO_CAPTURE ||
          permission == blink::PermissionType::VIDEO_CAPTURE);
   DCHECK(!request_.security_origin.is_empty());
-  DCHECK(network::IsUrlPotentiallyTrustworthy(request_.security_origin) ||
-         request_.request_type == blink::MEDIA_OPEN_DEVICE_PEPPER_ONLY);
+  DCHECK(network::IsUrlPotentiallyTrustworthy(request_.security_origin));
   if (!PermissionIsRequested(permission, request)) {
     // No denial reason set as it will have been previously set.
     return CONTENT_SETTING_DEFAULT;
@@ -481,7 +451,7 @@ bool MediaStreamDevicesController::PermissionIsBlockedForReason(
   // TODO(raymes): This function wouldn't be needed if
   // PermissionManager::RequestPermissions returned a denial reason.
   content::PermissionResult result =
-      web_contents_->GetBrowserContext()
+      content::GetUserBrowserContext(*web_contents_)
           ->GetPermissionController()
           ->GetPermissionResultForCurrentDocument(
               content::PermissionDescriptorUtil::

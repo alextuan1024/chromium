@@ -7,6 +7,7 @@
 #include <stddef.h>
 
 #include <algorithm>
+#include <atomic>
 
 #include "base/compiler_specific.h"
 #include "base/feature_list.h"
@@ -46,6 +47,7 @@
 #include "chrome/browser/ui/views/omnibox/omnibox_placeholder_util.h"
 #include "chrome/browser/ui/views/omnibox/omnibox_popup_view_views.h"
 #include "chrome/browser/ui/views/toolbar/toolbar_view.h"
+#include "chrome/browser/ui/views/toolbar/webui_test_utils.h"
 #include "chrome/common/chrome_features.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/common/webui_url_constants.h"
@@ -66,6 +68,7 @@
 #include "components/omnibox/common/omnibox_feature_configs.h"
 #include "components/omnibox/common/omnibox_features.h"
 #include "components/security_interstitials/core/omnibox_https_upgrade_metrics.h"
+#include "components/strings/grit/components_strings.h"
 #include "components/unified_consent/pref_names.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/navigation_controller.h"
@@ -90,6 +93,7 @@
 #include "ui/base/ime/mock_input_method.h"
 #include "ui/base/ime/text_edit_commands.h"
 #include "ui/base/ime/text_input_client.h"
+#include "ui/base/l10n/l10n_util.h"
 #include "ui/base/test/ui_controls.h"
 #include "ui/base/ui_base_features.h"
 #include "ui/base/ui_base_switches.h"
@@ -139,18 +143,9 @@ class OmniboxViewViewsTest : public InProcessBrowserTest {
 
  protected:
   OmniboxViewViewsTest() {
-    scoped_feature_list_.InitWithFeatures(
-        /*enabled_features=*/{},
-        /*disabled_features=*/
-        // TODO(crbug.com/452061489): Fix tests that fail when the WebUI Omnibox
-        // is enabled and then remove these two Features.
-        {
-            omnibox::internal::kWebUIOmniboxPopup,
-            omnibox::internal::kWebUIOmniboxAimPopup,
-            // kWebUILocationBar however replaces OmniboxViewViews, so almost
-            // all tests here are inherently incompatible with it
-            features::kWebUILocationBar,
-        });
+    // kWebUILocationBar replaces OmniboxViewViews, so almost all tests here are
+    // inherently incompatible with it.
+    scoped_feature_list_.InitAndDisableFeature(features::kWebUILocationBar);
   }
   ~OmniboxViewViewsTest() override = default;
 
@@ -571,7 +566,7 @@ IN_PROC_BROWSER_TEST_F(OmniboxViewViewsTest, CloseOmniboxPopupOnTextDrag) {
   AutocompleteResult& results = autocomplete_controller->internal_result_;
   ACMatches matches;
   AutocompleteMatch match(nullptr, 500, false,
-                          AutocompleteMatchType::HISTORY_TITLE);
+                          omnibox::AutocompleteMatchType::kHistoryTitle);
   match.contents = u"http://autocomplete-result/";
   match.contents_class.emplace_back(0, ACMatchClassification::URL);
   match.destination_url = GURL("http://autocomplete-result/");
@@ -631,7 +626,7 @@ IN_PROC_BROWSER_TEST_F(OmniboxViewViewsTest, MaintainCursorAfterFocusCycle) {
   AutocompleteResult& results = autocomplete_controller->internal_result_;
   ACMatches matches;
   AutocompleteMatch match(nullptr, 500, false,
-                          AutocompleteMatchType::HISTORY_TITLE);
+                          omnibox::AutocompleteMatchType::kHistoryTitle);
   match.contents = u"http://autocomplete-result/";
   match.contents_class.emplace_back(0, ACMatchClassification::URL);
   match.destination_url = GURL("http://autocomplete-result/");
@@ -732,7 +727,7 @@ IN_PROC_BROWSER_TEST_F(OmniboxViewViewsTest, FriendlyAccessibleLabel) {
   ASSERT_NO_FATAL_FAILURE(GetOmniboxViewForBrowser(browser(), &omnibox_view));
   std::u16string match_url = u"https://google.com";
   AutocompleteMatch match(nullptr, 500, false,
-                          AutocompleteMatchType::HISTORY_TITLE);
+                          omnibox::AutocompleteMatchType::kHistoryTitle);
   match.contents = match_url;
   match.contents_class.emplace_back(0, ACMatchClassification::URL);
   match.destination_url = GURL(match_url);
@@ -824,9 +819,23 @@ IN_PROC_BROWSER_TEST_F(OmniboxViewViewsTest, FriendlyAccessibleLabel) {
             node_data.GetString16Attribute(ax::mojom::StringAttribute::kValue));
 }
 
+// Disables the WebUI omnibox popup so that the views popup
+// (`OmniboxPopupViewViews`) is used. Only the views popup implements
+// `OmniboxPopupView::GetPopupAccessibleNodeData()`; the WebUI popup exposes its
+// accessibility tree through its WebContents instead.
+class OmniboxViewViewsViewsPopupTest : public OmniboxViewViewsTest {
+ public:
+  OmniboxViewViewsViewsPopupTest() {
+    feature_list_.InitAndDisableFeature(omnibox::internal::kWebUIOmniboxPopup);
+  }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+};
+
 // Ensure that the Omnibox popup exposes appropriate accessibility semantics,
 // given a current state of open or closed.
-IN_PROC_BROWSER_TEST_F(OmniboxViewViewsTest, AccessiblePopup) {
+IN_PROC_BROWSER_TEST_F(OmniboxViewViewsViewsPopupTest, AccessiblePopup) {
   OmniboxView* omnibox_view = nullptr;
   ASSERT_NO_FATAL_FAILURE(GetOmniboxViewForBrowser(browser(), &omnibox_view));
   OmniboxViewViews* omnibox_view_views =
@@ -835,7 +844,7 @@ IN_PROC_BROWSER_TEST_F(OmniboxViewViewsTest, AccessiblePopup) {
 
   std::u16string match_url = u"https://google.com";
   AutocompleteMatch match(nullptr, 500, false,
-                          AutocompleteMatchType::HISTORY_TITLE);
+                          omnibox::AutocompleteMatchType::kHistoryTitle);
   match.contents = match_url;
   match.contents_class.emplace_back(0, ACMatchClassification::URL);
   match.destination_url = GURL(match_url);
@@ -920,7 +929,7 @@ IN_PROC_BROWSER_TEST_F(OmniboxViewViewsTest, DISABLED_ReloadAfterKill) {
   // Verify the omnibox contents, URL and icon.
   EXPECT_EQ(u"", omnibox_view_views->GetText());
   EXPECT_EQ(GURL(url::kAboutBlankURL),
-            browser()->GetFeatures().location_bar_model()->GetURL());
+            LocationBarModel::From(browser())->GetURL());
 }
 
 // Omnibox un-elides and elides URL appropriately according to the Always Show
@@ -1006,7 +1015,7 @@ IN_PROC_BROWSER_TEST_F(OmniboxViewViewsUIATest, AccessibleOmnibox) {
 
   std::u16string match_url = u"https://example.com";
   AutocompleteMatch match(nullptr, 500, false,
-                          AutocompleteMatchType::HISTORY_TITLE);
+                          omnibox::AutocompleteMatchType::kHistoryTitle);
   match.contents = match_url;
   match.contents_class.push_back(
       ACMatchClassification(0, ACMatchClassification::URL));
@@ -1134,7 +1143,7 @@ IN_PROC_BROWSER_TEST_F(OmniboxViewViewsUIATest, GetSelectionAndBounds) {
   omnibox_view_views->ConvertRectToScreen(omnibox_view_views,
                                           &bounds_in_screen);
 
-  std::vector<int32_t> offsets =
+  base::span<const int32_t> offsets =
       ax_tree_manager->GetRoot()->GetIntListAttribute(
           ax::mojom::IntListAttribute::kCharacterOffsets);
   int range_start_offset = offsets[selection_range.start()];
@@ -1275,9 +1284,9 @@ IN_PROC_BROWSER_TEST_F(OmniboxViewViewsTest, MAYBE_HandleExternalProtocolURLs) {
     const AutocompleteResult& result = controller->result();
     ASSERT_EQ(result.size(), 2U);
     EXPECT_EQ(result.match_at(0).type,
-              AutocompleteMatchType::SEARCH_WHAT_YOU_TYPED);
+              omnibox::AutocompleteMatchType::kSearchWhatYouTyped);
     EXPECT_EQ(result.match_at(1).type,
-              AutocompleteMatchType::URL_WHAT_YOU_TYPED);
+              omnibox::AutocompleteMatchType::kUrlWhatYouTyped);
 
     // Navigate to UWYT suggestion.
     ASSERT_TRUE(ui_test_utils::SendKeyPressSync(browser(), ui::VKEY_DOWN, false,
@@ -1542,6 +1551,7 @@ class OmniboxViewViewsHintTextLimitingBrowserTest
  public:
   OmniboxViewViewsHintTextLimitingBrowserTest() {
     scoped_feature_list_.InitAndDisableFeature(lens::features::kLensOverlay);
+    SetMockTime(base::subtle::TimeNowIgnoringOverride());
   }
 
  protected:
@@ -1559,7 +1569,10 @@ class OmniboxViewViewsHintTextLimitingBrowserTest
 
  private:
   base::test::ScopedFeatureList scoped_feature_list_;
-  inline static base::Time fake_time_;
+  inline static std::atomic<base::Time> fake_time_;
+  base::subtle::ScopedTimeClockOverrides time_override_{
+      &GetMockTime, /*time_ticks_override=*/nullptr,
+      /*thread_ticks_override=*/nullptr};
 };
 
 IN_PROC_BROWSER_TEST_F(OmniboxViewViewsHintTextLimitingBrowserTest,
@@ -1570,11 +1583,6 @@ IN_PROC_BROWSER_TEST_F(OmniboxViewViewsHintTextLimitingBrowserTest,
 
 IN_PROC_BROWSER_TEST_F(OmniboxViewViewsHintTextLimitingBrowserTest,
                        HintTextPrefsIncrementOnFirstImpression) {
-  SetMockTime(base::Time::Now());
-  base::subtle::ScopedTimeClockOverrides time_override(
-      &GetMockTime, /* time_ticks_override */ nullptr,
-      /* thread_ticks_override */ nullptr);
-
   FocusAndPaint();
 
   EXPECT_EQ(prefs()->GetInteger(omnibox::kAimHintTotalImpressions), 1);
@@ -1585,11 +1593,6 @@ IN_PROC_BROWSER_TEST_F(OmniboxViewViewsHintTextLimitingBrowserTest,
 
 IN_PROC_BROWSER_TEST_F(OmniboxViewViewsHintTextLimitingBrowserTest,
                        HintTextPrefsIncrementOnSecondImpressionSameDay) {
-  SetMockTime(base::Time::Now());
-  base::subtle::ScopedTimeClockOverrides time_override(
-      &GetMockTime, /* time_ticks_override */ nullptr,
-      /* thread_ticks_override */ nullptr);
-
   // First impression.
   FocusAndPaint();
 
@@ -1604,12 +1607,6 @@ IN_PROC_BROWSER_TEST_F(OmniboxViewViewsHintTextLimitingBrowserTest,
 
 IN_PROC_BROWSER_TEST_F(OmniboxViewViewsHintTextLimitingBrowserTest,
                        HintTextPrefsResetDailyCountOnNewDay) {
-  // Set the initial time and install the override.
-  SetMockTime(base::Time::Now());
-  base::subtle::ScopedTimeClockOverrides time_override(
-      &GetMockTime, /* time_ticks_override */ nullptr,
-      /* thread_ticks_override */ nullptr);
-
   // First impression on the initial day.
   FocusAndPaint();
   const int initial_day = (GetMockTime() - base::Time::UnixEpoch()).InDays();
@@ -1635,11 +1632,6 @@ IN_PROC_BROWSER_TEST_F(OmniboxViewViewsHintTextLimitingBrowserTest,
 
 IN_PROC_BROWSER_TEST_F(OmniboxViewViewsHintTextLimitingBrowserTest,
                        HintTextPrefsRespectDailyLimit) {
-  SetMockTime(base::Time::Now());
-  base::subtle::ScopedTimeClockOverrides time_override(
-      &GetMockTime, /* time_ticks_override */ nullptr,
-      /* thread_ticks_override */ nullptr);
-
   // Three impressions to hit the daily limit of 3.
   FocusAndPaint();
   ClickBrowserWindowCenter();
@@ -1658,11 +1650,6 @@ IN_PROC_BROWSER_TEST_F(OmniboxViewViewsHintTextLimitingBrowserTest,
 
 IN_PROC_BROWSER_TEST_F(OmniboxViewViewsHintTextLimitingBrowserTest,
                        HintTextPrefsRespectTotalLimit) {
-  SetMockTime(base::Time::Now());
-  base::subtle::ScopedTimeClockOverrides time_override(
-      &GetMockTime, /* time_ticks_override */ nullptr,
-      /* thread_ticks_override */ nullptr);
-
   // Hit the total limit.
   prefs()->SetInteger(omnibox::kAimHintTotalImpressions, 15);
 
@@ -1791,10 +1778,8 @@ class OmniboxViewViewsPlaceholderTest : public InProcessBrowserTest {
         {contextual_tasks::kContextualTasks,
          contextual_tasks::kContextualTasksForceEntryPointEligibility},
         /*disabled_features=*/
-        // TODO(crbug.com/452061489): Fix tests that fail when the WebUI Omnibox
-        // is enabled and then remove these two Features.
-        {omnibox::internal::kWebUIOmniboxPopup,
-         omnibox::internal::kWebUIOmniboxAimPopup,
+        {contextual_tasks::kContextualTasksRearchitecture,
+         contextual_tasks::kContextualTasksSidePanelRearchitecture,
          // kWebUILocationBar however replaces OmniboxViewViews, so almost
          // all tests here are inherently incompatible with it
          features::kWebUILocationBar});
@@ -1875,9 +1860,10 @@ IN_PROC_BROWSER_TEST_F(OmniboxViewViewsPlaceholderTest,
   EXPECT_FALSE(
       omnibox::ShouldInstallContextualTasksPlaceholderText(location_bar()));
 
-  // Verify the placeholder text is set to the default search engine.
-  EXPECT_EQ(u"Search Google or type a URL",
-            omnibox_view()->GetPlaceholderText());
+  // Verify the placeholder text is set to the default search engine. The AIM
+  // variant is used because the mock AIM eligibility service always returns
+  // true for `IsFuseboxEligible()`.
+  EXPECT_EQ(u"Ask Google or type a URL", omnibox_view()->GetPlaceholderText());
   // Verify the display text is empty.
   EXPECT_EQ(u"", omnibox_view()->GetText());
 }
@@ -1898,9 +1884,10 @@ IN_PROC_BROWSER_TEST_F(OmniboxViewViewsPlaceholderTest,
   EXPECT_FALSE(
       omnibox::ShouldInstallContextualTasksPlaceholderText(location_bar()));
 
-  // Verify the placeholder text is the default search engine.
-  EXPECT_EQ(u"Search Google or type a URL",
-            omnibox_view()->GetPlaceholderText());
+  // Verify the placeholder text is the default search engine. The AIM variant
+  // is used because the mock AIM eligibility service always returns true for
+  // `IsFuseboxEligible()`.
+  EXPECT_EQ(u"Ask Google or type a URL", omnibox_view()->GetPlaceholderText());
   // Verify the display text is set to the page URL.
   EXPECT_EQ(u"about:blank", omnibox_view()->GetText());
 
@@ -1923,9 +1910,10 @@ IN_PROC_BROWSER_TEST_F(OmniboxViewViewsPlaceholderTest,
   EXPECT_FALSE(
       omnibox::ShouldInstallContextualTasksPlaceholderText(location_bar()));
 
-  // Verify the placeholder text is set to the default search engine.
-  EXPECT_EQ(u"Search Google or type a URL",
-            omnibox_view()->GetPlaceholderText());
+  // Verify the placeholder text is set to the default search engine. The AIM
+  // variant is used because the mock AIM eligibility service always returns
+  // true for `IsFuseboxEligible()`.
+  EXPECT_EQ(u"Ask Google or type a URL", omnibox_view()->GetPlaceholderText());
   // Verify the display text is empty.
   EXPECT_EQ(u"", omnibox_view()->GetText());
 
@@ -1946,9 +1934,10 @@ IN_PROC_BROWSER_TEST_F(OmniboxViewViewsPlaceholderTest,
   EXPECT_FALSE(
       omnibox::ShouldInstallContextualTasksPlaceholderText(location_bar()));
 
-  // Verify the placeholder text is set to the default search engine.
-  EXPECT_EQ(u"Search Google or type a URL",
-            omnibox_view()->GetPlaceholderText());
+  // Verify the placeholder text is set to the default search engine. The AIM
+  // variant is used because the mock AIM eligibility service always returns
+  // true for `IsFuseboxEligible()`.
+  EXPECT_EQ(u"Ask Google or type a URL", omnibox_view()->GetPlaceholderText());
   // Verify the display text is empty.
   EXPECT_EQ(u"", omnibox_view()->GetText());
 }
@@ -2039,6 +2028,15 @@ IN_PROC_BROWSER_TEST_P(OmniboxViewViewsDumpAccessibilityEventsTest,
 
   ASSERT_TRUE(ui_test_utils::BringBrowserWindowToFront(browser()));
   chrome::FocusLocationBar(browser());
+// TODO(crbug.com/581293433): ViewAX blocks focusing omnibox on Mac.
+#if !BUILDFLAG(IS_MAC)
+  ui_test_utils::WaitForViewFocus(browser(), VIEW_ID_OMNIBOX, true);
+#endif  // !BUILDFLAG(IS_MAC)
+  if (features::IsWebUILocationBarEnabled()) {
+    ASSERT_TRUE(WaitForWebUIToolbarAccessibilityNode(
+        browser(), l10n_util::GetStringUTF8(IDS_ACCNAME_LOCATION)));
+  }
+  WaitForPendingSerialization();
 
   EXPECT_FALSE(omnibox_controller()->IsPopupOpen());
 

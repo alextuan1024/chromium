@@ -15,7 +15,6 @@
 #include "base/run_loop.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
-#include "base/synchronization/lock.h"
 #include "base/test/bind.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/run_until.h"
@@ -23,14 +22,15 @@
 #include "base/test/simple_test_clock.h"
 #include "base/test/test_future.h"
 #include "base/test/with_feature_override.h"
-#include "base/thread_annotations.h"
 #include "base/threading/thread_restrictions.h"
 #include "base/time/time.h"
+#include "build/build_config.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/tabs/tab_enums.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
+#include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/web_applications/app_browser_controller.h"
 #include "chrome/browser/ui/web_applications/test/web_app_browsertest_util.h"
 #include "chrome/browser/ui/web_applications/web_app_browsertest_base.h"
@@ -57,8 +57,11 @@
 #include "chrome/common/chrome_features.h"
 #include "chrome/common/chrome_paths.h"
 #include "chrome/test/base/ui_test_utils.h"
+#include "components/content_settings/core/browser/cookie_settings.h"
+#include "components/content_settings/core/common/pref_names.h"
 #include "components/permissions/permission_request_manager.h"
 #include "components/permissions/test/permission_request_observer.h"
+#include "components/prefs/pref_service.h"
 #include "components/ukm/test_ukm_recorder.h"
 #include "components/url_formatter/elide_url.h"
 #include "components/webapps/browser/install_result_code.h"
@@ -76,8 +79,7 @@
 #include "net/test/embedded_test_server/http_request.h"
 #include "net/test/embedded_test_server/http_response.h"
 #include "services/metrics/public/cpp/ukm_builders.h"
-#include "services/network/public/cpp/ip_address_space_overrides_test_utils.h"
-#include "services/network/public/mojom/ip_address_space.mojom.h"
+#include "services/network/public/cpp/network_switches.h"
 #include "skia/ext/image_operations.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/common/features_generated.h"
@@ -93,6 +95,7 @@
 #include "ui/views/test/dialog_test.h"
 #include "ui/views/test/widget_test.h"
 #include "ui/views/widget/any_widget_observer.h"
+#include "ui/views/widget/widget.h"
 #include "url/gurl.h"
 #include "url/origin.h"
 
@@ -101,6 +104,11 @@
 #include "chrome/test/base/testing_profile.h"
 #include "components/user_manager/user_names.h"
 #endif  // BUILDFLAG(IS_CHROMEOS)
+
+#if BUILDFLAG(IS_MAC)
+#include "chrome/browser/ui/views/web_apps/web_app_install_flow_dialog_delegate.h"
+#include "components/remote_cocoa/browser/window.h"
+#endif  // BUILDFLAG(IS_MAC)
 
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
 #include "components/policy/core/browser/browser_policy_connector.h"
@@ -118,6 +126,24 @@ constexpr int kMaxInstalledBySize = 10;
 constexpr char kTestPageWithId[] = "/banners/manifest_with_id_test_page.html";
 constexpr char kValidManifestNoId[] = "/banners/manifest.json";
 constexpr char kValidManifestWithId[] = "/banners/manifest_with_id.json";
+constexpr char kContentTypeManifest[] = R"({
+  "name": "Content-Type test app",
+  "id": "/content-type-app",
+  "start_url": "/banners/manifest_with_id_test_page.html",
+  "display": "standalone",
+  "icons": [{
+    "src": "/banners/image-512px.png",
+    "sizes": "512x512",
+    "type": "image/png"
+  }]
+})";
+constexpr char kCrossOriginManifestPath[] =
+    "/controlled_cross_origin_manifest.webmanifest";
+constexpr char kCrossOriginManifestCookie[] =
+    "manifest_cookie=1; SameSite=None; Secure";
+constexpr char kCrossOriginManifestIdPath[] = "/cross-origin-app";
+constexpr char kCrossOriginManifestStartUrlPath[] =
+    "/banners/manifest_with_id_test_page.html";
 constexpr webapps::WebappInstallSource kInstallSource =
     webapps::WebappInstallSource::WEB_INSTALL;
 constexpr apps::LaunchSource kLaunchSource =
@@ -158,20 +184,39 @@ constexpr char kVariantedInstallTypeUma[] =
 constexpr char kRequestingPageUkm[] = "ResultByRequestingPage";
 constexpr char kInstalledAppUkm[] = "ResultByInstalledApp";
 
+// How the fixture should set features::kWebAppInstallDialog.
+enum class InstallDialogFeature {
+  kDisabled,
+  kUnspecified,
+  kEnabled,
+};
+
 // Browser tests for the navigator.install({manifest: ...}) flow.
 // These require a real renderer because manifest parsing uses the
 // ManifestManager mojo interface via ParseManifestFromStringJob.
 class WebInstallFromManifestBrowserTest : public WebAppBrowserTestBase {
  public:
   explicit WebInstallFromManifestBrowserTest(
-      bool disable_install_dialog = true) {
-    if (disable_install_dialog) {
-      scoped_feature_list_.InitWithFeatures(
-          {blink::features::kWebAppInstallation},
-          {features::kWebAppInstallDialog});
-    } else {
-      scoped_feature_list_.InitAndEnableFeature(
-          blink::features::kWebAppInstallation);
+      InstallDialogFeature install_dialog_feature =
+          InstallDialogFeature::kDisabled) {
+    switch (install_dialog_feature) {
+      case InstallDialogFeature::kDisabled:
+        scoped_feature_list_.InitWithFeatures(
+            {blink::features::kWebAppInstallation},
+            {features::kWebAppInstallDialog});
+        break;
+      case InstallDialogFeature::kUnspecified:
+        // Leave kWebAppInstallDialog at its default so
+        // WithFeatureOverride can enable or disable it.
+        scoped_feature_list_.InitAndEnableFeature(
+            blink::features::kWebAppInstallation);
+        break;
+      case InstallDialogFeature::kEnabled:
+        scoped_feature_list_.InitWithFeatures(
+            {blink::features::kWebAppInstallation,
+             features::kWebAppInstallDialog},
+            {});
+        break;
     }
   }
 
@@ -183,8 +228,7 @@ class WebInstallFromManifestBrowserTest : public WebAppBrowserTestBase {
         &WebInstallFromManifestBrowserTest::HandleDynamicRequest,
         base::Unretained(this)));
     WebAppBrowserTestBase::SetUpOnMainThread();
-    // A second HTTPS origin, used to navigate the initiating page cross-origin
-    // mid-install.
+    // A second HTTPS server for tests that require an independent origin.
     secondary_server_.AddDefaultHandlers(GetChromeTestDataDir());
     ASSERT_TRUE(secondary_server_.Start());
   }
@@ -241,6 +285,20 @@ class WebInstallFromManifestBrowserTest : public WebAppBrowserTestBase {
                            content::EXECUTE_SCRIPT_NO_RESOLVE_PROMISES);
   }
 
+  bool FireInstallFromManifestNoResolve(
+      const GURL& manifest_url,
+      const GURL& manifest_id,
+      content::WebContents* contents = nullptr) {
+    content::WebContents* wc = contents ? contents : web_contents();
+    const std::string script = content::JsReplace(
+        "navigator.install({manifest: $1, manifestId: $2})"
+        ".then(result => { webInstallResult = result; })"
+        ".catch(error => { webInstallError = error; });",
+        manifest_url.spec(), manifest_id.spec());
+    return content::ExecJs(wc, script,
+                           content::EXECUTE_SCRIPT_NO_RESOLVE_PROMISES);
+  }
+
   bool ResultExists(content::WebContents* contents = nullptr) {
     content::WebContents* wc = contents ? contents : web_contents();
     return content::ExecJs(wc, "webInstallResult");
@@ -257,8 +315,11 @@ class WebInstallFromManifestBrowserTest : public WebAppBrowserTestBase {
   }
 
   // Sets a dynamic manifest response for /dynamic_manifest.json.
-  void SetDynamicManifestResponse(const std::string& json) {
+  void SetDynamicManifestResponse(
+      const std::string& json,
+      std::optional<std::string> content_type = "application/json") {
     dynamic_manifest_json_ = json;
+    dynamic_manifest_content_type_ = std::move(content_type);
   }
 
   // When the permission prompt shows, it must be granted or denied.
@@ -318,9 +379,17 @@ class WebInstallFromManifestBrowserTest : public WebAppBrowserTestBase {
       return response;
     }
     if (request.relative_url == "/dynamic_manifest.json") {
+      if (!dynamic_manifest_content_type_) {
+        // BasicHttpResponse always sends Content-Type, even when empty. Use
+        // RawHttpResponse to omit the header entirely.
+        return std::make_unique<net::test_server::RawHttpResponse>(
+            "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: " +
+                base::NumberToString(dynamic_manifest_json_.size()),
+            dynamic_manifest_json_);
+      }
       auto response = std::make_unique<net::test_server::BasicHttpResponse>();
       response->set_code(net::HTTP_OK);
-      response->set_content_type("application/json");
+      response->set_content_type(*dynamic_manifest_content_type_);
       response->set_content(dynamic_manifest_json_);
       return response;
     }
@@ -328,8 +397,39 @@ class WebInstallFromManifestBrowserTest : public WebAppBrowserTestBase {
   }
 
   std::string dynamic_manifest_json_;
+  std::optional<std::string> dynamic_manifest_content_type_ =
+      "application/json";
   base::test::ScopedFeatureList scoped_feature_list_;
 };
+
+class WebInstallManifestContentTypeBrowserTest
+    : public WebInstallFromManifestBrowserTest,
+      public testing::WithParamInterface<const char*> {};
+
+IN_PROC_BROWSER_TEST_P(WebInstallManifestContentTypeBrowserTest,
+                       JsonContentType_Succeeds) {
+  SetDynamicManifestResponse(kContentTypeManifest, GetParam());
+  NavigateToValidUrl();
+  SetPermissionResponse(/*permission_granted=*/true);
+  auto auto_accept_pwa = web_app::SetPwaInstallationAutoRespondForTesting(
+      web_app::InstallDialogTestResponse::kAcceptAndLaunch);
+
+  ASSERT_TRUE(TryInstallFromManifest(
+      embedded_https_test_server().GetURL("/dynamic_manifest.json")));
+
+  EXPECT_TRUE(ResultExists());
+  EXPECT_FALSE(ErrorExists());
+  const webapps::AppId app_id = GenerateAppIdFromManifestId(webapps::ManifestId(
+      embedded_https_test_server().GetURL("/content-type-app")));
+  EXPECT_TRUE(provider().registrar_unsafe().AppMatches(
+      app_id, WebAppFilter::LaunchableFromInstallApi()));
+}
+
+INSTANTIATE_TEST_SUITE_P(All,
+                         WebInstallManifestContentTypeBrowserTest,
+                         testing::Values("application/json",
+                                         "application/manifest+json",
+                                         "application/vnd.example+json"));
 
 // Valid manifest with custom id, no id option provided.
 IN_PROC_BROWSER_TEST_F(WebInstallFromManifestBrowserTest,
@@ -407,73 +507,6 @@ IN_PROC_BROWSER_TEST_F(WebInstallFromManifestBrowserTest,
       static_cast<int>(WebInstallServiceResult::kSuccess));
   EXPECT_EQ(ukm::GetSourceIdType(entries[1]->source_id),
             ukm::SourceIdType::APP_ID);
-}
-
-// Fixture with a dedicated manifest server placed in the local network
-// address space, while the page servers stay in the public address space (as
-// the test harness configures by default).
-class WebInstallFromManifestLocalNetworkBrowserTest
-    : public WebInstallFromManifestBrowserTest {
- public:
-  void SetUpCommandLine(base::CommandLine* command_line) override {
-    WebInstallFromManifestBrowserTest::SetUpCommandLine(command_line);
-    manifest_server_.AddDefaultHandlers(GetChromeTestDataDir());
-    manifest_server_.RegisterRequestHandler(base::BindRepeating(
-        &WebInstallFromManifestLocalNetworkBrowserTest::RecordManifestRequest,
-        base::Unretained(this)));
-    ASSERT_TRUE(manifest_server_.InitializeAndListen());
-    // Keep every other test server endpoint in the public address space, as
-    // the test harness does by default, while placing the manifest server on
-    // the local network.
-    network::AddIpAddressSpaceOverridesToCommandLine(
-        {network::GenerateIpAddressSpaceOverride(
-             manifest_server_, network::mojom::IPAddressSpace::kLocal),
-         "127.0.0.1:0=public", "[::1]:0=public"},
-        *command_line);
-  }
-
-  void SetUpOnMainThread() override {
-    WebInstallFromManifestBrowserTest::SetUpOnMainThread();
-    manifest_server_.StartAcceptingConnections();
-  }
-
-  // Returns whether the manifest server received any request.
-  bool ManifestServerSawRequest() {
-    base::AutoLock lock(manifest_request_count_lock_);
-    return manifest_request_count_ > 0;
-  }
-
- protected:
-  net::EmbeddedTestServer manifest_server_;
-
- private:
-  std::unique_ptr<net::test_server::HttpResponse> RecordManifestRequest(
-      const net::test_server::HttpRequest& request) {
-    base::AutoLock lock(manifest_request_count_lock_);
-    manifest_request_count_++;
-    // Fall through to the default handlers.
-    return nullptr;
-  }
-
-  base::Lock manifest_request_count_lock_;
-  int manifest_request_count_ GUARDED_BY(manifest_request_count_lock_) = 0;
-};
-
-// The manifest is fetched in the browser process on behalf of the initiating
-// document. A document in the public address space must not retrieve a
-// manifest from a host on the local network: the fetch is denied before any
-// request reaches the manifest host, and the install reports a DataError.
-IN_PROC_BROWSER_TEST_F(WebInstallFromManifestLocalNetworkBrowserTest,
-                       ManifestOnLocalNetworkRejected) {
-  NavigateToValidUrl();
-  SetPermissionResponse(/*permission_granted=*/false);
-
-  ASSERT_TRUE(
-      TryInstallFromManifest(manifest_server_.GetURL(kValidManifestWithId)));
-
-  EXPECT_FALSE(ManifestServerSawRequest());
-  ASSERT_TRUE(ErrorExists());
-  EXPECT_EQ(GetErrorName(), kDataError);
 }
 
 // Valid manifest with custom id, matching id option.
@@ -582,6 +615,289 @@ IN_PROC_BROWSER_TEST_F(WebInstallFromManifestBrowserTest,
       app_id, WebAppFilter::LaunchableFromInstallApi()));
 }
 
+// Id attribute is resolved against the base URL, not the document URL.
+IN_PROC_BROWSER_TEST_F(WebInstallFromManifestBrowserTest,
+                       ManifestAndRelativeId_Succeeds) {
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(
+      browser(),
+      embedded_https_test_server().GetURL("/banners/manifest_test_page.html")));
+  ASSERT_TRUE(content::ExecJs(web_contents(),
+                              "const base = document.createElement('base');"
+                              "base.href = '/';"
+                              "document.head.appendChild(base);"));
+  // Ensure the document URL and base URL resolve the id differently, so the
+  // test would detect use of the wrong base.
+  EXPECT_EQ(content::EvalJs(web_contents(),
+                            "new URL('some_id', document.URL).pathname"),
+            "/banners/some_id");
+  EXPECT_EQ(content::EvalJs(web_contents(),
+                            "new URL('some_id', document.baseURI).pathname"),
+            "/some_id");
+  SetPermissionResponse(/*permission_granted=*/true);
+  base::AutoReset<web_app::InstallDialogTestResponse> auto_accept_pwa =
+      web_app::SetPwaInstallationAutoRespondForTesting(
+          web_app::InstallDialogTestResponse::kAcceptAndLaunch);
+
+  permissions::PermissionRequestObserver observer(web_contents());
+  ASSERT_TRUE(content::ExecJs(
+      web_contents(),
+      content::JsReplace(
+          "navigator.install({manifest: $1, manifestId: $2})"
+          ".then(result => { webInstallResult = result; })"
+          ".catch(error => { webInstallError = error; });",
+          embedded_https_test_server().GetURL(kValidManifestWithId).spec(),
+          "some_id")));
+  observer.Wait();
+
+  EXPECT_TRUE(observer.request_shown());
+  EXPECT_TRUE(ResultExists());
+  EXPECT_FALSE(ErrorExists());
+
+  const GURL manifest_id = embedded_https_test_server().GetURL("/some_id");
+  const webapps::AppId app_id =
+      GenerateAppIdFromManifestId(webapps::ManifestId(manifest_id));
+  EXPECT_TRUE(provider().registrar_unsafe().AppMatches(
+      app_id, WebAppFilter::LaunchableFromInstallApi()));
+}
+
+class WebInstallFromCrossOriginManifestBrowserTest
+    : public WebInstallFromManifestBrowserTest {
+ public:
+  void SetUpOnMainThread() override {
+    manifest_response_ =
+        std::make_unique<net::test_server::ControllableHttpResponse>(
+            &secondary_server_, kCrossOriginManifestPath);
+    WebInstallFromManifestBrowserTest::SetUpOnMainThread();
+  }
+
+ protected:
+  static constexpr char kCrossOriginManifest[] = R"json({
+    "name": "Cross-origin manifest app",
+    "id": "/cross-origin-app",
+    "start_url": "/banners/manifest_with_id_test_page.html",
+    "scope": "/",
+    "display": "standalone",
+    "icons": [{
+      "src": "/banners/image-512px.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }]
+  })json";
+
+  net::test_server::ControllableHttpResponse& manifest_response() {
+    return *manifest_response_;
+  }
+
+ private:
+  std::unique_ptr<net::test_server::ControllableHttpResponse>
+      manifest_response_;
+};
+
+IN_PROC_BROWSER_TEST_F(WebInstallFromCrossOriginManifestBrowserTest,
+                       ManifestOnly_Succeeds) {
+  // Navigate to a.test and use a manifest on b.test so the manifest fetch is
+  // both cross-origin and cross-site.
+  const GURL initiating_url =
+      embedded_https_test_server().GetURL("a.test", "/simple.html");
+  const GURL manifest_url =
+      secondary_server_.GetURL("b.test", kCrossOriginManifestPath);
+  const GURL manifest_id = manifest_url.Resolve(kCrossOriginManifestIdPath);
+
+  // Allow third-party cookies and seed b.test with an eligible cookie so the
+  // request assertion below detects a credentialed manifest fetch.
+  profile()->GetPrefs()->SetInteger(
+      prefs::kCookieControlsMode,
+      static_cast<int>(content_settings::CookieControlsMode::kOff));
+  ASSERT_TRUE(
+      content::SetCookie(profile(), manifest_url, kCrossOriginManifestCookie));
+
+  ASSERT_FALSE(url::Origin::Create(initiating_url)
+                   .IsSameOriginWith(url::Origin::Create(manifest_url)));
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), initiating_url));
+  SetPermissionResponse(/*permission_granted=*/true);
+  base::AutoReset<web_app::InstallDialogTestResponse> auto_accept_pwa =
+      web_app::SetPwaInstallationAutoRespondForTesting(
+          web_app::InstallDialogTestResponse::kAcceptAndLaunch);
+
+  // Start an install using only the manifest URL.
+  permissions::PermissionRequestObserver observer(web_contents());
+  ASSERT_TRUE(FireInstallFromManifestNoResolve(manifest_url));
+
+  // Verify the browser-owned GET reached b.test without Origin, Referer, or
+  // Cookie headers.
+  manifest_response().WaitForRequest();
+  const net::test_server::HttpRequest& request =
+      *manifest_response().http_request();
+  EXPECT_EQ(request.method, net::test_server::METHOD_GET);
+  const auto host = request.headers.find("Host");
+  ASSERT_NE(host, request.headers.end());
+  EXPECT_EQ(host->second,
+            "b.test:" + base::NumberToString(secondary_server_.port()));
+  EXPECT_FALSE(request.headers.contains("Origin"));
+  EXPECT_FALSE(request.headers.contains("Referer"));
+  EXPECT_FALSE(request.headers.contains("Cookie"));
+
+  // Send no Access-Control-Allow-Origin header. Arbitrary manifest servers do
+  // not need to opt in to this browser-owned fetch.
+  manifest_response().Send(net::HTTP_OK, "application/manifest+json",
+                           kCrossOriginManifest);
+  manifest_response().Done();
+  observer.Wait();
+
+  // Wait for installation to complete and verify the API call succeeded.
+  EXPECT_TRUE(observer.request_shown());
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return content::EvalJs(web_contents(),
+                           "typeof webInstallResult !== 'undefined' || "
+                           "typeof webInstallError !== 'undefined'")
+        .ExtractBool();
+  }));
+  ASSERT_TRUE(ResultExists());
+  EXPECT_FALSE(ErrorExists());
+  EXPECT_FALSE(
+      content::EvalJs(web_contents(), "'manifestId' in webInstallResult")
+          .ExtractBool());
+
+  // Verify the installed app uses the manifest's identity and start URL.
+  const webapps::AppId app_id =
+      GenerateAppIdFromManifestId(webapps::ManifestId(manifest_id));
+  ASSERT_TRUE(provider().registrar_unsafe().AppMatches(
+      app_id, WebAppFilter::LaunchableFromInstallApi()));
+  EXPECT_EQ(provider().registrar_unsafe().GetAppStartUrl(app_id),
+            manifest_url.Resolve(kCrossOriginManifestStartUrlPath));
+
+  // Verify the install is attributed to the initiating page on a.test.
+  const std::deque<AppInstalledBy> installed_by = GetInstalledBy(app_id);
+  ASSERT_EQ(installed_by.size(), 1u);
+  EXPECT_EQ(installed_by.front().requesting_url(), initiating_url);
+}
+
+IN_PROC_BROWSER_TEST_F(WebInstallFromCrossOriginManifestBrowserTest,
+                       ManifestAndId_Succeeds) {
+  // Navigate to a.test and use a manifest on b.test so the manifest fetch is
+  // both cross-origin and cross-site.
+  const GURL initiating_url =
+      embedded_https_test_server().GetURL("a.test", "/simple.html");
+  const GURL manifest_url =
+      secondary_server_.GetURL("b.test", kCrossOriginManifestPath);
+  const GURL manifest_id = manifest_url.Resolve(kCrossOriginManifestIdPath);
+
+  // Allow third-party cookies and seed b.test with an eligible cookie so the
+  // request assertion below detects a credentialed manifest fetch.
+  profile()->GetPrefs()->SetInteger(
+      prefs::kCookieControlsMode,
+      static_cast<int>(content_settings::CookieControlsMode::kOff));
+  ASSERT_TRUE(
+      content::SetCookie(profile(), manifest_url, kCrossOriginManifestCookie));
+
+  ASSERT_FALSE(url::Origin::Create(initiating_url)
+                   .IsSameOriginWith(url::Origin::Create(manifest_url)));
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), initiating_url));
+  SetPermissionResponse(/*permission_granted=*/true);
+  base::AutoReset<web_app::InstallDialogTestResponse> auto_accept_pwa =
+      web_app::SetPwaInstallationAutoRespondForTesting(
+          web_app::InstallDialogTestResponse::kAcceptAndLaunch);
+
+  // Start an install using both the manifest URL and manifest ID.
+  permissions::PermissionRequestObserver observer(web_contents());
+  ASSERT_TRUE(FireInstallFromManifestNoResolve(manifest_url, manifest_id));
+
+  // Verify the browser-owned GET reached b.test without Origin, Referer, or
+  // Cookie headers.
+  manifest_response().WaitForRequest();
+  const net::test_server::HttpRequest& request =
+      *manifest_response().http_request();
+  EXPECT_EQ(request.method, net::test_server::METHOD_GET);
+  const auto host = request.headers.find("Host");
+  ASSERT_NE(host, request.headers.end());
+  EXPECT_EQ(host->second,
+            "b.test:" + base::NumberToString(secondary_server_.port()));
+  EXPECT_FALSE(request.headers.contains("Origin"));
+  EXPECT_FALSE(request.headers.contains("Referer"));
+  EXPECT_FALSE(request.headers.contains("Cookie"));
+
+  // Send no Access-Control-Allow-Origin header. Arbitrary manifest servers do
+  // not need to opt in to this browser-owned fetch.
+  manifest_response().Send(net::HTTP_OK, "application/manifest+json",
+                           kCrossOriginManifest);
+  manifest_response().Done();
+  observer.Wait();
+
+  // Wait for installation to complete and verify the API call succeeded.
+  EXPECT_TRUE(observer.request_shown());
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return content::EvalJs(web_contents(),
+                           "typeof webInstallResult !== 'undefined' || "
+                           "typeof webInstallError !== 'undefined'")
+        .ExtractBool();
+  }));
+  ASSERT_TRUE(ResultExists());
+  EXPECT_FALSE(ErrorExists());
+  EXPECT_FALSE(
+      content::EvalJs(web_contents(), "'manifestId' in webInstallResult")
+          .ExtractBool());
+
+  // Verify the installed app uses the manifest's identity and start URL.
+  const webapps::AppId app_id =
+      GenerateAppIdFromManifestId(webapps::ManifestId(manifest_id));
+  ASSERT_TRUE(provider().registrar_unsafe().AppMatches(
+      app_id, WebAppFilter::LaunchableFromInstallApi()));
+  EXPECT_EQ(provider().registrar_unsafe().GetAppStartUrl(app_id),
+            manifest_url.Resolve(kCrossOriginManifestStartUrlPath));
+
+  // Verify the install is attributed to the initiating page on a.test.
+  const std::deque<AppInstalledBy> installed_by = GetInstalledBy(app_id);
+  ASSERT_EQ(installed_by.size(), 1u);
+  EXPECT_EQ(installed_by.front().requesting_url(), initiating_url);
+}
+
+// Verifies that a public origin cannot fetch a manifest from a loopback/local
+// endpoint via WebInstallManifestFetcher (Local Network Access enforcement,
+// https://crbug.com/574375869).
+class WebInstallFromManifestLocalNetworkAccessBrowserTest
+    : public WebInstallFromCrossOriginManifestBrowserTest {
+ public:
+  void SetUpCommandLine(base::CommandLine* command_line) override {
+    WebInstallFromCrossOriginManifestBrowserTest::SetUpCommandLine(
+        command_line);
+    ASSERT_TRUE(embedded_https_test_server().InitializeAndListen());
+    // Treat `embedded_https_test_server()` as IPAddressSpace::kPublic while
+    // `secondary_server_` remains on 127.0.0.1 (IPAddressSpace::kLoopback).
+    command_line->AppendSwitchASCII(
+        network::switches::kIpAddressSpaceOverrides,
+        base::StrCat({embedded_https_test_server().host_port_pair().ToString(),
+                      "=public"}));
+  }
+
+  void SetUpOnMainThread() override {
+    WebInstallFromCrossOriginManifestBrowserTest::SetUpOnMainThread();
+    embedded_https_test_server().StartAcceptingConnections();
+  }
+};
+
+IN_PROC_BROWSER_TEST_F(WebInstallFromManifestLocalNetworkAccessBrowserTest,
+                       PublicToLoopbackManifestFetch_BlockedByLna) {
+  const GURL initiating_url =
+      embedded_https_test_server().GetURL("a.test", "/simple.html");
+  const GURL loopback_manifest_url =
+      secondary_server_.GetURL("b.test", kCrossOriginManifestPath);
+
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), initiating_url));
+  SetPermissionResponse(/*permission_granted=*/true);
+  permissions::PermissionRequestObserver observer(web_contents());
+
+  // The network service's LocalNetworkAccessUrlLoaderInterceptor blocks the
+  // public -> loopback connection at the socket layer before any HTTP request
+  // is transmitted.
+  ASSERT_TRUE(TryInstallFromManifest(loopback_manifest_url));
+
+  EXPECT_FALSE(observer.request_shown());
+  EXPECT_EQ(manifest_response().http_request(), nullptr);
+  EXPECT_FALSE(ResultExists());
+  ASSERT_TRUE(ErrorExists());
+  EXPECT_EQ(GetErrorName(), kDataError);
+}
+
 // When the user denies the Web Install permission prompt, the install is
 // rejected with AbortError.
 IN_PROC_BROWSER_TEST_F(WebInstallFromManifestBrowserTest,
@@ -658,9 +974,9 @@ IN_PROC_BROWSER_TEST_F(WebInstallFromManifestBrowserTest,
 }
 
 IN_PROC_BROWSER_TEST_F(WebInstallFromManifestBrowserTest,
-                       ManifestWithoutIcons_AbortError) {
+                       ManifestWithoutIcons_DataError) {
   NavigateToValidUrl();
-  SetPermissionResponse(/*permission_granted=*/true);
+  SetPermissionResponse(/*permission_granted=*/false);
   // Valid start_url/name and a custom id (so parsing and the id check pass),
   // but deliberately no "icons" member.
   SetDynamicManifestResponse(
@@ -672,43 +988,77 @@ IN_PROC_BROWSER_TEST_F(WebInstallFromManifestBrowserTest,
 
   base::HistogramTester histograms;
   permissions::PermissionRequestObserver observer(web_contents());
+  WebInstallDialogShownWatcher install_dialog_watcher;
+  WebInstallDialogShownWatcher launch_dialog_watcher("WebInstallLaunchDialog");
+  WebInstallDialogShownWatcher unsupported_dialog_watcher(
+      "WebAppInstallNotSupportedDialog");
   ukm::TestAutoSetUkmRecorder ukm_recorder;
   ASSERT_TRUE(TryInstallFromManifest(manifest_url));
-  observer.Wait();
 
-  // Permission is requested and granted before the icon check runs in the
-  // command.
-  EXPECT_TRUE(observer.request_shown());
+  EXPECT_FALSE(observer.request_shown());
+  EXPECT_FALSE(install_dialog_watcher.shown());
+  EXPECT_FALSE(launch_dialog_watcher.shown());
+  EXPECT_FALSE(unsupported_dialog_watcher.shown());
 
   EXPECT_FALSE(ResultExists());
   ASSERT_TRUE(ErrorExists());
-  EXPECT_EQ(GetErrorName(), kAbortError);
+  EXPECT_EQ(GetErrorName(), kDataError);
+  EXPECT_TRUE(provider().registrar_unsafe().GetAppIds().empty());
 
-  histograms.ExpectUniqueSample(
-      "WebApp.InstallCommand.InstallFromManifestUrl.ResultCode",
-      webapps::InstallResultCode::kNoValidIconsInManifest, 1);
+  histograms.ExpectTotalCount(
+      "WebApp.InstallCommand.InstallFromManifestUrl.ResultCode", 0);
   histograms.ExpectBucketCount(kInstallTypeUma,
                                WebInstallServiceType::kBackgroundDocument, 1);
   histograms.ExpectBucketCount(kVariantedInstallTypeUma,
                                WebInstallServiceType::kBackgroundDocument, 1);
-  histograms.ExpectUniqueSample(
-      kInstallResultUma, WebInstallServiceResult::kInstallCommandFailed, 1);
+  histograms.ExpectUniqueSample(kInstallResultUma,
+                                WebInstallServiceResult::kNoManifestIcons, 1);
   histograms.ExpectUniqueSample(kVariantedInstallResultUma,
-                                WebInstallServiceResult::kInstallCommandFailed,
-                                1);
+                                WebInstallServiceResult::kNoManifestIcons, 1);
   auto ukm_entries = ukm_recorder.GetEntriesByName(
       ukm::builders::WebApp_WebInstall::kEntryName);
   ASSERT_EQ(2u, ukm_entries.size());
   ukm_recorder.ExpectEntryMetric(
       ukm_entries[0], kRequestingPageUkm,
-      static_cast<int>(WebInstallServiceResult::kInstallCommandFailed));
+      static_cast<int>(WebInstallServiceResult::kNoManifestIcons));
   EXPECT_EQ(ukm::GetSourceIdType(ukm_entries[0]->source_id),
             ukm::SourceIdType::NAVIGATION_ID);
   ukm_recorder.ExpectEntryMetric(
       ukm_entries[1], kInstalledAppUkm,
-      static_cast<int>(WebInstallServiceResult::kInstallCommandFailed));
+      static_cast<int>(WebInstallServiceResult::kNoManifestIcons));
   EXPECT_EQ(ukm::GetSourceIdType(ukm_entries[1]->source_id),
             ukm::SourceIdType::APP_ID);
+}
+
+IN_PROC_BROWSER_TEST_F(WebInstallFromManifestBrowserTest,
+                       ManifestWithoutIcons_ReleasesInstallTracker) {
+  NavigateToValidUrl();
+  SetDynamicManifestResponse(
+      R"({"id": "/no-icons-app", "start_url": "/index.html",)"
+      R"( "name": "No Icons App", "display": "standalone"})");
+
+  ASSERT_TRUE(TryInstallFromManifest(
+      embedded_https_test_server().GetURL("/dynamic_manifest.json")));
+  ASSERT_TRUE(ErrorExists());
+  EXPECT_EQ(GetErrorName(), kDataError);
+
+  webapps::MLInstallabilityPromoter* promoter =
+      webapps::MLInstallabilityPromoter::FromWebContents(web_contents());
+  ASSERT_TRUE(promoter);
+  EXPECT_FALSE(promoter->HasCurrentInstall());
+
+  ASSERT_TRUE(content::ExecJs(
+      web_contents(),
+      "delete window.webInstallResult; delete window.webInstallError;"));
+  base::AutoReset<web_app::InstallDialogTestResponse> auto_accept =
+      web_app::SetPwaInstallationAutoRespondForTesting(
+          web_app::InstallDialogTestResponse::kAcceptAndLaunch);
+  SetPermissionResponse(/*permission_granted=*/true);
+  ASSERT_TRUE(TryInstallFromManifest(
+      embedded_https_test_server().GetURL(kValidManifestWithId)));
+
+  EXPECT_TRUE(ResultExists());
+  EXPECT_FALSE(ErrorExists());
 }
 
 // User declines the install dialog after permission is granted.
@@ -1154,6 +1504,151 @@ IN_PROC_BROWSER_TEST_F(WebInstallFromManifestBrowserTest,
       app_id, WebAppFilter::LaunchableFromInstallApi()));
 }
 
+// Enables kWebAppInstallDialog and captures Show() after the dialog is fully
+// prepared.
+class WebInstallFlowDialogBrowserTest
+    : public WebInstallFromManifestBrowserTest {
+ public:
+  WebInstallFlowDialogBrowserTest()
+      : WebInstallFromManifestBrowserTest(InstallDialogFeature::kEnabled) {}
+};
+
+// The install API is page-scoped. A cross-document navigation before the
+// captured show runs must cancel the install and not show the dialog over
+// the new page.
+IN_PROC_BROWSER_TEST_F(WebInstallFlowDialogBrowserTest,
+                       InstallAPI_CrossDocumentNavigation_DoesNotShow) {
+  NavigateToValidUrl();
+  SetPermissionResponse(/*permission_granted=*/true);
+
+  const GURL manifest_url =
+      embedded_https_test_server().GetURL(kValidManifestWithId);
+  const GURL manifest_id = embedded_https_test_server().GetURL("/some_id");
+  const webapps::AppId app_id =
+      GenerateAppIdFromManifestId(webapps::ManifestId(manifest_id));
+
+  // Capture the dialog show after the command's last page check.
+  base::OnceClosure captured_show;
+  auto capture = CaptureInstallDialogShowForTesting(&captured_show);
+  WebInstallDialogShownWatcher dialog_watcher("WebAppInstallFlowDialog");
+  base::HistogramTester histograms;
+
+  ASSERT_TRUE(FireInstallFromManifestNoResolve(manifest_url));
+
+  // Wait until the show is captured. The command has already passed its last
+  // page check.
+  ASSERT_TRUE(base::test::RunUntil([&]() { return !captured_show.is_null(); }));
+
+  // Navigate the initiating tab cross-origin before the captured show runs.
+  const GURL cross_origin_url = secondary_server_.GetURL("/simple.html");
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), cross_origin_url));
+  EXPECT_NE(url::Origin::Create(manifest_url),
+            url::Origin::Create(cross_origin_url));
+
+  // Run the captured show. The acceptance callback is already cancelled, so
+  // the dialog must not appear.
+  std::move(captured_show).Run();
+  provider().command_manager().AwaitAllCommandsCompleteForTesting();
+
+  // No dialog was shown and no app was installed.
+  histograms.ExpectUniqueSample(
+      "WebApp.InstallCommand.InstallFromManifestUrl.ResultCode",
+      webapps::InstallResultCode::kCancelledDueToMainFrameNavigation, 1);
+  EXPECT_FALSE(dialog_watcher.shown());
+  EXPECT_FALSE(provider().registrar_unsafe().AppMatches(
+      app_id, WebAppFilter::LaunchableFromInstallApi()));
+}
+
+// The install prompt allows same-origin navigations. A same-origin navigation
+// before the captured show runs should continue to show the dialog.
+IN_PROC_BROWSER_TEST_F(WebInstallFlowDialogBrowserTest,
+                       InstallPrompt_SameOriginNavigation_Shows) {
+  const GURL test_url =
+      embedded_https_test_server().GetURL("/banners/manifest_test_page.html");
+  ASSERT_TRUE(NavigateAndAwaitInstallabilityCheck(browser(), test_url));
+
+  // Capture the dialog show so a same-origin navigation can land first.
+  base::OnceClosure captured_show;
+  auto capture = CaptureInstallDialogShowForTesting(&captured_show);
+  WebInstallDialogShownWatcher dialog_watcher("WebAppInstallFlowDialog");
+  base::AutoReset<InstallDialogTestResponse> auto_accept =
+      SetPwaInstallationAutoRespondForTesting(
+          InstallDialogTestResponse::kAcceptAndLaunch);
+
+  base::test::TestFuture<const webapps::AppId&, webapps::InstallResultCode>
+      install_future;
+  ASSERT_TRUE(CreateWebAppFromManifest(
+      web_contents(), webapps::WebappInstallSource::OMNIBOX_INSTALL_ICON,
+      install_future.GetCallback()));
+
+  // Wait until the show is captured.
+  ASSERT_TRUE(base::test::RunUntil([&]() { return !captured_show.is_null(); }));
+
+  // Navigate the initiating tab same-origin.
+  const GURL same_origin_url =
+      embedded_https_test_server().GetURL("/title1.html");
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), same_origin_url));
+  EXPECT_EQ(url::Origin::Create(test_url),
+            url::Origin::Create(same_origin_url));
+
+  // Run the captured show. The acceptance callback is still valid, so the
+  // dialog should appear.
+  std::move(captured_show).Run();
+  ASSERT_TRUE(base::test::RunUntil([&]() { return dialog_watcher.shown(); }));
+  ASSERT_TRUE(install_future.Wait());
+  EXPECT_EQ(install_future.Get<webapps::InstallResultCode>(),
+            webapps::InstallResultCode::kSuccessNewInstall);
+}
+
+// The install prompt aborts cross-origin navigations. A cross-origin
+// navigation before the captured show runs must cancel the install and not
+// show the dialog over the new page.
+IN_PROC_BROWSER_TEST_F(WebInstallFlowDialogBrowserTest,
+                       InstallPrompt_CrossOriginNavigation_DoesNotShow) {
+  // Start on a.test so the later navigation to b.test is both cross-origin
+  // and cross-site.
+  const GURL test_url = embedded_https_test_server().GetURL(
+      "a.test", "/banners/manifest_test_page.html");
+  ASSERT_TRUE(NavigateAndAwaitInstallabilityCheck(browser(), test_url));
+
+  // Capture the dialog show after the command's last page check.
+  base::OnceClosure captured_show;
+  auto capture = CaptureInstallDialogShowForTesting(&captured_show);
+  WebInstallDialogShownWatcher dialog_watcher("WebAppInstallFlowDialog");
+  base::HistogramTester histograms;
+
+  base::test::TestFuture<const webapps::AppId&, webapps::InstallResultCode>
+      install_future;
+  ASSERT_TRUE(CreateWebAppFromManifest(
+      web_contents(), webapps::WebappInstallSource::OMNIBOX_INSTALL_ICON,
+      install_future.GetCallback()));
+
+  // Wait until the show is captured. The command has already passed its last
+  // page check.
+  ASSERT_TRUE(base::test::RunUntil([&]() { return !captured_show.is_null(); }));
+
+  // Navigate the initiating tab cross-origin before the captured show runs.
+  const GURL cross_origin_url =
+      secondary_server_.GetURL("b.test", "/simple.html");
+  ASSERT_FALSE(url::Origin::Create(test_url).IsSameOriginWith(
+      url::Origin::Create(cross_origin_url)));
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), cross_origin_url));
+
+  // Run the captured show. The acceptance callback is already cancelled, so
+  // the dialog must not appear.
+  std::move(captured_show).Run();
+  provider().command_manager().AwaitAllCommandsCompleteForTesting();
+
+  // No dialog was shown and the install was cancelled.
+  histograms.ExpectUniqueSample(
+      "WebApp.InstallCommand.FetchManifestAndInstall.ResultCode",
+      webapps::InstallResultCode::kCancelledDueToMainFrameNavigation, 1);
+  EXPECT_FALSE(dialog_watcher.shown());
+  ASSERT_TRUE(install_future.Wait());
+  EXPECT_EQ(install_future.Get<webapps::InstallResultCode>(),
+            webapps::InstallResultCode::kCancelledDueToMainFrameNavigation);
+}
+
 ///////////////////////////////////////////////////////////////////////////////
 // Collection of tests for calling `navigator.install({manifest: ...})` for an
 // app that is already installed. In these cases we show the
@@ -1326,6 +1821,60 @@ IN_PROC_BROWSER_TEST_F(WebInstallFromManifestBrowserTest,
       static_cast<int>(WebInstallServiceResult::kSuccessAlreadyInstalled));
   EXPECT_EQ(ukm::GetSourceIdType(entries[1]->source_id),
             ukm::SourceIdType::APP_ID);
+}
+
+IN_PROC_BROWSER_TEST_F(WebInstallFromManifestBrowserTest,
+                       AlreadyInstalled_ManifestWithoutIcons_DataError) {
+  const GURL install_url = embedded_https_test_server().GetURL(kTestPageWithId);
+  const webapps::AppId app_id =
+      web_app::InstallWebAppInNewTabAndClose(browser(), install_url);
+  EXPECT_TRUE(provider().registrar_unsafe().AppMatches(
+      app_id, WebAppFilter::LaunchableFromInstallApi()));
+
+  NavigateToValidUrl();
+  SetDynamicManifestResponse(
+      R"({"id": "/some_id",)"
+      R"( "start_url": "/banners/manifest_with_id_test_page.html",)"
+      R"( "name": "Manifest test app with id specified", "icons": []})");
+
+  base::HistogramTester histograms;
+  ukm::TestAutoSetUkmRecorder ukm_recorder;
+  permissions::PermissionRequestObserver observer(web_contents());
+  WebInstallDialogShownWatcher launch_dialog_watcher("WebInstallLaunchDialog");
+  ASSERT_TRUE(TryInstallFromManifest(
+      embedded_https_test_server().GetURL("/dynamic_manifest.json")));
+
+  EXPECT_FALSE(ResultExists());
+  ASSERT_TRUE(ErrorExists());
+  EXPECT_EQ(GetErrorName(), kDataError);
+  EXPECT_FALSE(observer.request_shown());
+  EXPECT_FALSE(launch_dialog_watcher.shown());
+  histograms.ExpectTotalCount(
+      "WebApp.InstallCommand.InstallFromManifestUrl.ResultCode", 0);
+  histograms.ExpectBucketCount(kInstallTypeUma,
+                               WebInstallServiceType::kBackgroundDocument, 1);
+  histograms.ExpectBucketCount(kVariantedInstallTypeUma,
+                               WebInstallServiceType::kBackgroundDocument, 1);
+  histograms.ExpectUniqueSample(kInstallResultUma,
+                                WebInstallServiceResult::kNoManifestIcons, 1);
+  histograms.ExpectUniqueSample(kVariantedInstallResultUma,
+                                WebInstallServiceResult::kNoManifestIcons, 1);
+  histograms.ExpectBucketCount("WebApp.LaunchSource", kLaunchSource, 0);
+  auto entries = ukm_recorder.GetEntriesByName(
+      ukm::builders::WebApp_WebInstall::kEntryName);
+  ASSERT_EQ(2u, entries.size());
+  ukm_recorder.ExpectEntryMetric(
+      entries[0], kRequestingPageUkm,
+      static_cast<int>(WebInstallServiceResult::kNoManifestIcons));
+  EXPECT_EQ(ukm::GetSourceIdType(entries[0]->source_id),
+            ukm::SourceIdType::NAVIGATION_ID);
+  ukm_recorder.ExpectEntryMetric(
+      entries[1], kInstalledAppUkm,
+      static_cast<int>(WebInstallServiceResult::kNoManifestIcons));
+  EXPECT_EQ(ukm::GetSourceIdType(entries[1]->source_id),
+            ukm::SourceIdType::APP_ID);
+  EXPECT_TRUE(provider().registrar_unsafe().AppMatches(
+      app_id, WebAppFilter::LaunchableFromInstallApi()));
 }
 
 // Same as above, but the caller also supplies a matching `id`.
@@ -1743,7 +2292,53 @@ class WebInstallPrivacyInvariantTest
                            ".then(result => { webInstallResult = result; })"
                            ".catch(error => { webInstallError = error; });");
   }
+
+  void ExpectContentTypeDataError(std::optional<std::string> content_type) {
+    content::WebContents* wc = NavigateAndGetWebContents();
+    SetPermissionResponse(/*permission_granted=*/false, wc);
+    const GURL manifest_url =
+        embedded_https_test_server().GetURL("/dynamic_manifest.json");
+
+    SetDynamicManifestResponse("invalid json");
+    ASSERT_TRUE(TryInstallFromManifest(manifest_url, wc));
+    ASSERT_EQ(GetErrorName(wc), kDataError);
+    const std::string parsing_error =
+        content::EvalJs(wc, "webInstallError.toString()").ExtractString();
+    ASSERT_TRUE(content::ExecJs(wc, "delete window.webInstallError;"));
+
+    SetDynamicManifestResponse(kContentTypeManifest, std::move(content_type));
+    permissions::PermissionRequestObserver permission_observer(wc);
+    WebInstallDialogShownWatcher dialog_watcher;
+    base::HistogramTester histograms;
+    ASSERT_TRUE(TryInstallFromManifest(manifest_url, wc));
+
+    ASSERT_TRUE(ErrorExists(wc));
+    EXPECT_EQ(GetErrorName(wc), kDataError);
+    EXPECT_EQ(content::EvalJs(wc, "webInstallError.toString()"), parsing_error);
+    EXPECT_EQ(content::EvalJs(wc, "typeof webInstallResult"), "undefined");
+    EXPECT_FALSE(permission_observer.request_shown());
+    EXPECT_FALSE(dialog_watcher.shown());
+    const webapps::AppId app_id =
+        GenerateAppIdFromManifestId(webapps::ManifestId(
+            embedded_https_test_server().GetURL("/content-type-app")));
+    EXPECT_FALSE(provider().registrar_unsafe().GetAppById(app_id));
+    histograms.ExpectUniqueSample(
+        kInstallResultUma, WebInstallServiceResult::kInstallCommandFailed, 1);
+  }
 };
+
+IN_PROC_BROWSER_TEST_P(WebInstallPrivacyInvariantTest, TextPlain_DataError) {
+  ExpectContentTypeDataError("text/plain");
+}
+
+IN_PROC_BROWSER_TEST_P(WebInstallPrivacyInvariantTest, TextHtml_DataError) {
+  ExpectContentTypeDataError("text/html");
+}
+
+IN_PROC_BROWSER_TEST_P(WebInstallPrivacyInvariantTest,
+                       MissingContentType_DataError) {
+  ExpectContentTypeDataError(std::nullopt);
+}
 
 // A valid manifest without a custom id, and no id option provided, should
 // return DataError identically in regular and Incognito modes.
@@ -1896,6 +2491,44 @@ IN_PROC_BROWSER_TEST_P(WebInstallPrivacyInvariantTest,
   histograms.ExpectUniqueSample(kVariantedInstallResultUma,
                                 WebInstallServiceResult::kInstallCommandFailed,
                                 1);
+}
+
+IN_PROC_BROWSER_TEST_P(WebInstallPrivacyInvariantTest,
+                       ManifestEmptyOrDiscardedIcons_DataError) {
+  base::HistogramTester histograms;
+  content::WebContents* wc = NavigateAndGetWebContents();
+  const GURL manifest_url =
+      embedded_https_test_server().GetURL("/dynamic_manifest.json");
+  permissions::PermissionRequestObserver observer(wc);
+  WebInstallDialogShownWatcher install_dialog_watcher;
+  WebInstallDialogShownWatcher launch_dialog_watcher("WebInstallLaunchDialog");
+  WebInstallDialogShownWatcher unsupported_dialog_watcher(
+      "WebAppInstallNotSupportedDialog");
+
+  SetDynamicManifestResponse(
+      R"({"id": "/empty-icons-app", "start_url": "/index.html",)"
+      R"( "name": "Empty Icons App", "icons": []})");
+  ASSERT_TRUE(TryInstallFromManifest(manifest_url, wc));
+  ASSERT_TRUE(ErrorExists(wc));
+  EXPECT_EQ(GetErrorName(wc), kDataError);
+
+  ASSERT_TRUE(content::ExecJs(
+      wc, "delete window.webInstallResult; delete window.webInstallError;"));
+  SetDynamicManifestResponse(
+      R"({"id": "/discarded-icons-app", "start_url": "/index.html",)"
+      R"( "name": "Discarded Icons App", "icons": [{"src": {}}]})");
+  ASSERT_TRUE(TryInstallFromManifest(manifest_url, wc));
+  ASSERT_TRUE(ErrorExists(wc));
+  EXPECT_EQ(GetErrorName(wc), kDataError);
+
+  EXPECT_FALSE(observer.request_shown());
+  EXPECT_FALSE(install_dialog_watcher.shown());
+  EXPECT_FALSE(launch_dialog_watcher.shown());
+  EXPECT_FALSE(unsupported_dialog_watcher.shown());
+  histograms.ExpectBucketCount(kInstallResultUma,
+                               WebInstallServiceResult::kNoManifestIcons, 2);
+  histograms.ExpectBucketCount(kVariantedInstallResultUma,
+                               WebInstallServiceResult::kNoManifestIcons, 2);
 }
 
 // A valid manifest with a custom id, but a non-matching id option, should
@@ -2421,8 +3054,7 @@ class WebInstallFromManifestInstallDialogFeatureBrowserTest
  public:
   WebInstallFromManifestInstallDialogFeatureBrowserTest()
       : base::test::WithFeatureOverride(features::kWebAppInstallDialog),
-        WebInstallFromManifestBrowserTest(
-            /*disable_install_dialog=*/false) {}
+        WebInstallFromManifestBrowserTest(InstallDialogFeature::kUnspecified) {}
 };
 
 IN_PROC_BROWSER_TEST_P(WebInstallFromManifestInstallDialogFeatureBrowserTest,
@@ -2496,6 +3128,69 @@ IN_PROC_BROWSER_TEST_P(WebInstallFromManifestInstallDialogFeatureBrowserTest,
   EXPECT_EQ(requesting_url, installed_by.front().requesting_url());
   EXPECT_FALSE(installed_by.front().install_api_call_time().is_null());
 }
+
+#if BUILDFLAG(IS_MAC)
+// Regression test for crbug.com/572892450.
+IN_PROC_BROWSER_TEST_P(WebInstallFromManifestInstallDialogFeatureBrowserTest,
+                       FlowDialogSurvivesGracePeriod_FromPWAWindow) {
+  // Test is only relevant to the new flow dialog.
+  if (!base::FeatureList::IsEnabled(features::kWebAppInstallDialog)) {
+    GTEST_SKIP();
+  }
+
+  // Install and launch the caller PWA in an app-shim-hosted window.
+  BrowserWindowInterface* app_browser =
+      web_app::InstallWebAppFromPageGetBrowser(
+          browser(), embedded_https_test_server().GetURL(
+                         "/banners/manifest_test_page.html"));
+  ASSERT_TRUE(app_browser);
+  content::WebContents* app_contents =
+      app_browser->tab_strip_model()->GetActiveWebContents();
+  ASSERT_TRUE(app_contents);
+  ASSERT_TRUE(content::WaitForLoadStop(app_contents));
+
+  views::Widget* app_widget =
+      BrowserView::GetBrowserViewForBrowser(app_browser)->GetWidget();
+  ASSERT_TRUE(app_widget);
+  views::test::WidgetVisibleWaiter(app_widget).Wait();
+  ASSERT_TRUE(remote_cocoa::IsWindowRemote(app_widget->GetNativeWindow()));
+
+  // Invoke `navigator.install` from the PWA.
+  SetPermissionResponse(/*permission_granted=*/true, app_contents);
+  views::NamedWidgetShownWaiter widget_waiter(
+      views::test::AnyWidgetTestPasskey{}, "WebAppInstallFlowDialog");
+
+  ASSERT_TRUE(FireInstallFromManifestNoResolve(
+      embedded_https_test_server().GetURL(kValidManifestWithId),
+      embedded_https_test_server().GetURL("/some_id"), app_contents));
+
+  views::Widget* widget = widget_waiter.WaitIfNeededAndGet();
+  ASSERT_TRUE(widget);
+  ASSERT_TRUE(remote_cocoa::IsWindowRemote(widget->GetNativeWindow()));
+  base::WeakPtr<views::Widget> weak_widget = widget->GetWeakPtr();
+
+  // Wait for the grace period to expire and verify the dialog stays open.
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    if (!weak_widget || weak_widget->IsClosed()) {
+      return true;
+    }
+    return !WebAppInstallFlowDialogDelegate::GetAppShimGraceTimerForTesting(
+                weak_widget.get())
+                .IsRunning();
+  }));
+  ASSERT_TRUE(weak_widget);
+  ASSERT_FALSE(weak_widget->IsClosed());
+  EXPECT_FALSE(ErrorExists(app_contents));
+
+  // Cancel the dialog and verify the install request rejects with AbortError.
+  views::test::WidgetDestroyedWaiter destroyed(widget);
+  views::test::CancelDialog(widget);
+  destroyed.Wait();
+  ASSERT_TRUE(
+      base::test::RunUntil([&]() { return ErrorExists(app_contents); }));
+  EXPECT_EQ(kAbortError, GetErrorName(app_contents));
+}
+#endif  // BUILDFLAG(IS_MAC)
 
 IN_PROC_BROWSER_TEST_P(WebInstallFromManifestInstallDialogFeatureBrowserTest,
                        AlreadyInstalled_UserAcceptsLaunchDialog_FromPWAWindow) {

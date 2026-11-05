@@ -158,6 +158,14 @@ AudioEncoderTraits::ParsedConfig* ParseOpusConfigStatic(
     return nullptr;
   }
 
+  if (result->options.bitrate.has_value() &&
+      result->options.bitrate.value() < media::AudioOpusEncoder::kMinBitrate) {
+    exception_state.ThrowTypeError(Format(
+        "Opus bitrate is too low; expected at least {}, received {}.",
+        media::AudioOpusEncoder::kMinBitrate, result->options.bitrate.value()));
+    return nullptr;
+  }
+
   if (opus_config->format().AsEnum() == V8OpusBitstreamFormat::Enum::kOgg) {
     exception_state.ThrowDOMException(DOMExceptionCode::kNotSupportedError,
                                       "Opus Ogg format is unsupported");
@@ -247,6 +255,10 @@ AudioEncoderTraits::ParsedConfig* ParseConfigStatic(
 
   result->codec_string = config->codec();
   if (config->hasBitrate()) {
+    if (config->bitrate() == 0) {
+      exception_state.ThrowTypeError("Bitrate must be greater than zero.");
+      return nullptr;
+    }
     if (config->bitrate() > std::numeric_limits<int>::max()) {
       exception_state.ThrowTypeError(
           Format("Bitrate is too large; expected at most {}, received {}",
@@ -310,15 +322,6 @@ bool VerifyCodecSupportStatic(AudioEncoderTraits::ParsedConfig* config,
             "Too many channels for Opus encoder; expected at most 2, received "
             "{}.",
             config->options.channels);
-        return false;
-      }
-      if (config->options.bitrate.has_value() &&
-          config->options.bitrate.value() <
-              media::AudioOpusEncoder::kMinBitrate) {
-        *js_error_message = Format(
-            "Opus bitrate is too low; expected at least {}, received {}.",
-            media::AudioOpusEncoder::kMinBitrate,
-            config->options.bitrate.value());
         return false;
       }
       return true;
@@ -399,16 +402,18 @@ AudioEncoderConfig* CopyConfig(const AudioEncoderConfig& config) {
 }
 
 std::unique_ptr<media::AudioEncoder> CreateSoftwareAudioEncoder(
-    media::AudioCodec codec) {
+    media::AudioCodec codec,
+    scoped_refptr<base::SequencedTaskRunner> callback_runner) {
   if (codec != media::AudioCodec::kOpus)
     return nullptr;
   auto software_encoder = std::make_unique<media::AudioOpusEncoder>();
   return std::make_unique<media::OffloadingAudioEncoder>(
-      std::move(software_encoder));
+      std::move(software_encoder), std::move(callback_runner));
 }
 
 std::unique_ptr<media::AudioEncoder> CreatePlatformAudioEncoder(
-    media::AudioCodec codec) {
+    media::AudioCodec codec,
+    scoped_refptr<base::SequencedTaskRunner> callback_runner) {
   if (codec != media::AudioCodec::kAAC)
     return nullptr;
 
@@ -421,7 +426,8 @@ std::unique_ptr<media::AudioEncoder> CreatePlatformAudioEncoder(
   mojo::PendingRemote<media::mojom::AudioEncoder> encoder_remote;
   interface_factory->CreateAudioEncoder(
       encoder_remote.InitWithNewPipeAndPassReceiver());
-  return std::make_unique<media::MojoAudioEncoder>(std::move(encoder_remote));
+  return std::make_unique<media::MojoAudioEncoder>(std::move(encoder_remote),
+                                                   std::move(callback_runner));
 }
 
 }  // namespace
@@ -451,12 +457,13 @@ AudioEncoder::~AudioEncoder() = default;
 
 std::unique_ptr<media::AudioEncoder> AudioEncoder::CreateMediaAudioEncoder(
     const ParsedConfig& config) {
-  if (auto result = CreatePlatformAudioEncoder(config.options.codec)) {
+  if (auto result =
+          CreatePlatformAudioEncoder(config.options.codec, callback_runner_)) {
     is_platform_encoder_ = true;
     return result;
   }
   is_platform_encoder_ = false;
-  return CreateSoftwareAudioEncoder(config.options.codec);
+  return CreateSoftwareAudioEncoder(config.options.codec, callback_runner_);
 }
 
 void AudioEncoder::ProcessConfigure(Request* request) {

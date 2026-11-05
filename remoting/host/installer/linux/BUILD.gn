@@ -9,7 +9,10 @@ import("//remoting/host/installer/credits.gni")
 import("//remoting/remoting_locales.gni")
 import("//remoting/remoting_options.gni")
 
-if (enable_me2me_host && target_cpu == "x64") {
+# The Debian package is only built for Chrome-branded builds. It also can't be
+# built in component builds since it doesn't package the shared libraries.
+if (is_chrome_branded && enable_me2me_host && target_cpu == "x64" &&
+    !is_component_build) {
   remoting_credits("credits") {
     gn_target = "//remoting/host/installer/linux:remoting_me2me_host_archive"
   }
@@ -55,6 +58,7 @@ if (enable_me2me_host && target_cpu == "x64") {
     inputs = [
       build_deb_script,
       "Makefile",
+      "apt.include",
       "debian/chrome-remote-desktop-environment.user.service",
       "debian/chrome-remote-desktop.service",
       "debian/chrome-remote-desktop.pam",
@@ -68,16 +72,24 @@ if (enable_me2me_host && target_cpu == "x64") {
       "debian/repo.cron",
       "debian/rules",
       "debian/triggers",
+      "installer.include",
+      "repo_variables.include",
+      "variables.include",
+      "//chrome/installer/linux/common/key.include",
 
       # Files to be packaged into the deb.
       "//remoting/host/installer/linux/Xsession",
+      "//remoting/host/installer/linux/chrome-remote-desktop-x11-session@.service",
+      "//remoting/host/installer/linux/chrome-remote-desktop@.service",
       "//remoting/host/installer/linux/is-remoting-session",
       "//remoting/host/installer/linux/setup-session-environment",
       "//remoting/host/linux/configure_url_forwarder.py",
+      "//remoting/host/linux/desktop_session.py",
       "//remoting/host/linux/linux_me2me_host.py",
       "//remoting/host/linux/pipewire.conf.template",
       "//remoting/host/linux/pipewire-media-session.conf.template",
       "//remoting/host/linux/pipewire-pulse.conf.template",
+      "//remoting/host/linux/shared_lib.py",
       "//remoting/host/linux/wireplumber.conf.fragment",
       "//remoting/host/linux/wireplumber.conf.template",
       "//remoting/resources/chromoting128.png",
@@ -98,6 +110,7 @@ if (enable_me2me_host && target_cpu == "x64") {
       "$root_out_dir/remoting/com.google.chrome.remote_desktop-firefox.json",
       "$root_out_dir/remoting/com.google.chrome.remote_desktop.json",
       "$root_out_dir/remoting/com.google.chrome.remote_webauthn.json",
+      "$root_out_dir/remoting/com.google.ChromeRemoteDesktop.desktop",
       "$root_out_dir/remoting/crd-url-forwarder.desktop",
     ]
 
@@ -115,8 +128,6 @@ if (enable_me2me_host && target_cpu == "x64") {
       "-b",
       build_timestamp,
     ]
-    inputs +=
-        [ "//remoting/host/installer/linux/chrome-remote-desktop@.service" ]
 
     deps = [
       ":credits",
@@ -128,6 +139,7 @@ if (enable_me2me_host && target_cpu == "x64") {
       "//remoting/host/crash:crash_tools",
       "//remoting/host/it2me:remote_assistance_host",
       "//remoting/host/linux:remote_session_info",
+      "//remoting/host/linux:remoting_me2me_host_desktop_entry",
       "//remoting/host/linux:remoting_migrate_host",
       "//remoting/host/linux:url_forwarder_desktop_entry",
       "//remoting/host/remote_open_url",
@@ -139,4 +151,20 @@ if (enable_me2me_host && target_cpu == "x64") {
 } else {
   group("remoting_me2me_host_archive") {
   }
+}
+
+source_set("unit_tests") {
+  testonly = true
+
+  sources = [ "setup_session_environment_unittest.cc" ]
+
+  data = [
+    "setup-session-environment",
+    "setup_session_environment_unittest.py",
+  ]
+
+  deps = [
+    "//base",
+    "//testing/gtest",
+  ]
 }

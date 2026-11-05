@@ -108,8 +108,9 @@ class WaylandSurface {
   // Sets an optional transformation for how the Wayland compositor interprets
   // the contents of the buffer attached to this surface.
   void set_buffer_transform(gfx::OverlayTransform transform) {
-    DCHECK(!apply_state_immediately_);
-    DCHECK(transform != gfx::OVERLAY_TRANSFORM_INVALID);
+    CHECK(!apply_state_immediately_, base::NotFatalUntil::M163);
+    CHECK(transform != gfx::OVERLAY_TRANSFORM_INVALID,
+          base::NotFatalUntil::M163);
     pending_state_.buffer_transform = transform;
     return;
   }
@@ -145,14 +146,14 @@ class WaylandSurface {
   // Note this method does not send corresponding wayland requests until
   // attaching the next buffer.
   void set_buffer_crop(const gfx::RectF& crop) {
-    DCHECK(!apply_state_immediately_);
+    CHECK(!apply_state_immediately_, base::NotFatalUntil::M163);
     pending_state_.crop = crop == gfx::RectF{1.f, 1.f} ? gfx::RectF() : crop;
   }
 
   // Sets the opacity of the wl_surface using zcr_blending_v1_set_alpha.
   // See: alpha-compositing-unstable-v1.xml
   void set_opacity(const float opacity) {
-    DCHECK(!apply_state_immediately_);
+    CHECK(!apply_state_immediately_, base::NotFatalUntil::M163);
     if (blending())
       pending_state_.opacity = opacity;
   }
@@ -160,7 +161,7 @@ class WaylandSurface {
   // Sets the blending equation of the wl_surface using
   // zcr_blending_v1_set_blending. See: alpha-compositing-unstable-v1.xml
   void set_blending(const bool use_blending) {
-    DCHECK(!apply_state_immediately_);
+    CHECK(!apply_state_immediately_, base::NotFatalUntil::M163);
     if (blending())
       pending_state_.use_blending = use_blending;
   }
@@ -170,7 +171,7 @@ class WaylandSurface {
   // Note this method sends corresponding wayland requests immediately because
   // it does not need a new buffer attach to take effect.
   void set_viewport_destination(const gfx::SizeF& dest_size_px) {
-    DCHECK(!apply_state_immediately_);
+    CHECK(!apply_state_immediately_, base::NotFatalUntil::M163);
     pending_state_.viewport_px = dest_size_px;
   }
 
@@ -196,6 +197,15 @@ class WaylandSurface {
   // Set surface ColorSpace and HDR metadata.
   void SetImageDescription(const gfx::ColorSpace& color_space,
                            const gfx::HDRMetadata& hdr_metadata);
+
+  // Returns true if SetImageDescription() with these arguments followed by
+  // ApplyPendingState() sets the surface's image description synchronously,
+  // so it is latched by the same commit as the attached buffer. Otherwise
+  // returns false and runs `on_ready` once the image description is ready.
+  bool EnsureImageDescription(const gfx::ColorSpace& color_space,
+                              const gfx::HDRMetadata& hdr_metadata,
+                              bool contains_video,
+                              base::OnceClosure on_ready);
 
   // Validates the |pending_state_| and generates the corresponding requests.
   // Then copy |pending_states_| to |states_|.

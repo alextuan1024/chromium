@@ -56,7 +56,7 @@ class TestSensorClient : public mojom::SensorClient {
   }
 
   // Implements mojom::SensorClient:
-  void SensorReadingChanged() override {
+  void SensorReadingChanged(const SensorReading& reading) override {
     if (!shared_buffer_reader_->GetReading(&reading_data_)) {
       ADD_FAILURE() << "Failed to get readings from shared buffer";
       return;
@@ -98,7 +98,8 @@ class TestSensorClient : public mojom::SensorClient {
                        mojom::SensorInitParamsPtr params) {
     ASSERT_TRUE(params);
     EXPECT_EQ(mojom::SensorCreationResult::SUCCESS, result);
-    EXPECT_TRUE(params->memory.IsValid());
+    ASSERT_TRUE(params->shared_buffer);
+    EXPECT_TRUE(params->shared_buffer->memory.IsValid());
 
     const double expected_maximum_frequency = std::min(
         kMaximumPlatformFrequency, GetSensorMaxAllowedFrequency(type_));
@@ -112,7 +113,8 @@ class TestSensorClient : public mojom::SensorClient {
                      params->default_configuration.frequency());
 
     shared_buffer_reader_ = device::SensorReadingSharedBufferReader::Create(
-        std::move(params->memory), params->buffer_offset);
+        std::move(params->shared_buffer->memory),
+        params->shared_buffer->buffer_offset);
     ASSERT_TRUE(shared_buffer_reader_);
 
     sensor_.Bind(std::move(params->sensor));
@@ -854,6 +856,91 @@ TEST_F(GenericSensorServiceTest, GetNonOverriddenSensorTest) {
 TEST_F(GenericSensorServiceTest, UpdateNonOverriddenSensorTest) {
   EXPECT_EQ(UpdateVirtualSensorSync(SensorType::ACCELEROMETER, 42.0),
             mojom::UpdateVirtualSensorResult::kSensorTypeNotOverridden);
+}
+
+TEST_F(GenericSensorServiceTest,
+       VirtualSensorImmuneToControllerSuspensionTest) {
+  EXPECT_EQ(CreateVirtualSensorSync(SensorType::ACCELEROMETER),
+            mojom::CreateVirtualSensorResult::kSuccess);
+
+  mojo::Remote<mojom::SensorClientController> controller;
+  auto client = std::make_unique<TestSensorClient>(SensorType::ACCELEROMETER);
+  base::test::TestFuture<mojom::SensorCreationResult,
+                         mojom::SensorInitParamsPtr>
+      future;
+  sensor_provider_->GetSensor(
+      SensorType::ACCELEROMETER, controller.BindNewPipeAndPassReceiver(),
+      /*initially_suspended=*/false, future.GetCallback());
+  auto [result, params] = future.Take();
+  EXPECT_EQ(mojom::SensorCreationResult::SUCCESS, result);
+  client->OnSensorCreated(base::DoNothing(), result, std::move(params));
+
+  EXPECT_TRUE(client->AddConfigurationSync(PlatformSensorConfiguration(20.0)));
+
+  // Suspend via controller (simulating FrameSensorProviderProxy suspending on
+  // tab visibility loss).
+  controller->Suspend();
+
+  // Virtual sensors are immune to controller suspension, so updates are still
+  // processed and received by the client.
+  EXPECT_EQ(UpdateVirtualSensorSync(SensorType::ACCELEROMETER, 15.0),
+            mojom::UpdateVirtualSensorResult::kSuccess);
+  EXPECT_DOUBLE_EQ(client->WaitForReading(), 15.0);
+
+  // But client-side suspension (simulating Blink page visibility suspension)
+  // must still take effect and reset the shared buffer.
+  client->sensor()->Suspend();
+
+  base::test::TestFuture<void> flush_future;
+  base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+      FROM_HERE, flush_future.GetCallback());
+  EXPECT_TRUE(flush_future.Wait());
+  SensorReading reading;
+  client->FetchSensorReading(&reading);
+  EXPECT_DOUBLE_EQ(reading.accel.x, 0.0);
+
+  // Resuming client-side allows updates again.
+  client->sensor()->Resume();
+  EXPECT_EQ(UpdateVirtualSensorSync(SensorType::ACCELEROMETER, 30.0),
+            mojom::UpdateVirtualSensorResult::kSuccess);
+  EXPECT_DOUBLE_EQ(client->WaitForReading(), 30.0);
+}
+
+TEST_F(GenericSensorServiceTest,
+       NonVirtualSensorSuspendsOnControllerSuspendTest) {
+  EXPECT_CALL(*fake_platform_sensor_provider_, CreateSensorInternal).Times(1);
+  mojo::Remote<mojom::SensorClientController> controller;
+  auto client = std::make_unique<TestSensorClient>(SensorType::ACCELEROMETER);
+  base::test::TestFuture<mojom::SensorCreationResult,
+                         mojom::SensorInitParamsPtr>
+      future;
+  sensor_provider_->GetSensor(
+      SensorType::ACCELEROMETER, controller.BindNewPipeAndPassReceiver(),
+      /*initially_suspended=*/false, future.GetCallback());
+  auto [result, params] = future.Take();
+  EXPECT_EQ(mojom::SensorCreationResult::SUCCESS, result);
+  client->OnSensorCreated(base::DoNothing(), result, std::move(params));
+
+  EXPECT_TRUE(client->AddConfigurationSync(PlatformSensorConfiguration(46.0)));
+  EXPECT_DOUBLE_EQ(client->WaitForReading(), 46.0);
+
+  // Suspend via controller.
+  controller->Suspend();
+
+  // For a non-virtual sensor, controller suspension stops the sensor and
+  // resets the shared buffer.
+  base::test::TestFuture<void> flush_future;
+  base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+      FROM_HERE, flush_future.GetCallback());
+  EXPECT_TRUE(flush_future.Wait());
+
+  SensorReading reading;
+  client->FetchSensorReading(&reading);
+  EXPECT_DOUBLE_EQ(reading.accel.x, 0.0);
+
+  // Resume via controller and verify that a new reading is received.
+  controller->Resume();
+  EXPECT_DOUBLE_EQ(client->WaitForReading(), 46.0);
 }
 
 }  //  namespace device

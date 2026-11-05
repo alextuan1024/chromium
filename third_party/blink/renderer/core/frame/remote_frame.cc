@@ -4,11 +4,13 @@
 
 #include "third_party/blink/renderer/core/frame/remote_frame.h"
 
+#include "base/feature_list.h"
 #include "base/timer/elapsed_timer.h"
 #include "base/types/optional_util.h"
 #include "cc/layers/surface_layer.h"
 #include "services/network/public/cpp/permissions_policy/permissions_policy_declaration.h"
 #include "services/network/public/mojom/web_sandbox_flags.mojom-blink.h"
+#include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/common/fenced_frame/fenced_frame_utils.h"
 #include "third_party/blink/public/common/frame/frame_owner_element_type.h"
 #include "third_party/blink/public/common/navigation/navigation_policy.h"
@@ -32,6 +34,7 @@
 #include "third_party/blink/renderer/core/accessibility/ax_object_cache.h"
 #include "third_party/blink/renderer/core/events/message_event.h"
 #include "third_party/blink/renderer/core/exported/web_view_impl.h"
+#include "third_party/blink/renderer/core/frame/csp/content_security_policy.h"
 #include "third_party/blink/renderer/core/frame/local_dom_window.h"
 #include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/core/frame/local_frame_client.h"
@@ -166,6 +169,7 @@ void RemoteFrame::Trace(Visitor* visitor) const {
   visitor->Trace(receiver_);
   visitor->Trace(main_frame_receiver_);
   Frame::Trace(visitor);
+  ChildFrameCompositor::Trace(visitor);
 }
 
 void RemoteFrame::Navigate(FrameLoadRequest& frame_request,
@@ -275,7 +279,7 @@ void RemoteFrame::Navigate(FrameLoadRequest& frame_request,
   params->referrer = mojom::blink::Referrer::New(
       KURL(NullUrl(), request.ReferrerString()), request.GetReferrerPolicy());
   params->is_form_submission = !!frame_request.Form();
-  params->disposition = ui::mojom::blink::WindowOpenDisposition::CURRENT_TAB;
+  params->disposition = ui::mojom::blink::WindowOpenDisposition::kCurrentTab;
   params->should_replace_current_entry =
       frame_load_type == WebFrameLoadType::kReplaceCurrentItem;
   params->user_gesture = request.HasUserGesture();
@@ -312,6 +316,18 @@ void RemoteFrame::Navigate(FrameLoadRequest& frame_request,
   params->started_by_ad = initiator_frame_is_ad || is_ad_script_in_stack;
   params->is_container_initiated = frame_request.IsContainerInitiated();
   params->has_rel_opener = frame_request.GetWindowFeatures().explicit_opener;
+
+  // Navigations initiated from an isolated world (e.g., by an extension
+  // content script) bypass the main world's CSP. This mirrors what
+  // FrameLoader::StartNavigation() does for navigations of local frames, so
+  // that CSP enforcement doesn't depend on whether the navigated frame happens
+  // to live in another process. See the comment on
+  // OpenURLParams::should_check_main_world_csp for more details.
+  params->should_check_main_world_csp =
+      ContentSecurityPolicy::ShouldBypassMainWorldDeprecated(
+          frame_request.JavascriptWorld())
+          ? network::mojom::CSPDisposition::DO_NOT_CHECK
+          : network::mojom::CSPDisposition::CHECK;
 
   GetRemoteFrameHostRemote().OpenURL(std::move(params));
 }
@@ -440,13 +456,51 @@ void RemoteFrame::DidStopLoading() {
 
   SetIsLoading(false);
 
-  // When a subframe finishes loading, the parent should check if *all*
-  // subframes have finished loading (which may mean that the parent can declare
-  // that the parent itself has finished loading). This remote-subframe-focused
-  // code has a local-subframe equivalent in FrameLoader::DidFinishNavigation.
+  // When a subframe finishes loading, an ancestor LocalFrame in this process
+  // may be waiting for all descendant frames to finish loading before
+  // completing its own load (see AllDescendantsAreComplete() in document.cc).
+  // This remote-subframe-focused code has a local-subframe equivalent in
+  // FrameLoader::DidFinishNavigation.
   Frame* parent = Tree().Parent();
-  if (parent)
+  if (!parent) {
+    return;
+  }
+
+  // If the immediate parent in this process is a LocalFrame, check completion
+  // on it directly without querying FeatureList. Both the enabled and disabled
+  // paths behave identically here, so avoiding the feature check keeps Field
+  // Trial activation scoped strictly to processes where `parent` is a
+  // RemoteFrame and behavior actually diverges.
+  if (parent->IsLocalFrame() ||
+      !base::FeatureList::IsEnabled(
+          features::kSkipRedundantRemoteFrameCheckCompleted)) {
     parent->CheckCompleted();
+    return;
+  }
+
+  // `parent` is a RemoteFrame. Because the browser process broadcasts
+  // DidStopLoading() for a finishing frame to all renderer processes that hold
+  // a proxy for it, the renderer process hosting `parent`'s actual LocalFrame
+  // already receives DidStopLoading() directly from the browser and runs
+  // LocalFrame::CheckCompleted() there. Sending RemoteFrameHost::CheckCompleted
+  // back through the browser from every non-parent renderer process is
+  // therefore redundant (and simply dropped by RenderFrameProxyHost when the
+  // sender is in a different BrowsingInstance).
+  //
+  // However, this renderer process may still host a LocalFrame higher up the
+  // ancestor chain (for example, LocalFrame A -> RemoteFrame B -> RemoteFrame
+  // C, where B already finished loading earlier and A's Document is waiting on
+  // C in AllDescendantsAreComplete()). Walk upward to notify the nearest
+  // LocalFrame ancestor in this process, if one exists, and return immediately
+  // since CheckCompleted() may synchronously dispatch load events that mutate
+  // the frame tree.
+  for (Frame* ancestor = parent->Tree().Parent(); ancestor;
+       ancestor = ancestor->Tree().Parent()) {
+    if (auto* local_ancestor = DynamicTo<LocalFrame>(ancestor)) {
+      local_ancestor->CheckCompleted();
+      return;
+    }
+  }
 }
 
 void RemoteFrame::DidFocus() {
@@ -715,7 +769,8 @@ void RemoteFrame::UpdateUserActivationState(
     case mojom::blink::UserActivationUpdateType::kClearActivation:
       ClearUserActivationInFrameTree();
       break;
-    default:
+    case mojom::blink::UserActivationUpdateType::
+        kNotifyActivationPendingBrowserVerification:
       NOTREACHED() << "Unexpected UserActivationUpdateType from browser";
   }
 }
@@ -762,14 +817,11 @@ void RemoteFrame::ScrollRectToVisible(
 void RemoteFrame::IntrinsicSizingInfoOfChildChanged(
     mojom::blink::IntrinsicSizingInfoPtr info) {
   FrameOwner* owner = Owner();
-  // Only communication from HTMLPluginElement-owned subframes is allowed
-  // at present. This includes <embed> and <object> tags.
-  if (!owner || (!owner->IsPlugin() &&
-                 !RuntimeEnabledFeatures::ResponsiveIframesEnabled())) {
+  if (!owner) {
     return;
   }
 
-  if (info->is_cleared && RuntimeEnabledFeatures::ResponsiveIframesEnabled()) {
+  if (info->is_cleared) {
     View()->ClearNaturalDimensions();
     owner->NaturalSizingInfoChanged();
     return;
@@ -914,7 +966,7 @@ void RemoteFrame::SetFrameSinkId(const viz::FrameSinkId& frame_sink_id,
 void RemoteFrame::ChildProcessGone() {
   remote_process_gone_ = true;
   compositing_helper_->ChildFrameGone(
-      ancestor_widget_->GetOriginalScreenInfo().device_scale_factor);
+      ancestor_widget_->GetOriginalDeviceScaleFactor());
 }
 
 bool RemoteFrame::IsIgnoredForHitTest() const {
@@ -1050,10 +1102,9 @@ void RemoteFrame::ResendVisualPropertiesInternal(
   SynchronizeVisualProperties(/*propagate=*/true, allow_paint_holding);
 }
 
-void RemoteFrame::DidUpdateVisualProperties(
-    const cc::RenderFrameMetadata& metadata) {
-  if (!parent_local_surface_id_allocator_->UpdateFromChild(
-          metadata.local_surface_id.value_or(viz::LocalSurfaceId()))) {
+void RemoteFrame::DidUpdateChildLocalSurfaceId(
+    const viz::LocalSurfaceId& local_surface_id) {
+  if (!parent_local_surface_id_allocator_->UpdateFromChild(local_surface_id)) {
     return;
   }
 

@@ -11,7 +11,6 @@
 #include "base/location.h"
 #include "base/logging.h"
 #include "base/memory/raw_ptr_exclusion.h"
-#include "base/memory/raw_ref.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/notimplemented.h"
 #include "base/notreached.h"
@@ -30,9 +29,6 @@
 #include "services/webnn/public/mojom/webnn_device.mojom.h"
 #include "services/webnn/public/mojom/webnn_error.mojom.h"
 #include "services/webnn/public/mojom/webnn_graph.mojom.h"
-#include "services/webnn/queueable_resource_state.h"
-#include "services/webnn/queueable_resource_state_base.h"
-#include "services/webnn/resource_task.h"
 #include "services/webnn/tflite/buffer_content_tflite.h"
 #include "services/webnn/tflite/context_impl_litert.h"
 #include "services/webnn/tflite/graph_builder_tflite.h"
@@ -59,6 +55,12 @@
 #include "third_party/litert/src/litert/cc/options/litert_gpu_options.h"
 #include "third_party/litert/src/litert/core/buffer_error_reporter.h"
 #include "third_party/litert/src/tflite/tools/verifier.h"
+
+#if BUILDFLAG(BUILD_LITERT_WITH_ML_DRIFT)
+#include "third_party/litert/src/litert/c/internal/litert_accelerator_def.h"
+
+extern "C" const LiteRtAcceleratorDef LiteRtAcceleratorImpl;
+#endif
 
 #if BUILDFLAG(BUILD_LITERT_WITH_XNNPACK)
 #include "third_party/litert/src/tflite/delegates/xnnpack/xnnpack_delegate.h"
@@ -212,6 +214,11 @@ class GraphImplLiteRt::ComputeResources {
 
     std::vector<::litert::EnvironmentOptions::Option> env_options;
     if (context_device == mojom::Device::kGpu) {
+#if BUILDFLAG(BUILD_LITERT_WITH_ML_DRIFT)
+      env_options.emplace_back(
+          ::litert::EnvironmentOptions::Tag::kSystemGpuAcceleratorHandle,
+          static_cast<const void*>(&LiteRtAcceleratorImpl));
+#endif
       const DawnProcTable* dawn_procs = static_cast<const DawnProcTable*>(
           self->webgpu_properties_.dawn_procs.get());
 
@@ -265,25 +272,27 @@ class GraphImplLiteRt::ComputeResources {
     ASSIGN_OR_RETURN(self->profiler_,
                      AsBaseExpected(self->model_->GetProfiler()));
 #endif
-    // TODO(crbug.com/454732289): LiteRT currently provides no API to query
-    // runtime accelerators. As a temporary workaround we infer the target
-    // devices from the compilation options when the model is fully
-    // accelerated. Replace this inference with the official LiteRT API once
-    // it becomes available.
-    if (self->model_->IsFullyAccelerated()) {
-      ASSIGN_OR_RETURN(
-          auto hardware_accelerators,
-          AsBaseExpected(compilation_options.GetHardwareAccelerators()));
-      if (hardware_accelerators & kLiteRtHwAcceleratorGpu) {
-        self->devices.push_back(mojom::Device::kGpu);
+    ASSIGN_OR_RETURN(auto delegation_metrics,
+                     AsBaseExpected(self->model_->GetDelegationMetrics()));
+    LiteRtHwAcceleratorSet active_accelerators = kLiteRtHwAcceleratorNone;
+    int total_delegated_nodes = 0;
+    for (const auto& accelerator : delegation_metrics.accelerators) {
+      if (accelerator.delegated_node_count > 0) {
+        active_accelerators |= accelerator.hardware_type;
+        total_delegated_nodes += accelerator.delegated_node_count;
       }
-      if (hardware_accelerators & kLiteRtHwAcceleratorNpu) {
-        self->devices.push_back(mojom::Device::kNpu);
-      }
-      if (hardware_accelerators & kLiteRtHwAcceleratorCpu) {
-        self->devices.push_back(mojom::Device::kCpu);
-      }
-    } else {
+    }
+    if (total_delegated_nodes < delegation_metrics.total_node_count ||
+        active_accelerators == kLiteRtHwAcceleratorNone) {
+      active_accelerators |= kLiteRtHwAcceleratorCpu;
+    }
+    if (active_accelerators & kLiteRtHwAcceleratorGpu) {
+      self->devices.push_back(mojom::Device::kGpu);
+    }
+    if (active_accelerators & kLiteRtHwAcceleratorNpu) {
+      self->devices.push_back(mojom::Device::kNpu);
+    }
+    if (active_accelerators & kLiteRtHwAcceleratorCpu) {
       self->devices.push_back(mojom::Device::kCpu);
     }
 
@@ -366,36 +375,42 @@ class GraphImplLiteRt::ComputeResources {
   }
 
   base::expected<void, mojom::ErrorPtr> DoDispatchImpl(
-      const std::vector<std::pair<std::string, TensorDescriptor>>& inputs,
-      const std::vector<std::pair<std::string, TensorDescriptor>>& outputs,
-      const base::flat_map<int, raw_ref<const BufferContent>>& buffers,
+      const base::flat_map<std::string, scoped_refptr<WebNNTensorImpl>>&
+          named_inputs,
+      const base::flat_map<std::string, scoped_refptr<WebNNTensorImpl>>&
+          named_outputs,
       ScopedTrace& scoped_trace) {
     scoped_trace.AddStep("Set up input and output buffers");
 
+    // The caller guarantees that all expected tensors have been provided.
     std::vector<::litert::TensorBuffer> input_buffers;
-    input_buffers.reserve(inputs.size());
-    for (int i = 0; i < inputs.size(); ++i) {
-      const auto& [name, input] = inputs[i];
-      const auto& buffer = buffers.at(input.tensor_index);
+    input_buffers.reserve(input_name_to_descriptor.size());
+    for (size_t i = 0; i < input_name_to_descriptor.size(); ++i) {
+      const std::string& name = input_name_to_descriptor[i].first;
+      const BufferContent& buffer =
+          static_cast<tflite::TensorImplTflite*>(named_inputs.at(name).get())
+              ->GetBufferContent();
       ASSIGN_OR_RETURN(
           auto litert_buffer,
           AsBaseExpected(::litert::TensorBuffer::CreateFromHostMemory(
                              *env_, input_tensor_types[i],
-                             buffer->AsSpan().data(), buffer->AllocatedSize()),
+                             buffer.AsSpan().data(), buffer.AllocatedSize()),
                          "Failed to create input LiteRT buffer"));
       input_buffers.push_back(std::move(litert_buffer));
     }
 
     std::vector<::litert::TensorBuffer> output_buffers;
-    output_buffers.reserve(outputs.size());
-    for (int i = 0; i < outputs.size(); ++i) {
-      const auto& [name, output] = outputs[i];
-      const auto& buffer = buffers.at(output.tensor_index);
+    output_buffers.reserve(output_name_to_descriptor.size());
+    for (size_t i = 0; i < output_name_to_descriptor.size(); ++i) {
+      const std::string& name = output_name_to_descriptor[i].first;
+      const BufferContent& buffer =
+          static_cast<tflite::TensorImplTflite*>(named_outputs.at(name).get())
+              ->GetBufferContent();
       ASSIGN_OR_RETURN(
           auto litert_buffer,
           AsBaseExpected(::litert::TensorBuffer::CreateFromHostMemory(
                              *env_, output_tensor_types[i],
-                             buffer->AsSpan().data(), buffer->AllocatedSize()),
+                             buffer.AsSpan().data(), buffer.AllocatedSize()),
                          "Failed to create output LiteRT buffer"));
       output_buffers.push_back(std::move(litert_buffer));
     }
@@ -419,39 +434,17 @@ class GraphImplLiteRt::ComputeResources {
   }
 
   void DoDispatch(
-      const std::vector<std::pair<std::string, TensorDescriptor>>& inputs,
-      const std::vector<std::pair<std::string, TensorDescriptor>>& outputs,
-      base::flat_map<int, raw_ref<const BufferContent>> buffers,
+      base::flat_map<std::string, scoped_refptr<WebNNTensorImpl>> named_inputs,
+      base::flat_map<std::string, scoped_refptr<WebNNTensorImpl>> named_outputs,
       ScopedTrace scoped_trace) {
-    auto result = DoDispatchImpl(inputs, outputs, buffers, scoped_trace);
+    auto result = DoDispatchImpl(named_inputs, named_outputs, scoped_trace);
     if (!result.has_value()) {
       LOG(ERROR) << result.error()->message;
     }
   }
 
-  base::flat_map<int, raw_ref<const BufferContent>> CollectBuffersForDispatch(
-      const base::flat_map<
-          int,
-          scoped_refptr<QueueableResourceState<BufferContent>>>& inputs,
-      const base::flat_map<
-          int,
-          scoped_refptr<QueueableResourceState<BufferContent>>>& outputs) {
-    std::vector<std::pair<int, raw_ref<const BufferContent>>> buffers;
-    buffers.reserve(inputs.size() + outputs.size());
-
-    for (const auto& [tensor_idx, buffer] : inputs) {
-      buffers.emplace_back(tensor_idx, buffer->GetSharedLockedResource());
-    }
-    for (const auto& [tensor_idx, buffer] : outputs) {
-      buffers.emplace_back(tensor_idx, *buffer->GetExclusivelyLockedResource());
-    }
-
-    return buffers;
-  }
-
   std::vector<mojom::Device> devices;
 
-  // Used for getting queueable input/output resources.
   std::vector<std::pair<std::string, TensorDescriptor>>
       input_name_to_descriptor;
   std::vector<std::pair<std::string, TensorDescriptor>>
@@ -459,8 +452,6 @@ class GraphImplLiteRt::ComputeResources {
 
   std::vector<::litert::RankedTensorType> input_tensor_types;
   std::vector<::litert::RankedTensorType> output_tensor_types;
-
-  bool UseDawnWire() const { return webgpu_properties_.IsValid(); }
 
  private:
   base::expected<::litert::Options, mojom::ErrorPtr> GetCompilationOptions(
@@ -614,19 +605,19 @@ GraphImplLiteRt::BuildGraphOnBackgroundThread(
     base::flat_map<OperandId, OperationId> operand_to_producing_operation,
     base::File weights_file,
     mojo::SharedRemote<mojom::WeightsFileSession> shared_session) {
-  ASSIGN_OR_RETURN(
-      tflite::GraphBuilderTflite::Result result,
-      tflite::GraphBuilderTflite::CreateAndBuild(
-          context_properties, context_device, *graph_info,
-          std::move(constant_operands),
-          std::move(operand_to_dependent_operations),
-          std::move(operand_to_producing_operation), std::move(weights_file),
-          std::move(shared_session),
-          /*use_external_buffer=*/true),
-      [](std::string error) {
-        return mojom::Error::New(mojom::Error::Code::kNotSupportedError,
-                                 std::move(error));
-      });
+  ASSIGN_OR_RETURN(tflite::GraphBuilderTflite::Result result,
+                   tflite::GraphBuilderTflite::CreateAndBuild(
+                       context_properties, context_device, *graph_info,
+                       std::move(constant_operands),
+                       std::move(operand_to_dependent_operations),
+                       std::move(operand_to_producing_operation),
+                       std::move(weights_file), std::move(shared_session),
+                       /*use_external_buffer=*/true),
+                   [](std::string error) {
+                     return mojom::Error::New(
+                         mojom::Error::Code::kNotSupportedError,
+                         std::move(error));
+                   });
   return result;
 }
 
@@ -710,9 +701,8 @@ void GraphImplLiteRt::DispatchCreateComputeResources(
   // For CPU/NPU execution, compute resources and compilation do not depend on
   // Dawn and can safely run on the asynchronous worker ThreadPool to avoid
   // blocking the context sequence.
-  // TODO(crbug.com/524317888): Remove the background task runner and
-  // ResourceTask for non-GPU cases; a single task runner should be used for the
-  // entire MLContext.
+  // TODO(crbug.com/524317888): Remove the background task runner for non-GPU
+  // cases; a single task runner should be used for the entire MLContext.
   scoped_refptr<base::TaskRunner> compute_task_runner =
       webgpu_properties.IsValid()
           ? context->owning_task_runner()
@@ -762,141 +752,33 @@ void GraphImplLiteRt::DidCreateAndBuild(
   }
 
   auto devices = std::move((*compute_resources)->devices);
-  auto input_name_to_index =
-      std::move((*compute_resources)->input_name_to_descriptor);
-  auto output_name_to_index =
-      std::move((*compute_resources)->output_name_to_descriptor);
-  auto compute_resources_state =
-      base::MakeRefCounted<QueueableResourceState<ComputeResources>>(
-          std::move(*compute_resources));
   std::move(callback).Run(base::MakeRefCounted<GraphImplLiteRt>(
-      std::move(compute_resource_info), std::move(input_name_to_index),
-      std::move(output_name_to_index), std::move(compute_resources_state),
-      *context, std::move(devices)));
+      std::move(compute_resource_info), std::move(*compute_resources), *context,
+      std::move(devices)));
 }
 
-GraphImplLiteRt::~GraphImplLiteRt() = default;
+GraphImplLiteRt::~GraphImplLiteRt() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+}
 
 GraphImplLiteRt::GraphImplLiteRt(
     ComputeResourceInfo compute_resource_info,
-    std::vector<std::pair<std::string, tflite::TensorDescriptor>>
-        input_name_to_descriptor,
-    std::vector<std::pair<std::string, tflite::TensorDescriptor>>
-        output_name_to_descriptor,
-    scoped_refptr<QueueableResourceState<ComputeResources>>
-        compute_resources_state,
+    std::unique_ptr<ComputeResources> compute_resources,
     WebNNContextImpl& context,
     std::vector<mojom::Device> devices)
     : WebNNGraphImpl(context,
                      std::move(compute_resource_info),
                      std::move(devices)),
-      compute_resources_state_(std::move(compute_resources_state)),
-      input_name_to_descriptor_(std::move(input_name_to_descriptor)),
-      output_name_to_descriptor_(std::move(output_name_to_descriptor)) {}
+      compute_resources_(std::move(compute_resources)) {}
 
 void GraphImplLiteRt::DispatchImpl(
-    const base::flat_map<std::string, scoped_refptr<WebNNTensorImpl>>
-        named_inputs,
-    const base::flat_map<std::string, scoped_refptr<WebNNTensorImpl>>
-        named_outputs) {
+    base::flat_map<std::string, scoped_refptr<WebNNTensorImpl>> named_inputs,
+    base::flat_map<std::string, scoped_refptr<WebNNTensorImpl>> named_outputs) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   ScopedTrace scoped_trace("GraphImplLiteRt::DispatchImpl");
-
-  std::vector<
-      std::pair<int, scoped_refptr<QueueableResourceState<BufferContent>>>>
-      input_buffer_states, output_buffer_states;
-  input_buffer_states.reserve(input_name_to_descriptor_.size());
-  output_buffer_states.reserve(output_name_to_descriptor_.size());
-
-  // The caller guarantees that all expected tensors have been provided.
-  for (const auto& [name, descriptor] : input_name_to_descriptor_) {
-    auto* tflite_tensor =
-        static_cast<tflite::TensorImplTflite*>(named_inputs.at(name).get());
-    input_buffer_states.emplace_back(descriptor.tensor_index,
-                                     tflite_tensor->GetBufferState());
-  }
-
-  for (const auto& [name, descriptor] : output_name_to_descriptor_) {
-    auto* tflite_tensor =
-        static_cast<tflite::TensorImplTflite*>(named_outputs.at(name).get());
-    output_buffer_states.emplace_back(descriptor.tensor_index,
-                                      tflite_tensor->GetBufferState());
-  }
-
-  // Input tensors will be read from while the graph is executing, so lock them
-  // them as shared/read-only.
-  std::vector<scoped_refptr<QueueableResourceStateBase>> shared_resources;
-  shared_resources.reserve(input_name_to_descriptor_.size());
-  for (const auto& [name, buffer_state] : input_buffer_states) {
-    shared_resources.push_back(buffer_state);
-  }
-
-  // Exclusively reserve all output tensors - which will be written to - and
-  // this graph's compute resources while the graph is executing.
-  std::vector<scoped_refptr<QueueableResourceStateBase>> exclusive_resources;
-  // Extra +1 is for the compute resources.
-  exclusive_resources.reserve(1 + output_name_to_descriptor_.size());
-  exclusive_resources.push_back(compute_resources_state_);
-  for (const auto& [name, buffer_state] : output_buffer_states) {
-    exclusive_resources.push_back(buffer_state);
-  }
-
-  scoped_trace.AddStep("Acquire resources");
-  auto task = base::MakeRefCounted<ResourceTask>(
-      std::move(shared_resources), std::move(exclusive_resources),
-      base::BindOnce(
-          [](scoped_refptr<QueueableResourceState<ComputeResources>>
-                 compute_resources_state,
-             base::flat_map<
-                 int, scoped_refptr<QueueableResourceState<BufferContent>>>
-                 input_buffer_states,
-             base::flat_map<
-                 int, scoped_refptr<QueueableResourceState<BufferContent>>>
-                 output_buffer_states,
-             const std::vector<
-                 std::pair<std::string, tflite::TensorDescriptor>>&
-                 input_name_to_descriptor,
-             const std::vector<
-                 std::pair<std::string, tflite::TensorDescriptor>>&
-                 output_name_to_descriptor,
-             ScopedTrace scoped_trace, base::OnceClosure completion_closure) {
-            ComputeResources* raw_compute_resources =
-                compute_resources_state->GetExclusivelyLockedResource();
-
-            base::flat_map<int, raw_ref<const BufferContent>> buffers =
-                raw_compute_resources->CollectBuffersForDispatch(
-                    input_buffer_states, output_buffer_states);
-
-            // When executing in-renderer over WebGPU, Dawn Wire client objects
-            // (`wgpu_device`, command queues) are strictly sequence-bound and
-            // thread-unsafe. We must execute `DoDispatch` synchronously inline
-            // on the current calling sequence rather than offloading to an
-            // asynchronous background CPU worker pool.
-            if (raw_compute_resources->UseDawnWire()) {
-              raw_compute_resources->DoDispatch(
-                  input_name_to_descriptor, output_name_to_descriptor,
-                  std::move(buffers), std::move(scoped_trace));
-              std::move(completion_closure).Run();
-            } else {
-              // Compute tasks can take a significant amount of time, use the
-              // thread pool to avoid blocking the main thread.
-              base::ThreadPool::PostTaskAndReply(
-                  FROM_HERE,
-                  base::BindOnce(
-                      &ComputeResources::DoDispatch,
-                      // Unretained is safe here because a reference to
-                      // a `QueueableResourceState` corresponding to
-                      // `raw_compute_resources` is held by the
-                      // `ResourceTask` until `completion_closure` is run below.
-                      base::Unretained(raw_compute_resources),
-                      input_name_to_descriptor, output_name_to_descriptor,
-                      std::move(buffers), std::move(scoped_trace)),
-                  std::move(completion_closure));
-            }
-          },
-          compute_resources_state_, std::move(input_buffer_states),
-          std::move(output_buffer_states), input_name_to_descriptor_,
-          output_name_to_descriptor_, std::move(scoped_trace)));
-  task->Enqueue();
+  compute_resources_->DoDispatch(std::move(named_inputs),
+                                 std::move(named_outputs),
+                                 std::move(scoped_trace));
 }
 
 }  // namespace webnn::litert

@@ -39,10 +39,6 @@ MemoryManagedPaintRecorder::MemoryManagedPaintRecorder(gfx::Size size,
 
 MemoryManagedPaintRecorder::~MemoryManagedPaintRecorder() = default;
 
-void MemoryManagedPaintRecorder::SetClient(Client* client) {
-  client_ = client;
-}
-
 void MemoryManagedPaintRecorder::DisableLineDrawingAsPaths() {
   main_canvas_.DisableLineDrawingAsPaths();
   if (side_canvas_) {
@@ -58,12 +54,6 @@ cc::PaintRecord MemoryManagedPaintRecorder::ReleaseMainRecording() {
     client_->InitializeForRecording(&main_canvas_);
   }
   return record;
-}
-
-cc::PaintRecord MemoryManagedPaintRecorder::CopyMainRecording() {
-  // CopyAsRecord() does not clear the paint ops, so we do not need to call
-  // InitializeForRecording().
-  return main_canvas_.CopyAsRecord();
 }
 
 void MemoryManagedPaintRecorder::RestartCurrentLayer() {

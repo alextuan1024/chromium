@@ -65,13 +65,14 @@ import org.chromium.chrome.browser.tab.TabArchiveSettings;
 import org.chromium.chrome.browser.tab_group_sync.TabGroupSyncServiceFactory;
 import org.chromium.chrome.browser.tab_ui.TabContentManager;
 import org.chromium.chrome.browser.tab_ui.TabListMode;
+import org.chromium.chrome.browser.tab_ui.undo_tab_close_snackbar.UndoBarThrottle;
 import org.chromium.chrome.browser.tabmodel.TabCreatorManager;
 import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
 import org.chromium.chrome.browser.tabmodel.TabUiUnitTestUtils;
+import org.chromium.chrome.browser.tabwindow.TabWindowManager;
 import org.chromium.chrome.browser.ui.edge_to_edge.EdgeToEdgeController;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
-import org.chromium.chrome.browser.undo_tab_close_snackbar.UndoBarThrottle;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
 import org.chromium.components.browser_ui.widget.scrim.ScrimManager;
 import org.chromium.components.collaboration.CollaborationService;
@@ -90,7 +91,7 @@ import java.util.List;
 import java.util.function.Supplier;
 
 /** Unit tests for {@link TabSwitcherPaneCoordinatorFactory}. */
-@EnableFeatures({ChromeFeatureList.GLIC, ChromeFeatureList.SEND_TAB_TO_SELF_AUTO_OPEN})
+@EnableFeatures({ChromeFeatureList.GLIC})
 @RunWith(BaseRobolectricTestRunner.class)
 public class TabSwitcherPaneCoordinatorFactoryUnitTest {
     private static final int TAB1_ID = 456;
@@ -132,6 +133,7 @@ public class TabSwitcherPaneCoordinatorFactoryUnitTest {
     @Mock private Supplier<LayoutStateProvider> mLayoutStateProviderSupplier;
     @Mock private ArchivedTabModelOrchestrator mArchivedTabModelOrchestrator;
     @Mock private TabArchiveSettings mTabArchiveSettings;
+    @Mock private TabWindowManager mTabWindowManager;
 
     @Captor private ArgumentCaptor<LifecycleObserver> mLifecycleObserverCaptor;
 
@@ -230,7 +232,8 @@ public class TabSwitcherPaneCoordinatorFactoryUnitTest {
                         mPaneManagerSupplier,
                         mTabGroupUiActionHandlerSupplier,
                         mLayoutStateProviderSupplier,
-                        /* tabSwitcherDragHandler= */ null);
+                        /* tabSwitcherDragHandler= */ null,
+                        () -> mTabWindowManager);
     }
 
     @Test

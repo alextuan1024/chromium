@@ -83,17 +83,6 @@ void CompositorFilterOperations::AppendColorMatrixFilter(
       cc::FilterOperation::CreateColorMatrixFilter(matrix));
 }
 
-void CompositorFilterOperations::AppendZoomFilter(float amount, int inset) {
-  filter_operations_.Append(
-      cc::FilterOperation::CreateZoomFilter(amount, inset));
-}
-
-void CompositorFilterOperations::AppendSaturatingBrightnessFilter(
-    float amount) {
-  filter_operations_.Append(
-      cc::FilterOperation::CreateSaturatingBrightnessFilter(amount));
-}
-
 void CompositorFilterOperations::AppendReferenceFilter(
     sk_sp<PaintFilter> image_filter) {
   filter_operations_.Append(
@@ -102,6 +91,8 @@ void CompositorFilterOperations::AppendReferenceFilter(
 
 void CompositorFilterOperations::Clear() {
   filter_operations_.Clear();
+  origin_tainted_ = false;
+  contains_backdrop_ = false;
 }
 
 bool CompositorFilterOperations::IsEmpty() const {

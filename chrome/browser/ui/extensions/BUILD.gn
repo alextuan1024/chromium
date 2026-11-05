@@ -55,6 +55,7 @@ source_set("extensions") {
     "extensions_toolbar_view_model.h",
     "icon_with_badge_image_source.h",
     "reload_page_dialog_controller.h",
+    "search_override_stack.h",
     "settings_api_bubble_helpers.h",
     "settings_overridden_dialog.h",
     "settings_overridden_dialog_controller.h",
@@ -90,6 +91,7 @@ source_set("extensions") {
     "//ui/base/unowned_user_data",
     "//ui/gfx",
     "//ui/gfx/geometry",
+    "//url",
   ]
 
   if (enable_extensions) {
@@ -123,7 +125,6 @@ source_set("extensions") {
       "//ui/base/mojom:ui_base_types",
       "//ui/gfx",
       "//ui/gfx/geometry",
-      "//url",
     ]
   }
 }
@@ -176,6 +177,7 @@ source_set("impl") {
     "extensions_toolbar_view_model.cc",
     "icon_with_badge_image_source.cc",
     "reload_page_dialog_controller.cc",
+    "search_override_stack.cc",
     "settings_api_bubble_helpers.cc",
     "settings_overridden_dialog.cc",
     "settings_overridden_dialog_controller.cc",
@@ -185,6 +187,7 @@ source_set("impl") {
   deps = [
     ":extension_post_install_dialog",
     ":extensions",
+    "//chrome/app:generated_resources",
     "//chrome/browser/extensions",
     "//chrome/browser/favicon",
     "//chrome/browser/image_fetcher",
@@ -204,23 +207,32 @@ source_set("impl") {
     "//chrome/browser/ui/hats",
     "//chrome/browser/ui/side_panel:side_panel_views_dependent",
     "//chrome/browser/ui/toolbar",
+    "//chrome/common",
+    "//chrome/common:channel_info",
+    "//chrome/common:chrome_features",
+    "//chrome/common/extensions",
     "//components/google/core/common",
     "//components/image_fetcher/core",
+    "//components/regional_capabilities",
     "//components/search_engines",
     "//components/sessions",
+    "//components/strings:components_strings",
     "//components/tabs:public",
     "//components/url_formatter",
     "//components/vector_icons",
     "//extensions/common",
+    "//services/metrics/public/cpp:ukm_builders",
+    "//ui/native_theme",
     "//ui/strings",
   ]
 
   if (is_win || is_mac || is_linux || is_chromeos) {
     sources += [ "extension_install_ui_desktop.cc" ]
     deps += [
-      "//chrome/app:generated_resources",
       "//chrome/browser/prefs",
       "//chrome/browser/themes",
+      "//chrome/browser/ui:browser_commands",
+      "//chrome/browser/ui:browser_tabstrip",
       "//chrome/browser/ui:browser_window_header",
       "//chrome/browser/ui:scoped_tabbed_browser_displayer",
       "//chrome/browser/ui:singleton_tabs",
@@ -298,8 +310,6 @@ source_set("impl") {
       "//chrome/browser/ui/profiles",
       "//chrome/browser/ui/side_panel:side_panel_views_dependent",
       "//chrome/browser/ui/startup",
-      "//chrome/browser/ui/tabs/organizer",
-      "//chrome/browser/ui/views/tabs/organizer",
       "//chrome/browser/ui/web_applications:launch_utils",
       "//chrome/browser/ui/window_metadata",
       "//chrome/browser/web_applications",
@@ -309,7 +319,10 @@ source_set("impl") {
       "//components/signin/public/base:signin_switches",
     ]
   }
-  public_deps = [ "//chrome/browser:browser_public_dependencies" ]
+
+  if (!is_android) {
+    deps += [ "//chrome/browser/ui/views/frame:browser_view_header" ]
+  }
 }
 
 source_set("test_support") {
@@ -338,6 +351,7 @@ source_set("unit_tests") {
       "extension_post_install_dialog_model_unittest.cc",
       "extension_settings_overridden_dialog_unittest.cc",
       "extensions_overrides/simple_overrides_unittest.cc",
+      "search_override_stack_unittest.cc",
       "settings_api_bubble_helpers_unittest.cc",
       "settings_overridden_params_providers_unittest.cc",
     ]
@@ -397,8 +411,10 @@ source_set("browser_tests") {
     "//base/test:test_support",
     "//chrome/browser/extensions",
     "//chrome/browser/ui/browser_window",
+    "//chrome/browser/ui/dialogs:browser_dialogs",
     "//chrome/test:test_support",
     "//chrome/test/base:browser_test_waiters",
+    "//chrome/test/base:chrome_test_utils",
     "//content/test:test_support",
     "//extensions:test_support",
     "//net:test_support",
@@ -432,16 +448,20 @@ source_set("browser_tests") {
       "//chrome/browser:chrome_content_browser_client",
       "//chrome/browser/apps/app_service:test_support",
       "//chrome/browser/extensions:test_support",
+      "//chrome/browser/image_fetcher",
       "//chrome/browser/preloading/prerender",
       "//chrome/browser/profiles:profile",
       "//chrome/browser/search_engines",
       "//chrome/browser/themes",
+      "//chrome/browser/ui:browser_commands",
       "//chrome/browser/ui:browser_window_header",
       "//chrome/browser/ui/color:color_headers",
       "//chrome/browser/ui/views/extensions:extensions_toolbar_desktop",
+      "//chrome/browser/ui/views/frame:browser_view_header",
       "//chrome/browser/ui/views/toolbar",
       "//chrome/browser/ui/web_applications",
       "//chrome/browser/ui/web_applications:launch_utils",
+      "//chrome/browser/ui/web_applications/test:test_support_ui",
       "//chrome/browser/web_applications",
       "//chrome/browser/web_applications:features",
       "//chrome/browser/web_applications:web_applications_test_support",
@@ -451,11 +471,19 @@ source_set("browser_tests") {
       "//chrome/common:non_code_constants",
       "//chrome/common/extensions",
       "//chrome/common/extensions/api",
-      "//chrome/test:test_support_ui",
+      "//components/enterprise/isolated_mode",
+      "//components/image_fetcher/core",
+      "//components/image_fetcher/core:test_support",
+      "//components/policy:generated",
+      "//components/policy/core/browser",
+      "//components/policy/core/common",
+      "//components/policy/core/common:test_support",
+      "//components/prefs",
       "//components/proxy_config",
       "//components/search_engines",
       "//components/search_engines:test_support",
       "//components/sessions",
+      "//components/vector_icons",
       "//components/webapps/browser",
       "//components/webapps/common",
       "//content/public/browser",
@@ -469,6 +497,7 @@ source_set("browser_tests") {
       "//net",
       "//pdf:buildflags",
       "//pdf:features",
+      "//testing/gmock",
       "//third_party/blink/public/common",
       "//third_party/blink/public/common:headers",
       "//ui/base",
@@ -476,6 +505,7 @@ source_set("browser_tests") {
       "//ui/base:features",
       "//ui/color:color_headers",
       "//ui/gfx",
+      "//ui/gfx:test_support",
       "//ui/native_theme",
       "//ui/native_theme:test_support",
     ]
@@ -558,6 +588,7 @@ if (!is_android) {
         "//chrome/browser/ui/hats:test_support",
         "//chrome/browser/ui/views/extensions:settings_overridden_dialog_view_utils",
         "//chrome/common",
+        "//chrome/test/base:browser_test_waiters",
         "//components/image_fetcher/core",
         "//components/image_fetcher/core:test_support",
         "//components/regional_capabilities",

@@ -60,8 +60,8 @@ import org.chromium.base.GarbageCollectionTestUtils;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.supplier.ObservableSuppliers;
 import org.chromium.base.supplier.SettableMonotonicObservableSupplier;
+import org.chromium.base.supplier.SupplierUtils;
 import org.chromium.base.test.util.Batch;
-import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.Criteria;
 import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.base.test.util.DisableIf;
@@ -73,8 +73,6 @@ import org.chromium.chrome.R;
 import org.chromium.chrome.browser.ChromeTabbedActivity;
 import org.chromium.chrome.browser.app.bookmarks.BookmarkEditActivity;
 import org.chromium.chrome.browser.bookmarks.BookmarkModel;
-import org.chromium.chrome.browser.flags.ChromeSwitches;
-import org.chromium.chrome.browser.layouts.LayoutType;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabLaunchType;
 import org.chromium.chrome.browser.tab_ui.RecyclerViewPosition;
@@ -87,6 +85,8 @@ import org.chromium.chrome.browser.tasks.tab_management.TabListEditorAction.Show
 import org.chromium.chrome.browser.tasks.tab_management.TabListEditorCoordinator.CreationMode;
 import org.chromium.chrome.browser.tasks.tab_management.TabListMediator.TabListLayoutType;
 import org.chromium.chrome.browser.tasks.tab_management.TabProperties.TabActionState;
+import org.chromium.chrome.browser.tasks.tab_management.data_provider.GroupedTabListDataProvider;
+import org.chromium.chrome.browser.tasks.tab_management.data_provider.TabListDataProvider;
 import org.chromium.chrome.browser.ui.desktop_windowing.AppHeaderCoordinator;
 import org.chromium.chrome.browser.ui.edge_to_edge.EdgeToEdgeController;
 import org.chromium.chrome.browser.ui.messages.snackbar.Snackbar;
@@ -116,7 +116,6 @@ import java.util.Map;
 
 /** End-to-end test for the selectable TabListEditor. */
 @RunWith(ChromeJUnit4ClassRunner.class)
-@CommandLineFlags.Add(ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE)
 @Batch(Batch.PER_CLASS)
 public class SelectableTabListEditorTest {
     private static final String PAGE_WITH_HTTPS_CANONICAL_URL =
@@ -152,6 +151,7 @@ public class SelectableTabListEditorTest {
     private TabListEditorCoordinator.TabListEditorController mTabListEditorController;
     private TabListEditorLayout mTabListEditorLayout;
     private TabListEditorCoordinator mTabListEditorCoordinator;
+    private TabListDataProvider mDataProvider;
     private WeakReference<TabListEditorLayout> mRef;
     private ViewGroup mParentView;
     private SnackbarManager mSnackbarManager;
@@ -196,6 +196,13 @@ public class SelectableTabListEditorTest {
                                             .getRootUiCoordinatorForTesting()
                                             .getDesktopWindowStateManager();
                     mEdgeToEdgeSupplier = ObservableSuppliers.createMonotonic();
+                    mDataProvider =
+                            TabUiFeatureUtilities.isTabUiDataVirtualizationEnabled(
+                                            TabListLayoutType.GROUPED)
+                                    ? new GroupedTabListDataProvider(
+                                            currentTabModelSupplier,
+                                            /* supportsGroupExpansion= */ false)
+                                    : null;
                     mTabListEditorCoordinator =
                             new TabListEditorCoordinator(
                                     cta,
@@ -218,7 +225,7 @@ public class SelectableTabListEditorTest {
                                     /* undoBarExplicitTrigger= */ null,
                                     /* componentId= */ null,
                                     TabListEditorCoordinator.UNLIMITED_SELECTION,
-                                    /* isSingleContextMode= */ false);
+                                    mDataProvider);
 
                     mTabListEditorController = mTabListEditorCoordinator.getController();
                     mTabListEditorLayout =
@@ -242,16 +249,11 @@ public class SelectableTabListEditorTest {
                         }
                         mTabListEditorCoordinator.destroy();
                     });
-
-            if (mActivityTestRule
-                    .getActivity()
-                    .getLayoutManager()
-                    .isLayoutVisible(LayoutType.HUB)) {
-                TabUiTestHelper.leaveTabSwitcher(mActivityTestRule.getActivity());
-            }
         }
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
+                    // After the editor, which may already be destroyed by the test.
+                    if (mDataProvider != null) mDataProvider.destroy();
                     if (mSnackbarManager == null) return;
                     mSnackbarManager.destroy();
                 });
@@ -1595,7 +1597,8 @@ public class SelectableTabListEditorTest {
                                     mCreationDialogManager,
                                     ShowMode.IF_ROOM,
                                     ButtonType.TEXT,
-                                    IconPosition.START));
+                                    IconPosition.START,
+                                    SupplierUtils.ofNull()));
 
                     showSelectionEditor(tabs, actions);
                 });
@@ -1641,7 +1644,8 @@ public class SelectableTabListEditorTest {
                                                     f,
                                                     g,
                                                     h,
-                                                    i)));
+                                                    i),
+                                    SupplierUtils.ofNull()));
                     showSelectionEditor(tabs, actions);
                 });
 
@@ -1713,16 +1717,7 @@ public class SelectableTabListEditorTest {
      */
     private List<Tab> getRepresentativeTabsInCurrentTabModel() {
         return ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    List<Tab> tabs = new ArrayList<>();
-
-                    TabModel tabModel = mTabModelSelector.getCurrentModel();
-                    for (int i = 0; i < tabModel.getIndividualTabAndGroupCount(); i++) {
-                        tabs.add(tabModel.getRepresentativeTabAt(i));
-                    }
-
-                    return tabs;
-                });
+                () -> mTabModelSelector.getCurrentModel().getRepresentativeTabList());
     }
 
     private void showSelectionEditor(List<Tab> tabs, @Nullable List<TabListEditorAction> actions) {

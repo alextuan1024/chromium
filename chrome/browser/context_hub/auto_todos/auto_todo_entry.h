@@ -16,20 +16,30 @@
 
 namespace context_hub {
 
-// Source reference from which an AutoTodo was generated.
-struct SourceReference {
+// Gmail reference from which an AutoTodo was generated.
+struct GmailReference {
   GURL url;
   std::string subject;
 };
 
-// Data for Gmail-based AutoTodos.
+// Chrome history entry reference from which an AutoTodo was generated.
+struct ChromeHistoryEntry {
+  GURL url;
+  std::string title;
+  base::Time visit_timestamp;
+};
+
+// Source reference from which an AutoTodo was generated.
+using SourceReference = std::variant<GmailReference, ChromeHistoryEntry>;
+
+// Data for first-party AutoTodos.
 struct FirstPartyData {
-  // Source references (e.g., Gmail message URLs and subjects) where the
-  // AutoTodo was generated from.
+  // Source references where the AutoTodo was generated from.
   std::vector<SourceReference> source_references;
 
-  // Actionable URL where the user can complete the todo.
-  GURL actionable_url;
+  // Actionable URL where the user can complete the todo. `std::nullopt` if
+  // using source references instead.
+  std::optional<GURL> actionable_url;
 };
 
 // Data for Browser tab-based AutoTodos.

@@ -65,6 +65,7 @@ class WebContentsViewChildFrame : public WebContentsView,
   BackForwardTransitionAnimationManager*
   GetBackForwardTransitionAnimationManager() override;
   void DestroyBackForwardTransitionAnimationManager() override;
+  void CancelDrag() override;
 
   // Backend implementation of RenderViewHostDelegateView.
   void ShowContextMenu(RenderFrameHost& render_frame_host,
@@ -78,7 +79,8 @@ class WebContentsViewChildFrame : public WebContentsView,
       const gfx::Rect& drag_obj_rect,
       const blink::mojom::DragEventSourceInfo& event_info) override;
   void UpdateDragOperation(ui::mojom::DragOperation operation,
-                           bool document_is_handling_drag) override;
+                           bool document_is_handling_drag,
+                           RenderWidgetHostImpl* source_rwh) override;
   void GotFocus(RenderWidgetHostImpl* render_widget_host) override;
   void TakeFocus(bool reverse) override;
 #if BUILDFLAG(USE_EXTERNAL_POPUP_MENU)

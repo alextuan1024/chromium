@@ -31,7 +31,6 @@ import org.chromium.base.TraceEvent;
 import org.chromium.base.library_loader.IRelroLibInfo;
 import org.chromium.base.memory.SelfFreezeCallback;
 import org.chromium.base.metrics.RecordHistogram;
-import org.chromium.build.BuildConfig;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 
@@ -182,11 +181,6 @@ public class ChildProcessConnection {
         }
     }
 
-    /** Run time check if variable number of connections is supported. */
-    public static boolean supportVariableConnections() {
-        return BindService.supportVariableConnections();
-    }
-
     /** The string passed to bindToCaller to identify this class loader. */
     @VisibleForTesting
     public static String getBindToCallerClazz() {
@@ -195,10 +189,6 @@ public class ChildProcessConnection {
         ClassLoader cl = ChildProcessConnection.class.getClassLoader();
         return cl.toString() + cl.hashCode();
     }
-
-    // The last zygote PID for which the zygote startup metrics were recorded. Lives on the
-    // launcher thread.
-    private static int sLastRecordedZygotePid;
 
     // Only accessed on launcher thread.
     // Set when a launching a service with zygote times out, in which case
@@ -362,13 +352,9 @@ public class ChildProcessConnection {
         mIndependentFallback = independentFallback;
         mIsSandboxedForHistograms = isSandboxedForHistograms;
 
-        // Incremental install does not work with isolatedProcess, and externalService requires
-        // isolatedProcess, so both need to be turned off for incremental install.
         int defaultBindFlags =
                 Context.BIND_AUTO_CREATE
-                        | ((bindAsExternalService && !BuildConfig.IS_INCREMENTAL_INSTALL)
-                                ? Context.BIND_EXTERNAL_SERVICE
-                                : 0);
+                        | (bindAsExternalService ? Context.BIND_EXTERNAL_SERVICE : 0);
 
         if (connectionFactory == null) {
             connectionFactory =
@@ -751,10 +737,7 @@ public class ChildProcessConnection {
     }
 
     private void onSetupConnectionResultOnLauncherThread(
-            int pid,
-            int zygotePid,
-            long zygoteStartupTimeMillis,
-            @Nullable IRelroLibInfo relroInfo) {
+            int pid, int zygotePid, @Nullable IRelroLibInfo relroInfo) {
         assert isRunningOnLauncherThread();
 
         // The RELRO parcel should be accepted only when establishing the connection. This is to
@@ -775,17 +758,6 @@ public class ChildProcessConnection {
             mZygoteInfoCallback.onReceivedZygoteInfo(this, relroInfo);
         }
         mZygoteInfoCallback = null;
-
-        // Only record the zygote startup time for a process the first time it is sent.  The zygote
-        // may get killed and recreated, so keep track of the last PID recorded to avoid double
-        // counting. The app may reuse a zygote process if the app is stopped and started again
-        // quickly, so the startup time of that zygote may be recorded multiple times. There's not
-        // much we can do about that, and it shouldn't be a major issue.
-        if (sLastRecordedZygotePid != mZygotePid && hasUsableZygoteInfo()) {
-            sLastRecordedZygotePid = mZygotePid;
-            RecordHistogram.deprecatedRecordMediumTimesHistogram(
-                    "Android.ChildProcessStartTimeV2.Zygote", zygoteStartupTimeMillis);
-        }
 
         if (mConnectionCallback != null) {
             mConnectionCallback.onConnected(this);
@@ -825,7 +797,7 @@ public class ChildProcessConnection {
                             mLauncherHandler.post(
                                     () -> {
                                         onSetupConnectionResultOnLauncherThread(
-                                                pid, zygotePid, zygoteStartupTimeMillis, relroInfo);
+                                                pid, zygotePid, relroInfo);
                                     });
                         }
 

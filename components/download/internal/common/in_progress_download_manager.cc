@@ -7,8 +7,6 @@
 #include <optional>
 
 #include "base/functional/bind.h"
-#include "base/metrics/histogram_functions.h"
-#include "base/strings/string_util.h"
 #include "base/task/single_thread_task_runner.h"
 #include "build/build_config.h"
 #include "components/download/database/download_db_entry.h"
@@ -40,10 +38,6 @@
 namespace download {
 
 namespace {
-#if BUILDFLAG(IS_ANDROID)
-// PDF MIME type.
-constexpr char kPdfMimeType[] = "application/pdf";
-#endif  // BUILDFLAG(IS_ANDROID)
 
 std::unique_ptr<DownloadItemImpl> CreateDownloadItemImpl(
     DownloadItemImplDelegate* delegate,
@@ -155,15 +149,6 @@ void CreateDownloadHandlerForNavigation(
 }
 
 #if BUILDFLAG(IS_ANDROID)
-void OnDownloadDisplayNamesReturned(
-    DownloadCollectionBridge::GetDisplayNamesCallback callback,
-    const scoped_refptr<base::SingleThreadTaskRunner>& main_task_runner,
-    InProgressDownloadManager::DisplayNames download_names) {
-  main_task_runner->PostTask(
-      FROM_HERE,
-      base::BindOnce(std::move(callback), std::move(download_names)));
-}
-
 void OnPathReserved(
     DownloadTargetCallback callback,
     DownloadDangerType danger_type,
@@ -599,6 +584,11 @@ void InProgressDownloadManager::StartDownloadWithItem(
   std::unique_ptr<DownloadFile> download_file;
   if (info->result == DOWNLOAD_INTERRUPT_REASON_NONE) {
     DCHECK(stream);
+    if (info->save_info && info->save_info->last_modified.empty()) {
+      info->save_info->last_modified = !info->last_modified.empty()
+                                           ? info->last_modified
+                                           : download->GetLastModifiedTime();
+    }
     download_file.reset(file_factory_->CreateFile(
         std::move(info->save_info), default_download_directory,
         std::move(stream), download->GetId(), duplicate_download_file_path,
@@ -613,52 +603,31 @@ void InProgressDownloadManager::StartDownloadWithItem(
 
   if (download_start_observer_)
     download_start_observer_->OnDownloadStarted(download);
-#if BUILDFLAG(IS_ANDROID)
-  if (info->transient && info->allow_auto_open_after_completion &&
-      base::EqualsCaseInsensitiveASCII(info->mime_type, kPdfMimeType)) {
-    base::UmaHistogramBoolean("Download.Android.OpenPdfFromDuplicates",
-                              !duplicate_download_file_path.empty());
-  }
-#endif  // BUILDFLAG(IS_ANDROID)
 }
 
 void InProgressDownloadManager::OnDBInitialized(
     bool success,
     std::unique_ptr<std::vector<DownloadDBEntry>> entries) {
 #if BUILDFLAG(IS_ANDROID)
-  // Retrieve display names for content URI downloads if needed.
-  if (base::android::android_info::sdk_int() >=
-      base::android::android_info::SDK_VERSION_Q) {
-    std::vector<base::FilePath> content_uris;
-    if (entries) {
-      for (const auto& entry : *entries) {
-        if (entry.download_info && entry.download_info->in_progress_info) {
-          const base::FilePath& path =
-              entry.download_info->in_progress_info->target_path;
-          if (path.IsContentUri()) {
-            content_uris.push_back(path);
-          }
+  std::vector<base::FilePath> content_uris;
+  if (entries) {
+    for (const auto& entry : *entries) {
+      if (entry.download_info && entry.download_info->in_progress_info) {
+        const base::FilePath& path =
+            entry.download_info->in_progress_info->target_path;
+        if (path.IsContentUri()) {
+          content_uris.push_back(path);
         }
       }
     }
-    if (content_uris.empty()) {
-      OnDownloadNamesRetrieved(std::move(entries), nullptr);
-      return;
-    }
-    DownloadCollectionBridge::GetDisplayNamesCallback callback =
-        base::BindOnce(&InProgressDownloadManager::OnDownloadNamesRetrieved,
-                       weak_factory_.GetWeakPtr(), std::move(entries));
-    GetDownloadTaskRunner()->PostTask(
-        FROM_HERE,
-        base::BindOnce(
-            &DownloadCollectionBridge::GetDisplayNamesForDownloads,
-            std::move(content_uris),
-            base::BindOnce(&OnDownloadDisplayNamesReturned, std::move(callback),
-                           base::SingleThreadTaskRunner::GetCurrentDefault())));
-    return;
   }
-#endif
+  GetDisplayNamesForDownloads(
+      std::move(content_uris),
+      base::BindOnce(&InProgressDownloadManager::OnDownloadNamesRetrieved,
+                     weak_factory_.GetWeakPtr(), std::move(entries)));
+#else
   OnDownloadNamesRetrieved(std::move(entries), nullptr);
+#endif
 }
 
 void InProgressDownloadManager::OnDownloadNamesRetrieved(

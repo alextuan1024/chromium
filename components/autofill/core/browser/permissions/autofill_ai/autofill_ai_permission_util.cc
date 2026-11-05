@@ -12,13 +12,11 @@
 
 #include "base/check.h"
 #include "base/containers/fixed_flat_set.h"
-#include "base/containers/flat_set.h"
 #include "base/feature.h"
 #include "base/feature_list.h"
 #include "base/functional/function_ref.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/notreached.h"
-#include "base/strings/string_number_conversions.h"
 #include "base/strings/string_split.h"
 #include "base/values.h"
 #include "build/build_config.h"
@@ -33,16 +31,18 @@
 #include "components/autofill/core/common/autofill_features.h"
 #include "components/autofill/core/common/autofill_prefs.h"
 #include "components/feature_engagement/public/feature_constants.h"
+#include "components/optimization_guide/core/feature_registry/enterprise_policy_registry.h"
 #include "components/optimization_guide/core/feature_registry/feature_registration.h"
-#include "components/optimization_guide/core/model_execution/model_execution_prefs.h"
+#include "components/personal_context/core/personal_context_features.h"
 #include "components/personal_context/core/personal_context_prefs.h"
 #include "components/personal_context/core/personal_context_types.h"
 #include "components/prefs/pref_service.h"
 #include "components/signin/public/base/consent_level.h"
 #include "components/signin/public/base/gaia_id_hash.h"
+#include "components/signin/public/identity_manager/account_capabilities.h"
+#include "components/signin/public/identity_manager/account_info.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/signin/public/identity_manager/tribool.h"
-#include "components/subscription_eligibility/subscription_eligibility_service.h"
 #include "components/sync/base/account_pref_utils.h"
 #include "components/sync/base/data_type.h"
 #include "components/sync/base/user_selectable_type.h"
@@ -274,7 +274,12 @@ void MaybeOutputReason(std::string* out, std::string_view message) {
     case AutofillAiAction::kAmbientAutofill:
     case AutofillAiAction::kShowAmbientAutofillInSettings:
     case AutofillAiAction::kTypeSupportsAmbientAutofillData:
-      return is_enabled(features::kAutofillAmbientAutofill);
+      if (!is_enabled(features::kAutofillAmbientAutofill)) {
+        MaybeOutputReason(debug_message,
+                          "AutofillAmbientAutofill is not enabled.");
+        return false;
+      }
+      return true;
   }
   NOTREACHED();
 }
@@ -372,20 +377,49 @@ void MaybeOutputReason(std::string* out, std::string_view message) {
     case AutofillAiAction::kShowAmbientAutofillInSettings:
       return is_allowed_by_opt_in_or_default;
     case AutofillAiAction::kAmbientAutofill:
-      return personal_context_pref_enabled && is_allowed_by_opt_in_or_default;
+      if (!personal_context_pref_enabled) {
+        MaybeOutputReason(
+            debug_message,
+            "Personal Context toggle in Autofill settings is disabled.");
+        return false;
+      }
+      if (!is_allowed_by_opt_in_or_default) {
+        MaybeOutputReason(
+            debug_message,
+            "User has not opted in or enterprise policy disallows action.");
+        return false;
+      }
+      return true;
     case AutofillAiAction::kTypeSupportsAmbientAutofillData: {
       if (!entity_type) {
+        MaybeOutputReason(debug_message, "Entity type is not specified.");
         return false;
       }
       if (!GetAutofillAmbientAutofillSupportedEntityTypes().contains(
               *entity_type)) {
+        MaybeOutputReason(
+            debug_message,
+            "Entity type is not supported by Ambient Autofill feature param.");
         return false;
       }
       if (!personal_context_pref_enabled) {
+        MaybeOutputReason(
+            debug_message,
+            "Personal Context toggle in Autofill settings is disabled.");
         return false;
       }
-      return EntityTypeIsEnabledInSettings(*prefs, *entity_type) &&
-             is_allowed_by_opt_in_or_default;
+      if (!EntityTypeIsEnabledInSettings(*prefs, *entity_type)) {
+        MaybeOutputReason(debug_message,
+                          "Entity type category is disabled in settings.");
+        return false;
+      }
+      if (!is_allowed_by_opt_in_or_default) {
+        MaybeOutputReason(
+            debug_message,
+            "User has not opted in or enterprise policy disallows action.");
+        return false;
+      }
+      return true;
     }
     case AutofillAiAction::kImportToWallet:
       if (!EntityTypeIsEnabledInSettings(*prefs, *entity_type)) {
@@ -415,30 +449,69 @@ void MaybeOutputReason(std::string* out, std::string_view message) {
   NOTREACHED();
 }
 
-// Returns the set of eligible subscription tiers configured by feature
-// parameters for Ambient Autofill.
-base::flat_set<int32_t> GetAutofillAmbientAutofillEligibleTiers() {
-  const std::string tier_list =
-      features::kAutofillAmbientAutofillEligibleTiers.Get();
-  const std::vector<std::string_view> tier_pieces = base::SplitStringPiece(
-      tier_list, ",", base::TRIM_WHITESPACE, base::SPLIT_WANT_NONEMPTY);
-  base::flat_set<int32_t> eligible_tiers;
-  eligible_tiers.reserve(tier_pieces.size());
-  for (std::string_view piece : tier_pieces) {
-    int32_t tier_id = 0;
-    if (base::StringToInt(piece, &tier_id)) {
-      eligible_tiers.insert(tier_id);
-    }
+// Checks whether the signed-in primary account's `AccountCapabilities` allow
+// importing `entity_type` (for both `kImport` and `kImportToWallet`).
+[[nodiscard]] bool SatisfiesImportAccountCapabilities(
+    const IdentityManager& identity_manager,
+    AutofillAiAction action,
+    EntityType entity_type,
+    std::string* debug_message) {
+  CHECK(action == AutofillAiAction::kImport ||
+        action == AutofillAiAction::kImportToWallet);
+  if (GetWalletPassType(entity_type,
+                        EntityInstance::RecordType::kServerWallet) !=
+      EntityInstance::WalletPassType::kPrivate) {
+    // For non-private passes, there are no additional account requirements.
+    return true;
   }
-  return eligible_tiers;
+
+  const AccountInfo account_info = identity_manager.FindExtendedAccountInfo(
+      identity_manager.GetPrimaryAccountInfo(signin::ConsentLevel::kSignin));
+  const AccountCapabilities& capabilities =
+      account_info.GetAccountCapabilities();
+
+  if (base::FeatureList::IsEnabled(
+          features::kAutofillRegionalizedPrivatePassesUxRefine) &&
+      capabilities
+              .must_show_equally_weighted_buttons_for_private_passes_in_chrome_autofill() ==
+          signin::Tribool::kUnknown) {
+    MaybeOutputReason(
+        debug_message,
+        "Account capability for private pass prompt buttons is unknown.");
+    return false;
+  }
+
+  if (action != AutofillAiAction::kImportToWallet) {
+    // All non-Wallet requirements are handled before here.
+    return true;
+  }
+
+  if (base::FeatureList::IsEnabled(
+          features::kAutofillAiWalletPrivatePassesCapability)) {
+    if (capabilities.supports_wallet_private_passes_in_autofill() !=
+        signin::Tribool::kTrue) {
+      MaybeOutputReason(debug_message,
+                        "Account doesn't support private passes in Autofill.");
+      return false;
+    }
+  } else if (capabilities.can_use_model_execution_features() !=
+             signin::Tribool::kTrue) {
+    // For private passes, underaged users are not allowed to save. When
+    // `kAutofillAiWalletPrivatePassesCapability` is enabled, the
+    // `supports_wallet_private_passes_in_autofill()` capability covers this
+    // requirement. If the feature is disabled, this branch hackily implements
+    // the requirement by relying on another capability.
+    MaybeOutputReason(debug_message, "User is underaged.");
+    return false;
+  }
+
+  return true;
 }
 
 // Checks whether all requirements for `IdentityManager` state are
 // met.
 [[nodiscard]] bool SatisfiesAccountRequirements(
     const IdentityManager* identity_manager,
-    const subscription_eligibility::SubscriptionEligibilityService*
-        subscription_service,
     bool has_entity_data_saved,
     AutofillAiAction action,
     std::optional<EntityType> entity_type,
@@ -462,53 +535,12 @@ base::flat_set<int32_t> GetAutofillAmbientAutofillEligibleTiers() {
     return false;
   }
   switch (action) {
+    case AutofillAiAction::kImport:
     case AutofillAiAction::kImportToWallet: {
       CHECK(entity_type) << "An entity type is required to check if an entity "
-                            "can be upstreamed";
-      if (GetWalletPassType(*entity_type,
-                            EntityInstance::RecordType::kServerWallet) !=
-          EntityInstance::WalletPassType::kPrivate) {
-        // For non-private passes, there are no additional account requirements.
-        break;
-      }
-
-      AccountInfo account_info = identity_manager->FindExtendedAccountInfo(
-          identity_manager->GetPrimaryAccountInfo(
-              signin::ConsentLevel::kSignin));
-      const AccountCapabilities& capabilities =
-          account_info.GetAccountCapabilities();
-      if (base::FeatureList::IsEnabled(
-              features::kAutofillAiWalletPrivatePassesCapability)) {
-        if (capabilities.supports_wallet_private_passes_in_autofill() !=
-            signin::Tribool::kTrue) {
-          MaybeOutputReason(
-              debug_message,
-              "Account doesn't support private passes in Autofill.");
-          return false;
-        }
-      } else {
-        // For private passes, underaged users are not allowed to save. When
-        // AutofillAiWalletPrivatePassesCapability is enabled, the
-        // supports_wallet_private_passes_in_autofill() capability covers this
-        // requirement. Before, it was hackily implemented by relying on another
-        // capability.
-        if (capabilities.can_use_model_execution_features() !=
-            signin::Tribool::kTrue) {
-          MaybeOutputReason(debug_message, "User is underaged.");
-          return false;
-        }
-      }
-      break;
-    }
-    case AutofillAiAction::kAmbientAutofill:
-    case AutofillAiAction::kShowAmbientAutofillInSettings:
-    case AutofillAiAction::kTypeSupportsAmbientAutofillData: {
-      if (!IsSubscriptionTierEligibleForAmbientAutofill(subscription_service)) {
-        MaybeOutputReason(debug_message,
-                          "User subscription tier is not eligible.");
-        return false;
-      }
-      break;
+                            "can be imported";
+      return SatisfiesImportAccountCapabilities(*identity_manager, action,
+                                                *entity_type, debug_message);
     }
     case AutofillAiAction::kOptIn: {
       if (!GetAccountGaiaIdHash(identity_manager).has_value()) {
@@ -517,14 +549,16 @@ base::flat_set<int32_t> GetAutofillAmbientAutofillEligibleTiers() {
       break;
     }
     case AutofillAiAction::kAddLocalEntityInstanceInSettings:
+    case AutofillAiAction::kAmbientAutofill:
     case AutofillAiAction::kCrowdsourcingVote:
     case AutofillAiAction::kEditAndDeleteEntityInstanceInSettings:
     case AutofillAiAction::kFilling:
-    case AutofillAiAction::kImport:
     case AutofillAiAction::kListEntityInstancesInSettings:
     case AutofillAiAction::kLogToMqls:
     case AutofillAiAction::kEnableOrDisable:
     case AutofillAiAction::kServerClassificationModel:
+    case AutofillAiAction::kShowAmbientAutofillInSettings:
+    case AutofillAiAction::kTypeSupportsAmbientAutofillData:
     case AutofillAiAction::kUseCachedServerClassificationModelResults:
     case AutofillAiAction::kWalletDataSharingPromotion:
       break;
@@ -617,6 +651,9 @@ base::flat_set<int32_t> GetAutofillAmbientAutofillEligibleTiers() {
     case AutofillAiAction::kAmbientAutofill:
     case AutofillAiAction::kTypeSupportsAmbientAutofillData: {
       if (!IsPersonalContextEligible(personal_context_eligibility_state)) {
+        MaybeOutputReason(
+            debug_message,
+            "PersonalContextEligibilityService state is not eligible.");
         return false;
       }
       break;
@@ -648,6 +685,8 @@ base::flat_set<int32_t> GetAutofillAmbientAutofillEligibleTiers() {
               EntityInstance::PersonalContextSpiiType::kSpii &&
           !base::FeatureList::IsEnabled(
               features::debug::kAutofillAiDisableReauthRequirement)) {
+        MaybeOutputReason(debug_message,
+                          "Reauth is not available for SPII entity type.");
         return false;
       }
       break;
@@ -693,7 +732,6 @@ bool MayPerformAutofillAiAction(const AutofillClient& client,
       client.GetIdentityManager(), client.GetSyncService(),
       client.IsWalletPublicPassStorageEnabled(), client.IsOffTheRecord(),
       client.GetVariationConfigCountryCode(),
-      client.GetSubscriptionEligibilityService(),
       client.GetPersonalContextEligibilityState(), action, entity_type,
       debug_message);
 }
@@ -709,8 +747,6 @@ bool MayPerformAutofillAiAction(
     bool is_wallet_public_pass_storage_enabled,
     bool is_off_the_record,
     const GeoIpCountryCode& country_code,
-    const subscription_eligibility::SubscriptionEligibilityService*
-        subscription_service,
     personal_context::PersonalContextEligibilityState
         personal_context_eligibility_state,
     AutofillAiAction action,
@@ -737,9 +773,8 @@ bool MayPerformAutofillAiAction(
     return false;
   }
 
-  if (!SatisfiesAccountRequirements(identity_manager, subscription_service,
-                                    has_entity_data_saved, action, entity_type,
-                                    debug_message)) {
+  if (!SatisfiesAccountRequirements(identity_manager, has_entity_data_saved,
+                                    action, entity_type, debug_message)) {
     return false;
   }
 
@@ -820,7 +855,6 @@ bool SetAutofillAiOptInStatus(AutofillClient& client,
       client.GetIdentityManager(), client.GetSyncService(),
       client.IsWalletPublicPassStorageEnabled(), client.IsOffTheRecord(),
       client.GetVariationConfigCountryCode(),
-      client.GetSubscriptionEligibilityService(),
       client.GetPersonalContextEligibilityState(), opt_in_status);
 }
 
@@ -835,8 +869,6 @@ bool SetAutofillAiOptInStatus(
     bool is_wallet_public_pass_storage_enabled,
     bool is_off_the_record,
     const GeoIpCountryCode& country_code,
-    const subscription_eligibility::SubscriptionEligibilityService*
-        subscription_service,
     personal_context::PersonalContextEligibilityState
         personal_context_eligibility_state,
     AutofillAiOptInStatus opt_in_status) {
@@ -846,8 +878,8 @@ bool SetAutofillAiOptInStatus(
 #endif
           prefs, edm, identity_manager, sync_service,
           is_wallet_public_pass_storage_enabled, is_off_the_record,
-          country_code, subscription_service,
-          personal_context_eligibility_state, AutofillAiAction::kOptIn)) {
+          country_code, personal_context_eligibility_state,
+          AutofillAiAction::kOptIn)) {
     return false;
   }
 
@@ -901,11 +933,9 @@ bool IsAutofillAiEntityTypeBlockedByPolicy(const AutofillClient& client,
   // State of the AutofillAI-specific enterprise policy pref.
   constexpr int kAutofillPredictionSettingsAllowWithoutLogging =
       std::to_underlying(
-          optimization_guide::model_execution::prefs::
-              ModelExecutionEnterprisePolicyValue::kAllowWithoutLogging);
+          optimization_guide::EnterprisePolicyValue::kAllowWithoutLogging);
   constexpr int kAutofillPredictionSettingsDisabled =
-      std::to_underlying(optimization_guide::model_execution::prefs::
-                             ModelExecutionEnterprisePolicyValue::kDisable);
+      std::to_underlying(optimization_guide::EnterprisePolicyValue::kDisable);
   static_assert(kAutofillPredictionSettingsAllowWithoutLogging == 1);
   static_assert(kAutofillPredictionSettingsDisabled == 2);
 
@@ -919,8 +949,7 @@ bool IsAutofillAiEntityTypeBlockedByPolicy(const AutofillClient& client,
     const PrefService* prefs) {
   // State of the AutofillAI-specific enterprise policy pref.
   constexpr int kAutofillPredictionSettingsAllow =
-      std::to_underlying(optimization_guide::model_execution::prefs::
-                             ModelExecutionEnterprisePolicyValue::kAllow);
+      std::to_underlying(optimization_guide::EnterprisePolicyValue::kAllow);
   static_assert(kAutofillPredictionSettingsAllow == 0);
 
   return prefs->GetInteger(
@@ -937,14 +966,6 @@ bool IsAutofillAiDefaultAvailabilityEnabled() {
 #endif
 }
 
-[[nodiscard]] bool IsSubscriptionTierEligibleForAmbientAutofill(
-    const subscription_eligibility::SubscriptionEligibilityService*
-        subscription_eligibility_service) {
-  return subscription_eligibility_service &&
-         GetAutofillAmbientAutofillEligibleTiers().contains(
-             subscription_eligibility_service->GetAiSubscriptionTier());
-}
-
 DenseSet<EntityType> GetAutofillAmbientAutofillSupportedEntityTypes() {
   const std::string type_list =
       features::kAutofillAmbientAutofillSupportedEntityTypes.Get();
@@ -957,7 +978,41 @@ DenseSet<EntityType> GetAutofillAmbientAutofillSupportedEntityTypes() {
       supported_types.insert(*type);
     }
   }
+  if (base::FeatureList::IsEnabled(
+          personal_context::features::kAutofillAmbientAutofillPassport)) {
+    supported_types.insert(EntityType(EntityTypeName::kPassport));
+  }
+  if (base::FeatureList::IsEnabled(
+          personal_context::features::kAutofillAmbientAutofillDriversLicense)) {
+    supported_types.insert(EntityType(EntityTypeName::kDriversLicense));
+  }
   return supported_types;
+}
+
+bool MustShowEquallyWeightedButtons(
+    const signin::IdentityManager* identity_manager,
+    EntityType entity_type) {
+  return GetWalletPassType(entity_type,
+                           EntityInstance::RecordType::kServerWallet) ==
+             EntityInstance::WalletPassType::kPrivate &&
+         MustShowEquallyWeightedButtonsForPrivatePasses(identity_manager);
+}
+
+bool MustShowEquallyWeightedButtonsForPrivatePasses(
+    const signin::IdentityManager* identity_manager) {
+  if (!base::FeatureList::IsEnabled(
+          features::kAutofillRegionalizedPrivatePassesUxRefine)) {
+    return false;
+  }
+  if (!identity_manager) {
+    return false;
+  }
+  const AccountInfo account_info = identity_manager->FindExtendedAccountInfo(
+      identity_manager->GetPrimaryAccountInfo(signin::ConsentLevel::kSignin));
+  const signin::Tribool must_show_equally_weighted_buttons =
+      account_info.GetAccountCapabilities()
+          .must_show_equally_weighted_buttons_for_private_passes_in_chrome_autofill();
+  return must_show_equally_weighted_buttons != signin::Tribool::kFalse;
 }
 
 }  // namespace autofill

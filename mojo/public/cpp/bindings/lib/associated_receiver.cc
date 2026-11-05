@@ -14,6 +14,7 @@
 #include "base/containers/span.h"
 #include "base/functional/bind.h"
 #include "base/task/sequenced_task_runner.h"
+#include "mojo/public/cpp/bindings/interface_endpoint_client.h"
 #include "mojo/public/cpp/bindings/lib/multiplex_router.h"
 #include "mojo/public/cpp/bindings/lib/task_runner_helper.h"
 #include "mojo/public/cpp/system/message_pipe.h"
@@ -66,26 +67,40 @@ void AssociatedReceiverBase::FlushForTesting() {
   endpoint_client_->FlushForTesting();  // IN-TEST
 }
 
+void AssociatedReceiverBase::ResetFromAnotherSequenceUnsafe() {
+  if (endpoint_client_) {
+    endpoint_client_->ResetFromAnotherSequenceUnsafe();
+  }
+}
+
 AssociatedReceiverBase::~AssociatedReceiverBase() = default;
 
-void AssociatedReceiverBase::BindImpl(
+void AssociatedReceiverBase::Bind(
     ScopedInterfaceEndpointHandle handle,
     MessageReceiverWithResponderStatus* receiver,
-    std::unique_ptr<MessageReceiver> payload_validator,
+    MessageValidatorFunc payload_validator,
     base::span<const uint32_t> sync_method_ordinals,
     scoped_refptr<base::SequencedTaskRunner> runner,
     uint32_t interface_version,
     const char* interface_name,
     MessageToMethodInfoCallback method_info_callback,
     MessageToMethodNameCallback method_name_callback) {
-  DCHECK(handle.is_valid());
+  // Handled here rather than in AssociatedReceiver<T>::Bind() to avoid
+  // duplicating the check across every interface template instantiation.
+  if (!handle.is_valid()) {
+    reset();
+    return;
+  }
 
   endpoint_client_ = std::make_unique<InterfaceEndpointClient>(
-      std::move(handle), receiver, std::move(payload_validator),
-      sync_method_ordinals,
+      std::move(handle), receiver, payload_validator, sync_method_ordinals,
       internal::GetTaskRunnerToUseFromUserProvidedTaskRunner(std::move(runner)),
       interface_version, interface_name, method_info_callback,
       method_name_callback);
+}
+
+ScopedInterfaceEndpointHandle AssociatedReceiverBase::Unbind() {
+  return std::exchange(endpoint_client_, nullptr)->PassHandle();
 }
 
 }  // namespace internal

@@ -116,9 +116,7 @@ export function webFormElementToFormData(
 
   // To avoid performance bottlenecks, do not keep child frames if their
   // quantity exceeds the allowed threshold.
-  if (iframeElements.length > fillConstants.MAX_EXTRACTABLE_FRAMES &&
-      autofillFormFeaturesApi.getFunction(
-          'isAutofillAcrossIframesThrottlingEnabled')()) {
+  if (iframeElements.length > fillConstants.MAX_EXTRACTABLE_FRAMES) {
     iframeElements = [];
   }
 
@@ -202,8 +200,15 @@ export function webFormControlElementToFormField(
       inferenceUtil.isSelectElement(element)) {
     field.is_autofilled = (element as any).isAutofilled;
     field.should_autocomplete = fillUtil.shouldAutocomplete(element);
+    // A negative `tabindex` only removes an element from the sequential focus
+    // order; the element stays programmatically focusable. Blink's
+    // Element::IsFocusable() therefore ignores it, and some payment providers
+    // rely on that to receive autofilled values in off-screen mirror fields.
     field.is_focusable = !element.disabled && !(element as any).readOnly &&
-        element.tabIndex >= 0 && fillUtil.isVisibleNode(element);
+        (element.tabIndex >= 0 ||
+         autofillFormFeaturesApi.getFunction(
+             'isAutofillIgnoreTabIndexForFocusabilityEnabled')()) &&
+        fillUtil.isVisibleNode(element);
   }
 
   if (isTextField(element) || inferenceUtil.isTextAreaElement(element)) {
@@ -439,9 +444,7 @@ export function unownedFormElementsAndFieldSetsToFormData(
 
   // To avoid performance bottlenecks, do not keep child frames if their
   // quantity exceeds the allowed threshold.
-  if (iframeElements.length > fillConstants.MAX_EXTRACTABLE_FRAMES &&
-      autofillFormFeaturesApi.getFunction(
-          'isAutofillAcrossIframesThrottlingEnabled')()) {
+  if (iframeElements.length > fillConstants.MAX_EXTRACTABLE_FRAMES) {
     iframeElements = [];
   }
 
@@ -588,10 +591,14 @@ function getChildFrameRemoteToken(frame: HTMLIFrameElement|null): string|null {
   if (!frame) {
     return null;
   }
-  // Either register a new token when in the isolated world or read the last
-  // registered token from the page content world.
-  return registerChildFrame(frame) ??
-      frame.getAttribute(fillConstants.CHILD_FRAME_REMOTE_TOKEN_ATTRIBUTE);
+  // Only register child frames when executing in the isolated world (where the
+  // 'autofill' API is registered). When called from the page content world
+  // (e.g., during programmatic form submission), read the token previously
+  // stored in the DOM by the isolated world.
+  if (gCrWeb.hasRegisteredApi('autofill')) {
+    return registerChildFrame(frame);
+  }
+  return frame.getAttribute(fillConstants.CHILD_FRAME_REMOTE_TOKEN_ATTRIBUTE);
 }
 
 /**

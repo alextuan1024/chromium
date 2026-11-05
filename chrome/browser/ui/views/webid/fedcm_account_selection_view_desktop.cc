@@ -4,15 +4,21 @@
 
 #include "chrome/browser/ui/views/webid/fedcm_account_selection_view_desktop.h"
 
+#include <algorithm>
 #include <memory>
 #include <optional>
+#include <tuple>
+#include <utility>
+#include <vector>
 
 #include "base/functional/bind.h"
 #include "base/logging.h"
 #include "base/memory/ptr_util.h"
+#include "base/memory/weak_ptr.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/task/sequenced_task_runner.h"
 #include "chrome/browser/actor/actor_util.h"
 #include "chrome/browser/net/system_network_context_manager.h"
 #include "chrome/browser/ui/actions/chrome_action_id.h"
@@ -21,9 +27,9 @@
 #include "chrome/browser/ui/page_action/page_action_controller.h"
 #include "chrome/browser/ui/tabs/inactive_window_mouse_event_controller.h"
 #include "chrome/browser/ui/tabs/public/tab_dialog_manager.h"
-#include "chrome/browser/ui/tabs/public/tab_features.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_model_delegate.h"
+#include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/views/extensions/security_dialog_tracker.h"
 #include "chrome/browser/ui/views/interaction/browser_elements_views.h"
 #include "chrome/browser/ui/views/webid/account_selection_bubble_view.h"
@@ -31,10 +37,16 @@
 #include "chrome/browser/ui/views/webid/account_selection_view_base.h"
 #include "chrome/browser/ui/views/webid/fedcm_modal_dialog_view.h"
 #include "chrome/browser/ui/views/webid/webid_utils.h"
+#include "chrome/browser/ui/webauthn/ambient/ambient_login_permission_controller.h"
+#include "chrome/browser/ui/webauthn/ambient/ambient_login_permission_request.h"
 #include "chrome/browser/ui/webid/account_selection_view.h"
 #include "chrome/browser/ui/webid/identity_ui_utils.h"
 #include "chrome/grit/generated_resources.h"
 #include "components/constrained_window/constrained_window_views.h"
+#include "components/permissions/permission_decision.h"
+#include "components/permissions/permission_prompt_decision.h"
+#include "components/permissions/permission_request_data.h"
+#include "components/permissions/permission_request_manager.h"
 #include "components/tabs/public/tab_interface.h"
 #include "components/web_modal/web_contents_modal_dialog_manager.h"
 #include "content/public/common/content_features.h"
@@ -45,12 +57,15 @@
 #include "third_party/blink/public/mojom/manifest/display_mode.mojom.h"
 #include "third_party/blink/public/mojom/webid/federated_request.mojom.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/models/image_model.h"
+#include "ui/gfx/image/image_skia.h"
 #include "ui/gfx/image/image_skia_operations.h"
 #include "ui/gfx/native_ui_types.h"
 #include "ui/views/bubble/bubble_dialog_delegate_view.h"
 #include "ui/views/view_utils.h"
 #include "ui/views/widget/widget.h"
 #include "ui/views/window/dialog_delegate.h"
+#include "url/origin.h"
 
 namespace {
 
@@ -144,8 +159,7 @@ void FedCmAccountSelectionView::OnPageActionClicked() {
                           accounts_[0]->browser_trusted_login_state) ==
                           content::IdentityRequestAccount::LoginState::kSignIn;
 
-  auto* features = tab_->GetTabFeatures();
-  auto* controller = features->page_action_controller();
+  auto* controller = page_actions::PageActionController::From(tab_);
 
   // Passing false to hide_dialog_widget_after_idp_login_popup_ to ensure the
   // widget is shown.
@@ -173,7 +187,7 @@ void FedCmAccountSelectionView::OnPageActionClicked() {
         l10n_util::GetStringUTF16(IDS_FEDERATION_SIGNING_IN_TITLE));
     controller->ShowSuggestionChip(kActionFederation);
     controller->Show(kActionFederation);
-    if (!NotifyDelegate([&]() {
+    if (!RunAndCheckAlive([&]() {
           delegate_->OnAccountSelected(
               accounts_[0]->identity_provider->idp_metadata.config_url,
               accounts_[0]->id,
@@ -216,17 +230,22 @@ void FedCmAccountSelectionView::ShowDialogWidget() {
     params->get_dialog_bounds = base::BindRepeating(
         &FedCmAccountSelectionView::GetDialogBounds, base::Unretained(this));
     // Features may not be available under some unit tests. Check first.
-    if (auto* features = tab_->GetTabFeatures()) {
-      if (auto* inactive_event_controller =
-              features->inactive_window_mouse_event_controller()) {
-        tab_accept_mouse_events_ =
-            inactive_event_controller->AcceptMouseEventsWhileWindowInactive();
-      }
+    if (auto* inactive_event_controller =
+            tabs::InactiveWindowMouseEventController::From(tab_)) {
+      tab_accept_mouse_events_ =
+          inactive_event_controller->AcceptMouseEventsWhileWindowInactive();
     }
   }
-  ShowDialog(GetDialogWidget(), std::move(params));
+  // Showing the dialog is not known to destroy `this`, but check as a
+  // preventative measure.
+  if (!RunAndCheckAlive(
+          [&]() { ShowDialog(GetDialogWidget(), std::move(params)); })) {
+    return;
+  }
 
   if (accounts_widget_shown_callback_) {
+    // `OnAccountsDisplayed()` is not known to destroy `this`, but as a
+    // preventative measure, do not access members afterwards.
     std::move(accounts_widget_shown_callback_).Run();
   }
 }
@@ -258,7 +277,10 @@ bool FedCmAccountSelectionView::Show(
     return true;
   }
 
-  ResetDialogWidgetStateOnAnyShow();
+  // Preventative check; not known to destroy `this`.
+  if (!RunAndCheckAlive([&]() { ResetDialogWidgetStateOnAnyShow(); })) {
+    return false;
+  }
   accounts_widget_shown_callback_ =
       base::BindOnce(&FedCmAccountSelectionView::OnAccountsDisplayed,
                      weak_ptr_factory_.GetWeakPtr());
@@ -287,6 +309,22 @@ bool FedCmAccountSelectionView::Show(
     rp_context = identity_provider->rp_context;
   }
 
+  // The ambient bubble takes precedence over the page action (omnibox chip)
+  // ambient UI, which is controlled by a separate flag.
+  if (IsAmbientBubbleEnabled() && rp_mode == blink::mojom::RpMode::kPassive) {
+    bool ambient_bubble_shown = false;
+    // Preventative check; not known to destroy `this`.
+    if (!RunAndCheckAlive([&]() {
+          ambient_bubble_shown =
+              ShowAmbientBubble(idp_list, accounts, new_accounts);
+        })) {
+      return false;
+    }
+    if (ambient_bubble_shown) {
+      return true;
+    }
+  }
+
   if (IsAmbientEnabled()) {
     if (rp_mode == blink::mojom::RpMode::kPassive) {
       if (ShowPageAction(idp_list, accounts)) {
@@ -294,20 +332,10 @@ bool FedCmAccountSelectionView::Show(
         return true;
       }
       if (tab_) {
-        if (auto* features = tab_->GetTabFeatures()) {
-          if (auto* controller = features->page_action_controller()) {
-            controller->Hide(kActionFederation);
-          }
+        if (auto* controller = page_actions::PageActionController::From(tab_)) {
+          controller->Hide(kActionFederation);
         }
       }
-    }
-  }
-
-  bool has_filtered_out_accounts = false;
-  for (const auto& account : accounts) {
-    if (account->is_filtered_out) {
-      has_filtered_out_accounts = true;
-      break;
     }
   }
 
@@ -317,14 +345,7 @@ bool FedCmAccountSelectionView::Show(
                 base::UTF8ToUTF16(idp_list_[0]->idp_for_display))
           : std::nullopt;
 
-  // If a modal dialog was created previously but there is no modal support for
-  // this type of dialog, reset account_selection_view_ to create a bubble
-  // dialog instead. We also reset for widget multi IDP to recalculate the title
-  // and other parts of the header.
-  if ((rp_mode == blink::mojom::RpMode::kPassive && idp_list_.size() > 1) ||
-      (rp_mode == blink::mojom::RpMode::kActive && !has_modal_support)) {
-    Close(/*notify_delegate=*/false, /*hide_widget=*/false);
-  }
+  MaybeResetViewAndWidget(has_modal_support);
 
   CreateOrUpdateViewAndWidget(rp_data, idp_title, rp_context, rp_mode,
                               has_modal_support);
@@ -350,8 +371,18 @@ bool FedCmAccountSelectionView::Show(
           !new_accounts_[0]->fields.empty();
 
       if (should_show_verifying_sheet) {
+        // The verifying sheet is shown over the account chooser, not the IDP
+        // picker: choosing an IDP is not the same as verifying a chosen
+        // account. After logging in from the IDP picker, `accounts_` includes
+        // the returning account, so show the account chooser first. The
+        // verifying sheet then shows its spinner on the "use other account"
+        // button, as it does after logging in from that button with one IDP.
+        if (state_ == State::IDP_PICKER) {
+          ShowMultiAccountPicker(accounts_, idp_list_, rp_data_->rp_icon,
+                                 /*show_back_button=*/false);
+        }
         state_ = State::VERIFYING;
-        if (!NotifyDelegate([&]() {
+        if (!RunAndCheckAlive([&]() {
               delegate_->OnAccountSelected(
                   new_idp_data.idp_metadata.config_url, new_accounts_[0]->id,
                   new_accounts_[0]->idp_claimed_login_state.value_or(
@@ -403,8 +434,17 @@ bool FedCmAccountSelectionView::Show(
         state_ = State::NEWLY_LOGGED_IN_ACCOUNT_PICKER;
       }
     }
+  } else if (dialog_type_ == DialogType::MODAL && idp_list_.size() > 1u &&
+             std::ranges::all_of(accounts, &Account::is_filtered_out)) {
+    // With multiple IDPs and no account to choose from, the account chooser
+    // would be empty, so open the IDP picker directly. There is no account
+    // chooser to go back to.
+    state_ = State::IDP_PICKER;
+    account_selection_view_->ShowIdpPicker(idp_list_, rp_data_->rp_icon,
+                                           /*show_back_button=*/false);
   } else if (idp_list_.size() == 1u && accounts_or_mismatches_size == 1u) {
-    if (dialog_type_ == DialogType::BUBBLE && has_filtered_out_accounts) {
+    if (dialog_type_ == DialogType::BUBBLE &&
+        std::ranges::any_of(accounts, &Account::is_filtered_out)) {
       // The logic to support add account is in ShowMultiAccountPicker for the
       // bubble dialog.
       ShowMultiAccountPicker(accounts_, idp_list_, rp_data_->rp_icon,
@@ -419,7 +459,10 @@ bool FedCmAccountSelectionView::Show(
     ShowMultiAccountPicker(accounts_, idp_list_, rp_data_->rp_icon,
                            /*show_back_button=*/false);
   }
-  UpdateDialogVisibilityAndPosition();
+  // Preventative check; not known to destroy `this`.
+  if (!RunAndCheckAlive([&]() { UpdateDialogVisibilityAndPosition(); })) {
+    return false;
+  }
 
   if (!idp_close_popup_time_.is_null()) {
     popup_window_state_ =
@@ -438,6 +481,8 @@ bool FedCmAccountSelectionView::Show(
     // account row, cancel button or use other account button. If we do not
     // receive any of these actions by time the dialog is closed, it means our
     // placeholder assumption is true i.e. the user has closed the tab.
+    // TODO(crbug.com/581372729): Record the modal dialog metrics for passive
+    // mode flows separately from the active mode flow.
     modal_account_chooser_state_ = webid::AccountChooserResult::kTabClosed;
   }
 
@@ -462,28 +507,27 @@ bool FedCmAccountSelectionView::ShowFailureDialog(
   }
 
   state_ = State::IDP_SIGNIN_STATUS_MISMATCH;
-  ResetDialogWidgetStateOnAnyShow();
+  // Preventative check; not known to destroy `this`.
+  if (!RunAndCheckAlive([&]() { ResetDialogWidgetStateOnAnyShow(); })) {
+    return false;
+  }
 
   // TODO(crbug.com/41491333): Support modal dialogs for all types of FedCM
   // dialogs. This boolean is used to fall back to the bubble dialog where
   // modal is not yet implemented.
   bool has_modal_support = false;
 
-  // If a modal dialog was created previously but there is no modal support for
-  // this type of dialog, reset account_selection_view_ to create a bubble
-  // dialog instead.  We also reset for widget multi IDP to recalculate the
-  // title and other parts of the header.
-  if ((rp_mode == blink::mojom::RpMode::kPassive && idp_list_.size() > 1) ||
-      (rp_mode == blink::mojom::RpMode::kActive && !has_modal_support)) {
-    Close(/*notify_delegate=*/false, /*hide_widget=*/false);
-  }
+  MaybeResetViewAndWidget(has_modal_support);
 
   CreateOrUpdateViewAndWidget(rp_data, base::UTF8ToUTF16(idp_etld_plus_one),
                               rp_context, rp_mode, has_modal_support);
 
   account_selection_view_->ShowFailureDialog(
       base::UTF8ToUTF16(idp_etld_plus_one), idp_metadata);
-  UpdateDialogVisibilityAndPosition();
+  // Preventative check; not known to destroy `this`.
+  if (!RunAndCheckAlive([&]() { UpdateDialogVisibilityAndPosition(); })) {
+    return false;
+  }
   return true;
 }
 
@@ -500,25 +544,24 @@ bool FedCmAccountSelectionView::ShowErrorDialog(
   }
 
   state_ = State::SIGN_IN_ERROR;
-  ResetDialogWidgetStateOnAnyShow();
+  // Preventative check; not known to destroy `this`.
+  if (!RunAndCheckAlive([&]() { ResetDialogWidgetStateOnAnyShow(); })) {
+    return false;
+  }
 
   bool has_modal_support = true;
 
-  // If a modal dialog was created previously but there is no modal support for
-  // this type of dialog, reset account_selection_view_ to create a bubble
-  // dialog instead. We also reset for widget multi IDP to recalculate the title
-  // and other parts of the header.
-  if ((rp_mode == blink::mojom::RpMode::kPassive && idp_list_.size() > 1) ||
-      (rp_mode == blink::mojom::RpMode::kActive && !has_modal_support)) {
-    Close(/*notify_delegate=*/false, /*hide_widget=*/false);
-  }
+  MaybeResetViewAndWidget(has_modal_support);
 
   CreateOrUpdateViewAndWidget(rp_data, base::UTF8ToUTF16(idp_etld_plus_one),
                               rp_context, rp_mode, has_modal_support);
 
   account_selection_view_->ShowErrorDialog(base::UTF8ToUTF16(idp_etld_plus_one),
                                            idp_metadata, error);
-  UpdateDialogVisibilityAndPosition();
+  // Preventative check; not known to destroy `this`.
+  if (!RunAndCheckAlive([&]() { UpdateDialogVisibilityAndPosition(); })) {
+    return false;
+  }
   return true;
 }
 
@@ -535,7 +578,10 @@ bool FedCmAccountSelectionView::ShowLoadingDialog(
   CHECK(rp_mode == blink::mojom::RpMode::kActive);
 
   state_ = State::LOADING;
-  ResetDialogWidgetStateOnAnyShow();
+  // Preventative check; not known to destroy `this`.
+  if (!RunAndCheckAlive([&]() { ResetDialogWidgetStateOnAnyShow(); })) {
+    return false;
+  }
 
   std::optional<std::u16string> idp_title =
       idp_etld_plus_one.empty()
@@ -545,7 +591,10 @@ bool FedCmAccountSelectionView::ShowLoadingDialog(
   CreateOrUpdateViewAndWidget(rp_data, idp_title, rp_context, rp_mode,
                               /*has_modal_support=*/true);
 
-  UpdateDialogVisibilityAndPosition();
+  // Preventative check; not known to destroy `this`.
+  if (!RunAndCheckAlive([&]() { UpdateDialogVisibilityAndPosition(); })) {
+    return false;
+  }
   modal_loading_dialog_state_ = webid::LoadingDialogResult::kDestroy;
   return true;
 }
@@ -555,6 +604,22 @@ void FedCmAccountSelectionView::SetCanShowUi(bool can_show_ui) {
     return;
   }
   can_show_ui_ = can_show_ui;
+  if (!can_show_ui_ && ambient_bubble_request_pending_) {
+    // The ambient bubble cannot be hidden temporarily. Replace it with the
+    // regular UI, which stays hidden until FedCM UI can be shown again;
+    // `Show()` does not use the ambient bubble while FedCM UI can't be shown.
+    // The delegate was already notified when the bubble was shown, so do not
+    // notify it again when the regular UI is shown.
+    // Preventative check; not known to destroy `this`.
+    if (!RunAndCheckAlive([&]() {
+          Show(*rp_data_, idp_list_, accounts_, blink::mojom::RpMode::kPassive,
+               new_accounts_);
+        })) {
+      return;
+    }
+    accounts_widget_shown_callback_.Reset();
+    return;
+  }
   UpdateDialogVisibilityAndPosition();
 }
 
@@ -585,7 +650,10 @@ bool FedCmAccountSelectionView::ShowVerifyingDialog(
     return true;
   }
 
-  ResetDialogWidgetStateOnAnyShow();
+  // Preventative check; not known to destroy `this`.
+  if (!RunAndCheckAlive([&]() { ResetDialogWidgetStateOnAnyShow(); })) {
+    return false;
+  }
   accounts_widget_shown_callback_ =
       base::BindOnce(&FedCmAccountSelectionView::OnAccountsDisplayed,
                      weak_ptr_factory_.GetWeakPtr());
@@ -609,9 +677,17 @@ bool FedCmAccountSelectionView::ShowVerifyingDialog(
   }
 
   ShowVerifyingSheet(account);
-  UpdateDialogVisibilityAndPosition();
+  // Preventative check; not known to destroy `this`.
+  if (!RunAndCheckAlive([&]() { UpdateDialogVisibilityAndPosition(); })) {
+    return false;
+  }
 
   return true;
+}
+
+bool FedCmAccountSelectionView::ShowNativeAppUi(
+    const content::NativeAppRequestOptions& request_options) {
+  return false;
 }
 
 void FedCmAccountSelectionView::ShowUrl(LinkType link_type, const GURL& url) {
@@ -620,7 +696,7 @@ void FedCmAccountSelectionView::ShowUrl(LinkType link_type, const GURL& url) {
           delegate_->GetWebContents());
   TabStripModel* tab_strip_model = browser->GetTabStripModel();
 
-  DCHECK(tab_strip_model);
+  CHECK(tab_strip_model, base::NotFatalUntil::M162);
   // Add a tab for the URL at the end of the tab strip, in the foreground.
   tab_strip_model->delegate()->AddTabAt(url, -1, true);
 
@@ -632,14 +708,34 @@ void FedCmAccountSelectionView::ShowUrl(LinkType link_type, const GURL& url) {
     case LinkType::PRIVACY_POLICY:
       UMA_HISTOGRAM_BOOLEAN("Blink.FedCm.SignUp.PrivacyPolicyClicked", true);
       break;
+
+    case LinkType::IDP_LINK:
+      // Not recorded, so that the histograms above only count the RP's links.
+      // TODO(crbug.com/581372729): Record clicks on each of the identity
+      // provider's links, and how often the links are shown.
+      break;
   }
 }
 
 std::string FedCmAccountSelectionView::GetTitle() const {
+  // There is no FedCM dialog when the accounts are shown in the ambient bubble
+  // or the omnibox chip. This is still called in that case if DevTools' FedCm
+  // domain is enabled (e.g. by automation): FedCmHandler queries the title
+  // when Show() returns true for the bubble or chip, and when the domain is
+  // enabled while one of them is shown.
+  if (!account_selection_view_) {
+    return std::string();
+  }
   return account_selection_view_->GetDialogTitle();
 }
 
 std::optional<std::string> FedCmAccountSelectionView::GetSubtitle() const {
+  // As in GetTitle(), there is no FedCM dialog when the accounts are shown in
+  // the ambient bubble or the omnibox chip. FedCmHandler queries the subtitle
+  // along with the title in that case if DevTools' FedCm domain is enabled.
+  if (!account_selection_view_) {
+    return std::nullopt;
+  }
   return account_selection_view_->GetDialogSubtitle();
 }
 
@@ -651,6 +747,21 @@ void FedCmAccountSelectionView::PrimaryPageChanged(content::Page& page) {
 void FedCmAccountSelectionView::SetInputEventActivationProtectorForTesting(
     std::unique_ptr<views::InputEventActivationProtector> input_protector) {
   input_protector_ = std::move(input_protector);
+}
+
+void FedCmAccountSelectionView::MaybeResetViewAndWidget(
+    bool has_modal_support) {
+  // If a modal dialog was created previously but there is no modal support for
+  // this type of dialog, reset `account_selection_view_` to create a bubble
+  // dialog instead. We also reset a multi-IDP bubble to recalculate the title
+  // and other parts of the header. Check the dialog type rather than the mode,
+  // since the modal dialog is also used in passive mode after the user accepts
+  // the ambient bubble, or selects an account in the bubble when
+  // `ShouldSwitchToModalForPermission()` is true.
+  if ((dialog_type_ == DialogType::BUBBLE && idp_list_.size() > 1) ||
+      (dialog_type_ == DialogType::MODAL && !has_modal_support)) {
+    Close(/*notify_delegate=*/false, /*hide_widget=*/false);
+  }
 }
 
 void FedCmAccountSelectionView::CreateOrUpdateViewAndWidget(
@@ -678,7 +789,7 @@ void FedCmAccountSelectionView::CreateOrUpdateViewAndWidget(
 }
 
 void FedCmAccountSelectionView::OnAccountsDisplayed() {
-  if (!NotifyDelegate([&]() { delegate_->OnAccountsDisplayed(); })) {
+  if (!RunAndCheckAlive([&]() { delegate_->OnAccountsDisplayed(); })) {
     return;
   }
 }
@@ -686,8 +797,8 @@ void FedCmAccountSelectionView::OnAccountsDisplayed() {
 bool FedCmAccountSelectionView::OnAccountSelected(
     const IdentityRequestAccountPtr& account,
     const ui::Event& event) {
-  DCHECK(state_ != State::IDP_SIGNIN_STATUS_MISMATCH);
-  DCHECK(state_ != State::AUTO_REAUTHN);
+  CHECK(state_ != State::IDP_SIGNIN_STATUS_MISMATCH, base::NotFatalUntil::M162);
+  CHECK(state_ != State::AUTO_REAUTHN, base::NotFatalUntil::M162);
 
   if (input_protector_->IsPossiblyUnintendedInteraction(
           event, /*allow_key_events=*/false) ||
@@ -704,14 +815,15 @@ bool FedCmAccountSelectionView::OnAccountSelected(
   }
 
   const content::IdentityProviderData& idp_data = *account->identity_provider;
+  const bool switch_to_modal = ShouldSwitchToModalForPermission(*account);
   // If the account dialog doesn't need to ask for the user's permission to
   // share their id/email/name/picture or if the account is selected from UI
   // which shows the disclosure text, show the verifying sheet.
   if (account->fields.empty() || state_ == State::REQUEST_PERMISSION ||
       (state_ == State::SINGLE_ACCOUNT_PICKER &&
-       dialog_type_ == DialogType::BUBBLE)) {
+       dialog_type_ == DialogType::BUBBLE && !switch_to_modal)) {
     state_ = State::VERIFYING;
-    if (!NotifyDelegate([&]() {
+    if (!RunAndCheckAlive([&]() {
           delegate_->OnAccountSelected(
               idp_data.idp_metadata.config_url, account->id,
               account->idp_claimed_login_state.value_or(
@@ -727,8 +839,17 @@ bool FedCmAccountSelectionView::OnAccountSelected(
     return true;
   }
 
-  // At this point, the account is a non-returning user. If the dialog is modal,
-  // we'd request permission through the request permission dialog.
+  // At this point, the account is a non-returning user. If
+  // `ShouldSwitchToModalForPermission()` is true, replace the bubble with the
+  // modal dialog's request permission sheet.
+  if (switch_to_modal) {
+    // The flow continues in the modal dialog, so don't notify the delegate.
+    Close(/*notify_delegate=*/false, /*hide_widget=*/false);
+    ShowRequestPermissionModal(account);
+    return true;
+  }
+
+  // If the dialog is modal, show the request permission dialog.
   if (dialog_type_ == DialogType::MODAL) {
     state_ = State::REQUEST_PERMISSION;
     account_selection_view_->ShowRequestPermissionDialog(account);
@@ -744,12 +865,26 @@ bool FedCmAccountSelectionView::OnAccountSelected(
 
   // At this point, the account is a non-returning user, the dialog is a bubble
   // and it is a multi account picker, there is no disclosure text on the dialog
-  // so we'd request permission through a single account dialog.
+  // so we'd request permission through a single account dialog. This is only
+  // reached when `ShouldSwitchToModalForPermission()` is false.
   state_ = State::SINGLE_ACCOUNT_PICKER;
   account_selection_view_->ShowSingleAccountConfirmDialog(
       account, /*show_back_button=*/true);
   UpdateDialogPosition();
   return true;
+}
+
+bool FedCmAccountSelectionView::ShouldSwitchToModalForPermission(
+    const content::IdentityRequestAccount& account) const {
+  // With multiple identity providers, also require
+  // `kFedCmActiveModeMultipleIdentityProviders`, since Back on the modal dialog
+  // then shows its account chooser for multiple identity providers, which is
+  // otherwise only shown in active mode with that flag.
+  return base::FeatureList::IsEnabled(features::kFedCmIdpLinks) &&
+         dialog_type_ == DialogType::BUBBLE && !account.fields.empty() &&
+         (idp_list_.size() == 1u ||
+          base::FeatureList::IsEnabled(
+              features::kFedCmActiveModeMultipleIdentityProviders));
 }
 
 void FedCmAccountSelectionView::OnLinkClicked(LinkType link_type,
@@ -794,9 +929,6 @@ void FedCmAccountSelectionView::OnCloseButtonClicked(const ui::Event& event) {
   }
 
   if (dialog_type_ == DialogType::BUBBLE) {
-    UMA_HISTOGRAM_BOOLEAN("Blink.FedCm.CloseVerifySheet.Desktop",
-                          state_ == State::VERIFYING);
-
     // Record the sheet type that the user was closing.
     UMA_HISTOGRAM_ENUMERATION("Blink.FedCm.ClosedSheetType.Desktop",
                               GetSheetType());
@@ -817,6 +949,27 @@ void FedCmAccountSelectionView::OnCloseButtonClicked(const ui::Event& event) {
     modal_loading_dialog_state_ = webid::LoadingDialogResult::kCancel;
   }
 
+  views::Widget* widget = GetDialogWidget();
+  if (!widget) {
+    OnUserClosedDialog(views::Widget::ClosedReason::kCloseButtonClicked);
+    return;
+  }
+
+  // Close the dialog in a separate task. The button can be pressed while a
+  // dialog view is still running, and closing synchronously would destroy
+  // that view while it runs.
+  base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+      FROM_HERE,
+      base::BindOnce(&FedCmAccountSelectionView::CloseDialogForCloseButton,
+                     weak_ptr_factory_.GetWeakPtr(), widget->GetWeakPtr()));
+}
+
+void FedCmAccountSelectionView::CloseDialogForCloseButton(
+    base::WeakPtr<views::Widget> closing_widget) {
+  // Do nothing if the dialog was closed or replaced since the click.
+  if (!closing_widget || closing_widget.get() != GetDialogWidget()) {
+    return;
+  }
   OnUserClosedDialog(views::Widget::ClosedReason::kCloseButtonClicked);
 }
 
@@ -843,10 +996,48 @@ void FedCmAccountSelectionView::OnLoginToIdP(const GURL& idp_config_url,
         webid::AccountChooserResult::kUseOtherAccountButton;
   }
 
-  if (!NotifyDelegate(
+  if (!RunAndCheckAlive(
           [&]() { delegate_->OnLoginToIdP(idp_config_url, idp_login_url); })) {
     return;
   }
+}
+
+void FedCmAccountSelectionView::OnIdpPickerRowClicked(
+    const GURL& idp_config_url,
+    const GURL& idp_login_url,
+    const ui::Event& event) {
+  // The modal stays clickable while a pop-up is open. If the user clicks
+  // another IDP row, starting a second login would point the request at the
+  // new IDP while the pop-up still shows the first IDP's login page. Bringing
+  // that pop-up back would not be safe either: the user could enter the
+  // credentials of the IDP they just clicked on the other IDP's login page.
+  // So ignore the click.
+  // TODO(crbug.com/575549004): Decide on the UX for this case, e.g. closing
+  // the open pop-up or disabling the modal while a pop-up is open.
+  if (popup_window_) {
+    return;
+  }
+
+  OnLoginToIdP(idp_config_url, idp_login_url, event);
+}
+
+void FedCmAccountSelectionView::OnShowIdpPickerClicked(const ui::Event& event) {
+  if (input_protector_->IsPossiblyUnintendedInteraction(
+          event, /*allow_key_events=*/false) ||
+      is_occluded_by_pip_) {
+    return;
+  }
+
+  // The user left the account chooser to use a different account.
+  if (modal_account_chooser_state_) {
+    modal_account_chooser_state_ =
+        webid::AccountChooserResult::kUseOtherAccountButton;
+  }
+
+  state_ = State::IDP_PICKER;
+  account_selection_view_->ShowIdpPicker(idp_list_, rp_data_->rp_icon,
+                                         /*show_back_button=*/true);
+  UpdateDialogPosition();
 }
 
 void FedCmAccountSelectionView::OnGotIt(const ui::Event& event) {
@@ -856,7 +1047,7 @@ void FedCmAccountSelectionView::OnGotIt(const ui::Event& event) {
     return;
   }
 
-  if (!NotifyDelegate(
+  if (!RunAndCheckAlive(
           [&]() { delegate_->OnDismiss(DismissReason::kGotItButton); })) {
     return;
   }
@@ -869,10 +1060,10 @@ void FedCmAccountSelectionView::OnMoreDetails(const ui::Event& event) {
     return;
   }
 
-  if (!NotifyDelegate([&]() { delegate_->OnMoreDetails(); })) {
+  if (!RunAndCheckAlive([&]() { delegate_->OnMoreDetails(); })) {
     return;
   }
-  if (!NotifyDelegate(
+  if (!RunAndCheckAlive(
           [&]() { delegate_->OnDismiss(DismissReason::kMoreDetailsButton); })) {
     return;
   }
@@ -887,7 +1078,17 @@ content::WebContents* FedCmAccountSelectionView::ShowModalDialog(
     // TODO(crbug.com/324052630): Support add account with multi IDP API. An add
     // account pop-up of a different IDP might be open, so this might need to
     // load the new IDP's login URL.
-    popup_window_->ResizeAndFocusPopupWindow();
+    //
+    // Resizing and focusing the pop-up can synchronously destroy `this`.
+    if (!RunAndCheckAlive(
+            [&]() { popup_window_->ResizeAndFocusPopupWindow(); })) {
+      return nullptr;
+    }
+    // `ResizeAndFocusPopupWindow()` is not known to close the pop-up, but as a
+    // preventative measure, check for null/UAF.
+    if (!popup_window_) {
+      return nullptr;
+    }
   } else {
     popup_window_ = CreatePopupWindow();
   }
@@ -906,7 +1107,10 @@ content::WebContents* FedCmAccountSelectionView::ShowModalDialog(
 
   // The modal should not be hidden when the pop-up window is displayed for
   // better UX.
-  UpdateDialogVisibilityAndPosition();
+  // Preventative check; not known to destroy `this`.
+  if (!RunAndCheckAlive([&]() { UpdateDialogVisibilityAndPosition(); })) {
+    return nullptr;
+  }
 
   if (tabs::TabInterface* initiating_task_tab = InitiatingTaskTab(tab_)) {
     content::WebContents* initiating_contents =
@@ -957,10 +1161,18 @@ void FedCmAccountSelectionView::CloseModalDialog() {
     // This ensures that OnPopupWindowDestroyed is only called when the user
     // closes the popup.
     popup_window_->ResetObserver();
-    popup_window_->ClosePopupWindow();
+
+    // Closing the pop-up can synchronously destroy `this`, e.g. if it activates
+    // another tab.
+    if (!RunAndCheckAlive([&]() { popup_window_->ClosePopupWindow(); })) {
+      return;
+    }
     popup_window_.reset();
 
-    UpdateDialogVisibilityAndPosition();
+    // Preventative check; not known to destroy `this`.
+    if (!RunAndCheckAlive([&]() { UpdateDialogVisibilityAndPosition(); })) {
+      return;
+    }
   }
 
   if (state_ == State::LOADING) {
@@ -1000,8 +1212,8 @@ bool FedCmAccountSelectionView::CanFitInWebContents() {
 
 void FedCmAccountSelectionView::UpdateDialogPosition() {
   // Features may not be available under some unit tests. Check first.
-  if (auto* features = tab_->GetTabFeatures()) {
-    features->tab_dialog_manager()->UpdateModalDialogBounds();
+  if (auto* tab_dialog_manager = tabs::TabDialogManager::From(tab_)) {
+    tab_dialog_manager->UpdateModalDialogBounds();
   }
 }
 
@@ -1069,11 +1281,11 @@ void FedCmAccountSelectionView::OnPopupWindowDestroyed() {
   Close(/*notify_delegate=*/true, /*hide_widget=*/false);
 }
 
-bool FedCmAccountSelectionView::NotifyDelegate(
-    base::FunctionRef<void()> notify_callback) {
+bool FedCmAccountSelectionView::RunAndCheckAlive(
+    base::FunctionRef<void()> callback) {
   base::WeakPtr<FedCmAccountSelectionView> weak_this =
       weak_ptr_factory_.GetWeakPtr();
-  notify_callback();
+  callback();
   return weak_this != nullptr;
 }
 
@@ -1095,6 +1307,9 @@ SheetType FedCmAccountSelectionView::GetSheetType() {
     case State::MULTI_ACCOUNT_PICKER:
     case State::REQUEST_PERMISSION:
     case State::NEWLY_LOGGED_IN_ACCOUNT_PICKER:
+    // The IDP picker is part of account selection: closing the IDP login
+    // pop-up opened from it must not cancel the flow.
+    case State::IDP_PICKER:
       return webid::SheetType::kAccountSelection;
 
     case State::VERIFYING:
@@ -1113,22 +1328,27 @@ SheetType FedCmAccountSelectionView::GetSheetType() {
 
 void FedCmAccountSelectionView::Close(bool notify_delegate, bool hide_widget) {
   scoped_user_data_.reset();
+  // Preventative check; not known to destroy `this`.
+  if (!RunAndCheckAlive([&]() { CancelAmbientBubble(); })) {
+    return;
+  }
   if (IsAmbientEnabled() && tab_) {
-    if (auto* features = tab_->GetTabFeatures()) {
-      if (auto* controller = features->page_action_controller()) {
-        controller->Hide(kActionFederation);
-        controller->HideSuggestionChip(kActionFederation);
-        controller->HideAnchoredMessage(kActionFederation);
-      }
+    if (auto* controller = page_actions::PageActionController::From(tab_)) {
+      controller->Hide(kActionFederation);
+      controller->HideSuggestionChip(kActionFederation);
+      controller->HideAnchoredMessage(kActionFederation);
     }
   }
 
   if (!GetDialogWidget()) {
     CHECK(!account_selection_view_);
-    // When the UI is in the AMBIENT state (omnibox chip), there is no widget
-    // to trigger the standard destruction sequence. We must notify the delegate
-    // here to ensure the request is properly terminated.
-    if (dialog_type_ == DialogType::AMBIENT && notify_delegate) {
+    // When the UI is in the AMBIENT state (omnibox chip) or the AMBIENT_BUBBLE
+    // state, there is no widget to trigger the standard destruction sequence.
+    // We must notify the delegate here to ensure the request is properly
+    // terminated.
+    if ((dialog_type_ == DialogType::AMBIENT ||
+         dialog_type_ == DialogType::AMBIENT_BUBBLE) &&
+        notify_delegate) {
       delegate_->OnDismiss(DismissReason::kOther);
     }
     return;
@@ -1205,21 +1425,19 @@ FedCmAccountSelectionView::CreatePopupWindow() {
 void FedCmAccountSelectionView::ShowDialog(
     views::Widget* widget,
     std::unique_ptr<tabs::TabDialogManager::Params> params) {
-  tab_->GetTabFeatures()->tab_dialog_manager()->ShowDialog(widget,
-                                                           std::move(params));
+  tabs::TabDialogManager::From(tab_)->ShowDialog(widget, std::move(params));
 }
 
 void FedCmAccountSelectionView::UpdateDialogVisibility(
     bool requested_visibility) {
-  if (auto* features = tab_->GetTabFeatures()) {
-    features->tab_dialog_manager()->UpdateDialogVisibility(
-        requested_visibility);
+  if (auto* tab_dialog_manager = tabs::TabDialogManager::From(tab_)) {
+    tab_dialog_manager->UpdateDialogVisibility(requested_visibility);
   }
 }
 
 bool FedCmAccountSelectionView::IsDialogManaged(views::Widget* widget) {
-  if (auto* features = tab_->GetTabFeatures()) {
-    return features->tab_dialog_manager()->IsDialogManaged(widget);
+  if (auto* tab_dialog_manager = tabs::TabDialogManager::From(tab_)) {
+    return tab_dialog_manager->IsDialogManaged(widget);
   }
   return false;
 }
@@ -1268,13 +1486,14 @@ AccountSelectionViewBase* FedCmAccountSelectionView::CreateDialogView(
 bool FedCmAccountSelectionView::IsIdpSigninPopupOpen() {
   // The IDP sign-in pop-up can be triggered either from the user triggering a
   // active flow with no accounts while the loading dialog is shown, the
-  // "Continue" button on the mismatch dialog or the "Add Account" button from
-  // an account picker.
+  // "Continue" button on the mismatch dialog, the "Add Account" button from
+  // an account picker or an IDP row on the IDP picker.
   return popup_window_ && (state_ == State::LOADING ||
                            state_ == State::IDP_SIGNIN_STATUS_MISMATCH ||
                            state_ == State::SINGLE_ACCOUNT_PICKER ||
                            state_ == State::MULTI_ACCOUNT_PICKER ||
-                           state_ == State::NEWLY_LOGGED_IN_ACCOUNT_PICKER);
+                           state_ == State::NEWLY_LOGGED_IN_ACCOUNT_PICKER ||
+                           state_ == State::IDP_PICKER);
 }
 
 void FedCmAccountSelectionView::PrimaryMainFrameWasResized(bool width_changed) {
@@ -1421,6 +1640,7 @@ void FedCmAccountSelectionView::CloseWidget(bool notify_delegate,
     parked_dialog_view_.reset();
   }
   scoped_ignore_input_events_.reset();
+  tab_accept_mouse_events_.reset();
   dialog_widget_observation_.Reset();
   dialog_widget_.reset();
   widget_delegate_.reset();
@@ -1462,7 +1682,10 @@ void FedCmAccountSelectionView::UpdateDialogVisibilityAndPosition() {
     UpdateDialogPosition();
     if (!dialog_widget_->IsVisible() &&
         !IsDialogManaged(dialog_widget_.get())) {
-      ShowDialogWidget();
+      // Preventative check; not known to destroy `this`.
+      if (!RunAndCheckAlive([&]() { ShowDialogWidget(); })) {
+        return;
+      }
     }
     UpdateDialogVisibility(true);
     return;
@@ -1477,6 +1700,9 @@ void FedCmAccountSelectionView::ResetDialogWidgetStateOnAnyShow() {
   chip_impression_recorded_ = false;
   icon_impression_recorded_ = false;
   chip_requested_for_flow_ = false;
+  // Any new UI replaces the ambient bubble. `CancelAmbientBubble()` is not
+  // known to destroy `this`, but as a preventative measure, call it last.
+  CancelAmbientBubble();
 }
 
 gfx::Rect FedCmAccountSelectionView::GetDialogBounds() {
@@ -1533,12 +1759,7 @@ bool FedCmAccountSelectionView::ShowPageAction(
     return false;
   }
 
-  auto* features = tab_->GetTabFeatures();
-  if (!features) {
-    return false;
-  }
-
-  auto* controller = features->page_action_controller();
+  auto* controller = page_actions::PageActionController::From(tab_);
   if (!controller) {
     return false;
   }
@@ -1599,6 +1820,301 @@ bool FedCmAccountSelectionView::IsAmbientEnabled() const {
          (delegate_ && delegate_->GetPassiveDialogVolume() ==
                            content::IdentityRequestDialogController::
                                PassiveDialogVolume::kAmbient);
+}
+
+bool FedCmAccountSelectionView::IsAmbientBubbleEnabled() const {
+  return base::FeatureList::IsEnabled(features::kFedCmAmbientBubble);
+}
+
+bool FedCmAccountSelectionView::ShowAmbientBubble(
+    const std::vector<IdentityProviderDataPtr>& idp_list,
+    const std::vector<IdentityRequestAccountPtr>& accounts,
+    const std::vector<IdentityRequestAccountPtr>& new_accounts) {
+  // Only accounts from a single IdP are supported for now. If the selected
+  // account requires disclosure text (e.g. a new account), the user reviews it
+  // in the modal dialog after accepting the bubble. See
+  // HandleAmbientBubbleDecision().
+  // TODO(crbug.com/567563304): Support multiple IdPs, IdP login status mismatch
+  // and the "use other account" flow, which the regular UI offers when accounts
+  // are filtered out.
+  if (idp_list.size() != 1u || accounts.empty() || !new_accounts.empty() ||
+      idp_list[0]->has_login_status_mismatch ||
+      std::ranges::any_of(accounts, &Account::is_filtered_out)) {
+    return false;
+  }
+
+  // Keep using the existing FedCM UI, including a dialog that is temporarily
+  // hidden (parked), if there is one.
+  if (GetDialogWidget() || account_selection_view_) {
+    return false;
+  }
+
+  // While FedCM UI can't be shown, e.g. while an actor task is acting on the
+  // tab, use the regular UI, which stays hidden until it can be shown.
+  if (!can_show_ui_) {
+    return false;
+  }
+
+  content::WebContents* contents = web_contents();
+  if (!contents ||
+      !permissions::PermissionRequestManager::FromWebContents(contents)) {
+    return false;
+  }
+
+  content::RenderFrameHost* main_frame = contents->GetPrimaryMainFrame();
+  auto* controller =
+      ambient_signin::AmbientLoginPermissionController::GetOrCreateForPage(
+          main_frame->GetPage());
+  // Another ambient login request is outstanding, so the controller would
+  // reject this one. Fall back to the regular UI.
+  if (controller->state() !=
+      ambient_signin::AmbientLoginPermissionController::State::kIdle) {
+    return false;
+  }
+
+  // The credentials are in the same order as the accounts, so the index of the
+  // selected credential is also the index of the account in `accounts_`.
+  std::vector<ambient_signin::FederatedCredential> federated_credentials;
+  federated_credentials.reserve(accounts.size());
+  for (const IdentityRequestAccountPtr& account : accounts) {
+    ambient_signin::FederatedCredential& federated_credential =
+        federated_credentials.emplace_back();
+    federated_credential.idp_name =
+        base::UTF8ToUTF16(account->identity_provider->idp_for_display);
+    // The bubble shows the account name (e.g. "John Doe") in the first row and
+    // falls back to the identifier, which may be an email address.
+    federated_credential.account_name =
+        base::UTF8ToUTF16(account->display_name);
+    federated_credential.email = base::UTF8ToUTF16(account->display_identifier);
+    federated_credential.idp_origin =
+        url::Origin::Create(account->identity_provider->idp_metadata.config_url)
+            .GetURL();
+    federated_credential.icon =
+        ui::ImageModel::FromImageSkia(webid::ComputeAccountCircleCroppedPicture(
+            *account, ambient_signin::kAccountPictureSize,
+            /*idp_image=*/std::nullopt,
+            /*device_scale_factor=*/1.0f));
+    // Like in the regular FedCM UI with multiple IdPs, the IdP's icon is a
+    // badge on the account picture. There is no badge if the icon is missing,
+    // isn't square, or is so small that its safe zone would be scaled up.
+    const gfx::ImageSkia idp_icon = account->identity_provider->idp_metadata
+                                        .brand_decoded_icon.AsImageSkia();
+    if (idp_icon.width() == idp_icon.height() &&
+        idp_icon.width() >= ambient_signin::kBadgeImageSize /
+                                webid::kMaskableWebIconSafeZoneRatio) {
+      federated_credential.badge =
+          ui::ImageModel::FromImageSkia(webid::CreateCircleCroppedImage(
+              idp_icon, ambient_signin::kBadgeImageSize));
+    }
+    // Accounts with fields to share show the disclosure text in the modal
+    // dialog after the bubble. Other accounts are signed in right away, which
+    // the chip shows. These include all sign-in accounts, whose fields content
+    // always clears. See HandleAmbientBubbleDecision().
+    federated_credential.signs_in_directly = account->fields.empty();
+  }
+
+  // TODO(crbug.com/567563304): Use the RP's frame as the requesting frame when
+  // FedCM is invoked from an iframe.
+  const GURL origin = main_frame->GetLastCommittedOrigin().GetURL();
+  // If all accounts would sign up rather than sign in, only the chip is shown,
+  // and the bubble opens when the user clicks it.
+  const bool bubble_starts_open = std::ranges::any_of(
+      accounts, [](const IdentityRequestAccountPtr& account) {
+        return account->idp_claimed_login_state.value_or(
+                   account->browser_trusted_login_state) ==
+               Account::LoginState::kSignIn;
+      });
+  auto request =
+      std::make_unique<ambient_signin::AmbientLoginPermissionRequest>(
+          origin, std::vector<ambient_signin::PasskeyOrPasswordCredential>(),
+          /*credential_selected_callback=*/base::NullCallback(),
+          std::move(federated_credentials),
+          base::BindOnce(
+              &FedCmAccountSelectionView::OnAmbientBubbleAccountSelected,
+              ambient_bubble_weak_ptr_factory_.GetWeakPtr()),
+          ambient_signin::AmbientLoginPermissionRequest::Options{
+              .permission_decided_callback = base::BindRepeating(
+                  &FedCmAccountSelectionView::OnAmbientBubbleDecided,
+                  ambient_bubble_weak_ptr_factory_.GetWeakPtr()),
+              .bubble_starts_open = bubble_starts_open});
+
+  // Set before adding the request, since the decided callback runs
+  // synchronously if the request is rejected right away.
+  ambient_bubble_request_pending_ = true;
+  ambient_login_permission_controller_ = controller->GetWeakPtr();
+  // `RequestPermission()` is not known to destroy `this`, but check as a
+  // preventative measure.
+  if (!RunAndCheckAlive([&]() {
+        controller->RequestPermission(main_frame, std::move(request));
+      })) {
+    return false;
+  }
+  if (!ambient_bubble_request_pending_) {
+    // The request was rejected right away, e.g. because permission prompts are
+    // disabled. Drop the decision posted for it and fall back to the regular
+    // UI.
+    ambient_bubble_weak_ptr_factory_.InvalidateWeakPtrs();
+    return false;
+  }
+  dialog_type_ = DialogType::AMBIENT_BUBBLE;
+  state_ = accounts.size() == 1u ? State::SINGLE_ACCOUNT_PICKER
+                                 : State::MULTI_ACCOUNT_PICKER;
+
+  // TODO(crbug.com/567563304): Notify the delegate when the bubble is actually
+  // shown, since PermissionRequestManager may defer showing it.
+  if (accounts_widget_shown_callback_) {
+    // `OnAccountsDisplayed()` is not known to destroy `this`, but as a
+    // preventative measure, do not access members afterwards.
+    std::move(accounts_widget_shown_callback_).Run();
+  }
+  return true;
+}
+
+void FedCmAccountSelectionView::OnAmbientBubbleAccountSelected(size_t index) {
+  // The decision is handled in OnAmbientBubbleDecided(), which runs right after
+  // this.
+  ambient_bubble_selected_account_index_ = index;
+}
+
+void FedCmAccountSelectionView::OnAmbientBubbleDecided(
+    const permissions::PermissionPromptDecision& decision,
+    const permissions::PermissionRequestData& request_data) {
+  // Only handle the decision on the outstanding request.
+  if (!ambient_bubble_request_pending_) {
+    return;
+  }
+  ambient_bubble_request_pending_ = false;
+  ambient_login_permission_controller_.reset();
+
+  // Set right before this if the user accepted the bubble. See
+  // OnAmbientBubbleAccountSelected().
+  std::optional<size_t> selected_account_index =
+      std::exchange(ambient_bubble_selected_account_index_, std::nullopt);
+
+  bool accepted = false;
+  switch (decision.overall_decision) {
+    case PermissionDecision::kAllow:
+    case PermissionDecision::kAllowThisTime:
+      accepted = true;
+      break;
+    case PermissionDecision::kDeny:
+    case PermissionDecision::kNone:
+      accepted = false;
+      break;
+  }
+
+  // This callback runs synchronously from within
+  // PermissionRequestManager::Accept()/Deny()/Dismiss(), which continues to
+  // use its internal state (and the prompt view) after the callback returns.
+  // Notifying the FedCM backend here can re-enter or tear down UI that the
+  // manager is still using, so defer the handling.
+  base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+      FROM_HERE,
+      base::BindOnce(&FedCmAccountSelectionView::HandleAmbientBubbleDecision,
+                     ambient_bubble_weak_ptr_factory_.GetWeakPtr(),
+                     accepted ? selected_account_index : std::nullopt));
+}
+
+void FedCmAccountSelectionView::HandleAmbientBubbleDecision(
+    std::optional<size_t> selected_account_index) {
+  // Bail out if the request was closed or replaced in the meantime.
+  if (!delegate_ || dialog_type_ != DialogType::AMBIENT_BUBBLE ||
+      (state_ != State::SINGLE_ACCOUNT_PICKER &&
+       state_ != State::MULTI_ACCOUNT_PICKER) ||
+      ambient_bubble_request_pending_) {
+    return;
+  }
+
+  if (!selected_account_index) {
+    // The request was dismissed or ignored, e.g. because the chip expired or
+    // the tab navigated away. Closing the bubble keeps the chip, and the
+    // request pending.
+    // TODO(crbug.com/567563304): Tell apart requests whose bubble the user
+    // closed so that the appropriate DismissReason (and cooldown) can be used.
+    // `this` may be deleted after this call.
+    std::ignore = RunAndCheckAlive(
+        [&]() { delegate_->OnDismiss(DismissReason::kOther); });
+    return;
+  }
+
+  // Showing other UI would have cancelled the bubble, so `accounts_` still has
+  // the accounts that the bubble showed.
+  IdentityRequestAccountPtr account = accounts_[*selected_account_index];
+  if (!account->fields.empty()) {
+    // The ambient bubble does not show the disclosure text, so let the user
+    // review it in the modal dialog before continuing.
+    ShowRequestPermissionModal(account);
+    return;
+  }
+
+  state_ = State::VERIFYING;
+  // `this` may be deleted after this call.
+  std::ignore = RunAndCheckAlive([&]() {
+    delegate_->OnAccountSelected(
+        account->identity_provider->idp_metadata.config_url, account->id,
+        account->idp_claimed_login_state.value_or(
+            account->browser_trusted_login_state));
+  });
+}
+
+void FedCmAccountSelectionView::ShowRequestPermissionModal(
+    const IdentityRequestAccountPtr& account) {
+  CHECK(rp_data_);
+  CHECK(!GetDialogWidget());
+  if (!tab_) {
+    // `this` may be deleted after this call.
+    std::ignore = RunAndCheckAlive(
+        [&]() { delegate_->OnDismiss(DismissReason::kOther); });
+    return;
+  }
+
+  // Reset the state like other methods that show UI. Unlike `Show()`, the
+  // delegate is not notified that the accounts were displayed, since it was
+  // notified when the ambient bubble or the bubble was shown.
+  // Preventative check; not known to destroy `this`.
+  if (!RunAndCheckAlive([&]() { ResetDialogWidgetStateOnAnyShow(); })) {
+    return;
+  }
+
+  // Pass kActive so that the modal dialog is used even though the request is
+  // in passive mode. Title the dialog with the identity provider of `account`,
+  // since the request may have several.
+  const content::IdentityProviderData& idp_data = *account->identity_provider;
+  CreateOrUpdateViewAndWidget(
+      *rp_data_, base::UTF8ToUTF16(idp_data.idp_for_display),
+      idp_data.rp_context, blink::mojom::RpMode::kActive,
+      /*has_modal_support=*/true);
+  CHECK(dialog_type_ == DialogType::MODAL);
+
+  state_ = State::REQUEST_PERMISSION;
+  account_selection_view_->ShowRequestPermissionDialog(account);
+  // This is a placeholder assuming the tab containing the disclosure dialog
+  // will be closed. This will be updated upon clicking the continue, back or
+  // cancel button.
+  // TODO(crbug.com/581372729): Record the modal dialog metrics for passive mode
+  // flows separately from the active mode flow.
+  modal_disclosure_dialog_state_ = webid::DisclosureDialogResult::kDestroy;
+  UpdateDialogVisibilityAndPosition();
+}
+
+void FedCmAccountSelectionView::CancelAmbientBubble() {
+  // Drop the callbacks of the request, including the decision reported when
+  // the request is cancelled below, and a decision that was already made but
+  // has not been handled yet.
+  ambient_bubble_weak_ptr_factory_.InvalidateWeakPtrs();
+  if (!ambient_bubble_request_pending_) {
+    return;
+  }
+  ambient_bubble_request_pending_ = false;
+  base::WeakPtr<ambient_signin::AmbientLoginPermissionController> controller =
+      ambient_login_permission_controller_;
+  ambient_login_permission_controller_.reset();
+  if (controller) {
+    // This cancels the request whether `PermissionRequestManager` is showing it
+    // or has queued it. `Reset()` is not known to destroy `this`, but as a
+    // preventative measure, do not access members afterwards.
+    controller->Reset();
+  }
 }
 
 void FedCmAccountSelectionView::RecordPageActionImpression(

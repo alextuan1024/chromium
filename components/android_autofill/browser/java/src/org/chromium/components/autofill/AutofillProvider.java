@@ -161,6 +161,10 @@ public class AutofillProvider {
 
     private void maybeInitializeInputObserver() {
         if (mInputUiObserver != null || mAutofillManager == null) return;
+        // AutofillManagerWrapper calls InputUiObserver.onInputUiShown() when the framework
+        // reports AutofillCallback.EVENT_INPUT_SHOWN, i.e. the autofill dropdown or inline
+        // suggestions were shown. The event is not filtered by view, so it is attributed to
+        // the live session (mRequest) as an approximation.
         mInputUiObserver =
                 () -> {
                     // Not need to report suggestion window displayed if there is no live
@@ -168,6 +172,9 @@ public class AutofillProvider {
                     if (mRequest == null) return;
                     mAutofillUMA.onSuggestionDisplayed(
                             System.currentTimeMillis() - mAutofillTriggeredTimeMillis);
+                    if (mNativeAutofillProvider != 0) {
+                        AutofillProviderJni.get().onDidShowSuggestions(mNativeAutofillProvider);
+                    }
                 };
 
         mAutofillManager.addInputUiObserver(mInputUiObserver);
@@ -274,6 +281,7 @@ public class AutofillProvider {
             FocusField focusField = mRequest.getFocusField();
             @Nullable Rect clampedBounds = clampToVisibleBounds(focusField.absBound);
             if (clampedBounds == null) return;
+            maybeRefetchAutofillManager();
             getAutofillManagerWrapper()
                     .requestAutofill(
                             mContainerView,
@@ -309,6 +317,7 @@ public class AutofillProvider {
         mPrefillRequest = new PrefillRequest(form);
         mStructureProvidedForPrefillRequest = false;
 
+        maybeRefetchAutofillManager();
         getAutofillManagerWrapper()
                 .notifyVirtualViewsReady(mContainerView, mPrefillRequest.getPrefillHints());
     }
@@ -335,10 +344,12 @@ public class AutofillProvider {
             float height,
             boolean hasServerPrediction) {
         Rect absBound = transformToWindowBounds(new RectF(x, y, x + width, y + height));
+        hideDatalistPopup();
         if (mRequest != null) notifyViewExitBeforeDestroyRequest();
 
         transformFormFieldToContainViewCoordinates(formData);
         initializeFrameworkWrapper();
+        maybeRefetchAutofillManager();
         mAutofillUMA.onSessionStarted(getAutofillManagerWrapper().isDisabled());
         mRequest =
                 new AutofillRequest(
@@ -348,6 +359,9 @@ public class AutofillProvider {
         } else {
             notifyVirtualViewEntered(mContainerView, focus, absBound);
         }
+        // A prefill request is only valid for the first session started after it is sent;
+        // clear it so a later session that recycles the same session ID cannot match it.
+        mPrefillRequest = null;
         if (hasServerPrediction) {
             mAutofillUMA.onServerTypeAvailable(formData, /* afterSessionStarted= */ false);
         }
@@ -666,13 +680,38 @@ public class AutofillProvider {
         return mAutofillManager;
     }
 
+    private void maybeRefetchAutofillManager() {
+        if (mAutofillManager == null) return;
+        Context context = getContext();
+        if (!mAutofillManager.canRefetch(context)) return;
+        if (!AndroidAutofillFeatures.ANDROID_AUTOFILL_REFETCH_MANAGER_IF_DISABLED.isEnabled()) {
+            return;
+        }
+        if (mAutofillManager.refetch(context) && mAutofillUMA != null) {
+            mAutofillUMA.setCurrentProvider(
+                    mAutofillManager.isAwGCurrentAutofillService(),
+                    mAutofillManager.getPackageName());
+        }
+    }
+
     /**
-     * Display the simplest popup for the datalist. This is same as WebView's datalist popup in
+     * Displays the simplest popup for the datalist. This is same as WebView's datalist popup in
      * Android pre-o. No suggestion from the autofill service will be presented, No advance features
-     * of AutofillPopup are used.
+     * of AutofillPopup are used. Does nothing if {@code bounds} lie entirely outside the container
+     * view's visible area.
      */
     private void showDatalistPopup(
             String[] datalistValues, String[] datalistLabels, RectF bounds, boolean isRtl) {
+        // Suppress the popup if the field is entirely outside the visible bounds of the container
+        // view; renderer-supplied bounds could otherwise place the dropdown over browser or
+        // embedder UI (crbug.com/562236428). We clamp the anchor bounds themselves rather than
+        // FocusField.absBound.
+        @Nullable Rect clampedBounds = clampToVisibleBounds(transformToWindowBounds(bounds));
+        if (AndroidAutofillFeatures.ANDROID_AUTOFILL_SUPPRESS_OFFSCREEN_DATALIST.isEnabled()
+                && (clampedBounds == null || clampedBounds.isEmpty())) {
+            hideDatalistPopup();
+            return;
+        }
         mDatalistSuggestions = new AutofillDropdownItem[datalistValues.length];
         for (int i = 0; i < mDatalistSuggestions.length; i++) {
             mDatalistSuggestions[i] =
@@ -756,7 +795,13 @@ public class AutofillProvider {
         // finalizer, and so the methods we call will throw. It's not
         // possible to know which case we're in, so just catch the exception
         // in AutofillManagerWrapper.destroy().
-        if (mNativeAutofillProvider != 0) mRequest = null;
+        if (mNativeAutofillProvider != 0) {
+            // Session IDs are minted per native `AndroidAutofillProvider` starting at 1. Cancel the
+            // framework session and clear `mPrefillRequest` when detaching so a replacement native
+            // provider cannot collide with session IDs from the previous one.
+            cancelSession();
+            reset();
+        }
         mNativeAutofillProvider = nativeAutofillProvider;
     }
 
@@ -771,7 +816,14 @@ public class AutofillProvider {
     public void setWebContents(WebContents webContents) {
         if (webContents == mWebContents) return;
         if (mAutofillUMA != null) mAutofillUMA.recordSession();
-        if (mWebContents != null) mRequest = null;
+        if (mWebContents != null) {
+            // Re-binding to a new `WebContents` creates a new native `AndroidAutofillProvider`
+            // whose session ID counter restarts at 1. Cancel the ongoing framework session and
+            // clear `mPrefillRequest` so the new `WebContents` cannot reuse cached responses from
+            // the previous one.
+            cancelSession();
+            reset();
+        }
         mWebContents = webContents;
         detachFromJavaAutofillProvider();
         if (mWebContents != null) {
@@ -805,9 +857,19 @@ public class AutofillProvider {
         return mDatalistPopup;
     }
 
+    void setDatalistPopupForTesting(AutofillPopup datalistPopup) {
+        mDatalistPopup = datalistPopup;
+    }
+
     private int getToolbarOffset() {
         return mWebContents != null
-                ? RenderCoordinates.fromWebContents(mWebContents).getContentOffsetYPixInt()
+                ? RenderCoordinates.fromWebContents(mWebContents).getContentOffsetTopPixInt()
+                : 0;
+    }
+
+    private int getBottomToolbarOffset() {
+        return mWebContents != null
+                ? RenderCoordinates.fromWebContents(mWebContents).getContentOffsetBottomPixInt()
                 : 0;
     }
 
@@ -826,21 +888,24 @@ public class AutofillProvider {
      */
     private Rect getContainerVisibleScreenBounds() {
         Rect rect = new Rect();
-        if (mContainerView.getGlobalVisibleRect(rect)) {
-            int[] windowLocation = new int[2];
-            mContainerView.getLocationInWindow(windowLocation);
-            int[] screenLocation = new int[2];
-            mContainerView.getLocationOnScreen(screenLocation);
-            int offsetX = screenLocation[0] - windowLocation[0];
-            int offsetY = screenLocation[1] - windowLocation[1];
-            // Translate the rect from window coordinates to screen coordinates.
-            rect.offset(offsetX, offsetY);
-            // In Chrome, the omnibox toolbar sits on top of `mContainerView`, obscuring the top
-            // content. We must add the toolbar offset to `rect.top` to exclude this obscured area
-            // from the visible bounds. We cannot use `getWebContentScreenLocation()` to translate
-            // the whole rect because that would incorrectly offset rect.bottom (which is not
-            // obscured by the top toolbar).
-            rect.top += getToolbarOffset();
+        if (!mContainerView.getGlobalVisibleRect(rect)) {
+            return new Rect();
+        }
+        int[] windowLocation = new int[2];
+        mContainerView.getLocationInWindow(windowLocation);
+        int[] screenLocation = new int[2];
+        mContainerView.getLocationOnScreen(screenLocation);
+        int offsetX = screenLocation[0] - windowLocation[0];
+        int offsetY = screenLocation[1] - windowLocation[1];
+        // Translate the rect from window coordinates to screen coordinates.
+        rect.offset(offsetX, offsetY);
+        // Browser controls (e.g. top/bottom omnibox toolbars in Chrome) sit on top of
+        // `mContainerView`, obscuring its top and/or bottom edges. Exclude both obscured areas
+        // from the visible bounds.
+        rect.top += getToolbarOffset();
+        rect.bottom -= getBottomToolbarOffset();
+        if (rect.isEmpty()) {
+            return new Rect();
         }
         return rect;
     }
@@ -849,20 +914,22 @@ public class AutofillProvider {
      * Clamps the given absolute bounds to the visible screen bounds of the container view.
      *
      * <p>Calculates the intersection of {@code absBounds} with the visible area of {@code
-     * mContainerView}. If the bounds are entirely outside the visible area, returns {@code null}.
+     * mContainerView}. If {@code absBounds} is empty or lies entirely outside the visible area,
+     * returns {@code null}.
      *
      * <p>This method returns new coordinates and does not mutate the input.
      *
      * @param absBounds the absolute bounds in screen coordinates to clamp.
-     * @return coordinates representing the clamped bounds, or {@code null} if the bounds do not
-     *     intersect with the container's visible area.
+     * @return coordinates representing the clamped bounds, or {@code null} if the bounds are empty
+     *     or do not intersect with the container's visible area.
      */
     private @Nullable Rect clampToVisibleBounds(Rect absBounds) {
-        Rect visibleBounds = getContainerVisibleScreenBounds();
         if (absBounds.isEmpty()) {
-            return visibleBounds.contains(absBounds.left, absBounds.top)
-                    ? new Rect(absBounds)
-                    : null;
+            return null;
+        }
+        Rect visibleBounds = getContainerVisibleScreenBounds();
+        if (visibleBounds.isEmpty()) {
+            return null;
         }
 
         Rect clampedBounds = new Rect(absBounds);
@@ -945,6 +1012,7 @@ public class AutofillProvider {
 
     @CalledByNative
     public void cancelSession() {
+        hideDatalistPopup();
         getAutofillManagerWrapper().cancel();
         mPrefillRequest = null;
         mRequest = null;
@@ -955,6 +1023,18 @@ public class AutofillProvider {
         hideDatalistPopup();
         mPrefillRequest = null;
         mRequest = null;
+    }
+
+    /**
+     * Returns whether Android Autofill is known to be disabled. Doesn't create the framework
+     * wrapper, so this returns false if it hasn't been created yet.
+     */
+    @CalledByNative
+    public boolean isAutofillDisabled() {
+        // Native calls this when a new page loads and skips the page's metrics if Autofill is
+        // disabled. Refetch first in case the app has moved the WebView to an Activity.
+        maybeRefetchAutofillManager();
+        return mAutofillManager != null && mAutofillManager.isDisabled();
     }
 
     @NativeMethods
@@ -984,6 +1064,8 @@ public class AutofillProvider {
                 long nativeAndroidAutofillProviderBridgeImpl,
                 boolean isShown,
                 boolean providedAutofillStructure);
+
+        void onDidShowSuggestions(long nativeAndroidAutofillProviderBridgeImpl);
 
         void onTriggerPasskeyRequest(long nativeAndroidAutofillProviderBridgeImpl);
     }

@@ -27,22 +27,15 @@
 #include <optional>
 #include <set>
 #include <string>
-#include <utility>
-#include <vector>
 
 #include "base/byte_size.h"
 #include "base/component_export.h"
 #include "base/containers/enum_set.h"
-#include "base/containers/flat_set.h"
 #include "base/feature_list.h"
 #include "base/metrics/field_trial_params.h"
 #include "base/time/time.h"
-#include "build/build_config.h"
-#include "components/optimization_guide/core/optimization_guide_enums.h"
 #include "components/optimization_guide/proto/hints.pb.h"
 #include "components/optimization_guide/proto/models.pb.h"
-#include "components/optimization_guide/public/mojom/model_broker.mojom-shared.h"
-#include "net/nqe/effective_connection_type.h"
 #include "url/gurl.h"
 
 namespace optimization_guide {
@@ -59,15 +52,11 @@ BASE_DECLARE_FEATURE(kOptimizationTargetPrediction);
 COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
 BASE_DECLARE_FEATURE(kPageTextExtraction);
 COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
-BASE_DECLARE_FEATURE(kPushNotifications);
-COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
-BASE_DECLARE_FEATURE(kOptimizationGuideMetadataValidation);
-COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
 BASE_DECLARE_FEATURE(kPreventLongRunningPredictionModels);
 COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
 BASE_DECLARE_FEATURE(kOverrideNumThreadsForModelExecution);
 COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
-BASE_DECLARE_FEATURE(kOptimizationGuidePersonalizedFetching);
+BASE_DECLARE_FEATURE(kBuildTFLiteModelExecutionTaskOnLoadingThread);
 COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
 BASE_DECLARE_FEATURE(kOptimizationGuidePredictionModelKillswitch);
 COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
@@ -76,8 +65,6 @@ COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
 BASE_DECLARE_FEATURE(kModelQualityLogging);
 COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
 BASE_DECLARE_FEATURE(kLogOnDeviceMetricsOnStartup);
-COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
-BASE_DECLARE_FEATURE(kTextSafetyScanLanguageDetection);
 COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
 BASE_DECLARE_FEATURE(kOnDeviceModelFetchPerformanceClassEveryStartup);
 COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
@@ -93,44 +80,9 @@ BASE_DECLARE_FEATURE(kOptimizationGuideBypassFormsClassificationAuth);
 COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
 BASE_DECLARE_FEATURE(kOptimizationGuideBypassPasswordChangeAuth);
 
-// Allows setting feature params for model download configuration, such as
-// minimum performance class for download.
-COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
-BASE_DECLARE_FEATURE(kOnDeviceModelPerformanceParams);
-
-// Comma-separated list of performance classes (e.g. "3,4,5") that should
-// download the base model. Use "*" if there is no performance class
-// requirement.
-COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
-extern const base::FeatureParam<std::string>
-    kPerformanceClassListForOnDeviceModel;
-
-// Comma-separated list of performance classes that should use a smaller model
-// if available. This should be a subset of
-// kPerformanceClassListForOnDeviceModel.
-COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
-extern const base::FeatureParam<std::string>
-    kLowTierPerformanceClassListForOnDeviceModel;
-
-// Comma-separated list of performance classes that have image input enabled.
-COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
-extern const base::FeatureParam<std::string> kPerformanceClassListForImageInput;
-
 // Whether on device models are downloaded in background prior to feature usage.
 COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
 BASE_DECLARE_FEATURE(kOnDeviceModelBackgroundDownload);
-
-// Comma-separated list of features that are allowed to be downloaded in
-// background.
-COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
-extern const base::FeatureParam<std::string>
-    kOnDeviceModelBackgroundDownloadAllowedFeatures;
-
-// Returns whether the feature is allowed to be downloaded in background.
-COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
-bool IsOnDeviceModelBackgroundDownloadEnabledForFeature(
-    mojom::OnDeviceFeature feature);
-
 
 // Whether model sessions may be brokered to untrusted processes.
 COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
@@ -168,10 +120,6 @@ typedef base::EnumSet<proto::OptimizationType,
 // requests to respond after DidFinishLoad.
 COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
 base::TimeDelta PageTextExtractionOutstandingRequestsGracePeriod();
-
-// Whether hints for active tabs and top hosts should be batch updated.
-COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
-bool ShouldBatchUpdateHintsForActiveTabsAndTopHosts();
 
 // Whether hints fetching for search results is enabled.
 COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
@@ -267,15 +215,6 @@ bool IsModelExecutionWatchdogEnabled();
 COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
 base::TimeDelta ModelExecutionWatchdogDefaultTimeout();
 
-// Returns whether the page entities model should be executed on page content
-// for a user using |locale| as their browser language.
-COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
-bool ShouldExecutePageEntitiesModelOnPageContent(const std::string& locale);
-
-// Returns whether the metadata validation fetch feature is host keyed.
-COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
-bool ShouldMetadataValidationFetchHostKeyed();
-
 // Returns the number of threads to use for model inference on the given
 // optimization target.
 COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
@@ -295,19 +234,6 @@ bool IsModelQualityLoggingEnabledForFeature(const MqlsFeatureMetadata*);
 COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
 std::map<proto::OptimizationTarget, std::set<int64_t>>
 GetPredictionModelVersionsInKillSwitch();
-
-// Returns whether the on-device config should be loaded with higher priority.
-// If true, all tasks for the on-device model execution config interpreter
-// will be run with user visible priority.
-inline constexpr bool
-ShouldLoadOnDeviceModelExecutionConfigWithHigherPriority() {
-  return true;
-}
-
-// Returns the idle timeout before the on device model service shuts down.
-inline constexpr base::TimeDelta GetOnDeviceModelIdleTimeout() {
-  return base::Minutes(1);
-}
 
 // Returns the delay before starting the on device model inference when
 // running validation.
@@ -336,24 +262,6 @@ base::TimeDelta GetOnDeviceStartupMetricDelay();
 // Whether on-device execution is enabled.
 COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
 bool IsOnDeviceExecutionEnabled();
-
-// The amount of grace period to use from the last time the feature was used to
-// consider it as recently used. Recent usage is one of the criteria for the
-// base and adaptation on-device models to be downloaded.
-inline constexpr base::TimeDelta
-GetOnDeviceEligibleModelFeatureRecentUsePeriod() {
-  return base::Days(30);
-}
-
-// The on-device model is fetched when the device is considered eligible for
-// on-device execution. When the device stops being eligible, the model is
-// retained for this amount of time. This protects the user from repeatedly
-// downloading the model in the event eligibility fluctuates. for on-device
-// evaluation
-// See on_device_model_component.cc for how eligibility is computed.
-inline constexpr base::TimeDelta GetOnDeviceModelRetentionTime() {
-  return base::Days(30);
-}
 
 // Return the disk space required for on device model install.
 inline constexpr base::ByteSize GetDiskSpaceRequiredForOnDeviceModelInstall() {
@@ -410,21 +318,6 @@ inline constexpr int GetOnDeviceModelMinRepeatChars() {
 // Whether the response should be retracted if repeats are detected.
 inline constexpr bool GetOnDeviceModelRetractRepeats() {
   return true;
-}
-
-// Settings to control output sampling.
-inline constexpr int GetOnDeviceModelDefaultTopK() {
-  return 64;
-}
-inline constexpr int GetOnDeviceModelMaxTopK() {
-  return 128;
-}
-inline constexpr double GetOnDeviceModelDefaultTemperature() {
-  return 1.0;
-}
-
-inline std::vector<uint32_t> GetOnDeviceModelAllowedAdaptationRanks() {
-  return {32};
 }
 
 // Returns what the timeout for calls to GetAIPageContent should be for

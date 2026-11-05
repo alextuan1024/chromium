@@ -519,10 +519,10 @@
 <translation id="5045550434625856497">密码不正确</translation>
 <translation id="5059127710849015030">尼泊尔语音译</translation>
 <translation id="5068919226082848014">披萨</translation>
+<translation id="5075336522277785691">“<ph name="EXTENSION_NAME" />”设置了代理覆盖规则</translation>
 <translation id="5081517858322016911">其中的所有文件（共计 <ph name="TOTAL_FILE_SIZE" />）都将被删除</translation>
 <translation id="508423945471810158">正在将 <ph name="NUMBER_OF_ITEMS" /> 项内容移动到“<ph name="FOLDER_NAME" />”</translation>
 <translation id="509429900233858213">出现错误。</translation>
-<translation id="5102922915594634436">管理已同步的文件夹</translation>
 <translation id="5109254780565519649">出错了。某些内容可能未成功恢复。</translation>
 <translation id="5110329002213341433">英语（加拿大）</translation>
 <translation id="5119780910075847424">已暂停同步</translation>
@@ -553,7 +553,6 @@
 <translation id="5305688511332277257">未安装任何证书</translation>
 <translation id="5317780077021120954">保存</translation>
 <translation id="5318819489018851358">与 Linux 共享</translation>
-<translation id="5330145655348521461">这些文件已在其他桌面打开。请转至<ph name="USER_NAME" />(<ph name="MAIL_ADDRESS" />)查看这些文件。</translation>
 <translation id="5330512191124428349">获取信息</translation>
 <translation id="535792325654997756">一个人和几只猫</translation>
 <translation id="5358764674931277">帧速率</translation>
@@ -694,7 +693,6 @@
 <translation id="636254897931573416">域名后缀的匹配值无效</translation>
 <translation id="6364301859968397756">贵组织的存储空间已用尽</translation>
 <translation id="6367976544441405720">客货车</translation>
-<translation id="637062427944097960">此文件已在其他桌面打开。请转至<ph name="USER_NAME" />(<ph name="MAIL_ADDRESS" />)查看此文件。</translation>
 <translation id="6394388407447716302">只读</translation>
 <translation id="6395575651121294044"><ph name="NUMBER_OF_FILES" /> 项内容</translation>
 <translation id="6407769893376380348"><ph name="FILE_NAME" /> 经过加密，因此无法移动。</translation>

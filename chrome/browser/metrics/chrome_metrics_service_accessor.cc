@@ -38,11 +38,14 @@ bool ChromeMetricsServiceAccessor::IsMetricsAndCrashReportingEnabled(
   if (g_metrics_consent_for_testing)
     return *g_metrics_consent_for_testing;
 
-  // TODO(blundell): Fix the unittests that don't set up the UI thread and
-  // change this to just be DCHECK_CURRENTLY_ON().
-  DCHECK(!content::BrowserThread::IsThreadInitialized(
-             content::BrowserThread::UI) ||
-         content::BrowserThread::CurrentlyOn(content::BrowserThread::UI));
+  // Early browser startup calls this before the main thread is registered as
+  // BrowserThread::UI, e.g. when the MetricsStateManager is created during
+  // field trial setup in ChromeMainDelegate::PostEarlyInitialization(). Once
+  // the UI thread is registered, all calls must happen on it.
+  CHECK(!content::BrowserThread::IsThreadInitialized(
+            content::BrowserThread::UI) ||
+            content::BrowserThread::CurrentlyOn(content::BrowserThread::UI),
+        base::NotFatalUntil::M161);
 
   // This is only possible during unit tests. If the unit test didn't set the
   // local_state then it doesn't care about pref value and therefore we return

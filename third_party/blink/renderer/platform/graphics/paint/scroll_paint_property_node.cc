@@ -4,6 +4,7 @@
 
 #include "third_party/blink/renderer/platform/graphics/paint/scroll_paint_property_node.h"
 
+#include "base/no_destructor.h"
 #include "third_party/blink/renderer/platform/geometry/infinite_int_rect.h"
 #include "third_party/blink/renderer/platform/graphics/paint/clip_paint_property_node.h"
 #include "third_party/blink/renderer/platform/heap/persistent.h"
@@ -48,8 +49,7 @@ PaintPropertyChangeType ScrollPaintPropertyNode::State::ComputeChange(
       prevent_scroll_axis_locking != other.prevent_scroll_axis_locking) {
     return PaintPropertyChangeType::kChangedOnlyValues;
   }
-  if (RuntimeEnabledFeatures::ScrollingContentsCullRectOnScrollNodeEnabled() &&
-      scrolling_contents_cull_rect != other.scrolling_contents_cull_rect) {
+  if (scrolling_contents_cull_rect != other.scrolling_contents_cull_rect) {
     return PaintPropertyChangeType::kChangedOnlySimpleValues;
   }
   return PaintPropertyChangeType::kUnchanged;
@@ -64,9 +64,9 @@ ScrollPaintPropertyNode::ScrollPaintPropertyNode(RootTag)
       state_{InfiniteIntRect(), InfiniteIntRect()} {}
 
 const ScrollPaintPropertyNode& ScrollPaintPropertyNode::Root() {
-  DEFINE_STATIC_LOCAL(Persistent<ScrollPaintPropertyNode>, root,
-                      (MakeGarbageCollected<ScrollPaintPropertyNode>(kRoot)));
-  return *root;
+  static base::NoDestructor<Persistent<ScrollPaintPropertyNode>> root(
+      MakeGarbageCollected<ScrollPaintPropertyNode>(kRoot));
+  return **root;
 }
 
 void ScrollPaintPropertyNode::ClearChangedToRoot(int sequence_number) const {
@@ -131,12 +131,9 @@ std::unique_ptr<JSONObject> ScrollPaintPropertyNode::ToJSON() const {
     }
   }
 
-  if (RuntimeEnabledFeatures::ScrollingContentsCullRectOnScrollNodeEnabled()) {
-    auto& rect = state_.scrolling_contents_cull_rect;
-    json->SetString("contents_cull_rect", rect == InfiniteIntRect()
-                                              ? "Inf"
-                                              : String(rect.ToString()));
-  }
+  auto& rect = state_.scrolling_contents_cull_rect;
+  json->SetString("contents_cull_rect",
+                  rect == InfiniteIntRect() ? "Inf" : String(rect.ToString()));
 
   return json;
 }

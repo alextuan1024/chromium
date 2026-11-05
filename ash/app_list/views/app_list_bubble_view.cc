@@ -73,7 +73,7 @@
 #include "ui/views/layout/box_layout.h"
 #include "ui/views/layout/fill_layout.h"
 #include "ui/views/view_class_properties.h"
-#include "ui/views/view_shadow.h"
+#include "ui/views/view_decoration.h"
 
 using views::BoxLayout;
 
@@ -475,7 +475,6 @@ void AppListBubbleView::ShowPage(AppListBubblePage page) {
   switch (current_page_) {
     case AppListBubblePage::kNone:
     case AppListBubblePage::kAssistant:
-    case AppListBubblePage::kAppsCollections:
       NOTREACHED();
     case AppListBubblePage::kApps:
       apps_page_->ResetScrollPosition();

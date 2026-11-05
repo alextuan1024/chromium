@@ -14,8 +14,6 @@ static_library("os_feedback") {
     "os_feedback_screenshot_manager.h",
   ]
 
-  public_deps = [ "//chrome/browser:browser_public_dependencies" ]
-
   deps = [
     "//ash",
     "//ash/constants",
@@ -31,7 +29,6 @@ static_library("os_feedback") {
     "//chrome/browser/ui/ash/system_web_apps",
     "//chrome/browser/ui/dialogs:browser_dialogs",
     "//chrome/browser/ui/webui/ash/diagnostics_dialog",
-    "//chrome/common",
     "//chromeos/ash/components/browser_context_helper",
     "//chromeos/ash/components/browser_delegate",
     "//chromeos/ash/components/signin:identity_manager_provider",
@@ -82,11 +79,11 @@ source_set("browser_tests") {
     ":os_feedback",
     "//ash/constants",
     "//ash/webui/help_app_ui",
+    "//ash/webui/os_feedback_ui/backend",
     "//base",
     "//chrome/browser",
     "//chrome/browser/ash/system_web_apps",
     "//chrome/browser/signin",
-    "//chrome/browser/ui",
     "//chrome/browser/ui:chrome_pages",
     "//chrome/browser/ui/ash/system_web_apps",
     "//chrome/browser/ui/webui/ash/os_feedback_dialog",
@@ -105,10 +102,6 @@ source_set("browser_tests") {
     "//ui/views",
     "//url",
   ]
-
-  # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
-  # enable the diagnostic by removing this line.
-  configs += [ "//build/config/compiler:no_exit_time_destructors" ]
 }
 
 if (!is_chromeos_device) {
@@ -123,7 +116,6 @@ if (!is_chromeos_device) {
       "//ash/constants",
       "//base",
       "//base/test:test_support",
-      "//chrome/browser/ui",
       "//chrome/browser/ui:chrome_pages",
       "//chrome/test:test_support",
       "//chrome/test/base/ash/interactive:test_support",

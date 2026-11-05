@@ -15,6 +15,7 @@ import android.content.res.Configuration;
 import android.graphics.Rect;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.OutcomeReceiver;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
@@ -28,7 +29,6 @@ import androidx.appcompat.app.AppCompatDelegate;
 import org.jni_zero.CalledByNative;
 import org.jni_zero.NativeMethods;
 
-import org.chromium.base.AconfigFlaggedApiDelegate;
 import org.chromium.base.IntentUtils;
 import org.chromium.base.Log;
 import org.chromium.base.ResettersForTesting;
@@ -51,6 +51,7 @@ import org.chromium.chrome.browser.offlinepages.OfflinePageUtils.WebContentsOffl
 import org.chromium.chrome.browser.page_info.ChromePageInfoControllerDelegate;
 import org.chromium.chrome.browser.page_info.ChromePageInfoHighlight;
 import org.chromium.chrome.browser.profiles.Profile;
+import org.chromium.chrome.browser.profiles.ProfileManager;
 import org.chromium.chrome.browser.profiles.ProfileProvider;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabObserver;
@@ -99,6 +100,7 @@ public class DocumentPictureInPictureActivity extends AsyncInitializationActivit
     private WebContents mWebContents;
     private WebContents mParentWebContents;
     private @MonotonicNonNull Tab mInitiatorTab;
+    private ProfileManager.@Nullable Observer mProfileObserver;
     private @MonotonicNonNull ThinWebView mThinWebView;
     private @MonotonicNonNull TabObserver mInitiatorTabObserver;
     private @MonotonicNonNull PictureInPictureWindowOptions mWindowOptions;
@@ -141,6 +143,32 @@ public class DocumentPictureInPictureActivity extends AsyncInitializationActivit
         }
 
         mWebContents = webContents;
+
+        Profile profile = Profile.fromWebContents(mWebContents);
+        // The profile may have started shutting down while the launch intent was in flight, in
+        // which case onProfileDestroyed() already fired and the observer below would never run.
+        if (profile == null || profile.shutdownStarted()) {
+            destroyContentViewsAndWebContents();
+            finish();
+            return;
+        }
+        mProfileObserver =
+                new ProfileManager.Observer() {
+                    @Override
+                    public void onProfileAdded(Profile addedProfile) {}
+
+                    @Override
+                    public void onProfileDestroyed(Profile destroyedProfile) {
+                        if (destroyedProfile == profile) {
+                            // finish() only schedules onDestroy(), which would run after
+                            // the profile is gone. Tear down the views and WebContents
+                            // now so no WebContents outlives its BrowserContext.
+                            destroyContentViewsAndWebContents();
+                            finish();
+                        }
+                    }
+                };
+        ProfileManager.addObserver(mProfileObserver);
 
         // Handshake with native WindowManager. Since Activity startup is async, C++ might have
         // closed the session while this intent was in-flight. If so, abort to prevent an orphaned
@@ -274,16 +302,12 @@ public class DocumentPictureInPictureActivity extends AsyncInitializationActivit
     }
 
     private void goIntoPinnedMode() {
-        if (!sIgnoreSdkVersionForTesting && Build.VERSION.SDK_INT < Build.VERSION_CODES.BAKLAVA) {
-            Log.e(TAG, "SDK version is too low, minimum required is 36.");
-            finish();
+        if (sIgnoreSdkVersionForTesting) {
+            mIsPinned = true;
             return;
         }
-
-        final AconfigFlaggedApiDelegate aconfigFlaggedApiDelegate =
-                AconfigFlaggedApiDelegate.getInstance();
-        if (aconfigFlaggedApiDelegate == null) {
-            Log.e(TAG, "AconfigFlaggedApiDelegate is null");
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.CINNAMON_BUN) {
+            Log.e(TAG, "SDK version is too low, minimum required is 37.");
             finish();
             return;
         }
@@ -295,17 +319,25 @@ public class DocumentPictureInPictureActivity extends AsyncInitializationActivit
             return;
         }
 
-        aconfigFlaggedApiDelegate
-                .requestPinnedWindowingLayer(appTask, getMainExecutor())
-                .then(
-                        _ -> mIsPinned = true,
-                        (e) -> {
-                            Log.e(
-                                    TAG,
-                                    "Failed to request pinned windowing layer."
-                                            + (e == null ? "" : e.getMessage()));
+        OutcomeReceiver<Integer, Exception> receiver =
+                new OutcomeReceiver<Integer, Exception>() {
+                    @Override
+                    public void onResult(Integer result) {
+                        if (result == AppTask.WINDOWING_LAYER_REQUEST_GRANTED) {
+                            mIsPinned = true;
+                        } else {
+                            Log.e(TAG, "Failed to pin the task with result: %d", result);
                             finish();
-                        });
+                        }
+                    }
+
+                    @Override
+                    public void onError(Exception e) {
+                        Log.e(TAG, "Failed to request pinned windowing layer.", e);
+                        finish();
+                    }
+                };
+        appTask.requestWindowingLayer(AppTask.WINDOWING_LAYER_PINNED, getMainExecutor(), receiver);
     }
 
     @Override
@@ -314,7 +346,9 @@ public class DocumentPictureInPictureActivity extends AsyncInitializationActivit
         // is posted to the UI thread, the opener WebContents could have navigated
         // to a different origin before the child WebContents delegate is attached.
         // If that happens, verify the origin to abort and prevent origin spoofing.
-        if (mParentWebContents == null
+        // The profile observer may have also destroyed mWebContents during this gap.
+        if (mWebContents == null
+                || mParentWebContents == null
                 || mParentWebContents.isDestroyed()
                 || !verifyOpenerOrigin(getIntent(), mParentWebContents)) {
             finish();
@@ -589,7 +623,10 @@ public class DocumentPictureInPictureActivity extends AsyncInitializationActivit
                 /* listenToActivityState= */ true,
                 getIntentRequestTracker(),
                 getInsetObserver(),
-                /* occlusionTrackingAllowed= */ true);
+                // The pinned window stays above the browser window, but WindowOcclusionTracker
+                // ranks windows by top resumed state and would report it as occluded once the
+                // browser window is focused.
+                /* occlusionTrackingAllowed= */ false);
     }
 
     @Override
@@ -685,23 +722,46 @@ public class DocumentPictureInPictureActivity extends AsyncInitializationActivit
         super.onStop();
     }
 
-    @Override
+    /** Destroys views before the WebContents they host. Safe to call more than once. */
     @SuppressWarnings("NullAway")
-    protected final void onDestroy() {
+    private void destroyContentViewsAndWebContents() {
+        if (mHeaderCoordinator != null) {
+            mHeaderCoordinator.destroy();
+            mHeaderCoordinator = null;
+        }
         if (mThinWebView != null) {
             mThinWebView.destroy();
             mThinWebView = null;
         }
         if (mWebContents != null) {
-            if (mIsRecreating) {
+            if (!mWebContents.isDestroyed()) {
+                mWebContents.destroy();
+            }
+            mWebContents = null;
+        }
+    }
+
+    @Override
+    @SuppressWarnings("NullAway")
+    protected final void onDestroy() {
+        if (mProfileObserver != null) {
+            ProfileManager.removeObserver(mProfileObserver);
+            mProfileObserver = null;
+        }
+
+        if (mIsRecreating) {
+            if (mThinWebView != null) {
+                mThinWebView.destroy();
+                mThinWebView = null;
+            }
+            if (mWebContents != null) {
                 // Hide the web contents instead of destroying it so that it can be reused in the
                 // recreated activity, WebContents would be shown when attached to the new
                 // ThinWebView.
                 mWebContents.updateWebContentsVisibility(Visibility.HIDDEN);
-            } else {
-                mWebContents.destroy();
-                mWebContents = null;
             }
+        } else {
+            destroyContentViewsAndWebContents();
         }
 
         if (mParentWebContents != null && !mParentWebContents.isDestroyed() && !mIsRecreating) {
@@ -896,10 +956,9 @@ public class DocumentPictureInPictureActivity extends AsyncInitializationActivit
         if (!initialOpenerOriginStr.equals(currentOpenerOriginStr)) {
             Log.e(
                     TAG,
-                    "Opener origin mismatch! Initial: "
-                            + initialOpenerOriginStr
-                            + ", Current: "
-                            + currentOpenerOriginStr);
+                    "Opener origin mismatch! Initial: %s, Current: %s",
+                    initialOpenerOriginStr,
+                    currentOpenerOriginStr);
             return false;
         }
         return true;

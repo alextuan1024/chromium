@@ -7,33 +7,39 @@
 
 #include <map>
 #include <optional>
+#include <string_view>
 #include <vector>
 
 #include "base/callback_list.h"
 #include "base/containers/flat_map.h"
 #include "base/functional/callback_forward.h"
-#include "base/memory/memory_pressure_listener.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
+#include "base/memory_coordinator/memory_consumer.h"
 #include "base/observer_list.h"
 #include "base/scoped_observation.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
 #include "chrome/browser/glic/common/glic_tab_observer.h"
 #include "chrome/browser/glic/common/instance_independent_hotkey_manager.h"
+#include "chrome/browser/glic/glic_enums.h"
 #include "chrome/browser/glic/glic_tab_restore_data.h"
 #include "chrome/browser/glic/host/glic.mojom.h"
 #include "chrome/browser/glic/host/glic_web_client_access.h"
 #include "chrome/browser/glic/host/host.h"
 #include "chrome/browser/glic/public/context/glic_sharing_manager.h"
+#include "chrome/browser/glic/public/glic_cui_tracker.h"
 #include "chrome/browser/glic/public/glic_enabling.h"
 #include "chrome/browser/glic/public/glic_invoke_options.h"
 #include "chrome/browser/glic/public/glic_passkeys.h"
 #include "chrome/browser/glic/public/service/glic_instance_coordinator.h"
 #include "chrome/browser/glic/service/glic_instance_impl.h"
+#include "chrome/browser/glic/service/glic_instance_limit_calculator.h"
 #include "chrome/browser/glic/service/glic_invoke_handler.h"
 #include "chrome/browser/glic/service/glic_onboarding_tracker.h"
+#include "chrome/browser/glic/service/glic_wayfinding_controller.h"
 #include "chrome/browser/glic/service/metrics/glic_instance_coordinator_metrics.h"
+#include "chrome/browser/glic/service/metrics/glic_invoke_metrics.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/tabs/tab_strip_model_observer.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
@@ -48,10 +54,6 @@ namespace tabs {
 class TabInterface;
 }
 
-namespace gfx {
-class Point;
-}  // namespace gfx
-
 namespace glic {
 
 class GlicActiveInstanceSharingManager;
@@ -60,15 +62,16 @@ class GlicWebContentsManager;
 class GlicWebContentsWarmingPool;
 BASE_DECLARE_FEATURE(kGlicHibernateOnMemoryUsage);
 
-BASE_DECLARE_FEATURE(kGlicMaxAwakeInstances);
-
 class GlicInstanceCoordinatorImpl
     : public GlicInstanceCoordinator,
       public GlicInstanceImpl::InstanceCoordinatorDelegate,
-      public base::MemoryPressureListener,
+      public base::MemoryConsumer,
       public GlicInstanceCoordinatorMetrics::DataProvider,
       public signin::IdentityManager::Observer {
  public:
+  static constexpr std::string_view kMemoryConsumerName =
+      "GlicInstanceCoordinatorImpl";
+
   GlicInstanceCoordinatorImpl(const GlicInstanceCoordinatorImpl&) = delete;
   GlicInstanceCoordinatorImpl& operator=(const GlicInstanceCoordinatorImpl&) =
       delete;
@@ -84,7 +87,6 @@ class GlicInstanceCoordinatorImpl
   GlicKeyedService* service() { return service_; }
 
   // GlicInstanceImpl::InstanceCoordinatorDelegate implementation
-  void OnInstanceWillAwaken() override;
   void OnInstanceVisibilityChanged(GlicInstanceImpl* instance,
                                    bool is_showing) override;
   void OnInstanceActivationChanged(GlicInstanceImpl* instance,
@@ -105,10 +107,13 @@ class GlicInstanceCoordinatorImpl
   // conversation. Used by the web client to get recent conversations.
   std::vector<glic::mojom::ConversationInfoPtr> GetRecentlyActiveConversations(
       size_t limit) override;
+  Profile* GetProfile() const override;
   void ContextAccessIndicatorChanged(GlicInstanceImpl& instance,
                                      bool enabled) override;
   bool IsInvoking(const GlicInstanceImpl* instance) const override;
   void CancelInvoke(GlicInstanceImpl* instance) override;
+  void CancelInvokesOnPanelClose(GlicInstanceImpl* instance,
+                                 GlicInvokeError error) override;
   // TODO(crbug.com/545714879): Remove OnInvoked, OnUserInputSubmitted, and
   // OnFreOptInShown delegate overrides when GlicOnboardingTracker is refactored
   // to free-standing profile helper functions.
@@ -124,15 +129,20 @@ class GlicInstanceCoordinatorImpl
 
   // GlicInstanceCoordinatorMetrics::DataProvider implementation
   int GetVisibleInstanceCount() const override;
+  std::vector<GlicInstanceImpl*> GetInstances() override;
 
   bool IsAnyPanelShowing() const override;
   bool IsConversationPresent(const std::string& conversation_id) const override;
+  bool IsConversationPanelShowingForTab(
+      const std::string& conversation_id,
+      const tabs::TabInterface* tab) const override;
   GlicInstanceCoordinator::ActivateTabResult ActivateTabWithConversation(
       const std::string& conversation_id) override;
   // GlicInstanceCoordinator implementation
+  GlicInstance* GetInstanceForConversationId(
+      const std::string& conversation_id) const override;
+  GlicInstance* GetInstanceForTaskId(int task_id) const override;
   GlicInstance* GetInstanceForTab(const tabs::TabInterface* tab) const override;
-  GlicInstance* GetInstanceForTabGroup(
-      tab_groups::TabGroupId group_id) const override;
   GlicInstance* ShowInstanceForTabGroup(
       tab_groups::TabGroupId group_id) override;
   GlicInstance* GetInstanceWithGlicWebContents(
@@ -166,7 +176,7 @@ class GlicInstanceCoordinatorImpl
   // Shuts down all hosts. Only call it before destruction of the instance
   // coordinator.
   void Shutdown() override;
-  void Close(const CloseOptions& options) override;
+  void CloseFloatingPanel() override;
   base::WeakPtr<GlicInstance> Invoke(GlicInvokeOptions options) override;
   base::WeakPtr<GlicInstance> InvokeWithAutoSubmit(
       InvokeWithAutoSubmitPasskey auto_submit_passkey,
@@ -176,19 +186,21 @@ class GlicInstanceCoordinatorImpl
       GlicInvokeOptions options,
       GlicInvokeWithAutoSubmitOptions auto_submit_options);
 
-  void CloseInstanceWithFrame(
-      content::RenderFrameHost* render_frame_host) override;
   void CloseAndShutdownInstanceWithFrame(
       content::RenderFrameHost* render_frame_host) override;
   void ArchiveInstanceWithFrame(
       content::RenderFrameHost* render_frame_host) override;
 
-  bool IsDetached() const override;
   bool IsPanelShowingForBrowser(
       const BrowserWindowInterface& bwi) const override;
+  bool WouldToggleClose(BrowserWindowInterface* browser) const override;
 
   base::CallbackListSubscription AddGlobalShowHideCallback(
       base::RepeatingClosure callback) override;
+  using InstanceCreatedCallback =
+      base::RepeatingCallback<void(GlicInstanceImpl*)>;
+  base::CallbackListSubscription AddInstanceCreatedCallback(
+      InstanceCreatedCallback callback);
   void Reload(content::RenderFrameHost* render_frame_host) override;
   base::WeakPtr<GlicInstanceCoordinatorImpl> GetWeakPtr();
 
@@ -204,9 +216,6 @@ class GlicInstanceCoordinatorImpl
   // Testing support.
   void SetWarmingEnabledForTesting(bool warming_enabled);
   GlicWebContentsWarmingPool& GetWebContentsWarmingPoolForTesting();
-  std::string DescribeForTesting();
-  std::vector<GlicInstanceImpl*> GetInstances() override;
-  GlicInstanceCoordinatorMetrics& GetMetricsForTesting() { return metrics_; }
   InstanceIndependentHotkeyManager* GetHotkeyManagerForTesting() {
     return hotkey_manager_.get();
   }
@@ -217,17 +226,22 @@ class GlicInstanceCoordinatorImpl
   GlicInstanceImpl* GetInstanceImplForTabGroup(
       tab_groups::TabGroupId group_id) const;
 
-  void RemoveInstance(InstanceId id) override;
+  void RemoveInstance(InstanceId id, InstanceRemovalReason reason) override;
 
  private:
-  void RemoveAllInstances();
+  void RemoveAllInstances(InstanceRemovalReason reason);
   void TransferTabGroupBinding(GlicInstanceImpl& source_instance,
                                GlicInstanceImpl& target_instance);
+  // `entry_path` says which public entry point this came from. It is
+  // recorded on the invocation's structured metrics, and the toggle path
+  // skips the check for a conflicting in-progress client invoke.
+  // `cui_tracker`, if any, is resolved with the invocation's outcome.
   base::WeakPtr<GlicInstanceImpl> InvokeInternal(
       std::optional<InvokeWithAutoSubmitPasskey> auto_submit_passkey,
       GlicInvokeOptions options,
       GlicInvokeWithAutoSubmitOptions auto_submit_options,
-      bool bypass_in_progress_check = false);
+      GlicInvokeEntryPath entry_path,
+      std::unique_ptr<GlicCuiTracker> cui_tracker = nullptr);
 
   void OnTabEvent(const GlicTabEvent& event);
   // Returns a pointer to an instance with the given conversation id or nullptr
@@ -264,9 +278,9 @@ class GlicInstanceCoordinatorImpl
       const EmbedderKey& key,
       std::unique_ptr<GlicWindowInvocationTracker> invocation_tracker);
 
-  void CloseFloaty(const CloseOptions& options = {});
-
-  void OnMemoryPressure(base::MemoryPressureLevel level) override;
+  // base::MemoryConsumer:
+  void OnUpdateMemoryLimit() override;
+  void OnReleaseMemory() override;
 
   // Enforces the maximum awake instances limit (`kGlicMaxAwakeInstances`).
   // If the current count of awake (non-hibernated) instances is at or above the
@@ -283,8 +297,15 @@ class GlicInstanceCoordinatorImpl
   // the limit may be temporarily exceeded.
   void TrimAwakeInstancesTo(size_t target_total_awake_count);
 
-  // Returns the current maximum number of awake instances allowed. When
-  // `base::kStatefulMemoryPressure` is enabled, this limit is dynamically
+  // Returns the current count of unhibernated (awake) Glic instances.
+  size_t GetAwakeInstancesCount() const;
+
+  // Computes the target maximum number of awake instances based on current
+  // memory pressure (`ScaleAwakeInstancesLimit`).
+  size_t ComputeTargetMaxAwakeInstancesLimit() const;
+
+  // Returns the currently enforced maximum number of awake instances allowed.
+  // When `base::kStatefulMemoryPressure` is enabled, this limit is dynamically
   // scaled down based on the current system memory pressure level.
   size_t GetCurrentMaxAwakeInstancesLimit() const;
 
@@ -314,12 +335,31 @@ class GlicInstanceCoordinatorImpl
       GlicInstance* instance,
       GlicInvokeHandler* handler);
 
+  // Removes all of `instance`'s handlers from `invoke_handlers_` and returns
+  // ownership of them. Cancelling a handler re-enters
+  // OnInvokeHandlerComplete(), so take them before cancelling.
+  std::vector<std::unique_ptr<GlicInvokeHandler>> TakeInvokeHandlers(
+      GlicInstance* instance);
+
   GlicInstanceImpl* GetOrRestoreInstanceImpl(
       const GlicRestoredState::InstanceInfo& instance_info);
   void RestoreTab(content::WebContents* web_contents,
                   const GlicRestoredState& state);
 
   bool MaybeInvoke(BrowserWindowInterface* bwi, mojom::InvocationSource source);
+
+  // The panel that a toggle would close, along with the embedder to close it
+  // through.
+  struct ToggleCloseTarget {
+    raw_ptr<GlicInstanceImpl> instance;
+    EmbedderKey key;
+  };
+
+  // Returns the target that a toggle would close now, or nullopt if a toggle
+  // would open a panel instead.
+  std::optional<ToggleCloseTarget> FindCloseTargetForToggle(
+      BrowserWindowInterface* bwi) const;
+
   bool MaybeCloseForToggle(BrowserWindowInterface* bwi,
                            mojom::InvocationSource source);
 
@@ -347,13 +387,19 @@ class GlicInstanceCoordinatorImpl
   base::RepeatingCallbackList<void(GlicInstance*)>
       active_instance_changed_callback_list_;
   base::RepeatingClosureList global_show_hide_callback_list_;
+  base::RepeatingCallbackList<void(GlicInstanceImpl*)>
+      instance_created_callback_list_;
 
-  base::MemoryPressureListenerRegistration
-      memory_pressure_listener_registration_;
+  std::optional<base::MemoryConsumerRegistration> memory_consumer_registration_;
+
+  // The effective awake limit applied during OnUpdateMemoryLimit() and
+  // OnReleaseMemory().
+  size_t current_max_awake_limit_ = 0;
 
   bool warming_enabled_ = true;
 
   std::unique_ptr<GlicOnboardingTracker> onboarding_tracker_;
+  std::unique_ptr<GlicWayfindingController> wayfinding_controller_;
 
   GlicInstanceCoordinatorMetrics metrics_;
 

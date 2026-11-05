@@ -298,6 +298,64 @@ class TestShardingMapGenerator(unittest.TestCase):
       sharding_map['2']['crossbench']['cb_benchmark_0']['arguments'],
     )
 
+  def testGenerateShardingMapWithCrossbenchRepeat(self):
+    (
+      benchmarks_data,
+      timing_data,
+    ) = self._generate_test_data(
+      [[10, 20, 30], [65, 55, 5, 45], [50, 40, 30, 20, 10]]
+    )
+    benchmarks_data.append(
+      bot_platforms.CrossbenchConfig(
+        'cb_benchmark_0', 'cb_benchmark_0_name', flags=['--my_arg'], repeat=10
+      )
+    )
+    sharding_map = sharding_map_generator.generate_sharding_map(
+      benchmarks_data, timing_data, 3, None
+    )
+    self.assertIn('cb_benchmark_0', sharding_map['2']['crossbench'])
+    self.assertEqual(
+      ('--my_arg', '--enable-field-trials=benchmarking', '--repeat=10'),
+      sharding_map['2']['crossbench']['cb_benchmark_0']['arguments'],
+    )
+
+  def testMeasuredTimingOnlyScaledByRepeatForTelemetry(self):
+    telemetry = FakeBenchmarkConfig('telemetry', stories=['s_1'], repeat=3)
+    crossbench = bot_platforms.CrossbenchConfig(
+      'cb_benchmark', 'cb_benchmark_name', estimated_runtime=60, repeat=10
+    )
+    executable = bot_platforms.ExecutableConfig(
+      'gtest_benchmark', estimated_runtime=60, repeat=2
+    )
+    timing_data = [
+      {'name': 'telemetry/s_1', 'duration': '10'},
+      {'name': 'cb_benchmark/default', 'duration': '500'},
+      {
+        'name': 'gtest_benchmark/' + bot_platforms.GTEST_STORY_NAME,
+        'duration': '200',
+      },
+    ]
+    timing_list = sharding_map_generator._gather_timing_data(
+      [telemetry, crossbench, executable], timing_data, True
+    )
+    self.assertEqual(
+      dict(timing_list),
+      {
+        'telemetry/s_1': 30,
+        'cb_benchmark/default': 500,
+        'gtest_benchmark/' + bot_platforms.GTEST_STORY_NAME: 200,
+      },
+    )
+
+  def testCrossbenchWithoutTimingDataFallsBackToEstimate(self):
+    crossbench = bot_platforms.CrossbenchConfig(
+      'cb_benchmark', 'cb_benchmark_name', estimated_runtime=60, repeat=10
+    )
+    timing_list = sharding_map_generator._gather_timing_data(
+      [crossbench], [], True
+    )
+    self.assertEqual(dict(timing_list), {'cb_benchmark/default': 60})
+
 
 if __name__ == '__main__':
   unittest.main()

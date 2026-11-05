@@ -7,8 +7,8 @@
 #include "chrome/browser/origin_gating/origin_gating_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
+#include "chrome/browser/stream_transport/transport_service_factory.h"
 #include "chrome/common/chrome_features.h"
-#include "components/actor/core/actor_features.h"
 #include "content/public/browser/browser_context.h"
 
 namespace actor {
@@ -34,6 +34,7 @@ ActorKeyedServiceFactory::ActorKeyedServiceFactory(
                                  ProfileSelections::BuildForRegularProfile()) {
   DependsOn(IdentityManagerFactory::GetInstance());
   DependsOn(origin_gating::OriginGatingServiceFactory::GetInstance());
+  DependsOn(stream_transport::TransportServiceFactory::GetInstance());
 }
 
 ActorKeyedServiceFactory::~ActorKeyedServiceFactory() = default;

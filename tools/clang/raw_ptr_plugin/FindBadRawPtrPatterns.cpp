@@ -215,7 +215,8 @@ class ContainerOfPointersFieldMatcher : public MatchFinder::MatchCallback {
       const RawPtrContainerConfig& config)
       : compiler_(compiler),
         exclusion_options_(exclusion_options),
-        config_(config) {
+        config_(config),
+        excluded_pointer_types_(config.excluded_pointer_types) {
     error_need_container_signature_ =
         compiler_.getDiagnostics().getCustomDiagID(
             clang::DiagnosticsEngine::Error,
@@ -267,10 +268,17 @@ class ContainerOfPointersFieldMatcher : public MatchFinder::MatchCallback {
                   hasDeclaration(classTemplateDecl(container_matcher)),
                   hasAnyTemplateArgument(refersToType(arg_ptr_type))))));
 
+    // `hasCanonicalType` strips the typedef sugar from the template arguments,
+    // so `hasExcludedPointerTemplateArgument` additionally checks the
+    // arguments as written, to skip the fields using a pointer type listed in
+    // the config (e.g. `std::vector<HANDLE>`). It is evaluated last, so only
+    // on fields that would otherwise be diagnosed.
     auto field_decl_matcher =
         traverse(clang::TK_IgnoreUnlessSpelledInSource,
                  fieldDecl(hasType(hasCanonicalType(supported_containers)),
-                           unless(PtrAndRefExclusions(exclusion_options_)))
+                           unless(PtrAndRefExclusions(exclusion_options_)),
+                           unless(hasExcludedPointerTemplateArgument(
+                               &excluded_pointer_types_)))
                      .bind("affectedFieldDecl"));
 
     match_finder.addMatcher(field_decl_matcher, this);
@@ -291,6 +299,8 @@ class ContainerOfPointersFieldMatcher : public MatchFinder::MatchCallback {
   unsigned error_need_container_signature_;
   const RawPtrAndRefExclusionsOptions exclusion_options_;
   const RawPtrContainerConfig& config_;
+  // Built from `config_.excluded_pointer_types`.
+  const ExcludedPointerTypeSet excluded_pointer_types_;
 };
 
 const char kNoRawPtrToStackAllocatedSignature[] =
@@ -408,11 +418,11 @@ class SpanFieldMatcher : public MatchFinder::MatchCallback {
     auto container_of_span_type =
         qualType(hasCanonicalType(anyOf(
                      qualType(hasDeclaration(classTemplateSpecializationDecl(
-                         container_methods, template_arguments))),
+                         template_arguments, container_methods))),
                      qualType(type(templateSpecializationType(
+                         template_arguments,
                          hasDeclaration(classTemplateDecl(
-                             has(cxxRecordDecl(container_methods)))),
-                         template_arguments))))))
+                             has(cxxRecordDecl(container_methods))))))))))
             .bind("container_type");
 
     auto field_decl_matcher =
@@ -462,7 +472,8 @@ void FindBadRawPtrPatterns(const Options& options,
   std::vector<std::string> check_bad_raw_ptr_cast_exclude_paths;
 
   AddManualPathsToIgnore(paths_to_exclude_lines,
-                         options.explicitly_ignore_oilpanized_paths);
+                         options.explicitly_ignore_oilpanized_paths,
+                         options.check_raw_ptr_in_blink);
   for (auto* const line : kSeparateRepositoryPaths) {
     paths_to_exclude_lines.push_back(line);
     check_bad_raw_ptr_cast_exclude_paths.push_back(line);

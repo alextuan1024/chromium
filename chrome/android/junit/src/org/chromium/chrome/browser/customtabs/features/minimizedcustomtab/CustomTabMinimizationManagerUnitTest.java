@@ -12,14 +12,12 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import static org.chromium.chrome.browser.customtabs.features.minimizedcustomtab.CustomTabMinimizationManager.KEY_IS_CCT_MINIMIZED;
 import static org.chromium.chrome.browser.tab.TabSelectionType.FROM_USER;
 
-import android.app.PictureInPictureParams;
 import android.os.Build;
 import android.os.Build.VERSION_CODES;
 import android.os.Bundle;
@@ -38,7 +36,6 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
-import org.mockito.Spy;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 import org.robolectric.annotation.Config;
@@ -60,8 +57,8 @@ import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabHidingType;
 import org.chromium.chrome.browser.toolbar.top.ResourceFactory;
 import org.chromium.chrome.browser.toolbar.top.ResourceFactoryJni;
-import org.chromium.components.dom_distiller.core.DomDistillerUrlUtilsJni;
 import org.chromium.components.url_formatter.UrlFormatter;
+import org.chromium.components.web_distiller.core.WebDistillerUrlUtilsJni;
 import org.chromium.content_public.browser.WebContents;
 import org.chromium.url.GURL;
 import org.chromium.url.JUnitTestGURLs;
@@ -85,14 +82,14 @@ public class CustomTabMinimizationManagerUnitTest {
                     JUnitTestGURLs.SEARCH_URL);
 
     private ActivityScenario<CustomTabActivity> mActivityScenario;
-    @Spy private AppCompatActivity mActivity;
+    private AppCompatActivity mActivity;
     @Mock private Tab mTab;
     @Mock private WebContents mWebContents;
     @Mock private MinimizedCustomTabFeatureEngagementDelegate mFeatureEngagementDelegate;
     @Mock private BrowserServicesIntentDataProvider mIntentData;
     @Mock private CustomTabsConnection mConnection;
     @Mock private Runnable mCloseTabRunnable;
-    @Mock private DomDistillerUrlUtilsJni mDomDistillerUrlUtilsJni;
+    @Mock private WebDistillerUrlUtilsJni mWebDistillerUrlUtilsJni;
     @Mock private ResourceFactory.Natives mResourceFactoryNatives;
     @Mock private CustomTabMinimizeDelegate.Observer mMinimizationObserver;
     @Mock private CustomTabMinimizeDelegate mOtherMinimizeDelegate;
@@ -104,19 +101,17 @@ public class CustomTabMinimizationManagerUnitTest {
 
     @Before
     public void setUp() {
-        DomDistillerUrlUtilsJni.setInstanceForTesting(mDomDistillerUrlUtilsJni);
+        WebDistillerUrlUtilsJni.setInstanceForTesting(mWebDistillerUrlUtilsJni);
         ResourceFactoryJni.setInstanceForTesting(mResourceFactoryNatives);
 
         mActivityScenario = ActivityScenario.launch(CustomTabActivity.class);
-        mActivityScenario.onActivity(activity -> mActivity = spy(activity));
+        mActivityScenario.onActivity(activity -> mActivity = activity);
 
         CustomTabsConnection.setInstanceForTesting(mConnection);
         mActivityTabProvider.setForTesting(mTab);
         when(mTab.getWebContents()).thenReturn(mWebContents);
         when(mTab.getUrl()).thenReturn(JUnitTestGURLs.SEARCH_URL);
         when(mTab.getTitle()).thenReturn(TITLE);
-        when(mActivity.enterPictureInPictureMode(any(PictureInPictureParams.class)))
-                .thenReturn(true);
         mManager =
                 new CustomTabMinimizationManager(
                         mActivity,
@@ -139,8 +134,9 @@ public class CustomTabMinimizationManagerUnitTest {
 
     @Test
     public void testMinimize() {
+        assertFalse(mActivity.isInPictureInPictureMode());
         mManager.minimize();
-        verify(mActivity).enterPictureInPictureMode(any(PictureInPictureParams.class));
+        assertTrue(mActivity.isInPictureInPictureMode());
         verify(mFeatureEngagementDelegate).notifyUserEngaged();
         verify(mMinimizationObserver).onMinimizationChanged(true);
 
@@ -189,7 +185,7 @@ public class CustomTabMinimizationManagerUnitTest {
         String distillerUrl = "chrome-distiller://url/";
         // Simulate having a distiller URL in the tab.
         when(mTab.getUrl()).thenReturn(new GURL(distillerUrl));
-        when(mDomDistillerUrlUtilsJni.isDistilledPage(distillerUrl)).thenReturn(true);
+        when(mWebDistillerUrlUtilsJni.isDistilledPage(distillerUrl)).thenReturn(true);
         when(mTab.getOriginalUrl()).thenReturn(JUnitTestGURLs.SEARCH_URL);
 
         mManager.minimize();

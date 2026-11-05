@@ -519,10 +519,10 @@
 <translation id="5045550434625856497">Sandi salah</translation>
 <translation id="5059127710849015030">Transliterasi Nepali</translation>
 <translation id="5068919226082848014">Pizza</translation>
+<translation id="5075336522277785691"><ph name="EXTENSION_NAME" /> menetapkan aturan penggantian proxy</translation>
 <translation id="5081517858322016911"><ph name="TOTAL_FILE_SIZE" /> file akan dihapus</translation>
 <translation id="508423945471810158">Memindahkan <ph name="NUMBER_OF_ITEMS" /> item ke <ph name="FOLDER_NAME" /></translation>
 <translation id="509429900233858213">Terjadi error.</translation>
-<translation id="5102922915594634436">Kelola folder yang disinkronkan</translation>
 <translation id="5109254780565519649">Terjadi error. Beberapa item mungkin belum dipulihkan.</translation>
 <translation id="5110329002213341433">Inggris (Kanada)</translation>
 <translation id="5119780910075847424">Sinkronisasi dijeda</translation>
@@ -558,7 +558,6 @@
 <translation id="5305688511332277257">Tidak ada yang dipasang</translation>
 <translation id="5317780077021120954">Simpan</translation>
 <translation id="5318819489018851358">Bagikan dengan Linux</translation>
-<translation id="5330145655348521461">File ini dibuka pada desktop yang berbeda. Pindahkan ke <ph name="USER_NAME" /> (<ph name="MAIL_ADDRESS" />) untuk melihatnya.</translation>
 <translation id="5330512191124428349">Dapatkan info</translation>
 <translation id="535792325654997756">Orang dengan kucing</translation>
 <translation id="5358764674931277">Kecepatan frame</translation>
@@ -699,7 +698,6 @@
 <translation id="636254897931573416">Nilai kecocokan suffix domain tidak valid</translation>
 <translation id="6364301859968397756">Penyimpanan organisasi penuh</translation>
 <translation id="6367976544441405720">Van</translation>
-<translation id="637062427944097960">File ini dibuka pada desktop yang berbeda. Pindahkan ke <ph name="USER_NAME" /> (<ph name="MAIL_ADDRESS" />) untuk melihatnya.</translation>
 <translation id="6394388407447716302">Hanya baca</translation>
 <translation id="6395575651121294044"><ph name="NUMBER_OF_FILES" /> item</translation>
 <translation id="6407769893376380348"><ph name="FILE_NAME" /> tidak dapat dipindahkan karena dienkripsi.</translation>

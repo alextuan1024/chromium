@@ -4,11 +4,11 @@
 
 #include "content/browser/service_worker/service_worker_client.h"
 
+#include <ranges>
 #include <set>
 #include <variant>
 
 #include "base/check_is_test.h"
-#include "base/containers/adapters.h"
 #include "base/debug/alias.h"
 #include "base/debug/crash_logging.h"
 #include "base/metrics/histogram_functions.h"
@@ -371,7 +371,8 @@ void ServiceWorkerClient::RemoveMatchingRegistration(
 
 ServiceWorkerRegistration* ServiceWorkerClient::MatchRegistration() const {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  for (const auto& registration : base::Reversed(matching_registrations_)) {
+  for (const auto& registration :
+       std::views::reverse(matching_registrations_)) {
     if (registration.second->is_uninstalled()) {
       continue;
     }
@@ -649,10 +650,12 @@ std::optional<blink::StorageKey> GetStorageKeyFromRenderFrameHost(
 }
 
 // For dedicated/shared worker cases, if a storage key is returned, it will have
-// its origin replaced by |origin|. This would mean that the origin of the
-// WorkerHost and the origin as used by the service worker code don't match,
-// however in cases where these wouldn't match the load will be aborted later
-// anyway.
+// its origin replaced by |origin| (the script URL's origin). The worker's own
+// StorageKey origin is never opaque here:
+// ServiceWorkerMainResourceLoaderInterceptor::CreateForWorker() refuses to
+// create a ServiceWorkerClient for opaque-origin workers, so this substitution
+// cannot turn an opaque worker into a client matching its precursor origin's
+// registrations (crbug.com/578670204).
 std::optional<blink::StorageKey> GetStorageKeyFromDedicatedWorkerHost(
     content::StoragePartition* storage_partition,
     blink::DedicatedWorkerToken dedicated_worker_token,
@@ -662,6 +665,7 @@ std::optional<blink::StorageKey> GetStorageKeyFromDedicatedWorkerHost(
   auto* worker_host =
       worker_service->GetDedicatedWorkerHostFromToken(dedicated_worker_token);
   if (worker_host) {
+    DUMP_WILL_BE_CHECK(!worker_host->GetWorkerStorageKey().origin().opaque());
     return worker_host->GetWorkerStorageKey().WithOrigin(origin);
   }
   return std::nullopt;
@@ -676,6 +680,7 @@ std::optional<blink::StorageKey> GetStorageKeyFromSharedWorkerHost(
   auto* worker_host =
       worker_service->GetSharedWorkerHostFromToken(shared_worker_token);
   if (worker_host) {
+    DUMP_WILL_BE_CHECK(!worker_host->GetWorkerStorageKey().origin().opaque());
     return worker_host->GetWorkerStorageKey().WithOrigin(origin);
   }
   return std::nullopt;

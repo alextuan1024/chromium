@@ -11,54 +11,38 @@ import org.chromium.base.ApkAssets;
 import org.chromium.base.LocaleUtils;
 import org.chromium.base.Log;
 import org.chromium.base.ResettersForTesting;
+import org.chromium.build.BuildConfig;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 
 import java.util.Arrays;
 
-/**
- * This class provides the resource bundle related methods for the native
- * library.
- *
- * IMPORTANT: Clients that use {@link ResourceBundle} MUST call either
- * {@link ResourceBundle#setAvailablePakLocales(String[], String[])} or
- * {@link ResourceBundle#setNoAvailableLocalePaks()} before calling the getters in this class.
- */
+/** This class provides the resource bundle related methods for the native library. */
 @JNINamespace("ui")
 @NullMarked
 public final class ResourceBundle {
     private static final String TAG = "ResourceBundle";
-    private static String @Nullable [] sAvailableLocales;
+    private static String[] sAvailableLocales = BuildConfig.LOCALES;
     private static boolean sOverrideApkSubpathExistsForTesting;
-    private static boolean sOverrideFallbackPathExistsForTesting;
 
     private ResourceBundle() {}
 
-    /** Initiaze with no locales. */
-    public static void setNoAvailableLocalePaks() {
-        setAvailablePakLocales(new String[] {});
-    }
-
     /**
-     * Sets the available locale pak files.
+     * Sets the available locale pak files for testing.
      *
      * @param locales Locales that have pak files.
      */
-    public static void setAvailablePakLocales(String[] locales) {
-        assert sAvailableLocales == null;
+    public static void setAvailablePakLocalesForTesting(String[] locales) {
         sAvailableLocales = locales;
-    }
-
-    public static void clearAvailablePakLocalesForTesting() {
-        sAvailableLocales = null;
+        ResettersForTesting.register(() -> sAvailableLocales = BuildConfig.LOCALES);
     }
 
     /**
      * Return the list of available locales.
+     *
      * @return The correct locale list for this build.
      */
     public static String[] getAvailableLocales() {
-        assert sAvailableLocales != null;
         return sAvailableLocales;
     }
 
@@ -67,44 +51,42 @@ public final class ResourceBundle {
      *
      * @param locale Chromium locale name.
      * @param gender User's gender.
-     * @param inBundle If true, return the path of the uncompressed .pak file containing Chromium UI
-     *     strings within app bundles. If false, return the path of the WebView UI strings instead.
+     * @param inSplit If true, return the path of the .pak file containing Chromium UI strings,
+     *     which is stored in a language split when using app bundles. If false, return the path of
+     *     the WebView UI strings instead.
      * @param logError Logs if the file is not found.
      * @return Asset path to .pak file, or null if the locale is not supported.
      */
     @CalledByNative
     static @Nullable String getLocalePakResourcePath(
-            String locale, @Gender int gender, boolean inBundle, boolean logError) {
-        if (sAvailableLocales == null) {
-            // Locales may be null in unit tests.
-            return null;
-        }
+            String locale, @Gender int gender, boolean inSplit, boolean logError) {
         if (Arrays.binarySearch(sAvailableLocales, locale) < 0) {
             // This locale is not supported by Chromium.
             return null;
         }
-        String pathPrefix = "assets/stored-locales/";
-        if (inBundle) {
-            if (locale.equals("en-US")) {
-                pathPrefix = "assets/fallback-locales/";
-            } else {
-                String lang =
-                        LocalizationUtils.getSplitLanguageForAndroid(
-                                LocaleUtils.toBaseLanguage(locale));
-                pathPrefix = "assets/locales#lang_" + lang + "/";
-            }
+        String pathPrefix;
+        if (!inSplit) {
+            pathPrefix = "assets/stored-locales/";
+        } else if (locale.equals("en-US") && gender == Gender.DEFAULT) {
+            pathPrefix = "assets/fallback-locales/";
+        } else {
+            String lang =
+                    LocalizationUtils.getSplitLanguageForAndroid(
+                            LocaleUtils.toBaseLanguage(locale));
+            pathPrefix = "assets/locales#lang_" + lang + "/";
         }
-        String apkSubpath = maybeAppendGender(pathPrefix + locale, gender) + ".pak";
+        String genderSuffix =
+                switch (gender) {
+                    case Gender.FEMININE -> "_FEMININE";
+                    case Gender.MASCULINE -> "_MASCULINE";
+                    case Gender.NEUTER -> "_NEUTER";
+                    default -> "";
+                };
+        String apkSubpath = pathPrefix + locale + genderSuffix + ".pak";
         // The file may not exist if the language split for this locale has not been installed
         // yet, so make sure it exists before returning the asset path.
         if (ApkAssets.exists(apkSubpath) || sOverrideApkSubpathExistsForTesting) {
             return apkSubpath;
-        }
-        // Fallback for apk targets.
-        // TODO(crbug.com/40168285): Remove the need for this fallback logic.
-        String fallbackPath = maybeAppendGender("assets/locales/" + locale, gender) + ".pak";
-        if (ApkAssets.exists(fallbackPath) || sOverrideFallbackPathExistsForTesting) {
-            return fallbackPath;
         }
         if (logError) {
             Log.e(TAG, "Did not exist: %s", apkSubpath);
@@ -120,33 +102,5 @@ public final class ResourceBundle {
     static void setOverrideApkSubpathExistsForTesting(boolean b) {
         sOverrideApkSubpathExistsForTesting = b;
         ResettersForTesting.register(() -> sOverrideApkSubpathExistsForTesting = false);
-    }
-
-    /**
-     * Sets sOverrideFallbackPathExistsForTesting.
-     *
-     * @param b Value to set.
-     */
-    static void setOverrideFallbackPathExistsForTesting(boolean b) {
-        sOverrideFallbackPathExistsForTesting = b;
-        ResettersForTesting.register(() -> sOverrideFallbackPathExistsForTesting = false);
-    }
-
-    /**
-     * Appends a gender string to the given path if the gender is not the default.
-     *
-     * @param path The path to append to.
-     * @param gender The gender to (maybe) append to the path.
-     * @return A copy of the path, possibly with a gender suffix.
-     */
-    private static String maybeAppendGender(String path, @Gender int gender) {
-        String suffix =
-                switch (gender) {
-                    case Gender.FEMININE -> "_FEMININE";
-                    case Gender.MASCULINE -> "_MASCULINE";
-                    case Gender.NEUTER -> "_NEUTER";
-                    default -> "";
-                };
-        return path + suffix;
     }
 }

@@ -47,11 +47,11 @@ public class GlicEnabling {
         return GlicEnablingJni.get().isEnabledForProfile(profile);
     }
 
-    /** Returns true if the user was previously determined to be ineligible for Glic. */
-    public static boolean wasPreviouslyNotAllowed(@Nullable Profile profile) {
+    /** Returns true if the given profile has Glic enabled and the user has consented. */
+    public static boolean isEnabledAndConsentForProfile(@Nullable Profile profile) {
         if (profile == null) return false;
         if (sIsEnabledForTesting != null) return sIsEnabledForTesting;
-        return GlicEnablingJni.get().wasPreviouslyNotAllowed(profile);
+        return GlicEnablingJni.get().isEnabledAndConsentForProfile(profile);
     }
 
     /** Returns true if the Glic settings page should be shown for the given profile. */
@@ -76,6 +76,14 @@ public class GlicEnabling {
         if (profile == null) return false;
         if (sIsEnabledForTesting != null) return sIsEnabledForTesting;
         return GlicEnablingJni.get().shouldShowExperimentalTriggeringToggle(profile);
+    }
+
+    /**
+     * Returns true if Auto Browse settings should show the country variant of the "things to
+     * consider" disclosure.
+     */
+    public static boolean shouldUseWebActuationDisclosureCountryVariant() {
+        return GlicEnablingJni.get().shouldUseWebActuationDisclosureCountryVariant();
     }
 
     /** Returns true if Glic is ready to be used for the given profile. */
@@ -134,11 +142,11 @@ public class GlicEnabling {
         return GlicEnablingJni.get().isProfileManaged(profile);
     }
 
-    /** Returns true if Glic settings are enforced by enterprise policy. */
-    public static boolean isPolicyEnforced(@Nullable Profile profile) {
+    /** Returns true if the primary account for the profile is an enterprise account. */
+    public static boolean isEnterpriseAccount(@Nullable Profile profile) {
         if (profile == null) return false;
         if (sIsEnabledForTesting != null) return false;
-        return GlicEnablingJni.get().isPolicyEnforced(profile);
+        return GlicEnablingJni.get().isEnterpriseAccount(profile);
     }
 
     /**
@@ -159,7 +167,7 @@ public class GlicEnabling {
 
         boolean isEnabledForProfile(@JniType("Profile*") Profile profile);
 
-        boolean wasPreviouslyNotAllowed(@JniType("Profile*") Profile profile);
+        boolean isEnabledAndConsentForProfile(@JniType("Profile*") Profile profile);
 
         boolean shouldShowSettingsPage(@JniType("Profile*") Profile profile);
 
@@ -171,9 +179,11 @@ public class GlicEnabling {
 
         boolean isDisabledByPolicy(@JniType("Profile*") Profile profile);
 
+        boolean shouldUseWebActuationDisclosureCountryVariant();
+
         boolean isProfileManaged(@JniType("Profile*") Profile profile);
 
-        boolean isPolicyEnforced(@JniType("Profile*") Profile profile);
+        boolean isEnterpriseAccount(@JniType("Profile*") Profile profile);
 
         boolean experimentalOptInIsNeeded(@JniType("Profile*") Profile profile);
 

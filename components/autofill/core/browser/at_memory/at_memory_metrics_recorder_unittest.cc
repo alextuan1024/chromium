@@ -15,7 +15,8 @@
 #include "components/autofill/core/browser/test_utils/autofill_test_util.h"
 #include "components/autofill/core/common/aliases.h"
 #include "components/autofill/core/common/signatures.h"
-#include "components/optimization_guide/core/model_execution/model_execution_prefs.h"
+#include "components/optimization_guide/core/feature_registry/feature_registration.h"
+#include "components/optimization_guide/core/model_quality/model_quality_prefs.h"
 #include "components/optimization_guide/core/model_quality/test_model_quality_logs_uploader_service.h"
 #include "components/prefs/testing_pref_service.h"
 #include "components/ukm/test_ukm_recorder.h"
@@ -42,10 +43,9 @@ HasAction(optimization_guide::proto::AtMemorySuggestionAction action) {
 class AtMemoryMetricsRecorderTest : public testing::Test {
  public:
   AtMemoryMetricsRecorderTest() {
-    optimization_guide::model_execution::prefs::RegisterLocalStatePrefs(
+    optimization_guide::RegisterModelQualityLocalStatePrefs(
         local_state_.registry());
-    optimization_guide::model_execution::prefs::RegisterProfilePrefs(
-        local_state_.registry());
+    optimization_guide::RegisterGenAiFeatures(local_state_.registry());
     uploader_service_ =
         std::make_unique<optimization_guide::TestModelQualityLogsUploaderService>(
             &local_state_);
@@ -97,8 +97,8 @@ TEST_F(AtMemoryMetricsRecorderTest, OnPopupShown_DoubleCtrl) {
       AutofillMetrics::AtMemoryTriggerSource::kDoubleCtrl, 1);
 }
 
-// Tests that `OnPopupShown` is idempotent and only logs a metric for the
-// first call in a session.
+// Tests that `OnPopupShown` is idempotent while the popup is displayed and only
+// logs a metric for the first call.
 TEST_F(AtMemoryMetricsRecorderTest, OnPopupShown_Idempotent) {
   AtMemoryMetricsRecorder metrics(nullptr, &test_ukm_recorder_, kTestSourceId,
                                   GURL(), std::u16string(), FieldGlobalId(),
@@ -112,6 +112,42 @@ TEST_F(AtMemoryMetricsRecorderTest, OnPopupShown_Idempotent) {
   histogram_tester_.ExpectUniqueSample(
       "Autofill.AtMemory.SearchBarDisplayed",
       AutofillMetrics::AtMemoryTriggerSource::kDoubleCtrl, 1);
+}
+
+// Tests that "SearchBarDisplayed" is logged once per display: repeated
+// `OnPopupShown` calls while the popup is visible are ignored, but a re-show
+// after `OnPopupHidden` (search statefulness keeps the session alive) is logged
+// with its own trigger source. The session UKM keeps the first trigger.
+TEST_F(AtMemoryMetricsRecorderTest, OnPopupShown_LogsAgainAfterPopupHidden) {
+  {
+    AtMemoryMetricsRecorder metrics(nullptr, &test_ukm_recorder_, kTestSourceId,
+                                    GURL(), std::u16string(), FieldGlobalId(),
+                                    FormSignature(0), FieldSignature(0));
+    metrics.OnPopupShown(AutofillSuggestionTriggerSource::kAtMemoryDoubleCtrl,
+                         /*metadata=*/{});
+    // A suggestions update while the popup is visible is not a new display.
+    metrics.OnPopupShown(AutofillSuggestionTriggerSource::kAtMemoryDoubleCtrl,
+                         /*metadata=*/{});
+    metrics.OnPopupHidden();
+    metrics.OnPopupShown(AutofillSuggestionTriggerSource::kAtMemoryContextMenu,
+                         /*metadata=*/{});
+
+    histogram_tester_.ExpectTotalCount("Autofill.AtMemory.SearchBarDisplayed",
+                                       2);
+    histogram_tester_.ExpectBucketCount(
+        "Autofill.AtMemory.SearchBarDisplayed",
+        AutofillMetrics::AtMemoryTriggerSource::kDoubleCtrl, 1);
+    histogram_tester_.ExpectBucketCount(
+        "Autofill.AtMemory.SearchBarDisplayed",
+        AutofillMetrics::AtMemoryTriggerSource::kContextMenu, 1);
+  }
+
+  auto entries = test_ukm_recorder_.GetEntriesByName(
+      ukm::builders::AtMemory_UiSession::kEntryName);
+  ASSERT_EQ(entries.size(), 1u);
+  test_ukm_recorder_.ExpectEntryMetric(
+      entries[0], ukm::builders::AtMemory_UiSession::kSearchBarDisplayedName,
+      std::to_underlying(AutofillMetrics::AtMemoryTriggerSource::kDoubleCtrl));
 }
 
 // Tests that the destructor correctly logs that a query was submitted.
@@ -495,6 +531,50 @@ TEST_F(AtMemoryMetricsRecorderTest,
                                            base::Seconds(5), 1);
   histogram_tester_.ExpectUniqueTimeSample(
       "Autofill.AtMemory.Latency.Query.Passport", base::Seconds(5), 1);
+}
+
+// Tests that query latency metric correctly records samples exceeding 10
+// seconds without capping at 10s.
+TEST_F(AtMemoryMetricsRecorderTest,
+       QueryLatency_ExceedsTenSecondsWithoutCapping) {
+  {
+    AtMemoryMetricsRecorder metrics(/*uploader_service=*/nullptr,
+                                    &test_ukm_recorder_, kTestSourceId, GURL(),
+                                    std::u16string(), FieldGlobalId(),
+                                    FormSignature(0), FieldSignature(0));
+    metrics.OnPopupShown(AutofillSuggestionTriggerSource::kAtMemoryContextMenu,
+                         /*metadata=*/{});
+    metrics.OnQuerySubmitted(u"query 1");
+    task_environment_.FastForwardBy(base::Seconds(15));
+    metrics.OnQueryResponseReceived(
+        MemorySearchResults(MemorySearchStatus::kFinalResponseSuccess,
+                            {MemorySearchResult(MemoryDataType::kPassportNumber,
+                                                u"Passport", u"A1234567")}));
+  }
+  {
+    AtMemoryMetricsRecorder metrics(/*uploader_service=*/nullptr,
+                                    &test_ukm_recorder_, kTestSourceId, GURL(),
+                                    std::u16string(), FieldGlobalId(),
+                                    FormSignature(0), FieldSignature(0));
+    metrics.OnPopupShown(AutofillSuggestionTriggerSource::kAtMemoryContextMenu,
+                         /*metadata=*/{});
+    metrics.OnQuerySubmitted(u"query 2");
+    task_environment_.FastForwardBy(base::Seconds(25));
+    metrics.OnQueryResponseReceived(
+        MemorySearchResults(MemorySearchStatus::kFinalResponseSuccess,
+                            {MemorySearchResult(MemoryDataType::kPassportNumber,
+                                                u"Passport", u"A1234567")}));
+  }
+
+  histogram_tester_.ExpectTotalCount("Autofill.AtMemory.Latency.Query", 2);
+  histogram_tester_.ExpectTimeBucketCount("Autofill.AtMemory.Latency.Query",
+                                          base::Seconds(15), 1);
+  histogram_tester_.ExpectTimeBucketCount("Autofill.AtMemory.Latency.Query",
+                                          base::Seconds(25), 1);
+  histogram_tester_.ExpectTimeBucketCount(
+      "Autofill.AtMemory.Latency.Query.Passport", base::Seconds(15), 1);
+  histogram_tester_.ExpectTimeBucketCount(
+      "Autofill.AtMemory.Latency.Query.Passport", base::Seconds(25), 1);
 }
 
 struct FetchPiiLatencyTestCase {

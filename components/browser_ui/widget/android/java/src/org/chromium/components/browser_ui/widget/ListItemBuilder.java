@@ -27,6 +27,7 @@ import org.chromium.ui.modelutil.MVCListAdapter.ListItem;
 import org.chromium.ui.modelutil.PropertyModel;
 
 import java.util.List;
+import java.util.function.Supplier;
 
 /** Builder for creating a {@link ListItem}. */
 @NullMarked
@@ -47,12 +48,13 @@ public class ListItemBuilder {
     private @ColorRes int mIconTintColorStateList;
     private int mStartIconWidth;
     private int mEndIconWidth;
-    private @Nullable List<ListItem> mSubmenuItems;
+    private @Nullable Supplier<List<ListItem>> mSubmenuProvider;
     private @StyleRes int mTextAppearanceStyle;
     private @StyleRes int mSubtitleTextAppearanceStyle;
     private @Px int mVerticalPaddingPx;
     private @Nullable CharSequence mTitle;
     private @Nullable String mSubtitle;
+    private @Nullable CharSequence mShortcutText;
 
     /** Constructs a new builder for a {@link ListItem}. By default, the item is enabled. */
     public ListItemBuilder() {
@@ -82,6 +84,17 @@ public class ListItemBuilder {
      */
     public ListItemBuilder withSubtitle(String subtitle) {
         mSubtitle = subtitle;
+        return this;
+    }
+
+    /**
+     * Sets the keyboard shortcut hint text on the menu item. By default, this is set to null.
+     *
+     * @param shortcutText The shortcut hint text on the menu item.
+     * @return This {@link ListItemBuilder} instance.
+     */
+    public ListItemBuilder withShortcutText(@Nullable CharSequence shortcutText) {
+        mShortcutText = shortcutText;
         return this;
     }
 
@@ -225,7 +238,14 @@ public class ListItemBuilder {
      * @param submenuItems The submenu items that are children of this item.
      */
     public ListItemBuilder withSubmenuItems(List<ListItem> submenuItems) {
-        mSubmenuItems = submenuItems;
+        return withSubmenuProvider(() -> submenuItems);
+    }
+
+    /**
+     * @param submenuProvider The provider supplying submenu items lazily when opened.
+     */
+    public ListItemBuilder withSubmenuProvider(Supplier<List<ListItem>> submenuProvider) {
+        mSubmenuProvider = submenuProvider;
         return this;
     }
 
@@ -266,7 +286,7 @@ public class ListItemBuilder {
 
     /** Builds the {@link ListItem} with the specified properties. */
     public ListItem build() {
-        boolean hasSubmenu = mSubmenuItems != null;
+        boolean hasSubmenu = mSubmenuProvider != null;
         PropertyModel.Builder builder =
                 (hasSubmenu
                                 ? new PropertyModel.Builder(ListMenuSubmenuItemProperties.ALL_KEYS)
@@ -292,6 +312,9 @@ public class ListItemBuilder {
                         ListMenuItemProperties.SUBTITLE_TEXT_APPEARANCE_ID,
                         mSubtitleTextAppearanceStyle);
             }
+            if (mShortcutText != null) {
+                builder.with(ListMenuItemProperties.SHORTCUT_TEXT, mShortcutText);
+            }
             if (mVerticalPaddingPx != 0) {
                 builder.with(ListMenuItemProperties.VERTICAL_PADDING, mVerticalPaddingPx);
             }
@@ -300,7 +323,7 @@ public class ListItemBuilder {
                     .with(ListMenuItemProperties.END_ICON_ID, mEndIconRes)
                     .with(ListMenuItemProperties.SHOULD_TINT_END_ICON, mShouldTintEndIcon);
         } else {
-            builder.with(ListMenuSubmenuItemProperties.SUBMENU_PROVIDER, () -> mSubmenuItems);
+            builder.with(ListMenuSubmenuItemProperties.SUBMENU_PROVIDER, mSubmenuProvider);
         }
 
         if (mShouldTintIcon) {
@@ -346,6 +369,11 @@ public class ListItemBuilder {
                             ? mTextAppearanceStyle
                             : R.style
                                     .TextAppearance_DensityAdaptive_TextLarge_Primary_Baseline_Light);
+            if (!hasSubmenu) {
+                builder.with(
+                        ListMenuItemProperties.SHORTCUT_TEXT_APPEARANCE_ID,
+                        R.style.TextAppearance_TextMedium_Secondary_Baseline_Light);
+            }
             if (mShouldTintIcon) {
                 builder.with(
                         ListMenuItemProperties.ICON_TINT_COLOR_STATE_LIST_ID,

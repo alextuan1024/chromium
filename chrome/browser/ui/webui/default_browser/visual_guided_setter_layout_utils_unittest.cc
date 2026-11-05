@@ -6,6 +6,9 @@
 
 #include <windows.h>
 
+#include <array>
+#include <memory>
+
 #include "base/i18n/rtl.h"
 #include "base/memory/raw_ptr.h"
 #include "base/test/icu_test_util.h"
@@ -14,6 +17,8 @@
 #include "ui/display/display.h"
 #include "ui/display/screen.h"
 #include "ui/display/win/screen_win.h"
+#include "ui/display/win/test/scoped_screen_win.h"
+#include "ui/display/win/uwp_text_scale_factor.h"
 #include "ui/gfx/geometry/point.h"
 #include "ui/gfx/geometry/rect.h"
 
@@ -21,9 +26,57 @@ namespace visual_guided_setter {
 
 namespace {
 
-// Test helper class to decouple the fake HWND from the running environment's
-// window manager state.
-class TestScreenWin : public display::win::ScreenWin {
+// An offset from the top of the Settings window down to the row, as the row
+// locator would report it.
+constexpr int kMeasuredOffsetPx = 164;
+
+// The narrowest anchor that can host a docked Settings window:
+// kNoWrapClientWidthDip (410) + kHorizontalFrameDip (16) + two
+// kHorizontalInsetDip (61) margins. Kept as a literal so a change to any of
+// those constants has to be acknowledged here.
+constexpr int kMinAnchorWidthDip = 548;
+constexpr int kMinAnchorHeightDip = 160;
+
+// The client width at which the Settings navigation pane expands, and the band
+// around it where the flow declines to dock.
+constexpr int kPaneCollapseClientWidthDip = 800;
+constexpr int kBreakpointMarginDip = 20;
+
+// 'visual_guided_setter_layout_utils.cc' generates its layout table from fitted
+// formulas rather than writing these down, so this table is what holds those
+// formulas to what was measured.
+struct MeasuredLayout {
+  float text_scale;
+  int wrap_client_width_dip;
+};
+
+constexpr auto kMeasuredLayouts = std::to_array<MeasuredLayout>({
+    {1.00f, 376},
+    {1.25f, 404},
+    {1.50f, 432},
+    {1.58f, 441},
+    {1.75f, 460},
+    {2.00f, 488},
+});
+
+// Stands in for the Windows "Make text bigger" accessibility setting so the
+// expectations below do not depend on how the developer's machine is
+// configured. Without this, a machine running at 175% text scale reads
+// different rows out of the layout table than the bots do.
+class TestUwpTextScaleFactor : public display::win::UwpTextScaleFactor {
+ public:
+  explicit TestUwpTextScaleFactor(float scale) : scale_(scale) {}
+
+  float GetTextScaleFactor() const override { return scale_; }
+
+ private:
+  const float scale_;
+};
+
+// A synthetic 1920x1200 screen at scale factor 1.0, so that DIPs and physical
+// pixels are the same number and the arithmetic under test can be checked
+// against literals.
+class TestScreenWin : public display::win::test::ScopedScreenWin {
  public:
   TestScreenWin() = default;
 
@@ -32,38 +85,66 @@ class TestScreenWin : public display::win::ScreenWin {
 
   ~TestScreenWin() override = default;
 
+  // Decouples the fake HWND from the running environment's window manager
+  // state.
   HWND GetRootWindow(HWND hwnd) const override {
     if (hwnd == reinterpret_cast<HWND>(1)) {
       return ::GetDesktopWindow();
     }
-    return display::win::ScreenWin::GetRootWindow(hwnd);
+    return display::win::test::ScopedScreenWin::GetRootWindow(hwnd);
   }
-};
-
-class VisualGuidedSetterLayoutUtilsTest : public testing::Test {
- protected:
-  void SetUp() override {
-    old_screen_ = display::Screen::SetScreenInstance(&test_screen_);
-  }
-
-  void TearDown() override { display::Screen::SetScreenInstance(old_screen_); }
-
-  base::test::TaskEnvironment task_environment_;
-  TestScreenWin test_screen_;
-  raw_ptr<display::Screen> old_screen_ = nullptr;
-  HWND fake_hwnd() const { return reinterpret_cast<HWND>(1); }
 };
 
 }  // namespace
 
+class VisualGuidedSetterLayoutUtilsTest : public testing::Test {
+ protected:
+  void SetUp() override {
+    text_scale_factor_ =
+        std::make_unique<TestUwpTextScaleFactor>(GetTestTextScale());
+    display::win::UwpTextScaleFactor::SetImplementationForTesting(
+        text_scale_factor_.get());
+    screen_ = std::make_unique<TestScreenWin>();
+    old_screen_ = display::Screen::SetScreenInstance(screen_.get());
+  }
+
+  void TearDown() override {
+    display::Screen::SetScreenInstance(old_screen_);
+    screen_.reset();
+    display::win::UwpTextScaleFactor::SetImplementationForTesting(nullptr);
+    text_scale_factor_.reset();
+  }
+
+  // The Windows text scale the test runs at. Overridden by the large-text
+  // fixture below.
+  virtual float GetTestTextScale() const { return 1.0f; }
+
+  // Moves the Windows text scale mid-test, for the sweep over the measured
+  // scales below.
+  void SetTextScale(float scale) {
+    display::win::UwpTextScaleFactor::SetImplementationForTesting(nullptr);
+    text_scale_factor_ = std::make_unique<TestUwpTextScaleFactor>(scale);
+    display::win::UwpTextScaleFactor::SetImplementationForTesting(
+        text_scale_factor_.get());
+  }
+
+  TestScreenWin* screen() { return screen_.get(); }
+  HWND fake_hwnd() const { return reinterpret_cast<HWND>(1); }
+
+  base::test::TaskEnvironment task_environment_;
+  std::unique_ptr<TestUwpTextScaleFactor> text_scale_factor_;
+  std::unique_ptr<TestScreenWin> screen_;
+  raw_ptr<display::Screen> old_screen_ = nullptr;
+};
+
 TEST_F(VisualGuidedSetterLayoutUtilsTest, IsAnchorLargeEnoughForDocking) {
-  gfx::Rect too_narrow(0, 0, 319, 200);
+  gfx::Rect too_narrow(0, 0, kMinAnchorWidthDip - 1, 200);
   EXPECT_FALSE(IsAnchorLargeEnoughForDocking(too_narrow));
 
-  gfx::Rect too_short(0, 0, 400, 159);
+  gfx::Rect too_short(0, 0, kMinAnchorWidthDip, kMinAnchorHeightDip - 1);
   EXPECT_FALSE(IsAnchorLargeEnoughForDocking(too_short));
 
-  gfx::Rect exact_min(0, 0, 320, 160);
+  gfx::Rect exact_min(0, 0, kMinAnchorWidthDip, kMinAnchorHeightDip);
   EXPECT_TRUE(IsAnchorLargeEnoughForDocking(exact_min));
 }
 
@@ -102,18 +183,18 @@ TEST_F(VisualGuidedSetterLayoutUtilsTest, ComputeArrowStartAndEndPoints) {
   EXPECT_EQ(start.x(), 300);
   EXPECT_EQ(start.y(), 300);
 
-  const int padding_px = display::win::GetScreenWin()
-                             ->DIPToScreenSize(fake_hwnd(), gfx::Size(0, 164))
-                             .height();
   gfx::Rect target(200, 300, 200, 400);
-  gfx::Point end = ComputeArrowEndPoint(fake_hwnd(), target);
+  gfx::Point end = ComputeArrowEndPoint(target, kMeasuredOffsetPx);
   EXPECT_EQ(end.x(), 400);
-  EXPECT_EQ(end.y(), 300 + padding_px);
+  EXPECT_EQ(end.y(), 300 + kMeasuredOffsetPx);
 }
 
+// A measurement is taken from one layout and applied to whatever window is on
+// screen now. Those can disagree -- the window shrank between the two -- so
+// the arrow must still end inside the window.
 TEST_F(VisualGuidedSetterLayoutUtilsTest, ArrowEndPointStaysInsideTheWindow) {
   gfx::Rect short_target(200, 300, 200, 40);
-  gfx::Point end = ComputeArrowEndPoint(fake_hwnd(), short_target);
+  gfx::Point end = ComputeArrowEndPoint(short_target, 5000);
   EXPECT_LE(end.y(), short_target.bottom());
   EXPECT_GE(end.y(), short_target.y());
 }
@@ -123,10 +204,57 @@ TEST_F(VisualGuidedSetterLayoutUtilsTest, IsDpiCompatibleForDocking) {
   gfx::Rect primary_bounds_dip =
       display::Screen::Get()->GetPrimaryDisplay().bounds();
   gfx::Rect physical_bounds =
-      test_screen_.DIPToScreenRect(fake_hwnd(), primary_bounds_dip);
+      screen()->DIPToScreenRect(fake_hwnd(), primary_bounds_dip);
 
   // The fake window should be compatible with its own primary bounds.
   EXPECT_TRUE(IsDpiCompatibleForDocking(fake_hwnd(), physical_bounds));
+}
+
+TEST_F(VisualGuidedSetterLayoutUtilsTest, FittedLayoutMatchesMeasuredLayout) {
+  // Any height will do; only the width decides whether the layout is stable.
+  constexpr int kTallEnoughDip = 400;
+
+  for (const MeasuredLayout& measured : kMeasuredLayouts) {
+    SCOPED_TRACE(testing::Message() << "text scale " << measured.text_scale);
+    SetTextScale(measured.text_scale);
+
+    // Below the wrap width the button stacks under the subtitle, and where it
+    // lands then is not modeled, so docking is declined instead of guessed at.
+    EXPECT_FALSE(IsSettingsLayoutStableForDocking(
+        fake_hwnd(),
+        gfx::Rect(0, 0, measured.wrap_client_width_dip - 1, kTallEnoughDip)));
+    EXPECT_TRUE(IsSettingsLayoutStableForDocking(
+        fake_hwnd(),
+        gfx::Rect(0, 0, measured.wrap_client_width_dip, kTallEnoughDip)));
+  }
+}
+
+TEST_F(VisualGuidedSetterLayoutUtilsTest, LayoutIsUnstableOnThePaneBreakpoint) {
+  auto stable = [&](int client_width_dip) {
+    return IsSettingsLayoutStableForDocking(
+        fake_hwnd(), gfx::Rect(0, 0, client_width_dip, 400));
+  };
+
+  EXPECT_TRUE(stable(kPaneCollapseClientWidthDip - kBreakpointMarginDip - 1));
+  EXPECT_FALSE(stable(kPaneCollapseClientWidthDip - kBreakpointMarginDip));
+  EXPECT_FALSE(stable(kPaneCollapseClientWidthDip));
+  EXPECT_FALSE(stable(kPaneCollapseClientWidthDip + kBreakpointMarginDip));
+  EXPECT_TRUE(stable(kPaneCollapseClientWidthDip + kBreakpointMarginDip + 1));
+}
+
+// The Settings page lays itself out against the Windows text scale.
+class VisualGuidedSetterLayoutUtilsLargeTextTest
+    : public VisualGuidedSetterLayoutUtilsTest {
+ protected:
+  float GetTestTextScale() const override { return 1.75f; }
+};
+
+TEST_F(VisualGuidedSetterLayoutUtilsLargeTextTest,
+       MinimumAnchorWidthDoesNotFollowText) {
+  EXPECT_FALSE(IsAnchorLargeEnoughForDocking(
+      gfx::Rect(0, 0, kMinAnchorWidthDip - 1, kMinAnchorHeightDip)));
+  EXPECT_TRUE(IsAnchorLargeEnoughForDocking(
+      gfx::Rect(0, 0, kMinAnchorWidthDip, kMinAnchorHeightDip)));
 }
 
 // The arrow runs between the stage and the instructions, which swap sides with
@@ -145,14 +273,10 @@ TEST_F(VisualGuidedSetterLayoutUtilsRTLTest, ArrowPointsTheOtherWay) {
   EXPECT_EQ(start.x(), 100);
   EXPECT_EQ(start.y(), 300);
 
-  const int padding_px = display::win::GetScreenWin()
-                             ->DIPToScreenSize(fake_hwnd(), gfx::Size(0, 164))
-                             .height();
-
   gfx::Rect target(200, 300, 200, 2000);
-  gfx::Point end = ComputeArrowEndPoint(fake_hwnd(), target);
+  gfx::Point end = ComputeArrowEndPoint(target, kMeasuredOffsetPx);
   EXPECT_EQ(end.x(), 200);
-  EXPECT_EQ(end.y(), 300 + padding_px);
+  EXPECT_EQ(end.y(), 300 + kMeasuredOffsetPx);
 }
 
 }  // namespace visual_guided_setter

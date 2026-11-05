@@ -80,11 +80,33 @@ SubmenuView::~SubmenuView() {
 }
 
 std::vector<MenuItemView*> SubmenuView::GetMenuItems() {
-  return GetMenuItemsFromChildren<MenuItemView, View>(children());
+  std::vector<MenuItemView*> menu_items;
+  if (scroll_view_container_) {
+    const auto headers = scroll_view_container_->pinned_header_region();
+    menu_items.insert(menu_items.end(), headers.begin(), headers.end());
+  }
+  auto middle_items = GetMenuItemsFromChildren<MenuItemView, View>(children());
+  menu_items.insert(menu_items.end(), middle_items.begin(), middle_items.end());
+  if (scroll_view_container_) {
+    const auto footers = scroll_view_container_->pinned_footer_region();
+    menu_items.insert(menu_items.end(), footers.begin(), footers.end());
+  }
+  return menu_items;
 }
 
 std::vector<const MenuItemView*> SubmenuView::GetMenuItems() const {
-  return GetMenuItemsFromChildren<const MenuItemView, const View>(children());
+  std::vector<const MenuItemView*> menu_items;
+  if (scroll_view_container_) {
+    const auto headers = scroll_view_container_->pinned_header_region();
+    menu_items.insert(menu_items.end(), headers.begin(), headers.end());
+  }
+  auto middle_items = GetMenuItemsFromChildren<MenuItemView, View>(children());
+  menu_items.insert(menu_items.end(), middle_items.begin(), middle_items.end());
+  if (scroll_view_container_) {
+    const auto footers = scroll_view_container_->pinned_footer_region();
+    menu_items.insert(menu_items.end(), footers.begin(), footers.end());
+  }
+  return menu_items;
 }
 
 MenuItemView* SubmenuView::GetMenuItemAt(size_t index) {
@@ -101,7 +123,6 @@ const MenuItemView* SubmenuView::GetMenuItemAt(size_t index) const {
 
 int SubmenuView::GetPreferredItemHeight() const {
   EmptyMenuMenuItem menu_item(parent_menu_item_);
-  menu_item.set_controller(parent_menu_item_->GetMenuController());
   return menu_item.GetPreferredSize({}).height();
 }
 
@@ -114,12 +135,11 @@ void SubmenuView::UpdateMenuPartSizes() {
 
   const auto get_metrics = [&] {
     return std::tie(icon_area_width_, label_start_, trailing_padding_,
-                    content_start_, item_horizontal_border_);
+                    content_start_);
   };
   const auto old_metrics = get_metrics();
 
-  item_horizontal_border_ = parent_menu_item_->GetItemHorizontalBorder();
-  trailing_padding_ = config.item_horizontal_padding + item_horizontal_border_;
+  trailing_padding_ = parent_menu_item_->GetTrailingPadding();
   const auto& menu_items = GetMenuItems();
   if (config.reserve_dedicated_arrow_column &&
       std::ranges::any_of(menu_items, &MenuItemView::HasSubmenu)) {
@@ -289,6 +309,16 @@ gfx::Size SubmenuView::CalculatePreferredSize(
           std::max(max_complex_width, child->GetPreferredSize({}).width());
     }
   }
+  // Pinned items aren't in `children()`, but their titles are painted using
+  // this submenu's minor text column, so include them to avoid eliding.
+  for (const MenuItemView* item : GetMenuItems()) {
+    if (item->IsPinned() && item->GetVisible()) {
+      const auto& dimensions = item->GetDimensions();
+      max_simple_width = std::max(max_simple_width, dimensions.standard_width);
+      max_minor_text_width_ =
+          std::max(max_minor_text_width_, dimensions.minor_text_width);
+    }
+  }
   const auto& config = MenuConfig::instance();
   if (max_minor_text_width_ > 0) {
     max_minor_text_width_ += config.item_horizontal_padding;
@@ -363,39 +393,39 @@ void SubmenuView::PaintChildren(const PaintInfo& paint_info) {
 bool SubmenuView::GetDropFormats(
     int* formats,
     std::set<ui::ClipboardFormatType>* format_types) {
-  DCHECK(parent_menu_item_->GetMenuController());
+  CHECK(parent_menu_item_->GetMenuController(), base::NotFatalUntil::M163);
   return parent_menu_item_->GetMenuController()->GetDropFormats(this, formats,
                                                                 format_types);
 }
 
 bool SubmenuView::AreDropTypesRequired() {
-  DCHECK(parent_menu_item_->GetMenuController());
+  CHECK(parent_menu_item_->GetMenuController(), base::NotFatalUntil::M163);
   return parent_menu_item_->GetMenuController()->AreDropTypesRequired(this);
 }
 
 bool SubmenuView::CanDrop(const OSExchangeData& data) {
-  DCHECK(parent_menu_item_->GetMenuController());
+  CHECK(parent_menu_item_->GetMenuController(), base::NotFatalUntil::M163);
   return parent_menu_item_->GetMenuController()->CanDrop(this, data);
 }
 
 void SubmenuView::OnDragEntered(const ui::DropTargetEvent& event) {
-  DCHECK(parent_menu_item_->GetMenuController());
+  CHECK(parent_menu_item_->GetMenuController(), base::NotFatalUntil::M163);
   parent_menu_item_->GetMenuController()->OnDragEntered(this, event);
 }
 
 int SubmenuView::OnDragUpdated(const ui::DropTargetEvent& event) {
-  DCHECK(parent_menu_item_->GetMenuController());
+  CHECK(parent_menu_item_->GetMenuController(), base::NotFatalUntil::M163);
   return parent_menu_item_->GetMenuController()->OnDragUpdated(this, event);
 }
 
 void SubmenuView::OnDragExited() {
-  DCHECK(parent_menu_item_->GetMenuController());
+  CHECK(parent_menu_item_->GetMenuController(), base::NotFatalUntil::M163);
   parent_menu_item_->GetMenuController()->OnDragExited(this);
 }
 
 views::View::DropCallback SubmenuView::GetDropCallback(
     const ui::DropTargetEvent& event) {
-  DCHECK(parent_menu_item_->GetMenuController());
+  CHECK(parent_menu_item_->GetMenuController(), base::NotFatalUntil::M163);
   drop_item_ = nullptr;
   return parent_menu_item_->GetMenuController()->GetDropCallback(this, event);
 }
@@ -406,6 +436,9 @@ bool SubmenuView::OnMouseWheel(const ui::MouseWheelEvent& e) {
   if (vis_bounds.height() == height() || menu_items.empty()) {
     // All menu items are visible, nothing to scroll.
     return true;
+  }
+  if (use_scroll_bar_) {
+    return OnScroll(0, e.y_offset());
   }
 
   auto i = std::ranges::lower_bound(menu_items, vis_bounds.y(), {},
@@ -771,7 +804,8 @@ void SubmenuView::SchedulePaintForDropIndicator(
 gfx::Rect SubmenuView::CalculateDropIndicatorBounds(
     MenuItemView* item,
     MenuDelegate::DropPosition position) {
-  DCHECK(position != MenuDelegate::DropPosition::kNone);
+  CHECK(position != MenuDelegate::DropPosition::kNone,
+        base::NotFatalUntil::M163);
   gfx::Rect item_bounds = item->bounds();
   switch (position) {
     case MenuDelegate::DropPosition::kBefore:

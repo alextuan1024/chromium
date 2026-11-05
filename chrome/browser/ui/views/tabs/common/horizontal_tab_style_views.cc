@@ -22,9 +22,8 @@
 #include "chrome/browser/ui/views/frame/browser_frame_view.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/themed_background.h"
-#include "chrome/browser/ui/views/tabs/tab.h"
+#include "chrome/browser/ui/views/tabs/common/tab_group_style.h"
 #include "chrome/browser/ui/views/tabs/tab/glow_hover_controller.h"
-#include "chrome/browser/ui/views/tabs/tab_group_underline.h"
 #include "chrome/grit/theme_resources.h"
 #include "third_party/skia/include/core/SkPath.h"
 #include "third_party/skia/include/core/SkPathBuilder.h"
@@ -36,6 +35,7 @@
 #include "ui/gfx/geometry/insets.h"
 #include "ui/gfx/geometry/skia_conversions.h"
 #include "ui/gfx/scoped_canvas.h"
+#include "ui/views/controls/separator.h"
 #include "ui/views/widget/widget.h"
 
 HorizontalTabStyleViews::HorizontalTabStyleViews(
@@ -665,7 +665,7 @@ float HorizontalTabStyleViews::GetHoverOpacity() const {
 int HorizontalTabStyleViews::GetStrokeThickness() const {
   if (delegate_->GetGroup().has_value() && !delegate_->IsInFocusedGroup() &&
       delegate_->IsActive()) {
-    return TabGroupUnderline::kStrokeThickness;
+    return TabGroupStyle::GetUnderlineStrokeThickness();
   }
 
   if (delegate_->IsActive()) {
@@ -712,7 +712,7 @@ bool HorizontalTabStyleViews::ShouldPaintTabBackgroundColor(
 
 SkColor HorizontalTabStyleViews::GetTabSeparatorColor() const {
   const auto* cp = delegate_->GetView()->GetWidget()->GetColorProvider();
-  DCHECK(cp);
+  CHECK(cp, base::NotFatalUntil::M162);
   if (!cp) {
     return gfx::kPlaceholderColor;
   }
@@ -756,7 +756,7 @@ void HorizontalTabStyleViews::PaintTabBackground(
   PaintTabBackgroundFill(canvas, hovered, fill_id);
 
   const auto* widget = delegate_->GetView()->GetWidget();
-  DCHECK(widget);
+  CHECK(widget, base::NotFatalUntil::M162);
   const SkColor tab_stroke_color =
       (delegate_->IsPinned() && !delegate_->IsActive() &&
        tabs::IsNewHorizontalPinnedTabStylingEnabled())
@@ -837,7 +837,7 @@ void HorizontalTabStyleViews::PaintBackgroundStroke(
     SkColor stroke_color) const {
   if (base::FeatureList::IsEnabled(tabs::kTabStripUnification) &&
       delegate_->GetGroup().has_value() && !delegate_->IsInFocusedGroup() &&
-      !delegate_->IsDragging()) {
+      !delegate_->IsDragging() && !delegate_->GetView()->layer()) {
     return;
   }
 

@@ -30,6 +30,11 @@ ContextualTasksExtensionConfigProvider::ContextualTasksExtensionConfigProvider()
 ContextualTasksExtensionConfigProvider::
     ~ContextualTasksExtensionConfigProvider() = default;
 
+bool ContextualTasksExtensionConfigProvider::ShouldReplaceI18nTemplates()
+    const {
+  return true;
+}
+
 base::DictValue ContextualTasksExtensionConfigProvider::GetLoadTimeData(
     content::BrowserContext& context) {
   return ContextualTasksUI::GetContextualTasksLoadTimeData(
@@ -42,6 +47,10 @@ bool ContextualTasksExtensionConfigProvider::IsJsErrorReportingEnabled() const {
 
 bool ContextualTasksExtensionConfigProvider::
     ShouldCrashOnJsErrorInDevelopmentBuild() const {
+  return true;
+}
+
+bool ContextualTasksExtensionConfigProvider::IsUnboundedElementAllowed() const {
   return true;
 }
 

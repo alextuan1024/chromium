@@ -14,6 +14,7 @@ build_webui("build") {
   ts_files = [
     "animation_tracker.ts",
     "cr_lazy_iconset.ts",
+    "extension_action_id.ts",
     "icon_from_table.html.ts",
     "icon_from_table.ts",
     "icon_table.ts",
@@ -23,6 +24,8 @@ build_webui("build") {
     "permission_chip_delegate.ts",
     "permission_dashboard.html.ts",
     "permission_dashboard.ts",
+    "timer_helper.ts",
+    "toolbar_button.ts",
   ]
 
   css_files = [

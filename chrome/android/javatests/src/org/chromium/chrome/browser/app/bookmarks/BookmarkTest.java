@@ -35,6 +35,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 
 import static org.chromium.base.ThreadUtils.runOnUiThreadBlocking;
+import static org.chromium.base.test.transit.ViewFinder.waitForView;
 import static org.chromium.chrome.browser.url_constants.UrlConstantResolver.getOriginalNativeBookmarksUrl;
 import static org.chromium.components.browser_ui.widget.highlight.ViewHighlighterTestUtils.checkHighlightOff;
 import static org.chromium.components.browser_ui.widget.highlight.ViewHighlighterTestUtils.checkHighlightPulse;
@@ -54,7 +55,6 @@ import androidx.annotation.Nullable;
 import androidx.recyclerview.widget.RecyclerView;
 import androidx.recyclerview.widget.RecyclerView.ViewHolder;
 import androidx.test.espresso.Espresso;
-import androidx.test.espresso.matcher.ViewMatchers;
 import androidx.test.filters.MediumTest;
 import androidx.test.filters.SmallTest;
 import androidx.test.platform.app.InstrumentationRegistry;
@@ -62,7 +62,6 @@ import androidx.test.runner.lifecycle.Stage;
 
 import org.hamcrest.Matchers;
 import org.junit.After;
-import org.junit.AfterClass;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
@@ -83,7 +82,6 @@ import org.chromium.base.supplier.MonotonicObservableSupplier;
 import org.chromium.base.test.util.ApplicationTestUtils;
 import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CallbackHelper;
-import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.Criteria;
 import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.base.test.util.DisableIf;
@@ -116,8 +114,6 @@ import org.chromium.chrome.browser.bookmarks.bar.BookmarkBarUtils;
 import org.chromium.chrome.browser.commerce.ShoppingServiceFactory;
 import org.chromium.chrome.browser.commerce.ShoppingServiceFactoryJni;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
-import org.chromium.chrome.browser.flags.ChromeSwitches;
-import org.chromium.chrome.browser.night_mode.ChromeNightModeTestUtils;
 import org.chromium.chrome.browser.preferences.ChromePreferenceKeys;
 import org.chromium.chrome.browser.preferences.ChromeSharedPreferences;
 import org.chromium.chrome.browser.sync.SyncServiceFactory;
@@ -142,7 +138,6 @@ import org.chromium.components.commerce.core.CommerceFeatureUtilsJni;
 import org.chromium.components.commerce.core.ShoppingService;
 import org.chromium.components.power_bookmarks.PowerBookmarkMeta;
 import org.chromium.components.power_bookmarks.ShoppingSpecifics;
-import org.chromium.components.profile_metrics.BrowserProfileType;
 import org.chromium.components.sync.SyncService;
 import org.chromium.components.sync.SyncService.SyncStateChangedListener;
 import org.chromium.content_public.browser.test.util.TouchCommon;
@@ -153,7 +148,6 @@ import org.chromium.ui.listmenu.ListMenuButton;
 import org.chromium.ui.modelutil.MVCListAdapter.ListItem;
 import org.chromium.ui.modelutil.MVCListAdapter.ModelList;
 import org.chromium.ui.test.util.DeviceRestriction;
-import org.chromium.ui.test.util.ViewUtils;
 import org.chromium.url.GURL;
 
 import java.util.ArrayList;
@@ -166,13 +160,13 @@ import java.util.stream.IntStream;
 
 /** Tests for the bookmark manager. */
 @RunWith(ChromeJUnit4ClassRunner.class)
-@CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
 @ImportantFormFactors(DeviceFormFactor.ONLY_TABLET)
 @Batch(Batch.PER_CLASS)
 @DisableFeatures({
     ChromeFeatureList.ANDROID_DESKTOP_BOOKMARK_LAYOUT,
     ChromeFeatureList.ANDROID_DESKTOP_BOOKMARK_DIALOG
 })
+@DisableIf.Device(DeviceFormFactor.AUTOMOTIVE) // crbug.com/462590301
 public class BookmarkTest {
     private static final String TEST_PAGE_URL_GOOGLE = "/chrome/test/data/android/google.html";
     private static final String TEST_PAGE_TITLE_GOOGLE = "The Google";
@@ -265,11 +259,6 @@ public class BookmarkTest {
                     AccessibilityStateTestHelper.uninitializeForTesting();
                 });
         BookmarkModel.clearLastUsedParent();
-    }
-
-    @AfterClass
-    public static void tearDownAfterActivityDestroyed() {
-        ChromeNightModeTestUtils.tearDownNightModeAfterChromeActivityDestroyed();
     }
 
     @Test
@@ -714,7 +703,6 @@ public class BookmarkTest {
 
     @Test
     @MediumTest
-    @EnableFeatures(ChromeFeatureList.ENABLE_ESCAPE_HANDLING_FOR_SECONDARY_ACTIVITIES)
     @Restriction({DeviceFormFactor.PHONE})
     public void testSearchBookmarks_pressEscape() throws Exception {
         BookmarkId folder = addFolder(TEST_FOLDER_TITLE);
@@ -763,7 +751,6 @@ public class BookmarkTest {
 
     @Test
     @MediumTest
-    @EnableFeatures(ChromeFeatureList.ENABLE_ESCAPE_HANDLING_FOR_SECONDARY_ACTIVITIES)
     @Restriction({DeviceFormFactor.ONLY_TABLET})
     public void testTabletSearch_EscapeKeyClearsSearch() throws Exception {
         // Setup: Add a bookmark so the folder isn't empty.
@@ -805,6 +792,45 @@ public class BookmarkTest {
                             false,
                             mBookmarkManagerCoordinator.handleEscPress());
                 });
+    }
+
+    @Test
+    @MediumTest
+    @Restriction({DeviceFormFactor.TABLET_OR_DESKTOP})
+    public void testSearchBookmarks_Tablet_MoveDownReproAndShowInFolder() throws Exception {
+        // Regression test for https://crbug.com/566206510 where reordering filtered search results
+        // via the overflow menu on tablets triggered a native CHECK failure in
+        // BookmarkBridge::ReorderChildren.
+        BookmarkId folder = addFolder(TEST_FOLDER_TITLE);
+        addBookmark(TEST_TITLE_A, mTestUrlA, folder);
+        addBookmark(TEST_PAGE_TITLE_GOOGLE2, mTestPageFoo, folder);
+        addBookmark(TEST_PAGE_TITLE_GOOGLE, mTestPage, folder);
+        openBookmarkManager();
+        openFolder(folder);
+
+        assertEquals(BookmarkUiMode.FOLDER, mDelegate.getCurrentUiMode());
+        assertEquals("Wrong number of items before starting search.", 3, getBookmarkCount());
+
+        // Search for "Google" so 2 out of the 3 bookmarks in the folder are shown.
+        BookmarkTestUtil.getSearchBoxViewInteraction().perform(replaceText("Google"));
+        RecyclerViewTestUtils.waitForStableMvcRecyclerView(mItemsContainer);
+        assertEquals("Wrong number of items after searching.", 2, getBookmarkCount());
+
+        // Open the 3-dot overflow menu on the first search result.
+        ImprovedBookmarkRow firstRow = getNthBookmarkRow(1);
+        ListMenuButton more = firstRow.findViewById(R.id.more);
+        runOnUiThreadBlocking(more::callOnClick);
+
+        // During tablet search, Move up and Move down must be omitted, and Show in folder must be
+        // shown instead.
+        onView(withText("Move up")).check(doesNotExist());
+        onView(withText("Move down")).check(doesNotExist());
+        onView(withText("Show in folder")).check(matches(isDisplayed())).perform(click());
+
+        // Selecting "Show in folder" should clear the search filter and restore all 3 bookmarks in
+        // the folder.
+        CriteriaHelper.pollUiThread(() -> Criteria.checkThat(getBookmarkCount(), is(3)));
+        BookmarkTestUtil.getSearchBoxViewInteraction().check(matches(withText("")));
     }
 
     @Test
@@ -1848,78 +1874,6 @@ public class BookmarkTest {
                         LaunchCauseMetrics.LAUNCH_CAUSE_HISTOGRAM));
     }
 
-    /**
-     * Test that we record Bookmarks.BookmarkTestUtil.openBookmarkManager.PerProfileType when
-     * R.id.all_bookmarks_menu_id is clicked in regular mode.
-     *
-     * <p>Please note that this test doesn't run for tablet because of the way bookmark manager is
-     * opened for tablets via BookmarkTestUtil.openBookmarkManager test method which circumvents the
-     * click of R.id.all_bookmarks_menu_id, this doesn't happen in actual case and the metric indeed
-     * gets recorded in tablets.
-     */
-    @Test
-    @MediumTest
-    @Restriction({DeviceFormFactor.PHONE})
-    @RequiresRestart("Asserts exact total count of 0 prior to opening bookmark manager")
-    public void testRecordsHistogramWhenBookmarkManagerOpened_InRegular() throws Throwable {
-        assertEquals(
-                0,
-                RecordHistogram.getHistogramTotalCountForTesting(
-                        "Bookmarks.OpenBookmarkManager.PerProfileType"));
-
-        openBookmarkManager();
-        pressBack();
-        BookmarkTestUtil.waitForTabbedActivity();
-
-        assertEquals(
-                1,
-                RecordHistogram.getHistogramTotalCountForTesting(
-                        "Bookmarks.OpenBookmarkManager.PerProfileType"));
-
-        assertEquals(
-                1,
-                RecordHistogram.getHistogramValueCountForTesting(
-                        "Bookmarks.OpenBookmarkManager.PerProfileType",
-                        BrowserProfileType.REGULAR));
-    }
-
-    /**
-     * Test that we record Bookmarks.OpenBookmarkManager.PerProfileType when
-     * R.id.all_bookmarks_menu_id is clicked in Incognito mode.
-     *
-     * <p>Please note that this test doesn't run for tablet because of the way bookmark manager is
-     * opened for tablets via openBookmarkManager test method which circumvents the click of
-     * R.id.all_bookmarks_menu_id. This doesn't happen in actual case and the metric indeed gets
-     * recorded in tablets.
-     */
-    @Test
-    @MediumTest
-    @Restriction({DeviceFormFactor.PHONE})
-    @DisabledTest(message = "https://crbug.com/344981899, this test needs to be fixed post-UNO")
-    @RequiresRestart("Asserts exact total count of 0 prior to opening bookmark manager")
-    public void testRecordsHistogramWhenBookmarkManagerOpened_InIncognito() throws Throwable {
-        assertEquals(
-                0,
-                RecordHistogram.getHistogramTotalCountForTesting(
-                        "Bookmarks.OpenBookmarkManager.PerProfileType"));
-
-        mActivityTestRule.loadUrlInNewTab("about:blank", /* incognito= */ true);
-        openBookmarkManager();
-        pressBack();
-        BookmarkTestUtil.waitForTabbedActivity();
-
-        assertEquals(
-                1,
-                RecordHistogram.getHistogramTotalCountForTesting(
-                        "Bookmarks.OpenBookmarkManager.PerProfileType"));
-
-        assertEquals(
-                1,
-                RecordHistogram.getHistogramValueCountForTesting(
-                        "Bookmarks.OpenBookmarkManager.PerProfileType",
-                        BrowserProfileType.INCOGNITO));
-    }
-
     @Test
     @MediumTest
     @Restriction({DeviceFormFactor.PHONE})
@@ -2063,9 +2017,7 @@ public class BookmarkTest {
                                     InstrumentationRegistry.getInstrumentation(),
                                     mActivityTestRule.getActivity(),
                                     R.id.all_bookmarks_menu_id));
-            ViewUtils.waitForView(
-                    (ViewGroup) mBookmarkActivity.getWindow().getDecorView().getRootView(),
-                    ViewMatchers.withId(R.id.selectable_list));
+            waitForView(mBookmarkActivity, withId(R.id.selectable_list));
             ThreadUtils.runOnUiThreadBlocking(
                     () -> {
                         mItemsContainer =

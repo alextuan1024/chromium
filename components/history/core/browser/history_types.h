@@ -280,8 +280,8 @@ class QueryResults {
   QueryResults(QueryResults&& other) noexcept;
   QueryResults& operator=(QueryResults&& other) noexcept;
 
-  void set_reached_beginning(bool reached) { reached_beginning_ = reached; }
-  bool reached_beginning() { return reached_beginning_; }
+  void set_has_more_results(bool has_more) { has_more_results_ = has_more; }
+  bool has_more_results() const { return has_more_results_; }
 
   size_t size() const { return results_.size(); }
   bool empty() const { return results_.empty(); }
@@ -339,8 +339,12 @@ class QueryResults {
   // (this is inclusive). This is used when inserting or deleting.
   void AdjustResultMap(size_t begin, size_t end, ptrdiff_t delta);
 
-  // Whether the query reaches the beginning of the database.
-  bool reached_beginning_ = false;
+  // Whether more results exist within the queried time range
+  // [QueryOptions::begin_time, QueryOptions::end_time) beyond the ones
+  // returned, i.e. the results were truncated by QueryOptions::max_count. A
+  // paged query should continue (with a smaller `end_time`) while this is
+  // true.
+  bool has_more_results_ = false;
 
   // The ordered list of results. The pointers inside this are owned by this
   // QueryResults object.
@@ -388,11 +392,11 @@ struct QueryOptions {
   // enough room. When 0, this will return everything.
   int max_count = 0;
 
-  // Temporarily defaulted to `kExclude404s`; this may change in the future.
+  // Defaulted to `kInclude404s`.
   // Callers are strongly encouraged to explicitly set a value, unless they are
   // certain that the handling of 404 visits is irrelevant for their use case.
   VisitQuery404sPolicy policy_for_404_visits =
-      VisitQuery404sPolicy::kExclude404s;
+      VisitQuery404sPolicy::kInclude404s;
 
   enum DuplicateHandling {
     // Omit visits for which there is a more recent visit to the same URL.
@@ -1069,10 +1073,10 @@ struct DuplicateClusterVisit {
   VisitID visit_id = 0;
 
   // Not persisted; derived from visit_id.
-  GURL url = {};
+  GURL url;
 
   // Not persisted; derived from visit_id.
-  base::Time visit_time = {};
+  base::Time visit_time;
 };
 
 // An `AnnotatedVisit` associated with some other metadata from clustering.

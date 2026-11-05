@@ -114,6 +114,7 @@ LayoutUnit ResolveInlineLengthInternal(
       return min_max_sizes_func(SizeType::kContent).sizes.min_size;
     case Length::kMinIntrinsic:
       return min_max_sizes_func(SizeType::kIntrinsic).sizes.min_size;
+    case Length::kShrinkContent:
     case Length::kFitContent: {
       const LayoutUnit available_size =
           override_available_size == kIndefiniteSize
@@ -250,6 +251,7 @@ LayoutUnit ResolveBlockLengthInternal(
     case Length::kMinContent:
     case Length::kMaxContent:
     case Length::kMinIntrinsic:
+    case Length::kShrinkContent:
     case Length::kFitContent: {
       const LayoutUnit intrinsic_size = block_size_func(
           length.IsMinIntrinsic() ? SizeType::kIntrinsic : SizeType::kContent);
@@ -317,9 +319,11 @@ MinMaxSizesResult ComputeMinAndMaxContentContributionForReplaced(
   const auto& child_style = child.Style();
   const BoxStrut border_padding =
       ComputeBorders(space, child) + ComputePadding(space, child_style);
+  const LayoutUnit inline_size =
+      ComputeReplacedSize(child, space, border_padding).inline_size;
 
   MinMaxSizes result;
-  result = ComputeReplacedSize(child, space, border_padding).inline_size;
+  result = inline_size;
 
   if (child_style.LogicalWidth().HasPercent() ||
       child_style.LogicalMaxWidth().HasPercent()) {
@@ -329,9 +333,9 @@ MinMaxSizesResult ComputeMinAndMaxContentContributionForReplaced(
     result.min_size = ResolveMinInlineLength(
         space, child_style, border_padding,
         [&](SizeType) -> MinMaxSizesResult {
-          // Behave the same as if we couldn't resolve the min-inline size.
+          // Use the inline-size if we need to resolve min-content/max-content.
           MinMaxSizes sizes;
-          sizes = border_padding.InlineSum();
+          sizes = inline_size;
           return {sizes, /* depends_on_block_constraints */ false};
         },
         child_style.LogicalMinWidth());
@@ -435,6 +439,7 @@ MinMaxSizesResult ComputeMinAndMaxContentContributionInternal(
   // If fit-content is present we need to resolve the min/max sizes twice, once
   // assuming its min-content, and max-content. See:
   // https://github.com/w3c/csswg-drafts/issues/10721
+  // TODO(crbug.com/537526308): Check if shrink-content needs this too.
   if (style.LogicalMinWidth().HasFitContent() ||
       style.LogicalMaxWidth().HasFitContent()) {
     const MinMaxSizes min_sizes = ComputeMinMaxInlineSizes(
@@ -1373,24 +1378,22 @@ LayoutUnit ResolveRowGapForMulticol(const ComputedStyle& style,
       .value_or(LayoutUnit(style.GetFontDescription().ComputedPixelSize()));
 }
 
-std::optional<LayoutUnit> ResolveFlowToleranceLength(
-    const ComputedStyle& style,
-    LayoutUnit available_size) {
-  // TODO (celestepan): Account for when flow-tolerance is set to infinite.
-  const FlowTolerance& flow_tolerance = style.GetFlowTolerance();
-  if (flow_tolerance.IsNormal()) {
+std::optional<LayoutUnit> ResolveFitToleranceLength(const ComputedStyle& style,
+                                                    LayoutUnit available_size) {
+  const FitTolerance& fit_tolerance = style.GetFitTolerance();
+  if (fit_tolerance.IsNormal()) {
     return std::nullopt;
   }
-  if (flow_tolerance.IsInfinite()) {
+  if (fit_tolerance.IsInfinite()) {
     return LayoutUnit::Max();
   }
-  return MinimumValueForLength(flow_tolerance.GetLength(),
+  return MinimumValueForLength(fit_tolerance.GetLength(),
                                available_size.ClampIndefiniteToZero());
 }
 
-LayoutUnit ResolveFlowToleranceForGridLanes(const ComputedStyle& style,
-                                            const LogicalSize& available_size) {
-  return ResolveFlowToleranceLength(
+LayoutUnit ResolveFitToleranceForGridLanes(const ComputedStyle& style,
+                                           const LogicalSize& available_size) {
+  return ResolveFitToleranceLength(
              style, (style.GridLanesTrackSizingDirection() == kForColumns)
                         ? available_size.inline_size
                         : available_size.block_size)

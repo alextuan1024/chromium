@@ -10,17 +10,11 @@ include_rules = [
   "+chrome/browser/ash/login/users",
   "+chrome/browser/ash/policy/core",
   "+chrome/browser/ash/profiles",
-  "+chrome/browser/ash/scanning",
   "+chrome/browser/ash/settings",
   "+chrome/browser/browser_process.h",
-  "+chrome/browser/chromeos/printing",
   "+chrome/browser/local_discovery",
-  "+chrome/browser/net",
-  "+chrome/browser/notifications",
-  "+chrome/browser/policy",
   "+chrome/browser/printing",
   "+chrome/browser/profiles",
-  "+chrome/browser/sync",
   "+chrome/browser/ui/ash/system_web_apps",
   "+chrome/browser/ui/chrome_pages.h",
   "+chrome/grit",
@@ -29,6 +23,10 @@ include_rules = [
 ]
 
 specific_include_rules = {
+  # The keyed service factories are the //chrome seam for the sync services.
+  "(authorization_zones_manager|synced_printers_manager)_factory\\.cc": [
+    "+chrome/browser/sync/data_type_store_service_factory.h",
+  ],
   ".*test(_.*)?\\.(cc|h)": [
     "+chrome/browser/ash/system_web_apps/test_support",
     "+chrome/browser/global_features.h",
@@ -37,6 +35,10 @@ specific_include_rules = {
   ],
   "cups_printers_manager_factory\\.cc": [
     "+chrome/browser/global_features.h",
+    "+chrome/browser/policy/profile_policy_connector.h",
+  ],
+  "enterprise_printers_provider_unittest\\.cc": [
+    "+chrome/browser/policy/profile_policy_connector.h",
   ],
   "(server_printers_fetcher|server_printers_provider_unittest)\\.cc": [
     # IPP protocol; it is needed for communication with print servers.

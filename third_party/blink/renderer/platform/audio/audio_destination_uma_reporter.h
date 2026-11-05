@@ -50,7 +50,7 @@ class PLATFORM_EXPORT AudioDestinationUmaReporter final {
   static constexpr std::string_view kUnexpectedFifoUnderrunHistogramNameBase =
       "UnexpectedFIFOUnderrunCount";
   static constexpr std::string_view kTotalPlayoutDelayHistogramNameBase =
-      "TotalPlayoutDelay";
+      "TotalPlayoutDelay2";
   static constexpr std::string_view kRenderTimeRatioHistogramNameBase =
       "RenderTimeRatio";
   static constexpr std::string_view kRequestRenderTimeRatioHistogramNameBase =
@@ -64,10 +64,6 @@ class PLATFORM_EXPORT AudioDestinationUmaReporter final {
   // Returns the percentage (0-100).
   int PercentOfCallbackInterval(base::TimeDelta duration);
 
-  // Indicates what period samples are aggregated over. kShort means entire
-  // streams of less than 1000 callbacks, kIntervals means exactly 1000
-  // callbacks.
-  enum class SamplingPeriod { kShort, kIntervals };
   int callback_count_ = 0;
   int fifo_underrun_count_ = 0;
   int unexpected_fifo_underrun_count_ = 0;
@@ -83,6 +79,9 @@ class PLATFORM_EXPORT AudioDestinationUmaReporter final {
   // the speaker. Averaged, reported and reset at every 'kMetricsReportCycle'
   // audio callbacks.
   base::TimeDelta total_playout_delay_sum_;
+  // Number of delays in `total_playout_delay_sum_`. We add one per render
+  // quantum, so there can be several per callback.
+  int total_playout_delay_count_ = 0;
 
   // Histogram names for metrics reported by `AudioDestinationUmaReporter`.
   // These names are constructed during initialization (or updated in

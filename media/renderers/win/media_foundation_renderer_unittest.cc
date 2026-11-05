@@ -20,6 +20,7 @@
 #include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
 #include "base/win/scoped_com_initializer.h"
+#include "base/win/windows_version.h"
 #include "media/base/demuxer_stream.h"
 #include "media/base/media_switches.h"
 #include "media/base/media_util.h"
@@ -111,6 +112,15 @@ class MediaFoundationRendererTest : public testing::Test {
   }
 
   ~MediaFoundationRendererTest() override { mf_renderer_.reset(); }
+
+  void SetUp() override {
+    // MediaFoundation playback requires at least Windows 10 RS3 (see
+    // SupportMediaFoundationClearPlayback() in mf_feature_checks.cc).
+    if (base::win::GetVersion() < base::win::Version::WIN10_RS3) {
+      GTEST_SKIP()
+          << "MediaFoundationRenderer requires Windows 10 RS3 or later.";
+    }
+  }
 
   void AddStream(DemuxerStream::Type type, bool encrypted) {
     streams_.push_back(CreateMockDemuxerStream(type, encrypted));
@@ -564,6 +574,9 @@ TEST_F(MediaFoundationRendererTest,
 // each request should be forwarded to the pipeline as a lost decoder state.
 TEST_F(MediaFoundationRendererTest,
        EngineSeekRequestedReportsDecoderStateLost) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeature(
+      kMediaFoundationChromiumCompatibilityMode);
   base::HistogramTester histogram_tester;
   // Use encrypted streams to avoid SetSourceOnMediaEngine() being called
   // automatically during Initialize(). This prevents the MediaEngine from

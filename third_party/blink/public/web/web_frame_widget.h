@@ -33,6 +33,7 @@
 
 #include <stdint.h>
 
+#include <optional>
 #include <vector>
 
 #include "base/functional/callback_forward.h"
@@ -47,6 +48,7 @@
 #include "third_party/skia/include/core/SkColor.h"
 #include "ui/base/dragdrop/mojom/drag_drop_types.mojom-shared.h"
 #include "ui/gfx/ca_layer_result.h"
+#include "ui/gfx/geometry/point_f.h"
 #include "ui/gfx/geometry/rect.h"
 
 namespace base {
@@ -58,8 +60,12 @@ struct ApplyViewportChangesArgs;
 class LayerTreeHost;
 }  // namespace cc
 
+namespace display {
+struct ScreenInfo;
+struct ScreenInfos;
+}  // namespace display
+
 namespace gfx {
-class PointF;
 class RectF;
 }  // namespace gfx
 
@@ -132,11 +138,14 @@ class WebFrameWidget : public WebWidget {
                               uint32_t key_modifiers,
                               base::OnceClosure callback) = 0;
 
-  // Notifies the WebFrameWidget that a drag has terminated.
-  virtual void DragSourceEndedAt(const gfx::PointF& point_in_viewport,
-                                 const gfx::PointF& screen_point,
-                                 ui::mojom::DragOperation,
-                                 base::OnceClosure callback) = 0;
+  // Notifies the WebFrameWidget that a drag has terminated. `point_in_viewport`
+  // and `screen_point` must either both be set or both be omitted (when the
+  // drag was rejected before starting a system drag session).
+  virtual void DragSourceEndedAt(
+      const std::optional<gfx::PointF>& point_in_viewport,
+      const std::optional<gfx::PointF>& screen_point,
+      ui::mojom::DragOperation,
+      base::OnceClosure callback) = 0;
 
   // Notifies the WebFrameWidget that the system drag and drop operation has
   // ended.
@@ -170,6 +179,13 @@ class WebFrameWidget : public WebWidget {
   // be timestamp of when the failure is detected.
   virtual void NotifyPresentationTime(
       base::OnceCallback<void(const viz::FrameTimingDetails&)> callback) = 0;
+
+  // Returns true if a main frame update has been requested but has not yet
+  // started. A DOM mutation made while a main frame update is already running
+  // (e.g. inside a requestAnimationFrame or ResizeObserver callback) does not
+  // request a new one, so this may read false there even though the running
+  // update will include the mutation.
+  virtual bool RequestedMainFramePending() = 0;
 
 #if BUILDFLAG(IS_APPLE)
   virtual void NotifyCoreAnimationErrorCode(
@@ -262,6 +278,16 @@ class WebFrameWidget : public WebWidget {
 
   // Update the LocalSurfaceId used for frames produced by this widget.
   virtual void ApplyLocalSurfaceIdUpdate(const viz::LocalSurfaceId& id) = 0;
+
+  // Returns information about the screen where this widget is being displayed.
+  virtual const display::ScreenInfo& GetScreenInfo() = 0;
+
+  // Returns information about all available screens.
+  virtual const display::ScreenInfos& GetScreenInfos() = 0;
+
+  // Returns the original (non-emulated) device scale factor of the screen
+  // where this widget is being displayed.
+  virtual float GetOriginalDeviceScaleFactor() = 0;
 
  private:
   // This is a private virtual method so we don't expose cc::LayerTreeHost

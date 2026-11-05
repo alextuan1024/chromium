@@ -46,6 +46,7 @@
 #include "third_party/blink/renderer/core/dom/dom_high_res_time_stamp.h"
 #include "third_party/blink/renderer/core/dom/events/event_target.h"
 #include "third_party/blink/renderer/core/loader/frame_loader_types.h"
+#include "third_party/blink/renderer/core/performance_entry_names.h"
 #include "third_party/blink/renderer/core/timing/performance_entry.h"
 #include "third_party/blink/renderer/core/timing/performance_paint_timing.h"
 #include "third_party/blink/renderer/core/timing/performance_timeline_entry_id_generator.h"
@@ -127,7 +128,7 @@ class CORE_EXPORT Performance : public EventTarget {
   virtual EventCounts* eventCounts();
   virtual SpeculationData* getSpeculations();
   virtual std::uint64_t interactionCount() const = 0;
-  virtual void PopulateContainerTimingEntries() {}
+  virtual void ClearForWindowReuse();
 
   // Reduce the resolution to prevent timing attacks. See:
   // http://www.w3.org/TR/hr-time-2/#privacy-security
@@ -158,6 +159,14 @@ class CORE_EXPORT Performance : public EventTarget {
 
   // Internal getter method for the time origin value.
   base::TimeTicks GetTimeOriginInternal() const { return time_origin_; }
+
+  PerformanceNavigationTiming* NavigationTiming() const {
+    return navigation_timing_.Get();
+  }
+
+  PerformanceEntry* FirstPaintTiming() const {
+    return first_paint_timing_.Get();
+  }
 
   // Get all performance entries of the main frame. This is kept until the one
   // with optional filtering options is enabled by default.
@@ -219,7 +228,6 @@ class CORE_EXPORT Performance : public EventTarget {
 
   bool IsContainerTimingBufferFull() const;
   void AddToContainerTimingBuffer(PerformanceContainerTiming&);
-  void NotifyObserversOfContainerTiming();
 
   bool IsElementTimingBufferFull() const;
   void AddToElementTimingBuffer(PerformanceElementTiming&);
@@ -332,7 +340,7 @@ class CORE_EXPORT Performance : public EventTarget {
 
   bool HasObserverFor(PerformanceEntry::EntryType) const;
   // Determine whether a given Node can be exposed via a Web Perf API.
-  static bool CanExposeNode(Node*);
+  static bool CanExposeNode(Node*, const DOMWindow* source);
 
   ScriptObject toJSONForBinding(ScriptState*) const;
 
@@ -343,6 +351,10 @@ class CORE_EXPORT Performance : public EventTarget {
   void Trace(Visitor*) const override;
 
   void ResetTimeOriginForTesting(base::TimeTicks time_origin);
+
+  int GetDroppedEntriesForTypesForTesting(PerformanceEntryTypeMask types) {
+    return GetDroppedEntriesForTypes(types);
+  }
 
   void SetCrossOriginIsolatedCapabilityForTesting(bool is_isolated) {
     cross_origin_isolated_capability_ = is_isolated;
@@ -450,7 +462,8 @@ class CORE_EXPORT Performance : public EventTarget {
   PerformanceEntryVector long_animation_frame_buffer_;
   Member<PerformanceNavigationTiming> navigation_timing_;
   Member<UserTiming> user_timing_;
-  PerformanceEntryVector paint_entries_timing_;
+  Member<PerformancePaintTiming> first_paint_timing_;
+  Member<PerformancePaintTiming> first_contentful_paint_timing_;
   Member<PerformanceEventTiming> first_input_timing_;
 
   base::TimeTicks time_origin_;

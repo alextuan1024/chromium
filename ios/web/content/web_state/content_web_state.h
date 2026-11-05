@@ -13,6 +13,7 @@
 
 #import "base/memory/raw_ptr.h"
 #import "base/observer_list.h"
+#import "base/types/pass_key.h"
 #import "build/blink_buildflags.h"
 #import "content/public/browser/web_contents_delegate.h"
 #import "content/public/browser/web_contents_observer.h"
@@ -22,6 +23,7 @@
 #import "ios/web/public/session/session_certificate_policy_cache.h"
 #import "ios/web/public/web_state.h"
 #import "ios/web/public/web_state_id.h"
+#import "ui/base/mojom/window_open_disposition.mojom-forward.h"
 
 @class CRCWebViewportContainerView;
 @class CRWWebViewProxy;
@@ -52,7 +54,14 @@ class ContentWebState : public WebState,
                         public content::WebContentsObserver,
                         public content::WebContentsDelegate {
  public:
-  explicit ContentWebState(const CreateParams& params);
+  using PassKey = base::PassKey<WebState>;
+
+  // For compatibility with WebStateImpl.
+  template <typename... Args>
+  ContentWebState(PassKey pass_key, Args&&... args)
+      : ContentWebState(std::forward<Args>(args)...) {}
+
+  ContentWebState(const CreateParams& params);
 
   // Constructor for ContentWebState created for deserialized sessions.
   ContentWebState(BrowserState* browser_state,
@@ -158,7 +167,8 @@ class ContentWebState : public WebState,
   void SetHasOpener(bool has_opener) override;
   bool CanTakeSnapshot() const override;
   void TakeSnapshot(const CGRect rect, SnapshotCallback callback) override;
-  void CreateFullPagePdf(base::OnceCallback<void(NSData*)> callback) override;
+  void CreatePdf(const CreatePdfParams& params,
+                 base::OnceCallback<void(NSData*)> callback) override;
   void CloseMediaPresentations() override;
 
  protected:
@@ -201,21 +211,12 @@ class ContentWebState : public WebState,
       content::WebContents* source,
       std::unique_ptr<content::WebContents> new_contents,
       const GURL& target_url,
-      WindowOpenDisposition disposition,
+      ui::mojom::WindowOpenDisposition disposition,
       const blink::mojom::WindowFeatures& window_features,
       bool user_gesture,
       bool* was_blocked) override;
   void CloseContents(content::WebContents* source) override;
-  int GetTopControlsHeight() override;
-  int GetTopControlsMinHeight() override;
-  int GetBottomControlsHeight() override;
-  int GetBottomControlsMinHeight() override;
-  bool ShouldAnimateBrowserControlsHeightChanges() override;
-  bool DoBrowserControlsShrinkRendererSize(
-      content::WebContents* web_contents) override;
   int GetVirtualKeyboardHeight(content::WebContents* web_contents) override;
-  bool OnlyExpandTopControlsAtPageTop() override;
-  void SetTopControlsGestureScrollInProgress(bool in_progress) override;
   std::unique_ptr<content::ColorChooser> OpenColorChooser(
       content::WebContents* web_contents,
       SkColor color,
@@ -256,8 +257,6 @@ class ContentWebState : public WebState,
   std::unique_ptr<ContentNavigationManager> navigation_manager_;
   std::map<ContentWorld, std::unique_ptr<ContentWebFramesManager>> managers_;
   FaviconStatus favicon_status_;
-  bool top_control_scroll_in_progress_ = false;
-  bool cached_shrink_controls_ = false;
   bool created_with_opener_ = false;
   id keyboard_showing_observer_;
   id keyboard_hiding_observer_;

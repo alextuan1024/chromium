@@ -47,10 +47,10 @@ import org.chromium.chrome.browser.browserservices.TrustedWebActivityClient;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.init.ChromeBrowserInitializer;
 import org.chromium.chrome.browser.notifications.NotificationContentDetectionManager.SuspiciousNotificationWarningInteractions;
+import org.chromium.chrome.browser.notifications.NotificationUmaTracker.SystemNotificationLifecycleEvent;
 import org.chromium.chrome.browser.notifications.NotificationUmaTracker.SystemNotificationType;
 import org.chromium.chrome.browser.notifications.channels.SiteChannelsManager;
 import org.chromium.chrome.browser.profiles.Profile;
-import org.chromium.chrome.browser.profiles.ProfileManager;
 import org.chromium.chrome.browser.settings.SettingsNavigationFactory;
 import org.chromium.chrome.browser.usage_stats.UsageStatsService;
 import org.chromium.chrome.browser.webapps.ChromeWebApkHost;
@@ -79,9 +79,7 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
-import java.util.function.Function;
 
 /**
  * Provides the ability for the NotificationPlatformBridgeAndroid to talk to the Android platform
@@ -187,20 +185,21 @@ public class NotificationPlatformBridge {
                     /* origin= */ assumeNonNull(
                             intent.getStringExtra(
                                     NotificationConstants.EXTRA_NOTIFICATION_INFO_ORIGIN)),
-                    /* scopeUrl= */ Objects.requireNonNullElse(
-                            intent.getStringExtra(
-                                    NotificationConstants.EXTRA_NOTIFICATION_INFO_SCOPE),
-                            ""),
+                    /* scopeUrl= */ getStringExtraOrEmpty(
+                            intent, NotificationConstants.EXTRA_NOTIFICATION_INFO_SCOPE),
                     /* profileId= */ intent.getStringExtra(
                             NotificationConstants.EXTRA_NOTIFICATION_INFO_PROFILE_ID),
                     /* incognito= */ intent.getBooleanExtra(
                             NotificationConstants.EXTRA_NOTIFICATION_INFO_PROFILE_INCOGNITO, false),
-                    /* webApkPackage= */ Objects.requireNonNullElse(
-                            intent.getStringExtra(
-                                    NotificationConstants.EXTRA_NOTIFICATION_INFO_WEBAPK_PACKAGE),
-                            ""),
+                    /* webApkPackage= */ getStringExtraOrEmpty(
+                            intent, NotificationConstants.EXTRA_NOTIFICATION_INFO_WEBAPK_PACKAGE),
                     /* channelId= */ intent.getStringExtra(
                             NotificationConstants.EXTRA_NOTIFICATION_INFO_CHANNEL_ID));
+        }
+
+        private static String getStringExtraOrEmpty(Intent intent, String key) {
+            String value = intent.getStringExtra(key);
+            return value == null ? "" : value;
         }
     }
 
@@ -522,11 +521,11 @@ public class NotificationPlatformBridge {
     }
 
     /**
-     * Returns the PendingIntent for completing |action| on the notification identified by the data
-     * in the other parameters.
+     * Returns the PendingIntent for completing {@code action} on the notification identified by the
+     * data in the other parameters.
      *
      * <p>All parameters set here should also be set in {@link
-     * NotificationJobService#getJobExtrasFromIntent(Intent)}.
+     * NotificationJobServiceImpl#getJobExtrasFromIntent(Intent)}.
      *
      * @param attributes Attributes identifying the notification and its source.
      * @param action The action this pending intent will represent.
@@ -694,6 +693,8 @@ public class NotificationPlatformBridge {
      * Displays a notification with the given details.
      *
      * @param notificationId The id of the notification.
+     * @param notificationType The type of the notification, such as a web persistent or web
+     *     non-persistent notification.
      * @param origin Full text of the origin, including the protocol, owning this notification.
      * @param scopeUrl The scope of the service worker registered by the site where the notification
      *     comes from.
@@ -741,7 +742,7 @@ public class NotificationPlatformBridge {
             final boolean isSuspicious,
             final boolean skipUAButtons) {
         final boolean vibrateEnabled =
-                UserPrefs.get(ProfileManager.getLastUsedRegularProfile())
+                UserPrefs.get(profile.getOriginalProfile())
                         .getBoolean(NOTIFICATIONS_VIBRATE_ENABLED);
         final boolean incognito = profile.isOffTheRecord();
         // TODO(peter): by-pass this check for non-Web Notification types.
@@ -781,15 +782,12 @@ public class NotificationPlatformBridge {
                                 Log.e(TAG, "Failed to display notification.", e);
                             }
                         })
-                .exceptionally(
-                        (Function<Throwable, @Nullable Void>)
-                                error -> {
-                                    Log.e(
-                                            TAG,
-                                            "Error occured when displaying notification.",
-                                            error);
-                                    return null;
-                                });
+                .whenComplete(
+                        (unused, error) -> {
+                            if (error != null) {
+                                Log.e(TAG, "Error occured when displaying notification.", error);
+                            }
+                        });
     }
 
     private CompletableFuture<String> getWebApkPackage(String scopeUrl) {
@@ -964,6 +962,21 @@ public class NotificationPlatformBridge {
                             // `skipUAButtons` set to true.
                             if (suspended && !skipUAButtons) {
                                 return;
+                            }
+
+                            // Track site notification arrival before channel blocks and Android
+                            // OS dispatch to measure top-of-funnel queued volume for Chrome-handled
+                            // site notifications. Excludes synthetic confirmation notifications
+                            // (skipUAButtons == true).
+                            if (!skipUAButtons
+                                    && (identifyingAttributes.notificationType
+                                                    == NotificationType.WEB_PERSISTENT
+                                            || identifyingAttributes.notificationType
+                                                    == NotificationType.WEB_NON_PERSISTENT)) {
+                                NotificationUmaTracker.getInstance()
+                                        .recordLifecycleEvent(
+                                                SystemNotificationType.SITES,
+                                                SystemNotificationLifecycleEvent.QUEUED);
                             }
 
                             // Display notification as Chrome.
@@ -1340,8 +1353,8 @@ public class NotificationPlatformBridge {
     }
 
     /**
-     * Creates the ticker text for a notification having |title| and |body|. The notification's
-     * title will be printed in bold, followed by the text of the body.
+     * Creates the ticker text for a notification having {@code title} and {@code body}. The
+     * notification's title will be printed in bold, followed by the text of the body.
      *
      * @param title Title of the notification.
      * @param body Textual contents of the notification.
@@ -1865,7 +1878,7 @@ public class NotificationPlatformBridge {
                 boolean incognito,
                 @JniType("std::string") String webApkPackage,
                 int actionIndex,
-                @Nullable String reply);
+                @JniType("std::optional<std::u16string>") @Nullable String reply);
 
         void onNotificationClosed(
                 long nativeNotificationPlatformBridgeAndroid,

@@ -2,6 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include <algorithm>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -66,20 +67,22 @@
 #include "components/password_manager/core/browser/http_auth_manager.h"
 #include "components/password_manager/core/browser/http_auth_observer.h"
 #include "components/password_manager/core/browser/password_form.h"
+#include "components/password_manager/core/browser/password_form_cache.h"
 #include "components/password_manager/core/browser/password_form_manager.h"
 #include "components/password_manager/core/browser/password_manager_client.h"
 #include "components/password_manager/core/browser/password_manager_driver.h"
 #include "components/password_manager/core/browser/password_store/password_form_converters.h"
 #include "components/password_manager/core/browser/password_store/password_store_interface.h"
+#include "components/password_manager/core/browser/password_store/stored_credential.h"
 #include "components/password_manager/core/browser/password_store/test_password_store.h"
 #include "components/password_manager/core/browser/password_string.h"
 #include "components/signin/public/base/signin_buildflags.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/signin/public/identity_manager/identity_test_utils.h"
 #include "components/signin/public/identity_manager/tribool.h"
-#include "components/sync/base/features.h"
 #include "components/sync/base/user_selectable_type.h"
 #include "components/sync/test/test_sync_user_settings.h"
+#include "components/trusted_vault/trusted_vault_client.h"
 #include "components/version_info/version_info.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
@@ -102,18 +105,21 @@
 #include "content/public/test/url_loader_interceptor.h"
 #include "google_apis/gaia/gaia_id.h"
 #include "google_apis/gaia/gaia_switches.h"
+#include "google_apis/gaia/gaia_urls.h"
 #include "net/base/filename_util.h"
 #include "net/dns/mock_host_resolver.h"
+#include "net/test/embedded_test_server/embedded_test_server.h"
 #include "net/test/embedded_test_server/http_request.h"
 #include "net/test/embedded_test_server/http_response.h"
 #include "services/network/public/cpp/is_potentially_trustworthy.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "third_party/blink/public/common/input/web_input_event.h"
 #include "third_party/blink/public/common/input/web_keyboard_event.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "ui/base/page_transition_types.h"
-#include "ui/base/window_open_disposition.h"
 #include "ui/events/keycodes/keyboard_codes.h"
 #include "ui/gfx/geometry/point.h"
+#include "url/origin.h"
 
 #if BUILDFLAG(ENABLE_DICE_SUPPORT)
 #include "chrome/browser/password_manager/password_manager_signin_intercept_test_helper.h"
@@ -149,10 +155,7 @@ class PasswordManagerBrowserTest : public PasswordManagerBrowserTestBase {
 
     signin::MakePrimaryAccountAvailable(
         IdentityManagerFactory::GetForProfile(browser()->GetProfile()),
-        "user@example.com",
-        syncer::IsReplaceSyncPromosWithSignInPromosEnabled()
-            ? signin::ConsentLevel::kSignin
-            : signin::ConsentLevel::kSync);
+        "user@example.com", signin::ConsentLevel::kSignin);
   }
 
   void SetUpCommandLine(base::CommandLine* command_line) override {
@@ -1447,7 +1450,7 @@ IN_PROC_BROWSER_TEST_F(PasswordManagerBrowserTest, SlowPageFill) {
   GURL url =
       embedded_test_server()->GetURL("/password/infinite_password_form.html");
   ui_test_utils::NavigateToURLWithDisposition(
-      browser(), url, WindowOpenDisposition::CURRENT_TAB,
+      browser(), url, ::ui::mojom::WindowOpenDisposition::kCurrentTab,
       ui_test_utils::BROWSER_TEST_NO_WAIT);
 
   // Wait for autofill.
@@ -2248,6 +2251,100 @@ IN_PROC_BROWSER_TEST_F(PasswordManagerBrowserTest,
                             content::EXECUTE_SCRIPT_NO_USER_GESTURE));
 }
 
+// Regression test for crbug.com/561039723.
+// The first navigation of a subframe away from its initial empty document
+// reuses the RenderFrameHost, and therefore the ContentPasswordManagerDriver.
+// Password manager state created for the initial document (whose URL is set to
+// origin A by document.write()) must not be reused for the new document from
+// the same-site, but cross-origin, origin B.
+IN_PROC_BROWSER_TEST_F(PasswordManagerBrowserTest,
+                       NoStaleCredentialsAfterInitialEmptyDocumentNavigation) {
+  // B is served on a different port than A: A and B are still same-site (the
+  // port is ignored when computing the site, which is required for reusing the
+  // RenderFrameHost), but A's credential isn't a PSL match for B.
+  net::EmbeddedTestServer b_server;
+  b_server.ServeFilesFromSourceDirectory("chrome/test/data");
+  ASSERT_TRUE(b_server.Start());
+  const GURL a_url =
+      embedded_test_server()->GetURL("a.example.test", "/password/other.html");
+  const GURL b_url =
+      b_server.GetURL("b.example.test", "/password/no_form_element.html");
+  ASSERT_NE(a_url.port(), b_url.port());
+
+  // Store a credential for A.
+  PasswordForm a_credential;
+  a_credential.signon_realm = a_url.DeprecatedGetOriginAsURL().spec();
+  a_credential.url = a_url;
+  a_credential.username_value = u"a_user";
+  a_credential.password_value = PasswordString(u"a_pa55w0rd");
+  GetDefaultPasswordStore(browser()->GetProfile())
+      ->AddLogin(FromPasswordForm(a_credential));
+  WaitForPasswordStore();
+
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), a_url));
+
+  // A writes form-less login fields into the initial empty document of a new
+  // iframe. Form-less fields are reported with `FormRendererId()`.
+  ASSERT_TRUE(content::ExecJs(RenderFrameHost(), R"(
+      const iframe = document.createElement('iframe');
+      iframe.id = 'iframe';
+      document.body.appendChild(iframe);
+      const doc = iframe.contentDocument;
+      doc.open();
+      doc.write('<input type="text" id="username">' +
+                '<input type="password" id="password">');
+      doc.close();
+  )"));
+  content::RenderFrameHost* child = content::ChildFrameAt(RenderFrameHost(), 0);
+  ASSERT_TRUE(child);
+  const content::GlobalRenderFrameHostId child_id = child->GetGlobalId();
+
+  // Returns the form manager of the iframe's current driver that observes a
+  // form from `origin` and has finished fetching credentials.
+  auto get_manager = [&](const GURL& origin) -> PasswordFormManager* {
+    content::RenderFrameHost* rfh = content::ChildFrameAt(RenderFrameHost(), 0);
+    auto* driver =
+        rfh ? ContentPasswordManagerDriver::GetForRenderFrameHost(rfh)
+            : nullptr;
+    if (!driver) {
+      return nullptr;
+    }
+    for (const auto& manager : driver->GetPasswordManager()
+                                   ->GetPasswordFormCache()
+                                   ->GetFormManagers()) {
+      if (manager->GetDriver().get() == driver &&
+          url::IsSameOriginWith(manager->GetURL(), origin) &&
+          manager->IsFetchCompleted()) {
+        return manager.get();
+      }
+    }
+    return nullptr;
+  };
+  auto has_a_credential = [](const PasswordFormManager& manager) {
+    return std::ranges::any_of(manager.GetBestMatches(),
+                               [](const StoredCredential& credential) {
+                                 return credential.username_value == u"a_user";
+                               });
+  };
+
+  // Sanity check: the form in A's initial document gets A's credential.
+  ASSERT_TRUE(base::test::RunUntil([&] { return get_manager(a_url); }));
+  ASSERT_TRUE(has_a_credential(*get_manager(a_url)));
+
+  // A navigates the iframe to B.
+  ASSERT_TRUE(content::NavigateIframeToURL(WebContents(), "iframe", b_url));
+  child = content::ChildFrameAt(RenderFrameHost(), 0);
+  ASSERT_TRUE(child);
+  ASSERT_EQ(b_url, child->GetLastCommittedURL());
+  // Precondition of the scenario: the RenderFrameHost is reused.
+  ASSERT_EQ(child_id, child->GetGlobalId());
+
+  // B's form-less fields must get a fresh form manager that doesn't know about
+  // A's credential.
+  ASSERT_TRUE(base::test::RunUntil([&] { return get_manager(b_url); }));
+  EXPECT_FALSE(has_a_credential(*get_manager(b_url)));
+}
+
 // Check that a password form in an iframe of same origin will not be
 // filled in until user interact with the iframe.
 IN_PROC_BROWSER_TEST_F(PasswordManagerBrowserTest,
@@ -2899,7 +2996,7 @@ IN_PROC_BROWSER_TEST_F(PasswordManagerBrowserTest,
   // Open the internals page.
   ui_test_utils::NavigateToURLWithDisposition(
       browser(), GURL("chrome://password-manager-internals"),
-      WindowOpenDisposition::CURRENT_TAB,
+      ::ui::mojom::WindowOpenDisposition::kCurrentTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
   content::WebContents* internals_web_contents = WebContents();
 
@@ -2910,7 +3007,7 @@ IN_PROC_BROWSER_TEST_F(PasswordManagerBrowserTest,
   // availability of logging and has enough time to receive the answer.
   ui_test_utils::NavigateToURLWithDisposition(
       browser(), embedded_test_server()->GetURL("/password/done.html"),
-      WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      ::ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
   content::WebContents* forms_web_contents =
       browser()->tab_strip_model()->GetActiveWebContents();
@@ -2922,7 +3019,7 @@ IN_PROC_BROWSER_TEST_F(PasswordManagerBrowserTest,
   PasswordsNavigationObserver observer(forms_web_contents);
   ui_test_utils::NavigateToURLWithDisposition(
       browser(), embedded_test_server()->GetURL("/password/password_form.html"),
-      WindowOpenDisposition::CURRENT_TAB,
+      ::ui::mojom::WindowOpenDisposition::kCurrentTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
   ASSERT_TRUE(observer.Wait());
 
@@ -2939,13 +3036,13 @@ IN_PROC_BROWSER_TEST_F(PasswordManagerBrowserTest,
 IN_PROC_BROWSER_TEST_F(PasswordManagerBrowserTest, InternalsPage_Browser) {
   ui_test_utils::NavigateToURLWithDisposition(
       browser(), GURL("chrome://password-manager-internals"),
-      WindowOpenDisposition::CURRENT_TAB,
+      ::ui::mojom::WindowOpenDisposition::kCurrentTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
   content::WebContents* internals_web_contents = WebContents();
 
   ui_test_utils::NavigateToURLWithDisposition(
       browser(), embedded_test_server()->GetURL("/password/password_form.html"),
-      WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      ::ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
 
   std::string find_logs =
@@ -4073,7 +4170,7 @@ IN_PROC_BROWSER_TEST_F(PasswordManagerBrowserTestWithSigninInterception,
   signin_interceptor->MaybeInterceptWebSignin(
       WebContents(), account_id, signin_metrics::AccessPoint::kStartPage,
       /*is_new_account=*/true,
-      /*is_sync_signin=*/false,
+      /*is_chrome_signin=*/false,
       /*primary_is_connected=*/signin::Tribool::kUnknown);
   EXPECT_FALSE(signin_interceptor->is_interception_in_progress());
   histogram_tester.ExpectUniqueSample(
@@ -4103,7 +4200,7 @@ IN_PROC_BROWSER_TEST_F(PasswordManagerBrowserTestWithSigninInterception,
   signin_interceptor->MaybeInterceptWebSignin(
       WebContents(), account_id, signin_metrics::AccessPoint::kStartPage,
       /*is_new_account=*/true,
-      /*is_sync_signin=*/false,
+      /*is_chrome_signin=*/false,
       /*primary_is_connected=*/signin::Tribool::kUnknown);
   EXPECT_FALSE(signin_interceptor->is_interception_in_progress());
   histogram_tester.ExpectUniqueSample(
@@ -4135,7 +4232,7 @@ IN_PROC_BROWSER_TEST_F(PasswordManagerBrowserTestWithSigninInterception,
   signin_interceptor->MaybeInterceptWebSignin(
       WebContents(), account_id, signin_metrics::AccessPoint::kStartPage,
       /*is_new_account=*/true,
-      /*is_sync_signin=*/false,
+      /*is_chrome_signin=*/false,
       /*primary_is_connected=*/signin::Tribool::kUnknown);
   EXPECT_TRUE(signin_interceptor->is_interception_in_progress());
 }
@@ -4159,7 +4256,7 @@ IN_PROC_BROWSER_TEST_F(PasswordManagerBrowserTestWithSigninInterception,
   signin_interceptor->MaybeInterceptWebSignin(
       WebContents(), account_id, signin_metrics::AccessPoint::kStartPage,
       /*is_new_account=*/true,
-      /*is_sync_signin=*/false,
+      /*is_chrome_signin=*/false,
       /*primary_is_connected=*/signin::Tribool::kUnknown);
   EXPECT_TRUE(signin_interceptor->is_interception_in_progress());
 
@@ -4435,12 +4532,10 @@ class PasswordManagerPrerenderBrowserTest : public PasswordManagerBrowserTest {
     ChromePasswordManagerClient::CreateForWebContents(owned_web_contents.get());
     ASSERT_TRUE(
         ChromePasswordManagerClient::FromWebContents(owned_web_contents.get()));
-    ManagePasswordsUIController::CreateForWebContents(owned_web_contents.get());
-    ASSERT_TRUE(
-        ManagePasswordsUIController::FromWebContents(owned_web_contents.get()));
     ASSERT_FALSE(owned_web_contents.get()->IsLoading());
     browser()->tab_strip_model()->AppendWebContents(
         std::move(owned_web_contents), true);
+    ASSERT_TRUE(ManagePasswordsUIController::FromWebContents(web_contents()));
     if (preexisting_tab) {
       ClearWebContentsPtr();
       browser()->tab_strip_model()->CloseWebContentsAt(
@@ -4736,6 +4831,66 @@ IN_PROC_BROWSER_TEST_F(PasswordManagerCredentiallessIframeTest,
   EXPECT_EQ("not found",
             content::EvalJs(iframe_normal,
                             "window.parent.check_password(document);"));
+}
+
+IN_PROC_BROWSER_TEST_F(PasswordManagerBrowserTest,
+                       StartTrustedVaultKeyRetrievalDelegatesToSyncUiUtil) {
+  base::HistogramTester histogram_tester;
+  ChromePasswordManagerClient* client =
+      ChromePasswordManagerClient::FromWebContents(WebContents());
+  ASSERT_NE(nullptr, client);
+
+  client->StartTrustedVaultKeyRetrieval(
+      trusted_vault::TrustedVaultUserActionTriggerForUMA::
+          kPasswordManagerSettings);
+
+  histogram_tester.ExpectUniqueSample(
+      "Sync.TrustedVaultKeyRetrievalTrigger",
+      trusted_vault::TrustedVaultUserActionTriggerForUMA::
+          kPasswordManagerSettings,
+      1);
+  EXPECT_EQ(2, browser()->tab_strip_model()->count());
+  content::WebContents* new_tab =
+      browser()->tab_strip_model()->GetWebContentsAt(1);
+  EXPECT_EQ(url::Origin::Create(GaiaUrls::GetInstance()->gaia_url()),
+            url::Origin::Create(new_tab->GetVisibleURL()));
+  EXPECT_EQ(GaiaUrls::GetInstance()
+                ->SigninChromeSyncKeysRetrievalUrl(/*account_index=*/0)
+                .path(),
+            new_tab->GetVisibleURL().path());
+
+  // Deactivate the new tab to verify the second call reactivates it.
+  browser()->tab_strip_model()->ActivateTabAt(0);
+  EXPECT_NE(new_tab, browser()->tab_strip_model()->GetActiveWebContents());
+
+  // Triggering key retrieval again should reuse and reactivate the existing tab.
+  client->StartTrustedVaultKeyRetrieval(
+      trusted_vault::TrustedVaultUserActionTriggerForUMA::
+          kPasswordManagerSettings);
+  EXPECT_EQ(2, browser()->tab_strip_model()->count());
+  EXPECT_EQ(new_tab, browser()->tab_strip_model()->GetActiveWebContents());
+  histogram_tester.ExpectUniqueSample(
+      "Sync.TrustedVaultKeyRetrievalTrigger",
+      trusted_vault::TrustedVaultUserActionTriggerForUMA::
+          kPasswordManagerSettings,
+      2);
+}
+
+IN_PROC_BROWSER_TEST_F(PasswordManagerBrowserTest,
+                       StartTrustedVaultKeyRetrievalInIncognitoIsNoOp) {
+  BrowserWindowInterface* incognito = CreateIncognitoBrowser();
+  base::HistogramTester histogram_tester;
+  ChromePasswordManagerClient* client =
+      ChromePasswordManagerClient::FromWebContents(
+          incognito->GetTabStripModel()->GetActiveWebContents());
+  ASSERT_NE(nullptr, client);
+
+  client->StartTrustedVaultKeyRetrieval(
+      trusted_vault::TrustedVaultUserActionTriggerForUMA::
+          kPasswordManagerSettings);
+
+  histogram_tester.ExpectTotalCount("Sync.TrustedVaultKeyRetrievalTrigger", 0);
+  EXPECT_EQ(1, incognito->GetTabStripModel()->count());
 }
 
 }  // namespace

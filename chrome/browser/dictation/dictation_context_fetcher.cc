@@ -5,14 +5,21 @@
 #include "chrome/browser/dictation/dictation_context_fetcher.h"
 
 #include <optional>
+#include <string>
+#include <string_view>
 
 #include "base/byte_size.h"
 #include "base/functional/bind.h"
 #include "base/memory/weak_ptr.h"
+#include "base/strings/string_split.h"
+#include "chrome/browser/dictation/dictation_keyed_service.h"
+#include "chrome/browser/dictation/features.h"
 #include "chrome/browser/dictation/logging.h"
+#include "chrome/browser/dictation/metrics.h"
 #include "chrome/browser/dictation/target.h"
 #include "chrome/browser/glic/host/guest_util.h"
 #include "chrome/browser/page_content_annotations/multi_source_page_context_fetcher.h"
+#include "chrome/browser/search/search.h"
 #include "chrome/browser/ui/tabs/page_context_eligibility_helper.h"
 #include "components/optimization_guide/content/browser/page_content_proto_provider.h"
 #include "components/optimization_guide/content/browser/page_context_eligibility_observer.h"
@@ -20,7 +27,13 @@
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents.h"
+#include "content/public/common/url_utils.h"
+#include "mojo/public/cpp/bindings/callback_helpers.h"
 #include "third_party/blink/public/mojom/content_extraction/ai_page_content.mojom.h"
+#include "third_party/blink/public/mojom/dictation/dictation_agent.mojom.h"
+#include "url/gurl.h"
+#include "url/origin.h"
+#include "url/url_constants.h"
 
 namespace dictation {
 
@@ -102,12 +115,30 @@ optimization_guide::PageContextEligibilityStatus GetPageContextEligibility(
   return helper->IsPageContextEligible();
 }
 
+// Returns true if `origin` is https and its host (or a parent domain of it) is
+// listed in `kPopulateEditContextHosts`. Uses the origin, not the URL, because
+// some editors put their EditContext in an about:blank iframe, which inherits
+// its origin from the page.
+bool ShouldPopulateEditContext(const url::Origin& origin) {
+  if (origin.scheme() != url::kHttpsScheme) {
+    return false;
+  }
+  const std::string hosts = kPopulateEditContextHosts.Get();
+  for (std::string_view host : base::SplitStringPiece(
+           hosts, ",", base::TRIM_WHITESPACE, base::SPLIT_WANT_NONEMPTY)) {
+    if (origin.DomainIs(host)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 }  // namespace
 
 DictationContextFetcher::DictationContextFetcher() = default;
 DictationContextFetcher::~DictationContextFetcher() = default;
 
-void DictationContextFetcher::Fetch(const Target& target,
+void DictationContextFetcher::Fetch(Target& target,
                                     GetContextCallback callback) {
   content::RenderFrameHost* rfh = target.GetRenderFrameHost();
   content::WebContents* web_contents =
@@ -118,12 +149,17 @@ void DictationContextFetcher::Fetch(const Target& target,
     return;
   }
 
-  if (glic::IsGlicGuest(web_contents)) {
-    // TODO(b/535731618): Straightforward context fetch appears to never return
-    // and needs more investigation. For now, just eliding context is better
-    // than breaking the feature. (Also, we probably want to include the web
-    // page content _in addition to_ the side panel content since that's likely
-    // relevant for speech biasing)
+  const GURL& url = rfh->GetLastCommittedURL();
+  if (glic::IsGlicGuest(web_contents) ||
+      (content::HasWebUIScheme(url) && !search::IsWebUINewTabPageOrigin(url))) {
+    // TODO(b/535731618): Straightforward context fetch on Glic guests and
+    // general WebUI surfaces (other than the New Tab Page) appears to never
+    // return and needs more investigation. For now, just eliding context is
+    // better than breaking the feature. (Also, for Glic, we probably want to
+    // include the web page content _in addition to_ the side panel content
+    // since that's likely relevant for speech biasing)
+    // TODO(b/580953907): Eliding context here also drops the selected text sent
+    // as `editable_content`, so the model can't see or edit it.
     DictationContext context;
     std::move(callback).Run(std::move(context));
     return;
@@ -135,13 +171,71 @@ void DictationContextFetcher::Fetch(const Target& target,
       optimization_guide::PageContextEligibilityStatus::kNotEligible) {
     VT_LOG(web_contents->GetBrowserContext())
         << "Page not eligible for context";
+    RecordDictationPageContextEligibility(
+        DictationPageContextEligibility::kCseIrmIneligible);
     DictationContext context;
     std::move(callback).Run(std::move(context));
     return;
   }
 
+  // As above, if the Optimization Guide hint is still in flight (`kUnknown`),
+  // proceed and check again when the fetch completes, but bail immediately if
+  // the page is known ineligible.
+  DictationKeyedService* service =
+      DictationKeyedService::Get(web_contents->GetBrowserContext());
+  CHECK(service);
+  // TODO(b/580953907): Blocking here also drops the selected text sent as
+  // `editable_content`, so the model can't see or edit it. Check with
+  // safety/product whether it should send selected text in blocked cases.
+  if (service->CheckOptimizationGuideHint(
+          web_contents->GetLastCommittedURL()) ==
+      optimization_guide::PageContextEligibilityStatus::kNotEligible) {
+    VT_LOG(web_contents->GetBrowserContext())
+        << "Page not eligible for context per Optimization Guide";
+    RecordDictationPageContextEligibility(
+        DictationPageContextEligibility::kHintIneligible);
+    std::move(callback).Run(DictationContext());
+    return;
+  }
+
+  // Some pages using EditContext only populate it once they see IME input. On
+  // listed sites, ask the agent to populate it first. Page context is fetched
+  // over other pipes, so only start it once the agent has replied.
+  // TODO(b/568411900): Only do this if the target has an EditContext,
+  // e.g. via a new bit in FocusedNodeDetails stored on Target.
+  const blink::DOMNodeIdType node_id =
+      target.global_dom_node_id().target_element_dom_id;
+  if (node_id.is_null() ||
+      !ShouldPopulateEditContext(rfh->GetLastCommittedOrigin())) {
+    FetchPageContext(web_contents->GetWeakPtr(), std::move(callback));
+    return;
+  }
+  blink::mojom::DictationAgent* agent = target.GetDictationAgent();
+  if (!agent) {
+    // The target's frame is gone.
+    std::move(callback).Run(DictationContext());
+    return;
+  }
+  agent->PopulateEditContext(
+      node_id.value(),
+      mojo::WrapCallbackWithDefaultInvokeIfNotRun(
+          base::BindOnce(&DictationContextFetcher::FetchPageContext,
+                         weak_ptr_factory_.GetWeakPtr(),
+                         web_contents->GetWeakPtr(), std::move(callback))));
+}
+
+void DictationContextFetcher::FetchPageContext(
+    base::WeakPtr<content::WebContents> web_contents,
+    GetContextCallback callback) {
+  if (!web_contents) {
+    std::move(callback).Run(DictationContext());
+    return;
+  }
+
   page_content_annotations::FetchPageContextOptions options;
   options.inner_text_bytes_limit = kInnerTextLimit.InBytes();
+  // Pages using EditContext may keep their text there instead of the DOM.
+  options.inner_text_include_edit_context = true;
   options.annotated_page_content_options =
       optimization_guide::DefaultAIPageContentOptions(
           /*on_critical_path=*/true);
@@ -151,7 +245,7 @@ void DictationContextFetcher::Fetch(const Target& target,
       *web_contents, options,
       /*progress_listener=*/nullptr,
       base::BindOnce(&DictationContextFetcher::OnPageContextFetched,
-                     weak_ptr_factory_.GetWeakPtr(), web_contents->GetWeakPtr(),
+                     weak_ptr_factory_.GetWeakPtr(), web_contents,
                      std::move(callback)));
 }
 
@@ -161,15 +255,36 @@ void DictationContextFetcher::OnPageContextFetched(
     page_content_annotations::FetchPageContextResultCallbackArg result) {
   DictationContext context;
 
-  // Fail closed if the page is not explicitly eligible.
-  if (!web_contents ||
-      GetPageContextEligibility(web_contents.get()) !=
-          optimization_guide::PageContextEligibilityStatus::kEligible) {
-    VT_LOG(web_contents->GetBrowserContext())
-        << "Page not eligible for context";
+  if (!web_contents) {
     std::move(callback).Run(std::move(context));
     return;
   }
+  DictationKeyedService* service =
+      DictationKeyedService::Get(web_contents->GetBrowserContext());
+  CHECK(service);
+  // Fail closed if the page is not explicitly eligible under both checks.
+  if (GetPageContextEligibility(web_contents.get()) !=
+      optimization_guide::PageContextEligibilityStatus::kEligible) {
+    VT_LOG(web_contents->GetBrowserContext())
+        << "Page not eligible for context";
+    RecordDictationPageContextEligibility(
+        DictationPageContextEligibility::kCseIrmIneligible);
+    std::move(callback).Run(std::move(context));
+    return;
+  }
+  if (service->CheckOptimizationGuideHint(
+          web_contents->GetLastCommittedURL()) !=
+      optimization_guide::PageContextEligibilityStatus::kEligible) {
+    VT_LOG(web_contents->GetBrowserContext())
+        << "Page not eligible for context per Optimization Guide";
+    RecordDictationPageContextEligibility(
+        DictationPageContextEligibility::kHintIneligible);
+    std::move(callback).Run(std::move(context));
+    return;
+  }
+
+  RecordDictationPageContextEligibility(
+      DictationPageContextEligibility::kEligible);
 
   // TODO(b/527240600): Handle errors
   if (result.has_value()) {

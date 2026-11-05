@@ -73,17 +73,21 @@ FeatureProcessorState::PopNextProcessor() {
 
 void FeatureProcessorState::AppendProcessor(
     std::unique_ptr<QueryProcessor> processor,
-    bool is_input) {
-  if (is_input) {
-    in_processors_.emplace_back(std::move(processor));
-  } else {
-    out_processors_.emplace_back(std::move(processor));
+    Data::DataType type) {
+  switch (type) {
+    case Data::DataType::INPUT_UMA:
+    case Data::DataType::INPUT_UKM:
+    case Data::DataType::INPUT_CUSTOM:
+      in_processors_.emplace_back(std::move(processor));
+      break;
+    case Data::DataType::OUTPUT_UMA:
+      out_processors_.emplace_back(std::move(processor));
+      break;
   }
 }
 
-void FeatureProcessorState::AppendIndexedTensors(
-    const QueryProcessor::IndexedTensors& result,
-    bool is_input) {
+void FeatureProcessorState::AppendIndexedTensors(const IndexedTensors& result,
+                                                 bool is_input) {
   if (is_input) {
     for (const auto& item : result) {
       input_tensor_[item.first] = item.second;
@@ -110,7 +114,7 @@ void FeatureProcessorState::OnFinishProcessing() {
 }
 
 std::vector<float> FeatureProcessorState::MergeTensors(
-    const QueryProcessor::IndexedTensors& tensor) {
+    const IndexedTensors& tensor) {
   std::vector<float> result;
   if (metadata_utils::ValidateIndexedTensors(tensor, tensor.size()) !=
       metadata_utils::ValidationResult::kValidationSuccess) {

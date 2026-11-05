@@ -33,6 +33,7 @@
 #import "ios/chrome/browser/saved_tab_groups/model/tab_group_service.h"
 #import "ios/chrome/browser/saved_tab_groups/model/tab_group_sync_service_factory.h"
 #import "ios/chrome/browser/share_kit/model/test_share_kit_service.h"
+#import "ios/chrome/browser/shared/coordinator/scene/scene_state.h"
 #import "ios/chrome/browser/shared/model/browser/browser_list.h"
 #import "ios/chrome/browser/shared/model/browser/test/test_browser.h"
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_ios.h"
@@ -542,6 +543,7 @@ TEST_P(BaseGridMediatorTest, TestToolbarsSelectionModeWithoutSelection) {
   EXPECT_EQ(0u, fake_toolbars_mediator_.configuration.selectedItemsCount);
 
   EXPECT_FALSE(fake_toolbars_mediator_.configuration.closeAllButton);
+  EXPECT_FALSE(fake_toolbars_mediator_.configuration.exitTabGridButton);
   EXPECT_FALSE(fake_toolbars_mediator_.configuration.newTabButton);
   EXPECT_FALSE(fake_toolbars_mediator_.configuration.searchButton);
   EXPECT_FALSE(fake_toolbars_mediator_.configuration.selectTabsButton);
@@ -570,11 +572,20 @@ TEST_P(BaseGridMediatorTest, TestToolbarsSelectionModeWithSelection) {
   EXPECT_TRUE(fake_toolbars_mediator_.configuration.addToButton);
 
   EXPECT_FALSE(fake_toolbars_mediator_.configuration.closeAllButton);
+  EXPECT_FALSE(fake_toolbars_mediator_.configuration.exitTabGridButton);
   EXPECT_FALSE(fake_toolbars_mediator_.configuration.newTabButton);
   EXPECT_FALSE(fake_toolbars_mediator_.configuration.searchButton);
   EXPECT_FALSE(fake_toolbars_mediator_.configuration.selectTabsButton);
   EXPECT_FALSE(fake_toolbars_mediator_.configuration.deselectAllButton);
   EXPECT_FALSE(fake_toolbars_mediator_.configuration.cancelSearchButton);
+}
+
+// Test that the Exit Tab Grid button is disabled when in search mode.
+TEST_P(BaseGridMediatorTest, TestToolbarsSearchModeWithWebstates) {
+  EXPECT_EQ(3UL, consumer_.items.size());
+  [mediator_ searchButtonTapped:nil];
+
+  EXPECT_FALSE(fake_toolbars_mediator_.configuration.exitTabGridButton);
 }
 
 // Tests that no updates to the toolbars happen when the mediator is not
@@ -797,7 +808,7 @@ TEST_P(BaseGridMediatorTest, SelectedTabAndGroupWithGroup) {
   EXPECT_FALSE(configuration.closeAllButton);
   EXPECT_FALSE(configuration.newTabButton);
   EXPECT_FALSE(configuration.searchButton);
-  EXPECT_FALSE(configuration.searchButtonHidden);
+  EXPECT_TRUE(configuration.searchButtonHidden);
   EXPECT_FALSE(configuration.selectTabsButton);
   EXPECT_FALSE(configuration.deselectAllButton);
   EXPECT_FALSE(configuration.cancelSearchButton);
@@ -1319,6 +1330,18 @@ TEST_P(BaseGridMediatorTest, SnapshotIgnoredBatchOperationGuardTest) {
   // When the batch operation ends, snapshot update should be processed.
   [mediator_ didUpdateSnapshotStorageWithSnapshotID:wrapper];
   EXPECT_EQ(initial_count + 2, consumer_.replaceItemCount);
+}
+
+// Test that the consumer's `multipleScenesAvailable` state is initialized from
+// `SceneState` and updated when `SceneState`'s availability changes.
+TEST_P(BaseGridMediatorTest, MultipleScenesAvailable) {
+  EXPECT_FALSE(consumer_.multipleScenesAvailable);
+
+  scene_state_.multipleScenesAvailable = YES;
+  EXPECT_TRUE(consumer_.multipleScenesAvailable);
+
+  scene_state_.multipleScenesAvailable = NO;
+  EXPECT_FALSE(consumer_.multipleScenesAvailable);
 }
 
 INSTANTIATE_TEST_SUITE_P(

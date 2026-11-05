@@ -15,7 +15,25 @@
 namespace performance_manager::features {
 
 #if !BUILDFLAG(IS_ANDROID)
+BASE_FEATURE(kPerformanceControlsPerformanceSurvey,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
+BASE_FEATURE(kPerformanceControlsBatteryPerformanceSurvey,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
+BASE_FEATURE(kPerformanceControlsMemorySaverOptOutSurvey,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
+BASE_FEATURE(kPerformanceControlsBatterySaverOptOutSurvey,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
 BASE_FEATURE(kPerformanceControlsPPMSurvey, base::FEATURE_DISABLED_BY_DEFAULT);
+
+BASE_FEATURE_PARAM(base::TimeDelta,
+                   kPerformanceControlsBatterySurveyLookback,
+                   &kPerformanceControlsBatteryPerformanceSurvey,
+                   "battery_lookback",
+                   base::Days(8));
 
 BASE_FEATURE_PARAM(base::TimeDelta,
                    kPerformanceControlsPPMSurveyMinDelay,
@@ -137,6 +155,9 @@ BASE_FEATURE_PARAM(int,
                    "string_version",
                    1);
 
+BASE_FEATURE(kMemorySaverMemoryCoordinatorPolicy,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
 #if BUILDFLAG(IS_CHROMEOS)
 BASE_FEATURE(kUnthrottledTabProcessReporting, base::FEATURE_ENABLED_BY_DEFAULT);
 #endif  // BUILDFLAG(IS_CHROMEOS)
@@ -171,7 +192,12 @@ const base::FeatureParam<bool> kRenderedOutOfViewIsNotVisible{
 const base::FeatureParam<bool> kRendererHighInitialPriority{
     &kPMProcessPriorityPolicy, "renderer_high_initial_priority", false};
 
+BASE_FEATURE(kSubframeNotVisibleIfParentNotVisible,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
 BASE_FEATURE(kPMLoadingPageVoter, base::FEATURE_DISABLED_BY_DEFAULT);
+
+BASE_FEATURE(kPMLoadingPageVoterV2, base::FEATURE_DISABLED_BY_DEFAULT);
 
 BASE_FEATURE(kUrgentPageDiscarding, base::FEATURE_ENABLED_BY_DEFAULT);
 
@@ -241,11 +267,53 @@ BASE_FEATURE_PARAM(base::TimeDelta,
                    "interval",
                    base::Seconds(5));
 
+// On Windows, memory is swapped to disk once available physical memory drops
+// below ~10%, and swapping continues until available memory is back to 15%.
+// If available memory drops to e.g. 12%, no swapping occurs and there is no
+// reason to freeze tabs. Once it drops below 10%, Windows swaps until
+// available memory recovers to 15%, so tabs remain frozen until then.
+BASE_FEATURE_PARAM(
+    int,
+    kInfiniteTabsFreezingOnMemoryPressureEnterAvailableMemoryPercent,
+    &kInfiniteTabsFreezingOnMemoryPressure,
+    10);
+
+BASE_FEATURE_PARAM(
+    int,
+    kInfiniteTabsFreezingOnMemoryPressureExitAvailableMemoryPercent,
+    &kInfiniteTabsFreezingOnMemoryPressure,
+    15);
+
+// Starting in Windows 11 25H2 (build 26200) and 26H2 (build 26300) on PCs with
+// 8 GiB of RAM or less, Windows regulates available physical memory around
+// ~10-11% of RAM by keeping compressed pages in RAM rather than batch-flushing
+// them to the pagefile to refill available memory to ~15%. Use lower enter and
+// exit percentage thresholds on matching devices.
+BASE_FEATURE_PARAM(
+    bool,
+    kInfiniteTabsFreezingOnMemoryPressureLowRamRequireWin1125H2OrLater,
+    &kInfiniteTabsFreezingOnMemoryPressure,
+    true);
+
+BASE_FEATURE_PARAM(
+    int,
+    kInfiniteTabsFreezingOnMemoryPressureLowRamEnterAvailableMemoryPercent,
+    &kInfiniteTabsFreezingOnMemoryPressure,
+    8);
+
+BASE_FEATURE_PARAM(
+    int,
+    kInfiniteTabsFreezingOnMemoryPressureLowRamExitAvailableMemoryPercent,
+    &kInfiniteTabsFreezingOnMemoryPressure,
+    12);
+
+BASE_FEATURE(kDisablePeriodicUnfreezeOnCriticalMemoryPressure,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
 BASE_FEATURE_PARAM(int,
-                   kInfiniteTabsFreezingOnMemoryPressurePercent,
-                   &kInfiniteTabsFreezingOnMemoryPressure,
-                   "percent_threshold",
-                   15);
+                   kDisablePeriodicUnfreezeOnCriticalMemoryPressurePercent,
+                   &kDisablePeriodicUnfreezeOnCriticalMemoryPressure,
+                   5);
 
 BASE_FEATURE(kDiscardOnCommitLimit, base::FEATURE_DISABLED_BY_DEFAULT);
 
@@ -313,6 +381,10 @@ BASE_FEATURE(kUseLoadingStateToDetectBackgroundTitleOrFaviconUpdate,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kGlicActuationPriorityVoter, base::FEATURE_ENABLED_BY_DEFAULT);
+BASE_RUNTIME_MUTABLE_FEATURE(kPMWithheldFromViewVoter,
+                             base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_RUNTIME_MUTABLE_FEATURE(kPMSidePanelLoadingVoter,
+                             base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kIgnoreMediaQueryFaviconUpdates, base::FEATURE_ENABLED_BY_DEFAULT);
 

@@ -8,6 +8,11 @@
 #include <string>
 
 #include "ash/ash_export.h"
+#include "base/types/expected.h"
+
+namespace aura {
+class Window;
+}
 
 namespace gfx {
 class Point;
@@ -26,6 +31,15 @@ namespace ash {
 // Interface provided to ShelfTooltipManager to create the tooltip for children.
 class ASH_EXPORT ShelfTooltipDelegate {
  public:
+  // The reason why no window preview should be shown for a shelf item.
+  enum class NoPreviewReason {
+    // The shelf item has multiple windows and uses an application menu instead
+    // of a tooltip.
+    kUseAppMenu,
+    // The view is not a shelf item, or its shelf item has no open window.
+    kNoSingleWindow,
+  };
+
   ShelfTooltipDelegate() = default;
   virtual ~ShelfTooltipDelegate() = default;
 
@@ -39,6 +53,13 @@ class ASH_EXPORT ShelfTooltipDelegate {
 
   // Returns the title of |view|.
   virtual std::u16string GetTitleForView(const views::View* view) const = 0;
+
+  // Returns the single open window of `view`'s shelf item to preview. If the
+  // shelf item has multiple windows, shows the application menu if
+  // `show_app_menu` is true and returns `NoPreviewReason::kUseAppMenu`, in
+  // which case a tooltip bubble should not be shown.
+  virtual base::expected<aura::Window*, NoPreviewReason>
+  GetPreviewWindowOrShowAppMenu(views::View* view, bool show_app_menu) = 0;
 
   // Returns the view that should handle |event|.
   virtual views::View* GetViewForEvent(const ui::Event& event) = 0;

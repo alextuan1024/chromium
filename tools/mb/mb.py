@@ -142,6 +142,8 @@ class MetaBuildWrapper:
 
   def ParseArgs(self, argv):
     def AddCommonOptions(subp):
+      # Commands can regenerate GN files without exposing these output flags.
+      subp.set_defaults(write_ide_json=False, json_output=None)
       group = subp.add_mutually_exclusive_group()
       group.add_argument(
         '-m',
@@ -199,14 +201,6 @@ class MetaBuildWrapper:
         '--config-file',
         metavar='PATH',
         help=('path to config file (default is mb_config.pyl'),
-      )
-      subp.add_argument(
-        '--android-version-code',
-        help='Sets GN arg android_default_version_code',
-      )
-      subp.add_argument(
-        '--android-version-name',
-        help='Sets GN arg android_default_version_name',
       )
       # TODO(crbug.com/40122201): Remove this once swarming task templates
       # support command prefixes.
@@ -975,7 +969,7 @@ class MetaBuildWrapper:
           errs.append(
             'Unknown args file "%s" referenced from "%s".' % (config, loc)
           )
-      elif not config in self.configs:
+      elif config not in self.configs:
         errs.append('Unknown config "%s" referenced from "%s".' % (config, loc))
 
     # Check that every config and mixin is referenced.
@@ -1061,7 +1055,9 @@ class MetaBuildWrapper:
       vals = self.Lookup()
       # Re-run gn gen in order to ensure the config is consistent with the
       # build dir.
-      self.RunGNGen(vals)
+      ret = self.RunGNGen(vals)
+      if ret != 0:
+        raise MBErr('GN gen failed: %d' % ret, retcode=ret)
       return vals
 
     toolchain_path = self.PathJoin(self.ToAbsPath(build_dir), 'toolchain.ninja')
@@ -1146,7 +1142,7 @@ class MetaBuildWrapper:
       vals = DefaultVals()
       vals['args_file'] = config
     else:
-      if not config in self.configs:
+      if config not in self.configs:
         raise MBErr(
           'Config "%s" not found in %s' % (config, self.args.config_file)
         )
@@ -1262,7 +1258,7 @@ class MetaBuildWrapper:
           or '',
         }
 
-    if not self.args.builder_group in self.builder_groups:
+    if self.args.builder_group not in self.builder_groups:
       raise MBErr(
         (
           'Builder group name "%s" not found in "%s"'
@@ -1271,7 +1267,7 @@ class MetaBuildWrapper:
         retcode=_CONFIG_NOT_FOUND_RETCODE,
       )
 
-    if not self.args.builder in self.builder_groups[self.args.builder_group]:
+    if self.args.builder not in self.builder_groups[self.args.builder_group]:
       raise MBErr(
         (
           'Builder name "%s" not found under groups[%s] in "%s"'
@@ -1415,7 +1411,10 @@ class MetaBuildWrapper:
     self.WriteFile(gn_runtime_deps_path, '\n'.join(runtime_deps) + '\n')
     cmd = self.GNCmd('gen', build_dir)
     cmd.append('--runtime-deps-list-file=%s' % gn_runtime_deps_path)
-    self.Run(cmd)
+    ret, _, _ = self.Run(cmd)
+    if ret != 0:
+      self.Print('GN gen failed: %d' % ret, file=sys.stderr)
+      return ret
 
     return self.GenerateIsolates(vals, isolate_targets, isolate_map, build_dir)
 
@@ -1658,7 +1657,6 @@ class MetaBuildWrapper:
     )
     is_msan = 'is_msan=true' in vals['gn_args']
     is_ios = 'target_os="ios"' in vals['gn_args']
-    # pylint: disable=consider-using-ternary
     is_mac = (
       self.platform == 'darwin' and not is_ios
     ) or 'target_os="mac"' in vals['gn_args']
@@ -1748,6 +1746,7 @@ class MetaBuildWrapper:
             'corb_test_plugin.plugin/',
             'obj/tools/grit/brotli_mac_asan_workaround/',
             'ppapi_tests.plugin/',
+            'quarantine_enabled_app.app/',
             'registration_test_app_bundle.app/',
             'ui_unittests Framework.framework/',
           )
@@ -1841,14 +1840,6 @@ class MetaBuildWrapper:
     valuese them will be included."""
     gn_args = vals['gn_args']
 
-    android_version_code = self.args.android_version_code
-    if android_version_code:
-      gn_args += ' android_default_version_code="%s"' % android_version_code
-
-    android_version_name = self.args.android_version_name
-    if android_version_name:
-      gn_args += ' android_default_version_name="%s"' % android_version_name
-
     args_gn_lines = []
     parsed_gn_args = {}
 
@@ -1880,7 +1871,6 @@ class MetaBuildWrapper:
     is_cros_device = 'is_chromeos_device=true' in vals['gn_args']
     is_ios = 'target_os="ios"' in vals['gn_args']
     is_linux = 'target_os="linux"' in vals['gn_args']
-    # pylint: disable=consider-using-ternary
     is_mac = (
       self.platform == 'darwin' and not is_ios
     ) or 'target_os="mac"' in vals['gn_args']
@@ -1952,23 +1942,11 @@ class MetaBuildWrapper:
     )
 
     vpython_exe = 'vpython3'
-    extra_files = []
-    has_new_vpython3_spec = self.Exists(
-      self.PathJoin(self.chromium_src_dir, 'vpython.toml')
-    )
-    has_legacy_vpython3_spec = self.Exists(
-      self.PathJoin(self.chromium_src_dir, '.vpython3')
-    )
-    if has_legacy_vpython3_spec or not has_new_vpython3_spec:
-      extra_files.append('../../.vpython3')
-    extra_files.append('../../testing/test_env.py')
-    if has_new_vpython3_spec:
-      extra_files.extend(
-        [
-          '../../vpython.toml',
-          '../../vpython.toml.uv.lock',
-        ]
-      )
+    extra_files = [
+      '../../testing/test_env.py',
+      '../../vpython.toml',
+      '../../vpython.toml.uv.lock',
+    ]
 
     if is_android and test_type != 'script':
       if asan:
@@ -2280,7 +2258,7 @@ class MetaBuildWrapper:
       )
 
     for k in required_keys:
-      if not k in inp:
+      if k not in inp:
         self.WriteFailureAndRaise(
           'input file is missing a "%s" key' % k, output_path
         )
@@ -2353,10 +2331,10 @@ class MetaBuildWrapper:
     env=None,
     capture_output=True,
     input='',
-  ):  # pylint: disable=redefined-builtin
+  ):
+
     # We are returning the exit code, we don't want an exception thrown
     # for non-zero exit code
-    # pylint: disable=subprocess-run-check
     p = subprocess.run(
       cmd,
       shell=False,

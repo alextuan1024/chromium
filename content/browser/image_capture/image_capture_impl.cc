@@ -4,6 +4,7 @@
 
 #include "content/browser/image_capture/image_capture_impl.h"
 
+#include <string>
 #include <utility>
 
 #include "base/functional/bind.h"
@@ -11,7 +12,6 @@
 #include "base/task/bind_post_task.h"
 #include "base/trace_event/trace_event.h"
 #include "base/unguessable_token.h"
-#include "content/browser/browser_main_loop.h"
 #include "content/browser/media/media_devices_permission_checker.h"
 #include "content/browser/renderer_host/media/media_stream_manager.h"
 #include "content/browser/renderer_host/media/video_capture_manager.h"
@@ -31,12 +31,16 @@ namespace content {
 namespace {
 
 void GetPhotoStateOnIOThread(const std::string& source_id,
-                             MediaStreamManager* media_stream_manager,
+                             GlobalRenderFrameHostId render_frame_host_id,
                              ImageCaptureImpl::GetPhotoStateCallback callback) {
   CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M160);
 
+  MediaStreamManager* media_stream_manager = MediaStreamManager::GetInstance();
+  CHECK(media_stream_manager);
+
   const base::UnguessableToken session_id =
-      media_stream_manager->VideoDeviceIdToSessionId(source_id);
+      media_stream_manager->VideoDeviceIdToSessionId(source_id,
+                                                     render_frame_host_id);
   if (session_id.is_empty())
     return;
 
@@ -46,13 +50,17 @@ void GetPhotoStateOnIOThread(const std::string& source_id,
 
 void SetPhotoOptionsOnIOThread(
     const std::string& source_id,
-    MediaStreamManager* media_stream_manager,
+    GlobalRenderFrameHostId render_frame_host_id,
     media::mojom::PhotoSettingsPtr settings,
     ImageCaptureImpl::SetPhotoOptionsCallback callback) {
   CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M160);
 
+  MediaStreamManager* media_stream_manager = MediaStreamManager::GetInstance();
+  CHECK(media_stream_manager);
+
   const base::UnguessableToken session_id =
-      media_stream_manager->VideoDeviceIdToSessionId(source_id);
+      media_stream_manager->VideoDeviceIdToSessionId(source_id,
+                                                     render_frame_host_id);
   if (session_id.is_empty())
     return;
   media_stream_manager->video_capture_manager()->SetPhotoOptions(
@@ -60,15 +68,19 @@ void SetPhotoOptionsOnIOThread(
 }
 
 void TakePhotoOnIOThread(const std::string& source_id,
-                         MediaStreamManager* media_stream_manager,
+                         GlobalRenderFrameHostId render_frame_host_id,
                          ImageCaptureImpl::TakePhotoCallback callback) {
   CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M160);
   TRACE_EVENT_INSTANT0(TRACE_DISABLED_BY_DEFAULT("video_and_image_capture"),
                        "image_capture_impl.cc::TakePhotoOnIOThread",
                        TRACE_EVENT_SCOPE_PROCESS);
 
+  MediaStreamManager* media_stream_manager = MediaStreamManager::GetInstance();
+  CHECK(media_stream_manager);
+
   const base::UnguessableToken session_id =
-      media_stream_manager->VideoDeviceIdToSessionId(source_id);
+      media_stream_manager->VideoDeviceIdToSessionId(source_id,
+                                                     render_frame_host_id);
   if (session_id.is_empty())
     return;
 
@@ -87,8 +99,9 @@ void ImageCaptureImpl::Create(
   // ImageCaptureImpl owns itself. It will self-destruct when a Mojo interface
   // error occurs, the RenderFrameHost is deleted, or the RenderFrameHost
   // navigates to a new document.
-  new ImageCaptureImpl(*render_frame_host, std::move(receiver),
-                       skip_connecting_to_media_stream_manager_for_testing);
+  base::MakeSelfDeleting<ImageCaptureImpl>(
+      *render_frame_host, std::move(receiver),
+      skip_connecting_to_media_stream_manager_for_testing);
 }
 
 void ImageCaptureImpl::GetPhotoState(const std::string& source_id,
@@ -105,10 +118,9 @@ void ImageCaptureImpl::GetPhotoState(const std::string& source_id,
                              weak_factory_.GetWeakPtr(), std::move(callback))),
           mojo::CreateEmptyPhotoState());
   GetIOThreadTaskRunner({})->PostTask(
-      FROM_HERE,
-      base::BindOnce(&GetPhotoStateOnIOThread, source_id,
-                     BrowserMainLoop::GetInstance()->media_stream_manager(),
-                     std::move(scoped_callback)));
+      FROM_HERE, base::BindOnce(&GetPhotoStateOnIOThread, source_id,
+                                render_frame_host().GetGlobalId(),
+                                std::move(scoped_callback)));
 }
 
 void ImageCaptureImpl::SetPhotoOptions(const std::string& source_id,
@@ -138,8 +150,8 @@ void ImageCaptureImpl::SetPhotoOptions(const std::string& source_id,
   GetIOThreadTaskRunner({})->PostTask(
       FROM_HERE,
       base::BindOnce(&SetPhotoOptionsOnIOThread, source_id,
-                     BrowserMainLoop::GetInstance()->media_stream_manager(),
-                     std::move(settings), std::move(scoped_callback)));
+                     render_frame_host().GetGlobalId(), std::move(settings),
+                     std::move(scoped_callback)));
 }
 
 void ImageCaptureImpl::TakePhoto(const std::string& source_id,
@@ -154,17 +166,17 @@ void ImageCaptureImpl::TakePhoto(const std::string& source_id,
           base::BindPostTaskToCurrentDefault(std::move(callback)),
           media::mojom::Blob::New());
   GetIOThreadTaskRunner({})->PostTask(
-      FROM_HERE,
-      base::BindOnce(&TakePhotoOnIOThread, source_id,
-                     BrowserMainLoop::GetInstance()->media_stream_manager(),
-                     std::move(scoped_callback)));
+      FROM_HERE, base::BindOnce(&TakePhotoOnIOThread, source_id,
+                                render_frame_host().GetGlobalId(),
+                                std::move(scoped_callback)));
 }
 
 ImageCaptureImpl::ImageCaptureImpl(
     RenderFrameHost& render_frame_host,
     mojo::PendingReceiver<media::mojom::ImageCapture> receiver,
-    bool skip_connecting_to_media_stream_manager_for_testing)
-    : DocumentService(render_frame_host, std::move(receiver)),
+    bool skip_connecting_to_media_stream_manager_for_testing,
+    base::SelfDeletingPassKey key)
+    : DocumentService(render_frame_host, std::move(receiver), key),
       skip_connecting_to_media_stream_manager_for_testing_(
           skip_connecting_to_media_stream_manager_for_testing) {}
 

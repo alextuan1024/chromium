@@ -5,21 +5,31 @@
 #ifndef CHROME_BROWSER_ACTOR_ACTOR_KEYED_SERVICE_H_
 #define CHROME_BROWSER_ACTOR_ACTOR_KEYED_SERVICE_H_
 
+#include <compare>
 #include <memory>
+#include <optional>
+#include <string>
+#include <variant>
 #include <vector>
 
 #include "base/callback_list.h"
 #include "base/compiler_specific.h"
+#include "base/containers/flat_set.h"
 #include "base/functional/callback.h"
+#include "base/functional/callback_helpers.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/observer_list.h"
 #include "base/scoped_observation.h"
 #include "base/supports_user_data.h"
+#include "base/timer/timer.h"
 #include "base/types/expected.h"
+#include "base/types/optional_ref.h"
 #include "base/types/pass_key.h"
+#include "chrome/browser/actor/actor_surface_handle.h"
 #include "chrome/browser/actor/actor_task.h"
 #include "chrome/browser/actor/actor_task_delegate.h"
+#include "chrome/browser/actor/tools/registry/tool_registry.h"
 #include "chrome/browser/glic/host/glic.mojom.h"
 #include "chrome/browser/page_content_annotations/multi_source_page_context_fetcher.h"
 #include "chrome/browser/profiles/profile_observer.h"
@@ -35,11 +45,16 @@
 #include "components/sessions/core/session_id.h"
 #include "components/tabs/public/tab_interface.h"
 
+class BrowserWindowInterface;
 class Profile;
 
 namespace content {
 class BrowserContext;
 }  // namespace content
+
+namespace optimization_guide::proto {
+class AgentContainerConfig;
+}  // namespace optimization_guide::proto
 
 namespace actor {
 class AggregatedJournalFileSerializer;
@@ -47,12 +62,47 @@ namespace ui {
 class ActorUiStateManager;
 class ActorUiStateManagerInterface;
 class UiEventDispatcher;
-}
+}  // namespace ui
 
+class ActorKeyedService;
+class ActorSurfaceRegistry;
+class ChromeActuationTransportHandlerFactory;
 class EnterprisePolicyChecker;
 class ActorTaskMetadata;
+class HeadlessWebContentsManager;
 class ToolRequest;
 class TabObservationStrategy;
+
+// Owns a headless actor surface created by
+// ActorKeyedService::CreateHeadlessActorSurface(), and destroys it through
+// ActorKeyedService::DestroyHeadlessActorSurface() when it goes out of scope.
+// Whoever holds it decides how long the headless page lives.
+class ScopedHeadlessActorSurface {
+ public:
+  ScopedHeadlessActorSurface(base::PassKey<ActorKeyedService>,
+                             ActorSurfaceHandle actor_surface_handle,
+                             base::OnceClosure destroyer);
+  ScopedHeadlessActorSurface(const ScopedHeadlessActorSurface&) = delete;
+  ScopedHeadlessActorSurface& operator=(const ScopedHeadlessActorSurface&) =
+      delete;
+  ScopedHeadlessActorSurface(ScopedHeadlessActorSurface&& other);
+  ~ScopedHeadlessActorSurface();
+
+  ActorSurfaceHandle actor_surface_handle() const {
+    return actor_surface_handle_;
+  }
+
+  // Gives up ownership without destroying the surface and returns its handle;
+  // the caller becomes responsible for the surface. Leaves this object empty.
+  [[nodiscard]] ActorSurfaceHandle ReleaseOwnership(
+      base::PassKey<ActorKeyedService>);
+
+ private:
+  // The headless surface this object owns.
+  ActorSurfaceHandle actor_surface_handle_;
+  // Runs ActorKeyedService::DestroyHeadlessActorSurface() on destruction.
+  base::ScopedClosureRunner destroyer_;
+};
 
 // This class owns all ActorTasks for a given profile. ActorTasks are kept in
 // memory until the process is destroyed.
@@ -81,12 +131,16 @@ class ActorKeyedService : public KeyedService,
   // Stop and clear all active tasks for testing only.
   void ResetForTesting();
 
+  using AllowedSchemes = ActorTask::AllowedSchemes;
+
   // Starts a new task with an execution engine and returns the new task's id.
   // `options`, when provided, contains information used to initialize the task.
   // The provided `policy_checker` and `ui_state_manager` must be non-null and
   // must outlive the ActorTask.
-  TaskId CreateTask(const TaskSourceInfo& source_info,
-                    const EnterprisePolicyChecker* policy_checker);
+  TaskId CreateTask(
+      const TaskSourceInfo& source_info,
+      const EnterprisePolicyChecker* policy_checker,
+      AllowedSchemes allowed_schemes = AllowedSchemes::kRequireHttpsOrHttp);
   TaskId CreateTaskWithOptions(
       const TaskSourceInfo& source_info,
       const EnterprisePolicyChecker* policy_checker,
@@ -94,7 +148,10 @@ class ActorKeyedService : public KeyedService,
       base::WeakPtr<ActorTaskDelegate> delegate,
       actor::ui::ActorUiStateManagerInterface* ui_state_manager,
       std::optional<glic::mojom::InvocationSource> initial_invocation_source =
-          std::nullopt);
+          std::nullopt,
+      AllowedSchemes allowed_schemes = AllowedSchemes::kRequireHttpsOrHttp,
+      base::optional_ref<const optimization_guide::proto::AgentContainerConfig>
+          agent_container_config = std::nullopt);
   TaskId CreateTaskForTesting(
       std::unique_ptr<actor::ui::UiEventDispatcher> ui_event_dispatcher,
       const TaskSourceInfo& source_info,
@@ -102,7 +159,8 @@ class ActorKeyedService : public KeyedService,
       webui::mojom::TaskOptionsPtr options,
       base::WeakPtr<ActorTaskDelegate> delegate,
       std::optional<glic::mojom::InvocationSource> initial_invocation_source =
-          std::nullopt);
+          std::nullopt,
+      AllowedSchemes allowed_schemes = AllowedSchemes::kRequireHttpsOrHttp);
 
   // Executes the given ToolRequest actions using the execution engine for the
   // given task id.
@@ -125,6 +183,56 @@ class ActorKeyedService : public KeyedService,
   // The associated journal for the associated profile.
   AggregatedJournal& GetJournal() LIFETIME_BOUND { return journal_; }
 
+  // The registry of surfaces the actor can act on for the associated profile.
+  ActorSurfaceRegistry& GetSurfaceRegistry() LIFETIME_BOUND;
+
+  // Creates a headless actor surface: a page with no tab and no window. It
+  // lives until the returned object is destroyed, or until this service shuts
+  // down.
+  [[nodiscard]] ScopedHeadlessActorSurface CreateHeadlessActorSurface();
+
+  // Destroys the headless actor surface `actor_surface_handle` and its page.
+  // First tells the tasks acting on or observing it, while the page is still
+  // alive, through ActorTask::OnActorSurfaceWillDetach(). A no-op if the
+  // surface is already gone, or after Shutdown(). `actor_surface_handle` must
+  // not refer to a tab-backed surface.
+  void DestroyHeadlessActorSurface(ActorSurfaceHandle actor_surface_handle);
+
+  // Moves the page of the headless surface owned by `owner` into a new tab at
+  // the end of `window`'s tab strip and selects it (`window` isn't activated).
+  // The surface keeps its handle. On success, the tab strip owns the page,
+  // `owner` is empty, and the new tab is returned. Returns nullptr and leaves
+  // `owner` unchanged if `owner` is empty or no longer headless, or if `window`
+  // is closing, isn't a normal window, or belongs to another profile.
+  // TODO(b/573589111): Make this work on Android, where a failed insert
+  // destroys the page.
+  tabs::TabInterface* PromoteHeadlessActorSurface(
+      ScopedHeadlessActorSurface& owner,
+      BrowserWindowInterface& window);
+
+  // Moves the page of the tab-backed surface `actor_surface_handle` out of its
+  // tab and keeps it as a headless page; the tab is closed (and its window too,
+  // if it was the last tab). The surface keeps its handle and ActorTabData. On
+  // success, the caller owns the page through the returned object, as with
+  // CreateHeadlessActorSurface().
+  // TODO(b/573589111): Verify and test this on Android.
+  [[nodiscard]] std::optional<ScopedHeadlessActorSurface>
+  DemoteTabToHeadlessActorSurface(ActorSurfaceHandle actor_surface_handle);
+
+  // Lets tests call the ActorSurfaceRegistry methods reserved for this class.
+  static base::PassKey<ActorKeyedService> GetPassKeyForTesting() {
+    return base::PassKey<ActorKeyedService>();
+  }
+
+  // Lets tests check which pages the headless manager owns.
+  HeadlessWebContentsManager& GetHeadlessWebContentsManagerForTesting()
+      LIFETIME_BOUND;
+
+  // The shared browser tool registry for the associated profile.
+  const ToolRegistry& tool_registry() const LIFETIME_BOUND {
+    return tool_registry_;
+  }
+
   // The associated ActorUiStateManager for the associated profile.
   ui::ActorUiStateManager* GetActorUiStateManager(
       base::PassKey<ui::ActorUiStateManager>);
@@ -133,9 +241,15 @@ class ActorKeyedService : public KeyedService,
   // in the given `tab`.
   bool IsActiveOnTab(const tabs::TabInterface& tab) const;
 
-  // Returns an ActorTask which has the given tab in its set. Returns null if no
-  // task has `tab`. Note: a returned task may be paused.
+  // Deprecated: Use GetTaskFromActorSurface() instead. Returns an ActorTask
+  // which has the given tab in its set. Returns null if no task has `tab`.
+  // Note: a returned task may be paused.
   ActorTask* GetTaskFromTab(const tabs::TabInterface& tab) const;
+
+  // Returns an ActorTask which has the given surface in its set. Returns null
+  // if no task has `actor_surface_handle`. Note: a returned task may be paused.
+  ActorTask* GetTaskFromActorSurface(
+      ActorSurfaceHandle actor_surface_handle) const;
 
   Profile* GetProfile();
 
@@ -144,6 +258,15 @@ class ActorKeyedService : public KeyedService,
   // Request a TabObservation be generated from the given tab.
   void RequestTabObservation(
       tabs::TabInterface& tab,
+      TaskId task_id,
+      std::optional<page_content_annotations::ScreenshotOptions::
+                        ScreenshotCollectionOptions>
+          screenshot_collection_options,
+      base::OnceCallback<void(TabObservationResult)> callback);
+
+  // Request a TabObservation be generated from the given surface.
+  void RequestActorSurfaceObservation(
+      ActorSurfaceHandle actor_surface_handle,
       TaskId task_id,
       std::optional<page_content_annotations::ScreenshotOptions::
                         ScreenshotCollectionOptions>
@@ -238,18 +361,65 @@ class ActorKeyedService : public KeyedService,
       MessageTriggerTaskStoppedCallback callback);
   void OnMessageTriggerTaskStopped(const std::string& message_id);
 
-#if BUILDFLAG(IS_ANDROID)
-  using EnsureForegroundServiceStartedCallback =
+  // Adds a pending task for an external trigger (an intent from the Gemini
+  // app) that arrives before the FCM message. It has no triggering context ID
+  // yet, so it is stored under a placeholder key. It is replaced by the first
+  // `AddPendingTask()` call, removed when a task is created, and expires after
+  // `timeout`. Calling it again only restarts `timeout`.
+  void AddExternalTriggerPendingTask(base::TimeDelta timeout);
+
+  // Returns true if an external trigger pending task is waiting for a task.
+  bool HasExternalTriggerPendingTaskForTesting() const;
+
+  // Registers a pending task for the given unique triggering context ID.
+  // While pending, the task is preparing resources before an ActorTask is
+  // formally created.
+  // Note: `triggering_context_id` refers to the same context identifier as
+  // `glic_trigger_message_id` and `message_id` on neighboring methods.
+  void AddPendingTask(const std::string& triggering_context_id);
+
+  // Like AddPendingTask(), but doesn't notify pending task added observers,
+  // so no background tab is prepared. Used when the pending entry only needs
+  // to keep the task alive until an ActorTask starts (e.g. a background
+  // continuation turn that reuses an existing surface).
+  void AddPendingTaskWithoutBackgroundSetup(
+      const std::string& triggering_context_id);
+
+  // Removes a pending task (e.g. on cancellation, failure, or handoff).
+  void RemovePendingTask(const std::string& triggering_context_id);
+
+  // Returns the count of pending tasks currently preparing resources.
+  size_t GetPendingTasksCount() const;
+
+  // Returns true if there is a pending task with the given context ID.
+  bool HasPendingTask(const std::string& triggering_context_id) const;
+
+  using PendingTaskCountChangedCallback = base::RepeatingCallback<void(size_t)>;
+  base::CallbackListSubscription AddPendingTaskCountChangedCallback(
+      PendingTaskCountChangedCallback callback);
+
+  using PendingTaskAddedCallback =
       base::RepeatingCallback<void(const std::string&)>;
-  base::CallbackListSubscription AddForegroundServiceStartedCallback(
-      EnsureForegroundServiceStartedCallback callback);
-  void EnsureForegroundServiceStarted(
-      const std::string& glic_trigger_message_id);
-#endif
+  base::CallbackListSubscription AddPendingTaskAddedCallback(
+      PendingTaskAddedCallback callback);
 
   base::WeakPtr<ActorKeyedService> GetWeakPtr();
 
  private:
+  // Placeholder key for the external trigger pending task, which has no
+  // triggering context ID until the FCM message arrives.
+  struct ExternalTriggerToken {
+    friend auto operator<=>(const ExternalTriggerToken&,
+                            const ExternalTriggerToken&) = default;
+  };
+  using PendingTaskKey = std::variant<ExternalTriggerToken, std::string>;
+
+  // Returns the `pending_tasks_` key for the external trigger pending task.
+  static PendingTaskKey ExternalTriggerKey();
+
+  void AddPendingTaskInternal(const std::string& triggering_context_id,
+                              bool notify_task_added);
+
   TaskId CreateTaskImpl(
       std::unique_ptr<actor::ui::UiEventDispatcher> ui_event_dispatcher,
       const TaskSourceInfo& source_info,
@@ -257,7 +427,15 @@ class ActorKeyedService : public KeyedService,
       webui::mojom::TaskOptionsPtr options,
       base::WeakPtr<ActorTaskDelegate> delegate,
       actor::ui::ActorUiStateManagerInterface* ui_state_manager,
-      std::optional<glic::mojom::InvocationSource> initial_invocation_source);
+      std::optional<glic::mojom::InvocationSource> initial_invocation_source,
+      AllowedSchemes allowed_schemes,
+      base::optional_ref<const optimization_guide::proto::AgentContainerConfig>
+          agent_container_config = std::nullopt);
+
+  void AssignAgentContainerConfig(
+      ActorTask& task,
+      const optimization_guide::proto::AgentContainerConfig&
+          agent_container_config);
 
   // The callback used for ExecutorEngine::Act.
   void OnActionsFinished(
@@ -272,6 +450,8 @@ class ActorKeyedService : public KeyedService,
   void InitializeTraceRecording(const base::FilePath& trace_path);
   void OnTraceFilePathResolved(const base::FilePath& resolved_path);
   void OnTraceFileInitDone(bool success);
+  void RemoveExternalTriggerPendingTask();
+  void NotifyPendingTaskCountChanged();
 
   // Serializes journal events to a file when --actor-trace-path is set.
   std::unique_ptr<AggregatedJournalFileSerializer> trace_file_serializer_;
@@ -286,6 +466,22 @@ class ActorKeyedService : public KeyedService,
   // Note: This field should not be used directly, use the
   // ActorUiStateManagerInterface* passed in via CreateTaskImpl instead.
   std::unique_ptr<ui::ActorUiStateManager> actor_ui_state_manager_;
+
+  // Declared before `surface_registry_` so the manager outlives the registry
+  // that uses it, and before `active_tasks_` so tasks are destroyed before
+  // surfaces.
+  std::unique_ptr<HeadlessWebContentsManager> headless_web_contents_manager_;
+  std::unique_ptr<ActorSurfaceRegistry> surface_registry_;
+
+  // For avoiding reentrancy. A temporary set of headless surfaces being
+  // destroyed.
+  base::flat_set<ActorSurfaceHandle> headless_actor_surfaces_being_destroyed_;
+
+  // Registered with `TransportService` when `kBrowserActuator` is
+  // enabled, and unregistered and destroyed in `Shutdown()` after tasks are
+  // cleared.
+  std::unique_ptr<ChromeActuationTransportHandlerFactory>
+      actuation_transport_handler_factory_;
 
   std::map<TaskId, std::unique_ptr<ActorTask>> active_tasks_;
 
@@ -311,13 +507,21 @@ class ActorKeyedService : public KeyedService,
   base::RepeatingCallbackList<void(const std::string&)>
       message_trigger_task_stopped_callbacks_;
 
-#if BUILDFLAG(IS_ANDROID)
+  // Single source of truth for the pending task count.
+  base::flat_set<PendingTaskKey> pending_tasks_;
+  base::RepeatingCallbackList<void(size_t)>
+      pending_task_count_change_callback_list_;
   base::RepeatingCallbackList<void(const std::string&)>
-      ensure_foreground_service_started_callbacks_;
-#endif
+      pending_task_added_callback_list_;
+  // Expiry for the `ExternalTriggerToken` entry only. The state itself lives
+  // in `pending_tasks_`.
+  base::OneShotTimer external_trigger_expiry_;
 
   // Owns this.
   raw_ptr<Profile> profile_;
+
+  // Catalog of shared browser tool definitions returned by `tool_registry()`.
+  ToolRegistry tool_registry_;
 
   base::WeakPtrFactory<ActorKeyedService> weak_ptr_factory_{this};
 };

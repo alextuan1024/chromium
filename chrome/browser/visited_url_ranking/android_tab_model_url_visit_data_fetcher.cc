@@ -54,6 +54,7 @@ TabMetadata::TabOrigin GetTabOriginFromLaunchType(int type) {
     case TabModel::TabLaunchType::FROM_READING_LIST:
     case TabModel::TabLaunchType::FROM_TAB_SWITCHER_UI:
     case TabModel::TabLaunchType::FROM_OMNIBOX:
+    case TabModel::TabLaunchType::FROM_OMNIBOX_BACKGROUND:
     case TabModel::TabLaunchType::FROM_BOOKMARK_BAR_BACKGROUND:
     case TabModel::TabLaunchType::FROM_RECENT_TABS_FOREGROUND:
     case TabModel::TabLaunchType::FROM_HISTORY_NAVIGATION_BACKGROUND:
@@ -61,6 +62,7 @@ TabMetadata::TabOrigin GetTabOriginFromLaunchType(int type) {
     case TabModel::TabLaunchType::FROM_LONGPRESS_FOREGROUND_IN_GROUP:
     case TabModel::TabLaunchType::FROM_LINK_CREATING_NEW_WINDOW:
     case TabModel::TabLaunchType::FROM_TIPS_NOTIFICATIONS:
+    case TabModel::TabLaunchType::FROM_UNDO_CLOSURE:
       return TabMetadata::TabOrigin::kOpenedByUserAction;
 
     case TabModel::TabLaunchType::FROM_RESTORE:
@@ -142,11 +144,7 @@ void AndroidTabModelURLVisitDataFetcher::FetchURLVisitData(
       (ui::GetDeviceFormFactor() == ui::DEVICE_FORM_FACTOR_TABLET)
           ? syncer::DeviceInfo::FormFactor::kTablet
           : syncer::DeviceInfo::FormFactor::kPhone;
-  for (TabModel* model : TabModelList::models()) {
-    if (profile_ != model->GetProfile()) {
-      continue;
-    }
-
+  TabModelList::ForEach(profile_, [&](TabModel* model) {
     int count = model->GetTabCount();
     for (int i = 0; i < count; ++i) {
       auto* tab_android = model->GetTabAt(i);
@@ -187,7 +185,8 @@ void AndroidTabModelURLVisitDataFetcher::FetchURLVisitData(
       tab_data.pinned = false;
       tab_data.in_group = tab_data.in_group || tab_android->GetGroup();
     }
-  }
+    return true;
+  });
 
   std::map<URLMergeKey, URLVisitVariant> url_visit_variant_map;
   std::transform(

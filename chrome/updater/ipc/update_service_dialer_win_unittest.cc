@@ -4,10 +4,16 @@
 
 #include "chrome/updater/ipc/update_service_dialer_win.h"
 
+#include <windows.h>
+
 #include <optional>
 #include <vector>
 
 #include "base/containers/flat_set.h"
+#include "base/types/expected.h"
+#include "base/win/access_token.h"
+#include "base/win/sid.h"
+#include "chrome/updater/updater_scope.h"
 #include "mojo/public/cpp/platform/named_platform_channel.h"
 #include "mojo/public/cpp/platform/platform_channel.h"
 #include "mojo/public/cpp/platform/platform_channel_endpoint.h"
@@ -22,7 +28,7 @@ using ::testing::ElementsAre;
 
 class UpdateServiceDialerWinTest : public ::testing::Test {
  protected:
-  std::optional<mojo::PlatformChannelEndpoint> Select() {
+  base::expected<mojo::PlatformChannelEndpoint, ConnectToServerError> Select() {
     return SelectUpdateServiceEndpoint(
         [&](PipeNameType pipe_name_type) { return Connect(pipe_name_type); },
         [&](PipeNameType pipe_name_type) {
@@ -30,17 +36,21 @@ class UpdateServiceDialerWinTest : public ::testing::Test {
         });
   }
 
-  std::optional<mojo::PlatformChannelEndpoint> Connect(
+  base::expected<mojo::PlatformChannelEndpoint, ConnectToServerError> Connect(
       PipeNameType pipe_name_type) {
     connect_attempts_.push_back(pipe_name_type);
+    if (rejected_.contains(pipe_name_type)) {
+      return base::unexpected(ConnectToServerError::kRejected);
+    }
     if (!connectable_.contains(pipe_name_type)) {
-      return std::nullopt;
+      return base::unexpected(ConnectToServerError::kRetryable);
     }
     mojo::PlatformChannel channel;
     return channel.TakeLocalEndpoint();
   }
 
   base::flat_set<PipeNameType> connectable_;
+  base::flat_set<PipeNameType> rejected_;
   base::flat_set<PipeNameType> present_;
   std::vector<PipeNameType> connect_attempts_;
 };
@@ -66,8 +76,35 @@ TEST_F(UpdateServiceDialerWinTest, DoesNotFallBackWhenProtectedPipeRefuses) {
   connectable_ = {PipeNameType::kDefault};
   present_ = {PipeNameType::kAdminProtected, PipeNameType::kDefault};
 
-  EXPECT_FALSE(Select().has_value());
+  base::expected<mojo::PlatformChannelEndpoint, ConnectToServerError> result =
+      Select();
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error(), ConnectToServerError::kRetryable);
   EXPECT_THAT(connect_attempts_, ElementsAre(PipeNameType::kAdminProtected));
+}
+
+TEST_F(UpdateServiceDialerWinTest, DoesNotFallBackWhenProtectedPipeRejects) {
+  rejected_ = {PipeNameType::kAdminProtected};
+  connectable_ = {PipeNameType::kDefault};
+  present_ = {PipeNameType::kDefault};
+
+  base::expected<mojo::PlatformChannelEndpoint, ConnectToServerError> result =
+      Select();
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error(), ConnectToServerError::kRejected);
+  EXPECT_THAT(connect_attempts_, ElementsAre(PipeNameType::kAdminProtected));
+}
+
+TEST_F(UpdateServiceDialerWinTest, PropagatesRejectionFromFallbackPipe) {
+  rejected_ = {PipeNameType::kDefault};
+  present_ = {PipeNameType::kDefault};
+
+  base::expected<mojo::PlatformChannelEndpoint, ConnectToServerError> result =
+      Select();
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error(), ConnectToServerError::kRejected);
+  EXPECT_THAT(connect_attempts_, ElementsAre(PipeNameType::kAdminProtected,
+                                             PipeNameType::kDefault));
 }
 
 TEST_F(UpdateServiceDialerWinTest, ConnectsWhenOnlyProtectedPipeIsPresent) {
@@ -79,8 +116,124 @@ TEST_F(UpdateServiceDialerWinTest, ConnectsWhenOnlyProtectedPipeIsPresent) {
 }
 
 TEST_F(UpdateServiceDialerWinTest, DoesNotFallBackWhileServerIsStarting) {
-  EXPECT_FALSE(Select().has_value());
+  base::expected<mojo::PlatformChannelEndpoint, ConnectToServerError> result =
+      Select();
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error(), ConnectToServerError::kRetryable);
   EXPECT_THAT(connect_attempts_, ElementsAre(PipeNameType::kAdminProtected));
+}
+
+TEST_F(UpdateServiceDialerWinTest, ConnectToUpdateServiceMissingPipeRetries) {
+  base::expected<mojo::PlatformChannelEndpoint, ConnectToServerError> result =
+      ConnectToUpdateService(
+          UpdaterScope::kUser,
+          mojo::NamedPlatformChannel::GenerateRandomServerName(),
+          PipeNameType::kDefault);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error(), ConnectToServerError::kRetryable);
+}
+
+TEST_F(UpdateServiceDialerWinTest, ConnectToUpdateServiceAccessDeniedRejects) {
+  mojo::NamedPlatformChannel::Options options;
+  options.server_name = mojo::NamedPlatformChannel::GenerateRandomServerName();
+  // Deny Generic All to Everyone (WD).
+  options.security_descriptor = L"D:(D;;GA;;;WD)";
+  mojo::NamedPlatformChannel server(options);
+
+  base::expected<mojo::PlatformChannelEndpoint, ConnectToServerError> result =
+      ConnectToUpdateService(UpdaterScope::kUser, options.server_name,
+                             PipeNameType::kDefault);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error(), ConnectToServerError::kRejected);
+}
+
+// Whether the current process's token owner would pass `CheckServerElevated`.
+// Used only to pick which of the two system-scope tests below is meaningful on
+// this bot; the expectation in each test is a hard-coded constant.
+bool IsCurrentProcessElevatedOwner() {
+  std::optional<base::win::AccessToken> token =
+      base::win::AccessToken::FromCurrentProcess();
+  if (!token) {
+    return false;
+  }
+  const base::win::Sid owner = token->Owner();
+  return owner == base::win::Sid(base::win::WellKnownSid::kLocalSystem) ||
+         owner ==
+             base::win::Sid(base::win::WellKnownSid::kBuiltinAdministrators);
+}
+
+TEST_F(UpdateServiceDialerWinTest,
+       ConnectToUpdateServiceSystemScopeAcceptsElevatedServer) {
+  if (!IsCurrentProcessElevatedOwner()) {
+    GTEST_SKIP() << "Requires an elevated test process to host the server.";
+  }
+  mojo::NamedPlatformChannel::Options options;
+  options.server_name = mojo::NamedPlatformChannel::GenerateRandomServerName();
+  mojo::NamedPlatformChannel server(options);
+
+  base::expected<mojo::PlatformChannelEndpoint, ConnectToServerError> result =
+      ConnectToUpdateService(UpdaterScope::kSystem, options.server_name,
+                             PipeNameType::kDefault);
+  EXPECT_TRUE(result.has_value());
+}
+
+TEST_F(UpdateServiceDialerWinTest,
+       ConnectToUpdateServiceSystemScopeRejectsUnelevatedServer) {
+  if (IsCurrentProcessElevatedOwner()) {
+    GTEST_SKIP() << "Requires an unelevated test process to host the server.";
+  }
+  mojo::NamedPlatformChannel::Options options;
+  options.server_name = mojo::NamedPlatformChannel::GenerateRandomServerName();
+  mojo::NamedPlatformChannel server(options);
+
+  base::expected<mojo::PlatformChannelEndpoint, ConnectToServerError> result =
+      ConnectToUpdateService(UpdaterScope::kSystem, options.server_name,
+                             PipeNameType::kDefault);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error(), ConnectToServerError::kRejected);
+}
+
+TEST_F(UpdateServiceDialerWinTest,
+       ConnectToUpdateServiceUserScopeAcceptsSameUserServer) {
+  mojo::NamedPlatformChannel::Options options;
+  options.server_name = mojo::NamedPlatformChannel::GenerateRandomServerName();
+  mojo::NamedPlatformChannel server(options);
+
+  base::expected<mojo::PlatformChannelEndpoint, ConnectToServerError> result =
+      ConnectToUpdateService(UpdaterScope::kUser, options.server_name,
+                             PipeNameType::kDefault);
+  EXPECT_TRUE(result.has_value());
+}
+
+TEST_F(UpdateServiceDialerWinTest,
+       IsUserScopeServerTrustedRequiresSameUserOrPrivilegedServer) {
+  const base::win::Sid user_a =
+      *base::win::Sid::FromSddlString(L"S-1-5-21-1-2-3-1001");
+  const base::win::Sid user_b =
+      *base::win::Sid::FromSddlString(L"S-1-5-21-1-2-3-1002");
+  const base::win::Sid system(base::win::WellKnownSid::kLocalSystem);
+  const base::win::Sid admins(base::win::WellKnownSid::kBuiltinAdministrators);
+
+  // The same user is trusted.
+  EXPECT_TRUE(IsUserScopeServerTrusted(user_a, user_a, user_a));
+  // Another standard user squatting the pipe name is not, even though it runs
+  // at the same (Medium) integrity level.
+  EXPECT_FALSE(IsUserScopeServerTrusted(user_b, user_b, user_a));
+  // Privileged servers are trusted regardless of user.
+  EXPECT_TRUE(IsUserScopeServerTrusted(system, system, user_a));
+  EXPECT_TRUE(IsUserScopeServerTrusted(user_b, admins, user_a));
+}
+
+TEST_F(UpdateServiceDialerWinTest, ClassifyDialErrorAccessDeniedRejects) {
+  EXPECT_EQ(ClassifyDialError(E_ACCESSDENIED), ConnectToServerError::kRejected);
+}
+
+TEST_F(UpdateServiceDialerWinTest, ClassifyDialErrorOtherFailuresRetry) {
+  EXPECT_EQ(ClassifyDialError(REGDB_E_CLASSNOTREG),
+            ConnectToServerError::kRetryable);
+  EXPECT_EQ(ClassifyDialError(CO_E_SERVER_EXEC_FAILURE),
+            ConnectToServerError::kRetryable);
+  EXPECT_EQ(ClassifyDialError(E_FAIL), ConnectToServerError::kRetryable);
 }
 
 }  // namespace

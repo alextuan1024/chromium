@@ -15,8 +15,10 @@
 #include "third_party/blink/renderer/core/origin_trials/origin_trial_context.h"
 #include "third_party/blink/renderer/core/script/script.h"
 #include "third_party/blink/renderer/core/workers/global_scope_creation_params.h"
+#include "third_party/blink/renderer/core/workers/outside_settings_csp_violation_reporter.h"
 #include "third_party/blink/renderer/core/workers/worklet_module_responses_map.h"
 #include "third_party/blink/renderer/platform/weborigin/kurl.h"
+#include "third_party/blink/renderer/platform/wtf/text/format.h"
 #include "third_party/blink/renderer/platform/wtf/wtf.h"
 
 namespace blink {
@@ -34,8 +36,7 @@ PaintWorkletGlobalScopeProxy::PaintWorkletGlobalScopeProxy(
   LocalDOMWindow* window = frame->DomWindow();
   reporting_proxy_ = std::make_unique<MainThreadWorkletReportingProxy>(window);
 
-  String global_scope_name =
-      StrCat({"PaintWorklet #", String::Number(global_scope_number)});
+  String global_scope_name = Format("PaintWorklet {}", global_scope_number);
 
   LocalFrameClient* frame_client = frame->Client();
   auto creation_params = std::make_unique<GlobalScopeCreationParams>(
@@ -43,10 +44,10 @@ PaintWorkletGlobalScopeProxy::PaintWorkletGlobalScopeProxy(
       frame_client->UserAgent(), frame_client->UserAgentMetadata(),
       frame_client->CreateWorkletFetchContext(),
       mojo::Clone(window->GetContentSecurityPolicy()->GetParsedPolicies()),
-      Vector<network::mojom::blink::ContentSecurityPolicyPtr>(),
-      window->GetReferrerPolicy(), DocumentPolicy::DocumentPolicyBundle{},
-      window->GetSecurityOrigin(), window->IsSecureContext(),
-      window->GetHttpsState(), nullptr /* worker_clients */,
+      OutsideSettingsCSPViolationReporter::BindNewRemote(*window),
+      window->GetReferrerPolicy(), window->GetSecurityOrigin(),
+      window->IsSecureContext(), window->GetHttpsState(),
+      nullptr /* worker_clients */,
       frame_client->CreateWorkerContentSettingsClient(),
       OriginTrialContext::GetInheritedTrialFeatures(window).get(),
       base::UnguessableToken::Create(), nullptr /* worker_settings */,

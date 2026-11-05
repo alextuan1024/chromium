@@ -14,6 +14,7 @@
 #include "base/functional/bind.h"
 #include "base/location.h"
 #include "base/process/process_handle.h"
+#include "base/sanitizer_buildflags.h"
 #include "base/synchronization/waitable_event.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/threading/thread_restrictions.h"
@@ -21,6 +22,7 @@
 #include "base/trace_event/trace_event.h"
 #include "build/build_config.h"
 #include "components/viz/host/gpu_host_impl.h"
+#include "content/browser/browser_main_loop.h"
 #include "content/browser/child_process_host_impl.h"
 #include "content/browser/gpu/gpu_data_manager_impl.h"
 #include "content/browser/gpu/gpu_disk_cache_factory.h"
@@ -34,10 +36,6 @@
 #include "gpu/ipc/common/gpu_client_ids.h"
 #include "gpu/ipc/common/gpu_watchdog_timeout.h"
 #include "services/resource_coordinator/public/mojom/memory_instrumentation/constants.mojom.h"
-
-#if BUILDFLAG(IS_MAC)
-#include "ui/accelerated_widget_mac/window_resize_helper_mac.h"
-#endif
 
 namespace content {
 
@@ -148,12 +146,7 @@ BrowserGpuChannelHostFactory::EstablishRequest::EstablishRequest(
       gpu_client_id_(gpu_client_id),
       gpu_client_tracing_id_(gpu_client_tracing_id),
       finished_(false),
-#if BUILDFLAG(IS_MAC)
-      main_task_runner_(ui::WindowResizeHelperMac::Get()->task_runner())
-#else
-      main_task_runner_(base::SingleThreadTaskRunner::GetCurrentDefault())
-#endif
-{
+      main_task_runner_(BrowserMainLoop::GetInstance()->GetResizeTaskRunner()) {
 }
 
 void BrowserGpuChannelHostFactory::EstablishRequest::RestartTimeout() {
@@ -171,12 +164,10 @@ void BrowserGpuChannelHostFactory::EstablishRequest::Establish(bool sync) {
     return;
   }
 
-  bool is_gpu_host = true;
-
   mojo::MessagePipe pipe;
   host->gpu_host()->EstablishGpuChannel(
-      gpu_client_id_, gpu_client_tracing_id_, is_gpu_host,
-      /*enable_extra_handles_validation=*/false, sync, std::move(pipe.handle1),
+      gpu_client_id_, gpu_client_tracing_id_,
+      viz::mojom::GpuClientType::kBrowser, sync, std::move(pipe.handle1),
       base::BindOnce(
           &BrowserGpuChannelHostFactory::EstablishRequest::OnEstablished, this,
           std::move(pipe.handle0)));
@@ -202,7 +193,7 @@ void BrowserGpuChannelHostFactory::EstablishRequest::OnEstablished(
             &BrowserGpuChannelHostFactory::EstablishRequest::RestartTimeout,
             this));
     // TODO(jam): can we ever enter this when it was a sync call?
-    GetUIThreadTaskRunner({})->PostTask(
+    main_task_runner_->PostTask(
         FROM_HERE,
         base::BindOnce(
             &BrowserGpuChannelHostFactory::EstablishRequest::Establish, this,
@@ -213,8 +204,9 @@ void BrowserGpuChannelHostFactory::EstablishRequest::OnEstablished(
   if (status == viz::GpuHostImpl::EstablishChannelStatus::kSuccess &&
       channel_handle.is_valid()) {
     gpu_channel_ = gpu::GpuChannelHost::Create(
-        gpu_client_id_, gpu_info, gpu_feature_info, shared_image_capabilities,
-        std::move(channel_handle), GetIOThreadTaskRunner({}));
+        gpu_client_id_, viz::mojom::GpuClientType::kBrowser, gpu_info,
+        gpu_feature_info, shared_image_capabilities, std::move(channel_handle),
+        GetIOThreadTaskRunner({}));
     // `GPUChannelHost::Create()` can't fail, since we pass in `gpu_info` etc
     // directly instead of requesting the info from the GPU process (which can
     // fail).
@@ -462,8 +454,8 @@ void BrowserGpuChannelHostFactory::RestartTimeout() {
   if (!pending_request_ || !is_visible_)
     return;
 
-#if defined(ADDRESS_SANITIZER) || defined(THREAD_SANITIZER) || \
-    BUILDFLAG(ORDERFILE_INSTRUMENTATION)
+#if defined(ADDRESS_SANITIZER) || BUILDFLAG(IS_HWASAN) || \
+    defined(THREAD_SANITIZER) || BUILDFLAG(ORDERFILE_INSTRUMENTATION)
   constexpr int64_t kGpuChannelTimeoutInSeconds = 40;
 #else
   // This is also monitored by the GPU watchdog (restart or initialization

@@ -75,7 +75,6 @@
 #import "ios/chrome/common/ui/colors/semantic_color_names.h"
 #import "ios/chrome/common/ui/elements/branded_navigation_item_title_view.h"
 #import "ios/chrome/common/ui/elements/popover_label_view_controller.h"
-#import "ios/chrome/common/ui/reauthentication/reauthentication_module.h"
 #import "ios/chrome/common/ui/util/constraints_ui_util.h"
 #import "ios/chrome/grit/ios_branded_strings.h"
 #import "ios/chrome/grit/ios_strings.h"
@@ -138,55 +137,6 @@ bool IsPasswordCheckTappable(PasswordCheckUIState passwordCheckState) {
     case PasswordCheckStateSignedOut:
       return false;
   }
-}
-
-// TODO(crbug.com/40261300): Remove when CredentialUIEntry operator== is fixed.
-template <typename T>
-bool AreNotesEqual(const T& lhs, const T& rhs) {
-  return std::ranges::equal(lhs, rhs, {},
-                            &password_manager::CredentialUIEntry::note,
-                            &password_manager::CredentialUIEntry::note);
-}
-
-bool AreNotesEqual(const std::vector<password_manager::AffiliatedGroup>& lhs,
-                   const std::vector<password_manager::AffiliatedGroup>& rhs) {
-  return std::ranges::equal(
-      lhs, rhs,
-      AreNotesEqual<base::span<const password_manager::CredentialUIEntry>>,
-      &password_manager::AffiliatedGroup::GetCredentials,
-      &password_manager::AffiliatedGroup::GetCredentials);
-}
-
-template <typename T>
-bool AreStoresEqual(const T& lhs, const T& rhs) {
-  return std::ranges::equal(lhs, rhs, {},
-                            &password_manager::CredentialUIEntry::stored_in,
-                            &password_manager::CredentialUIEntry::stored_in);
-}
-
-bool AreStoresEqual(const std::vector<password_manager::AffiliatedGroup>& lhs,
-                    const std::vector<password_manager::AffiliatedGroup>& rhs) {
-  return std::ranges::equal(
-      lhs, rhs,
-      AreStoresEqual<base::span<const password_manager::CredentialUIEntry>>,
-      &password_manager::AffiliatedGroup::GetCredentials,
-      &password_manager::AffiliatedGroup::GetCredentials);
-}
-
-template <typename T>
-bool AreIssuesEqual(const T& lhs, const T& rhs) {
-  return std::ranges::equal(
-      lhs, rhs, {}, &password_manager::CredentialUIEntry::password_issues,
-      &password_manager::CredentialUIEntry::password_issues);
-}
-
-bool AreIssuesEqual(const std::vector<password_manager::AffiliatedGroup>& lhs,
-                    const std::vector<password_manager::AffiliatedGroup>& rhs) {
-  return std::ranges::equal(
-      lhs, rhs,
-      AreIssuesEqual<base::span<const password_manager::CredentialUIEntry>>,
-      &password_manager::AffiliatedGroup::GetCredentials,
-      &password_manager::AffiliatedGroup::GetCredentials);
 }
 
 }  // namespace
@@ -357,11 +307,6 @@ bool AreIssuesEqual(const std::vector<password_manager::AffiliatedGroup>& lhs,
   // Not an invariant due to possible race conditions. DCHECKing for debugging
   // purposes. See crbug.com/40067451.
   DCHECK(!_identityManagerObserver.get());
-}
-
-- (void)setReauthenticationModule:
-    (ReauthenticationModule*)reauthenticationModule {
-  _reauthenticationModule = reauthenticationModule;
 }
 
 - (void)setMostRecentlyUpdatedPasswordDetails:
@@ -976,15 +921,8 @@ bool AreIssuesEqual(const std::vector<password_manager::AffiliatedGroup>& lhs,
     _affiliatedGroups = affiliatedGroups;
     [self hideLoadingSpinnerBackground];
   } else {
-    // The AffiliatedGroup equality operator ignores the password stores, but
-    // this UI cares, see password_manager::ShouldShowLocalOnlyIcon().
-    // The AffiliatedGroup equality operator ignores password notes, but the UI
-    // should be updated so that any changes to just notes are visible.
     if (_affiliatedGroups == affiliatedGroups &&
-        _blockedSites == blockedSites &&
-        AreStoresEqual(_affiliatedGroups, affiliatedGroups) &&
-        AreIssuesEqual(_affiliatedGroups, affiliatedGroups) &&
-        AreNotesEqual(_affiliatedGroups, affiliatedGroups)) {
+        _blockedSites == blockedSites) {
       return;
     }
 
@@ -1297,9 +1235,10 @@ bool AreIssuesEqual(const std::vector<password_manager::AffiliatedGroup>& lhs,
         initWithGURL:
             google_util::AppendGoogleLocaleParam(
                 GURL(password_manager::kPasswordManagerHelpCenteriOSURL),
-                GetApplicationContext()
-                    ->GetApplicationLocaleStorage()
-                    ->Get())] ];
+                std::string(GetApplicationContext()
+                                ->GetApplicationLocaleStorage()
+                                ->GetTag()
+                                .tag_string()))] ];
   } else {
     _manageAccountLinkItem.text =
         l10n_util::GetNSString(IDS_IOS_PASSWORD_MANAGER_HEADER_NOT_SYNCING);
@@ -1981,7 +1920,10 @@ bool AreIssuesEqual(const std::vector<password_manager::AffiliatedGroup>& lhs,
           [TableViewIllustratedEmptyView defaultTextAttributesForSubtitle];
       NSURL* linkURL = net::NSURLWithGURL(google_util::AppendGoogleLocaleParam(
           GURL(password_manager::kPasswordManagerHelpCenteriOSURL),
-          GetApplicationContext()->GetApplicationLocaleStorage()->Get()));
+          std::string(GetApplicationContext()
+                          ->GetApplicationLocaleStorage()
+                          ->GetTag()
+                          .tag_string())));
       NSDictionary* linkAttributes = @{
         NSForegroundColorAttributeName : [UIColor colorNamed:kBlueColor],
         NSLinkAttributeName : linkURL,

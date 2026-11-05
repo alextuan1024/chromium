@@ -10,7 +10,6 @@
 #include <vector>
 
 #include "base/containers/flat_map.h"
-#include "base/notimplemented.h"
 #include "components/sync_sessions/open_tabs_ui_delegate.h"
 #include "components/sync_sessions/synced_session.h"
 
@@ -23,6 +22,10 @@ class FakeOpenTabsUIDelegate : public OpenTabsUIDelegate {
 
   // OpenTabsUIDelegate overrides.
   bool GetAllForeignSessions(
+      std::vector<raw_ptr<const SyncedSession, VectorExperimental>>* sessions,
+      ForeignSessionFilter filter) override;
+
+  bool GetAllRawForeignSessions(
       std::vector<raw_ptr<const SyncedSession, VectorExperimental>>* sessions)
       override;
 

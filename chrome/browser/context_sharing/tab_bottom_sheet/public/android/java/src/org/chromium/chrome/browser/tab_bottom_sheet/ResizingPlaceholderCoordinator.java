@@ -23,6 +23,20 @@ public interface ResizingPlaceholderCoordinator {
      */
     void updateVisibleHeight(@Px int visibleHeight);
 
+    /**
+     * Updates the bottom inset of the resizing placeholder view to avoid overlapping system bars.
+     *
+     * @param bottomInset The bottom inset in pixels.
+     */
+    default void updateBottomInset(@Px int bottomInset) {}
+
+    /**
+     * Notifies the coordinator whether the sheet is actively in resizing mode.
+     *
+     * @param isResizing True if resizing mode is active, false otherwise.
+     */
+    default void setIsResizing(boolean isResizing) {}
+
     /** Destroys the coordinator and cleans up any observers or resources. */
     default void destroy() {}
 }

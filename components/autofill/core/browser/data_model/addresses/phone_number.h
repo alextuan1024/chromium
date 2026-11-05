@@ -66,14 +66,13 @@ class PhoneNumber : public FormGroup {
   void GetMatchingTypes(std::u16string_view text,
                         std::string_view app_locale,
                         FieldTypeSet* matching_types) const override;
-  using FormGroup::GetInfo;
-  std::u16string GetInfo(const AutofillType& type,
+  std::u16string GetInfo(FieldType type,
                          std::string_view app_locale) const override;
   std::u16string GetRawInfo(FieldType type) const override;
   void SetRawInfoWithVerificationStatus(FieldType type,
                                         std::u16string_view value,
                                         VerificationStatus status) override;
-  bool SetInfoWithVerificationStatus(const AutofillType& type,
+  bool SetInfoWithVerificationStatus(FieldType type,
                                      std::u16string_view value,
                                      std::string_view app_locale,
                                      const VerificationStatus status) override;
@@ -98,7 +97,8 @@ class PhoneNumber : public FormGroup {
     // Parses the number built up from pieces stored via `SetInfo()` according
     // to the given two-letter region code and returns it as a string in
     // international format if it is a valid phone number. The region code
-    // should be one of the values returned by `autofill::GetCountryCodes()`.
+    // should be one of the values returned by
+    // `CountryDataMap::GetInstance()->country_codes()`.
     std::optional<std::u16string> ParseNumber(const std::string& region) const;
 
     // Parses the combined phone number and returns the region to which it
@@ -129,8 +129,7 @@ class PhoneNumber : public FormGroup {
   // FormGroup:
   FieldTypeSet GetSupportedTypes() const override;
 
-  // Updates the cached parsed number if the profile's region has changed
-  // since the last time the cache was updated.
+  // Updates the cached parsed number if the number has changed substantially.
   void UpdateCacheIfNeeded(std::string_view app_locale) const;
 
   // The phone number.

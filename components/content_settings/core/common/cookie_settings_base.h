@@ -95,7 +95,7 @@ class CookieSettingsBase {
     // kAllowBy3PCD = 4,  // Deprecated
     // kAllowBy3PCDHeuristics = 5,  // Deprecated
     kAllowByStorageAccess = 6,
-    kAllowByTopLevelStorageAccess = 7,
+    // kAllowByTopLevelStorageAccess = 7,  // Deprecated
     // kAllowByCORSException = 8,  // Deprecated
     // kAllowByTopLevel3PCD = 9,  // Deprecated
     // Allow by Enterprise Policy (SettingSource::kPolicy):
@@ -166,7 +166,7 @@ class CookieSettingsBase {
   };
 
   // Set of types relevant for CookieSettings.
-  using CookieSettingsTypeSet = base::fixed_flat_set<ContentSettingsType, 6>;
+  using CookieSettingsTypeSet = base::fixed_flat_set<ContentSettingsType, 5>;
 
   // ContentSettings listed in this set will be automatically synced to the
   // CookieSettings instance in the network service.
@@ -202,6 +202,33 @@ class CookieSettingsBase {
   //
   // This may be called on any thread.
   bool IsFullCookieAccessAllowed(
+      const GURL& url,
+      const net::SiteForCookies& site_for_cookies,
+      base::optional_ref<const url::Origin> top_frame_origin,
+      net::CookieSettingOverrides overrides,
+      base::optional_ref<const net::CookiePartitionKey> cookie_partition_key,
+      CookieSettingWithMetadata* cookie_settings = nullptr) const;
+
+  // Returns true if the context identified by (`url`, `site_for_cookies`,
+  // `top_frame_origin`, `cookie_partition_key`) is allowed to access any level
+  // of storage (unpartitioned, partitioned, or nonced/ephemeral) for APIs such
+  // as WebStorage, IndexedDB, CacheStorage, Service Worker, and Shared Worker.
+  //
+  // While most contexts have access to at least partitioned or ephemeral
+  // storage by default, storage access is completely denied (returning false)
+  // when cookies/site data are blocked by user content settings (e.g. site-
+  // specific block rules or global block-all-cookies), or when third-party
+  // cookies are blocked and storage partitioning is disabled.
+  //
+  // Unlike `IsFullCookieAccessAllowed()`:
+  // - Nonced contexts (e.g. Fenced Frames, credentialless iframes) are allowed
+  //   to access ephemeral nonced storage unless blocked by site settings.
+  // - Cross-site contexts are allowed to access partitioned storage by default
+  //   when third-party cookies are blocked (provided storage partitioning is
+  //   enabled), unless blocked by a site-specific content setting.
+  //
+  // This may be called on any thread.
+  bool IsAnyStorageAccessAllowed(
       const GURL& url,
       const net::SiteForCookies& site_for_cookies,
       base::optional_ref<const url::Origin> top_frame_origin,
@@ -365,8 +392,8 @@ class CookieSettingsBase {
  private:
   // Returns a content setting for the requested parameters and populates |info|
   // if not null. Implementations might only implement a subset of all
-  // ContentSettingsTypes. Currently only COOKIES, STORAGE_ACCESS,
-  // TOP_LEVEL_STORAGE_ACCESS, and FEDERATED_IDENTITY_SHARING are required.
+  // ContentSettingsTypes. Currently only COOKIES, STORAGE_ACCESS, and
+  // FEDERATED_IDENTITY_SHARING are required.
   virtual ContentSetting GetContentSetting(const GURL& primary_url,
                                            const GURL& secondary_url,
                                            ContentSettingsType content_type,
@@ -378,11 +405,6 @@ class CookieSettingsBase {
   };
 
   bool IsAllowedByStorageAccessGrant(
-      const GURL& url,
-      const GURL& first_party_url,
-      net::CookieSettingOverrides overrides) const;
-
-  bool IsAllowedByTopLevelStorageAccessGrant(
       const GURL& url,
       const GURL& first_party_url,
       net::CookieSettingOverrides overrides) const;
@@ -412,8 +434,10 @@ class CookieSettingsBase {
 
   // Returns whether requests for |url| and |first_party_url| should always
   // be allowed. Called before checking other cookie settings.
-  virtual bool ShouldAlwaysAllowCookies(const GURL& url,
-                                        const GURL& first_party_url) const = 0;
+  virtual bool ShouldAlwaysAllowCookies(
+      const GURL& url,
+      const GURL& first_party_url,
+      net::CookieSettingOverrides overrides) const = 0;
 
   // Returns whether third-party cookies are blocked.
   virtual bool ShouldBlockThirdPartyCookies(

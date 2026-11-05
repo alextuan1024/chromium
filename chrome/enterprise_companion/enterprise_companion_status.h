@@ -5,6 +5,8 @@
 #ifndef CHROME_ENTERPRISE_COMPANION_ENTERPRISE_COMPANION_STATUS_H_
 #define CHROME_ENTERPRISE_COMPANION_ENTERPRISE_COMPANION_STATUS_H_
 
+#include <stddef.h>
+
 #include <ostream>
 #include <string>
 #include <utility>
@@ -24,11 +26,11 @@ namespace enterprise_companion {
 struct PersistedError {
   PersistedError(int space, int code, const std::string& description);
   PersistedError(const PersistedError&);
-  PersistedError(PersistedError&&);
+  PersistedError(PersistedError&&) noexcept;
   ~PersistedError();
 
   PersistedError& operator=(const PersistedError&);
-  PersistedError& operator=(PersistedError&&);
+  PersistedError& operator=(PersistedError&&) noexcept;
 
   // The error space, as defined by `EnterpriseCompanionStatus`.
   int space;

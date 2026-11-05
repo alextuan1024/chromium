@@ -2,7 +2,7 @@ Name: SPIR-V Tools
 Short Name: SPIRV-Tools
 URL: https://github.com/KhronosGroup/SPIRV-Tools.git
 Version: N/A
-Revision: 8a75baff9c9ebe40f36b06a04075c33d92452204
+Revision: 4772069f41ab84482c732dc73d35ec455494d0a3
 Update Mechanism: Autoroll
 Security Critical: yes
 Shipped: yes

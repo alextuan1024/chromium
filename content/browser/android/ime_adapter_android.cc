@@ -27,6 +27,7 @@
 #include "content/browser/renderer_host/render_widget_host_view_android.h"
 #include "content/browser/web_contents/web_contents_impl.h"
 #include "content/public/browser/browser_thread.h"
+#include "content/public/browser/render_frame_host.h"
 #include "content/public/common/content_features.h"
 #include "mojo/public/cpp/base/big_buffer.h"
 #include "third_party/blink/public/common/input/web_input_event.h"
@@ -232,7 +233,7 @@ void ImeAdapterAndroid::UpdateState(const ui::mojom::TextInputState& state) {
       state.composition ? state.composition.value().end() : -1,
       state.reply_to_request,
       static_cast<int>(state.last_vk_visibility_request),
-      static_cast<int>(state.vk_policy), j_ime_text_spans);
+      static_cast<int>(state.vk_policy), state.node_id, j_ime_text_spans);
 }
 
 void ImeAdapterAndroid::UpdateOnTouchDown() {
@@ -412,9 +413,12 @@ void ImeAdapterAndroid::FinishComposingText(JNIEnv* env) {
 
 bool ImeAdapterAndroid::InsertMediaFromBytes(
     JNIEnv* env,
-    RenderFrameHost* target_rfh,
+    int render_process_id,
+    int render_frame_id,
     const base::android::JavaRef<jbyteArray>& bytes,
     const base::android::JavaRef<jstring>& extension) {
+  RenderFrameHost* target_rfh =
+      RenderFrameHost::FromID(render_process_id, render_frame_id);
   if (!target_rfh || GetFocusedFrame() != target_rfh) {
     return false;
   }

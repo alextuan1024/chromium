@@ -8,15 +8,23 @@
 
 #include "base/functional/bind.h"
 #include "base/memory/raw_ptr.h"
+#include "base/test/metrics/user_action_tester.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
+#include "chrome/app/chrome_command_ids.h"
 #include "chrome/browser/ui/actions/chrome_action_id.h"
+#include "chrome/browser/ui/actions/chrome_action_properties.h"
 #include "chrome/browser/ui/browser_actions.h"
 #include "chrome/browser/ui/browser_window/test/mock_browser_window_interface.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
+#include "chrome/browser/ui/tabs/test_tab_strip_model_delegate.h"
+#include "chrome/browser/ui/views/tabs/shared/new_tab_button_menu_model.h"
+#include "chrome/grit/generated_resources.h"
 #include "chrome/test/base/testing_profile.h"
 #include "chrome/test/views/chrome_views_test_base.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/actions/actions.h"
+#include "ui/base/l10n/l10n_util.h"
 #include "ui/events/event.h"
 #include "ui/events/event_constants.h"
 #include "ui/gfx/geometry/point.h"
@@ -43,11 +51,15 @@ class NewTabButtonTest : public ChromeViewsTestBase {
     auto root = actions::ActionItem::Builder().Build();
     root->AddChild(actions::ActionItem::Builder(
                        base::BindRepeating(
-                           [](bool* action_invoked, actions::ActionItem* item,
+                           [](bool* action_invoked,
+                              chrome::ActionInvocationSource* invocation_source,
+                              actions::ActionItem* item,
                               actions::ActionInvocationContext context) {
                              *action_invoked = true;
+                             *invocation_source = context.GetProperty(
+                                 chrome::kActionInvocationSourceKey);
                            },
-                           &new_tab_action_invoked_))
+                           &new_tab_action_invoked_, &invocation_source_))
                        .SetActionId(kActionNewTab)
                        .SetText(u"New Tab")
                        .Build());
@@ -89,6 +101,8 @@ class NewTabButtonTest : public ChromeViewsTestBase {
       mock_browser_window_interface_;
   std::unique_ptr<BrowserActions> browser_actions_;
   bool new_tab_action_invoked_ = false;
+  chrome::ActionInvocationSource invocation_source_ =
+      chrome::ActionInvocationSource::kUnknown;
   std::unique_ptr<views::Widget> widget_;
   raw_ptr<NewTabButton> button_ = nullptr;
 };
@@ -104,6 +118,7 @@ TEST_F(NewTabButtonTest, TriggerableEventFlags) {
 }
 
 TEST_F(NewTabButtonTest, LeftClickButtonCreatesNewTabAndUpdatesInkDrop) {
+  base::UserActionTester user_action_tester;
   EXPECT_FALSE(new_tab_action_invoked_);
 
   ui::MouseEvent press_event(ui::EventType::kMousePressed, gfx::Point(5, 5),
@@ -121,12 +136,19 @@ TEST_F(NewTabButtonTest, LeftClickButtonCreatesNewTabAndUpdatesInkDrop) {
   button_->OnMouseReleased(release_event);
 
   EXPECT_TRUE(new_tab_action_invoked_);
+  EXPECT_EQ(chrome::ActionInvocationSource::kViewButton, invocation_source_);
+  EXPECT_EQ(1, user_action_tester.GetActionCount("NewTab_Button"));
   EXPECT_NE(views::InkDrop::Get(button_)->GetInkDrop()->GetTargetInkDropState(),
             views::InkDropState::ACTION_PENDING);
 }
 
 #if BUILDFLAG(IS_LINUX)
 TEST_F(NewTabButtonTest, MiddleClickExecutesCallbackAndUpdatesInkDropOnLinux) {
+  base::UserActionTester user_action_tester;
+  bool will_invoke_called = false;
+  base::CallbackListSubscription subscription =
+      button_->RegisterWillInvokeActionCallback(base::BindRepeating(
+          [](bool* called) { *called = true; }, &will_invoke_called));
   bool callback_called = false;
   button_->SetMiddleClickCallbackForTesting(base::BindRepeating(
       [](bool* called) { *called = true; }, &callback_called));
@@ -145,7 +167,9 @@ TEST_F(NewTabButtonTest, MiddleClickExecutesCallbackAndUpdatesInkDropOnLinux) {
                                ui::EF_MIDDLE_MOUSE_BUTTON);
   button_->OnMouseReleased(release_event);
 
+  EXPECT_TRUE(will_invoke_called);
   EXPECT_TRUE(callback_called);
+  EXPECT_EQ(1, user_action_tester.GetActionCount("NewTab_Button"));
   EXPECT_NE(views::InkDrop::Get(button_)->GetInkDrop()->GetTargetInkDropState(),
             views::InkDropState::ACTION_PENDING);
 }
@@ -174,6 +198,19 @@ TEST_F(NewTabButtonTest, MiddleClickIgnoredOnNonLinux) {
             views::InkDropState::ACTION_PENDING);
 }
 #endif
+
+TEST_F(NewTabButtonTest, MenuModelNewTabItemLabel) {
+  TestTabStripModelDelegate delegate;
+  TabStripModel tab_strip_model(&delegate, profile_.get());
+  ON_CALL(*mock_browser_window_interface_, GetTabStripModel())
+      .WillByDefault(testing::Return(&tab_strip_model));
+
+  NewTabButtonMenuModel model(mock_browser_window_interface_.get());
+  std::optional<size_t> new_tab_index = model.GetIndexOfCommandId(IDC_NEW_TAB);
+  ASSERT_TRUE(new_tab_index.has_value());
+  EXPECT_EQ(model.GetLabelAt(new_tab_index.value()),
+            l10n_util::GetStringUTF16(IDS_NEW_TAB_BUTTON_CXMENU_NEW_TAB));
+}
 
 }  // namespace
 }  // namespace shared

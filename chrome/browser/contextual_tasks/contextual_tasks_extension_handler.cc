@@ -4,26 +4,39 @@
 
 #include "chrome/browser/contextual_tasks/contextual_tasks_extension_handler.h"
 
+#include <algorithm>
+#include <iterator>
+#include <optional>
+#include <ranges>
+#include <set>
+#include <utility>
+#include <vector>
+
+#include "base/containers/adapters.h"
+#include "base/containers/flat_set.h"
+#include "base/functional/bind.h"
+#include "base/logging.h"
+#include "base/memory/weak_ptr.h"
+#include "base/metrics/histogram_functions.h"
 #include "base/metrics/user_metrics.h"
 #include "base/metrics/user_metrics_action.h"
+#include "base/strings/utf_string_conversions.h"
 #include "base/unguessable_token.h"
 #include "build/build_config.h"
-#include "chrome/browser/contextual_search/contextual_search_service_factory.h"
 #include "chrome/browser/contextual_search/contextual_search_web_contents_helper.h"
-#include "chrome/browser/contextual_tasks/contextual_tasks_ui_service.h"
-#include "chrome/browser/contextual_tasks/contextual_tasks_ui_service_factory.h"
+#include "chrome/browser/contextual_tasks/contextual_tasks_context_service.h"
+#include "chrome/browser/contextual_tasks/contextual_tasks_context_service_factory.h"
+#include "chrome/browser/contextual_tasks/contextual_tasks_panel_controller.h"
 #include "chrome/browser/contextual_tasks/contextual_tasks_utils.h"
 #include "chrome/browser/contextual_tasks/contextual_tasks_web_contents_user_data.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/tab_list/tab_list_interface.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
-#include "chrome/browser/ui/webui/webui_embedding_context.h"
-#include "chrome/common/webui_url_constants.h"
-#include "components/contextual_search/contextual_search_service.h"
 #include "components/contextual_search/contextual_search_session_handle.h"
 #include "components/contextual_search/contextual_search_types.h"
 #include "components/contextual_search/input_state_model.h"
 #include "components/contextual_tasks/public/features.h"
+#include "components/lens/contextual_input.h"
 #include "components/lens/lens_overlay_dismissal_source.h"
 #include "components/lens/lens_overlay_invocation_source.h"
 #include "components/omnibox/common/input_state.h"
@@ -32,31 +45,100 @@
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents.h"
-#include "content/public/browser/web_ui.h"
 #include "mojo/public/cpp/base/proto_wrapper.h"
 #include "third_party/lens_server_proto/aim_communication.pb.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 
 #if !BUILDFLAG(IS_ANDROID)
+#include "chrome/browser/ui/browser_element_identifiers.h"
+#include "chrome/browser/ui/interaction/browser_elements.h"
 #include "chrome/browser/ui/lens/lens_overlay_controller.h"
 #include "chrome/browser/ui/lens/lens_search_controller.h"
 #include "chrome/browser/ui/webui/cr_components/searchbox/contextual_searchbox_handler.h"
+#include "ui/webui/tracked_element/tracked_element_handler.h"
 #endif
+
+namespace {
+
+#if !BUILDFLAG(IS_ANDROID)
+void DeleteTabToken(
+    contextual_search::ContextualSearchSessionHandle* session_handle,
+    const base::UnguessableToken& token) {
+  if (!session_handle) {
+    return;
+  }
+  if (!session_handle->DeleteFile(token)) {
+    session_handle->RemoveUploadedContextToken(token);
+  }
+}
+
+bool IsTabSharable(content::RenderFrameHost& rfh,
+                   int32_t tab_id,
+                   bool allow_empty_url) {
+  Profile* profile = Profile::FromBrowserContext(rfh.GetBrowserContext());
+  tabs::TabInterface* tab = tabs::TabHandle(tab_id).Get();
+  content::WebContents* wc = tab ? tab->GetContents() : nullptr;
+  if (!profile || !contextual_tasks::CanShareTabContext(profile) || !wc ||
+      Profile::FromBrowserContext(wc->GetBrowserContext()) != profile) {
+    return false;
+  }
+  const GURL& url = wc->GetLastCommittedURL();
+  return (allow_empty_url && url.is_empty()) ||
+         contextual_tasks::IsUrlValidForContextSharing(url);
+}
+#endif
+
+searchbox::mojom::TabInfoPtr CreateMojomTab(
+    const contextual_search::TabInfo& tab,
+    int32_t tab_handle_id) {
+  auto mojom_tab = searchbox::mojom::TabInfo::New();
+  mojom_tab->tab_id = tab_handle_id;
+  mojom_tab->title = tab.title;
+  mojom_tab->url = tab.url;
+  return mojom_tab;
+}
+
+}  // namespace
 
 DOCUMENT_USER_DATA_KEY_IMPL(ContextualTasksExtensionHandler);
 
 ContextualTasksExtensionHandler::ContextualTasksExtensionHandler(
     content::RenderFrameHost* rfh)
     : content::DocumentUserData<ContextualTasksExtensionHandler>(rfh) {
-  if (auto* browser_context = rfh->GetBrowserContext()) {
-    if (auto* ui_service = contextual_tasks::ContextualTasksUiServiceFactory::
-            GetForBrowserContext(browser_context)) {
-      ui_service_observation_.Observe(ui_service);
+  if (auto* user_data = GetOrCreateWebContentsUserData()) {
+    user_data->RegisterExtensionFrame(this);
+  }
+  if (auto* web_contents =
+          content::WebContents::FromRenderFrameHost(&render_frame_host())) {
+    session_changed_subscription_ =
+        ContextualSearchWebContentsHelper::GetOrCreateForWebContents(
+            web_contents)
+            ->RegisterSessionChangedCallback(base::BindRepeating(
+                &ContextualTasksExtensionHandler::OnSessionChanged,
+                base::Unretained(this)));
+  }
+}
+
+ContextualTasksExtensionHandler::~ContextualTasksExtensionHandler() {
+  if (auto* web_contents =
+          content::WebContents::FromRenderFrameHost(&render_frame_host())) {
+    if (auto* user_data = contextual_tasks::ContextualTasksWebContentsUserData::
+            FromWebContents(web_contents)) {
+      user_data->UnregisterExtensionFrame(this);
     }
   }
 }
 
-ContextualTasksExtensionHandler::~ContextualTasksExtensionHandler() = default;
+contextual_tasks::ContextualTasksWebContentsUserData*
+ContextualTasksExtensionHandler::GetOrCreateWebContentsUserData() const {
+  content::WebContents* web_contents =
+      content::WebContents::FromRenderFrameHost(&render_frame_host());
+  if (!web_contents) {
+    return nullptr;
+  }
+  return contextual_tasks::ContextualTasksWebContentsUserData::
+      GetOrCreateForWebContents(web_contents);
+}
 
 void ContextualTasksExtensionHandler::OnLensOverlayStateChanged(
     bool is_showing) {
@@ -113,6 +195,33 @@ void ContextualTasksExtensionHandler::BindContextualTasksFactory(
   contextual_tasks_factory_receiver_.Bind(std::move(receiver));
 }
 
+void ContextualTasksExtensionHandler::BindTrackedElementHandler(
+    mojo::PendingReceiver<tracked_element::mojom::TrackedElementHandler>
+        receiver) {
+#if !BUILDFLAG(IS_ANDROID)
+  if (!IsEmbeddedInSidePanel()) {
+    return;
+  }
+  content::WebContents* web_contents =
+      content::WebContents::FromRenderFrameHost(&render_frame_host());
+  BrowserWindowInterface* browser_window = GetBrowserWindowInterface();
+  if (!web_contents || !browser_window) {
+    return;
+  }
+
+  BrowserElements* browser_elements = BrowserElements::From(browser_window);
+  if (!browser_elements) {
+    return;
+  }
+
+  ui::ElementContext context = browser_elements->GetContext();
+  tracked_element_handler_ = std::make_unique<ui::TrackedElementHandler>(
+      web_contents, std::move(receiver), context,
+      std::vector<ui::ElementIdentifier>{kContextualTasksFaviconsElementId},
+      &render_frame_host());
+#endif
+}
+
 // contextual_tasks::mojom::ExtensionPageHandlerFactory:
 void ContextualTasksExtensionHandler::CreateExtensionPageHandler(
     mojo::PendingRemote<contextual_tasks::mojom::ExtensionPage> page,
@@ -122,70 +231,124 @@ void ContextualTasksExtensionHandler::CreateExtensionPageHandler(
   contextual_tasks_handler_receiver_.Bind(std::move(receiver));
   contextual_tasks_page_.reset();
   contextual_tasks_page_.Bind(std::move(page));
+  if (auto* user_data = GetOrCreateWebContentsUserData()) {
+    user_data->UpdateExtensionFrameBound(
+        this, /*is_page_bound=*/true,
+        base::BindRepeating(&ContextualTasksExtensionHandler::OnLensCropUpdated,
+                            weak_ptr_factory_.GetWeakPtr()),
+        base::BindRepeating(
+            &ContextualTasksExtensionHandler::OnTabContextUpdatedFromUserData,
+            weak_ptr_factory_.GetWeakPtr()));
+  }
+  InitializeInputStateModel();
+  // Do not reset the session's tab context here. The session is shared by every
+  // extension frame in this WebContents, so a frame binding in the middle of a
+  // session (e.g. the context library, which mounts right after a tab is
+  // attached) would drop the tabs unexpectedly. Instead, send the page any
+  // tabs added before it subscribed, since subscribing does not load initial
+  // state.
+  if (contextual_search::ContextualSearchSessionHandle* session_handle =
+          GetOrCreateContextualSessionHandle()) {
+    MaybeRefreshTabContextSubscription(session_handle);
+    const auto& tab_context = session_handle->GetTabContextState();
+    contextual_tasks::ContextualTasksWebContentsUserData* user_data =
+        GetOrCreateWebContentsUserData();
+    const bool sts_enabled = user_data && user_data->IsSmartTabSharingEnabled();
+    if (!tab_context.attached.empty() || !tab_context.restored.empty() ||
+        sts_enabled) {
+      SendTabContextToExtensionPage(tab_context);
+    }
+  }
+  if (IsSmartTabSharingActive()) {
+    PreflightSmartTabSharingEmbeddings();
+  }
 }
 
 // contextual_tasks::mojom::ExtensionPageHandler:
 void ContextualTasksExtensionHandler::SetTaskId(const base::Uuid& uuid) {
-  task_id_ = uuid;
+  if (auto* user_data = GetOrCreateWebContentsUserData()) {
+    user_data->SetTaskId(uuid);
+  }
+  OnSessionChanged(GetOrCreateContextualSessionHandle());
+  GetOrCreateInputStateModel();
 }
 
 void ContextualTasksExtensionHandler::OnWebviewMessage(
-    const std::vector<uint8_t>& message) {
-  if (!contextual_tasks_page_.is_bound()) {
-    return;
-  }
-  constexpr size_t kMaxWebviewMessageBytes = 1024 * 1024;
-  if (message.size() > kMaxWebviewMessageBytes) {
-    return;
-  }
-  lens::AimToClientMessage aim_to_client_message;
-  if (!aim_to_client_message.ParseFromArray(message.data(), message.size())) {
-    return;
-  }
-
-  if (aim_to_client_message.has_handshake_response()) {
-    contextual_tasks_page_->OnHandshakeComplete();
-  }
+    const std::vector<uint8_t>& message,
+    const std::optional<std::string>& document_id) {
+  // Only implemented on `ContextualTasksExtensionServiceWorkerHandler`.
+  DLOG(WARNING)
+      << "Unexpected call to ContextualTasksExtensionHandler::OnWebviewMessage";
 }
 
 void ContextualTasksExtensionHandler::GetHandshakeMessage(
+    const std::optional<std::string>& document_id,
     GetHandshakeMessageCallback callback) {
-  std::move(callback).Run(
-      mojo_base::ProtoWrapper(contextual_tasks::GetHandshakeMessageProto()));
+  // Only implemented on `ContextualTasksExtensionServiceWorkerHandler`.
+  DLOG(WARNING) << "Unexpected call to "
+                   "ContextualTasksExtensionHandler::GetHandshakeMessage";
+  std::move(callback).Run(mojo_base::ProtoWrapper(lens::ClientToAimMessage()));
 }
 
 void ContextualTasksExtensionHandler::GetLensCropPreview(
-    const std::string& data_id,
     GetLensCropPreviewCallback callback) {
   auto model = GetOrCreateInputStateModel();
   if (!model) {
+    base::UmaHistogramBoolean("ContextualTasks.LensRegionChip.PreviewLoaded",
+                              false);
     std::move(callback).Run(std::nullopt);
     return;
   }
-  std::move(callback).Run(model->GetLensCrop(data_id));
+  auto crop = model->GetLensCrop();
+  base::UmaHistogramBoolean("ContextualTasks.LensRegionChip.PreviewLoaded",
+                            crop.has_value());
+  if (crop.has_value()) {
+    base::RecordAction(
+        base::UserMetricsAction("ContextualTasks.LensRegionChip.Shown"));
+    base::UmaHistogramBoolean("ContextualTasks.LensRegionChip.Shown", true);
+  }
+  std::move(callback).Run(std::move(crop));
+}
+
+void ContextualTasksExtensionHandler::RemoveLensCrop() {
+  if (auto* user_data = GetOrCreateWebContentsUserData()) {
+    user_data->RemoveLensCrop();
+  }
 }
 
 void ContextualTasksExtensionHandler::OnLensThumbnailCreated(
     const std::string& thumbnail_uri) {
-  std::string data_id = base::UnguessableToken::Create().ToString();
-  auto model = GetOrCreateInputStateModel();
-  if (model) {
-    model->SetLensCrop(data_id, thumbnail_uri);
+  if (auto* user_data = GetOrCreateWebContentsUserData()) {
+    user_data->OnLensThumbnailCreated(thumbnail_uri);
   }
 }
 
-// composebox::mojom::PageHandler stubs:
-void ContextualTasksExtensionHandler::FocusChanged(bool focused) {}
-void ContextualTasksExtensionHandler::StartPlatformVoiceRecognition() {}
+// composebox::mojom::PageHandler:
 void ContextualTasksExtensionHandler::HandleLensButtonClick() {
 #if !BUILDFLAG(IS_ANDROID)
+  if (!IsEmbeddedInSidePanel()) {
+    return;
+  }
+
   base::RecordAction(base::UserMetricsAction(
       "ContextualTasks.Composebox.UserAction.LensButtonClicked"));
+  base::UmaHistogramBoolean(
+      "ContextualTasks.Composebox.UserAction.LensButtonClicked", true);
+
+  auto* user_data = GetOrCreateWebContentsUserData();
+  if (user_data) {
+    base::UmaHistogramEnumeration(
+        "ContextualTasks.Composebox.UserAction.LensButtonClicked.PageState",
+        user_data->GetPageState());
+  }
 
   if (auto* controller = GetLensSearchController()) {
-    controller->SetThumbnailCreatedCallback(base::BindRepeating(
-        &ContextualTasksExtensionHandler::OnLensThumbnailCreated,
-        weak_ptr_factory_.GetWeakPtr()));
+    if (user_data) {
+      controller->SetThumbnailCreatedCallback(base::BindRepeating(
+          &contextual_tasks::ContextualTasksWebContentsUserData::
+              OnLensThumbnailCreated,
+          user_data->AsWeakPtr()));
+    }
     if (controller->IsShowingUI()) {
       if (controller->invocation_source() ==
           lens::LensOverlayInvocationSource::kContextualTasksComposebox) {
@@ -213,15 +376,29 @@ void ContextualTasksExtensionHandler::HandleLensButtonClick() {
   }
 #endif
 }
+
+void ContextualTasksExtensionHandler::SetSmartTabSharingActive(bool active) {
+  if (contextual_tasks::ContextualTasksWebContentsUserData* user_data =
+          GetOrCreateWebContentsUserData()) {
+    user_data->SetSmartTabSharingActive(active);
+  }
+  if (IsSmartTabSharingActive()) {
+    PreflightSmartTabSharingEmbeddings();
+  }
+}
+
+void ContextualTasksExtensionHandler::GetSmartTabSharingActive(
+    GetSmartTabSharingActiveCallback callback) {
+  std::move(callback).Run(IsSmartTabSharingActive());
+}
+
+// composebox::mojom::PageHandler stubs:
+void ContextualTasksExtensionHandler::FocusChanged(bool focused) {}
+void ContextualTasksExtensionHandler::StartPlatformVoiceRecognition() {}
 void ContextualTasksExtensionHandler::HandleFileUpload(bool is_image) {}
 void ContextualTasksExtensionHandler::NavigateUrl(const GURL& url) {}
 void ContextualTasksExtensionHandler::CloseLensOverlayFromWebUI(
     composebox::mojom::LensOverlayDismissalSource dismissal_source) {}
-void ContextualTasksExtensionHandler::SetSmartTabSharingActive(bool active) {}
-void ContextualTasksExtensionHandler::GetSmartTabSharingActive(
-    GetSmartTabSharingActiveCallback callback) {
-  std::move(callback).Run(false);
-}
 void ContextualTasksExtensionHandler::
     NotifyComposeboxQuerySubmittedWithContext() {}
 void ContextualTasksExtensionHandler::CanShowNextboxAnimation(
@@ -247,6 +424,9 @@ void ContextualTasksExtensionHandler::QueryAutocomplete(
   DCHECK(!tab_id.has_value())
       << "QueryAutocomplete with tab_id is only supported for the full WebUI "
          "Omnibox.";
+  if (IsSmartTabSharingActive()) {
+    PreflightSmartTabSharingEmbeddings();
+  }
 }
 void ContextualTasksExtensionHandler::StopAutocomplete(bool clear_result) {}
 void ContextualTasksExtensionHandler::OpenAutocompleteMatch(
@@ -266,7 +446,11 @@ void ContextualTasksExtensionHandler::SetPopupSelection(
 void ContextualTasksExtensionHandler::OpenPopupSelection(
     uint32_t result_sequence_id,
     searchbox::mojom::OmniboxPopupSelectionPtr selection,
-    WindowOpenDisposition disposition) {}
+    searchbox::mojom::ActionModifiersPtr modifiers) {}
+void ContextualTasksExtensionHandler::OpenPopupSelectionWithDisposition(
+    uint32_t result_sequence_id,
+    searchbox::mojom::OmniboxPopupSelectionPtr selection,
+    ui::mojom::WindowOpenDisposition disposition) {}
 void ContextualTasksExtensionHandler::OnNavigationLikely(
     uint8_t line,
     const GURL& url,
@@ -278,7 +462,7 @@ void ContextualTasksExtensionHandler::ActivateKeyword(
     uint8_t line,
     const GURL& url,
     base::TimeTicks match_selection_timestamp,
-    bool is_mouse_event) {}
+    searchbox::mojom::KeywordActivationMethod activation_method) {}
 void ContextualTasksExtensionHandler::ExecuteAction(
     uint8_t line,
     uint8_t action_index,
@@ -295,12 +479,15 @@ void ContextualTasksExtensionHandler::GetCyclingPlaceholderConfig(
 }
 void ContextualTasksExtensionHandler::GetRecentTabs(
     GetRecentTabsCallback callback) {
-  content::WebContents* host_contents =
-      content::WebContents::FromRenderFrameHost(&render_frame_host());
-  auto* browser_window_interface =
-      host_contents ? webui::GetBrowserWindowInterface(host_contents) : nullptr;
-  std::move(callback).Run(
-      ContextualSearchboxHandler::GetRecentTabInfos(browser_window_interface));
+  base::flat_set<SessionID> always_include_tab_ids;
+  if (contextual_search::ContextualSearchSessionHandle* session_handle =
+          GetOrCreateContextualSessionHandle()) {
+    always_include_tab_ids = session_handle->GetNonDeselectedTabSessionIds();
+  }
+  std::move(callback).Run(ContextualSearchboxHandler::GetRecentTabInfos(
+      GetBrowserWindowInterface(), /*max_tab_suggestions=*/std::nullopt,
+      always_include_tab_ids,
+      /*exclude_page_context_ineligible_tabs=*/true));
 }
 void ContextualTasksExtensionHandler::GetTabPreview(
     int32_t tab_id,
@@ -310,7 +497,27 @@ void ContextualTasksExtensionHandler::GetTabPreview(
 void ContextualTasksExtensionHandler::WaitForTabFaviconLoad(
     int32_t tab_id,
     WaitForTabFaviconLoadCallback callback) {
+#if !BUILDFLAG(IS_ANDROID)
+  if (!IsTabSharable(render_frame_host(), tab_id, /*allow_empty_url=*/true)) {
+    std::move(callback).Run(std::nullopt);
+    return;
+  }
+  tab_favicon_helper_.WaitForTabFaviconLoad(
+      tab_id, base::BindOnce(
+                  [](base::WeakPtr<ContextualTasksExtensionHandler> self,
+                     int32_t tab_id, WaitForTabFaviconLoadCallback callback,
+                     const std::optional<GURL>& favicon_data_url) {
+                    std::move(callback).Run(
+                        (self && favicon_data_url.has_value() &&
+                         IsTabSharable(self->render_frame_host(), tab_id,
+                                       /*allow_empty_url=*/false))
+                            ? favicon_data_url
+                            : std::nullopt);
+                  },
+                  weak_ptr_factory_.GetWeakPtr(), tab_id, std::move(callback)));
+#else
   std::move(callback).Run(std::nullopt);
+#endif
 }
 void ContextualTasksExtensionHandler::GetInputState(
     GetInputStateCallback callback) {
@@ -322,6 +529,15 @@ void ContextualTasksExtensionHandler::GetInputState(
   } else {
     std::move(callback).Run(std::nullopt);
   }
+}
+void ContextualTasksExtensionHandler::ResetSmartTabSharing(
+    ResetSmartTabSharingCallback callback) {
+  contextual_tasks::ContextualTasksWebContentsUserData* user_data =
+      GetOrCreateWebContentsUserData();
+  if (user_data) {
+    user_data->ResetSmartTabSharing();
+  }
+  std::move(callback).Run(user_data && user_data->IsSmartTabSharingActive());
 }
 void ContextualTasksExtensionHandler::NotifySessionStarted() {}
 void ContextualTasksExtensionHandler::NotifySessionAbandoned() {}
@@ -337,14 +553,126 @@ void ContextualTasksExtensionHandler::AddTabContext(
     bool delay_upload,
     searchbox::mojom::TabAttachmentSource source,
     AddTabContextCallback callback) {
-  std::move(callback).Run(base::ok(base::UnguessableToken::Create()));
+#if !BUILDFLAG(IS_ANDROID)
+  Profile* profile =
+      Profile::FromBrowserContext(render_frame_host().GetBrowserContext());
+  if (!contextual_tasks::CanShareTabContext(profile)) {
+    std::move(callback).Run(base::unexpected(
+        contextual_search::ContextUploadErrorType::kBrowserProcessingError));
+    return;
+  }
+
+  auto* user_data = GetOrCreateWebContentsUserData();
+  auto* session_handle = GetOrCreateContextualSessionHandle();
+  if (!user_data || !session_handle) {
+    std::move(callback).Run(base::unexpected(
+        contextual_search::ContextUploadErrorType::kBrowserProcessingError));
+    return;
+  }
+
+  tabs::TabInterface* const tab = tabs::TabHandle(tab_id).Get();
+  content::WebContents* const tab_contents = tab ? tab->GetContents() : nullptr;
+  SessionID session_id =
+      tab_contents ? sessions::SessionTabHelper::IdForTab(tab_contents)
+                   : SessionID::InvalidValue();
+  if (session_id.is_valid()) {
+    if (!delay_upload && tab && tab_contents) {
+      user_data->OnManualTabContextAdded(tab_contents->GetLastCommittedURL(),
+                                         session_id);
+    }
+    for (const auto& selected_tab : user_data->GetSelectedTabs()) {
+      if (selected_tab.tab_id == session_id.id()) {
+        user_data->OnTabContextRemoved(selected_tab.context_token);
+        DeleteTabToken(session_handle, selected_tab.context_token);
+      }
+    }
+  }
+
+  if (delay_upload) {
+    if (!session_id.is_valid()) {
+      std::move(callback).Run(base::unexpected(
+          contextual_search::ContextUploadErrorType::kBrowserProcessingError));
+      return;
+    }
+    user_data->RecordTabIdMapping(tab_id, session_id.id());
+    // Auto-suggested chip tabs are captured and uploaded by the user data's
+    // `QueryContextualizer` on submit, so that their context is as recent as
+    // possible. Until then, the session handle attaches them with a token for
+    // the chip, so that they can be deleted. `user_data` is notified of the tab
+    // context change and updates its context library input state.
+    const base::UnguessableToken token = session_handle->AddPendingDelayedTab(
+        session_id.id(), tab_contents->GetLastCommittedURL(),
+        base::UTF16ToUTF8(tab_contents->GetTitle()));
+    contextual_tasks::RecordTabAddedMetric(
+        tab, session_handle->GetMetricsRecorder(),
+        /*is_tab_suggestion_chip=*/true, GetBrowserWindowInterface());
+    user_data->AssociateTabWithTask(session_id);
+    UpdateInputStateModelContext();
+    std::move(callback).Run(base::ok(token));
+    return;
+  }
+
+  const bool should_attach_tab = tab_contents && session_id.is_valid();
+  auto result = contextual_tasks::CaptureAndUploadTabContext(
+      tab_id, session_handle,
+      /*on_context_uploaded=*/
+      base::BindRepeating(
+          [](base::WeakPtr<contextual_tasks::ContextualTasksWebContentsUserData>
+                 ud) {
+            if (ud) {
+              if (base::WeakPtr<contextual_search::InputStateModel> model =
+                      ud->GetOrCreateInputStateModel()) {
+                model->OnContextChanged();
+              }
+              ud->RefreshActiveTaskContext();
+            }
+          },
+          user_data->AsWeakPtr()),
+      /*browser_window_interface=*/GetBrowserWindowInterface(),
+      should_attach_tab ? user_data : nullptr);
+  if (result.has_value() && should_attach_tab) {
+    user_data->RecordTabIdMapping(tab_id, session_id.id());
+    // Attach the tab right away, while its page context is captured, so that
+    // it is selected (and can be deleted) from now on. Its upload updates the
+    // attached tab in place.
+    session_handle->AttachTabPendingUpload(
+        *result, session_id.id(), tab_contents->GetLastCommittedURL(),
+        base::UTF16ToUTF8(tab_contents->GetTitle()));
+    // Associate the tab with the task as soon as it is attached as context so
+    // the task knows which tabs are part of it.
+    user_data->AssociateTabWithTask(session_id);
+    UpdateInputStateModelContext();
+    user_data->RefreshActiveTaskContext();
+  }
+
+  std::move(callback).Run(result);
+#else
+  std::move(callback).Run(base::unexpected(
+      contextual_search::ContextUploadErrorType::kBrowserProcessingError));
+#endif
 }
+
 void ContextualTasksExtensionHandler::DeleteContext(
     const base::UnguessableToken& file_token,
-    bool from_automatic_chip) {}
-void ContextualTasksExtensionHandler::DeleteTabContext(int32_t tab_id) {}
+    bool from_automatic_chip) {
+  if (auto* user_data = GetOrCreateWebContentsUserData()) {
+    user_data->DeleteContext(file_token);
+  }
+}
+
+void ContextualTasksExtensionHandler::DeleteTabContext(int32_t tab_id) {
+  if (auto* user_data = GetOrCreateWebContentsUserData()) {
+    user_data->DeleteTabContext(tab_id);
+    UpdateInputStateModelContext();
+  }
+}
+
 void ContextualTasksExtensionHandler::ClearFiles(
-    bool should_block_auto_suggested_tabs) {}
+    bool should_block_auto_suggested_tabs) {
+  if (auto* user_data = GetOrCreateWebContentsUserData()) {
+    user_data->ClearFiles(should_block_auto_suggested_tabs);
+  }
+}
 void ContextualTasksExtensionHandler::SubmitQuery(const std::string& query_text,
                                                   uint8_t mouse_button,
                                                   bool alt_key,
@@ -352,26 +680,8 @@ void ContextualTasksExtensionHandler::SubmitQuery(const std::string& query_text,
                                                   bool meta_key,
                                                   bool shift_key,
                                                   bool is_voice_search) {
-  auto* session_handle = GetOrCreateContextualSessionHandle();
-  if (!session_handle) {
-    return;
-  }
-
-  std::optional<base::UnguessableToken> overlay_token = GetLensOverlayToken();
-
-#if !BUILDFLAG(IS_ANDROID)
-  if (auto* controller = GetLensSearchController()) {
-    controller->CloseLensSync(
-        lens::LensOverlayDismissalSource::kContextualTasksQuerySubmitted);
-  }
-#endif
-
-  auto request_info = contextual_tasks::PrepareClientToAimRequestInfo(
-      query_text, session_handle, this, active_tool_, active_model_,
-      GetActiveTabContextId(), overlay_token, is_voice_search);
-
-  contextual_tasks::FinalizeAndSendAimQuery(std::move(request_info),
-                                            session_handle, this);
+  DVLOG(1)
+      << "ContextualTasksExtensionHandler::SubmitQuery called unexpectedly";
 }
 void ContextualTasksExtensionHandler::OpenLensSearch() {}
 void ContextualTasksExtensionHandler::SetActiveToolMode(omnibox::ToolMode tool,
@@ -408,151 +718,63 @@ void ContextualTasksExtensionHandler::GetPageClassification(
 }
 void ContextualTasksExtensionHandler::OnThumbnailRemoved() {}
 
-void ContextualTasksExtensionHandler::PostAimMessage(
-    const lens::ClientToAimMessage& message) {
-  // Route the message directly to the extension page's bound remote.
+void ContextualTasksExtensionHandler::OnLensCropUpdated(const GURL& data_uri) {
   if (contextual_tasks_page_.is_bound()) {
-    const size_t size = message.ByteSizeLong();
-    std::vector<uint8_t> serialized_message(size);
-    message.SerializeToArray(serialized_message.data(), size);
-    contextual_tasks_page_->PostAimMessage(std::move(serialized_message));
+    contextual_tasks_page_->OnLensCropUpdated(data_uri);
   }
 }
 
-content::WebContents* ContextualTasksExtensionHandler::GetActiveTabWebContents()
-    const {
-  content::WebContents* host_contents =
+BrowserWindowInterface*
+ContextualTasksExtensionHandler::GetBrowserWindowInterface() const {
+  if (auto* user_data = GetOrCreateWebContentsUserData()) {
+    return user_data->GetBrowserWindowInterface();
+  }
+  return nullptr;
+}
+
+bool ContextualTasksExtensionHandler::IsEmbeddedInSidePanel() const {
+  content::WebContents* web_contents =
       content::WebContents::FromRenderFrameHost(&render_frame_host());
-  if (!host_contents) {
-    return nullptr;
-  }
-  auto* browser_window_interface =
-      webui::GetBrowserWindowInterface(host_contents);
-  if (!browser_window_interface) {
-    return nullptr;
-  }
-  auto* active_tab = browser_window_interface->GetActiveTabInterface();
-  if (!active_tab) {
-    return nullptr;
-  }
-  return active_tab->GetContents();
+  return contextual_tasks::ContextualTasksPanelController::IsWebContentsInPanel(
+      web_contents);
 }
 
 contextual_search::ContextualSearchSessionHandle*
 ContextualTasksExtensionHandler::GetOrCreateContextualSessionHandle() {
-  content::WebContents* web_contents =
-      content::WebContents::FromRenderFrameHost(&render_frame_host());
-  if (!web_contents) {
-    return nullptr;
+  if (auto* user_data = GetOrCreateWebContentsUserData()) {
+    return user_data->GetOrCreateContextualSessionHandle();
   }
-
-  auto* helper = ContextualSearchWebContentsHelper::GetOrCreateForWebContents(
-      web_contents);
-
-  contextual_search::ContextualSearchSessionHandle* existing_session =
-      task_id_.has_value() ? helper->GetSessionForTask(task_id_.value())
-                           : helper->session_handle();
-  if (existing_session) {
-    return existing_session;
-  }
-
-  if (!task_id_) {
-    auto* browser_context = render_frame_host().GetBrowserContext();
-    Profile* profile = Profile::FromBrowserContext(browser_context);
-    auto* contextual_search_service =
-        ContextualSearchServiceFactory::GetForProfile(profile);
-    if (contextual_search_service) {
-      auto session_handle = contextual_search_service->CreateSession(
-          contextual_tasks::CreateQueryControllerConfigParams(),
-          contextual_search::ContextualSearchSource::kContextualTasks,
-          lens::LensOverlayInvocationSource::kContextualTasksComposebox);
-      session_handle->CheckSearchContentSharingSettings(profile->GetPrefs());
-      helper->SetTaskSession(std::nullopt, std::move(session_handle),
-                             /*input_state_model=*/nullptr);
-      return helper->session_handle();
-    }
-  }
-
-  return existing_session;
-}
-
-std::optional<int64_t>
-ContextualTasksExtensionHandler::GetActiveTabContextId() {
-  auto* contextual_session_handle = GetOrCreateContextualSessionHandle();
-  if (!contextual_session_handle) {
-    return std::nullopt;
-  }
-
-  content::WebContents* active_tab_contents = GetActiveTabWebContents();
-  if (!active_tab_contents) {
-    return std::nullopt;
-  }
-  SessionID active_tab_id =
-      sessions::SessionTabHelper::IdForTab(active_tab_contents);
-  if (!active_tab_id.is_valid()) {
-    return std::nullopt;
-  }
-
-  auto file_infos = contextual_session_handle->GetUploadedContextFileInfos();
-  auto submitted_file_infos =
-      contextual_session_handle->GetSubmittedContextFileInfos();
-  file_infos.insert(file_infos.end(), submitted_file_infos.begin(),
-                    submitted_file_infos.end());
-  for (const auto& file_info : file_infos) {
-    if (file_info.tab_session_id &&
-        file_info.tab_session_id->id() == active_tab_id.id()) {
-      return file_info.GetContextId();
-    }
-  }
-  return std::nullopt;
+  return nullptr;
 }
 
 std::optional<base::UnguessableToken>
 ContextualTasksExtensionHandler::GetLensOverlayToken() {
-#if !BUILDFLAG(IS_ANDROID)
-  if (auto* controller = GetLensSearchController()) {
-    auto* overlay = controller->lens_overlay_controller();
-    if (!overlay || !overlay->HasRegionSelection()) {
-      return std::nullopt;
-    }
-    if (auto* router = controller->query_router()) {
-      return router->overlay_tab_context_file_token();
-    }
+  if (auto* user_data = GetOrCreateWebContentsUserData()) {
+    return user_data->GetLensOverlayToken();
   }
-#endif
   return std::nullopt;
 }
 
 #if !BUILDFLAG(IS_ANDROID)
 LensSearchController* ContextualTasksExtensionHandler::GetLensSearchController()
     const {
-  content::WebContents* active_tab_contents = GetActiveTabWebContents();
-  if (!active_tab_contents) {
-    return nullptr;
+  if (auto* user_data = GetOrCreateWebContentsUserData()) {
+    return user_data->GetLensSearchController();
   }
-  return LensSearchController::FromTabWebContents(active_tab_contents);
+  return nullptr;
 }
 #endif
 
 void ContextualTasksExtensionHandler::InitializeInputStateModel() {
-  input_state_model_ = GetOrCreateInputStateModel();
-  if (!input_state_model_) {
-    return;
-  }
-
-  content::WebContents* active_tab_contents = GetActiveTabWebContents();
-  if (active_tab_contents) {
-    Profile* profile =
-        Profile::FromBrowserContext(active_tab_contents->GetBrowserContext());
-    if (profile) {
-      input_state_model_->SetPrefService(profile->GetPrefs());
+  input_state_model_ = nullptr;
+  auto model = GetOrCreateInputStateModel();
+  if (model) {
+    auto* browser_context = render_frame_host().GetBrowserContext();
+    if (auto* profile = Profile::FromBrowserContext(browser_context)) {
+      model->SetPrefService(profile->GetPrefs());
     }
+    model->Initialize();
   }
-
-  input_state_subscription_ = input_state_model_->subscribe(
-      base::BindRepeating(&ContextualTasksExtensionHandler::OnInputStateChanged,
-                          base::Unretained(this)));
-  input_state_model_->Initialize();
 }
 
 void ContextualTasksExtensionHandler::OnInputStateChanged(
@@ -568,21 +790,189 @@ ContextualTasksExtensionHandler::GetOrCreateInputStateModel() {
   if (!session_handle) {
     return nullptr;
   }
-  content::WebContents* active_tab_contents = GetActiveTabWebContents();
-  if (!active_tab_contents) {
+  auto* user_data = GetOrCreateWebContentsUserData();
+  if (!user_data) {
     return nullptr;
   }
-  auto* user_data =
-      contextual_tasks::ContextualTasksWebContentsUserData::FromWebContents(
-          active_tab_contents);
-  if (!user_data) {
-    contextual_tasks::ContextualTasksWebContentsUserData::CreateForWebContents(
-        active_tab_contents);
-    user_data =
-        contextual_tasks::ContextualTasksWebContentsUserData::FromWebContents(
-            active_tab_contents);
+  auto model = user_data->GetOrCreateInputStateModel(*session_handle);
+  if (input_state_model_.get() != model.get()) {
+    input_state_model_ = model;
+    if (model) {
+      input_state_subscription_ =
+          input_state_model_->Subscribe(base::BindRepeating(
+              &ContextualTasksExtensionHandler::OnInputStateChanged,
+              base::Unretained(this)));
+    } else {
+      input_state_subscription_ = {};
+    }
   }
-  return user_data->GetOrCreateInputStateModel(*session_handle);
+  return input_state_model_;
+}
+
+void ContextualTasksExtensionHandler::UpdateInputStateModelContext() {
+  // Ask the input state model to recalculate input limits based on the
+  // updated context.
+  if (base::WeakPtr<contextual_search::InputStateModel> model =
+          GetOrCreateInputStateModel()) {
+    model->OnContextChanged();
+  }
+}
+
+void ContextualTasksExtensionHandler::OnSessionChanged(
+    contextual_search::ContextualSearchSessionHandle* session_handle) {
+  if (subscribed_session_handle_.get() == session_handle &&
+      !subscribed_session_handle_.WasInvalidated()) {
+    return;
+  }
+  MaybeRefreshTabContextSubscription(session_handle);
+  SendTabContextToExtensionPage(session_handle
+                                    ? session_handle->GetTabContextState()
+                                    : contextual_search::TabContextState());
+}
+
+void ContextualTasksExtensionHandler::MaybeRefreshTabContextSubscription(
+    contextual_search::ContextualSearchSessionHandle* session_handle) {
+  if (subscribed_session_handle_.get() == session_handle &&
+      !subscribed_session_handle_.WasInvalidated()) {
+    return;
+  }
+  if (!session_handle) {
+    subscribed_session_handle_ = nullptr;
+    tab_context_subscription_ = {};
+    return;
+  }
+  subscribed_session_handle_ = session_handle->AsWeakPtr();
+  tab_context_subscription_ =
+      session_handle->SubscribeTabContext(base::BindRepeating(
+          &ContextualTasksExtensionHandler::SendTabContextToExtensionPage,
+          base::Unretained(this)));
+}
+
+void ContextualTasksExtensionHandler::OnTabContextUpdatedFromUserData() {
+  if (contextual_search::ContextualSearchSessionHandle* session_handle =
+          GetOrCreateContextualSessionHandle()) {
+    SendTabContextToExtensionPage(session_handle->GetTabContextState());
+  }
+}
+
+bool ContextualTasksExtensionHandler::IsSmartTabSharingActive() {
+  contextual_tasks::ContextualTasksWebContentsUserData* user_data =
+      GetOrCreateWebContentsUserData();
+  return user_data && user_data->IsSmartTabSharingActive();
+}
+
+void ContextualTasksExtensionHandler::PreflightSmartTabSharingEmbeddings() {
+  auto* profile =
+      Profile::FromBrowserContext(render_frame_host().GetBrowserContext());
+  if (!profile) {
+    return;
+  }
+  if (auto* context_service =
+          contextual_tasks::ContextualTasksContextServiceFactory::GetForProfile(
+              profile)) {
+    BrowserWindowInterface* browser_window = GetBrowserWindowInterface();
+    context_service->OnTypedQuery(browser_window ? browser_window->GetWeakPtr()
+                                                 : nullptr);
+  }
+}
+
+void ContextualTasksExtensionHandler::SendTabContextToExtensionPage(
+    const contextual_search::TabContextState& state) {
+  if (!contextual_tasks_page_.is_bound()) {
+    return;
+  }
+
+  contextual_tasks::ContextualTasksWebContentsUserData* user_data =
+      GetOrCreateWebContentsUserData();
+  auto smart_tab_sharing_state =
+      contextual_tasks::mojom::SmartTabSharingState::New();
+  smart_tab_sharing_state->active =
+      user_data && user_data->IsSmartTabSharingActive();
+  smart_tab_sharing_state->visible =
+      user_data && user_data->IsSmartTabSharingEnabled();
+
+  // Combine and deduplicate tabs between restored tabs and attached
+  // tabs into a single tab list to send to the frontend extension.
+  // Key tabs by TabHandle ID (used by the frontend) rather than SessionID.
+  std::vector<searchbox::mojom::TabInfoPtr> tabs;
+  std::vector<int32_t> submitted_tab_ids;
+
+  if (!smart_tab_sharing_state->active) {
+    std::vector<base::UnguessableToken> uploaded_tokens;
+    if (subscribed_session_handle_) {
+      uploaded_tokens = subscribed_session_handle_->GetUploadedContextTokens();
+    }
+    std::set<GURL> seen_urls;
+    std::set<int32_t> seen_tab_ids;
+
+    // Resolve each tab's SessionID to its TabHandle ID via `user_data` (falling
+    // back to SessionID if no matching open or mapped tab handle exists).
+    // Frontend uses tab handle ID to identify tabs, while restored tab session
+    // IDs are persistent between chat sessions.
+
+    // Attached tabs are reversed to show the newest tabs first and processed
+    // before restored tabs so they take precedence during deduplication.
+    for (const auto& tab : std::views::reverse(state.attached)) {
+      if (!tab.tab_id.has_value() ||
+          state.deselected.contains(
+              SessionID::FromSerializedValue(*tab.tab_id))) {
+        continue;
+      }
+      const int32_t tab_handler_id =
+          (user_data ? user_data->ResolveAndRecordTabHandleForSessionTabId(
+                           *tab.tab_id)
+                     : std::nullopt)
+              .value_or(*tab.tab_id);
+      // Skip duplicate tabs.
+      if (!seen_tab_ids.insert(tab_handler_id).second) {
+        continue;
+      }
+      // Record the URL so restored duplicates are skipped below. Attached tabs
+      // are never skipped, even if two share a URL since the user manually
+      // selected them.
+      if (tab.url.is_valid()) {
+        seen_urls.insert(tab.url);
+      }
+      tabs.push_back(CreateMojomTab(tab, tab_handler_id));
+      const bool is_submitted =
+          !tab.pending_delayed_upload &&
+          !std::ranges::contains(uploaded_tokens, tab.context_token);
+      if (is_submitted) {
+        submitted_tab_ids.push_back(tab_handler_id);
+      }
+    }
+
+    for (const auto& tab : std::views::reverse(state.restored)) {
+      // Tab ID is not guaranteed to be present. Verify it exists and skip
+      // deselected tabs.
+      if (!tab.tab_id.has_value() ||
+          state.deselected.contains(
+              SessionID::FromSerializedValue(*tab.tab_id))) {
+        continue;
+      }
+
+      const int32_t tab_handler_id =
+          (user_data ? user_data->ResolveAndRecordTabHandleForSessionTabId(
+                           *tab.tab_id)
+                     : std::nullopt)
+              .value_or(*tab.tab_id);
+      // Disallow duplicate restored IDs.
+      if (!seen_tab_ids.insert(tab_handler_id).second) {
+        continue;
+      }
+
+      // Allow for empty URLs, but not duplicate restored URLs.
+      if (tab.url.is_valid() && !seen_urls.insert(tab.url).second) {
+        continue;
+      }
+      tabs.push_back(CreateMojomTab(tab, tab_handler_id));
+      submitted_tab_ids.push_back(tab_handler_id);
+    }
+  }
+
+  contextual_tasks_page_->OnTabContextUpdated(
+      std::move(tabs), std::move(submitted_tab_ids),
+      std::move(smart_tab_sharing_state));
 }
 
 void ContextualTasksExtensionHandler::StartScreenshare(
@@ -593,5 +983,11 @@ void ContextualTasksExtensionHandler::StartScreenshare(
 
 void ContextualTasksExtensionHandler::CaptureRegionScreenshot(
     CaptureRegionScreenshotCallback callback) {
+  NOTREACHED();
+}
+
+void ContextualTasksExtensionHandler::ShowHotkeyDropdown(
+    const gfx::Rect& anchor_bounds,
+    ShowHotkeyDropdownCallback callback) {
   NOTREACHED();
 }

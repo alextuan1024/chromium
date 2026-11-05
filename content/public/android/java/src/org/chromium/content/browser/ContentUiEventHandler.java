@@ -20,11 +20,13 @@ import org.jni_zero.JniType;
 import org.jni_zero.NativeMethods;
 
 import org.chromium.base.UserData;
+import org.chromium.blink_public.common.BlinkFeatures;
 import org.chromium.build.annotations.Initializer;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.content.browser.input.ImeAdapterImpl;
 import org.chromium.content.browser.webcontents.WebContentsImpl;
+import org.chromium.content_public.browser.ContentFeatureMap;
 import org.chromium.content_public.browser.ViewEventSink.InternalAccessDelegate;
 import org.chromium.content_public.browser.WebContents;
 import org.chromium.content_public.browser.WebContents.UserDataFactory;
@@ -39,7 +41,6 @@ import org.chromium.ui.util.MotionEventUtils;
 public class ContentUiEventHandler implements UserData {
     private final WebContentsImpl mWebContents;
     private InternalAccessDelegate mEventDelegate;
-    private long mNativeContentUiEventHandler;
 
     private static final class UserDataFactoryLazyHolder {
         private static final UserDataFactory<ContentUiEventHandler> INSTANCE =
@@ -64,14 +65,7 @@ public class ContentUiEventHandler implements UserData {
 
     private ContentUiEventHandler(WebContents webContents) {
         mWebContents = (WebContentsImpl) webContents;
-        mNativeContentUiEventHandler = ContentUiEventHandlerJni.get().init(webContents);
-    }
-
-    static ContentUiEventHandler createForTesting(
-            WebContents webContents, long nativeContentUiEventHandler) {
-        ContentUiEventHandler contentUiEventHandler = new ContentUiEventHandler(webContents);
-        contentUiEventHandler.mNativeContentUiEventHandler = nativeContentUiEventHandler;
-        return contentUiEventHandler;
+        ContentUiEventHandlerJni.get().init(webContents);
     }
 
     @Initializer
@@ -110,16 +104,14 @@ public class ContentUiEventHandler implements UserData {
     }
 
     private void onMouseWheelEvent(MotionEvent event) {
-        assert mNativeContentUiEventHandler != 0;
+        if (mWebContents.isDestroyed()) return;
         ContentUiEventHandlerJni.get()
                 .sendMouseWheelEvent(
-                        mNativeContentUiEventHandler,
-                        event,
-                        MotionEventUtils.getEventTimeNanos(event));
+                        mWebContents, event, MotionEventUtils.getEventTimeNanos(event));
     }
 
     private boolean onMouseEvent(MotionEvent event, boolean shouldConvertToMouseEvent) {
-        assert mNativeContentUiEventHandler != 0;
+        if (mWebContents.isDestroyed()) return false;
         EventForwarder eventForwarder = mWebContents.getEventForwarder();
         boolean didOffsetEvent = false;
         MotionEvent newEvent = eventForwarder.createOffsetMotionEventIfNeeded(event);
@@ -129,7 +121,7 @@ public class ContentUiEventHandler implements UserData {
         }
         ContentUiEventHandlerJni.get()
                 .sendMouseEvent(
-                        mNativeContentUiEventHandler,
+                        mWebContents,
                         event,
                         MotionEventUtils.getEventTimeNanos(event),
                         EventForwarder.getMouseEventActionButton(event),
@@ -161,22 +153,27 @@ public class ContentUiEventHandler implements UserData {
     }
 
     /**
-     * Check whether a key should be propagated to the embedder or not.
-     * We need to send almost every key to Blink. However:
-     * 1. We don't want to block the device on the renderer for
-     * some keys like menu, home, call.
-     * 2. There are no WebKit equivalents for some of these keys
-     * (see app/keyboard_codes_win.h)
-     * Note that these are not the same set as KeyEvent.isSystemKey:
-     * for instance, AKEYCODE_MEDIA_* will be dispatched to webkit*.
-     * 3. KEYCODE_SYSRQ is the keycode received when Print screen is pressed
-     * on a hardware keyboard. Do not propagate this to allow Android Platform
-     * to take a screenshot.
+     * Check whether a key should be propagated to the embedder or not. We need to send almost every
+     * key to Blink. However:
+     *
+     * <p>1. We don't want to block the device on the renderer for some keys like home, call
+     * (KEYCODE_MENU is propagated when {@link BlinkFeatures#ANDROID_KEYBOARD_CONTEXT_MENU} is
+     * enabled).
+     *
+     * <p>2. There are no WebKit equivalents for some of these keys (see app/keyboard_codes_win.h)
+     * Note that these are not the same set as KeyEvent.isSystemKey: for instance, AKEYCODE_MEDIA_*
+     * will be dispatched to webkit*.
+     *
+     * <p>3. KEYCODE_SYSRQ is the keycode received when Print screen is pressed on a hardware
+     * keyboard. Do not propagate this to allow Android Platform to take a screenshot.
      */
-    private static boolean shouldPropagateKeyEvent(KeyEvent event) {
+    @VisibleForTesting
+    static boolean shouldPropagateKeyEvent(KeyEvent event) {
         int keyCode = event.getKeyCode();
-        if (keyCode == KeyEvent.KEYCODE_MENU
-                || keyCode == KeyEvent.KEYCODE_HOME
+        if (keyCode == KeyEvent.KEYCODE_MENU) {
+            return ContentFeatureMap.isEnabled(BlinkFeatures.ANDROID_KEYBOARD_CONTEXT_MENU);
+        }
+        if (keyCode == KeyEvent.KEYCODE_HOME
                 || keyCode == KeyEvent.KEYCODE_BACK
                 || keyCode == KeyEvent.KEYCODE_CALL
                 || keyCode == KeyEvent.KEYCODE_ENDCALL
@@ -194,14 +191,15 @@ public class ContentUiEventHandler implements UserData {
     }
 
     /**
+     * Currently the ContentView scrolling happens in the native side. In the Java view system, it
+     * is always pinned at (0, 0). scrollBy() and scrollTo() are overridden, so that View's mScrollX
+     * and mScrollY will be unchanged at (0, 0). This is critical for drawing ContentView correctly.
+     *
      * @see View#scrollBy(int, int)
-     * Currently the ContentView scrolling happens in the native side. In
-     * the Java view system, it is always pinned at (0, 0). scrollBy() and scrollTo()
-     * are overridden, so that View's mScrollX and mScrollY will be unchanged at
-     * (0, 0). This is critical for drawing ContentView correctly.
      */
     @CalledByNative
     private void scrollBy(float dxPix, float dyPix) {
+        if (mWebContents.isDestroyed()) return;
         if (dxPix == 0 && dyPix == 0) return;
         long time = SystemClock.uptimeMillis();
         // It's a very real (and valid) possibility that a fling may still
@@ -211,10 +209,9 @@ public class ContentUiEventHandler implements UserData {
                 GestureListenerManagerImpl.fromWebContents(mWebContents);
         assumeNonNull(gestureManager);
         if (gestureManager.hasActiveFlingScroll()) {
-            ContentUiEventHandlerJni.get().cancelFling(mNativeContentUiEventHandler, time);
+            ContentUiEventHandlerJni.get().cancelFling(mWebContents, time);
         }
-        ContentUiEventHandlerJni.get()
-                .sendScrollEvent(mNativeContentUiEventHandler, time, dxPix, dyPix);
+        ContentUiEventHandlerJni.get().sendScrollEvent(mWebContents, time, dxPix, dyPix);
     }
 
     @CalledByNative
@@ -228,20 +225,26 @@ public class ContentUiEventHandler implements UserData {
 
     @NativeMethods
     interface Natives {
-        long init(@JniType("content::WebContents*") WebContents webContents);
+        void init(@JniType("content::WebContents*") WebContents webContents);
 
-        void sendMouseWheelEvent(long nativeContentUiEventHandler, MotionEvent event, long timeNs);
+        void sendMouseWheelEvent(
+                @JniType("content::WebContents*") WebContents webContents,
+                MotionEvent event,
+                long timeNs);
 
         void sendMouseEvent(
-                long nativeContentUiEventHandler,
+                @JniType("content::WebContents*") WebContents webContents,
                 MotionEvent event,
                 long timeNs,
                 int changedButton,
                 int toolType);
 
         void sendScrollEvent(
-                long nativeContentUiEventHandler, long timeMs, float deltaX, float deltaY);
+                @JniType("content::WebContents*") WebContents webContents,
+                long timeMs,
+                float deltaX,
+                float deltaY);
 
-        void cancelFling(long nativeContentUiEventHandler, long timeMs);
+        void cancelFling(@JniType("content::WebContents*") WebContents webContents, long timeMs);
     }
 }

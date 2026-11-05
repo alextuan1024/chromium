@@ -6,6 +6,7 @@
 #define CHROME_BROWSER_RENDERER_CONTEXT_MENU_RENDER_VIEW_CONTEXT_MENU_H_
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -28,13 +29,14 @@
 #include "components/renderer_context_menu/render_view_context_menu_proxy.h"
 #include "components/supervised_user/core/browser/supervised_user_url_filtering_service.h"
 #include "content/public/browser/context_menu_params.h"
+#include "content/public/browser/weak_document_ptr.h"
 #include "content/public/common/buildflags.h"
 #include "extensions/buildflags/buildflags.h"
 #include "mojo/public/cpp/bindings/associated_remote.h"
 #include "printing/buildflags/buildflags.h"
 #include "third_party/blink/public/mojom/frame/frame.mojom-forward.h"
 #include "ui/base/interaction/element_identifier.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom-forward.h"
 #include "ui/gfx/geometry/vector2d.h"
 #include "ui/gfx/text_constants.h"
 #include "ui/menus/simple_menu_model.h"
@@ -62,10 +64,6 @@ class SpellingOptionsSubMenuObserver;
 class TemplateURL;
 class ToastController;
 
-namespace send_tab_to_self {
-class SendTabToSelfContextMenuDelegate;
-}
-
 namespace content {
 class NavigationHandle;
 class RenderFrameHost;
@@ -78,6 +76,10 @@ class Extension;
 
 namespace gfx {
 class Point;
+}
+
+namespace indigo {
+class IndigoImageReplacementManager;
 }
 
 namespace blink {
@@ -125,7 +127,10 @@ class RenderViewContextMenu
   DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kGlicShareImageMenuItem);
   DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kOpenLinkInSplitMenuItem);
   DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kRegionSearchItem);
+  DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kAskGoogleAboutThisPageItem);
+  DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kContextualTasksSubmenuItem);
   DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kSearchForImageItem);
+  DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kSearchForTextItem);
   DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kSearchForVideoFrameItem);
   DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kVideoFrameSubmenuItem);
 
@@ -238,6 +243,21 @@ class RenderViewContextMenu
   virtual ChromeComposeClient* GetChromeComposeClient() const;
 #endif
 
+  struct IndigoReplacementInfo {
+    raw_ptr<indigo::IndigoImageReplacementManager> manager = nullptr;
+    raw_ptr<content::RenderFrameHost> subframe_rfh = nullptr;
+    GURL image_url;
+  };
+
+  // Returns information about the loaded Indigo replacement (manager, subframe
+  // RenderFrameHost, and generated image URL) if the context menu was invoked
+  // on an image with a completed Indigo replacement, or std::nullopt otherwise.
+  virtual std::optional<IndigoReplacementInfo> GetIndigoReplacementInfo() const;
+
+  // Returns the URL of the Indigo replacement image if the context menu was
+  // invoked on an image with a completed Indigo replacement, or an empty GURL.
+  GURL GetIndigoReplacementImageURL() const;
+
   // RenderViewContextMenuBase:
   // The |initiator| parameter is the origin that supplied the URL being
   // navigated to; it may be an opaque origin with no precursor if the URL came
@@ -246,7 +266,7 @@ class RenderViewContextMenu
       const GURL& url,
       const GURL& referring_url,
       const url::Origin& initiator,
-      WindowOpenDisposition disposition,
+      ui::mojom::WindowOpenDisposition disposition,
       ui::PageTransition transition,
       const std::string& extra_headers,
       bool started_from_context_menu,
@@ -258,6 +278,7 @@ class RenderViewContextMenu
                                         gfx::BreakType break_type);
 
   void ExecGlic();
+  void ExecGlicSmartSuggestion();
 
   friend class RenderViewContextMenuTest;
   friend class TestRenderViewContextMenu;
@@ -329,6 +350,7 @@ class RenderViewContextMenu
   void AppendVideoItems();
   void AppendMediaItems();
   void AppendPluginItems();
+  bool IsFullPagePlugin() const;
   void AppendPageItems();
   void AppendExitFullscreenItem();
   void AppendCopyItem();
@@ -336,9 +358,12 @@ class RenderViewContextMenu
   void AppendPrintItem();
   void AppendPartialTranslateItem();
   void AppendTranslateItem();
+  void AppendTranslateOrPartialTranslateItem();
   void AppendMediaRouterItem();
   void AppendReadAnythingItem();
   void AppendSaveToMemoryBanksItem();
+  void AppendBrowseMemoryBanksItem();
+  bool CanSaveImageToMemoryBanks() const;
   void AppendGlicItems();
   void AppendRotationItems();
   void AppendSpellingAndSearchSuggestionItems();
@@ -356,8 +381,10 @@ class RenderViewContextMenu
   void AppendPrintPreviewItems();
   void AppendSearchWebForImageItems();
   void AppendGlicShareImageItem();
+  void AppendIndigoItem();
   bool CanAppendRegionSearchItem() const;
   bool CanAppendGlicShareImageItem() const;
+  bool CanAppendIndigoItem() const;
   void AppendLensGeminiSection();
   void AppendRevisedTextSelectionSection();
   void AppendProtocolHandlerSubMenu();
@@ -417,6 +444,7 @@ class RenderViewContextMenu
   void ExecSaveLinkAs();
   void ExecSaveAs();
   void ExecGlicShareImage();
+  void ExecIndigo();
   void ExecExitFullscreen();
   void ExecCopyLinkText();
   void ExecCopyImageAt();
@@ -449,6 +477,7 @@ class RenderViewContextMenu
   void ExecOpenInReadAnything();
   void ExecListenToThisPage();
   void ExecSaveToMemoryBanks();
+  void ExecBrowseMemoryBanks();
 
   void MediaPlayerAction(const blink::mojom::MediaPlayerAction& action);
   void SearchForVideoFrame(int event_flags,
@@ -465,9 +494,6 @@ class RenderViewContextMenu
   // the original page being distilled.
   content::WebContents* GetWebContentsForDataControls() const;
 
-  // Returns the URL of the Indigo replacement image if the context menu was
-  // invoked on an image with an active Indigo replacement, or an empty GURL.
-  virtual GURL GetIndigoReplacementImageURL() const;
 
   // Returns a list of registered ProtocolHandlers that can handle the clicked
   // on URL.
@@ -482,9 +508,8 @@ class RenderViewContextMenu
   // or whether the current page can be translated.
   bool CanTranslate(bool menu_logging);
 
-  // Whether or not partial translation is supported for the current target
-  // language.
-  bool CanPartiallyTranslateTargetLanguage();
+  // Whether or not partial translation on this page can be triggered.
+  bool CanPartiallyTranslate();
 
   // Under the correct conditions, issues a preconnection to the Lens URL and
   // warms up a renderer process.
@@ -496,6 +521,18 @@ class RenderViewContextMenu
       supervised_user::WebFilteringResult result);
 
   void MaybeAppendOpenGlicItem(bool add_separator = true);
+  bool CanAppendGlicSmartSuggestionItem() const;
+  void AppendGlicSmartSuggestionItem(const std::u16string& label);
+
+  // Appends the Glic smart suggestion item at the top of the menu if the
+  // feature is enabled, the browser/profile/page are eligible (see
+  // `CanAppendGlicSmartSuggestionItem()`), the target is not a password field,
+  // and the context is a non-empty text selection, a valid image with non-empty
+  // bounds, an editable field with non-empty bounds, a page, or a full-page
+  // plugin. Note that this does not append an item on links (unless there is a
+  // text selection or valid image), as links are handled separately in
+  // `AppendLinkItems()` so the item is placed after the "Open link..." items.
+  void MaybeAppendGlicSmartSuggestionItem();
 
   // Opens the Lens overlay to search a region defined by the given bounds of
   // the view and the image to be searched. Tab bounds and view bounds are
@@ -523,7 +560,7 @@ class RenderViewContextMenu
   // next to the active tab. If the active tab is already in the split view,
   // then the tab that wasn't the source of the link will be navigated to the
   // link instead.
-  void OpenLinkInSplitView(split_tabs::SplitTabLayout layout);
+  void OpenLinkInSplitView();
 #endif  // !BUILDFLAG(IS_ANDROID)
 
   // The destination URL to use if the user tries to search for or navigate to
@@ -554,6 +591,9 @@ class RenderViewContextMenu
 
   // Inspect sub-menu handling.
   ui::SimpleMenuModel inspect_submenu_model_;
+
+  // Contextual tasks sub-menu handling.
+  ui::SimpleMenuModel contextual_tasks_submenu_model_;
 
   // Video frame sub-menu handling.
   ui::SimpleMenuModel video_frame_submenu_model_;
@@ -626,14 +666,18 @@ class RenderViewContextMenu
   const bool is_paste_and_match_style_enabled_;
 
   std::unique_ptr<ui::SimpleMenuModel> send_tab_to_self_submenu_;
-  std::unique_ptr<send_tab_to_self::SendTabToSelfContextMenuDelegate>
-      send_tab_to_self_submenu_delegate_;
-
-  std::unique_ptr<ui::SimpleMenuModel> split_layout_submenu_;
 
   //  Used for CTR metrics of menu item for opening Glic.
   bool glic_item_shown_ = false;
   bool glic_item_executed_ = false;
+
+  // Used for CTR metrics of the Glic share image menu item.
+  bool glic_share_image_item_shown_ = false;
+  bool glic_share_image_item_executed_ = false;
+
+  // Tracks the originating document at menu-open time so Glic actions can bail
+  // out if the tab navigated while the menu was open.
+  const content::WeakDocumentPtr source_document_at_menu_open_;
 
   base::WeakPtrFactory<RenderViewContextMenu> weak_pointer_factory_{this};
 };

@@ -50,6 +50,7 @@ animation-duration: 0s
 animation-fill-mode: none
 animation-iteration-count: 1
 animation-name: none
+animation-navigation-behavior: abrupt
 animation-play-state: running
 animation-range-end: normal
 animation-range-start: normal
@@ -189,6 +190,7 @@ fill: rgb(0, 0, 0)
 fill-opacity: 1
 fill-rule: nonzero
 filter: none
+fit-tolerance: normal
 flex-basis: auto
 flex-direction: row
 flex-grow: 0
@@ -198,7 +200,6 @@ flex-wrap: nowrap
 float: none
 flood-color: rgb(0, 0, 0)
 flood-opacity: 1
-flow-tolerance: normal
 font-feature-settings: normal
 font-kerning: auto
 font-language-override: normal
@@ -348,7 +349,7 @@ position-anchor: normal
 position-area: none
 position-try-fallbacks: none
 position-try-order: normal
-position-visibility: anchors-visible
+position-visibility: anchor-visible
 print-color-adjust: economy
 quotes: auto
 r: 0px

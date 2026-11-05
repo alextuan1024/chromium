@@ -38,6 +38,7 @@
 #include "remoting/base/logging.h"
 #include "remoting/base/passwd_utils.h"
 #include "remoting/base/username.h"
+#include "remoting/base/fqdn.h"
 #include "remoting/host/base/host_exit_codes.h"
 #include "remoting/host/host_config.h"
 #include "remoting/host/linux/host_types.h"
@@ -583,7 +584,7 @@ int MigrateHostMain(int argc, char** argv) {
   }
 
   bool success = false;
-  DaemonController::SetHostType(target_host_type);
+  DaemonController::SetHostTypeForSetup(*target_host_type, user_name);
   if (target_host_type->is_multi_process()) {
     success = MigrateToMultiProcess(command_line, *user_info);
   } else {

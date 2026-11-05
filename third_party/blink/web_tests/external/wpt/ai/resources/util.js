@@ -5,8 +5,18 @@ const kAvailableAvailabilities = ['downloadable', 'downloading', 'available'];
 const kAudioPrompt = 'transcribe this';
 const kImagePrompt = 'describe this';
 const kTestPrompt = 'Please write a sentence in English.';
+const kTestPrompt2 = 'Please write another sentence in English.';
 
 const kTestContext = 'This is a test; this is only a test.';
+
+// SemanticEmbedder.create()/availability() require an embeddingSpace. This is
+// the space the current Chrome implementation serves; implementations that do
+// not serve it report 'unavailable' and the tests yield PRECONDITION_FAILED.
+const kEmbeddingSpace = 'embeddinggemma-300m';
+
+function embedderOptions(options = {}) {
+  return {embeddingSpace: kEmbeddingSpace, ...options};
+}
 
 const kValidAudioPath = '/media/speech.wav';
 const kValidImagePath = '/images/computer.jpg';
@@ -281,7 +291,7 @@ async function createRewriter(options = {}) {
 
 async function createEmbedder(options = {}) {
   await test_driver.bless();
-  return await SemanticEmbedder.create(options);
+  return await SemanticEmbedder.create(embedderOptions(options));
 }
 
 async function createProofreader(options = {}) {
@@ -295,9 +305,15 @@ async function createProofreader(options = {}) {
   return await Proofreader.create(options);
 }
 
-async function createClassifier(options = {}) {
+async function createDecisionModel(options = {}) {
+  if (!options.monitor) {
+    const availability = await DecisionModel.availability(options);
+    assert_implements_optional(
+        availability !== 'unavailable',
+        'DecisionModel is not available for the given options');
+  }
   await test_driver.bless();
-  return await Classifier.create(options);
+  return await DecisionModel.create(options);
 }
 
 async function ensureLanguageModel(options = {}) {
@@ -310,7 +326,8 @@ async function ensureLanguageModel(options = {}) {
 
 async function ensureEmbedder(options = {}) {
   assert_true(!!SemanticEmbedder);
-  const availability = await SemanticEmbedder.availability(options);
+  const availability =
+      await SemanticEmbedder.availability(embedderOptions(options));
   assert_in_array(availability, kValidAvailabilities);
   // Yield PRECONDITION_FAILED if the API is unavailable on this device.
   assert_implements_optional(availability != 'unavailable', 'API unavailable');
@@ -393,4 +410,9 @@ function createColorGridCanvas(width, height, isOffscreen = false) {
   context.fillRect(w2, h2, w2, h2);
 
   return canvas;
+}
+
+// Drains a ReadableStream and returns the concatenated string.
+async function readStream(stream) {
+  return (await Array.fromAsync(stream)).join('');
 }

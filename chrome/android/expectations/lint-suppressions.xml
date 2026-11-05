@@ -63,6 +63,7 @@ https://chromium.googlesource.com/chromium/src/+/main/build/android/docs/lint.md
   <issue id="ImpliedQuantity">
     <ignore regexp="chrome/app/generated_resources"/>
     <ignore regexp="chrome/android/features/tab_ui/java_strings_grd"/>
+    <ignore regexp="chrome/browser/tab_ui/android/java_strings_grd"/>
     <ignore regexp="chrome/browser/touch_to_fill/password_manager/android/internal/java_strings_grd"/>
     <ignore regexp="chrome/browser/ui/android/strings/ui_strings_grd"/>
     <ignore regexp="components/browser_ui/strings/android/browser_ui_strings_grd"/>
@@ -157,6 +158,9 @@ https://chromium.googlesource.com/chromium/src/+/main/build/android/docs/lint.md
   <issue id="UnusedQuantity" severity="ignore"/>
   <issue id="UnusedResources">
     <!-- Do not add new suppressions without rationale. -->
+    <!-- TODO(crbug.com/571546748): Remove temporarily suppress Glic native FRE strings. -->
+    <ignore regexp="The resource `R.string.glic_fre_dialog_.*` appears to be unused"/>
+
     <!-- TODO(crbug.com/554115227): Remove temporarily suppress Actor notification prompt strings. -->
     <ignore regexp="The resource `R.string.actor_notification_prompt_toast_title` appears to be unused"/>
     <ignore regexp="The resource `R.string.actor_notification_prompt_toast_body` appears to be unused"/>
@@ -168,6 +172,10 @@ https://chromium.googlesource.com/chromium/src/+/main/build/android/docs/lint.md
     <!-- Strings used by Desktop Android extensions, which are not built in all configurations. -->
     <ignore regexp="The resource `R.string.extensions_menu_.*` appears to be unused"/>
     <ignore regexp="The resource `R.string.extensions_request_access_button` appears to be unused"/>
+
+    <!-- Strings used by printing code, which is not built when enable_printing is false. -->
+    <ignore regexp="The resource `R.string.error_printing_failed` appears to be unused"/>
+    <ignore regexp="The resource `R.string.toast_disallow_print` appears to be unused"/>
 
     <!-- Strings used by Desktop Android extensions, which are only used in tests. -->
     <ignore regexp="The resource `R.string.acc_name_extensions_button_.*` appears to be unused"/>
@@ -281,9 +289,6 @@ https://chromium.googlesource.com/chromium/src/+/main/build/android/docs/lint.md
     <!--TODO(crbug.com/408284509): Remove unused shopping string resources. -->
     <ignore regexp="The resource `R.string.price_tracking_title` appears to be unused"/>
     <ignore regexp="The resource `R.string.discount_icon_expanded_text` appears to be unused"/>
-
-    <!-- TODO(crbug.com/40227734): Remove unused resources when UX is finalized. -->
-    <ignore regexp="The resource `R.string.search_resumption_module_title_short` appears to be unused"/>
 
     <!-- TODO(crbug.com/40225008): Remove the following 2 lines after the bug is resolved. -->
     <ignore regexp="The resource `R.string.iph_translate_message_dismissed_text` appears to be unused"/>

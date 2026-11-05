@@ -45,11 +45,9 @@ import java.util.Set;
 @RunWith(ChromeJUnit4ClassRunner.class)
 @Batch(Batch.PER_CLASS)
 @EnableFeatures({
-    ChromeFeatureList.YOUR_SAVED_INFO_SETTINGS_PAGE_ANDROID,
     ChromeFeatureList.AUTOFILL_AI_WITH_DATA_SCHEMA,
     ChromeFeatureList.AUTOFILL_ENABLE_NEW_CARD_BENEFITS_TOGGLE_TEXT,
     ChromeFeatureList.AUTOFILL_ENABLE_SEPARATE_PIX_PREFERENCE_ITEM,
-    ChromeFeatureList.FACILITATED_PAYMENTS_ENABLE_A2A_PAYMENT,
     ChromeFeatureList.AUTOFILL_SYNC_EWALLET_ACCOUNTS,
     ChromeFeatureList.DETAILED_LANGUAGE_SETTINGS
 })

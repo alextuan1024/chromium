@@ -20,8 +20,10 @@
 #include "base/timer/elapsed_timer.h"
 #include "base/trace_event/trace_event.h"
 #include "base/types/pass_key.h"
+#include "content/browser/browser_context_impl.h"
 #include "content/browser/preloading/prefetch/pre_prefetch_container.h"
 #include "content/browser/preloading/prefetch/pre_prefetch_handle_impl.h"
+#include "content/browser/preloading/prefetch/prefetch_features.h"
 #include "content/browser/preloading/prefetch/prefetch_request.h"
 #include "content/browser/preloading/prefetch/prefetch_resource_request_utils.h"
 #include "content/browser/preloading/prefetch/prefetch_type.h"
@@ -53,6 +55,7 @@ network::HttpRequestHeadersUpdateParams PreCalculatePrePrefetchHeadersOnUI(
     BrowserContext* browser_context,
     const PrePrefetchPreCalculatedHeadersKey& key) {
   CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M159);
+  TRACE_EVENT("loading", "PreCalculatePrePrefetchHeadersOnUI");
   // Create a tentative `PrefetchRequest` to pre-calculate headers based on
   // `PrePrefetchPreCalculatedHeadersKey`.
   // TODO(crbug.com/470242977): Creating a full `PrefetchRequest` just to
@@ -119,6 +122,8 @@ class PrePrefetchServiceCore {
             std::move(non_ui_thread_update_headers_callbacks)) {
     DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
     CHECK(base::FeatureList::IsEnabled(features::kPrefetchOffTheMainThread));
+    TRACE_EVENT("loading", "PrePrefetchServiceCore::PrePrefetchServiceCore");
+
     UpdateURLLoaderFactory(std::move(pending_factory));
   }
   ~PrePrefetchServiceCore() {
@@ -313,11 +318,26 @@ std::unique_ptr<PrePrefetchService> PrePrefetchService::Create(
     std::optional<bool> initial_should_append_variations_header_hint) {
   CHECK(base::FeatureList::IsEnabled(features::kPrefetchOffTheMainThread));
   CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M159);
-  return std::make_unique<PrePrefetchServiceImpl>(
+  base::ElapsedTimer timer;
+  if (base::FeatureList::IsEnabled(
+          features::kPrePrefetchServiceCreatesPrefetchService)) {
+    // Note: This `IsEnabled()` check activates the field trial only for
+    // clients calling `PrePrefetchService::Create()`, so that the experiment
+    // is evaluated only for them.
+    base::ElapsedTimer prefetch_service_timer;
+    BrowserContextImpl::From(browser_context)->GetPrefetchService();
+    base::UmaHistogramMicrosecondsTimes(
+        "Preloading.Prefetch.PrePrefetch.EagerPrefetchServiceCreationTime",
+        prefetch_service_timer.Elapsed());
+  }
+  auto service = std::make_unique<PrePrefetchServiceImpl>(
       browser_context,
       std::move(embedder_non_ui_thread_update_headers_callbacks),
       initial_origin_hint, initial_javascript_enabled_hint,
       initial_should_append_variations_header_hint);
+  base::UmaHistogramMicrosecondsTimes(
+      "Preloading.Prefetch.PrePrefetch.ServiceCreationTime", timer.Elapsed());
+  return service;
 }
 
 PrePrefetchServiceImpl::PrePrefetchServiceImpl(

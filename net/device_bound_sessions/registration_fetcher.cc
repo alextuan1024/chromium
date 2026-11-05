@@ -33,6 +33,7 @@
 #include "net/base/features.h"
 #include "net/base/net_errors.h"
 #include "net/base/registry_controlled_domains/registry_controlled_domain.h"
+#include "net/base/request_priority.h"
 #include "net/base/url_util.h"
 #include "net/device_bound_sessions/registration_request_param.h"
 #include "net/device_bound_sessions/session.h"
@@ -45,8 +46,10 @@
 #include "net/device_bound_sessions/session_service.h"
 #include "net/device_bound_sessions/url_fetcher.h"
 #include "net/http/http_request_headers.h"
+#include "net/http/http_status_code.h"
 #include "net/log/net_log_event_type.h"
 #include "net/traffic_annotation/network_traffic_annotation.h"
+#include "net/url_request/redirect_info.h"
 #include "net/url_request/url_request_context.h"
 #include "third_party/abseil-cpp/absl/container/flat_hash_set.h"
 #include "third_party/abseil-cpp/absl/functional/overload.h"
@@ -61,6 +64,19 @@ constexpr char kJwtSessionHeaderName[] = "Secure-Session-Response";
 
 constexpr base::TimeDelta kInteractiveFetchTimeout = base::Seconds(20);
 constexpr base::TimeDelta kBackgroundFetchTimeout = base::Seconds(30);
+
+// Whether a federated registration request got redirected and, if so, where
+// the first redirect points to relative to the registration endpoint. These
+// values are persisted to logs. Entries should not be renumbered and numeric
+// values should never be reused.
+// LINT.IfChange(FederatedRegistrationRedirect)
+enum class FederatedRegistrationRedirect {
+  kNoRedirect = 0,
+  kSameOrigin = 1,
+  kCrossOrigin = 2,
+  kMaxValue = kCrossOrigin,
+};
+// LINT.ThenChange(//tools/metrics/histograms/metadata/net/enums.xml:DeviceBoundSessionFederatedRegistrationRedirect)
 
 void RecordHttpResponseOrErrorCode(std::string_view metric_name,
                                    int net_error,
@@ -487,17 +503,9 @@ class RegistrationFetcherImpl : public RegistrationFetcher {
     current_authorization_ = std::move(authorization);
 
     if (current_challenge_.has_value() || current_authorization_.has_value()) {
-      number_of_challenges_++;
-      if (number_of_challenges_ < kMaxChallenges) {
-        AttemptChallengeSigning();
-        // `this` may be deleted.
-        return;
-      } else {
-        RunCallback(CreateErrorRegistrationResult(
-            SessionError(SessionError::kTooManyChallenges)));
-        // `this` may be deleted.
-        return;
-      }
+      AttemptChallengeSigning();
+      // `this` may be deleted.
+      return;
     }
 
     StartFetcherEndpointRequest();
@@ -521,7 +529,10 @@ class RegistrationFetcherImpl : public RegistrationFetcher {
     CHECK(callback_.is_null());
     callback_ = std::move(callback);
     CHECK(callback_);
+    had_initial_challenge_ = registration_params.challenge().has_value();
 
+    // TODO(crbug.com/578130078): Check the signing quota before generating
+    // keys.
     const bool aik_required =
         registration_params.attestation_mode() == AttestationMode::kRequired;
     if (aik_required) {
@@ -534,10 +545,17 @@ class RegistrationFetcherImpl : public RegistrationFetcher {
                        registration_params.TakeAuthorization()));
 
     if (aik_required) {
+      base::WeakPtr<RegistrationFetcherImpl> weak_this = GetWeakPtr();
       key_service_->GenerateAttestationKeySlowlyAsync(
           supported_algos, priority_,
           base::BindOnce(&RegistrationFetcherImpl::OnAttestationKeyGenerated,
-                         GetWeakPtr(), barrier_closure));
+                         weak_this, barrier_closure));
+      // The key service can fail synchronously, e.g. when its Mojo pipe is
+      // disconnected. That runs `callback_`, which may delete `this`. If it
+      // doesn't, the fetch has already failed, so skip the signing key.
+      if (!weak_this || !callback_) {
+        return;
+      }
     }
 
     key_service_->GenerateSigningKeySlowlyAsync(
@@ -561,6 +579,7 @@ class RegistrationFetcherImpl : public RegistrationFetcher {
 
     CHECK(callback_.is_null());
     callback_ = std::move(callback);
+    had_initial_challenge_ = request_params.challenge().has_value();
 
     key_id_ = key_id;
     provider_url_ = provider_url;
@@ -579,7 +598,7 @@ class RegistrationFetcherImpl : public RegistrationFetcher {
     // once the tests are fixed.
     url_fetcher_ = std::make_unique<URLFetcher>(
         context_, well_known_url, referring_origin_, net_log_source_,
-        IsForRefreshRequest(), GetTimeout());
+        IsForRefreshRequest(), GetRequestPriority(), GetTimeout());
     ConfigureWellKnownRequest(url_fetcher_->request());
     url_fetcher_->Start(base::BindOnce(
         &RegistrationFetcherImpl::OnProviderWellKnownRequestComplete,
@@ -600,6 +619,7 @@ class RegistrationFetcherImpl : public RegistrationFetcher {
 
     CHECK(callback_.is_null());
     callback_ = std::move(callback);
+    had_initial_challenge_ = request_params.challenge().has_value();
 
     key_id_ = key_id;
 
@@ -613,6 +633,12 @@ class RegistrationFetcherImpl : public RegistrationFetcher {
     return priority_ == unexportable_keys::BackgroundTaskPriority::kUserBlocking
                ? kInteractiveFetchTimeout
                : kBackgroundFetchTimeout;
+  }
+
+  net::RequestPriority GetRequestPriority() const {
+    return priority_ == unexportable_keys::BackgroundTaskPriority::kUserBlocking
+               ? net::HIGHEST
+               : net::IDLE;
   }
 
   // Consolidates common URLRequest initialization, credential isolation, and
@@ -646,14 +672,23 @@ class RegistrationFetcherImpl : public RegistrationFetcher {
   }
 
   void StartFetcherEndpointRequest() {
+    if (attempts_made_ == 0) {
+      round_trip_count_++;
+    }
     url_fetcher_ = std::make_unique<URLFetcher>(
         context_, fetcher_endpoint_, referring_origin_, net_log_source_,
-        IsForRefreshRequest(), GetTimeout());
+        IsForRefreshRequest(), GetRequestPriority(), GetTimeout());
     ConfigureRequest(url_fetcher_->request());
     if (last_registration_token_.has_value()) {
       url_fetcher_->request().SetExtraRequestHeaderByName(
           kJwtSessionHeaderName, last_registration_token_.value(),
           /*overwrite=*/true);
+    }
+    if (IsForFederatedRegistration()) {
+      // `this` owns `url_fetcher_`, so it's safe to use `base::Unretained`.
+      url_fetcher_->SetShouldFollowRedirectCallback(base::BindRepeating(
+          &RegistrationFetcherImpl::ShouldFollowFederatedRedirect,
+          base::Unretained(this)));
     }
     // `this` owns `url_fetcher_`, so it's safe to use `base::Unretained`.
     url_fetcher_->Start(base::BindOnce(
@@ -674,7 +709,7 @@ class RegistrationFetcherImpl : public RegistrationFetcher {
         CreateWellKnownUrl(url::Origin::Create(fetcher_endpoint_));
     url_fetcher_ = std::make_unique<URLFetcher>(
         context_, well_known_url, referring_origin_, net_log_source_,
-        IsForRefreshRequest(), GetTimeout());
+        IsForRefreshRequest(), GetRequestPriority(), GetTimeout());
     ConfigureWellKnownRequest(url_fetcher_->request());
     url_fetcher_->Start(base::BindOnce(
         &RegistrationFetcherImpl::OnRelyingPartyWellKnownRequestComplete,
@@ -708,8 +743,9 @@ class RegistrationFetcherImpl : public RegistrationFetcher {
           SessionError::kSessionProviderWellKnownHasProviderOrigin);
     }
 
-    // TODO(crbug.com/511776603): Evaluate whether to use the final redirect URL
-    // instead of the original URL here in a follow-up.
+    // While `kDeviceBoundSessionsFederatedRegistrationBlockRedirects` is
+    // enabled, `ShouldFollowFederatedRedirect()` blocks every redirect, so the
+    // registration is never served by any other origin.
     return CheckRelyingOrigin(params.relying_origins,
                               url::Origin::Create(fetcher_endpoint_));
   }
@@ -753,8 +789,9 @@ class RegistrationFetcherImpl : public RegistrationFetcher {
           SessionError::kRelyingPartyWellKnownHasRelyingOrigins);
     }
 
-    // TODO(crbug.com/511776603): Evaluate whether to use the final redirect URL
-    // instead of the original URL here in a follow-up.
+    // While `kDeviceBoundSessionsFederatedRegistrationBlockRedirects` is
+    // enabled, `ShouldFollowFederatedRedirect()` blocks every redirect, so this
+    // relying party is the one that serves the registration.
     if (!params.provider_origin.has_value() ||
         url::Origin::Create(provider_url_).Serialize() !=
             *params.provider_origin) {
@@ -765,7 +802,9 @@ class RegistrationFetcherImpl : public RegistrationFetcher {
     return base::ok();
   }
 
-  static constexpr size_t kMaxChallenges = 5;
+  // Maximum number of protocol request/response round-trips allowed in a single
+  // refresh.
+  static constexpr size_t kMaxRoundTrips = 5;
 
   void AttemptChallengeSigning() {
     base::OnceCallback<void(
@@ -792,17 +831,15 @@ class RegistrationFetcherImpl : public RegistrationFetcher {
       }
     }
 
-    // Now, right before signing, we check whether the signing quota is
-    // exceeded. Note this callback is intentionally different from the one
-    // defined above.
-    if (session_service_->SigningQuotaExceeded(site)) {
+    // Now, right before signing, charge the signing quota. Note this callback
+    // is intentionally different from the one defined above.
+    if (!session_service_->TryConsumeSigningQuota(site,
+                                                  GetSigningQuotaOperation())) {
       RunCallback(CreateErrorRegistrationResult(
           SessionError(SessionError::kSigningQuotaExceeded)));
       // `this` may be deleted.
       return;
     }
-    // Track a new signing attempt.
-    session_service_->AddSigningOccurrence(site);
 
     if (attestation_key_id_.has_value()) {
       // AIK attestation is strictly supported for registration requests, not
@@ -888,6 +925,16 @@ class RegistrationFetcherImpl : public RegistrationFetcher {
       return;
     }
 
+    // Limit the number of round-trips in a single refresh, regardless of
+    // whether the initial request or any subsequent retry used a cached
+    // challenge.
+    if (round_trip_count_ >= kMaxRoundTrips) {
+      RunCallback(CreateErrorRegistrationResult(
+          SessionError(SessionError::kTooManyChallenges)));
+      // `this` may be deleted.
+      return;
+    }
+
     // Reset the number of attempts because we are transitioning to a new
     // challenge (a new roundtrip), and each roundtrip should have its own
     // retry budget.
@@ -902,6 +949,23 @@ class RegistrationFetcherImpl : public RegistrationFetcher {
     const int response_code = headers ? headers->response_code() : 0;
     RecordNetworkResultMetrics(IsForRefreshRequest(), attempts_made_,
                                url_fetcher_->net_error(), response_code);
+
+    if (IsForFederatedRegistration()) {
+      base::UmaHistogramEnumeration(
+          "Net.DeviceBoundSessions.FederatedRegistration.Redirect",
+          federated_redirect_);
+
+      // The fetch fails with `ERR_UNSAFE_REDIRECT` when a redirect isn't
+      // followed, e.g. because `ShouldFollowFederatedRedirect()` blocked it or
+      // because it downgrades to HTTP. This is a policy decision, not a network
+      // error, so report the specific error instead of `kNetError`.
+      if (url_fetcher_->net_error() == ERR_UNSAFE_REDIRECT) {
+        RunCallback(CreateErrorRegistrationResult(
+            SessionError(SessionError::kFederatedRegistrationRedirected)));
+        // `this` may be deleted.
+        return;
+      }
+    }
 
     // Proxy errors are treated the same way as network errors.
     if (url_fetcher_->net_error() != OK || response_code == 407) {
@@ -939,14 +1003,18 @@ class RegistrationFetcherImpl : public RegistrationFetcher {
           SessionError(SessionError::kPersistentHttpError)));
       // `this` may be deleted.
       return;
+    } else if (response_code == HTTP_TOO_MANY_REQUESTS ||
+               response_code >= 500) {
+      // The server is rate limiting or temporarily failing. Keep the session
+      // and back off on refresh, see
+      // https://w3c.github.io/webappsec-dbsc/#algo-session-request.
+      RunCallback(CreateErrorRegistrationResult(
+          SessionError(SessionError::kTransientHttpError)));
+      // `this` may be deleted.
+      return;
     } else if (300 <= response_code && response_code < 500) {
       RunCallback(CreateErrorRegistrationResult(
           SessionError(SessionError::kPersistentHttpError)));
-      // `this` may be deleted.
-      return;
-    } else if (response_code >= 500) {
-      RunCallback(CreateErrorRegistrationResult(
-          SessionError(SessionError::kTransientHttpError)));
       // `this` may be deleted.
       return;
     }
@@ -1036,7 +1104,7 @@ class RegistrationFetcherImpl : public RegistrationFetcher {
       GURL well_known_url = CreateWellKnownUrl(session->origin());
       url_fetcher_ = std::make_unique<URLFetcher>(
           context_, well_known_url, referring_origin_, net_log_source_,
-          /*is_refresh=*/false, GetTimeout());
+          /*is_refresh=*/false, GetRequestPriority(), GetTimeout());
       ConfigureWellKnownRequest(url_fetcher_->request());
       url_fetcher_->Start(base::BindOnce(
           &RegistrationFetcherImpl::
@@ -1103,9 +1171,13 @@ class RegistrationFetcherImpl : public RegistrationFetcher {
     }
     AddNetLogResult(registration_result);
     if (IsForRefreshRequest()) {
-      base::UmaHistogramCounts100(
-          "Net.DeviceBoundSessions.RefreshChallengeCount",
-          number_of_challenges_);
+      base::UmaHistogramExactLinear(
+          had_initial_challenge_
+              ? "Net.DeviceBoundSessions.RefreshRequestCount."
+                "InitialCachedChallenge"
+              : "Net.DeviceBoundSessions.RefreshRequestCount."
+                "NoInitialCachedChallenge",
+          round_trip_count_, kMaxRoundTrips + 1);
     }
     std::move(callback_).Run(this, std::move(registration_result));
     // `this` may be deleted.
@@ -1145,6 +1217,39 @@ class RegistrationFetcherImpl : public RegistrationFetcher {
   // for a registration request.
   bool IsForRefreshRequest() const { return session_identifier_.has_value(); }
 
+  // Returns the operation to charge against the signing quota.
+  SigningQuotaOperation GetSigningQuotaOperation() const {
+    if (IsForRefreshRequest()) {
+      return SigningQuotaOperation::kRefresh;
+    }
+    return attestation_key_id_.has_value()
+               ? SigningQuotaOperation::kAttestedRegistration
+               : SigningQuotaOperation::kRegistration;
+  }
+
+  // Returns true if we're fetching for a federated registration request.
+  bool IsForFederatedRegistration() const { return !provider_url_.is_empty(); }
+
+  // Returns whether a federated registration request may follow a redirect,
+  // and remembers the first redirect for UMA. The registration request carries
+  // a JWT signed with the provider's key, so its mere arrival tells the
+  // redirect target that the provider key matched. Hence every redirect is
+  // blocked while `kDeviceBoundSessionsFederatedRegistrationBlockRedirects` is
+  // enabled.
+  bool ShouldFollowFederatedRedirect(const RedirectInfo& redirect_info) {
+    if (federated_redirect_ == FederatedRegistrationRedirect::kNoRedirect) {
+      const bool is_same_origin = url::Origin::Create(fetcher_endpoint_)
+                                      .IsSameOriginWith(redirect_info.new_url);
+      federated_redirect_ = is_same_origin
+                                ? FederatedRegistrationRedirect::kSameOrigin
+                                : FederatedRegistrationRedirect::kCrossOrigin;
+    }
+
+    // The kill switch restores the old behavior of following every redirect.
+    return !base::FeatureList::IsEnabled(
+        features::kDeviceBoundSessionsFederatedRegistrationBlockRedirects);
+  }
+
   // Returns true if the fetcher should retry on transient network error.
   bool ShouldRetryOnTransientError() const {
     return IsForRefreshRequest() && attempts_made_ == 1 &&
@@ -1181,10 +1286,26 @@ class RegistrationFetcherImpl : public RegistrationFetcher {
   std::unique_ptr<URLFetcher> url_fetcher_;
 
   GURL provider_url_;
+  // Whether the initial request carried a challenge.
+  bool had_initial_challenge_ = false;
   std::optional<std::string> current_challenge_;
   std::optional<std::string> current_authorization_;
-  size_t number_of_challenges_ = 0;
+  // Number of protocol request/response round-trips started against
+  // `fetcher_endpoint_` (excludes transient network/proxy retries within the
+  // same round-trip). Incremented right before sending the first network
+  // attempt of each round-trip.
+  size_t round_trip_count_ = 0;
 
+  // The first redirect of the federated registration request. Recorded in UMA
+  // once the request completes, because blocked redirects never make it into
+  // the URL chain.
+  FederatedRegistrationRedirect federated_redirect_ =
+      FederatedRegistrationRedirect::kNoRedirect;
+
+  // Number of completed network attempts within the current round-trip,
+  // incremented after each attempt finishes (1 after the first try, 2 after a
+  // transient-error retry). Reset to 0 when starting a new challenge
+  // round-trip so each round-trip gets its own transient-error retry budget.
   size_t attempts_made_ = 0;
   std::optional<RegistrationToken> last_registration_token_;
 

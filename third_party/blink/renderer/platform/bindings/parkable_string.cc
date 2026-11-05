@@ -28,6 +28,7 @@
 #include "base/trace_event/typed_macros.h"
 #include "partition_alloc/oom.h"
 #include "partition_alloc/partition_alloc.h"
+#include "partition_alloc/partition_alloc_public_constants.h"
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/platform/platform.h"
 #include "third_party/blink/renderer/platform/bindings/buildflags.h"
@@ -40,8 +41,6 @@
 #include "third_party/blink/renderer/platform/scheduler/public/worker_pool.h"
 #include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
 #include "third_party/blink/renderer/platform/wtf/allocator/partitions.h"
-#include "third_party/blink/renderer/platform/wtf/cross_thread_copier_base.h"
-#include "third_party/blink/renderer/platform/wtf/cross_thread_copier_std.h"
 #include "third_party/blink/renderer/platform/wtf/cross_thread_functional.h"
 #include "third_party/blink/renderer/platform/wtf/functional.h"
 #include "third_party/blink/renderer/platform/wtf/thread_specific.h"
@@ -274,7 +273,7 @@ std::unique_ptr<SecureStringDigest> ParkableStringImpl::HashString(
     StringImpl* string) {
   DigestValue digest_result;
 
-  Digestor digestor(kHashAlgorithmSha256);
+  Digestor digestor(HashAlgorithm::kSha256);
   digestor.Update(string->RawByteSpan());
   // Also include encoding in the digest, otherwise two strings with identical
   // byte content but different encoding will be assumed equal, leading to

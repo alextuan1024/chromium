@@ -6,29 +6,34 @@
 # core. This is enforced via DEPS.
 source_set("public") {
   public = [
-    "public/conversation.h",
+    "public/audio_controller.h",
+    "public/audio_envelope.h",
     "public/make_conversation.h",
-    "public/tool_types.h",
+  ]
+  sources = [
+    "public/audio_controller.cc",
+    "public/audio_envelope.cc",
   ]
   public_deps = [
     "//base",
+    "//components/actor/public/mojom:mojo_bindings",
     "//components/optimization_guide/proto:optimization_guide_proto",
+    "//components/ttc/app/public",
+    "//media",
     "//url",
   ]
 }
 
 source_set("app") {
-  public = [
-    "audio_controller.h",
-    "ttc_backend.h",
-    "ttc_mes_client.h",
-  ]
+  public = [ "audio_controller_impl.h" ]
   public_deps = [
     ":public",
     "//base",
     "//chrome/browser/optimization_guide",
     "//components/optimization_guide/core",
     "//components/optimization_guide/proto:optimization_guide_proto",
+    "//components/ttc/app",
+    "//components/ttc/app/public",
     "//media",
     "//media/mojo/mojom",
     "//mojo/public/cpp/bindings",
@@ -38,38 +43,133 @@ source_set("app") {
 
 source_set("impl") {
   sources = [
-    "audio_controller.cc",
+    "audio_controller_impl.cc",
+    "audio_logger.cc",
+    "audio_logger.h",
     "conversation_impl.cc",
     "conversation_impl.h",
     "make_conversation.cc",
-    "tool_types.cc",
-    "ttc_mes_client.cc",
+    "playback_status_reporter.cc",
+    "playback_status_reporter.h",
+    "speaker_tracker.cc",
+    "speaker_tracker.h",
   ]
+  public_deps = [ "//components/ttc/app:impl" ]
   deps = [
     ":app",
     "//base",
     "//chrome/browser/profiles:profile",
     "//chrome/browser/ttc/core",
+    "//components/ttc/app",
+    "//components/ttc/app/public",
     "//content/public/browser",
     "//services/audio/public/cpp",
   ]
 }
 
+source_set("test_support") {
+  testonly = true
+  public_deps = [ "//components/ttc/app:test_support" ]
+}
+
 source_set("unit_tests") {
   testonly = true
   sources = [
-    "audio_controller_unittest.cc",
+    "audio_controller_impl_unittest.cc",
     "conversation_impl_unittest.cc",
+    "playback_status_reporter_unittest.cc",
   ]
   deps = [
     ":app",
     ":impl",
+    ":test_support",
     "//base/test:test_support",
+    "//chrome/browser/optimization_guide:test_support",
     "//chrome/browser/ttc/core",
     "//chrome/test:test_support",
+    "//components/actor/core:journal",
+    "//components/actor/core:task_id",
+    "//components/ttc/app",
+    "//components/ttc/app:test_support",
+    "//components/ttc/app/public",
     "//content/test:test_support",
     "//media",
+    "//media:test_support",
     "//testing/gmock",
     "//testing/gtest",
   ]
+}
+
+if (!is_android) {
+  source_set("browser_test_support") {
+    testonly = true
+    sources = [
+      "app_browser_test_base.cc",
+      "app_browser_test_base.h",
+    ]
+    public_deps = [
+      ":app",
+      "//base",
+      "//base/test:test_support",
+      "//chrome/browser/optimization_guide:test_support",
+      "//chrome/test:test_support",
+      "//components/ttc/app",
+      "//content/public/browser",
+      "//media",
+      "//media:test_support",
+      "//media/mojo/mojom",
+      "//mojo/public/cpp/bindings",
+      "//testing/gmock",
+      "//third_party/protobuf:protobuf_lite",
+    ]
+    deps = [
+      ":impl",
+      "//chrome/browser/optimization_guide",
+      "//chrome/browser/profiles:profile",
+      "//chrome/browser/ttc/core",
+      "//chrome/browser/ttc/core:impl",
+      "//chrome/test/base:chrome_test_utils",
+      "//components/keyed_service/core",
+      "//components/optimization_guide/core",
+      "//net:test_support",
+      "//testing/gtest",
+    ]
+  }
+
+  source_set("browser_tests") {
+    testonly = true
+    defines = [ "HAS_OUT_OF_PROC_TEST_RUNNER" ]
+    sources = [
+      "audio_controller_browsertest.cc",
+      "page_context_protocol_browsertest.cc",
+      "protocol_browsertest.cc",
+      "speaker_state_browsertest.cc",
+    ]
+    deps = [
+      ":app",
+      ":browser_test_support",
+      ":impl",
+      "//base",
+      "//base/test:test_support",
+      "//chrome/browser/actor",
+      "//chrome/browser/history",
+      "//chrome/browser/optimization_guide:test_support",
+      "//chrome/browser/profiles:profile",
+      "//chrome/browser/ttc/core",
+      "//chrome/browser/ttc/core:impl",
+      "//chrome/test:test_support",
+      "//components/actor/core",
+      "//components/history/core/browser",
+      "//components/keyed_service/core",
+      "//components/optimization_guide/proto:optimization_guide_proto",
+      "//components/ttc/app",
+      "//content/public/browser",
+      "//content/test:test_support",
+      "//net:test_support",
+      "//testing/gmock",
+      "//testing/gtest",
+      "//third_party/protobuf:protobuf_lite",
+      "//url",
+    ]
+  }
 }

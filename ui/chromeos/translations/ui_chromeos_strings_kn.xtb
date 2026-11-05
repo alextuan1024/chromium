@@ -519,10 +519,10 @@
 <translation id="5045550434625856497">ತಪ್ಪು ಪಾಸ್‌ವರ್ಡ್</translation>
 <translation id="5059127710849015030">ನೇಪಾಳಿ ಲಿಪ್ಯಂತರಣ</translation>
 <translation id="5068919226082848014">ಪಿಜ್ಜಾ</translation>
+<translation id="5075336522277785691"><ph name="EXTENSION_NAME" /> ಪ್ರಾಕ್ಸಿ ಅತಿಕ್ರಮಿಸುವ ನಿಯಮಗಳನ್ನು ಸೆಟ್ ಮಾಡಿದೆ</translation>
 <translation id="5081517858322016911"><ph name="TOTAL_FILE_SIZE" /> ಗಾತ್ರದ ಫೈಲ್‍‍ಗಳನ್ನು ಅಳಿಸಲಾಗುತ್ತದೆ</translation>
 <translation id="508423945471810158"><ph name="NUMBER_OF_ITEMS" /> ಐಟಂಗಳನ್ನು <ph name="FOLDER_NAME" /> ಗೆ ಸರಿಸಲಾಗುತ್ತಿದೆ</translation>
 <translation id="509429900233858213">ದೋಷವೊಂದು ಕಾಣಿಸಿಕೊಂಡಿದೆ.</translation>
-<translation id="5102922915594634436">ಸಿಂಕ್ ಮಾಡಿದ ಫೋಲ್ಡರ್‌ಗಳನ್ನು ನಿರ್ವಹಿಸಿ</translation>
 <translation id="5109254780565519649">ದೋಷ ಎದುರಾಗಿದೆ. ಕೆಲವು ಐಟಂಗಳನ್ನು ಮರುಸ್ಥಾಪಿಸಲು ಆಗದೇ ಇರಬಹುದು.</translation>
 <translation id="5110329002213341433">ಇಂಗ್ಲಿಷ್ (ಕೆನಡಾ)</translation>
 <translation id="5119780910075847424">ಸಿಂಕ್ ಮಾಡುವುದನ್ನು ವಿರಾಮಗೊಳಿಸಲಾಗಿದೆ</translation>
@@ -560,7 +560,6 @@
 <translation id="5305688511332277257">ಯಾವುದನ್ನೂ ಸ್ಥಾಪನೆ ಮಾಡಲಾಗಿಲ್ಲ</translation>
 <translation id="5317780077021120954">ಸೇವ್ ಮಾಡಿ</translation>
 <translation id="5318819489018851358">Linux ನೊಂದಿಗೆ ಹಂಚಿಕೊಳ್ಳಿ</translation>
-<translation id="5330145655348521461">ಈ ಫೈಲ್‍‍ಗಳನ್ನು ವಿವಿಧ ಡೆಸ್ಕ್‌ಟಾಪ್‍‍ಗಳಲ್ಲಿ ತೆರೆಯಲಾಗಿದೆ. ಅದನ್ನು ವೀಕ್ಷಿಸಲು <ph name="USER_NAME" /> (<ph name="MAIL_ADDRESS" />) ಗೆ ಸರಿಸಿ.</translation>
 <translation id="5330512191124428349">ಮಾಹಿತಿ ಪಡೆಯಿರಿ</translation>
 <translation id="535792325654997756">ಬೆಕ್ಕುಗಳ ಜೊತೆಯಲ್ಲಿರುವ ವ್ಯಕ್ತಿ</translation>
 <translation id="5358764674931277">ಫ್ರೇಮ್‌ ರೇಟ್</translation>
@@ -699,7 +698,6 @@
 <translation id="636254897931573416">ಅಮಾನ್ಯವಾದ ಡೊಮೇನ್ ಸಫಿಕ್ಸ್ ಹೊಂದಾಣಿಕೆಯ ಮೌಲ್ಯ</translation>
 <translation id="6364301859968397756">ಸಂಸ್ಥೆಯ ಸಂಗ್ರಹಣೆ ಭರ್ತಿಯಾಗಿದೆ</translation>
 <translation id="6367976544441405720">ವ್ಯಾನ್</translation>
-<translation id="637062427944097960">ಈ ಫೈಲ್‍ ಬೇರೆಯ ಡೆಸ್ಕ್‌ಟಾಪ್‍‍ನಲ್ಲಿ ತೆರೆಯಲಾಗಿದೆ. ಅದನ್ನು ವೀಕ್ಷಿಸಲು <ph name="USER_NAME" /> (<ph name="MAIL_ADDRESS" />) ಗೆ ಸರಿಸಿ.</translation>
 <translation id="6394388407447716302">ಓದಲು ಮಾತ್ರ</translation>
 <translation id="6395575651121294044"><ph name="NUMBER_OF_FILES" /> ಐಟಂಗಳು</translation>
 <translation id="6407769893376380348">ಅದು ಎನ್‌ಕ್ರಿಪ್ಟ್ ಆಗಿರುವುದರಿಂದ <ph name="FILE_NAME" /> ಅನ್ನು ಸರಿಸಲು ಸಾಧ್ಯವಾಗಲಿಲ್ಲ.</translation>

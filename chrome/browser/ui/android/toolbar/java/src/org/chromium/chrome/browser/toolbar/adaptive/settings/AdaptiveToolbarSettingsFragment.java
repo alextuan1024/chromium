@@ -5,6 +5,7 @@
 package org.chromium.chrome.browser.toolbar.adaptive.settings;
 
 import android.app.Activity;
+import android.content.Context;
 import android.os.Bundle;
 
 import androidx.annotation.VisibleForTesting;
@@ -27,6 +28,7 @@ import org.chromium.chrome.browser.toolbar.adaptive.AdaptiveToolbarStats;
 import org.chromium.chrome.browser.ui.bottombar.BottomBarConfigUtils;
 import org.chromium.components.browser_ui.settings.ChromeSwitchPreference;
 import org.chromium.components.browser_ui.settings.SettingsUtils;
+import org.chromium.components.browser_ui.settings.search.SettingsIndexData;
 import org.chromium.ui.permissions.ActivityAndroidPermissionDelegate;
 import org.chromium.ui.permissions.AndroidPermissionDelegate;
 
@@ -59,11 +61,17 @@ public class AdaptiveToolbarSettingsFragment extends ChromeBaseSettingsFragment 
 
     @Override
     public void onCreatePreferences(@Nullable Bundle bundle, @Nullable String s) {
-        mPageTitle.set(getString(R.string.toolbar_shortcut));
+        Context context = getContext();
+        int titleRes =
+                BottomBarConfigUtils.shouldMoveToolbarSettingsToAppearance(context)
+                        ? R.string.address_bar_shortcut
+                        : R.string.toolbar_shortcut;
+        mPageTitle.set(getString(titleRes));
         SettingsUtils.addPreferencesFromResource(this, R.xml.adaptive_toolbar_preference);
 
         mToolbarShortcutSwitch =
                 (ChromeSwitchPreference) findPreference(PREF_TOOLBAR_SHORTCUT_SWITCH);
+        mToolbarShortcutSwitch.setTitle(titleRes);
         mToolbarShortcutSwitch.setChecked(AdaptiveToolbarPrefs.isCustomizationPreferenceEnabled());
         mToolbarShortcutSwitch.setOnPreferenceChangeListener(
                 (preference, newValue) -> {
@@ -74,7 +82,6 @@ public class AdaptiveToolbarSettingsFragment extends ChromeBaseSettingsFragment 
         mRadioButtonGroup = findPreference(PREF_ADAPTIVE_RADIO_GROUP);
         if (mRadioButtonGroup != null) {
             var profile = getProfile();
-            var context = getContext();
             // When the bottom bar is enabled, the new tab and glic buttons are available there
             // instead.
             boolean isBottomBarEnabled = BottomBarConfigUtils.isBottomBarEnabled(context);
@@ -87,6 +94,8 @@ public class AdaptiveToolbarSettingsFragment extends ChromeBaseSettingsFragment 
                     AdaptiveToolbarFeatures.isTranslateEnabled(profile));
             mRadioButtonGroup.setCanUseGlic(
                     AdaptiveToolbarFeatures.isGlicEnabledForAdaptiveToolbar(context, profile));
+            mRadioButtonGroup.setCanUseTtc(
+                    AdaptiveToolbarFeatures.isTtcEnabledForAdaptiveToolbar());
             maybeSetUiStateFromBundleArgs();
             mRadioButtonGroup.setStatePredictor(
                     new AdaptiveToolbarStatePredictor(
@@ -144,7 +153,7 @@ public class AdaptiveToolbarSettingsFragment extends ChromeBaseSettingsFragment 
         if (activity == null) return false;
         AndroidPermissionDelegate permissionDelegate =
                 new ActivityAndroidPermissionDelegate(new WeakReference<>(activity));
-        return VoiceRecognitionUtil.isVoiceSearchEnabled(permissionDelegate);
+        return VoiceRecognitionUtil.isVoiceSearchEnabled(permissionDelegate, getProfile());
     }
 
     /*package*/ void setCanUseVoiceSearchForTesting(boolean canUseVoiceSearch) {
@@ -156,13 +165,18 @@ public class AdaptiveToolbarSettingsFragment extends ChromeBaseSettingsFragment 
         return AnimationType.PROPERTY;
     }
 
-    @Override
-    public @Nullable String getMainMenuKey() {
-        return "toolbar_shortcut";
-    }
-
     public static final ChromeBaseSearchIndexProvider SEARCH_INDEX_DATA_PROVIDER =
             new ChromeBaseSearchIndexProvider(
                     AdaptiveToolbarSettingsFragment.class.getName(),
-                    R.xml.adaptive_toolbar_preference);
+                    R.xml.adaptive_toolbar_preference) {
+                @Override
+                public void updateDynamicPreferences(Context context, SettingsIndexData indexData) {
+                    if (BottomBarConfigUtils.shouldMoveToolbarSettingsToAppearance(context)) {
+                        indexData.updateEntryForKey(
+                                getPrefFragmentName(),
+                                PREF_TOOLBAR_SHORTCUT_SWITCH,
+                                R.string.address_bar_shortcut);
+                    }
+                }
+            };
 }

@@ -13,7 +13,7 @@
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/new_tab_page/prefs/ntp_pref_names.h"
 #include "chrome/browser/profiles/profile.h"
-#include "components/ntp_tiles/pref_names.h"
+#include "components/ntp_tiles/most_visited_sites.h"
 #include "components/pref_registry/pref_registry_syncable.h"
 #include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/pref_service.h"
@@ -67,6 +67,7 @@ void RegisterProfilePrefs(user_prefs::PrefRegistrySyncable* registry) {
   registry->RegisterBooleanPref(kFreShortcutReminderDismissed, false);
   registry->RegisterIntegerPref(kFreShortcutReminderImpressionCount, 0);
   registry->RegisterBooleanPref(kScreenshotDisclosureAccepted, false);
+  registry->RegisterBooleanPref(kNtpPromoCompleted, false);
 }
 
 namespace {
@@ -84,16 +85,16 @@ PrefService* ResolveLocalState(PrefService* local_state) {
 #if BUILDFLAG(IS_MAC)
 void MapMacHotkeyToken(std::u16string& token) {
   // Accelerator code returns hotkeys on Mac represented by their respective
-  // symbols (e.g. ⌘) rather than their spelled forms (e.g. Command). Map the
-  // former to the latter using standard localized strings.
+  // symbols (e.g. ⌘) rather than their spelled forms (e.g. Command). Map
+  // modifiers to include both symbol and text.
   if (token == u"⌃") {
-    token = l10n_util::GetStringUTF16(IDS_APP_CTRL_KEY);
+    token = u"⌃ " + l10n_util::GetStringUTF16(IDS_APP_CTRL_KEY);
   } else if (token == u"⌥") {
-    token = u"Option";
+    token = u"⌥ Option";
   } else if (token == u"⇧") {
-    token = l10n_util::GetStringUTF16(IDS_APP_SHIFT_KEY);
+    token = u"⇧ " + l10n_util::GetStringUTF16(IDS_APP_SHIFT_KEY);
   } else if (token == u"⌘") {
-    token = u"Cmd";
+    token = u"⌘ Cmd";
   }
 }
 #endif
@@ -109,142 +110,6 @@ bool HasOmniboxEverywhereHotkey(PrefService* local_state) {
     return false;
   }
   return !GetOmniboxEverywhereHotkey(resolved_local_state).IsEmpty();
-}
-
-FreStage GetCurrentFreStage(Profile* profile, PrefService* local_state) {
-  if (!profile || !profile->GetPrefs()) {
-    return FreStage::kNone;
-  }
-  PrefService* prefs = profile->GetPrefs();
-  PrefService* resolved_local_state = ResolveLocalState(local_state);
-
-  if (prefs->GetBoolean(kFreDismissed)) {
-    return FreStage::kNone;
-  }
-
-  // Stage 1: Intro Modal (max 2 impressions or until dismissed)
-  if (!prefs->GetBoolean(kFreIntroDismissed) &&
-      prefs->GetInteger(kFreIntroImpressionCount) < kMaxFreIntroImpressions) {
-    return FreStage::kIntroModal;
-  }
-
-  // Stage 2: Shortcut Setup Chin.
-  // Stays active until dismissed via 'X' or until a hotkey is selected and
-  // the impression threshold is reached (on the next open).
-  if (!prefs->GetBoolean(kFreShortcutSetupDismissed)) {
-    const bool has_hotkey = HasOmniboxEverywhereHotkey(resolved_local_state);
-    if (!has_hotkey || prefs->GetInteger(kFreShortcutSetupImpressionCount) <
-                           kMaxFreShortcutSetupImpressions) {
-      return FreStage::kShortcutSetupChin;
-    }
-  }
-
-  // Stage 3: Shortcut Reminder Chin (max 3 impressions or until dismissed)
-  if (!prefs->GetBoolean(kFreShortcutReminderDismissed) &&
-      prefs->GetInteger(kFreShortcutReminderImpressionCount) <
-          kMaxFreShortcutReminderImpressions) {
-    if (HasOmniboxEverywhereHotkey(resolved_local_state)) {
-      return FreStage::kShortcutReminderChin;
-    }
-  }
-
-  return FreStage::kNone;
-}
-
-void IncrementFreImpression(Profile* profile, PrefService* local_state) {
-  if (!profile || !profile->GetPrefs()) {
-    return;
-  }
-  PrefService* prefs = profile->GetPrefs();
-  PrefService* resolved_local_state = ResolveLocalState(local_state);
-  FreStage current_stage = GetCurrentFreStage(profile, resolved_local_state);
-  switch (current_stage) {
-    case FreStage::kIntroModal:
-      prefs->SetInteger(kFreIntroImpressionCount,
-                        prefs->GetInteger(kFreIntroImpressionCount) + 1);
-      if (prefs->GetInteger(kFreIntroImpressionCount) >=
-              kMaxFreIntroImpressions &&
-          HasOmniboxEverywhereHotkey(resolved_local_state)) {
-        prefs->SetBoolean(kFreShortcutSetupDismissed, true);
-      }
-      break;
-    case FreStage::kShortcutSetupChin: {
-      // If a hotkey isn't set, impressions are not capped so the setup chin
-      // remains visible until the user selects a shortcut or explicitly
-      // dismisses it.
-      const bool has_hotkey = HasOmniboxEverywhereHotkey(resolved_local_state);
-      if (has_hotkey) {
-        prefs->SetInteger(
-            kFreShortcutSetupImpressionCount,
-            prefs->GetInteger(kFreShortcutSetupImpressionCount) + 1);
-      }
-      break;
-    }
-    case FreStage::kShortcutReminderChin:
-      prefs->SetInteger(
-          kFreShortcutReminderImpressionCount,
-          prefs->GetInteger(kFreShortcutReminderImpressionCount) + 1);
-      break;
-    case FreStage::kNone:
-      break;
-  }
-
-  // If impressions have exhausted all stages, mark the overall FRE as dismissed
-  // so downstream features (such as IPH) are unblocked.
-  if (GetCurrentFreStage(profile, resolved_local_state) == FreStage::kNone) {
-    prefs->SetBoolean(kFreDismissed, true);
-  }
-}
-
-void OnFreStageDismissed(Profile* profile,
-                         FreStage stage,
-                         PrefService* local_state) {
-  if (!profile || !profile->GetPrefs()) {
-    return;
-  }
-  PrefService* prefs = profile->GetPrefs();
-  PrefService* resolved_local_state = ResolveLocalState(local_state);
-  switch (stage) {
-    case FreStage::kIntroModal:
-      prefs->SetBoolean(kFreIntroDismissed, true);
-      if (HasOmniboxEverywhereHotkey(resolved_local_state)) {
-        prefs->SetBoolean(kFreShortcutSetupDismissed, true);
-      }
-      break;
-    case FreStage::kShortcutSetupChin:
-      prefs->SetBoolean(kFreShortcutSetupDismissed, true);
-      prefs->SetBoolean(kFreShortcutReminderDismissed, true);
-      prefs->SetBoolean(kFreDismissed, true);
-      break;
-    case FreStage::kShortcutReminderChin:
-      prefs->SetBoolean(kFreShortcutReminderDismissed, true);
-      prefs->SetBoolean(kFreDismissed, true);
-      break;
-    case FreStage::kNone:
-      prefs->SetBoolean(kFreDismissed, true);
-      break;
-  }
-}
-
-void MarkFreStageCompleted(Profile* profile, FreStage stage) {
-  if (!profile || !profile->GetPrefs()) {
-    return;
-  }
-  PrefService* prefs = profile->GetPrefs();
-  switch (stage) {
-    case FreStage::kIntroModal:
-      prefs->SetBoolean(kFreIntroDismissed, true);
-      break;
-    case FreStage::kShortcutSetupChin:
-      prefs->SetBoolean(kFreShortcutSetupDismissed, true);
-      break;
-    case FreStage::kShortcutReminderChin:
-      prefs->SetBoolean(kFreShortcutReminderDismissed, true);
-      prefs->SetBoolean(kFreDismissed, true);
-      break;
-    case FreStage::kNone:
-      break;
-  }
 }
 
 ui::Accelerator GetOmniboxEverywhereHotkey(PrefService* local_state) {
@@ -344,7 +209,7 @@ bool AreShortcutsAvailableForProfile(Profile* profile) {
   }
   PrefService* prefs = profile->GetPrefs();
   const bool has_enterprise_shortcuts =
-      !prefs->GetList(ntp_tiles::prefs::kEnterpriseShortcutsPolicyList).empty();
+      ntp_tiles::MostVisitedSites::HasEnterpriseShortcuts(*prefs);
   if (!has_enterprise_shortcuts) {
     return true;
   }
@@ -413,6 +278,7 @@ void ResetProfilePrefs(Profile* profile) {
       kFreShortcutReminderDismissed,
       kFreShortcutReminderImpressionCount,
       kScreenshotDisclosureAccepted,
+      kNtpPromoCompleted,
   };
   for (std::string_view pref_name : kProfilePrefsToClear) {
     if (prefs->FindPreference(pref_name)) {

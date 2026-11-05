@@ -410,7 +410,7 @@ void AXPlatformNodeWin::Init(AXPlatformNodeDelegate& delegate) {
 void AXPlatformNodeWin::SanitizeStringAttributeForUIAAriaProperty(
     const std::wstring& input,
     std::wstring* output) {
-  DCHECK(output);
+  CHECK(output, base::NotFatalUntil::M163);
   // According to the UIA Spec, these characters need to be escaped with a
   // backslash in an AriaProperties string: backslash, equals and semicolon.
   // Note that backslash must be replaced first.
@@ -476,7 +476,7 @@ void AXPlatformNodeWin::StateToUIAAriaProperty(
 
 std::vector<AXPlatformNodeWin*>
 AXPlatformNodeWin::CreatePlatformNodeVectorFromRelationIdVector(
-    const std::vector<int32_t>& relation_id_list) {
+    base::span<const int32_t> relation_id_list) {
   std::vector<AXPlatformNodeWin*> platform_node_list;
 
   for (int32_t id : relation_id_list) {
@@ -503,7 +503,7 @@ SAFEARRAY* AXPlatformNodeWin::CreateUIAElementsSafeArray(
     // All incoming ids should already be validated to have a valid relation
     // targets so that this function does not need to re-check before allocating
     // the SAFEARRAY.
-    DCHECK(IsValidUiaRelationTarget(platform_node));
+    CHECK(IsValidUiaRelationTarget(platform_node), base::NotFatalUntil::M163);
     SafeArrayPutElement(uia_array, &i,
                         static_cast<IRawElementProviderSimple*>(platform_node));
     ++i;
@@ -513,7 +513,7 @@ SAFEARRAY* AXPlatformNodeWin::CreateUIAElementsSafeArray(
 }
 
 SAFEARRAY* AXPlatformNodeWin::CreateUIAControllerForArray() {
-  std::vector<int32_t> relation_id_list =
+  base::span<const int32_t> relation_id_list =
       GetIntListAttribute(ax::mojom::IntListAttribute::kControlsIds);
 
   std::vector<AXPlatformNodeWin*> platform_node_list =
@@ -531,7 +531,7 @@ SAFEARRAY* AXPlatformNodeWin::CreateUIAControllerForArray() {
   // expected to be exposed through the ControllerFor property on UIA:
   // https://w3c.github.io/core-aam/#ariaErrorMessage
   if (HasIntListAttribute(ax::mojom::IntListAttribute::kErrormessageIds)) {
-    std::vector<int32_t> error_message_node_ids =
+    base::span<const int32_t> error_message_node_ids =
         GetIntListAttribute(ax::mojom::IntListAttribute::kErrormessageIds);
     for (int32_t id : error_message_node_ids) {
       AXPlatformNodeWin* error_message_node_win =
@@ -599,7 +599,7 @@ gfx::Vector2d AXPlatformNodeWin::CalculateUIAScrollPoint(
   const int large_vertical_change = bounds.height();
 
   const HWND hwnd = GetDelegate()->GetTargetForNativeAccessibilityEvent();
-  DCHECK(hwnd);
+  CHECK(hwnd, base::NotFatalUntil::M163);
   const float scale_factor =
       display::win::GetScreenWin()->GetScaleFactorForHWND(hwnd);
   const int small_change =
@@ -735,8 +735,7 @@ void AXPlatformNodeWin::NotifyAccessibilityEvent(ax::mojom::Event event_type) {
 
   AXPlatformNodeBase::NotifyAccessibilityEvent(event_type);
 
-  // TODO(benjamin.beaudry): Uncomment DCHECK once https://crbug.com/331840469
-  // is fixed.
+  // TODO(crbug.com/331840469): Uncomment DCHECK once this bug is fixed.
   // DCHECK(event_type != ax::mojom::Event::kLiveRegionChanged ||
   //        IsWebContent() || IsUIAControl())
   //     << "For views, the LiveRegionChanged event should only be fired on
@@ -1857,7 +1856,7 @@ IFACEMETHODIMP AXPlatformNodeWin::get_accDefaultAction(VARIANT var_id,
   }
 
   *def_action = SysAllocString(action_verb.c_str());
-  DCHECK(def_action);
+  CHECK(def_action, base::NotFatalUntil::M163);
   return S_OK;
 }
 
@@ -2135,7 +2134,7 @@ IFACEMETHODIMP AXPlatformNodeWin::get_uniqueID(LONG* id) {
   // convention here and when we fire events via
   // ::NotifyWinEvent().
   *id = -GetUniqueId();
-  DCHECK(*id < 0);
+  CHECK(*id < 0, base::NotFatalUntil::M163);
   return S_OK;
 }
 
@@ -2247,7 +2246,7 @@ IFACEMETHODIMP AXPlatformNodeWin::get_attributes(BSTR* attributes) {
     return S_FALSE;
 
   *attributes = SysAllocString(attributes_str.c_str());
-  DCHECK(*attributes);
+  CHECK(*attributes, base::NotFatalUntil::M163);
   return S_OK;
 }
 
@@ -2695,7 +2694,7 @@ IFACEMETHODIMP AXPlatformNodeWin::get_Target(
 
   // If there is no reverse relation target, IAnnotationProvider
   // should not be exposed in the first place.
-  DCHECK_GT(reverse_relations.size(), 0u);
+  CHECK_GT(reverse_relations.size(), 0u, base::NotFatalUntil::M163);
   AXPlatformNodeWin* target_node;
   auto iter = reverse_relations.begin();
   target_node = static_cast<AXPlatformNodeWin*>(*iter);
@@ -3078,7 +3077,7 @@ IFACEMETHODIMP AXPlatformNodeWin::get_HorizontalViewSize(double* result) {
   float x_min = GetIntAttribute(ax::mojom::IntAttribute::kScrollXMin);
   float x_max = GetIntAttribute(ax::mojom::IntAttribute::kScrollXMax);
   float total_width = clipped_bounds.width() + x_max - x_min;
-  DCHECK_LE(clipped_bounds.width(), total_width);
+  CHECK_LE(clipped_bounds.width(), total_width, base::NotFatalUntil::M163);
   *result = 100.0 * clipped_bounds.width() / total_width;
   return S_OK;
 }
@@ -3115,7 +3114,7 @@ IFACEMETHODIMP AXPlatformNodeWin::get_VerticalViewSize(double* result) {
   float y_min = GetIntAttribute(ax::mojom::IntAttribute::kScrollYMin);
   float y_max = GetIntAttribute(ax::mojom::IntAttribute::kScrollYMax);
   float total_height = clipped_bounds.height() + y_max - y_min;
-  DCHECK_LE(clipped_bounds.height(), total_height);
+  CHECK_LE(clipped_bounds.height(), total_height, base::NotFatalUntil::M163);
   *result = 100.0 * clipped_bounds.height() / total_height;
   return S_OK;
 }
@@ -4547,7 +4546,7 @@ IFACEMETHODIMP AXPlatformNodeWin::get_text(LONG start_offset,
     return S_FALSE;
 
   *text = SysAllocString(base::as_wcstr(substr));
-  DCHECK(*text);
+  CHECK(*text, base::NotFatalUntil::M163);
   return S_OK;
 }
 
@@ -4624,7 +4623,7 @@ HRESULT AXPlatformNodeWin::IAccessibleTextGetTextForOffsetType(
     }
   }
 
-  DCHECK_LE(start, end);
+  CHECK_LE(start, end, base::NotFatalUntil::M163);
   if (start >= end)
     return S_FALSE;
 
@@ -4693,7 +4692,8 @@ IFACEMETHODIMP AXPlatformNodeWin::get_offsetAtPoint(
   }
 
   // We currently only handle IA2 screen relative coord type.
-  DCHECK_EQ(coord_type, IA2_COORDTYPE_SCREEN_RELATIVE);
+  CHECK_EQ(coord_type, IA2_COORDTYPE_SCREEN_RELATIVE,
+           base::NotFatalUntil::M163);
 
   const AXPlatformNodeWin* hit_child = static_cast<AXPlatformNodeWin*>(
       FromNativeViewAccessible(GetDelegate()->HitTestSync(x, y)));
@@ -5243,7 +5243,7 @@ IFACEMETHODIMP AXPlatformNodeWin::get_FragmentRoot(
   if (root) {
     root->GetNativeViewAccessible()->QueryInterface(
         IID_PPV_ARGS(fragment_root));
-    DCHECK(*fragment_root);
+    CHECK(*fragment_root, base::NotFatalUntil::M163);
     return S_OK;
   }
 
@@ -5792,7 +5792,7 @@ HRESULT AXPlatformNodeWin::GetPropertyValueImpl(PROPERTYID property_id,
                  UiaRegistrarWin::GetInstance().GetAriaActionsPropertyId()) {
         if (HasState(ax::mojom::State::kHasActions) &&
             HasIntListAttribute(ax::mojom::IntListAttribute::kActionsIds)) {
-          const std::vector<int32_t>& aria_actions =
+          base::span<const int32_t> aria_actions =
               GetIntListAttribute(ax::mojom::IntListAttribute::kActionsIds);
           std::vector<AXPlatformNodeWin*> target_nodes;
           for (int32_t action_id : aria_actions) {
@@ -6132,8 +6132,8 @@ HRESULT AXPlatformNodeWin::GetTextAttributeValue(
     const std::optional<int>& start_offset,
     const std::optional<int>& end_offset,
     base::win::VariantVector* result) {
-  DCHECK(!start_offset || start_offset.value() >= 0);
-  DCHECK(!end_offset || end_offset.value() >= 0);
+  CHECK(!start_offset || start_offset.value() >= 0, base::NotFatalUntil::M163);
+  CHECK(!end_offset || end_offset.value() >= 0, base::NotFatalUntil::M163);
   switch (attribute_id) {
     case UIA_AnnotationObjectsAttributeId:
       GetAnnotationObjectsAttribute(result);
@@ -6528,14 +6528,14 @@ void AXPlatformNodeWin::AggregateRangesForMarkerType(
     int offset_ranges_amount,
     std::vector<std::pair<int, int>>* ranges,
     const std::optional<ax::mojom::HighlightType>& highlight_type) {
-  DCHECK(node->IsText());
-  const std::vector<int32_t>& marker_types =
+  CHECK(node->IsText(), base::NotFatalUntil::M163);
+  base::span<const int32_t> marker_types =
       node->GetIntListAttribute(ax::mojom::IntListAttribute::kMarkerTypes);
-  const std::vector<int32_t>& highlight_types =
+  base::span<const int32_t> highlight_types =
       node->GetIntListAttribute(ax::mojom::IntListAttribute::kHighlightTypes);
-  const std::vector<int>& marker_starts =
+  base::span<const int> marker_starts =
       node->GetIntListAttribute(ax::mojom::IntListAttribute::kMarkerStarts);
-  const std::vector<int>& marker_ends =
+  base::span<const int> marker_ends =
       node->GetIntListAttribute(ax::mojom::IntListAttribute::kMarkerEnds);
 
   CHECK_EQ(marker_types.size(), marker_starts.size());
@@ -6565,7 +6565,7 @@ AXPlatformNodeWin::GetMarkerTypeFromRange(
     const std::optional<int>& end_offset,
     ax::mojom::MarkerType marker_type,
     const std::optional<ax::mojom::HighlightType>& highlight_type) {
-  DCHECK(IsText() || IsAtomicTextField());
+  CHECK(IsText() || IsAtomicTextField(), base::NotFatalUntil::M163);
   std::vector<std::pair<int, int>> relevant_ranges;
 
   if (IsText()) {
@@ -7612,6 +7612,10 @@ std::wstring AXPlatformNodeWin::ComputeUIAProperties() {
                                 "setsize");
   StateToUIAAriaProperty(properties, ax::mojom::State::kHasActions,
                          "hasactions");
+  // Like the has-interest-for object attribute, this is only exposed when true.
+  if (HasState(ax::mojom::State::kHasInterestFor)) {
+    properties.push_back(L"hasinterestfor=true");
+  }
 
   int32_t sort_direction;
   if (IsTableHeader(GetRole()) &&
@@ -8392,7 +8396,7 @@ BSTR AXPlatformNodeWin::GetValueAttributeAsBstr(AXPlatformNodeWin* target) {
     std::wstring url =
         base::UTF8ToWide(target->GetDelegate()->GetTreeData().url);
     BSTR value = SysAllocString(url.c_str());
-    DCHECK(value);
+    CHECK(value, base::NotFatalUntil::M163);
     return value;
   }
 
@@ -8400,12 +8404,12 @@ BSTR AXPlatformNodeWin::GetValueAttributeAsBstr(AXPlatformNodeWin* target) {
     std::wstring url = base::UTF8ToWide(
         target->GetStringAttribute(ax::mojom::StringAttribute::kUrl));
     BSTR value = SysAllocString(url.c_str());
-    DCHECK(value);
+    CHECK(value, base::NotFatalUntil::M163);
     return value;
   }
 
   BSTR value = SysAllocString(base::as_wcstr(target->GetValueForControl()));
-  DCHECK(value);
+  CHECK(value, base::NotFatalUntil::M163);
   return value;
 }
 
@@ -8418,7 +8422,7 @@ HRESULT AXPlatformNodeWin::GetStringAttributeAsBstr(
     return S_FALSE;
 
   *value_bstr = SysAllocString(base::as_wcstr(str));
-  DCHECK(*value_bstr);
+  CHECK(*value_bstr, base::NotFatalUntil::M163);
 
   return S_OK;
 }
@@ -8427,13 +8431,14 @@ HRESULT AXPlatformNodeWin::GetNameAsBstr(BSTR* value_bstr) const {
   std::wstring str = base::UTF8ToWide(GetName());
 
   *value_bstr = SysAllocString(str.c_str());
-  DCHECK(*value_bstr);
+  CHECK(*value_bstr, base::NotFatalUntil::M163);
   return S_OK;
 }
 
 HRESULT AXPlatformNodeWin::ComputeListItemNameAsBstr(BSTR* value_bstr) const {
-  DCHECK_EQ(GetRole(), ax::mojom::Role::kListItem);
-  DCHECK(!HasStringAttribute(ax::mojom::StringAttribute::kName));
+  CHECK_EQ(GetRole(), ax::mojom::Role::kListItem, base::NotFatalUntil::M163);
+  CHECK(!HasStringAttribute(ax::mojom::StringAttribute::kName),
+        base::NotFatalUntil::M163);
   std::wstring str;
   // If the name is specified by the author.
   if (GetNameFrom() == ax::mojom::NameFrom::kAttribute) {
@@ -8443,13 +8448,20 @@ HRESULT AXPlatformNodeWin::ComputeListItemNameAsBstr(BSTR* value_bstr) const {
   }
 
   *value_bstr = SysAllocString(str.c_str());
-  DCHECK(*value_bstr);
+  CHECK(*value_bstr, base::NotFatalUntil::M163);
   return S_OK;
 }
 
 void AXPlatformNodeWin::AddAlertTarget() {
-  // Firing an alert event can reentrantly destroy this node via the STA
-  // message pump; don't insert a dangling pointer. crbug.com/503419515.
+  // Guard against this node having been marked destroyed (`Destroy()`, while
+  // kept alive as a ghost COM object by an outstanding reference) during event
+  // notification. Out-of-process `NotifyWinEvent` and `UiaRaiseAutomation*`
+  // notifications are delivered asynchronously, and neither API ever runs
+  // Chromium tasks or Mojo IPCs, but synchronous re-entrancy can still occur
+  // via an in-process subscriber (for example, a `WINEVENT_INCONTEXT` hook in
+  // `NotifyWinEvent`, or an inbound local UIA call dispatched while
+  // `UiaRaiseAutomation*` waits on an in-process cross-apartment subscriber);
+  // see crbug.com/503419515 and content/browser/SECURITY.md.
   if (IsDestroyed()) {
     return;
   }
@@ -8580,9 +8592,9 @@ HRESULT AXPlatformNodeWin::AllocateComArrayFromVector(
     LONG max,
     LONG** selected,
     LONG* n_selected) {
-  DCHECK_GT(max, 0);
-  DCHECK(selected);
-  DCHECK(n_selected);
+  CHECK_GT(max, 0, base::NotFatalUntil::M163);
+  CHECK(selected, base::NotFatalUntil::M163);
+  CHECK(n_selected, base::NotFatalUntil::M163);
 
   auto count = std::min(static_cast<LONG>(results.size()), max);
   *n_selected = count;
@@ -9043,7 +9055,7 @@ AXPlatformNodeWin* AXPlatformNodeWin::GetUIATableAncestor() const {
 // static
 void AXPlatformNodeWin::SanitizeStringAttributeForIA2(const std::string& input,
                                                       std::string* output) {
-  DCHECK(output);
+  CHECK(output, base::NotFatalUntil::M163);
   // According to the IA2 Spec, these characters need to be escaped with a
   // backslash: backslash, colon, comma, equals and semicolon.
   // Note that backslash must be replaced first.

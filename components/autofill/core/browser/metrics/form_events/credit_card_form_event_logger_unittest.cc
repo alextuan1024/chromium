@@ -8,6 +8,7 @@
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/metrics/user_action_tester.h"
 #include "components/autofill/core/browser/autofill_field.h"
+#include "components/autofill/core/browser/filling/filling_product.h"
 #include "components/autofill/core/browser/form_structure_test_api.h"
 #include "components/autofill/core/browser/metrics/autofill_metrics_test_base.h"
 #include "components/autofill/core/browser/metrics/payments/bnpl_metrics.h"
@@ -532,10 +533,6 @@ TEST_F(CreditCardFormEventLoggerTest, CreditCardParsedFormEvents) {
                   CreateTestFormField("Verification", "verification", "",
                                       FormControlType::kInputText)});
 
-  const std::vector<FieldType> field_types = {CREDIT_CARD_NAME_FULL,
-                                              CREDIT_CARD_EXP_MONTH,
-                                              CREDIT_CARD_VERIFICATION_CODE};
-
   base::HistogramTester histogram_tester;
   SeeForm(form);
   histogram_tester.ExpectUniqueSample(
@@ -746,9 +743,10 @@ TEST_F(CreditCardFormEventLoggerTest, CreditCardSelectedFormEventsPreviewOnce) {
   base::HistogramTester histogram_tester;
   autofill_manager().FillOrPreviewForm(
       mojom::ActionPersistence::kPreview, form.global_id(),
-      form.fields()[2].global_id(),
+      form.fields()[2].global_id(), FillingProduct::kCreditCard,
       paydm().GetCreditCardByGUID(kTestLocalCardId),
-      AutofillTriggerSource::kPopup, /*blocked_fields=*/{});
+      AutofillTriggerSource::kPopup, /*require_user_confirmation=*/false,
+      /*blocked_fields=*/{});
   EXPECT_THAT(histogram_tester.GetAllSamples("Autofill.FormEvents.CreditCard"),
               BucketsInclude(
                   Bucket(FORM_EVENT_LOCAL_CARD_SUGGESTION_SELECTED, 0),
@@ -766,14 +764,16 @@ TEST_F(CreditCardFormEventLoggerTest, CreditCardSelectedFormEventsFillTwice) {
   base::HistogramTester histogram_tester;
   autofill_manager().FillOrPreviewForm(
       mojom::ActionPersistence::kFill, form.global_id(),
-      form.fields()[2].global_id(),
+      form.fields()[2].global_id(), FillingProduct::kCreditCard,
       paydm().GetCreditCardByGUID(kTestLocalCardId),
-      AutofillTriggerSource::kPopup, /*blocked_fields=*/{});
+      AutofillTriggerSource::kPopup, /*require_user_confirmation=*/false,
+      /*blocked_fields=*/{});
   autofill_manager().FillOrPreviewForm(
       mojom::ActionPersistence::kFill, form.global_id(),
-      form.fields()[2].global_id(),
+      form.fields()[2].global_id(), FillingProduct::kCreditCard,
       paydm().GetCreditCardByGUID(kTestLocalCardId),
-      AutofillTriggerSource::kPopup, /*blocked_fields=*/{});
+      AutofillTriggerSource::kPopup, /*require_user_confirmation=*/false,
+      /*blocked_fields=*/{});
   EXPECT_THAT(histogram_tester.GetAllSamples("Autofill.FormEvents.CreditCard"),
               BucketsInclude(
                   Bucket(FORM_EVENT_LOCAL_CARD_SUGGESTION_SELECTED, 2),
@@ -792,9 +792,10 @@ TEST_F(CreditCardFormEventLoggerTest,
   base::HistogramTester histogram_tester;
   autofill_manager().FillOrPreviewForm(
       mojom::ActionPersistence::kFill, form.global_id(),
-      form.fields()[2].global_id(),
+      form.fields()[2].global_id(), FillingProduct::kCreditCard,
       paydm().GetCreditCardByGUID(kTestMaskedCardId),
-      AutofillTriggerSource::kPopup, /*blocked_fields=*/{});
+      AutofillTriggerSource::kPopup, /*require_user_confirmation=*/false,
+      /*blocked_fields=*/{});
   EXPECT_THAT(
       histogram_tester.GetAllSamples("Autofill.FormEvents.CreditCard"),
       BucketsInclude(
@@ -841,9 +842,9 @@ TEST_F(CreditCardFormEventLoggerTest, ExternallySavedCardSuggestionSelected) {
   base::HistogramTester histogram_tester;
   autofill_manager().FillOrPreviewForm(
       mojom::ActionPersistence::kFill, form.global_id(),
-      form.fields()[2].global_id(), &externally_saved_card,
-      AutofillTriggerSource::kPopup,
-      /*blocked_fields=*/{});
+      form.fields()[2].global_id(), FillingProduct::kCreditCard,
+      &externally_saved_card, AutofillTriggerSource::kPopup,
+      /*require_user_confirmation=*/false, /*blocked_fields=*/{});
 
   EXPECT_THAT(
       histogram_tester.GetAllSamples("Autofill.FormEvents.CreditCard"),
@@ -889,8 +890,9 @@ TEST_F(CreditCardFormEventLoggerTest, NeverUsedCardSuggestionSelected) {
   base::HistogramTester histogram_tester;
   autofill_manager().FillOrPreviewForm(
       mojom::ActionPersistence::kFill, form.global_id(),
-      form.fields()[2].global_id(), &never_used_card,
-      AutofillTriggerSource::kPopup, /*blocked_fields=*/{});
+      form.fields()[2].global_id(), FillingProduct::kCreditCard,
+      &never_used_card, AutofillTriggerSource::kPopup,
+      /*require_user_confirmation=*/false, /*blocked_fields=*/{});
 
   EXPECT_THAT(
       histogram_tester.GetAllSamples("Autofill.FormEvents.CreditCard"),
@@ -911,14 +913,16 @@ TEST_F(CreditCardFormEventLoggerTest,
   base::HistogramTester histogram_tester;
   autofill_manager().FillOrPreviewForm(
       mojom::ActionPersistence::kFill, form.global_id(),
-      form.fields()[2].global_id(),
+      form.fields()[2].global_id(), FillingProduct::kCreditCard,
       paydm().GetCreditCardByGUID(kTestMaskedCardId),
-      AutofillTriggerSource::kPopup, /*blocked_fields=*/{});
+      AutofillTriggerSource::kPopup, /*require_user_confirmation=*/false,
+      /*blocked_fields=*/{});
   autofill_manager().FillOrPreviewForm(
       mojom::ActionPersistence::kFill, form.global_id(),
-      form.fields()[2].global_id(),
+      form.fields()[2].global_id(), FillingProduct::kCreditCard,
       paydm().GetCreditCardByGUID(kTestMaskedCardId),
-      AutofillTriggerSource::kPopup, /*blocked_fields=*/{});
+      AutofillTriggerSource::kPopup, /*require_user_confirmation=*/false,
+      /*blocked_fields=*/{});
   EXPECT_THAT(
       histogram_tester.GetAllSamples("Autofill.FormEvents.CreditCard"),
       BucketsInclude(
@@ -939,12 +943,13 @@ TEST_F(CreditCardFormEventLoggerTest,
   base::HistogramTester histogram_tester;
   CreditCard virtual_card = GetVirtualCreditCard(kTestMaskedCardId);
   EXPECT_CALL(credit_card_access_manager(), FetchCreditCard)
-      .WillOnce(RunOnceCallback<1>(BuildCard(u"6011000990139424",
+      .WillOnce(RunOnceCallback<2>(BuildCard(u"6011000990139424",
                                              /*is_virtual_card=*/true)));
   autofill_manager().FillOrPreviewForm(
       mojom::ActionPersistence::kFill, form.global_id(),
-      form.fields()[2].global_id(), &virtual_card,
-      AutofillTriggerSource::kPopup, /*blocked_fields=*/{});
+      form.fields()[2].global_id(), FillingProduct::kCreditCard, &virtual_card,
+      AutofillTriggerSource::kPopup, /*require_user_confirmation=*/false,
+      /*blocked_fields=*/{});
   EXPECT_THAT(histogram_tester.GetAllSamples("Autofill.FormEvents.CreditCard"),
               BucketsInclude(
                   Bucket(FORM_EVENT_VIRTUAL_CARD_SUGGESTION_SELECTED, 1),
@@ -963,19 +968,21 @@ TEST_F(CreditCardFormEventLoggerTest,
   base::HistogramTester histogram_tester;
   CreditCard virtual_card = GetVirtualCreditCard(kTestMaskedCardId);
   EXPECT_CALL(credit_card_access_manager(), FetchCreditCard)
-      .WillOnce(RunOnceCallback<1>(BuildCard(u"6011000990139424",
+      .WillOnce(RunOnceCallback<2>(BuildCard(u"6011000990139424",
                                              /*is_virtual_card=*/true)));
   autofill_manager().FillOrPreviewForm(
       mojom::ActionPersistence::kFill, form.global_id(),
-      form.fields()[2].global_id(), &virtual_card,
-      AutofillTriggerSource::kPopup, /*blocked_fields=*/{});
+      form.fields()[2].global_id(), FillingProduct::kCreditCard, &virtual_card,
+      AutofillTriggerSource::kPopup, /*require_user_confirmation=*/false,
+      /*blocked_fields=*/{});
   EXPECT_CALL(credit_card_access_manager(), FetchCreditCard)
-      .WillOnce(RunOnceCallback<1>(BuildCard(u"6011000990139424",
+      .WillOnce(RunOnceCallback<2>(BuildCard(u"6011000990139424",
                                              /*is_virtual_card=*/true)));
   autofill_manager().FillOrPreviewForm(
       mojom::ActionPersistence::kFill, form.global_id(),
-      form.fields()[2].global_id(), &virtual_card,
-      AutofillTriggerSource::kPopup, /*blocked_fields=*/{});
+      form.fields()[2].global_id(), FillingProduct::kCreditCard, &virtual_card,
+      AutofillTriggerSource::kPopup, /*require_user_confirmation=*/false,
+      /*blocked_fields=*/{});
   EXPECT_THAT(histogram_tester.GetAllSamples("Autofill.FormEvents.CreditCard"),
               BucketsInclude(
                   Bucket(FORM_EVENT_VIRTUAL_CARD_SUGGESTION_SELECTED, 2),
@@ -1000,9 +1007,10 @@ TEST_F(CreditCardFormEventLoggerTest, CreditCardFilledFormEventsPreviewOnly) {
   base::HistogramTester histogram_tester;
   autofill_manager().FillOrPreviewForm(
       mojom::ActionPersistence::kPreview, form.global_id(),
-      form.fields().front().global_id(),
+      form.fields().front().global_id(), FillingProduct::kCreditCard,
       paydm().GetCreditCardByGUID(kTestLocalCardId),
-      AutofillTriggerSource::kPopup, /*blocked_fields=*/{});
+      AutofillTriggerSource::kPopup, /*require_user_confirmation=*/false,
+      /*blocked_fields=*/{});
   EXPECT_THAT(
       histogram_tester.GetAllSamples("Autofill.FormEvents.CreditCard"),
       BucketsInclude(Bucket(FORM_EVENT_LOCAL_SUGGESTION_FILLED, 0),
@@ -1027,9 +1035,10 @@ TEST_F(CreditCardFormEventLoggerTest, CreditCardFilledFormEventsFill) {
   EXPECT_CALL(credit_card_access_manager(), FetchCreditCard);
   autofill_manager().FillOrPreviewForm(
       mojom::ActionPersistence::kFill, form.global_id(),
-      form.fields().front().global_id(),
+      form.fields().front().global_id(), FillingProduct::kCreditCard,
       paydm().GetCreditCardByGUID(kTestLocalCardId),
-      AutofillTriggerSource::kPopup, /*blocked_fields=*/{});
+      AutofillTriggerSource::kPopup, /*require_user_confirmation=*/false,
+      /*blocked_fields=*/{});
   EXPECT_THAT(
       histogram_tester.GetAllSamples("Autofill.FormEvents.CreditCard"),
       BucketsInclude(Bucket(FORM_EVENT_LOCAL_SUGGESTION_FILLED, 1),
@@ -1055,12 +1064,13 @@ TEST_F(CreditCardFormEventLoggerTest,
   base::HistogramTester histogram_tester;
   CreditCard virtual_card = GetVirtualCreditCard(kTestMaskedCardId);
   EXPECT_CALL(credit_card_access_manager(), FetchCreditCard)
-      .WillOnce(RunOnceCallback<1>(BuildCard(u"6011000990139424",
+      .WillOnce(RunOnceCallback<2>(BuildCard(u"6011000990139424",
                                              /*is_virtual_card=*/true)));
   autofill_manager().FillOrPreviewForm(
       mojom::ActionPersistence::kFill, form.global_id(),
-      form.fields().front().global_id(), &virtual_card,
-      AutofillTriggerSource::kPopup, /*blocked_fields=*/{});
+      form.fields().front().global_id(), FillingProduct::kCreditCard,
+      &virtual_card, AutofillTriggerSource::kPopup,
+      /*require_user_confirmation=*/false, /*blocked_fields=*/{});
   EXPECT_THAT(histogram_tester.GetAllSamples("Autofill.FormEvents.CreditCard"),
               BucketsInclude(
                   Bucket(FORM_EVENT_VIRTUAL_CARD_SUGGESTION_FILLED, 1),
@@ -1084,12 +1094,13 @@ TEST_F(CreditCardFormEventLoggerTest,
   // Simulate filling a masked card server suggestion.
   base::HistogramTester histogram_tester;
   EXPECT_CALL(credit_card_access_manager(), FetchCreditCard)
-      .WillOnce(RunOnceCallback<1>(BuildCard(u"6011000990139424")));
+      .WillOnce(RunOnceCallback<2>(BuildCard(u"6011000990139424")));
   autofill_manager().FillOrPreviewForm(
       mojom::ActionPersistence::kFill, form.global_id(),
-      form.fields().back().global_id(),
+      form.fields().back().global_id(), FillingProduct::kCreditCard,
       paydm().GetCreditCardByGUID(kTestMaskedCardId),
-      AutofillTriggerSource::kPopup, /*blocked_fields=*/{});
+      AutofillTriggerSource::kPopup, /*require_user_confirmation=*/false,
+      /*blocked_fields=*/{});
   SubmitForm(form);
   EXPECT_THAT(
       histogram_tester.GetAllSamples("Autofill.FormEvents.CreditCard"),
@@ -1115,14 +1126,16 @@ TEST_F(CreditCardFormEventLoggerTest, CreditCardFilledFormEventsFillTwice) {
   base::HistogramTester histogram_tester;
   autofill_manager().FillOrPreviewForm(
       mojom::ActionPersistence::kFill, form.global_id(),
-      form.fields().front().global_id(),
+      form.fields().front().global_id(), FillingProduct::kCreditCard,
       paydm().GetCreditCardByGUID(kTestLocalCardId),
-      AutofillTriggerSource::kPopup, /*blocked_fields=*/{});
+      AutofillTriggerSource::kPopup, /*require_user_confirmation=*/false,
+      /*blocked_fields=*/{});
   autofill_manager().FillOrPreviewForm(
       mojom::ActionPersistence::kFill, form.global_id(),
-      form.fields().front().global_id(),
+      form.fields().front().global_id(), FillingProduct::kCreditCard,
       paydm().GetCreditCardByGUID(kTestLocalCardId),
-      AutofillTriggerSource::kPopup, /*blocked_fields=*/{});
+      AutofillTriggerSource::kPopup, /*require_user_confirmation=*/false,
+      /*blocked_fields=*/{});
   EXPECT_THAT(
       histogram_tester.GetAllSamples("Autofill.FormEvents.CreditCard"),
       BucketsInclude(Bucket(FORM_EVENT_LOCAL_SUGGESTION_FILLED, 2),
@@ -1155,8 +1168,9 @@ TEST_F(
   base::HistogramTester histogram_tester;
   autofill_manager().FillOrPreviewForm(
       mojom::ActionPersistence::kFill, form.global_id(),
-      form.fields().front().global_id(),
+      form.fields().front().global_id(), FillingProduct::kCreditCard,
       paydm().GetCreditCardByGUID(local_guid), AutofillTriggerSource::kPopup,
+      /*require_user_confirmation=*/false,
       /*blocked_fields=*/{});
 
   EXPECT_THAT(
@@ -1194,8 +1208,9 @@ TEST_F(CreditCardFormEventLoggerTest,
   // Server card with a duplicate local card present at index 0.
   autofill_manager().FillOrPreviewForm(
       mojom::ActionPersistence::kFill, form.global_id(),
-      form.fields().front().global_id(),
+      form.fields().front().global_id(), FillingProduct::kCreditCard,
       paydm().GetCreditCardByGUID(local_guid), AutofillTriggerSource::kPopup,
+      /*require_user_confirmation=*/false,
       /*blocked_fields=*/{});
   autofill_manager().OnAskForValuesToFillTest(form,
                                               form.fields().back().global_id());
@@ -1246,8 +1261,9 @@ TEST_F(CreditCardFormEventLoggerTest,
   // Server card with a duplicate local card present at index 0.
   autofill_manager().FillOrPreviewForm(
       mojom::ActionPersistence::kFill, form.global_id(),
-      form.fields().front().global_id(),
+      form.fields().front().global_id(), FillingProduct::kCreditCard,
       paydm().GetCreditCardByGUID(local_guid), AutofillTriggerSource::kPopup,
+      /*require_user_confirmation=*/false,
       /*blocked_fields=*/{});
   autofill_manager().OnAskForValuesToFillTest(form,
                                               form.fields().back().global_id());
@@ -1405,9 +1421,10 @@ TEST_F(CreditCardFormEventLoggerTest,
                                               form.fields()[0].global_id());
   autofill_manager().FillOrPreviewForm(
       mojom::ActionPersistence::kFill, form.global_id(),
-      form.fields().back().global_id(),
+      form.fields().back().global_id(), FillingProduct::kCreditCard,
       paydm().GetCreditCardByGUID(kTestLocalCardId),
-      AutofillTriggerSource::kPopup, /*blocked_fields=*/{});
+      AutofillTriggerSource::kPopup, /*require_user_confirmation=*/false,
+      /*blocked_fields=*/{});
 
   SubmitForm(form);
   EXPECT_THAT(
@@ -1531,9 +1548,10 @@ TEST_F(CreditCardFormEventLoggerTest,
                                               form.fields().back().global_id());
   autofill_manager().FillOrPreviewForm(
       mojom::ActionPersistence::kFill, form.global_id(),
-      form.fields().front().global_id(),
+      form.fields().front().global_id(), FillingProduct::kCreditCard,
       paydm().GetCreditCardByGUID(kTestLocalCardId),
-      AutofillTriggerSource::kPopup, /*blocked_fields=*/{});
+      AutofillTriggerSource::kPopup, /*require_user_confirmation=*/false,
+      /*blocked_fields=*/{});
   SubmitForm(form);
   EXPECT_THAT(
       histogram_tester.GetAllSamples("Autofill.FormEvents.CreditCard"),
@@ -1571,12 +1589,13 @@ TEST_F(CreditCardFormEventLoggerTest,
   autofill_manager().OnAskForValuesToFillTest(form,
                                               form.fields().back().global_id());
   EXPECT_CALL(credit_card_access_manager(), FetchCreditCard)
-      .WillOnce(RunOnceCallback<1>(BuildCard(u"6011000990139424",
+      .WillOnce(RunOnceCallback<2>(BuildCard(u"6011000990139424",
                                              /*is_virtual_card=*/true)));
   autofill_manager().FillOrPreviewForm(
       mojom::ActionPersistence::kFill, form.global_id(),
-      form.fields().front().global_id(), &virtual_card,
-      AutofillTriggerSource::kPopup, /*blocked_fields=*/{});
+      form.fields().front().global_id(), FillingProduct::kCreditCard,
+      &virtual_card, AutofillTriggerSource::kPopup,
+      /*require_user_confirmation=*/false, /*blocked_fields=*/{});
   SubmitForm(form);
   EXPECT_THAT(
       histogram_tester.GetAllSamples("Autofill.FormEvents.CreditCard"),
@@ -1611,12 +1630,13 @@ TEST_F(CreditCardFormEventLoggerTest,
   // Simulate submission with a masked card server suggestion.
   base::HistogramTester histogram_tester;
   EXPECT_CALL(credit_card_access_manager(), FetchCreditCard)
-      .WillOnce(RunOnceCallback<1>(BuildCard(u"6011000990139424")));
+      .WillOnce(RunOnceCallback<2>(BuildCard(u"6011000990139424")));
   autofill_manager().FillOrPreviewForm(
       mojom::ActionPersistence::kFill, form.global_id(),
-      form.fields().back().global_id(),
+      form.fields().back().global_id(), FillingProduct::kCreditCard,
       paydm().GetCreditCardByGUID(kTestMaskedCardId),
-      AutofillTriggerSource::kPopup, /*blocked_fields=*/{});
+      AutofillTriggerSource::kPopup, /*require_user_confirmation=*/false,
+      /*blocked_fields=*/{});
   SubmitForm(form);
   EXPECT_THAT(
       histogram_tester.GetAllSamples("Autofill.FormEvents.CreditCard"),
@@ -1768,9 +1788,10 @@ TEST_F(CreditCardFormEventLoggerTest,
                                               form.fields()[0].global_id());
   autofill_manager().FillOrPreviewForm(
       mojom::ActionPersistence::kFill, form.global_id(),
-      form.fields().front().global_id(),
+      form.fields().front().global_id(), FillingProduct::kCreditCard,
       paydm().GetCreditCardByGUID(kTestLocalCardId),
-      AutofillTriggerSource::kPopup, /*blocked_fields=*/{});
+      AutofillTriggerSource::kPopup, /*require_user_confirmation=*/false,
+      /*blocked_fields=*/{});
   SubmitForm(form);
   EXPECT_THAT(
       histogram_tester.GetAllSamples("Autofill.FormEvents.CreditCard"),
@@ -1793,12 +1814,13 @@ TEST_F(CreditCardFormEventLoggerTest,
   autofill_manager().OnAskForValuesToFillTest(form,
                                               form.fields()[0].global_id());
   EXPECT_CALL(credit_card_access_manager(), FetchCreditCard)
-      .WillOnce(RunOnceCallback<1>(BuildCard(u"6011000990139424",
+      .WillOnce(RunOnceCallback<2>(BuildCard(u"6011000990139424",
                                              /*is_virtual_card=*/true)));
   autofill_manager().FillOrPreviewForm(
       mojom::ActionPersistence::kFill, form.global_id(),
-      form.fields().front().global_id(), &virtual_card,
-      AutofillTriggerSource::kPopup, /*blocked_fields=*/{});
+      form.fields().front().global_id(), FillingProduct::kCreditCard,
+      &virtual_card, AutofillTriggerSource::kPopup,
+      /*require_user_confirmation=*/false, /*blocked_fields=*/{});
   SubmitForm(form);
   EXPECT_THAT(
       histogram_tester.GetAllSamples("Autofill.FormEvents.CreditCard"),
@@ -1818,12 +1840,13 @@ TEST_F(CreditCardFormEventLoggerTest,
   // Simulate submission with a masked card server suggestion.
   base::HistogramTester histogram_tester;
   EXPECT_CALL(credit_card_access_manager(), FetchCreditCard)
-      .WillOnce(RunOnceCallback<1>(BuildCard(u"6011000990139424")));
+      .WillOnce(RunOnceCallback<2>(BuildCard(u"6011000990139424")));
   autofill_manager().FillOrPreviewForm(
       mojom::ActionPersistence::kFill, form.global_id(),
-      form.fields().back().global_id(),
+      form.fields().back().global_id(), FillingProduct::kCreditCard,
       paydm().GetCreditCardByGUID(kTestMaskedCardId),
-      AutofillTriggerSource::kPopup, /*blocked_fields=*/{});
+      AutofillTriggerSource::kPopup, /*require_user_confirmation=*/false,
+      /*blocked_fields=*/{});
   EXPECT_THAT(
       histogram_tester.GetAllSamples("Autofill.FormEvents.CreditCard"),
       BucketsInclude(
@@ -1935,11 +1958,6 @@ TEST_F(CreditCardFormEventLoggerTest, MixedParsedFormEvents) {
                            FormControlType::kInputText),
        CreateTestFormField("Verification", "verification", "",
                            FormControlType::kInputText)});
-
-  const std::vector<FieldType> field_types = {
-      ADDRESS_HOME_STATE,          ADDRESS_HOME_CITY,
-      ADDRESS_HOME_STREET_ADDRESS, CREDIT_CARD_NAME_FULL,
-      CREDIT_CARD_EXP_MONTH,       CREDIT_CARD_VERIFICATION_CODE};
 
   base::HistogramTester histogram_tester;
   SeeForm(form);

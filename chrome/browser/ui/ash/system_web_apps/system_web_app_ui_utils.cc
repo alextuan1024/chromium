@@ -7,6 +7,8 @@
 #include <string>
 #include <utility>
 
+#include "ash/multi_user/multi_user_window_manager.h"
+#include "ash/shell.h"
 #include "base/check_deref.h"
 #include "base/check_op.h"
 #include "base/strings/utf_string_conversions.h"
@@ -14,11 +16,9 @@
 #include "chrome/browser/apps/app_service/app_service_proxy.h"
 #include "chrome/browser/apps/app_service/app_service_proxy_factory.h"
 #include "chrome/browser/apps/app_service/launch_utils.h"
-#include "chrome/browser/ash/browser_delegate/browser_type_conversion.h"
 #include "chrome/browser/ash/profiles/user_profile_migration.h"
 #include "chrome/browser/ash/system_web_apps/system_web_app_manager.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/ash/multi_user/multi_user_util.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/create_browser_window.h"
 #include "chrome/browser/ui/web_applications/web_app_launch_utils.h"
@@ -38,7 +38,7 @@
 #include "components/services/app_service/public/cpp/app_launch_util.h"
 #include "components/user_manager/user.h"
 #include "content/public/browser/web_contents.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/display/scoped_display_for_new_windows.h"
 
 namespace ash {
@@ -71,7 +71,7 @@ std::optional<apps::AppLaunchParams> CreateSystemWebAppLaunchParams(
   }
 
   auto* provider = SystemWebAppManager::GetWebAppProvider(profile);
-  DCHECK(provider);
+  CHECK(provider, base::NotFatalUntil::M162);
 
   web_app::DisplayMode display_mode =
       provider->registrar_unsafe().GetAppEffectiveDisplayMode(app_id.value());
@@ -110,10 +110,11 @@ void LaunchSystemWebAppAsyncContinue(Profile* profile_for_launch,
 
   auto* app_service =
       apps::AppServiceProxyFactory::GetForProfile(profile_for_launch);
-  DCHECK(app_service);
+  CHECK(app_service, base::NotFatalUntil::M162);
 
-  auto event_flags = apps::GetEventFlags(WindowOpenDisposition::NEW_WINDOW,
-                                         /* prefer_container */ false);
+  auto event_flags =
+      apps::GetEventFlags(ui::mojom::WindowOpenDisposition::kNewWindow,
+                          /* prefer_container */ false);
 
   if (!params.launch_paths.empty()) {
     DCHECK(!params.url.has_value())
@@ -124,7 +125,7 @@ void LaunchSystemWebAppAsyncContinue(Profile* profile_for_launch,
   }
 
   if (params.url) {
-    DCHECK(params.url->is_valid());
+    CHECK(params.url->is_valid(), base::NotFatalUntil::M162);
     app_service->LaunchAppWithUrl(*app_id, event_flags, *params.url,
                                   params.launch_source, std::move(window_info),
                                   std::move(callback));
@@ -142,9 +143,9 @@ void LaunchSystemWebAppAsync(Profile* profile,
                              apps::WindowInfoPtr window_info,
                              std::optional<apps::LaunchCallback> callback) {
   // Terminal should be launched with crostini::LaunchTerminal*.
-  DCHECK(type != SystemWebAppType::TERMINAL);
+  CHECK(type != SystemWebAppType::TERMINAL, base::NotFatalUntil::M162);
   // Callback is only supported when launching with an URL.
-  DCHECK(!callback || params.url.has_value());
+  CHECK(!callback || params.url.has_value(), base::NotFatalUntil::M162);
 
   base::expected<void, NonUserRepresentativeProfileReason> ok =
       IsUserRepresentativeProfileForMigration(profile);
@@ -222,10 +223,11 @@ BrowserDelegate* LaunchSystemWebAppImpl(Profile* profile,
   auto* system_app = swa_manager->GetSystemApp(app_type);
 
 #if BUILDFLAG(IS_CHROMEOS)
-  DCHECK(url.DeprecatedGetOriginAsURL() == provider->registrar_unsafe()
-                                               .GetAppLaunchUrl(params.app_id)
-                                               .DeprecatedGetOriginAsURL() ||
-         system_app && system_app->IsUrlInSystemAppScope(url));
+  CHECK(url.DeprecatedGetOriginAsURL() == provider->registrar_unsafe()
+                                              .GetAppLaunchUrl(params.app_id)
+                                              .DeprecatedGetOriginAsURL() ||
+            system_app && system_app->IsUrlInSystemAppScope(url),
+        base::NotFatalUntil::M162);
 #endif
 
   if (!system_app) {
@@ -261,7 +263,8 @@ BrowserDelegate* LaunchSystemWebAppImpl(Profile* profile,
   // Here we move the newly created browser window (or the existing one on the
   // inactive desktop) to the current active (visible) desktop, so the user
   // always sees the launched app.
-  multi_user_util::MoveWindowToCurrentDesktop(browser->GetNativeWindow());
+  Shell::Get()->multi_user_window_manager()->ShowWindowForCurrentUser(
+      browser->GetNativeWindow());
 
   browser->Show();
   return browser;
@@ -321,6 +324,9 @@ bool IsBrowserForSystemWebApp(const BrowserDelegate& browser,
 
 std::optional<SystemWebAppType> GetCapturingSystemAppForURL(Profile* profile,
                                                             const GURL& url) {
+  if (!url.is_valid() || url.IsAboutBlank()) {
+    return std::nullopt;
+  }
   SystemWebAppManager* swa_manager = SystemWebAppManager::Get(profile);
   return swa_manager ? swa_manager->GetCapturingSystemAppForURL(url)
                      : std::nullopt;

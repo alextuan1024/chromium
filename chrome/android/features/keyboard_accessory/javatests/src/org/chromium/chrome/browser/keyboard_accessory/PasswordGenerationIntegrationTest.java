@@ -35,7 +35,6 @@ import org.chromium.base.test.util.Matchers;
 import org.chromium.base.test.util.Restriction;
 import org.chromium.chrome.browser.ChromeTabbedActivity;
 import org.chromium.chrome.browser.ChromeWindow;
-import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.keyboard_accessory.button_group_component.KeyboardAccessoryButtonGroupView;
 import org.chromium.chrome.browser.password_manager.PasswordManagerTestHelper;
 import org.chromium.chrome.browser.password_manager.PasswordStoreBridge;
@@ -69,7 +68,7 @@ import java.util.concurrent.TimeoutException;
         reason =
                 "TODO(crbug.com/40232561): add resetting logic for"
                         + "FakePasswordStoreAndroidBackend to allow batching")
-@CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE, "show-autofill-signatures"})
+@CommandLineFlags.Add("show-autofill-signatures")
 @DisableIf.Device(DeviceFormFactor.DESKTOP) // https://crbug.com/481445547
 public class PasswordGenerationIntegrationTest {
     /**
@@ -141,6 +140,7 @@ public class PasswordGenerationIntegrationTest {
         GmsCoreVersionRestriction.RESTRICTION_TYPE_VERSION_GE_22W30,
         DeviceRestriction.RESTRICTION_TYPE_NON_AUTO
     })
+    @DisabledTest(message = "https://crbug.com/562982887")
     public void testAutomaticGenerationCancel() throws InterruptedException, TimeoutException {
         waitForGenerationLabel();
         focusField(PASSWORD_NODE_ID);
@@ -196,6 +196,7 @@ public class PasswordGenerationIntegrationTest {
         GmsCoreVersionRestriction.RESTRICTION_TYPE_VERSION_GE_22W30,
         DeviceRestriction.RESTRICTION_TYPE_NON_AUTO
     })
+    @DisabledTest(message = "https://crbug.com/562982887")
     public void testAutomaticGenerationUsePassword() throws InterruptedException, TimeoutException {
         waitForGenerationLabel();
         focusField(PASSWORD_NODE_ID);

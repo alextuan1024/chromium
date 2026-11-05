@@ -2,39 +2,39 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import '//resources/cr_components/composebox/composebox_file_inputs.js';
-import '//resources/cr_components/composebox/contextual_entrypoint_and_menu.js';
-import '//resources/cr_components/searchbox/searchbox_compose_button.js';
-import '//resources/cr_components/searchbox/searchbox_dropdown.js';
-import '//resources/cr_components/search/animated_glow.js';
-import '//resources/cr_components/searchbox/searchbox_input.js';
+import 'chrome://resources/cr_components/composebox/composebox_file_inputs.js';
+import 'chrome://resources/cr_components/composebox/contextual_entrypoint_and_menu.js';
+import 'chrome://resources/cr_components/searchbox/searchbox_compose_button.js';
+import 'chrome://resources/cr_components/searchbox/searchbox_dropdown.js';
+import 'chrome://resources/cr_components/searchbox/searchbox_input.js';
 
-import type {ComposeboxState, ContextualUpload, DriveUpload, TabUpload, TabUploadOrigin} from '//resources/cr_components/composebox/common.js';
-import {ContextType, getLoadTimeBoolean, GlifAnimationState, recordContextAdditionMethod, recordContextualElementClickedMetric, recordInputTypeShown, recordModelModeSelection, recordModelModeShown, recordToolModeSelection, recordToolModeShown, TabSuggestionsState} from '//resources/cr_components/composebox/common.js';
-import type {ContextualEntrypointAndMenuElement} from '//resources/cr_components/composebox/contextual_entrypoint_and_menu.js';
-import {ComposeboxContextAddedMethod, GlowAnimationState} from '//resources/cr_components/search/constants.js';
-import {DragAndDropHandler} from '//resources/cr_components/search/drag_drop_handler.js';
-import type {DragAndDropHost} from '//resources/cr_components/search/drag_drop_host.js';
-import {PlaceholderTextCycler} from '//resources/cr_components/searchbox/placeholder_text_cycler.js';
-import {SearchboxBrowserProxy} from '//resources/cr_components/searchbox/searchbox_browser_proxy.js';
-import type {SearchboxDropdownElement} from '//resources/cr_components/searchbox/searchbox_dropdown.js';
-import type {SearchboxInputElement} from '//resources/cr_components/searchbox/searchbox_input.js';
-import {SearchboxMixin} from '//resources/cr_components/searchbox/searchbox_mixin.js';
-import type {SearchboxMixinInterface} from '//resources/cr_components/searchbox/searchbox_mixin.js';
-import {waitForLazyRender} from '//resources/cr_components/searchbox/utils.js';
-import {I18nMixinLit} from '//resources/cr_elements/i18n_mixin_lit.js';
-import {WebUiListenerMixinLit} from '//resources/cr_elements/web_ui_listener_mixin_lit.js';
-import {assert} from '//resources/js/assert.js';
-import {loadTimeData} from '//resources/js/load_time_data.js';
-import {CrLitElement} from '//resources/lit/v3_0/lit.rollup.js';
-import type {PropertyValues} from '//resources/lit/v3_0/lit.rollup.js';
-import type {FuseboxAction} from '//resources/mojo/components/omnibox/browser/fusebox_action.mojom-webui.js';
-import {InputSource} from '//resources/mojo/components/omnibox/browser/fusebox_action.mojom-webui.js';
-import {DriveDisclaimerStatus, SideType} from '//resources/mojo/components/omnibox/browser/searchbox.mojom-webui.js';
-import type {DriveUploadError, PageCallbackRouter, PageHandlerInterface, TabInfo} from '//resources/mojo/components/omnibox/browser/searchbox.mojom-webui.js';
-import type {InputState} from '//resources/mojo/components/omnibox/composebox/composebox_query.mojom-webui.js';
-import {InputType, ModelMode, ToolMode} from '//resources/mojo/components/omnibox/composebox/composebox_query.mojom-webui.js';
-import type {Url} from '//resources/mojo/url/mojom/url.mojom-webui.js';
+import type {ComposeboxState, ContextualUpload, DriveUpload, TabUpload} from 'chrome://resources/cr_components/composebox/common.js';
+import {ContextType, getLoadTimeBoolean, GlifAnimationState, recordBoolean, recordContextAdditionMethod, recordContextualElementClickedMetric, recordCount, recordEnumerationValue, recordInputTypeShown, recordModelModeSelection, recordModelModeShown, recordToolModeSelection, recordToolModeShown, recordUserAction, TabSuggestionsState} from 'chrome://resources/cr_components/composebox/common.js';
+import type {ContextualEntrypointAndMenuElement} from 'chrome://resources/cr_components/composebox/contextual_entrypoint_and_menu.js';
+import {ComposeboxContextAddedMethod, GlowAnimationState} from 'chrome://resources/cr_components/search/constants.js';
+import {DragAndDropHandler} from 'chrome://resources/cr_components/search/drag_drop_handler.js';
+import type {DragAndDropHost} from 'chrome://resources/cr_components/search/drag_drop_host.js';
+import {PlaceholderTextCycler} from 'chrome://resources/cr_components/searchbox/placeholder_text_cycler.js';
+import {SearchboxBrowserProxy} from 'chrome://resources/cr_components/searchbox/searchbox_browser_proxy.js';
+import type {SearchboxDropdownElement} from 'chrome://resources/cr_components/searchbox/searchbox_dropdown.js';
+import type {SearchboxInputElement} from 'chrome://resources/cr_components/searchbox/searchbox_input.js';
+import {SearchboxMixin} from 'chrome://resources/cr_components/searchbox/searchbox_mixin.js';
+import type {SearchboxMixinInterface} from 'chrome://resources/cr_components/searchbox/searchbox_mixin.js';
+import {waitForLazyRender} from 'chrome://resources/cr_components/searchbox/utils.js';
+import {I18nMixinLit} from 'chrome://resources/cr_elements/i18n_mixin_lit.js';
+import {WebUiListenerMixinLit} from 'chrome://resources/cr_elements/web_ui_listener_mixin_lit.js';
+import {assert} from 'chrome://resources/js/assert.js';
+import {FocusOutlineManager} from 'chrome://resources/js/focus_outline_manager.js';
+import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
+import {CrLitElement} from 'chrome://resources/lit/v3_0/lit.rollup.js';
+import type {PropertyValues} from 'chrome://resources/lit/v3_0/lit.rollup.js';
+import type {FuseboxAction} from 'chrome://resources/mojo/components/omnibox/browser/fusebox_action.mojom-webui.js';
+import {InputSource} from 'chrome://resources/mojo/components/omnibox/browser/fusebox_action.mojom-webui.js';
+import {DriveDisclaimerStatus, SideType} from 'chrome://resources/mojo/components/omnibox/browser/searchbox.mojom-webui.js';
+import type {DriveUploadError, PageCallbackRouter, PageHandlerInterface, TabAttachmentSource, TabInfo} from 'chrome://resources/mojo/components/omnibox/browser/searchbox.mojom-webui.js';
+import type {InputState} from 'chrome://resources/mojo/components/omnibox/composebox/composebox_query.mojom-webui.js';
+import {InputType, ModelMode, ToolMode} from 'chrome://resources/mojo/components/omnibox/composebox/composebox_query.mojom-webui.js';
+import type {Url} from 'chrome://resources/mojo/url/mojom/url.mojom-webui.js';
 
 import {getCss} from './ntp_searchbox.css.js';
 import {getHtml} from './ntp_searchbox.html.js';
@@ -55,7 +55,7 @@ export interface NtpSearchboxElement {
   };
 }
 
-import {SearchboxSelectionMixin} from '//resources/cr_components/searchbox/searchbox_selection_mixin.js';
+import {SearchboxSelectionMixin} from 'chrome://resources/cr_components/searchbox/searchbox_selection_mixin.js';
 
 const NtpSearchboxElementBase = SearchboxMixin(
     SearchboxSelectionMixin(I18nMixinLit(WebUiListenerMixinLit(CrLitElement))));
@@ -150,15 +150,6 @@ export class NtpSearchboxElement extends NtpSearchboxElementBase implements
         reflect: true,
       },
 
-      /**
-       * Whether the secondary side was at any point available to be shown.
-       */
-      hadSecondarySide: {
-        type: Boolean,
-        reflect: true,
-        notify: true,
-      },
-
       /*
        * Whether the secondary side is currently available to be shown.
        */
@@ -217,6 +208,7 @@ export class NtpSearchboxElement extends NtpSearchboxElementBase implements
       energyEffectAnimationEnabled: {type: Boolean},
       hasUserInput_: {type: Boolean},
       ntpRealboxDynamicAiModeButtonEnabled_: {type: Boolean},
+      ntpRealboxDynamicAiModeButtonPreventEarlyPaint_: {type: Boolean},
       contextManagementInComposeboxEnabled: {type: Boolean},
       composeboxContextMenuTooltipsEnabled: {type: Boolean},
       keepMenuOpenOnTabSelectForRealbox: {type: Boolean},
@@ -243,7 +235,6 @@ export class NtpSearchboxElement extends NtpSearchboxElementBase implements
   accessor isDark: boolean = false;
   accessor searchboxLayoutMode: string = '';
   accessor canShowSecondarySide: boolean = false;
-  accessor hadSecondarySide: boolean = false;
   accessor hasSecondarySide: boolean = false;
   accessor searchboxChromeRefreshTheming: boolean =
       loadTimeData.getBoolean('searchboxCr23Theming');
@@ -260,6 +251,8 @@ export class NtpSearchboxElement extends NtpSearchboxElementBase implements
       getLoadTimeBoolean('composeboxContextMenuTooltipsEnabled', false);
   accessor keepMenuOpenOnTabSelectForRealbox: boolean =
       getLoadTimeBoolean('keepMenuOpenOnTabSelectForRealbox', false);
+  private dynamicAimFulfillmentEnabled_: boolean =
+      getLoadTimeBoolean('dynamicAimFulfillmentEnabled', false);
   accessor placeholderText: string = '';
   accessor recentTabId_: number|null = null;
 
@@ -281,10 +274,12 @@ export class NtpSearchboxElement extends NtpSearchboxElementBase implements
       loadTimeData.getBoolean('searchboxLensSearch');
   protected accessor ntpRealboxDynamicAiModeButtonEnabled_: boolean =
       loadTimeData.getBoolean('ntpRealboxDynamicAiModeButton');
+  protected accessor ntpRealboxDynamicAiModeButtonPreventEarlyPaint_: boolean =
+      loadTimeData.getBoolean('ntpRealboxDynamicAiModeButtonPreventEarlyPaint');
   protected accessor useWebkitSearchIcons_: boolean = false;
   protected accessor hasUserInput_: boolean = false;
   protected dragAndDropHandler: DragAndDropHandler|null = null;
-  protected callbackRouter_: PageCallbackRouter;
+  private callbackRouter_: PageCallbackRouter;
 
   private placeholderCycler_: PlaceholderTextCycler|null = null;
   private dragAndDropEnabled_: boolean =
@@ -294,6 +289,9 @@ export class NtpSearchboxElement extends NtpSearchboxElementBase implements
   private pageHandler_: PageHandlerInterface;
   private autocompleteResultChangedListenerId_: number|null = null;
   private inputStateListenerId_: number|null = null;
+  // <if expr="not is_android">
+  private smartTabSharingUpdateGeneration_: number = 0;
+  // </if>
 
   constructor() {
     performance.mark('searchbox-creation-start');
@@ -334,8 +332,11 @@ export class NtpSearchboxElement extends NtpSearchboxElementBase implements
     }
 
     // <if expr="not is_android">
-    this.smartTabSharingActive =
-        (await this.pageHandler().getSmartTabSharingActive()).active;
+    const stsGeneration = ++this.smartTabSharingUpdateGeneration_;
+    const {active} = await this.pageHandler().getSmartTabSharingActive();
+    if (stsGeneration === this.smartTabSharingUpdateGeneration_) {
+      this.smartTabSharingActive = active;
+    }
     // </if>
   }
 
@@ -507,17 +508,12 @@ export class NtpSearchboxElement extends NtpSearchboxElementBase implements
   // Public API (ported from SearchboxElement)
   //============================================================================
 
-  isInputEmpty(): boolean {
-    // If this is called before first render, the input element will not exist.
-    if (!this.shadowRoot?.querySelector('#input') || !this.$.input ||
-        !this.$.input.lastInput()) {
-      return true;
-    }
-    return !this.$.input.lastInput()!.text.trim();
-  }
-
   setInputText(text: string) {
     this.$.input.setInputText(text);
+    // Setting the text programmatically (e.g. with the voice search transcript)
+    // does not fire `searchbox-input-text-updated`, so update the state here to
+    // keep the dynamic AI Mode button in sync with the input.
+    this.hasUserInput_ = !!text.trim();
   }
 
   focusInput() {
@@ -567,10 +563,30 @@ export class NtpSearchboxElement extends NtpSearchboxElementBase implements
   protected onSmartTabSharingActiveChanged_(
       _e: CustomEvent<{active: boolean}>) {
     // <if expr="not is_android">
+    this.smartTabSharingUpdateGeneration_++;
     this.smartTabSharingActive = _e.detail.active;
     this.pageHandler().setSmartTabSharingActive(_e.detail.active);
     if (_e.detail.active) {
       this.openComposebox_();
+    }
+    // </if>
+  }
+
+  /**
+   * Resets local Smart Tab Sharing state, and optionally requests the browser
+   * backend to reset its state as well. By default, only local UI state is
+   * cleared because the composebox component initiates the backend reset.
+   */
+  resetSmartTabSharing(_resetBackend: boolean = false) {
+    // <if expr="not is_android">
+    this.smartTabSharingActive = false;
+    if (_resetBackend) {
+      const generation = ++this.smartTabSharingUpdateGeneration_;
+      this.pageHandler().resetSmartTabSharing()?.then(({active}) => {
+        if (generation === this.smartTabSharingUpdateGeneration_) {
+          this.smartTabSharingActive = active;
+        }
+      });
     }
     // </if>
   }
@@ -584,7 +600,7 @@ export class NtpSearchboxElement extends NtpSearchboxElementBase implements
     title: string,
     url: Url,
     delayUpload: boolean,
-    origin: TabUploadOrigin,
+    origin: TabAttachmentSource,
   }>) {
     const attachment: TabUpload = {
       tabId: e.detail.id,
@@ -642,7 +658,11 @@ export class NtpSearchboxElement extends NtpSearchboxElementBase implements
   protected onContextMenuClosed_() {
     this.contextMenuOpened_ = false;
     this.tabSuggestionsState_ = TabSuggestionsState.NOT_STARTED;
-    this.blur();
+    // Keep focus on "+" after keyboard use (b/564743397); blur after mouse
+    // use so #searchboxContainer drops its scrim (https://crrev.com/c/7540901).
+    if (!FocusOutlineManager.forDocument(document).visible) {
+      this.blur();
+    }
   }
 
   protected onRequestTabSuggestionsLoad() {
@@ -750,10 +770,8 @@ export class NtpSearchboxElement extends NtpSearchboxElementBase implements
     // now a `ContextualSearchboxHandler`.
     this.pageHandler().activateMetricsFunnel('AiModeButton');
 
-    chrome.histograms.recordUserAction(
-        'ContextualSearch.AiModeButtonClick.NtpRealbox');
-    chrome.histograms.recordBoolean(
-        'ContextualSearch.AiModeButtonClick.NtpRealbox', true);
+    recordUserAction('ContextualSearch.AiModeButtonClick.NtpRealbox');
+    recordBoolean('ContextualSearch.AiModeButtonClick.NtpRealbox', true);
 
     const isSearch = this.selectedMatch?.isSearchType ?? true;
     if (!isSearch) {
@@ -765,14 +783,14 @@ export class NtpSearchboxElement extends NtpSearchboxElementBase implements
       const histogramName =
           'ContextualSearch.UserAction.SubmitQueryV2.NewTabPage';
       // LINT.IfChange(ContextualSearchContextState)
-      chrome.histograms.recordEnumerationValue(
+      recordEnumerationValue(
           histogramName, /*WithoutContext */ 0,
           /*ContextualSearchContextState.Size + 1*/ 5);
       // LINT.ThenChange(//tools/metrics/histograms/metadata/contextual_search/enums.xml:ContextualSearchContextState)
 
       const userActionName =
           'ContextualSearch.UserAction.SubmitQueryV2.WithoutContext.NewTabPage';
-      chrome.histograms.recordUserAction(userActionName);
+      recordUserAction(userActionName);
     }
 
     if (!this.composeboxEnabled || queryText) {
@@ -782,10 +800,15 @@ export class NtpSearchboxElement extends NtpSearchboxElementBase implements
           e.detail.ctrlKey, e.detail.metaKey, e.detail.shiftKey,
           /* isVoiceSearch */ false);
     } else {
-      this.openComposebox_();
+      // With dynamic AIM fulfillment, the compose box would otherwise open
+      // headed to SRP, so ask it to enter AI Mode.
+      this.openComposebox_(
+          [], ToolMode.kUnspecified, ModelMode.kUnspecified,
+          /*error=*/ undefined,
+          /*enterAimMode=*/ this.dynamicAimFulfillmentEnabled_);
     }
 
-    chrome.histograms.recordBoolean(
+    recordBoolean(
         'NewTabPage.ComposeEntrypoint.Click.UserTextPresent',
         !this.isInputEmpty());
   }
@@ -796,7 +819,10 @@ export class NtpSearchboxElement extends NtpSearchboxElementBase implements
 
   protected openComposebox_(
       uploads: ContextualUpload[] = [], mode: ToolMode = ToolMode.kUnspecified,
-      model: ModelMode = ModelMode.kUnspecified, error?: DriveUploadError) {
+      model: ModelMode = ModelMode.kUnspecified, error?: DriveUploadError,
+      // Whether to force AI Mode. Ignored without dynamic AIM fulfillment
+      // enabled.
+      enterAimMode: boolean = false) {
     if (this.ntpRealboxNextEnabled) {
       const context =
           this.shadowRoot.querySelector<ContextualEntrypointAndMenuElement>(
@@ -820,6 +846,7 @@ export class NtpSearchboxElement extends NtpSearchboxElementBase implements
       files: uploads,
       mode: mode,
       model: model,
+      enterAimMode: enterAimMode,
       error: error,
       // <if expr="not is_android">
       smartTabSharingActive: this.smartTabSharingActive,
@@ -829,8 +856,8 @@ export class NtpSearchboxElement extends NtpSearchboxElementBase implements
   }
 
   protected onSearchboxInputPasted_() {
-    chrome.histograms.recordCount('NewTabPage.Realbox.Paste', 1);
-    chrome.histograms.recordUserAction('NewTabPage.Realbox.Paste');
+    recordCount('NewTabPage.Realbox.Paste', 1);
+    recordUserAction('NewTabPage.Realbox.Paste');
   }
 
   protected onSearchboxInputFilesPasted_(e: CustomEvent<{files: FileList}>) {
@@ -868,10 +895,6 @@ export class NtpSearchboxElement extends NtpSearchboxElementBase implements
   protected onLensSearchClick_() {
     this.dropdownIsVisible = false;
     this.dispatchEvent(new Event('open-lens-search'));
-  }
-
-  protected onHadSecondarySideChanged_(e: CustomEvent<{value: boolean}>) {
-    this.hadSecondarySide = e.detail.value;
   }
 
   protected onHasSecondarySideChanged_(e: CustomEvent<{value: boolean}>) {

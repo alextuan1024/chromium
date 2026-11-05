@@ -15,6 +15,7 @@
 
 #include "base/compiler_specific.h"
 #include "base/time/time.h"
+#include "media/base/audio_codecs.h"
 #include "media/base/decrypt_config.h"
 #include "media/base/media_export.h"
 #include "media/base/media_log.h"
@@ -286,6 +287,42 @@ struct MEDIA_EXPORT AV1CodecConfigurationRecord : Box {
 };
 #endif
 
+#if BUILDFLAG(ENABLE_DAV2D_DECODER)
+struct MEDIA_EXPORT AV2CodecConfigurationRecord : Box {
+  DECLARE_BOX_METHODS(AV2CodecConfigurationRecord);
+
+  // Parses OutOfBandAV2CodecConfigurationBox ('av2C') payload encoded in `data`
+  // without the MP4 box header. This box is denoted by either the `AV02` or
+  // `AV2E` FOURCC.
+  bool Parse(base::span<const uint8_t> data);
+
+  VideoCodecProfile profile = VIDEO_CODEC_PROFILE_UNKNOWN;
+  VideoCodecLevel level = kNoVideoCodecLevel;
+
+  // While we must parse profile and level from the OBUs, we also need to keep
+  // them around in full for the decoders.
+  std::vector<uint8_t> config_obus;
+
+ private:
+  bool ParseInternal(base::span<const uint8_t> data, MediaLog* media_log);
+};
+
+struct MEDIA_EXPORT InBandAV2CodecConfigurationRecord : Box {
+  DECLARE_BOX_METHODS(InBandAV2CodecConfigurationRecord);
+
+  // Parses InBandAV2CodecConfigurationBox ('av2c') payload encoded in `data`
+  // without the MP4 box header. This box is denoted by either the `av2e` or
+  // `AV02` FOURCC.
+  bool Parse(base::span<const uint8_t> data);
+
+  VideoCodecProfile profile = VIDEO_CODEC_PROFILE_UNKNOWN;
+  VideoCodecLevel level = kNoVideoCodecLevel;
+
+ private:
+  bool ParseInternal(BufferReader* reader, MediaLog* media_log);
+};
+#endif  // BUILDFLAG(ENABLE_DAV2D_DECODER)
+
 struct MEDIA_EXPORT PixelAspectRatioBox : Box {
   DECLARE_BOX_METHODS(PixelAspectRatioBox);
 
@@ -391,6 +428,8 @@ struct MEDIA_EXPORT VideoSampleEntry : Box {
 
   VideoSpatialFormat video_spatial_format;
 
+  std::vector<uint8_t> extra_data;
+
   bool IsFormatValid() const;
 
   scoped_refptr<BitstreamConverter> frame_bitstream_converter;
@@ -488,7 +527,7 @@ struct MEDIA_EXPORT IamfSpecificBox : Box {
                      uint32_t* obu_size);
   bool ReadLeb128Value(BufferReader* reader, uint32_t* value) const;
 
-  uint8_t profile;
+  AudioCodecProfile profile = AudioCodecProfile::kUnknown;
   bool redundant_copy = false;
 
   std::vector<uint8_t> ia_descriptors;

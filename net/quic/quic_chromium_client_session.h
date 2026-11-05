@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "base/containers/flat_map.h"
+#include "base/containers/flat_set.h"
 #include "base/feature_list.h"
 #include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
@@ -108,30 +109,6 @@ enum class ConnectionMigrationMode {
   FULL_MIGRATION_V2
 };
 
-// Result of connection migration.
-enum QuicConnectionMigrationStatus {
-  MIGRATION_STATUS_NO_MIGRATABLE_STREAMS,
-  MIGRATION_STATUS_ALREADY_MIGRATED,
-  MIGRATION_STATUS_INTERNAL_ERROR,
-  MIGRATION_STATUS_TOO_MANY_CHANGES,
-  MIGRATION_STATUS_SUCCESS,
-  MIGRATION_STATUS_NON_MIGRATABLE_STREAM,
-  MIGRATION_STATUS_NOT_ENABLED,
-  MIGRATION_STATUS_NO_ALTERNATE_NETWORK,
-  MIGRATION_STATUS_ON_PATH_DEGRADING_DISABLED,
-  MIGRATION_STATUS_DISABLED_BY_CONFIG,
-  MIGRATION_STATUS_PATH_DEGRADING_NOT_ENABLED,
-  MIGRATION_STATUS_TIMEOUT,
-  MIGRATION_STATUS_ON_WRITE_ERROR_DISABLED,
-  MIGRATION_STATUS_PATH_DEGRADING_BEFORE_HANDSHAKE_CONFIRMED,
-  MIGRATION_STATUS_IDLE_MIGRATION_TIMEOUT,
-  MIGRATION_STATUS_NO_UNUSED_CONNECTION_ID,
-  MIGRATION_STATUS_STATELESS_RESET,
-  MIGRATION_STATUS_DISCONNECTING,
-  MIGRATION_STATUS_CANCELED_BY_NEWER_VALIDATION,
-  MIGRATION_STATUS_MAX
-};
-
 // Result of a connectivity probing attempt.
 enum class ProbingResult {
   PENDING,                          // Probing started, pending result.
@@ -182,6 +159,14 @@ class NET_EXPORT_PRIVATE QuicChromiumClientSession
   // Sets a callback that is called in the middle of a connection migration.
   // Only for testing.
   static void SetMidMigrationCallbackForTesting(base::OnceClosure callback);
+
+  // Maps between Chromium's QuicMigrationAttemptCause and QUICHE's
+  // quic::PathValidationFailure::Reason for path validations superseded by
+  // a new migration.
+  static quic::PathValidationFailure::Reason
+  ChromiumMigrationCauseToQuicheFailureReason(QuicMigrationAttemptCause cause);
+  static QuicMigrationAttemptCause QuicheFailureReasonToChromiumMigrationCause(
+      quic::PathValidationFailure::Reason reason);
 
   class StreamRequest;
 
@@ -309,16 +294,19 @@ class NET_EXPORT_PRIVATE QuicChromiumClientSession
     }
 
     MultiplexedSessionCreationInitiator session_creation_initiator() const {
-      return session_ ? session_->session_creation_initiator()
-                      : MultiplexedSessionCreationInitiator::kUnknown;
+      return session_creation_initiator_;
     }
     bool WasEverUsed() const;
+
+    // Returns true if the underlying session was ever used to create a stream.
+    // Remains valid after the session is closed.
+    bool WasEverUsedToCreateStreams() const;
 
     // Retrieves any DNS aliases for the given session key from the map stored
     // in `session_pool_`. Includes all known aliases, e.g. from A, AAAA, or
     // HTTPS, not just from the address used for the connection, in no
     // particular order.
-    const std::set<std::string>& GetDnsAliasesForSessionKey(
+    const base::flat_set<std::string>& GetDnsAliasesForSessionKey(
         const QuicSessionKey& key) const;
 
     // Returns the largest payload that will fit into a single MESSAGE frame at
@@ -371,6 +359,7 @@ class NET_EXPORT_PRIVATE QuicChromiumClientSession
                          bool quic_connection_migration_successful,
                          LoadTimingInfo::ConnectTiming connect_timing,
                          bool was_ever_used,
+                         bool was_ever_used_to_create_streams,
                          const ConnectionMigrationInformation& migration_info);
 
     // Called by |request| to create a stream.
@@ -416,7 +405,12 @@ class NET_EXPORT_PRIVATE QuicChromiumClientSession
     // The last known set of migration information
     ConnectionMigrationInformation last_migration_information_;
 
+    // How the underlying session was created. Saved at construction so that it
+    // remains available after the session is closed.
+    const MultiplexedSessionCreationInitiator session_creation_initiator_;
+
     bool was_ever_used_ = false;
+    bool was_ever_used_to_create_streams_ = false;
   };
 
   // A helper class used to manage a request to create a stream.
@@ -698,6 +692,20 @@ class NET_EXPORT_PRIVATE QuicChromiumClientSession
   // including cases where the stream creation failed.
   bool was_ever_used_to_create_streams() const;
 
+  // Returns true if this side closed the connection with
+  // QUIC_CONNECTION_CANCELLED or cancelled it for proactive IP pooling. Unlike
+  // error(), this is already set while the pool is notified that the session is
+  // going away.
+  bool WasClosedByLocalCancellation() const;
+
+  // Returns true if unconfirmed-handshake failure histograms should be skipped
+  // because the owning session attempt was cancelled for proactive IP pooling.
+  bool ShouldSkipUnconfirmedHandshakeMetrics() const;
+
+  void MarkClosedByProactiveIpPooling() {
+    closed_by_proactive_ip_pooling_ = true;
+  }
+
   const QuicConnectionReuseDetails& quic_connection_reuse_details() const {
     return quic_connection_reuse_details_;
   }
@@ -753,13 +761,24 @@ class NET_EXPORT_PRIVATE QuicChromiumClientSession
   void LogProbeFailure(handles::NetworkHandle network,
                        const quic::QuicSocketAddress& peer_address);
 
+  // Marks the ongoing probing attempt according to `reason` and cancels path
+  // validation. Requires an in-flight path validation to exist.
+  void CancelInFlightProbe(
+      ProbingCancellationReason reason,
+      std::optional<QuicMigrationAttemptCause> superseded_cause);
+
   // If there is an ongoing probing on <network, peer_address>, marks the
   // attempt according to `reason` and cancels path validation.
-  void MaybeCancelProbing(
+  void MaybeCancelSpecificInFlightProbe(
       handles::NetworkHandle network,
       const quic::QuicSocketAddress& peer_address,
       ProbingCancellationReason reason,
-      std::optional<QuicMigrationAttemptCause> superseded_cause = std::nullopt);
+      std::optional<QuicMigrationAttemptCause> superseded_cause);
+
+  // If there is any ongoing probing, marks the attempt as superseded by
+  // `superseded_by_cause` and cancels path validation.
+  void MaybeCancelAnyInFlightProbe(
+      QuicMigrationAttemptCause superseded_by_cause);
 
   // quic::QuicSpdySession methods:
   size_t WriteHeadersOnHeadersStream(
@@ -830,10 +849,12 @@ class NET_EXPORT_PRIVATE QuicChromiumClientSession
 
   // Helper for CreateContextForMultiPortPath. Gets the result of
   // ConnectAndConfigureSocket and uses it to create the multiport path context.
+  // `error_step` is non-empty only when `rv` is not OK.
   void FinishCreateContextForMultiPortPath(
       std::unique_ptr<quic::MultiPortPathContextObserver> context_observer,
       std::unique_ptr<QuicMigrationAttemptContext> context,
-      int rv);
+      int rv,
+      std::optional<QuicSocketConfigStep> error_step);
 
   // Performs a crypto handshake with the server.
   int CryptoConnect(CompletionOnceCallback callback);
@@ -909,23 +930,15 @@ class NET_EXPORT_PRIVATE QuicChromiumClientSession
   // then, OnWriteUnblocked() will be invoked to send packet after migration.
   void WriteToNewSocket();
 
-  // Migrates session over to use |peer_address| and |network|.
-  // If |network| is handles::kInvalidNetworkHandle, default network is used. If
-  // the migration fails and |close_session_on_error| is true, session will be
-  // closed.
   using MigrationCallback = base::OnceCallback<void(MigrationResult)>;
-  void MigrateWithoutProbing(MigrationCause migration_cause,
-                             handles::NetworkHandle network,
-                             IPEndPoint peer_address,
-                             bool close_session_on_error,
-                             MigrationCallback migration_callback);
   // Helper to finish session migration once a socket has been opened. Always
   // called asynchronously.
   void FinishMigrateWithoutProbing(
       std::unique_ptr<QuicMigrationAttemptContext> migration_context,
       bool close_session_on_error,
       MigrationCallback callback,
-      int rv);
+      int rv,
+      std::optional<QuicSocketConfigStep> error_step);
 
   void DoMigrationCallback(MigrationCallback callback, MigrationResult rv);
 
@@ -952,11 +965,17 @@ class NET_EXPORT_PRIVATE QuicChromiumClientSession
   void OnNetworkMadeDefault(handles::NetworkHandle new_network);
 
   // Schedules a migration alarm to wait for a new network.
-  void OnNoNewNetwork(MigrationCause migration_cause);
+  void OnNoNewNetwork(QuicMigrationAttemptCause migration_cause);
 
   // Called when migration alarm fires. If migration has not occurred
   // since alarm was set, closes session with error.
-  void OnMigrationTimeout(size_t num_sockets, MigrationCause migration_cause);
+  void OnMigrationTimeout();
+
+  // Clears the state associated with waiting for a new network. If
+  // `superseded_by_cause` is provided and the session was waiting for a new
+  // network, records the superseded outcome for that waiting attempt.
+  void ResetWaitForNewNetworkState(
+      std::optional<QuicMigrationAttemptCause> superseded_by_cause);
 
   // Populates network error details for this session.
   void PopulateNetErrorDetails(NetErrorDetails* details) const;
@@ -991,7 +1010,7 @@ class NET_EXPORT_PRIVATE QuicChromiumClientSession
   // in `session_pool_`. Includes all known aliases, e.g. from A, AAAA, or
   // HTTPS, not just from the address used for the connection, in no particular
   // order.
-  const std::set<std::string>& GetDnsAliasesForSessionKey(
+  const base::flat_set<std::string>& GetDnsAliasesForSessionKey(
       const QuicSessionKey& key) const;
 
   const std::set<url::SchemeHostPort>& received_origins() const {
@@ -1045,24 +1064,50 @@ class NET_EXPORT_PRIVATE QuicChromiumClientSession
   void CancelAllRequests(int net_error);
   void NotifyRequestsOfConfirmation(int net_error);
 
+  // Performs pre-migration checks and, if eligible, initiates an immediate
+  // migration to `peer_address` and `network` via `MigrateWithoutProbing`.
+  // If `network` is handles::kInvalidNetworkHandle, default network is used. If
+  // the migration fails and `close_session_on_error` is true, session will be
+  // closed.
+  void MaybeMigrateWithoutProbing(QuicMigrationAttemptCause migration_cause,
+                                  handles::NetworkHandle network,
+                                  const quic::QuicSocketAddress& peer_address,
+                                  bool close_session_on_error,
+                                  MigrationCallback migration_callback);
+  void MigrateWithoutProbing(
+      std::unique_ptr<QuicMigrationAttemptContext> migration_context,
+      bool close_session_on_error,
+      MigrationCallback migration_callback);
+
+  // Creates a new socket, packet reader, and packet writer, and wraps them in a
+  // `QuicMigrationAttemptContext` for a new migration attempt.
+  std::unique_ptr<QuicMigrationAttemptContext> CreateMigrationAttemptContext(
+      QuicMigrationAttemptCause cause,
+      handles::NetworkHandle target_network,
+      const quic::QuicSocketAddress& target_peer_address);
+
   // Probe on <network, peer_address>.
   // If <network, peer_addres> is identical to the current path, the probe
   // is sent on a different port.
   using ProbingCallback = base::OnceCallback<void(ProbingResult)>;
-  void StartProbing(MigrationCause migration_cause,
+  void StartProbing(QuicMigrationAttemptCause migration_cause,
                     handles::NetworkHandle network,
                     const quic::QuicSocketAddress& peer_address,
+                    ProbingCallback probing_callback);
+  void StartProbing(std::unique_ptr<QuicMigrationAttemptContext> context,
                     ProbingCallback probing_callback);
 
   // Helper to finish network probe once socket has been opened. Always called
   // asynchronously.
+  // `error_step` is non-empty only when `rv` is not OK.
   void FinishStartProbing(ProbingCallback probing_callback,
                           std::unique_ptr<QuicMigrationAttemptContext> context,
-                          int rv);
+                          int rv,
+                          std::optional<QuicSocketConfigStep> error_step);
 
   // Perform a few checks before StartProbing. If any of those checks fails,
   // StartProbing will be skipped.
-  void MaybeStartProbing(MigrationCause migration_cause,
+  void MaybeStartProbing(QuicMigrationAttemptCause migration_cause,
                          handles::NetworkHandle network,
                          const quic::QuicSocketAddress& peer_address,
                          ProbingCallback probing_callback);
@@ -1072,7 +1117,7 @@ class NET_EXPORT_PRIVATE QuicChromiumClientSession
   // Called when path is degrading and there is an alternate network or a new
   // network is connected after path degrading.
   void MaybeMigrateToAlternateNetworkOnPathDegrading(
-      MigrationCause migration_cause);
+      QuicMigrationAttemptCause migration_cause);
 
   // Helper method to initiate a port migration on path degrading is detected.
   void MaybeMigrateToDifferentPortOnPathDegrading();
@@ -1084,7 +1129,7 @@ class NET_EXPORT_PRIVATE QuicChromiumClientSession
   //    default network;
   //  - If now on the default network, cancel timer to migrate back to default
   //    network.
-  void MigrateNetworkImmediately(MigrationCause migration_cause,
+  void MigrateNetworkImmediately(QuicMigrationAttemptCause migration_cause,
                                  handles::NetworkHandle network);
 
   // Called when MigrateWithoutProbing() call from MigrateNetworkImmediately
@@ -1092,15 +1137,18 @@ class NET_EXPORT_PRIVATE QuicChromiumClientSession
   void FinishMigrateNetworkImmediately(handles::NetworkHandle network,
                                        MigrationResult result);
 
-  void StartMigrateBackToDefaultNetworkTimer(MigrationCause migration_cause,
-                                             base::TimeDelta delay);
+  void StartMigrateBackToDefaultNetworkTimer(
+      QuicMigrationAttemptCause migration_cause,
+      base::TimeDelta delay);
   void CancelMigrateBackToDefaultNetworkTimer();
-  void TryMigrateBackToDefaultNetwork(MigrationCause migration_cause,
+  void TryMigrateBackToDefaultNetwork(QuicMigrationAttemptCause migration_cause,
                                       base::TimeDelta timeout);
-  void FinishTryMigrateBackToDefaultNetwork(MigrationCause migration_cause,
-                                            base::TimeDelta timeout,
-                                            ProbingResult result);
-  void MaybeRetryMigrateBackToDefaultNetwork(MigrationCause migration_cause);
+  void FinishTryMigrateBackToDefaultNetwork(
+      QuicMigrationAttemptCause migration_cause,
+      base::TimeDelta timeout,
+      ProbingResult result);
+  void MaybeRetryMigrateBackToDefaultNetwork(
+      QuicMigrationAttemptCause migration_cause);
 
   // If migrate idle session is enabled, returns true and post a task to close
   // the connection if session's idle time exceeds the |idle_migration_period_|.
@@ -1114,12 +1162,9 @@ class NET_EXPORT_PRIVATE QuicChromiumClientSession
   void ResetNonMigratableStreams();
   void LogMetricsOnNetworkDisconnected();
   void LogMetricsOnNetworkMadeDefault();
-  void LogMigrationResultToHistogram(QuicConnectionMigrationStatus status);
-  void LogHandshakeStatusOnMigrationSignal() const;
-  void HistogramAndLogMigrationFailure(QuicConnectionMigrationStatus status,
-                                       quic::QuicConnectionId connection_id,
-                                       const char* reason);
-  void HistogramAndLogMigrationSuccess(quic::QuicConnectionId connection_id);
+  void LogMigrationFailure(quic::QuicConnectionId connection_id,
+                           const char* reason);
+  void LogMigrationSuccess(quic::QuicConnectionId connection_id);
   void LogPathValidationFailure(QuicChromiumPathValidationContext* context);
 
   // Notifies the factory that this session is going away and no more streams
@@ -1138,6 +1183,8 @@ class NET_EXPORT_PRIVATE QuicChromiumClientSession
   void OnCryptoHandshakeComplete();
 
   void LogZeroRttStats();
+
+  void RecordUnusedConnectionIdsAtMigrationAttempt();
 
 #if BUILDFLAG(ENABLE_WEBSOCKETS)
   std::unique_ptr<WebSocketQuicStreamAdapter>
@@ -1260,6 +1307,10 @@ class NET_EXPORT_PRIVATE QuicChromiumClientSession
   bool going_away_ = false;
   // Connection close source
   quic::ConnectionCloseSource source_ = quic::ConnectionCloseSource::FROM_SELF;
+  // Connection close error. Set together with `source_`, before the pool is
+  // notified, whereas quic::QuicSession::error() is set only afterwards.
+  quic::QuicErrorCode connection_close_error_ = quic::QUIC_NO_ERROR;
+  bool closed_by_proactive_ip_pooling_ = false;
   // True when the session receives a go away from server due to port migration.
   bool port_migration_detected_ = false;
   bool quic_connection_migration_attempted_ = false;
@@ -1287,7 +1338,8 @@ class NET_EXPORT_PRIVATE QuicChromiumClientSession
   base::OneShotTimer migrate_back_to_default_timer_;
   // TODO(crbug.com/557126867): Remove this when we remove the old connection
   // migration UMAs.
-  MigrationCause current_migration_cause_ = UNKNOWN_CAUSE;
+  QuicMigrationAttemptCause current_migration_cause_ =
+      QuicMigrationAttemptCause::kUnknown;
   // True if a packet needs to be sent when packet writer is unblocked to
   // complete connection migration. The packet can be a cached packet if
   // `packet_` is set, a queued packet, or a PING packet.
@@ -1300,7 +1352,12 @@ class NET_EXPORT_PRIVATE QuicChromiumClientSession
   // TODO(crbug.com/558250723): Consider moving this, and every other field
   // connected to a migration attempt state, into a new manager-like entity for
   // migration attempts.
-  std::optional<MigrationCause> wait_for_new_network_cause_;
+  std::optional<QuicMigrationAttemptCause> wait_for_new_network_cause_;
+  // Timestamp when the session started waiting for a new network.
+  base::TimeTicks wait_for_new_network_start_time_;
+  // Timer to close the session if no new network connects within the wait
+  // timeout.
+  base::OneShotTimer wait_for_new_network_timer_;
   // True if read errors should be ignored. Set when migration on write error is
   // posted and unset until the first packet is written after migration.
   // TODO(crbug.com/558250723): Consider moving this, and every other field
@@ -1338,10 +1395,6 @@ class NET_EXPORT_PRIVATE QuicChromiumClientSession
   // Must be declared after `session_key_`, as its initialization depends on it.
   const EchMode ech_mode_;
 
-  // The list of TLS Trust Anchor IDs, each in binary representation, advertised
-  // by the server in DNS.
-  std::vector<std::vector<uint8_t>> trust_anchor_ids_;
-
   const bool allow_server_preferred_address_;
 
   const MultiplexedSessionCreationInitiator session_creation_initiator_;
@@ -1367,6 +1420,10 @@ namespace features {
 // when there is an ongoing migration with probing.
 NET_EXPORT BASE_DECLARE_FEATURE(
     kQuicMigrationIgnoreDisconnectSignalDuringProbing);
+
+// When enabled, QuicChromiumClientSession registers and unregisters QUIC
+// connection close payloads with the Android system service.
+NET_EXPORT BASE_DECLARE_FEATURE(kQuicRegisterConnectionClosePayload);
 
 }  // namespace features
 

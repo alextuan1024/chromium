@@ -5,7 +5,6 @@
 #include "components/webauthn/core/browser/passkey_sync_bridge.h"
 
 #include <algorithm>
-#include <iterator>
 #include <memory>
 #include <numeric>
 #include <optional>
@@ -15,6 +14,7 @@
 #include "base/containers/flat_set.h"
 #include "base/containers/flat_tree.h"
 #include "base/containers/span.h"
+#include "base/containers/to_vector.h"
 #include "base/feature_list.h"
 #include "base/functional/callback_helpers.h"
 #include "base/logging.h"
@@ -232,11 +232,12 @@ void PasskeySyncBridge::ApplyDisableSyncChanges(
   CHECK(store_);
   store_->DeleteAllDataAndMetadata(std::move(delete_metadata_change_list),
                                    base::DoNothing());
-  std::vector<PasskeyModelChange> changes;
-  for (const auto& passkey : data_) {
-    changes.emplace_back(PasskeyModelChange::ChangeType::REMOVE,
-                         passkey.second);
-  }
+  std::vector<PasskeyModelChange> changes =
+      base::ToVector(data_, [](const auto& pair) {
+        return PasskeyModelChange(PasskeyModelChange::ChangeType::REMOVE,
+                                  pair.second);
+      });
+
   data_.clear();
   NotifyPasskeysChanged(std::move(changes));
 }
@@ -255,10 +256,22 @@ bool PasskeySyncBridge::IsEmpty() const {
 }
 
 base::flat_set<std::string> PasskeySyncBridge::GetAllSyncIds() const {
-  std::vector<std::string> sync_ids;
-  std::ranges::transform(data_, std::back_inserter(sync_ids),
-                         [](const auto& pair) { return pair.first; });
-  return base::flat_set<std::string>(base::sorted_unique, std::move(sync_ids));
+  return base::flat_set<std::string>(
+      base::sorted_unique,
+      base::ToVector(data_, [](const auto& pair) { return pair.first; }));
+}
+
+base::flat_set<int32_t> PasskeySyncBridge::GetDeviceAuthorizationKeyVersions()
+    const {
+  base::flat_set<int32_t> versions;
+  for (const auto& [sync_id, passkey] : data_) {
+    if (passkey.encrypted_data_case() ==
+            sync_pb::WebauthnCredentialSpecifics::kSecurityDomainEncrypted &&
+        passkey.has_device_authorization_key_version()) {
+      versions.insert(passkey.device_authorization_key_version());
+    }
+  }
+  return versions;
 }
 
 std::vector<sync_pb::WebauthnCredentialSpecifics>
@@ -456,29 +469,6 @@ bool PasskeySyncBridge::UpdatePasskeyEncryptedBlob(
             return true;
           },
           new_encrypted_blob));
-}
-
-sync_pb::WebauthnCredentialSpecifics PasskeySyncBridge::CreatePasskey(
-    std::string_view rp_id,
-    const UserEntity& user_entity,
-    base::span<const uint8_t> trusted_vault_key,
-    int32_t trusted_vault_key_version,
-    std::vector<uint8_t>* public_key_spki_der_out) {
-  CHECK(IsReady());
-
-  auto [specifics, public_key_spki_der] =
-      webauthn::passkey_model_utils::GeneratePasskeyAndEncryptSecrets(
-          rp_id, user_entity, trusted_vault_key, trusted_vault_key_version,
-          /*extension_input_data=*/{}, /*extension_output_data=*/nullptr);
-
-  AddShadowedCredentialIdsToNewPasskey(specifics);
-
-  AddPasskeyInternal(specifics);
-
-  if (public_key_spki_der_out != nullptr) {
-    *public_key_spki_der_out = std::move(public_key_spki_der);
-  }
-  return specifics;
 }
 
 void PasskeySyncBridge::CreatePasskey(

@@ -8,6 +8,7 @@
 
 #include <map>
 #include <memory>
+#include <optional>
 #include <string_view>
 #include <vector>
 
@@ -17,6 +18,7 @@
 #include "base/containers/to_vector.h"
 #include "base/logging.h"
 #include "base/memory/raw_ptr.h"
+#include "base/metrics/histogram_functions.h"
 #include "base/notreached.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
@@ -46,6 +48,7 @@
 #include "third_party/boringssl/src/pki/parse_certificate.h"
 #include "third_party/boringssl/src/pki/parse_name.h"
 #include "third_party/boringssl/src/pki/parse_values.h"
+#include "third_party/boringssl/src/pki/parser.h"
 #include "third_party/boringssl/src/pki/signature_algorithm.h"
 
 namespace net::x509_util {
@@ -216,9 +219,7 @@ bssl::ParsedCertificateList ParseAllValidCerts(
   bssl::ParsedCertificateList parsed_certs;
   for (const auto& x509_cert : x509_certs) {
     std::shared_ptr<const bssl::ParsedCertificate> cert =
-        bssl::ParsedCertificate::Create(
-            bssl::UpRef(x509_cert->cert_buffer()),
-            net::x509_util::DefaultParseCertificateOptions(), nullptr);
+        CreateParsedCertificate(bssl::UpRef(x509_cert->cert_buffer()), nullptr);
     if (cert) {
       parsed_certs.push_back(std::move(cert));
     }
@@ -544,14 +545,98 @@ bssl::ParseCertificateOptions DefaultParseCertificateOptions() {
   return options;
 }
 
+namespace {
+
+// Classifies the attribute order of the RDNs in `name_tlv`, or returns
+// `std::nullopt` if `name_tlv` is not a valid Name. This is used for metrics.
+//
+// TODO(crbug.com/506186107): If metrics show it is safe, require sorted RDNs in
+// `bssl::ParseNameValue` and `bssl::ReadRdn`, and remove this.
+std::optional<RdnAttributeOrder> GetRdnAttributeOrder(
+    bssl::der::Input name_tlv) {
+  bssl::der::Parser name_parser(name_tlv);
+  bssl::der::Parser rdn_sequence_parser;
+  if (!name_parser.ReadSequence(&rdn_sequence_parser) ||
+      name_parser.HasMore()) {
+    return std::nullopt;
+  }
+
+  RdnAttributeOrder order = RdnAttributeOrder::kAllSingleValued;
+  while (rdn_sequence_parser.HasMore()) {
+    bssl::der::Input rdn;
+    if (!rdn_sequence_parser.ReadTag(CBS_ASN1_SET, &rdn)) {
+      return std::nullopt;
+    }
+    CBS rdn_cbs;
+    CBS_init(&rdn_cbs, rdn.data(), rdn.size());
+    if (!CBS_is_valid_asn1_set_of(&rdn_cbs)) {
+      return RdnAttributeOrder::kMultiValuedUnsorted;
+    }
+
+    bssl::der::Parser rdn_parser(rdn);
+    bssl::der::Input attribute;
+    if (!rdn_parser.ReadRawTLV(&attribute)) {
+      return std::nullopt;
+    }
+    if (rdn_parser.HasMore()) {
+      order = RdnAttributeOrder::kMultiValuedSorted;
+    }
+  }
+  return order;
+}
+
+}  // namespace
+
+std::shared_ptr<const bssl::ParsedCertificate> CreateParsedCertificate(
+    bssl::UniquePtr<CRYPTO_BUFFER> cert_buffer,
+    bssl::CertErrors* errors) {
+  std::shared_ptr<const bssl::ParsedCertificate> cert =
+      bssl::ParsedCertificate::Create(std::move(cert_buffer),
+                                      DefaultParseCertificateOptions(), errors);
+  if (!cert) {
+    return nullptr;
+  }
+
+  bssl::der::Input serial = cert->tbs().serial_number;
+  base::UmaHistogramCounts100("Net.Certificate.SerialNumberLength",
+                              serial.size());
+
+  SerialNumberType type;
+  bool negative;
+  static constexpr uint8_t kZero[] = {0};
+  if (!bssl::der::IsValidInteger(serial, &negative)) {
+    type = SerialNumberType::kInvalid;
+  } else if (negative) {
+    type = SerialNumberType::kNegative;
+  } else if (serial == bssl::der::Input(kZero)) {
+    type = SerialNumberType::kZero;
+  } else {
+    type = SerialNumberType::kPositive;
+  }
+  base::UmaHistogramEnumeration("Net.Certificate.SerialNumberType", type);
+
+  // `bssl::ParsedCertificate::Create` already checked that both names parse.
+  if (std::optional<RdnAttributeOrder> order =
+          GetRdnAttributeOrder(cert->tbs().subject_tlv)) {
+    base::UmaHistogramEnumeration("Net.Certificate.RdnAttributeOrder.Subject",
+                                  *order);
+  }
+  if (std::optional<RdnAttributeOrder> order =
+          GetRdnAttributeOrder(cert->tbs().issuer_tlv)) {
+    base::UmaHistogramEnumeration("Net.Certificate.RdnAttributeOrder.Issuer",
+                                  *order);
+  }
+
+  return cert;
+}
+
 SHA256HashValue CalculateSha256SpkiHash(const CRYPTO_BUFFER* buffer) {
   std::string_view spki;
   CHECK(asn1::ExtractSPKIFromDERCert(CryptoBufferAsStringPiece(buffer), &spki));
   return crypto::hash::Sha256(base::as_byte_span(spki));
 }
 
-bool SignatureVerifierInitWithCertificate(
-    crypto::SignatureVerifier* verifier,
+std::optional<crypto::sign::Verifier> CreateSignatureVerifierWithCertificate(
     crypto::sign::SignatureKind signature_algorithm,
     base::span<const uint8_t> signature,
     const CRYPTO_BUFFER* certificate) {
@@ -566,14 +651,14 @@ bool SignatureVerifierInitWithCertificate(
                               nullptr) ||
       !ParseTbsCertificate(tbs_certificate_tlv,
                            DefaultParseCertificateOptions(), &tbs, nullptr)) {
-    return false;
+    return std::nullopt;
   }
 
   // The key usage extension, if present, must assert the digitalSignature bit.
   if (tbs.extensions_tlv) {
     std::map<bssl::der::Input, bssl::ParsedExtension> extensions;
     if (!ParseExtensions(tbs.extensions_tlv.value(), &extensions)) {
-      return false;
+      return std::nullopt;
     }
     bssl::ParsedExtension key_usage_ext;
     if (ConsumeExtension(bssl::der::Input(bssl::kKeyUsageOid), &extensions,
@@ -581,12 +666,19 @@ bool SignatureVerifierInitWithCertificate(
       bssl::der::BitString key_usage;
       if (!bssl::ParseKeyUsage(key_usage_ext.value, &key_usage) ||
           !key_usage.AssertsBit(bssl::KEY_USAGE_BIT_DIGITAL_SIGNATURE)) {
-        return false;
+        return std::nullopt;
       }
     }
   }
 
-  return verifier->VerifyInit(signature_algorithm, signature, tbs.spki_tlv);
+  std::optional<crypto::keypair::PublicKey> public_key =
+      crypto::keypair::PublicKey::FromSubjectPublicKeyInfo(tbs.spki_tlv);
+  if (!public_key) {
+    return std::nullopt;
+  }
+
+  return crypto::sign::Verifier(signature_algorithm, std::move(*public_key),
+                                signature);
 }
 
 bool HasRsaPkcs1Sha1Signature(const CRYPTO_BUFFER* cert_buffer) {

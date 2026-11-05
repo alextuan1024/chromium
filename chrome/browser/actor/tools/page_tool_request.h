@@ -10,12 +10,12 @@
 #include <string>
 #include <variant>
 
+#include "chrome/browser/actor/actor_surface_handle.h"
 #include "chrome/browser/actor/tools/tool_request.h"
 #include "chrome/common/actor.mojom-forward.h"
 #include "components/actor/core/shared_types.h"
 #include "components/actor/core/task_id.h"
 #include "ui/gfx/geometry/point.h"
-#include "url/gurl.h"
 
 namespace content {
 class RenderFrameHost;
@@ -23,7 +23,11 @@ class RenderFrameHost;
 
 namespace actor {
 
-mojom::ToolTargetPtr ToMojo(const PageTarget& target);
+// Converts `target` into a Mojo `ToolTarget` in `frame`'s view coordinate
+// space. Returns `nullptr` if coordinate transformation into `frame`'s view
+// coordinate space fails.
+mojom::ToolTargetPtr ToMojo(const PageTarget& target,
+                            content::RenderFrameHost& frame);
 // Tool requests targeting a specific, existing document should inherit from
 // this subclass. Being page-scoped implies also being tab-scoped since a page
 // exists inside a tab.
@@ -35,12 +39,15 @@ mojom::ToolTargetPtr ToMojo(const PageTarget& target);
 // ready to invoke.
 class PageToolRequest : public TabToolRequest {
  public:
-  PageToolRequest(tabs::TabHandle tab_handle, const PageTarget& target);
+  PageToolRequest(ActorSurfaceHandle actor_surface_handle,
+                  const PageTarget& target);
   ~PageToolRequest() override;
   PageToolRequest(const PageToolRequest& other);
 
   // Converts this request into the ToolAction mojo message which can be
-  // executed in the renderer.
+  // executed in the renderer. Returns nullptr if the request parameters cannot
+  // be converted for `frame` (e.g. when coordinate transformation into
+  // `frame`'s view space fails).
   virtual mojom::ToolActionPtr ToMojoToolAction(
       content::RenderFrameHost& frame) const = 0;
 

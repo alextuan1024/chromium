@@ -4,7 +4,6 @@
 
 #include "chrome/browser/safe_browsing/download_protection/download_protection_util.h"
 
-#include "base/feature_list.h"
 #include "base/functional/callback_helpers.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/metrics/histogram_macros.h"
@@ -14,11 +13,11 @@
 #include "chrome/browser/enterprise/connectors/referrer_cache_utils.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/safe_browsing/download_protection/download_item_metadata.h"
-#include "chrome/browser/safe_browsing/safe_browsing_navigation_observer_manager_factory.h"
+#include "chrome/browser/safe_browsing/navigation_observer/safe_browsing_navigation_observer_manager_factory.h"
 #include "components/download/public/common/download_danger_type.h"
 #include "components/enterprise/connectors/core/reporting_utils.h"
 #include "components/safe_browsing/buildflags.h"
-#include "components/safe_browsing/content/common/file_type_policies.h"
+#include "components/safe_browsing/content/common/file_type_policies/file_type_policies.h"
 #include "components/safe_browsing/core/browser/referrer_chain_provider.h"
 #include "components/safe_browsing/core/common/proto/csd.pb.h"
 #include "components/safe_browsing/core/common/safe_browsing_prefs.h"
@@ -34,10 +33,6 @@
 
 #if !BUILDFLAG(IS_ANDROID)
 #include "chrome/browser/safe_browsing/download_protection/deep_scanning_request.h"
-#endif
-
-#if BUILDFLAG(IS_ANDROID)
-#include "components/enterprise/connectors/core/features.h"
 #endif
 
 namespace safe_browsing {
@@ -461,22 +456,8 @@ bool ShouldSendDangerousDownloadReport(
 }
 #endif
 
-bool IsDeepScanningEnabled() {
-#if BUILDFLAG(IS_ANDROID)
-  // On Android, only Enterprise scan may be enabled. Consumer deep scan is not
-  // (yet) supported.
-  return base::FeatureList::IsEnabled(
-      enterprise_connectors::kEnableDownloadEnterpriseScanOnClank);
-#else
-  return true;
-#endif
-}
-
 std::optional<enterprise_connectors::AnalysisSettings>
 ShouldUploadBinaryForDeepScanning(download::DownloadItem* item) {
-  if (!IsDeepScanningEnabled()) {
-    return std::nullopt;
-  }
   // Create temporary metadata wrapper on the stack.
   DownloadItemMetadata metadata(item);
   return DeepScanningRequest::ShouldUploadBinary(metadata);

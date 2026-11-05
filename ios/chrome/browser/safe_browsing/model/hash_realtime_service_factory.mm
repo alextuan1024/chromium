@@ -4,7 +4,8 @@
 
 #import "ios/chrome/browser/safe_browsing/model/hash_realtime_service_factory.h"
 
-#import "base/feature_list.h"
+#import <utility>
+
 #import "components/safe_browsing/core/browser/db/v5_search_hashes_cache.h"
 #import "components/safe_browsing/core/browser/hashprefix_realtime/hash_realtime_service.h"
 #import "components/safe_browsing/ios/browser/web_ui/web_ui_ios_info_singleton.h"
@@ -22,28 +23,17 @@ network::mojom::NetworkContext* GetNetworkContext() {
 
 }  // namespace
 
-// static
-safe_browsing::HashRealTimeService* HashRealTimeServiceFactory::GetForProfile(
-    ProfileIOS* profile) {
-  return GetInstance()
-      ->GetServiceForProfileAs<safe_browsing::HashRealTimeService>(
-          profile, /*create=*/true);
-}
-
-// static
-HashRealTimeServiceFactory* HashRealTimeServiceFactory::GetInstance() {
-  static base::NoDestructor<HashRealTimeServiceFactory> instance;
-  return instance.get();
-}
-
-HashRealTimeServiceFactory::HashRealTimeServiceFactory()
-    : ProfileKeyedServiceFactoryIOS("HashRealTimeService") {
+HashRealTimeServiceFactory::HashRealTimeServiceFactory(PassKey key)
+    : TypedProfileKeyedServiceFactoryIOS(
+          std::move(key),
+          "HashRealTimeService",
+          ProfileSelection::kOwnInstanceInIncognito) {
   DependsOn(V5SearchHashesCacheFactory::GetInstance());
   DependsOn(OhttpKeyServiceFactory::GetInstance());
 }
 
 std::unique_ptr<KeyedService>
-HashRealTimeServiceFactory::BuildServiceInstanceFor(ProfileIOS* profile) const {
+HashRealTimeServiceFactory::BuildServiceInstanceFor(ProfileIOS& profile) const {
   SafeBrowsingService* safe_browsing_service =
       GetApplicationContext()->GetSafeBrowsingService();
   if (!safe_browsing_service) {
@@ -53,5 +43,6 @@ HashRealTimeServiceFactory::BuildServiceInstanceFor(ProfileIOS* profile) const {
       base::BindRepeating(&GetNetworkContext),
       V5SearchHashesCacheFactory::GetForProfile(profile),
       OhttpKeyServiceFactory::GetForProfile(profile),
-      /*webui_delegate=*/safe_browsing::WebUIIOSInfoSingleton::GetInstance());
+      /*webui_delegate=*/safe_browsing::WebUIIOSInfoSingleton::GetInstance(),
+      profile.IsOffTheRecord() ? "Incognito" : "Regular");
 }

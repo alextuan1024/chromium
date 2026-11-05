@@ -75,12 +75,20 @@ public class ProfileResolver implements PartitionResolver {
     @VisibleForTesting
     @NativeMethods
     public interface Natives {
-        String tokenizeProfile(@Nullable @JniType("Profile*") Profile profile);
+        @JniType("std::string")
+        String tokenizeProfile(@JniType("Profile*") @Nullable Profile profile);
 
-        String tokenizeProfileKey(@Nullable ProfileKey profileKey);
+        @JniType("std::string")
+        String tokenizeProfileKey(@JniType("ProfileKey*") @Nullable ProfileKey profileKey);
 
-        void resolveProfile(@Nullable String token, Callback<@Nullable Profile> callback);
+        void resolveProfile(
+                @JniType("std::optional<std::string>") @Nullable String token,
+                @JniType("base::OnceCallback<void(Profile*)>")
+                        Callback<@Nullable Profile> callback);
 
-        void resolveProfileKey(@Nullable String token, Callback<@Nullable ProfileKey> callback);
+        void resolveProfileKey(
+                @JniType("std::optional<std::string>") @Nullable String token,
+                @JniType("base::OnceCallback<void(ProfileKey*)>")
+                        Callback<@Nullable ProfileKey> callback);
     }
 }

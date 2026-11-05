@@ -13,7 +13,7 @@ export type {Bookmark} from './bookmark_type.js';
 export {BrowserApi, ZoomBehavior} from './browser_api.js';
 // <if expr="enable_pdf_ink2">
 export {AnnotationBrushType, TextAlignment, TextAnnotationSource, TextStyle, TextTypeface} from './constants.js';
-export type {AnnotationBrush, Color, TextAnnotation, TextAnnotationMessageData, TextAttributes, TextBoxRect} from './constants.js';
+export type {AnnotationBrush, Color, DeleteTextAnnotationMessageData, TextAnnotation, TextAnnotationMessageData, TextAttributes, TextBoxRect} from './constants.js';
 // </if>
 // <if expr="enable_pdf_ink2">
 export {AnnotationMode} from './constants.js';
@@ -27,8 +27,9 @@ export {PluginController} from './controller.js';
 export type {SaveMessage} from './controller.js';
 // <if expr="enable_pdf_ink2">
 export {PluginControllerEventType} from './controller.js';
-export type {AnnotationBrushMessage} from './controller.js';
+export type {AnnotationBrushMessage, ContinueSignatureStrokeMessage, FinishSignatureStrokeMessage, StartSignatureStrokeMessage} from './controller.js';
 export {HIGHLIGHTER_COLORS, InkAnnotationBrushMixin, PEN_COLORS} from './elements/ink_annotation_brush_mixin.js';
+export {SIGNATURE_COLORS} from './elements/ink_annotation_signature_mixin.js';
 export {InkAnnotationTextMixin, TEXT_COLORS, TEXT_SIZES} from './elements/ink_annotation_text_mixin.js';
 export {InkBrushSelectorElement} from './elements/ink_brush_selector.js';
 export {InkColorSelectorElement} from './elements/ink_color_selector.js';
@@ -36,6 +37,7 @@ export {InkSizeSelectorElement, HIGHLIGHTER_SIZES, PEN_SIZES} from './elements/i
 export {InkTextAnnotationsElement} from './elements/ink_text_annotations.js';
 export {InkTextBoxElement, TextBoxState} from './elements/ink_text_box.js';
 export {SelectableIconButtonElement} from './elements/selectable_icon_button.js';
+export {SignatureSelectorElement} from './elements/signature_selector.js';
 export {TextAlignmentSelectorElement} from './elements/text_alignment_selector.js';
 export {TextStylesSelectorElement} from './elements/text_styles_selector.js';
 // </if>
@@ -60,6 +62,9 @@ export {ViewerSaveToDriveControlsElement} from './elements/viewer_save_to_drive_
 // </if>
 // <if expr="enable_pdf_ink2">
 export {ViewerSidePanelElement} from './elements/viewer_side_panel.js';
+export {ViewerSignatureBottomToolbarElement} from './elements/viewer_signature_bottom_toolbar.js';
+export {ViewerSignatureDialogElement} from './elements/viewer_signature_dialog.js';
+export {ViewerSignatureSidePanelElement} from './elements/viewer_signature_side_panel.js';
 export {ViewerTextBottomToolbarElement} from './elements/viewer_text_bottom_toolbar.js';
 export {ViewerTextSidePanelElement} from './elements/viewer_text_side_panel.js';
 // </if>
@@ -74,12 +79,14 @@ export type {TextBoxInit} from './ink2_manager.js';
 export {UndoRedoStack} from './undo_redo_stack.js';
 export type {UndoRedoState, UndoRedoStateChangedDetail} from './undo_redo_stack.js';
 // </if>
+export {LocalStorageProxyImpl} from './local_storage_proxy.js';
+export type {LocalStorageProxy} from './local_storage_proxy.js';
 export type {PdfPluginElement} from './internal_plugin.js';
 export {PostMessageDataType, record, recordFitTo, resetForTesting, UserAction} from './metrics.js';
 export {PdfNavigatorImpl, WindowOpenDisposition} from './navigator.js';
 export type {NavigatorDelegate, PdfNavigator} from './navigator.js';
 export {OpenPdfParamsParser, ViewMode} from './open_pdf_params_parser.js';
-export {getFilenameFromURL, PdfViewerElement} from './pdf_viewer.js';
+export {getFilenameFromURL, LOCAL_STORAGE_TWO_UP_VIEW_ENABLED_KEY, PdfViewerElement} from './pdf_viewer.js';
 export {PdfViewerBaseElement} from './pdf_viewer_base.js';
 // <if expr="enable_pdf_save_to_drive">
 export {PdfViewerPrivateProxyImpl} from './pdf_viewer_private_proxy.js';

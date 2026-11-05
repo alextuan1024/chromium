@@ -10,8 +10,6 @@
 
 #include <stddef.h>
 
-#include <string_view>
-
 #include "base/containers/flat_set.h"
 #include "base/containers/span.h"
 #include "base/strings/cstring_view.h"
@@ -81,6 +79,7 @@ inline constexpr char kChromeUIConstrainedHTMLTestURL[] =
     "chrome://constrained-test/";
 inline constexpr char kChromeUIContactInfoPath[] = "/contactInfo";
 inline constexpr char kChromeUIContextHubHost[] = "context-hub";
+inline constexpr char kChromeUIContextHubURL[] = "chrome://context-hub/";
 #if !BUILDFLAG(IS_ANDROID)
 inline constexpr char kChromeUIContextualCueingInternalsHost[] =
     "contextual-cueing-internals";
@@ -97,6 +96,9 @@ inline constexpr char kChromeUIContentSettingsURL[] =
     "chrome://settings/content";
 inline constexpr char16_t kChromeUICookieSettingsURL[] =
     u"chrome://settings/cookies";
+#if !BUILDFLAG(IS_ANDROID)
+inline constexpr char kChromeUICraftHost[] = "craft";
+#endif
 inline constexpr char kChromeUICrashesHost[] = "crashes";
 inline constexpr char kChromeUICrashesUrl[] = "chrome://crashes";
 inline constexpr char kChromeUICreditsHost[] = "credits";
@@ -119,10 +121,15 @@ inline constexpr char kChromeUIDataSharingInternalsHost[] =
 inline constexpr char kChromeUIDefaultHost[] = "version";
 inline constexpr char kChromeUIDelayedHangUIHost[] = "delayeduithreadhang";
 inline constexpr char kChromeUIDeviceLogHost[] = "device-log";
+// TODO(crbug.com/570417844): Finalize the settings URL path with UX/PM
+// before launch.
+inline constexpr char kChromeUIDeviceTabVisibilitySettingsURL[] =
+    "chrome://settings/deviceTabVisibility";
 inline constexpr char kChromeUIDevToolsBlankPath[] = "blank";
 inline constexpr char kChromeUIDevToolsBundledPath[] = "bundled";
 inline constexpr char kChromeUIDevToolsCustomPath[] = "custom";
 inline constexpr char kChromeUIDevToolsHost[] = "devtools";
+inline constexpr char kChromeUIDevToolsRemoteHost[] = "devtools-remote";
 inline constexpr char kChromeUIDevToolsRemotePath[] = "remote";
 inline constexpr char kChromeUIDevToolsURL[] =
     "devtools://devtools/bundled/inspector.html";
@@ -237,9 +244,11 @@ inline constexpr char kChromeUIUntrustedNtpMicrosoftAuthHost[] =
 inline constexpr char kChromeUIUntrustedNtpMicrosoftAuthURL[] =
     "chrome-untrusted://ntp-microsoft-auth/";
 inline constexpr char kChromeUINTPTilesInternalsHost[] = "ntp-tiles-internals";
-inline constexpr char kChromeUIOmniboxHost[] = "omnibox";
-inline constexpr char kChromeUIOmniboxAimEligibilityPage[] =
-    "omnibox/aim-eligibility";
+inline constexpr char kChromeUIOmniboxInternalsAimEligibilityPage[] =
+    "omnibox-internals/aim-eligibility";
+inline constexpr char kChromeUIOmniboxInternalsHost[] = "omnibox-internals";
+inline constexpr char kChromeUIOmniboxInternalsURL[] =
+    "chrome://omnibox-internals/";
 inline constexpr char kChromeUIOmniboxPopupHost[] = "omnibox-popup.top-chrome";
 inline constexpr char kChromeUIOmniboxEverywhereHost[] =
     "omnibox-everywhere.top-chrome";
@@ -249,7 +258,6 @@ inline constexpr char kChromeUIOmniboxPopupURL[] =
     "chrome://omnibox-popup.top-chrome/";
 inline constexpr char kChromeUIOmniboxPopupAimURL[] =
     "chrome://omnibox-popup.top-chrome/omnibox_popup_aim.html";
-inline constexpr char kChromeUIOmniboxURL[] = "chrome://omnibox/";
 inline constexpr char kChromeUIOrganizerPanelHost[] =
     "organizer-panel.top-chrome";
 inline constexpr char kChromeUIOrganizerPanelURL[] =
@@ -323,10 +331,6 @@ inline constexpr char kChromeUISubresourceFilterInternalsHost[] =
     "subresource-filter-internals";
 inline constexpr char kChromeUISuggestInternalsHost[] = "suggest-internals";
 inline constexpr char kChromeUISupportToolHost[] = "support-tool";
-inline constexpr char kChromeUISyncConfirmationHost[] = "sync-confirmation";
-inline constexpr char kChromeUISyncConfirmationLoadingPath[] = "loading";
-inline constexpr char kChromeUISyncConfirmationURL[] =
-    "chrome://sync-confirmation/";
 inline constexpr char kChromeUISyncInternalsHost[] = "sync-internals";
 inline constexpr char kChromeUISystemInfoHost[] = "system";
 inline constexpr char kChromeUIAiOverlayDialogUntrustedHost[] =
@@ -383,6 +387,9 @@ inline constexpr char kChromeUINativeNewTabURL[] = "chrome-native://newtab/";
 inline constexpr char kChromeUINotificationsInternalsHost[] =
     "notifications-internals";
 inline constexpr char kChromeUISnippetsInternalsHost[] = "snippets-internals";
+inline constexpr char kChromeUITabStripNtbHost[] = "tabstrip-ntb.top-chrome";
+inline constexpr char kChromeUITabStripNtbURL[] =
+    "chrome://tabstrip-ntb.top-chrome/";
 inline constexpr char kChromeUIWebApksHost[] = "webapks";
 #else
 inline constexpr char kChromeUIAppServiceInternalsHost[] =
@@ -413,8 +420,6 @@ inline constexpr char kChromeUILensUntrustedSidePanelURL[] =
 inline constexpr char kChromeUIMultistepFilterInternalsHost[] =
     "multistep-filter-internals";
 inline constexpr char kChromeUINearbyInternalsHost[] = "nearby-internals";
-inline constexpr char kChromeUINearbyShareHost[] = "nearby";
-inline constexpr char kChromeUINearbyShareURL[] = "chrome://nearby/";
 inline constexpr char kChromeUIOnDeviceInternalsHost[] = "on-device-internals";
 inline constexpr char kChromeUIReadLaterHost[] = "read-later.top-chrome";
 inline constexpr char kChromeUIReadLaterURL[] =
@@ -442,13 +447,6 @@ inline constexpr char kChromeUIWebuiBrowserURL[] = "chrome://webui-browser/";
 inline constexpr char kChromeUIWebUIJsErrorHost[] = "webuijserror";
 inline constexpr char kChromeUIWebUIJsErrorURL[] = "chrome://webuijserror/";
 #endif  // BUILDFLAG(IS_ANDROID)
-
-#if BUILDFLAG(IS_CHROMEOS)
-// Returns true if this web UI is part of the "system UI". Generally this is
-// UI that opens in a window (not a browser tab) and that on other operating
-// systems would be considered part of the OS or window manager.
-bool IsSystemWebUIHost(std::string_view host);
-#endif  // BUILDFLAG(IS_CHROMEOS)
 
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX) || \
     BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_DESKTOP_ANDROID)
@@ -514,6 +512,7 @@ inline constexpr char kChromeUIProfilePickerOmniboxEverywhereQuery[] =
     "omnibox-everywhere";
 inline constexpr char kChromeUIProfilePickerUrl[] = "chrome://profile-picker/";
 inline constexpr char kChromeUIHistorySyncOptinHost[] = "history-sync-optin";
+inline constexpr char kChromeUIHistorySyncOptinLoadingPath[] = "loading";
 inline constexpr char kChromeUIHistorySyncOptinURL[] =
     "chrome://history-sync-optin/";
 inline constexpr char kChromeUIUpdaterHost[] = "updater";
@@ -543,6 +542,7 @@ inline constexpr char kChromeUITabStripInternalsHost[] = "tab-strip-internals";
 // chrome_autocomplete_provider_client.cc to be listed by the built-in
 // AutocompleteProvider.
 
+inline constexpr char kAccessibilitySubPage[] = "accessibility";
 inline constexpr char kAccountSubPage[] = "account";
 inline constexpr char kAddressesSubPage[] = "addresses";
 inline constexpr char kAdPrivacySubPage[] = "adPrivacy";
@@ -561,11 +561,13 @@ inline constexpr char kDownloadsSubPage[] = "downloads";
 inline constexpr char kExperimentalAISettingsSubPage[] = "ai";
 inline constexpr char kFileSystemSettingsSubpage[] =
     "content/filesystem/siteDetails";
+inline constexpr char kFontsSubPage[] = "fonts";
 inline constexpr char kGlicSettingsSubpage[] = "ai/gemini";
+inline constexpr char kGlicEnterpriseSettingsSubpage[] = "ai/geminienterprise";
 inline constexpr char kGlicLoginSettingsSubpage[] = "ai/gemini/login";
 inline constexpr char kGoogleServicesSubpage[] = "googleServices";
 inline constexpr char kHandlerSettingsSubPage[] = "handlers";
-inline constexpr char kHistorySearchSubpage[] = "ai/historySearch";
+inline constexpr char kHelpSubPage[] = "help";
 inline constexpr char kImportDataSubPage[] = "importData";
 inline constexpr char kLanguageOptionsSubPage[] = "languages";
 inline constexpr char kLanguagesSubPage[] = "languages/details";
@@ -579,6 +581,7 @@ inline constexpr char kPaymentsSubPage[] = "payments";
 inline constexpr char kIdentityDocsSubPage[] = "identityDocs";
 inline constexpr char kTravelSubPage[] = "travel";
 inline constexpr char kShoppingSubPage[] = "shopping";
+inline constexpr char kOffersAndLoyaltyCardsSubPage[] = "offersAndLoyaltyCards";
 inline constexpr char kPeopleSubPage[] = "people";
 inline constexpr char kPerformanceSubPage[] = "performance";
 inline constexpr char kPrivacyGuideSubPage[] = "privacy/guide";
@@ -593,9 +596,16 @@ inline constexpr char kSafetyCheckSubPage[] = "safetyCheck";
 inline constexpr char kSafetyHubSubPage[] = "safetyCheck";
 inline constexpr char kSearchEnginesSubPage[] = "searchEngines";
 inline constexpr char kSearchSubPage[] = "search";
+inline constexpr char kSecurityKeysSubPage[] = "securityKeys";
 inline constexpr char kSecuritySubPage[] = "security";
 inline constexpr char kSignOutSubPage[] = "signOut";
 inline constexpr char kSiteDetailsSubpage[] = "content/siteDetails";
+#if BUILDFLAG(IS_ANDROID)
+// Android shows settings in a native page rather than the settings WebUI, and
+// does not nest the site details page under the content settings page. Keep in
+// sync with the route registered in SettingsFragmentRegistry.java.
+inline constexpr char kAndroidSiteDetailsSubpage[] = "siteDetails";
+#endif  // BUILDFLAG(IS_ANDROID)
 inline constexpr char kSuggestionsFromGeminiSubPage[] = "enhancedAutofill";
 inline constexpr char kSuggestionsSubPage[] = "ai/suggestions";
 inline constexpr char kSyncSetupSubPage[] = "syncSetup";

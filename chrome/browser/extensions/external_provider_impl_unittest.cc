@@ -17,6 +17,7 @@
 #include "base/path_service.h"
 #include "base/run_loop.h"
 #include "base/strings/stringprintf.h"
+#include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/scoped_path_override.h"
 #include "base/time/time.h"
@@ -77,6 +78,10 @@
 #include "base/win/registry.h"
 #endif
 
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
+#include "chrome/browser/extensions/policy_dse_ntp_override_metrics_reporter.h"
+#endif
+
 namespace extensions {
 
 namespace {
@@ -108,7 +113,7 @@ const char kExternalExtensionId[] = "ghpipljflpbfljcfjlhfbfcpoklobpji";
 
 #if BUILDFLAG(IS_WIN)
 const char kExternalExtensionCrxPath[] =
-    "external\\ghpipljflpbfljcfjlhfbfcpoklobpji.crx";
+    "external_extension\\ghpipljflpbfljcfjlhfbfcpoklobpji.crx";
 const wchar_t kExternalExtensionRegistryKey[] =
     L"Software\\Google\\Chrome\\Extensions\\ghpipljflpbfljcfjlhfbfcpoklobpji";
 #endif
@@ -458,6 +463,9 @@ TEST_F(ExternalProviderImplTest, LowTrustBlockedScannerBypass) {
       kGoodApp.app_id);
 
   // 1. Simulate an unmanaged (low trust) environment.
+  policy::ScopedManagementServiceOverrideForTesting platform_management(
+      policy::ManagementServiceFactory::GetForPlatform(),
+      policy::EnterpriseManagementAuthority::NONE);
   policy::ScopedManagementServiceOverrideForTesting profile_management(
       policy::ManagementServiceFactory::GetForProfile(profile()),
       policy::EnterpriseManagementAuthority::NONE);
@@ -497,7 +505,13 @@ TEST_F(ExternalProviderImplTest, LowTrustBlockedScannerBypass) {
                   ->IsBlocked(kGoodApp.app_id));
 
   // Run the scan again.
-  raw_provider->VisitRegisteredExtension();
+  {
+    base::HistogramTester histograms;
+    raw_provider->VisitRegisteredExtension();
+    histograms.ExpectUniqueSample("Extensions.LowTrustPolicyBlock.Action",
+                                  LowTrustPolicyBlockAction::kSkippedDownload,
+                                  1);
+  }
 
   // Second time: Since the extension is in the blocked cache and the
   // environment is low-trust, it is skipped and not added to the pending
@@ -584,6 +598,9 @@ TEST_F(ExternalProviderImplTest, LowTrustPolicyTakeoverPrevention) {
       registry()->GetInstalledExtension(user_extension->id())->location());
 
   // 2. Simulate an unmanaged (low trust) environment.
+  policy::ScopedManagementServiceOverrideForTesting platform_management(
+      policy::ManagementServiceFactory::GetForPlatform(),
+      policy::EnterpriseManagementAuthority::NONE);
   auto* management_service =
       policy::ManagementServiceFactory::GetForProfile(profile());
   policy::ScopedManagementServiceOverrideForTesting profile_management(
@@ -611,7 +628,13 @@ TEST_F(ExternalProviderImplTest, LowTrustPolicyTakeoverPrevention) {
   external_provider_manager()->AddProviderForTesting(std::move(provider));
 
   // Run the provider update loop. This will synchronously trigger the scan.
-  raw_provider->VisitRegisteredExtension();
+  {
+    base::HistogramTester histograms;
+    raw_provider->VisitRegisteredExtension();
+    histograms.ExpectUniqueSample(
+        "Extensions.LowTrustPolicyBlock.Action",
+        LowTrustPolicyBlockAction::kBlockedPolicyTakeoverOfUserInstall, 1);
+  }
 
   // Verify that in a low-trust environment, policy installation does not
   // override the existing user-installed extension location.

@@ -4,6 +4,7 @@
 
 package org.chromium.chrome.browser.tab;
 
+import static org.chromium.build.NullUtil.assertNonNull;
 import static org.chromium.build.NullUtil.assumeNonNull;
 
 import android.app.Activity;
@@ -30,35 +31,29 @@ import org.chromium.chrome.browser.bookmarks.BookmarkModel;
 import org.chromium.chrome.browser.bookmarks.BookmarkUtils;
 import org.chromium.chrome.browser.contextual_tasks.ContextualTasksUtils;
 import org.chromium.chrome.browser.document.ChromeLauncherActivity;
-import org.chromium.chrome.browser.dom_distiller.ReaderModeManager;
 import org.chromium.chrome.browser.download.DownloadUtils;
 import org.chromium.chrome.browser.ephemeraltab.EphemeralTabCoordinator;
 import org.chromium.chrome.browser.flags.ActivityType;
 import org.chromium.chrome.browser.incognito.IncognitoUtils;
 import org.chromium.chrome.browser.multiwindow.MultiInstanceOrchestratorFactory;
 import org.chromium.chrome.browser.multiwindow.MultiWindowUtils;
-import org.chromium.chrome.browser.offlinepages.OfflinePageBridge;
-import org.chromium.chrome.browser.offlinepages.RequestCoordinatorBridge;
-import org.chromium.chrome.browser.preferences.Pref;
 import org.chromium.chrome.browser.price_tracking.PriceDropNotificationManagerFactory;
-import org.chromium.chrome.browser.printing.TabPrinter;
+import org.chromium.chrome.browser.printing.PrintingDelegate;
 import org.chromium.chrome.browser.profiles.Profile;
+import org.chromium.chrome.browser.reader_mode.ReaderModeManager;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
 import org.chromium.components.embedder_support.contextmenu.ContextMenuItemDelegate;
 import org.chromium.components.embedder_support.util.UrlUtilities;
+import org.chromium.components.external_intents.ExternalNavigationHelper;
 import org.chromium.components.user_prefs.UserPrefs;
 import org.chromium.content_public.browser.AdditionalNavigationParams;
 import org.chromium.content_public.browser.LoadUrlParams;
 import org.chromium.content_public.browser.WebContents;
 import org.chromium.content_public.common.Referrer;
-import org.chromium.printing.PrintManagerDelegateImpl;
-import org.chromium.printing.PrintingController;
-import org.chromium.printing.PrintingControllerImpl;
 import org.chromium.ui.base.Clipboard;
 import org.chromium.ui.base.PageTransition;
-import org.chromium.ui.base.WindowAndroid;
 import org.chromium.url.GURL;
 
 import java.util.function.Supplier;
@@ -75,7 +70,8 @@ public class TabContextMenuItemDelegate implements ContextMenuItemDelegate {
     private final Supplier<@Nullable EphemeralTabCoordinator> mEphemeralTabCoordinatorSupplier;
     private final Runnable mContextMenuCopyLinkObserver;
     private final Supplier<SnackbarManager> mSnackbarManagerSupplier;
-    private final Supplier<BottomSheetController> mBottomSheetControllerSupplier;
+    private final Supplier<@Nullable BottomSheetController> mBottomSheetControllerSupplier;
+    private final @Nullable PrintingDelegate mPrintingDelegate;
 
     /** Builds a {@link TabContextMenuItemDelegate} instance. */
     public TabContextMenuItemDelegate(
@@ -86,7 +82,8 @@ public class TabContextMenuItemDelegate implements ContextMenuItemDelegate {
             Supplier<@Nullable EphemeralTabCoordinator> ephemeralTabCoordinatorSupplier,
             Runnable contextMenuCopyLinkObserver,
             Supplier<SnackbarManager> snackbarManagerSupplier,
-            Supplier<BottomSheetController> bottomSheetControllerSupplier) {
+            Supplier<@Nullable BottomSheetController> bottomSheetControllerSupplier,
+            @Nullable PrintingDelegate printingDelegate) {
         mActivity = activity;
         mActivityType = activityType;
         mTab = (TabImpl) tab;
@@ -95,6 +92,7 @@ public class TabContextMenuItemDelegate implements ContextMenuItemDelegate {
         mContextMenuCopyLinkObserver = contextMenuCopyLinkObserver;
         mSnackbarManagerSupplier = snackbarManagerSupplier;
         mBottomSheetControllerSupplier = bottomSheetControllerSupplier;
+        mPrintingDelegate = printingDelegate;
     }
 
     @Override
@@ -151,11 +149,11 @@ public class TabContextMenuItemDelegate implements ContextMenuItemDelegate {
 
     @Override
     public boolean isPrintSupported() {
-        if (mTab == null) return false;
+        if (mTab == null || mPrintingDelegate == null) return false;
         if (ContextualTasksUtils.isContextualTasksUrl(mTab.getUrl())) {
             return false;
         }
-        return UserPrefs.get(mTab.getProfile()).getBoolean(Pref.PRINTING_ENABLED);
+        return mPrintingDelegate.isPrintingEnabled(UserPrefs.get(mTab.getProfile()));
     }
 
     @Override
@@ -177,12 +175,8 @@ public class TabContextMenuItemDelegate implements ContextMenuItemDelegate {
     @Override
     public void startPrint() {
         if (mActivity.isFinishing() || mActivity.isDestroyed()) return;
-        WindowAndroid windowAndroid = mTab.getWindowAndroid();
-        if (windowAndroid != null) {
-            PrintingController printingController =
-                    PrintingControllerImpl.getInstance(windowAndroid);
-            printingController.startPrint(
-                    new TabPrinter(mTab), new PrintManagerDelegateImpl(mActivity));
+        if (mPrintingDelegate != null) {
+            mPrintingDelegate.print(mTab);
         }
     }
 
@@ -212,7 +206,7 @@ public class TabContextMenuItemDelegate implements ContextMenuItemDelegate {
         Intent intent = new Intent(Intent.ACTION_VIEW);
         intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
         intent.setData(Uri.parse(url.getSpec()));
-        IntentUtils.safeStartActivity(mTab.getContext(), intent);
+        startExternalActivity(intent);
     }
 
     @Override
@@ -227,7 +221,7 @@ public class TabContextMenuItemDelegate implements ContextMenuItemDelegate {
         Intent intent = new Intent(Intent.ACTION_VIEW);
         intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
         intent.setData(Uri.parse(url.getSpec()));
-        IntentUtils.safeStartActivity(mTab.getContext(), intent);
+        startExternalActivity(intent);
     }
 
     @Override
@@ -240,8 +234,9 @@ public class TabContextMenuItemDelegate implements ContextMenuItemDelegate {
     @Override
     public void onSendTextMessage(GURL url) {
         Intent intent = new Intent(Intent.ACTION_VIEW);
+        intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
         intent.setData(Uri.parse("sms:" + UrlUtilities.getTelNumber(url)));
-        IntentUtils.safeStartActivity(mTab.getContext(), intent);
+        startExternalActivity(intent);
     }
 
     @Override
@@ -262,6 +257,26 @@ public class TabContextMenuItemDelegate implements ContextMenuItemDelegate {
                     MailTo.parse(url.getSpec()).getTo().split(",")[0]);
         } else if (UrlUtilities.isTelScheme(url)) {
             intent.putExtra(ContactsContract.Intents.Insert.PHONE, UrlUtilities.getTelNumber(url));
+        }
+        startExternalActivity(intent);
+    }
+
+    private void startExternalActivity(Intent intent) {
+        if (isIncognito()) {
+            InterceptNavigationDelegateTabHelper tabHelper =
+                    InterceptNavigationDelegateTabHelper.getFromTab(mTab);
+            if (tabHelper != null) {
+                ExternalNavigationHelper helper =
+                        tabHelper.getInterceptNavigationDelegate().getExternalNavigationHelper();
+                if (helper != null) {
+                    helper.launchExternalAppWithIncognitoConfirmation(
+                            intent,
+                            /* navigationId= */ -1,
+                            mTab.getContext(),
+                            CallbackUtils.emptyRunnable());
+                }
+            }
+            return;
         }
         IntentUtils.safeStartActivity(mTab.getContext(), intent);
     }
@@ -326,6 +341,8 @@ public class TabContextMenuItemDelegate implements ContextMenuItemDelegate {
         if (!isIncognito) {
             loadUrlParams.setReferrer(referrer);
             loadUrlParams.setAdditionalNavigationParams(additionalNavigationParams);
+        } else if (additionalNavigationParams != null) {
+            additionalNavigationParams.destroy();
         }
         MultiInstanceOrchestratorFactory.getInstance()
                 .openUrlInOtherWindow(
@@ -483,6 +500,9 @@ public class TabContextMenuItemDelegate implements ContextMenuItemDelegate {
             @Nullable AdditionalNavigationParams additionalNavigationParams) {
         EphemeralTabCoordinator ephemeralTabCoordinator = mEphemeralTabCoordinatorSupplier.get();
         if (ephemeralTabCoordinator == null) {
+            if (additionalNavigationParams != null) {
+                additionalNavigationParams.destroy();
+            }
             return;
         }
         var initiatorOrigin = getWebContents().getMainFrame().getLastCommittedOrigin();
@@ -522,16 +542,9 @@ public class TabContextMenuItemDelegate implements ContextMenuItemDelegate {
                             url,
                             mSnackbarManagerSupplier.get(),
                             mTab.getProfile(),
-                            mBottomSheetControllerSupplier.get(),
+                            assertNonNull(mBottomSheetControllerSupplier.get()),
                             new BookmarkManagerOpenerImpl(),
                             PriceDropNotificationManagerFactory.create(mTab.getProfile()));
-
-                    // Add to offline pages.
-                    assumeNonNull(RequestCoordinatorBridge.getForProfile(profile))
-                            .savePageLater(
-                                    url.getSpec(),
-                                    OfflinePageBridge.BOOKMARK_NAMESPACE,
-                                    /* userRequested= */ true);
                 });
     }
 

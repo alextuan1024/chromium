@@ -4,6 +4,8 @@
 
 #include "chrome/browser/ui/ash/login/user_adding_screen.h"
 
+#include <optional>
+
 #include "base/functional/bind.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/singleton.h"
@@ -16,9 +18,10 @@
 #include "chrome/browser/ui/ash/login/login_display_host_mojo.h"
 #include "chrome/browser/ui/ash/login/user_adding_screen_input_methods_controller.h"
 #include "chrome/browser/ui/ash/wallpaper/wallpaper_controller_client_impl.h"
+#include "components/account_id/account_id.h"
+#include "components/session_manager/core/session.h"
 #include "components/session_manager/core/session_manager.h"
 #include "components/session_manager/session_manager_types.h"
-#include "components/user_manager/user_manager.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
 
 namespace ash {
@@ -48,27 +51,59 @@ class UserAddingScreenImpl : public UserAddingScreen {
   raw_ptr<LoginDisplayHost, DanglingUntriaged> display_host_;
 
   UserAddingScreenInputMethodsController im_controller_;
+
+  // The user whose session the screen was opened on top of, so that Cancel()
+  // can put their wallpaper back and the input methods controller can tell
+  // whether a different user is active once the screen is gone. Empty when
+  // the screen was opened from the login screen, where no session exists.
+  std::optional<AccountId> interrupted_user_;
 };
 
 void UserAddingScreenImpl::Start() {
   // TODO(crbug.com/403154552): Avoid g_browser_process.
   PrefService* local_state = g_browser_process->local_state();
+  ::metrics::MetricsService* metrics_service =
+      g_browser_process->metrics_service();
   ApplicationLocaleStorage* application_locale_storage =
       g_browser_process->GetFeatures()->application_locale_storage();
   scoped_refptr<network::SharedURLLoaderFactory> shared_url_loader_factory =
       g_browser_process->shared_url_loader_factory();
   policy::BrowserPolicyConnectorAsh* browser_policy_connector_ash =
       g_browser_process->platform_part()->browser_policy_connector_ash();
+  scoped_refptr<component_updater::ComponentManagerAsh> component_manager_ash =
+      g_browser_process->platform_part()->component_manager_ash();
+  policy::DeviceRestrictionScheduleController*
+      device_restriction_schedule_controller =
+          g_browser_process->platform_part()
+              ->device_restriction_schedule_controller();
+  const user_manager::MultiUserSignInPolicyController*
+      multi_user_sign_in_policy_controller =
+          g_browser_process->platform_part()
+              ->multi_user_sign_in_policy_controller();
+  system::SystemClock* system_clock =
+      g_browser_process->platform_part()->GetSystemClock();
 
   CHECK(!IsRunning());
   display_host_ = new LoginDisplayHostMojo(
-      local_state, application_locale_storage, shared_url_loader_factory,
-      browser_policy_connector_ash, DisplayedScreen::USER_ADDING_SCREEN,
+      local_state, metrics_service, application_locale_storage,
+      shared_url_loader_factory, browser_policy_connector_ash,
+      component_manager_ash, device_restriction_schedule_controller,
+      multi_user_sign_in_policy_controller, system_clock,
+      DisplayedScreen::USER_ADDING_SCREEN,
       /*update_geolocation_usage_allowed=*/false);
+
+  // The screen adds a user to an existing session, but it is also reachable
+  // from the login screen, where there is none yet.
+  const session_manager::Session* const session =
+      session_manager::SessionManager::Get()->GetActiveSession();
+  interrupted_user_ =
+      session ? std::make_optional(session->account_id()) : std::nullopt;
 
   // This triggers input method manager to filter login screen methods. This
   // should happen before setting user input method, which happens when focusing
   // user pod (triggered by SetSessionState)"
+  im_controller_.OnScreenShown(interrupted_user_.has_value());
+
   for (auto& observer : observers_) {
     observer.OnBeforeUserAddingScreenStarted();
   }
@@ -85,9 +120,11 @@ void UserAddingScreenImpl::Cancel() {
   display_host_->CancelUserAdding();
 
   // Reset wallpaper if cancel adding user from multiple user sign in page.
-  if (user_manager::UserManager::Get()->IsUserLoggedIn()) {
+  // Nothing was added, so the user to put back is the one the screen
+  // interrupted.
+  if (interrupted_user_.has_value()) {
     WallpaperControllerClientImpl::Get()->ShowUserWallpaper(
-        user_manager::UserManager::Get()->GetActiveUser()->GetAccountId());
+        interrupted_user_.value());
   }
 }
 
@@ -110,6 +147,15 @@ void UserAddingScreenImpl::OnDisplayHostCompletion() {
 
   session_manager::SessionManager::Get()->SetSessionState(
       session_manager::SessionState::ACTIVE);
+
+  // The user just added, or the one the screen interrupted if the adding was
+  // cancelled.
+  const session_manager::Session* const session =
+      session_manager::SessionManager::Get()->GetActiveSession();
+  const std::optional<AccountId> active_user =
+      session ? std::make_optional(session->account_id()) : std::nullopt;
+  im_controller_.OnScreenHidden(active_user != interrupted_user_);
+
   for (auto& observer : observers_) {
     observer.OnUserAddingFinished();
   }
@@ -120,8 +166,7 @@ UserAddingScreenImpl* UserAddingScreenImpl::GetInstance() {
   return base::Singleton<UserAddingScreenImpl>::get();
 }
 
-UserAddingScreenImpl::UserAddingScreenImpl()
-    : display_host_(nullptr), im_controller_(this) {}
+UserAddingScreenImpl::UserAddingScreenImpl() : display_host_(nullptr) {}
 
 UserAddingScreenImpl::~UserAddingScreenImpl() = default;
 

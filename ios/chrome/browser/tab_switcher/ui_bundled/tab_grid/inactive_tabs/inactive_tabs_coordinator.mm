@@ -16,6 +16,7 @@
 #import "ios/chrome/browser/shared/coordinator/alert/action_sheet_coordinator.h"
 #import "ios/chrome/browser/shared/coordinator/scene/scene_state.h"
 #import "ios/chrome/browser/shared/coordinator/scene/state/scene_layout_state.h"
+#import "ios/chrome/browser/shared/coordinator/scene/state/tab_grid_state.h"
 #import "ios/chrome/browser/shared/model/application_context/application_context.h"
 #import "ios/chrome/browser/shared/model/browser/browser.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
@@ -137,7 +138,7 @@ const base::TimeDelta kPopUIDelay = base::Seconds(0.3);
     NSLayoutConstraint* baseViewSnapshotHorizontalPosition;
 
 // Whether settings are currently presented.
-@property(nonatomic, getter=isPresetingSettings) BOOL presentingSettings;
+@property(nonatomic, getter=isPresentingSettings) BOOL presentingSettings;
 
 // The optional user education coordinator shown the first time Inactive Tabs
 // are displayed.
@@ -298,6 +299,7 @@ const base::TimeDelta kPopUIDelay = base::Seconds(0.3);
 
   [self.mediator disconnect];
   self.mediator = nil;
+  self.showing = NO;
   self.viewController.layoutState = nil;
   self.viewController = nil;
 }
@@ -420,9 +422,11 @@ const base::TimeDelta kPopUIDelay = base::Seconds(0.3);
 - (void)inactiveTabsUserEducationCoordinatorDidTapSettingsButton:
     (InactiveTabsUserEducationCoordinator*)
         inactiveTabsUserEducationCoordinator {
-  [self.userEducationCoordinator stop];
+  __weak __typeof(self) weakSelf = self;
+  [self.userEducationCoordinator stopWithCompletion:^{
+    [weakSelf presentSettings];
+  }];
   self.userEducationCoordinator = nil;
-  [self presentSettings];
 }
 
 - (void)inactiveTabsUserEducationCoordinatorDidFinish:
@@ -564,6 +568,12 @@ const base::TimeDelta kPopUIDelay = base::Seconds(0.3);
 
 #pragma mark - Private
 
+// Sets whether the inactive tabs view controller is currently shown.
+- (void)setShowing:(BOOL)showing {
+  _showing = showing;
+  self.browser->GetSceneState().tabGridState.inactiveTabsVisible = showing;
+}
+
 // Called when inactive tabs should be dismissed.
 - (void)didFinish {
   [_delegate inactiveTabsCoordinatorDidFinish:self];
@@ -691,6 +701,12 @@ const base::TimeDelta kPopUIDelay = base::Seconds(0.3);
 // Presents the Inactive Tabs settings modally in their own navigation
 // controller.
 - (void)presentSettings {
+  if (self.presentingSettings || _settingsController ||
+      self.viewController.presentedViewController ||
+      self.baseViewController.presentedViewController) {
+    return;
+  }
+
   _settingsController = [SettingsNavigationController
       inactiveTabsControllerForBrowser:self.browser->GetActiveBrowser()
                               delegate:self];

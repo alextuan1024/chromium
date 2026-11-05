@@ -155,12 +155,24 @@ public class TabSwitcherSearchStation extends Station<SearchActivity> {
                                         withEffectiveVisibility(ViewMatchers.Visibility.VISIBLE))));
             }
             if (text != null) {
-                matchers.add(
+                Matcher<View> line2Matcher =
                         hasDescendant(
                                 allOf(
                                         withId(R.id.line_2),
                                         withText(text),
-                                        withEffectiveVisibility(ViewMatchers.Visibility.VISIBLE))));
+                                        withEffectiveVisibility(ViewMatchers.Visibility.VISIBLE)));
+                if (OmniboxCapabilities.isDesktopPlatform()) {
+                    Matcher<View> desktopSingleLineMatcher =
+                            hasDescendant(
+                                    allOf(
+                                            withId(R.id.line_1),
+                                            withText(Matchers.endsWith(text)),
+                                            withEffectiveVisibility(
+                                                    ViewMatchers.Visibility.VISIBLE)));
+                    matchers.add(Matchers.anyOf(line2Matcher, desktopSingleLineMatcher));
+                } else {
+                    matchers.add(line2Matcher);
+                }
             }
             matchers.add(instanceOf(BaseSuggestionView.class));
             matchers.add(
@@ -174,7 +186,7 @@ public class TabSwitcherSearchStation extends Station<SearchActivity> {
             Matcher<View>[] matchersArray = new Matcher[matchers.size()];
             matchers.toArray(matchersArray);
 
-            suggestionElement = declareView(viewSpec(BaseSuggestionView.class, matchersArray));
+            suggestionElement = declareView(BaseSuggestionView.class, matchersArray);
         }
 
         public WebPageStation openPage() {

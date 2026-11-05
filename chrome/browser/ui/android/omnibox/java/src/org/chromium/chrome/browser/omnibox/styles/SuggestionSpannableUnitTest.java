@@ -4,15 +4,21 @@
 
 package org.chromium.chrome.browser.omnibox.styles;
 
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 import android.content.Context;
 import android.content.res.ColorStateList;
+import android.graphics.Color;
 import android.graphics.Typeface;
+import android.graphics.drawable.ColorDrawable;
+import android.graphics.drawable.Drawable;
 import android.text.Spanned;
+import android.text.SpannedString;
 import android.text.style.BackgroundColorSpan;
 import android.text.style.ForegroundColorSpan;
+import android.text.style.ImageSpan;
 import android.text.style.ScaleXSpan;
 import android.text.style.StyleSpan;
 import android.text.style.TextAppearanceSpan;
@@ -29,11 +35,18 @@ import org.mockito.quality.Strictness;
 
 import org.chromium.base.ContextUtils;
 import org.chromium.base.test.BaseRobolectricTestRunner;
+import org.chromium.chrome.browser.omnibox.MatchClassificationStyle;
 import org.chromium.chrome.browser.omnibox.R;
+import org.chromium.components.omnibox.AutocompleteMatch.MatchClassification;
+
+import java.util.List;
 
 /** Tests for {@link SuggestionSpannable}. */
 @RunWith(BaseRobolectricTestRunner.class)
 public class SuggestionSpannableUnitTest {
+    private static final int DEFAULT_COLOR = 0xFF112233;
+    private static final int DIM_COLOR = 0xFF445566;
+
     @Rule
     public final MockitoRule mMockitoRule = MockitoJUnit.rule().strictness(Strictness.STRICT_STUBS);
 
@@ -402,14 +415,192 @@ public class SuggestionSpannableUnitTest {
         assertTrue(c1.equals(c2));
     }
 
-    @Test(expected = AssertionError.class)
-    public void spannableEquals_customSpansTriggerAssertionError() {
+    @Test
+    public void spannableEquals_unknownSpanTypesAreNeverEqual() {
         SuggestionSpannable c1 = new SuggestionSpannable("test string");
         SuggestionSpannable c2 = new SuggestionSpannable("test string");
 
         c1.setSpan(new ScaleXSpan(1.0f), 3, 5, Spanned.SPAN_INCLUSIVE_EXCLUSIVE);
         c2.setSpan(new ScaleXSpan(1.0f), 3, 5, Spanned.SPAN_INCLUSIVE_EXCLUSIVE);
 
+        // Not understood by equals(): conservatively reported as different, without asserting.
         assertFalse(c1.equals(c2));
+    }
+
+    @Test
+    public void spannableEquals_multiSpan_identicalExtents() {
+        assertTrue(
+                twoBoldRegionsPlusColor(0, 9, 10, 17)
+                        .equals(twoBoldRegionsPlusColor(0, 9, 10, 17)));
+    }
+
+    @Test
+    public void spannableEquals_multiSpan_sameCountAndTypes_firstExtentGrows() {
+        // Typing one more character extends the first highlight by one.
+        assertFalse(
+                twoBoldRegionsPlusColor(0, 9, 10, 17)
+                        .equals(twoBoldRegionsPlusColor(0, 10, 10, 17)));
+    }
+
+    @Test
+    public void spannableEquals_multiSpan_sameCountAndTypes_secondExtentMoves() {
+        assertFalse(
+                twoBoldRegionsPlusColor(0, 9, 10, 17)
+                        .equals(twoBoldRegionsPlusColor(0, 9, 11, 17)));
+    }
+
+    @Test
+    public void spannableEquals_multiSpan_sameExtentsAssignedInDifferentOrder() {
+        // The same multiset of extents attached to the two bold spans in swapped insertion order.
+        // The comparison is positional, so this is (conservatively) not equal. This pins that
+        // differing extents can never be masked by span count/type matching.
+        assertFalse(
+                twoBoldRegionsPlusColor(0, 9, 10, 17)
+                        .equals(twoBoldRegionsPlusColor(10, 17, 0, 9)));
+    }
+
+    @Test
+    public void spannableEquals_multiSpan_spanCountDiffers() {
+        SuggestionSpannable oneBold = new SuggestionSpannable("developer.android.com/reference");
+        oneBold.setSpan(new StyleSpan(Typeface.BOLD), 0, 9, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        oneBold.setSpan(
+                new ForegroundColorSpan(Color.RED),
+                0,
+                oneBold.length(),
+                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        assertFalse(twoBoldRegionsPlusColor(0, 9, 10, 17).equals(oneBold));
+        assertFalse(oneBold.equals(twoBoldRegionsPlusColor(0, 9, 10, 17)));
+    }
+
+    @Test
+    public void spannableEquals_imageSpan_sameDrawableInstance() {
+        Drawable icon = new ColorDrawable(Color.RED);
+        assertTrue(
+                withImageSpan(icon, ImageSpan.ALIGN_CENTER)
+                        .equals(withImageSpan(icon, ImageSpan.ALIGN_CENTER)));
+    }
+
+    @Test
+    public void spannableEquals_imageSpan_differentAlignment() {
+        Drawable icon = new ColorDrawable(Color.RED);
+        assertFalse(
+                withImageSpan(icon, ImageSpan.ALIGN_CENTER)
+                        .equals(withImageSpan(icon, ImageSpan.ALIGN_BASELINE)));
+    }
+
+    @Test
+    public void spannableEquals_imageSpan_distinctDrawablesAreNeverEqual() {
+        // Drawables have no meaningful equals(), so even a look-alike instance is reported as
+        // different (a false negative, never a false positive).
+        assertFalse(
+                withImageSpan(new ColorDrawable(Color.RED), ImageSpan.ALIGN_CENTER)
+                        .equals(
+                                withImageSpan(
+                                        new ColorDrawable(Color.RED), ImageSpan.ALIGN_CENTER)));
+    }
+
+    @Test
+    public void contentEquals_matchesTextViewStyleCopy() {
+        // TextView.setText keeps a SpannedString copy of what it was given; contentEquals must
+        // treat that copy as equal to the original so no-op rebinds can be detected against it.
+        SuggestionSpannable original = twoBoldRegionsPlusColor(0, 9, 10, 17);
+        assertTrue(SuggestionSpannable.contentEquals(new SpannedString(original), original));
+        assertTrue(SuggestionSpannable.contentEquals(original, new SpannedString(original)));
+        assertFalse(
+                SuggestionSpannable.contentEquals(
+                        new SpannedString(original), twoBoldRegionsPlusColor(0, 10, 10, 17)));
+    }
+
+    /**
+     * Build the shape of text BasicSuggestionProcessor produces: two bold match regions plus a
+     * full-length foreground colour span, in that insertion order.
+     */
+    private static SuggestionSpannable twoBoldRegionsPlusColor(
+            int bold1Start, int bold1End, int bold2Start, int bold2End) {
+        SuggestionSpannable s = new SuggestionSpannable("developer.android.com/reference");
+        s.setSpan(
+                new StyleSpan(Typeface.BOLD),
+                bold1Start,
+                bold1End,
+                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        s.setSpan(
+                new StyleSpan(Typeface.BOLD),
+                bold2Start,
+                bold2End,
+                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        s.setSpan(
+                new ForegroundColorSpan(Color.RED),
+                0,
+                s.length(),
+                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        return s;
+    }
+
+    private static SuggestionSpannable withImageSpan(Drawable icon, int alignment) {
+        SuggestionSpannable s = new SuggestionSpannable(" x");
+        s.setSpan(new ImageSpan(icon, alignment), 0, 1, Spanned.SPAN_INCLUSIVE_EXCLUSIVE);
+        return s;
+    }
+
+    @Test
+    public void applyTextColor_nonDimClassification() {
+        SuggestionSpannable text = new SuggestionSpannable("0123456789");
+        List<MatchClassification> classifications =
+                List.of(
+                        new MatchClassification(0, MatchClassificationStyle.NONE),
+                        new MatchClassification(4, MatchClassificationStyle.MATCH));
+
+        text.applyTextColor(classifications, DEFAULT_COLOR, DIM_COLOR);
+
+        SuggestionSpannable expected = new SuggestionSpannable("0123456789");
+        expected.setSpan(
+                new ForegroundColorSpan(DEFAULT_COLOR),
+                0,
+                expected.length(),
+                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        assertEquals(expected, text);
+    }
+
+    @Test
+    public void applyTextColor_allDim() {
+        SuggestionSpannable text = new SuggestionSpannable("0123456789");
+        List<MatchClassification> classifications =
+                List.of(new MatchClassification(0, MatchClassificationStyle.DIM));
+
+        text.applyTextColor(classifications, DEFAULT_COLOR, DIM_COLOR);
+
+        SuggestionSpannable expected = new SuggestionSpannable("0123456789");
+        expected.setSpan(
+                new ForegroundColorSpan(DIM_COLOR),
+                0,
+                expected.length(),
+                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        assertEquals(expected, text);
+    }
+
+    @Test
+    public void applyTextColor_mixedDimAndDefault() {
+        SuggestionSpannable text = new SuggestionSpannable("0123456789");
+        List<MatchClassification> classifications =
+                List.of(
+                        new MatchClassification(0, MatchClassificationStyle.NONE),
+                        new MatchClassification(3, MatchClassificationStyle.DIM),
+                        new MatchClassification(
+                                6, MatchClassificationStyle.MATCH | MatchClassificationStyle.DIM),
+                        new MatchClassification(8, MatchClassificationStyle.NONE));
+
+        text.applyTextColor(classifications, DEFAULT_COLOR, DIM_COLOR);
+
+        SuggestionSpannable expected = new SuggestionSpannable("0123456789");
+        expected.setSpan(
+                new ForegroundColorSpan(DEFAULT_COLOR), 0, 3, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        expected.setSpan(
+                new ForegroundColorSpan(DIM_COLOR), 3, 8, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        expected.setSpan(
+                new ForegroundColorSpan(DEFAULT_COLOR),
+                8,
+                expected.length(),
+                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        assertEquals(expected, text);
     }
 }

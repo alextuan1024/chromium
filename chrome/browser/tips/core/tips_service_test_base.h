@@ -45,6 +45,7 @@ class TestDatabaseClient : public segmentation_platform::DatabaseClient {
   void AddEvent(const StructuredEvent& event) override;
 
   segmentation_platform::proto::SegmentationModelMetadata last_metadata_;
+  int process_features_call_count_ = 0;
   raw_ptr<segmentation_platform::SegmentationPlatformService> real_service_;
   std::optional<std::vector<float>> override_values_;
   bool simulate_error_ = false;
@@ -78,16 +79,34 @@ class TipsServiceTestBase : public ::testing::Test {
   void SetUp() override;
   void TearDown() override;
 
+  // Default exclusive upper bound (number of enum buckets) for linear histogram
+  // recordings in tests.
+  static constexpr base::HistogramBase::Sample32 kDefaultEnumSize = 50;
+
+  // Emits a user action using production `base::RecordAction` and commits it
+  // to the segmentation platform's database.
   void RecordUserAction(const std::string& action_name);
-  std::optional<TipsNotificationsFeatureType> DetermineBestTipSync();
+
+  // Emits an enumerated/linear histogram sample using production UMA APIs and
+  // commits it to the segmentation platform's database. `enum_size` is the
+  // exclusive maximum enum value (i.e. the total number of enum entries).
+  void RecordHistogramEnum(
+      const std::string& histogram_name,
+      base::HistogramBase::Sample32 sample,
+      base::HistogramBase::Sample32 enum_size = kDefaultEnumSize);
+  std::optional<TipsNotificationsFeatureType> DetermineBestTipSync(
+      std::map<std::string, float> custom_signals = {});
 
   void RunDetermineBestTipTest(
       std::vector<std::unique_ptr<TipsFeature>> features,
-      std::optional<TipsNotificationsFeatureType> expected_best_tip);
+      std::optional<TipsNotificationsFeatureType> expected_best_tip,
+      std::map<std::string, float> custom_signals = {});
 
   void RunDetermineBestTipTestWithOverrides(
       std::vector<FeatureTestConfig> configs,
-      std::optional<TipsNotificationsFeatureType> expected_best_tip);
+      std::optional<TipsNotificationsFeatureType> expected_best_tip,
+      float mock_global_cooldown_shown_count = 0.0f,
+      std::map<std::string, float> custom_signals = {});
 
   sync_preferences::TestingPrefServiceSyncable pref_service_;
   std::unique_ptr<TestSegmentationPlatformService> test_segmentation_service_;

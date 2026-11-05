@@ -17,7 +17,6 @@
 #include "components/prefs/pref_service.h"
 #include "components/signin/public/base/consent_level.h"
 #include "components/signin/public/identity_manager/identity_test_utils.h"
-#include "components/sync/base/features.h"
 #include "components/unified_consent/pref_names.h"
 #include "content/public/test/browser_test.h"
 #include "third_party/skia/include/core/SkBitmap.h"
@@ -39,23 +38,15 @@ class PriceTrackingBubbleDialogViewBrowserTest : public DialogBrowserTest {
 
   void SetUpOnMainThread() override {
     DialogBrowserTest::SetUpOnMainThread();
-    signin::ConsentLevel consent_level =
-        syncer::IsReplaceSyncPromosWithSignInPromosEnabled()
-            ? signin::ConsentLevel::kSignin
-            : signin::ConsentLevel::kSync;
     signin::MakePrimaryAccountAvailable(
         IdentityManagerFactory::GetForProfile(get_profile()), "test@email.com",
-        consent_level);
+        signin::ConsentLevel::kSignin);
 
     bookmarks::BookmarkModel* bookmark_model =
         BookmarkModelFactory::GetForBrowserContext(get_profile());
     bookmarks::test::WaitForBookmarkModelToLoad(bookmark_model);
-
-    // If we are not syncing, we need to add account nodes in order to use the
-    // price tracking service.
-    if (consent_level == signin::ConsentLevel::kSignin) {
-      bookmark_model->CreateAccountPermanentFolders();
-    }
+    // Create account nodes in order to use the price tracking service.
+    bookmark_model->CreateAccountPermanentFolders();
 
     // Enable anonymized data collection.
     PrefService* prefs = get_profile()->GetPrefs();
@@ -112,10 +103,6 @@ class PriceTrackingBubbleDialogViewBrowserTest : public DialogBrowserTest {
   Profile* get_profile() { return chrome_test_utils::GetProfile(this); }
 
   std::unique_ptr<PriceTrackingBubbleCoordinator> coordinator_;
-#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN)
-  base::test::ScopedFeatureList feature_list_{
-      syncer::kReplaceSyncPromosWithSignInPromos};
-#endif
 };
 
 IN_PROC_BROWSER_TEST_F(PriceTrackingBubbleDialogViewBrowserTest,

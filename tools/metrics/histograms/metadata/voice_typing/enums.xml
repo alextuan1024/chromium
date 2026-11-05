@@ -26,6 +26,16 @@ this directory.
 
 <!-- LINT.ThenChange(//chrome/browser/dictation/metrics.h:DictationFirstRunExitStatus) -->
 
+<!-- LINT.IfChange(DictationPageContextEligibility) -->
+
+<enum name="DictationPageContextEligibility">
+  <int value="0" label="Eligible (Page context allowed)"/>
+  <int value="1" label="Ineligible (Optimization Guide hint)"/>
+  <int value="2" label="Ineligible (CSE/IRM PageContextEligibility)"/>
+</enum>
+
+<!-- LINT.ThenChange(//chrome/browser/dictation/metrics.h:DictationPageContextEligibility) -->
+
 <!-- LINT.IfChange(DictationSessionEntryPoint) -->
 
 <enum name="DictationSessionEntryPoint">
@@ -66,6 +76,7 @@ this directory.
 <enum name="DictationUrlCategory">
   <int value="0" label="Web"/>
   <int value="1" label="Glic"/>
+  <int value="2" label="WebUI"/>
 </enum>
 
 <!-- LINT.ThenChange(//chrome/browser/dictation/metrics.h:DictationUrlCategory) -->

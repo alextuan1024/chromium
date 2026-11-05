@@ -4,7 +4,9 @@
 
 #include "components/autofill/core/browser/network/autofill_ai/fake_wallet_pass_access_manager.h"
 
+#include "base/check.h"
 #include "base/check_deref.h"
+#include "base/containers/map_util.h"
 #include "base/functional/bind.h"
 #include "base/location.h"
 #include "base/notimplemented.h"
@@ -18,6 +20,42 @@
 #include "components/autofill/core/common/autofill_debug_features.h"
 
 namespace autofill {
+
+namespace {
+
+WalletPassAccessManager::GetDetailsForUpsertPassResponse
+CreateFakeUpsertPassResponse() {
+  base::ListValue parameters;
+  parameters.Append(base::DictValue()
+                        .Set("display_text", "Google Privacy Policy")
+                        .Set("url", "https://policies.google.com/privacy"));
+  parameters.Append(base::DictValue()
+                        .Set("display_text", "Wallet settings")
+                        .Set("url", "https://wallet.google.com/settings"));
+
+  base::DictValue line;
+  line.Set("template",
+           "Lorem ipsum dolor sit amet, consectetur {0} sed do "
+           "eiusmod {1}.");
+  line.Set("template_parameter", std::move(parameters));
+
+  base::ListValue line_list;
+  line_list.Append(std::move(line));
+
+  base::DictValue legal_message;
+  legal_message.Set("line", std::move(line_list));
+
+  LegalMessageLines legal_message_lines;
+  LegalMessageLine::Parse(legal_message, &legal_message_lines);
+
+  return WalletPassAccessManager::GetDetailsForUpsertPassResponse{
+      .legal_message_lines = std::move(legal_message_lines),
+      .legal_message_token = "mock_legal_message_token",
+      .user_eligibility = WalletPassAccessManager::UserEligibility::kEligible,
+  };
+}
+
+}  // namespace
 
 FakeWalletPassAccessManager::FakeWalletPassAccessManager(
     EntityDataManager* data_manager)
@@ -90,15 +128,60 @@ void FakeWalletPassAccessManager::GetUnmaskedWalletEntityInstance(
           features::debug::kFakeWalletApiResponsesDelayMs.Get()));
 }
 
-void FakeWalletPassAccessManager::GetDetailsForUpsertPass(
-    EntityType entity_type,
-    GetDetailsForUpsertPassCallback callback) {
+void FakeWalletPassAccessManager::PreloadDetailsForUpsertPass(
+    EntityType entity_type) {
+  if (fake_upsert_details_cache_.contains(entity_type)) {
+    return;
+  }
   base::SequencedTaskRunner::GetCurrentDefault()->PostDelayedTask(
       FROM_HERE,
       base::BindOnce(
-          [](base::WeakPtr<FakeWalletPassAccessManager> weakSelf,
+          [](base::WeakPtr<FakeWalletPassAccessManager> weak_self,
+             EntityType entity_type) {
+            if (!weak_self) {
+              return;
+            }
+            if (features::debug::kFakeWalletApiResponsesSimulateFailure.Get()) {
+              return;
+            }
+            weak_self->fake_upsert_details_cache_.insert_or_assign(
+                entity_type, CreateFakeUpsertPassResponse());
+          },
+          weak_ptr_factory_.GetWeakPtr(), entity_type),
+      base::Milliseconds(
+          features::debug::kFakeWalletApiResponsesDelayMs.Get()));
+}
+
+std::optional<WalletPassAccessManager::GetDetailsForUpsertPassResponse>
+FakeWalletPassAccessManager::ExtractPreloadedDetailsForUpsertPass(
+    EntityType entity_type) {
+  absl::flat_hash_map<EntityType, GetDetailsForUpsertPassResponse>::node_type
+      node = fake_upsert_details_cache_.extract(entity_type);
+  if (node.empty()) {
+    return std::nullopt;
+  }
+  PreloadDetailsForUpsertPass(entity_type);
+  return std::move(node.mapped());
+}
+
+void FakeWalletPassAccessManager::GetDetailsForUpsertPass(
+    EntityType entity_type,
+    GetDetailsForUpsertPassCallback callback) {
+  CHECK(callback);
+  if (std::optional<GetDetailsForUpsertPassResponse> cached_response =
+          ExtractPreloadedDetailsForUpsertPass(entity_type)) {
+    base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE,
+        base::BindOnce(std::move(callback), *std::move(cached_response)));
+    return;
+  }
+
+  base::SequencedTaskRunner::GetCurrentDefault()->PostDelayedTask(
+      FROM_HERE,
+      base::BindOnce(
+          [](base::WeakPtr<FakeWalletPassAccessManager> weak_self,
              GetDetailsForUpsertPassCallback callback) {
-            if (!weakSelf) {
+            if (!weak_self) {
               return;
             }
             if (features::debug::kFakeWalletApiResponsesSimulateFailure.Get()) {
@@ -106,35 +189,7 @@ void FakeWalletPassAccessManager::GetDetailsForUpsertPass(
                   wallet::WalletHttpClient::WalletRequestError::kGenericError));
               return;
             }
-            base::ListValue parameters;
-            parameters.Append(
-                base::DictValue()
-                    .Set("display_text", "Google Privacy Policy")
-                    .Set("url", "https://policies.google.com/privacy"));
-            parameters.Append(
-                base::DictValue()
-                    .Set("display_text", "Wallet settings")
-                    .Set("url", "https://wallet.google.com/settings"));
-
-            base::DictValue line;
-            line.Set("template",
-                     "Lorem ipsum dolor sit amet, consectetur {0} sed do "
-                     "eiusmod {1}.");
-            line.Set("template_parameter", std::move(parameters));
-
-            base::ListValue line_list;
-            line_list.Append(std::move(line));
-
-            base::DictValue legal_message;
-            legal_message.Set("line", std::move(line_list));
-
-            LegalMessageLines legal_message_lines;
-            LegalMessageLine::Parse(legal_message, &legal_message_lines);
-
-            std::move(callback).Run(GetDetailsForUpsertPassResponse{
-                .legal_message_lines = std::move(legal_message_lines),
-                .context_token = "mock_context_token",
-            });
+            std::move(callback).Run(CreateFakeUpsertPassResponse());
           },
           weak_ptr_factory_.GetWeakPtr(), std::move(callback)),
       base::Milliseconds(
@@ -182,9 +237,9 @@ FakeWalletPassAccessManager::RunGetUnmaskedCallback(
     return std::nullopt;
   }
 
-  auto it = fake_entities_cache_.find(entity_id);
-  if (it != fake_entities_cache_.end()) {
-    return it->second;
+  if (const EntityInstance* entity =
+          base::FindOrNull(fake_entities_cache_, entity_id)) {
+    return *entity;
   }
 
   NOTIMPLEMENTED();

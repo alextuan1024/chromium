@@ -21,13 +21,13 @@ namespace blink {
 
 class OpenTypeCapsSupportTest : public FontTestBase {};
 
-void ensureHasNativeSmallCaps(const String& font_family_name) {
+void EnsureHasNativeSmallCaps(const String& font_family_name) {
   sk_sp<SkTypeface> test_typeface = skia::MakeTypefaceFromName(
       font_family_name.Utf8().c_str(), SkFontStyle());
   FontPlatformData* font_platform_data = MakeGarbageCollected<FontPlatformData>(
       test_typeface, font_family_name.Utf8(),
       /* text_size */ 16, /* synthetic_bold */ false,
-      /* synthetic_italic */ false, TextRenderingMode::kAutoTextRendering,
+      /* synthetic_italic */ false, TextRenderingMode::kAuto,
       ResolvedFontFeatures{});
   // System font names are magical. The family name of the system font in the
   // test below yields ".AppleSystemUIFont", which seems to be a generic role
@@ -51,15 +51,16 @@ void ensureHasNativeSmallCaps(const String& font_family_name) {
   ASSERT_FALSE(caps_support.NeedsRunCaseSplitting());
 }
 
-TEST_F(OpenTypeCapsSupportTest, SmallCapsForMacAATFonts) {
+TEST_F(OpenTypeCapsSupportTest, SmallCapsForMacAatFonts) {
   Vector<String> test_fonts = {
       [NSFont systemFontOfSize:12].familyName,  // has OpenType small-caps
       "Apple Chancery",  // has old-style (feature id 3,"Letter Case")
                          // small-caps
       "Baskerville"};    // has new-style (feature id 38, "Upper Case")
                          // small-case.
-  for (const auto& test_font : test_fonts)
-    ensureHasNativeSmallCaps(test_font);
+  for (const auto& test_font : test_fonts) {
+    EnsureHasNativeSmallCaps(test_font);
+  }
 }
 
 }  // namespace blink

@@ -88,12 +88,16 @@ chromium-metrics-reviews@google.com.
   <int value="4" label="Zoom level is above maximum value"/>
 </enum>
 
+<!-- LINT.IfChange(ClientSideAllowlistMatchResult) -->
+
 <enum name="ClientSideAllowlistMatchResult">
   <int value="0" label="No match"/>
   <int value="1" label="CSD match"/>
   <int value="2" label="High confidence match"/>
-  <int value="3" label="CSD and high confidence match"/>
+  <int value="3" label="CSD and high confidence match (deprecated)"/>
 </enum>
+
+<!-- LINT.ThenChange(//components/safe_browsing/core/common/client_side_detection_enums.h:ClientSideAllowlistMatchResult) -->
 
 <!-- LINT.IfChange(ClientSideDetectionEvent) -->
 
@@ -132,9 +136,12 @@ chromium-metrics-reviews@google.com.
   <int value="10" label="IMAGE_EMBEDDING_MATCH"/>
   <int value="11" label="USER_REPORT"/>
   <int value="12" label="UNFAMILIAR_LOGIN_PAGE"/>
+  <int value="13" label="POLICY_ENGINE"/>
 </enum>
 
 <!-- LINT.ThenChange(//components/safe_browsing/core/common/proto/csd.proto:ClientSideDetectionType) -->
+
+<!-- LINT.IfChange(ClientSidePhishingImageEmbeddingResult) -->
 
 <enum name="ClientSidePhishingImageEmbeddingResult">
   <summary>
@@ -145,7 +152,11 @@ chromium-metrics-reviews@google.com.
   <int value="2" label="Image embedding cancelled"/>
   <int value="3" label="Forward/back transition"/>
   <int value="4" label="Image embedding failed"/>
+  <int value="5" label="Invalid URL format request"/>
+  <int value="6" label="Invalid document loader"/>
 </enum>
+
+<!-- LINT.ThenChange(//components/safe_browsing/core/browser/client_side_detection/client_side_detection_host_base.h:ImageEmbeddingResult, //components/safe_browsing/content/common/safe_browsing.mojom:PhishingImageEmbeddingResult) -->
 
 <!-- LINT.IfChange(ClientSidePhishingResult) -->
 
@@ -258,6 +269,8 @@ chromium-metrics-reviews@google.com.
   <int value="1" label="DidFirstVisuallyNonEmptyPaint"/>
 </enum>
 
+<!-- LINT.IfChange(IntelligentScanVerdict) -->
+
 <enum name="IntelligentScanVerdict">
   <int value="0" label="Unspecified"/>
   <int value="1" label="Intelligent scan verdict safe"/>
@@ -265,16 +278,12 @@ chromium-metrics-reviews@google.com.
   <int value="3" label="Scam experiment verdict 2"/>
   <int value="4" label="Scam experiment verdict 3"/>
   <int value="5" label="Scam experiment verdict 4"/>
+  <int value="6" label="Scam experiment verdict billing"/>
   <int value="999" label="Scam experiment verdict catch all enforcement"/>
   <int value="1000" label="Scam experiment verdict catch all telemetry"/>
 </enum>
 
-<enum name="OptimizationGuideOnDeviceModelUnavailableReason">
-  <int value="0" label="Unknown"/>
-  <int value="2" label="NotSupported"/>
-  <int value="3" label="PendingAssets"/>
-  <int value="4" label="PendingUsage"/>
-</enum>
+<!-- LINT.ThenChange(//components/safe_browsing/core/common/proto/csd.proto:IntelligentScanVerdict) -->
 
 <!-- LINT.IfChange(SafeBrowsingAndroidGetReferringAppInfoResult) -->
 
@@ -286,7 +295,7 @@ chromium-metrics-reviews@google.com.
   <int value="4" label="Referring app found, referring WebAPK found"/>
 </enum>
 
-<!-- LINT.ThenChange(//components/safe_browsing/core/browser/referring_app_info.h:GetReferringAppInfoResult) -->
+<!-- LINT.ThenChange(//components/safe_browsing/core/browser/referring_app_info/referring_app_info.h:GetReferringAppInfoResult) -->
 
 <enum name="SBClientDetectionClassifyThresholdsResult">
   <int value="0" label="Success"/>
@@ -421,6 +430,20 @@ chromium-metrics-reviews@google.com.
   <int value="4" label="Has bypassed download warnings before"/>
 </enum>
 
+<!-- LINT.IfChange(SBClientPhishingBrowserCaptureResult) -->
+
+<enum name="SBClientPhishingBrowserCaptureResult">
+  <int value="0" label="Success"/>
+  <int value="1" label="No RenderWidgetHostView"/>
+  <int value="2" label="Visible but no compositing surface to copy"/>
+  <int value="3" label="CopyFromSurface reported an error"/>
+  <int value="4" label="CopyFromSurface produced an empty bitmap"/>
+  <int value="5" label="CopyFromSurface timed out"/>
+  <int value="6" label="Superseded by a newer capture request"/>
+</enum>
+
+<!-- LINT.ThenChange(//components/safe_browsing/content/browser/client_side_detection_host.h:BrowserCaptureResult) -->
+
 <!-- LINT.IfChange(SBClientPhishingCancelClassificationReason) -->
 
 <enum name="SBClientPhishingCancelClassificationReason">
@@ -449,6 +472,54 @@ chromium-metrics-reviews@google.com.
 
 <!-- LINT.ThenChange(//components/safe_browsing/content/renderer/phishing_classifier/phishing_image_embedder_delegate.h:CancelImageEmbeddingReason) -->
 
+<!-- LINT.IfChange(SBClientPhishingClassificationVisibility) -->
+
+<enum name="SBClientPhishingClassificationVisibility">
+  <int value="0" label="Hidden"/>
+  <int value="1" label="Occluded"/>
+  <int value="2" label="Visible"/>
+</enum>
+
+<!-- LINT.ThenChange(//components/safe_browsing/content/browser/client_side_detection_host.h:ClassificationVisibility) -->
+
+<!-- LINT.IfChange(SBClientPhishingDelayedForceRequestPingEvent) -->
+
+<enum name="SBClientPhishingDelayedForceRequestPingEvent">
+  <int value="0" label="Scheduled"/>
+  <int value="1" label="Started"/>
+  <int value="2" label="Cancelled"/>
+  <int value="3" label="Sent"/>
+  <int value="4" label="Skipped (URL changed since the first ping)"/>
+</enum>
+
+<!-- LINT.ThenChange(//components/safe_browsing/core/common/client_side_detection_enums.h:DelayedForceRequestPingEvent) -->
+
+<!-- LINT.IfChange(SBClientPhishingForceRequestPingOrder) -->
+
+<enum name="SBClientPhishingForceRequestPingOrder">
+  <int value="0" label="First ping (immediate)"/>
+  <int value="1" label="Second ping (delayed)"/>
+</enum>
+
+<!-- LINT.ThenChange(//components/safe_browsing/core/common/client_side_detection_enums.h:ForceRequestPingOrder) -->
+
+<!-- LINT.IfChange(SBClientPhishingMultimodalScreenshotCaptureStatus) -->
+
+<enum name="SBClientPhishingMultimodalScreenshotCaptureStatus">
+  <int value="0" label="Success"/>
+  <int value="1" label="Tab not visible or URL changed"/>
+  <int value="2" label="RenderWidgetHostView unavailable"/>
+  <int value="3" label="CopyFromSurface failed"/>
+  <int value="4" label="Empty bitmap"/>
+  <int value="5" label="Encoding failed"/>
+  <int value="6" label="WebState unavailable (iOS)"/>
+  <int value="7" label="PageContext extraction failed (iOS)"/>
+  <int value="8" label="Snapshot missing from PageContext (iOS)"/>
+  <int value="9" label="Base64 decode failed (iOS)"/>
+</enum>
+
+<!-- LINT.ThenChange(//components/safe_browsing/core/common/client_side_detection_enums.h:MultimodalScreenshotCaptureStatus) -->
+
 <enum name="SBClientPhishingScorerCreationStatus">
   <int value="0" label="SUCCESS"/>
   <int value="1" label="MODEL_OPEN_FAIL"/>
@@ -467,7 +538,7 @@ chromium-metrics-reviews@google.com.
   <int value="3" label="Scorer is missing after snapshot"/>
 </enum>
 
-<!-- LINT.ThenChange(//ios/chrome/browser/safe_browsing/model/client_side_detection/client_side_detection_host_ios.h:VisualClassificationEarlyReturnReason) -->
+<!-- LINT.ThenChange(//components/safe_browsing/core/browser/client_side_detection/client_side_detection_host_base.h:VisualClassificationEarlyReturnReason) -->
 
 <!-- LINT.IfChange(SBClientPhishingVisualExtractionFrameState) -->
 

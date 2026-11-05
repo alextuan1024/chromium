@@ -8,10 +8,11 @@
 #include <utility>
 
 #include "base/files/file_path.h"
+#include "base/values.h"
 #include "build/build_config.h"
 #include "chrome/browser/new_tab_page/prefs/ntp_pref_names.h"
 #include "chrome/test/base/testing_profile.h"
-#include "components/ntp_tiles/pref_names.h"
+#include "components/ntp_tiles/enterprise/enterprise_shortcuts_pref_names.h"
 #include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/scoped_user_pref_update.h"
 #include "components/prefs/testing_pref_service.h"
@@ -98,7 +99,9 @@ TEST_F(OmniboxEverywherePrefsTest,
   {
     ScopedListPrefUpdate update(
         profile_.GetPrefs(), ntp_tiles::prefs::kEnterpriseShortcutsPolicyList);
-    update->Append("https://corp.example.com");
+    update->Append(base::DictValue()
+                       .Set("url", "https://corp.example.com")
+                       .Set("title", "Corp"));
   }
 
   // Top toggle is ON, but both enterprise and personal shortcuts are OFF.
@@ -126,7 +129,9 @@ TEST_F(OmniboxEverywherePrefsTest,
   {
     ScopedListPrefUpdate update(
         profile_.GetPrefs(), ntp_tiles::prefs::kEnterpriseShortcutsPolicyList);
-    update->Append("https://corp.example.com");
+    update->Append(base::DictValue()
+                       .Set("url", "https://corp.example.com")
+                       .Set("title", "Corp"));
   }
 
   profile_.GetPrefs()->SetBoolean(ntp_prefs::kNtpShortcutsVisible, true);
@@ -146,7 +151,9 @@ TEST_F(OmniboxEverywherePrefsTest,
   {
     ScopedListPrefUpdate update(
         profile_.GetPrefs(), ntp_tiles::prefs::kEnterpriseShortcutsPolicyList);
-    update->Append("https://corp.example.com");
+    update->Append(base::DictValue()
+                       .Set("url", "https://corp.example.com")
+                       .Set("title", "Corp"));
   }
 
   profile_.GetPrefs()->SetBoolean(ntp_prefs::kNtpShortcutsVisible, true);
@@ -181,171 +188,27 @@ TEST_F(OmniboxEverywherePrefsTest,
   EXPECT_TRUE(IsOmniboxEverywhereShortcutsVisible(&profile_));
 }
 
-TEST_F(OmniboxEverywherePrefsTest, FreStagesProgression_Impressions) {
-  // Fresh profile starts at Stage 1 (IntroModal).
-  EXPECT_EQ(GetCurrentFreStage(&profile_, &local_state_),
-            FreStage::kIntroModal);
-
-  // Increment impression 1
-  IncrementFreImpression(&profile_, &local_state_);
-  EXPECT_EQ(GetCurrentFreStage(&profile_, &local_state_),
-            FreStage::kIntroModal);
-
-  // Increment impression 2 -> Stage 1 reaches max impressions (2).
-  // Because no hotkey is configured by default, advances to Stage 2
-  // (ShortcutSetupChin).
-  IncrementFreImpression(&profile_, &local_state_);
-  EXPECT_EQ(GetCurrentFreStage(&profile_, &local_state_),
-            FreStage::kShortcutSetupChin);
-
-  // Configure a hotkey while in Stage 2.
-  SetOmniboxEverywhereHotkey(&local_state_, "Ctrl+Shift+Space");
-  EXPECT_TRUE(HasOmniboxEverywhereHotkey(&local_state_));
-
-  // Current open still shows Stage 2.
-  EXPECT_EQ(GetCurrentFreStage(&profile_, &local_state_),
-            FreStage::kShortcutSetupChin);
-
-  // Increment impression 1 (closing the invocation where hotkey was
-  // configured). The next invocation immediately shows Stage 3
-  // (ShortcutReminderChin).
-  IncrementFreImpression(&profile_, &local_state_);
-  EXPECT_EQ(GetCurrentFreStage(&profile_, &local_state_),
-            FreStage::kShortcutReminderChin);
-
-  // Stage 3 impressions (max 3)
-  IncrementFreImpression(&profile_, &local_state_);
-  EXPECT_EQ(GetCurrentFreStage(&profile_, &local_state_),
-            FreStage::kShortcutReminderChin);
-  IncrementFreImpression(&profile_, &local_state_);
-  EXPECT_EQ(GetCurrentFreStage(&profile_, &local_state_),
-            FreStage::kShortcutReminderChin);
-  IncrementFreImpression(&profile_, &local_state_);
-  // Reached 3 impressions -> FRE complete (kNone) and marked dismissed.
-  EXPECT_EQ(GetCurrentFreStage(&profile_, &local_state_), FreStage::kNone);
-  EXPECT_TRUE(profile_.GetPrefs()->GetBoolean(kFreDismissed));
-}
-
-TEST_F(OmniboxEverywherePrefsTest, FreStagesProgression_ExplicitDismissal) {
-  EXPECT_EQ(GetCurrentFreStage(&profile_, &local_state_),
-            FreStage::kIntroModal);
-
-  // Dismiss Stage 1 explicitly (e.g. user clicked close 'X').
-  // Because no hotkey is configured by default, advances to Stage 2
-  // (ShortcutSetupChin).
-  OnFreStageDismissed(&profile_, FreStage::kIntroModal, &local_state_);
-  EXPECT_EQ(GetCurrentFreStage(&profile_, &local_state_),
-            FreStage::kShortcutSetupChin);
-
-  // Dismiss Stage 2 explicitly with no hotkey -> completes FRE.
-  OnFreStageDismissed(&profile_, FreStage::kShortcutSetupChin, &local_state_);
-  EXPECT_EQ(GetCurrentFreStage(&profile_, &local_state_), FreStage::kNone);
-  EXPECT_TRUE(profile_.GetPrefs()->GetBoolean(kFreDismissed));
-}
-
 TEST_F(OmniboxEverywherePrefsTest,
-       FreStagesProgression_NoHotkeyShowsSetupChin) {
-  // When hotkey is disabled, HasOmniboxEverywhereHotkey is false.
-  local_state_.SetBoolean(kHotkeyEnabled, false);
-  EXPECT_FALSE(HasOmniboxEverywhereHotkey(&local_state_));
-
-  // Stage 1 (IntroModal) is shown first.
-  EXPECT_EQ(GetCurrentFreStage(&profile_, &local_state_),
-            FreStage::kIntroModal);
-
-  // Dismiss Stage 1 explicitly -> transitions to Stage 2 (ShortcutSetupChin).
-  OnFreStageDismissed(&profile_, FreStage::kIntroModal, &local_state_);
-  EXPECT_EQ(GetCurrentFreStage(&profile_, &local_state_),
-            FreStage::kShortcutSetupChin);
-
-  // Dismiss Stage 2 explicitly with no hotkey -> skips Stage 3 and completes
-  // FRE.
-  OnFreStageDismissed(&profile_, FreStage::kShortcutSetupChin, &local_state_);
-  EXPECT_EQ(GetCurrentFreStage(&profile_, &local_state_), FreStage::kNone);
-  EXPECT_TRUE(profile_.GetPrefs()->GetBoolean(kFreDismissed));
-}
-
-TEST_F(OmniboxEverywherePrefsTest,
-       FreStagesProgression_DismissSetupWithHotkeySkipsReminder) {
-  EXPECT_FALSE(HasOmniboxEverywhereHotkey(&local_state_));
-
-  // Dismiss Stage 1 to transition to Stage 2.
-  OnFreStageDismissed(&profile_, FreStage::kIntroModal, &local_state_);
-  EXPECT_EQ(GetCurrentFreStage(&profile_, &local_state_),
-            FreStage::kShortcutSetupChin);
-
-  // Configure a hotkey while in Stage 2.
-  SetOmniboxEverywhereHotkey(&local_state_, "Ctrl+Shift+Space");
-  EXPECT_TRUE(HasOmniboxEverywhereHotkey(&local_state_));
-  // Does not immediately switch to Stage 3 before dismissal or impression cap.
-  EXPECT_EQ(GetCurrentFreStage(&profile_, &local_state_),
-            FreStage::kShortcutSetupChin);
-
-  // When user dismisses Stage 2 after selecting a hotkey, Stage 3 is skipped
-  // and FRE is marked dismissed.
-  OnFreStageDismissed(&profile_, FreStage::kShortcutSetupChin, &local_state_);
-  EXPECT_EQ(GetCurrentFreStage(&profile_, &local_state_), FreStage::kNone);
-  EXPECT_TRUE(profile_.GetPrefs()->GetBoolean(kFreDismissed));
-  EXPECT_TRUE(profile_.GetPrefs()->GetBoolean(kFreShortcutReminderDismissed));
-}
-
-TEST_F(OmniboxEverywherePrefsTest, MarkFreStageCompleted_NullProfile) {
-  EXPECT_NO_FATAL_FAILURE(
-      MarkFreStageCompleted(nullptr, FreStage::kShortcutSetupChin));
-}
-
-TEST_F(OmniboxEverywherePrefsTest,
-       MarkFreStageCompleted_SetupChinPreservesReminder) {
-  // Dismiss Stage 1 to transition to Stage 2.
-  OnFreStageDismissed(&profile_, FreStage::kIntroModal, &local_state_);
-  EXPECT_EQ(GetCurrentFreStage(&profile_, &local_state_),
-            FreStage::kShortcutSetupChin);
-
-  // User sets hotkey (e.g. in Settings) and marks Stage 2 completed.
-  SetOmniboxEverywhereHotkey(&local_state_, "Ctrl+Shift+Space");
-  MarkFreStageCompleted(&profile_, FreStage::kShortcutSetupChin);
-
-  // Stage 3 (reminder chin) is shown, not skipped.
-  EXPECT_EQ(GetCurrentFreStage(&profile_, &local_state_),
-            FreStage::kShortcutReminderChin);
-  EXPECT_FALSE(profile_.GetPrefs()->GetBoolean(kFreDismissed));
-  EXPECT_FALSE(profile_.GetPrefs()->GetBoolean(kFreShortcutReminderDismissed));
-}
-
-TEST_F(OmniboxEverywherePrefsTest,
-       FreStagesProgression_SetupHotkeyImpressionTransitionsToReminder) {
-  // Start with hotkey disabled so that Stage 2 (ShortcutSetupChin) is reached.
-  local_state_.SetBoolean(kHotkeyEnabled, false);
-  EXPECT_FALSE(HasOmniboxEverywhereHotkey(&local_state_));
-
-  // Dismiss Stage 1 to transition to Stage 2.
-  OnFreStageDismissed(&profile_, FreStage::kIntroModal, &local_state_);
-  EXPECT_EQ(GetCurrentFreStage(&profile_, &local_state_),
-            FreStage::kShortcutSetupChin);
-
-  // While no hotkey is selected, impressions are not capped.
-  for (int i = 0; i < 5; ++i) {
-    IncrementFreImpression(&profile_, &local_state_);
-    EXPECT_EQ(GetCurrentFreStage(&profile_, &local_state_),
-              FreStage::kShortcutSetupChin);
+       ShortcutsVisible_MalformedEnterprisePolicyTreatedAsNoPolicy) {
+  // A policy entry without a URL is not a valid enterprise shortcut, so it
+  // must not gate shortcut availability on the enterprise checkboxes.
+  {
+    ScopedListPrefUpdate update(
+        profile_.GetPrefs(), ntp_tiles::prefs::kEnterpriseShortcutsPolicyList);
+    update->Append(base::DictValue().Set("title", "Missing URL"));
   }
-  EXPECT_EQ(profile_.GetPrefs()->GetInteger(kFreShortcutSetupImpressionCount),
-            0);
 
-  // Set a hotkey while in Stage 2.
-  SetOmniboxEverywhereHotkey(&local_state_, "Ctrl+Shift+Space");
-  EXPECT_TRUE(HasOmniboxEverywhereHotkey(&local_state_));
+  profile_.GetPrefs()->SetBoolean(ntp_prefs::kNtpShortcutsVisible, true);
+  profile_.GetPrefs()->SetBoolean(ntp_prefs::kNtpEnterpriseShortcutsVisible,
+                                  false);
+  profile_.GetPrefs()->SetBoolean(ntp_prefs::kNtpPersonalShortcutsVisible,
+                                  false);
+  profile_.GetPrefs()->SetInteger(
+      kOmniboxEverywhereShowShortcuts,
+      std::to_underlying(ShowShortcutsPrefValue::kUnset));
 
-  // Does not immediately switch to Stage 3 during current open.
-  EXPECT_EQ(GetCurrentFreStage(&profile_, &local_state_),
-            FreStage::kShortcutSetupChin);
-
-  // Increment impression 1 -> reaches impression cap (1), advances to
-  // Stage 3 on the next invocation.
-  IncrementFreImpression(&profile_, &local_state_);
-  EXPECT_EQ(GetCurrentFreStage(&profile_, &local_state_),
-            FreStage::kShortcutReminderChin);
-  EXPECT_FALSE(profile_.GetPrefs()->GetBoolean(kFreDismissed));
+  EXPECT_TRUE(AreShortcutsAvailableForProfile(&profile_));
+  EXPECT_TRUE(IsOmniboxEverywhereShortcutsVisible(&profile_));
 }
 
 TEST_F(OmniboxEverywherePrefsTest, SetOmniboxEverywhereHotkeyEnablesHotkey) {
@@ -355,46 +218,6 @@ TEST_F(OmniboxEverywherePrefsTest, SetOmniboxEverywhereHotkeyEnablesHotkey) {
   SetOmniboxEverywhereHotkey(&local_state_, "Ctrl+Shift+Space");
   EXPECT_TRUE(local_state_.GetBoolean(kHotkeyEnabled));
   EXPECT_TRUE(HasOmniboxEverywhereHotkey(&local_state_));
-}
-
-TEST_F(OmniboxEverywherePrefsTest,
-       FreStagesProgression_PresetHotkeySkipsSetupChin) {
-  EXPECT_FALSE(HasOmniboxEverywhereHotkey(&local_state_));
-
-  // Explicitly configure a hotkey in local state before completing FRE.
-  SetOmniboxEverywhereHotkey(&local_state_, "Ctrl+Shift+Space");
-  EXPECT_TRUE(HasOmniboxEverywhereHotkey(&local_state_));
-
-  // Stage 1 (IntroModal) is still shown first.
-  EXPECT_EQ(GetCurrentFreStage(&profile_, &local_state_),
-            FreStage::kIntroModal);
-
-  // Dismiss Stage 1 explicitly -> skips Stage 2 and goes directly to Stage 3.
-  OnFreStageDismissed(&profile_, FreStage::kIntroModal, &local_state_);
-  EXPECT_EQ(GetCurrentFreStage(&profile_, &local_state_),
-            FreStage::kShortcutReminderChin);
-
-  // Dismiss Stage 3 explicitly -> completes FRE.
-  OnFreStageDismissed(&profile_, FreStage::kShortcutReminderChin,
-                      &local_state_);
-  EXPECT_EQ(GetCurrentFreStage(&profile_, &local_state_), FreStage::kNone);
-  EXPECT_TRUE(profile_.GetPrefs()->GetBoolean(kFreDismissed));
-}
-
-TEST_F(OmniboxEverywherePrefsTest,
-       FreStagesProgression_PresetHotkeyImpressionCap) {
-  SetOmniboxEverywhereHotkey(&local_state_, "Ctrl+Shift+Space");
-
-  EXPECT_EQ(GetCurrentFreStage(&profile_, &local_state_),
-            FreStage::kIntroModal);
-
-  // Exhaust Stage 1 impressions (max 2).
-  IncrementFreImpression(&profile_, &local_state_);
-  IncrementFreImpression(&profile_, &local_state_);
-
-  // Transitions directly to Stage 3 (ShortcutReminderChin), skipping Stage 2.
-  EXPECT_EQ(GetCurrentFreStage(&profile_, &local_state_),
-            FreStage::kShortcutReminderChin);
 }
 
 TEST_F(OmniboxEverywherePrefsTest, HotkeyPresetsAndTokens) {
@@ -423,30 +246,30 @@ TEST_F(OmniboxEverywherePrefsTest, HotkeyPresetsAndTokens) {
   EXPECT_FALSE(tokens.empty());
   EXPECT_EQ(tokens.back(), "Space");
 #if BUILDFLAG(IS_MAC)
-  EXPECT_EQ(tokens[0], "Option");
+  EXPECT_EQ(tokens[0], "⌥ Option");
 
   // Verify Apple canonical order [control -> option -> shift -> command].
   ui::Accelerator cmd_shift_space(ui::VKEY_SPACE,
                                   ui::EF_COMMAND_DOWN | ui::EF_SHIFT_DOWN);
   auto cmd_tokens = GetOmniboxEverywhereHotkeyTokens(cmd_shift_space);
   ASSERT_EQ(3u, cmd_tokens.size());
-  EXPECT_EQ("Shift", cmd_tokens[0]);
-  EXPECT_EQ("Cmd", cmd_tokens[1]);
+  EXPECT_EQ("⇧ Shift", cmd_tokens[0]);
+  EXPECT_EQ("⌘ Cmd", cmd_tokens[1]);
   EXPECT_EQ("Space", cmd_tokens[2]);
 
   ui::Accelerator ctrl_shift_space(ui::VKEY_SPACE,
                                    ui::EF_CONTROL_DOWN | ui::EF_SHIFT_DOWN);
   auto ctrl_tokens = GetOmniboxEverywhereHotkeyTokens(ctrl_shift_space);
   ASSERT_EQ(3u, ctrl_tokens.size());
-  EXPECT_EQ("Ctrl", ctrl_tokens[0]);
-  EXPECT_EQ("Shift", ctrl_tokens[1]);
+  EXPECT_EQ("⌃ Ctrl", ctrl_tokens[0]);
+  EXPECT_EQ("⇧ Shift", ctrl_tokens[1]);
   EXPECT_EQ("Space", ctrl_tokens[2]);
 
   // Verify non-letter keys (Return) map to localized text instead of glyphs.
   ui::Accelerator cmd_return(ui::VKEY_RETURN, ui::EF_COMMAND_DOWN);
   auto return_tokens = GetOmniboxEverywhereHotkeyTokens(cmd_return);
   ASSERT_EQ(2u, return_tokens.size());
-  EXPECT_EQ("Cmd", return_tokens[0]);
+  EXPECT_EQ("⌘ Cmd", return_tokens[0]);
   EXPECT_EQ("Enter", return_tokens[1]);
 #else
   EXPECT_EQ(tokens[0], "Alt");

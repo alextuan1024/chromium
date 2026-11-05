@@ -12,6 +12,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -73,6 +74,22 @@ bool AttributesMeetImportConstraints(EntityType entity_type,
                              });
 }
 
+bool ShouldImportValueForAttribute(AttributeType attribute,
+                                   std::u16string_view value) {
+  // At the moment, AutofillAI attributes can never save an email. At the same
+  // time, in some countries fields that accept either an AutofillAI type or an
+  // email address are common. This avoids mistakenly offering to save those.
+  if (value.empty() || IsValidEmailAddress(value)) {
+    return false;
+  }
+  // At the moment, additional validation only exists for redress number.
+  if (attribute.name() != AttributeTypeName::kRedressNumberNumber) {
+    return true;
+  }
+  return value.size() == 7 &&
+         std::ranges::all_of(value, &base::IsAsciiDigit<char16_t>);
+}
+
 struct ValueAndFormatString {
   std::u16string value;
   AutofillFormatString format_string;
@@ -124,7 +141,7 @@ std::vector<EntityInstance> GetPossibleEntitiesFromSubmittedForm(
     base::span<const std::unique_ptr<AutofillField>> fields,
     const AutofillClient& client) {
   const GeoIpCountryCode& country_code = client.GetVariationConfigCountryCode();
-  const std::string& app_locale = client.GetAppLocale();
+  const std::string_view app_locale = client.GetAppLocale().tag_string();
 
   std::map<Section,
            std::map<EntityType, std::map<AttributeType, AttributeInstance>>>
@@ -162,11 +179,7 @@ std::vector<EntityInstance> GetPossibleEntitiesFromSubmittedForm(
         const ValueAndFormatString value =
             GetValueAndFormatString(*field, attribute_type);
 
-        // At the moment, AutofillAI attributes can never save an email. At the
-        // same time, in some countries fields that accept either an AutofillAI
-        // type or an email address are common. This avoids mistakenly offering
-        // to save those.
-        if (value.value.empty() || IsValidEmailAddress(value.value)) {
+        if (!ShouldImportValueForAttribute(attribute_type, value.value)) {
           continue;
         }
 
@@ -225,7 +238,7 @@ std::vector<EntityInstance> GetPossibleEntitiesFromSubmittedForm(
                     // exist on Google Wallet servers yet. Their management URL
                     // is empty until the pass is created by the Wallet service.
                     EntityInstance::WalletRecordTypePayload{.management_url =
-                                                                ""})
+                                                                GURL()})
               : EntityInstance::RecordTypeData(
                     EntityInstance::LocalRecordTypePayload{});
       EntityInstance entity = EntityInstance(

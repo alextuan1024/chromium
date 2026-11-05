@@ -11,7 +11,6 @@
 #include "build/build_config.h"
 
 PERFETTO_DEFINE_TEST_CATEGORY_PREFIXES("cat",
-                                       "cast_perf_test",
                                        "foo",
                                        "test",
                                        "test_gpu",
@@ -259,6 +258,10 @@ PERFETTO_DEFINE_CATEGORIES_IN_NAMESPACE_WITH_ATTRS(
     perfetto::Category("shell"),
     perfetto::Category("shutdown"),
     perfetto::Category("skia"),
+    perfetto::Category("speech")
+        .SetTags("audio")
+        .SetDescription(
+            "Events from the Web Speech API and speech recognition."),
     perfetto::Category("sql"),
     perfetto::Category("startup"),
     perfetto::Category("sync"),
@@ -304,6 +307,11 @@ PERFETTO_DEFINE_CATEGORIES_IN_NAMESPACE_WITH_ATTRS(
         .SetTags("debug"),
     perfetto::Category(TRACE_DISABLED_BY_DEFAULT("blink.debug.display_lock"))
         .SetTags("debug"),
+    perfetto::Category(TRACE_DISABLED_BY_DEFAULT("blink.debug.html_content"))
+        .SetTags("debug")
+        .SetDescription(
+            "Exports parsed HTML content and target element metadata in Blink "
+            "HTML parser trace events."),
     perfetto::Category(TRACE_DISABLED_BY_DEFAULT("blink.debug.layout"))
         .SetTags("debug"),
     perfetto::Category(TRACE_DISABLED_BY_DEFAULT("blink.debug.layout.trees"))

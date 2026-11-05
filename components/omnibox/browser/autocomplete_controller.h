@@ -12,8 +12,8 @@
 
 #include "base/compiler_specific.h"
 #include "base/gtest_prod_util.h"
-#include "base/memory/advanced_memory_safety_checks.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory/sanitized_object.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/observer_list.h"
 #include "base/observer_list_types.h"
@@ -39,7 +39,7 @@ class ClipboardProvider;
 class ContextualSearchProvider;
 class DocumentProvider;
 class FeaturedSearchProvider;
-class HistoryFuzzyProvider;
+class GURL;
 class HistoryQuickProvider;
 class HistoryURLProvider;
 class KeywordProvider;
@@ -85,7 +85,7 @@ inline constexpr char kOmniboxGeminiHeader[] = "X-Omnibox-Gemini";
 class AutocompleteController : public AutocompleteProviderListener,
                                public base::trace_event::MemoryDumpProvider {
   // TODO(crbug.com/449894891): Remove this macro once it gets fixed.
-  ADVANCED_MEMORY_SAFETY_CHECKS();
+  SANITIZED_OBJECT();
 
  public:
   // Describes an autocomplete pass.
@@ -266,6 +266,17 @@ class AutocompleteController : public AutocompleteProviderListener,
   // Constructs and sets the final destination URL on the given match.
   void SetMatchDestinationURL(AutocompleteMatch* match) const;
 
+  // Computes the alternative navigation match for `match` opened for `input`,
+  // if any, or constructs one for a precomputed `alternate_nav_url`. Used to
+  // suggest a direct navigation when a search was performed for what could be
+  // an intranet hostname.
+  AutocompleteMatch ComputeAlternativeNavMatch(
+      const AutocompleteInput& input,
+      const AutocompleteMatch& match) const;
+  AutocompleteMatch ComputeAlternativeNavMatch(
+      const AutocompleteInput& input,
+      const GURL& alternate_nav_url) const;
+
   HistoryURLProvider* history_url_provider() const {
     return history_url_provider_;
   }
@@ -343,6 +354,9 @@ class AutocompleteController : public AutocompleteProviderListener,
   FRIEND_TEST_ALL_PREFIXES(
       AutocompleteControllerTest,
       UpdateKeywordDescriptions_StaticContextualSearchSuggestion);
+  FRIEND_TEST_ALL_PREFIXES(
+      AutocompleteControllerTest,
+      UpdateKeywordDescriptions_ContextualSearchSidePanelDescription);
   FRIEND_TEST_ALL_PREFIXES(AutocompleteControllerTest,
                            FilterMatchesForInstantKeywordWithBareAt);
   FRIEND_TEST_ALL_PREFIXES(AutocompleteControllerTest,
@@ -357,6 +371,8 @@ class AutocompleteController : public AutocompleteProviderListener,
                            ContextualSearchActionAttachedInZeroSuggest);
   FRIEND_TEST_ALL_PREFIXES(AutocompleteControllerTest,
                            AttachContextualSearchOpenLensActionToMatches);
+  FRIEND_TEST_ALL_PREFIXES(AutocompleteControllerTest,
+                           AttachContextualSearchFulfillmentActionWithoutLens);
   FRIEND_TEST_ALL_PREFIXES(
       AutocompleteControllerTest,
       ContextualSearchOpenLensActionAttachedPageKeywordMode);
@@ -380,7 +396,7 @@ class AutocompleteController : public AutocompleteProviderListener,
   FRIEND_TEST_ALL_PREFIXES(OmniboxViewTest, DoesNotUpdateAutocompleteOnBlur);
   FRIEND_TEST_ALL_PREFIXES(OmniboxViewViewsTest, CloseOmniboxPopupOnTextDrag);
   FRIEND_TEST_ALL_PREFIXES(OmniboxViewViewsTest, FriendlyAccessibleLabel);
-  FRIEND_TEST_ALL_PREFIXES(OmniboxViewViewsTest, AccessiblePopup);
+  FRIEND_TEST_ALL_PREFIXES(OmniboxViewViewsViewsPopupTest, AccessiblePopup);
   FRIEND_TEST_ALL_PREFIXES(OmniboxViewViewsTest, MaintainCursorAfterFocusCycle);
 #if BUILDFLAG(IS_WIN)
   FRIEND_TEST_ALL_PREFIXES(OmniboxViewViewsUIATest, AccessibleOmnibox);
@@ -549,7 +565,6 @@ class AutocompleteController : public AutocompleteProviderListener,
   raw_ptr<OnDeviceHeadProvider> on_device_head_provider_ = nullptr;
   raw_ptr<ClipboardProvider> clipboard_provider_ = nullptr;
   raw_ptr<VoiceSuggestProvider> voice_suggest_provider_ = nullptr;
-  raw_ptr<HistoryFuzzyProvider> history_fuzzy_provider_ = nullptr;
   raw_ptr<OpenTabProvider> open_tab_provider_ = nullptr;
   raw_ptr<TabGroupProvider> tab_group_provider_ = nullptr;
   raw_ptr<FeaturedSearchProvider> featured_search_provider_ = nullptr;

@@ -44,6 +44,11 @@ namespace strike_database {
 class StrikeDatabase;
 }  // namespace strike_database
 
+namespace device_reauth {
+class DeviceAuthAvailabilityChecker;
+class DeviceAuthenticator;
+}  // namespace device_reauth
+
 namespace syncer {
 class SyncService;
 }
@@ -92,7 +97,7 @@ class AndroidAutofillClient : public autofill::ContentAutofillClient,
 
   // AutofillClient:
   base::WeakPtr<AutofillClient> GetWeakPtr() final;
-  const std::string& GetAppLocale() const final;
+  const base::i18n::LanguageTag& GetAppLocale() const final;
   bool IsOffTheRecord() const final;
   scoped_refptr<network::SharedURLLoaderFactory> GetURLLoaderFactory() final;
   autofill::AutofillCrowdsourcingManager& GetCrowdsourcingManager() final;
@@ -141,6 +146,10 @@ class AndroidAutofillClient : public autofill::ContentAutofillClient,
   autofill::autofill_metrics::FormInteractionsUkmLogger&
   GetFormInteractionsUkmLogger() final;
   metrics::ProfileMetricsService* GetProfileMetricsService() override;
+  std::unique_ptr<device_reauth::DeviceAuthenticator> GetDeviceAuthenticator(
+      std::string histogram) const final;
+  std::unique_ptr<device_reauth::DeviceAuthAvailabilityChecker>
+  GetDeviceAuthAvailabilityChecker() const final;
 
   // ContentAutofillClient:
   std::unique_ptr<autofill::AutofillManager> CreateManager(

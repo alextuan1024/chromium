@@ -14,7 +14,7 @@
 #include "ui/base/x/selection_utils.h"
 #include "ui/base/x/x11_clipboard_helper.h"
 #include "ui/base/x/x11_util.h"
-#include "ui/gfx/x/atom_cache.h"
+#include "ui/gfx/x/connection.h"
 #include "ui/gfx/x/xproto.h"
 
 namespace ui {
@@ -22,6 +22,13 @@ namespace ui {
 namespace {
 
 const char kChromeSelection[] = "CHROME_SELECTION";
+
+// The amount of time to wait for the selection owner to make progress on the
+// in-flight request before aborting it. Requests are processed serially, so
+// without this, a single owner that never responds would block all subsequent
+// requests indefinitely. The clipboard is asynchronous, so this does not need
+// to be short to keep the UI responsive.
+constexpr base::TimeDelta kRequestTimeout = base::Seconds(5);
 
 // Combines |data| into a single std::vector<uint8_t>.
 std::vector<uint8_t> CombineData(
@@ -44,7 +51,7 @@ SelectionRequester::SelectionRequester(x11::Window x_window,
                                        XClipboardHelper* helper)
     : x_window_(x_window),
       helper_(helper),
-      x_property_(x11::GetAtom(kChromeSelection)) {}
+      x_property_(x11::Connection::Get()->GetAtom(kChromeSelection)) {}
 
 SelectionRequester::~SelectionRequester() = default;
 
@@ -56,7 +63,7 @@ void SelectionRequester::PerformConvertSelectionAsync(
     x11::Atom selection,
     x11::Atom target,
     ConvertSelectionCallback callback) {
-  requests_.push_back(
+  requests_.push(
       std::make_unique<Request>(selection, target, std::move(callback)));
   if (requests_.size() == 1) {
     ConvertSelectionForCurrentRequest();
@@ -111,8 +118,7 @@ void SelectionRequester::OnSelectionNotify(
     const x11::SelectionNotifyEvent& selection) {
   Request* request = GetCurrentRequest();
   x11::Atom event_property = selection.property;
-  if (!request || request->completed ||
-      request->selection != selection.selection ||
+  if (!request || request->selection != selection.selection ||
       request->target != selection.target) {
     // ICCCM requires us to delete the property passed into SelectionNotify.
     if (event_property != x11::Atom::None) {
@@ -135,13 +141,15 @@ void SelectionRequester::OnSelectionNotify(
     x11::Connection::Get()->DeleteProperty(x_window_, event_property);
   }
 
-  if (request->out_type == x11::GetAtom(kIncr)) {
+  if (request->out_type == x11::Connection::Get()->GetAtom(kIncr)) {
     request->data_sent_incrementally = true;
     request->out_data.clear();
     request->out_type = x11::Atom::None;
+    // The owner is making progress, so give it more time.
+    timeout_timer_.Reset();
   } else {
     // Note: `this` may be deleted after this call.
-    CompleteRequest(0, success);
+    CompleteCurrentRequest(success);
   }
 }
 
@@ -164,13 +172,13 @@ void SelectionRequester::OnPropertyEvent(
       ui::GetRawBytesOfProperty(x_window_, x_property_, &out_data, &out_type);
   if (!success) {
     // Note: `this` may be deleted after this call.
-    CompleteRequest(0, false);
+    CompleteCurrentRequest(false);
     return;
   }
 
   if (request->out_type != x11::Atom::None && request->out_type != out_type) {
     // Note: `this` may be deleted after this call.
-    CompleteRequest(0, false);
+    CompleteCurrentRequest(false);
     return;
   }
 
@@ -182,63 +190,59 @@ void SelectionRequester::OnPropertyEvent(
 
   if (!out_data->size()) {
     // Note: `this` may be deleted after this call.
-    CompleteRequest(0, true);
-  }
-}
-
-void SelectionRequester::CompleteRequest(size_t index, bool success) {
-  CHECK_LT(index, requests_.size());
-
-  Request* request = requests_[index].get();
-  if (request->completed) {
+    CompleteCurrentRequest(true);
     return;
   }
 
-  // 1. Mark completed
-  request->success = success;
-  request->completed = true;
+  // The owner is making progress, so give it more time.
+  timeout_timer_.Reset();
+}
 
-  // 2. Extract data & callback
+void SelectionRequester::OnRequestTimeout() {
+  // Note: `this` may be deleted after this call.
+  CompleteCurrentRequest(false);
+}
+
+void SelectionRequester::CompleteCurrentRequest(bool success) {
+  CHECK(!requests_.empty());
+
+  std::unique_ptr<Request> request = std::move(requests_.front());
+  requests_.pop();
+
   std::vector<uint8_t> out_data;
   if (success) {
     out_data = CombineData(request->out_data);
   }
-  x11::Atom out_type = request->out_type;
-  auto callback = std::move(request->callback);
 
-  // 3. Update `requests_` queue
-  if (index == 0) {
-    size_t completed_count = 0;
-    while (completed_count < requests_.size() &&
-           requests_[completed_count]->completed) {
-      ++completed_count;
-    }
+  // Start the next request before running the callback, since the callback
+  // may delete `this`.
+  ConvertSelectionForCurrentRequest();
 
-    if (completed_count > 0) {
-      requests_.erase(requests_.begin(), requests_.begin() + completed_count);
-    }
-
-    ConvertSelectionForCurrentRequest();
-  }
-
-  // 4. Safely run the callback
-  if (callback) {
-    std::move(callback).Run(success, std::move(out_data), out_type);
+  if (request->callback) {
+    // Note: `this` may be deleted after this call.
+    std::move(request->callback)
+        .Run(success, std::move(out_data), request->out_type);
   }
 }
 
 void SelectionRequester::ConvertSelectionForCurrentRequest() {
   Request* request = GetCurrentRequest();
-  if (request) {
-    x11::Connection::Get()->ConvertSelection({
-        .requestor = x_window_,
-        .selection = request->selection,
-        .target = request->target,
-        .property = x_property_,
-        .time = x11::Time::CurrentTime,
-    });
-    x11::Connection::Get()->Flush();
+  if (!request) {
+    timeout_timer_.Stop();
+    return;
   }
+
+  x11::Connection::Get()->ConvertSelection({
+      .requestor = x_window_,
+      .selection = request->selection,
+      .target = request->target,
+      .property = x_property_,
+      .time = x11::Time::CurrentTime,
+  });
+  x11::Connection::Get()->Flush();
+
+  timeout_timer_.Start(FROM_HERE, kRequestTimeout, this,
+                       &SelectionRequester::OnRequestTimeout);
 }
 
 SelectionRequester::Request* SelectionRequester::GetCurrentRequest() {
@@ -252,8 +256,6 @@ SelectionRequester::Request::Request(x11::Atom selection,
       target(target),
       data_sent_incrementally(false),
       out_type(x11::Atom::None),
-      success(false),
-      completed(false),
       callback(std::move(callback)) {}
 
 SelectionRequester::Request::~Request() = default;

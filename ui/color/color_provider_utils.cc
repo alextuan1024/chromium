@@ -4,17 +4,21 @@
 
 #include "ui/color/color_provider_utils.h"
 
+#include <array>
 #include <memory>
 #include <string_view>
 
 #include "base/compiler_specific.h"
 #include "base/containers/fixed_flat_map.h"
+#include "base/feature_list.h"
 #include "base/no_destructor.h"
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
 #include "third_party/skia/include/core/SkColor.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/color/color_id.mojom.h"
 #include "ui/color/color_provider.h"
+#include "ui/color/color_provider_utils_internal.h"
 #include "ui/color/color_recipe.h"
 #include "ui/gfx/color_palette.h"
 #include "ui/gfx/color_utils.h"
@@ -184,45 +188,26 @@ bool ColorProviderUtilsCallbacks::NameToColorId(std::string_view color_name,
 }
 
 std::string ColorIdName(ColorId color_id) {
-#include "ui/color/color_id_map_macros.inc"  // NOLINT(build/include)
-  static constexpr auto kColorIdMap =
-      base::MakeFixedFlatMap<ColorId, const char*>({COLOR_IDS});
-// Note that this second include is not redundant. The second inclusion of the
-// .inc file serves to undefine the macros the first inclusion defined.
-#include "ui/color/color_id_map_macros.inc"  // NOLINT(build/include)
-
-  auto it = kColorIdMap.find(color_id);
-  if (it != kColorIdMap.cend()) {
-    return {it->second};
-  }
-  std::string_view color_name;
-  if (g_color_provider_utils_callbacks &&
-      g_color_provider_utils_callbacks->ColorIdName(color_id, &color_name)) {
-    return std::string(color_name);
+  if (std::string_view css_name = ColorIdToCSSColorId(color_id);
+      !css_name.empty()) {
+    return ConvertCSSColorIdToColorIdName(css_name);
   }
   return base::StringPrintf("ColorId(%d)", color_id);
 }
 
 std::string_view ColorIdToCSSColorId(ColorId color_id) {
-  // Populate the compile-time map using `color_id_map_macros.inc`. Each entry
-  // expands `COLOR_ID_MAP_ENTRY` to map the `ColorId` enum value to a static
-  // `std::string_view` stored in `internal::CssNameHolder`.
-#define COLOR_ID_MAP_ENTRY(enum_name, string_name)                      \
-  {                                                                     \
-    enum_name, internal::CssNameHolder<internal::ConstexprCssColorName( \
-                   string_name)>::kName.view()                          \
-  }
+  constexpr const auto& kColorIdToCssTable =
+      color_internal::MakeCssColorIdTable<[] {
 #include "ui/color/color_id_map_macros.inc"  // NOLINT(build/include)
-  static constexpr auto kColorIdToCssMap =
-      base::MakeFixedFlatMap<ColorId, std::string_view>({COLOR_IDS});
+        return std::to_array<color_internal::ColorIdEntry>({COLOR_IDS});
 // Note that this second include is not redundant. The second inclusion of the
 // .inc file serves to undefine the macros the first inclusion defined.
 #include "ui/color/color_id_map_macros.inc"  // NOLINT(build/include)
+      }>();
 
-  // Perform an O(log N) lookup in the compile-time map.
-  auto it = kColorIdToCssMap.find(color_id);
-  if (it != kColorIdToCssMap.cend()) {
-    return it->second;
+  if (std::string_view css_name = kColorIdToCssTable.Lookup(color_id);
+      !css_name.empty()) {
+    return css_name;
   }
   // Fall back to embedder-registered callbacks (e.g. ChromeColorProviderUtils)
   // for embedder-specific color IDs.
@@ -403,6 +388,25 @@ std::string ConvertColorProviderColorIdToCSSColorId(
     }
   }
   return css_color_id_name;
+}
+
+std::string ConvertCSSColorIdToColorIdName(std::string_view css_color_id_name) {
+  if (css_color_id_name.empty()) {
+    return std::string();
+  }
+  std::string color_id_name;
+  color_id_name.reserve(css_color_id_name.size());
+  color_id_name.push_back('k');
+  for (size_t i = 1; i < css_color_id_name.size(); ++i) {
+    if (css_color_id_name[i] == '-') {
+      if (++i < css_color_id_name.size()) {
+        color_id_name.push_back(base::ToUpperASCII(css_color_id_name[i]));
+      }
+    } else {
+      color_id_name.push_back(css_color_id_name[i]);
+    }
+  }
+  return color_id_name;
 }
 
 void FastAppendCssHexColor(SkColor color, std::string& out) {
@@ -715,7 +719,15 @@ void COMPONENT_EXPORT(COLOR)
     CompleteDefaultWebNativeRendererColorIdsDefinition(ui::ColorMixer& mixer,
                                                        bool dark_mode,
                                                        bool high_contrast) {
+  // Disabled controls paint `kLightenLayerAlpha` gray under a
+  // `kDisabledFillAlpha` fill so the page background shows through.
+  // SkAlpha values (0-255): 153/255 ~= 60%, 51/255 ~= 20%.
+  constexpr SkAlpha kDisabledFillAlpha = 153;
+  constexpr SkAlpha kLightenLayerAlpha = 51;
+
   if (dark_mode) {
+    const bool translucent_disabled = base::FeatureList::IsEnabled(
+        ::features::kDarkModeTranslucentDisabledControls);
     mixer[kColorWebNativeControlAccent] = {SkColorSetRGB(0x99, 0xC8, 0xFF)};
     mixer[kColorWebNativeControlAccentDisabled] = {
         SkColorSetRGB(0x75, 0x75, 0x75)};
@@ -750,7 +762,9 @@ void COMPONENT_EXPORT(COLOR)
     mixer[kColorWebNativeControlCheckboxBackground] = {
         SkColorSetRGB(0x3B, 0x3B, 0x3B)};
     mixer[kColorWebNativeControlCheckboxBackgroundDisabled] = {
-        SkColorSetRGB(0x3B, 0x3B, 0x3B)};
+        translucent_disabled
+            ? SkColorSetARGB(kDisabledFillAlpha, 0x3B, 0x3B, 0x3B)
+            : SkColorSetRGB(0x3B, 0x3B, 0x3B)};
     mixer[kColorWebNativeControlFill] = {SkColorSetRGB(0x3B, 0x3B, 0x3B)};
     mixer[kColorWebNativeControlFillDisabled] = {
         SkColorSetRGB(0x36, 0x36, 0x36)};
@@ -759,7 +773,9 @@ void COMPONENT_EXPORT(COLOR)
     mixer[kColorWebNativeControlFillPressed] = {
         SkColorSetRGB(0x3B, 0x3B, 0x3B)};
     mixer[kColorWebNativeControlLightenLayer] = {
-        SkColorSetRGB(0x3B, 0x3B, 0x3B)};
+        translucent_disabled
+            ? SkColorSetARGB(kLightenLayerAlpha, 0x3B, 0x3B, 0x3B)
+            : SkColorSetRGB(0x3B, 0x3B, 0x3B)};
     mixer[kColorWebNativeControlProgressValue] = {
         SkColorSetRGB(0x63, 0xAD, 0xE5)};
     mixer[kColorWebNativeControlScrollbarArrowBackgroundDisabled] = {
@@ -833,7 +849,7 @@ void COMPONENT_EXPORT(COLOR)
         SkColorSetRGB(0xF5, 0xF5, 0xF5)};
     mixer[kColorWebNativeControlCheckboxBackground] = {SK_ColorWHITE};
     mixer[kColorWebNativeControlCheckboxBackgroundDisabled] = {
-        SkColorSetA(SK_ColorWHITE, 0x99)};
+        SkColorSetA(SK_ColorWHITE, kDisabledFillAlpha)};
     mixer[kColorWebNativeControlFill] = {SkColorSetRGB(0xEF, 0xEF, 0xEF)};
     mixer[kColorWebNativeControlFillDisabled] = {
         SkColorSetARGB(0x4D, 0xEF, 0xEF, 0xEF)};
@@ -842,7 +858,7 @@ void COMPONENT_EXPORT(COLOR)
     mixer[kColorWebNativeControlFillPressed] = {
         SkColorSetRGB(0xF5, 0xF5, 0xF5)};
     mixer[kColorWebNativeControlLightenLayer] = {
-        SkColorSetARGB(0x33, 0xA9, 0xA9, 0xA9)};
+        SkColorSetARGB(kLightenLayerAlpha, 0xA9, 0xA9, 0xA9)};
     mixer[kColorWebNativeControlProgressValue] = {
         SkColorSetRGB(0x00, 0x75, 0xFF)};
     mixer[kColorWebNativeControlScrollbarArrowBackgroundDisabled] = {
@@ -924,7 +940,8 @@ bool IsRendererColorMappingEquivalent(
 
   for (const auto& table : kRendererColorIdMap) {
     // The `renderer_color_map_` should map the full set of renderer color ids.
-    DCHECK(renderer_color_map.contains(table.renderer_color_id));
+    CHECK(renderer_color_map.contains(table.renderer_color_id),
+          base::NotFatalUntil::M163);
     if (color_provider->GetColor(table.color_id) !=
         renderer_color_map.at(table.renderer_color_id)) {
       return false;

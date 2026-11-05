@@ -17,8 +17,10 @@
 #include "base/files/scoped_temp_dir.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
+#include "base/test/scoped_feature_list.h"
 #include "base/test/test_file_util.h"
 #include "build/build_config.h"
+#include "components/download/public/common/download_features.h"
 #include "components/download/public/common/download_interrupt_reasons.h"
 #include "components/download/public/common/download_item.h"
 #include "crypto/hash.h"
@@ -51,6 +53,20 @@ const auto kHashOfTestData1To3 = std::to_array<uint8_t>(
     {0xcb, 0xf6, 0x8b, 0xf1, 0x0f, 0x80, 0x03, 0xdb, 0x86, 0xb3, 0x13,
      0x43, 0xaf, 0xac, 0x8c, 0x71, 0x75, 0xbd, 0x03, 0xfb, 0x5f, 0xc9,
      0x05, 0x65, 0x0f, 0x8c, 0x80, 0xaf, 0x08, 0x74, 0x43, 0xa8});
+
+// Make sure paths are normalized on Windows.
+bool IsParentDirectory(const base::FilePath& dir, const base::FilePath& path) {
+#if BUILDFLAG(IS_WIN)
+  const base::FilePath long_dir = base::MakeLongFilePath(dir);
+  const base::FilePath long_path = base::MakeLongFilePath(path);
+  if (long_dir.empty() || long_path.empty()) {
+    return dir.IsParent(path);
+  }
+  return long_dir.IsParent(long_path);
+#else
+  return dir.IsParent(path);
+#endif  // BUILDFLAG(IS_WIN)
+}
 
 }  // namespace
 
@@ -747,7 +763,9 @@ TEST_F(BaseFileTest, CreatedInSystemTempDirectory) {
 
   base::FilePath system_temp_dir;
   ASSERT_TRUE(base::GetTempDir(&system_temp_dir));
-  EXPECT_TRUE(system_temp_dir.IsParent(base_file_->full_path()));
+  EXPECT_TRUE(IsParentDirectory(system_temp_dir, base_file_->full_path()))
+      << "system_temp_dir=" << system_temp_dir
+      << " full_path=" << base_file_->full_path();
   base_file_->Finish();
 }
 
@@ -777,10 +795,12 @@ TEST_F(BaseFileTest, MAYBE_CreatedInSystemTempDirectoryFallback) {
   EXPECT_FALSE(base_file_->full_path().empty());
   EXPECT_TRUE(base_file_->in_progress());
 
-  EXPECT_FALSE(unwritable_dir.IsParent(base_file_->full_path()));
+  EXPECT_FALSE(IsParentDirectory(unwritable_dir, base_file_->full_path()));
   base::FilePath system_temp_dir;
   ASSERT_TRUE(base::GetTempDir(&system_temp_dir));
-  EXPECT_TRUE(system_temp_dir.IsParent(base_file_->full_path()));
+  EXPECT_TRUE(IsParentDirectory(system_temp_dir, base_file_->full_path()))
+      << "system_temp_dir=" << system_temp_dir
+      << " full_path=" << base_file_->full_path();
   base_file_->Finish();
 }
 
@@ -956,6 +976,57 @@ TEST_F(BaseFileTest, GetEffectiveAuthorityURL) {
   // Nothing usable.
   EXPECT_EQ(GURL(),
             BaseFile::GetEffectiveAuthorityURL(GURL(), GURL(), std::nullopt));
+}
+
+TEST_F(BaseFileTest, PreserveLastModifiedEnabled) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(features::kPreserveDownloadLastModified);
+
+  ASSERT_TRUE(InitializeFile());
+  ASSERT_TRUE(AppendDataToFile(kTestData1));
+
+  const std::string kLastModified = "Wed, 21 Oct 2015 07:28:00 GMT";
+  base::Time expected_mtime;
+  ASSERT_TRUE(base::Time::FromString(kLastModified.c_str(), &expected_mtime));
+
+  base_file_->Finish(0, kLastModified);
+
+  base::File::Info file_info;
+  ASSERT_TRUE(base::GetFileInfo(base_file_->full_path(), &file_info));
+  EXPECT_NEAR(expected_mtime.InSecondsFSinceUnixEpoch(),
+              file_info.last_modified.InSecondsFSinceUnixEpoch(), 1.0);
+}
+
+TEST_F(BaseFileTest, PreserveLastModifiedDisabled) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndDisableFeature(features::kPreserveDownloadLastModified);
+
+  ASSERT_TRUE(InitializeFile());
+  ASSERT_TRUE(AppendDataToFile(kTestData1));
+
+  const std::string kLastModified = "Wed, 21 Oct 2015 07:28:00 GMT";
+  base::Time expected_mtime;
+  ASSERT_TRUE(base::Time::FromString(kLastModified.c_str(), &expected_mtime));
+
+  base_file_->Finish(0, kLastModified);
+
+  base::File::Info file_info;
+  ASSERT_TRUE(base::GetFileInfo(base_file_->full_path(), &file_info));
+  EXPECT_NE(expected_mtime, file_info.last_modified);
+}
+
+TEST_F(BaseFileTest, PreserveLastModifiedInvalidString) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(features::kPreserveDownloadLastModified);
+
+  ASSERT_TRUE(InitializeFile());
+  ASSERT_TRUE(AppendDataToFile(kTestData1));
+
+  base_file_->Finish(0, "not-a-valid-timestamp");
+
+  base::File::Info file_info;
+  ASSERT_TRUE(base::GetFileInfo(base_file_->full_path(), &file_info));
+  EXPECT_FALSE(file_info.last_modified.is_null());
 }
 
 }  // namespace download

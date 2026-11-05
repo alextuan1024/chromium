@@ -4,6 +4,8 @@
 
 package org.chromium.base.test.transit;
 
+import static org.chromium.build.NullUtil.assumeNonNull;
+
 import android.util.ArrayMap;
 
 import androidx.annotation.CallSuper;
@@ -17,6 +19,7 @@ import org.chromium.build.annotations.MonotonicNonNull;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 
+import java.util.Map;
 import java.util.Objects;
 import java.util.function.Function;
 import java.util.function.Supplier;
@@ -24,8 +27,7 @@ import java.util.function.Supplier;
 /**
  * A condition that needs to be fulfilled for a state transition to be considered done.
  *
- * <p>{@link ConditionWaiter} waits for multiple Conditions to be fulfilled. {@link
- * ConditionChecker} performs one-time checks for whether multiple Conditions are fulfilled.
+ * <p>{@link ConditionWaiter} waits for multiple Conditions to be fulfilled.
  */
 @NullMarked
 public abstract class Condition {
@@ -207,6 +209,7 @@ public abstract class Condition {
         }
 
         StringBuilder suppliersMissing = null;
+        Map<String, Supplier<?>> blockingSuppliers = null;
         for (var kv : mDependentSuppliers.entrySet()) {
             Supplier<?> supplier = kv.getValue();
             var value = supplier.get();
@@ -216,13 +219,20 @@ public abstract class Condition {
                 } else {
                     suppliersMissing.append(", ");
                 }
+                if (blockingSuppliers == null) {
+                    blockingSuppliers = new ArrayMap<>();
+                }
                 String inputName = kv.getKey();
                 suppliersMissing.append(inputName);
+                blockingSuppliers.put(inputName, supplier);
             }
         }
 
         if (suppliersMissing != null) {
-            return awaiting(suppliersMissing.toString());
+            assumeNonNull(blockingSuppliers);
+            ConditionStatus status = awaiting(suppliersMissing.toString());
+            status.setBlockingSuppliers(blockingSuppliers);
+            return status;
         }
 
         return null;

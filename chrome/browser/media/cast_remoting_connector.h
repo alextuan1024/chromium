@@ -5,42 +5,27 @@
 #ifndef CHROME_BROWSER_MEDIA_CAST_REMOTING_CONNECTOR_H_
 #define CHROME_BROWSER_MEDIA_CAST_REMOTING_CONNECTOR_H_
 
-#include <optional>
 #include <set>
 #include <vector>
 
 #include "base/memory/raw_ptr.h"
-#include "base/memory/weak_ptr.h"
 #include "base/supports_user_data.h"
 #include "chrome/browser/media/remoting_bridge.h"
 #include "components/prefs/pref_change_registrar.h"
 #include "components/sessions/core/session_id.h"
+#include "content/public/browser/global_routing_id.h"
+#include "content/public/browser/web_contents_observer.h"
 #include "media/mojo/mojom/remoting.mojom.h"
 #include "media/mojo/mojom/remoting_common.mojom.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "mojo/public/cpp/bindings/receiver.h"
 #include "mojo/public/cpp/bindings/remote.h"
+#include "url/origin.h"
 
 namespace content {
 class WebContents;
 }  // namespace content
-
-class MediaRemotingDialogCoordinator {
- public:
-  using PermissionCallback = base::OnceCallback<void(bool)>;
-
-  MediaRemotingDialogCoordinator() = default;
-  MediaRemotingDialogCoordinator(const MediaRemotingDialogCoordinator&) =
-      delete;
-  MediaRemotingDialogCoordinator& operator=(
-      const MediaRemotingDialogCoordinator&) = delete;
-  virtual ~MediaRemotingDialogCoordinator() = default;
-
-  virtual bool Show(PermissionCallback permission_callback);
-  virtual void Hide();
-  virtual bool IsShowing() const;
-};
 
 // CastRemotingConnector connects a single source (a media element in a render
 // frame) with a single sink (a media player in a remote device). There is one
@@ -88,7 +73,8 @@ class MediaRemotingDialogCoordinator {
 // start/execute/stop remoting sessions.
 class CastRemotingConnector final : public base::SupportsUserData::Data,
                                     public media::mojom::RemotingSource,
-                                    public RemotingBridge::Client {
+                                    public RemotingBridge::Client,
+                                    public content::WebContentsObserver {
  public:
   CastRemotingConnector(const CastRemotingConnector&) = delete;
   CastRemotingConnector& operator=(const CastRemotingConnector&) = delete;
@@ -100,13 +86,36 @@ class CastRemotingConnector final : public base::SupportsUserData::Data,
   // |source_contents| doesn't have a valid tab ID.
   static CastRemotingConnector* Get(content::WebContents* source_contents);
 
+  // content::WebContentsObserver implementation:
+  void DidAcquireFullscreen(content::RenderFrameHost* rfh) override;
+  void DidToggleFullscreenModeForTab(bool entered_fullscreen,
+                                     bool will_cause_resize) override;
+  void RenderFrameDeleted(content::RenderFrameHost* render_frame_host) override;
+
   // Called at the start of mirroring to reset the permission.
   void ResetRemotingPermission();
+
+  // Called when an explicit Remote Playback session is initiated, granting
+  // permission without requiring the Tab Mirroring permission dialog. If a
+  // non-opaque |authorized_origin| is provided, cross-origin subframes
+  // matching that origin are also authorized to start remoting.
+  void GrantPermissionForRemotePlayback(
+      std::optional<url::Origin> authorized_origin = std::nullopt);
 
   // Used by Mirroring Service to connect the media remoter with this source.
   void ConnectWithMediaRemoter(
       mojo::PendingRemote<media::mojom::Remoter> remoter,
       mojo::PendingReceiver<media::mojom::RemotingSource> receiver);
+
+  // Creates an instance for testing.
+  static std::unique_ptr<CastRemotingConnector> CreateForTesting(
+      PrefService* pref_service,
+      SessionID tab_id,
+      content::WebContents* web_contents = nullptr);
+
+  void set_remoting_allowed_for_testing(bool remoting_allowed) {
+    remoting_allowed_ = remoting_allowed;
+  }
 
  private:
   // Allow unit tests access to the private constructor, since unit tests don't
@@ -117,10 +126,25 @@ class CastRemotingConnector final : public base::SupportsUserData::Data,
 
   // Main constructor. |tab_id| refers to any remoted content managed
   // by this instance (i.e., any remoted content from one tab/WebContents).
-  CastRemotingConnector(
-      PrefService* pref_service,
-      SessionID tab_id,
-      std::unique_ptr<MediaRemotingDialogCoordinator> dialog_coordinator);
+  CastRemotingConnector(PrefService* pref_service,
+                        SessionID tab_id,
+                        content::WebContents* web_contents = nullptr);
+
+  // Checks whether |rfh| belongs to a subframe that is cross-origin with
+  // the primary main frame. Fails closed (returns true) if |rfh| is invalid.
+  bool IsCrossOriginSubframe(content::RenderFrameHost* rfh) const;
+
+  // Checks whether |bridge| belongs to a subframe that is cross-origin with
+  // the primary main frame.
+  bool IsCrossOriginSubframeBridge(const RemotingBridge* bridge) const;
+
+  // Verifies whether |bridge| is authorized to start media remoting.
+  bool IsBridgeAllowedToStart(const RemotingBridge* bridge) const;
+
+  // Returns sink metadata appropriate for |bridge|, omitting sensitive
+  // fields (like friendly_name) for cross-origin subframes.
+  const media::mojom::RemotingSinkMetadata& GetSinkMetadataForBridge(
+      const RemotingBridge* bridge) const;
 
   // RemotingBridge::Client implementation.
   // These methods are called by RemotingBridge to forward media::mojom::Remoter
@@ -131,7 +155,6 @@ class CastRemotingConnector final : public base::SupportsUserData::Data,
   void DeregisterBridge(RemotingBridge* bridge,
                         media::mojom::RemotingStopReason reason) override;
   void StartRemoting(RemotingBridge* bridge) override;
-  void StartWithPermissionAlreadyGranted(RemotingBridge* bridge) override;
   void StartRemotingDataStreams(
       RemotingBridge* bridge,
       mojo::ScopedDataPipeConsumerHandle audio_pipe,
@@ -160,10 +183,6 @@ class CastRemotingConnector final : public base::SupportsUserData::Data,
   void OnStartFailed(media::mojom::RemotingStartFailReason reason) override;
 
   bool StartRemotingCommon(RemotingBridge* bridge);
-
-  // Called by the permission dialog when it closes, to signal whether
-  // permission is allowed.
-  void OnDialogClosed(bool remoting_allowed);
 
   // Called after permission check. Either call |remoter_| to start remoting or
   // notify the source that start fails due to no permission.
@@ -199,22 +218,20 @@ class CastRemotingConnector final : public base::SupportsUserData::Data,
   // remoting if necessary.
   void OnPrefChanged();
 
-  // Returns the user's remoting preference, or nullopt if it isn't set.
-  std::optional<bool> GetRemotingAllowedUserPref() const;
-
-  void set_remoting_allowed_for_testing(bool remoting_allowed) {
-    remoting_allowed_ = remoting_allowed;
-  }
+  // Returns the user's remoting preference.
+  bool GetRemotingAllowedUserPref() const;
 
   const raw_ptr<PrefService> pref_service_;
   const SessionID tab_id_;
-
-  std::unique_ptr<MediaRemotingDialogCoordinator> dialog_coordinator_;
 
   // Describes the remoting sink's metadata and its enabled features. The sink's
   // metadata is updated by the mirror service calling OnSinkAvailable() and
   // cleared when remoting stops.
   media::mojom::RemotingSinkMetadata sink_metadata_;
+
+  // Cached copy of sink_metadata_ with friendly_name stripped for cross-origin
+  // subframes.
+  media::mojom::RemotingSinkMetadata sink_metadata_without_friendly_name_;
 
   // Set of registered RemotingBridges, maintained by RegisterBridge() and
   // DeregisterBridge(). These pointers are always valid while they are in this
@@ -228,16 +245,15 @@ class CastRemotingConnector final : public base::SupportsUserData::Data,
   mojo::Receiver<media::mojom::RemotingSource> receiver_{this};
   mojo::Remote<media::mojom::Remoter> remoter_;
 
-  // Permission is checked the first time remoting requested to start for each
-  // casting session.
-  std::optional<bool> remoting_allowed_;
+  bool remoting_allowed_ = false;
 
+  // Current fullscreen frame ID (tracked via WebContentsObserver).
+  std::optional<content::GlobalRenderFrameHostId> fullscreen_frame_id_;
+
+  // Optional origin authorized for Remote Playback when initiated by a
+  // cross-origin subframe.
+  std::optional<url::Origin> authorized_remote_playback_origin_;
   PrefChangeRegistrar pref_change_registrar_;
-
-  // Produces weak pointers that are only valid for the current remoting
-  // session. This is used to cancel any outstanding callbacks when a remoting
-  // session is stopped.
-  base::WeakPtrFactory<CastRemotingConnector> weak_factory_{this};
 
   // Key used with the base::SupportsUserData interface to search for an
   // instance of CastRemotingConnector owned by a WebContents.

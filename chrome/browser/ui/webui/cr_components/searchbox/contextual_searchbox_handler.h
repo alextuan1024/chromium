@@ -11,11 +11,15 @@
 #include <string>
 
 #include "base/callback_list.h"
+#include "base/containers/flat_map.h"
+#include "base/containers/flat_set.h"
 #include "base/feature_list.h"
 #include "base/gtest_prod_util.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/scoped_observation.h"
+#include "base/time/time.h"
+#include "base/timer/timer.h"
 #include "base/unguessable_token.h"
 #include "build/build_config.h"
 #include "build/buildflag.h"
@@ -35,6 +39,7 @@
 #include "components/lens/contextual_input.h"
 #include "components/omnibox/browser/searchbox.mojom.h"
 #include "components/omnibox/composebox/composebox_query.mojom.h"
+#include "components/sessions/core/session_id.h"
 #include "components/signin/public/base/signin_buildflags.h"
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/web_contents.h"
@@ -42,6 +47,7 @@
 #include "third_party/omnibox_proto/chrome_aim_entry_point.pb.h"
 #include "third_party/omnibox_proto/model_mode.pb.h"
 #include "third_party/omnibox_proto/tool_mode.pb.h"
+#include "ui/base/mojom/window_open_disposition.mojom-forward.h"
 #include "ui/webui/resources/cr_components/composebox/composebox.mojom.h"
 
 #if !BUILDFLAG(IS_ANDROID)
@@ -186,11 +192,18 @@ class ContextualSearchboxHandler
                    bool is_voice_search) override;
 
   // Returns recent tabs from the tab list associated with
-  // `browser_window_interface` sorted by recency. If `max_tab_suggestions` > 0,
-  // the result is capped to that number of tabs.
+  // `browser_window_interface` sorted by recency. If `max_tab_suggestions` is
+  // set, the result is capped to that number of tabs. If
+  // `exclude_page_context_ineligible_tabs` is true, tabs known to be
+  // page-context-ineligible (`kNotEligible`) are excluded. Tabs whose
+  // `SessionID` is in `always_include_tab_ids` are included even if they are
+  // internal or page-context-ineligible pages (e.g. an NTP tab attached via
+  // Lens Overlay).
   static std::vector<searchbox::mojom::TabInfoPtr> GetRecentTabInfos(
       BrowserWindowInterface* browser_window_interface,
-      int max_tab_suggestions = -1);
+      std::optional<int> max_tab_suggestions = std::nullopt,
+      const base::flat_set<SessionID>& always_include_tab_ids = {},
+      bool exclude_page_context_ineligible_tabs = false);
 
   void GetRecentTabs(GetRecentTabsCallback callback) override;
   void GetTabPreview(int32_t tab_id, GetTabPreviewCallback callback) override;
@@ -237,6 +250,12 @@ class ContextualSearchboxHandler
     return screenshare_controller_.get();
   }
 
+  // Whether the page waits for the Drive picker, which runs for the browser
+  // window that embeds the WebUI.
+  bool IsDriveUploadPending() const {
+    return !drive_upload_click_callback_.is_null();
+  }
+
 #if !BUILDFLAG(IS_ANDROID)
   bool has_drive_picker_deactivation_blocker_for_testing() const {
     return drive_picker_deactivation_blocker_ != nullptr;
@@ -267,6 +286,9 @@ class ContextualSearchboxHandler
   void SetSmartTabSharingActive(bool active) override;
   void GetSmartTabSharingActive(
       searchbox::mojom::PageHandler::GetSmartTabSharingActiveCallback callback)
+      override;
+  void ResetSmartTabSharing(
+      searchbox::mojom::PageHandler::ResetSmartTabSharingCallback callback)
       override;
 #endif
 
@@ -321,6 +343,12 @@ class ContextualSearchboxHandler
     return context_input_data_;
   }
 
+  // Returns the contextual session session handle, or nullptr if none exists.
+  // This function also resets the context controller that is being observed for
+  // file upload status updates if different from the one that's current.
+  contextual_search::ContextualSearchSessionHandle*
+  GetContextualSessionHandle();
+
   std::vector<base::UnguessableToken> GetUploadedContextTokens();
 
   contextual_search::InputStateModel* input_state_model() {
@@ -329,6 +357,19 @@ class ContextualSearchboxHandler
 
   // Resets `input_state_model_`.
   void ResetInputStateModel();
+
+  // Drops the state tied to the browser window that embeds the WebUI: its tab
+  // observations, tab underlines and pending tab context, the Drive picker,
+  // and the input state model of its active tab. Called before the WebUI's
+  // WebContents moves to another browser window, while the old window still
+  // embeds it.
+  void DetachFromBrowserWindow();
+
+  // Observes the tabs of the browser window that now embeds the WebUI and
+  // creates the input state model for its active tab. Called after the WebUI's
+  // WebContents moved to that window.
+  void AttachToBrowserWindow();
+
   void OnAimEligibilityChanged();
   void SetActiveToolMode(omnibox::ToolMode tool, bool is_set_by_aim) override;
   void RecordToolSelectionAction(omnibox::ToolMode tool) override;
@@ -345,13 +386,17 @@ class ContextualSearchboxHandler
   void set_screenshare_delegate_for_testing(
       ContextualSearchboxScreenshareController::Delegate* screenshare_delegate);
 
-#if !BUILDFLAG(IS_ANDROID)
-  bool ShouldOpenInLensSidePanelForTesting(
-      content::WebContents* active_web_contents,
-      contextual_search::ContextualSearchSessionHandle* session_handle) {
-    return ShouldOpenInLensSidePanel(active_web_contents, session_handle);
-  }
-#endif
+  // Turns on dynamic AIM fulfillment for each input state model this handler
+  // uses. Called by the NTP and Omnibox popup when their feature is enabled.
+  void OptInToDynamicAimFulfillment();
+
+  // Returns the input state model that a handler in `web_contents` uses for
+  // `session_handle`, creating it if needed. For the Omnibox popup, that's the
+  // model of the active tab.
+  static base::WeakPtr<contextual_search::InputStateModel>
+  GetOrCreateInputStateModelForSession(
+      content::WebContents* web_contents,
+      contextual_search::ContextualSearchSessionHandle& session_handle);
 
   // Map of context tokens (frontend) to tab IDs (backend);
   // used for determining which tabs to underline based on frontend changes, and
@@ -370,10 +415,10 @@ class ContextualSearchboxHandler
 
   virtual void ProcessContextAndOpenUrl(
       GURL url,
-      const WindowOpenDisposition disposition);
+      const ui::mojom::WindowOpenDisposition disposition);
 
   virtual void OpenUrl(GURL url,
-                       const WindowOpenDisposition disposition,
+                       const ui::mojom::WindowOpenDisposition disposition,
                        base::OnceCallback<void(content::NavigationHandle&)>
                            navigation_handle_callback);
 
@@ -382,14 +427,14 @@ class ContextualSearchboxHandler
 
   void ContextualizeQueryAndOpenUrl(
       const std::string& query_text,
-      WindowOpenDisposition disposition,
+      ui::mojom::WindowOpenDisposition disposition,
       omnibox::ChromeAimEntryPoint aim_entry_point,
       std::map<std::string, std::string> additional_params,
       bool is_voice_search);
 
   void ComputeAndOpenQueryUrl(
       const std::string& query_text,
-      WindowOpenDisposition disposition,
+      ui::mojom::WindowOpenDisposition disposition,
       omnibox::ChromeAimEntryPoint aim_entry_point,
       std::map<std::string, std::string> additional_params,
       bool is_voice_search);
@@ -436,22 +481,9 @@ class ContextualSearchboxHandler
   // none exists.
   std::optional<lens::proto::LensOverlaySuggestInputs> GetSuggestInputs();
 
-  // Returns the contextual session session handle, or nullptr if none exists.
-  // This function also resets the context controller that is being observed for
-  // file upload status updates if different from the one that's current.
-  contextual_search::ContextualSearchSessionHandle*
-  GetContextualSessionHandle();
-
   // Records metrics for when a tab is added to the composebox.
   void RecordTabAddedMetric(tabs::TabInterface* const tab,
                             bool is_tab_suggestion_chip);
-
-#if !BUILDFLAG(IS_ANDROID)
-  // Returns true if the query should be opened in the Lens side panel.
-  bool ShouldOpenInLensSidePanel(
-      content::WebContents* active_web_contents,
-      contextual_search::ContextualSearchSessionHandle* session_handle);
-#endif
 
   virtual void InitializeInputStateModel();
 
@@ -483,6 +515,25 @@ class ContextualSearchboxHandler
       const base::UnguessableToken& context_token,
       std::unique_ptr<lens::ContextualInputData> page_content_data);
 
+  struct TabContextFetch {
+    base::OneShotTimer timer;
+    int32_t tab_id = 0;
+    base::WeakPtr<contextual_search::ContextualSearchSessionHandle> session;
+    AddTabContextCallback add_tab_context_callback;
+  };
+
+  std::unique_ptr<TabContextFetch> TakeTabContextFetch(
+      const base::UnguessableToken& context_token);
+  void OnTabContextFetchTimeout(const base::UnguessableToken& context_token);
+  void CancelTabContextFetch(const base::UnguessableToken& context_token);
+  void CancelAllTabContextFetches();
+  void ReleaseTabContextFetchResources(
+      const base::UnguessableToken& context_token,
+      const TabContextFetch& fetch);
+  void ReportTabContextFetchFailure(
+      const base::UnguessableToken& context_token);
+  void RemoveSelectedTabState(const base::UnguessableToken& context_token);
+
   // Helper function that handles the caching of the tab context. Once it's
   // successfully cached, we notify the page that the file is uploaded.
   void SnapshotTabContext(
@@ -494,7 +545,7 @@ class ContextualSearchboxHandler
 
   void ContextualizeQueryWithRelevantTabsAndOpenUrl(
       const std::string& query_text,
-      WindowOpenDisposition disposition,
+      ui::mojom::WindowOpenDisposition disposition,
       omnibox::ChromeAimEntryPoint aim_entry_point,
       std::map<std::string, std::string> additional_params,
       std::vector<base::WeakPtr<content::WebContents>> relevant_tabs);
@@ -516,9 +567,20 @@ class ContextualSearchboxHandler
 
   class AllTabNavigationObserver;
   std::vector<std::unique_ptr<AllTabNavigationObserver>> all_tab_nav_observers_;
+  // Observes the tab list and the active tab of the browser window that
+  // embeds the WebUI, if any.
+  void ObserveEmbeddingWindowTabs();
   void UpdateAllTabNavigationObservers();
   void OnAnyTabNavigated(content::WebContents* web_contents);
 
+  // Observes tabs last reported to the page as loading, so the page can be
+  // told to refresh when they finish (see `TabInfo.is_loading`).
+  class TabLoadStopObserver;
+  void UpdateTabLoadStopObservers(
+      const std::vector<searchbox::mojom::TabInfoPtr>& tab_infos);
+  void OnTabStoppedLoading();
+
+  std::vector<std::unique_ptr<TabLoadStopObserver>> tab_load_stop_observers_;
   raw_ptr<contextual_tasks::ContextualTasksContextService>
       contextual_tasks_context_service_;
 
@@ -532,11 +594,19 @@ class ContextualSearchboxHandler
   // Callback to get the contextual session handle from WebUI controller.
   GetSessionHandleCallback get_session_callback_;
 
+  base::flat_map<base::UnguessableToken, std::unique_ptr<TabContextFetch>>
+      pending_tab_context_fetches_;
+
+  base::TimeDelta tab_context_fetch_timeout_ = base::Seconds(60);
+
   base::ScopedObservation<TabListInterface, TabListInterfaceObserver>
       tab_list_observation_{this};
 
   std::unique_ptr<ContextualSearchboxTabFaviconHelper> tab_favicon_helper_;
   base::CallbackListSubscription aim_eligibility_subscription_;
+
+  // Whether `OptInToDynamicAimFulfillment()` was called.
+  bool opted_in_to_dynamic_aim_fulfillment_ = false;
 
  protected:
   std::optional<bool> smart_tab_sharing_active_for_thread_;

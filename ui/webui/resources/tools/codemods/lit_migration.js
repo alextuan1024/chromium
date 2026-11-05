@@ -13,7 +13,11 @@ const replacements = new Map([
 
   // URLs
   [
-    '//resources/cr_components/help_bubble/help_bubble_mixin.js',
+    '../help_bubble_mixin.js',
+    '//resources/cr_components/help_bubble/help_bubble_mixin_lit.js',
+  ],
+  [
+    './help_bubble_mixin.js',
     '//resources/cr_components/help_bubble/help_bubble_mixin_lit.js',
   ],
   [
@@ -21,8 +25,8 @@ const replacements = new Map([
     '//resources/cr_elements/i18n_mixin_lit.js',
   ],
   [
-    '//resources/cr_elements/web_ui_listener_mixin.js',
-    '//resources/cr_elements/web_ui_listener_mixin_lit.js',
+    '/shared/settings/web_ui_listener_mixin.js',
+    'chrome://resources/cr_elements/web_ui_listener_mixin_lit.js',
   ],
   [
     '//resources/polymer/v3_0/polymer/polymer_bundled.min.js',

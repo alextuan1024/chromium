@@ -47,7 +47,7 @@ void PaintInvalidator::UpdatePaintingLayer(const LayoutObject& object,
 
   if (!context.painting_layer->NeedsPaintPhaseDescendantOutlines() &&
       ((object != context.painting_layer->GetLayoutObject() &&
-        object.StyleRef().HasOutline()))) {
+        object.Style().HasOutline()))) {
     context.painting_layer->SetNeedsPaintPhaseDescendantOutlines();
   }
 }
@@ -249,6 +249,8 @@ bool PaintInvalidator::InvalidatePaint(
         PaintInvalidatorContext::kSubtreeInvalidationChecking;
   }
 
+  context.is_last_for_node =
+      !pre_paint_info || pre_paint_info->is_last_for_node;
   if (pre_paint_info) {
     context.fragment_data = pre_paint_info->fragment_data;
     CHECK(context.fragment_data);
@@ -280,7 +282,7 @@ bool PaintInvalidator::InvalidatePaint(
        reason == PaintInvalidationReason::kJustCreated ||
        // We don't invalidate paint of visibility:hidden objects, but observe
        // intersection for them.
-       object.StyleRef().Visibility() != EVisibility::kVisible)) {
+       object.Style().Visibility() != EVisibility::kVisible)) {
     object.GetFrameView()->SetIntersectionObservationState(
         LocalFrameView::kDesired);
   }

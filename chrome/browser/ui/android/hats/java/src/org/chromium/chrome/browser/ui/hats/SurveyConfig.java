@@ -10,6 +10,7 @@ import androidx.annotation.VisibleForTesting;
 
 import org.jni_zero.CalledByNative;
 import org.jni_zero.JNINamespace;
+import org.jni_zero.JniType;
 import org.jni_zero.NativeMethods;
 
 import org.chromium.base.ResettersForTesting;
@@ -183,12 +184,12 @@ public class SurveyConfig {
     @CalledByNative
     private static void addActiveSurveyConfigToHolder(
             Holder holder,
-            String trigger,
-            String triggerId,
+            @JniType("std::string") String trigger,
+            @JniType("std::string") String triggerId,
             double probability,
             boolean userPrompted,
-            String[] psdBitDataFields,
-            String[] psdStringDataFields,
+            @JniType("std::vector<std::string>") String[] psdBitDataFields,
+            @JniType("std::vector<std::string>") String[] psdStringDataFields,
             @RequestedBrowserType int requestedBrowserType,
             @ProfileAgeRequirement int profileAgeRequirement) {
         holder.mTriggers.put(
@@ -209,41 +210,34 @@ public class SurveyConfig {
 
         private static @Nullable Holder sInstance;
         private final Map<String, SurveyConfig> mTriggers;
-        private long mNativeInstance;
 
-        private Holder(Profile profile) {
+        private Holder() {
             mTriggers = new HashMap<>();
-            mNativeInstance = SurveyConfigJni.get().initHolder(this, profile);
+            SurveyConfigJni.get().initHolder(this);
         }
 
         static Holder getInstance(Profile profile) {
             if (sInstance == null) {
-                sInstance = new Holder(profile);
+                sInstance = new Holder();
             }
             return sInstance;
         }
 
         static void clearAll() {
             if (sInstance != null) {
-                sInstance.destroy();
+                sInstance.mTriggers.clear();
+                sInstance = null;
             }
         }
 
         @Nullable SurveyConfig getSurveyConfig(String trigger) {
             return mTriggers.get(trigger);
         }
-
-        void destroy() {
-            SurveyConfigJni.get().destroy(mNativeInstance);
-            mNativeInstance = 0;
-        }
     }
 
     @NativeMethods
     interface Natives {
 
-        long initHolder(Holder caller, Profile profile);
-
-        void destroy(long nativeSurveyConfigHolder);
+        void initHolder(Holder caller);
     }
 }

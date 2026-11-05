@@ -4,6 +4,7 @@
 
 #include "components/autofill/content/renderer/password_autofill_agent.h"
 
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -32,6 +33,7 @@
 #include "components/autofill/content/renderer/form_autofill_util.h"
 #include "components/autofill/content/renderer/form_submission_tracker.h"
 #include "components/autofill/content/renderer/password_generation_agent.h"
+#include "components/autofill/content/renderer/synchronous_form_cache.h"
 #include "components/autofill/content/renderer/test_password_autofill_agent.h"
 #include "components/autofill/core/common/autofill_constants.h"
 #include "components/autofill/core/common/autofill_features.h"
@@ -49,6 +51,7 @@
 #include "content/public/test/browser_test_utils.h"
 #include "mojo/public/cpp/bindings/pending_associated_receiver.h"
 #include "services/service_manager/public/cpp/interface_provider.h"
+#include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest-param-test.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/common/associated_interfaces/associated_interface_provider.h"
@@ -61,6 +64,10 @@
 #include "third_party/blink/public/web/web_local_frame.h"
 #include "third_party/blink/public/web/web_local_frame_client.h"
 #include "ui/events/keycodes/keyboard_codes.h"
+
+#if BUILDFLAG(IS_ANDROID)
+#include "base/android/device_info.h"
+#endif
 
 #if BUILDFLAG(IS_WIN)
 #include "third_party/blink/public/web/win/web_font_rendering.h"
@@ -766,11 +773,26 @@ class PasswordAutofillAgentTest : public ChromeRenderViewTest {
     }
   }
 
-  void SimulateElementClick(const WebElement element) {
-    SimulatePointClick(element.BoundsInWidget().CenterPoint());
+  void SimulateFocusChangeCompleteIfAndroid() {
+#if BUILDFLAG(IS_ANDROID)
+    if (GetMainFrame() && GetMainFrame()->AutofillClient()) {
+      GetMainFrame()->AutofillClient()->DidCompleteFocusChangeInFrame();
+    }
+#endif
   }
 
-  using ChromeRenderViewTest::SimulateElementClick;
+  void SimulateElementClick(const WebElement element) {
+    SimulatePointClick(element.BoundsInWidget().CenterPoint());
+    SimulateFocusChangeCompleteIfAndroid();
+  }
+
+  bool SimulateElementClick(const std::string& element_id) {
+    bool result = ChromeRenderViewTest::SimulateElementClick(element_id);
+    if (result) {
+      SimulateFocusChangeCompleteIfAndroid();
+    }
+    return result;
+  }
 
   void SimulateSuggestionChoice(WebInputElement& username_input) {
     std::u16string username(kAliceUsername16);
@@ -2606,9 +2628,8 @@ TEST_F(PasswordAutofillAgentTest,
   base::RunLoop().RunUntilIdle();
 }
 
-#if BUILDFLAG(ENABLE_DICE_SUPPORT)
-// Users in pending state are shown a suggestion to "verify it's you" even when
-// there are no passwords.
+// Users in signin pending state or with a locked Trusted Vault are shown a
+// promo suggestion even when there are no saved passwords.
 TEST_F(
     PasswordAutofillAgentTest,
     NoPopupOnPasswordFieldWithoutSuggestionsByDefaultWhenNotEligibleForPromo) {
@@ -2619,9 +2640,10 @@ TEST_F(
 
   EXPECT_CALL(fake_autofill_driver_,
               AskForValuesToFill(_, _, _, _, Eq(std::nullopt)))
-      .Times(1);
+      .Times(NumShowSuggestionsCalls());
 
   ASSERT_TRUE(SimulateElementClick(kPasswordName));
+  base::RunLoop().RunUntilIdle();
 }
 
 TEST_F(PasswordAutofillAgentTest,
@@ -2632,11 +2654,25 @@ TEST_F(PasswordAutofillAgentTest,
   password_autofill_agent_->InformNoSavedCredentials(
       /*should_show_popup_without_passwords=*/true);
 
-  EXPECT_CALL(fake_autofill_driver_, AskForValuesToFill)
+  EXPECT_CALL(fake_autofill_driver_,
+              AskForValuesToFill(_, _, _, _, Optional(_)))
       .Times(NumShowSuggestionsCalls());
   ASSERT_TRUE(SimulateElementClick(kPasswordName));
+  base::RunLoop().RunUntilIdle();
+  testing::Mock::VerifyAndClearExpectations(&fake_autofill_driver_);
+
+  // Navigating to a new document triggers `CleanupOnDocumentShutdown()`, which
+  // resets `should_show_popup_without_passwords_` back to false.
+  LoadHTML(kFormHTML);
+  UpdateUsernameAndPasswordElements();
+  ClearUsernameAndPasswordFieldValues();
+
+  EXPECT_CALL(fake_autofill_driver_,
+              AskForValuesToFill(_, _, _, _, Eq(std::nullopt)))
+      .Times(NumShowSuggestionsCalls());
+  ASSERT_TRUE(SimulateElementClick(kPasswordName));
+  base::RunLoop().RunUntilIdle();
 }
-#endif  // BUILDFLAG(ENABLE_DICE_SUPPORT)
 
 // Tests the autosuggestions that are given when the element is clicked.
 // Specifically, tests when the user clicks on the username element after page
@@ -3505,8 +3541,8 @@ TEST_F(PasswordAutofillAgentTest, CanShowSuggestionsAfterManualGeneration) {
 
   // Clear the password field value.
   password_element_.SetValue(WebString());
-  password_generation_->TextDidChangeInTextField(password_element_,
-                                                 /*form_cache=*/{});
+  SynchronousFormCache form_cache;
+  password_generation_->TextDidChangeInTextField(password_element_, form_cache);
 
   // Focus the password element again and verify that suggestions are shown to
   // the user.
@@ -5225,9 +5261,15 @@ TEST_F(PasswordAutofillAgentTest,
   FocusElement(kUsernameName);
 
 #if BUILDFLAG(IS_ANDROID)
-  EXPECT_CALL(fake_autofill_driver_,
-              AskForValuesToFill(_, _, _, _, Eq(std::nullopt)))
-      .Times(1);
+  if (!base::android::device_info::is_desktop() ||
+      !base::FeatureList::IsEnabled(
+          features::kAutofillAndroidKeyboardAccessoryDynamicPositioning)) {
+    EXPECT_CALL(fake_autofill_driver_,
+                AskForValuesToFill(_, _, _, _, Eq(std::nullopt)))
+        .Times(1);
+  } else {
+    CheckSuggestionsNotShown();
+  }
 #else
   CheckSuggestionsNotShown();
 #endif
@@ -5268,10 +5310,16 @@ TEST_F(PasswordAutofillAgentTest,
   FocusElement(kUsernameName);
 
 #if BUILDFLAG(IS_ANDROID)
-  EXPECT_CALL(fake_autofill_driver_,
-              AskForValuesToFill(_, _, _, _, Eq(std::nullopt)))
-      .Times(1);
-  task_environment_.FastForwardBy(base::Seconds(1));
+  if (!base::android::device_info::is_desktop() ||
+      !base::FeatureList::IsEnabled(
+          features::kAutofillAndroidKeyboardAccessoryDynamicPositioning)) {
+    EXPECT_CALL(fake_autofill_driver_,
+                AskForValuesToFill(_, _, _, _, Eq(std::nullopt)))
+        .Times(1);
+    task_environment_.FastForwardBy(base::Seconds(1));
+  } else {
+    CheckSuggestionsNotShown();
+  }
 #else
   CheckSuggestionsNotShown();
 #endif  // BUILDFLAG(IS_ANDROID)
@@ -5470,6 +5518,58 @@ TEST_F(PasswordAutofillAgentTest, FillChangePasswordForm) {
     EXPECT_EQ(u"Pa$sw0rD", new_password.Value().Utf16());
     EXPECT_EQ(u"Pa$sw0rD", confirmation_password.Value().Utf16());
   }
+}
+
+// Tests that `FillChangePasswordForm` marks filled text fields as password
+// fields so that they are redacted for AI page content and screenshots.
+TEST_F(PasswordAutofillAgentTest, FillChangePasswordFormWithTextFields) {
+  static constexpr char kPasswordChangeFormWithTextFieldsHTML[] =
+      "<FORM name='ChangeWithUsernameForm' action='http://www.bidule.com'>"
+      "  <INPUT type='text' id='username'/>"
+      "  <INPUT type='text' id='password'/>"
+      "  <INPUT type='text' id='newpassword'/>"
+      "  <INPUT type='text' id='confirmpassword'/>"
+      "  <INPUT type='submit' value='Login'/>"
+      "</FORM>";
+
+  LoadHTML(kPasswordChangeFormWithTextFieldsHTML);
+  UpdateUrlForHTML(kPasswordChangeFormWithTextFieldsHTML);
+  base::RunLoop().RunUntilIdle();
+
+  WebInputElement password = GetInputElementByID("password"),
+                  new_password = GetInputElementByID("newpassword"),
+                  confirmation_password =
+                      GetInputElementByID("confirmpassword");
+  auto password_id = form_util::GetFieldRendererId(password),
+       new_password_id = form_util::GetFieldRendererId(new_password),
+       password_confirmation =
+           form_util::GetFieldRendererId(confirmation_password);
+
+  EXPECT_EQ(blink::mojom::FormControlType::kInputText,
+            password.FormControlTypeForAutofill());
+  EXPECT_EQ(blink::mojom::FormControlType::kInputText,
+            new_password.FormControlTypeForAutofill());
+  EXPECT_EQ(blink::mojom::FormControlType::kInputText,
+            confirmation_password.FormControlTypeForAutofill());
+
+  base::MockCallback<base::OnceCallback<void(const std::optional<FormData>&)>>
+      mock_reply;
+  EXPECT_CALL(mock_reply, Run(testing::_));
+
+  password_autofill_agent_->FillChangePasswordForm(
+      password_id, new_password_id, password_confirmation, u"qwerty",
+      u"Pa$sw0rD", mock_reply.Get());
+
+  EXPECT_EQ(u"qwerty", password.Value().Utf16());
+  EXPECT_EQ(u"Pa$sw0rD", new_password.Value().Utf16());
+  EXPECT_EQ(u"Pa$sw0rD", confirmation_password.Value().Utf16());
+
+  EXPECT_EQ(blink::mojom::FormControlType::kInputPassword,
+            password.FormControlTypeForAutofill());
+  EXPECT_EQ(blink::mojom::FormControlType::kInputPassword,
+            new_password.FormControlTypeForAutofill());
+  EXPECT_EQ(blink::mojom::FormControlType::kInputPassword,
+            confirmation_password.FormControlTypeForAutofill());
 }
 
 // Tests that `FillChangePasswordForm` invokes callback with std::nullopt when

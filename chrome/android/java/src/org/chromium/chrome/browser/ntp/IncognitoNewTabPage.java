@@ -5,6 +5,7 @@
 package org.chromium.chrome.browser.ntp;
 
 import android.app.Activity;
+import android.content.Context;
 import android.graphics.Canvas;
 import android.view.LayoutInflater;
 
@@ -16,16 +17,27 @@ import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.feedback.HelpAndFeedbackLauncherImpl;
+import org.chromium.chrome.browser.native_page.ContextMenuManager;
+import org.chromium.chrome.browser.native_page.NativePageNavigationDelegate;
+import org.chromium.chrome.browser.native_page.NativePageNavigationDelegateImpl;
 import org.chromium.chrome.browser.ntp.IncognitoNewTabPageView.IncognitoNewTabPageManager;
+import org.chromium.chrome.browser.preloading.AndroidPrerenderManager;
+import org.chromium.chrome.browser.preloading.PreloadingFeatureMap;
 import org.chromium.chrome.browser.profiles.Profile;
+import org.chromium.chrome.browser.tab.Tab;
+import org.chromium.chrome.browser.tab.TabObserver;
+import org.chromium.chrome.browser.tab.TabSelectionType;
 import org.chromium.chrome.browser.tab_ui.InvalidationAwareThumbnailProvider;
+import org.chromium.chrome.browser.tabmodel.TabModelSelector;
 import org.chromium.chrome.browser.ui.edge_to_edge.EdgeToEdgeController;
 import org.chromium.chrome.browser.ui.edge_to_edge.EdgeToEdgeControllerFactory;
 import org.chromium.chrome.browser.ui.native_page.BasicNativePage;
 import org.chromium.chrome.browser.ui.native_page.NativePageHost;
 import org.chromium.chrome.browser.url_constants.UrlConstantResolver;
 import org.chromium.chrome.browser.url_constants.UrlConstantResolverFactory;
+import org.chromium.components.browser_ui.util.FirstDrawDetector;
 import org.chromium.components.embedder_support.util.UrlConstants;
+import org.chromium.content_public.browser.WebContents;
 import org.chromium.ui.edge_to_edge.EdgeToEdgePadAdjuster;
 
 /** Provides functionality when the user interacts with the Incognito NTP. */
@@ -36,12 +48,17 @@ public class IncognitoNewTabPage extends BasicNativePage
     private static @Nullable IncognitoNewTabPageManager sIncognitoNtpManagerForTesting;
     private final Activity mActivity;
     private final Profile mProfile;
+    private final Tab mTab;
+    private final TabObserver mTabObserver;
     private final int mIncognitoNtpBackgroundColor;
+    private final ContextMenuManager mContextMenuManager;
 
     private final String mTitle;
     protected IncognitoNewTabPageView mIncognitoNewTabPageView;
 
     private boolean mIsLoaded;
+    private boolean mHasFirstDrawCompleted;
+    private boolean mIsDestroyed;
 
     private EdgeToEdgePadAdjuster mEdgeToEdgePadAdjuster;
 
@@ -59,33 +76,59 @@ public class IncognitoNewTabPage extends BasicNativePage
      * @param activity The activity used to create the new tab page's View.
      * @param host The view that's hosting this incognito NTP.
      * @param profile The {@link Profile} associated with this incognito NTP.
+     * @param tabModelSelector The {@link TabModelSelector} used to open tabs from context menus.
+     * @param tab The {@link Tab} hosting this incognito NTP.
      * @param edgeToEdgeControllerSupplier The supplier for e2e status and the bottom inset.
      */
     public IncognitoNewTabPage(
             Activity activity,
             NativePageHost host,
             Profile profile,
+            TabModelSelector tabModelSelector,
+            Tab tab,
             MonotonicObservableSupplier<EdgeToEdgeController> edgeToEdgeControllerSupplier) {
         super(host);
 
         mActivity = activity;
         mProfile = profile;
+        mTab = tab;
 
         if (!mProfile.isOffTheRecord()) {
             throw new IllegalStateException(
                     "Attempting to create an incognito NTP with a normal profile.");
         }
 
-        mIncognitoNtpBackgroundColor = host.getContext().getColor(R.color.ntp_bg_incognito);
+        mTabObserver =
+                new TabObserver() {
+                    @Override
+                    public void onShown(Tab tab, @TabSelectionType int type) {
+                        maybeStartPrewarm();
+                    }
+                };
+        mTab.addObserver(mTabObserver);
+
+        Context context = host.getContext();
+        mIncognitoNtpBackgroundColor = context.getColor(R.color.ntp_bg_incognito);
+
+        NativePageNavigationDelegate navigationDelegate =
+                new NativePageNavigationDelegateImpl(
+                        activity, mProfile, host, tabModelSelector, tab);
+        mContextMenuManager =
+                new ContextMenuManager(
+                        navigationDelegate,
+                        /* touchEnabledDelegate= */ _ -> {},
+                        mActivity::closeContextMenu,
+                        /* userActionPrefix= */ "IncognitoNewTabPage");
 
         IncognitoNewTabPageManager incognitoNewTabPageManager = createIncognitoNewTabPageManager();
 
-        mTitle = host.getContext().getString(R.string.new_incognito_tab_title);
+        mTitle = context.getString(R.string.new_incognito_tab_title);
 
-        LayoutInflater inflater = LayoutInflater.from(host.getContext());
+        LayoutInflater inflater = LayoutInflater.from(context);
         mIncognitoNewTabPageView =
                 (IncognitoNewTabPageView) inflater.inflate(R.layout.new_tab_page_incognito, null);
-        mIncognitoNewTabPageView.initialize(incognitoNewTabPageManager);
+        mIncognitoNewTabPageView.initialize(
+                incognitoNewTabPageManager, mContextMenuManager, navigationDelegate);
 
         // Work around https://crbug.com/41447943 and https://crbug.com/41458988 where default focus
         // highlight shows up after toggling dark mode.
@@ -93,9 +136,25 @@ public class IncognitoNewTabPage extends BasicNativePage
 
         initWithView(mIncognitoNewTabPageView);
 
+        FirstDrawDetector.waitForFirstDraw(
+                mIncognitoNewTabPageView,
+                () -> {
+                    mHasFirstDrawCompleted = true;
+                    maybeStartPrewarm();
+                });
+
         mEdgeToEdgePadAdjuster =
                 EdgeToEdgeControllerFactory.createForViewAndObserveSupplier(
                         mIncognitoNewTabPageView.getScrollView(), edgeToEdgeControllerSupplier);
+    }
+
+    private void maybeStartPrewarm() {
+        if (mIsDestroyed || mTab.isHidden() || !mIsLoaded || !mHasFirstDrawCompleted) return;
+        WebContents webContents = mTab.getWebContents();
+        if (webContents == null) return;
+        if (PreloadingFeatureMap.getInstance().shouldPrewarmOnPageLoadAndTabSwitchAfterPaint()) {
+            AndroidPrerenderManager.startPrewarm(webContents);
+        }
     }
 
     /**
@@ -113,12 +172,15 @@ public class IncognitoNewTabPage extends BasicNativePage
         assert !ViewCompat.isAttachedToWindow(getView())
                 : "Destroy called before removed from window";
 
+        mIsDestroyed = true;
+        mTab.removeObserver(mTabObserver);
+
+        mContextMenuManager.hideListContextMenu();
+
         if (mEdgeToEdgePadAdjuster != null) {
             mEdgeToEdgePadAdjuster.destroy();
             mEdgeToEdgePadAdjuster = null;
         }
-
-
 
         super.destroy();
     }
@@ -154,7 +216,7 @@ public class IncognitoNewTabPage extends BasicNativePage
     public void updateForUrl(String url) {}
 
     @Override
-    public boolean supportsEdgeToEdge() {
+    public boolean supportsEdgeToEdgeOnBottom() {
         return true;
     }
 
@@ -182,6 +244,7 @@ public class IncognitoNewTabPage extends BasicNativePage
             @Override
             public void onLoadingComplete() {
                 mIsLoaded = true;
+                maybeStartPrewarm();
             }
         };
     }

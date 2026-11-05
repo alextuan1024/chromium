@@ -292,12 +292,8 @@ class CC_PAINT_EXPORT PaintImage {
   // the SkImage.
   sk_sp<SkImage> GetSwSkImage() const;
 
-  // Reads this image's pixels into caller-owned |dst_pixels|
-  bool readPixels(const SkImageInfo& dst_info,
-                  void* dst_pixels,
-                  size_t dst_row_bytes,
-                  int src_x,
-                  int src_y) const;
+  // Reads this image's pixels into caller-owned `dst_pixmap`.
+  bool readPixels(const SkPixmap& dst_pixmap, int src_x, int src_y) const;
 
   // Returned mailbox must not outlive this PaintImage.
   gpu::Mailbox GetMailbox() const;
@@ -313,6 +309,9 @@ class CC_PAINT_EXPORT PaintImage {
   bool is_multipart() const { return is_multipart_; }
   bool is_high_bit_depth() const { return is_high_bit_depth_; }
   bool no_cache() const { return no_cache_; }
+  // Returns true if pixel readback of this image is disallowed (e.g., cross-
+  // origin images without CORS access).
+  bool is_read_back_disallowed() const { return is_read_back_disallowed_; }
   int repetition_count() const { return repetition_count_; }
   bool ShouldAnimate() const;
   AnimationSequenceId reset_animation_sequence_id() const {
@@ -347,6 +346,7 @@ class CC_PAINT_EXPORT PaintImage {
   }
   bool GetReinterpretAsSRGB() const { return reinterpret_as_srgb_; }
 
+  void UnionColorVolumeInto(gfx::ContentColorVolume& color_volume) const;
   gfx::ContentColorUsage GetContentColorUsage() const;
 
   // Returns whether this image will be decoded and rendered from YUV data
@@ -408,6 +408,12 @@ class CC_PAINT_EXPORT PaintImage {
   // 0.5f corresponds to 2^0.5 ~= 1.41x SDR white).
   float GetMaximumRenderedHdrHeadroom() const;
 
+  // Returns true if converting this image to the target color space in a
+  // decode cache would clamp values above white, destroying HDR content (from
+  // a gainmap or HDR color space) or content that is white-scaled at draw time.
+  // Decode caches must keep such images in their original color space.
+  bool DecodeCacheColorConversionIsDestructive() const;
+
   std::string ToString() const;
 
  private:
@@ -423,7 +429,6 @@ class CC_PAINT_EXPORT PaintImage {
   friend class DrawImageRectOp;
   friend class DrawImageOp;
   friend class DrawSkottieOp;
-  friend class ToneMapUtil;
 
   // TODO(crbug.com/40110279): Remove these once GetSkImage()
   // is fully removed.
@@ -481,6 +486,10 @@ class CC_PAINT_EXPORT PaintImage {
   // appears in. Used as a hint to avoid caching it downstream, but is not a
   // mandate.
   bool no_cache_ = false;
+
+  // Whether readback of this image's pixel data is disallowed (e.g., cross-
+  // origin images without CORS access).
+  bool is_read_back_disallowed_ = false;
 
   // An incrementing sequence number maintained by the painter to indicate if
   // this animation should be reset in the compositor. Incrementing this number

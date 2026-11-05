@@ -10,6 +10,7 @@
 #include "base/command_line.h"
 #include "base/feature_list.h"
 #include "base/features.h"
+#include "base/functional/callback_helpers.h"
 #include "base/metrics/field_trial.h"
 #include "base/metrics/field_trial_params.h"
 #include "base/path_service.h"
@@ -19,13 +20,14 @@
 #include "chrome/browser/metrics/chrome_browser_sampling_trials.h"
 #include "chrome/browser/metrics/chrome_metrics_service_accessor.h"
 #include "chrome/browser/metrics/chrome_metrics_service_client.h"
-#include "chrome/common/channel_info.h"
 #include "chrome/common/chrome_paths.h"
 #include "chrome/common/chrome_switches.h"
 #include "components/feed/feed_feature_list.h"
 #include "components/metrics/metrics_features.h"
 #include "components/metrics/metrics_pref_names.h"
 #include "components/metrics/persistent_histograms.h"
+#include "components/password_manager/core/browser/features/password_features.h"
+#include "components/performance_manager/public/features.h"
 #include "components/site_isolation/features.h"
 #include "components/variations/feature_overrides.h"
 #include "components/version_info/version_info.h"
@@ -44,7 +46,6 @@
 #include "chrome/browser/media/webrtc/desktop_media_picker.h"
 #include "chrome/common/chrome_features.h"
 #include "components/autofill/core/common/autofill_features.h"
-#include "components/download/public/common/download_features.h"
 #include "content/common/features.h"
 #include "content/public/common/content_features.h"
 #include "gpu/config/gpu_finch_features.h"
@@ -57,18 +58,23 @@
 #endif
 
 #if BUILDFLAG(IS_CHROMEOS)
+#include "chrome/common/channel_info.h"
 #include "chromeos/ash/services/multidevice_setup/public/cpp/first_run_field_trial.h"
 #endif
 
 #if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
-#include "base/check_deref.h"
 #include "chrome/browser/first_run/first_run.h"
 #include "chrome/browser/signin/first_run_desktop_refresh_field_trial.h"
 #endif  // BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
 
+#if BUILDFLAG(IS_POSIX)
+#include "base/check_deref.h"
+#include "chrome/browser/metrics/client_id_backup_correctness_fix_field_trial.h"
+#endif  // BUILDFLAG(IS_POSIX)
+
 ChromeBrowserFieldTrials::ChromeBrowserFieldTrials(PrefService* local_state)
     : local_state_(local_state) {
-  DCHECK(local_state_);
+  CHECK(local_state_, base::NotFatalUntil::M162);
 }
 
 ChromeBrowserFieldTrials::~ChromeBrowserFieldTrials() = default;
@@ -105,6 +111,11 @@ void ChromeBrowserFieldTrials::SetUpClientSideFieldTrials(
         CHECK_DEREF(feature_list), entropy_providers.default_entropy());
   }
 #endif  // BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+
+#if BUILDFLAG(IS_POSIX)
+  metrics::CreateClientIdBackupCorrectnessFixFieldTrial(
+      CHECK_DEREF(feature_list), entropy_providers.default_entropy());
+#endif  // BUILDFLAG(IS_POSIX)
 }
 
 void ChromeBrowserFieldTrials::RegisterSyntheticTrials() {
@@ -127,12 +138,6 @@ void ChromeBrowserFieldTrials::RegisterFeatureOverrides(
     base::FeatureList* feature_list) {
   variations::FeatureOverrides feature_overrides(*feature_list);
 
-  // TODO(crbug.com/552456654): Remove when rollout is complete to stable.
-  if (chrome::GetChannel() != version_info::Channel::STABLE) {
-    feature_overrides.EnableFeature(
-        blink::features::kSingleAxisScrollContainers);
-  }
-
 #if BUILDFLAG(IS_ANDROID)
 #if BUILDFLAG(IS_DESKTOP_ANDROID)
   // Nota bene: Anything here is expected to be short-lived, unless deemed too
@@ -141,30 +146,15 @@ void ChromeBrowserFieldTrials::RegisterFeatureOverrides(
   // override in the generic IS_ANDROID block below, guarded by an appropriate
   // runtime check.
 
-  // Enable the "Ask Gemini" context-menu and text-selection entry points on
-  // desktop Android (AL); disabled by default on other Android form factors.
-  // TODO(crbug.com/545717789): Remove when rollout to phones/tablets is
-  // complete.
-  feature_overrides.EnableFeature(chrome::android::kClankGlicContextMenu);
-
   // Enables media capture (tab+window+screen sharing).
   // TODO(crbug.com/352187279): Remove when tablet rollout is complete.
   feature_overrides.EnableFeature(kAndroidMediaPicker);
   feature_overrides.EnableFeature(features::kUserMediaScreenCapturing);
 
-  // Enable open download in new tab.
-  // TODO(crbug.com/531944280): Remove when rollout is complete to all form
-  // factors.
-  feature_overrides.EnableFeature(download::features::kOpenDownloadInNewTab);
-
-  // Enable`save as`context menu.
-  feature_overrides.EnableFeature(
-      download::features::kEnableDownloadSaveAsContextMenu);
-
-  // Enable open download in preferred app.
-  // TODO(crbug.com/539965859): Remove when rollout is complete to all form
-  // factors.
-  feature_overrides.EnableFeature(chrome::android::kOpenDownloadInPreferredApp);
+  // Enables the tab sharing toolbar on Desktop Android.
+  // TODO(crbug.com/552925889): Remove when rollout to other form factors is
+  // complete.
+  feature_overrides.EnableFeature(chrome::android::kTabSharingToolbarAndroid);
 
   // Enable background media capturing on desktop devices.
   // TODO(crbug.com/426461170): Remove once we enable this feature for all form
@@ -183,19 +173,10 @@ void ChromeBrowserFieldTrials::RegisterFeatureOverrides(
   // Enable V8 optimizations for high-end Android Desktop devices.
   // TODO(crbug.com/425860368): Remove when the feature is stable.
   feature_overrides.EnableFeature(features::kV8AndroidDesktopHighEndConfig);
-  // TODO(crbug.com/430304112): Remove when rollout is complete to all form
-  // factors.
-  feature_overrides.EnableFeature(
-      autofill::features::kAutofillAndroidDesktopSuppressAccessoryOnEmpty);
   // TODO(crbug.com/445446479): Remove when rollout is complete to all form
   // factors.
   feature_overrides.EnableFeature(
       sandbox::policy::features::kAndroidGpuSandbox);
-  // Bypass the WebAudio output buffer, to reduce audio latency.
-  // TODO(crbug.com/436988695): Remove when the long term solution is
-  // implemented.
-  feature_overrides.EnableFeature(
-      blink::features::kWebAudioBypassOutputBuffering);
   // TODO(crbug.com/437004266): Remove when the feature is stable.
   feature_overrides.EnableFeature(
       features::kAlwaysUseAudioManagerOutputFramesPerBuffer);
@@ -244,20 +225,14 @@ void ChromeBrowserFieldTrials::RegisterFeatureOverrides(
   // on desktop Android as a native workaround for Intel hardware scalers.
   feature_overrides.EnableFeature(features::kAndroidYuvOverlayEvenAlignment);
 
-  // Enable by default for desktop platforms, pending a phone / foldable /
-  // tablet rollout using the same flag.
-  // TODO(crbug.com/442327273): Remove when rollout is complete to all form
-  // factors.
-  feature_overrides.EnableFeature(
-      autofill::features::kAutofillAndroidDesktopKeyboardAccessoryRevamp);
-
   // Enable ANGLE/Vulkan features.
   // TODO (crbug.com//376280554): Enable these features with runtime checks
   // instead.
   feature_overrides.EnableFeature(::features::kSkipVulkanBlocklist);
   feature_overrides.EnableFeature(::features::kDefaultANGLEVulkan);
   feature_overrides.EnableFeature(::features::kVulkanFromANGLE);
-  feature_overrides.EnableFeature(::features::kDefaultPassthroughCommandDecoder);
+  feature_overrides.EnableFeature(
+      ::features::kDefaultPassthroughCommandDecoder);
 
   // Enable site-per-process by default for desktop platforms.
   // TODO(crbug.com/453856709): Remove when we determine how to ensure
@@ -315,10 +290,6 @@ void ChromeBrowserFieldTrials::RegisterFeatureOverrides(
   // TODO(crbug.com/504722790): Remove when experiment is complete.
   feature_overrides.EnableFeature(features::kTextClassifierTimeout);
 
-  // Enable graceful tab shutdown.
-  // TODO(crbug.com/532514154): Remove when experiment is complete.
-  feature_overrides.EnableFeature(chrome::android::kTabAndroidGracefulShutdown);
-
   // Enable desktop fling curve.
   feature_overrides.EnableFeature(features::kDesktopFlingCurveOnAndroid);
 
@@ -366,11 +337,6 @@ void ChromeBrowserFieldTrials::RegisterFeatureOverrides(
   // factors.
   feature_overrides.EnableFeature(chrome::android::kAndroidFreLayoutUpdate);
 
-  // Enable Account Picker dialog on Android Desktop.
-  // TODO(crbug.com/553630105): Remove when rollout is complete to all form
-  // factors.
-  feature_overrides.EnableFeature(chrome::android::kAccountPickerDialog);
-
   // Disables the Grid Tab Switcher (Hub layout) on Desktop Android in favor of
   // the desktop tab strip.
   // TODO(crbug.com/545634112): Remove when launched to 100% on Desktop Android.
@@ -382,6 +348,10 @@ void ChromeBrowserFieldTrials::RegisterFeatureOverrides(
   feature_overrides.EnableFeature(chrome::android::kInlinePdfV2Incognito);
   feature_overrides.EnableFeature(chrome::android::kPdfReuseFragment);
   feature_overrides.EnableFeature(chrome::android::kPdfLauncherActivity);
+
+  // Enables reporting the user agent platform as Android on desktop Android.
+  // TODO(crbug.com/555541268): Remove when rollout is complete.
+  feature_overrides.EnableFeature(blink::features::kAndroidDesktopUAPlatform);
 
   // Enables spoofing the user agent platform as ChromeOS on desktop Android.
   // TODO(crbug.com/556358275): Enablement on tablets is tracked by this bug.
@@ -402,6 +372,11 @@ void ChromeBrowserFieldTrials::RegisterFeatureOverrides(
   // complete.
   feature_overrides.EnableFeature(chrome::android::kSubmenusInAppMenuLff);
 
+  // Enables DevTools frontend on desktop Android.
+  // TODO(crbug.com/438369690): Remove when we enable DevTools frontend on all
+  // LFF devices.
+  feature_overrides.EnableFeature(features::kAndroidDevToolsFrontend);
+
 #endif  // BUILDFLAG(IS_DESKTOP_ANDROID)
   // Desktop-first features which are past incubation should either end up here,
   // or to a finch trial that enables it for all form factors.
@@ -410,5 +385,18 @@ void ChromeBrowserFieldTrials::RegisterFeatureOverrides(
 
 void ChromeBrowserFieldTrials::EnableRuntimeMutableFeatures(
     base::FeatureList* feature_list) {
+  variations::PlatformFieldTrials::EnableRuntimeMutableFeatures(feature_list);
+
   // Add calls to enable runtime-mutable features here.
+#if !BUILDFLAG(IS_ANDROID)
+  // Defined on desktop only (see password_features.h).
+  feature_list->EnableRuntimeMutability(
+      password_manager::features::kPasskeyUnlockPromo, base::DoNothing());
+#endif  // !BUILDFLAG(IS_ANDROID)
+  feature_list->EnableRuntimeMutability(
+      performance_manager::features::kPMWithheldFromViewVoter,
+      base::DoNothing());
+  feature_list->EnableRuntimeMutability(
+      performance_manager::features::kPMSidePanelLoadingVoter,
+      base::DoNothing());
 }

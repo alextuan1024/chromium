@@ -23,6 +23,8 @@ UIImage* ImageForIconResourceId(omnibox::IconResourceIds icon_id,
                                  point_size);
     case omnibox::IconResourceIds::BOLT:
       return SymbolWithPointSize(SymbolBolt, point_size);
+    case omnibox::IconResourceIds::ACUTE:
+      return SymbolWithPointSize(SymbolAcute, point_size);
     case omnibox::IconResourceIds::ATTACH_FILE:
       return SymbolWithPointSize(SymbolPaperclip, point_size);
     case omnibox::IconResourceIds::ADD_PHOTO_ALTERNATE:
@@ -38,11 +40,18 @@ UIImage* ImageForIconResourceId(omnibox::IconResourceIds icon_id,
     case omnibox::IconResourceIds::LENS_CAMERA:
       return SymbolWithPointSize(SymbolCameraLens, point_size);
     case omnibox::IconResourceIds::BANANA:
+    case omnibox::IconResourceIds::IMAGE_CREATE:
       return SymbolWithPointSize(SymbolImageCreate, point_size);
     case omnibox::IconResourceIds::CHECK_SMALL:
       return SymbolWithPointSize(SymbolCheckmark, point_size);
     case omnibox::IconResourceIds::PHOTO_PRINTS:
       return SymbolWithPointSize(SymbolPhoto, point_size);
+    case omnibox::IconResourceIds::PTM_TOOL:
+#if BUILDFLAG(IOS_USE_BRANDED_ASSETS)
+      return SymbolWithPointSize(SymbolSparkleTrail, point_size);
+#else
+      return SymbolWithPointSize(SymbolSparkle, point_size);
+#endif
     case omnibox::IconResourceIds::DRIVE:
 #if BUILDFLAG(IOS_USE_BRANDED_ASSETS)
       return SymbolWithPointSize(SymbolGoogleDrive, point_size);

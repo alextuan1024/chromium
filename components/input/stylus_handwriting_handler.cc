@@ -14,7 +14,8 @@ StylusHandwritingHandler::StylusHandwritingHandler(InputRouterClient* client)
 
 StylusHandwritingHandler::~StylusHandwritingHandler() = default;
 
-void StylusHandwritingHandler::OnTouchEvent(const blink::WebTouchEvent&) {}
+void StylusHandwritingHandler::OnTouchEvent(const blink::WebTouchEvent&,
+                                            float) {}
 
 void StylusHandwritingHandler::ApplyTouchAction(cc::TouchAction) {}
 
@@ -34,8 +35,12 @@ bool StylusHandwritingHandler::StartStylusWriting() {
     return false;
   }
   stylus_writing_started_ = true;
-  client_->OnStartStylusWriting();
+  OnStartStylusWriting();
   return true;
+}
+
+void StylusHandwritingHandler::OnStartStylusWriting() {
+  client_->OnStartStylusWriting(std::nullopt);
 }
 
 }  // namespace input

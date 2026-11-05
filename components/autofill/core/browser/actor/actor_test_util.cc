@@ -39,6 +39,7 @@ TestCreditCardAccessManager::~TestCreditCardAccessManager() = default;
 
 void TestCreditCardAccessManager::FetchCreditCard(
     const CreditCard*,
+    bool,
     OnCreditCardFetchedCallback callback) {
   callback_ = std::move(callback);
 }
@@ -72,13 +73,15 @@ void TestBrowserAutofillManagerWithTestCCAM::FillOrPreviewForm(
     mojom::ActionPersistence action_persistence,
     const FormGlobalId& form_id,
     const FieldGlobalId& field_id,
+    FillingProduct filling_product,
     const FillingPayload& filling_payload,
     AutofillTriggerSource trigger_source,
+    bool require_user_confirmation,
     const base::flat_set<FieldGlobalId>& blocked_fields) {
   last_trigger_field_id_ = field_id;
-  TestBrowserAutofillManager::FillOrPreviewForm(action_persistence, form_id,
-                                                field_id, filling_payload,
-                                                trigger_source, blocked_fields);
+  TestBrowserAutofillManager::FillOrPreviewForm(
+      action_persistence, form_id, field_id, filling_product, filling_payload,
+      trigger_source, require_user_confirmation, blocked_fields);
 }
 
 TestActorAutofillClient::TestActorAutofillClient() {

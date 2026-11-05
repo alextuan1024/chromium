@@ -44,6 +44,9 @@ namespace {
 class WindowEventObserver;
 }  // namespace
 
+// TODO(crbug.com/546631275): Rename PictureInPictureBrowserFrameView to better
+// reflect that it is now used for both document picture-in-picture and
+// always-on-top windows.
 class PictureInPictureBrowserFrameView
     : public BrowserFrameView,
       public ChromeLocationBarModelDelegate,
@@ -181,6 +184,7 @@ class PictureInPictureBrowserFrameView
   bool HasAnyVisibleContentSettingViews() const;
 
   // Helper functions for testing.
+  bool IsTopBarActiveForTesting() const;
   std::vector<raw_ptr<gfx::Animation>> GetRenderActiveAnimationsForTesting();
   std::vector<raw_ptr<gfx::Animation>> GetRenderInactiveAnimationsForTesting();
   views::View* GetBackToTabButtonForTesting();
@@ -227,6 +231,17 @@ class PictureInPictureBrowserFrameView
 
  protected:
   views::View* top_bar_container_view() { return top_bar_container_view_; }
+#if BUILDFLAG(IS_CHROMEOS)
+  views::FlexLayoutView* button_container_view() const {
+    return button_container_view_;
+  }
+  size_t content_setting_views_count() const {
+    return content_setting_views_.size();
+  }
+  PipTopBarAnimationController* animation_controller() {
+    return animation_controller_.get();
+  }
+#endif
 
   // Returns the insets of the window frame borders for resizing.
   virtual gfx::Insets ResizeBorderInsets() const;

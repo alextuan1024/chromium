@@ -164,7 +164,7 @@ class AutofillAiImportUtilsTest : public testing::Test {
     autofill_client().SetUpPrefsAndIdentityForAutofillAi();
     autofill_client().GetSyncService()->GetUserSettings()->SetSelectedType(
         syncer::UserSelectableType::kPayments, true);
-    autofill_client().set_app_locale("en-US");
+    autofill_client().set_app_locale(base::i18n::GetKnownLanguageTag("en-US"));
     autofill_client().SetVariationConfigCountryCode(GeoIpCountryCode("US"));
   }
 
@@ -179,6 +179,24 @@ class AutofillAiImportUtilsTest : public testing::Test {
   syncer::TestSyncService sync_service_;
   TestAutofillClient autofill_client_;
 };
+
+TEST_F(AutofillAiImportUtilsTest, ShouldImportValueForAttribute) {
+  using enum AttributeTypeName;
+  // Empty values and email addresses are not supported for any attribute.
+  EXPECT_FALSE(ShouldImportValueForAttribute(AttributeType(kVehicleVin), u""));
+  EXPECT_FALSE(ShouldImportValueForAttribute(AttributeType(kPassportName),
+                                             u"test@mail.com"));
+  // Redress numbers need to consist of 7 digits.
+  EXPECT_FALSE(ShouldImportValueForAttribute(
+      AttributeType(kRedressNumberNumber), u"123456"));
+  EXPECT_FALSE(ShouldImportValueForAttribute(
+      AttributeType(kRedressNumberNumber), u"123456x"));
+  EXPECT_TRUE(ShouldImportValueForAttribute(AttributeType(kRedressNumberNumber),
+                                            u"1234567"));
+  // For other attributes, no requirements exist.
+  EXPECT_TRUE(ShouldImportValueForAttribute(
+      AttributeType(kDriversLicenseNumber), u"asdf"));
+}
 
 // Tests import that includes and a date distributed over three <input>
 // elements.
@@ -281,9 +299,9 @@ TEST_F(AutofillAiImportUtilsTest, ImportFromInput_RecordType_FeatureOff_Local) {
                                    EntityInstance::RecordType::kLocal)));
 }
 
-// Tests that we do not import any attribute whose value has a value email
-// address format
-TEST_F(AutofillAiImportUtilsTest, NoEmailAddressImport) {
+// Tests that we do not import any attribute whose value doesn't satisfy
+// `ShouldImportValueForAttribute()`, like an email address.
+TEST_F(AutofillAiImportUtilsTest, NoInvalidAttributeValues) {
   std::vector<std::unique_ptr<AutofillField>> fields;
   fields.push_back(CreateInput(FormControlType::kInputText,
                                FieldType::PASSPORT_NUMBER, "foo@bar.com"));

@@ -26,13 +26,12 @@ import org.junit.runner.RunWith;
 
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.util.Batch;
-import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.base.test.util.ImportantFormFactors;
 import org.chromium.base.test.util.Restriction;
 import org.chromium.chrome.browser.ChromeTabbedActivity;
-import org.chromium.chrome.browser.flags.ChromeSwitches;
+import org.chromium.chrome.browser.preferences.Pref;
 import org.chromium.chrome.browser.profiles.ProfileManager;
 import org.chromium.chrome.browser.search_engines.TemplateUrlServiceFactory;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
@@ -53,7 +52,6 @@ import java.util.List;
 /** Instrumentation tests for site search on Android Large Form Factor. */
 @RunWith(ChromeJUnit4ClassRunner.class)
 @Batch(Batch.PER_CLASS)
-@CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
 @EnableFeatures(OmniboxFeatureList.OMNIBOX_SITE_SEARCH)
 @ImportantFormFactors(DeviceFormFactor.TABLET_OR_DESKTOP)
 @Restriction(DeviceFormFactor.TABLET_OR_DESKTOP)
@@ -85,6 +83,8 @@ public class SiteSearchTest {
                     service.load();
                     UserPrefs.get(ProfileManager.getLastUsedRegularProfile())
                             .setBoolean(KEYWORD_SPACE_TRIGGERING_ENABLED_PREF, true);
+                    UserPrefs.get(ProfileManager.getLastUsedRegularProfile())
+                            .setBoolean(Pref.SHOW_AI_MODE_OMNIBOX_BUTTON, false);
                 });
 
         CriteriaHelper.pollUiThread(

@@ -56,6 +56,7 @@
 #include "components/webapps/common/web_app_id.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/blink/public/common/manifest/manifest.h"
 #include "third_party/blink/public/mojom/manifest/display_mode.mojom-shared.h"
 #include "third_party/skia/include/core/SkColor.h"
 
@@ -560,9 +561,9 @@ TEST_F(WebAppSyncBridgeTest, ApplyIncrementalSyncChanges_EmptyEntityChanges) {
 TEST_F(WebAppSyncBridgeTest, ApplyIncrementalSyncChanges_AddUpdateDelete) {
   StartWebAppProvider();
 
-  webapps::AppId app_id_to_keep = test::InstallDummyWebApp(
-      profile(), "To Keep", GURL("https://www.to_keep.com/"),
-      webapps::WebappInstallSource::SYNC);
+  test::InstallDummyWebApp(profile(), "To Keep",
+                           GURL("https://www.to_keep.com/"),
+                           webapps::WebappInstallSource::SYNC);
   webapps::AppId app_id_to_delete = test::InstallDummyWebApp(
       profile(), "To Delete", GURL("https://www.to_delete.com/"),
       webapps::WebappInstallSource::SYNC);
@@ -779,11 +780,9 @@ TEST_F(WebAppSyncBridgeTest, MigrateFromSourceAppInSameSyncChange) {
   auto& fake_page_state =
       web_contents_manager.GetOrCreatePageState(kTargetStartUrl);
   fake_page_state.url_load_result = webapps::WebAppUrlLoaderResult::kUrlLoaded;
-  blink::mojom::ManifestPtr manifest = blink::mojom::Manifest::New();
-  manifest->name = u"Target App";
-  manifest->start_url = kTargetStartUrl;
-  manifest->id = kTargetStartUrl;
-  fake_page_state.manifest_before_default_processing = std::move(manifest);
+  fake_page_state.opt_manifest = blink::Manifest::Builder(kTargetStartUrl)
+                                     .SetName(u"Target App")
+                                     .BuildChecked();
 
   syncer::EntityChangeList entity_changes;
   // Delete source
@@ -1031,8 +1030,6 @@ TEST_F(WebAppSyncBridgeTest, CanDeleteNonUserInstallableApps) {
 TEST_F(WebAppSyncBridgeTest,
        ApplyIncrementalSyncChanges_OnWebAppsWillBeUpdatedFromSync) {
   const GURL kStartUrl = GURL("https://www.example.com/index.html");
-  const webapps::AppId kAppId = GenerateAppIdFromManifestId(
-      GenerateManifestIdFromStartUrlOnly(kStartUrl));
 
   test::AwaitStartWebAppProviderAndSubsystems(profile());
 
@@ -1330,6 +1327,63 @@ TEST_F(WebAppSyncBridgeTest, SyncOsIntegrationOnStartup) {
   // Verify the histogram was recorded.
   histogram_tester.ExpectUniqueSample(
       "WebApp.Install.CompletedOsIntegrationOnStartup", true, 1);
+}
+
+TEST_F(
+    WebAppSyncBridgeTest,
+    ApplyIncrementalSyncChanges_EmptySpecificsAndEntityNameFallsBackToStartUrl) {
+  StartWebAppProvider();
+
+  const GURL kStartUrl("https://example.com/app/");
+  WebAppSpecifics sync_proto = CreateWebAppSpecificsForTesting("", kStartUrl);
+  sync_proto.clear_name();
+  const webapps::AppId app_id = GetAppIdFromWebAppSpecifics(sync_proto);
+
+  WebAppTestInstallObserver install_observer(profile());
+  install_observer.BeginListening({app_id});
+
+  sync_bridge().ApplyIncrementalSyncChanges(
+      sync_bridge().CreateMetadataChangeList(),
+      ToEntityChangeList(app_id, sync_proto, sync_bridge()));
+
+  EXPECT_EQ(install_observer.Wait(), app_id);
+
+  const WebApp* app = registrar().GetAppById(app_id);
+  ASSERT_TRUE(app);
+  EXPECT_EQ(app->sync_proto().name(), kStartUrl.spec());
+  EXPECT_EQ(registrar().GetAppShortName(app_id), kStartUrl.spec());
+}
+
+TEST_F(
+    WebAppSyncBridgeTest,
+    ApplyIncrementalSyncChanges_UpdateWithEmptySpecificsNamePreservesExistingName) {
+  StartWebAppProvider();
+
+  const GURL kStartUrl("https://example.com/app/");
+  EXPECT_CALL(processor(), Put).WillOnce(testing::Return());
+  const webapps::AppId app_id = test::InstallDummyWebApp(
+      profile(), "Existing App", kStartUrl, webapps::WebappInstallSource::SYNC);
+
+  WebAppSpecifics sync_proto = GetSpecificsFromInstalledApp(app_id);
+  sync_proto.clear_name();
+
+  // A non-empty `entity_data.name` must not clobber the existing local name.
+  syncer::EntityData entity_data;
+  entity_data.name = "Stale Or Encrypted Entity Name";
+  *entity_data.specifics.mutable_web_app() = sync_proto;
+  ASSERT_TRUE(sync_bridge().IsEntityDataValid(entity_data));
+
+  syncer::EntityChangeList entity_changes;
+  entity_changes.push_back(
+      syncer::EntityChange::CreateUpdate(app_id, std::move(entity_data)));
+
+  sync_bridge().ApplyIncrementalSyncChanges(
+      sync_bridge().CreateMetadataChangeList(), std::move(entity_changes));
+
+  const WebApp* app = registrar().GetAppById(app_id);
+  ASSERT_TRUE(app);
+  EXPECT_EQ(app->sync_proto().name(), "Existing App");
+  EXPECT_EQ(registrar().GetAppShortName(app_id), "Existing App");
 }
 
 namespace {

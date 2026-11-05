@@ -10,7 +10,6 @@
 #include "base/memory/weak_ptr.h"
 #include "base/types/pass_key.h"
 #include "components/permissions/content_setting_permission_context_base.h"
-#include "net/first_party_sets/first_party_set_metadata.h"
 
 class GURL;
 
@@ -24,7 +23,9 @@ struct PermissionPromptDecision;
 enum class RequestOutcome {
   // The request was granted because the requesting site and the top level site
   // were in the same First-Party Set.
-  kGrantedByFirstPartySet = 0,
+  // This variant is no longer used.
+  // kGrantedByFirstPartySet = 0,
+
   // The request was granted because the requesting site had not yet used up its
   // allowance of implicit grants (`kStorageAccessAPIImplicitGrantLimit`).
   kGrantedByAllowance = 1,
@@ -50,8 +51,7 @@ enum class RequestOutcome {
   kDeniedByTopLevelInteractionHeuristic = 8,
   // 3p cookies are already allowed by user agent, so there is no need to ask.
   kAllowedByCookieSettings = 9,
-  // The permission was previously granted without user action. E.g. through
-  // FPS.
+  // The permission was previously granted without user action.
   kReusedImplicitGrant = 10,
   // 3p cookies are blocked by user explicitly, so there is no need to ask.
   kDeniedByCookieSettings = 11,
@@ -130,23 +130,12 @@ class StorageAccessGrantPermissionContext
       PermissionDecision decision,
       RequestOutcome outcome);
 
-  // Checks First-Party Sets metadata to determine if auto-grants or
-  // auto-denials are applicable. If no autogrant or autodenial is applicable,
-  // this tries to to use an implicit grant, and finally may prompt the user if
-  // necessary.
-  void CheckForAutoGrantOrAutoDenial(
-      std::unique_ptr<permissions::PermissionRequestData> request_data,
-      permissions::BrowserPermissionCallback callback,
-      net::FirstPartySetMetadata metadata);
-
   // Determines whether the top-level user-interaction heuristic was satisfied,
   // and if so, prompts the user.
   void OnCheckedUserInteractionHeuristic(
       std::unique_ptr<permissions::PermissionRequestData> request_data,
       permissions::BrowserPermissionCallback callback,
       bool had_top_level_user_interaction);
-
-  void ReportRelatedWebsiteSetsDeprecation(content::RenderFrameHost* rfh);
 
   base::WeakPtrFactory<StorageAccessGrantPermissionContext> weak_factory_{this};
 };

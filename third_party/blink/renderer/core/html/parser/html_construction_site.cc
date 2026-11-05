@@ -192,6 +192,9 @@ static String TryCanonicalizeString(const StringView& string,
 
 static inline void Insert(HTMLConstructionSite::InsertionLocation location,
                           Node* child) {
+  if (!location.IsValid()) {
+    return;
+  }
   // https://html.spec.whatwg.org/multipage/parsing.html#appropriate-place-for-inserting-a-node
   // 3. If the adjusted insertion location is inside a template element, let it
   // instead be inside the template element's template contents, after its last
@@ -199,7 +202,7 @@ static inline void Insert(HTMLConstructionSite::InsertionLocation location,
   if (auto* template_element =
           DynamicTo<HTMLTemplateElement>(*location.parent)) {
     auto* patch = template_element->GetPatch();
-    if (patch && !patch->is_buffered()) {
+    if (patch && !patch->IsExternal()) {
       patch->Apply(location);
     } else {
       location.parent = template_element->InsertionTarget();
@@ -252,6 +255,10 @@ void HTMLConstructionSite::FlushPendingText() {
 
   InsertionLocation location = AdjustInsertionLocation(
       {pending_text_.parent.Get(), pending_text_.next_child.Get()});
+  if (!location.IsValid()) {
+    pending_text_.Discard();
+    return;
+  }
 
   Text* child = Text::Create(
       location.parent->GetDocument(),
@@ -267,64 +274,29 @@ void HTMLConstructionSite::FlushPendingText() {
   pending_text_.Discard();
 }
 
-bool HTMLConstructionSite::ShouldInsertChild(ContainerNode* parent,
+bool HTMLConstructionSite::ShouldInsertChild(const InsertionLocation& location,
                                              Node* child) {
-  if (!parent->IsDocumentNode()) {
-    if (auto* active_sanitizer = ActiveSanitizer(child)) {
-      if (!active_sanitizer->Sanitize(child)) {
-        return false;
-      }
+  if (!location.parent->IsDocumentNode() && sanitizer_) {
+    if (!sanitizer_->Sanitize(child)) {
+      return false;
     }
   }
   return true;
 }
 
 Sanitizer::Action HTMLConstructionSite::CheckSanitizerAction(Node* node) const {
-  auto* active_sanitizer = ActiveSanitizer(node);
-  if (!active_sanitizer) {
+  if (!sanitizer_) {
     return Sanitizer::Action::kKeep;
   }
-  return active_sanitizer->CheckSanitizerAction(node);
+  return sanitizer_->CheckSanitizerAction(node);
 }
 
 Sanitizer::Action HTMLConstructionSite::SanitizeAndReturnAction(
     Node* node) const {
-  auto* active_sanitizer = ActiveSanitizer(node);
-  if (!active_sanitizer) {
+  if (!sanitizer_) {
     return Sanitizer::Action::kKeep;
   }
-  return active_sanitizer->SanitizeAndReturnAction(node);
-}
-
-StreamingSanitizer* HTMLConstructionSite::ActiveSanitizer(
-    Node* node_being_inserted) const {
-  if (!RuntimeEnabledFeatures::StreamingSanitizerEnabled()) {
-    return nullptr;
-  }
-
-  auto* default_sanitizer = sanitizer_.Get();
-
-  if (!RuntimeEnabledFeatures::DeclarativeFragmentEnabled()) {
-    return default_sanitizer;
-  }
-
-  HTMLStackItem* top = open_elements_.TopStackItem();
-
-  // This is needed because sanitization might take place after the <template
-  // sanitize> element is already added to the stack.
-  if (top && node_being_inserted && top->GetNode() == node_being_inserted) {
-    top = top->NextItemInStack();
-  }
-
-  if (!top) {
-    return default_sanitizer;
-  }
-
-  if (StreamingSanitizer* patch_sanitizer = top->GetSanitizer()) {
-    return patch_sanitizer;
-  }
-
-  return default_sanitizer;
+  return sanitizer_->SanitizeAndReturnAction(node);
 }
 
 void HTMLConstructionSite::Attach(InsertionLocation location,
@@ -346,12 +318,13 @@ void HTMLConstructionSite::Attach(InsertionLocation location,
   }
 
   DCHECK(location.parent);
-  if (!ShouldInsertChild(location.parent, child)) {
+  InsertionLocation adjusted_location = AdjustInsertionLocation(location);
+  if (!ShouldInsertChild(adjusted_location, child)) {
     return;
   }
 
   FlushPendingText();
-  Insert(AdjustInsertionLocation(location), child);
+  Insert(adjusted_location, child);
 
   if (auto* element_child = DynamicTo<Element>(child)) {
     element_child->BeginParsingChildren();
@@ -458,7 +431,11 @@ void HTMLConstructionSite::InsertHTMLHtmlStartTagBeforeHTML(
     AtomicHTMLToken* token) {
   DCHECK(document_);
   HTMLHtmlElement* element;
-  if (const auto* is_attribute = token->GetAttributeItem(html_names::kIsAttr)) {
+  const auto* is_attribute = token->GetAttributeItem(html_names::kIsAttr);
+  bool sanitizer_allows_is_attribute =
+      is_attribute &&
+      (!sanitizer_ || sanitizer_->AllowIsAttribute(html_names::kHTMLTag));
+  if (is_attribute && sanitizer_allows_is_attribute) {
     element = To<HTMLHtmlElement>(document_->CreateElement(
         html_names::kHTMLTag, GetCreateElementFlags(), is_attribute->Value(),
         CustomElementRegistry::DefaultRegistry(*document_)));
@@ -739,36 +716,34 @@ HTMLConstructionSite::CurrentInsertionLocation() {
              : InsertionLocation{CurrentNode(), nullptr};
 }
 
+// Returns true if `item` is an open element that the sanitizer replaces with
+// its children, so that nodes parsed under it are hoisted to its parent. A
+// <template> has no light-tree children: its parsed content is dropped along
+// with it, matching Sanitizer::ReplaceWithChildren for already-parsed trees.
+static bool IsUnwrappedBySanitizer(StreamingSanitizer* sanitizer,
+                                   HTMLStackItem* item) {
+  return item && item->IsElementNode() && item->NextItemInStack() &&
+         !IsA<HTMLTemplateElement>(item->GetNode()) &&
+         sanitizer->CheckSanitizerAction(item->GetNode()) ==
+             Sanitizer::Action::kReplaceWithChildren;
+}
+
 HTMLConstructionSite::InsertionLocation
 HTMLConstructionSite::AdjustInsertionLocation(InsertionLocation location) {
-  if (!RuntimeEnabledFeatures::StreamingSanitizerEnabled()) {
-    return location;
-  }
   if (IsEmpty()) {
     return location;
   }
-  if (auto* active_sanitizer = ActiveSanitizer()) {
-    // Find the first inclusive ancestor of location.parent that is not replaced
-    // with its children by the sanitizer.
-    // Using Find here as it might not be the topmost item due to foster
-    // parenting.
-    // TODO(nrosenthal): See if we can refactor this to be more efficient by
-    // doing this at the same time as foster parenting.
+  if (sanitizer_) {
     for (HTMLStackItem* parent_item =
              open_elements_.Find(DynamicTo<Element>(location.parent));
-         parent_item &&
-         active_sanitizer->CheckSanitizerAction(location.parent) ==
-             Sanitizer::Action::kReplaceWithChildren;
+         IsUnwrappedBySanitizer(sanitizer_.Get(), parent_item);
          parent_item = parent_item->NextItemInStack()) {
-      location.parent = parent_item->GetNode();
-    }
-
-    // This can happen if the reference node moved right before closing the
-    // stream, and the stream close has some side effects (e.g. <head>
-    // processing). In this case, ignore the reference node and append.
-    if (location.next_child &&
-        location.next_child->parentNode() != location.parent) {
-      location.next_child = nullptr;
+      if (parent_item->IsReplacedWithChildren()) {
+        location = {parent_item->ReplacedInsertionParent(),
+                    parent_item->ReplacedInsertionNextChild()};
+        break;
+      }
+      location.parent = parent_item->NextItemInStack()->GetNode();
     }
   }
 
@@ -870,14 +845,11 @@ void HTMLConstructionSite::InsertHTMLTemplateElement(
       CreateElement(token, html_names::xhtmlNamespaceURI));
 
   AtomicString patch_target =
-      RuntimeEnabledFeatures::DocumentPatchingEnabled()
-          ? template_element->FastGetAttribute(html_names::kForAttr)
-          : g_null_atom;
+      template_element->FastGetAttribute(html_names::kForAttr);
 
-  auto* active_sanitizer = ActiveSanitizer();
-  if (active_sanitizer &&
+  if (sanitizer_ &&
       (!declarative_shadow_root_mode.IsNull() || !patch_target.IsNull())) {
-    bool ok = active_sanitizer->Sanitize(template_element);
+    bool ok = sanitizer_->Sanitize(template_element);
     if (!ok ||
         !template_element->FastHasAttribute(html_names::kShadowrootmodeAttr)) {
       declarative_shadow_root_mode = String();
@@ -890,7 +862,9 @@ void HTMLConstructionSite::InsertHTMLTemplateElement(
   bool should_attach_template = true;
 
   if (!declarative_shadow_root_mode.IsNull() &&
-      IsA<Element>(open_elements_.TopStackItem()->GetNode())) {
+      IsA<Element>(open_elements_.TopStackItem()->GetNode()) &&
+      CheckSanitizerAction(open_elements_.TopStackItem()->GetNode()) !=
+          Sanitizer::Action::kReplaceWithChildren) {
     auto focus_delegation = template_element->FastHasAttribute(
                                 html_names::kShadowrootdelegatesfocusAttr)
                                 ? FocusDelegation::kDelegateFocus
@@ -947,23 +921,25 @@ void HTMLConstructionSite::InsertHTMLTemplateElement(
     return;
   }
 
+  // The content policy for an external fragment follows the enclosing parser:
+  // editing/clipboard parsers disallow scripting content altogether, fragment
+  // parsers (innerHTML etc.) keep scripts but never run them, and the main
+  // document parser runs them as parser-inserted.
+  ParserContentPolicy patch_content_policy;
+  if (!is_scripting_content_allowed_) {
+    patch_content_policy = kDisallowScriptingAndPluginContent;
+  } else if (ShouldMarkScriptAlreadyStarted()) {
+    patch_content_policy = kAllowScriptingContent;
+  } else {
+    patch_content_policy = kAllowScriptingContentAndMarkAsParserInserted;
+  }
   if (Patch* patch = Patch::Prepare(current_insertion_location.parent,
-                                    patch_target, template_element)) {
-    CHECK(RuntimeEnabledFeatures::DocumentPatchingEnabled());
+                                    patch_target, template_element,
+                                    sanitizer_.Get(), patch_content_policy)) {
     UseCounter::Count(OwnerDocumentForCurrentNode(), WebFeature::kHTMLPatching);
     template_element->SetPatch(patch);
-    if (RuntimeEnabledFeatures::DeclarativeFragmentEnabled()) {
-      const AtomicString& sanitize_val =
-          template_element->FastGetAttribute(html_names::kSanitizeAttr);
-      if (!sanitize_val.IsNull() &&
-          (sanitize_val.empty() ||
-           EqualIgnoringAsciiCase(sanitize_val, "sanitize"))) {
-        stack_item->SetSanitizer(StreamingSanitizer::SafeFor(sanitizer_.Get()));
-      }
-    }
 
-    if (!patch_target.empty() && !patch->is_buffered() &&
-        !patch->IsExternal()) {
+    if (!patch_target.empty() && !patch->IsExternal()) {
       return;
     }
 
@@ -1026,10 +1002,8 @@ void HTMLConstructionSite::InsertScriptElement(AtomicHTMLToken* token) {
       .SetAlreadyStarted(ShouldMarkScriptAlreadyStarted());
   HTMLScriptElement* element = nullptr;
   const auto* is_attribute = token->GetAttributeItem(html_names::kIsAttr);
-  auto* active_sanitizer = ActiveSanitizer();
   bool sanitizer_allows_is_attribute =
-      !active_sanitizer ||
-      active_sanitizer->AllowIsAttribute(html_names::kScriptTag);
+      !sanitizer_ || sanitizer_->AllowIsAttribute(html_names::kScriptTag);
   if (is_attribute && sanitizer_allows_is_attribute) {
     element = To<HTMLScriptElement>(OwnerDocumentForCurrentNode().CreateElement(
         html_names::kScriptTag, flags, is_attribute->Value(),
@@ -1076,12 +1050,15 @@ void HTMLConstructionSite::InsertTextNode(const StringView& string,
   }
 
   location = AdjustInsertionLocation(location);
+  if (!location.IsValid()) {
+    return;
+  }
   if (auto* template_element =
           DynamicTo<HTMLTemplateElement>(*location.parent)) {
     // If the Document was detached in the middle of parsing, the template
     // element won't be able to initialize its contents.
     auto* patch = template_element->GetPatch();
-    if (patch && !patch->is_buffered()) {
+    if (patch && !patch->IsExternal()) {
       patch->Apply(location);
     } else {
       location.parent = template_element->InsertionTarget();
@@ -1115,11 +1092,11 @@ void HTMLConstructionSite::Reparent(HTMLStackItem* new_parent,
   if (RemoveChildIfValidForRemoval(parent_node, child_node)) {
     return;
   }
-  if (!ShouldInsertChild(parent_node, child_node)) {
+  InsertionLocation location = AdjustInsertionLocation({parent_node, nullptr});
+  if (!ShouldInsertChild(location, child_node)) {
     return;
   }
-  InsertionLocation location = AdjustInsertionLocation({parent_node, nullptr});
-  location.parent->ParserAppendChild(child_node);
+  Insert(location, child_node);
 }
 
 void HTMLConstructionSite::InsertAlreadyParsedChild(HTMLStackItem* new_parent,
@@ -1134,10 +1111,10 @@ void HTMLConstructionSite::InsertAlreadyParsedChild(HTMLStackItem* new_parent,
   if (RemoveChildIfValidForRemoval(parent_node, child_node)) {
     return;
   }
-  if (!ShouldInsertChild(parent_node, child_node)) {
+  InsertionLocation location = AdjustInsertionLocation({parent_node, nullptr});
+  if (!ShouldInsertChild(location, child_node)) {
     return;
   }
-  InsertionLocation location = AdjustInsertionLocation({parent_node, nullptr});
   Insert(location, child_node);
 }
 
@@ -1145,6 +1122,9 @@ void HTMLConstructionSite::TakeAllChildren(HTMLStackItem* new_parent,
                                            HTMLStackItem* old_parent) {
   InsertionLocation location =
       AdjustInsertionLocation({new_parent->GetNode(), nullptr});
+  if (!location.IsValid()) {
+    return;
+  }
   location.parent->ParserTakeAllChildrenFrom(
       *To<ContainerNode>(old_parent->GetNode()));
 }
@@ -1175,10 +1155,11 @@ Document& HTMLConstructionSite::OwnerDocumentForCurrentNode() {
   // be re-targeted to the .content() document of the template. This function is
   // used in those places. The spec needs to be updated to reflect this
   // behavior, and when that happens, a link to the spec should be placed here.
-  ContainerNode* parent = CurrentNode();
+  ContainerNode* parent =
+      AdjustInsertionLocation(CurrentInsertionLocation()).parent;
   while (auto* template_element = DynamicTo<HTMLTemplateElement>(parent)) {
     if (auto* patch = template_element->GetPatch()) {
-      if (!patch->is_buffered()) {
+      if (!patch->IsExternal()) {
         parent = patch->parent();
         continue;
       }
@@ -1238,13 +1219,12 @@ Element* HTMLConstructionSite::CreateElement(
   const Attribute* is_attribute = token->GetAttributeItem(html_names::kIsAttr);
   // If sanitizer_ is set and if santizer_ would not allow the "is" attribute,
   // then we will just pretend to not have seen it.
-  auto* active_sanitizer = ActiveSanitizer();
-  Document& creation_document = (active_sanitizer && document.IsActive() &&
-                                 !active_sanitizer->IsElementAllowed(tag_name))
+  Document& creation_document = (sanitizer_ && document.IsActive() &&
+                                 !sanitizer_->IsElementAllowed(tag_name))
                                     ? document.EnsureTemplateDocument()
                                     : document;
   bool sanitizer_allows_is_attribute =
-      !active_sanitizer || active_sanitizer->AllowIsAttribute(tag_name);
+      !sanitizer_ || sanitizer_->AllowIsAttribute(tag_name);
   const AtomicString& is = (is_attribute && sanitizer_allows_is_attribute)
                                ? is_attribute->Value()
                                : g_null_atom;
@@ -1254,9 +1234,21 @@ Element* HTMLConstructionSite::CreateElement(
   // Look up intended parent's custom element registry. Note that if the
   // intended parent is a template element, which means it will create a
   // document fragment, the custom element registry should be null.
-  if (open_elements_.StackDepth() > 1) {
-    if (auto* tmpl = DynamicTo<HTMLTemplateElement>(CurrentNode())) {
-      if (tmpl->GetPatch() && !tmpl->GetPatch()->is_buffered()) {
+  ContainerNode* intended_parent = CurrentNode();
+  if (sanitizer_) {
+    for (HTMLStackItem* parent_item = CurrentStackItem();
+         IsUnwrappedBySanitizer(sanitizer_.Get(), parent_item);
+         parent_item = parent_item->NextItemInStack()) {
+      if (parent_item->IsReplacedWithChildren()) {
+        intended_parent = parent_item->ReplacedInsertionParent();
+        break;
+      }
+      intended_parent = parent_item->NextItemInStack()->GetNode();
+    }
+  }
+  if (intended_parent != open_elements_.RootNode()) {
+    if (auto* tmpl = DynamicTo<HTMLTemplateElement>(intended_parent)) {
+      if (tmpl->GetPatch() && !tmpl->GetPatch()->IsExternal()) {
         // Keep custom_element_registry_
       } else if (tmpl->IsShadowRootModeTemplate()) {
         // For declarative shadow root templates, the insertion target is the
@@ -1281,7 +1273,11 @@ Element* HTMLConstructionSite::CreateElement(
       // the cached custom_element_registry_: during fragment parsing, when
       // scoped registries are in use, or when a script has moved the current
       // node to a different document mid-parse (stale cached registry).
-      registry = CurrentElement()->customElementRegistry();
+      if (auto* element = DynamicTo<Element>(intended_parent)) {
+        registry = element->customElementRegistry();
+      } else if (auto* shadow = DynamicTo<ShadowRoot>(intended_parent)) {
+        registry = shadow->customElementRegistry();
+      }
     }
   }
   // If the token has the "customelementregistry" content attribute, override
@@ -1295,7 +1291,7 @@ Element* HTMLConstructionSite::CreateElement(
   // 8. Let definition be the result of looking up a custom element definition
   // given registry, given namespace, local name and is.
   CustomElementDefinition* definition = nullptr;
-  if (!active_sanitizer || active_sanitizer->IsElementAllowed(tag_name)) {
+  if (!sanitizer_ || sanitizer_->IsElementAllowed(tag_name)) {
     definition =
         LookUpCustomElementDefinition(document, tag_name, is, registry);
   }
@@ -1463,19 +1459,26 @@ bool HTMLConstructionSite::IndexOfFirstUnopenFormattingElement(
 
 void HTMLConstructionSite::ReconstructTheActiveFormattingElements() {
   unsigned first_unopen_element_index;
-  if (!IndexOfFirstUnopenFormattingElement(first_unopen_element_index)) {
-    return;
-  }
-
-  unsigned unopen_entry_index = first_unopen_element_index;
-  for (; unopen_entry_index < active_formatting_elements_.size();
-       ++unopen_entry_index) {
-    HTMLFormattingElementList::Entry& unopened_entry =
-        active_formatting_elements_.at(unopen_entry_index);
-    HTMLStackItem* reconstructed =
-        CreateElementFromSavedToken(unopened_entry.StackItem());
+  while (IndexOfFirstUnopenFormattingElement(first_unopen_element_index)) {
+    HTMLStackItem* unopened_item =
+        active_formatting_elements_.at(first_unopen_element_index).StackItem();
+    HTMLStackItem* reconstructed = CreateElementFromSavedToken(unopened_item);
+    // AttachOrFosterParent() can execute script synchronously (e.g. via blur
+    // handlers on foster parenting), which might re-enter the parser and
+    // reallocate active_formatting_elements_. Avoid holding references to an
+    // HTMLFormattingElementList::Entry across the call and re-find the entry
+    // afterwards.
     AttachOrFosterParent(reconstructed);
-    unopened_entry.ReplaceElement(reconstructed);
+    if (first_unopen_element_index < active_formatting_elements_.size() &&
+        active_formatting_elements_.at(first_unopen_element_index)
+                .StackItem() == unopened_item) {
+      active_formatting_elements_.at(first_unopen_element_index)
+          .ReplaceElement(reconstructed);
+    } else if (HTMLFormattingElementList::Entry* entry =
+                   active_formatting_elements_.Find(
+                       unopened_item->GetElement())) {
+      entry->ReplaceElement(reconstructed);
+    }
   }
 }
 
@@ -1524,6 +1527,11 @@ void HTMLConstructionSite::FindFosterSite(InsertionLocation& location) {
   }
 
   // 2.5
+  if (last_table->IsReplacedWithChildren()) {
+    location.parent = last_table->ReplacedInsertionParent();
+    location.next_child = last_table->ReplacedInsertionNextChild();
+    return;
+  }
   if (ContainerNode* parent = last_table->GetElement()->parentNode()) {
     location.parent = parent;
     if (!IsA<HTMLTemplateElement>(parent)) {
@@ -1546,11 +1554,20 @@ void HTMLConstructionSite::FosterParent(Node* node) {
   InsertionLocation location;
   FindFosterSite(location);
   DCHECK(location.parent);
-  if (!ShouldInsertChild(location.parent, node)) {
+  InsertionLocation adjusted_location = AdjustInsertionLocation(location);
+  if (!ShouldInsertChild(adjusted_location, node)) {
+    if (auto* element = DynamicTo<Element>(node)) {
+      if (HTMLStackItem* item = open_elements_.Find(element);
+          item && CheckSanitizerAction(element) ==
+                      Sanitizer::Action::kReplaceWithChildren) {
+        item->SetReplacedInsertionLocation(adjusted_location.parent,
+                                           adjusted_location.next_child);
+      }
+    }
     return;
   }
   FlushPendingText();
-  Insert(AdjustInsertionLocation(location), node);
+  Insert(adjusted_location, node);
   if (auto* element_child = DynamicTo<Element>(node)) {
     element_child->BeginParsingChildren();
   }
@@ -1563,11 +1580,12 @@ void HTMLConstructionSite::FosterParentAlreadyParsedChild(Node* child) {
   if (RemoveChildIfValidForRemoval(location.parent, child)) {
     return;
   }
-  if (!ShouldInsertChild(location.parent, child)) {
+  InsertionLocation adjusted_location = AdjustInsertionLocation(location);
+  if (!ShouldInsertChild(adjusted_location, child)) {
     return;
   }
   FlushPendingText();
-  Insert(AdjustInsertionLocation(location), child);
+  Insert(adjusted_location, child);
 }
 
 void HTMLConstructionSite::PendingText::Trace(Visitor* visitor) const {

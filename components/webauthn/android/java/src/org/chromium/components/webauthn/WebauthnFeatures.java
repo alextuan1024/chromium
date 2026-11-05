@@ -9,12 +9,14 @@ import org.chromium.build.annotations.NullMarked;
 /**
  * Lists //components/webauthn features that can be accessed through {@link WebauthnFeatureMap}.
  *
- * <p>Note: Features must be added to the array |kFeaturesExposedToJava| in
+ * <p>Note: Features must be added to the array {@code kFeaturesExposedToJava} in
  * //components/webauthn/android/webauthn_feature_map.cc.
  */
 @NullMarked
 public abstract class WebauthnFeatures {
     public static final String WEBAUTHN_ANDROID_CRED_MAN_FOR_DEV = "WebAuthnAndroidCredManForDev";
+    public static final String WEBAUTHN_ANDROID_DISALLOW_INCOGNITO_CONDITIONAL_CREATE =
+            "WebAuthnAndroidDisallowIncognitoConditionalCreate";
     // This is a temporary workaround for crbug.com/555599813.
     public static final String WEBAUTHN_FILTER_SMART_CARD_TRANSPORT =
             "WebAuthnFilterSmartCardTransport";

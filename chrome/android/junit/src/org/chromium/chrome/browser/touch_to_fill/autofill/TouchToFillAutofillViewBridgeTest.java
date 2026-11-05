@@ -5,11 +5,13 @@
 package org.chromium.chrome.browser.touch_to_fill.autofill;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.atLeastOnce;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.inOrder;
-import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
@@ -17,7 +19,10 @@ import static org.mockito.Mockito.when;
 
 import android.app.Activity;
 import android.view.ViewGroup;
+import android.widget.FrameLayout;
 
+import org.jni_zero.JniRawPtr;
+import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
@@ -49,34 +54,52 @@ public class TouchToFillAutofillViewBridgeTest {
 
     @Mock private WebContents mWebContents;
     private ViewAndroidDelegate mViewAndroidDelegate;
-    @Mock private ViewGroup mContainerView;
+    private ViewGroup mContainerView;
 
-    private static final long NATIVE_POINTER = 123456L;
+    private JniRawPtr<TouchToFillAutofillViewBridge.NativeTouchToFillAutofillViewImpl>
+            mNativePointer;
     private TouchToFillAutofillViewBridge mBridge;
 
     @Before
     public void setUp() {
         TouchToFillAutofillViewBridgeJni.setInstanceForTesting(mNativeMock);
+        mNativePointer = JniRawPtr.createForTesting(123456L);
 
-        Activity activity = Robolectric.buildActivity(Activity.class).create().get();
+        Activity activity = Robolectric.buildActivity(Activity.class).get();
+        mContainerView = new FrameLayout(activity);
+        mContainerView.setFocusable(true);
+        mContainerView.setFocusableInTouchMode(true);
         mViewAndroidDelegate = ViewAndroidDelegate.createBasicDelegate(mContainerView);
 
         when(mWindowAndroid.getKeyboardDelegate()).thenReturn(mKeyboardDelegate);
         when(mWebContents.getViewAndroidDelegate()).thenReturn(mViewAndroidDelegate);
-        when(mContainerView.isFocused()).thenReturn(false);
 
         mBridge =
                 new TouchToFillAutofillViewBridge(
-                        NATIVE_POINTER,
+                        mNativePointer,
                         activity,
                         mBottomSheetController,
                         mWindowAndroid,
                         mWebContents);
     }
 
+    @After
+    public void tearDown() {
+        mNativePointer.release();
+    }
+
     @Test
     public void testShow_RegistersObserver() {
         mBridge.showPersonalContextNotice();
+        ArgumentCaptor<BottomSheetObserver> captor =
+                ArgumentCaptor.forClass(BottomSheetObserver.class);
+        verify(mBottomSheetController, atLeastOnce()).addObserver(captor.capture());
+        assertNotNull(captor.getAllValues().get(0));
+    }
+
+    @Test
+    public void testShowPrivateInferenceNotice_RegistersObserver() {
+        mBridge.showPrivateInferenceNotice();
         ArgumentCaptor<BottomSheetObserver> captor =
                 ArgumentCaptor.forClass(BottomSheetObserver.class);
         verify(mBottomSheetController, atLeastOnce()).addObserver(captor.capture());
@@ -129,7 +152,7 @@ public class TouchToFillAutofillViewBridgeTest {
 
         observer.onSheetClosed(BottomSheetController.StateChangeReason.BACK_PRESS);
 
-        verify(mNativeMock).onDismissed(NATIVE_POINTER);
+        verify(mNativeMock).onDismissed(mNativePointer);
     }
 
     @Test
@@ -156,7 +179,7 @@ public class TouchToFillAutofillViewBridgeTest {
 
         observer.onSheetClosed(BottomSheetController.StateChangeReason.BACK_PRESS);
 
-        verify(mContainerView).requestFocus();
+        assertTrue(mContainerView.isFocused());
         verify(mKeyboardDelegate).showKeyboard(mContainerView);
         verify(mBottomSheetController).removeObserver(observer);
     }
@@ -169,12 +192,20 @@ public class TouchToFillAutofillViewBridgeTest {
         verify(mBottomSheetController, atLeastOnce()).addObserver(captor.capture());
         BottomSheetObserver observer = captor.getAllValues().get(0);
 
+        doAnswer(
+                        inv -> {
+                            assertTrue(mContainerView.isFocused());
+                            return null;
+                        })
+                .when(mKeyboardDelegate)
+                .showKeyboard(mContainerView);
+
         observer.onSheetClosed(BottomSheetController.StateChangeReason.BACK_PRESS);
 
-        InOrder inOrder = inOrder(mContainerView, mKeyboardDelegate, mNativeMock);
-        inOrder.verify(mContainerView).requestFocus();
+        assertTrue(mContainerView.isFocused());
+        InOrder inOrder = inOrder(mKeyboardDelegate, mNativeMock);
         inOrder.verify(mKeyboardDelegate).showKeyboard(mContainerView);
-        inOrder.verify(mNativeMock).onDismissed(NATIVE_POINTER);
+        inOrder.verify(mNativeMock).onDismissed(mNativePointer);
     }
 
     @Test
@@ -188,7 +219,7 @@ public class TouchToFillAutofillViewBridgeTest {
         observer.onSheetClosed(BottomSheetController.StateChangeReason.OMNIBOX_FOCUS);
 
         verifyNoInteractions(mKeyboardDelegate);
-        verify(mContainerView, never()).requestFocus();
+        assertFalse(mContainerView.isFocused());
         verify(mBottomSheetController).removeObserver(observer);
     }
 

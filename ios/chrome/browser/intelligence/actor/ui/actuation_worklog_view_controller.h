@@ -8,8 +8,11 @@
 #import <UIKit/UIKit.h>
 
 #import "ios/chrome/browser/intelligence/actor/ui/actuation_worklog_consumer.h"
+#import "ios/chrome/browser/intelligence/actor/ui/actuation_worklog_item_view.h"
+#import "ios/chrome/browser/intelligence/actor/ui/actuation_worklog_view_data.h"
 
 @class ActuationWorklogViewController;
+@protocol ActuationSuggestionsPresenter;
 @protocol ActuationWorklogMutator;
 
 // Delegate protocol for ActuationWorklogViewController events.
@@ -23,16 +26,30 @@
 
 // View controller displaying the actuation worklog in the Helios sheet.
 @interface ActuationWorklogViewController
-    : UIViewController <ActuationWorklogConsumer>
+    : UIViewController <ActuationWorklogConsumer,
+                        ActuationWorklogItemViewDelegate>
 
 // The delegate for this view controller.
 @property(nonatomic, weak) id<ActuationWorklogViewControllerDelegate> delegate;
 
-// The mutator for delegating user actions.
+// Mutator for dispatching user actions.
 @property(nonatomic, weak) id<ActuationWorklogMutator> mutator;
 
-// Whether the worklog is presented in compact mode or full timeline mode.
-@property(nonatomic, assign, getter=isCompact) BOOL compact;
+// Presenter for managing suggestion picker presentation.
+@property(nonatomic, weak) id<ActuationSuggestionsPresenter>
+    suggestionsPresenter;
+
+// How the worklog is presented. Defaults to
+// `ActuationWorklogDisplayModeCompact`.
+@property(nonatomic, assign) ActuationWorklogDisplayMode displayMode;
+
+// Returns the fitting height of the worklog when presented in `mode`,
+// regardless of the currently active `displayMode`.
+- (CGFloat)heightForDisplayMode:(ActuationWorklogDisplayMode)mode;
+
+// Calculates the current fitting height and reports it to `delegate`. Use this
+// when `delegate` may have ignored a previous report.
+- (void)notifyHeightDidChange;
 
 // Designated initializer.
 - (instancetype)init NS_DESIGNATED_INITIALIZER;

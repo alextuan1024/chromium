@@ -47,16 +47,24 @@
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/test_devtools_protocol_client.h"
+#include "media/base/media_switches.h"
 #include "net/dns/mock_host_resolver.h"
+#include "services/device/public/cpp/test/scoped_geolocation_overrider.h"
+#include "services/device/public/mojom/geoposition.mojom.h"
 #include "services/metrics/public/cpp/ukm_builders.h"
 #include "third_party/blink/public/common/features_generated.h"
+#include "ui/accessibility/ax_enums.mojom.h"
 #include "ui/base/interaction/element_identifier.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/ozone_buildflags.h"
 #include "ui/compositor/layer.h"
 #include "ui/events/base_event_utils.h"
+#include "ui/views/accessibility/ax_update_notifier.h"
+#include "ui/views/bubble/bubble_frame_view.h"
 #include "ui/views/controls/label.h"
 #include "ui/views/controls/webview/webview.h"
+#include "ui/views/test/ax_event_counter.h"
+#include "ui/views/test/views_test_utils.h"
 #include "ui/views/views_switches.h"
 #include "ui/views/widget/any_widget_observer.h"
 #include "ui/views/widget/widget_deletion_observer.h"
@@ -193,6 +201,26 @@ class EmbeddedPermissionPromptInteractiveTest
     }
   }
 
+#if !BUILDFLAG(IS_CHROMEOS)
+  auto CheckMediaPreviewViewType(
+      std::optional<MediaCoordinator::ViewType> expected_view_type) {
+    return InAnyContext(CheckView(
+        EmbeddedPermissionPromptBaseView::kMainViewId,
+        [expected_view_type](views::View* view) {
+          auto* prompt_view =
+              static_cast<EmbeddedPermissionPromptBaseView*>(view);
+          const auto& media_previews =
+              prompt_view->GetMediaPreviewsForTesting();
+          if (!expected_view_type.has_value()) {
+            return !media_previews.has_value();
+          }
+          return media_previews.has_value() &&
+                 media_previews->GetViewTypeForTesting() ==
+                     expected_view_type.value();
+        }));
+  }
+#endif
+
   auto CheckContentSettingsValue(
       const std::vector<ContentSettingsType>& content_settings_types,
       const ContentSetting& expected_value) {
@@ -261,14 +289,31 @@ class EmbeddedPermissionPromptInteractiveTest
     }));
   }
 
+  static PermissionOption ToPermissionOption(ContentSetting setting) {
+    switch (setting) {
+      case CONTENT_SETTING_ALLOW:
+        return PermissionOption::kAllowed;
+      case CONTENT_SETTING_BLOCK:
+        return PermissionOption::kDenied;
+      default:
+        return PermissionOption::kAsk;
+    }
+  }
+
   bool DoContentSettingsHaveValue(
       const std::vector<ContentSettingsType>& content_settings_types,
       ContentSetting expected_value) {
     HostContentSettingsMap* hcsm =
         HostContentSettingsMapFactory::GetForProfile(browser()->GetProfile());
     for (const auto& type : content_settings_types) {
-      if (expected_value !=
-          hcsm->GetContentSetting(GetOrigin(), GetOrigin(), type)) {
+      if (type == ContentSettingsType::GEOLOCATION_WITH_OPTIONS) {
+        auto setting = std::get<GeolocationSetting>(
+            hcsm->GetPermissionSetting(GetOrigin(), GetOrigin(), type));
+        if (setting.approximate != ToPermissionOption(expected_value)) {
+          return false;
+        }
+      } else if (expected_value !=
+                 hcsm->GetContentSetting(GetOrigin(), GetOrigin(), type)) {
         return false;
       }
     }
@@ -279,8 +324,14 @@ class EmbeddedPermissionPromptInteractiveTest
   void SetContentSetting(ContentSettingsType type, ContentSetting setting) {
     HostContentSettingsMap* hcsm =
         HostContentSettingsMapFactory::GetForProfile(browser()->GetProfile());
-    hcsm->SetContentSettingDefaultScope(GetOrigin(), GetOrigin(), type,
-                                        setting);
+    if (type == ContentSettingsType::GEOLOCATION_WITH_OPTIONS) {
+      PermissionOption option = ToPermissionOption(setting);
+      hcsm->SetPermissionSettingDefaultScope(
+          GetOrigin(), GetOrigin(), type, GeolocationSetting{option, option});
+    } else {
+      hcsm->SetContentSettingDefaultScope(GetOrigin(), GetOrigin(), type,
+                                          setting);
+    }
   }
 
   // Tests
@@ -308,6 +359,9 @@ class EmbeddedPermissionPromptInteractiveTest
                    expected_labels1, /*expected_label_index=*/0),
         CheckLabel(EmbeddedPermissionPromptBaseView::kLabelViewId2,
                    expected_labels2, /*expected_label_index=*/0),
+#if !BUILDFLAG(IS_CHROMEOS)
+        CheckMediaPreviewViewType(std::nullopt),
+#endif
 
         // After allowing, the content setting is updated accordingly.
         PushPEPCPromptButton(EmbeddedPermissionPromptAskView::kAllowId),
@@ -332,6 +386,9 @@ class EmbeddedPermissionPromptInteractiveTest
                    expected_labels1, /*expected_label_index=*/2),
         CheckLabel(EmbeddedPermissionPromptBaseView::kLabelViewId2,
                    expected_labels2, /*expected_label_index=*/2),
+#if !BUILDFLAG(IS_CHROMEOS)
+        CheckMediaPreviewViewType(std::nullopt),
+#endif
 
         // Click on "Allow this time" and observe the content setting change.
         PushPEPCPromptButton(
@@ -688,6 +745,9 @@ IN_PROC_BROWSER_TEST_P(EmbeddedPermissionPromptInteractiveTest,
       ClickOnPEPCElement("camera"),
       InAnyContext(
           WaitForShow(EmbeddedPermissionPromptSystemSettingsView::kMainViewId)),
+#if !BUILDFLAG(IS_CHROMEOS)
+      CheckMediaPreviewViewType(std::nullopt),
+#endif
       InAnyContext(CheckViewProperty(
           EmbeddedPermissionPromptSystemSettingsView::kOpenSettingsId,
           &views::MdTextButton::GetText, open_settings_label)));
@@ -1658,17 +1718,28 @@ namespace {
 class DummyOmniboxPopupWebUIContent : public OmniboxPopupWebUIBaseContent {
   METADATA_HEADER(DummyOmniboxPopupWebUIContent, OmniboxPopupWebUIBaseContent)
  public:
-  explicit DummyOmniboxPopupWebUIContent(LocationBar* location_bar)
+  explicit DummyOmniboxPopupWebUIContent(LocationBar* location_bar,
+                                         bool draw_shadow_in_webui = false)
       : OmniboxPopupWebUIBaseContent(nullptr,
                                      location_bar,
                                      nullptr,
-                                     /*top_rounded_corners=*/true) {}
+                                     /*top_rounded_corners=*/true),
+        draw_shadow_in_webui_(draw_shadow_in_webui) {}
 
   void Clear() override {}
   std::string_view GetMetricPrefix() const override { return "Dummy"; }
+  bool ShouldDrawShadowInWebUI() const override {
+    return draw_shadow_in_webui_;
+  }
+  void set_draw_shadow_in_webui(bool draw_shadow_in_webui) {
+    draw_shadow_in_webui_ = draw_shadow_in_webui;
+  }
 
  protected:
   void OnContextMenuClosed() override {}
+
+ private:
+  bool draw_shadow_in_webui_ = false;
 };
 
 BEGIN_METADATA(DummyOmniboxPopupWebUIContent)
@@ -1764,6 +1835,99 @@ IN_PROC_BROWSER_TEST_P(EmbeddedPermissionPromptInteractiveTest,
   EXPECT_FALSE(scrim_view->layer()->fills_bounds_opaquely());
   EXPECT_EQ(scrim_view->layer()->rounded_corner_radii(),
             omnibox_content->GetRoundedCornerRadii());
+
+  omnibox_content->SetWebContents(nullptr);
+  views::WidgetDeletionObserver deletion_observer(widget.get());
+  widget.reset();
+  ASSERT_TRUE(base::test::RunUntil(
+      [&]() { return !deletion_observer.IsWidgetAlive(); }));
+}
+
+IN_PROC_BROWSER_TEST_P(EmbeddedPermissionPromptInteractiveTest,
+                       AccessibleWindowRoleIsDialog) {
+  views::test::AXEventCounter counter(views::AXUpdateNotifier::Get());
+  RunTestSequence(
+      InstrumentTab(kWebContentsElementId),
+      NavigateWebContents(kWebContentsElementId, GetURL()),
+      ClickOnPEPCElement("camera"),
+      InAnyContext(WaitForShow(EmbeddedPermissionPromptBaseView::kMainViewId)),
+      InAnyContext(CheckView(
+          EmbeddedPermissionPromptBaseView::kMainViewId,
+          [](EmbeddedPermissionPromptBaseView* view) {
+            return view->GetAccessibleWindowRole();
+          },
+          ax::mojom::Role::kDialog)),
+      CheckResult([&]() { return counter.GetCount(ax::mojom::Event::kAlert); },
+                  0),
+      Do([this]() {
+        auto* manager = permissions::PermissionRequestManager::FromWebContents(
+            browser()->tab_strip_model()->GetActiveWebContents());
+        manager->Dismiss(/*prompt_options=*/std::monostate());
+      }));
+}
+
+IN_PROC_BROWSER_TEST_P(EmbeddedPermissionPromptInteractiveTest,
+                       ScrimBoundsOmniboxPopupWithWebUIShadow) {
+  views::Widget::InitParams params(
+      views::Widget::InitParams::CLIENT_OWNS_WIDGET,
+      views::Widget::InitParams::TYPE_WINDOW_FRAMELESS);
+  params.context = browser()->GetWindow()->GetNativeWindow();
+  auto widget = std::make_unique<views::Widget>();
+  widget->Init(std::move(params));
+  widget->SetBounds(gfx::Rect(100, 100, 800, 600));
+
+  auto* browser_view = BrowserView::GetBrowserViewForBrowser(browser());
+  auto* location_bar = browser_view->toolbar()->location_bar();
+
+  auto container = std::make_unique<views::View>();
+  container->SetUseDefaultFillLayout(true);
+  auto* omnibox_content =
+      container->AddChildView(std::make_unique<DummyOmniboxPopupWebUIContent>(
+          location_bar, /*draw_shadow_in_webui=*/true));
+
+  auto rounded_frame = std::make_unique<RoundedOmniboxResultsFrame>(
+      container.release(), location_bar, /*forward_mouse_events=*/false);
+
+  widget->SetContentsView(std::move(rounded_frame));
+  widget->Show();
+
+  std::unique_ptr<content::WebContents> test_web_contents =
+      content::WebContents::Create(
+          content::WebContents::CreateParams(browser()->GetProfile()));
+  ASSERT_TRUE(
+      content::NavigateToURL(test_web_contents.get(), GURL("about:blank")));
+
+  omnibox_content->SetWebContents(test_web_contents.get());
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return views::Widget::GetTopLevelWidgetForNativeView(
+               test_web_contents->GetContentNativeView()) == widget.get();
+  }));
+  // Attaching the WebContents only schedules an asynchronous layout, so its
+  // native view may still be unsized here. Run the layout so that the
+  // container bounds reflect the WebView's bounds before they are read.
+  views::test::RunScheduledLayout(widget.get());
+
+  gfx::Rect container_bounds = test_web_contents->GetContainerBounds();
+  ASSERT_FALSE(container_bounds.IsEmpty());
+  gfx::Rect scrim_bounds =
+      EmbeddedPermissionPromptContentScrimView::GetScrimBounds(
+          *test_web_contents);
+
+  const gfx::Insets shadow_insets =
+      RoundedOmniboxResultsFrame::GetShadowInsets();
+  EXPECT_EQ(scrim_bounds.x(), container_bounds.x() + shadow_insets.left());
+  EXPECT_EQ(scrim_bounds.y(), container_bounds.y() + shadow_insets.top());
+  EXPECT_EQ(scrim_bounds.width(),
+            container_bounds.width() - shadow_insets.width());
+  EXPECT_EQ(scrim_bounds.height(),
+            container_bounds.height() - shadow_insets.height());
+
+  // When WebUI shadow is disabled, the frame border already insets the
+  // WebContents container, so GetScrimBounds should not inset again.
+  omnibox_content->set_draw_shadow_in_webui(false);
+  EXPECT_EQ(EmbeddedPermissionPromptContentScrimView::GetScrimBounds(
+                *test_web_contents),
+            container_bounds);
 
   omnibox_content->SetWebContents(nullptr);
   views::WidgetDeletionObserver deletion_observer(widget.get());
@@ -1872,13 +2036,13 @@ IN_PROC_BROWSER_TEST_P(EmbeddedPermissionPromptLoomniboxInteractiveTest,
       EmbeddedPermissionPromptContentScrimView::GetScrimBounds(
           *test_web_contents);
 
-  // Padding should only be applied to top and left (24px each).
+  // Padding should be applied to all four sides (24px each).
   constexpr int kPadding =
       EmbeddedPermissionPromptContentScrimView::kOmniboxEverywherePadding;
   EXPECT_EQ(scrim_bounds.x(), container_bounds.x() + kPadding);
   EXPECT_EQ(scrim_bounds.y(), container_bounds.y() + kPadding);
-  EXPECT_EQ(scrim_bounds.width(), container_bounds.width() - kPadding);
-  EXPECT_EQ(scrim_bounds.height(), container_bounds.height() - kPadding);
+  EXPECT_EQ(scrim_bounds.width(), container_bounds.width() - 2 * kPadding);
+  EXPECT_EQ(scrim_bounds.height(), container_bounds.height() - 2 * kPadding);
 
   views::WidgetDeletionObserver deletion_observer(widget.get());
   widget.reset();
@@ -1970,10 +2134,528 @@ IN_PROC_BROWSER_TEST_P(EmbeddedPermissionPromptInteractiveTest,
       [&]() { return !deletion_observer.IsWidgetAlive(); }));
 }
 
+class MediaCaptureElementInteractiveUiTest
+    : public EmbeddedPermissionPromptInteractiveTest {
+ public:
+  MediaCaptureElementInteractiveUiTest() {
+    scoped_feature_list_.InitWithFeatures(
+        {blink::features::kUserMediaElement,
+         blink::features::kCameraAndMicrophoneElements,
+         blink::features::kMediaCaptureElementPreview,
+         blink::features::kBypassPepcSecurityForTesting},
+        {blink::features::kUserMediaElementLegacy});
+  }
+
+  void SetUpCommandLine(base::CommandLine* command_line) override {
+    EmbeddedPermissionPromptInteractiveTest::SetUpCommandLine(command_line);
+    command_line->AppendSwitch(switches::kUseFakeDeviceForMediaStream);
+  }
+
+  GURL GetMediaCaptureURL() {
+    return https_server()->GetURL("a.test",
+                                  "/permissions/media_capture_element.html");
+  }
+
+  auto WaitForElementSelector(const std::string& selector) {
+    StateChange state_change;
+    state_change.where = DeepQuery{selector};
+    state_change.type = StateChange::Type::kExists;
+    state_change.event = kDoneVisibleEvent;
+    return WaitForStateChange(kWebContentsElementId, state_change);
+  }
+
+  auto ResetMediaElementState(const std::string& element_id) {
+    return ExecuteJs(
+        kWebContentsElementId,
+        base::StrCat({"() => { resetMediaElement('", element_id, "'); }"}));
+  }
+
+  void RunSingleTrackElementPrimaryAndSecondaryUiCuj(
+      const std::string& element_id,
+      ContentSettingsType content_settings_type,
+      const std::u16string& expected_label,
+      const std::u16string& expected_denied_title,
+      const std::string& expected_track_kind
+#if !BUILDFLAG(IS_CHROMEOS)
+      ,
+      MediaCoordinator::ViewType expected_preview_type
+#endif
+  ) {
+    std::vector<std::u16string> expected_titles = {
+        u"a.test:" + base::UTF8ToUTF16(GetOrigin().GetPort()) + u" wants to",
+        expected_denied_title};
+    std::vector<std::u16string> expected_labels1 = {expected_label};
+    const std::string track_selector = base::StrCat(
+        {"#", element_id, "[data-last-event='track'][data-track-kind='",
+         expected_track_kind, "'][data-track-ready-state='live']"});
+    const std::string cancel_selector =
+        base::StrCat({"#", element_id,
+                      "[data-last-event='cancel']"
+                      "[data-error-name='NotAllowedError']"});
+
+    RunTestSequence(
+        InstrumentTab(kWebContentsElementId),
+        NavigateWebContents(kWebContentsElementId, GetMediaCaptureURL()),
+
+        // 1. Click element when ASK -> Secondary UI AskView appears -> Allow
+        // delivers live MediaStreamTrack via ontrack.
+        ClickOnPEPCElement(element_id),
+        InAnyContext(
+            WaitForShow(EmbeddedPermissionPromptBaseView::kMainViewId)),
+        CheckLabel(EmbeddedPermissionPromptBaseView::kTitleViewId,
+                   expected_titles, /*expected_label_index=*/0),
+        CheckLabel(EmbeddedPermissionPromptBaseView::kLabelViewId1,
+                   expected_labels1, /*expected_label_index=*/0),
+#if !BUILDFLAG(IS_CHROMEOS)
+        CheckMediaPreviewViewType(expected_preview_type),
+#endif
+        PushPEPCPromptButton(EmbeddedPermissionPromptAskView::kAllowId),
+        CheckContentSettingsValue({content_settings_type},
+                                  CONTENT_SETTING_ALLOW),
+        WaitForElementSelector(track_selector),
+
+        // 2. Stop track and click again while already ALLOW -> skips Secondary
+        // UI and directly delivers a new live MediaStreamTrack.
+        ResetMediaElementState(element_id), ClickOnPEPCElement(element_id),
+        WaitForElementSelector(track_selector),
+        EnsureNotPresent(EmbeddedPermissionPromptBaseView::kMainViewId),
+
+        // 3. Set permission to BLOCK -> click element -> Secondary UI
+        // PreviouslyDeniedView appears (without media preview) -> AllowThisTime
+        // delivers live track.
+        ResetMediaElementState(element_id), Do([this, content_settings_type]() {
+          SetContentSetting(content_settings_type, CONTENT_SETTING_BLOCK);
+        }),
+        ClickOnPEPCElement(element_id),
+        InAnyContext(
+            WaitForShow(EmbeddedPermissionPromptBaseView::kMainViewId)),
+        CheckLabel(EmbeddedPermissionPromptBaseView::kTitleViewId,
+                   expected_titles, /*expected_label_index=*/1),
+#if !BUILDFLAG(IS_CHROMEOS)
+        CheckMediaPreviewViewType(std::nullopt),
+#endif
+        PushPEPCPromptButton(
+            EmbeddedPermissionPromptPreviouslyDeniedView::kAllowThisTimeId),
+        CheckContentSettingsValue({content_settings_type},
+                                  CONTENT_SETTING_ALLOW),
+        WaitForElementSelector(track_selector),
+
+        // 4. Dismissing Secondary UI fires oncancel with NotAllowedError.
+        ResetMediaElementState(element_id), Do([this, content_settings_type]() {
+          SetContentSetting(content_settings_type, CONTENT_SETTING_ASK);
+        }),
+        ClickOnPEPCElement(element_id),
+        InAnyContext(
+            WaitForShow(EmbeddedPermissionPromptBaseView::kMainViewId)),
+        InAnyContext(
+            PressButton(views::BubbleFrameView::kCloseButtonElementId)),
+        WaitForHide(EmbeddedPermissionPromptBaseView::kMainViewId),
+        WaitForElementSelector(cancel_selector));
+  }
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_;
+};
+
+IN_PROC_BROWSER_TEST_P(MediaCaptureElementInteractiveUiTest,
+                       UserMediaElementAskAllowAndPreviouslyDeniedCuj) {
+  std::vector<ContentSettingsType> media_types = {
+      ContentSettingsType::MEDIASTREAM_CAMERA,
+      ContentSettingsType::MEDIASTREAM_MIC};
+  std::vector<std::u16string> expected_titles = {
+      u"a.test:" + base::UTF8ToUTF16(GetOrigin().GetPort()) + u" wants to",
+      u"You have allowed camera and microphone for this site",
+      u"You previously didn't allow camera and microphone for this site"};
+  std::vector<std::u16string> expected_labels1 = {u"Use your cameras"};
+  std::vector<std::u16string> expected_labels2 = {u"Use your microphones"};
+  constexpr char kActiveStreamSelector[] =
+      "#usermedia[data-last-event='stream'][data-stream-active='true']"
+      "[data-video-tracks='1'][data-audio-tracks='1']";
+
+  RunTestSequence(
+      InstrumentTab(kWebContentsElementId),
+      NavigateWebContents(kWebContentsElementId, GetMediaCaptureURL()),
+
+      // 1. Click <usermedia> when ASK -> Secondary UI AskView appears.
+      ClickOnPEPCElement("usermedia"),
+      InAnyContext(WaitForShow(EmbeddedPermissionPromptBaseView::kMainViewId)),
+      CheckLabel(EmbeddedPermissionPromptBaseView::kTitleViewId,
+                 expected_titles, /*expected_label_index=*/0),
+      CheckLabel(EmbeddedPermissionPromptBaseView::kLabelViewId1,
+                 expected_labels1, /*expected_label_index=*/0),
+      CheckLabel(EmbeddedPermissionPromptBaseView::kLabelViewId2,
+                 expected_labels2, /*expected_label_index=*/0),
+#if !BUILDFLAG(IS_CHROMEOS)
+      CheckMediaPreviewViewType(MediaCoordinator::ViewType::kBoth),
+#endif
+
+      // Allow via Secondary UI -> Primary UI receives active MediaStream with
+      // both video and audio tracks.
+      PushPEPCPromptButton(EmbeddedPermissionPromptAskView::kAllowId),
+      CheckContentSettingsValue(media_types, CONTENT_SETTING_ALLOW),
+      WaitForElementSelector(kActiveStreamSelector),
+
+      // 2. Stop active stream and click <usermedia> while already ALLOW ->
+      // skips Secondary UI and directly delivers a new active MediaStream.
+      ResetMediaElementState("usermedia"), ClickOnPEPCElement("usermedia"),
+      WaitForElementSelector(kActiveStreamSelector),
+      EnsureNotPresent(EmbeddedPermissionPromptBaseView::kMainViewId),
+
+      // 3. Stop active stream, set permissions to BLOCK, and click <usermedia>
+      // again -> Secondary UI PreviouslyDeniedView appears (without media
+      // preview) -> AllowThisTime delivers a new active MediaStream.
+      ResetMediaElementState("usermedia"), Do([&, this]() {
+        for (const auto& type : media_types) {
+          SetContentSetting(type, CONTENT_SETTING_BLOCK);
+        }
+      }),
+      ClickOnPEPCElement("usermedia"),
+      InAnyContext(WaitForShow(EmbeddedPermissionPromptBaseView::kMainViewId)),
+      CheckLabel(EmbeddedPermissionPromptBaseView::kTitleViewId,
+                 expected_titles, /*expected_label_index=*/2),
+#if !BUILDFLAG(IS_CHROMEOS)
+      CheckMediaPreviewViewType(std::nullopt),
+#endif
+      PushPEPCPromptButton(
+          EmbeddedPermissionPromptPreviouslyDeniedView::kAllowThisTimeId),
+      CheckContentSettingsValue(media_types, CONTENT_SETTING_ALLOW),
+      WaitForElementSelector(kActiveStreamSelector));
+}
+
+IN_PROC_BROWSER_TEST_P(MediaCaptureElementInteractiveUiTest,
+                       UserMediaElementAllowThisTimeAndDismissCancelCuj) {
+  std::vector<ContentSettingsType> media_types = {
+      ContentSettingsType::MEDIASTREAM_CAMERA,
+      ContentSettingsType::MEDIASTREAM_MIC};
+
+  RunTestSequence(
+      InstrumentTab(kWebContentsElementId),
+      NavigateWebContents(kWebContentsElementId, GetMediaCaptureURL()),
+
+      // 1. Click <usermedia> and choose "Allow this time" on Secondary UI.
+      ClickOnPEPCElement("usermedia"),
+      InAnyContext(WaitForShow(EmbeddedPermissionPromptBaseView::kMainViewId)),
+      PushPEPCPromptButton(EmbeddedPermissionPromptAskView::kAllowThisTimeId),
+      CheckContentSettingsValue(media_types, CONTENT_SETTING_ALLOW),
+      WaitForElementSelector(
+          "#usermedia[data-last-event='stream'][data-stream-active='true']"
+          "[data-video-tracks='1'][data-audio-tracks='1']"),
+
+      // 2. Reset permissions to ASK, click <usermedia>, and dismiss via X
+      // button on Secondary UI -> Primary UI fires cancel with NotAllowedError.
+      ResetMediaElementState("usermedia"), Do([&, this]() {
+        for (const auto& type : media_types) {
+          SetContentSetting(type, CONTENT_SETTING_ASK);
+        }
+      }),
+      ClickOnPEPCElement("usermedia"),
+      InAnyContext(WaitForShow(EmbeddedPermissionPromptBaseView::kMainViewId)),
+      InAnyContext(PressButton(views::BubbleFrameView::kCloseButtonElementId)),
+      WaitForHide(EmbeddedPermissionPromptBaseView::kMainViewId),
+      WaitForElementSelector(
+          "#usermedia[data-last-event='cancel'][data-stream-active='false']"
+          "[data-error-name='NotAllowedError']"));
+}
+
+IN_PROC_BROWSER_TEST_P(MediaCaptureElementInteractiveUiTest,
+                       UserMediaElementPartialPermissionCuj) {
+  std::vector<std::u16string> expected_labels1 = {u"Use your microphones",
+                                                  u"Use your cameras"};
+  std::vector<std::u16string> expected_denied_titles = {
+      u"You previously didn't allow camera and microphone for this site"};
+  std::vector<std::u16string> empty_labels;
+  constexpr char kActiveStreamSelector[] =
+      "#usermedia[data-last-event='stream'][data-stream-active='true']"
+      "[data-video-tracks='1'][data-audio-tracks='1']";
+
+  RunTestSequence(
+      InstrumentTab(kWebContentsElementId),
+      NavigateWebContents(kWebContentsElementId, GetMediaCaptureURL()),
+      Do([this]() {
+        SetContentSetting(ContentSettingsType::MEDIASTREAM_CAMERA,
+                          CONTENT_SETTING_ALLOW);
+        SetContentSetting(ContentSettingsType::MEDIASTREAM_MIC,
+                          CONTENT_SETTING_ASK);
+      }),
+
+      // 1. Clicking <usermedia> when Camera is ALLOW and Mic is ASK shows
+      // Secondary UI asking only for Microphone.
+      ClickOnPEPCElement("usermedia"),
+      InAnyContext(WaitForShow(EmbeddedPermissionPromptBaseView::kMainViewId)),
+      CheckLabel(EmbeddedPermissionPromptBaseView::kLabelViewId1,
+                 expected_labels1, /*expected_label_index=*/0),
+      CheckLabel(EmbeddedPermissionPromptBaseView::kLabelViewId2, empty_labels,
+                 /*expected_label_index=*/0),
+#if !BUILDFLAG(IS_CHROMEOS)
+      CheckMediaPreviewViewType(MediaCoordinator::ViewType::kMicOnly),
+#endif
+
+      // Allowing Microphone completes the combined requirement and delivers a
+      // MediaStream with both video and audio tracks to <usermedia>.
+      PushPEPCPromptButton(EmbeddedPermissionPromptAskView::kAllowId),
+      CheckContentSettingsValue({ContentSettingsType::MEDIASTREAM_CAMERA,
+                                 ContentSettingsType::MEDIASTREAM_MIC},
+                                CONTENT_SETTING_ALLOW),
+      WaitForElementSelector(kActiveStreamSelector),
+
+      // 2. Clicking <usermedia> when Camera is ASK and Mic is ALLOW shows
+      // Secondary UI asking only for Camera with a camera-only preview.
+      ResetMediaElementState("usermedia"), Do([this]() {
+        SetContentSetting(ContentSettingsType::MEDIASTREAM_CAMERA,
+                          CONTENT_SETTING_ASK);
+        SetContentSetting(ContentSettingsType::MEDIASTREAM_MIC,
+                          CONTENT_SETTING_ALLOW);
+      }),
+      ClickOnPEPCElement("usermedia"),
+      InAnyContext(WaitForShow(EmbeddedPermissionPromptBaseView::kMainViewId)),
+      CheckLabel(EmbeddedPermissionPromptBaseView::kLabelViewId1,
+                 expected_labels1, /*expected_label_index=*/1),
+      CheckLabel(EmbeddedPermissionPromptBaseView::kLabelViewId2, empty_labels,
+                 /*expected_label_index=*/0),
+#if !BUILDFLAG(IS_CHROMEOS)
+      CheckMediaPreviewViewType(MediaCoordinator::ViewType::kCameraOnly),
+#endif
+      PushPEPCPromptButton(EmbeddedPermissionPromptAskView::kAllowId),
+      CheckContentSettingsValue({ContentSettingsType::MEDIASTREAM_CAMERA,
+                                 ContentSettingsType::MEDIASTREAM_MIC},
+                                CONTENT_SETTING_ALLOW),
+      WaitForElementSelector(kActiveStreamSelector),
+
+      // 3. When Camera is BLOCK and Mic is ASK, PreviouslyDeniedView groups
+      // both requests and does not show a media preview.
+      ResetMediaElementState("usermedia"), Do([this]() {
+        SetContentSetting(ContentSettingsType::MEDIASTREAM_CAMERA,
+                          CONTENT_SETTING_BLOCK);
+        SetContentSetting(ContentSettingsType::MEDIASTREAM_MIC,
+                          CONTENT_SETTING_ASK);
+      }),
+      ClickOnPEPCElement("usermedia"),
+      InAnyContext(WaitForShow(EmbeddedPermissionPromptBaseView::kMainViewId)),
+      CheckLabel(EmbeddedPermissionPromptBaseView::kTitleViewId,
+                 expected_denied_titles, /*expected_label_index=*/0),
+#if !BUILDFLAG(IS_CHROMEOS)
+      CheckMediaPreviewViewType(std::nullopt),
+#endif
+      PushPEPCPromptButton(
+          EmbeddedPermissionPromptPreviouslyDeniedView::kAllowThisTimeId),
+      CheckContentSettingsValue({ContentSettingsType::MEDIASTREAM_CAMERA,
+                                 ContentSettingsType::MEDIASTREAM_MIC},
+                                CONTENT_SETTING_ALLOW),
+      WaitForElementSelector(kActiveStreamSelector));
+}
+
+IN_PROC_BROWSER_TEST_P(MediaCaptureElementInteractiveUiTest,
+                       CameraElementPrimaryAndSecondaryUiCuj) {
+  RunSingleTrackElementPrimaryAndSecondaryUiCuj(
+      "camera", ContentSettingsType::MEDIASTREAM_CAMERA, u"Use your cameras",
+      u"You previously didn't allow camera for this site", "video"
+#if !BUILDFLAG(IS_CHROMEOS)
+      ,
+      MediaCoordinator::ViewType::kCameraOnly
+#endif
+  );
+}
+
+IN_PROC_BROWSER_TEST_P(MediaCaptureElementInteractiveUiTest,
+                       MicrophoneElementPrimaryAndSecondaryUiCuj) {
+  RunSingleTrackElementPrimaryAndSecondaryUiCuj(
+      "microphone", ContentSettingsType::MEDIASTREAM_MIC,
+      u"Use your microphones",
+      u"You previously didn't allow microphone for this site", "audio"
+#if !BUILDFLAG(IS_CHROMEOS)
+      ,
+      MediaCoordinator::ViewType::kMicOnly
+#endif
+  );
+}
+
+class GeolocationElementInteractiveUiTest
+    : public EmbeddedPermissionPromptInteractiveTest {
+ public:
+  GeolocationElementInteractiveUiTest() {
+    scoped_feature_list_.InitAndEnableFeature(
+        blink::features::kMediaCaptureElementPreview);
+  }
+
+  void SetUpOnMainThread() override {
+    EmbeddedPermissionPromptInteractiveTest::SetUpOnMainThread();
+    geolocation_overrider_ =
+        std::make_unique<device::ScopedGeolocationOverrider>(
+            device::mojom::GeopositionResult::NewPosition(
+                device::mojom::Geoposition::New(
+                    /*latitude=*/37.7749,
+                    /*longitude=*/-122.4194,
+                    /*altitude=*/0.0,
+                    /*accuracy=*/100.0,
+                    /*altitude_accuracy=*/5.0,
+                    /*heading=*/0.0,
+                    /*speed=*/0.0,
+                    /*timestamp=*/base::Time::Now(),
+                    /*is_precise=*/true)));
+  }
+
+  auto WaitForElementSelector(const std::string& css_selector) {
+    StateChange ready;
+    ready.type = StateChange::Type::kExists;
+    ready.where = DeepQuery{css_selector};
+    ready.event = kDoneVisibleEvent;
+    return WaitForStateChange(kWebContentsElementId, ready);
+  }
+
+  auto ResetGeolocationElementState() {
+    return ExecuteJs(kWebContentsElementId,
+                     "() => { resetGeolocationElementState(); }");
+  }
+
+ protected:
+  base::test::ScopedFeatureList scoped_feature_list_;
+  std::unique_ptr<device::ScopedGeolocationOverrider> geolocation_overrider_;
+};
+
+IN_PROC_BROWSER_TEST_P(GeolocationElementInteractiveUiTest,
+                       GeolocationElementAskAllowAndPreviouslyDeniedCuj) {
+  const ContentSettingsType geo_type =
+      permissions::PermissionUtil::GetGeolocationType();
+  std::vector<std::u16string> expected_titles = {
+      u"a.test:" + base::UTF8ToUTF16(GetOrigin().GetPort()) + u" wants to",
+      u"You previously didn't allow location for this site"};
+  std::vector<std::u16string> expected_labels1 = {u"Know your location"};
+  constexpr char kLocationDeliveredSelector[] =
+      "#geolocation[data-last-event='location'][data-lat='37.7749']"
+      "[data-lng='-122.4194'][data-accuracy='100'][data-error-code='']";
+
+  RunTestSequence(
+      InstrumentTab(kWebContentsElementId),
+      NavigateWebContents(kWebContentsElementId, GetURL()),
+
+      // 1. Click <geolocation> when ASK -> Secondary UI AskView appears ->
+      // Allow grants permission and delivers position coordinates via
+      // onlocation.
+      ClickOnPEPCElement("geolocation"),
+      InAnyContext(WaitForShow(EmbeddedPermissionPromptBaseView::kMainViewId)),
+      CheckLabel(EmbeddedPermissionPromptBaseView::kTitleViewId,
+                 expected_titles, /*expected_label_index=*/0),
+      CheckLabel(EmbeddedPermissionPromptBaseView::kLabelViewId1,
+                 expected_labels1, /*expected_label_index=*/0),
+#if !BUILDFLAG(IS_CHROMEOS)
+      CheckMediaPreviewViewType(std::nullopt),
+#endif
+      PushPEPCPromptButton(EmbeddedPermissionPromptAskView::kAllowId),
+      CheckContentSettingsValue({geo_type}, CONTENT_SETTING_ALLOW),
+      WaitForElementSelector(kLocationDeliveredSelector),
+
+      // 2. Click <geolocation> again while already ALLOW -> skips Secondary UI
+      // and directly delivers position via onlocation.
+      ResetGeolocationElementState(), ClickOnPEPCElement("geolocation"),
+      WaitForElementSelector(kLocationDeliveredSelector),
+      EnsureNotPresent(EmbeddedPermissionPromptBaseView::kMainViewId),
+
+      // 3. Set permission to BLOCK -> click <geolocation> -> Secondary UI
+      // PreviouslyDeniedView appears -> AllowThisTime grants permission and
+      // delivers position via onlocation.
+      ResetGeolocationElementState(), Do([this, geo_type]() {
+        SetContentSetting(geo_type, CONTENT_SETTING_BLOCK);
+      }),
+      ClickOnPEPCElement("geolocation"),
+      InAnyContext(WaitForShow(EmbeddedPermissionPromptBaseView::kMainViewId)),
+      CheckLabel(EmbeddedPermissionPromptBaseView::kTitleViewId,
+                 expected_titles, /*expected_label_index=*/1),
+#if !BUILDFLAG(IS_CHROMEOS)
+      CheckMediaPreviewViewType(std::nullopt),
+#endif
+      PushPEPCPromptButton(
+          EmbeddedPermissionPromptPreviouslyDeniedView::kAllowThisTimeId),
+      CheckContentSettingsValue({geo_type}, CONTENT_SETTING_ALLOW),
+      WaitForElementSelector(kLocationDeliveredSelector));
+}
+
+IN_PROC_BROWSER_TEST_P(
+    GeolocationElementInteractiveUiTest,
+    GeolocationElementAllowThisTimePreciseAccuracyAndWatchCuj) {
+  const ContentSettingsType geo_type =
+      permissions::PermissionUtil::GetGeolocationType();
+
+  RunTestSequence(
+      InstrumentTab(kWebContentsElementId),
+      NavigateWebContents(kWebContentsElementId, GetURL()),
+      ExecuteJs(kWebContentsElementId, R"(
+        () => {
+          const el = document.getElementById('geolocation');
+          el.setAttribute('accuracymode', 'precise');
+          el.setAttribute('watch', '');
+        }
+      )"),
+
+      // 1. Click <geolocation accuracymode="precise" watch> when ASK ->
+      // Secondary UI AskView appears -> AllowThisTime delivers initial
+      // position.
+      ClickOnPEPCElement("geolocation"),
+      InAnyContext(WaitForShow(EmbeddedPermissionPromptBaseView::kMainViewId)),
+      PushPEPCPromptButton(EmbeddedPermissionPromptAskView::kAllowThisTimeId),
+      CheckContentSettingsValue({geo_type}, CONTENT_SETTING_ALLOW),
+      WaitForElementSelector(
+          "#geolocation[data-last-event='location'][data-lat='37.7749']"
+          "[data-lng='-122.4194'][data-accuracy='100'][data-location-count='1'"
+          "]"),
+
+      // 2. Updating the provider location while watch is active automatically
+      // fires onlocation with the new coordinates without any click or prompt.
+      Do([this]() { geolocation_overrider_->UpdateLocation(48.8566, 2.3522); }),
+      WaitForElementSelector(
+          "#geolocation[data-last-event='location'][data-lat='48.8566']"
+          "[data-lng='2.3522'][data-location-count='2']"),
+      EnsureNotPresent(EmbeddedPermissionPromptBaseView::kMainViewId));
+}
+
+IN_PROC_BROWSER_TEST_P(GeolocationElementInteractiveUiTest,
+                       GeolocationElementAutolocateWhenGrantedAndErrorCuj) {
+  const ContentSettingsType geo_type =
+      permissions::PermissionUtil::GetGeolocationType();
+
+  RunTestSequence(
+      InstrumentTab(kWebContentsElementId),
+      NavigateWebContents(kWebContentsElementId, GetURL()),
+      Do([this, geo_type]() {
+        SetContentSetting(geo_type, CONTENT_SETTING_ALLOW);
+      }),
+
+      // 1. Setting autolocate when permission is already granted automatically
+      // delivers position without clicking <geolocation> or showing Secondary
+      // UI.
+      ExecuteJs(kWebContentsElementId, R"(
+        () => {
+          document.getElementById('geolocation').setAttribute('autolocate', '');
+        }
+      )"),
+      WaitForElementSelector(
+          "#geolocation[data-last-event='location'][data-lat='37.7749']"
+          "[data-lng='-122.4194'][data-error-code='']"),
+      EnsureNotPresent(EmbeddedPermissionPromptBaseView::kMainViewId),
+
+      // 2. When the geolocation provider reports an error, clicking
+      // <geolocation> populates element.error and fires onlocation.
+      ResetGeolocationElementState(), Do([this]() {
+        geolocation_overrider_->UpdateLocation(
+            device::mojom::GeopositionResult::NewError(
+                device::mojom::GeopositionError::New(
+                    device::mojom::GeopositionErrorCode::kPositionUnavailable,
+                    "Position unavailable", "")));
+      }),
+      ClickOnPEPCElement("geolocation"),
+      WaitForElementSelector(
+          "#geolocation[data-last-event='location'][data-error-code='2']"));
+}
+
 // Setting up to run all tests with two screen scale factors.
 INSTANTIATE_TEST_SUITE_P(,
                          EmbeddedPermissionPromptInteractiveTest,
                          testing::Values(1.0, 2.0));
+INSTANTIATE_TEST_SUITE_P(,
+                         MediaCaptureElementInteractiveUiTest,
+                         testing::Values(1.0));
+INSTANTIATE_TEST_SUITE_P(,
+                         GeolocationElementInteractiveUiTest,
+                         testing::Values(1.0));
 INSTANTIATE_TEST_SUITE_P(,
                          EmbeddedPermissionPromptPolicyInteractiveTest,
                          testing::Values(1.0));

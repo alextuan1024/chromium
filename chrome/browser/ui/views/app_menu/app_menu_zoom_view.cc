@@ -11,27 +11,25 @@
 #include <vector>
 
 #include "base/check.h"
+#include "base/functional/bind.h"
 #include "base/i18n/number_formatting.h"
 #include "build/build_config.h"
 #include "chrome/app/chrome_command_ids.h"
-#include "chrome/browser/ui/accelerator_table.h"
 #include "chrome/browser/ui/actions/chrome_action_id.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/color/chrome_color_id.h"
-#include "chrome/browser/ui/exclusive_access/exclusive_access_context.h"
-#include "chrome/browser/ui/exclusive_access/exclusive_access_manager.h"
 #include "chrome/grit/generated_resources.h"
 #include "components/tabs/public/tab_interface.h"
 #include "components/zoom/page_zoom.h"
 #include "components/zoom/zoom_controller.h"
 #include "content/public/browser/web_contents.h"
 #include "ui/actions/actions.h"
-#include "ui/base/accelerators/accelerator.h"
 #include "ui/base/base_window.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/models/image_model.h"
 #include "ui/color/color_id.h"
+#include "ui/events/event.h"
 #include "ui/gfx/text_utils.h"
 #include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/actions/action_view_controller.h"
@@ -42,7 +40,6 @@
 #include "ui/views/controls/button/image_button.h"
 #include "ui/views/controls/highlight_path_generator.h"
 #include "ui/views/controls/label.h"
-#include "ui/views/controls/menu/menu_item_view.h"
 #include "ui/views/controls/separator.h"
 #include "ui/views/view_utils.h"
 
@@ -50,7 +47,7 @@ namespace {
 
 constexpr int kZoomCircularButtonSize = 28;
 constexpr int kZoomSeparatorPreferredLength = 24;
-constexpr int kZoomButtonHorizontalInset = 9;
+constexpr int kZoomButtonHorizontalInset = 16;
 
 std::unique_ptr<views::Background> CreateZoomButtonBackground() {
   return views::CreatePillBackground(kColorAppMenuZoomButtonBackground);
@@ -62,26 +59,21 @@ AppMenuZoomView::AppMenuZoomView(
     BrowserWindowInterface* browser_window_interface,
     views::ActionViewController* action_view_controller,
     base::flat_map<int, raw_ptr<actions::BaseAction>>& command_to_action_map,
-    actions::BaseAction* zoom_row_action_item)
+    actions::BaseAction* zoom_row_action_item,
+    ExecuteCommandCallback execute_command_callback)
     : browser_window_interface_(browser_window_interface) {
   CHECK(browser_window_interface_);
+  CHECK(execute_command_callback);
+  GetViewAccessibility().SetRole(ax::mojom::Role::kMenu);
   SetOrientation(views::BoxLayout::Orientation::kHorizontal);
   SetMainAxisAlignment(views::BoxLayout::MainAxisAlignment::kStart);
   SetCrossAxisAlignment(views::BoxLayout::CrossAxisAlignment::kCenter);
 
   BuildZoomChildControls(zoom_row_action_item, action_view_controller,
-                         command_to_action_map);
-
-  if (content::WebContents* const contents = GetActiveWebContents()) {
-    if (auto* zoom_controller =
-            zoom::ZoomController::FromWebContents(contents)) {
-      zoom_observation_.Observe(zoom_controller);
-    }
-  }
+                         command_to_action_map,
+                         std::move(execute_command_callback));
 
   SetBetweenChildSpacing(kZoomButtonHorizontalInset);
-  UpdateZoomControls();
-  UpdateFullScreenButton();
 }
 
 AppMenuZoomView::~AppMenuZoomView() = default;
@@ -119,100 +111,75 @@ int AppMenuZoomView::GetZoomLabelMaxWidth() const {
 void AppMenuZoomView::BuildZoomChildControls(
     actions::BaseAction* zoom_row_action_item,
     views::ActionViewController* action_view_controller,
-    base::flat_map<int, raw_ptr<actions::BaseAction>>& command_to_action_map) {
+    base::flat_map<int, raw_ptr<actions::BaseAction>>& command_to_action_map,
+    ExecuteCommandCallback execute_command_callback) {
   for (auto& zoom_child_holder :
        zoom_row_action_item->GetChildren().children()) {
     actions::ActionItem* zoom_child = zoom_child_holder->GetActionItem();
     actions::ActionId zoom_action_id = zoom_child->GetActionId().value();
-
-    views::ImageButton* const zoom_child_button =
-        AddChildView(CreateZoomButton(zoom_child));
-
-    action_view_controller->CreateActionViewRelationship(
-        zoom_child_button, zoom_child->GetAsWeakPtr());
     command_to_action_map[zoom_action_id] = zoom_child_holder.get();
 
-    if (zoom_action_id == kActionZoomPlus) {
-      zoom_plus_button_ = zoom_child_button;
-      auto separator = std::make_unique<views::Separator>();
-      separator->SetOrientation(views::Separator::Orientation::kVertical);
-      separator->SetColorId(kColorAppMenuZoomSeparator);
-      separator->SetPreferredLength(kZoomSeparatorPreferredLength);
-      AddChildView(std::move(separator));
-    } else if (zoom_action_id == kActionZoomMinus) {
-      zoom_minus_button_ = zoom_child_button;
+    if (zoom_action_id == kActionZoomNormal) {
       zoom_label_ = AddChildView(std::make_unique<views::Label>(
-          base::FormatPercent(GetCurrentZoomPercent())));
+          std::u16string(zoom_child->GetText())));
       zoom_label_->SetPreferredSize(gfx::Size(
           GetZoomLabelMaxWidth(), zoom_label_->GetPreferredSize().height()));
-    } else if (zoom_action_id == kActionFullscreen) {
-      zoom_fullscreen_button_ = zoom_child_button;
+
+      // Bind a WeakPtr to `this` rather than a raw pointer to `zoom_label_`
+      // because `zoom_child` is owned by BrowserActions and outlives the menu;
+      // synchronous native accessibility event dispatch (e.g., UIA on Windows)
+      // can also spin an STA message pump and re-entrantly close/destroy the
+      // menu while action callbacks are being notified. This is needed to
+      // prevent a UAF bug as reported in crbug.com/575090745.
+      zoom_label_subscription_ =
+          zoom_child->AddActionChangedCallback(base::BindRepeating(
+              [](base::WeakPtr<AppMenuZoomView> self,
+                 actions::ActionItem* item) {
+                if (!self || !self->zoom_label_) {
+                  return;
+                }
+                views::Label* label = self->zoom_label_;
+                if (label->GetText() != item->GetText()) {
+                  // Block the intermediate kTextChanged event during SetText()
+                  // so synchronous UIA event dispatch cannot re-entrantly
+                  // destroy `label` mid-update before AnnounceAlert() runs.
+                  {
+                    views::ScopedAccessibilityEventBlocker blocker(
+                        label->GetViewAccessibility());
+                    label->SetText(std::u16string(item->GetText()));
+                  }
+                  label->GetViewAccessibility().AnnounceAlert(item->GetText());
+                }
+              },
+              weak_ptr_factory_.GetWeakPtr(), zoom_child));
+    } else {
+      views::ImageButton* const zoom_child_button =
+          AddChildView(CreateZoomButton(zoom_child));
+
+      if (zoom_action_id == kActionZoomMinus) {
+        zoom_minus_button_ = zoom_child_button;
+      } else if (zoom_action_id == kActionZoomPlus) {
+        zoom_plus_button_ = zoom_child_button;
+      }
+
+      action_view_controller->CreateActionViewRelationship(
+          zoom_child_button, zoom_child->GetAsWeakPtr());
+      zoom_child_button->SetCallback(base::BindRepeating(
+          [](const ExecuteCommandCallback& callback, actions::ActionId id,
+             const ui::Event& event) { callback.Run(id, event.flags()); },
+          execute_command_callback, zoom_action_id));
+
+      if (zoom_action_id == kActionZoomPlus) {
+        auto separator = std::make_unique<views::Separator>();
+        separator->SetOrientation(views::Separator::Orientation::kVertical);
+        separator->SetColorId(kColorAppMenuZoomSeparator);
+        separator->SetPreferredLength(kZoomSeparatorPreferredLength);
+        AddChildView(std::move(separator));
+      }
     }
   }
 
-  CHECK(zoom_minus_button_);
   CHECK(zoom_label_);
-  CHECK(zoom_plus_button_);
-  CHECK(zoom_fullscreen_button_);
-}
-
-void AppMenuZoomView::OnZoomChanged(
-    const zoom::ZoomController::ZoomChangedEventData& data) {
-  UpdateZoomControls();
-}
-
-void AppMenuZoomView::OnZoomControllerDestroyed(
-    zoom::ZoomController* zoom_controller) {
-  zoom_observation_.Reset();
-}
-
-void AppMenuZoomView::UpdateZoomControls() {
-  content::WebContents* const contents = GetActiveWebContents();
-  if (!contents) {
-    return;
-  }
-  const int zoom = GetCurrentZoomPercent();
-  zoom_plus_button_->SetEnabled(zoom < contents->GetMaximumZoomPercent());
-  zoom_minus_button_->SetEnabled(zoom > contents->GetMinimumZoomPercent());
-  zoom_label_->SetText(base::FormatPercent(zoom));
-}
-
-void AppMenuZoomView::UpdateFullScreenButton() {
-  const bool is_fullscreen =
-      browser_window_interface_->GetWindow() &&
-      browser_window_interface_->GetWindow()->IsFullscreen();
-
-  ExclusiveAccessManager* const exclusive_access_manager =
-      ExclusiveAccessManager::From(browser_window_interface_);
-  const bool can_fullscreen =
-      !exclusive_access_manager || !exclusive_access_manager->context() ||
-      exclusive_access_manager->context()->CanUserEnterFullscreen();
-
-  zoom_fullscreen_button_->SetEnabled(can_fullscreen || is_fullscreen);
-
-  const int accname_string_id =
-      is_fullscreen ? IDS_ACCNAME_EXIT_FULLSCREEN
-                    : (can_fullscreen ? IDS_ACCNAME_FULLSCREEN
-                                      : IDS_ACCNAME_FULLSCREEN_DISABLED);
-  zoom_fullscreen_button_->SetTooltipText(
-      l10n_util::GetStringUTF16(accname_string_id));
-
-  std::u16string accelerator_text;
-#if !BUILDFLAG(IS_CHROMEOS)
-  // ChromeOS uses a dedicated "fullscreen" media key for fullscreen mode on
-  // most ChromeOS devices which cannot be specified in the standard way here,
-  // so omit the accelerator to avoid providing misleading or confusing
-  // information to screen reader users. See crbug.com/40708624 for context.
-  ui::Accelerator fullscreen_accelerator;
-  if (GetAcceleratorForCommandId(IDC_FULLSCREEN, &fullscreen_accelerator)) {
-    accelerator_text = fullscreen_accelerator.GetShortcutText();
-  }
-#endif
-
-  zoom_fullscreen_button_->GetViewAccessibility().SetName(
-      views::MenuItemView::GetAccessibleNameForMenuItem(
-          l10n_util::GetStringUTF16(accname_string_id), accelerator_text,
-          /*badge_type=*/std::nullopt));
 }
 
 content::WebContents* AppMenuZoomView::GetActiveWebContents() const {
@@ -221,20 +188,12 @@ content::WebContents* AppMenuZoomView::GetActiveWebContents() const {
   return active_tab ? active_tab->GetContents() : nullptr;
 }
 
-int AppMenuZoomView::GetCurrentZoomPercent() const {
-  content::WebContents* const contents = GetActiveWebContents();
-  if (!contents) {
-    return 100;
-  }
-  const auto* zoom_controller = zoom::ZoomController::FromWebContents(contents);
-  return zoom_controller ? zoom_controller->GetZoomPercent() : 100;
-}
-
 std::unique_ptr<views::ImageButton> AppMenuZoomView::CreateZoomButton(
     actions::ActionItem* zoom_child) {
   auto button =
       std::make_unique<views::ImageButton>(views::Button::PressedCallback());
   button->SetFocusBehavior(views::View::FocusBehavior::ALWAYS);
+  button->GetViewAccessibility().SetRole(ax::mojom::Role::kMenuItem);
   button->SetImageHorizontalAlignment(views::ImageButton::ALIGN_CENTER);
   button->SetImageVerticalAlignment(views::ImageButton::ALIGN_MIDDLE);
   button->SetPreferredSize(
@@ -244,8 +203,17 @@ std::unique_ptr<views::ImageButton> AppMenuZoomView::CreateZoomButton(
   button_subscriptions_.push_back(
       button->AddEnabledChangedCallback(base::BindRepeating(
           [](views::Button* button) {
-            button->SetBackground(
-                button->GetEnabled() ? CreateZoomButtonBackground() : nullptr);
+            const bool enabled = button->GetEnabled();
+            button->SetBackground(enabled ? CreateZoomButtonBackground()
+                                          : nullptr);
+            auto* const ink_drop_host = views::InkDrop::Get(button);
+            if (enabled) {
+              ink_drop_host->SetMode(views::InkDropHost::InkDropMode::ON);
+              auto* const ink_drop = ink_drop_host->GetInkDrop();
+              ink_drop->SetHovered(button->IsMouseHovered());
+            } else {
+              ink_drop_host->SetMode(views::InkDropHost::InkDropMode::OFF);
+            }
           },
           button.get())));
 

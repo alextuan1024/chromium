@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # Copyright 2023 The Chromium Authors
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
@@ -7,6 +7,7 @@ import unittest
 import xml.etree.ElementTree as ET
 
 import setup_modules  # pylint: disable=unused-import
+
 
 import chromium_src.tools.metrics.histograms.generate_allowlist_from_histograms_file as generate_allowlist_from_histograms_file
 

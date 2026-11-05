@@ -6,15 +6,18 @@
 #define CHROME_BROWSER_GLIC_HOST_GLIC_PAGE_HANDLER_H_
 
 #include <memory>
+#include <optional>
 #include <vector>
 
 #include "base/callback_list.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/scoped_observation.h"
+#include "chrome/browser/glic/glic_enums.h"
 #include "chrome/browser/glic/host/glic.mojom.h"
 #include "chrome/browser/glic/host/glic_webui.mojom.h"
 #include "chrome/browser/glic/host/host.h"
+#include "chrome/browser/glic/public/glic_provider_metrics.h"
 #include "mojo/public/cpp/bindings/receiver.h"
 #include "mojo/public/cpp/bindings/remote.h"
 
@@ -30,9 +33,7 @@ namespace glic {
 class GlicKeyedService;
 
 // Handles the Mojo requests coming from the Glic WebUI.
-class GlicPageHandler : public glic::mojom::PageHandler,
-                        public PanelStateObserver,
-                        public Host::Observer {
+class GlicPageHandler : public glic::mojom::PageHandler, public Host::Observer {
  public:
   GlicPageHandler(content::WebContents* webui_contents,
                   Host* host,
@@ -47,6 +48,9 @@ class GlicPageHandler : public glic::mojom::PageHandler,
   content::WebContents* webui_contents();
 
   void NotifyWindowIntentToShow();
+
+  void WaitForLoad(
+      base::OnceCallback<void(std::optional<ClientLoadErrorReason>)> callback);
 
   void Zoom(mojom::ZoomAction zoom_action, ZoomSource source);
 
@@ -68,6 +72,8 @@ class GlicPageHandler : public glic::mojom::PageHandler,
   void SignInAndClosePanel() override;
 
   void OpenDisabledByAdminLinkAndClosePanel() override;
+
+  void RelaunchForProviderChange() override;
 
   void OpenLinkInPopup(const GURL& url,
                        int32_t popup_width,
@@ -92,6 +98,8 @@ class GlicPageHandler : public glic::mojom::PageHandler,
   void UpdateProfileReadyState();
 
   void OnWebUiStateChanged(glic::mojom::WebUiState new_state) override;
+  void OnClientLoadFailed(
+      std::optional<glic::mojom::ClientLoadErrorReason> error_reason) override;
 
   void NotifyClientLoadError(
       glic::mojom::ClientLoadErrorReason reason) override;
@@ -99,20 +107,20 @@ class GlicPageHandler : public glic::mojom::PageHandler,
   // Host::Observer implementation.
   void ClientReadyToShow(const mojom::OpenPanelInfo& open_info) override;
 
-  // PanelStateObserver implementation.
-  void PanelStateChanged(const glic::mojom::PanelState& panel_state) override;
-
   void UpdatePageState(mojom::PanelStateKind panelStateKind);
 
   glic::mojom::Page* page() { return page_.get(); }
 
  private:
+  void PanelStateChanged(const glic::mojom::PanelState& panel_state);
+
   GlicKeyedService* GetGlicService();
 
   // Cleared when the page handler unregisters.
   raw_ptr<Host> host_;
   raw_ptr<content::WebContents> webui_contents_;
   raw_ptr<content::BrowserContext> browser_context_;
+  GlicMetricReporter metric_reporter_;
   mojo::Receiver<glic::mojom::PageHandler> receiver_;
   mojo::Remote<glic::mojom::Page> page_;
   mojo::Remote<glic::mojom::WebClient> web_client_;

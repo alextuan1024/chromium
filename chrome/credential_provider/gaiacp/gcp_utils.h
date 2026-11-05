@@ -228,29 +228,42 @@ HRESULT InitializeStdHandles(CommDirection direction,
                              ScopedStartupInfo* startupinfo,
                              StdParentHandles* parent_handles);
 
-// Fills |path_to_dll| with the short path to the dll referenced by
-// |dll_handle|. The short path is needed to correctly call rundll32.exe in
-// cases where there might be quotes or spaces in the path.
+// Fills |path_to_dll| with the full path of the module referenced by
+// |dll_handle|, as returned by GetModuleFileName(). The path is not converted
+// to its short (8.3) form. If |dll_handle| is null, this is the path of the
+// executable of the current process. Fails if the path has MAX_PATH characters
+// or more.
 HRESULT GetPathToDllFromHandle(HINSTANCE dll_handle,
                                base::FilePath* path_to_dll);
 
-// This function gets a correctly formatted entry point argument to pass to
-// rundll32.exe for a dll referenced by the handle |dll_handle| and an entry
-// point function with the name |entrypoint|. |entrypoint_arg| will be filled
-// with the argument value.
-HRESULT GetEntryPointArgumentForRunDll(HINSTANCE dll_handle,
-                                       const wchar_t* entrypoint,
-                                       std::wstring* entrypoint_arg);
+// How the dll path is quoted depends on who starts rundll32:
+// - Crashpad starts the handler and quotes the arguments again, which rundll32
+//   cannot parse (see AppendCommandLineArgument() in
+//   third_party/crashpad/crashpad/util/win/command_line.cc).
+// - OSProcessManager::CreateRunningProcess() starts PerformPostSigninActions
+//   without changing the arguments.
+// That's why we need to treat each initialization differently.
 
-// This function is used to build the command line for rundll32 to call an
-// exported entrypoint from the DLL given by |dll_handle|.
-// Returns S_FALSE if a command line can successfully be built but if the
-// path to the "dll" actually points to a non ".dll" file. This allows
-// detection of calls to this function via a unit test which will be
-// running under an ".exe" module.
-HRESULT GetCommandLineForEntrypoint(HINSTANCE dll_handle,
-                                    const wchar_t* entrypoint,
-                                    base::CommandLine* command_line);
+// Builds the rundll32.exe command line that runs the crashpad handler of the
+// dll at |path_to_dll|, from the short (8.3) path of the dll:
+// https://learn.microsoft.com/en-us/windows/win32/fileio/naming-a-file#short-vs-long-names
+// Returns S_FALSE if |path_to_dll| is not a ".dll" file, as in unit tests.
+HRESULT GetCommandLineForCrashpadHandler(const base::FilePath& path_to_dll,
+                                         base::CommandLine* command_line);
+
+// Returns the argument of that command line: <dll_path>,RunAsCrashpadHandler.
+std::wstring FormatRunDllArgumentForCrashpadHandler(std::wstring_view dll_path);
+
+// Same as GetCommandLineForCrashpadHandler(), for the PerformPostSigninActions
+// entry point of the dll given by |dll_handle|.
+HRESULT GetCommandLineForPerformPostSigninActions(
+    HINSTANCE dll_handle,
+    base::CommandLine* command_line);
+
+// Returns the argument of that command line:
+// "<dll_path>",PerformPostSigninActions.
+std::wstring FormatRunDllArgumentForPerformPostSigninActions(
+    std::wstring_view dll_path);
 
 // Looks up the name associated to the |sid| (if any). Returns an error on any
 // failure or no name is associated with the |sid|.
@@ -277,13 +290,28 @@ void DeleteStartupSentinelForVersion(const std::wstring& version);
 // secured with restrictive DACLs. Returns an empty path on failure.
 base::FilePath GetDataDirectory();
 
-// Creates a directory with restrictive DACLs that limit access exclusively to
-// NT AUTHORITY\SYSTEM and BUILTIN\Administrators, preventing inheritance from
-// parent folders (such as ProgramData). If the directory already exists, its
-// DACL is updated to be secure. Parent directories of `path` are created
-// as-needed. Returns false if the directory could not be created or the DACL
-// could not be applied.
-bool SecureCreateDirectory(const base::FilePath& path);
+// Checks if the given path (or its parent directory if the path does not yet
+// exist) was redirected by a junction or symlink. This compares the intended
+// path with the final OS-resolved physical path. Returns true if the path was
+// redirected, false if it matches exactly.
+bool IsPathRedirected(const base::FilePath& path);
+
+// Creates a directory owned by BUILTIN\Administrators with restrictive DACLs
+// that limit access exclusively to NT AUTHORITY\SYSTEM and
+// BUILTIN\Administrators, preventing inheritance from parent folders (such as
+// ProgramData). When `grant_read_on_children` is true, also grants
+// Authenticated Users and All Application Packages inherit-only read access to
+// child objects. If the directory already exists, its owner and DACL are
+// updated to be secure. Parent directories of `path` are created as-needed.
+// Returns false if the directory could not be created or the security
+// descriptor could not be applied.
+bool SecureCreateDirectory(const base::FilePath& path,
+                           bool grant_read_on_children = false);
+
+// Securely writes |data| to |path|. Operates by opening
+// the file handle without truncating, verifying it is not a reparse point or
+// hardlink, and then truncating and writing to the validated handle.
+bool SecureCreateFile(const base::FilePath& path, std::string_view data);
 
 // Gets a string resource from the DLL with the given id.
 std::wstring GetStringResource(UINT base_message_id);
@@ -431,6 +459,11 @@ GURL GetGcpwServiceUrl();
 // https://{dev}-xxxxx.sandbox.googleapis.com/...
 std::wstring GetDevelopmentUrl(const std::wstring& url,
                                const std::wstring& dev);
+
+// Opens a file securely, verifying it is not a reparse point or a hardlink,
+// and ensures it has an exclusive lock.
+base::win::ScopedHandle SecureOpenFile(const base::FilePath& file_path,
+                                       uint32_t open_flags);
 
 // Returns a handle to a file which is stored under DIR_COMMON_APP_DATA > |sid|
 // > |file_dir| > |file_name|. The file is opened with the provided

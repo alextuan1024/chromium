@@ -10,6 +10,7 @@
 
 #include "build/build_config.h"
 #include "chrome/browser/ui/tabs/tab_style.h"
+#include "chrome/browser/ui/views/tabs/hovercard/hover_card_update_type.h"
 #include "chrome/browser/ui/views/tabs/shared/tab_strip_types.h"
 #include "components/tab_groups/tab_group_id.h"
 #include "third_party/skia/include/core/SkColor.h"
@@ -48,16 +49,6 @@ class HoverCardAnchorTarget;
 // Controller for tabs and group headers.
 class TabSlotController {
  public:
-  enum HoverCardUpdateType {
-    kHover,
-    kFocus,
-    kTabDataChanged,
-    kAnimating,
-    kTabRemoved,
-    kSelectionChanged,
-    kEvent
-  };
-
   enum class Liveness { kAlive, kDeleted };
 
   virtual ui::ListSelectionModel GetSelectionModel() const = 0;
@@ -236,6 +227,12 @@ class TabSlotController {
 
   // Returns the currently focused tab group ID, if any.
   virtual std::optional<tab_groups::TabGroupId> GetFocusedGroup() const = 0;
+
+  // Enters focus mode for the given tab `group`.
+  virtual void EnterFocusMode(const tab_groups::TabGroupId& group) = 0;
+
+  // Exits focus mode.
+  virtual void ExitFocusMode(std::optional<TabGroupFocusExitReason> reason) = 0;
 
   // Returns the actual painted color of the given `group`, which depends on the
   // current theme.

@@ -35,7 +35,6 @@ import androidx.test.filters.SmallTest;
 import androidx.test.platform.app.InstrumentationRegistry;
 
 import org.junit.After;
-import org.junit.AfterClass;
 import org.junit.Before;
 import org.junit.BeforeClass;
 import org.junit.Rule;
@@ -58,7 +57,6 @@ import org.chromium.base.test.params.ParameterAnnotations.UseRunnerDelegate;
 import org.chromium.base.test.params.ParameterizedRunner;
 import org.chromium.base.test.util.ApplicationTestUtils;
 import org.chromium.base.test.util.Batch;
-import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.DisableLeakChecks;
 import org.chromium.base.test.util.Feature;
 import org.chromium.base.test.util.Features.DisableFeatures;
@@ -69,18 +67,16 @@ import org.chromium.chrome.R;
 import org.chromium.chrome.browser.ChromeTabbedActivity;
 import org.chromium.chrome.browser.feature_engagement.TrackerFactory;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
-import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.night_mode.ChromeNightModeTestUtils;
 import org.chromium.chrome.browser.preferences.Pref;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.profiles.ProfileManager;
-import org.chromium.chrome.browser.settings.SettingsActivity;
+import org.chromium.chrome.browser.settings.MainSettings;
 import org.chromium.chrome.browser.signin.SigninAndHistorySyncActivity;
 import org.chromium.chrome.browser.signin.services.IdentityServicesProvider;
 import org.chromium.chrome.browser.signin.services.SigninManager;
 import org.chromium.chrome.browser.sync.FakeSyncServiceImpl;
 import org.chromium.chrome.browser.sync.SyncServiceFactory;
-import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.toolbar.optional_button.ButtonDataProvider;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
 import org.chromium.chrome.test.ChromeJUnit4RunnerDelegate;
@@ -89,8 +85,7 @@ import org.chromium.chrome.test.transit.ChromeTransitTestRules;
 import org.chromium.chrome.test.transit.ntp.RegularNewTabPageStation;
 import org.chromium.chrome.test.util.ActivityTestUtils;
 import org.chromium.chrome.test.util.ChromeRenderTestRule;
-import org.chromium.chrome.test.util.ChromeTabUtils;
-import org.chromium.chrome.test.util.NewTabPageTestUtils;
+import org.chromium.chrome.test.util.SettingsTestUtils;
 import org.chromium.chrome.test.util.browser.signin.SigninTestRule;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
 import org.chromium.components.browser_ui.device_lock.DeviceLockActivityLauncher;
@@ -119,21 +114,14 @@ import java.io.IOException;
 @Batch(Batch.PER_CLASS)
 @RunWith(ParameterizedRunner.class)
 @UseRunnerDelegate(ChromeJUnit4RunnerDelegate.class)
-@CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
-@DisableFeatures({
-    SigninFeatures.SIGNIN_LEVEL_UP_BUTTON,
-    ChromeFeatureList.ANDROID_BOTTOM_BAR,
-    ChromeFeatureList.SETTINGS_IN_TAB, // crbug.com/521895796
-    ChromeFeatureList.SETTINGS_IN_TAB_DESKTOP, // crbug.com/556881398
-    ChromeFeatureList.USE_WEB_UI_NTP_ANDROID // crbug.com/555414915
-})
+@DisableFeatures({SigninFeatures.SIGNIN_LEVEL_UP_BUTTON, ChromeFeatureList.ANDROID_BOTTOM_BAR})
 @DisableLeakChecks("crbug.com/527131198")
 public class IdentityDiscControllerTest {
 
     private final AutoResetCtaTransitTestRule mActivityTestRule =
             ChromeTransitTestRules.fastAutoResetCtaActivityRule();
 
-    private final SigninTestRule mSigninTestRule = new SigninTestRule();
+    private final SigninTestRule mSigninTestRule = SigninTestRule.createWithCleanups();
 
     // Mock sign-in environment needs to be destroyed after ChromeTabbedActivity in case there are
     // observers registered in the AccountManagerFacade mock.
@@ -152,7 +140,6 @@ public class IdentityDiscControllerTest {
                     .build();
 
     private RegularNewTabPageStation mPage;
-    private Tab mTab;
     private ChromeTabbedActivity mActivity;
     private SettableMonotonicObservableSupplier<Profile> mProfileSupplier;
     private String mFallbackAccountName;
@@ -182,19 +169,11 @@ public class IdentityDiscControllerTest {
         mRenderTestRule.setNightModeEnabled(nightModeEnabled);
     }
 
-    @AfterClass
-    public static void tearDownAfterActivityDestroyed() {
-        ThreadUtils.runOnUiThreadBlocking(
-                ChromeNightModeTestUtils::tearDownNightModeAfterChromeActivityDestroyed);
-    }
-
     @Before
     public void setUp() {
         ThreadUtils.runOnUiThreadBlocking(
                 () -> mProfileSupplier = ObservableSuppliers.createMonotonic());
         mPage = mActivityTestRule.startOnNtp();
-        mTab = mPage.getTab();
-        NewTabPageTestUtils.waitForNtpLoaded(mTab);
         mActivity = mPage.getActivity();
         assertNotNull(mActivity);
         mActivityTestRule.getActivityTestRule().setActivity(mActivity);
@@ -225,9 +204,6 @@ public class IdentityDiscControllerTest {
         // NewTabPageCoordinator, which removes the pending callback.
         if (mActivity != null && !mActivity.isActivityFinishingOrDestroyed()) {
             mActivityTestRule.loadUrl(ContentUrlConstants.ABOUT_BLANK_DISPLAY_URL);
-            ChromeTabUtils.waitForTabPageLoaded(
-                    mActivityTestRule.getActivityTab(),
-                    ContentUrlConstants.ABOUT_BLANK_DISPLAY_URL);
         }
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
@@ -269,10 +245,7 @@ public class IdentityDiscControllerTest {
     @Test
     @MediumTest
     @RequiresRestart("Requires clean platform account list with zero accounts")
-    @DisableFeatures({
-        SigninFeatures.ENABLE_SEAMLESS_SIGNIN,
-        SigninFeatures.ENABLE_ACTIVITYLESS_SIGNIN_ALL_ENTRY_POINT
-    })
+    @DisableFeatures(SigninFeatures.ENABLE_ACTIVITYLESS_SIGNIN_ALL_ENTRY_POINT)
     public void testIdentityDiscSignedOut_noAccount_legacy() throws Exception {
         // When user is signed out, a signed-out avatar should be visible on the NTP.
         @StringRes int descriptionId = R.string.accessibility_toolbar_btn_signed_out_identity_disc;
@@ -296,10 +269,7 @@ public class IdentityDiscControllerTest {
     @Test
     @MediumTest
     @RequiresRestart("Requires clean platform account list with zero accounts")
-    @EnableFeatures({
-        SigninFeatures.ENABLE_SEAMLESS_SIGNIN,
-        SigninFeatures.ENABLE_ACTIVITYLESS_SIGNIN_ALL_ENTRY_POINT
-    })
+    @EnableFeatures(SigninFeatures.ENABLE_ACTIVITYLESS_SIGNIN_ALL_ENTRY_POINT)
     public void testIdentityDiscSignedOut_noAccount() {
         // When user is signed out, a signed-out avatar should be visible on the NTP.
         @StringRes int descriptionId = R.string.accessibility_toolbar_btn_signed_out_identity_disc;
@@ -343,12 +313,11 @@ public class IdentityDiscControllerTest {
                                 R.string.accessibility_toolbar_btn_signed_out_identity_disc)));
 
         // Clicking the signed-out avatar should lead to the settings screen.
-        Activity settingsActivity =
-                ActivityTestUtils.waitForActivity(
-                        InstrumentationRegistry.getInstrumentation(),
-                        SettingsActivity.class,
-                        () -> onView(withId(R.id.optional_toolbar_button)).perform(click()));
-        ApplicationTestUtils.finishActivity(settingsActivity);
+        Activity settingsHost =
+                SettingsTestUtils.waitForSettingsFragment(
+                        () -> onView(withId(R.id.optional_toolbar_button)).perform(click()),
+                        MainSettings.class);
+        SettingsTestUtils.closeSettings(settingsHost);
     }
 
     @Test
@@ -802,10 +771,7 @@ public class IdentityDiscControllerTest {
 
     @Test
     @MediumTest
-    @EnableFeatures({
-        SigninFeatures.ENABLE_SEAMLESS_SIGNIN,
-        SigninFeatures.ENABLE_ACTIVITYLESS_SIGNIN_ALL_ENTRY_POINT
-    })
+    @EnableFeatures(SigninFeatures.ENABLE_ACTIVITYLESS_SIGNIN_ALL_ENTRY_POINT)
     public void testSetProfile_IncognitoProfile_DoesNotCreateSigninCoordinator() {
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
@@ -824,10 +790,7 @@ public class IdentityDiscControllerTest {
 
     @Test
     @MediumTest
-    @EnableFeatures({
-        SigninFeatures.ENABLE_SEAMLESS_SIGNIN,
-        SigninFeatures.ENABLE_ACTIVITYLESS_SIGNIN_ALL_ENTRY_POINT
-    })
+    @EnableFeatures(SigninFeatures.ENABLE_ACTIVITYLESS_SIGNIN_ALL_ENTRY_POINT)
     public void testSetProfile_SwitchToIncognito_DestroysSigninCoordinator() {
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
@@ -849,8 +812,7 @@ public class IdentityDiscControllerTest {
     }
 
     private void leaveNtp() {
-        mActivityTestRule.loadUrl(ContentUrlConstants.ABOUT_BLANK_DISPLAY_URL);
-        ChromeTabUtils.waitForTabPageLoaded(mTab, ContentUrlConstants.ABOUT_BLANK_DISPLAY_URL);
+        mPage.loadAboutBlank();
     }
 
     private AccountInfo addAndSigninAccountWithNonDisplayableEmail() {

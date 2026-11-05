@@ -93,8 +93,6 @@ class FakeLocalFrame : public blink::mojom::LocalFrame {
                            const std::optional<blink::RemoteFrameToken>&
                                source_frame_token) override;
   void AdvanceFocusForIME(blink::mojom::FocusType focus_type) override;
-  void ReportContentSecurityPolicyViolation(
-      network::mojom::CSPViolationPtr violation) override;
   void DidUpdateFramePolicy(const blink::FramePolicy& frame_policy) override;
   void PostMessageEvent(
       const std::optional<blink::RemoteFrameToken>& source_frame_token,
@@ -196,12 +194,12 @@ class FakeLocalFrame : public blink::mojom::LocalFrame {
                           UpdatePrerenderURLCallback callback) override;
   void GetScrollPosition(GetScrollPositionCallback callback) override;
   void InvokeScriptToolForInspector(
-      const base::UnguessableToken& invocation_id,
-      const std::string& tool_name,
+      const blink::ToolInvocationToken& invocation_id,
+      blink::mojom::ScriptToolSelectorPtr tool,
       const std::string& input_arguments,
       InvokeScriptToolForInspectorCallback callback) override;
   void NotifyInspectorOfCrossDocumentScriptToolResult(
-      const base::UnguessableToken& invocation_id) override;
+      const blink::ToolInvocationToken& invocation_id) override;
 #if BUILDFLAG(IS_ANDROID)
   void PerformFullContentSpellCheck() override;
 #endif

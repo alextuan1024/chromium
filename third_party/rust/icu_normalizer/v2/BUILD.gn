@@ -23,19 +23,19 @@ cargo_crate("lib") {
   inputs = []
 
   build_native_rust_unit_tests = false
-  edition = "2021"
+  edition = "2024"
   cargo_pkg_authors = "The ICU4X Project Developers"
   cargo_pkg_name = "icu_normalizer"
   cargo_pkg_description =
       "API for normalizing text into Unicode Normalization Forms"
   cargo_pkg_repository = "https://github.com/unicode-org/icu4x"
-  cargo_pkg_version = "2.2.0"
+  cargo_pkg_version = "2.4.0"
 
   allow_unsafe = true
 
   deps = [
+    "//third_party/rust/icu4x_data:lib",
     "//third_party/rust/icu_collections/v2:lib",
-    "//third_party/rust/icu_normalizer_data/v2:lib",
     "//third_party/rust/icu_provider/v2:lib",
     "//third_party/rust/smallvec/v1:lib",
     "//third_party/rust/utf16_iter/v1:lib",
@@ -43,6 +43,9 @@ cargo_crate("lib") {
     "//third_party/rust/write16/v1:lib",
     "//third_party/rust/zerovec/v0_11:lib",
   ]
+  aliased_deps = {
+    icu_normalizer_data = "//third_party/rust/icu4x_data:lib"
+  }
   features = [
     "compiled_data",
     "default",

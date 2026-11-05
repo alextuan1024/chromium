@@ -16,6 +16,7 @@
 #include "chrome/browser/ui/actions/chrome_action_id.h"
 #include "chrome/browser/ui/browser_actions.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/color/chrome_color_id.h"
 #include "chrome/browser/ui/tabs/horizontal_tab_strip_metrics.h"
 #include "chrome/browser/ui/tabs/tab_style.h"
 #include "chrome/browser/ui/user_education/browser_user_education_interface.h"
@@ -24,6 +25,7 @@
 #include "ui/actions/actions.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
+#include "ui/color/color_id.h"
 #include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/controls/menu/menu_runner.h"
 #include "ui/views/controls/scroll_view.h"
@@ -159,6 +161,11 @@ TabScrollButtonContainer::TabScrollButtonContainer(
       l10n_util::GetStringUTF16(base::i18n::IsRTL()
                                     ? IDS_ACCNAME_TAB_SCROLL_TRAILING
                                     : IDS_ACCNAME_TAB_SCROLL_LEADING));
+  start_scroll_button_->SetForegroundFrameActiveColorId(
+      kColorTabForegroundInactiveFrameActive);
+  start_scroll_button_->SetForegroundFrameInactiveColorId(
+      kColorTabForegroundInactiveFrameInactive);
+  start_scroll_button_->set_paint_transparent_for_glass(true);
 
   end_scroll_button_ = AddChildView(std::make_unique<TabStripControlButton>(
       browser_window_interface,
@@ -172,6 +179,11 @@ TabScrollButtonContainer::TabScrollButtonContainer(
   end_scroll_button_->GetViewAccessibility().SetName(l10n_util::GetStringUTF16(
       base::i18n::IsRTL() ? IDS_ACCNAME_TAB_SCROLL_LEADING
                           : IDS_ACCNAME_TAB_SCROLL_TRAILING));
+  end_scroll_button_->SetForegroundFrameActiveColorId(
+      kColorTabForegroundInactiveFrameActive);
+  end_scroll_button_->SetForegroundFrameInactiveColorId(
+      kColorTabForegroundInactiveFrameInactive);
+  end_scroll_button_->set_paint_transparent_for_glass(true);
   start_scroll_button_->SetBorder(views::CreateEmptyBorder(gfx::Insets()));
   end_scroll_button_->SetBorder(views::CreateEmptyBorder(gfx::Insets()));
   animation_.SetDuration(kScrollAnimationTime);
@@ -257,10 +269,13 @@ bool TabScrollButtonContainer::IsPositionInWindowCaption(const gfx::Point& p) {
 }
 
 void TabScrollButtonContainer::SetScrollView(views::ScrollView* scroll_view) {
+  scroll_synchronizer_.reset();
   scroll_view_ = scroll_view;
 
   if (scroll_view == nullptr) {
     animation_.Stop();
+  } else {
+    scroll_synchronizer_ = scroll_view_->EnableScrollSynchronization();
   }
 }
 

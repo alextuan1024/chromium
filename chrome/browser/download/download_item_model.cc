@@ -7,6 +7,7 @@
 #include <string>
 
 #include "base/byte_size.h"
+#include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/i18n/number_formatting.h"
 #include "base/i18n/rtl.h"
@@ -40,12 +41,13 @@
 #include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/grit/generated_resources.h"
 #include "components/download/public/common/download_danger_type.h"
+#include "components/download/public/common/download_features.h"
 #include "components/download/public/common/download_interrupt_reasons.h"
 #include "components/download/public/common/download_item.h"
 #include "components/download/public/common/download_item_rename_handler.h"
 #include "components/safe_browsing/buildflags.h"
 #include "components/safe_browsing/content/browser/web_ui/safe_browsing_ui.h"
-#include "components/safe_browsing/content/common/proto/download_file_types.pb.h"
+#include "components/safe_browsing/content/common/file_type_policies/proto/download_file_types.pb.h"
 #include "components/safe_browsing/core/common/features.h"
 #include "components/signin/public/base/consent_level.h"
 #include "components/signin/public/identity_manager/account_info.h"
@@ -74,8 +76,8 @@
 #endif
 
 #if BUILDFLAG(FULL_SAFE_BROWSING)
-#include "chrome/browser/safe_browsing/advanced_protection_status_manager.h"
-#include "chrome/browser/safe_browsing/advanced_protection_status_manager_factory.h"
+#include "chrome/browser/safe_browsing/advanced_protection/advanced_protection_status_manager.h"
+#include "chrome/browser/safe_browsing/advanced_protection/advanced_protection_status_manager_factory.h"
 #endif
 
 #if BUILDFLAG(SAFE_BROWSING_DOWNLOAD_PROTECTION)
@@ -90,7 +92,7 @@
 #if BUILDFLAG(SAFE_BROWSING_AVAILABLE)
 #include "chrome/browser/safe_browsing/download_protection/download_protection_util.h"
 #include "chrome/browser/safe_browsing/safe_browsing_service.h"
-#include "components/safe_browsing/content/common/file_type_policies.h"
+#include "components/safe_browsing/content/common/file_type_policies/file_type_policies.h"
 #endif
 
 using DangerUiPattern = DownloadUIModel::DangerUiPattern;
@@ -599,6 +601,10 @@ bool DownloadItemModel::HasUserGesture() const {
   return download_->HasUserGesture();
 }
 
+std::u16string DownloadItemModel::GetDownloadDomainForDisplay() const {
+  return DownloadUIModel::GetDownloadDomainForDisplay(download_);
+}
+
 void DownloadItemModel::OnDownloadUpdated(DownloadItem* download) {
   if (delegate_)
     delegate_->OnDownloadUpdated();
@@ -671,6 +677,15 @@ bool DownloadItemModel::IsCommandEnabled(
       return download_->CanOpenDownload() && !IsExtensionDownload();
     case DownloadCommands::PLATFORM_OPEN:
       return download_->CanOpenDownload() && !IsExtensionDownload();
+    case DownloadCommands::OPEN_WITH:
+#if BUILDFLAG(IS_WIN)
+      return download_->IsDone() && download_->CanShowInFolder() &&
+             !IsExtensionDownload() &&
+             base::FeatureList::IsEnabled(
+                 download::features::kEnableDownloadOpenWithContextMenu);
+#else
+      return false;
+#endif
     case DownloadCommands::ALWAYS_OPEN_TYPE:
       // For temporary downloads, the target filename might be a temporary
       // filename. Don't base an "Always open" decision based on it. Also
@@ -738,6 +753,7 @@ bool DownloadItemModel::IsCommandChecked(
       return IsPaused();
     case DownloadCommands::SHOW_IN_FOLDER:
     case DownloadCommands::PLATFORM_OPEN:
+    case DownloadCommands::OPEN_WITH:
     case DownloadCommands::CANCEL:
     case DownloadCommands::DISCARD:
     case DownloadCommands::KEEP:
@@ -817,6 +833,8 @@ void DownloadItemModel::ExecuteCommand(DownloadCommands* download_commands,
       if (GetDangerType() == download::DOWNLOAD_DANGER_TYPE_ASYNC_SCANNING) {
         break;
       }
+      // TODO(crbug.com/582612340): CHECK-exclusion: Convert to a CHECK once
+      // we are confident it won't be triggered.
       DCHECK(IsDangerous());
 #if BUILDFLAG(SAFE_BROWSING_DOWNLOAD_PROTECTION)
       MaybeSendDownloadReport(/*did_proceed=*/true, download_);
@@ -849,6 +867,20 @@ void DownloadItemModel::ExecuteCommand(DownloadCommands* download_commands,
       NOTREACHED();
 #endif
     }
+    case DownloadCommands::OPEN_WITH:
+#if BUILDFLAG(IS_WIN)
+      if (DownloadCoreService* download_core_service =
+              DownloadCoreServiceFactory::GetForBrowserContext(
+                  content::DownloadItemUtils::GetBrowserContext(download_))) {
+        if (ChromeDownloadManagerDelegate* delegate =
+                download_core_service->GetDownloadManagerDelegate()) {
+          delegate->OpenDownloadWithDialog(download_);
+        }
+      }
+      break;
+#else
+      NOTREACHED();
+#endif
     case DownloadCommands::PLATFORM_OPEN:
     case DownloadCommands::CANCEL:
     case DownloadCommands::LEARN_MORE_INTERRUPTED:
@@ -879,10 +911,10 @@ void DownloadItemModel::ExecuteCommand(DownloadCommands* download_commands,
       DownloadCoreService* download_core_service =
           DownloadCoreServiceFactory::GetForBrowserContext(
               content::DownloadItemUtils::GetBrowserContext(download_));
-      DCHECK(download_core_service);
+      CHECK(download_core_service, base::NotFatalUntil::M161);
       ChromeDownloadManagerDelegate* delegate =
           download_core_service->GetDownloadManagerDelegate();
-      DCHECK(delegate);
+      CHECK(delegate, base::NotFatalUntil::M161);
       LogDeepScanEvent(download_, safe_browsing::DeepScanEvent::kScanCanceled);
       delegate->CheckClientDownloadDone(
           download_->GetId(),

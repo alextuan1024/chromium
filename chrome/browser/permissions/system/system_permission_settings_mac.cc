@@ -5,9 +5,12 @@
 #include "chrome/browser/permissions/system/system_permission_settings.h"
 
 #include <memory>
+#include <optional>
+#include <string>
 #include <utility>
 #include <vector>
 
+#include "base/apple/bundle_locations.h"
 #include "base/check_deref.h"
 #include "base/mac/mac_util.h"
 #include "base/notreached.h"
@@ -97,6 +100,17 @@ class PlatformHandleImpl : public PlatformHandle {
     }
   }
 
+  bool HasInitializedPermissionState(ContentSettingsType type) const override {
+    switch (type) {
+      case ContentSettingsType::MEDIASTREAM_CAMERA:
+      case ContentSettingsType::CAMERA_PAN_TILT_ZOOM:
+      case ContentSettingsType::MEDIASTREAM_MIC:
+        return media_cache_.IsPermissionCacheInitialized(type);
+      default:
+        return true;
+    }
+  }
+
   void IsDeniedFresh(ContentSettingsType type,
                      SystemPermissionDeniedCallback callback) override {
     switch (type) {
@@ -114,14 +128,15 @@ class PlatformHandleImpl : public PlatformHandle {
                           ContentSettingsType type) override {
     switch (type) {
       case ContentSettingsType::NOTIFICATIONS: {
-        const webapps::AppId* app_id =
-            web_app::WebAppTabHelper::GetAppId(web_contents);
-        if (!app_id) {
-          return;
+        std::string bundle_identifier = base::apple::MainBundleIdentifier();
+        if (std::optional<webapps::AppId> app_id =
+                web_app::WebAppTabHelper::GetAppIdForNotificationAttribution(
+                    web_contents);
+            app_id.has_value()) {
+          bundle_identifier = web_app::GetBundleIdentifierForShim(*app_id);
         }
         base::mac::OpenSystemSettingsPane(
-            base::mac::SystemSettingsPane::kNotifications,
-            web_app::GetBundleIdentifierForShim(*app_id));
+            base::mac::SystemSettingsPane::kNotifications, bundle_identifier);
         return;
       }
       case ContentSettingsType::MEDIASTREAM_CAMERA:
@@ -170,7 +185,8 @@ class PlatformHandleImpl : public PlatformHandle {
         return;
       }
       case ContentSettingsType::GEOLOCATION: {
-        DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+        CHECK_CURRENTLY_ON(content::BrowserThread::UI,
+                           base::NotFatalUntil::M162);
         geolocation_callbacks_.push_back(std::move(callback));
         // The system permission prompt is modal and requires a user decision
         // (Allow or Deny) before it can be dismissed.

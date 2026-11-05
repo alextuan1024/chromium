@@ -14,7 +14,7 @@
 namespace crypto::apple {
 
 ScopedFakeKeychainV2::ScopedFakeKeychainV2(
-    const std::string& keychain_access_group)
+    std::string_view keychain_access_group)
     : keychain_(std::make_unique<FakeKeychainV2>(keychain_access_group)) {
   KeychainV2::SetInstanceOverride(keychain_.get());
 }
@@ -25,6 +25,11 @@ ScopedFakeKeychainV2::~ScopedFakeKeychainV2() {
 
 void ScopedFakeKeychainV2::SetUVMethod(FakeKeychainV2::UVMethod uv_method) {
   keychain_->set_uv_method(uv_method);
+}
+
+void ScopedFakeKeychainV2::SetSecureEnclaveAvailable(
+    bool is_secure_enclave_available) {
+  keychain_->set_secure_enclave_available(is_secure_enclave_available);
 }
 
 void ScopedFakeKeychainV2::SetFindGenericResult(OSStatus result) {

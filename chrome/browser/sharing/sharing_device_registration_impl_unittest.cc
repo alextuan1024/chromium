@@ -17,7 +17,6 @@
 #include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
 #include "build/build_config.h"
-#include "chrome/common/chrome_features.h"
 #include "components/browser_actuator/public/features.h"
 #include "components/gcm_driver/instance_id/instance_id_driver.h"
 #include "components/prefs/pref_registry.h"
@@ -31,7 +30,6 @@
 #include "components/sync_device_info/fake_device_info_sync_service.h"
 #include "components/sync_preferences/pref_service_mock_factory.h"
 #include "components/sync_preferences/testing_pref_service_syncable.h"
-#include "google_apis/gcm/engine/account_mapping.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -116,9 +114,11 @@ class SharingDeviceRegistrationImplTest : public testing::Test {
  public:
   SharingDeviceRegistrationImplTest()
       : sync_prefs_(&prefs_, &fake_device_info_sync_service_),
-        sharing_device_registration_(&sync_prefs_,
-                                     &mock_instance_id_driver_,
-                                     &test_sync_service_) {
+        sharing_device_registration_(
+            &sync_prefs_,
+            &mock_instance_id_driver_,
+            &test_sync_service_,
+            /*glic_experimental_triggering_supported=*/false) {
     SharingSyncPreference::RegisterProfilePrefs(prefs_.registry());
   }
 
@@ -239,20 +239,20 @@ TEST_F(SharingDeviceRegistrationImplTest,
 
 TEST_F(SharingDeviceRegistrationImplTest,
        IsGlicExperimentalTriggeringSupported_True) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndEnableFeature(features::kGlicExperimentalTriggering);
-
+  SharingDeviceRegistrationImpl sharing_device_registration(
+      &sync_prefs_, &mock_instance_id_driver_, &test_sync_service_,
+      /*glic_experimental_triggering_supported=*/true);
   EXPECT_TRUE(
-      sharing_device_registration_.IsGlicExperimentalTriggeringSupported());
+      sharing_device_registration.IsGlicExperimentalTriggeringSupported());
 }
 
 TEST_F(SharingDeviceRegistrationImplTest,
        IsGlicExperimentalTriggeringSupported_False) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndDisableFeature(features::kGlicExperimentalTriggering);
-
+  SharingDeviceRegistrationImpl sharing_device_registration(
+      &sync_prefs_, &mock_instance_id_driver_, &test_sync_service_,
+      /*glic_experimental_triggering_supported=*/false);
   EXPECT_FALSE(
-      sharing_device_registration_.IsGlicExperimentalTriggeringSupported());
+      sharing_device_registration.IsGlicExperimentalTriggeringSupported());
 }
 
 TEST_F(SharingDeviceRegistrationImplTest, IsBrowserActuatorSupported_True) {

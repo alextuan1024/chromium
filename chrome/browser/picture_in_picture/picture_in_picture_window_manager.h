@@ -74,8 +74,9 @@ class PictureInPictureWindowManager {
   //
   // This mode is triggered through WebContentsDelegate::EnterPictureInPicture,
   // and the default implementation of that fails with a kNotSupported
-  // result. For compatibility, this method must also return a
-  // content::PictureInPictureResult even though it doesn't fail.
+  // result. This method also returns kNotSupported if `web_contents` is a
+  // Document Picture-in-Picture child WebContents or is destroyed while closing
+  // an existing Picture-in-Picture window.
   content::PictureInPictureResult EnterVideoPictureInPicture(
       content::WebContents*);
 
@@ -83,7 +84,7 @@ class PictureInPictureWindowManager {
   // picture.
   //
   // Document picture-in-picture mode is triggered from the Renderer via
-  // WindowOpenDisposition::NEW_PICTURE_IN_PICTURE, and the browser
+  // `ui::mojom::WindowOpenDisposition::kNewPictureInPicture`, and the browser
   // (i.e. Chrome's BrowserNavigator) then calls this method to create the
   // window. There's no corresponding path through the WebContentsDelegate, so
   // it doesn't have a failure state.
@@ -316,23 +317,6 @@ class PictureInPictureWindowManager {
   class VideoWebContentsObserver;
   class DocumentWebContentsObserver;
 
-  // These values are persisted to logs. Entries should not be renumbered and
-  // numeric values should never be reused.
-  //
-  // LINT.IfChange(PictureInPictureDisallowedType)
-  enum class PictureInPictureDisallowedType {
-    // An existing picture-in-picture window was closed because we started
-    // disallowing picture-in-picture windows.
-    kExistingWindowClosed = 0,
-
-    // A new picture-in-picture window was closed because it was created while
-    // we were already disallowing picture-in-picture windows.
-    kNewWindowClosed = 1,
-
-    kMaxValue = kNewWindowClosed,
-  };
-  // LINT.ThenChange(//tools/metrics/histograms/metadata/media/enums.xml:PictureInPictureDisallowedTypeEnum)
-
 #if !BUILDFLAG(IS_ANDROID)
   // These values are persisted to logs. Entries should not be renumbered and
   // numeric values should never be reused.
@@ -377,10 +361,6 @@ class PictureInPictureWindowManager {
   void RecordDocumentPictureInPictureRequestedSizeMetrics(
       const blink::mojom::PictureInPictureWindowOptions& pip_options,
       const display::Display& display);
-
-  // Records whether a new or existing picture-in-picture window was closed due
-  // to an existing ScopedDisallowPictureInPicture.
-  void RecordPictureInPictureDisallowed(PictureInPictureDisallowedType type);
 
   // Records whether a new or existing picture-in-picture window was tucked due
   // to an existing ScopedTuckPictureInPicture.

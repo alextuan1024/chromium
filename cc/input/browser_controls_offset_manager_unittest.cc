@@ -22,13 +22,12 @@
 #include "cc/test/test_task_graph_runner.h"
 #include "cc/trees/browser_controls_params.h"
 #include "cc/trees/layer_tree_impl.h"
+#include "components/viz/common/quads/offset_tag.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/gfx/geometry/vector2d_f.h"
 
 namespace cc {
 namespace {
-
-constexpr int kDeviceFramesPerSecond = 60;
 
 // Use the linear animation to avoid flakiness in tests that control the
 // browser controls position by scrolling.
@@ -64,7 +63,10 @@ class MockBrowserControlsOffsetManagerClient
     update_draw_properties_needed_ = true;
   }
 
-  bool HaveRootScrollNode() const override { return true; }
+  bool HaveRootScrollNode() const override { return have_root_scroll_node_; }
+  void SetHaveRootScrollNode(bool have_root_scroll_node) {
+    have_root_scroll_node_ = have_root_scroll_node;
+  }
 
   float BottomControlsHeight() const override {
     return browser_controls_params_.bottom_controls_height;
@@ -154,10 +156,6 @@ class MockBrowserControlsOffsetManagerClient
         std::min(viewport_scroll_offset_.y(), max_viewport_scroll_offset_y_));
   }
 
-  base::TimeDelta CurrentFrameInterval() const override {
-    return base::Seconds(1) / kDeviceFramesPerSecond;
-  }
-
   float DeviceScaleFactor() const override { return 1.0f; }
 
  private:
@@ -177,6 +175,7 @@ class MockBrowserControlsOffsetManagerClient
   float browser_controls_hide_threshold_;
   gfx::PointF viewport_scroll_offset_;
   float max_viewport_scroll_offset_y_ = 10000.0f;
+  bool have_root_scroll_node_ = true;
 };
 
 TEST_F(BrowserControlsOffsetManagerTest, EnsureScrollThresholdApplied) {
@@ -186,41 +185,41 @@ TEST_F(BrowserControlsOffsetManagerTest, EnsureScrollThresholdApplied) {
   manager->ScrollBegin();
 
   // Scroll down to hide the controls entirely.
-  manager->ScrollBy(gfx::Vector2dF(0.0f, 30.0f));
+  manager->ScrollBy(gfx::Vector2dF(0.0f, 30.0f), /*is_inertial=*/false);
   EXPECT_FLOAT_EQ(-30.0f, manager->ControlsTopOffset());
 
-  manager->ScrollBy(gfx::Vector2dF(0.0f, 30.0f));
+  manager->ScrollBy(gfx::Vector2dF(0.0f, 30.0f), /*is_inertial=*/false);
   EXPECT_FLOAT_EQ(-60.0f, manager->ControlsTopOffset());
 
-  manager->ScrollBy(gfx::Vector2dF(0.0f, 100.0f));
+  manager->ScrollBy(gfx::Vector2dF(0.0f, 100.0f), /*is_inertial=*/false);
   EXPECT_FLOAT_EQ(-100.0f, manager->ControlsTopOffset());
 
   // Scroll back up a bit and ensure the controls don't move until we cross
   // the threshold.
-  manager->ScrollBy(gfx::Vector2dF(0.0f, -10.0f));
+  manager->ScrollBy(gfx::Vector2dF(0.0f, -10.0f), /*is_inertial=*/false);
   EXPECT_FLOAT_EQ(-100.0f, manager->ControlsTopOffset());
 
-  manager->ScrollBy(gfx::Vector2dF(0.0f, -50.0f));
+  manager->ScrollBy(gfx::Vector2dF(0.0f, -50.0f), /*is_inertial=*/false);
   EXPECT_FLOAT_EQ(-100.0f, manager->ControlsTopOffset());
 
   // After hitting the threshold, further scrolling up should result in the top
   // controls showing.
-  manager->ScrollBy(gfx::Vector2dF(0.0f, -10.0f));
+  manager->ScrollBy(gfx::Vector2dF(0.0f, -10.0f), /*is_inertial=*/false);
   EXPECT_FLOAT_EQ(-90.0f, manager->ControlsTopOffset());
 
-  manager->ScrollBy(gfx::Vector2dF(0.0f, -50.0f));
+  manager->ScrollBy(gfx::Vector2dF(0.0f, -50.0f), /*is_inertial=*/false);
   EXPECT_FLOAT_EQ(-40.0f, manager->ControlsTopOffset());
 
   // Reset the scroll threshold by going further up the page than the initial
   // threshold.
-  manager->ScrollBy(gfx::Vector2dF(0.0f, -100.0f));
+  manager->ScrollBy(gfx::Vector2dF(0.0f, -100.0f), /*is_inertial=*/false);
   EXPECT_FLOAT_EQ(0.0f, manager->ControlsTopOffset());
 
   // See that scrolling down the page now will result in the controls hiding.
-  manager->ScrollBy(gfx::Vector2dF(0.0f, 20.0f));
+  manager->ScrollBy(gfx::Vector2dF(0.0f, 20.0f), /*is_inertial=*/false);
   EXPECT_FLOAT_EQ(-20.0f, manager->ControlsTopOffset());
 
-  manager->ScrollEnd();
+  manager->ScrollEnd(gfx::Vector2dF());
 }
 
 TEST_F(BrowserControlsOffsetManagerTest,
@@ -234,58 +233,58 @@ TEST_F(BrowserControlsOffsetManagerTest,
   manager->ScrollBegin();
 
   // Scroll down to hide the controls.
-  manager->ScrollBy(gfx::Vector2dF(0.0f, 30.0f));
+  manager->ScrollBy(gfx::Vector2dF(0.0f, 30.0f), /*is_inertial=*/false);
   EXPECT_FLOAT_EQ(-30.0f, manager->ControlsTopOffset());
 
-  manager->ScrollBy(gfx::Vector2dF(0.0f, 30.0f));
+  manager->ScrollBy(gfx::Vector2dF(0.0f, 30.0f), /*is_inertial=*/false);
   EXPECT_FLOAT_EQ(-60.0f, manager->ControlsTopOffset());
 
   // Controls should stop scrolling when we hit the min-height.
-  manager->ScrollBy(gfx::Vector2dF(0.0f, 100.0f));
+  manager->ScrollBy(gfx::Vector2dF(0.0f, 100.0f), /*is_inertial=*/false);
   EXPECT_FLOAT_EQ(-80.0f, manager->ControlsTopOffset());
 
   // Scroll back up a bit and ensure the controls don't move until we cross
   // the threshold.
-  manager->ScrollBy(gfx::Vector2dF(0.0f, -20.0f));
+  manager->ScrollBy(gfx::Vector2dF(0.0f, -20.0f), /*is_inertial=*/false);
   EXPECT_FLOAT_EQ(-80.0f, manager->ControlsTopOffset());
 
-  manager->ScrollBy(gfx::Vector2dF(0.0f, -60.0f));
+  manager->ScrollBy(gfx::Vector2dF(0.0f, -60.0f), /*is_inertial=*/false);
   EXPECT_FLOAT_EQ(-80.0f, manager->ControlsTopOffset());
 
   // After hitting the threshold, further scrolling up should result in the top
   // controls starting to move.
-  manager->ScrollBy(gfx::Vector2dF(0.0f, -10.0f));
+  manager->ScrollBy(gfx::Vector2dF(0.0f, -10.0f), /*is_inertial=*/false);
   EXPECT_FLOAT_EQ(-70.0f, manager->ControlsTopOffset());
 
-  manager->ScrollBy(gfx::Vector2dF(0.0f, -50.0f));
+  manager->ScrollBy(gfx::Vector2dF(0.0f, -50.0f), /*is_inertial=*/false);
   EXPECT_FLOAT_EQ(-20.0f, manager->ControlsTopOffset());
 
   // Reset the scroll threshold by going further up the page than the initial
   // threshold.
-  manager->ScrollBy(gfx::Vector2dF(0.0f, -100.0f));
+  manager->ScrollBy(gfx::Vector2dF(0.0f, -100.0f), /*is_inertial=*/false);
   EXPECT_FLOAT_EQ(0.0f, manager->ControlsTopOffset());
 
   // See that scrolling down the page now will result in the controls hiding.
-  manager->ScrollBy(gfx::Vector2dF(0.0f, 20.0f));
+  manager->ScrollBy(gfx::Vector2dF(0.0f, 20.0f), /*is_inertial=*/false);
   EXPECT_FLOAT_EQ(-20.0f, manager->ControlsTopOffset());
 
-  manager->ScrollEnd();
+  manager->ScrollEnd(gfx::Vector2dF());
 }
 
 TEST_F(BrowserControlsOffsetManagerTest, PartialShownHideAnimation) {
   MockBrowserControlsOffsetManagerClient client(100.0f, 0.5f, 0.5f);
   BrowserControlsOffsetManager* manager = client.manager();
   manager->ScrollBegin();
-  manager->ScrollBy(gfx::Vector2dF(0.0f, 300.0f));
+  manager->ScrollBy(gfx::Vector2dF(0.0f, 300.0f), /*is_inertial=*/false);
   EXPECT_FLOAT_EQ(-100.0f, manager->ControlsTopOffset());
   EXPECT_FLOAT_EQ(0.0f, manager->ContentTopOffset());
-  manager->ScrollEnd();
+  manager->ScrollEnd(gfx::Vector2dF());
 
   manager->ScrollBegin();
-  manager->ScrollBy(gfx::Vector2dF(0.0f, -15.0f));
+  manager->ScrollBy(gfx::Vector2dF(0.0f, -15.0f), /*is_inertial=*/false);
   EXPECT_FLOAT_EQ(-85.0f, manager->ControlsTopOffset());
   EXPECT_FLOAT_EQ(15.0f, manager->ContentTopOffset());
-  manager->ScrollEnd();
+  manager->ScrollEnd(gfx::Vector2dF());
 
   EXPECT_TRUE(manager->HasAnimation());
 
@@ -313,16 +312,16 @@ TEST_F(BrowserControlsOffsetManagerTest,
   client.SetBrowserControlsParams({0, 0, 100, 0, false, false});
   BrowserControlsOffsetManager* manager = client.manager();
   manager->ScrollBegin();
-  manager->ScrollBy(gfx::Vector2dF(0.0f, 300.0f));
+  manager->ScrollBy(gfx::Vector2dF(0.0f, 300.0f), /*is_inertial=*/false);
   EXPECT_FLOAT_EQ(0.0f, manager->BottomControlsShownRatio());
   EXPECT_FLOAT_EQ(0.0f, manager->ContentTopOffset());
-  manager->ScrollEnd();
+  manager->ScrollEnd(gfx::Vector2dF());
 
   manager->ScrollBegin();
-  manager->ScrollBy(gfx::Vector2dF(0.0f, -20.0f));
+  manager->ScrollBy(gfx::Vector2dF(0.0f, -20.0f), /*is_inertial=*/false);
   EXPECT_FLOAT_EQ(0.2f, manager->BottomControlsShownRatio());
   EXPECT_FLOAT_EQ(0.0f, manager->ContentTopOffset());
-  manager->ScrollEnd();
+  manager->ScrollEnd(gfx::Vector2dF());
 
   EXPECT_TRUE(manager->HasAnimation());
 
@@ -348,16 +347,16 @@ TEST_F(BrowserControlsOffsetManagerTest, PartialShownShowAnimation) {
   MockBrowserControlsOffsetManagerClient client(100.0f, 0.5f, 0.5f);
   BrowserControlsOffsetManager* manager = client.manager();
   manager->ScrollBegin();
-  manager->ScrollBy(gfx::Vector2dF(0.0f, 300.0f));
+  manager->ScrollBy(gfx::Vector2dF(0.0f, 300.0f), /*is_inertial=*/false);
   EXPECT_FLOAT_EQ(-100.0f, manager->ControlsTopOffset());
   EXPECT_FLOAT_EQ(0.0f, manager->ContentTopOffset());
-  manager->ScrollEnd();
+  manager->ScrollEnd(gfx::Vector2dF());
 
   manager->ScrollBegin();
-  manager->ScrollBy(gfx::Vector2dF(0.0f, -70.0f));
+  manager->ScrollBy(gfx::Vector2dF(0.0f, -70.0f), /*is_inertial=*/false);
   EXPECT_FLOAT_EQ(-30.0f, manager->ControlsTopOffset());
   EXPECT_FLOAT_EQ(70.0f, manager->ContentTopOffset());
-  manager->ScrollEnd();
+  manager->ScrollEnd(gfx::Vector2dF());
 
   EXPECT_TRUE(manager->HasAnimation());
 
@@ -386,10 +385,10 @@ TEST_F(BrowserControlsOffsetManagerTest,
   BrowserControlsOffsetManager* manager = client.manager();
 
   manager->ScrollBegin();
-  manager->ScrollBy(gfx::Vector2dF(0.0f, 20.0f));
+  manager->ScrollBy(gfx::Vector2dF(0.0f, 20.0f), /*is_inertial=*/false);
   EXPECT_FLOAT_EQ(0.8f, manager->BottomControlsShownRatio());
   EXPECT_FLOAT_EQ(0.0f, manager->ContentTopOffset());
-  manager->ScrollEnd();
+  manager->ScrollEnd(gfx::Vector2dF());
 
   EXPECT_TRUE(manager->HasAnimation());
 
@@ -418,11 +417,11 @@ TEST_F(BrowserControlsOffsetManagerTest,
 
   manager->ScrollBegin();
 
-  manager->ScrollBy(gfx::Vector2dF(0.0f, 20.0f));
+  manager->ScrollBy(gfx::Vector2dF(0.0f, 20.0f), /*is_inertial=*/false);
   EXPECT_FLOAT_EQ(-20.0f, manager->ControlsTopOffset());
   EXPECT_FLOAT_EQ(80.0f, manager->ContentTopOffset());
 
-  manager->ScrollEnd();
+  manager->ScrollEnd(gfx::Vector2dF());
   EXPECT_TRUE(manager->HasAnimation());
 
   base::TimeTicks time = base::TimeTicks::Now();
@@ -450,11 +449,11 @@ TEST_F(BrowserControlsOffsetManagerTest,
 
   manager->ScrollBegin();
 
-  manager->ScrollBy(gfx::Vector2dF(0.0f, 30.0f));
+  manager->ScrollBy(gfx::Vector2dF(0.0f, 30.0f), /*is_inertial=*/false);
   EXPECT_FLOAT_EQ(-30.0f, manager->ControlsTopOffset());
   EXPECT_FLOAT_EQ(70.0f, manager->ContentTopOffset());
 
-  manager->ScrollEnd();
+  manager->ScrollEnd(gfx::Vector2dF());
   EXPECT_TRUE(manager->HasAnimation());
 
   base::TimeTicks time = base::TimeTicks::Now();
@@ -480,17 +479,17 @@ TEST_F(BrowserControlsOffsetManagerTest,
   MockBrowserControlsOffsetManagerClient client(100.0f, 0.25f, 0.25f);
   BrowserControlsOffsetManager* manager = client.manager();
 
-  manager->ScrollBy(gfx::Vector2dF(0.0f, 200.0f));
+  manager->ScrollBy(gfx::Vector2dF(0.0f, 200.0f), /*is_inertial=*/false);
   EXPECT_FLOAT_EQ(-100.0f, manager->ControlsTopOffset());
   EXPECT_FLOAT_EQ(0.0f, manager->ContentTopOffset());
 
   manager->ScrollBegin();
 
-  manager->ScrollBy(gfx::Vector2dF(0.0f, -20.0f));
+  manager->ScrollBy(gfx::Vector2dF(0.0f, -20.0f), /*is_inertial=*/false);
   EXPECT_FLOAT_EQ(-80.0f, manager->ControlsTopOffset());
   EXPECT_FLOAT_EQ(20.0f, manager->ContentTopOffset());
 
-  manager->ScrollEnd();
+  manager->ScrollEnd(gfx::Vector2dF());
   EXPECT_TRUE(manager->HasAnimation());
 
   base::TimeTicks time = base::TimeTicks::Now();
@@ -516,17 +515,17 @@ TEST_F(BrowserControlsOffsetManagerTest,
   MockBrowserControlsOffsetManagerClient client(100.0f, 0.25f, 0.25f);
   BrowserControlsOffsetManager* manager = client.manager();
 
-  manager->ScrollBy(gfx::Vector2dF(0.0f, 200.0f));
+  manager->ScrollBy(gfx::Vector2dF(0.0f, 200.0f), /*is_inertial=*/false);
   EXPECT_FLOAT_EQ(-100.0f, manager->ControlsTopOffset());
   EXPECT_FLOAT_EQ(0.0f, manager->ContentTopOffset());
 
   manager->ScrollBegin();
 
-  manager->ScrollBy(gfx::Vector2dF(0.0f, -30.0f));
+  manager->ScrollBy(gfx::Vector2dF(0.0f, -30.0f), /*is_inertial=*/false);
   EXPECT_FLOAT_EQ(-70.0f, manager->ControlsTopOffset());
   EXPECT_FLOAT_EQ(30.0f, manager->ContentTopOffset());
 
-  manager->ScrollEnd();
+  manager->ScrollEnd(gfx::Vector2dF());
   EXPECT_TRUE(manager->HasAnimation());
 
   base::TimeTicks time = base::TimeTicks::Now();
@@ -555,23 +554,23 @@ TEST_F(BrowserControlsOffsetManagerTest, PinchIgnoresScroll) {
   manager->ScrollBegin();
   EXPECT_FLOAT_EQ(0.0f, manager->ControlsTopOffset());
 
-  manager->ScrollBy(gfx::Vector2dF(0.0f, 300.0f));
+  manager->ScrollBy(gfx::Vector2dF(0.0f, 300.0f), /*is_inertial=*/false);
   EXPECT_FLOAT_EQ(-100.0f, manager->ControlsTopOffset());
 
   manager->PinchBegin();
   EXPECT_FLOAT_EQ(-100.0f, manager->ControlsTopOffset());
 
   // Scrolls are ignored during pinch.
-  manager->ScrollBy(gfx::Vector2dF(0.0f, -15.0f));
+  manager->ScrollBy(gfx::Vector2dF(0.0f, -15.0f), /*is_inertial=*/false);
   EXPECT_FLOAT_EQ(-100.0f, manager->ControlsTopOffset());
   manager->PinchEnd();
   EXPECT_FLOAT_EQ(-100.0f, manager->ControlsTopOffset());
 
   // Scrolls should no long be ignored.
-  manager->ScrollBy(gfx::Vector2dF(0.0f, -15.0f));
+  manager->ScrollBy(gfx::Vector2dF(0.0f, -15.0f), /*is_inertial=*/false);
   EXPECT_FLOAT_EQ(-85.0f, manager->ControlsTopOffset());
   EXPECT_FLOAT_EQ(15.0f, manager->ContentTopOffset());
-  manager->ScrollEnd();
+  manager->ScrollEnd(gfx::Vector2dF());
 
   EXPECT_TRUE(manager->HasAnimation());
 }
@@ -581,7 +580,7 @@ TEST_F(BrowserControlsOffsetManagerTest, PinchBeginStartsAnimationIfNecessary) {
   BrowserControlsOffsetManager* manager = client.manager();
 
   manager->ScrollBegin();
-  manager->ScrollBy(gfx::Vector2dF(0.0f, 300.0f));
+  manager->ScrollBy(gfx::Vector2dF(0.0f, 300.0f), /*is_inertial=*/false);
   EXPECT_FLOAT_EQ(-100.0f, manager->ControlsTopOffset());
 
   manager->PinchBegin();
@@ -590,7 +589,7 @@ TEST_F(BrowserControlsOffsetManagerTest, PinchBeginStartsAnimationIfNecessary) {
   manager->PinchEnd();
   EXPECT_FALSE(manager->HasAnimation());
 
-  manager->ScrollBy(gfx::Vector2dF(0.0f, -15.0f));
+  manager->ScrollBy(gfx::Vector2dF(0.0f, -15.0f), /*is_inertial=*/false);
   EXPECT_FLOAT_EQ(-85.0f, manager->ControlsTopOffset());
   EXPECT_FLOAT_EQ(15.0f, manager->ContentTopOffset());
 
@@ -615,12 +614,12 @@ TEST_F(BrowserControlsOffsetManagerTest, PinchBeginStartsAnimationIfNecessary) {
   manager->PinchEnd();
   EXPECT_FALSE(manager->HasAnimation());
 
-  manager->ScrollBy(gfx::Vector2dF(0.0f, -55.0f));
+  manager->ScrollBy(gfx::Vector2dF(0.0f, -55.0f), /*is_inertial=*/false);
   EXPECT_FLOAT_EQ(-45.0f, manager->ControlsTopOffset());
   EXPECT_FLOAT_EQ(55.0f, manager->ContentTopOffset());
   EXPECT_FALSE(manager->HasAnimation());
 
-  manager->ScrollEnd();
+  manager->ScrollEnd(gfx::Vector2dF());
   EXPECT_TRUE(manager->HasAnimation());
 
   time = base::TimeTicks::Now();
@@ -715,9 +714,9 @@ TEST_F(BrowserControlsOffsetManagerTest, MinHeightIncreaseWhenHiddenAnimation) {
 
   // Scroll to hide.
   manager->ScrollBegin();
-  manager->ScrollBy(gfx::Vector2dF(0.0f, 100.0f));
+  manager->ScrollBy(gfx::Vector2dF(0.0f, 100.0f), /*is_inertial=*/false);
   EXPECT_FLOAT_EQ(0.0f, manager->ContentTopOffset());
-  manager->ScrollEnd();
+  manager->ScrollEnd(gfx::Vector2dF());
 
   // Set the new min-height with animation.
   client.SetBrowserControlsParams({100, 20, 0, 0, true, false});
@@ -764,9 +763,9 @@ TEST_F(BrowserControlsOffsetManagerTest,
 
   // Scroll to min-height.
   manager->ScrollBegin();
-  manager->ScrollBy(gfx::Vector2dF(0.0f, 80.0f));
+  manager->ScrollBy(gfx::Vector2dF(0.0f, 80.0f), /*is_inertial=*/false);
   EXPECT_FLOAT_EQ(20.0f, manager->ContentTopOffset());
-  manager->ScrollEnd();
+  manager->ScrollEnd(gfx::Vector2dF());
 
   // Set the new min-height with animation.
   client.SetBrowserControlsParams({100, 0, 0, 0, true, false});
@@ -814,9 +813,9 @@ TEST_F(BrowserControlsOffsetManagerTest, EnsureNoAnimationCases) {
 
   // Scroll to min-height.
   manager->ScrollBegin();
-  manager->ScrollBy(gfx::Vector2dF(0.0f, 80.0f));
+  manager->ScrollBy(gfx::Vector2dF(0.0f, 80.0f), /*is_inertial=*/false);
   EXPECT_FLOAT_EQ(20.0f, manager->ContentTopOffset());
-  manager->ScrollEnd();
+  manager->ScrollEnd(gfx::Vector2dF());
 
   // No animation should run if only the height changes when the controls
   // are at min-height.
@@ -863,12 +862,12 @@ TEST_F(BrowserControlsOffsetManagerTest,
   EXPECT_FLOAT_EQ(30.0f, manager->TopControlsMinHeightOffset());
   EXPECT_FALSE(manager->HasAnimation());
   // Then, the scroll will move the controls as it would normally.
-  manager->ScrollBy(gfx::Vector2dF(0.0f, 60.0f));
+  manager->ScrollBy(gfx::Vector2dF(0.0f, 60.0f), /*is_inertial=*/false);
   EXPECT_FALSE(manager->HasAnimation());
   EXPECT_FLOAT_EQ(90.0f, manager->ContentTopOffset());
   // Min-height offset won't change once the animation is complete.
   EXPECT_FLOAT_EQ(30.0f, manager->TopControlsMinHeightOffset());
-  manager->ScrollEnd();
+  manager->ScrollEnd(gfx::Vector2dF());
 }
 
 TEST_F(BrowserControlsOffsetManagerTest,
@@ -890,15 +889,35 @@ TEST_F(BrowserControlsOffsetManagerTest,
 }
 
 TEST_F(BrowserControlsOffsetManagerTest,
+       MetadataShownRatioClampedDuringHeightChangeAnimation) {
+  MockBrowserControlsOffsetManagerClient client(100.0f, 0.5f, 0.5f);
+  BrowserControlsOffsetManager* manager = client.manager();
+
+  EXPECT_FLOAT_EQ(100.0f, manager->ContentTopOffset());
+  EXPECT_FLOAT_EQ(1.0f, manager->TopControlsShownRatio());
+
+  // Shrinking the height with animation initiates an animation where
+  // the initial shown ratio exceeds 1.0f (old_height / new_height = 2.0f).
+  client.SetBrowserControlsParams({50, 0, 0, 0, true, false});
+  EXPECT_TRUE(manager->HasAnimation());
+
+  // GetMetadata() must clamp the ratio to [0.0f, 1.0f].
+  BrowserControlsMetadata metadata = manager->GetMetadata();
+  EXPECT_GE(metadata.top_controls_shown_ratio, 0.0f);
+  EXPECT_LE(metadata.top_controls_shown_ratio, 1.0f);
+  EXPECT_FLOAT_EQ(1.0f, metadata.top_controls_shown_ratio);
+}
+
+TEST_F(BrowserControlsOffsetManagerTest,
        ShrinkingHeightKeepsBrowserControlsHidden) {
   MockBrowserControlsOffsetManagerClient client(100.0f, 0.5f, 0.5f);
   BrowserControlsOffsetManager* manager = client.manager();
 
   manager->ScrollBegin();
-  manager->ScrollBy(gfx::Vector2dF(0.0f, 300.0f));
+  manager->ScrollBy(gfx::Vector2dF(0.0f, 300.0f), /*is_inertial=*/false);
   EXPECT_FLOAT_EQ(-100.0f, manager->ControlsTopOffset());
   EXPECT_FLOAT_EQ(0.0f, manager->ContentTopOffset());
-  manager->ScrollEnd();
+  manager->ScrollEnd(gfx::Vector2dF());
 
   client.SetBrowserControlsParams({50, 0, 0, 0, false, false});
   EXPECT_FALSE(manager->HasAnimation());
@@ -936,10 +955,10 @@ TEST_F(BrowserControlsOffsetManagerTest,
 
   // Scroll to hide the controls.
   manager->ScrollBegin();
-  manager->ScrollBy(gfx::Vector2dF(0.0f, 100.0f));
+  manager->ScrollBy(gfx::Vector2dF(0.0f, 100.0f), /*is_inertial=*/false);
   EXPECT_FLOAT_EQ(-100.0f, manager->ControlsTopOffset());
   EXPECT_FLOAT_EQ(0.0f, manager->ContentTopOffset());
-  manager->ScrollEnd();
+  manager->ScrollEnd(gfx::Vector2dF());
 
   // Change the min-height from 0 to 20.
   client.SetBrowserControlsParams({100, 20, 0, 0, false, false});
@@ -1040,9 +1059,9 @@ TEST_F(BrowserControlsOffsetManagerTest,
 
   // Scroll the controls to min-height.
   manager->ScrollBegin();
-  manager->ScrollBy(gfx::Vector2dF(0.0f, 100.0f));
+  manager->ScrollBy(gfx::Vector2dF(0.0f, 100.0f), /*is_inertial=*/false);
   EXPECT_FLOAT_EQ(20.0f, manager->ContentTopOffset());
-  manager->ScrollEnd();
+  manager->ScrollEnd(gfx::Vector2dF());
 
   // Change the height from 100 to 120.
   client.SetBrowserControlsParams({120, 20, 0, 0, false, false});
@@ -1097,7 +1116,7 @@ TEST_F(BrowserControlsOffsetManagerTest, ControlsAdjustToNewHeight) {
 
   // Scroll the controls a little.
   manager->ScrollBegin();
-  manager->ScrollBy(gfx::Vector2dF(0.0f, 40.0f));
+  manager->ScrollBy(gfx::Vector2dF(0.0f, 40.0f), /*is_inertial=*/false);
   EXPECT_FLOAT_EQ(60.0f, manager->ContentTopOffset());
 
   // Change the height from 100 to 120.
@@ -1106,7 +1125,7 @@ TEST_F(BrowserControlsOffsetManagerTest, ControlsAdjustToNewHeight) {
   // The shown ratios should be adjusted to keep the shown height same.
   EXPECT_FLOAT_EQ(60.0f, manager->ContentTopOffset());
 
-  manager->ScrollEnd();
+  manager->ScrollEnd(gfx::Vector2dF());
 }
 
 TEST_F(BrowserControlsOffsetManagerTest, ScrollByWithZeroHeightControlsIsNoop) {
@@ -1117,12 +1136,13 @@ TEST_F(BrowserControlsOffsetManagerTest, ScrollByWithZeroHeightControlsIsNoop) {
                                       std::nullopt);
 
   manager->ScrollBegin();
-  gfx::Vector2dF pending = manager->ScrollBy(gfx::Vector2dF(0.0f, 20.0f));
+  gfx::Vector2dF pending =
+      manager->ScrollBy(gfx::Vector2dF(0.0f, 20.0f), /*is_inertial=*/false);
   EXPECT_FLOAT_EQ(20.0f, pending.y());
   EXPECT_FLOAT_EQ(0.0f, manager->ControlsTopOffset());
   EXPECT_FLOAT_EQ(0.0f, manager->ContentTopOffset());
   EXPECT_FLOAT_EQ(1.0f, client.CurrentTopControlsShownRatio());
-  manager->ScrollEnd();
+  manager->ScrollEnd(gfx::Vector2dF());
 }
 
 TEST_F(BrowserControlsOffsetManagerTest, ScrollThenRestoreBottomControls) {
@@ -1130,16 +1150,16 @@ TEST_F(BrowserControlsOffsetManagerTest, ScrollThenRestoreBottomControls) {
   client.SetBrowserControlsParams({0, 0, 100, 0, false, false});
   BrowserControlsOffsetManager* manager = client.manager();
   manager->ScrollBegin();
-  manager->ScrollBy(gfx::Vector2dF(0.0f, 20.0f));
+  manager->ScrollBy(gfx::Vector2dF(0.0f, 20.0f), /*is_inertial=*/false);
   EXPECT_FLOAT_EQ(80.0f, manager->ContentBottomOffset());
   EXPECT_FLOAT_EQ(0.8f, manager->BottomControlsShownRatio());
-  manager->ScrollEnd();
+  manager->ScrollEnd(gfx::Vector2dF());
 
   manager->ScrollBegin();
-  manager->ScrollBy(gfx::Vector2dF(0.0f, -200.0f));
+  manager->ScrollBy(gfx::Vector2dF(0.0f, -200.0f), /*is_inertial=*/false);
   EXPECT_FLOAT_EQ(100.0f, manager->ContentBottomOffset());
   EXPECT_FLOAT_EQ(1.0f, manager->BottomControlsShownRatio());
-  manager->ScrollEnd();
+  manager->ScrollEnd(gfx::Vector2dF());
 }
 
 TEST_F(BrowserControlsOffsetManagerTest,
@@ -1148,16 +1168,16 @@ TEST_F(BrowserControlsOffsetManagerTest,
   client.SetBrowserControlsParams({0, 0, 100, 0, false, false});
   BrowserControlsOffsetManager* manager = client.manager();
   manager->ScrollBegin();
-  manager->ScrollBy(gfx::Vector2dF(0.0f, 20.0f));
+  manager->ScrollBy(gfx::Vector2dF(0.0f, 20.0f), /*is_inertial=*/false);
   EXPECT_FLOAT_EQ(80.0f, manager->ContentBottomOffset());
   EXPECT_FLOAT_EQ(0.8f, manager->BottomControlsShownRatio());
-  manager->ScrollEnd();
+  manager->ScrollEnd(gfx::Vector2dF());
 
   manager->ScrollBegin();
-  manager->ScrollBy(gfx::Vector2dF(0.0f, -200.0f));
+  manager->ScrollBy(gfx::Vector2dF(0.0f, -200.0f), /*is_inertial=*/false);
   EXPECT_FLOAT_EQ(100.0f, manager->ContentBottomOffset());
   EXPECT_FLOAT_EQ(1.0f, manager->BottomControlsShownRatio());
-  manager->ScrollEnd();
+  manager->ScrollEnd(gfx::Vector2dF());
 }
 
 TEST_F(BrowserControlsOffsetManagerTest, HideAndPeekBottomControls) {
@@ -1165,16 +1185,16 @@ TEST_F(BrowserControlsOffsetManagerTest, HideAndPeekBottomControls) {
   client.SetBrowserControlsParams({0, 0, 100, 0, false, false});
   BrowserControlsOffsetManager* manager = client.manager();
   manager->ScrollBegin();
-  manager->ScrollBy(gfx::Vector2dF(0.0f, 300.0f));
+  manager->ScrollBy(gfx::Vector2dF(0.0f, 300.0f), /*is_inertial=*/false);
   EXPECT_FLOAT_EQ(0.0f, manager->ContentBottomOffset());
   EXPECT_FLOAT_EQ(0.0f, manager->BottomControlsShownRatio());
-  manager->ScrollEnd();
+  manager->ScrollEnd(gfx::Vector2dF());
 
   manager->ScrollBegin();
-  manager->ScrollBy(gfx::Vector2dF(0.0f, -15.0f));
+  manager->ScrollBy(gfx::Vector2dF(0.0f, -15.0f), /*is_inertial=*/false);
   EXPECT_FLOAT_EQ(15.0f, manager->ContentBottomOffset());
   EXPECT_FLOAT_EQ(0.15f, manager->BottomControlsShownRatio());
-  manager->ScrollEnd();
+  manager->ScrollEnd(gfx::Vector2dF());
 }
 
 TEST_F(BrowserControlsOffsetManagerTest,
@@ -1207,17 +1227,17 @@ TEST_F(BrowserControlsOffsetManagerTest,
 
   // Controls don't hide completely and stop at the min-height.
   manager->ScrollBegin();
-  manager->ScrollBy(gfx::Vector2dF(0, 150));
+  manager->ScrollBy(gfx::Vector2dF(0, 150), /*is_inertial=*/false);
   EXPECT_FLOAT_EQ(30.0f / 100, client.CurrentTopControlsShownRatio());
   EXPECT_FLOAT_EQ(0.0f, client.CurrentBottomControlsShownRatio());
-  manager->ScrollEnd();
+  manager->ScrollEnd(gfx::Vector2dF());
 
   // Controls scroll immediately from the min-height point.
   manager->ScrollBegin();
-  manager->ScrollBy(gfx::Vector2dF(0, -70));
+  manager->ScrollBy(gfx::Vector2dF(0, -70), /*is_inertial=*/false);
   EXPECT_FLOAT_EQ(1.0f, client.CurrentTopControlsShownRatio());
   EXPECT_FLOAT_EQ(1.0f, client.CurrentBottomControlsShownRatio());
-  manager->ScrollEnd();
+  manager->ScrollEnd(gfx::Vector2dF());
 }
 
 TEST_F(BrowserControlsOffsetManagerTest,
@@ -1230,16 +1250,16 @@ TEST_F(BrowserControlsOffsetManagerTest,
 
   // Controls don't hide completely and stop at the min-height.
   manager->ScrollBegin();
-  manager->ScrollBy(gfx::Vector2dF(0, 150));
+  manager->ScrollBy(gfx::Vector2dF(0, 150), /*is_inertial=*/false);
   EXPECT_FLOAT_EQ(30.0f / 100, client.CurrentTopControlsShownRatio());
   EXPECT_FLOAT_EQ(20.0f / 100, client.CurrentBottomControlsShownRatio());
-  manager->ScrollEnd();
+  manager->ScrollEnd(gfx::Vector2dF());
 
   manager->ScrollBegin();
-  manager->ScrollBy(gfx::Vector2dF(0, -70));
+  manager->ScrollBy(gfx::Vector2dF(0, -70), /*is_inertial=*/false);
   EXPECT_FLOAT_EQ(1.0f, client.CurrentTopControlsShownRatio());
   EXPECT_FLOAT_EQ(1.0f, client.CurrentBottomControlsShownRatio());
-  manager->ScrollEnd();
+  manager->ScrollEnd(gfx::Vector2dF());
 }
 
 TEST_F(BrowserControlsOffsetManagerTest, ChangingBottomHeightFromZeroAnimates) {
@@ -1310,7 +1330,7 @@ TEST_F(BrowserControlsOffsetManagerTest, OnlyExpandTopControlsAtPageTop) {
   client.ScrollVerticallyBy(150.0f);
   EXPECT_FLOAT_EQ(-100.0f, manager->ControlsTopOffset());
   EXPECT_FLOAT_EQ(50.0f, client.ViewportScrollOffset().y());
-  manager->ScrollEnd();
+  manager->ScrollEnd(gfx::Vector2dF());
 
   manager->ScrollBegin();
 
@@ -1334,7 +1354,7 @@ TEST_F(BrowserControlsOffsetManagerTest, OnlyExpandTopControlsAtPageTop) {
   // The final offset is greater than gtest's epsilon.
   EXPECT_GT(0.0001f, client.ViewportScrollOffset().y());
 
-  manager->ScrollEnd();
+  manager->ScrollEnd(gfx::Vector2dF());
 }
 
 // Tests that if the min-height changes while we're animating to the previous
@@ -1461,7 +1481,7 @@ TEST_F(BrowserControlsOffsetManagerTest,
   // Finish the scroll, which should restart the show animation.  Since the
   // animation didn't run yet, the controls would auto-hide otherwise since they
   // started almost hidden.
-  manager->ScrollEnd();
+  manager->ScrollEnd(gfx::Vector2dF());
   EXPECT_TRUE(manager->IsAnimatingToShowControls());
 }
 
@@ -1493,7 +1513,7 @@ TEST_F(BrowserControlsOffsetManagerTest,
   // Finish the scroll, and the animation should still be in progress and/or
   // restarted.  We don't really care which, as long as it wasn't cancelled and
   // is trying to show the controls.
-  manager->ScrollEnd();
+  manager->ScrollEnd(gfx::Vector2dF());
   EXPECT_TRUE(manager->IsAnimatingToShowControls());
 }
 
@@ -1664,42 +1684,203 @@ TEST_F(BrowserControlsOffsetManagerTest,
   // ratio is NaN which is the bug being tested here.
   manager->ScrollBegin();
   client.ScrollVerticallyBy(30.0f);
-  manager->ScrollEnd();
+  manager->ScrollEnd(gfx::Vector2dF());
   EXPECT_FLOAT_EQ(30.0f, client.ViewportScrollOffset().y());
 }
 
-TEST_F(BrowserControlsOffsetManagerTest, SmoothScrollPreventsInstantJump) {
-  constexpr float kControlsHeight = 100.0f;
+TEST_F(BrowserControlsOffsetManagerTest,
+       BottomControlsScrollWithPinnedTopControls) {
   MockBrowserControlsOffsetManagerClient client(
-      /*top_controls_height=*/kControlsHeight,
+      /*top_controls_height=*/60.0f,
       /*browser_controls_show_threshold=*/0.5f,
       /*browser_controls_hide_threshold=*/0.5f);
   BrowserControlsOffsetManager* manager = client.manager();
 
+  // Case 1: Pinned top controls (60 == 60) with bottom controls (160, min 0).
+  client.SetBrowserControlsParams(
+      {/*top_controls_height=*/60.0f, /*top_controls_min_height=*/60.0f,
+       /*bottom_controls_height=*/160.0f, /*bottom_controls_min_height=*/0.0f,
+       /*animate_browser_controls_height_changes=*/false,
+       /*browser_controls_shrink_blink_size=*/false});
   EXPECT_FLOAT_EQ(1.0f, manager->TopControlsShownRatio());
+  EXPECT_FLOAT_EQ(60.0f, manager->ContentTopOffset());
+  EXPECT_FLOAT_EQ(1.0f, manager->BottomControlsShownRatio());
+  EXPECT_FLOAT_EQ(160.0f, manager->ContentBottomOffset());
 
+  // Scroll down by 40 (normalized ratio = 0.75 > 0.5). Top controls remain
+  // pinned at 60.0f, so the full scroll delta is applied to the viewport, and
+  // ScrollEnd() animates bottom controls back to 1.0f.
   manager->ScrollBegin();
-  manager->ScrollBy(gfx::Vector2dF(0.0f, 2 * kControlsHeight));
-  manager->ScrollEnd();
+  gfx::Vector2dF remaining_delta =
+      manager->ScrollBy(gfx::Vector2dF(0.0f, 40.0f), /*is_inertial=*/false);
+  EXPECT_FLOAT_EQ(40.0f, remaining_delta.y());
+  EXPECT_FLOAT_EQ(1.0f, manager->TopControlsShownRatio());
+  EXPECT_FLOAT_EQ(60.0f, manager->ContentTopOffset());
+  EXPECT_FLOAT_EQ(0.75f, manager->BottomControlsShownRatio());
+  EXPECT_FLOAT_EQ(120.0f, manager->ContentBottomOffset());
+  manager->ScrollEnd(gfx::Vector2dF());
+  EXPECT_TRUE(manager->HasAnimation());
+  EXPECT_TRUE(manager->IsAnimatingToShowControls());
 
-  EXPECT_FLOAT_EQ(0.0f, manager->TopControlsShownRatio());
-
-  base::test::ScopedFeatureList feature_list(
-      features::kBrowserControlsSmoothScroll);
-
-  const int kNumAnimationFrames =
-      std::ceil(1 / manager->MaximumShownRatioDeltaPerFrame(0.0f));
-  manager->ScrollBegin();
-  for (int i = 0; i < kNumAnimationFrames; i++) {
-    manager->ScrollBy(gfx::Vector2dF(0.0f, -kControlsHeight));
-    if (i < kNumAnimationFrames - 1) {
-      EXPECT_LT(manager->TopControlsShownRatio(), 1.0f) << "Frame #" << i + 1;
-    } else {
-      EXPECT_FLOAT_EQ(1.0f, manager->TopControlsShownRatio())
-          << "Frame #" << i + 1;
-    }
+  base::TimeTicks time = base::TimeTicks::Now();
+  // The first tick completes the no-op top controls animation ([1.0f, 1.0f]),
+  // leaving only the bottom controls animation active.
+  time += base::Microseconds(100);
+  manager->Animate(time);
+  EXPECT_TRUE(manager->HasAnimation());
+  EXPECT_TRUE(manager->IsAnimatingToShowControls());
+  while (manager->HasAnimation()) {
+    time += base::Microseconds(100);
+    manager->Animate(time);
+    EXPECT_FLOAT_EQ(1.0f, manager->TopControlsShownRatio());
+    EXPECT_FLOAT_EQ(60.0f, manager->ContentTopOffset());
   }
-  manager->ScrollEnd();
+  EXPECT_FLOAT_EQ(1.0f, manager->BottomControlsShownRatio());
+  EXPECT_FLOAT_EQ(160.0f, manager->ContentBottomOffset());
+
+  // Scroll down by 120 (normalized ratio = 0.25 <= 0.5). ScrollEnd() animates
+  // bottom controls to 0.0f while top controls remain pinned at 1.0f.
+  manager->ScrollBegin();
+  manager->ScrollBy(gfx::Vector2dF(0.0f, 120.0f), /*is_inertial=*/false);
+  EXPECT_FLOAT_EQ(1.0f, manager->TopControlsShownRatio());
+  EXPECT_FLOAT_EQ(60.0f, manager->ContentTopOffset());
+  EXPECT_FLOAT_EQ(0.25f, manager->BottomControlsShownRatio());
+  EXPECT_FLOAT_EQ(40.0f, manager->ContentBottomOffset());
+  manager->ScrollEnd(gfx::Vector2dF());
+  EXPECT_TRUE(manager->HasAnimation());
+  EXPECT_FALSE(manager->IsAnimatingToShowControls());
+
+  time += base::Microseconds(100);
+  manager->Animate(time);
+  EXPECT_TRUE(manager->HasAnimation());
+  EXPECT_FALSE(manager->IsAnimatingToShowControls());
+  while (manager->HasAnimation()) {
+    time += base::Microseconds(100);
+    manager->Animate(time);
+    EXPECT_FLOAT_EQ(1.0f, manager->TopControlsShownRatio());
+    EXPECT_FLOAT_EQ(60.0f, manager->ContentTopOffset());
+  }
+  EXPECT_FLOAT_EQ(0.0f, manager->BottomControlsShownRatio());
+  EXPECT_FLOAT_EQ(0.0f, manager->ContentBottomOffset());
+
+  // Scroll up slightly with latency compensation sufficient to cross the show
+  // threshold. ScrollEnd() should animate bottom controls to 1.0f.
+  manager->ScrollBegin();
+  manager->ScrollBy(gfx::Vector2dF(0.0f, -10.0f), /*is_inertial=*/false);
+  EXPECT_FLOAT_EQ(10.0f / 160.0f, manager->BottomControlsShownRatio());
+  manager->ScrollEnd(gfx::Vector2dF(0.0f, -80.0f));
+  EXPECT_TRUE(manager->HasAnimation());
+  EXPECT_TRUE(manager->IsAnimatingToShowControls());
+
+  // Tick once so top_controls_animation_ resets while
+  // bottom_controls_animation_ remains active and BottomControlsShownRatio() is
+  // still < 0.5f. Interrupting with ScrollBegin() and ScrollEnd() should
+  // preserve and restart the show animation for the bottom controls.
+  time += base::Microseconds(100);
+  manager->Animate(time);
+  EXPECT_TRUE(manager->HasAnimation());
+  EXPECT_TRUE(manager->IsAnimatingToShowControls());
+  EXPECT_LT(manager->BottomControlsShownRatio(), 0.5f);
+  manager->ScrollBegin();
+  EXPECT_FALSE(manager->HasAnimation());
+  manager->ScrollEnd(gfx::Vector2dF());
+  EXPECT_TRUE(manager->HasAnimation());
+  EXPECT_TRUE(manager->IsAnimatingToShowControls());
+
+  while (manager->HasAnimation()) {
+    time += base::Microseconds(100);
+    manager->Animate(time);
+    EXPECT_FLOAT_EQ(1.0f, manager->TopControlsShownRatio());
+    EXPECT_FLOAT_EQ(60.0f, manager->ContentTopOffset());
+  }
+  EXPECT_FLOAT_EQ(1.0f, manager->BottomControlsShownRatio());
+  EXPECT_FLOAT_EQ(160.0f, manager->ContentBottomOffset());
+
+  // Case 2: Pinned top controls (60 == 60) with bottom controls min-height 40
+  // (160, min 40 -> min_shown_ratio = 0.25, scrollable range = 120).
+  client.SetBrowserControlsParams(
+      {/*top_controls_height=*/60.0f, /*top_controls_min_height=*/60.0f,
+       /*bottom_controls_height=*/160.0f, /*bottom_controls_min_height=*/40.0f,
+       /*animate_browser_controls_height_changes=*/false,
+       /*browser_controls_shrink_blink_size=*/false});
+
+  // Scroll down by 90 (shown height = 70, normalized ratio = (70-40)/120 =
+  // 0.25 <= 0.5). ScrollEnd() animates bottom controls to min_shown_ratio
+  // (0.25, 40.0f) while top controls stay pinned at 60.0f.
+  manager->ScrollBegin();
+  manager->ScrollBy(gfx::Vector2dF(0.0f, 90.0f), /*is_inertial=*/false);
+  EXPECT_FLOAT_EQ(1.0f, manager->TopControlsShownRatio());
+  EXPECT_FLOAT_EQ(60.0f, manager->ContentTopOffset());
+  EXPECT_FLOAT_EQ(70.0f / 160.0f, manager->BottomControlsShownRatio());
+  EXPECT_FLOAT_EQ(70.0f, manager->ContentBottomOffset());
+  manager->ScrollEnd(gfx::Vector2dF());
+  EXPECT_TRUE(manager->HasAnimation());
+  EXPECT_FALSE(manager->IsAnimatingToShowControls());
+
+  while (manager->HasAnimation()) {
+    time += base::Microseconds(100);
+    manager->Animate(time);
+    EXPECT_FLOAT_EQ(1.0f, manager->TopControlsShownRatio());
+    EXPECT_FLOAT_EQ(60.0f, manager->ContentTopOffset());
+  }
+  EXPECT_FLOAT_EQ(0.25f, manager->BottomControlsShownRatio());
+  EXPECT_FLOAT_EQ(40.0f, manager->ContentBottomOffset());
+
+  // Scroll up by 90 (shown height = 130, normalized ratio = (130-40)/120 =
+  // 0.75 >= 0.5). ScrollEnd() animates bottom controls to 1.0f (160.0f).
+  manager->ScrollBegin();
+  manager->ScrollBy(gfx::Vector2dF(0.0f, -90.0f), /*is_inertial=*/false);
+  EXPECT_FLOAT_EQ(1.0f, manager->TopControlsShownRatio());
+  EXPECT_FLOAT_EQ(60.0f, manager->ContentTopOffset());
+  EXPECT_FLOAT_EQ(130.0f / 160.0f, manager->BottomControlsShownRatio());
+  EXPECT_FLOAT_EQ(130.0f, manager->ContentBottomOffset());
+  manager->ScrollEnd(gfx::Vector2dF());
+  EXPECT_TRUE(manager->HasAnimation());
+  EXPECT_TRUE(manager->IsAnimatingToShowControls());
+
+  while (manager->HasAnimation()) {
+    time += base::Microseconds(100);
+    manager->Animate(time);
+    EXPECT_FLOAT_EQ(1.0f, manager->TopControlsShownRatio());
+    EXPECT_FLOAT_EQ(60.0f, manager->ContentTopOffset());
+  }
+  EXPECT_FLOAT_EQ(1.0f, manager->BottomControlsShownRatio());
+  EXPECT_FLOAT_EQ(160.0f, manager->ContentBottomOffset());
+
+  // Case 3: Pinned top controls (60 == 60) with zero-height bottom controls
+  // (0 == 0). Exercises the `TopControlsHeight() > 0.f` fallback in
+  // ShouldBaseOnTopControls() and the `controls.min_shown_ratio < 1.0f` guard
+  // in ScrollEnd().
+  client.SetBrowserControlsParams(
+      {/*top_controls_height=*/60.0f, /*top_controls_min_height=*/60.0f,
+       /*bottom_controls_height=*/0.0f, /*bottom_controls_min_height=*/0.0f,
+       /*animate_browser_controls_height_changes=*/false,
+       /*browser_controls_shrink_blink_size=*/false});
+  manager->UpdateBrowserControlsState(BrowserControlsState::kBoth,
+                                      BrowserControlsState::kHidden,
+                                      /*animate=*/false, std::nullopt);
+  EXPECT_FLOAT_EQ(1.0f, manager->TopControlsShownRatio());
+  EXPECT_FLOAT_EQ(60.0f, manager->ContentTopOffset());
+  EXPECT_FLOAT_EQ(0.0f, manager->BottomControlsShownRatio());
+  EXPECT_FLOAT_EQ(0.0f, manager->ContentBottomOffset());
+
+  manager->ScrollBegin();
+  remaining_delta =
+      manager->ScrollBy(gfx::Vector2dF(0.0f, 40.0f), /*is_inertial=*/false);
+  EXPECT_FLOAT_EQ(40.0f, remaining_delta.y());
+  EXPECT_FLOAT_EQ(1.0f, manager->TopControlsShownRatio());
+  EXPECT_FLOAT_EQ(60.0f, manager->ContentTopOffset());
+  manager->ScrollEnd(gfx::Vector2dF());
+  EXPECT_FALSE(manager->HasAnimation());
+
+  manager->ScrollBegin();
+  remaining_delta =
+      manager->ScrollBy(gfx::Vector2dF(0.0f, -40.0f), /*is_inertial=*/false);
+  EXPECT_FLOAT_EQ(-40.0f, remaining_delta.y());
+  EXPECT_FLOAT_EQ(1.0f, manager->TopControlsShownRatio());
+  EXPECT_FLOAT_EQ(60.0f, manager->ContentTopOffset());
+  manager->ScrollEnd(gfx::Vector2dF(0.0f, -80.0f));
+  EXPECT_FALSE(manager->HasAnimation());
 }
 
 TEST_F(BrowserControlsOffsetManagerTest, ScrollWithLatencyCompensation) {
@@ -1711,14 +1892,16 @@ TEST_F(BrowserControlsOffsetManagerTest, ScrollWithLatencyCompensation) {
   BrowserControlsOffsetManager* manager = client.manager();
 
   manager->ScrollBegin();
-  manager->ScrollBy(gfx::Vector2dF(0.0f, kControlsHeight));
-  manager->ScrollEnd();
+  manager->ScrollBy(gfx::Vector2dF(0.0f, kControlsHeight),
+                    /*is_inertial=*/false);
+  manager->ScrollEnd(gfx::Vector2dF());
   EXPECT_FLOAT_EQ(manager->TopControlsShownRatio(), 0.0f);
 
   manager->ScrollBegin();
 
   // Scroll by a small amount that is not enough to show controls.
-  manager->ScrollBy(gfx::Vector2dF(0.0f, -kControlsHeight * 0.01f));
+  manager->ScrollBy(gfx::Vector2dF(0.0f, -kControlsHeight * 0.01f),
+                    /*is_inertial=*/false);
   EXPECT_LT(manager->TopControlsShownRatio(), 1.0f);
 
   // ScrollEnd with latency compensation should show the controls if the
@@ -1733,6 +1916,173 @@ TEST_F(BrowserControlsOffsetManagerTest, ScrollWithLatencyCompensation) {
   }
   EXPECT_FALSE(manager->HasAnimation());
   EXPECT_FLOAT_EQ(manager->TopControlsShownRatio(), 1.0f);
+}
+
+TEST_F(BrowserControlsOffsetManagerTest, GetOffsetTagValues) {
+  MockBrowserControlsOffsetManagerClient client(100.0f, 0.5f, 0.5f);
+  client.SetBrowserControlsParams({100.0f, 0.0f, 50.0f, 0.0f, false, false});
+  BrowserControlsOffsetManager* manager = client.manager();
+
+  viz::OffsetTag top_tag = viz::OffsetTag::CreateRandom();
+  viz::OffsetTag content_tag = viz::OffsetTag::CreateRandom();
+  viz::OffsetTag bottom_tag = viz::OffsetTag::CreateRandom();
+
+  BrowserControlsOffsetTagModifications modifications;
+  modifications.tags.top_controls_offset_tag = top_tag;
+  modifications.tags.content_offset_tag = content_tag;
+  modifications.tags.bottom_controls_offset_tag = bottom_tag;
+  modifications.top_controls_additional_height = 5;
+  modifications.bottom_controls_additional_height = 10;
+
+  manager->SetOffsetTagModifications(modifications);
+
+  // 1. Fully shown controls (top_ratio = 1.0, bottom_ratio = 1.0)
+  client.SetCurrentBrowserControlsShownRatio(1.0f, 1.0f);
+  {
+    std::vector<viz::OffsetTagValue> values = manager->GetOffsetTagValues();
+    ASSERT_EQ(3u, values.size());
+    EXPECT_EQ(top_tag, values[0].tag);
+    EXPECT_EQ(gfx::Vector2dF(0.0f, 0.0f), values[0].offset);
+    EXPECT_EQ(content_tag, values[1].tag);
+    EXPECT_EQ(gfx::Vector2dF(0.0f, 0.0f), values[1].offset);
+    EXPECT_EQ(bottom_tag, values[2].tag);
+    EXPECT_EQ(gfx::Vector2dF(0.0f, 0.0f), values[2].offset);
+  }
+
+  // 2. Partially shown controls (top_ratio = 0.5, bottom_ratio = 0.5)
+  // Top: visible_height = 50, offset = 100 - 50 = 50 -> offset2d = (0, -50)
+  // Content: offset = 100 - 50 = 50 -> offset2d = (0, -50)
+  // Bottom: visible_height = 25, offset = 50 - 25 = 25 -> offset2d = (0, 25)
+  client.SetCurrentBrowserControlsShownRatio(0.5f, 0.5f);
+  {
+    std::vector<viz::OffsetTagValue> values = manager->GetOffsetTagValues();
+    ASSERT_EQ(3u, values.size());
+    EXPECT_EQ(top_tag, values[0].tag);
+    EXPECT_EQ(gfx::Vector2dF(0.0f, -50.0f), values[0].offset);
+    EXPECT_EQ(content_tag, values[1].tag);
+    EXPECT_EQ(gfx::Vector2dF(0.0f, -50.0f), values[1].offset);
+    EXPECT_EQ(bottom_tag, values[2].tag);
+    EXPECT_EQ(gfx::Vector2dF(0.0f, 25.0f), values[2].offset);
+  }
+
+  // 3. Fully hidden controls (top_ratio = 0.0, bottom_ratio = 0.0)
+  // Top: visible_height = 0, offset = 100 - 0 + 5 = 105 -> offset2d = (0, -105)
+  // Content: offset = 100 - 0 = 100 -> offset2d = (0, -100)
+  // Bottom: visible_height = 0, offset = 50 - 0 + 10 = 60 -> offset2d = (0, 60)
+  client.SetCurrentBrowserControlsShownRatio(0.0f, 0.0f);
+  {
+    std::vector<viz::OffsetTagValue> values = manager->GetOffsetTagValues();
+    ASSERT_EQ(3u, values.size());
+    EXPECT_EQ(top_tag, values[0].tag);
+    EXPECT_EQ(gfx::Vector2dF(0.0f, -105.0f), values[0].offset);
+    EXPECT_EQ(content_tag, values[1].tag);
+    EXPECT_EQ(gfx::Vector2dF(0.0f, -100.0f), values[1].offset);
+    EXPECT_EQ(bottom_tag, values[2].tag);
+    EXPECT_EQ(gfx::Vector2dF(0.0f, 60.0f), values[2].offset);
+  }
+}
+
+TEST_F(BrowserControlsOffsetManagerTest, AnimateWithoutRootScrollNode) {
+  MockBrowserControlsOffsetManagerClient client(50.0f, 0.5f, 0.5f);
+  client.SetBrowserControlsParams({50.0f, 0.0f, 50.0f, 0.0f, false, false});
+  BrowserControlsOffsetManager* manager = client.manager();
+
+  client.SetCurrentBrowserControlsShownRatio(0.0f, 0.0f);
+  EXPECT_FLOAT_EQ(0.0f, client.CurrentTopControlsShownRatio());
+  EXPECT_FLOAT_EQ(0.0f, client.CurrentBottomControlsShownRatio());
+
+  manager->UpdateBrowserControlsState(BrowserControlsState::kBoth,
+                                      BrowserControlsState::kShown,
+                                      /*animate=*/true, std::nullopt);
+  EXPECT_TRUE(manager->HasAnimation());
+
+  client.SetHaveRootScrollNode(false);
+
+  base::TimeTicks time = base::TimeTicks::Now();
+  // First Animate() initializes the animation start and stop times.
+  EXPECT_EQ(gfx::Vector2dF(), manager->Animate(time));
+  EXPECT_FLOAT_EQ(0.0f, client.CurrentTopControlsShownRatio());
+  EXPECT_FLOAT_EQ(0.0f, client.CurrentBottomControlsShownRatio());
+
+  bool saw_intermediate_ratio = false;
+  float previous_top_ratio = client.CurrentTopControlsShownRatio();
+  float previous_bottom_ratio = client.CurrentBottomControlsShownRatio();
+  while (manager->HasAnimation()) {
+    time += base::Milliseconds(16);
+    gfx::Vector2dF scroll_delta = manager->Animate(time);
+    EXPECT_EQ(gfx::Vector2dF(), scroll_delta);
+    EXPECT_GE(client.CurrentTopControlsShownRatio(), previous_top_ratio);
+    EXPECT_GE(client.CurrentBottomControlsShownRatio(), previous_bottom_ratio);
+    if (client.CurrentTopControlsShownRatio() > 0.0f &&
+        client.CurrentTopControlsShownRatio() < 1.0f) {
+      saw_intermediate_ratio = true;
+    }
+    previous_top_ratio = client.CurrentTopControlsShownRatio();
+    previous_bottom_ratio = client.CurrentBottomControlsShownRatio();
+  }
+
+  EXPECT_TRUE(saw_intermediate_ratio);
+  EXPECT_FALSE(manager->HasAnimation());
+  EXPECT_FLOAT_EQ(1.0f, client.CurrentTopControlsShownRatio());
+  EXPECT_FLOAT_EQ(1.0f, client.CurrentBottomControlsShownRatio());
+}
+
+TEST_F(BrowserControlsOffsetManagerTest,
+       AnimateWithoutRootScrollNodeTicksHeightChangeAnimation) {
+  constexpr float kControlsHeight = 100.0f;
+  MockBrowserControlsOffsetManagerClient client(kControlsHeight, 0.5f, 0.5f);
+  client.SetBrowserControlsParams(
+      {kControlsHeight, 0.0f, 50.0f, 50.0f, false, false});
+  BrowserControlsOffsetManager* manager = client.manager();
+
+  client.SetHaveRootScrollNode(false);
+  client.SetBrowserControlsParams(
+      {kControlsHeight, 0.0f, 100.0f, 50.0f,
+       /*animate_browser_controls_height_changes=*/true, false});
+  EXPECT_TRUE(manager->HasAnimation());
+  base::TimeTicks time = base::TimeTicks::Now();
+  while (manager->HasAnimation()) {
+    time += base::Milliseconds(16);
+    EXPECT_EQ(gfx::Vector2dF(), manager->Animate(time));
+  }
+  EXPECT_FALSE(manager->HasAnimation());
+  EXPECT_FLOAT_EQ(1.0f, client.CurrentBottomControlsShownRatio());
+}
+
+TEST_F(BrowserControlsOffsetManagerTest,
+       AnimateWithoutRootScrollNodeSnapAnimationReshowsInAlwaysShownRegion) {
+  base::test::ScopedFeatureList feature_list(
+      features::kBrowserControlsScrollSnapAnimation);
+  MockBrowserControlsOffsetManagerClient client(50.0f, 0.5f, 0.5f);
+  client.SetBrowserControlsParams({50.0f, 0.0f, 50.0f, 0.0f, false, false});
+  BrowserControlsOffsetManager* manager = client.manager();
+
+  EXPECT_FLOAT_EQ(1.0f, client.CurrentTopControlsShownRatio());
+  EXPECT_FLOAT_EQ(1.0f, client.CurrentBottomControlsShownRatio());
+
+  client.SetHaveRootScrollNode(false);
+  manager->UpdateBrowserControlsState(BrowserControlsState::kBoth,
+                                      BrowserControlsState::kHidden,
+                                      /*animate=*/true, std::nullopt);
+  EXPECT_TRUE(manager->HasAnimation());
+
+  // With no root scroll node the viewport scroll offset is 0, which is in the
+  // always-shown region, so the completed hide is followed by a show snap. This
+  // errs on the side of showing the controls during navigation.
+  bool hide_completed = false;
+  base::TimeTicks time = base::TimeTicks::Now();
+  while (manager->HasAnimation()) {
+    time += base::Milliseconds(16);
+    EXPECT_EQ(gfx::Vector2dF(), manager->Animate(time));
+    if (client.CurrentTopControlsShownRatio() == 0.0f) {
+      hide_completed = true;
+    }
+  }
+
+  EXPECT_TRUE(hide_completed);
+  EXPECT_FALSE(manager->HasAnimation());
+  EXPECT_FLOAT_EQ(1.0f, client.CurrentTopControlsShownRatio());
+  EXPECT_FLOAT_EQ(1.0f, client.CurrentBottomControlsShownRatio());
 }
 
 class BrowserControlsOffsetManagerCancelAnimationTest : public testing::Test {
@@ -1809,8 +2159,10 @@ TEST_F(BrowserControlsOffsetManagerCancelAnimationTest,
 #if !(BUILDFLAG(IS_LINUX) && defined(THREAD_SANITIZER))
 class BrowserControlsOffsetManagerSnapAnimationTest : public testing::Test {
  public:
-  BrowserControlsOffsetManagerSnapAnimationTest()
-      : client_(kControlsHeight, 0.5f, 0.5f) {
+  explicit BrowserControlsOffsetManagerSnapAnimationTest(
+      const std::vector<base::test::FeatureRef>& enabled_features =
+          {features::kBrowserControlsScrollSnapAnimation})
+      : feature_list_(enabled_features), client_(kControlsHeight, 0.5f, 0.5f) {
     client_.SetMaxViewportScrollOffsetY(kMaxScrollY);
   }
 
@@ -1835,7 +2187,7 @@ class BrowserControlsOffsetManagerSnapAnimationTest : public testing::Test {
     }
 
     ~ScrollSequence() {
-      test_->client_.manager()->ScrollEnd();
+      test_->client_.manager()->ScrollEnd(gfx::Vector2dF());
       EXPECT_EQ(test_->client_.manager()->HasAnimation(),
                 scroll_end_animation_direction_ != AnimationDirection::kNone);
       if (scroll_end_animation_direction_ != AnimationDirection::kNone) {
@@ -1918,8 +2270,10 @@ class BrowserControlsOffsetManagerSnapAnimationTest : public testing::Test {
   void AnimateToCompletion(bool animate_to_show) {
     BrowserControlsOffsetManager* manager = client_.manager();
     ASSERT_EQ(manager->IsAnimatingToShowControls(), animate_to_show);
-    const float final_shown_ratio =
-        manager->IsAnimatingToShowControls() ? 1.0f : 0.0f;
+    const float final_top_shown_ratio =
+        animate_to_show ? 1.0f : manager->TopControlsMinShownRatio();
+    const float final_bottom_shown_ratio =
+        animate_to_show ? 1.0f : manager->BottomControlsMinShownRatio();
 
     // Let the animation run to completion.
     base::TimeTicks time = base::TimeTicks::Now();
@@ -1928,8 +2282,8 @@ class BrowserControlsOffsetManagerSnapAnimationTest : public testing::Test {
       manager->Animate(time);
     }
     ASSERT_FALSE(manager->HasAnimation());
-    ASSERT_EQ(manager->TopControlsShownRatio(), final_shown_ratio);
-    ASSERT_EQ(manager->BottomControlsShownRatio(), final_shown_ratio);
+    ASSERT_EQ(manager->TopControlsShownRatio(), final_top_shown_ratio);
+    ASSERT_EQ(manager->BottomControlsShownRatio(), final_bottom_shown_ratio);
   }
 
   std::optional<float> MeasureScrollDeltaToHide(
@@ -1963,26 +2317,30 @@ class BrowserControlsOffsetManagerSnapAnimationTest : public testing::Test {
     return did_animate;
   }
 
+  const BrowserControlsSnapAnimationController& snap_controller() {
+    return client_.manager()->snap_controller_for_testing();
+  }
+
   float MinimumTopCanHideRegionHeight() {
-    return client_.manager()->SnapAnimationCanHideRegionHeights(0.0f).first;
+    return snap_controller().CanHideRegionHeights(0.0f).first;
   }
 
   float MaximumTopCanHideRegionHeight() {
-    return client_.manager()->SnapAnimationCanHideRegionHeights(1.0f).first;
+    return snap_controller().CanHideRegionHeights(1.0f).first;
   }
 
   float MinimumBottomCanHideRegionHeight() {
-    return client_.manager()->SnapAnimationCanHideRegionHeights(0.0f).second;
+    return snap_controller().CanHideRegionHeights(0.0f).second;
   }
 
   float MaximumBottomCanHideRegionHeight() {
-    return client_.manager()->SnapAnimationCanHideRegionHeights(1.0f).second;
+    return snap_controller().CanHideRegionHeights(1.0f).second;
   }
 
   // Returns a large scroll delta that is guaranteed to trigger the snap
   // animation when the top of the page is in the can-hide region.
   float LargeScrollDelta() {
-    return client_.manager()->SnapAnimationThreshold(/*slowness=*/1.0f);
+    return snap_controller().TriggerThreshold(/*slowness=*/1.0f);
   }
 
   constexpr static float kControlsHeight = 100.0f;
@@ -1990,8 +2348,7 @@ class BrowserControlsOffsetManagerSnapAnimationTest : public testing::Test {
   // Initialize the feature list before the client is created to avoid
   // other threads from being created before the feature list is initialized,
   // which can cause crashes (see crbug.com/487287578 for details).
-  base::test::ScopedFeatureList feature_list_{
-      features::kBrowserControlsScrollSnapAnimation};
+  base::test::ScopedFeatureList feature_list_;
   MockBrowserControlsOffsetManagerClient client_;
   base::ScopedMockClockOverride mock_clock_;
 };
@@ -2301,8 +2658,6 @@ TEST_F(BrowserControlsOffsetManagerSnapAnimationTest,
 
 TEST_F(BrowserControlsOffsetManagerSnapAnimationTest,
        ControlsShowInAlwaysShownRegion) {
-  BrowserControlsOffsetManager* manager = client_.manager();
-
   client_.SetViewportScrollOffset(
       0.0f, MaximumTopCanHideRegionHeight() + LargeScrollDelta());
   {
@@ -2313,9 +2668,9 @@ TEST_F(BrowserControlsOffsetManagerSnapAnimationTest,
 
   // Scroll up in discrete scrolls until the top of the page is just outside the
   // always-shown region, lest the scroll-end processing should trigger the show
-  // animation..
+  // animation.
   while (client_.ViewportScrollOffset().y() >
-         manager->SnapAnimationAlwaysShownRegionHeight() + 1.0f) {
+         snap_controller().AlwaysShownRegionHeight() + 1.0f) {
     ScrollSequence scroll_sequence(this);
     EXPECT_TRUE(ScrollDidNotAnimate(-1.0f));
   }
@@ -2361,7 +2716,7 @@ TEST_F(BrowserControlsOffsetManagerSnapAnimationTest,
   // after the first scroll but before the second scroll is triggered.
   manager->ScrollBegin();
   ScrollBy(LargeScrollDelta(), base::Milliseconds(1), /*is_inertial=*/false);
-  manager->ScrollEnd();
+  manager->ScrollEnd(gfx::Vector2dF());
 
   // A hide animation should be running.
   ASSERT_TRUE(manager->HasAnimation());
@@ -2372,7 +2727,7 @@ TEST_F(BrowserControlsOffsetManagerSnapAnimationTest,
   manager->ScrollBegin();
   ScrollBy(-client_.ViewportScrollOffset().y(), base::Microseconds(10),
            /*is_inertial=*/false);
-  manager->ScrollEnd();
+  manager->ScrollEnd(gfx::Vector2dF());
 
   // A show animation should have been triggered immediately after the hide
   // animation completes since the top of the page is in the always-shown
@@ -2499,6 +2854,201 @@ TEST_F(BrowserControlsOffsetManagerSnapAnimationTest,
   }
 }
 
+class BrowserControlsOffsetManagerExtraHideGesturesSnapTest
+    : public BrowserControlsOffsetManagerSnapAnimationTest {
+ public:
+  BrowserControlsOffsetManagerExtraHideGesturesSnapTest()
+      : BrowserControlsOffsetManagerSnapAnimationTest(
+            {features::kBrowserControlsScrollSnapAnimation,
+             features::kBrowserControlsExtraHideGestures}) {}
+};
+
+TEST_F(BrowserControlsOffsetManagerExtraHideGesturesSnapTest,
+       ExplicitHideInAlwaysShownRegionStaysHidden) {
+  BrowserControlsOffsetManager* manager = client_.manager();
+
+  // Start at the top of the page (inside the always-shown region).
+  client_.SetViewportScrollOffset(0.0f, 0.0f);
+  ASSERT_EQ(manager->TopControlsShownRatio(), 1.0f);
+
+  // Explicitly hide the browser controls (e.g. via toolbar swipe-to-hide).
+  manager->UpdateBrowserControlsState(BrowserControlsState::kBoth,
+                                      BrowserControlsState::kHidden,
+                                      /*animate=*/true, std::nullopt);
+  ASSERT_TRUE(manager->HasAnimation());
+  ASSERT_FALSE(manager->IsAnimatingToShowControls());
+
+  // Completing the explicit hide animation in the always-shown region must not
+  // immediately trigger a snap animation to re-show the controls.
+  AnimateToCompletion(/*animate_to_show=*/false);
+  EXPECT_FALSE(manager->HasAnimation());
+  EXPECT_EQ(manager->TopControlsShownRatio(), 0.0f);
+
+  // A zero-velocity ScrollBegin/ScrollEnd sequence at the page top must also
+  // not re-show the controls.
+  manager->ScrollBegin();
+  manager->ScrollEnd(gfx::Vector2dF());
+  EXPECT_FALSE(manager->HasAnimation());
+  EXPECT_EQ(manager->TopControlsShownRatio(), 0.0f);
+
+  // A single-gesture down-then-up scroll starting at the page top should
+  // reveal the controls once the scroll reverses upward.
+  {
+    ScrollSequence scroll_sequence(this);
+    EXPECT_TRUE(ScrollDidNotAnimate(10.0f));
+    EXPECT_TRUE(ScrollDidAnimate(-5.0f, AnimationDirection::kShowingControls));
+  }
+  EXPECT_EQ(manager->TopControlsShownRatio(), 1.0f);
+}
+
+TEST_F(BrowserControlsOffsetManagerExtraHideGesturesSnapTest,
+       ScrollInitiatedHideCompletingInAlwaysShownRegionStillShowsControls) {
+  BrowserControlsOffsetManager* manager = client_.manager();
+
+  // Start well inside the can-hide region and trigger a scroll-initiated hide
+  // animation.
+  client_.SetViewportScrollOffset(
+      0.0f, MaximumTopCanHideRegionHeight() + 2 * LargeScrollDelta());
+  manager->ScrollBegin();
+  ScrollBy(LargeScrollDelta(), base::Milliseconds(1), /*is_inertial=*/false);
+  manager->ScrollEnd(gfx::Vector2dF());
+  ASSERT_TRUE(manager->HasAnimation());
+  ASSERT_FALSE(manager->IsAnimatingToShowControls());
+
+  // Scroll to the top of the page while the hide animation is running.
+  manager->ScrollBegin();
+  ScrollBy(-client_.ViewportScrollOffset().y(), base::Microseconds(10),
+           /*is_inertial=*/false);
+  manager->ScrollEnd(gfx::Vector2dF());
+
+  // Only explicit (non-snap) hide animations are exempt from the snap-back to
+  // the shown state; a scroll-initiated one must still be undone.
+  while (manager->HasAnimation()) {
+    mock_clock_.Advance(base::Milliseconds(1));
+    manager->Animate(base::TimeTicks::Now());
+  }
+  EXPECT_EQ(manager->TopControlsShownRatio(), 1.0f);
+}
+
+TEST_F(BrowserControlsOffsetManagerExtraHideGesturesSnapTest,
+       ExplicitHideWithBottomControlsOnlyStaysHiddenAtPageTop) {
+  BrowserControlsOffsetManager* manager = client_.manager();
+
+  // Bottom toolbar: there are no top controls, so there is no always-shown
+  // region even at the page top.
+  BrowserControlsParams params;
+  params.bottom_controls_height = kControlsHeight;
+  client_.SetBrowserControlsParams(params);
+  client_.SetViewportScrollOffset(0.0f, 0.0f);
+  ASSERT_EQ(manager->BottomControlsShownRatio(), 1.0f);
+
+  manager->UpdateBrowserControlsState(BrowserControlsState::kBoth,
+                                      BrowserControlsState::kHidden,
+                                      /*animate=*/true, std::nullopt);
+  ASSERT_TRUE(manager->HasAnimation());
+  AnimateToCompletion(/*animate_to_show=*/false);
+  EXPECT_FALSE(manager->HasAnimation());
+  EXPECT_EQ(manager->BottomControlsShownRatio(), 0.0f);
+
+  // A zero-velocity scroll at the page top must not re-show the controls.
+  manager->ScrollBegin();
+  manager->ScrollEnd(gfx::Vector2dF());
+  EXPECT_FALSE(manager->HasAnimation());
+  EXPECT_EQ(manager->BottomControlsShownRatio(), 0.0f);
+}
+
+TEST_F(BrowserControlsOffsetManagerExtraHideGesturesSnapTest,
+       ExplicitHideReplacingSnapShowAtPageTopStaysHidden) {
+  BrowserControlsOffsetManager* manager = client_.manager();
+
+  // Scroll-initiated hide, well inside the can-hide region.
+  client_.SetViewportScrollOffset(
+      0.0f, MaximumTopCanHideRegionHeight() + 2 * LargeScrollDelta());
+  {
+    ScrollSequence scroll_sequence(this);
+    EXPECT_TRUE(ScrollDidAnimate(LargeScrollDelta(),
+                                 AnimationDirection::kHidingControls));
+  }
+  ASSERT_EQ(manager->TopControlsShownRatio(), 0.0f);
+
+  // Scroll up so that a scroll-initiated show animation starts, and advance it
+  // part-way.
+  manager->ScrollBegin();
+  ScrollBy(-2 * LargeScrollDelta());
+  manager->ScrollEnd(gfx::Vector2dF());
+  ASSERT_TRUE(manager->IsAnimatingToShowControls());
+  base::TimeTicks time = base::TimeTicks::Now();
+  manager->Animate(time);
+  manager->Animate(time + base::Milliseconds(30));
+  ASSERT_GT(manager->TopControlsShownRatio(), 0.0f);
+  ASSERT_LT(manager->TopControlsShownRatio(), 1.0f);
+
+  // An explicit hide at the page top replaces the snap animation. It must not
+  // inherit its snap state, which would re-show the controls on completion.
+  client_.SetViewportScrollOffset(0.0f, 0.0f);
+  manager->UpdateBrowserControlsState(BrowserControlsState::kBoth,
+                                      BrowserControlsState::kHidden,
+                                      /*animate=*/true, std::nullopt);
+  ASSERT_FALSE(manager->IsAnimatingToShowControls());
+  AnimateToCompletion(/*animate_to_show=*/false);
+  EXPECT_EQ(manager->TopControlsShownRatio(), 0.0f);
+}
+
+TEST_F(BrowserControlsOffsetManagerSnapAnimationTest,
+       BottomControlsSnapWithPinnedTopControls) {
+  BrowserControlsOffsetManager* manager = client_.manager();
+
+  // Case 1: Pinned top controls (60 == 60) with bottom controls (160, min 0).
+  client_.SetBrowserControlsParams(
+      {/*top_controls_height=*/60.0f, /*top_controls_min_height=*/60.0f,
+       /*bottom_controls_height=*/160.0f, /*bottom_controls_min_height=*/0.0f,
+       /*animate_browser_controls_height_changes=*/false,
+       /*browser_controls_shrink_blink_size=*/false});
+  client_.SetViewportScrollOffset(0.0f, 200.0f);
+
+  {
+    ScrollSequence scroll_sequence(this);
+    EXPECT_TRUE(ScrollDidAnimate(LargeScrollDelta(),
+                                 AnimationDirection::kHidingControls));
+    EXPECT_FLOAT_EQ(1.0f, manager->TopControlsShownRatio());
+    EXPECT_FLOAT_EQ(60.0f, manager->ContentTopOffset());
+    EXPECT_FLOAT_EQ(0.0f, manager->BottomControlsShownRatio());
+    EXPECT_FLOAT_EQ(0.0f, manager->ContentBottomOffset());
+
+    EXPECT_TRUE(ScrollDidAnimate(-2 * LargeScrollDelta(),
+                                 AnimationDirection::kShowingControls));
+    EXPECT_FLOAT_EQ(1.0f, manager->TopControlsShownRatio());
+    EXPECT_FLOAT_EQ(60.0f, manager->ContentTopOffset());
+    EXPECT_FLOAT_EQ(1.0f, manager->BottomControlsShownRatio());
+    EXPECT_FLOAT_EQ(160.0f, manager->ContentBottomOffset());
+  }
+
+  // Case 2: Pinned top controls (60 == 60) with bottom controls min-height 40.
+  client_.SetBrowserControlsParams(
+      {/*top_controls_height=*/60.0f, /*top_controls_min_height=*/60.0f,
+       /*bottom_controls_height=*/160.0f, /*bottom_controls_min_height=*/40.0f,
+       /*animate_browser_controls_height_changes=*/false,
+       /*browser_controls_shrink_blink_size=*/false});
+  client_.SetViewportScrollOffset(0.0f, 200.0f);
+
+  {
+    ScrollSequence scroll_sequence(this);
+    EXPECT_TRUE(ScrollDidAnimate(LargeScrollDelta(),
+                                 AnimationDirection::kHidingControls));
+    EXPECT_FLOAT_EQ(1.0f, manager->TopControlsShownRatio());
+    EXPECT_FLOAT_EQ(60.0f, manager->ContentTopOffset());
+    EXPECT_FLOAT_EQ(0.25f, manager->BottomControlsShownRatio());
+    EXPECT_FLOAT_EQ(40.0f, manager->ContentBottomOffset());
+
+    EXPECT_TRUE(ScrollDidAnimate(-2 * LargeScrollDelta(),
+                                 AnimationDirection::kShowingControls));
+    EXPECT_FLOAT_EQ(1.0f, manager->TopControlsShownRatio());
+    EXPECT_FLOAT_EQ(60.0f, manager->ContentTopOffset());
+    EXPECT_FLOAT_EQ(1.0f, manager->BottomControlsShownRatio());
+    EXPECT_FLOAT_EQ(160.0f, manager->ContentBottomOffset());
+  }
+}
+
 class BrowserControlsOffsetManagerScrollSpeedTest
     : public BrowserControlsOffsetManagerSnapAnimationTest,
       public testing::WithParamInterface<float> {
@@ -2534,7 +3084,7 @@ class BrowserControlsOffsetManagerScrollSpeedTest
         break;
       }
     }
-    manager->ScrollEnd();
+    manager->ScrollEnd(gfx::Vector2dF());
 
     if (!manager->HasAnimation()) {
       return false;

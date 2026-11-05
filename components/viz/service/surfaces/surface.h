@@ -8,7 +8,6 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include <map>
 #include <memory>
 #include <optional>
 #include <set>
@@ -28,6 +27,7 @@
 #include "components/viz/common/quads/compositor_frame.h"
 #include "components/viz/common/surfaces/frame_sink_id.h"
 #include "components/viz/common/surfaces/surface_info.h"
+#include "components/viz/common/surfaces/surface_range.h"
 #include "components/viz/common/view_transition_element_resource_id.h"
 #include "components/viz/service/frame_sinks/frame_sink_observer.h"
 #include "components/viz/service/surfaces/frame_index_constants.h"
@@ -35,6 +35,7 @@
 #include "components/viz/service/surfaces/surface_client.h"
 #include "components/viz/service/surfaces/surface_dependency_deadline.h"
 #include "components/viz/service/viz_service_export.h"
+#include "ui/gfx/display_color_spaces.h"
 #include "ui/gfx/geometry/size.h"
 
 namespace gfx {
@@ -197,14 +198,6 @@ class VIZ_SERVICE_EXPORT Surface final : public FrameSinkObserver {
   void RequestCopyOfOutput(
       std::unique_ptr<PendingCopyOutputRequest> pending_copy_output_request);
 
-  using CopyRequestsMap =
-      std::multimap<CompositorRenderPassId, std::unique_ptr<CopyOutputRequest>>;
-
-  // Adds each CopyOutputRequest in the current frame to copy_requests. The
-  // caller takes ownership of them. |copy_requests| is keyed by RenderPass
-  // ids.
-  void TakeCopyOutputRequests(CopyRequestsMap* copy_requests);
-
   // Takes CopyOutputRequests made at the client level and adds them to this
   // Surface.
   void TakeCopyOutputRequestsFromClient();
@@ -220,6 +213,9 @@ class VIZ_SERVICE_EXPORT Surface final : public FrameSinkObserver {
   const CompositorFrame& GetActiveFrame() const;
   const CompositorFrameMetadata& GetActiveFrameMetadata() const;
   const FrameIntervalInputs& GetFrameIntervalInputs() const;
+  gfx::ContentColorUsage GetActiveFrameContentColorUsage() const {
+    return active_frame_content_color_usage_;
+  }
 
   // ViewTransition needs to interpolate a new CompositorFrame from the active
   // one of this Surface. The interpolated new frame replaces the currently
@@ -259,6 +255,13 @@ class VIZ_SERVICE_EXPORT Surface final : public FrameSinkObserver {
   const base::flat_set<SurfaceId>& active_referenced_surfaces() const {
     return active_referenced_surfaces_;
   }
+
+  // Returns whether `range` refers to the allocation group of its start: the
+  // range spans two embed tokens and doesn't yet resolve to a surface in its
+  // end's group. `latest_in_flight` must be
+  // SurfaceManager::GetLatestInFlightSurface(range).
+  static bool ReferencesStartAllocationGroup(const SurfaceRange& range,
+                                             const Surface* latest_in_flight);
 
   // Returns the set of dependencies blocking this surface's pending frame
   // that themselves have not yet activated.
@@ -377,6 +380,7 @@ class VIZ_SERVICE_EXPORT Surface final : public FrameSinkObserver {
   // method will also update the observed sinks based on the referenced ranges
   // in the submitted compositor frame.
   void RecomputeActiveReferencedSurfaces();
+  void RecomputeActiveFrameContentColorUsage();
 
   void ActivatePendingFrame();
 
@@ -433,6 +437,8 @@ class VIZ_SERVICE_EXPORT Surface final : public FrameSinkObserver {
   // A set of all valid SurfaceIds contained |last_surface_id_for_range_| to
   // avoid recompution.
   base::flat_set<SurfaceId> active_referenced_surfaces_;
+  gfx::ContentColorUsage active_frame_content_color_usage_ =
+      gfx::ContentColorUsage::kSRGB;
 
   // Allocation groups that this surface references by its active frame.
   base::flat_set<raw_ptr<SurfaceAllocationGroup, CtnExperimental>>

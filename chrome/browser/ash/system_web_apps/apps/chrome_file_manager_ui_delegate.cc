@@ -4,7 +4,9 @@
 
 #include "chrome/browser/ash/system_web_apps/apps/chrome_file_manager_ui_delegate.h"
 
-#include "base/check_deref.h"
+#include <string>
+
+#include "base/i18n/language_tag.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/time/time.h"
@@ -15,10 +17,11 @@
 #include "chrome/browser/ash/file_manager/volume_manager.h"
 #include "chrome/browser/ash/policy/dlp/files_policy_notification_manager.h"
 #include "chrome/browser/ash/policy/dlp/files_policy_notification_manager_factory.h"
-#include "chrome/browser/browser_process.h"
+#include "chrome/browser/extensions/component_loader.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/webui/plural_string_handler.h"
 #include "chrome/browser/ui/webui/theme_source.h"
+#include "chromeos/ash/components/file_manager/app_id.h"
 #include "components/drive/drive_pref_names.h"
 #include "components/drive/file_errors.h"
 #include "components/prefs/pref_service.h"
@@ -31,16 +34,23 @@ ChromeFileManagerUIDelegate::ChromeFileManagerUIDelegate(content::WebUI* web_ui)
   CHECK(web_ui_, base::NotFatalUntil::M160);
   Profile* profile = Profile::FromWebUI(web_ui_);
   content::URLDataSource::Add(profile, std::make_unique<ThemeSource>(profile));
+  // Load the Image Loader extension on demand for Files app thumbnails.
+  auto* component_loader = extensions::ComponentLoader::Get(profile);
+  if (component_loader &&
+      !component_loader->Exists(file_manager::kImageLoaderExtensionId)) {
+    component_loader->AddImageLoaderExtension();
+  }
 }
 
 ChromeFileManagerUIDelegate::~ChromeFileManagerUIDelegate() = default;
 
-base::DictValue ChromeFileManagerUIDelegate::GetLoadTimeData() const {
-  const std::string& locale = g_browser_process->GetApplicationLocale();
+base::DictValue ChromeFileManagerUIDelegate::GetLoadTimeData(
+    const base::i18n::LanguageTag& app_locale,
+    const variations::VariationsService& variations_service) const {
+  const std::string locale(app_locale.tag_string());
   base::DictValue dict = GetFileManagerStrings(locale);
-  AddFileManagerFeatureStrings(
-      locale, locale, CHECK_DEREF(g_browser_process->variations_service()),
-      Profile::FromWebUI(web_ui_), &dict);
+  AddFileManagerFeatureStrings(locale, locale, variations_service,
+                               Profile::FromWebUI(web_ui_), &dict);
   return dict;
 }
 

@@ -26,6 +26,8 @@
 #include "components/autofill/core/common/autofill_features.h"
 #include "components/credential_management/android/features.h"
 #include "components/credential_management/android/third_party_credential_manager_impl.h"
+#include "components/device_reauth/device_auth_availability_checker.h"
+#include "components/device_reauth/device_authenticator.h"
 #include "components/prefs/pref_service.h"
 #include "components/security_state/content/android/security_state_client.h"
 #include "components/security_state/content/android/security_state_model_delegate.h"
@@ -84,7 +86,7 @@ base::WeakPtr<autofill::AutofillClient> AndroidAutofillClient::GetWeakPtr() {
   return weak_ptr_factory_.GetWeakPtr();
 }
 
-const std::string& AndroidAutofillClient::GetAppLocale() const {
+const base::i18n::LanguageTag& AndroidAutofillClient::GetAppLocale() const {
   NOTREACHED();
 }
 
@@ -192,9 +194,9 @@ url::Origin AndroidAutofillClient::GetLastCommittedPrimaryMainFrameOrigin()
 
 security_state::SecurityLevel
 AndroidAutofillClient::GetSecurityLevelForUmaHistograms() {
-  if (SecurityStateModelDelegate* delegate =
+  if (SecurityStateModelDelegate* const delegate =
           security_state::GetSecurityStateModelDelegate()) {
-    return delegate->GetSecurityLevel(&GetWebContents());
+    return delegate->GetCommittedSecurityLevel(&GetWebContents());
   }
 
   // If there is no helper, it means we are not in a "web" state or the embedder
@@ -274,21 +276,22 @@ bool AndroidAutofillClient::UsesPlatformAutofill() const {
 }
 
 bool AndroidAutofillClient::IsContextSecure() const {
+  content::NavigationEntry* const navigation_entry =
+      GetWebContents().GetController().GetLastCommittedEntry();
+  if (!navigation_entry ||
+      navigation_entry->GetPageType() != content::PAGE_TYPE_NORMAL ||
+      !navigation_entry->GetURL().SchemeIsCryptographic()) {
+    return false;
+  }
+
   // Note: As of crbug.com/701018, Chrome determines whether the page is
   // secure from the embedder-enriched security state, exposed here through
   // SecurityStateModelDelegate. WebView does not register a
   // SecurityStateClient, so it uses the SSLStatus fallback below.
-  if (SecurityStateModelDelegate* delegate =
+  if (SecurityStateModelDelegate* const delegate =
           security_state::GetSecurityStateModelDelegate()) {
     return security_state::IsSslCertificateValid(
-        delegate->GetSecurityLevel(&GetWebContents()));
-  }
-
-  content::NavigationEntry* navigation_entry =
-      GetWebContents().GetController().GetLastCommittedEntry();
-  if (!navigation_entry ||
-      !navigation_entry->GetURL().SchemeIsCryptographic()) {
-    return false;
+        delegate->GetCommittedSecurityLevel(&GetWebContents()));
   }
 
   content::SSLStatus ssl_status = navigation_entry->GetSSL();
@@ -305,6 +308,16 @@ AndroidAutofillClient::GetFormInteractionsUkmLogger() {
 metrics::ProfileMetricsService*
 AndroidAutofillClient::GetProfileMetricsService() {
   NOTREACHED();
+}
+
+std::unique_ptr<device_reauth::DeviceAuthenticator>
+AndroidAutofillClient::GetDeviceAuthenticator(std::string histogram) const {
+  return nullptr;
+}
+
+std::unique_ptr<device_reauth::DeviceAuthAvailabilityChecker>
+AndroidAutofillClient::GetDeviceAuthAvailabilityChecker() const {
+  return nullptr;
 }
 
 content::WebContents& AndroidAutofillClient::GetWebContents() const {

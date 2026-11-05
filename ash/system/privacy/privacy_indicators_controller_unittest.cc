@@ -107,10 +107,7 @@ class PrivacyIndicatorsControllerTest
       public testing::WithParamInterface<bool> {
  public:
   PrivacyIndicatorsControllerTest()
-      : AshTestBase(base::test::TaskEnvironment::TimeSource::MOCK_TIME) {
-    scoped_feature_list_.InitWithFeatureState(features::kOngoingProcesses,
-                                              AreOngoingProcessesEnabled());
-  }
+      : AshTestBase(base::test::TaskEnvironment::TimeSource::MOCK_TIME) {}
 
   // Get the notification view from message center associated with `id`.
   const message_center::MessageView* GetMessageViewFromMessageCenter(
@@ -121,14 +118,9 @@ class PrivacyIndicatorsControllerTest
             ->notification_center_tray();
     notification_center_tray->ShowBubble();
 
-    if (features::AreOngoingProcessesEnabled()) {
-      return notification_center_tray->bubble()
-          ->GetOngoingProcessMessageViewContainerById(id)
-          ->message_view();
-    }
-
-    return notification_center_tray->GetNotificationListView()
-        ->GetMessageViewForNotificationId(id);
+    return notification_center_tray->bubble()
+        ->GetOngoingProcessMessageViewContainerById(id)
+        ->message_view();
   }
 
   // Get the popup notification view associated with `id`.
@@ -139,22 +131,10 @@ class PrivacyIndicatorsControllerTest
   }
 
   void ClickPrimaryNotificationButton(const std::string& id) {
-    if (features::AreOngoingProcessesEnabled()) {
-      auto* notification_view = GetMessageViewFromMessageCenter(id);
-      ASSERT_TRUE(notification_view);
-      auto* button_view = notification_view->GetViewByID(
-          VIEW_ID_ONGOING_PROCESS_PRIMARY_ICON_BUTTON);
-      ASSERT_TRUE(button_view);
-      LeftClickOn(button_view);
-      return;
-    }
-
     auto* notification_view = GetMessageViewFromMessageCenter(id);
     ASSERT_TRUE(notification_view);
-    auto* action_buttons = notification_view->GetViewByID(
-        message_center::NotificationViewBase::kActionButtonsRow);
-    ASSERT_TRUE(action_buttons);
-    auto* button_view = action_buttons->children()[0].get();
+    auto* button_view = notification_view->GetViewByID(
+        VIEW_ID_ONGOING_PROCESS_PRIMARY_ICON_BUTTON);
     ASSERT_TRUE(button_view);
     LeftClickOn(button_view);
   }
@@ -166,11 +146,6 @@ class PrivacyIndicatorsControllerTest
         ->notification_center_tray()
         ->privacy_indicators_view();
   }
-
-  bool AreOngoingProcessesEnabled() { return GetParam(); }
-
- private:
-  base::test::ScopedFeatureList scoped_feature_list_;
 };
 
 INSTANTIATE_TEST_SUITE_P(All,
@@ -196,6 +171,35 @@ TEST_P(PrivacyIndicatorsControllerTest, NotificationMetadata) {
   // Privacy indicators notification should not be a popup. It is silently added
   // to the tray.
   EXPECT_FALSE(GetPopupNotificationView(notification_id));
+}
+
+// With the video conference tray, only allowlisted apps such as TTC keep using
+// privacy indicators.
+TEST_P(PrivacyIndicatorsControllerTest,
+       VideoConferenceTrayLimitsNotificationsToAllowlistedApps) {
+  base::test::ScopedFeatureList scoped_feature_list(
+      features::kFeatureManagementVideoConference);
+  auto use_microphone = [](const std::string& app_id) {
+    PrivacyIndicatorsController::Get()->UpdatePrivacyIndicators(
+        app_id, u"test_app_name", /*is_camera_used=*/false,
+        /*is_microphone_used=*/true, base::MakeRefCounted<TestDelegate>(),
+        PrivacyIndicatorsSource::kApps);
+  };
+  auto* message_center = message_center::MessageCenter::Get();
+
+  use_microphone("test_app_id");
+  EXPECT_FALSE(message_center->FindNotificationById(
+      GetPrivacyIndicatorsNotificationId("test_app_id")));
+  ExpectPrivacyIndicatorsTrayItemVisible(/*visible=*/false,
+                                         /*camera_visible=*/false,
+                                         /*microphone_visible=*/false);
+
+  use_microphone(kTtcPrivacyIndicatorsAppId);
+  EXPECT_TRUE(message_center->FindNotificationById(
+      GetPrivacyIndicatorsNotificationId(kTtcPrivacyIndicatorsAppId)));
+  ExpectPrivacyIndicatorsTrayItemVisible(/*visible=*/true,
+                                         /*camera_visible=*/false,
+                                         /*microphone_visible=*/true);
 }
 
 TEST_P(PrivacyIndicatorsControllerTest, NotificationWithNoButton) {
@@ -344,7 +348,7 @@ TEST_P(PrivacyIndicatorsControllerTest,
       gfx::ScopedAnimationDurationScaleMode::NORMAL_DURATION);
 
   // Make sure privacy indicators work on multiple displays.
-  UpdateDisplay("300x200,500x400");
+  UpdateDisplay("320x200,500x400");
 
   scoped_refptr<TestDelegate> delegate = base::MakeRefCounted<TestDelegate>();
 

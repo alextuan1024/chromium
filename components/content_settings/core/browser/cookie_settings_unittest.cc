@@ -73,14 +73,11 @@ enum GrantSource {
   kNoneGranted,
   // Eligible for StorageAccess grants.
   kStorageAccessGrantsEligibleViaAPI,
-  // Eligible for TopLevelStorageAccess grants.
-  kTopLevelStorageAccessGrantsEligible,
   // Can use Storage Access permission grants via an HTTP response header.
   kStorageAccessGrantsEligibleViaHeader,
 
   kGrantSourceCount
 };
-
 
 }  // namespace
 
@@ -268,11 +265,6 @@ class CookieSettingsTestP : public CookieSettingsTestBase,
     return grant_source() == GrantSource::kStorageAccessGrantsEligibleViaHeader;
   }
 
-  bool IsTopLevelStorageAccessGrantEligible() const {
-    return grant_source() == GrantSource::kTopLevelStorageAccessGrantsEligible;
-  }
-
-
   net::CookieSettingOverrides GetCookieSettingOverrides() const {
     net::CookieSettingOverrides overrides;
     if (IsStorageAccessGrantEligibleViaAPI()) {
@@ -281,10 +273,6 @@ class CookieSettingsTestP : public CookieSettingsTestBase,
     if (IsStorageAccessGrantEligibleViaHeader()) {
       overrides.Put(
           net::CookieSettingOverride::kStorageAccessGrantEligibleViaHeader);
-    }
-    if (IsTopLevelStorageAccessGrantEligible()) {
-      overrides.Put(
-          net::CookieSettingOverride::kTopLevelStorageAccessGrantEligible);
     }
     return overrides;
   }
@@ -304,13 +292,6 @@ class CookieSettingsTestP : public CookieSettingsTestBase,
   ContentSetting SettingWithSaaViaAPI() const {
     return IsStorageAccessGrantEligibleViaAPI() ? CONTENT_SETTING_ALLOW
                                                 : CONTENT_SETTING_BLOCK;
-  }
-
-  // A version of above that considers Top-Level Storage Access API grant
-  // instead of Storage Access API grant.
-  ContentSetting SettingWithTopLevelSaaOverride() const {
-    return IsTopLevelStorageAccessGrantEligible() ? CONTENT_SETTING_ALLOW
-                                                  : CONTENT_SETTING_BLOCK;
   }
 
  private:
@@ -532,6 +513,10 @@ TEST_F(CookieSettingsTest, CookiesBlockSingle) {
   EXPECT_FALSE(cookie_settings_->IsFullCookieAccessAllowed(
       kBlockedSite, kBlockedSiteForCookies, /*top_frame_origin=*/std::nullopt,
       net::CookieSettingOverrides(), /*cookie_partition_key=*/std::nullopt));
+  EXPECT_TRUE(cookie_settings_->IsFullCookieAccessAllowed(
+      kBlockedSite, kBlockedSiteForCookies, /*top_frame_origin=*/std::nullopt,
+      {net::CookieSettingOverride::kForceAllowCookies},
+      /*cookie_partition_key=*/std::nullopt));
 }
 
 TEST_P(CookieSettingsTestP, CookiesBlockThirdParty) {
@@ -1232,44 +1217,6 @@ TEST_P(CookieSettingsTestP, GetCookieSettingSAAViaFedCM) {
             CONTENT_SETTING_BLOCK);
 }
 
-// A top-level storage access grant should behave similarly to standard SAA
-// grants.
-TEST_P(CookieSettingsTestP, GetCookieSettingTopLevelStorageAccess) {
-  const GURL top_level_url(kFirstPartySite);
-  const GURL url(kAllowedSite);
-  const GURL third_url(kBlockedSite);
-
-  prefs_.SetInteger(prefs::kCookieControlsMode,
-                    static_cast<int>(CookieControlsMode::kBlockThirdParty));
-
-  settings_map_->SetContentSettingCustomScope(
-      ContentSettingsPattern::FromURLNoWildcard(url),
-      ContentSettingsPattern::FromURLNoWildcard(top_level_url),
-      ContentSettingsType::TOP_LEVEL_STORAGE_ACCESS, CONTENT_SETTING_ALLOW);
-
-  EXPECT_EQ(cookie_settings_->GetCookieSetting(
-                url, net::SiteForCookies(), top_level_url,
-                GetCookieSettingOverrides(), nullptr),
-            SettingWithTopLevelSaaOverride());
-
-  // Invalid pair the |top_level_url| granting access to |url| is now being
-  // loaded under |url| as the top level url.
-  EXPECT_EQ(cookie_settings_->GetCookieSetting(
-                top_level_url, net::SiteForCookies(), url,
-                GetCookieSettingOverrides(), nullptr),
-            CONTENT_SETTING_BLOCK);
-
-  // Invalid pairs where a |third_url| is used.
-  EXPECT_EQ(
-      cookie_settings_->GetCookieSetting(url, net::SiteForCookies(), third_url,
-                                         GetCookieSettingOverrides(), nullptr),
-      CONTENT_SETTING_BLOCK);
-  EXPECT_EQ(cookie_settings_->GetCookieSetting(
-                third_url, net::SiteForCookies(), top_level_url,
-                GetCookieSettingOverrides(), nullptr),
-            CONTENT_SETTING_BLOCK);
-}
-
 // Subdomains of the granted resource url should not gain access if a valid
 // grant exists; the grant should also not apply on different schemes.
 TEST_P(CookieSettingsTestP, GetCookieSettingSAAResourceWildcards) {
@@ -1378,7 +1325,6 @@ TEST_P(CookieSettingsTestP, GetCookieSettingSAAExpiredGrant) {
                 GetCookieSettingOverrides(), nullptr),
             CONTENT_SETTING_BLOCK);
 }
-
 
 #endif
 
@@ -1783,6 +1729,5 @@ INSTANTIATE_TEST_SUITE_P(
     testing::Range(GrantSource::kNoneGranted, GrantSource::kGrantSourceCount),
 #endif
     CustomTestName);
-
 
 }  // namespace content_settings

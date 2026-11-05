@@ -28,10 +28,12 @@
 #include "base/synchronization/lock.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/test/bind.h"
+#include "base/test/metrics/histogram_tester.h"
 #include "base/thread_annotations.h"
 #include "base/time/time.h"
 #include "base/values.h"
 #include "build/build_config.h"
+#include "content/browser/bad_message.h"
 #include "content/browser/process_lock.h"
 #include "content/browser/renderer_host/frame_tree_node.h"
 #include "content/browser/renderer_host/navigation_entry_restore_context_impl.h"
@@ -44,6 +46,7 @@
 #include "content/browser/security/cpsp/child_process_security_policy_impl.h"
 #include "content/browser/site_info.h"
 #include "content/browser/site_instance_impl.h"
+#include "content/browser/site_shard.h"
 #include "content/browser/web_contents/web_contents_impl.h"
 #include "content/browser/webui/web_ui_controller_factory_registry.h"
 #include "content/browser/webui/web_ui_impl.h"
@@ -1901,14 +1904,6 @@ IN_PROC_BROWSER_TEST_P(RenderFrameHostManagerTest,
           ? root->render_manager()->speculative_frame_host()
           : root->current_frame_host());
 
-  // When speculative RenderFrameHost owns the pending commit navigation,
-  // it is only discarded once that RenderFrameHost is destroyed,
-  // and ends up labeled with the destruction reason, unfortunately.
-  auto discard_reason =
-      commit_rfh.get() == root->current_frame_host()
-          ? NavigationDiscardReason::kWillRemoveFrame
-          : NavigationDiscardReason::kRenderFrameHostDestruction;
-
   // Let the renderer commit the reload, but pause before the browser processes
   // the commit, so that the navigation is pending commit.
   CommitNavigationPauser commit_pauser(commit_rfh.get());
@@ -1922,8 +1917,103 @@ IN_PROC_BROWSER_TEST_P(RenderFrameHostManagerTest,
   web_contents->ClosePage();
 
   EXPECT_FALSE(root->render_manager()->speculative_frame_host());
-  EXPECT_FALSE(root->current_frame_host()->HasPendingCommitNavigation());
-  EXPECT_EQ(discard_reason_observer.discard_reason(), discard_reason);
+  if (commit_rfh.get() == root->current_frame_host()) {
+    // A navigation pending commit in the current RenderFrameHost cannot
+    // replace it, so it is kept: the renderer has already committed it, and
+    // discarding it would drop the commit reply (crbug.com/559040906).
+    EXPECT_TRUE(root->current_frame_host()->HasPendingCommitNavigation());
+    EXPECT_FALSE(discard_reason_observer.discard_reason().has_value());
+  } else {
+    // The speculative RenderFrameHost owning the pending commit is discarded,
+    // and its navigation ends up labeled with the destruction reason,
+    // unfortunately.
+    EXPECT_FALSE(root->current_frame_host()->HasPendingCommitNavigation());
+    EXPECT_EQ(discard_reason_observer.discard_reason(),
+              NavigationDiscardReason::kRenderFrameHostDestruction);
+  }
+  destroyed_watcher.Wait();
+}
+
+// A browser-initiated ClosePage() must not discard a navigation that is pending
+// commit in the current RenderFrameHost. When the renderer commits, it has to
+// notify the browser over NavigationClient pipe to avoid state
+// desynchronization, which in turn can lead to unnecessary renderer kills. See
+// https://crbug.com/559040906 for more details.
+IN_PROC_BROWSER_TEST_P(RenderFrameHostManagerTest,
+                       ClosePageKeepsNavigationPendingCommitInCurrentFrame) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+
+  // Open a window that stays on the initial empty document, so that the
+  // browser has no URL and no real origin for its main frame.
+  Shell* new_shell = Shell::CreateNewWindow(
+      shell()->web_contents()->GetBrowserContext(), GURL(),
+      /*site_instance=*/nullptr, gfx::Size());
+  WebContentsImpl* web_contents =
+      static_cast<WebContentsImpl*>(new_shell->web_contents());
+  FrameTreeNode* root = web_contents->GetPrimaryFrameTree().root();
+  RenderFrameHostImpl* rfh = root->current_frame_host();
+  ASSERT_TRUE(rfh->GetLastCommittedURL().is_empty());
+  ASSERT_TRUE(rfh->GetLastCommittedOrigin().opaque());
+
+  // Start a browser-initiated navigation and let it run until the
+  // RenderFrameHost that will commit it has been picked. A navigation out of
+  // the initial empty document reuses the current RenderFrameHost, even with
+  // RenderDocument enabled, because the frame has not committed any navigation
+  // yet.
+  const GURL url(embedded_test_server()->GetURL("a.com", "/title1.html"));
+  TestNavigationManager nav(web_contents, url);
+  new_shell->LoadURL(url);
+  ASSERT_TRUE(nav.WaitForResponse());
+  ASSERT_FALSE(root->render_manager()->speculative_frame_host());
+
+  // Let the renderer commit the document, but pause just before the browser
+  // processes the commit. At this point the renderer has a real document and
+  // the browser has not updated any of its per-document state yet.
+  CommitNavigationPauser commit_pauser(rfh);
+  nav.ResumeNavigation();
+  commit_pauser.WaitForCommitAndPause();
+  ASSERT_TRUE(rfh->HasPendingCommitNavigation());
+
+  // Install a same-document navigation in a `pagehide` handler, and confirm via
+  // the round trip that the renderer really is running the new document.
+  // (`unload` is not used: it is blocked by permissions policy by default.)
+  EXPECT_EQ(url::Origin::Create(url).Serialize(), EvalJs(rfh, R"(
+      (() => {
+        window.addEventListener('pagehide', () => {
+          history.pushState({}, '', '#fragment');
+        });
+        return self.origin;
+      })();
+  )"));
+
+  // Watch for the bad message kill.
+  base::HistogramTester histogram_tester;
+  RenderProcessHostWatcher exit_watcher(
+      rfh->GetProcess(), RenderProcessHostWatcher::WATCH_FOR_PROCESS_EXIT);
+
+  // Browser-initiated close.
+  WebContentsDestroyedWatcher destroyed_watcher(web_contents);
+  web_contents->ClosePage();
+
+  // The navigation that is pending commit in `rfh` must survive the close.
+  ASSERT_TRUE(rfh->HasPendingCommitNavigation());
+  EXPECT_TRUE(rfh->IsActive());
+
+  // Deliver the commit that the renderer already performed. The browser now
+  // agrees with the renderer about the document.
+  commit_pauser.ResumePausedCommit();
+  EXPECT_EQ(url, rfh->GetLastCommittedURL());
+  EXPECT_EQ(url::Origin::Create(url), rfh->GetLastCommittedOrigin());
+
+  // The `pagehide` handler now runs a same-document navigation, which reports
+  // the origin of the document the renderer committed. This must match what the
+  // browser knows and must not kill the renderer.
+  exit_watcher.Wait();
+  EXPECT_THAT(
+      histogram_tester.GetAllSamples("Stability.BadMessageTerminated.Content"),
+      testing::IsEmpty());
+
+  // The close itself must still complete.
   destroyed_watcher.Wait();
 }
 
@@ -2259,11 +2349,7 @@ IN_PROC_BROWSER_TEST_P(RenderFrameHostManagerTest,
                         std::string(kChromeUIGpuHost));
   EXPECT_TRUE(NavigateToURL(shell(), webui_url));
   EXPECT_TRUE(ChildProcessSecurityPolicyImpl::GetInstance()->HasWebUIBindings(
-      shell()
-          ->web_contents()
-          ->GetPrimaryMainFrame()
-          ->GetProcess()
-          ->GetDeprecatedID()));
+      shell()->web_contents()->GetPrimaryMainFrame()->GetProcess()->GetID()));
 
   // Crash the renderer of the WebUI page.
   RenderProcessHostWatcher crash_observer(
@@ -2318,11 +2404,7 @@ IN_PROC_BROWSER_TEST_P(RFHMProcessPerTabTest, MAYBE_BackFromWebUI) {
                       std::string(kChromeUIGpuHost)));
   EXPECT_TRUE(NavigateToURL(shell(), webui_url));
   EXPECT_TRUE(ChildProcessSecurityPolicyImpl::GetInstance()->HasWebUIBindings(
-      shell()
-          ->web_contents()
-          ->GetPrimaryMainFrame()
-          ->GetProcess()
-          ->GetDeprecatedID()));
+      shell()->web_contents()->GetPrimaryMainFrame()->GetProcess()->GetID()));
 
   // Go back and ensure we have no WebUI bindings.
   TestNavigationObserver back_nav_load_observer(shell()->web_contents());
@@ -2330,11 +2412,7 @@ IN_PROC_BROWSER_TEST_P(RFHMProcessPerTabTest, MAYBE_BackFromWebUI) {
   back_nav_load_observer.Wait();
   EXPECT_EQ(original_url, shell()->web_contents()->GetLastCommittedURL());
   EXPECT_FALSE(ChildProcessSecurityPolicyImpl::GetInstance()->HasWebUIBindings(
-      shell()
-          ->web_contents()
-          ->GetPrimaryMainFrame()
-          ->GetProcess()
-          ->GetDeprecatedID()));
+      shell()->web_contents()->GetPrimaryMainFrame()->GetProcess()->GetID()));
 }
 
 // crbug.com/424526
@@ -2351,11 +2429,7 @@ IN_PROC_BROWSER_TEST_P(RenderFrameHostManagerTest,
                         std::string(kChromeUIGpuHost));
   EXPECT_TRUE(NavigateToURL(shell(), web_ui_url));
   EXPECT_TRUE(ChildProcessSecurityPolicyImpl::GetInstance()->HasWebUIBindings(
-      shell()
-          ->web_contents()
-          ->GetPrimaryMainFrame()
-          ->GetProcess()
-          ->GetDeprecatedID()));
+      shell()->web_contents()->GetPrimaryMainFrame()->GetProcess()->GetID()));
 
   // Capture the SiteInstance before navigating to about:blank to ensure
   // it doesn't change.
@@ -2368,11 +2442,7 @@ IN_PROC_BROWSER_TEST_P(RenderFrameHostManagerTest,
   GURL regular_page_url(embedded_test_server()->GetURL("/title2.html"));
   EXPECT_TRUE(NavigateToURL(shell(), regular_page_url));
   EXPECT_FALSE(ChildProcessSecurityPolicyImpl::GetInstance()->HasWebUIBindings(
-      shell()
-          ->web_contents()
-          ->GetPrimaryMainFrame()
-          ->GetProcess()
-          ->GetDeprecatedID()));
+      shell()->web_contents()->GetPrimaryMainFrame()->GetProcess()->GetID()));
 }
 
 // crbug.com/615274
@@ -3609,8 +3679,16 @@ IN_PROC_BROWSER_TEST_P(RenderFrameHostManagerTest, FileURLIsolation) {
   ASSERT_TRUE(NavigateToURL(shell(), file_url));
   WebContentsImpl* web_contents =
       static_cast<WebContentsImpl*>(shell()->web_contents());
-  ChildProcessId file_process_id =
-      web_contents->GetPrimaryMainFrame()->GetProcess()->GetID();
+  RenderProcessHost* file_process =
+      web_contents->GetPrimaryMainFrame()->GetProcess();
+
+  // With full site isolation, the process should be locked to the file:// URL
+  // like any other site. Otherwise, it will be in an unlocked process. On
+  // Android WebView (though this test doesn't run there), navigating to a
+  // file:// URL should not cause a process swap.
+  EXPECT_EQ(file_process->IsProcessLockedToSiteForTesting(),
+            AreAllSitesIsolatedForTesting());
+  ChildProcessId file_process_id = file_process->GetID();
 
   // Navigate to a regular web page, a.com, with a same-site subframe.
   GURL a_url(embedded_test_server()->GetURL("a.com", "/page_with_iframe.html"));
@@ -3621,10 +3699,6 @@ IN_PROC_BROWSER_TEST_P(RenderFrameHostManagerTest, FileURLIsolation) {
   RenderProcessHost* a_process =
       web_contents->GetPrimaryMainFrame()->GetProcess();
   EXPECT_NE(a_process->GetID(), file_process_id);
-  // With full site isolation, the process should be locked to the file:// URL
-  // like any other site. Otherwise, it will be in an unlocked process. On
-  // Android WebView (though this test doesn't run there), navigating to a
-  // file:// URL should not cause a process swap.
   EXPECT_EQ(a_process->IsProcessLockedToSiteForTesting(),
             AreAllSitesIsolatedForTesting());
 
@@ -3649,19 +3723,21 @@ IN_PROC_BROWSER_TEST_P(RenderFrameHostManagerTest, FileURLIsolation) {
     EXPECT_NE(root_instance, child_instance);
     EXPECT_NE(root_instance->group(), child_instance->group());
   } else {
+    // With default SiteInstanceGroup enabled, the file:// subframe should be in
+    // a different SiteInstance and group from the parent (since file:// URLs
+    // are excluded from the default SiteInstanceGroup for security reasons), so
+    // it gets its own process. Otherwise, it shares the parent's SiteInstance
+    // and process.
     // TODO(crbug.com/40704573): When default SiteInstanceGroup supports file://
     // URLs on Android WebView and low-end Clank, the file:// SiteInstance
     // should be in the default SiteInstanceGroup when site isolation is not
     // enabled.
-    EXPECT_EQ(a_process, child_process);
-
-    // With default SiteInstanceGroup enabled, the file:// subframe should be in
-    // a different SiteInstance from the parent. Otherwise it should share a
-    // site instance with the parent.
     if (ShouldUseDefaultSiteInstanceGroup()) {
+      EXPECT_NE(a_process, child_process);
       EXPECT_NE(root_instance, child_instance);
       EXPECT_NE(root_instance->group(), child_instance->group());
     } else {
+      EXPECT_EQ(a_process, child_process);
       EXPECT_EQ(root_instance, child_instance);
       EXPECT_EQ(root_instance->group(), child_instance->group());
     }
@@ -5373,7 +5449,7 @@ IN_PROC_BROWSER_TEST_P(RenderFrameHostManagerTest,
   EXPECT_TRUE(HasErrorPageSiteInfo(error_site_instance.get()));
   EXPECT_TRUE(HasErrorPageProcessLock(error_site_instance.get()));
   EXPECT_FALSE(ChildProcessSecurityPolicy::GetInstance()->HasWebUIBindings(
-      error_site_instance->GetProcess()->GetDeprecatedID()));
+      error_site_instance->GetProcess()->GetID()));
   EXPECT_TRUE(IsMainFrameOriginOpaqueAndCompatibleWithURL(shell(), error_url));
 }
 
@@ -5405,7 +5481,7 @@ IN_PROC_BROWSER_TEST_P(RenderFrameHostManagerTest,
         shell()->web_contents()->GetPrimaryMainFrame()->GetSiteInstance();
     EXPECT_TRUE(HasErrorPageSiteInfo(error_site_instance.get()));
     EXPECT_FALSE(ChildProcessSecurityPolicy::GetInstance()->HasWebUIBindings(
-        error_site_instance->GetProcess()->GetDeprecatedID()));
+        error_site_instance->GetProcess()->GetID()));
   }
 
   // Once the throttles are no longer inserted into each navigation, reloading
@@ -5421,7 +5497,7 @@ IN_PROC_BROWSER_TEST_P(RenderFrameHostManagerTest,
   EXPECT_EQ(webui_url,
             webui_site_instance->GetSecurityPrincipal().GetDeprecatedSiteURL());
   EXPECT_TRUE(ChildProcessSecurityPolicy::GetInstance()->HasWebUIBindings(
-      webui_site_instance->GetProcess()->GetDeprecatedID()));
+      webui_site_instance->GetProcess()->GetID()));
 
   // A second reload should work without crashing the browser process.
   {
@@ -6441,9 +6517,11 @@ IN_PROC_BROWSER_TEST_P(
   EXPECT_TRUE(NavigateToURL(shell(), foo_url));
   RenderProcessHost* original_process =
       web_contents->GetPrimaryMainFrame()->GetProcess();
-  EXPECT_EQ(original_process, web_contents->GetPrimaryMainFrame()
-                                  ->GetSiteInstance()
-                                  ->GetDefaultProcessForBrowsingInstance());
+  EXPECT_EQ(original_process,
+            web_contents->GetPrimaryMainFrame()
+                ->GetSiteInstance()
+                ->GetDefaultProcessForBrowsingInstanceForTesting(
+                    SiteShard::kDefault));
   // This test expect a cross-site navigation to be same BrowsingInstance. With
   // ProactivelySwapBrowsingInstance, it won't be the case. Opening a popup
   // prevent the BrowsingInstance to change.
@@ -7387,63 +7465,6 @@ IN_PROC_BROWSER_TEST_P(RenderFrameHostManagerClearWindowNameTest,
   EXPECT_EQ("", frame_c->GetFrameName());
 }
 
-class ResumeNavigationWithSpeculativeRFHProcessGoneTest
-    : public RenderFrameHostManagerTest {
- public:
-  ResumeNavigationWithSpeculativeRFHProcessGoneTest() {
-    feature_list_.InitWithFeatures(
-        {features::kResumeNavigationWithSpeculativeRFHProcessGone},
-        {features::kDeferSpeculativeRFHCreation});
-  }
-  ~ResumeNavigationWithSpeculativeRFHProcessGoneTest() override = default;
-
-  void SetUpCommandLine(base::CommandLine* command_line) override {
-    // Isolate all sites so that speculative RFH will be created during
-    // navigation to a different site.
-    IsolateAllSitesForTesting(command_line);
-  }
-
- private:
-  base::test::ScopedFeatureList feature_list_;
-};
-
-IN_PROC_BROWSER_TEST_P(ResumeNavigationWithSpeculativeRFHProcessGoneTest,
-                       ProcessForSpeculativeRFHKilled) {
-  StartEmbeddedServer();
-
-  GURL url_a(embedded_test_server()->GetURL("a.com", "/title1.html"));
-  EXPECT_TRUE(NavigateToURL(shell(), url_a));
-
-  WebContentsImpl* web_contents =
-      static_cast<WebContentsImpl*>(shell()->web_contents());
-
-  // Start a navigation to a b.com URL, and don't wait for commit.
-  GURL url_b(embedded_test_server()->GetURL("b.com", "/title2.html"));
-  TestNavigationManager navigation_manager(web_contents, url_b);
-  shell()->LoadURL(url_b);
-  navigation_manager.WaitForSpeculativeRenderFrameHostCreation();
-  RenderFrameHost* rfh = navigation_manager.GetCreatedSpeculativeRFH();
-  RenderProcessHostWatcher crash_observer(
-      rfh->GetProcess(), RenderProcessHostWatcher::WATCH_FOR_PROCESS_EXIT);
-  if (!rfh->GetProcess()->IsReady()) {
-    // ChildProcessLauncher::Terminate will not kill a process if it is not
-    // ready yet so we need to wait for the process to be ready.
-    RenderProcessHostWatcher ready_observer(
-        rfh->GetProcess(), RenderProcessHostWatcher::WATCH_FOR_PROCESS_READY);
-    ready_observer.Wait();
-  }
-  EXPECT_TRUE(rfh->GetProcess()->Shutdown(0));
-  crash_observer.Wait();
-  NavigationRequest* navigation_request =
-      NavigationRequest::From(navigation_manager.GetNavigationHandle());
-  EXPECT_EQ(navigation_request->GetAssociatedRFHType(),
-            NavigationRequest::AssociatedRenderFrameHostType::NONE);
-
-  EXPECT_TRUE(navigation_manager.WaitForNavigationFinished());
-  EXPECT_TRUE(navigation_manager.was_successful());
-  EXPECT_TRUE(navigation_manager.was_committed());
-}
-
 // Test that a BrowsingInstance swap occurs when the process flags for a site
 // change. Ensure this happens only for main frames and only when there are no
 // related WebContents.
@@ -7783,8 +7804,5 @@ INSTANTIATE_TEST_SUITE_P(
     testing::ValuesIn(RenderDocumentFeatureLevelValues()));
 INSTANTIATE_TEST_SUITE_P(All,
                          RenderFrameHostManagerClearWindowNameTest,
-                         testing::ValuesIn(RenderDocumentFeatureLevelValues()));
-INSTANTIATE_TEST_SUITE_P(All,
-                         ResumeNavigationWithSpeculativeRFHProcessGoneTest,
                          testing::ValuesIn(RenderDocumentFeatureLevelValues()));
 }  // namespace content

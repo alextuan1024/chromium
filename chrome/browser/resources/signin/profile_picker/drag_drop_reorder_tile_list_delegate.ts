@@ -31,6 +31,14 @@ const SHIFTED_TAG: string = 'shifted';
 // initial position).
 const SHIFTING_TAG: string = 'shifting';
 
+// Minimum and maximum vertical scroll speed in pixels per animation frame when
+// dragging a tile past the scrollable container's top or bottom edge.
+const MIN_SCROLL_SPEED: number = 8;
+const MAX_SCROLL_SPEED: number = 24;
+// Distance in pixels past the container edge at which scroll speed reaches
+// `MAX_SCROLL_SPEED`.
+const MAX_SCROLL_OVERFLOW: number = 80;
+
 // Interface to interact with the real underlying tile list that expects to have
 // the Drag and Drop functionality.
 export interface DraggableTileListInterface {
@@ -39,12 +47,110 @@ export interface DraggableTileListInterface {
   getDraggableTile(index: number): HTMLElement;
   // Given a draggable tile, return its corresponding index in the tile list.
   getDraggableTileIndex(tile: HTMLElement): number;
+  // Returns the scrollable container that holds the draggable tiles.
+  getScrollableContainer(): HTMLElement;
 
   // On drag end, send back the indices of the tiles that were affected.
   // initialIndex: is the index of the tile that was dragged.
   // finalIndex: is the index of the tile that was targeted, the location at
   // which the dragging tile was dropped.
   onDragEnd(initialIndex: number, finalIndex: number): void;
+}
+
+// Handles smooth vertical scrolling of the scrollable container when a tile is
+// dragged past its top or bottom edge.
+class DragScrollController {
+  private container_: HTMLElement;
+
+  private grabOffsetY_: number = 0;
+  private pointerX_: number = 0;
+  private pointerY_: number = 0;
+  private scrollDeltaY_: number = 0;
+  private animationFrameId_: number|null = null;
+
+  constructor(container: HTMLElement) {
+    this.container_ = container;
+  }
+
+  onDragStart(event: DragEvent, tile: HTMLElement) {
+    const rect = tile.getBoundingClientRect();
+    this.grabOffsetY_ = (event.y >= rect.top && event.y <= rect.bottom) ?
+        event.y - rect.top :
+        rect.height / 2;
+  }
+
+  onDragOver(event: DragEvent, tile: HTMLElement) {
+    // Do not scroll on unset event coordinates (e.g. default in tests) or when
+    // the container has no vertical overflow.
+    if ((event.x === 0 && event.y === 0) ||
+        this.container_.scrollHeight <= this.container_.clientHeight) {
+      this.stop();
+      return;
+    }
+
+    this.pointerX_ = event.x;
+    this.pointerY_ = event.y;
+
+    // Compute the dragged tile's current top and bottom edges in viewport
+    // coordinates based on the pointer position and initial grab offset.
+    const containerRect = this.container_.getBoundingClientRect();
+    const tileTop = event.y - this.grabOffsetY_;
+    const tileBottom = tileTop + tile.offsetHeight;
+
+    if (tileTop < containerRect.top && this.container_.scrollTop > 0) {
+      // Scroll up when the tile's top edge crosses above the container top.
+      this.start_(-this.computeSpeed_(containerRect.top - tileTop));
+    } else if (
+        tileBottom > containerRect.bottom &&
+        this.container_.scrollTop + this.container_.clientHeight <
+            this.container_.scrollHeight) {
+      // Scroll down when the tile's bottom edge crosses below the container.
+      this.start_(this.computeSpeed_(tileBottom - containerRect.bottom));
+    } else {
+      // Stop scrolling while the tile is within the container's bounds.
+      this.stop();
+    }
+  }
+
+  stop() {
+    this.scrollDeltaY_ = 0;
+    if (this.animationFrameId_ !== null) {
+      cancelAnimationFrame(this.animationFrameId_);
+      this.animationFrameId_ = null;
+    }
+  }
+
+  private computeSpeed_(overflow: number): number {
+    const ratio = Math.min(overflow / MAX_SCROLL_OVERFLOW, 1);
+    return Math.round(
+        MIN_SCROLL_SPEED + ratio * (MAX_SCROLL_SPEED - MIN_SCROLL_SPEED));
+  }
+
+  private start_(deltaY: number) {
+    this.scrollDeltaY_ = deltaY;
+    if (this.animationFrameId_ === null) {
+      this.animationFrameId_ = requestAnimationFrame(() => this.step_());
+    }
+  }
+
+  private step_() {
+    this.animationFrameId_ = null;
+    const previousScrollTop = this.container_.scrollTop;
+    this.container_.scrollTop += this.scrollDeltaY_;
+    if (this.container_.scrollTop === previousScrollTop) {
+      this.stop();
+      return;
+    }
+
+    // Check the tile under the pointer while scrolling so tiles shift.
+    const root = this.container_.getRootNode() as Document | ShadowRoot;
+    const elementUnderPointer =
+        root.elementFromPoint(this.pointerX_, this.pointerY_);
+    elementUnderPointer?.dispatchEvent(
+        new DragEvent('dragenter', {bubbles: true, composed: true}));
+
+    this.animationFrameId_ = requestAnimationFrame(() => this.step_());
+  }
 }
 
 // This delegate class allows any Lit list container of tiles to add the
@@ -77,6 +183,7 @@ export class DragDropReorderTileListDelegate {
   private dragStartIndex_: number = -1;
   private dropTargetIndex_: number = -1;
 
+  private scrollController_: DragScrollController;
   private eventTracker_: EventTracker;
 
   // ---------------------------------------------------------------------------
@@ -91,6 +198,8 @@ export class DragDropReorderTileListDelegate {
     this.tileListInterface_ = tileListInterface;
     this.transitionDuration_ = transitionDuration;
 
+    this.scrollController_ = new DragScrollController(
+        this.tileListInterface_.getScrollableContainer());
     this.eventTracker_ = new EventTracker();
 
     this.initializeListeners_();
@@ -98,9 +207,13 @@ export class DragDropReorderTileListDelegate {
 
   // Clear all drag events listeners and reset tiles drag state.
   clearListeners() {
+    this.resetActiveDrag_();
+    this.scrollController_.stop();
     for (let i = 0; i < this.tileList_.length; ++i) {
       const tile = this.getDraggableTile_(i);
-      tile.draggable = false;
+      if (tile) {
+        tile.draggable = false;
+      }
     }
 
     this.eventTracker_.removeAll();
@@ -112,6 +225,9 @@ export class DragDropReorderTileListDelegate {
   // tile).
   toggleDrag(toggle: boolean) {
     this.isDragEnabled_ = toggle;
+    if (!toggle) {
+      this.scrollController_.stop();
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -150,7 +266,8 @@ export class DragDropReorderTileListDelegate {
     // since the tile we are replacing is potentially moved and therefore not
     // triggering any more drag over events that will be associated with the
     // dragend of our drag event cycle of interest).
-    // Therefore, we only use this listener to allow properly dropping the tile.
+    // We also use this listener to scroll the container when a tile is dragged
+    // near or beyond the top or bottom edge of the scrollable container.
     this.eventTracker_.add(this.element, 'dragover', (event: DragEvent) => {
       // Only react if we are part of our drag event cycle. This event will
       // trigger for any element being dragged over within the Lit
@@ -160,6 +277,7 @@ export class DragDropReorderTileListDelegate {
       }
 
       event.preventDefault();
+      this.scrollController_.onDragOver(event, this.draggingTile_!);
     });
   }
 
@@ -174,6 +292,7 @@ export class DragDropReorderTileListDelegate {
       return;
     }
 
+    this.resetActiveDrag_();
     this.isDragging_ = true;
     // 'event.target' corresponds to the tile being dragged. Implicit cast to
     // an HTMLElement.
@@ -184,14 +303,22 @@ export class DragDropReorderTileListDelegate {
     // cycle.
     this.setAllTilesTransitions_();
 
-    // `event.dataTransfer` is null in tests.
+    this.scrollController_.onDragStart(event, tile);
+
+    // `event.dataTransfer` may be null in tests.
     if (event.dataTransfer) {
+      // Clear any default drag data (e.g. from sub-elements or text selection)
+      // so OS drop targets such as File Explorer on the Windows taskbar do not
+      // treat internal tile reordering as an external file/URL drag.
+      event.dataTransfer.items.clear();
       const pos = tile.getBoundingClientRect();
       // Make the dragging image the tile itself so that reaction to any sub
       // element that is also draggable shows the whole tile being dragged and
       // not the sub element only (e.g. images).
       event.dataTransfer.setDragImage(
           tile, event.x - pos.left, event.y - pos.top);
+      // Avoid showing the 'copy' (+) cursor icon when dragging (e.g. on MacOS).
+      event.dataTransfer.effectAllowed = 'move';
     }
   }
 
@@ -278,19 +405,25 @@ export class DragDropReorderTileListDelegate {
   // Transition effects are disabled at this point not to have back and forth
   // animations.
   private onDragEnd_(event: DragEvent) {
+    if (!this.isDragging_) {
+      return;
+    }
+
     // The 'event.target' of the 'dragend' event is expected to be the same as
     // the one that started the drag event cycle.
     assert(this.draggingTile_);
     assert(this.draggingTile_ === event.target as HTMLElement);
 
     this.isDragging_ = false;
+    this.scrollController_.stop();
 
     // Reset all the tiles that shifted during the drag events.
     // Disable transition so that the change is instant and re-alligned by the
     // data change.
     this.resetAllTilesWithoutTransition_();
 
-    if (this.dropTargetIndex_ !== -1) {
+    if (this.dropTargetIndex_ !== -1 &&
+        this.dropTargetIndex_ !== this.dragStartIndex_) {
       // In case a reorder should happen:
       // - Apply the changes on the original list.
       // - The changes will cause a re-rendering of the Lit element which
@@ -470,6 +603,18 @@ export class DragDropReorderTileListDelegate {
     this.draggingTile_ = null;
   }
 
+  private resetActiveDrag_() {
+    if (!this.isDragging_) {
+      return;
+    }
+
+    this.isDragging_ = false;
+    this.scrollController_.stop();
+    this.dropTargetIndex_ = -1;
+    this.resetAllTilesWithoutTransition_();
+    this.resetDraggingTile_();
+  }
+
   // Clear all tiles transition effects, and remove the temporary transforms on
   // all tiles that shifted or are shifting.
   private resetAllTilesWithoutTransition_() {
@@ -478,6 +623,10 @@ export class DragDropReorderTileListDelegate {
     // animate.
     for (let i = 0; i < this.tileList_.length; ++i) {
       const tile = this.getDraggableTile_(i);
+      if (!tile) {
+        continue;
+      }
+      tile.ontransitionend = null;
       tile.classList.remove(SHIFTED_TAG);
       tile.classList.remove(SHIFTING_TAG);
       tile.style.removeProperty('transition');

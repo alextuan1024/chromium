@@ -4,11 +4,14 @@
 
 #include "third_party/blink/renderer/core/loader/anchor_element_interaction_tracker.h"
 
+#include <array>
+
 #include "base/feature_list.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/notreached.h"
 #include "base/strings/strcat.h"
 #include "base/time/time.h"
+#include "build/build_config.h"
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/common/input/web_mouse_wheel_event.h"
 #include "third_party/blink/public/common/input/web_pointer_properties.h"
@@ -124,7 +127,43 @@ const ModerateViewportHeuristicConfig& GetViewportHeuristicConfig() {
                                            : *g_config_for_testing;
 }
 
+bool ShouldRunMobileViewportHeuristicImpl(const Document& document,
+                                          bool for_devtools_emulation) {
+#if BUILDFLAG(IS_ANDROID)
+  return IsMobileViewportContext(document);
+#elif BUILDFLAG(IS_IOS)
+  // Mobile viewport style is the platform default on iOS, so it does not
+  // imply DevTools mobile emulation.
+  return false;
+#else
+  // On desktop, a mobile viewport context implies DevTools mobile emulation;
+  // `for_devtools_emulation` acts as a kill-switch for that path.
+  return for_devtools_emulation && IsMobileViewportContext(document);
+#endif
+}
+
 }  // namespace
+
+bool ShouldRunModerateMobileViewportHeuristic(const Document& document) {
+  if (!base::FeatureList::IsEnabled(
+          features::kPreloadingModerateViewportHeuristics)) {
+    return false;
+  }
+  return ShouldRunMobileViewportHeuristicImpl(
+      document,
+      features::kPreloadingModerateViewportHeuristicsForDevToolsEmulation
+          .Get());
+}
+
+bool ShouldRunEagerMobileViewportHeuristic(const Document& document) {
+  if (!base::FeatureList::IsEnabled(
+          features::kPreloadingEagerViewportHeuristics)) {
+    return false;
+  }
+  return ShouldRunMobileViewportHeuristicImpl(
+      document,
+      features::kPreloadingEagerViewportHeuristicsForDevToolsEmulation.Get());
+}
 
 ModerateViewportHeuristicConfigTestingScope::
     ModerateViewportHeuristicConfigTestingScope()
@@ -322,21 +361,16 @@ AnchorElementInteractionTracker::AnchorElementInteractionTracker(
       interaction_host_.BindNewPipeAndPassReceiver(
           document.GetExecutionContext()->GetTaskRunner(
               TaskType::kInternalDefault)));
-  if (base::FeatureList::IsEnabled(
-          blink::features::kPreloadingModerateViewportHeuristics) ||
-      base::FeatureList::IsEnabled(
-          blink::features::kPreloadingEagerViewportHeuristics)) {
-    auto* anchor_metrics_sender =
-        AnchorElementMetricsSender::GetForFrame(GetDocument()->GetFrame());
-    auto* anchor_viewport_observer =
-        AnchorElementViewportPositionTracker::MaybeGetOrCreateFor(document);
-    // The viewport-based heuristic implemented by this class isn't as accurate
-    // when all anchors are not sampled in (i.e. not reported to
-    // `anchor_viewport_observer`), so we don't register for notifications (and
-    // don't run the heuristic) in that case.
-    if (anchor_viewport_observer && anchor_metrics_sender &&
-        anchor_metrics_sender->AllAnchorsSampledIn()) {
-      anchor_viewport_observer->AddObserver(this);
+  if (ShouldRunModerateMobileViewportHeuristic(document) ||
+      ShouldRunEagerMobileViewportHeuristic(document)) {
+    if (auto* anchor_metrics_sender =
+            AnchorElementMetricsSender::GetForFrame(GetDocument()->GetFrame());
+        anchor_metrics_sender && anchor_metrics_sender->AllAnchorsSampledIn()) {
+      if (auto* anchor_viewport_observer =
+              AnchorElementViewportPositionTracker::MaybeGetOrCreateFor(
+                  document)) {
+        anchor_viewport_observer->AddObserver(this);
+      }
     }
   }
 }
@@ -384,9 +418,6 @@ void AnchorElementInteractionTracker::OnPointerEvent(
   const AtomicString& event_type = pointer_event.type();
 
   if (event_type == event_type_names::kPointerdown) {
-    last_pointer_down_locations_[1] = last_pointer_down_locations_[0];
-    last_pointer_down_locations_[0] = pointer_event.screenY();
-
     if (auto* viewport_position_tracker =
             AnchorElementViewportPositionTracker::MaybeGetOrCreateFor(
                 *GetDocument())) {
@@ -485,41 +516,6 @@ void AnchorElementInteractionTracker::OnClickEvent(
   if (auto* sender =
           AnchorElementMetricsSender::GetForFrame(GetDocument()->GetFrame())) {
     sender->MaybeReportClickedMetricsOnClick(anchor);
-  }
-
-  LocalFrame* frame = anchor.GetDocument().GetFrame();
-  if (!frame->IsMainFrame() || !frame->View()) {
-    return;
-  }
-
-  Screen* screen = frame->DomWindow()->screen();
-  const int screen_height = screen->height();
-  if (screen_height == 0) {
-    return;
-  }
-
-  const char* orientation_pattern =
-      screen->width() <= screen_height ? ".Portrait" : ".Landscape";
-  double click_y = click_event.screenY();
-  int normalized_click_y = base::ClampRound(100.0f * (click_y / screen_height));
-  base::UmaHistogramPercentage(
-      base::StrCat({"Blink.AnchorElementInteractionTracker.ClickLocationY",
-                    orientation_pattern}),
-      normalized_click_y);
-
-  if (last_pointer_down_locations_[1]) {
-    double click_distance = click_y - last_pointer_down_locations_[1].value();
-    // Because a click could happen both above and below the previous pointer
-    // down, |click_distance| can be any value between -|screen_height| and
-    // |screen_height| inclusive. We shift and scale it to be values between 0
-    // and 100 before recording to UMA.
-    int shifted_normalized_click_distance =
-        base::ClampRound(50.0f * (1 + click_distance / screen_height));
-    base::UmaHistogramPercentage(
-        base::StrCat({"Blink.AnchorElementInteractionTracker"
-                      ".ClickDistanceFromPreviousPointerDown",
-                      orientation_pattern}),
-        shifted_normalized_click_distance);
   }
 }
 
@@ -632,14 +628,11 @@ KURL AnchorElementInteractionTracker::GetHrefEligibleForPreloading(
 void AnchorElementInteractionTracker::ViewportIntersectionUpdate(
     const HeapVector<Member<const HTMLAnchorElementBase>>& entered_viewport,
     const HeapVector<Member<const HTMLAnchorElementBase>>& left_viewport) {
-  if (!base::FeatureList::IsEnabled(
-          blink::features::kPreloadingEagerViewportHeuristics)) {
-    return;
-  }
   // TODO(https://crbug.com/505056924): The state of IsPreloadingEligible may be
   // dynamically changed in the future changes, make sure the state is reflected
   // correctly at the point.
-  if (!IsPreloadingEligible()) {
+  if (!ShouldRunEagerMobileViewportHeuristic(*GetDocument()) ||
+      !IsPreloadingEligible()) {
     eager_viewport_heuristics_candidates_.clear();
     eager_viewport_heuristic_timer_.Stop();
     return;
@@ -678,14 +671,11 @@ void AnchorElementInteractionTracker::ViewportIntersectionUpdate(
 
 void AnchorElementInteractionTracker::AnchorPositionsUpdated(
     HeapVector<Member<AnchorPositionUpdate>>& position_updates) {
-  if (!base::FeatureList::IsEnabled(
-          blink::features::kPreloadingModerateViewportHeuristics)) {
-    return;
-  }
   // TODO(https://crbug.com/505056924): The state of IsPreloadingEligible may be
   // dynamically changed in the future changes, make sure the state is reflected
   // correctly at the point.
-  if (!IsPreloadingEligible()) {
+  if (!ShouldRunModerateMobileViewportHeuristic(*GetDocument()) ||
+      !IsPreloadingEligible()) {
     largest_anchor_element_in_viewport_ = nullptr;
     moderate_viewport_heuristic_timer_.Stop();
     return;
@@ -781,13 +771,12 @@ bool AnchorElementInteractionTracker::IsPreloadingEligible() {
 
 void AnchorElementInteractionTracker::ModerateViewportHeuristicTimerFired(
     TimerBase* timer) {
-  CHECK(base::FeatureList::IsEnabled(
-      blink::features::kPreloadingModerateViewportHeuristics));
   if (!largest_anchor_element_in_viewport_ || !GetDocument()->GetFrame()) {
     return;
   }
 
-  if (!IsPreloadingEligible()) {
+  if (!ShouldRunModerateMobileViewportHeuristic(*GetDocument()) ||
+      !IsPreloadingEligible()) {
     return;
   }
 
@@ -816,9 +805,12 @@ void AnchorElementInteractionTracker::ModerateViewportHeuristicTimerFired(
 
 void AnchorElementInteractionTracker::EagerViewportHeuristicTimerFired(
     TimerBase*) {
-  CHECK(base::FeatureList::IsEnabled(
-      blink::features::kPreloadingEagerViewportHeuristics));
   if (!GetDocument()->GetFrame()) {
+    return;
+  }
+  if (!ShouldRunEagerMobileViewportHeuristic(*GetDocument()) ||
+      !IsPreloadingEligible()) {
+    eager_viewport_heuristics_candidates_.clear();
     return;
   }
 
@@ -834,7 +826,7 @@ void AnchorElementInteractionTracker::EagerViewportHeuristicTimerFired(
     next_fire_time = std::min(next_fire_time, candidate.timestamp);
   }
 
-  if (!fired_candidates.empty() && IsPreloadingEligible()) {
+  if (!fired_candidates.empty()) {
     // The candidates are enacted via DocumentSpeculationRules.
     DocumentSpeculationRules* rules = nullptr;
     if (Document* document = GetDocument()) {

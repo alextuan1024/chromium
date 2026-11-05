@@ -100,7 +100,8 @@ RenderWidgetHostViewIOS::RenderWidgetHostViewIOS(RenderWidgetHost* widget)
           ui::GetGestureProviderConfig(
               ui::GestureProviderConfigType::CURRENT_PLATFORM,
               GetUIThreadTaskRunner({BrowserTaskType::kUserInput})),
-          this)) {
+          this)),
+      use_fixed_size_for_testing_(IsTesting()) {
   ui_view_ = std::make_unique<UIViewHolder>();
   ui_view_->view_ =
       [[RenderWidgetUIView alloc] initWithWidget:weak_factory_.GetWeakPtr()];
@@ -113,7 +114,7 @@ RenderWidgetHostViewIOS::RenderWidgetHostViewIOS(RenderWidgetHost* widget)
       [ui_view_->view_ viewHandle], this, host()->IsHidden(),
       host()->GetFrameSinkId());
 
-  if (IsTesting()) {
+  if (use_fixed_size_for_testing_) {
     view_bounds_ = GetDefaultSizeForTesting();
     browser_compositor_->UpdateSurfaceFromUIView(GetViewBounds().size());
   }
@@ -168,9 +169,10 @@ bool RenderWidgetHostViewIOS::IsSurfaceAvailableForCopy() {
       ->CanCopyFromCompositingSurface();
 }
 
-void RenderWidgetHostViewIOS::CopyFromSurface(
+void RenderWidgetHostViewIOS::CopyFromSurfaceImpl(
     const gfx::Rect& src_rect,
     const gfx::Size& dst_size,
+    bool is_copy_request_secure,
     base::TimeDelta timeout,
     base::OnceCallback<void(const content::CopyFromSurfaceResult&)> callback) {
   base::WeakPtr<RenderWidgetHostImpl> popup_host;
@@ -178,8 +180,8 @@ void RenderWidgetHostViewIOS::CopyFromSurface(
   RenderWidgetHostViewBase::CopyMainAndPopupFromSurface(
       host()->GetWeakPtr(),
       browser_compositor_->GetDelegatedFrameHost()->GetWeakPtr(), popup_host,
-      popup_frame_host, src_rect, dst_size, GetDeviceScaleFactor(), timeout,
-      std::move(callback));
+      popup_frame_host, src_rect, dst_size, GetDeviceScaleFactor(),
+      is_copy_request_secure, timeout, std::move(callback));
 }
 
 ui::FilteredGestureProvider*
@@ -221,7 +223,7 @@ void RenderWidgetHostViewIOS::Focus() {
 }
 
 bool RenderWidgetHostViewIOS::HasFocus() {
-  return is_first_responder_;
+  return has_focus_for_testing_.value_or(is_first_responder_);
 }
 
 gfx::Rect RenderWidgetHostViewIOS::GetViewBounds() {
@@ -457,6 +459,13 @@ RenderWidgetHostViewIOS::CollectSurfaceIdsForEviction() {
 }
 
 void RenderWidgetHostViewIOS::UpdateScreenInfo() {
+  const gfx::Size native_view_size = gfx::Rect([ui_view_->view_ bounds]).size();
+  // UIKit autoresizing does not refresh the cached renderer size. Update it
+  // before publishing visual properties, preserving resize deferral during
+  // scrolling and fixed web-test sizing.
+  const bool renderer_size_changed =
+      UpdateViewBounds(gfx::Rect(view_bounds_.origin(), native_view_size));
+
   if (host()->delegate()) {
     host()->delegate()->SendScreenRects();
   }
@@ -466,21 +475,22 @@ void RenderWidgetHostViewIOS::UpdateScreenInfo() {
       display_screen->GetScreenInfosNearestDisplay(
           display_screen->GetPrimaryDisplay().id());
 
-  gfx::Rect view_bounds_dips([ui_view_->view_ bounds]);
   const bool screen_info_changed = screen_infos_ != new_screen_infos;
-  const bool size_changed =
-      view_bounds_dips.size() != browser_compositor_->GetRendererSize();
+  const bool compositor_size_changed =
+      native_view_size != browser_compositor_->GetRendererSize();
   screen_infos_ = std::move(new_screen_infos);
 
-  if (!IsTesting() && (size_changed || screen_info_changed)) {
-    browser_compositor_->UpdateSurfaceFromUIView(view_bounds_dips.size());
+  if (!use_fixed_size_for_testing_ &&
+      (compositor_size_changed || screen_info_changed)) {
+    browser_compositor_->UpdateSurfaceFromUIView(native_view_size);
   }
   ComputeDisplayFeature();
 
-  // Notify the associated RenderWidgetHostImpl when screen info has changed.
-  // That will synchronize visual properties needed for frame tree rendering
-  // and for web platform APIs that expose screen and window info and events.
-  if (size_changed || screen_info_changed) {
+  // Notify the associated RenderWidgetHostImpl when screen info or size
+  // changes. That will synchronize visual properties needed for frame tree
+  // rendering and for web platform APIs that expose screen and window info and
+  // events.
+  if (renderer_size_changed || compositor_size_changed || screen_info_changed) {
     host()->NotifyScreenInfoChanged();
   }
 }
@@ -625,7 +635,7 @@ bool RenderWidgetHostViewIOS::ShouldRouteEvents() const {
   if (!host()) {
     return false;
   }
-  return host()->delegate() && host()->delegate()->GetInputEventRouter();
+  return !!host()->GetInputEventRouter();
 }
 
 void RenderWidgetHostViewIOS::OnTouchEvent(blink::WebTouchEvent web_event) {
@@ -641,8 +651,8 @@ void RenderWidgetHostViewIOS::OnTouchEvent(blink::WebTouchEvent web_event) {
   ui::LatencyInfo latency_info;
   latency_info.AddLatencyNumber(ui::INPUT_EVENT_LATENCY_UI_COMPONENT);
   if (ShouldRouteEvents()) {
-    host()->delegate()->GetInputEventRouter()->RouteTouchEvent(this, &web_event,
-                                                               latency_info);
+    host()->GetInputEventRouter()->RouteTouchEvent(this, &web_event,
+                                                   latency_info);
   } else {
     host()->GetRenderInputRouter()->ForwardTouchEventWithLatencyInfo(
         web_event, latency_info);
@@ -664,11 +674,8 @@ void RenderWidgetHostViewIOS::ProcessAckedTouchEvent(
   }
   if (touch.event.touch_start_or_first_touch_move && event_consumed &&
       ShouldRouteEvents()) {
-    host()
-        ->delegate()
-        ->GetInputEventRouter()
-        ->OnHandledTouchStartOrFirstTouchMove(
-            touch.event.unique_touch_event_id);
+    host()->GetInputEventRouter()->OnHandledTouchStartOrFirstTouchMove(
+        touch.event.unique_touch_event_id);
   }
 }
 
@@ -711,8 +718,8 @@ void RenderWidgetHostViewIOS::InjectTouchEvent(
 
   if (ShouldRouteEvents()) {
     blink::WebTouchEvent touch_event(event);
-    host()->delegate()->GetInputEventRouter()->RouteTouchEvent(
-        this, &touch_event, latency_info);
+    host()->GetInputEventRouter()->RouteTouchEvent(this, &touch_event,
+                                                   latency_info);
   } else if (host()) {
     host()->GetRenderInputRouter()->ForwardTouchEventWithLatencyInfo(
         event, latency_info);
@@ -728,8 +735,8 @@ void RenderWidgetHostViewIOS::InjectGestureEvent(
   ScopedInputDispatchPin pin(this);
   if (ShouldRouteEvents()) {
     blink::WebGestureEvent gesture_event(event);
-    host()->delegate()->GetInputEventRouter()->RouteGestureEvent(
-        this, &gesture_event, latency_info);
+    host()->GetInputEventRouter()->RouteGestureEvent(this, &gesture_event,
+                                                     latency_info);
   } else {
     host()->GetRenderInputRouter()->ForwardGestureEventWithLatencyInfo(
         event, latency_info);
@@ -744,8 +751,8 @@ void RenderWidgetHostViewIOS::InjectMouseEvent(
   }
   if (ShouldRouteEvents()) {
     blink::WebMouseEvent mouse_event(web_mouse);
-    host()->delegate()->GetInputEventRouter()->RouteMouseEvent(
-        this, &mouse_event, latency_info);
+    host()->GetInputEventRouter()->RouteMouseEvent(this, &mouse_event,
+                                                   latency_info);
   } else {
     host()->ForwardMouseEventWithLatencyInfo(web_mouse, latency_info);
   }
@@ -759,7 +766,7 @@ void RenderWidgetHostViewIOS::InjectMouseWheelEvent(
   }
   if (ShouldRouteEvents()) {
     blink::WebMouseWheelEvent mouse_wheel_event(web_wheel);
-    host()->delegate()->GetInputEventRouter()->RouteMouseWheelEvent(
+    host()->GetInputEventRouter()->RouteMouseWheelEvent(
         this, &mouse_wheel_event, latency_info);
   } else {
     host()->ForwardWheelEventWithLatencyInfo(web_wheel, latency_info);
@@ -926,13 +933,11 @@ void RenderWidgetHostViewIOS::GestureEventAck(
       break;
     case blink::WebInputEvent::Type::kGestureScrollEnd: {
       // Make sure our cached view bounds gets updated.
-      if (!IsTesting()) {
-        view_bounds_ = gfx::Rect([ui_view_->view_ bounds]);
-      }
+      is_scrolling_ = false;
+      UpdateViewBounds(gfx::Rect([ui_view_->view_ bounds]));
       if (host()->delegate()) {
         host()->delegate()->SetTopControlsGestureScrollInProgress(false);
       }
-      is_scrolling_ = false;
       CGPoint targetOffset = [scrollView contentOffset];
       [[scrollView delegate] scrollViewWillEndDragging:scrollView
                                           withVelocity:CGPoint()
@@ -971,11 +976,16 @@ void RenderWidgetHostViewIOS::UpdateFrameBounds() {
   frameBounds.origin = CGPointMake(scrollOffset.x() + parentInset.left,
                                    scrollOffset.y() + parentInset.top);
 
-  // If we are scrolling we don't resize the WebView immediately.
-  if (!is_scrolling_ && !IsTesting()) {
-    view_bounds_ = gfx::Rect(frameBounds);
-  }
+  UpdateViewBounds(gfx::Rect(frameBounds));
   [ui_view_->view_ setFrame:frameBounds];
+}
+
+bool RenderWidgetHostViewIOS::UpdateViewBounds(const gfx::Rect& bounds) {
+  if (is_scrolling_ || use_fixed_size_for_testing_ || view_bounds_ == bounds) {
+    return false;
+  }
+  view_bounds_ = bounds;
+  return true;
 }
 
 void RenderWidgetHostViewIOS::ApplyRootScrollOffsetChanged(
@@ -1075,6 +1085,18 @@ void RenderWidgetHostViewIOS::AdvanceFocusForIME(
       focus_type);
 }
 
+void RenderWidgetHostViewIOS::ClearFocusedElement() {
+  auto* host = GetFocusedWidget();
+  if (!host) {
+    return;
+  }
+  auto* rfh = host->frame_tree()->GetFocusedFrame();
+  if (!rfh) {
+    return;
+  }
+  rfh->current_frame_host()->ClearFocusedElement();
+}
+
 void RenderWidgetHostViewIOS::SendKeyEvent(
     const input::NativeWebKeyboardEvent& event) {
   auto* host = GetFocusedWidget();
@@ -1138,9 +1160,10 @@ void RenderWidgetHostViewIOS::RectForEditFieldChars(
 }
 
 gfx::Size RenderWidgetHostViewIOS::GetCompositorViewportPixelSize() {
-  return gfx::ScaleToCeiledSize(
-      IsTesting() ? GetRequestedRendererSize() : GetScreenInfo().rect.size(),
-      GetDeviceScaleFactor());
+  return gfx::ScaleToCeiledSize(use_fixed_size_for_testing_
+                                    ? GetRequestedRendererSize()
+                                    : GetScreenInfo().rect.size(),
+                                GetDeviceScaleFactor());
 }
 
 void RenderWidgetHostViewIOS::ComputeDisplayFeature() {

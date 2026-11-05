@@ -19,6 +19,7 @@
 #include "base/debug/leak_annotations.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
+#include "base/i18n/icu_util.h"
 #include "base/location.h"
 #include "base/logging.h"
 #include "base/memory/ptr_util.h"
@@ -43,8 +44,12 @@
 #include "base/task/current_thread.h"
 #include "base/task/deferred_sequenced_task_runner.h"
 #include "base/task/execution_fence.h"
+#include "base/task/responsiveness/calculator.h"
+#include "base/task/responsiveness/responsiveness_calculator_delegate.h"
+#include "base/task/responsiveness/watcher.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/single_thread_task_runner.h"
+#include "base/task/thread_pool.h"
 #include "base/task/thread_pool/initialization_util.h"
 #include "base/task/thread_pool/thread_pool_instance.h"
 #include "base/thread_annotations.h"
@@ -76,8 +81,6 @@
 #include "content/browser/cpu_performance/cpu_performance.h"
 #include "content/browser/download/save_file_manager.h"
 #include "content/browser/field_trial_synchronizer.h"
-#include "content/browser/first_party_sets/first_party_set_parser.h"
-#include "content/browser/first_party_sets/first_party_sets_handler_impl.h"
 #include "content/browser/gpu/browser_gpu_channel_host_factory.h"
 #include "content/browser/gpu/browser_gpu_client_delegate.h"
 #include "content/browser/gpu/compositor_util.h"
@@ -92,7 +95,7 @@
 #include "content/browser/renderer_host/media/media_stream_manager.h"
 #include "content/browser/renderer_host/render_process_host_impl.h"
 #include "content/browser/scheduler/browser_task_executor.h"
-#include "content/browser/scheduler/responsiveness/watcher.h"
+#include "content/browser/scheduler/responsiveness/native_event_observer.h"
 #include "content/browser/screenlock_monitor/screenlock_monitor.h"
 #include "content/browser/screenlock_monitor/screenlock_monitor_device_source.h"
 #include "content/browser/security/cpsp/child_process_security_policy_impl.h"
@@ -164,6 +167,7 @@
 #include "skia/ext/event_tracer_impl.h"
 #include "skia/ext/legacy_display_globals.h"
 #include "skia/ext/skia_memory_dump_provider.h"
+#include "sql/database.h"
 #include "sql/sql_memory_dump_provider.h"
 #include "ui/base/clipboard/clipboard.h"
 #include "ui/display/display_features.h"
@@ -214,7 +218,9 @@
 #include <commctrl.h>
 #include <shellapi.h>
 
+#include "content/public/browser/child_process_launcher_utils.h"
 #include "net/base/winsock_init.h"
+#include "sandbox/policy/win/sandbox_win.h"
 #endif
 
 #if BUILDFLAG(IS_CHROMEOS)
@@ -440,6 +446,43 @@ uint32_t GenerateBrowserSalt() {
 
   return salt;
 }
+
+// Controls whether the memory-mapped ICU data file is pre-read on the
+// ThreadPool during startup.
+BASE_FEATURE(kPreReadIcuData, base::FEATURE_ENABLED_BY_DEFAULT);
+
+class BrowserResponsivenessWatcher : public base::responsiveness::Watcher {
+ public:
+  BrowserResponsivenessWatcher()
+      : Watcher("Browser",
+                {.consume_secondary_sources = true,
+                 .register_first_idle_callback = false,
+                 .observe_application_status = true,
+                 .delegate = GetContentClient()
+                                 ->browser()
+                                 ->CreateResponsivenessCalculatorDelegate()}) {}
+  ~BrowserResponsivenessWatcher() override = default;
+
+ private:
+  // Overrides `Watcher::SetUp()` to also install `BrowserUINativeEventObserver`
+  // (which depends on `//ui` and `//content`, so
+  // `base::responsiveness::Watcher` cannot own it directly) for native OS
+  // events dispatched from the UI message pump.
+  void SetUp() override {
+    Watcher::SetUp();
+    native_event_observer_ui_ =
+        std::make_unique<responsiveness::BrowserUINativeEventObserver>(
+            base::BindRepeating(
+                &BrowserResponsivenessWatcher::WillRunEventOnMainThread,
+                base::Unretained(this)),
+            base::BindRepeating(
+                &BrowserResponsivenessWatcher::DidRunEventOnMainThread,
+                base::Unretained(this)));
+  }
+
+  std::unique_ptr<responsiveness::BrowserUINativeEventObserver>
+      native_event_observer_ui_;
+};
 
 }  // namespace
 
@@ -1062,11 +1105,23 @@ int BrowserMainLoop::PreMainMessageLoopRun() {
     result_code_ = parts_->PreMainMessageLoopRun();
 
   // ShellBrowserMainParts initializes a ShellBrowserContext with user data
-  // directory only in PreMainMessageLoopRun(). First-Party Sets handler needs
-  // to access this directory, hence triggering after this stage has run.
+  // directory only in PreMainMessageLoopRun(). Delete any residual
+  // First-Party Sets database after this stage has run.
   if (result_code_ == RESULT_CODE_NORMAL_EXIT) {
-    FirstPartySetsHandlerImpl::GetInstance()->Init(
-        GetContentClient()->browser()->GetFirstPartySetsDirectory());
+    if (base::FilePath dir =
+            GetContentClient()->browser()->GetFirstPartySetsDirectory();
+        !dir.empty()) {
+      base::ThreadPool::PostTask(
+          FROM_HERE,
+          {base::MayBlock(), base::TaskPriority::BEST_EFFORT,
+           base::TaskShutdownBehavior::BLOCK_SHUTDOWN},
+          base::BindOnce(
+              [](const base::FilePath& dir) {
+                sql::Database::Delete(
+                    dir.Append(FILE_PATH_LITERAL("first_party_sets.db")));
+              },
+              std::move(dir)));
+    }
   }
 
   variations::MaybeScheduleFakeCrash();
@@ -1116,7 +1171,7 @@ int BrowserMainLoop::PreMainMessageLoopRun() {
   // responsiveness::Watcher to catch jank induced by any unintentionally
   // blocking tasks.
   base::DisallowUnresponsiveTasks();
-  responsiveness_watcher_ = new responsiveness::Watcher;
+  responsiveness_watcher_ = std::make_unique<BrowserResponsivenessWatcher>();
   responsiveness_watcher_->SetUp();
   return result_code_;
 }
@@ -1217,6 +1272,10 @@ void BrowserMainLoop::ShutdownThreadsAndCleanUp() {
   if (RenderProcessHost::run_renderer_in_process())
     RenderProcessHostImpl::ShutDownInProcessRenderer();
 
+  if (audio_manager_) {
+    audio_manager_->CloseIdleStreams();
+  }
+
   if (parts_) {
     TRACE_EVENT0("shutdown",
                  "BrowserMainLoop::Subsystem:PostMainMessageLoopRun");
@@ -1300,6 +1359,15 @@ void BrowserMainLoop::ShutdownThreadsAndCleanUp() {
   }
 
   GetContentClient()->browser()->ThreadPoolWillTerminate();
+#if BUILDFLAG(IS_WIN)
+  // Cancel launch replies on their origin sequence before broker teardown.
+  // Process creation runs on a separate worker, so cancellation does not wait
+  // for it or unblock a stalled launcher task. The launcher runner still blocks
+  // ThreadPool shutdown, ordering cancellation before CRT teardown.
+  CHECK(GetProcessLauncherTaskRunner()->PostTask(
+      FROM_HERE,
+      base::BindOnce(&sandbox::policy::SandboxWin::ShutdownBrokerServices)));
+#endif
   {
     TRACE_EVENT0("shutdown", "BrowserMainLoop::Subsystem:ThreadPool");
     base::ThreadPoolInstance::Get()->Shutdown();
@@ -1409,7 +1477,6 @@ void BrowserMainLoop::PostCreateThreadsImpl() {
 #else
   establish_gpu_channel = true;
   if (parsed_command_line_->HasSwitch(switches::kDisableGpu) ||
-      parsed_command_line_->HasSwitch(switches::kDisableGpuCompositing) ||
       parsed_command_line_->HasSwitch(switches::kDisableGpuEarlyInit)) {
     establish_gpu_channel = always_uses_gpu = false;
   }
@@ -1544,6 +1611,10 @@ void BrowserMainLoop::PostCreateThreadsImpl() {
     TRACE_EVENT0("startup",
                  "BrowserMainLoop::PostCreateThreads:InitCpuPerformance");
     content::cpu_performance::Initialize();
+  }
+
+  if (base::FeatureList::IsEnabled(kPreReadIcuData)) {
+    base::i18n::PreReadIcuData();
   }
 }
 

@@ -198,6 +198,8 @@ class FakeDesktopSession : public mojom::DesktopSession {
     receiver_.set_disconnect_handler(close_callback_);
   }
 
+  void ResetReceiver() { receiver_.reset(); }
+
  private:
   int terminal_id_;
   raw_ptr<MockDesktopSessionManager> session_manager_;
@@ -319,7 +321,7 @@ class IpcDesktopEnvironmentTest : public testing::Test {
   std::unique_ptr<ScreenControls> screen_controls_;
 
   // The IPC screen capturer.
-  std::unique_ptr<webrtc::DesktopCapturer> video_capturer_;
+  std::unique_ptr<DesktopCapturer> video_capturer_;
 
   // Represents the desktop process running in a user session.
   std::unique_ptr<DesktopProcess> desktop_process_;
@@ -327,6 +329,11 @@ class IpcDesktopEnvironmentTest : public testing::Test {
   // Input injector owned by |desktop_process_|.
   raw_ptr<MockInputInjector, AcrossTasksDanglingUntriaged>
       remote_input_injector_;
+
+  // Clipboard stub passed by the desktop session agent to
+  // `remote_input_injector_`. It holds a reference to the desktop process's
+  // caller task runner, so it must be released in DestroyDesktopProcess().
+  std::unique_ptr<protocol::ClipboardStub> remote_clipboard_stub_;
 
   base::WeakPtr<protocol::FakeDesktopCapturer> remote_desktop_capturer_;
 
@@ -531,7 +538,10 @@ IpcDesktopEnvironmentTest::CreateInputInjector() {
   EXPECT_TRUE(remote_input_injector_ == nullptr);
   remote_input_injector_ = remote_input_injector.get();
 
-  EXPECT_CALL(*remote_input_injector_, Start(_));
+  EXPECT_CALL(*remote_input_injector_, Start(_))
+      .WillOnce([this](std::unique_ptr<protocol::ClipboardStub> stub) {
+        remote_clipboard_stub_ = std::move(stub);
+      });
   return remote_input_injector;
 }
 
@@ -628,6 +638,7 @@ void IpcDesktopEnvironmentTest::DestroyDesktopProcess() {
   }
   desktop_listener_.Disconnect();
   remote_input_injector_ = nullptr;
+  remote_clipboard_stub_.reset();
 }
 
 void IpcDesktopEnvironmentTest::ResetRemoteUrlForwarderConfigurator() {
@@ -896,6 +907,35 @@ TEST_F(IpcDesktopEnvironmentTest, InjectClipboardEvent) {
   input_injector_->InjectClipboardEvent(event);
 }
 
+// Tests that local clipboard events reported by the desktop's input injector on
+// a different thread (e.g. `ClipboardX11` on the input thread) are forwarded to
+// the network process.
+TEST_F(IpcDesktopEnvironmentTest, InjectClipboardEventFromAnotherThread) {
+  auto clipboard_stub = std::make_unique<protocol::MockClipboardStub>();
+
+  // Stop the test when a clipboard event is received from the desktop process.
+  EXPECT_CALL(*clipboard_stub, InjectClipboardEvent(_))
+      .WillOnce(InvokeWithoutArgs(
+          this, &IpcDesktopEnvironmentTest::DeleteDesktopEnvironment));
+
+  // Start the input injector and screen capturer.
+  input_injector_->Start(std::move(clipboard_stub));
+  video_capturer_->Start(&desktop_capturer_callback_);
+
+  // Run the message loop until the desktop is attached.
+  setup_run_loop_->Run();
+  ASSERT_TRUE(remote_clipboard_stub_);
+
+  // Report a local clipboard event from the IO thread.
+  protocol::ClipboardEvent event;
+  event.set_mime_type(kMimeTypeTextUtf8);
+  event.set_data("a");
+  io_task_runner_->PostTask(
+      FROM_HERE,
+      base::BindOnce(&protocol::ClipboardStub::InjectClipboardEvent,
+                     base::Unretained(remote_clipboard_stub_.get()), event));
+}
+
 // Tests injection of key events.
 TEST_F(IpcDesktopEnvironmentTest, InjectKeyEvent) {
   std::unique_ptr<protocol::MockClipboardStub> clipboard_stub(
@@ -1162,6 +1202,30 @@ TEST_F(IpcDesktopEnvironmentTest, OnTerminalDisconnectedWithError) {
 
   OnTerminalDisconnected(terminal_id_, ErrorCode::SESSION_REJECTED,
                          "Test rejection", FROM_HERE);
+
+  desktop_environment_factory_.reset();
+  DestroyDesktopProcess();
+}
+
+TEST_F(IpcDesktopEnvironmentTest, OnDesktopSessionRemoteDisconnected) {
+  auto clipboard_stub = std::make_unique<protocol::MockClipboardStub>();
+  EXPECT_CALL(*clipboard_stub, InjectClipboardEvent(_)).Times(0);
+  input_injector_->Start(std::move(clipboard_stub));
+
+  setup_run_loop_->Run();
+
+  base::test::TestFuture<void> disconnected_future;
+  EXPECT_CALL(
+      client_session_control_,
+      DisconnectSession(ErrorCode::INVALID_STATE,
+                        "DesktopSession control remote disconnected.", _))
+      .WillOnce([this, &disconnected_future]() {
+        DeleteDesktopEnvironment();
+        disconnected_future.SetValue();
+      });
+
+  fake_desktop_session_->ResetReceiver();
+  EXPECT_TRUE(disconnected_future.Wait());
 
   desktop_environment_factory_.reset();
   DestroyDesktopProcess();

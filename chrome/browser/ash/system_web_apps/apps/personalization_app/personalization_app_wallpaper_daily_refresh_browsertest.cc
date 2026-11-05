@@ -32,10 +32,9 @@
 #include "chrome/browser/ash/system_web_apps/apps/personalization_app/personalization_app_utils.h"
 #include "chrome/browser/ash/system_web_apps/apps/personalization_app/test_personalization_app_webui_provider.h"
 #include "chrome/browser/ash/system_web_apps/test_support/system_web_app_browsertest_base.h"
-#include "chrome/browser/ash/wallpaper_handlers/mock_wallpaper_handlers.h"
+#include "chrome/browser/ash/wallpaper_handlers/fake_wallpaper_handlers.h"
 #include "chrome/browser/ash/wallpaper_handlers/test_wallpaper_fetcher_delegate.h"
 #include "chrome/browser/browser_process.h"
-#include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/ash/wallpaper/wallpaper_controller_client_impl.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chromeos/constants/chromeos_features.h"
@@ -216,10 +215,11 @@ IN_PROC_BROWSER_TEST_F(PersonalizationAppWallpaperDailyRefreshBrowserTest,
       *wallpaper_controller()->GetActiveUserWallpaperInfo();
   ASSERT_EQ(WallpaperType::kDaily, original_info.type);
   EXPECT_EQ(kCollectionId, original_info.collection_id);
-  // Fast forwards to the next day. Extra 1 minuter is used to account for
-  // delays.
+  // Fast forwards to the next day. Extra time (up to 25 hours + 1 minute) is
+  // used to account for daylight saving time (e.g. 25-hour Autumn fallback
+  // days) and delays.
   const bool checkpoint_change =
-      FastForwardBy(base::Hours(24) + base::Minutes(1));
+      FastForwardBy(base::Hours(25) + base::Minutes(1));
   ASSERT_TRUE(checkpoint_change);
   base::RunLoop loop;
   WallpaperChangedWaiter waiter(loop.QuitClosure());
@@ -281,10 +281,11 @@ IN_PROC_BROWSER_TEST_F(PersonalizationAppWallpaperDailyRefreshBrowserTest,
         << "Expect same collection";
   }
   {
-    // Forwards another half day. Extra 1 minute is used to account for delays.
-    // Expects a new wallpaper is set.
+    // Forwards another half day. Extra time (up to 13 hours + 1 minute) is
+    // used to account for daylight saving time (e.g. 25-hour Autumn fallback
+    // days) and delays. Expects a new wallpaper is set.
     const auto checkpoint_change =
-        FastForwardBy(base::Hours(12) + base::Minutes(1));
+        FastForwardBy(base::Hours(13) + base::Minutes(1));
     EXPECT_TRUE(checkpoint_change);
     base::RunLoop loop;
     WallpaperChangedWaiter waiter(loop.QuitClosure());
@@ -318,10 +319,11 @@ IN_PROC_BROWSER_TEST_F(PersonalizationAppWallpaperDailyRefreshBrowserTest,
       *wallpaper_controller()->GetActiveUserWallpaperInfo();
   ASSERT_EQ(WallpaperType::kDailyGooglePhotos, original_info.type);
   EXPECT_EQ(kAlbumId, original_info.collection_id);
-  // Fast forwards to the next day. Extra 1 minute is used to account for
-  // delays.
+  // Fast forwards to the next day. Extra time (up to 25 hours + 1 minute) is
+  // used to account for daylight saving time (e.g. 25-hour Autumn fallback
+  // days) and delays.
   const bool checkpoint_change =
-      FastForwardBy(base::Hours(24) + base::Minutes(1));
+      FastForwardBy(base::Hours(25) + base::Minutes(1));
   ASSERT_TRUE(checkpoint_change);
   base::RunLoop loop;
   WallpaperChangedWaiter waiter(loop.QuitClosure());

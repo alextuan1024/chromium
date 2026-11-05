@@ -85,6 +85,9 @@ class CORE_EXPORT HTMLCapabilityElementBase
   bool IsRendered() const;
   bool granted() const { return PermissionsGranted(); }
 
+  bool IsIconOnly() const;
+  const String& AccessibleLabel() const;
+
   const Member<HTMLSpanElement>& permission_text_span_for_testing() const {
     return permission_text_span_;
   }
@@ -96,6 +99,8 @@ class CORE_EXPORT HTMLCapabilityElementBase
 
   // HTMLElement overrides.
   bool IsHTMLCapabilityElementBase() const final { return true; }
+  bool HasActivationBehavior() const override;
+  void RunActivationBehavior(Event&, EventDispatchHandlingState*) override;
 
  protected:
   // blink::HTMLElement:
@@ -138,6 +143,8 @@ class CORE_EXPORT HTMLCapabilityElementBase
   HTMLSpanElement* permission_text_span() const {
     return permission_text_span_.Get();
   }
+
+  void SetPermissionText(const String& text);
 
   HTMLPermissionIconElement* permission_internal_icon() const {
     return permission_internal_icon_.Get();
@@ -224,9 +231,14 @@ class CORE_EXPORT HTMLCapabilityElementBase
   FRIEND_TEST_ALL_PREFIXES(HTMLCapabilityElementBaseIntersectionTest,
                            ContainerDivClipPath);
   FRIEND_TEST_ALL_PREFIXES(HTMLCapabilityElementBaseIntersectionTest,
+                           ContainerDivSingularTransform);
+  FRIEND_TEST_ALL_PREFIXES(HTMLCapabilityElementBaseIntersectionTest,
                            IntersectionOccluderLogging);
   FRIEND_TEST_ALL_PREFIXES(HTMLCapabilityElementBaseIntersectionTest,
                            IntersectionVisibleOverlapsRecentAttachedInterval);
+  FRIEND_TEST_ALL_PREFIXES(
+      HTMLCapabilityElementBaseIntersectionTest,
+      IntersectionVisibleAfterRecentAttachedIntervalExpired);
   FRIEND_TEST_ALL_PREFIXES(HTMLCapabilityElementBaseFencedFrameTest,
                            NotAllowedInFencedFrame);
   FRIEND_TEST_ALL_PREFIXES(HTMLCapabilityElementBaseSimTest,
@@ -603,6 +615,8 @@ class CORE_EXPORT HTMLCapabilityElementBase
 
   // Whether the elements has entered fallback mode. See |EnableFallbackMode|.
   bool fallback_mode_ = false;
+
+  String accessible_label_;
 
  private:
   String GetActivationErrorMessage() const;

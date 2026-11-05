@@ -12,7 +12,6 @@
 #include "ash/public/cpp/shelf_model.h"
 #include "ash/resources/vector_icons/vector_icons.h"
 #include "ash/strings/grit/ash_strings.h"
-#include "chrome/app/vector_icons/vector_icons.h"
 #include "chrome/browser/apps/app_service/menu_util.h"
 #include "chrome/browser/ash/app_list/app_context_menu_delegate.h"
 #include "chrome/browser/ash/app_list/app_list_controller_delegate.h"
@@ -21,7 +20,6 @@
 #include "components/vector_icons/vector_icons.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/ui_base_features.h"
-#include "ui/base/window_open_disposition.h"
 #include "ui/color/color_id.h"
 #include "ui/gfx/vector_icon_types.h"
 #include "ui/views/vector_icons.h"
@@ -229,8 +227,7 @@ void AppContextMenu::AddContextMenuOption(ui::SimpleMenuModel* menu_model,
 }
 
 void AppContextMenu::AddReorderMenuOption(ui::SimpleMenuModel* menu_model) {
-  if (item_context_ != ash::AppListItemContext::kAppsGrid &&
-      item_context_ != ash::AppListItemContext::kAppsCollectionsGrid) {
+  if (item_context_ != ash::AppListItemContext::kAppsGrid) {
     return;
   }
   const ui::ColorId color_id = apps::GetColorIdForMenuItemIcon();

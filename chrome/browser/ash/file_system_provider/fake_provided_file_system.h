@@ -42,7 +42,6 @@ class OperationRequestManager;
 // default.
 extern const base::FilePath::CharType kFakeFilePath[];
 extern const char kFakeFileText[];
-extern const char kFakeFileVersionTag[];
 
 // Represents a file or a directory on a fake file system.
 struct FakeEntry {
@@ -80,7 +79,6 @@ class FakeProvidedFileSystem : public ProvidedFileSystemInterface {
                 int64_t size,
                 base::Time modification_time,
                 std::string mime_type,
-                std::unique_ptr<CloudFileInfo> cloud_file_info,
                 std::string contents);
 
   // Fetches a pointer to a fake entry registered in the fake file system. If
@@ -180,8 +178,6 @@ class FakeProvidedFileSystem : public ProvidedFileSystemInterface {
   void Configure(storage::AsyncFileUtil::StatusCallback callback) override;
   base::WeakPtr<ProvidedFileSystemInterface> GetWeakPtr() override;
   std::unique_ptr<ScopedUserInteraction> StartUserInteraction() override;
-
-  base::WeakPtr<FakeProvidedFileSystem> GetFakeWeakPtr();
 
  private:
   using Entries = std::map<base::FilePath, std::unique_ptr<FakeEntry>>;

@@ -54,7 +54,7 @@
 #include "services/viz/public/mojom/compositing/compositor_frame_sink.mojom.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "third_party/khronos/GLES2/gl2.h"
+#include "third_party/angle/include/GLES2/gl2.h"
 #include "ui/gfx/geometry/rrect_f.h"
 
 using testing::_;
@@ -127,6 +127,7 @@ class MockFrameSinkManagerClient : public mojom::FrameSinkManagerClient {
 
   // mojom::FrameSinkManagerClient:
   MOCK_METHOD1(OnFirstSurfaceActivation, void(const SurfaceInfo&));
+  MOCK_METHOD1(OnFirstNonEmptyFrame, void(const FrameSinkId&));
   MOCK_METHOD3(OnFrameTokenChanged,
                void(const FrameSinkId&, uint32_t, base::TimeTicks));
   void OnAggregatedHitTestRegionListUpdated(
@@ -1373,14 +1374,6 @@ TEST_P(CompositorFrameSinkSupportTest,
   GetSurfaceForId(id2)->TakeCopyOutputRequestsFromClient();
   EXPECT_TRUE(GetSurfaceForId(id1)->HasCopyOutputRequests());
   EXPECT_FALSE(GetSurfaceForId(id2)->HasCopyOutputRequests());
-
-  // Also try TakeCopyOutputRequests, to see if its output is consistent with
-  // HasCopyOutputRequests.
-  Surface::CopyRequestsMap requests_map;
-  GetSurfaceForId(id2)->TakeCopyOutputRequests(&requests_map);
-  EXPECT_TRUE(requests_map.empty());
-  GetSurfaceForId(id1)->TakeCopyOutputRequests(&requests_map);
-  EXPECT_FALSE(requests_map.empty());
 }
 
 TEST_P(CompositorFrameSinkSupportTest,
@@ -1416,14 +1409,6 @@ TEST_P(CompositorFrameSinkSupportTest,
   GetSurfaceForId(id2)->TakeCopyOutputRequestsFromClient();
   EXPECT_FALSE(GetSurfaceForId(id1)->HasCopyOutputRequests());
   EXPECT_TRUE(GetSurfaceForId(id2)->HasCopyOutputRequests());
-
-  // Do TakeCopyOutputRequests, to see if its output is consistent with
-  // HasCopyOutputRequests.
-  Surface::CopyRequestsMap requests_map;
-  GetSurfaceForId(id1)->TakeCopyOutputRequests(&requests_map);
-  EXPECT_TRUE(requests_map.empty());
-  GetSurfaceForId(id2)->TakeCopyOutputRequests(&requests_map);
-  EXPECT_FALSE(requests_map.empty());
 }
 
 // Verifies that CopyOutputRequests made at frame sink level are sent to the
@@ -1464,14 +1449,6 @@ TEST_P(CompositorFrameSinkSupportTest,
   GetSurfaceForId(id1)->TakeCopyOutputRequestsFromClient();
   EXPECT_FALSE(GetSurfaceForId(id1)->HasCopyOutputRequests());
   EXPECT_TRUE(GetSurfaceForId(id2)->HasCopyOutputRequests());
-
-  // Also try TakeCopyOutputRequests, to see if its output is consistent with
-  // HasCopyOutputRequests.
-  Surface::CopyRequestsMap requests_map;
-  GetSurfaceForId(id1)->TakeCopyOutputRequests(&requests_map);
-  EXPECT_TRUE(requests_map.empty());
-  GetSurfaceForId(id2)->TakeCopyOutputRequests(&requests_map);
-  EXPECT_FALSE(requests_map.empty());
 }
 
 // Verifies that CopyOutputRequests are released when the embedding
@@ -1873,6 +1850,113 @@ TEST_P(CompositorFrameSinkSupportTest, RedirectionToInvalidFlags) {
   EXPECT_FALSE(active_list);
 
   manager_->InvalidateFrameSinkId(frame_sink_id, {});
+}
+
+// Accept non-child regions whose frame sink id matches that of the submitted
+// surface.
+TEST_P(CompositorFrameSinkSupportTest, NonChildRegionWithSubmitterFrameSinkId) {
+  const FrameSinkId submitter_frame_sink_ids[] = {
+      kArbitraryFrameSinkId,
+      FrameSinkId(0, kArbitraryFrameSinkId.sink_id()),
+  };
+  TestLookupDelegate lookup_delegate;
+  lookup_delegate.SetSurface(kArbitraryFrameSinkId, local_surface_id_);
+
+  for (const auto& frame_sink_id : submitter_frame_sink_ids) {
+    SCOPED_TRACE(frame_sink_id.ToString());
+    HitTestRegionList hit_test_region_list;
+    hit_test_region_list.flags = HitTestRegionFlags::kHitTestMine;
+    hit_test_region_list.bounds = kDefaultOutputRect;
+
+    HitTestRegion region;
+    region.frame_sink_id = frame_sink_id;
+    region.rect = gfx::RRectF(gfx::RectF(kDefaultOutputRect));
+    hit_test_region_list.regions.push_back(std::move(region));
+
+    ASSERT_EQ(SubmitResult::ACCEPTED,
+              support_->MaybeSubmitCompositorFrame(
+                  local_surface_id_, MakeDefaultCompositorFrame(),
+                  std::move(hit_test_region_list), 0));
+    const auto* active_list =
+        manager_->hit_test_manager()->GetActiveHitTestRegionList(
+            &lookup_delegate, kArbitraryFrameSinkId);
+    ASSERT_TRUE(active_list);
+    ASSERT_EQ(1u, active_list->regions.size());
+    EXPECT_EQ(kArbitraryFrameSinkId, active_list->regions[0].frame_sink_id);
+    EXPECT_EQ(0u, active_list->regions[0].flags);
+  }
+}
+
+// Reject non-child regions whose frame sink id does not match that of the
+// submitted surface.
+TEST_P(CompositorFrameSinkSupportTest, NonChildRegionWithForeignFrameSinkId) {
+  const FrameSinkId foreign_frame_sink_ids[] = {
+      kAnotherArbitraryFrameSinkId,
+      FrameSinkId(kArbitraryFrameSinkId.client_id(), 2),
+      FrameSinkId(0, 2),
+  };
+  manager_->RegisterFrameSinkHierarchy(kArbitraryFrameSinkId,
+                                       kAnotherArbitraryFrameSinkId);
+  TestLookupDelegate lookup_delegate;
+  lookup_delegate.SetSurface(kArbitraryFrameSinkId, local_surface_id_);
+
+  for (const auto& frame_sink_id : foreign_frame_sink_ids) {
+    SCOPED_TRACE(frame_sink_id.ToString());
+    HitTestRegionList hit_test_region_list;
+    hit_test_region_list.flags = HitTestRegionFlags::kHitTestMine;
+    hit_test_region_list.bounds = kDefaultOutputRect;
+
+    HitTestRegion region;
+    region.frame_sink_id = frame_sink_id;
+    region.rect = gfx::RRectF(gfx::RectF(kDefaultOutputRect));
+    hit_test_region_list.regions.push_back(std::move(region));
+
+    EXPECT_EQ(SubmitResult::HIT_TEST_DATA_INVALID,
+              support_->MaybeSubmitCompositorFrame(
+                  local_surface_id_, MakeDefaultCompositorFrame(),
+                  std::move(hit_test_region_list), 0));
+    EXPECT_EQ(
+        0u, manager_->hit_test_manager()->submit_hit_test_region_list_index());
+    EXPECT_FALSE(manager_->hit_test_manager()->GetActiveHitTestRegionList(
+        &lookup_delegate, kArbitraryFrameSinkId));
+  }
+  manager_->UnregisterFrameSinkHierarchy(kArbitraryFrameSinkId,
+                                         kAnotherArbitraryFrameSinkId);
+}
+
+// A child region's parentage cannot be verified until aggregation so it is
+// accepted regardless of the frame sink id.
+TEST_P(CompositorFrameSinkSupportTest, ChildRegionAccepted) {
+  manager_->RegisterFrameSinkHierarchy(kArbitraryFrameSinkId,
+                                       kAnotherArbitraryFrameSinkId);
+  TestLookupDelegate lookup_delegate;
+  lookup_delegate.SetSurface(kArbitraryFrameSinkId, local_surface_id_);
+
+  HitTestRegionList hit_test_region_list;
+  hit_test_region_list.flags = HitTestRegionFlags::kHitTestMine;
+  hit_test_region_list.bounds = kDefaultOutputRect;
+
+  HitTestRegion region;
+  region.frame_sink_id = kAnotherArbitraryFrameSinkId;
+  region.flags = HitTestRegionFlags::kHitTestChildSurface;
+  region.rect = gfx::RRectF(gfx::RectF(kDefaultOutputRect));
+  hit_test_region_list.regions.push_back(std::move(region));
+
+  ASSERT_EQ(SubmitResult::ACCEPTED,
+            support_->MaybeSubmitCompositorFrame(
+                local_surface_id_, MakeDefaultCompositorFrame(),
+                std::move(hit_test_region_list), 0));
+  const auto* active_list =
+      manager_->hit_test_manager()->GetActiveHitTestRegionList(
+          &lookup_delegate, kArbitraryFrameSinkId);
+  ASSERT_TRUE(active_list);
+  ASSERT_EQ(1u, active_list->regions.size());
+  EXPECT_EQ(kAnotherArbitraryFrameSinkId,
+            active_list->regions[0].frame_sink_id);
+  EXPECT_EQ(HitTestRegionFlags::kHitTestChildSurface,
+            active_list->regions[0].flags);
+  manager_->UnregisterFrameSinkHierarchy(kArbitraryFrameSinkId,
+                                         kAnotherArbitraryFrameSinkId);
 }
 
 // Verifies that an unresponsive client has OnBeginFrame() messages throttled

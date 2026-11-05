@@ -544,6 +544,11 @@ class CORE_EXPORT WebViewImpl final : public WebView,
   void DidEnterFullscreen();
   void DidExitFullscreen();
 
+  // Called when a pending fullscreen request was not granted by the browser
+  // (e.g. if an entry and exit coalesced while visual property updates were
+  // being throttled). Rejects any pending request and resets state to kInitial.
+  void DidFailToEnterFullscreen();
+
   // Called when some JS code has instructed the window associated to the main
   // frame to close, which will result in a request to the browser to close the
   // Widget associated to it.
@@ -1023,6 +1028,9 @@ class CORE_EXPORT WebViewImpl final : public WebView,
   // to skip Blink-side scroll restoration to avoid conflicts with the cache's
   // native restoration. Reset on each lifecycle update.
   bool last_page_lifecycle_state_update_restored_from_bfcache_ = false;
+
+  // Whether we're currently in Close().
+  bool is_closing_ = false;
 
   // All the registered observers.
   base::ObserverList<WebViewObserver> observers_;

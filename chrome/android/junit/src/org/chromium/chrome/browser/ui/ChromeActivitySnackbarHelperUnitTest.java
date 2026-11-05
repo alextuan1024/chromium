@@ -18,6 +18,7 @@ import static org.mockito.Mockito.when;
 
 import android.app.Activity;
 import android.view.ViewGroup;
+import android.widget.FrameLayout;
 
 import org.junit.Before;
 import org.junit.Rule;
@@ -27,6 +28,7 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
+import org.robolectric.Robolectric;
 
 import org.chromium.base.supplier.ObservableSuppliers;
 import org.chromium.base.supplier.SettableMonotonicObservableSupplier;
@@ -40,6 +42,7 @@ import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager.ParentOv
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetContent;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetObserver;
+import org.chromium.components.browser_ui.bottomsheet.BottomSheetType;
 
 @RunWith(BaseRobolectricTestRunner.class)
 public class ChromeActivitySnackbarHelperUnitTest {
@@ -47,17 +50,18 @@ public class ChromeActivitySnackbarHelperUnitTest {
 
     private SettableMonotonicObservableSupplier<EdgeToEdgeController> mEdgeToEdgeControllerSupplier;
 
-    @Mock private Activity mActivity;
     @Mock private EdgeToEdgeController mEdgeToEdgeController1;
     @Mock private EdgeToEdgeController mEdgeToEdgeController2;
     @Mock private BottomSheetController mBottomSheetController;
     @Mock private SnackbarManager mSnackbarManager;
     @Mock private BottomControlsLayer mBottomControlsLayer;
 
+    private Activity mActivity;
     private ChromeActivitySnackbarHelper mSnackbarHelper;
 
     @Before
     public void setUp() {
+        mActivity = Robolectric.buildActivity(Activity.class).setup().get();
         mEdgeToEdgeControllerSupplier = ObservableSuppliers.createMonotonic();
         mSnackbarHelper =
                 new ChromeActivitySnackbarHelper(
@@ -214,13 +218,12 @@ public class ChromeActivitySnackbarHelperUnitTest {
         verify(mBottomSheetController).addObserver(observerCaptor.capture());
         BottomSheetObserver observer = observerCaptor.getValue();
 
-        ViewGroup mockContainer = mock(ViewGroup.class);
-        when(mActivity.findViewById(R.id.bottom_sheet_snackbar_container))
-                .thenReturn(mockContainer);
+        setupBottomSheetSnackbarContainer();
 
         BottomSheetContent mockContent = mock(BottomSheetContent.class);
         when(mockContent.allowInSheetContentSnackbars()).thenReturn(true);
         when(mockContent.hasCustomScrimLifecycle()).thenReturn(false);
+        when(mockContent.getSheetType()).thenReturn(new BottomSheetType.Builder().build());
         when(mBottomSheetController.getCurrentSheetContent()).thenReturn(mockContent);
 
         // HALF state -> push override
@@ -251,13 +254,13 @@ public class ChromeActivitySnackbarHelperUnitTest {
         verify(mBottomSheetController).addObserver(observerCaptor.capture());
         BottomSheetObserver observer = observerCaptor.getValue();
 
-        ViewGroup mockContainer = mock(ViewGroup.class);
-        when(mActivity.findViewById(R.id.bottom_sheet_snackbar_container))
-                .thenReturn(mockContainer);
+        setupBottomSheetSnackbarContainer();
 
         BottomSheetContent mockContent = mock(BottomSheetContent.class);
         when(mockContent.allowInSheetContentSnackbars()).thenReturn(false);
         when(mockContent.hasCustomScrimLifecycle()).thenReturn(true);
+        when(mockContent.getSheetType())
+                .thenReturn(new BottomSheetType.Builder().setModal(false).build());
         when(mBottomSheetController.getCurrentSheetContent()).thenReturn(mockContent);
 
         // HALF state -> should not push override because not allowed
@@ -274,12 +277,12 @@ public class ChromeActivitySnackbarHelperUnitTest {
         verify(mBottomSheetController).addObserver(observerCaptor.capture());
         BottomSheetObserver observer = observerCaptor.getValue();
 
-        ViewGroup mockContainer = mock(ViewGroup.class);
-        when(mActivity.findViewById(R.id.bottom_sheet_snackbar_container))
-                .thenReturn(mockContainer);
+        setupBottomSheetSnackbarContainer();
 
         BottomSheetContent mockContent = mock(BottomSheetContent.class);
         when(mockContent.hasCustomScrimLifecycle()).thenReturn(true);
+        when(mockContent.getSheetType())
+                .thenReturn(new BottomSheetType.Builder().setModal(false).build());
         when(mockContent.allowInSheetContentSnackbars()).thenReturn(true);
         when(mBottomSheetController.getSheetState())
                 .thenReturn(BottomSheetController.SheetState.HALF);
@@ -291,6 +294,8 @@ public class ChromeActivitySnackbarHelperUnitTest {
         // Switch to not allowed content -> pop override
         BottomSheetContent mockContent2 = mock(BottomSheetContent.class);
         when(mockContent2.hasCustomScrimLifecycle()).thenReturn(true);
+        when(mockContent2.getSheetType())
+                .thenReturn(new BottomSheetType.Builder().setModal(false).build());
         when(mockContent2.allowInSheetContentSnackbars()).thenReturn(false);
         observer.onSheetContentChanged(mockContent2);
         verify(mSnackbarManager).popParentViewOverride(eq(ParentOverrideSlot.BOTTOM_SHEET));
@@ -306,5 +311,11 @@ public class ChromeActivitySnackbarHelperUnitTest {
         verify(mEdgeToEdgeController1).unregisterObserver(mSnackbarHelper);
         verify(mBottomSheetController).removeObserver(any(BottomSheetObserver.class));
         assertFalse(mEdgeToEdgeControllerSupplier.hasObservers());
+    }
+
+    private void setupBottomSheetSnackbarContainer() {
+        ViewGroup container = new FrameLayout(mActivity);
+        container.setId(R.id.bottom_sheet_snackbar_container);
+        mActivity.setContentView(container);
     }
 }

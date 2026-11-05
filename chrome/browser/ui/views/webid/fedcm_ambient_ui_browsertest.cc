@@ -11,7 +11,6 @@
 #include "chrome/browser/ui/page_action/page_action_controller.h"
 #include "chrome/browser/ui/page_action/page_action_icon_type.h"
 #include "chrome/browser/ui/page_action/page_action_observer.h"
-#include "chrome/browser/ui/tabs/public/tab_features.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/location_bar/location_bar_view.h"
@@ -27,14 +26,13 @@
 #include "content/public/test/browser_test.h"
 #include "content/public/test/test_navigation_observer.h"
 #include "testing/gmock/include/gmock/gmock.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/base/page_transition_types.h"
-#include "ui/base/window_open_disposition.h"
 #include "ui/events/event.h"
 
 namespace webid {
 
 using testing::_;
-using testing::InvokeWithoutArgs;
 using testing::NiceMock;
 
 class MockDelegate : public AccountSelectionView::Delegate {
@@ -56,6 +54,10 @@ class MockDelegate : public AccountSelectionView::Delegate {
   MOCK_METHOD(void, OnMoreDetails, (), (override));
   MOCK_METHOD(void, OnAccountsDisplayed, (), (override));
   MOCK_METHOD(void, OnNativeAppResult, (const std::string&), (override));
+  MOCK_METHOD(void,
+              OnNativeAppError,
+              (const content::IdentityCredentialTokenError&),
+              (override));
   MOCK_METHOD(void, OnNativeAppLoginFinished, (), (override));
   MOCK_METHOD(gfx::NativeView, GetNativeView, (), (override));
   MOCK_METHOD(content::WebContents*, GetWebContents, (), (override));
@@ -194,10 +196,8 @@ class FedCmAmbientUiDisabledBrowserTest : public FedCmAmbientUiBrowserTest {
 };
 
 IN_PROC_BROWSER_TEST_F(FedCmAmbientUiBrowserTest, SignUpToActiveTransition) {
-  auto* controller = browser()
-                         ->GetActiveTabInterface()
-                         ->GetTabFeatures()
-                         ->page_action_controller();
+  auto* controller = page_actions::PageActionController::From(
+      browser()->GetActiveTabInterface());
 
   page_actions::PageActionObserver observer(kActionFederation);
   observer.RegisterAsPageActionObserver(*controller);
@@ -240,10 +240,8 @@ IN_PROC_BROWSER_TEST_F(FedCmAmbientUiBrowserTest, SignUpToActiveTransition) {
 }
 
 IN_PROC_BROWSER_TEST_F(FedCmAmbientUiBrowserTest, SignInTransition) {
-  auto* controller = browser()
-                         ->GetActiveTabInterface()
-                         ->GetTabFeatures()
-                         ->page_action_controller();
+  auto* controller = page_actions::PageActionController::From(
+      browser()->GetActiveTabInterface());
 
   page_actions::PageActionObserver observer(kActionFederation);
   observer.RegisterAsPageActionObserver(*controller);
@@ -264,9 +262,9 @@ IN_PROC_BROWSER_TEST_F(FedCmAmbientUiBrowserTest, SignInTransition) {
   EXPECT_FALSE(view()->GetDialogWidget());
 
   bool account_selected = false;
-  EXPECT_CALL(*delegate_, OnAccountSelected).WillOnce(InvokeWithoutArgs([&]() {
+  EXPECT_CALL(*delegate_, OnAccountSelected).WillOnce([&]() {
     account_selected = true;
-  }));
+  });
 
   // Simulate click on the omnibox chip.
   view()->OnPageActionClicked();
@@ -287,10 +285,8 @@ IN_PROC_BROWSER_TEST_F(FedCmAmbientUiBrowserTest, SignInTransition) {
 }
 
 IN_PROC_BROWSER_TEST_F(FedCmAmbientUiBrowserTest, SignInCollapsedTransition) {
-  auto* controller = browser()
-                         ->GetActiveTabInterface()
-                         ->GetTabFeatures()
-                         ->page_action_controller();
+  auto* controller = page_actions::PageActionController::From(
+      browser()->GetActiveTabInterface());
 
   page_actions::PageActionObserver observer(kActionFederation);
   observer.RegisterAsPageActionObserver(*controller);
@@ -315,9 +311,9 @@ IN_PROC_BROWSER_TEST_F(FedCmAmbientUiBrowserTest, SignInCollapsedTransition) {
                                AmbientImpression::kSignInIcon, 1);
 
   bool account_selected = false;
-  EXPECT_CALL(*delegate_, OnAccountSelected).WillOnce(InvokeWithoutArgs([&]() {
+  EXPECT_CALL(*delegate_, OnAccountSelected).WillOnce([&]() {
     account_selected = true;
-  }));
+  });
 
   // We simulate clicking on the icon, which should now sign the user in
   // directly.
@@ -378,10 +374,8 @@ IN_PROC_BROWSER_TEST_F(FedCmAmbientUiDisabledBrowserTest,
 }
 
 IN_PROC_BROWSER_TEST_F(FedCmAmbientUiBrowserTest, ReloadPage) {
-  auto* controller = browser()
-                         ->GetActiveTabInterface()
-                         ->GetTabFeatures()
-                         ->page_action_controller();
+  auto* controller = page_actions::PageActionController::From(
+      browser()->GetActiveTabInterface());
 
   page_actions::PageActionObserver observer(kActionFederation);
   observer.RegisterAsPageActionObserver(*controller);
@@ -401,13 +395,13 @@ IN_PROC_BROWSER_TEST_F(FedCmAmbientUiBrowserTest, ReloadPage) {
       *delegate_,
       OnDismiss(
           content::IdentityRequestDialogController::DismissReason::kOther))
-      .WillOnce(InvokeWithoutArgs([&]() { dismissed = true; }));
+      .WillOnce([&]() { dismissed = true; });
 
   // Reload the page.
   content::WebContents* web_contents =
       browser()->GetTabStripModel()->GetActiveWebContents();
   content::TestNavigationObserver navigation(web_contents);
-  chrome::Reload(browser(), WindowOpenDisposition::CURRENT_TAB);
+  chrome::Reload(browser(), ui::mojom::WindowOpenDisposition::kCurrentTab);
   navigation.Wait();
 
   // The FedCM request should be dismissed on navigation/reload.
@@ -415,10 +409,8 @@ IN_PROC_BROWSER_TEST_F(FedCmAmbientUiBrowserTest, ReloadPage) {
 }
 
 IN_PROC_BROWSER_TEST_F(FedCmAmbientUiBrowserTest, TabSwitching) {
-  auto* controller = browser()
-                         ->GetActiveTabInterface()
-                         ->GetTabFeatures()
-                         ->page_action_controller();
+  auto* controller = page_actions::PageActionController::From(
+      browser()->GetActiveTabInterface());
 
   page_actions::PageActionObserver observer(kActionFederation);
   observer.RegisterAsPageActionObserver(*controller);
@@ -450,10 +442,8 @@ IN_PROC_BROWSER_TEST_F(FedCmAmbientUiBrowserTest, TabSwitching) {
 
 IN_PROC_BROWSER_TEST_F(FedCmAmbientUiBrowserTest,
                        IdpMissingApprovedClientsUsesBrowserSignIn) {
-  auto* controller = browser()
-                         ->GetActiveTabInterface()
-                         ->GetTabFeatures()
-                         ->page_action_controller();
+  auto* controller = page_actions::PageActionController::From(
+      browser()->GetActiveTabInterface());
 
   page_actions::PageActionObserver observer(kActionFederation);
   observer.RegisterAsPageActionObserver(*controller);
@@ -482,10 +472,8 @@ IN_PROC_BROWSER_TEST_F(FedCmAmbientUiBrowserTest,
 
 IN_PROC_BROWSER_TEST_F(FedCmAmbientUiBrowserTest,
                        IdpClaimedSignUpOverridesBrowserSignIn) {
-  auto* controller = browser()
-                         ->GetActiveTabInterface()
-                         ->GetTabFeatures()
-                         ->page_action_controller();
+  auto* controller = page_actions::PageActionController::From(
+      browser()->GetActiveTabInterface());
 
   page_actions::PageActionObserver observer(kActionFederation);
   observer.RegisterAsPageActionObserver(*controller);
@@ -515,10 +503,8 @@ IN_PROC_BROWSER_TEST_F(FedCmAmbientUiBrowserTest,
 
 IN_PROC_BROWSER_TEST_F(FedCmAmbientUiBrowserTest,
                        IdpClaimedSignInOverridesBrowserSignUp) {
-  auto* controller = browser()
-                         ->GetActiveTabInterface()
-                         ->GetTabFeatures()
-                         ->page_action_controller();
+  auto* controller = page_actions::PageActionController::From(
+      browser()->GetActiveTabInterface());
 
   page_actions::PageActionObserver observer(kActionFederation);
   observer.RegisterAsPageActionObserver(*controller);
@@ -578,10 +564,8 @@ IN_PROC_BROWSER_TEST_F(FedCmAmbientUiBrowserTest,
 IN_PROC_BROWSER_TEST_F(FedCmAmbientUiBrowserTest, CollectsSignInMetrics) {
   base::HistogramTester histograms;
 
-  auto* controller = browser()
-                         ->GetActiveTabInterface()
-                         ->GetTabFeatures()
-                         ->page_action_controller();
+  auto* controller = page_actions::PageActionController::From(
+      browser()->GetActiveTabInterface());
 
   page_actions::PageActionObserver observer(kActionFederation);
   observer.RegisterAsPageActionObserver(*controller);
@@ -642,10 +626,8 @@ IN_PROC_BROWSER_TEST_F(FedCmAmbientUiBrowserTest, CollectsSignInMetrics) {
 //             Blink.FedCm.Ambient.ClickSource.kSignUpAnchoredMessage /
 //             Blink.FedCm.Ambient.Impression.kSignUpChip
 IN_PROC_BROWSER_TEST_F(FedCmAmbientUiBrowserTest, CollectsSignUpMetrics) {
-  auto* controller = browser()
-                         ->GetActiveTabInterface()
-                         ->GetTabFeatures()
-                         ->page_action_controller();
+  auto* controller = page_actions::PageActionController::From(
+      browser()->GetActiveTabInterface());
 
   page_actions::PageActionObserver observer(kActionFederation);
   observer.RegisterAsPageActionObserver(*controller);
@@ -734,10 +716,8 @@ IN_PROC_BROWSER_TEST_F(FedCmAmbientUiBrowserTest, MultiIdpOneAccountFallback) {
   view()->Show(content::RelyingPartyData(u"rp-example.com", u""), idps_,
                accounts_, blink::mojom::RpMode::kPassive, {});
 
-  auto* controller = browser()
-                         ->GetActiveTabInterface()
-                         ->GetTabFeatures()
-                         ->page_action_controller();
+  auto* controller = page_actions::PageActionController::From(
+      browser()->GetActiveTabInterface());
 
   page_actions::PageActionObserver observer(kActionFederation);
   observer.RegisterAsPageActionObserver(*controller);
@@ -752,10 +732,8 @@ IN_PROC_BROWSER_TEST_F(FedCmAmbientUiBrowserTest, MultiIdpOneAccountFallback) {
 
 IN_PROC_BROWSER_TEST_F(FedCmAmbientUiBrowserTest,
                        TabSwitchingNoDoubleCounting) {
-  auto* controller = browser()
-                         ->GetActiveTabInterface()
-                         ->GetTabFeatures()
-                         ->page_action_controller();
+  auto* controller = page_actions::PageActionController::From(
+      browser()->GetActiveTabInterface());
 
   page_actions::PageActionObserver observer(kActionFederation);
   observer.RegisterAsPageActionObserver(*controller);
@@ -786,10 +764,8 @@ IN_PROC_BROWSER_TEST_F(FedCmAmbientUiBrowserTest,
 
 IN_PROC_BROWSER_TEST_F(FedCmAmbientUiBrowserTest,
                        SignInNoDoubleCountingOverlap) {
-  auto* controller = browser()
-                         ->GetActiveTabInterface()
-                         ->GetTabFeatures()
-                         ->page_action_controller();
+  auto* controller = page_actions::PageActionController::From(
+      browser()->GetActiveTabInterface());
 
   page_actions::PageActionObserver observer(kActionFederation);
   observer.RegisterAsPageActionObserver(*controller);
@@ -821,10 +797,8 @@ IN_PROC_BROWSER_TEST_F(FedCmAmbientUiBrowserTest,
 }
 
 IN_PROC_BROWSER_TEST_F(FedCmAmbientUiBrowserTest, SignInNoVerifyingImpression) {
-  auto* controller = browser()
-                         ->GetActiveTabInterface()
-                         ->GetTabFeatures()
-                         ->page_action_controller();
+  auto* controller = page_actions::PageActionController::From(
+      browser()->GetActiveTabInterface());
 
   page_actions::PageActionObserver observer(kActionFederation);
   observer.RegisterAsPageActionObserver(*controller);
@@ -842,9 +816,9 @@ IN_PROC_BROWSER_TEST_F(FedCmAmbientUiBrowserTest, SignInNoVerifyingImpression) {
   histograms.ExpectTotalCount("Blink.FedCm.Ambient.Impression", 1);
 
   bool account_selected = false;
-  EXPECT_CALL(*delegate_, OnAccountSelected).WillOnce(InvokeWithoutArgs([&]() {
+  EXPECT_CALL(*delegate_, OnAccountSelected).WillOnce([&]() {
     account_selected = true;
-  }));
+  });
 
   // We simulate clicking on the chip, which should now sign the user in
   // directly and show "Signing in...".

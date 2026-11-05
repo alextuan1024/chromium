@@ -8,29 +8,34 @@
 
 #include <algorithm>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 
 #include "ash/constants/ash_features.h"
+#include "ash/constants/ash_paths.h"
 #include "ash/public/cpp/app_list/internal_app_id_constants.h"
+#include "base/files/file_path.h"
 #include "base/i18n/language_tag.h"
 #include "base/i18n/rtl.h"
 #include "base/i18n/tag_converters.h"
 #include "base/i18n/test/scoped_icu_locale.h"
+#include "base/path_service.h"
 #include "base/run_loop.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/scoped_feature_list.h"
+#include "base/test/scoped_path_override.h"
 #include "base/time/time.h"
 #include "chrome/browser/apps/app_service/app_service_proxy.h"
 #include "chrome/browser/apps/app_service/app_service_proxy_factory.h"
 #include "chrome/browser/ash/app_list/arc/arc_app_list_prefs.h"
 #include "chrome/browser/ash/app_list/arc/arc_app_test.h"
-#include "chrome/browser/ash/app_list/arc/arc_default_app_list.h"
 #include "chrome/browser/ash/app_list/search/app_search_provider_test_base.h"
 #include "chrome/browser/ash/app_list/search/types.h"
 #include "chrome/browser/ash/crostini/crostini_test_helper.h"
 #include "chrome/browser/web_applications/test/web_app_install_test_utils.h"
+#include "chrome/common/chrome_paths.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chromeos/ash/components/browser_context_helper/annotated_account_id.h"
 #include "chromeos/ash/components/dbus/chunneld/chunneld_client.h"
@@ -203,7 +208,7 @@ TEST_F(AppSearchProviderTest, AppServiceIconCache) {
   EXPECT_EQ(2, stub_icon_loader.NumLoadIconFromIconKeyCalls());
 
   // The number of LoadIconFromIconKey calls should not change, when hiding the
-  // UI (i.e. calling ViewClosing).
+  // UI (i.e. calling ViewClosing), which sweeps released icons from the cache.
   CallViewClosing();
 
   EXPECT_NE("", GetSortedResultsString());
@@ -211,18 +216,27 @@ TEST_F(AppSearchProviderTest, AppServiceIconCache) {
   base::RunLoop().RunUntilIdle();
   EXPECT_EQ(2, stub_icon_loader.NumLoadIconFromIconKeyCalls());
 
-  // The icon has been added to the map, so issuing the same "pa" query should
-  // not call the wrapped stub_icon_loader.
+  // Hiding the UI swept the cache, so issuing "pa" again reloads both icons.
   RunQuery("pa");
-  EXPECT_EQ(2, stub_icon_loader.NumLoadIconFromIconKeyCalls());
+  EXPECT_EQ(4, stub_icon_loader.NumLoadIconFromIconKeyCalls());
+
+  // Issuing "pa" again during the same search session hits the cache.
+  RunQuery("pa");
+  EXPECT_EQ(4, stub_icon_loader.NumLoadIconFromIconKeyCalls());
 
   // Update the icon key to remove the app icon from cache.
   UpdateIconKey(*proxy, kPackagedApp2Id);
 
   // The icon has been removed from the cache, so issuing the same "pa" query
-  // should call the wrapped stub_icon_loader.
+  // should call the wrapped stub_icon_loader for the updated app only.
   RunQuery("pa");
-  EXPECT_EQ(3, stub_icon_loader.NumLoadIconFromIconKeyCalls());
+  EXPECT_EQ(5, stub_icon_loader.NumLoadIconFromIconKeyCalls());
+
+  // Clearing the search sweeps the cache, so issuing "pa" again reloads both
+  // icons.
+  ClearSearch();
+  RunQuery("pa");
+  EXPECT_EQ(7, stub_icon_loader.NumLoadIconFromIconKeyCalls());
 
   proxy->OverrideInnerIconLoaderForTesting(old_icon_loader);
 }
@@ -595,11 +609,19 @@ class AppSearchProviderWithArcAppInstallType
 
   void SetUp() override {
     if (GetParam() == TestArcAppInstallType::INSTALLED_BY_DEFAULT) {
-      ArcDefaultAppList::UseTestAppsDirectory();
+      base::FilePath test_data_dir;
+      ASSERT_TRUE(
+          base::PathService::Get(chrome::DIR_TEST_DATA, &test_data_dir));
+      arc_default_apps_dir_override_.emplace(
+          ash::DIR_ARC_DEFAULT_APPS,
+          test_data_dir.AppendASCII("arc_default_apps"));
       arc_app_test().set_wait_default_apps(true);
     }
     AppSearchProviderWithArcAppsTest::SetUp();
   }
+
+ private:
+  std::optional<base::ScopedPathOverride> arc_default_apps_dir_override_;
 };
 
 // TODO (879413): Enable this after resolving flakiness.

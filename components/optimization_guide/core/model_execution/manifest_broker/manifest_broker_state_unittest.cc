@@ -10,7 +10,9 @@
 
 #include "base/byte_size.h"
 #include "base/files/file_path.h"
+#include "base/files/file_util.h"
 #include "base/run_loop.h"
+#include "base/task/execution_fence.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
@@ -23,8 +25,9 @@
 #include "components/optimization_guide/core/model_execution/manifest_broker/test/scenario_builder.h"
 #include "components/optimization_guide/core/model_execution/manifest_broker/test/test_manifest_asset_manager_component_state.h"
 #include "components/optimization_guide/core/model_execution/model_broker_client.h"
-#include "components/optimization_guide/core/model_execution/model_execution_prefs.h"
 #include "components/optimization_guide/core/model_execution/on_device_model_feature_adapter.h"
+#include "components/optimization_guide/core/model_execution/on_device_model_names.h"
+#include "components/optimization_guide/core/model_execution/on_device_prefs.h"
 #include "components/optimization_guide/core/model_execution/performance_class.h"
 #include "components/optimization_guide/core/model_execution/test/fake_model_assets.h"
 #include "components/optimization_guide/core/model_execution/test/feature_config_builder.h"
@@ -45,6 +48,7 @@ class ManifestBrokerStateTest : public testing::Test {
   ManifestBrokerStateTest() {}
 
  protected:
+  ScopedModelBrokerFeatureList scoped_feature_list_;
   base::test::TaskEnvironment task_environment_{
       base::test::TaskEnvironment::TimeSource::MOCK_TIME};
   FakeManifestBroker fake_;
@@ -159,7 +163,7 @@ TEST_F(ManifestBrokerStateTest, FallbackToDefaultMaxTokens) {
                       proto::BaseModelRecipe::PERFORMANCE_HINT_UNSPECIFIED, {},
                       /*max_tokens=*/0)));
   builder.Add("test_solution",
-              SolutionRecipe(name + "_recipe", "",
+              SolutionRecipe(name + "_recipe",
                              ManifestFileReference("testconfig.pb")));
   builder.Add(DeviceUseCase{DeviceCategory::kGpuHighTier, "test"},
               "test_solution");
@@ -230,9 +234,215 @@ TEST_F(ManifestBrokerStateTest, UninstallModels) {
   EXPECT_TRUE(fake_.component_state().WaitForRegistration(
       {"model_A_key", base::Version("1.0.0.0")}));
 
+  base::test::TestFuture<ModelBrokerClient::CreateSessionResult> session_future;
+  fake_.client().CreateSession(mojom::OnDeviceFeature::kTest,
+                               SessionConfigParams{},
+                               session_future.GetCallback());
+  EXPECT_TRUE(session_future.Take());
+
   fake_.state().UninstallModels();
 
   EXPECT_TRUE(fake_.component_state().WaitForUninstall("model_A_key"));
+  EXPECT_TRUE(base::test::RunUntil([&]() {
+    return fake_.client().GetSubscriber("test").unavailable_reason() ==
+           mojom::ModelUnavailableReason::kPendingUsage;
+  }));
+
+  // Requesting assets again should re-install and restore availability.
+  fake_.client().RequestAssetsFor("test");
+  base::test::TestFuture<ModelBrokerClient::CreateSessionResult>
+      session_future2;
+  fake_.client().CreateSession(mojom::OnDeviceFeature::kTest,
+                               SessionConfigParams{},
+                               session_future2.GetCallback());
+  EXPECT_TRUE(session_future2.Take());
+}
+
+TEST_F(ManifestBrokerStateTest, SetUseCaseRequested) {
+  ScenarioBuilder::MinimalTestScenario(fake_.component_state());
+  fake_.Startup();
+  fake_.state().SetUseCaseRequested("test", true);
+
+  base::test::TestFuture<ModelBrokerClient::CreateSessionResult> session_future;
+  fake_.client().CreateSession(mojom::OnDeviceFeature::kTest,
+                               SessionConfigParams{},
+                               session_future.GetCallback());
+  EXPECT_TRUE(session_future.Take());
+
+  fake_.state().SetUseCaseRequested("test", false);
+
+  EXPECT_TRUE(fake_.component_state().WaitForUninstall("model_A_key"));
+  EXPECT_TRUE(base::test::RunUntil([&]() {
+    return fake_.client().GetSubscriber("test").unavailable_reason() ==
+           mojom::ModelUnavailableReason::kPendingUsage;
+  }));
+
+  // Requesting the use case again should re-install and restore availability.
+  fake_.state().SetUseCaseRequested("test", true);
+  base::test::TestFuture<ModelBrokerClient::CreateSessionResult>
+      session_future2;
+  fake_.client().CreateSession(mojom::OnDeviceFeature::kTest,
+                               SessionConfigParams{},
+                               session_future2.GetCallback());
+  EXPECT_TRUE(session_future2.Take());
+}
+
+TEST_F(ManifestBrokerStateTest, SetUseCaseRequestedFalseBeforeManifestLoaded) {
+  ScenarioBuilder::MinimalTestScenario(fake_.component_state());
+  ASSERT_TRUE(fake_.WarmupPrefsAndAssets());
+
+  // Call SetUseCaseRequested(false) immediately on startup before the manifest
+  // has finished loading and creating ManifestAssetManager.
+  fake_.state().SetUseCaseRequested("test", false);
+
+  // Trigger initialization and verify the model is evicted once the asset
+  // manager initializes.
+  fake_.client().GetSubscriber("test");
+  EXPECT_TRUE(fake_.component_state().WaitForUninstall("model_A_key"));
+  EXPECT_TRUE(base::test::RunUntil([&]() {
+    return fake_.client().GetSubscriber("test").unavailable_reason() ==
+           mojom::ModelUnavailableReason::kPendingUsage;
+  }));
+}
+
+TEST_F(ManifestBrokerStateTest, UninstallCapabilityBeforeManifestLoaded) {
+  ScenarioBuilder(fake_.component_state())
+      .AddBaseModel("gemma4_component")
+      .AddUnsafeSolution("test", "gemma4_component")
+      .Finish();
+  ASSERT_TRUE(fake_.WarmupPrefsAndAssets());
+
+  // Call UninstallCapability immediately on startup before the manifest has
+  // finished loading and creating ManifestAssetManager.
+  fake_.state().UninstallCapability(OnDeviceBaseModel::kGemma4);
+
+  EXPECT_TRUE(
+      fake_.component_state().WaitForUninstall("gemma4_component_key"));
+  EXPECT_TRUE(base::test::RunUntil([&]() {
+    return fake_.client().GetSubscriber("test").unavailable_reason() ==
+           mojom::ModelUnavailableReason::kPendingUsage;
+  }));
+}
+
+TEST_F(ManifestBrokerStateTest,
+       UninstallCapabilityWithAdaptationsAndSharedPostprocessorModel) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitWithFeatures(
+      {kOnDeviceModelEviction, kOnDeviceWebSpeechPolisherModel}, {});
+  fake_.local_state().SetBoolean(model_execution::prefs::localstate::
+                                     kOnDeviceAiAutoRemoveUnusedModelsEnabled,
+                                 false);
+
+  ScenarioBuilder(fake_.component_state())
+      .AddBaseModel("nano_v3_gpu_component")
+      .AddBaseModel("summarizer_small_expert_model_component")
+      .AddBaseModel("speech_recognition_small_expert_model_component")
+      .AddBaseModel("nano_v3_cpu_component")
+      .AddBaseModel("polisher")
+      .AddAdaptation("adapt_A", "nano_v3_gpu_component")
+      .AddPostprocessedModel("post_asr",
+                             "speech_recognition_small_expert_model_component",
+                             "polisher")
+      .AddUnsafeSolution("test", "adapt_A")
+      .AddUnsafeSolution("summarizer_api",
+                         "summarizer_small_expert_model_component")
+      .AddUnsafeSolution("speech_recognition_small_expert_model", "post_asr")
+      .AddUnsafeSolution("prompt_api", "nano_v3_cpu_component")
+      .Finish();
+  fake_.Startup();
+
+  fake_.client().RequestAssetsFor("test");
+  fake_.client().RequestAssetsFor("summarizer_api");
+  fake_.client().RequestAssetsFor("speech_recognition_small_expert_model");
+
+  EXPECT_TRUE(fake_.component_state().WaitForRegistration(
+      {"nano_v3_gpu_component_key", base::Version("1.0.0.0")}));
+  EXPECT_TRUE(fake_.component_state().WaitForRegistration(
+      {"adapt_A_key", base::Version("12345")}));
+  EXPECT_TRUE(fake_.component_state().WaitForRegistration(
+      {"summarizer_small_expert_model_component_key",
+       base::Version("1.0.0.0")}));
+  EXPECT_TRUE(fake_.component_state().WaitForRegistration(
+      {"speech_recognition_small_expert_model_component_key",
+       base::Version("1.0.0.0")}));
+  EXPECT_TRUE(fake_.component_state().WaitForRegistration(
+      {"polisher_key", base::Version("1.0.0.0")}));
+
+  {
+    base::test::TestFuture<ModelBrokerClient::CreateSessionResult> test_future;
+    fake_.client().CreateSession(mojom::OnDeviceFeature::kTest,
+                                 SessionConfigParams{},
+                                 test_future.GetCallback());
+    EXPECT_TRUE(test_future.Take());
+
+    base::test::TestFuture<ModelBrokerClient::CreateSessionResult>
+        summarize_future;
+    fake_.client().CreateSession("summarizer_api", SessionConfigParams{},
+                                 summarize_future.GetCallback());
+    EXPECT_TRUE(summarize_future.Take());
+
+    base::test::TestFuture<ModelBrokerClient::CreateSessionResult> asr_future;
+    fake_.client().CreateSession("speech_recognition_small_expert_model",
+                                 SessionConfigParams{},
+                                 asr_future.GetCallback());
+    EXPECT_TRUE(asr_future.Take());
+  }
+
+  // Advance past the 30-day retention window so that "test"
+  // (nano_v3_gpu_component), "summarizer_api"
+  // (summarizer_small_expert_model_component), and
+  // "speech_recognition_small_expert_model"
+  // (speech_recognition_small_expert_model_component) become kEvictable. With
+  // Auto-Removal disabled, uninstalling kV3NanoGpu should still retain the
+  // other expired models.
+  task_environment_.FastForwardBy(base::Days(31));
+
+  OnDeviceModelControl* model_control = fake_.state().GetModelControl();
+  ASSERT_NE(model_control, nullptr);
+
+  // Uninstalling kV3NanoGpu should uninstall nano_v3_gpu_component and its
+  // adaptation adapt_A, while keeping summarizer_small_expert_model_component,
+  // speech_recognition_small_expert_model_component, and the polisher model.
+  model_control->UninstallCapability(OnDeviceBaseModel::kV3NanoGpu);
+
+  EXPECT_TRUE(
+      fake_.component_state().WaitForUninstall("nano_v3_gpu_component_key"));
+  EXPECT_TRUE(fake_.component_state().WaitForUninstall("adapt_A_key"));
+  EXPECT_FALSE(fake_.component_state().WasUninstallRequested(
+      "summarizer_small_expert_model_component_key"));
+  EXPECT_FALSE(fake_.component_state().WasUninstallRequested(
+      "speech_recognition_small_expert_model_component_key"));
+  EXPECT_FALSE(fake_.component_state().WasUninstallRequested("polisher_key"));
+
+  EXPECT_TRUE(base::test::RunUntil([&]() {
+    return fake_.client().GetSubscriber("test").unavailable_reason() ==
+           mojom::ModelUnavailableReason::kPendingUsage;
+  }));
+  EXPECT_EQ(
+      fake_.client().GetSubscriber("summarizer_api").unavailable_reason(),
+      std::nullopt);
+  EXPECT_EQ(fake_.client()
+                .GetSubscriber("speech_recognition_small_expert_model")
+                .unavailable_reason(),
+            std::nullopt);
+
+  // Uninstalling kSpeechRecognitionSmallExpert should uninstall both
+  // speech_recognition_small_expert_model_component and its polisher model,
+  // while still retaining summarizer_small_expert_model_component.
+  model_control->UninstallCapability(
+      OnDeviceBaseModel::kSpeechRecognitionSmallExpert);
+
+  EXPECT_TRUE(fake_.component_state().WaitForUninstall(
+      "speech_recognition_small_expert_model_component_key"));
+  EXPECT_TRUE(fake_.component_state().WaitForUninstall("polisher_key"));
+  EXPECT_FALSE(fake_.component_state().WasUninstallRequested(
+      "summarizer_small_expert_model_component_key"));
+  EXPECT_TRUE(base::test::RunUntil([&]() {
+    return fake_.client()
+               .GetSubscriber("speech_recognition_small_expert_model")
+               .unavailable_reason() ==
+           mojom::ModelUnavailableReason::kPendingUsage;
+  }));
 }
 
 TEST_F(ManifestBrokerStateTest,
@@ -302,6 +512,252 @@ TEST_F(ManifestBrokerStateTest,
                                session_future.GetCallback());
   EXPECT_TRUE(session_future.Take());
   EXPECT_EQ(obs.reason_, OnDeviceModelEligibilityReason::kSuccess);
+}
+
+TEST_F(ManifestBrokerStateTest, EnsureInitializationBypassesBestEffortFence) {
+  base::ScopedBestEffortExecutionFence best_effort_fence;
+  ScenarioBuilder::MinimalTestScenario(fake_.component_state());
+  // Pre-seed the performance class so that ManifestMonitor::OnInputsChanged
+  // posts Manifest::Load during startup while the best-effort execution fence
+  // is active.
+  UpdatePerformanceClassPref(&fake_.local_state(),
+                             OnDeviceModelPerformanceClass::kHigh);
+  fake_.Startup();
+  base::RunLoop().RunUntilIdle();
+
+  // Before EnsureInitialization is called, the manifest load is queued at
+  // BEST_EFFORT priority and blocked by the execution fence.
+  EXPECT_EQ(
+      fake_.state().GetOnDeviceModelEligibility(mojom::OnDeviceFeature::kTest),
+      OnDeviceModelEligibilityReason::kUnknown);
+
+  // Triggering EnsureInitialization should raise the manifest load priority to
+  // USER_VISIBLE and complete even while the best-effort execution fence is
+  // active.
+  fake_.client().RequestAssetsFor("test");
+  base::test::TestFuture<ModelBrokerClient::CreateSessionResult> session_future;
+  fake_.client().CreateSession(mojom::OnDeviceFeature::kTest,
+                               SessionConfigParams{},
+                               session_future.GetCallback());
+  EXPECT_TRUE(session_future.Take());
+}
+
+TEST_F(ManifestBrokerStateTest,
+       CanCreateSessionAfterManifestLoadedWaitsForInitComplete) {
+  ScenarioBuilder::MinimalTestScenario(fake_.component_state());
+  ASSERT_TRUE(fake_.WarmupPrefsAndAssets());
+  fake_.component_state().SetDeferRegistrationCallbacks(true);
+  fake_.Startup();
+
+  // Wait until the manifest has loaded and `ManifestAssetManager` has started
+  // registering `model_A_key`, while `ManifestSolutionFactory` initialization
+  // is still waiting on that registration.
+  EXPECT_TRUE(fake_.component_state().WaitForRegistration(
+      {"model_A_key", base::Version("1.0.0.0")}));
+
+  base::test::TestFuture<std::optional<mojom::ModelUnavailableReason>,
+                         std::optional<mojom::ModelNotSupportedDetailedReason>>
+      can_create_future;
+  fake_.client()
+      .GetSubscriber(mojom::OnDeviceFeature::kTest)
+      .CanCreateSession({}, can_create_future.GetCallback());
+  base::RunLoop().RunUntilIdle();
+  EXPECT_FALSE(can_create_future.IsReady());
+
+  fake_.component_state().RunPendingRegistrations();
+  EXPECT_EQ(can_create_future.Get<0>(), std::nullopt);
+}
+
+TEST_F(ManifestBrokerStateTest, ManifestUpdatedBeforeInitCompletes) {
+  ScenarioBuilder::MinimalTestScenario(fake_.component_state());
+  ASSERT_TRUE(fake_.WarmupPrefsAndAssets());
+  fake_.component_state().SetDeferRegistrationCallbacks(true);
+  fake_.Startup();
+
+  EXPECT_TRUE(fake_.component_state().WaitForRegistration(
+      {"model_A_key", base::Version("1.0.0.0")}));
+
+  base::test::TestFuture<std::optional<mojom::ModelUnavailableReason>,
+                         std::optional<mojom::ModelNotSupportedDetailedReason>>
+      can_create_future;
+  fake_.client()
+      .GetSubscriber(mojom::OnDeviceFeature::kTest)
+      .CanCreateSession({}, can_create_future.GetCallback());
+  base::RunLoop().RunUntilIdle();
+  EXPECT_FALSE(can_create_future.IsReady());
+
+  // Replace the manifest with an uninstall manifest before the first
+  // `ManifestSolutionFactory` finishes initializing.
+  fake_.local_state().SetBoolean(
+      model_execution::prefs::localstate::kOnDeviceAiUserSettingsEnabled,
+      false);
+  EXPECT_EQ(can_create_future.Get<0>(),
+            mojom::ModelUnavailableReason::kNotSupported);
+
+  // Letting pending registrations complete and re-enabling the user setting
+  // triggers another manifest update after init is already complete; subsequent
+  // `BrokerInit::Complete()` calls are no-ops and the subscriber reflects the
+  // reloaded manifest (`kPendingAssets` since the opt-out uninstalled the
+  // model).
+  fake_.component_state().SetDeferRegistrationCallbacks(false);
+  fake_.component_state().RunPendingRegistrations();
+  fake_.local_state().SetBoolean(
+      model_execution::prefs::localstate::kOnDeviceAiUserSettingsEnabled, true);
+  task_environment_.RunUntilIdle();
+
+  base::test::TestFuture<std::optional<mojom::ModelUnavailableReason>,
+                         std::optional<mojom::ModelNotSupportedDetailedReason>>
+      reenabled_future;
+  fake_.client()
+      .GetSubscriber(mojom::OnDeviceFeature::kTest)
+      .CanCreateSession({}, reenabled_future.GetCallback());
+  EXPECT_EQ(reenabled_future.Get<0>(),
+            mojom::ModelUnavailableReason::kPendingAssets);
+}
+
+TEST_F(ManifestBrokerStateTest,
+       EnabledAfterDisallowedStartupWaitsForInitAndManifestLoad) {
+  ScenarioBuilder(fake_.component_state())
+      .AddBaseModel("model_A")
+      .AddUnsafeSolution("test", "model_A")
+      .SetFeatureConfig("test", proto::Any())
+      .Finish();
+  fake_.local_state().SetBoolean(
+      model_execution::prefs::localstate::kOnDeviceAiUserSettingsEnabled,
+      false);
+  fake_.Startup();
+
+  // Startup with `kOnDeviceAiUserSettingsEnabled` disabled does not complete
+  // `BrokerInit` before `PerformanceClassifier` finishes.
+  task_environment_.RunUntilIdle();
+
+  // Enable on-device AI and immediately request the feature config and session
+  // availability before `PerformanceClassifier` or manifest loading has run.
+  fake_.local_state().SetBoolean(
+      model_execution::prefs::localstate::kOnDeviceAiUserSettingsEnabled, true);
+
+  ModelBrokerClient& client = fake_.client();
+  base::test::TestFuture<std::optional<mojo_base::ProtoWrapper>> config_future;
+  client.GetConfig(mojom::OnDeviceFeature::kTest, config_future.GetCallback());
+
+  base::test::TestFuture<std::optional<mojom::ModelUnavailableReason>,
+                         std::optional<mojom::ModelNotSupportedDetailedReason>>
+      can_create_future;
+  client.GetSubscriber(mojom::OnDeviceFeature::kTest)
+      .CanCreateSession({on_device_model::CapabilityFlags::kImageInput},
+                        can_create_future.GetCallback());
+
+  EXPECT_TRUE(config_future.Get().has_value());
+  EXPECT_EQ(can_create_future.Get<0>(),
+            mojom::ModelUnavailableReason::kPendingUsage);
+}
+
+TEST_F(ManifestBrokerStateTest,
+       CapabilitiesAvailableWhenEnabledAfterDisallowedInit) {
+  ScenarioBuilder::MinimalTestScenario(fake_.component_state());
+  fake_.local_state().SetBoolean(
+      model_execution::prefs::localstate::kOnDeviceAiUserSettingsEnabled,
+      false);
+  fake_.Startup();
+
+  // Allow `PerformanceClassifier` to complete while on-device AI is disabled,
+  // which initializes the broker with the uninstall manifest and the device's
+  // capabilities.
+  fake_.state().performance_classifier().EnsurePerformanceClassAvailable(
+      base::DoNothing());
+  task_environment_.RunUntilIdle();
+
+  // Enable on-device AI and allow the manifest to load.
+  fake_.local_state().SetBoolean(
+      model_execution::prefs::localstate::kOnDeviceAiUserSettingsEnabled, true);
+  task_environment_.RunUntilIdle();
+
+  ModelBrokerClient& client = fake_.client();
+  base::test::TestFuture<std::optional<mojom::ModelUnavailableReason>,
+                         std::optional<mojom::ModelNotSupportedDetailedReason>>
+      can_create_future;
+  client.GetSubscriber(mojom::OnDeviceFeature::kTest)
+      .CanCreateSession({on_device_model::CapabilityFlags::kImageInput},
+                        can_create_future.GetCallback());
+  EXPECT_EQ(can_create_future.Get<0>(),
+            mojom::ModelUnavailableReason::kPendingUsage);
+}
+
+TEST_F(ManifestBrokerStateTest, GetInstalledModelsBeforeManifestLoaded) {
+  ScenarioBuilder(fake_.component_state())
+      .AddBaseModel("gemma4_component")
+      .AddUnsafeSolution("test", "gemma4_component")
+      .Finish();
+  ASSERT_TRUE(fake_.WarmupPrefsAndAssets());
+
+  // Call GetInstalledModels immediately on startup before the manifest has
+  // finished loading and creating ManifestAssetManager.
+  OnDeviceModelControl* model_control = fake_.state().GetModelControl();
+  ASSERT_NE(model_control, nullptr);
+
+  base::test::TestFuture<std::vector<OnDeviceModelControl::InstalledModel>>
+      future;
+  model_control->GetInstalledModels(future.GetCallback());
+
+  std::vector<OnDeviceModelControl::InstalledModel> models = future.Take();
+  ASSERT_EQ(models.size(), 1u);
+  EXPECT_EQ(models[0].base_model, OnDeviceBaseModel::kGemma4);
+  EXPECT_GT(models[0].size_bytes, 0u);
+}
+
+TEST_F(ManifestBrokerStateTest, GetInstalledModelsAndUninstall) {
+  proto::SolutionConfig compose_config;
+  *compose_config.mutable_feature() = SimpleComposeConfig();
+
+  ScenarioBuilder(fake_.component_state())
+      .AddBaseModel("nano_v3_gpu_component")
+      .AddBaseModel("gemma4_component")
+      .AddAdaptation("adapt_A", "nano_v3_gpu_component")
+      .AddUnsafeSolution("test", "adapt_A")
+      .AddUnsafeSolution("compose", "gemma4_component",
+                         std::move(compose_config))
+      .Finish();
+  fake_.Startup();
+
+  fake_.client().RequestAssetsFor("test");
+  fake_.client().RequestAssetsFor("compose");
+
+  EXPECT_TRUE(fake_.component_state().WaitForRegistration(
+      {"nano_v3_gpu_component_key", base::Version("1.0.0.0")}));
+  EXPECT_TRUE(fake_.component_state().WaitForRegistration(
+      {"adapt_A_key", base::Version("12345")}));
+  EXPECT_TRUE(fake_.component_state().WaitForRegistration(
+      {"gemma4_component_key", base::Version("1.0.0.0")}));
+
+  OnDeviceModelControl* model_control = fake_.state().GetModelControl();
+  ASSERT_NE(model_control, nullptr);
+
+  {
+    base::test::TestFuture<std::vector<OnDeviceModelControl::InstalledModel>>
+        future;
+    model_control->GetInstalledModels(future.GetCallback());
+    std::vector<OnDeviceModelControl::InstalledModel> models = future.Take();
+    ASSERT_EQ(models.size(), 2u);
+
+    EXPECT_EQ(models[0].base_model, OnDeviceBaseModel::kV3NanoGpu);
+    EXPECT_GT(models[0].size_bytes, 0u);
+
+    EXPECT_EQ(models[1].base_model, OnDeviceBaseModel::kGemma4);
+    EXPECT_GT(models[1].size_bytes, 0u);
+  }
+
+  // Uninstalling nano_v3_gpu_component should immediately exclude it from
+  // GetInstalledModels.
+  model_control->UninstallCapability(OnDeviceBaseModel::kV3NanoGpu);
+
+  {
+    base::test::TestFuture<std::vector<OnDeviceModelControl::InstalledModel>>
+        future;
+    model_control->GetInstalledModels(future.GetCallback());
+    std::vector<OnDeviceModelControl::InstalledModel> models = future.Take();
+    ASSERT_EQ(models.size(), 1u);
+    EXPECT_EQ(models[0].base_model, OnDeviceBaseModel::kGemma4);
+  }
 }
 
 }  // namespace optimization_guide

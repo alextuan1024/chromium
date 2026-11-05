@@ -9,8 +9,6 @@
 
 #include <memory>
 
-#include "base/android/jni_weak_ref.h"
-#include "base/android/scoped_java_ref.h"
 #include "base/memory/raw_ptr.h"
 
 class BrowserWindowInterface;
@@ -26,21 +24,15 @@ class ExtensionSidePanelManager;
 // window.
 class ExtensionSidePanelManagerBridge final {
  public:
-  ExtensionSidePanelManagerBridge(JNIEnv* env,
-                                  const base::android::JavaRef<jobject>&
-                                      java_extension_side_panel_manager_bridge,
-                                  BrowserWindowInterface* browser_window);
+  explicit ExtensionSidePanelManagerBridge(
+      BrowserWindowInterface* browser_window);
   ExtensionSidePanelManagerBridge(const ExtensionSidePanelManagerBridge&) =
       delete;
   ExtensionSidePanelManagerBridge& operator=(
       const ExtensionSidePanelManagerBridge&) = delete;
   ~ExtensionSidePanelManagerBridge();
 
-  // Implements Java |ExtensionSidePanelManagerBridgeImpl.Natives#destroy|.
-  void Destroy(JNIEnv* env);
-
  private:
-  JavaObjectWeakGlobalRef java_extension_side_panel_manager_bridge_;
   raw_ptr<BrowserWindowInterface> browser_window_;
   std::unique_ptr<extensions::ExtensionSidePanelManager>
       extension_side_panel_manager_;

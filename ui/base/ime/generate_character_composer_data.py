@@ -39,9 +39,10 @@ Output file format:
   The output file is a C++ header containing a small header structure
   |ui::TreeComposeChecker::CompositionData| and a tree of composition sequences.
 
-  For space efficiency, the tree is stored in a single array of 16-bit values,
-  which represent either characters (printable or dead-key) or subtree array
-  indices.
+  For space efficiency, the tree is stored in a single array of
+  |ui::TreeComposeChecker::TreeEntry|, pairs of 16-bit values, which represent
+  either characters (printable or dead-key), subtree array indices, or table
+  sizes.
 
   Each tree level consists for four tables: two key kinds (character or dead)
   by two node types (internal or leaf), in the order:
@@ -52,8 +53,9 @@ Output file format:
   This order is used because character key entries are more common than dead-key
   entries, and internal entries are more common than leaf entries.
 
-  Each table consists of a word containing the number of table entries |n|,
-  followed immediately by |n| key-value pairs of words, ordered by key.
+  The tables of each key kind are preceded by an entry holding the number of
+  internal table entries in |key| and of leaf table entries in |value|. Each
+  table consists of key-value pair entries, ordered by key.
   For internal edges, the value is the array index of the resulting subtree.
   For leaf edges, the value is the unicode character code of the composition
   result.
@@ -61,14 +63,15 @@ Output file format:
 
 import argparse
 import codecs
-import collections
+import collections  # noqa: F401
 import sys
 import unicodedata
 
 # Global error counter.
 g_fail = 0
 
-unichr_compat = chr if sys.version_info[0] == 3 else unichr
+unichr_compat = chr if sys.version_info[0] == 3 else unichr  # noqa: F821
+
 
 class Key(str):
   """Represents an element of a composition sequence.
@@ -79,6 +82,7 @@ class Key(str):
   followed by 4 hex digits for the character value. The Compose key is
   represented as dead key with combining character 0.
   """
+
   _kinds = ['character', 'dead_key']
 
   def __new__(cls, key, character, location=None):
@@ -100,8 +104,9 @@ class Key(str):
     elif key.lower() == 'compose':
       s = 'D0000'
     else:
-      print('{}: unexpected combination {}<{}>'
-            .format(location, key, character))
+      print(
+        '{}: unexpected combination {}<{}>'.format(location, key, character)
+      )
       g_fail += 1
       s = 'ERROR'
     return str.__new__(cls, s)
@@ -138,6 +143,7 @@ class Input:
   Takes a sequences of file names and presents them as a single input stream,
   with location reporting for error messages.
   """
+
   def __init__(self, filenames):
     self._pending = filenames
     self._filename = None
@@ -184,16 +190,17 @@ class Lexer:
   Breaks the input stream into a sequence of tokens, each of which is either
   a Key or the string 'EOL'.
   """
+
   def __init__(self, compose_input):
     self._input = compose_input
 
   _delimiters = {
-      '"': '"',
-      "'": "'",
-      '<': '>',
-      '(': ')',
-      '[': ']',
-      '{': '}',
+    '"': '"',
+    "'": "'",
+    '<': '>',
+    '(': ')',
+    '[': ']',
+    '{': '}',
   }
 
   def GetUntilDelimiter(self, e):
@@ -239,8 +246,11 @@ class Lexer:
         except KeyError:
           g_fail += 1
           character = None
-          print('{}: unknown character name "{}"'.format(location,
-                                                         s.encode('utf-8')))
+          print(
+            '{}: unknown character name "{}"'.format(
+              location, s.encode('utf-8')
+            )
+          )
     return Key(key, character, location)
 
   def Where(self):
@@ -254,6 +264,7 @@ class Parser:
   composition source element key is a dictionary key, and the final
   composition result has a dictionary key of |None|.
   """
+
   def __init__(self, lexer):
     self._lexer = lexer
     self._trie = {}
@@ -268,8 +279,11 @@ class Parser:
         break
       if t and t != 'EOL' and t.Kind() != 'dead_key':
         g_fail += 1
-        print('{}: sequence does not begin with Compose or Dead key'
-              .format(self._lexer.Where()))
+        print(
+          '{}: sequence does not begin with Compose or Dead key'.format(
+            self._lexer.Where()
+          )
+        )
         break
       while t and t != 'EOL':
         seq.append(t)
@@ -302,6 +316,7 @@ class GroupedTree:
   tables the dictionary values are |GroupedTree|s at the next level;
   for 'leaf' tables the dictionary values are |Key| composition results.
   """
+
   _key_kinds = Key._kinds
   _sub_parts = ['internal', 'leaf']
 
@@ -352,6 +367,7 @@ class Assembler:
   def __init__(self, args, dtree):
     self._name = args.data_name
     self._type = args.type_name
+    self._entry_type = args.entry_type_name
     self._gtree = GroupedTree(dtree)
 
   def Write(self, out):
@@ -359,13 +375,14 @@ class Assembler:
     self.Pass(None, self._gtree)
 
     # Second pass: write the array.
-    out.write('\nstatic const uint16_t {}Tree[] = {{\n'.format(self._name))
+    out.write(
+      '\nstatic const {} {}Tree[] = {{\n'.format(self._entry_type, self._name)
+    )
     self.Pass(out, self._gtree)
     out.write('};\n\n')
 
     # Write the description structure.
-    out.write('static const {} {} = {{\n'
-              .format(self._type, self._name))
+    out.write('static const {} {} = {{\n'.format(self._type, self._name))
     out.write('  {}, // maximum sequence length\n'.format(self._gtree.height))
     out.write('  {}Tree\n'.format(self._name))
     out.write('};\n\n')
@@ -383,26 +400,38 @@ class Assembler:
 
     # Write tables.
     for k in gtree._key_kinds:
+      # Write table sizes.
+      location += 1
+      if out:
+        out.write('    //   number of internal and leaf {} entries\n'.format(k))
+        out.write(
+          '    {{0x{:04X}, 0x{:04X}}},\n'.format(
+            len(gtree._tables[k]['internal']), len(gtree._tables[k]['leaf'])
+          )
+        )
       for p in gtree._sub_parts:
-        # Write table size.
-        location += 1
         if out:
           out.write('    //   {} {} table\n'.format(p, k))
-          out.write('    0x{:04X},          // number of entries\n'
-                    .format(len(gtree._tables[k][p])))
         # Write table body.
         for key in sorted(gtree._tables[k][p]):
-          location += 2
+          location += 1
           if out:
-            out.write('    0x{:04X},  // {}\n'
-                      .format(key.CharacterCode(), key.ShorterUnicodeName()))
             result = gtree._tables[k][p][key]
             if p == 'internal':
-              out.write('    0x{:04X},\n'.format(result.location))
+              out.write(
+                '    {{0x{:04X}, 0x{:04X}}},  // {}\n'.format(
+                  key.CharacterCode(), result.location, key.ShorterUnicodeName()
+                )
+              )
             else:
-              out.write('    0x{:04X},  // -> {}\n'
-                        .format(result.CharacterCode(),
-                                result.ShorterUnicodeName()))
+              out.write(
+                '    {{0x{:04X}, 0x{:04X}}},  // {} -> {}\n'.format(
+                  key.CharacterCode(),
+                  result.CharacterCode(),
+                  key.ShorterUnicodeName(),
+                  result.ShorterUnicodeName(),
+                )
+              )
 
     # Assemble subtrees of the current tree.
     for t in gtree.SubTrees():
@@ -413,8 +442,12 @@ class Assembler:
 
 def main(argv):
   parser = argparse.ArgumentParser()
-  parser.add_argument('--type_name',
-                      default='ui::TreeComposeChecker::CompositionData')
+  parser.add_argument(
+    '--type_name', default='ui::TreeComposeChecker::CompositionData'
+  )
+  parser.add_argument(
+    '--entry_type_name', default='ui::TreeComposeChecker::TreeEntry'
+  )
   parser.add_argument('--data_name', default='kCompositions')
   parser.add_argument('--output', default='character_composer_data.h')
   parser.add_argument('--guard', default=None)
@@ -423,13 +456,14 @@ def main(argv):
 
   parse_tree = Parser(Lexer(Input(args.inputs))).Parse()
 
-  with (sys.stdout if args.output == '-' else open(args.output, 'w')) as out:
+  with sys.stdout if args.output == '-' else open(args.output, 'w') as out:
     out.write('// Copyright 2015 The Chromium Authors\n')
     out.write('// Use of this source code is governed by a BSD-style license')
     out.write(' that can be\n// found in the LICENSE file.\n\n')
     out.write('// DO NOT EDIT.\n')
     out.write('//   GENERATED BY {}\n'.format(sys.argv[0]))
     out.write('//   FROM {}\n\n'.format(' '.join(args.inputs)))
+    out.write('// clang-format off\n\n')
     guard = args.guard if args.guard else args.output
     guard = ''.join([c.upper() if c.isalpha() else '_' for c in guard])
     guard = 'UI_BASE_IME_' + guard
@@ -438,6 +472,7 @@ def main(argv):
     out.write('#endif  // {}_\n'.format(guard))
 
   return g_fail
+
 
 if __name__ == '__main__':
   sys.exit(main(sys.argv))

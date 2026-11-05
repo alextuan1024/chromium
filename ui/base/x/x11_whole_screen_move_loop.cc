@@ -84,7 +84,7 @@ bool X11WholeScreenMoveLoop::CanDispatchEvent(const ui::PlatformEvent& event) {
 }
 
 uint32_t X11WholeScreenMoveLoop::DispatchEvent(const ui::PlatformEvent& event) {
-  DCHECK(base::CurrentUIThread::IsSet());
+  CHECK(base::CurrentUIThread::IsSet(), base::NotFatalUntil::M163);
 
   // This method processes all events while the move loop is active.
   if (!in_move_loop_) {
@@ -135,6 +135,9 @@ uint32_t X11WholeScreenMoveLoop::DispatchEvent(const ui::PlatformEvent& event) {
     }
     case ui::EventType::kTouchReleased:
     case ui::EventType::kTouchCancelled: {
+      // The touch sequence ends here without reaching its window. Remember it
+      // so the owner can end it once the loop returns.
+      consumed_touches_.push_back(event->AsTouchEvent()->pointer_details().id);
       delegate_->OnMouseReleased();
       return ui::POST_DISPATCH_NONE;
     }
@@ -156,7 +159,9 @@ bool X11WholeScreenMoveLoop::RunMoveLoop(
     scoped_refptr<ui::X11Cursor> old_cursor,
     scoped_refptr<ui::X11Cursor> new_cursor,
     base::OnceClosure started_callback) {
-  DCHECK(!in_move_loop_);  // Can only handle one nested loop at a time.
+  CHECK(
+      !in_move_loop_,
+      base::NotFatalUntil::M163);  // Can only handle one nested loop at a time.
 
   // Query the mouse cursor prior to the move loop starting so that it can be
   // restored when the move loop finishes.
@@ -195,6 +200,7 @@ bool X11WholeScreenMoveLoop::RunMoveLoop(
 
   in_move_loop_ = true;
   canceled_ = false;
+  consumed_touches_.clear();
   base::RunLoop run_loop(base::RunLoop::Type::kNestableTasksAllowed);
   quit_closure_ = run_loop.QuitClosure();
   run_loop.Run();
@@ -211,6 +217,10 @@ void X11WholeScreenMoveLoop::UpdateCursor(scoped_refptr<ui::X11Cursor> cursor) {
   if (in_move_loop_) {
     ui::ChangeActivePointerGrabCursor(cursor);
   }
+}
+
+std::vector<PointerId> X11WholeScreenMoveLoop::TakeConsumedTouches() {
+  return std::exchange(consumed_touches_, {});
 }
 
 void X11WholeScreenMoveLoop::EndMoveLoop() {

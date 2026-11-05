@@ -22,10 +22,13 @@ import static org.mockito.Mockito.when;
 
 import android.app.Activity;
 import android.content.res.Resources;
+import android.os.Build;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.FrameLayout;
+import android.widget.PopupWindow;
 
+import androidx.annotation.IdRes;
 import androidx.test.ext.junit.rules.ActivityScenarioRule;
 
 import org.junit.Before;
@@ -37,8 +40,13 @@ import org.mockito.Captor;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
+import org.robolectric.Robolectric;
+import org.robolectric.RuntimeEnvironment;
+import org.robolectric.Shadows;
+import org.robolectric.annotation.Config;
 
 import org.chromium.base.Callback;
+import org.chromium.base.supplier.ObservableSuppliers;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.Features.EnableFeatures;
@@ -71,7 +79,9 @@ import org.chromium.components.feature_engagement.Tracker;
 import org.chromium.components.profile_metrics.BrowserProfileType;
 import org.chromium.components.signin.identitymanager.IdentityManager;
 import org.chromium.components.signin.test.util.TestAccounts;
+import org.chromium.ui.base.DeviceFormFactor;
 import org.chromium.ui.base.TestActivity;
+import org.chromium.ui.display.DisplayUtil;
 import org.chromium.url.GURL;
 import org.chromium.url.JUnitTestGURLs;
 
@@ -108,6 +118,7 @@ public class BookmarkUtilsTest {
     @Mock private IdentityManager mIdentityManager;
     @Mock private BookmarkManagerOpener mBookmarkManagerOpener;
     @Mock private PriceDropNotificationManager mPriceDropNotificationManager;
+    @Mock private BookmarkModel mTabBookmarkModel;
 
     private Activity mActivity;
     private FakeBookmarkModel mBookmarkModel;
@@ -215,7 +226,8 @@ public class BookmarkUtilsTest {
                 /* fromExplicitTrackUi= */ false,
                 mBookmarkManagerOpener,
                 mPriceDropNotificationManager,
-                false);
+                /* isBookmarkBarVisible= */ false,
+                /* anchorView= */ null);
 
         histograms.assertExpected();
     }
@@ -258,7 +270,8 @@ public class BookmarkUtilsTest {
                 /* fromExplicitTrackUi= */ false,
                 mBookmarkManagerOpener,
                 mPriceDropNotificationManager,
-                false);
+                /* isBookmarkBarVisible= */ false,
+                /* anchorView= */ null);
         histograms.assertExpected();
         // Verify index-aligned results list has size 2 and non-null elements
         verify(mBookmarkIdListCallback).onResult(mBookmarkIdListCaptor.capture());
@@ -304,12 +317,14 @@ public class BookmarkUtilsTest {
                 /* fromExplicitTrackUi= */ false,
                 mBookmarkManagerOpener,
                 mPriceDropNotificationManager,
-                false);
+                /* isBookmarkBarVisible= */ false,
+                /* anchorView= */ null);
 
         histograms.assertExpected();
     }
 
     @Test
+    @Config(qualifiers = "sw600dp")
     @EnableFeatures(ChromeFeatureList.ANDROID_DESKTOP_BOOKMARK_POPUP)
     public void testAddOrEditBookmark_desktopPopup() {
         BookmarkModel.setInstanceForTesting(mBookmarkModel);
@@ -331,7 +346,8 @@ public class BookmarkUtilsTest {
                 /* fromExplicitTrackUi= */ false,
                 mBookmarkManagerOpener,
                 mPriceDropNotificationManager,
-                false);
+                /* isBookmarkBarVisible= */ false,
+                /* anchorView= */ null);
 
         verify(mBookmarkIdListCallback).onResult(mBookmarkIdListCaptor.capture());
         assertEquals(1, mBookmarkIdListCaptor.getValue().size());
@@ -341,6 +357,7 @@ public class BookmarkUtilsTest {
     }
 
     @Test
+    @Config(qualifiers = "sw600dp")
     @EnableFeatures(ChromeFeatureList.ANDROID_DESKTOP_BOOKMARK_POPUP)
     public void testAddOrEditBookmark_desktopPopup_anchorsToVisibleMenuButton() {
         BookmarkModel.setInstanceForTesting(mBookmarkModel);
@@ -381,7 +398,8 @@ public class BookmarkUtilsTest {
                 /* fromExplicitTrackUi= */ false,
                 mBookmarkManagerOpener,
                 mPriceDropNotificationManager,
-                false);
+                /* isBookmarkBarVisible= */ false,
+                /* anchorView= */ null);
 
         verify(mBookmarkIdListCallback).onResult(mBookmarkIdListCaptor.capture());
         assertEquals(1, mBookmarkIdListCaptor.getValue().size());
@@ -390,6 +408,65 @@ public class BookmarkUtilsTest {
     }
 
     @Test
+    @Config(qualifiers = "sw600dp")
+    @EnableFeatures(ChromeFeatureList.ANDROID_DESKTOP_BOOKMARK_POPUP)
+    public void testShowSaveFlow_desktopPopup_usesProvidedVisibleAnchorView() {
+        setUpDesktopPopup();
+        View bookmarkButton = addViewToContent(R.id.bookmark_button);
+        View anchorView = addViewToContent(View.NO_ID);
+
+        addOrEditBookmarkWithAnchor(anchorView);
+
+        assertPopupAnchoredTo(anchorView, bookmarkButton);
+    }
+
+    @Test
+    @Config(qualifiers = "sw600dp")
+    @EnableFeatures(ChromeFeatureList.ANDROID_DESKTOP_BOOKMARK_POPUP)
+    public void testShowSaveFlow_desktopPopup_hiddenAnchorFallsBackToBookmarkButton() {
+        setUpDesktopPopup();
+        View bookmarkButton = addViewToContent(R.id.bookmark_button);
+        View hiddenAnchor = addViewToContent(View.NO_ID);
+        hiddenAnchor.setVisibility(View.GONE);
+
+        addOrEditBookmarkWithAnchor(hiddenAnchor);
+
+        assertPopupAnchoredTo(bookmarkButton, hiddenAnchor);
+    }
+
+    @Test
+    @Config(qualifiers = "sw600dp")
+    @EnableFeatures(ChromeFeatureList.ANDROID_DESKTOP_BOOKMARK_POPUP)
+    public void testStartOrModifyPriceTracking_existingBookmark_forwardsAnchorView() {
+        setUpDesktopPopup();
+        View bookmarkButton = addViewToContent(R.id.bookmark_button);
+        View anchorView = addViewToContent(View.NO_ID);
+        BookmarkId bookmarkId =
+                mBookmarkModel.addBookmark(
+                        mBookmarkModel.getDefaultBookmarkFolder(),
+                        /* index= */ 0,
+                        "test title",
+                        new GURL("https://test.com"));
+        doReturn(bookmarkId).when(mTabBookmarkModel).getUserBookmarkIdForTab(mTab);
+        TabBookmarker tabBookmarker =
+                new TabBookmarker(
+                        mActivity,
+                        ObservableSuppliers.createNonNull(mTabBookmarkModel),
+                        /* bottomSheetControllerSupplier= */ () -> mBottomSheetController,
+                        /* snackbarManagerSupplier= */ () -> mSnackbarManager,
+                        mBookmarkManagerOpener,
+                        /* priceDropNotificationManagerSupplier= */ () ->
+                                mPriceDropNotificationManager,
+                        /* bookmarkBarVisibilitySupplier= */ () -> false,
+                        /* saveBookmarkOfflineCallback= */ (_, _) -> {});
+
+        tabBookmarker.startOrModifyPriceTracking(mTab, anchorView);
+
+        assertPopupAnchoredTo(anchorView, bookmarkButton);
+    }
+
+    @Test
+    @Config(qualifiers = "sw600dp")
     @EnableFeatures(ChromeFeatureList.ANDROID_DESKTOP_BOOKMARK_POPUP)
     public void testAddOrEditBookmark_existingBookmark_desktopPopup() {
         BookmarkItem existingBookmark = mock(BookmarkItem.class);
@@ -408,9 +485,63 @@ public class BookmarkUtilsTest {
                 /* fromExplicitTrackUi= */ false,
                 mBookmarkManagerOpener,
                 mPriceDropNotificationManager,
-                false);
+                /* isBookmarkBarVisible= */ false,
+                /* anchorView= */ null);
 
         verify(mBookmarkManagerOpener, never()).startEditActivity(any(), any(), any());
+    }
+
+    @Test
+    @Config(qualifiers = "sw599dp")
+    @EnableFeatures(ChromeFeatureList.ANDROID_DESKTOP_BOOKMARK_POPUP)
+    public void testAddOrEditBookmark_desktopPopup_onPhone() {
+        doReturn("test title").when(mTab).getTitle();
+        doReturn(new GURL("https://test.com")).when(mTab).getOriginalUrl();
+
+        BookmarkUtils.addOrEditBookmark(
+                Collections.singletonList(null),
+                mBookmarkModel,
+                Collections.singletonList(mTab),
+                /* snackbarManager= */ null,
+                mBottomSheetController,
+                mActivity,
+                BookmarkType.NORMAL,
+                mBookmarkIdListCallback,
+                /* fromExplicitTrackUi= */ false,
+                mBookmarkManagerOpener,
+                mPriceDropNotificationManager,
+                /* isBookmarkBarVisible= */ false,
+                /* anchorView= */ null);
+
+        // Phone-sized displays have no tab strip, so the bottom sheet save flow is used.
+        verify(mBottomSheetController).requestShowContent(any(), anyBoolean());
+    }
+
+    @Test
+    @Config(qualifiers = "sw599dp")
+    @EnableFeatures(ChromeFeatureList.ANDROID_DESKTOP_BOOKMARK_POPUP)
+    public void testAddOrEditBookmark_existingBookmark_desktopPopup_onPhone() {
+        BookmarkItem existingBookmark = mock(BookmarkItem.class);
+        BookmarkId bookmarkId = new BookmarkId(123, BookmarkType.NORMAL);
+        doReturn(bookmarkId).when(existingBookmark).getId();
+
+        BookmarkUtils.addOrEditBookmark(
+                Collections.singletonList(existingBookmark),
+                mBookmarkModel,
+                Collections.singletonList(mTab),
+                /* snackbarManager= */ null,
+                mBottomSheetController,
+                mActivity,
+                BookmarkType.NORMAL,
+                mBookmarkIdListCallback,
+                /* fromExplicitTrackUi= */ false,
+                mBookmarkManagerOpener,
+                mPriceDropNotificationManager,
+                /* isBookmarkBarVisible= */ false,
+                /* anchorView= */ null);
+
+        verify(mBookmarkManagerOpener).startEditActivity(mActivity, mProfile, bookmarkId);
+        verifyNoInteractions(mBottomSheetController);
     }
 
     @Test
@@ -431,7 +562,8 @@ public class BookmarkUtilsTest {
                 /* fromExplicitTrackUi= */ false,
                 mBookmarkManagerOpener,
                 mPriceDropNotificationManager,
-                false);
+                /* isBookmarkBarVisible= */ false,
+                /* anchorView= */ null);
 
         verify(mBookmarkManagerOpener).startEditActivity(mActivity, mProfile, bookmarkId);
     }
@@ -474,7 +606,8 @@ public class BookmarkUtilsTest {
                 /* fromExplicitTrackUi= */ false,
                 mBookmarkManagerOpener,
                 mPriceDropNotificationManager,
-                false);
+                /* isBookmarkBarVisible= */ false,
+                /* anchorView= */ null);
         histograms.assertExpected();
         // Verify index-aligned results list has size 2 and non-null elements
         verify(mBookmarkIdListCallback).onResult(mBookmarkIdListCaptor.capture());
@@ -729,6 +862,101 @@ public class BookmarkUtilsTest {
     }
 
     @Test
+    @Config(sdk = Build.VERSION_CODES.R, qualifiers = "sw800dp-large")
+    public void testMakeTranslucentIfFloating_tabletWidth() {
+        TranslucentRecordingActivity activity =
+                Robolectric.buildActivity(TranslucentRecordingActivity.class).create().get();
+
+        BookmarkUtils.makeTranslucentIfFloating(activity);
+
+        assertTrue(activity.mTranslucent);
+    }
+
+    @Test
+    @Config(sdk = Build.VERSION_CODES.R, qualifiers = "sw800dp-normal")
+    public void testMakeTranslucentIfFloating_splitScreenMultiWindow() {
+        // Split-screen multi-window pins smallestScreenWidthDp >= 600dp with normal screenLayout.
+        TranslucentRecordingActivity activity =
+                Robolectric.buildActivity(TranslucentRecordingActivity.class).create().get();
+
+        assertTrue(DeviceFormFactor.isNonMultiDisplayContextOnTablet(activity));
+        BookmarkUtils.makeTranslucentIfFloating(activity);
+
+        assertFalse(activity.mTranslucent);
+    }
+
+    @Test
+    @Config(sdk = Build.VERSION_CODES.R, qualifiers = "sw360dp")
+    public void testMakeTranslucentIfFloating_phoneWidth() {
+        TranslucentRecordingActivity activity =
+                Robolectric.buildActivity(TranslucentRecordingActivity.class).create().get();
+
+        BookmarkUtils.makeTranslucentIfFloating(activity);
+
+        assertFalse(activity.mTranslucent);
+    }
+
+    @Test
+    @Config(sdk = Build.VERSION_CODES.Q, qualifiers = "sw800dp-large")
+    public void testMakeTranslucentIfFloating_preR() {
+        TranslucentRecordingActivity activity =
+                Robolectric.buildActivity(TranslucentRecordingActivity.class).create().get();
+
+        BookmarkUtils.makeTranslucentIfFloating(activity);
+
+        assertFalse(activity.mTranslucent);
+    }
+
+    /** Real setTranslucent() is a no-op under Robolectric; record it to test the decision. */
+    private static class TranslucentRecordingActivity extends Activity {
+        boolean mTranslucent;
+
+        @Override
+        public boolean setTranslucent(boolean translucent) {
+            mTranslucent = translucent;
+            return true;
+        }
+    }
+
+    @Test
+    @Config(qualifiers = "sw800dp-large")
+    @EnableFeatures(ChromeFeatureList.ANDROID_DESKTOP_BOOKMARK_DIALOG)
+    public void testShouldShowDesktopBookmarkDialog_tabletWidth() {
+        assertTrue(BookmarkUtils.isBookmarkDialog(mActivity));
+        assertTrue(BookmarkUtils.shouldShowDesktopBookmarkDialog(mActivity));
+    }
+
+    @Test
+    @Config(qualifiers = "sw800dp-normal")
+    @EnableFeatures(ChromeFeatureList.ANDROID_DESKTOP_BOOKMARK_DIALOG)
+    public void testShouldShowDesktopBookmarkDialog_splitScreenMultiWindow() {
+        // Split-screen multi-window pins smallestScreenWidthDp >= 600dp with normal screenLayout.
+        assertTrue(DeviceFormFactor.isNonMultiDisplayContextOnTablet(mActivity));
+        assertFalse(BookmarkUtils.isBookmarkDialog(mActivity));
+        assertFalse(BookmarkUtils.shouldShowDesktopBookmarkDialog(mActivity));
+    }
+
+    @Test
+    @Config(qualifiers = "sw360dp")
+    @EnableFeatures(ChromeFeatureList.ANDROID_DESKTOP_BOOKMARK_DIALOG)
+    public void testShouldShowDesktopBookmarkDialog_phoneWidth() {
+        // E.g. a folded foldable: the flag alone must not produce the desktop dialog.
+        assertFalse(BookmarkUtils.shouldShowDesktopBookmarkDialog(mActivity));
+    }
+
+    @Test
+    @Config(qualifiers = "sw800dp")
+    public void testIsCurrentDisplayTabletWidth_usesLiveDisplayWidth() {
+        // Resources say tablet, but the live display is phone-width (e.g. folded).
+        DisplayUtil.setCurrentSmallestScreenWidthForTesting(360);
+        assertTrue(DeviceFormFactor.isNonMultiDisplayContextOnTablet(mActivity));
+        assertFalse(BookmarkUtils.isCurrentDisplayTabletWidth(mActivity));
+
+        DisplayUtil.setCurrentSmallestScreenWidthForTesting(800);
+        assertTrue(BookmarkUtils.isCurrentDisplayTabletWidth(mActivity));
+    }
+
+    @Test
     @EnableFeatures(ChromeFeatureList.ANDROID_DESKTOP_BOOKMARK_LAYOUT)
     public void testIsDesktopBookmarksLayoutEnabled_featureEnabled() {
         assertTrue(BookmarkUtils.isDesktopBookmarksLayoutEnabled());
@@ -792,6 +1020,51 @@ public class BookmarkUtilsTest {
     }
 
     @Test
+    public void testJavascriptAndOpenableInNewTabHelpers() {
+        assertFalse(BookmarkUtils.isJavascriptBookmark(/* item= */ null));
+        assertFalse(BookmarkUtils.canOpenBookmarkInNewTab(/* item= */ null));
+
+        BookmarkId folderId =
+                mBookmarkModel.addFolder(
+                        mBookmarkModel.getMobileFolderId(), /* index= */ 0, "Folder");
+        BookmarkItem folderItem = mBookmarkModel.getBookmarkById(folderId);
+        assertFalse(BookmarkUtils.isJavascriptBookmark(folderItem));
+        assertFalse(BookmarkUtils.canOpenBookmarkInNewTab(folderItem));
+
+        BookmarkId emptyUrlId =
+                mBookmarkModel.addBookmark(folderId, /* index= */ 0, "Empty", GURL.emptyGURL());
+        BookmarkId invalidUrlId =
+                mBookmarkModel.addBookmark(
+                        folderId, /* index= */ 1, "Invalid", JUnitTestGURLs.INVALID_URL);
+        BookmarkId jsId =
+                mBookmarkModel.addBookmark(
+                        folderId, /* index= */ 2, "JS", new GURL("JavaScript:alert(1)"));
+        BookmarkId httpsId =
+                mBookmarkModel.addBookmark(
+                        folderId, /* index= */ 3, "HTTPS", JUnitTestGURLs.EXAMPLE_URL);
+
+        assertFalse(BookmarkUtils.isJavascriptBookmark(mBookmarkModel.getBookmarkById(emptyUrlId)));
+        assertFalse(
+                BookmarkUtils.canOpenBookmarkInNewTab(mBookmarkModel.getBookmarkById(emptyUrlId)));
+        assertFalse(
+                BookmarkUtils.isJavascriptBookmark(mBookmarkModel.getBookmarkById(invalidUrlId)));
+        assertFalse(
+                BookmarkUtils.canOpenBookmarkInNewTab(
+                        mBookmarkModel.getBookmarkById(invalidUrlId)));
+
+        assertTrue(BookmarkUtils.isJavascriptBookmark(mBookmarkModel.getBookmarkById(jsId)));
+        assertFalse(BookmarkUtils.canOpenBookmarkInNewTab(mBookmarkModel.getBookmarkById(jsId)));
+
+        assertFalse(BookmarkUtils.isJavascriptBookmark(mBookmarkModel.getBookmarkById(httpsId)));
+        assertTrue(BookmarkUtils.canOpenBookmarkInNewTab(mBookmarkModel.getBookmarkById(httpsId)));
+
+        assertEquals(
+                1,
+                BookmarkUtils.getChildOpenableInNewTabBookmarkCountForFolder(
+                        mBookmarkModel, folderId));
+    }
+
+    @Test
     @EnableFeatures(ChromeFeatureList.ANDROID_DESKTOP_BOOKMARK_LAYOUT)
     public void testGetImageIconSize_desktopLayoutEnabled() {
         Resources res = mActivity.getResources();
@@ -826,5 +1099,53 @@ public class BookmarkUtilsTest {
         assertEquals(
                 res.getDimensionPixelSize(R.dimen.improved_bookmark_icon_radius),
                 BookmarkViewUtils.getImageIconCornerRadius(res, BookmarkRowDisplayPref.COMPACT));
+    }
+
+    /**
+     * Verifies the active popup is anchored to {@code expectedAnchor}: the popup dismisses itself
+     * when its anchor is detached, but not when {@code otherView} is.
+     */
+    private void assertPopupAnchoredTo(View expectedAnchor, View otherView) {
+        PopupWindow popup =
+                Shadows.shadowOf(RuntimeEnvironment.getApplication()).getLatestPopupWindow();
+        assertNotNull(popup);
+        assertTrue(popup.isShowing());
+        ViewGroup content = mActivity.findViewById(android.R.id.content);
+        content.removeView(otherView);
+        assertTrue(popup.isShowing());
+        content.removeView(expectedAnchor);
+        assertFalse(popup.isShowing());
+    }
+
+    private void setUpDesktopPopup() {
+        BookmarkModel.setInstanceForTesting(mBookmarkModel);
+        mActivity.setTheme(R.style.Theme_BrowserUI_DayNight);
+        doReturn("test title").when(mTab).getTitle();
+        doReturn(new GURL("https://test.com")).when(mTab).getOriginalUrl();
+    }
+
+    private View addViewToContent(@IdRes int id) {
+        View view = new View(mActivity);
+        view.setId(id);
+        ViewGroup content = mActivity.findViewById(android.R.id.content);
+        content.addView(view);
+        return view;
+    }
+
+    private void addOrEditBookmarkWithAnchor(@Nullable View anchorView) {
+        BookmarkUtils.addOrEditBookmark(
+                Collections.singletonList(null),
+                mBookmarkModel,
+                Collections.singletonList(mTab),
+                /* snackbarManager= */ null,
+                mBottomSheetController,
+                mActivity,
+                BookmarkType.NORMAL,
+                mBookmarkIdListCallback,
+                /* fromExplicitTrackUi= */ false,
+                mBookmarkManagerOpener,
+                mPriceDropNotificationManager,
+                /* isBookmarkBarVisible= */ false,
+                anchorView);
     }
 }

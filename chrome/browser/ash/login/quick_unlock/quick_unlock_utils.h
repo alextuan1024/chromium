@@ -5,6 +5,8 @@
 #ifndef CHROME_BROWSER_ASH_LOGIN_QUICK_UNLOCK_QUICK_UNLOCK_UTILS_H_
 #define CHROME_BROWSER_ASH_LOGIN_QUICK_UNLOCK_QUICK_UNLOCK_UTILS_H_
 
+#include <array>
+
 #include "base/memory/raw_ptr.h"
 
 namespace base {
@@ -17,7 +19,6 @@ class WebUIDataSource;
 
 class PrefRegistrySimple;
 class PrefService;
-class Profile;
 
 namespace ash {
 namespace quick_unlock {
@@ -97,13 +98,13 @@ class TestApi {
   bool IsFingerprintEnabledByPolicy(Purpose purpose);
 
  private:
-  static constexpr int kNumOfPurposes =
-      static_cast<int>(Purpose::kNumOfPurposes);
+  static constexpr size_t kNumOfPurposes =
+      static_cast<size_t>(Purpose::kNumOfPurposes);
 
-  raw_ptr<TestApi> old_instance_;
-  bool overridden_;
-  bool pin_purposes_enabled_by_policy_[kNumOfPurposes];
-  bool fingerprint_purposes_enabled_by_policy_[kNumOfPurposes];
+  raw_ptr<TestApi> old_instance_ = nullptr;
+  bool overridden_ = false;
+  std::array<bool, kNumOfPurposes> pin_purposes_enabled_by_policy_ = {};
+  std::array<bool, kNumOfPurposes> fingerprint_purposes_enabled_by_policy_ = {};
 };
 
 base::TimeDelta PasswordConfirmationFrequencyToTimeDelta(
@@ -124,9 +125,6 @@ bool IsPinEnabled();
 
 // Returns true if the fingerprint is supported by the device.
 bool IsFingerprintSupported();
-
-// Returns true if the fingerprint is allowed for specified profile.
-bool IsFingerprintEnabled(Profile* profile, Purpose purpose);
 
 // Returns true if the fingerprint unlock is disabled by policy for the
 // specified purpose. If purpose is kAny, then it is regarded as enabled if any

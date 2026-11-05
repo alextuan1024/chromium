@@ -124,8 +124,10 @@ class MODULES_EXPORT AudioNode : public EventTarget,
   // able to see whether a handle has been set.
   bool ContainsHandler() const;
 
+  // Returns true if any output of this node is connected to a node or param.
+  bool HasOutputsConnected() const;
+
  private:
-  void WarnIfContextClosed() const;
   void Dispose();
   void DisconnectAllFromOutput(unsigned output_index);
   // Returns true if the specified AudioNodeInput was connected.

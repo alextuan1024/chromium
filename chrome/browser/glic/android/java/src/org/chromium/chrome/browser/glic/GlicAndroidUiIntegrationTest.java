@@ -11,13 +11,13 @@ import static androidx.test.espresso.assertion.ViewAssertions.matches;
 import static androidx.test.espresso.matcher.ViewMatchers.isDisplayed;
 import static androidx.test.espresso.matcher.ViewMatchers.withContentDescription;
 import static androidx.test.espresso.matcher.ViewMatchers.withId;
-import static androidx.test.espresso.matcher.ViewMatchers.withText;
 
 import static org.hamcrest.CoreMatchers.not;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import android.view.View;
+import android.view.inspector.WindowInspector;
 
 import androidx.test.filters.LargeTest;
 
@@ -56,15 +56,19 @@ import org.chromium.chrome.browser.actor.ui.ControlOwnership;
 import org.chromium.chrome.browser.actor.ui.TabIndicatorStatus;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
+import org.chromium.chrome.browser.glic.toolbar_button.GlicButtonStateController;
+import org.chromium.chrome.browser.glic.toolbar_button.GlicToolbarButtonController;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.toolbar.adaptive.AdaptiveToolbarButtonController;
 import org.chromium.chrome.browser.toolbar.adaptive.AdaptiveToolbarButtonVariant;
 import org.chromium.chrome.browser.toolbar.adaptive.AdaptiveToolbarPrefs;
+import org.chromium.chrome.browser.toolbar.adaptive.AdaptiveToolbarStatePredictor;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.chrome.test.ChromeTabbedActivityTestRule;
 import org.chromium.chrome.test.util.ChromeTabUtils;
 import org.chromium.ui.base.DeviceFormFactor;
 
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Set;
 
@@ -99,6 +103,8 @@ public class GlicAndroidUiIntegrationTest {
     @Before
     public void setUp() throws Exception {
         GlicEnabling.setEnabledForTesting(true, /* forwardToNative= */ false);
+        ActorUiTabController.setActorUiSupportedForTesting(true);
+        AdaptiveToolbarStatePredictor.setToolbarStateForTesting(AdaptiveToolbarButtonVariant.GLIC);
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
                     AdaptiveToolbarPrefs.saveToolbarButtonManualOverride(
@@ -124,7 +130,6 @@ public class GlicAndroidUiIntegrationTest {
                             adaptiveToolbarUiCoordinator
                                     .getAdaptiveToolbarButtonControllerForTesting();
                     Criteria.checkThat(buttonController, Matchers.notNullValue());
-                    buttonController.recomputeUiState();
                     Criteria.checkThat(
                             buttonController.getSingleProviderForTesting(),
                             Matchers.instanceOf(GlicToolbarButtonController.class));
@@ -139,6 +144,7 @@ public class GlicAndroidUiIntegrationTest {
     @After
     public void tearDown() {
         ActorKeyedServiceFactory.setForTesting(null);
+        ActorUiTabController.setActorUiSupportedForTesting(null);
         GlicKeyedServiceFactory.setForTesting(null);
         GlicEnabling.setEnabledForTesting(false, false);
         ThreadUtils.runOnUiThreadBlocking(
@@ -242,7 +248,7 @@ public class GlicAndroidUiIntegrationTest {
 
         // Verify that toggleUI was called on GlicKeyedService.
         verify(mGlicService, Mockito.timeout(5000))
-                .toggleUI(Mockito.anyLong(), Mockito.eq(false), Mockito.any(), Mockito.anyInt());
+                .toggleUI(Mockito.any(), Mockito.eq(false), Mockito.any(), Mockito.anyInt());
     }
 
     @Test
@@ -250,8 +256,9 @@ public class GlicAndroidUiIntegrationTest {
     public void testButtonClickShowsTaskMenuWhenTaskOnOtherTab() {
         // Set up active task on a different tab.
         int otherTabId = mTab.getId() + 1;
+        String expectedTaskTitle = "Background filling task";
         when(mActorTask.getId()).thenReturn(TEST_TASK_ID);
-        when(mActorTask.getTitle()).thenReturn("Background filling task");
+        when(mActorTask.getTitle()).thenReturn(expectedTaskTitle);
         when(mActorTask.getState()).thenReturn(ActorTaskState.ACTING);
 
         Set<Integer> tabSet = Collections.singleton(otherTabId);
@@ -262,12 +269,44 @@ public class GlicAndroidUiIntegrationTest {
         when(mActorService.getActiveTaskIdOnTab(mTab.getId())).thenReturn(null);
         when(mActorService.getActiveTaskIdOnTab(mTab.getId(), false)).thenReturn(null);
 
-        // Click the Glic button.
-        onView(withId(R.id.optional_toolbar_button)).perform(click());
+        // Verify the optional toolbar button is displayed and enabled before clicking.
+        CriteriaHelper.pollUiThread(
+                () -> {
+                    View button =
+                            mActivityTestRule
+                                    .getActivity()
+                                    .findViewById(R.id.optional_toolbar_button);
+                    Criteria.checkThat(button, Matchers.notNullValue());
+                    Criteria.checkThat(button.isShown(), Matchers.is(true));
+                    Criteria.checkThat(button.isEnabled(), Matchers.is(true));
+                });
 
-        // Verify that the task menu popup is shown and displays the task title.
-        String expectedTaskTitle = "Background filling task";
-        onView(withText(expectedTaskTitle)).check(matches(isDisplayed()));
+        // Click the Glic button directly on the UI thread to prevent Espresso click from
+        // flaking with AppNotIdleException on the infinite LottieDrawable Choreographer
+        // animation running during ActorTaskState.ACTING.
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    View button =
+                            mActivityTestRule
+                                    .getActivity()
+                                    .findViewById(R.id.optional_toolbar_button);
+                    Assert.assertNotNull(button);
+                    Assert.assertTrue(button.isShown());
+                    Assert.assertTrue(button.performClick());
+                });
+
+        // Verify that the task menu popup is shown and displays the task title without
+        // relying on Espresso idle checks, which time out while LottieDrawable animates.
+        CriteriaHelper.pollUiThread(
+                () -> {
+                    ArrayList<View> matchingViews = new ArrayList<>();
+                    for (View root : WindowInspector.getGlobalWindowViews()) {
+                        root.findViewsWithText(
+                                matchingViews, expectedTaskTitle, View.FIND_VIEWS_WITH_TEXT);
+                    }
+                    Criteria.checkThat(
+                            matchingViews.stream().anyMatch(View::isShown), Matchers.is(true));
+                });
     }
 
     @Test

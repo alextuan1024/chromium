@@ -19,7 +19,6 @@ import static org.mockito.Mockito.verify;
 import android.app.Activity;
 import android.content.Context;
 import android.content.pm.ApplicationInfo;
-import android.content.pm.PackageManager;
 import android.content.pm.ProviderInfo;
 import android.net.Uri;
 import android.os.Build;
@@ -37,9 +36,12 @@ import org.mockito.Mockito;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 import org.mockito.stubbing.Answer;
+import org.robolectric.Robolectric;
+import org.robolectric.Shadows;
 import org.robolectric.annotation.Config;
 
 import org.chromium.base.Callback;
+import org.chromium.base.ContextUtils;
 import org.chromium.base.TriState;
 import org.chromium.base.supplier.ObservableSuppliers;
 import org.chromium.base.supplier.SettableMonotonicObservableSupplier;
@@ -66,10 +68,10 @@ import org.chromium.chrome.test.OverrideContextWrapperTestRule;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
 import org.chromium.components.browser_ui.share.ShareParams;
 import org.chromium.components.browser_ui.util.AutomotiveUtils;
-import org.chromium.components.dom_distiller.core.DomDistillerUrlUtils;
-import org.chromium.components.dom_distiller.core.DomDistillerUrlUtilsJni;
 import org.chromium.components.favicon.LargeIconBridgeJni;
 import org.chromium.components.feature_engagement.Tracker;
+import org.chromium.components.web_distiller.core.WebDistillerUrlUtils;
+import org.chromium.components.web_distiller.core.WebDistillerUrlUtilsJni;
 import org.chromium.content_public.browser.PermissionsPolicyFeature;
 import org.chromium.content_public.browser.RenderFrameHost;
 import org.chromium.content_public.browser.WebContents;
@@ -97,7 +99,6 @@ public class ShareDelegateImplUnitTest {
             new OverrideContextWrapperTestRule();
 
     @Mock private Context mContext;
-    @Mock private PackageManager mPackageManager;
     @Mock private RenderFrameHost mRenderFrameHost;
     @Mock private BottomSheetController mBottomSheetController;
     @Mock private ShareSheetDelegate mShareSheetController;
@@ -106,7 +107,6 @@ public class ShareDelegateImplUnitTest {
     @Mock private ActivityLifecycleDispatcher mActivityLifecycleDispatcher;
     @Mock private TabModelSelector mTabModelSelector;
     @Mock private WindowAndroid mWindowAndroid;
-    @Mock private Activity mActivity;
     @Mock private LargeIconBridgeJni mLargeIconBridgeJni;
     @Mock private Tracker mTracker;
     @Mock private DataSharingTabManager mDataSharingTabManager;
@@ -116,7 +116,9 @@ public class ShareDelegateImplUnitTest {
     @Mock SnackbarManager mSnackbarManager;
 
     @Mock private DataProtectionBridge.Natives mDataProtectionBridgeMock;
-    @Mock private DomDistillerUrlUtils.Natives mDomDistillerUrlUtilsJniMock;
+    @Mock private WebDistillerUrlUtils.Natives mWebDistillerUrlUtilsJniMock;
+
+    private Activity mActivity;
 
     private final ArgumentCaptor<ShareParams> mShareParamsCaptor =
             ArgumentCaptor.forClass(ShareParams.class);
@@ -176,13 +178,13 @@ public class ShareDelegateImplUnitTest {
         ShareHelper.setShareWithLastUsedComponentHookForTesting(() -> mShareHelperCallCount++);
         LargeIconBridgeJni.setInstanceForTesting(mLargeIconBridgeJni);
         TrackerFactory.setTrackerForTests(mTracker);
+        mActivity = Robolectric.buildActivity(Activity.class).get();
         Mockito.doReturn(new WeakReference<>(mActivity)).when(mWindowAndroid).getActivity();
         DataProtectionBridge.setInstanceForTesting(mDataProtectionBridgeMock);
-        DomDistillerUrlUtilsJni.setInstanceForTesting(mDomDistillerUrlUtilsJniMock);
+        WebDistillerUrlUtilsJni.setInstanceForTesting(mWebDistillerUrlUtilsJniMock);
         doAnswer(invocation -> new GURL((String) invocation.getArgument(0)))
-                .when(mDomDistillerUrlUtilsJniMock)
+                .when(mWebDistillerUrlUtilsJniMock)
                 .getOriginalUrlFromDistillerUrl(anyString());
-        doReturn(mPackageManager).when(mContext).getPackageManager();
         doReturn("org.chromium.chrome").when(mContext).getPackageName();
 
         // TODO(crbug.com/406591712): Update to stubbing share methods when those are added.
@@ -542,6 +544,7 @@ public class ShareDelegateImplUnitTest {
                 ObservableSuppliers.createMonotonic(mockShareDelegate));
 
         doReturn(true).when(mRenderFrameHost).isFeatureEnabled(PermissionsPolicyFeature.WEB_SHARE);
+        doReturn(true).when(mRenderFrameHost).consumeTransientUserActivation();
 
         ShareServiceImplementationFactory factory =
                 new ShareServiceImplementationFactory(mRenderFrameHost);
@@ -574,6 +577,36 @@ public class ShareDelegateImplUnitTest {
         ChromeShareExtras capturedExtras = extrasCaptor.getValue();
         Assert.assertEquals(mRenderFrameHost, capturedExtras.getRenderFrameHost());
         Assert.assertEquals(DetailedContentType.WEB_SHARE, capturedExtras.getDetailedContentType());
+    }
+
+    @Test
+    public void testShareServiceImplementationFactory_noTransientUserActivation() {
+        WebContents webContents = mock(WebContents.class);
+        doReturn(mWindowAndroid).when(webContents).getTopLevelNativeWindow();
+        WebContentsStatics.setWebContentsForTesting(webContents);
+
+        ShareDelegate mockShareDelegate = mock(ShareDelegate.class);
+        ShareDelegateSupplier.setInstanceForTesting(
+                ObservableSuppliers.createMonotonic(mockShareDelegate));
+
+        doReturn(true).when(mRenderFrameHost).isFeatureEnabled(PermissionsPolicyFeature.WEB_SHARE);
+        doReturn(false).when(mRenderFrameHost).consumeTransientUserActivation();
+
+        ShareServiceImplementationFactory factory =
+                new ShareServiceImplementationFactory(mRenderFrameHost);
+        ShareService shareService = factory.createImpl();
+        Assert.assertNotNull(shareService);
+
+        org.chromium.url.mojom.Url validUrl = new org.chromium.url.mojom.Url();
+        validUrl.url = "https://example.com";
+
+        int[] shareError = new int[1];
+        shareService.share(
+                "sample_title", "sample_text", validUrl, null, error -> shareError[0] = error);
+
+        Assert.assertEquals(ShareError.PERMISSION_DENIED, shareError[0]);
+        verify(mRenderFrameHost).consumeTransientUserActivation();
+        verify(mockShareDelegate, never()).share(any(), any(), anyInt());
     }
 
     @Test
@@ -935,14 +968,15 @@ public class ShareDelegateImplUnitTest {
         doReturn(pdfTitle).when(mTab).getTitle();
         doReturn(mock(WindowAndroid.class)).when(mTab).getWindowAndroid();
 
-        // Setup mock package manager to identify this URI as coming from this app.
+        // Setup package manager to identify this URI as coming from this app.
         ProviderInfo providerInfo = new ProviderInfo();
+        providerInfo.name = "org.chromium.chrome.browser.util.ChromeFileProvider";
+        providerInfo.authority = "org.chromium.chrome.FileProvider";
         providerInfo.packageName = "org.chromium.chrome";
         providerInfo.applicationInfo = new ApplicationInfo();
         providerInfo.applicationInfo.uid = Process.myUid();
-        doReturn(providerInfo)
-                .when(mPackageManager)
-                .resolveContentProvider("org.chromium.chrome.FileProvider", 0);
+        Shadows.shadowOf(ContextUtils.getApplicationContext().getPackageManager())
+                .addOrUpdateProvider(providerInfo);
 
         createShareDelegate(false, mShareSheetController);
         mShareDelegate.share(mTab, false, ShareOrigin.OVERFLOW_MENU);

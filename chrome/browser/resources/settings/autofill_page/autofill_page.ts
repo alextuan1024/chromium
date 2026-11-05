@@ -12,7 +12,6 @@ import 'chrome://resources/cr_elements/cr_icon/cr_icon.js';
 import './account_card.js';
 import './category_reference_card.js';
 import './collapsible_autofill_settings_card.js';
-import '/shared/settings/prefs/prefs.js';
 import '../settings_page/settings_section.js';
 import '../icons.html.js';
 import '../privacy_icons.html.js';
@@ -21,12 +20,11 @@ import '../internal/icons.html.js';
 
 // </if>
 
-import {PrefsMixin} from '/shared/settings/prefs/prefs_mixin.js';
-import {I18nMixin} from 'chrome://resources/cr_elements/i18n_mixin.js';
-import {WebUiListenerMixin} from 'chrome://resources/cr_elements/web_ui_listener_mixin.js';
+import {I18nMixinLit} from 'chrome://resources/cr_elements/i18n_mixin_lit.js';
+import {WebUiListenerMixinLit} from 'chrome://resources/cr_elements/web_ui_listener_mixin_lit.js';
 import {assert, assertNotReached, assertNotReachedCase} from 'chrome://resources/js/assert.js';
 import {OpenWindowProxyImpl} from 'chrome://resources/js/open_window_proxy.js';
-import {PolymerElement} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
+import {CrLitElement} from 'chrome://resources/lit/v3_0/lit.rollup.js';
 
 import {EntityTypeName} from '../autofill_ai_enums.mojom-webui.js';
 import {loadTimeData} from '../i18n_setup.js';
@@ -34,11 +32,12 @@ import type {MetricsBrowserProxy} from '../metrics_browser_proxy.js';
 import {MetricsBrowserProxyImpl, SuggestionsFromGeminiEntryPoint, YourSavedInfoDataCategory, YourSavedInfoDataChip, YourSavedInfoRelatedService} from '../metrics_browser_proxy.js';
 import {routes} from '../route.js';
 import {Router} from '../router.js';
-import {SettingsViewMixin} from '../settings_page/settings_view_mixin.js';
+import {SettingsViewMixinLit} from '../settings_page/settings_view_mixin_lit.js';
 
 import type {AutofillManagerProxy, PersonalDataChangedListener} from './autofill_manager_proxy.js';
 import {AutofillManagerImpl} from './autofill_manager_proxy.js';
-import {getTemplate} from './autofill_page.html.js';
+import {getCss} from './autofill_page.css.js';
+import {getHtml} from './autofill_page.html.js';
 import type {DataCategoryClickEvent, DataChipClickEvent} from './category_reference_card.js';
 import type {EntityDataManagerProxy, EntityInstancesChangedListener} from './entity_data_manager_proxy.js';
 import {EntityDataManagerProxyImpl} from './entity_data_manager_proxy.js';
@@ -65,6 +64,7 @@ interface DataTypeHierarchy {
   contactInfo: DataCategory;
   identityDocs: DataCategory;
   travel: DataCategory;
+  offersAndLoyaltyCards: DataCategory;
   shopping: DataCategory;
 }
 
@@ -88,8 +88,8 @@ export interface DataChip {
   isVisibleWhenNoEntitiesOfTypeExists: () => boolean;
 }
 
-const SettingsAutofillPageElementBase = WebUiListenerMixin(
-    SettingsViewMixin(PrefsMixin(I18nMixin(PolymerElement))));
+const SettingsAutofillPageElementBase =
+    SettingsViewMixinLit(WebUiListenerMixinLit(I18nMixinLit(CrLitElement)));
 
 export class SettingsAutofillPageElement extends
     SettingsAutofillPageElementBase {
@@ -97,56 +97,43 @@ export class SettingsAutofillPageElement extends
     return 'settings-autofill-page';
   }
 
-  static get template() {
-    return getTemplate();
+  static override get styles() {
+    return getCss();
   }
 
-  static get properties() {
+  override render() {
+    return getHtml.bind(this)();
+  }
+
+  static override get properties() {
     return {
-      prefs: Object,
-
-      hierarchy_: {
-        type: Object,
-      },
-
-      isShoppingEnabled_: {
-        type: Boolean,
-        value() {
-          return loadTimeData.getBoolean('shoppingIntegrationEnabled');
-        },
-      },
-
-      showSuggestionsFromGeminiSettings_: {
-        type: Boolean,
-        value() {
-          return loadTimeData.getBoolean('showSuggestionsFromGeminiSettings');
-        },
-      },
-      spark_: {
-        type: String,
-        value: () => {
-          // <if expr="_google_chrome">
-          return loadTimeData.getBoolean('glicAssetsV2Enabled') ?
-              'settings-internal:sparkv2' :
-              'settings-internal:spark';
-          // </if>
-          // <if expr="not _google_chrome">
-          return 'settings20:lightbulb';
-          // </if>
-        },
-      },
+      hierarchy_: {type: Object},
+      isShoppingEnabled_: {type: Boolean},
+      isOffersAndLoyaltyCardsEnabled_: {type: Boolean},
+      showSuggestionsFromGeminiSettings_: {type: Boolean},
+      spark_: {type: String},
     };
   }
 
-  declare prefs: Record<string, unknown>;
-  declare private hierarchy_: DataTypeHierarchy;
-  declare private isShoppingEnabled_: boolean;
-  declare private showSuggestionsFromGeminiSettings_: boolean;
+  protected accessor hierarchy_: DataTypeHierarchy;
+  protected accessor isShoppingEnabled_: boolean =
+      loadTimeData.getBoolean('shoppingIntegrationEnabled');
+  protected accessor isOffersAndLoyaltyCardsEnabled_: boolean =
+      loadTimeData.getBoolean('offersAndLoyaltyCardsSettingsEnabled');
+  protected accessor showSuggestionsFromGeminiSettings_: boolean =
+      loadTimeData.getBoolean('showSuggestionsFromGeminiSettings');
+  // <if expr="not _google_chrome">
+  protected accessor spark_: string = 'settings20:lightbulb';
+  // </if>
+  // <if expr="_google_chrome">
+  protected accessor spark_: string =
+      loadTimeData.getBoolean('glicAssetsV2Enabled') ?
+      'settings-internal:sparkv2' :
+      'settings-internal:spark';
+  // </if>
 
   private dataChipIdToChip_: Map<YourSavedInfoDataChip, DataChip> = new Map();
   private dataChipIdToCategory_: Map<YourSavedInfoDataChip, DataCategory> =
-      new Map();
-  private dataChipIdToCategoryName_: Map<YourSavedInfoDataChip, string> =
       new Map();
   private availableAutofillAiTypes_: Set<EntityTypeName> = new Set();
 
@@ -161,16 +148,33 @@ export class SettingsAutofillPageElement extends
   private setPersonalDataListener_: PersonalDataChangedListener|null = null;
   private onAutofillAiEntitiesChangedListener_: EntityInstancesChangedListener|
       null = null;
-  declare private spark_: string;
+
+  constructor() {
+    super();
+
+    this.hierarchy_ = this.initializeDataTypeHierarchy_();
+    for (const category of Object.values(this.hierarchy_)) {
+      for (const chip of category.chips) {
+        this.dataChipIdToChip_.set(chip.id, chip);
+        this.dataChipIdToCategory_.set(chip.id, category);
+      }
+    }
+  }
 
   override connectedCallback() {
     super.connectedCallback();
-    this.initializeDataTypeHierarchy_();
     this.setupDataTypeCounters();
   }
 
-  private initializeDataTypeHierarchy_() {
-    this.hierarchy_ = {
+  private initializeDataTypeHierarchy_(): DataTypeHierarchy {
+    const loyaltyCardsChip: DataChip = {
+      id: YourSavedInfoDataChip.LOYALTY_CARDS,
+      label: this.i18n('loyaltyCardsTitle'),
+      icon: 'settings20:loyalty-programs',
+      isVisibleWhenNoEntitiesOfTypeExists: () => true,
+    };
+
+    return {
       passwordManager: {
         id: YourSavedInfoDataCategory.PASSWORD_MANAGER,
         chips: [
@@ -211,12 +215,9 @@ export class SettingsAutofillPageElement extends
             isVisibleWhenNoEntitiesOfTypeExists: () =>
                 loadTimeData.getBoolean('shouldShowPayOverTimeSettings'),
           },
-          {
-            id: YourSavedInfoDataChip.LOYALTY_CARDS,
-            label: this.i18n('loyaltyCardsTitle'),
-            icon: 'settings20:loyalty-programs',
-            isVisibleWhenNoEntitiesOfTypeExists: () => true,
-          },
+          // When the offers and loyalty cards page is enabled, loyalty cards
+          // are shown in that category instead of in payments.
+          ...(this.isOffersAndLoyaltyCardsEnabled_ ? [] : [loyaltyCardsChip]),
         ],
       },
       contactInfo: {
@@ -286,6 +287,11 @@ export class SettingsAutofillPageElement extends
           },
         ],
       },
+      offersAndLoyaltyCards: {
+        id: YourSavedInfoDataCategory.OFFERS_AND_LOYALTY_CARDS,
+        // TODO(crbug.com/546252995): Add the offers chip.
+        chips: this.isOffersAndLoyaltyCardsEnabled_ ? [loyaltyCardsChip] : [],
+      },
       shopping: {
         id: YourSavedInfoDataCategory.SHOPPING,
         chips: [
@@ -306,14 +312,6 @@ export class SettingsAutofillPageElement extends
         ],
       },
     };
-
-    for (const [categoryName, category] of Object.entries(this.hierarchy_)) {
-      for (const chip of category.chips) {
-        this.dataChipIdToChip_.set(chip.id, chip);
-        this.dataChipIdToCategory_.set(chip.id, category);
-        this.dataChipIdToCategoryName_.set(chip.id, categoryName);
-      }
-    }
   }
 
   private setupDataTypeCounters() {
@@ -382,9 +380,7 @@ export class SettingsAutofillPageElement extends
           for (const entityType of entityTypes) {
             this.availableAutofillAiTypes_.add(entityType.typeName);
           }
-          this.notifyPath('hierarchy_.identityDocs.chips');
-          this.notifyPath('hierarchy_.travel.chips');
-          this.notifyPath('hierarchy_.shopping.chips');
+          this.requestUpdate();
         });
 
     if (this.isShoppingEnabled_) {
@@ -468,6 +464,11 @@ export class SettingsAutofillPageElement extends
     if (routes.TRAVEL) {
       map.set(routes.TRAVEL.path, '#travelManagerButton');
     }
+    if (routes.OFFERS_AND_LOYALTY_CARDS) {
+      map.set(
+          routes.OFFERS_AND_LOYALTY_CARDS.path,
+          '#offersAndLoyaltyCardsManagerButton');
+    }
     if (routes.SHOPPING) {
       map.set(routes.SHOPPING.path, '#shoppingManagerButton');
     }
@@ -499,6 +500,9 @@ export class SettingsAutofillPageElement extends
       case 'travel':
         triggerId = 'travelManagerButton';
         break;
+      case 'offersAndLoyaltyCards':
+        triggerId = 'offersAndLoyaltyCardsManagerButton';
+        break;
       case 'shopping':
         triggerId = 'shoppingManagerButton';
         break;
@@ -508,8 +512,7 @@ export class SettingsAutofillPageElement extends
       default:
         assertNotReached(`Unrecognized child view ID: ${childViewId}`);
     }
-    const control =
-        this.shadowRoot!.querySelector<HTMLElement>(`#${triggerId}`);
+    const control = this.shadowRoot.querySelector<HTMLElement>(`#${triggerId}`);
     assert(
         control,
         `Failed to find associated control for child '${childViewId}'`);
@@ -518,12 +521,11 @@ export class SettingsAutofillPageElement extends
 
   private setChipCount_(chipId: YourSavedInfoDataChip, count?: number) {
     const chip: DataChip = this.dataChipIdToChip_.get(chipId)!;
-    const categoryName = this.dataChipIdToCategoryName_.get(chipId)!;
     chip.count = count;
-    this.notifyPath(`hierarchy_.${categoryName}.chips`);
+    this.requestUpdate();
   }
 
-  private getVisibleChips_(chips: DataChip[]): DataChip[] {
+  protected getVisibleChips_(chips: DataChip[]): DataChip[] {
     return chips.filter(
                chip =>
                    chip.isVisibleWhenNoEntitiesOfTypeExists() || !!chip.count)
@@ -535,13 +537,13 @@ export class SettingsAutofillPageElement extends
         chip => chip.isVisibleWhenNoEntitiesOfTypeExists() || !!chip.count);
   }
 
-  private onDataCategoryClick_(e: DataCategoryClickEvent) {
+  protected onDataCategoryClick_(e: DataCategoryClickEvent) {
     const categoryId: YourSavedInfoDataCategory = e.detail.categoryId;
     this.metricsBrowserProxy_.recordYourSavedInfoCategoryClick(categoryId);
     this.navigateToLeafPage_(categoryId);
   }
 
-  private onDataChipClick_(e: DataChipClickEvent) {
+  protected onDataChipClick_(e: DataChipClickEvent) {
     const chipId: YourSavedInfoDataChip = e.detail.chipId;
     const category: DataCategory = this.dataChipIdToCategory_.get(chipId)!;
     this.metricsBrowserProxy_.recordYourSavedInfoDataChipClick(chipId);
@@ -572,6 +574,9 @@ export class SettingsAutofillPageElement extends
       case YourSavedInfoDataCategory.TRAVEL:
         Router.getInstance().navigateTo(routes.TRAVEL);
         break;
+      case YourSavedInfoDataCategory.OFFERS_AND_LOYALTY_CARDS:
+        Router.getInstance().navigateTo(routes.OFFERS_AND_LOYALTY_CARDS);
+        break;
       case YourSavedInfoDataCategory.SHOPPING:
         Router.getInstance().navigateTo(routes.SHOPPING);
         break;
@@ -582,7 +587,7 @@ export class SettingsAutofillPageElement extends
     }
   }
 
-  private onSuggestionsFromGeminiClick_() {
+  protected onSuggestionsFromGeminiClick_() {
     this.metricsBrowserProxy_.recordSuggestionsFromGeminiEntryPointClick(
         SuggestionsFromGeminiEntryPoint.YOUR_SAVED_INFO);
     Router.getInstance().navigateTo(routes.SUGGESTIONS_FROM_GEMINI);
@@ -591,7 +596,7 @@ export class SettingsAutofillPageElement extends
   /**
    * Opens Password Manager page on clicking a related service link.
    */
-  private onPasswordManagerRelatedServiceClick_() {
+  protected onPasswordManagerRelatedServiceClick_() {
     this.metricsBrowserProxy_.recordYourSavedInfoRelatedServiceClick(
         YourSavedInfoRelatedService.GOOGLE_PASSWORD_MANAGER);
     PasswordManagerImpl.getInstance().recordPasswordsPageAccessInSettings();
@@ -604,7 +609,7 @@ export class SettingsAutofillPageElement extends
   /**
    * Opens Wallet page in a new tab.
    */
-  private onGoogleWalletRelatedServiceClick_() {
+  protected onGoogleWalletRelatedServiceClick_() {
     this.metricsBrowserProxy_.recordYourSavedInfoRelatedServiceClick(
         YourSavedInfoRelatedService.GOOGLE_WALLET);
     OpenWindowProxyImpl.getInstance().openUrl(
@@ -614,7 +619,7 @@ export class SettingsAutofillPageElement extends
   /**
    * Opens Google Account page in a new tab.
    */
-  private onGoogleAccountRelatedServiceClick_() {
+  protected onGoogleAccountRelatedServiceClick_() {
     this.metricsBrowserProxy_.recordYourSavedInfoRelatedServiceClick(
         YourSavedInfoRelatedService.GOOGLE_ACCOUNT);
     OpenWindowProxyImpl.getInstance().openUrl(

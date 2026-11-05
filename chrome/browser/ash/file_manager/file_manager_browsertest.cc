@@ -35,7 +35,6 @@
 #include "chrome/browser/extensions/component_loader.h"
 #include "chrome/browser/extensions/extension_service.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/common/chrome_paths.h"
 #include "chrome/test/base/fake_gaia_mixin.h"
 #include "chrome/test/base/ui_test_utils.h"
@@ -55,7 +54,7 @@
 #include "content/public/test/browser_test.h"
 #include "content/public/test/download_test_observer.h"
 #include "testing/gmock/include/gmock/gmock.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 
 using file_manager::test::TestCase;
 
@@ -267,7 +266,7 @@ IN_PROC_BROWSER_TEST_F(QuickOfficeForceFileDownloadEnabledBrowserTest,
 
   // This call will not wait for the download to finish.
   ui_test_utils::NavigateToURLWithDisposition(
-      browser(), download_url, WindowOpenDisposition::CURRENT_TAB,
+      browser(), download_url, ui::mojom::WindowOpenDisposition::kCurrentTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
 
   // Wait for the download itself to complete.
@@ -679,9 +678,10 @@ WRAPPED_INSTANTIATE_TEST_SUITE_P(
         TestCase("directoryTreeExpandFolderOnDelayExpansionVolume"),
         TestCase("directoryTreeExpandAndSelectedOnDragMove"),
         TestCase("directoryTreeClickDriveRootWhenMyDriveIsActive"),
-#if !defined(ADDRESS_SANITIZER) && defined(NDEBUG)
+#if !defined(ADDRESS_SANITIZER) && !defined(MEMORY_SANITIZER) && defined(NDEBUG)
         // TODO(crbug.com/339374326): Flaking on
         // "Linux Chromium OS ASan LSan Tests (1)" and on several dbg bots.
+        // TODO(crbug.com/577912018): Failing on "Linux ChromiumOS MSan Tests".
         TestCase("directoryTreeHideExpandIconWhenLastSubFolderIsRemoved"),
 #endif
         TestCase("directoryTreeKeepDriveOrderAfterReconnected")));
@@ -1238,10 +1238,7 @@ WRAPPED_INSTANTIATE_TEST_SUITE_P(
             .EnableGenericDocumentsProvider()
             .FeatureIds({"screenplay-56f7e10e-b7ba-4425-b397-14ce54d670dc"}),
         TestCase("openHelpPageFromDownloadsVolume"),
-        TestCase("openHelpPageFromDriveVolume"),
-        TestCase("showManageMirrorSyncShowsOnlyInLocalRoot"),
-        TestCase("showManageMirrorSyncShowsOnlyInLocalRoot")
-            .EnableMirrorSync()));
+        TestCase("openHelpPageFromDriveVolume")));
 
 WRAPPED_INSTANTIATE_TEST_SUITE_P(
     FilesTooltip, /* files_tooltip.ts */
@@ -1476,9 +1473,6 @@ WRAPPED_INSTANTIATE_TEST_SUITE_P(
             .FeatureIds({"screenplay-38573550-c60a-4009-ba92-c0af1420fde6"}),
         TestCase("trashDeleteFromTrashOriginallyFromMyFiles")
             .FeatureIds({"screenplay-38573550-c60a-4009-ba92-c0af1420fde6"}),
-        TestCase("trashDeleteFromTrashOriginallyFromDrive")
-            .FeatureIds({"screenplay-38573550-c60a-4009-ba92-c0af1420fde6"})
-            .EnableDriveTrash(),
         TestCase("trashNoTasksInTrashRoot"),
         TestCase("trashDoubleClickOnFileInTrashRootShowsDialog"),
         TestCase("trashDragDropRootAcceptsEntries"),

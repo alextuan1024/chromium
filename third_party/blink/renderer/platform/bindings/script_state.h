@@ -240,9 +240,6 @@ class PLATFORM_EXPORT ScriptState : public GarbageCollected<ScriptState> {
   ScriptState(v8::Local<v8::Context>, DOMWrapperWorld*, scheduler::EventLoop*);
 
  private:
-  static void OnV8ContextCollectedCallback(
-      const v8::WeakCallbackInfo<ScriptState>&);
-
   // This is de-facto a `raw_ref`, but actually using `raw_ref` here
   // leads to considerable bloat in bindings, so we just CHECK() it
   // upon construction.
@@ -265,8 +262,7 @@ class PLATFORM_EXPORT ScriptState : public GarbageCollected<ScriptState> {
       static_cast<int>(gin::kEmbedderBlink);
 
   static constexpr v8::CppHeapPointerTag kTypeTag =
-      static_cast<v8::CppHeapPointerTag>(
-          CppHeapPointerTag::kScriptStateTag);
+      static_cast<v8::CppHeapPointerTag>(CppHeapExternalTag::kScriptStateTag);
 
   // For accessing information about the last script compilation via
   // internals.idl.

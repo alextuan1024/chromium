@@ -346,6 +346,7 @@ class TeardropCursorChipView : public views::View {
   static constexpr int kTotalSize = kChipSize + (kPadding * 2);
 
   TeardropCursorChipView() {
+    SetMirrored(false);
     SetCanProcessEventsWithinSubtree(false);
     GetViewAccessibility().SetIsIgnored(true);
 
@@ -426,6 +427,7 @@ class RegionSelectOverlayView : public views::View {
         bitmap_(screenshot),
         image_(!bitmap_.empty() ? gfx::ImageSkia::CreateFromBitmap(bitmap_, 1.f)
                                 : gfx::ImageSkia()) {
+    SetMirrored(false);
     SetFocusBehavior(FocusBehavior::ALWAYS);
     GetViewAccessibility().SetRole(ax::mojom::Role::kImage);
     GetViewAccessibility().SetName(l10n_util::GetStringUTF16(
@@ -504,6 +506,9 @@ class RegionSelectOverlayView : public views::View {
 
   void AddedToWidget() override {
     views::View::AddedToWidget();
+    if (views::Widget* widget = GetWidget(); widget && widget->GetRootView()) {
+      widget->GetRootView()->SetMirrored(false);
+    }
     UpdateToastPosition();
   }
 
@@ -966,6 +971,7 @@ OmniboxEverywhereRegionSelectOverlay::CreateWidgetForDisplay(
       views::Widget::InitParams::CLIENT_OWNS_WIDGET,
       views::Widget::InitParams::TYPE_WINDOW_FRAMELESS);
   params.name = "OmniboxEverywhereRegionSelectOverlay";
+  params.opacity = views::Widget::InitParams::WindowOpacity::kTranslucent;
   params.shadow_type = views::Widget::InitParams::ShadowType::kNone;
 #if BUILDFLAG(IS_MAC)
   // Required to support Widget::SetActivationIndependence().

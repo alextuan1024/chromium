@@ -10,7 +10,6 @@
 #include "base/android/scoped_java_ref.h"
 #include "base/functional/bind.h"
 #include "base/logging.h"
-#include "base/metrics/histogram_functions.h"
 #include "base/time/time.h"
 #include "chrome/browser/android/tab_android.h"
 #include "chrome/browser/glic/host/glic.mojom.h"
@@ -19,13 +18,16 @@
 #include "chrome/browser/glic/public/glic_instance_id.h"
 #include "chrome/browser/glic/public/glic_invoke_options.h"
 #include "chrome/browser/glic/public/glic_keyed_service.h"
-#include "chrome/browser/glic/public/glic_passkeys.h"
+#include "chrome/browser/glic/public/glic_provider_metrics.h"
 #include "chrome/browser/glic/public/service/glic_instance_coordinator.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/tab_list/tab_list_interface.h"
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/android/browser_context_handle.h"
+#include "content/public/browser/render_frame_host.h"
 #include "third_party/jni_zero/jni_zero.h"
+#include "url/android/gurl_android.h"
+#include "url/gurl.h"
 
 // Must come after all headers that specialize FromJniType() / ToJniType().
 #include "chrome/browser/glic/android/jni_headers/GlicKeyedServiceImpl_jni.h"
@@ -40,14 +42,6 @@ namespace glic {
 namespace {
 const char kGlicKeyedServiceAndroidKey[] = "glic_keyed_service_android";
 }  // namespace
-
-template <mojom::InvocationSource Source>
-class AndroidAutoSubmitPasskeyHelper {
- public:
-  static InvokeWithAutoSubmitPasskey GetPassKey() {
-    return InvokeWithAutoSubmitPasskeyProvider::GetPassKey();
-  }
-};
 
 // static
 ScopedJavaLocalRef<jobject> GlicKeyedService::GetJavaObject(
@@ -98,53 +92,33 @@ GlicKeyedServiceAndroid::GetJavaObject() {
 }
 
 void GlicKeyedServiceAndroid::ToggleUI(JNIEnv* env,
-                                       int64_t browser_window_ptr,
+                                       BrowserWindowInterface* browser_window,
                                        bool prevent_close,
                                        Profile* profile,
                                        int32_t source) {
-  auto* window = reinterpret_cast<BrowserWindowInterface*>(browser_window_ptr);
-  CHECK(window);
+  CHECK(browser_window);
 
-  service_->ToggleUI(window, prevent_close,
+  service_->ToggleUI(browser_window, prevent_close,
                      static_cast<mojom::InvocationSource>(source));
-}
-
-bool GlicKeyedServiceAndroid::InvokeWithAutoSubmit(JNIEnv* env,
-                                                   TabAndroid* tab,
-                                                   std::string text,
-                                                   int32_t source) {
-  if (!tab) {
-    return false;
-  }
-
-  auto invocation_source = static_cast<mojom::InvocationSource>(source);
-  GlicInvokeOptions options(Target(*tab), invocation_source);
-  options.prompts.push_back(std::move(text));
-
-  switch (invocation_source) {
-    case mojom::InvocationSource::kUniversalCart:
-      service_->InvokeWithAutoSubmit(
-          AndroidAutoSubmitPasskeyHelper<
-              mojom::InvocationSource::kUniversalCart>::GetPassKey(),
-          std::move(options));
-      return true;
-    default:
-      // Handle unauthorized source
-      return false;
-  }
 }
 
 bool GlicKeyedServiceAndroid::InvokeWithPrompt(JNIEnv* env,
                                                TabAndroid* tab,
+                                               content::RenderFrameHost* frame,
                                                std::string text,
                                                int32_t source) {
-  if (!tab) {
+  // The prompt is page data, so it must pass the same enterprise clipboard
+  // policy checks as a copy/paste into Glic. Those require the source frame
+  // and non-empty text.
+  if (!tab || !frame || text.empty()) {
     return false;
   }
 
   GlicInvokeOptions options(Target(*tab),
                             static_cast<mojom::InvocationSource>(source));
   options.prompts.push_back(std::move(text));
+  options.prompt_policy =
+      PromptPolicy{frame->GetGlobalId(), PolicyCheck::kClipboard};
   // Invoke() returns a null WeakPtr if the Glic instance could not be created,
   // which means the prompt was never delivered.
   return !!service_->Invoke(std::move(options));
@@ -188,12 +162,22 @@ void GlicKeyedServiceAndroid::ShowExperimentalOptInDialogForTesting(
       tab->GetContents());  // IN-TEST
 }
 
+void GlicKeyedServiceAndroid::ShareContextImage(JNIEnv* env,
+                                                TabAndroid* tab,
+                                                content::RenderFrameHost* frame,
+                                                const GURL& src_url) {
+  if (!tab || !frame || !src_url.is_valid()) {
+    return;
+  }
+
+  service_->ShareContextImage(tab, frame, src_url);
+}
+
 bool GlicKeyedServiceAndroid::IsPanelShowingForBrowser(
     JNIEnv* env,
-    int64_t browser_window_ptr) {
-  auto* window = reinterpret_cast<BrowserWindowInterface*>(browser_window_ptr);
-  CHECK(window);
-  return service_->IsPanelShowingForBrowser(*window);
+    BrowserWindowInterface* browser_window) {
+  CHECK(browser_window);
+  return service_->IsPanelShowingForBrowser(*browser_window);
 }
 
 bool GlicKeyedServiceAndroid::GetUserEnabledActuationOnWeb(JNIEnv* env) {
@@ -240,13 +224,13 @@ void GlicKeyedServiceAndroid::ShareTabs(JNIEnv* env,
     }
   }
 
+  GlicMetricReporter metric_reporter(service_->profile());
   if (new_conversation) {
-    base::UmaHistogramCounts100(
-        "Glic.TabContextMenu.PinnedTabsToNewConversation", tab_handles.size());
+    metric_reporter.RecordCounts100(
+        "TabContextMenu.PinnedTabsToNewConversation", tab_handles.size());
   } else {
-    base::UmaHistogramCounts100(
-        "Glic.TabContextMenu.PinnedTabsToExistingConversation",
-        tab_handles.size());
+    metric_reporter.RecordCounts100(
+        "TabContextMenu.PinnedTabsToExistingConversation", tab_handles.size());
   }
 
   options.tab_sharing =

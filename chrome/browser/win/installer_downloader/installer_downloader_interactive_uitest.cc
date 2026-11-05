@@ -2,9 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include <vector>
-
 #include "base/test/metrics/histogram_tester.h"
+#include "base/test/scoped_feature_list.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/global_features.h"
 #include "chrome/browser/infobars/infobar_features.h"
@@ -69,12 +68,12 @@ class InstallerDownloaderInteractiveUiTest
       public testing::WithParamInterface<bool> {
  protected:
   void SetUp() override {
-    std::vector<base::test::FeatureRefAndParams> enabled_features;
-    if (GetParam()) {
-      enabled_features.push_back({infobars::kCentralizedInfoBarFramework,
-                                  {{"MigratedInstallerDownloader", "true"}}});
-    }
-    feature_list_.InitWithFeaturesAndParameters(enabled_features, {});
+    // TODO(crbug.com/567121669): Remove the legacy variant once the legacy
+    // delegate is deleted.
+    feature_list_.InitAndEnableFeatureWithParameters(
+        infobars::kCentralizedInfoBarFramework,
+        {{infobars::kMigratedInstallerDownloader.name,
+          GetParam() ? "true" : "false"}});
     InteractiveBrowserTest::SetUp();
   }
 
@@ -183,16 +182,25 @@ class InstallerDownloaderReengagementInteractiveUiTest
       public testing::WithParamInterface<bool> {
  protected:
   void SetUp() override {
-    std::vector<base::test::FeatureRefAndParams> enabled_features;
-    if (GetParam()) {
-      enabled_features.push_back({infobars::kCentralizedInfoBarFramework,
-                                  {{"MigratedInstallerDownloader", "true"}}});
-    }
-    enabled_features.push_back(
-        {kInstallerDownloaderReengagement,
-         {{"MaxCycleCount", "3"}, {"ReengagementCooldownDays", "60"}}});
-    feature_list_.InitWithFeaturesAndParameters(enabled_features, {});
+    // TODO(crbug.com/567121669): Remove the legacy variant once the legacy
+    // delegate is deleted.
+    feature_list_.InitWithFeaturesAndParameters(
+        {{infobars::kCentralizedInfoBarFramework,
+          {{infobars::kMigratedInstallerDownloader.name,
+            GetParam() ? "true" : "false"}}},
+         {kInstallerDownloaderReengagement,
+          {{"MaxCycleCount", "3"}, {"ReengagementCooldownDays", "60"}}}},
+        {});
     InteractiveBrowserTest::SetUp();
+  }
+
+  void AdvanceCooldownAndResetSession() {
+    g_browser_process->local_state()->SetTime(
+        prefs::kInstallerDownloaderInfobarLastShowTime,
+        base::Time::Now() - base::Days(61));
+    g_browser_process->GetFeatures()
+        ->installer_downloader_controller()
+        ->ResetSessionStateForTesting();
   }
 
  private:
@@ -217,10 +225,8 @@ IN_PROC_BROWSER_TEST_P(InstallerDownloaderReengagementInteractiveUiTest,
   TriggerInfobar();
   RunTestSequence(EnsureNotPresent(ConfirmInfoBar::kInfoBarElementId));
 
-  // 3. Simulate cooldown passed by modifying pref.
-  g_browser_process->local_state()->SetTime(
-      prefs::kInstallerDownloaderInfobarLastShowTime,
-      base::Time::Now() - base::Days(61));
+  // 3. Simulate cooldown passed and a new browser session starting.
+  AdvanceCooldownAndResetSession();
 
   // 4. Trigger again, should show (Cycle 2).
   TriggerInfobar();
@@ -251,18 +257,14 @@ IN_PROC_BROWSER_TEST_P(InstallerDownloaderReengagementInteractiveUiTest,
                   VerifyNoInfobarInAnyTab());
 
   // Cycle 2: Fast forward, Show and Dismiss.
-  g_browser_process->local_state()->SetTime(
-      prefs::kInstallerDownloaderInfobarLastShowTime,
-      base::Time::Now() - base::Days(61));
+  AdvanceCooldownAndResetSession();
   TriggerInfobar();
   RunTestSequence(WaitForShow(ConfirmInfoBar::kInfoBarElementId),
                   PressButton(ConfirmInfoBar::kDismissButtonElementId),
                   VerifyNoInfobarInAnyTab());
 
   // Cycle 3 (Last): Fast forward, Show and Dismiss.
-  g_browser_process->local_state()->SetTime(
-      prefs::kInstallerDownloaderInfobarLastShowTime,
-      base::Time::Now() - base::Days(61));
+  AdvanceCooldownAndResetSession();
   TriggerInfobar();
   RunTestSequence(WaitForShow(ConfirmInfoBar::kInfoBarElementId),
                   PressButton(ConfirmInfoBar::kDismissButtonElementId),
@@ -274,9 +276,7 @@ IN_PROC_BROWSER_TEST_P(InstallerDownloaderReengagementInteractiveUiTest,
                                 /*sample=*/3, /*expected_bucket_count=*/1);
 
   // Try to show again after another cooldown (should fail).
-  g_browser_process->local_state()->SetTime(
-      prefs::kInstallerDownloaderInfobarLastShowTime,
-      base::Time::Now() - base::Days(61));
+  AdvanceCooldownAndResetSession();
   TriggerInfobar();
   RunTestSequence(EnsureNotPresent(ConfirmInfoBar::kInfoBarElementId));
 }

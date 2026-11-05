@@ -396,10 +396,8 @@ suite('ComposeApp', () => {
     await mockInput('Here is my input');
     // Changing the input also saves the state with the initial mode.
     // Since mockInput() is async, there is time for the debouncer to fire.
-    const initialMode = loadTimeData.getBoolean('enableUpfrontInputModes') ?
-        InputMode.kPolish :
-        InputMode.kUnset;
-    await assertSavedState({input: 'Here is my input', inputMode: initialMode});
+    await assertSavedState(
+        {input: 'Here is my input', inputMode: InputMode.kPolish});
     // Changing the mode saves state.
     app.$.elaborateChip.click();
     await microtasksFinished();
@@ -445,7 +443,7 @@ suite('ComposeApp', () => {
     // Mock a filtered error response that enables the go back button.
     await mockInput('Initial input.');
     app.$.submitButton.click();
-    const errorMessage = `filtered error message`;
+    const errorMessage = 'filtered error message';
     loadTimeData.overrideValues({['errorFiltered']: errorMessage});
     await mockResponse('', ComposeStatus.kFiltered, false, true);
 
@@ -526,8 +524,7 @@ suite('ComposeApp', () => {
   });
 
   test('AllowsEditingPrompt', async () => {
-    app.$.textarea.dispatchEvent(
-        new CustomEvent('edit-click', {composed: true, bubbles: true}));
+    app.$.textarea.fire('edit-click');
     await microtasksFinished();
     assertTrue(isVisible(app.$.editTextarea));
 
@@ -538,8 +535,7 @@ suite('ComposeApp', () => {
     testProxy.resetResolver('compose');
 
     // Mock clicking edit in the textarea and verify new textarea shows.
-    app.$.textarea.dispatchEvent(
-        new CustomEvent('edit-click', {composed: true, bubbles: true}));
+    app.$.textarea.fire('edit-click');
     await testProxy.whenCalled('logEditInput');
     assertTrue(isVisible(app.$.editTextarea));
 
@@ -553,8 +549,7 @@ suite('ComposeApp', () => {
     assertEquals('Initial input.', app.$.textarea.value);
 
     // Mock updating input and submitting.
-    app.$.textarea.dispatchEvent(
-        new CustomEvent('edit-click', {composed: true, bubbles: true}));
+    app.$.textarea.fire('edit-click');
     await microtasksFinished();
     app.$.editTextarea.value = 'Here is an even better input.';
     await microtasksFinished();
@@ -674,11 +669,8 @@ suite('ComposeApp', () => {
   test('Feedback', async () => {
     const feedbackButtons =
         app.shadowRoot.querySelector('cr-feedback-buttons')!;
-    feedbackButtons.dispatchEvent(new CustomEvent('selected-option-changed', {
-      bubbles: true,
-      composed: true,
-      detail: {value: CrFeedbackOption.THUMBS_DOWN},
-    }));
+    feedbackButtons.fire(
+        'selected-option-changed', {value: CrFeedbackOption.THUMBS_DOWN});
     const args = await testProxy.whenCalled('setUserFeedback');
     assertEquals(args.reason, args.UserFeedback);
   });
@@ -782,140 +774,6 @@ suite('ComposeApp', () => {
 
     assertEquals(StyleModifier.kShorter, args);
   });
-});
-
-suite('ComposeAppLegacyUi', () => {
-  let app: ComposeAppElement;
-  let testProxy: TestComposeApiProxy;
-
-  suiteSetup(function() {
-    if (loadTimeData.getBoolean('enableUpfrontInputModes')) {
-      this.skip();
-    }
-  });
-
-  setup(async () => {
-    testProxy = new TestComposeApiProxy();
-    ComposeApiProxyImpl.setInstance(testProxy);
-
-    document.body.innerHTML = window.trustedTypes!.emptyHTML;
-    app = document.createElement('compose-app');
-    document.body.appendChild(app);
-
-    await testProxy.whenCalled('requestInitialState');
-    return microtasksFinished();
-  });
-
-  async function mockInput(input: string) {
-    app.$.textarea.value = input;
-    await microtasksFinished();
-  }
-
-  test('SavesState', async () => {
-    assertEquals(0, testProxy.getCallCount('saveWebuiState'));
-
-    async function assertSavedState(expectedState: ComposeAppState) {
-      const savedState = await testProxy.whenCalled('saveWebuiState');
-      assertDeepEquals(expectedState, JSON.parse(savedState));
-      testProxy.resetResolver('saveWebuiState');
-    }
-
-    // Changing input saves state.
-    await mockInput('Here is my input');
-    await assertSavedState(
-        {input: 'Here is my input', inputMode: InputMode.kUnset});
-
-    // Visibilitychange event saves state.
-    Object.defineProperty(
-        document, 'visibilityState', {value: 'hidden', writable: true});
-    document.dispatchEvent(new CustomEvent('visibilitychange'));
-    await assertSavedState(
-        {input: 'Here is my input', inputMode: InputMode.kUnset});
-
-    // Hitting submit saves state.
-    app.$.submitButton.click();
-    await assertSavedState(
-        {input: 'Here is my input', inputMode: InputMode.kUnset});
-
-    // Hitting edit button saves state.
-    app.$.textarea.dispatchEvent(
-        new CustomEvent('edit-click', {composed: true, bubbles: true}));
-    await assertSavedState({
-      editedInput: 'Here is my input',
-      input: 'Here is my input',
-      inputMode: InputMode.kUnset,
-      isEditingSubmittedInput: true,
-    });
-
-    // Updating edit textarea saves state.
-    app.$.editTextarea.value = 'Here is my new input';
-    await microtasksFinished();
-    await assertSavedState({
-      editedInput: 'Here is my new input',
-      input: 'Here is my input',
-      inputMode: InputMode.kUnset,
-      isEditingSubmittedInput: true,
-    });
-
-    // Canceling reverts state back to before editing.
-    app.$.cancelEditButton.click();
-    await assertSavedState(
-        {input: 'Here is my input', inputMode: InputMode.kUnset});
-
-    // Submitting edited textarea saves state.
-    app.$.textarea.dispatchEvent(
-        new CustomEvent('edit-click', {composed: true, bubbles: true}));
-    await microtasksFinished();
-    app.$.editTextarea.value = 'Here is my new input!!!!';
-    await microtasksFinished();
-    testProxy.resetResolver('saveWebuiState');
-    app.$.submitEditButton.click();
-    await assertSavedState(
-        {input: 'Here is my new input!!!!', inputMode: InputMode.kUnset});
-  });
-
-  test('DebouncesSavingState', async () => {
-    app.$.textarea.value = 'Here is my input';
-    // Intentionally not calling microtasksFinished() here to allow value to
-    // propagate through the UI, since this test is trying to validate that if
-    // 2 inputs are received within a microtask, only the second is registered.
-    app.$.textarea.value = 'Here is my input 2';
-    await microtasksFinished();
-    const savedState = await testProxy.whenCalled('saveWebuiState');
-    assertEquals(1, testProxy.getCallCount('saveWebuiState'));
-    assertEquals(
-        JSON.stringify(
-            {input: 'Here is my input 2', inputMode: InputMode.kUnset}),
-        savedState);
-  });
-});
-
-suite('ComposeAppLegacyInputModesUi', () => {
-  let app: ComposeAppElement;
-  let testProxy: TestComposeApiProxy;
-
-  suiteSetup(function() {
-    if (!loadTimeData.getBoolean('enableUpfrontInputModes')) {
-      this.skip();
-    }
-  });
-
-  setup(async () => {
-    testProxy = new TestComposeApiProxy();
-    ComposeApiProxyImpl.setInstance(testProxy);
-
-    document.body.innerHTML = window.trustedTypes!.emptyHTML;
-    app = document.createElement('compose-app');
-    document.body.appendChild(app);
-
-    await testProxy.whenCalled('requestInitialState');
-    return microtasksFinished();
-  });
-
-  async function mockInput(input: string) {
-    app.$.textarea.value = input;
-    await microtasksFinished();
-  }
 
   test('SavesState', async () => {
     assertEquals(0, testProxy.getCallCount('saveWebuiState'));
@@ -944,8 +802,7 @@ suite('ComposeAppLegacyInputModesUi', () => {
         {input: 'Here is my input', inputMode: InputMode.kPolish});
 
     // Hitting edit button saves state.
-    app.$.textarea.dispatchEvent(
-        new CustomEvent('edit-click', {composed: true, bubbles: true}));
+    app.$.textarea.fire('edit-click');
     await assertSavedState({
       editedInput: 'Here is my input',
       input: 'Here is my input',
@@ -969,8 +826,7 @@ suite('ComposeAppLegacyInputModesUi', () => {
         {input: 'Here is my input', inputMode: InputMode.kPolish});
 
     // Submitting edited textarea saves state.
-    app.$.textarea.dispatchEvent(
-        new CustomEvent('edit-click', {composed: true, bubbles: true}));
+    app.$.textarea.fire('edit-click');
     await microtasksFinished();
     app.$.editTextarea.value = 'Here is my new input!!!!';
     await microtasksFinished();

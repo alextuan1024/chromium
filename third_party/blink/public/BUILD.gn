@@ -76,6 +76,7 @@ buildflag_header("buildflags") {
     "USE_MINIKIN_HYPHENATION=$use_minikin_hyphenation",
     "ENABLE_UNHANDLED_TAP=$enable_unhandled_tap",
     "VERBOSE_PERSISTENT=$cppgc_enable_object_names",
+    "ENABLE_SMART_CARD=$enable_smart_card",
   ]
 }
 
@@ -127,8 +128,12 @@ source_set("blink_headers") {
     "platform/child_url_loader_factory_bundle.h",
     "platform/cross_variant_mojo_util.h",
     "platform/file_path_conversion.h",
+    "platform/generic_font_family.h",
     "platform/interface_registry.h",
+    "platform/media/key_system_config_selector.h",
     "platform/media/video_capture.h",
+    "platform/media/web_encrypted_media_client_impl.h",
+    "platform/media/web_media_player_builder.h",
     "platform/media/web_media_player_delegate.h",
     "platform/modules/mediastream/media_stream_types.h",
     "platform/modules/mediastream/secure_display_link_tracker.h",
@@ -157,10 +162,12 @@ source_set("blink_headers") {
     "platform/scheduler/web_thread_scheduler.h",
     "platform/task_type.h",
     "platform/tracked_child_url_loader_factory_bundle.h",
+    "platform/unicode_utilities.h",
     "platform/url_conversion.h",
     "platform/url_loader_throttle_provider.h",
     "platform/user_metrics_action.h",
     "platform/weak_wrapper_resource_load_info_notifier.h",
+    "platform/web_audio_bus.h",
     "platform/web_audio_device.h",
     "platform/web_audio_latency_hint.h",
     "platform/web_audio_sink_descriptor.h",
@@ -333,6 +340,7 @@ source_set("blink_headers") {
     "web/web_manifest_manager.h",
     "web/web_meaningful_layout.h",
     "web/web_media_inspector.h",
+    "web/web_memory_features.h",
     "web/web_message_port_converter.h",
     "web/web_meta_element.h",
     "web/web_navigation_control.h",
@@ -346,6 +354,7 @@ source_set("blink_headers") {
     "web/web_page_popup.h",
     "web/web_performance_metrics_for_nested_contexts.h",
     "web/web_performance_metrics_for_reporting.h",
+    "web/web_performance_timings.h",
     "web/web_picture_in_picture_window_options.h",
     "web/web_plugin.h",
     "web/web_plugin_container.h",
@@ -425,6 +434,8 @@ source_set("blink_headers") {
     ":resources_grit",
     ":runtime_features_for_public",
     "//components/subresource_filter/core/common",
+    "//media",
+    "//media/mojo/mojom:mojom_shared",
     "//net",
     "//services/network/public/mojom:mojom_shared",
     "//services/service_manager/public/cpp",
@@ -505,11 +516,18 @@ group("blink_devtools_inspector_resources") {
 
 group("blink_devtools_frontend_resources_files") {
   testonly = true
-  data_deps = [ "$devtools_frontend_path:devtools_all_files" ]
+  data_deps = [ "$devtools_frontend_path:devtools_web_test_files" ]
 }
 
 group("blink_generate_devtools_grd") {
   public_deps = [ "$devtools_frontend_path:generate_devtools_grd" ]
+}
+
+# devtools-frontend.zip with all files served by the remote DevTools server.
+# The official archive configs reference this group as the SBOM GN target, so
+# its label must not depend on where DevTools lives in the source tree.
+group("blink_devtools_frontend_zip") {
+  public_deps = [ "$devtools_frontend_path:devtools_frontend_zip" ]
 }
 
 resources_out_dir = "$blink_public_output_dir/resources"

@@ -13,7 +13,7 @@ source_set("ui") {
   ]
   deps = [
     ":constants",
-    "//components/dom_distiller/core/mojom",
+    "//components/web_distiller/core/mojom",
     "//ios/chrome/app/strings:ios_strings_grit",
     "//ios/chrome/browser/keyboard/ui_bundled",
     "//ios/chrome/browser/overscroll_actions/ui_bundled",
@@ -64,9 +64,8 @@ source_set("options") {
   ]
   deps = [
     ":constants",
-    "//components/dom_distiller/core",
-    "//components/dom_distiller/core:dom_distiller_features",
-    "//components/dom_distiller/core/mojom",
+    "//components/web_distiller/core",
+    "//components/web_distiller/core/mojom",
     "//ios/chrome/app/strings:ios_strings_grit",
     "//ios/chrome/browser/shared/public/commands",
     "//ios/chrome/browser/shared/ui/util",
@@ -82,13 +81,13 @@ source_set("eg2_tests") {
   sources = [ "reader_mode_egtest.mm" ]
   deps = [
     ":constants",
-    "//components/dom_distiller/core:dom_distiller_features",
-    "//components/dom_distiller/core:prefs",
-    "//components/dom_distiller/core/mojom",
     "//components/feature_engagement/public",
     "//components/optimization_guide/core:test_support",
     "//components/signin/internal/identity_manager:capabilities",
     "//components/translate/core/browser:translate_pref_names",
+    "//components/web_distiller/core:prefs",
+    "//components/web_distiller/core:web_distiller_features",
+    "//components/web_distiller/core/mojom",
     "//ios/chrome/app/strings:ios_strings_grit",
     "//ios/chrome/browser/authentication/test:eg_test_support+eg2",
     "//ios/chrome/browser/badges/ui_bundled:public",
@@ -100,7 +99,6 @@ source_set("eg2_tests") {
     "//ios/chrome/browser/optimization_guide/model:eg_test_support+eg2",
     "//ios/chrome/browser/popup_menu/public",
     "//ios/chrome/browser/reader_mode/model:constants",
-    "//ios/chrome/browser/reader_mode/model:features",
     "//ios/chrome/browser/reader_mode/test:eg_test_support+eg2",
     "//ios/chrome/browser/settings/ui_bundled:constants",
     "//ios/chrome/browser/shared/model/prefs:pref_names",
@@ -109,6 +107,7 @@ source_set("eg2_tests") {
     "//ios/chrome/browser/text_zoom/ui_bundled:constants",
     "//ios/chrome/test:eg_test_support+eg2",
     "//ios/chrome/test/earl_grey:eg_test_support+eg2",
+    "//ios/testing:test_tag_registry",
     "//ios/testing/earl_grey:eg_test_support+eg2",
     "//net:test_support",
     "//ui/base",

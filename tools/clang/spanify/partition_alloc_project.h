@@ -71,15 +71,6 @@ class PartitionAllocProject : public Project {
   std::string_view GetRawSpanIncludePath() const override {
     return "partition_alloc/partition_alloc_base/memory/raw_span.h";
   }
-  std::string_view GetAutoSpanificationHelperIncludePath() const override {
-    return "partition_alloc/partition_alloc_base/containers/"
-           "auto_spanification_helper.h";
-  }
-
-  const std::vector<FuncMapping>& GetFuncMappingTable() const override {
-    static const std::vector<FuncMapping> kFuncMappingTable = {};
-    return kFuncMappingTable;
-  }
 
   bool IsExcludedFromProject(const clang::Decl& Node) const override {
     const clang::SourceManager& source_manager =
@@ -91,9 +82,11 @@ class PartitionAllocProject : public Project {
 
     // Running in-place inside Chromium: absolute path contains
     // "base/allocator/partition_allocator". We only want to spanify
-    // PartitionAlloc sources, excluding third_party (e.g. googletest).
+    // PartitionAlloc sources, excluding third_party (e.g. googletest) and the
+    // container/span implementation, which is the rewrite target itself.
     llvm::StringRef file(filename);
     return file.contains("third_party/") ||
+           file.contains("partition_alloc_base/containers/") ||
            (!file.contains("base/allocator/partition_allocator/") &&
             !file.contains("partition_alloc/"));
   }

@@ -12,14 +12,16 @@ import static org.junit.Assert.assertTrue;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 import static org.robolectric.Shadows.shadowOf;
 
 import android.app.Activity;
 import android.content.res.ColorStateList;
 import android.content.res.Configuration;
+import android.graphics.Outline;
+import android.graphics.Rect;
 import android.graphics.drawable.ColorDrawable;
-import android.view.DragEvent;
 import android.view.Gravity;
 import android.view.InputDevice;
 import android.view.KeyEvent;
@@ -43,11 +45,8 @@ import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 import org.robolectric.Robolectric;
 
-import org.chromium.base.Callback;
 import org.chromium.base.DeviceInfo;
-import org.chromium.base.FeatureOverrides;
 import org.chromium.base.test.BaseRobolectricTestRunner;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.incognito.IncognitoUtils;
 import org.chromium.chrome.browser.tasks.tab_management.TabListRecyclerView;
 import org.chromium.chrome.browser.tasks.tab_management.TabUiThemeUtil;
@@ -55,14 +54,18 @@ import org.chromium.chrome.browser.tasks.tab_management.vertical_tabs.VerticalTa
 import org.chromium.chrome.browser.ui.vertical_tabs.VerticalTabUtils;
 import org.chromium.chrome.tab_ui.R;
 import org.chromium.components.browser_ui.styles.SemanticColorUtils;
+import org.chromium.ui.base.ViewUtils;
 import org.chromium.ui.modelutil.PropertyModel;
+
+import java.util.ArrayList;
+import java.util.List;
 
 /** Unit tests for {@link VerticalTabRailLayout} and {@link VerticalTabListViewBinder}. */
 @RunWith(BaseRobolectricTestRunner.class)
 public class VerticalTabRailLayoutUnitTest {
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
 
-    @Mock private Callback<Integer> mMockHoverListener;
+    @Mock private VerticalTabRailLayout.RailEventListener mMockRailEventListener;
     @Mock private View.OnClickListener mSearchClickListener;
     @Mock private View.OnClickListener mNewTabClickListener;
     @Mock private View.OnClickListener mIncognitoClickListener;
@@ -88,13 +91,10 @@ public class VerticalTabRailLayoutUnitTest {
                 (VerticalTabRailLayout)
                         LayoutInflater.from(mActivity)
                                 .inflate(R.layout.vertical_tab_layout, null, false);
-        mRailLayout.setExpandOrCollapseOnHoverListener(mMockHoverListener);
+        mRailLayout.setRailEventListener(mMockRailEventListener);
 
         mModel =
                 new PropertyModel.Builder(VerticalTabListProperties.ALL_KEYS)
-                        .with(
-                                VerticalTabListProperties.EXPAND_OR_COLLAPSE_ON_HOVER_LISTENER,
-                                mMockHoverListener)
                         .with(
                                 VerticalTabListProperties.ON_SEARCH_CLICK_LISTENER,
                                 mSearchClickListener)
@@ -105,6 +105,7 @@ public class VerticalTabRailLayoutUnitTest {
                                 VerticalTabListProperties.ON_INCOGNITO_CLICK_LISTENER,
                                 mIncognitoClickListener)
                         .with(VerticalTabListProperties.IS_INCOGNITO_BUTTON_VISIBLE, false)
+                        .with(VerticalTabListProperties.IS_SEARCH_BUTTON_VISIBLE, true)
                         .with(
                                 VerticalTabListProperties.ON_COLLAPSE_CLICK_LISTENER,
                                 mCollapseClickListener)
@@ -135,9 +136,7 @@ public class VerticalTabRailLayoutUnitTest {
         View searchButton = mRailLayout.findViewById(R.id.tab_search_button);
         assertNotNull(searchButton);
         assertEquals(
-                mRailLayout
-                        .getContext()
-                        .getString(R.string.accessibility_search_loupe_tooltip_text),
+                mRailLayout.getContext().getString(R.string.vertical_tabs_tab_search),
                 searchButton.getTooltipText());
 
         View newTabButton = mRailLayout.findViewById(R.id.new_tab_button);
@@ -243,40 +242,255 @@ public class VerticalTabRailLayoutUnitTest {
     }
 
     @Test
+    public void testExpandedForHovering_HeaderKeepsCollapsedPositions() {
+        LinearLayout header = mRailLayout.getHeaderContainer();
+        View collapseButton = mRailLayout.findViewById(R.id.collapse_button);
+        View searchButton = mRailLayout.findViewById(R.id.tab_search_button);
+        View headerSpacer = mRailLayout.findViewById(R.id.header_spacer);
+
+        mRailLayout.setCollapseState(RailCollapseState.EXPANDED_FOR_HOVERING);
+
+        // Header buttons stay stacked vertically, start-aligned at their collapsed centered offset.
+        int collapsedRailWidth =
+                ViewUtils.dpToPx(mActivity, VerticalTabUtils.SIDE_UI_CONTAINER_COLLAPSED_WIDTH_DP);
+        int expectedButtonMarginStart =
+                (collapsedRailWidth - mRailLayout.getHeaderButtonWidthPxForTesting()) / 2
+                        - mRailLayout.getPaddingStart();
+        assertEquals(LinearLayout.VERTICAL, header.getOrientation());
+        assertEquals(Gravity.START, header.getGravity() & Gravity.RELATIVE_HORIZONTAL_GRAVITY_MASK);
+        assertEquals(View.GONE, headerSpacer.getVisibility());
+        assertEquals(
+                expectedButtonMarginStart,
+                ((ViewGroup.MarginLayoutParams) collapseButton.getLayoutParams()).getMarginStart());
+        assertEquals(
+                expectedButtonMarginStart,
+                ((ViewGroup.MarginLayoutParams) searchButton.getLayoutParams()).getMarginStart());
+
+        // The footer keeps the expanded layout, with the new tab button starting at the same offset
+        // as the tab rows.
+        View newTabButton = mRailLayout.getNewTabButton();
+        assertEquals(LinearLayout.HORIZONTAL, mRailLayout.getFooterContainer().getOrientation());
+        assertEquals(ViewGroup.LayoutParams.MATCH_PARENT, newTabButton.getLayoutParams().width);
+        assertEquals(
+                VerticalTabRailLayout.getCollapsedRailCenteringMarginStart(
+                        mActivity, TabVerticalViewBinder.getCollapsedTabItemWidth(mActivity)),
+                ((ViewGroup.MarginLayoutParams) newTabButton.getLayoutParams()).getMarginStart());
+
+        // Collapsing keeps the exact same positions.
+        mRailLayout.setCollapseState(RailCollapseState.COLLAPSED);
+        assertEquals(Gravity.START, header.getGravity() & Gravity.RELATIVE_HORIZONTAL_GRAVITY_MASK);
+        assertEquals(
+                expectedButtonMarginStart,
+                ((ViewGroup.MarginLayoutParams) collapseButton.getLayoutParams()).getMarginStart());
+        assertEquals(
+                expectedButtonMarginStart,
+                ((ViewGroup.MarginLayoutParams) searchButton.getLayoutParams()).getMarginStart());
+        // The collapsed footer centers the new tab button, so it has no explicit offset.
+        assertEquals(
+                0,
+                ((ViewGroup.MarginLayoutParams) newTabButton.getLayoutParams()).getMarginStart());
+
+        // Expanding resets the explicit offsets.
+        mRailLayout.setCollapseState(RailCollapseState.EXPANDED);
+        assertEquals(
+                0,
+                ((ViewGroup.MarginLayoutParams) collapseButton.getLayoutParams()).getMarginStart());
+        assertEquals(
+                0,
+                ((ViewGroup.MarginLayoutParams) searchButton.getLayoutParams()).getMarginStart());
+        assertEquals(
+                0,
+                ((ViewGroup.MarginLayoutParams) newTabButton.getLayoutParams()).getMarginStart());
+    }
+
+    @Test
+    public void testExpandedForHovering_ClipsToRoundedRightCorners() {
+        int radius =
+                mActivity
+                        .getResources()
+                        .getDimensionPixelSize(R.dimen.vertical_tabs_hover_overlay_corner_radius);
+        mRailLayout.layout(0, 0, 200, 800);
+
+        // The outline is shifted left by the radius, so only the right corners are rounded.
+        Outline outline = new Outline();
+        mRailLayout.getOutlineProvider().getOutline(mRailLayout, outline);
+        Rect rect = new Rect();
+        assertTrue(outline.getRect(rect));
+        assertEquals(new Rect(-radius, 0, 200, 800), rect);
+        assertEquals(radius, outline.getRadius(), 0f);
+
+        // The clip turns on when expanded for hovering.
+        mRailLayout.setCollapseState(RailCollapseState.EXPANDED_FOR_HOVERING);
+        assertTrue(mRailLayout.getClipToOutline());
+
+        // It stays on while the rail collapses back from hovering, so the corners shrink with the
+        // width instead of snapping square.
+        mRailLayout.setCollapseState(RailCollapseState.COLLAPSED);
+        assertTrue(mRailLayout.getClipToOutline());
+
+        mRailLayout.setCollapseState(RailCollapseState.EXPANDED_FOR_HOVERING);
+        assertTrue(mRailLayout.getClipToOutline());
+
+        // A manual expand turns it off, and a later manual collapse keeps it off.
+        mRailLayout.setCollapseState(RailCollapseState.EXPANDED);
+        assertFalse(mRailLayout.getClipToOutline());
+
+        mRailLayout.setCollapseState(RailCollapseState.COLLAPSED);
+        assertFalse(mRailLayout.getClipToOutline());
+    }
+
+    @Test
+    public void testHoverOverlayCornerRadius_FollowsWidthPastCollapsedWidth() {
+        int radius =
+                mActivity
+                        .getResources()
+                        .getDimensionPixelSize(R.dimen.vertical_tabs_hover_overlay_corner_radius);
+        int collapsedWidth =
+                ViewUtils.dpToPx(mActivity, VerticalTabUtils.SIDE_UI_CONTAINER_COLLAPSED_WIDTH_DP);
+
+        // Square while the rail is at (or below) its collapsed width, i.e. when it still abuts the
+        // web contents, e.g. at the start of the expand-on-hover animation.
+        assertEquals(0, mRailLayout.getHoverOverlayCornerRadius(collapsedWidth - 1));
+        assertEquals(0, mRailLayout.getHoverOverlayCornerRadius(collapsedWidth));
+        // Grows with the width the rail extends over the web contents.
+        assertEquals(1, mRailLayout.getHoverOverlayCornerRadius(collapsedWidth + 1));
+        // Capped at the full radius.
+        assertEquals(radius, mRailLayout.getHoverOverlayCornerRadius(collapsedWidth + radius));
+        assertEquals(radius, mRailLayout.getHoverOverlayCornerRadius(collapsedWidth + radius * 4));
+
+        // The outline uses the same radius.
+        mRailLayout.layout(0, 0, collapsedWidth, 800);
+        Outline outline = new Outline();
+        mRailLayout.getOutlineProvider().getOutline(mRailLayout, outline);
+        Rect rect = new Rect();
+        assertTrue(outline.getRect(rect));
+        assertEquals(new Rect(0, 0, collapsedWidth, 800), rect);
+        assertEquals(0f, outline.getRadius(), 0f);
+    }
+
+    @Test
+    public void testExpandedForHovering_SearchButtonSpansRailWithLabel() {
+        View searchButton = mRailLayout.findViewById(R.id.tab_search_button);
+        View searchIcon = mRailLayout.findViewById(R.id.tab_search_icon);
+        View searchLabel = mRailLayout.findViewById(R.id.tab_search_label);
+        int buttonWidth = mRailLayout.getHeaderButtonWidthPxForTesting();
+
+        // Hovering: the button spans the rail and shows the label aligned with the tab titles.
+        mRailLayout.setCollapseState(RailCollapseState.EXPANDED_FOR_HOVERING);
+        assertEquals(ViewGroup.LayoutParams.MATCH_PARENT, searchButton.getLayoutParams().width);
+        assertEquals(buttonWidth, searchIcon.getLayoutParams().width);
+        assertEquals(View.VISIBLE, searchLabel.getVisibility());
+        int searchLabelStart =
+                ((ViewGroup.MarginLayoutParams) searchButton.getLayoutParams()).getMarginStart()
+                        + buttonWidth
+                        + ((ViewGroup.MarginLayoutParams) searchLabel.getLayoutParams())
+                                .getMarginStart();
+        assertEquals(VerticalTabRailLayout.getHoverTabTitleStart(mActivity), searchLabelStart);
+
+        // Collapsed: icon-only button.
+        mRailLayout.setCollapseState(RailCollapseState.COLLAPSED);
+        assertEquals(buttonWidth, searchButton.getLayoutParams().width);
+        assertEquals(buttonWidth, searchIcon.getLayoutParams().width);
+        assertEquals(View.GONE, searchLabel.getVisibility());
+
+        // Expanded: icon-only button.
+        mRailLayout.setCollapseState(RailCollapseState.EXPANDED);
+        assertEquals(buttonWidth, searchButton.getLayoutParams().width);
+        assertEquals(buttonWidth, searchIcon.getLayoutParams().width);
+        assertEquals(View.GONE, searchLabel.getVisibility());
+    }
+
+    @Test
+    public void testExpandedForHovering_SeparatorKeepsCollapsedPosition() {
+        ConstraintLayout.LayoutParams params =
+                (ConstraintLayout.LayoutParams)
+                        mRailLayout.getPinnedTabsSeparatorView().getLayoutParams();
+        int separatorWidth =
+                mActivity
+                        .getResources()
+                        .getDimensionPixelSize(R.dimen.vertical_tabs_pinned_separator_width);
+        int expectedMarginStart =
+                VerticalTabRailLayout.getCollapsedRailCenteringMarginStart(
+                        mActivity, separatorWidth);
+
+        // Hovering: extends to the end of the tab rows from the collapsed start.
+        mRailLayout.setCollapseState(RailCollapseState.EXPANDED_FOR_HOVERING);
+        assertEquals(ConstraintLayout.LayoutParams.MATCH_CONSTRAINT, params.width);
+        assertEquals(expectedMarginStart, params.getMarginStart());
+        assertEquals(0f, params.horizontalBias, 0f);
+
+        // Collapsed: same position as hovering.
+        mRailLayout.setCollapseState(RailCollapseState.COLLAPSED);
+        assertEquals(separatorWidth, params.width);
+        assertEquals(expectedMarginStart, params.getMarginStart());
+        assertEquals(0f, params.horizontalBias, 0f);
+
+        // Expanded: fixed width, centered.
+        mRailLayout.setCollapseState(RailCollapseState.EXPANDED);
+        assertEquals(separatorWidth, params.width);
+        assertEquals(0, params.getMarginStart());
+        assertEquals(0.5f, params.horizontalBias, 0f);
+    }
+
+    @Test
     public void testSetDesktopWindowSpacerVisible() {
         View spacer = mRailLayout.findViewById(R.id.desktop_window_spacer);
-        mRailLayout.setDesktopWindowSpacerVisible(true);
+        mRailLayout.setDesktopWindowSpacerVisibleForTesting(true);
         assertEquals(View.VISIBLE, spacer.getVisibility());
 
-        mRailLayout.setDesktopWindowSpacerVisible(false);
+        mRailLayout.setDesktopWindowSpacerVisibleForTesting(false);
         assertEquals(View.GONE, spacer.getVisibility());
     }
 
     @Test
-    public void testDispatchGenericMotionEvent_HoverInsideAndOutside() {
-        FeatureOverrides.overrideParam(
-                ChromeFeatureList.ANDROID_VERTICAL_TABS, "expand_on_hover", true);
-        mRailLayout.setCollapseState(RailCollapseState.COLLAPSED);
-        measureAndLayout(mRailLayout, 200, 500);
+    public void testSetDesktopWindowSpacerHeight() {
+        View spacer = mRailLayout.findViewById(R.id.desktop_window_spacer);
 
-        // Hover inside
-        MotionEvent hoverEnter =
-                MotionEvent.obtain(0, 0, MotionEvent.ACTION_HOVER_ENTER, 50f, 50f, 0);
-        hoverEnter.setSource(InputDevice.SOURCE_MOUSE);
-        mRailLayout.dispatchGenericMotionEvent(hoverEnter);
-        verify(mMockHoverListener).onResult(RailCollapseState.EXPANDED_FOR_HOVERING);
+        mRailLayout.setDesktopWindowSpacerHeight(48);
+        assertEquals(View.VISIBLE, spacer.getVisibility());
+        assertEquals(48, spacer.getLayoutParams().height);
 
-        // Hover outside
-        mRailLayout.setCollapseState(RailCollapseState.EXPANDED_FOR_HOVERING);
-        MotionEvent hoverExit =
-                MotionEvent.obtain(0, 0, MotionEvent.ACTION_HOVER_EXIT, 500f, 50f, 0);
-        hoverExit.setSource(InputDevice.SOURCE_MOUSE);
-        mRailLayout.dispatchGenericMotionEvent(hoverExit);
-        verify(mMockHoverListener).onResult(RailCollapseState.COLLAPSED);
+        // Fullscreen / split-screen with status bar + caption bar height.
+        mRailLayout.setDesktopWindowSpacerHeight(72);
+        assertEquals(View.VISIBLE, spacer.getVisibility());
+        assertEquals(72, spacer.getLayoutParams().height);
+
+        mRailLayout.setDesktopWindowSpacerHeight(0);
+        assertEquals(View.GONE, spacer.getVisibility());
     }
 
     @Test
-    public void testDispatchGenericMotionEvent_consumesMouseButtonEvent() {
+    public void testDispatchEvents_ForwardedToRailEventListener() {
+        measureAndLayout(mRailLayout, 200, 500);
+
+        MotionEvent hoverEvent = obtainMouseEvent(MotionEvent.ACTION_HOVER_MOVE);
+        mRailLayout.dispatchGenericMotionEvent(hoverEvent);
+        verify(mMockRailEventListener).onGenericMotionEventDispatched(hoverEvent);
+        hoverEvent.recycle();
+
+        MotionEvent touchEvent = obtainMouseEvent(MotionEvent.ACTION_UP);
+        mRailLayout.dispatchTouchEvent(touchEvent);
+        verify(mMockRailEventListener).onTouchEventDispatched(touchEvent);
+        touchEvent.recycle();
+    }
+
+    @Test
+    public void testDispatchEvents_NotForwardedWithoutListener() {
+        mRailLayout.setRailEventListener(null);
+        measureAndLayout(mRailLayout, 200, 500);
+
+        MotionEvent hoverEvent = obtainMouseEvent(MotionEvent.ACTION_HOVER_MOVE);
+        mRailLayout.dispatchGenericMotionEvent(hoverEvent);
+        hoverEvent.recycle();
+        MotionEvent touchEvent = obtainMouseEvent(MotionEvent.ACTION_UP);
+        mRailLayout.dispatchTouchEvent(touchEvent);
+        touchEvent.recycle();
+
+        verifyNoInteractions(mMockRailEventListener);
+    }
+
+    @Test
+    public void testDispatchGenericMotionEvent_consumesMouseEvents() {
         mRailLayout.setCollapseState(RailCollapseState.COLLAPSED);
         measureAndLayout(mRailLayout, 200, 500);
 
@@ -290,28 +504,45 @@ public class VerticalTabRailLayoutUnitTest {
         releaseEvent.setSource(InputDevice.SOURCE_MOUSE);
         assertTrue(mRailLayout.dispatchGenericMotionEvent(releaseEvent));
 
+        MotionEvent scrollEvent = MotionEvent.obtain(0, 0, MotionEvent.ACTION_SCROLL, 50f, 50f, 0);
+        scrollEvent.setSource(InputDevice.SOURCE_MOUSE);
+        assertTrue(mRailLayout.dispatchGenericMotionEvent(scrollEvent));
+
+        MotionEvent stylusScrollEvent =
+                MotionEvent.obtain(0, 0, MotionEvent.ACTION_SCROLL, 50f, 50f, 0);
+        stylusScrollEvent.setSource(InputDevice.SOURCE_STYLUS);
+        assertTrue(mRailLayout.dispatchGenericMotionEvent(stylusScrollEvent));
+
+        MotionEvent joystickScrollEvent =
+                MotionEvent.obtain(0, 0, MotionEvent.ACTION_SCROLL, 50f, 50f, 0);
+        joystickScrollEvent.setSource(InputDevice.SOURCE_JOYSTICK);
+        assertFalse(mRailLayout.dispatchGenericMotionEvent(joystickScrollEvent));
+
         MotionEvent otherEvent = MotionEvent.obtain(0, 0, MotionEvent.ACTION_MOVE, 50f, 50f, 0);
         otherEvent.setSource(InputDevice.SOURCE_MOUSE);
         assertFalse(mRailLayout.dispatchGenericMotionEvent(otherEvent));
     }
 
-    @Test
-    public void testOnWindowFocusChanged_CollapsesRailOnFocusLost() {
-        mRailLayout.onWindowFocusChanged(false);
-        verify(mMockHoverListener).onResult(RailCollapseState.COLLAPSED);
+    private static MotionEvent obtainMouseEvent(int action) {
+        MotionEvent event = MotionEvent.obtain(0, 0, action, 100f, 250f, 0);
+        event.setSource(InputDevice.SOURCE_MOUSE);
+        return event;
     }
 
     @Test
-    public void testOnDragEvent_CollapsesRailOnDragExitedOrEnded() {
-        DragEvent exitEvent = mock(DragEvent.class);
-        when(exitEvent.getAction()).thenReturn(DragEvent.ACTION_DRAG_EXITED);
-        mRailLayout.onDragEvent(exitEvent);
-        verify(mMockHoverListener).onResult(RailCollapseState.COLLAPSED);
+    public void testBindSearchButtonVisibility() {
+        View searchButton = mRailLayout.findViewById(R.id.tab_search_button);
+        assertNotNull(searchButton);
 
-        DragEvent endEvent = mock(DragEvent.class);
-        when(endEvent.getAction()).thenReturn(DragEvent.ACTION_DRAG_ENDED);
-        mRailLayout.onDragEvent(endEvent);
-        verify(mMockHoverListener, times(2)).onResult(RailCollapseState.COLLAPSED);
+        mModel.set(VerticalTabListProperties.IS_SEARCH_BUTTON_VISIBLE, false);
+        VerticalTabListViewBinder.bind(
+                mModel, mRailLayout, VerticalTabListProperties.IS_SEARCH_BUTTON_VISIBLE);
+        assertEquals(View.GONE, searchButton.getVisibility());
+
+        mModel.set(VerticalTabListProperties.IS_SEARCH_BUTTON_VISIBLE, true);
+        VerticalTabListViewBinder.bind(
+                mModel, mRailLayout, VerticalTabListProperties.IS_SEARCH_BUTTON_VISIBLE);
+        assertEquals(View.VISIBLE, searchButton.getVisibility());
     }
 
     @Test
@@ -631,6 +862,19 @@ public class VerticalTabRailLayoutUnitTest {
                         .getDimensionPixelSize(R.dimen.vertical_tabs_footer_button_height_tablet),
                 tabletLayout.getIncognitoChipSizePxForTesting());
 
+        ImageView tabletCollapseButton = tabletLayout.findViewById(R.id.collapse_button);
+        ImageView tabletSearchButton = tabletLayout.findViewById(R.id.tab_search_icon);
+        assertEquals(
+                R.drawable.vertical_tabs_menu_collapse_24dp,
+                shadowOf(tabletCollapseButton.getDrawable()).getCreatedFromResId());
+        assertEquals(
+                R.drawable.ic_manage_search_24dp,
+                shadowOf(tabletSearchButton.getDrawable()).getCreatedFromResId());
+        tabletLayout.setCollapseState(RailCollapseState.COLLAPSED);
+        assertEquals(
+                R.drawable.vertical_tabs_menu_expand_24dp,
+                shadowOf(tabletCollapseButton.getDrawable()).getCreatedFromResId());
+
         DeviceInfo.setIsDesktopForTesting(true);
         VerticalTabRailLayout desktopLayout =
                 (VerticalTabRailLayout)
@@ -651,6 +895,18 @@ public class VerticalTabRailLayoutUnitTest {
                         .getResources()
                         .getDimensionPixelSize(R.dimen.vertical_tabs_footer_button_height),
                 desktopLayout.getIncognitoChipSizePxForTesting());
+        ImageView desktopCollapseButton = desktopLayout.findViewById(R.id.collapse_button);
+        ImageView desktopSearchButton = desktopLayout.findViewById(R.id.tab_search_icon);
+        assertEquals(
+                R.drawable.vertical_tabs_menu_collapse,
+                shadowOf(desktopCollapseButton.getDrawable()).getCreatedFromResId());
+        assertEquals(
+                R.drawable.ic_manage_search_20dp,
+                shadowOf(desktopSearchButton.getDrawable()).getCreatedFromResId());
+        desktopLayout.setCollapseState(RailCollapseState.COLLAPSED);
+        assertEquals(
+                R.drawable.vertical_tabs_menu_expand,
+                shadowOf(desktopCollapseButton.getDrawable()).getCreatedFromResId());
     }
 
     @Test
@@ -820,6 +1076,158 @@ public class VerticalTabRailLayoutUnitTest {
         ViewGroup.MarginLayoutParams lp =
                 (ViewGroup.MarginLayoutParams) mRailLayout.getRecyclerView().getLayoutParams();
         assertEquals(0, lp.topMargin);
+    }
+
+    @Test
+    public void testDispatchTouchEvent_InvokesOnTouchDownListenerOnlyOnActionDown() {
+        Runnable onTouchDownListener = mock(Runnable.class);
+        mRailLayout.setOnTouchDownListener(onTouchDownListener);
+
+        MotionEvent downEvent =
+                MotionEvent.obtain(
+                        /* downTime= */ 100L,
+                        /* eventTime= */ 100L,
+                        /* action= */ MotionEvent.ACTION_DOWN,
+                        /* x= */ 50f,
+                        /* y= */ 50f,
+                        /* metaState= */ 0);
+        mRailLayout.dispatchTouchEvent(downEvent);
+        downEvent.recycle();
+        verify(
+                        onTouchDownListener,
+                        times(1).description("Listener should run once on ACTION_DOWN."))
+                .run();
+
+        MotionEvent moveEvent =
+                MotionEvent.obtain(
+                        /* downTime= */ 100L,
+                        /* eventTime= */ 150L,
+                        /* action= */ MotionEvent.ACTION_MOVE,
+                        /* x= */ 55f,
+                        /* y= */ 55f,
+                        /* metaState= */ 0);
+        mRailLayout.dispatchTouchEvent(moveEvent);
+        moveEvent.recycle();
+        verify(
+                        onTouchDownListener,
+                        times(1).description(
+                                        "Listener should only have run once on ACTION_DOWN (not on"
+                                                + " ACTION_MOVE)."))
+                .run();
+
+        MotionEvent upEvent =
+                MotionEvent.obtain(
+                        /* downTime= */ 100L,
+                        /* eventTime= */ 200L,
+                        /* action= */ MotionEvent.ACTION_UP,
+                        /* x= */ 55f,
+                        /* y= */ 55f,
+                        /* metaState= */ 0);
+        mRailLayout.dispatchTouchEvent(upEvent);
+        upEvent.recycle();
+        verify(
+                        onTouchDownListener,
+                        times(1).description(
+                                        "Listener should only have run once on ACTION_DOWN (not on"
+                                                + " ACTION_UP)."))
+                .run();
+    }
+
+    @Test
+    public void testDispatchTouchEvent_SplitMultiTouch_NormalizesDownTimeAcrossGesture() {
+        List<Long> observedDownTimes = new ArrayList<>();
+        List<Long> observedEventTimes = new ArrayList<>();
+        // Records every touch event that passes through mRailLayout.
+        mRailLayout.setOnTouchListener(
+                (v, event) -> {
+                    observedDownTimes.add(event.getDownTime());
+                    observedEventTimes.add(event.getEventTime());
+                    return true;
+                });
+
+        // Simulate a split multi-touch gesture where Finger 1 went down outside the rail at t=1000
+        // and Finger 2 touches down on the rail at t=3000. DOWN, MOVE, and UP all have Finger 1's
+        // downTime.
+        MotionEvent splitDown =
+                MotionEvent.obtain(
+                        /* downTime= */ 1000L,
+                        /* eventTime= */ 3000L,
+                        /* action= */ MotionEvent.ACTION_DOWN,
+                        /* x= */ 50f,
+                        /* y= */ 50f,
+                        /* metaState= */ 0);
+        mRailLayout.dispatchTouchEvent(splitDown);
+        splitDown.recycle();
+
+        MotionEvent splitMove =
+                MotionEvent.obtain(
+                        /* downTime= */ 1000L,
+                        /* eventTime= */ 3050L,
+                        /* action= */ MotionEvent.ACTION_MOVE,
+                        /* x= */ 52f,
+                        /* y= */ 52f,
+                        /* metaState= */ 0);
+        mRailLayout.dispatchTouchEvent(splitMove);
+        splitMove.recycle();
+
+        MotionEvent splitUp =
+                MotionEvent.obtain(
+                        /* downTime= */ 1000L,
+                        /* eventTime= */ 3100L,
+                        /* action= */ MotionEvent.ACTION_UP,
+                        /* x= */ 52f,
+                        /* y= */ 52f,
+                        /* metaState= */ 0);
+        mRailLayout.dispatchTouchEvent(splitUp);
+        splitUp.recycle();
+
+        assertEquals(
+                "All events in the split multi-touch gesture (DOWN, MOVE, UP) should have their"
+                        + " downTime rewritten from Finger 1's downTime (1000L) to Finger 2's"
+                        + " ACTION_DOWN eventTime (3000L).",
+                List.of(3000L, 3000L, 3000L),
+                observedDownTimes);
+        assertEquals(
+                "Each event in the split multi-touch gesture should preserve its own eventTime.",
+                List.of(3000L, 3050L, 3100L),
+                observedEventTimes);
+
+        observedDownTimes.clear();
+        observedEventTimes.clear();
+
+        // Subsequent single-pointer gesture with matching downTime and eventTime.
+        MotionEvent singleDown =
+                MotionEvent.obtain(
+                        /* downTime= */ 4000L,
+                        /* eventTime= */ 4000L,
+                        /* action= */ MotionEvent.ACTION_DOWN,
+                        /* x= */ 60f,
+                        /* y= */ 60f,
+                        /* metaState= */ 0);
+        mRailLayout.dispatchTouchEvent(singleDown);
+        singleDown.recycle();
+
+        MotionEvent singleUp =
+                MotionEvent.obtain(
+                        /* downTime= */ 4000L,
+                        /* eventTime= */ 4050L,
+                        /* action= */ MotionEvent.ACTION_UP,
+                        /* x= */ 60f,
+                        /* y= */ 60f,
+                        /* metaState= */ 0);
+        mRailLayout.dispatchTouchEvent(singleUp);
+        singleUp.recycle();
+
+        assertEquals(
+                "After ACTION_UP resets mSplitTouchDownTime, a subsequent normal 1-finger gesture"
+                        + " should keep its original downTime (4000L).",
+                List.of(4000L, 4000L),
+                observedDownTimes);
+        assertEquals(
+                "Each event in the subsequent normal 1-finger gesture should preserve its own"
+                        + " eventTime.",
+                List.of(4000L, 4050L),
+                observedEventTimes);
     }
 
     private void measureAndLayout(View view, int width, int height) {

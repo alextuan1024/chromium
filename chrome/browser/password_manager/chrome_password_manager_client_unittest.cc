@@ -37,8 +37,8 @@
 #include "chrome/browser/password_manager/factories/profile_password_store_factory.h"
 #include "chrome/browser/password_manager/password_change_delegate_mock.h"
 #include "chrome/browser/password_manager/password_change_service_factory.h"
+#include "chrome/browser/safe_browsing/interstitials/user_interaction_observer.h"
 #include "chrome/browser/safe_browsing/test_safe_browsing_service.h"
-#include "chrome/browser/safe_browsing/user_interaction_observer.h"
 #include "chrome/browser/sync/sync_service_factory.h"
 #include "chrome/browser/ui/autofill/chrome_autofill_client.h"
 #include "chrome/browser/ui/passwords/password_cross_domain_confirmation_popup_controller_impl.h"
@@ -61,7 +61,9 @@
 #include "components/autofill/core/common/signatures.h"
 #include "components/autofill/core/common/unique_ids.h"
 #include "components/device_reauth/device_authenticator.h"
+#include "components/device_reauth/mock_device_auth_availability_checker.h"
 #include "components/device_reauth/mock_device_authenticator.h"
+#include "components/enterprise/buildflags/buildflags.h"
 #include "components/password_manager/content/browser/content_password_manager_driver.h"
 #include "components/password_manager/content/browser/password_manager_log_router_factory.h"
 #include "components/password_manager/core/browser/credential_cache.h"
@@ -85,6 +87,7 @@
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/web_contents.h"
+#include "content/public/browser/web_contents_delegate.h"
 #include "content/public/browser/web_contents_observer.h"
 #include "content/public/common/content_switches.h"
 #include "content/public/common/url_constants.h"
@@ -105,6 +108,25 @@
 #if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 #include "extensions/common/constants.h"
 #endif
+#if BUILDFLAG(ENTERPRISE_CONTENT_ANALYSIS) || BUILDFLAG(IS_ANDROID)
+#include "chrome/browser/actor/actor_keyed_service.h"
+#include "chrome/browser/actor/actor_keyed_service_factory.h"
+#include "chrome/browser/actor/actor_keyed_service_fake.h"
+#include "chrome/browser/actor/actor_surface_registry.h"
+#include "chrome/browser/actor/actor_task.h"
+#include "chrome/browser/actor/actor_test_util.h"
+#include "chrome/browser/actor/enterprise_policy_checker.h"
+#include "chrome/browser/actor/ui/test_support/mock_event_dispatcher.h"
+#include "chrome/browser/enterprise/connectors/reporting/reporting_event_router_factory.h"
+#include "chrome/common/actor_webui.mojom.h"
+#include "components/actor/core/task_id.h"
+#include "components/actor/core/task_source_info.h"
+#include "components/enterprise/common/proto/synced/browser_events.pb.h"
+#include "components/enterprise/connectors/core/features.h"
+#include "components/enterprise/connectors/core/reporting_event_router.h"
+#include "components/tabs/public/mock_tab_interface.h"
+#include "components/tabs/public/tab_interface.h"
+#endif  // BUILDFLAG(ENTERPRISE_CONTENT_ANALYSIS) || BUILDFLAG(IS_ANDROID)
 
 #if BUILDFLAG(FULL_SAFE_BROWSING)
 #include "components/safe_browsing/content/browser/password_protection/mock_password_protection_service.h"
@@ -134,6 +156,7 @@
 #include "chrome/browser/ui/hats/hats_service_factory.h"
 #include "chrome/browser/ui/hats/mock_hats_service.h"
 #include "chrome/browser/ui/passwords/password_cross_domain_confirmation_popup_view.h"
+#include "components/trusted_vault/trusted_vault_client.h"
 #endif  // BUILDFLAG(IS_ANDROID)
 
 using ::autofill::CalculateFormSignature;
@@ -214,7 +237,7 @@ class MockChromePasswordManagerClient : public ChromePasswordManagerClient {
     return client;
   }
 
-  MOCK_METHOD(net::CertStatus, GetMainFrameCertStatus, (), (const override));
+  MOCK_METHOD(net::CertStatus, GetMainFrameCertStatus, (), (const, override));
 
   MockChromePasswordManagerClient(const MockChromePasswordManagerClient&) =
       delete;
@@ -382,7 +405,7 @@ class MockPasswordChangeService : public ChromePasswordChangeService {
 
   MOCK_METHOD(void,
               OfferPasswordChangeUi,
-              (password_manager::PasswordForm, content::WebContents*),
+              (password_manager::LeakedPasswordDetails, content::WebContents*),
               (override));
   MOCK_METHOD(PasswordChangeDelegate*,
               GetPasswordChangeDelegate,
@@ -915,7 +938,7 @@ TEST_F(ChromePasswordManagerClientTest,
           GetClient()->GetPasswordManager())
           ->GetClassifierModelPredictionsForTesting();
   // Check that predictions are available for the form.
-  auto form_key = std::make_pair(password_driver, form.renderer_id());
+  auto form_key = std::make_pair(password_driver->GetId(), form.renderer_id());
   ASSERT_THAT(received_predictions, UnorderedElementsAre(Key(form_key)));
   // Check that predictions are available for all form fields.
   EXPECT_THAT(received_predictions[form_key],
@@ -1232,78 +1255,125 @@ TEST_F(ChromePasswordManagerClientTest,
 }
 
 #if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN) || BUILDFLAG(IS_CHROMEOS)
-// Test that authentication is not possible if the `authenticator` is `nullptr`.
-TEST_F(ChromePasswordManagerClientTest, CanUseBiometricAuthNoAuthenticator) {
+// Test that authentication is not possible if the `checker` is `nullptr`.
+TEST_F(ChromePasswordManagerClientTest, CanUseBiometricAuthNoChecker) {
   EXPECT_FALSE(GetClient()->IsReauthBeforeFillingRequired(
+      /*checker=*/nullptr));
+}
+
+// Test that authentication is not possible if the `authenticator` is `nullptr`.
+TEST_F(ChromePasswordManagerClientTest,
+       CanUseBiometricAuthNoChecker_LegacyAuthenticator) {
+  EXPECT_FALSE(GetClient()->IsReauthBeforeFillingRequiredLegacy(
       /*authenticator=*/nullptr));
 }
 
 // Test that authentication is not possible if the device doesn't have
 // necessary hardware for biometric authentication.
 TEST_F(ChromePasswordManagerClientTest, CanUseBiometricAuthNoBiometrics) {
-  device_reauth::MockDeviceAuthenticator authenticator;
+  device_reauth::MockDeviceAuthAvailabilityChecker checker;
   // Both prefs are registered by the `PasswordManager`.
   TestingBrowserProcess::GetGlobal()->local_state()->SetBoolean(
       password_manager::prefs::kHadBiometricsAvailable, false);
   profile()->GetTestingPrefService()->SetBoolean(
       password_manager::prefs::kBiometricAuthenticationBeforeFilling, true);
-  EXPECT_FALSE(GetClient()->IsReauthBeforeFillingRequired(&authenticator));
+  EXPECT_FALSE(GetClient()->IsReauthBeforeFillingRequired(&checker));
+}
+
+TEST_F(ChromePasswordManagerClientTest,
+       CanUseBiometricAuthNoBiometrics_LegacyAuthenticator) {
+  device_reauth::MockDeviceAuthenticator authenticator;
+  TestingBrowserProcess::GetGlobal()->local_state()->SetBoolean(
+      password_manager::prefs::kHadBiometricsAvailable, false);
+  profile()->GetTestingPrefService()->SetBoolean(
+      password_manager::prefs::kBiometricAuthenticationBeforeFilling, true);
+  EXPECT_FALSE(
+      GetClient()->IsReauthBeforeFillingRequiredLegacy(&authenticator));
 }
 
 // Test that authentication is not possible if the user didn't configure the
 // corresponding setting.
 TEST_F(ChromePasswordManagerClientTest, CanUseBiometricAuthSettingDisabled) {
-  device_reauth::MockDeviceAuthenticator authenticator;
+  device_reauth::MockDeviceAuthAvailabilityChecker checker;
   // Both prefs are registered by the `PasswordManager`.
   TestingBrowserProcess::GetGlobal()->local_state()->SetBoolean(
       password_manager::prefs::kHadBiometricsAvailable, true);
   profile()->GetTestingPrefService()->SetBoolean(
       password_manager::prefs::kBiometricAuthenticationBeforeFilling, false);
-  EXPECT_FALSE(GetClient()->IsReauthBeforeFillingRequired(&authenticator));
+  EXPECT_FALSE(GetClient()->IsReauthBeforeFillingRequired(&checker));
 }
-#endif  // BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN) || BUILDFLAG(IS_CHROMEOS)
 
-#if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN)
+TEST_F(ChromePasswordManagerClientTest,
+       CanUseBiometricAuthSettingDisabled_LegacyAuthenticator) {
+  device_reauth::MockDeviceAuthenticator authenticator;
+  TestingBrowserProcess::GetGlobal()->local_state()->SetBoolean(
+      password_manager::prefs::kHadBiometricsAvailable, true);
+  profile()->GetTestingPrefService()->SetBoolean(
+      password_manager::prefs::kBiometricAuthenticationBeforeFilling, false);
+  EXPECT_FALSE(
+      GetClient()->IsReauthBeforeFillingRequiredLegacy(&authenticator));
+}
+
 // Test that authentication is possible if both the biometric authentication
 // hardware is available and the user configured the corresponding setting.
 TEST_F(ChromePasswordManagerClientTest, CanUseBiometricAuthSettingEnabled) {
-  device_reauth::MockDeviceAuthenticator authenticator;
+  device_reauth::MockDeviceAuthAvailabilityChecker checker;
   // Both prefs are registered by the `PasswordManager`.
   TestingBrowserProcess::GetGlobal()->local_state()->SetBoolean(
       password_manager::prefs::kHadBiometricsAvailable, true);
   profile()->GetTestingPrefService()->SetBoolean(
       password_manager::prefs::kBiometricAuthenticationBeforeFilling, true);
-  EXPECT_TRUE(GetClient()->IsReauthBeforeFillingRequired(&authenticator));
+  EXPECT_TRUE(GetClient()->IsReauthBeforeFillingRequired(&checker));
 }
-#endif
 
-#if BUILDFLAG(IS_CHROMEOS)
-// Test that authentication is possible if biometric authentication
-// hardware is available and the user configured the corresponding setting.
 TEST_F(ChromePasswordManagerClientTest,
-       CanUseBiometricAuthSettingEnabledKillFlagEnabled) {
+       CanUseBiometricAuthSettingEnabled_LegacyAuthenticator) {
   device_reauth::MockDeviceAuthenticator authenticator;
-  // Both prefs are registered by the `PasswordManager`.
   TestingBrowserProcess::GetGlobal()->local_state()->SetBoolean(
       password_manager::prefs::kHadBiometricsAvailable, true);
   profile()->GetTestingPrefService()->SetBoolean(
       password_manager::prefs::kBiometricAuthenticationBeforeFilling, true);
-  EXPECT_TRUE(GetClient()->IsReauthBeforeFillingRequired(&authenticator));
+  EXPECT_TRUE(GetClient()->IsReauthBeforeFillingRequiredLegacy(&authenticator));
 }
-#endif  // BUILDFLAG(IS_CHROMEOS)
+#endif  // BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN) || BUILDFLAG(IS_CHROMEOS)
 
 #if BUILDFLAG(IS_ANDROID)
-// Test that authentication is not possible if the `authenticator` is `nullptr`.
-TEST_F(ChromePasswordManagerClientTest, CanUseBiometricAuthAndroid) {
-  if (base::android::device_info::is_automotive()) {
-    // Authentication is always available for automotive and the `authenticator`
-    // is always available.
-    device_reauth::MockDeviceAuthenticator authenticator;
-    EXPECT_TRUE(GetClient()->IsReauthBeforeFillingRequired(&authenticator));
-  } else {
-    EXPECT_FALSE(GetClient()->IsReauthBeforeFillingRequired(
-        /*authenticator=*/nullptr));
+// Authentication is always available for automotive and the `checker` is always
+// available.
+TEST_F(ChromePasswordManagerClientTest, CanUseBiometricAuthAndroidAutomotive) {
+  if (!base::android::device_info::is_automotive()) {
+    GTEST_SKIP();
   }
+  device_reauth::MockDeviceAuthAvailabilityChecker checker;
+  EXPECT_TRUE(GetClient()->IsReauthBeforeFillingRequired(&checker));
+}
+
+TEST_F(ChromePasswordManagerClientTest,
+       CanUseBiometricAuthAndroidAutomotive_LegacyAuthenticator) {
+  if (!base::android::device_info::is_automotive()) {
+    GTEST_SKIP();
+  }
+  device_reauth::MockDeviceAuthenticator authenticator;
+  EXPECT_TRUE(GetClient()->IsReauthBeforeFillingRequiredLegacy(&authenticator));
+}
+
+// Test that authentication is not possible if the `checker` is `nullptr`.
+TEST_F(ChromePasswordManagerClientTest,
+       CanUseBiometricAuthAndroidNonAutomotive) {
+  if (base::android::device_info::is_automotive()) {
+    GTEST_SKIP();
+  }
+  EXPECT_FALSE(GetClient()->IsReauthBeforeFillingRequired(/*checker=*/nullptr));
+}
+
+// Test that authentication is not possible if the `authenticator` is `nullptr`.
+TEST_F(ChromePasswordManagerClientTest,
+       CanUseBiometricAuthAndroidNonAutomotive_LegacyAuthenticator) {
+  if (base::android::device_info::is_automotive()) {
+    GTEST_SKIP();
+  }
+  EXPECT_FALSE(GetClient()->IsReauthBeforeFillingRequiredLegacy(
+      /*authenticator=*/nullptr));
 }
 
 // Test that authentication is not possible if the `kBiometricTouchToFill`
@@ -1314,10 +1384,23 @@ TEST_F(ChromePasswordManagerClientTest,
   if (base::android::device_info::is_automotive()) {
     GTEST_SKIP();
   }
+  device_reauth::MockDeviceAuthAvailabilityChecker checker;
+  ON_CALL(checker, GetBiometricAvailabilityStatus)
+      .WillByDefault(Return(BiometricStatus::kBiometricsAvailable));
+  EXPECT_FALSE(GetClient()->IsReauthBeforeFillingRequired(&checker));
+}
+
+TEST_F(ChromePasswordManagerClientTest,
+       CanUseBiometricAuthAndroidFeatureIsDisabled_LegacyAuthenticator) {
+  // Authentication is always available for automotive.
+  if (base::android::device_info::is_automotive()) {
+    GTEST_SKIP();
+  }
   device_reauth::MockDeviceAuthenticator authenticator;
   ON_CALL(authenticator, GetBiometricAvailabilityStatus)
       .WillByDefault(Return(BiometricStatus::kBiometricsAvailable));
-  EXPECT_FALSE(GetClient()->IsReauthBeforeFillingRequired(&authenticator));
+  EXPECT_FALSE(
+      GetClient()->IsReauthBeforeFillingRequiredLegacy(&authenticator));
 }
 
 // Test that authentication is not possible if the
@@ -1332,10 +1415,29 @@ TEST_F(ChromePasswordManagerClientTest,
   base::HistogramTester histogram_tester;
   base::test::ScopedFeatureList enabled_features(
       password_manager::features::kBiometricTouchToFill);
+  device_reauth::MockDeviceAuthAvailabilityChecker checker;
+  ON_CALL(checker, GetBiometricAvailabilityStatus)
+      .WillByDefault(Return(BiometricStatus::kUnavailable));
+  EXPECT_FALSE(GetClient()->IsReauthBeforeFillingRequired(&checker));
+  histogram_tester.ExpectUniqueSample(
+      "PasswordManager.BiometricAuthPwdFillAndroid."
+      "CanAuthenticateWithBiometricOrScreenLock",
+      false, 1);
+}
+
+TEST_F(ChromePasswordManagerClientTest,
+       CanUseBiometricAuthAndroidAuthDisabled_LegacyAuthenticator) {
+  if (base::android::device_info::is_automotive()) {
+    GTEST_SKIP();
+  }
+  base::HistogramTester histogram_tester;
+  base::test::ScopedFeatureList enabled_features(
+      password_manager::features::kBiometricTouchToFill);
   device_reauth::MockDeviceAuthenticator authenticator;
   ON_CALL(authenticator, GetBiometricAvailabilityStatus)
       .WillByDefault(Return(BiometricStatus::kUnavailable));
-  EXPECT_FALSE(GetClient()->IsReauthBeforeFillingRequired(&authenticator));
+  EXPECT_FALSE(
+      GetClient()->IsReauthBeforeFillingRequiredLegacy(&authenticator));
   histogram_tester.ExpectUniqueSample(
       "PasswordManager.BiometricAuthPwdFillAndroid."
       "CanAuthenticateWithBiometricOrScreenLock",
@@ -1354,10 +1456,25 @@ TEST_F(ChromePasswordManagerClientTest,
   }
   base::test::ScopedFeatureList enabled_features(
       password_manager::features::kBiometricTouchToFill);
+  device_reauth::MockDeviceAuthAvailabilityChecker checker;
+  ON_CALL(checker, GetBiometricAvailabilityStatus)
+      .WillByDefault(Return(BiometricStatus::kBiometricsAvailable));
+  EXPECT_FALSE(GetClient()->IsReauthBeforeFillingRequired(&checker));
+}
+
+TEST_F(ChromePasswordManagerClientTest,
+       CanUseBiometricAuthAndroidPrefDisabled_LegacyAuthenticator) {
+  // Authentication is always available for automotive.
+  if (base::android::device_info::is_automotive()) {
+    GTEST_SKIP();
+  }
+  base::test::ScopedFeatureList enabled_features(
+      password_manager::features::kBiometricTouchToFill);
   device_reauth::MockDeviceAuthenticator authenticator;
   ON_CALL(authenticator, GetBiometricAvailabilityStatus)
       .WillByDefault(Return(BiometricStatus::kBiometricsAvailable));
-  EXPECT_FALSE(GetClient()->IsReauthBeforeFillingRequired(&authenticator));
+  EXPECT_FALSE(
+      GetClient()->IsReauthBeforeFillingRequiredLegacy(&authenticator));
 }
 
 // Test that authentication is possible if the `GetBiometricAvailabilityStatus`
@@ -1372,12 +1489,33 @@ TEST_F(ChromePasswordManagerClientTest, CanUseBiometricAuthAndroidAuthEnabled) {
   base::HistogramTester histogram_tester;
   base::test::ScopedFeatureList enabled_features(
       password_manager::features::kBiometricTouchToFill);
+  device_reauth::MockDeviceAuthAvailabilityChecker checker;
+  profile()->GetTestingPrefService()->SetBoolean(
+      password_manager::prefs::kBiometricAuthenticationBeforeFilling, true);
+  ON_CALL(checker, GetBiometricAvailabilityStatus)
+      .WillByDefault(Return(BiometricStatus::kOnlyLskfAvailable));
+  EXPECT_TRUE(GetClient()->IsReauthBeforeFillingRequired(&checker));
+  histogram_tester.ExpectUniqueSample(
+      "PasswordManager.BiometricAuthPwdFillAndroid."
+      "CanAuthenticateWithBiometricOrScreenLock",
+      true, 1);
+}
+
+TEST_F(ChromePasswordManagerClientTest,
+       CanUseBiometricAuthAndroidAuthEnabled_LegacyAuthenticator) {
+  if (base::android::device_info::is_automotive()) {
+    GTEST_SKIP();
+  }
+
+  base::HistogramTester histogram_tester;
+  base::test::ScopedFeatureList enabled_features(
+      password_manager::features::kBiometricTouchToFill);
   device_reauth::MockDeviceAuthenticator authenticator;
   profile()->GetTestingPrefService()->SetBoolean(
       password_manager::prefs::kBiometricAuthenticationBeforeFilling, true);
   ON_CALL(authenticator, GetBiometricAvailabilityStatus)
       .WillByDefault(Return(BiometricStatus::kOnlyLskfAvailable));
-  EXPECT_TRUE(GetClient()->IsReauthBeforeFillingRequired(&authenticator));
+  EXPECT_TRUE(GetClient()->IsReauthBeforeFillingRequiredLegacy(&authenticator));
   histogram_tester.ExpectUniqueSample(
       "PasswordManager.BiometricAuthPwdFillAndroid."
       "CanAuthenticateWithBiometricOrScreenLock",
@@ -1392,17 +1530,36 @@ TEST_F(ChromePasswordManagerClientTest,
   if (!base::android::device_info::is_automotive()) {
     GTEST_SKIP();
   }
+  device_reauth::MockDeviceAuthAvailabilityChecker checker;
+  ON_CALL(checker, GetBiometricAvailabilityStatus)
+      .WillByDefault(Return(BiometricStatus::kBiometricsAvailable));
+  EXPECT_TRUE(GetClient()->IsReauthBeforeFillingRequired(&checker));
+}
+
+TEST_F(ChromePasswordManagerClientTest,
+       CanUseBiometricAuthAndroidAlwaysTrueOnAutomotive_LegacyAuthenticator) {
+  // Authentication is always available for automotive.
+  if (!base::android::device_info::is_automotive()) {
+    GTEST_SKIP();
+  }
   device_reauth::MockDeviceAuthenticator authenticator;
   ON_CALL(authenticator, GetBiometricAvailabilityStatus)
       .WillByDefault(Return(BiometricStatus::kBiometricsAvailable));
-  EXPECT_TRUE(GetClient()->IsReauthBeforeFillingRequired(&authenticator));
+  EXPECT_TRUE(GetClient()->IsReauthBeforeFillingRequiredLegacy(&authenticator));
 }
 
 #else
 // Test that authentication is not possible on other platforms.
 TEST_F(ChromePasswordManagerClientTest, CanUseBiometricAuth) {
+  device_reauth::MockDeviceAuthAvailabilityChecker checker;
+  EXPECT_FALSE(GetClient()->IsReauthBeforeFillingRequired(&checker));
+}
+
+TEST_F(ChromePasswordManagerClientTest,
+       CanUseBiometricAuth_LegacyAuthenticator) {
   device_reauth::MockDeviceAuthenticator authenticator;
-  EXPECT_FALSE(GetClient()->IsReauthBeforeFillingRequired(&authenticator));
+  EXPECT_FALSE(
+      GetClient()->IsReauthBeforeFillingRequiredLegacy(&authenticator));
 }
 #endif  // BUILDFLAG(IS_ANDROID)
 
@@ -1581,35 +1738,36 @@ TEST_F(ChromePasswordManagerClientTest, CanShowBubbleOnURL) {
 
 #if !BUILDFLAG(IS_ANDROID)
 // Test that the hats service is called with the expected params.
-TEST_F(ChromePasswordManagerClientTest,
-       TriggerUserPerceptionOfAutofillPasswordSurvey) {
+TEST_F(ChromePasswordManagerClientTest, TriggerPersonalizationAndTrustSurvey) {
   MockHatsService* mock_hats_service = static_cast<MockHatsService*>(
       HatsServiceFactory::GetInstance()->SetTestingFactoryAndUse(
           profile(), base::BindRepeating(&BuildMockHatsService)));
   EXPECT_CALL(*mock_hats_service, CanShowAnySurvey)
       .WillRepeatedly(Return(true));
 
-  const std::string filling_assistane = "Automatically filled";
-  const SurveyStringData filling_assistance_in_product_data = {
-      {"Filling assistance", filling_assistane}};
-  EXPECT_CALL(*mock_hats_service,
-              LaunchDelayedSurveyForWebContents(
-                  kHatsSurveyTriggerAutofillPasswordUserPerception, _, _, _,
-                  filling_assistance_in_product_data, _, _, _, _, _));
+  constexpr std::string_view kFillingAssistance = "Automatically filled";
+  EXPECT_CALL(
+      *mock_hats_service,
+      LaunchDelayedSurveyForWebContents(
+          kHatsSurveyTriggerAutofillPersonalizationAndTrustPasswordFilled, _, _,
+          _,
+          SurveyStringData{
+              {"Filling assistance", std::string(kFillingAssistance)}},
+          _, _, _, _, _));
 
-  GetClient()->TriggerUserPerceptionOfPasswordManagerSurvey(filling_assistane);
+  GetClient()->TriggerPersonalizationAndTrustSurvey(kFillingAssistance);
 }
 
 TEST_F(
     ChromePasswordManagerClientTest,
-    TriggerUserPerceptionOfAutofillPasswordSurvey_EmptyFillingAssistanceString_DoNotCallHats) {
+    TriggerPersonalizationAndTrustSurvey_EmptyFillingAssistance_DoNotCallHats) {
   MockHatsService* mock_hats_service = static_cast<MockHatsService*>(
       HatsServiceFactory::GetInstance()->SetTestingFactoryAndUse(
           profile(), base::BindRepeating(&BuildMockHatsService)));
 
   EXPECT_CALL(*mock_hats_service, LaunchDelayedSurveyForWebContents).Times(0);
 
-  GetClient()->TriggerUserPerceptionOfPasswordManagerSurvey("");
+  GetClient()->TriggerPersonalizationAndTrustSurvey("");
 }
 #endif
 
@@ -1687,6 +1845,38 @@ TEST_F(ChromePasswordManagerClientTest, GetActionableError) {
   EXPECT_EQ(password_manager::ActionableError::kNoError,
             GetClient()->GetActionableError());
 }
+
+#if !BUILDFLAG(IS_ANDROID)
+TEST_F(ChromePasswordManagerClientTest,
+       StartTrustedVaultKeyRetrievalWithoutBrowserDoesNotCrash) {
+  base::HistogramTester histogram_tester;
+  GetClient()->StartTrustedVaultKeyRetrieval(
+      trusted_vault::TrustedVaultUserActionTriggerForUMA::
+          kPasswordManagerSettings);
+  histogram_tester.ExpectTotalCount("Sync.TrustedVaultKeyRetrievalTrigger", 0);
+}
+
+TEST_F(ChromePasswordManagerClientTest,
+       StartTrustedVaultKeyRetrievalInIncognitoDoesNotRetrieve) {
+  std::unique_ptr<content::WebContents> incognito_web_contents(
+      content::WebContentsTester::CreateTestWebContents(
+          profile()->GetPrimaryOTRProfile(/*create_if_needed=*/true), nullptr));
+  autofill::ChromeAutofillClient::CreateForWebContents(
+      incognito_web_contents.get());
+  ChromePasswordManagerClient::CreateForWebContents(
+      incognito_web_contents.get());
+  ChromePasswordManagerClient* client =
+      ChromePasswordManagerClient::FromWebContents(
+          incognito_web_contents.get());
+  ASSERT_NE(nullptr, client);
+
+  base::HistogramTester histogram_tester;
+  client->StartTrustedVaultKeyRetrieval(
+      trusted_vault::TrustedVaultUserActionTriggerForUMA::
+          kPasswordManagerSettings);
+  histogram_tester.ExpectTotalCount("Sync.TrustedVaultKeyRetrievalTrigger", 0);
+}
+#endif  // !BUILDFLAG(IS_ANDROID)
 
 #if BUILDFLAG(IS_ANDROID)
 class ChromePasswordManagerClientAndroidTest
@@ -1891,6 +2081,10 @@ TEST_F(ChromePasswordManagerClientAndroidTest, FocusedInputChangedWrongFrame) {
   client->FocusedInputChanged(driver.get(), FieldRendererId(123),
                               FocusedFieldType::kFillablePasswordField);
 
+  EXPECT_EQ(ManualFillingControllerImpl::FromWebContents(web_contents())
+                ->GetLastFocusedFieldId(),
+            autofill::FieldGlobalId());
+
   PasswordGenerationController* pwd_generation_controller =
       PasswordGenerationController::GetIfExisting(web_contents());
 
@@ -1908,6 +2102,12 @@ TEST_F(ChromePasswordManagerClientAndroidTest, FocusedInputChangedGoodFrame) {
   FocusWebContentsOnMainFrame();
   client->FocusedInputChanged(driver.get(), FieldRendererId(123),
                               FocusedFieldType::kFillablePasswordField);
+
+  EXPECT_EQ(ManualFillingControllerImpl::FromWebContents(web_contents())
+                ->GetLastFocusedFieldId(),
+            autofill::FieldGlobalId(
+                autofill::LocalFrameToken(main_rfh()->GetFrameToken().value()),
+                FieldRendererId(123)));
 
   PasswordGenerationController* pwd_generation_controller =
       PasswordGenerationController::GetIfExisting(web_contents());
@@ -2026,6 +2226,7 @@ TEST_F(ChromePasswordManagerClientAndroidTest,
 
 TEST_F(ChromePasswordManagerClientAndroidTest,
        FocusedInputChangeUpdatesCredManReentryUi) {
+  FocusWebContentsOnMainFrame();
   std::unique_ptr<password_manager::ContentPasswordManagerDriver> driver =
       CreateContentPasswordManagerDriver(main_rfh());
   MockPasswordAccessoryControllerImpl* weak_mock_pwd_controller =
@@ -2278,6 +2479,106 @@ TEST_F(ChromePasswordManagerClientTest, ShowCrossDomainConfirmationPopup) {
   EXPECT_CALL(accepted_callback, Run);
   view->Confirm();
 }
+
+class DropFullscreenWebContentsDelegate : public content::WebContentsDelegate {
+ public:
+  explicit DropFullscreenWebContentsDelegate(base::OnceClosure on_exit)
+      : on_exit_(std::move(on_exit)) {}
+
+  content::FullscreenState GetFullscreenState(
+      const content::WebContents* web_contents) const override {
+    content::FullscreenState state;
+    state.target_mode = content::FullscreenMode::kContent;
+    return state;
+  }
+
+  void ExitFullscreenModeForTab(content::WebContents* web_contents) override {
+    if (on_exit_) {
+      std::move(on_exit_).Run();
+    }
+  }
+
+ private:
+  base::OnceClosure on_exit_;
+};
+
+TEST_F(
+    ChromePasswordManagerClientTest,
+    AutomaticGenerationAvailable_WebContentsDestroyedWhileExitingFullscreen) {
+  const GURL kUrl("https://www.example.com/");
+  NavigateAndCommit(kUrl);
+  FocusWebContentsOnMainFrame();
+  ON_CALL(settings_service(),
+          IsSettingEnabled(PasswordManagerSetting::kOfferToSavePasswords))
+      .WillByDefault(Return(true));
+
+  mojo::AssociatedRemote<autofill::mojom::PasswordGenerationDriver>
+      generation_driver;
+  ChromePasswordManagerClient::BindPasswordGenerationDriver(
+      generation_driver.BindNewEndpointAndPassDedicatedReceiver(), main_rfh());
+
+  bool exit_fullscreen_called = false;
+  DropFullscreenWebContentsDelegate delegate(base::BindLambdaForTesting([&]() {
+    exit_fullscreen_called = true;
+    DeleteContents();
+  }));
+  web_contents()->SetDelegate(&delegate);
+
+  FormData form = CreateLoginFormData();
+  autofill::password_generation::PasswordGenerationUIData ui_data(
+      gfx::RectF(100, 20), /*max_length=*/20, u"password",
+      form.fields()[1].renderer_id(),
+      /*is_generation_element_password_type=*/true, base::i18n::TextDirection(),
+      form, /*input_field_empty=*/false);
+
+  generation_driver->AutomaticGenerationAvailable(ui_data);
+  generation_driver.FlushForTesting();
+
+  EXPECT_TRUE(exit_fullscreen_called);
+  EXPECT_FALSE(web_contents());
+}
+
+TEST_F(ChromePasswordManagerClientTest,
+       AutomaticGenerationAvailable_SubframeDetachedWhileExitingFullscreen) {
+  const GURL kMainUrl("https://www.example.com/");
+  const GURL kSubframeUrl("https://www.example.com/subframe.html");
+  NavigateAndCommit(kMainUrl);
+  content::RenderFrameHost* subframe =
+      content::NavigationSimulator::NavigateAndCommitFromDocument(
+          kSubframeUrl, content::RenderFrameHostTester::For(main_rfh())
+                            ->AppendChild("subframe"));
+  FocusWebContentsOnFrame(subframe);
+  ON_CALL(settings_service(),
+          IsSettingEnabled(PasswordManagerSetting::kOfferToSavePasswords))
+      .WillByDefault(Return(true));
+
+  mojo::AssociatedRemote<autofill::mojom::PasswordGenerationDriver>
+      generation_driver;
+  ChromePasswordManagerClient::BindPasswordGenerationDriver(
+      generation_driver.BindNewEndpointAndPassDedicatedReceiver(), subframe);
+
+  bool exit_fullscreen_called = false;
+  DropFullscreenWebContentsDelegate delegate(base::BindLambdaForTesting([&]() {
+    exit_fullscreen_called = true;
+    content::RenderFrameHostTester::For(subframe)->Detach();
+  }));
+  web_contents()->SetDelegate(&delegate);
+
+  FormData form = CreateLoginFormDataForFrame(subframe);
+  autofill::password_generation::PasswordGenerationUIData ui_data(
+      gfx::RectF(100, 20), /*max_length=*/20, u"password",
+      form.fields()[1].renderer_id(),
+      /*is_generation_element_password_type=*/true, base::i18n::TextDirection(),
+      form, /*input_field_empty=*/false);
+
+  generation_driver->AutomaticGenerationAvailable(ui_data);
+  generation_driver.FlushForTesting();
+
+  EXPECT_TRUE(exit_fullscreen_called);
+  ASSERT_TRUE(web_contents());
+  EXPECT_FALSE(GetClient()->generation_popup_controller());
+  web_contents()->SetDelegate(nullptr);
+}
 #endif  //  !BUILDFLAG(IS_ANDROID)
 
 #if BUILDFLAG(IS_ANDROID)
@@ -2459,6 +2760,7 @@ TEST_F(ChromePasswordManagerClientAndroidTest,
 
   constexpr char kUrl[] = "https://www.foo.com/login.html";
   NavigateAndCommit(GURL(kUrl));
+  FocusWebContentsOnMainFrame();
   ContentAutofillDriver* autofill_driver =
       ContentAutofillDriver::GetForRenderFrameHost(main_rfh());
   ASSERT_TRUE(autofill_driver);
@@ -2478,6 +2780,7 @@ TEST_F(ChromePasswordManagerClientAndroidTest,
 
   auto* driver =
       ContentPasswordManagerDriver::GetForRenderFrameHost(main_rfh());
+  SetUpMockPwdAccessoryForClientUse(driver);
   GetClient()->ShowKeyboardReplacingSurface(
       driver, GetFocusedFieldSuggestionRequest(form));
 
@@ -2486,6 +2789,66 @@ TEST_F(ChromePasswordManagerClientAndroidTest,
 
   // Simulate a timeout. The timer should be cancelled so TTF methods should not
   // be called.
+  AdvanceClock(base::Seconds(5));
+  base::RunLoop().RunUntilIdle();
+}
+
+// Regression test for the passkeys timer when the focus moves to another frame
+// before the original frame's blur event arrives: the late blur comes from a
+// frame that is no longer focused, but it must still cancel the pending
+// Touch-To-Fill sheet for the field that started the timer.
+TEST_F(ChromePasswordManagerClientAndroidTest,
+       DelaySuggestionsSheetPasskeysTimerCancelledByBlurFromUnfocusedFrame) {
+  webauthn::WebAuthnCredManDelegate::override_cred_man_support_for_testing(
+      webauthn::CredManSupport::DISABLED);
+  base::test::ScopedFeatureList features(
+      password_manager::features::
+          kDelaySuggestionsOnAutofocusWaitingForPasskeys);
+  CreateManualFillingController(web_contents());
+
+  auto* ttf_controller = MakeMockTouchToFillPasswordManagerController();
+  EXPECT_CALL(*ttf_controller, InitData).Times(0);
+  EXPECT_CALL(*ttf_controller, Show).Times(0);
+
+  constexpr char kUrl[] = "https://www.foo.com/login.html";
+  NavigateAndCommit(GURL(kUrl));
+  FocusWebContentsOnMainFrame();
+  ContentAutofillDriver* autofill_driver =
+      ContentAutofillDriver::GetForRenderFrameHost(main_rfh());
+  ASSERT_TRUE(autofill_driver);
+
+  std::vector<FormFieldData> fields = {CreateTestFormField(
+      "Username:", "username", "", FormControlType::kInputText, "webauthn")};
+  FormData form =
+      CreateFormDataForRenderFrameHost(*main_rfh(), std::move(fields));
+  {
+    autofill::TestAutofillManagerWaiter waiter(
+        autofill_driver->GetAutofillManager(),
+        {autofill::AutofillManagerEvent::kFormsSeen});
+    autofill_driver->renderer_events().FormsSeen(/*updated_forms=*/{form},
+                                                 /*removed_forms=*/{});
+    ASSERT_TRUE(waiter.Wait(/*num_expected_relevant_events=*/1));
+  }
+
+  // Frame A (main frame): autofocused field starts the passkeys timer.
+  auto* main_driver =
+      ContentPasswordManagerDriver::GetForRenderFrameHost(main_rfh());
+  SetUpMockPwdAccessoryForClientUse(main_driver);
+  GetClient()->ShowKeyboardReplacingSurface(
+      main_driver, GetFocusedFieldSuggestionRequest(form));
+
+  // Frame B takes browser-side focus (e.g. the user tapped non-editable
+  // content in it), so it never sends a FocusedInputChanged of its own.
+  content::RenderFrameHost* subframe =
+      content::RenderFrameHostTester::For(main_rfh())->AppendChild("subframe");
+  FocusWebContentsOnFrame(subframe);
+
+  // Frame A's blur arrives late, from a frame that is no longer focused.
+  GetClient()->FocusedInputChanged(main_driver, FieldRendererId(123),
+                                   FocusedFieldType::kUnknown);
+
+  // Simulate a timeout. The timer must have been cancelled, so TTF methods
+  // must not be called.
   AdvanceClock(base::Seconds(5));
   base::RunLoop().RunUntilIdle();
 }
@@ -2605,3 +2968,145 @@ TEST_F(ChromePasswordManagerClientAndroidTest,
 }
 
 #endif  // BUILDFLAG(IS_ANDROID)
+
+#if BUILDFLAG(ENTERPRISE_CONTENT_ANALYSIS) || BUILDFLAG(IS_ANDROID)
+namespace {
+
+using EventInitiatorInfo = ::chrome::cros::reporting::proto::EventInitiatorInfo;
+
+constexpr char kLoginUrl[] = "https://www.example.com/login";
+constexpr char kConversationId[] = "conversation-id";
+
+class MockReportingEventRouter
+    : public enterprise_connectors::ReportingEventRouter {
+ public:
+  MockReportingEventRouter()
+      : ReportingEventRouter(/*reporting_client=*/nullptr) {}
+  ~MockReportingEventRouter() override = default;
+
+  MOCK_METHOD(void,
+              OnLoginEvent,
+              (const GURL& url,
+               bool is_federated,
+               const url::SchemeHostPort& federated_origin,
+               const std::u16string& username,
+               const std::optional<EventInitiatorInfo>& initiator),
+              (override));
+};
+
+}  // namespace
+
+// Tests that enterprise login events are attributed to the entity acting on
+// the tab. Members are declared so that `policy_checker_` and `mock_tab_`
+// outlive the profile, whose `ActorKeyedService` refers to both.
+class ChromePasswordManagerClientEnterpriseLoginTest
+    : public ChromePasswordManagerClientTest {
+ public:
+  ChromePasswordManagerClientEnterpriseLoginTest() {
+    feature_list_.InitWithFeatures(
+        /*enabled_features=*/{enterprise_connectors::
+                                  kEnterpriseGlicActorAttribution},
+        /*disabled_features=*/{
+            enterprise_connectors::kEnterpriseExtensionActorAttribution,
+            enterprise_connectors::kEventReportingCdpAttribution});
+  }
+
+  void SetUp() override {
+    ChromePasswordManagerClientTest::SetUp();
+
+    enterprise_connectors::ReportingEventRouterFactory::GetInstance()
+        ->SetTestingFactory(
+            profile(),
+            base::BindRepeating([](content::BrowserContext* context)
+                                    -> std::unique_ptr<KeyedService> {
+              return std::make_unique<NiceMock<MockReportingEventRouter>>();
+            }));
+    actor::ActorKeyedServiceFactory::GetInstance()->SetTestingFactory(
+        profile(), base::BindRepeating([](content::BrowserContext* context)
+                                           -> std::unique_ptr<KeyedService> {
+          return std::make_unique<actor::ActorKeyedServiceFake>(
+              Profile::FromBrowserContext(context));
+        }));
+
+    ON_CALL(mock_tab_, GetProfile).WillByDefault(Return(profile()));
+    tabs::TabLookupFromWebContents::CreateForWebContents(web_contents(),
+                                                         &mock_tab_);
+    actor::ActorKeyedService::Get(profile())->GetSurfaceRegistry().OnTabCreated(
+        mock_tab_);
+  }
+
+  MockReportingEventRouter& router() {
+    return *static_cast<MockReportingEventRouter*>(
+        enterprise_connectors::ReportingEventRouterFactory::
+            GetForBrowserContext(profile()));
+  }
+
+  // Starts a Gemini in Chrome task that acts on `web_contents()`.
+  actor::TaskId StartGlicTask() {
+    actor::ActorKeyedService* actor_service =
+        actor::ActorKeyedService::Get(profile());
+    actor::TaskId task_id = actor_service->CreateTaskForTesting(
+        actor::ui::NewMockUiEventDispatcher(),
+        actor::TaskSourceInfo(actor::TaskSourceInfo::Client::kGlic,
+                              kConversationId),
+        &policy_checker_, actor::webui::mojom::TaskOptions::New(),
+        /*delegate=*/nullptr);
+    actor_service->GetTask(task_id)->AddTab(
+        mock_tab_.GetHandle(), /*stop_task_on_detach=*/true, base::DoNothing());
+    return task_id;
+  }
+
+  void ReportLogin() {
+    GetClient()->MaybeReportEnterpriseLoginEvent(
+        GURL(kLoginUrl), /*is_federated=*/false, url::SchemeHostPort(),
+        u"username");
+  }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+  actor::MockPolicyChecker policy_checker_{
+      actor::EnterprisePolicyChecker::UrlBlockReason::kNotBlocked};
+  tabs::MockTabInterface mock_tab_;
+};
+
+TEST_F(ChromePasswordManagerClientEnterpriseLoginTest,
+       AttributesLoginToActingGlicTask) {
+  actor::TaskId task_id = StartGlicTask();
+
+  std::optional<EventInitiatorInfo> initiator;
+  EXPECT_CALL(router(), OnLoginEvent(GURL(kLoginUrl), false, _,
+                                     std::u16string(u"username"), _))
+      .WillOnce(SaveArg<4>(&initiator));
+  ReportLogin();
+
+  ASSERT_TRUE(initiator.has_value());
+  ASSERT_TRUE(initiator->has_browser_agent_info());
+  EXPECT_EQ(::chrome::cros::reporting::proto::BrowserAgentInfo::
+                AGENT_TYPE_GEMINI_IN_CHROME,
+            initiator->browser_agent_info().agent_type());
+  EXPECT_EQ(base::NumberToString(task_id.value()),
+            initiator->browser_agent_info().task_id());
+  EXPECT_EQ(kConversationId, initiator->browser_agent_info().conversation_id());
+}
+
+TEST_F(ChromePasswordManagerClientEnterpriseLoginTest,
+       NoInitiatorWithoutActingTask) {
+  EXPECT_CALL(router(),
+              OnLoginEvent(GURL(kLoginUrl), false, _,
+                           std::u16string(u"username"), Eq(std::nullopt)));
+  ReportLogin();
+}
+
+TEST_F(ChromePasswordManagerClientEnterpriseLoginTest,
+       NoInitiatorWhenAttributionDisabled) {
+  base::test::ScopedFeatureList disabled;
+  disabled.InitAndDisableFeature(
+      enterprise_connectors::kEnterpriseGlicActorAttribution);
+  StartGlicTask();
+
+  EXPECT_CALL(router(),
+              OnLoginEvent(GURL(kLoginUrl), false, _,
+                           std::u16string(u"username"), Eq(std::nullopt)));
+  ReportLogin();
+}
+#endif  // BUILDFLAG(ENTERPRISE_CONTENT_ANALYSIS) || BUILDFLAG(IS_ANDROID)

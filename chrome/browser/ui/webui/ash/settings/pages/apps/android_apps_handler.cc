@@ -4,14 +4,13 @@
 
 #include "chrome/browser/ui/webui/ash/settings/pages/apps/android_apps_handler.h"
 
+#include "base/check_deref.h"
 #include "base/functional/bind.h"
-#include "chrome/browser/apps/app_service/app_service_proxy.h"
-#include "chrome/browser/apps/app_service/app_service_proxy_factory.h"
-#include "chrome/browser/apps/app_service/launch_utils.h"
 #include "chrome/browser/ash/arc/arc_util.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chromeos/ash/experiences/arc/app/arc_app_constants.h"
 #include "components/services/app_service/public/cpp/app_launch_util.h"
+#include "components/services/app_service/public/cpp/app_service.h"
 #include "components/services/app_service/public/cpp/intent_util.h"
 #include "content/public/browser/web_contents.h"
 #include "ui/display/display.h"
@@ -21,8 +20,8 @@
 namespace ash::settings {
 
 AndroidAppsHandler::AndroidAppsHandler(Profile* profile,
-                                       apps::AppServiceProxy* app_service_proxy)
-    : profile_(profile), app_service_proxy_(app_service_proxy) {}
+                                       apps::AppService* app_service)
+    : profile_(profile), app_service_(CHECK_DEREF(app_service)) {}
 
 AndroidAppsHandler::~AndroidAppsHandler() = default;
 
@@ -108,14 +107,14 @@ void AndroidAppsHandler::ShowAndroidAppsSettings(const base::ListValue& args) {
   }
   int flags = activated_from_keyboard ? ui::EF_NONE : ui::EF_LEFT_MOUSE_BUTTON;
 
-  app_service_proxy_->Launch(
+  app_service_->Launch(
       arc::kSettingsAppId, flags, apps::LaunchSource::kFromParentalControls,
       std::make_unique<apps::WindowInfo>(GetDisplayIdForCurrentProfile()));
 }
 
 int64_t AndroidAppsHandler::GetDisplayIdForCurrentProfile() {
   // Settings in secondary profile cannot access ARC.
-  DCHECK(arc::IsArcAllowedForProfile(profile_));
+  CHECK(arc::IsArcAllowedForProfile(profile_), base::NotFatalUntil::M162);
   return display::Screen::Get()
       ->GetDisplayNearestView(web_ui()->GetWebContents()->GetNativeView())
       .id();

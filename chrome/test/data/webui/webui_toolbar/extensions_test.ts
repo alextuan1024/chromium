@@ -2,15 +2,18 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import 'chrome://webui-toolbar.top-chrome/app.js';
+import 'chrome://webui-toolbar.top-chrome/lazy_load.js';
 
 import {assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chai_assert.js';
 import {microtasksFinished} from 'chrome://webui-test/test_util.js';
-import {BrowserProxyImpl, TrackedElementManager} from 'chrome://webui-toolbar.top-chrome/app.js';
-import type {ExtensionsElement} from 'chrome://webui-toolbar.top-chrome/app.js';
+import {AnimationTracker, FlatEdge} from 'chrome://webui-toolbar.top-chrome/lazy_load.js';
+import type {ExtensionActionId, ExtensionActionInfo, ExtensionsElement} from 'chrome://webui-toolbar.top-chrome/lazy_load.js';
+import {BrowserProxyImpl, TrackedElementManager} from 'chrome://webui-toolbar.top-chrome/webui_toolbar.js';
 
 suite('Extensions', function() {
   let container: ExtensionsElement;
+  let executeCalls: ExtensionActionId[] = [];
+  let contextMenuCalls: ExtensionActionId[] = [];
   let moveCalls: Array<{extensionId: string, index: number}> = [];
   let moveByCalls: Array<{extensionId: string, delta: number}> = [];
 
@@ -51,10 +54,18 @@ suite('Extensions', function() {
   setup(async () => {
     channels = [];  // Reset active channels
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
+    executeCalls = [];
+    contextMenuCalls = [];
     moveCalls = [];
     moveByCalls = [];
 
     const mockHandler = {
+      executeExtensionAction: (id: ExtensionActionId) => {
+        executeCalls.push(id);
+      },
+      showExtensionContextMenu: (id: ExtensionActionId) => {
+        contextMenuCalls.push(id);
+      },
       moveExtensionAction: (extensionId: string, index: number) => {
         moveCalls.push({extensionId, index});
       },
@@ -67,6 +78,7 @@ suite('Extensions', function() {
     const mockTrackedElementManager = {
       startTracking: () => {},
       stopTracking: () => {},
+      notifyElementActivated: () => {},
     };
     TrackedElementManager.setInstance(mockTrackedElementManager as any);
 
@@ -77,28 +89,49 @@ suite('Extensions', function() {
     // Initial state with 2 extensions and the menu button
     container.states = [
       {
-        id: 'action-1',
+        id: {extensionId: 'action-1'},
         accessibleName: 'Action 1',
         tooltip: 'Action 1 Tooltip',
         isVisible: true,
+        forceVisible: false,
         icon: {handleId: 1n},
+        isPinnedByDefaultIphAnchor: false,
+        highlighted: false,
+        text: '',
+        flatEdge: FlatEdge.kNone,
       },
       {
-        id: 'action-2',
+        id: {extensionId: 'action-2'},
         accessibleName: 'Action 2',
         tooltip: 'Action 2 Tooltip',
         isVisible: true,
+        forceVisible: false,
         icon: {handleId: 2n},
+        isPinnedByDefaultIphAnchor: false,
+        highlighted: false,
+        text: '',
+        flatEdge: FlatEdge.kNone,
       },
       {
-        id: '',
+        id: {extensionsMenuButton: {}},
         accessibleName: 'Extensions Button',
         tooltip: 'Extensions Button Tooltip',
         isVisible: true,
+        forceVisible: true,
         icon: {handleId: 3n},
+        isPinnedByDefaultIphAnchor: false,
+        highlighted: false,
+        text: '',
+        flatEdge: FlatEdge.kNone,
       },
     ];
     await container.updateComplete;
+    // Simulate the app having rendered the browser's initial state.
+    container.markInitialStateRendered();
+  });
+
+  teardown(() => {
+    AnimationTracker.resetForTesting();
   });
 
   test('Keyboard reorder retains focus', async () => {
@@ -111,10 +144,10 @@ suite('Extensions', function() {
     firstAction.focus();
     assertEquals(
         firstAction.shadowRoot.activeElement,
-        firstAction.shadowRoot.querySelector('cr-button'));
+        firstAction.shadowRoot.querySelector('toolbar-chip-button'));
 
     // Trigger keyboard reorder (Ctrl+ArrowRight)
-    const button = firstAction.shadowRoot.querySelector('cr-button')!;
+    const button = firstAction.shadowRoot.querySelector('toolbar-chip-button')!;
     button.dispatchEvent(new KeyboardEvent('keydown', {
       key: 'ArrowRight',
       ctrlKey: true,
@@ -130,25 +163,40 @@ suite('Extensions', function() {
     // We move Action 1 to index 1 (after Action 2)
     container.states = [
       {
-        id: 'action-2',
+        id: {extensionId: 'action-2'},
         accessibleName: 'Action 2',
         tooltip: 'Action 2 Tooltip',
         isVisible: true,
+        forceVisible: false,
         icon: {handleId: 2n},
+        isPinnedByDefaultIphAnchor: false,
+        highlighted: false,
+        text: '',
+        flatEdge: FlatEdge.kNone,
       },
       {
-        id: 'action-1',
+        id: {extensionId: 'action-1'},
         accessibleName: 'Action 1',
         tooltip: 'Action 1 Tooltip',
         isVisible: true,
+        forceVisible: false,
         icon: {handleId: 1n},
+        isPinnedByDefaultIphAnchor: false,
+        highlighted: false,
+        text: '',
+        flatEdge: FlatEdge.kNone,
       },
       {
-        id: 'extensions_button',
+        id: {extensionsMenuButton: {}},
         accessibleName: 'Extensions Button',
         tooltip: 'Extensions Button Tooltip',
         isVisible: true,
+        forceVisible: true,
         icon: {handleId: 3n},
+        isPinnedByDefaultIphAnchor: false,
+        highlighted: false,
+        text: '',
+        flatEdge: FlatEdge.kNone,
       },
     ];
     await microtasksFinished();
@@ -159,10 +207,11 @@ suite('Extensions', function() {
         container.shadowRoot.querySelectorAll('webui-toolbar-extension');
     const newSecondAction = newActionElements[1]!;
     assertEquals(
-        'action-1', newSecondAction.state.id);  // Verify it is indeed Action 1
+        'action-1',
+        newSecondAction.state.id.extensionId);  // Verify it is indeed Action 1
     assertEquals(
         newSecondAction.shadowRoot.activeElement,
-        newSecondAction.shadowRoot.querySelector('cr-button'));
+        newSecondAction.shadowRoot.querySelector('toolbar-chip-button'));
   });
 
   test('Cross-window dragover identifies action from broadcast', () => {
@@ -231,11 +280,7 @@ suite('Extensions', function() {
     };
 
     // Trigger dragstart on first action
-    firstAction.dispatchEvent(new CustomEvent('toolbar-action-drag-start', {
-      detail: {itemId: 'action-1'},
-      bubbles: true,
-      composed: true,
-    }));
+    firstAction.fire('toolbar-action-drag-start', {itemId: 'action-1'});
 
     assertEquals('drag-start', receivedMessage?.type);
     assertEquals('action-1', receivedMessage?.itemId);
@@ -248,11 +293,7 @@ suite('Extensions', function() {
     const firstAction = actionElements[0]!;
 
     // Start drag first
-    firstAction.dispatchEvent(new CustomEvent('toolbar-action-drag-start', {
-      detail: {itemId: 'action-1'},
-      bubbles: true,
-      composed: true,
-    }));
+    firstAction.fire('toolbar-action-drag-start', {itemId: 'action-1'});
 
     let receivedMessage: any = null;
     const listenerChannel = new BroadcastChannel('extension-action-drag');
@@ -261,11 +302,8 @@ suite('Extensions', function() {
     };
 
     // Trigger dragend
-    container.dispatchEvent(new CustomEvent('toolbar-action-drag-end', {
-      detail: {itemId: 'action-1', dropEffect: 'move'},
-      bubbles: true,
-      composed: true,
-    }));
+    container.fire(
+        'toolbar-action-drag-end', {itemId: 'action-1', dropEffect: 'move'});
 
     assertEquals('drag-end', receivedMessage?.type);
   });
@@ -357,11 +395,7 @@ suite('Extensions', function() {
     const firstAction = actionElements[0]!;
 
     // 1. Start a local drag
-    firstAction.dispatchEvent(new CustomEvent('toolbar-action-drag-start', {
-      detail: {itemId: 'action-1'},
-      bubbles: true,
-      composed: true,
-    }));
+    firstAction.fire('toolbar-action-drag-start', {itemId: 'action-1'});
 
     // Verify it is marked as dragging/placeholder locally
     let keyedStates = container.keyedStates;
@@ -396,11 +430,7 @@ suite('Extensions', function() {
         const firstAction = actionElements[0]!;
 
         // 1. Start a local drag
-        firstAction.dispatchEvent(new CustomEvent('toolbar-action-drag-start', {
-          detail: {itemId: 'action-1'},
-          bubbles: true,
-          composed: true,
-        }));
+        firstAction.fire('toolbar-action-drag-start', {itemId: 'action-1'});
 
         // Verify it is marked as dragging/placeholder locally
         let keyedStates = container.keyedStates;
@@ -568,7 +598,7 @@ suite('Extensions', function() {
         container.shadowRoot.querySelectorAll('webui-toolbar-extension');
     const firstAction = actionElements[0]!;
     assertTrue(firstAction.isDraggable());
-    const button = firstAction.shadowRoot.querySelector('cr-button')!;
+    const button = firstAction.shadowRoot.querySelector('toolbar-chip-button')!;
     assertEquals('true', button.getAttribute('draggable'));
   });
 
@@ -576,7 +606,7 @@ suite('Extensions', function() {
     const actionElements =
         container.shadowRoot.querySelectorAll('webui-toolbar-extension');
     const firstAction = actionElements[0]!;
-    const button = firstAction.shadowRoot.querySelector('cr-button')!;
+    const button = firstAction.shadowRoot.querySelector('toolbar-chip-button')!;
 
     const dragStartEvent = new DragEvent('dragstart', {
       bubbles: true,
@@ -618,32 +648,52 @@ suite('Extensions', function() {
     // 2. Update state
     container.states = [
       {
-        id: 'action-1',
+        id: {extensionId: 'action-1'},
         accessibleName: 'Action 1',
         tooltip: 'Action 1 Tooltip',
         isVisible: true,
+        forceVisible: false,
         icon: {handleId: 1n},
+        isPinnedByDefaultIphAnchor: false,
+        highlighted: false,
+        text: '',
+        flatEdge: FlatEdge.kNone,
       },
       {
-        id: 'action-2',
+        id: {extensionId: 'action-2'},
         accessibleName: 'Action 2',
         tooltip: 'Action 2 Tooltip',
         isVisible: true,
+        forceVisible: false,
         icon: {handleId: 2n},
+        isPinnedByDefaultIphAnchor: false,
+        highlighted: false,
+        text: '',
+        flatEdge: FlatEdge.kNone,
       },
       {
-        id: 'action-3',
+        id: {extensionId: 'action-3'},
         accessibleName: 'Action 3',
         tooltip: 'Action 3 Tooltip',
         isVisible: true,
+        forceVisible: false,
         icon: {handleId: 4n},
+        isPinnedByDefaultIphAnchor: false,
+        highlighted: false,
+        text: '',
+        flatEdge: FlatEdge.kNone,
       },
       {
-        id: '',
+        id: {extensionsMenuButton: {}},
         accessibleName: 'Extensions Button',
         tooltip: 'Extensions Button Tooltip',
         isVisible: true,
+        forceVisible: true,
         icon: {handleId: 3n},
+        isPinnedByDefaultIphAnchor: false,
+        highlighted: false,
+        text: '',
+        flatEdge: FlatEdge.kNone,
       },
     ];
 
@@ -661,7 +711,8 @@ suite('Extensions', function() {
         const actionElements =
             container.shadowRoot.querySelectorAll('webui-toolbar-extension');
         const firstAction = actionElements[0]!;
-        const button = firstAction.shadowRoot.querySelector('cr-button')!;
+        const button =
+            firstAction.shadowRoot.querySelector('toolbar-chip-button')!;
 
         // 1. Start drag
         const dragStartEvent = new DragEvent('dragstart', {
@@ -682,32 +733,52 @@ suite('Extensions', function() {
         // 2. Update state (add action-3)
         container.states = [
           {
-            id: 'action-1',
+            id: {extensionId: 'action-1'},
             accessibleName: 'Action 1',
             tooltip: 'Action 1 Tooltip',
             isVisible: true,
+            forceVisible: false,
             icon: {handleId: 1n},
+            isPinnedByDefaultIphAnchor: false,
+            highlighted: false,
+            text: '',
+            flatEdge: FlatEdge.kNone,
           },
           {
-            id: 'action-2',
+            id: {extensionId: 'action-2'},
             accessibleName: 'Action 2',
             tooltip: 'Action 2 Tooltip',
             isVisible: true,
+            forceVisible: false,
             icon: {handleId: 2n},
+            isPinnedByDefaultIphAnchor: false,
+            highlighted: false,
+            text: '',
+            flatEdge: FlatEdge.kNone,
           },
           {
-            id: 'action-3',
+            id: {extensionId: 'action-3'},
             accessibleName: 'Action 3',
             tooltip: 'Action 3 Tooltip',
             isVisible: true,
+            forceVisible: false,
             icon: {handleId: 4n},
+            isPinnedByDefaultIphAnchor: false,
+            highlighted: false,
+            text: '',
+            flatEdge: FlatEdge.kNone,
           },
           {
-            id: '',
+            id: {extensionsMenuButton: {}},
             accessibleName: 'Extensions Button',
             tooltip: 'Extensions Button Tooltip',
             isVisible: true,
+            forceVisible: true,
             icon: {handleId: 3n},
+            isPinnedByDefaultIphAnchor: false,
+            highlighted: false,
+            text: '',
+            flatEdge: FlatEdge.kNone,
           },
         ];
 
@@ -759,25 +830,40 @@ suite('Extensions', function() {
         // 2. Update state (change tooltip)
         container.states = [
           {
-            id: 'action-1',
+            id: {extensionId: 'action-1'},
             accessibleName: 'Action 1',
             tooltip: 'Action 1 Tooltip Changed',
             isVisible: true,
+            forceVisible: false,
             icon: {handleId: 1n},
+            isPinnedByDefaultIphAnchor: false,
+            highlighted: false,
+            text: '',
+            flatEdge: FlatEdge.kNone,
           },
           {
-            id: 'action-2',
+            id: {extensionId: 'action-2'},
             accessibleName: 'Action 2',
             tooltip: 'Action 2 Tooltip',
             isVisible: true,
+            forceVisible: false,
             icon: {handleId: 2n},
+            isPinnedByDefaultIphAnchor: false,
+            highlighted: false,
+            text: '',
+            flatEdge: FlatEdge.kNone,
           },
           {
-            id: '',
+            id: {extensionsMenuButton: {}},
             accessibleName: 'Extensions Button',
             tooltip: 'Extensions Button Tooltip',
             isVisible: true,
+            forceVisible: true,
             icon: {handleId: 3n},
+            isPinnedByDefaultIphAnchor: false,
+            highlighted: false,
+            text: '',
+            flatEdge: FlatEdge.kNone,
           },
         ];
 
@@ -792,7 +878,7 @@ suite('Extensions', function() {
     const actionElements =
         container.shadowRoot.querySelectorAll('webui-toolbar-extension');
     const firstAction = actionElements[0]!;
-    const button = firstAction.shadowRoot.querySelector('cr-button')!;
+    const button = firstAction.shadowRoot.querySelector('toolbar-chip-button')!;
 
     // 1. Start drag
     const dragStartEvent = new DragEvent('dragstart', {
@@ -811,25 +897,40 @@ suite('Extensions', function() {
     // 2. Update state (change tooltip)
     container.states = [
       {
-        id: 'action-1',
+        id: {extensionId: 'action-1'},
         accessibleName: 'Action 1',
         tooltip: 'Action 1 Tooltip Changed',
         isVisible: true,
+        forceVisible: false,
         icon: {handleId: 1n},
+        isPinnedByDefaultIphAnchor: false,
+        highlighted: false,
+        text: '',
+        flatEdge: FlatEdge.kNone,
       },
       {
-        id: 'action-2',
+        id: {extensionId: 'action-2'},
         accessibleName: 'Action 2',
         tooltip: 'Action 2 Tooltip',
         isVisible: true,
+        forceVisible: false,
         icon: {handleId: 2n},
+        isPinnedByDefaultIphAnchor: false,
+        highlighted: false,
+        text: '',
+        flatEdge: FlatEdge.kNone,
       },
       {
-        id: '',
+        id: {extensionsMenuButton: {}},
         accessibleName: 'Extensions Button',
         tooltip: 'Extensions Button Tooltip',
         isVisible: true,
+        forceVisible: true,
         icon: {handleId: 3n},
+        isPinnedByDefaultIphAnchor: false,
+        highlighted: false,
+        text: '',
+        flatEdge: FlatEdge.kNone,
       },
     ];
 
@@ -860,7 +961,8 @@ suite('Extensions', function() {
         const actionElements =
             container.shadowRoot.querySelectorAll('webui-toolbar-extension');
         const firstAction = actionElements[0]!;
-        const button = firstAction.shadowRoot.querySelector('cr-button')!;
+        const button =
+            firstAction.shadowRoot.querySelector('toolbar-chip-button')!;
 
         // 1. Start drag
         const dragStartEvent = new DragEvent('dragstart', {
@@ -881,25 +983,40 @@ suite('Extensions', function() {
         // 2. Update state changing order (swap action-1 and action-2 in Mojo)
         container.states = [
           {
-            id: 'action-2',
+            id: {extensionId: 'action-2'},
             accessibleName: 'Action 2',
             tooltip: 'Action 2 Tooltip',
             isVisible: true,
+            forceVisible: false,
             icon: {handleId: 2n},
+            isPinnedByDefaultIphAnchor: false,
+            highlighted: false,
+            text: '',
+            flatEdge: FlatEdge.kNone,
           },
           {
-            id: 'action-1',
+            id: {extensionId: 'action-1'},
             accessibleName: 'Action 1',
             tooltip: 'Action 1 Tooltip',
             isVisible: true,
+            forceVisible: false,
             icon: {handleId: 1n},
+            isPinnedByDefaultIphAnchor: false,
+            highlighted: false,
+            text: '',
+            flatEdge: FlatEdge.kNone,
           },
           {
-            id: '',
+            id: {extensionsMenuButton: {}},
             accessibleName: 'Extensions Button',
             tooltip: 'Extensions Button Tooltip',
             isVisible: true,
+            forceVisible: true,
             icon: {handleId: 3n},
+            isPinnedByDefaultIphAnchor: false,
+            highlighted: false,
+            text: '',
+            flatEdge: FlatEdge.kNone,
           },
         ];
 
@@ -942,7 +1059,7 @@ suite('Extensions', function() {
     const actionElements =
         container.shadowRoot.querySelectorAll('webui-toolbar-extension');
     const firstAction = actionElements[0]!;
-    const button = firstAction.shadowRoot.querySelector('cr-button')!;
+    const button = firstAction.shadowRoot.querySelector('toolbar-chip-button')!;
 
     // 1. Start drag
     const dragStartEvent = new DragEvent('dragstart', {
@@ -963,18 +1080,28 @@ suite('Extensions', function() {
     // 2. Update state removing action-1
     container.states = [
       {
-        id: 'action-2',
+        id: {extensionId: 'action-2'},
         accessibleName: 'Action 2',
         tooltip: 'Action 2 Tooltip',
         isVisible: true,
+        forceVisible: false,
         icon: {handleId: 2n},
+        isPinnedByDefaultIphAnchor: false,
+        highlighted: false,
+        text: '',
+        flatEdge: FlatEdge.kNone,
       },
       {
-        id: '',
+        id: {extensionsMenuButton: {}},
         accessibleName: 'Extensions Button',
         tooltip: 'Extensions Button Tooltip',
         isVisible: true,
+        forceVisible: true,
         icon: {handleId: 3n},
+        isPinnedByDefaultIphAnchor: false,
+        highlighted: false,
+        text: '',
+        flatEdge: FlatEdge.kNone,
       },
     ];
 
@@ -991,11 +1118,16 @@ suite('Extensions', function() {
     // 3. Re-add action-1 to states
     container.states = [
       {
-        id: 'action-1',
+        id: {extensionId: 'action-1'},
         accessibleName: 'Action 1',
         tooltip: 'Action 1 Tooltip',
         isVisible: true,
+        forceVisible: false,
         icon: {handleId: 1n},
+        isPinnedByDefaultIphAnchor: false,
+        highlighted: false,
+        text: '',
+        flatEdge: FlatEdge.kNone,
       },
       ...container.states,
     ];
@@ -1015,12 +1147,12 @@ suite('Extensions', function() {
     const actionElements =
         container.shadowRoot.querySelectorAll('webui-toolbar-extension');
     const menuButton = actionElements[2]!;
-    assertEquals('', menuButton.state.id);
+    assertTrue(!!menuButton.state.id.extensionsMenuButton);
 
     // Verify it returns false for isDraggable
     assertTrue(!menuButton.isDraggable());
 
-    const button = menuButton.shadowRoot.querySelector('cr-button')!;
+    const button = menuButton.shadowRoot.querySelector('toolbar-chip-button')!;
     assertEquals('false', button.getAttribute('draggable'));
 
     // Try to trigger dragstart
@@ -1109,5 +1241,293 @@ suite('Extensions', function() {
     assertEquals(1, moveCalls.length);
     assertEquals('action-1', moveCalls[0]!.extensionId);
     assertEquals(1, moveCalls[0]!.index);
+  });
+
+  test('Only extension actions have the extension-action attribute', () => {
+    const actionElements =
+        container.shadowRoot.querySelectorAll('webui-toolbar-extension');
+    assertEquals(3, actionElements.length);
+
+    // The container outline CSS distinguishes the pinned actions from the
+    // extensions menu button (the puzzle icon) via `[extension-action]`.
+    assertEquals('action-1', actionElements[0]!.getAttribute('data-key'));
+    assertTrue(actionElements[0]!.hasAttribute('extension-action'));
+    assertEquals('action-2', actionElements[1]!.getAttribute('data-key'));
+    assertTrue(actionElements[1]!.hasAttribute('extension-action'));
+    assertEquals('', actionElements[2]!.getAttribute('data-key'));
+    assertFalse(actionElements[2]!.hasAttribute('extension-action'));
+  });
+
+  test('getActions', () => {
+    const actions = container.getActions();
+    assertEquals(4, actions.length);
+    assertEquals('action-1', actions[0]!.getAttribute('data-key'));
+    assertEquals('action-2', actions[1]!.getAttribute('data-key'));
+    assertEquals('', actions[2]!.getAttribute('data-key'));
+    assertFalse(actions[2]!.isDivider);
+    assertTrue(actions[3]!.isDivider);
+  });
+
+  test('getActions ignores other elements', async () => {
+    const action1 = container.getActions()[0]!;
+    // TrackedElementManager adds an element after an action while a dialog is
+    // anchored to the action.
+    const sentinel = document.createElement('div');
+    action1.after(sentinel);
+    container.requestUpdate();
+    await microtasksFinished();
+
+    const actions = container.getActions();
+    assertEquals(4, actions.length);
+    assertEquals(action1, actions[0]);
+    assertEquals('action-2', actions[1]!.getAttribute('data-key'));
+    // The extensions menu button and the divider.
+    assertEquals('webui-toolbar-extension', actions[2]!.localName);
+    assertEquals('', actions[2]!.getAttribute('data-key'));
+    assertEquals('toolbar-divider', actions[3]!.localName);
+
+    // The element is not treated as an action that can overflow either.
+    container.setToMinWidth();
+    assertFalse(sentinel.classList.contains('overflow-display-none'));
+    assertEquals(0, container.controlsToAddToOverflowMenu().length);
+  });
+
+  test('Prevents overflow of force-visible actions', async () => {
+    const actionElements =
+        container.shadowRoot.querySelectorAll('webui-toolbar-extension');
+    assertEquals(3, actionElements.length);
+    const action1 = actionElements[0]!;
+    const action2 = actionElements[1]!;
+    const menuButton = actionElements[2]!;
+    assertFalse(action1.preventOverflow);
+    assertFalse(action2.preventOverflow);
+    // The extensions menu button is always force-visible.
+    assertTrue(menuButton.preventOverflow);
+
+    // Force action 2 to be visible, as happens when its popup is shown.
+    container.states = container.states.map(
+        s => s.id.extensionId === 'action-2' ? {...s, forceVisible: true} : s);
+    await microtasksFinished();
+    assertFalse(action1.preventOverflow);
+    assertTrue(action2.preventOverflow);
+    assertTrue(menuButton.preventOverflow);
+
+    container.states = container.states.map(
+        s => s.id.extensionId === 'action-2' ? {...s, forceVisible: false} : s);
+    await microtasksFinished();
+    assertFalse(action1.preventOverflow);
+    assertFalse(action2.preventOverflow);
+    assertTrue(menuButton.preventOverflow);
+  });
+
+  test('Prevents overflow of tracked highlighted actions', async () => {
+    const actionElements =
+        container.shadowRoot.querySelectorAll('webui-toolbar-extension');
+    assertEquals(3, actionElements.length);
+    const action1 = actionElements[0]!;
+    const action2 = actionElements[1]!;
+    assertFalse(action1.preventOverflow);
+    assertFalse(action2.preventOverflow);
+
+    action2.trackedHighlighted = true;
+    await microtasksFinished();
+    assertFalse(action1.preventOverflow);
+    assertTrue(action2.preventOverflow);
+
+    action2.trackedHighlighted = false;
+    await microtasksFinished();
+    assertFalse(action1.preventOverflow);
+    assertFalse(action2.preventOverflow);
+  });
+
+  test('Overflowed actions are not added to the overflow menu', () => {
+    // Hide everything that may be hidden. Only the extensions menu button,
+    // which may not overflow, and the divider after it, should remain visible.
+    container.setToMinWidth();
+    const actions = container.getActions();
+    assertEquals(4, actions.length);
+    assertTrue(actions[0]!.classList.contains('overflow-display-none'));
+    assertTrue(actions[1]!.classList.contains('overflow-display-none'));
+    assertFalse(actions[2]!.classList.contains('overflow-display-none'));
+    assertFalse(actions[3]!.classList.contains('overflow-display-none'));
+
+    // Overflowed extensions are just hidden, and not added to the overflow
+    // menu.
+    assertEquals(0, container.controlsToAddToOverflowMenu().length);
+  });
+
+  test('Click suppression when bubble is open or recently closed', () => {
+    const actionElements =
+        container.shadowRoot.querySelectorAll('webui-toolbar-extension');
+    const firstAction = actionElements[0]!;
+    const button = firstAction.shadowRoot.querySelector('toolbar-chip-button')!;
+
+    const dispatchMouseClick = () => {
+      button.dispatchEvent(new PointerEvent(
+          'pointerdown', {bubbles: true, button: 0, pointerType: 'mouse'}));
+      button.dispatchEvent(new PointerEvent(
+          'click', {bubbles: true, button: 0, pointerType: 'mouse'}));
+    };
+
+    // 1. Normal click when bubble is closed executes the action.
+    dispatchMouseClick();
+    assertEquals(1, executeCalls.length);
+    assertEquals('action-1', executeCalls[0]!.extensionId);
+
+    // 2. Click while highlighted (bubble open) is suppressed.
+    firstAction.highlightTracker.onHighlightChanged(true);
+    dispatchMouseClick();
+    assertEquals(1, executeCalls.length);
+
+    // 3. Click right after unhighlighting (< 100ms) is suppressed.
+    firstAction.highlightTracker.onHighlightChanged(false);
+    firstAction.highlightTracker.lastUnhighlightedTime =
+        performance.now() + 10000;
+    dispatchMouseClick();
+    assertEquals(1, executeCalls.length);
+
+    // 4. Keyboard activation (empty pointerType) is not suppressed even after
+    // a pointerdown that armed click skipping.
+    button.dispatchEvent(new PointerEvent(
+        'pointerdown', {bubbles: true, button: 0, pointerType: 'mouse'}));
+    button.dispatchEvent(
+        new PointerEvent('click', {bubbles: true, button: 0, pointerType: ''}));
+    assertEquals(2, executeCalls.length);
+
+    // 5. Click after >= 100ms since bubble closed executes the action.
+    firstAction.highlightTracker.lastUnhighlightedTime =
+        performance.now() - 200;
+    dispatchMouseClick();
+    assertEquals(3, executeCalls.length);
+  });
+
+  test('Extension buttons have aria-haspopup menu', () => {
+    const actionElements =
+        container.shadowRoot.querySelectorAll('webui-toolbar-extension');
+    assertEquals(3, actionElements.length);
+
+    for (const element of actionElements) {
+      const button = element.shadowRoot.querySelector('toolbar-chip-button')!;
+      assertEquals('menu', button.ariaHasPopup);
+      assertEquals('menu', button.$.button.getAttribute('aria-haspopup'));
+    }
+  });
+
+  test('Request access button', async () => {
+    container.states = [
+      ...container.states.slice(0, 2),
+      {
+        id: {requestAccessButton: 1},
+        accessibleName: '',
+        tooltip: 'Request Access Tooltip',
+        isVisible: true,
+        forceVisible: false,
+        icon: {handleId: 0n},
+        isPinnedByDefaultIphAnchor: false,
+        highlighted: false,
+        text: 'Allow 1?',
+        flatEdge: FlatEdge.kEnd,
+      },
+      ...container.states.slice(2),
+    ];
+    await microtasksFinished();
+
+    const requestAccessButton = Array
+                                    .from(container.shadowRoot.querySelectorAll(
+                                        'webui-toolbar-extension'))
+                                    .find(
+                                        el => el.getAttribute('data-key') ===
+                                            'ExtensionsRequestAccessButton');
+    assertTrue(!!requestAccessButton);
+
+    // The request access button isn't an extension action.
+    assertFalse(requestAccessButton.hasAttribute('extension-action'));
+
+    // The flat edge and text are rendered on the chip button.
+    const button =
+        requestAccessButton.shadowRoot.querySelector('toolbar-chip-button')!;
+    assertEquals('end', button.flatEdge);
+    assertEquals('end', button.getAttribute('flat-edge'));
+    assertTrue(button.hasAttribute('has-label'));
+    const text = button.querySelector('#text');
+    assertTrue(!!text);
+    assertEquals('Allow 1?', text.textContent);
+    // There's no icon.
+    assertFalse(!!button.querySelector('icon-from-table'));
+
+    // The request access button isn't draggable.
+    assertFalse(requestAccessButton.isDraggable());
+    assertEquals('false', button.getAttribute('draggable'));
+
+    // The request access button doesn't have a context menu.
+    button.dispatchEvent(new PointerEvent(
+        'contextmenu', {bubbles: true, cancelable: true, composed: true}));
+    assertEquals(0, contextMenuCalls.length);
+
+    // Clicking the request access button sends its ID, including the sequence
+    // number, to the browser.
+    button.click();
+    assertEquals(1, executeCalls.length);
+    assertEquals(1, executeCalls[0]!.requestAccessButton);
+  });
+
+  function createExtensionsStates(): ExtensionActionInfo[] {
+    return [
+      {
+        id: {extensionId: 'action-1'},
+        accessibleName: 'Action 1',
+        tooltip: 'Action 1 Tooltip',
+        isVisible: true,
+        forceVisible: false,
+        icon: {handleId: 1n},
+        isPinnedByDefaultIphAnchor: false,
+        highlighted: false,
+        text: '',
+        flatEdge: FlatEdge.kNone,
+      },
+      {
+        id: {extensionsMenuButton: {}},
+        accessibleName: 'Extensions Button',
+        tooltip: 'Extensions Button Tooltip',
+        isVisible: true,
+        forceVisible: true,
+        icon: {handleId: 3n},
+        isPinnedByDefaultIphAnchor: false,
+        highlighted: false,
+        text: '',
+        flatEdge: FlatEdge.kNone,
+      },
+    ];
+  }
+
+  test('Actions in the initial state do not animate in', async () => {
+    AnimationTracker.showAnimations = true;
+    const newContainer = document.createElement('webui-toolbar-extensions');
+    document.body.appendChild(newContainer);
+    await microtasksFinished();
+
+    newContainer.states = createExtensionsStates();
+    await microtasksFinished();
+
+    assertEquals(2, newContainer.keyedStates.length);
+    assertFalse(newContainer.keyedStates.some(s => s.animateIn));
+    assertTrue(newContainer.classList.contains('initial-load'));
+  });
+
+  test('First action added after the initial state animates in', async () => {
+    AnimationTracker.showAnimations = true;
+    const newContainer = document.createElement('webui-toolbar-extensions');
+    document.body.appendChild(newContainer);
+    // The browser's initial state has no extensions.
+    newContainer.states = [];
+    await microtasksFinished();
+    newContainer.markInitialStateRendered();
+
+    newContainer.states = createExtensionsStates();
+    await microtasksFinished();
+
+    assertEquals(2, newContainer.keyedStates.length);
+    assertTrue(newContainer.keyedStates.every(s => s.animateIn));
+    assertFalse(newContainer.classList.contains('initial-load'));
   });
 });

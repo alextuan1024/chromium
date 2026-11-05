@@ -4,11 +4,55 @@
 
 #include "chrome/browser/ui/webui/settings/settings_utils.h"
 
+#include "base/check.h"
 #include "chrome/browser/extensions/extension_tab_util.h"
+#include "chrome/browser/metrics/critical_user_journeys/features.h"
+#include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/ui/browser_element_identifiers.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_features.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/interaction/browser_elements.h"
+#include "chrome/browser/ui/webui/webui_embedding_context.h"
 #include "components/url_formatter/url_fixer.h"
+#include "content/public/browser/web_contents.h"
+#include "content/public/browser/web_ui.h"
+#include "ui/base/interaction/element_tracker.h"
 #include "url/gurl.h"
 
+#if BUILDFLAG(IS_CHROMEOS)
+#include "components/user_manager/user_manager.h"
+#endif
+
+#if BUILDFLAG(IS_WIN)
+#include "base/feature_list.h"
+#include "device/fido/public/features.h"
+#include "device/fido/win/webauthn_api.h"
+#endif
+
 namespace settings_utils {
+
+bool IsGuest(const Profile* profile) {
+  CHECK(profile);
+#if BUILDFLAG(IS_CHROMEOS)
+  const user_manager::UserManager* user_manager =
+      user_manager::UserManager::Get();
+  CHECK(user_manager);
+  return user_manager->IsLoggedInAsGuest() ||
+         user_manager->IsLoggedInAsManagedGuestSession();
+#else
+  return profile->IsGuestSession();
+#endif
+}
+
+bool IsSecurityKeysSubpageEnabled() {
+#if BUILDFLAG(IS_WIN)
+  if (base::FeatureList::IsEnabled(device::kWebAuthUseNativeWinApi) &&
+      device::WinWebAuthnApi::GetDefault()->IsAvailable()) {
+    return false;
+  }
+#endif
+  return true;
+}
 
 bool FixupAndValidateStartupPage(const std::string& url_string,
                                  GURL* fixed_url) {
@@ -18,6 +62,35 @@ bool FixupAndValidateStartupPage(const std::string& url_string,
     fixed_url->Swap(&url);
   }
   return valid;
+}
+
+void MaybeNotifySettingsCustomEvent(content::WebContents* web_contents,
+                                    ui::CustomElementEventType event_type) {
+  if (!base::FeatureList::IsEnabled(metrics::kSettingsGlowupJourneys)) {
+    return;
+  }
+  // Unit tests (e.g., `SiteSettingsHandlerTest`, `SearchEnginesHandlerTest`)
+  // run with a detached `TestWebUI` without a `WebContents` or
+  // `BrowserWindowInterface`.
+  if (!web_contents) {
+    return;
+  }
+  BrowserWindowInterface* const browser =
+      webui::GetBrowserWindowInterface(web_contents);
+  if (!browser) {
+    return;
+  }
+  BrowserElements* const browser_elements = BrowserElements::From(browser);
+  if (!browser_elements) {
+    return;
+  }
+  browser_elements->NotifyEvent(kBrowserViewElementId, event_type);
+}
+
+void MaybeNotifySettingsCustomEvent(content::WebUI* web_ui,
+                                    ui::CustomElementEventType event_type) {
+  CHECK(web_ui);
+  MaybeNotifySettingsCustomEvent(web_ui->GetWebContents(), event_type);
 }
 
 }  // namespace settings_utils

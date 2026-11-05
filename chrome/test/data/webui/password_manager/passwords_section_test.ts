@@ -5,14 +5,14 @@
 import 'chrome://password-manager/password_manager.js';
 
 import type {AddPasswordDialogElement, AuthTimedOutDialogElement, MovePasswordsDialogElement, PasswordListItemElement, PasswordsSectionElement} from 'chrome://password-manager/password_manager.js';
-import {Page, PasswordManagerActionableError, PasswordManagerImpl, PasswordViewPageInteractions, PluralStringProxyImpl, Router, SyncBrowserProxyImpl, UrlParam} from 'chrome://password-manager/password_manager.js';
+import {Page, PasswordManagerActionableError, PasswordManagerImpl, PasswordViewPageInteractions, PluralStringProxyImpl, PrefsBrowserProxy, PrefService, Router, SyncBrowserProxyImpl, TrustedVaultUnlockDialogSource, UrlParam} from 'chrome://password-manager/password_manager.js';
 import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
 import {assertArrayEquals, assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chai_assert.js';
-import {flushTasks} from 'chrome://webui-test/polymer_test_util.js';
 import {TestPluralStringProxy} from 'chrome://webui-test/test_plural_string_proxy.js';
-import {eventToPromise, isVisible} from 'chrome://webui-test/test_util.js';
+import {eventToPromise, isVisible, microtasksFinished} from 'chrome://webui-test/test_util.js';
 
 import {TestPasswordManagerProxy} from './test_password_manager_proxy.js';
+import {TestPrefsBrowserProxy} from './test_prefs_browser_proxy.js';
 import {TestSyncBrowserProxy} from './test_sync_browser_proxy.js';
 import {createAffiliatedDomain, createCredentialGroup, createPasswordEntry, makePasswordManagerPrefs} from './test_util.js';
 
@@ -24,8 +24,9 @@ function validatePasswordsSubsection(
     section: PasswordsSectionElement,
     expectedGroups: chrome.passwordsPrivate.CredentialGroup[],
     searchTerm: string) {
+  assertEquals(expectedGroups.length > 0, isVisible(section.$.passwords));
   const listItemElements =
-      section.shadowRoot!.querySelectorAll('password-list-item');
+      section.shadowRoot.querySelectorAll('password-list-item');
   assertEquals(listItemElements.length, expectedGroups.length);
 
   for (let index = 0; index < expectedGroups.length; ++index) {
@@ -64,6 +65,8 @@ function validatePasswordsSubsection(
 suite('PasswordsSectionTest', function() {
   let passwordManager: TestPasswordManagerProxy;
   let pluralString: TestPluralStringProxy;
+  let prefsBrowserProxy: TestPrefsBrowserProxy;
+  let prefService: PrefService;
   let syncProxy: TestSyncBrowserProxy;
 
   async function createPasswordsSection(): Promise<PasswordsSectionElement> {
@@ -71,13 +74,27 @@ suite('PasswordsSectionTest', function() {
         document.createElement('passwords-section');
     document.body.appendChild(section);
     await passwordManager.whenCalled('getCredentialGroups');
-    await flushTasks();
+    await microtasksFinished();
 
     return section;
   }
 
-  setup(function() {
+  function setSavingDisabledByMandatoryPolicy() {
+    prefsBrowserProxy.fakeApi.sendPrefChanges([{
+      key: 'credentials_enable_service',
+      value: false,
+      enforcement: chrome.settingsPrivate.Enforcement.ENFORCED,
+      controlledBy: chrome.settingsPrivate.ControlledBy.DEVICE_POLICY,
+    }]);
+  }
+
+  setup(async function() {
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
+    prefsBrowserProxy = new TestPrefsBrowserProxy(makePasswordManagerPrefs());
+    PrefsBrowserProxy.setInstance(prefsBrowserProxy);
+    PrefService.resetInstanceForTesting();
+    prefService = PrefService.getInstance();
+    await prefService.whenInitialized();
     passwordManager = new TestPasswordManagerProxy();
     PasswordManagerImpl.setInstance(passwordManager);
     pluralString = new TestPluralStringProxy();
@@ -85,7 +102,7 @@ suite('PasswordsSectionTest', function() {
     syncProxy = new TestSyncBrowserProxy();
     SyncBrowserProxyImpl.setInstance(syncProxy);
     Router.getInstance().updateRouterParams(new URLSearchParams());
-    return flushTasks();
+    return microtasksFinished();
   });
 
   test('groups shown correctly', async function() {
@@ -109,7 +126,7 @@ suite('PasswordsSectionTest', function() {
     const section = await createPasswordsSection();
 
     // PasswordsList is hidden as there are no passwords.
-    assertFalse(isVisible(section.$.passwordsList));
+    assertFalse(isVisible(section.$.passwords));
   });
 
   test('clicking group navigates to details page', async function() {
@@ -127,7 +144,7 @@ suite('PasswordsSectionTest', function() {
     const section = await createPasswordsSection();
 
     const listEntry =
-        section.shadowRoot!.querySelector<HTMLElement>('password-list-item');
+        section.shadowRoot.querySelector<HTMLElement>('password-list-item');
     assertTrue(!!listEntry);
     listEntry.click();
     assertEquals(
@@ -152,7 +169,7 @@ suite('PasswordsSectionTest', function() {
     const section = await createPasswordsSection();
 
     const listEntry =
-        section.shadowRoot!.querySelector<HTMLElement>('password-list-item');
+        section.shadowRoot.querySelector<HTMLElement>('password-list-item');
     assertTrue(!!listEntry);
     listEntry.click();
     // Without setRequestCredentialsDetailsResponse auth is considered failed.
@@ -182,10 +199,10 @@ suite('PasswordsSectionTest', function() {
         document.createElement('passwords-section');
     document.body.appendChild(section);
     await passwordManager.whenCalled('getCredentialGroups');
-    await flushTasks();
+    await microtasksFinished();
 
     const listEntries =
-        section.shadowRoot!.querySelectorAll<PasswordListItemElement>(
+        section.shadowRoot.querySelectorAll<PasswordListItemElement>(
             'password-list-item');
     assertEquals(2, listEntries.length);
 
@@ -216,7 +233,7 @@ suite('PasswordsSectionTest', function() {
     const query = new URLSearchParams();
     query.set(UrlParam.SEARCH_TERM, 'bar');
     Router.getInstance().updateRouterParams(query);
-    await flushTasks();
+    await microtasksFinished();
 
     validatePasswordsSubsection(
         section, passwordManager.data.groups.slice(1), 'bar');
@@ -241,7 +258,7 @@ suite('PasswordsSectionTest', function() {
     const query = new URLSearchParams();
     query.set(UrlParam.SEARCH_TERM, 'ert');
     Router.getInstance().updateRouterParams(query);
-    await flushTasks();
+    await microtasksFinished();
 
     validatePasswordsSubsection(
         section, passwordManager.data.groups.slice(0, 1), 'ert');
@@ -274,7 +291,7 @@ suite('PasswordsSectionTest', function() {
     const query = new URLSearchParams();
     query.set(UrlParam.SEARCH_TERM, 'bar.uk');
     Router.getInstance().updateRouterParams(query);
-    await flushTasks();
+    await microtasksFinished();
 
     validatePasswordsSubsection(
         section, passwordManager.data.groups.slice(1), 'bar.uk');
@@ -302,7 +319,7 @@ suite('PasswordsSectionTest', function() {
     const query = new URLSearchParams();
     query.set(UrlParam.SEARCH_TERM, 'foo');
     Router.getInstance().updateRouterParams(query);
-    await flushTasks();
+    await microtasksFinished();
 
     // Now foo.com is the first item because the group name matches query.
     validatePasswordsSubsection(
@@ -313,13 +330,13 @@ suite('PasswordsSectionTest', function() {
     const section: PasswordsSectionElement =
         document.createElement('passwords-section');
     document.body.appendChild(section);
-    await flushTasks();
+    await microtasksFinished();
 
     section.$.addPasswordButton.click();
     await eventToPromise('cr-dialog-open', section);
 
     const addDialog =
-        section.shadowRoot!.querySelector<AddPasswordDialogElement>(
+        section.shadowRoot.querySelector<AddPasswordDialogElement>(
             'add-password-dialog');
     assertTrue(!!addDialog);
     assertTrue(addDialog.$.dialog.open);
@@ -333,7 +350,7 @@ suite('PasswordsSectionTest', function() {
             PasswordManagerActionableError.kTrustedVaultKeyNeeded;
         const section = await createPasswordsSection();
         await passwordManager.whenCalled('getPasswordManagerActionableError');
-        await flushTasks();
+        await microtasksFinished();
 
         const trustedVaultDiv = section.$.trustedVaultUnlock;
         assertTrue(isVisible(trustedVaultDiv));
@@ -342,7 +359,7 @@ suite('PasswordsSectionTest', function() {
         assertTrue(!!unlockLink);
 
         unlockLink.click();
-        await flushTasks();
+        await microtasksFinished();
 
         assertEquals(
             1, passwordManager.getCallCount('startTrustedVaultUnlock'));
@@ -361,7 +378,7 @@ suite('PasswordsSectionTest', function() {
     query.set(UrlParam.SEARCH_TERM, 'Foo');
     Router.getInstance().updateRouterParams(query);
     const params = await pluralString.whenCalled('getPluralString');
-    await flushTasks();
+    await microtasksFinished();
 
     assertEquals('searchResults', params.messageName);
     assertEquals(1, params.itemCount);
@@ -371,7 +388,7 @@ suite('PasswordsSectionTest', function() {
     const section: PasswordsSectionElement =
         document.createElement('passwords-section');
     document.body.appendChild(section);
-    await flushTasks();
+    await microtasksFinished();
 
     window.dispatchEvent(new CustomEvent('auth-timed-out', {
       bubbles: true,
@@ -380,7 +397,7 @@ suite('PasswordsSectionTest', function() {
     await eventToPromise('cr-dialog-open', section);
 
     const addDialog =
-        section.shadowRoot!.querySelector<AuthTimedOutDialogElement>(
+        section.shadowRoot.querySelector<AuthTimedOutDialogElement>(
             'auth-timed-out-dialog');
     assertTrue(!!addDialog);
     assertTrue(addDialog.$.dialog.open);
@@ -402,77 +419,102 @@ suite('PasswordsSectionTest', function() {
     // an update.
     assertTrue(!!passwordManager.listeners.savedPasswordListChangedListener);
     passwordManager.listeners.savedPasswordListChangedListener([]);
-    await flushTasks();
+    await microtasksFinished();
 
     // Now import passwords option is hidden.
     assertTrue(section.$.importPasswords.hidden);
   });
 
-  test(
-      'add button visible when policy disabled and controlled by extension',
-      async function() {
-        const section: PasswordsSectionElement =
-            document.createElement('passwords-section');
-        section.prefs = makePasswordManagerPrefs();
-        const prefObject =
-            section.getPref<boolean>('credentials_enable_service');
-        prefObject.value = false;
-        prefObject.enforcement = chrome.settingsPrivate.Enforcement.ENFORCED;
-        prefObject.controlledBy = chrome.settingsPrivate.ControlledBy.EXTENSION;
-        document.body.appendChild(section);
-        await flushTasks();
-
-        assertTrue(isVisible(section.$.addPasswordButton));
-      });
-
-  test(
-      'add button hidden when policy disabled and not controlled by extension',
-      async function() {
-        const section: PasswordsSectionElement =
-            document.createElement('passwords-section');
-        section.prefs = makePasswordManagerPrefs();
-        const prefObject =
-            section.getPref<boolean>('credentials_enable_service');
-        prefObject.value = false;
-        prefObject.enforcement = chrome.settingsPrivate.Enforcement.ENFORCED;
-        prefObject.controlledBy =
-            chrome.settingsPrivate.ControlledBy.DEVICE_POLICY;
-
-        document.body.appendChild(section);
-        await flushTasks();
-
-        assertFalse(isVisible(section.$.addPasswordButton));
-      });
-
-  test('add button visible when policy enabled', async function() {
+  test('add button visible when extension turns saving off', async function() {
     const section: PasswordsSectionElement =
         document.createElement('passwords-section');
-    section.prefs = makePasswordManagerPrefs();
-    const prefObject = section.getPref<boolean>('credentials_enable_service');
-    prefObject.value = true;
+    prefsBrowserProxy.fakeApi.sendPrefChanges([{
+      key: 'credentials_enable_service',
+      value: false,
+      enforcement: chrome.settingsPrivate.Enforcement.ENFORCED,
+      controlledBy: chrome.settingsPrivate.ControlledBy.EXTENSION,
+    }]);
     document.body.appendChild(section);
-    await flushTasks();
+    await microtasksFinished();
 
     assertTrue(isVisible(section.$.addPasswordButton));
   });
 
   test(
-      'import hidden when policy disabled and not controlled by extension',
+      'add button hidden when mandatory policy blocks password saving',
       async function() {
         const section: PasswordsSectionElement =
             document.createElement('passwords-section');
-        section.prefs = makePasswordManagerPrefs();
-        const prefObject =
-            section.getPref<boolean>('credentials_enable_service');
-        prefObject.value = false;
-        prefObject.enforcement = chrome.settingsPrivate.Enforcement.ENFORCED;
-        prefObject.controlledBy =
-            chrome.settingsPrivate.ControlledBy.DEVICE_POLICY;
+        setSavingDisabledByMandatoryPolicy();
 
         document.body.appendChild(section);
-        await flushTasks();
+        await microtasksFinished();
+
+        assertFalse(isVisible(section.$.addPasswordButton));
+      });
+
+  test(
+      'add button hidden when mandatory policy arrives after load',
+      async function() {
+        const section = document.createElement('passwords-section');
+        document.body.appendChild(section);
+        await microtasksFinished();
+        assertTrue(isVisible(section.$.addPasswordButton));
+
+        prefsBrowserProxy.fakeApi.sendPrefChanges([{
+          key: 'credentials_enable_service',
+          value: false,
+          enforcement: chrome.settingsPrivate.Enforcement.ENFORCED,
+          controlledBy: chrome.settingsPrivate.ControlledBy.USER_POLICY,
+        }]);
+        await microtasksFinished();
+
+        assertFalse(isVisible(section.$.addPasswordButton));
+      });
+
+  test('add button visible when no policy is set', async function() {
+    const section: PasswordsSectionElement =
+        document.createElement('passwords-section');
+    prefService.setPrefValue('credentials_enable_service', true);
+    document.body.appendChild(section);
+    await microtasksFinished();
+
+    assertTrue(isVisible(section.$.addPasswordButton));
+  });
+
+  test(
+      'import hidden when mandatory policy blocks password saving',
+      async function() {
+        const section: PasswordsSectionElement =
+            document.createElement('passwords-section');
+        setSavingDisabledByMandatoryPolicy();
+
+        document.body.appendChild(section);
+        await microtasksFinished();
 
         assertFalse(isVisible(section.$.importPasswords));
+      });
+
+  test(
+      'trusted vault unlock visible when mandatory policy blocks password ' +
+          'saving',
+      async function() {
+        loadTimeData.overrideValues({enableTrustedVaultUnlock: true});
+        passwordManager.data.getActionableError =
+            PasswordManagerActionableError.kTrustedVaultKeyNeeded;
+
+        const section: PasswordsSectionElement =
+            document.createElement('passwords-section');
+        setSavingDisabledByMandatoryPolicy();
+
+        document.body.appendChild(section);
+        await passwordManager.whenCalled('getCredentialGroups');
+        await passwordManager.whenCalled('getPasswordManagerActionableError');
+        await microtasksFinished();
+
+        assertTrue(isVisible(section.$.trustedVaultUnlock));
+        assertFalse(isVisible(section.$.importPasswords));
+        assertFalse(isVisible(section.$.addPasswordButton));
       });
 
   test('description is hidden during search', async function() {
@@ -492,7 +534,7 @@ suite('PasswordsSectionTest', function() {
     const query = new URLSearchParams();
     query.set(UrlParam.SEARCH_TERM, 'bar');
     Router.getInstance().updateRouterParams(query);
-    await flushTasks();
+    await microtasksFinished();
 
     assertFalse(isVisible(section.$.descriptionLabel));
   });
@@ -514,12 +556,12 @@ suite('PasswordsSectionTest', function() {
     const query = new URLSearchParams();
     query.set(UrlParam.SEARCH_TERM, 'bar');
     Router.getInstance().updateRouterParams(query);
-    await flushTasks();
+    await microtasksFinished();
     assertFalse(isVisible(section.$.noPasswordsFound));
 
     query.set(UrlParam.SEARCH_TERM, 'bar.org');
     Router.getInstance().updateRouterParams(query);
-    await flushTasks();
+    await microtasksFinished();
     assertTrue(isVisible(section.$.noPasswordsFound));
   });
 
@@ -531,7 +573,7 @@ suite('PasswordsSectionTest', function() {
     const query = new URLSearchParams();
     query.set(UrlParam.SEARCH_TERM, 'test');
     Router.getInstance().updateRouterParams(query);
-    await flushTasks();
+    await microtasksFinished();
 
     assertFalse(isVisible(section.$.noPasswordsFound));
   });
@@ -555,8 +597,8 @@ suite('PasswordsSectionTest', function() {
 
         const section = await createPasswordsSection();
 
-        const listEntry = section.shadowRoot!.querySelector<HTMLElement>(
-            'password-list-item');
+        const listEntry =
+            section.shadowRoot.querySelector<HTMLElement>('password-list-item');
         assertTrue(!!listEntry);
         listEntry.click();
         assertEquals(
@@ -584,10 +626,10 @@ suite('PasswordsSectionTest', function() {
 
     const section = await createPasswordsSection();
     const listEntry =
-        section.shadowRoot!.querySelector<HTMLElement>('password-list-item');
+        section.shadowRoot.querySelector<HTMLElement>('password-list-item');
     assertTrue(!!listEntry);
     assertFalse(isVisible(
-        section.shadowRoot!.querySelector<HTMLElement>('#cloudUploadButton')));
+        section.shadowRoot.querySelector<HTMLElement>('#cloudUploadButton')));
   });
 
   test(
@@ -602,10 +644,10 @@ suite('PasswordsSectionTest', function() {
         })];
 
         const section = await createPasswordsSection();
-        const listEntry = section.shadowRoot!.querySelector<HTMLElement>(
-            'password-list-item');
+        const listEntry =
+            section.shadowRoot.querySelector('password-list-item');
         assertTrue(!!listEntry);
-        assertFalse(isVisible(listEntry.shadowRoot!.querySelector<HTMLElement>(
+        assertFalse(isVisible(listEntry.shadowRoot.querySelector<HTMLElement>(
             '#cloudUploadButton')));
       });
 
@@ -619,11 +661,10 @@ suite('PasswordsSectionTest', function() {
     })];
 
     const section = await createPasswordsSection();
-    const listEntry =
-        section.shadowRoot!.querySelector<HTMLElement>('password-list-item');
+    const listEntry = section.shadowRoot.querySelector('password-list-item');
     assertTrue(!!listEntry);
-    assertTrue(isVisible(listEntry.shadowRoot!.querySelector<HTMLElement>(
-        '#cloudUploadButton')));
+    assertTrue(isVisible(
+        listEntry.shadowRoot.querySelector<HTMLElement>('#cloudUploadButton')));
   });
 
   test('Clicking upload icon opens dialog', async function() {
@@ -638,25 +679,24 @@ suite('PasswordsSectionTest', function() {
         passwordManager.data.groups[0]!.entries.slice());
 
     const section = await createPasswordsSection();
-    const listEntry =
-        section.shadowRoot!.querySelector<HTMLElement>('password-list-item');
+    const listEntry = section.shadowRoot.querySelector('password-list-item');
     assertTrue(!!listEntry);
 
     // Initially, the dialog should not exist.
     assertFalse(
-        !!listEntry.shadowRoot!.querySelector<MovePasswordsDialogElement>(
+        !!listEntry.shadowRoot.querySelector<MovePasswordsDialogElement>(
             '#movePasswordsDialog'));
 
     // Click the button to open the dialog.
     const cloudUploadButton =
-        listEntry.shadowRoot!.querySelector<HTMLElement>('#cloudUploadButton');
+        listEntry.shadowRoot.querySelector<HTMLElement>('#cloudUploadButton');
     assertTrue(!!cloudUploadButton);
     cloudUploadButton.click();
-    await flushTasks();
+    await microtasksFinished();
 
     // Now the dialog should have opened.
     const movePasswordsDialog =
-        listEntry.shadowRoot!.querySelector<MovePasswordsDialogElement>(
+        listEntry.shadowRoot.querySelector<MovePasswordsDialogElement>(
             '#movePasswordsDialog');
     assertTrue(!!movePasswordsDialog);
     assertTrue(movePasswordsDialog.$.dialog.open);
@@ -676,20 +716,19 @@ suite('PasswordsSectionTest', function() {
     pluralString.text = 'Save $1 password in your Google Account';
 
     const section = await createPasswordsSection();
-    const listEntry =
-        section.shadowRoot!.querySelector<HTMLElement>('password-list-item');
+    const listEntry = section.shadowRoot.querySelector('password-list-item');
     assertTrue(!!listEntry);
 
-    await flushTasks();
+    await microtasksFinished();
 
     assertEquals(
         'Save bar.com password in your Google Account',
-        listEntry.shadowRoot!.querySelector<HTMLElement>(
-                                 'cr-tooltip')!.innerHTML.trim());
+        listEntry.shadowRoot.querySelector<HTMLElement>(
+                                'cr-tooltip')!.textContent.trim());
     assertEquals(
         'Save bar.com password in your Google Account',
-        listEntry.shadowRoot!.querySelector<HTMLElement>(
-                                 '#cloudUploadButton')!.ariaLabel);
+        listEntry.shadowRoot.querySelector<HTMLElement>(
+                                '#cloudUploadButton')!.ariaLabel);
   });
 
   test('Dialog closes when account storage is disabled', async function() {
@@ -705,24 +744,23 @@ suite('PasswordsSectionTest', function() {
         passwordManager.data.groups[0]!.entries.slice());
 
     const section = await createPasswordsSection();
-    const listEntry =
-        section.shadowRoot!.querySelector<PasswordListItemElement>(
-            'password-list-item');
+    const listEntry = section.shadowRoot.querySelector<PasswordListItemElement>(
+        'password-list-item');
     assertTrue(!!listEntry);
 
     // Initially, the dialog should not exist.
     assertFalse(
-        !!listEntry.shadowRoot!.querySelector<MovePasswordsDialogElement>(
+        !!listEntry.shadowRoot.querySelector<MovePasswordsDialogElement>(
             '#movePasswordsDialog'));
 
     // Click the button to open the dialog.
-    listEntry.shadowRoot!.querySelector<HTMLElement>(
-                             '#cloudUploadButton')!.click();
-    await flushTasks();
+    listEntry.shadowRoot.querySelector<HTMLElement>(
+                            '#cloudUploadButton')!.click();
+    await microtasksFinished();
 
     // Now the dialog should have opened.
     const movePasswordsDialog =
-        listEntry.shadowRoot!.querySelector<MovePasswordsDialogElement>(
+        listEntry.shadowRoot.querySelector<MovePasswordsDialogElement>(
             '#movePasswordsDialog');
     assertTrue(!!movePasswordsDialog);
     assertTrue(movePasswordsDialog.$.dialog.open);
@@ -736,11 +774,11 @@ suite('PasswordsSectionTest', function() {
       ],
     })];
     listEntry.item = passwordManager.data.groups[0]!;
-    await flushTasks();
+    await microtasksFinished();
 
     // The dialog should no longer exist.
     assertFalse(
-        !!listEntry.shadowRoot!.querySelector<MovePasswordsDialogElement>(
+        !!listEntry.shadowRoot.querySelector<MovePasswordsDialogElement>(
             '#movePasswordsDialog'));
   });
 
@@ -754,14 +792,16 @@ suite('PasswordsSectionTest', function() {
 
         section.actionableError =
             PasswordManagerActionableError.kTrustedVaultKeyNeeded;
-        await flushTasks();
+        await microtasksFinished();
 
         const eventPromise =
             eventToPromise('show-trusted-vault-error-dialog', section);
         const addButton = section.$.addPasswordButton;
         assertTrue(!!addButton);
         addButton.click();
-        await eventPromise;
-        assertFalse(!!section.shadowRoot!.querySelector('add-password-dialog'));
+        const event = await eventPromise;
+        assertEquals(
+            TrustedVaultUnlockDialogSource.ADD_PASSWORD, event.detail.source);
+        assertFalse(!!section.shadowRoot.querySelector('add-password-dialog'));
       });
 });

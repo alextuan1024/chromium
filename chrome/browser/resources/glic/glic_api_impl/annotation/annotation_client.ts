@@ -13,9 +13,9 @@ import type {                                          //
 } from '../../glic.mojom-webui.js';
 import type {GlicBrowserHost, ScrollToParams} from '../../glic_api/glic_api.js';
 import {ScrollToErrorReason} from '../../glic_api/glic_api.js';
-import {urlFromClient} from '../host/conversions.js';
+import {urlFromClient} from '../conversions.js';
+import {ErrorWithReasonImpl} from '../glic_client_common.js';
 import {maybeWrapWithLogging} from '../mojo_logging.js';
-import {ErrorWithReasonImpl} from '../request_types.js';
 
 export class GlicBrowserHostAnnotation implements Partial<GlicBrowserHost> {
   private annotationHandler?: AnnotationHandlerRemote;

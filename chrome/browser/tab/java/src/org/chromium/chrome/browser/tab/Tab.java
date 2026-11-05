@@ -33,6 +33,7 @@ import org.chromium.url.GURL;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
+import java.util.Map;
 
 /**
  * Tab is a visual/functional unit that encapsulates the content (not just web site content from
@@ -71,7 +72,8 @@ public interface Tab extends TabLifecycle {
     interface SelectionStateSupplier {
         /**
          * @param tabId The ID of the tab to check.
-         * @return True if the tab is selected.
+         * @return True if the tab is in the multi-selection set (which implicitly includes the
+         *     current/active tab).
          */
         boolean isTabMultiSelected(int tabId);
     }
@@ -85,6 +87,7 @@ public interface Tab extends TabLifecycle {
 
     /**
      * Removes a {@link TabObserver}.
+     *
      * @param observer The {@link TabObserver} to remove.
      */
     void removeObserver(TabObserver observer);
@@ -128,13 +131,17 @@ public interface Tab extends TabLifecycle {
         return assertNonNull(getWindowAndroid());
     }
 
+    /** Returns extra metadata associated with this tab, or null if none. */
+    @Nullable Map<String, String> getExtraData();
+
     /**
      * Update the attachment state to Window(Activity).
-     * @param window A new {@link WindowAndroid} to attach the tab to. If {@code null},
-     *        the tab is being detached. See {@link ReparentingTask#detach()} for details.
-     * @param tabDelegateFactory The new delegate factory this tab should be using. Can be
-     *        {@code null} even when {@code window} is not, meaning we simply want to swap out
-     *        {@link WindowAndroid} for this tab and keep using the current delegate factory.
+     *
+     * @param window A new {@link WindowAndroid} to attach the tab to. If {@code null}, the tab is
+     *     being detached. See {@link ReparentingTask#detach()} for details.
+     * @param tabDelegateFactory The new delegate factory this tab should be using. Can be {@code
+     *     null} even when {@code window} is not, meaning we simply want to swap out {@link
+     *     WindowAndroid} for this tab and keep using the current delegate factory.
      */
     void updateAttachment(
             @Nullable WindowAndroid window, @Nullable TabDelegateFactory tabDelegateFactory);
@@ -167,8 +174,8 @@ public interface Tab extends TabLifecycle {
     @Nullable LoadUrlParams getPendingLoadParams();
 
     /**
-     * Returns the URL that is loaded in the current tab. This may not be the same as the last
-     * committed URL if a new navigation is in progress.
+     * Returns the URL that is loaded in this tab. This may not be the same as the last committed
+     * URL if a new navigation is in progress.
      */
     GURL getUrl();
 
@@ -197,8 +204,8 @@ public interface Tab extends TabLifecycle {
     boolean isShowingCustomView();
 
     /**
-     * Replaces the current NativePage with a empty stand-in for a NativePage. This can be used
-     * to reduce memory pressure.
+     * Replaces the current NativePage with a empty stand-in for a NativePage. This can be used to
+     * reduce memory pressure.
      */
     void freezeNativePage();
 
@@ -251,8 +258,19 @@ public interface Tab extends TabLifecycle {
     boolean isShowingErrorPage();
 
     /**
-     * Returns true iff the tab doesn't hold a live page. For example, this could happen when the
-     * tab holds frozen WebContents state that is yet to be inflated.
+     * Returns true iff the tab has neither a live {@link WebContents} nor a native page. This is
+     * the case:
+     *
+     * <ul>
+     *   <li>before content is created, including tabs waiting on a lazy load that have no
+     *       WebContents yet (see {@link #getPendingLoadParams()}) and tabs waiting to be restored
+     *       from a saved {@link WebContentsState};
+     *   <li>for tabs in dormant tab models (e.g. headless or archived), which never create content;
+     *   <li>after the tab is destroyed.
+     * </ul>
+     *
+     * <p>This is unrelated to {@link NativePage#isFrozen()}: a tab showing a frozen native page is
+     * not frozen.
      */
     boolean isFrozen();
 
@@ -264,28 +282,34 @@ public interface Tab extends TabLifecycle {
     void setFocusChangeSuppressed(boolean suppressed);
 
     /**
-     * Returns Whether the tab can currently be interacted with by the user. This requires the view
-     * owned by the Tab to be visible and in a state where the user can interact with it (i.e. not
-     * in something like the phone tab switcher).
+     * Returns whether the tab can currently be interacted with by the user. This requires the tab's
+     * primary content view ({@link ContentView} or {@link NativePage} view, not a custom view from
+     * {@link TabViewManager}) to be shown ({@code !isHidden()}), non-frozen, and attached to an
+     * Activity window.
      */
     boolean isUserInteractable();
 
     /**
-     * Returns whether the tab is detached from an activity. This usually means the tab is being
-     * reparented; however for headless mode this is always true. A detached tab has a null {@link
-     * #getWindowAndroid()} or the window has no activity. Note that this is not the same as the tab
-     * being dragged for drag & drop, it also does not imply anything about whether the tab is in a
-     * tab model.
+     * Returns whether the tab is detached from an activity. This is true when the tab's {@link
+     * #getWindowAndroid()} is null or has no activity (e.g. headless mode, {@code HiddenTabHolder},
+     * or spare tabs), or while the tab is detached via {@link #updateAttachment} during reparenting
+     * (which clears {@code webContents.setTopLevelNativeWindow(null)} while retaining a non-null
+     * {@link #getWindowAndroid()} until re-attachment). Note that this is not the same as the tab
+     * being dragged for drag & drop, and is distinct from {@code TabModel} or {@code TabCollection}
+     * detachment (see {@link #hasParentCollection()} and {@link #onRemovedFromTabModel}).
      */
     boolean isDetachedFromActivity();
 
-    /** Returns whether this is the activated tab; AKA selected tab, or current tab. */
+    /**
+     * Returns whether this is the currently active (current) tab in its {@link TabModel}. This is
+     * distinct from {@link #isMultiSelected()}.
+     */
     boolean isActivated();
 
     /** Returns whether the tab has a parent collection. */
     boolean hasParentCollection();
 
-    /** Sets Parent for the current Tab and other tab related parent properties. */
+    /** Sets Parent for this Tab and other tab related parent properties. */
     void reparentTab(Tab parent);
 
     /**
@@ -298,18 +322,21 @@ public interface Tab extends TabLifecycle {
      */
     LoadUrlResult loadUrl(LoadUrlParams params);
 
+    /** Opens a file chooser dialog for this tab. */
+    void openFile();
+
     /**
-     * Discards the tab by saving its {@link WebContents} to an {@link WebContentsState} and
-     * destroying the {@link WebContents}. If the tab is already frozen/discarded this is a no-op.
-     * The tab must be closing or inactive to be discarded.
+     * Discards the tab's {@link WebContents} in-place, tearing down its renderer and frame tree
+     * while retaining the {@link WebContents} instance (so {@link #isFrozen()} remains {@code
+     * false}). If the tab has no {@link WebContents}, this is a no-op. The tab must be closing or
+     * hidden to be discarded.
      */
     void discard();
 
     /**
-     * Discards the tabs and stores the URL in the tab's WebContentsState. If the tab is already
-     * frozen/discarded this method still appends the navigation entry, but skips the process of
-     * discarding the tab. If there is already a pending navigation, it will be replaced by this
-     * one.
+     * Discards any live {@link WebContents} in-place (or updates serialized {@link
+     * WebContentsState} or pending load params if frozen) and appends the pending navigation. If
+     * there is already a pending navigation, it will be replaced by this one.
      *
      * @param params Parameters describing the url load. Note that it is important to set correct
      *     page transition as it is used for ranking URLs in the history so the omnibox can report
@@ -338,6 +365,20 @@ public interface Tab extends TabLifecycle {
 
     /** Stop the current navigation. */
     void stopLoading();
+
+    /**
+     * Sets whether the next {@code beforeunload} completion on this tab leaves the page open
+     * instead of letting Content close it.
+     *
+     * <p>A mark covers exactly one completion, and is dropped if none can arrive: the tab's {@link
+     * WebContents} goes away, its primary page changes, or the {@link WebContents} leaves this tab.
+     * A gone renderer is not one of those, because Content's {@code beforeunload} timeout still
+     * produces a completion for the mark to meet. Set it before dispatching {@code beforeunload}
+     * when the caller, rather than Content, decides whether the tab actually closes.
+     *
+     * <p>Does nothing when the tab has no {@link WebContents}: there is no dispatch to answer.
+     */
+    void setSuppressBeforeUnloadAutoClose(boolean suppress);
 
     /** Returns whether the Tab has requested a reload. */
     boolean needsReload();
@@ -421,10 +462,7 @@ public interface Tab extends TabLifecycle {
     @Deprecated
     void setRootId(@TabId int rootId);
 
-    /**
-     * Returns the tab group ID of the {@link Tab} or null if not part of a group. Note that during
-     * migration from root ID the TabGroupId may be null until tab state is initialized.
-     */
+    /** Returns the tab group ID of the {@link Tab} or null if not part of a group. */
     @Nullable Token getTabGroupId();
 
     /**
@@ -445,7 +483,7 @@ public interface Tab extends TabLifecycle {
     /** Returns the content state bytes for the {@link Tab} */
     @Nullable WebContentsState getWebContentsState();
 
-    /** Returns the timestamp in milliseconds when the tab was last interacted. */
+    /** Returns the timestamp in milliseconds when a navigation was last committed in this tab. */
     long getLastNavigationCommittedTimestampMillis();
 
     /** Returns launch type at creation. May be {@link TabLaunchType.UNSET} if unknown. */
@@ -467,7 +505,7 @@ public interface Tab extends TabLifecycle {
     /** Returns true if we have a WebContents that's navigated to a trusted origin of a TWA. */
     boolean isTrustedWebActivity();
 
-    /** Returns true if the current tab has embedded media experience enabled. */
+    /** Returns true if this tab has embedded media experience enabled. */
     boolean shouldEnableEmbeddedMediaExperience();
 
     /** Returns the content sensitivity of the tab. */
@@ -527,7 +565,12 @@ public interface Tab extends TabLifecycle {
     void onRemovedFromTabModel(
             LookAheadObservableSupplier<Tab> currentTabSupplier, @DetachReason int detachReason);
 
-    /** Returns whether the tab is multi-selected. */
+    /**
+     * Returns whether the tab is in the multi-selection set (which implicitly includes the
+     * current/active tab when attached to a {@code TabModel}; see {@link
+     * SelectionStateSupplier#isTabMultiSelected(int)}), or {@code false} when detached from a
+     * {@code TabModel}.
+     */
     boolean isMultiSelected();
 
     /**

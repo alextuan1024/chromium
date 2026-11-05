@@ -4,7 +4,8 @@
 
 #import "ios/chrome/browser/authentication/fullscreen_signin_screen/coordinator/fullscreen_signin_screen_coordinator.h"
 
-#import "base/apple/foundation_util.h"
+#import <utility>
+
 #import "base/metrics/histogram_functions.h"
 #import "base/strings/sys_string_conversions.h"
 #import "ios/chrome/browser/authentication/fullscreen_signin_screen/coordinator/fullscreen_signin_screen_mediator.h"
@@ -17,20 +18,17 @@
 #import "ios/chrome/browser/authentication/ui_bundled/signin/signin_constants.h"
 #import "ios/chrome/browser/authentication/ui_bundled/signin/signin_context_style.h"
 #import "ios/chrome/browser/authentication/ui_bundled/signin/signin_coordinator.h"
-#import "ios/chrome/browser/authentication/ui_bundled/signin/signin_utils.h"
-#import "ios/chrome/browser/first_run/model/first_run_metrics.h"
 #import "ios/chrome/browser/first_run/public/first_run_constants.h"
 #import "ios/chrome/browser/first_run/public/first_run_screen_delegate.h"
 #import "ios/chrome/browser/first_run/public/first_run_util.h"
 #import "ios/chrome/browser/first_run/tos/coordinator/tos_coordinator.h"
 #import "ios/chrome/browser/first_run/uma/coordinator/uma_coordinator.h"
 #import "ios/chrome/browser/metrics/model/ios_profile_metrics_service_factory.h"
-#import "ios/chrome/browser/shared/coordinator/chrome_coordinator/animated_coordinator.h"
 #import "ios/chrome/browser/shared/coordinator/scene/scene_state.h"
 #import "ios/chrome/browser/shared/model/application_context/application_context.h"
 #import "ios/chrome/browser/shared/model/browser/browser.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
-#import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
+#import "ios/chrome/browser/signin/model/account_preview_data_service_factory.h"
 #import "ios/chrome/browser/signin/model/authentication_service.h"
 #import "ios/chrome/browser/signin/model/authentication_service_factory.h"
 #import "ios/chrome/browser/signin/model/chrome_account_manager_service.h"
@@ -141,6 +139,8 @@
       ChromeAccountManagerServiceFactory::GetForProfile(profile);
   signin::IdentityManager* identityManager =
       IdentityManagerFactory::GetForProfile(profile);
+  signin::AccountPreviewDataService* accountPreviewDataService =
+      AccountPreviewDataServiceFactory::GetForProfile(profile);
   PrefService* localPrefService = GetApplicationContext()->GetLocalState();
   PrefService* prefService = profile->GetPrefs();
   syncer::SyncService* syncService = SyncServiceFactory::GetForProfile(profile);
@@ -150,6 +150,7 @@
           initWithAccountManagerService:self.accountManagerService
                   authenticationService:self.authenticationService
                         identityManager:identityManager
+              accountPreviewDataService:accountPreviewDataService
                        localPrefService:localPrefService
                             prefService:prefService
                             syncService:syncService
@@ -235,30 +236,26 @@
                              continuationProvider:
                                  _changeProfileContinuationProvider];
   __weak __typeof(self) weakSelf = self;
-  self.addAccountSigninCoordinator.signinCompletion = ^(
-      SigninCoordinator* coordinator, SigninCoordinatorResult signinResult,
-      id<SystemIdentity> signinCompletionIdentity) {
-    [weakSelf addAccountSigninCompleteWithCoordinator:coordinator
-                                         signinResult:signinResult
-                                   completionIdentity:signinCompletionIdentity];
-  };
+  self.addAccountSigninCoordinator.signinCompletion =
+      ^(SigninCoordinator* coordinator,
+        SigninCoordinatorResultOrIdentity result) {
+        [weakSelf addAccountSigninCompleteWithCoordinator:coordinator
+                                             signinResult:std::move(result)];
+      };
   [self.addAccountSigninCoordinator start];
 }
 
 // Callback handling the completion of the AddAccount action.
 - (void)addAccountSigninCompleteWithCoordinator:(SigninCoordinator*)coordinator
                                    signinResult:
-                                       (SigninCoordinatorResult)signinResult
-                             completionIdentity:
-                                 (id<SystemIdentity>)signinCompletionIdentity {
-  CHECK_EQ(self.addAccountSigninCoordinator, coordinator,
-           base::NotFatalUntil::M151);
+                                       (SigninCoordinatorResultOrIdentity)
+                                           signinResult {
+  CHECK_EQ(self.addAccountSigninCoordinator, coordinator);
   [self stopAddAccountCoordinator];
-  if (signinResult == SigninCoordinatorResultSuccess &&
-      self.accountManagerService->IsValidIdentity(
-          signinCompletionIdentity.gaiaId)) {
-    self.mediator.selectedIdentity = signinCompletionIdentity;
-    self.mediator.addedAccount = YES;
+  if (signinResult.has_value() && self.accountManagerService->IsValidIdentity(
+                                      signinResult.value().gaiaId)) {
+    [self.mediator systemIdentityAdded:signinResult.value()];
+    self.mediator.selectedIdentity = signinResult.value();
   }
 }
 

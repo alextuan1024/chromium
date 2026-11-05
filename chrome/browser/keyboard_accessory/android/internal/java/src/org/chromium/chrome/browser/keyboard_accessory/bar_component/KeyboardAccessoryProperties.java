@@ -64,13 +64,9 @@ class KeyboardAccessoryProperties {
             new ReadableBooleanPropertyKey("skip_all_animations_for_testing");
     static final WritableObjectPropertyKey<KeyboardAccessoryStyle> STYLE =
             new WritableObjectPropertyKey<>("style");
-    static final WritableObjectPropertyKey<Callback<Integer>> OBFUSCATED_CHILD_AT_CALLBACK =
-            new WritableObjectPropertyKey<>("obfuscated_child_at_callback");
     static final PropertyModel.WritableObjectPropertyKey<Callback<Boolean>>
             ON_TOUCH_EVENT_CALLBACK =
                     new PropertyModel.WritableObjectPropertyKey<>("on_touch_event_handler");
-    static final WritableBooleanPropertyKey SHOW_SWIPING_IPH =
-            new WritableBooleanPropertyKey("show_swiping_iph");
     static final WritableBooleanPropertyKey HAS_SUGGESTIONS =
             new WritableBooleanPropertyKey("has_suggestions");
     static final WritableBooleanPropertyKey HAS_STICKY_LAST_ITEM =
@@ -93,9 +89,7 @@ class KeyboardAccessoryProperties {
                         STYLE,
                         SHEET_OPENER_ITEM,
                         DISMISS_ITEM,
-                        OBFUSCATED_CHILD_AT_CALLBACK,
                         ON_TOUCH_EVENT_CALLBACK,
-                        SHOW_SWIPING_IPH,
                         HAS_SUGGESTIONS,
                         HAS_STICKY_LAST_ITEM,
                         SELECTED_SUGGESTION_INDEX,
@@ -106,7 +100,6 @@ class KeyboardAccessoryProperties {
                 .with(VISIBLE, false)
                 .with(SKIP_CLOSING_ANIMATION, false)
                 .with(DISABLE_ANIMATIONS_FOR_TESTING, false)
-                .with(SHOW_SWIPING_IPH, false)
                 .with(HAS_SUGGESTIONS, false)
                 .with(SELECTED_SUGGESTION_INDEX, null)
                 .with(ANIMATE_SUGGESTIONS_FROM_TOP, false);
@@ -266,29 +259,6 @@ class KeyboardAccessoryProperties {
         int getCaptionId() {
             return mCaptionId;
         }
-
-        @Override
-        public String toString() {
-            String typeName = "BarItem(" + getViewType() + ")"; // Fallback. We shouldn't crash.
-            switch (getViewType()) {
-                case Type.ACTION_BUTTON:
-                    typeName = "ACTION_BUTTON";
-                    break;
-                case Type.SUGGESTION:
-                    typeName = "SUGGESTION";
-                    break;
-                case Type.TAB_LAYOUT:
-                    typeName = "TAB_LAYOUT";
-                    break;
-                case Type.ACTION_CHIP:
-                    typeName = "ACTION_CHIP";
-                    break;
-                case Type.DISMISS_CHIP:
-                    typeName = "DISMISS_CHIP";
-                    break;
-            }
-            return typeName + ": " + mAction;
-        }
     }
 
     /**
@@ -297,6 +267,7 @@ class KeyboardAccessoryProperties {
      */
     static class AutofillBarItem extends ActionBarItem {
         private final AutofillSuggestion mSuggestion;
+        private final boolean mHasGeminiAttribution;
         private @Nullable String mFeature;
         private boolean mIsLoading;
         private boolean mIsSelected;
@@ -310,8 +281,32 @@ class KeyboardAccessoryProperties {
          * @param profile The {@link Profile} associated with the autofill data.
          */
         AutofillBarItem(AutofillSuggestion suggestion, Action action, Profile profile) {
+            this(suggestion, action, profile, /* hasGeminiAttribution= */ false);
+        }
+
+        /**
+         * Creates a new autofill item with a suggestion for the view's representation, an action to
+         * handle the interaction with the rendered View, and whether the suggestion's icon carries
+         * Gemini attribution.
+         *
+         * @param suggestion An {@link AutofillSuggestion}.
+         * @param action An {@link Action}.
+         * @param profile The {@link Profile} associated with the autofill data.
+         * @param hasGeminiAttribution Whether the suggestion originates from Gemini personal
+         *     context.
+         */
+        AutofillBarItem(
+                AutofillSuggestion suggestion,
+                Action action,
+                Profile profile,
+                boolean hasGeminiAttribution) {
             super(getBarItemType(suggestion, profile), action, 0);
             mSuggestion = suggestion;
+            mHasGeminiAttribution = hasGeminiAttribution;
+        }
+
+        boolean hasGeminiAttribution() {
+            return mHasGeminiAttribution;
         }
 
         /**
@@ -363,11 +358,6 @@ class KeyboardAccessoryProperties {
 
         @Nullable String getFeatureForIph() {
             return mFeature;
-        }
-
-        @Override
-        public String toString() {
-            return "Autofill" + super.toString();
         }
 
         @VisibleForTesting
@@ -438,7 +428,7 @@ class KeyboardAccessoryProperties {
                     Type.DISMISS_CHIP,
                     new Action(
                             AccessoryAction.DISMISS,
-                            () -> {
+                            wasObscured -> {
                                 ManualFillingMetricsRecorder.recordActionSelected(
                                         AccessoryAction.DISMISS);
                                 dismissRunnable.run();

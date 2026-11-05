@@ -23,7 +23,7 @@
 #include "content/public/test/browser_test_utils.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 
 using ::testing::Eq;
 
@@ -41,7 +41,7 @@ IN_PROC_BROWSER_TEST_F(ChromeWebContentsMenuHelperBrowserTest,
 
   ui_test_utils::NavigateToURLWithDisposition(
       browser(), GURL("http://foo/1"),
-      WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
 
   content::ContextMenuParams enriched_params =
@@ -62,7 +62,7 @@ IN_PROC_BROWSER_TEST_F(ChromeWebContentsMenuHelperBrowserTest,
 
   ui_test_utils::NavigateToURLWithDisposition(
       browser(), GURL("http://foo/1"),
-      WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
 
   content::ContextMenuParams enriched_params =

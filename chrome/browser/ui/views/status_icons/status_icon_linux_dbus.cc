@@ -7,6 +7,7 @@
 #include <dbus/dbus-shared.h>
 
 #include <memory>
+#include <optional>
 #include <string>
 
 #include "base/check_op.h"
@@ -108,6 +109,8 @@ const char kPropertyToolTip[] = "ToolTip";
 const char kSignalNewIcon[] = "NewIcon";
 const char kSignalNewIconThemePath[] = "NewIconThemePath";
 const char kSignalNewToolTip[] = "NewToolTip";
+const char kSignalStatusNotifierHostRegistered[] =
+    "StatusNotifierHostRegistered";
 
 // Property values.
 const char kPropertyValueCategory[] = "ApplicationStatus";
@@ -240,7 +243,7 @@ scoped_refptr<dbus::Bus> CreateSessionBus() {
 }
 
 scoped_refptr<dbus::Bus> GetBusForNewStatusIcon() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
   if (!g_shared_bus_in_use) {
     g_shared_bus_in_use = true;
     return dbus_thread_linux::GetSharedSessionBus();
@@ -259,19 +262,19 @@ StatusIconLinuxDbus::StatusIconLinuxDbus(scoped_refptr<dbus::Bus> bus)
       icon_task_runner_(base::ThreadPool::CreateSequencedTaskRunner(
           {base::MayBlock(), base::TaskPriority::USER_VISIBLE,
            base::TaskShutdownBehavior::BLOCK_SHUTDOWN})) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
   if (bus_) {
     CheckStatusNotifierWatcherHasOwner();
   }
 }
 
 void StatusIconLinuxDbus::SetImage(const gfx::ImageSkia& image) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
   SetImageImpl(image, /*send_signals=*/true);
 }
 
 void StatusIconLinuxDbus::SetIcon(const gfx::VectorIcon& icon) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
   if (properties_.empty()) {
     return;
   }
@@ -297,7 +300,7 @@ void StatusIconLinuxDbus::SetIcon(const gfx::VectorIcon& icon) {
 }
 
 void StatusIconLinuxDbus::SetToolTip(const std::u16string& tool_tip) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
   if (properties_.empty()) {
     return;
   }
@@ -317,12 +320,12 @@ void StatusIconLinuxDbus::SetToolTip(const std::u16string& tool_tip) {
 }
 
 void StatusIconLinuxDbus::UpdatePlatformContextMenu(ui::MenuModel* model) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
   UpdateMenuImpl(model, true);
 }
 
 void StatusIconLinuxDbus::RefreshPlatformContextMenu() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
   // This codepath gets called for property changes like changed labels or
   // icons, but also for layout changes like deleted items.
   // TODO(thomasanderson): Split this into two methods so we can avoid
@@ -331,13 +334,13 @@ void StatusIconLinuxDbus::RefreshPlatformContextMenu() {
 }
 
 void StatusIconLinuxDbus::ExecuteCommand(int command_id, int event_flags) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-  DCHECK_EQ(command_id, 0);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
+  CHECK_EQ(command_id, 0, base::NotFatalUntil::M162);
   delegate_->OnClick();
 }
 
 StatusIconLinuxDbus::~StatusIconLinuxDbus() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
   CleanupIconFile();
 
   if (menu_) {
@@ -362,7 +365,21 @@ StatusIconLinuxDbus::~StatusIconLinuxDbus() {
 }
 
 void StatusIconLinuxDbus::CheckStatusNotifierWatcherHasOwner() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
+  // Watch for the StatusNotifierWatcher and a StatusNotifierHost to appear
+  // before checking whether they exist. The match rules are added on the D-Bus
+  // thread before the NameHasOwner call is sent, so no change is missed.
+  watcher_ = bus_->GetObjectProxy(kServiceStatusNotifierWatcher,
+                                  dbus::ObjectPath(kPathStatusNotifierWatcher));
+  watcher_->SetNameOwnerChangedCallback(
+      base::BindRepeating(&StatusIconLinuxDbus::OnNameOwnerChangedReceived,
+                          weak_factory_.GetWeakPtr()));
+  watcher_->ConnectToSignal(
+      kInterfaceStatusNotifierWatcher, kSignalStatusNotifierHostRegistered,
+      base::BindRepeating(&StatusIconLinuxDbus::OnHostRegisteredSignal,
+                          weak_factory_.GetWeakPtr()),
+      base::DoNothing());
+
   dbus::ObjectProxy* bus_proxy =
       bus_->GetObjectProxy(DBUS_SERVICE_DBUS, dbus::ObjectPath(DBUS_PATH_DBUS));
   dbus_utils::CallMethod<"s", "b">(
@@ -374,15 +391,22 @@ void StatusIconLinuxDbus::CheckStatusNotifierWatcherHasOwner() {
 
 void StatusIconLinuxDbus::OnNameHasOwnerResponse(
     dbus_utils::CallMethodResultSig<"b"> response) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-  if (!response.has_value() || !std::get<0>(*response)) {
-    delegate_->OnImplInitializationFailed();
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
+  if (!response.has_value()) {
+    OnInitializationFailed();
+    return;
+  }
+  if (!std::get<0>(*response)) {
+    // Wait for OnNameOwnerChangedReceived().
+    DelayInitialization();
     return;
   }
 
-  watcher_ = bus_->GetObjectProxy(kServiceStatusNotifierWatcher,
-                                  dbus::ObjectPath(kPathStatusNotifierWatcher));
+  CheckStatusNotifierHostRegistered();
+}
 
+void StatusIconLinuxDbus::CheckStatusNotifierHostRegistered() {
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
   dbus_utils::CallMethod<"ss", "v">(
       watcher_, DBUS_INTERFACE_PROPERTIES, kMethodGet,
       base::BindOnce(&StatusIconLinuxDbus::OnHostRegisteredResponse,
@@ -392,15 +416,22 @@ void StatusIconLinuxDbus::OnNameHasOwnerResponse(
 
 void StatusIconLinuxDbus::OnHostRegisteredResponse(
     dbus_utils::CallMethodResultSig<"v"> response) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-  if (!response.has_value()) {
-    delegate_->OnImplInitializationFailed();
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
+  if (item_) {
+    // Initialization was already started by an earlier response.
     return;
   }
 
-  auto registered = std::move(std::get<0>(*response)).Take<bool>();
+  std::optional<bool> registered;
+  if (response.has_value()) {
+    registered = std::move(std::get<0>(*response)).Take<bool>();
+  }
   if (!registered.value_or(false)) {
-    delegate_->OnImplInitializationFailed();
+    // No StatusNotifierHost yet. An error response is treated the same way,
+    // since it usually means the StatusNotifierWatcher exited after
+    // NameHasOwner; a new one is noticed by OnNameOwnerChangedReceived(). Wait
+    // for OnHostRegisteredSignal() or OnNameOwnerChangedReceived().
+    DelayInitialization();
     return;
   }
 
@@ -482,16 +513,13 @@ void StatusIconLinuxDbus::OnHostRegisteredResponse(
 }
 
 void StatusIconLinuxDbus::OnInitialized(bool success) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
   if (!success) {
-    delegate_->OnImplInitializationFailed();
+    OnInitializationFailed();
     return;
   }
 
-  watcher_->SetNameOwnerChangedCallback(
-      base::BindRepeating(&StatusIconLinuxDbus::OnNameOwnerChangedReceived,
-                          weak_factory_.GetWeakPtr()));
-
+  initialized_ = true;
   RegisterStatusNotifierItem();
 }
 
@@ -506,31 +534,71 @@ void StatusIconLinuxDbus::RegisterStatusNotifierItem() {
 
 void StatusIconLinuxDbus::OnRegistered(
     dbus_utils::CallMethodResultSig<""> response) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
   if (!response.has_value()) {
-    delegate_->OnImplInitializationFailed();
+    OnInitializationFailed();
+    return;
   }
+
+  initialization_delayed_ = false;
+  delegate_->OnImplInitialized();
 }
 
 void StatusIconLinuxDbus::OnNameOwnerChangedReceived(
     const std::string& old_owner,
     const std::string& new_owner) {
-  // Re-register the item when the StatusNotifierWatcher has a new owner.
-  if (!new_owner.empty()) {
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
+  if (new_owner.empty()) {
+    return;
+  }
+  if (initialized_) {
+    // Re-register the item with the new StatusNotifierWatcher.
     RegisterStatusNotifierItem();
+  } else if (!item_) {
+    // A StatusNotifierWatcher appeared before initialization started.
+    CheckStatusNotifierHostRegistered();
+  }
+}
+
+void StatusIconLinuxDbus::OnHostRegisteredSignal(dbus::Signal* signal) {
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
+  if (!item_) {
+    CheckStatusNotifierHostRegistered();
+  }
+}
+
+void StatusIconLinuxDbus::DelayInitialization() {
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
+  if (initialization_delayed_) {
+    return;
+  }
+  initialization_delayed_ = true;
+  delegate_->OnImplInitializationDelayed();
+}
+
+void StatusIconLinuxDbus::OnInitializationFailed() {
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
+  // While initialization is delayed, the delegate may use a fallback icon. Stay
+  // inactive instead of failing so the delegate keeps it. No state needs to be
+  // reset for a later attempt: a failed RegisterStatusNotifierItem call is
+  // retried when a new StatusNotifierWatcher appears, since |initialized_|
+  // stays set. A failure to export the menu isn't caused by the
+  // StatusNotifierWatcher and isn't retried.
+  if (!initialization_delayed_) {
+    delegate_->OnImplInitializationFailed();
   }
 }
 
 dbus_utils::ExportMethodResult<> StatusIconLinuxDbus::OnActivate(int32_t x,
                                                                  int32_t y) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
   delegate_->OnClick();
   return std::make_tuple();
 }
 
 dbus_utils::ExportMethodResult<> StatusIconLinuxDbus::OnContextMenu(int32_t x,
                                                                     int32_t y) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
   if (!menu_runner_) {
     menu_runner_ = std::make_unique<views::MenuRunner>(
         concat_menu_.get(), views::MenuRunner::HAS_MNEMONICS |
@@ -546,7 +614,7 @@ dbus_utils::ExportMethodResult<> StatusIconLinuxDbus::OnContextMenu(int32_t x,
 dbus_utils::ExportMethodResult<> StatusIconLinuxDbus::OnScroll(
     int32_t delta,
     std::string orientation) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
   // Ignore scroll events.
   return std::make_tuple();
 }
@@ -554,7 +622,7 @@ dbus_utils::ExportMethodResult<> StatusIconLinuxDbus::OnScroll(
 dbus_utils::ExportMethodResult<> StatusIconLinuxDbus::OnSecondaryActivate(
     int32_t x,
     int32_t y) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
   // gnome-shell-extension-appindicator requires a double-click to activate
   // which is non-obvious, so allow middle-click to activate which is slightly
   // more obvious.
@@ -564,14 +632,14 @@ dbus_utils::ExportMethodResult<> StatusIconLinuxDbus::OnSecondaryActivate(
 
 dbus_utils::ExportMethodResult<>
 StatusIconLinuxDbus::OnProvideXdgActivationToken(std::string token) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
   base::nix::SetActivationToken(token);
   return std::make_tuple();
 }
 
 void StatusIconLinuxDbus::UpdateMenuImpl(ui::MenuModel* model,
                                          bool send_signal) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
   if (!menu_) {
     return;
   }
@@ -600,7 +668,7 @@ void StatusIconLinuxDbus::UpdateMenuImpl(ui::MenuModel* model,
 void StatusIconLinuxDbus::OnGetProperty(
     dbus::MethodCall* method_call,
     dbus::ExportedObject::ResponseSender response_sender) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
   dbus::MessageReader reader(method_call);
   std::string interface;
   std::string property_name;
@@ -631,7 +699,7 @@ void StatusIconLinuxDbus::OnGetProperty(
 void StatusIconLinuxDbus::OnGetAllProperties(
     dbus::MethodCall* method_call,
     dbus::ExportedObject::ResponseSender response_sender) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
   dbus::MessageReader reader(method_call);
   std::string interface;
   if (!reader.PopString(&interface)) {
@@ -658,7 +726,7 @@ void StatusIconLinuxDbus::OnGetAllProperties(
 
 void StatusIconLinuxDbus::SetImageImpl(const gfx::ImageSkia& image,
                                        bool send_signals) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
   if (properties_.empty()) {
     return;
   }
@@ -684,7 +752,7 @@ void StatusIconLinuxDbus::SetImageImpl(const gfx::ImageSkia& image,
 }
 
 void StatusIconLinuxDbus::OnIconFileWritten(const base::FilePath& icon_file) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
   CleanupIconFile();
   icon_file_ = icon_file;
   if (icon_file_.empty()) {
@@ -710,7 +778,7 @@ void StatusIconLinuxDbus::OnIconFileWritten(const base::FilePath& icon_file) {
 }
 
 void StatusIconLinuxDbus::CleanupIconFile() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
   if (!icon_file_.empty()) {
     icon_task_runner_->PostTask(
         FROM_HERE,

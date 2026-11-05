@@ -27,6 +27,8 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_CORE_DOM_PSEUDO_ELEMENT_H_
 #define THIRD_PARTY_BLINK_RENDERER_CORE_DOM_PSEUDO_ELEMENT_H_
 
+#include <utility>
+
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/core/dom/element.h"
 #include "third_party/blink/renderer/platform/wtf/casting.h"
@@ -59,6 +61,8 @@ class CORE_EXPORT PseudoElement : public Element {
   void AttachLayoutTree(AttachContext&) override;
   bool LayoutObjectIsNeeded(const DisplayStyle&) const override;
   bool CanGeneratePseudoElement(PseudoId) const override;
+  static bool CanGeneratePseudoElement(PseudoId parent_pseudo_id,
+                                       PseudoId pseudo_id);
 
   // Returns true if the PseudoElement can generates child boxes based on the
   // CSS content property.
@@ -73,6 +77,11 @@ class CORE_EXPORT PseudoElement : public Element {
   PseudoId GetPseudoIdForStyling() const override;
   void DefaultEventHandler(Event&) override;
   const AtomicString& GetPseudoArgument() const { return pseudo_argument_; }
+  // Returns the pseudo id and argument of the pseudo-element selector that
+  // refers to this pseudo-element, e.g. {kPseudoIdScrollButton, "block-start"}
+  // for ::scroll-button(block-start).
+  virtual std::pair<PseudoId, AtomicString> GetSelectorPseudoIdAndArgument()
+      const;
 
   // Return the adjusted style needed by layout. In some cases computed style
   // cannot be used as-is by layout. display:contents needs to be adjusted to
@@ -101,7 +110,6 @@ class CORE_EXPORT PseudoElement : public Element {
   virtual Node* InnerNodeForHitTesting();
 
   bool SupportsHitTesting() const;
-  static bool SupportsHitTesting(PseudoId pseudo_id);
 
   void AccessKeyAction(SimulatedClickCreationScope creation_scope) override;
 
@@ -142,8 +150,8 @@ class CORE_EXPORT PseudoElement : public Element {
     const ComputedStyle* original_style_{nullptr};
   };
 
-  PseudoId pseudo_id_;
   const AtomicString pseudo_argument_;
+  PseudoId pseudo_id_;
   bool is_generated_name_ = false;
 };
 

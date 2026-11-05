@@ -519,10 +519,10 @@
 <translation id="5045550434625856497">Неправильний пароль</translation>
 <translation id="5059127710849015030">Непальська, транслітерація</translation>
 <translation id="5068919226082848014">Піца</translation>
+<translation id="5075336522277785691">Розширення <ph name="EXTENSION_NAME" /> налаштувало правила перевизначення проксі-сервера</translation>
 <translation id="5081517858322016911">Буде видалено файли загальним обсягом <ph name="TOTAL_FILE_SIZE" /></translation>
 <translation id="508423945471810158">Переміщення елементів (<ph name="NUMBER_OF_ITEMS" />) у папку "<ph name="FOLDER_NAME" />"</translation>
 <translation id="509429900233858213">Сталася помилка.</translation>
-<translation id="5102922915594634436">Керувати синхронізованими папками</translation>
 <translation id="5109254780565519649">Сталася помилка. Можливо, відновлено не всі елементи.</translation>
 <translation id="5110329002213341433">Англійська (Канада)</translation>
 <translation id="5119780910075847424">Cинхронізацію призупинено</translation>
@@ -558,7 +558,6 @@
 <translation id="5305688511332277257">Не встановлено жодного</translation>
 <translation id="5317780077021120954">Зберегти</translation>
 <translation id="5318819489018851358">Надати доступ додаткам Linux</translation>
-<translation id="5330145655348521461">Ці файли відкрито на іншому комп’ютері. Перейдіть до <ph name="USER_NAME" /> (<ph name="MAIL_ADDRESS" />), щоб переглянути їх.</translation>
 <translation id="5330512191124428349">Отримати інформацію</translation>
 <translation id="535792325654997756">Людина з котами</translation>
 <translation id="5358764674931277">Частота кадрів</translation>
@@ -699,7 +698,6 @@
 <translation id="636254897931573416">Недійсне значення збігу із суфіксом домену</translation>
 <translation id="6364301859968397756">Сховище організації заповнено</translation>
 <translation id="6367976544441405720">Фургон</translation>
-<translation id="637062427944097960">Цей файл відкрито на іншому робочому столі. Перейдіть до <ph name="USER_NAME" /> (<ph name="MAIL_ADDRESS" />), щоб переглянути його.</translation>
 <translation id="6394388407447716302">Лише перегляд</translation>
 <translation id="6395575651121294044">Елементів: <ph name="NUMBER_OF_FILES" /></translation>
 <translation id="6407769893376380348">Не вдалося перемістити файл <ph name="FILE_NAME" />, оскільки він зашифрований.</translation>

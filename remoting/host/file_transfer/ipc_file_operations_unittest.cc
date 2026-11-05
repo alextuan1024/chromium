@@ -154,7 +154,6 @@ class FakeDesktopSessionAgent : public mojom::DesktopSessionControl {
   void BeginFileRead(BeginFileReadCallback callback) override;
   void BeginFileWrite(const base::FilePath& file_path,
                       BeginFileWriteCallback callback) override;
-  void SetHostCursorRenderedByClient() override;
   void StartAudioInjector(
       std::unique_ptr<IpcFifoBufferReader> audio_reader) override {}
   void SetAudioInjectorSampleInfo(
@@ -258,8 +257,6 @@ void FakeDesktopSessionAgent::BeginFileWrite(const base::FilePath& file_path,
   session_file_operations_handler_.BeginFileWrite(file_path,
                                                   std::move(callback));
 }
-
-void FakeDesktopSessionAgent::SetHostCursorRenderedByClient() {}
 
 void FakeDesktopSessionAgent::Bind(
     mojo::PendingAssociatedReceiver<mojom::DesktopSessionControl> receiver) {
@@ -695,9 +692,6 @@ TEST_F(IpcFileOperationsTest, ConcurrentWriteOperationsSupported) {
       base_path.InsertBeforeExtension(FILE_PATH_LITERAL("(2)")),
       base_path.InsertBeforeExtension(FILE_PATH_LITERAL("(3)")),
       base_path.InsertBeforeExtension(FILE_PATH_LITERAL("(4)"))};
-
-  std::vector<std::uint8_t> contents =
-      ByteArrayFrom(kTestDataOne, kTestDataTwo, kTestDataThree);
 
   std::vector<std::unique_ptr<FileOperations::Writer>> writers;
   for (size_t i = 0; i < paths.size(); i++) {

@@ -7,6 +7,7 @@
 #include <algorithm>
 
 #include "base/compiler_specific.h"
+#include "base/containers/span.h"
 #include "base/functional/callback.h"
 #include "base/logging.h"
 #include "base/notreached.h"
@@ -16,7 +17,6 @@
 #include "remoting/codec/utils.h"
 #include "third_party/libaom/source/libaom/aom/aom_image.h"
 #include "third_party/libaom/source/libaom/aom/aomcx.h"
-#include "third_party/libyuv/include/libyuv/convert_from_argb.h"
 #include "third_party/webrtc/modules/desktop_capture/desktop_frame.h"
 #include "third_party/webrtc/modules/desktop_capture/desktop_geometry.h"
 #include "third_party/webrtc/modules/desktop_capture/desktop_region.h"
@@ -34,21 +34,14 @@ void DestroyAomCodecContext(aom_codec_ctx_t* codec_ctx) {
   delete codec_ctx;
 }
 
-// Minimum target bitrate per megapixel.
-// TODO(joedow): Perform some additional testing to see if this needs tweaking.
-constexpr int kAv1MinimumTargetBitrateKbpsPerMegapixel = 2500;
-
-// Use the highest possible encoder speed as it produces frames faster than the
-// lower settings, requires fewer CPU resources, and still has low bitrates.
-constexpr int kAv1DefaultEncoderSpeed = 11;
-
 }  // namespace
 
 WebrtcVideoEncoderAV1::WebrtcVideoEncoderAV1()
     : codec_(nullptr, DestroyAomCodecContext),
       image_(nullptr, aom_img_free),
-      av1_encoder_speed_(kAv1DefaultEncoderSpeed),
-      bitrate_filter_(kAv1MinimumTargetBitrateKbpsPerMegapixel) {
+      av1_encoder_speed_(kDefaultEncoderSpeed),
+      bitrate_filter_(
+          EncoderBitrateFilter::kDefaultMinimumBitrateKbpsPerMegapixel) {
   ConfigureCodecParams();
 }
 WebrtcVideoEncoderAV1::~WebrtcVideoEncoderAV1() = default;
@@ -65,7 +58,8 @@ void WebrtcVideoEncoderAV1::SetEncoderSpeed(int encoder_speed) {
   // realtime encoding with AV1.  This allows for client-driven experimentation,
   // however in practice, a value of 10 or 11 should be chosen as they will give
   // the best performance.
-  int clamped_speed = std::clamp<int>(encoder_speed, 7, 11);
+  int clamped_speed =
+      std::clamp<int>(encoder_speed, kMinEncoderSpeed, kMaxEncoderSpeed);
   if (av1_encoder_speed_ != clamped_speed) {
     VLOG(0) << "Setting AV1 encoder speed to " << clamped_speed;
     av1_encoder_speed_ = clamped_speed;
@@ -106,7 +100,9 @@ bool WebrtcVideoEncoderAV1::InitializeCodec(const webrtc::DesktopSize& size) {
     return false;
   }
   DCHECK_NE(codec->name, nullptr);
+  last_init_target_bitrate_kbps_ = config_.rc_target_bitrate;
 
+  codec_active_map_enabled_ = false;
   if (use_active_map_) {
     active_map_data_.Initialize(size);
     active_map_ = {
@@ -126,19 +122,19 @@ bool WebrtcVideoEncoderAV1::InitializeCodec(const webrtc::DesktopSize& size) {
     error = aom_codec_control(codec.get(), AV1E_SET_ROW_MT, 1);
     DCHECK_EQ(error, AOM_CODEC_OK) << "Failed to set AV1E_SET_ROW_MT";
 
-    // Use a smaller superblock size for 5k, 4k, and 2k displays.
+    // Force 64x64 superblocks when encoding with more than 4 threads (e.g.
+    // 1080p, 2K, 4K, and 5K displays on hosts with >= 10 logical CPUs).
     if (config_.g_threads > 4) {
-      // The default value for AV1E_SET_SUPERBLOCK_SIZE is
-      // AOM_SUPERBLOCK_SIZE_DYNAMIC which uses 64x64 blocks for resolutions of
-      // 720px or lower and 128x128 for resolutions above that. When testing
-      // with display resolutions higher than 3840x2160 (4K), we found that
-      // increasing the number of threads from 16 to 32 increased performance
-      // for VP9 but performance decreased with AV1. The codec team investigated
-      // and suggested adjusting the superblock size down to 64x64 to increase
-      // the amount of parallelism.  This solution increased performance for 5K
-      // displays and put it around the level of what we see for a 4K display.
-      // Additional testing with 4K and 2K displays showed that a smaller
-      // superblock size increased performance there as well.
+      // Note: In REALTIME + AOM_CONTENT_SCREEN mode (configured below),
+      // libaom's default AOM_SUPERBLOCK_SIZE_DYNAMIC heuristic
+      // (av1_select_sb_size) already selects 64x64 superblocks at 1080p with
+      // >= 4 threads, while defaulting to 128x128 at higher resolutions where
+      // (width * height) / (128 * 128 * num_tiles) >= 40. Explicitly setting
+      // AOM_SUPERBLOCK_SIZE_64X64 ensures fine-grained superblock row-MT
+      // parallelism across 1080p, 2K, 4K, and 5K displays. When testing > 4K
+      // displays, increasing threads from 16 to 32 degraded AV1 performance
+      // until superblocks were reduced to 64x64 (putting 5K performance on par
+      // with 4K and improving 4K and 2K as well).
       // See https://crbug.com/aomedia/3363 for more info.
       error = aom_codec_control(codec.get(), AV1E_SET_SUPERBLOCK_SIZE,
                                 AOM_SUPERBLOCK_SIZE_64X64);
@@ -270,49 +266,23 @@ void WebrtcVideoEncoderAV1::PrepareImage(
   }
 
   // Convert the updated region to YUV ready for encoding.
-  CHECK_EQ(frame->pixel_format(), webrtc::FOURCC_ARGB);
-  const uint8_t* rgb_data = frame->data();
-  const int rgb_stride = frame->stride();
-  const int y_stride = image_->stride[0];
-  DCHECK_EQ(image_->stride[1], image_->stride[2]);
-  const int uv_stride = image_->stride[1];
-  uint8_t* y_data = image_->planes[0];
-  uint8_t* u_data = image_->planes[1];
-  uint8_t* v_data = image_->planes[2];
-
-  switch (image_->fmt) {
-    case AOM_IMG_FMT_I420:
-      for (webrtc::DesktopRegion::Iterator r(updated_region); !r.IsAtEnd();
-           r.Advance()) {
-        webrtc::DesktopRect rect = GetRowAlignedRect(r.rect(), image_->d_w);
-        int rgb_offset = rgb_stride * rect.top() +
-                         rect.left() * webrtc::DesktopFrame::kBytesPerPixel;
-        int y_offset = y_stride * rect.top() + rect.left();
-        int uv_offset = uv_stride * rect.top() / 2 + rect.left() / 2;
-        libyuv::ARGBToI420(UNSAFE_TODO(rgb_data + rgb_offset), rgb_stride,
-                           UNSAFE_TODO(y_data + y_offset), y_stride,
-                           UNSAFE_TODO(u_data + uv_offset), uv_stride,
-                           UNSAFE_TODO(v_data + uv_offset), uv_stride,
-                           rect.width(), rect.height());
-      }
-      break;
-    case AOM_IMG_FMT_I444:
-      for (webrtc::DesktopRegion::Iterator r(updated_region); !r.IsAtEnd();
-           r.Advance()) {
-        webrtc::DesktopRect rect = GetRowAlignedRect(r.rect(), image_->d_w);
-        int rgb_offset = rgb_stride * rect.top() +
-                         rect.left() * webrtc::DesktopFrame::kBytesPerPixel;
-        int yuv_offset = uv_stride * rect.top() + rect.left();
-        libyuv::ARGBToI444(UNSAFE_TODO(rgb_data + rgb_offset), rgb_stride,
-                           UNSAFE_TODO(y_data + yuv_offset), y_stride,
-                           UNSAFE_TODO(u_data + yuv_offset), uv_stride,
-                           UNSAFE_TODO(v_data + yuv_offset), uv_stride,
-                           rect.width(), rect.height());
-      }
-      break;
-    default:
-      NOTREACHED();
-  }
+  DCHECK(image_->fmt == AOM_IMG_FMT_I420 || image_->fmt == AOM_IMG_FMT_I444);
+  const bool is_i444 = image_->fmt == AOM_IMG_FMT_I444;
+  const size_t y_rows = image_->d_h;
+  const size_t uv_rows = is_i444 ? image_->d_h : (image_->d_h + 1) / 2;
+  // SAFETY: `image_->planes[i]` is allocated by `aom_img_alloc` with at least
+  // `image_->stride[i] * rows` bytes for each plane.
+  ConvertDesktopFrameRegionToYuv(
+      *frame, updated_region, is_i444,
+      UNSAFE_TODO(base::span(image_->planes[0],
+                             static_cast<size_t>(image_->stride[0]) * y_rows)),
+      image_->stride[0],
+      UNSAFE_TODO(base::span(image_->planes[1],
+                             static_cast<size_t>(image_->stride[1]) * uv_rows)),
+      image_->stride[1],
+      UNSAFE_TODO(base::span(image_->planes[2],
+                             static_cast<size_t>(image_->stride[2]) * uv_rows)),
+      image_->stride[2]);
 }
 
 void WebrtcVideoEncoderAV1::ConfigureCodecParams() {
@@ -342,11 +312,15 @@ void WebrtcVideoEncoderAV1::ConfigureCodecParams() {
 
   config_.kf_mode = AOM_KF_DISABLED;
 
-  // Initial max/min qp values were suggested by the codecs team. The intent is
-  // to set a reasonable default for the first key frame before WebRTC begins
-  // sending us updated max/min qp values based on the network conditions.
-  config_.rc_max_quantizer = 52;
-  config_.rc_min_quantizer = 10;
+  // Default max/min quantizer bounds match WebrtcVideoEncoderWrapper and
+  // WebrtcVideoEncoderVpx. Capping max quantizer at 50 (rather than the general
+  // WebRTC default of 52) avoids a ~16% jump in AC quantization step size at
+  // the ceiling, preserving text legibility during keyframes or large screen
+  // updates and reducing the number of top-off frames needed to converge to the
+  // minimum quantizer (10), below which additional bandwidth yields negligible
+  // visual improvement.
+  config_.rc_max_quantizer = kMaxQuantizer;
+  config_.rc_min_quantizer = kMinQuantizer;
   config_.rc_dropframe_thresh = 0;
   config_.rc_undershoot_pct = 50;
   config_.rc_overshoot_pct = 50;
@@ -354,7 +328,7 @@ void WebrtcVideoEncoderAV1::ConfigureCodecParams() {
   config_.rc_buf_optimal_sz = 600;
   config_.rc_buf_sz = 1000;
   config_.rc_end_usage = AOM_CBR;
-  config_.rc_target_bitrate = 1024;  // 1024 Kbps = 1Mbps.
+  config_.rc_target_bitrate = EncoderBitrateFilter::kDefaultMinimumBitrateKbps;
 }
 
 void WebrtcVideoEncoderAV1::UpdateConfig(const FrameParams& params) {
@@ -362,11 +336,12 @@ void WebrtcVideoEncoderAV1::UpdateConfig(const FrameParams& params) {
 
   if (params.bitrate_kbps >= 0) {
     bitrate_filter_.SetBandwidthEstimateKbps(params.bitrate_kbps);
-    if (config_.rc_target_bitrate !=
-        static_cast<unsigned int>(bitrate_filter_.GetTargetBitrateKbps())) {
-      config_.rc_target_bitrate = bitrate_filter_.GetTargetBitrateKbps();
-      changed = true;
-    }
+  }
+  const unsigned int target_bitrate =
+      static_cast<unsigned int>(bitrate_filter_.GetTargetBitrateKbps());
+  if (config_.rc_target_bitrate != target_bitrate) {
+    config_.rc_target_bitrate = target_bitrate;
+    changed = true;
   }
 
   if (params.vpx_min_quantizer >= 0 &&
@@ -383,7 +358,7 @@ void WebrtcVideoEncoderAV1::UpdateConfig(const FrameParams& params) {
     changed = true;
   }
 
-  if (!changed) {
+  if (!changed || !codec_) {
     return;
   }
 
@@ -411,19 +386,26 @@ void WebrtcVideoEncoderAV1::Encode(std::unique_ptr<webrtc::DesktopFrame> frame,
     return;
   }
 
-  DCHECK_GE(frame_size.width(), 32);
-  DCHECK_GE(frame_size.height(), 32);
+  DCHECK_GE(frame_size.width(), kMinDimension);
+  DCHECK_GE(frame_size.height(), kMinDimension);
 
   // Create or reconfigure the codec to match the size of |frame|.
   if (!codec_ || !frame_size.equals(previous_frame_size)) {
     image_.reset();
-    if (!InitializeCodec(frame_size)) {
-      std::move(done).Run(EncodeResult::UNKNOWN_ERROR, nullptr);
-      return;
-    }
+    codec_.reset();
   }
 
+  // Populate target bitrate and quantizer bounds in |config_| before
+  // InitializeCodec() so aom_codec_enc_init() initializes its rate-control
+  // buffer level with the actual target bitrate rather than the 1000 kbps
+  // default (EncoderBitrateFilter::kDefaultMinimumBitrateKbps), since
+  // av1_change_config() only clamps buffer_level down and never scales it up.
   UpdateConfig(params);
+
+  if (!codec_ && !InitializeCodec(frame_size)) {
+    std::move(done).Run(EncodeResult::UNKNOWN_ERROR, nullptr);
+    return;
+  }
 
   // Transfer the frame data to the image buffer for encoding.
   // TODO(joedow): Look into using aom_img_wrap instead of our own buffer.
@@ -431,15 +413,52 @@ void WebrtcVideoEncoderAV1::Encode(std::unique_ptr<webrtc::DesktopFrame> frame,
   PrepareImage(frame.get(), updated_region);
 
   if (use_active_map_) {
-    if (params.clear_active_map || params.key_frame) {
-      active_map_data_.Clear();
-    }
+    auto disable_codec_active_map = [&]() {
+      if (codec_active_map_enabled_) {
+        // Passing a null `active_map` buffer makes libaom's
+        // `av1_set_active_map()` reset `rc.percent_blocks_inactive = 0` without
+        // scanning the 4x4 MI grid; on the next encode,
+        // `av1_apply_active_map()` sees `percent_blocks_inactive == 0` and sets
+        // `active_map.enabled = 0, update = 1`.
+        aom_active_map_t empty_map = {nullptr, active_map_.rows,
+                                      active_map_.cols};
+        if (aom_codec_control(codec_.get(), AOME_SET_ACTIVEMAP, &empty_map)) {
+          LOG(ERROR) << "Unable to disable active map";
+        } else {
+          codec_active_map_enabled_ = false;
+        }
+      }
+    };
 
-    // AV1 does not use an active map for keyframes so skip in that case.
-    if (!params.key_frame) {
+    if (params.key_frame) {
+      // AV1 does not use an active map for keyframes, but we still populate
+      // |active_map_data_| with the full frame so subsequent top-off frames
+      // (with clear_active_map = false) know the entire frame is active.
+      active_map_data_.SetFull();
+      disable_codec_active_map();
+    } else {
+      if (params.clear_active_map) {
+        active_map_data_.Clear();
+      }
       active_map_data_.Update(updated_region);
-      if (aom_codec_control(codec_.get(), AOME_SET_ACTIVEMAP, &active_map_)) {
-        LOG(ERROR) << "Unable to apply active map";
+
+      const size_t active_blocks = active_map_data_.active_blocks();
+      const size_t total_blocks = active_map_data_.total_blocks();
+      // Only enable libaom's active map when [2.5%, 25%] of 16x16 macroblocks
+      // are active (chosen via `webrtc_video_encoder_benchmark`). Below 2.5%,
+      // full-frame 4x4 segmentation-map coding outweighs superblock skip
+      // savings on tiny updates. Above 25%, active-map overhead and libaom
+      // disabling `set_zeromv_skip_based_on_source_sad` outweigh skipping the
+      // remaining inactive blocks.
+      if (active_blocks * 4 > total_blocks ||
+          active_blocks * 40 < total_blocks) {
+        disable_codec_active_map();
+      } else {
+        if (aom_codec_control(codec_.get(), AOME_SET_ACTIVEMAP, &active_map_)) {
+          LOG(ERROR) << "Unable to apply active map";
+        } else {
+          codec_active_map_enabled_ = true;
+        }
       }
     }
   }

@@ -8,6 +8,7 @@
 #include <string>
 #include <string_view>
 
+#include "base/functional/callback_helpers.h"
 #include "base/i18n/case_conversion.h"
 #include "base/metrics/user_metrics.h"
 #include "base/metrics/user_metrics_action.h"
@@ -26,6 +27,7 @@
 #include "chrome/grit/generated_resources.h"
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/navigation_controller.h"
+#include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/web_contents.h"
 #include "extensions/browser/extension_registry.h"
 #include "extensions/browser/extension_system.h"
@@ -707,7 +709,7 @@ void ExtensionsMenuViewModel::GrantSiteAccess(
   extensions::ExtensionActionRunner* action_runner =
       extensions::ExtensionActionRunner::GetForWebContents(web_contents);
   if (action_runner) {
-    action_runner->GrantTabPermissions({extension});
+    action_runner->GrantTabPermissions({extension}, base::DoNothing());
   }
 }
 
@@ -1338,6 +1340,10 @@ void ExtensionsMenuViewModel::OnTabListDestroyed(TabListInterface& tab_list) {
 
 void ExtensionsMenuViewModel::DidFinishNavigation(
     content::NavigationHandle* handle) {
+  if (!handle->IsInPrimaryMainFrame() || !handle->HasCommitted()) {
+    return;
+  }
+
   auto* web_contents = GetActiveWebContents();
   if (!web_contents) {
     return;

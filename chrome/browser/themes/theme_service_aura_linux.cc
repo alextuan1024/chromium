@@ -8,6 +8,7 @@
 #include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/themes/chrome_linux_ui_getter.h"
 #include "chrome/browser/themes/custom_theme_supplier.h"
 #include "chrome/browser/themes/theme_service.h"
 #include "chrome/common/pref_names.h"
@@ -16,6 +17,7 @@
 #include "ui/gfx/image/image.h"
 #include "ui/linux/linux_ui.h"
 #include "ui/linux/linux_ui_factory.h"
+#include "ui/native_theme/native_theme.h"
 #include "ui/native_theme/native_theme_aura.h"
 
 namespace {
@@ -47,6 +49,8 @@ class SystemThemeLinux : public CustomThemeSupplier {
   bool GetDisplayProperty(int id, int* result) const override;
   gfx::Image GetImageNamed(int id) const override;
   bool HasCustomImage(int id) const override;
+  void AddColorMixers(ui::ColorProvider* provider,
+                      const ui::ColorProviderKey& key) const override;
   ui::NativeTheme* GetNativeTheme() const override;
 
  private:
@@ -93,6 +97,16 @@ gfx::Image SystemThemeLinux::GetImageNamed(int id) const {
 
 bool SystemThemeLinux::HasCustomImage(int id) const {
   return false;
+}
+
+void SystemThemeLinux::AddColorMixers(ui::ColorProvider* provider,
+                                      const ui::ColorProviderKey& key) const {
+  // Intentionally a no-op. The Linux system theme feeds its colors into the
+  // color pipeline via LinuxUiTheme::AddNativeChromeColorMixer() instead of
+  // through the ThemeProperties-to-color-ID mapping that
+  // CustomThemeSupplier::AddColorMixers() performs. Since the custom theme's
+  // mixer is added after the native one, running that mapping here would
+  // clobber the colors the native mixer is meant to win on.
 }
 
 ui::NativeTheme* SystemThemeLinux::GetNativeTheme() const {
@@ -168,6 +182,19 @@ ThemeService::BrowserColorScheme ThemeServiceAuraLinux::GetBrowserColorScheme()
   return ThemeService::GetBrowserColorScheme();
 }
 
+bool ThemeServiceAuraLinux::BrowserUsesDarkColors() const {
+  // The system theme (GTK or QT) paints with the toolkit's colors, so use the
+  // color scheme of its native theme, which matches those colors.
+  // GetBrowserColorScheme() is always kSystem in this case.
+  if (UsingSystemTheme()) {
+    if (const auto* native_theme = GetThemeSupplier()->GetNativeTheme()) {
+      return native_theme->preferred_color_scheme() ==
+             ui::NativeTheme::PreferredColorScheme::kDark;
+    }
+  }
+  return ThemeService::BrowserUsesDarkColors();
+}
+
 // static
 ui::SystemTheme ThemeServiceAuraLinux::GetSystemThemeForProfile(
     const Profile* profile) {
@@ -176,4 +203,12 @@ ui::SystemTheme ThemeServiceAuraLinux::GetSystemThemeForProfile(
   }
   return ValidateSystemTheme(static_cast<ui::SystemTheme>(
       profile->GetPrefs()->GetInteger(prefs::kSystemTheme)));
+}
+
+// static
+ui::LinuxUiTheme* ThemeServiceAuraLinux::GetLinuxUiThemeForProfile(
+    const Profile* profile) {
+  return ChromeLinuxUiGetter::instance()
+             ? ChromeLinuxUiGetter::instance()->GetForProfile(profile)
+             : nullptr;
 }

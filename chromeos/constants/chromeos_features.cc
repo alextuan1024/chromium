@@ -12,18 +12,9 @@
 
 namespace chromeos::features {
 
-// Enables better quick settings UI for bluetooth and wifi error states.
-BASE_FEATURE(kBluetoothWifiQSPodRefresh, base::FEATURE_DISABLED_BY_DEFAULT);
-
 // System location provider will use caching to optimize GCP usage. This flag
 // will be enabled with Finch.
 BASE_FEATURE(kCachedLocationProvider, base::FEATURE_ENABLED_BY_DEFAULT);
-
-// Enables cloud game features.
-BASE_FEATURE(kCloudGamingDevice, base::FEATURE_DISABLED_BY_DEFAULT);
-
-// Enables MPS to push payload to chrome devices.
-BASE_FEATURE(kAlmanacLauncherPayload, base::FEATURE_DISABLED_BY_DEFAULT);
 
 // Enables ChromeOS Apps APIs.
 BASE_FEATURE(kBlinkExtension, base::FEATURE_DISABLED_BY_DEFAULT);
@@ -44,9 +35,6 @@ BASE_FEATURE(kCrosIsolatedWebAppSetShapeAllowlist,
 BASE_FEATURE(kDataControlsFileAccessDefaultDeny,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
-// Feature flag used to gate preinstallation of the Gemini app.
-BASE_FEATURE(kGeminiAppPreinstall, base::FEATURE_ENABLED_BY_DEFAULT);
-
 // Controls enabling / disabling the mahi feature from the feature management
 // module.
 BASE_FEATURE(kFeatureManagementMahi, base::FEATURE_DISABLED_BY_DEFAULT);
@@ -57,11 +45,6 @@ BASE_FEATURE(kOrcaDogfood, base::FEATURE_DISABLED_BY_DEFAULT);
 // Feature management flag used to gate preinstallation of the Gemini app. This
 // flag is meant to be enabled by the feature management module.
 BASE_FEATURE(kFeatureManagementGeminiAppPreinstall,
-             base::FEATURE_DISABLED_BY_DEFAULT);
-
-// Controls enabling / disabling the history embedding feature from the
-// feature management module.
-BASE_FEATURE(kFeatureManagementHistoryEmbedding,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
 // Controls enabling / disabling the passage embedder infrastructure from the
@@ -102,31 +85,8 @@ BASE_FEATURE(kPlatformKeysChangesWave1, base::FEATURE_DISABLED_BY_DEFAULT);
 BASE_FEATURE(kQuickAnswersV2SettingsSubToggle,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
-// Controls whether to enable Quick Answers Rich card.
-BASE_FEATURE(kQuickAnswersRichCard, base::FEATURE_DISABLED_BY_DEFAULT);
-
-// Enables CloudFileSystem for FileSystemProvider extensions.
-BASE_FEATURE(kFileSystemProviderCloudFileSystem,
-             base::FEATURE_DISABLED_BY_DEFAULT);
-
-// Enables a content cache in CloudFileSystem for FileSystemProvider extensions.
-BASE_FEATURE(kFileSystemProviderContentCache,
-             base::FEATURE_DISABLED_BY_DEFAULT);
-
-bool IsBluetoothWifiQSPodRefreshEnabled() {
-  return base::FeatureList::IsEnabled(kBluetoothWifiQSPodRefresh);
-}
-
 bool IsCachedLocationProviderEnabled() {
   return base::FeatureList::IsEnabled(kCachedLocationProvider);
-}
-
-bool IsCloudGamingDeviceEnabled() {
-  return base::FeatureList::IsEnabled(kCloudGamingDevice);
-}
-
-bool IsAlmanacLauncherPayloadEnabled() {
-  return base::FeatureList::IsEnabled(kAlmanacLauncherPayload);
 }
 
 bool IsBlinkExtensionEnabled() {
@@ -145,26 +105,8 @@ bool IsDataControlsFileAccessDefaultDenyEnabled() {
   return base::FeatureList::IsEnabled(kDataControlsFileAccessDefaultDeny);
 }
 
-bool IsFileSystemProviderCloudFileSystemEnabled() {
-  return base::FeatureList::IsEnabled(kFileSystemProviderCloudFileSystem);
-}
-
-bool IsFileSystemProviderContentCacheEnabled() {
-  // The `ContentCache` will be owned by the `CloudFileSystem`. Thus, the
-  // `FileSystemProviderCloudFileSystem` flag has to be enabled too.
-  if (!IsFileSystemProviderCloudFileSystemEnabled()) {
-    return false;
-  }
-  return base::FeatureList::IsEnabled(kFileSystemProviderContentCache);
-}
-
-
 bool IsGeminiAppPreinstallFeatureManagementEnabled() {
   return base::FeatureList::IsEnabled(kFeatureManagementGeminiAppPreinstall);
-}
-
-bool IsGeminiAppPreinstallEnabled() {
-  return base::FeatureList::IsEnabled(kGeminiAppPreinstall);
 }
 
 bool IsMahiEnabled() {
@@ -185,10 +127,6 @@ bool ShouldDisableChromeComposeOnChromeOS() {
          IsOrcaEnabled();
 }
 
-bool IsQuickAnswersRichCardEnabled() {
-  return base::FeatureList::IsEnabled(kQuickAnswersRichCard);
-}
-
 bool IsQuickAnswersV2SettingsSubToggleEnabled() {
   return base::FeatureList::IsEnabled(kQuickAnswersV2SettingsSubToggle);
 }
@@ -200,10 +138,6 @@ bool IsRoundedWindowsEnabled() {
 bool IsSystemBlurEnabled() {
   constexpr base::ByteSize kMinimumMemoryThreshold = base::GiB(4);  // 4GB
   return base::SysInfo::AmountOfTotalPhysicalMemory() > kMinimumMemoryThreshold;
-}
-
-bool IsFeatureManagementHistoryEmbeddingEnabled() {
-  return base::FeatureList::IsEnabled(kFeatureManagementHistoryEmbedding);
 }
 
 }  // namespace chromeos::features

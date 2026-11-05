@@ -4,18 +4,25 @@
 
 #include "content/public/browser/document_picture_in_picture_window_controller.h"
 
+#include <utility>
+#include <vector>
+
 #include "base/barrier_closure.h"
+#include "base/containers/flat_map.h"
 #include "base/files/file_util.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory/weak_ptr.h"
 #include "base/path_service.h"
 #include "base/scoped_observation.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/to_string.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
+#include "base/test/test_future.h"
 #include "base/test/test_timeouts.h"
 #include "build/build_config.h"
 #include "chrome/browser/chrome_content_browser_client.h"
@@ -26,7 +33,6 @@
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
-#include "chrome/browser/ui/omnibox/omnibox_next_features.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/picture_in_picture_browser_frame_view.h"
@@ -42,6 +48,7 @@
 #include "chrome/test/base/chrome_test_utils.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
+#include "components/javascript_dialogs/tab_modal_dialog_manager.h"
 #include "components/viz/common/frame_sinks/copy_output_request.h"
 #include "components/viz/common/frame_sinks/copy_output_result.h"
 #include "content/public/browser/media_session.h"
@@ -55,7 +62,6 @@
 #include "content/public/common/content_switches.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
-#include "content/public/test/fenced_frame_test_util.h"
 #include "content/public/test/file_system_chooser_test_helpers.h"
 #include "content/public/test/media_start_stop_observer.h"
 #include "content/public/test/prerender_test_util.h"
@@ -70,7 +76,7 @@
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/common/web_preferences/web_preferences.h"
 #include "ui/base/mojom/menu_source_type.mojom.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "ui/compositor/compositor.h"
 #include "ui/compositor/layer.h"
 #include "ui/compositor/test/draw_waiter_for_test.h"
@@ -79,12 +85,20 @@
 #include "ui/display/screen.h"
 #include "ui/events/base_event_utils.h"
 #include "ui/gfx/codec/png_codec.h"
+#include "ui/gfx/geometry/insets.h"
+#include "ui/gfx/geometry/rect.h"
 #include "ui/shell_dialogs/select_file_dialog.h"
 #include "ui/shell_dialogs/select_file_dialog_factory.h"
 #include "ui/views/controls/button/image_button.h"
 #include "ui/views/test/button_test_api.h"
+#include "ui/views/test/widget_test.h"
 #include "ui/views/view_observer.h"
+#include "ui/views/widget/widget.h"
+#include "ui/views/widget/widget_delegate.h"
 #include "ui/views/widget/widget_observer.h"
+#include "ui/views/window/client_view.h"
+#include "ui/views/window/dialog_delegate.h"
+#include "ui/views/window/frame_view.h"
 #include "ui/views/window/non_client_view.h"
 
 #if BUILDFLAG(IS_CHROMEOS)
@@ -107,6 +121,10 @@ namespace {
 const base::FilePath::CharType kPictureInPictureDocumentPipPage[] =
     FILE_PATH_LITERAL("media/picture-in-picture/document-pip.html");
 
+std::string BackendParamName(const testing::TestParamInfo<bool>& info) {
+  return info.param ? "Standalone" : "BrowserBacked";
+}
+
 // Observes a views::Widget and waits for it to be active or inactive.
 class WidgetActivationWaiter : public views::WidgetObserver {
  public:
@@ -125,23 +143,15 @@ class WidgetActivationWaiter : public views::WidgetObserver {
 
   // Eventually returns true if the actual activation state matches `activated`.
   // Returns false if the Widget is destroyed before that activation state ever
-  // matches `activated`.
+  // matches `activated`. Activation may change more than once before settling
+  // (e.g. while a previous window closes), so keep waiting until it matches.
   bool WaitForActivationState(bool activated) {
-    if (!widget_) {
-      return false;
+    while (widget_ && widget_->IsActive() != activated) {
+      run_loop_ = std::make_unique<base::RunLoop>();
+      run_loop_->Run();
+      run_loop_.reset();
     }
-
-    if (widget_->IsActive() == activated) {
-      return true;
-    }
-
-    run_loop_ = std::make_unique<base::RunLoop>();
-    run_loop_->Run();
-
-    if (!widget_) {
-      return false;
-    }
-    return widget_->IsActive() == activated;
+    return !!widget_;
   }
 
   // views::WidgetObserver:
@@ -149,7 +159,9 @@ class WidgetActivationWaiter : public views::WidgetObserver {
   void OnWidgetDestroying(views::Widget*) override {
     widget_->RemoveObserver(this);
     widget_ = nullptr;
-    run_loop_->Quit();
+    if (run_loop_) {
+      run_loop_->Quit();
+    }
   }
 
   void OnWidgetActivationChanged(views::Widget*, bool active) override {
@@ -220,15 +232,15 @@ class DocumentPictureInPictureWindowControllerBrowserTest
   }
 
   void SetUp() override {
-    scoped_feature_list_.InitWithFeatureStates(
-        {{blink::features::kDocumentPictureInPictureAPI, true},
-         {blink::features::kDocumentPictureInPicturePreferInitialPlacement,
-          true},
-         {features::kDocumentPipStandaloneWindow, UseStandaloneDocumentPip()},
-         // TODO(crbug.com/452061489): Fix tests that fail when the WebUI
-         // Omnibox is enabled and then remove these two Features.
-         {omnibox::internal::kWebUIOmniboxPopup, false},
-         {omnibox::internal::kWebUIOmniboxAimPopup, false}});
+    base::flat_map<base::test::FeatureRef, bool> feature_states = {
+        {blink::features::kDocumentPictureInPictureAPI, true},
+        {blink::features::kDocumentPictureInPicturePreferInitialPlacement,
+         true},
+        {features::kDocumentPipStandaloneWindow, UseStandaloneDocumentPip()}};
+    for (const auto& [feature, enabled] : GetAdditionalFeatureStates()) {
+      feature_states[feature] = enabled;
+    }
+    scoped_feature_list_.InitWithFeatureStates(feature_states);
     InProcessBrowserTest::SetUp();
   }
 
@@ -253,13 +265,11 @@ class DocumentPictureInPictureWindowControllerBrowserTest
     return nullptr;
   }
 
-  void LoadTabAndEnterPictureInPicture(
+  void LoadUrlAndEnterPictureInPicture(
       BrowserWindowInterface* browser,
+      const GURL& test_page_url,
       const gfx::Size& window_size = gfx::Size(500, 500),
       bool prefer_initial_window_placement = false) {
-    GURL test_page_url = chrome_test_utils::GetTestUrl(
-        base::FilePath(base::FilePath::kCurrentDirectory),
-        base::FilePath(kPictureInPictureDocumentPipPage));
     ASSERT_TRUE(ui_test_utils::NavigateToURL(browser, test_page_url));
 
     content::WebContents* active_web_contents =
@@ -286,6 +296,18 @@ class DocumentPictureInPictureWindowControllerBrowserTest
     ASSERT_TRUE(GetRenderWidgetHostView()->IsShowing());
   }
 
+  void LoadTabAndEnterPictureInPicture(
+      BrowserWindowInterface* browser,
+      const gfx::Size& window_size = gfx::Size(500, 500),
+      bool prefer_initial_window_placement = false) {
+    LoadUrlAndEnterPictureInPicture(
+        browser,
+        chrome_test_utils::GetTestUrl(
+            base::FilePath(base::FilePath::kCurrentDirectory),
+            base::FilePath(kPictureInPictureDocumentPipPage)),
+        window_size, prefer_initial_window_placement);
+  }
+
   void ClickButton(views::Button* button) {
     views::test::ButtonTestApi(button).NotifyDefaultMouseClick();
   }
@@ -295,21 +317,21 @@ class DocumentPictureInPictureWindowControllerBrowserTest
     EXPECT_TRUE(WaitForRenderFrameReady(contents->GetPrimaryMainFrame()));
   }
 
-  bool IsOriginSet(BrowserView* browser_view) {
+  bool IsOriginSet(views::Widget* pip_widget) {
     // Document Picture In Picture windows are always positioned relative to the
     // bottom-right corner. Therefore we can assert that the origin is set
     // whenever it is not located at the top-left corner.
-    return browser_view->GetBounds().origin() != gfx::Point(0, 0);
+    return pip_widget->GetWindowBoundsInScreen().origin() != gfx::Point(0, 0);
   }
 
-  void CheckOriginSet(BrowserView* browser_view) {
+  void CheckOriginSet(views::Widget* pip_widget) {
     ui_test_utils::CheckWaiter(
         base::BindRepeating(
             &DocumentPictureInPictureWindowControllerBrowserTest::IsOriginSet,
-            base::Unretained(this), browser_view),
+            base::Unretained(this), pip_widget),
         true, base::Minutes(1))
         .Wait();
-    EXPECT_NE(browser_view->GetBounds().origin(), gfx::Point(0, 0));
+    EXPECT_NE(pip_widget->GetWindowBoundsInScreen().origin(), gfx::Point(0, 0));
   }
 
   const std::string GetPipWindowPageTitle(content::WebContents* web_contents) {
@@ -328,21 +350,14 @@ class DocumentPictureInPictureWindowControllerBrowserTest
     return EvalJs(web_contents, "getWindowPageTitle();").ExtractString();
   }
 
-  // Watch for destruction of a WebContents. `is_destroyed()` will report if the
-  // WebContents has been destroyed yet.
-  class DestructionObserver : public content::WebContentsObserver {
-   public:
-    explicit DestructionObserver(content::WebContents* web_contents)
-        : content::WebContentsObserver(web_contents) {}
-
-    void WebContentsDestroyed() override { Observe(/*web_contents=*/nullptr); }
-
-    // If we've stopped observing, it's because the WebContents was destroyed.
-    bool is_destroyed() const { return !web_contents(); }
-  };
-
  protected:
   virtual bool UseStandaloneDocumentPip() const { return false; }
+
+  // Features to override on top of the defaults in SetUp().
+  virtual std::vector<std::pair<base::test::FeatureRef, bool>>
+  GetAdditionalFeatureStates() const {
+    return {};
+  }
 
  private:
   raw_ptr<content::DocumentPictureInPictureWindowController,
@@ -357,15 +372,8 @@ class DocumentPictureInPictureWindowControllerBackendTest
  public:
   bool standalone_enabled() const { return GetParam(); }
 
- protected:
-  bool UseStandaloneDocumentPip() const override {
-    return standalone_enabled();
-  }
-};
-
-class DocumentPictureInPictureWindowControllerLifecycleTest
-    : public DocumentPictureInPictureWindowControllerBackendTest {
- protected:
+  // Returns the generic Widget that hosts the PiP window, regardless of
+  // which backend is in use.
   views::Widget* GetPipWidget() {
     content::WebContents* pip_web_contents =
         window_controller()->GetChildWebContents();
@@ -384,6 +392,15 @@ class DocumentPictureInPictureWindowControllerLifecycleTest
     return browser_view->GetWidget();
   }
 
+ protected:
+  bool UseStandaloneDocumentPip() const override {
+    return standalone_enabled();
+  }
+};
+
+class DocumentPictureInPictureWindowControllerLifecycleTest
+    : public DocumentPictureInPictureWindowControllerBackendTest {
+ protected:
   void ExpectPipWindowOwner() {
     content::WebContents* pip_web_contents =
         window_controller()->GetChildWebContents();
@@ -460,34 +477,56 @@ class DocumentPictureInPictureWindowControllerFrameViewTest
   }
 };
 
+class DocumentPictureInPictureWindowControllerBoundsCacheTest
+    : public DocumentPictureInPictureWindowControllerBackendTest {
+ protected:
+  // Sets the PiP window's bounds through the same entry point production
+  // code uses for each backend. On the legacy backend,
+  // `views::Widget::SetBounds()` bypasses `BrowserView::SetBounds()`'s
+  // frame-view routing (see `PictureInPictureBrowserFrameView`), so the
+  // resulting bounds can disagree slightly with a direct Widget call.
+  void SetPipWidgetBounds(const gfx::Rect& bounds) {
+    if (standalone_enabled()) {
+      GetPipWidget()->SetBounds(bounds);
+      return;
+    }
+
+    content::WebContents* pip_web_contents =
+        window_controller()->GetChildWebContents();
+    CHECK(pip_web_contents);
+    auto* browser_view = BrowserView::GetBrowserViewForNativeWindow(
+        pip_web_contents->GetTopLevelNativeWindow());
+    CHECK(browser_view);
+    browser_view->SetBounds(bounds);
+  }
+};
+
 INSTANTIATE_TEST_SUITE_P(All,
                          DocumentPictureInPictureWindowControllerBackendTest,
                          testing::Bool(),
-                         [](const testing::TestParamInfo<bool>& info) {
-                           return info.param ? "Standalone" : "BrowserBacked";
-                         });
+                         BackendParamName);
 
 INSTANTIATE_TEST_SUITE_P(All,
                          DocumentPictureInPictureWindowControllerLifecycleTest,
                          testing::Bool(),
-                         [](const testing::TestParamInfo<bool>& info) {
-                           return info.param ? "Standalone" : "BrowserBacked";
-                         });
+                         BackendParamName);
 
 INSTANTIATE_TEST_SUITE_P(
     All,
     DocumentPictureInPictureWindowControllerRequestedSizeTest,
     testing::Bool(),
-    [](const testing::TestParamInfo<bool>& info) {
-      return info.param ? "Standalone" : "BrowserBacked";
-    });
+    BackendParamName);
 
 INSTANTIATE_TEST_SUITE_P(All,
                          DocumentPictureInPictureWindowControllerFrameViewTest,
                          testing::Bool(),
-                         [](const testing::TestParamInfo<bool>& info) {
-                           return info.param ? "Standalone" : "BrowserBacked";
-                         });
+                         BackendParamName);
+
+INSTANTIATE_TEST_SUITE_P(
+    All,
+    DocumentPictureInPictureWindowControllerBoundsCacheTest,
+    testing::Bool(),
+    BackendParamName);
 
 // Helper class that waits without polling a run loop until a condition is met.
 // Note that it does not ever check the condition itself; some other thing, like
@@ -576,7 +615,8 @@ IN_PROC_BROWSER_TEST_P(DocumentPictureInPictureWindowControllerLifecycleTest,
 
   ASSERT_TRUE(window_controller()->GetWebContents());
   ASSERT_TRUE(window_controller()->GetChildWebContents());
-  DestructionObserver w(window_controller()->GetChildWebContents());
+  content::WebContentsDestroyedWatcher destroyed_watcher(
+      window_controller()->GetChildWebContents());
 
   // Now open the window a second time, without previously closing the
   // original window.
@@ -585,10 +625,11 @@ IN_PROC_BROWSER_TEST_P(DocumentPictureInPictureWindowControllerLifecycleTest,
   ASSERT_EQ(true, EvalJs(active_web_contents,
                          "documentPictureInPicture.requestWindow()"
                          ".then(w => true)"));
-  base::RunLoop().RunUntilIdle();
 
-  // The first WebContents should be destroyed.
-  EXPECT_TRUE(w.is_destroyed());
+  // The first WebContents should be destroyed. Closing it runs the page's
+  // unload handlers in the renderer first, so it is destroyed asynchronously.
+  destroyed_watcher.Wait();
+  EXPECT_TRUE(destroyed_watcher.IsDestroyed());
 
   // The new window should be visible, active, and focused.
   ASSERT_TRUE(GetRenderWidgetHostView());
@@ -611,12 +652,33 @@ IN_PROC_BROWSER_TEST_P(DocumentPictureInPictureWindowControllerLifecycleTest,
 // Tests navigating the opener closes the picture in picture window.
 IN_PROC_BROWSER_TEST_P(DocumentPictureInPictureWindowControllerBackendTest,
                        ClosePictureInPictureOnOpenerNavigation) {
-  LoadTabAndEnterPictureInPicture(browser());
-  GURL test_page_url = chrome_test_utils::GetTestUrl(
-      base::FilePath(base::FilePath::kCurrentDirectory),
-      base::FilePath(kPictureInPictureDocumentPipPage));
-  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), test_page_url));
+  ASSERT_NO_FATAL_FAILURE(LoadTabAndEnterPictureInPicture(browser()));
+
+  auto* opener = browser()->GetTabStripModel()->GetActiveWebContents();
+  auto* child = window_controller()->GetChildWebContents();
+  ASSERT_NE(nullptr, child);
+  auto* widget =
+      views::Widget::GetWidgetForNativeWindow(child->GetTopLevelNativeWindow());
+  ASSERT_NE(nullptr, widget);
+  content::WebContentsDestroyedWatcher child_destroyed_watcher(child);
+  views::test::WidgetDestroyedWaiter widget_destroyed_waiter(widget);
+  auto* host = DocumentPipHost::FromWebContents(opener);
+  ASSERT_EQ(standalone_enabled(), host != nullptr);
+  base::WeakPtr<DocumentPipHost> host_weak =
+      host ? host->GetWeakPtr() : nullptr;
+
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(
+      browser(), embedded_test_server()->GetURL("/title1.html")));
+
+  child_destroyed_watcher.Wait();
+  widget_destroyed_waiter.Wait();
   ASSERT_FALSE(window_controller()->GetChildWebContents());
+  if (standalone_enabled()) {
+    ASSERT_TRUE(host_weak);
+    EXPECT_EQ(host_weak.get(), DocumentPipHost::FromWebContents(opener));
+    EXPECT_EQ(nullptr, host_weak->GetWidget());
+    EXPECT_EQ(nullptr, host_weak->GetChildWebContents());
+  }
 }
 
 // Navigation by the pip window to a new document should close the pip
@@ -689,7 +751,7 @@ IN_PROC_BROWSER_TEST_P(DocumentPictureInPictureWindowControllerBackendTest,
 }
 
 // Adding a script to the popup window should not crash.
-IN_PROC_BROWSER_TEST_F(DocumentPictureInPictureWindowControllerBrowserTest,
+IN_PROC_BROWSER_TEST_P(DocumentPictureInPictureWindowControllerBackendTest,
                        AddScriptToPictureInPictureWindow) {
   LoadTabAndEnterPictureInPicture(browser());
 
@@ -720,15 +782,8 @@ IN_PROC_BROWSER_TEST_P(
   EXPECT_GE(pip_window_bounds->height(), container_bounds.height());
 }
 
-#if BUILDFLAG(IS_WIN)
-// Back to tab button (PictureInPictureBrowserFrameView) is not available
-// in Windows yet.
-#define MAYBE_FocusInitiatorWhenBackToTab DISABLED_FocusInitiatorWhenBackToTab
-#else
-#define MAYBE_FocusInitiatorWhenBackToTab FocusInitiatorWhenBackToTab
-#endif
 IN_PROC_BROWSER_TEST_P(DocumentPictureInPictureWindowControllerFrameViewTest,
-                       MAYBE_FocusInitiatorWhenBackToTab) {
+                       FocusInitiatorWhenBackToTab) {
   LoadTabAndEnterPictureInPicture(browser());
   auto* opener_web_contents = window_controller()->GetWebContents();
 
@@ -737,7 +792,8 @@ IN_PROC_BROWSER_TEST_P(DocumentPictureInPictureWindowControllerFrameViewTest,
       base::FilePath(base::FilePath::kCurrentDirectory),
       base::FilePath(kPictureInPictureDocumentPipPage));
   ASSERT_TRUE(ui_test_utils::NavigateToURLWithDisposition(
-      browser(), test_page_url, WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      browser(), test_page_url,
+      ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP));
   EXPECT_NE(browser()->GetTabStripModel()->GetActiveWebContents(),
             opener_web_contents);
@@ -844,6 +900,28 @@ IN_PROC_BROWSER_TEST_F(DocumentPictureInPictureWindowControllerBrowserTest,
             pip_frame_view->browser_widget()->IsMenuRunnerRunningForTesting());
 }
 
+class DocumentPictureInPictureWindowControllerStandaloneTest
+    : public DocumentPictureInPictureWindowControllerBrowserTest {
+ protected:
+  bool UseStandaloneDocumentPip() const override { return true; }
+};
+
+// Standalone counterpart of ContextMenuIsDisabled, which needs a BrowserWidget.
+// Checks controller installation only, without simulating a native caption
+// click.
+IN_PROC_BROWSER_TEST_F(DocumentPictureInPictureWindowControllerStandaloneTest,
+                       ContextMenuIsDisabled) {
+  LoadTabAndEnterPictureInPicture(browser());
+  auto* pip_web_contents = window_controller()->GetChildWebContents();
+  ASSERT_NE(nullptr, pip_web_contents);
+  WaitForPageLoad(pip_web_contents);
+
+  auto* host = DocumentPipHost::FromChildWebContents(pip_web_contents);
+  ASSERT_TRUE(host);
+  views::View* const contents_view = host->GetWidget()->GetContentsView();
+  ASSERT_TRUE(contents_view->context_menu_controller());
+}
+
 IN_PROC_BROWSER_TEST_P(DocumentPictureInPictureWindowControllerFrameViewTest,
                        WindowClosesEvenIfDisconnectedFromWindowManager) {
   // Rarely, `PictureInPictureWindowManager` fails to close the PiP window.
@@ -884,10 +962,80 @@ IN_PROC_BROWSER_TEST_P(DocumentPictureInPictureWindowControllerFrameViewTest,
             window_title->GetTextDirectionForTesting());
 }
 
+IN_PROC_BROWSER_TEST_P(DocumentPictureInPictureWindowControllerFrameViewTest,
+                       WindowTitleShowsOpenerHost) {
+  const GURL test_page_url = embedded_test_server()->GetURL(
+      "/media/picture-in-picture/document-pip.html?query=1#fragment");
+  LoadUrlAndEnterPictureInPicture(browser(), test_page_url);
+
+  views::Label* window_title = GetPipFrameViewControls().window_title();
+  ASSERT_NE(nullptr, window_title);
+  EXPECT_EQ(base::UTF8ToUTF16(base::StrCat(
+                {test_page_url.host(), ":", test_page_url.port()})),
+            window_title->GetText());
+}
+
+// A page-authored JavaScript dialog may overlap the contents divider, but must
+// not cover the browser-owned origin/title strip or controls.
+IN_PROC_BROWSER_TEST_P(DocumentPictureInPictureWindowControllerFrameViewTest,
+                       JavaScriptDialogPlacedBelowFrameView) {
+  LoadTabAndEnterPictureInPicture(browser());
+  content::WebContents* pip_web_contents =
+      window_controller()->GetChildWebContents();
+  ASSERT_NE(nullptr, pip_web_contents);
+  WaitForPageLoad(pip_web_contents);
+
+  auto* dialog_manager =
+      javascript_dialogs::TabModalDialogManager::FromWebContents(
+          pip_web_contents);
+  ASSERT_NE(nullptr, dialog_manager);
+  base::RunLoop dialog_shown;
+  dialog_manager->SetDialogShownCallbackForTesting(dialog_shown.QuitClosure());
+  content::ExecuteScriptAsync(pip_web_contents, "alert('hello');");
+  dialog_shown.Run();
+  ASSERT_TRUE(dialog_manager->IsShowingDialogForTesting());
+
+  views::Widget* pip_widget = views::Widget::GetWidgetForNativeWindow(
+      pip_web_contents->GetTopLevelNativeWindow());
+  ASSERT_NE(nullptr, pip_widget);
+  views::Widget* dialog_widget = nullptr;
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    for (views::Widget* owned :
+         views::Widget::GetAllOwnedWidgets(pip_widget->GetNativeView())) {
+      if (owned->IsVisible() && owned->widget_delegate() &&
+          owned->widget_delegate()->AsDialogDelegate()) {
+        dialog_widget = owned;
+        return true;
+      }
+    }
+    return false;
+  }));
+  // The frame view owns the strip above the client view in both backends.
+  ASSERT_NE(nullptr, pip_widget->client_view());
+  gfx::Rect allowed_bounds = pip_widget->client_view()->GetBoundsInScreen();
+  ASSERT_GT(allowed_bounds.y(), pip_widget->GetWindowBoundsInScreen().y());
+  constexpr int kConstrainedWindowOverlap = 3;
+  allowed_bounds.Inset(gfx::Insets::TLBR(-kConstrainedWindowOverlap, 0, 0, 0));
+  gfx::Rect dialog_bounds = dialog_widget->GetWindowBoundsInScreen();
+  ASSERT_TRUE(dialog_widget->non_client_view());
+  // Compare the visible dialog, excluding its frame border and shadow.
+  dialog_bounds.Inset(
+      dialog_widget->non_client_view()->frame_view()->GetInsets());
+  EXPECT_EQ(dialog_bounds.y(), allowed_bounds.y())
+      << "dialog " << dialog_bounds.ToString() << " overlaps frame above "
+      << allowed_bounds.ToString();
+  EXPECT_TRUE(allowed_bounds.Contains(dialog_bounds))
+      << "dialog " << dialog_bounds.ToString() << " outside client area "
+      << allowed_bounds.ToString();
+
+  dialog_manager->ClickDialogButtonForTesting(/*accept=*/true,
+                                              std::u16string());
+}
+
 #if BUILDFLAG(IS_CHROMEOS)
 // Verify that it is possible to resize a document picture in picture window
 // using the resize outside bound in ChromeOS ASH.
-IN_PROC_BROWSER_TEST_F(DocumentPictureInPictureWindowControllerBrowserTest,
+IN_PROC_BROWSER_TEST_P(DocumentPictureInPictureWindowControllerBackendTest,
                        CanResizeUsingOutsideBounds) {
   // Attempt to create a Document PiP window with the minimum window size.
   LoadTabAndEnterPictureInPicture(
@@ -897,9 +1045,10 @@ IN_PROC_BROWSER_TEST_F(DocumentPictureInPictureWindowControllerBrowserTest,
   WaitForPageLoad(pip_web_contents);
 
   // Get a point within the resize outside bounds.
-  auto* browser_view = static_cast<BrowserView*>(
-      BrowserWindow::FindBrowserWindowWithWebContents(pip_web_contents));
-  const auto left_center_point = browser_view->GetBounds().left_center();
+  views::Widget* pip_widget = GetPipWidget();
+  ASSERT_TRUE(pip_widget);
+  const auto left_center_point =
+      pip_widget->GetWindowBoundsInScreen().left_center();
   const auto resize_outside_bound_point =
       gfx::Point(left_center_point.x() - chromeos::kResizeInsideBoundsSize -
                      chromeos::kResizeOutsideBoundsSize / 2,
@@ -907,7 +1056,7 @@ IN_PROC_BROWSER_TEST_F(DocumentPictureInPictureWindowControllerBrowserTest,
 
   // Perform a click on the left resize outside bound, followed by a drag to the
   // left.
-  aura::Window* window = browser_view->GetNativeWindow();
+  aura::Window* window = pip_widget->GetNativeWindow();
   const auto initial_window_size = window->GetBoundsInScreen().size();
   ui::test::EventGenerator event_generator(window->GetRootWindow());
   event_generator.set_current_screen_location(resize_outside_bound_point);
@@ -920,7 +1069,7 @@ IN_PROC_BROWSER_TEST_F(DocumentPictureInPictureWindowControllerBrowserTest,
 }
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
-IN_PROC_BROWSER_TEST_F(DocumentPictureInPictureWindowControllerBrowserTest,
+IN_PROC_BROWSER_TEST_P(DocumentPictureInPictureWindowControllerBoundsCacheTest,
                        WindowBoundsAreCached) {
 #if BUILDFLAG(IS_OZONE)
   // Ozone/wayland doesn't support getting/setting window position in global
@@ -941,16 +1090,16 @@ IN_PROC_BROWSER_TEST_F(DocumentPictureInPictureWindowControllerBrowserTest,
   auto* pip_web_contents = window_controller()->GetChildWebContents();
   ASSERT_NE(nullptr, pip_web_contents);
   WaitForPageLoad(pip_web_contents);
-  auto* browser_view = BrowserView::GetBrowserViewForNativeWindow(
-      pip_web_contents->GetTopLevelNativeWindow());
-  ASSERT_TRUE(browser_view);
+  views::Widget* pip_widget = GetPipWidget();
+  ASSERT_TRUE(pip_widget);
 
   // Wait for the window origin location to be set. This is needed to eliminate
   // test flakiness.
-  CheckOriginSet(browser_view);
+  CheckOriginSet(pip_widget);
 
   // Get the bounds, which might not be the same size we asked for.
-  const gfx::Rect original_window_bounds = browser_view->GetBounds();
+  const gfx::Rect original_window_bounds =
+      pip_widget->GetWindowBoundsInScreen();
   gfx::Rect window_bounds = original_window_bounds;
 
   // Move the window and change the size.  Make sure that it stays on-screen.
@@ -985,7 +1134,7 @@ IN_PROC_BROWSER_TEST_F(DocumentPictureInPictureWindowControllerBrowserTest,
       {window_bounds.width() - 10, window_bounds.height() - 10});
 #endif  // !BUILDFLAG(IS_LINUX)
 
-  browser_view->SetBounds(window_bounds);
+  SetPipWidgetBounds(window_bounds);
 
   // Wait for the bounds to change.  It would be nice if we didn't need to
   // explicitly create a variable.  A temporary would do it, but it seems like
@@ -996,12 +1145,12 @@ IN_PROC_BROWSER_TEST_F(DocumentPictureInPictureWindowControllerBrowserTest,
       CheckCondition();
     }
   } waiter;
-  waiter.Wait(browser_view->GetWidget(),
+  waiter.Wait(pip_widget,
               base::BindRepeating(
-                  [](const gfx::Rect& expected, BrowserView* browser_view) {
-                    return expected == browser_view->GetBounds();
+                  [](const gfx::Rect& expected, views::Widget* pip_widget) {
+                    return expected == pip_widget->GetWindowBoundsInScreen();
                   },
-                  window_bounds, browser_view));
+                  window_bounds, pip_widget));
 
   // Open a new pip window, and make sure that it's not in the same place it was
   // last time.
@@ -1009,12 +1158,12 @@ IN_PROC_BROWSER_TEST_F(DocumentPictureInPictureWindowControllerBrowserTest,
   auto* pip_web_contents_2 = window_controller()->GetChildWebContents();
   ASSERT_NE(nullptr, pip_web_contents_2);
   WaitForPageLoad(pip_web_contents_2);
-  auto* browser_view_2 = BrowserView::GetBrowserViewForNativeWindow(
-      pip_web_contents_2->GetTopLevelNativeWindow());
+  views::Widget* pip_widget_2 = GetPipWidget();
+  ASSERT_TRUE(pip_widget_2);
 
   // The new window should match the bounds we set for the old one, which differ
   // from the default.
-  EXPECT_EQ(browser_view_2->GetBounds(), window_bounds);
+  EXPECT_EQ(pip_widget_2->GetWindowBoundsInScreen(), window_bounds);
 
   // Close the window and re-open it, but request no cache this time.  This
   // should revert it to its original bounds.
@@ -1023,23 +1172,49 @@ IN_PROC_BROWSER_TEST_F(DocumentPictureInPictureWindowControllerBrowserTest,
   auto* pip_web_contents_3 = window_controller()->GetChildWebContents();
   ASSERT_NE(nullptr, pip_web_contents_3);
   WaitForPageLoad(pip_web_contents_3);
-  auto* browser_view_3 = BrowserView::GetBrowserViewForNativeWindow(
-      pip_web_contents_3->GetTopLevelNativeWindow());
-  EXPECT_EQ(browser_view_3->GetBounds(), original_window_bounds);
+  views::Widget* pip_widget_3 = GetPipWidget();
+  ASSERT_TRUE(pip_widget_3);
+  EXPECT_EQ(pip_widget_3->GetWindowBoundsInScreen(), original_window_bounds);
 }
+
+// Parameters for the window margin tests: which Document PiP backend to run and
+// the requested window size.
+struct WindowMarginsParam {
+  bool standalone;
+  gfx::Size requested_size;
+};
 
 class DocumentPictureInPictureWindowControllerWindowSizeBrowserTest
     : public DocumentPictureInPictureWindowControllerBrowserTest,
-      public testing::WithParamInterface<gfx::Size> {};
+      public testing::WithParamInterface<WindowMarginsParam> {
+ protected:
+  bool UseStandaloneDocumentPip() const override {
+    return GetParam().standalone;
+  }
+};
+
+std::vector<WindowMarginsParam> GetWindowMarginsParams() {
+  std::vector<WindowMarginsParam> params;
+  for (const bool standalone : {false, true}) {
+    for (const gfx::Size& size :
+         {gfx::Size(1, 1), gfx::Size(22, 22), gfx::Size(300, 300),
+          gfx::Size(500, 500), gfx::Size(250, 670)}) {
+      params.push_back({standalone, size});
+    }
+  }
+  return params;
+}
 
 INSTANTIATE_TEST_SUITE_P(
     WindowSizes,
     DocumentPictureInPictureWindowControllerWindowSizeBrowserTest,
-    testing::Values(gfx::Size(1, 1),
-                    gfx::Size(22, 22),
-                    gfx::Size(300, 300),
-                    gfx::Size(500, 500),
-                    gfx::Size(250, 670)));
+    testing::ValuesIn(GetWindowMarginsParams()),
+    [](const testing::TestParamInfo<WindowMarginsParam>& info) {
+      return base::StrCat(
+          {info.param.standalone ? "Standalone" : "BrowserBacked", "_",
+           base::NumberToString(info.param.requested_size.width()), "x",
+           base::NumberToString(info.param.requested_size.height())});
+    });
 
 #if BUILDFLAG(IS_LINUX)
 // TODO(crbug.com/40923223): Fix and re-enable this test for Linux.
@@ -1061,19 +1236,20 @@ IN_PROC_BROWSER_TEST_P(
       screen->GetDisplayNearestWindow(native_window);
 
   // Create a Document PiP window with the given size.
-  LoadTabAndEnterPictureInPicture(browser(), GetParam());
+  LoadTabAndEnterPictureInPicture(browser(), GetParam().requested_size);
   auto* pip_web_contents = window_controller()->GetChildWebContents();
   ASSERT_NE(nullptr, pip_web_contents);
   WaitForPageLoad(pip_web_contents);
-  auto* browser_view = static_cast<BrowserView*>(
-      BrowserWindow::FindBrowserWindowWithWebContents(pip_web_contents));
+  views::Widget* pip_widget = views::Widget::GetWidgetForNativeWindow(
+      pip_web_contents->GetTopLevelNativeWindow());
+  ASSERT_TRUE(pip_widget);
 
   // Wait for the window origin location to be set. This is needed to eliminate
   // test flakiness.
-  CheckOriginSet(browser_view);
+  CheckOriginSet(pip_widget);
 
   // Make sure that the right and bottom window margins are equal.
-  gfx::Rect window_bounds = browser_view->GetBounds();
+  gfx::Rect window_bounds = pip_widget->GetWindowBoundsInScreen();
   gfx::Rect work_area = display.work_area();
   int window_diff_width = work_area.right() - window_bounds.width();
   int window_diff_height = work_area.bottom() - window_bounds.height();
@@ -1088,7 +1264,7 @@ IN_PROC_BROWSER_TEST_P(
   ASSERT_EQ(window_bounds.origin(), expected_origin);
 }
 
-IN_PROC_BROWSER_TEST_F(DocumentPictureInPictureWindowControllerBrowserTest,
+IN_PROC_BROWSER_TEST_P(DocumentPictureInPictureWindowControllerBackendTest,
                        DoNotDeferMediaLoadIfWindowOpened) {
   LoadTabAndEnterPictureInPicture(browser());
   auto* opener_web_contents = window_controller()->GetWebContents();
@@ -1098,7 +1274,8 @@ IN_PROC_BROWSER_TEST_F(DocumentPictureInPictureWindowControllerBrowserTest,
       base::FilePath(base::FilePath::kCurrentDirectory),
       base::FilePath(kPictureInPictureDocumentPipPage));
   ASSERT_TRUE(ui_test_utils::NavigateToURLWithDisposition(
-      browser(), test_page_url, WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      browser(), test_page_url,
+      ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP));
   EXPECT_NE(browser()->GetTabStripModel()->GetActiveWebContents(),
             opener_web_contents);
@@ -1106,20 +1283,23 @@ IN_PROC_BROWSER_TEST_F(DocumentPictureInPictureWindowControllerBrowserTest,
   ASSERT_EQ(true, EvalJs(opener_web_contents, "loadAndPlayVideo();"));
 }
 
-IN_PROC_BROWSER_TEST_F(DocumentPictureInPictureWindowControllerBrowserTest,
+IN_PROC_BROWSER_TEST_P(DocumentPictureInPictureWindowControllerBackendTest,
                        MatchMediaQuery) {
-  LoadTabAndEnterPictureInPicture(browser());
-  auto* opener_web_contents = window_controller()->GetWebContents();
-  auto* web_contents = window_controller()->GetChildWebContents();
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(
+      browser(), chrome_test_utils::GetTestUrl(
+                     base::FilePath(base::FilePath::kCurrentDirectory),
+                     base::FilePath(kPictureInPictureDocumentPipPage))));
+  auto* opener_web_contents =
+      browser()->GetTabStripModel()->GetActiveWebContents();
   ASSERT_TRUE(opener_web_contents);
-  ASSERT_TRUE(web_contents);
-
-  std::string match_media_picture_in_picture =
-      "window.matchMedia('(display-mode: picture-in-picture)').matches;";
-  ASSERT_FALSE(EvalJs(opener_web_contents, match_media_picture_in_picture)
-                   .ExtractBool());
-  ASSERT_TRUE(
-      EvalJs(web_contents, match_media_picture_in_picture).ExtractBool());
+  // The display mode must be correct as soon as requestWindow() resolves.
+  ASSERT_EQ(true, EvalJs(opener_web_contents, R"(
+    (async () => {
+      const pipWindow = await documentPictureInPicture.requestWindow(
+          {width: 400, height: 300});
+      return pipWindow.matchMedia('(display-mode: picture-in-picture)').matches;
+    })()
+  )"));
 }
 
 // Make sure that inner bounds of document PiP windows match the requested size.
@@ -1141,7 +1321,7 @@ IN_PROC_BROWSER_TEST_P(
 // When `window.open()` is called from a picture-in-picture window, it must lose
 // focus to the newly opened window to prevent multiple popunders from opening
 // when a user types multiple keys in a picture-in-picture window.
-IN_PROC_BROWSER_TEST_F(DocumentPictureInPictureWindowControllerBrowserTest,
+IN_PROC_BROWSER_TEST_P(DocumentPictureInPictureWindowControllerBackendTest,
                        WindowOpenLosesFocus) {
   LoadTabAndEnterPictureInPicture(browser());
   auto* web_contents = window_controller()->GetChildWebContents();
@@ -1206,15 +1386,15 @@ IN_PROC_BROWSER_TEST_F(DocumentPictureInPictureWindowControllerBrowserTest,
                 /*is_for_tab=*/false));
 }
 
-// A dialog that checks if the picture-in-picture window is force-tucked
-// when the dialog is shown, and then immediately cancels itself.
+// Keeps the picker open until the test observes tucking and cancels it.
 class TuckingTestSelectFileDialog : public ui::SelectFileDialog {
  public:
-  TuckingTestSelectFileDialog(Listener* listener,
-                              std::unique_ptr<ui::SelectFilePolicy> policy,
-                              bool* was_tucked)
+  TuckingTestSelectFileDialog(
+      Listener* listener,
+      std::unique_ptr<ui::SelectFilePolicy> policy,
+      base::OnceCallback<void(base::OnceClosure)> on_shown)
       : ui::SelectFileDialog(listener, std::move(policy)),
-        was_tucked_(was_tucked) {}
+        on_shown_(std::move(on_shown)) {}
 
  private:
   ~TuckingTestSelectFileDialog() override = default;
@@ -1228,9 +1408,8 @@ class TuckingTestSelectFileDialog : public ui::SelectFileDialog {
                       const base::FilePath::StringType& default_extension,
                       gfx::NativeWindow owning_window,
                       const GURL* caller) override {
-    *was_tucked_ = PictureInPictureWindowManager::GetInstance()
-                       ->IsPictureInPictureForceTucked();
-    listener_->FileSelectionCanceled();
+    std::move(on_shown_).Run(base::BindOnce(
+        &TuckingTestSelectFileDialog::Cancel, weak_factory_.GetWeakPtr()));
   }
 
   bool IsRunning(gfx::NativeWindow owning_window) const override {
@@ -1239,64 +1418,83 @@ class TuckingTestSelectFileDialog : public ui::SelectFileDialog {
   void ListenerDestroyed() override {}
   bool HasMultipleFileTypeChoicesImpl() override { return false; }
 
-  raw_ptr<bool> was_tucked_;
+  void Cancel() { listener_->FileSelectionCanceled(); }
+
+  base::OnceCallback<void(base::OnceClosure)> on_shown_;
   base::WeakPtrFactory<TuckingTestSelectFileDialog> weak_factory_{this};
 };
 
 class TuckingTestSelectFileDialogFactory : public ui::SelectFileDialogFactory {
  public:
-  explicit TuckingTestSelectFileDialogFactory(bool* was_tucked)
-      : was_tucked_(was_tucked) {}
+  explicit TuckingTestSelectFileDialogFactory(
+      base::OnceCallback<void(base::OnceClosure)> on_shown)
+      : on_shown_(std::move(on_shown)) {}
   ~TuckingTestSelectFileDialogFactory() override = default;
 
   ui::SelectFileDialog* Create(
       ui::SelectFileDialog::Listener* listener,
       std::unique_ptr<ui::SelectFilePolicy> policy) override {
     return new TuckingTestSelectFileDialog(listener, std::move(policy),
-                                           was_tucked_);
+                                           std::move(on_shown_));
   }
 
  private:
-  raw_ptr<bool> was_tucked_;
+  base::OnceCallback<void(base::OnceClosure)> on_shown_;
 };
 
 class DocumentPictureInPictureWindowControllerTuckingBrowserTest
-    : public DocumentPictureInPictureWindowControllerBrowserTest {
- public:
-  DocumentPictureInPictureWindowControllerTuckingBrowserTest() = default;
-
-  void SetUp() override {
-    feature_list_.InitWithFeatures(
-        {blink::features::kDocumentPictureInPictureAPI,
-         blink::features::kDocumentPictureInPicturePreferInitialPlacement,
-         media::kFileDialogsTuckPictureInPicture},
-        {});
-    InProcessBrowserTest::SetUp();
+    : public DocumentPictureInPictureWindowControllerBackendTest {
+ protected:
+  std::vector<std::pair<base::test::FeatureRef, bool>>
+  GetAdditionalFeatureStates() const override {
+    return {{media::kFileDialogsTuckPictureInPicture, true}};
   }
-
- private:
-  base::test::ScopedFeatureList feature_list_;
 };
 
+INSTANTIATE_TEST_SUITE_P(
+    All,
+    DocumentPictureInPictureWindowControllerTuckingBrowserTest,
+    testing::Bool(),
+    BackendParamName);
+
 // Test when the file picker is opened, the pip window is tucked.
-IN_PROC_BROWSER_TEST_F(
+IN_PROC_BROWSER_TEST_P(
     DocumentPictureInPictureWindowControllerTuckingBrowserTest,
     TuckOnOpenFilePicker) {
+#if BUILDFLAG(IS_OZONE)
+  if (!ui::OzonePlatform::GetInstance()
+           ->GetPlatformProperties()
+           .supports_global_screen_coordinates) {
+    GTEST_SKIP() << "Window tucking requires global screen coordinates.";
+  }
+#endif
   LoadTabAndEnterPictureInPicture(browser());
+  views::Widget* pip_widget = GetPipWidget();
+  ASSERT_TRUE(pip_widget);
+  CheckOriginSet(pip_widget);
+  const gfx::Rect initial_bounds = pip_widget->GetWindowBoundsInScreen();
   // Initially it was not tucked
   EXPECT_FALSE(PictureInPictureWindowManager::GetInstance()
                    ->IsPictureInPictureForceTucked());
 
-  // `was_tucked_during_picker` will be updated if the window is tucked while
-  // the file picker dialog is open.
-  bool was_tucked_during_picker = false;
+  base::test::TestFuture<base::OnceClosure> picker_shown;
   ui::SelectFileDialog::SetFactory(
       std::make_unique<TuckingTestSelectFileDialogFactory>(
-          &was_tucked_during_picker));
+          picker_shown.GetCallback()));
 
   content::WebContents* web_contents =
       browser()->GetTabStripModel()->GetActiveWebContents();
-  auto result = EvalJs(web_contents, "window.showOpenFilePicker();");
+  ASSERT_TRUE(ExecJs(web_contents,
+                     "window.filePickerPromise = window.showOpenFilePicker();"
+                     "void 0;"));
+  ASSERT_TRUE(picker_shown.Wait());
+  EXPECT_TRUE(PictureInPictureWindowManager::GetInstance()
+                  ->IsPictureInPictureForceTucked());
+  EXPECT_TRUE(base::test::RunUntil([&] {
+    return pip_widget->GetWindowBoundsInScreen().x() != initial_bounds.x();
+  }));
+  picker_shown.Take().Run();
+  auto result = EvalJs(web_contents, "window.filePickerPromise;");
   EXPECT_TRUE(result.ExtractError().find("aborted") != std::string::npos)
       << result;
 
@@ -1304,7 +1502,8 @@ IN_PROC_BROWSER_TEST_F(
 
   // The pip window should be tucked once, and now it's back to non-tucked
   // state.
-  EXPECT_TRUE(was_tucked_during_picker);
   EXPECT_FALSE(PictureInPictureWindowManager::GetInstance()
                    ->IsPictureInPictureForceTucked());
+  EXPECT_TRUE(base::test::RunUntil(
+      [&] { return pip_widget->GetWindowBoundsInScreen() == initial_bounds; }));
 }

@@ -7,13 +7,11 @@ package org.chromium.chrome.browser.bookmarks;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
-
-import static org.chromium.chrome.browser.flags.ChromeFeatureList.ENABLE_ESCAPE_HANDLING_FOR_SECONDARY_ACTIVITIES;
 
 import android.app.Activity;
 import android.view.ViewGroup;
@@ -38,7 +36,6 @@ import org.chromium.base.supplier.ObservableSuppliers;
 import org.chromium.base.supplier.SettableMonotonicObservableSupplier;
 import org.chromium.base.test.BaseRobolectricTestRule;
 import org.chromium.base.test.util.Features.DisableFeatures;
-import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.chrome.browser.back_press.BackPressManager;
 import org.chromium.chrome.browser.commerce.ShoppingServiceFactory;
 import org.chromium.chrome.browser.commerce.ShoppingServiceFactoryJni;
@@ -57,6 +54,7 @@ import org.chromium.chrome.browser.ui.favicon.FaviconHelper;
 import org.chromium.chrome.browser.ui.favicon.FaviconHelperJni;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
 import org.chromium.chrome.browser.ui.native_page.NativePageHost;
+import org.chromium.chrome.browser.ui.signin.BottomSheetSigninAndHistorySyncCoordinator;
 import org.chromium.chrome.browser.ui.signin.SigninAndHistorySyncActivityLauncher;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
 import org.chromium.components.browser_ui.device_lock.DeviceLockActivityLauncher;
@@ -76,10 +74,6 @@ import java.util.Collection;
  * MAKE_IDENTITY_MANAGER_SOURCE_OF_ACCOUNTS launch.
  */
 @RunWith(ParameterizedRobolectricTestRunner.class)
-@EnableFeatures({
-    ENABLE_ESCAPE_HANDLING_FOR_SECONDARY_ACTIVITIES,
-    SigninFeatures.ENABLE_SEAMLESS_SIGNIN
-})
 @DisableFeatures({
     ChromeFeatureList.ANDROID_DESKTOP_BOOKMARK_LAYOUT,
     ChromeFeatureList.ANDROID_DESKTOP_BOOKMARK_DIALOG
@@ -111,6 +105,7 @@ public class BookmarkPageUnitTest {
     @Mock private BookmarkManagerOpener mBookmarkManagerOpener;
     @Mock private PriceDropNotificationManager mPriceDropNotificationManager;
     @Mock private SigninAndHistorySyncActivityLauncher mSigninAndHistorySyncActivityLauncher;
+    @Mock private BottomSheetSigninAndHistorySyncCoordinator mSigninCoordinator;
     @Mock private DeviceLockActivityLauncher mDeviceLockActivityLauncher;
 
     // Other dependencies.
@@ -168,6 +163,13 @@ public class BookmarkPageUnitTest {
                         invocation ->
                                 EdgeToEdgeControllerFactory.createForViewAndObserveSupplier(
                                         invocation.getArgument(0), mEdgeToEdgeSupplier));
+        // The promo coordinator is now assigned unconditionally, so the factory must not
+        // return null.
+        when(mSigninAndHistorySyncActivityLauncher
+                        .createBottomSheetSigninCoordinatorAndObserveAddAccountResult(
+                                any(), any(), any(), any(), any(), any(), any(), any(), any(),
+                                anyInt()))
+                .thenReturn(mSigninCoordinator);
         mBookmarkPage =
                 new BookmarkPage(
                         mWindowAndroid,
@@ -186,23 +188,15 @@ public class BookmarkPageUnitTest {
     }
 
     @Test
-    public void testBackPressManagerWiredWhenFeatureEnabled() {
+    public void testBackPressManagerWired() {
         assertNotNull(
-                "BackPressManager should be set on coordinator when feature is enabled.",
-                mBookmarkPage.getManagerForTesting().getBackPressManagerForTesting());
-    }
-
-    @Test
-    @DisableFeatures(ChromeFeatureList.ENABLE_ESCAPE_HANDLING_FOR_SECONDARY_ACTIVITIES)
-    public void testBackPressManagerNotWiredWhenFeatureDisabled() {
-        assertNull(
-                "BackPressManager should NOT be set on coordinator when feature is disabled.",
+                "BackPressManager should be set on coordinator.",
                 mBookmarkPage.getManagerForTesting().getBackPressManagerForTesting());
     }
 
     @Test
     public void testEdgeToEdge() {
-        assertTrue("Bookmark page should support E2E.", mBookmarkPage.supportsEdgeToEdge());
+        assertTrue("Bookmark page should support E2E.", mBookmarkPage.supportsEdgeToEdgeOnBottom());
 
         // This should call SimpleEdgeToEdgePadAdjuster#mControllerChangedCallback.
         mEdgeToEdgeSupplier.set(mEdgeToEdgeController);

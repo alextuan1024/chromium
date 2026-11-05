@@ -63,6 +63,7 @@ consoles.console_view(
 
 ci.builder(
     name = "WebKit Win10",
+    description_html = "Runs Blink web tests against Windows x86 release builds on Windows 10.",
     parent = "Win Builder",
     builder_spec = builder_config.builder_spec(
         execution_mode = builder_config.execution_mode.TEST,
@@ -97,6 +98,7 @@ ci.builder(
 ci.builder(
     name = "Win Builder",
     branch_selector = branches.selector.WINDOWS_BRANCHES,
+    description_html = "Compiles Windows x86 release builds for triggered testers.",
     builder_spec = builder_config.builder_spec(
         gclient_config = builder_config.gclient_config(
             config = "chromium",
@@ -141,6 +143,7 @@ ci.builder(
 
 ci.builder(
     name = "Win x64 Builder (dbg)",
+    description_html = "Compiles Windows x64 debug builds for triggered testers.",
     builder_spec = builder_config.builder_spec(
         gclient_config = builder_config.gclient_config(
             config = "chromium",
@@ -184,6 +187,7 @@ ci.builder(
 
 ci.builder(
     name = "Win10 Tests x64 (dbg)",
+    description_html = "Runs standard Chromium test suites against Windows x64 debug builds on Windows 10.",
     parent = "Win x64 Builder (dbg)",
     builder_spec = builder_config.builder_spec(
         execution_mode = builder_config.execution_mode.TEST,
@@ -206,6 +210,7 @@ ci.builder(
             "chromium_win_dbg_isolated_scripts",
         ],
         mixins = [
+            "no_ssd",
             "x86-64",
             "win10",
         ],
@@ -270,6 +275,7 @@ ci.builder(
             ),
         },
     ),
+    ssd = None,
     tree_closing = False,
     console_view_entry = consoles.console_view_entry(
         category = "debug|tester",
@@ -280,6 +286,7 @@ ci.builder(
 ci.builder(
     name = "Win Builder (dbg)",
     branch_selector = branches.selector.WINDOWS_BRANCHES,
+    description_html = "Compiles Windows x86 debug builds.",
     builder_spec = builder_config.builder_spec(
         gclient_config = builder_config.gclient_config(
             config = "chromium",
@@ -311,7 +318,7 @@ ci.builder(
     ),
     builderless = False,
     cores = 16,
-    os = os.WINDOWS_ANY,
+    os = os.WINDOWS_DEFAULT,
     ssd = True,
     console_view_entry = consoles.console_view_entry(
         category = "debug|builder",
@@ -323,6 +330,7 @@ ci.builder(
 ci.builder(
     name = "Win x64 Builder",
     branch_selector = branches.selector.WINDOWS_BRANCHES,
+    description_html = "Compiles Windows x64 release builds for triggered testers.",
     builder_spec = builder_config.builder_spec(
         gclient_config = builder_config.gclient_config(
             config = "chromium",
@@ -379,6 +387,7 @@ ci.builder(
 ci.builder(
     name = "Win10 Tests x64",
     branch_selector = branches.selector.WINDOWS_BRANCHES,
+    description_html = "Runs standard Chromium test suites against Windows x64 release builds on Windows 10.",
     parent = "ci/Win x64 Builder",
     builder_spec = builder_config.builder_spec(
         execution_mode = builder_config.execution_mode.TEST,
@@ -414,15 +423,18 @@ ci.builder(
                 swarming = targets.swarming(
                     # blink_web_tests has issues when mixing different CPUs.
                     # see https://crbug.com/1458859
-                    # As of 2024 Q4, all e2 machines in chromium.tests use
-                    # x86-64-Broadwell_GCE. But, the situation may change when
-                    # GCE replaces the hardwares. If that happens, it needs to
-                    # be updated to run on the most popular CPU platform.
+                    # All e4 machines in chromium.tests use
+                    # x86-64-Sapphire_Rapids_GCE. But, the situation may change
+                    # when GCE replaces the hardwares. If that happens, it needs
+                    # to be updated to run on the most popular CPU platform.
                     dimensions = {
-                        "cpu": "x86-64-Broadwell_GCE",
+                        "cpu": "x86-64-Sapphire_Rapids_GCE",
                     },
                     shards = 12,
                 ),
+            ),
+            "blink_wpt_tests": targets.mixin(
+                enable_rts_filtering = True,
             ),
             "browser_tests": targets.mixin(
                 enable_rts_filtering = True,
@@ -443,13 +455,45 @@ ci.builder(
             "content_browsertests": targets.mixin(
                 enable_rts_filtering = True,
             ),
+            "chrome_wpt_tests": targets.mixin(
+                swarming = targets.swarming(
+                    # This suite's isolate has ~90k small WPT files, which leads
+                    # to ~3min of CAS setup & teardown disk I/O overhead on
+                    # non-SSD bots (eg: e2s).
+                    optional_dimensions = {
+                        30: {
+                            "ssd": "1",
+                        },
+                    },
+                ),
+            ),
             "chromedriver_py_tests": targets.mixin(
                 # TODO(crbug.com/40868908): Fix & re-enable.
                 isolate_profile_data = False,
             ),
+            "headless_shell_wpt_tests": targets.mixin(
+                swarming = targets.swarming(
+                    # This suite's isolate has ~90k small WPT files, which leads
+                    # to ~3min of CAS setup & teardown disk I/O overhead on
+                    # non-SSD bots (eg: e2s).
+                    optional_dimensions = {
+                        30: {
+                            "ssd": "1",
+                        },
+                    },
+                ),
+            ),
             "interactive_ui_tests": targets.mixin(
                 enable_rts_filtering = True,
                 swarming = targets.swarming(
+                    # Move to faster machine types to reduce capacity impact.
+                    # TODO(crbug.com/541675870): Can remove this if/when
+                    # everything's been migrated.
+                    optional_dimensions = {
+                        30: {
+                            "cpu": "x86-64-e4",
+                        },
+                    },
                     shards = 9,
                 ),
             ),
@@ -470,6 +514,8 @@ ci.builder(
             "telemetry_unittests": targets.remove(
                 reason = "Some test cases fail on win-rel (crbug/40622135).",
             ),
+            "telemetry_desktop_minidump_unittests": "no_ssd",
+            "webui_resources_tools_python_unittests": "no_ssd",
         },
     ),
     builderless = False,
@@ -478,6 +524,10 @@ ci.builder(
         short_name = "w10",
     ),
     cq_mirrors_console_view = "mirrors",
+    experiments = {
+        "luci.buildbucket.run_in_turboci": 100,
+        "luci.buildbucket.run_in_turboci.grpc_client": 100,
+    },
 )
 
 ci.thin_tester(
@@ -513,6 +563,7 @@ ci.thin_tester(
         ],
     ),
     builderless = True,
+    ssd = None,
     gardener_rotations = args.ignore_default(None),
     tree_closing = False,
     console_view_entry = consoles.console_view_entry(
@@ -568,7 +619,7 @@ ci.thin_tester(
                     "--disable-features=InitialWebUI,WebUIReloadButton,SkipIPCChannelPausingForNonGuests,WebUIInProcessResourceLoadingV2,InitialWebUISyncNavStartToCommit",
                 ],
                 swarming = targets.swarming(
-                    shards = 3,
+                    shards = 5,
                 ),
             ),
             "unit_tests": targets.mixin(
@@ -578,6 +629,7 @@ ci.thin_tester(
             ),
         },
     ),
+    ssd = None,
     tree_closing = False,
     console_view_entry = consoles.console_view_entry(
         category = "release",
@@ -589,6 +641,7 @@ ci.thin_tester(
 
 ci.thin_tester(
     name = "Win11 Tests x64",
+    description_html = "Runs standard Chromium test suites against Windows x64 release builds on Windows 11.",
     parent = "ci/Win x64 Builder",
     builder_spec = builder_config.builder_spec(
         execution_mode = builder_config.execution_mode.TEST,
@@ -678,6 +731,7 @@ ci.thin_tester(
             ),
         },
     ),
+    ssd = None,
     tree_closing = False,
     console_view_entry = consoles.console_view_entry(
         category = "release|tester",
@@ -826,6 +880,7 @@ ci.thin_tester(
             ),
         },
     ),
+    ssd = None,
     tree_closing = False,
     console_view_entry = consoles.console_view_entry(
         category = "release|tester",
@@ -946,6 +1001,7 @@ ci.thin_tester(
             ),
         },
     ),
+    ssd = None,
     # TODO(crbug.com/40877793): Enable gardening when stable and green.
     gardener_rotations = args.ignore_default(None),
     tree_closing = False,
@@ -958,6 +1014,7 @@ ci.thin_tester(
 
 ci.builder(
     name = "Windows deterministic",
+    description_html = "Verifies that Windows x86 release builds are deterministic.",
     executable = "recipe:swarming/deterministic_build",
     gn_args = gn_args.config(
         configs = [
@@ -970,6 +1027,7 @@ ci.builder(
     ),
     builderless = False,
     cores = 32,
+    os = os.WINDOWS_DEFAULT,
     ssd = True,
     console_view_entry = consoles.console_view_entry(
         category = "misc",
@@ -1075,6 +1133,7 @@ ci.builder(
     ),
     cores = 32,
     os = os.LINUX_DEFAULT,
+    ssd = None,
     tree_closing = False,
     console_view_entry = consoles.console_view_entry(
         category = "misc",
@@ -1082,4 +1141,39 @@ ci.builder(
     ),
     contact_team_email = "chrome-build-team@google.com",
     execution_timeout = 4 * time.hour,
+)
+
+ci.builder(
+    name = "win-webdriver-bidi-rel",
+    description_html = "Builder for WebDriver BiDi implementation",
+    builder_spec = builder_config.copy_from("ci/Win x64 Builder"),
+    gn_args = "ci/Win x64 Builder",
+    targets = targets.bundle(
+        targets = [
+            "webdriver_bidi_e2e_tests",
+            "webdriver_bidi_unittests",
+        ],
+        mixins = [
+            "x86-64",
+            "win10",
+        ],
+        per_test_modifications = {
+            "webdriver_bidi_e2e_tests": [
+                targets.mixin(
+                    swarming = targets.swarming(
+                        shards = 8,
+                    ),
+                ),
+                # TODO(crbug.com/579036421): Remove once e4 failures are fixed.
+                "e2-standard-8",
+            ],
+        },
+    ),
+    ssd = None,
+    tree_closing = False,
+    console_view_entry = consoles.console_view_entry(
+        category = "webdriver",
+        short_name = "bidi",
+    ),
+    contact_team_email = "chrome-devtools@google.com",
 )

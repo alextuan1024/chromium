@@ -111,6 +111,9 @@ PageActionControllerImpl::PageActionControllerImpl(
     }
   }
   chip_selector_ = CreateChipSelector(
+      base::BindRepeating(
+          &PageActionControllerImpl::IsPageActionSuppressedByOmnibox,
+          base::Unretained(this)),
       base::BindRepeating(&PageActionControllerImpl::DoShowSuggestionChip,
                           base::Unretained(this)),
       base::BindRepeating(&PageActionControllerImpl::DoHideSuggestionChip,
@@ -336,6 +339,11 @@ ScopedPageActionActivity PageActionControllerImpl::AddActivity(
   return ScopedPageActionActivity(*this, action_id);
 }
 
+bool PageActionControllerImpl::IsPageActionSuppressedByOmnibox(
+    actions::ActionId page_action_id) {
+  return FindPageActionModel(page_action_id).IsAffectedByOmniboxSuppression();
+}
+
 void PageActionControllerImpl::DecrementActivityCounter(
     actions::ActionId action_id) {
   auto it = activity_counters_.find(action_id);
@@ -475,6 +483,13 @@ void PageActionControllerImpl::OverrideBackgroundColor(
       PageActionPassKey(), override_background_color_id);
 }
 
+void PageActionControllerImpl::OverrideForegroundColor(
+    actions::ActionId action_id,
+    std::optional<ui::ColorId> override_foreground_color_id) {
+  FindPageActionModel(action_id).SetOverrideForegroundColorId(
+      PageActionPassKey(), override_foreground_color_id);
+}
+
 void PageActionControllerImpl::SetAnchoredMessageText(
     actions::ActionId action_id,
     const std::u16string& anchored_message_text) {
@@ -544,6 +559,7 @@ void PageActionControllerImpl::SetShouldHidePageActions(
     model->SetIsSuppressedByOmnibox(PageActionPassKey(),
                                     should_hide_page_actions);
   }
+  chip_selector_->ReevaluateAfterSuppressionChange();
 }
 
 void PageActionControllerImpl::OnActionsChanged() {
@@ -616,6 +632,9 @@ void PageActionControllerImpl::RegisterCallbacks(PageActionPassKey,
   delegate->SetAnchoredMessageCollapseCallback(base::BindRepeating(
       &PageActionControllerImpl::ResumeAnchoredMessageTimeout,
       weak_factory_.GetWeakPtr(), action_id));
+  delegate->SetAnchoredMessageDowngradeCallback(
+      base::BindRepeating(&PageActionControllerImpl::DowngradeAnchoredMessage,
+                          weak_factory_.GetWeakPtr(), action_id));
 }
 
 void PageActionControllerImpl::RecordClickMetric(

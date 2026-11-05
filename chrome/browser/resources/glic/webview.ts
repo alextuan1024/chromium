@@ -104,9 +104,7 @@ export class WebviewPersistentState {
 // Creates and manages the <webview> element.
 export class WebviewController {
   webview: WebViewType;
-  private dormant = false;
 
-  private onDestroy: Array<() => void> = [];
   private eventTracker = new EventTracker();
   private webClientState =
       ObservableValue.withValue(WebClientState.kUninitialized);
@@ -134,6 +132,9 @@ export class WebviewController {
     this.glicRequestHeaderInjector = new GlicRequestHeaderInjector(
         this.webview, loadTimeData.getString('chromeVersion'),
         loadTimeData.getString('chromeChannel'),
+        loadTimeData.getBoolean('glicSsr'),
+        loadTimeData.getBoolean('onboardingCompleted'),
+        loadTimeData.getString('onboardingArm'),
         loadTimeData.getString('glicHeaderRequestTypes'));
 
     this.webClientStateListenerId =
@@ -149,7 +150,7 @@ export class WebviewController {
                   this.persistentState.onClientReady();
                   break;
                 case WebClientState.kError:
-                  this.destroyHost(WebClientState.kError);
+                  this.resetWebClientState(WebClientState.kError);
                   break;
                 default:
                   break;
@@ -205,6 +206,7 @@ export class WebviewController {
 
   focus(): void {
     this.webview.focus();
+    this.webview.shadowRoot?.querySelector('iframe')?.focus();
   }
 
   destroy() {
@@ -218,28 +220,15 @@ export class WebviewController {
       this.glicRequestHeaderInjector = undefined;
     }
 
-    this.destroyHost(
+    this.resetWebClientState(
         this.webClientState.getCurrentValue() === WebClientState.kError ?
             WebClientState.kError :
             WebClientState.kUninitialized);
     this.eventTracker.removeAll();
-    this.onDestroy.forEach(f => f());
-    this.onDestroy = [];
     this.webview.remove();
   }
 
-  // Destroys the host and prevents the host from being recreated. This results
-  // in a webview which effectively cannot communicate with Chrome. Useful for
-  // debugging.
-  setDormant(): void {
-    if (this.dormant) {
-      return;
-    }
-    this.dormant = true;
-    this.destroyHost();
-  }
-
-  private destroyHost(webClientState?: WebClientState) {
+  private resetWebClientState(webClientState?: WebClientState) {
     this.stopBootstrapPing();
     if (webClientState !== undefined) {
       this.webClientState.assignAndSignal(webClientState);
@@ -268,7 +257,7 @@ export class WebviewController {
 
   private onLoadStop(): void {
     if (this.webview.checkVisibility()) {
-      this.webview.focus();
+      this.focus();
     }
   }
 
@@ -305,7 +294,7 @@ export class WebviewController {
 
   private onExit(event: chrome.webviewTag.ExitEvent): void {
     if (event.reason !== 'normal') {
-      this.destroyHost(WebClientState.kError);
+      this.resetWebClientState(WebClientState.kError);
       chrome.histograms.recordUserAction('GlicSessionWebClientCrash');
       console.warn(`webview exit. processId: ${event.processId}, reason: ${
           event.reason}`);
@@ -317,21 +306,17 @@ export class WebviewController {
   onGuestNavigated(
       url: string, isApiAllowed: boolean, pageType: GuestPageType,
       _isInitialCommit: boolean): void {
-    if (this.dormant ||
-        this.getWebClientState().getCurrentValue() === WebClientState.kError) {
+    if (this.getWebClientState().getCurrentValue() === WebClientState.kError) {
       return;
     }
 
     const wasResponsive = this.getWebClientState().getCurrentValue() ===
         WebClientState.kResponsive;
 
-    this.destroyHost();
+    this.resetWebClientState();
 
     if (pageType !== GuestPageType.kRegular || !isApiAllowed) {
-      this.delegate.webviewPageCommit(
-          pageType === GuestPageType.kRegular ? GuestPageType.kLoadError :
-                                                pageType,
-          isApiAllowed);
+      this.delegate.webviewPageCommit(pageType, isApiAllowed);
       return;
     }
 

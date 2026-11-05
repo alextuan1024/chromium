@@ -1,0 +1,115 @@
+// Copyright 2026 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+#include "chrome/browser/ttc/core/page_context_util.h"
+
+#include <optional>
+#include <utility>
+
+#include "base/functional/bind.h"
+#include "base/functional/callback.h"
+#include "chrome/browser/actor/enterprise_policy_checker.h"
+#include "chrome/browser/search/search.h"
+#include "components/actor/core/safety_list_manager.h"
+#include "components/actor/public/mojom/actor_types.mojom.h"
+#include "components/page_content_annotations/content/page_context_fetcher.h"
+#include "content/public/browser/page.h"
+#include "content/public/browser/web_contents.h"
+#include "url/gurl.h"
+
+namespace ttc {
+
+namespace {
+
+// Returns whether `url`'s scheme and host are supported for page context.
+// Similar to, but stricter than, Glic's IsTabValidForSharing() (see
+// chrome/browser/glic/host/context/glic_sharing_utils.cc), which also allows
+// file: URLs and a few other WebUI pages.
+//
+// The WebUI New Tab Page is allowed on every platform that serves one, which
+// includes desktop Android. The native New Tab Page used on mobile Android has
+// no DOM to extract and is not supported.
+//
+// TODO(crbug.com/555804152): Decide what page context, if any, the mobile
+// Android native New Tab Page should produce.
+bool IsSchemeAndHostSupported(const GURL& url) {
+  if (search::IsWebUINewTabPageOrigin(url)) {
+    return true;
+  }
+  // Excludes all other chrome:// URLs, as well as file:, javascript:, about:,
+  // data:, blob:, chrome-extension:, etc.
+  return url.SchemeIsHTTPOrHTTPS();
+}
+
+}  // namespace
+
+void IsUrlSupportedForPageContext(
+    const GURL& url,
+    const actor::EnterprisePolicyChecker* enterprise_policy_checker,
+    base::OnceCallback<void(bool)> callback) {
+  if (!IsSchemeAndHostSupported(url)) {
+    std::move(callback).Run(false);
+    return;
+  }
+
+  if (enterprise_policy_checker &&
+      enterprise_policy_checker->Evaluate(url) ==
+          actor::EnterprisePolicyChecker::UrlBlockReason::kExplicitlyBlocked) {
+    std::move(callback).Run(false);
+    return;
+  }
+
+  // Ask the actor safety lists whether a navigation from `url` to itself is
+  // allowed, and invoke `callback` with false iff it is blocked. This mirrors
+  // how the actor's safety list gating predicate (see
+  // CreateSafetyListPredicate() in chrome/browser/actor/execution_engine.cc)
+  // evaluates an event that has no distinct source URL: the destination is used
+  // as the source. As there, a lack of decision (e.g. because the lists have
+  // not been loaded) does not block.
+  actor::SafetyListManager::GetInstance()->Find(
+      url, url, base::BindOnce([](actor::SafetyListManager::Decision decision) {
+                  return decision != actor::SafetyListManager::Decision::kBlock;
+                }).Then(std::move(callback)));
+}
+
+std::optional<ToolResponse> CheckPageForCapture(
+    content::WebContents* focused_contents,
+    const base::WeakPtr<content::Page>& page,
+    bool is_url_supported) {
+  if (!is_url_supported) {
+    return ToolResponse::Error(actor::mojom::ActionResultCode::kUrlBlocked,
+                               "URL is not supported for page capture");
+  }
+  if (!focused_contents) {
+    return ToolResponse::Error(actor::mojom::ActionResultCode::kTabWentAway,
+                               "No active tab");
+  }
+  if (!page || &*page != &focused_contents->GetPrimaryPage()) {
+    return ToolResponse::Error(
+        actor::mojom::ActionResultCode::kScreenshotCapturePageChanged,
+        "Focused page changed during page capture");
+  }
+  if (focused_contents->IsCrashed()) {
+    return ToolResponse::Error(actor::mojom::ActionResultCode::kRendererCrashed,
+                               "Renderer crashed");
+  }
+  return std::nullopt;
+}
+
+actor::mojom::ActionResultCode ToScreenshotErrorCode(
+    page_content_annotations::FetchPageContextError error) {
+  using page_content_annotations::FetchPageContextError;
+  switch (error) {
+    case FetchPageContextError::kWebContentsWentAway:
+      return actor::mojom::ActionResultCode::kTabWentAway;
+    case FetchPageContextError::kWebContentsChanged:
+      return actor::mojom::ActionResultCode::kScreenshotCapturePageChanged;
+    case FetchPageContextError::kPageContextNotEligible:
+      return actor::mojom::ActionResultCode::kScreenshotCapturePageNotEligible;
+    case FetchPageContextError::kUnknown:
+      return actor::mojom::ActionResultCode::kScreenshotCaptureFailed;
+  }
+}
+
+}  // namespace ttc

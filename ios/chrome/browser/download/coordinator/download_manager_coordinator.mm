@@ -69,7 +69,6 @@
 #import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/signin/model/authentication_service.h"
 #import "ios/chrome/browser/signin/model/authentication_service_factory.h"
-#import "ios/chrome/browser/signin/model/identity_manager_factory.h"
 #import "ios/chrome/browser/store_kit/model/store_kit_coordinator.h"
 #import "ios/chrome/browser/store_kit/model/store_kit_coordinator_delegate.h"
 #import "ios/chrome/grit/ios_strings.h"
@@ -109,7 +108,7 @@
 @implementation DownloadManagerCoordinator
 
 - (void)dealloc {
-  CHECK(_stopped, base::NotFatalUntil::M150);
+  CHECK(_stopped);
 }
 
 - (void)start {
@@ -118,8 +117,8 @@
 
 // Similar to start but can be called after pause.
 - (void)restart {
-  CHECK(self.presenter, base::NotFatalUntil::M150);
-  CHECK(self.browser, base::NotFatalUntil::M150);
+  CHECK(self.presenter);
+  CHECK(self.browser);
   if (IsPageActionMenuEnabled()) {
     _geminiHandler = HandlerForProtocol(self.browser->GetCommandDispatcher(),
                                         GeminiCommands);
@@ -161,7 +160,6 @@
 
   _mediator.SetIsIncognito(isIncognito);
   ProfileIOS* profile = self.profile;
-  _mediator.SetIdentityManager(IdentityManagerFactory::GetForProfile(profile));
   _mediator.SetDriveService(drive::DriveServiceFactory::GetForProfile(profile));
   _mediator.SetPrefService(profile->GetPrefs());
   _mediator.SetAuthenticationService(
@@ -199,7 +197,6 @@
   _mediator.SetDriveService(nullptr);
   _mediator.SetPrefService(nullptr);
   _mediator.SetAuthenticationService(nullptr);
-  _mediator.SetIdentityManager(nullptr);
   if (IsDownloadListEnabled()) {
     _mediator.SetDownloadRecordService(nullptr);
   }
@@ -296,7 +293,7 @@
 - (void)downloadManagerTabHelper:(DownloadManagerTabHelper*)tabHelper
                  didHideDownload:(web::DownloadTask*)download
                         animated:(BOOL)animated {
-  CHECK_EQ(_downloadTask.get(), download, base::NotFatalUntil::M150);
+  CHECK_EQ(_downloadTask.get(), download);
   self.animatesPresentation = animated;
   [self stop];
   self.animatesPresentation = YES;
@@ -305,7 +302,7 @@
 - (void)downloadManagerTabHelper:(DownloadManagerTabHelper*)tabHelper
                  didShowDownload:(web::DownloadTask*)download
                         animated:(BOOL)animated {
-  CHECK_NE(_downloadTask.get(), download, base::NotFatalUntil::M150);
+  CHECK_NE(_downloadTask.get(), download);
   _downloadTask = download->GetWeakPtr();
   self.animatesPresentation = animated;
   [self start];
@@ -320,7 +317,7 @@
     // observer is called.
     return;
   }
-  CHECK_EQ(_downloadTask.get(), download, base::NotFatalUntil::M150);
+  CHECK_EQ(_downloadTask.get(), download);
   self.animatesPresentation = NO;
   [self pause];
   self.animatesPresentation = YES;
@@ -350,7 +347,7 @@
 
 - (void)downloadManagerTabHelper:(DownloadManagerTabHelper*)tabHelper
             wantsToStartDownload:(web::DownloadTask*)download {
-  CHECK_EQ(_downloadTask.get(), download, base::NotFatalUntil::M150);
+  CHECK_EQ(_downloadTask.get(), download);
   [self tryDownload];
 }
 
@@ -373,12 +370,12 @@
 }
 
 - (void)containedPresenterDidPresent:(id<ContainedPresenter>)presenter {
-  CHECK_EQ(presenter, self.presenter, base::NotFatalUntil::M150);
+  CHECK_EQ(presenter, self.presenter);
   [_viewController disableCurrentButtonTemporarily];
 }
 
 - (void)containedPresenterDidDismiss:(id<ContainedPresenter>)presenter {
-  CHECK_EQ(presenter, self.presenter, base::NotFatalUntil::M150);
+  CHECK_EQ(presenter, self.presenter);
   // The view controller may not be dealloced immediately.
   presenter.presentedViewController = nil;
   if (_restartPending) {

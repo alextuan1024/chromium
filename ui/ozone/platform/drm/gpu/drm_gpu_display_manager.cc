@@ -9,6 +9,8 @@
 #include <algorithm>
 #include <cstring>
 #include <memory>
+#include <optional>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -41,6 +43,8 @@ namespace {
 
 constexpr char kMultipleDisplayIdsCollisionDetected[] =
     "Display.MultipleDisplays.GenerateId.CollisionDetection";
+constexpr char kMultipleDisplaySerialNumberIdentifiersCollisionDetected[] =
+    "Display.MultipleDisplays.GenerateId.SerialNumberIdentifierCollision";
 
 // A list of property names that are blocked from issuing a full display
 // configuration (modeset) via a udev display CHANGE event.
@@ -312,6 +316,10 @@ MovableDisplaySnapshots DrmGpuDisplayManager::GetDisplays() {
   size_t device_index = 0;
   MapEdidIdToDisplaySnapshot edid_id_collision_map;
   bool collision_detected = false;
+  // Serial number based identifiers of external displays, excluding the ones
+  // whose serial numbers are all placeholders.
+  std::set<std::string> serial_number_identifiers;
+  size_t num_displays_with_serial_number_identifier = 0;
   for (const auto& drm : devices) {
     if (device_index >= kMaxDrmCount) {
       LOG(WARNING) << "Reached the current limit of " << kMaxDrmCount
@@ -345,6 +353,15 @@ MovableDisplaySnapshots DrmGpuDisplayManager::GetDisplays() {
     ConsolidateTiledDisplayInfo(display_infos);
 
     for (auto& display_info : display_infos) {
+      if (display_info->edid_parser().has_value()) {
+        std::optional<std::string> serial_number_identifier =
+            display_info->edid_parser()->GetSerialNumberBasedIdentifier();
+        if (serial_number_identifier.has_value()) {
+          ++num_displays_with_serial_number_identifier;
+          serial_number_identifiers.insert(*serial_number_identifier);
+        }
+      }
+
       display_snapshots.emplace_back(CreateDisplaySnapshot(
           *drm, display_info.get(), static_cast<uint8_t>(device_index)));
 
@@ -394,6 +411,13 @@ MovableDisplaySnapshots DrmGpuDisplayManager::GetDisplays() {
   if (multiple_connected_displays) {
     base::UmaHistogramBoolean(kMultipleDisplayIdsCollisionDetected,
                               collision_detected);
+  }
+  // A collision is only possible with 2 or more such identifiers.
+  if (num_displays_with_serial_number_identifier > 1) {
+    base::UmaHistogramBoolean(
+        kMultipleDisplaySerialNumberIdentifiersCollisionDetected,
+        serial_number_identifiers.size() <
+            num_displays_with_serial_number_identifier);
   }
 
   NotifyScreenManager(displays_, old_displays);
@@ -453,7 +477,7 @@ bool DrmGpuDisplayManager::RelinquishDisplayControl() {
 
 bool DrmGpuDisplayManager::ShouldDisplayEventTriggerConfiguration(
     const EventPropertyMap& event_props) {
-  DCHECK(!event_props.empty());
+  CHECK(!event_props.empty(), base::NotFatalUntil::M163);
 
   const std::string event_seq_num =
       GetEventPropertyByKey("SEQNUM", event_props);
@@ -479,7 +503,7 @@ bool DrmGpuDisplayManager::ShouldDisplayEventTriggerConfiguration(
     {
       const bool conversion_success =
           base::StringToUint(connector_id_str, &connector_id);
-      DCHECK(conversion_success);
+      CHECK(conversion_success, base::NotFatalUntil::M163);
     }
 
     // Get the trigger property's ID and convert to an int.
@@ -492,19 +516,19 @@ bool DrmGpuDisplayManager::ShouldDisplayEventTriggerConfiguration(
     {
       const bool conversion_success =
           base::StringToUint(trigger_prop_id_str, &trigger_prop_id);
-      DCHECK(conversion_success);
+      CHECK(conversion_success, base::NotFatalUntil::M163);
     }
 
     ScopedDrmObjectPropertyPtr property_values(
         drm->GetObjectProperties(connector_id, DRM_MODE_OBJECT_CONNECTOR));
-    DCHECK(property_values);
+    CHECK(property_values, base::NotFatalUntil::M163);
 
     // Fetch the name of the property from the device.
     ScopedDrmPropertyPtr drm_property(drm->GetProperty(trigger_prop_id));
-    DCHECK(drm_property);
+    CHECK(drm_property, base::NotFatalUntil::M163);
     const std::string enum_value =
         GetEnumNameForProperty(*drm_property, *property_values);
-    DCHECK(!enum_value.empty());
+    CHECK(!enum_value.empty(), base::NotFatalUntil::M163);
 
     trigger_prop_log =
         "[CONNECTOR:" + connector_id_str +

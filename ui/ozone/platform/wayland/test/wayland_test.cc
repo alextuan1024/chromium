@@ -5,9 +5,11 @@
 #include "ui/ozone/platform/wayland/test/wayland_test.h"
 
 #include <memory>
+#include <string_view>
 
-#include "base/compiler_specific.h"
+#include "base/containers/span.h"
 #include "base/run_loop.h"
+#include "base/timer/timer.h"
 #include "ui/base/ui_base_features.h"
 #include "ui/events/devices/device_data_manager.h"
 #include "ui/events/ozone/layout/keyboard_layout_engine_manager.h"
@@ -131,6 +133,12 @@ void WaylandTestBase::PostToServerAndWait(base::OnceClosure closure,
     // Wait for server thread to complete running posted tasks.
     server_.FlushForTesting();
 
+    // Round-trip twice so server events and any requests sent while handling
+    // them (e.g. the wl_display.sync used before binding wl_output) are
+    // dispatched before flushing non-delayed tasks.
+    connection_->RoundTripQueue();
+    connection_->RoundTripQueue();
+
     // Flush all non-delayed tasks.
     task_environment_.RunUntilIdle();
   } else {
@@ -141,6 +149,7 @@ void WaylandTestBase::PostToServerAndWait(base::OnceClosure closure,
 
     // Sync with the display to ensure server's events are received and
     // processed
+    SyncDisplay();
     SyncDisplay();
   }
 }
@@ -211,7 +220,8 @@ void WaylandTestBase::MaybeSetUpXkb() {
         xkb_keymap_get_as_string(xkb_keymap.get(), XKB_KEYMAP_FORMAT_TEXT_V1));
     ASSERT_TRUE(keymap_string.get());
 
-    size_t keymap_size = strlen(keymap_string.get()) + 1;
+    const std::string_view keymap(keymap_string.get());
+    size_t keymap_size = keymap.size() + 1;
     base::UnsafeSharedMemoryRegion shared_keymap_region =
         base::UnsafeSharedMemoryRegion::Create(keymap_size);
     base::WritableSharedMemoryMapping shared_keymap =
@@ -221,8 +231,9 @@ void WaylandTestBase::MaybeSetUpXkb() {
             std::move(shared_keymap_region));
     ASSERT_TRUE(shared_keymap.IsValid());
 
-    UNSAFE_TODO(
-        memcpy(shared_keymap.memory(), keymap_string.get(), keymap_size));
+    auto keymap_span = shared_keymap.GetMemoryAsSpan<char>();
+    keymap_span.copy_prefix_from(keymap);
+    keymap_span[keymap.size()] = '\0';
 
     auto* const keyboard = server->seat()->keyboard()->resource();
     ASSERT_TRUE(keyboard);

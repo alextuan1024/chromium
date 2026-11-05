@@ -407,7 +407,7 @@ PasswordStoreAndroidBackend::PasswordStoreAndroidBackend(
     std::unique_ptr<PasswordManagerLifecycleHelper> lifecycle_helper)
     : lifecycle_helper_(std::move(lifecycle_helper)),
       bridge_helper_(std::move(bridge_helper)) {
-  DCHECK(bridge_helper_);
+  CHECK(bridge_helper_, base::NotFatalUntil::M161);
   bridge_helper_->SetConsumer(weak_ptr_factory_.GetWeakPtr());
 }
 
@@ -669,6 +669,30 @@ void PasswordStoreAndroidBackend::ClearAllTasksAndReplyWithReason(
   scheduled_retries_.clear();
 }
 
+bool PasswordStoreAndroidBackend::HasPendingOperation(
+    PasswordStoreOperation operation) const {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(main_sequence_checker_);
+  for (const auto& [id, job_reply] : request_for_job_) {
+    if (job_reply.GetOperation() == operation) {
+      return true;
+    }
+  }
+  for (const auto& [id, retry_wrapper] : scheduled_retries_) {
+    if (retry_wrapper->operation() == operation) {
+      return true;
+    }
+  }
+  return false;
+}
+
+void PasswordStoreAndroidBackend::TriggerStoreRefresh() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(main_sequence_checker_);
+  if (stored_passwords_changed_) {
+    main_task_runner_->PostTask(
+        FROM_HERE, base::BindOnce(stored_passwords_changed_, std::nullopt));
+  }
+}
+
 PasswordStoreAndroidBackend::JobReturnHandler::JobReturnHandler(
     LoginsOrErrorReply callback,
     PasswordStoreBackendMetricsRecorder metrics_recorder,
@@ -711,7 +735,7 @@ base::TimeDelta PasswordStoreAndroidBackend::JobReturnHandler::GetDelay() {
 }
 
 PasswordStoreOperation
-PasswordStoreAndroidBackend::JobReturnHandler::GetOperation() {
+PasswordStoreAndroidBackend::JobReturnHandler::GetOperation() const {
   return operation_;
 }
 
@@ -819,7 +843,7 @@ void PasswordStoreAndroidBackend::OnCompleteWithLogins(
 
   last_error_ = ActionableError::kNoError;
   reply->RecordMetrics(/*error=*/std::nullopt);
-  DCHECK(reply->Holds<LoginsOrErrorReply>());
+  CHECK(reply->Holds<LoginsOrErrorReply>(), base::NotFatalUntil::M161);
 
   main_task_runner_->PostTask(
       FROM_HERE, base::BindOnce(std::move(*reply).Get<LoginsOrErrorReply>(),
@@ -835,7 +859,7 @@ void PasswordStoreAndroidBackend::OnLoginsChanged(
     return;  // Task cleaned up after returning from background.
   }
   reply->RecordMetrics(/*error=*/std::nullopt);
-  DCHECK(reply->Holds<PasswordChangesOrErrorReply>());
+  CHECK(reply->Holds<PasswordChangesOrErrorReply>(), base::NotFatalUntil::M161);
 
   last_error_ = ActionableError::kNoError;
   main_task_runner_->PostTask(
@@ -859,7 +883,8 @@ void PasswordStoreAndroidBackend::OnError(JobId job_id,
       PasswordStoreBackendErrorType::kUncategorized);
 
   if (error.api_error_code.has_value()) {
-    DCHECK_EQ(AndroidBackendErrorType::kExternalError, error.type);
+    CHECK_EQ(AndroidBackendErrorType::kExternalError, error.type,
+             base::NotFatalUntil::M161);
     int api_error = error.api_error_code.value();
     reported_error.android_backend_api_error = api_error;
     auto api_error_code = static_cast<AndroidBackendAPIErrorCode>(api_error);
@@ -1055,7 +1080,7 @@ PasswordChangesOrErrorReply PasswordStoreAndroidBackend::
 
 void PasswordStoreAndroidBackend::OnForegroundSessionStart() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(main_sequence_checker_);
-  DCHECK(stored_passwords_changed_);
+  CHECK(stored_passwords_changed_, base::NotFatalUntil::M163);
 
   // Clear outdated pending tasks before the store queues a new request.
   ClearZombieTasks();

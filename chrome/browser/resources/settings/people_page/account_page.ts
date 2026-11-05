@@ -62,15 +62,12 @@ export class SettingsAccountPageElement extends SettingsAccountPageElementBase {
        */
       syncPrefs: {type: Object},
 
-      isEeaChoiceCountry_: {type: Boolean},
-
+      mayShowLinkedGoogleServicesSetting_: {type: Boolean},
       personalizationCollapseExpanded_: {type: Boolean},
-
       existingPassphraseLabel_: {type: String},
-
       dataEncrypted_: {type: Boolean},
-
       encryptionExpanded_: {type: Boolean},
+      enableDeviceTabVisibilitySettings_: {type: Boolean},
     };
   }
 
@@ -79,12 +76,14 @@ export class SettingsAccountPageElement extends SettingsAccountPageElementBase {
   protected accessor syncStatus_: SyncStatus|null = null;
   accessor syncPrefs: SyncPrefs|null = null;
 
-  protected accessor isEeaChoiceCountry_: boolean =
-      loadTimeData.getBoolean('isEeaChoiceCountry');
+  protected accessor mayShowLinkedGoogleServicesSetting_: boolean =
+      loadTimeData.getBoolean('mayShowLinkedGoogleServicesSetting');
   protected accessor personalizationCollapseExpanded_: boolean = false;
-  protected accessor dataEncrypted_: boolean = false;
+  private accessor dataEncrypted_: boolean = false;
   protected accessor encryptionExpanded_: boolean = false;
   protected accessor existingPassphraseLabel_: string = '';
+  protected accessor enableDeviceTabVisibilitySettings_: boolean =
+      loadTimeData.getBoolean('enableDeviceTabVisibilitySettings');
 
   override connectedCallback() {
     super.connectedCallback();
@@ -175,6 +174,11 @@ export class SettingsAccountPageElement extends SettingsAccountPageElementBase {
         loadTimeData.getString('googleAccountUrl'));
   }
 
+  protected onDeviceTabVisibilityClick_() {
+    assert(this.enableDeviceTabVisibilitySettings_);
+    Router.getInstance().navigateTo(routes.DEVICE_TAB_VISIBILITY);
+  }
+
   // <if expr="is_chromeos">
   protected onManageDeviceAccountsClick_() {
     OpenWindowProxyImpl.getInstance().openUrl(
@@ -207,6 +211,15 @@ export class SettingsAccountPageElement extends SettingsAccountPageElementBase {
   protected shouldShowPageContents_() {
     return this.syncStatus_ &&
         this.syncStatus_.signedInState === SignedInState.SIGNED_IN;
+  }
+
+  // SettingsViewMixin implementation.
+  override getFocusConfig() {
+    const map = new Map();
+    if (routes.DEVICE_TAB_VISIBILITY) {
+      map.set(routes.DEVICE_TAB_VISIBILITY.path, '#deviceTabVisibilityLinkRow');
+    }
+    return map;
   }
 
   // SettingsViewMixin implementation.

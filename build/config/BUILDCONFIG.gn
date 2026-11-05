@@ -189,8 +189,6 @@ declare_args() {
   rust_clippy_conf_file = ""
 }
 
-import("//build/strict_deps_failures.gni")
-
 declare_args() {
   # Whether to enable strict deps checks. This ensures that your dependencies
   # are correctly declared (no missing deps and no accessing transitive deps).
@@ -390,6 +388,7 @@ default_compiler_configs = [
   "//build/config/compiler:thinlto_optimize_default",
   "//build/config/compiler:tot_warnings",
   "//build/config/coverage:default_coverage",
+  "//build/config/sanitizers:alloc_token",
   "//build/config/sanitizers:default_sanitizer_flags",
   "//build/config:feature_flags",
 ]
@@ -599,6 +598,13 @@ foreach(_target_type,
         public_deps = []
       }
 
+      if (_target_type == "static_library" && defined(complete_static_lib) &&
+          complete_static_lib &&
+          filter_include(configs,
+                         [ "//build/config/sanitizers:alloc_token" ]) != []) {
+        deps += [ "//build/config:alloc_token_aliases" ]
+      }
+
       if (!defined(use_libcxx_modules)) {
         use_libcxx_modules = is_clang
       }
@@ -624,13 +630,6 @@ foreach(_target_type,
         strict_deps = enable_strict_deps
       }
 
-      if (!defined(check_includes_strict)) {
-        _current_label = get_label_info(":$target_name", "label_no_toolchain")
-        check_includes_strict =
-            filter_include([ _current_label ],
-                           CHECK_INCLUDES_STRICT_ALLOWLIST) != []
-      }
-
       if (use_libcxx_modules && is_clang) {
         if (strict_deps) {
           configs += [ "//build/modules:strict_deps" ]
@@ -649,9 +648,6 @@ foreach(_target_type,
       }
 
       # Consumed by the unsafe-buffers plugin during compile.
-      #
-      # TODO(crbug.com/326584510): Reclient doesn't respect this variable, see
-      # rbe_bug_326584510_missing_inputs in //build/config/clang/clang.gni
       _uses_cflags = false
       if (defined(sources)) {
         foreach(f, sources) {
@@ -705,9 +701,6 @@ foreach(_target_type,
       }
 
       # Consumed by the unsafe-buffers plugin during compile.
-      #
-      # TODO(crbug.com/326584510): Reclient doesn't respect this variable, see
-      # rbe_bug_326584510_missing_inputs in //build/config/clang/clang.gni
       _uses_cflags = false
       if (defined(sources)) {
         foreach(f, sources) {
@@ -737,6 +730,16 @@ foreach(_target_type,
         # (This explicit list is so that grepping for these configs finds where
         # they are used.)
         deps += [ "//build/config:${_target_type}_deps" ]
+
+        if (filter_include(configs,
+                           [ "//build/config/sanitizers:alloc_token" ]) != []) {
+          deps += [ "//build/config:alloc_token_aliases" ]
+        }
+      } else {
+        # The default deps provide the __alloc_token_* fallbacks, so don't
+        # instrument the sources of binaries without them.
+        configs -=
+            filter_include(configs, [ "//build/config/sanitizers:alloc_token" ])
       }
 
       if (!defined(public_deps)) {
@@ -766,13 +769,6 @@ foreach(_target_type,
 
       if (!defined(strict_deps)) {
         strict_deps = enable_strict_deps
-      }
-
-      if (!defined(check_includes_strict)) {
-        _current_label = get_label_info(":$target_name", "label_no_toolchain")
-        check_includes_strict =
-            filter_include([ _current_label ],
-                           CHECK_INCLUDES_STRICT_ALLOWLIST) != []
       }
 
       if (use_libcxx_modules && is_clang) {
@@ -869,11 +865,6 @@ template("component") {
   target(_component_mode, target_name) {
     if (defined(_output_name)) {
       output_name = _output_name
-    }
-    if (is_component_build && is_android) {
-      # By appending .cr, we prevent name collisions with libraries already
-      # loaded by the Android zygote.
-      output_extension = "cr.so"
     }
     forward_variables_from(invoker, TESTONLY_AND_VISIBILITY)
     forward_variables_from(invoker, "*", TESTONLY_AND_VISIBILITY)

@@ -7,7 +7,6 @@
 #include "base/feature_list.h"
 #include "base/test/metrics/user_action_tester.h"
 #include "base/test/run_until.h"
-#include "base/test/scoped_feature_list.h"
 #include "build/build_config.h"
 #include "chrome/app/chrome_command_ids.h"
 #include "chrome/browser/profiles/profile.h"
@@ -36,6 +35,7 @@
 #include "ui/base/test/ui_controls.h"
 #include "ui/base/unowned_user_data/user_data_factory.h"
 #include "ui/events/event_constants.h"
+#include "ui/gfx/animation/animation_test_api.h"
 #include "ui/gfx/scoped_animation_duration_scale_mode.h"
 #include "ui/views/controls/menu/menu_item_view.h"
 #include "ui/views/interaction/interactive_views_test.h"
@@ -107,7 +107,6 @@ class VerticalTabStripInteractiveUiTest : public InteractiveBrowserTest {
   ~VerticalTabStripInteractiveUiTest() override = default;
 
   void SetUp() override {
-    scoped_feature_list_.InitAndEnableFeature(tabs::kVerticalTabsExpandOnHover);
     override_ =
         BrowserWindowFeatures::GetUserDataFactoryForTesting()
             .AddOverrideForTesting<FakeImmersiveModeController>(
@@ -151,7 +150,6 @@ class VerticalTabStripInteractiveUiTest : public InteractiveBrowserTest {
   raw_ptr<FakeImmersiveModeController> fake_controller_ = nullptr;
 
  private:
-  base::test::ScopedFeatureList scoped_feature_list_;
   std::optional<ui::UserDataFactory::ScopedOverride> override_;
 };
 
@@ -361,6 +359,52 @@ IN_PROC_BROWSER_TEST_F(VerticalTabStripMenuInteractiveUiTest,
       menu->GetNewBadgeTypeAt(command_index);
   ASSERT_TRUE(badge_type_in_horizontal_tabs.has_value());
   EXPECT_EQ(badge_type_in_horizontal_tabs.value(), ui::NewBadgeType::kNew);
+}
+
+IN_PROC_BROWSER_TEST_F(VerticalTabStripInteractiveUiTest,
+                       DeferredModeSwitchUpdatesCollapseAction) {
+  auto disable_animations = gfx::AnimationTestApi::SetRichAnimationRenderMode(
+      gfx::Animation::RichAnimationRenderMode::FORCE_DISABLED);
+  auto* controller = tabs::VerticalTabStripStateController::From(browser());
+
+  for (bool initially_collapsed : {false, true}) {
+    SCOPED_TRACE(initially_collapsed);
+    controller->SetVerticalTabsEnabled(true);
+    controller->RequestCollapse(initially_collapsed);
+    ASSERT_EQ(initially_collapsed, controller->IsCollapsed());
+    controller->SetVerticalTabsEnabled(false);
+
+    // Immersive fullscreen holds this lock until fullscreen exits.
+    auto lock = controller->GetEnableStateLock();
+    controller->SetVerticalTabsEnabled(true);
+    EXPECT_FALSE(controller->ShouldDisplayVerticalTabs());
+    EXPECT_FALSE(
+        chrome::IsCommandEnabled(browser(), IDC_TOGGLE_VERTICAL_TABS_COLLAPSE));
+
+    lock.reset();
+    ASSERT_TRUE(controller->ShouldDisplayVerticalTabs());
+    EXPECT_EQ(initially_collapsed, controller->IsCollapsed());
+    RunScheduledLayouts();
+
+    EXPECT_TRUE(
+        chrome::IsCommandEnabled(browser(), IDC_TOGGLE_VERTICAL_TABS_COLLAPSE));
+    RunTestSequence(
+        WaitForShow(kVerticalTabStripCollapseButtonElementId),
+        CheckViewProperty(kVerticalTabStripCollapseButtonElementId,
+                          &views::View::GetEnabled, true),
+        PressButton(kVerticalTabStripCollapseButtonElementId,
+                    ui::test::InteractionTestUtil::InputType::kMouse),
+        CheckResult([controller]() { return controller->IsCollapsed(); },
+                    !initially_collapsed));
+
+    lock = controller->GetEnableStateLock();
+    controller->SetVerticalTabsEnabled(false);
+    EXPECT_TRUE(controller->ShouldDisplayVerticalTabs());
+    lock.reset();
+    EXPECT_FALSE(controller->ShouldDisplayVerticalTabs());
+    EXPECT_FALSE(
+        chrome::IsCommandEnabled(browser(), IDC_TOGGLE_VERTICAL_TABS_COLLAPSE));
+  }
 }
 
 IN_PROC_BROWSER_TEST_F(VerticalTabStripInteractiveUiTest,

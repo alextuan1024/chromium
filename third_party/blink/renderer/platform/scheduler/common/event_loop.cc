@@ -54,7 +54,13 @@ EventLoop::EventLoop(Delegate* delegate,
       &EventLoop::RunEndOfCheckpointTasks, this);
 }
 
-EventLoop::~EventLoop() = default;
+EventLoop::~EventLoop() {
+  // `microtask_queue_` may be cleared before sweeping during heap termination.
+  if (microtask_queue_) {
+    microtask_queue_->RemoveMicrotasksCompletedCallback(
+        &EventLoop::RunEndOfCheckpointTasks, this);
+  }
+}
 
 void EventLoop::EnqueueMicrotask(base::OnceClosure task) {
   pending_microtasks_.push_back(std::move(task));
@@ -86,6 +92,7 @@ void EventLoop::RunEndOfMicrotaskCheckpointTasks() {
     // execution was interrupted by the debugger. V8 expects that any pending
     // microtasks are discarded here. See https://crbug.com/1394714.
     pending_microtasks_.clear();
+    ++microtask_discard_count_;
   }
 
   if (delegate_) {

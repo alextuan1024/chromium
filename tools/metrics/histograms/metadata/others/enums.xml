@@ -26,10 +26,78 @@ chromium-metrics-reviews@google.com.
 
 <enums>
 
-<enum name="BooleanRelroAvailableImmediately">
-  <int value="0" label="Available Later"/>
-  <int value="1" label="Available Immediately"/>
+<!-- LINT.IfChange(BrotliFilterDecodingStatus) -->
+
+<enum name="BrotliFilterDecodingStatus">
+  <int value="0" label="In progress"/>
+  <int value="1" label="Done"/>
+  <int value="2" label="Error"/>
 </enum>
+
+<!-- LINT.ThenChange(//net/filter/brotli_source_stream.cc:DecodingStatus) -->
+
+<enum name="BrotliFilterErrorCode">
+  <summary>
+    The negated values of the errors of BrotliDecoderErrorCode in
+    //third_party/brotli/include/brotli/decode.h. The Rust brotli-decompressor
+    crate uses the same values.
+  </summary>
+  <int value="1" label="FORMAT_EXUBERANT_NIBBLE"/>
+  <int value="2" label="FORMAT_RESERVED"/>
+  <int value="3" label="FORMAT_EXUBERANT_META_NIBBLE"/>
+  <int value="4" label="FORMAT_SIMPLE_HUFFMAN_ALPHABET"/>
+  <int value="5" label="FORMAT_SIMPLE_HUFFMAN_SAME"/>
+  <int value="6" label="FORMAT_CL_SPACE"/>
+  <int value="7" label="FORMAT_HUFFMAN_SPACE"/>
+  <int value="8" label="FORMAT_CONTEXT_MAP_REPEAT"/>
+  <int value="9" label="FORMAT_BLOCK_LENGTH_1"/>
+  <int value="10" label="FORMAT_BLOCK_LENGTH_2"/>
+  <int value="11" label="FORMAT_TRANSFORM"/>
+  <int value="12" label="FORMAT_DICTIONARY"/>
+  <int value="13" label="FORMAT_WINDOW_BITS"/>
+  <int value="14" label="FORMAT_PADDING_1"/>
+  <int value="15" label="FORMAT_PADDING_2"/>
+  <int value="16" label="FORMAT_DISTANCE"/>
+  <int value="17" label="FORMAT_BLOCK_SWITCH"/>
+  <int value="18" label="COMPOUND_DICTIONARY"/>
+  <int value="19" label="DICTIONARY_NOT_SET"/>
+  <int value="20" label="INVALID_ARGUMENTS"/>
+  <int value="21" label="ALLOC_CONTEXT_MODES"/>
+  <int value="22" label="ALLOC_TREE_GROUPS"/>
+  <int value="25" label="ALLOC_CONTEXT_MAP"/>
+  <int value="26" label="ALLOC_RING_BUFFER_1"/>
+  <int value="27" label="ALLOC_RING_BUFFER_2"/>
+  <int value="30" label="ALLOC_BLOCK_TYPE_TREES"/>
+  <int value="31" label="UNREACHABLE"/>
+</enum>
+
+<!-- LINT.IfChange(CrxDownloaderType) -->
+
+<enum name="CrxDownloaderType">
+  <int value="0" label="None (every downloader in the chain failed)"/>
+  <int value="1" label="URL fetcher"/>
+  <int value="2" label="BITS (Windows)"/>
+  <int value="3" label="NSURLSession background (Mac)"/>
+  <int value="4" label="Delivery Optimization (Windows)"/>
+</enum>
+
+<!-- LINT.ThenChange(//components/update_client/crx_downloader.h:CrxDownloaderType) -->
+
+<!-- LINT.IfChange(DeliveryOptimizationFinalDownloadState) -->
+
+<enum name="DeliveryOptimizationFinalDownloadState">
+  <int value="0"
+      label="No download (DO unavailable, queue full, or create/start failed)"/>
+  <int value="1" label="Created"/>
+  <int value="2" label="Transferring"/>
+  <int value="3" label="Transferred"/>
+  <int value="4" label="Finalized"/>
+  <int value="5" label="Aborted"/>
+  <int value="6" label="Paused"/>
+  <int value="7" label="Unknown"/>
+</enum>
+
+<!-- LINT.ThenChange(//components/update_client/delivery_optimization_downloader_win.cc:DeliveryOptimizationFinalDownloadState) -->
 
 <!-- LINT.IfChange(DetachKernelDriverOutcome) -->
 
@@ -41,9 +109,33 @@ chromium-metrics-reviews@google.com.
   <int value="4" label="Kernel driver detached: cdc_acm"/>
   <int value="5" label="Kernel driver detached: usblp"/>
   <int value="6" label="Kernel driver detached: ftdi_sio"/>
+  <int value="7" label="Kernel driver detached: usb-storage"/>
 </enum>
 
 <!-- LINT.ThenChange(//services/device/usb/usb_device_handle_usbfs.cc:DetachKernelDriverOutcome) -->
+
+<!-- LINT.IfChange(FeedbackAppScreenshotAndTabInfo) -->
+
+<enum name="FeedbackAppScreenshotAndTabInfo">
+  <int value="0" label="No screenshot available"/>
+  <int value="1" label="Screenshot available but not included"/>
+  <int value="2" label="Screenshot included but no tab info"/>
+  <int value="3" label="Screenshot and tab info included"/>
+</enum>
+
+<!-- LINT.ThenChange(//ash/webui/os_feedback_ui/backend/histogram_util.h:FeedbackAppScreenshotAndTabInfo) -->
+
+<!-- LINT.IfChange(FindInPageSessionOutcome) -->
+
+<enum name="FindInPageSessionOutcome">
+  <int value="0" label="Matched without seeing zero-match"/>
+  <int value="1" label="Matched after seeing zero-match"/>
+  <int value="2" label="Ended with zero matches"/>
+  <int value="3" label="Ended with empty query without seeing zero-match"/>
+  <int value="4" label="Ended with empty query after seeing zero-match"/>
+</enum>
+
+<!-- LINT.ThenChange(//components/find_in_page/find_types.h:FindInPageSessionOutcome) -->
 
 <!-- LINT.IfChange(FindsResult) -->
 
@@ -225,6 +317,17 @@ chromium-metrics-reviews@google.com.
   <int value="2" label="Failed after retry limit"/>
 </enum>
 
+<!-- LINT.IfChange(InitialDateLastActiveState) -->
+
+<enum name="InitialDateLastActiveState">
+  <int value="0" label="Unknown (-2)"/>
+  <int value="1" label="First time, unpersisted (-1)"/>
+  <int value="2" label="Persisted (&gt;= 0)"/>
+  <int value="3" label="Invalid (&lt; -2)"/>
+</enum>
+
+<!-- LINT.ThenChange(//components/activity_reporter/activity_reporter.h:InitialDateLastActiveState) -->
+
 <!-- LINT.IfChange(IpczBlockAllocationSize) -->
 
 <enum name="IpczBlockAllocationSize">
@@ -246,8 +349,7 @@ chromium-metrics-reviews@google.com.
   <int value="15" label="1 MB"/>
 </enum>
 
-<!-- LINT.ThenChange(//third_party/ipcz/src/ipcz/buffer_pool.cc:IpczBlockAllocationSize)
--->
+<!-- LINT.ThenChange(//third_party/ipcz/src/ipcz/metrics.h:IpczBlockAllocationSize) -->
 
 <enum name="MissingFileRestoreResult">
   <int value="0" label="No candidate temp file found"/>
@@ -276,6 +378,24 @@ chromium-metrics-reviews@google.com.
 
 <!-- LINT.ThenChange(//mojo/public/cpp/bindings/direct_receiver.cc:MojoMergePortalsResult)
 -->
+
+<!-- LINT.IfChange(ProductComponentInstallStep) -->
+
+<enum name="ProductComponentInstallStep">
+  <summary>
+    The step at which installation of a product component (e.g., a dynamic
+    patch) into the Chrome installation directory ended.
+  </summary>
+  <int value="1" label="Invalid input (missing CRX or User Data directory)"/>
+  <int value="2" label="Chrome is not properly installed"/>
+  <int value="3" label="Getting the App Command failed"/>
+  <int value="4" label="COM/RPC error"/>
+  <int value="5" label="Launching setup.exe failed"/>
+  <int value="6" label="setup.exe exited"/>
+  <int value="7" label="Waiting for setup.exe failed"/>
+</enum>
+
+<!-- LINT.ThenChange(//chrome/browser/component_updater/install_product_component.h:ProductComponentInstallStep) -->
 
 <enum name="RedactionToolCaller">
   <summary>The caller of the redaction tool.</summary>
@@ -356,6 +476,35 @@ chromium-metrics-reviews@google.com.
 </enum>
 
 <!-- LINT.ThenChange(//chrome/browser/webshare/safe_browsing_request.h:WebShareSafeBrowsingCheckResult) -->
+
+<!-- LINT.IfChange(WgiGamepadAddedResult) -->
+
+<enum name="WgiGamepadAddedResult">
+  <summary>
+    The outcome of a gamepad added event in the Windows.Gaming.Input (WGI) data
+    fetcher.
+  </summary>
+  <int value="0" label="Success"/>
+  <int value="1" label="No slot available"/>
+  <int value="2" label="GetGamepadDetails failed"/>
+</enum>
+
+<!-- LINT.ThenChange(//device/gamepad/gamepad_uma.h:WgiGamepadAddedResult) -->
+
+<!-- LINT.IfChange(WgiInitializationResult) -->
+
+<enum name="WgiInitializationResult">
+  <summary>
+    The outcome of Windows.Gaming.Input (WGI) API initialization in the WGI data
+    fetcher.
+  </summary>
+  <int value="0" label="Success"/>
+  <int value="1" label="RoGetActivationFactory failed"/>
+  <int value="2" label="Registering GamepadAdded handler failed"/>
+  <int value="3" label="Registering GamepadRemoved handler failed"/>
+</enum>
+
+<!-- LINT.ThenChange(//device/gamepad/gamepad_uma.h:WgiInitializationResult) -->
 
 <!--
   Names are converted to ASCII before hashing - generate new hashes with:

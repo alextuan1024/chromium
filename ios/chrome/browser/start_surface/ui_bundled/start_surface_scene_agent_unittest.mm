@@ -18,7 +18,6 @@
 #import "ios/chrome/browser/shared/coordinator/scene/scene_state_prefs.h"
 #import "ios/chrome/browser/shared/coordinator/scene/test/fake_scene_state.h"
 #import "ios/chrome/browser/shared/model/browser/browser.h"
-#import "ios/chrome/browser/shared/model/browser/browser_provider.h"
 #import "ios/chrome/browser/shared/model/browser/browser_provider_interface.h"
 #import "ios/chrome/browser/shared/model/prefs/pref_names.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
@@ -55,27 +54,26 @@ const char kURL[] = "https://chromium.org/";
 class StartSurfaceSceneAgentTest : public PlatformTest {
  public:
   StartSurfaceSceneAgentTest() {
-    TestProfileIOS::Builder builder;
-    builder.SetName(profile_manager_.ReserveNewProfileName());
-    profile_ = profile_manager_.AddProfileWithBuilder(std::move(builder));
+    personal_profile_ =
+        profile_manager_.AddProfileWithBuilder(TestProfileIOS::Builder());
     startup_information_ = [[FakeStartupInformation alloc] init];
     app_state_ = OCMClassMock([AppState class]);
     OCMStub([app_state_ startupInformation]).andReturn(startup_information_);
 
     profile_state_ = [[ProfileState alloc] initWithAppState:app_state_];
     SetProfileStateInitStage(profile_state_, ProfileInitStage::kFinal);
-    profile_state_.profile = profile_.get();
+    profile_state_.profile = personal_profile_.get();
 
-    scene_state_ = [[FakeSceneState alloc] initWithProfile:profile_.get()];
+    scene_state_ =
+        [[FakeSceneState alloc] initWithProfile:personal_profile_.get()];
     scene_state_.activationLevel = SceneActivationLevelUnattached;
     scene_state_.profileState = profile_state_;
     scene_state_.sceneSessionID = "scene";
     scene_state_.UIEnabled = YES;
     scene_state_.prefs = [[SceneStatePrefs alloc]
         initWithProfileManager:&profile_manager_
-                   profileName:profile_->GetProfileName()
-             sessionIdentifier:scene_state_.sceneSessionID
-                  sceneSession:nil];
+                   profileName:personal_profile_->GetProfileName()
+             sessionIdentifier:scene_state_.sceneSessionID];
 
     agent_ = [[StartSurfaceSceneAgent alloc] init];
     agent_.sceneState = scene_state_;
@@ -118,7 +116,7 @@ class StartSurfaceSceneAgentTest : public PlatformTest {
   web::WebTaskEnvironment task_environment_;
   IOSChromeScopedTestingLocalState scoped_testing_local_state_;
   TestProfileManagerIOS profile_manager_;
-  raw_ptr<TestProfileIOS> profile_;
+  raw_ptr<TestProfileIOS> personal_profile_;
   FakeStartupInformation* startup_information_;
   AppState* app_state_;
   ProfileState* profile_state_;
@@ -133,7 +131,7 @@ class StartSurfaceSceneAgentTest : public PlatformTest {
 
   // Returns the Browser for the SceneState.
   Browser* GetBrowser() {
-    return scene_state_.browserProviderInterface.currentBrowserProvider.browser;
+    return scene_state_.browserProviderInterface.currentBrowser;
   }
 
   // Returns the regular WebStateList for the SceneState.
@@ -149,7 +147,7 @@ class StartSurfaceSceneAgentTest : public PlatformTest {
     auto test_web_state = std::make_unique<web::FakeWebState>();
     test_web_state->SetCurrentURL(url);
     test_web_state->SetNavigationItemCount(1);
-    test_web_state->SetBrowserState(profile_.get());
+    test_web_state->SetBrowserState(personal_profile_.get());
     NewTabPageTabHelper::CreateForWebState(test_web_state.get());
     GetWebStateList()->InsertWebState(
         std::move(test_web_state),
@@ -161,7 +159,7 @@ class StartSurfaceSceneAgentTest : public PlatformTest {
     auto test_web_state = std::make_unique<web::FakeWebState>();
     test_web_state->SetCurrentURL(url);
     test_web_state->SetNavigationItemCount(1);
-    test_web_state->SetBrowserState(profile_.get());
+    test_web_state->SetBrowserState(personal_profile_.get());
     NewTabPageTabHelper::CreateForWebState(test_web_state.get());
     GetIncognitoWebStateList()->InsertWebState(
         std::move(test_web_state),
@@ -456,11 +454,11 @@ TEST_F(StartSurfaceSceneAgentTest,
   test::SetStartSurfaceSessionObjectForSceneStateForTesting(
       scene_state_, time_last_background);
 
-  // Forcing the current BrowserProvider to be incognito.
+  // Forcing the current Browser to be incognito.
   auto interface = scene_state_.browserProviderInterface;
-  [scene_state_ setCurrentBrowserProvider:interface.incognitoBrowserProvider];
+  [scene_state_ setCurrentBrowser:interface.incognitoBrowser];
   CommandDispatcher* dispatcherIncognito =
-      interface.currentBrowserProvider.browser->GetCommandDispatcher();
+      interface.currentBrowser->GetCommandDispatcher();
 
   [dispatcherIncognito startDispatchingToTarget:application_handler_
                                     forProtocol:@protocol(SceneCommands)];
@@ -646,7 +644,7 @@ TEST_F(StartSurfaceSceneAgentTest, OpenNTPAfterThresholdSettingOff) {
   base::test::ScopedFeatureList scoped_feature_list;
   scoped_feature_list.InitAndEnableFeature(kStartSurfaceUserSetting);
 
-  profile_->GetPrefs()->SetBoolean(prefs::kStartSurfaceEnabled, false);
+  personal_profile_->GetPrefs()->SetBoolean(prefs::kStartSurfaceEnabled, false);
 
   base::Time time_last_background = base::Time::Now() - base::Hours(5);
   test::SetStartSurfaceSessionObjectForSceneStateForTesting(
@@ -676,7 +674,7 @@ TEST_F(StartSurfaceSceneAgentTest, OpenNTPAfterThresholdSettingOn) {
   base::test::ScopedFeatureList scoped_feature_list;
   scoped_feature_list.InitAndEnableFeature(kStartSurfaceUserSetting);
 
-  profile_->GetPrefs()->SetBoolean(prefs::kStartSurfaceEnabled, true);
+  personal_profile_->GetPrefs()->SetBoolean(prefs::kStartSurfaceEnabled, true);
 
   base::Time time_last_background = base::Time::Now() - base::Hours(5);
   test::SetStartSurfaceSessionObjectForSceneStateForTesting(
@@ -705,7 +703,7 @@ TEST_F(StartSurfaceSceneAgentTest, OpenNTPWithinThresholdSettingOn) {
   base::test::ScopedFeatureList scoped_feature_list;
   scoped_feature_list.InitAndEnableFeature(kStartSurfaceUserSetting);
 
-  profile_->GetPrefs()->SetBoolean(prefs::kStartSurfaceEnabled, true);
+  personal_profile_->GetPrefs()->SetBoolean(prefs::kStartSurfaceEnabled, true);
 
   base::Time time_last_background = base::Time::Now() - base::Hours(2);
   test::SetStartSurfaceSessionObjectForSceneStateForTesting(
@@ -734,7 +732,7 @@ TEST_F(StartSurfaceSceneAgentTest, OpenNTPWithinThresholdSettingOff) {
   base::test::ScopedFeatureList scoped_feature_list;
   scoped_feature_list.InitAndEnableFeature(kStartSurfaceUserSetting);
 
-  profile_->GetPrefs()->SetBoolean(prefs::kStartSurfaceEnabled, false);
+  personal_profile_->GetPrefs()->SetBoolean(prefs::kStartSurfaceEnabled, false);
 
   base::Time time_last_background = base::Time::Now() - base::Hours(2);
   test::SetStartSurfaceSessionObjectForSceneStateForTesting(

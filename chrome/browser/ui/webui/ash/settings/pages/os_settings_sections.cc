@@ -26,6 +26,7 @@
 #include "chrome/browser/ui/webui/ash/settings/pages/search/search_section.h"
 #include "chrome/browser/ui/webui/ash/settings/pages/system_preferences/system_preferences_section.h"
 #include "chromeos/ash/components/phonehub/phone_hub_manager.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 
 namespace ash::settings {
 
@@ -37,6 +38,8 @@ OsSettingsSections::OsSettingsSections(
     PrefService* local_state,
     const ApplicationLocaleStorage* application_locale_storage,
     policy::BrowserPolicyConnectorAsh* browser_policy_connector_ash,
+    system::TimeZoneResolverManager* timezone_resolver_manager,
+    scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
     Profile* profile,
     SearchTagRegistry* search_tag_registry,
     multidevice_setup::MultiDeviceSetupClient* multidevice_setup_client,
@@ -47,6 +50,8 @@ OsSettingsSections::OsSettingsSections(
     CupsPrintersManager* printers_manager,
     apps::AppServiceProxy* app_service_proxy,
     eche_app::EcheAppManager* eche_app_manager) {
+  CHECK(url_loader_factory);
+
   auto* prefs = profile->GetPrefs();
 
   // Special case: Main section does not have an associated enum value.
@@ -70,7 +75,8 @@ OsSettingsSections::OsSettingsSections(
                                              identity_manager, prefs));
 
   AddSection(mojom::Section::kDevice,
-             std::make_unique<DeviceSection>(profile, search_tag_registry,
+             std::make_unique<DeviceSection>(std::move(url_loader_factory),
+                                             profile, search_tag_registry,
                                              printers_manager, prefs));
 
   AddSection(mojom::Section::kPersonalization,
@@ -101,10 +107,11 @@ OsSettingsSections::OsSettingsSections(
                                                search_tag_registry,
                                                kerberos_credentials_manager));
 
-  AddSection(mojom::Section::kSystemPreferences,
-             std::make_unique<SystemPreferencesSection>(
-                 local_state, application_locale_storage, profile,
-                 search_tag_registry, prefs));
+  AddSection(
+      mojom::Section::kSystemPreferences,
+      std::make_unique<SystemPreferencesSection>(
+          local_state, application_locale_storage, timezone_resolver_manager,
+          profile, search_tag_registry, prefs));
 }
 
 OsSettingsSections::OsSettingsSections() = default;
@@ -121,7 +128,7 @@ const OsSettingsSection* OsSettingsSections::GetSection(
 void OsSettingsSections::AddSection(
     chromeos::settings::mojom::Section section_id,
     std::unique_ptr<OsSettingsSection> section) {
-  DCHECK(!sections_map_.contains(section_id));
+  CHECK(!sections_map_.contains(section_id), base::NotFatalUntil::M162);
 
   sections_map_[section_id] = section.get();
   sections_.push_back(std::move(section));

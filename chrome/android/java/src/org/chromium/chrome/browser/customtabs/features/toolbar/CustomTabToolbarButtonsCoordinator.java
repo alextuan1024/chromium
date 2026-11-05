@@ -19,7 +19,7 @@ import android.content.Context;
 import android.graphics.drawable.Drawable;
 import android.view.View;
 
-import androidx.browser.customtabs.CustomTabsIntent;
+import androidx.browser.customtabs.CustomTabsIntent.CloseButtonPosition;
 
 import org.chromium.base.Callback;
 import org.chromium.build.annotations.NullMarked;
@@ -68,9 +68,8 @@ public class CustomTabToolbarButtonsCoordinator
             CustomTabToolbar view,
             BrowserServicesIntentDataProvider intentDataProvider,
             Callback<CustomButtonParams> customButtonClickCallback,
-            CustomTabMinimizeDelegate minimizeDelegate,
+            @Nullable CustomTabMinimizeDelegate minimizeDelegate,
             Supplier<@Nullable AppMenuHandler> appMenuHandler,
-            CustomTabToolbar.@Nullable OmniboxParams omniboxParams,
             ActivityLifecycleDispatcher lifecycleDispatcher,
             ActivityTabProvider tabProvider) {
         var customActionButtons =
@@ -92,7 +91,6 @@ public class CustomTabToolbarButtonsCoordinator
 
         mIsOptionalButtonSupported = intentDataProvider.isOptionalButtonSupported();
         int toolbarWidth = CustomTabDimensionUtils.getInitialWidth(activity, intentDataProvider);
-        boolean omniboxEnabled = omniboxParams != null;
         boolean titleVisible =
                 intentDataProvider.getTitleVisibilityState() == TitleVisibility.VISIBLE;
         boolean isIncognito =
@@ -108,7 +106,6 @@ public class CustomTabToolbarButtonsCoordinator
                         /* menuButtonVisible= */ true,
                         /* optionalButtonVisible= */ false,
                         toolbarWidth,
-                        omniboxEnabled,
                         titleVisible,
                         isIncognito,
                         tint);
@@ -236,7 +233,7 @@ public class CustomTabToolbarButtonsCoordinator
     private static CloseButtonData getCloseButtonData(
             boolean visible,
             @Nullable Drawable icon,
-            @CustomTabsIntent.CloseButtonPosition int closeButtonPosition,
+            @CloseButtonPosition int closeButtonPosition,
             View.OnClickListener clickListener) {
         return new CloseButtonData(visible, icon, closeButtonPosition, clickListener);
     }

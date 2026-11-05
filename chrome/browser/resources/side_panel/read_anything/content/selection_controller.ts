@@ -1,28 +1,16 @@
 // Copyright 2025 The Chromium Authors
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
-import {isDistilledByReadability} from '../shared/common.js';
-import {getNearestTextBoundaryPoint, getTextNodeOffsets} from '../shared/dom_queries.js';
+import {isBlockTrackingEnabled, isDistilledByReadability} from '../shared/common.js';
+import {getNearestTextBoundaryPoint, getTextNodeOffsets, isBackwardSelection} from '../shared/dom_queries.js';
 
+import {BlockSelectionHighlighter} from './block_selection_highlighter.js';
 import type {ContentBrowserProxy} from './content_browser_proxy.js';
 import {ContentBrowserProxyImpl} from './content_browser_proxy.js';
 import {NodeStore} from './node_store.js';
 import {ContentPositionSource} from './read_anything_types.js';
-import type {ContentPosition} from './read_anything_types.js';
-
-interface SelectionWithIds {
-  anchorNodeId?: number;
-  anchorOffset: number;
-  focusNodeId?: number;
-  focusOffset: number;
-}
-
-interface ReadOnlySelection {
-  anchorNode: Node;
-  anchorOffset: number;
-  focusNode: Node;
-  focusOffset: number;
-}
+import type {ContentPosition, ReadingModeSelection, SelectionWithIds} from './read_anything_types.js';
+import {TranslatedSelectionMapper} from './translated_selection_mapper.js';
 
 export interface SelectionEndpoint {
   nodeId?: number;
@@ -34,6 +22,10 @@ export class SelectionController {
   private contentBrowserProxy_: ContentBrowserProxy =
       ContentBrowserProxyImpl.getInstance();
   private nodeStore_: NodeStore = NodeStore.getInstance();
+  private blockSelectionHighlighter_: BlockSelectionHighlighter =
+      BlockSelectionHighlighter.getInstance();
+  private translatedSelectionMapper_: TranslatedSelectionMapper =
+      new TranslatedSelectionMapper();
   private scrollingOnSelection_: boolean = false;
   private currentSelection_: Selection|null = null;
   private isSelectionFromMainPanel_: boolean = false;
@@ -45,42 +37,35 @@ export class SelectionController {
          selection.anchorOffset !== selection.focusOffset);
   }
 
+  // TODO(crbug.com/583941942): When blocks are highlighted for a translated
+  // PDF, start from the beginning of the first highlighted block (see
+  // BlockSelectionHighlighter), so Read Aloud reads the whole highlighted
+  // block.
   getCurrentSelectionStart(): ContentPosition|null {
     const selection = this.currentSelection_;
     if (!selection || !selection.anchorNode || !selection.focusNode) {
       return null;
     }
 
-    let node: Node|null = null;
-    let offset: number = 0;
-    const pos =
-        selection.anchorNode.compareDocumentPosition(selection.focusNode);
-    // If the focus and anchor are the same node, use the earlier offset.
-    if (pos === 0) {
-      node = selection.anchorNode;
-      offset = Math.min(selection.anchorOffset, selection.focusOffset);
-    } else {
-      const focusIsFirst = pos === Node.DOCUMENT_POSITION_PRECEDING;
-      node = focusIsFirst ? selection.focusNode : selection.anchorNode;
-      offset = focusIsFirst ? selection.focusOffset : selection.anchorOffset;
+    const isBackward = isBackwardSelection(
+        selection.anchorNode, selection.anchorOffset, selection.focusNode,
+        selection.focusOffset);
+    let node: Node = isBackward ? selection.focusNode : selection.anchorNode;
+    let offset = isBackward ? selection.focusOffset : selection.anchorOffset;
+
+    const ancestor = this.nodeStore_.getAncestor(node);
+    if (ancestor) {
+      node = ancestor.node;
+      offset += ancestor.offset;
     }
 
-    if (node) {
-      const ancestor = this.nodeStore_.getAncestor(node);
-      if (ancestor) {
-        node = ancestor.node;
-        offset += ancestor.offset;
-      }
-    }
-
-    return node ? {node, offset, source: ContentPositionSource.SELECTION} :
-                  null;
+    return {node, offset, source: ContentPositionSource.SELECTION};
   }
 
   // Called when the user selects text in reading mode. Forwards that
   // information to the main panel to draw the corresponding selection there.
   onSelectionChange(
-      selection: Selection|null, container: Node = document.body) {
+      selection: Selection|null, contentContainer: Node = document.body) {
     this.currentSelection_ = selection;
 
     // No need to send the selection info back to the main panel if it came
@@ -93,22 +78,34 @@ export class SelectionController {
     // Only notify about selection changes if the side panel has focus. This
     // ensures the change originates from direct user interaction within the
     // side panel.
-    if (!document.hasFocus()) {
+    if (!this.contentBrowserProxy_.hasFocus()) {
       return;
     }
 
     if ((selection === null) || !selection.anchorNode || !selection.focusNode ||
         selection.isCollapsed) {
       // The selection was collapsed by clicking inside the selection.
+      this.blockSelectionHighlighter_.clear();
       this.contentBrowserProxy_.onCollapseSelection();
       return;
     }
 
-    // If we're using Readability with select text enabled, report a user
-    // selection attempt to try to log this as an early selection attempt from
-    // the side panel.
-    if (isDistilledByReadability() &&
-        this.contentBrowserProxy_.isReadabilitySelectTextEnabled()) {
+    // Translated text can't be mapped to the main panel's text exactly, so map
+    // the selection to the main panel one block at a time instead.
+    if (this.shouldUseBlockMode_()) {
+      const readingModeSelection: ReadingModeSelection = {
+        anchorNode: selection.anchorNode,
+        anchorOffset: selection.anchorOffset,
+        focusNode: selection.focusNode,
+        focusOffset: selection.focusOffset,
+      };
+      this.sendBlockSelection_(readingModeSelection, contentContainer);
+      return;
+    }
+
+    // If we're using Readability, report a user selection attempt to try to log
+    // this as an early selection attempt from the side panel.
+    if (isDistilledByReadability()) {
       this.contentBrowserProxy_.attemptLogEarlySelection(
           /*fromSidePanel=*/ true);
     }
@@ -119,26 +116,19 @@ export class SelectionController {
     // end (isStart = false) to perform correct boundary shifting without
     // leaking into preceding elements (like the article title on backward
     // drags).
-    let isBackward = false;
-    if (selection.anchorNode && selection.focusNode) {
-      const position =
-          selection.anchorNode.compareDocumentPosition(selection.focusNode);
-      if (position === Node.DOCUMENT_POSITION_PRECEDING) {
-        isBackward = true;
-      } else if (position === 0) {
-        isBackward = selection.anchorOffset > selection.focusOffset;
-      }
-    }
+    const isBackward = isBackwardSelection(
+        selection.anchorNode, selection.anchorOffset, selection.focusNode,
+        selection.focusOffset);
 
     // Normalize the selection boundaries to ensure they fall on valid text
     // nodes within the article container, adjusting for the direction of
     // selection to prevent index shifting errors.
     const normalizedAnchor = getNearestTextBoundaryPoint(
-        selection.anchorNode, selection.anchorOffset, container, !isBackward,
-        node => this.isValidSelectionTarget_(node));
+        selection.anchorNode, selection.anchorOffset, contentContainer,
+        !isBackward, node => this.isValidSelectionTarget_(node));
     const normalizedFocus = getNearestTextBoundaryPoint(
-        selection.focusNode, selection.focusOffset, container, isBackward,
-        node => this.isValidSelectionTarget_(node));
+        selection.focusNode, selection.focusOffset, contentContainer,
+        isBackward, node => this.isValidSelectionTarget_(node));
     const {anchorNodeId, anchorOffset, focusNodeId, focusOffset} =
         this.getSelectionIds_(
             normalizedAnchor.node, normalizedAnchor.offset,
@@ -207,10 +197,16 @@ export class SelectionController {
   }
 
   // Updates the reading mode selection to match the main panel selection.
-  updateSelection(selectionToUpdate: Selection|null, container: Node) {
+  updateSelection(
+      selectionToUpdate: Selection|null,
+      contentContainer: Node = document.body) {
     if (!selectionToUpdate) {
       return;
     }
+    // The highlighted blocks are replaced by the main panel selection drawn
+    // below.
+    this.blockSelectionHighlighter_.clear();
+
     const startNodeId = this.contentBrowserProxy_.getStartNodeId();
     const endNodeId = this.contentBrowserProxy_.getEndNodeId();
     const hasValidSelection = this.contentBrowserProxy_.hasValidSelection();
@@ -220,16 +216,19 @@ export class SelectionController {
       return;
     }
 
-    // If we're using Readability with select text enabled, report a user
-    // selection attempt to try to log this as an early selection attempt from
-    // the main panel.
-    if (isDistilledByReadability() &&
-        this.contentBrowserProxy_.isReadabilitySelectTextEnabled()) {
+    // If we're using Readability, report a user selection attempt to try to log
+    // this as an early selection attempt from the main panel.
+    if (isDistilledByReadability()) {
       this.contentBrowserProxy_.attemptLogEarlySelection(
           /*fromSidePanel=*/ false);
     }
 
-    const newSelection = this.getNewSelection_(container);
+    if (this.shouldUseBlockMode_()) {
+      this.drawBlockSelection_(selectionToUpdate, contentContainer);
+      return;
+    }
+
+    const newSelection = this.getNewSelection_();
     if (!newSelection) {
       return;
     }
@@ -250,108 +249,188 @@ export class SelectionController {
 
     this.isSelectionFromMainPanel_ = true;
     selectionToUpdate.addRange(range);
+    this.scrollIntoView_(newSelection.anchorNode);
+  }
 
-    // Scroll the anchor node into view. ScrollIntoView is available on the
-    // Element class.
-    const anchorElement =
-        newSelection.anchorNode.nodeType === Node.ELEMENT_NODE ?
-        newSelection.anchorNode as Element :
-        newSelection.anchorNode.parentElement;
-    if (!anchorElement) {
+  // Called when the reading mode content is translated or restored to its
+  // original language. Redraws the main panel's selection here, so that it's
+  // drawn one block at a time if and only if the content is translated.
+  onTranslationStateChanged(selection: Selection|null, contentContainer: Node) {
+    this.blockSelectionHighlighter_.clear();
+    if (!this.isBlockModeSupported_()) {
+      return;
+    }
+    this.updateSelection(selection, contentContainer);
+  }
+
+  // Whether selections can be synced with the main panel one block at a time.
+  // Blocks are only tracked for PDFs, whose reading mode content is translated
+  // in the reading mode panel while the main panel shows the original.
+  private isBlockModeSupported_(): boolean {
+    return isBlockTrackingEnabled() && !isDistilledByReadability();
+  }
+
+  // Whether to sync selections with the main panel one block at a time. This
+  // is the case if and only if the PDF is translated. It depends only on the
+  // translation state reported by the browser, and not on the reading mode
+  // panel's DOM, which the translate script rewrites while it translates.
+  private shouldUseBlockMode_(): boolean {
+    return this.isBlockModeSupported_() &&
+        this.contentBrowserProxy_.isContentTranslated();
+  }
+
+  // Selects all of the text in the main panel that's in the blocks containing
+  // the given reading mode selection.
+  private sendBlockSelection_(
+      selection: ReadingModeSelection, contentContainer: Node) {
+    const axSelection = this.translatedSelectionMapper_.getAxSelection(
+        selection, contentContainer);
+    if (!axSelection) {
+      // No text in a block is selected, e.g. only whitespace or images are
+      // selected, so treat this like a selection that doesn't map to the
+      // main panel's text.
+      this.blockSelectionHighlighter_.clear();
+      this.contentBrowserProxy_.onCollapseSelection();
+      return;
+    }
+
+    // The browser ignores selection changes without transient user
+    // activation, e.g. those caused by translation rewriting the selected
+    // text. Don't send those, since a send that's never echoed back by the
+    // main panel stops the next main panel selection from being drawn here.
+    // The main panel's selection doesn't change then, so neither do the
+    // highlighted blocks that show it.
+    const isMainPanelSelection = this.isMainPanelSelection_(axSelection);
+    if (!isMainPanelSelection &&
+        !this.contentBrowserProxy_.hasTransientUserActivation()) {
+      return;
+    }
+
+    // Highlight the whole blocks that contain the selection, even if the
+    // selection isn't sent below because the main panel already selects
+    // these blocks. The same blocks are sent on every selection change while
+    // the user drags within them.
+    // ReadAnythingAppController::OnSelectionChange() drops the repeats.
+    const blocks = this.translatedSelectionMapper_.getReadingModeSelection(
+        axSelection, contentContainer);
+    if (blocks) {
+      this.blockSelectionHighlighter_.highlight(blocks, contentContainer);
+    } else {
+      this.blockSelectionHighlighter_.clear();
+    }
+
+    if (isMainPanelSelection) {
+      return;
+    }
+
+    const {anchorNodeId, anchorOffset, focusNodeId, focusOffset} = axSelection;
+    if (anchorNodeId === undefined || focusNodeId === undefined) {
+      return;
+    }
+    this.contentBrowserProxy_.onSelectionChange(
+        anchorNodeId, anchorOffset, focusNodeId, focusOffset);
+  }
+
+  // Selects the blocks here that contain the main panel selection.
+  private drawBlockSelection_(selection: Selection, contentContainer: Node) {
+    const blockSelection =
+        this.translatedSelectionMapper_.getReadingModeSelection(
+            {
+              anchorNodeId: this.contentBrowserProxy_.getStartNodeId(),
+              anchorOffset: this.contentBrowserProxy_.getStartOffset(),
+              focusNodeId: this.contentBrowserProxy_.getEndNodeId(),
+              focusOffset: this.contentBrowserProxy_.getEndOffset(),
+            },
+            contentContainer);
+    if (!blockSelection) {
+      selection.removeAllRanges();
+      return;
+    }
+    // getReadingModeSelection() always returns a forward selection, so its
+    // anchor is the start of the range.
+    const range = new Range();
+    range.setStart(blockSelection.anchorNode, blockSelection.anchorOffset);
+    range.setEnd(blockSelection.focusNode, blockSelection.focusOffset);
+
+    // Don't reselect the same blocks, e.g. when the main panel selection
+    // changes within the same blocks. This avoids flicker, and setting
+    // isSelectionFromMainPanel_ for a selection change that never happens.
+    if (this.isSelectingSameBlocks_(selection, range, contentContainer)) {
+      return;
+    }
+
+    selection.removeAllRanges();
+    this.isSelectionFromMainPanel_ = true;
+    selection.addRange(range);
+    // The first block is the anchor's child at the anchor offset.
+    const startBlock =
+        blockSelection.anchorNode.childNodes[blockSelection.anchorOffset];
+    if (startBlock) {
+      this.scrollIntoView_(startBlock);
+    }
+  }
+
+  // Whether the selection already selects exactly the whole blocks in the given
+  // range. The endpoints can't be compared directly, since the reading mode
+  // selection comes from the app's shadow root, which reports canonicalized
+  // endpoints, e.g. in the blocks' text rather than in their parent. So this
+  // checks that the selection is in the same blocks and selects the same text.
+  private isSelectingSameBlocks_(
+      selection: Selection, blocksRange: Range,
+      contentContainer: Node): boolean {
+    if (selection.rangeCount !== 1) {
+      return false;
+    }
+    const current = selection.getRangeAt(0);
+    if (current.toString() !== blocksRange.toString()) {
+      return false;
+    }
+    const currentBlocks = this.translatedSelectionMapper_.getAxSelection(
+        toReadingModeSelection(current), contentContainer);
+    const newBlocks = this.translatedSelectionMapper_.getAxSelection(
+        toReadingModeSelection(blocksRange), contentContainer);
+    return !!currentBlocks && !!newBlocks &&
+        currentBlocks.anchorNodeId === newBlocks.anchorNodeId &&
+        currentBlocks.anchorOffset === newBlocks.anchorOffset &&
+        currentBlocks.focusNodeId === newBlocks.focusNodeId &&
+        currentBlocks.focusOffset === newBlocks.focusOffset;
+  }
+
+  // Whether the given selection is the main panel's current selection.
+  private isMainPanelSelection_(axSelection: SelectionWithIds): boolean {
+    return this.contentBrowserProxy_.hasValidSelection() &&
+        axSelection.anchorNodeId ===
+        this.contentBrowserProxy_.getStartNodeId() &&
+        axSelection.anchorOffset ===
+        this.contentBrowserProxy_.getStartOffset() &&
+        axSelection.focusNodeId === this.contentBrowserProxy_.getEndNodeId() &&
+        axSelection.focusOffset === this.contentBrowserProxy_.getEndOffset();
+  }
+
+  // Scrolls the given node into view if needed, after the next frame.
+  private scrollIntoView_(node: Node) {
+    // ScrollIntoView is available on the Element class.
+    const element = node instanceof Element ? node : node.parentElement;
+    if (!element) {
       return;
     }
     this.scrollingOnSelection_ = true;
     requestAnimationFrame(() => {
-      anchorElement.scrollIntoViewIfNeeded();
+      element.scrollIntoViewIfNeeded();
     });
   }
 
-  private getNewSelection_(container: Node): ReadOnlySelection|null {
-    const selectionIds = {
-      anchorNodeId: this.contentBrowserProxy_.getStartNodeId(),
-      anchorOffset: this.contentBrowserProxy_.getStartOffset(),
-      focusNodeId: this.contentBrowserProxy_.getEndNodeId(),
-      focusOffset: this.contentBrowserProxy_.getEndOffset(),
-    };
-
-    if (isDistilledByReadability()) {
-      return this.contentBrowserProxy_.isReadabilitySelectTextEnabled() ?
-          this.getNewSelectionWithAxIds_(selectionIds) :
-          this.getNewSelectionWithoutAxIds_(container, selectionIds);
-    }
-
-    return this.getNewSelectionWithAxIds_(selectionIds);
-  }
-
-  private getNewSelectionWithoutAxIds_(
-      container: Node, selectionIds: SelectionWithIds): ReadOnlySelection|null {
-    const {anchorNodeId, focusNodeId} = selectionIds;
-    let {anchorOffset, focusOffset} = selectionIds;
+  private getNewSelection_(): ReadingModeSelection|null {
+    const anchorNodeId = this.contentBrowserProxy_.getStartNodeId();
+    const focusNodeId = this.contentBrowserProxy_.getEndNodeId();
+    let anchorOffset = this.contentBrowserProxy_.getStartOffset();
+    let focusOffset = this.contentBrowserProxy_.getEndOffset();
     if (!anchorNodeId || !focusNodeId) {
       return null;
     }
 
-    const anchorContent =
-        this.contentBrowserProxy_.getTextContent(anchorNodeId);
-    const focusContent = this.contentBrowserProxy_.getTextContent(focusNodeId);
-
-    // If the nodes don't have valid text content, they shouldn't be used
-    // for selection.
-    if (!anchorContent || !focusContent) {
-      return null;
-    }
-
-    const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
-    const anchorContext = {
-      prefix: this.contentBrowserProxy_.getPrefixText(anchorNodeId),
-      content: anchorContent,
-    };
-    const focusContext = {
-      prefix: this.contentBrowserProxy_.getPrefixText(focusNodeId),
-      content: focusContent,
-    };
-
-    const result = this.findTargetNodes_(walker, anchorContext, focusContext);
-    if (!result) {
-      return null;
-    }
-
-    const anchorNode = result.startNode;
-    const focusNode = result.endNode;
-    const isSameNode = anchorNodeId === focusNodeId;
-    const originalFocus =
-        isSameNode ? focusOffset : anchorContext.content.length;
-    const originalContent =
-        anchorContext.content.substring(anchorOffset, originalFocus);
-    const actualContent =
-        anchorNode.textContent?.substring(anchorOffset, originalFocus);
-    // If the actually selected text matches the found Reading mode text, use
-    // the original offsets. Otherwise, search for the selected text within
-    // the Reading mode node and use that as the offset.
-    if (actualContent !== originalContent) {
-      const foundIndex = anchorNode.textContent?.indexOf(originalContent) ?? -1;
-      if (foundIndex < 0) {
-        return null;
-      }
-
-      anchorOffset = foundIndex;
-      focusOffset =
-          isSameNode ? (foundIndex + originalContent.length) : focusOffset;
-    }
-
-    return {anchorNode, anchorOffset, focusNode, focusOffset};
-  }
-
-  private getNewSelectionWithAxIds_(selectionIds: SelectionWithIds):
-      ReadOnlySelection|null {
-    const {anchorNodeId, focusNodeId} = selectionIds;
-    let {anchorOffset, focusOffset} = selectionIds;
-    if (!anchorNodeId || !focusNodeId) {
-      return null;
-    }
-
-    let anchorNode = this.nodeStore_.getDomNode(anchorNodeId);
-    let focusNode = this.nodeStore_.getDomNode(focusNodeId);
+    let anchorNode = this.getDomNodeForAxOffset_(anchorNodeId, anchorOffset);
+    let focusNode = this.getDomNodeForAxOffset_(focusNodeId, focusOffset);
     if (!anchorNode || !focusNode) {
       return null;
     }
@@ -386,56 +465,23 @@ export class SelectionController {
     return {anchorNode, anchorOffset, focusNode, focusOffset};
   }
 
-  // Locates selection nodes based on their text content and prefix text.
-  // Assumptions made:
-  // - start content is <= end content (i.e. either earlier in the document or
-  //   the same content) (see PostProcessSelection in read_anything_app_model.cc
-  //   which always sends a forward selection)
-  // - start prefix is either a superset of the start content or strictly
-  //   earlier in the document (see GetPrefixText in
-  //   read_anything_node_utils.cc)
-  // - end prefix is either a superset of the end content or strictly
-  //   earlier in the document
-  // Unknowns:
-  // - The end prefix may be anywhere relative to the start node depending on
-  //   how the prefix is calculated. It could be before the start node if the
-  //   start content is too short to be a reliable prefix. It could be the same
-  //   as the start node if its content is long enough. Or it could be later
-  //   than the start node if the end node is very far after the start node.
-  private findTargetNodes_(
-      walker: TreeWalker, startContext: {prefix: string, content: string},
-      endContext: {prefix: string, content: string}):
-      {startNode: Node, endNode: Node}|null {
-    let startNode: Node|undefined;
-    let endNode: Node|undefined;
-    // If the prefix contains the content (i.e. it is a parent of the target
-    // node), then skip looking for a prefix.
-    let foundStartPrefix = startContext.prefix.includes(startContext.content);
-    let foundEndPrefix = endContext.prefix.includes(endContext.content);
-    while (walker.nextNode()) {
-      const node = walker.currentNode;
-      if (foundStartPrefix && node.nodeValue?.includes(startContext.content)) {
-        startNode = node;
-      }
-      if (foundEndPrefix && node.nodeValue?.includes(endContext.content)) {
-        endNode = node;
-      }
-
-      // Look for the prefix first in order to reduce the risk of matching the
-      // same text earlier in the document.
-      if (node.nodeValue?.includes(startContext.prefix)) {
-        foundStartPrefix = true;
-      }
-      if (node.nodeValue?.includes(endContext.prefix)) {
-        foundEndPrefix = true;
-      }
-
-      if (startNode && endNode) {
-        return {startNode, endNode};
+  // With Readability, one AXNode's text can be split across several sibling
+  // DOM nodes (see ContentController.mapBlockToAxNodes_), but the NodeStore
+  // only returns one of them for an AX ID. Returns the sibling that contains
+  // `axOffset`, i.e. the last one whose AX node offset is at or before it.
+  // TODO(crbug.com/582908703): Investigate if selection offsets should be
+  // applied more broadly.
+  private getDomNodeForAxOffset_(axNodeId: number, axOffset: number): Node
+      |undefined {
+    let result = this.nodeStore_.getDomNode(axNodeId);
+    const siblings = result?.parentNode?.childNodes ?? [];
+    for (const sibling of siblings) {
+      if (this.nodeStore_.getAxId(sibling) === axNodeId &&
+          this.nodeStore_.getAxNodeOffset(sibling) <= axOffset) {
+        result = sibling;
       }
     }
-
-    return null;
+    return result;
   }
 
   // Returns true if the node maps to a valid AX ID in the NodeStore.
@@ -450,6 +496,16 @@ export class SelectionController {
   static setInstance(obj: SelectionController) {
     instance = obj;
   }
+}
+
+// Returns the forward selection with the same endpoints as the range.
+function toReadingModeSelection(range: Range): ReadingModeSelection {
+  return {
+    anchorNode: range.startContainer,
+    anchorOffset: range.startOffset,
+    focusNode: range.endContainer,
+    focusOffset: range.endOffset,
+  };
 }
 
 let instance: SelectionController|null = null;

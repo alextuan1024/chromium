@@ -625,6 +625,16 @@ void Surface::UpdateReferencedAllocationGroups(
   referenced_allocation_groups_ = std::move(new_set);
 }
 
+// static
+bool Surface::ReferencesStartAllocationGroup(const SurfaceRange& range,
+                                             const Surface* latest_in_flight) {
+  if (!range.HasDifferentEmbedTokens()) {
+    return false;
+  }
+  return !latest_in_flight ||
+         latest_in_flight->surface_id().HasSameEmbedTokenAs(*range.start());
+}
+
 void Surface::RecomputeActiveReferencedSurfaces() {
   // Extract the latest in flight surface from the ranges in the frame then
   // notify SurfaceManager of the new references.
@@ -637,12 +647,6 @@ void Surface::RecomputeActiveReferencedSurfaces() {
   const std::vector<SurfaceRange> referenced_surfaces =
       active_frame_data_->frame.metadata.referenced_surfaces;
   for (const SurfaceRange& surface_range : referenced_surfaces) {
-    // Figure out what surface in the |surface_range| needs to be referenced.
-    Surface* surface =
-        surface_manager_->GetLatestInFlightSurface(surface_range);
-    if (surface) {
-      active_referenced_surfaces_.insert(surface->surface_id());
-    }
     // The allocation group for the end of the SurfaceRange should always be
     // referenced.
     SurfaceAllocationGroup* end_allocation_group =
@@ -653,11 +657,12 @@ void Surface::RecomputeActiveReferencedSurfaces() {
       end_allocation_group->UpdateLastActiveReferenceAndMaybeActivate(
           surface_range.end());
     }
+    // Figure out what surface in the `surface_range` needs to be referenced.
+    Surface* surface =
+        surface_manager_->GetLatestInFlightSurface(surface_range);
     // Only reference the allocation group for the start of SurfaceRange if the
     // current referenced surface is a part of it.
-    if (surface_range.HasDifferentEmbedTokens() &&
-        (!surface ||
-         surface->surface_id().HasSameEmbedTokenAs(*surface_range.start()))) {
+    if (ReferencesStartAllocationGroup(surface_range, surface)) {
       SurfaceAllocationGroup* start_allocation_group =
           surface_manager_->GetOrCreateAllocationGroupForSurfaceId(
               *surface_range.start());
@@ -665,7 +670,14 @@ void Surface::RecomputeActiveReferencedSurfaces() {
         new_referenced_allocation_groups.push_back(start_allocation_group);
         start_allocation_group->UpdateLastActiveReferenceAndMaybeActivate(
             *surface_range.start());
+        // A surface from range start could have activated on previous line so
+        // check for latest surface again.
+        surface = start_allocation_group->FindLatestActiveSurfaceInRange(
+            surface_range);
       }
+    }
+    if (surface) {
+      active_referenced_surfaces_.insert(surface->surface_id());
     }
   }
 
@@ -677,6 +689,15 @@ void Surface::RecomputeActiveReferencedSurfaces() {
 
   UpdateReferencedAllocationGroups(std::move(new_referenced_allocation_groups));
   UpdateSurfaceReferences();
+}
+
+void Surface::RecomputeActiveFrameContentColorUsage() {
+  gfx::ContentColorUsage content_color_usage = gfx::ContentColorUsage::kSRGB;
+  for (const auto& resource : active_frame_data_->frame.resource_list) {
+    content_color_usage =
+        std::max(content_color_usage, resource.GetContentColorUsage());
+  }
+  active_frame_content_color_usage_ = content_color_usage;
 }
 
 // A frame is activated if all its Surface ID dependencies are active or a
@@ -710,6 +731,7 @@ void Surface::ActivateFrame(FrameData frame_data) {
   blocking_allocation_groups_.clear();
 
   RecomputeActiveReferencedSurfaces();
+  RecomputeActiveFrameContentColorUsage();
 
   for (auto& copy_request : old_copy_requests)
     RequestCopyOfOutputOnRootRenderPass(std::move(copy_request));
@@ -930,21 +952,6 @@ void Surface::UpdateActivationDependencies(
   blocking_allocation_groups_ = std::move(new_blocking_allocation_groups);
 }
 
-void Surface::TakeCopyOutputRequests(Surface::CopyRequestsMap* copy_requests) {
-  DCHECK(copy_requests->empty());
-  if (!active_frame_data_)
-    return;
-
-  for (const auto& render_pass : GetActiveFrame().render_pass_list) {
-    for (auto& request : render_pass->copy_requests) {
-      copy_requests->insert(
-          std::make_pair(render_pass->id, std::move(request)));
-    }
-    render_pass->copy_requests.clear();
-  }
-  MarkAsDrawn();
-}
-
 void Surface::TakeCopyOutputRequestsFromClient() {
   if (!surface_client_)
     return;
@@ -982,6 +989,7 @@ void Surface::SetActiveFrameForViewTransition(CompositorFrame frame) {
   // We need to recompute these as there can be undrawn surfaces as referenced
   // surfaces for cross-doc view transitions on shared element replacement.
   RecomputeActiveReferencedSurfaces();
+  RecomputeActiveFrameContentColorUsage();
 }
 
 const CompositorFrame& Surface::GetPendingFrame() {

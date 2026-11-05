@@ -376,8 +376,10 @@ MetricsService::MetricsService(MetricsStateManager* state_manager,
           base::BindOnce(&MetricsService::OnClonedInstallDetected,
                          self_ptr_factory_.GetWeakPtr()));
 
-  RegisterMetricsProvider(
-      std::make_unique<StabilityMetricsProvider>(local_state_));
+  auto stability_metrics_provider =
+      std::make_unique<StabilityMetricsProvider>(local_state_);
+  stability_metrics_provider_ = stability_metrics_provider.get();
+  RegisterMetricsProvider(std::move(stability_metrics_provider));
 
   RegisterMetricsProvider(state_manager_->GetProvider());
 }
@@ -896,7 +898,7 @@ void MetricsService::InitializeMetricsState() {
 
   session_id_ = local_state_->GetInteger(prefs::kMetricsSessionID);
 
-  StabilityMetricsProvider provider(local_state_);
+  StabilityMetricsProvider& provider = *stability_metrics_provider_;
   const bool was_last_shutdown_clean = WasLastShutdownClean();
   if (!was_last_shutdown_clean) {
     provider.LogCrash(
@@ -1251,27 +1253,54 @@ void MetricsService::StartSchedulerIfNecessary() {
   }
 }
 
-bool MetricsService::StartOutOfBandUploadIfPossible(
-    OutOfBandUploadPasskey passkey) {
-  DVLOG(1) << "StartOutOfBandUploadIfPossible";
+MetricsService::RotateUmaLogResult
+MetricsService::StartOutOfBandUploadIfPossible(OutOfBandUploadPasskey passkey) {
+  return RotateUmaLog(MetricsLogsEventManager::CreateReason::kOutOfBand);
+}
+
+MetricsService::RotateUmaLogResult
+MetricsService::RotateUmaLogForRuntimeMutability(
+    RuntimeMutabilityPassKey passkey) {
+  return RotateUmaLog(
+      MetricsLogsEventManager::CreateReason::kRuntimeMutability);
+}
+
+bool MetricsService::ShouldDelayRuntimeMutability(
+    RuntimeMutabilityPassKey passkey) const {
+  // If recording is disabled, there is no point in delaying seed processing,
+  // as logs will not be sent. Return false to proceed immediately. Note that
+  // `reporting_active()` is intentionally not checked: reporting may be
+  // temporarily disabled (e.g. no network at startup) while logs are still
+  // persisted for later upload. Delaying allows the first ongoing log to be
+  // closed and gives reporting a chance to come back before the rotation is
+  // attempted.
+  return recording_active() && IsTooEarlyToCloseLog();
+}
+
+MetricsService::RotateUmaLogResult MetricsService::RotateUmaLog(
+    MetricsLogsEventManager::CreateReason reason) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  DVLOG(1) << "RotateUmaLog reason=" << static_cast<int>(reason);
 
   // If the service has not uploaded the initial logs, don't upload.
   if (IsTooEarlyToCloseLog()) {
-    return false;
+    return RotateUmaLogResult::kTooEarly;
   }
 
   // If recording or reporting are off, don't upload.
-  if (!recording_active() || !reporting_active()) {
-    return false;
+  if (!recording_active()) {
+    return RotateUmaLogResult::kRecordingDisabled;
+  }
+  if (!reporting_active()) {
+    return RotateUmaLogResult::kReportingDisabled;
   }
 
   // Upload current log and open a new log.
-  PushPendingLogsToPersistentStorage(
-      MetricsLogsEventManager::CreateReason::kOutOfBand);
+  PushPendingLogsToPersistentStorage(reason);
   OpenNewLog();
   StartSchedulerIfNecessary();
 
-  return true;
+  return RotateUmaLogResult::kSuccess;
 }
 
 void MetricsService::StartScheduledUpload() {
@@ -1611,7 +1640,7 @@ void MetricsService::UpdateLastLiveTimestampTask() {
   StartUpdatingLastLiveTimestamp();
 }
 
-bool MetricsService::IsTooEarlyToCloseLog() {
+bool MetricsService::IsTooEarlyToCloseLog() const {
   // Only start closing logs when logs have started being sent.
   return state_ < SENDING_LOGS;
 }

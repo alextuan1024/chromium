@@ -35,7 +35,9 @@ enum class CueTargetType {
   kGlic = 0,
   kTestSource = 1,
   kIndigo = 2,
-  kMaxValue = kIndigo
+  kContextualSearch = 3,
+  kAbaSearchJourney = 4,
+  kMaxValue = kAbaSearchJourney
 };
 // LINT.ThenChange(//tools/metrics/histograms/metadata/contextual_cueing/enums.xml:CueTargetType)
 
@@ -64,7 +66,24 @@ struct GlicCueActionData {
   GlicCueActionData& operator=(const GlicCueActionData&);
 };
 
-using CueActionData = std::variant<std::monostate, GlicCueActionData>;
+// ContextualSearch-specific click data.
+struct ContextualSearchCueActionData {
+  // Query to be submitted to contextual search upon opening.
+  std::string query;
+  // Tabs that should be shared as context with contextual search.
+  std::vector<tabs::TabHandle> tabs_to_share;
+
+  ContextualSearchCueActionData();
+  ~ContextualSearchCueActionData();
+  ContextualSearchCueActionData(const ContextualSearchCueActionData&);
+  ContextualSearchCueActionData(ContextualSearchCueActionData&&);
+  ContextualSearchCueActionData& operator=(
+      const ContextualSearchCueActionData&);
+};
+
+using CueActionData = std::variant<std::monostate,
+                                   GlicCueActionData,
+                                   ContextualSearchCueActionData>;
 
 struct CueAction {
   CueActionData data;
@@ -94,6 +113,11 @@ class CueTarget {
   // disappearing when the anchored message is dismissed.
   virtual bool DowngradesToQuietOnDismiss() const;
 
+  // Whether the cue is persistent across UI interactions. If true, the cue
+  // remains visible when clicked or when a side panel is opened, and can also
+  // be initially shown even if a side panel is already open.
+  virtual bool IsPersistent() const;
+
   // Returns true if this target supports the given intrusiveness level.
   // Targets requiring MES are restricted to kLoud only. Non-MES targets
   // can override SupportsIntrusivenessImpl() to declare supported levels.
@@ -119,8 +143,10 @@ class CueTarget {
   // Evaluates whether this target can show a cue on the current page.
   //
   // Called at page navigation/load for all non-backed-off targets in
-  // parallel via base::BarrierCallback. The controller passes in the
-  // highest UI prominence tier currently allowed by global quotas:
+  // parallel via base::BarrierCallback, or for a single target through
+  // `ContextualCueingController::EvaluateCueForTarget()`. The controller
+  // passes in the highest UI prominence tier currently allowed by global
+  // quotas:
   //
   //   - eligible: true if this target has relevant content for the page at
   //               the requested prominence level.
@@ -167,6 +193,16 @@ class CueTarget {
 
   // Called when the user clicks the "edit prompt" menu item.
   virtual void OnEditPrompt(CueActionData data) = 0;
+
+  // Called when the user clicks the "dismiss" menu item, after the cue has been
+  // hidden. For targets that `DowngradesToQuietOnDismiss()`, only the anchored
+  // message is hidden, so the user can reopen it from the chip and dismiss it
+  // again; this may then be called more than once per cue.
+  virtual void OnDismissed();
+
+  // Called when the user clicks the menu item that opens the suggestions
+  // settings, after the cue has been hidden and before the settings page opens.
+  virtual void OnSuggestionsSettingsOpened();
 
   // Icon to be shown in the anchored message.
   virtual ui::ImageModel GetAnchoredMessageIcon() const = 0;

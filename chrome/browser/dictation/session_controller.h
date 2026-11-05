@@ -22,6 +22,8 @@
 #include "chrome/browser/dictation/target.h"
 #include "content/public/browser/global_dom_node_id.h"
 #include "content/public/browser/web_contents_observer.h"
+#include "mojo/public/cpp/bindings/remote.h"
+#include "services/device/public/mojom/wake_lock.mojom.h"
 #include "third_party/abseil-cpp/absl/container/flat_hash_set.h"
 
 namespace dictation {
@@ -48,9 +50,7 @@ class SessionController : public SessionUiDelegate,
 
   // SessionUiDelegate:
   void UiRequestEndSession() override;
-  void UiRequestEndActiveStream() override;
-  void FinalizeAndShutdown() override;
-  void UiRequestStartStream() override;
+  void FinalizeAndShutdown(DictationStreamEndTrigger trigger) override;
   SessionState GetState() const override;
   base::CallbackListSubscription AddSessionStateChangedCallback(
       SessionStateChangedCallback callback) override;
@@ -69,12 +69,14 @@ class SessionController : public SessionUiDelegate,
   void PrimaryPageChanged(content::Page& page) override;
   void PrimaryMainFrameRenderProcessGone(
       base::TerminationStatus status) override;
+  void WebContentsDestroyed() override;
 
   // Starts a new dictation stream by creating and attaching a new stream
   // provider. An existing stream must have been detached before calling this
   // method.
   void StartDictationStream(const TargetDetails& target_details,
-                            DictationStreamStartTrigger trigger);
+                            DictationStreamStartTrigger trigger,
+                            base::TimeTicks trigger_time);
 
   // Ends the current dictation stream and detaches the stream provider.
   void EndDictationStream(DictationStreamEndTrigger trigger);
@@ -82,8 +84,17 @@ class SessionController : public SessionUiDelegate,
   // Updates the audio level in the UI.
   void UpdateAudioLevel(float audio_level);
 
+  // Stops any stream, moves to `SessionState::kEnded`, then asks the delegate
+  // to destroy the session, and so `this`. Every session ends through here.
+  void EndSessionSynchronously();
+
   StreamProvider* attached_stream_provider() const {
     return attached_stream_provider_.get();
+  }
+
+  // The target the latest stream was started on, if any.
+  const std::optional<TargetDetails>& last_used_target_details() const {
+    return last_used_target_details_;
   }
 
   SessionUi* ui_for_testing() { return ui_.get(); }
@@ -92,10 +103,13 @@ class SessionController : public SessionUiDelegate,
     return auto_session_end_timer_.IsRunning();
   }
 
+  void FlushWakeLockForTesting();
+
  private:
   void MoveToState(SessionState new_state);
+  void UpdateWakeLock();
+  device::mojom::WakeLock* GetWakeLock();
   void EndSessionAsynchronously();
-  void EndSessionSynchronously();
   void PurgeToDeleteStreamProviders();
   content::BrowserContext* GetBrowserContext() const;
 
@@ -123,9 +137,21 @@ class SessionController : public SessionUiDelegate,
 
   std::optional<TargetDetails> last_used_target_details_;
 
-  // Timer for delayed session shutdown when `kSessionEndsOnStreamEnd` is
-  // enabled.
+  // When the user action that started the current stream happened. Used to
+  // record VoiceTyping.StreamStartLatency and
+  // VoiceTyping.StreamAbandonedBeforeListening.
+  base::TimeTicks stream_trigger_time_;
+
+  // Timer for delayed session shutdown after a stream ends.
   base::OneShotTimer auto_session_end_timer_;
+
+  // Display wake lock held whenever `state_` is not `SessionState::kInactive`
+  // so the screen does not go to sleep during long dictations.
+  // TODO(https://crbug.com/581952682): Consider still allowing the screen to
+  // dim during periods of silence on platforms where that kind of wake lock is
+  // supported.
+  mojo::Remote<device::mojom::WakeLock> wake_lock_;
+  bool is_wake_lock_active_ = false;
 
   base::WeakPtrFactory<SessionController> weak_ptr_factory_{this};
 };

@@ -45,8 +45,8 @@
 #include "content/public/test/test_navigation_observer.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/base/page_transition_types.h"
-#include "ui/base/window_open_disposition.h"
 #include "url/origin.h"
 
 namespace web_app {
@@ -584,10 +584,13 @@ IN_PROC_BROWSER_TEST_F(
 
   // Open a new background tab from the scope-extension page, as the renderer
   // does for e.g. a middle-click on a link.
-  content::OpenURLParams params(
-      GURL("https://example.com/destination"), content::Referrer(),
-      WindowOpenDisposition::NEW_BACKGROUND_TAB, ui::PAGE_TRANSITION_LINK,
-      /*is_renderer_initiated=*/true);
+  content::OpenURLParams params =
+      content::OpenURLParams::CreateRendererInitiated(
+          GURL("https://example.com/destination"),
+          ui::mojom::WindowOpenDisposition::kNewBackgroundTab,
+          ui::PAGE_TRANSITION_LINK, content::Referrer(),
+          opener_contents->GetPrimaryMainFrame()
+              ->GetCurrentInitiatorNavigationState());
   params.initiator_origin = scope_extension_origin;
   params.source_site_instance =
       opener_contents->GetPrimaryMainFrame()->GetSiteInstance();

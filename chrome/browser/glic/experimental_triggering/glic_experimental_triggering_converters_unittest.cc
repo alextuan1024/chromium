@@ -7,6 +7,8 @@
 #include <variant>
 #include <vector>
 
+#include "base/time/time.h"
+#include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace glic {
@@ -49,6 +51,36 @@ TEST(GlicExperimentalTriggeringConvertersTest, TriggerActuationRequest) {
   ASSERT_TRUE(std::holds_alternative<TriggerActuationRequest>(request.payload));
   EXPECT_EQ(std::get<TriggerActuationRequest>(request.payload).initial_prompt,
             "hello world");
+  EXPECT_TRUE(std::get<TriggerActuationRequest>(request.payload)
+                  .payment_metadata.empty());
+}
+
+TEST(GlicExperimentalTriggeringConvertersTest,
+     TriggerActuationRequest_PaymentMetadata) {
+  components_sharing_message::GlicExperimentalTriggering proto;
+  auto* trigger = proto.mutable_request()->mutable_trigger_actuation_request();
+  trigger->set_initial_prompt("buy it");
+  trigger->set_payment_metadata(std::string("\x01\x00\xff", 3));
+
+  auto request = ProtoToRequest(proto);
+  ASSERT_TRUE(std::holds_alternative<TriggerActuationRequest>(request.payload));
+  const auto& trigger_req = std::get<TriggerActuationRequest>(request.payload);
+  EXPECT_EQ(trigger_req.initial_prompt, "buy it");
+  EXPECT_EQ(trigger_req.payment_metadata,
+            (std::vector<uint8_t>{0x01, 0x00, 0xff}));
+}
+
+TEST(GlicExperimentalTriggeringConvertersTest,
+     TriggerActuationRequest_EmptyPaymentMetadata) {
+  components_sharing_message::GlicExperimentalTriggering proto;
+  proto.mutable_request()
+      ->mutable_trigger_actuation_request()
+      ->set_payment_metadata("");
+
+  auto request = ProtoToRequest(proto);
+  ASSERT_TRUE(std::holds_alternative<TriggerActuationRequest>(request.payload));
+  EXPECT_TRUE(std::get<TriggerActuationRequest>(request.payload)
+                  .payment_metadata.empty());
 }
 
 TEST(GlicExperimentalTriggeringConvertersTest,
@@ -165,6 +197,33 @@ TEST(GlicExperimentalTriggeringConvertersTest, GetScreenshotRequest) {
   EXPECT_EQ(screenshot_req.auth_secret,
             std::vector<uint8_t>(
                 {'s', 'e', 'c', 'r', 'e', 't', '_', 'b', 'y', 't', 'e', 's'}));
+}
+
+TEST(GlicExperimentalTriggeringConvertersTest, SubmitConfirmation) {
+  components_sharing_message::GlicExperimentalTriggering proto;
+  proto.mutable_task_metadata()->set_conversation_id("conv_123");
+  auto* req = proto.mutable_request()->mutable_submit_confirmation();
+  req->set_confirmation_response("opaque_bytes");
+
+  auto request = ProtoToRequest(proto);
+  ASSERT_TRUE(std::holds_alternative<SubmitConfirmation>(request.payload));
+  const auto& confirmation = std::get<SubmitConfirmation>(request.payload);
+  EXPECT_EQ(confirmation.confirmation_response,
+            std::vector<uint8_t>(
+                {'o', 'p', 'a', 'q', 'u', 'e', '_', 'b', 'y', 't', 'e', 's'}));
+}
+
+TEST(GlicExperimentalTriggeringConvertersTest,
+     SubmitConfirmationWithoutPayload) {
+  components_sharing_message::GlicExperimentalTriggering proto;
+  proto.mutable_task_metadata()->set_conversation_id("conv_123");
+  // The oneof arm is selected, but the inner payload is absent.
+  proto.mutable_request()->mutable_submit_confirmation();
+
+  auto request = ProtoToRequest(proto);
+  ASSERT_TRUE(std::holds_alternative<SubmitConfirmation>(request.payload));
+  EXPECT_TRUE(std::get<SubmitConfirmation>(request.payload)
+                  .confirmation_response.empty());
 }
 
 TEST(GlicExperimentalTriggeringConvertersTest, TaskMetadataUpdated) {
@@ -483,6 +542,88 @@ TEST(GlicExperimentalTriggeringConvertersTest,
   EXPECT_FALSE(resp_proto.screenshot_result().has_error_message());
 }
 
+using ProtoConfirmationResult =
+    components_sharing_message::GlicExperimentalTriggering::
+        ExperimentalTriggeringResponse::ConfirmationResult;
+
+struct ConfirmationStatusTestCase {
+  const char* test_name;
+  ConfirmationResult::Status status;
+  ProtoConfirmationResult::Status expected_proto_status;
+};
+
+class GlicExperimentalTriggeringConfirmationStatusTest
+    : public testing::TestWithParam<ConfirmationStatusTestCase> {};
+
+TEST_P(GlicExperimentalTriggeringConfirmationStatusTest, ConvertsStatus) {
+  ExperimentalTriggeringResponse response;
+  response.context_id = "test_context";
+  response.confirmation_result = ConfirmationResult{
+      .status = GetParam().status,
+  };
+
+  auto sharing_message = ResponseToProto(response);
+  const auto& resp_proto =
+      sharing_message.glic_experimental_triggering().response();
+  EXPECT_EQ(resp_proto.confirmation_result().status(),
+            GetParam().expected_proto_status);
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    ResponseToProto_ConfirmationResult,
+    GlicExperimentalTriggeringConfirmationStatusTest,
+    testing::Values(
+        ConfirmationStatusTestCase{"Unspecified",
+                                   ConfirmationResult::Status::kUnspecified,
+                                   ProtoConfirmationResult::UNSPECIFIED},
+        ConfirmationStatusTestCase{"Applied",
+                                   ConfirmationResult::Status::kApplied,
+                                   ProtoConfirmationResult::APPLIED},
+        ConfirmationStatusTestCase{"NotApplied",
+                                   ConfirmationResult::Status::kNotApplied,
+                                   ProtoConfirmationResult::NOT_APPLIED},
+        ConfirmationStatusTestCase{
+            "ErrorInvalidRequest",
+            ConfirmationResult::Status::kErrorInvalidRequest,
+            ProtoConfirmationResult::ERROR_INVALID_REQUEST},
+        ConfirmationStatusTestCase{
+            "ErrorUnavailable", ConfirmationResult::Status::kErrorUnavailable,
+            ProtoConfirmationResult::ERROR_UNAVAILABLE}),
+    [](const testing::TestParamInfo<ConfirmationStatusTestCase>& info) {
+      return info.param.test_name;
+    });
+
+TEST(GlicExperimentalTriggeringConvertersTest,
+     ResponseToProto_ConfirmationResultFields) {
+  ExperimentalTriggeringResponse response;
+  response.context_id = "test_context";
+  response.confirmation_result = ConfirmationResult{
+      .status = ConfirmationResult::Status::kErrorUnavailable,
+      .error_message = "no instance",
+  };
+
+  auto sharing_message = ResponseToProto(response);
+  const auto& resp_proto =
+      sharing_message.glic_experimental_triggering().response();
+  EXPECT_EQ(resp_proto.confirmation_result().status(),
+            ProtoConfirmationResult::ERROR_UNAVAILABLE);
+  EXPECT_EQ(resp_proto.confirmation_result().error_message(), "no instance");
+}
+
+TEST(GlicExperimentalTriggeringConvertersTest,
+     ResponseToProto_ConfirmationResultOmitsEmptyErrorMessage) {
+  ExperimentalTriggeringResponse response;
+  response.context_id = "test_context";
+  response.confirmation_result = ConfirmationResult{
+      .status = ConfirmationResult::Status::kApplied,
+  };
+
+  auto sharing_message = ResponseToProto(response);
+  const auto& resp_proto =
+      sharing_message.glic_experimental_triggering().response();
+  EXPECT_FALSE(resp_proto.confirmation_result().has_error_message());
+}
+
 TEST(GlicExperimentalTriggeringConvertersTest, ProtoToTaskMetadata) {
   {
     components_sharing_message::GlicExperimentalTriggering proto;
@@ -525,6 +666,56 @@ TEST(GlicExperimentalTriggeringConvertersTest, ProtoToTaskMetadata) {
   }
 }
 
+TEST(GlicExperimentalTriggeringConvertersTest, ExecuteActionsRequest) {
+  components_sharing_message::GlicExperimentalTriggering proto;
+  proto.set_glic_experimental_triggering_version(1);
+  proto.set_context_id("test_context");
+
+  auto* exec_req = proto.mutable_request()->mutable_execute_actions_request();
+  auto* action = exec_req->mutable_actions()->add_actions();
+  action->mutable_script_tool()->set_tool_name("test_script_tool");
+
+  auto request = ProtoToRequest(proto);
+  EXPECT_EQ(request.version, 1);
+  EXPECT_EQ(request.context_id, "test_context");
+  ASSERT_TRUE(std::holds_alternative<ExecuteActionsRequest>(request.payload));
+  const auto& payload = std::get<ExecuteActionsRequest>(request.payload);
+  ASSERT_EQ(payload.actions.actions_size(), 1);
+  EXPECT_EQ(payload.actions.actions(0).script_tool().tool_name(),
+            "test_script_tool");
+}
+
+TEST(GlicExperimentalTriggeringConvertersTest,
+     ResponseToProto_ExecuteActionsResponse) {
+  ExperimentalTriggeringResponse response;
+  response.context_id = "test_context";
+  ExecuteActionsResponse exec_resp;
+  auto* result = exec_resp.actions_result.add_script_tool_results();
+  result->set_tool_name("test_tool");
+  result->set_result("success");
+  response.execute_actions_response = std::move(exec_resp);
+
+  auto sharing_message = ResponseToProto(response);
+  const auto& resp_proto =
+      sharing_message.glic_experimental_triggering().response();
+  ASSERT_TRUE(resp_proto.has_execute_actions_response());
+  ASSERT_TRUE(resp_proto.execute_actions_response().has_actions_result());
+  ASSERT_EQ(resp_proto.execute_actions_response()
+                .actions_result()
+                .script_tool_results_size(),
+            1);
+  EXPECT_EQ(resp_proto.execute_actions_response()
+                .actions_result()
+                .script_tool_results(0)
+                .tool_name(),
+            "test_tool");
+  EXPECT_EQ(resp_proto.execute_actions_response()
+                .actions_result()
+                .script_tool_results(0)
+                .result(),
+            "success");
+}
+
 TEST(GlicExperimentalTriggeringConvertersTest, ResponseToTriggeringProto) {
   ExperimentalTriggeringResponse response;
   response.context_id = "test_context";
@@ -542,6 +733,187 @@ TEST(GlicExperimentalTriggeringConvertersTest, ResponseToTriggeringProto) {
             components_sharing_message::GlicExperimentalTriggering::
                 ExperimentalTriggeringResponse::TaskUpdate::COMPLETE);
   EXPECT_EQ(triggering.response().task_update().data(), "done");
+}
+
+TEST(GlicExperimentalTriggeringConvertersTest,
+     ResponseToTriggeringProto_TaskUpdateDiagnosticMetadata) {
+  ExperimentalTriggeringResponse response;
+  response.context_id = "test_context";
+  response.task_update = TaskUpdate{
+      .state = TaskUpdate::State::kFailed,
+      .data_type = TaskUpdate::DataType::kErrorMessage,
+      .data = "Glic invocation failed: Client failed to load",
+      .metadata =
+          {
+              {"chrome_error_code", "GLIC_CLIENT_LOAD_ERROR"},
+              {"chrome_invoke_diagnostics",
+               "stage=WAIT_FOR_CLIENT_READY;load_state_at_start=ERROR;"
+               "load_error=OFFLINE"},
+              {"panel_opened", "1"},
+              {"client_connected", "0"},
+              {"t_to_panel_open_ms", "120"},
+              {"t_to_client_connected_ms", "240"},
+              {"t_to_first_response_ms", "360"},
+              {"t_to_terminal_ms", "500"},
+          },
+  };
+
+  auto triggering = ResponseToTriggeringProto(response);
+  ASSERT_TRUE(triggering.has_response());
+  ASSERT_TRUE(triggering.response().has_task_update());
+  const auto& proto_update = triggering.response().task_update();
+  EXPECT_EQ(proto_update.state(),
+            components_sharing_message::GlicExperimentalTriggering::
+                ExperimentalTriggeringResponse::TaskUpdate::FAILED);
+  EXPECT_EQ(proto_update.data(),
+            "Glic invocation failed: Client failed to load");
+  EXPECT_EQ(proto_update.metadata_size(), 8);
+  EXPECT_EQ(proto_update.metadata().at("chrome_error_code"),
+            "GLIC_CLIENT_LOAD_ERROR");
+  EXPECT_EQ(proto_update.metadata().at("chrome_invoke_diagnostics"),
+            "stage=WAIT_FOR_CLIENT_READY;load_state_at_start=ERROR;"
+            "load_error=OFFLINE");
+  EXPECT_EQ(proto_update.metadata().at("panel_opened"), "1");
+  EXPECT_EQ(proto_update.metadata().at("client_connected"), "0");
+  EXPECT_EQ(proto_update.metadata().at("t_to_panel_open_ms"), "120");
+  EXPECT_EQ(proto_update.metadata().at("t_to_client_connected_ms"), "240");
+  EXPECT_EQ(proto_update.metadata().at("t_to_first_response_ms"), "360");
+  EXPECT_EQ(proto_update.metadata().at("t_to_terminal_ms"), "500");
+
+  auto sharing_message = ResponseToProto(response);
+  const auto& sharing_update =
+      sharing_message.glic_experimental_triggering().response().task_update();
+  EXPECT_EQ(sharing_update.metadata_size(), 8);
+  EXPECT_EQ(sharing_update.metadata().at("chrome_error_code"),
+            "GLIC_CLIENT_LOAD_ERROR");
+}
+
+TEST(GlicExperimentalTriggeringConvertersTest,
+     ResponseToTriggeringProto_ExecuteActionsResponse) {
+  ExperimentalTriggeringResponse response;
+  response.context_id = "test_context";
+  ExecuteActionsResponse exec_resp;
+  exec_resp.actions_result.set_action_result(1);
+  response.execute_actions_response = std::move(exec_resp);
+
+  auto triggering = ResponseToTriggeringProto(response);
+  EXPECT_EQ(triggering.context_id(), "test_context");
+  EXPECT_TRUE(triggering.has_response());
+  EXPECT_TRUE(triggering.response().has_execute_actions_response());
+  EXPECT_EQ(triggering.response()
+                .execute_actions_response()
+                .actions_result()
+                .action_result(),
+            1);
+}
+
+TEST(GlicExperimentalTriggeringTypesTest, TaskUpdateIsTerminal) {
+  auto is_terminal = [](TaskUpdate::State state) {
+    TaskUpdate update;
+    update.state = state;
+    return update.IsTerminal();
+  };
+
+  EXPECT_TRUE(is_terminal(TaskUpdate::State::kComplete));
+  EXPECT_TRUE(is_terminal(TaskUpdate::State::kStopped));
+  EXPECT_TRUE(is_terminal(TaskUpdate::State::kFailed));
+
+  EXPECT_FALSE(is_terminal(TaskUpdate::State::kUnknown));
+  EXPECT_FALSE(is_terminal(TaskUpdate::State::kStarting));
+  EXPECT_FALSE(is_terminal(TaskUpdate::State::kRunning));
+  EXPECT_FALSE(is_terminal(TaskUpdate::State::kPaused));
+  EXPECT_FALSE(is_terminal(TaskUpdate::State::kYield));
+  EXPECT_FALSE(is_terminal(TaskUpdate::State::kResumed));
+}
+
+TEST(GlicExperimentalTriggeringConvertersTest,
+     GlicInvokeErrorToChromeErrorCode) {
+  const std::map<GlicInvokeError, std::string_view> kExpectedErrorCodes = {
+      {GlicInvokeError::kTimeout, "GLIC_INVOKE_TIMEOUT"},
+      {GlicInvokeError::kClientLoadError, "GLIC_CLIENT_LOAD_ERROR"},
+      {GlicInvokeError::kTabClosed, "GLIC_TAB_CLOSED"},
+      {GlicInvokeError::kPanelClosed, "GLIC_PANEL_CLOSED"},
+      {GlicInvokeError::kInstanceDestroyedBlankInstanceClosed,
+       "GLIC_PANEL_CLOSED"},
+      {GlicInvokeError::kInstanceDestroyedUnbound,
+       "GLIC_DESTROYED_BEFORE_COMPLETION"},
+      {GlicInvokeError::kInstanceDestroyedArchived,
+       "GLIC_DESTROYED_BEFORE_COMPLETION"},
+      {GlicInvokeError::kInstanceDestroyedSignedOut,
+       "GLIC_DESTROYED_BEFORE_COMPLETION"},
+      {GlicInvokeError::kInstanceDestroyedShutdown,
+       "GLIC_DESTROYED_BEFORE_COMPLETION"},
+      {GlicInvokeError::kSuperseded, "GLIC_SUPERSEDED"},
+  };
+
+  // 0 is reserved for success in metrics, so values start at 1.
+  for (int value = 1; value <= static_cast<int>(GlicInvokeError::kMaxValue);
+       ++value) {
+    // Skip deprecated kInstanceDestroyed.
+    if (value == 6) {
+      continue;
+    }
+    const auto error = static_cast<GlicInvokeError>(value);
+    auto it = kExpectedErrorCodes.find(error);
+    if (it != kExpectedErrorCodes.end()) {
+      EXPECT_EQ(GlicInvokeErrorToChromeErrorCode(error), it->second)
+          << "Unexpected mapping for error " << value;
+    } else {
+      EXPECT_EQ(GlicInvokeErrorToChromeErrorCode(error), std::nullopt)
+          << "Unlisted error " << value << " should omit chrome_error_code";
+    }
+  }
+}
+
+TEST(GlicExperimentalTriggeringConvertersTest, BuildChromeErrorMetadata) {
+  EXPECT_THAT(BuildChromeErrorMetadata(kErrorCodeEtNoBrowserWindow),
+              testing::ElementsAre(
+                  testing::Pair("chrome_error_code", "ET_NO_BROWSER_WINDOW")));
+  EXPECT_THAT(BuildChromeErrorMetadata(kErrorCodeEtCannotActOnWeb),
+              testing::ElementsAre(
+                  testing::Pair("chrome_error_code", "ET_CANNOT_ACT_ON_WEB")));
+  EXPECT_THAT(BuildChromeErrorMetadata(kErrorCodeGlicClientDisconnected),
+              testing::ElementsAre(testing::Pair("chrome_error_code",
+                                                 "GLIC_CLIENT_DISCONNECTED")));
+  EXPECT_THAT(BuildChromeErrorMetadata(kErrorCodeGlicDestroyedBeforeCompletion),
+              testing::ElementsAre(testing::Pair(
+                  "chrome_error_code", "GLIC_DESTROYED_BEFORE_COMPLETION")));
+}
+
+TEST(GlicExperimentalTriggeringConvertersTest, BuildInvokeErrorMetadata) {
+  EXPECT_THAT(BuildInvokeErrorMetadata(
+                  GlicInvokeError::kClientLoadError,
+                  "stage=WAIT_FOR_CLIENT_READY;load_state_at_start=LOADING;"
+                  "load_error=CLIENT_LOAD_TIMEOUT"),
+              testing::UnorderedElementsAre(
+                  testing::Pair("chrome_error_code", "GLIC_CLIENT_LOAD_ERROR"),
+                  testing::Pair(
+                      "chrome_invoke_diagnostics",
+                      "stage=WAIT_FOR_CLIENT_READY;load_state_at_start=LOADING;"
+                      "load_error=CLIENT_LOAD_TIMEOUT")));
+
+  // Mapped error with empty diagnostics omits `chrome_invoke_diagnostics`.
+  EXPECT_THAT(BuildInvokeErrorMetadata(GlicInvokeError::kTimeout, ""),
+              testing::ElementsAre(
+                  testing::Pair("chrome_error_code", "GLIC_INVOKE_TIMEOUT")));
+
+  // Unlisted error with non-empty diagnostics omits `chrome_error_code` while
+  // forwarding `chrome_invoke_diagnostics`.
+  EXPECT_THAT(BuildInvokeErrorMetadata(GlicInvokeError::kInvalidConfiguration,
+                                       "stage=SEND_TO_CLIENT"),
+              testing::ElementsAre(testing::Pair("chrome_invoke_diagnostics",
+                                                 "stage=SEND_TO_CLIENT")));
+
+  // Unlisted error with empty diagnostics produces an empty map.
+  EXPECT_TRUE(BuildInvokeErrorMetadata(GlicInvokeError::kUnknown, "").empty());
+}
+
+TEST(GlicExperimentalTriggeringConvertersTest, FormatMetadataDurationMs) {
+  EXPECT_EQ(FormatMetadataDurationMs(base::Milliseconds(0)), "0");
+  EXPECT_EQ(FormatMetadataDurationMs(base::Milliseconds(245)), "245");
+  EXPECT_EQ(FormatMetadataDurationMs(base::Microseconds(1999)), "1");
+  // Negative durations (e.g. clock adjustments) are clamped to 0.
+  EXPECT_EQ(FormatMetadataDurationMs(base::Milliseconds(-50)), "0");
 }
 
 }  // namespace glic

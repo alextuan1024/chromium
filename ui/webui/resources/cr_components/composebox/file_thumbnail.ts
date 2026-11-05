@@ -2,6 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+import '//resources/cr_elements/cr_auto_img/cr_auto_img.js';
 import '//resources/cr_elements/cr_icon_button/cr_icon_button.js';
 import '//resources/cr_elements/cr_icon/cr_icon.js';
 import '//resources/cr_elements/icons.html.js';
@@ -12,7 +13,7 @@ import {loadTimeData} from '//resources/js/load_time_data.js';
 import {CrLitElement} from '//resources/lit/v3_0/lit.rollup.js';
 import type {PropertyValues} from '//resources/lit/v3_0/lit.rollup.js';
 
-import {getLoadTimeBoolean} from './common.js';
+import {getLoadTimeBoolean, isHeifImage} from './common.js';
 import type {ComposeboxFile} from './common.js';
 import {ContextUploadStatus, InputType} from './composebox_query.mojom-webui.js';
 import {getCss} from './file_thumbnail.css.js';
@@ -20,14 +21,6 @@ import {getHtml} from './file_thumbnail.html.js';
 
 const SUPPORTED_VIDEO_EXTENSIONS =
     new Set(['mp4', 'webm', 'ogg', 'mov', 'm4v']);
-
-export interface ComposeboxFileThumbnailElement {
-  $: {
-    removeImgButton: HTMLElement,
-    removeDocumentButton: HTMLElement,
-    removeTabButton: HTMLElement,
-  };
-}
 
 export class ComposeboxFileThumbnailElement extends CrLitElement {
   static get is() {
@@ -78,7 +71,7 @@ export class ComposeboxFileThumbnailElement extends CrLitElement {
     return this.isUploading_;
   }
 
-  protected lensSendRawFileMediaTypesEnabled_: boolean =
+  private lensSendRawFileMediaTypesEnabled_: boolean =
       loadTimeData.getBoolean('lensSendRawFileMediaTypesEnabled');
 
   protected accessor tabFaviconChipsToCoinsEnabled_: boolean =
@@ -121,7 +114,13 @@ export class ComposeboxFileThumbnailElement extends CrLitElement {
   }
 
   protected hasVisualThumbnail_(): boolean {
-    return this.isImage_() ||
+    // Chrome cannot render HEIC/HEIF images, and their object/data URLs contain
+    // the raw HEIC/HEIF bytes. Show them as a file chip unless a separate
+    // thumbnail is available.
+    if (this.file && isHeifImage(this.file)) {
+      return Boolean(this.file.thumbnailUrl);
+    }
+    return Boolean(this.isImage_() && this.file?.objectUrl) ||
         Boolean(this.file?.dataUrl || this.file?.thumbnailUrl) ||
         Boolean(this.isSupportedVideo_() && this.file?.objectUrl);
   }

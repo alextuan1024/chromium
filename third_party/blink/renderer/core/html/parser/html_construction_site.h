@@ -67,6 +67,10 @@ class HTMLConstructionSite final {
     STACK_ALLOCATED();
 
    public:
+    bool IsValid() const {
+      return !next_child || next_child->parentNode() == parent;
+    }
+
     ContainerNode* parent = nullptr;
     Node* next_child = nullptr;
   };
@@ -104,7 +108,6 @@ class HTMLConstructionSite final {
   void InsertComment(AtomicHTMLToken*);
   void InsertCommentOnDocument(AtomicHTMLToken*);
   void InsertCommentOnHTMLHtmlElement(AtomicHTMLToken*);
-  void InsertDOMPart(AtomicHTMLToken*);
   void InsertHTMLElement(AtomicHTMLToken*);
   void InsertHTMLTemplateElement(AtomicHTMLToken*, String);
   void InsertSelfClosingHTMLElementDestroyingToken(AtomicHTMLToken*);
@@ -159,7 +162,6 @@ class HTMLConstructionSite final {
   HTMLStackItem* CurrentStackItem() const {
     return open_elements_.TopStackItem();
   }
-  HTMLStackItem* OneBelowTop() const { return open_elements_.OneBelowTop(); }
   Document& OwnerDocumentForCurrentNode();
   HTMLElementStack* OpenElements() const { return &open_elements_; }
   HTMLFormattingElementList* ActiveFormattingElements() const {
@@ -237,9 +239,7 @@ class HTMLConstructionSite final {
 
   void MergeAttributesFromTokenIntoElement(AtomicHTMLToken*, Element*);
 
-  bool ShouldInsertChild(ContainerNode* parent, Node* child);
-  StreamingSanitizer* ActiveSanitizer(
-      Node* node_being_inserted = nullptr) const;
+  bool ShouldInsertChild(const InsertionLocation& location, Node* child);
   void SetAttributes(Element* element, AtomicHTMLToken* token);
 
   Member<HTMLParserReentryPermit> reentry_permit_;

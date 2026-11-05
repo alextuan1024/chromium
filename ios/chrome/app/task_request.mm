@@ -41,20 +41,26 @@
 
 @end
 
-@interface TaskRequest () {
+@interface TaskRequest ()
+@property(nonatomic, strong, readwrite) NSURL* URL;
+@end
+
+@implementation TaskRequest {
   __weak UIScene* _scene;
   BOOL _isColdStart;
   __weak SceneState* _sceneState;
 }
-@end
-
-@implementation TaskRequest
 
 @synthesize minimumStage = _minimumStage;
 @synthesize gaiaID = _gaiaID;
+@synthesize URL = _URL;
 
 - (UIScene*)scene {
   return _scene;
+}
+
+- (BOOL)isFromShareExtension {
+  return NO;
 }
 
 + (instancetype)taskForURLContext:(UIOpenURLContext*)URLContext
@@ -89,6 +95,18 @@
   return [[TaskRequestForTesting alloc] initWithScene:scene executeBlock:block];
 }
 
+// Factory used for tests.
++ (instancetype)taskForTestingWithScene:(UIScene*)scene
+                                 gaiaID:(NSString*)gaiaID
+                                    URL:(NSURL*)URL {
+  TaskRequest* task = [self taskForTestingWithScene:scene
+                                       executeBlock:^{
+                                       }];
+  task.gaiaID = gaiaID;
+  task.URL = URL;
+  return task;
+}
+
 - (instancetype)initWithSceneState:(SceneState*)sceneState
                        isColdStart:(BOOL)isColdStart {
   self = [super init];
@@ -120,9 +138,10 @@
 #pragma mark - Protected
 
 - (SceneState*)sceneState {
-  if (!_sceneState) {
-    _sceneState =
-        base::apple::ObjCCast<SceneDelegate>(_scene.delegate).sceneState;
+  SceneDelegate* sceneDelegate =
+      base::apple::ObjCCast<SceneDelegate>(_scene.delegate);
+  if (sceneDelegate.sceneState) {
+    _sceneState = sceneDelegate.sceneState;
   }
   CHECK(_sceneState);
   return _sceneState;

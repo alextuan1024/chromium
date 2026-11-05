@@ -19,12 +19,12 @@
 #include "pdf/pdf_accessibility_data_handler.h"
 #include "services/screen_ai/buildflags/buildflags.h"
 #include "third_party/blink/public/web/web_ax_object.h"
+#include "third_party/blink/public/web/web_local_frame_observer.h"
 #include "ui/accessibility/ax_node.h"
 #include "ui/accessibility/ax_node_id_forward.h"
 #include "ui/accessibility/ax_tree.h"
 #include "ui/accessibility/ax_tree_id.h"
 #include "ui/accessibility/ax_tree_source.h"
-#include "ui/gfx/geometry/rect_f.h"
 #include "ui/gfx/geometry/vector2d_f.h"
 
 namespace blink {
@@ -38,7 +38,6 @@ class PdfAccessibilityActionHandler;
 }  // namespace chrome_pdf
 
 namespace content {
-class RenderAccessibility;
 class RenderFrame;
 }  // namespace content
 
@@ -48,35 +47,12 @@ class Transform;
 
 namespace pdf {
 
-// LINT.IfChange(HeadingClassifier)
-// Heuristic rules used to classify a text block as a heading.
-// These values are persisted to logs. Entries should not be renumbered and
-// numeric values should never be reused.
-enum class HeadingClassifier {
-  // Not classified as a heading. This value is not logged.
-  kNone = 0,
-  // Classified based on font size.
-  kFontSize = 1,
-  // Classified based on bold styling.
-  kBoldStyle = 2,
-  // Classified because all characters are uppercase.
-  kAllUppercase = 3,
-  // Classified due to semi-bold font weight (600).
-  kSemiBoldWeight = 4,
-  // Classified by looking at the font name to determine styling.
-  kFontName = 5,
-  // Classified by looking at text color when it differs from body text color.
-  kTextColor = 6,
-
-  kMaxValue = kTextColor,
-};
-// LINT.ThenChange(//tools/metrics/histograms/enums.xml:PdfAccessibilityHeadingClassifier)
-
 class PdfAccessibilityTree : public ui::AXTreeSource<const ui::AXNode*,
                                                      ui::AXTreeData*,
                                                      ui::AXNodeData>,
                              public content::PluginAXTreeActionTargetAdapter,
                              public content::RenderFrameObserver,
+                             public blink::WebLocalFrameObserver,
                              public chrome_pdf::PdfAccessibilityDataHandler {
  public:
   PdfAccessibilityTree(
@@ -150,6 +126,9 @@ class PdfAccessibilityTree : public ui::AXTreeSource<const ui::AXNode*,
   // content::RenderFrameObserver:
   void AccessibilityModeChanged(const ui::AXMode& mode) override;
   void OnDestruct() override {}
+
+  // blink::WebLocalFrameObserver:
+  void OnFrameDetached() override {}
   void WasHidden() override;
   void WasShown() override;
 
@@ -265,11 +244,9 @@ class PdfAccessibilityTree : public ui::AXTreeSource<const ui::AXNode*,
   // From PDF plugin we receive all the data in logical pixels. Which is
   // without the zoom and scale factor applied. We apply the `zoom_` and
   // `scale_` to generate the final bounding boxes of elements in accessibility
-  // tree. `orientation_` represents page rotations as multiples of 90 degrees,
-  // based on `chrome_pdf::PageOrientation`.
+  // tree.
   double zoom_ = 1.0;
   double scale_ = 1.0;
-  int32_t orientation_ = 0;
   gfx::Vector2dF scroll_;
   gfx::Vector2dF offset_;
   chrome_pdf::Selection selection_;

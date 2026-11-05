@@ -7,6 +7,8 @@
 #include "build/build_config.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/renderer/platform/fonts/simple_font_data.h"
+#include "third_party/blink/renderer/platform/testing/runtime_enabled_features_test_helpers.h"
+#include "third_party/blink/renderer/platform/testing/scoped_default_locale.h"
 
 namespace blink {
 
@@ -96,7 +98,7 @@ TEST_F(FontCacheAndroidTest, LocaleSpecificTypeface) {
 // Check non-CJK locales do not create locale-specific typeface.
 // TODO(crbug.com/1233315 crbug.com/1237860): Locale-specific serif is supported
 // only for CJK until these issues were fixed.
-TEST_F(FontCacheAndroidTest, LocaleSpecificTypefaceOnlyForCJK) {
+TEST_F(FontCacheAndroidTest, LocaleSpecificTypefaceOnlyForCjk) {
   EXPECT_EQ(CreateSerifTypeface(LayoutLocale::Get(AtomicString("en"))),
             nullptr);
   // We can't test CJK locales return non-nullptr because not all devices on all
@@ -129,6 +131,79 @@ TEST(FontCacheAndroid, GenericFamilyNameForScript) {
   EXPECT_EQ(font_family_names::kMonospace,
             FontCache::GetGenericFamilyNameForScript(
                 font_family_names::kMonospace, fallback, chinese));
+}
+
+TEST(FontCacheAndroid, GenericFamilyNameForScriptArabicNastaliq) {
+  ScopedNastaliqScriptForTest scoped_feature(true);
+  font_family_names::Init();
+  AtomicString fallback("MyGenericFamilyNameFallback");
+
+  for (const char* locale_str : {"ur", "ks", "ar-Aran", "und-Aran"}) {
+    FontDescription description;
+    scoped_refptr<LayoutLocale> locale =
+        LayoutLocale::CreateForTesting(AtomicString(locale_str));
+    description.SetLocale(locale.get());
+    EXPECT_NE(fallback,
+              FontCache::GetGenericFamilyNameForScript(
+                  font_family_names::kWebkitStandard, fallback, description))
+        << locale_str;
+    EXPECT_EQ(font_family_names::kMonospace,
+              FontCache::GetGenericFamilyNameForScript(
+                  font_family_names::kMonospace, fallback, description))
+        << locale_str;
+  }
+
+  for (const char* locale_str : {"ar", "ur-Arab"}) {
+    FontDescription description;
+    scoped_refptr<LayoutLocale> locale =
+        LayoutLocale::CreateForTesting(AtomicString(locale_str));
+    description.SetLocale(locale.get());
+    EXPECT_EQ(fallback,
+              FontCache::GetGenericFamilyNameForScript(
+                  font_family_names::kWebkitStandard, fallback, description))
+        << locale_str;
+  }
+}
+
+TEST_F(FontCacheAndroidTest,
+       FallbackFontForCharacterArabicNastaliqDefaultLocale) {
+  ScopedNastaliqScriptForTest scoped_feature(true);
+  FontCache& font_cache = FontCache::Get();
+  constexpr UChar32 kTestChar = 0x0627;  // U+0627 ARABIC LETTER ALEF
+
+  auto fallback_typeface =
+      [&](const char* content_locale) -> sk_sp<SkTypeface> {
+    FontDescription description;
+    description.SetGenericFamily(FontDescription::kStandardFamily);
+    if (content_locale) {
+      description.SetLocale(LayoutLocale::Get(AtomicString(content_locale)));
+    }
+    const SimpleFontData* font_data =
+        font_cache.FallbackFontForCharacter(description, kTestChar, nullptr);
+    return font_data ? font_data->PlatformData().TypefaceSp() : nullptr;
+  };
+
+  sk_sp<SkTypeface> nastaliq_typeface;
+  sk_sp<SkTypeface> naskh_typeface;
+  {
+    ScopedDefaultLocale default_locale("en-US");
+    nastaliq_typeface = fallback_typeface("ur");
+    naskh_typeface = fallback_typeface("ar");
+    ASSERT_TRUE(nastaliq_typeface);
+    ASSERT_TRUE(naskh_typeface);
+    if (nastaliq_typeface == naskh_typeface) {
+      GTEST_SKIP() << "Nastaliq fallback font is not available on this device.";
+    }
+  }
+
+  ScopedDefaultLocale default_locale("ur-PK");
+  EXPECT_EQ(nastaliq_typeface, fallback_typeface(nullptr));
+  for (const char* locale_str : {"ur", "ks", "ar-Aran"}) {
+    EXPECT_EQ(nastaliq_typeface, fallback_typeface(locale_str)) << locale_str;
+  }
+  for (const char* locale_str : {"ar", "ar-Arab", "ur-Arab", "fa"}) {
+    EXPECT_EQ(naskh_typeface, fallback_typeface(locale_str)) << locale_str;
+  }
 }
 
 }  // namespace blink

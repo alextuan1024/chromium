@@ -124,8 +124,79 @@ public class HistoryUmaRecorder {
         RecordHistogram.recordTimesHistogram("History.QueryAppDuration", timeMs);
     }
 
-    /** Record the user action of opending the app filter sheet. */
+    /** Record the user action of opening the app filter sheet. */
     public void recordAppFilterSheetOpened() {
         recordUserAction("OpenAppFilterSheet");
+    }
+
+    /** Record the user action of selecting an app filter. */
+    public void recordAppFilterSelected() {
+        recordUserAction("AppFilterSelected");
+    }
+
+    /** Record the user action of opening the host filter sheet. */
+    public void recordHostFilterSheetOpened() {
+        recordUserAction("OpenHostFilterSheet");
+    }
+
+    /** Record the user action of selecting a host filter. */
+    public void recordHostFilterSelected() {
+        recordUserAction("HostFilterSelected");
+    }
+
+    /** Record the user action of opening the device filter sheet. */
+    public void recordDeviceFilterSheetOpened() {
+        recordUserAction("OpenDeviceFilterSheet");
+    }
+
+    /** Record the user action of selecting a device filter. */
+    public void recordDeviceFilterSelected() {
+        recordUserAction("DeviceFilterSelected");
+    }
+
+    /** Record the user action of opening the actor filter sheet. */
+    public void recordActorFilterSheetOpened() {
+        recordUserAction("OpenActorFilterSheet");
+    }
+
+    /** Record the user action of selecting an actor filter. */
+    public void recordActorFilterSelected() {
+        recordUserAction("ActorFilterSelected");
+    }
+
+    /** Record the user action of clearing all applied filters. */
+    public void recordClearAllFilters() {
+        recordUserAction("ClearAllFilters");
+    }
+
+    /**
+     * Record the time period option the user selected in the time period filter.
+     *
+     * @param optionId The selected option, or {@link TimePeriodOptionId#ALL_TIME} if the filter was
+     *     deselected.
+     */
+    public void recordTimePeriodFilterSelected(@TimePeriodOptionId int optionId) {
+        RecordHistogram.recordEnumeratedHistogram(
+                METRICS_PREFIX + "TimePeriodFilterSelected",
+                optionId,
+                TimePeriodOptionId.MAX_VALUE + 1);
+    }
+
+    /**
+     * Record the duration in milliseconds to query browsing history entries.
+     *
+     * @param durationMs The query duration in milliseconds.
+     */
+    public void recordQueryDuration(long durationMs) {
+        RecordHistogram.recordTimesHistogram(getPrefix() + "QueryDuration", durationMs);
+    }
+
+    /**
+     * Record the time to first visible content for browsing history in milliseconds.
+     *
+     * @param durationMs The time to first visible content in milliseconds.
+     */
+    public void recordTimeToFirstVisibleContent(long durationMs) {
+        RecordHistogram.recordTimesHistogram(getPrefix() + "TimeToFirstVisibleContent", durationMs);
     }
 }

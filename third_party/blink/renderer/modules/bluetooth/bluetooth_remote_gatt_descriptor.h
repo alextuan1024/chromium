@@ -8,7 +8,6 @@
 #include "third_party/blink/renderer/bindings/core/v8/script_promise.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_promise_resolver.h"
 #include "third_party/blink/renderer/core/typed_arrays/array_buffer_view_helpers.h"
-#include "third_party/blink/renderer/core/typed_arrays/dom_array_piece.h"
 #include "third_party/blink/renderer/core/typed_arrays/dom_data_view.h"
 #include "third_party/blink/renderer/modules/bluetooth/bluetooth.h"
 #include "third_party/blink/renderer/modules/bluetooth/bluetooth_remote_gatt_characteristic.h"
@@ -50,8 +49,6 @@ class BluetoothRemoteGATTDescriptor final : public ScriptWrappable {
   void Trace(Visitor*) const override;
 
  private:
-  friend class DescriptorReadValueCallback;
-
   BluetoothRemoteGATTServer* GetGatt() const {
     return characteristic_->GetGatt();
   }

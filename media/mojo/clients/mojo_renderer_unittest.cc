@@ -13,24 +13,25 @@
 #include "base/memory/ptr_util.h"
 #include "base/memory/raw_ptr.h"
 #include "base/run_loop.h"
-#include "base/task/single_thread_task_runner.h"
 #include "base/test/gmock_callback_support.h"
-#include "base/test/test_message_loop.h"
-#include "base/threading/platform_thread.h"
+#include "base/test/scoped_feature_list.h"
+#include "base/test/task_environment.h"
 #include "base/timer/elapsed_timer.h"
 #include "media/base/cdm_config.h"
 #include "media/base/cdm_context.h"
+#include "media/base/media_switches.h"
 #include "media/base/mock_filters.h"
 #include "media/base/test_helpers.h"
+#include "media/base/wall_clock_time_source.h"
 #include "media/cdm/clear_key_cdm_common.h"
 #include "media/cdm/default_cdm_factory.h"
+#include "media/gfx/video_overlay_factory.h"
 #include "media/mojo/common/media_type_converters.h"
 #include "media/mojo/mojom/content_decryption_module.mojom.h"
 #include "media/mojo/mojom/renderer.mojom.h"
 #include "media/mojo/services/mojo_cdm_service.h"
 #include "media/mojo/services/mojo_cdm_service_context.h"
 #include "media/mojo/services/mojo_renderer_service.h"
-#include "media/renderers/video_overlay_factory.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "mojo/public/cpp/bindings/receiver.h"
 #include "mojo/public/cpp/bindings/remote.h"
@@ -57,13 +58,6 @@ const int64_t kStartPlayingTimeInMs = 100;
 ACTION_P2(GetMediaTime, start_time, elapsed_timer) {
   return start_time + elapsed_timer->Elapsed();
 }
-
-void WaitFor(base::TimeDelta duration) {
-  base::RunLoop run_loop;
-  base::SingleThreadTaskRunner::GetCurrentDefault()->PostDelayedTask(
-      FROM_HERE, run_loop.QuitClosure(), duration);
-  run_loop.Run();
-}
 }  // namespace
 
 class MojoRendererTest : public ::testing::Test {
@@ -79,7 +73,7 @@ class MojoRendererTest : public ::testing::Test {
         remote_renderer_remote.InitWithNewPipeAndPassReceiver());
 
     mojo_renderer_ = std::make_unique<MojoRenderer>(
-        message_loop_.task_runner(),
+        task_environment_.GetMainThreadTaskRunner(),
         std::unique_ptr<VideoOverlayFactory>(nullptr), nullptr,
         std::move(remote_renderer_remote));
 
@@ -94,7 +88,11 @@ class MojoRendererTest : public ::testing::Test {
   MojoRendererTest(const MojoRendererTest&) = delete;
   MojoRendererTest& operator=(const MojoRendererTest&) = delete;
 
-  ~MojoRendererTest() override = default;
+  ~MojoRendererTest() override {
+    // Flush pending tasks so that the self-owned `MojoRendererService` is torn
+    // down while the fixture members it references are still alive.
+    Destroy();
+  }
 
   void Destroy() {
     mojo_renderer_.reset();
@@ -125,7 +123,6 @@ class MojoRendererTest : public ::testing::Test {
     video_stream_->set_video_decoder_config(
         is_encrypted ? TestVideoConfig::NormalEncrypted()
                      : TestVideoConfig::Normal());
-    std::vector<raw_ptr<DemuxerStream>> streams;
     streams_.push_back(audio_stream_.get());
     EXPECT_CALL(demuxer_, GetAllStreams()).WillRepeatedly(Return(streams_));
   }
@@ -202,7 +199,8 @@ class MojoRendererTest : public ::testing::Test {
   void Play() { StartPlayingFrom(base::Milliseconds(kStartPlayingTimeInMs)); }
 
   // Fixture members.
-  base::TestMessageLoop message_loop_;
+  base::test::SingleThreadTaskEnvironment task_environment_{
+      base::test::TaskEnvironment::TimeSource::MOCK_TIME};
 
   // The MojoRenderer that we are testing.
   std::unique_ptr<MojoRenderer> mojo_renderer_;
@@ -412,7 +410,7 @@ TEST_F(MojoRendererTest, GetMediaTime) {
   Initialize();
   EXPECT_EQ(base::TimeDelta(), mojo_renderer_->GetMediaTime());
 
-  const base::TimeDelta kSleepTime = base::Milliseconds(500);
+  constexpr base::TimeDelta kAdvanceTime = base::Milliseconds(500);
   const base::TimeDelta kStartTime = base::Milliseconds(kStartPlayingTimeInMs);
 
   // Media time should not advance since playback rate is 0.
@@ -422,7 +420,7 @@ TEST_F(MojoRendererTest, GetMediaTime) {
       .WillRepeatedly(Return(kStartTime));
   mojo_renderer_->SetPlaybackRate(0);
   mojo_renderer_->StartPlayingFrom(kStartTime);
-  WaitFor(kSleepTime);
+  task_environment_.FastForwardBy(kAdvanceTime);
   EXPECT_EQ(kStartTime, mojo_renderer_->GetMediaTime());
 
   // Media time should now advance since playback rate is > 0.
@@ -431,7 +429,7 @@ TEST_F(MojoRendererTest, GetMediaTime) {
   EXPECT_CALL(*mock_renderer_, GetMediaTime())
       .WillRepeatedly(GetMediaTime(kStartTime, elapsed_timer.get()));
   mojo_renderer_->SetPlaybackRate(1.0);
-  WaitFor(kSleepTime);
+  task_environment_.FastForwardBy(kAdvanceTime);
   EXPECT_GT(mojo_renderer_->GetMediaTime(), kStartTime);
 
   // Flushing should pause media-time updates.
@@ -439,8 +437,180 @@ TEST_F(MojoRendererTest, GetMediaTime) {
   Flush();
   base::TimeDelta pause_time = mojo_renderer_->GetMediaTime();
   EXPECT_GT(pause_time, kStartTime);
-  WaitFor(kSleepTime);
+  task_environment_.FastForwardBy(kAdvanceTime);
   EXPECT_EQ(pause_time, mojo_renderer_->GetMediaTime());
+  Destroy();
+}
+
+// Media time interpolated by MojoRenderer should keep up with the remote
+// renderer between periodic time updates at playback rates above 2x, rather
+// than being clamped to the upper bound of the last time update.
+TEST_F(MojoRendererTest, GetMediaTime_HighPlaybackRate) {
+  Initialize();
+
+  // Must match `kTimeUpdateInterval` in mojo_renderer_service.cc.
+  constexpr base::TimeDelta kTimeUpdateInterval = base::Milliseconds(125);
+  constexpr double kPlaybackRate = 4.0;
+  const base::TimeDelta kStartTime = base::Milliseconds(kStartPlayingTimeInMs);
+
+  // The remote renderer's media time advances at `kPlaybackRate`.
+  base::ElapsedTimer elapsed_timer;
+  auto remote_media_time = [&]() {
+    return kStartTime + elapsed_timer.Elapsed() * kPlaybackRate;
+  };
+  EXPECT_CALL(*mock_renderer_, SetPlaybackRate(kPlaybackRate));
+  EXPECT_CALL(*mock_renderer_, StartPlayingFrom(kStartTime));
+  EXPECT_CALL(*mock_renderer_, GetMediaTime())
+      .WillRepeatedly(remote_media_time);
+  mojo_renderer_->SetPlaybackRate(kPlaybackRate);
+  mojo_renderer_->StartPlayingFrom(kStartTime);
+
+  // Wait for the first periodic time update.
+  task_environment_.FastForwardBy(kTimeUpdateInterval);
+  EXPECT_EQ(remote_media_time(), mojo_renderer_->GetMediaTime());
+
+  // Sample the media time throughout the next few update intervals. At 4x,
+  // more than `2 * kTimeUpdateInterval` of media time elapses within a single
+  // update interval, so an upper bound that is not scaled by the playback rate
+  // would stall the interpolated media time until the next time update.
+  constexpr int kSamplesPerInterval = 5;
+  for (int i = 0; i < 3 * kSamplesPerInterval; ++i) {
+    task_environment_.FastForwardBy(kTimeUpdateInterval / kSamplesPerInterval);
+    EXPECT_EQ(remote_media_time(), mojo_renderer_->GetMediaTime());
+  }
+
+  Destroy();
+}
+
+// Regression test for crbug.com/583180909: MojoRenderer::GetMediaTime() should
+// coarsen interpolated media time to WallClockTimeSource::kCoarseResolution
+// (100 us) so it cannot be used as a high-resolution clock.
+TEST_F(MojoRendererTest, GetMediaTime_CoarsenedWhenPlaying) {
+  Initialize();
+
+  constexpr base::TimeDelta kTimeUpdateInterval = base::Milliseconds(125);
+  base::ElapsedTimer elapsed_timer;
+  EXPECT_CALL(*mock_renderer_, SetPlaybackRate(1.0));
+  EXPECT_CALL(*mock_renderer_, StartPlayingFrom(base::TimeDelta()));
+  EXPECT_CALL(*mock_renderer_, GetMediaTime()).WillRepeatedly([&]() {
+    return elapsed_timer.Elapsed();
+  });
+  mojo_renderer_->SetPlaybackRate(1.0);
+  mojo_renderer_->StartPlayingFrom(base::TimeDelta());
+
+  // Advance to the first periodic OnTimeUpdate so the upper bound is extended
+  // and client-side interpolation is active.
+  task_environment_.FastForwardBy(kTimeUpdateInterval);
+  EXPECT_EQ(kTimeUpdateInterval, mojo_renderer_->GetMediaTime());
+
+  // Sub-100us advances must remain floored to the 100us boundary.
+  task_environment_.FastForwardBy(base::Microseconds(1));
+  EXPECT_EQ(kTimeUpdateInterval, mojo_renderer_->GetMediaTime());
+
+  task_environment_.FastForwardBy(base::Microseconds(49));
+  EXPECT_EQ(kTimeUpdateInterval, mojo_renderer_->GetMediaTime());
+
+  task_environment_.FastForwardBy(base::Microseconds(49));
+  EXPECT_EQ(kTimeUpdateInterval, mojo_renderer_->GetMediaTime());
+
+  // Reaching +100us steps to the next coarse boundary.
+  task_environment_.FastForwardBy(base::Microseconds(1));
+  EXPECT_EQ(kTimeUpdateInterval + WallClockTimeSource::kCoarseResolution,
+            mojo_renderer_->GetMediaTime());
+
+  // +199us stays at +100us; +200us steps to +200us.
+  task_environment_.FastForwardBy(base::Microseconds(99));
+  EXPECT_EQ(kTimeUpdateInterval + WallClockTimeSource::kCoarseResolution,
+            mojo_renderer_->GetMediaTime());
+
+  task_environment_.FastForwardBy(base::Microseconds(1));
+  EXPECT_EQ(kTimeUpdateInterval + WallClockTimeSource::kCoarseResolution * 2,
+            mojo_renderer_->GetMediaTime());
+
+  // Flushing at an unaligned timestamp (+250us) keeps the reported time
+  // coarsened rather than leaking the exact stop timestamp.
+  task_environment_.FastForwardBy(base::Microseconds(50));
+  EXPECT_CALL(*mock_renderer_, OnFlush(_)).WillOnce(RunOnceClosure<0>());
+  Flush();
+  EXPECT_EQ(kTimeUpdateInterval + WallClockTimeSource::kCoarseResolution * 2,
+            mojo_renderer_->GetMediaTime());
+
+  Destroy();
+}
+
+TEST_F(MojoRendererTest, GetMediaTime_CoarseSeekOffset) {
+  Initialize();
+
+  // Seek / start playing from an unaligned timestamp (150 us).
+  constexpr base::TimeDelta kTimeUpdateInterval = base::Milliseconds(125);
+  constexpr base::TimeDelta kSeekTime = base::Microseconds(150);
+  base::TimeDelta remote_time = kSeekTime;
+  EXPECT_CALL(*mock_renderer_, SetPlaybackRate(1.0));
+  EXPECT_CALL(*mock_renderer_, StartPlayingFrom(kSeekTime));
+  EXPECT_CALL(*mock_renderer_, GetMediaTime()).WillRepeatedly([&]() {
+    return remote_time;
+  });
+  mojo_renderer_->SetPlaybackRate(1.0);
+  mojo_renderer_->StartPlayingFrom(kSeekTime);
+  task_environment_.FastForwardBy(base::TimeDelta());
+
+  // GetMediaTime() must not jump backwards below the StartPlayingFrom target.
+  EXPECT_EQ(kSeekTime, mojo_renderer_->GetMediaTime());
+
+  // Simulate startup buffering completing shortly before the first periodic
+  // OnTimeUpdate (remote_time advanced by 10 us to 160 us), extending
+  // upper_bound_ by 2 * kTimeUpdateInterval while still below the next 100 us
+  // coarse boundary (200 us).
+  remote_time = kSeekTime + base::Microseconds(10);
+  task_environment_.FastForwardBy(kTimeUpdateInterval);
+  EXPECT_EQ(kSeekTime, mojo_renderer_->GetMediaTime());
+
+  // Elapsed 30 us (media time 190 us): still clamped to kSeekTime (150 us).
+  task_environment_.FastForwardBy(base::Microseconds(30));
+  EXPECT_EQ(kSeekTime, mojo_renderer_->GetMediaTime());
+
+  // Elapsed 40 us (media time 200 us): reaches the next 100 us boundary.
+  task_environment_.FastForwardBy(base::Microseconds(10));
+  EXPECT_EQ(base::Microseconds(200), mojo_renderer_->GetMediaTime());
+
+  // Elapsed 139 us (media time 299 us): stays at 200 us.
+  task_environment_.FastForwardBy(base::Microseconds(99));
+  EXPECT_EQ(base::Microseconds(200), mojo_renderer_->GetMediaTime());
+
+  // Elapsed 140 us (media time 300 us): steps to 300 us.
+  task_environment_.FastForwardBy(base::Microseconds(1));
+  EXPECT_EQ(base::Microseconds(300), mojo_renderer_->GetMediaTime());
+
+  // Pausing at 350 us keeps the paused timestamp coarsened to 300 us.
+  task_environment_.FastForwardBy(base::Microseconds(50));
+  EXPECT_CALL(*mock_renderer_, SetPlaybackRate(0.0));
+  mojo_renderer_->SetPlaybackRate(0.0);
+  EXPECT_EQ(base::Microseconds(300), mojo_renderer_->GetMediaTime());
+
+  Destroy();
+}
+
+TEST_F(MojoRendererTest, GetMediaTime_CoarseKillSwitch) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndDisableFeature(kCoarseWallClockTimeSource);
+
+  Initialize();
+
+  constexpr base::TimeDelta kTimeUpdateInterval = base::Milliseconds(125);
+  base::ElapsedTimer elapsed_timer;
+  EXPECT_CALL(*mock_renderer_, SetPlaybackRate(1.0));
+  EXPECT_CALL(*mock_renderer_, StartPlayingFrom(base::TimeDelta()));
+  EXPECT_CALL(*mock_renderer_, GetMediaTime()).WillRepeatedly([&]() {
+    return elapsed_timer.Elapsed();
+  });
+  mojo_renderer_->SetPlaybackRate(1.0);
+  mojo_renderer_->StartPlayingFrom(base::TimeDelta());
+
+  task_environment_.FastForwardBy(kTimeUpdateInterval);
+  task_environment_.FastForwardBy(base::Microseconds(50));
+  EXPECT_EQ(kTimeUpdateInterval + base::Microseconds(50),
+            mojo_renderer_->GetMediaTime());
+
   Destroy();
 }
 
@@ -540,11 +710,56 @@ TEST_F(MojoRendererTest, ErrorDuringFlush) {
   EXPECT_CALL(renderer_client_, OnError(HasStatusCode(PIPELINE_ERROR_DECODE)))
       .Times(1);
   EXPECT_CALL(*mock_renderer_, OnFlush(_))
-      .WillOnce(DoAll(InvokeWithoutArgs([&]() {
-                        remote_renderer_client_->OnError(PIPELINE_ERROR_DECODE);
-                      }),
-                      RunOnceClosure<0>()));
+      .WillOnce(DoAll(
+          [&]() { remote_renderer_client_->OnError(PIPELINE_ERROR_DECODE); },
+          RunOnceClosure<0>()));
   Flush();
+}
+
+TEST_F(MojoRendererTest, OnTracksChanged) {
+  Initialize();
+  Play();
+
+  // Create a second audio stream to switch to.
+  std::unique_ptr<StrictMock<MockDemuxerStream>> audio_stream_2 =
+      CreateStream(DemuxerStream::AUDIO);
+  audio_stream_2->set_audio_decoder_config(TestAudioConfig::Normal());
+  EXPECT_CALL(*audio_stream_2, ManagesTrackSwitchesInternally())
+      .WillOnce(Return(false));
+
+  // Switching to a new stream that does not manage track switches internally
+  // should flush and restart playback at the current media time.
+  EXPECT_CALL(*mock_renderer_, OnFlush(_)).WillOnce(RunOnceClosure<0>());
+  EXPECT_CALL(*mock_renderer_, StartPlayingFrom(_)).Times(1);
+
+  bool track_change_completed = false;
+  mojo_renderer_->OnTracksChanged(
+      DemuxerStream::AUDIO, audio_stream_2.get(),
+      base::BindOnce([](bool* completed) { *completed = true; },
+                     &track_change_completed));
+  base::RunLoop().RunUntilIdle();
+  EXPECT_TRUE(track_change_completed);
+
+  // Switching between active streams where the stream manages track switches
+  // internally (e.g., HLS/MSE) should complete immediately without flushing.
+  EXPECT_CALL(*audio_stream_, ManagesTrackSwitchesInternally())
+      .WillOnce(Return(true));
+  track_change_completed = false;
+  mojo_renderer_->OnTracksChanged(
+      DemuxerStream::AUDIO, audio_stream_.get(),
+      base::BindOnce([](bool* completed) { *completed = true; },
+                     &track_change_completed));
+  base::RunLoop().RunUntilIdle();
+  EXPECT_TRUE(track_change_completed);
+
+  // Disabling the track (nullptr) should complete immediately without flushing.
+  track_change_completed = false;
+  mojo_renderer_->OnTracksChanged(
+      DemuxerStream::AUDIO, nullptr,
+      base::BindOnce([](bool* completed) { *completed = true; },
+                     &track_change_completed));
+  base::RunLoop().RunUntilIdle();
+  EXPECT_TRUE(track_change_completed);
 }
 
 }  // namespace media

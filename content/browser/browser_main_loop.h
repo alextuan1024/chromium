@@ -35,6 +35,9 @@ class CommandLine;
 class HighResolutionTimerManager;
 class SingleThreadTaskRunner;
 class SystemMonitor;
+namespace responsiveness {
+class Watcher;
+}  // namespace responsiveness
 }  // namespace base
 
 namespace data_decoder {
@@ -98,10 +101,6 @@ class StartupTracingController;
 }
 namespace content {
 struct MainFunctionParams;
-
-namespace responsiveness {
-class Watcher;
-}  // namespace responsiveness
 
 #if BUILDFLAG(IS_ANDROID)
 class ScreenOrientationDelegate;
@@ -191,7 +190,7 @@ class CONTENT_EXPORT BrowserMainLoop {
 
   midi::MidiService* midi_service() const { return midi_service_.get(); }
 
-  // Returns the task runner for tasks that that are critical to producing a new
+  // Returns the task runner for tasks that are critical to producing a new
   // CompositorFrame on resize. On Mac this will be the task runner provided by
   // WindowResizeHelperMac, on other platforms it will just be the thread task
   // runner.
@@ -390,7 +389,7 @@ class CONTENT_EXPORT BrowserMainLoop {
   // END Members initialized in |PostCreateThreads()| --------------------------
 
   // Members initialized in |PreMainMessageLoopRun()| --------------------------
-  scoped_refptr<responsiveness::Watcher> responsiveness_watcher_;
+  std::unique_ptr<base::responsiveness::Watcher> responsiveness_watcher_;
   base::CallbackListSubscription idle_callback_subscription_;
 
   // Members not associated with a specific phase.

@@ -519,10 +519,10 @@
 <translation id="5045550434625856497">Ugyldig adgangskode</translation>
 <translation id="5059127710849015030">Nepalesisk translitteration</translation>
 <translation id="5068919226082848014">Pizza</translation>
+<translation id="5075336522277785691"><ph name="EXTENSION_NAME" /> har angivet regler for tilsidesættelse af proxy</translation>
 <translation id="5081517858322016911"><ph name="TOTAL_FILE_SIZE" /> filer slettes</translation>
 <translation id="508423945471810158">Flytter <ph name="NUMBER_OF_ITEMS" /> elementer til <ph name="FOLDER_NAME" /></translation>
 <translation id="509429900233858213">Der opstod en fejl.</translation>
-<translation id="5102922915594634436">Administrer synkroniserede mapper</translation>
 <translation id="5109254780565519649">Der opstod en fejl. Nogle elementer er muligvis ikke blevet gendannet.</translation>
 <translation id="5110329002213341433">Engelsk (Canada)</translation>
 <translation id="5119780910075847424">Synkronisering er sat på pause</translation>
@@ -558,7 +558,6 @@
 <translation id="5305688511332277257">Ingen installeret</translation>
 <translation id="5317780077021120954">Gem</translation>
 <translation id="5318819489018851358">Del med Linux</translation>
-<translation id="5330145655348521461">Disse filer blev åbnet på en anden computer. Skift til <ph name="USER_NAME" /> (<ph name="MAIL_ADDRESS" />) for at se dem.</translation>
 <translation id="5330512191124428349">Hent oplysninger</translation>
 <translation id="535792325654997756">Person med katte</translation>
 <translation id="5358764674931277">Billedfrekvens</translation>
@@ -699,7 +698,6 @@
 <translation id="636254897931573416">Ugyldig værdi for match af domænesuffiks</translation>
 <translation id="6364301859968397756">Organisationens lagerplads er opbrugt</translation>
 <translation id="6367976544441405720">Varevogn</translation>
-<translation id="637062427944097960">Denne fil blev åbnet på en anden computer. Skift til <ph name="USER_NAME" /> (<ph name="MAIL_ADDRESS" />) for at se den.</translation>
 <translation id="6394388407447716302">Skrivebeskyttet</translation>
 <translation id="6395575651121294044"><ph name="NUMBER_OF_FILES" /> elementer</translation>
 <translation id="6407769893376380348"><ph name="FILE_NAME" /> kunne ikke flyttes, fordi den er krypteret.</translation>
@@ -1024,7 +1022,7 @@
 <translation id="8688591111840995413">Forkert adgangskode</translation>
 <translation id="8698464937041809063">Google-tegning</translation>
 <translation id="8698877009525468705">Denne fil er fortrolig og underlagt begrænsninger i henhold til administratorpolitikken.</translation>
-<translation id="8712637175834984815">Forstået</translation>
+<translation id="8712637175834984815">OK</translation>
 <translation id="8713112442029511308">Maltesisk</translation>
 <translation id="8714406895390098252">Cykel</translation>
 <translation id="8719721339511222681"><ph name="ENTRY_NAME" /> er valgt.</translation>

@@ -4,7 +4,6 @@
 """Validate mojo attributes are allowed in Chrome before generation."""
 
 import mojom.generate.check as check
-import mojom.generate.module as module
 
 _COMMON_ATTRIBUTES = {
   'EnableIf',
@@ -70,7 +69,11 @@ _MODULE_ATTRIBUTES = _COMMON_ATTRIBUTES | {
   'IncludeSendValidation',
 }
 
-_PARAMETER_ATTRIBUTES = _COMMON_FIELD_ATTRIBUTES
+_PARAMETER_ATTRIBUTES = _COMMON_FIELD_ATTRIBUTES | {
+  'Unverified',
+}
+
+_RESPONSE_PARAMETER_ATTRIBUTES = _COMMON_FIELD_ATTRIBUTES
 
 _STRUCT_ATTRIBUTES = _COMMON_ATTRIBUTES | {
   'CustomSerializer',
@@ -182,7 +185,7 @@ class Check(check.Check):
     if not attributes:
       return
     for attribute in attributes:
-      if not attribute in allowed:
+      if attribute not in allowed:
         # Is there a close misspelling?
         hint = self._Respell(allowed, attribute)
         raise check.CheckException(
@@ -193,7 +196,7 @@ class Check(check.Check):
     if enum.attributes:
       self._CheckAttributes("enum", _ENUM_ATTRIBUTES, enum.attributes)
       full_name = f"{self.module.mojom_namespace}.{enum.mojom_name}"
-      if 'Stable' in enum.attributes and not 'Extensible' in enum.attributes:
+      if 'Stable' in enum.attributes and 'Extensible' not in enum.attributes:
         raise check.CheckException(
           self.module, f"[Extensible] required on [Stable] enum {full_name}"
         )
@@ -204,7 +207,7 @@ class Check(check.Check):
           "no new uses should be introduced",
         )
       if full_name in _NATIVE_ALLOWLIST and (
-        not enum.attributes or not 'Native' in enum.attributes
+        not enum.attributes or 'Native' not in enum.attributes
       ):
         raise check.CheckException(
           self.module, f"{full_name} can be removed from _NATIVE_ALLOWLIST"
@@ -224,10 +227,21 @@ class Check(check.Check):
         self._CheckAttributes(
           "parameter", _PARAMETER_ATTRIBUTES, param.attributes
         )
+        if param.attributes and 'Unverified' in param.attributes:
+          val = param.attributes['Unverified']
+          if val is not True:
+            raise check.CheckException(
+              self.module,
+              f"attribute Unverified on parameter "
+              f"{interface.mojom_name}.{method.mojom_name}.{param.mojom_name} "
+              f"must not specify a value",
+            )
       if method.response_parameters:
         for param in method.response_parameters:
           self._CheckAttributes(
-            "parameter", _PARAMETER_ATTRIBUTES, param.attributes
+            "response parameter",
+            _RESPONSE_PARAMETER_ATTRIBUTES,
+            param.attributes,
           )
     for enum in interface.enums:
       self._CheckEnumAttributes(enum)
@@ -246,7 +260,7 @@ class Check(check.Check):
           "no new uses should be introduced",
         )
     if full_name in _NATIVE_ALLOWLIST and (
-      not struct.attributes or not 'Native' in struct.attributes
+      not struct.attributes or 'Native' not in struct.attributes
     ):
       raise check.CheckException(
         self.module, f"{full_name} can be removed from _NATIVE_ALLOWLIST"

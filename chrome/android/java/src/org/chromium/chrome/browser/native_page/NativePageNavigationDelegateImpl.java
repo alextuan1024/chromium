@@ -10,6 +10,7 @@ import android.app.Activity;
 
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
+import org.chromium.chrome.browser.download.DownloadUtils;
 import org.chromium.chrome.browser.incognito.IncognitoUtils;
 import org.chromium.chrome.browser.multiwindow.MultiInstanceOrchestratorFactory;
 import org.chromium.chrome.browser.multiwindow.MultiWindowUtils;
@@ -50,7 +51,7 @@ public class NativePageNavigationDelegateImpl implements NativePageNavigationDel
 
     @Override
     public boolean isOpenInIncognitoEnabled() {
-        return IncognitoUtils.isIncognitoModeEnabled(mProfile);
+        return !mProfile.isOffTheRecord() && IncognitoUtils.isIncognitoModeEnabled(mProfile);
     }
 
     @Override
@@ -59,12 +60,17 @@ public class NativePageNavigationDelegateImpl implements NativePageNavigationDel
     }
 
     @Override
+    public boolean isDownloadRestrictedByPolicy() {
+        return DownloadUtils.isDownloadRestrictedByPolicy(mProfile);
+    }
+
+    @Override
     public @Nullable Tab openUrl(int windowOpenDisposition, LoadUrlParams loadUrlParams) {
         Tab loadingTab = null;
 
         switch (windowOpenDisposition) {
             case WindowOpenDisposition.CURRENT_TAB:
-                mHost.loadUrl(loadUrlParams, mTabModelSelector.isIncognitoSelected());
+                mHost.loadUrl(loadUrlParams, mProfile.isOffTheRecord());
                 loadingTab = mTab;
                 break;
             case WindowOpenDisposition.NEW_FOREGROUND_TAB:
@@ -101,7 +107,7 @@ public class NativePageNavigationDelegateImpl implements NativePageNavigationDel
                 loadUrlParams,
                 TabLaunchType.FROM_LONGPRESS_BACKGROUND_IN_GROUP,
                 mTab,
-                /* incognito= */ false);
+                /* incognito= */ mProfile.isOffTheRecord());
     }
 
     private @Nullable Tab openUrlInNewTab(LoadUrlParams loadUrlParams, int windowOpenDisposition) {
@@ -110,7 +116,7 @@ public class NativePageNavigationDelegateImpl implements NativePageNavigationDel
             tabLaunchType = TabLaunchType.FROM_LONGPRESS_FOREGROUND;
         }
         return mTabModelSelector.openNewTab(
-                loadUrlParams, tabLaunchType, mTab, /* incognito= */ false);
+                loadUrlParams, tabLaunchType, mTab, /* incognito= */ mProfile.isOffTheRecord());
     }
 
     private void saveUrlForOffline(String url) {

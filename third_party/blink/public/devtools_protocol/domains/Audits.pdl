@@ -36,7 +36,6 @@ experimental domain Audits
       ExcludeSameSiteLax
       ExcludeSameSiteStrict
       ExcludeDomainNonASCII
-      ExcludeThirdPartyCookieBlockedInFirstPartySet
       ExcludeThirdPartyPhaseout
       ExcludePortMismatch
       ExcludeSchemeMismatch
@@ -407,6 +406,7 @@ experimental domain Audits
       FormModelContextMissingToolDescription
       FormModelContextRequiredParameterMissingName
       FormModelContextParameterMissingName
+      GeolocationPromptWithoutUserGesture
 
   # Depending on the concrete errorType, different properties are set.
   type GenericIssueDetails extends object

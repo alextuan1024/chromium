@@ -6,6 +6,9 @@
 
 #include "base/android/jni_android.h"
 #include "base/feature_list.h"
+#include "base/functional/callback_helpers.h"
+#include "base/metrics/user_metrics.h"
+#include "base/metrics/user_metrics_action.h"
 #include "base/notimplemented.h"
 #include "base/notreached.h"
 #include "base/scoped_observation.h"
@@ -15,40 +18,45 @@
 #include "chrome/browser/glic/android/glic_helper_android.h"
 #include "chrome/browser/glic/common/panel_focus_dependent_hotkey_manager.h"
 #include "chrome/browser/glic/common/panel_visibility_dependent_hotkey_manager.h"
+#include "chrome/browser/glic/glic_pref_names.h"
+#include "chrome/browser/glic/host/glic_drag_and_drop_util.h"
+#include "chrome/browser/glic/host/guest_util.h"
 #include "chrome/browser/glic/public/features.h"
+#include "chrome/browser/glic/public/glic_enabling.h"
+#include "chrome/browser/glic/public/glic_keyed_service.h"
+#include "chrome/browser/glic/public/glic_keyed_service_factory.h"
 #include "chrome/browser/glic/public/widget/glic_side_panel_coordinator_android.h"
 #include "chrome/browser/glic/service/metrics/glic_instance_metrics.h"
 #include "chrome/browser/glic/widget/conversions.h"
+#include "chrome/browser/glic/widget/glic_co_browse_views.h"
 #include "chrome/browser/glic/widget/glic_inactive_side_panel_ui_android.h"
 #include "chrome/browser/glic/widget/web_contents_delegate_util.h"
 #include "chrome/browser/media/webrtc/media_capture_devices_dispatcher.h"
+#include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_window/public/browser_collection.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/common/chrome_features.h"
 #include "components/input/native_web_keyboard_event.h"
+#include "components/permissions/permission_recovery_success_rate_tracker.h"
+#include "components/prefs/pref_service.h"
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/file_select_listener.h"
 #include "content/public/browser/render_widget_host_view.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/drop_data.h"
+#include "mojo/public/cpp/bindings/callback_helpers.h"
 #include "third_party/blink/public/common/input/web_input_event.h"
 #include "third_party/blink/public/common/mediastream/media_stream_request.h"
 #include "third_party/blink/public/mojom/mediastream/media_stream.mojom.h"
 #include "ui/android/accelerator_manager_android.h"
 #include "ui/android/window_android.h"
 #include "ui/base/base_window.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "ui/content_accelerators/accelerator_util.h"
 #include "ui/events/keycodes/keyboard_codes.h"
 
 namespace glic {
-
-namespace {
-
-// Android runtime permission required to capture audio.
-constexpr char kRecordAudioPermission[] = "android.permission.RECORD_AUDIO";
-
-}  // namespace
 
 GlicSidePanelUi::GlicSidePanelUi(Profile* profile,
                                  base::WeakPtr<tabs::TabInterface> tab,
@@ -94,8 +102,25 @@ GlicSidePanelUi::GlicSidePanelUi(Profile* profile,
   // PrivilegedWebContents APIs instead of setting the delegate directly.
   content::WebContents* web_contents = delegate_->host().webui_contents();
   SetWebContentsDelegate(web_contents, /*delegate=*/this);
+  ConfigureGlicDragAndDropForWebContents(web_contents);
 
-  glic_side_panel_coordinator->SetWebContents(web_contents);
+  if (!glic_side_panel_coordinator->GetCoBrowseViews()) {
+    glic_side_panel_coordinator->SetCoBrowseViews(
+        std::make_unique<GlicCoBrowseViews>(
+            tab_, profile_, glic_side_panel_coordinator->SupportsPeek()));
+  }
+  co_browse_views_ =
+      glic_side_panel_coordinator->GetCoBrowseViews()->GetWeakPtr();
+  co_browse_views_resetter_ = co_browse_views_->Configure({
+      .web_contents = web_contents,
+      .is_loading = delegate_->host().IsShowingNativeLoading(),
+      .close_callback =
+          base::BindRepeating(&GlicSidePanelUi::Close,
+                              weak_ptr_factory_.GetWeakPtr(), CloseOptions()),
+      .native_fre_accepted_callback =
+          base::BindRepeating(&GlicSidePanelUi::OnNativeFreAccepted,
+                              weak_ptr_factory_.GetWeakPtr()),
+  });
 
   host_observation_.Observe(&delegate_->host());
   panel_state_.kind = mojom::PanelStateKind::kAttached;
@@ -107,6 +132,7 @@ GlicSidePanelUi::~GlicSidePanelUi() {
   // `panel_` weak pointers) is still valid.
   panel_focus_dependent_hotkey_manager_.reset();
   panel_visibility_dependent_hotkey_manager_.reset();
+  co_browse_views_resetter_.RunAndReset();
   content::WebContents* web_contents = delegate_->host().webui_contents();
   SetWebContentsDelegate(web_contents, /*delegate=*/nullptr,
                          /*expected_delegate=*/this);
@@ -123,11 +149,15 @@ void GlicSidePanelUi::Show(const ShowOptions& options) {
     return;
   }
   panel_state_.kind = mojom::PanelStateKind::kAttached;
-  delegate_->NotifyPanelStateChanged();
+  delegate_->UpdatePanelState();
   delegate_->host().FloatingPanelCanAttachChanged(false);
   panel_visibility_dependent_hotkey_manager_->InitializeAccelerators();
   panel_focus_dependent_hotkey_manager_->InitializeAccelerators();
 
+  if (co_browse_views_) {
+    co_browse_views_->PrepareForShow(options.fre_override ==
+                                     mojom::FreOverride::kNativeFre);
+  }
   glic_side_panel_coordinator->Show(ConvertToCoordinatorShowOptions(
       options, glic_side_panel_coordinator->SupportsPeek()));
 }
@@ -209,24 +239,33 @@ void GlicSidePanelUi::ClosePanel() {
   Close(CloseOptions());
 }
 
-void GlicSidePanelUi::OnReload() {
-  auto* glic_side_panel_coordinator = GetGlicSidePanelCoordinator();
-  if (glic_side_panel_coordinator) {
-    glic_side_panel_coordinator->SetWebContents(
-        delegate_->host().webui_contents());
+void GlicSidePanelUi::ContentsCreated() {
+  content::WebContents* web_contents = delegate_->host().webui_contents();
+  SetWebContentsDelegate(web_contents, /*delegate=*/this);
+  ConfigureGlicDragAndDropForWebContents(web_contents);
+  if (co_browse_views_) {
+    co_browse_views_->SetIsLoading(delegate_->host().IsShowingNativeLoading());
+    co_browse_views_->SetWebContents(web_contents);
   }
 }
 
 void GlicSidePanelUi::ActiveWebContentsChanged(
     content::WebContents* new_contents) {
-  if (auto* glic_side_panel_coordinator = GetGlicSidePanelCoordinator()) {
-    content::WebContents* old_contents = delegate_->host().webui_contents();
-    if (old_contents && old_contents != new_contents) {
-      SetWebContentsDelegate(old_contents, /*delegate=*/nullptr,
-                             /*expected_delegate=*/this);
-    }
-    SetWebContentsDelegate(new_contents, /*delegate=*/this);
-    glic_side_panel_coordinator->SetWebContents(new_contents);
+  content::WebContents* old_contents = delegate_->host().webui_contents();
+  if (old_contents && old_contents != new_contents) {
+    SetWebContentsDelegate(old_contents, /*delegate=*/nullptr,
+                           /*expected_delegate=*/this);
+  }
+  SetWebContentsDelegate(new_contents, /*delegate=*/this);
+  ConfigureGlicDragAndDropForWebContents(new_contents);
+  if (co_browse_views_) {
+    co_browse_views_->SetWebContents(new_contents);
+  }
+}
+
+void GlicSidePanelUi::NativeLoadingStateChanged(bool is_showing) {
+  if (co_browse_views_) {
+    co_browse_views_->SetIsLoading(is_showing);
   }
 }
 
@@ -245,6 +284,13 @@ void GlicSidePanelUi::OnBrowserDeactivated(BrowserWindowInterface* browser) {
   }
   if (tab_ && tab_->GetBrowserWindowInterface() == browser) {
     delegate_->OnEmbedderWindowActivationChanged(false);
+    // Voice input is a foreground-only interaction on Android. When another
+    // app or system UI (e.g. an incoming call screen) takes over, the web
+    // client does not get a reliable signal to stop listening, so ask it
+    // explicitly.
+    if (base::FeatureList::IsEnabled(features::kGlicVoice)) {
+      delegate_->host().StopMicrophone(base::DoNothing());
+    }
   }
 }
 
@@ -278,13 +324,19 @@ EmbedderCloseReason MapStateToCloseReason(
 void GlicSidePanelUi::SidePanelStateChanged(
     GlicSidePanelCoordinator::State state) {
   if (state != GlicSidePanelCoordinator::State::kShown && tab_) {
+    // The panel is no longer in front of the user, so it must not keep
+    // listening.
+    if (base::FeatureList::IsEnabled(features::kGlicVoice)) {
+      delegate_->host().StopMicrophone(base::DoNothing());
+    }
+
     GlicInstanceMetrics::CloseReason reason =
         state == GlicSidePanelCoordinator::State::kBackgrounded
             ? GlicInstanceMetrics::CloseReason::kTabSwitched
             : GlicInstanceMetrics::CloseReason::kExplicitlyClosed;
     instance_metrics_->OnSidePanelClosed(tab_.get(), reason);
     panel_state_.kind = mojom::PanelStateKind::kHidden;
-    delegate_->NotifyPanelStateChanged();
+    delegate_->UpdatePanelState();
 
     // NOTE: `this` will be destroyed after this call.
     delegate_->DidCloseFor(SidePanelEmbedderKey{*tab_},
@@ -305,7 +357,14 @@ bool GlicSidePanelUi::CanDragEnter(
           features::kGlicDragAndDropFileUploadAndroid)) {
     return false;
   }
-  return !data.filenames.empty() || !data.file_system_files.empty();
+  // File upload is unavailable until the user completes the FRE; mirror the
+  // disabled "+" upload menu by rejecting drags too.
+  if (!GlicEnabling::HasConsentedForProfile(profile_)) {
+    return false;
+  }
+  // Page context eligibility for web drags is decided once, at drop, in
+  // `StartDragAndDropInvoke`.
+  return IsValidDragPayload(data);
 }
 
 void GlicSidePanelUi::RequestMediaAccessPermission(
@@ -319,25 +378,31 @@ void GlicSidePanelUi::RequestMediaAccessPermission(
 
   ui::WindowAndroid* window_android =
       web_contents ? web_contents->GetTopLevelNativeWindow() : nullptr;
-  if (window_android && blink::IsAudioInputMediaType(request.audio_type) &&
-      !window_android->HasPermission(kRecordAudioPermission)) {
-    // Explain why Gemini needs the microphone before handing off to the OS
-    // permission prompt.
-    //
-    // Note this is a two-step flow: Chrome's dialog is dismissed before the OS
-    // prompt is shown, so a user who accepts here can still deny the OS prompt.
-    // Keeping Chrome's dialog on screen while the OS prompt is up would mean
-    // driving the runtime permission request from Java instead (which is what
-    // the Glic settings microphone toggle does). That is intentionally not done
-    // here: the pre-prompt exists because Android only lets us show the OS
-    // prompt a limited number of times, so we want the user's intent before
-    // spending one of those.
-    ShowMicPermissionDialog(
+  MicPermissionUi* mic_permission_ui = GetMicPermissionUi();
+  if (window_android && mic_permission_ui &&
+      blink::IsAudioInputMediaType(request.audio_type) &&
+      (!IsMicSettingEnabled() ||
+       !mic_permission_ui->HasMicOsPermission(window_android))) {
+    // Explain why Gemini needs the microphone before asking for the OS
+    // permission. Android limits how often its prompt can be shown, so get the
+    // user's intent first. Chrome's dialog is dismissed before the OS prompt is
+    // shown, so a user who accepts here can still deny the OS prompt.
+    mic_permission_ui->ShowMicPermissionDialog(
         window_android,
-        base::BindOnce(&GlicSidePanelUi::OnMicPermissionDialogResult,
-                       weak_ptr_factory_.GetWeakPtr(),
-                       web_contents->GetWeakPtr(), request,
-                       std::move(callback)));
+        mojo::WrapCallbackWithDefaultInvokeIfNotRun(
+            base::BindOnce(&GlicSidePanelUi::OnMicPermissionDialogResult,
+                           weak_ptr_factory_.GetWeakPtr(),
+                           web_contents->GetWeakPtr(), request,
+                           std::move(callback)),
+            false));
+    return;
+  }
+
+  if (blink::IsAudioInputMediaType(request.audio_type) &&
+      !IsMicSettingEnabled()) {
+    RejectMediaAccessRequest(
+        std::move(callback),
+        blink::mojom::MediaStreamRequestResult::PERMISSION_DENIED);
     return;
   }
 
@@ -356,10 +421,53 @@ void GlicSidePanelUi::OnMicPermissionDialogResult(
         blink::mojom::MediaStreamRequestResult::PERMISSION_DENIED);
     return;
   }
+  MicPermissionUi* mic_permission_ui = GetMicPermissionUi();
+  if (!web_contents || !mic_permission_ui) {
+    RejectMediaAccessRequest(
+        std::move(callback),
+        blink::mojom::MediaStreamRequestResult::FAILED_DUE_TO_SHUTDOWN_OTHER);
+    return;
+  }
+
+  content::WebContents* contents = web_contents.get();
+  if (mic_permission_ui->HasMicOsPermission(
+          contents->GetTopLevelNativeWindow())) {
+    RequestSystemMediaAccessPermission(contents, request, std::move(callback));
+    return;
+  }
+
+  // Request the OS permission directly rather than through
+  // MediaCaptureDevicesDispatcher: with GlicNoWebview,
+  // GlicPwcPermissionDelegate grants the mic, which skips Chrome's usual prompt
+  // for missing Android permissions.
+  mic_permission_ui->RequestMicOsPermission(
+      contents->GetTopLevelNativeWindow(),
+      mojo::WrapCallbackWithDefaultInvokeIfNotRun(
+          base::BindOnce(&GlicSidePanelUi::OnMicOsPermissionResult,
+                         weak_ptr_factory_.GetWeakPtr(),
+                         std::move(web_contents), request, std::move(callback)),
+          false));
+}
+
+void GlicSidePanelUi::OnMicOsPermissionResult(
+    base::WeakPtr<content::WebContents> web_contents,
+    const content::MediaStreamRequest& request,
+    content::MediaResponseCallback callback,
+    bool granted) {
   if (!web_contents) {
     RejectMediaAccessRequest(
         std::move(callback),
         blink::mojom::MediaStreamRequestResult::FAILED_DUE_TO_SHUTDOWN_OTHER);
+    return;
+  }
+  if (!granted) {
+    if (MicPermissionUi* mic_permission_ui = GetMicPermissionUi()) {
+      mic_permission_ui->ShowMicDisabledSnackbar(
+          web_contents->GetTopLevelNativeWindow());
+    }
+    RejectMediaAccessRequest(
+        std::move(callback),
+        blink::mojom::MediaStreamRequestResult::PERMISSION_DENIED_BY_SYSTEM);
     return;
   }
 
@@ -367,10 +475,29 @@ void GlicSidePanelUi::OnMicPermissionDialogResult(
                                      std::move(callback));
 }
 
+MicPermissionUi* GlicSidePanelUi::GetMicPermissionUi() {
+  if (mic_permission_ui_for_testing_) {
+    return mic_permission_ui_for_testing_;
+  }
+  GlicKeyedService* service =
+      GlicKeyedServiceFactory::GetGlicKeyedService(profile_);
+  return service ? &service->GetMicPermissionUi() : nullptr;
+}
+
+bool GlicSidePanelUi::IsMicSettingEnabled() const {
+  return !base::FeatureList::IsEnabled(features::kGlicVoice) ||
+         (profile_ &&
+          profile_->GetPrefs()->GetBoolean(prefs::kGlicMicrophoneEnabled));
+}
+
 void GlicSidePanelUi::RequestSystemMediaAccessPermission(
     content::WebContents* web_contents,
     const content::MediaStreamRequest& request,
     content::MediaResponseCallback callback) {
+  if (web_contents) {
+    permissions::PermissionRecoverySuccessRateTracker::CreateForWebContents(
+        web_contents);
+  }
   MediaCaptureDevicesDispatcher::GetInstance()->ProcessMediaAccessRequest(
       web_contents, request,
       base::BindOnce(&GlicSidePanelUi::OnMediaAccessPermissionResult,
@@ -388,10 +515,22 @@ void GlicSidePanelUi::OnMediaAccessPermissionResult(
     blink::mojom::MediaStreamRequestResult result,
     std::unique_ptr<content::MediaStreamUI> ui) {
   is_requesting_media_permission_ = false;
-  if (result != blink::mojom::MediaStreamRequestResult::OK &&
-      blink::IsAudioInputMediaType(audio_type) && web_contents) {
-    // No-ops if the OS permission was actually granted.
-    ShowMicDisabledSnackbar(web_contents->GetTopLevelNativeWindow());
+  if (blink::IsAudioInputMediaType(audio_type)) {
+    if (result == blink::mojom::MediaStreamRequestResult::OK) {
+      if (!IsMicSettingEnabled() && profile_) {
+        profile_->GetPrefs()->SetBoolean(prefs::kGlicMicrophoneEnabled, true);
+        base::RecordAction(
+            base::UserMetricsAction("GlicMicrophonePermissionEnabled"));
+      }
+    } else if (web_contents) {
+      // Covers failures after the checks above, e.g. the OS permission was
+      // revoked mid-request. The snackbar is only shown if the OS permission is
+      // missing.
+      if (MicPermissionUi* mic_permission_ui = GetMicPermissionUi()) {
+        mic_permission_ui->ShowMicDisabledSnackbar(
+            web_contents->GetTopLevelNativeWindow());
+      }
+    }
   }
   std::move(callback).Run(stream_devices_set, result, std::move(ui));
   SyncEmbedderWindowActivation();
@@ -417,10 +556,17 @@ void GlicSidePanelUi::SyncEmbedderWindowActivation() {
   }
 }
 
+void GlicSidePanelUi::OnNativeFreAccepted() {
+  delegate_->AcceptNativeFre();
+}
+
 bool GlicSidePanelUi::CheckMediaAccessPermission(
     content::RenderFrameHost* render_frame_host,
     const url::Origin& security_origin,
     blink::mojom::MediaStreamType type) {
+  if (blink::IsAudioInputMediaType(type) && !IsMicSettingEnabled()) {
+    return false;
+  }
   return MediaCaptureDevicesDispatcher::GetInstance()
       ->CheckMediaAccessPermission(render_frame_host, security_origin, type);
 }
@@ -431,6 +577,15 @@ void GlicSidePanelUi::RunFileChooser(
     const blink::mojom::FileChooserParams& params) {
   FileSelectHelper::RunFileChooser(render_frame_host, std::move(listener),
                                    params);
+}
+
+bool GlicSidePanelUi::HandleWindowCreation(
+    content::RenderFrameHost* opener,
+    const GURL& target_url,
+    ui::mojom::WindowOpenDisposition disposition,
+    const blink::mojom::WindowFeatures& features) {
+  return MaybeHandleGlicWindowCreation(opener, target_url, disposition,
+                                       features);
 }
 
 void GlicSidePanelUi::FocusIfOpen() {
@@ -470,7 +625,7 @@ content::KeyboardEventProcessingResult GlicSidePanelUi::PreHandleKeyboardEvent(
       if (auto* delegate = tab_->GetContents()->GetDelegate()) {
         auto result =
             delegate->PreHandleKeyboardEvent(tab_->GetContents(), event);
-        if (result != content::KeyboardEventProcessingResult::NOT_HANDLED) {
+        if (result == content::KeyboardEventProcessingResult::HANDLED) {
           // If the primary tab handled Escape (e.g. exiting fullscreen mode or
           // pointer lock), also close the side panel.
           Close(CloseOptions());

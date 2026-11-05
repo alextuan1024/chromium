@@ -15,6 +15,7 @@
 #include "base/metrics/histogram_functions.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_split.h"
+#include "base/task/sequenced_task_runner.h"
 #include "base/task/thread_pool.h"
 #include "base/version.h"
 #include "chrome/browser/feature_engagement/tracker_factory.h"
@@ -178,6 +179,16 @@ void SearchPromotionManager::OnPromoAccepted() {
 }
 
 void SearchPromotionManager::OnPromoClosed() {
+  // Defer reading was_accepted_ to a subsequent task on the current sequence so
+  // it observes was_accepted_ after FeaturePromoControllerImpl::OnCustomAction
+  // invokes OnPromoAccepted.
+  base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+      FROM_HERE,
+      base::BindOnce(&SearchPromotionManager::RecordPromoClosedMetrics,
+                     weak_ptr_factory_.GetWeakPtr()));
+}
+
+void SearchPromotionManager::RecordPromoClosedMetrics() {
   // Capture current class state to determine if the user accepted the promo.
   bool accepted = was_accepted_;
   // Reset the accepted flag. This prevents subsequent triggers from
@@ -402,6 +413,23 @@ void SearchPromotionManager::PerformInstall() {
   if (extension_id.empty() || !instructions_url.is_valid()) {
     return;
   }
+
+  // With an escape hatch, PEH opens store_url instead if the extension isn't
+  // installed in time. An unusable store_url falls back to the regular install
+  // so an accepted promo is never dropped.
+  GURL escape_hatch_url;
+  std::optional<base::TimeDelta> escape_hatch_time =
+      feature_engagement::GetSearchPromotionEscapeHatchTime();
+  if (escape_hatch_time.has_value()) {
+    GURL store_url(feature_engagement::kSearchPromotionStoreUrl.Get());
+    if (store_url.is_valid() && store_url.SchemeIsHTTPOrHTTPS()) {
+      escape_hatch_url = std::move(store_url);
+    } else {
+      escape_hatch_time.reset();
+    }
+  }
+
   RunRegisterTask(std::make_unique<RegisterSearchPromotionTask>(
-      /*post_install_url=*/instructions_url, /*extension_id=*/extension_id));
+      /*post_install_url=*/instructions_url, /*extension_id=*/extension_id,
+      escape_hatch_url, escape_hatch_time));
 }

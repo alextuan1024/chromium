@@ -9,13 +9,13 @@
 #include <memory>
 #include <string>
 
-#include "base/task/single_thread_task_runner.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "mojo/public/cpp/bindings/receiver_set.h"
 #include "services/device/public/mojom/wake_lock_context.mojom.h"
 #include "services/device/public/mojom/wake_lock_provider.mojom.h"
 #include "services/device/wake_lock/wake_lock.h"
+#include "third_party/abseil-cpp/absl/container/flat_hash_set.h"
 
 namespace device {
 
@@ -23,8 +23,7 @@ namespace device {
 class WakeLockProvider : public mojom::WakeLockProvider,
                          public device::WakeLock::Observer {
  public:
-  WakeLockProvider(scoped_refptr<base::SingleThreadTaskRunner> file_task_runner,
-                   const WakeLockContextCallback& native_view_getter);
+  explicit WakeLockProvider(const WakeLockContextCallback& native_view_getter);
 
   WakeLockProvider(const WakeLockProvider&) = delete;
   WakeLockProvider& operator=(const WakeLockProvider&) = delete;
@@ -55,8 +54,7 @@ class WakeLockProvider : public mojom::WakeLockProvider,
   void OnWakeLockDeactivated(mojom::WakeLockType type) override;
   void OnWakeLockChanged(mojom::WakeLockType old_type,
                          mojom::WakeLockType new_type) override;
-  void OnConnectionError(mojom::WakeLockType type,
-                         WakeLock* wake_lock) override;
+  void OnConnectionError(WakeLock* wake_lock) override;
 
  private:
   struct WakeLockDataPerType;
@@ -64,7 +62,6 @@ class WakeLockProvider : public mojom::WakeLockProvider,
   // Returns |WakeLockDataPerType| associated with wake lock of type |type|.
   WakeLockDataPerType& GetWakeLockDataPerType(mojom::WakeLockType type);
 
-  scoped_refptr<base::SingleThreadTaskRunner> file_task_runner_;
   WakeLockContextCallback native_view_getter_;
 
   mojo::ReceiverSet<mojom::WakeLockProvider> receivers_;
@@ -72,6 +69,12 @@ class WakeLockProvider : public mojom::WakeLockProvider,
   // Stores wake lock count and observers associated with each wake lock type.
   std::map<mojom::WakeLockType, std::unique_ptr<WakeLockDataPerType>>
       wake_lock_store_;
+
+  // Stores all wake locks created via |GetWakeLockWithoutContext()|. An entry
+  // is removed from this map when an |OnConnectionError| is received. Keyed by
+  // |WakeLock| rather than by type, because a wake lock's type can change via
+  // |ChangeType()| over its lifetime.
+  absl::flat_hash_set<std::unique_ptr<WakeLock>> wake_locks_;
 };  // namespace device
 
 }  // namespace device

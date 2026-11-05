@@ -20,7 +20,7 @@ void AcceleratorManager::Register(
     const std::vector<ui::Accelerator>& accelerators,
     HandlerPriority priority,
     AcceleratorTarget* target) {
-  DCHECK(target);
+  CHECK(target, base::NotFatalUntil::M163);
 
   for (const ui::Accelerator& accelerator : accelerators) {
     accelerators_.GetOrInsertDefault(accelerator)
@@ -30,7 +30,7 @@ void AcceleratorManager::Register(
 
 void AcceleratorManager::Unregister(const Accelerator& accelerator,
                                     AcceleratorTarget* target) {
-  DCHECK(target);
+  CHECK(target, base::NotFatalUntil::M163);
   AcceleratorTargetInfo* target_info = accelerators_.Find(accelerator);
   if (!target_info) {
     DLOG(WARNING) << "Unregistering non-existing accelerator";
@@ -63,16 +63,29 @@ void AcceleratorManager::UnregisterAll(AcceleratorTarget* target) {
       continue;
     }
 
-    DCHECK(target_info.HasTargets());
+    CHECK(target_info.HasTargets(), base::NotFatalUntil::M163);
     ++map_iter;
   }
 }
+
+#if DCHECK_IS_ON()
+size_t AcceleratorManager::GetAcceleratorCountForTarget(
+    AcceleratorTarget* target) const {
+  size_t count = 0;
+  for (const auto& [accelerator, target_info] : accelerators_) {
+    if (target_info.Contains(target)) {
+      ++count;
+    }
+  }
+  return count;
+}
+#endif
 
 bool AcceleratorManager::IsRegistered(const Accelerator& accelerator) const {
   const AcceleratorTargetInfo* target_info = accelerators_.Find(accelerator);
 
   // If the accelerator is in the map, the target list should not be empty.
-  DCHECK(!target_info || target_info->HasTargets());
+  CHECK(!target_info || target_info->HasTargets(), base::NotFatalUntil::M163);
   return target_info != nullptr;
 }
 
@@ -82,7 +95,7 @@ bool AcceleratorManager::Process(const Accelerator& accelerator) {
     return false;
 
   // If the accelerator is in the map, the target list should not be empty.
-  DCHECK(target_info->HasTargets());
+  CHECK(target_info->HasTargets(), base::NotFatalUntil::M163);
 
   // We have to copy the target list here, because processing the accelerator
   // event handler may modify the list.
@@ -125,7 +138,7 @@ void AcceleratorManager::AcceleratorTargetInfo::RegisterWithPriority(
     // handler to the front. Otherwise, register it after the first (only)
     // priority handler.
     if (has_priority_handler_) {
-      DCHECK(!targets_.empty());
+      CHECK(!targets_.empty(), base::NotFatalUntil::M163);
       targets_.insert(++targets_.begin(), target);
     } else {
       targets_.push_front(target);
@@ -133,12 +146,12 @@ void AcceleratorManager::AcceleratorTargetInfo::RegisterWithPriority(
   }
 
   // Post condition. Ensure there's at least one target.
-  DCHECK(!targets_.empty());
+  CHECK(!targets_.empty(), base::NotFatalUntil::M163);
 }
 
 bool AcceleratorManager::AcceleratorTargetInfo::Unregister(
     AcceleratorTarget* target) {
-  DCHECK(!targets_.empty());
+  CHECK(!targets_.empty(), base::NotFatalUntil::M163);
 
   // Only one priority handler is allowed, so if we remove the first element we
   // no longer have a priority target.
@@ -156,7 +169,7 @@ bool AcceleratorManager::AcceleratorTargetInfo::Unregister(
 
 bool AcceleratorManager::AcceleratorTargetInfo::TryProcess(
     const Accelerator& accelerator) {
-  DCHECK(!targets_.empty());
+  CHECK(!targets_.empty(), base::NotFatalUntil::M163);
 
   for (AcceleratorTarget* target : targets_) {
     if (target->CanHandleAccelerators() &&
@@ -169,13 +182,13 @@ bool AcceleratorManager::AcceleratorTargetInfo::TryProcess(
 }
 
 bool AcceleratorManager::AcceleratorTargetInfo::HasPriorityHandler() const {
-  DCHECK(!targets_.empty());
+  CHECK(!targets_.empty(), base::NotFatalUntil::M163);
   return has_priority_handler_ && targets_.front()->CanHandleAccelerators();
 }
 
 bool AcceleratorManager::AcceleratorTargetInfo::Contains(
     AcceleratorTarget* target) const {
-  DCHECK(target);
+  CHECK(target, base::NotFatalUntil::M163);
   return std::ranges::contains(targets_, target);
 }
 

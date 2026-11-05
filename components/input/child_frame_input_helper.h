@@ -5,6 +5,8 @@
 #ifndef COMPONENTS_INPUT_CHILD_FRAME_INPUT_HELPER_H_
 #define COMPONENTS_INPUT_CHILD_FRAME_INPUT_HELPER_H_
 
+#include <optional>
+
 #include "components/input/render_widget_host_view_input.h"
 
 namespace input {
@@ -42,6 +44,8 @@ class COMPONENT_EXPORT(INPUT) ChildFrameInputHelper {
   gfx::PointF TransformPointToRootCoordSpace(const gfx::PointF& point);
 
   gfx::PointF TransformRootPointToViewCoordSpace(const gfx::PointF& point);
+  std::optional<gfx::PointF> TryTransformRootPointToViewCoordSpace(
+      const gfx::PointF& point);
 
   bool TransformPointToCoordSpaceForView(
       const gfx::PointF& point,
@@ -76,9 +80,9 @@ class COMPONENT_EXPORT(INPUT) ChildFrameInputHelper {
       const blink::WebGestureEvent& event,
       blink::mojom::InputEventResultState ack_result);
 
-  // Pass acked touchpad pinch or double tap gesture events to the root view
-  // for processing.
-  void ProcessTouchpadZoomEventAckInRoot(
+  // Pass acked touchpad pinch or double tap gesture events to the view that
+  // owns page scale for processing.
+  void ProcessTouchpadZoomEventAckInPinchTarget(
       const blink::WebGestureEvent& event,
       blink::mojom::InputEventResultSource ack_source,
       blink::mojom::InputEventResultState ack_result);
@@ -110,6 +114,8 @@ class COMPONENT_EXPORT(INPUT) ChildFrameInputHelper {
 
   // |delegate_| can be NULL.
   raw_ptr<Delegate> delegate_;
+
+  base::WeakPtr<RenderWidgetHostViewInput> touchpad_pinch_zoom_target_;
 };
 
 }  // namespace input

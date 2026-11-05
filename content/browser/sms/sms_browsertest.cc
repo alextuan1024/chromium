@@ -10,7 +10,9 @@
 #include "base/test/metrics/histogram_tester.h"
 #include "build/build_config.h"
 #include "components/ukm/test_ukm_recorder.h"
+#include "content/browser/bad_message.h"
 #include "content/browser/browser_main_loop.h"
+#include "content/browser/renderer_host/render_frame_host_impl.h"
 #include "content/browser/sms/sms_fetcher_impl.h"
 #include "content/browser/sms/test/mock_sms_provider.h"
 #include "content/browser/sms/test/mock_sms_web_contents_delegate.h"
@@ -24,14 +26,15 @@
 #include "content/public/test/content_browser_test.h"
 #include "content/public/test/content_browser_test_utils.h"
 #include "content/public/test/content_mock_cert_verifier.h"
-#include "content/public/test/fenced_frame_test_util.h"
 #include "content/public/test/prerender_test_util.h"
 #include "content/shell/browser/shell.h"
 #include "content/test/content_browser_test_utils_internal.h"
+#include "mojo/public/cpp/bindings/remote.h"
 #include "net/cert/mock_cert_verifier.h"
 #include "net/dns/mock_host_resolver.h"
 #include "net/test/embedded_test_server/default_handlers.h"
 #include "services/metrics/public/cpp/ukm_builders.h"
+#include "services/network/public/mojom/permissions_policy/permissions_policy_feature.mojom.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "third_party/blink/public/common/sms/webotp_service_outcome.h"
 
@@ -1208,6 +1211,61 @@ IN_PROC_BROWSER_TEST_F(SmsBrowserTest, RecordOutcomeWithSameOriginFrame) {
       /* is_cross_origin_frame */ false);
 }
 
+// Verifies that the browser rejects a WebOTPService request from a frame where
+// the "otp-credentials" Permissions Policy is disabled, e.g. when a compromised
+// renderer skips the renderer-side check.
+IN_PROC_BROWSER_TEST_F(SmsBrowserTest,
+                       BindWebOTPServiceBlockedByPermissionsPolicy) {
+  GURL main_url(
+      https_server_.GetURL("a.com", "/cross_site_iframe_factory.html?a(b)"));
+  EXPECT_TRUE(NavigateToURL(shell(), main_url));
+
+  FrameTreeNode* root = static_cast<WebContentsImpl*>(shell()->web_contents())
+                            ->GetPrimaryFrameTree()
+                            .root();
+  RenderFrameHostImpl* child_rfh = root->child_at(0)->current_frame_host();
+  // The policy is not delegated to cross-origin iframes by default.
+  ASSERT_FALSE(child_rfh->IsFeatureEnabled(
+      network::mojom::PermissionsPolicyFeature::kOTPCredentials));
+
+  RenderProcessHostBadIpcMessageWaiter kill_waiter(child_rfh->GetProcess());
+  mojo::Remote<blink::mojom::WebOTPService> service;
+  child_rfh->browser_interface_broker_receiver_for_testing()
+      .internal_state()
+      ->impl()
+      ->GetInterface(service.BindNewPipeAndPassReceiver());
+
+  ASSERT_FALSE(child_rfh->DocumentUsedWebOTP());
+  EXPECT_EQ(bad_message::BIBI_BIND_WEBOTP_SERVICE_BLOCKED_BY_PERMISSIONS_POLICY,
+            kill_waiter.Wait());
+}
+
+// Verifies that a cross-origin iframe can still bind WebOTPService when the
+// embedder delegates the "otp-credentials" Permissions Policy to it.
+IN_PROC_BROWSER_TEST_F(SmsBrowserTest,
+                       BindWebOTPServiceAllowedByPermissionsPolicy) {
+  GURL main_url(https_server_.GetURL(
+      "a.com", "/cross_site_iframe_factory.html?a(b{allow-otp-credentials})"));
+  EXPECT_TRUE(NavigateToURL(shell(), main_url));
+
+  FrameTreeNode* root = static_cast<WebContentsImpl*>(shell()->web_contents())
+                            ->GetPrimaryFrameTree()
+                            .root();
+  RenderFrameHostImpl* child_rfh = root->child_at(0)->current_frame_host();
+  ASSERT_TRUE(child_rfh->IsFeatureEnabled(
+      network::mojom::PermissionsPolicyFeature::kOTPCredentials));
+
+  mojo::Remote<blink::mojom::WebOTPService> service;
+  child_rfh->browser_interface_broker_receiver_for_testing()
+      .internal_state()
+      ->impl()
+      ->GetInterface(service.BindNewPipeAndPassReceiver());
+
+  EXPECT_TRUE(child_rfh->DocumentUsedWebOTP());
+  service.FlushForTesting();
+  EXPECT_TRUE(service.is_connected());
+}
+
 class MockSmsPrerenderingWebContentsDelegate : public WebContentsDelegate {
  public:
   MockSmsPrerenderingWebContentsDelegate() = default;
@@ -1296,54 +1354,6 @@ IN_PROC_BROWSER_TEST_F(SmsPrerenderingBrowserTest,
   // Activate the prerendered page.
   prerender_helper()->NavigatePrimaryPage(prerender_url);
   run_loop.Run();
-}
-
-class SmsFencedFrameBrowserTest : public SmsBrowserTest {
- public:
-  SmsFencedFrameBrowserTest() = default;
-  ~SmsFencedFrameBrowserTest() override = default;
-
-  void SetUpOnMainThread() override {
-    ASSERT_TRUE(embedded_test_server()->Start());
-    SmsBrowserTest::SetUpOnMainThread();
-  }
-
-  WebContents* web_contents() { return shell()->web_contents(); }
-
-  content::test::FencedFrameTestHelper& fenced_frame_test_helper() {
-    return fenced_frame_helper_;
-  }
-
- private:
-  content::test::FencedFrameTestHelper fenced_frame_helper_;
-};
-
-// Tests that FencedFrame doesn't record any Sms metrics.
-IN_PROC_BROWSER_TEST_F(SmsFencedFrameBrowserTest,
-                       DoNotRecordSmsMetricsOnFencedFrame) {
-  GURL initial_url(https_server_.GetURL("/simple_page.html"));
-  EXPECT_TRUE(NavigateToURL(shell(), initial_url));
-
-  auto provider = std::make_unique<MockSmsProvider>();
-  MockSmsProvider* mock_provider_ptr = provider.get();
-  BrowserMainLoop::GetInstance()->SetSmsProviderForTesting(std::move(provider));
-  shell()->web_contents()->SetDelegate(&delegate_);
-
-  // Retrieve method should not be called by a fenced frame.
-  EXPECT_CALL(*mock_provider_ptr, Retrieve(_, _)).Times(0);
-
-  // Create a fenced frame and load a webotp page.
-  GURL fenced_frame_url(
-      https_server_.GetURL("a.test", "/fenced_frames/page_with_webotp.html"));
-  RenderFrameHost* fenced_frame_host =
-      fenced_frame_test_helper().CreateFencedFrame(
-          web_contents()->GetPrimaryMainFrame(), fenced_frame_url);
-  ASSERT_TRUE(fenced_frame_host);
-
-  // Check that a WebOTPService object is not created and do not record any
-  // metrics on the fenced frame.
-  EXPECT_FALSE(fenced_frame_host->DocumentUsedWebOTP());
-  ExpectNoOutcomeUKM();
 }
 
 }  // namespace content

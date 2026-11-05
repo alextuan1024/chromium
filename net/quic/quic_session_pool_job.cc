@@ -4,9 +4,16 @@
 
 #include "net/quic/quic_session_pool_job.h"
 
+#include <string>
+#include <string_view>
+#include <vector>
+
 #include "base/debug/dump_without_crashing.h"
 #include "base/memory/weak_ptr.h"
+#include "base/metrics/histogram_functions.h"
+#include "base/strings/strcat.h"
 #include "base/trace_event/trace_event.h"
+#include "net/base/address_family.h"
 #include "net/base/completion_once_callback.h"
 #include "net/base/network_change_notifier.h"
 #include "net/base/network_handle.h"
@@ -16,6 +23,7 @@
 #include "net/dns/host_resolver.h"
 #include "net/log/net_log_with_source.h"
 #include "net/quic/address_utils.h"
+#include "net/quic/quic_chromium_client_session.h"
 #include "net/quic/quic_crypto_client_config_handle.h"
 #include "net/quic/quic_http_stream.h"
 #include "net/quic/quic_session_pool.h"
@@ -121,7 +129,60 @@ void QuicSessionPool::Job::OnQuicSessionCreationComplete(int rv) {
   }
 }
 
+void QuicSessionPool::Job::NotifyRequests(
+    base::WeakPtr<Job> weak_this,
+    base::FunctionRef<void(QuicSessionRequest&)> notify) {
+  // A notified request may reenter the pool and add or remove requests on
+  // this job, or destroy the job/pool. Iterate over a snapshot of WeakPtrs and
+  // skip requests that were removed or destroyed.
+  std::vector<base::WeakPtr<QuicSessionRequest>> snapshot;
+  snapshot.reserve(requests().size());
+  for (QuicSessionRequest* request : requests()) {
+    snapshot.push_back(request->GetWeakPtr());
+  }
+  for (const auto& weak_request : snapshot) {
+    if (!weak_this) {
+      return;
+    }
+    if (!weak_request) {
+      continue;
+    }
+    if (!weak_this->requests().contains(weak_request.get())) {
+      continue;
+    }
+    notify(*weak_request);
+  }
+}
+
+void QuicSessionPool::Job::NotifyRequestsOfSessionCreation(
+    base::WeakPtr<Job> weak_this,
+    int rv) {
+  NotifyRequests(std::move(weak_this), [rv](QuicSessionRequest& request) {
+    request.OnQuicSessionCreationComplete(rv);
+  });
+}
+
 void QuicSessionPool::Job::UpdatePriority(RequestPriority old_priority,
                                           RequestPriority new_priority) {}
+
+void QuicSessionPool::Job::RecordCompleteTime(
+    const QuicChromiumClientSession* session) const {
+  const base::TimeDelta complete_time = base::TimeTicks::Now() - creation_time_;
+  if (!session) {
+    base::UmaHistogramMediumTimes("Net.QuicSessionPool.JobCompleteTime.Failure",
+                                  complete_time);
+    return;
+  }
+
+  constexpr std::string_view kSuccessHistogramName =
+      "Net.QuicSessionPool.JobCompleteTime.Success";
+  base::UmaHistogramMediumTimes(kSuccessHistogramName, complete_time);
+  const AddressFamily address_family =
+      GetAddressFamily(ToIPAddress(session->peer_address().host()));
+  base::UmaHistogramMediumTimes(
+      base::StrCat(
+          {kSuccessHistogramName, ".", AddressFamilyToString(address_family)}),
+      complete_time);
+}
 
 }  // namespace net

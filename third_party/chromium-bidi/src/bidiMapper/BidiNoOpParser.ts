@@ -16,6 +16,7 @@
  */
 
 import type {
+  Autofill,
   Browser,
   BrowsingContext,
   Cdp,
@@ -35,6 +36,13 @@ import type {
 import type {BidiCommandParameterParser} from './BidiParser.js';
 
 export class BidiNoOpParser implements BidiCommandParameterParser {
+  // Autofill module
+  // keep-sorted start block=yes
+  parseAutofillTriggerParams(params: unknown): Autofill.TriggerParameters {
+    return params as Autofill.TriggerParameters;
+  }
+  // keep-sorted end
+
   // Bluetooth module
   // keep-sorted start block=yes
   parseDisableSimulationParameters(
@@ -86,6 +94,11 @@ export class BidiNoOpParser implements BidiCommandParameterParser {
     params: unknown,
   ): Bluetooth.SimulateGattDisconnectionParameters {
     return params as Bluetooth.SimulateGattDisconnectionParameters;
+  }
+  parseSimulateGattMtuChangeParameters(
+    params: unknown,
+  ): Bluetooth.SimulateGattMtuChangeParameters {
+    return params as Bluetooth.SimulateGattMtuChangeParameters;
   }
   parseSimulatePreconnectedPeripheralParameters(
     params: unknown,

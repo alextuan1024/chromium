@@ -7,10 +7,10 @@
 
 #import "base/ios/block_types.h"
 #import "base/memory/raw_ptr.h"
-#import "ios/chrome/browser/authentication/ui_bundled/signin/signin_constants.h"
 #import "ios/chrome/browser/settings/ui_bundled/settings_navigation_controller.h"
 #import "ios/chrome/browser/shared/coordinator/root_coordinator/root_coordinator.h"
 #import "ios/chrome/browser/shared/public/commands/gemini_commands.h"
+#import "ios/chrome/browser/shared/public/commands/scene_commands.h"
 #import "ios/chrome/browser/shared/public/commands/settings_commands.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/tab_grid_coordinator_delegate.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/tab_grid_paging.h"
@@ -20,15 +20,12 @@ class Browser;
 @protocol BrowserProviderInterface;
 enum class SafariDataImportEntryPoint;
 @protocol SafariDataImportUIHandler;
-@protocol SceneCommands;
 @class BrowserLayoutViewController;
 @class OpenNewTabCommand;
 @class SceneCoordinator;
 class SceneUrlLoadingService;
 @protocol SceneURLLoadingServiceDelegate;
 @class SettingsNavigationController;
-@class ShowSigninCommand;
-@class SigninCoordinator;
 @protocol TabOpening;
 enum class UserFeedbackSender;
 struct UrlLoadParams;
@@ -80,18 +77,37 @@ enum class WarningType;
 // Proxy properties for TabGridCoordinator.
 @property(nonatomic, readonly, strong) UIViewController* activeViewController;
 
-// Updates the incognito browser. Should only be sets when both the current
-// incognito browser and the new incognito browser are either nil or contain no
-// tabs. This must be called after the incognito browser has been deleted
-// because the incognito profile is deleted.
-@property(nonatomic, assign) Browser* incognitoBrowser;
-
 // The scene level component for url loading.
 @property(nonatomic, assign) raw_ptr<SceneUrlLoadingService>
     sceneURLLoadingService;
 
-// Sets the main, inactive, and incognito browsers from the given provider.
-- (void)setBrowsersFromProvider:(id<BrowserProviderInterface>)provider;
+// Connects the receiver to the main, inactive and incognito browsers of
+// `provider`: they back the UI created in `-start`, and the receiver handles
+// their scene-level commands (`SceneCommands`, `SettingsCommands` and
+// `GeminiCommands`, and `SceneSignInCommands` through its sign-in modal host).
+// Must be called once, before the coordinators of those browsers are started,
+// as they resolve these handlers when starting.
+- (void)connectBrowsersFromProvider:(id<BrowserProviderInterface>)provider;
+
+// Connects the receiver to `incognitoBrowser`, created after the incognito
+// profile was recreated, and starts handling its scene-level commands. Must be
+// called after `-disconnectIncognitoBrowser` and before the coordinator of
+// `incognitoBrowser` is started. Unlike `-disconnectIncognitoBrowser`, this
+// does not update the UI, as some UI components depend on the coordinator of
+// `incognitoBrowser`: it must be followed by `-propagateIncognitoBrowser` once
+// that coordinator is started.
+- (void)connectIncognitoBrowser:(Browser*)incognitoBrowser;
+
+// Disconnects the receiver from the current incognito browser, before it is
+// destroyed with the incognito profile: stops handling its scene-level commands
+// and clears it from the UI (see `-propagateIncognitoBrowser`).
+- (void)disconnectIncognitoBrowser;
+
+// Pushes the connected incognito browser, if any, to the tab grid, the app bar
+// and the fullscreen mediator. When an incognito browser is connected, must be
+// called after its coordinator is started, as some of these components resolve
+// its handlers.
+- (void)propagateIncognitoBrowser;
 
 // YES if the Tab Grid is currently being shown.
 - (BOOL)isTabGridActive;

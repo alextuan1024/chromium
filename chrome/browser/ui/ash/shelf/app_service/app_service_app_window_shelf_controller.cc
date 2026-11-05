@@ -26,7 +26,6 @@
 #include "chrome/browser/ash/crostini/crostini_util.h"
 #include "chrome/browser/ash/guest_os/guest_os_shelf_utils.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/ash/multi_user/multi_user_util.h"
 #include "chrome/browser/ui/ash/shelf/app_service/app_service_app_window_arc_tracker.h"
 #include "chrome/browser/ui/ash/shelf/app_service/app_service_app_window_crostini_tracker.h"
 #include "chrome/browser/ui/ash/shelf/app_service/app_service_app_window_shelf_item_controller.h"
@@ -35,7 +34,6 @@
 #include "chrome/browser/ui/ash/shelf/arc_app_window.h"
 #include "chrome/browser/ui/ash/shelf/chrome_shelf_controller.h"
 #include "chrome/browser/ui/ash/shelf/crostini_app_window.h"
-#include "chrome/browser/web_applications/web_app_utils.h"
 #include "chrome/grit/chrome_unscaled_resources.h"
 #include "chromeos/ash/components/borealis/borealis_util.h"
 #include "chromeos/ash/components/browser_delegate/browser_controller.h"
@@ -127,7 +125,7 @@ AppServiceAppWindowShelfController::ControllerForWindow(aura::Window* window) {
   }
 
   AppWindowBase* const app_window = it->second.get();
-  DCHECK(app_window);
+  CHECK(app_window, base::NotFatalUntil::M162);
   return app_window->controller();
 }
 
@@ -242,7 +240,7 @@ void AppServiceAppWindowShelfController::OnWindowVisibilityChanged(
 
 void AppServiceAppWindowShelfController::OnWindowDestroying(
     aura::Window* window) {
-  DCHECK(observed_windows_.IsObservingSource(window));
+  CHECK(observed_windows_.IsObservingSource(window), base::NotFatalUntil::M162);
   observed_windows_.RemoveObservation(window);
 
   if (arc_tracker_) {
@@ -688,7 +686,7 @@ void AppServiceAppWindowShelfController::UserHasAppOnActiveDesktop(
     aura::Window* window,
     const ash::ShelfID& shelf_id,
     content::BrowserContext* browser_context) {
-  DCHECK(browser_context);
+  CHECK(browser_context, base::NotFatalUntil::M162);
   // If the window was created for the active user, register it to show an item
   // on the shelf.
   if (proxy_->InstanceRegistry().Exists(window)) {
@@ -698,9 +696,10 @@ void AppServiceAppWindowShelfController::UserHasAppOnActiveDesktop(
 
   // If the window was created for the inactive user and it has been teleported
   // to the current user's desktop, register it to show an item on the shelf.
-  const AccountId current_account_id = multi_user_util::GetCurrentAccountId();
   auto* multi_user_window_manager =
       ash::Shell::Get()->multi_user_window_manager();
+  const AccountId current_account_id =
+      multi_user_window_manager->CurrentAccountId();
   aura::Window* other_window = nullptr;
   for (Profile* it : profile_list_) {
     apps::AppServiceProxy* proxy =
@@ -725,8 +724,7 @@ void AppServiceAppWindowShelfController::UserHasAppOnActiveDesktop(
     }
   }
   if (other_window) {
-    multi_user_window_manager->ShowWindowForUser(
-        window, multi_user_util::GetCurrentAccountId());
+    multi_user_window_manager->ShowWindowForUser(window, current_account_id);
     RegisterWindow(window, shelf_id);
   }
 }

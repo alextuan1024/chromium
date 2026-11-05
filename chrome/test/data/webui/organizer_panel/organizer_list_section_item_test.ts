@@ -4,20 +4,18 @@
 
 import 'chrome://organizer-panel.top-chrome/organizer_panel.js';
 
-import type {OrganizerListSectionItemElement, StackedFaviconsElement} from 'chrome://organizer-panel.top-chrome/organizer_panel.js';
-import {getFaviconForPageURL} from 'chrome://resources/js/icon.js';
+import type {OrganizerFaviconElement, OrganizerListSectionItemElement} from 'chrome://organizer-panel.top-chrome/organizer_panel.js';
+import type {CrIconElement} from 'chrome://resources/cr_elements/cr_icon/cr_icon.js';
+import {getDeepActiveElement} from 'chrome://resources/js/util.js';
 import {html} from 'chrome://resources/lit/v3_0/lit.rollup.js';
 import {assertDeepEquals, assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chai_assert.js';
 import {eventToPromise, isVisible, microtasksFinished} from 'chrome://webui-test/test_util.js';
 
 const TEST_TITLE_PARTS = ['Google Search'];
 const TEST_DESCRIPTION_PARTS = [{text: 'google.com'}, {text: '5 mins ago'}];
-const EXPECTED_ARIA_DESCRIPTION = 'google.com · 5 mins ago';
+const EXPECTED_ARIA_DESCRIPTION = 'google.com, 5 mins ago';
 const TEST_URL_1 = 'https://google.com';
 const TEST_URL_2 = 'https://youtube.com';
-
-const TEST_FAVICON_1 = getFaviconForPageURL(TEST_URL_1, false);
-const TEST_FAVICON_2 = getFaviconForPageURL(TEST_URL_2, false);
 
 const TEST_CUSTOM_ICON_ID = 'customGroupIcon';
 const TEST_CUSTOM_ICON_TEXT = 'Group';
@@ -55,6 +53,45 @@ suite('OrganizerListSectionItemTest', () => {
         TEST_DESCRIPTION_PARTS, descriptionElement.descriptionParts);
   });
 
+  test('combines multiple title and description parts for aria', async () => {
+    listItem.item = {
+      title: ['Google Search', 'YouTube'],
+      description: [
+        {text: 'google.com'},
+        {text: 'youtube.com'},
+        {text: '5 mins ago'},
+      ],
+    };
+    await microtasksFinished();
+
+    const crUrlListItem = listItem.$.crUrlListItem;
+    assertTrue(!!crUrlListItem);
+    assertEquals('Google Search, YouTube', crUrlListItem.itemAriaLabel);
+    assertEquals(
+        'google.com, youtube.com, 5 mins ago',
+        crUrlListItem.itemAriaDescription);
+  });
+
+  test(
+      'uses custom ariaLabel and ariaDescription overrides when provided',
+      async () => {
+        listItem.item = {
+          title: ['YouTube', 'Google Search'],
+          ariaLabel: ['Split view', 'YouTube', 'Google Search'],
+          description: [
+            {text: 'youtube.com', matchable: true},
+            {text: '5 mins ago', matchable: false},
+          ],
+          ariaDescription: ['5 mins ago'],
+        };
+        await microtasksFinished();
+
+        const crUrlListItem = listItem.$.crUrlListItem;
+        assertEquals(
+            'Split view, YouTube, Google Search', crUrlListItem.itemAriaLabel);
+        assertEquals('5 mins ago', crUrlListItem.itemAriaDescription);
+      });
+
   test('hides description element when description is absent', async () => {
     listItem.item = {
       title: TEST_TITLE_PARTS,
@@ -75,9 +112,12 @@ suite('OrganizerListSectionItemTest', () => {
     };
     await microtasksFinished();
 
-    const crUrlListItem = listItem.$.crUrlListItem;
-    assertTrue(!!crUrlListItem);
-    assertEquals(TEST_URL_1, crUrlListItem.url);
+    const favicon = listItem.shadowRoot.querySelector<OrganizerFaviconElement>(
+        'organizer-favicon');
+    assertTrue(!!favicon);
+    assertEquals('customIcon', favicon.getAttribute('slot'));
+    assertEquals(TEST_URL_1, favicon.url);
+    assertEquals('', favicon.secondaryUrl);
   });
 
   test('renders prefix icon with custom element', async () => {
@@ -108,7 +148,8 @@ suite('OrganizerListSectionItemTest', () => {
     assertTrue(!!crUrlListItem);
     assertTrue(crUrlListItem.hasAttribute('always-show-suffix'));
 
-    const trailingIcon = listItem.$.trailingIcon;
+    const trailingIcon =
+        listItem.shadowRoot.querySelector<CrIconElement>('#trailingIcon')!;
     assertTrue(!!trailingIcon);
     assertEquals('cr:star', trailingIcon.icon);
     assertFalse(trailingIcon.classList.contains('has-action-button'));
@@ -139,17 +180,38 @@ suite('OrganizerListSectionItemTest', () => {
     const trailingIcon = crUrlListItem.querySelector('#trailingIcon');
     assertEquals(null, trailingIcon);
 
-    const actionButton = listItem.$.actionButton;
+    const actionButton =
+        listItem.shadowRoot.querySelector<HTMLElement>('#actionButton')!;
     assertTrue(!!actionButton);
     assertEquals('cr:close', actionButton.getAttribute('iron-icon'));
     assertEquals('Close tab', actionButton.getAttribute('aria-label'));
+    assertFalse(actionButton.hasAttribute('title'));
 
     // Action button should be hidden when not hovered.
+    listItem.classList.remove('hovered');
+    listItem.$.crUrlListItem.classList.remove('hovered');
     assertFalse(isVisible(actionButton));
 
     // Action button should be displayed when hovered.
     listItem.classList.add('hovered');
     assertTrue(isVisible(actionButton));
+  });
+
+  test('renders hovered action button with tooltip', async () => {
+    listItem.item = {
+      title: ['Tab Group'],
+      hoveredActionButton: {
+        icon: 'cr:more-vert',
+        ariaLabel: 'More options',
+        tooltip: 'Options',
+      },
+    };
+    await microtasksFinished();
+
+    const actionButton =
+        listItem.shadowRoot.querySelector<HTMLElement>('#actionButton')!;
+    assertTrue(!!actionButton);
+    assertEquals('Options', actionButton.getAttribute('title'));
   });
 
   test('switches from trailing icon to action button on hover', async () => {
@@ -166,14 +228,18 @@ suite('OrganizerListSectionItemTest', () => {
     const crUrlListItem = listItem.$.crUrlListItem;
     assertTrue(!!crUrlListItem);
 
-    const trailingIcon = listItem.$.trailingIcon;
+    const trailingIcon =
+        listItem.shadowRoot.querySelector<CrIconElement>('#trailingIcon')!;
     assertTrue(!!trailingIcon);
     assertTrue(trailingIcon.classList.contains('has-action-button'));
 
-    const actionButton = listItem.$.actionButton;
+    const actionButton =
+        listItem.shadowRoot.querySelector<HTMLElement>('#actionButton')!;
     assertTrue(!!actionButton);
 
     // Initially, trailing icon is visible and action button is hidden.
+    listItem.classList.remove('hovered');
+    listItem.$.crUrlListItem.classList.remove('hovered');
     assertTrue(isVisible(trailingIcon));
     assertFalse(isVisible(actionButton));
 
@@ -202,7 +268,8 @@ suite('OrganizerListSectionItemTest', () => {
         listItem.item = item;
         await microtasksFinished();
 
-        const actionButton = listItem.$.actionButton;
+        const actionButton =
+            listItem.shadowRoot.querySelector<HTMLElement>('#actionButton')!;
         assertTrue(!!actionButton);
 
         let itemClicked = false;
@@ -223,11 +290,92 @@ suite('OrganizerListSectionItemTest', () => {
         assertFalse(itemClicked);
       });
 
+  test('right clicking item dispatches context-menu-click event', async () => {
+    const item = {
+      title: ['Tab Group'],
+    };
+    listItem.item = item;
+    listItem.hasContextMenu = true;
+    await microtasksFinished();
+
+    const contextMenuClickPromise =
+        eventToPromise('context-menu-click', listItem);
+    const event = new MouseEvent('contextmenu', {
+      bubbles: true,
+      cancelable: true,
+      clientX: 15,
+      clientY: 25,
+    });
+    listItem.$.crUrlListItem.dispatchEvent(event);
+    const contextMenuEvent = await contextMenuClickPromise as CustomEvent<{
+                               item: typeof item,
+                               x: number,
+                               y: number,
+                             }>;
+
+    assertTrue(event.defaultPrevented);
+    assertEquals(item, contextMenuEvent.detail.item);
+    assertEquals(15, contextMenuEvent.detail.x);
+    assertEquals(25, contextMenuEvent.detail.y);
+  });
+
+  test(
+      'right clicking item does not dispatch context-menu-click event ' +
+          'when hasContextMenu is false',
+      async () => {
+        const item = {
+          title: ['Open Tab'],
+        };
+        listItem.item = item;
+        listItem.hasContextMenu = false;
+        await microtasksFinished();
+
+        let eventFired = false;
+        listItem.addEventListener('context-menu-click', () => {
+          eventFired = true;
+        });
+        const event = new MouseEvent('contextmenu', {
+          bubbles: true,
+          cancelable: true,
+          clientX: 15,
+          clientY: 25,
+        });
+        listItem.$.crUrlListItem.dispatchEvent(event);
+
+        assertFalse(event.defaultPrevented);
+        assertFalse(eventFired);
+      });
+
+  test(
+      'resetActionButtonStateIfNeeded hides action button when not hovered',
+      async () => {
+        listItem.item = {
+          title: ['Group'],
+          hoveredActionButton: {
+            icon: 'cr:more-vert',
+            ariaLabel: 'More options',
+          },
+        };
+        await microtasksFinished();
+
+        const actionButton =
+            listItem.shadowRoot.querySelector<HTMLElement>('#actionButton')!;
+        listItem.classList.add('hovered');
+        listItem.$.crUrlListItem.classList.add('hovered');
+        actionButton.focus();
+        assertTrue(isVisible(actionButton));
+
+        listItem.classList.remove('hovered');
+        listItem.$.crUrlListItem.classList.remove('hovered');
+        listItem.resetActionButtonStateIfNeeded();
+        assertFalse(isVisible(actionButton));
+      });
+
   test(
       'renders prefix icon with multiple URLs as stacked favicons',
       async () => {
         listItem.item = {
-          title: ['Split View'],
+          title: ['Split view'],
           prefixIcon: {
             stackedFavicons: {
               urls: [TEST_URL_1, TEST_URL_2],
@@ -237,29 +385,19 @@ suite('OrganizerListSectionItemTest', () => {
         };
         await microtasksFinished();
 
-        const crUrlListItem = listItem.$.crUrlListItem;
-        assertTrue(!!crUrlListItem);
-        assertEquals(undefined, crUrlListItem.url);
-
-        const stackedFavicons =
-            listItem.shadowRoot.querySelector<StackedFaviconsElement>(
-                'stacked-favicons');
-        assertTrue(!!stackedFavicons);
-        assertEquals('customIcon', stackedFavicons.getAttribute('slot'));
-        assertEquals(TEST_URL_1, stackedFavicons.url);
-        assertEquals(TEST_URL_2, stackedFavicons.secondaryUrl);
-        assertEquals(
-            TEST_FAVICON_1,
-            stackedFavicons.$.firstFavicon.style.backgroundImage);
-        assertEquals(
-            TEST_FAVICON_2,
-            stackedFavicons.$.secondFavicon.style.backgroundImage);
-        assertFalse(stackedFavicons.stackVertically);
+        const favicon =
+            listItem.shadowRoot.querySelector<OrganizerFaviconElement>(
+                'organizer-favicon');
+        assertTrue(!!favicon);
+        assertEquals('customIcon', favicon.getAttribute('slot'));
+        assertEquals(TEST_URL_1, favicon.url);
+        assertEquals(TEST_URL_2, favicon.secondaryUrl);
+        assertFalse(favicon.stackVertically);
       });
 
-  test('forwards stacking orientation to stacked favicons', async () => {
+  test('forwards stacking orientation to organizer favicon', async () => {
     listItem.item = {
-      title: ['Split View Vertical'],
+      title: ['Split view vertical'],
       prefixIcon: {
         stackedFavicons: {
           urls: [TEST_URL_1, TEST_URL_2],
@@ -269,48 +407,38 @@ suite('OrganizerListSectionItemTest', () => {
     };
     await microtasksFinished();
 
-    const stackedFavicons =
-        listItem.shadowRoot.querySelector<StackedFaviconsElement>(
-            'stacked-favicons');
-    assertTrue(!!stackedFavicons);
-    assertTrue(stackedFavicons.stackVertically);
-    assertTrue(stackedFavicons.hasAttribute('stack-vertically'));
+    const favicon = listItem.shadowRoot.querySelector<OrganizerFaviconElement>(
+        'organizer-favicon');
+    assertTrue(!!favicon);
+    assertTrue(favicon.stackVertically);
   });
 
   test(
-      'does not render stacked favicons when single URL is provided',
+      'does not render organizer favicon when prefixIcon has no URL',
       async () => {
         listItem.item = {
-          title: ['Single URL'],
-          prefixIcon: {
-            url: TEST_URL_1,
-          },
+          title: ['No Icon'],
         };
         await microtasksFinished();
 
-        const stackedFavicons =
-            listItem.shadowRoot.querySelector('stacked-favicons');
-        assertEquals(null, stackedFavicons);
-        assertEquals(TEST_URL_1, listItem.$.crUrlListItem.url);
+        const favicon = listItem.shadowRoot.querySelector('organizer-favicon');
+        assertEquals(null, favicon);
       });
 
   test(
-      'forwards sliced highlight ranges to title and description elements',
+      'forwards highlight ranges to title and description elements',
       async () => {
         listItem.item = {
           title: ['Google Search', 'YouTube'],
           description: [{text: 'google.com'}, {text: '5 mins ago'}],
           highlightRanges: {
-            // "Google Search YouTube" -> "Google": [0, 6), "Search": [7, 13),
-            // "YouTube": [14, 21)
             title: [
-              {start: 0, length: 6},
-              {start: 14, length: 3},
+              [{start: 0, length: 6}],
+              [{start: 0, length: 3}],
             ],
-            // "google.com 5 mins ago" -> "google.com": [0, 10), "5 mins ago":
-            // [11, 21)
             description: [
-              {start: 0, length: 6},
+              [{start: 0, length: 6}],
+              [],
             ],
           },
         };
@@ -340,4 +468,239 @@ suite('OrganizerListSectionItemTest', () => {
         assertDeepEquals([[]], listItem.$.title.highlightRanges);
         assertDeepEquals([[]], listItem.$.description.highlightRanges);
       });
+
+  test('updates tabIndex from tabbable and supports focus()', async () => {
+    listItem.item = {
+      title: ['Google Search'],
+      hoveredActionButton: {
+        icon: 'cr:close',
+        ariaLabel: 'Close tab',
+      },
+    };
+    await microtasksFinished();
+
+    const actionButton =
+        listItem.shadowRoot.querySelector<HTMLElement>('#actionButton')!;
+    assertEquals(-1, listItem.$.crUrlListItem.getFocusableElement().tabIndex);
+    assertEquals(-1, actionButton.tabIndex);
+
+    listItem.tabbable = true;
+    await microtasksFinished();
+    assertEquals(0, listItem.$.crUrlListItem.getFocusableElement().tabIndex);
+    assertEquals(0, actionButton.tabIndex);
+
+    // Focusing actionButton directly when the row is not hovered or focused
+    // (as native Shift+Tab does) focuses and reveals actionButton.
+    assertFalse(isVisible(actionButton));
+    actionButton.focus();
+    assertEquals(actionButton, getDeepActiveElement());
+    assertTrue(isVisible(actionButton));
+
+    listItem.tabbable = false;
+    await microtasksFinished();
+    assertEquals(-1, listItem.$.crUrlListItem.getFocusableElement().tabIndex);
+    assertEquals(-1, actionButton.tabIndex);
+
+    listItem.focus();
+    assertEquals(
+        listItem.$.crUrlListItem.getFocusableElement(), getDeepActiveElement());
+
+    listItem.focusLast();
+    assertEquals(actionButton, getDeepActiveElement());
+
+    listItem.item = {title: ['Google Search']};
+    await microtasksFinished();
+    listItem.focusLast();
+    assertEquals(
+        listItem.$.crUrlListItem.getFocusableElement(), getDeepActiveElement());
+  });
+
+  test('tab navigation on item with action button', async () => {
+    listItem.item = {
+      title: ['Tab with close action'],
+      hoveredActionButton: {
+        icon: 'cr:close',
+        ariaLabel: 'Close tab',
+      },
+    };
+    await microtasksFinished();
+
+    listItem.focus();
+    assertEquals(
+        listItem.$.crUrlListItem.getFocusableElement(), getDeepActiveElement());
+
+    const actionButton =
+        listItem.shadowRoot.querySelector<HTMLElement>('#actionButton')!;
+    assertTrue(!!actionButton);
+
+    // Tab focuses action button
+    listItem.$.crUrlListItem.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'Tab',
+      bubbles: true,
+      composed: true,
+      cancelable: true,
+    }));
+    assertEquals(actionButton, getDeepActiveElement());
+
+    // Shift+Tab on action button returns focus to item
+    actionButton.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'Tab',
+      shiftKey: true,
+      bubbles: true,
+      composed: true,
+      cancelable: true,
+    }));
+    assertEquals(
+        listItem.$.crUrlListItem.getFocusableElement(), getDeepActiveElement());
+
+    // Tab on action button fires focus-next-section without preventing default
+    const whenFocusNextSection = eventToPromise('focus-next-section', listItem);
+    const tabEvent = new KeyboardEvent('keydown', {
+      key: 'Tab',
+      bubbles: true,
+      composed: true,
+      cancelable: true,
+    });
+    actionButton.dispatchEvent(tabEvent);
+    await whenFocusNextSection;
+    assertFalse(tabEvent.defaultPrevented);
+  });
+
+  test('tab navigation on item without action button', async () => {
+    listItem.item = {
+      title: ['Tab without action button'],
+    };
+    await microtasksFinished();
+
+    listItem.focus();
+
+    // Tab fires focus-next-section immediately
+    const whenFocusNextSection = eventToPromise('focus-next-section', listItem);
+    listItem.$.crUrlListItem.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'Tab',
+      bubbles: true,
+      composed: true,
+      cancelable: true,
+    }));
+    await whenFocusNextSection;
+  });
+
+  test('shift+tab on item fires focus-current-section', async () => {
+    listItem.item = {
+      title: ['Tab'],
+    };
+    await microtasksFinished();
+
+    listItem.focus();
+
+    const whenFocusCurrentSection =
+        eventToPromise('focus-current-section', listItem);
+    listItem.$.crUrlListItem.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'Tab',
+      shiftKey: true,
+      bubbles: true,
+      composed: true,
+      cancelable: true,
+    }));
+    await whenFocusCurrentSection;
+
+    let currentSectionFired = false;
+    listItem.addEventListener('focus-current-section', () => {
+      currentSectionFired = true;
+    });
+    listItem.tabbable = true;
+    await microtasksFinished();
+    listItem.$.crUrlListItem.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'Tab',
+      shiftKey: true,
+      bubbles: true,
+      composed: true,
+      cancelable: true,
+    }));
+    assertFalse(currentSectionFired);
+  });
+
+  function dispatchKeydown(element: HTMLElement, key: string): KeyboardEvent {
+    const event = new KeyboardEvent('keydown', {
+      key,
+      bubbles: true,
+      composed: true,
+      cancelable: true,
+    });
+    element.dispatchEvent(event);
+    return event;
+  }
+
+  async function setupItemWithActionButton(): Promise<{
+    itemFocusable: HTMLElement,
+    actionButton: HTMLElement,
+  }> {
+    listItem.item = {
+      title: ['Tab with close action'],
+      hoveredActionButton: {
+        icon: 'cr:close',
+        ariaLabel: 'Close tab',
+      },
+    };
+    await microtasksFinished();
+
+    const itemFocusable = listItem.$.crUrlListItem.getFocusableElement();
+    const actionButton =
+        listItem.shadowRoot.querySelector<HTMLElement>('#actionButton')!;
+    assertTrue(!!actionButton);
+
+    listItem.focus();
+    assertEquals(itemFocusable, getDeepActiveElement());
+    return {itemFocusable, actionButton};
+  }
+
+  test('arrow key navigation on item with action button', async () => {
+    const {itemFocusable, actionButton} = await setupItemWithActionButton();
+
+    // ArrowLeft at start does not wrap around.
+    assertFalse(dispatchKeydown(listItem.$.crUrlListItem, 'ArrowLeft')
+                    .defaultPrevented);
+    assertEquals(itemFocusable, getDeepActiveElement());
+
+    // ArrowRight moves focus to action button.
+    assertTrue(dispatchKeydown(listItem.$.crUrlListItem, 'ArrowRight')
+                   .defaultPrevented);
+    assertEquals(actionButton, getDeepActiveElement());
+
+    // ArrowRight at end does not wrap around.
+    assertFalse(dispatchKeydown(actionButton, 'ArrowRight').defaultPrevented);
+    assertEquals(actionButton, getDeepActiveElement());
+
+    // ArrowLeft returns focus to item.
+    assertTrue(dispatchKeydown(actionButton, 'ArrowLeft').defaultPrevented);
+    assertEquals(itemFocusable, getDeepActiveElement());
+  });
+
+  test('arrow key navigation on item with action button in RTL', async () => {
+    const previousDir = document.documentElement.dir;
+    document.documentElement.dir = 'rtl';
+    try {
+      const {itemFocusable, actionButton} = await setupItemWithActionButton();
+
+      // ArrowRight at start does not wrap around in RTL.
+      assertFalse(dispatchKeydown(listItem.$.crUrlListItem, 'ArrowRight')
+                      .defaultPrevented);
+      assertEquals(itemFocusable, getDeepActiveElement());
+
+      // ArrowLeft moves focus to action button in RTL.
+      assertTrue(dispatchKeydown(listItem.$.crUrlListItem, 'ArrowLeft')
+                     .defaultPrevented);
+      assertEquals(actionButton, getDeepActiveElement());
+
+      // ArrowLeft at end does not wrap around in RTL.
+      assertFalse(dispatchKeydown(actionButton, 'ArrowLeft').defaultPrevented);
+      assertEquals(actionButton, getDeepActiveElement());
+
+      // ArrowRight returns focus to item in RTL.
+      assertTrue(dispatchKeydown(actionButton, 'ArrowRight').defaultPrevented);
+      assertEquals(itemFocusable, getDeepActiveElement());
+    } finally {
+      document.documentElement.dir = previousDir;
+    }
+  });
 });

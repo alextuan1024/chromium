@@ -107,13 +107,21 @@ class PermissionPromptBubbleBaseViewBrowserTest : public DialogBrowserTest {
     // gfx::Animation. `base::RunLoop().RunUntilIdle()` alone does not wait for
     // the WebUI IPC callback to arrive. If the chip is still animating,
     // forcibly snap the chip to expanded and trigger `OnExpandAnimationEnded()`
-    // so the prompt bubble widget is created synchronously before `ShowUi()`
-    // returns.
+    // to open the prompt bubble.
     ChipController* chip_controller = GetChipController();
     if (chip_controller && chip_controller->IsAnimating()) {
       chip_controller->chip()->ResetAnimation(
           PermissionChipInterface::AnimationState::kExpanded);
       chip_controller->OnExpandAnimationEnded();
+    }
+
+    // WebUIPermissionChip also resolves the bubble's anchor asynchronously,
+    // once the WebUI has registered the chip element over Mojo. Wait for it so
+    // that the prompt bubble widget is created before `ShowUi()` returns.
+    if (chip_controller) {
+      ASSERT_TRUE(base::test::RunUntil([chip_controller] {
+        return !chip_controller->is_waiting_for_anchor_for_testing();
+      }));
     }
   }
 
@@ -683,6 +691,81 @@ IN_PROC_BROWSER_TEST_F(PermissionPromptBubbleBaseViewBrowserTest,
   EXPECT_TRUE(base::test::RunUntil(
       [&]() { return test_observer.is_showing_history().size() >= 2u; }));
 
+  ASSERT_EQ(2u, test_observer.is_showing_history().size());
+  EXPECT_FALSE(test_observer.is_showing_history()[1]);
+  EXPECT_EQ(gfx::Size(0, 0), test_observer.sizes()[1]);
+
+  observer->RemoveObserver(&test_observer);
+}
+
+// The prompt bubble opened from the permission chip notifies the observer as
+// well, e.g. so that composebox voice search can tell that it lost focus to the
+// prompt.
+IN_PROC_BROWSER_TEST_F(PermissionPromptBubbleBaseViewBrowserTest,
+                       PermissionPromptChipNotifiesObserverWhenDismissed) {
+  content::WebContents* web_contents =
+      browser()->GetTabStripModel()->GetActiveWebContents();
+  PermissionPromptObserver::CreateForWebContents(web_contents);
+  PermissionPromptObserver* observer =
+      PermissionPromptObserver::FromWebContents(web_contents);
+
+  TestPermissionPromptObserver test_observer;
+  observer->AddObserver(&test_observer);
+
+  // A microphone request made with a user gesture shows the chip, which opens
+  // the prompt bubble.
+  ShowUi("mic");
+  EXPECT_EQ(
+      GetTestApi().manager()->current_request_prompt_disposition_for_testing(),
+      permissions::PermissionPromptDisposition::
+          LOCATION_BAR_LEFT_CHIP_AUTO_BUBBLE);
+  EXPECT_TRUE(base::test::RunUntil(
+      [&]() { return test_observer.is_showing_history().size() >= 1u; }));
+  ASSERT_EQ(1u, test_observer.is_showing_history().size());
+  EXPECT_TRUE(test_observer.is_showing_history()[0]);
+  EXPECT_EQ(gfx::Size(0, 0), test_observer.sizes()[0]);
+
+  // Closing the bubble dismisses the request; `ChipController` notifies
+  // observers before resolving the request and destroying the chip prompt.
+  views::Widget* prompt = GetTestApi().GetPromptWindow();
+  ASSERT_TRUE(prompt);
+  prompt->CloseWithReason(views::Widget::ClosedReason::kCloseButtonClicked);
+  EXPECT_TRUE(base::test::RunUntil(
+      [&]() { return test_observer.is_showing_history().size() >= 2u; }));
+  ASSERT_EQ(2u, test_observer.is_showing_history().size());
+  EXPECT_FALSE(test_observer.is_showing_history()[1]);
+  EXPECT_EQ(gfx::Size(0, 0), test_observer.sizes()[1]);
+  EXPECT_FALSE(GetTestApi().manager()->IsRequestInProgress());
+
+  observer->RemoveObserver(&test_observer);
+}
+
+// Allowing from the bubble also notifies the observer once when the bubble
+// closes.
+IN_PROC_BROWSER_TEST_F(PermissionPromptBubbleBaseViewBrowserTest,
+                       PermissionPromptChipNotifiesObserverWhenAllowed) {
+  content::WebContents* web_contents =
+      browser()->GetTabStripModel()->GetActiveWebContents();
+  PermissionPromptObserver::CreateForWebContents(web_contents);
+  PermissionPromptObserver* observer =
+      PermissionPromptObserver::FromWebContents(web_contents);
+
+  TestPermissionPromptObserver test_observer;
+  observer->AddObserver(&test_observer);
+
+  ShowUi("mic");
+  EXPECT_TRUE(base::test::RunUntil(
+      [&]() { return test_observer.is_showing_history().size() >= 1u; }));
+  ASSERT_EQ(1u, test_observer.is_showing_history().size());
+  EXPECT_TRUE(test_observer.is_showing_history()[0]);
+
+  PermissionPromptBubbleBaseView* bubble_view =
+      GetChipController()->GetPromptBubbleView();
+  ASSERT_TRUE(bubble_view);
+  bubble_view->RunButtonCallback(static_cast<int>(
+      PermissionPromptBubbleBaseView::PermissionDialogButton::kAccept));
+  EXPECT_TRUE(base::test::RunUntil(
+      [&]() { return !GetTestApi().manager()->IsRequestInProgress(); }));
   ASSERT_EQ(2u, test_observer.is_showing_history().size());
   EXPECT_FALSE(test_observer.is_showing_history()[1]);
   EXPECT_EQ(gfx::Size(0, 0), test_observer.sizes()[1]);

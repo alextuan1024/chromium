@@ -18,22 +18,102 @@
 #include "chrome/browser/dictation/metrics.h"
 #include "chrome/browser/dictation/onboarding_manager.h"
 #include "chrome/browser/dictation/session_controller.h"
+#include "chrome/browser/dictation/session_state.h"
 #include "chrome/browser/dictation/session_ui_impl.h"
 #include "chrome/browser/dictation/target.h"
 #include "chrome/browser/glic/host/guest_util.h"
+#include "chrome/browser/optimization_guide/optimization_guide_keyed_service.h"
+#include "chrome/browser/optimization_guide/optimization_guide_keyed_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
+#include "chrome/browser/ui/user_education/browser_user_education_interface.h"
+#include "chrome/browser/ui/views/frame/browser_view.h"
+#include "chrome/browser/ui/webui/webui_embedding_context.h"
 #include "chrome/common/pref_names.h"
+#include "components/feature_engagement/public/event_constants.h"
+#include "components/feature_engagement/public/feature_constants.h"
+#include "components/optimization_guide/content/browser/page_context_eligibility_observer.h"
+#include "components/optimization_guide/core/hints/optimization_guide_decider.h"
+#include "components/optimization_guide/core/hints/optimization_guide_decision.h"
+#include "components/optimization_guide/core/hints/optimization_metadata.h"
+#include "components/optimization_guide/proto/dictation_metadata.pb.h"
+#include "components/optimization_guide/proto/hints.pb.h"
 #include "components/prefs/pref_service.h"
 #include "components/tabs/public/tab_interface.h"
+#include "content/public/browser/device_service.h"
+#include "content/public/browser/global_dom_node_id.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents.h"
+#include "content/public/common/url_utils.h"
+#include "ui/views/controls/webview/webview.h"
+#include "ui/views/focus/focus_manager.h"
+#include "ui/views/view_utils.h"
+#include "url/gurl.h"
 
 namespace dictation {
 
 namespace {
 constexpr int kVoiceTypingSettingsDisabled = 2;
+
+content::WebContents* GetWebContentsForHotkey(
+    BrowserWindowInterface* active_browser,
+    tabs::TabInterface* active_tab) {
+  if (auto* const browser_view =
+          BrowserView::GetBrowserViewForBrowser(active_browser)) {
+    if (views::FocusManager* const focus_manager =
+            browser_view->GetFocusManager()) {
+      if (auto* const web_view = views::AsViewClass<views::WebView>(
+              focus_manager->GetFocusedView())) {
+        if (content::WebContents* const web_contents =
+                web_view->web_contents()) {
+          if (content::WebContents* const guest_contents =
+                  glic::GetGlicGuestWebContents(web_contents)) {
+            return guest_contents;
+          }
+          if (webui::GetTabInterface(web_contents) == active_tab) {
+            return web_contents;
+          }
+        }
+      }
+    }
+  }
+  return active_tab->GetContents();
+}
+
+// Returns the focused editable in `active_tab` (or a focused Glic panel), or
+// nullopt if nothing editable is focused.
+std::optional<TargetDetails> GetFocusedEditableTarget(
+    BrowserWindowInterface* active_browser,
+    tabs::TabInterface* active_tab) {
+  content::WebContents* web_contents =
+      GetWebContentsForHotkey(active_browser, active_tab);
+  if (!web_contents) {
+    return std::nullopt;
+  }
+
+  content::RenderFrameHost* focused_frame = web_contents->GetFocusedFrame();
+  if (!focused_frame) {
+    return std::nullopt;
+  }
+
+  content::EditableLevel editable_level =
+      focused_frame->GetFocusedEditableLevel();
+  if (editable_level == content::EditableLevel::kNotEditable ||
+      focused_frame->IsFocusedElementPasswordLike()) {
+    return std::nullopt;
+  }
+
+  blink::DOMNodeIdType node_id = focused_frame->GetFocusedDOMNodeId();
+  if (node_id.is_null()) {
+    return std::nullopt;
+  }
+
+  content::GlobalDOMNodeId global_id{focused_frame->GetWeakDocumentPtr(),
+                                     node_id};
+  return TargetDetails(
+      global_id, editable_level == content::EditableLevel::kRichlyEditable);
+}
 
 tabs::TabInterface* GetActiveTabFromGlic(content::WebContents* web_contents) {
   if (!glic::IsGlicGuest(web_contents)) {
@@ -68,6 +148,13 @@ tabs::TabInterface* GetTabFromTargetId(
     return tab;
   }
 
+  // Check if `web_contents` is a WebUI embedded in a tab (e.g. Glic selection
+  // overlay).
+  if (tabs::TabInterface* embedding_tab =
+          webui::GetTabInterface(web_contents)) {
+    return embedding_tab;
+  }
+
   // If the Glic side panel is being targeted, then associate the session with
   // the active tab of the window.
   if (tabs::TabInterface* tab = GetActiveTabFromGlic(web_contents)) {
@@ -94,6 +181,10 @@ std::optional<DictationUrlCategory> GetUrlCategoryFromTargetId(
     return DictationUrlCategory::kGlic;
   }
 
+  if (content::HasWebUIScheme(rfh->GetLastCommittedURL())) {
+    return DictationUrlCategory::kWebUI;
+  }
+
   return DictationUrlCategory::kWeb;
 }
 
@@ -114,6 +205,8 @@ DictationKeyedService::SessionState::~SessionState() = default;
 
 DictationKeyedService::DictationKeyedService(Profile* profile)
     : profile_(profile),
+      optimization_guide_decider_(
+          OptimizationGuideKeyedServiceFactory::GetForProfile(profile)),
       connector_extension_(profile),
       onboarding_manager_(*this, *profile->GetPrefs()),
       log_buffer_(profile) {
@@ -125,21 +218,19 @@ DictationKeyedService::DictationKeyedService(Profile* profile)
                           base::Unretained(this)));
   // `kDictation` is implicitly enabled by virtue of DictationKeyedService being
   // created (`CHECK`ed above).
-  bool disabled_by_policy =
-      profile_->GetPrefs()->GetInteger(prefs::kVoiceTypingSettings) ==
-      kVoiceTypingSettingsDisabled;
-  RecordDictationIsEnabledOnProfileInit(!disabled_by_policy);
+  RecordDictationIsEnabledOnProfileInit(!IsDisabledByPolicy());
 
+  MaybeRegisterOptimizationTypes();
   UpdateHotkeyManager();
 }
 
 DictationKeyedService::~DictationKeyedService() = default;
 
 void DictationKeyedService::Shutdown() {
-  EndSession();
+  EndActiveSession();
   // Ensure accelerators are unregistered safely before UI objects are
   // destroyed.
-  local_hotkey_manager_.reset();
+  hotkey_manager_.reset();
 }
 
 content::BrowserContext* DictationKeyedService::GetBrowserContext() const {
@@ -159,8 +250,24 @@ std::unique_ptr<SessionUi> DictationKeyedService::CreateUi(
   // We must have a tab since this is called synchronously from session
   // creation.
   CHECK(tab);
+  return std::make_unique<SessionUiImpl>(*tab, controller,
+                                         ConsumeShowReviewingPageStatus());
+}
 
-  return std::make_unique<SessionUiImpl>(*tab, controller);
+void DictationKeyedService::BindWakeLockProvider(
+    mojo::PendingReceiver<device::mojom::WakeLockProvider> receiver) {
+  content::GetDeviceService().BindWakeLockProvider(std::move(receiver));
+}
+
+bool DictationKeyedService::ConsumeShowReviewingPageStatus() const {
+  return reviewing_page_status_ui_controller_.ConsumeShowReviewingPageStatus(
+      GetActiveDictationTab());
+}
+
+void DictationKeyedService::SetReviewingPageStatusEnabledForTesting(
+    bool enabled) {
+  reviewing_page_status_ui_controller_.SetEnabledForTesting(  // IN-TEST
+      enabled);
 }
 
 base::CallbackListSubscription
@@ -174,10 +281,16 @@ tabs::TabInterface* DictationKeyedService::GetActiveDictationTab() const {
   return session_ ? session_->tab_.get() : nullptr;
 }
 
-void DictationKeyedService::StartSession(
-    tabs::TabInterface& tab,
-    const TargetDetails& target_details,
-    DictationSessionEntryPoint entry_point) {
+base::CallbackListSubscription DictationKeyedService::AddSessionEndedCallback(
+    base::RepeatingCallback<void(const content::GlobalDOMNodeId& target)>
+        callback) {
+  return session_ended_callbacks_.Add(std::move(callback));
+}
+
+void DictationKeyedService::StartSession(tabs::TabInterface& tab,
+                                         const TargetDetails& target_details,
+                                         DictationSessionEntryPoint entry_point,
+                                         base::TimeTicks trigger_time) {
   CHECK(IsEnabledAndReady());
   CHECK(!session_);
 
@@ -193,13 +306,20 @@ void DictationKeyedService::StartSession(
     RecordDictationSessionUrlCategory(*url_category);
   }
 
+  UpdateUserEducationForStartSession(tab, entry_point);
+
   session_.emplace(*this, tab);
+  // Unretained is safe: `this` owns `session_`, which owns the subscription.
+  session_->session_state_subscription_ =
+      session_->controller_.AddSessionStateChangedCallback(
+          base::BindRepeating(&DictationKeyedService::OnSessionStateChanged,
+                              base::Unretained(this)));
   dictation_tab_changed_callbacks_.Notify(&tab);
 
   session_->controller_.ResetUi();
 
   session_->controller_.StartDictationStream(
-      target_details, DictationStreamStartTrigger::kSessionStart);
+      target_details, DictationStreamStartTrigger::kSessionStart, trigger_time);
 }
 
 void DictationKeyedService::DidCompleteOnboarding(
@@ -210,19 +330,52 @@ void DictationKeyedService::DidCompleteOnboarding(
     return;
   }
   UpdateHotkeyManager();
-  StartSession(tab, target_details, entry_point);
+  StartSession(tab, target_details, entry_point, base::TimeTicks::Now());
 }
 
 void DictationKeyedService::StartSessionForTesting(  // IN-TEST
     tabs::TabInterface& tab,
     const TargetDetails& target_details,
     DictationSessionEntryPoint entry_point) {
-  StartSession(tab, target_details, entry_point);
+  StartSession(tab, target_details, entry_point, base::TimeTicks::Now());
 }
 
 void DictationKeyedService::EndSession() {
+  CHECK(session_);
+  CHECK_EQ(session_->controller_.GetState(), dictation::SessionState::kEnded);
   session_.reset();
   dictation_tab_changed_callbacks_.Notify(nullptr);
+}
+
+void DictationKeyedService::EndActiveSession() {
+  if (session_) {
+    session_->controller_.EndSessionSynchronously();
+    // WARNING: The session is destroyed, so `session_` is now empty.
+  }
+}
+
+void DictationKeyedService::UpdateUserEducationForStartSession(
+    tabs::TabInterface& tab,
+    DictationSessionEntryPoint entry_point) {
+  auto* const user_education =
+      BrowserUserEducationInterface::MaybeGetForWebContentsInTab(
+          tab.GetContents());
+  if (!user_education) {
+    return;
+  }
+  // The user has found dictation, so the dictation IPH shouldn't show again.
+  user_education->NotifyFeaturePromoFeatureUsed(
+      feature_engagement::kIPHDictationFeature,
+      FeaturePromoFeatureUsedAction::kClosePromoIfPresent);
+  // Starting dictation with the hotkey means the user knows about it.
+  if (entry_point == DictationSessionEntryPoint::kHotkeyToggle) {
+    user_education->NotifyFeaturePromoFeatureUsed(
+        feature_engagement::kIPHDictationHotkeyFeature,
+        FeaturePromoFeatureUsedAction::kClosePromoIfPresent);
+  }
+  // Counts towards showing the hotkey IPH.
+  user_education->NotifyAdditionalConditionEvent(
+      feature_engagement::events::kDictationInvoked);
 }
 
 bool DictationKeyedService::ShouldShowContextMenuItem() const {
@@ -232,6 +385,8 @@ bool DictationKeyedService::ShouldShowContextMenuItem() const {
 void DictationKeyedService::TriggerSession(
     const TargetDetails& target_details,
     DictationSessionEntryPoint entry_point) {
+  const base::TimeTicks trigger_time = base::TimeTicks::Now();
+
   tabs::TabInterface* tab = GetTabFromTargetId(target_details.target_id);
   if (!tab) {
     return;
@@ -239,7 +394,7 @@ void DictationKeyedService::TriggerSession(
 
   if (!session_) {
     VT_LOG(profile_) << "Starting new session";
-    StartSession(*tab, target_details, entry_point);
+    StartSession(*tab, target_details, entry_point, trigger_time);
   } else {
     // Always stop existing stream before starting a new one.
     if (session_->controller_.attached_stream_provider()) {
@@ -267,7 +422,8 @@ void DictationKeyedService::TriggerSession(
         trigger = DictationStreamStartTrigger::kHotkeyToggleExistingSession;
         break;
     }
-    session_->controller_.StartDictationStream(target_details, trigger);
+    session_->controller_.StartDictationStream(target_details, trigger,
+                                               trigger_time);
   }
 }
 
@@ -298,61 +454,75 @@ void DictationKeyedService::ToggleHotkeyHandler() {
     return;
   }
 
-  if (session_) {
-    tabs::TabInterface* old_tab = session_->tab_.get();
-    bool tab_changed = (active_tab != old_tab);
+  std::optional<TargetDetails> target_details =
+      GetFocusedEditableTarget(active_browser, active_tab);
 
-    if (!tab_changed && session_->controller_.attached_stream_provider()) {
+  if (session_ && session_->controller_.attached_stream_provider()) {
+    const bool same_tab = active_tab == session_->tab_.get();
+    // In the tab being dictated into, the hotkey toggles dictation off.
+    // Elsewhere (e.g. another window of this profile), stop dictation in the
+    // original tab if nothing editable is focused. Otherwise, TriggerSession()
+    // below moves dictation to the focused editable, implicitly ending the
+    // current stream.
+    if (same_tab || !target_details) {
       session_->controller_.EndDictationStream(
           DictationStreamEndTrigger::kHotkeyToggle);
       return;
     }
   }
 
-  content::WebContents* web_contents = active_tab->GetContents();
-  if (!web_contents) {
+  if (!target_details) {
     return;
   }
 
-  content::RenderFrameHost* focused_frame = web_contents->GetFocusedFrame();
-  if (!focused_frame) {
-    return;
-  }
-
-  content::EditableLevel editable_level =
-      focused_frame->GetFocusedEditableLevel();
-  if (editable_level == content::EditableLevel::kNotEditable) {
-    return;
-  }
-
-  blink::DOMNodeIdType node_id = focused_frame->GetFocusedDOMNodeId();
-  if (node_id.is_null()) {
-    return;
-  }
-
-  content::GlobalDOMNodeId global_id{focused_frame->GetWeakDocumentPtr(),
-                                     node_id};
-
-  TargetDetails target_details(
-      global_id, editable_level == content::EditableLevel::kRichlyEditable);
-
-  TriggerSession(target_details, DictationSessionEntryPoint::kHotkeyToggle);
+  TriggerSession(*target_details, DictationSessionEntryPoint::kHotkeyToggle);
 }
 
 bool DictationKeyedService::IsEnabledAndReady() const {
   CHECK(profile_);
-  bool disabled_by_policy =
-      profile_->GetPrefs()->GetInteger(prefs::kVoiceTypingSettings) ==
-      kVoiceTypingSettingsDisabled;
-
   // Until the connector extension is available consider the feature disabled.
-  return !connector_extension_.IsPending() && !disabled_by_policy;
+  return !connector_extension_.IsPending() && !IsDisabledByPolicy();
+}
+
+optimization_guide::PageContextEligibilityStatus
+DictationKeyedService::CheckOptimizationGuideHint(const GURL& url) const {
+  // Optimization Guide does not fetch hints for non-HTTP(S) URLs, so WebUI
+  // pages will never have a cached DICTATION_ELIGIBLE hint.
+  if (content::HasWebUIScheme(url)) {
+    return optimization_guide::PageContextEligibilityStatus::kEligible;
+  }
+  if (!optimization_guide_decider_) {
+    return optimization_guide::PageContextEligibilityStatus::kNotEligible;
+  }
+  // Uses the synchronous API, which only consults cached hints, because the
+  // asynchronous one may wait indefinitely and block the stream from starting.
+  optimization_guide::OptimizationMetadata metadata;
+  switch (optimization_guide_decider_->CanApplyOptimization(
+      url, optimization_guide::proto::DICTATION_ELIGIBLE, &metadata)) {
+    case optimization_guide::OptimizationGuideDecision::kUnknown:
+      return optimization_guide::PageContextEligibilityStatus::kUnknown;
+    case optimization_guide::OptimizationGuideDecision::kFalse:
+      return optimization_guide::PageContextEligibilityStatus::kNotEligible;
+    case optimization_guide::OptimizationGuideDecision::kTrue: {
+      // The server attaches DICTATION_ELIGIBLE to any page it has a safety
+      // verdict for, so the hint alone isn't enough: the verdict must say
+      // eligible.
+      const auto dictation_metadata =
+          metadata
+              .ParsedMetadata<optimization_guide::proto::DictationMetadata>();
+      return (dictation_metadata && dictation_metadata->eligible())
+                 ? optimization_guide::PageContextEligibilityStatus::kEligible
+                 : optimization_guide::PageContextEligibilityStatus::
+                       kNotEligible;
+    }
+  }
 }
 
 void DictationKeyedService::OnPrefChanged() {
   if (!IsEnabledAndReady()) {
-    EndSession();
+    EndActiveSession();
   }
+  MaybeRegisterOptimizationTypes();
   UpdateHotkeyManager();
 }
 
@@ -365,10 +535,45 @@ void DictationKeyedService::UpdateHotkeyManager() {
       prefs::kPrefDictationOnboardingCompleted);
 
   if (!IsEnabledAndReady() || !onboarding_completed) {
-    local_hotkey_manager_.reset();
-  } else if (!local_hotkey_manager_) {
-    local_hotkey_manager_ = std::make_unique<LocalHotkeyManager>(
-        profile_, std::make_unique<ApplicationRegistrationDelegate>());
+    hotkey_manager_.reset();
+  } else if (!hotkey_manager_) {
+    hotkey_manager_ = std::make_unique<HotkeyManager>(
+        profile_, std::make_unique<ApplicationRegistrationDelegate>(),
+        /*is_listening=*/session_ &&
+            IsListeningState(session_->controller_.GetState()));
+  }
+}
+
+bool DictationKeyedService::IsDisabledByPolicy() const {
+  return profile_->GetPrefs()->GetInteger(prefs::kVoiceTypingSettings) ==
+         kVoiceTypingSettingsDisabled;
+}
+
+void DictationKeyedService::MaybeRegisterOptimizationTypes() {
+  // Avoid fetching hints that can't be used while Dictation is disabled. Note
+  // that Optimization Guide does not support unregistering types if the policy
+  // later changes from enabled to disabled.
+  if (!optimization_guide_decider_ || IsDisabledByPolicy()) {
+    return;
+  }
+  // Registration is idempotent, so this may be called on every policy change.
+  optimization_guide_decider_->RegisterOptimizationTypes(
+      {optimization_guide::proto::DICTATION_ELIGIBLE});
+}
+
+void DictationKeyedService::OnSessionStateChanged(
+    dictation::SessionState state) {
+  CHECK(session_);
+  if (hotkey_manager_) {
+    hotkey_manager_->OnSessionStateChanged(state);
+  }
+  if (state == dictation::SessionState::kEnded) {
+    // The session is still alive, so its target is available.
+    const std::optional<TargetDetails>& target_details =
+        session_->controller_.last_used_target_details();
+    if (target_details) {
+      session_ended_callbacks_.Notify(target_details->target_id);
+    }
   }
 }
 

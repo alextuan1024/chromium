@@ -16,11 +16,11 @@
 #include "chrome/browser/autofill/autofill_offer_manager_factory.h"
 #include "chrome/browser/feature_engagement/tracker_factory.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/ui/autofill/payments/create_card_unmask_prompt_view.h"
 #include "chrome/browser/ui/autofill/payments/credit_card_scanner_controller.h"
 #include "chrome/browser/ui/autofill/payments/iban_bubble_controller_impl.h"
 #include "chrome/browser/ui/autofill/payments/mandatory_reauth_bubble_controller_impl.h"
+#include "chrome/browser/ui/autofill/payments/offer_notification_handler.h"
 #include "chrome/browser/ui/autofill/payments/omnibox_autofill_bubble_controller.h"
 #include "chrome/browser/ui/autofill/payments/payments_view_factory.h"
 #include "chrome/browser/ui/autofill/payments/virtual_card_enroll_bubble_controller_impl.h"
@@ -66,7 +66,6 @@
 #include "components/autofill/core/browser/ui/payments/card_unmask_prompt_view.h"
 #include "components/autofill/core/browser/ui/payments/payments_churned_users_ui_delegate.h"
 #include "components/autofill/core/browser/ui/payments/save_and_fill_dialog_controller_impl.h"
-#include "components/autofill/core/browser/ui/payments/wallet_reminder_notice_ui_delegate.h"
 #include "components/autofill/core/common/autofill_features.h"
 #include "components/autofill/core/common/autofill_payments_features.h"
 #include "components/autofill/core/common/autofill_prefs.h"
@@ -75,13 +74,10 @@
 #include "components/signin/public/identity_manager/account_info.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/user_prefs/user_prefs.h"
-#include "content/public/browser/page_navigator.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_observer.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
-#include "ui/base/page_transition_types.h"
-#include "ui/base/window_open_disposition.h"
 #include "url/gurl.h"
 
 #if BUILDFLAG(IS_ANDROID)
@@ -92,17 +88,16 @@
 #include "chrome/browser/touch_to_fill/autofill/android/touch_to_fill_payment_method_controller_impl.h"
 #include "chrome/browser/touch_to_fill/autofill/android/touch_to_fill_payment_method_view_impl.h"
 #include "chrome/browser/ui/android/autofill/autofill_cvc_save_message_delegate.h"
+#include "chrome/browser/ui/android/autofill/autofill_message_controller_impl.h"
+#include "chrome/browser/ui/android/autofill/autofill_message_model.h"
 #include "chrome/browser/ui/android/autofill/autofill_save_card_bottom_sheet_bridge.h"
 #include "chrome/browser/ui/android/autofill/autofill_save_card_delegate_android.h"
 #include "chrome/browser/ui/android/autofill/autofill_save_iban_bottom_sheet_bridge.h"
 #include "chrome/browser/ui/android/autofill/autofill_save_iban_delegate.h"
+#include "chrome/browser/ui/android/autofill/autofill_snackbar_controller_impl.h"
 #include "chrome/browser/ui/android/autofill/card_expiration_date_fix_flow_view_android.h"
 #include "chrome/browser/ui/android/autofill/card_name_fix_flow_view_android.h"
-#include "chrome/browser/ui/android/autofill/wallet_reminder_notice_ui_delegate_android.h"
 #include "chrome/browser/ui/android/tab_model/tab_model_list.h"
-#include "chrome/browser/ui/autofill/autofill_message_controller_impl.h"
-#include "chrome/browser/ui/autofill/autofill_message_model.h"
-#include "chrome/browser/ui/autofill/autofill_snackbar_controller_impl.h"
 #include "chrome/browser/ui/autofill/payments/android_bnpl_ui_delegate.h"
 #include "chrome/browser/ui/autofill/payments/android_payments_window_manager.h"
 #include "chrome/browser/ui/autofill/payments/offer_notification_controller_android.h"
@@ -120,7 +115,6 @@
 #include "chrome/browser/ui/autofill/payments/omnibox_autofill_page_action_controller.h"
 #include "chrome/browser/ui/autofill/payments/payments_churned_users_ui_delegate_desktop.h"
 #include "chrome/browser/ui/autofill/payments/save_card_bubble_controller_impl.h"
-#include "chrome/browser/ui/autofill/payments/wallet_reminder_notice_ui_delegate_desktop.h"
 #include "chrome/browser/ui/autofill/payments/webauthn_dialog_controller_impl.h"
 #include "chrome/browser/ui/autofill/payments/webauthn_dialog_state.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"  // nogncheck
@@ -157,6 +151,10 @@ ChromePaymentsAutofillClient::ChromePaymentsAutofillClient(
         std::make_unique<OmniboxAutofillDelegate>(&client_.get());
   }
 #endif
+  if (GetAutofillOfferManager()) {
+    offer_notification_handler_ =
+        std::make_unique<OfferNotificationHandler>(client_.get());
+  }
 }
 
 ChromePaymentsAutofillClient::~ChromePaymentsAutofillClient() = default;
@@ -301,6 +299,8 @@ void ChromePaymentsAutofillClient::ShowSaveCreditCardLocally(
     SaveCreditCardOptions options,
     LocalSaveCardPromptCallback callback) {
 #if BUILDFLAG(IS_ANDROID)
+  // TODO(crbug.com/579239755): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
   DCHECK(options.show_prompt);
   AutofillSaveCardUiInfo ui_info =
       AutofillSaveCardUiInfo::CreateForLocalSave(options, card);
@@ -334,13 +334,11 @@ void ChromePaymentsAutofillClient::ShowSaveCreditCardToCloud(
     SaveCreditCardOptions options,
     UploadSaveCardPromptCallback callback) {
 #if BUILDFLAG(IS_ANDROID)
-  DCHECK(options.show_prompt);
-  Profile* profile =
-      !web_contents()
-          ? nullptr
-          : Profile::FromBrowserContext(web_contents()->GetBrowserContext());
-  signin::IdentityManager* identity_manager =
-      IdentityManagerFactory::GetForProfile(profile);
+  CHECK(options.show_prompt);
+  signin::IdentityManager* identity_manager = client_->GetIdentityManager();
+  if (!identity_manager) {
+    return;
+  }
   AccountInfo account_info = identity_manager->FindExtendedAccountInfo(
       identity_manager->GetPrimaryAccountInfo(signin::ConsentLevel::kSignin));
   AutofillSaveCardUiInfo ui_info = AutofillSaveCardUiInfo::CreateForUploadSave(
@@ -457,7 +455,7 @@ void ChromePaymentsAutofillClient::ShowVirtualCardEnrollDialog(
   VirtualCardEnrollBubbleControllerImpl::CreateForWebContents(web_contents());
   VirtualCardEnrollBubbleControllerImpl* controller =
       VirtualCardEnrollBubbleControllerImpl::FromWebContents(web_contents());
-  DCHECK(controller);
+  CHECK(controller, base::NotFatalUntil::M162);
   controller->SetupAndShowBubble(virtual_card_enrollment_fields,
                                  std::move(accept_virtual_card_callback),
                                  std::move(decline_virtual_card_callback));
@@ -625,7 +623,7 @@ void ChromePaymentsAutofillClient::ShowAutofillProgressDialog(
 void ChromePaymentsAutofillClient::CloseAutofillProgressDialog(
     bool show_confirmation_before_closing,
     base::OnceClosure no_interactive_authentication_callback) {
-  DCHECK(autofill_progress_dialog_controller_);
+  CHECK(autofill_progress_dialog_controller_, base::NotFatalUntil::M162);
   autofill_progress_dialog_controller_->DismissDialog(
       show_confirmation_before_closing,
       std::move(no_interactive_authentication_callback));
@@ -848,7 +846,7 @@ void ChromePaymentsAutofillClient::ShowMandatoryReauthOptInConfirmation() {
       AutofillSnackbarType::kMandatoryReauth,
       base::BindOnce(
           [](base::WeakPtr<content::WebContents> contents) {
-            if (contents) {
+            if (!contents) {
               return;
             }
             // For mandatory reauth snackbar, we will show Android credit card
@@ -907,15 +905,6 @@ ChromePaymentsAutofillClient::GetMerchantPromoCodeManager() {
   return merchant_promo_code_manager_.get();
 }
 
-void ChromePaymentsAutofillClient::OpenPromoCodeOfferDetailsURL(
-    const GURL& url) {
-  web_contents()->OpenURL(
-      content::OpenURLParams::CreateBrowserInitiated(
-          url, WindowOpenDisposition::NEW_FOREGROUND_TAB,
-          ui::PageTransition::PAGE_TRANSITION_AUTO_TOPLEVEL),
-      /*navigation_handle_callback=*/{});
-}
-
 AutofillOfferManager* ChromePaymentsAutofillClient::GetAutofillOfferManager() {
   return AutofillOfferManagerFactory::GetForBrowserContext(
       web_contents()->GetBrowserContext());
@@ -924,20 +913,10 @@ AutofillOfferManager* ChromePaymentsAutofillClient::GetAutofillOfferManager() {
 void ChromePaymentsAutofillClient::UpdateOfferNotification(
     const AutofillOfferData& offer,
     const OfferNotificationOptions& options) {
-  const CreditCard* card = offer.GetEligibleInstrumentIds().empty()
-                               ? nullptr
-                               : client_->GetPersonalDataManager()
-                                     .payments_data_manager()
-                                     .GetCreditCardByInstrumentId(
-                                         offer.GetEligibleInstrumentIds()[0]);
-
-  if (offer.GetOfferType() ==
-          AutofillOfferData::OfferType::GPAY_CARD_LINKED_OFFER &&
-      !card) {
-    return;
-  }
-
 #if BUILDFLAG(IS_ANDROID)
+  // TODO(crbug.com/546252995): Support Wallet offers in the Android offer
+  // notification. It currently requires a linked card, so it is not shown for
+  // Wallet offers.
   if (options.notification_has_been_shown) {
     // For Android, if notification has been shown on this merchant, don't show
     // it again.
@@ -946,12 +925,12 @@ void ChromePaymentsAutofillClient::UpdateOfferNotification(
   OfferNotificationControllerAndroid::CreateForWebContents(web_contents());
   OfferNotificationControllerAndroid* controller =
       OfferNotificationControllerAndroid::FromWebContents(web_contents());
-  controller->ShowIfNecessary(&offer, card);
+  controller->ShowIfNecessary(&offer, /*card=*/nullptr);
 #else
   OfferNotificationBubbleControllerImpl::CreateForWebContents(web_contents());
   OfferNotificationBubbleControllerImpl* controller =
       OfferNotificationBubbleControllerImpl::FromWebContents(web_contents());
-  controller->ShowOfferNotificationIfApplicable(offer, card, options);
+  controller->ShowOfferNotificationIfApplicable(offer, options);
 #endif
 }
 
@@ -1277,20 +1256,6 @@ BnplUiDelegate* ChromePaymentsAutofillClient::GetBnplUiDelegate() {
   return bnpl_ui_delegate_.get();
 }
 
-WalletReminderNoticeUiDelegate*
-ChromePaymentsAutofillClient::GetWalletReminderNoticeUiDelegate() {
-  if (!wallet_reminder_notice_ui_delegate_) {
-#if BUILDFLAG(IS_ANDROID)
-    wallet_reminder_notice_ui_delegate_ =
-        std::make_unique<WalletReminderNoticeUiDelegateAndroid>(&client_.get());
-#else
-    wallet_reminder_notice_ui_delegate_ =
-        std::make_unique<WalletReminderNoticeUiDelegateDesktop>(&client_.get());
-#endif
-  }
-  return wallet_reminder_notice_ui_delegate_.get();
-}
-
 WalletReminderNoticeManager*
 ChromePaymentsAutofillClient::GetWalletReminderNoticeManager() {
   if (!wallet_reminder_notice_manager_) {
@@ -1425,16 +1390,7 @@ void ChromePaymentsAutofillClient::
 #endif  // #if BUILDFLAG(IS_ANDROID)
 
 std::u16string ChromePaymentsAutofillClient::GetAccountHolderName() const {
-  if (!web_contents()) {
-    return std::u16string();
-  }
-  Profile* profile =
-      Profile::FromBrowserContext(web_contents()->GetBrowserContext());
-  if (!profile) {
-    return std::u16string();
-  }
-  signin::IdentityManager* identity_manager =
-      IdentityManagerFactory::GetForProfile(profile);
+  signin::IdentityManager* identity_manager = client_->GetIdentityManager();
   if (!identity_manager) {
     return std::u16string();
   }

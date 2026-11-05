@@ -28,7 +28,7 @@
 #include "content/public/browser/webid/identity_request_account.h"
 #include "crypto/keypair.h"
 #include "third_party/blink/public/mojom/webid/email_verification_request.mojom-shared.h"
-#include "url/gurl.h"
+#include "ui/gfx/image/image.h"
 #include "url/origin.h"
 
 // This class implements the Email Verification Protocol as described here:
@@ -40,11 +40,11 @@ class RenderFrameHostImpl;
 
 namespace content::webid {
 
-// For a given email address, returns the domain. Returns std::nullopt if the
-// email is not valid.
+// For a given email address, returns the domain in lowercase. Returns
+// std::nullopt if the email is not valid.
 // e.g. "test@example.com" -> "example.com"
-CONTENT_EXPORT std::optional<std::string_view> GetDomainFromEmail(
-    std::string_view email LIFETIME_BOUND);
+CONTENT_EXPORT std::optional<std::string> GetDomainFromEmail(
+    std::string_view email);
 
 // Performs the email verification process, which involves making a DNS TXT
 // record request to determine the issuer, and then fetching a token from the
@@ -65,6 +65,7 @@ class CONTENT_EXPORT EmailVerificationRequest {
   using WellKnownOrError = base::RefCountedData<
       base::expected<EmailVerifierNetworkRequestManager::WellKnown,
                      blink::mojom::EmailVerificationRequestResult>>;
+  using BrandIcon = base::RefCountedData<gfx::Image>;
   explicit EmailVerificationRequest(RenderFrameHostImpl& render_frame_host);
   EmailVerificationRequest(
       std::unique_ptr<EmailVerifierNetworkRequestManager> network_manager,
@@ -99,8 +100,13 @@ class CONTENT_EXPORT EmailVerificationRequest {
   void OnEmailVerificationWellKnownFetched(
       base::RepeatingClosure barrier,
       scoped_refptr<WellKnownOrError> well_known,
+      scoped_refptr<BrandIcon> brand_icon,
+      bool is_logged_in,
       FetchStatus status,
       EmailVerifierNetworkRequestManager::WellKnown fetched_well_known);
+  void OnBrandIconFetched(base::RepeatingClosure barrier,
+                          scoped_refptr<BrandIcon> brand_icon,
+                          const gfx::Image& image);
   void OnWebIdentityWellKnownFetched(
       const url::Origin& issuer,
       base::RepeatingClosure barrier,
@@ -114,6 +120,7 @@ class CONTENT_EXPORT EmailVerificationRequest {
       IdpNetworkRequestManager::AccountsResponse response);
   void OnAccountStatusFetched(scoped_refptr<WellKnownOrError> well_known,
                               scoped_refptr<AccountsOrError> accounts,
+                              scoped_refptr<BrandIcon> brand_icon,
                               const url::Origin& issuer_origin,
                               const std::string& email,
                               EmailVerifier::IsVerifiableCallback callback);

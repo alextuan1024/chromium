@@ -2,7 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import 'chrome://contextual-tasks/strings.m.js';
 import 'chrome://resources/cr_elements/icons.html.js';
 import 'chrome://resources/cr_components/composebox/icons.html.js';
 import 'chrome://resources/cr_components/composebox/composebox_tool_chip.js';
@@ -54,6 +53,29 @@ suite('ComposeboxToolChipTest', () => {
     const toolIcon = $$<CrIconElement>(toolChip, '.tool-icon');
     assertTrue(isVisible(toolIcon));
     assertEquals('searchbox_config:94', toolIcon!.icon);
+  });
+
+  test('Renders new tool icon defined in toolConfig', async () => {
+    toolChip['inputState'] = new MockInputState({
+      activeTool: ToolMode.kImageGen,
+      toolConfigs: [
+        {
+          tool: ToolMode.kImageGen,
+          menuLabel: 'Create Images',
+          disableActiveModelSelection: false,
+          chipLabel: 'Create Images',
+          icon: 108,
+          hintText: '',
+          aimUrlParams: [],
+          menuTooltip: '',
+        },
+      ],
+    });
+    await microtasksFinished();
+
+    const toolIcon = $$<CrIconElement>(toolChip, '.tool-icon');
+    assertTrue(isVisible(toolIcon));
+    assertEquals('searchbox_config:108', toolIcon!.icon);
   });
 
   test(

@@ -4,6 +4,9 @@
 
 #include "third_party/blink/renderer/core/css/cssom/declared_style_property_map.h"
 
+#include "base/check.h"
+#include "third_party/blink/renderer/core/css/css_grouping_rule.h"
+#include "third_party/blink/renderer/core/css/css_private_rule.h"
 #include "third_party/blink/renderer/core/css/css_property_value_set.h"
 #include "third_party/blink/renderer/core/css/css_style_rule.h"
 #include "third_party/blink/renderer/core/css/css_style_sheet.h"
@@ -24,6 +27,11 @@ unsigned int DeclaredStylePropertyMap::size() const {
   return GetStyleRule()->Properties().PropertyCount();
 }
 
+bool DeclaredStylePropertyMap::IsPropertyValid(
+    CSSPropertyID property_id) const {
+  return !GetPrivateRule() || property_id == CSSPropertyID::kVariable;
+}
+
 const CSSValue* DeclaredStylePropertyMap::GetProperty(
     CSSPropertyID property_id) const {
   if (!GetStyleRule()) {
@@ -37,7 +45,12 @@ const CSSValue* DeclaredStylePropertyMap::GetCustomProperty(
   if (!GetStyleRule()) {
     return nullptr;
   }
-  return GetStyleRule()->Properties().GetPropertyCSSValue(property_name);
+  AtomicString hygienic_name = property_name;
+  if (CSSPrivateRule* private_rule = GetPrivateRule()) {
+    hygienic_name =
+        private_rule->AuthoredToHygienicCustomPropertyName(property_name);
+  }
+  return GetStyleRule()->Properties().GetPropertyCSSValue(hygienic_name);
 }
 
 void DeclaredStylePropertyMap::SetProperty(CSSPropertyID property_id,
@@ -75,8 +88,13 @@ void DeclaredStylePropertyMap::SetCustomProperty(
 
   const auto& variable_value = To<CSSUnparsedDeclarationValue>(value);
   CSSVariableData* variable_data = variable_value.VariableDataValue();
+  AtomicString hygienic_name = property_name;
+  if (CSSPrivateRule* private_rule = GetPrivateRule()) {
+    hygienic_name =
+        private_rule->EnsureCustomPropertyNameForHygienic(property_name);
+  }
   GetStyleRule()->MutableProperties().SetProperty(
-      CSSPropertyName(property_name),
+      CSSPropertyName(hygienic_name),
       *MakeGarbageCollected<CSSUnparsedDeclarationValue>(
           variable_data, variable_value.ParserContext()));
   NotifyRuleMutation();
@@ -97,7 +115,12 @@ void DeclaredStylePropertyMap::RemoveCustomProperty(
     return;
   }
   CSSStyleSheet::RuleMutationScope mutation_scope(owner_rule_);
-  GetStyleRule()->MutableProperties().RemoveProperty(property_name);
+  AtomicString hygienic_name = property_name;
+  if (CSSPrivateRule* private_rule = GetPrivateRule()) {
+    hygienic_name =
+        private_rule->AuthoredToHygienicCustomPropertyName(property_name);
+  }
+  GetStyleRule()->MutableProperties().RemoveProperty(hygienic_name);
   NotifyRuleMutation();
 }
 
@@ -117,8 +140,18 @@ void DeclaredStylePropertyMap::ForEachProperty(IterationFunction visitor) {
   const CSSPropertyValueSet& declared_style_set = GetStyleRule()->Properties();
   for (const CSSPropertyValue& property_reference :
        declared_style_set.Properties()) {
-    visitor(property_reference.Name(), property_reference.Value());
+    CSSPropertyName name = property_reference.Name();
+    if (CSSPrivateRule* private_rule = GetPrivateRule();
+        name.IsCustomProperty() && private_rule) {
+      name = CSSPropertyName(private_rule->HygienicToAuthoredCustomPropertyName(
+          name.ToAtomicString()));
+    }
+    visitor(name, property_reference.Value());
   }
+}
+
+CSSPrivateRule* DeclaredStylePropertyMap::GetPrivateRule() const {
+  return DynamicTo<CSSPrivateRule>(owner_rule_.Get());
 }
 
 StyleRule* DeclaredStylePropertyMap::GetStyleRule() const {
@@ -145,7 +178,12 @@ void DeclaredStylePropertyMap::NotifyRuleMutation() {
   if (owner_rule_ && owner_rule_->parentStyleSheet()) {
     StyleSheetContents* parent_contents =
         owner_rule_->parentStyleSheet()->Contents();
-    parent_contents->NotifyRuleChanged(GetStyleRule());
+    StyleRule* changed_rule =
+        GetPrivateRule()
+            ? FindClosestParentStyleRuleOrNull(owner_rule_->parentRule())
+            : GetStyleRule();
+    CHECK(changed_rule);
+    parent_contents->NotifyRuleChanged(changed_rule);
   }
 }
 

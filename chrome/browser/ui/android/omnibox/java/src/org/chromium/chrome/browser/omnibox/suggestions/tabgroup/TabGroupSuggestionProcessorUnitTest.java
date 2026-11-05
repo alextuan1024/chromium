@@ -26,6 +26,7 @@ import org.chromium.base.supplier.ObservableSuppliers;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.chrome.browser.browser_controls.BrowserControlsStateProvider.ControlsPosition;
+import org.chromium.chrome.browser.omnibox.R;
 import org.chromium.chrome.browser.omnibox.UrlBarEditingTextStateProvider;
 import org.chromium.chrome.browser.omnibox.styles.OmniboxImageSupplier;
 import org.chromium.chrome.browser.omnibox.styles.OmniboxResourceProvider;
@@ -37,7 +38,7 @@ import org.chromium.chrome.browser.omnibox.suggestions.basic.BasicSuggestionProc
 import org.chromium.chrome.browser.omnibox.suggestions.basic.SuggestionViewProperties;
 import org.chromium.chrome.browser.share.ShareDelegate;
 import org.chromium.chrome.browser.tab.Tab;
-import org.chromium.chrome.tab_ui.R;
+import org.chromium.chrome.browser.ui.theme.BrandedColorScheme;
 import org.chromium.components.metrics.OmniboxEventProtosIntDef.PageClassification;
 import org.chromium.components.omnibox.AutocompleteInput;
 import org.chromium.components.omnibox.AutocompleteMatch;
@@ -77,15 +78,18 @@ public class TabGroupSuggestionProcessorUnitTest {
     private AutocompleteMatch mSuggestion;
     private PropertyModel mModel;
     private AutocompleteInput mInput;
+    private OmniboxResourceProvider mResourceProvider;
 
     @Before
     public void setUp() {
         mContext = ContextUtils.getApplicationContext();
         mContext.setTheme(R.style.Theme_BrowserUI_DayNight);
+        mResourceProvider = new OmniboxResourceProvider(mContext, BrandedColorScheme.APP_DEFAULT);
 
         AutocompleteUIContext uiContext =
                 new AutocompleteUIContext(
                         mContext,
+                        mResourceProvider,
                         mSuggestionHost,
                         mTextProvider,
                         mImageSupplier,
@@ -96,12 +100,10 @@ public class TabGroupSuggestionProcessorUnitTest {
                         mActionDelegate);
         mProcessor = new TabGroupSuggestionProcessor(uiContext);
         mInput = new AutocompleteInput();
-        OmniboxResourceProvider.disableCachesForTesting();
     }
 
     @After
     public void tearDown() {
-        OmniboxResourceProvider.reenableCachesForTesting();
         mInput.reset();
     }
 
@@ -150,6 +152,8 @@ public class TabGroupSuggestionProcessorUnitTest {
                         TITLE,
                         "Red",
                         DESCRIPTION);
-        assertEquals(targetString, mModel.get(SuggestionViewProperties.CONTENT_DESCRIPTION));
+        assertEquals(
+                targetString,
+                mModel.get(SuggestionViewProperties.CONTENT_DESCRIPTION_SUPPLIER).get());
     }
 }

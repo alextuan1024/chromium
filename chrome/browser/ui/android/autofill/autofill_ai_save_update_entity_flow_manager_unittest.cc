@@ -12,10 +12,10 @@
 #include "base/test/scoped_feature_list.h"
 #include "chrome/browser/autofill/android/save_update_address_profile_prompt_mode.h"
 #include "chrome/browser/signin/identity_test_environment_profile_adaptor.h"
-#include "chrome/browser/ui/autofill/autofill_message_model.h"
-#include "chrome/browser/ui/autofill/autofill_message_model_test_api.h"
-#include "chrome/browser/ui/autofill/mock_autofill_dialog_controller.h"
-#include "chrome/browser/ui/autofill/mock_autofill_message_controller.h"
+#include "chrome/browser/ui/android/autofill/autofill_message_model.h"
+#include "chrome/browser/ui/android/autofill/autofill_message_model_test_api.h"
+#include "chrome/browser/ui/android/autofill/mock_autofill_dialog_controller.h"
+#include "chrome/browser/ui/android/autofill/mock_autofill_message_controller.h"
 #include "chrome/test/base/chrome_render_view_host_test_harness.h"
 #include "chrome/test/base/testing_profile.h"
 #include "components/autofill/core/browser/foundations/autofill_client.h"
@@ -320,7 +320,8 @@ TEST_F(AutofillAiSaveUpdateEntityFlowManagerTest, ShowLocalSaveNotification) {
       IDS_AUTOFILL_AI_SNACK_BAR_CONFIRMATION_BUTTON_LABEL);
 
   EXPECT_CALL(autofill_dialog_controller(),
-              Show(title, description, button, _));
+              Show(title, description, /*positive_button_text=*/button,
+                   /*negative_button_text=*/std::u16string(), _));
   flow_manager().ShowLocalSaveNotification();
 }
 

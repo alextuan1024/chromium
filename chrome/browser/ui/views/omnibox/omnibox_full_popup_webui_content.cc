@@ -9,16 +9,22 @@
 
 #include "base/functional/bind.h"
 #include "base/memory/raw_ptr.h"
+#include "build/build_config.h"
 #include "chrome/app/chrome_command_ids.h"
 #include "chrome/browser/ui/location_bar/location_bar.h"
+#include "chrome/browser/ui/omnibox/ai_mode_page_action_controller.h"
 #include "chrome/browser/ui/omnibox/omnibox_controller.h"
 #include "chrome/browser/ui/omnibox/omnibox_edit_model.h"
 #include "chrome/browser/ui/ui_features.h"
-#include "chrome/browser/ui/views/omnibox/omnibox_popup_presenter_base.h"
+#include "chrome/browser/ui/views/omnibox/omnibox_popup_content_delegate.h"
+#include "chrome/browser/ui/views/omnibox/omnibox_popup_presenter_delegate.h"
+#include "chrome/browser/ui/webui/cr_components/searchbox/contextual_searchbox_handler.h"
 #include "chrome/browser/ui/webui/omnibox_popup/omnibox_popup_handler.h"
 #include "chrome/browser/ui/webui/omnibox_popup/omnibox_popup_ui.h"
 #include "chrome/browser/ui/webui/top_chrome/webui_contents_wrapper.h"
 #include "chrome/common/webui_url_constants.h"
+#include "content/public/browser/focused_node_details.h"
+#include "content/public/browser/render_widget_host.h"
 #include "content/public/browser/render_widget_host_view.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_ui.h"
@@ -31,14 +37,34 @@
 #include "ui/views/widget/widget.h"
 
 OmniboxFullPopupWebUIContent::OmniboxFullPopupWebUIContent(
-    OmniboxPopupPresenterBase* presenter,
+    OmniboxPopupContentDelegate* content_delegate,
+    OmniboxPopupContentSizer* sizer,
+    OmniboxPopupContentConfig config,
     LocationBar* location_bar,
     OmniboxController* controller)
-    : OmniboxPopupWebUIContent(presenter,
+    : OmniboxFullPopupWebUIContent(content_delegate,
+                                   sizer,
+                                   config,
+                                   location_bar,
+                                   controller,
+                                   /*contents=*/nullptr) {}
+
+OmniboxFullPopupWebUIContent::OmniboxFullPopupWebUIContent(
+    OmniboxPopupContentDelegate* content_delegate,
+    OmniboxPopupContentSizer* sizer,
+    OmniboxPopupContentConfig config,
+    LocationBar* location_bar,
+    OmniboxController* controller,
+    std::unique_ptr<ContentsWrapper> contents)
+    : OmniboxPopupWebUIContent(content_delegate,
+                               sizer,
+                               config,
                                location_bar,
                                controller,
                                /*include_location_bar_cutout=*/false,
-                               /*wants_focus=*/true),
+                               /*wants_focus=*/true,
+                               /*set_content_url=*/false,
+                               std::move(contents)),
       OmniboxContextMenuMixin<ui::SimpleMenuModel::Delegate>(location_bar,
                                                              controller) {
   SetContentURL(chrome::kChromeUIOmniboxPopupURL);
@@ -52,6 +78,7 @@ bool OmniboxFullPopupWebUIContent::EscClosesUI() const {
 }
 
 void OmniboxFullPopupWebUIContent::Clear() {
+  CancelPendingContextMenuRequest();
   if (auto* handler = popup_handler()) {
     handler->ClearPopup(
         base::BindOnce(&OmniboxFullPopupWebUIContent::OnClearCallback,
@@ -77,6 +104,105 @@ std::string_view OmniboxFullPopupWebUIContent::GetMetricPrefix() const {
 // `OmniboxAimPopupWebUIContent::UpdateLocationBarFocusForScreenReader()`
 // implementation to here to deal with potential popup focus issue(s) when a
 // screenreader is being used.
+
+bool OmniboxFullPopupWebUIContent::RequestContextMenu(
+    const gfx::Point& screen_point,
+    ui::mojom::MenuSourceType source_type) {
+  if (!GetWrappedWebContents()) {
+    return false;
+  }
+
+  pending_context_menu_request_ = ContextMenuRequest{screen_point, source_type};
+  ShowPendingContextMenuIfReady();
+  return true;
+}
+
+void OmniboxFullPopupWebUIContent::OnPopupWidgetActivationChanged(bool active) {
+  if (!pending_context_menu_request_) {
+    return;
+  }
+  if (active) {
+    ShowPendingContextMenuIfReady();
+  } else {
+    CancelPendingContextMenuRequest();
+  }
+}
+
+void OmniboxFullPopupWebUIContent::OnPopupWidgetPresentedChanged(
+    bool presented) {
+  popup_presented_ = presented;
+  if (presented) {
+    ShowPendingContextMenuIfReady();
+  }
+}
+
+void OmniboxFullPopupWebUIContent::CancelPendingContextMenuRequest() {
+  pending_context_menu_request_.reset();
+}
+
+void OmniboxFullPopupWebUIContent::OnFocusChangedInPage(
+    const content::FocusedNodeDetails& details) {
+  if (pending_context_menu_request_ &&
+      details.editable_level != content::EditableLevel::kNotEditable) {
+    ShowPendingContextMenuIfReady();
+  }
+}
+
+void OmniboxFullPopupWebUIContent::UpdateAimButtonVisibility() {
+  auto* controller = contents_wrapper()->GetWebUIController();
+  if (auto* handler = controller ? controller->omnibox_handler() : nullptr) {
+    // Compute visibility from the omnibox state rather than reading the Views
+    // AIM chip. During a tab change, the popup is shown before the location
+    // bar's page action container is rebound to the new tab, so the chip still
+    // reflects the deactivated previous tab and would report hidden, briefly
+    // hiding the AIM button on new tab creation.
+    handler->SetAimButtonVisible(
+        omnibox::AiModePageActionController::ShouldShowPageAction(
+            location_bar()->GetProfile(), *location_bar()));
+  }
+}
+
+void OmniboxFullPopupWebUIContent::DidFirstVisuallyNonEmptyPaint() {
+  // The host's `CompletedFirstVisuallyNonEmptyPaint()` turns true with this
+  // paint, so let `LocationBarView` drop its native focus ring.
+  if (auto* delegate = presenter_delegate()) {
+    delegate->OnPopupFirstVisuallyNonEmptyPaint();
+  }
+}
+
+void OmniboxFullPopupWebUIContent::ShowPendingContextMenuIfReady() {
+  if (!pending_context_menu_request_ || !GetWidget() ||
+      !GetWidget()->IsActive()) {
+    return;
+  }
+
+  content::WebContents* web_contents = GetWrappedWebContents();
+  content::RenderFrameHost* frame =
+      web_contents ? web_contents->GetPrimaryMainFrame() : nullptr;
+  content::RenderWidgetHost* host =
+      frame ? frame->GetRenderWidgetHost() : nullptr;
+  // Wait until the WebUI `<input>` is focused in Blink so `ContextMenuParams`
+  // is editable.
+  if (!host || frame->GetFocusedEditableLevel() ==
+                   content::EditableLevel::kNotEditable) {
+    return;
+  }
+
+#if BUILDFLAG(IS_MAC)
+  // The native menu's nested run loop holds back the popup's first frame
+  // until the menu closes, so wait for that frame before showing the menu.
+  if (!popup_presented_) {
+    return;
+  }
+#endif
+
+  const ContextMenuRequest request = *pending_context_menu_request_;
+  CancelPendingContextMenuRequest();
+  // Convert now that the popup is positioned.
+  gfx::Point point = request.screen_point;
+  views::View::ConvertPointFromScreen(this, &point);
+  host->ShowContextMenuAtPoint(point, request.source_type);
+}
 
 // Override of WebUIContentsWrapper::Host::HandleContextMenu. This mirrors
 // content::WebContentsDelegate::HandleContextMenu, which is called by the
@@ -121,7 +247,7 @@ void OmniboxFullPopupWebUIContent::ShowContextMenuComplete(
   menu_runner_->RunMenuAt(GetWidget(), /*button_controller=*/nullptr,
                           gfx::Rect(screen_point, gfx::Size()),
                           views::MenuAnchorPosition::kTopLeft,
-                          ui::mojom::MenuSourceType::kMouse);
+                          params.source_type);
 }
 
 void OmniboxFullPopupWebUIContent::ExecuteCommand(int command_id,
@@ -169,13 +295,9 @@ views::Widget* OmniboxFullPopupWebUIContent::GetWidgetForTextServices() {
 
 const OmniboxPopupHandler* OmniboxFullPopupWebUIContent::GetPopupHandler()
     const {
-  if (!popup_presenter() || !popup_presenter()->GetWebUIContent()) {
-    return nullptr;
-  }
-  const auto* contents_wrapper =
-      popup_presenter()->GetWebUIContent()->contents_wrapper();
+  const auto* wrapper = contents_wrapper();
   const auto* webui_controller =
-      contents_wrapper ? contents_wrapper->GetWebUIController() : nullptr;
+      wrapper ? wrapper->GetWebUIController() : nullptr;
   const auto* popup_ui = static_cast<const OmniboxPopupUI*>(webui_controller);
   return popup_ui ? popup_ui->popup_handler() : nullptr;
 }

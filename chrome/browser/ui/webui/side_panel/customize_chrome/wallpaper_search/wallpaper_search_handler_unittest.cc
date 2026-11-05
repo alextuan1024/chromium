@@ -40,7 +40,7 @@
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile.h"
 #include "components/image_fetcher/core/mock_image_decoder.h"
-#include "components/optimization_guide/core/model_execution/feature_keys.h"
+#include "components/optimization_guide/core/feature_registry/feature_keys.h"
 #include "components/optimization_guide/core/model_quality/model_quality_log_entry.h"
 #include "components/optimization_guide/core/model_quality/test_model_quality_logs_uploader_service.h"
 #include "components/optimization_guide/core/optimization_guide_features.h"
@@ -329,7 +329,7 @@ TEST_F(WallpaperSearchHandlerTest, GetHistory) {
       .WillOnce(MoveArg<0>(&history_images));
   EXPECT_CALL(mock_image_decoder(), DecodeImage(_, _, _, _))
       .WillOnce(
-          [&decoder_callback](const std::string& image_data,
+          [&decoder_callback](image_fetcher::ImageData image_data,
                               const gfx::Size& desired_image_frame_size,
                               data_decoder::DataDecoder* data_decoder,
                               image_fetcher::ImageDecodedCallback callback) {
@@ -677,14 +677,14 @@ TEST_F(WallpaperSearchHandlerTest, GetWallpaperSearchResults_Success) {
   EXPECT_CALL(mock_image_decoder(), DecodeImage(_, _, _, _))
       .Times(2)
       .WillOnce(
-          [&decoder_callback1](const std::string& image_data,
+          [&decoder_callback1](image_fetcher::ImageData image_data,
                                const gfx::Size& desired_image_frame_size,
                                data_decoder::DataDecoder* data_decoder,
                                image_fetcher::ImageDecodedCallback callback) {
             decoder_callback1 = std::move(callback);
           })
       .WillOnce(
-          [&decoder_callback2](const std::string& image_data,
+          [&decoder_callback2](image_fetcher::ImageData image_data,
                                const gfx::Size& desired_image_frame_size,
                                data_decoder::DataDecoder* data_decoder,
                                image_fetcher::ImageDecodedCallback callback) {
@@ -1302,7 +1302,7 @@ TEST_F(WallpaperSearchHandlerTest, SetBackgroundToHistoryImage) {
                       MoveArg<2>(&timer)));
   EXPECT_CALL(mock_image_decoder(), DecodeImage(_, _, _, _))
       .WillOnce(
-          [&decoder_callback](const std::string& image_data,
+          [&decoder_callback](image_fetcher::ImageData image_data,
                               const gfx::Size& desired_image_frame_size,
                               data_decoder::DataDecoder* data_decoder,
                               image_fetcher::ImageDecodedCallback callback) {
@@ -1390,14 +1390,14 @@ TEST_F(WallpaperSearchHandlerTest, SetBackgroundToWallpaperSearchResult) {
   EXPECT_CALL(mock_image_decoder(), DecodeImage(_, _, _, _))
       .Times(2)
       .WillOnce(
-          [&decoder_callback1](const std::string& image_data,
+          [&decoder_callback1](image_fetcher::ImageData image_data,
                                const gfx::Size& desired_image_frame_size,
                                data_decoder::DataDecoder* data_decoder,
                                image_fetcher::ImageDecodedCallback callback) {
             decoder_callback1 = std::move(callback);
           })
       .WillOnce(
-          [&decoder_callback2](const std::string& image_data,
+          [&decoder_callback2](image_fetcher::ImageData image_data,
                                const gfx::Size& desired_image_frame_size,
                                data_decoder::DataDecoder* data_decoder,
                                image_fetcher::ImageDecodedCallback callback) {
@@ -1966,7 +1966,7 @@ TEST_F(WallpaperSearchHandlerTest, SetBackgroundToInspirationImage) {
   base::OnceCallback<void(const gfx::Image&)> decoder_callback;
   EXPECT_CALL(mock_image_decoder(), DecodeImage(_, _, _, _))
       .WillOnce(
-          [&decoder_callback](const std::string& image_data,
+          [&decoder_callback](image_fetcher::ImageData image_data,
                               const gfx::Size& desired_image_frame_size,
                               data_decoder::DataDecoder* data_decoder,
                               image_fetcher::ImageDecodedCallback callback) {

@@ -7,8 +7,10 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <array>
 #include <memory>
 #include <optional>
+#include <ranges>
 #include <set>
 #include <unordered_map>
 #include <utility>
@@ -30,8 +32,8 @@
 #include "gpu/config/gpu_finch_features.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "third_party/khronos/GLES2/gl2.h"
-#include "third_party/khronos/GLES2/gl2ext.h"
+#include "third_party/angle/include/GLES2/gl2.h"
+#include "third_party/angle/include/GLES2/gl2ext.h"
 #include "third_party/skia/include/core/SkColorSpace.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/gpu_fence_handle.h"
@@ -72,10 +74,9 @@ class MockExternalUseClient : public ExternalUseClient {
   MOCK_METHOD1(ReleaseImageContexts,
                gpu::SyncToken(
                    std::vector<std::unique_ptr<ImageContext>> image_contexts));
-  MOCK_METHOD4(
+  MOCK_METHOD3(
       CreateImageContext,
       std::unique_ptr<ImageContext>(const TransferableResource& resource,
-                                    bool,
                                     bool,
                                     uint32_t));
 };
@@ -158,16 +159,14 @@ TEST_F(DisplayResourceProviderSkiaTest, LockForExternalUse) {
 
   ResourceId parent_id = resource_map[list.front().id];
 
-  EXPECT_CALL(client_, CreateImageContext(_, _, _, _))
+  EXPECT_CALL(client_, CreateImageContext(_, _, _))
       .WillOnce([&](const TransferableResource& resource,
-                    bool maybe_concurrent_reads, bool raw_draw_if_possible,
-                    uint32_t client_id) {
+                    bool maybe_concurrent_reads, uint32_t client_id) {
         return std::make_unique<ExternalUseClient::ImageContext>(resource);
       });
 
   ExternalUseClient::ImageContext* locked_image_context =
-      lock_set_->LockResource(parent_id, /*maybe_concurrent_reads=*/true,
-                              /*is_video_plane=*/false);
+      lock_set_->LockResource(parent_id, /*maybe_concurrent_reads=*/true);
   ASSERT_EQ(locked_image_context->mailbox(), gl_resource.mailbox());
   if (!base::FeatureList::IsEnabled(
           features::kUseAutomaticSyncTokenManagement)) {
@@ -225,16 +224,14 @@ TEST_F(DisplayResourceProviderSkiaTest, LockForExternalUseWebView) {
 
   ResourceId parent_id = resource_map[list.front().id];
 
-  EXPECT_CALL(client_, CreateImageContext(_, _, _, _))
+  EXPECT_CALL(client_, CreateImageContext(_, _, _))
       .WillOnce([&](const TransferableResource& resource,
-                    bool maybe_concurrent_reads, bool raw_draw_if_possible,
-                    uint32_t client_id) {
+                    bool maybe_concurrent_reads, uint32_t client_id) {
         return std::make_unique<ExternalUseClient::ImageContext>(resource);
       });
 
   ExternalUseClient::ImageContext* locked_image_context =
-      lock_set_->LockResource(parent_id, /*maybe_concurrent_reads=*/true,
-                              /*is_video_plane=*/false);
+      lock_set_->LockResource(parent_id, /*maybe_concurrent_reads=*/true);
   ASSERT_EQ(gl_resource.mailbox(), locked_image_context->mailbox());
   if (!base::FeatureList::IsEnabled(
           features::kUseAutomaticSyncTokenManagement)) {
@@ -388,8 +385,7 @@ TEST_F(DisplayResourceProviderSkiaTest,
     {
       for (auto& resource : list) {
         ResourceId parent_id = resource_map[resource.id];
-        lock_set_->LockResource(parent_id, /*maybe_concurrent_reads=*/true,
-                                /*is_video_plane=*/false);
+        lock_set_->LockResource(parent_id, /*maybe_concurrent_reads=*/true);
       }
       lock_set_->UnlockResources(GenSyncToken());
     }
@@ -495,8 +491,7 @@ TEST_F(DisplayResourceProviderSkiaTest, ResourceFenceDestroyChild) {
     {
       for (auto& resource : list) {
         ResourceId parent_id = resource_map[resource.id];
-        lock_set_->LockResource(parent_id, /*maybe_concurrent_reads=*/true,
-                                /*is_video_plane=*/false);
+        lock_set_->LockResource(parent_id, /*maybe_concurrent_reads=*/true);
       }
       lock_set_->UnlockResources(GenSyncToken());
     }
@@ -585,8 +580,7 @@ TEST_F(DisplayResourceProviderSkiaTest, ResourceFenceOutlivesResourceProvider) {
   {
     for (auto& resource : list) {
       ResourceId parent_id = resource_map[resource.id];
-      lock_set_->LockResource(parent_id, /*maybe_concurrent_reads=*/true,
-                              /*is_video_plane=*/false);
+      lock_set_->LockResource(parent_id, /*maybe_concurrent_reads=*/true);
     }
     lock_set_->UnlockResources(GenSyncToken());
   }
@@ -633,15 +627,14 @@ TEST_F(DisplayResourceProviderSkiaTest,
   constexpr size_t kTotalResources = 5;
   constexpr size_t kLockedResources = 3;
   constexpr size_t kUsedResources = 4;
-  ResourceId ids[kTotalResources];
+  std::array<ResourceId, kTotalResources> ids = {};
   for (auto& id : ids) {
     TransferableResource tran = CreateResource();
     id = child_resource_provider_->ImportResource(
         tran, base::BindOnce(&MockReleaseCallback::Released,
                              base::Unretained(&release)));
   }
-  std::vector<ResourceId> resource_ids_to_transfer(
-      ids, UNSAFE_TODO(ids + kTotalResources));
+  std::vector<ResourceId> resource_ids_to_transfer(std::from_range, ids);
 
   std::vector<TransferableResource> list;
 
@@ -658,13 +651,10 @@ TEST_F(DisplayResourceProviderSkiaTest,
   // In DisplayResourceProvider's namespace, use the mapped resource id.
   std::unordered_map<ResourceId, ResourceId, ResourceIdHasher> resource_map =
       resource_provider_->GetChildToParentMap(child_id);
-  std::vector<
-      std::unique_ptr<DisplayResourceProvider::ScopedReadLockSharedImage>>
-      read_locks;
   for (size_t i = 0; i < kLockedResources; i++) {
-    ResourceId mapped_resource_id = resource_map[UNSAFE_TODO(ids[i])];
-    lock_set_->LockResource(mapped_resource_id, /*maybe_concurrent_reads=*/true,
-                            /*is_video_plane=*/false);
+    ResourceId mapped_resource_id = resource_map[ids[i]];
+    lock_set_->LockResource(mapped_resource_id,
+                            /*maybe_concurrent_reads=*/true);
   }
 
   // Mark all locked resources, and one unlocked resource as used for first
@@ -673,7 +663,8 @@ TEST_F(DisplayResourceProviderSkiaTest,
     DisplayResourceProvider::ScopedBatchReturnResources returner(
         resource_provider_.get());
     resource_provider_->DeclareUsedResourcesFromChild(
-        child_id, ResourceIdSet(ids, UNSAFE_TODO(ids + kUsedResources)));
+        child_id,
+        ResourceIdSet(std::from_range, base::span(ids).first(kUsedResources)));
     EXPECT_EQ(0u, returned_to_child.size());
   }
   EXPECT_EQ(1u, returned_to_child.size());
@@ -686,14 +677,18 @@ TEST_F(DisplayResourceProviderSkiaTest,
     DisplayResourceProvider::ScopedBatchReturnResources returner(
         resource_provider_.get());
     resource_provider_->DeclareUsedResourcesFromChild(
-        child_id, ResourceIdSet(UNSAFE_TODO(ids + kLockedResources),
-                                UNSAFE_TODO(ids + kUsedResources)));
+        child_id,
+        ResourceIdSet(std::from_range, base::span(ids).subspan(
+                                           kLockedResources,
+                                           kUsedResources - kLockedResources)));
     // Can be called multiple times while batching is enabled.  This happens in
     // practice when the same surface is visited using different paths during
     // surface aggregation.
     resource_provider_->DeclareUsedResourcesFromChild(
-        child_id, ResourceIdSet(UNSAFE_TODO(ids + kLockedResources),
-                                UNSAFE_TODO(ids + kUsedResources)));
+        child_id,
+        ResourceIdSet(std::from_range, base::span(ids).subspan(
+                                           kLockedResources,
+                                           kUsedResources - kLockedResources)));
     lock_set_->UnlockResources(GenSyncToken());
     EXPECT_EQ(0u, returned_to_child.size());
   }

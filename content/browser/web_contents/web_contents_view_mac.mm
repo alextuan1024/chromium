@@ -20,6 +20,7 @@
 #include "base/task/current_thread.h"
 #include "base/task/thread_pool.h"
 #include "base/threading/thread_restrictions.h"
+#include "components/remote_cocoa/app_shim/mouse_capture.h"
 #include "components/remote_cocoa/app_shim/window_move_loop.h"
 #include "components/remote_cocoa/browser/ns_view_ids.h"
 #include "components/remote_cocoa/common/application.mojom.h"
@@ -213,6 +214,14 @@ WebContentsViewMac::GetBackForwardTransitionAnimationManager() {
 
 void WebContentsViewMac::DestroyBackForwardTransitionAnimationManager() {}
 
+void WebContentsViewMac::CancelDrag() {
+  if (remote_ns_view_) {
+    remote_ns_view_->CancelDrag();
+  } else {
+    in_process_ns_view_bridge_->CancelDrag();
+  }
+}
+
 void WebContentsViewMac::StartDragging(
     RenderFrameHost& source_rfh,
     const DropData& drop_data,
@@ -231,6 +240,13 @@ void WebContentsViewMac::StartDragging(
   // A window move loop already owns the held mouse button; refuse to start a
   // dragging session that would interfere with it.
   if (remote_cocoa::CocoaWindowMoveLoop::IsActive()) {
+    web_contents_->SystemDragEnded(source_rwh);
+    return;
+  }
+  // Likewise, a widget holding mouse capture (e.g. a tab strip during a tab
+  // drag, or an open menu) owns the held mouse button; refuse to start a
+  // dragging session that would interfere with its gesture.
+  if (remote_cocoa::CocoaMouseCapture::GetGlobalCaptureWindow()) {
     web_contents_->SystemDragEnded(source_rwh);
     return;
   }
@@ -334,7 +350,8 @@ DropData* WebContentsViewMac::GetDropData() const {
 }
 
 void WebContentsViewMac::UpdateDragOperation(ui::mojom::DragOperation operation,
-                                             bool document_is_handling_drag) {
+                                             bool document_is_handling_drag,
+                                             RenderWidgetHostImpl* source_rwh) {
   [drag_dest_ setCurrentOperation:operation
            documentIsHandlingDrag:document_is_handling_drag];
 }
@@ -720,8 +737,7 @@ void WebContentsViewMac::PerformEndDrag(uint32_t drag_operation,
   }
 
   web_contents_->DragSourceEndedAt(
-      transformed_point.x(), transformed_point.y(),
-      transformed_screen_point.x(), transformed_screen_point.y(),
+      transformed_point, transformed_screen_point,
       static_cast<ui::mojom::DragOperation>(drag_operation),
       drag_source_start_rwh_.get());
 

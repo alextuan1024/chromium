@@ -80,7 +80,6 @@
 #include "third_party/blink/renderer/platform/bindings/script_state.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/scheduler/public/worker_pool.h"
-#include "third_party/blink/renderer/platform/wtf/cross_thread_copier_base.h"
 #include "third_party/blink/renderer/platform/wtf/cross_thread_functional.h"
 #include "third_party/blink/renderer/platform/wtf/text/strcat.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
@@ -226,6 +225,25 @@ void BaseAudioContext::Dispose() {
   // BaseAudioContext is going away, so remove the context from the orphan
   // handlers.
   GetDeferredTaskHandler().ClearContextFromOrphanHandlers();
+
+  // Clear any pending resolvers without allocating DOMExceptions (which is
+  // forbidden during GC).
+  DetachPendingResolvers();
+}
+
+void BaseAudioContext::DetachPendingResolvers() {
+  for (auto& resolver : decode_audio_resolvers_) {
+    resolver->SuppressDetachCheck();
+  }
+  decode_audio_resolvers_.clear();
+
+  {
+    DeferredTaskHandler::GraphAutoLocker locker(GetDeferredTaskHandler());
+    for (auto& resolver : pending_promise_resolvers_) {
+      resolver->SuppressDetachCheck();
+    }
+    pending_promise_resolvers_.clear();
+  }
 }
 
 void BaseAudioContext::ContextLifecycleStateChanged(
@@ -394,6 +412,7 @@ ScriptPromise<AudioBuffer> BaseAudioContext::decodeAudioData(
 
     auto* resolver = MakeGarbageCollected<ScriptPromiseResolver<AudioBuffer>>(
         script_state, exception_state.GetContext());
+    resolver->SuppressDetachCheck();
     auto promise = resolver->Promise();
     decode_audio_resolvers_.insert(resolver);
 
@@ -822,22 +841,27 @@ void BaseAudioContext::AddPendingPromiseResolver(
     ScriptPromiseResolver<IDLUndefined>* resolver) {
   DCHECK(IsMainThread());
 
+  resolver->SuppressDetachCheck();
   DeferredTaskHandler::GraphAutoLocker locker(GetDeferredTaskHandler());
   pending_promise_resolvers_.push_back(resolver);
 }
 
-void BaseAudioContext::ResolvePendingPromiseResolvers() {
+void BaseAudioContext::ResolvePendingPromiseResolver(
+    ScriptPromiseResolver<IDLUndefined>* resolver) {
   DCHECK(IsMainThread());
 
-  HeapVector<Member<ScriptPromiseResolver<IDLUndefined>>> resolvers;
-  {
-    DeferredTaskHandler::GraphAutoLocker locker(GetDeferredTaskHandler());
-    resolvers.swap(pending_promise_resolvers_);
+  if (!resolver) {
+    return;
   }
 
-  for (auto& resolver : resolvers) {
-    resolver->Resolve();
+  {
+    DeferredTaskHandler::GraphAutoLocker locker(GetDeferredTaskHandler());
+    if (Erase(pending_promise_resolvers_, resolver) == 0) {
+      return;
+    }
   }
+
+  resolver->Resolve();
 }
 
 void BaseAudioContext::RejectPendingPromiseResolversWithException(
@@ -854,6 +878,35 @@ void BaseAudioContext::RejectPendingPromiseResolversWithException(
     resolver->Reject(MakeGarbageCollected<DOMException>(
         DOMExceptionCode::kInvalidStateError, message));
   }
+}
+
+void BaseAudioContext::RemovePendingPromiseResolver(
+    ScriptPromiseResolver<IDLUndefined>* resolver) {
+  DCHECK(IsMainThread());
+
+  DeferredTaskHandler::GraphAutoLocker locker(GetDeferredTaskHandler());
+  Erase(pending_promise_resolvers_, resolver);
+}
+
+void BaseAudioContext::RemovePendingPromiseResolvers(
+    const HeapVector<Member<ScriptPromiseResolver<IDLUndefined>>>& resolvers) {
+  DCHECK(IsMainThread());
+
+  DeferredTaskHandler::GraphAutoLocker locker(GetDeferredTaskHandler());
+  EraseIf(pending_promise_resolvers_, [&resolvers](const auto& resolver) {
+    return resolvers.Contains(resolver);
+  });
+}
+
+bool BaseAudioContext::HasPendingPromiseResolver(
+    ScriptPromiseResolver<IDLUndefined>* resolver) const {
+  DCHECK(IsMainThread());
+
+  if (!resolver) {
+    return false;
+  }
+  DeferredTaskHandler::GraphAutoLocker locker(GetDeferredTaskHandler());
+  return pending_promise_resolvers_.Contains(resolver);
 }
 
 void BaseAudioContext::RejectPendingDecodeAudioDataResolvers() {
@@ -906,14 +959,6 @@ void BaseAudioContext::Trace(Visitor* visitor) const {
   InspectorHelperMixin::Trace(visitor);
   EventTarget::Trace(visitor);
   ExecutionContextLifecycleStateObserver::Trace(visitor);
-}
-
-const SecurityOrigin* BaseAudioContext::GetSecurityOrigin() const {
-  if (GetExecutionContext()) {
-    return GetExecutionContext()->GetSecurityOrigin();
-  }
-
-  return nullptr;
 }
 
 AudioWorklet* BaseAudioContext::audioWorklet() const {

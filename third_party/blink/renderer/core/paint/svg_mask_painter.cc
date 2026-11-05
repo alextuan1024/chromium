@@ -6,7 +6,6 @@
 
 #include "base/containers/adapters.h"
 #include "cc/paint/color_filter.h"
-#include "third_party/blink/renderer/core/display_lock/display_lock_utilities.h"
 #include "third_party/blink/renderer/core/layout/svg/layout_svg_resource_masker.h"
 #include "third_party/blink/renderer/core/layout/svg/svg_layout_support.h"
 #include "third_party/blink/renderer/core/layout/svg/svg_resources.h"
@@ -61,9 +60,6 @@ LayoutSVGResourceMasker* ResolveElementReference(
   if (!masker) {
     return nullptr;
   }
-  if (DisplayLockUtilities::LockedAncestorPreventingLayout(*masker)) {
-    return nullptr;
-  }
   SECURITY_CHECK(!masker->SelfNeedsFullLayout());
   masker->ClearInvalidationMask();
   return masker;
@@ -99,6 +95,11 @@ void PaintMaskLayer(const FillLayer& layer,
                     PaintFlags paint_flags) {
   const StyleImage* style_image = layer.GetImage();
   if (!style_image) {
+    return;
+  }
+
+  if ((paint_flags & PaintFlag::kReadBackAllowedRendering) &&
+      !style_image->IsCorsSameOrigin()) {
     return;
   }
 
@@ -227,11 +228,11 @@ void PaintMaskLayer(const FillLayer& layer,
 }
 
 template <typename Callback>
-void IterateFillLayersReveresed(const FillLayer* layer, Callback callback) {
+void IterateFillLayersReversed(const FillLayer* layer, Callback callback) {
   if (!layer) {
     return;
   }
-  IterateFillLayersReveresed(layer->NextForUsedValue(), callback);
+  IterateFillLayersReversed(layer->NextForUsedValue(), callback);
   callback(*layer);
 }
 }  // namespace
@@ -261,13 +262,13 @@ void SVGMaskPainter::Paint(GraphicsContext& context,
                            gfx::ToEnclosingRect(visual_rect));
 
   const SVGBackgroundPaintContext bg_paint_context(layout_object);
-  IterateFillLayersReveresed(&layout_object.StyleRef().MaskLayers(),
-                             [&layout_object, &bg_paint_context, &context,
-                              paint_flags](const FillLayer& layer) {
-                               PaintMaskLayer(layer, layout_object,
-                                              bg_paint_context, context,
-                                              paint_flags);
-                             });
+  IterateFillLayersReversed(&layout_object.Style().MaskLayers(),
+                            [&layout_object, &bg_paint_context, &context,
+                             paint_flags](const FillLayer& layer) {
+                              PaintMaskLayer(layer, layout_object,
+                                             bg_paint_context, context,
+                                             paint_flags);
+                            });
 }
 
 void SVGMaskPainter::PaintSVGMaskLayer(GraphicsContext& context,
@@ -283,7 +284,7 @@ void SVGMaskPainter::PaintSVGMaskLayer(GraphicsContext& context,
   if (!masker) {
     return;
   }
-  if ((paint_flags & PaintFlag::kPrivacyPreserving) &&
+  if ((paint_flags & PaintFlag::kReadBackAllowedRendering) &&
       !masker->GetElement()->IsInCanvasSubtree()) {
     return;
   }
@@ -291,12 +292,14 @@ void SVGMaskPainter::PaintSVGMaskLayer(GraphicsContext& context,
       MaskToContentTransform(*masker, reference_box, zoom);
   SubtreeContentTransformScope content_transform_scope(content_transformation);
   PaintRecord record = masker->CreatePaintRecord(paint_flags);
+  if (!mask_source.IsCorsSameOrigin()) {
+    record.SetIsReadBackDisallowed();
+  }
 
   context.Clip(masker->ResourceBoundingBox(reference_box, zoom));
 
   bool has_layer = false;
-  if (apply_mask_type &&
-      masker->StyleRef().MaskType() == EMaskType::kLuminance) {
+  if (apply_mask_type && masker->Style().MaskType() == EMaskType::kLuminance) {
     context.BeginLayer(cc::ColorFilter::MakeLuma(), &composite_op);
     has_layer = true;
   } else if (composite_op != SkBlendMode::kSrcOver) {
@@ -317,7 +320,7 @@ bool SVGMaskPainter::MaskIsValid(const StyleMaskSourceImage& mask_source,
 
 gfx::RectF SVGMaskPainter::ResourceBoundsForSVGChild(
     const LayoutObject& object) {
-  const ComputedStyle& style = object.StyleRef();
+  const ComputedStyle& style = object.Style();
   const gfx::RectF reference_box = SVGResources::ReferenceBoxForEffects(
       object, GeometryBox::kFillBox,
       SVGResources::ForeignObjectQuirk::kDisabled);

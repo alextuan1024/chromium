@@ -8,10 +8,9 @@
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/location_bar/location_bar.h"
 #include "chrome/browser/ui/omnibox/omnibox_controller.h"
-#include "chrome/browser/ui/omnibox/omnibox_popup_state_manager.h"
 #include "chrome/browser/ui/omnibox/omnibox_popup_view.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
-#include "chrome/browser/ui/views/omnibox/omnibox_popup_presenter_base.h"
+#include "chrome/browser/ui/views/omnibox/omnibox_popup_host.h"
 
 namespace omnibox {
 
@@ -73,12 +72,12 @@ void OmniboxPopupCloser::CloseWithReason(PopupCloseReason reason) {
   VLOG(1) << "Closing omnibox popup with reason: "
           << CloseReasonToString(reason);
   auto* location_bar = browser_view_->GetLocationBar();
-  if (auto* popup_view = location_bar->GetOmniboxPopupView()) {
-    if (auto* presenter = popup_view->presenter()) {
+  auto* popup_view = location_bar->GetOmniboxPopupView();
+  if (popup_view) {
+    if (auto* popup_host = popup_view->popup_host()) {
       // Note: ESC key notifications (`PopupCloseReason::kEscapeKeyPressed`)
       // are handled via `OmniboxPopupWebUIBaseContent::OnPreHandleEscapeKey()`.
-      if (presenter->has_active_blockers() ||
-          presenter->IsPermissionPromptPreventingClose()) {
+      if (popup_host->IsClosePrevented()) {
         return;
       }
     }
@@ -89,13 +88,6 @@ void OmniboxPopupCloser::CloseWithReason(PopupCloseReason reason) {
   // Reset focus ring for the AIM button if it was set.
   if (auto* omnibox_view = location_bar->GetOmniboxView()) {
     omnibox_view->ApplyFocusRingToAimButton(false);
-  }
-  // For `kRevertAll` ensure the popup state is reset back to `kNone`.
-  if (reason == PopupCloseReason::kRevertAll) {
-    if (auto* state_manager =
-            location_bar->GetOmniboxController()->popup_state_manager()) {
-      state_manager->SetPopupState(OmniboxPopupState::kNone);
-    }
   }
 }
 

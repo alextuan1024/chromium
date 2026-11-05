@@ -13,6 +13,7 @@
 #include "base/functional/callback.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/metrics/histogram_tester.h"
+#include "base/test/metrics/user_action_tester.h"
 #include "base/test/scoped_feature_list.h"
 #include "build/build_config.h"
 #include "chrome/browser/content_settings/cookie_settings_factory.h"
@@ -42,7 +43,7 @@
 #include "components/content_settings/core/browser/host_content_settings_map.h"
 #include "components/content_settings/core/common/content_settings.h"
 #include "components/content_settings/core/common/content_settings_types.h"
-#include "components/content_settings/core/common/features.h"
+#include "components/content_settings/core/common/pref_names.h"
 #include "components/custom_handlers/protocol_handler_registry.h"
 #include "components/custom_handlers/test_protocol_handler_registry_delegate.h"
 #include "components/infobars/content/content_infobar_manager.h"
@@ -52,18 +53,25 @@
 #include "components/permissions/permission_recovery_success_rate_tracker.h"
 #include "components/strings/grit/components_strings.h"
 #include "components/subresource_filter/content/browser/content_subresource_filter_throttle_manager.h"
+#include "components/sync_preferences/testing_pref_service_syncable.h"
+#include "components/tabs/public/mock_tab_interface.h"
+#include "components/tabs/public/tab_interface.h"
 #include "components/url_formatter/elide_url.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/content_features.h"
 #include "content/public/test/mock_render_process_host.h"
 #include "content/public/test/web_contents_tester.h"
+#include "extensions/buildflags/buildflags.h"
 #include "net/base/schemeful_site.h"
 #include "services/device/public/cpp/device_features.h"
 #include "services/device/public/cpp/geolocation/buildflags.h"
+#include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/mojom/mediastream/media_stream.mojom.h"
+#include "third_party/blink/public/public_buildflags.h"
 #include "ui/base/l10n/l10n_util.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
+#include "ui/base/unowned_user_data/unowned_user_data_host.h"
 
 #if !BUILDFLAG(IS_ANDROID)
 #include "base/test/gmock_expected_support.h"
@@ -76,7 +84,19 @@
 
 #if BUILDFLAG(IS_MAC)
 #include "chrome/browser/permissions/system/system_media_permission_cache_mac_test_helper.h"
+#include "chrome/browser/ui/browser_window/test/mock_browser_window_interface.h"
+#include "chrome/browser/web_applications/os_integration/mac/app_shim_registry.h"
+#include "chrome/browser/web_applications/web_app_tab_helper.h"
+#include "chrome/common/chrome_features.h"
+#include "components/tabs/public/mock_tab_interface.h"
 #endif  // BUILDFLAG(IS_MAC)
+
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
+#include "chrome/browser/extensions/test_extension_system.h"
+#include "extensions/browser/extension_registrar.h"
+#include "extensions/common/extension.h"
+#include "extensions/common/extension_builder.h"
+#endif  // BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 
 using content::WebContentsTester;
 using content_settings::PageSpecificContentSettings;
@@ -415,12 +435,6 @@ TEST_F(ContentSettingBubbleModelTest, MediastreamContentBubble) {
 }
 
 TEST_F(ContentSettingBubbleModelTest, MediastreamMic) {
-  // Keep `kLeftHandSideActivityIndicators` disabled to test camera/mic content
-  // setting bubble.
-  base::test::ScopedFeatureList scoped_list;
-  scoped_list.InitAndDisableFeature(
-      content_settings::features::kLeftHandSideActivityIndicators);
-
   WebContentsTester::For(web_contents())
       ->NavigateAndCommit(GURL("https://www.example.com"));
   // Required to break dependency on BrowserMainLoop.
@@ -458,6 +472,8 @@ TEST_F(ContentSettingBubbleModelTest, MediastreamMic) {
   EXPECT_FALSE(bubble_content.manage_text.empty());
 
   // Change the microphone access.
+  content_settings->ResetMediaBlockedState(ContentSettingsType::MEDIASTREAM_MIC,
+                                           /*update_indicators=*/false);
   microphone_camera_state.Put(PageSpecificContentSettings::kMicrophoneBlocked);
   content_settings->OnMediaStreamPermissionSet(security_origin,
                                                microphone_camera_state);
@@ -483,12 +499,6 @@ TEST_F(ContentSettingBubbleModelTest, MediastreamMic) {
 }
 
 TEST_F(ContentSettingBubbleModelTest, MediastreamCamera) {
-  // Keep `kLeftHandSideActivityIndicators` disabled to test camera/mic content
-  // setting bubble.
-  base::test::ScopedFeatureList scoped_list;
-  scoped_list.InitAndDisableFeature(
-      content_settings::features::kLeftHandSideActivityIndicators);
-
   WebContentsTester::For(web_contents())
       ->NavigateAndCommit(GURL("https://www.example.com"));
   // Required to break dependency on BrowserMainLoop.
@@ -526,6 +536,8 @@ TEST_F(ContentSettingBubbleModelTest, MediastreamCamera) {
   EXPECT_FALSE(bubble_content.manage_text.empty());
 
   // Change the camera access.
+  content_settings->ResetMediaBlockedState(
+      ContentSettingsType::MEDIASTREAM_CAMERA, /*update_indicators=*/false);
   microphone_camera_state.Put(PageSpecificContentSettings::kCameraBlocked);
   content_settings->OnMediaStreamPermissionSet(security_origin,
                                                microphone_camera_state);
@@ -552,12 +564,6 @@ TEST_F(ContentSettingBubbleModelTest, MediastreamCamera) {
 }
 
 TEST_F(ContentSettingBubbleModelTest, AccumulateMediastreamMicAndCamera) {
-  // Keep `kLeftHandSideActivityIndicators` disabled to test camera/mic content
-  // setting bubble.
-  base::test::ScopedFeatureList scoped_list;
-  scoped_list.InitAndDisableFeature(
-      content_settings::features::kLeftHandSideActivityIndicators);
-
   WebContentsTester::For(web_contents())
       ->NavigateAndCommit(GURL("https://www.example.com"));
   // Required to break dependency on BrowserMainLoop.
@@ -594,6 +600,8 @@ TEST_F(ContentSettingBubbleModelTest, AccumulateMediastreamMicAndCamera) {
   EXPECT_EQ(0, bubble_content.radio_group.default_item);
 
   // Then add camera access.
+  content_settings->ResetMediaBlockedState(ContentSettingsType::MEDIASTREAM_MIC,
+                                           /*update_indicators=*/false);
   microphone_camera_state.Put(PageSpecificContentSettings::kCameraAccessed);
   content_settings->OnMediaStreamPermissionSet(security_origin,
                                                microphone_camera_state);
@@ -945,6 +953,37 @@ TEST_F(ContentSettingBubbleModelIsolatedWebAppTest, IsolatedWebAppUrl) {
 }
 #endif  // !BUILDFLAG(IS_ANDROID)
 
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
+// Content setting bubbles identify a chrome-extension:// page by the
+// extension's name.
+TEST_F(ContentSettingBubbleModelTest, ExtensionUrl) {
+  scoped_refptr<const extensions::Extension> extension =
+      extensions::ExtensionBuilder("Test Extension").Build();
+  static_cast<extensions::TestExtensionSystem*>(
+      extensions::ExtensionSystem::Get(profile()))
+      ->CreateExtensionService(base::CommandLine::ForCurrentProcess(),
+                               base::FilePath(), false);
+  extensions::ExtensionRegistrar::Get(profile())->AddExtension(extension.get());
+  NavigateAndCommit(extension->GetResourceURL("page.html"));
+  ASSERT_EQ(extension->GetResourceURL("page.html"),
+            web_contents()->GetPrimaryMainFrame()->GetLastCommittedURL());
+
+  PageSpecificContentSettings::GetForFrame(
+      web_contents()->GetPrimaryMainFrame())
+      ->OnContentBlocked(ContentSettingsType::CLIPBOARD_READ_WRITE);
+
+  std::unique_ptr<ContentSettingBubbleModel> content_setting_bubble_model(
+      ContentSettingBubbleModel::CreateContentSettingBubbleModel(
+          nullptr, page(), ContentSettingsType::CLIPBOARD_READ_WRITE));
+  const ContentSettingBubbleModel::BubbleContent& bubble_content =
+      content_setting_bubble_model->bubble_content();
+  ASSERT_FALSE(bubble_content.radio_group.radio_items.empty());
+  EXPECT_EQ(bubble_content.radio_group.radio_items[0],
+            l10n_util::GetStringFUTF16(IDS_BLOCKED_CLIPBOARD_UNBLOCK,
+                                       u"Test Extension"));
+}
+#endif  // BUILDFLAG(ENABLE_EXTENSIONS_CORE)
+
 TEST_F(ContentSettingBubbleModelTest, RegisterProtocolHandler) {
   const GURL page_url("https://toplevel.example/");
   NavigateAndCommit(page_url);
@@ -986,8 +1025,7 @@ TEST_F(ContentSettingBubbleModelTest, RPHAllow) {
       FakeOwner::Create(content_setting_bubble_model, 0);
 
   {
-    ProtocolHandler handler = registry.GetHandlerFor("mailto");
-    EXPECT_TRUE(handler.IsEmpty());
+    EXPECT_TRUE(registry.GetHandlerFor("mailto").IsEmpty());
     EXPECT_EQ(CONTENT_SETTING_DEFAULT,
               content_settings->pending_protocol_handler_setting());
   }
@@ -995,39 +1033,29 @@ TEST_F(ContentSettingBubbleModelTest, RPHAllow) {
   // "0" is the "Allow" radio button.
   owner->SetSelectedRadioOptionAndCommit(0);
   {
-    ProtocolHandler handler = registry.GetHandlerFor("mailto");
-    ASSERT_FALSE(handler.IsEmpty());
+    EXPECT_TRUE(registry.IsDefault(test_handler));
     EXPECT_EQ(CONTENT_SETTING_ALLOW,
               content_settings->pending_protocol_handler_setting());
   }
 
-  // "1" is the "Deny" radio button.
+  // "1" is the "Deny" radio button. Refusing after allowing must leave no
+  // trace of the handler among the registered ones, only among the ignored.
   owner->SetSelectedRadioOptionAndCommit(1);
   {
-    ProtocolHandler handler = registry.GetHandlerFor("mailto");
-    EXPECT_TRUE(handler.IsEmpty());
+    EXPECT_TRUE(registry.GetHandlerFor("mailto").IsEmpty());
+    EXPECT_FALSE(registry.IsRegistered(test_handler));
+    EXPECT_TRUE(registry.IsIgnored(test_handler));
     EXPECT_EQ(CONTENT_SETTING_BLOCK,
               content_settings->pending_protocol_handler_setting());
   }
 
-  // "2" is the "Ignore button.
-  owner->SetSelectedRadioOptionAndCommit(2);
-  {
-    ProtocolHandler handler = registry.GetHandlerFor("mailto");
-    EXPECT_TRUE(handler.IsEmpty());
-    EXPECT_EQ(CONTENT_SETTING_DEFAULT,
-              content_settings->pending_protocol_handler_setting());
-    EXPECT_TRUE(registry.IsIgnored(test_handler));
-  }
-
   // "0" is the "Allow" radio button.
   owner->SetSelectedRadioOptionAndCommit(0);
   {
-    ProtocolHandler handler = registry.GetHandlerFor("mailto");
-    ASSERT_FALSE(handler.IsEmpty());
+    EXPECT_TRUE(registry.IsDefault(test_handler));
+    EXPECT_FALSE(registry.IsIgnored(test_handler));
     EXPECT_EQ(CONTENT_SETTING_ALLOW,
               content_settings->pending_protocol_handler_setting());
-    EXPECT_FALSE(registry.IsIgnored(test_handler));
   }
 
   registry.Shutdown();
@@ -1053,14 +1081,58 @@ TEST_F(ContentSettingBubbleModelTest, RPHDefaultDone) {
       content_setting_bubble_model,
       content_setting_bubble_model.bubble_content().radio_group.default_item);
 
-  // If nothing is selected, the default action "Ignore" should be performed.
+  // If nothing is selected, the default action "Deny" should be performed:
+  // dismissing the bubble grants nothing.
   content_setting_bubble_model.CommitChanges();
   {
-    ProtocolHandler handler = registry.GetHandlerFor("mailto");
-    EXPECT_TRUE(handler.IsEmpty());
-    EXPECT_EQ(CONTENT_SETTING_DEFAULT,
-              content_settings->pending_protocol_handler_setting());
+    EXPECT_TRUE(registry.GetHandlerFor("mailto").IsEmpty());
+    EXPECT_FALSE(registry.IsRegistered(test_handler));
     EXPECT_TRUE(registry.IsIgnored(test_handler));
+    EXPECT_EQ(CONTENT_SETTING_BLOCK,
+              content_settings->pending_protocol_handler_setting());
+  }
+
+  registry.Shutdown();
+}
+
+// The handler named as being replaced is the registry's current default, not
+// whatever was the default when the registration request arrived.
+TEST_F(ContentSettingBubbleModelTest, RPHTitleNamesCurrentDefaultHandler) {
+  custom_handlers::ProtocolHandlerRegistry registry(
+      profile()->GetPrefs(),
+      std::make_unique<custom_handlers::TestProtocolHandlerRegistryDelegate>());
+  registry.InitProtocolSettings();
+  registry.OnAcceptRegisterProtocolHandler(
+      ProtocolHandler::CreateProtocolHandler(
+          "mailto", GURL("https://installed.example/?u=%s")));
+
+  const GURL page_url("https://toplevel.example/");
+  NavigateAndCommit(page_url);
+  PageSpecificContentSettingsDelegate::FromWebContents(web_contents())
+      ->set_pending_protocol_handler(ProtocolHandler::CreateProtocolHandler(
+          "mailto", GURL("https://www.toplevel.example/?u=%s")));
+
+  {
+    ContentSettingRPHBubbleModel content_setting_bubble_model(nullptr, page(),
+                                                              &registry);
+    EXPECT_EQ(content_setting_bubble_model.bubble_content().title,
+              l10n_util::GetStringFUTF16(
+                  IDS_REGISTER_PROTOCOL_HANDLER_CONFIRM_REPLACE,
+                  u"www.toplevel.example",
+                  ProtocolHandler::GetProtocolDisplayName("mailto"),
+                  u"installed.example"));
+  }
+
+  // Once the installed handler is gone there is nothing left to replace.
+  registry.RemoveDefaultHandler("mailto");
+  {
+    ContentSettingRPHBubbleModel content_setting_bubble_model(nullptr, page(),
+                                                              &registry);
+    EXPECT_EQ(
+        content_setting_bubble_model.bubble_content().title,
+        l10n_util::GetStringFUTF16(
+            IDS_REGISTER_PROTOCOL_HANDLER_CONFIRM, u"www.toplevel.example",
+            ProtocolHandler::GetProtocolDisplayName("mailto")));
   }
 
   registry.Shutdown();
@@ -1373,7 +1445,13 @@ TEST_F(ContentSettingBubbleModelTest, PopupBubbleModelListItems) {
           web_contents()->GetPrimaryMainFrame());
   content_settings->OnContentBlocked(ContentSettingsType::POPUPS);
 
-  blocked_content::PopupBlockerTabHelper::CreateForWebContents(web_contents());
+  ui::UnownedUserDataHost user_data_host;
+  tabs::MockTabInterface tab;
+  ON_CALL(tab, GetUnownedUserDataHost())
+      .WillByDefault(::testing::ReturnRef(user_data_host));
+  tabs::TabLookupFromWebContents::CreateForWebContents(web_contents(), &tab);
+  blocked_content::PopupBlockerTabHelper popup_blocker_tab_helper(
+      tab, web_contents());
   std::unique_ptr<ContentSettingBubbleModel> content_setting_bubble_model(
       ContentSettingBubbleModel::CreateContentSettingBubbleModel(
           nullptr, page(), ContentSettingsType::POPUPS));
@@ -1381,10 +1459,11 @@ TEST_F(ContentSettingBubbleModelTest, PopupBubbleModelListItems) {
       content_setting_bubble_model->bubble_content().list_items;
   EXPECT_EQ(0U, list_items.size());
 
-  BlockedWindowParams params(GURL("about:blank"), url::Origin(), nullptr,
-                             content::Referrer(), std::string(),
-                             WindowOpenDisposition::NEW_POPUP,
-                             blink::mojom::WindowFeatures(), false, true);
+  const BlockedWindowParams params(GURL("about:blank"), std::nullopt,
+                                   url::Origin(), nullptr, content::Referrer(),
+                                   std::string(),
+                                   ui::mojom::WindowOpenDisposition::kNewPopup,
+                                   blink::mojom::WindowFeatures(), false, true);
   constexpr size_t kItemCount = 3;
   for (size_t i = 1; i <= kItemCount; i++) {
     NavigateParams navigate_params =
@@ -1402,15 +1481,21 @@ TEST_F(ContentSettingBubbleModelTest, PopupBubbleModelListItems) {
 TEST_F(ContentSettingBubbleModelTest, PopupBubbleModelListItemsSpoofing) {
   const GURL url("https://www.example.test/");
   WebContentsTester::For(web_contents())->NavigateAndCommit(url);
-  blocked_content::PopupBlockerTabHelper::CreateForWebContents(web_contents());
+  ui::UnownedUserDataHost user_data_host;
+  tabs::MockTabInterface tab;
+  ON_CALL(tab, GetUnownedUserDataHost())
+      .WillByDefault(::testing::ReturnRef(user_data_host));
+  tabs::TabLookupFromWebContents::CreateForWebContents(web_contents(), &tab);
+  blocked_content::PopupBlockerTabHelper popup_blocker_tab_helper(
+      tab, web_contents());
 
   // Malicious URL
   GURL spoof_url("http://google.com:VeryLongString@evil.com");
 
-  BlockedWindowParams params(spoof_url, url::Origin(), nullptr,
-                             content::Referrer(), std::string(),
-                             WindowOpenDisposition::NEW_POPUP,
-                             blink::mojom::WindowFeatures(), false, true);
+  const BlockedWindowParams params(spoof_url, std::nullopt, url::Origin(),
+                                   nullptr, content::Referrer(), std::string(),
+                                   ui::mojom::WindowOpenDisposition::kNewPopup,
+                                   blink::mojom::WindowFeatures(), false, true);
 
   NavigateParams navigate_params =
       params.CreateNavigateParams(process(), web_contents());
@@ -1558,7 +1643,7 @@ TEST_F(ContentSettingBubbleModelTest,
                                    ContentSettingsType::STORAGE_ACCESS));
 }
 
-#if BUILDFLAG(IS_CHROMEOS)
+#if BUILDFLAG(ENABLE_SMART_CARD)
 TEST_F(ContentSettingBubbleModelTest, SmartCard) {
   const GURL page_url("https://toplevel.example/");
   NavigateAndCommit(page_url);
@@ -1972,3 +2057,198 @@ TEST_F(ContentSettingBubbleModelUnusedPermissionRevocationForAllSurfacesTest,
   hcsm->GetWebsiteSetting(url, url, ContentSettingsType::GEOLOCATION, &info);
   EXPECT_EQ(base::Time(), info.metadata.last_visited());
 }
+
+#if BUILDFLAG(IS_MAC)
+TEST_F(ContentSettingBubbleModelTest, NotificationsBubbleModel_DontAllow) {
+  const GURL url("https://www.example.com/");
+  WebContentsTester::For(web_contents())->NavigateAndCommit(url);
+
+  HostContentSettingsMap* hcsm =
+      HostContentSettingsMapFactory::GetForProfile(profile());
+  hcsm->SetContentSettingDefaultScope(
+      url, url, ContentSettingsType::NOTIFICATIONS, CONTENT_SETTING_ALLOW);
+
+  base::UserActionTester user_action_tester;
+  {
+    ContentSettingNotificationsBubbleModel bubble_model(nullptr, page());
+    EXPECT_EQ(1, user_action_tester.GetActionCount(
+                     "ContentSettings.NotificationsDialog.Shown"));
+    const auto& content = bubble_model.bubble_content();
+    EXPECT_EQ(content.title,
+              l10n_util::GetStringUTF16(IDS_NOTIFICATIONS_TURNED_OFF_IN_MACOS));
+    EXPECT_EQ(content.done_button_text,
+              l10n_util::GetStringUTF16(IDS_OPEN_SETTINGS_LINK));
+    EXPECT_EQ(content.cancel_button_text,
+              l10n_util::GetStringUTF16(IDS_PERMISSION_DONT_ALLOW));
+
+    bubble_model.OnCancelButtonClicked();
+    EXPECT_EQ(1, user_action_tester.GetActionCount(
+                     "ContentSettings.NotificationsDialog.DontAllowClicked"));
+    EXPECT_EQ(
+        CONTENT_SETTING_BLOCK,
+        hcsm->GetContentSetting(url, url, ContentSettingsType::NOTIFICATIONS));
+  }
+  EXPECT_EQ(1, user_action_tester.GetActionCount(
+                   "ContentSettings.NotificationsDialog.Closed"));
+}
+
+TEST_F(ContentSettingBubbleModelTest,
+       NotificationsBubbleModel_OpenSystemSettings) {
+  const GURL url("https://www.example.com/");
+  WebContentsTester::For(web_contents())->NavigateAndCommit(url);
+
+  system_permission_settings::MockPlatformHandle mock_platform_handle;
+  system_permission_settings::SetInstanceForTesting(&mock_platform_handle);
+
+  EXPECT_CALL(
+      mock_platform_handle,
+      OpenSystemSettings(web_contents(), ContentSettingsType::NOTIFICATIONS));
+
+  base::UserActionTester user_action_tester;
+  {
+    ContentSettingNotificationsBubbleModel bubble_model(nullptr, page());
+    bubble_model.OnDoneButtonClicked();
+    EXPECT_EQ(
+        1,
+        user_action_tester.GetActionCount(
+            "ContentSettings.NotificationsDialog.OpenSystemSettingsClicked"));
+  }
+
+  system_permission_settings::SetInstanceForTesting(nullptr);
+}
+
+TEST_F(ContentSettingBubbleModelTest,
+       NotificationsBubbleModel_SystemPermissionNotDetermined) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(features::kAppShimNotificationAttribution);
+
+  AppShimRegistry::Get()->SetPrefServiceAndUserDataDirForTesting(
+      TestingBrowserProcess::GetGlobal()->local_state(),
+      profile()->GetPath().DirName());
+
+  tabs::MockTabInterface mock_tab;
+  MockBrowserWindowInterface mock_browser_window;
+  ON_CALL(mock_tab, GetBrowserWindowInterface())
+      .WillByDefault(testing::Return(&mock_browser_window));
+  ON_CALL(mock_browser_window, GetProfile())
+      .WillByDefault(testing::Return(profile()));
+
+  web_app::test::AwaitStartWebAppProviderAndSubsystems(profile());
+
+  const GURL app_url("https://www.example.com/");
+  WebContentsTester::For(web_contents())->NavigateAndCommit(app_url);
+
+  const webapps::AppId app_id =
+      web_app::test::InstallDummyWebApp(profile(), "Web App Title", app_url);
+  AppShimRegistry::Get()->OnAppInstalledForProfile(app_id,
+                                                   profile()->GetPath());
+  web_app::WebAppTabHelper::Create(&mock_tab, web_contents());
+  web_app::WebAppTabHelper::FromWebContents(web_contents())->SetAppId(app_id);
+
+  system_permission_settings::MockPlatformHandle mock_platform_handle;
+  system_permission_settings::SetInstanceForTesting(&mock_platform_handle);
+
+  // When Chrome permission is already allowed while system permission is
+  // kNotDetermined, the bubble shows the turned-off-in-macOS text with an
+  // "Allow" button.
+  base::UserActionTester user_action_tester;
+  EXPECT_CALL(mock_platform_handle, OpenSystemSettings).Times(0);
+  ContentSettingNotificationsBubbleModel bubble_model(nullptr, page());
+  const auto& content = bubble_model.bubble_content();
+  EXPECT_EQ(content.title,
+            l10n_util::GetStringUTF16(IDS_NOTIFICATIONS_TURNED_OFF_IN_MACOS));
+  EXPECT_EQ(content.done_button_text,
+            l10n_util::GetStringUTF16(IDS_PERMISSION_ALLOW));
+  EXPECT_EQ(content.cancel_button_text,
+            l10n_util::GetStringUTF16(IDS_PERMISSION_DONT_ALLOW));
+  // Even if the system permission status updates in AppShimRegistry while the
+  // bubble is open, clicking the "Allow" button should still follow the
+  // "Allow" action rather than opening System Settings.
+  AppShimRegistry::Get()->SaveNotificationPermissionStatusForApp(
+      app_id, AppShimRegistry::NotificationPermissionStatus::kGranted);
+  bubble_model.OnDoneButtonClicked();
+  EXPECT_EQ(1, user_action_tester.GetActionCount(
+                   "ContentSettings.NotificationsDialog.AllowClicked"));
+  EXPECT_EQ(
+      0, user_action_tester.GetActionCount(
+             "ContentSettings.NotificationsDialog.OpenSystemSettingsClicked"));
+
+  system_permission_settings::SetInstanceForTesting(nullptr);
+  AppShimRegistry::Get()->SetPrefServiceAndUserDataDirForTesting(
+      nullptr, base::FilePath());
+}
+
+TEST_F(ContentSettingBubbleModelTest,
+       NotificationsBubbleModel_SystemPermissionImplicitlyDenied) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(features::kAppShimNotificationAttribution);
+
+  AppShimRegistry::Get()->SetPrefServiceAndUserDataDirForTesting(
+      TestingBrowserProcess::GetGlobal()->local_state(),
+      profile()->GetPath().DirName());
+
+  tabs::MockTabInterface mock_tab;
+  MockBrowserWindowInterface mock_browser_window;
+  ON_CALL(mock_tab, GetBrowserWindowInterface())
+      .WillByDefault(testing::Return(&mock_browser_window));
+  ON_CALL(mock_browser_window, GetProfile())
+      .WillByDefault(testing::Return(profile()));
+
+  web_app::test::AwaitStartWebAppProviderAndSubsystems(profile());
+
+  const GURL app_url("https://www.example.com/");
+  WebContentsTester::For(web_contents())->NavigateAndCommit(app_url);
+
+  const webapps::AppId app_id =
+      web_app::test::InstallDummyWebApp(profile(), "Web App Title", app_url);
+  AppShimRegistry::Get()->OnAppInstalledForProfile(app_id,
+                                                   profile()->GetPath());
+  web_app::WebAppTabHelper::Create(&mock_tab, web_contents());
+  web_app::WebAppTabHelper::FromWebContents(web_contents())->SetAppId(app_id);
+
+  system_permission_settings::MockPlatformHandle mock_platform_handle;
+  system_permission_settings::SetInstanceForTesting(&mock_platform_handle);
+
+  // When system permission is kImplicitlyDenied, the bubble shows the
+  // turned-off-in-macOS text with an "Open System Settings" button.
+  AppShimRegistry::Get()->SaveNotificationPermissionStatusForApp(
+      app_id, AppShimRegistry::NotificationPermissionStatus::kImplicitlyDenied);
+  base::UserActionTester user_action_tester;
+  EXPECT_CALL(
+      mock_platform_handle,
+      OpenSystemSettings(web_contents(), ContentSettingsType::NOTIFICATIONS));
+  ContentSettingNotificationsBubbleModel bubble_model(nullptr, page());
+  const auto& content = bubble_model.bubble_content();
+  EXPECT_EQ(content.title,
+            l10n_util::GetStringUTF16(IDS_NOTIFICATIONS_TURNED_OFF_IN_MACOS));
+  EXPECT_EQ(content.done_button_text,
+            l10n_util::GetStringUTF16(IDS_OPEN_SETTINGS_LINK));
+  bubble_model.OnDoneButtonClicked();
+  EXPECT_EQ(0, user_action_tester.GetActionCount(
+                   "ContentSettings.NotificationsDialog.AllowClicked"));
+  EXPECT_EQ(
+      1, user_action_tester.GetActionCount(
+             "ContentSettings.NotificationsDialog.OpenSystemSettingsClicked"));
+
+  system_permission_settings::SetInstanceForTesting(nullptr);
+  AppShimRegistry::Get()->SetPrefServiceAndUserDataDirForTesting(
+      nullptr, base::FilePath());
+}
+
+TEST_F(ContentSettingBubbleModelTest,
+       NotificationsBubbleModel_ManagedByPolicy) {
+  const GURL url("https://www.example.com/");
+  WebContentsTester::For(web_contents())->NavigateAndCommit(url);
+
+  profile()->GetTestingPrefService()->SetManagedPref(
+      prefs::kManagedDefaultNotificationsSetting,
+      base::Value(CONTENT_SETTING_ALLOW));
+
+  ContentSettingNotificationsBubbleModel bubble_model(nullptr, page());
+  const auto& content = bubble_model.bubble_content();
+  EXPECT_TRUE(content.is_user_modifiable);
+  EXPECT_EQ(content.done_button_text,
+            l10n_util::GetStringUTF16(IDS_OPEN_SETTINGS_LINK));
+  EXPECT_TRUE(content.cancel_button_text.empty());
+}
+#endif  // BUILDFLAG(IS_MAC)

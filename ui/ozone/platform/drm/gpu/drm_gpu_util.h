@@ -5,9 +5,11 @@
 #ifndef UI_OZONE_PLATFORM_DRM_GPU_DRM_GPU_UTIL_H_
 #define UI_OZONE_PLATFORM_DRM_GPU_DRM_GPU_UTIL_H_
 
+#include <array>
+
 #include "base/containers/flat_map.h"
+#include "base/containers/span.h"
 #include "third_party/perfetto/include/perfetto/tracing/traced_value_forward.h"
-#include "ui/gfx/geometry/rect.h"
 #include "ui/ozone/platform/drm/common/drm_util.h"
 #include "ui/ozone/platform/drm/common/drm_wrapper.h"
 #include "ui/ozone/platform/drm/common/scoped_drm_types.h"
@@ -79,9 +81,6 @@ ScopedDrmColorCtmPtr CreateCTMBlob(const skcms_Matrix3x3& color_matrix,
 // Parse a CTM blob to retrieve a skcms_Matrix3x3.
 bool ParseCTMBlob(const void* data, size_t size, skcms_Matrix3x3& result);
 
-// Creates a FB Damage Clip Blob
-ScopedDrmModeRectPtr CreateDCBlob(const gfx::Rect& rect);
-
 // Returns the display infos parsed in
 // |GetDisplayInfosAndInvalidCrtcs| and disables the invalid CRTCs
 // that weren't picked as preferred CRTCs.
@@ -103,7 +102,7 @@ std::vector<CrtcConnectorPairs> GetAllCrtcConnectorPermutations(
 // triple.
 void ApplyCrtcColorSpaceConversion(DrmWrapper* drm,
                                    uint32_t crtc_id,
-                                   float rgb[3]);
+                                   std::array<float, 3>& rgb);
 
 }  // namespace ui
 

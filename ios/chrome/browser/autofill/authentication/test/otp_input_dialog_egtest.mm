@@ -3,20 +3,19 @@
 // found in the LICENSE file.
 
 #import "base/test/ios/wait_util.h"
-#import "components/autofill/core/common/autofill_payments_features.h"
 #import "components/strings/grit/components_strings.h"
+#import "ios/chrome/browser/authentication/test/signin_earl_grey.h"
 #import "ios/chrome/browser/autofill/authentication/public/otp_input_dialog_view_constants.h"
 #import "ios/chrome/browser/autofill/authentication/test/authentication_egtest_util.h"
 #import "ios/chrome/browser/autofill/ui_bundled/autofill_app_interface.h"
+#import "ios/chrome/browser/signin/model/fake_system_identity.h"
 #import "ios/chrome/grit/ios_strings.h"
 #import "ios/chrome/test/earl_grey/chrome_actions.h"
 #import "ios/chrome/test/earl_grey/chrome_earl_grey.h"
 #import "ios/chrome/test/earl_grey/chrome_matchers.h"
 #import "ios/chrome/test/earl_grey/chrome_test_case.h"
 #import "ios/testing/earl_grey/earl_grey_test.h"
-#import "ios/testing/earl_grey/matchers.h"
 #import "net/test/embedded_test_server/default_handlers.h"
-#import "ui/base/l10n/l10n_util.h"
 
 namespace {
 
@@ -60,7 +59,7 @@ id<GREYMatcher> OtpInputDialogPendingButton() {
 // Matcher for the "Cancel" button.
 id<GREYMatcher> CancelButton() {
   return grey_allOf(
-      chrome_test_util::CancelButton(),
+      chrome_test_util::CancelButton(), grey_userInteractionEnabled(),
       grey_not(grey_accessibilityTrait(UIAccessibilityTraitNotEnabled)), nil);
 }
 
@@ -101,6 +100,8 @@ id<GREYMatcher> ActivityIndicatorMatcher() {
 
 - (void)setUp {
   [super setUp];
+  [SigninEarlGrey
+      signinWithFakeIdentity:[FakeSystemIdentity fakeIdentityWithMissingNames]];
   [AutofillAppInterface setUpFakeCreditCardServer];
   _enrolledCardNameAndLastFour =
       [AutofillAppInterface saveMaskedCreditCardEnrolledInVirtualCard];
@@ -118,6 +119,8 @@ id<GREYMatcher> ActivityIndicatorMatcher() {
   [ChromeEarlGrey waitForWebStateContainingText:kAutofillTestString];
 
   [AutofillAppInterface considerCreditCardFormSecureForTesting];
+  GREYAssertTrue([AutofillAppInterface waitForFormToBeCachedInMainFrame],
+                 @"Forms were not parsed and cached.");
 }
 
 - (void)tearDownHelper {

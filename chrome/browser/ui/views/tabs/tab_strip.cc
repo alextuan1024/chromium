@@ -52,7 +52,7 @@
 #include "chrome/browser/ui/views/tabs/shared/tab_strip_observer.h"
 #include "chrome/browser/ui/views/tabs/shared/tab_strip_types.h"
 #include "chrome/browser/ui/views/tabs/tab.h"
-#include "chrome/browser/ui/views/tabs/tab_container_impl.h"
+#include "chrome/browser/ui/views/tabs/tab_container.h"
 #include "chrome/browser/ui/views/tabs/tab_group_header.h"
 #include "chrome/browser/ui/views/tabs/tab_group_highlight.h"
 #include "chrome/browser/ui/views/tabs/tab_group_underline.h"
@@ -110,6 +110,8 @@
 
 #if BUILDFLAG(IS_CHROMEOS)
 #include "chrome/browser/ash/boca/on_task/on_task_locked_controller.h"
+#include "chrome/browser/ui/chromeos/locked_state/locked_state_controller.h"
+#include "chrome/common/chrome_features.h"
 #endif
 
 namespace {
@@ -123,9 +125,9 @@ std::unique_ptr<TabContainer> MakeTabContainer(
     TabStrip* tab_strip,
     TabHoverCardController* hover_card_controller,
     TabDragContext* drag_context) {
-  return std::make_unique<TabContainerImpl>(
-      *tab_strip, hover_card_controller, drag_context->GetPositioningDelegate(),
-      *tab_strip);
+  return std::make_unique<TabContainer>(*tab_strip, hover_card_controller,
+                                        drag_context->GetPositioningDelegate(),
+                                        *tab_strip);
 }
 
 void UpdateDragEventSourceCrashKey(
@@ -267,7 +269,7 @@ class TabStrip::TabDragContextImpl : public TabDragContext,
   void MaybeStartDrag(TabSlotView* source,
                       const ui::LocatedEvent& event,
                       ui::ListSelectionModel original_selection) {
-    std::vector<TabSlotView*> dragging_views;
+    std::vector<views::View*> dragging_views;
 
     // Build the set of selected tabs to drag and calculate the offset from the
     // source.
@@ -392,8 +394,9 @@ class TabStrip::TabDragContextImpl : public TabDragContext,
     return !IsDragSessionActive() || drag_controller_->IsMovingLastTab();
   }
 
-  std::optional<int> GetIndexOf(const TabSlotView* view) const {
-    return tab_strip_->GetModelIndexOf(view);
+  std::optional<int> GetIndexOf(const views::View* view) const {
+    const auto* slot_view = views::AsViewClass<TabSlotView>(view);
+    return slot_view ? tab_strip_->GetModelIndexOf(slot_view) : std::nullopt;
   }
 
   int GetTabCount() const { return tab_strip_->GetTabCount(); }
@@ -406,7 +409,7 @@ class TabStrip::TabDragContextImpl : public TabDragContext,
 
   TabDragPositioningDelegate* GetPositioningDelegate() override { return this; }
 
-  TabSlotView* GetTabForContents(content::WebContents* contents) override {
+  views::View* GetTabForContents(content::WebContents* contents) override {
     const int model_index = GetTabStripModel()->GetIndexOfWebContents(contents);
     if (model_index == TabStripModel::kNoTab) {
       return nullptr;
@@ -414,7 +417,7 @@ class TabStrip::TabDragContextImpl : public TabDragContext,
     return GetTabAt(model_index);
   }
 
-  content::WebContents* GetContentsForTab(TabSlotView* view) override {
+  content::WebContents* GetContentsForTab(views::View* view) override {
     std::optional<int> model_index = GetIndexOf(view);
     if (!model_index) {
       return nullptr;
@@ -422,18 +425,34 @@ class TabStrip::TabDragContextImpl : public TabDragContext,
     return GetTabStripModel()->GetWebContentsAt(*model_index);
   }
 
-  bool IsTabDetachable(const TabSlotView* view) const override {
+  bool IsTabDetachable(const views::View* view) const override {
     // The tab is not detachable if it is a pinned home tab on a web app.
     return !(web_app::HasPinnedHomeTab(GetTabStripModel()) &&
              GetIndexOf(view) == 0);
   }
 
-  TabSlotView* GetTabGroupHeader(const tab_groups::TabGroupId& group) override {
+  void SetTabDetached(views::View* view) override {
+    if (auto* slot_view = views::AsViewClass<TabSlotView>(view)) {
+      slot_view->set_detached();
+    }
+  }
+
+  views::View* GetTabGroupHeader(const tab_groups::TabGroupId& group) override {
     return std::as_const(*this).GetTabGroupHeader(group);
   }
 
   TabSlotView* GetTabGroupHeader(const tab_groups::TabGroupId& group) const {
     return tab_strip_->group_header(group);
+  }
+
+  std::optional<tab_groups::TabGroupId> GetTabGroupForHeader(
+      const views::View* header_view) const override {
+    const auto* slot_view = views::AsViewClass<TabSlotView>(header_view);
+    if (slot_view && slot_view->GetTabSlotViewType() ==
+                         TabSlotView::ViewType::kTabGroupHeader) {
+      return slot_view->group();
+    }
+    return std::nullopt;
   }
 
   TabStripModel* GetTabStripModel() override {
@@ -470,9 +489,9 @@ class TabStrip::TabDragContextImpl : public TabDragContext,
   }
 
   bool NotifyCustomEvent(ui::CustomElementEventType event_type,
-                         TabSlotView* tab_slot_view) override {
+                         views::View* view) override {
     return views::ElementTrackerViews::GetInstance()->NotifyCustomEvent(
-        event_type, tab_slot_view);
+        event_type, view);
   }
 
   // TabDragPositioningDelegate
@@ -480,7 +499,7 @@ class TabStrip::TabDragContextImpl : public TabDragContext,
 
   TabSlotView* GetTabAt(int i) const override { return tab_strip_->tab_at(i); }
 
-  void UpdateAnimationTarget(TabSlotView* tab_slot_view,
+  void UpdateAnimationTarget(views::View* tab_slot_view,
                              const gfx::Rect& target_bounds) override {
     if (bounds_animator_.IsAnimating(tab_slot_view)) {
       bounds_animator_.SetTargetBounds(tab_slot_view, target_bounds);
@@ -539,7 +558,7 @@ class TabStrip::TabDragContextImpl : public TabDragContext,
   }
 
   int GetInsertionIndexForDraggedBounds(const gfx::Rect& dragged_bounds,
-                                        std::vector<TabSlotView*> dragged_views,
+                                        std::vector<views::View*> dragged_views,
                                         int num_dragged_tabs) const override {
     // If the strip has no tabs, the only position to insert at is 0.
     if (!GetTabCount()) {
@@ -548,7 +567,9 @@ class TabStrip::TabDragContextImpl : public TabDragContext,
 
     std::optional<int> first_dragged_tab_model_index;
     bool can_insert_into_groups = true;
-    for (TabSlotView* tab_slot_view : dragged_views) {
+    for (views::View* view : dragged_views) {
+      const TabSlotView* tab_slot_view = views::AsViewClass<TabSlotView>(view);
+      CHECK(tab_slot_view);
       const bool is_tab =
           tab_slot_view->GetTabSlotViewType() == TabSlotView::ViewType::kTab;
       if (first_dragged_tab_model_index == std::nullopt && is_tab) {
@@ -596,13 +617,13 @@ class TabStrip::TabDragContextImpl : public TabDragContext,
   }
 
   std::vector<gfx::Rect> CalculateBoundsForDraggedViews(
-      const std::vector<TabSlotView*>& views) override {
+      const std::vector<views::View*>& views) override {
     CHECK(!views.empty()) << "The views vector must not be empty.";
 
     std::vector<gfx::Rect> bounds;
     const int overlap = TabStyle::Get()->GetTabOverlap();
     int x = 0;
-    for (const TabSlotView* view : views) {
+    for (const views::View* view : views) {
       const int width = view->width();
       bounds.emplace_back(x, std::max(0, height() - view->height()), width,
                           view->height());
@@ -612,7 +633,7 @@ class TabStrip::TabDragContextImpl : public TabDragContext,
     return bounds;
   }
 
-  void SetBoundsForDrag(const std::vector<TabSlotView*>& views,
+  void SetBoundsForDrag(const std::vector<views::View*>& views,
                         const std::vector<gfx::Rect>& bounds) override {
     CHECK(!views.empty() || !bounds.empty())
         << "Views and bounds cannot both be empty.";
@@ -631,15 +652,16 @@ class TabStrip::TabDragContextImpl : public TabDragContext,
     // Reset the layout size as we've effectively laid out a different size.
     // This ensures a layout happens after the drag is done.
     tab_strip_->tab_container_->InvalidateIdealBounds();
-    for (auto* view : views) {
-      if (view->group().has_value()) {
+    for (views::View* view : views) {
+      const TabSlotView* slot_view = views::AsViewClass<TabSlotView>(view);
+      if (slot_view && slot_view->group().has_value()) {
         tab_strip_->tab_container_->UpdateTabGroupVisuals(
-            view->group().value());
+            slot_view->group().value());
       }
     }
   }
 
-  void StartedDragging(const std::vector<TabSlotView*>& views) override {
+  void StartedDragging(const std::vector<views::View*>& views) override {
     if (drag_controller_) {
       const auto& drag_data = drag_controller_->GetSessionData();
       if (base::FeatureList::IsEnabled(features::kCollapseTabGroupDuringDrag) &&
@@ -673,16 +695,12 @@ class TabStrip::TabDragContextImpl : public TabDragContext,
           << "A tab is still marked as dragging when starting a new drag.";
     }
 
-    for (TabSlotView* dragged_view : views) {
+    for (views::View* view : views) {
+      TabSlotView* dragged_view = views::AsViewClass<TabSlotView>(view);
+      CHECK(dragged_view);
       CHECK_NE(dragged_view->parent(), this);
       AddChildViewRaw(dragged_view);
       dragged_view->set_dragging(true);
-      // The dragged tabs must be painted to a layer to ensure they appear
-      // on top of other tabs' loading throbbers.
-      if (base::FeatureList::IsEnabled(features::kCompositorLoadingThrobber)) {
-        dragged_view->SetPaintToLayer();
-        dragged_view->layer()->SetFillsBoundsOpaquely(false);
-      }
       if (TabGroupHeader* header =
               views::AsViewClass<TabGroupHeader>(dragged_view)) {
         tab_strip_->tab_container_->GetGroupViews(header->group().value())
@@ -759,8 +777,8 @@ class TabStrip::TabDragContextImpl : public TabDragContext,
     }
   }
 
-  void LayoutDraggedViewsAt(const std::vector<TabSlotView*>& views,
-                            TabSlotView* source_view,
+  void LayoutDraggedViewsAt(const std::vector<views::View*>& views,
+                            views::View* source_view,
                             const gfx::Point& location,
                             bool initial_drag) override {
     std::vector<gfx::Rect> bounds = CalculateBoundsForDraggedViews(views);
@@ -789,8 +807,10 @@ class TabStrip::TabDragContextImpl : public TabDragContext,
       // If the source of the drag is not a group header but a header is present
       // in the dragging views, this result will be same as for the first tab in
       // the group.
-      if (views[index_in_views]->GetTabSlotViewType() ==
-          TabSlotView::ViewType::kTabGroupHeader) {
+      const TabSlotView* slot_view =
+          views::AsViewClass<TabSlotView>(views[index_in_views]);
+      if (slot_view && slot_view->GetTabSlotViewType() ==
+                           TabSlotView::ViewType::kTabGroupHeader) {
         index_in_views += 1;
       }
 
@@ -804,7 +824,7 @@ class TabStrip::TabDragContextImpl : public TabDragContext,
     };
 
     for (size_t i = 0; i < views.size(); ++i) {
-      TabSlotView* view = views[i];
+      views::View* view = views[i];
       gfx::Rect new_bounds = bounds[i];
       new_bounds.Offset(location.x(), location.y());
       if (should_animate_tab(i)) {
@@ -822,12 +842,13 @@ class TabStrip::TabDragContextImpl : public TabDragContext,
     // of the corresponding underlines and headers.
     std::unordered_set<tab_groups::TabGroupId, tab_groups::TabGroupIdHash>
         updated_groups;
-    for (TabSlotView* view : views) {
-      if (view->group().has_value() &&
-          !updated_groups.contains(view->group().value())) {
+    for (views::View* view : views) {
+      const TabSlotView* slot_view = views::AsViewClass<TabSlotView>(view);
+      if (slot_view && slot_view->group().has_value() &&
+          !updated_groups.contains(slot_view->group().value())) {
         tab_strip_->tab_container_->UpdateTabGroupVisuals(
-            view->group().value());
-        updated_groups.insert(view->group().value());
+            slot_view->group().value());
+        updated_groups.insert(slot_view->group().value());
       }
     }
 
@@ -849,7 +870,7 @@ class TabStrip::TabDragContextImpl : public TabDragContext,
       if (updated_groups.empty() && left_of_dragged_tabs->group().has_value() &&
           rightmost_tab_in_drag.value() == tab_strip_->GetTabCount() - 1) {
         // Schedule paint for the dragged tabs.
-        for (TabSlotView* view : views) {
+        for (views::View* view : views) {
           view->SchedulePaint();
         }
       }
@@ -925,7 +946,6 @@ class TabStrip::TabDragContextImpl : public TabDragContext,
       AnimationProgressed(animation);
       slot_view_->set_animating(false);
       slot_view_->set_dragging(false);
-      slot_view_->DestroyLayer();
       tab_container_->ReturnTabSlotView(base::to_address(slot_view_));
     }
 
@@ -1247,9 +1267,9 @@ void TabStrip::NewTabButtonPressed(const ui::Event& event) {
 }
 
 // static
-int TabStrip::GetSizeNeededForViews(const std::vector<TabSlotView*>& views) {
+int TabStrip::GetSizeNeededForViews(const std::vector<views::View*>& views) {
   int width = 0;
-  for (const TabSlotView* view : views) {
+  for (const views::View* view : views) {
     width += view->width();
   }
   if (!views.empty()) {
@@ -1352,6 +1372,8 @@ void TabStrip::AddTabsAt(const std::vector<AddTabData>& tabs_data) {
       base::UmaHistogramCounts100("Tab.Count.Guest", GetTabCount());
     } else if (profile->IsIncognitoProfile()) {
       base::UmaHistogramCounts100("Tab.Count.Incognito", GetTabCount());
+    } else if (profile->IsEnterpriseIsolatedModeProfile()) {
+      base::UmaHistogramCounts100("Tab.Count.Isolated", GetTabCount());
     }
   }
 
@@ -1404,14 +1426,19 @@ void TabStrip::RemoveTabAt(content::WebContents* contents,
   }
 }
 
-void TabStrip::OnTabWillBeRemoved(content::WebContents* contents,
-                                  int model_index) {
+void TabStrip::OnTabWillBeRemoved(content::WebContents* contents) {
   drag_context_->OnTabWillBeRemoved(contents);
 }
 
 void TabStrip::OnTabPinnedStateChanged(int model_index, bool is_pinned) {
   tab_container_->SetTabPinned(
       model_index, is_pinned ? TabPinned::kPinned : TabPinned::kUnpinned);
+}
+
+void TabStrip::OnTabPinnedStateChanged(tabs::TabHandle tab, bool is_pinned) {
+  const std::optional<int> index = GetTabViewModelIndex(tab);
+  CHECK(index.has_value());
+  OnTabPinnedStateChanged(index.value(), is_pinned);
 }
 
 void TabStrip::AddTabToGroup(std::optional<tab_groups::TabGroupId> group,
@@ -1430,6 +1457,13 @@ void TabStrip::AddTabToGroup(std::optional<tab_groups::TabGroupId> group,
   if (group.has_value()) {
     tab_container_->ExitTabClosingMode();
   }
+}
+
+void TabStrip::AddTabToGroup(std::optional<tab_groups::TabGroupId> group,
+                             tabs::TabHandle tab) {
+  const std::optional<int> index = GetTabViewModelIndex(tab);
+  CHECK(index.has_value());
+  AddTabToGroup(group, index.value());
 }
 
 void TabStrip::OnGroupCreated(const tab_groups::TabGroupId& group) {
@@ -1472,6 +1506,14 @@ void TabStrip::OnGroupClosed(const tab_groups::TabGroupId& group) {
 void TabStrip::OnTabGroupFocusChanged(
     std::optional<tab_groups::TabGroupId> new_focused_group,
     std::optional<tab_groups::TabGroupId> old_focused_group) {
+  if (old_focused_group.has_value() &&
+      group_header(old_focused_group.value())) {
+    group_header(old_focused_group.value())->VisualsChanged();
+  }
+  if (new_focused_group.has_value() &&
+      group_header(new_focused_group.value())) {
+    group_header(new_focused_group.value())->VisualsChanged();
+  }
   // The TabStripLayoutHelper will query the controller for the focused group
   // and update the visibility of tabs and group headers. Calling
   // AnimateToIdealBounds() will trigger the animation to the new bounds.
@@ -1487,6 +1529,11 @@ void TabStrip::OnSplitCreated(const std::vector<int>& split_indices,
   tab_container_->OnSplitCreated(split_indices);
 }
 
+void TabStrip::OnSplitCreated(const std::vector<tabs::TabHandle>& split_tabs,
+                              split_tabs::SplitTabId split_id) {
+  OnSplitCreated(GetTabViewModelIndices(split_tabs), split_id);
+}
+
 void TabStrip::OnSplitRemoved(const std::vector<int>& split_indices) {
   for (const int split_index : split_indices) {
     tab_at(split_index)->SetSplit(std::nullopt);
@@ -1495,12 +1542,21 @@ void TabStrip::OnSplitRemoved(const std::vector<int>& split_indices) {
   tab_container_->OnSplitRemoved(split_indices);
 }
 
+void TabStrip::OnSplitRemoved(const std::vector<tabs::TabHandle>& split_tabs) {
+  OnSplitRemoved(GetTabViewModelIndices(split_tabs));
+}
+
 void TabStrip::OnSplitContentsChanged(const std::vector<int>& split_indices) {
   for (const int split_index : split_indices) {
     tab_at(split_index)->UpdateAccessibleName();
   }
 
   tab_container_->OnSplitContentsChanged(split_indices);
+}
+
+void TabStrip::OnSplitContentsChanged(
+    const std::vector<tabs::TabHandle>& split_tabs) {
+  OnSplitContentsChanged(GetTabViewModelIndices(split_tabs));
 }
 
 void TabStrip::SetSelection(const ui::ListSelectionModel& new_selection) {
@@ -1600,6 +1656,50 @@ std::optional<int> TabStrip::GetModelIndexOf(const TabSlotView* view) const {
     return std::nullopt;
   }
   return viewmodel_index;
+}
+
+Tab* TabStrip::GetTabForHandle(tabs::TabHandle handle) const {
+  if (handle == tabs::TabHandle::Null()) {
+    return nullptr;
+  }
+  for (int i = 0; i < GetTabCount(); ++i) {
+    Tab* tab = tab_at(i);
+    if (tab->tab_handle() == handle) {
+      return tab;
+    }
+  }
+  return nullptr;
+}
+
+std::optional<int> TabStrip::GetModelIndexOf(tabs::TabHandle handle) const {
+  const std::optional<int> index = GetTabViewModelIndex(handle);
+  return (index.has_value() && IsValidModelIndex(index.value())) ? index
+                                                                 : std::nullopt;
+}
+
+std::optional<int> TabStrip::GetTabViewModelIndex(
+    tabs::TabHandle handle) const {
+  if (handle == tabs::TabHandle::Null()) {
+    return std::nullopt;
+  }
+  for (int i = 0; i < GetTabCount(); ++i) {
+    if (tab_at(i)->tab_handle() == handle) {
+      return i;
+    }
+  }
+  return std::nullopt;
+}
+
+std::vector<int> TabStrip::GetTabViewModelIndices(
+    const std::vector<tabs::TabHandle>& handles) const {
+  std::vector<int> indices;
+  indices.reserve(handles.size());
+  for (tabs::TabHandle handle : handles) {
+    const std::optional<int> index = GetTabViewModelIndex(handle);
+    CHECK(index.has_value());
+    indices.push_back(index.value());
+  }
+  return indices;
 }
 
 int TabStrip::GetModelCount() const {
@@ -1712,6 +1812,14 @@ bool TabStrip::IsGroupCollapsed(const tab_groups::TabGroupId& group) const {
 
 std::optional<tab_groups::TabGroupId> TabStrip::GetFocusedGroup() const {
   return controller_->GetFocusedGroup();
+}
+
+void TabStrip::EnterFocusMode(const tab_groups::TabGroupId& group) {
+  controller_->EnterFocusMode(group);
+}
+
+void TabStrip::ExitFocusMode(std::optional<TabGroupFocusExitReason> reason) {
+  controller_->ExitFocusMode(reason);
 }
 
 ui::ListSelectionModel TabStrip::GetSelectionModel() const {
@@ -1950,9 +2058,17 @@ void TabStrip::MaybeStartDrag(TabSlotView* source,
   // Block drag operation if the web app is locked for OnTask. This prevents the
   // window from moving along with the tab when in locked fullsceeen mode. Only
   // relevant for non-web browser scenarios.
-  if (ash::boca::OnTaskLockedController::From(GetBrowserWindowInterface())
-          ->is_locked_for_on_task()) {
-    return;
+  if (features::IsUseUnifiedLockedStateControllerEnabled()) {
+    if (!chromeos::LockedStateController::From(GetBrowserWindowInterface())
+             ->GetCapabilities()
+             .allow_tab_modification) {
+      return;
+    }
+  } else {
+    if (ash::boca::OnTaskLockedController::From(GetBrowserWindowInterface())
+            ->is_locked_for_on_task()) {
+      return;
+    }
   }
 #endif
 
@@ -2191,8 +2307,7 @@ void TabStrip::Layout(PassKey) {
   }
 
   if (tab_container_->bounds() != GetLocalBounds()) {
-    UpdateHoverCard(nullptr,
-                    TabSlotController::HoverCardUpdateType::kAnimating);
+    UpdateHoverCard(nullptr, HoverCardUpdateType::kAnimating);
     tab_container_->SetBoundsRect(GetLocalBounds());
   } else {
     // We still need to layout in this case, as the available width may have

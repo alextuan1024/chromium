@@ -741,6 +741,10 @@ error::Error GLES2DecoderPassthroughImpl::DoCompressedTexImage2D(
     GLint border,
     GLsizei image_size,
     const void* data) {
+  if (!CanRedefineBoundTexture(target)) {
+    return error::kNoError;
+  }
+
   CheckErrorCallbackState();
   api()->glCompressedTexImage2DFn(target, level, internalformat, width, height,
                                   border, image_size, data);
@@ -787,6 +791,10 @@ error::Error GLES2DecoderPassthroughImpl::DoCompressedTexImage3D(
     GLint border,
     GLsizei image_size,
     const void* data) {
+  if (!CanRedefineBoundTexture(target)) {
+    return error::kNoError;
+  }
+
   CheckErrorCallbackState();
   api()->glCompressedTexImage3DFn(target, level, internalformat, width, height,
                                   depth, border, image_size, data);
@@ -828,8 +836,13 @@ error::Error GLES2DecoderPassthroughImpl::DoCompressedTexSubImage3D(
 
 error::Error GLES2DecoderPassthroughImpl::DoContextVisibilityHintCHROMIUM(
     GLboolean visibility) {
-  if (feature_info_->IsWebGLContext())
+  if (feature_info_->IsWebGLContext()) {
     context_->SetVisibility(visibility == GL_TRUE);
+    if (visibility == GL_FALSE &&
+        feature_info_->feature_flags().angle_trim_memory) {
+      api()->glTrimMemoryANGLEFn(GL_MEMORY_TRIM_HIGH_ANGLE);
+    }
+  }
   return error::kNoError;
 }
 
@@ -853,6 +866,15 @@ error::Error GLES2DecoderPassthroughImpl::DoCopyTexImage2D(
     GLsizei width,
     GLsizei height,
     GLint border) {
+  if (!CheckReadFramebufferSharedImageAccess(GL_COLOR_BUFFER_BIT,
+                                             "glCopyTexImage2D")) {
+    return error::kNoError;
+  }
+
+  if (!CanRedefineBoundTexture(target)) {
+    return error::kNoError;
+  }
+
   CheckErrorCallbackState();
   api()->glCopyTexImage2DFn(target, level, internalformat, x, y, width, height,
                             border);
@@ -877,6 +899,11 @@ error::Error GLES2DecoderPassthroughImpl::DoCopyTexSubImage2D(GLenum target,
                                                               GLint y,
                                                               GLsizei width,
                                                               GLsizei height) {
+  if (!CheckReadFramebufferSharedImageAccess(GL_COLOR_BUFFER_BIT,
+                                             "glCopyTexSubImage2D")) {
+    return error::kNoError;
+  }
+
   api()->glCopyTexSubImage2DFn(target, level, xoffset, yoffset, x, y, width,
                                height);
 
@@ -896,6 +923,11 @@ error::Error GLES2DecoderPassthroughImpl::DoCopyTexSubImage3D(GLenum target,
                                                               GLint y,
                                                               GLsizei width,
                                                               GLsizei height) {
+  if (!CheckReadFramebufferSharedImageAccess(GL_COLOR_BUFFER_BIT,
+                                             "glCopyTexSubImage3D")) {
+    return error::kNoError;
+  }
+
   api()->glCopyTexSubImage3DFn(target, level, xoffset, yoffset, zoffset, x, y,
                                width, height);
 
@@ -1073,7 +1105,7 @@ error::Error GLES2DecoderPassthroughImpl::DoDeleteTextures(
       // Deleted when unreferenced
       resources_->texture_id_map.RemoveClientID(client_id);
       resources_->texture_object_map.RemoveClientID(client_id);
-      resources_->texture_shared_image_map.erase(client_id);
+      resources_->RemoveSharedImage(client_id);
       UpdateTextureBinding(texture->target(), client_id, nullptr);
     }
   }
@@ -1249,6 +1281,10 @@ error::Error GLES2DecoderPassthroughImpl::DoFramebufferTexture2D(
                 "Cannot change the attachments of the default framebuffer.");
     return error::kNoError;
   }
+  if (!CheckSharedImageAttachment(attachment, texture,
+                                  "glFramebufferTexture2D")) {
+    return error::kNoError;
+  }
   api()->glFramebufferTexture2DEXTFn(
       target, attachment, textarget,
       GetTextureServiceID(api(), texture, resources_), level);
@@ -1264,6 +1300,10 @@ error::Error GLES2DecoderPassthroughImpl::DoFramebufferTextureLayer(
   if (IsEmulatedFramebufferBound(target)) {
     InsertError(GL_INVALID_OPERATION,
                 "Cannot change the attachments of the default framebuffer.");
+    return error::kNoError;
+  }
+  if (!CheckSharedImageAttachment(attachment, texture,
+                                  "glFramebufferTextureLayer")) {
     return error::kNoError;
   }
   api()->glFramebufferTextureLayerFn(
@@ -1282,6 +1322,10 @@ error::Error GLES2DecoderPassthroughImpl::DoFramebufferTextureMultiviewOVR(
   if (IsEmulatedFramebufferBound(target)) {
     InsertError(GL_INVALID_OPERATION,
                 "Cannot change the attachments of the default framebuffer.");
+    return error::kNoError;
+  }
+  if (!CheckSharedImageAttachment(attachment, texture,
+                                  "glFramebufferTextureMultiviewOVR")) {
     return error::kNoError;
   }
   api()->glFramebufferTextureMultiviewOVRFn(
@@ -1521,6 +1565,14 @@ error::Error GLES2DecoderPassthroughImpl::DoGetBufferSubDataCHROMIUM(
       api()->glMapBufferRangeFn(target, offset, size, GL_MAP_READ_BIT);
   if (!map_ptr) {
     return error::kNoError;
+  }
+
+  if (feature_info_->workarounds().check_graphics_reset_status_after_readback &&
+      CheckResetStatus()) {
+    // The driver reset underneath the blocking map; do not deliver bytes the
+    // discarded readback may never have written.
+    group_->LoseContexts(error::kUnknown);
+    return error::kLostContext;
   }
 
   UNSAFE_TODO(memcpy(data, map_ptr, static_cast<size_t>(size)));
@@ -2263,10 +2315,13 @@ error::Error GLES2DecoderPassthroughImpl::DoWritePixelsYUVINTERNAL(
       return error::kNoError;
     }
   }
-  ScopedPixelLocalStorageInterrupt scoped_pls_interrupt(this);
   auto* shared_context_state = lazy_context_->shared_context_state();
-  ui::ScopedMakeCurrent smc(shared_context_state->context(),
-                            shared_context_state->surface());
+  ScopedSharedContextCurrent scoped_current(
+      this, shared_context_state->context(), shared_context_state->surface());
+  if (!scoped_current.IsContextCurrent()) {
+    MarkContextLost(error::kMakeCurrentFailed);
+    return error::kLostContext;
+  }
 
   if (src_yuv_plane_config > static_cast<int>(SkYUVAInfo::PlaneConfig::kLast)) {
     InsertError(GL_INVALID_ENUM,
@@ -2469,9 +2524,13 @@ error::Error GLES2DecoderPassthroughImpl::DoReadbackARGBImagePixelsINTERNAL(
       return error::kNoError;
     }
   }
-  ScopedPixelLocalStorageInterrupt scoped_pls_interrupt(this);
-  ui::ScopedMakeCurrent smc(lazy_context_->shared_context_state()->context(),
-                            lazy_context_->shared_context_state()->surface());
+  ScopedSharedContextCurrent scoped_current(
+      this, lazy_context_->shared_context_state()->context(),
+      lazy_context_->shared_context_state()->surface());
+  if (!scoped_current.IsContextCurrent()) {
+    MarkContextLost(error::kMakeCurrentFailed);
+    return error::kLostContext;
+  }
 
   if (dst_sk_color_type > kLastEnum_SkColorType) {
     InsertError(GL_INVALID_ENUM,
@@ -2585,6 +2644,33 @@ error::Error GLES2DecoderPassthroughImpl::DoReadbackARGBImagePixelsINTERNAL(
       helper.ReadPixels(src_x, src_y, plane_index, row_bytes, dst_info,
                         pixel_address, std::move(source_shared_image));
 
+  // A device reset that occurs while the readback executes can complete it
+  // without error while the destination was never written on certain GPUs. This
+  // readback runs on `lazy_context_`'s shared context (current
+  // under `smc` above), so poll that context's reset status; the decoder's
+  // own CheckResetStatus() requires the decoder context to be current. On a
+  // latched reset, scrub the destination and lose the context instead of
+  // delivering unwritten allocation contents.
+  auto* readback_context_state = lazy_context_->shared_context_state();
+  if (feature_info_->workarounds().check_graphics_reset_status_after_readback &&
+      !readback_context_state->context_lost() &&
+      readback_context_state->CheckResetStatus(/*needs_gl=*/false)) {
+    // SAFETY: `pixel_address` was validated against shared memory for
+    // exactly `byte_size` bytes when the readback was set up above.
+    std::ranges::fill(UNSAFE_BUFFERS(base::span(
+                          static_cast<uint8_t*>(pixel_address), byte_size)),
+                      0);
+    InsertError(GL_INVALID_OPERATION,
+                "readback aborted: device reset detected");
+    // CheckResetStatus() above latched the robustness verdict on
+    // `readback_context_state`; carry it over rather than flattening to
+    // kUnknown, matching what the raster decoder's observer path reports
+    // for the same event.
+    MarkContextLost(*readback_context_state->context_lost_reason());
+    group_->LoseContexts(error::kUnknown);
+    return error::kLostContext;
+  }
+
   if (!helper_result.has_value()) {
     InsertError(helper_result.error().gl_error, helper_result.error().msg);
   } else {
@@ -2606,13 +2692,44 @@ error::Error GLES2DecoderPassthroughImpl::DoReadPixels(GLint x,
                                                        GLsizei* rows,
                                                        void* pixels,
                                                        int32_t* success) {
+  if (!CheckReadFramebufferSharedImageAccess(GL_COLOR_BUFFER_BIT,
+                                             "glReadPixels")) {
+    *success = 0;
+    return error::kNoError;
+  }
+
   CheckErrorCallbackState();
   ScopedPackStateRowLengthReset reset_row_length(
       api(), bound_buffers_[GL_PIXEL_PACK_BUFFER] == 0 &&
                  feature_info_->gl_version_info().is_es3);
   api()->glReadPixelsRobustANGLEFn(x, y, width, height, format, type, bufsize,
                                    length, columns, rows, pixels);
-  *success = CheckErrorCallbackState() ? 0 : 1;
+  bool had_error = CheckErrorCallbackState();
+  // A device reset that occurs while this call is blocked can release the
+  // wait with no GL error and a destination the GPU never wrote — or, when
+  // ANGLE's own readback reset check is active, with a context-lost error
+  // after the destination was already written. In either case, if the
+  // robustness extension reports a reset, scrub the destination and lose
+  // the context instead of leaving unwritten allocation contents
+  // client-visible.
+  if (feature_info_->workarounds().check_graphics_reset_status_after_readback &&
+      !WasContextLost() && CheckResetStatus()) {
+    if (bound_buffers_[GL_PIXEL_PACK_BUFFER] == 0 && pixels && bufsize > 0) {
+      // `*length` is reported by the now-untrusted GL stack; scrub the full
+      // Chrome-validated destination window rather than trusting the report
+      // for coverage (an under-report would leave driver bytes in place).
+      // SAFETY: the caller validated `pixels` against shared memory for
+      // exactly `bufsize` bytes before issuing the read.
+      std::ranges::fill(
+          UNSAFE_BUFFERS(base::span(static_cast<uint8_t*>(pixels),
+                                    static_cast<size_t>(bufsize))),
+          0);
+    }
+    *success = 0;
+    group_->LoseContexts(error::kUnknown);
+    return error::kLostContext;
+  }
+  *success = had_error ? 0 : 1;
   return error::kNoError;
 }
 
@@ -2633,6 +2750,11 @@ error::Error GLES2DecoderPassthroughImpl::DoReadPixelsAsync(
     uint32_t result_shm_offset) {
   DCHECK(feature_info_->feature_flags().use_async_readpixels &&
          bound_buffers_[GL_PIXEL_PACK_BUFFER] == 0);
+
+  if (!CheckReadFramebufferSharedImageAccess(GL_COLOR_BUFFER_BIT,
+                                             "glReadPixels")) {
+    return error::kNoError;
+  }
 
   CheckErrorCallbackState();
   ScopedPackStateRowLengthReset reset_row_length(
@@ -2851,6 +2973,10 @@ error::Error GLES2DecoderPassthroughImpl::DoTexImage2D(GLenum target,
                                                        GLenum type,
                                                        GLsizei image_size,
                                                        const void* pixels) {
+  if (!CanRedefineBoundTexture(target)) {
+    return error::kNoError;
+  }
+
   ScopedUnpackStateButAlignmentReset reset_unpack(
       api(), image_size != 0 && feature_info_->gl_version_info().is_es3, false);
 
@@ -2881,6 +3007,10 @@ error::Error GLES2DecoderPassthroughImpl::DoTexImage3D(GLenum target,
                                                        GLenum type,
                                                        GLsizei image_size,
                                                        const void* pixels) {
+  if (!CanRedefineBoundTexture(target)) {
+    return error::kNoError;
+  }
+
   ScopedUnpackStateButAlignmentReset reset_unpack(
       api(), image_size != 0 && feature_info_->gl_version_info().is_es3, true);
 
@@ -2967,6 +3097,10 @@ error::Error GLES2DecoderPassthroughImpl::DoTexStorage3D(GLenum target,
                                                          GLsizei width,
                                                          GLsizei height,
                                                          GLsizei depth) {
+  if (!CanRedefineBoundTexture(target)) {
+    return error::kNoError;
+  }
+
   CheckErrorCallbackState();
   api()->glTexStorage3DFn(target, levels, internalFormat, width, height, depth);
   if (CheckErrorCallbackState()) {
@@ -3466,6 +3600,9 @@ error::Error GLES2DecoderPassthroughImpl::DoBlitFramebufferCHROMIUM(
     GLbitfield mask,
     GLenum filter) {
   DCHECK(feature_info_->feature_flags().chromium_framebuffer_multisample);
+  if (!CheckReadFramebufferSharedImageAccess(mask, "glBlitFramebuffer")) {
+    return error::kNoError;
+  }
   api()->glBlitFramebufferFn(srcX0, srcY0, srcX1, srcY1, dstX0, dstY0, dstX1,
                              dstY1, mask, filter);
   return error::kNoError;
@@ -3523,6 +3660,10 @@ error::Error GLES2DecoderPassthroughImpl::DoFramebufferTexture2DMultisampleEXT(
                 "Cannot change the attachments of the default framebuffer.");
     return error::kNoError;
   }
+  if (!CheckSharedImageAttachment(attachment, texture,
+                                  "glFramebufferTexture2DMultisampleEXT")) {
+    return error::kNoError;
+  }
   api()->glFramebufferTexture2DMultisampleEXTFn(
       target, attachment, textarget,
       GetTextureServiceID(api(), texture, resources_), level, samples);
@@ -3535,6 +3676,10 @@ error::Error GLES2DecoderPassthroughImpl::DoTexStorage2DEXT(
     GLenum internalFormat,
     GLsizei width,
     GLsizei height) {
+  if (!CanRedefineBoundTexture(target)) {
+    return error::kNoError;
+  }
+
   CheckErrorCallbackState();
   api()->glTexStorage2DEXTFn(target, levels, internalFormat, width, height);
   if (CheckErrorCallbackState()) {
@@ -4333,6 +4478,9 @@ error::Error GLES2DecoderPassthroughImpl::DoCopyTextureCHROMIUM(
     GLboolean unpack_flip_y,
     GLboolean unpack_premultiply_alpha,
     GLboolean unpack_unmultiply_alpha) {
+  if (!CheckSharedImageTextureReadAccess(source_id, "glCopyTextureCHROMIUM")) {
+    return error::kNoError;
+  }
   gl::ScopedEnableTextureRectangleInShaderCompiler enable(
       feature_info_->IsWebGLContext() ? api() : nullptr);
   api()->glCopyTextureCHROMIUMFn(
@@ -4361,6 +4509,10 @@ error::Error GLES2DecoderPassthroughImpl::DoCopySubTextureCHROMIUM(
     GLboolean unpack_flip_y,
     GLboolean unpack_premultiply_alpha,
     GLboolean unpack_unmultiply_alpha) {
+  if (!CheckSharedImageTextureReadAccess(source_id,
+                                         "glCopySubTextureCHROMIUM")) {
+    return error::kNoError;
+  }
   gl::ScopedEnableTextureRectangleInShaderCompiler enable(
       feature_info_->IsWebGLContext() ? api() : nullptr);
   api()->glCopySubTextureCHROMIUMFn(
@@ -4679,16 +4831,29 @@ GLES2DecoderPassthroughImpl::DoCreateAndTexStorage2DSharedImageINTERNAL(
     return error::kNoError;
   }
 
-  auto texture = shared_image->GetTexturePassthrough();
+  PassthroughResources::SharedImageData shared_image_data(
+      this, std::move(shared_image));
+  if ((!shared_image_data.representation()->IsCleared() ||
+       !shared_image_data.representation()->IsBackingCleared()) &&
+      base::FeatureList::IsEnabled(kRejectUnclearedSharedImageOnClearFailure)) {
+    // Create a placeholder texture (see http://crbug.com/472465 and
+    // http://crbug.com/851878) and do not expose the uncleared shared image.
+    DoGenTextures(1, &texture_client_id);
+    InsertError(GL_INVALID_OPERATION,
+                "shared image could not be initialized before use");
+    return error::kNoError;
+  }
+
+  auto texture = shared_image_data.representation()->GetTexturePassthrough();
 
   // Update id mappings
   resources_->texture_id_map.RemoveClientID(texture_client_id);
   resources_->texture_id_map.SetIDMapping(texture_client_id,
                                           texture->service_id());
   resources_->texture_object_map.RemoveClientID(texture_client_id);
-  resources_->texture_object_map.SetIDMapping(texture_client_id, texture);
-  resources_->texture_shared_image_map[texture_client_id] =
-      PassthroughResources::SharedImageData(this, std::move(shared_image));
+  resources_->texture_object_map.SetIDMapping(texture_client_id,
+                                              std::move(texture));
+  resources_->AddSharedImage(texture_client_id, std::move(shared_image_data));
 
   return error::kNoError;
 }
@@ -4751,9 +4916,13 @@ error::Error GLES2DecoderPassthroughImpl::DoCopySharedImageINTERNAL(
       return error::kNoError;
     }
   }
-  ScopedPixelLocalStorageInterrupt scoped_pls_interrupt(this);
-  ui::ScopedMakeCurrent smc(lazy_context_->shared_context_state()->context(),
-                            lazy_context_->shared_context_state()->surface());
+  ScopedSharedContextCurrent scoped_current(
+      this, lazy_context_->shared_context_state()->context(),
+      lazy_context_->shared_context_state()->surface());
+  if (!scoped_current.IsContextCurrent()) {
+    MarkContextLost(error::kMakeCurrentFailed);
+    return error::kLostContext;
+  }
   CopySharedImageHelper helper(group_->shared_image_representation_factory(),
                                lazy_context_->shared_context_state());
   auto result = helper.CopySharedImage(xoffset, yoffset, x, y, width, height,
@@ -4781,9 +4950,13 @@ error::Error GLES2DecoderPassthroughImpl::DoCopySharedImageToTextureINTERNAL(
       return error::kNoError;
     }
   }
-  ScopedPixelLocalStorageInterrupt scoped_pls_interrupt(this);
-  ui::ScopedMakeCurrent smc(lazy_context_->shared_context_state()->context(),
-                            lazy_context_->shared_context_state()->surface());
+  ScopedSharedContextCurrent scoped_current(
+      this, lazy_context_->shared_context_state()->context(),
+      lazy_context_->shared_context_state()->surface());
+  if (!scoped_current.IsContextCurrent()) {
+    MarkContextLost(error::kMakeCurrentFailed);
+    return error::kLostContext;
+  }
 
   if (target != GL_TEXTURE_2D && target != GL_TEXTURE_RECTANGLE_ANGLE) {
     InsertError(GL_INVALID_VALUE, "Invalid texture target");

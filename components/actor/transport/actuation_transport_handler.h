@@ -1,0 +1,99 @@
+// Copyright 2026 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+#ifndef COMPONENTS_ACTOR_TRANSPORT_ACTUATION_TRANSPORT_HANDLER_H_
+#define COMPONENTS_ACTOR_TRANSPORT_ACTUATION_TRANSPORT_HANDLER_H_
+
+#include <memory>
+#include <optional>
+#include <string>
+#include <string_view>
+
+#include "base/containers/flat_map.h"
+#include "base/memory/weak_ptr.h"
+#include "components/actor/core/task_id.h"
+#include "components/actor/transport/actuation_delegate.h"
+#include "components/actor/transport/proto/actuation_transport.pb.h"
+#include "components/stream_transport/public/transport_handler.h"
+
+namespace stream_transport {
+class TransportSession;
+}  // namespace stream_transport
+
+namespace actor {
+
+// Routes actuation commands from a transport session to an ActuationDelegate
+// and sends the results upstream.
+class ActuationTransportHandler : public stream_transport::TransportHandler {
+ public:
+  ActuationTransportHandler(stream_transport::TransportSession* session,
+                            std::unique_ptr<ActuationDelegate> delegate);
+  ActuationTransportHandler(const ActuationTransportHandler&) = delete;
+  ActuationTransportHandler& operator=(const ActuationTransportHandler&) =
+      delete;
+  ~ActuationTransportHandler() override;
+
+  // stream_transport::TransportHandler:
+  void OnMessage(stream_transport::PayloadType payload_type,
+                 std::string_view serialized_payload) override;
+
+ private:
+  // A StopTask that arrived while its StartTask was still pending.
+  struct PendingStop {
+    std::string request_id;
+    proto::StopTaskRequest request;
+  };
+
+  void HandleStartTask(const std::string& request_id,
+                       const std::string& external_task_id,
+                       const proto::StartTaskRequest& request);
+  void OnStartTaskComplete(const std::string& request_id,
+                           const std::string& external_task_id,
+                           TaskId task_id,
+                           proto::StartTaskResponse response);
+  void SendStartTaskResponse(const std::string& request_id,
+                             const std::string& external_task_id,
+                             proto::StartTaskResponse response);
+
+  void HandleStopTask(const std::string& request_id,
+                      const std::string& task_id_str,
+                      const proto::StopTaskRequest& request);
+  void OnStopTaskComplete(const std::string& request_id,
+                          const std::string& task_id_str,
+                          bool success);
+
+  void HandlePauseTask(const std::string& request_id,
+                       const std::string& task_id_str,
+                       const proto::PauseTaskRequest& request);
+  void OnPauseTaskComplete(const std::string& request_id,
+                           const std::string& task_id_str,
+                           bool success);
+
+  void HandleResumeTask(const std::string& request_id,
+                        const std::string& task_id_str,
+                        const proto::ResumeTaskRequest& request);
+  void OnResumeTaskComplete(const std::string& request_id,
+                            const std::string& task_id_str,
+                            proto::ResumeTaskResponse response);
+
+  void HandlePerformActions(const std::string& request_id,
+                            const std::string& task_id_str,
+                            const proto::PerformActionsRequest& request);
+  void OnActComplete(const std::string& request_id,
+                     const std::string& task_id_str,
+                     proto::PerformActionsResponse response);
+
+  std::unique_ptr<ActuationDelegate> delegate_;
+  // Maps server-owned task_id strings to Chrome-internal TaskIds for tasks
+  // started on this session.
+  base::flat_map<std::string, TaskId> active_tasks_;
+  // Server-owned task_ids whose StartTask is waiting on the delegate, mapped to
+  // the StopTask received while waiting, if any.
+  base::flat_map<std::string, std::optional<PendingStop>> pending_start_tasks_;
+  base::WeakPtrFactory<ActuationTransportHandler> weak_ptr_factory_{this};
+};
+
+}  // namespace actor
+
+#endif  // COMPONENTS_ACTOR_TRANSPORT_ACTUATION_TRANSPORT_HANDLER_H_

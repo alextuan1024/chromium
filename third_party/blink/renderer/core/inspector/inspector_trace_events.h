@@ -9,6 +9,7 @@
 #include <optional>
 
 #include "base/containers/span_or_size.h"
+#include "base/time/time.h"
 #include "base/trace_event/trace_event.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_streamer.h"
 #include "third_party/blink/renderer/core/animation/compositing/specific_compositing_decision.h"
@@ -117,6 +118,7 @@ class CORE_EXPORT InspectorTraceEvents
                         DocumentLoader*,
                         base::TimeTicks monotonic_finish_time,
                         int64_t encoded_data_length,
+                        uint64_t encoded_body_length,
                         int64_t decoded_body_length);
   void DidFailLoading(
       CoreProbeSink* sink,
@@ -135,7 +137,7 @@ class CORE_EXPORT InspectorTraceEvents
   void Will(const probe::CallFunction&);
   void Did(const probe::CallFunction&);
 
-  void PaintTiming(Document*, const char* name, double timestamp);
+  void PaintTiming(Document*, const char* name, base::TimeTicks timestamp);
 
   void FrameStartedLoading(LocalFrame*);
 
@@ -230,6 +232,7 @@ extern const char kInvalidationSetMatchedClass[];
 extern const char kInvalidationSetMatchedId[];
 extern const char kInvalidationSetMatchedTagName[];
 extern const char kInvalidationSetMatchedPart[];
+extern const char kInvalidationSetMatchedFocused[];
 extern const char kInvalidationSetInvalidatesTreeCounting[];
 extern const char kInvalidationSetMatchedCustomPseudoName[];
 
@@ -441,6 +444,15 @@ void Data(perfetto::TracedValue context,
           v8::Isolate*,
           LocalFrame*,
           const String& url,
+          const TextPosition&);
+}
+
+namespace inspector_evaluate_module_event {
+void Data(perfetto::TracedValue context,
+          v8::Isolate*,
+          LocalFrame*,
+          const String& url,
+          int script_id,
           const TextPosition&);
 }
 

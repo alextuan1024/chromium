@@ -133,11 +133,12 @@ class AutofillDriverIOS final : public AutofillDriver,
       const FieldGlobalId& field_id,
       const std::u16string& value) override;
   void TriggerFormExtractionInDriverFrame(
-      AutofillDriverRouterAndFormForestPassKey pass_key) override;
+      AutofillDriverRouterAndFormForestPassKey pass_key,
+      bool force) override;
   void TriggerFormExtractionInAllFrames(
+      bool force,
       base::OnceCallback<void(bool)> form_extraction_finished_callback)
       override;
-  void ClearFormCacheInAllFrames() override;
   void ObserveFieldVisibility(
       const FieldGlobalId& field_id,
       mojo::PendingRemote<mojom::AutofillVisibilityObserver> observer) override;
@@ -167,6 +168,7 @@ class AutofillDriverIOS final : public AutofillDriver,
       mojom::AutofillSuggestionAvailability suggestion_availability) override;
   std::optional<net::IsolationInfo> GetIsolationInfo() override;
   void ScrollFieldIntoView(FieldGlobalId field_id) override;
+  void LoadCustomFormControlScript(const std::string& script) override;
 
   bool is_processed() const { return processed_; }
   void set_processed(bool processed) { processed_ = processed; }
@@ -238,7 +240,7 @@ class AutofillDriverIOS final : public AutofillDriver,
 
     // Renderer id of the last interacted formless field or `FieldRendererId()`
     // if the last interaction was not with a single formless field.
-    // TODO: crbug.com/40266699 - Convert to FieldGlobalId.
+    // TODO(crbug.com/585077444): Convert to FieldGlobalId.
     FieldRendererId formless_field;
   };
 

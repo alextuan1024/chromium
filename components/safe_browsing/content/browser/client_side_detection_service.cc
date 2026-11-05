@@ -52,8 +52,6 @@
 #include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "services/network/public/cpp/simple_url_loader.h"
 #include "services/network/public/mojom/url_response_head.mojom.h"
-#include "tensorflow_lite_support/cc/port/statusor.h"
-#include "third_party/tflite_support/src/tensorflow_lite_support/cc/task/vision/image_embedder.h"
 #include "url/gurl.h"
 
 using content::BrowserThread;
@@ -82,11 +80,15 @@ void ClientSideDetectionService::OnModelUpdated() {
   }
 }
 
+bool ClientSideDetectionService::ShouldCreateBrowserScorer() const {
+  return base::FeatureList::IsEnabled(kClientSideDetectionCopyFromSurface);
+}
+
 void ClientSideDetectionService::SendModelToRenderers() {
-  // We will not send models to the renderer process if the feature is disabled.
-  // This is because the feature can be disabled via Finch in a scenario where a
-  // bad model is uploaded to the server.
-  if (base::FeatureList::IsEnabled(kClientSideDetectionKillswitch)) {
+  // We will not send models to the renderer process if the feature is disabled
+  // or when classification runs in the browser process.
+  if (base::FeatureList::IsEnabled(kClientSideDetectionKillswitch) ||
+      base::FeatureList::IsEnabled(kClientSideDetectionCopyFromSurface)) {
     return;
   }
   for (content::RenderProcessHost::iterator it(
@@ -121,6 +123,9 @@ void ClientSideDetectionService::SetURLLoaderFactoryForTesting(
 
 void ClientSideDetectionService::OnRenderProcessHostCreated(
     content::RenderProcessHost* rph) {
+  if (base::FeatureList::IsEnabled(kClientSideDetectionCopyFromSurface)) {
+    return;
+  }
   // TODO(crbug.com/502615476): Once `ClientSideDetectionService::Delegate` is
   // removed, this conditional can be simplified to
   // `if (rph->GetBrowserContext() == browser_context_)`.
@@ -154,6 +159,11 @@ void ClientSideDetectionService::RenderProcessReady(
 void ClientSideDetectionService::SetPhishingModel(
     content::RenderProcessHost* rph,
     bool new_renderer_process_host) {
+  // When classification runs in the browser process, renderers never score
+  // pages, so they do not need the models (see `ShouldCreateBrowserScorer()`).
+  if (base::FeatureList::IsEnabled(kClientSideDetectionCopyFromSurface)) {
+    return;
+  }
   // We want to check if the trigger model has been sent. If we have received a
   // callback after sending the trigger models before and the models are now
   // unavailable, that means the OptimizationGuide server sent us a null model

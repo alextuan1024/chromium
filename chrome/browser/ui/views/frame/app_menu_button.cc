@@ -7,8 +7,11 @@
 #include <utility>
 
 #include "base/feature_list.h"
+#include "base/functional/bind.h"
 #include "base/observer_list.h"
+#include "base/task/single_thread_task_runner.h"
 #include "base/types/pass_key.h"
+#include "chrome/browser/ui/actions/command_action_updater.h"
 #include "chrome/browser/ui/browser_actions.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
 #include "chrome/browser/ui/browser_window.h"
@@ -80,18 +83,52 @@ void AppMenuButton::CloseMenu() {
   if (base::FeatureList::IsEnabled(features::kAppMenuGlowUp)) {
     if (action_menu_) {
       action_menu_->CloseMenu();
+      base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
+          FROM_HERE, base::BindOnce(
+                         [](base::WeakPtr<AppMenuButton> self) {
+                           if (self && self->action_menu_ &&
+                               !self->action_menu_->IsShowing()) {
+                             self->action_menu_.reset();
+                           }
+                         },
+                         weak_ptr_factory_.GetWeakPtr()));
     }
-    action_menu_.reset();
-    return;
+  } else {
+    if (menu_) {
+      menu_->CloseMenu();
+    }
+    menu_.reset();
   }
-  if (menu_) {
-    menu_->CloseMenu();
-  }
-  menu_.reset();
 }
 
 void AppMenuButton::ShowMenu() {
   menu_button_controller_->Activate(nullptr);
+}
+
+views::MenuItemView* AppMenuButton::GetRootMenuItemViewForTesting() {
+  if (action_menu_) {
+    return action_menu_->root_menu_item_for_testing();  // IN-TEST
+  }
+  return menu_ ? menu_->root_menu_item() : nullptr;
+}
+
+ActionAppMenu* AppMenuButton::GetActionAppMenuForTesting() {
+  return action_menu_.get();
+}
+
+void AppMenuButton::ExecuteCommandForTesting(int command_id,
+                                             int mouse_event_flags) {
+  if (action_menu_) {
+    int id = command_id;
+    if (std::optional<actions::ActionId> action_id =
+            chrome::CommandActionUpdater::GetActionId(command_id)) {
+      id = action_id.value();
+    }
+    action_menu_->ExecuteCommand(id, mouse_event_flags);
+    return;
+  }
+  CHECK(menu_);
+  menu_->ExecuteCommand(command_id, mouse_event_flags);
 }
 
 void AppMenuButton::AddObserver(AppMenuButtonObserver* observer) {
@@ -134,13 +171,17 @@ void AppMenuButton::RunActionMenu(
       browser_window_interface,
       base::BindRepeating(&AppMenuButton::OnMenuClosed,
                           weak_ptr_factory_.GetWeakPtr()));
-  action_menu_->RunMenu(menu_button_controller_);
+  action_menu_->RunMenu(menu_button_controller_, run_flags);
 
   observer_list_.Notify(&AppMenuButtonObserver::AppMenuShown);
 }
 
 void AppMenuButton::SetMenuTimerForTesting(base::ElapsedTimer timer) {
-  menu_->SetTimerForTesting(std::move(timer));  // IN-TEST
+  if (action_menu_) {
+    action_menu_->SetTimerForTesting(std::move(timer));  // IN-TEST
+  } else if (menu_) {
+    menu_->SetTimerForTesting(std::move(timer));  // IN-TEST
+  }
 }
 
 bool AppMenuButton::HasFocus() const {

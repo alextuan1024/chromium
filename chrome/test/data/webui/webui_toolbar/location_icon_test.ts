@@ -2,13 +2,16 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import 'chrome://webui-toolbar.top-chrome/app.js';
+import 'chrome://webui-toolbar.top-chrome/lazy_load.js';
 
-import {assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chai_assert.js';
+import {isMac} from 'chrome://resources/js/platform.js';
+import {DragEventSource} from 'chrome://resources/mojo/ui/base/dragdrop/mojom/drag_drop_types.mojom-webui.js';
+import {assertDeepEquals, assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chai_assert.js';
 import {TestBrowserProxy} from 'chrome://webui-test/test_browser_proxy.js';
 import {hasStyle, microtasksFinished} from 'chrome://webui-test/test_util.js';
-import {BrowserProxyImpl, IconTable, IconType, LhsChipIdentifier, PointerProxyImpl, SecurityChipRole} from 'chrome://webui-toolbar.top-chrome/app.js';
-import type {IconFromTableElement, LocationIconElement, PointerProxy} from 'chrome://webui-toolbar.top-chrome/app.js';
+import {PointerProxyImpl} from 'chrome://webui-toolbar.top-chrome/lazy_load.js';
+import type {IconFromTableElement, LocationIconElement, PointerProxy} from 'chrome://webui-toolbar.top-chrome/lazy_load.js';
+import {BrowserProxyImpl, IconTable, IconType, LhsChipIdentifier, SecurityChipRole} from 'chrome://webui-toolbar.top-chrome/webui_toolbar.js';
 
 import {TestToolbarUiHandler} from './test_toolbar_browser_proxy.js';
 
@@ -41,6 +44,14 @@ suite('LocationIconTest', function() {
 
     locationIcon = document.createElement('location-icon');
     document.body.appendChild(locationIcon);
+  });
+
+  teardown(function() {
+    // Fake colors set by the IPH pulse test.
+    const rootStyle = document.documentElement.style;
+    rootStyle.removeProperty('--color-omnibox-icon-pressed');
+    rootStyle.removeProperty('--color-omnibox-security-chip-ink-drop-ripple');
+    rootStyle.removeProperty('--color-button-feature-attention-highlight');
   });
 
   test('Render text', async function() {
@@ -92,8 +103,8 @@ suite('LocationIconTest', function() {
     };
     await microtasksFinished();
 
-    const container = locationIcon.$.button;
-    assertEquals('View site information', container.title);
+    const innerButton = locationIcon.$.button.$.button;
+    assertEquals('View site information', innerButton.title);
   });
 
   test('Dangerous text', async function() {
@@ -122,9 +133,9 @@ suite('LocationIconTest', function() {
     assertTrue(locationIcon.hasAttribute('is-text-dangerous'));
     assertTrue(locationIcon.hasAttribute('is-dangerous'));
 
-    const container = locationIcon.$.button;
-    assertTrue(hasStyle(container, 'background-color', 'rgb(0, 0, 255)'));
-    assertTrue(hasStyle(container, 'color', 'rgb(0, 255, 0)'));
+    const innerButton = locationIcon.$.button.$.button;
+    assertTrue(hasStyle(innerButton, 'background-color', 'rgb(0, 0, 255)'));
+    assertTrue(hasStyle(innerButton, 'color', 'rgb(0, 255, 0)'));
   });
 
   test('Dangerous level, Not secure text', async function() {
@@ -151,8 +162,8 @@ suite('LocationIconTest', function() {
     assertFalse(locationIcon.hasAttribute('is-text-dangerous'));
     assertTrue(locationIcon.hasAttribute('is-dangerous'));
 
-    const container = locationIcon.$.button;
-    assertTrue(hasStyle(container, 'color', 'rgb(255, 0, 0)'));
+    const innerButton = locationIcon.$.button.$.button;
+    assertTrue(hasStyle(innerButton, 'color', 'rgb(255, 0, 0)'));
   });
 
   test('Warning text', async function() {
@@ -198,10 +209,17 @@ suite('LocationIconTest', function() {
     assertFalse(locationIcon.hasAttribute('clickable'));
 
     const container = locationIcon.$.button;
+    assertTrue(container.hasAttribute('disable-hover-highlight'));
+    assertTrue(container.hasAttribute('disable-pressed-highlight'));
+    assertEquals(-1, container.$.button.tabIndex);
     container.dispatchEvent(new PointerEvent('pointerdown'));
     assertEquals(0, toolbarUiHandler.getCallCount('onLhsChipMousePressed'));
 
     container.click();
+    assertEquals(0, toolbarUiHandler.getCallCount('onLhsChipClicked'));
+
+    container.dispatchEvent(
+        new PointerEvent('auxclick', {button: 2, pointerType: 'mouse'}));
     assertEquals(0, toolbarUiHandler.getCallCount('onLhsChipClicked'));
   });
 
@@ -224,49 +242,273 @@ suite('LocationIconTest', function() {
     await microtasksFinished();
 
     const container = locationIcon.$.button;
+    assertEquals('TOOLBAR-CHIP-BUTTON', container.tagName);
+    assertFalse(container.hasAttribute('disable-hover-highlight'));
+    assertFalse(container.hasAttribute('disable-pressed-highlight'));
+    assertEquals(0, container.$.button.tabIndex);
 
     // Simulate normal click pointerdown
     container.dispatchEvent(new PointerEvent('pointerdown', {button: 0}));
     assertEquals(1, toolbarUiHandler.getCallCount('onLhsChipMousePressed'));
-    assertEquals(
-        LhsChipIdentifier.kLocationIcon,
-        toolbarUiHandler.getArgs('onLhsChipMousePressed')[0][0]);
-    assertFalse(toolbarUiHandler.getArgs('onLhsChipMousePressed')[0][1]);
+    assertDeepEquals(
+        {identifier: LhsChipIdentifier.kLocationIcon, isMiddleClick: false},
+        toolbarUiHandler.getArgs('onLhsChipMousePressed').at(-1));
     container.dispatchEvent(new PointerEvent('pointerup'));
 
     // Simulate right click pointerdown
     container.dispatchEvent(new PointerEvent('pointerdown', {button: 2}));
     assertEquals(2, toolbarUiHandler.getCallCount('onLhsChipMousePressed'));
-    assertFalse(toolbarUiHandler.getArgs('onLhsChipMousePressed')[1][1]);
+    assertDeepEquals(
+        {identifier: LhsChipIdentifier.kLocationIcon, isMiddleClick: false},
+        toolbarUiHandler.getArgs('onLhsChipMousePressed').at(-1));
     container.dispatchEvent(new PointerEvent('pointerup'));
 
     // Simulate middle click pointerdown with e.buttons = 4
     container.dispatchEvent(
         new PointerEvent('pointerdown', {button: 1, buttons: 4}));
     assertEquals(3, toolbarUiHandler.getCallCount('onLhsChipMousePressed'));
-    assertEquals(
-        LhsChipIdentifier.kLocationIcon,
-        toolbarUiHandler.getArgs('onLhsChipMousePressed')[2][0]);
-    assertTrue(toolbarUiHandler.getArgs('onLhsChipMousePressed')[2][1]);
+    assertDeepEquals(
+        {identifier: LhsChipIdentifier.kLocationIcon, isMiddleClick: true},
+        toolbarUiHandler.getArgs('onLhsChipMousePressed').at(-1));
     container.dispatchEvent(new PointerEvent('pointerup'));
 
     container.click();
     assertEquals(1, toolbarUiHandler.getCallCount('onLhsChipClicked'));
-    assertEquals(
-        LhsChipIdentifier.kLocationIcon,
-        toolbarUiHandler.getArgs('onLhsChipClicked')[0][0]);
-    assertFalse(toolbarUiHandler.getArgs('onLhsChipClicked')[0][1]);
-    assertEquals(0, toolbarUiHandler.getArgs('onLhsChipClicked')[0][2]);
+    assertDeepEquals(
+        {
+          identifier: LhsChipIdentifier.kLocationIcon,
+          isMouseInteraction: false,
+          stateToken: 0,
+        },
+        toolbarUiHandler.getArgs('onLhsChipClicked').at(-1));
 
     // Simulate mouse interaction
     const clickEvent = new PointerEvent('click', {pointerType: 'mouse'});
     container.dispatchEvent(clickEvent);
     assertEquals(2, toolbarUiHandler.getCallCount('onLhsChipClicked'));
+    assertDeepEquals(
+        {
+          identifier: LhsChipIdentifier.kLocationIcon,
+          isMouseInteraction: true,
+          stateToken: 0,
+        },
+        toolbarUiHandler.getArgs('onLhsChipClicked').at(-1));
+
+    // Middle click shouldn't trigger click action
+    container.dispatchEvent(
+        new PointerEvent('auxclick', {button: 1, pointerType: 'mouse'}));
+    assertEquals(2, toolbarUiHandler.getCallCount('onLhsChipClicked'));
+
+    // Right click should trigger click action for Page Info parity
+    container.dispatchEvent(
+        new PointerEvent('auxclick', {button: 2, pointerType: 'mouse'}));
+    assertEquals(3, toolbarUiHandler.getCallCount('onLhsChipClicked'));
+    assertDeepEquals(
+        {
+          identifier: LhsChipIdentifier.kLocationIcon,
+          isMouseInteraction: true,
+          stateToken: 0,
+        },
+        toolbarUiHandler.getArgs('onLhsChipClicked').at(-1));
+
+    // Contextmenu events from touch long-press or the keyboard context-menu
+    // key (Shift+F10) should just be prevented without opening Page Info.
+    for (const pointerType of ['touch', '']) {
+      const contextMenuEvent =
+          new PointerEvent('contextmenu', {pointerType, cancelable: true});
+      container.dispatchEvent(contextMenuEvent);
+      assertTrue(contextMenuEvent.defaultPrevented);
+      assertEquals(3, toolbarUiHandler.getCallCount('onLhsChipClicked'));
+    }
+  });
+
+  test('Right click after drag', async function() {
+    locationIcon.state = {
+      icon: {handleId: 0n},
+      securityLevel: 0,
+      text: '',
+      tooltip: '',
+      isClickable: true,
+      isTextDangerous: false,
+      isVisible: true,
+      isContextMenuVisible: false,
+      accessibilityState: {
+        role: SecurityChipRole.kButton,
+        label: '',
+        description: '',
+      },
+    };
+    await microtasksFinished();
+
+    const container = locationIcon.$.button;
+
+    // Left press and drag past the threshold, which hands off to a native drag
+    // session. No click event follows.
+    container.dispatchEvent(new PointerEvent(
+        'pointerdown', {pointerId: 1, button: 0, clientX: 0, clientY: 0}));
+    container.dispatchEvent(new PointerEvent(
+        'pointermove', {pointerId: 1, clientX: 20, clientY: 0}));
+    assertEquals(1, toolbarUiHandler.getCallCount('onLhsChipDrag'));
+    container.dispatchEvent(
+        new PointerEvent('lostpointercapture', {pointerId: 1}));
+
+    // A subsequent right click should still open Page Info.
+    container.dispatchEvent(new PointerEvent(
+        'pointerdown', {pointerId: 1, button: 2, pointerType: 'mouse'}));
+    container.dispatchEvent(
+        new PointerEvent('auxclick', {button: 2, pointerType: 'mouse'}));
+    assertEquals(1, toolbarUiHandler.getCallCount('onLhsChipClicked'));
+  });
+
+  async function setClickable(isClickable: boolean) {
+    locationIcon.state = {
+      icon: {handleId: 0n},
+      securityLevel: 0,
+      text: '',
+      tooltip: '',
+      isClickable,
+      isTextDangerous: false,
+      isVisible: true,
+      isContextMenuVisible: false,
+      accessibilityState: {
+        role: SecurityChipRole.kButton,
+        label: '',
+        description: '',
+      },
+    };
+    await microtasksFinished();
+  }
+
+  test('Dragging past the threshold notifies the browser', async function() {
+    await setClickable(true);
+    const container = locationIcon.$.button;
+
+    container.dispatchEvent(new PointerEvent(
+        'pointerdown', {pointerId: 1, button: 0, clientX: 0, clientY: 0}));
+    container.dispatchEvent(new PointerEvent(
+        'pointermove', {pointerId: 1, clientX: 5, clientY: 0}));
+    assertEquals(0, toolbarUiHandler.getCallCount('onLhsChipDrag'));
+
+    container.dispatchEvent(new PointerEvent(
+        'pointermove', {pointerId: 1, clientX: 20, clientY: 0}));
+    container.dispatchEvent(new PointerEvent(
+        'pointermove', {pointerId: 1, clientX: 40, clientY: 0}));
+    assertEquals(1, toolbarUiHandler.getCallCount('onLhsChipDrag'));
+    assertDeepEquals(
+        [LhsChipIdentifier.kLocationIcon, DragEventSource.kMouse],
+        toolbarUiHandler.getArgs('onLhsChipDrag')[0]);
+  });
+
+  test('Dragging with touch reports a touch source', async function() {
+    await setClickable(true);
+    const container = locationIcon.$.button;
+
+    container.dispatchEvent(new PointerEvent('pointerdown', {
+      pointerId: 1,
+      button: 0,
+      pointerType: 'touch',
+      clientX: 0,
+      clientY: 0,
+    }));
+    container.dispatchEvent(new PointerEvent('pointermove', {
+      pointerId: 1,
+      pointerType: 'touch',
+      clientX: 20,
+      clientY: 0,
+    }));
+    assertDeepEquals(
+        [LhsChipIdentifier.kLocationIcon, DragEventSource.kTouch],
+        toolbarUiHandler.getArgs('onLhsChipDrag')[0]);
+  });
+
+  // Like native Views, pressing the icon does not take the focus away from the
+  // omnibox when the icon cannot be clicked, e.g. while the omnibox is being
+  // edited, so that the omnibox keeps its suggestions popup. Synthetic events
+  // do not move the focus, so this only checks that the default action of the
+  // press is prevented. LocationIcon_PressWhileEditing covers the focus.
+  test('Pressing an unclickable icon prevents the default', async function() {
+    await setClickable(false);
+    const mousedown = new MouseEvent(
+        'mousedown', {bubbles: true, cancelable: true, composed: true});
+    locationIcon.$.button.$.button.dispatchEvent(mousedown);
+    assertTrue(mousedown.defaultPrevented);
+  });
+
+  // Like native Views, which closes the omnibox suggestions popup on a drag of
+  // the icon even when there is nothing to drag, the browser is notified of
+  // the drag. A press alone is not reported, since it does nothing.
+  test('Dragging an unclickable icon notifies the browser', async function() {
+    await setClickable(false);
+    const container = locationIcon.$.button;
+
+    container.dispatchEvent(new PointerEvent(
+        'pointerdown', {pointerId: 1, button: 0, clientX: 0, clientY: 0}));
+    container.dispatchEvent(new PointerEvent(
+        'pointermove', {pointerId: 1, clientX: 20, clientY: 0}));
+    assertEquals(0, toolbarUiHandler.getCallCount('onLhsChipMousePressed'));
+    assertEquals(1, toolbarUiHandler.getCallCount('onLhsChipDrag'));
+  });
+
+  // Only the pointer click that may follow a drag is suppressed. Keyboard
+  // activations, which have an empty pointerType and no preceding press, still
+  // open Page Info, like native Views.
+  test('Keyboard activation works after a drag', async function() {
+    await setClickable(true);
+    const container = locationIcon.$.button;
+
+    container.dispatchEvent(new PointerEvent(
+        'pointerdown', {pointerId: 1, button: 0, clientX: 0, clientY: 0}));
+    container.dispatchEvent(new PointerEvent(
+        'pointermove', {pointerId: 1, clientX: 20, clientY: 0}));
+    assertEquals(1, toolbarUiHandler.getCallCount('onLhsChipDrag'));
+    container.dispatchEvent(
+        new PointerEvent('lostpointercapture', {pointerId: 1}));
+    container.dispatchEvent(new PointerEvent('click', {pointerType: 'mouse'}));
+    assertEquals(0, toolbarUiHandler.getCallCount('onLhsChipClicked'));
+
+    container.click();
+    assertEquals(1, toolbarUiHandler.getCallCount('onLhsChipClicked'));
+    assertFalse(
+        toolbarUiHandler.getArgs('onLhsChipClicked')[0].isMouseInteraction);
+  });
+
+  test('Ctrl+click', async function() {
+    locationIcon.state = {
+      icon: {handleId: 0n},
+      securityLevel: 0,
+      text: '',
+      tooltip: '',
+      isClickable: true,
+      isTextDangerous: false,
+      isVisible: true,
+      isContextMenuVisible: false,
+      accessibilityState: {
+        role: SecurityChipRole.kButton,
+        label: '',
+        description: '',
+      },
+    };
+    await microtasksFinished();
+
+    const container = locationIcon.$.button;
+    const ctrlMouse = {
+      pointerId: 1,
+      button: 0,
+      ctrlKey: true,
+      pointerType: 'mouse',
+    };
+
+    // On Mac, Blink dispatches neither 'click' nor 'auxclick' for Ctrl+click,
+    // but native views treats it as a right click, so Page Info opens on
+    // release. On other platforms, the regular 'click' event handles it.
+    container.dispatchEvent(new PointerEvent('pointerdown', ctrlMouse));
+    container.dispatchEvent(new PointerEvent('pointerup', ctrlMouse));
     assertEquals(
-        LhsChipIdentifier.kLocationIcon,
-        toolbarUiHandler.getArgs('onLhsChipClicked')[1][0]);
-    assertTrue(toolbarUiHandler.getArgs('onLhsChipClicked')[1][1]);
-    assertEquals(0, toolbarUiHandler.getArgs('onLhsChipClicked')[1][2]);
+        isMac ? 1 : 0, toolbarUiHandler.getCallCount('onLhsChipClicked'));
+    if (isMac) {
+      assertTrue(
+          toolbarUiHandler.getArgs('onLhsChipClicked')[0].isMouseInteraction);
+    }
   });
 
   test('Multi-touch scenario', async function() {
@@ -365,6 +607,10 @@ suite('LocationIconTest', function() {
     assertEquals(
         'webui-toolbar:info_glow_up_forward', crIcon.getAttribute('icon'));
     assertTrue(locationIcon.hasAttribute('glow-up-active'));
+    // The pressed ripple is suppressed while GlowUp animates the icon, but the
+    // hover highlight is still allowed.
+    assertTrue(locationIcon.$.button.hasAttribute('disable-pressed-highlight'));
+    assertFalse(locationIcon.$.button.hasAttribute('disable-hover-highlight'));
 
     // Trigger the timeout to finish opening animation
     assertTrue(!!timeoutCallback);
@@ -471,11 +717,11 @@ suite('LocationIconTest', function() {
     };
     await microtasksFinished();
 
-    const container = locationIcon.$.button;
-    assertEquals('img', container.getAttribute('role'));
-    assertEquals('Search icon', container.getAttribute('aria-label'));
+    const innerButton = locationIcon.$.button.$.button;
+    assertEquals('img', innerButton.getAttribute('role'));
+    assertEquals('Search icon', innerButton.getAttribute('aria-label'));
     assertEquals(
-        'Context description', container.getAttribute('aria-description'));
+        'Context description', innerButton.getAttribute('aria-description'));
 
     // Verify the default button role updates correctly.
     locationIcon.state = Object.assign({}, locationIcon.state, {
@@ -486,6 +732,86 @@ suite('LocationIconTest', function() {
       },
     });
     await microtasksFinished();
-    assertEquals('button', container.getAttribute('role'));
+    assertEquals('button', innerButton.getAttribute('role'));
   });
+
+  test('Help bubble highlight is forwarded to the chip', async function() {
+    const chip = locationIcon.$.button;
+    assertFalse(chip.classList.contains('help-anchor-highlight'));
+
+    locationIcon.hasHelpBubble = true;
+    await microtasksFinished();
+    assertTrue(chip.classList.contains('help-anchor-highlight'));
+
+    locationIcon.hasHelpBubble = false;
+    await microtasksFinished();
+    assertFalse(chip.classList.contains('help-anchor-highlight'));
+  });
+
+  test(
+      'IPH pulse paints the pressed color over the attention color',
+      async function() {
+        const PRESSED_COLOR = 'rgb(1, 2, 3)';
+        const DANGEROUS_PRESSED_COLOR = 'rgb(4, 5, 6)';
+        const ATTENTION_COLOR = 'rgb(7, 8, 9)';
+        const rootStyle = document.documentElement.style;
+        rootStyle.setProperty('--color-omnibox-icon-pressed', PRESSED_COLOR);
+        rootStyle.setProperty(
+            '--color-omnibox-security-chip-ink-drop-ripple',
+            DANGEROUS_PRESSED_COLOR);
+        rootStyle.setProperty(
+            '--color-button-feature-attention-highlight', ATTENTION_COLOR);
+
+        const setState =
+            async (isClickable: boolean, isTextDangerous: boolean) => {
+          locationIcon.state = {
+            icon: {handleId: 0n},
+            securityLevel: 0,
+            text: isTextDangerous ? 'Dangerous' : '',
+            tooltip: '',
+            isClickable,
+            isTextDangerous,
+            isVisible: true,
+            isContextMenuVisible: false,
+            accessibilityState: {
+              role: SecurityChipRole.kButton,
+              label: '',
+              description: '',
+            },
+          };
+          await microtasksFinished();
+        };
+        const innerButton = locationIcon.$.button.$.button;
+        const getPulseStyle = () =>
+            window.getComputedStyle(innerButton, '::before');
+
+        locationIcon.hasHelpBubble = true;
+        const pressedGradient = (color: string) => `linear-gradient(${color})`;
+
+        await setState(/*isClickable=*/ true, /*isTextDangerous=*/ false);
+        assertEquals('pulse', getPulseStyle().animationName);
+        assertEquals(ATTENTION_COLOR, getPulseStyle().backgroundColor);
+        assertEquals(
+            pressedGradient(PRESSED_COLOR), getPulseStyle().backgroundImage);
+
+        // The pulse already paints the pressed color, so the chip's own pressed
+        // layer stays hidden during the IPH (e.g. while the anchor is
+        // highlighted).
+        locationIcon.$.button.toggleAttribute('is-menu-open', true);
+        assertEquals(
+            '0', window.getComputedStyle(innerButton, '::after').opacity);
+        locationIcon.$.button.toggleAttribute('is-menu-open', false);
+
+        await setState(/*isClickable=*/ true, /*isTextDangerous=*/ true);
+        assertEquals(
+            pressedGradient(DANGEROUS_PRESSED_COLOR),
+            getPulseStyle().backgroundImage);
+
+        // Like the pressed layer, there is no pressed color when the icon is
+        // not clickable.
+        await setState(/*isClickable=*/ false, /*isTextDangerous=*/ false);
+        assertEquals(
+            pressedGradient('rgba(0, 0, 0, 0)'),
+            getPulseStyle().backgroundImage);
+      });
 });

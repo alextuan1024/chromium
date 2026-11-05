@@ -35,14 +35,17 @@
 #include "third_party/blink/renderer/core/dom/events/event.h"
 #include "third_party/blink/renderer/core/dom/events/native_event_listener.h"
 #include "third_party/blink/renderer/core/dom/id_target_observer.h"
+#include "third_party/blink/renderer/core/dom/shadow_root.h"
 #include "third_party/blink/renderer/core/frame/web_feature.h"
 #include "third_party/blink/renderer/core/svg/animation/smil_time.h"
 #include "third_party/blink/renderer/core/svg/animation/smil_time_container.h"
 #include "third_party/blink/renderer/core/svg/svg_set_element.h"
 #include "third_party/blink/renderer/core/svg/svg_svg_element.h"
 #include "third_party/blink/renderer/core/svg/svg_uri_reference.h"
+#include "third_party/blink/renderer/core/svg/svg_use_element.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/instrumentation/use_counter.h"
+#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/wtf/functional.h"
 #include "third_party/blink/renderer/platform/wtf/math_extras.h"
 #include "third_party/blink/renderer/platform/wtf/std_lib_extras.h"
@@ -68,6 +71,32 @@ SMILTime ComputeNextRepeatTime(SMILTime interval_begin,
   SMILTime time_until_next_repeat =
       simple_duration - (time_in_interval % simple_duration);
   return presentation_time + time_until_next_repeat;
+}
+
+bool IsDescendantOfSvgUseElement(const Element& element) {
+  for (ShadowRoot* root = element.ContainingShadowRoot(); root;
+       root = root->host().ContainingShadowRoot()) {
+    if (IsA<SVGUseElement>(root->host())) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// Instance times from these origins apply to an animation element and all
+// its <use> instances, per
+// https://svgwg.org/svg2-draft/struct.html#UseAnimations.
+bool OriginIsSharedWithInstances(SMILTimeOrigin origin) {
+  switch (origin) {
+    case SMILTimeOrigin::kScript:
+    case SMILTimeOrigin::kEvent:
+    case SMILTimeOrigin::kLinkActivation:
+      return true;
+    case SMILTimeOrigin::kAttribute:
+    case SMILTimeOrigin::kSyncBase:
+    case SMILTimeOrigin::kRepeat:
+      return false;
+  }
 }
 
 }  // namespace
@@ -195,9 +224,13 @@ class ConditionEventListener final : public NativeEventListener {
   void Invoke(ExecutionContext*, Event*) override {
     if (!animation_)
       return;
+    // An event observed implicitly on the target element triggers only this
+    // animation element, while an event-base referenced by 'id' is shared
+    // with the element's <use> instances.
     animation_->AddInstanceTimeAndUpdate(
         condition_->GetBeginOrEnd(),
-        animation_->Elapsed() + condition_->Offset(), SMILTimeOrigin::kEvent);
+        animation_->Elapsed() + condition_->Offset(), SMILTimeOrigin::kEvent,
+        /*propagate_to_instances=*/condition_->HasExplicitBase());
   }
 
   void Trace(Visitor* visitor) const override {
@@ -333,13 +366,33 @@ void SVGSMILElement::BuildPendingResource() {
     SetTargetElement(nullptr);
     return;
   }
+  // A timed element inside a <use> shadow tree must resolve its target within
+  // that same tree, so that the one-to-one relationship between animation
+  // elements and target elements is preserved and the animation cannot reach
+  // out of the shadow tree. See
+  // https://svgwg.org/svg2-draft/struct.html#UseAnimations. Such an element
+  // can also appear via a cloned event handler; when the feature is disabled
+  // it is ignored, as the per-tree targeting below is gated on the feature.
+  if (!RuntimeEnabledFeatures::SvgUseInstanceAnimationsEnabled() &&
+      IsDescendantOfSvgUseElement(*this)) {
+    SetTargetElement(nullptr);
+    return;
+  }
 
   const AtomicString& href = SVGURIReference::LegacyHrefString(*this);
   Element* target;
   if (href.empty()) {
     target = parentElement();
   } else {
-    target = SVGURIReference::ObserveTarget(target_id_observer_, *this, href);
+    // Resolve the target in this element's own tree scope. For an instance in
+    // a <use> shadow tree this is the shadow tree, not the referenced
+    // element's originating scope, keeping the target in the same node tree.
+    const AtomicString id =
+        SVGURIReference::FragmentIdentifierFromIRIString(href, GetTreeScope());
+    target = SVGURIReference::ObserveTarget(
+        target_id_observer_, GetTreeScope(), id,
+        BindRepeating(&SVGElement::BuildPendingResource,
+                      WrapWeakPersistent(this)));
   }
   auto* svg_target = DynamicTo<SVGElement>(target);
 
@@ -391,6 +444,16 @@ Node::InsertionNotificationRequest SVGSMILElement::InsertedInto(
   if (!FastHasAttribute(svg_names::kBeginAttr) && begin_times_.IsEmpty())
     begin_times_.Append(SMILTime(), SMILTimeOrigin::kAttribute);
 
+  // An instance generated while its corresponding element has shared begin or
+  // end times (begun by script, link activation or an 'id'-referenced
+  // event-base) must line up with the corresponding element. See
+  // https://svgwg.org/svg2-draft/struct.html#UseAnimations.
+  if (RuntimeEnabledFeatures::SvgUseInstanceAnimationsEnabled()) {
+    if (SVGElement* corresponding = CorrespondingElement()) {
+      ImportInstanceTimes(To<SVGSMILElement>(*corresponding));
+    }
+  }
+
   BuildPendingResource();
   return kInsertionDone;
 }
@@ -440,7 +503,8 @@ SMILTime SVGSMILElement::ParseClockValue(const StringView& data) {
 
   StringView parse = data.StripWhiteSpace();
 
-  DEFINE_STATIC_LOCAL(const AtomicString, indefinite_value, ("indefinite"));
+  DEFINE_STATIC_LOCAL(const AtomicString, indefinite_value,
+                      (AtomicString::FromLiteral<"indefinite">()));
   if (parse == indefinite_value)
     return SMILTime::Indefinite();
 
@@ -904,9 +968,43 @@ void SVGSMILElement::AddInstanceTime(BeginOrEnd begin_or_end,
   instance_lists_have_changed_ = true;
 }
 
+void SVGSMILElement::ImportInstanceTimes(const SVGSMILElement& corresponding) {
+  // Shared-origin times can only exist on a running timeline, which is then
+  // the same timeline as this element's, so the times apply verbatim.
+  for (BeginOrEnd begin_or_end : {kBegin, kEnd}) {
+    const SMILInstanceTimeList& list = begin_or_end == kBegin
+                                           ? corresponding.begin_times_
+                                           : corresponding.end_times_;
+    for (const SMILTimeWithOrigin& instance_time : list.AsSpan()) {
+      if (!OriginIsSharedWithInstances(instance_time.Origin())) {
+        continue;
+      }
+      AddInstanceTime(begin_or_end, instance_time.Time(),
+                      instance_time.Origin());
+    }
+  }
+}
+
+void SVGSMILElement::PropagateInstanceTimeToInstances(BeginOrEnd begin_or_end,
+                                                      SMILTime time,
+                                                      SMILTimeOrigin origin) {
+  if (!RuntimeEnabledFeatures::SvgUseInstanceAnimationsEnabled()) {
+    return;
+  }
+  if (!OriginIsSharedWithInstances(origin) || !MayHaveInstances()) {
+    return;
+  }
+  HeapHashSet<WeakMember<SVGElement>> instances = InstancesForElement();
+  for (SVGElement* element : instances) {
+    To<SVGSMILElement>(element)->AddInstanceTimeAndUpdate(begin_or_end, time,
+                                                          origin);
+  }
+}
+
 void SVGSMILElement::AddInstanceTimeAndUpdate(BeginOrEnd begin_or_end,
                                               SMILTime time,
-                                              SMILTimeOrigin origin) {
+                                              SMILTimeOrigin origin,
+                                              bool propagate_to_instances) {
   // Ignore new instance times for 'end' if the element is not active
   // and the origin is script.
   if (begin_or_end == kEnd && GetActiveState() == kInactive &&
@@ -914,6 +1012,9 @@ void SVGSMILElement::AddInstanceTimeAndUpdate(BeginOrEnd begin_or_end,
     return;
   AddInstanceTime(begin_or_end, time, origin);
   InstanceListChanged();
+  if (propagate_to_instances) {
+    PropagateInstanceTimeToInstances(begin_or_end, time, origin);
+  }
 }
 
 SMILTime SVGSMILElement::RepeatingDuration() const {
@@ -1208,7 +1309,7 @@ void SVGSMILElement::AddedToTimeContainer() {
     // Dispatch a 'beginEvent' if the timeline has started and the interval is
     // active.
     if (GetActiveState() == kActive && time_container_->IsStarted()) {
-      DispatchEvents(kDispatchBeginEvent);
+      DispatchEvents({EventDispatch::kBeginEvent});
     }
   }
 }
@@ -1219,7 +1320,7 @@ void SVGSMILElement::RemovedFromTimeContainer() {
     // Dispatch a 'endEvent' if the timeline has started and the interval is
     // (was) active.
     if (GetActiveState() == kActive && time_container_->IsStarted()) {
-      DispatchEvents(kDispatchEndEvent);
+      DispatchEvents({EventDispatch::kEndEvent});
     }
   }
 }
@@ -1323,7 +1424,7 @@ bool SVGSMILElement::IsContributing(SMILTime elapsed) const {
          GetActiveState() == kFrozen;
 }
 
-SVGSMILElement::EventDispatchMask SVGSMILElement::UpdateActiveState(
+SVGSMILElement::EventDispatchSet SVGSMILElement::UpdateActiveState(
     SMILTime presentation_time,
     bool skip_repeat) {
   const bool was_active = GetActiveState() == kActive;
@@ -1333,14 +1434,14 @@ SVGSMILElement::EventDispatchMask SVGSMILElement::UpdateActiveState(
       interval_has_changed_ && previous_interval_.end == interval_.begin;
   interval_has_changed_ = false;
 
-  unsigned events_to_dispatch = kDispatchNoEvent;
+  EventDispatchSet events_to_dispatch;
   if ((was_active && !is_active) || interval_restart) {
-    events_to_dispatch |= kDispatchEndEvent;
+    events_to_dispatch.Put(EventDispatch::kEndEvent);
   }
 
   if (IsContributing(presentation_time)) {
     if ((!was_active && is_active) || interval_restart) {
-      events_to_dispatch |= kDispatchBeginEvent;
+      events_to_dispatch.Put(EventDispatch::kBeginEvent);
       StartedActiveInterval();
     }
 
@@ -1351,52 +1452,53 @@ SVGSMILElement::EventDispatchMask SVGSMILElement::UpdateActiveState(
       if (progress_state.repeat &&
           progress_state.repeat != last_progress_.repeat) {
         NotifyDependentsOnRepeat(progress_state.repeat, presentation_time);
-        events_to_dispatch |= kDispatchRepeatEvent;
+        events_to_dispatch.Put(EventDispatch::kRepeatEvent);
       }
       last_progress_ = progress_state;
     }
   }
-  return static_cast<EventDispatchMask>(events_to_dispatch);
+  return events_to_dispatch;
 }
 
-SVGSMILElement::EventDispatchMask SVGSMILElement::ComputeSeekEvents(
+SVGSMILElement::EventDispatchSet SVGSMILElement::ComputeSeekEvents(
     const SMILInterval& starting_interval) const {
   // Is the element active at the seeked-to time?
   if (GetActiveState() != SVGSMILElement::kActive) {
     // Was the element active at the previous time?
-    if (!starting_interval.IsResolved())
-      return kDispatchNoEvent;
+    if (!starting_interval.IsResolved()) {
+      return {};
+    }
     // Dispatch an 'endEvent' for ending |starting_interval|.
-    return kDispatchEndEvent;
+    return {EventDispatch::kEndEvent};
   }
   // Was the element active at the previous time?
   if (starting_interval.IsResolved()) {
     // The same interval?
-    if (interval_ == starting_interval)
-      return kDispatchNoEvent;
+    if (interval_ == starting_interval) {
+      return {};
+    }
     // Dispatch an 'endEvent' for ending |starting_interval| and a 'beginEvent'
     // for beginning the current interval.
-    unsigned to_dispatch = kDispatchBeginEvent | kDispatchEndEvent;
-    return static_cast<EventDispatchMask>(to_dispatch);
+    return {EventDispatch::kBeginEvent, EventDispatch::kEndEvent};
   }
   // Was not active at the previous time. Dispatch a 'beginEvent' for beginning
   // the current interval.
-  return kDispatchBeginEvent;
+  return {EventDispatch::kBeginEvent};
 }
 
-void SVGSMILElement::DispatchEvents(EventDispatchMask events_to_dispatch) {
+void SVGSMILElement::DispatchEvents(EventDispatchSet events_to_dispatch) {
   // The ordering is based on the usual order in which these events should be
   // dispatched (and should match the order the flags are set in
   // UpdateActiveState().
-  if (events_to_dispatch & kDispatchEndEvent) {
+  if (events_to_dispatch.Has(EventDispatch::kEndEvent)) {
     EnqueueEvent(*Event::Create(event_type_names::kEndEvent),
                  TaskType::kDOMManipulation);
   }
-  if (events_to_dispatch & kDispatchBeginEvent) {
+  if (events_to_dispatch.Has(EventDispatch::kBeginEvent)) {
     EnqueueEvent(*Event::Create(event_type_names::kBeginEvent),
                  TaskType::kDOMManipulation);
   }
-  if (events_to_dispatch & kDispatchRepeatEvent) {
+  if (events_to_dispatch.Has(EventDispatch::kRepeatEvent)) {
     EnqueueEvent(*Event::Create(event_type_names::kRepeatEvent),
                  TaskType::kDOMManipulation);
     EnqueueEvent(*Event::Create(AtomicString("repeatn")),

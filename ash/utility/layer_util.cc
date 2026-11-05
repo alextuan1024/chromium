@@ -9,7 +9,7 @@
 #include "components/viz/common/frame_sinks/copy_output_request.h"
 #include "components/viz/common/frame_sinks/copy_output_result.h"
 #include "gpu/command_buffer/client/client_shared_image.h"
-#include "third_party/khronos/GLES2/gl2.h"
+#include "third_party/angle/include/GLES2/gl2.h"
 #include "ui/compositor/layer_solid_color.h"
 #include "ui/compositor/layer_with_external_texture.h"
 #include "ui/gfx/geometry/size.h"
@@ -77,6 +77,7 @@ std::unique_ptr<ui::LayerWithExternalTexture> CreateLayerFromCopyOutputResult(
     std::unique_ptr<viz::CopyOutputResult> copy_result,
     const gfx::Size& layer_size) {
   auto copy_layer = std::make_unique<ui::LayerWithExternalTexture>();
+  copy_layer->SetName("LayerFromCopyOutputResult");
   copy_layer->SetBounds(gfx::Rect(layer_size));
   CopyCopyOutputResultToLayer(std::move(copy_result), copy_layer.get());
   return copy_layer;

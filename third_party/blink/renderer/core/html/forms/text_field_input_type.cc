@@ -89,6 +89,10 @@ class DataListIndicatorElement final : public HTMLDivElement {
            GetDocument().IsActive();
   }
 
+  FocusableState SupportsFocus(UpdateBehavior) const override {
+    return FocusableState::kNotFocusable;
+  }
+
  public:
   explicit DataListIndicatorElement(Document& document)
       : HTMLDivElement(document) {}
@@ -429,10 +433,6 @@ void TextFieldInputType::HandleBlurEvent() {
       }
     }
   }
-
-  if (HTMLSelectElement* select = input.FilterTarget()) {
-    select->StopFiltering();
-  }
 }
 
 bool TextFieldInputType::ShouldSubmitImplicitly(const Event& event) {
@@ -744,8 +744,7 @@ HTMLElement* TextFieldInputType::UpdatePlaceholderText(
     auto* new_element =
         MakeGarbageCollected<HTMLDivElement>(GetElement().GetDocument());
     placeholder = new_element;
-    placeholder->SetShadowPseudoId(
-        shadow_element_names::kPseudoInputPlaceholder);
+    GetElement().UpdatePlaceholderShadowPseudoId(*placeholder);
     placeholder->SetInlineStyleProperty(CSSPropertyID::kDisplay,
                                         GetElement().IsPlaceholderVisible()
                                             ? CSSValueID::kBlock
@@ -774,13 +773,11 @@ String TextFieldInputType::ConvertFromVisibleValue(
 }
 
 void TextFieldInputType::SubtreeHasChanged() {
+  // SetValueFromRenderer() invalidates the validity pseudo-classes through
+  // SetNeedsValidityCheck(). It does not invalidate the range ones.
   GetElement().SetValueFromRenderer(SanitizeUserInputValue(
       ConvertFromVisibleValue(GetElement().InnerEditorValue())));
   GetElement().UpdatePlaceholderVisibility();
-  GetElement().PseudoStateChanged(CSSSelector::kPseudoValid);
-  GetElement().PseudoStateChanged(CSSSelector::kPseudoInvalid);
-  GetElement().PseudoStateChanged(CSSSelector::kPseudoUserValid);
-  GetElement().PseudoStateChanged(CSSSelector::kPseudoUserInvalid);
   GetElement().PseudoStateChanged(CSSSelector::kPseudoInRange);
   GetElement().PseudoStateChanged(CSSSelector::kPseudoOutOfRange);
 
@@ -810,6 +807,8 @@ void TextFieldInputType::DidSetValueByUserEdit() {
     }
     chrome_client->DidChangeValueInTextField(GetElement());
   }
+  GetElement().GetDocument().DidHaveFormEdit();
+
   if (GetElement().IsBaseAppearanceCombobox()) {
     // TODO(https://crbug.com/453705243): Make IsBaseAppearanceCombobox return
     // the datalist element since i am always using the datalist afterwards and
@@ -877,12 +876,6 @@ void TextFieldInputType::HandleFocusInEvent(
     if (auto* datalist = input.DataList()) {
       datalist->ShowPopoverInternal(&input, /*exception_state=*/nullptr);
     }
-  } else if (HTMLSelectElement* select = input.FilterTarget()) {
-    select->StartFiltering();
-
-    // TODO(crbug.com/453705243): Track the target select element like we are
-    // already doing for the list attribute in order to remove the
-    // :active-option pseudo.
   }
   UpdateWheelEventRegistration(/*is_detaching=*/false);
 }

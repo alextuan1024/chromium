@@ -55,12 +55,8 @@ export function getHtml(this: ComposeboxElement) {
         .fileNum="${this.attachedContext.size}"
         .nonTabFileNum="${this.getNonTabFileNum()}"
         .sharedTabs="${this.getSharedTabs()}"
-        .isSidePanel="${this.isSidePanel}"
-        ?upload-button-disabled="${this.uploadButtonDisabled}"
         ?show-context-menu-description="${this.showContextMenuDescription}"
-        .glifAnimationState="${this.glifAnimationState}"
-        .energyEffectAnimationEnabled="${this.energyEffectAnimationEnabled}"
-        .disableFallbackGlifAnimation="${this.disableFallbackGlifAnimation}">
+        .energyEffectAnimationEnabled="${this.energyEffectAnimationEnabled}">
     </cr-composebox-contextual-entrypoint-and-menu>
   ` : html`
     ${hasAllowedInputs(this.inputState, this.usePecApi) ? html`
@@ -75,11 +71,8 @@ export function getHtml(this: ComposeboxElement) {
           .applyContextButtonBackground="${this.applyContextButtonBackground}"
           .sharedTabs="${this.getSharedTabs()}"
           .restoredTabs="${this.aimThreadRestoredTabs}"
-          ?upload-button-disabled="${this.uploadButtonDisabled}"
           ?show-context-menu-description="${this.showContextMenuDescription}"
-          .glifAnimationState="${this.glifAnimationState}"
-          .energyEffectAnimationEnabled="${this.energyEffectAnimationEnabled}"
-          .disableFallbackGlifAnimation="${this.disableFallbackGlifAnimation}">
+          .energyEffectAnimationEnabled="${this.energyEffectAnimationEnabled}">
       </cr-composebox-contextual-entrypoint-button>
     ` : ''}
   `}

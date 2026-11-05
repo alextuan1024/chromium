@@ -141,8 +141,8 @@ AX_TEST_F('ChromeVoxPanelTest', 'SearchMenu', async function() {
       .replay();
 });
 
-// TODO(crbug.com/1088438): flaky crashes.
-AX_TEST_F('ChromeVoxPanelTest', 'DISABLED_Gestures', async function() {
+AX_TEST_F('ChromeVoxPanelTest', 'Gestures', async function() {
+  const mockFeedback = this.createMockFeedback();
   const doGestureAsync = async gesture => {
     doGesture(gesture)();
   };
@@ -150,12 +150,11 @@ AX_TEST_F('ChromeVoxPanelTest', 'DISABLED_Gestures', async function() {
   doGestureAsync(Gesture.TAP4);
   await this.waitForMenu('panel_search_menu');
 
-  // GestureCommandHandler behaves in special ways only with range over
-  // the panel. Fake this out by setting range there.
-  const desktop = root.parent.root;
-  const panelNode = desktop.find(
-      {role: 'rootWebArea', attributes: {name: 'ChromeVox Panel'}});
-  ChromeVoxRange.set(CursorRange.fromNode(panelNode));
+  // Wait for focus on the search bar to update ChromeVoxRange into the
+  // panel menu item before sending menu swipe gestures.
+  await mockFeedback
+      .expectSpeech('Search the menus', /Type to search the menus/)
+      .replay();
 
   doGestureAsync(Gesture.SWIPE_RIGHT1);
   await this.waitForMenu('panel_menu_jump');
@@ -303,4 +302,59 @@ AX_TEST_F('ChromeVoxPanelTest', 'PanVirtualBrailleDisplay', async function() {
 
   this.braillePanRight();
   await panRightDone;
+});
+
+AX_TEST_F(
+    'ChromeVoxPanelTest', 'SetSpeechReplacesCaptionInOneStep',
+    async function() {
+      await this.runWithLoadedTree(this.linksDoc);
+      ChromeVox.tts.stop();
+      ChromeVox.tts.speak = () => ChromeVox.tts;
+
+      await new PanelCommand(PanelCommandType.ADD_NORMAL_SPEECH, 'old').send();
+      assertEquals(
+          '<span class="usertext">old</span>',
+          await PanelBridge.getSpeechHtmlForTest());
+
+      await new PanelCommand(
+          PanelCommandType.SET_SPEECH, {text: 'new', formatAsAnnotation: false})
+          .send();
+      assertEquals(
+          '<span class="usertext">new</span>',
+          await PanelBridge.getSpeechHtmlForTest());
+    });
+
+AX_TEST_F('ChromeVoxPanelTest', 'SetSpeechEscapesHtml', async function() {
+  await this.runWithLoadedTree(this.linksDoc);
+  ChromeVox.tts.stop();
+  ChromeVox.tts.speak = () => ChromeVox.tts;
+
+  await new PanelCommand(
+      PanelCommandType.SET_SPEECH, {text: '<b>', formatAsAnnotation: false})
+      .send();
+  assertEquals(
+      '<span class="usertext">&lt;b&gt;</span>',
+      await PanelBridge.getSpeechHtmlForTest());
+
+  await new PanelCommand(
+      PanelCommandType.SET_SPEECH, {text: '<b>', formatAsAnnotation: true})
+      .send();
+  assertEquals('&lt;b&gt;', await PanelBridge.getSpeechHtmlForTest());
+});
+
+AX_TEST_F('ChromeVoxPanelTest', 'AddAfterSetAppends', async function() {
+  await this.runWithLoadedTree(this.linksDoc);
+  ChromeVox.tts.stop();
+  ChromeVox.tts.speak = () => ChromeVox.tts;
+
+  await new PanelCommand(
+      PanelCommandType.SET_SPEECH, {text: 'first', formatAsAnnotation: false})
+      .send();
+  await new PanelCommand(PanelCommandType.ADD_NORMAL_SPEECH, 'second').send();
+  await new PanelCommand(PanelCommandType.ADD_ANNOTATION_SPEECH, 'third')
+      .send();
+  assertEquals(
+      '<span class="usertext">first</span>&nbsp;&nbsp;' +
+          '<span class="usertext">second</span>&nbsp;&nbsp;third',
+      await PanelBridge.getSpeechHtmlForTest());
 });

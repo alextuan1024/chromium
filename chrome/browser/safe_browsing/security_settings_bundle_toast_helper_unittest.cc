@@ -8,6 +8,7 @@
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/task_environment.h"
 #include "chrome/browser/ui/toasts/api/toast_id.h"
+#include "chrome/browser/ui/toasts/test/mock_toast_controller.h"
 #include "chrome/browser/ui/toasts/toast_controller.h"
 #include "chrome/test/base/testing_profile.h"
 #include "components/prefs/pref_service.h"
@@ -17,16 +18,6 @@
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace safe_browsing {
-
-namespace {
-
-class MockToastController : public ToastController {
- public:
-  MockToastController() : ToastController(nullptr, nullptr) {}
-  MOCK_METHOD(bool, MaybeShowToast, (ToastParams params), (override));
-};
-
-}  // namespace
 
 class SecuritySettingsBundleToastHelperTest : public testing::Test {
  public:
@@ -62,12 +53,13 @@ TEST_F(SecuritySettingsBundleToastHelperTest, ToastShownIfPending) {
       MaybeShowToast(testing::Field(&ToastParams::toast_id,
                                     ToastId::kEnhancedBundledSecuritySettings)))
       .Times(1)
-      .WillOnce(testing::DoAll(testing::InvokeWithoutArgs([]() {
-                                 base::UmaHistogramEnumeration(
-                                     "Toast.TriggeredToShow",
-                                     ToastId::kEnhancedBundledSecuritySettings);
-                               }),
-                               testing::Return(true)));
+      .WillOnce(testing::DoAll(
+          []() {
+            base::UmaHistogramEnumeration(
+                "Toast.TriggeredToShow",
+                ToastId::kEnhancedBundledSecuritySettings);
+          },
+          testing::Return(true)));
 
   helper_->TriggerIfNeeded();
 
@@ -123,18 +115,20 @@ TEST_F(SecuritySettingsBundleToastHelperTest, RetryTriggeredIfToastShownFails) {
       toast_controller_,
       MaybeShowToast(testing::Field(&ToastParams::toast_id,
                                     ToastId::kEnhancedBundledSecuritySettings)))
-      .WillOnce(testing::DoAll(testing::InvokeWithoutArgs([]() {
-                                 base::UmaHistogramEnumeration(
-                                     "Toast.FailedToShow",
-                                     ToastId::kEnhancedBundledSecuritySettings);
-                               }),
-                               testing::Return(false)))
-      .WillOnce(testing::DoAll(testing::InvokeWithoutArgs([]() {
-                                 base::UmaHistogramEnumeration(
-                                     "Toast.TriggeredToShow",
-                                     ToastId::kEnhancedBundledSecuritySettings);
-                               }),
-                               testing::Return(true)));
+      .WillOnce(testing::DoAll(
+          []() {
+            base::UmaHistogramEnumeration(
+                "Toast.FailedToShow",
+                ToastId::kEnhancedBundledSecuritySettings);
+          },
+          testing::Return(false)))
+      .WillOnce(testing::DoAll(
+          []() {
+            base::UmaHistogramEnumeration(
+                "Toast.TriggeredToShow",
+                ToastId::kEnhancedBundledSecuritySettings);
+          },
+          testing::Return(true)));
 
   helper_->TriggerIfNeeded();
 
@@ -168,13 +162,13 @@ TEST_F(SecuritySettingsBundleToastHelperTest, RetryStopsAfterMaxRetries) {
       MaybeShowToast(testing::Field(&ToastParams::toast_id,
                                     ToastId::kEnhancedBundledSecuritySettings)))
       .Times(SecuritySettingsBundleToastHelper::kMaxRetries + 1)
-      .WillRepeatedly(
-          testing::DoAll(testing::InvokeWithoutArgs([]() {
-                           base::UmaHistogramEnumeration(
-                               "Toast.FailedToShow",
-                               ToastId::kEnhancedBundledSecuritySettings);
-                         }),
-                         testing::Return(false)));
+      .WillRepeatedly(testing::DoAll(
+          []() {
+            base::UmaHistogramEnumeration(
+                "Toast.FailedToShow",
+                ToastId::kEnhancedBundledSecuritySettings);
+          },
+          testing::Return(false)));
 
   helper_->TriggerIfNeeded();
 

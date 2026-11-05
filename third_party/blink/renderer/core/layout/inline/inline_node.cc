@@ -6,8 +6,8 @@
 
 #include <algorithm>
 #include <numeric>
+#include <ranges>
 
-#include "base/containers/adapters.h"
 #include "base/debug/dump_without_crashing.h"
 #include "base/not_fatal_until.h"
 #include "base/numerics/safe_conversions.h"
@@ -91,8 +91,9 @@ unsigned Mismatch(const String& old_text, const String& new_text) {
 
 template <typename Span1, typename Span2>
 unsigned MismatchFromEnd(const Span1& span1, const Span2& span2) {
-  auto rspan1 = base::Reversed(span1);
-  const auto old_new = std::ranges::mismatch(rspan1, base::Reversed(span2));
+  auto rspan1 = std::views::reverse(span1);
+  const auto old_new =
+      std::ranges::mismatch(rspan1, std::views::reverse(span2));
   return static_cast<unsigned>(old_new.in1 - rspan1.begin());
 }
 
@@ -169,11 +170,16 @@ class ReusingTextShaper final {
     };
     if (allow_shape_cache_) {
       const LayoutLocale* locale = font.GetFontDescription().Locale();
-      return font.PrimaryFont()->GetShapeCache().GetOrCreate(
-          ShapeCacheKey(shaper_.GetText(), start_item.StartOffset(), end_offset,
-                        locale ? locale->LocaleString() : g_null_atom,
-                        font.GetFontFeatures(), start_item.Direction()),
-          ShapeFunc);
+      FontFallbackList* fallback_list = font.EnsureFontFallbackList();
+      const FontFallbackList::PrimaryFontData* primary_font_data =
+          fallback_list->PrimaryFontDataWithSpace(font.GetFontDescription());
+      return primary_font_data->simple_font_data->GetShapeCache().GetOrCreate(
+          ShapeCacheKey(
+              shaper_.GetText(), start_item.StartOffset(), end_offset,
+              locale ? locale->LocaleString() : g_null_atom,
+              fallback_list->GetFontFeatures(font.GetFontDescription()),
+              start_item.Direction()),
+          primary_font_data->is_generic_family_or_last_resort, ShapeFunc);
     }
     return ShapeFunc().shape_result;
   }
@@ -323,7 +329,7 @@ const Font& ScaledFont(const LayoutText& layout_text) {
   if (const auto* svg_text = DynamicTo<LayoutSVGInlineText>(layout_text)) {
     return svg_text->ScaledFont();
   }
-  return *layout_text.StyleRef().GetFont();
+  return *layout_text.Style().GetFont();
 }
 
 // The function is templated to indicate the purpose of collected inlines:
@@ -340,7 +346,7 @@ template <typename ItemsBuilder>
 void CollectInlinesInternal(ItemsBuilder* builder,
                             const InlineNodeData* previous_data) {
   LayoutBlockFlow* const block = builder->GetLayoutBlockFlow();
-  builder->EnterBlock(&block->StyleRef());
+  builder->EnterBlock(&block->Style());
   LayoutObject* node = block->FirstChild();
 
   const LayoutObject* symbol =
@@ -349,7 +355,7 @@ void CollectInlinesInternal(ItemsBuilder* builder,
   while (node) {
     if (auto* counter = DynamicTo<LayoutCounter>(node)) {
       // TODO(crbug.com/561873): PrimaryFont should not be nullptr.
-      if (counter->StyleRef().GetFont()->PrimaryFont()) {
+      if (counter->Style().GetFont()->PrimaryFont()) {
         // According to
         // https://w3c.github.io/csswg-drafts/css-counter-styles/#simple-symbolic,
         // disclosure-* should have special rendering paths.
@@ -717,8 +723,9 @@ class InlineNodeDataEditor final {
     // Because of current text content has secured text, e.g. whole text is
     // "***", all characters including collapsed white spaces are marker, and
     // new text is original text, we can't reuse shape result.
-    if (layout_text_.StyleRef().TextSecurity() != ETextSecurity::kNone)
+    if (layout_text_.Style().TextSecurity() != ETextSecurity::kNone) {
       return nullptr;
+    }
 
     // It is hard to figure differences of bidi control codes before/after
     // editing. See http://crbug.com/1039143
@@ -1583,8 +1590,8 @@ void InlineNode::ShapeText(InlineItemsData* data,
       DCHECK_EQ(font.GetFontDescription().Orientation(),
                 FontOrientation::kHorizontal);
       LayoutTextCombine::AssertStyleIsValid(start_style);
-      DCHECK(!override_font ||
-             font.GetFontDescription().WidthVariant() != kRegularWidth);
+      DCHECK(!override_font || font.GetFontDescription().WidthVariant() !=
+                                   FontWidthVariant::kRegular);
     }
 #endif
     shaper.SetOptions({
@@ -1593,7 +1600,7 @@ void InlineNode::ShapeText(InlineItemsData* data,
             is_next_start_of_paragraph &&
             ShouldTrimStartOfParagraph(
                 font.GetFontDescription().GetTextSpacingTrim()) &&
-            Character::MaybeHanKerningOpen(
+            unicode::MaybeHanKerningOpen(
                 text_content[start_item.StartOffset()]),
     });
     is_next_start_of_paragraph = false;
@@ -1790,8 +1797,8 @@ void InlineNode::ShapeTextForFirstLineIfNeeded(InlineNodeData* data) const {
     return;
 
   // Check if :first-line rules make any differences in the style.
-  const ComputedStyle& block_style = layout_object->StyleRef();
-  const ComputedStyle& first_line_style = layout_object->FirstLineStyleRef();
+  const ComputedStyle& block_style = layout_object->Style();
+  const ComputedStyle& first_line_style = layout_object->FirstLineStyle();
   if (block_style == first_line_style)
     return;
 
@@ -1976,8 +1983,8 @@ static LayoutUnit ComputeContentSize(InlineNode node,
   LayoutUnit result;
   LineBreaker line_breaker(
       node, mode, space, line_opportunity, empty_leading_floats,
-      /* break_token */ nullptr,
-      /* column_spanner_path */ nullptr, &empty_exclusion_space);
+      /*InlineBreakToken=*/nullptr, /*ColumnSpannerPath=*/nullptr,
+      /*FragmentedOofContainer=*/nullptr, &empty_exclusion_space);
   if (mode != LineBreakerMode::kContent) {
     line_breaker.SetIntrinsicSizeOutputs(max_size_cache,
                                          depends_on_block_constraints_out);
@@ -2241,7 +2248,7 @@ static LayoutUnit ComputeContentSize(InlineNode node,
       const MinMaxSizesResult child_result =
           ComputeMinAndMaxContentContribution(
               style, float_node, float_space,
-              MinMaxSizesInput::UnconstrainedUntriaged());
+              MinMaxSizesInput::Constrained(input.constrained_inline_size));
       LayoutUnit child_inline_margins =
           ComputeMarginsFor(float_space, float_node.Style(), space).InlineSum();
 
@@ -2352,7 +2359,7 @@ void InlineNode::CheckConsistency() const {
   for (const Member<InlineItem>& item_ptr : items) {
     const InlineItem& item = *item_ptr;
     DCHECK(!item.GetLayoutObject() || !item.Style() ||
-           item.Style() == &item.GetLayoutObject()->StyleRef());
+           item.Style() == &item.GetLayoutObject()->Style());
   }
 #endif
 }
@@ -2419,7 +2426,8 @@ void InlineNode::AdjustFontForTextCombineUprightAll() const {
 
   // Try compressed fonts.
   static const std::array<FontWidthVariant, 3> kWidthVariants = {
-      kHalfWidth, kThirdWidth, kQuarterWidth};
+      FontWidthVariant::kHalf, FontWidthVariant::kThird,
+      FontWidthVariant::kQuarter};
   for (const auto width_variant : kWidthVariants) {
     description.SetWidthVariant(width_variant);
     Font* compressed_font =

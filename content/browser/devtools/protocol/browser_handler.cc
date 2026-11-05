@@ -26,6 +26,7 @@
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/types/expected_macros.h"
+#include "base/unguessable_token.h"
 #include "build/build_config.h"
 #include "build/util/chromium_git_revision.h"
 #include "components/download/public/common/download_item.h"
@@ -46,6 +47,7 @@
 #include "content/public/browser/video_capture_service.h"
 #include "content/public/common/content_client.h"
 #include "content/public/common/content_switches.h"
+#include "media/capture/video/video_capture_device_descriptor.h"
 #include "net/base/filename_util.h"
 #include "services/video_capture/public/mojom/video_capture_service.mojom.h"
 #include "third_party/blink/public/common/global_privacy_control/global_privacy_control_util.h"
@@ -59,8 +61,6 @@ namespace content {
 namespace protocol {
 
 namespace {
-
-constexpr char kVirtualDeviceIdPrefix[] = "virtual-chromium-";
 
 void ConnectToVideoSourceProvider(
     mojo::PendingReceiver<video_capture::mojom::VideoSourceProvider> receiver) {
@@ -95,7 +95,6 @@ Response BrowserHandler::Disable() {
   // TODO: this leaks context ids for all contexts with overridden permissions.
   for (auto& browser_context_id : contexts_with_overridden_permissions_) {
     content::BrowserContext* browser_context = nullptr;
-    std::string error;
     std::optional<std::string> context_id =
         browser_context_id == ""
             ? std::nullopt
@@ -113,6 +112,7 @@ Response BrowserHandler::Disable() {
   SetDownloadEventsEnabled(false);
   histograms_snapshots_.clear();
   mock_capture_device_controller_.reset();
+  mock_camera_device_id_prefix_.clear();
 
   if (session()->GetAgentHost()->GetType() == DevToolsAgentHost::kTypeBrowser) {
     ResetGlobalPrivacyControlDevToolsOverride();
@@ -211,8 +211,6 @@ Response PermissionDescriptorToPermissionType(
     *permission_type = PermissionType::DISPLAY_CAPTURE;
   } else if (name == "storage-access") {
     *permission_type = PermissionType::STORAGE_ACCESS_GRANT;
-  } else if (name == "top-level-storage-access") {
-    *permission_type = PermissionType::TOP_LEVEL_STORAGE_ACCESS;
   } else if (name == "captured-surface-control") {
     *permission_type = PermissionType::CAPTURED_SURFACE_CONTROL;
   } else if (name == "speaker-selection") {
@@ -305,9 +303,6 @@ Response FromProtocolPermissionType(
     *out_type = PermissionType::LOCAL_FONTS;
   } else if (type == protocol::Browser::PermissionTypeEnum::DisplayCapture) {
     *out_type = PermissionType::DISPLAY_CAPTURE;
-  } else if (type ==
-             protocol::Browser::PermissionTypeEnum::TopLevelStorageAccess) {
-    *out_type = PermissionType::TOP_LEVEL_STORAGE_ACCESS;
   } else if (type ==
              protocol::Browser::PermissionTypeEnum::CapturedSurfaceControl) {
     *out_type = PermissionType::CAPTURED_SURFACE_CONTROL;
@@ -705,6 +700,9 @@ Response BrowserHandler::AddMockCamera(const std::string& device_id) {
   }
 
   if (!mock_capture_device_controller_) {
+    mock_camera_device_id_prefix_ =
+        base::StrCat({media::kVirtualDeviceIdPrefix,
+                      base::UnguessableToken::Create().ToString(), "-"});
     mock_capture_device_controller_ =
         std::make_unique<MockCaptureDeviceController>(
             base::SequencedTaskRunner::GetCurrentDefault(),
@@ -712,7 +710,7 @@ Response BrowserHandler::AddMockCamera(const std::string& device_id) {
   }
 
   mock_capture_device_controller_->AddMockCamera(MockCameraConfig{
-      .device_id = base::StrCat({kVirtualDeviceIdPrefix, device_id}),
+      .device_id = base::StrCat({mock_camera_device_id_prefix_, device_id}),
   });
   return Response::Success();
 }
@@ -736,7 +734,7 @@ Response BrowserHandler::GetGlobalPrivacyControl(bool* out_gpc) {
   if (session()->GetAgentHost()->GetType() != DevToolsAgentHost::kTypeBrowser) {
     return Response::ServerError("Browser agent host required");
   }
-  *out_gpc = IsGlobalPrivacyControlSettingEnabled();
+  *out_gpc = GetGlobalPrivacyControlDevToolsOverride().value_or(false);
   return Response::Success();
 }
 
@@ -748,7 +746,7 @@ Response BrowserHandler::SetGlobalPrivacyControl(bool in_gpc, bool* out_gpc) {
     return Response::ServerError("Browser agent host required");
   }
   UpdateGlobalPrivacyControlDevToolsOverride(in_gpc);
-  *out_gpc = IsGlobalPrivacyControlSettingEnabled();
+  *out_gpc = GetGlobalPrivacyControlDevToolsOverride().value_or(false);
   return Response::Success();
 }
 

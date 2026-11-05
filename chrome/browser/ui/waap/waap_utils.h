@@ -7,57 +7,153 @@
 
 #include <memory>
 
+#include "base/functional/function_ref.h"
 #include "base/time/time.h"
+#include "build/build_config.h"
 #include "url/gurl.h"
 
 class Profile;
 
 namespace content {
+class SecurityPrincipal;
 class WebContents;
+}  // namespace content
+
+namespace ui {
+struct ColorProviderKey;
 }
 
 namespace waap {
 
-// Represents the source of a new browser window creation.
+// Represents the source of a new browser window creation. Used to slice the
+// InitialWebUI.NewWindow.* histograms. The first window that paints in the
+// browser process is recorded under InitialWebUI.Startup.* instead, whatever
+// its source.
+// LINT.IfChange(NewWindowCreationSource)
 enum class NewWindowCreationSource {
   kUnknown = 0,
-  kBrowserInitiated = 1,
+  // kBrowserInitiated = 1,  // Deprecated; split into specific sources below.
+  // Created by dragging a tab out of a tab strip into a new window via
+  // `TabDragController`.
   kDragToNewWindow = 2,
+  // Created by session restore (`SessionRestoreImpl`) for a window restored
+  // from a saved session.
   kSessionRestore = 3,
-  kMaxValue = kSessionRestore,
+  // Created via `chrome::OpenEmptyWindow()` or
+  // `chrome::ScopedTabbedBrowserDisplayer`, e.g. keyboard shortcut
+  // (Ctrl/Cmd+N), app menu "New window" / "New Incognito window", macOS Dock
+  // click when no window is visible, or features such as Glic, background mode,
+  // or singleton-tab helpers opening a window when the profile has none. The
+  // window usually starts with a single NTP tab (or initially empty before the
+  // caller adds a tab), though startup tabs may be added during browser
+  // creation when `should_trigger_session_restore` is true.
+  kNewEmptyWindow = 4,
+  // Created by moving existing tab(s) or a tab group into a new window via
+  // `chrome::MoveTabsToNewWindow()` or `chrome::MoveGroupToNewWindow()`, e.g.
+  // from the tab or tab group context menu.
+  kMoveTabsToNewWindow = 5,
+  // Created by a browser launch in
+  // `StartupBrowserCreatorImpl::OpenTabsInBrowser()` (i.e.
+  // `BrowserWindowCreateParams::CreationSource::kStartupCreator`) when no
+  // existing tabbed browser is reused, e.g. an OS/shell shortcut (taskbar,
+  // desktop, Start menu) or `--new-window` handled by an already running
+  // browser process, or opening a window for another profile or Guest mode.
+  kLaunch = 6,
+  // Created by `SessionRestoreImpl::FinishedTabCreation()` as a fallback when
+  // the restored session has no tabbed browser windows. Unlike
+  // `kSessionRestore`, this window restores no tabs; it only opens the startup
+  // tabs or the NTP.
+  kSessionRestoreFallback = 7,
+  // Created during navigation in `Navigate()` (`browser_navigator.cc`) or web
+  // app navigation capturing (`navigation_capturing_process.cc`), e.g. opening
+  // a link in a new window or incognito window
+  // (`ui::mojom::WindowOpenDisposition::kNewWindow` / `kOffTheRecord`),
+  // Shift+Enter in the omnibox, navigating when no tabbed browser window exists
+  // for the profile, or capturing/reparenting a web app navigation into a new
+  // tabbed browser window.
+  kNavigation = 8,
+  // Created by an extension API or extension host helper opening a new normal
+  // browser window, e.g. `chrome.windows.create()`, `chrome.tabs.create()`,
+  // `chrome.runtime.openOptionsPage()`, `OpenTabHelper`, or
+  // `ChromeExtensionHostDelegate`.
+  kExtension = 9,
+  kMaxValue = kExtension,
 };
+// LINT.ThenChange(//tools/metrics/histograms/metadata/ui/histograms.xml:CreationSource)
 
-// Result of initial surface synchronization for the WebUI toolbar.
+// Result of initial surface synchronization for the WebUI toolbar. Orders the
+// reload button's first paint against the browser window's first presentation.
+// If the reload button never paints, records whether the window closed or its
+// renderer went away, and whether that happened before or after the browser
+// window's presentation. A paint after the browser window's presentation does
+// not mean the surface sync deadline expired: Viz presents the browser frame as
+// soon as the toolbar surface has any frame, even one that does not show the
+// reload button yet.
 // LINT.IfChange(InitialWebUISurfaceSyncResult)
 enum class InitialWebUISurfaceSyncResult {
-  kReadyWithinDeadline = 0,
-  kDeadlineExceededPaintedLater = 1,
-  kDeadlineExceededClosedBeforePaint = 2,
-  kDeadlineExceededRenderProcessGone = 3,
+  kPaintedByBrowserPresentation = 0,
+  kPaintedAfterBrowserPresentation = 1,
+  kClosedAfterBrowserPresentation = 2,
+  kRenderProcessGoneAfterBrowserPresentation = 3,
   kClosedBeforeBrowserPresentation = 4,
   kRenderProcessGoneBeforeBrowserPresentation = 5,
   kMaxValue = kRenderProcessGoneBeforeBrowserPresentation,
 };
 // LINT.ThenChange(//tools/metrics/histograms/metadata/ui/enums.xml:InitialWebUISurfaceSyncResult)
 
-// Returns true if the given URL is the initial WebUI scheme.
-// This is only relevant on non-Android platforms.
+// Returns true if the given URL or SecurityPrincipal is for the initial WebUI.
 bool IsForInitialWebUI(const GURL& url);
+bool IsForInitialWebUI(const content::SecurityPrincipal& principal);
 
 class PrewarmHelper {
  public:
-  // Configures the WebContents used for the initial WebUI (e.g. page load
-  // metrics, background color, zoom gestures, and color provider source).
+  // Configures the WebContents used for a non-tab WebUI (e.g. page type, page
+  // load metrics, task manager tag, background color, and zoom gestures).
+  // `profile` is the profile of the window showing `web_contents`. On
+  // non-Android platforms, when `web_contents` is in TopChromeWebUIProfile,
+  // `profile` is first set as its user profile.
   static void ConfigureWebUIContents(content::WebContents* web_contents,
-                                     Profile* profile);
+                                     Profile* profile,
+                                     int task_manager_string_id);
 
-  // Prewarms the WebUI toolbar WebContents for the given profile.
-  // Creates the WebContents and configures it using ConfigureWebUIContents.
+#if !BUILDFLAG(IS_ANDROID)
+  // Returns the color provider key that `ConfigureWebUIContents()` gives the
+  // WebContents, which the WebUI keeps until it is attached to a window.
+  static ui::ColorProviderKey GetColorProviderKey(Profile* profile);
+
+  // Prewarms the WebUI toolbar WebContents for a window of `profile`.
+  // Creates the WebContents and configures it for `profile` using
+  // ConfigureWebUIContents.
   // If `pre_navigate` is true, starts loading the toolbar URL; otherwise, only
   // initializes the renderer process.
+  // TODO(crbug.com/581783426): Enable on Android for the tab strip new tab
+  // button, once TopChromeWebUIProfile is supported there.
   static std::unique_ptr<content::WebContents> PrewarmWebUIContents(
       Profile* profile,
       bool pre_navigate);
+
+  // Prewarms and navigates an unbound WebUI toolbar WebContents in
+  // TopChromeWebUIProfile, seeding its prewarm color provider key from
+  // `template_profile` without binding a user profile. Runs `seed` after
+  // configuring the WebContents and before `LoadURL()`, since
+  // `WebUIRenderFrameCreated()` can run inside `LoadURL()`.
+  static std::unique_ptr<content::WebContents> PrewarmUnboundWebUIContents(
+      Profile& template_profile,
+      base::FunctionRef<void(content::WebContents&)> seed);
+
+  // Binds an unbound `web_contents` in TopChromeWebUIProfile to `profile`: sets
+  // its user profile, creates `PrefsTabHelper` and syncs renderer prefs,
+  // switches the prewarm color provider source only when `profile`'s key
+  // differs from the current prewarm source's key, and recomputes
+  // WebPreferences. Returns whether the color provider key changed.
+  static bool BindUserProfile(content::WebContents& web_contents,
+                              Profile& profile);
+#endif  // !BUILDFLAG(IS_ANDROID)
+
+ private:
+  static void ConfigureCommonWebUIContents(content::WebContents* web_contents,
+                                           int task_manager_string_id,
+                                           bool create_prefs_tab_helper);
 };
 
 }  // namespace waap

@@ -10,7 +10,9 @@
 #include <vector>
 
 #include "base/component_export.h"
+#include "base/files/file_path.h"
 #include "base/functional/callback_forward.h"
+#include "base/functional/callback_helpers.h"
 #include "base/memory/raw_ptr.h"
 #include "ui/base/glib/scoped_gobject.h"
 #include "ui/color/color_id.h"
@@ -180,7 +182,17 @@ SkColor GetSeparatorColor(const std::string& css_selector);
 
 // The four functions above cache their results by selector; call this when the
 // GTK theme (or anything else that affects theme colors) changes.
-void ClearStyleColorCache();
+COMPONENT_EXPORT(GTK) void ClearStyleColorCache();
+
+// Returns whether the current GTK theme is dark, judged by its window
+// background color. `gtk-application-prefer-dark-theme` only affects themes
+// that ship a dark variant (e.g. Adwaita); most dark themes have no light
+// variant, so the rendered colors are the only reliable signal.
+bool IsGtkThemeDark();
+
+// Returns the GTK theme's accent color, approximated by the background of a
+// focused, selected treeview cell. This may be translucent.
+COMPONENT_EXPORT(GTK) SkColor GetThemeAccentColor();
 
 // Get a GtkSettings property as a C++ string.
 std::string GetGtkSettingsStringProperty(GtkSettings* settings,
@@ -188,7 +200,17 @@ std::string GetGtkSettingsStringProperty(GtkSettings* settings,
 
 GtkIconTheme* GetDefaultIconTheme();
 
-void GtkWindowDestroy(GtkWidget* widget);
+// Prepends `path` to the default icon theme's search path on GTK3. Returns a
+// closure runner that restores the previous search path on destruction.
+[[nodiscard]] COMPONENT_EXPORT(GTK) base::ScopedClosureRunner
+    PrependIconThemeSearchPathForTesting(const base::FilePath& path);
+
+// Installs `css` as a user-priority global style provider. Returns a closure
+// runner that removes the provider on destruction.
+[[nodiscard]] COMPONENT_EXPORT(GTK) base::ScopedClosureRunner
+    AddGlobalCssForTesting(const std::string& css);
+
+COMPONENT_EXPORT(GTK) void GtkWindowDestroy(GtkWidget* widget);
 
 GtkWidget* GetDummyWindow();
 
@@ -200,38 +222,27 @@ gfx::Size GetSeparatorSize(bool horizontal);
 
 float GetDeviceScaleFactor();
 
-// This should only be called on Gtk4.
-GdkTexture* GetTextureFromRenderNode(GskRenderNode* node);
+// The reference DPI that corresponds to a font scale of 1.0.
+inline constexpr double kDefaultDPI = 96;
 
-double GetOpacityFromContext(GtkStyleContext* context);
+// Returns the value of the `gtk-xft-dpi` setting in 1/1024ths of an inch, or 0
+// if it's unset.
+COMPONENT_EXPORT(GTK) int GetXftDpi();
 
-enum class ThemeProperty {
-  kThemeName,
-  kIconThemeName,
-  kKeyThemeName,
-  kCursorThemeName,
-};
-
-// Returns true if `theme` is a safe, valid theme name for `property`.
-// If `theme` is null, returns true only for kKeyThemeName.
-COMPONENT_EXPORT(GTK)
-bool IsValidThemeName(ThemeProperty property, const char* theme);
-
-// Returns the safe fallback value for the given theme-related property.
-COMPONENT_EXPORT(GTK)
-const char* GetThemeFallback(ThemeProperty property);
-
-// Hook the `GtkSettings` `set_property` method to sanitize settings.
-COMPONENT_EXPORT(GTK) void InstallGtkSettingsInterceptor();
-
-// Unhook the `GtkSettings` `set_property` method.
-COMPONENT_EXPORT(GTK) void UninstallGtkSettingsInterceptor();
+// Returns the font scale implied by the system DPI, rounded to the nearest
+// 1/64th.  Returns 1.0 if the DPI is unknown.
+COMPONENT_EXPORT(GTK) double GetFontScale();
 
 // Returns the default `GtkSettings` instance. This wrapper is required because
 // in component builds, raw GTK symbols loaded via stubs (including
 // `gtk_settings_get_default`) are not exported, preventing direct usage in
 // non-component targets like tests.
 COMPONENT_EXPORT(GTK) GtkSettings* GetDefaultGtkSettings();
+
+// This should only be called on Gtk4.
+GdkTexture* GetTextureFromRenderNode(GskRenderNode* node);
+
+double GetOpacityFromContext(GtkStyleContext* context);
 
 // Installs a GLib log writer that intercepts fatal disconnect messages from
 // GDK and triggers the shutdown callback before GDK calls _exit(1).

@@ -11,11 +11,13 @@
 #include "gpu/command_buffer/client/client_test_helper.h"
 #include "gpu/command_buffer/common/webgpu_cmd_format.h"
 #include "gpu/command_buffer/service/context_group.h"
+#include "gpu/command_buffer/service/dawn_instance.h"
 #include "gpu/command_buffer/service/decoder_client.h"
 #include "gpu/command_buffer/service/gpu_tracer.h"
 #include "gpu/command_buffer/service/mocks.h"
 #include "gpu/command_buffer/service/shared_context_state.h"
 #include "gpu/command_buffer/service/test_helper.h"
+#include "gpu/config/gpu_preferences.h"
 #include "gpu/config/gpu_test_config.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -37,7 +39,8 @@ class WebGPUDecoderTest : public ::testing::Test {
 
     decoder_ = WebGPUDecoder::Create(
         decoder_client_.get(), command_buffer_service_.get(), nullptr, nullptr,
-        &outputter_, {}, nullptr, DawnCacheOptions(),
+        &outputter_, {}, nullptr,
+        DawnInstance::CreateForWebGPU(GpuPreferences()), DawnCacheOptions(),
         &mock_isolation_key_provider_);
     ASSERT_EQ(decoder_->Initialize(GpuFeatureInfo()), ContextResult::kSuccess);
   }
@@ -98,5 +101,32 @@ TEST_F(WebGPUDecoderTest, IsolationKeyFromWorker) {
   ExecuteCmd(cmd);
 }
 
+// Regression test for https://crbug.com/566667039 where an invalid variant
+// index would cause a NOTREACHED() instead of a command buffer error.
+TEST_F(WebGPUDecoderTest, IsolationKeyInvalidVariantIndex) {
+  blink::DocumentToken document_token;
+  blink::WebGPUExecutionContextToken wgpu_context_token(document_token);
+  uint64_t high = document_token->GetHighForSerialization();
+  uint64_t low = document_token->GetLowForSerialization();
+  EXPECT_CALL(mock_isolation_key_provider_,
+              GetIsolationKey(wgpu_context_token, _))
+      .Times(1);
+
+  // Control case: the variant index is valid.
+  {
+    cmds::SetWebGPUExecutionContextToken cmd;
+    cmd.Init(std::to_underlying(wgpu_context_token.variant_index()), high >> 32,
+             high, low >> 32, low);
+    EXPECT_EQ(error::kNoError, ExecuteCmd(cmd));
+  }
+
+  // Error case, the variant index is invalid.
+  {
+    cmds::SetWebGPUExecutionContextToken cmd;
+    cmd.Init(std::variant_size_v<blink::WebGPUExecutionContextToken::Storage>,
+             high >> 32, high, low >> 32, low);
+    EXPECT_EQ(error::kInvalidArguments, ExecuteCmd(cmd));
+  }
+}
 }  // namespace webgpu
 }  // namespace gpu

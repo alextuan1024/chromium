@@ -10,6 +10,7 @@
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
+#include "chrome/browser/ui/tabs/tab_group_model.h"
 #include "chrome/browser/ui/tabs/tab_group_theme.h"
 #include "chrome/browser/ui/views/chrome_layout_provider.h"
 #include "components/tab_groups/tab_group_color.h"
@@ -17,6 +18,8 @@
 #include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/pointer/touch_ui_controller.h"
+#include "ui/color/color_id.h"
+#include "ui/color/color_provider.h"
 #include "ui/gfx/animation/tween.h"
 #include "ui/gfx/canvas.h"
 #include "ui/gfx/favicon_size.h"
@@ -29,6 +32,8 @@
 #include "ui/views/layout/flex_layout.h"
 #include "ui/views/layout/flex_layout_types.h"
 #include "ui/views/view_class_properties.h"
+#include "ui/views/widget/widget.h"
+#include "ui/views/widget/widget_delegate.h"
 
 namespace {
 
@@ -60,16 +65,14 @@ class ColorPickerElementView : public views::Button {
  public:
   ColorPickerElementView(
       base::RepeatingCallback<void(ColorPickerElementView*)> selected_callback,
-      const views::BubbleDialogDelegateView* bubble_view,
       tab_groups::TabGroupColorId color_id,
       std::u16string color_name)
       : Button(base::BindRepeating(&ColorPickerElementView::ButtonPressed,
                                    base::Unretained(this))),
         selected_callback_(std::move(selected_callback)),
-        bubble_view_(bubble_view),
         color_id_(color_id),
         color_name_(color_name) {
-    DCHECK(selected_callback_);
+    CHECK(selected_callback_, base::NotFatalUntil::M162);
 
     GetViewAccessibility().SetName(color_name);
     SetInstallFocusRingOnFocus(true);
@@ -125,7 +128,7 @@ class ColorPickerElementView : public views::Button {
   }
 
   views::View* GetSelectedViewForGroup(int group) override {
-    DCHECK(parent());
+    CHECK(parent(), base::NotFatalUntil::M162);
     return parent()->GetSelectedViewForGroup(group);
   }
 
@@ -149,7 +152,7 @@ class ColorPickerElementView : public views::Button {
     gfx::RectF bounds(GetContentsBounds());
 
     // We should be a circle.
-    DCHECK_EQ(bounds.width(), bounds.height());
+    CHECK_EQ(bounds.width(), bounds.height(), base::NotFatalUntil::M162);
 
     const SkColor color =
         GetColorProvider()->GetColor(GetTabGroupDialogColorId(color_id_));
@@ -179,12 +182,20 @@ class ColorPickerElementView : public views::Button {
     flags.setStyle(cc::PaintFlags::kStroke_Style);
     flags.setStrokeWidth(kThickness);
     flags.setAntiAlias(true);
-    flags.setColor(bubble_view_->background_color().ResolveToSkColor(
-        bubble_view_->GetColorProvider()));
+    // Paint the ring in the hosting bubble's background color so it reads as
+    // a gap around the swatch.
+    const views::Widget* const widget = GetWidget();
+    const views::BubbleDialogDelegate* const bubble =
+        widget && widget->widget_delegate()
+            ? widget->widget_delegate()->AsBubbleDialogDelegate()
+            : nullptr;
+    flags.setColor(
+        bubble ? bubble->background_color().ResolveToSkColor(GetColorProvider())
+               : GetColorProvider()->GetColor(ui::kColorBubbleBackground));
 
     gfx::RectF indicator_bounds(GetContentsBounds());
     indicator_bounds.Inset(gfx::InsetsF(kInset));
-    DCHECK(!indicator_bounds.size().IsEmpty());
+    CHECK(!indicator_bounds.size().IsEmpty(), base::NotFatalUntil::M162);
     canvas->DrawCircle(indicator_bounds.CenterPoint(),
                        indicator_bounds.width() / 2.0f, flags);
   }
@@ -200,7 +211,6 @@ class ColorPickerElementView : public views::Button {
 
   const base::RepeatingCallback<void(ColorPickerElementView*)>
       selected_callback_;
-  raw_ptr<const views::BubbleDialogDelegateView> bubble_view_;
   const tab_groups::TabGroupColorId color_id_;
   const std::u16string color_name_;
   bool selected_ = false;
@@ -210,13 +220,11 @@ BEGIN_METADATA(ColorPickerElementView)
 ADD_PROPERTY_METADATA(bool, Selected)
 END_METADATA
 
-ColorPickerView::ColorPickerView(
-    const views::BubbleDialogDelegateView* bubble_view,
-    const TabGroupEditorBubbleView::Colors& colors,
-    tab_groups::TabGroupColorId initial_color_id,
-    ColorSelectedCallback callback)
+ColorPickerView::ColorPickerView(const TabGroupEditorBubbleView::Colors& colors,
+                                 tab_groups::TabGroupColorId initial_color_id,
+                                 ColorSelectedCallback callback)
     : callback_(std::move(callback)) {
-  DCHECK(!colors.empty());
+  CHECK(!colors.empty(), base::NotFatalUntil::M162);
 
   elements_.reserve(colors.size());
   for (const auto& color : colors) {
@@ -226,7 +234,7 @@ ColorPickerView::ColorPickerView(
     elements_.push_back(AddChildView(std::make_unique<ColorPickerElementView>(
         base::BindRepeating(&ColorPickerView::OnColorSelected,
                             base::Unretained(this)),
-        bubble_view, color.first, color.second)));
+        color.first, color.second)));
     if (initial_color_id == color.first) {
       elements_.back()->SetSelected(true);
     }
@@ -275,9 +283,24 @@ views::View* ColorPickerView::GetSelectedViewForGroup(int group) {
 }
 
 views::Button* ColorPickerView::GetElementAtIndexForTesting(int index) {
-  DCHECK_GE(index, 0);
-  DCHECK_LT(index, static_cast<int>(elements_.size()));
+  CHECK_GE(index, 0, base::NotFatalUntil::M162);
+  CHECK_LT(index, static_cast<int>(elements_.size()),
+           base::NotFatalUntil::M162);
   return elements_[index];
+}
+
+// static
+TabGroupEditorBubbleView::Colors ColorPickerView::GetTabGroupColors() {
+  TabGroupEditorBubbleView::Colors colors;
+  const tab_groups::ColorLabelMap color_map =
+      tab_groups::GetTabGroupColorLabelMap();
+  // TODO(tluk) remove the reliance on the ordering of the color pairs in the
+  // vector and use the ColorLabelMap structure instead.
+  for (const tab_groups::TabGroupColorId color_id :
+       TabGroupModel::GetColorOrdering()) {
+    colors.emplace_back(color_id, color_map.at(color_id));
+  }
+  return colors;
 }
 
 void ColorPickerView::OnColorSelected(ColorPickerElementView* element) {

@@ -4,8 +4,9 @@
 
 #include "components/power_metrics/energy_impact_mac.h"
 
+#include <array>
+
 #include "base/base_paths.h"
-#include "base/compiler_specific.h"
 #include "base/path_service.h"
 #include "components/power_metrics/resource_coalition_mac.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -31,7 +32,7 @@ coalition_resource_usage MakeResourceUsageWithQOS(int qos_level,
                                                   base::TimeDelta cpu_time) {
   coalition_resource_usage result{};
   result.cpu_time_eqos_len = COALITION_NUM_THREAD_QOS_TYPES;
-  UNSAFE_TODO(result.cpu_time_eqos[qos_level]) = cpu_time.InNanoseconds();
+  result.cpu_time_eqos[qos_level] = cpu_time.InNanoseconds();
   return result;
 }
 
@@ -189,17 +190,17 @@ TEST(EnergyImpactTest, ComputeEnergyImpactForResourceUsage_Combined) {
           NsScaleToTimebase(kM1Timebase, base::Milliseconds(4).InNanoseconds()),
       .cpu_time_eqos_len = COALITION_NUM_THREAD_QOS_TYPES,
   };
-  UNSAFE_TODO(sample.cpu_time_eqos[THREAD_QOS_BACKGROUND]) =
+  sample.cpu_time_eqos[THREAD_QOS_BACKGROUND] =
       NsScaleToTimebase(kM1Timebase, base::Milliseconds(100).InNanoseconds());
-  UNSAFE_TODO(sample.cpu_time_eqos[THREAD_QOS_DEFAULT]) =
+  sample.cpu_time_eqos[THREAD_QOS_DEFAULT] =
       NsScaleToTimebase(kM1Timebase, base::Milliseconds(50).InNanoseconds());
-  UNSAFE_TODO(sample.cpu_time_eqos[THREAD_QOS_UTILITY]) =
+  sample.cpu_time_eqos[THREAD_QOS_UTILITY] =
       NsScaleToTimebase(kM1Timebase, base::Milliseconds(100).InNanoseconds());
-  UNSAFE_TODO(sample.cpu_time_eqos[THREAD_QOS_LEGACY]) =
+  sample.cpu_time_eqos[THREAD_QOS_LEGACY] =
       NsScaleToTimebase(kM1Timebase, base::Milliseconds(10).InNanoseconds());
-  UNSAFE_TODO(sample.cpu_time_eqos[THREAD_QOS_USER_INITIATED]) =
+  sample.cpu_time_eqos[THREAD_QOS_USER_INITIATED] =
       NsScaleToTimebase(kM1Timebase, base::Milliseconds(10).InNanoseconds());
-  UNSAFE_TODO(sample.cpu_time_eqos[THREAD_QOS_USER_INTERACTIVE]) =
+  sample.cpu_time_eqos[THREAD_QOS_USER_INTERACTIVE] =
       NsScaleToTimebase(kM1Timebase, base::Milliseconds(10).InNanoseconds());
 
   EXPECT_DOUBLE_EQ(29.66, ComputeEnergyImpactForResourceUsage(

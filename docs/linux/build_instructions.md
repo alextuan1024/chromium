@@ -145,38 +145,49 @@ Accelerate Git operations in the massive Chromium repo by enabling fsmonitor and
 untrackedCache. This cuts time for `git status` and others significantly (e.g.,
 ~3.1s to 0.8s). Note that the first run requires time for indexing.
 
+ If the following command fails, install watchman via one of the recommended
+ methods listed on the installation page:
+ https://facebook.github.io/watchman/docs/install
 ```shell
-# If the following command fails, install watchman via one of the recommended
-# methods listed on the installation page:
-# https://facebook.github.io/watchman/docs/install
-$ which watchman
+which watchman
+```
 
-$ cd ~/chromium/src
+```
+cd ~/chromium/src
 
 # Copy executable
-$ cp .git/hooks/fsmonitor-watchman.sample ~/bin/query-watchman
+mkdir -p ~/bin
+cp .git/hooks/fsmonitor-watchman.sample ~/bin/query-watchman
 
 # Enable optimization
-$ git config core.untrackedCache true
-$ git config core.fsmonitor $HOME/bin/query-watchman
+git config core.untrackedCache true
+git config core.fsmonitor ~/bin/query-watchman
 
 # Let watchman ignore out. You should gitignore .watchmanconfig globally
-$ echo '{ "ignore_dirs": ["out"] }' > .watchmanconfig
+echo '{ "ignore_dirs": ["out"] }' > .watchmanconfig
+```
 
+```shell
 # Increase inotify parameters in case you hit the error like: `inotify:
 # inotify_init: The user limit on the total number of inotify instances
 # has been reached; increase the fs.inotify.max_user_instances sysctl`.
-$ sudo vim /etc/sysctl.d/99-inotify.conf
+sudo vim /etc/sysctl.d/99-inotify.conf
+```
 
-# Add the following.
+Add the following.
+```
 fs.inotify.max_user_instances = 8192
 fs.inotify.max_user_watches = 10485760
+```
 
+```shell
 # Then apply the change.
-$ sudo sysctl --system
+sudo sysctl --system
+```
 
-# (optional) `git add -A` is still slow, so create an alias that does the
-# same but faster. Update ~/.bashrc (or ~/.zshrc or whatever) and add:
+(optional) `git add -A` is still slow, so create an alias that does the
+same but faster. Update `~/.bashrc` (or `~/.zshrc` or whatever) and add:
+```
 alias gaa="git status --porcelain | awk '{print \$2}' | xargs -r git add"
 ```
 
@@ -309,7 +320,7 @@ load("@builtin//struct.star", "module")
 def __platform_properties(ctx):
     # fyi: this image is created by
     # https://chromium.googlesource.com/infra/infra/+/refs/heads/main/rbe/images/siso-chromium/linux/Dockerfile
-    container_image = "docker://gcr.io/chops-public-images-prod/rbe/siso-chromium/linux@sha256:d7cb1ab14a0f20aa669c23f22c15a9dead761dcac19f43985bf9dd5f41fbef3a"
+    container_image = "docker://gcr.io/chops-public-images-prod/rbe/siso-chromium/linux@sha256:bd0231e5a90df1485cc44f624494fd3df3c7bae5dcbef51b7929429f1170a345"
     return {
         "default": {
             # set platform properties for your worker.
@@ -375,9 +386,6 @@ Then, add the following GN args to your `args.gn`:
 use_remoteexec = true
 use_siso = true
 ```
-
-If `args.gn` contains `use_reclient=true`, drop it or replace it with
-`use_reclient=false`.
 
 That's it. Remember to always use `autoninja` for building Chromium as described
 below, instead of directly invoking `siso` or `ninja`.
@@ -642,10 +650,10 @@ xorg-xdpyinfo
 
 ### Crostini (Debian based)
 
-First install the `file` and `lsb-release` commands for the script to run properly:
+First install the `file` command for the script to run properly:
 
 ```shell
-$ sudo apt-get install file lsb-release
+$ sudo apt-get install file
 ```
 
 Then invoke install-build-deps.sh with the `--no-arm` argument,
@@ -826,7 +834,6 @@ reason, you will need to make sure that the following tools are available:
 
 * `curl`
 * `git`
-* `lsb_release`
 * `python3`
 * `sudo`
 * `file`
@@ -849,7 +856,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 # Install Mantatory tools (curl git python3) and optional tools (vim sudo)
 RUN apt-get update && \
-    apt-get install -y curl git lsb-release python3 git file vim sudo && \
+    apt-get install -y curl git python3 git file vim sudo && \
     rm -rf /var/lib/apt/lists/*
 
 # Export depot_tools path

@@ -4,9 +4,6 @@
 
 #include "content/browser/renderer_host/media/fuchsia_media_cdm_provider_impl.h"
 
-#include <fuchsia/mediacodec/cpp/fidl.h>
-#include <lib/sys/cpp/component_context.h>
-
 #include "content/public/browser/provision_fetcher_factory.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/storage_partition.h"
@@ -21,13 +18,15 @@ void FuchsiaMediaCdmProviderImpl::Bind(
     mojo::PendingReceiver<media::mojom::FuchsiaMediaCdmProvider> receiver) {
   CHECK(frame_host);
   // The object will delete itself when connection to the frame is broken.
-  new FuchsiaMediaCdmProviderImpl(*frame_host, std::move(receiver));
+  base::MakeSelfDeleting<FuchsiaMediaCdmProviderImpl>(*frame_host,
+                                                      std::move(receiver));
 }
 
 FuchsiaMediaCdmProviderImpl::FuchsiaMediaCdmProviderImpl(
     RenderFrameHost& render_frame_host,
-    mojo::PendingReceiver<media::mojom::FuchsiaMediaCdmProvider> receiver)
-    : DocumentService(render_frame_host, std::move(receiver)) {}
+    mojo::PendingReceiver<media::mojom::FuchsiaMediaCdmProvider> receiver,
+    base::SelfDeletingPassKey key)
+    : DocumentService(render_frame_host, std::move(receiver), key) {}
 FuchsiaMediaCdmProviderImpl::~FuchsiaMediaCdmProviderImpl() = default;
 
 void FuchsiaMediaCdmProviderImpl::CreateCdm(

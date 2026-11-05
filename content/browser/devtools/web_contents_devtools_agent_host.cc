@@ -167,6 +167,12 @@ void WebContentsDevToolsAgentHost::AddAllAgentHosts(
       // reported as Tab.
       continue;
     }
+    // Don't create agent hosts for targets that can't be inspected, since
+    // clients can't attach to them.
+    if (!RenderFrameDevToolsAgentHost::IsInspectable(
+            wc->GetPrimaryMainFrame())) {
+      continue;
+    }
     result->push_back(GetOrCreateFor(wc));
   }
 }
@@ -451,4 +457,10 @@ WebContentsDevToolsAgentHost::RevalidateSessionAccess() {
   return retain_this;
 }
 
+void WebContentsDevToolsAgentHost::DidFinishNavigation(
+    NavigationHandle* navigation_handle) {
+  if (navigation_handle->IsInPrimaryMainFrame() && navigation_handle->HasCommitted()) {
+    std::ignore = RevalidateSessionAccess();
+  }
+}
 }  // namespace content

@@ -10,6 +10,7 @@
 
 #include "ash/constants/ash_features.h"
 #include "ash/constants/ash_pref_names.h"
+#include "base/check_deref.h"
 #include "base/check_is_test.h"
 #include "base/feature_list.h"
 #include "base/files/file_enumerator.h"
@@ -25,6 +26,7 @@
 #include "base/task/thread_pool.h"
 #include "base/time/time.h"
 #include "base/timer/wall_clock_timer.h"
+#include "chrome/browser/ash/cloud_upload/upload_office_to_cloud.h"
 #include "chrome/browser/ash/drive/drive_integration_service.h"
 #include "chrome/browser/ash/drive/drive_integration_service_factory.h"
 #include "chrome/browser/ash/file_manager/path_util.h"
@@ -36,7 +38,6 @@
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/chromeos/extensions/login_screen/login/cleanup/cleanup_handler.h"
 #include "chrome/browser/chromeos/extensions/login_screen/login/cleanup/files_cleanup_handler.h"
-#include "chrome/browser/chromeos/upload_office_to_cloud/upload_office_to_cloud.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_selections.h"
 #include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
@@ -61,8 +62,12 @@ bool IsMigrationEnabled(MigrationDestination destination) {
 }
 
 // Returns a list of files under MyFiles.
-std::vector<base::FilePath> GetMyFilesContents(Profile* profile) {
-  base::FilePath my_files_path = GetMyFilesPath(profile);
+//
+// Runs on a background thread, so `my_files_path` must already be resolved by
+// the caller: a user_manager::User isn't guaranteed to outlive the task (e.g.
+// on logout).
+std::vector<base::FilePath> GetMyFilesContents(
+    const base::FilePath& my_files_path) {
   std::vector<base::FilePath> files;
 
   base::FileEnumerator enumerator(my_files_path,
@@ -85,9 +90,10 @@ std::vector<base::FilePath> GetMyFilesContents(Profile* profile) {
 }
 
 // Checks if there are any files that should be uploaded in MyFiles.
-bool IsMyFilesEmpty(Profile* profile) {
-  base::FilePath my_files_path = GetMyFilesPath(profile);
-
+//
+// Runs on a background thread; see `GetMyFilesContents()` for why
+// `my_files_path` must already be resolved.
+bool IsMyFilesEmpty(const base::FilePath& my_files_path) {
   base::FileEnumerator enumerator(my_files_path,
                                   /*recursive=*/true,
                                   /*file_type=*/base::FileEnumerator::FILES |
@@ -179,8 +185,8 @@ bool IsMigrationMisconfigured(Profile* profile, MigrationDestination provider) {
       return !drive::DriveIntegrationServiceFactory::FindForProfile(profile)
                   ->is_enabled();
     case MigrationDestination::kOneDrive:
-      return !chromeos::cloud_upload::
-          IsMicrosoftOfficeOneDriveIntegrationAllowed(profile);
+      return !ash::cloud_upload::IsMicrosoftOfficeOneDriveIntegrationAllowed(
+          profile);
     case MigrationDestination::kDelete:
       // Cannot be misconfigured.
       return false;
@@ -271,6 +277,8 @@ void LocalFilesMigrationManager::OnPrefsInitialized(bool success) {
 void LocalFilesMigrationManager::InitializeFromPrefs() {
   Profile* profile = Profile::FromBrowserContext(context_);
   PrefService* pref_service = profile->GetPrefs();
+  user_manager::User& user = CHECK_DEREF(
+      ash::BrowserContextHelper::Get()->GetUserByBrowserContext(context_));
   state_ = static_cast<State>(
       pref_service->GetInteger(ash::prefs::kSkyVaultMigrationState));
 
@@ -315,7 +323,8 @@ void LocalFilesMigrationManager::InitializeFromPrefs() {
             base::NotFatalUntil::M160);
       base::ThreadPool::PostTaskAndReplyWithResult(
           FROM_HERE, {base::MayBlock()},
-          base::BindOnce(&IsMyFilesEmpty, profile),
+          base::BindOnce(&IsMyFilesEmpty,
+                         file_manager::util::GetMyFilesFolder(user)),
           base::BindOnce(&LocalFilesMigrationManager::OnMyFilesChecked,
                          weak_factory_.GetWeakPtr()));
     }
@@ -344,7 +353,9 @@ void LocalFilesMigrationManager::InitializeFromPrefs() {
   }
 
   base::ThreadPool::PostTaskAndReplyWithResult(
-      FROM_HERE, {base::MayBlock()}, base::BindOnce(&IsMyFilesEmpty, profile),
+      FROM_HERE, {base::MayBlock()},
+      base::BindOnce(&IsMyFilesEmpty,
+                     file_manager::util::GetMyFilesFolder(user)),
       base::BindOnce(&LocalFilesMigrationManager::OnMyFilesChecked,
                      weak_factory_.GetWeakPtr()));
 }
@@ -362,6 +373,8 @@ void LocalFilesMigrationManager::OnLocalUserFilesPolicyChanged() {
   }
 
   Profile* profile = Profile::FromBrowserContext(context_);
+  user_manager::User& user = CHECK_DEREF(
+      ash::BrowserContextHelper::Get()->GetUserByBrowserContext(context_));
 
   LocalStorageHistograms(profile, local_user_files_allowed_);
 
@@ -379,7 +392,8 @@ void LocalFilesMigrationManager::OnLocalUserFilesPolicyChanged() {
             base::NotFatalUntil::M160);
       base::ThreadPool::PostTaskAndReplyWithResult(
           FROM_HERE, {base::MayBlock()},
-          base::BindOnce(&IsMyFilesEmpty, profile),
+          base::BindOnce(&IsMyFilesEmpty,
+                         file_manager::util::GetMyFilesFolder(user)),
           base::BindOnce(&LocalFilesMigrationManager::OnMyFilesChecked,
                          weak_factory_.GetWeakPtr()));
     }
@@ -409,6 +423,8 @@ void LocalFilesMigrationManager::OnMigrationStopped(bool log_file_deleted) {
   }
 
   Profile* profile = Profile::FromBrowserContext(context_);
+  user_manager::User& user = CHECK_DEREF(
+      ash::BrowserContextHelper::Get()->GetUserByBrowserContext(context_));
   if (IsMigrationMisconfigured(profile, migration_destination_)) {
     CHECK(IsCloudDestination(migration_destination_),
           base::NotFatalUntil::M160);
@@ -428,7 +444,9 @@ void LocalFilesMigrationManager::OnMigrationStopped(bool log_file_deleted) {
   // migration if there are any files to upload.
   SetState(State::kPending);
   base::ThreadPool::PostTaskAndReplyWithResult(
-      FROM_HERE, {base::MayBlock()}, base::BindOnce(&IsMyFilesEmpty, profile),
+      FROM_HERE, {base::MayBlock()},
+      base::BindOnce(&IsMyFilesEmpty,
+                     file_manager::util::GetMyFilesFolder(user)),
       base::BindOnce(&LocalFilesMigrationManager::OnMyFilesChecked,
                      weak_factory_.GetWeakPtr()));
 }
@@ -623,12 +641,13 @@ void LocalFilesMigrationManager::GetPathsToUpload() {
     return;
   }
 
-  Profile* profile = Profile::FromBrowserContext(context_);
-  CHECK(profile);
+  user_manager::User& user = CHECK_DEREF(
+      ash::BrowserContextHelper::Get()->GetUserByBrowserContext(context_));
 
   base::ThreadPool::PostTaskAndReplyWithResult(
       FROM_HERE, {base::MayBlock()},
-      base::BindOnce(&GetMyFilesContents, profile),
+      base::BindOnce(&GetMyFilesContents,
+                     file_manager::util::GetMyFilesFolder(user)),
       base::BindOnce(&LocalFilesMigrationManager::StartMigration,
                      weak_factory_.GetWeakPtr()));
   notification_manager_->ShowMigrationProgressNotification(
@@ -928,6 +947,16 @@ std::unique_ptr<KeyedService>
 LocalFilesMigrationManagerFactory::BuildServiceInstanceForBrowserContext(
     content::BrowserContext* context) const {
   if (!base::FeatureList::IsEnabled(ash::features::kSkyVaultV2)) {
+    return nullptr;
+  }
+
+  if (!ash::BrowserContextHelper::Get()->GetUserByBrowserContext(context)) {
+    // Not a rare edge case: this factory is also invoked for the
+    // sign-in/lock-screen profile (see WithAshInternals() above), which
+    // by design never has a user -- on every boot, not just for ad-hoc
+    // secondary profiles some browser_tests create directly, bypassing
+    // the normal session/login flow. There's no user session to migrate
+    // local files for either way.
     return nullptr;
   }
 

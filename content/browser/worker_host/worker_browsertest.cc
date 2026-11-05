@@ -17,11 +17,13 @@
 #include "base/system/sys_info.h"
 #include "base/test/bind.h"
 #include "base/test/scoped_feature_list.h"
+#include "base/test/test_future.h"
 #include "base/test/test_timeouts.h"
 #include "base/thread_annotations.h"
 #include "base/threading/thread_restrictions.h"
 #include "build/build_config.h"
 #include "content/browser/bad_message.h"
+#include "content/browser/permissions/permission_controller_impl.h"
 #include "content/browser/process_lock.h"
 #include "content/browser/renderer_host/render_frame_host_impl.h"
 #include "content/browser/security/cpsp/child_process_security_policy_impl.h"
@@ -32,9 +34,12 @@
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/client_certificate_delegate.h"
 #include "content/public/browser/dedicated_worker_service.h"
+#include "content/public/browser/navigation_handle.h"
+#include "content/public/browser/prerender_host_id.h"
 #include "content/public/browser/shared_worker_service.h"
 #include "content/public/browser/storage_partition.h"
 #include "content/public/browser/web_contents.h"
+#include "content/public/browser/web_contents_observer.h"
 #include "content/public/common/content_features.h"
 #include "content/public/common/content_paths.h"
 #include "content/public/common/content_switches.h"
@@ -42,16 +47,21 @@
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/content_browser_test.h"
 #include "content/public/test/content_browser_test_utils.h"
+#include "content/public/test/prerender_test_util.h"
 #include "content/public/test/test_navigation_observer.h"
 #include "content/public/test/test_utils.h"
 #include "content/public/test/url_loader_interceptor.h"
+#include "content/public/test/url_loader_monitor.h"
 #include "content/shell/browser/shell.h"
 #include "content/shell/browser/shell_content_browser_client.h"
 #include "content/test/content_browser_test_utils_internal.h"
+#include "mojo/public/cpp/bindings/receiver.h"
 #include "net/base/features.h"
 #include "net/base/filename_util.h"
+#include "net/base/schemeful_site.h"
 #include "net/cookies/canonical_cookie.h"
 #include "net/cookies/cookie_access_result.h"
+#include "net/cookies/cookie_partition_key.h"
 #include "net/dns/mock_host_resolver.h"
 #include "net/http/http_response_headers.h"
 #include "net/ssl/client_cert_identity.h"
@@ -64,12 +74,17 @@
 #include "net/test/test_data_directory.h"
 #include "net/traffic_annotation/network_traffic_annotation_test_helper.h"
 #include "services/network/public/cpp/constants.h"
+#include "services/network/public/cpp/cors/cors_error_status.h"
+#include "services/network/public/cpp/url_loader_completion_status.h"
 #include "services/network/public/mojom/connection_change_observer_client.mojom.h"
 #include "services/network/public/mojom/cookie_manager.mojom.h"
+#include "services/network/public/mojom/cors.mojom-shared.h"
 #include "services/network/public/mojom/network_context.mojom.h"
 #include "services/network/public/mojom/parsed_headers.mojom.h"
 #include "services/network/public/mojom/url_response_head.mojom.h"
 #include "third_party/blink/public/common/features.h"
+#include "third_party/blink/public/common/permissions/permission_utils.h"
+#include "third_party/blink/public/common/runtime_feature_state/runtime_feature_state_context.h"
 #include "third_party/blink/public/common/storage_key/storage_key.h"
 #include "url/gurl.h"
 
@@ -77,7 +92,16 @@ namespace content {
 
 namespace {
 
-const char kSameSiteCookie[] = "same-site-cookie=same-site-cookie-value";
+const char kSameSiteLaxCookie[] =
+    "same-site-lax-cookie=same-site-lax-cookie-value";
+const char kSameSiteStrictCookie[] =
+    "same-site-strict-cookie=same-site-strict-cookie-value";
+const char kSameSiteNoneCookie[] =
+    "same-site-none-cookie=same-site-none-cookie-value";
+const char kFirstPartyPartitionedCookie[] =
+    "first-party-partitioned=partitioned-cookie-value";
+const char kCrossSitePartitionedCookie[] =
+    "cross-site-partitioned=partitioned-cookie-value";
 
 // Used by both the embedded test server when a header specified by
 // "/echoheader" is missing, and by the test fixture when there's no cookie
@@ -241,33 +265,26 @@ class WorkerTest : public ContentBrowserTest {
     runner->Run();
   }
 
-  void SetSameSiteCookie(const std::string& host) {
-    StoragePartition* partition = shell()
-                                      ->web_contents()
-                                      ->GetBrowserContext()
-                                      ->GetDefaultStoragePartition();
-    mojo::Remote<network::mojom::CookieManager> cookie_manager;
-    partition->GetNetworkContext()->GetCookieManager(
-        cookie_manager.BindNewPipeAndPassReceiver());
-    net::CookieOptions options;
-    options.set_same_site_cookie_context(
-        net::CookieOptions::SameSiteCookieContext(
-            net::CookieOptions::SameSiteCookieContext::ContextType::
-                SAME_SITE_LAX));
+  void SetSameSiteLaxCookie(std::string_view host) {
+    ASSERT_TRUE(SetCookie(
+        shell()->web_contents()->GetBrowserContext(),
+        ssl_server_.GetURL(host, "/"),
+        base::StrCat({kSameSiteLaxCookie, "; SameSite=Lax; Secure"})));
+  }
+
+  void SetPartitionedCookie(
+      std::string_view host,
+      std::string_view cookie_name_value,
+      net::CookiePartitionKey::AncestorChainBit ancestor_chain_bit) {
     GURL cookie_url = ssl_server_.GetURL(host, "/");
-    std::unique_ptr<net::CanonicalCookie> cookie =
-        net::CanonicalCookie::CreateForTesting(
-            cookie_url, std::string(kSameSiteCookie) + "; SameSite=Lax; Secure",
-            base::Time::Now(), net::CookieSourceType::kOther);
-    base::RunLoop run_loop;
-    cookie_manager->SetCanonicalCookie(
-        *cookie, cookie_url, options,
-        base::BindLambdaForTesting(
-            [&](net::CookieAccessResult set_cookie_result) {
-              EXPECT_TRUE(set_cookie_result.status.IsInclude());
-              run_loop.Quit();
-            }));
-    run_loop.Run();
+    net::CookiePartitionKey partition_key = net::CookiePartitionKey::FromWire(
+        net::SchemefulSite(cookie_url), ancestor_chain_bit);
+    ASSERT_TRUE(
+        SetCookie(shell()->web_contents()->GetBrowserContext(), cookie_url,
+                  base::StrCat({cookie_name_value,
+                                "; SameSite=None; Secure; Partitioned"}),
+                  net::CookieOptions::SameSiteCookieContext::MakeInclusive(),
+                  partition_key));
   }
 
   // Returns the cookie received with the request for the specified path. If the
@@ -531,10 +548,28 @@ IN_PROC_BROWSER_TEST_F(WorkerTest, DedicatedWorkerBlockedForPdfProcess) {
   // Attempting to create a dedicated worker from a PDF frame triggers the
   // renderer to request blink.mojom.DedicatedWorkerHostFactory from
   // RenderFrameHost. The browser must reject this and terminate the process.
-  RenderProcessHostBadIpcMessageWaiter kill_waiter(frame->GetProcess());
-  ExecuteScriptAsync(frame, "new Worker('/workers/worker_common.js');");
-  EXPECT_EQ(bad_message::RFH_DEDICATED_WORKER_HOST_FACTORY_PDF_PROCESS_BLOCKED,
-            kill_waiter.Wait());
+  if (base::FeatureList::IsEnabled(features::kPdfOpaqueOrigin)) {
+    // With an opaque origin, the worker script URL is cross-origin to the
+    // document, so Blink throws a SecurityError before the renderer ever asks
+    // the browser for a DedicatedWorkerHostFactory. Nothing to terminate.
+    EXPECT_EQ("SecurityError", EvalJs(frame, R"(
+      (() => {
+        try {
+          new Worker('/workers/worker_common.js');
+          return 'no error';
+        } catch (e) {
+          return e.name;
+        }
+      })()
+    )"));
+    EXPECT_TRUE(frame->IsRenderFrameLive());
+  } else {
+    RenderProcessHostBadIpcMessageWaiter kill_waiter(frame->GetProcess());
+    ExecuteScriptAsync(frame, "new Worker('/workers/worker_common.js');");
+    EXPECT_EQ(
+        bad_message::RFH_DEDICATED_WORKER_HOST_FACTORY_PDF_PROCESS_BLOCKED,
+        kill_waiter.Wait());
+  }
 
   // Control: the same page committed normally can create dedicated workers.
   EXPECT_TRUE(NavigateToURL(shell(), url));
@@ -547,6 +582,67 @@ IN_PROC_BROWSER_TEST_F(WorkerTest, DedicatedWorkerBlockedForPdfProcess) {
       worker.postMessage('ping');
     })
   )"));
+}
+
+class WorkerPrerenderBrowserTest : public WorkerTest {
+ public:
+  WorkerPrerenderBrowserTest()
+      : prerender_helper_(
+            base::BindRepeating(&WorkerPrerenderBrowserTest::web_contents,
+                                base::Unretained(this))) {}
+  WorkerPrerenderBrowserTest(const WorkerPrerenderBrowserTest&) = delete;
+  WorkerPrerenderBrowserTest& operator=(const WorkerPrerenderBrowserTest&) =
+      delete;
+  ~WorkerPrerenderBrowserTest() override = default;
+
+  void SetUp() override {
+    prerender_helper_.RegisterServerRequestMonitor(ssl_server());
+    WorkerTest::SetUp();
+  }
+
+  WebContents* web_contents() { return shell()->web_contents(); }
+
+ protected:
+  test::PrerenderTestHelper prerender_helper_;
+};
+
+// `blink.mojom.DedicatedWorkerHostFactory` is deferred during prerendering via
+// `MojoBinderPolicy::kDefer`, so creating a dedicated worker in a prerendered
+// page does not hit `IsInactiveAndDisallowActivation()` or cancel prerendering.
+// Verify that activation succeeds and the worker runs once activated.
+IN_PROC_BROWSER_TEST_F(WorkerPrerenderBrowserTest,
+                       DedicatedWorkerCreatedDuringPrerendering) {
+  const GURL initial_url = ssl_server()->GetURL("a.test", "/empty.html");
+  const GURL prerender_url = ssl_server()->GetURL("a.test", "/title1.html");
+
+  ASSERT_TRUE(NavigateToURL(shell(), initial_url));
+
+  PrerenderHostId host_id = prerender_helper_.AddPrerender(prerender_url);
+  ASSERT_TRUE(host_id);
+  RenderFrameHost* prerender_rfh =
+      prerender_helper_.GetPrerenderedMainFrameHost(host_id);
+  ASSERT_TRUE(prerender_rfh);
+
+  test::PrerenderHostObserver host_observer(*web_contents(), host_id);
+
+  // Create a dedicated worker while prerendering. The `BrowserInterfaceBroker`
+  // request for `DedicatedWorkerHostFactory` is deferred until activation.
+  ASSERT_TRUE(ExecJs(prerender_rfh, R"(
+    window.worker = new Worker('/workers/worker_common.js');
+    window.workerReply = new Promise(resolve => {
+      window.worker.onmessage = e => resolve(e.data);
+    });
+    window.worker.postMessage('ping');
+  )"));
+  static_cast<RenderFrameHostImpl*>(prerender_rfh)
+      ->browser_interface_broker_receiver_for_testing()
+      .FlushForTesting();
+  ASSERT_EQ(prerender_helper_.GetHostForUrl(prerender_url), host_id);
+
+  prerender_helper_.NavigatePrimaryPage(prerender_url);
+  EXPECT_TRUE(host_observer.was_activated());
+  EXPECT_EQ(web_contents()->GetPrimaryMainFrame(), prerender_rfh);
+  EXPECT_EQ("pong", EvalJs(prerender_rfh, "window.workerReply"));
 }
 
 // A WebContents created with `disallow_shared_workers` must not be able to
@@ -569,8 +665,8 @@ IN_PROC_BROWSER_TEST_F(WorkerTest, PrivilegedWebContentsCannotUseSharedWorker) {
     })
   )";
 
-  // A privileged WebContents that disallows shared workers is blocked, and no
-  // shared worker host is created for it.
+  // A privileged WebContents that disallows shared workers does not expose the
+  // SharedWorker constructor in Blink.
   WebContents::CreateParams privileged_params(
       shell()->web_contents()->GetBrowserContext());
   WebContents::PrivilegedParams marker;
@@ -580,11 +676,28 @@ IN_PROC_BROWSER_TEST_F(WorkerTest, PrivilegedWebContentsCannotUseSharedWorker) {
   std::unique_ptr<WebContents> privileged(
       WebContents::Create(privileged_params));
   ASSERT_TRUE(NavigateToURL(privileged.get(), page_url));
+  EXPECT_EQ(false, EvalJs(privileged.get(), "'SharedWorker' in window"));
+
+  // Even if a renderer still has the SharedWorker interface enabled (e.g. a
+  // compromised renderer), the browser process blocks the connection and no
+  // shared worker host is created for it.
+  class ForceEnableSharedWorkerObserver : public WebContentsObserver {
+   public:
+    explicit ForceEnableSharedWorkerObserver(WebContents* web_contents)
+        : WebContentsObserver(web_contents) {}
+    void ReadyToCommitNavigation(NavigationHandle* navigation_handle) override {
+      navigation_handle->GetMutableRuntimeFeatureStateContext()
+          .SetSharedWorkerEnabled(true);
+    }
+  } force_enable_observer(privileged.get());
+  ASSERT_TRUE(NavigateToURL(privileged.get(), page_url));
   EXPECT_EQ("Worker blocked.", EvalJs(privileged.get(), kConnectSharedWorker));
   EXPECT_FALSE(GetSharedWorkerHost(worker_url));
 
-  // Control: an ordinary WebContents at the same URL connects normally.
+  // Control: an ordinary WebContents at the same URL exposes SharedWorker and
+  // connects normally.
   ASSERT_TRUE(NavigateToURL(shell(), page_url));
+  EXPECT_EQ(true, EvalJs(shell(), "'SharedWorker' in window"));
   EXPECT_EQ("Worker connected.", EvalJs(shell(), kConnectSharedWorker));
   EXPECT_TRUE(GetSharedWorkerHost(worker_url));
 }
@@ -620,15 +733,29 @@ IN_PROC_BROWSER_TEST_F(PdfWorkerTest, PdfCannotUseSharedWorker) {
       ssl_server()->GetURL("a.test", "/workers/messageport_worker.js");
   static constexpr char kConnectSharedWorker[] = R"(
     new Promise(resolve => {
-      window.worker = new SharedWorker("/workers/messageport_worker.js");
+      try {
+        window.worker = new SharedWorker("/workers/messageport_worker.js");
+      } catch (e) {
+        resolve(e.name);
+        return;
+      }
       window.worker.onerror = (e) => resolve("Worker blocked.");
       window.worker.port.onmessage = (e) => resolve(e.data);
     })
   )";
 
+  // With `features::kPdfOpaqueOrigin`, the PDF frame has an opaque origin, so
+  // Blink throws a SecurityError before the renderer ever asks the browser for
+  // a SharedWorkerConnector. Otherwise, the browser blocks the connection and
+  // the worker's error event fires.
+  const char* expected_pdf_result =
+      base::FeatureList::IsEnabled(features::kPdfOpaqueOrigin)
+          ? "SecurityError"
+          : "Worker blocked.";
+
   // 1. A PDF frame attempting to create a shared worker is blocked.
   ASSERT_TRUE(NavigateToURLWithPdf(shell()->web_contents(), page_url));
-  EXPECT_EQ("Worker blocked.",
+  EXPECT_EQ(expected_pdf_result,
             EvalJs(shell()->web_contents(), kConnectSharedWorker));
   EXPECT_FALSE(GetSharedWorkerHost(worker_url));
 
@@ -647,7 +774,7 @@ IN_PROC_BROWSER_TEST_F(PdfWorkerTest, PdfCannotUseSharedWorker) {
 
   // 3. A PDF frame is also blocked from connecting to the existing shared
   // worker, and the existing worker host remains unaffected.
-  EXPECT_EQ("Worker blocked.",
+  EXPECT_EQ(expected_pdf_result,
             EvalJs(shell()->web_contents(), kConnectSharedWorker));
   EXPECT_EQ(host, GetSharedWorkerHost(worker_url));
   EXPECT_EQ(std::vector<GlobalRenderFrameHostId>{ordinary_rfh->GetGlobalId()},
@@ -977,8 +1104,8 @@ IN_PROC_BROWSER_TEST_F(WorkerTest,
   const GURL resource_url(
       ssl_server()->GetURL(cross_site_domain, "/workers/empty.html"));
 
-  // Set a cookie for verfifying which requests send SameSite cookies.
-  SetSameSiteCookie(cross_site_domain);
+  // Set a cookie for verifying which requests send SameSite cookies.
+  SetSameSiteLaxCookie(cross_site_domain);
 
   std::set<GURL> expected_request_urls = {worker_url, script_url, resource_url};
   const url::Origin expected_origin =
@@ -1016,28 +1143,28 @@ IN_PROC_BROWSER_TEST_F(WorkerTest,
 // Test that an "a.test" worker sends "a.test" SameSite cookies, both when
 // requesting the worker script and when fetching other resources.
 IN_PROC_BROWSER_TEST_F(WorkerTest, WorkerSameSiteCookies1) {
-  SetSameSiteCookie("a.test");
+  SetSameSiteLaxCookie("a.test");
   ASSERT_TRUE(NavigateToURL(
       shell(),
       ssl_server()->GetURL(
           "a.test",
           "/workers/create_worker.html?worker_url=fetch_from_worker.js")));
-  EXPECT_EQ(kSameSiteCookie,
+  EXPECT_EQ(kSameSiteLaxCookie,
             EvalJs(shell()->web_contents(),
                    "worker.postMessage({url: '/echoheader?Cookie'}); "
                    "waitForMessage();"));
-  EXPECT_EQ(kSameSiteCookie,
+  EXPECT_EQ(kSameSiteLaxCookie,
             GetReceivedCookie(
                 "/workers/create_worker.html?worker_url=fetch_from_worker.js"));
-  EXPECT_EQ(kSameSiteCookie,
+  EXPECT_EQ(kSameSiteLaxCookie,
             GetReceivedCookie("/workers/fetch_from_worker.js"));
-  EXPECT_EQ(kSameSiteCookie, GetReceivedCookie("/echoheader?Cookie"));
+  EXPECT_EQ(kSameSiteLaxCookie, GetReceivedCookie("/echoheader?Cookie"));
 }
 
 // Test that a "b.test" worker does not send "a.test" SameSite cookies when
 // fetching resources.
 IN_PROC_BROWSER_TEST_F(WorkerTest, WorkerSameSiteCookies2) {
-  SetSameSiteCookie("a.test");
+  SetSameSiteLaxCookie("a.test");
   ASSERT_TRUE(NavigateToURL(
       shell(),
       ssl_server()->GetURL(
@@ -1056,26 +1183,26 @@ IN_PROC_BROWSER_TEST_F(WorkerTest, WorkerSameSiteCookies2) {
 // Test that an "a.test" nested worker sends "a.test" SameSite cookies, both
 // when requesting the worker script and when fetching other resources.
 IN_PROC_BROWSER_TEST_F(WorkerTest, NestedWorkerSameSiteCookies) {
-  SetSameSiteCookie("a.test");
+  SetSameSiteLaxCookie("a.test");
   ASSERT_TRUE(NavigateToURL(
       shell(),
       ssl_server()->GetURL(
           "a.test",
           "/workers/"
           "create_worker.html?worker_url=fetch_from_nested_worker.js")));
-  EXPECT_EQ(kSameSiteCookie,
+  EXPECT_EQ(kSameSiteLaxCookie,
             EvalJs(shell()->web_contents(),
                    "worker.postMessage({url: '/echoheader?Cookie'}); "
                    "waitForMessage();"));
-  EXPECT_EQ(kSameSiteCookie,
+  EXPECT_EQ(kSameSiteLaxCookie,
             GetReceivedCookie(
                 "/workers/"
                 "create_worker.html?worker_url=fetch_from_nested_worker.js"));
-  EXPECT_EQ(kSameSiteCookie,
+  EXPECT_EQ(kSameSiteLaxCookie,
             GetReceivedCookie("/workers/fetch_from_nested_worker.js"));
-  EXPECT_EQ(kSameSiteCookie,
+  EXPECT_EQ(kSameSiteLaxCookie,
             GetReceivedCookie("/workers/fetch_from_worker.js"));
-  EXPECT_EQ(kSameSiteCookie, GetReceivedCookie("/echoheader?Cookie"));
+  EXPECT_EQ(kSameSiteLaxCookie, GetReceivedCookie("/echoheader?Cookie"));
 }
 
 // Test that an "a.test" iframe in a "b.test" frame does not send same-site
@@ -1083,7 +1210,7 @@ IN_PROC_BROWSER_TEST_F(WorkerTest, NestedWorkerSameSiteCookies) {
 // "a.test" resources.
 IN_PROC_BROWSER_TEST_F(WorkerTest,
                        CrossOriginIframeWorkerDoesNotSendSameSiteCookies1) {
-  SetSameSiteCookie("a.test");
+  SetSameSiteLaxCookie("a.test");
 
   ASSERT_TRUE(NavigateToURL(
       shell(), ssl_server()->GetURL("b.test", "/workers/frame_factory.html")));
@@ -1125,7 +1252,7 @@ IN_PROC_BROWSER_TEST_F(WorkerTest,
 // cookies when its "b.test" worker requests "a.test" resources.
 IN_PROC_BROWSER_TEST_F(WorkerTest,
                        CrossOriginIframeWorkerDoesNotSendSameSiteCookies2) {
-  SetSameSiteCookie("a.test");
+  SetSameSiteLaxCookie("a.test");
 
   ASSERT_TRUE(NavigateToURL(
       shell(), ssl_server()->GetURL("a.test", "/workers/frame_factory.html")));
@@ -1276,15 +1403,15 @@ IN_PROC_BROWSER_TEST_F(WorkerTest, SameSiteCookiesSharedWorkerSameDefault) {
   if (!SupportsSharedWorker()) {
     return;
   }
-  SetSameSiteCookie("a.test");
+  SetSameSiteLaxCookie("a.test");
   ASSERT_TRUE(NavigateToURL(
       shell(), ssl_server()->GetURL("a.test", "/workers/simple.html")));
   EvalJsResult result =
       EvalJs(shell(), "new SharedWorker('/workers/worker.js');");
   ASSERT_TRUE(result.is_ok());
-  EXPECT_EQ(kSameSiteCookie, GetReceivedCookie("/workers/worker.js"));
-  EXPECT_EQ(kSameSiteCookie, GetReceivedCookie("/workers/empty.js"));
-  EXPECT_EQ(kSameSiteCookie, GetReceivedCookie("/workers/empty.html"));
+  EXPECT_EQ(kSameSiteLaxCookie, GetReceivedCookie("/workers/worker.js"));
+  EXPECT_EQ(kSameSiteLaxCookie, GetReceivedCookie("/workers/empty.js"));
+  EXPECT_EQ(kSameSiteLaxCookie, GetReceivedCookie("/workers/empty.html"));
 }
 
 // Test that an "a.test" frame starting a worker with `sameSiteCookies: 'none'`
@@ -1293,7 +1420,7 @@ IN_PROC_BROWSER_TEST_F(WorkerTest, SameSiteCookiesSharedWorkerSameNone) {
   if (!SupportsSharedWorker()) {
     return;
   }
-  SetSameSiteCookie("a.test");
+  SetSameSiteLaxCookie("a.test");
   ASSERT_TRUE(NavigateToURL(
       shell(), ssl_server()->GetURL("a.test", "/workers/simple.html")));
   EvalJsResult result = EvalJs(
@@ -1311,16 +1438,16 @@ IN_PROC_BROWSER_TEST_F(WorkerTest, SameSiteCookiesSharedWorkerSameAll) {
   if (!SupportsSharedWorker()) {
     return;
   }
-  SetSameSiteCookie("a.test");
+  SetSameSiteLaxCookie("a.test");
   ASSERT_TRUE(NavigateToURL(
       shell(), ssl_server()->GetURL("a.test", "/workers/simple.html")));
   EvalJsResult result = EvalJs(
       shell(),
       "new SharedWorker('/workers/worker.js', {sameSiteCookies: 'all'});");
   ASSERT_TRUE(result.is_ok());
-  EXPECT_EQ(kSameSiteCookie, GetReceivedCookie("/workers/worker.js"));
-  EXPECT_EQ(kSameSiteCookie, GetReceivedCookie("/workers/empty.js"));
-  EXPECT_EQ(kSameSiteCookie, GetReceivedCookie("/workers/empty.html"));
+  EXPECT_EQ(kSameSiteLaxCookie, GetReceivedCookie("/workers/worker.js"));
+  EXPECT_EQ(kSameSiteLaxCookie, GetReceivedCookie("/workers/empty.js"));
+  EXPECT_EQ(kSameSiteLaxCookie, GetReceivedCookie("/workers/empty.html"));
 }
 
 // Test that an "a.test" iframe in a "b.test" frame starting a worker without
@@ -1329,7 +1456,7 @@ IN_PROC_BROWSER_TEST_F(WorkerTest, SameSiteCookiesSharedWorkerCrossDefault) {
   if (!SupportsSharedWorker()) {
     return;
   }
-  SetSameSiteCookie("a.test");
+  SetSameSiteLaxCookie("a.test");
   ASSERT_TRUE(NavigateToURL(
       shell(), ssl_server()->GetURL("b.test", "/workers/frame_factory.html")));
   content::TestNavigationObserver navigation_observer(
@@ -1361,7 +1488,7 @@ IN_PROC_BROWSER_TEST_F(WorkerTest, SameSiteCookiesSharedWorkerCrossNone) {
   if (!SupportsSharedWorker()) {
     return;
   }
-  SetSameSiteCookie("a.test");
+  SetSameSiteLaxCookie("a.test");
   ASSERT_TRUE(NavigateToURL(
       shell(), ssl_server()->GetURL("b.test", "/workers/frame_factory.html")));
   content::TestNavigationObserver navigation_observer(
@@ -1394,7 +1521,7 @@ IN_PROC_BROWSER_TEST_F(WorkerTest, SameSiteCookiesSharedWorkerCrossAll) {
   if (!SupportsSharedWorker()) {
     return;
   }
-  SetSameSiteCookie("a.test");
+  SetSameSiteLaxCookie("a.test");
   ASSERT_TRUE(NavigateToURL(
       shell(), ssl_server()->GetURL("b.test", "/workers/frame_factory.html")));
   content::TestNavigationObserver navigation_observer(
@@ -1416,6 +1543,74 @@ IN_PROC_BROWSER_TEST_F(WorkerTest, SameSiteCookiesSharedWorkerCrossAll) {
       subframe_rfh,
       "new SharedWorker('/workers/worker.js', {sameSiteCookies: 'all'});");
   ASSERT_FALSE(worker_result.is_ok());
+}
+
+// Test that an "a.test" iframe in a "b.test" frame starting a first-party
+// shared worker via the Storage Access API (`handle.SharedWorker(...)`) sends
+// "a.test"'s unpartitioned SameSite=None and cross-site-partition
+// (AncestorChainBit::kCrossSite) SameSite=None; Partitioned cookies, rather
+// than SameSite=Strict/Lax or first-party-partition
+// (AncestorChainBit::kSameSite) cookies, on worker subresource requests.
+IN_PROC_BROWSER_TEST_F(
+    WorkerTest,
+    StorageAccessSharedWorkerSubresourcesDoNotSendFirstPartyPartitionedCookies) {
+  if (!SupportsSharedWorker()) {
+    GTEST_SKIP() << "SharedWorker not supported";
+  }
+  BrowserContext* browser_context =
+      shell()->web_contents()->GetBrowserContext();
+  const GURL a_cookie_url = ssl_server()->GetURL("a.test", "/");
+  ASSERT_TRUE(SetCookie(
+      browser_context, a_cookie_url,
+      base::StrCat({kSameSiteStrictCookie, "; SameSite=Strict; Secure"})));
+  SetSameSiteLaxCookie("a.test");
+  ASSERT_TRUE(SetCookie(
+      browser_context, a_cookie_url,
+      base::StrCat({kSameSiteNoneCookie, "; SameSite=None; Secure"})));
+  SetPartitionedCookie("a.test", kFirstPartyPartitionedCookie,
+                       net::CookiePartitionKey::AncestorChainBit::kSameSite);
+  SetPartitionedCookie("a.test", kCrossSitePartitionedCookie,
+                       net::CookiePartitionKey::AncestorChainBit::kCrossSite);
+
+  const GURL top_url =
+      ssl_server()->GetURL("b.test", "/workers/frame_factory.html");
+  const GURL subframe_url =
+      ssl_server()->GetURL("a.test", "/workers/simple.html");
+  ASSERT_TRUE(NavigateToURL(shell(), top_url));
+  content::TestNavigationObserver navigation_observer(
+      shell()->web_contents(), /*expected_number_of_navigations=*/1);
+  const char kSubframeName[] = "foo";
+  EXPECT_TRUE(ExecJs(
+      shell()->web_contents()->GetPrimaryMainFrame(),
+      JsReplace("createFrame($1, $2)", subframe_url.spec(), kSubframeName)));
+  navigation_observer.Wait();
+  RenderFrameHost* subframe_rfh = FrameMatchingPredicate(
+      shell()->web_contents()->GetPrimaryPage(),
+      base::BindRepeating(&FrameMatchesName, kSubframeName));
+  ASSERT_TRUE(subframe_rfh);
+
+  base::test::TestFuture<PermissionControllerImpl::OverrideStatus> future;
+  static_cast<PermissionControllerImpl*>(
+      subframe_rfh->GetBrowserContext()->GetPermissionController())
+      ->SetPermissionOverride(
+          /*requesting_origin=*/url::Origin::Create(subframe_url),
+          /*embedding_origin=*/url::Origin::Create(top_url),
+          blink::PermissionType::STORAGE_ACCESS_GRANT,
+          blink::mojom::PermissionStatus::GRANTED, future.GetCallback());
+  ASSERT_EQ(future.Get(),
+            PermissionControllerImpl::OverrideStatus::kOverrideSet);
+
+  EXPECT_TRUE(ExecJs(subframe_rfh, R"(
+    (async () => {
+      const handle = await document.requestStorageAccess({SharedWorker: true});
+      handle.SharedWorker('/workers/worker.js');
+    })()
+  )"));
+  const std::string expected_cookies = base::JoinString(
+      {kSameSiteNoneCookie, kCrossSitePartitionedCookie}, "; ");
+  EXPECT_EQ(expected_cookies, GetReceivedCookie("/workers/worker.js"));
+  EXPECT_EQ(expected_cookies, GetReceivedCookie("/workers/empty.js"));
+  EXPECT_EQ(expected_cookies, GetReceivedCookie("/workers/empty.html"));
 }
 
 // Test for the SharedWorker extendedLifetime option.
@@ -1622,5 +1817,187 @@ IN_PROC_BROWSER_TEST_F(SharedWorkerExtendedLifetimeBrowserOriginTrialTest,
   run_loop.Run();
 }
 
+class CrossOriginWorkerScriptTest : public WorkerTest,
+                                    public ::testing::WithParamInterface<bool> {
+ public:
+  CrossOriginWorkerScriptTest() {
+    feature_list_.InitWithFeatureState(
+        blink::features::kNoSynchronousThrowForCrossOriginBlockedWorker,
+        FeatureEnabled());
+  }
+
+ protected:
+  bool FeatureEnabled() { return GetParam(); }
+
+  EvalJsResult CreateWorker(const GURL& worker_url) {
+    return EvalJs(shell(), JsReplace(R"(
+      new Promise(resolve => {
+        let worker;
+        try {
+          worker = new Worker($1);
+        } catch (e) {
+          resolve('exception: ' + e.name);
+          return;
+        }
+        worker.onmessage = () => resolve('message');
+        worker.onerror = () => resolve('error');
+      })
+    )",
+                                     worker_url));
+  }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+};
+
+INSTANTIATE_TEST_SUITE_P(All, CrossOriginWorkerScriptTest, ::testing::Bool());
+
+IN_PROC_BROWSER_TEST_P(CrossOriginWorkerScriptTest,
+                       CrossOriginScriptIsBlockedBeforeFetching) {
+  const GURL page_url = ssl_server()->GetURL("a.test", "/title1.html");
+  const GURL worker_url =
+      ssl_server()->GetURL("b.test", "/workers/post_ready.js");
+
+  ASSERT_TRUE(NavigateToURL(shell(), page_url));
+
+  URLLoaderMonitor monitor;
+  EXPECT_EQ(FeatureEnabled() ? "error" : "exception: SecurityError",
+            CreateWorker(worker_url));
+
+  EXPECT_FALSE(monitor.GetRequestInfo(worker_url));
+}
+
+// TODO(crbug.com/581125012): Flaky on Android because
+// URLLoaderMonitor::GetCompletionStatus() is queried without waiting for the
+// aborted initial redirect request's OnComplete IPC on the IO thread.
+#if BUILDFLAG(IS_ANDROID)
+#define MAYBE_CrossOriginRedirectFailsFetchWithSameOriginMode \
+  DISABLED_CrossOriginRedirectFailsFetchWithSameOriginMode
+#else
+#define MAYBE_CrossOriginRedirectFailsFetchWithSameOriginMode \
+  CrossOriginRedirectFailsFetchWithSameOriginMode
+#endif
+IN_PROC_BROWSER_TEST_P(CrossOriginWorkerScriptTest,
+                       MAYBE_CrossOriginRedirectFailsFetchWithSameOriginMode) {
+  const GURL page_url = ssl_server()->GetURL("a.test", "/title1.html");
+  const GURL redirect_target =
+      ssl_server()->GetURL("b.test", "/workers/post_ready.js");
+  const GURL worker_url = ssl_server()->GetURL(
+      "a.test", "/server-redirect?" + redirect_target.spec());
+
+  ASSERT_TRUE(NavigateToURL(shell(), page_url));
+
+  URLLoaderMonitor monitor;
+  EXPECT_EQ("error", CreateWorker(worker_url));
+
+  std::optional<network::ResourceRequest> request =
+      monitor.GetRequestInfo(worker_url);
+  ASSERT_TRUE(request);
+  EXPECT_EQ(network::mojom::RequestMode::kSameOrigin, request->mode);
+
+  std::optional<network::URLLoaderCompletionStatus> status =
+      monitor.GetCompletionStatus(worker_url);
+  ASSERT_TRUE(status);
+  EXPECT_EQ(net::ERR_ABORTED, status->error_code);
+  EXPECT_FALSE(status->cors_error_status);
+}
+
+IN_PROC_BROWSER_TEST_P(CrossOriginWorkerScriptTest, SameOriginScriptStillRuns) {
+  const GURL page_url = ssl_server()->GetURL("a.test", "/title1.html");
+  const GURL worker_url =
+      ssl_server()->GetURL("a.test", "/workers/post_ready.js");
+
+  ASSERT_TRUE(NavigateToURL(shell(), page_url));
+
+  URLLoaderMonitor monitor;
+  EXPECT_EQ("message", CreateWorker(worker_url));
+
+  std::optional<network::URLLoaderCompletionStatus> status =
+      monitor.GetCompletionStatus(worker_url);
+  ASSERT_TRUE(status);
+  EXPECT_EQ(net::OK, status->error_code);
+  EXPECT_FALSE(status->cors_error_status);
+}
+
+class XMLHttpRequestLoadIgnoreLimitsTest
+    : public WorkerTest,
+      public testing::WithParamInterface<bool> {
+ public:
+  XMLHttpRequestLoadIgnoreLimitsTest() {
+    feature_list_.InitWithFeatureState(
+        blink::features::kRequiresLoadIgnoreLimitsForDomWindowsOnly,
+        GetParam());
+  }
+
+  bool IsRequiresLoadIgnoreLimitsForDomWindowsOnlyEnabled() const {
+    return GetParam();
+  }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+};
+
+INSTANTIATE_TEST_SUITE_P(All,
+                         XMLHttpRequestLoadIgnoreLimitsTest,
+                         testing::Bool());
+
+IN_PROC_BROWSER_TEST_P(XMLHttpRequestLoadIgnoreLimitsTest, WorkerContext) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  ASSERT_TRUE(NavigateToURL(
+      shell(), embedded_test_server()->GetURL("/workers/simple.html")));
+
+  GURL worker_async_url = embedded_test_server()->GetURL("/echo?async");
+  GURL worker_sync_url = embedded_test_server()->GetURL("/echo?sync");
+
+  URLLoaderMonitor monitor({worker_async_url, worker_sync_url});
+
+  // Async XHR in a Worker context should not set LOAD_IGNORE_LIMITS on the TCP
+  // request and bypass socket pool size limitations.
+  EXPECT_EQ("Echo", EvalJs(shell(), JsReplace(R"(
+    new Promise((resolve, reject) => {
+      const blob = new Blob([`
+        const xhr = new XMLHttpRequest();
+        xhr.open('GET', $1);
+        xhr.onload = function () {
+          postMessage(xhr.responseText);
+        };
+        xhr.send();
+      `], {type: 'application/javascript'});
+      const worker = new Worker(URL.createObjectURL(blob));
+      worker.onmessage = (e) => resolve(e.data);
+      worker.onerror = (e) => reject(e.message);
+    })
+  )",
+                                              worker_async_url)));
+  std::optional<network::ResourceRequest> worker_async_request =
+      monitor.GetRequestInfo(worker_async_url);
+  ASSERT_TRUE(worker_async_request.has_value());
+  EXPECT_FALSE(
+      (bool)(worker_async_request->load_flags & net::LOAD_IGNORE_LIMITS));
+
+  // Sync XHR in a Worker context should set LOAD_IGNORE_LIMITS,
+  // only if kRequiresLoadIgnoreLimitsForDomWindowsOnly is disabled.
+  EXPECT_EQ("Echo", EvalJs(shell(), JsReplace(R"(
+    new Promise((resolve, reject) => {
+      const blob = new Blob([`
+        const xhr = new XMLHttpRequest();
+        xhr.open('GET', $1, false);
+        xhr.onload = function () {
+          postMessage(xhr.responseText);
+        };
+        xhr.send();
+      `], {type: 'application/javascript'});
+      const worker = new Worker(URL.createObjectURL(blob));
+      worker.onmessage = (e) => resolve(e.data);
+      worker.onerror = (e) => reject(e.message);
+    })
+  )",
+                                              worker_sync_url)));
+  std::optional<network::ResourceRequest> worker_sync_request =
+      monitor.GetRequestInfo(worker_sync_url);
+  ASSERT_TRUE(worker_sync_request.has_value());
+  EXPECT_EQ(!IsRequiresLoadIgnoreLimitsForDomWindowsOnlyEnabled(),
+            (bool)(worker_sync_request->load_flags & net::LOAD_IGNORE_LIMITS));
+}
 
 }  // namespace content

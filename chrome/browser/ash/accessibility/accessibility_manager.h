@@ -24,9 +24,9 @@
 #include "chrome/browser/extensions/api/braille_display_private/braille_controller.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_observer.h"
-#include "chrome/common/extensions/api/accessibility_private.h"
 #include "chromeos/ash/components/audio/cras_audio_handler.h"
 #include "chromeos/ash/components/login/session/session_termination_manager.h"
+#include "chromeos/ash/experiences/extensions/common/api/accessibility_private.h"
 #include "components/prefs/pref_change_registrar.h"
 #include "components/session_manager/core/session_manager.h"
 #include "components/session_manager/core/session_manager_observer.h"
@@ -50,6 +50,10 @@
 
 class ApplicationLocaleStorage;
 class PrefService;
+
+namespace base::i18n {
+class LanguageTag;
+}  // namespace base::i18n
 
 namespace content {
 struct FocusedNodeDetails;
@@ -299,12 +303,6 @@ class AccessibilityManager
   // Returns if focus highlighting is enabled.
   bool IsFocusHighlightEnabled() const;
 
-  // Enables or disables tap dragging.
-  void EnableTapDragging(bool enabled);
-
-  // Returns true if the tap dragging is enabled, or false if not.
-  bool IsTapDraggingEnabled() const;
-
   // Invoked to enable or disable select-to-speak.
   void SetSelectToSpeakEnabled(bool enabled);
 
@@ -404,6 +402,10 @@ class AccessibilityManager
   // Profile having the a11y context.
   Profile* profile() { return profile_; }
 
+  // The same context, for callers that do not need a Profile. Null before a
+  // user session has started.
+  content::BrowserContext* browser_context();
+
   // Extension id of extension receiving keyboard events.
   void SetKeyboardListenerExtensionId(const std::string& id,
                                       content::BrowserContext* context);
@@ -420,7 +422,7 @@ class AccessibilityManager
   // Gets the default locale for the active profile.
   // If this is a |new_user|, it returns the application language.
   // Otherwise, it returns the Dictation language with default IME language.
-  std::string GetDictationDefaultLocale(bool new_user);
+  base::i18n::LanguageTag GetDictationDefaultLocale(bool new_user);
 
   // Sets the focus ring with the given ID based on |focus_ring|.
   void SetFocusRing(std::string focus_ring_id,
@@ -513,7 +515,6 @@ class AccessibilityManager
   void SetProfileForTest(Profile* profile);
   static void SetBrailleControllerForTest(
       extensions::api::braille_display_private::BrailleController* controller);
-  void SetScreenDarkenObserverForTest(base::RepeatingCallback<void()> observer);
   void SetOpenSettingsSubpageObserverForTest(
       base::RepeatingCallback<void()> observer);
   void SetFocusRingObserverForTest(base::RepeatingCallback<void()> observer);
@@ -521,8 +522,6 @@ class AccessibilityManager
   void SetHighlightsObserverForTest(base::RepeatingCallback<void()> observer);
   void SetSelectToSpeakStateObserverForTest(
       base::RepeatingCallback<void()> observer);
-  void SetCaretBoundsObserverForTest(
-      base::RepeatingCallback<void(const gfx::Rect&)> observer);
   void SetMagnifierBoundsObserverForTest(
       base::RepeatingCallback<void()> observer);
   void SetSwitchAccessKeysForTest(const std::set<int>& action_keys,
@@ -603,7 +602,6 @@ class AccessibilityManager
   void OnCaretHighlightChanged();
   void OnCursorHighlightChanged();
   void OnFocusHighlightChanged();
-  void OnTapDraggingChanged();
   void OnSelectToSpeakChanged();
   void OnAccessibilityCommonChanged(const std::string& pref_name);
   void OnSwitchAccessChanged();
@@ -763,7 +761,9 @@ class AccessibilityManager
 
   raw_ptr<FaceGazeSettingsEventHandler> facegaze_settings_event_handler_;
 
-  raw_ptr<ChromeVoxPanel> chromevox_panel_ = nullptr;
+  std::unique_ptr<ChromeVoxPanel> chromevox_panel_;
+  // The last closed panel, kept until the next one closes.
+  std::unique_ptr<ChromeVoxPanel> closed_chromevox_panel_;
   std::unique_ptr<AccessibilityPanelWidgetObserver>
       chromevox_panel_widget_observer_;
 
@@ -803,12 +803,9 @@ class AccessibilityManager
   bool dictation_triggered_by_user_ = false;
   bool ignore_dictation_locale_pref_change_ = false;
 
-  base::RepeatingCallback<void()> screen_darken_observer_for_test_;
   base::RepeatingCallback<void()> open_settings_subpage_observer_for_test_;
   base::RepeatingCallback<void()> highlights_observer_for_test_;
   base::RepeatingCallback<void()> select_to_speak_state_observer_for_test_;
-  base::RepeatingCallback<void(const gfx::Rect&)>
-      caret_bounds_observer_for_test_;
   base::RepeatingCallback<void()> magnifier_bounds_observer_for_test_;
   base::OnceClosure enhanced_network_tts_waiter_for_test_;
 

@@ -48,7 +48,7 @@ void BlendWithColorsFromGradient(cssvalue::CSSGradientValue* gradient,
                                  bool& found_opaque_color,
                                  const LayoutObject& layout_object) {
   const Document& document = layout_object.GetDocument();
-  const ComputedStyle& style = layout_object.StyleRef();
+  const ComputedStyle& style = layout_object.Style();
 
   Vector<Color> stop_colors = gradient->GetStopColors(document, style);
   if (colors.empty()) {
@@ -168,13 +168,13 @@ void InspectorContrast::CollectNodesAndBuildRTreeIfNeeded() {
   rtree_built_ = true;
 }
 
-std::vector<ContrastInfo> InspectorContrast::GetElementsWithContrastIssues(
+HeapVector<ContrastInfo> InspectorContrast::GetElementsWithContrastIssues(
     bool report_aaa,
     size_t max_elements = 0) {
   TRACE_EVENT0("devtools.contrast",
                "InspectorContrast::GetElementsWithContrastIssues");
   CollectNodesAndBuildRTreeIfNeeded();
-  std::vector<ContrastInfo> result;
+  HeapVector<ContrastInfo> result;
   for (Node* node : elements_) {
     auto info = GetContrast(To<Element>(node));
     if (info.able_to_compute_contrast &&
@@ -220,7 +220,7 @@ ContrastInfo InspectorContrast::GetContrast(Element* top_element) {
 
   const LayoutObject* layout_object = top_element->GetLayoutObject();
   const CSSValue* text_color_value = ComputedStyleUtils::ComputedPropertyValue(
-      CSSProperty::Get(CSSPropertyID::kColor), layout_object->StyleRef());
+      CSSProperty::Get(CSSPropertyID::kColor), layout_object->Style());
   if (!text_color_value->IsColorValue())
     return result;
 
@@ -340,7 +340,7 @@ bool InspectorContrast::GetColorsFromRect(PhysicalRect rect,
       continue;
     }
 
-    const ComputedStyle& style = layout_object->StyleRef();
+    const ComputedStyle& style = layout_object->Style();
 
     // If background elements are hidden, ignore their background colors.
     if (element != top_element && style.Visibility() == EVisibility::kHidden) {

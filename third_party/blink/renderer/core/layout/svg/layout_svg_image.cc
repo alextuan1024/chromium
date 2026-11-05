@@ -44,6 +44,7 @@
 #include "third_party/blink/renderer/core/svg/svg_image_element.h"
 #include "third_party/blink/renderer/core/svg/svg_length_functions.h"
 #include "third_party/blink/renderer/platform/graphics/paint/paint_record.h"
+#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 
 namespace blink {
 
@@ -97,11 +98,11 @@ gfx::SizeF LayoutSVGImage::CalculateObjectSize() const {
 
   const SVGViewportResolver viewport_resolver(*this);
   gfx::Vector2dF style_size = VectorForLengthPair(
-      StyleRef().Width(), StyleRef().Height(), viewport_resolver, StyleRef());
+      Style().Width(), Style().Height(), viewport_resolver, Style());
   // TODO(https://crbug.com/313072): This needs a bit of work to support
   // intrinsic keywords, calc-size(), etc. values for width and height.
-  bool width_is_auto = style_size.x() < 0 || StyleRef().Width().IsAuto();
-  bool height_is_auto = style_size.y() < 0 || StyleRef().Height().IsAuto();
+  bool width_is_auto = style_size.x() < 0 || Style().Width().IsAuto();
+  bool height_is_auto = style_size.y() < 0 || Style().Height().IsAuto();
   if (!width_is_auto && !height_is_auto)
     return gfx::SizeF(style_size.x(), style_size.y());
 
@@ -137,15 +138,30 @@ gfx::SizeF LayoutSVGImage::CalculateObjectSize() const {
   return gfx::SizeF(concrete_object_size.width(), style_size.y());
 }
 
+gfx::SizeF LayoutSVGImage::CalculateNormalizedObjectSize() const {
+  NOT_DESTROYED();
+  const gfx::SizeF size = CalculateObjectSize();
+  // A zero width or height disables rendering, and collapses the bounding
+  // box to empty.
+  if (size.IsEmpty() &&
+      RuntimeEnabledFeatures::SvgEmptyBBoxForNonRenderedEnabled()) {
+    return gfx::SizeF();
+  }
+  return size;
+}
+
 bool LayoutSVGImage::UpdateBoundingBox() {
   NOT_DESTROYED();
-  gfx::RectF old_object_bounding_box = object_bounding_box_;
+  const gfx::RectF old_object_bounding_box = object_bounding_box_;
 
-  const SVGViewportResolver viewport_resolver(*this);
-  const ComputedStyle& style = StyleRef();
-  object_bounding_box_.set_origin(
-      PointForLengthPair(style.X(), style.Y(), viewport_resolver, style));
-  object_bounding_box_.set_size(CalculateObjectSize());
+  object_bounding_box_ = gfx::RectF(CalculateNormalizedObjectSize());
+  if (!object_bounding_box_.IsEmpty() ||
+      !RuntimeEnabledFeatures::SvgEmptyBBoxForNonRenderedEnabled()) {
+    const SVGViewportResolver viewport_resolver(*this);
+    const ComputedStyle& style = Style();
+    object_bounding_box_.set_origin(
+        PointForLengthPair(style.X(), style.Y(), viewport_resolver, style));
+  }
 
   return old_object_bounding_box != object_bounding_box_;
 }
@@ -162,9 +178,9 @@ SVGLayoutResult LayoutSVGImage::UpdateSVGLayout(
 
   const bool has_viewport_dependence =
       (transform_uses_reference_box_ &&
-       StyleRef().TransformBox() == ETransformBox::kViewBox) ||
-      StyleRef().Width().HasPercent() || StyleRef().Height().HasPercent() ||
-      StyleRef().X().HasPercent() || StyleRef().Y().HasPercent();
+       Style().TransformBox() == ETransformBox::kViewBox) ||
+      Style().Width().HasPercent() || Style().Height().HasPercent() ||
+      Style().X().HasPercent() || Style().Y().HasPercent();
 
   DCHECK(!needs_transform_update_);
   ClearNeedsLayout();
@@ -210,7 +226,7 @@ bool LayoutSVGImage::NodeAtPoint(HitTestResult& result,
   if (phase != HitTestPhase::kForeground)
     return false;
 
-  const ComputedStyle& style = StyleRef();
+  const ComputedStyle& style = Style();
   PointerEventsHitRules hit_rules(PointerEventsHitRules::kSvgImageHitTesting,
                                   result.GetHitTestRequest(),
                                   style.UsedPointerEvents());
@@ -219,8 +235,7 @@ bool LayoutSVGImage::NodeAtPoint(HitTestResult& result,
     return false;
   }
 
-  TransformedHitTestLocation local_location(hit_test_location,
-                                            LocalToSVGParentTransform());
+  TransformedHitTestLocation local_location(hit_test_location, *this);
   if (!local_location)
     return false;
   if (HasClipPath() && !ClipPathClipper::HitTest(*this, *local_location)) {
@@ -256,8 +271,9 @@ void LayoutSVGImage::ImageChanged(WrappedImagePtr, CanDeferInvalidation defer) {
   LayoutSVGResourceContainer::MarkForLayoutAndParentResourceInvalidation(*this,
                                                                          false);
 
-  if (CalculateObjectSize() != object_bounding_box_.size())
+  if (CalculateNormalizedObjectSize() != object_bounding_box_.size()) {
     SetNeedsLayout(layout_invalidation_reason::kSizeChanged);
+  }
 
   SetShouldDoFullPaintInvalidationWithoutLayoutChange(
       PaintInvalidationReason::kImage);

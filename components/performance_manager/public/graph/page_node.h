@@ -117,20 +117,36 @@ class PageNode : public TypedNode<PageNode> {
   // See PageNodeObserver::OnIsVisibleChanged.
   virtual bool IsVisible() const = 0;
 
-  // Returns the time of the last visibility change. It is always well defined
-  // as the visibility property is set at node creation.
-  virtual base::TimeTicks GetLastVisibilityChangeTime() const = 0;
+  struct VisibilityState {
+    bool is_visible;
+    // Time at which the page transitioned to `is_visible`. Already updated when
+    // `PageNodeObserver::OnIsVisibleChanged()` is invoked.
+    base::TimeTicks last_change_time;
+
+    friend bool operator==(const VisibilityState&,
+                           const VisibilityState&) = default;
+  };
+  virtual VisibilityState GetVisibilityState() const = 0;
 
   // Returns true if this page is currently audible, false otherwise.
   // See PageNodeObserver::OnIsAudibleChanged.
   virtual bool IsAudible() const = 0;
 
-  // Returns the time since the last audible change. Unlike
-  // GetLastVisibilityChangeTime(), this returns nullopt for a node which has
-  // never been audible. If a node is audible when created, it is considered to
-  // change from inaudible to audible at that point.
-  virtual std::optional<base::TimeDelta> GetTimeSinceLastAudibleChange()
-      const = 0;
+  // Returns the page's current audible state and the time at which it
+  // transitioned to that state. Unlike GetVisibilityState().last_change_time,
+  // `last_change_time` is nullopt for a node which has never been audible. If a
+  // node is audible when created, it is considered to change from inaudible to
+  // audible at that point.
+  struct AudibleState {
+    bool is_audible;
+    // Time at which the page transitioned to `is_audible`, or nullopt if the
+    // page has never been audible. Already updated when
+    // `PageNodeObserver::OnIsAudibleChanged()` is invoked.
+    std::optional<base::TimeTicks> last_change_time;
+
+    friend bool operator==(const AudibleState&, const AudibleState&) = default;
+  };
+  virtual AudibleState GetAudibleState() const = 0;
 
   // Returns true if this page is displaying content in a picture-in-picture
   // window, false otherwise.
@@ -146,6 +162,17 @@ class PageNode : public TypedNode<PageNode> {
 
   // Returns the page's loading state.
   virtual LoadingState GetLoadingState() const = 0;
+
+  // Returns true if the current (or most recent) load was initiated by the
+  // browser (e.g. omnibox, bookmarks, session restore, extensions) or by a
+  // renderer with transient user activation (e.g. a link click), including
+  // client redirects that continue such a load (renderer-initiated
+  // navigations without activation that start shortly after the previous
+  // commit). Returns false for other renderer-initiated loads, e.g. a
+  // timer-driven `location.reload()` or meta-refresh that fires long after the
+  // page loaded.
+  // See PageNodeObserver::OnIsUserOrBrowserInitiatedLoadChanged.
+  virtual bool IsUserOrBrowserInitiatedLoad() const = 0;
 
   // Returns the UKM source ID associated with the URL of the main frame of
   // this page.
@@ -312,17 +339,9 @@ class PageNodeObserver : public base::CheckedObserver {
   virtual void OnIsFocusedChanged(const PageNode* page_node) {}
 
   // Invoked when the IsVisible property changes.
-  //
-  // GetLastVisibilityChangeTime() will return the time of the previous
-  // IsVisible change. After all observers have fired it will return the time of
-  // this property change.
   virtual void OnIsVisibleChanged(const PageNode* page_node) {}
 
   // Invoked when the IsAudible property changes.
-  //
-  // GetTimeSinceLastAudibleChange() will return the time since the previous
-  // IsAudible change. After all observers have fired it will return the time of
-  // this property change.
   virtual void OnIsAudibleChanged(const PageNode* page_node) {}
 
   // Invoked when the HasPictureInPicture property changes.
@@ -335,6 +354,10 @@ class PageNodeObserver : public base::CheckedObserver {
   // Invoked when the GetLoadingState property changes.
   virtual void OnLoadingStateChanged(const PageNode* page_node,
                                      PageNode::LoadingState previous_state) {}
+
+  // Invoked when the IsUserOrBrowserInitiatedLoad property changes.
+  virtual void OnIsUserOrBrowserInitiatedLoadChanged(
+      const PageNode* page_node) {}
 
   // Invoked when the UkmSourceId property changes.
   virtual void OnUkmSourceIdChanged(const PageNode* page_node) {}

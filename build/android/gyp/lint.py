@@ -8,6 +8,8 @@
 import argparse
 import logging
 import os
+import platform
+import re
 import shutil
 import sys
 import time
@@ -19,6 +21,9 @@ from util import server_utils
 import action_helpers  # build_utils adds //build to sys.path.
 
 _LINT_MD_URL = 'https://chromium.googlesource.com/chromium/src/+/main/build/android/docs/lint.md'
+
+# lint-graalvm is built for linux-x64 only.
+_IS_LINUX_X64 = sys.platform == 'linux' and platform.machine() == 'x86_64'
 
 # These checks are not useful for chromium.
 _DISABLED_ALWAYS = [
@@ -44,6 +49,7 @@ _DISABLED_ALWAYS = [
     "StringFormatCount",  # Has false-positives.
     "SwitchIntDef",  # Many C++ enums are not used at all in java.
     "ThreadConstraint",  # Disabled to avoid false positives (b/496928954).
+    "StaticInitializerThreadConstraint",  # Same as above (b/496928954).
     "Typos",  # Strings are committed in English first and later translated.
     "VisibleForTests",  # Does not recognize "ForTesting" methods.
     "UniqueConstants",  # Chromium enums allow aliases.
@@ -53,6 +59,11 @@ _DISABLED_ALWAYS = [
 
 _RES_ZIP_DIR = 'RESZIPS'
 _SRCJAR_DIR = 'SRCJARS'
+
+# Placeholder for the source root in the <ignore regexp="..."> entries of
+# lint-suppressions.xml files. See _SourceRootRegexp() and
+# //build/android/docs/lint.md.
+_SRC_PLACEHOLDER = '$SRC'
 
 
 def _SrcRelative(path):
@@ -72,6 +83,7 @@ def _GenerateProjectFile(
     aars=None,
     android_sdk_version=None,
     baseline_path=None,
+    aar_dirs=None,
 ):
     project = ElementTree.Element('project')
     root = ElementTree.SubElement(project, 'root')
@@ -127,10 +139,21 @@ def _GenerateProjectFile(
             resource = ElementTree.SubElement(main_module, 'resource')
             resource.set('file', resource_file)
     if aars:
+        aar_dirs = aar_dirs or {}
         aars = sorted(set(aars))  # Ensure these are unique.
         for aar in aars:
             lint = ElementTree.SubElement(main_module, 'aar')
             lint.set('file', aar)
+            if aar_dir := aar_dirs.get(aar):
+                # Already unpacked by the build, so lint need not unzip it.
+                lint.set('extracted', os.path.abspath(aar_dir))
+                # Lint reads an extracted aar's annotations.zip (typedefs and
+                # other external annotations of its classes) only when listed.
+                annotations = os.path.join(aar_dir, 'annotations.zip')
+                if os.path.exists(annotations):
+                    ElementTree.SubElement(main_module, 'annotations').set(
+                        'file', os.path.abspath(annotations)
+                    )
     return project
 
 
@@ -146,9 +169,27 @@ def _RetrieveBackportedMethods(backported_methods_path):
     return sorted(set(methods))
 
 
-def _GenerateConfigXmlTree(orig_config_path, backported_methods):
+def _SourceRootRegexp(pathvar_src):
+    """Returns a regexp matching the source root as lint spells it in paths.
+
+    Lint matches <ignore regexp="..."> against the absolute path of each file,
+    which is <output dir>/../../path/in/src for sources, but the canonical
+    /path/to/src/path/in/src for resource files (lint canonicalizes those).
+    """
+    return '(?:{}|{})'.format(
+        re.escape(os.path.realpath(pathvar_src)), re.escape(pathvar_src)
+    )
+
+
+def _GenerateConfigXmlTree(orig_config_path, backported_methods, src_regexp):
     if orig_config_path:
         root_node = ElementTree.parse(orig_config_path).getroot()
+        for ignore_node in root_node.iter('ignore'):
+            regexp = ignore_node.get('regexp')
+            if regexp and _SRC_PLACEHOLDER in regexp:
+                ignore_node.set(
+                    'regexp', regexp.replace(_SRC_PLACEHOLDER, src_regexp)
+                )
     else:
         root_node = ElementTree.fromstring('<lint/>')
 
@@ -189,13 +230,19 @@ def _RunLint(
     baseline,
     manifest_path,
     warnings_as_errors=False,
+    native_lint_path=None,
+    aar_dirs=None,
 ):
     logging.info('Lint starting')
-    if not cache_dir:
+    is_per_target_cache = not cache_dir
+    if is_per_target_cache:
         # Use per-target cache directory when --cache-dir is not used.
         cache_dir = os.path.join(lint_gen_dir, 'android_lint_cache')
+        # Clear any stale or partially extracted AARs from interrupted runs;
+        # Lint skips unpacking an AAR if its cache subdirectory already exists.
+        shutil.rmtree(cache_dir, ignore_errors=True)
         # Lint complains if the directory does not exist.
-        os.makedirs(cache_dir, exist_ok=True)
+        os.makedirs(cache_dir)
 
     if baseline and not os.path.exists(baseline):
         # Generating new baselines is only done locally, and requires more memory to
@@ -220,10 +267,18 @@ def _RunLint(
         root_path, os.path.relpath(build_utils.DIR_SOURCE_ROOT, start=root_path)
     )
 
-    cmd = build_utils.JavaCmd(xmx=lint_xmx) + [
-        '-cp',
-        lint_jar_path,
-        'com.android.tools.lint.Main',
+    if native_lint_path and _IS_LINUX_X64:
+        # A native image takes -Xmx but rejects most JVM flags. Size G1's
+        # threads for 2 CPUs, since many lint processes run in parallel.
+        cmd = [
+            native_lint_path,
+            '-Xmx' + lint_xmx,
+            '-XX:ActiveProcessorCount=2',
+        ]
+    else:
+        cmd = build_utils.JavaCmd(xmx=lint_xmx)
+        cmd += ['-cp', lint_jar_path, 'com.android.tools.lint.Main']
+    cmd += [
         '--sdk-home',
         android_sdk_root,
         '--jdk-home',
@@ -244,7 +299,9 @@ def _RunLint(
 
     logging.info('Generating config.xml')
     backported_methods = _RetrieveBackportedMethods(backported_methods_path)
-    config_xml_node = _GenerateConfigXmlTree(config_path, backported_methods)
+    config_xml_node = _GenerateConfigXmlTree(
+        config_path, backported_methods, _SourceRootRegexp(pathvar_src)
+    )
     generated_config_path = os.path.join(lint_gen_dir, 'config.xml')
     _WriteXmlFile(config_xml_node, generated_config_path)
     cmd.extend(['--config', generated_config_path])
@@ -294,6 +351,7 @@ def _RunLint(
         aars,
         android_sdk_version,
         baseline,
+        aar_dirs=aar_dirs,
     )
 
     project_xml_path = os.path.join(lint_gen_dir, 'project.xml')
@@ -319,9 +377,9 @@ def _RunLint(
 
     if creating_baseline and not warnings_as_errors:
         # Allow error code 6 when creating a baseline: ERRNO_CREATED_BASELINE
-        fail_func = lambda returncode, _: returncode not in (0, 6)
+        fail_func = lambda returncode, _: returncode not in (0, 6)  # noqa: E731
     else:
-        fail_func = lambda returncode, _: returncode != 0
+        fail_func = lambda returncode, _: returncode != 0  # noqa: E731
 
     # Lint writes an analytics.settings file here.
     env = os.environ.copy()
@@ -354,6 +412,8 @@ def _RunLint(
             if os.path.exists(project_xml_path):
                 os.unlink(project_xml_path)
             shutil.rmtree(partials_dir, ignore_errors=True)
+            if is_per_target_cache:
+                shutil.rmtree(cache_dir, ignore_errors=True)
 
         if failed:
             print('- For more help with lint in Chrome:', _LINT_MD_URL)
@@ -383,6 +443,11 @@ def _ParseArgs(argv):
     )
     parser.add_argument(
         '--lint-jar-path', required=True, help='Path to the lint jar.'
+    )
+    parser.add_argument(
+        '--native-lint-path',
+        help='Native image of the lint jar (lint-graalvm) to run instead of '
+        'the JVM on linux-x64.',
     )
     parser.add_argument(
         '--backported-methods',
@@ -419,6 +484,11 @@ def _ParseArgs(argv):
         help='A list of files containing java and kotlin source files.',
     )
     parser.add_argument('--aars', help='GN list of included aars.')
+    parser.add_argument(
+        '--aar-dirs',
+        help='GN list of directories that the --aars are unpacked into, in '
+        'the same order as --aars.',
+    )
     parser.add_argument('--srcjars', help='GN list of included srcjars.')
     parser.add_argument(
         '--manifest', help='Path to the merged AndroidManifest.xml.'
@@ -448,6 +518,9 @@ def _ParseArgs(argv):
     args = parser.parse_args(build_utils.ExpandFileArgs(argv))
     args.sources = action_helpers.parse_gn_list(args.sources)
     args.aars = action_helpers.parse_gn_list(args.aars)
+    args.aar_dirs = action_helpers.parse_gn_list(args.aar_dirs)
+    if args.aar_dirs:
+        assert len(args.aar_dirs) == len(args.aars), 'Need one dir per aar.'
     args.srcjars = action_helpers.parse_gn_list(args.srcjars)
     args.resource_sources = action_helpers.parse_gn_list(args.resource_sources)
     args.resource_zips = action_helpers.parse_gn_list(args.resource_zips)
@@ -516,6 +589,8 @@ def main():
         args.baseline,
         args.manifest,
         warnings_as_errors=args.warnings_as_errors,
+        native_lint_path=args.native_lint_path,
+        aar_dirs=dict(zip(args.aars, args.aar_dirs)),
     )
     logging.info('Creating stamp file')
     server_utils.MaybeTouch(args.stamp)

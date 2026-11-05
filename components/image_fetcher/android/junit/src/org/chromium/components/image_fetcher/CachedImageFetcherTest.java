@@ -16,8 +16,6 @@ import static org.mockito.Mockito.verifyNoMoreInteractions;
 
 import android.graphics.Bitmap;
 
-import jp.tomorrowkey.android.gifplayer.BaseGifImage;
-
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Rule;
@@ -32,6 +30,7 @@ import org.mockito.junit.MockitoRule;
 import org.chromium.base.Callback;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.RobolectricUtil;
+import org.chromium.net.NetError;
 import org.chromium.ui.test.util.MockitoHelper;
 import org.chromium.url.GURL;
 import org.chromium.url.JUnitTestGURLs;
@@ -48,7 +47,6 @@ public class CachedImageFetcherTest {
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
     @Mock ImageFetcherBridge mBridge;
     @Mock CachedImageFetcher.ImageLoader mImageLoader;
-    @Mock BaseGifImage mGif;
     @Mock Callback<Bitmap> mBitmapCallback;
     @Mock Callback<ImageDataFetchResult> mGifCallback;
 
@@ -64,11 +62,11 @@ public class CachedImageFetcherTest {
 
         mBitmap = Bitmap.createBitmap(WIDTH_PX, HEIGHT_PX, Bitmap.Config.ARGB_8888);
         mTestGifData = new byte[] {1, 2, 3};
-        doReturn(mTestGifData).when(mGif).getData();
         mImageDataFetchResult =
                 new ImageDataFetchResult(
                         mTestGifData,
-                        new RequestMetadata("image/gif", 200, "test_content_location_header"));
+                        new RequestMetadata(
+                                "image/gif", 200, NetError.OK, "test_content_location_header"));
         ArgumentCaptor<Callback<Bitmap>> bitmapCallbackCaptor = MockitoHelper.callbackCaptor();
         doAnswer(
                         (InvocationOnMock invocation) -> {
@@ -168,7 +166,7 @@ public class CachedImageFetcherTest {
 
     @Test
     public void testFetchGif_fileFoundOnDisk() {
-        doReturn(mGif).when(mImageLoader).tryToLoadGifFromDisk(PATH);
+        doReturn(mTestGifData).when(mImageLoader).tryToLoadGifFromDisk(PATH);
 
         ImageFetcher.Params params = ImageFetcher.Params.create(URL, UMA_CLIENT_NAME);
         mCachedImageFetcher.fetchGif(params, mGifCallback);

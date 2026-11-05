@@ -36,9 +36,13 @@
 #include <limits>
 
 #include "base/check_op.h"
+#include "base/i18n/chinese_helpers.h"
+#include "base/i18n/icubridge/default_icu_locale.h"
+#include "base/memory/raw_span.h"
 #include "base/no_destructor.h"
 #include "third_party/blink/renderer/platform/fonts/font_cache.h"
 #include "third_party/blink/renderer/platform/fonts/font_fallback_priority.h"
+#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/text/icu_error.h"
 #include "third_party/blink/renderer/platform/wtf/hash_map.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_hash.h"
@@ -81,12 +85,13 @@ struct FontMapping {
   }
 
   const char* family_name;
-  base::span<const char* const> candidate_family_names;
+  base::raw_span<const char* const, UnprotectedInRelease>
+      candidate_family_names;
 };
 
 struct ScriptToFontFamilies {
   UScriptCode script;
-  base::span<const char* const> families;
+  base::raw_span<const char* const, UnprotectedInRelease> families;
 };
 
 // A simple mapping from UScriptCode to family name. This is a sparse array,
@@ -95,7 +100,7 @@ class ScriptToFontMap {
  public:
   static constexpr UScriptCode kSize = USCRIPT_CODE_LIMIT;
 
-  ScriptToFontMap() : mappings_(kSize) {}
+  ScriptToFontMap() = default;
 
   FontMapping& operator[](UScriptCode script) { return mappings_[script]; }
 
@@ -106,13 +111,15 @@ class ScriptToFontMap {
   }
 
  private:
-  Vector<FontMapping> mappings_;
+  Vector<FontMapping> mappings_ = Vector<FontMapping>(kSize);
 };
 
 const AtomicString& FindMonospaceFontForScript(UScriptCode script) {
-  if (script == USCRIPT_ARABIC || script == USCRIPT_HEBREW) {
-    DEFINE_THREAD_SAFE_STATIC_LOCAL(AtomicString, kCourierNew, ("courier new"));
-    return kCourierNew;
+  if (script == USCRIPT_ARABIC || script == USCRIPT_ARABIC_NASTALIQ ||
+      script == USCRIPT_HEBREW) {
+    static base::NoDestructor<AtomicString> kCourierNew(
+        AtomicString::FromLiteral<"courier new">());
+    return *kCourierNew;
   }
   return g_null_atom;
 }
@@ -129,6 +136,9 @@ void InitializeScriptFontMap(ScriptToFontMap& script_font_map) {
   // with overrides and additional fallbacks as needed.
   // 1: https://msdn.microsoft.com/en-us/goglobal/bb688099.aspx
   static const char* const kArabicFonts[] = {"Tahoma", "Segoe UI"};
+  static const char* const kArabicNastaliqFonts[] = {
+      "Noto Nastaliq Urdu", "Aldhabi", "Urdu Typesetting", "Tahoma",
+      "Segoe UI"};
   static const char* const kArmenianFonts[] = {"Segoe UI", "Sylfaen"};
   static const char* const kBengaliFonts[] = {"Nirmala UI", "Vrinda"};
   static const char* const kBrahmiFonts[] = {"Segoe UI Historic"};
@@ -235,6 +245,7 @@ void InitializeScriptFontMap(ScriptToFontMap& script_font_map) {
 
   static const ScriptToFontFamilies kScriptToFontFamilies[] = {
       {USCRIPT_ARABIC, kArabicFonts},
+      {USCRIPT_ARABIC_NASTALIQ, kArabicNastaliqFonts},
       {USCRIPT_ARMENIAN, kArmenianFonts},
       {USCRIPT_BENGALI, kBengaliFonts},
       {USCRIPT_BRAHMI, kBrahmiFonts},
@@ -326,7 +337,7 @@ UScriptCode GetScript(int ucs4) {
   // If script is invalid, common or inherited or there's an error,
   // infer a script based on the unicode block of a character.
   if (script <= USCRIPT_INHERITED || U_FAILURE(err))
-    script = Character::GetScriptBasedOnUnicodeBlock(ucs4);
+    script = unicode::GetScriptBasedOnUnicodeBlock(ucs4);
   return script;
 }
 
@@ -371,38 +382,38 @@ const char* FirstAvailableMathFont(const SkFontMgr& font_manager) {
 
 const AtomicString& GetColorEmojiFont(const SkFontMgr& font_manager) {
   // `AtomicString` must be per thread, and calling `AvailableColorEmojiFont()`
-  // from `DEFINE_THREAD_SAFE_STATIC_LOCAL` may cause hangs. crbug.com/349456407
-  DEFINE_THREAD_SAFE_STATIC_LOCAL(ThreadSpecific<std::optional<AtomicString>>,
-                                  emoji_font, ());
-  if (!emoji_font->has_value()) {
-    emoji_font->emplace(AvailableColorEmojiFont(font_manager));
-    CHECK(!(**emoji_font).empty() || (**emoji_font).IsNull());
+  // from `base::NoDestructor` may cause hangs. crbug.com/349456407
+  static base::NoDestructor<ThreadSpecific<std::optional<AtomicString>>>
+      emoji_font;
+  if (!(*emoji_font)->has_value()) {
+    (*emoji_font)->emplace(AvailableColorEmojiFont(font_manager));
+    CHECK(!(***emoji_font).empty() || (***emoji_font).IsNull());
   }
-  return **emoji_font;
+  return ***emoji_font;
 }
 
 const AtomicString& GetMonoEmojiFont(const SkFontMgr& font_manager) {
   // `AtomicString` must be per thread, and calling `AvailableMonoEmojiFont()`
-  // from `DEFINE_THREAD_SAFE_STATIC_LOCAL` may cause hangs. crbug.com/349456407
-  DEFINE_THREAD_SAFE_STATIC_LOCAL(ThreadSpecific<std::optional<AtomicString>>,
-                                  emoji_font, ());
-  if (!emoji_font->has_value()) {
-    emoji_font->emplace(AvailableMonoEmojiFont(font_manager));
-    CHECK(!(**emoji_font).empty() || (**emoji_font).IsNull());
+  // from `base::NoDestructor` may cause hangs. crbug.com/349456407
+  static base::NoDestructor<ThreadSpecific<std::optional<AtomicString>>>
+      emoji_font;
+  if (!(*emoji_font)->has_value()) {
+    (*emoji_font)->emplace(AvailableMonoEmojiFont(font_manager));
+    CHECK(!(***emoji_font).empty() || (***emoji_font).IsNull());
   }
-  return **emoji_font;
+  return ***emoji_font;
 }
 
 const AtomicString& GetMathFont(const SkFontMgr& font_manager) {
   // `AtomicString` must be per thread, and calling `FirstAvailableMathFont()`
-  // from `DEFINE_THREAD_SAFE_STATIC_LOCAL` may cause hangs. crbug.com/349456407
-  DEFINE_THREAD_SAFE_STATIC_LOCAL(ThreadSpecific<std::optional<AtomicString>>,
-                                  math_font, ());
-  if (!math_font->has_value()) {
-    math_font->emplace(FirstAvailableMathFont(font_manager));
-    CHECK(!(**math_font).empty() || (**math_font).IsNull());
+  // from `base::NoDestructor` may cause hangs. crbug.com/349456407
+  static base::NoDestructor<ThreadSpecific<std::optional<AtomicString>>>
+      math_font;
+  if (!(*math_font)->has_value()) {
+    (*math_font)->emplace(FirstAvailableMathFont(font_manager));
+    CHECK(!(***math_font).empty() || (***math_font).IsNull());
   }
-  return **math_font;
+  return ***math_font;
 }
 
 const AtomicString& GetFontBasedOnUnicodeBlock(UBlockCode block_code,
@@ -411,7 +422,7 @@ const AtomicString& GetFontBasedOnUnicodeBlock(UBlockCode block_code,
     case UBLOCK_EMOTICONS:
     case UBLOCK_ENCLOSED_ALPHANUMERIC_SUPPLEMENT:
       // We call this function only when FallbackPriority is not kEmojiEmoji or
-      // kEmojiEmojiWithVS, so we need a text presentation of emoji.
+      // kEmojiEmojiWithVs, so we need a text presentation of emoji.
       return GetMonoEmojiFont(font_manager);
     case UBLOCK_PLAYING_CARDS:
     case UBLOCK_MISCELLANEOUS_SYMBOLS:
@@ -421,9 +432,9 @@ const AtomicString& GetFontBasedOnUnicodeBlock(UBlockCode block_code,
     case UBLOCK_ALCHEMICAL_SYMBOLS:
     case UBLOCK_DINGBATS:
     case UBLOCK_GOTHIC: {
-      DEFINE_THREAD_SAFE_STATIC_LOCAL(AtomicString, kSymbolFont,
-                                      ("Segoe UI Symbol"));
-      return kSymbolFont;
+      static base::NoDestructor<AtomicString> kSymbolFont(
+          AtomicString::FromLiteral<"Segoe UI Symbol">());
+      return *kSymbolFont;
     }
     case UBLOCK_ARROWS:
     case UBLOCK_MATHEMATICAL_OPERATORS:
@@ -477,11 +488,11 @@ const AtomicString& GetFontFamilyForScript(
   // Try the `AtomicString` cache first. `AtomicString` must be per thread, and
   // thus it can't be added to `ScriptToFontMap`.
   struct AtomicFamilies {
-    AtomicFamilies() : families(ScriptToFontMap::kSize) {}
-    Vector<std::optional<AtomicString>> families;
+    Vector<std::optional<AtomicString>> families =
+        Vector<std::optional<AtomicString>>(ScriptToFontMap::kSize);
   };
-  DEFINE_THREAD_SAFE_STATIC_LOCAL(ThreadSpecific<AtomicFamilies>, families, ());
-  std::optional<AtomicString>& family = (*families).families[script];
+  static base::NoDestructor<ThreadSpecific<AtomicFamilies>> families;
+  std::optional<AtomicString>& family = (**families).families[script];
   if (family) {
     return *family;
   }
@@ -538,7 +549,7 @@ const AtomicString& GetFallbackFamily(
     script = USCRIPT_HAN;
 
   if (script == USCRIPT_COMMON)
-    script = Character::GetScriptBasedOnUnicodeBlock(character);
+    script = unicode::GetScriptBasedOnUnicodeBlock(character);
 
   // For unified-Han scripts, try the lang attribute, system, or
   // accept-languages.
@@ -548,6 +559,10 @@ const AtomicString& GetFallbackFamily(
       script = locale_for_han->GetScriptForHan();
     // If still unknown, USCRIPT_HAN uses UI locale.
     // See initializeScriptFontMap().
+  } else if (script == USCRIPT_ARABIC && content_locale &&
+             content_locale->GetScriptForFont() == USCRIPT_ARABIC_NASTALIQ &&
+             RuntimeEnabledFeatures::NastaliqScriptEnabled()) [[unlikely]] {
+    script = USCRIPT_ARABIC_NASTALIQ;
   }
 
   script_out = script;
@@ -569,45 +584,46 @@ const AtomicString& GetFallbackFamily(
   int plane = character >> 16;
   switch (plane) {
     case 1: {
-      DEFINE_THREAD_SAFE_STATIC_LOCAL(AtomicString, kPlane1, ("code2001"));
-      return kPlane1;
+      static base::NoDestructor<AtomicString> kPlane1(
+          AtomicString::FromLiteral<"code2001">());
+      return *kPlane1;
     }
     case 2: {
       // Extension I (category IX) is part of Plane 2: U+2EBF0–U+2EE5F. As per
       // GB18030-2022, these characters must be rendered using simsun-extg
       // because simsun-extg supports these newer and extended ideographs.
       if (character >= 0x2EBF0 && character <= 0x2EE5F) {
-        DEFINE_THREAD_SAFE_STATIC_LOCAL(AtomicString, kPlane2exti,
-                                        ("simsun-extg"));
-        return kPlane2exti;
+        static base::NoDestructor<AtomicString> kPlane2exti(
+            AtomicString::FromLiteral<"simsun-extg">());
+        return *kPlane2exti;
       }
       // Use a Traditional Chinese ExtB font if in Traditional Chinese locale.
       // Otherwise, use a Simplified Chinese ExtB font. Windows Japanese
       // fonts do support a small subset of ExtB (that are included in JIS X
       // 0213), but its coverage is rather sparse.
       // Eventually, this should be controlled by lang/xml:lang.
-      if (icu::Locale::getDefault() == icu::Locale::getTraditionalChinese()) {
-        DEFINE_THREAD_SAFE_STATIC_LOCAL(AtomicString, kPlane2zht,
-                                        ("pmingliu-extb"));
-        return kPlane2zht;
+      if (base::i18n::IsTraditionalChinese(base::i18n::GetDefaultIcuLocale())) {
+        static base::NoDestructor<AtomicString> kPlane2zht(
+            AtomicString::FromLiteral<"pmingliu-extb">());
+        return *kPlane2zht;
       }
-      DEFINE_THREAD_SAFE_STATIC_LOCAL(AtomicString, kPlane2zhs,
-                                      ("simsun-extb"));
-      return kPlane2zhs;
+      static base::NoDestructor<AtomicString> kPlane2zhs(
+          AtomicString::FromLiteral<"simsun-extb">());
+      return *kPlane2zhs;
     }
     case 3:
       // Plane 3 includes Extension G (category GX): U+30000–U+3134F and
       // Extension H (category HX): U+31350–U+323AF. Both are required by
       // GB18030-2022 and must be rendered using simsun-extg because simsun-extg
       // supports these newer and extended ideographs.
-      DEFINE_THREAD_SAFE_STATIC_LOCAL(AtomicString, kPlane3extgh,
-                                      ("simsun-extg"));
-      return kPlane3extgh;
+      static base::NoDestructor<AtomicString> kPlane3extgh(
+          AtomicString::FromLiteral<"simsun-extg">());
+      return *kPlane3extgh;
   }
 
-  DEFINE_THREAD_SAFE_STATIC_LOCAL(AtomicString, kLastResort,
-                                  ("lucida sans unicode"));
-  return kLastResort;
+  static base::NoDestructor<AtomicString> kLastResort(
+      AtomicString::FromLiteral<"lucida sans unicode">());
+  return *kLastResort;
 }
 
 }  // namespace blink

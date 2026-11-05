@@ -45,8 +45,11 @@
 #include <unistd.h>
 #endif  // BUILDFLAG(IS_POSIX)
 
-#if BUILDFLAG(IS_LINUX)
+#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_WIN)
 #include "remoting/base/crash/crash_reporting_crashpad.h"
+#endif  // BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_WIN)
+
+#if BUILDFLAG(IS_LINUX)
 #include "remoting/host/linux/host_types.h"
 #include "remoting/host/setup/daemon_controller_delegate_linux_single_process.h"
 #include "remoting/host/setup/start_host_as_root.h"
@@ -56,7 +59,6 @@
 #include <windows.h>
 
 #include "base/process/process_info.h"
-#include "remoting/base/crash/crash_reporting_breakpad.h"
 #endif  // BUILDFLAG(IS_WIN)
 
 namespace remoting {
@@ -446,11 +448,9 @@ int StartHostMain(int argc, char** argv) {
   // setup), which does not affect the actual host daemon process (which will
   // still force crash reporting on corp users).
   if (!command_line->HasSwitch(kDisableCrashReportingSwitchName)) {
-#if BUILDFLAG(IS_LINUX)
+#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_WIN)
     InitializeCrashpadReporting();
-#elif BUILDFLAG(IS_WIN)
-    InitializeBreakpadReporting();
-#endif  // BUILDFLAG(IS_LINUX)
+#endif  // BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_WIN)
   }
 #endif  // defined(REMOTING_ENABLE_CRASH_REPORTING)
 
@@ -467,11 +467,12 @@ int StartHostMain(int argc, char** argv) {
     }
   }
 
-  DaemonController::SetHostType(host_type);
-  // If the host type is not specified, `host_type` will be nullptr so we use
-  // DaemonController to determine the current host type if it is already
-  // running. The currently running host will be restarted instead of fallback
-  // to the default host type.
+  // If the host type is not specified, DaemonController uses the configured
+  // host type, so that the configured host is set up again with its host type
+  // instead of the default one.
+  if (host_type) {
+    DaemonController::SetHostTypeForSetup(*host_type);
+  }
   bool is_multi_process = DaemonController::Create()->is_multi_process();
 
   // If the user is trying to set up a multi-process host unelevated, we just
@@ -499,7 +500,11 @@ int StartHostMain(int argc, char** argv) {
   // multi-process host, we just set up everything as root using the common
   // code path.
   if (getuid() == 0 && !is_multi_process) {
-    return remoting::StartHostAsRoot();
+    // `host_type` is only null here if the configured host type, if any, is
+    // single-process, which is also the default host type (see
+    // DaemonController::Create()).
+    return remoting::StartHostAsRoot(
+        host_type ? *host_type : HostType::GetDefaultHostType());
   }
 #endif  // BUILDFLAG(IS_LINUX)
 

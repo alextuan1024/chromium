@@ -61,7 +61,7 @@ namespace {
 
 // Converts a time object to the format used in sync protobufs (microseconds
 // since the Windows epoch).
-int64_t TimeToProtoTime(const base::Time t) {
+int64_t TimeToProtoTime(base::Time t) {
   return t.ToDeltaSinceWindowsEpoch().InMicroseconds();
 }
 
@@ -93,9 +93,9 @@ SendTabToSelfEntry::SendTabToSelfEntry(
   DCHECK(IsValidUrl(url_));
 }
 
-SendTabToSelfEntry::~SendTabToSelfEntry() = default;
-
 SendTabToSelfEntry::SendTabToSelfEntry(const SendTabToSelfEntry&) = default;
+
+SendTabToSelfEntry::~SendTabToSelfEntry() = default;
 
 const std::string& SendTabToSelfEntry::GetGUID() const {
   return guid_;
@@ -220,7 +220,8 @@ SendTabToSelfLocal SendTabToSelfEntry::AsLocalProto() const {
         TimeToProtoTime(GetActivatedTime()));
   }
 
-  sync_pb::PageContext pb_page_context = PageContextToProto(page_context_);
+  sync_pb::PageContext pb_page_context =
+      PageContextToProto(page_context_, GetURL());
   if (const size_t size = pb_page_context.ByteSizeLong();
       size > 0 && size <= kMaxPageContextSizeBytes) {
     *pb_entry->mutable_page_context() = std::move(pb_page_context);
@@ -275,7 +276,7 @@ std::unique_ptr<SendTabToSelfEntry> SendTabToSelfEntry::FromProto(
   auto entry = std::make_unique<SendTabToSelfEntry>(
       std::move(guid), url, pb_entry.title(), shared_time,
       pb_entry.device_name(), pb_entry.target_device_sync_cache_guid(),
-      PageContextFromProto(pb_entry.page_context()),
+      PageContextFromProto(pb_entry.page_context(), url),
       std::move(navigation_history));
 
   if (pb_entry.has_opened_time_windows_epoch_micros()) {
@@ -314,19 +315,6 @@ bool SendTabToSelfEntry::IsExpired(base::Time current_time) const {
   return (current_time.ToDeltaSinceWindowsEpoch() -
               GetSharedTime().ToDeltaSinceWindowsEpoch() >=
           kExpiryTime);
-}
-
-std::unique_ptr<SendTabToSelfEntry> SendTabToSelfEntry::FromRequiredFields(
-    std::string guid,
-    const GURL& url,
-    std::string target_device_sync_cache_guid) {
-  if (guid.empty() || !IsValidUrl(url)) {
-    return nullptr;
-  }
-  return std::make_unique<SendTabToSelfEntry>(
-      std::move(guid), url, "", base::Time(), "",
-      std::move(target_device_sync_cache_guid), PageContext{},
-      NavigationHistory{});
 }
 
 }  // namespace send_tab_to_self

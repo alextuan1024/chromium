@@ -17,13 +17,18 @@
 #include "third_party/blink/renderer/core/editing/ime/edit_context.h"
 #include "third_party/blink/renderer/core/editing/ime/ime_text_span_vector_builder.h"
 #include "third_party/blink/renderer/core/editing/ime/input_method_controller.h"
+#include "third_party/blink/renderer/core/editing/iterators/character_iterator.h"
+#include "third_party/blink/renderer/core/editing/iterators/text_iterator_behavior.h"
 #include "third_party/blink/renderer/core/editing/plain_text_range.h"
+#include "third_party/blink/renderer/core/editing/visible_units.h"
 #include "third_party/blink/renderer/core/exported/web_plugin_container_impl.h"
 #include "third_party/blink/renderer/core/frame/local_frame.h"
+#include "third_party/blink/renderer/core/frame/local_frame_view.h"
 #include "third_party/blink/renderer/core/frame/web_local_frame_impl.h"
 #include "third_party/blink/renderer/core/input_type_names.h"
 #include "third_party/blink/renderer/core/page/focus_controller.h"
 #include "third_party/blink/renderer/core/page/page.h"
+#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 
 namespace blink {
 
@@ -154,6 +159,17 @@ bool WebInputMethodControllerImpl::CommitText(
     const std::vector<ui::ImeTextSpan>& ime_text_spans,
     const WebRange& replacement_range,
     int relative_caret_position) {
+  return CommitText(text, ime_text_spans, replacement_range,
+                    relative_caret_position,
+                    CommitReplacementSelectionBehavior::kKeepSelection);
+}
+
+bool WebInputMethodControllerImpl::CommitText(
+    const WebString& text,
+    const std::vector<ui::ImeTextSpan>& ime_text_spans,
+    const WebRange& replacement_range,
+    int relative_caret_position,
+    CommitReplacementSelectionBehavior replacement_selection_behavior) {
   if (!text.IsEmpty()) {
     LocalFrame::NotifyUserActivation(
         GetFrame(), mojom::blink::UserActivationNotificationType::kInteraction);
@@ -174,10 +190,16 @@ bool WebInputMethodControllerImpl::CommitText(
   GetFrame()->GetDocument()->UpdateStyleAndLayout(DocumentUpdateReason::kInput);
 
   if (!replacement_range.IsNull()) {
+    PlainTextRange plain_text_range(replacement_range.StartOffset(),
+                                    replacement_range.EndOffset());
+    if (replacement_selection_behavior ==
+        CommitReplacementSelectionBehavior::kMoveCaret) {
+      return GetInputMethodController().ReplaceTextAndMoveCaret(
+          text, plain_text_range, relative_caret_position);
+    }
     return GetInputMethodController().ReplaceTextAndKeepSelection(
         text, ImeTextSpanVectorBuilder::Build(ime_text_spans),
-        PlainTextRange(replacement_range.StartOffset(),
-                       replacement_range.EndOffset()));
+        plain_text_range);
   }
 
   return GetInputMethodController().CommitText(
@@ -245,15 +267,49 @@ bool WebInputMethodControllerImpl::GetCompositionCharacterBounds(
     return false;
 
   int character_count = range.length();
-  int offset = range.StartOffset();
   std::vector<gfx::Rect> result(static_cast<size_t>(character_count));
-  gfx::Rect rect;
-  for (int i = 0; i < character_count; ++i) {
-    if (!web_frame_->FirstRectForCharacterRange(offset + i, 1, rect)) {
-      DLOG(ERROR) << "Could not retrieve character rectangle at " << i;
+
+  if (RuntimeEnabledFeatures::FastCompositionCharacterBoundsEnabled()) {
+    // Walk the editable's text once with a single CharacterIterator: advance
+    // it to `range.StartOffset()`, the first composition character, and then
+    // one character at a time, computing the bounds of each character's
+    // range. The iterator starts at the beginning of the editable and uses the
+    // same behavior as PlainTextRange, which CompositionRange() used to compute
+    // `range`, so its character offsets match the offsets in `range`.
+    // Iterating over just the composition range would not always visit the
+    // same characters, because whether TextIterator emits a separator, such as
+    // the newlines after a <p>, depends on what it has already emitted.
+    // CompositionRange() has already updated style and layout.
+    LocalFrame* frame = GetFrame();
+    Element* editable =
+        frame->Selection().RootEditableElementOrDocumentElement();
+    if (!editable) {
       return false;
     }
-    result[i] = rect;
+    CharacterIterator it(EphemeralRange::RangeOfContents(*editable),
+                         TextIteratorBehavior::DefaultRangeLengthBehavior());
+    it.Advance(range.StartOffset());
+    for (int i = 0; i < character_count; ++i) {
+      if (it.AtEnd()) {
+        DLOG(ERROR) << "Could not retrieve character rectangle at " << i;
+        return false;
+      }
+      const EphemeralRange character_range(it.StartPosition(),
+                                           it.EndPosition());
+      result[i] =
+          frame->View()->FrameToViewport(FirstRectForRange(character_range));
+      it.Advance(1);
+    }
+  } else {
+    int offset = range.StartOffset();
+    gfx::Rect rect;
+    for (int i = 0; i < character_count; ++i) {
+      if (!web_frame_->FirstRectForCharacterRange(offset + i, 1, rect)) {
+        DLOG(ERROR) << "Could not retrieve character rectangle at " << i;
+        return false;
+      }
+      result[i] = rect;
+    }
   }
 
   bounds.swap(result);

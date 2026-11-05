@@ -436,7 +436,7 @@ void DataTypeWorker::EnableEncryption() {
 
   encryption_enabled_ = true;
   // UpdateTypeEncryptionKeyName() might return false if the cryptographer does
-  // not have a default key yet.
+  // not have a primary key yet.
   if (UpdateTypeEncryptionKeyName()) {
     // Push the new key name to the processor.
     SendPendingUpdatesToProcessorIfReady();
@@ -499,7 +499,7 @@ void DataTypeWorker::ProcessGetUpdatesResponse(
       // Clean up all the pending updates because a new GC directive has been
       // received which means that all existing data should be cleaned up.
       pending_updates_.clear();
-      entries_pending_decryption_.clear();
+      updates_pending_decryption_by_server_id_.clear();
       // Since there are no more entries pending decryption, there are also no
       // more unknown encryption keys.
       unknown_encryption_keys_by_name_.clear();
@@ -521,7 +521,7 @@ void DataTypeWorker::ProcessGetUpdatesResponse(
                    update.entity.collaboration_metadata->collaboration_id()
                        .value());
       });
-      std::erase_if(entries_pending_decryption_,
+      std::erase_if(updates_pending_decryption_by_server_id_,
                     [&active_collaborations](const auto& pending_decryption) {
                       const sync_pb::SyncEntity& entity =
                           pending_decryption.second;
@@ -562,7 +562,8 @@ void DataTypeWorker::ProcessGetUpdatesResponse(
       case SUCCESS:
         pending_updates_.push_back(std::move(response_data));
         // Override any previously undecryptable update for the same id.
-        entries_pending_decryption_.erase(update_entity->id_string());
+        updates_pending_decryption_by_server_id_.erase(
+            update_entity->id_string());
         break;
       case DECRYPTION_PENDING: {
         SyncRecordDataTypeUpdateDropReason(UpdateDropReason::kDecryptionPending,
@@ -580,20 +581,23 @@ void DataTypeWorker::ProcessGetUpdatesResponse(
           // `server_id`, don't clear it: outdated data is better than nothing.
           // Such entry should be encrypted with another key, since `key_name`'s
           // queued updates would've have been dropped by now.
-          DCHECK(!entries_pending_decryption_.contains(server_id) ||
-                 GetEncryptionKeyName(entries_pending_decryption_[server_id]) !=
-                     key_name);
+          DCHECK(
+              !updates_pending_decryption_by_server_id_.contains(server_id) ||
+              GetEncryptionKeyName(
+                  updates_pending_decryption_by_server_id_[server_id]) !=
+                  key_name);
           SyncRecordDataTypeUpdateDropReason(
               UpdateDropReason::kDecryptionPendingForTooLong, type_);
           break;
         }
         // Copy the sync entity for later decryption.
-        // TODO(crbug.com/40805099): Any write to `entries_pending_decryption_`
-        // should do like DeduplicatePendingUpdatesBasedOnServerId() and honor
-        // entity version. Additionally, it should look up the same server id
-        // in `pending_updates_` and compare versions. In fact, the 2 containers
+        // TODO(crbug.com/40805099): Any write to
+        // `updates_pending_decryption_by_server_id_` should do like
+        // DeduplicatePendingUpdatesBasedOnServerId() and honor entity version.
+        // Additionally, it should look up the same server id in
+        // `pending_updates_` and compare versions. In fact, the 2 containers
         // should probably be moved to a separate class with unit tests.
-        entries_pending_decryption_[server_id] = *update_entity;
+        updates_pending_decryption_by_server_id_[server_id] = *update_entity;
         break;
       }
       case FAILED_TO_DECRYPT:
@@ -774,7 +778,7 @@ void DataTypeWorker::ApplyUpdates(StatusController* status, bool cycle_done) {
     }
   }
 
-  if (!entries_pending_decryption_.empty() &&
+  if (!updates_pending_decryption_by_server_id_.empty() &&
       (!encryption_enabled_ || cryptographer_->CanEncrypt())) {
     DCHECK(BlockForEncryption());
     for (auto& [key, info] : unknown_encryption_keys_by_name_) {
@@ -855,7 +859,7 @@ void DataTypeWorker::SendPendingUpdatesToProcessorIfReady() {
   DCHECK(!AlwaysEncryptedUserTypes().Has(type_) || encryption_enabled_);
   DCHECK(!encryption_enabled_ ||
          !data_type_state_.encryption_key_name().empty());
-  DCHECK(entries_pending_decryption_.empty());
+  DCHECK(updates_pending_decryption_by_server_id_.empty());
 
   DVLOG(1) << DataTypeToDebugString(type_) << ": "
            << base::StringPrintf("Delivering %" PRIuS " applicable updates.",
@@ -895,8 +899,11 @@ void DataTypeWorker::NudgeIfReadyToCommit() {
 }
 
 std::unique_ptr<CommitContribution> DataTypeWorker::GetContribution(
-    size_t max_entries) {
+    size_t max_entries,
+    size_t max_target_specifics_bytes) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  CHECK_GT(max_entries, 0u);
+  CHECK_GT(max_target_specifics_bytes, 0u);
   DCHECK(
       IsInitialSyncAtLeastPartiallyDone(data_type_state_.initial_sync_state()));
   DCHECK(data_type_processor_);
@@ -909,7 +916,15 @@ std::unique_ptr<CommitContribution> DataTypeWorker::GetContribution(
 
   // Client shouldn't be committing data to server when it hasn't processed all
   // updates it received.
-  DCHECK(entries_pending_decryption_.empty());
+  DCHECK(updates_pending_decryption_by_server_id_.empty());
+
+  // Encrypted data is Base64-encoded (~4/3 size expansion), so scale down the
+  // unencrypted byte limit passed to the processor accordingly.
+  const size_t max_target_specifics_bytes_before_encryption =
+      encryption_enabled_
+          ? std::max<size_t>(
+                1, max_target_specifics_bytes - max_target_specifics_bytes / 4)
+          : max_target_specifics_bytes;
 
   // Pull local changes from the processor (in the model thread/sequence). Note
   // that this takes place independently of nudges (i.e.
@@ -918,7 +933,7 @@ std::unique_ptr<CommitContribution> DataTypeWorker::GetContribution(
   scoped_refptr<GetLocalChangesRequest> request =
       base::MakeRefCounted<GetLocalChangesRequest>();
   data_type_processor_->GetLocalChanges(
-      max_entries,
+      max_entries, max_target_specifics_bytes_before_encryption,
       base::BindOnce(&GetLocalChangesRequest::SetResponse, request));
   request->WaitForResponseOrCancelation(cancelation_signal_);
   CommitRequestDataList response;
@@ -931,14 +946,10 @@ std::unique_ptr<CommitContribution> DataTypeWorker::GetContribution(
   }
 
   DCHECK(response.size() <= max_entries);
-  if (response.size() < max_entries) {
-    // In case when response.size() equals to `max_entries`, there will be
-    // another commit request (see CommitProcessor::GatherCommitContributions).
-    // Hence, in general it should be normal if `has_local_changes_state_` is
-    // `kNewlyNudgedLocalChanges` (even if there are no more items in the
-    // processor). In other words, `kAllNudgedLocalChangesInFlight` means that
-    // there might not be another commit request in the current sync cycle (but
-    // still possible if some other data type contributes `max_entities`).
+  if (!request->has_more_local_changes()) {
+    // In absence of additional local changes reported by the processor, there
+    // is no need to nudge for commit again until new changes happen. If Commit
+    // fails, it will transition back to `kNewlyNudgedLocalChanges`.
     has_local_changes_state_ = kAllNudgedLocalChangesInFlight;
   }
 
@@ -959,7 +970,7 @@ std::unique_ptr<CommitContribution> DataTypeWorker::GetContribution(
   DCHECK(!AlwaysEncryptedUserTypes().Has(type_) || encryption_enabled_);
   DCHECK(!encryption_enabled_ ||
          (data_type_state_.encryption_key_name() ==
-          cryptographer_->GetDefaultEncryptionKeyName()));
+          cryptographer_->GetPrimaryEncryptionKeyName()));
 
   return std::make_unique<CommitContributionImpl>(
       type_, data_type_state_.type_context(), std::move(response),
@@ -967,7 +978,7 @@ std::unique_ptr<CommitContribution> DataTypeWorker::GetContribution(
                      weak_ptr_factory_.GetWeakPtr()),
       base::BindOnce(&DataTypeWorker::OnFullCommitFailure,
                      weak_ptr_factory_.GetWeakPtr()),
-      passphrase_type_);
+      passphrase_type_, request->has_more_local_changes());
 }
 
 bool DataTypeWorker::HasLocalChanges() const {
@@ -1001,7 +1012,7 @@ size_t DataTypeWorker::EstimateMemoryUsage() const {
   using base::trace_event::EstimateMemoryUsage;
   size_t memory_usage = 0;
   memory_usage += EstimateMemoryUsage(data_type_state_);
-  memory_usage += EstimateMemoryUsage(entries_pending_decryption_);
+  memory_usage += EstimateMemoryUsage(updates_pending_decryption_by_server_id_);
   memory_usage += EstimateMemoryUsage(pending_updates_);
   return memory_usage;
 }
@@ -1015,7 +1026,7 @@ bool DataTypeWorker::CanCommitItems() const {
 }
 
 bool DataTypeWorker::BlockForEncryption() const {
-  if (!entries_pending_decryption_.empty()) {
+  if (!updates_pending_decryption_by_server_id_.empty()) {
     return true;
   }
 
@@ -1038,23 +1049,23 @@ bool DataTypeWorker::UpdateTypeEncryptionKeyName() {
   }
 
   if (!cryptographer_->CanEncrypt()) {
-    // There's no selected default key. Let's wait for one to be selected before
+    // There's no selected primary key. Let's wait for one to be selected before
     // updating.
     return false;
   }
 
-  std::string default_key_name = cryptographer_->GetDefaultEncryptionKeyName();
-  DCHECK(!default_key_name.empty());
+  std::string primary_key_name = cryptographer_->GetPrimaryEncryptionKeyName();
+  DCHECK(!primary_key_name.empty());
   DVLOG(1) << DataTypeToDebugString(type_) << ": Updating encryption key "
            << data_type_state_.encryption_key_name() << " -> "
-           << default_key_name;
-  data_type_state_.set_encryption_key_name(default_key_name);
+           << primary_key_name;
+  data_type_state_.set_encryption_key_name(primary_key_name);
   return true;
 }
 
 void DataTypeWorker::DecryptStoredEntities() {
-  for (auto it = entries_pending_decryption_.begin();
-       it != entries_pending_decryption_.end();) {
+  for (auto it = updates_pending_decryption_by_server_id_.begin();
+       it != updates_pending_decryption_by_server_id_.end();) {
     const sync_pb::SyncEntity& encrypted_update = it->second;
 
     CHECK_NE(encrypted_update.version(), kUncommittedVersion);
@@ -1064,7 +1075,7 @@ void DataTypeWorker::DecryptStoredEntities() {
                                        &response_data)) {
       case SUCCESS:
         pending_updates_.push_back(std::move(response_data));
-        it = entries_pending_decryption_.erase(it);
+        it = updates_pending_decryption_by_server_id_.erase(it);
         break;
       case DECRYPTION_PENDING:
         // Still cannot decrypt, move on and keep this one for later.
@@ -1074,7 +1085,7 @@ void DataTypeWorker::DecryptStoredEntities() {
         // Decryption error should be permanent (e.g. corrupt data), since
         // decryption keys are up-to-date. Let's ignore this update to avoid
         // blocking other updates.
-        it = entries_pending_decryption_.erase(it);
+        it = updates_pending_decryption_by_server_id_.erase(it);
         break;
     }
   }
@@ -1201,14 +1212,15 @@ void DataTypeWorker::MaybeDropPendingUpdatesEncryptedWith(
     return;
   }
 
-  std::erase_if(entries_pending_decryption_, [&](const auto& id_and_update) {
-    return key_name == GetEncryptionKeyName(id_and_update.second);
-  });
+  std::erase_if(updates_pending_decryption_by_server_id_,
+                [&](const auto& id_and_update) {
+                  return key_name == GetEncryptionKeyName(id_and_update.second);
+                });
 }
 
 void DataTypeWorker::RemoveKeysNoLongerUnknown() {
   std::set<std::string> keys_blocking_updates;
-  for (const auto& [id, update] : entries_pending_decryption_) {
+  for (const auto& [id, update] : updates_pending_decryption_by_server_id_) {
     const std::string key_name = GetEncryptionKeyName(update);
     DCHECK(!key_name.empty());
     keys_blocking_updates.insert(key_name);
@@ -1560,14 +1572,19 @@ void GetLocalChangesRequest::WaitForResponseOrCancelation(
   cancelation_signal->UnregisterHandler(this);
 }
 
-void GetLocalChangesRequest::SetResponse(
-    CommitRequestDataList&& local_changes) {
+void GetLocalChangesRequest::SetResponse(CommitRequestDataList&& local_changes,
+                                         bool has_more_local_changes) {
   response_ = std::move(local_changes);
+  has_more_local_changes_ = has_more_local_changes;
   response_accepted_.Signal();
 }
 
 CommitRequestDataList&& GetLocalChangesRequest::ExtractResponse() {
   return std::move(response_);
+}
+
+bool GetLocalChangesRequest::has_more_local_changes() const {
+  return has_more_local_changes_;
 }
 
 }  // namespace syncer

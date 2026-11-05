@@ -13,6 +13,7 @@
 #include <memory>
 #include <optional>
 #include <unordered_map>
+#include <vector>
 
 #include "base/apple/scoped_cftyperef.h"
 #include "base/feature_list.h"
@@ -28,15 +29,15 @@
 #include "ui/gfx/hdr_metadata.h"
 #include "ui/gfx/mac/io_surface.h"
 #include "ui/gfx/video_types.h"
+#include "ui/gl/ca_renderer_layer_params.h"
 
 @class AVSampleBufferDisplayLayer;
+@class CAShapeLayer;
 
 namespace ui {
 
 ACCELERATED_WIDGET_MAC_EXPORT BASE_DECLARE_FEATURE(
     kFullscreenLowPowerBackdropMac);
-
-struct CARendererLayerParams;
 
 enum class CALayerType {
   // A CALayer with contents set to an IOSurface by setContents.
@@ -45,6 +46,8 @@ enum class CALayerType {
   kVideo,
   // A CAMetalLayer that copies half-float or 10-bit IOSurfaces.
   kHDRCopier,
+  // A CABackdropLayer with CAFilter backdrop filters.
+  kBackdropFilter,
 };
 
 // The CARendererLayerTree will construct a hierarchy of CALayers from a linear
@@ -231,18 +234,11 @@ class ACCELERATED_WIDGET_MAC_EXPORT CARendererLayerTree {
   class ContentLayer {
    public:
     ContentLayer(TransformLayer* parent_layer,
-                 base::apple::ScopedCFTypeRef<IOSurfaceRef> io_surface,
-                 base::apple::ScopedCFTypeRef<CVPixelBufferRef> cv_pixel_buffer,
-                 const gfx::RectF& contents_rect,
-                 const gfx::Rect& rect,
-                 SkColor4f background_color,
-                 const gfx::ColorSpace& color_space,
-                 unsigned edge_aa_mask,
-                 float opacity,
-                 bool nearest_neighbor_filter,
-                 const gfx::HDRMetadata& hdr_metadata,
-                 gfx::ProtectedVideoType protected_video_type,
-                 bool is_render_pass_draw_quad);
+                 const CARendererLayerParams& params);
+    ContentLayer(TransformLayer* parent_layer,
+                 std::vector<CABackdropFilter> backdrop_filters,
+                 const gfx::RRectF& backdrop_filter_bounds,
+                 const std::optional<gfx::RectF>& backdrop_filter_clip);
 
     ContentLayer(ContentLayer&& layer) = delete;
     ContentLayer(const ContentLayer&) = delete;
@@ -251,6 +247,10 @@ class ACCELERATED_WIDGET_MAC_EXPORT CARendererLayerTree {
     // See the behavior of RootLayer for the effects of these functions.
     ~ContentLayer();
     void CommitToCA(CALayer* last_committed_ca_layer);
+    void CommitContentsToCA(bool update_contents, bool update_contents_rect);
+    void CommitBackdropFilterToCA(bool update_backdrop_filter,
+                                  bool update_backdrop_filter_bounds);
+    void CommitDebugBordersToCA(bool update_anything);
 
     CARendererLayerTree* tree() { return parent_layer_->tree(); }
     void UpdateMapAndMatchOldLayers(CALayerMap& old_ca_layer_map,
@@ -292,7 +292,12 @@ class ACCELERATED_WIDGET_MAC_EXPORT CARendererLayerTree {
     gfx::ProtectedVideoType protected_video_type_ =
         gfx::ProtectedVideoType::kClear;
 
+    std::vector<CABackdropFilter> backdrop_filters_;
+    gfx::RRectF backdrop_filter_bounds_;
+    std::optional<gfx::RectF> backdrop_filter_clip_;
+
     CALayer* __strong ca_layer_;
+    CAShapeLayer* __strong backdrop_mask_ca_layer_;
 
     // If this layer's contents can be represented as an
     // AVSampleBufferDisplayLayer, then |ca_layer| will point to |av_layer|.

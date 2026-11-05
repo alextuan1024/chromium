@@ -13,11 +13,14 @@
 #include <optional>
 #include <vector>
 
+#include "base/cancelable_callback.h"
 #include "base/containers/circular_deque.h"
 #include "base/containers/flat_map.h"
 #include "base/containers/flat_set.h"
+#include "base/feature_list.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
+#include "base/time/time.h"
 #include "build/build_config.h"
 #include "gpu/command_buffer/common/debug_marker_manager.h"
 #include "gpu/command_buffer/common/discardable_handle.h"
@@ -31,10 +34,12 @@
 #include "gpu/command_buffer/service/shared_context_state.h"
 #include "gpu/command_buffer/service/shared_image/shared_image_representation.h"
 #include "gpu/command_buffer/service/texture_manager.h"
+#include "gpu/gpu_gles2_export.h"
 #include "ui/gl/gl_bindings.h"
 #include "ui/gl/gl_context.h"
 #include "ui/gl/gl_fence.h"
 #include "ui/gl/gl_surface.h"
+#include "ui/gl/scoped_make_current.h"
 
 namespace gl {
 class GLFence;
@@ -45,6 +50,23 @@ namespace gpu {
 class GLTexturePassthroughImageRepresentation;
 
 namespace gles2 {
+
+// Kill switch for requiring an active shared image access for GL commands that
+// read shared image textures.
+// TODO(crbug.com/577345414): Remove after a safe rollout.
+GPU_GLES2_EXPORT BASE_DECLARE_FEATURE(kEnforceSharedImageAccessForGLReads);
+
+// Kill switch for only allowing shared image textures to be attached to color
+// attachments of framebuffers, i.e. not to depth or stencil attachments.
+// TODO(crbug.com/582302547): Remove after a safe rollout.
+GPU_GLES2_EXPORT BASE_DECLARE_FEATURE(
+    kRestrictSharedImageAttachmentsToColorAttachments);
+
+// Kill switch for rejecting shared image imports when lazy clearing fails in
+// CreateAndTexStorage2DSharedImageINTERNAL.
+// TODO(crbug.com/577339422): Remove after a safe rollout.
+GPU_GLES2_EXPORT BASE_DECLARE_FEATURE(
+    kRejectUnclearedSharedImageOnClearFailure);
 
 class ContextGroup;
 class GPUTracer;
@@ -94,7 +116,7 @@ struct PassthroughResources {
    public:
     SharedImageData();
     explicit SharedImageData(
-        const GLES2DecoderPassthroughImpl*,
+        GLES2DecoderPassthroughImpl*,
         std::unique_ptr<GLTexturePassthroughImageRepresentation>);
     SharedImageData(SharedImageData&& other);
 
@@ -108,11 +130,13 @@ struct PassthroughResources {
       return representation_.get();
     }
 
+    // Returns the service id of the shared image's texture. Shared images
+    // imported into the decoder always have exactly one expected plane.
+    GLuint service_id() const;
+
     // Returns true between a successful BeginAccess and the following EndAccess
     // even if access is currently suspended.
     bool is_being_accessed() const { return access_mode_.has_value(); }
-
-    void EnsureClear(const GLES2DecoderPassthroughImpl*);
 
     bool BeginAccess(GLenum mode, gl::GLApi* api);
     void EndAccess();
@@ -121,20 +145,44 @@ struct PassthroughResources {
     void SuspendAccessIfNeeded();
 
    private:
+    void EnsureClear(GLES2DecoderPassthroughImpl*);
+
     std::unique_ptr<GLTexturePassthroughImageRepresentation> representation_;
     std::unique_ptr<GLTexturePassthroughImageRepresentation::ScopedAccess>
         scoped_access_;
     std::optional<GLenum> access_mode_;
   };
+
+  // Adds or removes the shared image imported as `client_id`, keeping
+  // `texture_shared_image_map` and `shared_image_client_ids_by_service_id` in
+  // sync. Use these instead of modifying either map directly.
+  void AddSharedImage(GLuint client_id, SharedImageData shared_image_data);
+  void RemoveSharedImage(GLuint client_id);
+
+  // Returns true if `service_id` is the texture of a shared image and none of
+  // the client ids the shared image is imported as has an active access.
+  bool IsSharedImageWithoutAccess(GLuint service_id) const;
+
   // Mapping of client texture IDs to GLTexturePassthroughImageRepresentations.
   // TODO(ericrk): Remove this once TexturePassthrough holds a reference to
   // the GLTexturePassthroughImageRepresentation itself.
   base::flat_map<GLuint, SharedImageData> texture_shared_image_map;
+
+  // Mapping of shared image texture service IDs to the client IDs they are
+  // imported as in `texture_shared_image_map`. The same shared image may be
+  // imported more than once, in which case all its client ids alias the same
+  // service texture.
+  base::flat_map<GLuint, base::flat_set<GLuint>>
+      shared_image_client_ids_by_service_id;
 };
 
 // Impose an upper bound on the number ANGLE_shader_pixel_local_storage planes
 // so we can stack-allocate load/store ops.
 static constexpr GLsizei kPassthroughMaxPLSPlanes = 8;
+
+// Minimum idle delay before memory is trimmed for this context. Actual delay
+// can be higher.
+static constexpr base::TimeDelta kIdleTrimDelay = base::Seconds(1);
 
 class GPU_GLES2_EXPORT GLES2DecoderPassthroughImpl : public GLES2Decoder {
  public:
@@ -219,6 +267,9 @@ class GPU_GLES2_EXPORT GLES2DecoderPassthroughImpl : public GLES2Decoder {
 
   void SetIgnoreCachedStateForTest(bool ignore) override;
   void SetForceShaderNameHashingForTest(bool force) override;
+  void ForceReinitializeFeatureInfoForTesting() {
+    feature_info_->ForceReinitialize();
+  }
 
   // Gets the QueryManager for this context.
   QueryManager* GetQueryManager() override;
@@ -373,6 +424,8 @@ class GPU_GLES2_EXPORT GLES2DecoderPassthroughImpl : public GLES2Decoder {
  private:
   // Allow unittests to inspect internal state tracking
   friend class GLES2DecoderPassthroughTestBase;
+  // Uses FlushErrors() to detect failures when clearing shared images.
+  friend class PassthroughResources::SharedImageData;
 
   const char* GetCommandName(unsigned int command_id) const;
 
@@ -476,6 +529,36 @@ class GPU_GLES2_EXPORT GLES2DecoderPassthroughImpl : public GLES2Decoder {
 
   void BuildRequestableExtensionString();
 
+  bool CanRedefineBoundTexture(GLenum target);
+
+  // Shared image textures may only be read through GL while a
+  // BeginSharedImageAccessDirectCHROMIUM access is active on them. Reading
+  // them outside of an access is not synchronized with other users of the
+  // backing, and on some backings (e.g. D3D11 textures with a keyed mutex)
+  // the read is silently dropped by the driver. These checks are disabled if
+  // kEnforceSharedImageAccessForGLReads is disabled.
+  //
+  // Generates GL_INVALID_OPERATION and returns false if the texture with
+  // client id `texture_client_id` is a shared image without an active access.
+  bool CheckSharedImageTextureReadAccess(GLuint texture_client_id,
+                                         const char* function_name);
+  // Generates GL_INVALID_OPERATION and returns false if any attachment of the
+  // currently bound read framebuffer that would be read according to `mask`
+  // (a combination of GL_COLOR_BUFFER_BIT, GL_DEPTH_BUFFER_BIT and
+  // GL_STENCIL_BUFFER_BIT) is a shared image without an active access.
+  bool CheckReadFramebufferSharedImageAccess(GLbitfield mask,
+                                             const char* function_name);
+
+  // Shared image textures may only be attached to color attachments of
+  // framebuffers. Generates GL_INVALID_OPERATION and returns false if the
+  // texture with client id `texture_client_id` is a shared image and
+  // `attachment` is GL_DEPTH_ATTACHMENT, GL_STENCIL_ATTACHMENT or
+  // GL_DEPTH_STENCIL_ATTACHMENT. Disabled if
+  // kRestrictSharedImageAttachmentsToColorAttachments is disabled.
+  bool CheckSharedImageAttachment(GLenum attachment,
+                                  GLuint texture_client_id,
+                                  const char* function_name);
+
   PassthroughProgramCache* get_passthrough_program_cache() const;
 
   int commands_to_process_;
@@ -502,7 +585,8 @@ class GPU_GLES2_EXPORT GLES2DecoderPassthroughImpl : public GLES2Decoder {
   };
 
   // A table of CommandInfo for all the commands.
-  static const CommandInfo command_info[kNumCommands - kFirstGLES2Command];
+  static const std::array<CommandInfo, kNumCommands - kFirstGLES2Command>
+      command_info;
 
   // The GLApi to make the gl calls on.
   raw_ptr<gl::GLApi> api_ = nullptr;
@@ -752,6 +836,37 @@ class GPU_GLES2_EXPORT GLES2DecoderPassthroughImpl : public GLES2Decoder {
   };
 
   std::unique_ptr<LazySharedContextState> lazy_context_;
+
+  // Makes `context` current for its lifetime, first interrupting pixel local
+  // storage if the decoder's context is current. On destruction, restores the
+  // previously current context and verifies that the decoder's context is
+  // current again. If it is not, the decoder's context is marked as lost and
+  // pixel local storage is not restored, so no further work runs on the wrong
+  // context.
+  class ScopedSharedContextCurrent {
+   public:
+    ScopedSharedContextCurrent(GLES2DecoderPassthroughImpl* impl,
+                               gl::GLContext* context,
+                               gl::GLSurface* surface);
+    ScopedSharedContextCurrent(const ScopedSharedContextCurrent&) = delete;
+    ScopedSharedContextCurrent& operator=(const ScopedSharedContextCurrent&) =
+        delete;
+    ~ScopedSharedContextCurrent();
+
+    // Returns whether `context` was successfully made current.
+    bool IsContextCurrent();
+
+   private:
+    raw_ptr<GLES2DecoderPassthroughImpl> impl_;
+    bool decoder_context_was_current_ = false;
+    bool pixel_local_storage_interrupted_ = false;
+    std::optional<ui::ScopedMakeCurrent> scoped_make_current_;
+  };
+
+  // Returns whether the decoder's context is current, according to both
+  // Chromium's and the underlying GL implementation's bookkeeping.
+  bool IsDecoderContextCurrent() const;
+
   // Tracing
   std::unique_ptr<GPUTracer> gpu_tracer_;
   int gpu_trace_level_;
@@ -771,13 +886,19 @@ class GPU_GLES2_EXPORT GLES2DecoderPassthroughImpl : public GLES2Decoder {
 
   GLuint linking_program_service_id_ = 0u;
 
+  void ScheduleIdleMemoryTrim();
+  void PostIdleMemoryTrimTask();
+  void PerformIdleMemoryTrim();
+
+  base::TimeTicks last_active_time_;
+  base::CancelableOnceClosure idle_trim_cb_;
+
   base::WeakPtrFactory<GLES2DecoderPassthroughImpl> weak_ptr_factory_{this};
 
   class ScopedEnableTextureRectangleInShaderCompiler;
 
 // Include the prototypes of all the doer functions from a separate header to
 // keep this file clean.
-#include "base/time/time.h"
 #include "gpu/command_buffer/service/gles2_cmd_decoder_passthrough_doer_prototypes.h"
 };
 

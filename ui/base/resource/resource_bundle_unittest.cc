@@ -29,6 +29,7 @@
 #include "base/strings/string_view_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/bind.h"
+#include "base/threading/platform_thread.h"
 #include "base/threading/thread.h"
 #include "build/build_config.h"
 #include "skia/buildflags.h"
@@ -373,7 +374,6 @@ TEST_F(ResourceBundleTest, OverrideStringResource) {
 #if DCHECK_IS_ON()
 TEST_F(ResourceBundleTest, CanOverrideStringResources) {
   ResourceBundle* resource_bundle = CreateResourceBundle(nullptr);
-  std::u16string data = u"My test data";
   int resource_id = 5;
 
   EXPECT_TRUE(
@@ -392,8 +392,6 @@ TEST_F(ResourceBundleTest, DelegateGetLocalizedStringWithOverride) {
   EXPECT_CALL(delegate_, GetLocalizedString(resource_id, _))
       .Times(1)
       .WillOnce(DoAll(SetArgPointee<1>(delegate_data), Return(true)));
-
-  std::u16string override_data = u"My override data";
 
   std::u16string result = resource_bundle->GetLocalizedString(resource_id);
   EXPECT_EQ(delegate_data, result);
@@ -636,6 +634,7 @@ TEST_F(ResourceBundleImageTest, GetRawDataResourceWhileAddingDataPack) {
           EXPECT_FALSE(resource_bundle->HasDataResource(kMissingResourceId));
           EXPECT_TRUE(
               resource_bundle->GetRawDataResource(kMissingResourceId).empty());
+          base::PlatformThread::YieldCurrentThread();
         }
       }));
 

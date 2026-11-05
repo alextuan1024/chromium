@@ -10,11 +10,13 @@
 #include "base/check_is_test.h"
 #include "base/containers/extend.h"
 #include "base/functional/bind.h"
+#include "base/memory/weak_ptr.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/no_destructor.h"
 #include "build/build_config.h"
 #include "chrome/browser/account_settings/account_setting_service_factory.h"
 #include "chrome/browser/autocomplete/aim_eligibility_service_factory.h"
+#include "chrome/browser/autofill/personal_context_entity_metadata_manager_factory.h"
 #include "chrome/browser/autofill/personal_data_manager_factory.h"
 #include "chrome/browser/bookmarks/bookmark_model_factory.h"
 #include "chrome/browser/browser_process.h"
@@ -42,6 +44,7 @@
 #include "chrome/browser/sharing/sharing_message_bridge_factory.h"
 #include "chrome/browser/signin/about_signin_internals_factory.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
+#include "chrome/browser/skills/skills_service_factory.h"
 #include "chrome/browser/spellchecker/spellcheck_factory.h"
 #include "chrome/browser/supervised_user/family_link_settings_service_factory.h"
 #include "chrome/browser/supervised_user/supervised_user_service_factory.h"
@@ -61,7 +64,6 @@
 #include "chrome/browser/tab_group_sync/feature_utils.h"
 #include "chrome/browser/tab_group_sync/tab_group_sync_service_factory.h"
 #include "chrome/browser/tab_group_sync/tab_group_trial.h"
-#include "chrome/browser/themes/theme_service_factory.h"
 #include "chrome/browser/trusted_vault/trusted_vault_service_factory.h"
 #include "chrome/browser/undo/bookmark_undo_service_factory.h"
 #include "chrome/browser/webdata_services/web_data_service_factory.h"
@@ -95,11 +97,12 @@
 #if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 #include "chrome/browser/extensions/sync/extension_sync_service.h"  // nogncheck
 #include "extensions/browser/api/storage/storage_frontend.h"        // nogncheck
-#include "extensions/browser/extension_system_provider.h"           // nogncheck
+#include "extensions/browser/extension_system_provider.h"
 #include "extensions/browser/extensions_browser_client.h"           // nogncheck
 #endif  // BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 
 #if BUILDFLAG(ENABLE_EXTENSIONS)
+#include "chrome/browser/themes/theme_service_factory.h"
 #include "chrome/browser/web_applications/web_app_provider.h"
 #include "chrome/browser/web_applications/web_app_provider_factory.h"
 #include "chrome/browser/web_applications/web_app_utils.h"
@@ -127,7 +130,6 @@
 #include "chrome/browser/sync/android/jni_headers/SyncServiceFactory_jni.h"
 #else  // BUILDFLAG(IS_ANDROID)
 #include "chrome/browser/contextual_tasks/contextual_tasks_service_factory.h"
-#include "chrome/browser/skills/skills_service_factory.h"
 #include "chrome/browser/webauthn/passkey_model_factory.h"
 #endif  // BUILDFLAG(IS_ANDROID)
 
@@ -182,6 +184,16 @@ autofill::AddressDataManager* GetAddressDataManager(Profile* profile) {
   return pdm ? &pdm->address_data_manager() : nullptr;
 }
 
+#if !BUILDFLAG(IS_ANDROID)
+contextual_tasks::ContextualTasksService* GetContextualTasksService(
+    base::WeakPtr<Profile> profile) {
+  return profile
+             ? contextual_tasks::ContextualTasksServiceFactory::GetForProfile(
+                   profile.get())
+             : nullptr;
+}
+#endif  // !BUILDFLAG(IS_ANDROID)
+
 syncer::DataTypeController::TypeVector CreateCommonControllers(
     Profile* profile,
     syncer::SyncService* sync_service) {
@@ -216,6 +228,9 @@ syncer::DataTypeController::TypeVector CreateCommonControllers(
   builder.SetAutofillWebDataService(content::GetUIThreadTaskRunner({}),
                                     profile_web_data_service,
                                     account_web_data_service);
+  builder.SetPersonalContextEntityMetadataManager(
+      autofill::PersonalContextEntityMetadataManagerFactory::GetForProfile(
+          profile));
   builder.SetBookmarkModel(BookmarkModelFactory::GetForBrowserContext(profile));
   builder.SetBookmarkSyncService(
       LocalOrSyncableBookmarkSyncServiceFactory::GetForProfile(profile),
@@ -226,8 +241,10 @@ syncer::DataTypeController::TypeVector CreateCommonControllers(
 #if !BUILDFLAG(IS_ANDROID)
   builder.SetAimEligibilityService(
       AimEligibilityServiceFactory::GetForProfile(profile));
-  builder.SetContextualTasksService(
-      contextual_tasks::ContextualTasksServiceFactory::GetForProfile(profile));
+  // A callback is needed here to decouple `SyncServiceFactory` from
+  // `ContextualTasksServiceFactory` and prevent dependency cycles.
+  builder.SetContextualTasksServiceGetter(
+      base::BindRepeating(&GetContextualTasksService, profile->GetWeakPtr()));
 #endif
   builder.SetDataSharingService(
       data_sharing::DataSharingServiceFactory::GetForProfile(profile));
@@ -275,15 +292,9 @@ syncer::DataTypeController::TypeVector CreateCommonControllers(
       supervised_user::FamilyLinkSettingsServiceFactory::GetForKey(
           profile->GetProfileKey()));
 #endif  // BUILDFLAG(ENABLE_SUPERVISED_USERS)
-  builder.SetUserEventService(
-      browser_sync::UserEventServiceFactory::GetForProfile(profile));
+  builder.SetUserEventService(UserEventServiceFactory::GetForProfile(profile));
   builder.SetSkillsService(
-#if BUILDFLAG(IS_ANDROID)
-      nullptr
-#else   // BUILDFLAG(IS_ANDROID)
-      skills::SkillsServiceFactory::GetForProfile(profile)
-#endif  // BUILDFLAG(IS_ANDROID)
-  );
+      skills::SkillsServiceFactory::GetForProfile(profile));
   builder.SetNotebooksService(
       notebooks::NotebooksServiceFactory::GetForProfile(profile));
 
@@ -376,7 +387,7 @@ syncer::DataTypeController::TypeVector CreateControllers(
 std::unique_ptr<syncer::SyncClient> BuildSyncClient(Profile* profile) {
   CHECK(profile);
 
-  return std::make_unique<browser_sync::ChromeSyncClient>(
+  return std::make_unique<ChromeSyncClient>(
       profile->GetBaseName(), profile->GetPrefs(),
       IdentityManagerFactory::GetForProfile(profile),
       TrustedVaultServiceFactory::GetForProfile(profile),
@@ -385,7 +396,7 @@ std::unique_ptr<syncer::SyncClient> BuildSyncClient(Profile* profile) {
       DataTypeStoreServiceFactory::GetForProfile(profile),
       supervised_user::FamilyLinkSettingsServiceFactory::GetForKey(
           profile->GetProfileKey()),
-      std::make_unique<browser_sync::ExtensionsActivityMonitor>(profile));
+      std::make_unique<ExtensionsActivityMonitor>(profile));
 }
 
 std::unique_ptr<KeyedService> BuildSyncService(
@@ -542,14 +553,12 @@ SyncServiceFactory::SyncServiceFactory()
   DependsOn(AccountBookmarkSyncServiceFactory::GetInstance());
   DependsOn(AccountPasswordStoreFactory::GetInstance());
   DependsOn(AimEligibilityServiceFactory::GetInstance());
+  DependsOn(
+      autofill::PersonalContextEntityMetadataManagerFactory::GetInstance());
   DependsOn(BookmarkModelFactory::GetInstance());
   DependsOn(BookmarkUndoServiceFactory::GetInstance());
-  DependsOn(browser_sync::UserEventServiceFactory::GetInstance());
   DependsOn(collaboration::CollaborationServiceFactory::GetInstance());
   DependsOn(ConsentAuditorFactory::GetInstance());
-#if !BUILDFLAG(IS_ANDROID)
-  DependsOn(contextual_tasks::ContextualTasksServiceFactory::GetInstance());
-#endif  // !BUILDFLAG(IS_ANDROID)
   DependsOn(CrossDeviceThemeTrackerFactory::GetInstance());
   DependsOn(DataTypeStoreServiceFactory::GetInstance());
   DependsOn(DeviceInfoSyncServiceFactory::GetInstance());
@@ -573,19 +582,15 @@ SyncServiceFactory::SyncServiceFactory()
   DependsOn(SecurityEventRecorderFactory::GetInstance());
   DependsOn(SendTabToSelfSyncServiceFactory::GetInstance());
   DependsOn(SharingMessageBridgeFactory::GetInstance());
-#if !BUILDFLAG(IS_ANDROID)
   DependsOn(skills::SkillsServiceFactory::GetInstance());
-#endif  // !BUILDFLAG(IS_ANDROID)
   DependsOn(SpellcheckServiceFactory::GetInstance());
   DependsOn(SyncInvalidationsServiceFactory::GetInstance());
   DependsOn(supervised_user::FamilyLinkSettingsServiceFactory::GetInstance());
   DependsOn(SessionSyncServiceFactory::GetInstance());
   DependsOn(TabContextSyncServiceFactory::GetInstance());
   DependsOn(TemplateURLServiceFactory::GetInstance());
-#if !BUILDFLAG(IS_ANDROID)
-  DependsOn(ThemeServiceFactory::GetInstance());
-#endif  // !BUILDFLAG(IS_ANDROID)
   DependsOn(TrustedVaultServiceFactory::GetInstance());
+  DependsOn(UserEventServiceFactory::GetInstance());
 #if BUILDFLAG(IS_ANDROID)
   DependsOn(NtpAndroidCustomBackgroundServiceFactory::GetInstance());
 #endif  // BUILDFLAG(IS_ANDROID)
@@ -598,6 +603,7 @@ SyncServiceFactory::SyncServiceFactory()
 #endif  // BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 
 #if BUILDFLAG(ENABLE_EXTENSIONS)
+  DependsOn(ThemeServiceFactory::GetInstance());
   DependsOn(web_app::WebAppProviderFactory::GetInstance());
 #endif  // BUILDFLAG(ENABLE_EXTENSIONS)
 
@@ -634,7 +640,7 @@ bool SyncServiceFactory::HasSyncService(Profile* profile) {
 
 // static
 bool SyncServiceFactory::IsSyncAllowed(Profile* profile) {
-  DCHECK(profile);
+  CHECK(profile, base::NotFatalUntil::M163);
 
   syncer::SyncService* sync_service = GetForProfile(profile);
   return sync_service &&
@@ -668,7 +674,7 @@ SyncServiceFactory::GetDefaultFactory(
 #if BUILDFLAG(IS_ANDROID)
 static base::android::ScopedJavaLocalRef<jobject>
 JNI_SyncServiceFactory_GetForProfile(JNIEnv* env, Profile* profile) {
-  DCHECK(profile);
+  CHECK(profile, base::NotFatalUntil::M163);
 
   syncer::SyncService* sync_service =
       SyncServiceFactory::GetForProfile(profile);

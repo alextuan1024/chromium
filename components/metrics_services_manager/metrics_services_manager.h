@@ -36,10 +36,6 @@ namespace metrics::dwa {
 class DwaService;
 }
 
-namespace metrics::private_metrics {
-class PumaService;
-}
-
 namespace variations {
 class EntropyProviders;
 class SyntheticTrialRegistry;
@@ -86,9 +82,6 @@ class MetricsServicesManager {
 
   // Returns the DwaService, creating it if it hasn't been created yet.
   metrics::dwa::DwaService* GetDwaService();
-
-  // Returns the PumaService, creating it if it hasn't been created yet.
-  metrics::private_metrics::PumaService* GetPumaService();
 
   // Returns the StructuredMetricsService associated with the
   // |metrics_service_client_|.
@@ -148,7 +141,7 @@ class MetricsServicesManager {
   metrics::MetricsServiceClient* GetMetricsServiceClient();
 
   // Updates which services are running to match current permissions.
-  void UpdateRunningServices();
+  void UpdateRunningServices(bool may_record_and_upload_changed);
 
   // Updates the state of UkmService to match current permissions.
   void UpdateUkmService();
@@ -158,9 +151,6 @@ class MetricsServicesManager {
 
   // Updates the state of DwaService to match current permissions.
   void UpdateDwaService();
-
-  // Updates the state of PumaService to match current permissions.
-  void UpdatePumaService();
 
   // Updates the managed services when permissions for recording/uploading
   // metrics change.
@@ -191,6 +181,9 @@ class MetricsServicesManager {
 
   // The current metrics setting for reporting metrics.
   bool consent_given_ = false;
+
+  // Whether `UpdatePermissions()` has been called at least once.
+  bool permissions_initialized_ = false;
 
   std::unique_ptr<variations::SyntheticTrialRegistry> synthetic_trial_registry_;
 

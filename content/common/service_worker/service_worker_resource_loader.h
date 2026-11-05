@@ -12,12 +12,14 @@
 #include "mojo/public/cpp/base/big_buffer.h"
 #include "services/network/public/cpp/cross_origin_embedder_policy.h"
 #include "services/network/public/cpp/document_isolation_policy.h"
+#include "services/network/public/mojom/blocked_by_response_reason.mojom-forward.h"
 #include "services/network/public/mojom/cross_origin_embedder_policy.mojom-forward.h"
 #include "services/network/public/mojom/document_isolation_policy.mojom-forward.h"
 #include "services/network/public/mojom/service_worker_router_info.mojom-shared.h"
 #include "services/network/public/mojom/url_loader.mojom.h"
 #include "third_party/blink/public/common/service_worker/service_worker_router_rule.h"
 #include "third_party/blink/public/mojom/fetch/fetch_api_response.mojom-forward.h"
+#include "url/origin.h"
 
 namespace net {
 struct RedirectInfo;
@@ -103,6 +105,15 @@ class CONTENT_EXPORT ServiceWorkerResourceLoader {
       network::mojom::RedirectMode redirect_mode,
       const blink::mojom::FetchAPIResponsePtr& response);
 
+  // Evaluates the Timing-Allow-Origin check
+  // (https://fetch.spec.whatwg.org/#concept-tao-check) for |initiator| against
+  // |response|'s internal response headers (falling back to
+  // |response.parsed_headers->timing_allow_origin| when raw headers are not
+  // populated).
+  static bool PassesTimingAllowOriginCheck(
+      const blink::mojom::FetchAPIResponse& response,
+      const url::Origin& initiator);
+
   // Validates the response from the static router's cache source and records
   // the result to UMA. Returns true if the response is valid.
   bool IsValidStaticRouterResponse(
@@ -144,7 +155,14 @@ class CONTENT_EXPORT ServiceWorkerResourceLoader {
 
   // Calls url_loader_client_->OnComplete(). |reason| will be recorded as an
   // argument of TRACE_EVENT.
-  virtual void CommitCompleted(int error_code, const char* reason) = 0;
+  void CommitCompleted(int error_code, const char* reason) {
+    CommitCompleted(error_code, reason, std::nullopt);
+  }
+  virtual void CommitCompleted(
+      int error_code,
+      const char* reason,
+      std::optional<network::mojom::BlockedByResponseReason>
+          blocked_by_response_reason) = 0;
 
   // Calls url_loader_client_->OnReceiveRedirect().
   virtual void HandleRedirect(

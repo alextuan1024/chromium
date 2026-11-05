@@ -101,7 +101,6 @@
 #include "chrome/browser/ash/file_manager/path_util.h"
 #include "chrome/browser/ash/file_manager/volume.h"
 #include "chrome/browser/ash/file_manager/volume_manager.h"
-#include "chrome/browser/ash/file_system_provider/cloud_file_info.h"
 #include "chrome/browser/ash/file_system_provider/fake_extension_provider.h"
 #include "chrome/browser/ash/file_system_provider/fake_provided_file_system.h"
 #include "chrome/browser/ash/file_system_provider/provided_file_system_info.h"
@@ -2021,7 +2020,7 @@ class FileSystemProviderTestVolume : public TestVolume {
     fake_file_system->AddEntry(base::FilePath(entry.target_path), folder,
                                entry.name_text, file_contents.length(),
                                entry.last_modified_time, entry.mime_type,
-                               /*cloud_file_info=*/nullptr, file_contents);
+                               file_contents);
   }
 
  private:
@@ -2364,12 +2363,6 @@ void FileManagerBrowserTestBase::SetUpCommandLine(
     arc::SetArcAvailableCommandLineForTesting(command_line);
   }
 
-  if (options.enable_drive_trash) {
-    enabled_features.push_back(ash::features::kFilesTrashDrive);
-  } else {
-    disabled_features.push_back(ash::features::kFilesTrashDrive);
-  }
-
   if (options.enable_dlp_files_restriction) {
     enabled_features.push_back(
         ash::features::kDataLeakPreventionFilesRestriction);
@@ -2382,12 +2375,6 @@ void FileManagerBrowserTestBase::SetUpCommandLine(
     enabled_features.push_back(ash::features::kNewFilesPolicyUX);
   } else {
     disabled_features.push_back(ash::features::kNewFilesPolicyUX);
-  }
-
-  if (options.enable_mirrorsync) {
-    enabled_features.push_back(ash::features::kDriveFsMirroring);
-  } else {
-    disabled_features.push_back(ash::features::kDriveFsMirroring);
   }
 
   if (command_line->HasSwitch(switches::kDevtoolsCodeCoverage) &&
@@ -2732,12 +2719,18 @@ void FileManagerBrowserTestBase::TearDown() {
 }
 
 void FileManagerBrowserTestBase::StartTest() {
-  ash::SystemWebAppManager::GetForTest(profile())
-      ->InstallSystemAppsForTesting();
+  // Only install the System Web Apps used by FilesAppBrowserTest to avoid the
+  // overhead of installing all ~24 default SWAs in every test.
+  ash::SystemWebAppManager::GetForTest(profile())->InstallSystemAppsForTesting({
+      ash::SystemWebAppType::FILE_MANAGER,
+      ash::SystemWebAppType::MEDIA,
+      ash::SystemWebAppType::SETTINGS,
+      ash::SystemWebAppType::OS_FEEDBACK,
+  });
   const std::string full_test_name = GetFullTestCaseName();
   LOG(INFO) << "FileManagerBrowserTest::StartTest " << full_test_name;
 
-  static const base::FilePath test_extension_dir = base::FilePath(
+  const base::FilePath test_extension_dir(
       FILE_PATH_LITERAL("ui/file_manager/integration_tests/tsc"));
   LaunchExtension(base::DIR_GEN_TEST_DATA_ROOT, test_extension_dir,
                   GetTestExtensionManifestName());
@@ -3781,11 +3774,6 @@ void FileManagerBrowserTestBase::OnCommand(const std::string& name,
 
   if (name == "isBannersFrameworkEnabled") {
     *output = base::ToString(options.enable_banners_framework);
-    return;
-  }
-
-  if (name == "isMirrorSyncEnabled") {
-    *output = base::ToString(options.enable_mirrorsync);
     return;
   }
 

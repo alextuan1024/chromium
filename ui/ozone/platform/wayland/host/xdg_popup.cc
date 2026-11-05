@@ -7,6 +7,7 @@
 #include <xdg-shell-client-protocol.h>
 
 #include <memory>
+#include <utility>
 
 #include "base/command_line.h"
 #include "base/environment.h"
@@ -186,22 +187,24 @@ bool XdgPopup::Initialize(const InitParams& params) {
 }
 
 void XdgPopup::AckConfigure(uint32_t serial) {
-  DCHECK(xdg_surface_);
+  CHECK(xdg_surface_, base::NotFatalUntil::M163);
   xdg_surface_->AckConfigure(serial);
 }
 
 bool XdgPopup::IsConfigured() {
-  DCHECK(xdg_surface_);
+  CHECK(xdg_surface_, base::NotFatalUntil::M163);
   return xdg_surface_->IsConfigured();
 }
 
-bool XdgPopup::SetBounds(const gfx::Rect& new_bounds) {
+bool XdgPopup::SetBounds(const gfx::Rect& new_bounds,
+                         std::optional<OwnedWindowAnchor> anchor) {
   if (xdg_popup_get_version(xdg_popup_.get()) <
       XDG_POPUP_REPOSITIONED_SINCE_VERSION) {
     return false;
   }
 
   params_.bounds = new_bounds;
+  params_.anchor = std::move(anchor);
 
   // Create a new positioner with new bounds.
   auto positioner = CreatePositioner();
@@ -234,7 +237,8 @@ void XdgPopup::FillAnchorData(
     OwnedWindowAnchorPosition* anchor_position,
     OwnedWindowAnchorGravity* anchor_gravity,
     OwnedWindowConstraintAdjustment* constraints) const {
-  DCHECK(anchor_rect && anchor_position && anchor_gravity && constraints);
+  CHECK(anchor_rect && anchor_position && anchor_gravity && constraints,
+        base::NotFatalUntil::M163);
   if (params.anchor.has_value()) {
     *anchor_rect = params.anchor->anchor_rect;
     *anchor_position = params.anchor->anchor_position;
@@ -343,7 +347,7 @@ void XdgPopup::OnConfigure(void* data,
   // Wayland compositor needs during WaylandWindow::CreateXdgPopup call.
   auto* self = static_cast<XdgPopup*>(data);
   WaylandWindow* window = self->window();
-  DCHECK(window);
+  CHECK(window, base::NotFatalUntil::M163);
   window->HandlePopupConfigure({x, y, width, height});
 }
 
@@ -351,7 +355,7 @@ void XdgPopup::OnConfigure(void* data,
 void XdgPopup::OnPopupDone(void* data, xdg_popup* popup) {
   auto* self = static_cast<XdgPopup*>(data);
   WaylandWindow* window = self->window();
-  DCHECK(window);
+  CHECK(window, base::NotFatalUntil::M163);
   window->Hide();
   window->OnCloseRequest();
 }

@@ -5,6 +5,10 @@
 #ifndef COMPONENTS_OMNIBOX_COMMON_COMPOSEBOX_FEATURES_H_
 #define COMPONENTS_OMNIBOX_COMMON_COMPOSEBOX_FEATURES_H_
 
+#include <cstdint>
+#include <string>
+#include <string_view>
+
 #include "base/feature_list.h"
 #include "base/metrics/field_trial_params.h"
 
@@ -28,21 +32,27 @@ BASE_DECLARE_FEATURE(kContextManagementInOmnibox);
 // If enabled, the impressions of the context menu animation will be capped.
 BASE_DECLARE_FEATURE(kContextMenuAnimationLimiting);
 
-// If enabled, skills are enabled in the composebox/searchbox for Contextual Tasks.
+// If enabled, skills are enabled in the composebox/searchbox for Contextual
+// Tasks.
 BASE_DECLARE_FEATURE(kComposeboxSkillsContextualTasks);
 
 // If enabled, skills are enabled in the composebox/searchbox for NTP.
 BASE_DECLARE_FEATURE(kComposeboxSkillsNtp);
 
-// If enabled, skills are enabled in the composebox/searchbox for Omnibox Everywhere.
+// If enabled, skills are enabled in the composebox/searchbox for Omnibox
+// Everywhere.
 BASE_DECLARE_FEATURE(kComposeboxSkillsOmniboxEverywhere);
 
 // If enabled, skills are enabled in the composebox/searchbox for Omnibox Popup.
 BASE_DECLARE_FEATURE(kComposeboxSkillsOmniboxPopup);
 
 // If enabled, richer suggestions (e.g. image grids) for tools such as Create
-// Image will be shown in the Composebox.
-BASE_DECLARE_FEATURE(kComposeboxRichImageSuggestions);
+// Image will be shown in the Realbox Composebox.
+BASE_DECLARE_FEATURE(kComposeboxRichImageSuggestionsRealbox);
+
+// If enabled, richer suggestions (e.g. image grids) for tools such as Create
+// Image will be shown in the Omnibox Composebox.
+BASE_DECLARE_FEATURE(kComposeboxRichImageSuggestionsOmnibox);
 
 // If enabled, persists the AIM button in the Realbox Composebox.
 BASE_DECLARE_FEATURE(kComposeboxPersistentAimButtonRealbox);
@@ -52,8 +62,76 @@ BASE_DECLARE_FEATURE(kComposeboxPersistentAimButtonOmnibox);
 // the persistent AIM button is also enabled for the surface.
 BASE_DECLARE_FEATURE(kComposeboxPersistentAimButtonWithX);
 
-// If enabled, suggest requests for multifile inputs will include the cinpts CGI param.
+// If enabled, dynamically routes Realbox Composebox queries between SRP and AIM
+// based on active tools, models, and inputs.
+BASE_DECLARE_FEATURE(kDynamicAimFulfillmentRealbox);
+// If enabled, dynamically routes Omnibox Composebox queries between SRP and AIM
+// based on active tools, models, and inputs.
+BASE_DECLARE_FEATURE(kDynamicAimFulfillmentOmnibox);
+// Main switch for dynamic AIM fulfillment, and the settings both surfaces
+// share. A surface uses dynamic AIM fulfillment only if this feature and that
+// surface's feature above are both enabled; with this feature disabled, every
+// composebox query routes to AIM as before.
+BASE_DECLARE_FEATURE(kDynamicAimFulfillment);
+// Which attached inputs may go to the Search results page: "none",
+// "single_image", "multi_image", "any_combination_images_files",
+// "any_combination_images_files_tabs", "any_combination_images_files_drive" or
+// "any_combination_all_types".
+extern const base::FeatureParam<std::string> kDynamicAimFulfillmentSrpInputMode;
+// Whether to use the mode sent by the server, when present, instead of
+// `srp_input_mode`.
+extern const base::FeatureParam<bool> kDynamicAimFulfillmentUseServerInputRules;
+// Whether dynamic AIM fulfillment is enabled for the Realbox / Omnibox
+// Composebox: `kDynamicAimFulfillment` and the surface's feature are both
+// enabled.
+bool IsDynamicAimFulfillmentEnabledForRealbox();
+bool IsDynamicAimFulfillmentEnabledForOmnibox();
+
+// If enabled, clicking outside the Realbox Composebox closes the suggestions
+// dropdown and restores page interaction while keeping the Composebox open.
+BASE_DECLARE_FEATURE(kComposeboxRealboxOutsideClick);
+
+// If enabled, suggest requests for multifile inputs will include the cinpts CGI
+// param.
 BASE_DECLARE_FEATURE(kSuggestRequestSendsMultifileCgiParam);
+
+// If enabled, unselects the active suggestion match when Tab navigation moves
+// focus out of the composebox dropdown.
+BASE_DECLARE_FEATURE(kComposeboxUnselectMatchOnTabExit);
+
+// If enabled, personalizes the composebox placeholder hint text with the user's
+// given name when browser and AIM identities match.
+BASE_DECLARE_FEATURE(kComposeboxPersonalizedHintText);
+
+// If enabled, enforces a separate maximum file size limit (default 20 MiB) on
+// image uploads in the Composebox.
+BASE_DECLARE_FEATURE(kComposeboxImageFileSizeLimit);
+
+// Maximum file size in bytes for image uploads when
+// `kComposeboxImageFileSizeLimit` is enabled (defaults to 20 MiB).
+extern const base::FeatureParam<int> kComposeboxImageMaxSizeBytes;
+
+// If true, `kComposeboxImageMaxSizeBytes` applies to all image uploads (Option
+// B). If false, it applies only to HEIC/HEIF (`image/heic`, `image/heif`)
+// uploads while other image types fall back to the general attachment size
+// limit (Option A).
+extern const base::FeatureParam<bool> kComposeboxLimitAllImages;
+
+// Returns whether `mime_type` is a HEIC/HEIF image MIME type (`image/heic` or
+// `image/heif`, case-insensitive).
+bool IsComposeboxHeifMimeType(std::string_view mime_type);
+
+// Returns whether the image-specific file size limit should be applied for a
+// file with `mime_type` (or when `is_image` is true).
+bool ShouldUseComposeboxImageFileSizeLimit(std::string_view mime_type,
+                                           bool is_image = false);
+
+// Returns the effective maximum allowed file size in bytes for a file with
+// `mime_type` (or when `is_image` is true), given `max_attachment_size` for
+// general attachments.
+uint64_t GetComposeboxMaxFileSizeBytes(std::string_view mime_type,
+                                       bool is_image,
+                                       uint64_t max_attachment_size);
 
 // Parameter determining the daily limit for the context menu animation.
 extern const base::FeatureParam<int> kContextMenuAnimationDailyLimit;
@@ -80,6 +158,28 @@ extern const base::FeatureParam<bool> kContextManagementInComposeboxTooltips;
 
 // Helper to check if context menu tooltips are enabled in the composebox.
 bool IsContextMenuTooltipsInComposeboxEnabled();
+
+// If enabled, the current/recent tab is shown as a standalone menu item at the
+// top of the composebox context menu, above the "Add tabs" flyout entry on
+// Realbox, Omnibox, and SiC Side Panel.
+extern const base::FeatureParam<bool>
+    kContextManagementInComposeboxSingleTabMenuItem;
+
+// Helper to check if the single tab menu item is enabled, which requires the
+// parent feature kContextManagementInComposebox to be enabled and the param to
+// be true.
+bool IsSingleTabMenuItemInComposeboxEnabled();
+
+// If enabled, tab context state in the composebox is driven by the backend
+// session handle (`OnTabContextUpdated`) rather than tracked separately on the
+// frontend.
+extern const base::FeatureParam<bool>
+    kContextManagementInComposeboxTabStateUnification;
+
+// Helper to check if tab state unification is enabled, which requires the
+// parent feature kContextManagementInComposebox to be enabled and the param to
+// be true.
+bool IsTabStateUnificationInComposeboxEnabled();
 
 }  // namespace omnibox
 

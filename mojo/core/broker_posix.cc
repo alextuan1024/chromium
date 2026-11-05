@@ -5,156 +5,98 @@
 #include "mojo/core/broker.h"
 
 #include <fcntl.h>
-#include <unistd.h>
+#include <stdint.h>
+#include <sys/types.h>
 
 #include <utility>
 #include <vector>
 
+#include "base/check.h"
 #include "base/logging.h"
 #include "base/memory/platform_shared_memory_region.h"
-#include "build/build_config.h"
-#include "mojo/buildflags.h"
+#include "base/numerics/safe_conversions.h"
+#include "base/unguessable_token.h"
 #include "mojo/core/broker_messages.h"
-#include "mojo/core/channel.h"
-#include "mojo/core/platform_handle_utils.h"
 #include "mojo/public/cpp/platform/socket_utils_posix.h"
 
-namespace mojo {
-namespace core {
+namespace mojo::core {
 
-namespace {
+Broker::Broker(base::ScopedFD socket) : socket_(std::move(socket)) {
+  CHECK(socket_.is_valid());
 
-Channel::MessagePtr WaitForBrokerMessage(
-    int socket_fd,
-    BrokerMessageType expected_type,
-    size_t expected_num_handles,
-    size_t expected_data_size,
-    std::vector<PlatformHandle>* incoming_handles) {
-  Channel::MessagePtr message = Channel::Message::CreateMessage(
-      sizeof(BrokerMessageHeader) + expected_data_size, expected_num_handles);
-  std::vector<base::ScopedFD> incoming_fds;
-  ssize_t read_result =
-      SocketRecvmsg(socket_fd, const_cast<void*>(message->data()),
-                    message->data_num_bytes(), &incoming_fds, true /* block */);
-  bool error = false;
-  if (read_result < 0) {
-    PLOG(ERROR) << "Recvmsg error";
-    error = true;
-  } else if (static_cast<size_t>(read_result) != message->data_num_bytes()) {
-    LOG(ERROR) << "Invalid node channel message";
-    error = true;
-  } else if (incoming_fds.size() != expected_num_handles) {
-    DLOG(ERROR) << "Received unexpected number of handles";
-    error = true;
-  }
-
-  if (error) {
-    return nullptr;
-  }
-
-  const BrokerMessageHeader* header =
-      reinterpret_cast<const BrokerMessageHeader*>(message->payload());
-  if (header->type != expected_type) {
-    LOG(ERROR) << "Unexpected message";
-    return nullptr;
-  }
-
-  incoming_handles->reserve(incoming_fds.size());
-  for (size_t i = 0; i < incoming_fds.size(); ++i) {
-    incoming_handles->emplace_back(std::move(incoming_fds[i]));
-  }
-
-  return message;
-}
-
-}  // namespace
-
-Broker::Broker(PlatformHandle handle, bool wait_for_channel_handle)
-    : sync_channel_(std::move(handle)) {
-  CHECK(sync_channel_.is_valid());
-
-  int fd = sync_channel_.GetFD().get();
-  // Mark the channel as blocking.
-  int flags = fcntl(fd, F_GETFL);
+  // Mark the socket as blocking.
+  int flags = fcntl(socket_.get(), F_GETFL);
   PCHECK(flags != -1);
-  flags = fcntl(fd, F_SETFL, flags & ~O_NONBLOCK);
+  flags = fcntl(socket_.get(), F_SETFL, flags & ~O_NONBLOCK);
   PCHECK(flags != -1);
-
-  if (!wait_for_channel_handle) {
-    return;
-  }
-
-  // Wait for the first message, which should contain a handle.
-  std::vector<PlatformHandle> incoming_platform_handles;
-  if (WaitForBrokerMessage(fd, BrokerMessageType::INIT, 1, 0,
-                           &incoming_platform_handles)) {
-    inviter_endpoint_ =
-        PlatformChannelEndpoint(std::move(incoming_platform_handles[0]));
-  }
 }
 
 Broker::~Broker() = default;
 
-PlatformChannelEndpoint Broker::GetInviterEndpoint() {
-  return std::move(inviter_endpoint_);
-}
-
 base::WritableSharedMemoryRegion Broker::GetWritableSharedMemoryRegion(
     size_t num_bytes) {
-  base::AutoLock lock(lock_);
+  // The request carries a 32-bit size. Base never creates regions larger than
+  // INT_MAX bytes anyway, so there is no point in asking for one.
+  if (!base::IsValueInRangeForNumericType<uint32_t>(num_bytes)) {
+    return {};
+  }
 
-  BufferRequestData* buffer_request;
-  Channel::MessagePtr out_message = CreateBrokerMessage(
-      BrokerMessageType::BUFFER_REQUEST, 0, 0, &buffer_request);
-  buffer_request->size = num_bytes;
-  ssize_t write_result =
-      SocketWrite(sync_channel_.GetFD().get(), out_message->data(),
-                  out_message->data_num_bytes());
+  base::AutoLock lock(lock_);
+  if (!socket_.is_valid()) {
+    return {};
+  }
+
+  // Move `socket_` out so that any early return on an I/O or protocol error
+  // closes the connection permanently rather than leaving it out of sync.
+  base::ScopedFD socket = std::move(socket_);
+
+  const BrokerBufferRequest request = {
+      .num_bytes = base::checked_cast<uint32_t>(num_bytes),
+  };
+  const ssize_t write_result =
+      SocketWrite(socket.get(), &request, sizeof(request));
   if (write_result < 0) {
     PLOG(ERROR) << "Error sending sync broker message";
-    return base::WritableSharedMemoryRegion();
-  } else if (static_cast<size_t>(write_result) !=
-             out_message->data_num_bytes()) {
+    return {};
+  }
+  if (static_cast<size_t>(write_result) != sizeof(request)) {
     LOG(ERROR) << "Error sending complete broker message";
-    return base::WritableSharedMemoryRegion();
+    return {};
   }
 
-#if !BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_ANDROID) || \
-    BUILDFLAG(MOJO_USE_APPLE_CHANNEL)
-  // Non-POSIX systems, as well as Android and Mac, only use a single handle to
-  // represent a writable region.
-  constexpr size_t kNumExpectedHandles = 1;
-#else
-  constexpr size_t kNumExpectedHandles = 2;
-#endif
-
-  std::vector<PlatformHandle> handles;
-  Channel::MessagePtr message = WaitForBrokerMessage(
-      sync_channel_.GetFD().get(), BrokerMessageType::BUFFER_RESPONSE,
-      kNumExpectedHandles, sizeof(BufferResponseData), &handles);
-  if (message) {
-    const BufferResponseData* data;
-    if (!GetBrokerMessageData(message.get(), &data)) {
-      return base::WritableSharedMemoryRegion();
-    }
-    std::optional<base::UnguessableToken> guid =
-        base::UnguessableToken::Deserialize(data->guid_high, data->guid_low);
-    if (!guid.has_value()) {
-      return base::WritableSharedMemoryRegion();
-    }
-    if (handles.size() == 1) {
-      handles.emplace_back();
-    }
-    return base::WritableSharedMemoryRegion::Deserialize(
-        base::subtle::PlatformSharedMemoryRegion::Take(
-            CreateSharedMemoryRegionHandleFromPlatformHandles(
-                std::move(handles[0]), std::move(handles[1])),
-            base::subtle::PlatformSharedMemoryRegion::Mode::kWritable,
-            num_bytes, guid.value()));
+  // A 1-byte response can't arrive in pieces, so unlike requests in
+  // BrokerHost, it needs no reassembly.
+  static_assert(sizeof(BrokerBufferResponse) == 1);
+  BrokerBufferResponse response = BrokerBufferResponse::kFailure;
+  std::vector<base::ScopedFD> fds;
+  const ssize_t read_result = SocketRecvmsg(
+      socket.get(), &response, sizeof(response), &fds, /*block=*/true);
+  if (read_result < 0) {
+    PLOG(ERROR) << "Recvmsg error";
+    return {};
+  }
+  if (static_cast<size_t>(read_result) != sizeof(response)) {
+    LOG(ERROR) << "Connection closed or response descriptors dropped";
+    return {};
   }
 
-  return base::WritableSharedMemoryRegion();
+  if (response == BrokerBufferResponse::kFailure && fds.empty()) {
+    socket_ = std::move(socket);
+    return {};
+  }
+  if (response != BrokerBufferResponse::kSuccess || fds.size() != 2) {
+    LOG(ERROR) << "Invalid broker response";
+    return {};
+  }
+
+  socket_ = std::move(socket);
+  // A region's GUID only identifies it, e.g. in memory dumps, so the BrokerHost
+  // doesn't send one. Mint it here, as for regions created in this process.
+  return base::WritableSharedMemoryRegion::Deserialize(
+      base::subtle::PlatformSharedMemoryRegion::Take(
+          base::subtle::ScopedFDPair(std::move(fds[0]), std::move(fds[1])),
+          base::subtle::PlatformSharedMemoryRegion::Mode::kWritable, num_bytes,
+          base::UnguessableToken::Create()));
 }
 
-}  // namespace core
-}  // namespace mojo
+}  // namespace mojo::core

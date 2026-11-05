@@ -21,6 +21,7 @@ import android.view.View;
 import androidx.annotation.VisibleForTesting;
 import androidx.fragment.app.FragmentActivity;
 
+import org.chromium.base.ResettersForTesting;
 import org.chromium.base.lifetime.Destroyable;
 import org.chromium.base.metrics.RecordUserAction;
 import org.chromium.base.supplier.MonotonicObservableSupplier;
@@ -30,7 +31,6 @@ import org.chromium.base.supplier.SettableMonotonicObservableSupplier;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.R;
-import org.chromium.chrome.browser.RecentlyClosedEntriesManager;
 import org.chromium.chrome.browser.app.download.home.DownloadPage;
 import org.chromium.chrome.browser.back_press.BackPressManager;
 import org.chromium.chrome.browser.bookmarks.BookmarkManagerOpenerImpl;
@@ -52,14 +52,15 @@ import org.chromium.chrome.browser.metrics.StartupMetricsTracker;
 import org.chromium.chrome.browser.ntp.IncognitoNewTabPage;
 import org.chromium.chrome.browser.ntp.NewTabPage;
 import org.chromium.chrome.browser.ntp.NewTabPageCreationTracker;
-import org.chromium.chrome.browser.ntp.RecentTabsManager;
-import org.chromium.chrome.browser.ntp.RecentTabsPage;
 import org.chromium.chrome.browser.pdf.PdfFragmentViewTrackerImpl;
 import org.chromium.chrome.browser.pdf.PdfInfo;
 import org.chromium.chrome.browser.pdf.PdfPage;
 import org.chromium.chrome.browser.price_tracking.PriceDropNotificationManagerFactory;
-import org.chromium.chrome.browser.printing.PrintHelper;
+import org.chromium.chrome.browser.printing.PrintingDelegate;
 import org.chromium.chrome.browser.profiles.Profile;
+import org.chromium.chrome.browser.recent_tabs.RecentTabsManager;
+import org.chromium.chrome.browser.recent_tabs.RecentTabsPage;
+import org.chromium.chrome.browser.recent_tabs.RecentlyClosedEntriesManager;
 import org.chromium.chrome.browser.settings.SettingsPage;
 import org.chromium.chrome.browser.settings.SettingsPageFragmentDelegateImpl;
 import org.chromium.chrome.browser.share.ShareDelegate;
@@ -289,7 +290,12 @@ public class NativePageFactory {
                             mEdgeToEdgeControllerSupplier);
             if (tab.isIncognito()) {
                 return new IncognitoNewTabPage(
-                        mActivity, nativePageHost, tab.getProfile(), mEdgeToEdgeControllerSupplier);
+                        mActivity,
+                        nativePageHost,
+                        tab.getProfile(),
+                        mTabModelSelector,
+                        tab,
+                        mEdgeToEdgeControllerSupplier);
             }
 
             return new NewTabPage(
@@ -339,7 +345,8 @@ public class NativePageFactory {
                             () -> BookmarkModel.getForProfile(profile),
                             mActivity,
                             mActivity.getComponentName(),
-                            /* multiInstanceManager= */ null),
+                            /* multiInstanceManager= */ null,
+                            /* currentTabSupplier= */ null),
                     new BookmarkManagerOpenerImpl(),
                     PriceDropNotificationManagerFactory.create(profile),
                     SigninAndHistorySyncActivityLauncherImpl.get(),
@@ -353,7 +360,7 @@ public class NativePageFactory {
                     mActivity,
                     mSnackbarManagerSupplier.get(),
                     mWindowAndroid.getModalDialogManager(),
-                    profile.getOtrProfileId(),
+                    profile,
                     new TabShim(
                             tab,
                             mBrowserControlsManager,
@@ -394,7 +401,7 @@ public class NativePageFactory {
                             mSnackbarManagerSupplier.get(),
                             () ->
                                     HistoryManagerUtils.showHistoryManager(
-                                            mActivity, tab, tab.getProfile()),
+                                            mWindowAndroid, tab, tab.getProfile()),
                             mRecentlyClosedEntriesManager);
 
             NativePageHost host =
@@ -518,6 +525,9 @@ public class NativePageFactory {
                 return null;
             case NativePageType.CANDIDATE:
                 page = candidatePage;
+                if (isPdf && page != null) {
+                    page.setInitiatorOrigin(assumeNonNull(pdfInfo).initiatorOrigin);
+                }
                 break;
             case NativePageType.NTP:
                 page = getBuilder().buildNewTabPage(tab, url);
@@ -612,16 +622,21 @@ public class NativePageFactory {
             Tab tab,
             @Nullable PdfInfo pdfInfo,
             BrowserControlsManager browserControlsManager,
-            TabModelSelector tabModelSelector,
+            @Nullable TabModelSelector tabModelSelector,
             Activity activity) {
         // Only pdf native page is supported on custom tab.
         if (url == null || pdfInfo == null) {
             return null;
         }
         NativePage page;
-        if (candidatePage != null && url.equals(candidatePage.getUrl())) {
+        // A frozen page has no view, so it must never be reused. See crbug.com/568278676.
+        if (candidatePage != null
+                && !candidatePage.isFrozen()
+                && url.equals(candidatePage.getUrl())) {
             page = candidatePage;
+            page.setInitiatorOrigin(pdfInfo.initiatorOrigin);
         } else {
+            assert tabModelSelector != null;
             page =
                     buildPdfPage(
                             url,
@@ -727,7 +742,10 @@ public class NativePageFactory {
 
         @Override
         public void print() {
-            PrintHelper.printTab(mTab);
+            PrintingDelegate printingDelegate = PrintingDelegate.getInstance();
+            if (printingDelegate != null) {
+                printingDelegate.print(mTab);
+            }
         }
 
         @Override
@@ -736,6 +754,14 @@ public class NativePageFactory {
                 return;
             }
             DownloadController.downloadUrl(url, mTab);
+        }
+
+        @Override
+        public void downloadLocalFile(String uri, @Nullable String suggestedFileName) {
+            if (mTab.isDestroyed() || mTab.getWebContents() == null || TextUtils.isEmpty(uri)) {
+                return;
+            }
+            DownloadController.downloadLocalFile(uri, suggestedFileName, mTab);
         }
 
         @Override
@@ -760,7 +786,8 @@ public class NativePageFactory {
         }
     }
 
-    public static void setPdfPageForTesting(NativePage pdfPage) {
+    public static void setPdfPageForTesting(@Nullable NativePage pdfPage) {
         sTestPage = pdfPage;
+        ResettersForTesting.register(() -> sTestPage = null);
     }
 }

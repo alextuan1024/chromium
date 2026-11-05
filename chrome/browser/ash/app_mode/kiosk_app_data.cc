@@ -25,7 +25,6 @@
 #include "base/values.h"
 #include "chrome/browser/ash/app_mode/kiosk_app_data_delegate.h"
 #include "chrome/browser/ash/app_mode/kiosk_chrome_app_manager.h"
-#include "chrome/browser/net/system_network_context_manager.h"
 #include "chrome/browser/profiles/profile.h"
 #include "components/account_id/account_id.h"
 #include "components/prefs/pref_service.h"
@@ -492,8 +491,8 @@ void KioskAppData::LoadFromCrx() {
     return;
   }
 
-  scoped_refptr<CrxLoader> crx_loader(
-      new CrxLoader(weak_factory_.GetWeakPtr(), crx_file_));
+  auto crx_loader =
+      base::MakeRefCounted<CrxLoader>(weak_factory_.GetWeakPtr(), crx_file_);
   crx_loader->Start();
 }
 

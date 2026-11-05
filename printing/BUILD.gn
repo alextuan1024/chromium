@@ -27,7 +27,7 @@ if (is_win || enable_print_preview) {
 }
 
 config("strict") {
-  configs = [ "//build/config/compiler:wexit_time_destructors" ]
+  configs = [ "//build/config/compiler:wglobal_constructors" ]
 }
 
 # Lower-dependency base printing files which are needed by both :printing and
@@ -78,6 +78,7 @@ component("printing_base") {
   ]
   deps = [
     "//base",
+    "//base:i18n",
     "//third_party/icu",
     "//ui/gfx",
     "//ui/gfx/geometry",
@@ -514,6 +515,21 @@ if (is_android) {
       "android/java/src/org/chromium/printing/PrintingContext.java",
       "android/java/src/org/chromium/printing/PrintingController.java",
       "android/java/src/org/chromium/printing/PrintingControllerImpl.java",
+    ]
+  }
+
+  robolectric_library("printing_junit_tests") {
+    sources = [
+      "android/java/src/org/chromium/printing/PrintSessionUnitTest.java",
+      "android/java/src/org/chromium/printing/PrintingControllerImplUnitTest.java",
+    ]
+    deps = [
+      ":printing_java",
+      "//base:base_java",
+      "//base:base_junit_test_support",
+      "//build/android:build_java",
+      "//third_party/junit",
+      "//ui/android:ui_no_recycler_view_java",
     ]
   }
 }

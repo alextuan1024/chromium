@@ -2,6 +2,9 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include <optional>
+#include <utility>
+
 #include "base/memory/values_equivalent.h"
 #include "third_party/blink/renderer/core/animation/timeline_offset.h"
 #include "third_party/blink/renderer/core/css/css_color.h"
@@ -35,6 +38,7 @@
 #include "third_party/blink/renderer/core/frame/web_feature.h"
 #include "third_party/blink/renderer/core/layout/layout_object.h"
 #include "third_party/blink/renderer/core/style/computed_style.h"
+#include "third_party/blink/renderer/core/style/scoped_css_name.h"
 #include "third_party/blink/renderer/core/style_property_shorthand.h"
 #include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/wtf/casting.h"
@@ -2110,39 +2114,95 @@ const CSSValue* Container::CSSValueFromComputedStyleInternal(
 
 namespace {
 
-const CSSValue* CornerShorthandCSSValueFromComputedStyle(
-    const ComputedStyle& style) {
-  std::array<std::pair<LengthSize, Superellipse>, 4> corners = {
-      std::make_pair(style.BorderTopLeftRadius(), style.CornerTopLeftShape()),
-      std::make_pair(style.BorderTopRightRadius(), style.CornerTopRightShape()),
-      std::make_pair(style.BorderBottomRightRadius(),
-                     style.CornerBottomRightShape()),
-      std::make_pair(style.BorderBottomLeftRadius(),
-                     style.CornerBottomLeftShape())};
+// Note that `0%` is not the initial value: it is kept in the computed value
+// and must not be omitted from the shorthand.
+bool IsInitialRadius(const LengthSize& radius) {
+  return radius == LengthSize(Length::Fixed(0), Length::Fixed(0));
+}
 
-  CSSValueList* result = CSSValueList::CreateSlashSeparated();
-  const bool show_bottom_left = corners[1] != corners[3];
-  const bool show_bottom_right = show_bottom_left || corners[0] != corners[2];
-  const bool show_top_right = show_bottom_right || corners[0] != corners[1];
+CSSValue* InitialCornerRadiusValue() {
+  CSSNumericLiteralValue* zero =
+      CSSNumericLiteralValue::Create(0, CSSPrimitiveValue::UnitType::kPixels);
+  return MakeGarbageCollected<CSSValuePair>(zero, zero,
+                                            CSSValuePair::kDropIdenticalValues);
+}
 
-  const std::array<bool, 4> show_sides = {true, show_top_right,
-                                          show_bottom_right, show_bottom_left};
+CSSValue* InitialCornerShapeValue() {
+  return CSSIdentifierValue::Create(CSSValueID::kRound);
+}
 
-  for (size_t i = 0; i < 4 && show_sides[i]; ++i) {
-    if (corners[i].first.Width().IsZero() &&
-        corners[i].first.Height().IsZero() &&
-        corners[i].second == Superellipse::Round()) {
-      result->Append(*CSSIdentifierValue::Create(CSSValueID::kNormal));
-    } else {
-      result->Append(*MakeGarbageCollected<CSSValuePair>(
-          ComputedStyleUtils::ValueForBorderRadiusCorner(corners[i].first,
-                                                         style),
-          ComputedStyleUtils::ValueForCornerShape(corners[i].second),
-          CSSValuePair::kKeepIdenticalValues));
+// Consumes the components of `<shape> || <radius>` in either order. Returns
+// false if neither component is present. An omitted component is left unset
+// by its consumer.
+template <typename ConsumeShape, typename ConsumeRadius>
+bool ConsumeCornerShapeAndRadius(ConsumeShape consume_shape,
+                                 ConsumeRadius consume_radius) {
+  bool has_shape = false;
+  bool has_radius = false;
+  while (true) {
+    if (!has_shape && consume_shape()) {
+      has_shape = true;
+      continue;
+    }
+    if (!has_radius && consume_radius()) {
+      has_radius = true;
+      continue;
+    }
+    break;
+  }
+  return has_shape || has_radius;
+}
+
+template <size_t N>
+bool ConsumeCornerShapes(std::array<CSSValue*, N>& shapes,
+                         CSSParserTokenStream& stream,
+                         const CSSParserContext& context,
+                         CSSParserLocalContext& local_context) {
+  for (size_t i = 0; i < N; ++i) {
+    shapes[i] =
+        css_parsing_utils::ConsumeCornerShape(stream, context, local_context);
+    if (!shapes[i]) {
+      break;
     }
   }
+  return shapes[0] != nullptr;
+}
 
-  return result;
+// The space-separated `<shape> <radius>` form, with components equal to
+// their initial value omitted. When both are initial, only the radius (0px)
+// is emitted.
+const CSSValue* CornerShapeAndRadiusValue(const CSSValue* shape,
+                                          bool shape_is_initial,
+                                          const CSSValue* radius,
+                                          bool radius_is_initial) {
+  if (shape_is_initial) {
+    return radius;
+  }
+  if (radius_is_initial) {
+    return shape;
+  }
+  CSSValueList* list = CSSValueList::CreateSpaceSeparated();
+  list->Append(*shape);
+  list->Append(*radius);
+  return list;
+}
+
+const CSSValue* CornerShorthandCSSValueFromComputedStyle(
+    const ComputedStyle& style) {
+  const bool radius_is_initial =
+      IsInitialRadius(style.BorderTopLeftRadius()) &&
+      IsInitialRadius(style.BorderTopRightRadius()) &&
+      IsInitialRadius(style.BorderBottomRightRadius()) &&
+      IsInitialRadius(style.BorderBottomLeftRadius());
+  const bool shape_is_initial =
+      style.CornerTopLeftShape() == Superellipse::Round() &&
+      style.CornerTopRightShape() == Superellipse::Round() &&
+      style.CornerBottomRightShape() == Superellipse::Round() &&
+      style.CornerBottomLeftShape() == Superellipse::Round();
+  return CornerShapeAndRadiusValue(
+      ComputedStyleUtils::ValueForCornerShapeShorthand(style), shape_is_initial,
+      ComputedStyleUtils::ValueForBorderRadiusShorthand(style),
+      radius_is_initial);
 }
 
 bool ParseCornerShorthand(CSSPropertyID shorthand_property_id,
@@ -2152,29 +2212,46 @@ bool ParseCornerShorthand(CSSPropertyID shorthand_property_id,
                           const CSSParserContext& context,
                           CSSParserLocalContext& local_context,
                           HeapVector<CSSPropertyValue, 64>& properties) {
-  std::array<CSSValue*, 4> radii = {nullptr, nullptr, nullptr, nullptr};
-  std::array<CSSValue*, 4> shapes = {nullptr, nullptr, nullptr, nullptr};
-  for (size_t i = 0; i < 4; ++i) {
-    if (!css_parsing_utils::ConsumeCorner(stream, context, local_context,
-                                          radii[i], shapes[i])) {
-      return false;
-    }
-    if (i == 3 || !css_parsing_utils::ConsumeSlashIncludingWhitespace(stream)) {
-      break;
-    }
+  std::array<CSSValue*, 4> horizontal_radii = {nullptr};
+  std::array<CSSValue*, 4> vertical_radii = {nullptr};
+  std::array<CSSValue*, 4> shapes = {nullptr};
+  if (!ConsumeCornerShapeAndRadius(
+          [&] {
+            return ConsumeCornerShapes(shapes, stream, context, local_context);
+          },
+          [&] {
+            CSSParserSavePoint savepoint(stream);
+            std::array<CSSValue*, 4> horizontal = {nullptr};
+            std::array<CSSValue*, 4> vertical = {nullptr};
+            if (!css_parsing_utils::ConsumeRadii(horizontal, vertical, stream,
+                                                 context, local_context)) {
+              return false;
+            }
+            savepoint.Release();
+            horizontal_radii = horizontal;
+            vertical_radii = vertical;
+            return true;
+          })) {
+    return false;
   }
 
-  CHECK(radii[0]);
-  CHECK(shapes[0]);
+  if (!shapes[0]) {
+    shapes.fill(InitialCornerShapeValue());
+  } else {
+    css_parsing_utils::Complete4Sides(shapes);
+  }
 
-  css_parsing_utils::Complete4Sides(radii);
-  css_parsing_utils::Complete4Sides(shapes);
   const StylePropertyShorthand::Properties& shorthand_properties =
       shorthand.properties();
   DCHECK_EQ(shorthand_properties.size(), 8u);
   for (size_t i = 0; i < 4; ++i) {
+    CSSValue* radius = horizontal_radii[0]
+                           ? MakeGarbageCollected<CSSValuePair>(
+                                 horizontal_radii[i], vertical_radii[i],
+                                 CSSValuePair::kDropIdenticalValues)
+                           : InitialCornerRadiusValue();
     AddProperty(shorthand_properties[i * 2]->PropertyID(),
-                shorthand_property_id, *radii[i], important,
+                shorthand_property_id, *radius, important,
                 css_parsing_utils::IsImplicitProperty::kNotImplicit,
                 properties);
     AddProperty(shorthand_properties[i * 2 + 1]->PropertyID(),
@@ -2188,14 +2265,11 @@ bool ParseCornerShorthand(CSSPropertyID shorthand_property_id,
 const CSSValue* CornerValueFromComputedStyle(const LengthSize& radius,
                                              Superellipse shape,
                                              const ComputedStyle& style) {
-  if (radius.Width().IsZero() && radius.Height().IsZero() &&
-      shape == Superellipse::Round()) {
-    return CSSIdentifierValue::Create(CSSValueID::kNormal);
-  }
-  return MakeGarbageCollected<CSSValuePair>(
-      ComputedStyleUtils::ValueForBorderRadiusCorner(radius, style),
+  return CornerShapeAndRadiusValue(
       ComputedStyleUtils::ValueForCornerShape(shape),
-      CSSValuePair::kKeepIdenticalValues);
+      shape == Superellipse::Round(),
+      ComputedStyleUtils::ValueForBorderRadiusCorner(radius, style),
+      IsInitialRadius(radius));
 }
 
 LengthSize RadiusForPhysicalCorner(const ComputedStyle& style,
@@ -2239,13 +2313,26 @@ bool ParseSingleCornerShorthand(CSSPropertyID shorthand_property_id,
                                 HeapVector<CSSPropertyValue, 64>& properties) {
   CSSValue* radius = nullptr;
   CSSValue* shape = nullptr;
-  if (!css_parsing_utils::ConsumeCorner(stream, context, local_context, radius,
-                                        shape)) {
+  if (!ConsumeCornerShapeAndRadius(
+          [&] {
+            shape = css_parsing_utils::ConsumeCornerShape(stream, context,
+                                                          local_context);
+            return shape != nullptr;
+          },
+          [&] {
+            radius = css_parsing_utils::ConsumeSingleCornerRadius(
+                stream, context, local_context);
+            return radius != nullptr;
+          })) {
     return false;
   }
 
-  CHECK(radius);
-  CHECK(shape);
+  if (!radius) {
+    radius = InitialCornerRadiusValue();
+  }
+  if (!shape) {
+    shape = InitialCornerShapeValue();
+  }
 
   const StylePropertyShorthand::Properties& shorthand_properties =
       shorthand.properties();
@@ -2266,33 +2353,43 @@ bool ParseCornerPairShorthand(CSSPropertyID shorthand_property_id,
                               const CSSParserContext& context,
                               CSSParserLocalContext& local_context,
                               HeapVector<CSSPropertyValue, 64>& properties) {
-  std::array<CSSValue*, 2> radii = {nullptr, nullptr};
-  std::array<CSSValue*, 2> shapes = {nullptr, nullptr};
-  for (size_t i = 0; i < 2; ++i) {
-    if (!css_parsing_utils::ConsumeCorner(stream, context, local_context,
-                                          radii[i], shapes[i])) {
-      return false;
-    }
-    if (i == 1 || !css_parsing_utils::ConsumeSlashIncludingWhitespace(stream)) {
-      break;
-    }
+  std::array<CSSValue*, 2> radii = {nullptr};
+  std::array<CSSValue*, 2> shapes = {nullptr};
+  if (!ConsumeCornerShapeAndRadius(
+          [&] {
+            return ConsumeCornerShapes(shapes, stream, context, local_context);
+          },
+          [&] {
+            CSSParserSavePoint savepoint(stream);
+            std::optional<std::pair<CSSValue*, CSSValue*>> consumed_radii =
+                css_parsing_utils::ConsumeBorderRadiusCornerShorthand(
+                    stream, context, local_context);
+            if (!consumed_radii) {
+              return false;
+            }
+            savepoint.Release();
+            radii = {consumed_radii->first, consumed_radii->second};
+            return true;
+          })) {
+    return false;
   }
 
-  CHECK(radii[0]);
-  CHECK(shapes[0]);
-  if (!radii[1]) {
-    radii[1] = radii[0];
-  }
-  if (!shapes[1]) {
+  if (!shapes[0]) {
+    shapes.fill(InitialCornerShapeValue());
+  } else if (!shapes[1]) {
     shapes[1] = shapes[0];
+  }
+  if (!radii[0]) {
+    radii.fill(InitialCornerRadiusValue());
   }
 
   const StylePropertyShorthand::Properties& shorthand_properties =
       shorthand.properties();
   DCHECK_EQ(shorthand_properties.size(), 4u);
   for (size_t i = 0; i < 2; ++i) {
+    CSSValue* radius = radii[i];
     AddProperty(shorthand_properties[i * 2]->PropertyID(),
-                shorthand_property_id, *radii[i], important,
+                shorthand_property_id, *radius, important,
                 css_parsing_utils::IsImplicitProperty::kNotImplicit,
                 properties);
     AddProperty(shorthand_properties[i * 2 + 1]->PropertyID(),
@@ -2303,20 +2400,50 @@ bool ParseCornerPairShorthand(CSSPropertyID shorthand_property_id,
   return true;
 }
 
+// `<lp>{1,2} [ / <lp>{1,2} ]?` with the usual value collapsing.
+const CSSValue* CornerSideRadiusValue(const LengthSize& first,
+                                      const LengthSize& second,
+                                      const ComputedStyle& style) {
+  CSSValueList* horizontal = CSSValueList::CreateSpaceSeparated();
+  horizontal->Append(*ComputedStyleUtils::ZoomAdjustedPixelValueForLength(
+      first.Width(), style));
+  if (first.Width() != second.Width()) {
+    horizontal->Append(*ComputedStyleUtils::ZoomAdjustedPixelValueForLength(
+        second.Width(), style));
+  }
+  if (first.Height() == first.Width() && second.Height() == second.Width()) {
+    return horizontal;
+  }
+  CSSValueList* vertical = CSSValueList::CreateSpaceSeparated();
+  vertical->Append(*ComputedStyleUtils::ZoomAdjustedPixelValueForLength(
+      first.Height(), style));
+  if (first.Height() != second.Height()) {
+    vertical->Append(*ComputedStyleUtils::ZoomAdjustedPixelValueForLength(
+        second.Height(), style));
+  }
+  CSSValueList* result = CSSValueList::CreateSlashSeparated();
+  result->Append(*horizontal);
+  result->Append(*vertical);
+  return result;
+}
+
 const CSSValue* CornerPairValueFromComputedStyle(
     const LengthSize& first_radius,
     Superellipse first_shape,
     const LengthSize& second_radius,
     Superellipse second_shape,
     const ComputedStyle& style) {
-  CSSValueList* result = CSSValueList::CreateSlashSeparated();
-  result->Append(
-      *CornerValueFromComputedStyle(first_radius, first_shape, style));
-  if (first_radius != second_radius || first_shape != second_shape) {
-    result->Append(
-        *CornerValueFromComputedStyle(second_radius, second_shape, style));
+  CSSValueList* shapes = CSSValueList::CreateSpaceSeparated();
+  shapes->Append(*ComputedStyleUtils::ValueForCornerShape(first_shape));
+  if (first_shape != second_shape) {
+    shapes->Append(*ComputedStyleUtils::ValueForCornerShape(second_shape));
   }
-  return result;
+  return CornerShapeAndRadiusValue(
+      shapes,
+      first_shape == Superellipse::Round() &&
+          second_shape == Superellipse::Round(),
+      CornerSideRadiusValue(first_radius, second_radius, style),
+      IsInitialRadius(first_radius) && IsInitialRadius(second_radius));
 }
 
 }  // namespace
@@ -2984,6 +3111,10 @@ bool Flex::ParseShorthand(bool important,
                 stream.Peek().Id())) {
           flex_basis = css_parsing_utils::ConsumeIdent(stream);
         }
+        if (RuntimeEnabledFeatures::CssSizeShrinkContentEnabled() &&
+            stream.Peek().Id() == CSSValueID::kShrinkContent) {
+          flex_basis = css_parsing_utils::ConsumeIdent(stream);
+        }
 
         if (!flex_basis) {
           local_context.SetUnresolvedProperty(
@@ -3181,12 +3312,10 @@ bool ConsumeFont(bool important,
       CSSPropertyID::kFontVariantAlternates, CSSPropertyID::kFont,
       *CSSIdentifierValue::Create(CSSValueID::kNormal), important,
       css_parsing_utils::IsImplicitProperty::kNotImplicit, properties);
-  if (RuntimeEnabledFeatures::CSSFontSizeAdjustEnabled()) {
-    css_parsing_utils::AddProperty(
-        CSSPropertyID::kFontSizeAdjust, CSSPropertyID::kFont,
-        *CSSIdentifierValue::Create(CSSValueID::kNone), important,
-        css_parsing_utils::IsImplicitProperty::kNotImplicit, properties);
-  }
+  css_parsing_utils::AddProperty(
+      CSSPropertyID::kFontSizeAdjust, CSSPropertyID::kFont,
+      *CSSIdentifierValue::Create(CSSValueID::kNone), important,
+      css_parsing_utils::IsImplicitProperty::kNotImplicit, properties);
   if (RuntimeEnabledFeatures::FontLanguageOverrideEnabled()) {
     css_parsing_utils::AddProperty(
         CSSPropertyID::kFontLanguageOverride, CSSPropertyID::kFont,
@@ -5170,13 +5299,16 @@ bool ParseTimelineShorthand(CSSPropertyID shorthand_id,
 }
 
 static CSSValue* CSSValueForTimelineShorthand(
-    const Vector<AtomicString>& name_vector,
+    const ScopedCSSNameList* name_list,
     const Vector<TimelineAxis>& axis_vector,
     const Vector<TimelineInset>* inset_vector,
     const ComputedStyle& style) {
   CSSValueList* list = CSSValueList::CreateCommaSeparated();
 
-  const wtf_size_t name_length = name_vector.empty() ? 1u : name_vector.size();
+  const HeapVector<Member<const ScopedCSSName>>* names =
+      name_list ? &name_list->GetNames() : nullptr;
+  const wtf_size_t name_length =
+      (!names || names->empty()) ? 1u : names->size();
   const bool axis_is_initial =
       axis_vector.empty() ||
       (axis_vector.size() == 1u && axis_vector[0] == TimelineAxis::kBlock);
@@ -5190,8 +5322,9 @@ static CSSValue* CSSValueForTimelineShorthand(
   }
 
   for (wtf_size_t i = 0; i < name_length; ++i) {
-    const AtomicString& name =
-        name_vector.empty() ? g_null_atom : name_vector[i];
+    const AtomicString& name = (names && i < names->size() && (*names)[i])
+                                   ? (*names)[i]->GetName()
+                                   : g_null_atom;
     const TimelineAxis axis =
         axis_is_initial ? TimelineAxis::kBlock : axis_vector[i];
     std::optional<TimelineInset> inset = std::nullopt;
@@ -5223,9 +5356,9 @@ const CSSValue* ScrollTimeline::CSSValueFromComputedStyleInternal(
     const LayoutObject* layout_object,
     bool allow_visited_style,
     CSSValuePhase value_phase) const {
-  const Vector<AtomicString>& name_vector = style.ScrollTimelineName();
+  const ScopedCSSNameList* name_list = style.ScrollTimelineName();
   const Vector<TimelineAxis>& axis_vector = style.ScrollTimelineAxis();
-  return CSSValueForTimelineShorthand(name_vector, axis_vector,
+  return CSSValueForTimelineShorthand(name_list, axis_vector,
                                       /* inset_vector */ nullptr, style);
 }
 
@@ -5684,10 +5817,10 @@ const CSSValue* ViewTimeline::CSSValueFromComputedStyleInternal(
     const LayoutObject*,
     bool allow_visited_style,
     CSSValuePhase value_phase) const {
-  const Vector<AtomicString>& name_vector = style.ViewTimelineName();
+  const ScopedCSSNameList* name_list = style.ViewTimelineName();
   const Vector<TimelineAxis>& axis_vector = style.ViewTimelineAxis();
   const Vector<TimelineInset>& inset_vector = style.ViewTimelineInset();
-  return CSSValueForTimelineShorthand(name_vector, axis_vector, &inset_vector,
+  return CSSValueForTimelineShorthand(name_list, axis_vector, &inset_vector,
                                       style);
 }
 
@@ -6555,6 +6688,283 @@ const CSSValue* WhiteSpace::CSSValueFromComputedStyleInternal(
   // `IsValidWhiteSpace()` above.
   DCHECK(list->length());
   return list;
+}
+
+bool BorderBlockEndRadius::ParseShorthand(
+    bool important,
+    CSSParserTokenStream& stream,
+    const CSSParserContext& context,
+    CSSParserLocalContext& local_context,
+    HeapVector<CSSPropertyValue, 64>& properties) const {
+  std::optional<std::pair<CSSValue*, CSSValue*>> radii =
+      css_parsing_utils::ConsumeBorderRadiusCornerShorthand(stream, context,
+                                                            local_context);
+  if (!radii) {
+    return false;
+  }
+  auto [end_start_radius, end_end_radius] = *radii;
+  css_parsing_utils::AddProperty(
+      CSSPropertyID::kBorderEndStartRadius,
+      CSSPropertyID::kBorderBlockEndRadius, *end_start_radius, important,
+      css_parsing_utils::IsImplicitProperty::kNotImplicit, properties);
+  css_parsing_utils::AddProperty(
+      CSSPropertyID::kBorderEndEndRadius, CSSPropertyID::kBorderBlockEndRadius,
+      *end_end_radius, important,
+      css_parsing_utils::IsImplicitProperty::kNotImplicit, properties);
+  return true;
+}
+
+const CSSValue* BorderBlockEndRadius::CSSValueFromComputedStyleInternal(
+    const ComputedStyle& style,
+    const LayoutObject* layout_object,
+    bool allow_visited_style,
+    CSSValuePhase value_phase) const {
+  return ComputedStyleUtils::ValueForBorderRadiusCornerShorthand(
+      GetCSSPropertyBorderEndStartRadius(), GetCSSPropertyBorderEndEndRadius(),
+      style, layout_object, allow_visited_style, value_phase);
+}
+
+bool BorderBlockStartRadius::ParseShorthand(
+    bool important,
+    CSSParserTokenStream& stream,
+    const CSSParserContext& context,
+    CSSParserLocalContext& local_context,
+    HeapVector<CSSPropertyValue, 64>& properties) const {
+  std::optional<std::pair<CSSValue*, CSSValue*>> radii =
+      css_parsing_utils::ConsumeBorderRadiusCornerShorthand(stream, context,
+                                                            local_context);
+  if (!radii) {
+    return false;
+  }
+  auto [start_start_radius, start_end_radius] = *radii;
+  css_parsing_utils::AddProperty(
+      CSSPropertyID::kBorderStartStartRadius,
+      CSSPropertyID::kBorderBlockStartRadius, *start_start_radius, important,
+      css_parsing_utils::IsImplicitProperty::kNotImplicit, properties);
+  css_parsing_utils::AddProperty(
+      CSSPropertyID::kBorderStartEndRadius,
+      CSSPropertyID::kBorderBlockStartRadius, *start_end_radius, important,
+      css_parsing_utils::IsImplicitProperty::kNotImplicit, properties);
+  return true;
+}
+
+const CSSValue* BorderBlockStartRadius::CSSValueFromComputedStyleInternal(
+    const ComputedStyle& style,
+    const LayoutObject* layout_object,
+    bool allow_visited_style,
+    CSSValuePhase value_phase) const {
+  return ComputedStyleUtils::ValueForBorderRadiusCornerShorthand(
+      GetCSSPropertyBorderStartStartRadius(),
+      GetCSSPropertyBorderStartEndRadius(), style, layout_object,
+      allow_visited_style, value_phase);
+}
+
+bool BorderInlineEndRadius::ParseShorthand(
+    bool important,
+    CSSParserTokenStream& stream,
+    const CSSParserContext& context,
+    CSSParserLocalContext& local_context,
+    HeapVector<CSSPropertyValue, 64>& properties) const {
+  std::optional<std::pair<CSSValue*, CSSValue*>> radii =
+      css_parsing_utils::ConsumeBorderRadiusCornerShorthand(stream, context,
+                                                            local_context);
+  if (!radii) {
+    return false;
+  }
+  auto [start_end_radius, end_end_radius] = *radii;
+  css_parsing_utils::AddProperty(
+      CSSPropertyID::kBorderStartEndRadius,
+      CSSPropertyID::kBorderInlineEndRadius, *start_end_radius, important,
+      css_parsing_utils::IsImplicitProperty::kNotImplicit, properties);
+  css_parsing_utils::AddProperty(
+      CSSPropertyID::kBorderEndEndRadius, CSSPropertyID::kBorderInlineEndRadius,
+      *end_end_radius, important,
+      css_parsing_utils::IsImplicitProperty::kNotImplicit, properties);
+  return true;
+}
+
+const CSSValue* BorderInlineEndRadius::CSSValueFromComputedStyleInternal(
+    const ComputedStyle& style,
+    const LayoutObject* layout_object,
+    bool allow_visited_style,
+    CSSValuePhase value_phase) const {
+  return ComputedStyleUtils::ValueForBorderRadiusCornerShorthand(
+      GetCSSPropertyBorderStartEndRadius(), GetCSSPropertyBorderEndEndRadius(),
+      style, layout_object, allow_visited_style, value_phase);
+}
+
+bool BorderInlineStartRadius::ParseShorthand(
+    bool important,
+    CSSParserTokenStream& stream,
+    const CSSParserContext& context,
+    CSSParserLocalContext& local_context,
+    HeapVector<CSSPropertyValue, 64>& properties) const {
+  std::optional<std::pair<CSSValue*, CSSValue*>> radii =
+      css_parsing_utils::ConsumeBorderRadiusCornerShorthand(stream, context,
+                                                            local_context);
+  if (!radii) {
+    return false;
+  }
+  auto [start_start_radius, end_start_radius] = *radii;
+  css_parsing_utils::AddProperty(
+      CSSPropertyID::kBorderStartStartRadius,
+      CSSPropertyID::kBorderInlineStartRadius, *start_start_radius, important,
+      css_parsing_utils::IsImplicitProperty::kNotImplicit, properties);
+  css_parsing_utils::AddProperty(
+      CSSPropertyID::kBorderEndStartRadius,
+      CSSPropertyID::kBorderInlineStartRadius, *end_start_radius, important,
+      css_parsing_utils::IsImplicitProperty::kNotImplicit, properties);
+  return true;
+}
+
+const CSSValue* BorderInlineStartRadius::CSSValueFromComputedStyleInternal(
+    const ComputedStyle& style,
+    const LayoutObject* layout_object,
+    bool allow_visited_style,
+    CSSValuePhase value_phase) const {
+  return ComputedStyleUtils::ValueForBorderRadiusCornerShorthand(
+      GetCSSPropertyBorderStartStartRadius(),
+      GetCSSPropertyBorderEndStartRadius(), style, layout_object,
+      allow_visited_style, value_phase);
+}
+
+bool BorderBottomRadius::ParseShorthand(
+    bool important,
+    CSSParserTokenStream& stream,
+    const CSSParserContext& context,
+    CSSParserLocalContext& local_context,
+    HeapVector<CSSPropertyValue, 64>& properties) const {
+  std::optional<std::pair<CSSValue*, CSSValue*>> radii =
+      css_parsing_utils::ConsumeBorderRadiusCornerShorthand(stream, context,
+                                                            local_context);
+  if (!radii) {
+    return false;
+  }
+  auto [bottom_left_radius, bottom_right_radius] = *radii;
+  css_parsing_utils::AddProperty(
+      CSSPropertyID::kBorderBottomLeftRadius,
+      CSSPropertyID::kBorderBottomRadius, *bottom_left_radius, important,
+      css_parsing_utils::IsImplicitProperty::kNotImplicit, properties);
+  css_parsing_utils::AddProperty(
+      CSSPropertyID::kBorderBottomRightRadius,
+      CSSPropertyID::kBorderBottomRadius, *bottom_right_radius, important,
+      css_parsing_utils::IsImplicitProperty::kNotImplicit, properties);
+  return true;
+}
+
+const CSSValue* BorderBottomRadius::CSSValueFromComputedStyleInternal(
+    const ComputedStyle& style,
+    const LayoutObject* layout_object,
+    bool allow_visited_style,
+    CSSValuePhase value_phase) const {
+  return ComputedStyleUtils::ValueForBorderRadiusCornerShorthand(
+      GetCSSPropertyBorderBottomLeftRadius(),
+      GetCSSPropertyBorderBottomRightRadius(), style, layout_object,
+      allow_visited_style, value_phase);
+}
+
+bool BorderLeftRadius::ParseShorthand(
+    bool important,
+    CSSParserTokenStream& stream,
+    const CSSParserContext& context,
+    CSSParserLocalContext& local_context,
+    HeapVector<CSSPropertyValue, 64>& properties) const {
+  std::optional<std::pair<CSSValue*, CSSValue*>> radii =
+      css_parsing_utils::ConsumeBorderRadiusCornerShorthand(stream, context,
+                                                            local_context);
+  if (!radii) {
+    return false;
+  }
+  auto [top_left_radius, bottom_left_radius] = *radii;
+  css_parsing_utils::AddProperty(
+      CSSPropertyID::kBorderTopLeftRadius, CSSPropertyID::kBorderLeftRadius,
+      *top_left_radius, important,
+      css_parsing_utils::IsImplicitProperty::kNotImplicit, properties);
+  css_parsing_utils::AddProperty(
+      CSSPropertyID::kBorderBottomLeftRadius, CSSPropertyID::kBorderLeftRadius,
+      *bottom_left_radius, important,
+      css_parsing_utils::IsImplicitProperty::kNotImplicit, properties);
+  return true;
+}
+
+const CSSValue* BorderLeftRadius::CSSValueFromComputedStyleInternal(
+    const ComputedStyle& style,
+    const LayoutObject* layout_object,
+    bool allow_visited_style,
+    CSSValuePhase value_phase) const {
+  return ComputedStyleUtils::ValueForBorderRadiusCornerShorthand(
+      GetCSSPropertyBorderTopLeftRadius(),
+      GetCSSPropertyBorderBottomLeftRadius(), style, layout_object,
+      allow_visited_style, value_phase);
+}
+
+bool BorderRightRadius::ParseShorthand(
+    bool important,
+    CSSParserTokenStream& stream,
+    const CSSParserContext& context,
+    CSSParserLocalContext& local_context,
+    HeapVector<CSSPropertyValue, 64>& properties) const {
+  std::optional<std::pair<CSSValue*, CSSValue*>> radii =
+      css_parsing_utils::ConsumeBorderRadiusCornerShorthand(stream, context,
+                                                            local_context);
+  if (!radii) {
+    return false;
+  }
+  auto [top_right_radius, bottom_right_radius] = *radii;
+  css_parsing_utils::AddProperty(
+      CSSPropertyID::kBorderTopRightRadius, CSSPropertyID::kBorderRightRadius,
+      *top_right_radius, important,
+      css_parsing_utils::IsImplicitProperty::kNotImplicit, properties);
+  css_parsing_utils::AddProperty(
+      CSSPropertyID::kBorderBottomRightRadius,
+      CSSPropertyID::kBorderRightRadius, *bottom_right_radius, important,
+      css_parsing_utils::IsImplicitProperty::kNotImplicit, properties);
+  return true;
+}
+
+const CSSValue* BorderRightRadius::CSSValueFromComputedStyleInternal(
+    const ComputedStyle& style,
+    const LayoutObject* layout_object,
+    bool allow_visited_style,
+    CSSValuePhase value_phase) const {
+  return ComputedStyleUtils::ValueForBorderRadiusCornerShorthand(
+      GetCSSPropertyBorderTopRightRadius(),
+      GetCSSPropertyBorderBottomRightRadius(), style, layout_object,
+      allow_visited_style, value_phase);
+}
+
+bool BorderTopRadius::ParseShorthand(
+    bool important,
+    CSSParserTokenStream& stream,
+    const CSSParserContext& context,
+    CSSParserLocalContext& local_context,
+    HeapVector<CSSPropertyValue, 64>& properties) const {
+  std::optional<std::pair<CSSValue*, CSSValue*>> radii =
+      css_parsing_utils::ConsumeBorderRadiusCornerShorthand(stream, context,
+                                                            local_context);
+  if (!radii) {
+    return false;
+  }
+  auto [top_left_radius, top_right_radius] = *radii;
+  css_parsing_utils::AddProperty(
+      CSSPropertyID::kBorderTopLeftRadius, CSSPropertyID::kBorderTopRadius,
+      *top_left_radius, important,
+      css_parsing_utils::IsImplicitProperty::kNotImplicit, properties);
+  css_parsing_utils::AddProperty(
+      CSSPropertyID::kBorderTopRightRadius, CSSPropertyID::kBorderTopRadius,
+      *top_right_radius, important,
+      css_parsing_utils::IsImplicitProperty::kNotImplicit, properties);
+  return true;
+}
+
+const CSSValue* BorderTopRadius::CSSValueFromComputedStyleInternal(
+    const ComputedStyle& style,
+    const LayoutObject* layout_object,
+    bool allow_visited_style,
+    CSSValuePhase value_phase) const {
+  return ComputedStyleUtils::ValueForBorderRadiusCornerShorthand(
+      GetCSSPropertyBorderTopLeftRadius(), GetCSSPropertyBorderTopRightRadius(),
+      style, layout_object, allow_visited_style, value_phase);
 }
 
 }  // namespace css_shorthand

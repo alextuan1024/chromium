@@ -348,7 +348,7 @@ chromium-metrics-reviews@google.com.
   <int value="11" label="Form Submission"/>
 </enum>
 
-<!-- LINT.ThenChange(//chrome/browser/page_load_metrics/chrome_initiator_location.h:ChromeInitiatorLocation) -->
+<!-- LINT.ThenChange(//components/page_load_metrics/browser/navigation_initiator.h:PageLoadMetricsNavigationInitiator|//chrome/browser/page_load_metrics/chrome_navigation_initiator.h:ChromeNavigationInitiator) -->
 
 <enum name="NavigationIsGuest">
   <int value="0" label="Not a guest navigation"/>
@@ -358,11 +358,6 @@ chromium-metrics-reviews@google.com.
 <enum name="NavigationIsLockedProcess">
   <int value="0" label="Process is not locked to origin"/>
   <int value="1" label="Process is locked to origin"/>
-</enum>
-
-<enum name="NavigationIsSameBrowsingInstance">
-  <int value="0" label="Cross BrowsingInstance navigation"/>
-  <int value="1" label="Same BrowsingInstance navigation"/>
 </enum>
 
 <enum name="NavigationIsSameSiteInstance">
@@ -404,6 +399,8 @@ chromium-metrics-reviews@google.com.
   <int value="67108866" label="Home page | Auto bookmark"/>
   <int value="134217728" label="From API"/>
   <int value="134217729" label="From API | Typed"/>
+  <int value="134217734" label="From API | Auto toplevel"/>
+  <int value="1073741824" label="Client redirect"/>
 </enum>
 
 <!-- LINT.IfChange(NavigationRequestSchemeType) -->
@@ -542,6 +539,25 @@ chromium-metrics-reviews@google.com.
 </enum>
 
 <!-- LINT.ThenChange(//content/browser/loader/navigation_url_loader_impl.cc:OnAcceptCHFrameReceivedReturnLocation) -->
+
+<!-- LINT.IfChange(OriginAgentClusterAdExclusionResult) -->
+
+<enum name="OriginAgentClusterAdExclusionResult">
+  <int value="0" label="Ad decision true, site-keyed process"/>
+  <int value="1"
+      label="Ad decision true, origin-keyed process because of an existing
+             BrowsingInstance state"/>
+  <int value="2"
+      label="Ad decision false, ad tag arrived after the decision,
+             origin-keyed process that the ad exclusion would have prevented"/>
+  <int value="3"
+      label="Ad decision false, ad tag arrived after the decision, site-keyed
+             process because of an existing BrowsingInstance state"/>
+  <int value="4"
+      label="Not an excluded ad at the ad decision or at ReadyToCommit"/>
+</enum>
+
+<!-- LINT.ThenChange(//content/browser/renderer_host/navigation_request.h:AdExclusionResult) -->
 
 <enum name="OriginAgentClusterEndResult">
   <int value="0" label="Not requested and not origin-keyed"/>
@@ -1763,7 +1779,8 @@ chromium-metrics-reviews@google.com.
   </summary>
   <int value="-2066290458" label="search.mojom.EmbeddedSearchConnector"/>
   <int value="-2012727489" label="device.mojom.ScreenOrientation"/>
-  <int value="-1700130222" label="blink.mojom.SharedStorageDocumentService"/>
+  <int value="-1700130222"
+      label="(Obsolete) blink.mojom.SharedStorageDocumentService"/>
   <int value="-1398143678" label="blink.mojom.ClipboardHost (Unexpected)"/>
   <int value="-1354302262" label="blink.mojom.BackForwardCacheControllerHost"/>
   <int value="-1150785480"
@@ -1923,13 +1940,6 @@ chromium-metrics-reviews@google.com.
 
 <!-- LINT.ThenChange(//content/browser/preloading/prerender/prerender_host.h:WaitingForHeadersFinishedReason) -->
 
-<enum name="RelatedActiveContentsSyncAccessInfo">
-  <int value="0" label="kNoSyncAccess"/>
-  <int value="1"
-      label="kPotentiallySyncAccessibleDefaultSiteInstance (deprecated)"/>
-  <int value="2" label="kPotentiallySyncAccessible"/>
-</enum>
-
 <enum name="RendererBlockedURLReason">
   <int value="0" label="Invalid URL"/>
   <int value="1" label="URL Was Too Long"/>
@@ -1954,6 +1964,20 @@ chromium-metrics-reviews@google.com.
 </enum>
 
 <!-- LINT.ThenChange(//content/renderer/renderer_navigation_metrics_manager.cc:RendererProcessReadiness) -->
+
+<!-- LINT.IfChange(SearchEnginePrewarmDictionaryEvent) -->
+
+<enum name="SearchEnginePrewarmDictionaryEvent">
+  <int value="0" label="Prewarmed"/>
+  <int value="1" label="Refreshed"/>
+  <int value="2" label="Expired"/>
+  <int value="3" label="Closed on Session Closed"/>
+  <int value="4" label="Closed on Connection Failed"/>
+  <int value="5" label="Disconnected"/>
+  <int value="6" label="Destroyed"/>
+</enum>
+
+<!-- LINT.ThenChange(//chrome/browser/navigation_predictor/search_engine_dictionary_prewarmer.h:SearchEnginePrewarmDictionaryEvent) -->
 
 <enum name="ThirdPartyCookieBlockState">
   <int value="0" label="Cookies allowed"/>

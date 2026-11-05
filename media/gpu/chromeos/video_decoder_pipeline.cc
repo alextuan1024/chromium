@@ -140,6 +140,9 @@ int GetMaxNumDecoderInstances(const gpu::GpuDriverBugWorkarounds& workarounds) {
   if (workarounds.max_num_hw_video_decoders_10) {
     return 10;
   }
+  if (workarounds.max_num_hw_video_decoders_15) {
+    return 15;
+  }
   return kDefaultMaxNumDecoderInstances;
 }
 
@@ -233,6 +236,7 @@ std::unique_ptr<VideoDecoder> VideoDecoderPipeline::Create(
 
   CreateDecoderFunctionCB create_decoder_function_cb;
   bool uses_oop_video_decoder = false;
+  int max_decoder_instances = GetMaxNumDecoderInstances(workarounds);
 #if BUILDFLAG(ENABLE_OOP_VIDEO_DECODER)
   if (oop_video_decoder) {
     DCHECK(!frame_pool);
@@ -254,6 +258,14 @@ std::unique_ptr<VideoDecoder> VideoDecoderPipeline::Create(
         if (IsV4L2DecoderStateful()) {
           create_decoder_function_cb =
               base::BindOnce(&V4L2StatefulVideoDecoder::Create);
+          // Legacy implementations limited the maximum number of simultaneous
+          // stateful decoder instances to 15 [1]. Maintain that legacy behavior
+          // while respecting any GPU workaround that lowers the limit. Future
+          // device-specific limitations should be handled via GPU workarounds
+          // in GetMaxNumDecoderInstances().
+          // [1]
+          // https://source.chromium.org/chromium/chromium/src/+/main:media/gpu/v4l2/v4l2_stateful_video_decoder.cc;l=1226-1248;drc=bbd9b346363f4125cbc83a0373a3ab8c87f97583
+          max_decoder_instances = std::min(max_decoder_instances, 15);
         } else {
           create_decoder_function_cb =
               base::BindOnce(&V4L2VideoDecoder::Create);
@@ -266,7 +278,7 @@ std::unique_ptr<VideoDecoder> VideoDecoderPipeline::Create(
   }
 
   std::unique_ptr<DecoderReservation> decoder_reservation =
-      DecoderReservation::Take(GetMaxNumDecoderInstances(workarounds));
+      DecoderReservation::Take(max_decoder_instances);
   if (!decoder_reservation) {
     return nullptr;
   }
@@ -428,13 +440,6 @@ VideoDecoderPipeline::GetSupportedConfigs(
 
   if (!configs)
     return std::nullopt;
-
-  if (workarounds.disable_accelerated_vp8_decode) {
-    std::erase_if(configs.value(), [](const auto& config) {
-      return config.profile_min >= VP8PROFILE_MIN &&
-             config.profile_max <= VP8PROFILE_MAX;
-    });
-  }
 
   if (workarounds.disable_accelerated_vp9_decode) {
     std::erase_if(configs.value(), [](const auto& config) {
@@ -1122,7 +1127,7 @@ void VideoDecoderPipeline::NotifyEstimatedMaxDecodeRequests(int num) {
   decoder_max_decode_requests_ = num;
 }
 
-CroStatus::Or<PixelLayoutCandidate>
+base::expected<PixelLayoutCandidate, CroStatus>
 VideoDecoderPipeline::PickDecoderOutputFormat(
     const std::vector<PixelLayoutCandidate>& candidates,
     const gfx::Rect& decoder_visible_rect,
@@ -1141,7 +1146,7 @@ VideoDecoderPipeline::PickDecoderOutputFormat(
   CHECK(!uses_oop_video_decoder_);
 
   if (candidates.empty())
-    return CroStatus::Codes::kNoDecoderOutputFormatCandidates;
+    return base::unexpected(CroStatus::Codes::kNoDecoderOutputFormatCandidates);
 
   auxiliary_frame_pool_.reset();
   image_processor_.reset();
@@ -1226,7 +1231,7 @@ VideoDecoderPipeline::PickDecoderOutputFormat(
     // reference frames (plus one frame for the frame being decoded), then the
     // decode will stall. Instead, this returns an error.
     if ((num_codec_reference_frames + 1) > GetDecoderMaxOutputFramePoolSize()) {
-      return CroStatus::Codes::kInsufficientFramePoolSize;
+      return base::unexpected(CroStatus::Codes::kInsufficientFramePoolSize);
     }
 
     // |main_frame_pool_| needs to allocate enough buffers for both the codec
@@ -1262,18 +1267,19 @@ VideoDecoderPipeline::PickDecoderOutputFormat(
         LOG(ERROR) << "Exceeded max memory for secure V4L2: "
                    << (mem_required / (1024 * 1024)) << "MB of "
                    << (kMaxV4L2ProtectedMemory / (1024 * 1024)) << "MB";
-        return CroStatus::Codes::kUnableToAllocateSecureBuffer;
+        return base::unexpected(
+            CroStatus::Codes::kUnableToAllocateSecureBuffer);
       }
     }
 #endif  // BUILDFLAG(USE_V4L2_CODEC)
 
-    CroStatus::Or<GpuBufferLayout> status_or_layout =
+    base::expected<GpuBufferLayout, CroStatus> status_or_layout =
         main_frame_pool_->Initialize(viable_candidate->fourcc,
                                      viable_candidate->size,
                                      decoder_visible_rect, decoder_natural_size,
                                      num_pictures, use_protected);
     if (!status_or_layout.has_value())
-      return std::move(status_or_layout).error();
+      return base::unexpected(std::move(status_or_layout).error());
 
     // TODO(mcasas): Consider changing the code here to update
     // viable_candidate->modifier to be |status_or_layout|'s modifier(), so
@@ -1294,7 +1300,7 @@ VideoDecoderPipeline::PickDecoderOutputFormat(
       // modifier or DRM_FORMAT_MOD_LINEAR.
       DVLOGF(2) << "Unsupported modifier, " << std::hex
                 << viable_candidate->modifier << ", passed in";
-      return CroStatus::Codes::kFailedToCreateImageProcessor;
+      return base::unexpected(CroStatus::Codes::kFailedToCreateImageProcessor);
     }
 #else
     return *viable_candidate;
@@ -1348,7 +1354,7 @@ VideoDecoderPipeline::PickDecoderOutputFormat(
     DVLOGF(2) << "Unable to find ImageProcessor to convert format";
     // TODO(crbug.com/40139291): Make CreateWithInputCandidates return an Or
     // type.
-    return CroStatus::Codes::kFailedToCreateImageProcessor;
+    return base::unexpected(CroStatus::Codes::kFailedToCreateImageProcessor);
   }
 
   if (need_aux_frame_pool) {
@@ -1366,7 +1372,7 @@ VideoDecoderPipeline::PickDecoderOutputFormat(
     // frames |num_pictures|, the decode will stall. Instead, this returns an
     // error.
     if (num_pictures > GetDecoderMaxOutputFramePoolSize()) {
-      return CroStatus::Codes::kInsufficientFramePoolSize;
+      return base::unexpected(CroStatus::Codes::kInsufficientFramePoolSize);
     }
 
     VLOGF(2) << "Initializing auxiliary frame pool with up to " << num_pictures
@@ -1380,16 +1386,17 @@ VideoDecoderPipeline::PickDecoderOutputFormat(
         *allocator, VideoFrame::STORAGE_DMABUFS);
 #endif
 
-    CroStatus::Or<GpuBufferLayout> status_or_layout =
+    base::expected<GpuBufferLayout, CroStatus> status_or_layout =
         auxiliary_frame_pool_->Initialize(
             image_processor->input_config().fourcc,
             image_processor->input_config().size, decoder_visible_rect,
             decoder_natural_size, num_pictures, use_protected);
     if (!status_or_layout.has_value()) {
       // A PlatformVideoFramePool should never abort initialization.
-      DCHECK_NE(status_or_layout.code(), CroStatus::Codes::kResetRequired);
+      DCHECK_NE(status_or_layout.error().code(),
+                CroStatus::Codes::kResetRequired);
       DVLOGF(2) << "Could not initialize the auxiliary frame pool";
-      return std::move(status_or_layout).error();
+      return base::unexpected(std::move(status_or_layout).error());
     }
   }
   // Note that fourcc is specified in ImageProcessor's factory method.
@@ -1423,7 +1430,7 @@ VideoDecoderPipeline::PickDecoderOutputFormat(
       use_protected, decoder_task_runner_);
   if (!status_or_image_processor.has_value()) {
     DVLOGF(2) << "Unable to create ImageProcessorWithPool.";
-    return std::move(status_or_image_processor).error();
+    return base::unexpected(std::move(status_or_image_processor).error());
   }
 
   image_processor_ = std::move(status_or_image_processor).value();

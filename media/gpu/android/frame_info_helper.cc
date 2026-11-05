@@ -23,6 +23,7 @@ namespace {
 
 // These values are persisted to logs. Entries should not be renumbered and
 // numeric values should never be reused.
+// LINT.IfChange(CodedSizeGuessStatus)
 enum class CodedSizeGuessStatus {
   kNoneCorrect = 0,
   kGuessCorrect = 1,
@@ -32,6 +33,7 @@ enum class CodedSizeGuessStatus {
   kDidntGuessAndMediaFormatNotCorrect = 5,
   kMaxValue = kDidntGuessAndMediaFormatNotCorrect
 };
+// LINT.ThenChange(//tools/metrics/histograms/metadata/media/enums.xml:CodedSizeGuessStatus)
 }  // namespace
 
 FrameInfoHelper::FrameInfo::FrameInfo() = default;
@@ -91,7 +93,8 @@ class FrameInfoHelperImpl : public FrameInfoHelper,
                 &result);
         if (result == gpu::ContextResult::kSuccess) {
           DCHECK(shared_context_);
-          if (shared_context_->GrContextIsVulkan()) {
+          if (shared_context_->GrContextIsVulkan() ||
+              shared_context_->IsGraphiteVulkan()) {
             vulkan_context_provider_ = shared_context_->vk_context_provider();
           } else if (shared_context_->IsGraphiteDawnVulkan()) {
             dawn_context_provider_ = shared_context_->dawn_context_provider();

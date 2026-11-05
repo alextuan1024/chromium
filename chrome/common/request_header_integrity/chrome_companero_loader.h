@@ -9,6 +9,7 @@
 #include <string>
 
 #include "base/no_destructor.h"
+#include "base/power_monitor/power_observer.h"
 #include "base/sequence_checker.h"
 #include "base/synchronization/lock.h"
 #include "base/thread_annotations.h"
@@ -26,24 +27,32 @@ struct HeaderNameAndValue {
   std::string value;
 };
 
-// An in-memory token cache for child processes (such as Renderers).
+// How often a cached token is refreshed, both by the child-process Mojo poll
+// and by the browser-process feed in `ChromeCompaneroHost`.
+inline constexpr base::TimeDelta kTokenRefreshInterval = base::Minutes(1);
+
+// An in-memory request header integrity token cache, one per process.
 //
-// Periodically polls a remote `ChromeCompanero` service over Mojo for request
-// header integrity tokens.
+// The cache is fed differently depending on the process:
+// - Child processes (such as Renderers) call `SetMojoRemote()`, after which the
+//   cache polls the remote `ChromeCompanero` service over Mojo every
+//   `kTokenRefreshInterval`.
+// - The browser process has no Mojo remote. `ChromeCompaneroHost` pushes tokens
+//   in directly via `BrowserProcessUpdateCachedToken()`.
 //
-// Must be created, configured with a `PendingRemote`, and destroyed on the same
-// sequence. Its `GetHeaderNameAndValue()` method may be called from any
-// sequence.
-class ChromeCompaneroLoader {
+// `SetMojoRemote()` and the destructor must run on the same sequence.
+// `GetHeaderNameAndValue()` and `BrowserProcessUpdateCachedToken()` may be
+// called from any sequence.
+class ChromeCompaneroLoader : public base::PowerSuspendObserver {
  public:
   static ChromeCompaneroLoader& GetInstance();
 
   ChromeCompaneroLoader(const ChromeCompaneroLoader&) = delete;
   ChromeCompaneroLoader& operator=(const ChromeCompaneroLoader&) = delete;
 
-  // Returns the cached request header name and token value from RAM, or
-  // std::nullopt if the token is unavailable or uninitialized. Non-blocking
-  // and thread-safe.
+  // Returns the most recently received request header name and token value,
+  // even if older than `kTokenRefreshInterval`, or std::nullopt if none has
+  // been received. Non-blocking and thread-safe.
   std::optional<HeaderNameAndValue> GetHeaderNameAndValue();
 
   // Binds the Mojo remote to ChromeCompaneroHost. Triggers an initial token
@@ -51,12 +60,16 @@ class ChromeCompaneroLoader {
   void SetMojoRemote(
       mojo::PendingRemote<mojom::ChromeCompanero> pending_remote);
 
+  // Replaces the cached request header name and token value. Used in the
+  // browser process, which has no Mojo remote.
+  void BrowserProcessUpdateCachedToken(std::string name, std::string value);
+
  protected:
   // Production code reaches the single instance through GetInstance(). Tests
   // that need an isolated instance to inject derive from this class instead of
   // constructing one directly.
   ChromeCompaneroLoader();
-  ~ChromeCompaneroLoader();
+  ~ChromeCompaneroLoader() override;
 
   // Sets the cached header name and value without requiring IPC. Only
   // reachable from derived test helpers.
@@ -66,8 +79,14 @@ class ChromeCompaneroLoader {
   friend class base::NoDestructor<ChromeCompaneroLoader>;
   friend class ChromeCompaneroLoaderTest;
 
+  // base::PowerSuspendObserver:
+  void OnResume() override;
+
   void RefreshValue();
   void OnValueReceived(network::mojom::HttpRequestHeaderKeyValuePairPtr result);
+
+  // Validates `name` and `value` and stores them in the cache.
+  void SetCachedToken(std::string name, std::string value);
 
   // Protects access to the cached token fields below. Not held during blocking
   // operations.

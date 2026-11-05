@@ -8,31 +8,38 @@
 #include <optional>
 #include <string>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include "base/check.h"
+#include "base/check_op.h"
 #include "base/command_line.h"
+#include "base/containers/circular_deque.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/location.h"
-#include "base/task/sequenced_task_runner.h"
+#include "base/metrics/histogram_functions.h"
+#include "base/notreached.h"
+#include "base/strings/strcat.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/time/time.h"
 #include "base/types/expected.h"
 #include "components/optimization_guide/core/access_token_helper.h"
-#include "components/optimization_guide/core/model_execution/feature_keys.h"
+#include "components/optimization_guide/core/feature_registry/feature_keys.h"
 #include "components/optimization_guide/core/model_execution/optimization_guide_model_execution_error.h"
 #include "components/optimization_guide/core/model_execution/remote_model_execution_common.h"
 #include "components/optimization_guide/core/optimization_guide_common.mojom-shared.h"
 #include "components/optimization_guide/core/optimization_guide_features.h"
 #include "components/optimization_guide/core/optimization_guide_logger.h"
+#include "components/optimization_guide/core/optimization_guide_util.h"
 #include "components/optimization_guide/proto/model_execution.pb.h"
 #include "components/signin/public/base/oauth_consumer_id.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
+#include "net/base/net_errors.h"
 #include "net/base/url_util.h"
 #include "net/http/http_status_code.h"
 #include "net/traffic_annotation/network_traffic_annotation.h"
-#include "services/network/public/mojom/network_context.mojom.h"
 #include "url/gurl.h"
 
 namespace optimization_guide {
@@ -46,6 +53,12 @@ constexpr char kModelExecutionStreamingRPCName[] =
     "ws/"
     "google.internal.chrome.modelexecution.ModelExecutionService.StreamExecute";
 
+#define STREAMING_SESSION_LOGGER(logger, feature)                             \
+  if ((logger) && (logger)->ShouldEnableDebugLogs())                          \
+  OPTIMIZATION_GUIDE_LOGGER(                                                  \
+      optimization_guide_common::mojom::LogSource::MODEL_EXECUTION, (logger)) \
+      << "StreamingSession [" << (feature) << "] "
+
 GURL GetModelExecutionServiceStreamURL(ModelBasedCapabilityKey feature) {
   GURL url =
       GetModelExecutionServiceFullURLWebSocket(kModelExecutionStreamingRPCName);
@@ -56,6 +69,55 @@ GURL GetModelExecutionServiceStreamURL(ModelBasedCapabilityKey feature) {
   return url;
 }
 
+void RecordConnectionStatusHistogram(ModelBasedCapabilityKey feature,
+                                     StreamingConnectionStatusInternal status) {
+  base::UmaHistogramEnumeration(
+      base::StrCat(
+          {"OptimizationGuide.ModelExecution.Streaming.ConnectionStatus.",
+           GetStringNameForModelExecutionFeature(feature)}),
+      status);
+}
+
+void RecordDisconnectReasonHistogram(ModelBasedCapabilityKey feature,
+                                     StreamingDisconnectReasonInternal reason) {
+  base::UmaHistogramEnumeration(
+      base::StrCat(
+          {"OptimizationGuide.ModelExecution.Streaming.DisconnectReason.",
+           GetStringNameForModelExecutionFeature(feature)}),
+      reason);
+}
+
+RemoteModelExecutionSession::DisconnectReason GetDisconnectReason(
+    std::variant<StreamingConnectionStatusInternal,
+                 StreamingDisconnectReasonInternal> disconnect_reason) {
+  if (const auto* status =
+          std::get_if<StreamingConnectionStatusInternal>(&disconnect_reason)) {
+    switch (*status) {
+      case StreamingConnectionStatusInternal::kAccessTokenFailure:
+      case StreamingConnectionStatusInternal::kHandshakeFailed:
+      case StreamingConnectionStatusInternal::kClientErrorDuringConnect:
+      case StreamingConnectionStatusInternal::
+          kMojoPipeDisconnectedDuringConnect:
+        return RemoteModelExecutionSession::DisconnectReason::kError;
+      case StreamingConnectionStatusInternal::kConnected:
+      case StreamingConnectionStatusInternal::kCancelledByDestruction:
+        NOTREACHED();
+    }
+  }
+  switch (std::get<StreamingDisconnectReasonInternal>(disconnect_reason)) {
+    case StreamingDisconnectReasonInternal::kIdleTimeout:
+      return RemoteModelExecutionSession::DisconnectReason::kIdleTimeout;
+    case StreamingDisconnectReasonInternal::kServerDropClean:
+      return RemoteModelExecutionSession::DisconnectReason::kServerClosed;
+    case StreamingDisconnectReasonInternal::kServerDropUnclean:
+    case StreamingDisconnectReasonInternal::kClientError:
+    case StreamingDisconnectReasonInternal::kMojoPipeDisconnected:
+      return RemoteModelExecutionSession::DisconnectReason::kError;
+    case StreamingDisconnectReasonInternal::kSessionDestroyed:
+      NOTREACHED();
+  }
+}
+
 }  // namespace
 
 // static
@@ -64,32 +126,26 @@ RemoteModelExecutionSession::Create(
     ModelBasedCapabilityKey feature,
     const StreamingModelExecutionOptions& options,
     OptimizationGuideModelExecutionStreamingCallback callback,
-    network::mojom::NetworkContext* network_context,
+    network::NetworkContextGetter network_context_getter,
     signin::IdentityManager* identity_manager,
     OptimizationGuideLogger* logger) {
   if (!base::FeatureList::IsEnabled(
           features::kOptimizationGuideModelExecution)) {
     return nullptr;
   }
-  CHECK(network_context);
-  if (logger && logger->ShouldEnableDebugLogs()) {
-    OPTIMIZATION_GUIDE_LOGGER(
-        optimization_guide_common::mojom::LogSource::MODEL_EXECUTION, logger)
-        << "StartStreamingSession: "
-        << proto::ModelExecutionFeature_Name(
-               ToModelExecutionFeatureProto(feature));
-  }
+  CHECK(network_context_getter);
+  STREAMING_SESSION_LOGGER(logger, feature) << "Created";
 
   return std::make_unique<RemoteModelExecutionSessionImpl>(
-      feature, options, std::move(callback), network_context, identity_manager,
-      logger);
+      feature, options, std::move(callback), std::move(network_context_getter),
+      identity_manager, logger);
 }
 
 RemoteModelExecutionSessionImpl::RemoteModelExecutionSessionImpl(
     ModelBasedCapabilityKey feature,
     const StreamingModelExecutionOptions& options,
     OptimizationGuideModelExecutionStreamingCallback callback,
-    network::mojom::NetworkContext* network_context,
+    network::NetworkContextGetter network_context_getter,
     signin::IdentityManager* identity_manager,
     OptimizationGuideLogger* logger)
     : RemoteModelExecutionSessionImpl(
@@ -99,7 +155,7 @@ RemoteModelExecutionSessionImpl::RemoteModelExecutionSessionImpl(
           identity_manager,
           std::make_unique<streaming_client::StreamingWebSocketClient>(
               GetModelExecutionServiceStreamURL(feature),
-              network_context,
+              std::move(network_context_getter),
               GetNetworkTrafficAnnotation(feature),
               /*delegate=*/this),
           logger) {}
@@ -119,9 +175,6 @@ RemoteModelExecutionSessionImpl::RemoteModelExecutionSessionImpl(
       client_(std::move(client)) {
   CHECK(callback_);
   CHECK(client_);
-  // TODO(crbug.com/553134125): Refactor out `set_delegate` call as it is only
-  // needed for tests.
-  client_->set_delegate(this);
   if (options_.prewarm_connection) {
     StartConnection();
   }
@@ -129,6 +182,14 @@ RemoteModelExecutionSessionImpl::RemoteModelExecutionSessionImpl(
 
 RemoteModelExecutionSessionImpl::~RemoteModelExecutionSessionImpl() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  if (connection_state_ == ConnectionState::kConnecting) {
+    RecordConnectionStatusHistogram(
+        feature_, StreamingConnectionStatusInternal::kCancelledByDestruction);
+  } else if (connection_state_ == ConnectionState::kConnected) {
+    RecordDisconnectReasonHistogram(
+        feature_, StreamingDisconnectReasonInternal::kSessionDestroyed);
+  }
+  STREAMING_SESSION_LOGGER(optimization_guide_logger_, feature_) << "Destroyed";
   idle_timer_.Stop();
   client_.reset();
 }
@@ -142,6 +203,8 @@ void RemoteModelExecutionSessionImpl::Send(
 
   std::string serialized_request;
   if (!execute_request.SerializeToString(&serialized_request)) {
+    STREAMING_SESSION_LOGGER(optimization_guide_logger_, feature_)
+        << "Send Error: Failed to serialize request";
     DispatchError(OptimizationGuideModelExecutionError::FromModelExecutionError(
         ModelExecutionError::kGenericFailure));
     return;
@@ -151,12 +214,17 @@ void RemoteModelExecutionSessionImpl::Send(
                                      serialized_request.end());
 
   if (connection_state_ == ConnectionState::kConnected) {
+    STREAMING_SESSION_LOGGER(optimization_guide_logger_, feature_)
+        << "Send: Sending request";
     ResetIdleTimer();
     client_->Send(std::move(request_bytes));
     return;
   }
 
   pending_requests_.push_back(std::move(request_bytes));
+  STREAMING_SESSION_LOGGER(optimization_guide_logger_, feature_)
+      << "Send: Queuing request (pending requests: "
+      << base::NumberToString(pending_requests_.size()) << ")";
   StartConnection();
 }
 
@@ -177,15 +245,18 @@ void RemoteModelExecutionSessionImpl::StartConnection() {
     return;
   }
 
-  connection_state_ = ConnectionState::kConnecting;
+  const uint64_t state_change_id =
+      SetConnectionState(ConnectionState::kConnecting);
   base::WeakPtr<RemoteModelExecutionSessionImpl> weak_ptr =
       weak_ptr_factory_.GetWeakPtr();
-  NotifyObservers();
-  if (!weak_ptr) {
+  NotifyObservers(state_change_id);
+  if (!weak_ptr || state_change_id_ != state_change_id) {
     return;
   }
 
   if (IsAccessTokenRequiredForFeature(feature_) && access_token_.empty()) {
+    STREAMING_SESSION_LOGGER(optimization_guide_logger_, feature_)
+        << "StartConnection: Requesting access token";
     HandleTokenRequestFlow(
         /*require_token=*/true, identity_manager_,
         signin::OAuthConsumerId::kOptimizationGuideModelExecution,
@@ -194,6 +265,8 @@ void RemoteModelExecutionSessionImpl::StartConnection() {
     return;
   }
 
+  STREAMING_SESSION_LOGGER(optimization_guide_logger_, feature_)
+      << "StartConnection: Connecting";
   client_->Connect();
 }
 
@@ -203,49 +276,64 @@ void RemoteModelExecutionSessionImpl::OnAccessTokenReceived(
   // Return early if the session state changed after requesting the access
   // token (e.g. disconnected while access token is pending).
   if (connection_state_ != ConnectionState::kConnecting) {
+    STREAMING_SESSION_LOGGER(optimization_guide_logger_, feature_)
+        << "OnAccessTokenReceived: Ignoring token as session is no longer "
+           "connecting";
     return;
   }
 
   if (IsAccessTokenRequiredForFeature(feature_) && access_token.empty() &&
       !base::CommandLine::ForCurrentProcess()->HasSwitch(
           kOptimizationGuideServiceModelExecutionURLSwitch)) {
+    STREAMING_SESSION_LOGGER(optimization_guide_logger_, feature_)
+        << "OnAccessTokenReceived Error: Empty access token";
     HandleDisconnection(
         OptimizationGuideModelExecutionError::FromModelExecutionError(
-            ModelExecutionError::kPermissionDenied));
+            ModelExecutionError::kPermissionDenied),
+        StreamingConnectionStatusInternal::kAccessTokenFailure);
     return;
   }
 
+  STREAMING_SESSION_LOGGER(optimization_guide_logger_, feature_)
+      << "OnAccessTokenReceived: Connecting";
   access_token_ = access_token;
   client_->Connect();
 }
 
-void RemoteModelExecutionSessionImpl::SendPendingRequests() {
+void RemoteModelExecutionSessionImpl::SendPendingRequests(
+    uint64_t state_change_id) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   base::WeakPtr<RemoteModelExecutionSessionImpl> weak_ptr =
       weak_ptr_factory_.GetWeakPtr();
-  std::vector<std::vector<uint8_t>> pending_requests =
-      std::exchange(pending_requests_, {});
-  for (std::vector<uint8_t>& request : pending_requests) {
-    if (!weak_ptr || connection_state_ != ConnectionState::kConnected) {
-      break;
-    }
+  while (!pending_requests_.empty()) {
+    std::vector<uint8_t> request = std::move(pending_requests_.front());
+    pending_requests_.pop_front();
     client_->Send(std::move(request));
+    if (!weak_ptr || state_change_id_ != state_change_id) {
+      return;
+    }
   }
 }
 
 void RemoteModelExecutionSessionImpl::OnConnected() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   CHECK_EQ(connection_state_, ConnectionState::kConnecting);
-  connection_state_ = ConnectionState::kConnected;
+  const uint64_t state_change_id =
+      SetConnectionState(ConnectionState::kConnected);
+  RecordConnectionStatusHistogram(
+      feature_, StreamingConnectionStatusInternal::kConnected);
+  STREAMING_SESSION_LOGGER(optimization_guide_logger_, feature_)
+      << "Connected (flushing "
+      << base::NumberToString(pending_requests_.size()) << " pending requests)";
   ResetIdleTimer();
   base::WeakPtr<RemoteModelExecutionSessionImpl> weak_ptr =
       weak_ptr_factory_.GetWeakPtr();
-  SendPendingRequests();
+  SendPendingRequests(state_change_id);
   // `SendPendingRequests` can trigger disconnection and session destruction.
-  if (!weak_ptr || connection_state_ != ConnectionState::kConnected) {
+  if (!weak_ptr) {
     return;
   }
-  NotifyObservers();
+  NotifyObservers(state_change_id);
 }
 
 void RemoteModelExecutionSessionImpl::OnMessage(std::vector<uint8_t> message) {
@@ -254,6 +342,8 @@ void RemoteModelExecutionSessionImpl::OnMessage(std::vector<uint8_t> message) {
 
   proto::ExecuteResponse execute_response;
   if (!execute_response.ParseFromArray(message.data(), message.size())) {
+    STREAMING_SESSION_LOGGER(optimization_guide_logger_, feature_)
+        << "OnMessage Error: Failed to parse response";
     DispatchError(OptimizationGuideModelExecutionError::FromModelExecutionError(
         ModelExecutionError::kGenericFailure));
     return;
@@ -278,6 +368,11 @@ void RemoteModelExecutionSessionImpl::OnMessage(std::vector<uint8_t> message) {
             execute_response.error_response());
     execution_info->set_model_execution_error_enum(
         static_cast<uint32_t>(error.error()));
+    STREAMING_SESSION_LOGGER(optimization_guide_logger_, feature_)
+        << "OnMessage Error: Server error ("
+        << proto::ErrorState_Name(
+               execute_response.error_response().error_state())
+        << ")";
     DispatchResponse(OptimizationGuideModelStreamingResult(
         base::unexpected(error), std::move(execution_info)));
     return;
@@ -291,11 +386,19 @@ void RemoteModelExecutionSessionImpl::OnMessage(std::vector<uint8_t> message) {
         ModelExecutionError::kGenericFailure);
     execution_info->set_model_execution_error_enum(
         static_cast<uint32_t>(error.error()));
+    STREAMING_SESSION_LOGGER(optimization_guide_logger_, feature_)
+        << "OnMessage Error: No Response Metadata";
     DispatchResponse(OptimizationGuideModelStreamingResult(
         base::unexpected(error), std::move(execution_info)));
     return;
   }
 
+  STREAMING_SESSION_LOGGER(optimization_guide_logger_, feature_)
+      << "OnMessage: Received response"
+      << (execute_response.has_server_execution_id()
+              ? base::StrCat({" (execution_id: ",
+                              execute_response.server_execution_id(), ")"})
+              : "");
   DispatchResponse(OptimizationGuideModelStreamingResult(
       base::ok(std::move(*execute_response.mutable_response_metadata())),
       std::move(execution_info)));
@@ -306,12 +409,17 @@ void RemoteModelExecutionSessionImpl::OnConnectionError(
     int net_error,
     int response_code) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  STREAMING_SESSION_LOGGER(optimization_guide_logger_, feature_)
+      << "OnConnectionError: message: " << message
+      << ", net_error: " << net::ErrorToString(net_error)
+      << ", response_code: " << base::NumberToString(response_code);
   HandleDisconnection(
       response_code > 0
           ? OptimizationGuideModelExecutionError::FromHttpStatusCode(
                 static_cast<net::HttpStatusCode>(response_code))
           : OptimizationGuideModelExecutionError::FromModelExecutionError(
-                ModelExecutionError::kGenericFailure));
+                ModelExecutionError::kGenericFailure),
+      StreamingConnectionStatusInternal::kHandshakeFailed);
 }
 
 void RemoteModelExecutionSessionImpl::OnDropChannel(
@@ -320,26 +428,52 @@ void RemoteModelExecutionSessionImpl::OnDropChannel(
     const std::string& reason,
     std::optional<base::TimeDelta> elapsed) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  STREAMING_SESSION_LOGGER(optimization_guide_logger_, feature_)
+      << "OnDropChannel: was_clean: " << (was_clean ? "true" : "false")
+      << ", code: " << base::NumberToString(code) << ", reason: " << reason
+      << (elapsed ? base::StrCat(
+                        {", elapsed: ",
+                         base::NumberToString(elapsed->InMilliseconds()), "ms"})
+                  : "");
   HandleDisconnection(
       was_clean
           ? std::nullopt
           : std::make_optional(
                 OptimizationGuideModelExecutionError::FromModelExecutionError(
-                    ModelExecutionError::kGenericFailure)));
+                    ModelExecutionError::kGenericFailure)),
+      was_clean ? StreamingDisconnectReasonInternal::kServerDropClean
+                : StreamingDisconnectReasonInternal::kServerDropUnclean);
 }
 
 void RemoteModelExecutionSessionImpl::OnError(const std::string& message) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  HandleDisconnection(
+  STREAMING_SESSION_LOGGER(optimization_guide_logger_, feature_)
+      << "OnError: message: " << message;
+  const auto error =
       OptimizationGuideModelExecutionError::FromModelExecutionError(
-          ModelExecutionError::kGenericFailure));
+          ModelExecutionError::kGenericFailure);
+  if (connection_state_ == ConnectionState::kConnecting) {
+    HandleDisconnection(
+        error, StreamingConnectionStatusInternal::kClientErrorDuringConnect);
+  } else {
+    HandleDisconnection(error, StreamingDisconnectReasonInternal::kClientError);
+  }
 }
 
 void RemoteModelExecutionSessionImpl::OnClose() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  HandleDisconnection(
+  STREAMING_SESSION_LOGGER(optimization_guide_logger_, feature_) << "OnClose";
+  const auto error =
       OptimizationGuideModelExecutionError::FromModelExecutionError(
-          ModelExecutionError::kGenericFailure));
+          ModelExecutionError::kGenericFailure);
+  if (connection_state_ == ConnectionState::kConnecting) {
+    HandleDisconnection(
+        error,
+        StreamingConnectionStatusInternal::kMojoPipeDisconnectedDuringConnect);
+  } else {
+    HandleDisconnection(
+        error, StreamingDisconnectReasonInternal::kMojoPipeDisconnected);
+  }
 }
 
 std::vector<network::mojom::HttpHeaderPtr>
@@ -357,39 +491,75 @@ RemoteModelExecutionSessionImpl::GetAdditionalHeaders() {
   return additional_headers;
 }
 
-void RemoteModelExecutionSessionImpl::NotifyObservers() {
+uint64_t RemoteModelExecutionSessionImpl::SetConnectionState(
+    ConnectionState state) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  CHECK_NE(connection_state_, state);
+  connection_state_ = state;
+  return ++state_change_id_;
+}
+
+void RemoteModelExecutionSessionImpl::NotifyObservers(
+    uint64_t state_change_id,
+    std::optional<DisconnectReason> disconnect_reason) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  if (state_change_id_ != state_change_id) {
+    return;
+  }
   const ConnectionState state = connection_state_;
+  CHECK_EQ(state == ConnectionState::kDisconnected,
+           disconnect_reason.has_value());
   base::WeakPtr<RemoteModelExecutionSessionImpl> weak_ptr =
       weak_ptr_factory_.GetWeakPtr();
   for (Observer& observer : observers_) {
-    observer.OnConnectionStateChanged(state);
+    observer.OnConnectionStateChanged(state, disconnect_reason);
     // An observer may synchronously destroy the session, or trigger another
     // state transition (e.g. by causing a synchronous write error on a
-    // connected session with `Send()`). In the latter case the reentrant
+    // connected session with `Send()`). In the latter case a reentrant
     // `NotifyObservers()` call has already notified every observer of the newer
     // state, so stop here rather than delivering duplicate or stale
     // notifications to the remaining observers.
-    if (!weak_ptr || connection_state_ != state) {
+    if (!weak_ptr || state_change_id_ != state_change_id) {
       return;
     }
   }
 }
 
 void RemoteModelExecutionSessionImpl::HandleDisconnection(
-    std::optional<OptimizationGuideModelExecutionError> error) {
+    std::optional<OptimizationGuideModelExecutionError> error,
+    std::variant<StreamingConnectionStatusInternal,
+                 StreamingDisconnectReasonInternal> disconnect_reason) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   if (connection_state_ == ConnectionState::kDisconnected) {
     return;
   }
+  if (std::holds_alternative<StreamingConnectionStatusInternal>(
+          disconnect_reason)) {
+    RecordConnectionStatusHistogram(
+        feature_,
+        std::get<StreamingConnectionStatusInternal>(disconnect_reason));
+  } else {
+    RecordDisconnectReasonHistogram(
+        feature_,
+        std::get<StreamingDisconnectReasonInternal>(disconnect_reason));
+  }
+  STREAMING_SESSION_LOGGER(optimization_guide_logger_, feature_)
+      << "Disconnected (dropped "
+      << base::NumberToString(pending_requests_.size()) << " pending requests)";
   idle_timer_.Stop();
   pending_requests_.clear();
   access_token_.clear();
-  connection_state_ = ConnectionState::kDisconnected;
+  const uint64_t state_change_id =
+      SetConnectionState(ConnectionState::kDisconnected);
+  base::WeakPtr<RemoteModelExecutionSessionImpl> weak_ptr =
+      weak_ptr_factory_.GetWeakPtr();
   if (error) {
     DispatchError(*error);
+    if (!weak_ptr) {
+      return;
+    }
   }
-  NotifyObservers();
+  NotifyObservers(state_change_id, GetDisconnectReason(disconnect_reason));
 }
 
 void RemoteModelExecutionSessionImpl::ResetIdleTimer() {
@@ -404,15 +574,17 @@ void RemoteModelExecutionSessionImpl::ResetIdleTimer() {
 
 void RemoteModelExecutionSessionImpl::OnIdleTimeout() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  STREAMING_SESSION_LOGGER(optimization_guide_logger_, feature_)
+      << "IdleTimeout: Closing connection";
   client_->Close();
-  HandleDisconnection(/*error=*/std::nullopt);
+  HandleDisconnection(/*error=*/std::nullopt,
+                      StreamingDisconnectReasonInternal::kIdleTimeout);
 }
 
 void RemoteModelExecutionSessionImpl::DispatchResponse(
     OptimizationGuideModelStreamingResult result) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
-      FROM_HERE, base::BindOnce(callback_, std::move(result)));
+  callback_.Run(std::move(result));
 }
 
 void RemoteModelExecutionSessionImpl::DispatchError(

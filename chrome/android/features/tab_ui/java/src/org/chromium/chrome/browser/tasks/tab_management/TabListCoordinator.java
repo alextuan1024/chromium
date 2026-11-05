@@ -52,6 +52,7 @@ import org.chromium.chrome.browser.tab_ui.RecyclerViewPosition;
 import org.chromium.chrome.browser.tab_ui.TabListFaviconProvider;
 import org.chromium.chrome.browser.tab_ui.TabListMode;
 import org.chromium.chrome.browser.tab_ui.ThumbnailProvider;
+import org.chromium.chrome.browser.tab_ui.undo_tab_close_snackbar.UndoBarExplicitTrigger;
 import org.chromium.chrome.browser.tabmodel.TabClosingSource;
 import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.browser.tasks.tab_management.PriceMessageService.PriceWelcomeMessageProvider;
@@ -64,9 +65,9 @@ import org.chromium.chrome.browser.tasks.tab_management.TabListMediator.TabListL
 import org.chromium.chrome.browser.tasks.tab_management.TabProperties.TabActionState;
 import org.chromium.chrome.browser.tasks.tab_management.TabProperties.UiType;
 import org.chromium.chrome.browser.tasks.tab_management.TabSwitcherMessageManager.MessageType;
+import org.chromium.chrome.browser.tasks.tab_management.data_provider.TabListDataProvider;
 import org.chromium.chrome.browser.tasks.tab_management.labels.TabListHighlighter;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
-import org.chromium.chrome.browser.undo_tab_close_snackbar.UndoBarExplicitTrigger;
 import org.chromium.chrome.tab_ui.R;
 import org.chromium.components.browser_ui.widget.gesture.BackPressHandler.BackPressResult;
 import org.chromium.ui.base.ViewUtils;
@@ -179,12 +180,17 @@ public class TabListCoordinator implements PriceWelcomeMessageProvider, DestroyO
      * @param onModelTokenChange Callback to invoke whenever a model changes. Only currently
      *     respected in TabListMode.BOTTOM_STRIP mode.
      * @param emptyViewParent {@link ViewGroup} The root view of the empty state view.
-     * @param emptyImageResId Drawable resource for empty state. @StringRes int
-     *     emptyHeadingStringResId, @StringRes int emptySubheadingStringResId, @Nullable Runnable
-     *     onTabGroupCreation,
+     * @param emptyImageResId Drawable resource for empty state.
+     * @param emptyHeadingStringResId String resource for the empty state heading.
+     * @param emptySubheadingStringResId String resource for the empty state subheading.
+     * @param onTabGroupCreation Should be run when the UI is used to create a tab group.
      * @param allowDragAndDrop Whether to allow drag and drop for this tab list coordinator.
      * @param tabSwitcherDragHandler An instance of the {@link TabSwitcherDragHandler}.
      * @param undoBarExplicitTrigger An interface to explicitly trigger the undo closure snackbar.
+     * @param snackbarManager The {@link SnackbarManager} to show snackbars, if any.
+     * @param allowedSelectionCount The maximum number of tabs that can be selected at once. If
+     *     equal to UNLIMITED_SELECTION, then unlimited.
+     * @param dataProvider Scoped tab data provider, or null to use the global TabModel.
      */
     TabListCoordinator(
             @TabListMode int mode,
@@ -216,7 +222,7 @@ public class TabListCoordinator implements PriceWelcomeMessageProvider, DestroyO
             @Nullable UndoBarExplicitTrigger undoBarExplicitTrigger,
             @Nullable SnackbarManager snackbarManager,
             int allowedSelectionCount,
-            boolean isSingleContextMode) {
+            @Nullable TabListDataProvider dataProvider) {
         mMode = mode;
         mTabActionState = initialTabActionState;
         mActivity = activity;
@@ -326,13 +332,26 @@ public class TabListCoordinator implements PriceWelcomeMessageProvider, DestroyO
 
         @UiType int tabUiType = mMode == TabListMode.BOTTOM_STRIP ? UiType.STRIP : UiType.TAB;
         boolean isGridMode = mMode == TabListMode.GRID;
+        @TabClosingSource int tabClosingSource = TabClosingSource.UNKNOWN;
+        if (componentId == TabComponentId.GRID_TAB_SWITCHER
+                || componentId == TabComponentId.TAB_GRID_DIALOG_IN_SWITCHER
+                || componentId == TabComponentId.TAB_LIST_EDITOR) {
+            tabClosingSource = TabClosingSource.GRID_TAB_SWITCHER;
+        } else if (componentId == TabComponentId.TAB_GRID_DIALOG_FROM_STRIP
+                || componentId == TabComponentId.TAB_STRIP) {
+            tabClosingSource = TabClosingSource.BOTTOM_TAB_GROUP_STRIP;
+        }
         TabListConfig tabListConfig =
                 new TabListConfig.Builder(layoutType)
                         .setTabUiType(tabUiType)
+                        .setSupportsTabGroups(layoutType != TabListLayoutType.FLAT)
                         .setSupportsMessageCards(isGridMode)
                         .setSupportsShrinkCloseAnimation(isGridMode)
                         .setSupportsTabContextClick(true)
-                        .setTabClosingSource(TabClosingSource.UNKNOWN)
+                        .setRequiresThumbnailUpdateOnDeselect(
+                                layoutType == TabListLayoutType.GROUPED)
+                        .setTabClosingSource(tabClosingSource)
+                        .setDataProvider(dataProvider)
                         .build();
 
         mMediator =
@@ -355,7 +374,6 @@ public class TabListCoordinator implements PriceWelcomeMessageProvider, DestroyO
                         undoBarExplicitTrigger,
                         snackbarManager,
                         allowedSelectionCount,
-                        isSingleContextMode,
                         onDragStateChangedListener);
 
         try (TraceEvent _ = TraceEvent.scoped("TabListCoordinator.setupRecyclerView")) {
@@ -545,11 +563,10 @@ public class TabListCoordinator implements PriceWelcomeMessageProvider, DestroyO
      *     found).
      */
     Rect getTabThumbnailRect(int tabId) {
-        int index = getIndexForTabIdWithRelatedTabs(tabId);
+        int index = getIndexFromTabId(tabId);
         if (index == TabModel.INVALID_TAB_INDEX) return new Rect();
 
-        return mRecyclerView.getRectOfTabThumbnail(
-                index, mModelList.get(index).model.get(TabProperties.TAB_ID));
+        return mRecyclerView.getRectOfTabThumbnail(index);
     }
 
     Size getThumbnailSize() {
@@ -568,7 +585,7 @@ public class TabListCoordinator implements PriceWelcomeMessageProvider, DestroyO
             mAwaitingLayoutRunnable = null;
             mAwaitingModel = null;
         }
-        int index = getIndexForTabIdWithRelatedTabs(tabId);
+        int index = getIndexFromTabId(tabId);
         if (index == TabModel.INVALID_TAB_INDEX) {
             r.run();
             return;
@@ -706,19 +723,19 @@ public class TabListCoordinator implements PriceWelcomeMessageProvider, DestroyO
     }
 
     /**
-     * @return The container {@link androidx.recyclerview.widget.RecyclerView} that is showing the
-     *         tab list UI.
+     * Returns the container {@link androidx.recyclerview.widget.RecyclerView} that is showing the
+     * tab list UI.
      */
     public TabListRecyclerView getContainerView() {
         return mRecyclerView;
     }
 
     /**
-     * @see TabListMediator#resetWithListOfTabs(List, boolean)
+     * @see TabListMediator#resetWithListOfTabs(List, List, boolean)
      */
-    boolean resetWithListOfTabs(
+    void resetWithListOfTabs(
             @Nullable List<Tab> tabs, @Nullable List<String> tabGroupSyncIds, boolean quickMode) {
-        return mMediator.resetWithListOfTabs(tabs, tabGroupSyncIds, quickMode);
+        mMediator.resetWithListOfTabs(tabs, tabGroupSyncIds, quickMode);
     }
 
     void softCleanup() {
@@ -759,7 +776,7 @@ public class TabListCoordinator implements PriceWelcomeMessageProvider, DestroyO
         }
     }
 
-    private void destroyEmptyView() {
+    void destroyEmptyView() {
         if (mTabListEmptyCoordinator != null) {
             mTabListEmptyCoordinator.destroyEmptyView();
             mIsEmptyViewInitialized = false;
@@ -924,13 +941,9 @@ public class TabListCoordinator implements PriceWelcomeMessageProvider, DestroyO
         return indexes;
     }
 
-    int getIndexOfNthTabCard(int index) {
-        return mModelList.indexOfNthTabCardOrInvalid(index);
-    }
-
-    /** Returns the filter index of a tab from its view index or TabList.INVALID_TAB_INDEX. */
-    int indexOfTabCardsOrInvalid(int index) {
-        return mModelList.indexOfTabCardsOrInvalid(index);
+    /** Returns the tab group ID of the tab group card at the given view index, or null. */
+    @Nullable Token getTabGroupIdForIndex(int index) {
+        return mModelList.getTabGroupIdForIndex(index);
     }
 
     int getTabListModelSize() {
@@ -963,13 +976,6 @@ public class TabListCoordinator implements PriceWelcomeMessageProvider, DestroyO
             mAwaitingLayoutRunnable = null;
             r.run();
         }
-    }
-
-    /** Returns the index for the tab with related tabs. */
-    // TODO(crbug.com/517544602): Migrate to a token based lookup. Scanning related tab IDs can miss
-    // a group card once cards are keyed by token and its TAB_ID goes stale.
-    int getIndexForTabIdWithRelatedTabs(int tabId) {
-        return mMediator.getIndexForTabIdWithRelatedTabs(tabId);
     }
 
     void showQuickDeleteAnimation(Runnable onAnimationEnd, List<Tab> tabs) {
@@ -1072,11 +1078,18 @@ public class TabListCoordinator implements PriceWelcomeMessageProvider, DestroyO
                 mRecyclerView, cardIndex, () -> mRecyclerView.setSmoothScrolling(false));
     }
 
-    /**
-     * Maps a tab ID to an index. For use with {@link #addSpecialListItem(int, int, PropertyModel)}.
-     */
+    /** Maps a tab ID to an index in the model list. */
+    // TODO(crbug.com/517544602): Clean up the legacy fallback when removing the feature flag.
     int getIndexFromTabId(@TabId int tabId) {
-        return mMediator.getIndexFromTabId(tabId);
+        if (TabUiFeatureUtilities.isAndroidTabUiRefactorEnabled()) {
+            return mMediator.getIndexFromTabId(tabId);
+        }
+        return mMediator.getIndexForTabIdWithRelatedTabs(tabId);
+    }
+
+    /** Maps a tab group ID to an index in the model list. */
+    int getIndexFromTabGroupId(Token tabGroupId) {
+        return mMediator.getIndexFromTabGroupId(tabGroupId);
     }
 
     /**

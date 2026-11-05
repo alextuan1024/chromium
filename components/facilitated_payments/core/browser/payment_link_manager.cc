@@ -107,18 +107,10 @@ void PaymentLinkManager::TriggerPaymentLinkPushPayment(
   if (CanTriggerAppPaymentFlow(page_url)) {
     supported_apps = client_->GetDeviceDelegate()->GetSupportedPaymentApps(
         PaymentLinkValidator::SanitizeForPaymentAppRetrieval(payment_link_url));
-    if ((!supported_apps || supported_apps->Size() == 0) &&
-        base::FeatureList::IsEnabled(
-            payments::facilitated::kFacilitatedPaymentsEnableA2APayment)) {
+    if (!supported_apps || supported_apps->Size() == 0) {
       LogA2APayflowExitedReason(A2AFlowExitedReason::kNoSupportedPaymentApp,
                                 scheme_);
     }
-  }
-
-  if (!base::FeatureList::IsEnabled(
-          payments::facilitated::kFacilitatedPaymentsEnableA2APayment)) {
-    LogA2APayflowExitedReason(A2AFlowExitedReason::kFlagNotEnabled, scheme_);
-    supported_apps.reset();
   }
 
   // Cache availability before moving the unique_ptr resources
@@ -287,7 +279,9 @@ void PaymentLinkManager::Reset() {
   supported_ewallet_creation_options_.clear();
   ukm_source_id_ = ukm::kInvalidSourceId;
   initiate_payment_request_details_.reset();
-  ui_state_ = UiState::kHidden;
+  if (ui_state_ != UiState::kHidden) {
+    DismissPrompt();
+  }
   is_ewallet_available_ = false;
   is_payment_app_available_ = false;
   if (ewallet_account_linking_manager_) {
@@ -639,6 +633,10 @@ PaymentLinkManager::GetOrCreateStrikeDatabase() {
 
 void PaymentLinkManager::OnAccountLinkingResult(const GURL& payment_link_url,
                                                 AccountLinkingResult result) {
+  ewallet_account_linking_manager_.reset();
+  client_->SetUiEventListener(base::BindRepeating(
+      &PaymentLinkManager::OnUiScreenEvent, weak_ptr_factory_.GetWeakPtr()));
+
   // Reset the latency timer as the user just spent time in the account linking
   // flow.
   payment_flow_triggered_timestamp_ = base::TimeTicks::Now();
@@ -647,7 +645,6 @@ void PaymentLinkManager::OnAccountLinkingResult(const GURL& payment_link_url,
   if (!result.is_successful) {
     if (result.error_code == AccountLinkingResultCode::kResultError) {
       // Delegate to error screen for hard failures.
-      ewallet_account_linking_manager_.reset();
       ShowErrorScreen();
     } else {
       // Clean up the manager and UI state for soft cancellations, early exits,
@@ -656,6 +653,10 @@ void PaymentLinkManager::OnAccountLinkingResult(const GURL& payment_link_url,
     }
     return;
   }
+
+  // `EwalletAccountLinkingManager` leaves the progress screen open on
+  // `kResultOk` so the checkout phase can reuse the sheet.
+  ui_state_ = UiState::kProgressScreen;
 
   // Ewallet payment flow can't be completed in the landscape mode as the
   // Payments server doesn't support it yet.
@@ -671,8 +672,13 @@ void PaymentLinkManager::OnAccountLinkingResult(const GURL& payment_link_url,
 
   if (autofill::PaymentsDataManager* payments_data_manager =
           client_->GetPaymentsDataManager()) {
+    // Prefer the billing customer number carried in the instrument manager
+    // result: for a user who had no instruments before linking, Chrome Sync has
+    // not delivered `PaymentsCustomerData` yet and the synced value is 0.
     initiate_payment_request_details_->billing_customer_number_ =
-        autofill::payments::GetBillingCustomerId(*payments_data_manager);
+        result.billing_customer_number > 0
+            ? result.billing_customer_number
+            : autofill::payments::GetBillingCustomerId(*payments_data_manager);
   } else {
     Reset();
     return;

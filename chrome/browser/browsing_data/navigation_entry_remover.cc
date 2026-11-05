@@ -112,17 +112,17 @@ void DeleteTabNavigationEntries(
           : base::BindRepeating(&UrlMatcherForSerializedNavigationEntry,
                                 std::cref(url_set));
 
-  for (const TabModel* tab_model : TabModelList::models()) {
-    if (tab_model->GetProfile() == profile) {
-      for (int i = 0; i < tab_model->GetTabCount(); i++) {
-        TabAndroid* tab = tab_model->GetTabAt(i);
-        tab->DeleteFrozenNavigationEntries(session_predicate);
-        content::WebContents* web_contents = tab->web_contents();
-        if (web_contents)
-          DeleteNavigationEntries(web_contents, predicate);
+  TabModelList::ForEach(profile, [&](TabModel* tab_model) {
+    for (int i = 0; i < tab_model->GetTabCount(); i++) {
+      TabAndroid* tab = tab_model->GetTabAt(i);
+      tab->DeleteFrozenNavigationEntries(session_predicate);
+      content::WebContents* web_contents = tab->web_contents();
+      if (web_contents) {
+        DeleteNavigationEntries(web_contents, predicate);
       }
     }
-  }
+    return true;
+  });
 #else
   GlobalBrowserCollection::GetInstance()->ForEach(
       [profile, &predicate](BrowserWindowInterface* browser) {
@@ -152,7 +152,7 @@ class TabRestoreDeletionHelper : public sessions::TabRestoreServiceObserver {
       sessions::TabRestoreService* service,
       const sessions::TabRestoreService::DeletionPredicate& predicate)
       : service_(service), deletion_predicate_(predicate) {
-    DCHECK(!service->IsLoaded());
+    CHECK(!service->IsLoaded(), base::NotFatalUntil::M161);
     service->AddObserver(this);
     service->LoadTabsFromLastSession();
   }
@@ -217,8 +217,8 @@ namespace browsing_data {
 
 void RemoveNavigationEntries(Profile* profile,
                              const history::DeletionInfo& deletion_info) {
-  DCHECK(!profile->IsOffTheRecord());
-  DCHECK(!deletion_info.is_from_expiration());
+  CHECK(!profile->IsOffTheRecord(), base::NotFatalUntil::M161);
+  CHECK(!deletion_info.is_from_expiration(), base::NotFatalUntil::M161);
 
   base::flat_set<GURL> url_set;
   if (!deletion_info.time_range().IsValid())

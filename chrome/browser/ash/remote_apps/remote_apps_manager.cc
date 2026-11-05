@@ -24,11 +24,11 @@
 #include "chrome/browser/ash/app_list/app_list_util.h"
 #include "chrome/browser/ash/app_list/chrome_app_list_item.h"
 #include "chrome/browser/ash/app_list/chrome_app_list_model_updater.h"
-#include "chrome/browser/ash/profiles/profile_helper.h"
 #include "chrome/browser/ash/remote_apps/remote_apps_impl.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/common/apps/platform_apps/api/enterprise_remote_apps.h"
 #include "chrome/grit/generated_resources.h"
+#include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
 #include "components/account_id/account_id.h"
 #include "components/services/app_service/public/cpp/menu.h"
 #include "components/user_manager/user.h"
@@ -79,7 +79,8 @@ class ImageDownloaderImpl : public RemoteAppsManager::ImageDownloader {
   void Download(const GURL& url, DownloadCallback callback) override {
     ash::ImageDownloader* image_downloader = ash::ImageDownloader::Get();
     CHECK(image_downloader, base::NotFatalUntil::M160);
-    auto* const user = ProfileHelper::Get()->GetUserByProfile(profile_);
+    auto* const user = BrowserContextHelper::Get()->GetUserByBrowserContext(
+        const_cast<Profile*>(profile_.get()));
     CHECK(user, base::NotFatalUntil::M160);
     const AccountId& account_id = user->GetAccountId();
     image_downloader->Download(url, kTrafficAnnotation, account_id,
@@ -342,12 +343,14 @@ void RemoteAppsManager::LaunchApp(const std::string& app_id) {
     return;
   std::string source_id = it->second;
 
+  auto event_args = base::MakeRefCounted<extensions::EventArgs>(
+      chrome_apps::api::enterprise_remote_apps::OnRemoteAppLaunched::Create(
+          app_id));
   std::unique_ptr<extensions::Event> event = std::make_unique<
       extensions::Event>(
       extensions::events::ENTERPRISE_REMOTE_APPS_ON_REMOTE_APP_LAUNCHED,
       chrome_apps::api::enterprise_remote_apps::OnRemoteAppLaunched::kEventName,
-      chrome_apps::api::enterprise_remote_apps::OnRemoteAppLaunched::Create(
-          app_id));
+      std::move(event_args));
 
   event_router_->DispatchEventToExtension(source_id, std::move(event));
 

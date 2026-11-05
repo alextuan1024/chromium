@@ -4,6 +4,8 @@
 
 package org.chromium.chrome.browser.appearance.settings;
 
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNull;
 import static org.mockito.Mockito.anyBoolean;
 import static org.mockito.Mockito.anyInt;
 import static org.mockito.Mockito.doAnswer;
@@ -13,11 +15,21 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import static org.chromium.chrome.browser.appearance.settings.AppearanceSettingsFragment.PREF_ADDRESS_BAR;
 import static org.chromium.chrome.browser.appearance.settings.AppearanceSettingsFragment.PREF_BOOKMARK_BAR;
 import static org.chromium.chrome.browser.appearance.settings.AppearanceSettingsFragment.PREF_BOOKMARK_BAR_SWITCH;
+import static org.chromium.chrome.browser.appearance.settings.AppearanceSettingsFragment.PREF_BOTTOM_BAR_SWITCH;
+import static org.chromium.chrome.browser.appearance.settings.AppearanceSettingsFragment.PREF_GLIC_BOTTOM_BAR_BUTTON_SWITCH;
+import static org.chromium.chrome.browser.appearance.settings.AppearanceSettingsFragment.PREF_HOMEPAGE;
+import static org.chromium.chrome.browser.appearance.settings.AppearanceSettingsFragment.PREF_TAB_POSITION;
 import static org.chromium.chrome.browser.appearance.settings.AppearanceSettingsFragment.PREF_TOOLBAR_SHORTCUT;
 import static org.chromium.chrome.browser.appearance.settings.AppearanceSettingsFragment.PREF_UI_THEME;
+import static org.chromium.chrome.browser.preferences.ChromePreferenceKeys.BOTTOM_BAR_ENABLED;
+import static org.chromium.chrome.browser.preferences.ChromePreferenceKeys.BOTTOM_BAR_GLIC_BUTTON_ENABLED;
+import static org.chromium.chrome.browser.preferences.ChromePreferenceKeys.HOMEPAGE_ENABLED;
+import static org.chromium.chrome.browser.preferences.ChromePreferenceKeys.TOOLBAR_TOP_ANCHORED;
 import static org.chromium.chrome.browser.preferences.ChromePreferenceKeys.UI_THEME_SETTING;
+import static org.chromium.chrome.browser.preferences.ChromePreferenceKeys.VERTICAL_TABS_ENABLED;
 import static org.chromium.chrome.browser.toolbar.adaptive.AdaptiveToolbarButtonVariant.NEW_TAB;
 import static org.chromium.chrome.browser.toolbar.adaptive.AdaptiveToolbarButtonVariant.NONE;
 
@@ -25,6 +37,7 @@ import androidx.preference.Preference;
 import androidx.test.annotation.UiThreadTest;
 import androidx.test.filters.SmallTest;
 
+import org.junit.After;
 import org.junit.AfterClass;
 import org.junit.Assert;
 import org.junit.Before;
@@ -38,6 +51,7 @@ import org.mockito.stubbing.Answer;
 
 import org.chromium.base.Callback;
 import org.chromium.base.ContextUtils;
+import org.chromium.base.DeviceInfo;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.supplier.ObservableSuppliers;
 import org.chromium.base.supplier.SettableNonNullObservableSupplier;
@@ -45,30 +59,46 @@ import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.base.test.util.Restriction;
+import org.chromium.base.test.util.UserActionTester;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.bookmarks.bar.BookmarkBarUtils;
 import org.chromium.chrome.browser.bookmarks.bar.BookmarkBarUtils.BookmarkBarSettingChangeOrigin;
+import org.chromium.chrome.browser.feature_engagement.TrackerFactory;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
-import org.chromium.chrome.browser.night_mode.NightModeMetrics.ThemeSettingsEntry;
+import org.chromium.chrome.browser.glic.GlicEnabling;
+import org.chromium.chrome.browser.glic.GlicEnablingJni;
+import org.chromium.chrome.browser.homepage.HomepageManager;
+import org.chromium.chrome.browser.homepage.settings.HomepageSettings;
 import org.chromium.chrome.browser.night_mode.NightModeUtils;
 import org.chromium.chrome.browser.night_mode.ThemeType;
 import org.chromium.chrome.browser.night_mode.settings.ThemeSettingsFragment;
 import org.chromium.chrome.browser.preferences.ChromeSharedPreferences;
 import org.chromium.chrome.browser.preferences.Pref;
 import org.chromium.chrome.browser.profiles.Profile;
+import org.chromium.chrome.browser.profiles.ProfileManager;
+import org.chromium.chrome.browser.toolbar.ToolbarPositionController.ToolbarPositionAndSource;
 import org.chromium.chrome.browser.toolbar.adaptive.AdaptiveToolbarStatePredictor;
 import org.chromium.chrome.browser.toolbar.adaptive.settings.AdaptiveToolbarSettingsFragment;
+import org.chromium.chrome.browser.toolbar.settings.AddressBarPreference;
+import org.chromium.chrome.browser.toolbar.settings.AddressBarSettingsFragment;
+import org.chromium.chrome.browser.ui.actions.ActionId;
+import org.chromium.chrome.browser.ui.bottombar.BottomBarActionEligibility;
+import org.chromium.chrome.browser.ui.bottombar.BottomBarConfigUtils;
+import org.chromium.chrome.browser.ui.vertical_tabs.VerticalTabUtils;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.components.bookmarks.BookmarkBarVisibilityState;
 import org.chromium.components.browser_ui.settings.BlankUiTestActivitySettingsTestRule;
 import org.chromium.components.browser_ui.settings.ChromeSwitchPreference;
 import org.chromium.components.browser_ui.settings.search.SettingsIndexData;
+import org.chromium.components.feature_engagement.EventConstants;
+import org.chromium.components.feature_engagement.Tracker;
 import org.chromium.components.prefs.PrefChangeRegistrar;
 import org.chromium.components.prefs.PrefChangeRegistrar.PrefObserver;
 import org.chromium.components.prefs.PrefChangeRegistrarJni;
 import org.chromium.components.prefs.PrefService;
 import org.chromium.components.user_prefs.UserPrefs;
 import org.chromium.components.user_prefs.UserPrefsJni;
+import org.chromium.content_public.browser.test.NativeLibraryTestUtils;
 import org.chromium.ui.base.DeviceFormFactor;
 
 import java.util.HashSet;
@@ -85,24 +115,36 @@ public class AppearanceSettingsFragmentTest {
 
     @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
 
+    @Mock private GlicEnabling.Natives mGlicEnablingJni;
     @Mock private PrefChangeRegistrar.Natives mPrefChangeRegistrarJni;
     @Mock private PrefService mPrefService;
     @Mock private Profile mProfile;
+    @Mock private SettingsIndexData mIndexData;
     @Mock private UserPrefs.Natives mUserPrefsJni;
+    @Mock private Tracker mTracker;
 
     private Set<PrefObserver> mBookmarkBarSettingObserverCache;
     private SettableNonNullObservableSupplier<Boolean> mBookmarkBarSettingSupplier;
     private SettableNonNullObservableSupplier<Integer> mBookmarkBarVisibilityStateSupplier;
     private AppearanceSettingsFragment mSettings;
+    private UserActionTester mUserActionTester;
 
     @Before
     @UiThreadTest
     public void setUp() {
+        NativeLibraryTestUtils.loadNativeLibraryAndInitBrowserProcess();
+        mUserActionTester = new UserActionTester();
+
         // Set up mocks.
+        TrackerFactory.setTrackerForTests(mTracker);
+        ProfileManager.setLastUsedProfileForTesting(mProfile);
         when(mProfile.getOriginalProfile()).thenReturn(mProfile);
         when(mUserPrefsJni.get(mProfile)).thenReturn(mPrefService);
 
         // Set up natives.
+        GlicEnablingJni.setInstanceForTesting(mGlicEnablingJni);
+        // Settings may resolve and cache the bottom bar candidate; reset it after every test.
+        BottomBarActionEligibility.setCachedCandidateExtraActionForTesting(null);
         PrefChangeRegistrarJni.setInstanceForTesting(mPrefChangeRegistrarJni);
         UserPrefsJni.setInstanceForTesting(mUserPrefsJni);
 
@@ -147,10 +189,30 @@ public class AppearanceSettingsFragmentTest {
                 .getInteger(eq(Pref.BOOKMARK_BAR_VISIBILITY_STATE));
     }
 
+    @After
+    @UiThreadTest
+    public void tearDownPerTest() {
+        mUserActionTester.tearDown();
+        ChromeSharedPreferences.getInstance().removeKey(VERTICAL_TABS_ENABLED);
+        ChromeSharedPreferences.getInstance().removeKey(BOTTOM_BAR_ENABLED);
+        ChromeSharedPreferences.getInstance().removeKey(BOTTOM_BAR_GLIC_BUTTON_ENABLED);
+        AddressBarPreference.setToolbarPositionAndSource(ToolbarPositionAndSource.TOP_SETTINGS);
+        ChromeSharedPreferences.getInstance().removeKey(TOOLBAR_TOP_ANCHORED);
+        ChromeSharedPreferences.getInstance().removeKey(HOMEPAGE_ENABLED);
+    }
+
     @AfterClass
     public static void tearDown() {
+        GlicEnablingJni.setInstanceForTesting(null);
         PrefChangeRegistrarJni.setInstanceForTesting(null);
         UserPrefsJni.setInstanceForTesting(null);
+    }
+
+    @Test
+    @SmallTest
+    public void testSettingsAppearanceOpenedEventSent() {
+        launchSettings();
+        verify(mTracker).notifyEvent(EventConstants.SETTINGS_APPEARANCE_OPENED);
     }
 
     @Test
@@ -368,10 +430,76 @@ public class AppearanceSettingsFragmentTest {
 
     @Test
     @SmallTest
+    @DisableFeatures(ChromeFeatureList.ANDROID_BOTTOM_BAR)
     public void testToolbarShortcutPreferenceIsPresentWhenEnabled() throws ClassNotFoundException {
         AdaptiveToolbarStatePredictor.setToolbarStateForTesting(NEW_TAB);
         launchSettings();
-        assertSettingsExists(PREF_TOOLBAR_SHORTCUT, AdaptiveToolbarSettingsFragment.class);
+        Preference pref =
+                assertSettingsExists(PREF_TOOLBAR_SHORTCUT, AdaptiveToolbarSettingsFragment.class);
+        assertEquals(mSettings.getString(R.string.toolbar_shortcut), pref.getTitle());
+    }
+
+    @Test
+    @SmallTest
+    @Restriction(DeviceFormFactor.PHONE)
+    @EnableFeatures(ChromeFeatureList.ANDROID_BOTTOM_BAR)
+    public void testToolbarShortcutPreferenceTitleWhenMoveParamEnabled()
+            throws ClassNotFoundException {
+        AdaptiveToolbarStatePredictor.setToolbarStateForTesting(NEW_TAB);
+        launchSettings();
+        Preference pref =
+                assertSettingsExists(PREF_TOOLBAR_SHORTCUT, AdaptiveToolbarSettingsFragment.class);
+        assertEquals(mSettings.getString(R.string.address_bar_shortcut), pref.getTitle());
+    }
+
+    @Test
+    @SmallTest
+    @Restriction(DeviceFormFactor.PHONE)
+    @EnableFeatures(
+            ChromeFeatureList.ANDROID_BOTTOM_BAR + ":move_toolbar_settings_to_appearance/false")
+    public void testToolbarShortcutPreferenceTitleWhenMoveParamDisabled()
+            throws ClassNotFoundException {
+        AdaptiveToolbarStatePredictor.setToolbarStateForTesting(NEW_TAB);
+        launchSettings();
+        Preference pref =
+                assertSettingsExists(PREF_TOOLBAR_SHORTCUT, AdaptiveToolbarSettingsFragment.class);
+        assertEquals(mSettings.getString(R.string.toolbar_shortcut), pref.getTitle());
+    }
+
+    @Test
+    @SmallTest
+    @DisableFeatures(ChromeFeatureList.ANDROID_VERTICAL_TABS)
+    public void testTabPositionPreferenceIsAbsentWhenDisabled() {
+        launchSettings();
+        assertNull(mSettings.findPreference(PREF_TAB_POSITION));
+    }
+
+    @Test
+    @SmallTest
+    @EnableFeatures(ChromeFeatureList.ANDROID_VERTICAL_TABS)
+    public void testTabPositionPreferenceIsPresent() throws ClassNotFoundException {
+        VerticalTabUtils.setIsVerticalTabsEligibleForTesting(true);
+        launchSettings();
+
+        final var tabPositionPref =
+                assertSettingsExists(PREF_TAB_POSITION, TabPositionSettingsFragment.class);
+        final var context = mSettings.getContext();
+        assertEquals(
+                context.getString(R.string.tab_position_horizontal), tabPositionPref.getSummary());
+
+        ThreadUtils.runOnUiThreadBlocking(
+                () ->
+                        ChromeSharedPreferences.getInstance()
+                                .writeBoolean(VERTICAL_TABS_ENABLED, true));
+        assertEquals(
+                context.getString(R.string.tab_position_vertical), tabPositionPref.getSummary());
+
+        ThreadUtils.runOnUiThreadBlocking(
+                () ->
+                        ChromeSharedPreferences.getInstance()
+                                .writeBoolean(VERTICAL_TABS_ENABLED, false));
+        assertEquals(
+                context.getString(R.string.tab_position_horizontal), tabPositionPref.getSummary());
     }
 
     @Test
@@ -380,9 +508,6 @@ public class AppearanceSettingsFragmentTest {
         launchSettings();
 
         final var uiThemePref = assertSettingsExists(PREF_UI_THEME, ThemeSettingsFragment.class);
-        Assert.assertEquals(
-                ThemeSettingsEntry.SETTINGS,
-                uiThemePref.getExtras().getInt(ThemeSettingsFragment.KEY_THEME_SETTINGS_ENTRY));
 
         final var context = mSettings.getContext();
         Assert.assertEquals(
@@ -399,6 +524,278 @@ public class AppearanceSettingsFragmentTest {
             Assert.assertEquals(
                     NightModeUtils.getThemeSettingTitle(context, theme), uiThemePref.getSummary());
         }
+    }
+
+    @Test
+    @SmallTest
+    @DisableFeatures(ChromeFeatureList.ANDROID_BOTTOM_BAR)
+    public void testBottomBarPreferenceIsAbsentWhenNotEligible() {
+        launchSettings();
+        assertNull(mSettings.findPreference(PREF_BOTTOM_BAR_SWITCH));
+    }
+
+    @Test
+    @SmallTest
+    @Restriction(DeviceFormFactor.TABLET_OR_DESKTOP)
+    @EnableFeatures(ChromeFeatureList.ANDROID_BOTTOM_BAR)
+    public void testBottomBarPreferenceIsAbsentOnTablet() {
+        launchSettings();
+        assertNull(mSettings.findPreference(PREF_BOTTOM_BAR_SWITCH));
+    }
+
+    @Test
+    @SmallTest
+    @Restriction(DeviceFormFactor.PHONE)
+    @EnableFeatures(ChromeFeatureList.ANDROID_BOTTOM_BAR + ":show_settings_toggle/false")
+    public void testBottomBarPreferenceIsAbsentWhenToggleParamOff() {
+        launchSettings();
+        assertNull(mSettings.findPreference(PREF_BOTTOM_BAR_SWITCH));
+    }
+
+    @Test
+    @SmallTest
+    @Restriction(DeviceFormFactor.PHONE)
+    @EnableFeatures(ChromeFeatureList.ANDROID_BOTTOM_BAR)
+    public void testBottomBarPreferenceIsPresentWhenEligible() {
+        launchSettings();
+        final var bottomBarSwitch = assertSwitchExists(PREF_BOTTOM_BAR_SWITCH);
+        Assert.assertTrue(bottomBarSwitch.isChecked());
+        Assert.assertEquals(0, mUserActionTester.getActionCount("Settings.BottomBar.Enabled"));
+        Assert.assertEquals(0, mUserActionTester.getActionCount("Settings.BottomBar.Disabled"));
+    }
+
+    @Test
+    @SmallTest
+    @Restriction(DeviceFormFactor.PHONE)
+    @EnableFeatures(ChromeFeatureList.ANDROID_BOTTOM_BAR)
+    public void testBottomBarPreferenceReflectsPref() {
+        BottomBarConfigUtils.setBottomBarUserEnabled(false);
+        launchSettings();
+        Assert.assertFalse(assertSwitchExists(PREF_BOTTOM_BAR_SWITCH).isChecked());
+        Assert.assertEquals(0, mUserActionTester.getActionCount("Settings.BottomBar.Enabled"));
+        Assert.assertEquals(0, mUserActionTester.getActionCount("Settings.BottomBar.Disabled"));
+    }
+
+    @Test
+    @SmallTest
+    @Restriction(DeviceFormFactor.PHONE)
+    @EnableFeatures(ChromeFeatureList.ANDROID_BOTTOM_BAR)
+    public void testBottomBarPreferenceTurnsOff() {
+        launchSettings();
+        final var bottomBarSwitch = assertSwitchExists(PREF_BOTTOM_BAR_SWITCH);
+
+        ThreadUtils.runOnUiThreadBlocking(bottomBarSwitch::performClick);
+
+        Assert.assertFalse(bottomBarSwitch.isChecked());
+        Assert.assertFalse(BottomBarConfigUtils.isBottomBarUserEnabled());
+        Assert.assertEquals(0, mUserActionTester.getActionCount("Settings.BottomBar.Enabled"));
+        Assert.assertEquals(1, mUserActionTester.getActionCount("Settings.BottomBar.Disabled"));
+    }
+
+    @Test
+    @SmallTest
+    @Restriction(DeviceFormFactor.PHONE)
+    @EnableFeatures(ChromeFeatureList.ANDROID_BOTTOM_BAR)
+    public void testBottomBarPreferenceTurnsOn() {
+        BottomBarConfigUtils.setBottomBarUserEnabled(false);
+        launchSettings();
+        final var bottomBarSwitch = assertSwitchExists(PREF_BOTTOM_BAR_SWITCH);
+
+        ThreadUtils.runOnUiThreadBlocking(bottomBarSwitch::performClick);
+
+        Assert.assertTrue(bottomBarSwitch.isChecked());
+        Assert.assertTrue(BottomBarConfigUtils.isBottomBarUserEnabled());
+        Assert.assertEquals(1, mUserActionTester.getActionCount("Settings.BottomBar.Enabled"));
+        Assert.assertEquals(0, mUserActionTester.getActionCount("Settings.BottomBar.Disabled"));
+    }
+
+    @Test
+    @SmallTest
+    @Restriction(DeviceFormFactor.PHONE)
+    @EnableFeatures(ChromeFeatureList.ANDROID_BOTTOM_BAR)
+    public void testGlicBottomBarButtonPreferenceIsAbsentWhenNotOffered() {
+        launchSettings();
+        assertNull(mSettings.findPreference(PREF_GLIC_BOTTOM_BAR_BUTTON_SWITCH));
+    }
+
+    @Test
+    @SmallTest
+    @Restriction(DeviceFormFactor.PHONE)
+    @EnableFeatures(
+            ChromeFeatureList.ANDROID_BOTTOM_BAR + ":move_toolbar_settings_to_appearance/false")
+    public void testGlicBottomBarButtonPreferenceIsAbsentWhenMoveParamOff() {
+        offerGlicBottomBarButton();
+        launchSettings();
+        assertNull(mSettings.findPreference(PREF_GLIC_BOTTOM_BAR_BUTTON_SWITCH));
+    }
+
+    @Test
+    @SmallTest
+    @Restriction(DeviceFormFactor.PHONE)
+    @EnableFeatures(ChromeFeatureList.ANDROID_BOTTOM_BAR)
+    public void testGlicBottomBarButtonPreferenceIsPresentWhenOffered() {
+        offerGlicBottomBarButton();
+        launchSettings();
+        final var glicSwitch = assertSwitchExists(PREF_GLIC_BOTTOM_BAR_BUTTON_SWITCH);
+        Assert.assertTrue(glicSwitch.isVisible());
+        Assert.assertTrue(glicSwitch.isEnabled());
+        Assert.assertTrue(glicSwitch.isChecked());
+    }
+
+    @Test
+    @SmallTest
+    @Restriction(DeviceFormFactor.PHONE)
+    @EnableFeatures(ChromeFeatureList.ANDROID_BOTTOM_BAR)
+    public void testGlicBottomBarButtonPreferenceTurnsOff() {
+        offerGlicBottomBarButton();
+        launchSettings();
+        final var glicSwitch = assertSwitchExists(PREF_GLIC_BOTTOM_BAR_BUTTON_SWITCH);
+
+        ThreadUtils.runOnUiThreadBlocking(glicSwitch::performClick);
+
+        Assert.assertFalse(BottomBarConfigUtils.isGlicButtonEnabled());
+        Assert.assertEquals(
+                1, mUserActionTester.getActionCount("Glic.Settings.BottomBarGlicButton.Disabled"));
+    }
+
+    @Test
+    @SmallTest
+    @Restriction(DeviceFormFactor.PHONE)
+    @EnableFeatures(ChromeFeatureList.ANDROID_BOTTOM_BAR)
+    public void testGlicBottomBarButtonPreferenceHidesWhenBottomBarTurnsOff() {
+        offerGlicBottomBarButton();
+        launchSettings();
+        final var bottomBarSwitch = assertSwitchExists(PREF_BOTTOM_BAR_SWITCH);
+
+        ThreadUtils.runOnUiThreadBlocking(bottomBarSwitch::performClick);
+
+        Assert.assertFalse(assertSwitchExists(PREF_GLIC_BOTTOM_BAR_BUTTON_SWITCH).isVisible());
+    }
+
+    @Test
+    @SmallTest
+    @Restriction(DeviceFormFactor.PHONE)
+    @EnableFeatures(ChromeFeatureList.ANDROID_BOTTOM_BAR)
+    public void testGlicBottomBarButtonPreferenceShowsWhenBottomBarTurnsOn_CandidateUnresolved() {
+        BottomBarActionEligibility.setCachedCandidateExtraActionForTesting(null);
+        when(mGlicEnablingJni.isEnabledForProfile(mProfile)).thenReturn(true);
+        when(mGlicEnablingJni.shouldShowSettingsPage(mProfile)).thenReturn(true);
+        BottomBarConfigUtils.setBottomBarUserEnabled(false);
+        launchSettings();
+
+        ThreadUtils.runOnUiThreadBlocking(assertSwitchExists(PREF_BOTTOM_BAR_SWITCH)::performClick);
+
+        Assert.assertTrue(assertSwitchExists(PREF_GLIC_BOTTOM_BAR_BUTTON_SWITCH).isVisible());
+    }
+
+    @Test
+    @SmallTest
+    @Restriction(DeviceFormFactor.PHONE)
+    @EnableFeatures(ChromeFeatureList.ANDROID_BOTTOM_BAR)
+    public void testGlicBottomBarButtonPreferenceDisabledByPolicy() {
+        offerGlicBottomBarButton();
+        when(mGlicEnablingJni.isDisabledByPolicy(mProfile)).thenReturn(true);
+        launchSettings();
+        final var glicSwitch = assertSwitchExists(PREF_GLIC_BOTTOM_BAR_BUTTON_SWITCH);
+        Assert.assertFalse(glicSwitch.isEnabled());
+        Assert.assertFalse(glicSwitch.isChecked());
+    }
+
+    @Test
+    @SmallTest
+    @Restriction(DeviceFormFactor.PHONE)
+    @EnableFeatures(ChromeFeatureList.ANDROID_BOTTOM_BAR)
+    public void testSearchIndex_GlicBottomBarButtonNotOffered() {
+        AppearanceSettingsFragment.SEARCH_INDEX_DATA_PROVIDER.updateDynamicPreferences(
+                ContextUtils.getApplicationContext(), mIndexData, mProfile);
+        verify(mIndexData)
+                .removeEntryForKey(
+                        AppearanceSettingsFragment.class.getName(),
+                        PREF_GLIC_BOTTOM_BAR_BUTTON_SWITCH);
+    }
+
+    @Test
+    @SmallTest
+    @Restriction(DeviceFormFactor.PHONE)
+    @EnableFeatures(ChromeFeatureList.ANDROID_BOTTOM_BAR)
+    public void testSearchIndex_GlicBottomBarButtonOffered() {
+        offerGlicBottomBarButton();
+        AppearanceSettingsFragment.SEARCH_INDEX_DATA_PROVIDER.updateDynamicPreferences(
+                ContextUtils.getApplicationContext(), mIndexData, mProfile);
+        verify(mIndexData, never())
+                .removeEntryForKey(
+                        AppearanceSettingsFragment.class.getName(),
+                        PREF_GLIC_BOTTOM_BAR_BUTTON_SWITCH);
+    }
+
+    @Test
+    @SmallTest
+    @Restriction(DeviceFormFactor.PHONE)
+    @EnableFeatures(ChromeFeatureList.ANDROID_BOTTOM_BAR)
+    public void testSearchIndex_GlicBottomBarButtonOffered_BottomBarOff() {
+        offerGlicBottomBarButton();
+        BottomBarConfigUtils.setBottomBarUserEnabled(false);
+        AppearanceSettingsFragment.SEARCH_INDEX_DATA_PROVIDER.updateDynamicPreferences(
+                ContextUtils.getApplicationContext(), mIndexData, mProfile);
+        verify(mIndexData)
+                .removeEntryForKey(
+                        AppearanceSettingsFragment.class.getName(),
+                        PREF_GLIC_BOTTOM_BAR_BUTTON_SWITCH);
+    }
+
+    @Test
+    @SmallTest
+    @DisableFeatures(ChromeFeatureList.ANDROID_BOTTOM_BAR)
+    public void testSearchIndex_BottomBarNotEligible() {
+        var context = ContextUtils.getApplicationContext();
+        String prefFragment = AppearanceSettingsFragment.class.getName();
+
+        AppearanceSettingsFragment.SEARCH_INDEX_DATA_PROVIDER.updateDynamicPreferences(
+                context, mIndexData, mProfile);
+
+        verify(mIndexData).removeEntryForKey(prefFragment, PREF_BOTTOM_BAR_SWITCH);
+    }
+
+    @Test
+    @SmallTest
+    @Restriction(DeviceFormFactor.TABLET_OR_DESKTOP)
+    @EnableFeatures(ChromeFeatureList.ANDROID_BOTTOM_BAR)
+    public void testSearchIndex_BottomBarOnTablet() {
+        var context = ContextUtils.getApplicationContext();
+        String prefFragment = AppearanceSettingsFragment.class.getName();
+
+        AppearanceSettingsFragment.SEARCH_INDEX_DATA_PROVIDER.updateDynamicPreferences(
+                context, mIndexData, mProfile);
+
+        verify(mIndexData).removeEntryForKey(prefFragment, PREF_BOTTOM_BAR_SWITCH);
+    }
+
+    @Test
+    @SmallTest
+    @Restriction(DeviceFormFactor.PHONE)
+    @EnableFeatures(ChromeFeatureList.ANDROID_BOTTOM_BAR + ":show_settings_toggle/false")
+    public void testSearchIndex_BottomBarToggleParamOff() {
+        var context = ContextUtils.getApplicationContext();
+        String prefFragment = AppearanceSettingsFragment.class.getName();
+
+        AppearanceSettingsFragment.SEARCH_INDEX_DATA_PROVIDER.updateDynamicPreferences(
+                context, mIndexData, mProfile);
+
+        verify(mIndexData).removeEntryForKey(prefFragment, PREF_BOTTOM_BAR_SWITCH);
+    }
+
+    @Test
+    @SmallTest
+    @Restriction(DeviceFormFactor.PHONE)
+    @EnableFeatures(ChromeFeatureList.ANDROID_BOTTOM_BAR)
+    public void testSearchIndex_BottomBarEligible() {
+        var context = ContextUtils.getApplicationContext();
+        String prefFragment = AppearanceSettingsFragment.class.getName();
+
+        AppearanceSettingsFragment.SEARCH_INDEX_DATA_PROVIDER.updateDynamicPreferences(
+                context, mIndexData, mProfile);
+
+        verify(mIndexData, never()).removeEntryForKey(prefFragment, PREF_BOTTOM_BAR_SWITCH);
     }
 
     @Test
@@ -451,6 +848,194 @@ public class AppearanceSettingsFragmentTest {
         verify(indexData, never()).removeEntryForKey(prefFragment, PREF_BOOKMARK_BAR_SWITCH);
     }
 
+    @Test
+    @SmallTest
+    @DisableFeatures(ChromeFeatureList.ANDROID_VERTICAL_TABS)
+    public void testSearchIndex_TabPositionNotEligible() {
+        var context = ContextUtils.getApplicationContext();
+        String prefFragment = AppearanceSettingsFragment.class.getName();
+
+        AppearanceSettingsFragment.SEARCH_INDEX_DATA_PROVIDER.updateDynamicPreferences(
+                context, mIndexData, mProfile);
+
+        verify(mIndexData).removeEntryForKey(prefFragment, PREF_TAB_POSITION);
+    }
+
+    @Test
+    @SmallTest
+    @EnableFeatures(ChromeFeatureList.ANDROID_VERTICAL_TABS)
+    public void testSearchIndex_TabPosition() {
+        VerticalTabUtils.setIsVerticalTabsEligibleForTesting(true);
+        var context = ContextUtils.getApplicationContext();
+        String prefFragment = AppearanceSettingsFragment.class.getName();
+
+        AppearanceSettingsFragment.SEARCH_INDEX_DATA_PROVIDER.updateDynamicPreferences(
+                context, mIndexData, mProfile);
+
+        verify(mIndexData, never()).removeEntryForKey(prefFragment, PREF_TAB_POSITION);
+        verify(mIndexData, never())
+                .updateEntrySummaryForKey(eq(prefFragment), eq(PREF_TAB_POSITION), anyInt());
+    }
+
+    @Test
+    @SmallTest
+    @DisableFeatures(ChromeFeatureList.ANDROID_BOTTOM_BAR)
+    public void testAddressBarPreferenceIsAbsentWhenBottomBarDisabled() {
+        launchSettings();
+        assertNull(mSettings.findPreference(PREF_ADDRESS_BAR));
+    }
+
+    @Test
+    @SmallTest
+    @Restriction(DeviceFormFactor.TABLET_OR_DESKTOP)
+    @EnableFeatures(ChromeFeatureList.ANDROID_BOTTOM_BAR)
+    public void testAddressBarPreferenceIsAbsentOnTablet() {
+        DeviceInfo.setIsFoldableForTesting(false);
+        launchSettings();
+        assertNull(mSettings.findPreference(PREF_ADDRESS_BAR));
+    }
+
+    @Test
+    @SmallTest
+    @Restriction(DeviceFormFactor.PHONE)
+    @EnableFeatures(
+            ChromeFeatureList.ANDROID_BOTTOM_BAR + ":move_toolbar_settings_to_appearance/false")
+    public void testAddressBarPreferenceIsAbsentWhenMoveParamOff() {
+        launchSettings();
+        assertNull(mSettings.findPreference(PREF_ADDRESS_BAR));
+    }
+
+    @Test
+    @SmallTest
+    @Restriction(DeviceFormFactor.PHONE)
+    @EnableFeatures(ChromeFeatureList.ANDROID_BOTTOM_BAR)
+    public void testAddressBarPreferenceIsPresentWhenEligible() throws ClassNotFoundException {
+        launchSettings();
+
+        final var addressBarPref =
+                assertSettingsExists(PREF_ADDRESS_BAR, AddressBarSettingsFragment.class);
+        final var context = mSettings.getContext();
+        assertEquals(
+                context.getString(R.string.address_bar_settings_top), addressBarPref.getSummary());
+
+        ThreadUtils.runOnUiThreadBlocking(
+                () ->
+                        AddressBarPreference.setToolbarPositionAndSource(
+                                ToolbarPositionAndSource.BOTTOM_SETTINGS));
+        assertEquals(
+                context.getString(R.string.address_bar_settings_bottom),
+                addressBarPref.getSummary());
+
+        ThreadUtils.runOnUiThreadBlocking(
+                () ->
+                        AddressBarPreference.setToolbarPositionAndSource(
+                                ToolbarPositionAndSource.TOP_SETTINGS));
+        assertEquals(
+                context.getString(R.string.address_bar_settings_top), addressBarPref.getSummary());
+    }
+
+    @Test
+    @SmallTest
+    @DisableFeatures(ChromeFeatureList.ANDROID_BOTTOM_BAR)
+    public void testHomepagePreferenceIsAbsentWhenBottomBarDisabled() {
+        launchSettings();
+        assertNull(mSettings.findPreference(PREF_HOMEPAGE));
+    }
+
+    @Test
+    @SmallTest
+    @Restriction(DeviceFormFactor.TABLET_OR_DESKTOP)
+    @EnableFeatures(ChromeFeatureList.ANDROID_BOTTOM_BAR)
+    public void testHomepagePreferenceIsAbsentOnTablet() {
+        DeviceInfo.setIsFoldableForTesting(false);
+        launchSettings();
+        assertNull(mSettings.findPreference(PREF_HOMEPAGE));
+    }
+
+    @Test
+    @SmallTest
+    @Restriction(DeviceFormFactor.PHONE)
+    @EnableFeatures(
+            ChromeFeatureList.ANDROID_BOTTOM_BAR + ":move_toolbar_settings_to_appearance/false")
+    public void testHomepagePreferenceIsAbsentWhenMoveParamOff() {
+        launchSettings();
+        assertNull(mSettings.findPreference(PREF_HOMEPAGE));
+    }
+
+    @Test
+    @SmallTest
+    @Restriction(DeviceFormFactor.PHONE)
+    @EnableFeatures(ChromeFeatureList.ANDROID_BOTTOM_BAR)
+    public void testHomepagePreferenceIsPresentWhenEligible() throws ClassNotFoundException {
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> HomepageManager.getInstance().setJavaPrefHomepageEnabled(true));
+        launchSettings();
+
+        final var homepagePref = assertSettingsExists(PREF_HOMEPAGE, HomepageSettings.class);
+        final var context = mSettings.getContext();
+        assertEquals(context.getString(R.string.text_on), homepagePref.getSummary());
+
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> HomepageManager.getInstance().setJavaPrefHomepageEnabled(false));
+        assertEquals(context.getString(R.string.text_off), homepagePref.getSummary());
+
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> HomepageManager.getInstance().setJavaPrefHomepageEnabled(true));
+        assertEquals(context.getString(R.string.text_on), homepagePref.getSummary());
+    }
+
+    @Test
+    @SmallTest
+    @DisableFeatures(ChromeFeatureList.ANDROID_BOTTOM_BAR)
+    public void testSearchIndex_MoveToolbarSettingsNotEligible() {
+        var context = ContextUtils.getApplicationContext();
+        String prefFragment = AppearanceSettingsFragment.class.getName();
+
+        AppearanceSettingsFragment.SEARCH_INDEX_DATA_PROVIDER.updateDynamicPreferences(
+                context, mIndexData, mProfile);
+
+        verify(mIndexData).removeEntryForKey(prefFragment, PREF_ADDRESS_BAR);
+        verify(mIndexData).removeEntryForKey(prefFragment, PREF_HOMEPAGE);
+        verify(mIndexData, never())
+                .updateEntryForKey(eq(prefFragment), eq(PREF_TOOLBAR_SHORTCUT), anyInt());
+    }
+
+    @Test
+    @SmallTest
+    @Restriction(DeviceFormFactor.PHONE)
+    @EnableFeatures(
+            ChromeFeatureList.ANDROID_BOTTOM_BAR + ":move_toolbar_settings_to_appearance/false")
+    public void testSearchIndex_MoveToolbarSettingsParamOff() {
+        var context = ContextUtils.getApplicationContext();
+        String prefFragment = AppearanceSettingsFragment.class.getName();
+
+        AppearanceSettingsFragment.SEARCH_INDEX_DATA_PROVIDER.updateDynamicPreferences(
+                context, mIndexData, mProfile);
+
+        verify(mIndexData).removeEntryForKey(prefFragment, PREF_ADDRESS_BAR);
+        verify(mIndexData).removeEntryForKey(prefFragment, PREF_HOMEPAGE);
+        verify(mIndexData, never())
+                .updateEntryForKey(eq(prefFragment), eq(PREF_TOOLBAR_SHORTCUT), anyInt());
+    }
+
+    @Test
+    @SmallTest
+    @Restriction(DeviceFormFactor.PHONE)
+    @EnableFeatures(ChromeFeatureList.ANDROID_BOTTOM_BAR)
+    public void testSearchIndex_MoveToolbarSettingsEligible() {
+        var context = ContextUtils.getApplicationContext();
+        String prefFragment = AppearanceSettingsFragment.class.getName();
+
+        AppearanceSettingsFragment.SEARCH_INDEX_DATA_PROVIDER.updateDynamicPreferences(
+                context, mIndexData, mProfile);
+
+        verify(mIndexData, never()).removeEntryForKey(prefFragment, PREF_ADDRESS_BAR);
+        verify(mIndexData, never()).removeEntryForKey(prefFragment, PREF_HOMEPAGE);
+        verify(mIndexData)
+                .updateEntryForKey(
+                        prefFragment, PREF_TOOLBAR_SHORTCUT, R.string.address_bar_shortcut);
+    }
+
     private Preference assertSettingsExists(String prefKey, Class settingsFragmentClass)
             throws ClassNotFoundException {
         final Preference pref = mSettings.findPreference(prefKey);
@@ -465,6 +1050,11 @@ public class AppearanceSettingsFragmentTest {
         Assert.assertNotNull(pref);
         Assert.assertTrue(pref instanceof ChromeSwitchPreference);
         return (ChromeSwitchPreference) pref;
+    }
+
+    private void offerGlicBottomBarButton() {
+        BottomBarActionEligibility.setCachedCandidateExtraActionForTesting(ActionId.GLIC);
+        when(mGlicEnablingJni.shouldShowSettingsPage(mProfile)).thenReturn(true);
     }
 
     private void launchSettings() {

@@ -4,14 +4,58 @@
 
 #include "chrome/browser/ui/views/permissions/chip/webui_permission_chip.h"
 
+#include <optional>
+#include <string>
+#include <string_view>
+
+#include "base/check.h"
+#include "base/logging.h"
+#include "base/notreached.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/location_bar/location_bar.h"
+#include "chrome/browser/ui/passwords/ui_utils.h"
 #include "chrome/browser/ui/views/location_bar/webui_location_bar.h"
+#include "chrome/browser/ui/views/permissions/chip/permission_chip_view.h"
+#include "chrome/browser/ui/webui/webui_toolbar/icon_table.h"
 #include "ui/base/base_window.h"
+#include "ui/base/interaction/element_tracker.h"
 #include "ui/gfx/paint_vector_icon.h"
+#include "ui/gfx/vector_icon_types.h"
 #include "ui/views/widget/widget.h"
 
 namespace {
+
+// Returns the iconset name the WebUI chip renders for `icon`, e.g.
+// "webui-toolbar-shared:videocam", or an empty string for no icon. The mapping
+// lives in `webui_toolbar::IconTable` (see KnownIcons() in icon_table.cc).
+// Only request types with request chip text
+// (`PermissionRequest::GetRequestChipText(LOUD_REQUEST)`) can show a request
+// chip; the others always use a prompt bubble. The chip's icons must map to the
+// `webui-toolbar-shared` iconset, because the chip is also used by the
+// contextual tasks toolbar, which doesn't load the `webui-toolbar` iconset.
+std::string GetIconName(const gfx::VectorIcon& icon) {
+  if (icon.is_empty()) {
+    return std::string();
+  }
+  if (std::optional<std::string_view> name =
+          webui_toolbar::IconTable::GetKnownIconsetName(icon)) {
+    return std::string(*name);
+  }
+  // Ambient sign-in requests use `GooglePasswordManagerVectorIcon()`. In
+  // branded builds that's the multicolor Google Password Manager logo, which
+  // isn't in the public iconset, so use the monochrome password manager icon.
+  // In other builds it's a key icon, which IconTable already maps.
+  // TODO(crbug.com/582361456): In branded builds, map the Google Password
+  // Manager logo to an internal iconset (like `internal-icons` in
+  // webui_toolbar/internal/icons.ts) instead of the monochrome fallback.
+  if (&icon == &GooglePasswordManagerVectorIcon()) {
+    return "webui-toolbar-shared:password_manager";
+  }
+  // A new permission icon needs an entry in KnownIcons() and an SVG in
+  // webui_toolbar_shared/icons.ts.
+  DUMP_WILL_BE_NOTREACHED() << "No WebUI icon for " << icon.name;
+  return std::string();
+}
 
 // TODO(crbug.com/502597958): This C++/Mojo type conversion code could be
 // simplified with a `ToolbarUIService` mojom_traits file.
@@ -52,8 +96,11 @@ toolbar_ui_api::mojom::PermissionPromptStyle GetMojoPromptStyle(
 }
 
 toolbar_ui_api::mojom::PermissionAction GetMojoPermissionAction(
-    permissions::PermissionAction action) {
-  switch (action) {
+    std::optional<permissions::PermissionAction> action) {
+  if (!action.has_value()) {
+    return toolbar_ui_api::mojom::PermissionAction::kUnspecified;
+  }
+  switch (*action) {
     case permissions::PermissionAction::GRANTED:
       return toolbar_ui_api::mojom::PermissionAction::kGranted;
     case permissions::PermissionAction::DENIED:
@@ -66,16 +113,17 @@ toolbar_ui_api::mojom::PermissionAction GetMojoPermissionAction(
       return toolbar_ui_api::mojom::PermissionAction::kRevoked;
     case permissions::PermissionAction::GRANTED_ONCE:
       return toolbar_ui_api::mojom::PermissionAction::kGrantedOnce;
-    case permissions::PermissionAction::NUM:
-      return toolbar_ui_api::mojom::PermissionAction::kUnspecified;
   }
   NOTREACHED();
 }
 
 }  // namespace
 
-WebUIPermissionChip::WebUIPermissionChip(LocationBar* location_bar)
-    : location_bar_(location_bar) {}
+WebUIPermissionChip::WebUIPermissionChip(LocationBar* location_bar,
+                                         ui::ElementIdentifier element_id)
+    : location_bar_(location_bar), element_id_(element_id) {
+  CHECK(element_id_);
+}
 
 WebUIPermissionChip::~WebUIPermissionChip() = default;
 
@@ -85,6 +133,9 @@ void WebUIPermissionChip::SetVisible(bool visible) {
   }
   ++state_token_;
   is_visible_ = visible;
+  if (!is_visible_) {
+    RunPendingAnchorCallback();
+  }
   NotifyVisibilityChanged();
   UpdateState();
 }
@@ -98,19 +149,23 @@ std::u16string WebUIPermissionChip::GetTooltipText() const {
 }
 
 void WebUIPermissionChip::SetChipIcon(const gfx::VectorIcon& icon) {
-  icon_name_ = icon.name;
+  icon_name_ = GetIconName(icon);
   UpdateState();
 }
 
 void WebUIPermissionChip::SetChipIcon(const gfx::VectorIcon* icon) {
   if (icon) {
-    icon_name_ = icon->name;
-    UpdateState();
+    SetChipIcon(*icon);
   }
 }
 
 void WebUIPermissionChip::SetMessage(std::u16string message) {
   message_ = message;
+  // Mirror Views' `LabelButton::SetTextInternal()`, which resets the accessible
+  // name to the new text. A name set by `SetAccessibilityName()` only lasts
+  // until the next message, so it can't go stale when the message changes or
+  // the chip switches tabs.
+  accessibility_name_ = message_;
   UpdateState();
 }
 
@@ -125,7 +180,7 @@ void WebUIPermissionChip::SetTheme(PermissionChipTheme theme) {
 }
 
 void WebUIPermissionChip::SetUserDecision(
-    permissions::PermissionAction user_decision) {
+    std::optional<permissions::PermissionAction> user_decision) {
   user_decision_ = user_decision;
   UpdateState();
 }
@@ -265,21 +320,81 @@ void WebUIPermissionChip::SetPressedCallback(
 }
 
 views::BubbleAnchor WebUIPermissionChip::GetAnchor() {
-  // The WebUI element tracker registration happens asynchronously over Mojo.
-  // If a permission is requested during browser startup, we might attempt to
-  // anchor the bubble before the WebUI has finished registering the tracked
-  // element, causing GetAnchorOrNull() to return nullptr. We fallback to the
-  // main window contents view to prevent a crash during this sub-millisecond
-  // race condition.
+  // 1. Anchor to the element registered for `element_id_` in the current
+  // context. It may not be registered yet (WebUI registration is async), in
+  // which case fall back below.
+  if (ui::ElementContext context = location_bar_->GetElementContext()) {
+    if (ui::TrackedElement* element =
+            ui::ElementTracker::GetElementTracker()->GetFirstMatchingElement(
+                element_id_, context)) {
+      return views::BubbleAnchor(element);
+    }
+  }
+
+  // 2. The WebUI element tracker registration happens asynchronously over Mojo.
+  // If a permission is requested before the WebUI has finished registering the
+  // chip element, fallback to the location bar container to prevent a crash.
   if (ui::TrackedElement* element = location_bar_->GetAnchorOrNull()) {
     return views::BubbleAnchor(element);
   }
+
+  // 3. Fallback to the main window contents view if the location bar is also
+  // not yet tracked.
   ui::BaseWindow* window = location_bar_->GetBrowser()->GetWindow();
   CHECK(window);
   views::Widget* widget =
       views::Widget::GetWidgetForNativeWindow(window->GetNativeWindow());
   CHECK(widget);
   return views::BubbleAnchor(widget->GetContentsView());
+}
+
+void WebUIPermissionChip::WaitForAnchor(base::OnceClosure callback) {
+  CHECK(!pending_anchor_callback_);
+  // Look for the element in the same context `GetAnchor()` uses.
+  const ui::ElementContext context = location_bar_->GetElementContext();
+
+  // 1. If the element is already tracked, run the callback immediately and let
+  // `GetAnchor()` pick the anchor.
+  if (context &&
+      ui::ElementTracker::GetElementTracker()->GetFirstMatchingElement(
+          element_id_, context)) {
+    std::move(callback).Run();
+    return;
+  }
+
+  // 2. Otherwise, subscribe to the ElementTracker and wait for the element to
+  // appear. The context may not be available yet (e.g. the WebUI hasn't
+  // finished loading), so listen in all contexts and check the context once
+  // the element is shown.
+  pending_anchor_callback_ = std::move(callback);
+  element_shown_subscription_ =
+      ui::ElementTracker::GetElementTracker()
+          ->AddElementShownInAnyContextCallback(
+              element_id_,
+              base::BindRepeating(&WebUIPermissionChip::OnAnchorElementShown,
+                                  weak_factory_.GetWeakPtr()));
+  anchor_fallback_timer_.Start(
+      FROM_HERE, kAnchorFallbackTimeout,
+      base::BindOnce(&WebUIPermissionChip::RunPendingAnchorCallback,
+                     weak_factory_.GetWeakPtr()));
+}
+
+void WebUIPermissionChip::OnAnchorElementShown(ui::TrackedElement* element) {
+  // Like `GetAnchor()`, only consider the element in the location bar's
+  // context, so that e.g. a chip with the same ID in another window doesn't
+  // count.
+  if (element->context() != location_bar_->GetElementContext()) {
+    return;
+  }
+  RunPendingAnchorCallback();
+}
+
+void WebUIPermissionChip::RunPendingAnchorCallback() {
+  element_shown_subscription_ = {};
+  anchor_fallback_timer_.Stop();
+  if (pending_anchor_callback_) {
+    std::move(pending_anchor_callback_).Run();
+  }
 }
 
 void WebUIPermissionChip::SetBubbleOwner(BubbleOwnerDelegate* owner) {
@@ -346,10 +461,22 @@ void WebUIPermissionChip::OnMousePressed() {
   observers_.Notify(&Observer::OnMousePressed);
 }
 
-void WebUIPermissionChip::OnClicked(bool is_pointer_interaction) {
+bool WebUIPermissionChip::OnClickedIfCurrent(bool is_pointer_interaction,
+                                             uint32_t state_token) {
+  // Drop stale clicks: the WebUI echoes the token it rendered with, so a
+  // mismatch means the chip's backing model changed while the click IPC was
+  // in flight (e.g. across a tab switch or same-tab navigation). See
+  // crbug.com/557279024.
+  if (state_token_ != state_token) {
+    VLOG(1) << "Dropped stale chip click for " << element_id_
+            << ": received token " << state_token << " != current token "
+            << state_token_;
+    return false;
+  }
   if (pressed_callback_) {
     pressed_callback_.Run(is_pointer_interaction);
   }
+  return true;
 }
 
 void WebUIPermissionChip::OnMouseEntered() {

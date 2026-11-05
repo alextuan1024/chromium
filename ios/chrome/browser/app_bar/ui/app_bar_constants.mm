@@ -9,17 +9,23 @@
 
 namespace {
 const CGFloat kAppBarHeightDefault = 77;
-const CGFloat kAppBarHeightLandscapeDefault = 69;
+const CGFloat kAppBarHeightLandscapeDefault = 68;
 }  // namespace
 
 const CGFloat kAppBarHeightFullscreen = 62;
 
 CGFloat AppBarHeightPortrait() {
+  if (IsFiveButtonAppBarLayoutEnabled()) {
+    return kAppBarHeightLandscapeDefault;
+  }
   return kAppBarHeightDefault;
 }
 
 CGFloat CurrentAppBarHeightPortrait(BOOL gemini_floaty_invoked,
                                     BOOL app_bar_locked_in_fullscreen) {
+  if (IsFiveButtonAppBarLayoutEnabled()) {
+    return AppBarHeightPortrait();
+  }
   if (IsIOSGeminiBottomSheetMigrationEnabled() &&
       app_bar_locked_in_fullscreen) {
     return kAppBarHeightFullscreen;
@@ -39,9 +45,27 @@ NSString* const kAppBarTabGridButtonIdentifier =
     @"kAppBarTabGridButtonIdentifier";
 NSString* const kAppBarNewTabButtonIdentifier =
     @"kAppBarNewTabButtonIdentifier";
+NSString* const kAppBarBackButtonIdentifier = @"kAppBarBackButtonIdentifier";
+NSString* const kAppBarForwardButtonIdentifier =
+    @"kAppBarForwardButtonIdentifier";
 
 const char kAppBarAssistantButtonTappedHistogram[] =
     "IOS.AppBar.AssistantButtonTapped";
 
 const char kAppBarAssistantButtonStateOnLoadHistogram[] =
     "IOS.AppBar.AssistantButtonStateOnLoad";
+
+std::optional<AppBarAssistantButtonState>
+AssistantButtonStateFromPreferredState(
+    AppBarAssistantButtonPreferredState preferred_state) {
+  switch (preferred_state) {
+    case AppBarAssistantButtonPreferredState::kDefault:
+      return std::nullopt;
+    case AppBarAssistantButtonPreferredState::kLens:
+      return AppBarAssistantButtonState::kLens;
+    case AppBarAssistantButtonPreferredState::kAsk:
+      return AppBarAssistantButtonState::kAsk;
+    case AppBarAssistantButtonPreferredState::kAccount:
+      return AppBarAssistantButtonState::kAccount;
+  }
+}

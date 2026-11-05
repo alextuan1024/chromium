@@ -739,7 +739,7 @@ constexpr NSInteger kLevelUpPasswordCheckupWalkthroughTotalPages = 3;
   AuthenticationService* authenticationService =
       AuthenticationServiceFactory::GetForProfile(self.profile);
   if (!authenticationService->SigninEnabled()) {
-    // TODO(crbug.com/450982128): Display some error message to the user.
+    // TODO(crbug.com/564375982): Display some error message to the user.
     self.credentialImportUUID = nil;
     return;
   }
@@ -766,10 +766,10 @@ constexpr NSInteger kLevelUpPasswordCheckupWalkthroughTotalPages = 3;
                                              DoNothingContinuationProvider()];
   __weak __typeof(self) weakSelf = self;
   _signinCoordinator.signinCompletion =
-      ^(SigninCoordinator* coordinator, SigninCoordinatorResult result,
-        id<SystemIdentity> identity) {
+      ^(SigninCoordinator* coordinator,
+        SigninCoordinatorResultOrIdentity result) {
         [weakSelf signinForImportFinishedWithCoordinator:coordinator
-                                                identity:identity];
+                                                identity:result.value_or(nil)];
       };
   [_signinCoordinator start];
 }

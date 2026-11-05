@@ -9,6 +9,7 @@
 #include <stdint.h>
 
 #include <string>
+#include <vector>
 
 #include "base/android/scoped_java_ref.h"
 #include "base/functional/callback.h"
@@ -151,13 +152,25 @@ class MEDIA_EXPORT MediaCodecBridgeImpl : public MediaCodecBridge {
   CodecType GetCodecType() const override;
   size_t GetMaxInputSize() override;
 
+  // When the MediaCodec has been configured in async mode, this is called when
+  // input or output buffers are available.
+  void OnBuffersAvailable(JNIEnv* /* env */);
+
  private:
+  friend class MediaCodecBridgeTest;
+
   MediaCodecBridgeImpl(CodecType codec_type,
                        std::optional<VideoCodec> video_decoder_codec,
                        base::android::ScopedJavaGlobalRef<jobject> j_bridge,
                        bool use_block_model = false,
                        base::RepeatingClosure on_buffers_available_cb =
                            base::RepeatingClosure());
+
+  static bool GetCodecSpecificDataForAudio(const AudioDecoderConfig& config,
+                                           std::vector<uint8_t>* output_csd0,
+                                           std::vector<uint8_t>* output_csd1,
+                                           std::vector<uint8_t>* output_csd2,
+                                           bool* output_frame_has_adts_header);
 
   // Fills the given input buffer. Returns false if |data_size| exceeds the
   // input buffer's capacity (and doesn't touch the input buffer in that case).
@@ -168,17 +181,6 @@ class MEDIA_EXPORT MediaCodecBridgeImpl : public MediaCodecBridge {
   MediaCodecResult QueueInputBlock(int index,
                                    base::span<const uint8_t> data,
                                    base::TimeDelta presentation_time);
-
-  // Gets the address of the data in the given output buffer given by |index|
-  // and |offset|. The number of bytes available to read is written to
-  // |*capacity| and the address is written to |*addr|. Returns
-  // kError if an error occurs, or kOk otherwise.
-  MediaCodecResult GetOutputBufferAddress(int index,
-                                          size_t offset,
-                                          const uint8_t** addr,
-                                          size_t* capacity);
-
-  void OnBuffersAvailable(JNIEnv* /* env */) override;
 
   void ReportAnyErrorToUMA(MediaCodecStatus status);
 

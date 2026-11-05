@@ -71,7 +71,8 @@ enum class IndigoPageActionEntryPoint {
   kProactiveAnchoredMessage = 1,
   kReactiveAnchoredMessage = 2,
   kErrorToast = 3,
-  kMaxValue = kErrorToast,
+  kContextMenu = 4,
+  kMaxValue = kContextMenu,
 };
 // LINT.ThenChange(//tools/metrics/histograms/metadata/indigo/enums.xml:IndigoPageActionEntryPoint)
 
@@ -84,14 +85,27 @@ enum class IndigoTransformationTriggerSource {
   kErrorToastRetry = 1,
   kRegenerate = 2,
   kReplacePhoto = 3,
-  kMaxValue = kReplacePhoto,
+  kContextMenu = 4,
+  kMaxValue = kContextMenu,
 };
 // LINT.ThenChange(//tools/metrics/histograms/metadata/indigo/enums.xml:IndigoTransformationTriggerSource)
+
+// Target type for the Indigo context menu item when executed.
+// These values are persisted to logs. Entries should not be renumbered and
+// numeric values should never be reused.
+// LINT.IfChange(IndigoContextMenuTargetType)
+enum class IndigoContextMenuTargetType {
+  kPage = 0,
+  kImage = 1,
+  kMaxValue = kImage,
+};
+// LINT.ThenChange(//tools/metrics/histograms/metadata/indigo/enums.xml:IndigoContextMenuTargetType)
 
 enum class EntryPoint {
   kSuggestionChip = 0,
   kAnchoredMessage = 1,
   kErrorToast = 2,
+  kContextMenu = 3,
 };
 
 inline constexpr char kShownEntryPointHistogram[] =
@@ -109,6 +123,7 @@ inline constexpr char kProactiveAnchoredMessageShowAction[] =
     "Indigo.PageAction.AnchoredMessage.Proactive.Show";
 inline constexpr char kReactiveAnchoredMessageShowAction[] =
     "Indigo.PageAction.AnchoredMessage.Reactive.Show";
+inline constexpr char kContextMenuShowAction[] = "Indigo.ContextMenu.Show";
 
 inline constexpr char kSuggestionChipClickAction[] =
     "Indigo.PageAction.SuggestionChip.Click";
@@ -116,6 +131,9 @@ inline constexpr char kAnchoredMessageClickAction[] =
     "Indigo.PageAction.AnchoredMessage.Click";
 inline constexpr char kErrorToastRetryClickAction[] =
     "Indigo.ErrorToast.Retry.Click";
+inline constexpr char kContextMenuClickAction[] = "Indigo.ContextMenu.Click";
+inline constexpr char kContextMenuTargetTypeHistogram[] =
+    "Indigo.ContextMenu.TargetType";
 
 inline constexpr char kTransformationTriggerAction[] =
     "Indigo.Transformation.Trigger";
@@ -180,6 +198,9 @@ void RecordClickedEntryPoint(
     EntryPoint entry_point,
     std::optional<page_actions::PageActionPriorityCategory>
         last_anchored_message_priority);
+
+// Records UMA histogram for the context menu target type when executed.
+void RecordContextMenuTargetType(IndigoContextMenuTargetType target_type);
 
 // Records UMA histogram for the raw HTTP response code.
 void RecordApiHttpResponse(IndigoApiEndpoint endpoint,

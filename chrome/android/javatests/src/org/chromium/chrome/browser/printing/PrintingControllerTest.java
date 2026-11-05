@@ -7,7 +7,6 @@ package org.chromium.chrome.browser.printing;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
-import android.app.Activity;
 import android.os.Build.VERSION_CODES;
 import android.os.CancellationSignal;
 import android.os.ParcelFileDescriptor;
@@ -30,10 +29,9 @@ import org.mockito.Mockito;
 
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.util.CallbackHelper;
-import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.CriteriaHelper;
-import org.chromium.base.test.util.DisableIf;
 import org.chromium.base.test.util.Feature;
+import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.base.test.util.MinAndroidSdkLevel;
 import org.chromium.base.test.util.TestFileUtil;
@@ -42,7 +40,6 @@ import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.ChromeTabbedActivity;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
-import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabHidingType;
 import org.chromium.chrome.browser.tabmodel.TabClosureParams;
@@ -65,7 +62,6 @@ import org.chromium.printing.PrintManagerDelegate;
 import org.chromium.printing.Printable;
 import org.chromium.printing.PrintingController;
 import org.chromium.printing.PrintingControllerImpl;
-import org.chromium.ui.base.DeviceFormFactor;
 import org.chromium.ui.base.WindowAndroid;
 import org.chromium.ui.widget.Toast;
 import org.chromium.ui.widget.ToastManager;
@@ -85,7 +81,6 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * Chromium failing to generate a PDF.
  */
 @RunWith(ChromeJUnit4ClassRunner.class)
-@CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
 public class PrintingControllerTest {
     @Rule
     public final FreshCtaTransitTestRule mActivityTestRule =
@@ -419,7 +414,7 @@ public class PrintingControllerTest {
     @Test
     @SmallTest
     @Feature({"Printing"})
-    public void testGetFileDescriptorAfterFinish() throws Exception {
+    public void testFileDescriptorIsDetachedOnWrite() throws Exception {
         WebPageStation page = mActivityTestRule.startOnUrl(URL);
         final PrintingControllerImpl controller = createControllerOnUiThread();
 
@@ -428,22 +423,31 @@ public class PrintingControllerTest {
         try (TemporaryFileHandler handler = new TemporaryFileHandler()) {
             ThreadUtils.runOnUiThreadBlocking(
                     () -> {
-                        Assert.assertNull(controller.getParcelFileDescriptor());
+                        ParcelFileDescriptor pfd = handler.getFileDescriptor();
+                        Assert.assertTrue(pfd.getFd() >= 0);
                         controller.onStart();
 
-                        // Simulate onWrite to set the file descriptor
+                        // onLayout() must run first: it is what supplies the DPI and
+                        // media size that onWrite() forwards to native.
+                        controller.onLayout(
+                                null,
+                                createPlaceholderPrintAttributes(),
+                                new CancellationSignal(),
+                                new LayoutResultCallbackWrapperMock(),
+                                null);
+
+                        // Simulate onWrite: destination FD is detached and passed directly to JNI.
                         controller.onWrite(
                                 new PageRange[] {PageRange.ALL_PAGES},
-                                handler.getFileDescriptor(),
+                                pfd,
                                 new CancellationSignal(),
                                 new WriteResultCallbackWrapperMock());
 
-                        // Check that it is now a valid FD (non-null ParcelFileDescriptor)
-                        Assert.assertNotNull(controller.getParcelFileDescriptor());
+                        // Verify that the file descriptor has been detached by onWrite:
+                        // ParcelFileDescriptor#getFd() throws once ownership was given away.
+                        Assert.assertThrows(IllegalStateException.class, pfd::getFd);
 
                         controller.onFinish();
-                        // Verify it goes back to invalid after finish
-                        Assert.assertNull(controller.getParcelFileDescriptor());
                     });
         }
     }
@@ -491,6 +495,7 @@ public class PrintingControllerTest {
     @Test
     @SmallTest
     @Feature({"Printing"})
+    @DisableFeatures(ChromeFeatureList.ANDROID_DESKTOP_WEB_UI_HISTORY)
     public void testDisallowPrintOnNativePage() {
         mActivityTestRule.startOnBlankPage();
         mActivityTestRule.loadUrl(UrlConstants.HISTORY_URL);
@@ -965,59 +970,6 @@ public class PrintingControllerTest {
 
                     // Cleanup
                     printingController.onFinish();
-                });
-    }
-
-    /**
-     * Test to verify that if the Activity is finishing, calling startPendingPrint() will
-     * immediately invoke the pending print callback and not start printing.
-     */
-    @Test
-    @SmallTest
-    @Feature({"Printing"})
-    @DisableIf.Device(DeviceFormFactor.PHONE) // https://crbug.com/562625776
-    public void testStartPendingPrintWhenActivityIsFinishing() throws Throwable {
-        WebPageStation page = mActivityTestRule.startOnUrl(URL);
-        Tab tab = page.getTab();
-        WindowAndroid window = tab.getWindowAndroid();
-        Activity activity = window.getActivity().get();
-        Assert.assertNotNull(activity);
-
-        PrintManagerDelegate failIfCalledPrintManager =
-                new PrintManagerDelegate() {
-                    @Override
-                    public boolean print(
-                            String printJobName,
-                            PrintDocumentAdapter documentAdapter,
-                            @Nullable PrintAttributes attributes) {
-                        Assert.fail("print() must not be called for a finishing Activity.");
-                        return false;
-                    }
-                };
-
-        Runnable mockCallback = Mockito.mock(Runnable.class);
-
-        ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    PrintingControllerImpl printingController =
-                            (PrintingControllerImpl) PrintingControllerImpl.getInstance(window);
-                    printingController.setPendingPrint(
-                            new TabPrinter(tab), failIfCalledPrintManager, -1, -1);
-                    printingController.setPendingPrintCallback(mockCallback);
-
-                    activity.finish();
-                    Assert.assertTrue(activity.isFinishing());
-
-                    printingController.startPendingPrint();
-
-                    // The callback should have been invoked immediately because the Activity is
-                    // finishing.
-                    Mockito.verify(mockCallback, Mockito.times(1)).run();
-                    Assert.assertFalse(printingController.isBusy());
-                    Assert.assertTrue(printingController.hasPrintingFinished());
-
-                    // Cleanup
-                    printingController.onActivityDestroyed();
                 });
     }
 

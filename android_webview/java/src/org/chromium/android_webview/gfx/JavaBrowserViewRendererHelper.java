@@ -22,8 +22,9 @@ public class JavaBrowserViewRendererHelper {
 
     /**
      * Provides a Bitmap object with a given width and height used for auxiliary rasterization.
-     * |canvas| is optional and if supplied indicates the Canvas that this Bitmap will be drawn
-     * into. Note the Canvas will not be modified in any way.
+     *
+     * <p>{@code canvas} is optional and if supplied indicates the Canvas that this Bitmap will be
+     * drawn into. Note the Canvas will not be modified in any way.
      */
     @CalledByNative
     private static @Nullable Bitmap createBitmap(int width, int height, Canvas canvas) {
@@ -43,8 +44,8 @@ public class JavaBrowserViewRendererHelper {
     }
 
     /**
-     * Draws a provided bitmap into a canvas.
-     * Used for convenience from the native side and other static helper methods.
+     * Draws a provided bitmap into a canvas. Used for convenience from the native side and other
+     * static helper methods.
      */
     @CalledByNative
     private static void drawBitmapIntoCanvas(

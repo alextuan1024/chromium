@@ -6,6 +6,7 @@
 
 #include <memory>
 
+#include "base/supports_user_data.h"
 #include "components/viz/common/resources/shared_image_format_utils.h"
 #include "gpu/vulkan/buildflags.h"
 #include "ui/events/platform/x11/x11_event_source.h"
@@ -73,6 +74,9 @@ class GLOzoneEGLX11 : public GLOzoneEGL {
     if (GetNativePixmapSupportType() == NativePixmapSupportType::kNone) {
       return false;
     }
+    if (is_swiftshader_) {
+      return false;
+    }
 
     switch (GetNativePixmapSupportType()) {
       case NativePixmapSupportType::kDMABuf: {
@@ -96,12 +100,14 @@ class GLOzoneEGLX11 : public GLOzoneEGL {
     } else {
       switch (gl::GetGLImplementation()) {
         case gl::kGLImplementationEGLGLES2:
-          DCHECK(window != gfx::kNullAcceleratedWidget);
+          CHECK(window != gfx::kNullAcceleratedWidget,
+                base::NotFatalUntil::M163);
           return gl::InitializeGLSurface(new gl::NativeViewGLSurfaceEGLX11GLES2(
               display->GetAs<gl::GLDisplayEGL>(),
               static_cast<x11::Window>(window)));
         case gl::kGLImplementationEGLANGLE:
-          DCHECK(window != gfx::kNullAcceleratedWidget);
+          CHECK(window != gfx::kNullAcceleratedWidget,
+                base::NotFatalUntil::M163);
           return gl::InitializeGLSurface(new gl::NativeViewGLSurfaceEGLX11(
               display->GetAs<gl::GLDisplayEGL>(),
               static_cast<x11::Window>(window)));
@@ -139,21 +145,20 @@ class GLOzoneEGLX11 : public GLOzoneEGL {
  private:
   std::unique_ptr<NativePixmapGLBinding> ImportNativePixmap(
       scoped_refptr<gfx::NativePixmap> pixmap,
-      viz::SharedImageFormat plane_format,
+      viz::SharedImageFormat format,
       std::optional<int> plane_index,
-      gfx::Size plane_size,
+      gfx::Size size,
       const gfx::ColorSpace& color_space,
       GLenum target,
       GLuint texture_id) override {
     switch (GetNativePixmapSupportType()) {
       case NativePixmapSupportType::kDMABuf: {
-        return NativePixmapEGLBinding::Create(pixmap, plane_format, plane_index,
-                                              plane_size, color_space, target,
-                                              texture_id);
+        return NativePixmapEGLBinding::Create(pixmap, format, plane_index, size,
+                                              color_space, target, texture_id);
       }
       case NativePixmapSupportType::kX11Pixmap: {
-        return NativePixmapEGLX11Binding::Create(
-            pixmap, plane_format, plane_size, target, texture_id);
+        return NativePixmapEGLX11Binding::Create(pixmap, format, size, target,
+                                                 texture_id);
       }
       default:
         return nullptr;
@@ -161,6 +166,18 @@ class GLOzoneEGLX11 : public GLOzoneEGL {
   }
 
   bool is_swiftshader_ = false;
+};
+
+class OwnedEventSource : public base::SupportsUserData::Data {
+ public:
+  explicit OwnedEventSource(x11::Connection* connection)
+      : event_source_(connection) {}
+  OwnedEventSource(const OwnedEventSource&) = delete;
+  OwnedEventSource& operator=(const OwnedEventSource&) = delete;
+  ~OwnedEventSource() override = default;
+
+ private:
+  X11EventSource event_source_;
 };
 
 }  // namespace
@@ -199,13 +216,14 @@ X11SurfaceFactory::CreateVulkanImplementation(bool use_swiftshader,
 
 std::unique_ptr<SurfaceOzoneCanvas> X11SurfaceFactory::CreateCanvasForWidget(
     gfx::AcceleratedWidget widget) {
-  // X11SoftwareBitmapPresenter (created via X11CanvasSurface) requres a
+  // X11SoftwareBitmapPresenter (created via X11CanvasSurface) requires a
   // Connection TLS instance and a PlatformEventSource.
   if (connection_) {
     auto* connection = connection_.get();
     x11::Connection::Set(std::move(connection_));
-    connection->platform_event_source =
-        std::make_unique<X11EventSource>(connection);
+    static const int kEventSourceKey = 0;
+    connection->SetUserData(&kEventSourceKey,
+                            std::make_unique<OwnedEventSource>(connection));
   }
   return std::make_unique<X11CanvasSurface>(widget);
 }

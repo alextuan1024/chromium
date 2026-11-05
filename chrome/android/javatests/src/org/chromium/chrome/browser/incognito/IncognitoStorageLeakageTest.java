@@ -78,7 +78,7 @@ public class IncognitoStorageLeakageTest {
 
     @After
     public void tearDown() {
-        mChromeActivityTestRule.closeAllWindowsAndDeleteInstanceAndTabState();
+        IncognitoDataTestUtils.tearDown(mChromeActivityTestRule, mCustomTabActivityTestRule);
     }
 
     @Test

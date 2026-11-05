@@ -4,6 +4,9 @@
 
 #include "components/omnibox/common/composebox_features.h"
 
+#include <algorithm>
+
+#include "base/strings/string_util.h"
 #include "build/build_config.h"
 
 namespace omnibox {
@@ -22,7 +25,9 @@ BASE_FEATURE(kComposeboxSkillsNtp, base::FEATURE_DISABLED_BY_DEFAULT);
 BASE_FEATURE(kComposeboxSkillsOmniboxEverywhere,
              base::FEATURE_DISABLED_BY_DEFAULT);
 BASE_FEATURE(kComposeboxSkillsOmniboxPopup, base::FEATURE_DISABLED_BY_DEFAULT);
-BASE_FEATURE(kComposeboxRichImageSuggestions,
+BASE_FEATURE(kComposeboxRichImageSuggestionsRealbox,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kComposeboxRichImageSuggestionsOmnibox,
              base::FEATURE_DISABLED_BY_DEFAULT);
 BASE_FEATURE(kComposeboxPersistentAimButtonRealbox,
              base::FEATURE_DISABLED_BY_DEFAULT);
@@ -30,8 +35,27 @@ BASE_FEATURE(kComposeboxPersistentAimButtonOmnibox,
              base::FEATURE_DISABLED_BY_DEFAULT);
 BASE_FEATURE(kComposeboxPersistentAimButtonWithX,
              base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kDynamicAimFulfillmentRealbox, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kDynamicAimFulfillmentOmnibox, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kDynamicAimFulfillment, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kComposeboxRealboxOutsideClick, base::FEATURE_DISABLED_BY_DEFAULT);
 BASE_FEATURE(kSuggestRequestSendsMultifileCgiParam,
              base::FEATURE_ENABLED_BY_DEFAULT);
+BASE_FEATURE(kComposeboxUnselectMatchOnTabExit,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kComposeboxPersonalizedHintText,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kComposeboxImageFileSizeLimit, base::FEATURE_ENABLED_BY_DEFAULT);
+
+const base::FeatureParam<int> kComposeboxImageMaxSizeBytes(
+    &kComposeboxImageFileSizeLimit,
+    "max_image_size_bytes",
+    20 * 1024 * 1024);
+
+const base::FeatureParam<bool> kComposeboxLimitAllImages(
+    &kComposeboxImageFileSizeLimit,
+    "limit_all_images",
+    true);
 const base::FeatureParam<bool> kKeepMenuOpenOnTabSelectForRealbox(
     &kContextManagementInComposebox,
     "KeepMenuOpenOnTabSelectForRealboxComposebox",
@@ -46,7 +70,18 @@ const base::FeatureParam<bool>
 const base::FeatureParam<bool> kContextManagementInComposeboxTooltips(
     &kContextManagementInComposebox,
     "enable_context_menu_tooltips",
+    true);
+
+const base::FeatureParam<bool> kContextManagementInComposeboxSingleTabMenuItem(
+    &kContextManagementInComposebox,
+    "enable_single_tab_menu_item",
     false);
+
+const base::FeatureParam<bool>
+    kContextManagementInComposeboxTabStateUnification(
+        &kContextManagementInComposebox,
+        "enable_tab_state_unification",
+        true);
 
 const base::FeatureParam<int> kContextMenuAnimationDailyLimit(
     &kContextMenuAnimationLimiting,
@@ -58,6 +93,26 @@ const base::FeatureParam<int> kContextMenuAnimationLifetimeLimit(
     "ContextMenuAnimationLifetimeLimit",
     20);
 
+const base::FeatureParam<std::string> kDynamicAimFulfillmentSrpInputMode(
+    &kDynamicAimFulfillment,
+    "srp_input_mode",
+    "single_image");
+
+const base::FeatureParam<bool> kDynamicAimFulfillmentUseServerInputRules(
+    &kDynamicAimFulfillment,
+    "use_server_input_rules",
+    false);
+
+bool IsDynamicAimFulfillmentEnabledForRealbox() {
+  return base::FeatureList::IsEnabled(kDynamicAimFulfillment) &&
+         base::FeatureList::IsEnabled(kDynamicAimFulfillmentRealbox);
+}
+
+bool IsDynamicAimFulfillmentEnabledForOmnibox() {
+  return base::FeatureList::IsEnabled(kDynamicAimFulfillment) &&
+         base::FeatureList::IsEnabled(kDynamicAimFulfillmentOmnibox);
+}
+
 bool IsTabDeselectionInComposeboxEnabled() {
   return base::FeatureList::IsEnabled(kContextManagementInComposebox) &&
          kContextManagementInComposeboxEnableTabDeselection.Get();
@@ -66,6 +121,44 @@ bool IsTabDeselectionInComposeboxEnabled() {
 bool IsContextMenuTooltipsInComposeboxEnabled() {
   return base::FeatureList::IsEnabled(kContextManagementInComposebox) &&
          kContextManagementInComposeboxTooltips.Get();
+}
+
+bool IsSingleTabMenuItemInComposeboxEnabled() {
+  return base::FeatureList::IsEnabled(kContextManagementInComposebox) &&
+         kContextManagementInComposeboxSingleTabMenuItem.Get();
+}
+
+bool IsTabStateUnificationInComposeboxEnabled() {
+  return base::FeatureList::IsEnabled(kContextManagementInComposebox) &&
+         kContextManagementInComposeboxTabStateUnification.Get();
+}
+
+bool IsComposeboxHeifMimeType(std::string_view mime_type) {
+  return base::EqualsCaseInsensitiveASCII(mime_type, "image/heic") ||
+         base::EqualsCaseInsensitiveASCII(mime_type, "image/heif");
+}
+
+bool ShouldUseComposeboxImageFileSizeLimit(std::string_view mime_type,
+                                           bool is_image) {
+  if (!base::FeatureList::IsEnabled(kComposeboxImageFileSizeLimit) ||
+      kComposeboxImageMaxSizeBytes.Get() <= 0) {
+    return false;
+  }
+  if (kComposeboxLimitAllImages.Get()) {
+    return is_image || base::StartsWith(mime_type, "image/",
+                                        base::CompareCase::INSENSITIVE_ASCII);
+  }
+  return IsComposeboxHeifMimeType(mime_type);
+}
+
+uint64_t GetComposeboxMaxFileSizeBytes(std::string_view mime_type,
+                                       bool is_image,
+                                       uint64_t max_attachment_size) {
+  if (!ShouldUseComposeboxImageFileSizeLimit(mime_type, is_image)) {
+    return max_attachment_size;
+  }
+  return std::min(max_attachment_size,
+                  static_cast<uint64_t>(kComposeboxImageMaxSizeBytes.Get()));
 }
 
 }  // namespace omnibox

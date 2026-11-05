@@ -17,9 +17,9 @@
 #include "base/timer/elapsed_timer.h"
 #include "components/payments/content/browser_binding/browser_bound_key.h"
 #include "components/payments/content/browser_binding/browser_bound_key_store.h"
-#include "components/payments/content/web_payments_web_data_service.h"
 #include "components/payments/core/features.h"
 #include "components/payments/core/secure_payment_confirmation_credential.h"
+#include "components/payments/core/web_payments_web_data_service.h"
 #include "components/webauthn/core/browser/internal_authenticator.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/navigation_handle.h"
@@ -36,11 +36,9 @@ namespace payments {
 
 namespace {
 
-#if !BUILDFLAG(IS_IOS)
 constexpr char kIsBbkHardwareSupportedHistogramName[] =
     "PaymentRequest.GetSecurePaymentConfirmationCapabilities."
     "BrowserBoundKeyHardware";
-#endif
 
 void OnIsUserVerifyingPlatformAuthenticatorAvailable(
     SecurePaymentConfirmationService::
@@ -66,8 +64,9 @@ SecurePaymentConfirmationService::SecurePaymentConfirmationService(
     mojo::PendingReceiver<mojom::SecurePaymentConfirmationService> receiver,
     scoped_refptr<WebPaymentsWebDataService> web_data_service,
     std::unique_ptr<webauthn::InternalAuthenticator> authenticator,
-    std::string browser_bound_key_store_keychain_access_group)
-    : DocumentService(render_frame_host, std::move(receiver)),
+    std::string browser_bound_key_store_keychain_access_group,
+    base::SelfDeletingPassKey key)
+    : DocumentService(render_frame_host, std::move(receiver), key),
       web_data_service_(web_data_service),
       authenticator_(std::move(authenticator)),
       browser_bound_key_store_keychain_access_group_(
@@ -377,16 +376,23 @@ void SecurePaymentConfirmationService::OnCreateUnboundKey(
 
 void SecurePaymentConfirmationService::IsBrowserBoundKeyHardwareSupported(
     base::OnceCallback<void(bool)> callback) {
+  scoped_refptr<BrowserBoundKeyStore> bbk_store = test_browser_bound_key_store_;
 #if !BUILDFLAG(IS_IOS)
-  scoped_refptr<BrowserBoundKeyStore> bbk_store =
-      test_browser_bound_key_store_
-          ? test_browser_bound_key_store_
-          : GetBrowserBoundKeyStoreInstance(BrowserBoundKeyStore::Config{
+  if (!bbk_store) {
+    bbk_store = GetBrowserBoundKeyStoreInstance(BrowserBoundKeyStore::Config{
 #if BUILDFLAG(IS_MAC)
-                .keychain_access_group =
-                    browser_bound_key_store_keychain_access_group_
+        .keychain_access_group = browser_bound_key_store_keychain_access_group_
 #endif  // BUILDFLAG(IS_MAC)
-            });
+    });
+  }
+#endif  // !BUILDFLAG(IS_IOS)
+
+  // Report the capability as unsupported rather than dropping the
+  // callback, which would leave the caller waiting forever.
+  if (!bbk_store) {
+    std::move(callback).Run(/*supported=*/false);
+    return;
+  }
 
   base::ThreadPool::PostTaskAndReplyWithResult(
       FROM_HERE, {base::TaskPriority::BEST_EFFORT, base::MayBlock()},
@@ -399,7 +405,6 @@ void SecurePaymentConfirmationService::IsBrowserBoundKeyHardwareSupported(
             std::move(callback).Run(supported);
           },
           std::move(callback)));
-#endif  // !BUILDFLAG(IS_IOS)
 }
 
 void SecurePaymentConfirmationService::RecordFirstSystemPromptResult(

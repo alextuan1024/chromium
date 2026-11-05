@@ -10,13 +10,13 @@
 #include <string>
 #include <vector>
 
-#include "base/containers/flat_set.h"
 #include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/sequence_checker.h"
 #include "base/time/clock.h"
 #include "base/time/time.h"
+#include "components/optimization_guide/core/hints/optimization_guide_decision.h"
 #include "components/optimization_guide/proto/hints.pb.h"
 #include "url/gurl.h"
 
@@ -47,6 +47,37 @@ extern const char kOptimizationGuideLanguageOverrideHeaderKey[];
 // Service.
 using HintsFetchedCallback = base::OnceCallback<void(
     std::optional<std::unique_ptr<proto::GetHintsResponse>>)>;
+
+// Status of a request to fetch hints from the optimization guide service.
+//
+// These values are persisted to logs. Entries should not be renumbered and
+// numeric values should never be reused.
+// LINT.IfChange(HintsFetcherRequestStatus)
+enum class HintsFetcherRequestStatus {
+  // DEPRECATED: No fetch status known. Used in testing.
+  // kUnknown = 0,
+  // Fetch request was sent and a response received.
+  kSuccess = 1,
+  // Fetch request was sent but no response received.
+  kResponseError = 2,
+  // DEPRECATED: Fetch request not sent because of offline network status.
+  // kDeprecatedNetworkOffline = 3,
+  // Fetch request not sent because fetcher was busy with another request.
+  kFetcherBusy = 4,
+  // Hints fetch request not sent because the host and URL lists were empty.
+  kNoHostsOrURLsToFetchHints = 5,
+  // Hints fetch request not sent because no supported optimization types were
+  // provided.
+  kNoSupportedOptimizationTypesToFetchHints = 6,
+  // Fetch request was canceled before completion.
+  kRequestCanceled = 7,
+  // Legacy value used by ModelExecutionFetcher when this enum was shared.
+  // kUserNotSignedIn = 8,
+
+  // Insert new values before this line.
+  kMaxValue = kRequestCanceled
+};
+// LINT.ThenChange(//tools/metrics/histograms/metadata/optimization/enums.xml:OptimizationGuideHintsFetcherRequestStatus)
 
 // A class to handle requests for optimization hints from a remote Optimization
 // Guide Service.
@@ -93,8 +124,7 @@ class HintsFetcher {
   virtual bool FetchOptimizationGuideServiceHints(
       const std::vector<std::string>& hosts,
       const std::vector<GURL>& urls,
-      const base::flat_set<optimization_guide::proto::OptimizationType>&
-          optimization_types,
+      OptimizationTypeSet optimization_types,
       optimization_guide::proto::RequestContext request_context,
       const std::string& locale,
       const std::string& access_token,

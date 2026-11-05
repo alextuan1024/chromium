@@ -16,6 +16,7 @@ import static org.chromium.cc.mojom.RootScrollOffsetUpdateFrequency.NONE;
 import static org.chromium.cc.mojom.RootScrollOffsetUpdateFrequency.ON_SCROLL_END;
 
 import android.view.ViewGroup;
+import android.widget.FrameLayout;
 
 import org.junit.Assert;
 import org.junit.Before;
@@ -27,6 +28,7 @@ import org.mockito.Mockito;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 
+import org.chromium.base.ContextUtils;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.Features.EnableFeatures;
@@ -46,11 +48,15 @@ public class GestureListenerManagerImplUnitTest {
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
 
     @Mock WebContentsImpl mWebContents;
-    @Mock ViewGroup mViewGroup;
     @Mock GestureListenerManagerImpl.Natives mMockJniGestureListenerManager;
     @Mock GestureStateListener mGestureStateListener;
+    @Mock private GestureStateListener mListener1;
+    @Mock private GestureStateListener mListener2;
+
+    private final ViewGroup mViewGroup = new FrameLayout(ContextUtils.getApplicationContext());
 
     private GestureListenerManagerImpl mGestureManager;
+    private RenderCoordinatesImpl mRenderCoordinates;
 
     @Before
     public void setup() {
@@ -65,17 +71,14 @@ public class GestureListenerManagerImplUnitTest {
 
     @Test
     public void verticalScrollDirectionChanged() {
-        GestureStateListener listener1 = Mockito.mock(GestureStateListener.class);
-        GestureStateListener listener2 = Mockito.mock(GestureStateListener.class);
-
-        mGestureManager.addListener(listener1);
-        mGestureManager.addListener(listener2);
+        mGestureManager.addListener(mListener1);
+        mGestureManager.addListener(mListener2);
 
         // Verify all listener gets the update.
         mGestureManager.onVerticalScrollDirectionChanged(true, 0.1f);
         verify(mGestureStateListener).onVerticalScrollDirectionChanged(true, 0.1f);
-        verify(listener1).onVerticalScrollDirectionChanged(true, 0.1f);
-        verify(listener2).onVerticalScrollDirectionChanged(true, 0.1f);
+        verify(mListener1).onVerticalScrollDirectionChanged(true, 0.1f);
+        verify(mListener2).onVerticalScrollDirectionChanged(true, 0.1f);
     }
 
     @Test
@@ -139,12 +142,32 @@ public class GestureListenerManagerImplUnitTest {
                 ON_SCROLL_END, mGestureManager.getRootScrollOffsetUpdateFrequencyForTesting());
     }
 
+    @Test
+    public void updateScrollInfoUpdatesTopAndBottomControlsOffsets() {
+        mGestureManager.updateScrollInfo(
+                /* scrollOffsetX= */ 0f,
+                /* scrollOffsetY= */ 0f,
+                /* pageScaleFactor= */ 1f,
+                /* minPageScaleFactor= */ 0.5f,
+                /* maxPageScaleFactor= */ 2f,
+                /* contentWidth= */ 500f,
+                /* contentHeight= */ 1000f,
+                /* viewportWidth= */ 500f,
+                /* viewportHeight= */ 800f,
+                /* topBarShownPix= */ 56.9f,
+                /* bottomBarShownPix= */ 95.8f,
+                /* controlsChanged= */ true);
+
+        Assert.assertEquals(56, mRenderCoordinates.getContentOffsetTopPixInt());
+        Assert.assertEquals(95, mRenderCoordinates.getContentOffsetBottomPixInt());
+    }
+
     private void setupMockWebContents() {
         ViewAndroidDelegate viewAndroidDelegate =
                 ViewAndroidDelegate.createBasicDelegate(mViewGroup);
-        RenderCoordinatesImpl renderCoordinates = new RenderCoordinatesImpl();
+        mRenderCoordinates = new RenderCoordinatesImpl();
         doReturn(viewAndroidDelegate).when(mWebContents).getViewAndroidDelegate();
-        doReturn(renderCoordinates).when(mWebContents).getRenderCoordinates();
+        doReturn(mRenderCoordinates).when(mWebContents).getRenderCoordinates();
 
         // Setup UserData involved in the scrolling process.
         doAnswer(

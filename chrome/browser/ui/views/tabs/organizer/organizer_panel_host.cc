@@ -7,15 +7,56 @@
 #include "base/check.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/tabs/organizer/organizer_panel_utils.h"
 #include "chrome/browser/ui/tabs/vertical_tab_strip_state_controller.h"
 #include "chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h"
 #include "chrome/browser/ui/views/interaction/browser_elements_views.h"
-#include "chrome/browser/ui/views/tabs/organizer/organizer_panel_utils.h"
 #include "chrome/browser/ui/views/tabs/organizer/organizer_tray_view.h"
 #include "ui/base/interaction/element_identifier.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/views/view.h"
 #include "ui/views/view_utils.h"
+
+namespace {
+
+OrganizerPanelHost* GetVerticalTabStripHost(BrowserWindowInterface& browser) {
+  const auto views = BrowserElementsViews::From(&browser)->GetAllViews(
+      kTabStripRegionElementId, /*require_visible=*/false);
+  for (auto* const view : views) {
+    if (auto* const result = OrganizerPanelHost::FromView(view)) {
+      return result;
+    }
+  }
+  NOTREACHED()
+      << "Organizer panel in tab strip enabled, but no organizer panel "
+         "hosts found in list of tab strip regions.";
+}
+
+OrganizerPanelHost* GetOrganizerTrayHost(BrowserWindowInterface& browser) {
+  return OrganizerPanelHost::FromView(
+      BrowserElementsViews::From(&browser)->GetView(
+          OrganizerTrayView::kTrayElementId, /*require_visible=*/false));
+}
+
+}  // namespace
+
+bool DoesVerticalTabStripSupportEmbeddedOrganizerPanel(
+    BrowserWindowInterface& browser) {
+  const auto* controller =
+      tabs::VerticalTabStripStateController::From(&browser);
+  if (!controller) {
+    return false;
+  }
+  if (!controller->ShouldDisplayVerticalTabs()) {
+    return false;
+  }
+  if (controller->IsCollapsed()) {
+    return controller->IsExpandOnHoverEnabled();
+  }
+  return controller->GetUncollapsedWidth() >
+         organizer_panel::kOrganizerPanelMinWidth -
+             organizer_panel::kOrganizerPanelMinOverlap;
+}
 
 // static
 OrganizerPanelHost* OrganizerPanelHost::FromView(views::View* view) {
@@ -36,29 +77,30 @@ OrganizerPanelHost* OrganizerPanelHost::FromView(views::View* view) {
 }
 
 // static
-OrganizerPanelHost* OrganizerPanelHost::GetPreferredHost(
+OrganizerPanelLocation OrganizerPanelHost::GetPreferredLocation(
     BrowserWindowInterface& browser) {
-  if (organizer_panel::ShouldShowOrganizerPanelInVerticalTabStrip()) {
-    if (auto* const controller =
-            tabs::VerticalTabStripStateController::From(&browser)) {
-      if (controller->ShouldDisplayVerticalTabs()) {
-        const auto views = BrowserElementsViews::From(&browser)->GetAllViews(
-            kTabStripRegionElementId, /*require_visible=*/false);
-        for (auto* const view : views) {
-          if (auto* const result = FromView(view)) {
-            return result;
-          }
-        }
-        NOTREACHED()
-            << "Organizer panel in tab strip enabled, but no organizer panel "
-               "hosts found in list of tab strip regions.";
-      }
-    }
+  if (browser.GetType() != BrowserWindowInterface::TYPE_NORMAL ||
+      !organizer_panel::IsOrganizerPanelFeatureEnabled()) {
+    return OrganizerPanelLocation::kNone;
   }
+  if (DoesVerticalTabStripSupportEmbeddedOrganizerPanel(browser)) {
+    return OrganizerPanelLocation::kVerticalTabStrip;
+  }
+  return OrganizerPanelLocation::kOrganizerTray;
+}
 
-  // Default is to put the panel in the tray.
-  return FromView(BrowserElementsViews::From(&browser)->GetView(
-      OrganizerTrayView::kTrayElementId, /*require_visible=*/false));
+// static
+OrganizerPanelHost* OrganizerPanelHost::GetHostForLocation(
+    BrowserWindowInterface& browser,
+    OrganizerPanelLocation location) {
+  switch (location) {
+    case OrganizerPanelLocation::kNone:
+      return nullptr;
+    case OrganizerPanelLocation::kVerticalTabStrip:
+      return GetVerticalTabStripHost(browser);
+    case OrganizerPanelLocation::kOrganizerTray:
+      return GetOrganizerTrayHost(browser);
+  }
 }
 
 OrganizerPanelHostView::OrganizerPanelHostView() = default;

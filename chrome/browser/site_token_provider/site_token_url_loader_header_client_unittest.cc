@@ -54,6 +54,10 @@ class MockTrustedURLLoaderHeaderClient
       (const network::ResourceRequest& request,
        mojo::PendingReceiver<network::mojom::TrustedHeaderClient> receiver),
       (override));
+  MOCK_METHOD(void,
+              OnLoaderFailedWithRemoteEndpoint,
+              (int32_t request_id, const net::IPEndPoint& remote_endpoint),
+              (override));
 
  private:
   mojo::Receiver<network::mojom::TrustedURLLoaderHeaderClient> receiver_{this};
@@ -127,6 +131,20 @@ TEST_F(SiteTokenURLLoaderHeaderClientTest,
   mojo::PendingRemote<network::mojom::TrustedURLLoaderHeaderClient>
       header_client;
   SiteTokenURLLoaderHeaderClient::MaybeWrap(otr_profile, &header_client);
+
+  EXPECT_FALSE(header_client.is_valid());
+}
+
+TEST_F(SiteTokenURLLoaderHeaderClientTest,
+       MaybeWrapDoesNothingWhenAllowlistEmpty) {
+  base::test::ScopedFeatureList empty_allowlist_feature_list;
+  empty_allowlist_feature_list.InitAndEnableFeatureWithParameters(
+      features::kSiteTokenProviderEnabled, {{"site_token_allowlist", ""}});
+  TestingProfile empty_profile;
+
+  mojo::PendingRemote<network::mojom::TrustedURLLoaderHeaderClient>
+      header_client;
+  SiteTokenURLLoaderHeaderClient::MaybeWrap(&empty_profile, &header_client);
 
   EXPECT_FALSE(header_client.is_valid());
 }

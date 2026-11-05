@@ -14,12 +14,10 @@ export function getHtml(this: SettingsLanguagesPageIndexElement) {
       route-path="${this.routes_.LANGUAGES.path}">
   </settings-languages-page>
 
-  <settings-spell-check-page slot="view" id="spellCheck"
-      route-path="${this.routes_.SPELL_CHECK.path}">
+  <settings-spell-check-page slot="view" id="spellCheck">
   </settings-spell-check-page>
 
-  <settings-translate-page slot="view" id="translate">
-  </settings-translate-page>
+  <settings-translate-page slot="view" id="translate"></settings-translate-page>
 
 <if expr="not is_macosx">
   <settings-edit-dictionary-page slot="view" id="editDictionary"

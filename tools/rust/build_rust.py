@@ -34,8 +34,8 @@ TODO(crbug.com/40196262): Do a proper 3-stage build
 '''
 
 import argparse
-import base64
 import collections
+import functools
 import hashlib
 import json
 import platform
@@ -63,7 +63,7 @@ from build import (
     CheckoutGitRepo,
     CopyFile,
     DownloadDebianSysroot,
-    FetchUrl,
+    FetchGitFile,
     GetLibXml2Dirs,
     GitCherryPick,
     GitRevert,
@@ -71,6 +71,7 @@ from build import (
     IsGitAncestorToHead,
     LLVM_BUILD_TOOLS_DIR,
     RunCommand,
+    WriteGitCommitInfo,
     DEFAULT_MACOSX_DEPLOYMENT_TARGET,
     GetLatestCommit,
 )
@@ -145,12 +146,11 @@ RUST_BOOTSTRAP_DIST_RS = os.path.join(
     RUST_SRC_DIR, 'src', 'bootstrap', 'dist.rs'
 )
 STAGE0_JSON_PATH = os.path.join(RUST_SRC_DIR, 'src', 'stage0')
+# `STAGE0_JSON_PATH` relative to the root of the Rust repo, in git's format.
+STAGE0_JSON_GIT_PATH = 'src/stage0'
 # Download crates.io dependencies to rust-src subdir (rather than $HOME/.cargo)
 CARGO_HOME_DIR = os.path.join(RUST_SRC_DIR, 'cargo-home')
 RUST_SRC_VERSION_FILE_PATH = os.path.join(RUST_SRC_DIR, 'src', 'version')
-RUST_SRC_GIT_COMMIT_INFO_FILE_PATH = os.path.join(
-    RUST_SRC_DIR, 'git-commit-info'
-)
 RUST_TOOLCHAIN_LIB_DIR = os.path.join(RUST_TOOLCHAIN_OUT_DIR, 'lib')
 RUST_TOOLCHAIN_SRC_DIST_DIR = os.path.join(
     RUST_TOOLCHAIN_LIB_DIR, 'rustlib', 'src', 'rust'
@@ -188,7 +188,7 @@ RUST_BETA_SYSROOT_DIR = os.path.join(
 # cipd desc infra/3pp/static_libs/openssl/linux-amd64 --version <instance id>
 # - A version tag looks like: `version:2@1.1.1j.chromium.2` and we
 #   store the part after the `2@` here.
-CIPD_DOWNLOAD_URL = f'https://chrome-infra-packages.appspot.com/dl'
+CIPD_DOWNLOAD_URL = 'https://chrome-infra-packages.appspot.com/dl'
 OPENSSL_CIPD_LINUX_AMD_PATH = 'infra/3pp/static_libs/openssl/linux-amd64'
 OPENSSL_CIPD_LINUX_AMD_VERSION = '1.1.1j.chromium.2'
 OPENSSL_CIPD_MAC_AMD_PATH = 'infra/3pp/static_libs/openssl/mac-amd64'
@@ -218,18 +218,14 @@ TEST_SUITES = [
 ]
 
 
-def InstallRustBetaSysroot(rust_git_hash, target_triples):
+def InstallRustBetaSysroot(target_triples):
     if os.path.exists(RUST_BETA_SYSROOT_DIR):
         RmTree(RUST_BETA_SYSROOT_DIR)
-    InstallBetaPackage(
-        FetchBetaPackage('cargo', rust_git_hash), RUST_BETA_SYSROOT_DIR
-    )
-    InstallBetaPackage(
-        FetchBetaPackage('rustc', rust_git_hash), RUST_BETA_SYSROOT_DIR
-    )
+    InstallBetaPackage(FetchBetaPackage('cargo'), RUST_BETA_SYSROOT_DIR)
+    InstallBetaPackage(FetchBetaPackage('rustc'), RUST_BETA_SYSROOT_DIR)
     for t in target_triples:
         InstallBetaPackage(
-            FetchBetaPackage('rust-std', rust_git_hash, triple=t),
+            FetchBetaPackage('rust-std', triple=t),
             RUST_BETA_SYSROOT_DIR,
         )
 
@@ -267,13 +263,20 @@ def AddOpenSSLToEnv():
     return ssl_dir
 
 
-def VerifyStage0JsonHash(stage0_json_url=None):
+def VerifyStage0JsonHash(git_url=None, git_hash=None):
+    '''Exits if the hash of `src/stage0` differs from `STAGE0_JSON_SHA256`.
+
+    If `git_url` and `git_hash` are given, `src/stage0` is fetched from the
+    remote `git_url` at commit `git_hash`, without a checkout.  Otherwise, the
+    local checkout at `STAGE0_JSON_PATH` is used.
+    '''
+    assert (git_url is None) == (git_hash is None), (
+        '`git_url` and `git_hash` must be given together'
+    )
     hasher = hashlib.sha256()
-    if stage0_json_url:
-        print(stage0_json_url)
-        base64_text = FetchUrl(stage0_json_url).decode("utf-8")
-        stage0 = base64.b64decode(base64_text)
-        hasher.update(stage0)
+    if git_url:
+        print(f'Fetching {STAGE0_JSON_GIT_PATH} at {git_hash} from {git_url}')
+        hasher.update(FetchGitFile(git_url, git_hash, STAGE0_JSON_GIT_PATH))
     else:
         with open(STAGE0_JSON_PATH, 'rb') as input:
             hasher.update(input.read())
@@ -288,7 +291,7 @@ def VerifyStage0JsonHash(stage0_json_url=None):
     sys.exit(1)
 
 
-def FetchBetaPackage(name, rust_git_hash, triple=None):
+def FetchBetaPackage(name, triple=None):
     '''Downloads the beta package specified for the compiler build
 
     If `triple` is not specified, it downloads a package for the current
@@ -299,17 +302,12 @@ def FetchBetaPackage(name, rust_git_hash, triple=None):
     triple = triple if triple else RustTargetTriple()
     filename = f'{name}-beta-{triple}'
 
-    # Pull the stage0 to find the package intended to be used to build this
-    # version of the Rust compiler.
-    STAGE0_JSON_URL = (
-        'https://chromium.googlesource.com/external/github.com/'
-        'rust-lang/rust/+/{GIT_HASH}/src/stage0?format=TEXT'
-    )
-    base64_text = FetchUrl(
-        STAGE0_JSON_URL.format(GIT_HASH=rust_git_hash)
-    ).decode("utf-8")
-    stage0 = base64.b64decode(base64_text).decode("utf-8")
-    lines = stage0.splitlines()
+    # Read the stage0 to find the package intended to be used to build this
+    # version of the Rust compiler.  Read the local file (rather than
+    # fetching it from Gitiles) to avoid a network dependency.  This is the
+    # same file that `VerifyStage0JsonHash` checks and that `x.py` uses.
+    with open(STAGE0_JSON_PATH, encoding='utf-8') as f:
+        lines = f.read().splitlines()
 
     # The stage0 file contains the path to all tarballs it uses binaries from.
     for l in lines:
@@ -336,7 +334,7 @@ def InstallBetaPackage(package_dir, install_dir):
     cmd += [
         os.path.join(package_dir, 'install.sh'),
         f'--destdir={install_dir}',
-        f'--prefix=',
+        '--prefix=',
     ]
 
     if sys.platform.startswith('linux'):
@@ -425,12 +423,7 @@ class XPy:
             self._env['LD'] = os.path.join(self._llvm_bins_path, 'clang')
 
         if sys.platform == 'darwin':
-            # The system/xcode compiler would find system SDK correctly, but
-            # the Clang we've built does not. See
-            # https://github.com/llvm/llvm-project/issues/45225
-            sdk_path = subprocess.check_output(
-                ['xcrun', '--show-sdk-path'], text=True
-            ).rstrip()
+            sdk_path = GetMacSdkPath()
             self._env['CFLAGS'] += f' -isysroot {sdk_path}'
             self._env['CXXFLAGS'] += f' -isysroot {sdk_path}'
             self._env['LDFLAGS'] += f' -isysroot {sdk_path}'
@@ -649,11 +642,7 @@ def MakeVersionStamp(
 
 def GetLatestRustCommit():
     """Get the latest commit hash in the Rust repo."""
-    url = (
-        'https://chromium.googlesource.com/external/'
-        + 'github.com/rust-lang/rust/+/refs/heads/main?format=JSON'  # nocheck
-    )
-    return GetLatestCommit(url)
+    return GetLatestCommit(RUST_GIT_URL)
 
 
 def RustTargetTriple():
@@ -666,6 +655,16 @@ def RustTargetTriple():
         return 'x86_64-pc-windows-msvc'
     else:
         return 'x86_64-unknown-linux-gnu'
+
+
+@functools.cache
+def GetMacSdkPath():
+    # The system/xcode compiler would find system SDK correctly, but
+    # the Clang we've built does not. See
+    # https://github.com/llvm/llvm-project/issues/45225
+    return subprocess.check_output(
+        ['xcrun', '--show-sdk-path'], text=True
+    ).rstrip()
 
 
 # Build the LLVM libraries and install them .
@@ -808,24 +807,44 @@ def GitApplyLLVMDependentCherryPicks():
     #         'https://github.com/rust-lang/rust.git',
     #     )
 
-    # TODO(crbug.com/561655393): Remove once
-    # https://github.com/rust-lang/rust/pull/162783 rolls into rust.
+    # TODO(crbug.com/567940072): Remove once
+    # https://github.com/rust-lang/rust/pull/163546 rolls into rust.
     if IsGitAncestorToHead(
-        LLVM_DIR, '105ff16f816ffdce14b1d4895d8584971ef5192c'
+        LLVM_DIR, 'ea14603e78faa0eda6041ffe0519d451985b4faa'
     ):
         GitCherryPick(
             RUST_SRC_DIR,
-            'f0843be18bc97a38ae567c2fc620c15fdd5b1fef',
+            '937145bcebff9cafefdbad652b7463a8ed04fe1f',
             'https://github.com/rust-lang/rust.git',
         )
-    # TODO(crbug.com/562057029): Remove once
-    # https://github.com/rust-lang/rust/pull/162817 rolls into rust.
+
+    # TODO(crbug.com/575030918): Remove once
+    # https://github.com/rust-lang/rust/pull/164591 rolls into rust.
     if IsGitAncestorToHead(
-        LLVM_DIR, 'e733cebdf7c9c87bec77547f3c377f514a22c9b3'
+        LLVM_DIR, 'eb5c3a2dde4ea6d51a36e3df25bfc1b6503fd61c'
+    ) and not IsGitAncestorToHead(
+        RUST_SRC_DIR, '7b2a5cb692bef19a3cc7ccd03dec0105afb80f14'
+    ):
+        for commit in [
+            '2b90db31f806d8aa5168ed6c0c9a701e6e052eb8',
+            '7aa8cbec90eec97dcc24d4fef08c31b936b111ab',
+            '2b46ff9a850e100213eb5c593355143e66350aa6',
+            'e44056b967f96d3200e184aa7903c81c894749bb',
+        ]:
+            GitCherryPick(
+                RUST_SRC_DIR,
+                commit,
+                'https://github.com/rust-lang/rust.git',
+            )
+
+    # TODO(crbug.com/583437762): Remove once
+    # https://github.com/rust-lang/rust/pull/165680 rolls into rust.
+    if IsGitAncestorToHead(
+        LLVM_DIR, '7b6cf9d3de9c6dda1ece568b8ede85974ddbf2eb'
     ):
         GitCherryPick(
             RUST_SRC_DIR,
-            '5dd46310416da1074f652d3935956d6b1f03df4e',
+            'ec4acfa0c08e3bebd1aa5c2fbac75691fb9fe411',
             'https://github.com/rust-lang/rust.git',
         )
 
@@ -1036,18 +1055,13 @@ def main():
 
     if not args.skip_checkout:
         if args.verify_stage0_hash:
-            VerifyStage0JsonHash(
-                'https://chromium.googlesource.com/external/github.com/'
-                'rust-lang/rust/+/{}/src/stage0?format=TEXT'.format(
-                    checkout_revision
-                )
-            )
+            VerifyStage0JsonHash(RUST_GIT_URL, checkout_revision)
             # The above function exits and prints the actual hash if
             # verification failed so we just quit here; if we reach this point,
             # the hash is valid.
             return 0
         CheckoutGitRepo('Rust', RUST_GIT_URL, checkout_revision, RUST_SRC_DIR)
-        path = FetchBetaPackage('cargo', checkout_revision)
+        path = FetchBetaPackage('cargo')
         if sys.platform == 'win32':
             cargo_bin = os.path.join(path, 'cargo', 'bin', 'cargo.exe')
         else:
@@ -1068,6 +1082,15 @@ def main():
         ]
         RunWithRetry(submod_cmd, 'git submodule')
 
+        # Create git-commit-info in the source directory so that builds from
+        # tarballs (which lack `.git`) can set rustc's version info.  `tz=None`
+        # matches rustc's bootstrap. We use `checkout_revision` rather than
+        # `HEAD`, because `HEAD` may be one of the local cherry-picks below.
+        # The date ends up in `rustc --version`, where
+        # `#[rustversion::since(...)]` in Crubit reads it, so tarball and git
+        # builds have to agree (see also `GetGitMetadataEnv`).
+        WriteGitCommitInfo(RUST_SRC_DIR, checkout_revision, tz=None)
+
         # This happens after initializing submodules, so that we can include
         # changes that move submodules.
         GitApplyCherryPicks()
@@ -1084,34 +1107,6 @@ def main():
                     f.write(l)
 
         VendorForStdlib(cargo_bin)
-
-    # Create git-commit-info in the source directory so that builds
-    # from tarballs (which lack .git) can set rustc's version info.
-    if os.path.exists(os.path.join(RUST_SRC_DIR, '.git')):
-        if args.skip_checkout:
-            git_hash = subprocess.check_output(
-                ['git', 'rev-parse', 'HEAD'], cwd=RUST_SRC_DIR, text=True
-            ).strip()
-        else:
-            git_hash = checkout_revision
-        git_short_hash = git_hash[:9]
-        git_date = subprocess.check_output(
-            [
-                'git',
-                'log',
-                '-1',
-                '--date=short',
-                '--pretty=format:%cd',
-                f'{git_hash}',
-            ],
-            cwd=RUST_SRC_DIR,
-            text=True,
-        ).strip()
-
-        with open(os.path.join(RUST_SRC_GIT_COMMIT_INFO_FILE_PATH), 'w') as f:
-            f.write(f'{git_hash}\n')
-            f.write(f'{git_short_hash}\n')
-            f.write(f'{git_date}\n')
 
     # Gnrt needs the checkout to be up-to-date, workspace submodules to be
     # synced for cargo to work, and the cargo binary itself. All this is done,
@@ -1156,7 +1151,7 @@ def main():
             RmTree(RUST_BUILD_DIR)
 
     if not args.skip_test:
-        print(f'Building stage 2 artifacts and running tests...')
+        print('Building stage 2 artifacts and running tests...')
         xpy.run('test', xpy_args + GetTestArgs())
 
     if not args.skip_install:
@@ -1215,7 +1210,7 @@ def main():
 
         if args.gnrt_stdlib:
             print('Building gnrt...')
-            InstallRustBetaSysroot(checkout_revision, [RustTargetTriple()])
+            InstallRustBetaSysroot([RustTargetTriple()])
             print('Beta sysroot installed.')
             build_cmd = [
                 sys.executable,

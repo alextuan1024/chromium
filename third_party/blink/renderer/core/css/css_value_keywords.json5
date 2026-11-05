@@ -789,6 +789,7 @@
     "min-content",
     "max-content",
     "fit-content",
+    "shrink-content",
 
     // frame-sizing
     // "auto",
@@ -1676,6 +1677,7 @@
     // scroll-snap-stop
     // normal
     // always
+    // before
 
     // containment
     // paint
@@ -2013,8 +2015,8 @@
 
     // position-visibility
     // always
-    // TODO(crbug.com/332933527): Support anchors-valid.
-    // "anchors-valid",
+    "anchor-valid",
+    "anchor-visible",
     "anchors-visible",
     "no-overflow",
 
@@ -2025,6 +2027,9 @@
     "grid-rows",
     "grid-columns",
     "grid-order",
+    "grid-lanes-flow",
+    "grid-lanes-track",
+    "grid-lanes-order",
     "source-order",
 
     // fill / stroke
@@ -2037,6 +2042,9 @@
     "per-line",
     "per-line-all",
     "consistent",
+
+    // progress()
+    "no-clamp",
 
     // media-progress()
     "media-progress",
@@ -2158,5 +2166,9 @@
     // overscroll-container-type
     // "none", "auto", "overlay" already exist above
     "push",
+
+    // animation-navigation-behavior
+    // "continuous" already exists above
+    "abrupt",
   ],
 }

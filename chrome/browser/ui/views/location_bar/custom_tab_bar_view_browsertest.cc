@@ -6,16 +6,20 @@
 #include "base/i18n/icubridge/default_icu_locale.h"
 #include "base/memory/raw_ptr.h"
 #include "base/strings/string_util.h"
+#include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
 #include "build/build_config.h"
 #include "chrome/browser/preloading/scoped_prewarm_feature_list.h"
 #include "chrome/browser/renderer_context_menu/render_view_context_menu_test_util.h"
+#include "chrome/browser/ui/actions/chrome_action_id.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/tabs/tab_change_type.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
+#include "chrome/browser/ui/views/frame/toolbar_button_provider.h"
+#include "chrome/browser/ui/views/page_action/page_action_view_interface.h"
 #include "chrome/browser/ui/views/toolbar/toolbar_view.h"
 #include "chrome/browser/ui/web_applications/app_browser_controller.h"
 #include "chrome/browser/ui/web_applications/web_app_browsertest_base.h"
@@ -23,14 +27,18 @@
 #include "chrome/common/chrome_switches.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
+#include "components/omnibox/browser/location_bar_model.h"
 #include "components/security_interstitials/content/security_interstitial_controller_client.h"
 #include "components/security_interstitials/content/security_interstitial_page.h"
 #include "components/security_interstitials/content/security_interstitial_tab_helper.h"
 #include "components/security_interstitials/content/settings_page_helper.h"
 #include "components/security_interstitials/core/metrics_helper.h"
+#include "components/security_state/core/security_state.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/navigation_handle.h"
+#include "content/public/browser/web_contents_observer.h"
+#include "content/public/common/page_zoom.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/content_mock_cert_verifier.h"
@@ -178,6 +186,29 @@ class UrlHidingWebContentsObserver : public content::WebContentsObserver {
 
  private:
   bool install_interstitial_ = true;
+};
+
+// Runs the message loop until WebContents::DidChangeVisibleSecurityState fires
+// at least once.
+class SecurityStateWaiter : public content::WebContentsObserver {
+ public:
+  explicit SecurityStateWaiter(content::WebContents* contents)
+      : content::WebContentsObserver(contents) {}
+  void DidChangeVisibleSecurityState() override {
+    fired_ = true;
+    if (run_loop_.running()) {
+      run_loop_.Quit();
+    }
+  }
+  void Wait() {
+    if (!fired_) {
+      run_loop_.Run();
+    }
+  }
+
+ private:
+  bool fired_ = false;
+  base::RunLoop run_loop_;
 };
 
 }  // namespace
@@ -749,4 +780,365 @@ IN_PROC_BROWSER_TEST_F(CustomTabBarViewBrowserTest, BlobUrlLocation) {
       app_browser_view->toolbar()->custom_tab_bar()->location_for_testing() +
           u"/",
       base::ASCIIToUTF16(embedded_https_test_server().GetURL("/").spec()));
+  EXPECT_EQ(app_browser_view->toolbar()
+                ->custom_tab_bar()
+                ->GetLocationElideBehaviorForTesting(),
+            gfx::ElideBehavior::ELIDE_HEAD);
+}
+
+// Verify that navigating to an opaque-origin URL (like about:blank with a
+// crafted fragment) strips the fragment and uses tail elision rather than
+// head elision, preventing origin spoofing.
+IN_PROC_BROWSER_TEST_F(CustomTabBarViewBrowserTest,
+                       AboutBlankWithFragmentDoesNotSpoofOrigin) {
+  InstallPWA(
+      embedded_https_test_server().GetURL("app.com", "/ssl/google.html"));
+  ASSERT_TRUE(app_browser_);
+  EXPECT_EQ(app_browser_->GetType(), BrowserWindowInterface::Type::TYPE_APP);
+
+  BrowserView* app_view = BrowserView::GetBrowserViewForBrowser(app_browser_);
+  content::WebContents* web_contents = app_view->GetActiveWebContents();
+  CustomTabBarView* bar = app_view->toolbar()->custom_tab_bar();
+
+  NavigateAndWait(web_contents,
+                  GURL("about:blank#////////////////https://victim.com/login"));
+
+  EXPECT_TRUE(bar->GetVisible());
+  EXPECT_EQ(bar->location_for_testing(), u"about:blank");
+  EXPECT_EQ(bar->GetLocationElideBehaviorForTesting(),
+            gfx::ElideBehavior::ELIDE_TAIL);
+
+  // Navigating to a hierarchical HTTPS URL should use head elision.
+  NavigateAndWait(web_contents, GURL("https://example.com/path"));
+  EXPECT_TRUE(bar->GetVisible());
+  EXPECT_EQ(bar->location_for_testing(), u"https://example.com");
+  EXPECT_EQ(bar->GetLocationElideBehaviorForTesting(),
+            gfx::ElideBehavior::ELIDE_HEAD);
+}
+
+// Check that the CustomTabBarView security chip updates when the visible
+// security state changes while the bar is already visible, without breaking
+// page action updates in the web app frame toolbar (b/517407917, b/565727775).
+IN_PROC_BROWSER_TEST_F(CustomTabBarViewBrowserTest,
+                       SecurityChipUpdatesOnVisibleSecurityStateChange) {
+  const GURL app_url =
+      embedded_https_test_server().GetURL("app.com", "/ssl/google.html");
+  InstallPWA(app_url);
+  ASSERT_TRUE(app_browser_);
+  EXPECT_EQ(app_browser_->GetType(), BrowserWindowInterface::Type::TYPE_APP);
+
+  BrowserView* app_view = BrowserView::GetBrowserViewForBrowser(app_browser_);
+  CustomTabBarView* bar = app_view->toolbar()->custom_tab_bar();
+  ASSERT_TRUE(bar);
+  content::WebContents* contents = app_view->GetActiveWebContents();
+
+  // In-scope: custom tab bar is not shown.
+  EXPECT_FALSE(app_controller_->ShouldShowCustomTabBar());
+  EXPECT_FALSE(bar->GetVisible());
+
+  // Navigate off-scope to a secure HTTPS page. Custom tab bar becomes visible.
+  const GURL offscope_url = embedded_https_test_server().GetURL(
+      "example.com", "/ssl/blank_page.html");
+  NavigateAndWait(contents, offscope_url);
+
+  EXPECT_TRUE(app_controller_->ShouldShowCustomTabBar());
+  EXPECT_TRUE(bar->GetVisible());
+
+  LocationIconView* icon = bar->location_icon_view();
+  ASSERT_TRUE(icon);
+
+  // Baseline: model says SECURE, and displayed chip is in sync.
+  EXPECT_EQ(security_state::SECURE,
+            bar->GetLocationBarModel()->GetSecurityLevel());
+  EXPECT_FALSE(icon->HasSecurityStateChanged());
+  EXPECT_TRUE(icon->GetText().empty());
+  EXPECT_FALSE(icon->ShouldShowLabel());
+  EXPECT_FALSE(app_view->UpdateToolbarSecurityState());
+
+  // Trigger a visible security state change by loading mixed content.
+  SecurityStateWaiter sec_waiter(contents);
+  EXPECT_TRUE(content::ExecJs(contents, R"(
+      let img = document.createElement('img');
+      img.src = 'http://sample-image.test/img.png';
+      document.body.appendChild(img);
+    )"));
+  sec_waiter.Wait();
+
+  // The model now reports a non-SECURE security level.
+  const security_state::SecurityLevel new_level =
+      bar->GetLocationBarModel()->GetSecurityLevel();
+  EXPECT_NE(security_state::SECURE, new_level);
+
+  // The custom tab bar chip should update and remain in sync with the model.
+  EXPECT_FALSE(icon->HasSecurityStateChanged());
+  EXPECT_EQ(icon->GetShowText(), icon->ShouldShowLabel());
+  EXPECT_FALSE(app_view->UpdateToolbarSecurityState());
+
+  // Verify that the web app frame toolbar's page action icons (such as Zoom)
+  // remain connected to the active tab's PageActionController (b/565727775).
+  page_actions::PageActionViewInterface* zoom_action =
+      app_view->toolbar_button_provider()->GetPageActionViewInterface(
+          kActionShowZoomBubble);
+  ASSERT_TRUE(zoom_action);
+  views::View* zoom_view = zoom_action->GetBubbleAnchor().GetIfView();
+  ASSERT_TRUE(zoom_view);
+  EXPECT_FALSE(zoom_view->GetVisible());
+
+  chrome::Zoom(app_browser_, content::PAGE_ZOOM_IN);
+  EXPECT_TRUE(zoom_view->GetVisible());
+}
+
+// Verify that when a cross-origin frame inside an installed PWA window opens a
+// popup or new app window and replaces its initial document via
+// document.open() + document.write() (aborting the pending navigation so both
+// visible_url and last_committed_url are empty), the CustomTabBarView is shown
+// and displays the opener's committed origin rather than hiding the origin line
+// or omitting the bar (b/580569850).
+IN_PROC_BROWSER_TEST_F(CustomTabBarViewBrowserTest,
+                       WindowOpenDocumentWriteCrossOriginShowsOriginBar) {
+  // Install at the server root so that /hung is in scope. The opened URLs never
+  // respond, so the navigation can never commit over the written document and
+  // race the assertions below.
+  const GURL app_url =
+      embedded_https_test_server().GetURL("app.com", "/simple.html");
+  const GURL in_scope_hung_url =
+      embedded_https_test_server().GetURL("app.com", "/hung");
+  const GURL out_of_scope_hung_url =
+      embedded_https_test_server().GetURL("other.com", "/hung");
+  const GURL cross_origin_frame_url = embedded_https_test_server().GetURL(
+      "example.com", "/ssl/blank_page.html");
+
+  InstallPWA(app_url);
+  ASSERT_TRUE(app_browser_);
+  EXPECT_EQ(app_browser_->GetType(), BrowserWindowInterface::Type::TYPE_APP);
+
+  BrowserView* app_view = BrowserView::GetBrowserViewForBrowser(app_browser_);
+  content::WebContents* app_contents = app_view->GetActiveWebContents();
+  EXPECT_FALSE(app_controller_->ShouldShowCustomTabBar());
+
+  // Embed a cross-origin iframe inside the in-scope app window.
+  content::TestNavigationObserver iframe_nav_observer(app_contents);
+  ASSERT_TRUE(content::ExecJs(
+      app_contents,
+      content::JsReplace("const f = document.createElement('iframe');"
+                         "f.src = $1;"
+                         "document.body.appendChild(f);",
+                         cross_origin_frame_url)));
+  iframe_nav_observer.Wait();
+
+  content::RenderFrameHost* cross_origin_rfh =
+      content::ChildFrameAt(app_contents->GetPrimaryMainFrame(), 0);
+  ASSERT_TRUE(cross_origin_rfh);
+  ASSERT_TRUE(cross_origin_rfh->GetLastCommittedOrigin().IsSameOriginWith(
+      cross_origin_frame_url));
+
+  const std::u16string expected_location =
+      web_app::AppBrowserController::FormatUrlOrigin(
+          cross_origin_frame_url, url_formatter::kFormatUrlOmitDefaults);
+  const std::u16string spoofed_title = u"accounts.google.com";
+
+  // Opens `target_url` from the cross-origin frame, writes into the new window
+  // and verifies the custom tab bar reveals the opener's origin.
+  auto open_write_and_check = [&](const GURL& target_url,
+                                  std::string_view target_name,
+                                  std::string_view features,
+                                  BrowserWindowInterface::Type expected_type) {
+    ui_test_utils::BrowserCreatedObserver browser_created_observer;
+    EXPECT_TRUE(content::ExecJs(
+        cross_origin_rfh,
+        content::JsReplace("const w = window.open($1, $2, $3);"
+                           "w.document.open();"
+                           "w.document.write('<!doctype html><h1>Spoof</h1>');"
+                           "w.document.close();"
+                           "w.document.title = 'accounts.google.com';",
+                           target_url, target_name, features)));
+    BrowserWindowInterface* new_browser = browser_created_observer.Wait();
+    EXPECT_EQ(new_browser->GetType(), expected_type);
+    BrowserView* new_view = BrowserView::GetBrowserViewForBrowser(new_browser);
+    content::WebContents* new_contents = new_view->GetActiveWebContents();
+    CustomTabBarView* bar = new_view->toolbar()->custom_tab_bar();
+    web_app::AppBrowserController* controller =
+        web_app::AppBrowserController::From(new_browser);
+    ASSERT_TRUE(controller);
+
+    // Poll instead of observing: the title update may already have been
+    // applied to the bar before an observer could be installed.
+    EXPECT_TRUE(base::test::RunUntil(
+        [&] { return bar->title_for_testing() == spoofed_title; }));
+
+    EXPECT_TRUE(new_contents->GetLastCommittedURL().is_empty());
+    EXPECT_TRUE(new_contents->GetVisibleURL().is_empty());
+    EXPECT_TRUE(controller->ShouldShowCustomTabBar());
+    EXPECT_TRUE(bar->GetVisible());
+    EXPECT_TRUE(bar->IsShowingOriginForTesting());
+    EXPECT_EQ(bar->location_for_testing(), expected_location);
+    EXPECT_EQ(bar->title_for_testing(), spoofed_title);
+    EXPECT_EQ(bar->GetLocationElideBehaviorForTesting(),
+              gfx::ElideBehavior::ELIDE_HEAD);
+    EXPECT_TRUE(bar->location_icon_view()->GetVisible());
+  };
+
+  {
+    SCOPED_TRACE("popup, in-scope URL");
+    open_write_and_check(in_scope_hung_url, "", "popup,width=400,height=400",
+                         BrowserWindowInterface::Type::TYPE_APP_POPUP);
+  }
+  {
+    SCOPED_TRACE("popup, out-of-scope URL");
+    open_write_and_check(out_of_scope_hung_url, "",
+                         "popup,width=400,height=400",
+                         BrowserWindowInterface::Type::TYPE_APP_POPUP);
+  }
+  {
+    SCOPED_TRACE("_blank, in-scope URL");
+    open_write_and_check(in_scope_hung_url, "_blank", "",
+                         BrowserWindowInterface::Type::TYPE_APP);
+  }
+}
+
+// Verify that when an opaque-origin frame (such as a sandboxed iframe with
+// allow-popups-to-escape-sandbox) opens a popup and writes into it via
+// document.open() + document.write(), the CustomTabBarView is shown and falls
+// back to displaying "about:blank" with tail elision. Covers both an aborted
+// in-scope navigation and a javascript: URL that never reaches the browser,
+// with the page severing window.opener afterwards.
+IN_PROC_BROWSER_TEST_F(CustomTabBarViewBrowserTest,
+                       WindowOpenDocumentWriteOpaqueOriginShowsAboutBlank) {
+  // Install at the server root so that /hung is in scope; see the cross-origin
+  // test above for why the opened URL must never respond.
+  const GURL app_url =
+      embedded_https_test_server().GetURL("app.com", "/simple.html");
+  const GURL in_scope_hung_url =
+      embedded_https_test_server().GetURL("app.com", "/hung");
+
+  InstallPWA(app_url);
+  ASSERT_TRUE(app_browser_);
+
+  BrowserView* app_view = BrowserView::GetBrowserViewForBrowser(app_browser_);
+  content::WebContents* app_contents = app_view->GetActiveWebContents();
+
+  // Create a sandboxed iframe (opaque origin) with
+  // allow-popups-to-escape-sandbox so its popup inherits the iframe's opaque
+  // origin on the initial empty document rather than minting a distinct
+  // sandboxed opaque origin.
+  ASSERT_TRUE(content::ExecJs(
+      app_contents,
+      "const f = document.createElement('iframe');"
+      "f.sandbox = 'allow-scripts allow-popups allow-popups-to-escape-sandbox';"
+      "f.srcdoc = '<body>sandbox</body>';"
+      "document.body.appendChild(f);"));
+  ASSERT_TRUE(content::WaitForLoadStop(app_contents));
+
+  content::RenderFrameHost* sandbox_rfh =
+      content::ChildFrameAt(app_contents->GetPrimaryMainFrame(), 0);
+  ASSERT_TRUE(sandbox_rfh);
+  ASSERT_TRUE(sandbox_rfh->GetLastCommittedOrigin().opaque());
+
+  auto open_write_and_check = [&](const std::string& open_url_literal) {
+    ui_test_utils::BrowserCreatedObserver browser_created_observer;
+    EXPECT_TRUE(content::ExecJs(
+        sandbox_rfh,
+        "const w = window.open(" + open_url_literal +
+            ", '', 'popup,width=400,height=400');"
+            "w.document.open();"
+            "w.document.write('<!doctype html><title>accounts.google.com"
+            "</title><h1>spoof</h1>');"
+            "w.document.close();"
+            // Sever the opener relationship after writing; the bar must not
+            // depend on it.
+            "w.opener = null;"));
+
+    BrowserWindowInterface* popup_browser = browser_created_observer.Wait();
+    BrowserView* popup_view =
+        BrowserView::GetBrowserViewForBrowser(popup_browser);
+    CustomTabBarView* popup_bar = popup_view->toolbar()->custom_tab_bar();
+    content::WebContents* popup_contents = popup_view->GetActiveWebContents();
+    web_app::AppBrowserController* popup_controller =
+        web_app::AppBrowserController::From(popup_browser);
+    ASSERT_TRUE(popup_controller);
+
+    // Poll instead of observing: the title update may already have been
+    // applied to the bar before an observer could be installed.
+    EXPECT_TRUE(base::test::RunUntil([&] {
+      return popup_bar->title_for_testing() == u"accounts.google.com";
+    }));
+    EXPECT_TRUE(
+        base::test::RunUntil([&] { return !popup_contents->HasOpener(); }));
+
+    EXPECT_TRUE(popup_contents->GetLastCommittedURL().is_empty());
+    EXPECT_TRUE(popup_contents->GetVisibleURL().is_empty());
+    EXPECT_TRUE(popup_contents->GetPrimaryMainFrame()
+                    ->GetLastCommittedOrigin()
+                    .opaque());
+    EXPECT_TRUE(popup_controller->ShouldShowCustomTabBar());
+    EXPECT_TRUE(popup_bar->GetVisible());
+    EXPECT_TRUE(popup_bar->IsShowingOriginForTesting());
+    EXPECT_EQ(popup_bar->title_for_testing(), u"accounts.google.com");
+    EXPECT_EQ(popup_bar->location_for_testing(), u"about:blank");
+    EXPECT_EQ(popup_bar->GetLocationElideBehaviorForTesting(),
+              gfx::ElideBehavior::ELIDE_TAIL);
+    EXPECT_TRUE(popup_bar->location_icon_view()->GetVisible());
+  };
+
+  {
+    SCOPED_TRACE("aborted in-scope navigation");
+    open_write_and_check(content::JsReplace("$1", in_scope_hung_url));
+  }
+  {
+    // A javascript: URL is handled entirely in the renderer, so no navigation
+    // ever starts in the browser and initial_url() stays empty.
+    SCOPED_TRACE("javascript: URL");
+    open_write_and_check("'javascript:void(0)'");
+  }
+}
+
+// Verify that an in-scope document opening an app popup to an in-scope URL and
+// writing to it via document.open() + document.write() continues to omit the
+// custom tab bar, matching about:blank popup behavior for allowed origins.
+IN_PROC_BROWSER_TEST_F(CustomTabBarViewBrowserTest,
+                       WindowOpenDocumentWriteSameOriginInScopeHidesOriginBar) {
+  // Install at the server root so that /hung is in scope; see the cross-origin
+  // test above for why the opened URL must never respond.
+  const GURL app_url =
+      embedded_https_test_server().GetURL("app.com", "/simple.html");
+  const GURL in_scope_hung_url =
+      embedded_https_test_server().GetURL("app.com", "/hung");
+
+  InstallPWA(app_url);
+  ASSERT_TRUE(app_browser_);
+
+  BrowserView* app_view = BrowserView::GetBrowserViewForBrowser(app_browser_);
+  content::WebContents* app_contents = app_view->GetActiveWebContents();
+
+  ui_test_utils::BrowserCreatedObserver browser_created_observer;
+  EXPECT_TRUE(content::ExecJs(
+      app_contents,
+      content::JsReplace(
+          "const w = window.open($1, '', 'popup,width=400,height=400');"
+          "w.document.open();"
+          "w.document.write('<!doctype html><title>In-scope popup</title>');"
+          "w.document.close();",
+          in_scope_hung_url)));
+
+  BrowserWindowInterface* popup_browser = browser_created_observer.Wait();
+  EXPECT_EQ(popup_browser->GetType(),
+            BrowserWindowInterface::Type::TYPE_APP_POPUP);
+  BrowserView* popup_view =
+      BrowserView::GetBrowserViewForBrowser(popup_browser);
+  content::WebContents* popup_contents = popup_view->GetActiveWebContents();
+  CustomTabBarView* popup_bar = popup_view->toolbar()->custom_tab_bar();
+  web_app::AppBrowserController* popup_controller =
+      web_app::AppBrowserController::From(popup_browser);
+
+  // Wait for the written document's title to prove document.write() ran, then
+  // verify the navigation was aborted rather than committed.
+  EXPECT_TRUE(base::test::RunUntil(
+      [&] { return popup_contents->GetTitle() == u"In-scope popup"; }));
+  EXPECT_TRUE(popup_contents->GetLastCommittedURL().is_empty());
+  EXPECT_TRUE(popup_contents->GetVisibleURL().is_empty());
+  EXPECT_TRUE(popup_contents->GetPrimaryMainFrame()
+                  ->GetLastCommittedOrigin()
+                  .IsSameOriginWith(app_url));
+  EXPECT_FALSE(popup_controller->ShouldShowCustomTabBar());
+  EXPECT_FALSE(popup_bar->GetVisible());
 }

@@ -20,10 +20,8 @@
 #include "chrome/browser/permissions/permission_decision_auto_blocker_factory.h"
 #include "chrome/browser/permissions/permission_manager_factory.h"
 #include "chrome/browser/picture_in_picture/auto_picture_in_picture_tab_helper.h"
-#include "chrome/browser/privacy_sandbox/privacy_sandbox_service.h"
-#include "chrome/browser/privacy_sandbox/privacy_sandbox_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/safe_browsing/chrome_password_protection_service.h"
+#include "chrome/browser/safe_browsing/password_protection/chrome_password_protection_service.h"
 #include "chrome/browser/safe_browsing/safe_browsing_service.h"
 #include "chrome/browser/serial/serial_chooser_context.h"
 #include "chrome/browser/serial/serial_chooser_context_factory.h"
@@ -31,13 +29,6 @@
 #include "chrome/browser/ssl/https_upgrades_util.h"
 #include "chrome/browser/ssl/stateful_ssl_host_state_delegate_factory.h"
 #include "chrome/browser/subresource_filter/subresource_filter_profile_context_factory.h"
-#include "ui/base/page_transition_types.h"
-#include "ui/base/window_open_disposition.h"
-#if BUILDFLAG(IS_ANDROID)
-#include "chrome/browser/safe_browsing/android/suspicious_site_controller_android.h"
-#else
-#include "chrome/browser/safe_browsing/suspicious_site_warnings/suspicious_site_controller_desktop.h"
-#endif
 #include "chrome/browser/ui/url_identity.h"
 #include "chrome/browser/usb/usb_chooser_context.h"
 #include "chrome/browser/usb/usb_chooser_context_factory.h"
@@ -53,12 +44,11 @@
 #include "components/permissions/object_permission_context_base.h"
 #include "components/permissions/permission_manager.h"
 #include "components/prefs/pref_service.h"
-#include "components/safe_browsing/content/browser/ui_manager.h"
-#include "components/safe_browsing/core/browser/suspicious_site_warning_allowlist.h"
+#include "components/safe_browsing/buildflags.h"
+#include "components/safe_browsing/content/browser/interstitials/ui_manager.h"
 #include "components/security_interstitials/content/stateful_ssl_host_state_delegate.h"
 #include "components/subresource_filter/content/browser/subresource_filter_content_settings_manager.h"
 #include "components/subresource_filter/content/browser/subresource_filter_profile_context.h"
-#include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/permission_controller.h"
@@ -69,10 +59,22 @@
 #include "net/base/registry_controlled_domains/registry_controlled_domain.h"
 #include "services/network/public/cpp/features.h"
 #include "third_party/blink/public/common/features.h"
+#include "third_party/blink/public/public_buildflags.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/base/window_open_disposition_utils.h"
 #include "ui/events/event.h"
 #include "url/origin.h"
 #include "url/url_constants.h"
+
+#if BUILDFLAG(SAFE_BROWSING_AVAILABLE)
+#if BUILDFLAG(IS_ANDROID)
+#include "chrome/browser/safe_browsing/android/suspicious_site_controller_android.h"  // nogncheck
+#else
+#include "chrome/browser/safe_browsing/suspicious_site_warnings/suspicious_site_controller_desktop.h"  // nogncheck
+#endif
+#include "components/safe_browsing/core/browser/suspicious_site_warning_allowlist.h"  // nogncheck
+#endif  // BUILDFLAG(SAFE_BROWSING_AVAILABLE)
 
 #if BUILDFLAG(IS_ANDROID)
 #include "chrome/grit/branded_strings.h"
@@ -88,7 +90,7 @@
 #include "chrome/browser/ui/hats/trust_safety_sentiment_service.h"
 #include "chrome/browser/ui/hats/trust_safety_sentiment_service_factory.h"
 #include "chrome/browser/ui/page_info/page_info_infobar_delegate.h"
-#include "chrome/browser/ui/tab_dialogs.h"
+#include "chrome/browser/ui/views/site_data/page_specific_site_data_dialog_controller.h"
 #include "chrome/browser/ui/web_applications/app_browser_controller.h"
 #include "chrome/browser/ui/web_applications/web_app_ui_utils.h"
 #include "chrome/browser/web_applications/web_app_provider.h"
@@ -107,6 +109,9 @@
 #include "ash/constants/ash_features.h"
 #include "chrome/browser/ash/floating_sso/floating_sso_service.h"
 #include "chrome/browser/ash/floating_sso/floating_sso_service_factory.h"
+#endif
+
+#if BUILDFLAG(ENABLE_SMART_CARD)
 #include "chrome/browser/smart_card/smart_card_permission_context.h"
 #include "chrome/browser/smart_card/smart_card_permission_context_factory.h"
 #endif
@@ -173,7 +178,7 @@ ChromePageInfoDelegate::GetChooserContext(ContentSettingsType type) {
     case ContentSettingsType::HID_CHOOSER_DATA:
       return HidChooserContextFactory::GetForProfile(GetProfile());
     case ContentSettingsType::SMART_CARD_DATA:
-#if BUILDFLAG(IS_CHROMEOS)
+#if BUILDFLAG(ENABLE_SMART_CARD)
       if (base::FeatureList::IsEnabled(blink::features::kSmartCard)) {
         return &SmartCardPermissionContextFactory::GetForProfile(*GetProfile());
       }
@@ -200,7 +205,7 @@ void ChromePageInfoDelegate::OnUserActionOnPasswordUi(
     safe_browsing::WarningAction action) {
   auto* chrome_password_protection_service =
       GetChromePasswordProtectionService();
-  DCHECK(chrome_password_protection_service);
+  CHECK(chrome_password_protection_service, base::NotFatalUntil::M162);
 
   chrome_password_protection_service->OnUserAction(
       web_contents_->GetWeakPtr(),
@@ -246,17 +251,6 @@ void ChromePageInfoDelegate::FocusWebContents() {
   BrowserWebContentsDelegate::From(browser)->ActivateContents(web_contents_);
 }
 
-std::optional<std::u16string> ChromePageInfoDelegate::GetRwsOwner(
-    const GURL& site_url) {
-  return PrivacySandboxServiceFactory::GetForProfile(GetProfile())
-      ->GetRelatedWebsiteSetOwnerForDisplay(site_url);
-}
-
-bool ChromePageInfoDelegate::IsRwsManaged(const GURL& site_url) {
-  return PrivacySandboxServiceFactory::GetForProfile(GetProfile())
-      ->IsPartOfManagedRelatedWebsiteSet(net::SchemefulSite(site_url));
-}
-
 // static
 void ChromePageInfoDelegate::RegisterPageInfoInfoBar(
     infobars::BrowserInfoBarManager* infobar_manager) {
@@ -285,15 +279,13 @@ bool ChromePageInfoDelegate::CreateInfoBarDelegate() {
           infobars::InfoBarDelegate::PAGE_INFO_INFOBAR_DELEGATE)) {
     auto* browser_infobar_manager =
         infobars::BrowserInfoBarManager::From(g_browser_process);
-    if (browser_infobar_manager) {
-      auto* tab = tabs::TabInterface::MaybeGetFromContents(web_contents_);
-      if (tab) {
-        browser_infobar_manager->Show(
-            tab, infobars::InfoBarDelegate::PAGE_INFO_INFOBAR_DELEGATE);
-        return true;
-      }
+    if (!browser_infobar_manager) {
+      return false;
     }
-    return false;
+    return browser_infobar_manager->Show(
+               web_contents_,
+               infobars::InfoBarDelegate::PAGE_INFO_INFOBAR_DELEGATE) !=
+           nullptr;
   }
 
   infobars::ContentInfoBarManager* infobar_manager =
@@ -374,13 +366,6 @@ void ChromePageInfoDelegate::ShowCookiesSettings() {
   chrome::ShowSettingsSubPage(browser, chrome::kCookieSettingsSubPage);
 }
 
-void ChromePageInfoDelegate::ShowAllSitesSettingsFilteredByRwsOwner(
-    const std::u16string& rws_owner) {
-  BrowserWindowInterface* browser = get_browser_callback_.Run(web_contents_);
-  chrome::ShowAllSitesSettingsFilteredByRwsOwner(browser,
-                                                 base::UTF16ToUTF8(rws_owner));
-}
-
 void ChromePageInfoDelegate::ShowSyncSettings() {
   BrowserWindowInterface* browser = get_browser_callback_.Run(web_contents_);
   chrome::ShowSettingsSubPage(browser, chrome::kSyncSetupSubPage);
@@ -388,17 +373,19 @@ void ChromePageInfoDelegate::ShowSyncSettings() {
 
 void ChromePageInfoDelegate::OpenCookiesDialog() {
   FocusWebContents();
-  TabDialogs::FromWebContents(web_contents_)->ShowCollectedCookies();
+  PageSpecificSiteDataDialogController::CreateAndShowForWebContents(
+      web_contents_);
 }
 
 void ChromePageInfoDelegate::OpenCertificateDialog(
     net::X509Certificate* certificate) {
   gfx::NativeWindow top_window = web_contents_->GetTopLevelNativeWindow();
-  DCHECK(certificate);
-  DCHECK(top_window);
+  CHECK(certificate, base::NotFatalUntil::M162);
+  CHECK(top_window, base::NotFatalUntil::M162);
 
   FocusWebContents();
-  ShowCertificateViewer(web_contents_, top_window, certificate);
+  ShowCertificateViewer(web_contents_, top_window, certificate,
+                        CertificateViewerEntrypoint::kPageInfo);
 }
 
 void ChromePageInfoDelegate::OpenConnectionHelpCenterPage(
@@ -407,7 +394,8 @@ void ChromePageInfoDelegate::OpenConnectionHelpCenterPage(
       content::OpenURLParams::CreateBrowserInitiated(
           GURL(chrome::kPageInfoHelpCenterURL),
           ui::DispositionFromEventFlags(
-              event.flags(), WindowOpenDisposition::NEW_FOREGROUND_TAB),
+              event.flags(),
+              ui::mojom::WindowOpenDisposition::kNewForegroundTab),
           ui::PAGE_TRANSITION_LINK),
       /*navigation_handle_callback=*/{});
 }
@@ -456,12 +444,13 @@ void ChromePageInfoDelegate::OpenSafeBrowsingHelpCenterPage(
       content::OpenURLParams::CreateBrowserInitiated(
           GURL(url),
           ui::DispositionFromEventFlags(
-              event_flags, WindowOpenDisposition::NEW_FOREGROUND_TAB),
+              event_flags, ui::mojom::WindowOpenDisposition::kNewForegroundTab),
           ui::PAGE_TRANSITION_LINK),
       /*navigation_handle_callback=*/{});
 }
 
 void ChromePageInfoDelegate::OnSuspiciousSiteBackToSafety() {
+#if BUILDFLAG(SAFE_BROWSING_AVAILABLE)
 #if BUILDFLAG(IS_ANDROID)
   if (auto* ssc =
           safe_browsing::SuspiciousSiteControllerAndroid::FromWebContents(
@@ -502,9 +491,11 @@ void ChromePageInfoDelegate::OnSuspiciousSiteBackToSafety() {
   // Page.
   controller.LoadURLWithParams(content::NavigationController::LoadURLParams(
       GURL(chrome::kChromeUINewTabURL)));
+#endif  // BUILDFLAG(SAFE_BROWSING_AVAILABLE)
 }
 
 void ChromePageInfoDelegate::OnSuspiciousSiteMarkAsSafe() {
+#if BUILDFLAG(SAFE_BROWSING_AVAILABLE)
 #if BUILDFLAG(IS_ANDROID)
   if (auto* ssc =
           safe_browsing::SuspiciousSiteControllerAndroid::FromWebContents(
@@ -537,6 +528,7 @@ void ChromePageInfoDelegate::OnSuspiciousSiteMarkAsSafe() {
     }
   }
   web_contents_->DidChangeVisibleSecurityState();
+#endif  // BUILDFLAG(SAFE_BROWSING_AVAILABLE)
 }
 
 std::u16string ChromePageInfoDelegate::GetSubjectName(const GURL& url) {

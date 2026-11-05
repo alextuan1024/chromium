@@ -5,6 +5,7 @@
 #import "ios/chrome/browser/drive_file_picker/coordinator/root_drive_file_picker_coordinator.h"
 
 #import <memory>
+#import <utility>
 
 #import "base/memory/raw_ptr.h"
 #import "base/memory/weak_ptr.h"
@@ -32,7 +33,6 @@
 #import "ios/chrome/browser/drive_file_picker/ui/drive_file_picker_table_view_controller.h"
 #import "ios/chrome/browser/shared/coordinator/scene/scene_state.h"
 #import "ios/chrome/browser/shared/model/browser/browser.h"
-#import "ios/chrome/browser/shared/model/browser/browser_provider.h"
 #import "ios/chrome/browser/shared/model/browser/browser_provider_interface.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
 #import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
@@ -49,7 +49,6 @@
 #import "ios/chrome/browser/web/model/choose_file/choose_file_tab_helper.h"
 #import "ios/chrome/grit/ios_strings.h"
 #import "services/network/public/cpp/shared_url_loader_factory.h"
-#import "ui/base/device_form_factor.h"
 #import "ui/base/l10n/l10n_util_mac.h"
 
 @interface RootDriveFilePickerCoordinator () <
@@ -294,13 +293,6 @@ void ConfirmChangeProfileWithCompletion(
 }
 
 - (void)mediator:(DriveFilePickerMediator*)mediator
-    didActivateSearch:(BOOL)searchActivated {
-  _navigationController.sheetPresentationController.prefersGrabberVisible =
-      !searchActivated &&
-      (ui::GetDeviceFormFactor() == ui::DEVICE_FORM_FACTOR_PHONE);
-}
-
-- (void)mediator:(DriveFilePickerMediator*)mediator
     didPickDriveItems:(const std::vector<DriveItem>&)driveItems {
   CHECK(_forComposebox);
   CHECK(self.responseHandler);
@@ -381,24 +373,11 @@ void ConfirmChangeProfileWithCompletion(
 
   _navigationController.modalPresentationStyle = UIModalPresentationFormSheet;
   _navigationController.presentationController.delegate = self;
-  if (ui::GetDeviceFormFactor() ==
-      ui::DeviceFormFactor::DEVICE_FORM_FACTOR_PHONE) {
-    _navigationController.sheetPresentationController.prefersGrabberVisible =
-        YES;
-    // TODO(crbug.com/441764702): Add `mediumDetent` back.
-    _navigationController.sheetPresentationController.detents = @[
-      [UISheetPresentationControllerDetent largeDetent],
-    ];
-    _navigationController.sheetPresentationController.selectedDetentIdentifier =
-        UISheetPresentationControllerDetentIdentifierLarge;
-  } else {
-    _navigationController.sheetPresentationController.prefersGrabberVisible =
-        NO;
-    _navigationController.sheetPresentationController.detents =
-        @[ [UISheetPresentationControllerDetent largeDetent] ];
-    _navigationController.sheetPresentationController.selectedDetentIdentifier =
-        UISheetPresentationControllerDetentIdentifierLarge;
-  }
+  // TODO(crbug.com/585080085): Add `mediumDetent` back.
+  _navigationController.sheetPresentationController.detents =
+      @[ [UISheetPresentationControllerDetent largeDetent] ];
+  _navigationController.sheetPresentationController.selectedDetentIdentifier =
+      UISheetPresentationControllerDetentIdentifierLarge;
 
   [self.baseViewController presentViewController:_navigationController
                                         animated:YES
@@ -439,13 +418,12 @@ void ConfirmChangeProfileWithCompletion(
 }
 
 - (void)addAccountCompletionWithCoordinator:(SigninCoordinator*)coordinator
-                                     result:(SigninCoordinatorResult)result
-                         completionIdentity:
-                             (id<SystemIdentity>)completionIdentity {
-  CHECK_EQ(_addAccountCoordinator, coordinator, base::NotFatalUntil::M151);
-  if (result == SigninCoordinatorResultSuccess) {
-    CHECK(completionIdentity);
-    [self addAndSelectNewIdentity:completionIdentity];
+                                     result:(SigninCoordinatorResultOrIdentity)
+                                                result {
+  CHECK_EQ(_addAccountCoordinator, coordinator);
+  if (result.has_value()) {
+    CHECK(result.value());
+    [self addAndSelectNewIdentity:result.value()];
   } else {
     [self reportAddingIdentityFailure];
   }
@@ -472,11 +450,10 @@ void ConfirmChangeProfileWithCompletion(
                              continuationProvider:
                                  DoNothingContinuationProvider()];
   _addAccountCoordinator.signinCompletion =
-      ^(SigninCoordinator* coordinator, SigninCoordinatorResult result,
-        id<SystemIdentity> completionIdentity) {
+      ^(SigninCoordinator* coordinator,
+        SigninCoordinatorResultOrIdentity result) {
         [weakSelf addAccountCompletionWithCoordinator:coordinator
-                                               result:result
-                                   completionIdentity:completionIdentity];
+                                               result:std::move(result)];
       };
   [_addAccountCoordinator start];
 }
@@ -494,9 +471,8 @@ void ConfirmChangeProfileWithCompletion(
             promoAction:signin_metrics::PromoAction::
                             PROMO_ACTION_NO_SIGNIN_PROMO
              completion:^(SigninCoordinator* coordinator,
-                          SigninCoordinatorResult result,
-                          id<SystemIdentity> identity) {
-               [weakSelf handleSignInResult:result identity:identity];
+                          SigninCoordinatorResultOrIdentity result) {
+               [weakSelf handleSignInResult:std::move(result)];
              }];
   command.confirmChangeProfile = ^(void (^completion)(BOOL)) {
     ConfirmChangeProfileWithCompletion(weakSelf, completion);
@@ -508,12 +484,11 @@ void ConfirmChangeProfileWithCompletion(
   [_signinCoordinator start];
 }
 
-- (void)handleSignInResult:(SigninCoordinatorResult)result
-                  identity:(id<SystemIdentity>)identity {
+- (void)handleSignInResult:(SigninCoordinatorResultOrIdentity)result {
   [_signinCoordinator stop];
   _signinCoordinator = nil;
   [_metricsHelper reportDriveSignInResult:result];
-  if (result == SigninCoordinatorResultSuccess) {
+  if (result.has_value()) {
     [self startRootFilePicker];
     return;
   }
@@ -624,7 +599,8 @@ void ConfirmChangeProfileWithCompletion(
     [weakSelf userInterrupted];
   };
   UIAlertController* discardSelectionAlertController =
-      DiscardSelectionAlertController(discardSelectionBlock, nil);
+      DiscardSelectionAlertController(discardSelectionBlock, nil,
+                                      self.baseViewController.traitCollection);
   [_navigationController presentViewController:discardSelectionAlertController
                                       animated:YES
                                     completion:nil];

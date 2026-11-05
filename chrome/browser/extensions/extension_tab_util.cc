@@ -20,6 +20,7 @@
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
+#include "build/build_config.h"
 #include "chrome/browser/extensions/browser_extension_window_controller.h"
 #include "chrome/browser/extensions/browser_window_util.h"
 #include "chrome/browser/extensions/chrome_extension_function_details.h"
@@ -63,8 +64,8 @@
 #include "extensions/common/mojom/context_type.mojom.h"
 #include "extensions/common/permissions/permissions_data.h"
 #include "third_party/blink/public/common/chrome_debug_urls.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "ui/base/page_transition_types.h"
-#include "ui/base/window_open_disposition.h"
 #include "url/gurl.h"
 #include "url/url_constants.h"
 
@@ -84,6 +85,10 @@
 #include "chrome/common/url_constants.h"
 #include "content/public/browser/back_forward_cache.h"
 #include "extensions/common/manifest_handlers/incognito_info.h"
+#endif
+
+#if BUILDFLAG(IS_CHROMEOS)
+#include "ash/webui/os_feedback_ui/url_constants.h"
 #endif
 
 static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
@@ -368,7 +373,7 @@ api::tabs::Tab ExtensionTabUtil::CreateTabObject(
   tabs::TabInterface* tab_interface =
       tab_list ? tab_list->GetTab(tab_index) : nullptr;
 
-  bool is_active = tab_interface && tab_interface->IsActivated();
+  bool is_active = tab_interface ? tab_interface->IsActivated() : true;
   tab_object.active = is_active;
   tab_object.selected = is_active;
   tab_object.highlighted = tab_interface && tab_interface->IsSelected();
@@ -437,17 +442,24 @@ api::tabs::Tab ExtensionTabUtil::CreateTabObject(
   tab_object.width = contents_size.width();
   tab_object.height = contents_size.height();
 
-  tab_object.url = contents->GetLastCommittedURL().spec();
-  NavigationEntry* pending_entry = contents->GetController().GetPendingEntry();
-  if (pending_entry) {
-    tab_object.pending_url = pending_entry->GetVirtualURL().spec();
+  // Keep url/pending_url/title/fav_icon_url in sync with ScrubTabForExtension.
+  if (scrub_tab_behavior.committed_info != kScrubTabFully) {
+    tab_object.url = contents->GetLastCommittedURL().spec();
+    tab_object.title = base::UTF16ToUTF8(contents->GetTitle());
+    // TODO(tjudkins) This should probably use the LastCommittedEntry() for
+    // consistency.
+    NavigationEntry* visible_entry =
+        contents->GetController().GetVisibleEntry();
+    if (visible_entry && visible_entry->GetFavicon().valid) {
+      tab_object.fav_icon_url = visible_entry->GetFavicon().url.spec();
+    }
   }
-  tab_object.title = base::UTF16ToUTF8(contents->GetTitle());
-  // TODO(tjudkins) This should probably use the LastCommittedEntry() for
-  // consistency.
-  NavigationEntry* visible_entry = contents->GetController().GetVisibleEntry();
-  if (visible_entry && visible_entry->GetFavicon().valid) {
-    tab_object.fav_icon_url = visible_entry->GetFavicon().url.spec();
+  if (scrub_tab_behavior.pending_info != kScrubTabFully) {
+    NavigationEntry* pending_entry =
+        contents->GetController().GetPendingEntry();
+    if (pending_entry) {
+      tab_object.pending_url = pending_entry->GetVirtualURL().spec();
+    }
   }
 
   if (tab_list && tab_interface) {
@@ -558,16 +570,7 @@ bool ExtensionTabUtil::GetTabListInterface(content::WebContents& web_contents,
   }
 
   // Find the index of the tab within the browser window.
-  // TODO(https://crbug.com/415961057): This is clunky. Let's add a
-  // GetIndexOfTab() method.
-  std::vector<tabs::TabInterface*> all_tabs = tab_list->GetAllTabs();
-  int index = -1;
-  for (size_t i = 0; i < all_tabs.size(); ++i) {
-    if (all_tabs[i] == tab_interface) {
-      index = i;
-      break;
-    }
-  }
+  int index = tab_list->GetIndexOfTab(tab_interface->GetHandle());
 
   // Even though we got here by looking at the tab strip from the browser window
   // we got from the tab, it's possible the tab isn't in the tab strip. One case
@@ -642,7 +645,7 @@ bool ExtensionTabUtil::GetTabById(int tab_id,
           : nullptr;
 
   for (WindowController* window : *WindowControllerList::GetInstance()) {
-    bool is_alive = window->GetBrowserWindowInterface() &&
+    bool is_alive = !window->GetBrowserWindowInterface() ||
                     !window->GetBrowserWindowInterface()->IsDeleteScheduled();
     bool profile_matches =
         window->profile() == profile || window->profile() == incognito_profile;
@@ -738,7 +741,9 @@ int ExtensionTabUtil::GetSplitId(const split_tabs::SplitTabId& id) {
 
 // static
 bool ExtensionTabUtil::SupportsTabGroups(BrowserWindowInterface* browser) {
-  CHECK(browser);
+  if (!browser) {
+    return false;
+  }
 #if BUILDFLAG(IS_ANDROID)
   // Android only supports tab groups for normal browser windows.
   return browser->GetType() == BrowserWindowInterface::TYPE_NORMAL;
@@ -1050,10 +1055,11 @@ GURL ExtensionTabUtil::ResolvePossiblyRelativeURL(const std::string& url_string,
   return url;
 }
 
-void ExtensionTabUtil::NavigateToURL(WindowOpenDisposition disposition,
-                                     content::WebContents* source_contents,
-                                     const GURL& url,
-                                     base::OnceClosure done_callback) {
+void ExtensionTabUtil::NavigateToURL(
+    ui::mojom::WindowOpenDisposition disposition,
+    content::WebContents* source_contents,
+    const GURL& url,
+    base::OnceClosure done_callback) {
   BrowserWindowInterface* browser =
       source_contents
           ? browser_window_util::GetBrowserForTabContents(*source_contents)
@@ -1157,11 +1163,27 @@ base::expected<GURL, std::string> ExtensionTabUtil::PrepareURLForNavigation(
     return base::unexpected(kCannotNavigateToChromeUntrusted);
   }
 
+  // Note: `extension` can be null if the call is made from non-extension
+  // contexts (e.g. WebUI pages). In that case, we allow the navigation as such
+  // contexts are trusted and do not have a concept of file access. Arguably,
+  // we should apply the same logic to the cases above, but it's been this way
+  // long enough that we can keep this as fail-closed until there's a reason to
+  // change it.
+
+  // Don't let the extension navigate directly to chrome://feedback. Feedback is
+  // more of a native surface that shouldn't be accessible to (or triggerable
+  // by) extensions.
+  if (extension && url.SchemeIs(content::kChromeUIScheme) &&
+      (url.host() == chrome::kChromeUIFeedbackHost
+#if BUILDFLAG(IS_CHROMEOS)
+       || url.host() == ash::kChromeUIOSFeedbackHost
+#endif
+       )) {
+    return base::unexpected(kCannotNavigateToInternalPage);
+  }
+
   // Don't let the extension navigate directly to file scheme pages, unless
-  // they have file access. `extension` can be null if the call is made from
-  // non-extension contexts (e.g. WebUI pages). In that case, we allow the
-  // navigation as such contexts are trusted and do not have a concept of file
-  // access.
+  // they have file access.
   if (extension && IsFileUrl(url) &&
       // PDF viewer extension can navigate to file URLs.
       extension->id() != extension_misc::kPdfExtensionId &&
@@ -1199,7 +1221,9 @@ bool ExtensionTabUtil::OpenOptionsPageFromWebContents(
   const bool open_in_tab = ShouldOpenInTab(extension);
   BrowserWindowInterface* browser =
       browser_window_util::GetBrowserForTabContents(*web_contents);
-  CHECK(browser);
+  if (!browser) {
+    return false;
+  }
   return WindowControllerFromBrowser(browser)->OpenOptionsPage(extension, *url,
                                                                open_in_tab);
 }
@@ -1211,6 +1235,20 @@ WindowController* ExtensionTabUtil::GetWindowControllerOfTab(
       browser_window_util::GetBrowserForTabContents(*web_contents);
   if (browser) {
     return BrowserExtensionWindowController::From(browser);
+  }
+  // For non-Browser window controllers (which do not have a
+  // BrowserWindowInterface), IdForWindowContainingTab() consistently returns
+  // the owning window's SessionID. Note that this fallback also matches
+  // transiently detached browser tabs (e.g. tabs mid-drag between windows), for
+  // which IdForWindowContainingTab() returns the SessionID of the window the
+  // tab was previously attached to rather than returning nullptr.
+  SessionID window_id =
+      sessions::SessionTabHelper::IdForWindowContainingTab(web_contents);
+  if (window_id.is_valid()) {
+    const auto& controllers = *WindowControllerList::GetInstance();
+    auto it = std::ranges::find(controllers, window_id.id(),
+                                &WindowController::GetWindowId);
+    return it != controllers.end() ? *it : nullptr;
   }
   return nullptr;
 }

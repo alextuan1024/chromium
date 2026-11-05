@@ -36,6 +36,7 @@ struct ActorSuggestion;
 namespace actor {
 
 class ActorEngine;
+class ActorTask;
 class AggregatedJournal;
 
 // Combines a `credential` and a user choice in the account picker, and
@@ -78,7 +79,7 @@ class ActorTaskFormFillingHandler {
 
   // Sets the intervention delegate.
   void SetInterventionDelegate(
-      base::PassKey<ActorEngine> pass_key,
+      base::PassKey<ActorTask> pass_key,
       id<ActorTaskInterventionDelegate> intervention_delegate) {
     intervention_delegate_ = intervention_delegate;
   }
@@ -114,6 +115,12 @@ class ActorTaskFormFillingHandler {
   // suggestion and `index`, or with std::nullopt if the user closed the prompt
   // without making a selection.
   void PromptToSelectAutofillSuggestion(size_t index);
+
+  // Drops the registered callbacks and suggestions without running the
+  // callbacks and, if a selection prompt is pending, asks the intervention
+  // delegate to dismiss it. Called by the tool that opened the prompt when it
+  // is cancelled or finishes.
+  void CancelPendingPrompt();
 
   // Retrieves the credential that the user has chosen to allow the
   // actor to use. The selected credential can be used for multi-step login
@@ -165,6 +172,9 @@ class ActorTaskFormFillingHandler {
   CredentialSelectedCallback credential_selected_callback_;
   // Success callback for autofill suggestion selection other than credentials.
   AutofillSuggestionSelectedCallback autofill_suggestion_selected_callback_;
+
+  // Whether a selection prompt is shown and awaiting the user's answer.
+  bool has_pending_prompt_ = false;
 
   base::WeakPtrFactory<ActorTaskFormFillingHandler> weak_ptr_factory_{this};
 };

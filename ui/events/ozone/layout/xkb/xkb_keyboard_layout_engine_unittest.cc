@@ -154,6 +154,31 @@ class VkTestXkbKeyboardLayoutEngine : public XkbKeyboardLayoutEngine {
   raw_ptr<const KeysymEntry> keysym_entry_;
 };
 
+// Compiles an XKB keymap for the given |layout| (pc101 model) and installs it
+// as the current layout of |layout_engine|. Uses gtest assertions, so callers
+// should wrap it in ASSERT_NO_FATAL_FAILURE.
+void SetLayoutFromName(XkbKeyboardLayoutEngine& layout_engine,
+                       const char* layout) {
+  std::unique_ptr<xkb_context, XkbContextDeleter> xkb_context(
+      xkb_context_new(XKB_CONTEXT_NO_FLAGS));
+  ASSERT_TRUE(xkb_context);
+  xkb_rule_names names = {
+      .rules = nullptr,
+      .model = "pc101",
+      .layout = layout,
+      .variant = "",
+      .options = "",
+  };
+  std::unique_ptr<xkb_keymap, XkbKeymapDeleter> xkb_keymap(
+      xkb_keymap_new_from_names(xkb_context.get(), &names,
+                                XKB_KEYMAP_COMPILE_NO_FLAGS));
+  ASSERT_TRUE(xkb_keymap) << "Failed to compile keymap for layout: " << layout;
+  std::unique_ptr<char, base::FreeDeleter> keymap_string(
+      xkb_keymap_get_as_string(xkb_keymap.get(), XKB_KEYMAP_FORMAT_TEXT_V1));
+  ASSERT_TRUE(keymap_string);
+  ASSERT_TRUE(layout_engine.SetCurrentLayoutFromBuffer(keymap_string.get()));
+}
+
 }  // anonymous namespace
 
 class XkbLayoutEngineVkTest : public testing::Test {
@@ -951,25 +976,7 @@ TEST_F(XkbLayoutEngineVkTest, XkbRuleNamesForLayoutName) {
 }
 
 TEST_F(XkbLayoutEngineVkTest, GetDomCodeByKeysym) {
-  // Set up US keyboard layout.
-  {
-    std::unique_ptr<xkb_context, ui::XkbContextDeleter> xkb_context(
-        xkb_context_new(XKB_CONTEXT_NO_FLAGS));
-    xkb_rule_names names = {
-        .rules = nullptr,
-        .model = "pc101",
-        .layout = "us",
-        .variant = "",
-        .options = "",
-    };
-    std::unique_ptr<xkb_keymap, ui::XkbKeymapDeleter> xkb_keymap(
-        xkb_keymap_new_from_names(xkb_context.get(), &names,
-                                  XKB_KEYMAP_COMPILE_NO_FLAGS));
-    std::unique_ptr<char, base::FreeDeleter> layout(
-        xkb_keymap_get_as_string(xkb_keymap.get(), XKB_KEYMAP_FORMAT_TEXT_V1));
-    layout_engine_->SetCurrentLayoutFromBuffer(layout.get(),
-                                               std::strlen(layout.get()));
-  }
+  ASSERT_NO_FATAL_FAILURE(SetLayoutFromName(*layout_engine_, "us"));
 
   constexpr int32_t kNullopt = -1;
   constexpr int32_t kShiftMask = 1;
@@ -1030,25 +1037,7 @@ TEST(XkbKeyboardLayoutEngineTest, NumpadDecimal) {
   XkbEvdevCodes evdev_codes;
   XkbKeyboardLayoutEngine layout_engine(evdev_codes);
 
-  // Set up US keyboard layout.
-  {
-    std::unique_ptr<xkb_context, ui::XkbContextDeleter> xkb_context(
-        xkb_context_new(XKB_CONTEXT_NO_FLAGS));
-    xkb_rule_names names = {
-        .rules = nullptr,
-        .model = "pc101",
-        .layout = "us",
-        .variant = "",
-        .options = "",
-    };
-    std::unique_ptr<xkb_keymap, ui::XkbKeymapDeleter> xkb_keymap(
-        xkb_keymap_new_from_names(xkb_context.get(), &names,
-                                  XKB_KEYMAP_COMPILE_NO_FLAGS));
-    std::unique_ptr<char, base::FreeDeleter> layout(
-        xkb_keymap_get_as_string(xkb_keymap.get(), XKB_KEYMAP_FORMAT_TEXT_V1));
-    layout_engine.SetCurrentLayoutFromBuffer(layout.get(),
-                                             std::strlen(layout.get()));
-  }
+  ASSERT_NO_FATAL_FAILURE(SetLayoutFromName(layout_engine, "us"));
 
   DomKey dom_key;
   KeyboardCode key_code;
@@ -1102,6 +1091,135 @@ TEST(XkbKeyboardLayoutEngineTest, NumpadDecimal) {
                                    &dom_key, &key_code));
   EXPECT_EQ(ui::DomKey::FromCharacter('.'), dom_key);
   EXPECT_EQ(ui::VKEY_DECIMAL, key_code);
+}
+
+// Regression test for crbug.com/567348639. In the German layout, the numpad
+// decimal key is KP_Delete at level 1 and KP_Separator (',') at level 2 (i.e.
+// with NumLock on). The resulting key code must not be VKEY_DELETE, because
+// on ChromeOS EventRewriterAsh rewrites numpad VKEY_DELETE to '.'.
+TEST(XkbKeyboardLayoutEngineTest, NumpadDecimalGerman) {
+  XkbEvdevCodes evdev_codes;
+  XkbKeyboardLayoutEngine layout_engine(evdev_codes);
+
+  ASSERT_NO_FATAL_FAILURE(SetLayoutFromName(layout_engine, "de"));
+
+  DomKey dom_key = DomKey::NONE;
+  KeyboardCode key_code = VKEY_UNKNOWN;
+
+  // With NumLock enabled, NUMPAD_DECIMAL should produce ','.
+  EXPECT_TRUE(layout_engine.Lookup(ui::DomCode::NUMPAD_DECIMAL,
+                                   ui::EF_NUM_LOCK_ON, &dom_key, &key_code));
+  EXPECT_EQ(ui::DomKey::FromCharacter(','), dom_key);
+  EXPECT_EQ(ui::VKEY_DECIMAL, key_code);
+
+  // With NumLock enabled and Shift down, NumLock behavior is inverted (acts as
+  // disabled), which selects level 1 (KP_Delete) and maps to DomKey::DEL and
+  // VKEY_DELETE.
+  dom_key = DomKey::NONE;
+  key_code = VKEY_UNKNOWN;
+  EXPECT_TRUE(layout_engine.Lookup(ui::DomCode::NUMPAD_DECIMAL,
+                                   ui::EF_SHIFT_DOWN | ui::EF_NUM_LOCK_ON,
+                                   &dom_key, &key_code));
+  EXPECT_EQ(ui::DomKey::DEL, dom_key);
+  EXPECT_EQ(ui::VKEY_DELETE, key_code);
+
+#if BUILDFLAG(IS_CHROMEOS)
+  // On ChromeOS NumLock is always on, but key events do not carry
+  // EF_NUM_LOCK_ON. Both the DomKey and the key code must still be derived
+  // as if NumLock were on.
+  dom_key = DomKey::NONE;
+  key_code = VKEY_UNKNOWN;
+  EXPECT_TRUE(layout_engine.Lookup(ui::DomCode::NUMPAD_DECIMAL, ui::EF_NONE,
+                                   &dom_key, &key_code));
+  EXPECT_EQ(ui::DomKey::FromCharacter(','), dom_key);
+  EXPECT_EQ(ui::VKEY_DECIMAL, key_code);
+#else
+  // With NumLock disabled, NUMPAD_DECIMAL should act as Delete.
+  dom_key = DomKey::NONE;
+  key_code = VKEY_UNKNOWN;
+  EXPECT_TRUE(layout_engine.Lookup(ui::DomCode::NUMPAD_DECIMAL, ui::EF_NONE,
+                                   &dom_key, &key_code));
+  EXPECT_EQ(ui::DomKey::DEL, dom_key);
+  EXPECT_EQ(ui::VKEY_DELETE, key_code);
+#endif
+}
+
+// Regression test for crbug.com/467734216. XKB's Control transformation maps
+// Ctrl+Space (and Ctrl+`) to NUL. Per the UI Events key guidelines, the key
+// must then be the character produced without the non-shiftlike modifier, not
+// DomKey::UNIDENTIFIED.
+TEST(XkbKeyboardLayoutEngineTest, ControlTransformedToNul) {
+  XkbEvdevCodes evdev_codes;
+  XkbKeyboardLayoutEngine layout_engine(evdev_codes);
+
+  ASSERT_NO_FATAL_FAILURE(SetLayoutFromName(layout_engine, "us"));
+
+  DomKey dom_key = DomKey::NONE;
+  KeyboardCode key_code = VKEY_UNKNOWN;
+  EXPECT_TRUE(layout_engine.Lookup(ui::DomCode::SPACE, ui::EF_CONTROL_DOWN,
+                                   &dom_key, &key_code));
+  EXPECT_EQ(ui::DomKey::FromCharacter(' '), dom_key);
+  EXPECT_EQ(ui::VKEY_SPACE, key_code);
+
+  dom_key = DomKey::NONE;
+  key_code = VKEY_UNKNOWN;
+  EXPECT_TRUE(layout_engine.Lookup(ui::DomCode::SPACE,
+                                   ui::EF_CONTROL_DOWN | ui::EF_SHIFT_DOWN,
+                                   &dom_key, &key_code));
+  EXPECT_EQ(ui::DomKey::FromCharacter(' '), dom_key);
+  EXPECT_EQ(ui::VKEY_SPACE, key_code);
+
+  dom_key = DomKey::NONE;
+  key_code = VKEY_UNKNOWN;
+  EXPECT_TRUE(layout_engine.Lookup(ui::DomCode::BACKQUOTE, ui::EF_CONTROL_DOWN,
+                                   &dom_key, &key_code));
+  EXPECT_EQ(ui::DomKey::FromCharacter('`'), dom_key);
+  EXPECT_EQ(ui::VKEY_OEM_3, key_code);
+
+  // Ctrl+2 and Ctrl+Shift+2 (^@) keep producing the unmodified characters.
+  dom_key = DomKey::NONE;
+  key_code = VKEY_UNKNOWN;
+  EXPECT_TRUE(layout_engine.Lookup(ui::DomCode::DIGIT2, ui::EF_CONTROL_DOWN,
+                                   &dom_key, &key_code));
+  EXPECT_EQ(ui::DomKey::FromCharacter('2'), dom_key);
+  EXPECT_EQ(ui::VKEY_2, key_code);
+
+  dom_key = DomKey::NONE;
+  key_code = VKEY_UNKNOWN;
+  EXPECT_TRUE(layout_engine.Lookup(ui::DomCode::DIGIT2,
+                                   ui::EF_CONTROL_DOWN | ui::EF_SHIFT_DOWN,
+                                   &dom_key, &key_code));
+  EXPECT_EQ(ui::DomKey::FromCharacter('@'), dom_key);
+  EXPECT_EQ(ui::VKEY_2, key_code);
+
+  // Ctrl+A is unaffected.
+  dom_key = DomKey::NONE;
+  key_code = VKEY_UNKNOWN;
+  EXPECT_TRUE(layout_engine.Lookup(ui::DomCode::US_A, ui::EF_CONTROL_DOWN,
+                                   &dom_key, &key_code));
+  EXPECT_EQ(ui::DomKey::FromCharacter('a'), dom_key);
+  EXPECT_EQ(ui::VKEY_A, key_code);
+
+  // Ctrl+Enter remains DomKey::ENTER.
+  dom_key = DomKey::NONE;
+  key_code = VKEY_UNKNOWN;
+  EXPECT_TRUE(layout_engine.Lookup(ui::DomCode::ENTER, ui::EF_CONTROL_DOWN,
+                                   &dom_key, &key_code));
+  EXPECT_EQ(ui::DomKey::ENTER, dom_key);
+  EXPECT_EQ(ui::VKEY_RETURN, key_code);
+}
+
+TEST(XkbKeyboardLayoutEngineTest, NoStateBeforeKeymap) {
+  // GTK IM events (e.g. from fcitx5 on first input activation) can arrive
+  // before the compositor delivers the first keymap. The engine must not
+  // crash on a null XKB state (crbug.com/558945735).
+  XkbEvdevCodes evdev_codes;
+  XkbKeyboardLayoutEngine layout_engine(evdev_codes);
+
+  EXPECT_EQ(0, layout_engine.UpdateModifiers(/*depressed=*/0, /*latched=*/0,
+                                             /*locked=*/0, /*group=*/0));
+  EXPECT_EQ(DomCode::NONE,
+            layout_engine.GetDomCodeByKeysym(XKB_KEY_a, std::nullopt));
 }
 
 }  // namespace ui

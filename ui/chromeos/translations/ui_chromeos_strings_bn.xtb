@@ -519,10 +519,10 @@
 <translation id="5045550434625856497">ভুল পাসওয়ার্ড</translation>
 <translation id="5059127710849015030">নেপালি লিপ্যন্তর</translation>
 <translation id="5068919226082848014">পিৎজা</translation>
+<translation id="5075336522277785691"><ph name="EXTENSION_NAME" /> প্রক্সি ওভাররাইড করার নিয়ম সেট করেছে</translation>
 <translation id="5081517858322016911"><ph name="TOTAL_FILE_SIZE" /> ফাইল মুছে ফেলা হবে</translation>
 <translation id="508423945471810158"><ph name="NUMBER_OF_ITEMS" />টি আইটেম <ph name="FOLDER_NAME" /> ফোল্ডারে সরানো হচ্ছে</translation>
 <translation id="509429900233858213">একটি ত্রুটি ঘটেছে৷</translation>
-<translation id="5102922915594634436">সিঙ্ক করা ফোল্ডারগুলি ম্যানেজ করুন</translation>
 <translation id="5109254780565519649">কোনও সমস্যা হয়েছে। কিছু আইটেম হয়ত ফিরিয়ে আনা যায়নি।</translation>
 <translation id="5110329002213341433">ইংরেজি (কানাডা)</translation>
 <translation id="5119780910075847424">সিঙ্ক করার প্রসেস বন্ধ করা আছে</translation>
@@ -557,7 +557,6 @@
 <translation id="5305688511332277257">কিছুই ইনস্টল নেই</translation>
 <translation id="5317780077021120954">সেভ করুন</translation>
 <translation id="5318819489018851358">Linux-এর সাথে শেয়ার করুন</translation>
-<translation id="5330145655348521461">এই ফাইলগুলি একটি আলাদা ডেস্কটপে খোলা রয়েছে৷ এটিকে দেখতে <ph name="USER_NAME" /> (<ph name="MAIL_ADDRESS" />)-এ সরান৷</translation>
 <translation id="5330512191124428349">তথ্য পান</translation>
 <translation id="535792325654997756">বিড়ালের সাথে ব্যক্তির ছবি</translation>
 <translation id="5358764674931277">ফ্রেম রেট</translation>
@@ -698,7 +697,6 @@
 <translation id="636254897931573416">ডোমেন সাফিক্সের সাথে মিল থাকা মানটি ভুল</translation>
 <translation id="6364301859968397756">সংস্থার স্টোরেজ ভর্তি হয়ে গেছে</translation>
 <translation id="6367976544441405720">ভ্যান</translation>
-<translation id="637062427944097960">এই ফাইলটি একটি আলাদা ডেস্কটপে খোলা রয়েছে৷ এটিকে দেখতে <ph name="USER_NAME" /> (<ph name="MAIL_ADDRESS" />) এ সরান৷</translation>
 <translation id="6394388407447716302">রিড-ওনলি</translation>
 <translation id="6395575651121294044"><ph name="NUMBER_OF_FILES" />টি আইটেম</translation>
 <translation id="6407769893376380348"><ph name="FILE_NAME" /> সরানো যায়নি কারণ এটি এনক্রিপ্ট করা আছে।</translation>

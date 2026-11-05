@@ -71,7 +71,7 @@ class CORE_EXPORT ImagePaintTimingDetector final
   // Records an image paint for <img> tags, background images, <video> poster
   // images, and first video frames. The `StyleImage` will be nullptr unless
   // there is a background image.
-  void RecordImage(const LayoutObject&,
+  void RecordImage(const LayoutObject& image_layout_object,
                    const gfx::Size& intrinsic_size,
                    const MediaTiming&,
                    const PropertyTreeStateOrAlias& current_paint_properties,
@@ -96,14 +96,16 @@ class CORE_EXPORT ImagePaintTimingDetector final
   // at the current frame's paint stage.
   HeapVector<Member<ImageRecord>> TakeImageRecordsOnPaintFinished();
 
-  // Returns the set of `ImageRecord`s representing animated images that need
-  // the first animated frame timestamp set to the presentation time of the
-  // current frame. Called by `PaintTiming` at the current frame's paint stage.
-  HeapVector<Member<ImageRecord>> TakeAnimatedImageRecordsOnPaintFinished();
+  // Returns the list of `HeapTimeTicks` that need to be set to the current
+  // frame's presentation time. Called by `PaintTiming` at the current frame's
+  // paint stage.
+  HeapVector<Member<HeapTimeTicks>> TakePendingPresentationTimestamps();
 
-  // Called when documentElement changes from zero to nonzero opacity. Makes the
-  // largest image that was hidden due to this a Largest Contentful Paint
-  // candidate.
+  // Called at the start of paint when the documentElement is not invisible
+  // (i.e. has nonzero opacity) and there might be ignored content. Makes the
+  // largest image that was previously painted while the documentElement was
+  // invisible eligible for paint timing. Does nothing if no ignored content was
+  // previously painted.
   void ReportLargestIgnoredImage();
 
   // Called when the "src" attribute changes on a <video> element and the change
@@ -122,12 +124,12 @@ class CORE_EXPORT ImagePaintTimingDetector final
   // node can have multiple associated `StyleImage`s.
   base::TimeTicks LoadTime(const StyleImage&) const;
 
+  // Returns true if any of the persistent data structures (persisting across
+  // frames, i.e. pending images, recorded images, or load times), have entries.
+  // Used for testing image removal cleanup.
+  bool HasPersistentImageStateForTest() const;
+
  private:
-  friend class ImagePaintTimingDetectorTestBase;
-  friend class LargestContentfulPaintCalculatorTest;
-
-  void SendRectsToHud();
-
   // Returns the viewport size, initializing the cached `viewport_size_` if
   // needed.
   uint64_t ViewportSize();
@@ -137,10 +139,6 @@ class CORE_EXPORT ImagePaintTimingDetector final
   // Removes the image data associated with the `MediaRecordIdHash` from all
   // collections.
   void RemoveRecord(MediaRecordIdHash);
-
-  // Sets the first animated frame time for the given `ImageRecord` based on the
-  // record's `MediaTiming`, which must be a VideoTiming.
-  void SetVideoFirstAnimatedFrameTime(ImageRecord*);
 
   base::TimeTicks LoadTime(MediaRecordIdHash) const;
 
@@ -165,10 +163,11 @@ class CORE_EXPORT ImagePaintTimingDetector final
   // set is returned and cleared in `TakeImageRecordsOnPaintFinished()`.
   HeapVector<Member<ImageRecord>> images_queued_for_paint_time_;
 
-  // Animated image `ImageRecord`s that were painted this frame that need the
-  // first animated frame time set. This set is returned and cleared in
-  // `TakeAnimatedImageRecordsOnPaintFinished()`.
-  HeapVector<Member<ImageRecord>> animated_images_queued_for_first_frame_time_;
+  // List of `HeapTimeTicks` corresponding to `ImageRecord`s that were painted
+  // this frame that need the first animated frame time set. This is returned
+  // and cleared in `TakePendingPresentationTimestamps()`.
+  HeapVector<Member<HeapTimeTicks>>
+      pending_animated_image_first_frame_timestamps_;
 
   // Map containing timestamps of when LayoutObject::ImageNotifyFinished is
   // first called.

@@ -13,7 +13,6 @@
 #import "components/password_manager/core/common/password_manager_features.h"
 #import "components/password_manager/ios/features.h"
 #import "components/strings/grit/components_strings.h"
-#import "components/url_formatter/elide_url.h"
 #import "components/webauthn/ios/features.h"
 #import "ios/chrome/browser/authentication/test/signin_earl_grey.h"
 #import "ios/chrome/browser/autofill/manual_fill/public/manual_fill_constants.h"
@@ -30,6 +29,7 @@
 #import "ios/chrome/browser/settings/ui_bundled/password/password_manager_egtest_utils.h"
 #import "ios/chrome/browser/settings/ui_bundled/password/password_settings_app_interface.h"
 #import "ios/chrome/browser/settings/ui_bundled/password/passwords_table_view_constants.h"
+#import "ios/chrome/browser/shared/ui/bottom_sheet/bottom_sheet_util.h"
 #import "ios/chrome/browser/signin/model/fake_system_identity.h"
 #import "ios/chrome/browser/webauthn/test/ios_chrome_passkey_client_app_interface.h"
 #import "ios/chrome/common/ui/confirmation_alert/constants.h"
@@ -73,23 +73,20 @@ id<GREYMatcher> ContinueButton() {
 }
 
 id<GREYMatcher> SubtitleString(const GURL& url) {
+  const std::u16string formatted_url = FormatUrlForBottomSheetDisplay(url);
   return grey_anyOf(
       grey_text(l10n_util::GetNSStringF(
-          IDS_IOS_CREDENTIAL_BOTTOM_SHEET_SUBTITLE,
-          url_formatter::FormatUrlForDisplayOmitSchemePathAndTrivialSubdomains(
-              url))),
+          IDS_IOS_CREDENTIAL_BOTTOM_SHEET_SUBTITLE, formatted_url)),
       grey_text(l10n_util::GetNSStringF(
           IDS_IOS_CREDENTIAL_BOTTOM_SHEET_SUBTITLE_WITH_PASSKEYS,
-          url_formatter::FormatUrlForDisplayOmitSchemePathAndTrivialSubdomains(
-              url))),
+          formatted_url)),
       nil);
 }
 
 id<GREYMatcher> SubtitleWithPasskeysString(const GURL& url) {
   return grey_text(l10n_util::GetNSStringF(
       IDS_IOS_CREDENTIAL_BOTTOM_SHEET_SUBTITLE_WITH_PASSKEYS,
-      url_formatter::FormatUrlForDisplayOmitSchemePathAndTrivialSubdomains(
-          url)));
+      FormatUrlForBottomSheetDisplay(url)));
 }
 
 // Returns the matcher for the use password button.
@@ -357,9 +354,8 @@ void VerifyManualFillShowsSignInActionButton(
   [MetricsAppInterface overrideMetricsAndCrashReportingForTesting];
 
   // Set up reauth module.
-  [CredentialSuggestionBottomSheetAppInterface
-      mockReauthenticationModuleExpectedResult:ReauthenticationResult::
-                                                   kSuccess];
+  [ReauthenticationAppInterface mockReauthenticationModuleExpectedResult:
+                                    ReauthenticationResult::kSuccess];
 
   // Make sure the fake passkey keychain provider bridge is set.
   [IOSChromePasskeyClientAppInterface setUpFakePasskeyKeychainProviderBridge];
@@ -406,7 +402,7 @@ void VerifyManualFillShowsSignInActionButton(
     config.features_disabled.push_back(kAutofillBottomSheetNewBlur);
   }
 
-  if ([self isRunningTest:@selector(DISABLED_testAutoSubmission)]) {
+  if ([self isRunningTest:@selector(testAutoSubmission)]) {
     config.features_enabled.push_back(
         password_manager::features::kIOSPasswordAutoSubmission);
   } else {
@@ -1154,8 +1150,7 @@ void VerifyManualFillShowsSignInActionButton(
   GREYWaitForAppToIdle(@"App failed to idle");
 }
 
-// TODO(crbug.com/40279461): Fix flaky test & re-enable.
-- (void)DISABLED_testOpenCredentialBottomSheetExpand {
+- (void)testOpenCredentialBottomSheetExpand {
   NSURL* URL = net::NSURLWithGURL([self loginPageURL]);
   for (int i = 1; i <= 9; i++) {
     [PasswordManagerAppInterface
@@ -1237,8 +1232,7 @@ void VerifyManualFillShowsSignInActionButton(
   [ChromeEarlGrey waitForKeyboardToAppear];
 }
 
-// TODO(crbug.com/40279461): Fix flaky test & re-enable.
-- (void)DISABLED_testOpenCredentialBottomSheetNoUsername {
+- (void)testOpenCredentialBottomSheetNoUsername {
   [PasswordManagerAppInterface
       storeCredentialWithUsername:@""
                          password:@"password"
@@ -1303,8 +1297,7 @@ void VerifyManualFillShowsSignInActionButton(
   [self verifyPasswordFieldsHaveBeenFilled:@"user"];
 }
 
-// TODO(crbug.com/361518360): Unflake the test.
-- (void)DISABLED_testOpenCredentialBottomSheetWithSingleSharedPassword {
+- (void)testOpenCredentialBottomSheetWithSingleSharedPassword {
   NSURL* URL = net::NSURLWithGURL([self loginPageURL]);
 
   // Save 1 password that has been received via sharing and the other not.
@@ -1400,9 +1393,7 @@ void VerifyManualFillShowsSignInActionButton(
   [self verifyPasswordFieldsHaveBeenFilled:@"user1"];
 }
 
-// TODO(crbug.com/361518360): Unflake the test.
-- (void)
-    DISABLED_testOpenCredentialBottomSheetWithSharedPasswordsAndUseKeyboard {
+- (void)testOpenCredentialBottomSheetWithSharedPasswordsAndUseKeyboard {
   // Save a password that has been received via sharing.
   [PasswordManagerAppInterface
       storeCredentialWithUsername:@"user1"
@@ -1524,7 +1515,7 @@ void VerifyManualFillShowsSignInActionButton(
 // [ Checkbox ] (Ignored by heuristic)
 // [ Password ]
 // [ Submit   ]
-- (void)DISABLED_testAutoSubmission {
+- (void)testAutoSubmission {
   GURL URL = self.testServer->GetURL("/auto_submit_test.html");
 
   [PasswordManagerAppInterface

@@ -64,6 +64,7 @@
 #include "third_party/blink/renderer/platform/instrumentation/histogram.h"
 #include "third_party/blink/renderer/platform/instrumentation/tracing/trace_event.h"
 #include "third_party/blink/renderer/platform/instrumentation/use_counter.h"
+#include "third_party/blink/renderer/platform/loader/fetch/memory_cache.h"
 #include "third_party/blink/renderer/platform/weborigin/security_origin.h"
 #include "third_party/blink/renderer/platform/wtf/std_lib_extras.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_builder.h"
@@ -204,17 +205,18 @@ void ScriptController::UpdateDocument() {
 }
 
 void ScriptController::DiscardFrame() {
-  DCHECK(window_->GetFrame());
-  auto* previous_document_loader =
-      window_->GetFrame()->Loader().GetDocumentLoader();
+  LocalFrame* frame = window_->GetFrame();
+  DCHECK(frame);
+  auto* previous_document_loader = frame->Loader().GetDocumentLoader();
   DCHECK(previous_document_loader);
   auto params =
       previous_document_loader->CreateWebNavigationParamsToCloneDocument();
   WebNavigationParams::FillStaticResponse(params.get(), "text/html", "UTF-8",
                                           base::span<const char>());
   params->frame_load_type = WebFrameLoadType::kReplaceCurrentItem;
-  window_->GetFrame()->Loader().CommitNavigation(std::move(params), nullptr,
-                                                 CommitReason::kDiscard);
+  frame->Loader().CommitNavigation(std::move(params), nullptr,
+                                   CommitReason::kDiscard);
+  MemoryCache::Get()->EvictResources();
 }
 
 void ScriptController::ExecuteJavaScriptURL(
@@ -228,6 +230,7 @@ void ScriptController::ExecuteJavaScriptURL(
 
   bool had_navigation_before =
       window_->GetFrame()->Loader().HasProvisionalNavigation();
+  Document* previous_document = window_->document();
 
   // https://html.spec.whatwg.org/multipage/browsing-the-web.html#javascript-protocol
   // Step 6. "Let baseURL be settings's API base URL." [spec text]
@@ -235,6 +238,13 @@ void ScriptController::ExecuteJavaScriptURL(
 
   String script_source = window_->CheckAndGetJavascriptUrl(
       world_for_csp, url, nullptr /* element */, csp_disposition);
+
+  // Executing a Trusted Types default policy in CheckAndGetJavascriptUrl() may
+  // have detached this frame or committed a new document (even if the initial
+  // empty DOMWindow was reused).
+  if (!window_->GetFrame() || window_->document() != previous_document) {
+    return;
+  }
 
   // Step 7. "Let script be the result of creating a classic script given
   // scriptSource, settings, baseURL, and the default classic script fetch
@@ -265,10 +275,12 @@ void ScriptController::ExecuteJavaScriptURL(
     }
   }
 
-  // If executing script caused this frame to be removed from the page, we
-  // don't want to try to replace its document!
-  if (!window_->GetFrame())
+  // If executing script caused this frame to be removed from the page or
+  // committed a new document (even if the initial empty DOMWindow was reused),
+  // we don't want to replace its document!
+  if (!window_->GetFrame() || window_->document() != previous_document) {
     return;
+  }
   // If a navigation begins during the javascript: url's execution, ignore
   // the return value of the script. Otherwise, replacing the document with a
   // string result would cancel the navigation.

@@ -14,6 +14,7 @@ import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabObserver;
 import org.chromium.chrome.browser.url_constants.UrlConstantResolver;
 import org.chromium.chrome.browser.url_constants.UrlConstantResolverFactory;
+import org.chromium.content_public.browser.WebContents;
 import org.chromium.url.GURL;
 
 /**
@@ -23,7 +24,6 @@ import org.chromium.url.GURL;
  */
 @NullMarked
 public class AndroidPrerenderManager {
-    private final long mNativeAndroidPrerenderManager;
     private @Nullable Tab mTab;
     private static @Nullable AndroidPrerenderManager sAndroidPrerenderManager;
 
@@ -69,9 +69,7 @@ public class AndroidPrerenderManager {
         sAndroidPrerenderManager = null;
     }
 
-    private AndroidPrerenderManager() {
-        mNativeAndroidPrerenderManager = AndroidPrerenderManagerJni.get().init();
-    }
+    private AndroidPrerenderManager() {}
 
     /**
      * Link the tab with the AndroidPrerenderManager, and observe the tab.
@@ -90,9 +88,8 @@ public class AndroidPrerenderManager {
      * @param prerenderUrl The url to be prerendered.
      */
     public void startPrerendering(GURL prerenderUrl) {
-        if (mNativeAndroidPrerenderManager == 0 || mTab == null) return;
-        AndroidPrerenderManagerJni.get()
-                .startPrerendering(mNativeAndroidPrerenderManager, prerenderUrl, mTab);
+        if (mTab == null) return;
+        AndroidPrerenderManagerJni.get().startPrerendering(prerenderUrl, mTab);
     }
 
     /**
@@ -100,19 +97,27 @@ public class AndroidPrerenderManager {
      * the on-going but stale prerendering.
      */
     public void stopPrerendering() {
-        if (mNativeAndroidPrerenderManager == 0 || mTab == null) return;
-        AndroidPrerenderManagerJni.get().stopPrerendering(mNativeAndroidPrerenderManager, mTab);
+        if (mTab == null) return;
+        AndroidPrerenderManagerJni.get().stopPrerendering(mTab);
+    }
+
+    /**
+     * Starts prewarming the default search engine page on the given {@link WebContents}.
+     *
+     * @param webContents The {@link WebContents} to start prewarming in.
+     */
+    public static void startPrewarm(@Nullable WebContents webContents) {
+        if (webContents == null) return;
+        AndroidPrerenderManagerJni.get().startPrewarm(webContents);
     }
 
     @NativeMethods
     public interface Natives {
-        long init();
-
         void startPrerendering(
-                long nativeAndroidPrerenderManager,
-                @JniType("GURL") GURL prerenderUrl,
-                @JniType("TabAndroid*") Tab tab);
+                @JniType("GURL") GURL prerenderUrl, @JniType("TabAndroid*") Tab tab);
 
-        void stopPrerendering(long nativeAndroidPrerenderManager, @JniType("TabAndroid*") Tab tab);
+        void stopPrerendering(@JniType("TabAndroid*") Tab tab);
+
+        void startPrewarm(@JniType("content::WebContents*") WebContents webContents);
     }
 }

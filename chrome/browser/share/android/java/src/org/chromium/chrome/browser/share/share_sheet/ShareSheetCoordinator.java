@@ -27,6 +27,7 @@ import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.feature_engagement.TrackerFactory;
 import org.chromium.chrome.browser.lifecycle.ActivityLifecycleDispatcher;
 import org.chromium.chrome.browser.lifecycle.ConfigurationChangedObserver;
+import org.chromium.chrome.browser.printing.PrintingDelegate;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.share.ChromeShareExtras;
 import org.chromium.chrome.browser.share.ChromeShareExtras.DetailedContentType;
@@ -46,7 +47,6 @@ import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetObserver;
 import org.chromium.components.browser_ui.device_lock.DeviceLockActivityLauncher;
 import org.chromium.components.browser_ui.share.ShareParams;
-import org.chromium.components.favicon.LargeIconBridge;
 import org.chromium.components.feature_engagement.EventConstants;
 import org.chromium.components.feature_engagement.Tracker;
 import org.chromium.ui.base.ActivityResultTracker;
@@ -70,10 +70,9 @@ public class ShareSheetCoordinator
     private final BottomSheetController mBottomSheetController;
     private final Supplier<@Nullable Tab> mTabProvider;
     private final ShareSheetPropertyModelBuilder mPropertyModelBuilder;
-    private final Callback<Tab> mPrintTabCallback;
+    private final @Nullable PrintingDelegate mPrintingDelegate;
     private final boolean mIsIncognito;
     private final BottomSheetObserver mBottomSheetObserver;
-    private final LargeIconBridge mIconBridge;
     private final Tracker mFeatureEngagementTracker;
     private final Profile mProfile;
 
@@ -123,8 +122,7 @@ public class ShareSheetCoordinator
             BottomSheetController controller,
             ActivityLifecycleDispatcher lifecycleDispatcher,
             Supplier<@Nullable Tab> tabProvider,
-            Callback<Tab> printTab,
-            LargeIconBridge iconBridge,
+            @Nullable PrintingDelegate printingDelegate,
             boolean isIncognito,
             Tracker featureEngagementTracker,
             Profile profile,
@@ -137,7 +135,7 @@ public class ShareSheetCoordinator
         mLifecycleDispatcher = lifecycleDispatcher;
         mLifecycleDispatcher.register(this);
         mTabProvider = tabProvider;
-        mPrintTabCallback = printTab;
+        mPrintingDelegate = printingDelegate;
         mIsIncognito = isIncognito;
         mSigninAndHistorySyncActivityLauncher = signinAndHistorySyncActivityLauncher;
         mActivityResultTracker = activityResultTracker;
@@ -162,7 +160,6 @@ public class ShareSheetCoordinator
                     }
                 };
         mBottomSheetController.addObserver(mBottomSheetObserver);
-        mIconBridge = iconBridge;
         mFeatureEngagementTracker = featureEngagementTracker;
         mProfile = profile;
         mDeviceLockActivityLauncher = deviceLockActivityLauncher;
@@ -215,7 +212,10 @@ public class ShareSheetCoordinator
             mShareParams = mShareSheetLinkToggleCoordinator.getDefaultShareParams();
         }
         @Nullable Activity activity = params.getWindow().getActivity().get();
-        if (activity == null) return;
+        if (activity == null) {
+            destroy();
+            return;
+        }
         finishInitializationWithActivity(activity, params, shareStartTime);
     }
 
@@ -230,9 +230,7 @@ public class ShareSheetCoordinator
             }
         }
 
-        mBottomSheet =
-                new ShareSheetBottomSheetContent(
-                        mActivity, mProfile, mIconBridge, this, params, mFeatureEngagementTracker);
+        mBottomSheet = new ShareSheetBottomSheetContent(mActivity, this, params, mProfile);
 
         mShareStartTime = shareStartTime;
         mLinkGenerationStatusForMetrics = mBottomSheet.getLinkGenerationState();
@@ -376,7 +374,7 @@ public class ShareSheetCoordinator
                         mBottomSheetController,
                         mBottomSheet,
                         shareParams,
-                        mPrintTabCallback,
+                        mPrintingDelegate,
                         mIsIncognito,
                         mShareStartTime,
                         this,

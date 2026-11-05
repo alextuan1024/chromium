@@ -11,7 +11,9 @@
 #include "base/notreached.h"
 #include "base/task/bind_post_task.h"
 #include "base/task/single_thread_task_runner.h"
+#include "content/renderer/render_frame_impl.h"
 #include "third_party/blink/public/mojom/permissions/permission_status.mojom.h"
+#include "third_party/blink/public/platform/task_type.h"
 #include "third_party/blink/public/web/web_local_frame.h"
 #include "url/gurl.h"
 
@@ -45,7 +47,10 @@ namespace content {
 
 MediaPermissionDispatcher::MediaPermissionDispatcher(
     RenderFrameImpl* render_frame)
-    : task_runner_(base::SingleThreadTaskRunner::GetCurrentDefault()),
+    : task_runner_(
+          // Use `kInternalMedia` rather than `kPermission` so media permission
+          // replies are not deferred during user gestures when playback starts.
+          render_frame->GetTaskRunner(blink::TaskType::kInternalMedia)),
       next_request_id_(0),
       render_frame_(render_frame) {
   DCHECK(render_frame_);
@@ -121,7 +126,10 @@ uint32_t MediaPermissionDispatcher::RegisterCallback(
 
   uint32_t request_id = next_request_id_++;
   DCHECK(!requests_.contains(request_id));
-  requests_[request_id] = std::move(permission_status_cb);
+  // Ensure callbacks never run synchronously on a caller stack, because this
+  // can be re-entrant with destruction.
+  requests_[request_id] =
+      base::BindPostTask(task_runner_, std::move(permission_status_cb));
 
   return request_id;
 }
@@ -130,7 +138,7 @@ blink::mojom::PermissionService*
 MediaPermissionDispatcher::GetPermissionService() {
   if (!permission_service_) {
     render_frame_->GetBrowserInterfaceBroker().GetInterface(
-        permission_service_.BindNewPipeAndPassReceiver());
+        permission_service_.BindNewPipeAndPassReceiver(task_runner_));
     permission_service_.set_disconnect_handler(base::BindOnce(
         &MediaPermissionDispatcher::OnPermissionServiceConnectionError,
         base::Unretained(this)));
@@ -166,7 +174,7 @@ media::mojom::MediaFoundationPreferences*
 MediaPermissionDispatcher::GetMediaFoundationPreferences() {
   if (!mf_preferences_) {
     render_frame_->GetBrowserInterfaceBroker().GetInterface(
-        mf_preferences_.BindNewPipeAndPassReceiver());
+        mf_preferences_.BindNewPipeAndPassReceiver(task_runner_));
     mf_preferences_.set_disconnect_handler(base::BindOnce(
         &MediaPermissionDispatcher::OnMediaFoundationPreferencesConnectionError,
         base::Unretained(this)));

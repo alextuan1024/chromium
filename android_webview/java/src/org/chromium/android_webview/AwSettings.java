@@ -18,7 +18,10 @@ import androidx.annotation.VisibleForTesting;
 
 import org.jni_zero.CalledByNative;
 import org.jni_zero.JNINamespace;
+import org.jni_zero.JniPtr;
+import org.jni_zero.JniRawPtr;
 import org.jni_zero.JniType;
+import org.jni_zero.JniTypeToken;
 import org.jni_zero.NativeMethods;
 
 import org.chromium.android_webview.client_hints.AwUserAgentMetadata;
@@ -182,6 +185,7 @@ public class AwSettings {
     private boolean mSpatialNavigationEnabled; // Default depends on device features.
     private boolean mDownloadFaviconsEnabled = true;
     private boolean mEnableSupportedHardwareAcceleratedFeatures;
+    private boolean mWebGraphicsEnabled = true;
     private int mMixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW;
 
     @SpeculativeLoadingAllowedFlags
@@ -229,6 +233,13 @@ public class AwSettings {
     private boolean mShouldFocusFirstNode = true;
     private boolean mGeolocationEnabled = true;
     private boolean mFullscreenSupported;
+    // WebSurface does not yet support fullscreen so when it is bound, we will explicitly prevent
+    // fullscreen from being entered.
+    // Our logic assumes that if a developer has implemented the fullscreen methods in our
+    // client, we should enable fullscreen mode.
+    // We are implementing these methods in AndroidX to mark them as deprecated so we need
+    // to force disable fullscreen here.
+    private boolean mForceFullscreenUnsupported;
     private boolean mSupportZoom = true;
     private boolean mBuiltInZoomControls;
     private boolean mDisplayZoomControls = true;
@@ -254,8 +265,11 @@ public class AwSettings {
                 AwSettingsJni.get().getDefaultUserAgentMetadata();
     }
 
+    @JniType("::android_webview::AwSettings")
+    interface NativeAwSettings extends JniTypeToken {}
+
     // The native side of this object. It's lifetime is bounded by the WebContent it is attached to.
-    private long mNativeAwSettings;
+    private @Nullable JniRawPtr<NativeAwSettings> mNativeAwSettings;
 
     // Custom handler that queues messages to call native code on the UI thread.
     private final EventHandler mEventHandler;
@@ -284,7 +298,7 @@ public class AwSettings {
                             switch (msg.what) {
                                 case RUN_RUNNABLE_BLOCKING:
                                     synchronized (mAwSettingsLock) {
-                                        if (mNativeAwSettings != 0) {
+                                        if (mNativeAwSettings != null) {
                                             ((Runnable) msg.obj).run();
                                         }
                                         mSynchronizationPending = false;
@@ -467,9 +481,13 @@ public class AwSettings {
     }
 
     @CalledByNative
-    private void nativeAwSettingsGone(long nativeAwSettings) {
-        assert mNativeAwSettings != 0 && mNativeAwSettings == nativeAwSettings;
-        mNativeAwSettings = 0;
+    private void nativeAwSettingsGone() {
+        synchronized (mAwSettingsLock) {
+            assert mNativeAwSettings != null;
+            mAwContents.unregisterSafePointer(mNativeAwSettings);
+            mNativeAwSettings.release();
+            mNativeAwSettings = null;
+        }
     }
 
     @CalledByNative
@@ -522,13 +540,14 @@ public class AwSettings {
 
     void setWebContents(WebContents webContents) {
         synchronized (mAwSettingsLock) {
-            if (mNativeAwSettings != 0) {
+            if (mNativeAwSettings != null) {
                 AwSettingsJni.get().destroy(mNativeAwSettings, AwSettings.this);
-                assert mNativeAwSettings == 0; // nativeAwSettingsGone should have been called.
+                assert mNativeAwSettings == null; // nativeAwSettingsGone should have been called.
             }
             if (webContents != null) {
                 mEventHandler.bindUiThread();
                 mNativeAwSettings = AwSettingsJni.get().init(AwSettings.this, webContents);
+                mAwContents.registerSafePointer(mNativeAwSettings);
                 updateEverythingLocked();
                 WebauthnModeProvider.getInstance()
                         .setWebauthnModeForWebContents(webContents, mWebauthnMode);
@@ -540,7 +559,7 @@ public class AwSettings {
 
     private void updateEverythingLocked() {
         assert Thread.holdsLock(mAwSettingsLock);
-        assert mNativeAwSettings != 0;
+        assert mNativeAwSettings != null;
         AwSettingsJni.get().updateEverythingLocked(mNativeAwSettings, AwSettings.this);
         onGestureZoomSupportChanged(supportsDoubleTapZoomLocked(), supportsMultiTouchZoomLocked());
     }
@@ -569,6 +588,7 @@ public class AwSettings {
 
     /**
      * Enable/disable third party cookies for an AwContents
+     *
      * @param accept true if we should accept third party cookies
      */
     public void setAcceptThirdPartyCookies(boolean accept) {
@@ -601,6 +621,7 @@ public class AwSettings {
 
     /**
      * Return whether third party cookies are enabled for an AwContents
+     *
      * @return true if accept third party cookies
      */
     public boolean getAcceptThirdPartyCookies() {
@@ -617,6 +638,7 @@ public class AwSettings {
 
     /**
      * Return whether Safe Browsing has been enabled for the current WebView
+     *
      * @return true if SafeBrowsing is enabled
      */
     public boolean getSafeBrowsingEnabled() {
@@ -631,9 +653,14 @@ public class AwSettings {
     /** See {@link android.webkit.WebSettings#setAllowFileAccess}. */
     public void setAllowFileAccess(boolean allow) {
         if (TRACE) Log.i(TAG, "setAllowFileAccess=" + allow);
+        RecordHistogram.recordBooleanHistogram("Android.WebView.SetAllowFileAccess", allow);
         synchronized (mAwSettingsLock) {
+            boolean changed = mAllowFileUrlAccess != allow;
             mAllowFileUrlAccess = allow;
             mEventHandler.updateAllowFileAccessLocked();
+            if (changed) {
+                mEventHandler.updateWebkitPreferencesLocked();
+            }
         }
     }
 
@@ -661,6 +688,7 @@ public class AwSettings {
     /** Returns whether a navigation will download a Favicon or not */
     public boolean getDownloadFaviconsEnabled() {
         synchronized (mAwSettingsLock) {
+            assert mNativeAwSettings != null;
             return AwSettingsJni.get().getShouldDownloadFaviconsOnNavigation(mNativeAwSettings);
         }
     }
@@ -674,6 +702,7 @@ public class AwSettings {
     /** See {@link android.webkit.WebSettings#setAllowContentAccess}. */
     public void setAllowContentAccess(boolean allow) {
         if (TRACE) Log.i(TAG, "setAllowContentAccess=" + allow);
+        RecordHistogram.recordBooleanHistogram("Android.WebView.SetAllowContentAccess", allow);
         synchronized (mAwSettingsLock) {
             if (mAllowContentUrlAccess != allow) {
                 flushBackForwardCacheOnUiThreadLocked();
@@ -777,10 +806,19 @@ public class AwSettings {
         }
     }
 
+    void setForceFullscreenUnsupported(boolean forceUnsupported) {
+        synchronized (mAwSettingsLock) {
+            if (mForceFullscreenUnsupported != forceUnsupported) {
+                mForceFullscreenUnsupported = forceUnsupported;
+                mEventHandler.updateWebkitPreferencesLocked();
+            }
+        }
+    }
+
     @CalledByNative
     private boolean getFullscreenSupportedLocked() {
         assert Thread.holdsLock(mAwSettingsLock);
-        return mFullscreenSupported;
+        return mFullscreenSupported && !mForceFullscreenUnsupported;
     }
 
     /** See {@link android.webkit.WebSettings#setNeedInitialFocus}. */
@@ -802,9 +840,7 @@ public class AwSettings {
         }
     }
 
-    /**
-     * @return Returns if geolocation is currently enabled.
-     */
+    /** Returns whether geolocation is currently enabled. */
     @CalledByNative
     @VisibleForTesting(otherwise = VisibleForTesting.PACKAGE_PRIVATE)
     public boolean getGeolocationEnabled() {
@@ -823,16 +859,16 @@ public class AwSettings {
     }
 
     /**
-     * @return the default User-Agent used by each WebContents instance, i.e. unless overridden by
-     *     {@link #setUserAgentString()}
+     * Returns the default User-Agent used by each WebContents instance, i.e. unless overridden by
+     * {@link #setUserAgentString()}.
      */
     public static String getDefaultUserAgent() {
         return LazyDefaultUserAgent.sInstance;
     }
 
     /**
-     * @return the default metadata for user-agent client hints used by each WebContents instance,
-     *     i.e. unless overridden by {@link #setUserAgentMetadata()}
+     * Returns the default metadata for user-agent client hints used by each WebContents instance,
+     * i.e. unless overridden by {@link #setUserAgentMetadata()}.
      */
     public static AwUserAgentMetadata getDefaultUserAgentMetadata() {
         return LazyDefaultUserAgentMetadata.sInstance;
@@ -876,8 +912,8 @@ public class AwSettings {
     }
 
     /**
-     * See {@link androidx.webkit.WebSettingsCompat#setUserAgentMetadata}.
-     * Map<String, Object> represents the priorities name its value for AwUserAgentMetadata.
+     * See {@link androidx.webkit.WebSettingsCompat#setUserAgentMetadata}. Map<String, Object>
+     * represents the priorities name its value for AwUserAgentMetadata.
      */
     public void setUserAgentMetadataFromMap(Map<String, Object> uaMetadataMap) {
         if (TRACE) Log.i(TAG, "setUserAgentMetadata=" + uaMetadataMap);
@@ -927,7 +963,7 @@ public class AwSettings {
                 mLoadWithOverviewMode = overview;
                 mEventHandler.runOnUiThreadBlockingAndLocked(
                         () -> {
-                            if (mNativeAwSettings != 0) {
+                            if (mNativeAwSettings != null) {
                                 updateWebkitPreferencesOnUiThreadLocked();
                                 AwSettingsJni.get()
                                         .resetScrollAndScaleState(
@@ -1234,6 +1270,8 @@ public class AwSettings {
     /** See {@link android.webkit.WebSettings#setAllowUniversalAccessFromFileURLs}. */
     public void setAllowUniversalAccessFromFileUrls(boolean flag) {
         if (TRACE) Log.i(TAG, "setAllowUniversalAccessFromFileURLs=" + flag);
+        RecordHistogram.recordBooleanHistogram(
+                "Android.WebView.SetAllowUniversalAccessFromFileURLs", flag);
         synchronized (mAwSettingsLock) {
             if (mAllowUniversalAccessFromFileUrls != flag) {
                 mAllowUniversalAccessFromFileUrls = flag;
@@ -1245,6 +1283,8 @@ public class AwSettings {
     /** See {@link android.webkit.WebSettings#setAllowFileAccessFromFileURLs}. */
     public void setAllowFileAccessFromFileUrls(boolean flag) {
         if (TRACE) Log.i(TAG, "setAllowFileAccessFromFileURLs=" + flag);
+        RecordHistogram.recordBooleanHistogram(
+                "Android.WebView.SetAllowFileAccessFromFileURLs", flag);
         synchronized (mAwSettingsLock) {
             if (mAllowFileAccessFromFileUrls != flag) {
                 mAllowFileAccessFromFileUrls = flag;
@@ -1811,9 +1851,6 @@ public class AwSettings {
     }
 
     public void setMixedContentMode(int mode) {
-        // Using explicit max count for the histogram since enum is defined in Android code. The
-        // values can be trusted to remain stable since they are defined in the Android API.
-        RecordHistogram.recordEnumeratedHistogram("Android.WebView.MixedContent.Mode", mode, 3);
         synchronized (mAwSettingsLock) {
             if (mMixedContentMode != mode) {
                 mMixedContentMode = mode;
@@ -1992,14 +2029,14 @@ public class AwSettings {
 
     public boolean isForceDarkApplied() {
         synchronized (mAwSettingsLock) {
-            assert mNativeAwSettings != 0;
+            assert mNativeAwSettings != null;
             return AwSettingsJni.get().isForceDarkApplied(mNativeAwSettings, AwSettings.this);
         }
     }
 
     public boolean prefersDarkFromTheme() {
         synchronized (mAwSettingsLock) {
-            assert mNativeAwSettings != 0;
+            assert mNativeAwSettings != null;
             return AwSettingsJni.get().prefersDarkFromTheme(mNativeAwSettings, AwSettings.this);
         }
     }
@@ -2054,7 +2091,6 @@ public class AwSettings {
         return false;
     }
 
-
     public boolean getOffscreenPreRaster() {
         synchronized (mAwSettingsLock) {
             return getOffscreenPreRasterLocked();
@@ -2068,15 +2104,17 @@ public class AwSettings {
     }
 
     /**
-     * Sets whether this WebView should raster tiles when it is
-     * offscreen but attached to window. Turning this on can avoid
-     * rendering artifacts when animating an offscreen WebView on-screen.
-     * In particular, insertVisualStateCallback requires this mode to function.
-     * Offscreen WebViews in this mode uses more memory. Please follow
-     * these guidelines to limit memory usage:
-     * - Webview size should be not be larger than the device screen size.
-     * - Limit simple mode to a small number of webviews. Use it for
-     *   visible webviews and webviews about to be animated to visible.
+     * Sets whether this WebView should raster tiles when it is offscreen but attached to window.
+     *
+     * <p>Turning this on can avoid rendering artifacts when animating an offscreen WebView
+     * on-screen. In particular, insertVisualStateCallback requires this mode to function. Offscreen
+     * WebViews in this mode uses more memory. Please follow these guidelines to limit memory usage:
+     *
+     * <ul>
+     *   <li>Webview size should be not be larger than the device screen size.
+     *   <li>Limit simple mode to a small number of webviews. Use it for visible webviews and
+     *       webviews about to be animated to visible.
+     * </ul>
      */
     public void setOffscreenPreRaster(boolean enabled) {
         synchronized (mAwSettingsLock) {
@@ -2158,7 +2196,7 @@ public class AwSettings {
     @CalledByNative
     private void populateWebPreferences(long webPrefsPtr) {
         synchronized (mAwSettingsLock) {
-            assert mNativeAwSettings != 0;
+            assert mNativeAwSettings != null;
             AwSettingsJni.get()
                     .populateWebPreferencesLocked(mNativeAwSettings, AwSettings.this, webPrefsPtr);
         }
@@ -2168,7 +2206,7 @@ public class AwSettings {
         assert mEventHandler.mHandler != null;
         ThreadUtils.assertOnUiThread();
         flushBackForwardCache();
-        if (mNativeAwSettings != 0) {
+        if (mNativeAwSettings != null) {
             AwSettingsJni.get().updateInitialPageScaleLocked(mNativeAwSettings, AwSettings.this);
         }
     }
@@ -2177,7 +2215,7 @@ public class AwSettings {
         assert mEventHandler.mHandler != null;
         ThreadUtils.assertOnUiThread();
         flushBackForwardCache();
-        if (mNativeAwSettings != 0) {
+        if (mNativeAwSettings != null) {
             AwSettingsJni.get().updateUserAgentLocked(mNativeAwSettings, AwSettings.this);
         }
     }
@@ -2186,7 +2224,7 @@ public class AwSettings {
         assert mEventHandler.mHandler != null;
         ThreadUtils.assertOnUiThread();
         flushBackForwardCache();
-        if (mNativeAwSettings != 0) {
+        if (mNativeAwSettings != null) {
             AwSettingsJni.get().updateWebkitPreferencesLocked(mNativeAwSettings, AwSettings.this);
         }
     }
@@ -2195,7 +2233,7 @@ public class AwSettings {
         assert mEventHandler.mHandler != null;
         ThreadUtils.assertOnUiThread();
         flushBackForwardCache();
-        if (mNativeAwSettings != 0) {
+        if (mNativeAwSettings != null) {
             AwSettingsJni.get().updateRendererPreferencesLocked(mNativeAwSettings, AwSettings.this);
         }
     }
@@ -2204,7 +2242,7 @@ public class AwSettings {
         assert mEventHandler.mHandler != null;
         ThreadUtils.assertOnUiThread();
         flushBackForwardCache();
-        if (mNativeAwSettings != 0) {
+        if (mNativeAwSettings != null) {
             AwSettingsJni.get().updateOffscreenPreRasterLocked(mNativeAwSettings, AwSettings.this);
         }
     }
@@ -2213,7 +2251,7 @@ public class AwSettings {
         assert mEventHandler.mHandler != null;
         ThreadUtils.assertOnUiThread();
         flushBackForwardCache();
-        if (mNativeAwSettings != 0) {
+        if (mNativeAwSettings != null) {
             AwSettingsJni.get()
                     .updateWillSuppressErrorStateLocked(mNativeAwSettings, AwSettings.this);
         }
@@ -2223,7 +2261,7 @@ public class AwSettings {
         assert mEventHandler.mHandler != null;
         ThreadUtils.assertOnUiThread();
         flushBackForwardCache();
-        if (mNativeAwSettings != 0) {
+        if (mNativeAwSettings != null) {
             AwSettingsJni.get().updateCookiePolicyLocked(mNativeAwSettings, AwSettings.this);
         }
     }
@@ -2232,7 +2270,7 @@ public class AwSettings {
         assert mEventHandler.mHandler != null;
         ThreadUtils.assertOnUiThread();
         flushBackForwardCache();
-        if (mNativeAwSettings != 0) {
+        if (mNativeAwSettings != null) {
             AwSettingsJni.get().updateAllowFileAccessLocked(mNativeAwSettings, AwSettings.this);
         }
     }
@@ -2240,7 +2278,7 @@ public class AwSettings {
     private void updateSpeculativeLoadingAllowedOnUiThreadLocked() {
         assert mEventHandler.mHandler != null;
         ThreadUtils.assertOnUiThread();
-        if (mNativeAwSettings != 0) {
+        if (mNativeAwSettings != null) {
             AwSettingsJni.get()
                     .updateSpeculativeLoadingAllowedLocked(mNativeAwSettings, AwSettings.this);
         }
@@ -2249,7 +2287,7 @@ public class AwSettings {
     private void updateDownloadFaviconsEnabledOnUiThreadLocked() {
         assert mEventHandler.mHandler != null;
         ThreadUtils.assertOnUiThread();
-        if (mNativeAwSettings != 0) {
+        if (mNativeAwSettings != null) {
             AwSettingsJni.get()
                     .updateDownloadFaviconsEnabledLocked(mNativeAwSettings, AwSettings.this);
         }
@@ -2258,14 +2296,14 @@ public class AwSettings {
     private void updateBackForwardCacheEnabledOnUiThreadLocked() {
         assert mEventHandler.mHandler != null;
         ThreadUtils.assertOnUiThread();
-        if (mNativeAwSettings == 0) return;
+        if (mNativeAwSettings == null) return;
         AwSettingsJni.get().updateBackForwardCacheEnabledLocked(mNativeAwSettings, AwSettings.this);
     }
 
     private void updateBackForwardCacheSettingsTimeoutOnUiThreadLocked() {
         assert mEventHandler.mHandler != null;
         ThreadUtils.assertOnUiThread();
-        if (mNativeAwSettings == 0) return;
+        if (mNativeAwSettings == null) return;
         AwSettingsJni.get()
                 .updateBackForwardCacheSettingsTimeoutLocked(mNativeAwSettings, AwSettings.this);
     }
@@ -2273,7 +2311,7 @@ public class AwSettings {
     private void updateBackForwardCacheSettingsMaxPagesInCacheOnUiThreadLocked() {
         assert mEventHandler.mHandler != null;
         ThreadUtils.assertOnUiThread();
-        if (mNativeAwSettings == 0) return;
+        if (mNativeAwSettings == null) return;
         AwSettingsJni.get()
                 .updateBackForwardCacheSettingsMaxPagesInCacheLocked(
                         mNativeAwSettings, AwSettings.this);
@@ -2282,7 +2320,7 @@ public class AwSettings {
     private void updateBackForwardCacheSettingsKeepForwardEntriesOnUiThreadLocked() {
         assert mEventHandler.mHandler != null;
         ThreadUtils.assertOnUiThread();
-        if (mNativeAwSettings == 0) return;
+        if (mNativeAwSettings == null) return;
         AwSettingsJni.get()
                 .updateBackForwardCacheSettingsKeepForwardEntriesLocked(
                         mNativeAwSettings, AwSettings.this);
@@ -2291,7 +2329,7 @@ public class AwSettings {
     private void updateGeolocationEnabledOnUiThreadLocked() {
         assert mEventHandler.mHandler != null;
         ThreadUtils.assertOnUiThread();
-        if (mNativeAwSettings != 0) {
+        if (mNativeAwSettings != null) {
             AwSettingsJni.get().updateGeolocationEnabledLocked(mNativeAwSettings, AwSettings.this);
         }
     }
@@ -2301,7 +2339,7 @@ public class AwSettings {
             mEventHandler.runOnUiThreadBlockingAndLocked(
                     () -> {
                         flushBackForwardCache();
-                        if (mNativeAwSettings != 0) {
+                        if (mNativeAwSettings != null) {
                             AwSettingsJni.get()
                                     .setEnterpriseAuthenticationAppLinkPolicyEnabled(
                                             mNativeAwSettings, AwSettings.this, enabled);
@@ -2312,7 +2350,7 @@ public class AwSettings {
 
     public boolean getEnterpriseAuthenticationAppLinkPolicyEnabled() {
         synchronized (mAwSettingsLock) {
-            assert mNativeAwSettings != 0;
+            assert mNativeAwSettings != null;
             return AwSettingsJni.get()
                     .getEnterpriseAuthenticationAppLinkPolicyEnabled(
                             mNativeAwSettings, AwSettings.this);
@@ -2420,6 +2458,36 @@ public class AwSettings {
         }
     }
 
+    /**
+     * Sets whether web graphics APIs (WebGL 1, WebGL 2 and WebGPU) are available to content in this
+     * WebView. Defaults to true. Has no effect unless the WebViewWebGraphicsSwitchEnabled feature
+     * is enabled.
+     */
+    public void setWebGraphicsEnabled(boolean enabled) {
+        if (TRACE) Log.i(TAG, "setWebGraphicsEnabled=" + enabled);
+        synchronized (mAwSettingsLock) {
+            if (!AwFeatureMap.isEnabled(AwFeatures.WEBVIEW_WEB_GRAPHICS_SWITCH_ENABLED)) {
+                return;
+            }
+            if (mWebGraphicsEnabled != enabled) {
+                mWebGraphicsEnabled = enabled;
+                mEventHandler.updateWebkitPreferencesLocked();
+            }
+        }
+    }
+
+    public boolean getWebGraphicsEnabled() {
+        synchronized (mAwSettingsLock) {
+            return getWebGraphicsEnabledLocked();
+        }
+    }
+
+    @CalledByNative
+    private boolean getWebGraphicsEnabledLocked() {
+        assert Thread.holdsLock(mAwSettingsLock);
+        return mWebGraphicsEnabled;
+    }
+
     private void updateFontScaleLocked() {
         if (mTextZoomSetByEmbedder) {
             return;
@@ -2442,68 +2510,70 @@ public class AwSettings {
 
     @NativeMethods
     interface Natives {
-        long init(AwSettings caller, WebContents webContents);
+        JniRawPtr<NativeAwSettings> init(AwSettings caller, WebContents webContents);
 
-        void destroy(long nativeAwSettings, AwSettings caller);
+        void destroy(JniPtr<NativeAwSettings> self, AwSettings caller);
 
         AwSettings fromWebContents(WebContents webContents);
 
         void populateWebPreferencesLocked(
-                long nativeAwSettings, AwSettings caller, long webPrefsPtr);
+                JniPtr<NativeAwSettings> self, AwSettings caller, long webPrefsPtr);
 
-        void resetScrollAndScaleState(long nativeAwSettings, AwSettings caller);
+        void resetScrollAndScaleState(JniPtr<NativeAwSettings> self, AwSettings caller);
 
-        void updateEverythingLocked(long nativeAwSettings, AwSettings caller);
+        void updateEverythingLocked(JniPtr<NativeAwSettings> self, AwSettings caller);
 
-        void updateInitialPageScaleLocked(long nativeAwSettings, AwSettings caller);
+        void updateInitialPageScaleLocked(JniPtr<NativeAwSettings> self, AwSettings caller);
 
-        void updateUserAgentLocked(long nativeAwSettings, AwSettings caller);
+        void updateUserAgentLocked(JniPtr<NativeAwSettings> self, AwSettings caller);
 
-        void updateWebkitPreferencesLocked(long nativeAwSettings, AwSettings caller);
+        void updateWebkitPreferencesLocked(JniPtr<NativeAwSettings> self, AwSettings caller);
 
         @JniType("std::string")
         String getDefaultUserAgent();
 
         AwUserAgentMetadata getDefaultUserAgentMetadata();
 
-        void updateRendererPreferencesLocked(long nativeAwSettings, AwSettings caller);
+        void updateRendererPreferencesLocked(JniPtr<NativeAwSettings> self, AwSettings caller);
 
-        void updateOffscreenPreRasterLocked(long nativeAwSettings, AwSettings caller);
+        void updateOffscreenPreRasterLocked(JniPtr<NativeAwSettings> self, AwSettings caller);
 
-        void updateWillSuppressErrorStateLocked(long nativeAwSettings, AwSettings caller);
+        void updateWillSuppressErrorStateLocked(JniPtr<NativeAwSettings> self, AwSettings caller);
 
-        void updateCookiePolicyLocked(long nativeAwSettings, AwSettings caller);
+        void updateCookiePolicyLocked(JniPtr<NativeAwSettings> self, AwSettings caller);
 
-        void updateAllowFileAccessLocked(long nativeAwSettings, AwSettings caller);
+        void updateAllowFileAccessLocked(JniPtr<NativeAwSettings> self, AwSettings caller);
 
-        void updateSpeculativeLoadingAllowedLocked(long nativeAwSettings, AwSettings caller);
+        void updateSpeculativeLoadingAllowedLocked(
+                JniPtr<NativeAwSettings> self, AwSettings caller);
 
-        void updateBackForwardCacheEnabledLocked(long nativeAwSettings, AwSettings caller);
+        void updateBackForwardCacheEnabledLocked(JniPtr<NativeAwSettings> self, AwSettings caller);
 
-        void updateBackForwardCacheSettingsTimeoutLocked(long nativeAwSettings, AwSettings caller);
+        void updateBackForwardCacheSettingsTimeoutLocked(
+                JniPtr<NativeAwSettings> self, AwSettings caller);
 
         void updateBackForwardCacheSettingsMaxPagesInCacheLocked(
-                long nativeAwSettings, AwSettings caller);
+                JniPtr<NativeAwSettings> self, AwSettings caller);
 
         void updateBackForwardCacheSettingsKeepForwardEntriesLocked(
-                long nativeAwSettings, AwSettings caller);
+                JniPtr<NativeAwSettings> self, AwSettings caller);
 
-        boolean isForceDarkApplied(long nativeAwSettings, AwSettings caller);
+        boolean isForceDarkApplied(JniPtr<NativeAwSettings> self, AwSettings caller);
 
-        boolean prefersDarkFromTheme(long nativeAwSettings, AwSettings caller);
+        boolean prefersDarkFromTheme(JniPtr<NativeAwSettings> self, AwSettings caller);
 
         void setEnterpriseAuthenticationAppLinkPolicyEnabled(
-                long nativeAwSettings, AwSettings caller, boolean enabled);
+                JniPtr<NativeAwSettings> self, AwSettings caller, boolean enabled);
 
         boolean getEnterpriseAuthenticationAppLinkPolicyEnabled(
-                long nativeAwSettings, AwSettings caller);
+                JniPtr<NativeAwSettings> self, AwSettings caller);
 
-        void updateGeolocationEnabledLocked(long nativeAwSettings, AwSettings caller);
+        void updateGeolocationEnabledLocked(JniPtr<NativeAwSettings> self, AwSettings caller);
 
-        void updateDownloadFaviconsEnabledLocked(long nativeAwSettings, AwSettings caller);
+        void updateDownloadFaviconsEnabledLocked(JniPtr<NativeAwSettings> self, AwSettings caller);
 
         void setShouldDownloadFaviconsGlobal();
 
-        boolean getShouldDownloadFaviconsOnNavigation(long nativeAwSettings);
+        boolean getShouldDownloadFaviconsOnNavigation(JniPtr<NativeAwSettings> self);
     }
 }

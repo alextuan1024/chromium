@@ -39,6 +39,7 @@
 #include "cc/input/snap_selection_strategy.h"
 #include "net/base/registry_controlled_domains/registry_controlled_domain.h"
 #include "net/storage_access_api/status.h"
+#include "third_party/blink/public/common/dom/dom_node_id.h"
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/common/switches.h"
 #include "third_party/blink/public/mojom/devtools/inspector_issue.mojom-blink.h"
@@ -108,7 +109,6 @@
 #include "third_party/blink/renderer/core/frame/visual_viewport.h"
 #include "third_party/blink/renderer/core/html/custom/custom_element_registry.h"
 #include "third_party/blink/renderer/core/html/custom/custom_element_registry_assignment.h"
-#include "third_party/blink/renderer/core/html/fenced_frame/fence.h"
 #include "third_party/blink/renderer/core/html/forms/form_controller.h"
 #include "third_party/blink/renderer/core/html/html_frame_owner_element.h"
 #include "third_party/blink/renderer/core/html/plugin_document.h"
@@ -166,7 +166,6 @@
 #include "third_party/blink/renderer/platform/weborigin/kurl.h"
 #include "third_party/blink/renderer/platform/weborigin/security_origin.h"
 #include "third_party/blink/renderer/platform/widget/frame_widget.h"
-#include "third_party/blink/renderer/platform/wtf/cross_thread_copier_std.h"
 #include "third_party/blink/renderer/platform/wtf/cross_thread_functional.h"
 #include "third_party/blink/renderer/platform/wtf/text/strcat.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
@@ -226,6 +225,7 @@ class LocalDOMWindow::NetworkStateObserver final
 
   void Trace(Visitor* visitor) const override {
     ExecutionContextLifecycleObserver::Trace(visitor);
+    NetworkStateNotifier::NetworkStateObserver::Trace(visitor);
   }
 
  private:
@@ -284,7 +284,9 @@ void LocalDOMWindow::ClearForReuse() {
   }
   document_ = nullptr;
 
-  WindowPerformance::ClearForWindowReuse(*this);
+  // TODO(crbug.com/580495627): Avoid force-allocating WindowPerformance if it
+  // hasn't been created yet.
+  DOMWindowPerformance::performance(*this)->ClearForWindowReuse();
 }
 
 void LocalDOMWindow::ResetWindowAgent(WindowAgent* agent) {
@@ -573,7 +575,9 @@ String LocalDOMWindow::CheckAndGetJavascriptUrl(
   return script_source;
 }
 
-void LocalDOMWindow::ExceptionThrown(ErrorEvent* event) {
+void LocalDOMWindow::ExceptionThrown(
+    ErrorEvent* event,
+    SanitizeScriptErrors sanitize_script_errors) {
   MainThreadDebugger::Instance(GetIsolate())->ExceptionThrown(this, event);
 }
 
@@ -819,7 +823,7 @@ void LocalDOMWindow::AddConsoleMessageImpl(ConsoleMessage* console_message,
         line_number = parser->LineNumber().OneBasedInt();
       }
     }
-    Vector<DOMNodeId> nodes(console_message->Nodes());
+    Vector<DOMNodeIdType> nodes(console_message->Nodes());
     std::optional<mojom::blink::ConsoleMessageCategory> category =
         console_message->Category();
     console_message = MakeGarbageCollected<ConsoleMessage>(
@@ -1408,7 +1412,10 @@ void LocalDOMWindow::DispatchMessageEventWithOriginCheck(
           this,
           WebFeature::kMessageEventSharedArrayBufferDifferentAgentCluster);
       event = MessageEvent::CreateError(event);
-    } else {
+    } else if (sender_origin) {
+      // `sender_origin` is null when there is no sending document at all, e.g.
+      // for a message posted by the application embedding the renderer. Neither
+      // counter applies in that case.
       if (!sender_origin->IsSameOriginWith(GetSecurityOrigin())) {
         UseCounter::Count(
             this, WebFeature::kMessageEventSharedArrayBufferSameAgentCluster);
@@ -1423,38 +1430,9 @@ void LocalDOMWindow::DispatchMessageEventWithOriginCheck(
     event = MessageEvent::CreateError(event);
   }
 
-  if (event->delegatedCapability() ==
-      mojom::blink::DelegatedCapability::kPaymentRequest) {
-    UseCounter::Count(this, WebFeature::kCapabilityDelegationOfPaymentRequest);
-    payment_request_token_.Activate();
-  }
-
-  if (event->delegatedCapability() ==
-      mojom::blink::DelegatedCapability::kFullscreenRequest) {
-    UseCounter::Count(this,
-                      WebFeature::kCapabilityDelegationOfFullscreenRequest);
-    fullscreen_request_token_.Activate();
-  }
-  if (RuntimeEnabledFeatures::CapabilityDelegationDisplayCaptureRequestEnabled(
-          this) &&
-      event->delegatedCapability() ==
-          mojom::blink::DelegatedCapability::kDisplayCaptureRequest) {
-    // TODO(crbug.com/1412770): Add use counter.
-    display_capture_request_token_.Activate();
-  }
-  if (RuntimeEnabledFeatures::CapabilityDelegationDigitalCredentialsEnabled(
-          this)) {
-    if (event->delegatedCapability() ==
-        mojom::blink::DelegatedCapability::kDigitalCredentialsCreate) {
-      UseCounter::Count(
-          this, WebFeature::kCapabilityDelegationOfDigitalCredentialsCreate);
-      digital_credentials_create_token_.Activate();
-    } else if (event->delegatedCapability() ==
-               mojom::blink::DelegatedCapability::kDigitalCredentialsGet) {
-      UseCounter::Count(
-          this, WebFeature::kCapabilityDelegationOfDigitalCredentialsGet);
-      digital_credentials_get_token_.Activate();
-    }
+  if (event->delegatedCapability() !=
+      mojom::blink::DelegatedCapability::kNone) {
+    ActivateDelegatedCapability(event->delegatedCapability());
   }
 
   event->SetShouldMeasureDataAccessBeforeOrigin();
@@ -1467,6 +1445,52 @@ void LocalDOMWindow::DispatchMessageEventWithOriginCheck(
     EnqueueEvent(*event, TaskType::kInternalDefault);
   } else {
     DispatchEvent(*event);
+  }
+}
+
+void LocalDOMWindow::ActivateDelegatedCapability(
+    mojom::blink::DelegatedCapability delegated_capability) {
+  switch (delegated_capability) {
+    case mojom::blink::DelegatedCapability::kNone:
+      return;
+    case mojom::blink::DelegatedCapability::kPaymentRequest:
+      UseCounter::Count(this,
+                        WebFeature::kCapabilityDelegationOfPaymentRequest);
+      payment_request_token_.Activate();
+      return;
+    case mojom::blink::DelegatedCapability::kFullscreenRequest:
+      UseCounter::Count(this,
+                        WebFeature::kCapabilityDelegationOfFullscreenRequest);
+      fullscreen_request_token_.Activate();
+      return;
+    case mojom::blink::DelegatedCapability::kDisplayCaptureRequest:
+      if (RuntimeEnabledFeatures::
+              CapabilityDelegationDisplayCaptureRequestEnabled(this)) {
+        // TODO(crbug.com/40255428): Add use counter.
+        display_capture_request_token_.Activate();
+      }
+      return;
+    case mojom::blink::DelegatedCapability::kDigitalCredentialsCreate:
+      if (RuntimeEnabledFeatures::CapabilityDelegationDigitalCredentialsEnabled(
+              this)) {
+        UseCounter::Count(
+            this, WebFeature::kCapabilityDelegationOfDigitalCredentialsCreate);
+        digital_credentials_create_token_.Activate();
+      }
+      return;
+    case mojom::blink::DelegatedCapability::kDigitalCredentialsGet:
+      if (RuntimeEnabledFeatures::CapabilityDelegationDigitalCredentialsEnabled(
+              this)) {
+        UseCounter::Count(
+            this, WebFeature::kCapabilityDelegationOfDigitalCredentialsGet);
+        digital_credentials_get_token_.Activate();
+      }
+      return;
+    case mojom::blink::DelegatedCapability::kPopup:
+      if (RuntimeEnabledFeatures::CapabilityDelegationPopupEnabled(this)) {
+        popup_request_token_.Activate();
+      }
+      return;
   }
 }
 
@@ -1663,11 +1687,8 @@ bool LocalDOMWindow::offscreenBuffering() const {
   return true;
 }
 
-bool LocalDOMWindow::alwaysOnTop() const {
-  if (!GetFrame() || !GetFrame()->GetPage()) {
-    return false;
-  }
-  return GetFrame()->GetPage()->AlwaysOnTop();
+bool LocalDOMWindow::alwaysOnTopPopup() const {
+  return GetFrame() && GetFrame()->GetPage()->AlwaysOnTopPopup();
 }
 
 int LocalDOMWindow::outerHeight() const {
@@ -2098,117 +2119,71 @@ void LocalDOMWindow::scrollToForTesting(double x, double y) const {
 }
 
 void LocalDOMWindow::moveBy(int x, int y) const {
-  if (!GetFrame() || !GetFrame()->IsOutermostMainFrame() ||
-      document()->IsPrerendering()) {
-    return;
-  }
-
-  if (IsPictureInPictureWindow()) {
+  if (!CanMoveWindow()) {
     return;
   }
 
   LocalFrame* frame = GetFrame();
-  Page* page = frame->GetPage();
-  if (!page) {
-    return;
-  }
-
-  gfx::Rect window_rect = page->GetChromeClient().RootWindowRect(*frame);
+  ChromeClient& chrome_client = frame->GetPage()->GetChromeClient();
+  gfx::Rect window_rect = chrome_client.RootWindowRect(*frame);
   window_rect.Offset(x, y);
   if (base::FeatureList::IsEnabled(features::kMoveResizeWindowToIPCs)) {
-    page->GetChromeClient().MoveWindowTo(window_rect.origin(), *frame);
+    chrome_client.MoveWindowTo(window_rect.origin(), *frame);
   } else {
-    page->GetChromeClient().SetWindowRect(window_rect, *frame);
+    chrome_client.SetWindowRect(window_rect, *frame);
   }
 }
 
 void LocalDOMWindow::moveTo(int x, int y) const {
-  if (!GetFrame() || !GetFrame()->IsOutermostMainFrame() ||
-      document()->IsPrerendering()) {
-    return;
-  }
-
-  if (IsPictureInPictureWindow()) {
+  if (!CanMoveWindow()) {
     return;
   }
 
   LocalFrame* frame = GetFrame();
-  Page* page = frame->GetPage();
-  if (!page) {
-    return;
-  }
-
+  ChromeClient& chrome_client = frame->GetPage()->GetChromeClient();
   if (base::FeatureList::IsEnabled(features::kMoveResizeWindowToIPCs)) {
-    page->GetChromeClient().MoveWindowTo(gfx::Point(x, y), *frame);
+    chrome_client.MoveWindowTo(gfx::Point(x, y), *frame);
   } else {
-    gfx::Rect window_rect = page->GetChromeClient().RootWindowRect(*frame);
+    gfx::Rect window_rect = chrome_client.RootWindowRect(*frame);
     window_rect.set_origin(gfx::Point(x, y));
-    page->GetChromeClient().SetWindowRect(window_rect, *frame);
+    chrome_client.SetWindowRect(window_rect, *frame);
   }
 }
 
 void LocalDOMWindow::resizeBy(int x,
                               int y,
                               ExceptionState& exception_state) const {
-  if (!GetFrame() || !GetFrame()->IsOutermostMainFrame() ||
-      document()->IsPrerendering()) {
+  if (!CanResizeWindow("resizeBy", exception_state)) {
     return;
-  }
-
-  if (IsPictureInPictureWindow()) {
-    if (!LocalFrame::ConsumeTransientUserActivation(GetFrame())) {
-      exception_state.ThrowDOMException(
-          DOMExceptionCode::kNotAllowedError,
-          "resizeBy() requires user activation in document picture-in-picture");
-      return;
-    }
   }
 
   LocalFrame* frame = GetFrame();
-  Page* page = frame->GetPage();
-  if (!page) {
-    return;
-  }
-
-  gfx::Rect fr = page->GetChromeClient().RootWindowRect(*frame);
+  ChromeClient& chrome_client = frame->GetPage()->GetChromeClient();
+  gfx::Rect fr = chrome_client.RootWindowRect(*frame);
   gfx::Size dest(fr.width() + x, fr.height() + y);
   if (base::FeatureList::IsEnabled(features::kMoveResizeWindowToIPCs)) {
-    page->GetChromeClient().ResizeWindowTo(dest, *frame);
+    chrome_client.ResizeWindowTo(dest, *frame);
   } else {
-    page->GetChromeClient().SetWindowRect(gfx::Rect(fr.origin(), dest), *frame);
+    chrome_client.SetWindowRect(gfx::Rect(fr.origin(), dest), *frame);
   }
 }
 
 void LocalDOMWindow::resizeTo(int width,
                               int height,
                               ExceptionState& exception_state) const {
-  if (!GetFrame() || !GetFrame()->IsOutermostMainFrame() ||
-      document()->IsPrerendering()) {
+  if (!CanResizeWindow("resizeTo", exception_state)) {
     return;
-  }
-
-  if (IsPictureInPictureWindow()) {
-    if (!LocalFrame::ConsumeTransientUserActivation(GetFrame())) {
-      exception_state.ThrowDOMException(
-          DOMExceptionCode::kNotAllowedError,
-          "resizeTo() requires user activation in document picture-in-picture");
-      return;
-    }
   }
 
   LocalFrame* frame = GetFrame();
-  Page* page = frame->GetPage();
-  if (!page) {
-    return;
-  }
-
+  ChromeClient& chrome_client = frame->GetPage()->GetChromeClient();
   const gfx::Size dest(width, height);
   if (base::FeatureList::IsEnabled(features::kMoveResizeWindowToIPCs)) {
-    page->GetChromeClient().ResizeWindowTo(dest, *frame);
+    chrome_client.ResizeWindowTo(dest, *frame);
   } else {
-    gfx::Rect window_rect = page->GetChromeClient().RootWindowRect(*frame);
+    gfx::Rect window_rect = chrome_client.RootWindowRect(*frame);
     window_rect.set_size(dest);
-    page->GetChromeClient().SetWindowRect(window_rect, *frame);
+    chrome_client.SetWindowRect(window_rect, *frame);
   }
 }
 
@@ -2539,6 +2514,12 @@ DOMWindow* LocalDOMWindow::open(v8::Isolate* isolate,
   frame_request.GetResourceRequest().SetReferrerPolicy(
       referrer.referrer_policy);
 
+  bool has_user_gesture = LocalFrame::HasTransientUserActivation(GetFrame());
+  if (popup_request_token_.ConsumeIfActive()) {
+    has_user_gesture = true;
+  }
+  frame_request.GetResourceRequest().SetHasUserGesture(has_user_gesture);
+
   FrameTree::FindResult result =
       GetFrame()->Tree().FindOrCreateFrameForNavigation(
           frame_request, target.empty() ? AtomicString("_blank") : target);
@@ -2680,7 +2661,6 @@ void LocalDOMWindow::Trace(Visitor* visitor) const {
   visitor->Trace(text_suggestion_controller_);
   visitor->Trace(isolated_world_csp_map_);
   visitor->Trace(network_state_observer_);
-  visitor->Trace(fence_);
   visitor->Trace(crash_report_storage_);
   visitor->Trace(closewatcher_stack_);
   visitor->Trace(soft_navigation_heuristics_);
@@ -2709,7 +2689,13 @@ bool LocalDOMWindow::CrossOriginIsolatedCapability() const {
 }
 
 bool LocalDOMWindow::IsIsolatedContext() const {
-  return Agent::IsIsolatedContext();
+  // `Agent::IsIsolatedContext()` is process-wide. Windows with an opaque origin
+  // (e.g. sandboxed iframes that weren't moved to their own process) can share
+  // an isolated process, but are never isolated contexts, since an opaque
+  // origin can't be in the origin integrity verification map. See
+  // https://wicg.github.io/isolated-web-apps/isolated-contexts.html#isolated-context.
+  const SecurityOrigin* origin = GetSecurityOrigin();
+  return Agent::IsIsolatedContext() && origin && !origin->IsOpaque();
 }
 
 ukm::UkmRecorder* LocalDOMWindow::UkmRecorder() {
@@ -2797,26 +2783,7 @@ bool LocalDOMWindow::IsInFencedFrame() const {
 }
 
 Fence* LocalDOMWindow::fence() {
-  // Return nullptr if we aren't in a fenced subtree.
-  if (!GetFrame()) {
-    return nullptr;
-  }
-  if (!GetFrame()->IsInFencedFrameTree()) {
-    // We temporarily allow window.fence in iframes loaded via
-    // FencedFrameConfigs (navigated by a config's associated urn:uuid since
-    // iframes don't support config objects directly). If we are in an iframe
-    // that doesn't qualify, return nullptr.
-    if (!blink::features::IsAllowURNsInIframeEnabled() ||
-        !GetFrame()->GetDocument()->Loader()->FencedFrameProperties()) {
-      return nullptr;
-    }
-  }
-
-  if (!fence_) {
-    fence_ = MakeGarbageCollected<Fence>(*this);
-  }
-
-  return fence_.Get();
+  return nullptr;
 }
 
 CrashReportContext* LocalDOMWindow::crashReport() {
@@ -2838,6 +2805,40 @@ bool LocalDOMWindow::IsPictureInPictureWindow() const {
 
 void LocalDOMWindow::SetIsPictureInPictureWindow() {
   is_picture_in_picture_window_ = true;
+}
+
+bool LocalDOMWindow::CanMoveWindow() const {
+  return GetFrame() && GetFrame()->IsOutermostMainFrame() &&
+         !document()->IsPrerendering() && !IsPictureInPictureWindow() &&
+         !alwaysOnTopPopup();
+}
+
+bool LocalDOMWindow::CanResizeWindow(const char* method_name,
+                                     ExceptionState& exception_state) const {
+  if (!GetFrame() || !GetFrame()->IsOutermostMainFrame() ||
+      document()->IsPrerendering()) {
+    return false;
+  }
+
+  if (IsPictureInPictureWindow()) {
+    if (!LocalFrame::ConsumeTransientUserActivation(GetFrame())) {
+      exception_state.ThrowDOMException(
+          DOMExceptionCode::kNotAllowedError,
+          StrCat({method_name,
+                  "() requires user activation in document "
+                  "picture-in-picture"}));
+      return false;
+    }
+  } else if (alwaysOnTopPopup()) {
+    if (!LocalFrame::ConsumeTransientUserActivation(GetFrame())) {
+      exception_state.ThrowDOMException(
+          DOMExceptionCode::kNotAllowedError,
+          StrCat({method_name,
+                  "() requires user activation in always-on-top popups"}));
+      return false;
+    }
+  }
+  return true;
 }
 
 net::StorageAccessApiStatus LocalDOMWindow::GetStorageAccessApiStatus() const {
@@ -2937,7 +2938,6 @@ void LocalDOMWindow::UpdateEventListenerCountsToDocumentForReuseIfNeeded() {
 }
 
 void LocalDOMWindow::requestResize(ExceptionState& state) {
-  DCHECK(RuntimeEnabledFeatures::ResponsiveIframesEnabled());
   if (document_) {
     document_->RequestResizeResponsiveIframe(&state);
   }

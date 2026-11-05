@@ -1753,20 +1753,25 @@ TEST_P(FrameFetchContextSubresourceFilterTest,
 }
 
 // Tests that CalculateResourceAnnotations with an alias URL will tag ads
-// correctly according to the SubresourceFilter mode.
+// correctly according to the SubresourceFilter mode, and registers the actual
+// request URL (not the alias URL) in AdTracker.
 TEST_P(FrameFetchContextSubresourceFilterTest,
        CalculateResourceAnnotationsWithAliasURL) {
   const struct {
     WebDocumentSubresourceFilter::LoadPolicy policy;
+    const char* request_url;
     bool expected_to_be_tagged_ad;
-  } kTestCases[] = {{WebDocumentSubresourceFilter::kDisallow, true},
-                    {WebDocumentSubresourceFilter::kWouldDisallow, true},
-                    {WebDocumentSubresourceFilter::kAllow, false}};
+  } kTestCases[] = {{WebDocumentSubresourceFilter::kDisallow,
+                     "http://www.example.com/script_disallow.js", true},
+                    {WebDocumentSubresourceFilter::kWouldDisallow,
+                     "http://www.example.com/script_would_disallow.js", true},
+                    {WebDocumentSubresourceFilter::kAllow,
+                     "http://www.example.com/script_allow.js", false}};
 
   for (const auto& test : kTestCases) {
     SetFilterPolicy(test.policy);
 
-    KURL url("http://www.example.com");
+    KURL url(test.request_url);
     KURL alias_url("http://ads.com/some_script.js");
     ResourceRequest resource_request(url);
     resource_request.SetRequestContext(
@@ -1782,6 +1787,14 @@ TEST_P(FrameFetchContextSubresourceFilterTest,
                 options.initiator_info, /*scan_javascript_stack=*/false)
             .ad_provenance;
 
+    AdTracker* ad_tracker = document->GetFrame()->GetAdTracker();
+    ASSERT_TRUE(ad_tracker);
+    EXPECT_EQ(test.expected_to_be_tagged_ad,
+              ad_tracker->IsKnownAdScriptForTesting(document->domWindow(),
+                                                    url.GetString()));
+    EXPECT_FALSE(ad_tracker->IsKnownAdScriptForTesting(document->domWindow(),
+                                                       alias_url.GetString()));
+
     if (test.expected_to_be_tagged_ad) {
       EXPECT_TRUE(std::holds_alternative<subresource_filter::ScopedRule>(
           *ad_provenance));
@@ -1792,51 +1805,6 @@ TEST_P(FrameFetchContextSubresourceFilterTest,
       EXPECT_FALSE(ad_provenance.has_value());
     }
   }
-}
-
-class FrameFetchContextDisableReduceAcceptLanguageTest
-    : public FrameFetchContextTestBase,
-      public testing::WithParamInterface<std::tuple<bool, bool>> {
- public:
-  FrameFetchContextDisableReduceAcceptLanguageTest()
-      : preload_link_rel_data_urls_(std::get<1>(GetParam())) {
-    scoped_feature_list_.InitWithFeatures(
-        /*enabled_features=*/{},
-        /*disabled_features=*/{network::features::kReduceAcceptLanguage});
-  }
-
- protected:
-  void SetupForAcceptLanguageTest(bool is_detached, ResourceRequest& request) {
-    ResourceLoaderOptions options(/*world=*/nullptr);
-
-    document->GetFrame()->SetReducedAcceptLanguage(AtomicString("en-GB"));
-
-    if (is_detached) {
-      dummy_page_holder = nullptr;
-    }
-
-    GetFetchContext()->UpgradeResourceRequestForLoader(
-        ResourceType::kRaw, std::nullopt /* resource_width */, request,
-        options);
-  }
-
- private:
-  base::test::ScopedFeatureList scoped_feature_list_;
-  ScopedPreloadLinkRelDataUrlsForTest preload_link_rel_data_urls_;
-};
-
-INSTANTIATE_TEST_SUITE_P(FrameFetchContextDisableReduceAcceptLanguageTest,
-                         FrameFetchContextDisableReduceAcceptLanguageTest,
-                         testing::Combine(testing::Bool(),
-                                          testing::Bool()));
-
-TEST_P(FrameFetchContextDisableReduceAcceptLanguageTest,
-       VerifyReduceAcceptLanguage) {
-  const KURL url("https://www.example.com/");
-  ResourceRequest request(url);
-  SetupForAcceptLanguageTest(/*is_detached=*/std::get<0>(GetParam()), request);
-  // Expect no Accept-Language header set when feature is disabled.
-  EXPECT_EQ(nullptr, request.HttpHeaderField(http_names::kAcceptLanguage));
 }
 
 class FrameFetchContextNetworkGuardrailsTest

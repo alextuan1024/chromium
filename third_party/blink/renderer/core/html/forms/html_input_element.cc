@@ -42,6 +42,7 @@
 #include "third_party/blink/renderer/bindings/core/v8/js_event_handler_for_content_attribute.h"
 #include "third_party/blink/renderer/bindings/core/v8/native_value_traits_impl.h"
 #include "third_party/blink/renderer/bindings/core/v8/to_v8_traits.h"
+#include "third_party/blink/renderer/bindings/core/v8/v8_aria_notification_options.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_focus_options.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_selection_mode.h"
 #include "third_party/blink/renderer/core/accessibility/ax_object_cache.h"
@@ -1131,6 +1132,10 @@ void HTMLInputElement::ResetImpl() {
   }
   SetChecked(FastHasAttribute(html_names::kCheckedAttr));
   dirty_checkedness_ = false;
+  if (FormControlType() == FormControlType::kInputCheckbox && indeterminate()) {
+    UseCounter::Count(GetDocument(),
+                      WebFeature::kHTMLInputElementResetIndeterminateCheckbox);
+  }
   HTMLFormControlElementWithState::ResetImpl();
 }
 
@@ -1318,8 +1323,8 @@ void HTMLInputElement::SetSuggestedValue(const String& value) {
   if (!input_type_->CanSetSuggestedValue()) {
     // Clear the suggested value because it may have been set when
     // `input_type_->CanSetSuggestedValue()` was true.
-    SetAutofillState(WebAutofillState::kNotFilled);
     TextControlElement::SetSuggestedValue(String());
+    SetAutofillState(WebAutofillState::kNotFilled);
     return;
   }
   needs_to_update_view_value_ = true;
@@ -1331,9 +1336,9 @@ void HTMLInputElement::SetSuggestedValue(const String& value) {
     sanitized_value = String();
   }
 
+  TextControlElement::SetSuggestedValue(sanitized_value);
   SetAutofillState(sanitized_value.empty() ? WebAutofillState::kNotFilled
                                            : WebAutofillState::kPreviewed);
-  TextControlElement::SetSuggestedValue(sanitized_value);
 
   // Update the suggested value revelation.
   if (auto* placeholder = PlaceholderElement()) {
@@ -1351,11 +1356,14 @@ void HTMLInputElement::SetSuggestedValue(const String& value) {
   input_type_view_->UpdateView();
 }
 
-void HTMLInputElement::DidChangeIsInCanvasSubtree() {
-  TextControlElement::DidChangeIsInCanvasSubtree();
-  if (IsInCanvasSubtree()) {
-    // Hide suggested values when under canvas, to prevent leaking this
-    // information to javascript.
+void HTMLInputElement::DidChangeIsInCanvasSubtree(
+    CanvasSubtreePropagation propagation_behavior) {
+  TextControlElement::DidChangeIsInCanvasSubtree(propagation_behavior);
+  // Hide suggested values when under canvas, to prevent leaking this
+  // information to javascript. Skip when there is nothing to hide:
+  // SetSuggestedValue() always rebuilds the view, which can move focus and run
+  // script during slot assignment recalc (crbug.com/574469802).
+  if (IsInCanvasSubtree() && !SuggestedValue().IsNull()) {
     SetSuggestedValue(String());
   }
 }
@@ -1399,9 +1407,7 @@ void HTMLInputElement::SetValue(const String& value,
   if (!input_type_->CanSetValue(value))
     return;
 
-  const bool had_suggested_value =
-      RuntimeEnabledFeatures::FindIgnoreSuggestionFixEnabled() &&
-      !SuggestedValue().empty();
+  const bool had_suggested_value = !SuggestedValue().empty();
   // Clear the suggested value. Use the base class version to not trigger a view
   // update.
   TextControlElement::SetSuggestedValue(String());
@@ -1572,23 +1578,44 @@ EventDispatchHandlingState* HTMLInputElement::LegacyPreActivationBehavior(
   return input_type_view_->LegacyPreActivationBehavior();
 }
 
-void HTMLInputElement::RunActivationBehavior(
+void HTMLInputElement::RunActivationBehaviorBeforeDOMActivate(
     Event& event,
     EventDispatchHandlingState* state) {
   if (!state) {
     return;
   }
-
   // https://html.spec.whatwg.org/C#the-input-element:activation-behaviour.
   //
-  // The activation behavior for input elements element, given event, are these
-  // steps:
+  // The activation behavior for input elements element, given event, are
+  // these steps:
   //
   //   [...]
   //   2. Run element's input activation behavior, if any, and do nothing
   //      otherwise.
+  //
+  // For checkboxes and radio buttons this commits (or reverts) the checked
+  // state and marks the click event as default-handled, which suppresses the
+  // DOMActivate event and `RunActivationBehavior()` below.
   input_type_view_->RunInputActivationBehavior(
       event, *static_cast<ClickHandlingState*>(state));
+}
+
+void HTMLInputElement::RunActivationBehavior(
+    Event& event,
+    EventDispatchHandlingState* state) {
+  if (!RuntimeEnabledFeatures::CleanUpActivationBehaviorEnabled()) {
+    return;
+  }
+  if (event.defaultPrevented() || event.DefaultHandled()) {
+    return;
+  }
+
+  input_type_view_->HandleDOMActivateEvent(event);
+  if (event.DefaultHandled()) {
+    return;
+  }
+
+  TextControlElement::RunActivationBehavior(event, state);
 }
 
 void HTMLInputElement::DefaultEventHandler(Event& evt) {
@@ -1603,6 +1630,20 @@ void HTMLInputElement::DefaultEventHandler(Event& evt) {
     input_type_view_->HandleClickEvent(To<MouseEvent>(evt));
     if (evt.DefaultHandled())
       return;
+  }
+
+  // DOMActivate events cause the input to be "activated" - in the case of image
+  // and submit inputs, this means actually submitting the form. For reset
+  // inputs, the form is reset. These events are sent when the user clicks on
+  // the element, or presses enter while it is the active element. JavaScript
+  // code wishing to activate the element must dispatch a DOMActivate event - a
+  // click event will not do the job.
+  if (!RuntimeEnabledFeatures::CleanUpActivationBehaviorEnabled() &&
+      evt.type() == event_type_names::kDOMActivate) {
+    input_type_view_->HandleDOMActivateEvent(evt);
+    if (evt.DefaultHandled()) {
+      return;
+    }
   }
 
   auto* keyboard_event = DynamicTo<KeyboardEvent>(evt);
@@ -1620,18 +1661,6 @@ void HTMLInputElement::DefaultEventHandler(Event& evt) {
                         evt.type() == event_type_names::kKeypress);
   if (call_base_class_early) {
     TextControlElement::DefaultEventHandler(evt);
-    if (evt.DefaultHandled())
-      return;
-  }
-
-  // DOMActivate events cause the input to be "activated" - in the case of image
-  // and submit inputs, this means actually submitting the form. For reset
-  // inputs, the form is reset. These events are sent when the user clicks on
-  // the element, or presses enter while it is the active element. JavaScript
-  // code wishing to activate the element must dispatch a DOMActivate event - a
-  // click event will not do the job.
-  if (evt.type() == event_type_names::kDOMActivate) {
-    input_type_view_->HandleDOMActivateEvent(evt);
     if (evt.DefaultHandled())
       return;
   }
@@ -1710,6 +1739,10 @@ ShadowRoot* HTMLInputElement::EnsureShadowSubtree() {
 }
 
 bool HTMLInputElement::HasActivationBehavior() const {
+  if (RuntimeEnabledFeatures::CleanUpActivationBehaviorEnabled() &&
+      ShadowPseudoId() == shadow_element_names::kPseudoFileUploadButton) {
+    return false;
+  }
   return true;
 }
 
@@ -1887,10 +1920,6 @@ AppearanceValue HTMLInputElement::AutoAppearance() const {
 
 void HTMLInputElement::OnSearch() {
   input_type_->DispatchSearchEvent();
-}
-
-void HTMLInputElement::UpdateClearButtonVisibility() {
-  input_type_view_->UpdateClearButtonVisibility();
 }
 
 bool HTMLInputElement::IsInnerEditorValueEmpty() const {
@@ -2221,12 +2250,12 @@ int HTMLInputElement::scrollWidth() {
   const auto* box = GetLayoutBox();
   if (!editor_box || !box)
     return TextControlElement::scrollWidth();
-  // Adjust scrollWidth to include input element horizontal paddings and
-  // decoration width.
-  LayoutUnit adjustment = box->PhysicalPaddingBoxRect().Width() -
+  // Adjust scrollWidth to include the horizontal paddings and decoration width
+  // in the client rect.
+  LayoutUnit adjustment = PhysicalClientRect(*box).Width() -
                           editor_box->PhysicalPaddingBoxRect().Width();
   return AdjustForAbsoluteZoom::AdjustLayoutUnit(
-             editor_box->ScrollWidth() + adjustment, box->StyleRef())
+             editor_box->ScrollWidth() + adjustment, box->Style())
       .Round();
 }
 
@@ -2246,12 +2275,12 @@ int HTMLInputElement::scrollHeight() {
   const auto* box = GetLayoutBox();
   if (!editor_box || !box)
     return TextControlElement::scrollHeight();
-  // Adjust scrollHeight to include input element vertical paddings and
-  // decoration height.
-  LayoutUnit adjustment = box->PhysicalPaddingBoxRect().Height() -
+  // Adjust scrollHeight to include the vertical paddings and decoration height
+  // in the client rect.
+  LayoutUnit adjustment = PhysicalClientRect(*box).Height() -
                           editor_box->PhysicalPaddingBoxRect().Height();
   return AdjustForAbsoluteZoom::AdjustLayoutUnit(
-             editor_box->ScrollHeight() + adjustment, box->StyleRef())
+             editor_box->ScrollHeight() + adjustment, box->Style())
       .Round();
 }
 
@@ -2310,13 +2339,6 @@ RadioButtonGroupScope* HTMLInputElement::GetRadioButtonGroupScope() const {
   if (isConnected())
     return &GetTreeScope().GetRadioButtonGroupScope();
   return nullptr;
-}
-
-unsigned HTMLInputElement::SizeOfRadioGroup() const {
-  RadioButtonGroupScope* scope = GetRadioButtonGroupScope();
-  if (!scope)
-    return 0;
-  return scope->GroupSizeFor(this);
 }
 
 inline void HTMLInputElement::AddToRadioButtonGroup() {
@@ -2409,6 +2431,12 @@ OpaqueRange* HTMLInputElement::createValueRange(
                                               exception_state);
 }
 
+void HTMLInputElement::ClosePopupView() {
+  if (input_type_view_) {
+    input_type_view_->ClosePopupView();
+  }
+}
+
 bool HTMLInputElement::SetupDateTimeChooserParameters(
     DateTimeChooserParameters& parameters) {
   if (!GetDocument().View())
@@ -2475,9 +2503,12 @@ bool HTMLInputElement::ShouldDrawCapsLockIndicator() const {
   return input_type_view_->ShouldDrawCapsLockIndicator();
 }
 
-void HTMLInputElement::SetShouldRevealPassword(bool value) {
-  if (!!should_reveal_password_ == value)
+void HTMLInputElement::SetShouldRevealPassword(
+    bool value,
+    PasswordVisibilityAnnouncement announcement) {
+  if (!!should_reveal_password_ == value) {
     return;
+  }
   should_reveal_password_ = value;
   if (HTMLElement* inner_editor = InnerEditorElement()) {
     // Update -webkit-text-security style.
@@ -2485,6 +2516,21 @@ void HTMLInputElement::SetShouldRevealPassword(bool value) {
         kLocalStyleChange,
         StyleChangeReasonForTracing::Create(style_change_reason::kControl));
   }
+  if (announcement == PasswordVisibilityAnnouncement::kAnnounce) {
+    AnnouncePasswordVisibility();
+  }
+}
+
+void HTMLInputElement::AnnouncePasswordVisibility() {
+  if (!RuntimeEnabledFeatures::AriaNotifyEnabled(GetExecutionContext())) {
+    return;
+  }
+  // Native password visibility announcements intentionally respect the
+  // document's aria-notify permissions policy.
+  ariaNotify(GetLocale().QueryString(ShouldRevealPassword()
+                                         ? IDS_FORM_PASSWORD_SHOWN
+                                         : IDS_FORM_PASSWORD_HIDDEN),
+             AriaNotificationOptions::Create());
 }
 
 void HTMLInputElement::DispatchSimulatedEnter() {
@@ -2598,12 +2644,17 @@ void HTMLInputElement::showPicker(ExceptionState& exception_state) {
   if (!LocalFrame::HasTransientUserActivation(frame)) {
     exception_state.ThrowDOMException(
         DOMExceptionCode::kNotAllowedError,
-        "HTMLInputElement::showPicker() requires a user gesture.");
+        "HTMLInputElement::showPicker() requires user activation.");
     return;
   }
-  LocalFrame::ConsumeTransientUserActivation(frame);
 
+  if (!RuntimeEnabledFeatures::PopupWidgetRequiresUserActivationEnabled()) {
+    LocalFrame::ConsumeTransientUserActivation(frame);
+  }
   input_type_view_->OpenPopupView();
+  if (RuntimeEnabledFeatures::PopupWidgetRequiresUserActivationEnabled()) {
+    LocalFrame::ConsumeTransientUserActivation(frame);
+  }
 }
 
 bool HTMLInputElement::IsPickerVisible() const {
@@ -2629,10 +2680,11 @@ bool HTMLInputElement::IsValidBuiltinCommand(HTMLElement& invoker,
 }
 
 bool HTMLInputElement::HandleCommandInternal(HTMLElement& invoker,
-                                             CommandEventType command) {
+                                             CommandEventType command,
+                                             UIEvent* activate_event) {
   CHECK(IsValidBuiltinCommand(invoker, command));
 
-  if (HTMLElement::HandleCommandInternal(invoker, command)) {
+  if (HTMLElement::HandleCommandInternal(invoker, command, activate_event)) {
     return true;
   }
 
@@ -2706,6 +2758,19 @@ void HTMLInputElement::SetFocused(bool is_focused,
   if (RadioButtonGroupScope* scope = GetRadioButtonGroupScope()) {
     scope->UpdateLastFocusedState(this);
   }
+
+  if (focus_type != mojom::blink::FocusType::kPage && IsTextField()) {
+    if (HTMLSelectElement* select = FilterTarget()) {
+      // TODO(crbug.com/453705243): Track the target select element like we are
+      // already doing for the list attribute in order to remove the
+      // :active-option pseudo.
+      if (is_focused) {
+        select->StartFiltering();
+      } else {
+        select->StopFiltering();
+      }
+    }
+  }
 }
 
 bool HTMLInputElement::SupportsBaseAppearanceInternal(
@@ -2724,7 +2789,7 @@ bool HTMLInputElement::IsBaseAppearanceCombobox() const {
 }
 
 HTMLSelectElement* HTMLInputElement::FilterTarget() const {
-  if (!RuntimeEnabledFeatures::FilterableSelectEnabled()) {
+  if (!RuntimeEnabledFeatures::FilterableSelectEnabled() || !IsTextField()) {
     return nullptr;
   }
   if (nearest_ancestor_select_) {

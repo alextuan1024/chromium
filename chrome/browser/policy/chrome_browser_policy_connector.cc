@@ -7,11 +7,14 @@
 #include <memory>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "base/check_is_test.h"
 #include "base/command_line.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
+#include "base/functional/callback_helpers.h"
+#include "base/memory/weak_ptr.h"
 #include "base/path_service.h"
 #include "base/task/thread_pool.h"
 #include "build/branding_buildflags.h"
@@ -31,6 +34,8 @@
 #include "components/policy/core/common/command_line_policy_provider.h"
 #include "components/policy/core/common/configuration_policy_provider.h"
 #include "components/policy/core/common/local_test_policy_provider.h"
+#include "components/policy/core/common/management/management_service.h"
+#include "components/policy/core/common/policy_logger.h"
 #include "components/policy/core/common/policy_map.h"
 #include "components/policy/core/common/policy_namespace.h"
 #include "components/policy/core/common/policy_pref_names.h"
@@ -67,9 +72,32 @@
 #include "components/policy/core/common/proxy_policy_provider.h"
 #endif
 
+#if BUILDFLAG(IS_LINUX)
+#include "base/environment.h"
+#include "base/nix/xdg_util.h"
+#endif
+
 namespace policy {
 namespace {
 bool g_command_line_enabled_for_testing = false;
+
+#if BUILDFLAG(IS_LINUX)
+// Returns `$SNAP_DATA/policies` when running in a snap, or an empty path
+// otherwise. Being in a snap is derived from environment variables, so this
+// path must be paired with a `ConfigDirPolicyLoader::OwnershipRequirement`
+// rather than trusted directly.
+base::FilePath GetSnapPolicyDir() {
+  if (base::nix::GetAppSandbox() != base::nix::AppSandbox::kSnap) {
+    return base::FilePath();
+  }
+  base::FilePath snap_data_path(
+      base::Environment().GetVar("SNAP_DATA").value_or(std::string()));
+  if (!snap_data_path.IsAbsolute()) {
+    return base::FilePath();
+  }
+  return snap_data_path.Append(FILE_PATH_LITERAL("policies"));
+}
+#endif  // BUILDFLAG(IS_LINUX)
 }  // namespace
 
 ChromeBrowserPolicyConnector::ChromeBrowserPolicyConnector()
@@ -106,13 +134,24 @@ void ChromeBrowserPolicyConnector::Init(
       GetEncryptedReportingUrl());
   auto device_management_service =
       std::make_unique<DeviceManagementService>(std::move(configuration));
-  device_management_service->ScheduleInitialization(
-      kServiceInitializationStartupDelay);
+  // Production delays initialization by 5 seconds to avoid slowing initial UI
+  // startup. Skip the delay in browser tests so tests that upload reports or
+  // fetch policies don't stall waiting for the service to start.
+  const int64_t delay_milliseconds =
+      base::CommandLine::ForCurrentProcess()->HasSwitch(switches::kTestType)
+          ? 0
+          : kServiceInitializationStartupDelay;
+  device_management_service->ScheduleInitialization(delay_milliseconds);
 
 #if BUILDFLAG(IS_ANDROID)
   policy_cache_updater_ = std::make_unique<android::PolicyCacheUpdater>(
       GetPolicyService(), GetHandlerList());
 #endif
+
+  PolicyLogger::GetInstance()->EnableLogCompression(
+      base::ThreadPool::CreateSequencedTaskRunner(
+          {base::TaskPriority::USER_VISIBLE,
+           base::TaskShutdownBehavior::SKIP_ON_SHUTDOWN}));
 
   InitInternal(local_state, std::move(device_management_service));
 }
@@ -172,6 +211,35 @@ void ChromeBrowserPolicyConnector::RefreshPlatformPolicies() {
     platform_provider->RefreshPolicies(policy::PolicyFetchReason::kUserRequest);
   }
 }
+
+void ChromeBrowserPolicyConnector::RefreshManagementServiceCache(
+    ManagementService* management_service) {
+#if BUILDFLAG(IS_WIN)
+  management_service->RefreshCache(base::BindOnce(
+      &ChromeBrowserPolicyConnector::OnManagementServiceCacheRefreshed,
+      weak_factory_.GetWeakPtr(),
+      // Safe because `management_service` cancels callbacks on destruction.
+      base::Unretained(management_service),
+      management_service
+          ->GetManagementAuthorityTrustworthinessForPolicyLoading()));
+#else
+  management_service->RefreshCache(base::NullCallback());
+#endif  // BUILDFLAG(IS_WIN)
+}
+
+#if BUILDFLAG(IS_WIN)
+void ChromeBrowserPolicyConnector::OnManagementServiceCacheRefreshed(
+    ManagementService* management_service,
+    ManagementAuthorityTrustworthiness previous_trustworthiness,
+    ManagementAuthorityTrustworthiness /*previous_highest_trustworthiness*/,
+    ManagementAuthorityTrustworthiness /*new_highest_trustworthiness*/) {
+  if (management_service
+          ->GetManagementAuthorityTrustworthinessForPolicyLoading() !=
+      previous_trustworthiness) {
+    RefreshPlatformPolicies();
+  }
+}
+#endif
 
 ConfigurationPolicyProvider*
 ChromeBrowserPolicyConnector::local_test_policy_provider() {
@@ -344,10 +412,28 @@ ChromeBrowserPolicyConnector::CreatePlatformProvider() {
 #elif BUILDFLAG(IS_POSIX) && !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_CHROMEOS)
   base::FilePath config_dir_path;
   if (base::PathService::Get(chrome::DIR_POLICY_FILES, &config_dir_path)) {
+    std::vector<ConfigDirPolicyLoader::ConfigDirectory> config_dirs = {
+        ConfigDirPolicyLoader::ConfigDirectory(std::move(config_dir_path)),
+    };
+#if BUILDFLAG(IS_LINUX)
+    // In a snap, `$SNAP_DATA/policies` is a lower-precedence source of policy
+    // for systems where the standard directory isn't writable, e.g. Ubuntu
+    // Core. Require root ownership up to `/` so unprivileged users can't inject
+    // policy via `SNAP_DATA`.
+    if (base::FilePath snap_policy_dir = GetSnapPolicyDir();
+        !snap_policy_dir.empty()) {
+      config_dirs.emplace_back(
+          std::move(snap_policy_dir),
+          ConfigDirPolicyLoader::OwnershipRequirement{
+              .trusted_base_dir = base::FilePath(FILE_PATH_LITERAL("/")),
+              .trusted_uid = 0,
+          });
+    }
+#endif  // BUILDFLAG(IS_LINUX)
     auto loader = std::make_unique<ConfigDirPolicyLoader>(
         base::ThreadPool::CreateSequencedTaskRunner(
             {base::MayBlock(), base::TaskPriority::BEST_EFFORT}),
-        config_dir_path, POLICY_SCOPE_MACHINE);
+        std::move(config_dirs), POLICY_SCOPE_MACHINE);
     return std::make_unique<AsyncPolicyProvider>(GetSchemaRegistry(),
                                                  std::move(loader));
   } else {

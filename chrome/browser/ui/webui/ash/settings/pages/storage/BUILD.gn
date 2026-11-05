@@ -16,7 +16,6 @@ static_library("storage") {
 
   public_deps = [
     "//base",
-    "//chrome/browser:browser_public_dependencies",
     "//chrome/browser/ash/arc/session",
     "//chrome/browser/ui/webui/ash/settings/calculator",
     "//chrome/browser/ui/webui/settings",
@@ -27,24 +26,20 @@ static_library("storage") {
   deps = [
     "//ash/constants",
     "//ash/public/cpp",
-    "//chrome/app:generated_resources",
     "//chrome/browser/ash/arc",
     "//chrome/browser/ash/arc:arc_util",
     "//chrome/browser/ash/file_manager",
     "//chrome/browser/ui/webui/ash/settings/pages/device",
     "//chrome/browser/ui/webui/ash/settings/search",
-    "//chrome/common",
     "//chromeos/ash/components/cryptohome",
     "//chromeos/ash/components/dbus/userdataauth",
     "//chromeos/ash/components/dbus/userdataauth:userdataauth_proto",
     "//chromeos/ash/experiences/arc",
+    "//chromeos/ash/experiences/settings_ui/resources:strings",
     "//components/user_manager",
     "//content/public/browser",
     "//ui/base",
   ]
-
-  allow_circular_includes_from =
-      [ "//chrome/browser/ui/webui/ash/settings/pages/device" ]
 }
 
 source_set("unit_tests") {
@@ -67,8 +62,8 @@ source_set("unit_tests") {
     "//chrome/browser/ui/webui/ash/settings/calculator:test_support",
     "//chrome/common",
     "//chrome/common:chrome_features",
-    "//chrome/common:constants",
     "//chrome/test:test_support",
+    "//chrome/test/base:testing_browser_process",
     "//chromeos/ash/components/dbus/concierge",
     "//chromeos/ash/components/dbus/concierge:concierge_proto",
     "//chromeos/ash/components/dbus/spaced",

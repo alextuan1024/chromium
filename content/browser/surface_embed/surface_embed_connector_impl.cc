@@ -4,10 +4,15 @@
 
 #include "content/browser/surface_embed/surface_embed_connector_impl.h"
 
+#include <algorithm>
+
 #include "base/check_is_test.h"
+#include "base/check_op.h"
+#include "base/functional/callback_helpers.h"
 #include "build/build_config.h"
 #include "components/input/cursor_manager.h"
 #include "components/input/render_widget_host_input_event_router.h"
+#include "components/viz/common/surfaces/surface_id.h"
 #include "content/browser/renderer_host/render_frame_host_delegate.h"
 #include "content/browser/renderer_host/render_frame_host_impl.h"
 #include "content/browser/renderer_host/render_frame_host_manager.h"
@@ -37,6 +42,22 @@
 #endif
 
 namespace content {
+
+namespace {
+
+// Returns the LocalSurfaceId that both the parent and child allocators
+// will eventually converge to once each has seen the other's latest
+// update. Both IDs must share the same embed token.
+viz::LocalSurfaceId MergeLocalSurfaceIds(const viz::LocalSurfaceId& a,
+                                         const viz::LocalSurfaceId& b) {
+  CHECK_EQ(a.embed_token(), b.embed_token());
+  return viz::LocalSurfaceId(
+      std::max(a.parent_sequence_number(), b.parent_sequence_number()),
+      std::max(a.child_sequence_number(), b.child_sequence_number()),
+      a.embed_token());
+}
+
+}  // namespace
 
 // Forwards notifications about the child web contents to the connector.
 class SurfaceEmbedConnectorImpl::WCObserver : public WebContentsObserver {
@@ -104,7 +125,8 @@ class SurfaceEmbedConnectorImpl::ParentWCObserver : public WebContentsObserver {
 // static
 void SurfaceEmbedConnector::Attach(WebContents* child_web_contents,
                                    RenderFrameHost* outer_document_rfh,
-                                   SurfaceEmbedConnector::Delegate* delegate) {
+                                   SurfaceEmbedConnector::Delegate* delegate,
+                                   PinchGestureMode pinch_gesture_mode) {
   CHECK(child_web_contents);
   CHECK(outer_document_rfh);
   WebContents* parent_web_contents =
@@ -113,7 +135,8 @@ void SurfaceEmbedConnector::Attach(WebContents* child_web_contents,
   // Must Detach the child before re-Attaching.
   CHECK(!child_web_contents->GetSurfaceEmbedConnector());
   auto connector = base::WrapUnique(new SurfaceEmbedConnectorImpl(
-      child_web_contents, parent_web_contents, outer_document_rfh, delegate));
+      child_web_contents, parent_web_contents, outer_document_rfh, delegate,
+      pinch_gesture_mode));
   static_cast<WebContentsImpl*>(child_web_contents)
       ->SetSurfaceEmbedConnector(std::move(connector));
 }
@@ -142,14 +165,16 @@ SurfaceEmbedConnectorImpl::SurfaceEmbedConnectorImpl(
     WebContents* child_web_contents,
     WebContents* parent_web_contents,
     RenderFrameHost* embedder_rfh,
-    SurfaceEmbedConnector::Delegate* delegate)
+    SurfaceEmbedConnector::Delegate* delegate,
+    PinchGestureMode pinch_gesture_mode)
     : delegate_(delegate),
       child_web_contents_(static_cast<WebContentsImpl*>(child_web_contents)),
       // Rely on Chromium's WeakPtrFactory to automatically invalidate this
       // pointer safely at the start of parent_web_contents's destructor.
       parent_web_contents_(parent_web_contents->GetWeakPtr()),
       embedder_rfh_(
-          static_cast<RenderFrameHostImpl*>(embedder_rfh)->GetWeakPtr()) {
+          static_cast<RenderFrameHostImpl*>(embedder_rfh)->GetWeakPtr()),
+      pinch_gesture_mode_(pinch_gesture_mode) {
   CHECK_EQ(WebContents::FromRenderFrameHost(embedder_rfh), parent_web_contents);
   wc_observer_ = std::make_unique<WCObserver>(this, child_web_contents);
   parent_wc_observer_ =
@@ -230,18 +255,28 @@ const viz::FrameSinkId& SurfaceEmbedConnectorImpl::GetFrameSinkId() const {
 void SurfaceEmbedConnectorImpl::OnSynchronizeVisualProperties(
     const blink::FrameVisualProperties& visual_properties) {
   // If the `rect_in_local_root` or current ScreenInfo of the frame has
-  // changed, then the viz::LocalSurfaceId must also change.
-  if ((last_received_local_frame_size_ != visual_properties.local_frame_size ||
-       screen_infos_.current() != visual_properties.screen_infos.current() ||
-       last_received_zoom_level_ != visual_properties.zoom_level ||
-       last_received_css_zoom_factor_ != visual_properties.css_zoom_factor) &&
-      local_surface_id_ == visual_properties.local_surface_id) {
+  // changed, then the parent-allocated components of the viz::LocalSurfaceId
+  // must also change.
+  const bool resize_params_changed =
+      last_received_local_frame_size_ != visual_properties.local_frame_size ||
+      screen_infos_.current() != visual_properties.screen_infos.current() ||
+      last_received_zoom_level_ != visual_properties.zoom_level ||
+      last_received_css_zoom_factor_ != visual_properties.css_zoom_factor;
+
+  const viz::LocalSurfaceId& new_id = visual_properties.local_surface_id;
+  const bool has_new_parent_local_surface_id =
+      new_id.is_valid() &&
+      (new_id.embed_token() != local_surface_id_.embed_token() ||
+       new_id.parent_sequence_number() >
+           local_surface_id_.parent_sequence_number());
+
+  if (resize_params_changed && !has_new_parent_local_surface_id) {
     mojo::ReportBadMessage(
         "SurfaceEmbedConnectorImpl: Resize parameters changed but the local "
         "surface ID remained unchanged.");
     return;
   }
-  SynchronizeVisualProperties(visual_properties, true);
+  SynchronizeVisualProperties(visual_properties, /*propagate=*/true);
 }
 
 void SurfaceEmbedConnectorImpl::UpdateRenderThrottlingStatus(
@@ -420,9 +455,9 @@ void SurfaceEmbedConnectorImpl::SetView(RenderWidgetHostViewChildFrame* view,
     if (delegate_) {
       delegate_->SetFrameSinkId(frame_sink_id_, allow_paint_holding);
     }
-
-    MaybeRefreshKeepSurfaceAlive();
   }
+
+  UpdateKeepSurfaceAlive();
 }
 
 RenderWidgetHostViewBase*
@@ -443,6 +478,15 @@ SurfaceEmbedConnectorImpl::GetRootRenderWidgetHostView() {
       GetRootWebContents(parent_web_contents())->GetRenderWidgetHostView());
 }
 
+input::RenderWidgetHostViewInput*
+SurfaceEmbedConnectorImpl::GetPinchZoomTarget() {
+  if (pinch_gesture_mode_ == PinchGestureMode::kScaleChildWebContents) {
+    return view_;
+  }
+  input::RenderWidgetHostViewInput* parent = GetParentViewInput();
+  return parent ? parent->GetPinchZoomTarget() : nullptr;
+}
+
 void SurfaceEmbedConnectorImpl::RenderProcessGone() {
   delegate_->ChildProcessGone();
 
@@ -454,7 +498,7 @@ void SurfaceEmbedConnectorImpl::RenderProcessGone() {
 
 void SurfaceEmbedConnectorImpl::FirstSurfaceActivation(
     const viz::SurfaceInfo& surface_info) {
-  MaybeRefreshKeepSurfaceAlive();
+  UpdateKeepSurfaceAlive();
 }
 
 void SurfaceEmbedConnectorImpl::SendIntrinsicSizingInfoToParent(
@@ -467,9 +511,18 @@ void SurfaceEmbedConnectorImpl::SynchronizeVisualProperties(
   last_received_css_zoom_factor_ = visual_properties.css_zoom_factor;
   last_received_local_frame_size_ = visual_properties.local_frame_size;
   screen_infos_ = visual_properties.screen_infos;
-  bool local_surface_id_changed =
-      (local_surface_id_ != visual_properties.local_surface_id);
-  local_surface_id_ = visual_properties.local_surface_id;
+  // SurfaceEmbedConnectorImpl deviates from iframe/GuestView in that it
+  // supports capturing the child frame, which requires accepting updates to the
+  // cached `local_surface_id_` from both parent and child.
+  viz::LocalSurfaceId new_local_surface_id =
+      local_surface_id_.is_valid() &&
+              local_surface_id_.embed_token() ==
+                  visual_properties.local_surface_id.embed_token()
+          ? MergeLocalSurfaceIds(local_surface_id_,
+                                 visual_properties.local_surface_id)
+          : visual_properties.local_surface_id;
+  bool local_surface_id_changed = (local_surface_id_ != new_local_surface_id);
+  local_surface_id_ = new_local_surface_id;
   SetRectInParentView(visual_properties.rect_in_local_root);
   SetLocalFrameSize(visual_properties.local_frame_size);
 
@@ -496,7 +549,7 @@ void SurfaceEmbedConnectorImpl::SynchronizeVisualProperties(
   render_widget_host->UpdateVisualProperties(propagate);
 
   if (local_surface_id_changed) {
-    MaybeRefreshKeepSurfaceAlive();
+    UpdateKeepSurfaceAlive();
   }
 }
 
@@ -602,6 +655,15 @@ bool SurfaceEmbedConnectorImpl::IsDisplayLockedForTesting() {
   return IsDisplayLocked();
 }
 
+SurfaceEmbedConnector::PinchGestureMode
+SurfaceEmbedConnectorImpl::GetPinchGestureModeForTesting() const {
+  return pinch_gesture_mode_;
+}
+
+void SurfaceEmbedConnectorImpl::SetPinchGestureMode(PinchGestureMode mode) {
+  pinch_gesture_mode_ = mode;
+}
+
 void SurfaceEmbedConnectorImpl::EnableAutoResize(const gfx::Size& min_size,
                                                  const gfx::Size& max_size) {}
 
@@ -639,12 +701,30 @@ bool SurfaceEmbedConnectorImpl::IsDisplayLocked() {
   return display_locked_;
 }
 
-void SurfaceEmbedConnectorImpl::DidUpdateVisualProperties(
-    const cc::RenderFrameMetadata& metadata) {
-  if (metadata.local_surface_id.has_value() &&
-      local_surface_id_ != *metadata.local_surface_id) {
-    delegate_->UpdateLocalSurfaceIdFromChild(*metadata.local_surface_id);
+void SurfaceEmbedConnectorImpl::DidUpdateChildLocalSurfaceId(
+    const viz::LocalSurfaceId& child_local_surface_id) {
+  if (!child_local_surface_id.is_valid()) {
+    return;
   }
+
+  // Nothing to update until the parent assigns an ID; let it decide.
+  if (!local_surface_id_.is_valid()) {
+    delegate_->UpdateLocalSurfaceIdFromChild(child_local_surface_id);
+    return;
+  }
+
+  // The child may only advance its own part of the ID.
+  const viz::LocalSurfaceId updated_local_surface_id(
+      local_surface_id_.parent_sequence_number(),
+      child_local_surface_id.child_sequence_number(),
+      child_local_surface_id.embed_token());
+  if (!updated_local_surface_id.IsNewerThan(local_surface_id_)) {
+    return;
+  }
+
+  local_surface_id_ = updated_local_surface_id;
+  UpdateKeepSurfaceAlive();
+  delegate_->UpdateLocalSurfaceIdFromChild(local_surface_id_);
 }
 
 void SurfaceEmbedConnectorImpl::SetVisibilityForChildViews(bool visible) {
@@ -653,44 +733,42 @@ void SurfaceEmbedConnectorImpl::SetVisibilityForChildViews(bool visible) {
   }
 }
 
-void SurfaceEmbedConnectorImpl::SetKeepSurfaceAlive(bool keep_alive) {
-  should_keep_alive_ = keep_alive;
-  // We may be force-shown by WebContents to enable tab capture, even if we're
-  // in background. To enable that, we want to create a reference to the
-  // surface, to help the compositor notice its capture; this won't be created
-  // by the parent renderer unless it gets actually painted.
-  if (!view_) {
+void SurfaceEmbedConnectorImpl::UpdateKeepSurfaceAlive() {
+  // A captured child WebContents may be hidden in the background, where the
+  // parent renderer does not paint its plugin or reference its surface.
+  // Register a keep-alive surface range on the root compositor while captured
+  // so Viz aggregates the surface for CopyOutputRequests.
+  const bool should_keep_alive =
+      child_web_contents_ && child_web_contents_->IsBeingCaptured();
+  if (!should_keep_alive || !view_) {
     keep_surface_alive_.RunAndReset();
     return;
   }
 
-  auto surface_id = view_->GetCurrentSurfaceId();
+  const viz::SurfaceId surface_id = view_->GetCurrentSurfaceId();
+  if (!surface_id.is_valid()) {
+    keep_surface_alive_.RunAndReset();
+    return;
+  }
+
 #if BUILDFLAG(IS_ANDROID)
   ui::WindowAndroidCompositor* compositor = nullptr;
   if (view_->GetNativeView() && view_->GetNativeView()->GetWindowAndroid()) {
     compositor = view_->GetNativeView()->GetWindowAndroid()->GetCompositor();
   }
-  if (should_keep_alive_ && compositor && surface_id.is_valid()) {
+  if (compositor) {
     keep_surface_alive_ = base::ScopedClosureRunner(
         compositor->TakeScopedKeepSurfaceAliveCallback(surface_id));
+    return;
+  }
 #else
-  if (should_keep_alive_ && view_->GetCompositor() && surface_id.is_valid()) {
+  if (ui::Compositor* compositor = view_->GetCompositor()) {
     keep_surface_alive_ =
-        view_->GetCompositor()->TakeScopedKeepSurfaceAliveCallback(surface_id);
+        compositor->TakeScopedKeepSurfaceAliveCallback(surface_id);
+    return;
+  }
 #endif
-  } else {
-    keep_surface_alive_.RunAndReset();
-  }
-}
-
-bool SurfaceEmbedConnectorImpl::IsKeepingAlive() const {
-  return should_keep_alive_;
-}
-
-void SurfaceEmbedConnectorImpl::MaybeRefreshKeepSurfaceAlive() {
-  if (should_keep_alive_) {
-    SetKeepSurfaceAlive(true);
-  }
+  keep_surface_alive_.RunAndReset();
 }
 
 void SurfaceEmbedConnectorImpl::SetLocalFrameSize(
@@ -890,10 +968,18 @@ void SurfaceEmbedConnectorImpl::UpdateChildVisibility() {
     return;
   }
 
-  bool parent_is_visible = (EmbedderVisibility() == Visibility::VISIBLE);
+  const Visibility parent_visibility = EmbedderVisibility();
+  const bool parent_is_hidden = (parent_visibility == Visibility::HIDDEN);
+  const bool parent_is_occluded = (parent_visibility == Visibility::OCCLUDED);
 
-  if (!parent_is_visible) {
+  if (parent_is_hidden) {
     child_web_contents_->WasHidden();
+    return;
+  }
+
+  if (parent_is_occluded &&
+      visibility_ != blink::mojom::FrameVisibility::kNotRendered) {
+    child_web_contents_->WasOccluded();
     return;
   }
 

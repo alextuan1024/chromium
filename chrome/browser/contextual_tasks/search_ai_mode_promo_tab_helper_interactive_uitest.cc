@@ -44,6 +44,7 @@
 #include "net/test/embedded_test_server/http_response.h"
 #include "services/network/test/test_url_loader_factory.h"
 #include "testing/gmock/include/gmock/gmock.h"
+#include "ui/views/bubble/bubble_frame_view.h"
 
 namespace contextual_tasks {
 
@@ -81,7 +82,9 @@ class SearchAiModePromoTabHelperInteractiveUiTestBase
     std::vector<base::test::FeatureRef> enabled_features = {
         switches::kEnableSearchAIModeSigninPromo,
         contextual_tasks::kContextualTasks};
-    std::vector<base::test::FeatureRef> disabled_features;
+    std::vector<base::test::FeatureRef> disabled_features = {
+        contextual_tasks::kContextualTasksRearchitecture,
+        contextual_tasks::kContextualTasksSidePanelRearchitecture};
 
     if (load_original_aim_search) {
       enabled_features.push_back(

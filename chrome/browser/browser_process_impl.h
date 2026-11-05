@@ -23,10 +23,9 @@
 #include "base/sequence_checker.h"
 #include "base/timer/timer.h"
 #include "build/build_config.h"
-#include "chrome/browser/accessibility/accessibility_prefs/android/accessibility_prefs_controller.h"
+#include "chrome/browser/accessibility/accessibility_prefs/accessibility_prefs_controller.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/common/buildflags.h"
-#include "components/activity_reporter/activity_reporter.h"
 #include "components/keep_alive_registry/keep_alive_state_observer.h"
 #include "components/metrics_services_manager/metrics_services_manager.h"
 #include "components/prefs/persistent_pref_store.h"
@@ -57,6 +56,16 @@ class SecureOriginPrefsObserver;
 class SiteIsolationPrefsObserver;
 class SystemNotificationHelper;
 class StartupData;
+
+namespace base::i18n {
+class LanguageTag;
+}  // namespace base::i18n
+
+#if !BUILDFLAG(IS_CHROMEOS)
+namespace activity_reporter {
+class ActivityReporter;
+}  // namespace activity_reporter
+#endif  // !BUILDFLAG(IS_CHROMEOS)
 
 namespace speech {
 class SpeechRecognitionSmallExpertModelInstaller;
@@ -100,10 +109,6 @@ class WebRtcEventLogManager;
 namespace speech {
 class SodaInstaller;
 }  // namespace speech
-
-namespace screen_ai {
-class ScreenAIInstallState;
-}  // namespace screen_ai
 
 namespace supervised_user {
 class DeviceParentalControls;
@@ -219,7 +224,9 @@ class BrowserProcessImpl : public BrowserProcess,
   void StartAutoupdateTimer() override;
 #endif
 
+#if !BUILDFLAG(IS_CHROMEOS)
   activity_reporter::ActivityReporter* activity_reporter() override;
+#endif  // !BUILDFLAG(IS_CHROMEOS)
   component_updater::ComponentUpdateService* component_updater() override;
 #if BUILDFLAG(IS_CHROMEOS)
   MediaFileSystemRegistry* media_file_system_registry() override;
@@ -287,7 +294,7 @@ class BrowserProcessImpl : public BrowserProcess,
   void ApplyDefaultBrowserPolicy();
 
   // ApplicationLocaleStorage callback
-  void OnLocaleChanged(const std::string& new_locale);
+  void OnLocaleChanged(const base::i18n::LanguageTag& new_locale);
 
 #if BUILDFLAG(IS_WIN)
   void UpdateProcessIsolationState();
@@ -423,6 +430,13 @@ class BrowserProcessImpl : public BrowserProcess,
 
   base::CallbackListSubscription on_locale_changed_callback_subscription_;
 
+  // Copy of the locale stored in ApplicationLocaleStorage, kept in sync by
+  // OnLocaleChanged(). It backs the reference returned by
+  // GetApplicationLocale().
+  // TODO(crbug.com/582886728): Remove once GetApplicationLocale() returns a
+  // base::i18n::LanguageTag.
+  std::string application_locale_;
+
   // Download status updates (like a changing application icon on dock/taskbar)
   // are global per-application. DownloadStatusUpdater does no work in the ctor
   // so we don't have to worry about lazy initialization.
@@ -447,7 +461,9 @@ class BrowserProcessImpl : public BrowserProcess,
   void RestartBackgroundInstance();
 #endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_LINUX)
 
+#if !BUILDFLAG(IS_CHROMEOS)
   std::unique_ptr<activity_reporter::ActivityReporter> activity_reporter_;
+#endif  // !BUILDFLAG(IS_CHROMEOS)
 
   // component updater is normally not used under ChromeOS due
   // to concerns over integrity of data shared between profiles,
@@ -460,10 +476,6 @@ class BrowserProcessImpl : public BrowserProcess,
   // SodaInstallerImpl depends on ComponentUpdateService, so define it here
   // to ensure that SodaInstallerImpl gets destructed first.
   std::unique_ptr<speech::SodaInstaller> soda_installer_impl_;
-
-  // Used to download Screen AI on demand and keep track of the library
-  // availability.
-  std::unique_ptr<screen_ai::ScreenAIInstallState> screen_ai_download_;
 
   std::unique_ptr<speech::SpeechRecognitionSmallExpertModelInstaller>
       speech_recognition_small_expert_model_installer_;

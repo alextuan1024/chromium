@@ -93,7 +93,9 @@ bool IsSupportedVideoPixelFormat(media::VideoPixelFormat format) {
   if (format == media::VideoPixelFormat::PIXEL_FORMAT_UNKNOWN) {
     return false;
   }
-  return media::IsValidVideoPixelFormat(format);
+  return media::IsValidVideoPixelFormat(format) &&
+         format != media::VideoPixelFormat::PIXEL_FORMAT_Y410 &&
+         format != media::VideoPixelFormat::PIXEL_FORMAT_Y210;
 }
 
 SharedMemoryVirtualDeviceMojoAdapter::SharedMemoryVirtualDeviceMojoAdapter(

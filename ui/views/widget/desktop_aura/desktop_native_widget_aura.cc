@@ -9,6 +9,7 @@
 #include <utility>
 
 #include "base/auto_reset.h"
+#include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/memory/raw_ptr.h"
@@ -49,7 +50,6 @@
 #include "ui/views/corewm/tooltip.h"
 #include "ui/views/corewm/tooltip_controller.h"
 #include "ui/views/drag_utils.h"
-#include "ui/views/view_constants_aura.h"
 #include "ui/views/views_delegate.h"
 #include "ui/views/views_features.h"
 #include "ui/views/widget/desktop_aura/desktop_capture_client.h"
@@ -60,7 +60,6 @@
 #include "ui/views/widget/desktop_aura/desktop_window_tree_host.h"
 #include "ui/views/widget/desktop_aura/desktop_window_tree_host_platform.h"
 #include "ui/views/widget/focus_manager_event_handler.h"
-#include "ui/views/widget/legacy_window_reorderer.h"
 #include "ui/views/widget/native_widget_aura.h"
 #include "ui/views/widget/root_view.h"
 #include "ui/views/widget/tooltip_manager_aura.h"
@@ -70,10 +69,10 @@
 #include "ui/views/widget/window_reorderer.h"
 #include "ui/wm/core/compound_event_filter.h"
 #include "ui/wm/core/cursor_manager.h"
+#include "ui/wm/core/decoration_controller.h"
+#include "ui/wm/core/decoration_controller_delegate.h"
 #include "ui/wm/core/focus_controller.h"
 #include "ui/wm/core/native_cursor_manager.h"
-#include "ui/wm/core/shadow_controller.h"
-#include "ui/wm/core/shadow_controller_delegate.h"
 #include "ui/wm/core/shadow_types.h"
 #include "ui/wm/core/visibility_controller.h"
 #include "ui/wm/core/window_animations.h"
@@ -130,6 +129,12 @@ class DesktopNativeWidgetTopLevelHandler : public aura::WindowObserver {
       init_params.remove_standard_frame = true;
     }
 #endif
+    if (base::FeatureList::IsEnabled(
+            ::features::kOmitNativeFrameOnShadowlessMenus) &&
+        child_window->GetProperty(wm::kShadowElevationKey) ==
+            wm::kShadowElevationNone) {
+      init_params.shadow_type = Widget::InitParams::ShadowType::kNone;
+    }
     // If the window should be transparent, then ensure the top level widget
     // is also not opaque.
     if (child_window->GetTransparent()) {
@@ -192,7 +197,7 @@ class DesktopNativeWidgetTopLevelHandler : public aura::WindowObserver {
     }
 
     if (top_level_widget_) {
-      DCHECK(top_level_widget_->GetNativeView());
+      CHECK(top_level_widget_->GetNativeView(), base::NotFatalUntil::M163);
       top_level_widget_->GetNativeView()->RemoveObserver(this);
       // When we receive a notification that the child of the window created
       // above is being destroyed we go ahead and initiate the destruction of
@@ -214,7 +219,10 @@ class DesktopNativeWidgetTopLevelHandler : public aura::WindowObserver {
       top_level_widget_->SetBounds(window->GetBoundsInScreen());
     } else if (top_level_widget_ &&
                window == top_level_widget_->GetNativeView()) {
-      child_window_->SetBounds(gfx::Rect(new_bounds.size()));
+      // Only the origin is realigned: the widget's size is the child's size
+      // after a DIP/pixel round trip, so copying it back would feed rounding
+      // error into the child on fractional device scale factors.
+      child_window_->SetBounds(gfx::Rect(child_window_->bounds().size()));
     }
   }
 
@@ -324,7 +332,6 @@ DesktopNativeWidgetAura::~DesktopNativeWidgetAura() {
     // `native_widget_delegate_`'s root view. Reset them before deleting
     // `native_widget_delegate_` to avoid holding a briefly dangling ptr.
     drop_helper_.reset();
-    legacy_window_reorderer_.reset();
     window_reorderer_.reset();
     owned_native_widget_delegate.reset();
   } else {
@@ -357,9 +364,10 @@ void DesktopNativeWidgetAura::OnHostClosed() {
     }
   }
 
-  // DesktopWindowTreeHost owns the ActivationController which ShadowController
-  // references. Make sure we destroy ShadowController early on.
-  shadow_controller_.reset();
+  // DesktopWindowTreeHost owns the ActivationController which
+  // DecorationController references. Make sure we destroy DecorationController
+  // early on.
+  decoration_controller_.reset();
   tooltip_manager_.reset();
   if (tooltip_controller_.get()) {
     host_->window()->RemovePreTargetHandler(tooltip_controller_.get());
@@ -506,6 +514,19 @@ void DesktopNativeWidgetAura::HandleActivationChanged(bool active) {
         }
       }
 
+      // A modal transient child, e.g. a window-modal dialog shown before this
+      // widget was first activated, takes activation instead of
+      // `content_window_`, so focus wasn't restored above. As `content_window_`
+      // isn't active, it won't lose activation either, which is what normally
+      // schedules a restore (see `OnWindowActivated()`). Schedule one for when
+      // `content_window_` is activated, e.g. when the modal closes, so that a
+      // view focused while the widget is inactive (see
+      // `FocusManager::SetFocusedViewWithReason()`) gets focus then.
+      if (wm::GetModalTransient(GetWidget()->GetNativeView()) &&
+          !wm::IsActiveWindow(content_window_)) {
+        restore_focus_on_activate_ = true;
+      }
+
       // Refreshes the focus info to IMF in case that IMF cached the old info
       // about focused text input client when it was "inactive".
       GetInputMethod()->OnFocus();
@@ -530,6 +551,10 @@ void DesktopNativeWidgetAura::HandleActivationChanged(bool active) {
   // At this point the FocusController's state should have been appropriately
   // updated, propagate the NativeWidget activation notification.
   native_widget_delegate_->OnNativeWidgetActivationChanged(active);
+}
+
+bool DesktopNativeWidgetAura::IsHandlingHostDeactivation() const {
+  return should_activate_.has_value() && !should_activate_.value();
 }
 
 void DesktopNativeWidgetAura::OnHostWillClose() {
@@ -684,7 +709,7 @@ void DesktopNativeWidgetAura::InitNativeWidget(Widget::InitParams params) {
   capture_client_ = std::make_unique<DesktopCaptureClient>(host_->window());
 
   wm::FocusController* focus_controller =
-      new wm::FocusController(new DesktopFocusRules(content_window_));
+      new wm::FocusController(new DesktopFocusRules(content_window_, this));
   focus_client_.reset(focus_controller);
   aura::client::SetFocusClient(host_->window(), focus_controller);
   wm::SetActivationClient(host_->window(), focus_controller);
@@ -692,10 +717,17 @@ void DesktopNativeWidgetAura::InitNativeWidget(Widget::InitParams params) {
 
   position_client_ = desktop_window_tree_host_->CreateScreenPositionClient();
 
-  drag_drop_client_ = desktop_window_tree_host_->CreateDragDropClient();
-  // Mus returns null from CreateDragDropClient().
-  if (drag_drop_client_) {
-    aura::client::SetDragDropClient(host_->window(), drag_drop_client_.get());
+  const bool should_enable_drag_drop =
+      !base::FeatureList::IsEnabled(
+          views::features::kDisableDragDropForUnneededWidgets) ||
+      ShouldEnableDragDrop(params);
+
+  if (should_enable_drag_drop) {
+    drag_drop_client_ = desktop_window_tree_host_->CreateDragDropClient();
+    // Mus returns null from CreateDragDropClient().
+    if (drag_drop_client_) {
+      aura::client::SetDragDropClient(host_->window(), drag_drop_client_.get());
+    }
   }
 
   wm::SetActivationDelegate(content_window_, this);
@@ -707,8 +739,10 @@ void DesktopNativeWidgetAura::InitNativeWidget(Widget::InitParams params) {
   window_parenting_client_ =
       std::make_unique<DesktopNativeWidgetAuraWindowParentingClient>(
           host_->window());
-  drop_helper_ = std::make_unique<DropHelper>(GetWidget()->GetRootView());
-  aura::client::SetDragDropDelegate(content_window_, this);
+  if (should_enable_drag_drop) {
+    drop_helper_ = std::make_unique<DropHelper>(GetWidget()->GetRootView());
+    aura::client::SetDragDropDelegate(content_window_, this);
+  }
 
   if (params.type != Widget::InitParams::TYPE_TOOLTIP) {
     tooltip_manager_ = std::make_unique<TooltipManagerAura>(this);
@@ -735,18 +769,13 @@ void DesktopNativeWidgetAura::InitNativeWidget(Widget::InitParams params) {
   event_client_ = std::make_unique<DesktopEventClient>();
   aura::client::SetEventClient(host_->window(), event_client_.get());
 
-  shadow_controller_ = std::make_unique<wm::ShadowController>(
+  decoration_controller_ = std::make_unique<wm::DecorationController>(
       wm::GetActivationClient(host_->window()), nullptr);
 
   OnSizeConstraintsChanged();
 
-  if (base::FeatureList::IsEnabled(features::kNativeViewHostManagesLayers)) {
-    window_reorderer_ = std::make_unique<WindowReorderer>(
-        content_window_, GetWidget()->GetRootView());
-  } else {
-    legacy_window_reorderer_ = std::make_unique<legacy::WindowReorderer>(
-        content_window_, GetWidget()->GetRootView());
-  }
+  window_reorderer_ = std::make_unique<WindowReorderer>(
+      content_window_, GetWidget()->GetRootView());
 }
 
 void DesktopNativeWidgetAura::OnWidgetInitDone() {
@@ -796,7 +825,9 @@ Widget* DesktopNativeWidgetAura::GetTopLevelWidget() {
 }
 
 const ui::Compositor* DesktopNativeWidgetAura::GetCompositor() const {
-  return content_window_ ? content_window_->layer()->GetCompositor() : nullptr;
+  return content_window_ && content_window_->GetHost()
+             ? content_window_->GetHost()->compositor()
+             : nullptr;
 }
 
 const ui::Layer* DesktopNativeWidgetAura::GetLayer() const {
@@ -813,16 +844,15 @@ void DesktopNativeWidgetAura::ReorderNativeViews() {
   // scope rather than after each individual change.
   // https://crbug.com/829918
   aura::WindowOcclusionTracker::ScopedPause pause_occlusion;
-  if (legacy_window_reorderer_) {
-    legacy_window_reorderer_->ReorderChildWindows();
-  } else if (window_reorderer_) {
+  if (window_reorderer_) {
     window_reorderer_->ReorderChildWindows();
   }
 }
 
 void DesktopNativeWidgetAura::ViewRemoved(View* view) {
-  DCHECK(drop_helper_.get() != nullptr);
-  drop_helper_->ResetTargetViewIfEquals(view);
+  if (drop_helper_) {
+    drop_helper_->ResetTargetViewIfEquals(view);
+  }
 }
 
 void DesktopNativeWidgetAura::ClientDestroyedWidget() {
@@ -1491,7 +1521,7 @@ void DesktopNativeWidgetAura::OnKeyEvent(ui::KeyEvent* event) {
 }
 
 void DesktopNativeWidgetAura::OnMouseEvent(ui::MouseEvent* event) {
-  DCHECK(content_window_->IsVisible());
+  CHECK(content_window_->IsVisible(), base::NotFatalUntil::M163);
 
 #if BUILDFLAG(IS_WIN)
   if (event->type() == ui::EventType::kMouseMoved) {
@@ -1521,21 +1551,7 @@ void DesktopNativeWidgetAura::OnScrollEvent(ui::ScrollEvent* event) {
     return;
   }
 
-  if (event->type() == ui::EventType::kScroll) {
-    native_widget_delegate_->OnScrollEvent(event);
-    if (event->handled()) {
-      return;
-    }
-
-    // Convert unprocessed scroll events into wheel events.
-    ui::MouseWheelEvent mwe(*event->AsScrollEvent());
-    native_widget_delegate_->OnMouseEvent(&mwe);
-    if (mwe.handled()) {
-      event->SetHandled();
-    }
-  } else {
-    native_widget_delegate_->OnScrollEvent(event);
-  }
+  native_widget_delegate_->OnScrollEvent(event);
 }
 
 void DesktopNativeWidgetAura::OnGestureEvent(ui::GestureEvent* event) {
@@ -1563,7 +1579,8 @@ void DesktopNativeWidgetAura::OnWindowActivated(
     wm::ActivationChangeObserver::ActivationReason reason,
     aura::Window* gained_active,
     aura::Window* lost_active) {
-  DCHECK(content_window_ == gained_active || content_window_ == lost_active);
+  CHECK(content_window_ == gained_active || content_window_ == lost_active,
+        base::NotFatalUntil::M163);
   if (gained_active == content_window_ && restore_focus_on_activate_) {
     restore_focus_on_activate_ = false;
     // For OS_LINUX, desktop native widget may not be activated when child
@@ -1573,7 +1590,7 @@ void DesktopNativeWidgetAura::OnWindowActivated(
       GetWidget()->GetFocusManager()->RestoreFocusedView();
     }
   } else if (lost_active == content_window_ && GetWidget()->HasFocusManager()) {
-    DCHECK(!restore_focus_on_activate_);
+    CHECK(!restore_focus_on_activate_, base::NotFatalUntil::M163);
     restore_focus_on_activate_ = true;
     // Pass in false so that ClearNativeFocus() isn't invoked.
     if (GetWidget()) {
@@ -1631,14 +1648,16 @@ void DesktopNativeWidgetAura::OnWindowFocused(aura::Window* gained_focus,
 // DesktopNativeWidgetAura, aura::WindowDragDropDelegate implementation:
 
 void DesktopNativeWidgetAura::OnDragEntered(const ui::DropTargetEvent& event) {
-  DCHECK(drop_helper_.get() != nullptr);
+  // Can only be called if drag and drop is enabled for this widget.
+  CHECK(drop_helper_);
   last_drop_operation_ = drop_helper_->OnDragOver(
       event.data(), event.location(), event.source_operations());
 }
 
 aura::client::DragUpdateInfo DesktopNativeWidgetAura::OnDragUpdated(
     const ui::DropTargetEvent& event) {
-  DCHECK(drop_helper_.get() != nullptr);
+  // Can only be called if drag and drop is enabled for this widget.
+  CHECK(drop_helper_);
   last_drop_operation_ = drop_helper_->OnDragOver(
       event.data(), event.location(), event.source_operations());
 
@@ -1648,13 +1667,15 @@ aura::client::DragUpdateInfo DesktopNativeWidgetAura::OnDragUpdated(
 }
 
 void DesktopNativeWidgetAura::OnDragExited() {
-  DCHECK(drop_helper_.get() != nullptr);
+  // Can only be called if drag and drop is enabled for this widget.
+  CHECK(drop_helper_);
   drop_helper_->OnDragExit();
 }
 
 aura::client::DragDropDelegate::DropCallback
 DesktopNativeWidgetAura::GetDropCallback(const ui::DropTargetEvent& event) {
-  DCHECK(drop_helper_);
+  // Can only be called if drag and drop is enabled for this widget.
+  CHECK(drop_helper_);
   auto drop_helper_cb = drop_helper_->GetDropCallback(
       event.data(), event.location(), last_drop_operation_);
   return base::BindOnce(&DesktopNativeWidgetAura::PerformDrop,

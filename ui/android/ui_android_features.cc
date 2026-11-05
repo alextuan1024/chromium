@@ -3,14 +3,15 @@
 // found in the LICENSE file.
 
 #include "ui/android/ui_android_features.h"
+
 #include "base/feature_list.h"
 
 namespace ui {
 
 BASE_FEATURE(kAndroidHDR, base::FEATURE_ENABLED_BY_DEFAULT);
 
-BASE_FEATURE(kAndroidResourceMemoryOptimization,
-             base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kAndroidPreserveStatusBarInsetsWhenUnfocused,
+             base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kAndroidUseCorrectDisplayWorkArea,
              base::FEATURE_DISABLED_BY_DEFAULT);
@@ -27,7 +28,10 @@ BASE_FEATURE(kBottomSheetRemeasureFix, base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kCachedGestureNavMetrics, base::FEATURE_ENABLED_BY_DEFAULT);
 
-BASE_FEATURE(kCheckIntentCallerPermission, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kCheckIntentCallerPermission, base::FEATURE_ENABLED_BY_DEFAULT);
+
+BASE_FEATURE(kCheckLocalNetworkPermissionRevokedCompat,
+             base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kClipboardConfusedDeputyDefenseText,
              base::FEATURE_ENABLED_BY_DEFAULT);
@@ -41,15 +45,15 @@ BASE_FEATURE(kClipboardOversizedPayloadProvider,
 BASE_FEATURE(kConnectedDisplayDensityDebugLogs,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
-BASE_FEATURE(kDeprecatedExternalPickerFunction,
-             base::FEATURE_DISABLED_BY_DEFAULT);
-
 BASE_FEATURE(kDisablePhotoPickerForVideoCapture,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kHasContentUri, base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kMaximumWindowForGestureNavDetection,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+
+BASE_FEATURE(kPointerLockMouseDensityCompensation,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kPointerLockMouseScaling, base::FEATURE_ENABLED_BY_DEFAULT);
@@ -64,18 +68,17 @@ BASE_FEATURE(kRequireLeadingInTextViewWithLeading,
 
 BASE_FEATURE(kAndroidUpdateDisplayForContext, base::FEATURE_ENABLED_BY_DEFAULT);
 
+BASE_FEATURE(kSubmenuTypeOverride, base::FEATURE_DISABLED_BY_DEFAULT);
+
 BASE_FEATURE(kSupportKeyboard, base::FEATURE_ENABLED_BY_DEFAULT);
 
-BASE_FEATURE(kUseNewEtc1Encoder, base::FEATURE_ENABLED_BY_DEFAULT);
+BASE_FEATURE(kUseNewEtc1Decoder, base::FEATURE_DISABLED_BY_DEFAULT);
 
 BASE_FEATURE(kCheckHitEligibility, base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kAndroidTouchpadOverscrollHistoryNavigation,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
-BASE_FEATURE(kUpdatePaddingForDisplayCalculation,
-             base::FEATURE_ENABLED_BY_DEFAULT);
-
-BASE_FEATURE(kAvoidPerContextColorProviders, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kAvoidPerContextColorProviders, base::FEATURE_ENABLED_BY_DEFAULT);
 
 }  // namespace ui

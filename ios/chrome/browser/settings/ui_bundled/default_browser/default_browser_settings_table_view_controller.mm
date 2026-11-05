@@ -117,12 +117,8 @@ enum class DefaultBrowserSettingsPageUsage {
     return IsDefaultAppsPictureInPictureVariant();
   }
 
-  BOOL isFromOneTimeDefaultBrowserNotification =
-      self.source == DefaultBrowserSettingsPageSource::kTipsNotification &&
-      base::FeatureList::IsEnabled(kIOSOneTimeDefaultBrowserNotification);
   return IsDefaultAppsDestinationAvailable() &&
-         (isFromOneTimeDefaultBrowserNotification ||
-          IsUseDefaultAppsDestinationForPromosEnabled());
+         IsUseDefaultAppsDestinationForPromosEnabled();
 }
 
 // Responds to user action to go to default browser iOS settings.
@@ -135,7 +131,8 @@ enum class DefaultBrowserSettingsPageUsage {
   }
 
   RecordDefaultBrowserPromoLastAction(
-      IOSDefaultBrowserPromoAction::kActionButton);
+      IOSDefaultBrowserPromoAction::kActionButton,
+      IOSDefaultBrowserPromoSurface::kSettings);
   base::RecordAction(base::UserMetricsAction("Settings.DefaultBrowser"));
   base::UmaHistogramEnumeration("Settings.DefaultBrowserFromSource",
                                 self.source);
@@ -167,7 +164,7 @@ enum class DefaultBrowserSettingsPageUsage {
           useDefaultAppsDestination:_useDefaultAppsDestination
                            hasSteps:YES
                           titleText:nil];
-  _instructionsViewController.actionHandler = self;
+  _instructionsViewController.actionDelegate = self;
   [self addChildViewController:_instructionsViewController];
 
   self.tableView.backgroundView = [[UIView alloc] init];
@@ -192,10 +189,22 @@ enum class DefaultBrowserSettingsPageUsage {
   base::UmaHistogramEnumeration(perSourceHistogram, usage);
 }
 
-#pragma mark - ConfirmationAlertActionHandler
+#pragma mark - ButtonStackActionDelegate
 
-- (void)confirmationAlertPrimaryAction {
+- (void)didTapPrimaryActionButton {
   [self openSettingsButtonPressed];
+}
+
+- (void)didTapSecondaryActionButton {
+  NOTREACHED();
+}
+
+- (void)didTapTertiaryActionButton {
+  NOTREACHED();
+}
+
+- (void)didDismissButtonStackViewController {
+  NOTREACHED();
 }
 
 @end

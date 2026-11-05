@@ -115,6 +115,32 @@ int CountApps(const WebAppRegistrar::AppSet& app_set) {
   return count;
 }
 
+constexpr char kIwaUrl[] =
+    "isolated-app://berugqztij5biqquuk3mfwpsaibuegaqcitgfchwuosuofdjabzqaaic/";
+
+// Creates an app whose validated scope extensions cover `extended_origin`.
+std::unique_ptr<WebApp> CreateWebAppWithScopeExtension(
+    const GURL& start_url,
+    const url::Origin& extended_origin) {
+  auto web_app = test::CreateWebApp(start_url);
+  web_app->SetValidatedScopeExtensions(
+      {ScopeExtensionInfo::CreateForOrigin(extended_origin)});
+  return web_app;
+}
+
+// Creates an Isolated Web App whose validated scope extensions cover
+// `extended_origin`.
+std::unique_ptr<WebApp> CreateIsolatedWebAppWithScopeExtension(
+    const url::Origin& extended_origin) {
+  auto web_app = CreateWebAppWithScopeExtension(GURL(kIwaUrl), extended_origin);
+  web_app->SetIsolationData(
+      IsolationData::Builder(
+          IwaStorageOwnedBundle{"random_name", /*dev_mode=*/false},
+          *IwaVersion::Create("1.0.0"))
+          .Build());
+  return web_app;
+}
+
 }  // namespace
 
 using ::testing::ElementsAre;
@@ -634,8 +660,6 @@ TEST_F(WebAppRegistrarTest, CanFindAppWithUrlInScope) {
       GenerateAppId(/*manifest_id=*/std::nullopt, app2_scope);
   const webapps::AppId app3_id =
       GenerateAppId(/*manifest_id=*/std::nullopt, app3_scope);
-  const webapps::AppId app4_id =
-      GenerateAppId(/*manifest_id=*/std::nullopt, app3_scope);
 
   auto app1 = test::CreateWebApp(app1_scope);
   RegisterAppUnsafe(std::move(app1));
@@ -723,6 +747,92 @@ TEST_F(WebAppRegistrarTest, FindPwaBasedOnStartUrlIfScopeIsEmpty) {
           app2_page, web_app::WebAppFilter::InstalledInChrome());
   ASSERT_TRUE(app2_match);
   EXPECT_EQ(app2_match, std::optional<webapps::AppId>(app3_id));
+}
+
+TEST_F(WebAppRegistrarTest,
+       FindBestAppWithUrlInScope_IgnoresIsolatedAppScopeExtensionsByDefault) {
+  base::test::ScopedFeatureList scoped_feature_list(features::kIsolatedWebApps);
+  StartWebAppProvider();
+
+  const GURL extended_url("https://ext.example/page");
+  auto iwa =
+      CreateIsolatedWebAppWithScopeExtension(url::Origin::Create(extended_url));
+  const webapps::AppId iwa_id = iwa->app_id();
+  RegisterAppUnsafe(std::move(iwa));
+
+  // By default the IWA is not matched via its scope extensions, but its
+  // primary scope still matches.
+  EXPECT_EQ(registrar().FindBestAppWithUrlInScope(
+                extended_url, WebAppFilter::InstalledInChrome()),
+            std::nullopt);
+  EXPECT_EQ(
+      registrar().FindBestAppWithUrlInScope(GURL(kIwaUrl).Resolve("ui.html"),
+                                            WebAppFilter::InstalledInChrome()),
+      iwa_id);
+
+  // Callers can explicitly opt in to considering IWA scope extensions.
+  EXPECT_EQ(registrar().FindBestAppWithUrlInScope(
+                extended_url, WebAppFilter::InstalledInChrome(),
+                {.include_isolated_web_app_scope_extensions = true}),
+            iwa_id);
+}
+
+TEST_F(
+    WebAppRegistrarTest,
+    FindBestAppWithUrlInScope_IgnoresIsolatedSubAppScopeExtensionsByDefault) {
+  base::test::ScopedFeatureList scoped_feature_list(features::kIsolatedWebApps);
+  StartWebAppProvider();
+
+  const GURL extended_url("https://ext.example/page");
+  const url::Origin extended_origin = url::Origin::Create(extended_url);
+  auto iwa = CreateIsolatedWebAppWithScopeExtension(extended_origin);
+  const webapps::AppId iwa_id = iwa->app_id();
+  RegisterAppUnsafe(std::move(iwa));
+
+  const GURL sub_app_url = GURL(kIwaUrl).Resolve("sub_app/index.html");
+  auto sub_app = CreateWebAppWithScopeExtension(sub_app_url, extended_origin);
+  sub_app->SetParentAppId(iwa_id);
+  const webapps::AppId sub_app_id = sub_app->app_id();
+  RegisterAppUnsafe(std::move(sub_app));
+  ASSERT_TRUE(
+      registrar().AppMatches(sub_app_id, WebAppFilter::IsIsolatedSubApp()));
+
+  EXPECT_EQ(registrar().FindBestAppWithUrlInScope(
+                extended_url, WebAppFilter::InstalledInChrome()),
+            std::nullopt);
+  EXPECT_EQ(registrar().FindBestAppWithUrlInScope(
+                GURL(kIwaUrl).Resolve("sub_app/page.html"),
+                WebAppFilter::InstalledInChrome()),
+            sub_app_id);
+}
+
+TEST_F(WebAppRegistrarTest,
+       FindBestAppWithUrlInScope_HonorsNonIsolatedAppScopeExtensions) {
+  base::test::ScopedFeatureList scoped_feature_list(features::kIsolatedWebApps);
+  StartWebAppProvider();
+
+  const GURL extended_url("https://ext.example/page");
+  const url::Origin extended_origin = url::Origin::Create(extended_url);
+  RegisterAppUnsafe(CreateIsolatedWebAppWithScopeExtension(extended_origin));
+
+  auto pwa = CreateWebAppWithScopeExtension(GURL("https://app.example/start"),
+                                            extended_origin);
+  const webapps::AppId pwa_id = pwa->app_id();
+  RegisterAppUnsafe(std::move(pwa));
+
+  // Scope extensions of non-isolated apps are still honored, and the IWA
+  // doesn't shadow them.
+  EXPECT_EQ(registrar().FindBestAppWithUrlInScope(
+                extended_url, WebAppFilter::InstalledInChrome()),
+            pwa_id);
+
+  // An app actually controlling the URL wins as well.
+  auto controlling_app = test::CreateWebApp(GURL("https://ext.example/start"));
+  const webapps::AppId controlling_app_id = controlling_app->app_id();
+  RegisterAppUnsafe(std::move(controlling_app));
+  EXPECT_EQ(registrar().FindBestAppWithUrlInScope(
+                extended_url, WebAppFilter::InstalledInChrome()),
+            controlling_app_id);
 }
 
 TEST_F(WebAppRegistrarTest, BeginAndCommitUpdate) {
@@ -966,7 +1076,6 @@ TEST_F(WebAppRegistrarTest, SaveAndGetInMemoryControlledFramePartitionConfig) {
   GURL start_url(base::StrCat({webapps::kIsolatedAppScheme,
                                url::kStandardSchemeSeparator, kIwaHostname}));
   auto isolated_web_app = test::CreateWebApp(start_url);
-  const webapps::AppId app_id = isolated_web_app->app_id();
   auto url_info = IsolatedWebAppUrlInfo::Create(start_url);
   ASSERT_TRUE(url_info.has_value());
 
@@ -1252,7 +1361,6 @@ TEST_F(WebAppRegistrarTest, AppsDoNotOverlapIfNestedScope) {
       proto::NAVIGATION_CAPTURING_PREFERENCE_CAPTURE);
 
   const webapps::AppId app_id1 = web_app1->app_id();
-  const webapps::AppId app_id2 = web_app2->app_id();
   RegisterAppUnsafe(std::move(web_app1));
   RegisterAppUnsafe(std::move(web_app2));
 
@@ -1446,7 +1554,6 @@ TEST_F(WebAppRegistrarTest, InnerAndOuterScopeIntentPicker) {
   auto no_match_scope_app =
       test::CreateWebApp(GURL("https://def.com/"), WebAppManagement::kSync);
   no_match_scope_app->SetName("App_No_Match");
-  const webapps::AppId no_match_scope_app_id = no_match_scope_app->app_id();
   RegisterAppUnsafe(std::move(no_match_scope_app));
 
   // This should not be considered since this app is not set to open in a new
@@ -1456,7 +1563,6 @@ TEST_F(WebAppRegistrarTest, InnerAndOuterScopeIntentPicker) {
       GURL("https://abc.com/inner/"));
   browser_mode_app->SetName("App_Browser");
   browser_mode_app->SetUserDisplayMode(mojom::UserDisplayMode::kBrowser);
-  const webapps::AppId browser_mode_app_id = browser_mode_app->app_id();
   RegisterAppUnsafe(std::move(browser_mode_app));
 
   EXPECT_THAT(registrar().GetAllAppsControllingUrl(document_url),
@@ -2200,8 +2306,45 @@ TEST_P(WebAppRegistrarParameterizedTest, Filter_IsIsolatedSubApp) {
 
   EXPECT_TRUE(
       registrar().AppMatches(sub_app_id, WebAppFilter::IsIsolatedSubApp()));
+  EXPECT_FALSE(registrar().AppMatches(sub_app_id,
+                                      WebAppFilter::IsDevModeIsolatedSubApp()));
   EXPECT_EQ(sub_app_id, registrar().FindBestAppWithUrlInScope(
                             sub_app_url, WebAppFilter::IsIsolatedSubApp()));
+}
+
+TEST_P(WebAppRegistrarParameterizedTest, Filter_IsDevModeIsolatedSubApp) {
+  base::test::ScopedFeatureList scoped_feature_list(features::kIsolatedWebApps);
+  StartWebAppProvider();
+
+  constexpr char kIwaHostname[] =
+      "berugqztij5biqquuk3mfwpsaibuegaqcitgfchwuosuofdjabzqaaic";
+  GURL app_url(base::StrCat({webapps::kIsolatedAppScheme,
+                             url::kStandardSchemeSeparator, kIwaHostname}));
+  auto isolated_web_app = test::CreateWebApp(app_url);
+  const webapps::AppId app_id = isolated_web_app->app_id();
+
+  isolated_web_app->SetIsolationData(
+      IsolationData::Builder(
+          IwaStorageOwnedBundle{"random_name", /*dev_mode=*/true},
+          *IwaVersion::Create("1.0.0"))
+          .Build());
+  isolated_web_app->SetDisplayMode(DisplayMode::kBrowser);
+  isolated_web_app->SetUserDisplayMode(mojom::UserDisplayMode::kBrowser);
+  RegisterAppUnsafe(std::move(isolated_web_app));
+
+  GURL sub_app_url(
+      base::StrCat({webapps::kIsolatedAppScheme, url::kStandardSchemeSeparator,
+                    kIwaHostname, "/sub_app/"}));
+  auto isolated_sub_app = test::CreateWebApp(sub_app_url);
+  isolated_sub_app->SetParentAppId(app_id);
+  const webapps::AppId sub_app_id = isolated_sub_app->app_id();
+  RegisterAppUnsafe(std::move(isolated_sub_app));
+
+  EXPECT_TRUE(registrar().AppMatches(sub_app_id,
+                                     WebAppFilter::IsDevModeIsolatedSubApp()));
+  EXPECT_EQ(sub_app_id,
+            registrar().FindBestAppWithUrlInScope(
+                sub_app_url, WebAppFilter::IsDevModeIsolatedSubApp()));
 }
 
 INSTANTIATE_TEST_SUITE_P(

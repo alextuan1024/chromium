@@ -4,23 +4,29 @@
 
 package org.chromium.chrome.browser.ui.android.webid;
 
+import static org.chromium.build.NullUtil.assertNonNull;
+
 import android.content.res.Resources;
 
-import androidx.annotation.Nullable;
-
 import org.jni_zero.CalledByNative;
+import org.jni_zero.JniPtr;
+import org.jni_zero.JniRawPtr;
 import org.jni_zero.JniType;
+import org.jni_zero.JniTypeToken;
 import org.jni_zero.NativeMethods;
 
 import org.chromium.base.ContextUtils;
 import org.chromium.blink.mojom.RpContext;
 import org.chromium.blink.mojom.RpMode;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabUtils;
 import org.chromium.chrome.browser.ui.android.webid.data.Account;
 import org.chromium.chrome.browser.ui.android.webid.data.IdentityCredentialTokenError;
 import org.chromium.chrome.browser.ui.android.webid.data.IdentityProviderData;
 import org.chromium.chrome.browser.ui.android.webid.data.IdentityProviderMetadata;
+import org.chromium.chrome.browser.ui.android.webid.data.NativeAppRequestOptions;
 import org.chromium.chrome.browser.ui.android.webid.data.RelyingPartyData;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetControllerProvider;
@@ -30,24 +36,28 @@ import org.chromium.content_public.browser.WebContents;
 import org.chromium.ui.base.WindowAndroid;
 import org.chromium.url.GURL;
 
-import java.util.Arrays;
+import java.util.List;
 
 /**
  * This bridge creates and initializes a {@link AccountSelectionComponent} on construction and
  * forwards native calls to it.
  */
+@NullMarked
 class AccountSelectionBridge implements AccountSelectionComponent.Delegate {
+    @JniType("::AccountSelectionViewAndroid")
+    interface NativeAccountSelectionViewAndroid extends JniTypeToken {}
+
     /**
-     * The size of the maskable icon's safe zone as a fraction of the icon's edge size as defined
-     * in https://www.w3.org/TR/appmanifest/
+     * The size of the maskable icon's safe zone as a fraction of the icon's edge size as defined in
+     * https://www.w3.org/TR/appmanifest/
      */
     public static final float MASKABLE_ICON_SAFE_ZONE_DIAMETER_RATIO = 0.8f;
 
-    private long mNativeView;
+    private @Nullable JniRawPtr<NativeAccountSelectionViewAndroid> mNativeView;
     private final AccountSelectionComponent mAccountSelectionComponent;
 
     private AccountSelectionBridge(
-            long nativeView,
+            JniRawPtr<NativeAccountSelectionViewAndroid> nativeView,
             Tab tab,
             WindowAndroid windowAndroid,
             BottomSheetController bottomSheetController,
@@ -82,15 +92,18 @@ class AccountSelectionBridge implements AccountSelectionComponent.Delegate {
 
     @CalledByNative
     private static @Nullable AccountSelectionBridge create(
-            long nativeView,
-            WebContents webContents,
-            WindowAndroid windowAndroid,
+            JniRawPtr<NativeAccountSelectionViewAndroid> nativeView,
+            @JniType("content::WebContents*") WebContents webContents,
+            @JniType("ui::WindowAndroid*") WindowAndroid windowAndroid,
             @RpMode.EnumType int rpMode,
             boolean canShowUi) {
         BottomSheetController bottomSheetController =
                 BottomSheetControllerProvider.from(windowAndroid);
-        if (bottomSheetController == null) return null;
-        Tab tab = TabUtils.fromWebContents(webContents);
+        if (bottomSheetController == null) {
+            nativeView.release();
+            return null;
+        }
+        Tab tab = assertNonNull(TabUtils.fromWebContents(webContents));
         return new AccountSelectionBridge(
                 nativeView, tab, windowAndroid, bottomSheetController, rpMode, canShowUi);
     }
@@ -98,7 +111,10 @@ class AccountSelectionBridge implements AccountSelectionComponent.Delegate {
     @CalledByNative
     private void destroy() {
         mAccountSelectionComponent.close();
-        mNativeView = 0;
+        if (mNativeView != null) {
+            mNativeView.release();
+            mNativeView = null;
+        }
     }
 
     @CalledByNative
@@ -109,7 +125,7 @@ class AccountSelectionBridge implements AccountSelectionComponent.Delegate {
     /**
      * Shows the accounts in a bottom sheet UI allowing user to select one.
      *
-     * @param rpForDisplay is the formatted RP URL to display in the FedCM prompt.
+     * @param rpData is the data for the relying party.
      * @param accounts is the list of accounts to be shown.
      * @param idpDataList is the list of IDP datas.
      * @param newAccounts represents the newly logged in accounts.
@@ -119,22 +135,18 @@ class AccountSelectionBridge implements AccountSelectionComponent.Delegate {
     @CalledByNative
     private boolean showAccounts(
             RelyingPartyData rpData,
-            Account[] accounts,
-            IdentityProviderData[] idpDataList,
-            Account[] newAccounts) {
-        assert accounts != null && accounts.length > 0;
-        return mAccountSelectionComponent.showAccounts(
-                rpData,
-                Arrays.asList(accounts),
-                Arrays.asList(idpDataList),
-                Arrays.asList(newAccounts));
+            @JniType("std::vector") List<Account> accounts,
+            @JniType("std::vector") List<IdentityProviderData> idpDataList,
+            @JniType("std::vector") List<Account> newAccounts) {
+        assert accounts != null && !accounts.isEmpty();
+        return mAccountSelectionComponent.showAccounts(rpData, accounts, idpDataList, newAccounts);
     }
 
     /**
      * Shows a bottomsheet prompting the user to sign in to an IDP for the purpose of federated
      * login when the IDP sign-in status is signin but no accounts are received from the fetch.
      *
-     * @param rpForDisplay is the formatted RP URL to display in the FedCM prompt.
+     * @param rpData is the data for the relying party.
      * @param idpForDisplay is the formatted IDP URL to display in the FedCM prompt.
      * @param idpMetadata is the metadata of the IDP.
      * @param rpContext is an enum representing the desired text to be used in the title of the
@@ -156,7 +168,7 @@ class AccountSelectionBridge implements AccountSelectionComponent.Delegate {
      * Shows a bottomsheet detailing the error that has occurred in the user's attempt to sign-in
      * through federated login.
      *
-     * @param rpForDisplay is the formatted RP URL to display in the FedCM prompt.
+     * @param rpData is the data for the relying party.
      * @param idpForDisplay is the formatted IDP URL to display in the FedCM prompt.
      * @param idpMetadata is the metadata of the IDP.
      * @param rpContext is a {@link String} representing the desired text to be used in the title of
@@ -180,7 +192,7 @@ class AccountSelectionBridge implements AccountSelectionComponent.Delegate {
      * Shows a bottomsheet prompting the user to sign-in to an RP with an IDP with a spinner to
      * indicate that contents are loading.
      *
-     * @param rpForDisplay is the formatted RP URL to display in the FedCM prompt.
+     * @param rpData is the data for the relying party.
      * @param idpForDisplay is the formatted IDP URL to display in the FedCM prompt.
      * @param rpContext is a {@link String} representing the desired text to be used in the title of
      *     the FedCM prompt: "signin", "continue", etc.
@@ -209,12 +221,17 @@ class AccountSelectionBridge implements AccountSelectionComponent.Delegate {
     }
 
     @CalledByNative
+    private boolean showNativeAppUi(NativeAppRequestOptions requestOptions) {
+        return mAccountSelectionComponent.showNativeAppUi(requestOptions);
+    }
+
+    @CalledByNative
     private @JniType("std::string") String getTitle() {
         return mAccountSelectionComponent.getTitle();
     }
 
     @CalledByNative
-    private @JniType("std::optional<std::string>") String getSubtitle() {
+    private @JniType("std::optional<std::string>") @Nullable String getSubtitle() {
         return mAccountSelectionComponent.getSubtitle();
     }
 
@@ -224,7 +241,8 @@ class AccountSelectionBridge implements AccountSelectionComponent.Delegate {
     }
 
     @CalledByNative
-    private WebContents showModalDialog(@JniType("GURL") GURL url) {
+    private @JniType("content::WebContents*") @Nullable WebContents showModalDialog(
+            @JniType("GURL") GURL url) {
         return mAccountSelectionComponent.showModalDialog(url);
     }
 
@@ -234,20 +252,20 @@ class AccountSelectionBridge implements AccountSelectionComponent.Delegate {
     }
 
     @CalledByNative
-    private WebContents getRpWebContents() {
+    private @JniType("content::WebContents*") @Nullable WebContents getRpWebContents() {
         return mAccountSelectionComponent.getRpWebContents();
     }
 
     @Override
     public void onDismissed(@IdentityRequestDialogDismissReason int dismissReason) {
-        if (mNativeView != 0) {
+        if (mNativeView != null) {
             AccountSelectionBridgeJni.get().onDismiss(mNativeView, dismissReason);
         }
     }
 
     @Override
     public void onAccountSelected(Account account) {
-        if (mNativeView != 0) {
+        if (mNativeView != null) {
             // This call passes the account fields directly as String and GURL parameters as an
             // optimization to avoid needing multiple JNI getters on the Account class on for each
             // field.
@@ -262,35 +280,43 @@ class AccountSelectionBridge implements AccountSelectionComponent.Delegate {
 
     @Override
     public void onLoginToIdP(GURL idpConfigUrl, GURL idpLoginUrl) {
-        if (mNativeView != 0) {
+        if (mNativeView != null) {
             AccountSelectionBridgeJni.get().onLoginToIdP(mNativeView, idpConfigUrl, idpLoginUrl);
         }
     }
 
     @Override
     public void onMoreDetails() {
-        if (mNativeView != 0) {
+        if (mNativeView != null) {
             AccountSelectionBridgeJni.get().onMoreDetails(mNativeView);
         }
     }
 
     @Override
     public void onAccountsDisplayed() {
-        if (mNativeView != 0) {
+        if (mNativeView != null) {
             AccountSelectionBridgeJni.get().onAccountsDisplayed(mNativeView);
         }
     }
 
     @Override
     public void onNativeAppResult(String token) {
-        if (mNativeView != 0) {
+        if (mNativeView != null) {
             AccountSelectionBridgeJni.get().onNativeAppResult(mNativeView, token);
         }
     }
 
     @Override
+    public void onNativeAppError(IdentityCredentialTokenError error) {
+        if (mNativeView != null) {
+            AccountSelectionBridgeJni.get()
+                    .onNativeAppError(mNativeView, error.getCode(), error.getUrl());
+        }
+    }
+
+    @Override
     public void onNativeAppLoginFinished() {
-        if (mNativeView != 0) {
+        if (mNativeView != null) {
             AccountSelectionBridgeJni.get().onNativeAppLoginFinished(mNativeView);
         }
     }
@@ -301,7 +327,7 @@ class AccountSelectionBridge implements AccountSelectionComponent.Delegate {
     }
 
     @Override
-    public WebContents getWebContents() {
+    public @Nullable WebContents getWebContents() {
         return mAccountSelectionComponent.getWebContents();
     }
 
@@ -313,27 +339,33 @@ class AccountSelectionBridge implements AccountSelectionComponent.Delegate {
     @NativeMethods
     interface Natives {
         void onAccountSelected(
-                long nativeAccountSelectionViewAndroid,
+                JniPtr<NativeAccountSelectionViewAndroid> self,
                 @JniType("GURL") GURL idpConfigUrl,
                 @JniType("std::string") String accountId,
                 boolean isSignedIn);
 
         void onDismiss(
-                long nativeAccountSelectionViewAndroid,
+                JniPtr<NativeAccountSelectionViewAndroid> self,
                 @IdentityRequestDialogDismissReason int dismissReason);
 
         void onLoginToIdP(
-                long nativeAccountSelectionViewAndroid,
+                JniPtr<NativeAccountSelectionViewAndroid> self,
                 @JniType("GURL") GURL idpConfigUrl,
                 @JniType("GURL") GURL idpLoginUrl);
 
-        void onMoreDetails(long nativeAccountSelectionViewAndroid);
+        void onMoreDetails(JniPtr<NativeAccountSelectionViewAndroid> self);
 
-        void onAccountsDisplayed(long nativeAccountSelectionViewAndroid);
+        void onAccountsDisplayed(JniPtr<NativeAccountSelectionViewAndroid> self);
 
         void onNativeAppResult(
-                long nativeAccountSelectionViewAndroid, @JniType("std::string") String token);
+                JniPtr<NativeAccountSelectionViewAndroid> self,
+                @JniType("std::string") String token);
 
-        void onNativeAppLoginFinished(long nativeAccountSelectionViewAndroid);
+        void onNativeAppError(
+                JniPtr<NativeAccountSelectionViewAndroid> self,
+                @JniType("std::string") String code,
+                @JniType("GURL") GURL url);
+
+        void onNativeAppLoginFinished(JniPtr<NativeAccountSelectionViewAndroid> self);
     }
 }

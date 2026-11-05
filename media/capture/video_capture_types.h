@@ -61,6 +61,7 @@ enum class VideoCaptureBufferType {
 
 // These values are persisted to logs. Entries should not be renumbered and
 // numeric values should never be reused.
+// LINT.IfChange(VideoCaptureError)
 enum class VideoCaptureError {
   kNone = 0,
   kVideoCaptureControllerInvalidOrUnsupportedVideoCaptureParametersRequested =
@@ -112,7 +113,7 @@ enum class VideoCaptureError {
   kCrosHalV3BufferManagerFailedToMapGpuMemoryBuffer = 47,
   kCrosHalV3BufferManagerUnsupportedVideoPixelFormat = 48,
   kCrosHalV3BufferManagerFailedToDupFd = 49,
-  kCrosHalV3BufferManagerFailedToWrapGpuMemoryHandle = 50,
+  // kCrosHalV3BufferManagerFailedToWrapGpuMemoryHandle = 50,  // Removed.
   kCrosHalV3BufferManagerFailedToRegisterBuffer = 51,
   kCrosHalV3BufferManagerProcessCaptureRequestFailed = 52,
   kCrosHalV3BufferManagerInvalidPendingResultId = 53,
@@ -124,7 +125,7 @@ enum class VideoCaptureError {
   kCrosHalV3BufferManagerReceivedInvalidShutterTime = 59,
   kCrosHalV3BufferManagerFatalDeviceError = 60,
   kCrosHalV3BufferManagerReceivedFrameIsOutOfOrder = 61,
-  kCrosHalV3BufferManagerFailedToUnwrapReleaseFenceFd = 62,
+  // kCrosHalV3BufferManagerFailedToUnwrapReleaseFenceFd = 62,  // Removed.
   kCrosHalV3BufferManagerSyncWaitOnReleaseFenceTimedOut = 63,
   kCrosHalV3BufferManagerInvalidJpegBlob = 64,
   kAndroidFailedToAllocate = 65,
@@ -217,9 +218,11 @@ enum class VideoCaptureError {
   kVideoCaptureHostDuplicateDeviceId = 152,
   kMaxValue = 152
 };
+// LINT.ThenChange(//tools/metrics/histograms/metadata/media/enums.xml:VideoCaptureError)
 
 // WARNING: Do not change the values assigned to the entries. They are used for
 // UMA logging.
+// LINT.IfChange(VideoCaptureFrameDropReason)
 enum class VideoCaptureFrameDropReason {
   kNone = 0,
   kDeviceClientFrameHasInvalidFormat = 1,
@@ -257,6 +260,7 @@ enum class VideoCaptureFrameDropReason {
   kOldCaptureVersion = 34,
   kMaxValue = kOldCaptureVersion
 };
+// LINT.ThenChange(//tools/metrics/histograms/metadata/media/enums.xml:VideoCaptureFrameDropReason)
 
 // Assert that the int:frequency mapping is correct.
 static_assert(static_cast<int>(PowerLineFrequency::kDefault) == 0,
@@ -377,6 +381,13 @@ struct CAPTURE_EXPORT VideoCaptureParams {
 
   // The request type of the capture source.
   CaptureSourceRequestType request_type = CaptureSourceRequestType::kUnknown;
+
+  // Whether this video capture is secure.
+  // A capture is considered secure if the captured content is not easily
+  // accessible to JavaScript or users, and cannot be trivially shared or
+  // streamed out of the device. Used for capture prevention, e.g. for protected
+  // content or by enterprise policy.
+  bool is_secure = false;
 };
 
 CAPTURE_EXPORT std::ostream& operator<<(

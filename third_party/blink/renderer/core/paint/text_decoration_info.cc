@@ -32,7 +32,7 @@ static ResolvedUnderlinePosition ResolveUnderlinePosition(
   // scripts where it would not be appropriate (e.g., ideographs.)
   // However, this has performance implications. For now, we only work with
   // vertical text.
-  if (style.GetFontBaseline() != kCentralBaseline) {
+  if (style.GetFontBaseline() != FontBaseline::kCentral) {
     if (EnumHasFlags(position, TextUnderlinePosition::kUnder)) {
       return ResolvedUnderlinePosition::kUnder;
     }
@@ -172,6 +172,49 @@ TextDecorationFragmentContext ComputeTextDecorationFragmentContext(
   return fragment_context;
 }
 
+std::optional<gfx::RectF> ComputeUnderOverDecorationBounds(
+    const ComputedStyle& style,
+    const UsedFont& font,
+    LayoutUnit inline_size) {
+  DCHECK(style.HasAppliedTextDecorations());
+  if (!font.PrimaryFont()) {
+    return std::nullopt;
+  }
+
+  std::optional<gfx::RectF> bounds;
+  auto unite = [&bounds](const gfx::RectF& rect) {
+    if (!bounds) {
+      bounds = rect;
+      return;
+    }
+    bounds->UnionEvenIfEmpty(rect);
+  };
+
+  TextDecorationInfo decoration_info(
+      LineRelativeOffset(LayoutUnit(), LayoutUnit()), inline_size, style, font,
+      /*inline_context=*/nullptr, TextDecorationLine::kNone, Color());
+  TextDecorationOffset decoration_offset(style);
+  for (wtf_size_t i = 0; i < decoration_info.AppliedDecorationCount(); ++i) {
+    const ResolvedDecoration decoration =
+        decoration_info.ResolveDecorationAt(i);
+    if (!decoration.HasFontData()) {
+      continue;
+    }
+
+    if (decoration.HasUnderline()) {
+      unite(DecorationLinePainter::Bounds(
+          decoration_info.ComputeUnderlineLineData(decoration,
+                                                   decoration_offset)));
+    }
+    if (decoration.HasOverline()) {
+      unite(
+          DecorationLinePainter::Bounds(decoration_info.ComputeOverlineLineData(
+              decoration, decoration_offset)));
+    }
+  }
+  return bounds;
+}
+
 TextDecorationInfo::TextDecorationInfo(
     LineRelativeOffset local_origin,
     LayoutUnit width,
@@ -198,8 +241,6 @@ TextDecorationInfo::TextDecorationInfo(
       fragment_context_(fragment_context),
       conservative_inset_bounds_(conservative_inset_bounds),
       // NOTE: The use of is_svg_text here is probably problematic.
-      // See LayoutSVGInlineText::ComputeNewScaledFontForStyle() for
-      // a workaround that is needed due to that.
       use_decorating_box_(inline_context && !decoration_override_ &&
                           !is_svg_text && ShouldUseDecoratingBox(target_style)),
       is_svg_text_(is_svg_text) {
@@ -332,9 +373,9 @@ const ResolvedDecoration TextDecorationInfo::ResolveDecorationAt(
       // Disable the decorating box when the baseline is central, because the
       // decorating box doesn't produce the ideal position.
       // https://drafts.csswg.org/css-text-decor-3/#:~:text=text%20is%20not%20aligned%20to%20the%20alphabetic%20baseline
-      // TODO(kojii): The vertical flow in alphabetic baseline may want to use
-      // the decorating box. It needs supporting the rotated coordinate system
-      // text painters use when painting vertical text.
+      // TODO(crbug.com/563435074): The vertical flow in alphabetic baseline
+      // should use the decorating box. It needs supporting the rotated
+      // coordinate system text painters use when painting vertical text.
       disable_decorating_box = !decorating_box_style->IsHorizontalWritingMode();
     }
 
@@ -377,6 +418,10 @@ const ResolvedDecoration TextDecorationInfo::ResolveDecorationAt(
       decoration.HasUnderline() && decorating_box
           ? OffsetFromDecoratingBox(*decorating_box)
           : LayoutUnit();
+  if (decorating_box) {
+    decoration.inline_offset_from_decorating_box =
+        InlineOffsetFromDecoratingBox(*decorating_box);
+  }
 
   decoration.resolved_thickness = ComputeThickness(decoration);
   ResolveDecorationInsets(decoration_index, decoration);
@@ -451,6 +496,12 @@ DecorationGeometry TextDecorationInfo::ComputeLineData(
       DecorationGeometry::Make(style, decoration_rect, double_offset,
                                wavy_offset, base::OptionalToPtr(spelling_wave));
   geometry.antialias = antialias;
+  if (geometry.style == kWavyStroke &&
+      RuntimeEnabledFeatures::WavyDecorationContinuousPhaseEnabled()) {
+    geometry.wavy_pattern_shift =
+        decoration.inline_offset_from_decorating_box.ToFloat() +
+        decoration.line_left_inset;
+  }
   return geometry;
 }
 
@@ -532,6 +583,18 @@ LayoutUnit TextDecorationInfo::OffsetFromDecoratingBox(
       decorating_box.ContentOffsetInContainer().top +
       inline_context_->PaintOffset().top;
   return decorating_box_paint_offset - local_origin_.line_over;
+}
+
+// The decorating box is only used in horizontal writing modes (see
+// |ResolveDecorationAt|), where line-left equals the physical left.
+LayoutUnit TextDecorationInfo::InlineOffsetFromDecoratingBox(
+    const DecoratingBox& decorating_box) const {
+  DCHECK(use_decorating_box_);
+  DCHECK(inline_context_);
+  const LayoutUnit decorating_box_paint_offset =
+      decorating_box.ContentOffsetInContainer().left +
+      inline_context_->PaintOffset().left;
+  return local_origin_.line_left - decorating_box_paint_offset;
 }
 
 DecorationGeometry TextDecorationInfo::ComputeUnderlineLineData(

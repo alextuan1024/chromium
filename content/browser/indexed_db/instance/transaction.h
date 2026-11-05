@@ -12,6 +12,7 @@
 #include <set>
 #include <tuple>
 
+#include "base/byte_size.h"
 #include "base/containers/queue.h"
 #include "base/containers/stack.h"
 #include "base/functional/callback.h"
@@ -31,6 +32,7 @@
 #include "content/browser/indexed_db/status.h"
 #include "content/common/content_export.h"
 #include "mojo/public/cpp/bindings/associated_receiver.h"
+#include "mojo/public/cpp/bindings/message.h"
 #include "third_party/blink/public/mojom/indexeddb/indexeddb.mojom.h"
 
 namespace content::indexed_db {
@@ -140,11 +142,15 @@ class CONTENT_EXPORT Transaction : public blink::mojom::IDBTransaction {
   }
 
   // Common verifiers for mojo messages:
-  // Verifies that `object_store_id` exists.
-  static VerificationCallback ObjectStoreMustExist(int64_t object_store_id);
-  // Verifies that `object_store_id` exists in the metadata. If `index_id` is
-  // std::nullopt, it is ignored. If it is not nullopt, it must not be kInvalid
-  // and must exist in the provided object store.
+  // Verifies that `object_store_id` exists for version change transactions,
+  // or is in the transaction's validated scope otherwise.
+  static VerificationCallback ObjectStoreMustExist(
+      int64_t object_store_id,
+      mojo::ReportBadMessageCallback report_bad_message_callback =
+          mojo::GetBadMessageCallback());
+  // As above, plus, verifies the given index exists, unless `index_id` is
+  // std::nullopt. If not nullopt, it must not be kInvalid and must exist in the
+  // provided object store.
   static VerificationCallback ObjectStoreAndIndexMustExist(
       int64_t object_store_id,
       std::optional<int64_t> index_id);
@@ -348,7 +354,7 @@ class CONTENT_EXPORT Transaction : public blink::mojom::IDBTransaction {
   // quota usage.
   //
   // See crbug.com/1493696 for discussion of how this should be improved.
-  int64_t preliminary_size_estimate_ = 0;
+  base::ByteSizeDelta preliminary_size_estimate_;
 
   std::set<raw_ptr<Cursor, SetExperimental>> open_cursors_;
 

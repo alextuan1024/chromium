@@ -47,7 +47,8 @@ void ChromeUntrustedProjectorUIDelegate::PopulateLoadTimeData(
   source->AddBoolean(
       "isInternalServerSideSpeechRecognitionEnabled",
       ash::features::IsInternalServerSideSpeechRecognitionEnabled());
-  source->AddString("appLocale", application_locale_storage_->Get());
+  source->AddString("appLocale",
+                    application_locale_storage_->GetTag().tag_string());
 }
 
 UntrustedProjectorUIConfig::UntrustedProjectorUIConfig(
@@ -74,5 +75,6 @@ UntrustedProjectorUIConfig::CreateWebUIController(content::WebUI* web_ui,
       ash::IdentityManagerProvider::Get().Find(account_id),
       profile->GetDefaultStoragePartition()
           ->GetURLLoaderFactoryForBrowserProcess()
-          .get());
+          .get(),
+      account_id);
 }

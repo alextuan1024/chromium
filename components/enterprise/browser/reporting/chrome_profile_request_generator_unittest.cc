@@ -20,6 +20,7 @@
 #include "components/enterprise/browser/reporting/reporting_delegate_factory.h"
 #include "components/enterprise/connectors/core/reporting_constants.h"
 #include "components/enterprise/device_attestation/scoped_device_attestation_service_factory.h"
+#include "components/enterprise/isolated_mode/isolated_mode_features.h"
 #include "components/policy/core/common/cloud/cloud_policy_util.h"
 #include "components/policy/proto/device_management_backend.pb.h"
 #include "components/version_info/channel.h"
@@ -72,7 +73,8 @@ constexpr char kBrowserExePath[] = "browser-path";
 
 device_signals::SignalsAggregationResponse CreateFilledResponse(
     bool nullify_profile_id = false,
-    bool include_cert_signals = false) {
+    bool include_cert_signals = false,
+    bool is_isolated_mode = false) {
   device_signals::SignalsAggregationResponse response;
 
   device_signals::OsSignalsResponse os_signals;
@@ -143,6 +145,7 @@ device_signals::SignalsAggregationResponse CreateFilledResponse(
 
   profile_signals.realtime_url_check_mode = enterprise_connectors::
       EnterpriseRealTimeUrlCheckMode::REAL_TIME_CHECK_FOR_MAINFRAME_ENABLED;
+  profile_signals.is_isolated_mode = is_isolated_mode;
 
   response.profile_signals_response = profile_signals;
 
@@ -243,7 +246,8 @@ class ChromeProfileRequestGeneratorTest
       em::ChromeProfileReportRequest::ReportType expected_report_type,
       bool is_profile_id_null = false,
       bool agent_collection_enabled = false,
-      bool expect_cert_signals = false) {
+      bool expect_cert_signals = false,
+      bool expect_isolated_mode = false) {
     // True if a status report-exclusive field is expected to be filled
     // correctly, status reports with signals also count.
     bool expect_status_report_only_value =
@@ -282,6 +286,9 @@ class ChromeProfileRequestGeneratorTest
       EXPECT_EQ(os_report.version(), kFakeSignalOsVersion);
       EXPECT_EQ(os_report.screen_lock_secured(), em::SettingValue::ENABLED);
       EXPECT_EQ(os_report.distribution_version(), kFakeDistoVersion);
+      // `os_firewall` is not set in the collected signals, so it must not be
+      // reported.
+      EXPECT_FALSE(os_report.has_os_firewall());
 
       EXPECT_EQ(3, os_report.mac_addresses_size());
       EXPECT_EQ(os_report.mac_addresses(0), kFakeSignalMacAddr1);
@@ -380,7 +387,11 @@ class ChromeProfileRequestGeneratorTest
 
     // Affiliation info is now always included.
     EXPECT_TRUE(chrome_user_profile_info.has_affiliation());
-
+    if (enterprise_isolated_mode::IsCaaEnabledInIsolatedMode()) {
+      EXPECT_EQ(chrome_user_profile_info.profile_type(),
+                expect_isolated_mode ? em::ChromeUserProfileInfo::ISOLATED
+                                     : em::ChromeUserProfileInfo::REGULAR);
+    }
     // `profile_signals_report` is a signals report only sub-proto.
     EXPECT_EQ(chrome_user_profile_info.has_profile_signals_report(),
               expect_signals_override_value);
@@ -404,6 +415,10 @@ class ChromeProfileRequestGeneratorTest
                 is_profile_id_null ? std::string() : kFakeProfileId);
       EXPECT_EQ(profile_signals_report.realtime_url_check_mode(),
                 em::ProfileSignalsReport::ENABLED_MAIN_FRAME);
+      if (enterprise_isolated_mode::IsCaaEnabledInIsolatedMode()) {
+        EXPECT_EQ(profile_signals_report.is_isolated_mode(),
+                  expect_isolated_mode);
+      }
 
       if (expect_cert_signals) {
         EXPECT_EQ(1, chrome_user_profile_info.certificates_size());
@@ -569,6 +584,85 @@ TEST_P(ChromeProfileRequestGeneratorTest, GenerateSecuritySignalsOnlyReport) {
   VerifyReportContent(requests.value(),
                       em::ChromeProfileReportRequest::PROFILE_SECURITY_SIGNALS,
                       /*is_profile_id_null=*/false, agent_collection_enabled);
+}
+
+// Tests that a collected `os_firewall` value is reported, including an
+// explicitly collected UNKNOWN (e.g. when desktop can't read the firewall
+// state), which must not be confused with a value that wasn't collected.
+TEST_P(ChromeProfileRequestGeneratorTest, OsFirewallValueIsReported) {
+  const struct {
+    device_signals::SettingValue collected;
+    em::SettingValue reported;
+  } kCases[] = {
+      {device_signals::SettingValue::UNKNOWN, em::SettingValue::UNKNOWN},
+      {device_signals::SettingValue::DISABLED, em::SettingValue::DISABLED},
+      {device_signals::SettingValue::ENABLED, em::SettingValue::ENABLED},
+  };
+
+  for (const auto& test_case : kCases) {
+    SCOPED_TRACE(static_cast<int>(test_case.collected));
+    EXPECT_CALL(mock_aggregator_, GetSignals(CreateExpectedRequest(), _))
+        .WillOnce(
+            [&test_case](
+                const device_signals::SignalsAggregationRequest& request,
+                base::OnceCallback<void(
+                    device_signals::SignalsAggregationResponse)> callback) {
+              device_signals::SignalsAggregationResponse response =
+                  CreateFilledResponse();
+              response.os_signals_response->os_firewall = test_case.collected;
+              std::move(callback).Run(std::move(response));
+            });
+    base::test::TestFuture<
+        base::expected<ReportRequestQueue, ReportGenerationError>>
+        test_future;
+
+    generator_.Generate(
+        ReportGenerationConfig(ReportTrigger::kTriggerNone,
+                               ReportType::kProfileReport,
+                               SecuritySignalsMode::kSignalsOnly,
+                               /*use_cookies=*/false),
+        test_future.GetCallback());
+
+    const auto& requests = test_future.Get();
+    ASSERT_TRUE(requests.has_value());
+    ASSERT_EQ(1u, requests->size());
+    const auto& os_report =
+        requests->front()->GetChromeProfileReportRequest().os_report();
+    ASSERT_TRUE(os_report.has_os_firewall());
+    EXPECT_EQ(os_report.os_firewall(), test_case.reported);
+  }
+}
+
+TEST_P(ChromeProfileRequestGeneratorTest,
+       GenerateSecuritySignalsOnlyReportIsolatedMode) {
+  base::test::ScopedFeatureList feature_list{
+      enterprise_isolated_mode::kEnterpriseIsolatedModeMilestone2};
+  bool agent_collection_enabled = is_agent_collection_enabled();
+  EXPECT_CALL(mock_aggregator_, GetSignals(CreateExpectedRequest(), _))
+      .WillOnce([](const device_signals::SignalsAggregationRequest& request,
+                   base::OnceCallback<void(
+                       device_signals::SignalsAggregationResponse)> callback) {
+        std::move(callback).Run(
+            CreateFilledResponse(/*nullify_profile_id=*/false,
+                                 /*include_cert_signals=*/false,
+                                 /*is_isolated_mode=*/true));
+      });
+  base::test::TestFuture<
+      base::expected<ReportRequestQueue, ReportGenerationError>>
+      test_future;
+
+  generator_.Generate(ReportGenerationConfig(ReportTrigger::kTriggerSecurity,
+                                             ReportType::kProfileReport,
+                                             SecuritySignalsMode::kSignalsOnly,
+                                             /*use_cookies=*/true),
+                      test_future.GetCallback());
+
+  const auto& requests = test_future.Get();
+  VerifyReportContent(requests.value(),
+                      em::ChromeProfileReportRequest::PROFILE_SECURITY_SIGNALS,
+                      /*is_profile_id_null=*/false, agent_collection_enabled,
+                      /*expect_cert_signals=*/false,
+                      /*expect_isolated_mode=*/true);
 }
 
 // Test that no issue is encountered when a nullopt value is collected, on an

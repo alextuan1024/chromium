@@ -336,12 +336,17 @@ TEST_F(PersonalizationAppThemeProviderImplTest,
 class PersonalizationAppThemeProviderImplJellyTest
     : public PersonalizationAppThemeProviderImplTest {
  public:
-  PersonalizationAppThemeProviderImplJellyTest() { set_start_session(false); }
+  PersonalizationAppThemeProviderImplJellyTest() = default;
 
   PersonalizationAppThemeProviderImplJellyTest(
       const PersonalizationAppThemeProviderImplJellyTest&) = delete;
   PersonalizationAppThemeProviderImplJellyTest& operator=(
       const PersonalizationAppThemeProviderImplJellyTest&) = delete;
+
+  void SetUpInitParams(ash::AshTestHelper::InitParams& init_params) override {
+    PersonalizationAppThemeProviderImplTest::SetUpInitParams(init_params);
+    init_params.users.clear();
+  }
 
   void SetUp() override {
     PersonalizationAppThemeProviderImplTest::SetUp();
@@ -351,7 +356,7 @@ class PersonalizationAppThemeProviderImplJellyTest
 
     user_manager->AddUser(kAccountId);
     user_manager->LoginUser(kAccountId);
-    SimulateUserLogin({kFakeTestEmail}, kAccountId);
+    SimulateUserLogin(kAccountId);
     user_manager->SwitchActiveUser(kAccountId);
   }
 

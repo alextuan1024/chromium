@@ -8,6 +8,7 @@
 #include <utility>
 
 #include "base/base64.h"
+#include "base/check_op.h"
 #include "base/compiler_specific.h"
 #include "base/functional/bind.h"
 #include "base/location.h"
@@ -66,7 +67,7 @@ class PasswordStoreConsumerHelper
   }
 
   std::vector<std::unique_ptr<PasswordForm>> WaitForResult() {
-    DCHECK(!run_loop_.running());
+    CHECK(!run_loop_.running(), base::NotFatalUntil::M163);
     run_loop_.Run();
     std::vector<std::unique_ptr<PasswordForm>> unique_results;
     unique_results.reserve(result_.size());
@@ -104,7 +105,7 @@ sync_pb::EntitySpecifics EncryptPasswordSpecifics(
   bool result = cryptographer->Encrypt(
       password_data,
       encrypted_specifics.mutable_password()->mutable_encrypted());
-  DCHECK(result);
+  CHECK(result, base::NotFatalUntil::M163);
   return encrypted_specifics;
 }
 
@@ -205,6 +206,7 @@ int GetPasswordCount(int index, PasswordForm::Store store) {
 }
 
 PasswordForm CreateTestPasswordForm(int index, PasswordForm::Store store) {
+  CHECK_NE(store, PasswordForm::Store::kNotSet);
   PasswordForm form;
   form.signon_realm = kFakeSignonRealm;
   form.url = GURL(base::StringPrintf(kIndexedFakeOrigin, index));
@@ -235,7 +237,7 @@ void InjectEncryptedServerPassword(
     const std::string& encryption_passphrase,
     const syncer::KeyDerivationParams& key_derivation_params,
     fake_server::FakeServer* fake_server) {
-  DCHECK(fake_server);
+  CHECK(fake_server, base::NotFatalUntil::M163);
   const sync_pb::EntitySpecifics encrypted_specifics = EncryptPasswordSpecifics(
       password_data, encryption_passphrase, key_derivation_params);
   fake_server->InjectEntity(
@@ -272,6 +274,7 @@ PasswordSyncActiveChecker::PasswordSyncActiveChecker(
 PasswordSyncActiveChecker::~PasswordSyncActiveChecker() = default;
 
 bool PasswordSyncActiveChecker::IsExitConditionSatisfied(std::ostream* os) {
+  *os << "Waiting for passwords sync to become active.";
   return service()->GetActiveDataTypes().Has(syncer::PASSWORDS);
 }
 
@@ -282,6 +285,7 @@ PasswordSyncInactiveChecker::PasswordSyncInactiveChecker(
 PasswordSyncInactiveChecker::~PasswordSyncInactiveChecker() = default;
 
 bool PasswordSyncInactiveChecker::IsExitConditionSatisfied(std::ostream* os) {
+  *os << "Waiting for passwords sync to become inactive.";
   return !service()->GetActiveDataTypes().Has(syncer::PASSWORDS);
 }
 

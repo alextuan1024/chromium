@@ -10,11 +10,9 @@ import static androidx.test.espresso.assertion.PositionAssertions.isLeftOf;
 import static androidx.test.espresso.assertion.ViewAssertions.matches;
 import static androidx.test.espresso.matcher.RootMatchers.isPlatformPopup;
 import static androidx.test.espresso.matcher.ViewMatchers.hasDescendant;
-import static androidx.test.espresso.matcher.ViewMatchers.hasFocus;
 import static androidx.test.espresso.matcher.ViewMatchers.hasSibling;
 import static androidx.test.espresso.matcher.ViewMatchers.isActivated;
 import static androidx.test.espresso.matcher.ViewMatchers.isDisplayed;
-import static androidx.test.espresso.matcher.ViewMatchers.isRoot;
 import static androidx.test.espresso.matcher.ViewMatchers.isSelected;
 import static androidx.test.espresso.matcher.ViewMatchers.withContentDescription;
 import static androidx.test.espresso.matcher.ViewMatchers.withId;
@@ -28,10 +26,14 @@ import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
-import static org.chromium.ui.test.util.ViewUtils.VIEW_GONE;
-import static org.chromium.ui.test.util.ViewUtils.VIEW_NULL;
-import static org.chromium.ui.test.util.ViewUtils.withEventualExpectedViewState;
+import static org.chromium.base.test.transit.ViewFinder.waitForNoView;
 
 import android.app.Instrumentation;
 import android.os.SystemClock;
@@ -41,12 +43,13 @@ import android.view.ViewConfiguration;
 import android.view.ViewGroup;
 import android.widget.TextView;
 
+import androidx.test.espresso.Espresso;
 import androidx.test.espresso.ViewInteraction;
+import androidx.test.espresso.matcher.RootMatchers;
 import androidx.test.filters.LargeTest;
 import androidx.test.platform.app.InstrumentationRegistry;
 
-import org.hamcrest.Description;
-import org.hamcrest.TypeSafeMatcher;
+import org.hamcrest.Matchers;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
@@ -54,12 +57,13 @@ import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
 import org.junit.runner.RunWith;
 
+import org.chromium.base.Callback;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.base.test.util.DisableIf;
-import org.chromium.base.test.util.Features.DisableFeatures;
+import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.base.test.util.ImportantFormFactors;
 import org.chromium.chrome.browser.feature_engagement.TrackerFactory;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
@@ -75,11 +79,11 @@ import org.chromium.chrome.test.transit.FreshCtaTransitTestRule;
 import org.chromium.chrome.test.transit.page.WebPageStation;
 import org.chromium.components.embedder_support.util.UrlConstants;
 import org.chromium.components.embedder_support.view.ContentView;
+import org.chromium.components.feature_engagement.Tracker;
 import org.chromium.components.user_prefs.UserPrefs;
 import org.chromium.content_public.browser.WebContents;
 import org.chromium.content_public.browser.test.NativeLibraryTestUtils;
 import org.chromium.content_public.browser.test.util.TestTouchUtils;
-import org.chromium.extensions.common.ExtensionFeatures;
 import org.chromium.net.test.EmbeddedTestServer;
 import org.chromium.ui.base.DeviceFormFactor;
 import org.chromium.ui.test.util.ViewUtils;
@@ -95,8 +99,7 @@ import java.util.concurrent.TimeoutException;
 /** End-to-end test for the extension toolbar on Desktop Android. */
 @RunWith(ChromeJUnit4ClassRunner.class)
 @Batch(Batch.PER_CLASS)
-@CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE, ChromeSwitches.TEST_TYPE})
-@DisableFeatures(ExtensionFeatures.EXTENSION_DISABLE_UNSUPPORTED_DEVELOPER)
+@CommandLineFlags.Add(ChromeSwitches.TEST_TYPE)
 // @ImportantFormFactors may look redundant, but is actually essential to make this test run on CQ
 // because android-desktop CQ builders run chrome_public_test_apk_desktop that only covers tests
 // specific to desktop.
@@ -173,10 +176,7 @@ public class ExtensionsToolbarTest {
         ExtensionTestUtils.disableExtension(mProfile, extension2Id);
 
         // The extension 2 should disappear.
-        onView(isRoot())
-                .check(
-                        withEventualExpectedViewState(
-                                withContentDescription("Test Action 2"), VIEW_GONE | VIEW_NULL));
+        waitForNoView(withContentDescription("Test Action 2"));
     }
 
     /**
@@ -187,6 +187,7 @@ public class ExtensionsToolbarTest {
      */
     @Test
     @LargeTest
+    @DisableIf.Device(DeviceFormFactor.DESKTOP) // https://crbug.com/562625134
     public void testClickingOnASecondActionClosesTheFirst() throws IOException {
         String alphaId =
                 loadPopupExtension(
@@ -214,7 +215,9 @@ public class ExtensionsToolbarTest {
             assertTrue(listener.waitUntilSatisfied());
         }
         // Verify that Alpha (and only Alpha) has an active frame (i.e., popup).
-        waitForPopupReady(alphaId);
+        CriteriaHelper.pollInstrumentationThread(
+                () -> ExtensionTestUtils.getRenderFrameHostCount(mProfile, alphaId) == 1,
+                "Alpha popup did not open");
         CriteriaHelper.pollInstrumentationThread(
                 () -> ExtensionTestUtils.getRenderFrameHostCount(mProfile, betaId) == 0,
                 "Beta popup should not be open");
@@ -227,9 +230,11 @@ public class ExtensionsToolbarTest {
         }
         // Beta (and only Beta) should have an active popup.
         CriteriaHelper.pollInstrumentationThread(
+                () -> ExtensionTestUtils.getRenderFrameHostCount(mProfile, betaId) == 1,
+                "Beta popup did not open");
+        CriteriaHelper.pollInstrumentationThread(
                 () -> ExtensionTestUtils.getRenderFrameHostCount(mProfile, alphaId) == 0,
                 "Alpha popup should have closed");
-        waitForPopupReady(betaId);
     }
 
     @Test
@@ -256,7 +261,7 @@ public class ExtensionsToolbarTest {
         ViewUtils.onViewWaiting(withId(R.id.extensions_menu_site_settings_toggle)).perform(click());
 
         // Close the menu so Espresso can find views in the activity window again.
-        androidx.test.espresso.Espresso.pressBack();
+        Espresso.pressBack();
 
         // Check the button state after blocking all extensions.
         ViewUtils.onViewWaiting(
@@ -302,10 +307,7 @@ public class ExtensionsToolbarTest {
         uninstallTestExtension(id);
 
         // The extension should disappear from the toolbar.
-        onView(isRoot())
-                .check(
-                        withEventualExpectedViewState(
-                                withContentDescription("Test Action"), VIEW_GONE | VIEW_NULL));
+        waitForNoView(withContentDescription("Test Action"));
 
         // The popup should be gone.
         CriteriaHelper.pollInstrumentationThread(
@@ -339,10 +341,7 @@ public class ExtensionsToolbarTest {
         uninstallTestExtension(extensionId);
 
         // The extension should disappear from the toolbar.
-        onView(isRoot())
-                .check(
-                        withEventualExpectedViewState(
-                                withContentDescription("Test Action"), VIEW_GONE | VIEW_NULL));
+        waitForNoView(withContentDescription("Test Action"));
 
         // The popup should be gone.
         CriteriaHelper.pollInstrumentationThread(
@@ -601,29 +600,6 @@ public class ExtensionsToolbarTest {
         InstrumentationRegistry.getInstrumentation().sendKeySync(upEvent);
     }
 
-    private void waitForPopupReady(String extensionId) {
-        CriteriaHelper.pollInstrumentationThread(
-                () -> ExtensionTestUtils.getRenderFrameHostCount(mProfile, extensionId) == 1,
-                "Popup did not open");
-        ViewUtils.onViewWaiting(
-                        allOf(
-                                instanceOf(ContentView.class),
-                                hasFocus(),
-                                new TypeSafeMatcher<View>() {
-                                    @Override
-                                    public void describeTo(Description description) {
-                                        description.appendText("has window focus");
-                                    }
-
-                                    @Override
-                                    protected boolean matchesSafely(View view) {
-                                        return view.hasWindowFocus();
-                                    }
-                                }))
-                .inRoot(isPlatformPopup())
-                .check(matches(isDisplayed()));
-    }
-
     @Test
     @LargeTest
     public void testExtensionsMenuButtonStateOnTabChange() throws IOException {
@@ -649,7 +625,7 @@ public class ExtensionsToolbarTest {
         ViewUtils.onViewWaiting(withId(R.id.extensions_menu_site_settings_toggle)).perform(click());
 
         // Close the menu so Espresso can find views in the activity window again.
-        androidx.test.espresso.Espresso.pressBack();
+        Espresso.pressBack();
 
         // Check the button state after blocking all extensions.
         ViewUtils.onViewWaiting(
@@ -701,10 +677,7 @@ public class ExtensionsToolbarTest {
                 () -> UserPrefs.get(mProfile).setBoolean(Pref.PIN_EXTENSIONS_MENU_BUTTON, false));
 
         // Ensure the menu button is not visible anymore.
-        onView(isRoot())
-                .check(
-                        withEventualExpectedViewState(
-                                withId(R.id.extensions_menu_button), VIEW_GONE | VIEW_NULL));
+        waitForNoView(withId(R.id.extensions_menu_button));
     }
 
     @Test
@@ -733,10 +706,7 @@ public class ExtensionsToolbarTest {
         ViewUtils.onViewWaiting(withId(R.id.extensions_menu_close_button)).perform(click());
 
         // Verify that the extensions menu button is no longer visible on the toolbar.
-        onView(isRoot())
-                .check(
-                        withEventualExpectedViewState(
-                                withId(R.id.extensions_menu_button), VIEW_GONE | VIEW_NULL));
+        waitForNoView(withId(R.id.extensions_menu_button));
 
         // Open the extensions menu via the app menu.
         ViewUtils.onViewWaiting(withId(R.id.menu_button_wrapper)).perform(click());
@@ -813,10 +783,7 @@ public class ExtensionsToolbarTest {
         ExtensionTestUtils.setExtensionActionVisible(mProfile, extensionId, false);
 
         // Verify the extension is not visible on the toolbar initially.
-        onView(isRoot())
-                .check(
-                        withEventualExpectedViewState(
-                                withContentDescription("Test Action"), VIEW_GONE | VIEW_NULL));
+        waitForNoView(withContentDescription("Test Action"));
 
         // Pin the extension programmatically.
         ExtensionTestUtils.setExtensionActionVisible(mProfile, extensionId, true);
@@ -829,10 +796,7 @@ public class ExtensionsToolbarTest {
         ExtensionTestUtils.setExtensionActionVisible(mProfile, extensionId, false);
 
         // Verify the action disappears from the toolbar.
-        onView(isRoot())
-                .check(
-                        withEventualExpectedViewState(
-                                withContentDescription("Test Action"), VIEW_GONE | VIEW_NULL));
+        waitForNoView(withContentDescription("Test Action"));
     }
 
     @Test
@@ -851,10 +815,7 @@ public class ExtensionsToolbarTest {
         ExtensionTestUtils.disableExtension(mProfile, extensionId);
 
         // Verify the action disappears from the toolbar.
-        onView(isRoot())
-                .check(
-                        withEventualExpectedViewState(
-                                withContentDescription("Test Action"), VIEW_GONE | VIEW_NULL));
+        waitForNoView(withContentDescription("Test Action"));
 
         // Re-enable the extension.
         ExtensionTestUtils.enableExtension(mProfile, extensionId);
@@ -981,6 +942,89 @@ public class ExtensionsToolbarTest {
 
     @Test
     @LargeTest
+    public void testKeyReorderExtensions() throws IOException {
+        String alphaId = loadBasicExtension("alpha", "Alpha Extension", "Alpha Action");
+        String betaId = loadBasicExtension("beta", "Beta Extension", "Beta Action");
+        String gammaId = loadBasicExtension("gamma", "Gamma Extension", "Gamma Action");
+
+        // Pin all extensions.
+        ExtensionTestUtils.setExtensionActionVisible(mProfile, alphaId, true);
+        ExtensionTestUtils.setExtensionActionVisible(mProfile, betaId, true);
+        ExtensionTestUtils.setExtensionActionVisible(mProfile, gammaId, true);
+        ViewUtils.onViewWaiting(withContentDescription("Alpha Action"))
+                .check(matches(isDisplayed()));
+        ViewUtils.onViewWaiting(withContentDescription("Beta Action"))
+                .check(matches(isDisplayed()));
+        ViewUtils.onViewWaiting(withContentDescription("Gamma Action"))
+                .check(matches(isDisplayed()));
+
+        View root =
+                mActivityTestRule
+                        .getActivity()
+                        .getWindow()
+                        .getDecorView()
+                        .findViewById(android.R.id.content);
+        ExtensionActionListRecyclerView actionListView =
+                root.findViewById(R.id.extension_action_list);
+
+        View alphaIcon =
+                ThreadUtils.runOnUiThreadBlocking(
+                        () -> findViewWithContentDescription(root, "Alpha Action"));
+
+        // The order should be [A] [B] [G].
+        onView(withContentDescription("Alpha Action"))
+                .check(isLeftOf(withContentDescription("Beta Action")));
+        onView(withContentDescription("Beta Action"))
+                .check(isLeftOf(withContentDescription("Gamma Action")));
+        assertArrayEquals(
+                "The data order should match Views.",
+                new String[] {alphaId, betaId, gammaId},
+                ExtensionTestUtils.getPinnedActionIds(mProfile));
+
+        // Focus [A]. Explicitly set focusableInTouchMode to true because the test runner starts in
+        // touch mode and setInTouchMode(false) is asynchronous and flaky.
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    alphaIcon.setFocusableInTouchMode(true);
+                    alphaIcon.requestFocus();
+                });
+        assertTrue(ThreadUtils.runOnUiThreadBlocking(alphaIcon::hasFocus));
+
+        // Move [A] right using Ctrl+DPAD_RIGHT.
+        sendKeyEvent(KeyEvent.KEYCODE_DPAD_RIGHT, KeyEvent.META_CTRL_ON);
+        CriteriaHelper.pollUiThread(
+                () -> !actionListView.isLayoutRequested() && !actionListView.isAnimating());
+
+        // The order now should be [B] [A] [G].
+        onView(withContentDescription("Beta Action"))
+                .check(isLeftOf(withContentDescription("Alpha Action")));
+        onView(withContentDescription("Alpha Action"))
+                .check(isLeftOf(withContentDescription("Gamma Action")));
+        assertArrayEquals(
+                "The data order should match Views.",
+                new String[] {betaId, alphaId, gammaId},
+                ExtensionTestUtils.getPinnedActionIds(mProfile));
+        assertTrue(ThreadUtils.runOnUiThreadBlocking(alphaIcon::hasFocus));
+
+        // Move [A] left using Ctrl+DPAD_LEFT.
+        sendKeyEvent(KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.META_CTRL_ON);
+        CriteriaHelper.pollUiThread(
+                () -> !actionListView.isLayoutRequested() && !actionListView.isAnimating());
+
+        // The order should return to [A] [B] [G].
+        onView(withContentDescription("Alpha Action"))
+                .check(isLeftOf(withContentDescription("Beta Action")));
+        onView(withContentDescription("Beta Action"))
+                .check(isLeftOf(withContentDescription("Gamma Action")));
+        assertArrayEquals(
+                "The data order should match Views.",
+                new String[] {alphaId, betaId, gammaId},
+                ExtensionTestUtils.getPinnedActionIds(mProfile));
+        assertTrue(ThreadUtils.runOnUiThreadBlocking(alphaIcon::hasFocus));
+    }
+
+    @Test
+    @LargeTest
     public void testInstantDragWithTouchDoesNotReorder() throws IOException {
         String alphaId = loadBasicExtension("alpha", "Alpha Extension", "Alpha Action");
         String betaId = loadBasicExtension("beta", "Beta Extension", "Beta Action");
@@ -1051,6 +1095,7 @@ public class ExtensionsToolbarTest {
 
     @Test
     @LargeTest
+    @DisableIf.Device(DeviceFormFactor.DESKTOP) // https://crbug.com/562625134
     public void testExtensionCommandClosesPopupIfOpen() throws IOException {
         String extensionId =
                 loadCommandExtension(
@@ -1065,8 +1110,10 @@ public class ExtensionsToolbarTest {
             assertTrue(listener.waitUntilSatisfied());
         }
 
-        // Ensure the popup is open and focused before sending the key event to close it.
-        waitForPopupReady(extensionId);
+        // Ensure the popup is open.
+        CriteriaHelper.pollInstrumentationThread(
+                () -> ExtensionTestUtils.getRenderFrameHostCount(mProfile, extensionId) == 1,
+                "Popup did not open");
 
         // Send the same keypresses again.
         sendKeyEvent(KeyEvent.KEYCODE_1, KeyEvent.META_CTRL_ON | KeyEvent.META_SHIFT_ON);
@@ -1079,6 +1126,7 @@ public class ExtensionsToolbarTest {
 
     @Test
     @LargeTest
+    @DisableIf.Device(DeviceFormFactor.DESKTOP) // https://crbug.com/562625134
     public void testNonExtensionCommandIsSentToApplicationWindow() throws IOException {
         String extensionId = loadPopupExtension("extension", "Extension", "Action", "popup opened");
         ExtensionTestUtils.setExtensionActionVisible(mProfile, extensionId, true);
@@ -1092,8 +1140,10 @@ public class ExtensionsToolbarTest {
             assertTrue(listener.waitUntilSatisfied());
         }
 
-        // Ensure the popup is open and focused before sending the key event.
-        waitForPopupReady(extensionId);
+        // Ensure the popup is open before sending the key event.
+        CriteriaHelper.pollInstrumentationThread(
+                () -> ExtensionTestUtils.getRenderFrameHostCount(mProfile, extensionId) == 1,
+                "Popup did not open");
 
         // Send Ctrl+T.
         sendKeyEvent(KeyEvent.KEYCODE_T, KeyEvent.META_CTRL_ON);
@@ -1170,10 +1220,7 @@ public class ExtensionsToolbarTest {
         ViewUtils.onViewWaiting(withText("Remove from Chromium")).perform(click());
 
         // The dialog should trigger dismiss on the extensions menu.
-        onView(isRoot())
-                .check(
-                        withEventualExpectedViewState(
-                                withId(R.id.extensions_menu_close_button), VIEW_GONE | VIEW_NULL));
+        waitForNoView(withId(R.id.extensions_menu_close_button));
     }
 
     @Test
@@ -1220,35 +1267,24 @@ public class ExtensionsToolbarTest {
         "in-product-help-demo-mode-choice=IPH_ExtensionsPinnedByDefault",
         "disable-user-education-rate-limiting"
     })
-    @org.chromium.base.test.util.Features.EnableFeatures({
+    @EnableFeatures({
         "ExtensionsPinnedByDefault",
         "kExtensionsPinnedByDefault",
         "IPH_ExtensionsPinnedByDefault"
     })
     public void testPinnedByDefaultIphShowsOnExtensionInstall() throws IOException {
-        org.chromium.components.feature_engagement.Tracker tracker =
-                org.mockito.Mockito.mock(org.chromium.components.feature_engagement.Tracker.class);
-        org.mockito.Mockito.when(tracker.shouldTriggerHelpUi(org.mockito.Mockito.anyString()))
-                .thenReturn(false);
-        org.mockito.Mockito.when(
-                        tracker.shouldTriggerHelpUi(
-                                org.mockito.Mockito.eq("IPH_ExtensionsPinnedByDefault")))
-                .thenReturn(true);
-        org.mockito.Mockito.when(tracker.wouldTriggerHelpUi(org.mockito.Mockito.anyString()))
-                .thenReturn(false);
-        org.mockito.Mockito.when(
-                        tracker.wouldTriggerHelpUi(
-                                org.mockito.Mockito.eq("IPH_ExtensionsPinnedByDefault")))
-                .thenReturn(true);
-        org.mockito.Mockito.doAnswer(
+        Tracker tracker = mock(Tracker.class);
+        when(tracker.shouldTriggerHelpUi(anyString())).thenReturn(false);
+        when(tracker.shouldTriggerHelpUi(eq("IPH_ExtensionsPinnedByDefault"))).thenReturn(true);
+        when(tracker.wouldTriggerHelpUi(anyString())).thenReturn(false);
+        when(tracker.wouldTriggerHelpUi(eq("IPH_ExtensionsPinnedByDefault"))).thenReturn(true);
+        doAnswer(
                         invocation -> {
-                            invocation
-                                    .<org.chromium.base.Callback<Boolean>>getArgument(0)
-                                    .onResult(true);
+                            invocation.<Callback<Boolean>>getArgument(0).onResult(true);
                             return null;
                         })
                 .when(tracker)
-                .addOnInitializedCallback(org.mockito.Mockito.any());
+                .addOnInitializedCallback(any());
         TrackerFactory.setTrackerForTests(tracker);
         // Enable the pinned by default preference so that the IPH appears.
         ThreadUtils.runOnUiThreadBlocking(
@@ -1271,12 +1307,11 @@ public class ExtensionsToolbarTest {
         CriteriaHelper.pollInstrumentationThread(
                 () -> {
                     try {
-                        androidx.test.espresso.Espresso.onView(
-                                        withText(R.string.extensions_pinned_by_default_iph_body))
+                        Espresso.onView(withText(R.string.extensions_pinned_by_default_iph_body))
                                 .inRoot(
-                                        androidx.test.espresso.matcher.RootMatchers.withDecorView(
+                                        RootMatchers.withDecorView(
                                                 not(
-                                                        org.hamcrest.Matchers.is(
+                                                        Matchers.is(
                                                                 mActivityTestRule
                                                                         .getActivity()
                                                                         .getWindow()

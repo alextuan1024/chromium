@@ -4,6 +4,7 @@
 
 #include "ui/base/ime/character_composer.h"
 
+#include <algorithm>
 #include <optional>
 #include <string>
 
@@ -32,6 +33,19 @@ bool CheckCharacterComposeTable(
   return kTreeComposeChecker.CheckSequence(compose_sequence,
                                            composed_character) !=
          ui::ComposeChecker::CheckSequenceResult::NO_MATCH;
+}
+
+// Looks up `key` in `table`, sorted by key, and returns the matching value, if
+// any.
+std::optional<uint16_t> FindInTable(
+    base::span<const ui::TreeComposeChecker::TreeEntry> table,
+    uint16_t key) {
+  auto it = std::ranges::lower_bound(table, key, {},
+                                     &ui::TreeComposeChecker::TreeEntry::key);
+  if (it == table.end() || it->key != key) {
+    return std::nullopt;
+  }
+  return it->value;
 }
 
 // Converts |character| to UTF16 string.
@@ -149,7 +163,7 @@ bool CharacterComposer::FilterKeyPress(const ui::KeyEvent& event) {
 }
 
 bool CharacterComposer::FilterKeyPressSequenceMode(const KeyEvent& event) {
-  DCHECK(composition_mode_ == KEY_SEQUENCE_MODE);
+  CHECK(composition_mode_ == KEY_SEQUENCE_MODE, base::NotFatalUntil::M163);
   compose_buffer_.push_back(event.GetDomKey());
 
   // Check compose table.
@@ -220,7 +234,7 @@ void CharacterComposer::UpdatePreeditStringSequenceMode() {
 }
 
 bool CharacterComposer::FilterKeyPressHexMode(const KeyEvent& event) {
-  DCHECK(composition_mode_ == HEX_MODE);
+  CHECK(composition_mode_ == HEX_MODE, base::NotFatalUntil::M163);
   const size_t kMaxHexSequenceLength = 8;
   char16_t c = event.GetCharacter();
   int hex_digit = 0;
@@ -262,11 +276,11 @@ bool CharacterComposer::FilterKeyPressHexMode(const KeyEvent& event) {
 }
 
 void CharacterComposer::CommitHex() {
-  DCHECK(composition_mode_ == HEX_MODE);
+  CHECK(composition_mode_ == HEX_MODE, base::NotFatalUntil::M163);
   uint32_t composed_character_utf32 = 0;
   for (size_t i = 0; i != hex_buffer_.size(); ++i) {
     const uint32_t digit = hex_buffer_[i];
-    DCHECK(0 <= digit && digit < 16);
+    CHECK(0 <= digit && digit < 16, base::NotFatalUntil::M163);
     composed_character_utf32 <<= 4;
     composed_character_utf32 |= digit;
   }
@@ -282,7 +296,7 @@ void CharacterComposer::UpdatePreeditStringHexMode() {
   std::string preedit_string_ascii("u");
   for (size_t i = 0; i != hex_buffer_.size(); ++i) {
     const int digit = hex_buffer_[i];
-    DCHECK(0 <= digit && digit < 16);
+    CHECK(0 <= digit && digit < 16, base::NotFatalUntil::M163);
     preedit_string_ascii += digit <= 9 ? ('0' + digit) : ('a' + (digit - 10));
   }
   preedit_string_ = base::ASCIIToUTF16(preedit_string_ascii);
@@ -297,14 +311,14 @@ ComposeChecker::CheckSequenceResult TreeComposeChecker::CheckSequence(
 
   uint16_t tree_index = 0;
   for (const auto& keystroke : sequence) {
-    DCHECK(tree_index < data_->tree.size());
+    CHECK(tree_index < data_->tree.size(), base::NotFatalUntil::M163);
 
     // If we are looking up a dead key or the Compose key, skip over the
     // character tables.
     int32_t character = -1;
     if (keystroke.IsDeadKey() || keystroke.IsComposeKey()) {
-      tree_index += 2 * data_->tree[tree_index] + 1;  // internal unicode table
-      tree_index += 2 * data_->tree[tree_index] + 1;  // leaf unicode table
+      auto [internal_size, leaf_size] = data_->tree[tree_index];
+      tree_index += 1 + internal_size + leaf_size;  // unicode tables
       // The generate_character_composer_data.py script assigns 0 to the Compose
       // key.
       character = keystroke.IsComposeKey()
@@ -317,48 +331,25 @@ ComposeChecker::CheckSequenceResult TreeComposeChecker::CheckSequence(
       return CheckSequenceResult::NO_MATCH;
 
     // Check the internal subtree table.
-    uint16_t result = 0;
-    uint16_t entries = data_->tree[tree_index++];
-    if (entries &&
-        Find(tree_index, entries, static_cast<uint16_t>(character), &result)) {
-      tree_index = result;
+    auto [internal_size, leaf_size] = data_->tree[tree_index++];
+    if (std::optional<uint16_t> subtree_index =
+            FindInTable(data_->tree.subspan(tree_index, internal_size),
+                        static_cast<uint16_t>(character))) {
+      tree_index = *subtree_index;
       continue;
     }
 
     // Skip over the internal subtree table and check the leaf table.
-    tree_index += 2 * entries;
-    entries = data_->tree[tree_index++];
-    if (entries &&
-        Find(tree_index, entries, static_cast<uint16_t>(character), &result)) {
-      *composed_character = result;
+    tree_index += internal_size;
+    if (std::optional<uint16_t> leaf_character =
+            FindInTable(data_->tree.subspan(tree_index, leaf_size),
+                        static_cast<uint16_t>(character))) {
+      *composed_character = *leaf_character;
       return CheckSequenceResult::FULL_MATCH;
     }
     return CheckSequenceResult::NO_MATCH;
   }
   return CheckSequenceResult::PREFIX_MATCH;
-}
-
-bool TreeComposeChecker::Find(uint16_t index,
-                              uint16_t size,
-                              uint16_t key,
-                              uint16_t* value) const {
-  struct TableEntry {
-    uint16_t key;
-    uint16_t value;
-    bool operator<(const TableEntry& other) const {
-      return this->key < other.key;
-    }
-  };
-  const TableEntry* a =
-      reinterpret_cast<const TableEntry*>(&data_->tree[index]);
-  const TableEntry* z = UNSAFE_TODO(a + size);
-  const TableEntry target = {key, 0};
-  const TableEntry* it = std::lower_bound(a, z, target);
-  if ((it != z) && (it->key == key)) {
-    *value = it->value;
-    return true;
-  }
-  return false;
 }
 
 }  // namespace ui

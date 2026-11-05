@@ -73,7 +73,7 @@ void ProfilePrefStoreManager::ClearResetTime(PrefService* pref_service) {
 // static
 void ProfilePrefStoreManager::SetPreferenceValidationRegistryPathForTesting(
     const std::wstring* path) {
-  DCHECK(!path->empty());
+  CHECK(!path->empty(), base::NotFatalUntil::M163);
   g_preference_validation_registry_path_for_testing = path;
 }
 #endif  // BUILDFLAG(IS_WIN)
@@ -129,6 +129,14 @@ bool ProfilePrefStoreManager::InitializePrefsFromMasterPrefs(
   // State and Preferences files). This won't trip ThreadIORestrictions as they
   // won't have kicked in yet on the main thread.
   bool success = serializer.Serialize(master_prefs);
+
+  // Only allow first-run migration into Secure Preferences once Preferences
+  // actually contains the seeded values. If the write failed, Preferences may
+  // still hold whatever was on disk before.
+  if (success && kPlatformSupportsPreferenceTracking) {
+    MarkPrefsSeededFromInitialPrefs(
+        profile_path_.Append(chrome::kSecurePreferencesFilename));
+  }
 
   return success;
 }

@@ -24,6 +24,7 @@ try_.defaults.set(
     execution_timeout = try_constants.DEFAULT_EXECUTION_TIMEOUT,
     experiments = {
         "chromium_tests.resultdb_module": 100,
+        "luci.buildbucket.run_in_turboci.grpc_client": 5,
         "luci.buildbucket.run_in_turboci": 100,
     },
     orchestrator_cores = 2,
@@ -55,6 +56,7 @@ try_.builder(
             "release_try_builder",
         ],
     ),
+    ssd = True,
     contact_team_email = "chrome-fuchsia-engprod@google.com",
     cq_settings = try_.cq_settings(
         location_filters = [
@@ -75,6 +77,7 @@ try_.builder(
 try_.builder(
     name = "fuchsia-binary-size",
     branch_selector = branches.selector.FUCHSIA_BRANCHES,
+    description_html = "Measures Fuchsia ARM64 binary size impact of CLs.",
     executable = "recipe:binary_size_fuchsia_trybot",
     gn_args = gn_args.config(
         configs = [
@@ -88,6 +91,7 @@ try_.builder(
     ),
     builderless = not settings.is_main,
     cores = 16 if settings.is_main else 8,
+    ssd = None if settings.is_main else True,
     cq_settings = try_.cq_settings(
         on_default_cq = True,
     ),
@@ -121,6 +125,7 @@ try_.builder(
             "ci/fuchsia-x64-cast-receiver-dbg",
         ],
     ),
+    ssd = True,
     contact_team_email = "chrome-fuchsia-engprod@google.com",
     cq_settings = try_.cq_settings(
         location_filters = [
@@ -135,6 +140,7 @@ try_.builder(
 
 try_.builder(
     name = "fuchsia-deterministic-dbg",
+    description_html = "Verifies that Fuchsia x64 debug builds are deterministic.",
     executable = "recipe:swarming/deterministic_build",
     gn_args = gn_args.config(
         configs = [
@@ -154,6 +160,7 @@ try_.builder(
     name = "fuchsia-fyi-arm64-dbg",
     mirrors = ["ci/fuchsia-fyi-arm64-dbg"],
     gn_args = "ci/fuchsia-fyi-arm64-dbg",
+    ssd = True,
     contact_team_email = "chrome-fuchsia-engprod@google.com",
 )
 
@@ -161,6 +168,7 @@ try_.builder(
     name = "fuchsia-fyi-x64-asan",
     mirrors = ["ci/fuchsia-fyi-x64-asan"],
     gn_args = "ci/fuchsia-fyi-x64-asan",
+    ssd = True,
     contact_team_email = "chrome-fuchsia-engprod@google.com",
     execution_timeout = 10 * time.hour,
 )
@@ -169,6 +177,7 @@ try_.builder(
     name = "fuchsia-fyi-x64-dbg-persistent-emulator",
     mirrors = ["ci/fuchsia-fyi-x64-dbg-persistent-emulator"],
     gn_args = "ci/fuchsia-fyi-x64-dbg-persistent-emulator",
+    ssd = True,
     contact_team_email = "chrome-fuchsia-engprod@google.com",
     execution_timeout = 10 * time.hour,
 )
@@ -226,6 +235,7 @@ try_.orchestrator_builder(
     coverage_test_types = ["unit", "overall"],
     cq_settings = try_.cq_settings(
         on_default_cq = True,
+        reuse_max_commit_distance = 800 if settings.is_main else None,
     ),
     experiments = {
         # go/nplus1shardsproposal
@@ -247,6 +257,7 @@ try_.builder(
     name = "fuchsia-x64-perf-cast-receiver-rel",
     mirrors = ["ci/fuchsia-x64-perf-cast-receiver-rel"],
     gn_args = "ci/fuchsia-x64-perf-cast-receiver-rel",
+    ssd = True,
     contact_team_email = "chrome-fuchsia-engprod@google.com",
 )
 
@@ -263,5 +274,6 @@ try_.builder(
     name = "fuchsia-code-coverage",
     mirrors = ["ci/fuchsia-code-coverage"],
     gn_args = "ci/fuchsia-code-coverage",
+    ssd = True,
     execution_timeout = 10 * time.hour,
 )

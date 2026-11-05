@@ -22,6 +22,7 @@
 #include "base/no_destructor.h"
 #include "base/notimplemented.h"
 #include "base/trace_event/trace_event.h"
+#include "components/embedder_support/android/delegate/eye_dropper_bridge.h"
 #include "components/embedder_support/android/delegate/html_color_picker_bridge.h"
 #include "components/input/native_web_keyboard_event.h"
 #include "content/public/browser/color_chooser.h"
@@ -40,11 +41,12 @@
 #include "third_party/blink/public/mojom/devtools/console_message.mojom.h"
 #include "third_party/blink/public/mojom/frame/blocked_navigation_types.mojom.h"
 #include "third_party/blink/public/mojom/frame/fullscreen.mojom.h"
+#include "ui/android/accelerator_manager_android.h"
 #include "ui/android/color_utils_android.h"
 #include "ui/android/resources/capture_result.h"
 #include "ui/android/view_android.h"
 #include "ui/android/window_android.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "ui/gfx/android/java_bitmap.h"
 #include "ui/gfx/android/rect_jni_conversion.h"
 #include "url/android/gurl_android.h"
@@ -120,6 +122,15 @@ WebContentsDelegateAndroid::OpenColorChooser(
   return std::make_unique<HtmlColorPickerBridge>(source, color, suggestions);
 }
 
+std::unique_ptr<content::EyeDropper> WebContentsDelegateAndroid::OpenEyeDropper(
+    content::RenderFrameHost* frame,
+    content::EyeDropperListener* listener) {
+  content::WebContents* web_contents =
+      content::WebContents::FromRenderFrameHost(frame);
+  CHECK(web_contents);
+  return EyeDropperBridge::Create(web_contents, listener);
+}
+
 // OpenURLFromTab() will be called when we're performing a browser-intiated
 // navigation. The most common scenario for this is opening new tabs (see
 // RenderViewImpl::decidePolicyForNavigation for more details).
@@ -129,12 +140,13 @@ WebContents* WebContentsDelegateAndroid::OpenURLFromTab(
     base::OnceCallback<void(content::NavigationHandle&)>
         navigation_handle_callback) {
   const GURL& url = params.url;
-  WindowOpenDisposition disposition = params.disposition;
+  ui::mojom::WindowOpenDisposition disposition = params.disposition;
 
-  if (!source || (disposition != WindowOpenDisposition::CURRENT_TAB &&
-                  disposition != WindowOpenDisposition::NEW_FOREGROUND_TAB &&
-                  disposition != WindowOpenDisposition::NEW_BACKGROUND_TAB &&
-                  disposition != WindowOpenDisposition::OFF_THE_RECORD)) {
+  if (!source ||
+      (disposition != ui::mojom::WindowOpenDisposition::kCurrentTab &&
+       disposition != ui::mojom::WindowOpenDisposition::kNewForegroundTab &&
+       disposition != ui::mojom::WindowOpenDisposition::kNewBackgroundTab &&
+       disposition != ui::mojom::WindowOpenDisposition::kOffTheRecord)) {
     NOTIMPLEMENTED();
     return NULL;
   }
@@ -146,9 +158,9 @@ WebContents* WebContentsDelegateAndroid::OpenURLFromTab(
         source, params, std::move(navigation_handle_callback));
   }
 
-  if (disposition == WindowOpenDisposition::NEW_FOREGROUND_TAB ||
-      disposition == WindowOpenDisposition::NEW_BACKGROUND_TAB ||
-      disposition == WindowOpenDisposition::OFF_THE_RECORD) {
+  if (disposition == ui::mojom::WindowOpenDisposition::kNewForegroundTab ||
+      disposition == ui::mojom::WindowOpenDisposition::kNewBackgroundTab ||
+      disposition == ui::mojom::WindowOpenDisposition::kOffTheRecord) {
     ScopedJavaLocalRef<jobject> java_gurl =
         url::GURLAndroid::FromNativeGURL(env, url);
     ScopedJavaLocalRef<jstring> extra_headers =
@@ -342,9 +354,14 @@ WebContentsDelegateAndroid::PreHandleKeyboardEvent(
   ui::WindowAndroid* window = source->GetTopLevelNativeWindow();
   if (window) {
     JNIEnv* env = AttachCurrentThread();
-    if (Java_WebContentsDelegateAndroid_preHandleKeyboardEvent(
-            env, window->GetJavaObject(), event.os_event)) {
-      return content::KeyboardEventProcessingResult::HANDLED;
+    switch (Java_WebContentsDelegateAndroid_preHandleKeyboardEvent(
+        env, window->GetJavaObject(), event.os_event)) {
+      case ui::KeyEventPreHandleResult::kHandled:
+        return content::KeyboardEventProcessingResult::HANDLED;
+      case ui::KeyEventPreHandleResult::kNotHandled:
+        return content::KeyboardEventProcessingResult::NOT_HANDLED;
+      case ui::KeyEventPreHandleResult::kNotHandledIsShortcut:
+        return content::KeyboardEventProcessingResult::NOT_HANDLED_IS_SHORTCUT;
     }
   }
   return content::KeyboardEventProcessingResult::NOT_HANDLED;
@@ -543,6 +560,7 @@ void WebContentsDelegateAndroid::OnDidBlockNavigation(
     const GURL& blocked_url,
     const GURL& initiator_url,
     const url::Origin& initiator_origin,
+    scoped_refptr<content::InitiatorNavigationState> initiator_navigation_state,
     blink::mojom::NavigationBlockedReason reason) {}
 
 int WebContentsDelegateAndroid::GetTopControlsHeight() {

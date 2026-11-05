@@ -5,24 +5,25 @@
 #include "chrome/browser/media/cast_mirroring_service_host.h"
 
 #include <algorithm>
+#include <optional>
 
+#include "base/callback_list.h"
 #include "base/containers/flat_map.h"
+#include "base/functional/bind.h"
 #include "base/json/json_reader.h"
-#include "base/memory/raw_ptr.h"
 #include "base/run_loop.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/task/bind_post_task.h"
+#include "base/test/bind.h"
+#include "base/test/run_until.h"
 #include "base/test/test_timeouts.h"
 #include "build/build_config.h"
 #include "chrome/browser/media/router/discovery/access_code/access_code_cast_feature.h"
 #include "chrome/browser/media/router/media_router_feature.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/tabs/alert/tab_alert_controller.h"
-#include "chrome/browser/ui/tabs/tab_change_type.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_model_delegate.h"
-#include "chrome/browser/ui/tabs/tab_strip_model_observer.h"
 #include "chrome/browser/ui/tabs/tab_utils.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "components/media_router/common/pref_names.h"
@@ -31,6 +32,7 @@
 #include "components/mirroring/mojom/session_parameters.mojom.h"
 #include "components/prefs/pref_service.h"
 #include "components/tabs/public/tab_alert.h"
+#include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
@@ -49,6 +51,12 @@
 #include "mojo/public/cpp/bindings/receiver.h"
 #include "mojo/public/cpp/bindings/remote.h"
 #include "testing/gmock/include/gmock/gmock.h"
+
+#if BUILDFLAG(IS_CHROMEOS)
+#include "ash/shell.h"
+#include "ash/system/privacy/screen_security_observer.h"
+#include "ash/system/tray/system_tray_notifier.h"
+#endif
 
 using testing::_;
 using testing::InvokeWithoutArgs;
@@ -191,8 +199,18 @@ class CastMirroringServiceHostBrowserTest
     content::WebContents* web_contents =
         browser()->tab_strip_model()->GetActiveWebContents();
     ASSERT_TRUE(web_contents);
-    host_ = std::make_unique<CastMirroringServiceHost>(
-        BuildMediaIdForTabMirroring(web_contents));
+    StartMirroring(BuildMediaIdForTabMirroring(web_contents));
+  }
+
+  // Starts a desktop (whole screen) mirroring session. Note that no video is
+  // actually captured, since no receiver answers the OFFER.
+  void StartDesktopMirroring() {
+    StartMirroring(content::DesktopMediaID(content::DesktopMediaID::TYPE_SCREEN,
+                                           content::DesktopMediaID::kFakeId));
+  }
+
+  void StartMirroring(const content::DesktopMediaID& media_id) {
+    host_ = std::make_unique<CastMirroringServiceHost>(media_id);
     mojo::PendingRemote<mojom::SessionObserver> observer;
     observer_receiver_.Bind(observer.InitWithNewPipeAndPassReceiver());
     mojo::PendingRemote<mojom::CastMessageChannel> outbound_channel;
@@ -204,6 +222,10 @@ class CastMirroringServiceHostBrowserTest
     host_->Start(std::move(session_params), std::move(observer),
                  std::move(outbound_channel),
                  inbound_channel_.BindNewPipeAndPassReceiver(), "Sink Name");
+  }
+
+  bool IsMirroringServiceBound() const {
+    return host_ && host_->mirroring_service_.is_bound();
   }
 
   // Starts a tab mirroring session, and sets a target playout delay.
@@ -415,18 +437,21 @@ IN_PROC_BROWSER_TEST_F(CastMirroringServiceHostBrowserTest, TabIndicator) {
       browser()->tab_strip_model()->GetActiveWebContents();
   ASSERT_THAT(GetTabAlertStatesForContents(contents), ::testing::IsEmpty());
 
-  // A TabStripModelObserver that quits the MessageLoop whenever the
-  // UI's model is sent an event that might change the indicator status.
-  class IndicatorChangeObserver : public TabStripModelObserver {
+  // A helper that quits the MessageLoop whenever the UI's model is sent an
+  // event that changes the indicator status.
+  class IndicatorChangeObserver {
    public:
-    explicit IndicatorChangeObserver(BrowserWindowInterface* browser)
-        : browser_(browser) {
-      browser_->GetTabStripModel()->AddObserver(this);
+    explicit IndicatorChangeObserver(tabs::TabInterface* tab) {
+      alert_subscription_ =
+          tabs::TabAlertController::From(tab)->AddAlertToShowChangedCallback(
+              base::BindRepeating(&IndicatorChangeObserver::OnAlertChanged,
+                                  base::Unretained(this)));
     }
 
-    void OnTabChangedAt(tabs::TabInterface* tab,
-                        TabChangeType change_type) override {
-      std::move(on_tab_changed_).Run();
+    void OnAlertChanged(std::optional<tabs::TabAlert> alert) {
+      if (on_tab_changed_) {
+        std::move(on_tab_changed_).Run();
+      }
     }
 
     void WaitForTabChange() {
@@ -436,11 +461,12 @@ IN_PROC_BROWSER_TEST_F(CastMirroringServiceHostBrowserTest, TabIndicator) {
     }
 
    private:
-    const raw_ptr<BrowserWindowInterface> browser_;
     base::OnceClosure on_tab_changed_;
+    base::CallbackListSubscription alert_subscription_;
   };
 
-  IndicatorChangeObserver observer(browser());
+  IndicatorChangeObserver observer(
+      tabs::TabInterface::GetFromContents(contents));
   ASSERT_THAT(GetTabAlertStatesForContents(contents), ::testing::IsEmpty());
   StartTabMirroring();
 
@@ -501,5 +527,93 @@ IN_PROC_BROWSER_TEST_F(CastMirroringServiceHostBrowserTestTabSwitcher,
   StartVideoCapturing();
   StopMirroring();
 }
+
+#if BUILDFLAG(IS_CHROMEOS)
+namespace {
+
+class TestScreenSecurityObserver : public ash::ScreenSecurityObserver {
+ public:
+  TestScreenSecurityObserver() {
+    ash::Shell::Get()->system_tray_notifier()->AddScreenSecurityObserver(this);
+  }
+  ~TestScreenSecurityObserver() override {
+    ash::Shell::Get()->system_tray_notifier()->RemoveScreenSecurityObserver(
+        this);
+  }
+
+  // ash::ScreenSecurityObserver:
+  void OnScreenAccessStart(base::OnceClosure stop_callback,
+                           const base::RepeatingClosure& source_callback,
+                           const std::u16string& access_app_name) override {
+    ++start_count_;
+  }
+  void OnScreenAccessStop() override { ++stop_count_; }
+
+  int start_count() const { return start_count_; }
+  int stop_count() const { return stop_count_; }
+
+ private:
+  int start_count_ = 0;
+  int stop_count_ = 0;
+};
+
+}  // namespace
+
+// Desktop mirroring must be registered as screen access with ash, so that
+// ash::ScreenSwitchCheckController gates switching to another user in a
+// multi-profile session, and so that mirroring is stopped when ash stops all
+// screen access (as it does when the active user changes).
+// Regression test for https://crbug.com/518998812.
+IN_PROC_BROWSER_TEST_F(CastMirroringServiceHostBrowserTest,
+                       DesktopMirroringRegistersScreenAccess) {
+  TestScreenSecurityObserver observer;
+  StartDesktopMirroring();
+  EXPECT_EQ(1, observer.start_count());
+  EXPECT_TRUE(IsMirroringServiceBound());
+
+  // Simulate what ash::ScreenSwitchCheckController does on an active user
+  // session change.
+  ash::Shell::Get()->system_tray_notifier()->NotifyScreenAccessStop();
+  EXPECT_FALSE(IsMirroringServiceBound());
+
+  StopMirroring();
+}
+
+// After ash stops desktop mirroring (e.g. on a user switch), destroying the
+// host must not stop screen access sessions that were started in the meantime,
+// such as a getDisplayMedia() capture by the new active user.
+IN_PROC_BROWSER_TEST_F(CastMirroringServiceHostBrowserTest,
+                       StoppedDesktopMirroringDoesNotStopLaterScreenAccess) {
+  TestScreenSecurityObserver observer;
+  StartDesktopMirroring();
+  ash::Shell::Get()->system_tray_notifier()->NotifyScreenAccessStop();
+  EXPECT_FALSE(IsMirroringServiceBound());
+  EXPECT_EQ(1, observer.stop_count());
+  // Wait for the notification UI to be released, which notifies ash again.
+  ASSERT_TRUE(base::test::RunUntil([&] { return observer.stop_count() == 2; }));
+
+  bool other_session_stopped = false;
+  ash::Shell::Get()->system_tray_notifier()->NotifyScreenAccessStart(
+      base::BindLambdaForTesting([&] { other_session_stopped = true; }),
+      base::RepeatingClosure(), u"Other capture");
+
+  StopMirroring();
+  EXPECT_FALSE(other_session_stopped);
+
+  // Clean up the other session.
+  ash::Shell::Get()->system_tray_notifier()->NotifyScreenAccessStop();
+  EXPECT_TRUE(other_session_stopped);
+}
+
+// Tab mirroring does not capture the whole screen, so it should not be
+// registered as screen access.
+IN_PROC_BROWSER_TEST_F(CastMirroringServiceHostBrowserTest,
+                       TabMirroringDoesNotRegisterScreenAccess) {
+  TestScreenSecurityObserver observer;
+  StartTabMirroring();
+  EXPECT_EQ(0, observer.start_count());
+  StopMirroring();
+}
+#endif  // BUILDFLAG(IS_CHROMEOS)
 
 }  // namespace mirroring

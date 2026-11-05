@@ -412,9 +412,7 @@ suite('TreeView', () => {
     assertTrue(!!dotsIcon);
     assertEquals(loadTimeData.getString('tooltipMore'), dotsIcon.title);
 
-    const bookmarkDiv =
-        rowItem.shadowRoot.querySelector<HTMLElement>('#crUrlListItem');
-    assertTrue(!!bookmarkDiv);
+    const bookmarkDiv = rowItem.$.crUrlListItem;
 
     // Check if the depth is correctly applied to the style
     const computedStyle = getComputedStyle(bookmarkDiv);
@@ -743,7 +741,7 @@ suite('TreeView', () => {
         folder5Item.getBookmarkDescriptionForTests(folder5Row.bookmark);
     assertTrue(
         !!description && description.includes('4'),
-        `Folder 5 description should reflect 4 children after move, ` +
+        'Folder 5 description should reflect 4 children after move, ' +
             `got: ${description}`);
   });
 

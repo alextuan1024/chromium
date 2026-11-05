@@ -11,7 +11,7 @@
 #include "ash/shell.h"
 #include "base/containers/span.h"
 #include "chrome/browser/ui/webui/ash/settings/search/search_tag_registry.h"
-#include "chrome/grit/generated_resources.h"
+#include "chromeos/ash/experiences/settings_ui/resources/grit/ash_settings_strings.h"
 #include "chromeos/dbus/power/power_manager_client.h"
 #include "content/public/browser/web_ui.h"
 #include "content/public/browser/web_ui_data_source.h"
@@ -285,7 +285,8 @@ void PowerSection::PowerChanged(
   if (!has_observed_power_status_) {
     // IsAdaptiveChargingSupported and IsBatterySaverSupported both rely on
     // GetLastStatus, so make sure its not nullopt.
-    DCHECK(chromeos::PowerManagerClient::Get()->GetLastStatus());
+    CHECK(chromeos::PowerManagerClient::Get()->GetLastStatus(),
+          base::NotFatalUntil::M162);
     if (!has_observed_power_status_) {
       if (Shell::Get()
               ->adaptive_charging_controller()

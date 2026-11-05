@@ -28,6 +28,7 @@
 #include "device/vr/openxr/openxr_util.h"
 #include "device/vr/openxr/openxr_view_configuration.h"
 #include "device/vr/public/cpp/features.h"
+#include "device/vr/public/cpp/xr_session_feature_set.h"
 #include "device/vr/public/mojom/xr_session.mojom.h"
 #include "gpu/GLES2/gl2extchromium.h"
 #include "gpu/command_buffer/client/shared_image_interface.h"
@@ -157,7 +158,7 @@ void OpenXrApiWrapper::Reset() {
   bounds_provider_.reset();
   system_ = XR_NULL_SYSTEM_ID;
   instance_ = XR_NULL_HANDLE;
-  enabled_features_.clear();
+  enabled_features_.Clear();
   graphics_binding_ = nullptr;
 
   primary_view_config_ = OpenXrViewConfiguration();
@@ -168,6 +169,7 @@ void OpenXrApiWrapper::Reset() {
 
   session_options_.reset();
   on_session_started_callback_.Reset();
+  on_session_resumed_callback_.Reset();
   on_session_ended_callback_.Reset();
   visibility_changed_callback_.Reset();
 }
@@ -183,6 +185,7 @@ bool OpenXrApiWrapper::Initialize(XrInstance instance,
   graphics_binding_ = graphics_binding;
   session_running_ = false;
   pending_frame_ = false;
+  stop_pending_ = false;
 
   DCHECK(instance != XR_NULL_HANDLE);
   instance_ = instance;
@@ -190,10 +193,6 @@ bool OpenXrApiWrapper::Initialize(XrInstance instance,
   DCHECK(HasInstance());
 
   if (XR_FAILED(InitializeSystem())) {
-    return false;
-  }
-
-  if (!graphics_binding_->Initialize(instance_, system_)) {
     return false;
   }
 
@@ -256,6 +255,7 @@ void OpenXrApiWrapper::Uninitialize() {
   Reset();
   session_running_ = false;
   pending_frame_ = false;
+  stop_pending_ = false;
 }
 
 bool OpenXrApiWrapper::HasInstance() const {
@@ -300,7 +300,7 @@ bool OpenXrApiWrapper::HasFrameState() const {
 
 bool OpenXrApiWrapper::IsFeatureEnabled(
     device::mojom::XRSessionFeature feature) const {
-  return enabled_features_.contains(feature);
+  return enabled_features_.Has(feature);
 }
 
 XrResult OpenXrApiWrapper::InitializeViewConfig(
@@ -334,6 +334,12 @@ XrResult OpenXrApiWrapper::InitializeSystem() {
   DCHECK(!HasSystem());
 
   RETURN_IF_XR_FAILED(GetSystem(instance_, &system_));
+
+  // The view configurations are clamped to the binding's max texture size,
+  // which a binding may only know once it is initialized.
+  if (!graphics_binding_->Initialize(instance_, system_)) {
+    return XR_ERROR_INITIALIZATION_FAILED;
+  }
 
   RETURN_IF_XR_FAILED(
       InitializeViewConfig(kPrimaryViewConfiguration, primary_view_config_));
@@ -448,7 +454,7 @@ OpenXrDepthSensor* OpenXrApiWrapper::GetDepthSensor() {
 XrResult OpenXrApiWrapper::EnableSupportedFeatures(
     const OpenXrExtensionHelper& extension_helper) {
   CHECK(session_options_);
-  enabled_features_.clear();
+  enabled_features_.Clear();
 
   // First do some preliminary filtering to build a list of features we can
   // theoretically support based on the requested mode and enabled extensions.
@@ -473,15 +479,17 @@ XrResult OpenXrApiWrapper::EnableSupportedFeatures(
     return XR_ERROR_INITIALIZATION_FAILED;
   }
 
-  std::unordered_set<mojom::XRSessionFeature> requested_features;
-  requested_features.insert(session_options_->required_features.begin(),
-                            session_options_->required_features.end());
-  std::ranges::copy_if(
-      session_options_->optional_features,
-      std::inserter(requested_features, requested_features.begin()),
-      enable_function);
+  XRSessionFeatureSet requested_features;
+  for (mojom::XRSessionFeature feature : session_options_->required_features) {
+    requested_features.Put(feature);
+  }
+  for (mojom::XRSessionFeature feature : session_options_->optional_features) {
+    if (enable_function(feature)) {
+      requested_features.Put(feature);
+    }
+  }
 
-  for (const auto& feature : requested_features) {
+  for (mojom::XRSessionFeature feature : requested_features) {
     bool is_enabled = false;
     bool is_required =
         std::ranges::contains(session_options_->required_features, feature);
@@ -617,7 +625,7 @@ XrResult OpenXrApiWrapper::EnableSupportedFeatures(
     DVLOG(1) << __func__ << " feature=" << feature
              << " is_enabled=" << is_enabled << " is_required=" << is_required;
     if (is_enabled) {
-      enabled_features_.insert(feature);
+      enabled_features_.Put(feature);
     } else if (is_required) {  // Not enabled but required
       return XR_ERROR_INITIALIZATION_FAILED;
     }
@@ -1014,7 +1022,6 @@ XrResult OpenXrApiWrapper::UpdateLocalFloorSpace() {
 
 XrResult OpenXrApiWrapper::BeginSession() {
   DCHECK(HasSession());
-  DCHECK(on_session_started_callback_);
 
   XrSessionBeginInfo session_begin_info = {XR_TYPE_SESSION_BEGIN_INFO};
   session_begin_info.primaryViewConfigurationType = primary_view_config_.Type();
@@ -1038,10 +1045,22 @@ XrResult OpenXrApiWrapper::BeginSession() {
   if (XR_SUCCEEDED(xr_result))
     session_running_ = true;
 
-  std::move(on_session_started_callback_)
-      .Run(std::move(session_options_), xr_result);
+  // Only the first xrBeginSession() starts the WebXR session. Later ones
+  // resume it after the runtime stopped it.
+  if (on_session_started_callback_) {
+    std::move(on_session_started_callback_)
+        .Run(std::move(session_options_), xr_result);
+  } else if (XR_SUCCEEDED(xr_result)) {
+    on_session_resumed_callback_.Run();
+  }
 
   return xr_result;
+}
+
+XrResult OpenXrApiWrapper::StopSession() {
+  stop_pending_ = false;
+  session_running_ = false;
+  return xrEndSession(session_);
 }
 
 XrResult OpenXrApiWrapper::BeginFrame() {
@@ -1238,6 +1257,10 @@ XrResult OpenXrApiWrapper::EndFrame() {
   }
   pending_frame_ = false;
 
+  if (stop_pending_) {
+    return StopSession();
+  }
+
   return XR_SUCCESS;
 }
 
@@ -1345,8 +1368,7 @@ mojom::XRViewPtr OpenXrApiWrapper::CreateView(
   return view;
 }
 
-const std::unordered_set<mojom::XRSessionFeature>&
-OpenXrApiWrapper::GetEnabledFeatures() const {
+XRSessionFeatureSet OpenXrApiWrapper::GetEnabledFeatures() const {
   return enabled_features_;
 }
 
@@ -1563,7 +1585,15 @@ XrResult OpenXrApiWrapper::ProcessEvents() {
           xr_result = BeginSession();
           break;
         case XR_SESSION_STATE_STOPPING:
-          return ShutdownSession();
+          // The runtime may make the session READY again later, e.g. when the
+          // app becomes visible again, so only end the OpenXR session here.
+          // The WebXR session ends if the runtime moves on to EXITING.
+          if (pending_frame_) {
+            stop_pending_ = true;
+          } else {
+            xr_result = StopSession();
+          }
+          break;
         case XR_SESSION_STATE_SYNCHRONIZED:
           visibility_changed_callback_.Run(
               device::mojom::XRVisibilityState::HIDDEN);

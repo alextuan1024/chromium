@@ -21,6 +21,9 @@
 #import "testing/gtest_mac.h"
 #import "testing/platform_test.h"
 #import "third_party/ocmock/OCMock/OCMock.h"
+#import "third_party/ocmock/gtest_support.h"
+#import "ui/base/device_form_factor.h"
+
 @interface NewTabPageBottomSheetViewController (Testing)
 - (void)setupSuperviewConstraints;
 - (void)handleFeedPan:(UIPanGestureRecognizer*)gesture;
@@ -30,6 +33,7 @@
               currentConstant:(CGFloat)currentConstant;
 - (void)setSheetStateForTesting:(BottomSheetSnappingState)state;
 - (BottomSheetSnappingState)sheetStateForTesting;
+- (void)updateFeedSigninPromoVisibility;
 @end
 
 @interface LifecycleTrackingChildViewController : UIViewController
@@ -625,4 +629,309 @@ TEST_F(NewTabPageBottomSheetViewControllerTest,
       content_suggestions::SearchFieldWidth(superview.bounds.size.width,
                                             view_controller_.traitCollection),
       view_controller_.view.frame.size.width);
+}
+
+// Tests that feed insets correctly expand to include feedTopSectionHeight.
+TEST_F(NewTabPageBottomSheetViewControllerTest,
+       TestFeedInsetsWithFeedTopSection) {
+  UIViewController* promo_vc = [[UIViewController alloc] init];
+  promo_vc.view = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 390, 120)];
+  [promo_vc.view.heightAnchor constraintEqualToConstant:120.0].active = YES;
+  view_controller_.feedTopSectionViewController = promo_vc;
+  view_controller_.feedTopSectionVisible = YES;
+
+  UIViewController* feed_vc = [[UIViewController alloc] init];
+  UIScrollView* scroll_view =
+      [[UIScrollView alloc] initWithFrame:CGRectMake(0, 0, 390, 800)];
+  [feed_vc.view addSubview:scroll_view];
+  view_controller_.feedViewController = feed_vc;
+
+  [view_controller_ loadViewIfNeeded];
+  [view_controller_.view layoutIfNeeded];
+
+  CGFloat promo_height = [view_controller_ feedTopSectionHeight];
+  EXPECT_GT(promo_height, 0.0);
+
+  // The top inset expands to accommodate the promo plus the 16pt inter-module
+  // spacing.
+  constexpr CGFloat kExpectedPromoSpacing = 16.0;
+  CGFloat expected_header_height = [view_controller_ headerHeight];
+  CGFloat expected_top_inset =
+      expected_header_height + promo_height + kExpectedPromoSpacing;
+  EXPECT_FLOAT_EQ(expected_top_inset, scroll_view.contentInset.top);
+
+  // When the promo view is hidden, feedTopSectionHeight is 0.
+  promo_vc.view.hidden = YES;
+  EXPECT_FLOAT_EQ(0.0, [view_controller_ feedTopSectionHeight]);
+
+  [view_controller_ updateFeedLayout];
+  EXPECT_FLOAT_EQ(expected_header_height, scroll_view.contentInset.top);
+}
+
+// Tests that feed insets do not include promo height when feedTopSectionVisible
+// is NO even if feedTopSectionViewController is set.
+TEST_F(NewTabPageBottomSheetViewControllerTest,
+       TestFeedInsetsWithFeedTopSectionNotVisible) {
+  UIViewController* promo_vc = [[UIViewController alloc] init];
+  promo_vc.view = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 390, 120)];
+  [promo_vc.view.heightAnchor constraintEqualToConstant:120.0].active = YES;
+  view_controller_.feedTopSectionViewController = promo_vc;
+  view_controller_.feedTopSectionVisible = NO;
+
+  UIViewController* feed_vc = [[UIViewController alloc] init];
+  UIScrollView* scroll_view =
+      [[UIScrollView alloc] initWithFrame:CGRectMake(0, 0, 390, 800)];
+  [feed_vc.view addSubview:scroll_view];
+  view_controller_.feedViewController = feed_vc;
+
+  [view_controller_ loadViewIfNeeded];
+  [view_controller_.view layoutIfNeeded];
+
+  EXPECT_FLOAT_EQ(0.0, [view_controller_ feedTopSectionHeight]);
+  CGFloat expected_header_height = [view_controller_ headerHeight];
+  EXPECT_FLOAT_EQ(expected_header_height, scroll_view.contentInset.top);
+
+  // Dynamically setting feedTopSectionVisible to YES updates layout and insets.
+  view_controller_.feedTopSectionVisible = YES;
+  [view_controller_.view layoutIfNeeded];
+  CGFloat promo_height = [view_controller_ feedTopSectionHeight];
+  EXPECT_GT(promo_height, 0.0);
+  constexpr CGFloat kExpectedPromoSpacing = 16.0;
+  CGFloat expected_top_inset =
+      expected_header_height + promo_height + kExpectedPromoSpacing;
+  EXPECT_FLOAT_EQ(expected_top_inset, scroll_view.contentInset.top);
+
+  // Dynamically setting feedTopSectionVisible back to NO removes promo from
+  // insets.
+  view_controller_.feedTopSectionVisible = NO;
+  [view_controller_.view layoutIfNeeded];
+  EXPECT_FLOAT_EQ(0.0, [view_controller_ feedTopSectionHeight]);
+  EXPECT_FLOAT_EQ(expected_header_height, scroll_view.contentInset.top);
+}
+
+// Tests that handleFeedTopSectionClosed animates hidden and preserves child VC
+// hierarchy.
+TEST_F(NewTabPageBottomSheetViewControllerTest,
+       TestHandleFeedTopSectionClosed) {
+  UIViewController* promo_vc = [[UIViewController alloc] init];
+  promo_vc.view = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 390, 100)];
+  [promo_vc.view.heightAnchor constraintEqualToConstant:100.0].active = YES;
+  view_controller_.feedTopSectionViewController = promo_vc;
+  view_controller_.feedTopSectionVisible = YES;
+
+  UIViewController* feed_vc = [[UIViewController alloc] init];
+  UIScrollView* scroll_view =
+      [[UIScrollView alloc] initWithFrame:CGRectMake(0, 0, 390, 800)];
+  [feed_vc.view addSubview:scroll_view];
+  view_controller_.feedViewController = feed_vc;
+
+  [view_controller_ loadViewIfNeeded];
+  [view_controller_.view layoutIfNeeded];
+
+  EXPECT_FALSE(promo_vc.view.hidden);
+  EXPECT_TRUE(view_controller_.feedTopSectionVisible);
+
+  [view_controller_ handleFeedTopSectionClosed];
+
+  EXPECT_TRUE(promo_vc.view.hidden);
+  EXPECT_FALSE(view_controller_.feedTopSectionVisible);
+  // Child VC lifecycle must remain intact (not detached by dismiss animation).
+  EXPECT_EQ(promo_vc.parentViewController, feed_vc);
+}
+
+// Tests that promo visibility is not reported as YES when sheet has no window.
+TEST_F(NewTabPageBottomSheetViewControllerTest,
+       TestFeedSigninPromoVisibilityReportingWithoutWindow) {
+  UIViewController* promo_vc = [[UIViewController alloc] init];
+  promo_vc.view = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 390, 100)];
+  [promo_vc.view.heightAnchor constraintEqualToConstant:100.0].active = YES;
+  view_controller_.feedTopSectionViewController = promo_vc;
+  view_controller_.feedTopSectionVisible = YES;
+
+  UIViewController* feed_vc = [[UIViewController alloc] init];
+  UIScrollView* scroll_view =
+      [[UIScrollView alloc] initWithFrame:CGRectMake(0, 0, 390, 800)];
+  [feed_vc.view addSubview:scroll_view];
+  view_controller_.feedViewController = feed_vc;
+
+  id delegate =
+      OCMProtocolMock(@protocol(NewTabPageBottomSheetViewControllerDelegate));
+  view_controller_.delegate = delegate;
+
+  [view_controller_ loadViewIfNeeded];
+
+  // Without a window, visibility should not report YES.
+  [[delegate reject] bottomSheetViewController:view_controller_
+                didChangeSigninPromoVisibility:YES];
+  [view_controller_ updateFeedSigninPromoVisibility];
+  EXPECT_OCMOCK_VERIFY(delegate);
+}
+
+// Tests that embedMostVisitedView embeds the view, and passing nil removes it
+// and updates insets.
+TEST_F(NewTabPageBottomSheetViewControllerTest,
+       TestEmbedMostVisitedViewAndDetach) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(kMVTInBottomSheet);
+
+  UIViewController* feed_vc = [[UIViewController alloc] init];
+  UIScrollView* scroll_view =
+      [[UIScrollView alloc] initWithFrame:CGRectMake(0, 0, 390, 800)];
+  [feed_vc.view addSubview:scroll_view];
+  view_controller_.feedViewController = feed_vc;
+
+  [view_controller_ loadViewIfNeeded];
+  [view_controller_.view layoutIfNeeded];
+
+  CGFloat insets_without_mvt = scroll_view.contentInset.top;
+
+  UIView* mvt_view = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 300, 120)];
+  [mvt_view.heightAnchor constraintEqualToConstant:120.0].active = YES;
+
+  [view_controller_ embedMostVisitedView:mvt_view collectionView:nil];
+  [view_controller_.view layoutIfNeeded];
+
+  ASSERT_NE(mvt_view.superview, nil);
+  EXPECT_TRUE([mvt_view isDescendantOfView:view_controller_.view]);
+  EXPECT_GT(scroll_view.contentInset.top, insets_without_mvt);
+
+  // Detach by passing nil.
+  [view_controller_ embedMostVisitedView:nil collectionView:nil];
+  [view_controller_.view layoutIfNeeded];
+
+  EXPECT_EQ(mvt_view.superview, nil);
+  EXPECT_EQ(scroll_view.contentInset.top, insets_without_mvt);
+}
+
+// Tests that the feed scroll view content offset is initialized to match
+// the negative top content inset.
+TEST_F(NewTabPageBottomSheetViewControllerTest,
+       TestFeedScrollViewInitialContentOffsetMatchesTopInset) {
+  UIViewController* feed_vc = [[UIViewController alloc] init];
+  UIScrollView* scroll_view =
+      [[UIScrollView alloc] initWithFrame:CGRectMake(0, 0, 390, 800)];
+  [feed_vc.view addSubview:scroll_view];
+  view_controller_.feedViewController = feed_vc;
+
+  [view_controller_ loadViewIfNeeded];
+  [view_controller_.view layoutIfNeeded];
+
+  EXPECT_GT(scroll_view.contentInset.top, 0.0);
+  EXPECT_FLOAT_EQ(scroll_view.contentOffset.y, -scroll_view.contentInset.top);
+}
+
+// Tests that dynamic content inset updates while scrolled into feed content
+// preserve the scroll offset delta.
+TEST_F(NewTabPageBottomSheetViewControllerTest,
+       TestFeedInsetsDynamicUpdatePreservesScrollOffsetDelta) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(kMVTInBottomSheet);
+
+  UIViewController* feed_vc = [[UIViewController alloc] init];
+  UIScrollView* scroll_view =
+      [[UIScrollView alloc] initWithFrame:CGRectMake(0, 0, 390, 800)];
+  [feed_vc.view addSubview:scroll_view];
+  view_controller_.feedViewController = feed_vc;
+
+  [view_controller_ loadViewIfNeeded];
+  [view_controller_.view layoutIfNeeded];
+
+  CGFloat initial_top_inset = scroll_view.contentInset.top;
+  EXPECT_FLOAT_EQ(scroll_view.contentOffset.y, -initial_top_inset);
+
+  // Expand the sheet and scroll into feed content.
+  [view_controller_
+      setSheetStateForTesting:BottomSheetSnappingState::kExpanded];
+  scroll_view.contentOffset = CGPointMake(0, 50);
+
+  // Embed MVT, which increases top inset.
+  UIView* mvt_view = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 300, 120)];
+  [mvt_view.heightAnchor constraintEqualToConstant:120.0].active = YES;
+  [view_controller_ embedMostVisitedView:mvt_view collectionView:nil];
+  [view_controller_.view layoutIfNeeded];
+
+  CGFloat new_top_inset = scroll_view.contentInset.top;
+  CGFloat delta = new_top_inset - initial_top_inset;
+  EXPECT_GT(delta, 0.0);
+  EXPECT_FLOAT_EQ(scroll_view.contentOffset.y, 50 - delta);
+}
+
+// Tests that updateFeedInsets strictly reclamps contentOffset.y to -topInset
+// in resting state even if the offset was drifted or insets did not change.
+TEST_F(NewTabPageBottomSheetViewControllerTest,
+       TestFeedInsetsReclampsContentOffsetInRestingState) {
+  UIViewController* feed_vc = [[UIViewController alloc] init];
+  UIScrollView* scroll_view =
+      [[UIScrollView alloc] initWithFrame:CGRectMake(0, 0, 390, 800)];
+  [feed_vc.view addSubview:scroll_view];
+  view_controller_.feedViewController = feed_vc;
+
+  [view_controller_ loadViewIfNeeded];
+  [view_controller_.view layoutIfNeeded];
+
+  CGFloat top_inset = scroll_view.contentInset.top;
+  EXPECT_FLOAT_EQ(scroll_view.contentOffset.y, -top_inset);
+
+  // Manually perturb the scroll view's offset (simulate drift/overscroll).
+  scroll_view.contentOffset = CGPointMake(0, -top_inset + 40.0);
+
+  // Calling updateFeedInsets in resting state must reclamp to -top_inset.
+  [view_controller_ updateFeedInsets];
+  EXPECT_FLOAT_EQ(scroll_view.contentOffset.y, -top_inset);
+
+  // Simulate negative overscroll beyond top inset.
+  scroll_view.contentOffset = CGPointMake(0, -top_inset - 25.0);
+  [view_controller_ updateFeedInsets];
+  EXPECT_FLOAT_EQ(scroll_view.contentOffset.y, -top_inset);
+}
+
+// Tests that header height increases with larger dynamic type categories.
+TEST_F(NewTabPageBottomSheetViewControllerTest,
+       TestHeaderHeightUsesDynamicType) {
+  [view_controller_ loadViewIfNeeded];
+
+  CGFloat default_height = [view_controller_ headerHeight];
+
+  view_controller_.traitOverrides.preferredContentSizeCategory =
+      UIContentSizeCategoryAccessibilityExtraExtraExtraLarge;
+  [view_controller_.view layoutIfNeeded];
+
+  CGFloat scaled_height = [view_controller_ headerHeight];
+  EXPECT_GT(scaled_height, default_height);
+}
+
+// Tests that transitioning from regular to compact layout attaches the magic
+// stack to the feed hierarchy and updates headerHeight.
+TEST_F(NewTabPageBottomSheetViewControllerTest,
+       TestTransitionFromRegularToCompactAttachesMagicStackToFeed) {
+  UIView* superview =
+      [[UIView alloc] initWithFrame:CGRectMake(0, 0, 1024, 768)];
+  [superview addSubview:view_controller_.view];
+
+  view_controller_.traitOverrides.horizontalSizeClass =
+      UIUserInterfaceSizeClassRegular;
+
+  MagicStackCollectionViewController* magic_stack_vc =
+      [[MagicStackCollectionViewController alloc] init];
+  view_controller_.magicStackViewController = magic_stack_vc;
+
+  UIViewController* feed_vc = [[UIViewController alloc] init];
+  UIScrollView* scroll_view =
+      [[UIScrollView alloc] initWithFrame:CGRectMake(0, 0, 800, 1000)];
+  [feed_vc.view addSubview:scroll_view];
+  view_controller_.feedViewController = feed_vc;
+
+  [view_controller_ loadViewIfNeeded];
+  [view_controller_ setupSuperviewConstraints];
+  [view_controller_.view layoutIfNeeded];
+
+  EXPECT_FLOAT_EQ(0.0, [view_controller_ headerHeight]);
+
+  view_controller_.traitOverrides.horizontalSizeClass =
+      UIUserInterfaceSizeClassCompact;
+  [view_controller_ updateLayoutModeForCurrentTraitCollection];
+  [view_controller_.view layoutIfNeeded];
+
+  EXPECT_GT([view_controller_ headerHeight], 0.0);
+  EXPECT_EQ(feed_vc, magic_stack_vc.parentViewController);
 }

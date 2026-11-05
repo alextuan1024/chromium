@@ -7,7 +7,9 @@
 #include <memory>
 #include <vector>
 
+#include "base/i18n/rtl.h"
 #include "base/memory/raw_ptr.h"
+#include "base/test/icu_test_util.h"
 #include "base/test/test_future.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
@@ -28,6 +30,15 @@
 #include "ui/views/test/views_drawing_test_utils.h"
 #include "ui/views/view.h"
 #include "ui/views/widget/widget.h"
+
+#if defined(USE_AURA)
+#include "ui/aura/window.h"
+#endif
+
+#if BUILDFLAG(IS_WIN)
+#include "ui/base/win/internal_constants.h"
+#include "ui/views/win/hwnd_util.h"
+#endif
 
 namespace omnibox_everywhere {
 
@@ -199,6 +210,10 @@ TEST_F(OmniboxEverywhereRegionSelectOverlayTest, CreateAndDismiss) {
   ASSERT_TRUE(overlay);
   ASSERT_TRUE(overlay->GetActiveWidgetForTesting());
   EXPECT_TRUE(overlay->GetActiveWidgetForTesting()->IsVisible());
+#if defined(USE_AURA)
+  EXPECT_TRUE(
+      overlay->GetActiveWidgetForTesting()->GetNativeView()->GetTransparent());
+#endif
 
   // Close the overlay widget (simulating Escape / dismiss).
   overlay->GetActiveWidgetForTesting()->CloseWithReason(
@@ -207,6 +222,24 @@ TEST_F(OmniboxEverywhereRegionSelectOverlayTest, CreateAndDismiss) {
   ASSERT_TRUE(future.Wait());
   EXPECT_TRUE(future.Get().empty());
 }
+
+#if BUILDFLAG(IS_WIN)
+TEST_F(OmniboxEverywhereRegionSelectOverlayTest,
+       DesktopWidgetIsTranslucentOnWin) {
+  test_views_delegate()->set_use_desktop_native_widgets(true);
+
+  base::test::TestFuture<const SkBitmap&> future;
+  auto overlay = OmniboxEverywhereRegionSelectOverlay::Create(
+      CreateTestBitmap(100, 100, SK_ColorRED),
+      RegionCaptureSource::AllDisplays(), future.GetCallback(),
+      /*context=*/gfx::NativeWindow());
+  ASSERT_TRUE(overlay);
+  views::Widget* widget = overlay->GetActiveWidgetForTesting();
+  ASSERT_TRUE(widget);
+  EXPECT_TRUE(widget->GetNativeView()->GetTransparent());
+  EXPECT_TRUE(::GetProp(views::HWNDForWidget(widget), ui::kWindowTranslucent));
+}
+#endif
 
 TEST_F(OmniboxEverywhereRegionSelectOverlayTest,
        DragSelectReturnsCroppedBitmap) {
@@ -1108,6 +1141,44 @@ TEST_F(OmniboxEverywhereRegionSelectOverlayTest,
 
   ASSERT_TRUE(future.Wait());
   EXPECT_TRUE(future.Get().empty());
+}
+
+TEST_F(OmniboxEverywhereRegionSelectOverlayTest,
+       RTL_OverlayCoordinatesAreNotMirrored) {
+  base::test::ScopedRestoreICUDefaultLocale scoped_locale("he");
+  ASSERT_TRUE(base::i18n::IsRTL());
+
+  SetDisplays({display::Display(1, gfx::Rect(0, 0, 800, 600))});
+  SkBitmap bitmap = CreateTestBitmap(800, 600, SK_ColorBLUE);
+
+  base::test::TestFuture<const SkBitmap&> future;
+  auto overlay = OmniboxEverywhereRegionSelectOverlay::Create(
+      bitmap, RegionCaptureSource::AllDisplays(), future.GetCallback(),
+      GetContext());
+  ASSERT_TRUE(overlay);
+
+  views::Widget* widget = overlay->GetActiveWidgetForTesting();
+  ASSERT_TRUE(widget);
+  views::View* contents_view = widget->GetContentsView();
+  ASSERT_TRUE(contents_view);
+  EXPECT_FALSE(widget->GetRootView()->GetMirrored());
+  EXPECT_FALSE(contents_view->GetMirrored());
+
+  ASSERT_EQ(contents_view->children().size(), 2u);
+  views::View* toast_chip = contents_view->children()[0];
+  views::View* cursor_chip = contents_view->children()[1];
+
+  // The toast container sits at its unmirrored center position while still
+  // mirroring its internal icon/label layout in RTL.
+  EXPECT_EQ(toast_chip->GetMirroredBounds(), toast_chip->bounds());
+  EXPECT_TRUE(toast_chip->GetMirrored());
+
+  // Moving the mouse to (100, 100) keeps the cursor chip at (98, 98, 56, 56)
+  // on the left rather than mirroring it to x=646 on the right.
+  ui::MouseEvent move_event(ui::EventType::kMouseMoved, gfx::Point(100, 100),
+                            gfx::Point(100, 100), base::TimeTicks::Now(), 0, 0);
+  contents_view->OnMouseMoved(move_event);
+  EXPECT_EQ(cursor_chip->GetMirroredBounds(), gfx::Rect(98, 98, 56, 56));
 }
 
 }  // namespace omnibox_everywhere

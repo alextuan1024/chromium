@@ -93,10 +93,7 @@ class SyncServiceFactoryTest : public PlatformTest {
     if (data_sharing::features::IsDataSharingFunctionalityEnabled()) {
       datatypes.Put(syncer::COLLABORATION_GROUP);
       datatypes.Put(syncer::SHARED_TAB_GROUP_DATA);
-      if (base::FeatureList::IsEnabled(
-              syncer::kSyncSharedTabGroupAccountData)) {
-        datatypes.Put(syncer::SHARED_TAB_GROUP_ACCOUNT_DATA);
-      }
+      datatypes.Put(syncer::SHARED_TAB_GROUP_ACCOUNT_DATA);
     }
     datatypes.Put(syncer::WEBAUTHN_CREDENTIAL);
     if (base::FeatureList::IsEnabled(syncer::kSyncSharedComment)) {
@@ -114,8 +111,7 @@ class SyncServiceFactoryTest : public PlatformTest {
     if (base::FeatureList::IsEnabled(syncer::kSyncGeminiThread)) {
       datatypes.Put(syncer::GEMINI_THREAD);
     }
-    if (base::FeatureList::IsEnabled(
-            syncer::kSyncEncryptedTabContextContainer)) {
+    if (base::FeatureList::IsEnabled(syncer::kSyncEncryptedTabContext)) {
       datatypes.Put(syncer::ENCRYPTED_TAB_CONTEXT_CONTAINER);
       datatypes.Put(syncer::ENCRYPTED_TAB_CONTEXT_ITEM);
     }

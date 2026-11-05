@@ -12,7 +12,7 @@
 #include "base/strings/stringprintf.h"
 #include "base/types/expected.h"
 #include "chrome/browser/ui/webui/metrics_reporter/metrics_reporter.h"
-#include "chrome/browser/ui/webui/webui_toolbar/adapters/navigation_controls_state_fetcher.h"
+#include "chrome/browser/ui/webui/webui_toolbar/adapters/toolbar_state_fetcher.h"
 #include "components/browser_apis/ui_controllers/toolbar/toolbar_ui_api.mojom.h"
 #include "components/browser_apis/ui_controllers/toolbar/toolbar_ui_api_data_model.mojom.h"
 #include "mojo/public/cpp/bindings/clone_traits.h"
@@ -33,7 +33,7 @@ namespace toolbar_ui_api {
 
 ToolbarUIService::ToolbarUIService(
     mojo::PendingReceiver<toolbar_ui_api::mojom::ToolbarUIService> service,
-    std::unique_ptr<NavigationControlsStateFetcher> state_fetcher,
+    std::unique_ptr<ToolbarStateFetcher> state_fetcher,
     std::unique_ptr<IconTableFetcher> icon_table_fetcher,
     MetricsReporter* metrics_reporter,
     ToolbarUIServiceDelegate* delegate)
@@ -51,8 +51,7 @@ void ToolbarUIService::SetDelegate(ToolbarUIServiceDelegate* delegate) {
   delegate_ = delegate;
 }
 
-void ToolbarUIService::OnNavigationControlsStateChanged(
-    const mojom::NavigationControlsState& state) {
+void ToolbarUIService::OnToolbarStateChanged(const mojom::ToolbarState& state) {
   auto* mark = state.reload_control_state->is_navigation_loading
                    ? kChangeVisibleModeToLoadingStartMark
                    : kChangeVisibleModeToNotLoadingStartMark;
@@ -72,19 +71,17 @@ void ToolbarUIService::OnNavigationControlsStateChanged(
     ++it;
     if (it == observers_.end()) {
       // Last item, can avoid some copies.
-      observer->OnNavigationControlsStateChanged(std::move(icon_updates),
-                                                 state.Clone());
+      observer->OnToolbarStateChanged(std::move(icon_updates), state.Clone());
       break;
     } else {
-      observer->OnNavigationControlsStateChanged(mojo::Clone(icon_updates),
-                                                 state.Clone());
+      observer->OnToolbarStateChanged(mojo::Clone(icon_updates), state.Clone());
     }
   }
 }
 
-void ToolbarUIService::Bind(BindCallback callback) {
+void ToolbarUIService::GetInitialState(GetInitialStateCallback callback) {
   auto result = toolbar_ui_api::mojom::InitialState::New();
-  result->state = state_fetcher_->GetNavigationControlsState();
+  result->state = state_fetcher_->GetToolbarState();
   result->icons = icon_table_fetcher_->GetFullState();
 
   mojo::Remote<toolbar_ui_api::mojom::ToolbarUIObserver> observer;
@@ -105,6 +102,10 @@ void ToolbarUIService::ShowSplitTabsContextMenu() {
   for (const auto& observer : observers_) {
     observer->ShowSplitTabsContextMenu();
   }
+}
+
+void ToolbarUIService::FlushObserversForTesting() {
+  observers_.FlushForTesting();  // IN-TEST
 }
 
 void ToolbarUIService::ShowContextMenu(
@@ -174,19 +175,6 @@ void ToolbarUIService::OnContentSettingImagePointerDown(
   }
 }
 
-void ToolbarUIService::OnContentSettingImageAnimationEnded(
-    ::toolbar_ui_api::mojom::ContentSettingImageType type) {
-  if (delegate_) {
-    delegate_->OnContentSettingImageAnimationEnded(type);
-  }
-}
-
-void ToolbarUIService::OnPageActionPointerDown(
-    ::toolbar_ui_api::mojom::PageActionId action_id) {
-  if (delegate_) {
-    delegate_->OnPageActionPointerDown(action_id);
-  }
-}
 
 void ToolbarUIService::OnPageActionClick(
     ::toolbar_ui_api::mojom::PageActionId action_id,
@@ -316,9 +304,9 @@ void ToolbarUIService::OnLhsChipDrag(
   }
 }
 
-void ToolbarUIService::OnHomeButtonDropUrl(const GURL& url) {
+void ToolbarUIService::OnHomeButtonDropUrl() {
   if (delegate_) {
-    delegate_->OnHomeButtonDropUrl(url);
+    delegate_->OnHomeButtonDropUrl();
   }
 }
 
@@ -328,27 +316,38 @@ void ToolbarUIService::OnHomeButtonDropFile(const gfx::PointF& drop_position) {
   }
 }
 
+void ToolbarUIService::OnHomeButtonDropText(const std::string& text) {
+  if (delegate_) {
+    delegate_->OnHomeButtonDropText(text);
+  }
+}
+
+void ToolbarUIService::OnToolbarDropUrl() {
+  if (delegate_) {
+    delegate_->OnToolbarDropUrl();
+  }
+}
+
+void ToolbarUIService::OnToolbarDropText(const std::string& text) {
+  if (delegate_) {
+    delegate_->OnToolbarDropText(text);
+  }
+}
+
 void ToolbarUIService::OnToolbarDropFile(const gfx::PointF& drop_position) {
   if (delegate_) {
     delegate_->OnToolbarDropFile(drop_position);
   }
 }
 
-void ToolbarUIService::ShowAvatarMenu(bool is_pointer_interaction,
-                                      ShowAvatarMenuCallback callback) {
+void ToolbarUIService::ShowAvatarMenu(ShowAvatarMenuCallback callback) {
   if (delegate_) {
-    delegate_->ShowAvatarMenu(is_pointer_interaction);
+    delegate_->ShowAvatarMenu();
     std::move(callback).Run({});
   } else {
     std::move(callback).Run(base::unexpected(Error::New(
         Code::kFailedPrecondition,
         "ToolbarUIService: cannot show avatar menu without delegate_")));
-  }
-}
-
-void ToolbarUIService::OnAvatarButtonMousePressed() {
-  if (delegate_) {
-    delegate_->OnAvatarButtonMousePressed();
   }
 }
 
@@ -398,25 +397,18 @@ void ToolbarUIService::OnAppMenuFocusChanged(bool focused) {
   }
 }
 
-void ToolbarUIService::ExecuteExtensionAction(const std::string& extension_id,
-                                              bool is_pointer_interaction) {
+void ToolbarUIService::ExecuteExtensionAction(
+    extensions_bar::mojom::ExtensionActionIdPtr id) {
   if (delegate_) {
-    delegate_->ExecuteExtensionAction(extension_id, is_pointer_interaction);
-  }
-}
-
-void ToolbarUIService::OnExtensionActionPointerDown(
-    const std::string& extension_id) {
-  if (delegate_) {
-    delegate_->OnExtensionActionPointerDown(extension_id);
+    delegate_->ExecuteExtensionAction(std::move(id));
   }
 }
 
 void ToolbarUIService::ShowExtensionContextMenu(
-    const std::string& extension_id,
+    extensions_bar::mojom::ExtensionActionIdPtr id,
     ui::mojom::MenuSourceType source) {
   if (delegate_) {
-    delegate_->ShowExtensionContextMenu(extension_id, source);
+    delegate_->ShowExtensionContextMenu(std::move(id), source);
   }
 }
 
@@ -434,28 +426,27 @@ void ToolbarUIService::AdjustOmniboxTextForCopy(
   }
 }
 
-void ToolbarUIService::OnPerformanceInterventionButtonClicked(
-    bool is_mouse_interaction) {
+void ToolbarUIService::OnPerformanceInterventionButtonClicked() {
   if (delegate_) {
-    delegate_->OnPerformanceInterventionButtonClicked(is_mouse_interaction);
+    delegate_->OnPerformanceInterventionButtonClicked();
   }
 }
 
-void ToolbarUIService::OnPerformanceInterventionButtonMousePressed() {
+void ToolbarUIService::OnMediaButtonClicked() {
   if (delegate_) {
-    delegate_->OnPerformanceInterventionButtonMousePressed();
+    delegate_->OnMediaButtonClicked();
   }
 }
 
-void ToolbarUIService::OnMediaButtonClicked(bool is_mouse_interaction) {
+void ToolbarUIService::OnGlicButtonClicked() {
   if (delegate_) {
-    delegate_->OnMediaButtonClicked(is_mouse_interaction);
+    delegate_->OnGlicButtonClicked();
   }
 }
 
-void ToolbarUIService::OnMediaButtonMousePressed() {
+void ToolbarUIService::OnGlicActorTaskIconClicked() {
   if (delegate_) {
-    delegate_->OnMediaButtonMousePressed();
+    delegate_->OnGlicActorTaskIconClicked();
   }
 }
 }  // namespace toolbar_ui_api

@@ -45,8 +45,12 @@ KeyDataProviderAsh::~KeyDataProviderAsh() {
 }
 
 bool KeyDataProviderAsh::IsReady() {
-  DCHECK(device_key_);
+  CHECK(device_key_, base::NotFatalUntil::M161);
   return device_key_->IsReady();
+}
+
+bool KeyDataProviderAsh::IsProfileReady() {
+  return profile_key_ && profile_key_->IsReady();
 }
 
 std::optional<uint64_t> KeyDataProviderAsh::GetId(
@@ -72,7 +76,7 @@ std::optional<uint64_t> KeyDataProviderAsh::GetSecondaryId(
     return std::nullopt;
   }
 
-  DCHECK(device_key_);
+  CHECK(device_key_, base::NotFatalUntil::M161);
   if (device_key_->IsReady()) {
     return device_key_->GetId(project_name);
   }

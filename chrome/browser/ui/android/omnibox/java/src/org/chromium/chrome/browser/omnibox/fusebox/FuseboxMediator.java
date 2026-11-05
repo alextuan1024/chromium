@@ -13,8 +13,10 @@ import android.content.ClipData;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.content.res.Resources;
 import android.graphics.Bitmap;
 import android.graphics.Bitmap.CompressFormat;
+import android.graphics.Color;
 import android.graphics.drawable.BitmapDrawable;
 import android.net.Uri;
 import android.os.Build;
@@ -24,6 +26,10 @@ import android.text.TextUtils;
 import android.view.KeyEvent;
 import android.view.View;
 
+import androidx.annotation.CheckResult;
+import androidx.annotation.ColorInt;
+import androidx.annotation.StringRes;
+import androidx.annotation.StyleRes;
 import androidx.annotation.VisibleForTesting;
 
 import org.chromium.base.Callback;
@@ -36,26 +42,29 @@ import org.chromium.base.task.AsyncTask;
 import org.chromium.build.annotations.EnsuresNonNullIf;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
+import org.chromium.build.annotations.RequiresNonNull;
 import org.chromium.chrome.browser.back_press.BackPressManager;
 import org.chromium.chrome.browser.feature_engagement.TrackerFactory;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.omnibox.FuseboxSessionState;
 import org.chromium.chrome.browser.omnibox.R;
-import org.chromium.chrome.browser.omnibox.fusebox.FuseboxAttachmentModelList.FuseboxAttachmentChangeListener;
-import org.chromium.chrome.browser.omnibox.fusebox.FuseboxCoordinator.FuseboxLayoutMode;
-import org.chromium.chrome.browser.omnibox.fusebox.FuseboxCoordinator.FuseboxState;
-import org.chromium.chrome.browser.omnibox.fusebox.FuseboxCoordinator.PopupState;
+import org.chromium.chrome.browser.omnibox.fusebox.Fusebox.FuseboxLayoutMode;
+import org.chromium.chrome.browser.omnibox.fusebox.Fusebox.FuseboxState;
+import org.chromium.chrome.browser.omnibox.fusebox.Fusebox.PopupState;
 import org.chromium.chrome.browser.omnibox.fusebox.FuseboxMetrics.AiModeActivationSource;
+import org.chromium.chrome.browser.omnibox.fusebox.FuseboxMetrics.DrivePermissionDeniedReason;
 import org.chromium.chrome.browser.omnibox.fusebox.FuseboxMetrics.FuseboxAttachmentButtonType;
+import org.chromium.chrome.browser.omnibox.fusebox.FuseboxMetrics.MobileFuseboxPickerOutcome;
 import org.chromium.chrome.browser.omnibox.fusebox.FuseboxMetrics.SetActiveModelSource;
 import org.chromium.chrome.browser.omnibox.fusebox.FuseboxProperties.AnchoringMode;
 import org.chromium.chrome.browser.omnibox.fusebox.FuseboxProperties.BackgroundStyle;
-import org.chromium.chrome.browser.omnibox.fusebox.FuseboxProperties.PopupButtonData;
-import org.chromium.chrome.browser.omnibox.fusebox.FuseboxProperties.PopupButtonType;
+import org.chromium.chrome.browser.omnibox.fusebox.PopupButtonData.PopupButtonType;
+import org.chromium.chrome.browser.omnibox.fusebox.consent.DriveConsentDialog;
 import org.chromium.chrome.browser.omnibox.styles.OmniboxResourceProvider;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.profiles.ProfileIntentUtils;
 import org.chromium.chrome.browser.tab.Tab;
+import org.chromium.chrome.browser.tab.utilities.TabLoadingService;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
 import org.chromium.chrome.browser.ui.messages.snackbar.Snackbar;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
@@ -66,7 +75,9 @@ import org.chromium.components.browser_ui.util.ChromeItemPickerUtils;
 import org.chromium.components.browser_ui.widget.gesture.BackPressHandler;
 import org.chromium.components.browser_ui.widget.scrim.ScrimManager;
 import org.chromium.components.browser_ui.widget.scrim.ScrimProperties;
+import org.chromium.components.contextual_search.DisclaimerStatus;
 import org.chromium.components.contextual_search.InputState;
+import org.chromium.components.feature_engagement.EventConstants;
 import org.chromium.components.feature_engagement.Tracker;
 import org.chromium.components.omnibox.AimModelsProtoIntDef.ModelMode;
 import org.chromium.components.omnibox.AutocompleteInput;
@@ -74,7 +85,8 @@ import org.chromium.components.omnibox.AutocompleteInput.AutocompleteState;
 import org.chromium.components.omnibox.AutocompleteInput.DisplayState;
 import org.chromium.components.omnibox.AutocompleteRequestType;
 import org.chromium.components.omnibox.IconResourceIdsProtoIntDef.IconResourceIds;
-import org.chromium.components.omnibox.InputTypeProto.InputType;
+import org.chromium.components.omnibox.InputSourceProtoIntDef.InputSource;
+import org.chromium.components.omnibox.InputTypeProtoIntDef.InputType;
 import org.chromium.components.omnibox.ModelConfigProto.ModelConfig;
 import org.chromium.components.omnibox.OmniboxCapabilities;
 import org.chromium.components.omnibox.OmniboxFeatures;
@@ -88,6 +100,7 @@ import org.chromium.ui.base.WindowAndroid;
 import org.chromium.ui.modelutil.ListObservable;
 import org.chromium.ui.modelutil.ListObservable.ListObserver;
 import org.chromium.ui.modelutil.PropertyModel;
+import org.chromium.ui.modelutil.SimpleRecyclerViewAdapter;
 import org.chromium.ui.permissions.AndroidPermissionDelegate;
 
 import java.io.ByteArrayOutputStream;
@@ -99,7 +112,7 @@ import java.util.function.Supplier;
 
 /** Mediator for the Fusebox component. */
 @NullMarked
-/* package */ class FuseboxMediator implements FuseboxAttachmentChangeListener, BackPressHandler {
+class FuseboxMediator implements BackPressHandler {
 
     /* package */ static final @IconResourceIds int UNSPECIFIED_ICON_RESOURCE_ID =
             IconResourceIds.PLACE_WHITE;
@@ -108,7 +121,6 @@ import java.util.function.Supplier;
     private final WindowAndroid mWindowAndroid;
     private final AndroidPermissionDelegate mPermissionDelegate;
     private final PropertyModel mModel;
-    private final FuseboxViewHolder mViewHolder;
     private final MonotonicObservableSupplier<TabModelSelector> mTabModelSelectorSupplier;
     private final SettableNonNullObservableSupplier<@FuseboxState Integer> mFuseboxStateSupplier;
     private final Callback<@AutocompleteRequestType Integer> mOnAutocompleteRequestTypeChanged =
@@ -121,6 +133,7 @@ import java.util.function.Supplier;
     private final Callback<List<SuggestedTabInfo>> mOnSuggestedTabsChanged =
             this::reconcileSuggestedTabs;
     private final SnackbarManager mSnackbarManager;
+    private final Snackbar mAttachmentLimitSnackbar;
     private final Snackbar mAttachmentUploadFailedSnackbar;
     private final ScrimManager mScrimManager;
     private final Supplier<@Nullable View> mScrimAnchorViewSupplier;
@@ -133,7 +146,9 @@ import java.util.function.Supplier;
     private final OmniboxResourceProvider mResourceProvider;
     private @Nullable AttachmentsSelectionController mSelectionController;
 
-    private boolean mIsTextWrapping;
+    private final NonNullObservableSupplier<Boolean> mUrlTextWrappingSupplier;
+    private final Callback<Boolean> mOnTextWrappingChanged = _ -> updateFuseboxState();
+    private final Callback<Boolean> mOnInteractionCompletedCallback;
     private @BrandedColorScheme int mBrandedColorScheme = BrandedColorScheme.APP_DEFAULT;
     private @Nullable Profile mProfile;
     private @Nullable AutocompleteInput mInput;
@@ -142,8 +157,9 @@ import java.util.function.Supplier;
     private @Nullable FuseboxMetrics mMetrics;
     private @Nullable PropertyModel mScrimModel;
     private boolean mPopupItemSelected;
-    private @Nullable Runnable mOnFirstPickerInteractionCanceledCallback;
     private boolean mNeedUnfocusOnCancel;
+    private boolean mIsPickerPending;
+    private @Nullable DriveConsentDialog mDriveConsentDialog;
 
     private final ListObserver<Void> mListObserver =
             new ListObserver<>() {
@@ -162,7 +178,6 @@ import java.util.function.Supplier;
             Context context,
             WindowAndroid windowAndroid,
             PropertyModel model,
-            FuseboxViewHolder viewHolder,
             OmniboxResourceProvider resourceProvider,
             MonotonicObservableSupplier<TabModelSelector> tabModelSelectorSupplier,
             SettableNonNullObservableSupplier<@FuseboxState Integer> fuseboxStateSupplier,
@@ -171,15 +186,14 @@ import java.util.function.Supplier;
             ScrimManager scrimManager,
             Supplier<@Nullable View> scrimAnchorViewSupplier,
             BackPressManager backPressManager,
-            @Nullable Runnable onFirstPickerInteractionCanceledCallback,
-            SettableNonNullObservableSupplier<Boolean> hasAttachmentsSupplier) {
+            Callback<Boolean> onInteractionCompletedCallback,
+            SettableNonNullObservableSupplier<Boolean> hasAttachmentsSupplier,
+            NonNullObservableSupplier<Boolean> urlTextWrappingSupplier) {
         mContext = context;
         mWindowAndroid = windowAndroid;
         mPermissionDelegate = windowAndroid;
         mModel = model;
-        mViewHolder = viewHolder;
         mResourceProvider = resourceProvider;
-        mViewHolder.popup.addOnDismissListener(this::hidePopup);
         mTabModelSelectorSupplier = tabModelSelectorSupplier;
         mFuseboxStateSupplier = fuseboxStateSupplier;
         mPopupStateSupplier = popupStateSupplier;
@@ -187,11 +201,19 @@ import java.util.function.Supplier;
         mScrimManager = scrimManager;
         mScrimAnchorViewSupplier = scrimAnchorViewSupplier;
         mBackPressManager = backPressManager;
-        mOnFirstPickerInteractionCanceledCallback = onFirstPickerInteractionCanceledCallback;
+        mOnInteractionCompletedCallback = onInteractionCompletedCallback;
         mIsDesktopPlatform = OmniboxCapabilities.isDesktopPlatform();
         mHasAttachmentsSupplier = hasAttachmentsSupplier;
+        mUrlTextWrappingSupplier = urlTextWrappingSupplier;
+        mUrlTextWrappingSupplier.addSyncObserver(mOnTextWrappingChanged);
 
-        // Create the upload failed snackbar.
+        mAttachmentLimitSnackbar =
+                Snackbar.make(
+                        context.getText(R.string.fusebox_max_attachments),
+                        /* controller= */ null,
+                        Snackbar.TYPE_NOTIFICATION,
+                        Snackbar.UMA_FUSEBOX_MAX_ATTACHMENTS);
+
         mAttachmentUploadFailedSnackbar =
                 Snackbar.make(
                         context.getText(R.string.fusebox_upload_failed),
@@ -218,7 +240,13 @@ import java.util.function.Supplier;
         mModel.set(FuseboxProperties.POPUP_RECENT_TABS_BUTTON_DATA_LIST, List.of());
         mModel.set(FuseboxProperties.POPUP_RECENT_TABS_HEADER_VISIBLE, false);
         mModel.set(FuseboxProperties.POPUP_RECENT_TABS_DIVIDER_VISIBLE, false);
+        mModel.set(FuseboxProperties.POPUP_PINNED_TOOL_BUTTON_DATA_LIST, List.of());
+        mModel.set(FuseboxProperties.POPUP_PINNED_SECTION_TOP_DIVIDER_VISIBLE, false);
+        mModel.set(FuseboxProperties.POPUP_PINNED_SECTION_BOTTOM_DIVIDER_VISIBLE, false);
 
+        mModel.set(
+                FuseboxProperties.POPUP_ATTACHMENTS_HEADER_VISIBLE,
+                !mIsDesktopPlatform && OmniboxFeatures.hasAccordion());
         mModel.set(FuseboxProperties.POPUP_ATTACH_TAB_PICKER_VISIBLE, !mIsDesktopPlatform);
         mModel.set(FuseboxProperties.POPUP_ATTACH_CAMERA_VISIBLE, !mIsDesktopPlatform);
         mModel.set(FuseboxProperties.POPUP_ATTACH_GALLERY_VISIBLE, true);
@@ -236,14 +264,32 @@ import java.util.function.Supplier;
     /* package */ void destroy() {
         endInput();
         mBackPressManager.removeHandler(this);
+        mUrlTextWrappingSupplier.removeObserver(mOnTextWrappingChanged);
     }
 
     public boolean wasPopupItemSelected() {
         return mPopupItemSelected;
     }
 
-    public void setOnFirstPickerInteractionCanceledCallback(Runnable callback) {
-        mOnFirstPickerInteractionCanceledCallback = callback;
+    boolean isPickerPendingForTesting() {
+        return mIsPickerPending;
+    }
+
+    private void notifyInteractionCompleted(boolean actionTaken) {
+        mOnInteractionCompletedCallback.onResult(actionTaken);
+    }
+
+    /**
+     * Starts a picker interaction launched from the popup. Must be called before the picker is
+     * launched: dismissPopup() synchronously dismisses the popup, and the pending flag keeps that
+     * dismissal from completing the interaction.
+     */
+    @RequiresNonNull("mMetrics")
+    private void beginPickerInteraction(@FuseboxAttachmentButtonType int buttonType) {
+        mIsPickerPending = true;
+        mPopupItemSelected = true;
+        dismissPopup();
+        mMetrics.notifyAttachmentButtonUsed(buttonType);
     }
 
     boolean handleKeyEvent(int keyCode, KeyEvent event) {
@@ -280,6 +326,11 @@ import java.util.function.Supplier;
                 && mMetrics != null;
     }
 
+    /** Returns the current display state, or {@link DisplayState#WEBSITE} if no session. */
+    private @DisplayState int getDisplayState() {
+        return mInput == null ? DisplayState.WEBSITE : mInput.getDisplayState();
+    }
+
     private void setController(@Nullable ComposeboxQueryControllerBridge controller) {
         if (mComposeboxQueryControllerBridge != null) {
             mComposeboxQueryControllerBridge
@@ -293,6 +344,10 @@ import java.util.function.Supplier;
         mComposeboxQueryControllerBridge = controller;
         if (mComposeboxQueryControllerBridge == null) return;
 
+        mModel.set(
+                FuseboxProperties.POPUP_ATTACH_FILE_VISIBLE,
+                mComposeboxQueryControllerBridge.isPdfUploadEligible());
+
         mComposeboxQueryControllerBridge
                 .getInputStateSupplier()
                 .addSyncObserverAndCallIfNonNull(mOnInputStateChanged);
@@ -300,10 +355,6 @@ import java.util.function.Supplier;
         mComposeboxQueryControllerBridge
                 .getSuggestedTabsSupplier()
                 .addSyncObserver(mOnSuggestedTabsChanged);
-
-        mModel.set(
-                FuseboxProperties.POPUP_ATTACH_FILE_VISIBLE,
-                mComposeboxQueryControllerBridge.isPdfUploadEligible());
     }
 
     private void setModelList(@Nullable FuseboxAttachmentModelList modelList) {
@@ -311,25 +362,26 @@ import java.util.function.Supplier;
 
         if (mModelList != null) {
             mModelList.removeObserver(mListObserver);
-            mModelList.removeAttachmentChangeListener(this);
             mModelList.setAttachmentUploadFailedListener(null);
+        }
+
+        SimpleRecyclerViewAdapter oldAdapter = mModel.get(FuseboxProperties.ADAPTER);
+        if (oldAdapter != null) {
+            oldAdapter.destroy();
         }
 
         mModelList = modelList;
 
         if (mModelList != null) {
             var adapter = mModelList.createAdapter(mResourceProvider);
-            mViewHolder.attachmentsView.setAdapter(adapter);
             mModel.set(FuseboxProperties.ADAPTER, adapter);
             mModelList.setAttachmentUploadFailedListener(this::onAttachmentUploadFailed);
             mModelList.updateVisualsForState(mBrandedColorScheme);
-            mModelList.addAttachmentChangeListener(this);
             mModelList.addObserver(mListObserver);
             mSelectionController = new AttachmentsSelectionController(mModelList);
             onAttachmentsChanged();
         } else {
             // Need a safe fallback.
-            mViewHolder.attachmentsView.setAdapter(null);
             mModel.set(FuseboxProperties.ADAPTER, null);
             mModel.set(FuseboxProperties.ATTACHMENTS_VISIBLE, false);
             mHasAttachmentsSupplier.set(false);
@@ -345,6 +397,7 @@ import java.util.function.Supplier;
      */
     /* package */ void beginInput(FuseboxSessionState session) {
         mPopupItemSelected = false;
+        mIsPickerPending = false;
         mMetrics = session.getMetrics();
         mProfile = assertNonNull(session.getProfile());
         setController(session.getComposeboxQueryControllerBridge());
@@ -357,13 +410,14 @@ import java.util.function.Supplier;
 
     /** Called when the user stops interacting with the Omnibox. */
     /* package */ void endInput() {
-        hidePopup();
+        dismissPopup();
         setModelList(null);
         setController(null);
         setAutocompleteInput(null);
         mProfile = null;
         mMetrics = null;
-        mIsTextWrapping = false;
+        mIsPickerPending = false;
+        destroyDriveConsentDialog();
         updateFuseboxState();
     }
 
@@ -376,16 +430,27 @@ import java.util.function.Supplier;
         mInput = input;
         if (mInput == null) {
             mNeedUnfocusOnCancel = false;
+            mIsPickerPending = false;
         }
 
         if (mInput != null) {
+            boolean shouldShowPopup = false;
+            boolean shouldOpenGalleryPicker = false;
             // TODO(crbug.com/481365131): there must be a better way to do that.
             if (mInput.getRequestType() == AutocompleteRequestType.AI_MODE
                     && mInput.getFocusReason() == OmniboxFocusReason.NTP_AI_MODE) {
                 FuseboxMetrics.notifyAiModeActivated(AiModeActivationSource.NTP_BUTTON);
+            } else if (mInput.getRequestType() == AutocompleteRequestType.IMAGE_GENERATION
+                    && mInput.getFocusReason() == OmniboxFocusReason.NTP_AI_MODE) {
+                FuseboxMetrics.notifyAiModeActivated(
+                        AiModeActivationSource.NTP_CREATE_IMAGE_BUTTON);
             } else if (mInput.getFocusReason() == OmniboxFocusReason.FAKE_BOX_PLUS_BUTTON_TAP) {
                 mNeedUnfocusOnCancel = true;
-                showPopup();
+                shouldShowPopup = true;
+            } else if (mInput.getFocusReason() == OmniboxFocusReason.NTP_GALLERY_CHIP_CLICKED) {
+                FuseboxMetrics.notifyAiModeActivated(AiModeActivationSource.NTP_GALLERY_BUTTON);
+                mNeedUnfocusOnCancel = true;
+                shouldOpenGalleryPicker = true;
             }
 
             mInput.getRequestTypeSupplier()
@@ -394,19 +459,31 @@ import java.util.function.Supplier;
                     .addSyncObserverAndCallIfNonNull(mOnAutocompleteStateChanged);
             mInput.getDisplayStateSupplier()
                     .addSyncObserverAndCallIfNonNull(mOnDisplayStateChanged);
+
+            // Open the popup or gallery picker after observers are registered so the session state
+            // is fully set up and initial callbacks run while POPUP_STATE is still HIDDEN.
+            if (shouldShowPopup) {
+                showPopup();
+            } else if (shouldOpenGalleryPicker) {
+                onImagePickerClicked();
+            }
         }
     }
 
     private void updateSnackbarStyling() {
         boolean isIncognito = mProfile != null && mProfile.isOffTheRecord();
-        mAttachmentUploadFailedSnackbar.setBackgroundColor(
-                ChromeColors.getInverseBgColor(mContext, isIncognito));
-
+        @ColorInt int inverseBgColor = ChromeColors.getInverseBgColor(mContext, isIncognito);
+        @StyleRes
         int textAppearanceResId =
                 isIncognito
                         ? R.style.TextAppearance_TextMedium_Primary_Baseline_Dark
                         : R.style.TextAppearance_TextMedium_OnInverseSurface;
+
+        mAttachmentUploadFailedSnackbar.setBackgroundColor(inverseBgColor);
         mAttachmentUploadFailedSnackbar.setTextAppearance(textAppearanceResId);
+
+        mAttachmentLimitSnackbar.setBackgroundColor(inverseBgColor);
+        mAttachmentLimitSnackbar.setTextAppearance(textAppearanceResId);
     }
 
     /** Apply a variant of the branded color scheme to Fusebox UI elements. */
@@ -468,7 +545,7 @@ import java.util.function.Supplier;
     private void maybeActivateAiMode(@AiModeActivationSource int activationReason) {
         if (!isInInputSession()) return;
 
-        hidePopup();
+        if (!hidePopup()) return;
         if (mInput.getRequestType() != AutocompleteRequestType.SEARCH) return;
 
         activateAiMode(AutocompleteRequestType.AI_MODE, activationReason);
@@ -485,11 +562,6 @@ import java.util.function.Supplier;
         }
     }
 
-    /* package */ void setIsTextWrapping(boolean isTextWrapping) {
-        mIsTextWrapping = isTextWrapping;
-        updateFuseboxState();
-    }
-
     private void updateFuseboxState() {
         @FuseboxState int targetState;
         boolean showRequestTypeButton = shouldShowRequestTypeButton();
@@ -504,11 +576,12 @@ import java.util.function.Supplier;
             boolean isPopover =
                     mModel.get(FuseboxProperties.FUSEBOX_LAYOUT_MODE)
                             == FuseboxLayoutMode.SUGGESTIONS_POPOVER;
+            boolean isTextWrapping = mUrlTextWrappingSupplier.get();
             targetState =
                     // If we're showing the request type button...
                     showRequestTypeButton
                                     // or the text is wrapping (popover doesn't care)...
-                                    || (mIsTextWrapping && !isPopover)
+                                    || (isTextWrapping && !isPopover)
                                     // or the attachments list has elements...
                                     || !mModelList.isEmpty()
                                     // or popover with any ai request type, even when the request
@@ -579,62 +652,97 @@ import java.util.function.Supplier;
         return true;
     }
 
-    /** Toggles the visibility of the attachments popup. */
+    /**
+     * Toggles the visibility of the attachments popup.
+     *
+     * <p>Omnibox.MobileFusebox.AttachmentsPopupToggled counts deliberate user toggles only. Every
+     * open is deliberate, so the {@code true} record lives in {@link #showPopup()} where it also
+     * covers the NTP plus button. Closing is different: {@link #dismissPopup()} runs on every close
+     * (item selected, picker launched, scrim tap, back press, session end), and those are
+     * intentionally excluded from this histogram, so the {@code false} record stays here with the
+     * explicit plus-button close.
+     */
     /* package */ void onPlusButtonClicked() {
         if (!isInInputSession()) return;
 
-        if (mModel.get(FuseboxProperties.POPUP_STATE) != PopupState.HIDDEN) {
-            hidePopup();
-        } else {
+        if (mModel.get(FuseboxProperties.POPUP_STATE) == PopupState.HIDDEN) {
             showPopup();
+            return;
         }
 
+        // Resolve everything the metrics call needs before hiding: for NTP plus-menu sessions,
+        // hiding the popup completes the interaction and LocationBarMediator may end the input
+        // session synchronously, which clears mProfile and mMetrics.
+        FuseboxMetrics metrics = mMetrics;
         Tracker tracker = TrackerFactory.getTrackerForProfile(mProfile);
-        mMetrics.notifyAttachmentsPopupToggled(
-                mModel.get(FuseboxProperties.POPUP_STATE) != PopupState.HIDDEN, mModel, tracker);
+        dismissPopup();
+        metrics.notifyAttachmentsPopupToggled(/* toShowPopup= */ false, mModel, tracker);
     }
 
+    /**
+     * Shows the attachments popup. Records the popup impression (histograms, per-session flags and
+     * the feature engagement event) regardless of whether the popup was opened from the Omnibox
+     * plus button or from the NTP fakebox plus button.
+     */
     private void showPopup() {
         if (!isInInputSession()) return;
         // Prevent rapid clicks from "showing" the popup more than once.
         if (mModel.get(FuseboxProperties.POPUP_STATE) != PopupState.HIDDEN) return;
+        mPopupItemSelected = false;
 
         boolean shouldShowBottomSheetPopup = OmniboxFeatures.shouldShowBottomSheetPopup();
-        if (shouldShowBottomSheetPopup) {
-            mWindowAndroid.getKeyboardDelegate().hideKeyboard(mViewHolder.parentView);
-        }
         updateModelForCurrentTab();
         updateModelForRecentTabs();
-        if (mComposeboxQueryControllerBridge != null) {
-            InputState inputState = mComposeboxQueryControllerBridge.getInputStateSupplier().get();
-            if (inputState != null) {
-                updateModelForPopupInputState(inputState);
-            }
-        }
+        InputState inputState = mComposeboxQueryControllerBridge.getInputStateSupplier().get();
+        updateModelForPopupInputState(inputState);
+        updateAttachmentConfigs(inputState);
 
         @PopupState
         int targetState = shouldShowBottomSheetPopup ? PopupState.BOTTOM : PopupState.FLOATING;
         mModel.set(FuseboxProperties.POPUP_STATE, targetState);
         mPopupStateSupplier.set(targetState);
-        if (mScrimManager != null
-                && mModel.get(FuseboxProperties.POPUP_STATE) == PopupState.BOTTOM) {
-            View scrimAnchor = mScrimAnchorViewSupplier.get();
-            if (scrimAnchor == null) {
-                scrimAnchor = mViewHolder.parentView;
-            }
+        if (mScrimManager != null) {
             if (mScrimModel != null) {
                 mScrimManager.hideScrim(mScrimModel, /* animate= */ false);
             }
-            mScrimModel =
-                    new PropertyModel.Builder(ScrimProperties.ALL_KEYS)
-                            .with(ScrimProperties.ANCHOR_VIEW, scrimAnchor)
-                            .with(ScrimProperties.SHOW_IN_FRONT_OF_ANCHOR_VIEW, true)
-                            .with(ScrimProperties.CLICK_DELEGATE, this::hidePopup)
-                            .with(ScrimProperties.AFFECTS_STATUS_BAR, true)
-                            .build();
+            mScrimModel = createScrimModel(/* isBottomSheet= */ shouldShowBottomSheetPopup);
             mScrimManager.showScrim(mScrimModel);
         }
         mBackPressStateSupplier.set(true);
+        mMetrics.notifyAttachmentsPopupToggled(
+                /* toShowPopup= */ true, mModel, TrackerFactory.getTrackerForProfile(mProfile));
+    }
+
+    /**
+     * Creates the scrim shown behind the popup. The scrim consumes touches outside the popup so
+     * they don't reach the views behind it. The floating popup uses a transparent scrim, while the
+     * bottom sheet popup uses the default dimmed scrim that also tints the status bar.
+     *
+     * @param isBottomSheet Whether the popup is presented as a bottom sheet.
+     */
+    private PropertyModel createScrimModel(boolean isBottomSheet) {
+        PropertyModel scrimModel =
+                new PropertyModel.Builder(ScrimProperties.ALL_KEYS)
+                        .with(ScrimProperties.ANCHOR_VIEW, mScrimAnchorViewSupplier.get())
+                        .with(ScrimProperties.SHOW_IN_FRONT_OF_ANCHOR_VIEW, true)
+                        .with(ScrimProperties.CLICK_DELEGATE, this::dismissPopup)
+                        .with(ScrimProperties.AFFECTS_STATUS_BAR, isBottomSheet)
+                        .build();
+        if (!isBottomSheet) {
+            scrimModel.set(ScrimProperties.BACKGROUND_COLOR, Color.TRANSPARENT);
+        }
+        return scrimModel;
+    }
+
+    /**
+     * Called when the context popup window is dismissed. Completes the interaction unless a picker
+     * launched from the popup is still pending.
+     */
+    void onPopupDismissed() {
+        handleHidePopup();
+        if (!mIsPickerPending) {
+            notifyInteractionCompleted(mPopupItemSelected);
+        }
     }
 
     /** Hides the popup if currently shown. */
@@ -642,27 +750,52 @@ import java.util.function.Supplier;
         if (mModel.get(FuseboxProperties.POPUP_STATE) == PopupState.HIDDEN) {
             return false;
         } else {
-            hidePopup();
+            dismissPopup();
             return true;
         }
     }
 
-    private void hidePopup() {
+    /**
+     * Hides the popup and reports whether the input session survived it.
+     *
+     * <p>Dismissing the popup synchronously completes the interaction. For sessions where the popup
+     * does not imply Omnibox focus (NTP plus menu), LocationBarMediator may respond by ending the
+     * input session, which clears mInput, mProfile, mModelList and mMetrics. Callers that keep
+     * using session state afterwards must stop when this returns false.
+     *
+     * @return Whether the input session is still active after the popup was hidden.
+     */
+    @CheckResult
+    @EnsuresNonNullIf(
+            value = {
+                "mProfile",
+                "mInput",
+                "mModelList",
+                "mComposeboxQueryControllerBridge",
+                "mMetrics"
+            })
+    private boolean hidePopup() {
+        dismissPopup();
+        return isInInputSession();
+    }
+
+    /**
+     * Hides the popup without checking the session afterwards. Only for callers that do not touch
+     * session state after the call (session teardown, picker launches with the pending flag set, or
+     * when all needed state was captured beforehand); everyone else uses {@link #hidePopup()}.
+     */
+    private void dismissPopup() {
+        if (mModel.get(FuseboxProperties.POPUP_STATE) != PopupState.HIDDEN) {
+            FuseboxMetrics.notifyAttachmentsPopupClosed(mPopupItemSelected);
+        }
         if (OmniboxFeatures.hasAccordion()) {
             mModel.set(FuseboxProperties.POPUP_ACCORDION_EXPANDED, false);
         }
-        boolean wasBottomSheet = mModel.get(FuseboxProperties.POPUP_STATE) == PopupState.BOTTOM;
         mModel.set(FuseboxProperties.POPUP_STATE, PopupState.HIDDEN);
         mPopupStateSupplier.set(PopupState.HIDDEN);
         if (mScrimModel != null) {
             mScrimManager.hideScrim(mScrimModel, /* animate= */ true);
             mScrimModel = null;
-        }
-        if (wasBottomSheet) {
-            View focusedView = mViewHolder.parentView.findFocus();
-            if (focusedView != null) {
-                mWindowAndroid.getKeyboardDelegate().showKeyboard(focusedView);
-            }
         }
         mBackPressStateSupplier.set(false);
     }
@@ -713,7 +846,7 @@ import java.util.function.Supplier;
                     () -> onAddCurrentTab(currentTab));
             mModel.set(
                     FuseboxProperties.POPUP_ATTACH_CURRENT_TAB_FAVICON,
-                    OmniboxResourceProvider.getFaviconBitmapForTab(currentTab));
+                    mResourceProvider.getTabFavicon(currentTab));
         } else {
             mModel.set(FuseboxProperties.POPUP_ATTACH_CURRENT_TAB_VISIBLE, false);
         }
@@ -748,19 +881,17 @@ import java.util.function.Supplier;
         List<PopupButtonData> buttons = new ArrayList<>();
         for (int i = 0; i < eligibleTabs.size(); i++) {
             Tab tab = eligibleTabs.get(i);
-            Bitmap favicon = OmniboxResourceProvider.getFaviconBitmapForTab(tab);
+            Bitmap favicon = mResourceProvider.getTabFavicon(tab);
 
             buttons.add(
-                    new PopupButtonData(
-                            (data) -> onAddRecentTab(tab),
-                            tab.getTitle(),
-                            favicon,
-                            /* enabled= */ true,
-                            /* selected= */ false,
-                            PopupButtonType.RECENT_TAB,
-                            /* protoId= */ 0,
-                            /* hasColor= */ favicon != null,
-                            /* tooltip= */ ""));
+                    new PopupButtonData.Builder()
+                            .setType(PopupButtonType.RECENT_TAB)
+                            .setOnClicked((data) -> onAddRecentTab(tab))
+                            .setText(tab.getTitle())
+                            .setCustomIcon(favicon)
+                            .setEnabled(true)
+                            .setHasColor(favicon != null)
+                            .build());
         }
         return buttons;
     }
@@ -774,20 +905,20 @@ import java.util.function.Supplier;
         mMetrics.notifyAttachmentButtonUsed(source);
         mPopupItemSelected = true;
         maybeActivateAiMode(AiModeActivationSource.IMPLICIT);
+        // Handle sessions where the popup does not imply Omnibox focus (NTP plus menu): hiding
+        // the popup completes the interaction, and LocationBarMediator may end the input session
+        // synchronously in response.
+        if (!isInInputSession()) return;
 
-        if (!FuseboxTabUtils.isTabActive(tab)) {
-            tab.loadIfNeeded(/* forceBackingSize= */ true);
+        if (!FuseboxTabUtils.hasLoadedContent(tab)) {
+            TabLoadingService.getInstance().queueLoadIfNeeded(tab);
         }
 
         Set<Integer> currentAttachedIds = mModelList.getAttachedTabIds();
         if (currentAttachedIds.contains(tab.getId())) return;
         var attachment =
                 FuseboxAttachment.forTab(
-                        tab,
-                        isCurrentTab(tab),
-                        mContext.getResources(),
-                        source,
-                        /* isSuggestedTab= */ false);
+                        tab, isCurrentTab(tab), source, /* isSuggestedTab= */ false);
 
         mModelList.add(attachment);
     }
@@ -807,7 +938,7 @@ import java.util.function.Supplier;
         updateFuseboxState();
         mHasAttachmentsSupplier.set(!mModelList.isEmpty());
         updateAttachmentsVisibility();
-        if (mNeedUnfocusOnCancel && hasUserAddedAttachments()) {
+        if (!mIsPickerPending && mNeedUnfocusOnCancel && hasUserAddedAttachments()) {
             mNeedUnfocusOnCancel = false;
         }
     }
@@ -815,13 +946,15 @@ import java.util.function.Supplier;
     private void onTabPickerClicked() {
         if (!isInInputSession()) return;
 
-        mPopupItemSelected = true;
-        hidePopup();
-        mMetrics.notifyAttachmentButtonUsed(FuseboxAttachmentButtonType.TAB_PICKER);
-
         Intent intent = ChromeItemPickerUtils.createChromeItemPickerIntent(mContext);
-        if (intent == null) return;
+        if (intent == null) {
+            FuseboxMetrics.recordTabPickerOutcome(MobileFuseboxPickerOutcome.LOCAL_ERROR);
+            return;
+        }
         ProfileIntentUtils.addProfileToIntent(mProfile, intent);
+
+        beginPickerInteraction(FuseboxAttachmentButtonType.TAB_PICKER);
+        TabLoadingService.getInstance().checkpointLoadDurations(mModelList.getAttachedTabIds());
 
         ArrayList<Integer> tabIds = new ArrayList<>(mModelList.getAttachedTabIds());
         intent.putIntegerArrayListExtra(ChromeItemPickerExtras.EXTRA_PRESELECTED_TAB_IDS, tabIds);
@@ -833,20 +966,33 @@ import java.util.function.Supplier;
         int maxAllowedTabs = tabIds.size() + mModelList.getRemainingAttachments();
         intent.putExtra(ChromeItemPickerExtras.EXTRA_ALLOWED_SELECTION_COUNT, maxAllowedTabs);
 
-        boolean isSingleContextMode = !OmniboxFeatures.sMultiattachmentFusebox.getValue();
-        intent.putExtra(ChromeItemPickerExtras.EXTRA_IS_SINGLE_CONTEXT_MODE, isSingleContextMode);
-
+        intent.putExtra(ChromeItemPickerExtras.EXTRA_SHOULD_SHOW_SELECT_TABS_IPH, true);
         mWindowAndroid.showCancelableIntent(
                 intent, this::onTabPickerResult, R.string.low_memory_error);
     }
 
+    private void abortTabPicker() {
+        if (mModelList != null) {
+            TabLoadingService.getInstance().checkpointLoadDurations(mModelList.getAttachedTabIds());
+        }
+        handlePickerCanceled();
+    }
+
     private void handlePickerCanceled() {
+        mIsPickerPending = false;
         if (!isInInputSession()) return;
         if (mNeedUnfocusOnCancel) {
             mNeedUnfocusOnCancel = false;
-            if (mOnFirstPickerInteractionCanceledCallback != null) {
-                mOnFirstPickerInteractionCanceledCallback.run();
-            }
+            notifyInteractionCompleted(/* actionTaken= */ false);
+        }
+    }
+
+    private void handlePickerSucceeded() {
+        mIsPickerPending = false;
+        if (!isInInputSession()) return;
+        if (mNeedUnfocusOnCancel) {
+            mNeedUnfocusOnCancel = false;
+            notifyInteractionCompleted(/* actionTaken= */ true);
         }
     }
 
@@ -854,63 +1000,85 @@ import java.util.function.Supplier;
     /* package */ void onTabPickerResult(int resultCode, @Nullable Intent data) {
         if (!isInInputSession()) return;
 
-        if (resultCode == Activity.RESULT_CANCELED) {
-            if (data != null && data.hasExtra(ChromeItemPickerExtras.EXTRA_ITEM_PICKER_ERROR)) {
-                onAttachmentUploadFailed();
-            }
-            handlePickerCanceled();
+        // Explicit error returned by the picker activity.
+        if (data != null && data.hasExtra(ChromeItemPickerExtras.EXTRA_ITEM_PICKER_ERROR)) {
+            onAttachmentUploadFailed();
+            FuseboxMetrics.recordTabPickerOutcome(MobileFuseboxPickerOutcome.LOCAL_ERROR);
+            abortTabPicker();
             return;
         }
 
-        if (resultCode != Activity.RESULT_OK || data == null || data.getExtras() == null) return;
-        ArrayList<Integer> tabIds =
-                data.getIntegerArrayListExtra(ChromeItemPickerExtras.EXTRA_ATTACHMENT_TAB_IDS);
-        // tabIds will be null when the activity finishes with cancel using the back button.
-        if (tabIds == null) return;
-        updateCurrentlyAttachedTabs(new HashSet<>(tabIds));
+        // Manual user exit (canceled, dismissed, or back-pressed).
+        if (resultCode != Activity.RESULT_OK) {
+            FuseboxMetrics.recordTabPickerOutcome(MobileFuseboxPickerOutcome.MANUAL_USER_EXIT);
+            abortTabPicker();
+            return;
+        }
+
+        // Malformed success: RESULT_OK claimed, but tab IDs payload is missing.
+        List<Integer> tabIds = ChromeItemPickerUtils.getSelectedTabIdsFromIntent(data);
+        if (tabIds == null) {
+            FuseboxMetrics.recordTabPickerOutcome(MobileFuseboxPickerOutcome.LOCAL_ERROR);
+            abortTabPicker();
+            return;
+        }
+
+        Set<Integer> selectedTabIds = new HashSet<>(tabIds);
+        if (!mModelList.getAttachedTabIds().containsAll(selectedTabIds)) {
+            FuseboxMetrics.recordTabPickerOutcome(MobileFuseboxPickerOutcome.ATTACHMENT_ADDED);
+        }
+        TrackerFactory.getTrackerForProfile(mProfile)
+                .notifyEvent(EventConstants.FUSEBOX_TAB_PICKER_TAB_ATTACHED);
+        TabLoadingService.getInstance().checkpointLoadDurations(selectedTabIds);
+        updateCurrentlyAttachedTabs(selectedTabIds);
         mPopupItemSelected = true;
-        if (mModelList.size() != 0) {
+        if (!mModelList.isEmpty()) {
             maybeActivateAiMode(AiModeActivationSource.IMPLICIT);
         }
+        handlePickerSucceeded();
     }
 
     @VisibleForTesting
-    /* package */ void onAttachmentUploadFailed() {
+    void onAttachmentUploadFailed() {
         mSnackbarManager.showSnackbar(mAttachmentUploadFailedSnackbar);
+    }
+
+    @VisibleForTesting
+    void onAttachmentLimitReached() {
+        mSnackbarManager.showSnackbar(mAttachmentLimitSnackbar);
     }
 
     /**
      * Reconciles the model list attachments with a new set of selected tab IDs by removing
      * deselected tabs and adding newly selected tabs in one pass.
      *
-     * @param newlySelectedTabIds The set of Tab IDs (as Integer) that are now selected by the user.
+     * @param selectedTabIds The set of Tab IDs (as Integer) that are now selected by the user.
      */
     @VisibleForTesting
-    /* package */ void updateCurrentlyAttachedTabs(Set<Integer> newlySelectedTabIds) {
+    /* package */ void updateCurrentlyAttachedTabs(Set<Integer> selectedTabIds) {
         if (!isInInputSession()) return;
         TabModelSelector tabModelSelector = mTabModelSelectorSupplier.get();
         if (tabModelSelector == null) return;
 
         Set<Integer> currentAttachedIds = mModelList.getAttachedTabIds();
-        try (var ignored = mModelList.beginBatchEdit()) {
-            mModelList.removeTabsNotInSet(newlySelectedTabIds);
+        Set<Integer> newlyAddedTabIds = new HashSet<>(selectedTabIds);
+        newlyAddedTabIds.removeAll(currentAttachedIds);
+        boolean isPartOfMultiTabSelection = newlyAddedTabIds.size() > 1;
 
-            for (int id : newlySelectedTabIds) {
-                if (!currentAttachedIds.contains(id)) {
-                    Tab tab = tabModelSelector.getTabById(id);
-                    if (tab == null) continue;
-                    boolean addFailed =
-                            !mModelList.add(
-                                    FuseboxAttachment.forTab(
-                                            tab,
-                                            isCurrentTab(tab),
-                                            mContext.getResources(),
-                                            FuseboxAttachmentButtonType.TAB_PICKER,
-                                            /* isSuggestedTab= */ false));
-                    if (addFailed) {
-                        break;
-                    }
-                }
+        try (var ignored = mModelList.beginBatchEdit()) {
+            mModelList.removeTabsNotInSet(selectedTabIds);
+
+            for (int id : newlyAddedTabIds) {
+                Tab tab = tabModelSelector.getTabById(id);
+                if (tab == null) continue;
+                FuseboxAttachment attachment =
+                        FuseboxAttachment.forTab(
+                                tab,
+                                isCurrentTab(tab),
+                                FuseboxAttachmentButtonType.TAB_PICKER,
+                                /* isSuggestedTab= */ false);
+                attachment.setIsPartOfMultiTabSelection(isPartOfMultiTabSelection);
+                mModelList.add(attachment);
             }
         }
     }
@@ -939,12 +1107,11 @@ import java.util.function.Supplier;
                         FuseboxAttachment.forTab(
                                 tab,
                                 /* bypassTabCache= */ false,
-                                mContext.getResources(),
                                 FuseboxAttachmentButtonType.SUGGESTED_TAB,
                                 /* isSuggestedTab= */ true);
-                attachment.setUploadIsComplete();
-                mModelList.add(attachment);
-                mMetrics.notifyAttachmentButtonShown(FuseboxAttachmentButtonType.SUGGESTED_TAB);
+                if (mModelList.add(attachment)) {
+                    mMetrics.notifyAttachmentButtonShown(FuseboxAttachmentButtonType.SUGGESTED_TAB);
+                }
             }
         }
     }
@@ -952,9 +1119,7 @@ import java.util.function.Supplier;
     private void onCameraClicked() {
         if (!isInInputSession()) return;
 
-        mPopupItemSelected = true;
-        hidePopup();
-        mMetrics.notifyAttachmentButtonUsed(FuseboxAttachmentButtonType.CAMERA);
+        beginPickerInteraction(FuseboxAttachmentButtonType.CAMERA);
 
         if (mPermissionDelegate.hasPermission(Manifest.permission.CAMERA)) {
             launchCamera();
@@ -965,6 +1130,8 @@ import java.util.function.Supplier;
                         if (grantResults.length > 0
                                 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
                             launchCamera();
+                        } else {
+                            handlePickerCanceled();
                         }
                     });
         }
@@ -988,7 +1155,7 @@ import java.util.function.Supplier;
                         ? mComposeboxQueryControllerBridge.getInputStateSupplier().get()
                         : null;
         if (inputState != null) {
-            onInputStateChange(inputState);
+            applyInputState(inputState);
         } else {
             // Client controlled mode, or an input state that never arrived. Derive the tool from
             // the request type so the chip and send button are still described correctly.
@@ -1003,16 +1170,60 @@ import java.util.function.Supplier;
     private PopupButtonData createAiModeToolButtonData() {
         boolean selected =
                 mInput != null && mInput.getRequestType() == AutocompleteRequestType.AI_MODE;
-        return new PopupButtonData(
-                this::onDynamicButtonClicked,
-                mContext.getString(R.string.ai_mode_entrypoint_label),
-                IconResourceIds.SEARCH_LOUPE_WITH_SPARKLE,
-                /* enabled= */ true,
-                selected,
-                PopupButtonType.TOOL,
-                ToolMode.TOOL_MODE_UNSPECIFIED,
-                /* hasColor= */ false,
-                /* tooltip= */ "");
+        return new PopupButtonData.Builder()
+                .setType(PopupButtonType.TOOL)
+                .setOnClicked(this::onDynamicButtonClicked)
+                .setText(mContext.getString(R.string.ai_mode_entrypoint_label))
+                .setSubtext(getToolSubtext(ToolMode.TOOL_MODE_UNSPECIFIED, /* menuTooltip= */ null))
+                .setIconId(IconResourceIds.SEARCH_LOUPE_WITH_SPARKLE)
+                .setEnabled(true)
+                .setSelected(selected)
+                .setProtoId(ToolMode.TOOL_MODE_UNSPECIFIED)
+                .build();
+    }
+
+    /**
+     * Returns the subtext to display for {@code toolMode}, preferring {@code menuTooltip} for
+     * eligible tools and falling back to client-defined strings.
+     */
+    @VisibleForTesting
+    String getToolSubtext(@ToolMode int toolMode, @Nullable String menuTooltip) {
+        if (!OmniboxFeatures.hasAccordion()) {
+            return "";
+        }
+
+        if (canUseMenuTooltipAsSubtext(toolMode) && !TextUtils.isEmpty(menuTooltip)) {
+            return menuTooltip;
+        }
+
+        @StringRes
+        int resId =
+                switch (toolMode) {
+                    case ToolMode.TOOL_MODE_UNSPECIFIED -> R.string.fusebox_ai_mode_subtext;
+                    case ToolMode.TOOL_MODE_IMAGE_GEN -> R.string.fusebox_create_image_subtext;
+                    case ToolMode.TOOL_MODE_CANVAS -> R.string.fusebox_canvas_subtext;
+                    case ToolMode.TOOL_MODE_GEMINI_PRO -> R.string.fusebox_ptm_tool_subtext;
+                    default -> Resources.ID_NULL;
+                };
+        return resId != Resources.ID_NULL ? mResourceProvider.getString(resId) : "";
+    }
+
+    /** Returns whether the server menu tooltip of {@code toolMode} can be shown as its subtext. */
+    private static boolean canUseMenuTooltipAsSubtext(@ToolMode int toolMode) {
+        return switch (toolMode) {
+            // The menu tooltips of these tools hold longer desktop hover descriptions rather than
+            // short mobile subtexts. Keep their client strings until ToolConfig adds a dedicated
+            // subtext field.
+            case ToolMode.TOOL_MODE_UNSPECIFIED,
+                    ToolMode.TOOL_MODE_DEEP_SEARCH,
+                    ToolMode.TOOL_MODE_CANVAS,
+                    ToolMode.TOOL_MODE_IMAGE_GEN,
+                    ToolMode.TOOL_MODE_IMAGE_GEN_UPLOAD ->
+                    false;
+            // Other tools, including future launches, use the server menu tooltip by default so
+            // their subtexts can be configured without client changes.
+            default -> true;
+        };
     }
 
     private void launchCamera() {
@@ -1049,6 +1260,7 @@ import java.util.function.Supplier;
                                     startTime,
                                     FuseboxAttachmentButtonType.CAMERA);
                     uploadAndAddAttachment(attachment);
+                    handlePickerSucceeded();
                 },
                 R.string.low_memory_error);
     }
@@ -1056,9 +1268,7 @@ import java.util.function.Supplier;
     private void onImagePickerClicked() {
         if (!isInInputSession()) return;
 
-        mPopupItemSelected = true;
-        hidePopup();
-        mMetrics.notifyAttachmentButtonUsed(FuseboxAttachmentButtonType.GALLERY);
+        beginPickerInteraction(FuseboxAttachmentButtonType.GALLERY);
 
         Intent intent;
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -1100,6 +1310,7 @@ import java.util.function.Supplier;
                                     FuseboxAttachmentButtonType.GALLERY);
                         }
                     }
+                    handlePickerSucceeded();
                 },
                 R.string.low_memory_error);
     }
@@ -1107,41 +1318,136 @@ import java.util.function.Supplier;
     private void onDrivePickerClicked() {
         if (!isInInputSession()) return;
 
-        mPopupItemSelected = true;
-        hidePopup();
-        mMetrics.notifyAttachmentButtonUsed(FuseboxAttachmentButtonType.DRIVE_FILES);
-        launchDrivePicker();
+        beginPickerInteraction(FuseboxAttachmentButtonType.DRIVE_FILES);
+
+        Profile requestProfile = mProfile;
+        boolean wasUnfocusedWhenDriveTapped =
+                mInput.getDisplayState() == DisplayState.DRAFTING_NO_FOCUS;
+        DriveDisclaimerBridge.checkConsentStatus(
+                requestProfile,
+                status -> {
+                    // The session that requested the check ended or was replaced, which clears
+                    // the pending picker. Leave the current session untouched.
+                    if (!mIsPickerPending) return;
+
+                    // The user unfocused the URL bar (e.g. pressed ESC) during the check.
+                    boolean lostFocusDuringConsentCheck =
+                            !wasUnfocusedWhenDriveTapped
+                                    && getDisplayState() == DisplayState.DRAFTING_NO_FOCUS;
+                    onDriveConsentStatus(requestProfile, lostFocusDuringConsentCheck, status);
+                });
     }
 
-    private void launchDrivePicker() {
+    private void onDriveConsentStatus(
+            Profile requestProfile,
+            boolean lostFocusDuringConsentCheck,
+            @DisclaimerStatus int status) {
+        if (!isInInputSession() || mProfile != requestProfile || lostFocusDuringConsentCheck) {
+            handlePickerCanceled();
+            return;
+        }
+
+        switch (status) {
+            case DisclaimerStatus.ACCEPTED -> launchDrivePicker(mProfile);
+            case DisclaimerStatus.NOT_ACCEPTED -> showDriveConsentDialog(mProfile);
+            case DisclaimerStatus.RESTRICTED -> {
+                FuseboxMetrics.recordDrivePermissionDeniedReason(
+                        DrivePermissionDeniedReason.ACCOUNT_RESTRICTED);
+                onDrivePermissionDenied();
+            }
+        }
+    }
+
+    private void showDriveConsentDialog(Profile requestProfile) {
+        destroyDriveConsentDialog();
+        mDriveConsentDialog =
+                DriveConsentDialog.show(
+                        mWindowAndroid,
+                        requestProfile,
+                        granted -> onDriveConsentResult(requestProfile, granted));
+    }
+
+    private void onDriveConsentResult(Profile requestProfile, boolean granted) {
+        mDriveConsentDialog = null;
+        if (!isInInputSession() || mProfile != requestProfile) return;
+
+        if (granted) {
+            launchDrivePicker(requestProfile);
+        } else {
+            onDrivePermissionDenied();
+        }
+    }
+
+    private void onDrivePermissionDenied() {
+        FuseboxMetrics.recordDrivePickerOutcome(MobileFuseboxPickerOutcome.PERMISSION_DENIED);
+        handlePickerCanceled();
+    }
+
+    /**
+     * Dismisses and destroys any active Drive consent dialog.
+     *
+     * <p>This is invoked during {@link #endInput()} (and defensively before showing a new dialog in
+     * {@link #showDriveConsentDialog(Profile)}). It is only destroyed when the Omnibox session
+     * fully terminates because the dialog is an app-level modal overlaying the window; transient
+     * focus or display state changes (such as defocusing the URL bar) must not interrupt the user's
+     * in-progress consent flow. Destroying it on session end ensures the dialog cannot linger on
+     * screen over a concluded session.
+     */
+    private void destroyDriveConsentDialog() {
+        if (mDriveConsentDialog == null) return;
+        mDriveConsentDialog.destroy();
+        mDriveConsentDialog = null;
+    }
+
+    private void launchDrivePicker(Profile profile) {
         long startTime = TimeUtils.elapsedRealtimeMillis();
         DriveFilePickerClient.getInstance()
-                .launchPicker(mWindowAndroid, /* mimeTypes= */ null)
+                .launchPicker(
+                        mWindowAndroid,
+                        profile,
+                        /* mimeTypes= */ null,
+                        /* allowMultiSelect= */ true)
                 .then(
-                        metadata -> {
-                            if (metadata == null) {
+                        files -> {
+                            if (files.isEmpty()) {
+                                FuseboxMetrics.recordDrivePickerOutcome(
+                                        MobileFuseboxPickerOutcome.MANUAL_USER_EXIT);
                                 handlePickerCanceled();
                                 return;
                             }
                             if (!isInInputSession()) return;
 
-                            var attachment =
-                                    FuseboxAttachment.forDrive(
-                                            mContext,
-                                            metadata,
-                                            startTime,
-                                            FuseboxAttachmentButtonType.DRIVE_FILES);
-                            uploadAndAddAttachment(attachment);
+                            FuseboxMetrics.recordDrivePickerOutcome(
+                                    MobileFuseboxPickerOutcome.ATTACHMENT_ADDED);
+                            try (var batchToken = mModelList.beginBatchEdit()) {
+                                for (var metadata : files) {
+                                    if (mModelList.getRemainingAttachments() == 0) {
+                                        onAttachmentLimitReached();
+                                        break;
+                                    }
+                                    FuseboxMetrics.recordDriveDocumentType(
+                                            metadata.mimeType, metadata.title);
+                                    uploadAndAddAttachment(
+                                            FuseboxAttachment.forDrive(
+                                                    mContext,
+                                                    metadata,
+                                                    startTime,
+                                                    FuseboxAttachmentButtonType.DRIVE_FILES));
+                                }
+                            }
+                            handlePickerSucceeded();
                         },
-                        exception -> handlePickerCanceled());
+                        exception -> {
+                            FuseboxMetrics.recordDrivePickerOutcome(
+                                    MobileFuseboxPickerOutcome.LOCAL_ERROR);
+                            handlePickerCanceled();
+                        });
     }
 
     private void onFilePickerClicked() {
         if (!isInInputSession()) return;
 
-        mPopupItemSelected = true;
-        hidePopup();
-        mMetrics.notifyAttachmentButtonUsed(FuseboxAttachmentButtonType.FILES);
+        beginPickerInteraction(FuseboxAttachmentButtonType.FILES);
 
         String mimeType =
                 ChromeFeatureList.sLensSendRawFileMediaTypes.isEnabled()
@@ -1178,6 +1484,7 @@ import java.util.function.Supplier;
                                     FuseboxAttachmentButtonType.FILES);
                         }
                     }
+                    handlePickerSucceeded();
                 },
                 /* errorId= */ android.R.string.cancel);
     }
@@ -1233,6 +1540,14 @@ import java.util.function.Supplier;
     }
 
     private void onInputStateChange(InputState inputState) {
+        applyInputState(inputState);
+
+        if (mModel.get(FuseboxProperties.POPUP_STATE) != PopupState.HIDDEN) {
+            updateAttachmentConfigs(inputState);
+        }
+    }
+
+    private void applyInputState(InputState inputState) {
         // Note that some of the time that this method is called in the middle of beginInput(), so
         // checking avoid checking isInInputSession() or using mModelList.
 
@@ -1263,8 +1578,7 @@ import java.util.function.Supplier;
                 getRequestTypeButtonText(activeTool, toolConfig));
     }
 
-    private void updateModelForPopupInputState(InputState inputState) {
-
+    private void updateModelForPopupInputState(@Nullable InputState inputState) {
         boolean disableTabsForCanvas = OmniboxFeatures.sOmniboxDisableTabsForCanvas.isEnabled();
         boolean isCanvasActive =
                 mInput != null && mInput.getRequestType() == AutocompleteRequestType.CANVAS;
@@ -1272,21 +1586,26 @@ import java.util.function.Supplier;
 
         // TODO(https://crbug.com/480976526): Control visibility as well.
         boolean tabsEnabled =
-                !(disableTabsForCanvas && isCanvasActive)
-                        && !inputState.disabledInputTypes.contains(
-                                InputType.INPUT_TYPE_BROWSER_TAB_VALUE);
+                mTabModelSelectorSupplier.get() != null
+                        && !(disableTabsForCanvas && isCanvasActive)
+                        && (inputState == null
+                                || !inputState.disabledInputTypes.contains(
+                                        InputType.INPUT_TYPE_BROWSER_TAB));
         boolean imagesEnabled =
-                !inputState.disabledInputTypes.contains(InputType.INPUT_TYPE_LENS_IMAGE_VALUE);
+                inputState == null
+                        || !inputState.disabledInputTypes.contains(InputType.INPUT_TYPE_LENS_IMAGE);
         boolean filesEnabled =
-                !inputState.disabledInputTypes.contains(InputType.INPUT_TYPE_LENS_FILE_VALUE);
-        // Drive button only visible if the flag is enabled, it is in allowedInputTypes, and
-        // the Drive picker is available on device.
+                inputState == null
+                        || !inputState.disabledInputTypes.contains(InputType.INPUT_TYPE_LENS_FILE);
+        // Drive button is visible if native allows it (server config, feature flag, and identity
+        // are checked in InputStateModel) and the Drive picker is available on device.
         boolean driveVisible =
-                OmniboxFeatures.sComposeboxDriveContextMenuOption.isEnabled()
-                        && inputState.allowedInputTypes.contains(InputType.INPUT_TYPE_DRIVE_VALUE)
-                        && DriveFilePickerClient.getInstance().isAvailable(mContext);
+                inputState != null
+                        && inputState.allowedInputTypes.contains(InputType.INPUT_TYPE_DRIVE)
+                        && DriveFilePickerClient.getInstance().isAvailable(mContext, mProfile);
         boolean driveEnabled =
-                !inputState.disabledInputTypes.contains(InputType.INPUT_TYPE_DRIVE_VALUE);
+                inputState == null
+                        || !inputState.disabledInputTypes.contains(InputType.INPUT_TYPE_DRIVE);
         mModel.set(FuseboxProperties.POPUP_ATTACH_CURRENT_TAB_ENABLED, tabsEnabled);
         mModel.set(FuseboxProperties.POPUP_ATTACH_TAB_PICKER_ENABLED, tabsEnabled);
         mModel.set(FuseboxProperties.POPUP_RECENT_TABS_ENABLED, tabsEnabled);
@@ -1296,55 +1615,72 @@ import java.util.function.Supplier;
         mModel.set(FuseboxProperties.POPUP_ATTACH_DRIVE_VISIBLE, driveVisible);
         mModel.set(FuseboxProperties.POPUP_ATTACH_DRIVE_ENABLED, driveEnabled);
 
-        mModel.set(
-                FuseboxProperties.POPUP_TOOL_HEADER_TEXT,
-                inputState.getToolsSectionConfig().getHeader());
+        String toolHeaderText =
+                inputState != null ? inputState.getToolsSectionConfig().getHeader() : "";
+        mModel.set(FuseboxProperties.POPUP_TOOL_HEADER_TEXT, toolHeaderText);
 
         List<PopupButtonData> toolButtonDataList = new ArrayList<>();
-        if (!OmniboxCapabilities.isDesktopPlatform()) {
-            toolButtonDataList.add(createAiModeToolButtonData());
+        List<PopupButtonData> pinnedToolButtonDataList = new ArrayList<>();
+        if (inputState != null) {
+            if (!mIsDesktopPlatform) {
+                (shouldPinToolButton(ToolMode.TOOL_MODE_UNSPECIFIED)
+                                ? pinnedToolButtonDataList
+                                : toolButtonDataList)
+                        .add(createAiModeToolButtonData());
+            }
+
+            for (ToolConfig toolConfig : inputState.getToolConfigs()) {
+                @ToolMode int toolMode = toolConfig.getToolValue();
+                if (!inputState.isToolVisible(toolMode)) continue;
+
+                String label = toolConfig.getMenuLabel();
+                String tooltip = toolConfig.getMenuTooltip();
+                int iconId =
+                        toolConfig.hasIcon() && toolConfig.getIcon().hasIconId()
+                                ? toolConfig.getIcon().getIconIdValue()
+                                : UNSPECIFIED_ICON_RESOURCE_ID;
+                boolean selected =
+                        mInput != null
+                                && ToolModeUtils.getRequestTypeForToolMode(toolMode)
+                                        == mInput.getRequestType();
+                boolean enabled =
+                        inputState.isToolEnabled(toolMode)
+                                && (!disableTabsForCanvas
+                                        || !hasAttachedTabs
+                                        || toolMode != ToolMode.TOOL_MODE_CANVAS);
+                boolean hasColor = !shouldTintRequestTypeButtonIcon(iconId);
+
+                PopupButtonData buttonData =
+                        new PopupButtonData.Builder()
+                                .setType(PopupButtonType.TOOL)
+                                .setOnClicked(this::onDynamicButtonClicked)
+                                .setText(label)
+                                .setSubtext(getToolSubtext(toolMode, tooltip))
+                                .setIconId(iconId)
+                                .setEnabled(enabled)
+                                .setSelected(selected)
+                                .setProtoId(toolMode)
+                                .setHasColor(hasColor)
+                                .setTooltip(tooltip)
+                                .build();
+                (shouldPinToolButton(toolMode) ? pinnedToolButtonDataList : toolButtonDataList)
+                        .add(buttonData);
+            }
         }
 
-        for (ToolConfig toolConfig : inputState.getToolConfigs()) {
-            @ToolMode int toolMode = toolConfig.getToolValue();
-            if (!inputState.isToolVisible(toolMode)) continue;
-
-            String label = toolConfig.getMenuLabel();
-            String tooltip = toolConfig.getMenuTooltip();
-            int iconId =
-                    toolConfig.hasIcon() && toolConfig.getIcon().hasIconId()
-                            ? toolConfig.getIcon().getIconIdValue()
-                            : UNSPECIFIED_ICON_RESOURCE_ID;
-            boolean selected =
-                    mInput != null
-                            && ToolModeUtils.getRequestTypeForToolMode(toolMode)
-                                    == mInput.getRequestType();
-            boolean enabled =
-                    inputState.isToolEnabled(toolMode)
-                            && (!disableTabsForCanvas
-                                    || !hasAttachedTabs
-                                    || toolMode != ToolMode.TOOL_MODE_CANVAS);
-            boolean hasColor = !shouldTintRequestTypeButtonIcon(iconId);
-
-            toolButtonDataList.add(
-                    new PopupButtonData(
-                            this::onDynamicButtonClicked,
-                            label,
-                            iconId,
-                            enabled,
-                            selected,
-                            PopupButtonType.TOOL,
-                            toolMode,
-                            hasColor,
-                            tooltip));
-        }
-
+        boolean showSectionHeaders = !OmniboxFeatures.hasAccordion();
         boolean showTools = !toolButtonDataList.isEmpty();
         mModel.set(FuseboxProperties.POPUP_TOOL_DIVIDER_VISIBLE, showTools);
         mModel.set(
                 FuseboxProperties.POPUP_TOOL_HEADER_VISIBLE,
-                showTools && !TextUtils.isEmpty(inputState.getToolsSectionConfig().getHeader()));
+                showTools && showSectionHeaders && !TextUtils.isEmpty(toolHeaderText));
         mModel.set(FuseboxProperties.POPUP_TOOL_BUTTON_DATA_LIST, toolButtonDataList);
+        mModel.set(FuseboxProperties.POPUP_PINNED_TOOL_BUTTON_DATA_LIST, pinnedToolButtonDataList);
+        boolean showPinnedSection = !pinnedToolButtonDataList.isEmpty();
+        mModel.set(FuseboxProperties.POPUP_PINNED_SECTION_TOP_DIVIDER_VISIBLE, showPinnedSection);
+        mModel.set(
+                FuseboxProperties.POPUP_PINNED_SECTION_BOTTOM_DIVIDER_VISIBLE,
+                showPinnedSection && !OmniboxFeatures.shouldShowBottomSheetPopup());
 
         // The InputState is always targeting an AI Mode request and what would be possible, but the
         // user might not have activate AI Mode yet, in which case we do not want to show any
@@ -1354,39 +1690,144 @@ import java.util.function.Supplier;
                 mInput != null && ToolModeUtils.isAimRequest(mInput.getRequestType());
 
         List<PopupButtonData> modelButtonDataList = new ArrayList<>();
-        for (ModelConfig modelConfig : inputState.getModelConfigs()) {
-            int modelMode = modelConfig.getModelValue();
-            if (inputState.isModelVisible(modelMode)) {
-                boolean selected = isAimRequest && inputState.activeModel == modelMode;
-                String tooltip = modelConfig.getMenuTooltip();
-                int iconId =
-                        modelConfig.hasIcon() && modelConfig.getIcon().hasIconId()
-                                ? modelConfig.getIcon().getIconIdValue()
-                                : UNSPECIFIED_ICON_RESOURCE_ID;
-                modelButtonDataList.add(
-                        new PopupButtonData(
-                                this::onDynamicButtonClicked,
-                                modelConfig.getMenuLabel(),
-                                iconId,
-                                inputState.isModelEnabled(modelMode),
-                                selected,
-                                PopupButtonType.MODEL,
-                                modelMode,
-                                /* hasColor= */ false,
-                                tooltip));
+        if (inputState != null) {
+            // inputState.activeModel stays set so the user's model resumes after leaving the tool.
+            // Hide the selection checkmark while an incompatible tool is active.
+            boolean modelSelectionAllowed = isModelSelectionAllowed(inputState);
+            boolean showActiveModel = isAimRequest && modelSelectionAllowed;
+            for (ModelConfig modelConfig : inputState.getModelConfigs()) {
+                int modelMode = modelConfig.getModelValue();
+                if (inputState.isModelVisible(modelMode)) {
+                    boolean selected = showActiveModel && inputState.activeModel == modelMode;
+                    // TODO(crbug.com/584861500): Rely on inputState.isModelEnabled() alone once
+                    // InputStateModel populates disabledModels for disable_active_model_selection
+                    // and isModelEnabled() respects it.
+                    boolean enabled = modelSelectionAllowed && inputState.isModelEnabled(modelMode);
+                    String tooltip = modelConfig.getMenuTooltip();
+                    int iconId =
+                            modelConfig.hasIcon() && modelConfig.getIcon().hasIconId()
+                                    ? modelConfig.getIcon().getIconIdValue()
+                                    : UNSPECIFIED_ICON_RESOURCE_ID;
+                    modelButtonDataList.add(
+                            new PopupButtonData.Builder()
+                                    .setType(PopupButtonType.MODEL)
+                                    .setOnClicked(this::onDynamicButtonClicked)
+                                    .setText(modelConfig.getMenuLabel())
+                                    .setIconId(iconId)
+                                    .setEnabled(enabled)
+                                    .setSelected(selected)
+                                    .setProtoId(modelMode)
+                                    .setTooltip(tooltip)
+                                    .build());
+                }
             }
         }
         boolean showModelPicker = modelButtonDataList.size() >= 2;
-        boolean showModelPickerDivider =
-                showModelPicker && !OmniboxFeatures.shouldShowBottomSheetPopup();
-        mModel.set(FuseboxProperties.POPUP_MODEL_DIVIDER_VISIBLE, showModelPickerDivider);
-        mModel.set(FuseboxProperties.POPUP_MODEL_HEADER_VISIBLE, showModelPicker);
+        mModel.set(FuseboxProperties.POPUP_MODEL_DIVIDER_VISIBLE, showModelPicker);
+        mModel.set(
+                FuseboxProperties.POPUP_MODEL_HEADER_VISIBLE,
+                showModelPicker && showSectionHeaders);
         mModel.set(
                 FuseboxProperties.POPUP_MODEL_HEADER_TEXT,
-                inputState.getModelSectionConfig().getHeader());
+                inputState != null ? inputState.getModelSectionConfig().getHeader() : "");
         mModel.set(
                 FuseboxProperties.POPUP_MODEL_BUTTON_DATA_LIST,
                 showModelPicker ? modelButtonDataList : List.of());
+    }
+
+    private static boolean shouldPinToolButton(@ToolMode int toolMode) {
+        if (!OmniboxFeatures.hasFuseboxPinnedSection()) {
+            return false;
+        }
+        return switch (toolMode) {
+            case ToolMode.TOOL_MODE_UNSPECIFIED, ToolMode.TOOL_MODE_GEMINI_PRO -> true;
+            default -> false;
+        };
+    }
+
+    private void updateAttachmentConfigs(@Nullable InputState inputState) {
+        updateAttachmentLabels(inputState);
+        updateAttachmentIcons(inputState);
+    }
+
+    private void updateAttachmentLabels(@Nullable InputState inputState) {
+        mModel.set(
+                FuseboxProperties.POPUP_ATTACH_CAMERA_TEXT,
+                InputStateUtils.resolveInputMenuLabel(
+                        mContext,
+                        inputState,
+                        InputSource.INPUT_SOURCE_CAMERA,
+                        R.string.photo_picker_camera,
+                        /* shouldRecordFallback= */ mModel.get(
+                                FuseboxProperties.POPUP_ATTACH_CAMERA_VISIBLE)));
+        mModel.set(
+                FuseboxProperties.POPUP_ATTACH_GALLERY_TEXT,
+                InputStateUtils.resolveInputMenuLabel(
+                        mContext,
+                        inputState,
+                        InputSource.INPUT_SOURCE_GALLERY,
+                        mIsDesktopPlatform
+                                ? R.string.omnibox_navattach_add_images
+                                : R.string.omnibox_navattach_gallery,
+                        /* shouldRecordFallback= */ mModel.get(
+                                FuseboxProperties.POPUP_ATTACH_GALLERY_VISIBLE)));
+        mModel.set(
+                FuseboxProperties.POPUP_ATTACH_FILE_TEXT,
+                InputStateUtils.resolveInputMenuLabel(
+                        mContext,
+                        inputState,
+                        InputSource.INPUT_SOURCE_FILE_PICKER,
+                        mIsDesktopPlatform
+                                ? R.string.omnibox_navattach_add_files
+                                : R.string.omnibox_navattach_files,
+                        /* shouldRecordFallback= */ mModel.get(
+                                FuseboxProperties.POPUP_ATTACH_FILE_VISIBLE)));
+        mModel.set(
+                FuseboxProperties.POPUP_ATTACH_DRIVE_TEXT,
+                InputStateUtils.resolveInputMenuLabel(
+                        mContext,
+                        inputState,
+                        InputSource.INPUT_SOURCE_DRIVE,
+                        mIsDesktopPlatform
+                                ? R.string.ntp_compose_add_drive
+                                : R.string.omnibox_navattach_drive,
+                        /* shouldRecordFallback= */ mModel.get(
+                                FuseboxProperties.POPUP_ATTACH_DRIVE_VISIBLE)));
+    }
+
+    private void updateAttachmentIcons(@Nullable InputState inputState) {
+        mModel.set(
+                FuseboxProperties.POPUP_ATTACH_CAMERA_ICON,
+                InputStateUtils.resolveInputIconRes(
+                        inputState,
+                        InputSource.INPUT_SOURCE_CAMERA,
+                        R.drawable.photo_camera_24dp,
+                        /* shouldRecordFallback= */ mModel.get(
+                                FuseboxProperties.POPUP_ATTACH_CAMERA_VISIBLE)));
+        mModel.set(
+                FuseboxProperties.POPUP_ATTACH_GALLERY_ICON,
+                InputStateUtils.resolveInputIconRes(
+                        inputState,
+                        InputSource.INPUT_SOURCE_GALLERY,
+                        R.drawable.add_photo_alternate_24dp,
+                        /* shouldRecordFallback= */ mModel.get(
+                                FuseboxProperties.POPUP_ATTACH_GALLERY_VISIBLE)));
+        mModel.set(
+                FuseboxProperties.POPUP_ATTACH_FILE_ICON,
+                InputStateUtils.resolveInputIconRes(
+                        inputState,
+                        InputSource.INPUT_SOURCE_FILE_PICKER,
+                        FuseboxIconUtils.getResIdForIconId(IconResourceIds.ATTACH_FILE),
+                        /* shouldRecordFallback= */ mModel.get(
+                                FuseboxProperties.POPUP_ATTACH_FILE_VISIBLE)));
+        mModel.set(
+                FuseboxProperties.POPUP_ATTACH_DRIVE_ICON,
+                InputStateUtils.resolveInputIconRes(
+                        inputState,
+                        InputSource.INPUT_SOURCE_DRIVE,
+                        R.drawable.gs_drive_vd_theme_24,
+                        /* shouldRecordFallback= */ mModel.get(
+                                FuseboxProperties.POPUP_ATTACH_DRIVE_VISIBLE)));
     }
 
     /**
@@ -1412,6 +1853,15 @@ import java.util.function.Supplier;
             }
         }
         return imageGenFallback;
+    }
+
+    /**
+     * Returns whether selecting a model is allowed while the active tool is selected. Returns true
+     * unless the active tool specifies that it is not compatible with selectable models.
+     */
+    private static boolean isModelSelectionAllowed(InputState inputState) {
+        ToolConfig toolConfig = getActiveToolConfig(inputState);
+        return toolConfig == null || !toolConfig.getDisableActiveModelSelection();
     }
 
     private String getNavigateButtonContentDescription(@Nullable ToolConfig toolConfig) {
@@ -1456,7 +1906,7 @@ import java.util.function.Supplier;
     private boolean trySetRequestType(@AutocompleteRequestType int requestType) {
         if (!isInInputSession()) return false;
 
-        hidePopup();
+        if (!hidePopup()) return false;
         if (mInput.getRequestType() == requestType) return false;
 
         mInput.setRequestType(requestType);
@@ -1484,10 +1934,9 @@ import java.util.function.Supplier;
     private void setModelMode(@ModelMode int modelMode) {
         if (!isInInputSession()) return;
 
-        hidePopup();
+        if (!hidePopup()) return;
 
         maybeActivateAiMode(AiModeActivationSource.IMPLICIT);
-
         mInput.setModelMode(modelMode);
         // TODO(https://crbug.com/476434460): Consider replacing with wiring in session state.
         FuseboxMetrics.notifySetActiveModelSource(SetActiveModelSource.SET_FROM_MODEL_SELECTION);

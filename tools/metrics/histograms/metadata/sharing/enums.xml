@@ -92,7 +92,8 @@ chromium-metrics-reviews@google.com.
 <!-- LINT.IfChange(SendTabToSelfAutoOpenOutcome) -->
 
 <enum name="SendTabToSelfAutoOpenOutcome">
-  <int value="0" label="Unopened immediately (no window or in background)"/>
+  <int value="0"
+      label="(Deprecated) Unopened immediately (no window or in background)"/>
   <int value="1" label="First tab opened in foreground (Desktop)"/>
   <int value="2" label="Tabs opened immediately in background"/>
   <int value="3" label="Tabs opened upon browser activation"/>
@@ -198,7 +199,7 @@ chromium-metrics-reviews@google.com.
   <int value="4" label="Share Menu"/>
   <int value="5" label="Share Sheet"/>
   <int value="6" label="Tab Menu"/>
-  <int value="7" label="Gesture"/>
+  <int value="7" label="(Obsolete) Gesture"/>
   <int value="8" label="Share Sheet Direct Share"/>
 </enum>
 

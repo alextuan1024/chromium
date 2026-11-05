@@ -52,8 +52,8 @@ class SiteSettingsHandler
   class GroupingKey {
    public:
     static GroupingKey Create(const url::Origin& origin);
-    static GroupingKey CreateFromEtldPlus1(const std::string& etld_plus1);
-    static GroupingKey Deserialize(const std::string& serialized);
+    static GroupingKey CreateFromEtldPlus1(std::string_view etld_plus1);
+    static GroupingKey Deserialize(std::string_view serialized);
 
     GroupingKey(const GroupingKey& other);
     GroupingKey& operator=(const GroupingKey& other);
@@ -134,9 +134,6 @@ class SiteSettingsHandler
   // Asynchronously fetches the usage for a given origin. Replies back with
   // OnGetUsageInfo above.
   void HandleFetchUsageTotal(const base::ListValue& args);
-
-  // Asynchronously fetches the rws membership information label.
-  void HandleGetRwsMembershipLabel(const base::ListValue& args);
 
   // Deletes the storage being used for a given host.
   void HandleClearUnpartitionedUsage(const base::ListValue& args);
@@ -333,9 +330,6 @@ class SiteSettingsHandler
   // Returns a dictionary containing the lists of the allowed permission
   // grant objects granted via the File System Access API, per origin.
   base::ListValue PopulateFileSystemGrantData();
-
-  // Sends the list of notification permissions to review to the WebUI.
-  void SendNotificationPermissionReviewList();
 
   // Returns the list of permissions blocked at the system level.
   base::Value GetSystemDeniedPermissions();

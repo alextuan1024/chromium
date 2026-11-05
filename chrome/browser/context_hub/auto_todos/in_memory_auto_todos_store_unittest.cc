@@ -43,10 +43,11 @@ TEST_F(InMemoryAutoTodosStoreTest, AddAndGetSingleItem) {
 
   AutoTodoEntry item;
   item.id = "todo_1";
-  item.data = FirstPartyData{
-      .source_references = {{.url = GURL("https://mail.google.com/123"),
-                             .subject = "Test Subject"}},
-      .actionable_url = GURL("https://example.com/checkin")};
+  item.data =
+      FirstPartyData{.source_references = {GmailReference{
+                         .url = GURL("https://mail.google.com/123"),
+                         .subject = "Test Subject"}},
+                     .actionable_url = GURL("https://example.com/checkin")};
 
   base::test::TestFuture<bool> add_future;
   store_.AddOrUpdateItem(item, add_future.GetCallback());
@@ -187,7 +188,6 @@ TEST_F(InMemoryAutoTodosStoreTest, DeleteItemByTabId) {
 
   base::test::TestFuture<std::vector<AutoTodoEntry>> get_future;
   store_.GetAllItems(get_future.GetCallback());
-  auto items = get_future.Get();
   EXPECT_TRUE(get_future.Get().empty());
 
   base::test::TestFuture<bool> del_tab_fail_future;

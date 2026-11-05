@@ -12,10 +12,13 @@ import android.appwidget.AppWidgetManager;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.content.res.Configuration;
 import android.content.res.Resources;
 import android.graphics.Bitmap;
 import android.net.Uri;
+import android.os.Bundle;
 import android.text.TextUtils;
+import android.util.LruCache;
 import android.view.ContextThemeWrapper;
 import android.view.View;
 import android.widget.RemoteViews;
@@ -30,6 +33,7 @@ import com.google.android.apps.chrome.appwidget.bookmarks.BookmarkThumbnailWidge
 import org.chromium.base.ContextUtils;
 import org.chromium.base.IntentUtils;
 import org.chromium.base.Log;
+import org.chromium.base.ThreadUtils;
 import org.chromium.base.metrics.RecordUserAction;
 import org.chromium.base.task.PostTask;
 import org.chromium.base.task.TaskTraits;
@@ -54,15 +58,18 @@ import org.chromium.components.bookmarks.BookmarkId;
 import org.chromium.components.bookmarks.BookmarkItem;
 import org.chromium.components.browser_ui.styles.SemanticColorUtils;
 import org.chromium.components.browser_ui.widget.RoundedIconGenerator;
+import org.chromium.components.favicon.IconType;
 import org.chromium.components.favicon.LargeIconBridge;
 import org.chromium.components.favicon.LargeIconBridge.LargeIconCallback;
+import org.chromium.ui.base.ViewUtils;
+import org.chromium.url.GURL;
 
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
-import java.util.Map;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Service to support the bookmarks widget.
@@ -134,8 +141,7 @@ public class BookmarkWidgetServiceImpl extends SplitCompatRemoteViewsService.Imp
         void onBookmarksLoaded(
                 @Nullable BookmarkItem folder,
                 @Nullable BookmarkItem parent,
-                @Nullable List<BookmarkListEntry> entries,
-                Map<BookmarkId, Bitmap> favicons);
+                @Nullable List<BookmarkListEntry> entries);
     }
 
     /**
@@ -144,34 +150,18 @@ public class BookmarkWidgetServiceImpl extends SplitCompatRemoteViewsService.Imp
      * <p>This class must be used only on the UI thread.
      */
     private static class BookmarkLoader {
-        private BookmarkLoaderCallback mCallback;
+        private @Nullable BookmarkLoaderCallback mCallback;
         private @Nullable BookmarkItem mFolder;
         private @Nullable BookmarkItem mParent;
         private @Nullable List<BookmarkListEntry> mEntries;
-        private final Map<BookmarkId, Bitmap> mFavicons = new HashMap<>();
         private BookmarkModel mBookmarkModel;
-        private LargeIconBridge mLargeIconBridge;
         private ImprovedBookmarkQueryHandler mQueryHandler;
-        private RoundedIconGenerator mIconGenerator;
-        private int mMinIconSizeDp;
-        private int mDisplayedIconSize;
-        private int mRemainingTaskCount;
-
         private @Nullable BookmarkUiPrefs mBookmarkUiPrefs;
 
         @UiThread
         @Initializer
-        public void initialize(
-                Context context, final BookmarkId folderId, BookmarkLoaderCallback callback) {
+        public void initialize(final BookmarkId folderId, BookmarkLoaderCallback callback) {
             mCallback = callback;
-
-            Resources res = context.getResources();
-            mLargeIconBridge = new LargeIconBridge(ProfileManager.getLastUsedRegularProfile());
-            mMinIconSizeDp = (int) res.getDimension(R.dimen.default_favicon_min_size);
-            mDisplayedIconSize = res.getDimensionPixelSize(R.dimen.default_favicon_size);
-            mIconGenerator = FaviconUtils.createRoundedRectangleIconGenerator(context);
-
-            mRemainingTaskCount = 1;
             mBookmarkModel =
                     BookmarkModel.getForProfile(ProfileManager.getLastUsedRegularProfile());
             mBookmarkUiPrefs = new BookmarkUiPrefs(ChromeSharedPreferences.getInstance());
@@ -190,7 +180,7 @@ public class BookmarkWidgetServiceImpl extends SplitCompatRemoteViewsService.Imp
             if (folderId != null) {
                 mFolder = mBookmarkModel.getBookmarkById(folderId);
             }
-            if (mFolder == null) {
+            if (mFolder == null || !mFolder.isFolder()) {
                 folderId = mBookmarkModel.getDefaultBookmarkFolder();
                 mFolder = mBookmarkModel.getBookmarkById(folderId);
             }
@@ -198,53 +188,17 @@ public class BookmarkWidgetServiceImpl extends SplitCompatRemoteViewsService.Imp
             assertNonNull(mFolder);
 
             mParent = mBookmarkModel.getBookmarkById(mFolder.getParentId());
-
             mEntries = mQueryHandler.buildBookmarkListForParent(folderId, null);
 
-            for (BookmarkListEntry entry : mEntries) {
-                BookmarkItem item = entry.getBookmarkItem();
-                if (item != null && !item.isFolder()) {
-                    loadFavicon(item);
-                }
+            if (mCallback != null) {
+                mCallback.onBookmarksLoaded(mFolder, mParent, mEntries);
+                mCallback = null;
             }
-
-            taskFinished();
-        }
-
-        @UiThread
-        private void loadFavicon(BookmarkItem bookmarkItem) {
-            if (bookmarkItem == null || bookmarkItem.isFolder()) return;
-
-            mRemainingTaskCount++;
-            LargeIconCallback callback =
-                    (@Nullable Bitmap icon, int fallbackColor, boolean _, int _) -> {
-                        if (icon == null) {
-                            mIconGenerator.setBackgroundColor(fallbackColor);
-                            icon = mIconGenerator.generateIconForUrl(bookmarkItem.getUrl());
-                        } else {
-                            icon =
-                                    Bitmap.createScaledBitmap(
-                                            icon, mDisplayedIconSize, mDisplayedIconSize, true);
-                        }
-                        mFavicons.put(bookmarkItem.getId(), icon);
-                        taskFinished();
-                    };
-            mLargeIconBridge.getLargeIconForUrl(bookmarkItem.getUrl(), mMinIconSizeDp, callback);
-        }
-
-        @UiThread
-        private void taskFinished() {
-            mRemainingTaskCount--;
-            if (mRemainingTaskCount == 0) {
-                mCallback.onBookmarksLoaded(mFolder, mParent, mEntries, mFavicons);
-                destroy();
-            }
+            destroy();
         }
 
         @UiThread
         private void destroy() {
-            mLargeIconBridge.destroy();
-
             if (mBookmarkUiPrefs != null) {
                 mBookmarkUiPrefs.destroy();
                 mBookmarkUiPrefs = null;
@@ -255,36 +209,44 @@ public class BookmarkWidgetServiceImpl extends SplitCompatRemoteViewsService.Imp
     /** Provides the RemoteViews, one per bookmark, to be shown in the widget. */
     @VisibleForTesting
     static class BookmarkAdapter implements RemoteViewsFactory, SystemNightModeMonitor.Observer {
+        private static final int HEADER_HEIGHT_DP = 48;
+        private static final int EMPTY_MESSAGE_TEXT_HEIGHT_DP = 24;
+        private static final int EMPTY_MESSAGE_HORIZONTAL_PADDING_DP = 16;
+        private static final int MAX_FAVICON_CACHE_SIZE = 16;
+        private static final long FAVICON_FETCH_TIMEOUT_MS = 5000;
+
         // Can be accessed on any thread
         private final Context mContext;
         private final int mWidgetId;
         private final SharedPreferences mPreferences;
-        private final RemoteViews mBookmarkWidgetRemoteView;
+        private final int mMinIconSizePx;
+        private final int mDisplayedIconSize;
+        private final LruCache<GURL, Bitmap> mFaviconCache = new LruCache<>(MAX_FAVICON_CACHE_SIZE);
         private int mIconColor;
 
         // Accessed only on the UI thread
         private BookmarkModel mBookmarkModel;
+        private @Nullable BookmarkModelObserver mBookmarkModelObserver;
+        private final RoundedIconGenerator mIconGenerator;
+        private @Nullable LargeIconBridge mLargeIconBridge;
 
         // Accessed only on binder threads.
         private @Nullable BookmarkItem mCurrentFolder;
         private @Nullable BookmarkItem mParentFolder;
         private final List<BookmarkListEntry> mEntries;
-        private final Map<BookmarkId, Bitmap> mFavicons;
 
         @UiThread
         public BookmarkAdapter(Context context, int widgetId) {
             mContext = context;
             mWidgetId = widgetId;
             mPreferences = getWidgetState(mWidgetId);
+            Resources res = mContext.getResources();
+            mMinIconSizePx = (int) res.getDimension(R.dimen.default_favicon_min_size);
+            mDisplayedIconSize = res.getDimensionPixelSize(R.dimen.default_favicon_size);
+            mIconGenerator = FaviconUtils.createRoundedRectangleIconGenerator(mContext);
             mIconColor = getIconColor(mContext);
             SystemNightModeMonitor.getInstance().addObserver(this);
-            mBookmarkWidgetRemoteView =
-                    new RemoteViews(mContext.getPackageName(), R.layout.bookmark_widget);
-            mBookmarkWidgetRemoteView.setOnClickPendingIntent(
-                    R.id.empty_message,
-                    BookmarkWidgetProxy.createBookmarkProxyLaunchIntent(context));
             mEntries = new ArrayList<>();
-            mFavicons = new HashMap<>();
         }
 
         @UiThread
@@ -300,7 +262,8 @@ public class BookmarkWidgetServiceImpl extends SplitCompatRemoteViewsService.Imp
 
             mBookmarkModel =
                     BookmarkModel.getForProfile(ProfileManager.getLastUsedRegularProfile());
-            mBookmarkModel.addObserver(
+            mLargeIconBridge = new LargeIconBridge(ProfileManager.getLastUsedRegularProfile());
+            mBookmarkModelObserver =
                     new BookmarkModelObserver() {
                         @Override
                         public void bookmarkModelLoaded() {
@@ -309,9 +272,11 @@ public class BookmarkWidgetServiceImpl extends SplitCompatRemoteViewsService.Imp
 
                         @Override
                         public void bookmarkModelChanged() {
+                            mFaviconCache.evictAll();
                             redrawWidget(mWidgetId);
                         }
-                    });
+                    };
+            mBookmarkModel.addObserver(mBookmarkModelObserver);
         }
 
         @UiThread
@@ -348,7 +313,17 @@ public class BookmarkWidgetServiceImpl extends SplitCompatRemoteViewsService.Imp
         public void onDestroy() {
             PostTask.runOrPostTask(
                     TaskTraits.UI_DEFAULT,
-                    () -> SystemNightModeMonitor.getInstance().removeObserver(this));
+                    () -> {
+                        SystemNightModeMonitor.getInstance().removeObserver(this);
+                        if (mBookmarkModel != null && mBookmarkModelObserver != null) {
+                            mBookmarkModel.removeObserver(mBookmarkModelObserver);
+                        }
+                        if (mLargeIconBridge != null) {
+                            mLargeIconBridge.destroy();
+                            mLargeIconBridge = null;
+                        }
+                    });
+            mFaviconCache.evictAll();
             deleteWidgetState(mWidgetId);
         }
 
@@ -367,34 +342,11 @@ public class BookmarkWidgetServiceImpl extends SplitCompatRemoteViewsService.Imp
             // Blocks until bookmarks are loaded from the UI thread.
             loadBookmarks(folderId);
 
-            // Update empty message visibility right after mCurrentFolder is updated.
-            updateFolderEmptyMessageVisibility();
-
             if (mCurrentFolder != null) {
                 mPreferences
                         .edit()
                         .putString(PREF_CURRENT_FOLDER, mCurrentFolder.getId().toString())
                         .apply();
-            }
-        }
-
-        @BinderThread
-        private void updateFolderEmptyMessageVisibility() {
-            AppWidgetManager appWidgetManager = AppWidgetManager.getInstance(mContext);
-            if (!BookmarkWidgetProvider.shouldShowIconsOnly(appWidgetManager, mWidgetId)) {
-                boolean folderIsEmpty = mEntries != null && mEntries.isEmpty();
-                mBookmarkWidgetRemoteView.setViewVisibility(
-                        R.id.empty_message, folderIsEmpty ? View.VISIBLE : View.GONE);
-
-                // Directly update the widget on the UI thread.
-                PostTask.runOrPostTask(
-                        TaskTraits.UI_DEFAULT,
-                        () ->
-                                // Use AppWidgetManager#partiallyUpdateAppWidget to update only the
-                                // empty_message visibility, avoiding full widget redraws and
-                                // redundant intent setup from BookmarkWidgetProvider#performUpdate.
-                                appWidgetManager.partiallyUpdateAppWidget(
-                                        mWidgetId, mBookmarkWidgetRemoteView));
             }
         }
 
@@ -408,20 +360,16 @@ public class BookmarkWidgetServiceImpl extends SplitCompatRemoteViewsService.Imp
                     TaskTraits.UI_DEFAULT,
                     () ->
                             bookmarkLoader.initialize(
-                                    mContext,
                                     folderId,
                                     (@Nullable BookmarkItem folder,
                                             @Nullable BookmarkItem parent,
-                                            @Nullable List<BookmarkListEntry> entries,
-                                            Map<BookmarkId, Bitmap> favicons) -> {
+                                            @Nullable List<BookmarkListEntry> entries) -> {
                                         mCurrentFolder = folder;
                                         mParentFolder = parent;
                                         mEntries.clear();
                                         if (entries != null) {
                                             mEntries.addAll(entries);
                                         }
-                                        mFavicons.clear();
-                                        mFavicons.putAll(favicons);
                                         latch.countDown();
                                     }));
             try {
@@ -441,7 +389,7 @@ public class BookmarkWidgetServiceImpl extends SplitCompatRemoteViewsService.Imp
         @BinderThread
         @Override
         public int getViewTypeCount() {
-            return 2;
+            return 3;
         }
 
         @BinderThread
@@ -464,7 +412,14 @@ public class BookmarkWidgetServiceImpl extends SplitCompatRemoteViewsService.Imp
             if (mCurrentFolder == null) {
                 return 0;
             }
-            return mEntries.size() + (mParentFolder != null ? 1 : 0);
+            int count = mEntries.size() + (mParentFolder != null ? 1 : 0);
+            if (mEntries.isEmpty()) {
+                // When empty, include an empty message row inside the collection so that the empty
+                // state and the folder items are delivered atomically in the same dataset payload,
+                // eliminating any desync.
+                count++;
+            }
+            return count;
         }
 
         @BinderThread
@@ -507,6 +462,10 @@ public class BookmarkWidgetServiceImpl extends SplitCompatRemoteViewsService.Imp
                     return createUpView();
                 }
                 position--;
+            }
+
+            if (mEntries.isEmpty() && position == 0) {
+                return createEmptyItemView();
             }
 
             BookmarkListEntry entry = getBookmarkAtPosition(position);
@@ -582,7 +541,7 @@ public class BookmarkWidgetServiceImpl extends SplitCompatRemoteViewsService.Imp
             } else {
                 // Clear any color filter so that it doesn't cover the favicon bitmap.
                 views.setInt(R.id.favicon, "setColorFilter", 0);
-                views.setImageViewBitmap(R.id.favicon, mFavicons.get(item.getId()));
+                views.setImageViewBitmap(R.id.favicon, loadFavicon(item.getUrl()));
 
                 fillIn = new Intent(Intent.ACTION_VIEW);
                 fillIn.putExtra(
@@ -597,6 +556,141 @@ public class BookmarkWidgetServiceImpl extends SplitCompatRemoteViewsService.Imp
             setWidgetItemBackButtonVisible(false, views);
             views.setOnClickFillInIntent(R.id.list_item, fillIn);
             return views;
+        }
+
+        @BinderThread
+        @VisibleForTesting
+        @Nullable Bitmap loadFavicon(GURL url) {
+            ThreadUtils.assertOnBackgroundThread();
+            Bitmap cachedFavicon = mFaviconCache.get(url);
+            if (cachedFavicon != null) {
+                return cachedFavicon;
+            }
+            CountDownLatch latch = new CountDownLatch(1);
+            AtomicReference<@Nullable Bitmap> faviconRef = new AtomicReference<>();
+            PostTask.postTask(
+                    TaskTraits.UI_DEFAULT,
+                    () -> {
+                        if (mLargeIconBridge == null) {
+                            latch.countDown();
+                            return;
+                        }
+                        LargeIconCallback callback =
+                                (@Nullable Bitmap icon, int fallbackColor, boolean _, int _) -> {
+                                    if (icon == null) {
+                                        mIconGenerator.setBackgroundColor(fallbackColor);
+                                        icon = mIconGenerator.generateIconForUrl(url);
+                                    } else {
+                                        icon =
+                                                Bitmap.createScaledBitmap(
+                                                        icon,
+                                                        mDisplayedIconSize,
+                                                        mDisplayedIconSize,
+                                                        /* filter= */ true);
+                                    }
+                                    if (icon != null) {
+                                        mFaviconCache.put(url, icon);
+                                    }
+                                    faviconRef.set(icon);
+                                    latch.countDown();
+                                };
+                        boolean willRunCallback =
+                                mLargeIconBridge.getLargeIconForUrl(
+                                        url, mMinIconSizePx, mDisplayedIconSize, callback);
+                        // LargeIconBridge does not invoke the callback when it declines the request
+                        // (e.g. for NTP or about:blank URLs). Fall back to a generated icon so the
+                        // pending task still completes; otherwise the widget never finishes
+                        // loading.
+                        if (!willRunCallback) {
+                            callback.onLargeIconAvailable(
+                                    /* icon= */ null,
+                                    LargeIconBridge.DEFAULT_ICON_FALLBACK_COLOR,
+                                    /* isFallbackColorDefault= */ true,
+                                    IconType.INVALID);
+                        }
+                    });
+            try {
+                if (!latch.await(FAVICON_FETCH_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
+                    Log.w(TAG, "Timed out waiting for favicon");
+                }
+            } catch (InterruptedException e) {
+                Log.e(TAG, "Unable to load favicon", e);
+            }
+            return faviconRef.get();
+        }
+
+        private RemoteViews createEmptyItemView() {
+            RemoteViews views =
+                    new RemoteViews(mContext.getPackageName(), R.layout.bookmark_widget_empty_item);
+
+            AppWidgetManager appWidgetManager = AppWidgetManager.getInstance(mContext);
+            if (appWidgetManager != null) {
+                int heightDp = getCurrentWidgetHeightDp(appWidgetManager);
+                if (heightDp > 0) {
+                    int topPaddingDp = calculateEmptyItemTopPaddingDp(heightDp);
+                    // RemoteViews#setViewPadding accepts padding values in physical pixels (px).
+                    int topPaddingPx = ViewUtils.dpToPx(mContext, topPaddingDp);
+                    int horizontalPaddingPx =
+                            ViewUtils.dpToPx(mContext, EMPTY_MESSAGE_HORIZONTAL_PADDING_DP);
+                    views.setViewPadding(
+                            R.id.empty_item_container,
+                            horizontalPaddingPx,
+                            topPaddingPx,
+                            horizontalPaddingPx,
+                            0);
+                }
+            }
+            return views;
+        }
+
+        /**
+         * Returns the height of the widget in portrait orientation, in dp.
+         *
+         * <p>The options bundle reports both orientations at once so that rotating the screen needs
+         * no re-render or round trip to this provider: the taller portrait height is stored in
+         * OPTION_APPWIDGET_MAX_HEIGHT and the shorter landscape one in OPTION_APPWIDGET_MIN_HEIGHT.
+         */
+        private static int getPortraitWidgetHeightDp(Bundle options) {
+            return options.getInt(AppWidgetManager.OPTION_APPWIDGET_MAX_HEIGHT, 0);
+        }
+
+        /**
+         * Returns the height of the widget in landscape orientation, in dp. See {@link
+         * #getPortraitWidgetHeightDp}.
+         */
+        private static int getLandscapeWidgetHeightDp(Bundle options) {
+            return options.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_HEIGHT, 0);
+        }
+
+        /**
+         * Returns the height of the widget in the current orientation, in dp, or 0 if the host
+         * reported none. OPTION_APPWIDGET_SIZES would list the sizes directly, but it requires API
+         * 31, above the minimum supported API level.
+         */
+        private int getCurrentWidgetHeightDp(AppWidgetManager appWidgetManager) {
+            Bundle options = appWidgetManager.getAppWidgetOptions(mWidgetId);
+            boolean isPortrait =
+                    mContext.getResources().getConfiguration().orientation
+                            == Configuration.ORIENTATION_PORTRAIT;
+            return isPortrait
+                    ? getPortraitWidgetHeightDp(options)
+                    : getLandscapeWidgetHeightDp(options);
+        }
+
+        private int calculateEmptyItemTopPaddingDp(int heightDp) {
+            int headerOffsetDp = (mParentFolder != null) ? HEADER_HEIGHT_DP : 0;
+
+            /*
+             * Sizing cases:
+             * 1. Tall (>= 120dp): Center across the entire widget card.
+             * 2. Constrained (72dp - 120dp): Center in remaining space below the header.
+             * 3. Minimum (< 72dp): Clamp padding to 0dp to prevent overflow and scrollbars.
+             */
+            int wholeWidgetPadding = (heightDp - EMPTY_MESSAGE_TEXT_HEIGHT_DP) / 2 - headerOffsetDp;
+            if (wholeWidgetPadding >= 0) {
+                return wholeWidgetPadding;
+            }
+            return Math.max(0, (heightDp - headerOffsetDp - EMPTY_MESSAGE_TEXT_HEIGHT_DP) / 2);
         }
 
         private void setWidgetItemBackButtonVisible(boolean visible, RemoteViews views) {

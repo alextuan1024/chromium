@@ -64,17 +64,6 @@ class VerticalTabStripRegionView final
  public:
   DECLARE_CLASS_CUSTOM_ELEMENT_EVENT_TYPE(kAnimationCompletedEvent);
 
-  // TODO(crbug.com/465833741): Replace constant with derived value based on
-  // caption buttons.
-  static constexpr int kUncollapsedMinWidth = 126;
-  // TODO(crbug.com/465832180): Replace constant based width final max width for
-  // view.
-  static constexpr int kUncollapsedMaxWidth = 400;
-  static constexpr int kCollapsedWidth = 0;
-  // TODO(crbug.com/465833741): Determine snapping behavior.
-  static constexpr int kCollapseSnapWidth =
-      (kUncollapsedMinWidth + kCollapsedWidth) / 2;
-
   explicit VerticalTabStripRegionView(
       tabs::VerticalTabStripStateController* state_controller,
       actions::ActionItem* root_action_item,
@@ -113,7 +102,6 @@ class VerticalTabStripRegionView final
   void AddedToWidget() override;
   void RemovedFromWidget() override;
   void Layout(PassKey) override;
-  views::View* GetDefaultFocusableChild() override;
   gfx::Size GetMinimumSize() const override;
   gfx::Size CalculatePreferredSize(
       const views::SizeBounds& available_size) const override;
@@ -143,7 +131,7 @@ class VerticalTabStripRegionView final
   void RequestCollapse(bool collapse) override;
 
   void SetOrganizerPanelShowPercent(double percent);
-  void UpdatePanelClips();
+  void UpdatePanelClipAndOpacity();
 
   views::Separator* tabs_separator_for_testing() {
     return tab_strip_view() ? tab_strip_view()->GetTabsSeparator() : nullptr;
@@ -184,25 +172,6 @@ class VerticalTabStripRegionView final
     raw_ptr<VerticalTabStripRegionView> region_view_;
   };
 
-  // To avoid extra motion during expand on hover when the user doesn't need the
-  // expanded state, we reset the expand on hover timer when the user clicks on
-  // a tab to give them time to exit the tab strip before triggering the expand
-  // on hover state. This class listens for those click events to restart the
-  // timer.
-  class ClickEventHandler : public ui::EventHandler {
-   public:
-    explicit ClickEventHandler(VerticalTabStripRegionView* region_view);
-    ClickEventHandler(const ClickEventHandler&) = delete;
-    ClickEventHandler& operator=(const ClickEventHandler&) = delete;
-    ~ClickEventHandler() override = default;
-
-    // ui::EventHandler:
-    void OnMouseEvent(ui::MouseEvent* event) override;
-
-   private:
-    raw_ptr<VerticalTabStripRegionView> region_view_;
-  };
-
   // Used to create and destroy locks for the expand on hover state.
   friend class VerticalTabStripExpandOnHoverLock;
 
@@ -219,24 +188,24 @@ class VerticalTabStripRegionView final
   void OnCollapseStateChanged(
       tabs::VerticalTabStripCollapseState collapse_state);
 
-  void UpdateColors();
-
   void OnAnimationProgressed(const BrowserAnimationController* controller,
                              BrowserAnimationUpdate status);
 
   // Get whether the collapse/expand animation is running.
   bool IsAnimatingSize() const;
 
-  bool IsFrameActive() const;
   bool IsCollapseButtonHovered() const;
 
   // Returns the bounds within which tabs can be dragged in the vertical tab
   // strip.
   gfx::Rect GetTabStripDraggableBounds() const override;
 
+  // Returns whether the resize area should be visible.
+  bool ShouldShowResizeArea() const;
+
   void OnExpandOnHoverEnabledChanged(bool enabled);
+  void HandlePaintAsActiveChanged();
   void UpdateExpandOnHoverState(std::optional<bool> hovered = std::nullopt);
-  void RestartExpandOnHoverTimer(const base::TimeDelta& delay);
   void OnMouseVelocityHeuristicInterval();
   void CalculateMouseVelocityForExpandOnHover();
   void ResetExpandOnHoverTimers();
@@ -314,7 +283,6 @@ class VerticalTabStripRegionView final
       hover_card_animation_lock_;
 
   RegionViewFocusListener focus_listener_{this};
-  ClickEventHandler click_handler_{this};
   std::unique_ptr<VerticalTabStripFocusSwipeController> focus_swipe_controller_;
 
   // Allows the swipe controller to inspect tab dragging state and rotate
@@ -324,6 +292,9 @@ class VerticalTabStripRegionView final
   // The mouse exit event debounce timer.
   base::OneShotTimer mouse_exit_timer_;
 
+  // Debounces transient active -> inactive -> active blips (e.g. during child
+  // popup/bubble focus handoffs) before collapsing expand-on-hover.
+  base::OneShotTimer paint_as_active_timer_;
   base::CallbackListSubscription paint_as_active_subscription_;
 };
 

@@ -19,6 +19,7 @@
 #include "base/containers/span.h"
 #include "base/debug/dump_without_crashing.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory/stack_allocated.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/notreached.h"
 #include "base/numerics/safe_math.h"
@@ -70,6 +71,30 @@ bool IsValidPaintShaderScalingBehavior(PaintShader::ScalingBehavior behavior) {
   return behavior == PaintShader::ScalingBehavior::kRasterAtScale ||
          behavior == PaintShader::ScalingBehavior::kFixedScale;
 }
+
+// Forwards to another SharedImageProvider and records whether any SharedImage
+// was opened through it. Nested records are deserialized with the same
+// provider, so this also sees SharedImages opened by records nested inside the
+// record being read.
+class TrackingSharedImageProvider final : public SharedImageProvider {
+  STACK_ALLOCATED();
+
+ public:
+  explicit TrackingSharedImageProvider(SharedImageProvider& provider)
+      : provider_(provider) {}
+
+  sk_sp<SkImage> OpenSharedImageForRead(const gpu::Mailbox& mailbox,
+                                        Error& error) override {
+    opened_shared_image_ = true;
+    return provider_.OpenSharedImageForRead(mailbox, error);
+  }
+
+  bool opened_shared_image() const { return opened_shared_image_; }
+
+ private:
+  SharedImageProvider& provider_;
+  bool opened_shared_image_ = false;
+};
 
 }  // namespace
 
@@ -149,6 +174,13 @@ bool PaintOpReader::ReadAndValidateOpHeader(uint8_t* type,
     return false;
   }
   if (*type > static_cast<uint8_t>(PaintOpType::kLastPaintOpType)) {
+    return false;
+  }
+  // DrawTextBlobOp and DrawTextSlugsOp are never serialized: they are
+  // serialized as DrawSlugOp(s) instead, and their Deserialize() functions are
+  // NOTREACHED(). Reject them here so that untrusted input cannot reach them.
+  if (*type == static_cast<uint8_t>(PaintOpType::kDrawTextBlob) ||
+      *type == static_cast<uint8_t>(PaintOpType::kDrawTextSlugs)) {
     return false;
   }
   return true;
@@ -246,7 +278,14 @@ void PaintOpReader::Read(uint32_t* data) {
 }
 
 void PaintOpReader::Read(uint64_t* data) {
-  ReadSimple(data);
+  // uint64_t is serialized as two uint32_ts to meet the 4-byte minimum
+  // alignment requirement of the serialization format (see
+  // PaintOpWriter::Write(uint64_t)).
+  uint32_t lo = 0u;
+  uint32_t hi = 0u;
+  ReadSimple(&lo);
+  ReadSimple(&hi);
+  *data = static_cast<uint64_t>(hi) << 32 | lo;
 }
 
 void PaintOpReader::Read(int32_t* data) {
@@ -293,8 +332,8 @@ void PaintOpReader::Read(SkColor4f* color) {
 }
 
 void PaintOpReader::Read(SkPath* path) {
-  uint32_t path_id;
-  ReadSimple(&path_id);
+  PaintCacheId path_id;
+  Read(&path_id);
   if (!valid_)
     return;
 
@@ -633,11 +672,10 @@ void PaintOpReader::Read(sk_sp<sktext::gpu::Slug>* slug) {
     return;
   }
 
-  auto span = remaining_.first(data_bytes);
-  *slug =
-      sktext::gpu::Slug::Deserialize(const_cast<const uint8_t*>(span.data()),
-                                     span.size(), options_.strike_client);
-  DidRead(span.size());
+  base::span<uint8_t> scratch = CopyScratchSpace(data_bytes);
+  *slug = sktext::gpu::Slug::Deserialize(scratch.data(), scratch.size(),
+                                         options_.strike_client);
+  DidRead(data_bytes);
 
   if (!*slug) {
     SetInvalid(DeserializationError::kSlugDeserializeFailure);
@@ -730,10 +768,17 @@ void PaintOpReader::Read(sk_sp<PaintShader>* shader) {
   ReadSimple(&ref.end_degrees_);
   Read(&ref.gradient_interpolation_);
   Read(&ref.image_);
+  // Only image shaders use an image; clients never serialize one for any other
+  // shader type.
+  if (ref.image_ && shader_type != PaintShader::Type::kImage) {
+    SetInvalid(DeserializationError::kUnexpectedPaintShaderType);
+    return;
+  }
   bool has_record = false;
   Read(&has_record);
-  uint32_t shader_id = PaintShader::kInvalidRecordShaderId;
+  PaintShader::RecordShaderId shader_id = PaintShader::kInvalidRecordShaderId;
   size_t shader_size = 0;
+  bool record_opened_shared_image = false;
   if (has_record) {
     if (shader_type != PaintShader::Type::kPaintRecord) {
       SetInvalid(DeserializationError::kUnexpectedPaintShaderType);
@@ -745,12 +790,22 @@ void PaintOpReader::Read(sk_sp<PaintShader>* shader) {
       return;
     }
 
+    // Note whether the record opens any SharedImages, see below.
+    std::optional<TrackingSharedImageProvider> tracking_provider;
+    PaintOp::DeserializeOptions record_options = options_;
+    if (options_.shared_image_provider) {
+      tracking_provider.emplace(*options_.shared_image_provider);
+      record_options.shared_image_provider = &tracking_provider.value();
+    }
+
     // Track dependent transfer cache entries to make cached shader size
     // more realistic.
     size_t pre_size = options_.transfer_cache->GetTotalEntrySizes();
-    size_t record_size = Read(&ref.record_);
+    size_t record_size = Read(&ref.record_, record_options);
     size_t post_size = options_.transfer_cache->GetTotalEntrySizes();
     shader_size = post_size - pre_size + record_size;
+    record_opened_shared_image =
+        tracking_provider && tracking_provider->opened_shared_image();
 
     ref.id_ = shader_id;
   }
@@ -873,6 +928,16 @@ void PaintOpReader::Read(sk_sp<PaintShader>* shader) {
 
   // All shader types but records are done.
   if (shader_type != PaintShader::Type::kPaintRecord) {
+    (*shader)->ResolveSkObjects();
+    return;
+  }
+
+  // SkImages opened through `options_.shared_image_provider` borrow their
+  // textures only until the end of the current raster pass, after which the
+  // client can destroy the SharedImages. A shader whose record holds such
+  // images must neither be cached past this pass nor replaced by a cached
+  // version, so resolve it for this use only.
+  if (record_opened_shared_image) {
     (*shader)->ResolveSkObjects();
     return;
   }
@@ -1730,6 +1795,11 @@ void PaintOpReader::ReadLightingSpotPaintFilter(
 }
 
 size_t PaintOpReader::Read(std::optional<PaintRecord>* record) {
+  return Read(record, options_);
+}
+
+size_t PaintOpReader::Read(std::optional<PaintRecord>* record,
+                           const PaintOp::DeserializeOptions& options) {
   size_t size_bytes = 0;
   ReadSize(&size_bytes);
 
@@ -1754,7 +1824,7 @@ size_t PaintOpReader::Read(std::optional<PaintRecord>* record) {
     return 0;
 
   auto span = remaining_.first(size_bytes);
-  sk_sp<PaintOpBuffer> buffer = PaintOpBuffer::MakeFromMemory(span, options_);
+  sk_sp<PaintOpBuffer> buffer = PaintOpBuffer::MakeFromMemory(span, options);
   if (!buffer) {
     SetInvalid(DeserializationError::kPaintOpBufferMakeFromMemoryFailure);
     return 0;

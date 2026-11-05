@@ -2,13 +2,14 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import 'chrome://webui-toolbar.top-chrome/app.js';
+import 'chrome://webui-toolbar.top-chrome/lazy_load.js';
 
 import type {CrIconElement} from 'chrome://resources/cr_elements/cr_icon/cr_icon.js';
-import {assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chai_assert.js';
+import {assertDeepEquals, assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chai_assert.js';
 import {microtasksFinished} from 'chrome://webui-test/test_util.js';
-import {BrowserProxyImpl, LhsChipIdentifier, PermissionAction, PermissionChipTheme, PermissionPromptStyle} from 'chrome://webui-toolbar.top-chrome/app.js';
-import type {PermissionChipElement, PermissionChipState} from 'chrome://webui-toolbar.top-chrome/app.js';
+import type {PermissionChipElement} from 'chrome://webui-toolbar.top-chrome/lazy_load.js';
+import {BrowserProxyImpl, LhsChipIdentifier, PermissionAction, PermissionChipTheme, PermissionPromptStyle} from 'chrome://webui-toolbar.top-chrome/webui_toolbar.js';
+import type {PermissionChipState} from 'chrome://webui-toolbar.top-chrome/webui_toolbar.js';
 
 import {TestToolbarBrowserProxy} from './test_toolbar_browser_proxy.js';
 import type {TestToolbarUiHandler} from './test_toolbar_browser_proxy.js';
@@ -24,7 +25,7 @@ suite('PermissionChipTest', function() {
       accessibilityName: 'Camera',
       tooltip: 'Camera in use',
       isVisible: true,
-      iconName: 'kVideocamChromeRefreshOldIcon',
+      iconName: 'webui-toolbar-shared:videocam',
       theme: PermissionChipTheme.kNormalVisibility,
       promptStyle: PermissionPromptStyle.kChip,
       userDecision: PermissionAction.kGranted,
@@ -74,13 +75,36 @@ suite('PermissionChipTest', function() {
     assertTrue(!!iconEl);
     assertEquals('webui-toolbar-shared:videocam', iconEl.icon);
 
-    const messageEl = chip.shadowRoot.querySelector<HTMLElement>('#message');
-    assertTrue(!!messageEl);
+    const messageEl = chip.$.message;
     assertEquals('Camera', messageEl.textContent);
 
     // Verify it is a button for accessibility
     assertEquals('BUTTON', chipEl.tagName);
     assertEquals('Camera', chipEl.getAttribute('aria-label'));
+  });
+
+  // The browser sends the iconset id, so any permission icon renders, not only
+  // the camera, microphone, location and notifications icons.
+  test('Render icon from iconset id', async function() {
+    const state = createBaseState();
+    state.iconName = 'webui-toolbar-shared:content_paste';
+    state.message = 'Clipboard';
+    chip.chipState = state;
+    await microtasksFinished();
+
+    const iconEl = chip.shadowRoot.querySelector<CrIconElement>('#icon');
+    assertTrue(!!iconEl);
+    assertEquals('webui-toolbar-shared:content_paste', iconEl.icon);
+    assertTrue(!!iconEl.shadowRoot.querySelector('svg'));
+  });
+
+  test('Render no icon for empty icon name', async function() {
+    const state = createBaseState();
+    state.iconName = '';
+    chip.chipState = state;
+    await microtasksFinished();
+
+    assertFalse(!!chip.shadowRoot.querySelector('#icon'));
   });
 
   test('Click events', async function() {
@@ -93,9 +117,12 @@ suite('PermissionChipTest', function() {
     // Left press (pointerdown)
     chipEl.dispatchEvent(new PointerEvent('pointerdown', {button: 0}));
     assertEquals(1, toolbarUiHandler.getCallCount('onLhsChipMousePressed'));
-    assertEquals(
-        LhsChipIdentifier.kPermissionRequest,
-        toolbarUiHandler.getArgs('onLhsChipMousePressed')[0][0]);
+    assertDeepEquals(
+        {
+          identifier: LhsChipIdentifier.kPermissionRequest,
+          isMiddleClick: false,
+        },
+        toolbarUiHandler.getArgs('onLhsChipMousePressed').at(-1));
 
     // Right press should not trigger pressed
     chipEl.dispatchEvent(new PointerEvent('pointerdown', {button: 2}));
@@ -104,20 +131,24 @@ suite('PermissionChipTest', function() {
     // Programmatic click (e.g. keyboard)
     chipEl.click();
     assertEquals(1, toolbarUiHandler.getCallCount('onLhsChipClicked'));
-    assertEquals(
-        LhsChipIdentifier.kPermissionRequest,
-        toolbarUiHandler.getArgs('onLhsChipClicked')[0][0]);
-    assertFalse(toolbarUiHandler.getArgs('onLhsChipClicked')[0][1]);
-    assertEquals(1, toolbarUiHandler.getArgs('onLhsChipClicked')[0][2]);
+    assertDeepEquals(
+        {
+          identifier: LhsChipIdentifier.kPermissionRequest,
+          isMouseInteraction: false,
+          stateToken: 1,
+        },
+        toolbarUiHandler.getArgs('onLhsChipClicked').at(-1));
 
     // Mouse click
     chipEl.dispatchEvent(new PointerEvent('click', {pointerType: 'mouse'}));
     assertEquals(2, toolbarUiHandler.getCallCount('onLhsChipClicked'));
-    assertEquals(
-        LhsChipIdentifier.kPermissionRequest,
-        toolbarUiHandler.getArgs('onLhsChipClicked')[1][0]);
-    assertTrue(toolbarUiHandler.getArgs('onLhsChipClicked')[1][1]);
-    assertEquals(1, toolbarUiHandler.getArgs('onLhsChipClicked')[1][2]);
+    assertDeepEquals(
+        {
+          identifier: LhsChipIdentifier.kPermissionRequest,
+          isMouseInteraction: true,
+          stateToken: 1,
+        },
+        toolbarUiHandler.getArgs('onLhsChipClicked').at(-1));
 
     // Click with non-zero stateToken forwards the token correctly.
     const stateWithToken = createBaseState();
@@ -127,10 +158,13 @@ suite('PermissionChipTest', function() {
 
     chipEl.click();
     assertEquals(3, toolbarUiHandler.getCallCount('onLhsChipClicked'));
-    assertEquals(
-        LhsChipIdentifier.kPermissionRequest,
-        toolbarUiHandler.getArgs('onLhsChipClicked')[2][0]);
-    assertEquals(42, toolbarUiHandler.getArgs('onLhsChipClicked')[2][2]);
+    assertDeepEquals(
+        {
+          identifier: LhsChipIdentifier.kPermissionRequest,
+          isMouseInteraction: false,
+          stateToken: 42,
+        },
+        toolbarUiHandler.getArgs('onLhsChipClicked').at(-1));
   });
 
   test('Pointer hover events', async function() {

@@ -22,9 +22,8 @@ import type {PropertyValues} from 'chrome://resources/lit/v3_0/lit.rollup.js';
 import {getCss} from './appearance.css.js';
 import {getHtml} from './appearance.html.js';
 import {CustomizeChromeAction, recordCustomizeChromeAction} from './common.js';
-import {NewTabPageType} from './customize_chrome.mojom-webui.js';
-import type {Theme} from './customize_chrome.mojom-webui.js';
-import {CustomizeChromeApiProxy} from './customize_chrome_api_proxy.js';
+import {browserProxyFactory, NewTabPageType} from './customize_chrome.mojom-webui.js';
+import type {BrowserProxy, Theme} from './customize_chrome.mojom-webui.js';
 
 export interface AppearanceElement {
   $: {
@@ -113,14 +112,13 @@ export class AppearanceElement extends AppearanceElementBase {
       loadTimeData.getBoolean('wallpaperSearchEnabled');
   private accessor footerEnabled_: boolean =
       loadTimeData.getBoolean('footerEnabled');
-  protected accessor newTabPageType_: NewTabPageType =
+  private accessor newTabPageType_: NewTabPageType =
       NewTabPageType.kFirstPartyWebUI;
   protected accessor showEditTheme_: boolean = true;
   protected accessor managedByName_: string = '';
   protected accessor managedByDesc_: string = '';
   private listenerIds_: number[] = [];
-  private apiProxy_: CustomizeChromeApiProxy =
-      CustomizeChromeApiProxy.getInstance();
+  private apiProxy_: BrowserProxy = browserProxyFactory.getInstance();
 
   override connectedCallback() {
     super.connectedCallback();

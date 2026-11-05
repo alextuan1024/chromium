@@ -35,6 +35,7 @@
 #include "chrome/grit/generated_resources.h"
 #include "components/omnibox/browser/location_bar_model_impl.h"
 #include "components/security_state/core/security_state.h"
+#include "components/strings/grit/components_strings.h"
 #include "components/vector_icons/vector_icons.h"
 #include "components/webapps/isolated_web_apps/scheme.h"
 #include "content/public/browser/web_contents.h"
@@ -78,6 +79,10 @@
 #if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 #include "extensions/common/constants.h"
 #endif  // BUILDFLAG(ENABLE_EXTENSIONS_CORE)
+
+#if BUILDFLAG(IS_CHROMEOS)
+#include "chrome/browser/ui/views/picture_in_picture/picture_in_picture_pin_button.h"
+#endif
 
 namespace {
 
@@ -135,13 +140,17 @@ class OriginChipView : public IconLabelBubbleView {
  public:
   OriginChipView(const gfx::FontList& font_list,
                  IconLabelBubbleView::Delegate* delegate,
-                 base::RepeatingCallback<bool()> show_page_info)
+                 base::RepeatingCallback<bool()> show_page_info,
+                 base::RepeatingCallback<bool()> is_bubble_showing)
       : IconLabelBubbleView(font_list, delegate),
-        show_page_info_(std::move(show_page_info)) {
-    // Enable the security-text slide animation and let the explicit PiP
-    // foreground color drive the label color (no auto-contrast adjustment).
+        show_page_info_(std::move(show_page_info)),
+        is_bubble_showing_(std::move(is_bubble_showing)) {
+    // Enable the security-text slide animation and let the security-chip color
+    // drive the label color (no auto-contrast adjustment).
     SetUpForAnimation();
     label()->SetAutoColorReadabilityEnabled(false);
+    // The base constructor cannot dispatch to this class's UpdateBorder().
+    UpdateBorder();
   }
   OriginChipView(const OriginChipView&) = delete;
   OriginChipView& operator=(const OriginChipView&) = delete;
@@ -150,17 +159,16 @@ class OriginChipView : public IconLabelBubbleView {
   // Sets the security (lock) icon. Exposes the protected SetImageModel().
   void SetSecurityImage(const ui::ImageModel& image) { SetImageModel(image); }
 
-  // Re-applies the label/background colors from the delegate. Used to make the
-  // chip label track the top-bar active/inactive color fade.
-  void RefreshForegroundColor() { UpdateLabelColors(); }
-
   // Sets the security chip text, sliding it in/out when `animate` is true and
   // updating it instantly otherwise (e.g. on the first update or a theme
   // change). Mirrors LocationIconView::UpdateTextVisibility(), but takes the
   // already-computed text and animate flag (the browser-backed view pulls them
-  // from a LocationBarModel) and folds in the trailing UpdateLabelColors() that
-  // LocationIconView::Update() runs separately.
-  void UpdateSecurityText(std::u16string_view text, bool animate) {
+  // from a LocationBarModel) and folds in the trailing UpdateBorder() and
+  // UpdateLabelColors() that LocationIconView::Update() runs separately.
+  void UpdateSecurityText(std::u16string_view text,
+                          security_state::SecurityLevel security_level,
+                          bool animate) {
+    security_level_ = security_level;
     SetLabel(text);
     const bool should_show = !text.empty();
     if (!animate) {
@@ -170,6 +178,7 @@ class OriginChipView : public IconLabelBubbleView {
     } else {
       AnimateOut();
     }
+    UpdateBorder();
     // UpdateLabelColors() resolves colors through the ColorProvider, which is
     // only available once this view is attached to a Widget. During the frame
     // view's construction the chip is not yet in the widget, so skip the color
@@ -181,19 +190,55 @@ class OriginChipView : public IconLabelBubbleView {
 
  protected:
   // IconLabelBubbleView:
+  // Matches LocationIconView with the PictureInPictureBrowserFrameView
+  // delegate, which always returns the secure security-chip color. The label
+  // therefore does not follow the top-bar active/inactive fade.
+  SkColor GetForegroundColor() const override {
+    return GetColorProvider()->GetColor(
+        GetText() == l10n_util::GetStringUTF16(IDS_DANGEROUS_VERBOSE_STATE)
+            ? kColorOmniboxSecurityChipText
+            : kColorOmniboxSecurityChipSecure);
+  }
+  // Matches LocationIconView::UpdateBorder().
+  void UpdateBorder() override {
+    gfx::Insets insets = GetLayoutInsets(LOCATION_BAR_PAGE_INFO_ICON_PADDING);
+    if (ShouldShowLabel()) {
+      if (security_level_ == security_state::DANGEROUS) {
+        insets.set_left(GetLayoutConstant(
+            LayoutConstant::kLocationBarPageInfoIconDangerousLeadingPadding));
+        insets.set_right(GetLayoutConstant(
+            LayoutConstant::kLocationBarPageInfoIconDangerousTrailingPadding));
+      } else {
+        insets.set_right(
+            insets.right() +
+            GetLayoutConstant(
+                LayoutConstant::
+                    kLocationBarPageInfoIconLabelExtraTrailingPadding));
+      }
+    }
+    SetBorder(views::CreateEmptyBorder(insets));
+  }
   bool ShowBubble(const ui::Event& event) override {
     return show_page_info_.Run();
   }
-  bool IsBubbleShowing() const override {
-    return PageInfoBubbleView::GetShownBubbleType() !=
-           PageInfoBubbleView::BUBBLE_NONE;
-  }
+  bool IsBubbleShowing() const override { return is_bubble_showing_.Run(); }
+
   // Match the browser-backed LocationIconView: never draw the trailing
   // separator (there is no omnibox decoration to separate from).
   bool ShouldShowSeparator() const override { return false; }
+  // Match LocationIconView: keep the security text after it slides in. The
+  // base implementation follows ShouldShowSeparator(), which would hide it.
+  bool ShouldShowLabelAfterAnimation() const override {
+    return ShouldShowLabel();
+  }
 
  private:
   base::RepeatingCallback<bool()> show_page_info_;
+  base::RepeatingCallback<bool()> is_bubble_showing_;
+  // Level of the current security text, set by UpdateSecurityText().
+  // UpdateBorder() is also called by the base class without arguments, so it
+  // reads this to keep the dangerous-state padding.
+  security_state::SecurityLevel security_level_ = security_state::NONE;
 };
 
 BEGIN_METADATA(OriginChipView)
@@ -219,10 +264,41 @@ class DocumentPipFrameView::LocationBarModelDelegateImpl
   content::WebContents* GetActiveWebContents() const override {
     return host_->GetOpenerWebContents();
   }
+  bool GetURL(GURL* url) const override;
+  bool ShouldPreventElision() override;
+  bool ShouldTrimDisplayUrlAfterHostName() const override;
+  bool ShouldDisplayURL() const override;
 
  private:
   const raw_ref<DocumentPipHost> host_;
 };
+
+bool DocumentPipFrameView::LocationBarModelDelegateImpl::GetURL(
+    GURL* url) const {
+  CHECK(url);
+  if (content::WebContents* const web_contents = GetActiveWebContents()) {
+    *url = web_contents->GetLastCommittedURL();
+    return true;
+  }
+  return false;
+}
+
+bool DocumentPipFrameView::LocationBarModelDelegateImpl::
+    ShouldPreventElision() {
+  // We should never allow the full URL to show, as the PiP window only cares
+  // about the origin of the opener.
+  return false;
+}
+
+bool DocumentPipFrameView::LocationBarModelDelegateImpl::
+    ShouldTrimDisplayUrlAfterHostName() const {
+  return true;
+}
+
+bool DocumentPipFrameView::LocationBarModelDelegateImpl::ShouldDisplayURL()
+    const {
+  return true;
+}
 
 class DocumentPipFrameView::WindowEventObserver : public ui::EventObserver {
  public:
@@ -302,6 +378,12 @@ DocumentPipFrameView::DocumentPipFrameView(DocumentPipHost* host)
           },
           // Safety: The widget owns the frame view and this chip, so the
           // callback cannot outlive the widget.
+          base::Unretained(this)),
+      base::BindRepeating(
+          [](DocumentPipFrameView* frame_view) {
+            return PageInfoBubbleViewBase::IsShowing(
+                frame_view->host_->GetOpenerWebContents());
+          },
           base::Unretained(this)));
   origin_chip->SetProperty(views::kElementIdentifierKey,
                            kLocationIconElementId);
@@ -368,6 +450,20 @@ DocumentPipFrameView::DocumentPipFrameView(DocumentPipHost* host)
     content_setting_views_.push_back(
         button_container_view_->AddChildView(std::move(image_view)));
   }
+
+#if BUILDFLAG(IS_CHROMEOS)
+  // Create the pin button, which toggles the window manager's auto layout of
+  // the PiP window. Wrap it in a fixed-size placeholder for the same reason as
+  // the back-to-tab button below.
+  if (PictureInPicturePinButton::IsEnabled()) {
+    auto pin_wrapper = std::make_unique<views::View>();
+    pin_wrapper->SetUseDefaultFillLayout(true);
+    pin_button_ = pin_wrapper->AddChildView(
+        std::make_unique<PictureInPicturePinButton>());
+    pin_wrapper->SetPreferredSize(pin_button_->GetPreferredSize());
+    button_container_view_->AddChildView(std::move(pin_wrapper));
+  }
+#endif
 
   // Create the back-to-tab button if allowed.
 
@@ -442,6 +538,11 @@ DocumentPipFrameView::DocumentPipFrameView(DocumentPipHost* host)
   // animated, and starts in the active state.
   animation_controller_ = std::make_unique<PipTopBarAnimationController>(
       this, back_to_tab_button_, close_image_button_, content_setting_views_);
+#if BUILDFLAG(IS_CHROMEOS)
+  if (pin_button_) {
+    animation_controller_->SetPinButton(pin_button_);
+  }
+#endif
 
   // If the window manager wants us to display an overlay, get it. In practice
   // this is the auto-PiP Allow / Block content-setting UI, shown when a site
@@ -523,6 +624,12 @@ int DocumentPipFrameView::NonClientHitTest(const gfx::Point& point) {
   // hidden, so gate on the top bar's active state to avoid hit-testing the
   // hidden buttons.
   const bool top_bar_active = animation_controller_->is_top_bar_active();
+#if BUILDFLAG(IS_CHROMEOS)
+  if (pin_button_ && top_bar_active &&
+      ConvertControlBoundsToFrame(pin_button_).Contains(point)) {
+    return HTCLIENT;
+  }
+#endif
   if (back_to_tab_button_ && top_bar_active &&
       ConvertControlBoundsToFrame(back_to_tab_button_).Contains(point)) {
     return HTCLIENT;
@@ -801,7 +908,7 @@ void DocumentPipFrameView::UpdateOriginAndSecurity() {
       security_text_initialized_ &&
       location_bar::ShouldAnimateSecurityChipTextChange(
           /*is_editing_or_empty=*/false, last_security_level_, security_level);
-  chip->UpdateSecurityText(chip_text, animate);
+  chip->UpdateSecurityText(chip_text, security_level, animate);
   last_security_level_ = security_level;
   security_text_initialized_ = true;
 }
@@ -814,11 +921,6 @@ void DocumentPipFrameView::ApplyTopBarForegroundColor(SkColor color) {
   auto* const chip = views::AsViewClass<OriginChipView>(origin_chip_);
   chip->SetSecurityImage(ui::ImageModel::FromVectorIcon(
       location_bar_model_->GetVectorIcon(), color, kSecurityIconImageSize));
-  // The chip label reads the color from
-  // GetIconLabelBubbleSurroundingForegroundColor(), which returns the
-  // controller's current foreground color; the controller sets it before
-  // calling here.
-  chip->RefreshForegroundColor();
 }
 
 const ui::ColorProvider* DocumentPipFrameView::GetTopBarColorProvider() const {
@@ -878,9 +980,8 @@ bool DocumentPipFrameView::ShowPageInfo() {
 
 SkColor DocumentPipFrameView::GetIconLabelBubbleSurroundingForegroundColor()
     const {
-  // During the active/inactive color fade the interpolated color is used so the
-  // origin chip label tracks the animation; otherwise use the steady-state
-  // active/inactive foreground.
+  // Supplies the origin chip's ink-drop color.
+  // Label text uses OriginChipView::GetForegroundColor() instead.
   if (std::optional<SkColor> color =
           animation_controller_->current_foreground_color()) {
     return *color;

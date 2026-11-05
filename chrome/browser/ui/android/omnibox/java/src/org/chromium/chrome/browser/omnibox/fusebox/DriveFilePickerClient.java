@@ -11,6 +11,7 @@ import org.chromium.base.ResettersForTesting;
 import org.chromium.base.ServiceLoaderUtil;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
+import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.ui.base.WindowAndroid;
 
 import java.util.List;
@@ -30,18 +31,14 @@ public class DriveFilePickerClient {
         return sInstance;
     }
 
-    /** Sets the instance for testing. */
-    public static void setInstanceForTesting(@Nullable DriveFilePickerClient instance) {
-        var prev = sInstance;
-        sInstance = instance;
-        ResettersForTesting.register(() -> sInstance = prev);
-    }
-
     /**
      * Checks whether Google Drive file picker is available. Overridden by downstream implementation
      * in //clank.
+     *
+     * @param context Android context.
+     * @param profile The current user profile, or null if uninitialized/unavailable.
      */
-    public boolean isAvailable(Context context) {
+    public boolean isAvailable(Context context, @Nullable Profile profile) {
         return false;
     }
 
@@ -50,11 +47,24 @@ public class DriveFilePickerClient {
      * //clank.
      *
      * @param windowAndroid Window in which to display the picker.
+     * @param profile The current user profile.
      * @param mimeTypes Optional list of MIME type filters.
-     * @return A promise resolved with {@link DriveAttachmentMetadata} or null if canceled.
+     * @param allowMultiSelect Whether multiple files can be selected.
+     * @return A promise resolved with the selected {@link DriveAttachmentMetadata} list, or an
+     *     empty list if canceled.
      */
-    public Promise<@Nullable DriveAttachmentMetadata> launchPicker(
-            WindowAndroid windowAndroid, @Nullable List<String> mimeTypes) {
-        return Promise.<@Nullable DriveAttachmentMetadata>fulfilled(null);
+    public Promise<List<DriveAttachmentMetadata>> launchPicker(
+            WindowAndroid windowAndroid,
+            Profile profile,
+            @Nullable List<String> mimeTypes,
+            boolean allowMultiSelect) {
+        return Promise.fulfilled(List.of());
+    }
+
+    /** Sets the instance for testing. */
+    public static void setInstanceForTesting(@Nullable DriveFilePickerClient instance) {
+        var prev = sInstance;
+        sInstance = instance;
+        ResettersForTesting.register(() -> sInstance = prev);
     }
 }

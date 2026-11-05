@@ -12,6 +12,9 @@ import androidx.annotation.DrawableRes;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.compositor.overlays.strip.StripLayoutView;
+import org.chromium.chrome.browser.layouts.components.VirtualView;
+
+import java.util.List;
 
 /**
  * {@link TintedCompositorTextButton} is a {@link TintedCompositorButton} that can also display text
@@ -55,17 +58,23 @@ public class TintedCompositorTextButton extends TintedCompositorButton {
         mDismissButton = dismissButton;
     }
 
-    /**
-     * @return The dismiss sub-button nested inside this text button.
-     */
+    /** Returns the dismiss sub-button nested inside this text button. */
     public @Nullable TintedCompositorButton getDismissButton() {
         return mDismissButton;
     }
 
     @Override
+    public void getVirtualViews(List<VirtualView> views) {
+        super.getVirtualViews(views);
+        if (mDismissButton != null && mDismissButton.isVisible()) {
+            mDismissButton.getVirtualViews(views);
+        }
+    }
+
+    @Override
     public boolean checkClickedOrHovered(float x, float y) {
         if (mDismissButton != null && mDismissButton.checkClickedOrHovered(x, y)) {
-            return true;
+            return false;
         }
 
         return super.checkClickedOrHovered(x, y);
@@ -124,9 +133,7 @@ public class TintedCompositorTextButton extends TintedCompositorButton {
         mText = text;
     }
 
-    /**
-     * @return The text displayed on the button.
-     */
+    /** Returns the text displayed on the button. */
     public @Nullable String getText() {
         return mText;
     }
@@ -138,9 +145,7 @@ public class TintedCompositorTextButton extends TintedCompositorButton {
         mTextResourceId = textResourceId;
     }
 
-    /**
-     * @return The resource ID for the generated text bitmap.
-     */
+    /** Returns the resource ID for the generated text bitmap. */
     public int getTextResourceId() {
         return mTextResourceId;
     }

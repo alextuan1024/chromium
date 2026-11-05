@@ -29,7 +29,8 @@
 
 namespace ash {
 
-constexpr SystemShadow::Type kShadowType = SystemShadow::Type::kElevation12;
+constexpr SystemDecoration::ShadowType kShadowType =
+    SystemDecoration::ShadowType::kElevation12;
 
 constexpr base::TimeDelta kProxyAnimationDuration = base::Milliseconds(200);
 
@@ -85,8 +86,7 @@ AppDragIconProxy::AppDragIconProxy(
   const gfx::Point shadow_offset(
       (size.width() - scaled_shadow_size.width()) / 2,
       (size.height() - scaled_shadow_size.height()) / 2);
-  shadow_ = SystemShadow::CreateShadowOnNinePatchLayer(
-      kShadowType, SystemShadow::LayerRecreatedCallback());
+  shadow_ = SystemDecoration::Create(kShadowType);
   shadow_->SetRoundedCorners(
       gfx::RoundedCornersF(scaled_shadow_size.width() / 2.0f));
   drag_image->AddLayerToRegion(shadow_->GetLayer(), views::LayerRegion::kBelow);
@@ -102,6 +102,7 @@ AppDragIconProxy::AppDragIconProxy(
     blurred_background_layer_ =
         std::make_unique<ui::LayerOwner>(std::make_unique<ui::LayerTextured>());
     ui::Layer* const blurred_layer = blurred_background_layer_->layer();
+    blurred_layer->SetName("AppDragIconProxy:BlurredBackground");
     drag_image->AddLayerToRegion(blurred_layer, views::LayerRegion::kBelow);
     blurred_layer->SetBounds(shadow_->GetContentBounds());
     const float corner_radius = shadow_->GetContentBounds().width() / 2.0f;

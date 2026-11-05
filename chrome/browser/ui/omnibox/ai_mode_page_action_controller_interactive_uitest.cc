@@ -18,19 +18,19 @@
 #include "chrome/browser/ui/actions/chrome_action_id.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
+#include "chrome/browser/ui/color/chrome_color_id.h"
 #include "chrome/browser/ui/omnibox/omnibox_next_features.h"
 #include "chrome/browser/ui/ui_features.h"
+#include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/omnibox/omnibox_popup_presenter_base.h"
-#include "chrome/browser/ui/views/page_action/page_action_view.h"
 #include "chrome/browser/ui/views/page_action/test_support/page_action_interactive_test_mixin.h"
-#include "chrome/browser/ui/views/page_action/test_support/page_action_test_support.h"
+#include "chrome/browser/ui/views/page_action/test_support/page_action_test_accessor.h"
 #include "chrome/common/webui_url_constants.h"
 #include "chrome/test/interaction/interactive_browser_test.h"
 #include "chrome/test/interaction/interactive_browser_window_test.h"
 #include "components/bookmarks/browser/bookmark_model.h"
 #include "components/bookmarks/test/bookmark_test_helpers.h"
 #include "components/omnibox/browser/mock_aim_eligibility_service.h"
-#include "components/omnibox/common/omnibox_features.h"
 #include "content/public/test/browser_test.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -95,8 +95,7 @@ class AiModePageActionControllerInteractiveUiTest
     features_.InitWithFeaturesAndParameters(
         /*enabled_features*/ {{omnibox::internal::kWebUIOmniboxPopup, {}},
                               {omnibox::internal::kWebUIOmniboxAimPopup, {}}},
-        /*disabled_features*/ {kHideAimEntrypointOnUserInput,
-                               kHideAimEntrypointForUrlSuggestions});
+        /*disabled_features*/ {});
   }
 
   InteractiveTestApi::MultiStep OpenTabWithPageUrlAndFocusOmnibox(
@@ -217,50 +216,8 @@ IN_PROC_BROWSER_TEST_F(AiModePageActionControllerInteractiveUiTest,
                   CheckChipVisible(/*visible=*/false));
 }
 
-class AiModePageActionControllerHideEntryPointOnEditInteractiveUiTest
-    : public AiModePageActionControllerInteractiveUiTest {
- protected:
-  void InitializeFeatures() override {
-    features_.InitWithFeaturesAndParameters(
-        /*enabled_features*/ {{kHideAimEntrypointOnUserInput, {}},
-                              {omnibox::internal::kWebUIOmniboxPopup, {}},
-                              {omnibox::internal::kWebUIOmniboxAimPopup, {}}},
-        /*disabled_features*/ {});
-  }
-};
-
-IN_PROC_BROWSER_TEST_F(
-    AiModePageActionControllerHideEntryPointOnEditInteractiveUiTest,
-    HiddenWhileEditingOmnibox) {
-  RunTestSequence(OpenTabWithPageUrlAndFocusOmnibox(),
-                  OpenOmniboxPopupByTypingASingleZero(),
-                  CheckChipVisible(/*visible=*/false));
-}
-
-IN_PROC_BROWSER_TEST_F(
-    AiModePageActionControllerHideEntryPointOnEditInteractiveUiTest,
-    VisibleWhileNotEditingOmnibox) {
-  RunTestSequence(OpenTabWithPageUrlAndFocusOmnibox(),
-                  OpenOmniboxPopupByTypingASingleZero(),
-                  SendKeyPress(GetTargetElementId(), ui::VKEY_BACK),
-                  CheckChipVisible(/*visible=*/true));
-}
-
-class AiModePageActionControllerHideEntryPointForUrlInteractiveUiTest
-    : public AiModePageActionControllerInteractiveUiTest {
- protected:
-  void InitializeFeatures() override {
-    features_.InitWithFeaturesAndParameters(
-        /*enabled_features*/ {{kHideAimEntrypointForUrlSuggestions, {}},
-                              {omnibox::internal::kWebUIOmniboxPopup, {}},
-                              {omnibox::internal::kWebUIOmniboxAimPopup, {}}},
-        /*disabled_features*/ {});
-  }
-};
-
-IN_PROC_BROWSER_TEST_F(
-    AiModePageActionControllerHideEntryPointForUrlInteractiveUiTest,
-    HidesOnUrlSuggestion) {
+IN_PROC_BROWSER_TEST_F(AiModePageActionControllerInteractiveUiTest,
+                       HidesOnUrlSuggestion) {
   RunTestSequence(OpenTabWithPageUrlAndFocusOmnibox(/*is_ntp=*/true),
                   CheckChipVisible(true),
                   // Type a URL.
@@ -271,9 +228,8 @@ IN_PROC_BROWSER_TEST_F(
                   CheckChipVisible(false));
 }
 
-IN_PROC_BROWSER_TEST_F(
-    AiModePageActionControllerHideEntryPointForUrlInteractiveUiTest,
-    HidesOnSelectedUrlSuggestion) {
+IN_PROC_BROWSER_TEST_F(AiModePageActionControllerInteractiveUiTest,
+                       HidesOnSelectedUrlSuggestion) {
   bookmarks::BookmarkModel* model =
       BookmarkModelFactory::GetForBrowserContext(browser()->GetProfile());
   bookmarks::test::WaitForBookmarkModelToLoad(model);
@@ -346,22 +302,27 @@ IN_PROC_BROWSER_TEST_F(
   RunTestSequence(
       OpenTabWithPageUrlAndFocusOmnibox(/*is_ntp=*/true),
       CheckChipVisible(true), Do([this]() {
-        if (features::IsWebUILocationBarEnabled()) {
-          // TODO(crbug.com/545160323): Support background color test in WebUI
-          // location bar.
-          return;
-        }
-        auto* provider = BrowserView::GetBrowserViewForBrowser(browser())
-                             ->toolbar_button_provider();
-        auto* view = static_cast<page_actions::PageActionView*>(
-            page_actions::GetIconLabelBubbleViewForTesting(
-                provider->GetPageActionViewInterface(kActionAiMode),
-                kActionAiMode));
-        ASSERT_NE(view, nullptr);
-        SkColor actual_bg_color = view->GetBackgroundColorForTesting();
-        SkColor expected_bg_color = view->GetColorProvider()->GetColor(
-            kColorOmniboxResultsBackgroundHovered);
+        page_actions::PageActionTestAccessor accessor(browser(), kActionAiMode);
+        auto* browser_view = BrowserView::GetBrowserViewForBrowser(browser());
+        SkColor actual_bg_color = accessor.GetBackgroundColor();
+        SkColor expected_bg_color = browser_view->GetColorProvider()->GetColor(
+            kColorOmniboxComposeboxContextEntrypointBackground);
         EXPECT_EQ(actual_bg_color, expected_bg_color);
+      }));
+}
+
+IN_PROC_BROWSER_TEST_F(
+    AiModePageActionControllerDynamicAiModeButtonInteractiveUiTest,
+    VerifyForegroundColorOverride) {
+  RunTestSequence(
+      OpenTabWithPageUrlAndFocusOmnibox(/*is_ntp=*/true),
+      CheckChipVisible(true), Do([this]() {
+        page_actions::PageActionTestAccessor accessor(browser(), kActionAiMode);
+        auto* browser_view = BrowserView::GetBrowserViewForBrowser(browser());
+        SkColor actual_fg_color = accessor.GetForegroundColor();
+        SkColor expected_fg_color = browser_view->GetColorProvider()->GetColor(
+            kColorOmniboxContextEntrypointText);
+        EXPECT_EQ(actual_fg_color, expected_fg_color);
       }));
 }
 
@@ -370,19 +331,10 @@ IN_PROC_BROWSER_TEST_F(
     ShowsLeadingIconWhenNoUserInputInProgress) {
   RunTestSequence(
       OpenTabWithPageUrlAndFocusOmnibox(/*is_ntp=*/true),
-      CheckChipVisible(true),
-      Do([this]() {
-        if (features::IsWebUILocationBarEnabled()) {
-          return;
-        }
-        auto* provider = BrowserView::GetBrowserViewForBrowser(browser())
-                             ->toolbar_button_provider();
-        auto* view = static_cast<page_actions::PageActionView*>(
-            page_actions::GetIconLabelBubbleViewForTesting(
-                provider->GetPageActionViewInterface(kActionAiMode),
-                kActionAiMode));
-        ASSERT_NE(view, nullptr);
-        EXPECT_EQ(view->slide_animation_for_testing().GetCurrentValue(), 0.0);
+      CheckChipVisible(true), Do([this]() {
+        EXPECT_EQ(page_actions::PageActionTestAccessor(browser(), kActionAiMode)
+                      .GetSlideAnimationValue(),
+                  0.0);
       }));
 }
 

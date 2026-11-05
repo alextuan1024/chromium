@@ -7,6 +7,8 @@
 #import <Carbon/Carbon.h>
 
 #include <algorithm>
+#include <array>
+#include <string_view>
 
 #include "base/apple/foundation_util.h"
 #include "base/apple/osstatus_logging.h"
@@ -91,7 +93,7 @@ bool IsKeypadOrNumericKeyEvent(NSEvent* event) {
 }
 
 // A convenient array for getting symbol characters on the number keys.
-const char kShiftCharsForNumberKeys[] = ")!@#$%^&*(";
+constexpr std::string_view kShiftCharsForNumberKeys = ")!@#$%^&*(";
 
 DomKey DomKeyFromKeyCode(unsigned short key_code) {
   constexpr auto kMap = base::MakeFixedFlatMap<unsigned short, DomKey>({
@@ -241,7 +243,8 @@ char32_t ReadLastUnicodeCharacter(NSString* characters) {
 // NsKeyCodeAndModifiersToCharacter() is efficient (around 6E-4 ms).
 std::tuple<UniChar, bool> NsKeyCodeAndModifiersToCharacter(
     unsigned short key_code,
-    int modifiers) {
+    int modifiers,
+    TISInputSourceRef input_source) {
   // Convert NSEvent modifiers to format UCKeyTranslate accepts. See docs
   // on UCKeyTranslate for more info.
   int unicode_modifiers = 0;
@@ -261,16 +264,19 @@ std::tuple<UniChar, bool> NsKeyCodeAndModifiersToCharacter(
   UInt32 modifier_key_state = (unicode_modifiers >> 8) & 0xFF;
 
   UInt32 dead_key_state = 0;
-  base::apple::ScopedCFTypeRef<TISInputSourceRef> input_source(
-      TISCopyCurrentKeyboardLayoutInputSource());
+  base::apple::ScopedCFTypeRef<TISInputSourceRef> current_input_source;
+  if (!input_source) {
+    current_input_source.reset(TISCopyCurrentKeyboardLayoutInputSource());
+    input_source = current_input_source.get();
+  }
   UniChar translated_char = TranslatedUnicodeCharFromKeyCode(
-      input_source.get(), static_cast<UInt16>(key_code), kUCKeyActionDown,
+      input_source, static_cast<UInt16>(key_code), kUCKeyActionDown,
       modifier_key_state, LMGetKbdLast(), &dead_key_state);
 
   bool is_dead_key = dead_key_state != 0;
   if (is_dead_key) {
     translated_char = TranslatedUnicodeCharFromKeyCode(
-        input_source.get(), static_cast<UInt16>(kVK_Space), kUCKeyActionDown, 0,
+        input_source, static_cast<UInt16>(kVK_Space), kUCKeyActionDown, 0,
         LMGetKbdLast(), &dead_key_state);
   }
 
@@ -458,7 +464,7 @@ int MacKeyCodeForWindowsKeyCode(KeyboardCode keycode,
 
   // In release code, |flags| is used to lookup accelerators, so logic to handle
   // caps lock properly isn't implemented.
-  DCHECK_EQ(0u, flags & NSEventModifierFlagCapsLock);
+  CHECK_EQ(0u, flags & NSEventModifierFlagCapsLock, base::NotFatalUntil::M163);
 
   auto it = kMap.find(keycode);
   if (it == kMap.end() || it->second.mac_keycode == -1) {
@@ -480,7 +486,7 @@ int MacKeyCodeForWindowsKeyCode(KeyboardCode keycode,
   if (flags & NSEventModifierFlagShift) {
     if (keycode >= VKEY_0 && keycode <= VKEY_9) {
       *us_keyboard_shifted_character =
-          UNSAFE_TODO(kShiftCharsForNumberKeys[keycode - VKEY_0]);
+          kShiftCharsForNumberKeys[keycode - VKEY_0];
     } else if (keycode >= VKEY_A && keycode <= VKEY_Z) {
       *us_keyboard_shifted_character = 'A' + (keycode - VKEY_A);
     } else {
@@ -640,7 +646,7 @@ KeyboardCode KeyboardCodeFromCharCode(unichar char_code) {
 }
 
 KeyboardCode KeyboardCodeFromKeyCode(unsigned short key_code) {
-  static const KeyboardCode kKeyboardCodes[] = {
+  static constexpr std::array<KeyboardCode, 128> kKeyboardCodes = {
       /* 0x00 */ VKEY_A,
       /* 0x01 */ VKEY_S,
       /* 0x02 */ VKEY_D,
@@ -775,7 +781,7 @@ KeyboardCode KeyboardCodeFromKeyCode(unsigned short key_code) {
     return VKEY_UNKNOWN;
   }
 
-  return UNSAFE_TODO(kKeyboardCodes[key_code]);
+  return kKeyboardCodes[key_code];
 }
 
 KeyboardCode KeyboardCodeFromNSEvent(NSEvent* event) {
@@ -902,7 +908,7 @@ UniChar TranslatedUnicodeCharFromKeyCode(TISInputSourceRef input_source,
                                          UInt32 modifier_key_state,
                                          UInt32 keyboard_type,
                                          UInt32* dead_key_state) {
-  DCHECK(dead_key_state);
+  CHECK(dead_key_state, base::NotFatalUntil::M163);
 
   CFDataRef layout_data =
       base::apple::CFCast<CFDataRef>(TISGetInputSourceProperty(
@@ -913,7 +919,7 @@ UniChar TranslatedUnicodeCharFromKeyCode(TISInputSourceRef input_source,
 
   const UCKeyboardLayout* keyboard_layout =
       reinterpret_cast<const UCKeyboardLayout*>(CFDataGetBytePtr(layout_data));
-  DCHECK(keyboard_layout);
+  CHECK(keyboard_layout, base::NotFatalUntil::M163);
 
   UniChar char_buffer[kUCKeyTranslateBufferLength] = {0};
   UniCharCount buffer_length = kUCKeyTranslateBufferLength;

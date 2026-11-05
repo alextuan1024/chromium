@@ -88,9 +88,11 @@ namespace variations {
 class VariationsService;
 }
 
+#if !BUILDFLAG(IS_CHROMEOS)
 namespace activity_reporter {
 class ActivityReporter;
 }
+#endif  // !BUILDFLAG(IS_CHROMEOS)
 
 namespace component_updater {
 class ComponentUpdateService;
@@ -242,10 +244,12 @@ class BrowserProcess {
   // Setting the locale updates a few core places where this information is
   // stored, but does not reload any resources or refresh any UI.
 
-  // DEPRECATED: Please use GetFeatures()->application_locale_storage()->Get().
+  // DEPRECATED: Please use
+  // GetFeatures()->application_locale_storage()->GetTag().
   // TODO(crbug.com/407832571): Replace existing usages and remove this.
   virtual const std::string& GetApplicationLocale() = 0;
-  // DEPRECATED: Please use GetFeatures()->application_locale_storage()->Set().
+  // DEPRECATED: Please use
+  // GetFeatures()->application_locale_storage()->SetTag().
   // TODO(crbug.com/407832571): Replace existing usages and remove this.
   virtual void SetApplicationLocale(const std::string& actual_locale) = 0;
 
@@ -289,7 +293,10 @@ class BrowserProcess {
   virtual void StartAutoupdateTimer() = 0;
 #endif
 
+#if !BUILDFLAG(IS_CHROMEOS)
+  // Activity reporting is never built into ChromeOS.
   virtual activity_reporter::ActivityReporter* activity_reporter() = 0;
+#endif  // !BUILDFLAG(IS_CHROMEOS)
 
   virtual component_updater::ComponentUpdateService* component_updater() = 0;
 

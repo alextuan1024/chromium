@@ -39,6 +39,7 @@
 #include "services/network/public/cpp/resource_request_body.h"
 #include "third_party/blink/public/common/loader/resource_type_util.h"
 #include "third_party/blink/public/common/service_worker/service_worker_loader_helpers.h"
+#include "third_party/blink/public/mojom/service_worker/service_worker_database.mojom-forward.h"
 #include "third_party/perfetto/include/perfetto/tracing/track.h"
 
 #if BUILDFLAG(ENABLE_OFFLINE_PAGES)
@@ -182,6 +183,15 @@ void ServiceWorkerControlleeRequestHandler::MaybeCreateLoader(
     // If the navigation is from reloading, do not inject the service worker
     // registration.
     if (tentative_resource_request.load_flags & kReloadFlags) {
+      CompleteWithoutLoader();
+      return;
+    }
+    // Back/forward history navigations and tab restores set
+    // `net::LOAD_SKIP_CACHE_VALIDATION` to prefer cached content without
+    // revalidation. Do not inject the synthetic service worker registration so
+    // the request can be served from the HTTP cache or embedder cache.
+    if (tentative_resource_request.load_flags &
+        net::LOAD_SKIP_CACHE_VALIDATION) {
       CompleteWithoutLoader();
       return;
     }
@@ -466,11 +476,15 @@ void ServiceWorkerControlleeRequestHandler::ContinueWithActivatedVersion(
     service_worker_client_->AddServiceWorkerToUpdate(active_version);
   }
 
-  // If the router evaluation or synthetic response is needed, always forward to
-  // the service worker, because they are handled in
-  // ServiceWorkerMainResourceLoader.
+  // Forward to ServiceWorkerMainResourceLoader when router evaluation is
+  // needed, or when synthetic response interception applies to a synthetic
+  // registration (`id <= kSyntheticResponseServiceWorkerRegistrationId`). Real
+  // registrations (`id >= 0`) must fall through so workers with no or empty
+  // fetch handlers still bypass loader creation via `CompleteWithoutLoader()`.
   if (active_version->NeedRouterEvaluate() ||
-      needs_interception_for_synthetic_response_) {
+      (needs_interception_for_synthetic_response_ &&
+       registration->id() <=
+           blink::mojom::kSyntheticResponseServiceWorkerRegistrationId)) {
     CreateLoaderAndStartRequest(std::move(find_registration_start_time));
     return;
   }

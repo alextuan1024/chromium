@@ -39,7 +39,6 @@
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/resource/resource_bundle.h"
 #include "ui/base/webui/web_ui_util.h"
-#include "ui/base/window_open_disposition.h"
 #include "ui/webui/webui_util.h"
 
 namespace {
@@ -72,7 +71,6 @@ content::WebUIDataSource* CreateAndAddBookmarksUIHTMLSource(Profile* profile) {
       {"addBookmarkTitle", IDS_BOOKMARK_MANAGER_ADD_BOOKMARK_TITLE},
       {"addFolderTitle", IDS_BOOKMARK_MANAGER_ADD_FOLDER_TITLE},
       {"accountBookmarksTitle", IDS_BOOKMARKS_ACCOUNT_BOOKMARKS},
-      {"bookmarkPromoCardTitle", IDS_BATCH_UPLOAD_PROMO_TITLE},
       {"cancel", IDS_CANCEL},
       {"clearSearch", IDS_BOOKMARK_MANAGER_CLEAR_SEARCH},
       {"close", IDS_CLOSE},
@@ -137,7 +135,6 @@ content::WebUIDataSource* CreateAndAddBookmarksUIHTMLSource(Profile* profile) {
       {"openDialogTitle", IDS_BOOKMARK_MANAGER_OPEN_DIALOG_TITLE},
       {"organizeButtonTitle", IDS_BOOKMARK_MANAGER_ORGANIZE_MENU},
       {"renameFolderTitle", IDS_BOOKMARK_MANAGER_FOLDER_RENAME_TITLE},
-      {"saveToAccount", IDS_BATCH_UPLOAD_PROMO_TITLE_OK_BUTTON_LABEL},
       {"searchPrompt", IDS_BOOKMARK_MANAGER_SEARCH_BUTTON},
       {"sidebarAxLabel", IDS_BOOKMARK_MANAGER_SIDEBAR_AX_LABEL},
       {"searchCleared", IDS_SEARCH_CLEARED},

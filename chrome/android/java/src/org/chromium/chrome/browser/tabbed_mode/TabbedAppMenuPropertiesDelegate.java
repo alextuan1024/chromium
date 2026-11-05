@@ -31,17 +31,19 @@ import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.ActivityTabProvider;
-import org.chromium.chrome.browser.RecentlyClosedEntriesManager;
 import org.chromium.chrome.browser.app.appmenu.AppMenuItemUtils;
 import org.chromium.chrome.browser.app.appmenu.AppMenuPropertiesDelegateImpl;
 import org.chromium.chrome.browser.bookmarks.BookmarkImageFetcher;
 import org.chromium.chrome.browser.bookmarks.BookmarkModel;
+import org.chromium.chrome.browser.contextual_tasks.ContextualTasksUtils;
 import org.chromium.chrome.browser.device.DeviceConditions;
 import org.chromium.chrome.browser.enterprise.util.ManagedBrowserUtils;
 import org.chromium.chrome.browser.feed.FeedFeatures;
+import org.chromium.chrome.browser.feedback.FeedbackPolicyManager;
 import org.chromium.chrome.browser.feedback.HelpAndFeedbackLauncher;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.glic.GlicEnabling;
+import org.chromium.chrome.browser.glic.GlicUtils;
 import org.chromium.chrome.browser.homepage.HomepageManager;
 import org.chromium.chrome.browser.hub.HubManager;
 import org.chromium.chrome.browser.hub.Pane;
@@ -56,9 +58,11 @@ import org.chromium.chrome.browser.multiwindow.MultiWindowUtils;
 import org.chromium.chrome.browser.omaha.UpdateMenuItemHelper;
 import org.chromium.chrome.browser.open_in_app.OpenInAppMenuItemProvider;
 import org.chromium.chrome.browser.preferences.Pref;
+import org.chromium.chrome.browser.printing.PrintingDelegate;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.readaloud.ReadAloudController;
 import org.chromium.chrome.browser.recent_tabs.ForeignSessionHelper;
+import org.chromium.chrome.browser.recent_tabs.RecentlyClosedEntriesManager;
 import org.chromium.chrome.browser.share.ShareUtils;
 import org.chromium.chrome.browser.supervised_user.AndroidParentalControlsBridge;
 import org.chromium.chrome.browser.tab.Tab;
@@ -68,6 +72,7 @@ import org.chromium.chrome.browser.task_manager.TaskManager;
 import org.chromium.chrome.browser.toolbar.ToolbarManager;
 import org.chromium.chrome.browser.toolbar.menu_button.MenuItemState;
 import org.chromium.chrome.browser.toolbar.top.ToolbarUtils;
+import org.chromium.chrome.browser.ttc.TtcSessionCoordinator;
 import org.chromium.chrome.browser.ui.appmenu.AppMenuDelegate;
 import org.chromium.chrome.browser.ui.appmenu.AppMenuHandler;
 import org.chromium.chrome.browser.ui.appmenu.AppMenuItemProperties;
@@ -76,7 +81,6 @@ import org.chromium.chrome.browser.ui.favicon.FaviconHelper;
 import org.chromium.chrome.browser.ui.favicon.FaviconUtils;
 import org.chromium.chrome.browser.ui.lens.LensOverlayTabHelper;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
-import org.chromium.chrome.browser.ui.side_panel.AndroidSidePanelEnabledFn;
 import org.chromium.chrome.browser.ui.side_ui.SideUiCoordinator.SideUiId;
 import org.chromium.chrome.browser.ui.side_ui.SideUiStateProvider;
 import org.chromium.components.browser_ui.accessibility.PageZoomManager;
@@ -147,8 +151,9 @@ public class TabbedAppMenuPropertiesDelegate extends AppMenuPropertiesDelegateIm
     private @Nullable FaviconHelper mFaviconHelper;
     private final FaviconHelper.DefaultFaviconHelper mDefaultFaviconHelper;
     private final RoundedIconGenerator mRoundedIconGenerator;
-    private final Supplier<RecentlyClosedEntriesManager> mRecentlyClosedEntriesManagerSupplier;
-    private final Supplier<SideUiStateProvider> mSideUiStateProviderSupplier;
+    private final Supplier<@Nullable RecentlyClosedEntriesManager>
+            mRecentlyClosedEntriesManagerSupplier;
+    private final Supplier<@Nullable SideUiStateProvider> mSideUiStateProviderSupplier;
 
     public TabbedAppMenuPropertiesDelegate(
             Context context,
@@ -167,8 +172,8 @@ public class TabbedAppMenuPropertiesDelegate extends AppMenuPropertiesDelegateIm
             PageZoomManager pageZoomManager,
             OneshotSupplier<HubManager> hubManagerSupplier,
             @Nullable OpenInAppMenuItemProvider openInAppMenuItemProvider,
-            Supplier<RecentlyClosedEntriesManager> recentlyClosedEntriesManagerSupplier,
-            Supplier<SideUiStateProvider> sideUiStateProviderSupplier,
+            Supplier<@Nullable RecentlyClosedEntriesManager> recentlyClosedEntriesManagerSupplier,
+            Supplier<@Nullable SideUiStateProvider> sideUiStateProviderSupplier,
             NonNullObservableSupplier<Boolean> xrSpaceModeObservableSupplier,
             BooleanSupplier canActivateTabLayoutToggleMenu) {
         super(
@@ -475,11 +480,18 @@ public class TabbedAppMenuPropertiesDelegate extends AppMenuPropertiesDelegateIm
         ListItem openGlicItem = maybeBuildOpenGlicItem(currentTab);
         if (openGlicItem != null) modelList.add(openGlicItem);
 
+        // TTC
+        ListItem ttcItem = maybeBuildTtcItem(currentTab);
+        if (ttcItem != null) modelList.add(ttcItem);
+
         // Find in page
         if (shouldShowFindInPageItem(currentTab)) modelList.add(buildFindInPageItem(currentTab));
 
         // Lens Overlay
         if (shouldShowLensOverlayItem(currentTab)) modelList.add(buildLensOverlayItem(currentTab));
+
+        // Ask Google about this page
+        if (shouldShowAskGoogleItem(currentTab)) modelList.add(buildAskGoogleItem(currentTab));
 
         // Translate
         if (shouldShowTranslateMenuItem(currentTab)) {
@@ -673,6 +685,10 @@ public class TabbedAppMenuPropertiesDelegate extends AppMenuPropertiesDelegateIm
         ListItem openGlicItem = maybeBuildOpenGlicItem(currentTab);
         if (openGlicItem != null) modelList.add(openGlicItem);
 
+        // TTC
+        ListItem ttcItem = maybeBuildTtcItem(currentTab);
+        if (ttcItem != null) modelList.add(ttcItem);
+
         // Print
         if (shouldShowPrintItem(currentTab)) {
             modelList.add(buildPrintItem(currentTab));
@@ -689,6 +705,9 @@ public class TabbedAppMenuPropertiesDelegate extends AppMenuPropertiesDelegateIm
 
         // Lens Overlay
         if (shouldShowLensOverlayItem(currentTab)) modelList.add(buildLensOverlayItem(currentTab));
+
+        // Ask Google about this page
+        if (shouldShowAskGoogleItem(currentTab)) modelList.add(buildAskGoogleItem(currentTab));
 
         // Translate
         if (shouldShowTranslateMenuItem(currentTab)) {
@@ -780,7 +799,9 @@ public class TabbedAppMenuPropertiesDelegate extends AppMenuPropertiesDelegateIm
     private void populateOverviewModeMenu(MVCListAdapter.ModelList modelList) {
         Profile profile = getProfileFromTabModel();
         boolean isIncognitoForced = IncognitoUtils.isIncognitoModeForced(profile);
-        if (!IncognitoUtils.shouldOpenIncognitoAsWindow() || !isIncognitoShowing() || isIncognitoForced) {
+        if (!IncognitoUtils.shouldOpenIncognitoAsWindow()
+                || !isIncognitoShowing()
+                || isIncognitoForced) {
             modelList.add(buildNewTabItem(isIncognitoForced));
         }
         if (!IncognitoUtils.shouldOpenIncognitoAsWindow() || isIncognitoShowing()) {
@@ -1148,8 +1169,9 @@ public class TabbedAppMenuPropertiesDelegate extends AppMenuPropertiesDelegateIm
 
         // Check if printing is specifically enabled in user preferences for the current profile.
         Profile profile = currentTab.getProfile();
-        boolean isPrintingEnabled = UserPrefs.get(profile).getBoolean(Pref.PRINTING_ENABLED);
-        if (!isPrintingEnabled) {
+        PrintingDelegate printingDelegate = PrintingDelegate.getInstance();
+        if (printingDelegate == null
+                || !printingDelegate.isPrintingEnabled(UserPrefs.get(profile))) {
             return false;
         }
 
@@ -1411,6 +1433,9 @@ public class TabbedAppMenuPropertiesDelegate extends AppMenuPropertiesDelegateIm
         List<ListItem> submenuItems = new ArrayList<>();
         submenuItems.add(buildAboutChromeItem());
         submenuItems.add(buildHelpCenterItem());
+        if (FeedbackPolicyManager.getInstance().isUserFeedbackAllowed()) {
+            submenuItems.add(buildReportIssueItem());
+        }
 
         int helpString = HelpAndFeedbackLauncher.getHelpMenuStringRes();
         return new ListItem(
@@ -1432,6 +1457,18 @@ public class TabbedAppMenuPropertiesDelegate extends AppMenuPropertiesDelegateIm
                         getAppMenuItemTheme(),
                         R.id.help_id,
                         R.string.menu_help_center,
+                        Resources.ID_NULL,
+                        isMenuIconAtStart()),
+                /* showIcon= */ false);
+    }
+
+    private ListItem buildReportIssueItem() {
+        return AppMenuItemUtils.createStandardListItem(
+                AppMenuItemUtils.buildModelForStandardMenuItem(
+                        mContext,
+                        getAppMenuItemTheme(),
+                        R.id.report_issue_menu_id,
+                        R.string.menu_report_issue,
                         Resources.ID_NULL,
                         isMenuIconAtStart()),
                 /* showIcon= */ false);
@@ -1476,9 +1513,8 @@ public class TabbedAppMenuPropertiesDelegate extends AppMenuPropertiesDelegateIm
                     mDecorView.getWidth()
                             < DeviceFormFactor.getNonMultiDisplayMinimumTabletWidthPx(mContext);
             boolean appMenuIconsHiddenForWidth =
-                    ChromeFeatureList.sToolbarTabletResizeRefactor.isEnabled()
-                            && mToolbarManager.areAnyToolbarComponentsMissingForWidth(
-                                    ToolbarUtils.APP_MENU_ICON_ROW_COMPONENTS);
+                    mToolbarManager.areAnyToolbarComponentsMissingForWidth(
+                            ToolbarUtils.APP_MENU_ICON_ROW_COMPONENTS);
             shouldShowIconRow = widthOnTabletBelowMinimum || appMenuIconsHiddenForWidth;
         }
 
@@ -1531,6 +1567,26 @@ public class TabbedAppMenuPropertiesDelegate extends AppMenuPropertiesDelegateIm
         return new MVCListAdapter.ListItem(AppMenuHandler.AppMenuItemType.STANDARD, model);
     }
 
+    private boolean shouldShowAskGoogleItem(@Nullable Tab currentTab) {
+        return ContextualTasksUtils.shouldShowAskGoogleEntryPoint(
+                currentTab, ChromeFeatureList.sContextualTasksEntryPointsAppMenu);
+    }
+
+    private MVCListAdapter.ListItem buildAskGoogleItem(@Nullable Tab currentTab) {
+        assert shouldShowAskGoogleItem(currentTab);
+        PropertyModel model =
+                AppMenuItemUtils.buildModelForStandardMenuItem(
+                        mContext,
+                        getAppMenuItemTheme(),
+                        R.id.ask_google_about_page_menu_id,
+                        R.string.contextual_search_open_lens_action_label,
+                        shouldShowIconBeforeItem()
+                                ? R.drawable.ic_search_spark_24dp
+                                : Resources.ID_NULL,
+                        isMenuIconAtStart());
+        return new MVCListAdapter.ListItem(AppMenuHandler.AppMenuItemType.STANDARD, model);
+    }
+
     private boolean shouldShowDefaultBrowserPromo() {
         return DefaultBrowserPromoUtils.getInstance().shouldShowAppMenuItemEntryPoint()
                 && ChromeFeatureList.sDefaultBrowserPromoEntryPointShowAppMenu.getValue();
@@ -1567,7 +1623,7 @@ public class TabbedAppMenuPropertiesDelegate extends AppMenuPropertiesDelegateIm
         }
         // Only enforce width constraints if side panel feature is enabled on the device.
         // TODO(crbug.com/519680563): Remove this side panel check once bottom sheet enabled on LFF.
-        if (AndroidSidePanelEnabledFn.isEnabled()) {
+        if (GlicUtils.isSidePanelFormFactor(mContext)) {
             SideUiStateProvider sideUiStateProvider = mSideUiStateProviderSupplier.get();
             assert sideUiStateProvider != null;
             if (!sideUiStateProvider.canShowSideUi(SideUiId.SIDE_PANEL)) {
@@ -1586,6 +1642,27 @@ public class TabbedAppMenuPropertiesDelegate extends AppMenuPropertiesDelegateIm
                         isMenuIconAtStart()));
     }
 
+    private @Nullable ListItem maybeBuildTtcItem(@Nullable Tab currentTab) {
+        if (currentTab == null
+                || currentTab.isIncognito()
+                || currentTab.getWebContents() == null
+                || !TtcSessionCoordinator.usesMobileSessionUi(mContext)
+                || TtcSessionCoordinator.getServiceIfAvailable(currentTab.getProfile()) == null) {
+            return null;
+        }
+        return new ListItem(
+                AppMenuHandler.AppMenuItemType.STANDARD,
+                AppMenuItemUtils.buildModelForStandardMenuItem(
+                        mContext,
+                        getAppMenuItemTheme(),
+                        R.id.ttc_menu_id,
+                        R.string.ttc_entrypoint_label,
+                        shouldShowIconBeforeItem()
+                                ? R.drawable.ic_mic_white_24dp
+                                : Resources.ID_NULL,
+                        isMenuIconAtStart()));
+    }
+
     /**
      * @return Whether the "New window" menu item should be displayed.
      */
@@ -1599,9 +1676,10 @@ public class TabbedAppMenuPropertiesDelegate extends AppMenuPropertiesDelegateIm
             if (MultiWindowUtils.getInstanceCount(PersistedInstanceType.ACTIVE)
                     >= MultiWindowUtils.getMaxInstances()) return false;
 
-            // On phones, show the menu only when in split-screen, with a single instance
-            // running on the foreground.
+            // On phones, show the menu only when on the New Tab Page (NTP), or when in
+            // split-screen with a single instance running on the foreground.
             return isTabletSizeScreen()
+                    || isCurrentTabNtp()
                     || (!mMultiWindowModeStateDispatcher.isChromeRunningInAdjacentWindow()
                             && (mMultiWindowModeStateDispatcher.isInMultiWindowMode()
                                     || mMultiWindowModeStateDispatcher.isInMultiDisplayMode()));
@@ -1637,7 +1715,13 @@ public class TabbedAppMenuPropertiesDelegate extends AppMenuPropertiesDelegateIm
      */
     protected boolean shouldShowMoveToOtherWindow() {
         if (!isMultiInstanceEnabled() && shouldShowNewWindow()) return false;
+        if (isCurrentTabNtp()) return false;
         return mMultiWindowModeStateDispatcher.isMoveToOtherWindowSupported(mTabModelSelector);
+    }
+
+    private boolean isCurrentTabNtp() {
+        Tab currentTab = mActivityTabProvider.get();
+        return currentTab != null && UrlUtilities.isNtpUrl(currentTab.getUrl());
     }
 
     @VisibleForTesting

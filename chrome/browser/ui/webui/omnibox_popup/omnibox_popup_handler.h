@@ -24,10 +24,11 @@ class WebContents;
 
 class OmniboxController;
 
-// Returns the WebUI resource path or favicon URL for the default search
-// provider.
+// Returns the WebUI resource path or favicon URL for the DSE. In dark mode,
+// Google DSE uses the monochrome Super G icon.
 std::string GetDefaultSearchProviderIcon(
-    const TemplateURLService* template_url_service);
+    const TemplateURLService* template_url_service,
+    bool is_dark_mode);
 
 class OmniboxPopupHandler : public omnibox_popup::mojom::PageHandler,
                             public TemplateURLServiceObserver {
@@ -48,6 +49,15 @@ class OmniboxPopupHandler : public omnibox_popup::mojom::PageHandler,
     embedder_ = embedder;
   }
 
+  // Stops using the omnibox of the browser window that embeds the popup and
+  // drops the text state the page reported there. Called before the popup's
+  // WebContents moves to another browser window.
+  void DetachFromOmniboxController();
+
+  // Uses `controller`, the omnibox of the browser window that now embeds the
+  // popup.
+  void AttachToOmniboxController(OmniboxController* controller);
+
   // omnibox_popup::mojom::PageHandler:
   void ShowContextMenu(const gfx::Point& point) override;
   void CloseUI() override;
@@ -55,9 +65,11 @@ class OmniboxPopupHandler : public omnibox_popup::mojom::PageHandler,
                           uint32_t sequence_number,
                           bool show_full_url) override;
   void Revert(uint32_t sequence_number) override;
+  void RevertTemporaryText(uint32_t sequence_number) override;
   void LogEscapeAction(
       omnibox_popup::mojom::OmniboxEscapeAction action) override;
   void OnInputCleared(uint32_t sequence_number) override;
+  void StartUserInput(uint32_t sequence_number) override;
   void OnPaste(const std::string& text,
                const gfx::Range& selection,
                uint32_t sequence_number) override;
@@ -69,6 +81,16 @@ class OmniboxPopupHandler : public omnibox_popup::mojom::PageHandler,
                    const gfx::Range& selection) override;
   void SetEditHistoryState(bool can_undo, bool can_redo) override;
   void OpenDevTools() override;
+  void OpenDogfoodFeedback() override;
+  void AdvanceFocus(bool reverse) override;
+
+  // Computes URL emphasis metadata for the given text.
+  // This implementation is based on `OmniboxViewViews::UpdateTextStyle()`
+  // (for URL component parsing and deemphasis mode determination) and
+  // `OmniboxViewViews::UpdateSchemeStyle()` (for security-related scheme
+  // styling).
+  searchbox::mojom::UrlEmphasisPtr ComputeUrlEmphasis(
+      const std::string& text) const;
 
   // omnibox_popup::mojom::Page:
   void OnShow();
@@ -80,12 +102,14 @@ class OmniboxPopupHandler : public omnibox_popup::mojom::PageHandler,
                      bool is_focused,
                      const std::string& permanent_display_text,
                      bool show_full_url,
-                     bool query_zps,
+                     omnibox_popup::mojom::MatchesUpdate matches_update,
                      searchbox::mojom::InputKeywordModelPtr keyword_model,
                      bool is_tab_switch);
   void SetFocus(bool is_focused,
                 bool query_zps = false,
-                bool select_all = false);
+                bool select_all = false,
+                bool show_full_url = false);
+  void FocusSearchWithDefaultSearchEngineKeywordMode();
   void ClearAutocompleteMatches();
   void ClearPopup(base::OnceClosure callback);
 
@@ -93,14 +117,15 @@ class OmniboxPopupHandler : public omnibox_popup::mojom::PageHandler,
   void OnTemplateURLServiceChanged() override;
   void OnTemplateURLServiceShuttingDown() override;
 
+  // Notifies the WebUI of the current DSE icon and placeholder type.
+  void NotifyDefaultSearchProviderChanged();
+
   const gfx::Range& latest_selection() const { return latest_selection_; }
   bool show_full_url() const { return show_full_url_; }
   bool can_undo() const { return can_undo_; }
   bool can_redo() const { return can_redo_; }
 
  private:
-  void NotifyDefaultSearchProviderChanged();
-
   mojo::Receiver<omnibox_popup::mojom::PageHandler> receiver_;
   mojo::Remote<omnibox_popup::mojom::Page> page_;
   base::WeakPtr<TopChromeWebUIController::Embedder> embedder_;

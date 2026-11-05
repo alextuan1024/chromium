@@ -24,8 +24,8 @@ specific_include_rules = {
   "directory_lister(\\.cc|_unittest\\.cc)": [
     "+base/i18n",
   ],
-  "structured_headers\.cc": [
-    "+third_party/rust/sfv/v0_15/wrapper",
+  "structured_headers\\.cc": [
+    "+third_party/rust/sfv/v0_16/wrapper",
   ],
 
   # Functions largely not used by the rest of net.
@@ -54,7 +54,18 @@ specific_include_rules = {
     "+third_party/brotli",
   ],
 
+  # The tests compress bodies with BrotliEncoderCompress() and check the error
+  # codes of the decoder.
+  "brotli_source_stream_unittest\\.cc": [
+    "+third_party/brotli",
+  ],
+
   "cert_compression\\.cc": [
+    "+third_party/brotli",
+  ],
+
+  # The test server compresses certificates with BrotliEncoderCompress().
+  "cert_compression_unittest\\.cc": [
     "+third_party/brotli",
   ],
 
@@ -89,6 +100,11 @@ specific_include_rules = {
 
   "cookie_partition_key\\.(cc|h)": [
     "+mojo/public/cpp/bindings/default_construct_tag.h",
+  ],
+
+  "network_change_notifier_linux_(portal|unittest)\\.cc": [
+    "+components/dbus",
+    "+dbus",
   ],
 
   "proxy_config_service_linux\\.cc": [

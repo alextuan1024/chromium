@@ -4,6 +4,7 @@
 
 #include <optional>
 
+#include "base/auto_reset.h"
 #include "base/base64.h"
 #include "base/functional/bind.h"
 #include "base/memory/raw_ptr.h"
@@ -17,6 +18,8 @@
 #include "chrome/browser/autocomplete/aim_eligibility_service_factory.h"
 #include "chrome/browser/contextual_search/contextual_search_service_factory.h"
 #include "chrome/browser/signin/identity_test_environment_profile_adaptor.h"
+#include "chrome/browser/themes/theme_service.h"
+#include "chrome/browser/themes/theme_service_factory.h"
 #include "chrome/browser/ui/actions/chrome_action_id.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
 #include "chrome/browser/ui/location_bar/location_bar.h"
@@ -24,9 +27,11 @@
 #include "chrome/browser/ui/omnibox/omnibox_controller.h"
 #include "chrome/browser/ui/omnibox/omnibox_edit_model.h"
 #include "chrome/browser/ui/omnibox/omnibox_next_features.h"
+#include "chrome/browser/ui/omnibox/omnibox_popup_webui_creation.h"
 #include "chrome/browser/ui/tabs/public/tab_features.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
+#include "chrome/browser/ui/views/location_bar/location_bar_view.h"
 #include "chrome/browser/ui/views/omnibox/omnibox_context_menu.h"
 #include "chrome/browser/ui/views/omnibox/omnibox_popup_aim_presenter.h"
 #include "chrome/browser/ui/views/omnibox/omnibox_popup_presenter.h"
@@ -34,6 +39,8 @@
 #include "chrome/browser/ui/views/omnibox/omnibox_popup_presenter_delegate.h"
 #include "chrome/browser/ui/views/omnibox/omnibox_popup_view_webui.h"
 #include "chrome/browser/ui/views/omnibox/omnibox_popup_webui_content.h"
+#include "chrome/browser/ui/views/omnibox/omnibox_view_views.h"
+#include "chrome/browser/ui/views/omnibox/webui_readonly_omnibox.h"
 #include "chrome/browser/ui/views/page_action/test_support/page_action_interactive_test_mixin.h"
 #include "chrome/browser/ui/views/toolbar/toolbar_view.h"
 #include "chrome/browser/ui/webui/new_tab_page/composebox/variations/composebox_fieldtrial.h"
@@ -52,6 +59,7 @@
 #include "components/omnibox/browser/aim_eligibility_service.h"
 #include "components/omnibox/browser/aim_eligibility_service_features.h"
 #include "components/omnibox/browser/omnibox_field_trial.h"
+#include "components/omnibox/common/composebox_features.h"
 #include "components/omnibox/common/omnibox_features.h"
 #include "components/prefs/pref_service.h"
 #include "components/signin/public/base/consent_level.h"
@@ -84,10 +92,15 @@ DEFINE_LOCAL_STATE_IDENTIFIER_VALUE(ui::test::PollingStateObserver<bool>,
 // Whether the omnibox is in keyword mode; e.g. `@gemini`.
 DEFINE_LOCAL_STATE_IDENTIFIER_VALUE(ui::test::PollingStateObserver<bool>,
                                     kOmniboxKeywordState);
+// Current text displayed in the omnibox view.
+DEFINE_LOCAL_STATE_IDENTIFIER_VALUE(
+    ui::test::PollingStateObserver<std::u16string>,
+    kOmniboxTextState);
 
 using DeepQuery = WebContentsInteractionTestUtil::DeepQuery;
 const DeepQuery kClassicContextMenu = {
-    "omnibox-popup-app", "omnibox-popup-contextual-entrypoint", "#context"};
+    "omnibox-popup-app", "omnibox-popup-contextual-entrypoint", "#context",
+    "cr-composebox-contextual-entrypoint-button", "#entrypoint"};
 const DeepQuery kDropdownContent = {"omnibox-popup-app",
                                     "cr-searchbox-dropdown", "#content"};
 const DeepQuery kOmniboxPopup = {"omnibox-popup-app"};
@@ -135,6 +148,10 @@ class OmniboxWebUiInteractiveTestBase
       features.emplace_back(omnibox::internal::kWebUIOmniboxSimplification,
                             simplification_params);
       features.emplace_back(omnibox::kAimEnabled, base::FieldTrialParams());
+      features.emplace_back(omnibox::kContextManagementInComposebox,
+                            base::FieldTrialParams());
+      features.emplace_back(omnibox::kContextManagementInOmnibox,
+                            base::FieldTrialParams());
     }
     return features;
   }
@@ -150,10 +167,10 @@ class OmniboxWebUiInteractiveTestBase
       }
       auto* popup_view = static_cast<OmniboxPopupViewWebUI*>(
           browser_view->GetLocationBar()->GetOmniboxPopupView());
-      if (!popup_view || !popup_view->presenter()) {
+      if (!popup_view || !popup_view->popup_host()) {
         return nullptr;
       }
-      return popup_view->presenter()->GetWebUIContent();
+      return popup_view->popup_host()->GetWebUIContent();
     });
   }
 
@@ -197,6 +214,49 @@ class OmniboxWebUiInteractiveTestBase
         WaitForState(kOmniboxFocusState, true),
         // Release the state identifier so that it can be observed again.
         StopObservingState(kOmniboxFocusState));
+  }
+
+  auto WaitForOmniboxViewFocus(bool expected_focus) {
+    return Steps(
+        PollState(kOmniboxFocusState,
+                  [this]() {
+                    auto* browser_view =
+                        BrowserView::GetBrowserViewForBrowser(browser());
+                    if (!browser_view) {
+                      return false;
+                    }
+                    if (auto* location_bar_view =
+                            browser_view->GetLocationBarView()) {
+                      return location_bar_view->omnibox_view() &&
+                             location_bar_view->omnibox_view()->HasFocus();
+                    }
+                    if (auto* location_bar = browser_view->GetLocationBar()) {
+                      auto* omnibox_view = static_cast<WebUIReadOnlyOmnibox*>(
+                          location_bar->GetOmniboxView());
+                      return omnibox_view && omnibox_view->has_focus();
+                    }
+                    return false;
+                  }),
+        WaitForState(kOmniboxFocusState, expected_focus),
+        StopObservingState(kOmniboxFocusState));
+  }
+
+  auto WaitForOmniboxText(const std::u16string& expected_text) {
+    return Steps(
+        PollState(kOmniboxTextState,
+                  [this]() -> std::u16string {
+                    auto* browser_view =
+                        BrowserView::GetBrowserViewForBrowser(browser());
+                    if (!browser_view || !browser_view->GetLocationBar() ||
+                        !browser_view->GetLocationBar()->GetOmniboxView()) {
+                      return std::u16string();
+                    }
+                    return browser_view->GetLocationBar()
+                        ->GetOmniboxView()
+                        ->GetText();
+                  }),
+        WaitForState(kOmniboxTextState, expected_text),
+        StopObservingState(kOmniboxTextState));
   }
 };
 
@@ -369,6 +429,16 @@ class OmniboxAimWebUiInteractiveTestBase
         context, base::BindOnce(BuildMockContextualSearchServiceInstance));
   }
 
+  void SetUpOnMainThread() override {
+    PageActionInteractiveTestMixin<
+        OmniboxWebUiInteractiveTestBase>::SetUpOnMainThread();
+    auto* theme_service =
+        ThemeServiceFactory::GetForProfile(browser()->GetProfile());
+    theme_service->UseDeviceTheme(false);
+    theme_service->SetBrowserColorScheme(
+        ThemeService::BrowserColorScheme::kLight);
+  }
+
  protected:
   auto SetAimEligibleResponse() {
     return Do([this]() {
@@ -433,14 +503,14 @@ class OmniboxAimWebUiInteractiveTestBase
   // Opens the AIM popup by clicking the page action icon.
   auto OpenAimPopup() {
     return Steps(
-        FocusElement(kOmniboxElementId),
-        WaitForPageActionChipVisible(kActionAiMode),
+        FocusOmnibox(), WaitForPageActionChipVisible(kActionAiMode),
         InvokePageAction(kActionAiMode), WaitForAimPopupReady(),
         InAnyContext(WaitForElementToRender(kAimPopupWebView, kAimInput)),
         InAnyContext(ExecuteJsAt(
-            kAimPopupWebView, {"omnibox-aim-app"},
-            "el => { el.setSearchboxLayoutModeForTesting('TallBottomContext'); "
-            "el.setHasAllowedInputsForTesting(true); }")));
+            kAimPopupWebView, {"omnibox-aim-app", "#composebox"},
+            "el => { "
+            "el.setBaseSearchboxLayoutModeForTesting('TallBottomContext'); "
+            "el.hasAllowedInputs = true; }")));
   }
 
   // Opens the AIM popup in a new tab to ensure a clean state.
@@ -502,7 +572,7 @@ class OmniboxAimWebUiInteractiveTestBase
     DEFINE_LOCAL_CUSTOM_ELEMENT_EVENT_TYPE(kAimLayoutSettled);
     StateChange layout_settled;
     layout_settled.event = kAimLayoutSettled;
-    layout_settled.where = DeepQuery{"omnibox-aim-app"};
+    layout_settled.where = DeepQuery{"omnibox-aim-app", "#composebox"};
     layout_settled.test_function =
         "(el) => window.innerHeight > 170 || el.offsetHeight > 170";
     layout_settled.continue_across_navigation = true;
@@ -532,7 +602,8 @@ class OmniboxAimWebUiInteractiveTest
                                   base::FieldTrialParams());
     feature_list_.InitWithFeaturesAndParameters(
         enabled_features, {omnibox::kAimServerEligibilityEnabled,
-                           omnibox::kAimFuseboxEligibilityCheckEnabled});
+                           omnibox::kAimFuseboxEligibilityCheckEnabled,
+                           omnibox::kComposeboxPersistentAimButtonOmnibox});
   }
 
   std::unique_ptr<content::ScopedAccessibilityMode> scoped_accessibility_mode_;
@@ -554,14 +625,14 @@ IN_PROC_BROWSER_TEST_F(OmniboxAimWebUiInteractiveTest,
       OpenAimPopupInNewTab(),
       // Verify popup's web contents have focus.
       CheckJsResult(kAimPopupWebView, "() => document.hasFocus()", true),
-      CheckViewProperty(kOmniboxElementId, &views::View::HasFocus, false),
+      WaitForOmniboxViewFocus(false),
       // Hide the popup.
       InAnyContext(
           ExecuteJsAt(kAimPopupWebView, kCancelIcon, "el => el.click()")),
       InAnyContext(
           WaitForHide(OmniboxPopupPresenterBase::kRoundedResultsFrame)),
       // Verify location bar has focus.
-      CheckViewProperty(kOmniboxElementId, &views::View::HasFocus, true));
+      WaitForOmniboxViewFocus(true));
 }
 
 IN_PROC_BROWSER_TEST_F(OmniboxAimWebUiInteractiveTest,
@@ -586,7 +657,7 @@ IN_PROC_BROWSER_TEST_F(OmniboxAimWebUiInteractiveTest,
       WaitForGoogleSearch(kNewTab, {{"q", "foo"}}),
       // Verify tab has focus and not the location bar.
       CheckJsResult(kNewTab, "() => document.hasFocus()", true),
-      CheckViewProperty(kOmniboxElementId, &views::View::HasFocus, false));
+      WaitForOmniboxViewFocus(false));
 }
 
 // TODO(crbug.com/505548434, crbug.com/517370516): Flaky on Mac, Win and Linux.
@@ -624,12 +695,26 @@ IN_PROC_BROWSER_TEST_F(OmniboxAimWebUiInteractiveTest,
       InAnyContext(WaitForElementToRender(kAimPopupWebView, kDeepSearchChip)));
 }
 
-// TODO(crbug.com/509753148): Re-enable after fixing pixel screenshots on all
-// platforms.
-#define MAYBE_QueryWithTabContext DISABLED_QueryWithTabContext
-IN_PROC_BROWSER_TEST_F(OmniboxAimWebUiInteractiveTest,
-                       MAYBE_QueryWithTabContext) {
+// Creates the omnibox popups' WebContents before they are shown, as production
+// does, rather than only when shown, which is the default in browser tests (see
+// `InProcessBrowserTest`).
+// TODO(crbug.com/542347163): The tests using this fixture fail otherwise:
+// adding a tab from the classic popup's context menu creates the AI Mode
+// popup's page then, and the tab context seems to be lost while that page
+// loads. Either keep that context until the page is ready or create the page
+// explicitly where it is needed, and move these tests back to
+// `OmniboxAimWebUiInteractiveTest`.
+class OmniboxAimWebUiEagerPopupInteractiveTest
+    : public OmniboxAimWebUiInteractiveTest {
+ private:
+  base::AutoReset<bool> create_popup_webui_on_demand_ =
+      omnibox::SetCreatePopupWebUIOnDemandForTesting(false);
+};
+
+IN_PROC_BROWSER_TEST_F(OmniboxAimWebUiEagerPopupInteractiveTest,
+                       QueryWithTabContext) {
   DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kFirstTab);
+  ASSERT_TRUE(embedded_test_server()->Start());
 
   // Force a larger window size to give the popup room to grow.
   browser()->GetWindow()->SetBounds(gfx::Rect(0, 0, 1280, 1024));
@@ -675,67 +760,67 @@ IN_PROC_BROWSER_TEST_F(OmniboxAimWebUiInteractiveTest,
   RunTestSequence(
       SetOnIncompatibleAction(OnIncompatibleAction::kIgnoreAndContinue,
                               "Screenshot not supported in all test modes."),
-      // 1. Open a webpage and NTP in separate tabs.
-      AddInstrumentedTab(kFirstTab, GURL("https://www.example.com/")),
-
+      // Open a webpage and NTP in separate tabs.
+      AddInstrumentedTab(kFirstTab,
+                         embedded_test_server()->GetURL("/title1.html")),
       AddInstrumentedTab(kNewTab, chrome::ChromeUINewTabURLAsGURL()),
-
       SetAimEligibleResponse(),
-      // 2. Focus the Omnibox and type to trigger popup.
-      FocusElement(kOmniboxElementId), EnterText(kOmniboxElementId, u"a"),
+      // Focus the Omnibox and type to trigger the classic popup.
+      FocusOmnibox(), EnterText(kOmniboxElementId, u"a"),
 
-      // 3. Wait for the popup to open and the chip to appear.
+      // Wait for the popup to open and the context menu entrypoint to be ready.
       WaitForClassicPopupReady(),
+      InAnyContext(WaitForOmniboxAimStateReady(kClassicPopupWebView)),
       InAnyContext(WaitForStateChange(kClassicPopupWebView,
                                       classic_context_menu_exists)),
-      // Wait for the element to be within the viewport bounds
+      // Wait for the element to be within the viewport bounds.
       InSameContext(
           WaitForStateChange(kClassicPopupWebView, visible_in_viewport)),
 
-  // 4. Click the context menu and select the first tab.
+  // Click the context menu and select the first tab.
 #if BUILDFLAG(IS_WIN)
       // On Windows with pixel tests enabled, physical clicks fail because
-      // the element is outside the omnibox frame bounds. We call the Mojo
-      // method directly via JS to bypass bounds checks.
-      InSameContext(ExecuteJsAt(
-          kClassicPopupWebView, kOmniboxPopup,
-          "el => el.popupPageHandler_.showContextMenu({x: 0, y: 0})")),
+      // the element is outside the omnibox frame bounds. Trigger the click
+      // via JS to bypass physical bounds checks.
+      InSameContext(ExecuteJsAt(kClassicPopupWebView, kClassicContextMenu,
+                                "el => el.click()")),
 #else
       InSameContext(ClickElement(kClassicPopupWebView, kClassicContextMenu)),
 #endif
+      InAnyContext(WaitForShow(
+          OmniboxContextMenuController::kSharedTabsSubmenuIdForTesting)),
+      InSameContext(SelectMenuItem(
+          OmniboxContextMenuController::kSharedTabsSubmenuIdForTesting)),
       InAnyContext(WaitForShow(
           OmniboxContextMenuController::kFirstTabMenuItemIdForTesting)),
       InSameContext(SelectMenuItem(
           OmniboxContextMenuController::kFirstTabMenuItemIdForTesting)),
       InAnyContext(WaitForHide(kClassicPopupWebView)),
 
-      // 5. Verify that it transitions to AIM popup.
+      // Verify that it transitions to the AIM popup with the tab context.
       WaitForAimPopupReady(),
       InAnyContext(WaitForElementToRender(kAimPopupWebView, kAimInput)),
-      // Disable animations in the WebUI to ensure screenshot stability.
-      // We set the custom property here because the AIM popup WebView is only
-      // available after this point, and setting it earlier on the classic popup
-      // or initial tab would not persist to this new document.
-      InSameContext(ExecuteJsAt(kAimPopupWebView, {}, R"(
-        () => {
-          const style = document.createElement('style');
-          style.textContent = '* { animation: none !important; transition: none !important; }';
-          document.head.appendChild(style);
-        }
-      )")),
+      WaitForJsConditionAt(
+          kAimPopupWebView, {"omnibox-aim-app", "#composebox"},
+          "el => el && el.attachedContext && el.attachedContext.size === 1 && "
+          "el.fileUploadsComplete"),
+      InAnyContext(WaitForElementToRender(
+          kAimPopupWebView,
+          {"omnibox-aim-app", "#composebox", "#contextEntrypoint",
+           "composebox-favicon-group"})),
 
-      // 6. Type a query and submit.
+      // Type a query, wait for layout to settle, and freeze Shadow DOM
+      // animations before capturing the screenshot.
       InputAimPopupText("foo"),
       InSameContext(WaitForElementToRender(kAimPopupWebView, kAimSubmit)),
       InSameContext(WaitForStateChange(kAimPopupWebView,
                                        submit_visible_and_layout_settled)),
-      // Wait for the native view to resize.
-      WaitForAimPopupTallLayoutSettled(),
+      PrepareWebUiForPixelTest(kAimPopupWebView),
       InAnyContext(Screenshot(kAimPopupWebView, "AimPopupQueryWithTabContext",
-                              "7751707")),
+                              "8802716")),
       ClickAimSubmit(kAimPopupWebView),
 
-      // 7. Verify navigation to Google Search with the query.
+      // Verify navigation to Google Search with the query.
       WaitForGoogleSearch(kNewTab, {{"q", "foo"}}));
 }
 
@@ -748,7 +833,7 @@ IN_PROC_BROWSER_TEST_F(OmniboxAimWebUiInteractiveTest, TextTransfersOnDismiss) {
       // Close the popup by removing focus from it.
       RemoveFocusFromPopup(),
       // Ensure text transfers to the Omnibox.
-      WaitForViewProperty(kOmniboxElementId, views::Textfield, Text, u"foo"));
+      WaitForOmniboxText(u"foo"));
 }
 
 IN_PROC_BROWSER_TEST_F(OmniboxAimWebUiInteractiveTest, TextTransfersOnEscape) {
@@ -762,8 +847,7 @@ IN_PROC_BROWSER_TEST_F(OmniboxAimWebUiInteractiveTest, TextTransfersOnEscape) {
       InAnyContext(
           WaitForHide(OmniboxPopupPresenterBase::kRoundedResultsFrame)),
       // Ensure text transfers to the Omnibox.
-      WaitForViewProperty(kOmniboxElementId, views::Textfield, Text,
-                          u"foo bar"));
+      WaitForOmniboxText(u"foo bar"));
 }
 
 IN_PROC_BROWSER_TEST_F(OmniboxAimWebUiInteractiveTest,
@@ -794,7 +878,8 @@ class OmniboxAimSearchFulfillmentTest
     feature_list_.InitWithFeaturesAndParameters(
         GetEnabledFeatures(/*force_enable_aim=*/true),
         {omnibox::kAimServerEligibilityEnabled,
-         omnibox::kAimFuseboxEligibilityCheckEnabled});
+         omnibox::kAimFuseboxEligibilityCheckEnabled,
+         omnibox::kComposeboxPersistentAimButtonOmnibox});
   }
 
  private:
@@ -827,13 +912,16 @@ IN_PROC_BROWSER_TEST_P(OmniboxAimSearchFulfillmentTest,
           ? TriggerAimVoiceSearch(kAimPopupWebView, kVoiceSearch, query)
           : InputAimPopupText(query),
       // Submit query by pressing enter key or by clicking the submit button.
-      // Skip this step if voice search auto-submits.
+      // Skip this step if voice search auto-submits. Submitting closes the
+      // popup, which can happen before the key press step returns, so the
+      // popup is allowed to hide during the step.
       If([&]() { return !param.is_voice; },
-         Then(
-             param.submit_via_keyboard
-                 ? InAnyContext(SendKeyPress(kAimPopupWebView, ui::VKEY_RETURN))
-                 : Steps(WaitForAimPopupTallLayoutSettled(),
-                         ClickAimSubmit(kAimPopupWebView)))),
+         Then(param.submit_via_keyboard
+                  ? InAnyContext(
+                        SendKeyPress(kAimPopupWebView, ui::VKEY_RETURN)
+                            .SetMustRemainVisible(false))
+                  : Steps(WaitForAimPopupTallLayoutSettled(),
+                          ClickAimSubmit(kAimPopupWebView)))),
       // Ensure tab navigates to a Google search results page.
       WaitForGoogleSearch(kNewTab, {{"q", query}}));
 }
@@ -854,7 +942,8 @@ class OmniboxAimUploadInteractiveTest
                                   base::FieldTrialParams());
     feature_list_.InitWithFeaturesAndParameters(
         enabled_features, {omnibox::kAimServerEligibilityEnabled,
-                           omnibox::kAimFuseboxEligibilityCheckEnabled});
+                           omnibox::kAimFuseboxEligibilityCheckEnabled,
+                           omnibox::kComposeboxPersistentAimButtonOmnibox});
   }
 
   void SetUpOnMainThread() override {
@@ -1001,43 +1090,37 @@ class WebUIOmniboxSimplificationInteractiveTest
 
 IN_PROC_BROWSER_TEST_F(WebUIOmniboxSimplificationInteractiveTest,
                        HasBackgroundApplied) {
-  const DeepQuery kContextButton = {
-      "omnibox-popup-app", "omnibox-popup-contextual-entrypoint", "#context",
-      "cr-composebox-contextual-entrypoint-button", "#entrypoint"};
   RunTestSequence(
       SetAimEligibleResponse(),
       AddInstrumentedTab(kNewTab, chrome::ChromeUINewTabURLAsGURL()),
-      SeedSearchboxResult("a"), FocusElement(kOmniboxElementId),
+      SeedSearchboxResult("a"), FocusOmnibox(),
       EnterText(kOmniboxElementId, u"a"), WaitForClassicPopupReady(),
       InAnyContext(WaitForOmniboxAimStateReady(kClassicPopupWebView)),
       InAnyContext(
-          WaitForElementToRender(kClassicPopupWebView, kContextButton)),
+          WaitForElementToRender(kClassicPopupWebView, kClassicContextMenu)),
       InSameContext(CheckJsResultAt(
-          kClassicPopupWebView, kContextButton,
+          kClassicPopupWebView, kClassicContextMenu,
           "el => window.getComputedStyle(el).backgroundColor !== 'transparent'",
           true)));
 }
 
 IN_PROC_BROWSER_TEST_F(WebUIOmniboxSimplificationInteractiveTest,
                        OblongShapeApplied) {
-  const DeepQuery kContextButton = {
-      "omnibox-popup-app", "omnibox-popup-contextual-entrypoint", "#context",
-      "cr-composebox-contextual-entrypoint-button", "#entrypoint"};
   DEFINE_LOCAL_CUSTOM_ELEMENT_EVENT_TYPE(kOblongStyleApplied);
   StateChange style_applied;
   style_applied.event = kOblongStyleApplied;
-  style_applied.where = kContextButton;
+  style_applied.where = kClassicContextMenu;
   style_applied.test_function =
       "(el) => el && window.getComputedStyle(el).borderRadius === \"100px\"";
 
   RunTestSequence(
       SetAimEligibleResponse(),
       AddInstrumentedTab(kNewTab, chrome::ChromeUINewTabURLAsGURL()),
-      SeedSearchboxResult("a"), FocusElement(kOmniboxElementId),
+      SeedSearchboxResult("a"), FocusOmnibox(),
       EnterText(kOmniboxElementId, u"a"), WaitForClassicPopupReady(),
       InAnyContext(WaitForOmniboxAimStateReady(kClassicPopupWebView)),
       InAnyContext(
-          WaitForElementToRender(kClassicPopupWebView, kContextButton)),
+          WaitForElementToRender(kClassicPopupWebView, kClassicContextMenu)),
       InAnyContext(WaitForStateChange(kClassicPopupWebView, style_applied)));
 }
 

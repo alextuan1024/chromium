@@ -23,7 +23,7 @@ chromium-metrics-reviews@google.com.
 <histograms>
 
 <histogram name="RegionalCapabilities.ActiveRegionalProgram2"
-    enum="ActiveRegionalProgram" expires_after="2027-02-14">
+    enum="ActiveRegionalProgram" expires_after="2027-04-18">
   <owner>ljjlee@google.com</owner>
   <owner>chrome-regionalcapabilities@google.com</owner>
   <summary>
@@ -40,7 +40,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="RegionalCapabilities.ActiveRegionalProgram3{Profile}"
-    enum="ActiveRegionalProgram" expires_after="2027-03-07">
+    enum="ActiveRegionalProgram" expires_after="2027-05-09">
   <owner>ljjlee@google.com</owner>
   <owner>chrome-regionalcapabilities@google.com</owner>
   <summary>
@@ -68,7 +68,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="RegionalCapabilities.Debug.DefaultHighlightingResult"
-    enum="BooleanSuccess" expires_after="2027-01-17">
+    enum="BooleanSuccess" expires_after="2027-03-21">
   <owner>dgn@chromium.org</owner>
   <owner>chrome-regionalcapabilities@google.com</owner>
   <summary>
@@ -87,8 +87,28 @@ chromium-metrics-reviews@google.com.
   </summary>
 </histogram>
 
+<histogram
+    name="RegionalCapabilities.Debug.DynamicCountryRegionalProgram{Profile}"
+    enum="ActiveRegionalProgram" expires_after="2027-05-09">
+  <owner>ljjlee@google.com</owner>
+  <owner>chrome-regionalcapabilities@google.com</owner>
+  <summary>
+    Records the regional program for each loaded profile, computed as if the
+    current profile country was used rather than the one persisted at profile
+    creation (i.e. as if the DynamicProfileCountry feature was enabled). This
+    does not affect the actual active program, see
+    RegionalCapabilities.ActiveRegionalProgram3 for that.
+
+    Emitted through ProvideCurrentSessionData(), when a UMA session record is
+    getting finalized.
+
+    {Profile}
+  </summary>
+  <token key="Profile" variants="ProfileIndex"/>
+</histogram>
+
 <histogram name="RegionalCapabilities.Debug.HasActiveRegionalProgram"
-    enum="Boolean" expires_after="2027-03-07">
+    enum="Boolean" expires_after="2027-05-09">
   <owner>dgn@chromium.org</owner>
   <owner>chrome-regionalcapabilities@google.com</owner>
   <summary>
@@ -99,7 +119,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="RegionalCapabilities.Debug.ProgramSpecificExclusion"
-    enum="RegionalProgramSpecificExclusion" expires_after="2027-03-07">
+    enum="RegionalProgramSpecificExclusion" expires_after="2027-05-09">
   <owner>dgn@chromium.org</owner>
   <owner>chrome-regionalcapabilities@google.com</owner>
   <summary>
@@ -111,7 +131,7 @@ chromium-metrics-reviews@google.com.
 
 <histogram
     name="RegionalCapabilities.Debug.TriggeringEligibility.{SessionType}"
-    enum="SearchEngineChoiceScreenConditions" expires_after="2027-03-07">
+    enum="SearchEngineChoiceScreenConditions" expires_after="2027-05-09">
   <owner>dgn@chromium.org</owner>
   <owner>chrome-regionalcapabilities@google.com</owner>
   <summary>
@@ -147,7 +167,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="RegionalCapabilities.FetchedCountryMatching"
-    enum="CountryMatchingStatus" expires_after="2027-01-17">
+    enum="CountryMatchingStatus" expires_after="2027-03-21">
   <owner>dgn@chromium.org</owner>
   <owner>chrome-regionalcapabilities@google.com</owner>
   <summary>
@@ -161,7 +181,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="RegionalCapabilities.FunnelStage.Eligibility{Profile}"
-    enum="SearchEngineChoiceScreenConditions" expires_after="2027-03-07">
+    enum="SearchEngineChoiceScreenConditions" expires_after="2027-05-09">
   <owner>dgn@chromium.org</owner>
   <owner>ljjlee@chromium.org</owner>
   <owner>chrome-regionalcapabilities@google.com</owner>
@@ -175,7 +195,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="RegionalCapabilities.FunnelStage.RegionalPresence"
-    enum="RegionalProgramAndLocationMatch" expires_after="2027-02-07">
+    enum="RegionalProgramAndLocationMatch" expires_after="2027-04-11">
   <owner>dgn@chromium.org</owner>
   <owner>chrome-regionalcapabilities@google.com</owner>
   <summary>
@@ -190,7 +210,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="RegionalCapabilities.FunnelStage.Reported{Profile}"
-    enum="RegionalCapabilitiesFunnelStage" expires_after="2027-01-31">
+    enum="RegionalCapabilitiesFunnelStage" expires_after="2027-04-04">
   <owner>dgn@chromium.org</owner>
   <owner>chrome-regionalcapabilities@google.com</owner>
   <summary>
@@ -206,7 +226,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="RegionalCapabilities.FunnelStage.Triggering{Profile}"
-    enum="SearchEngineChoiceScreenConditions" expires_after="2027-03-07">
+    enum="SearchEngineChoiceScreenConditions" expires_after="2027-05-09">
   <owner>dgn@chromium.org</owner>
   <owner>ljjlee@chromium.org</owner>
   <owner>chrome-regionalcapabilities@google.com</owner>

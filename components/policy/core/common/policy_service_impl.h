@@ -55,7 +55,7 @@ class POLICY_EXPORT PolicyServiceImpl
   static constexpr char kWith1to50PoliciesHistogramSuffix[] =
       ".With_1_to_50_Policies";
   static constexpr char kWith51to100PoliciesHistogramSuffix[] =
-      ".With_1_to_50_Policies";
+      ".With_51_to_100_Policies";
   static constexpr char kWith101PlusPoliciesHistogramSuffix[] =
       ".With_101_Plus_Policies";
 
@@ -172,6 +172,13 @@ class POLICY_EXPORT PolicyServiceImpl
   // Combines the policies from all the providers, and notifies the observers
   // of namespaces whose policies have been modified.
   void MergeAndTriggerUpdates();
+
+  // Records, for each POLICY_SOURCE_MERGED entry outside the Chrome namespace,
+  // whether its merged value differs from what precedence alone would have
+  // selected. Samples are taken when an entry first appears and whenever its
+  // merge result differs from `old_bundle`, split by list vs. dictionary
+  // policy. Only profile-level services (`ScopeForMetrics::kUser`) record.
+  void RecordNonChromeNamespaceMergeMetrics(const PolicyBundle& old_bundle);
 
   // Checks if all providers are initialized or have loaded their policies and
   // sets |policy_domain_status_| accordingly.

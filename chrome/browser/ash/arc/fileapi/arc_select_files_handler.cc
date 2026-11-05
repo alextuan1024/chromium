@@ -22,8 +22,6 @@
 #include "chrome/browser/ash/policy/dlp/dlp_files_controller_ash.h"
 #include "chrome/browser/chromeos/policy/dlp/dlp_file_destination.h"
 #include "chrome/browser/chromeos/policy/dlp/dlp_rules_manager.h"
-#include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/ui/ash/shelf/chrome_shelf_controller.h"
 #include "chrome/browser/ui/select_file_policy/chrome_select_file_policy.h"
 #include "chrome/browser/ui/views/select_file_dialog_extension/select_file_dialog_extension.h"
@@ -287,7 +285,7 @@ void ArcSelectFilesHandler::FilesSelectedInternal(
   }
 
   arc::ConvertToContentUrlsAndShare(
-      ProfileManager::GetPrimaryUserProfile(), file_system_urls,
+      profile_, file_system_urls,
       base::BindOnce(&ContentUrlsResolved, std::move(callback_)));
 }
 
@@ -369,7 +367,6 @@ bool SelectFileDialogHolder::SelectFile(
 
   SelectFileDialogExtension::Owner owner;
   owner.window = owner_window;
-  owner.android_task_id = task_id;
   owner.dialog_caller =
       policy::DlpFileDestination(data_controls::Component::kArc);
   select_file_dialog_->SelectFileWithFileManagerParams(

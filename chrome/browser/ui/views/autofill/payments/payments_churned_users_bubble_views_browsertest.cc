@@ -12,6 +12,8 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/ui/actions/chrome_action_id.h"
+#include "chrome/browser/ui/autofill/bubble_controller_base.h"
+#include "chrome/browser/ui/autofill/bubble_manager.h"
 #include "chrome/browser/ui/autofill/chrome_autofill_client.h"
 #include "chrome/browser/ui/autofill/payments/payments_churned_users_bubble_controller.h"
 #include "chrome/browser/ui/browser_actions.h"
@@ -35,9 +37,12 @@
 #include "components/autofill/core/browser/ui/payments/payments_churned_users_ui_delegate.h"
 #include "components/autofill/core/common/autofill_payments_features.h"
 #include "components/signin/public/base/consent_level.h"
+#include "components/signin/public/identity_manager/account_info.h"
 #include "components/signin/public/identity_manager/identity_test_utils.h"
 #include "content/public/test/browser_test.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/actions/actions.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/events/event.h"
 #include "ui/gfx/geometry/point.h"
 #include "ui/views/interaction/interaction_test_util_views.h"
@@ -63,25 +68,20 @@ class PaymentsChurnedUsersBubbleViewsBrowserTest
   // DialogBrowserTest:
   void ShowUi(const std::string& name) override { ShowBubble(); }
 
-  void ShowBubble(base::OnceClosure accept_callback = base::DoNothing(),
-                  base::OnceClosure cancel_callback = base::DoNothing(),
-                  base::OnceClosure closed_callback = base::DoNothing(),
-                  bool sign_in = true) {
+  void ShowBubble(base::OnceCallback<void(PaymentsUiClosedReason)>
+                      closed_callback = base::DoNothing()) {
     EXPECT_TRUE(
         ui_test_utils::NavigateToURL(browser(), GURL("chrome://new-tab-page")));
-    if (sign_in) {
-      signin::MakePrimaryAccountAvailable(
-          IdentityManagerFactory::GetForProfile(browser()->GetProfile()),
-          "user@example.com", signin::ConsentLevel::kSignin);
-    }
+    AccountInfo account_info = signin::MakePrimaryAccountAvailable(
+        IdentityManagerFactory::GetForProfile(browser()->GetProfile()),
+        "user@example.com", signin::ConsentLevel::kSignin);
     autofill::ChromeAutofillClient* autofill_client =
         autofill::ChromeAutofillClient::FromWebContentsForTesting(
             browser()->GetTabStripModel()->GetActiveWebContents());
     ASSERT_TRUE(autofill_client);
     autofill_client->GetPaymentsAutofillClient()
         ->GetPaymentsChurnedUsersUiDelegate()
-        ->ShowPaymentsChurnedUsersUI(std::move(accept_callback),
-                                     std::move(cancel_callback),
+        ->ShowPaymentsChurnedUsersUI(std::move(account_info),
                                      std::move(closed_callback));
   }
 
@@ -162,9 +162,8 @@ IN_PROC_BROWSER_TEST_P(PaymentsChurnedUsersBubbleViewsBrowserTest,
                SAVE_PAYMENT_METHOD_AND_VIRTUAL_CARD_ENROLL_CONFIRMATION_BUBBLE_VIEWS;
   }));
 
-  histogram_tester.ExpectUniqueSample(
-      "Autofill.PaymentsChurnedUsersBubble.Result",
-      PaymentsUiClosedReason::kAccepted, 1);
+  histogram_tester.ExpectUniqueSample("Autofill.PaymentsChurnedUsersUi.Result",
+                                      PaymentsUiClosedReason::kAccepted, 1);
 }
 
 IN_PROC_BROWSER_TEST_P(
@@ -195,9 +194,8 @@ IN_PROC_BROWSER_TEST_P(
                SAVE_PAYMENT_METHOD_AND_VIRTUAL_CARD_ENROLL_CONFIRMATION_BUBBLE_VIEWS;
   }));
 
-  histogram_tester.ExpectUniqueSample(
-      "Autofill.PaymentsChurnedUsersBubble.Result",
-      PaymentsUiClosedReason::kAccepted, 1);
+  histogram_tester.ExpectUniqueSample("Autofill.PaymentsChurnedUsersUi.Result",
+                                      PaymentsUiClosedReason::kAccepted, 1);
 
   // Close the confirmation bubble and verify that no new accept metric was
   // logged.
@@ -211,9 +209,8 @@ IN_PROC_BROWSER_TEST_P(
       views::Widget::ClosedReason::kCloseButtonClicked);
   destroyed_waiter.Wait();
 
-  histogram_tester.ExpectUniqueSample(
-      "Autofill.PaymentsChurnedUsersBubble.Result",
-      PaymentsUiClosedReason::kAccepted, 1);
+  histogram_tester.ExpectUniqueSample("Autofill.PaymentsChurnedUsersUi.Result",
+                                      PaymentsUiClosedReason::kAccepted, 1);
 }
 
 IN_PROC_BROWSER_TEST_P(PaymentsChurnedUsersBubbleViewsBrowserTest,
@@ -228,9 +225,8 @@ IN_PROC_BROWSER_TEST_P(PaymentsChurnedUsersBubbleViewsBrowserTest,
   GetBubbleView()->CancelDialog();
   destroyed_waiter.Wait();
 
-  histogram_tester.ExpectUniqueSample(
-      "Autofill.PaymentsChurnedUsersBubble.Result",
-      PaymentsUiClosedReason::kCancelled, 1);
+  histogram_tester.ExpectUniqueSample("Autofill.PaymentsChurnedUsersUi.Result",
+                                      PaymentsUiClosedReason::kCancelled, 1);
 }
 
 IN_PROC_BROWSER_TEST_P(PaymentsChurnedUsersBubbleViewsBrowserTest,
@@ -247,9 +243,8 @@ IN_PROC_BROWSER_TEST_P(PaymentsChurnedUsersBubbleViewsBrowserTest,
       GetBubbleView()->GetBubbleFrameView()->close_button());
   destroyed_waiter.Wait();
 
-  histogram_tester.ExpectUniqueSample(
-      "Autofill.PaymentsChurnedUsersBubble.Result",
-      PaymentsUiClosedReason::kClosed, 1);
+  histogram_tester.ExpectUniqueSample("Autofill.PaymentsChurnedUsersUi.Result",
+                                      PaymentsUiClosedReason::kClosed, 1);
 }
 
 IN_PROC_BROWSER_TEST_P(PaymentsChurnedUsersBubbleViewsBrowserTest,
@@ -260,23 +255,8 @@ IN_PROC_BROWSER_TEST_P(PaymentsChurnedUsersBubbleViewsBrowserTest,
   EXPECT_TRUE(IsBubbleShowing());
 
   histogram_tester.ExpectUniqueSample(
-      "Autofill.PaymentsChurnedUsersBubble.ShowResult",
-      autofill_metrics::PaymentsChurnedUsersBubbleShowResult::kShown, 1);
-}
-
-IN_PROC_BROWSER_TEST_P(PaymentsChurnedUsersBubbleViewsBrowserTest,
-                       LogsShowResult_NoAccountInfoPresent) {
-  base::HistogramTester histogram_tester;
-
-  ShowBubble(base::DoNothing(), base::DoNothing(), base::DoNothing(),
-             /*sign_in=*/false);
-  EXPECT_FALSE(IsBubbleShowing());
-
-  histogram_tester.ExpectUniqueSample(
-      "Autofill.PaymentsChurnedUsersBubble.ShowResult",
-      autofill_metrics::PaymentsChurnedUsersBubbleShowResult::
-          kNoAccountInfoPresent,
-      1);
+      "Autofill.PaymentsChurnedUsersUi.ShowResult",
+      autofill_metrics::PaymentsChurnedUsersUiShowResult::kShown, 1);
 }
 
 INSTANTIATE_TEST_SUITE_P(,
@@ -296,14 +276,14 @@ IN_PROC_BROWSER_TEST_P(PaymentsChurnedUsersBubbleViewsBrowserTest, ShowBubble) {
 
 IN_PROC_BROWSER_TEST_P(PaymentsChurnedUsersBubbleViewsBrowserTest,
                        AcceptCallbackTriggered) {
-  base::test::TestFuture<void> accept_future;
-  ShowBubble(accept_future.GetCallback(), base::DoNothing(), base::DoNothing());
+  base::test::TestFuture<PaymentsUiClosedReason> accept_future;
+  ShowBubble(accept_future.GetCallback());
 
   PaymentsChurnedUsersBubbleView* bubble_view = GetBubbleView();
   ASSERT_TRUE(bubble_view);
   bubble_view->AcceptDialog();
 
-  EXPECT_TRUE(accept_future.Wait());
+  EXPECT_EQ(accept_future.Get(), PaymentsUiClosedReason::kAccepted);
 
   // Wait for the confirmation bubble to be shown.
   EXPECT_TRUE(base::test::RunUntil([&]() {
@@ -329,42 +309,42 @@ IN_PROC_BROWSER_TEST_P(PaymentsChurnedUsersBubbleViewsBrowserTest,
 
 IN_PROC_BROWSER_TEST_P(PaymentsChurnedUsersBubbleViewsBrowserTest,
                        CancelCallbackTriggered) {
-  base::test::TestFuture<void> cancel_future;
-  ShowBubble(base::DoNothing(), cancel_future.GetCallback(), base::DoNothing());
+  base::test::TestFuture<PaymentsUiClosedReason> cancel_future;
+  ShowBubble(cancel_future.GetCallback());
 
   PaymentsChurnedUsersBubbleView* bubble_view = GetBubbleView();
   ASSERT_TRUE(bubble_view);
   bubble_view->CancelDialog();
 
-  EXPECT_TRUE(cancel_future.Wait());
+  EXPECT_EQ(cancel_future.Get(), PaymentsUiClosedReason::kCancelled);
   EXPECT_FALSE(IsIconVisible());
 }
 
 IN_PROC_BROWSER_TEST_P(PaymentsChurnedUsersBubbleViewsBrowserTest,
                        ClosedCallbackTriggered) {
-  base::test::TestFuture<void> closed_future;
-  ShowBubble(base::DoNothing(), base::DoNothing(), closed_future.GetCallback());
+  base::test::TestFuture<PaymentsUiClosedReason> closed_future;
+  ShowBubble(closed_future.GetCallback());
 
   PaymentsChurnedUsersBubbleView* bubble_view = GetBubbleView();
   ASSERT_TRUE(bubble_view);
   bubble_view->GetWidget()->CloseWithReason(
       views::Widget::ClosedReason::kLostFocus);
 
-  EXPECT_TRUE(closed_future.Wait());
+  EXPECT_EQ(closed_future.Get(), PaymentsUiClosedReason::kLostFocus);
   EXPECT_TRUE(IsIconVisible());
 }
 
 IN_PROC_BROWSER_TEST_P(PaymentsChurnedUsersBubbleViewsBrowserTest,
                        CloseButtonCallbackTriggered) {
-  base::test::TestFuture<void> closed_future;
-  ShowBubble(base::DoNothing(), base::DoNothing(), closed_future.GetCallback());
+  base::test::TestFuture<PaymentsUiClosedReason> closed_future;
+  ShowBubble(closed_future.GetCallback());
 
   PaymentsChurnedUsersBubbleView* bubble_view = GetBubbleView();
   ASSERT_TRUE(bubble_view);
   bubble_view->GetWidget()->CloseWithReason(
       views::Widget::ClosedReason::kCloseButtonClicked);
 
-  EXPECT_TRUE(closed_future.Wait());
+  EXPECT_EQ(closed_future.Get(), PaymentsUiClosedReason::kClosed);
   EXPECT_FALSE(IsIconVisible());
 }
 
@@ -450,6 +430,124 @@ IN_PROC_BROWSER_TEST_P(PaymentsChurnedUsersBubbleViewsBrowserTest,
            DialogViewId::
                SAVE_PAYMENT_METHOD_AND_VIRTUAL_CARD_ENROLL_CONFIRMATION_BUBBLE_VIEWS;
   }));
+}
+
+// Tests that showing and closing the bubble syncs
+// `ActionItem::GetIsShowingBubble()` across prompt and confirmation views.
+IN_PROC_BROWSER_TEST_P(PaymentsChurnedUsersBubbleViewsBrowserTest,
+                       SyncsActionItemIsShowingBubble) {
+  actions::ActionItem* const action_item =
+      actions::ActionManager::Get().FindAction(
+          kActionShowPaymentsChurnedUsersBubble,
+          BrowserActions::From(browser())->root_action_item());
+  ASSERT_TRUE(action_item);
+  EXPECT_FALSE(action_item->GetIsShowingBubble());
+
+  ShowBubble();
+  EXPECT_TRUE(action_item->GetIsShowingBubble());
+
+  PaymentsChurnedUsersBubbleView* const bubble_view = GetBubbleView();
+  ASSERT_TRUE(bubble_view);
+  bubble_view->AcceptDialog();
+
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    AutofillBubbleBase* const current_bubble = GetAutofillBubbleView();
+    return current_bubble && current_bubble != bubble_view;
+  }));
+  EXPECT_TRUE(action_item->GetIsShowingBubble());
+
+  auto* const confirmation_bubble =
+      static_cast<AutofillLocationBarBubble*>(GetAutofillBubbleView());
+  views::test::WidgetDestroyedWaiter destroyed_waiter(
+      confirmation_bubble->GetWidget());
+  confirmation_bubble->GetWidget()->CloseWithReason(
+      views::Widget::ClosedReason::kCloseButtonClicked);
+  destroyed_waiter.Wait();
+
+  EXPECT_FALSE(action_item->GetIsShowingBubble());
+}
+
+// Tests that the confirmation bubble is queued via `BubbleManager` if the tab
+// becomes inactive during the loading delay, shown when reactivated, and hidden
+// on subsequent tab deactivation.
+IN_PROC_BROWSER_TEST_P(PaymentsChurnedUsersBubbleViewsBrowserTest,
+                       ConfirmationBubbleQueuedWhileTabInactive) {
+  actions::ActionItem* const action_item =
+      actions::ActionManager::Get().FindAction(
+          kActionShowPaymentsChurnedUsersBubble,
+          BrowserActions::From(browser())->root_action_item());
+  ASSERT_TRUE(action_item);
+
+  ShowBubble();
+  tabs::TabInterface* const first_tab =
+      browser()->GetTabStripModel()->GetActiveTab();
+  ASSERT_TRUE(first_tab);
+  PaymentsChurnedUsersBubbleController* const controller =
+      PaymentsChurnedUsersBubbleController::From(*first_tab);
+  ASSERT_TRUE(controller);
+  BubbleManager* const bubble_manager = BubbleManager::GetForTab(first_tab);
+  ASSERT_TRUE(bubble_manager);
+
+  PaymentsChurnedUsersBubbleView* const prompt_view = GetBubbleView();
+  ASSERT_TRUE(prompt_view);
+  prompt_view->AcceptDialog();
+
+  // Switch to a new foreground tab before the confirmation delay completes.
+  ASSERT_TRUE(AddTabAtIndex(1, GURL("about:blank"), ui::PAGE_TRANSITION_TYPED));
+  EXPECT_FALSE(controller->IsShowingBubble());
+  EXPECT_FALSE(action_item->GetIsShowingBubble());
+
+  // Wait for the delayed `ShowConfirmationBubbleView()` call to queue in
+  // `BubbleManager` without showing on the inactive tab.
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return bubble_manager->HasPendingBubbleOfSameType(
+        BubbleType::kPaymentsChurnedUsers);
+  }));
+  EXPECT_FALSE(controller->IsShowingBubble());
+
+  // Reactivating the first tab shows the queued confirmation bubble.
+  browser()->GetTabStripModel()->ActivateTabAt(0);
+  ASSERT_TRUE(controller->IsShowingBubble());
+  EXPECT_TRUE(action_item->GetIsShowingBubble());
+  EXPECT_EQ(
+      static_cast<AutofillLocationBarBubble*>(
+          controller->GetBubbleViewForTesting())
+          ->GetID(),
+      DialogViewId::
+          SAVE_PAYMENT_METHOD_AND_VIRTUAL_CARD_ENROLL_CONFIRMATION_BUBBLE_VIEWS);
+
+  // Deactivating the tab again hides the confirmation bubble via
+  // `BubbleManager` and resets `ActionItem::GetIsShowingBubble()`.
+  browser()->GetTabStripModel()->ActivateTabAt(1);
+  EXPECT_FALSE(controller->IsShowingBubble());
+  EXPECT_FALSE(action_item->GetIsShowingBubble());
+}
+
+// Tests that a delayed `ShowConfirmationBubbleView()` call after navigation is
+// a no-op and does not show the confirmation bubble or page action icon.
+IN_PROC_BROWSER_TEST_P(PaymentsChurnedUsersBubbleViewsBrowserTest,
+                       ShowConfirmationAfterNavigationIsNoOp) {
+  ShowBubble();
+  tabs::TabInterface* const active_tab =
+      browser()->GetTabStripModel()->GetActiveTab();
+  ASSERT_TRUE(active_tab);
+  PaymentsChurnedUsersBubbleController* const controller =
+      PaymentsChurnedUsersBubbleController::From(*active_tab);
+  ASSERT_TRUE(controller);
+
+  PaymentsChurnedUsersBubbleView* const prompt_view = GetBubbleView();
+  ASSERT_TRUE(prompt_view);
+  prompt_view->AcceptDialog();
+
+  // Navigate away during the loading delay.
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GURL("about:blank")));
+  EXPECT_FALSE(controller->IsShowingBubble());
+  EXPECT_FALSE(IsIconVisible());
+
+  // A delayed `ShowConfirmationBubbleView()` call must be a no-op.
+  controller->ShowConfirmationBubbleView();
+  EXPECT_FALSE(controller->IsShowingBubble());
+  EXPECT_FALSE(IsIconVisible());
 }
 
 }  // namespace autofill

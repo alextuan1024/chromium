@@ -8,11 +8,10 @@ import androidx.annotation.MainThread;
 
 import com.google.errorprone.annotations.CheckReturnValue;
 
-import org.jni_zero.CalledByNative;
+import org.jni_zero.JniType;
 import org.jni_zero.NativeMethods;
 
 import org.chromium.base.Callback;
-import org.chromium.base.ResettersForTesting;
 import org.chromium.base.task.PostTask;
 import org.chromium.base.task.TaskTraits;
 import org.chromium.build.annotations.NullMarked;
@@ -23,7 +22,6 @@ import org.chromium.content_public.browser.BrowserContextHandle;
 /** Provides key -> byte[] mapping storage with namespace support for PersistedData */
 @NullMarked
 public class LevelDBPersistedDataStorage implements PersistedDataStorage {
-    private static boolean sSkipNativeAssertionsForTesting;
     private long mNativePersistedStateDB;
     private final String mNamespace;
 
@@ -36,10 +34,8 @@ public class LevelDBPersistedDataStorage implements PersistedDataStorage {
         assert !profile.isOffTheRecord()
                 : "LevelDBPersistedTabDataStorage is not supported for incognito profiles";
         mNamespace = namespace;
-        LevelDBPersistedDataStorageJni.get().init(this, profile);
-        if (!sSkipNativeAssertionsForTesting) {
-            assert mNativePersistedStateDB != 0;
-        }
+        mNativePersistedStateDB = LevelDBPersistedDataStorageJni.get().init(profile);
+        assert mNativePersistedStateDB != 0;
     }
 
     @Override
@@ -133,49 +129,38 @@ public class LevelDBPersistedDataStorage implements PersistedDataStorage {
         }
     }
 
-    @CalledByNative
-    private void setNativePtr(long nativePtr) {
-        if (!sSkipNativeAssertionsForTesting) {
-            assert nativePtr != 0;
-            assert mNativePersistedStateDB == 0;
-        }
-        mNativePersistedStateDB = nativePtr;
-    }
-
     @CheckReturnValue
     private boolean assertNativeExists() {
-        if (sSkipNativeAssertionsForTesting) {
-            return true;
-        }
         assert mNativePersistedStateDB != 0;
         return mNativePersistedStateDB != 0;
     }
 
-    public static void setSkipNativeAssertionsForTesting(boolean skipNativeAssertionsForTesting) {
-        sSkipNativeAssertionsForTesting = skipNativeAssertionsForTesting;
-        ResettersForTesting.register(() -> sSkipNativeAssertionsForTesting = false);
-    }
-
     @NativeMethods
     public interface Natives {
-        void init(LevelDBPersistedDataStorage self, BrowserContextHandle handle);
+        long init(BrowserContextHandle handle);
 
         void destroy(long nativePersistedStateDB);
 
         void save(
                 long nativePersistedStateDB,
-                String key,
+                @JniType("std::string") String key,
                 byte @Nullable [] data,
                 @Nullable Runnable onComplete);
 
-        void load(long nativePersistedStateDB, String key, Callback<byte @Nullable []> callback);
+        void load(
+                long nativePersistedStateDB,
+                @JniType("std::string") String key,
+                Callback<byte @Nullable []> callback);
 
-        void delete(long nativePersistedStateDB, String key, @Nullable Runnable onComplete);
+        void delete(
+                long nativePersistedStateDB,
+                @JniType("std::string") String key,
+                @Nullable Runnable onComplete);
 
         void performMaintenance(
                 long nativePersistedStateDB,
-                String[] keysToKeep,
-                String dataId,
+                @JniType("std::vector<std::string>") String[] keysToKeep,
+                @JniType("std::string") String dataId,
                 @Nullable Runnable onComplete);
     }
 }

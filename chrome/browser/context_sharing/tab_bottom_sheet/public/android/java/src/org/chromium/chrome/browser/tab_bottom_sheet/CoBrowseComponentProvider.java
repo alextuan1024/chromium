@@ -45,14 +45,33 @@ public interface CoBrowseComponentProvider {
     }
 
     /**
+     * Instantiates a native loading placeholder view shown while client content is loading. While
+     * loading, the placeholder covers the web UI even if a {@code WebContents} is attached.
+     *
+     * @param context The {@link Context} used to construct the placeholder view.
+     * @param backgroundColor The background color of the container.
+     * @param placeholderElemColor The fill color of the skeleton placeholder blocks.
+     * @param onCloseClicked Callback invoked when the loading view's close button is clicked.
+     * @return A custom loading placeholder {@link View}, or null if unsupported.
+     */
+    default @Nullable View createLoadingPlaceholderView(
+            Context context,
+            @ColorInt int backgroundColor,
+            @ColorInt int placeholderElemColor,
+            Runnable onCloseClicked) {
+        return null;
+    }
+
+    /**
      * Instantiates a new instance of {@link ResizingPlaceholderCoordinator}.
      *
      * @param context The {@link Context} used to inflate placeholder views.
      * @param backgroundColor The background color of the sheet / placeholder.
+     * @param placeholderElemColor The element color of the placeholder skeleton items.
      * @return A custom {@link ResizingPlaceholderCoordinator}, or null to use default.
      */
     default @Nullable ResizingPlaceholderCoordinator createResizingPlaceholderCoordinator(
-            Context context, @ColorInt int backgroundColor) {
+            Context context, @ColorInt int backgroundColor, @ColorInt int placeholderElemColor) {
         return null;
     }
 

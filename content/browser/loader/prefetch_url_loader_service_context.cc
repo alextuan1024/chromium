@@ -71,8 +71,6 @@ PrefetchURLLoaderServiceContext::PrefetchURLLoaderServiceContext(
     : browser_context_(browser_context),
       loader_factory_receivers_(loader_factory_receivers) {
   CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
-  accept_langs_ =
-      GetContentClient()->browser()->GetAcceptLangs(browser_context);
 
   // Create a RendererPreferenceWatcher to observe updates in the preferences.
   GetContentClient()->browser()->RegisterRendererPreferenceWatcher(
@@ -96,7 +94,10 @@ void PrefetchURLLoaderServiceContext::CreatePrefetchLoaderAndStart(
 
   BindContext& current_context = *current_bind_context();
 
-  if (!current_context.render_frame_host) {
+  // Abort if the frame is gone, or if its committed document has since
+  // navigated away (e.g. a new document committed on the same RFH).
+  if (!current_context.render_frame_host ||
+      current_context.WasInitiatorDocumentDestroyed()) {
     mojo::Remote<network::mojom::URLLoaderClient>(std::move(client))
         ->OnComplete(network::URLLoaderCompletionStatus(net::ERR_ABORTED));
     return;
@@ -144,18 +145,17 @@ void PrefetchURLLoaderServiceContext::CreatePrefetchLoaderAndStart(
     // cross-origin prefetch intended for top-level navigation reuse. We must
     // verify that the request meets the necessary security requirements, and
     // populate `resource_request`'s IsolationInfo appropriately.
-    EnsureCrossOriginFactory();
-    CHECK(current_context.cross_origin_factory, base::NotFatalUntil::M160);
-
-    // An invalid request could indicate a compromised renderer
-    // inappropriately modifying the request, so we immediately complete it
-    // with an error.
     if (!IsValidCrossOriginPrefetch(resource_request)) {
       mojo::Remote<network::mojom::URLLoaderClient>(std::move(client))
           ->OnComplete(
               network::URLLoaderCompletionStatus(net::ERR_INVALID_ARGUMENT));
       return;
     }
+
+    // Defer creating `cross_origin_factory` until after origin validation so it
+    // isn't cached with a stale pre-commit origin or `ClientSecurityState`.
+    EnsureCrossOriginFactory();
+    CHECK(current_context.cross_origin_factory, base::NotFatalUntil::M160);
 
     // Cross-site prefetches shouldn't include SameSite cookies.
     resource_request.site_for_cookies = net::SiteForCookies();
@@ -199,13 +199,6 @@ void PrefetchURLLoaderServiceContext::CreatePrefetchLoaderAndStart(
       mojo::Remote<network::mojom::URLLoaderClient>(std::move(client))
           ->OnComplete(
               network::URLLoaderCompletionStatus(net::ERR_INVALID_ARGUMENT));
-      return;
-    }
-
-    EnsureCrossOriginFactory();
-    if (!current_context.cross_origin_factory) {
-      mojo::Remote<network::mojom::URLLoaderClient>(std::move(client))
-          ->OnComplete(network::URLLoaderCompletionStatus(net::ERR_FAILED));
       return;
     }
 
@@ -254,6 +247,13 @@ void PrefetchURLLoaderServiceContext::CreatePrefetchLoaderAndStart(
       return;
     }
 
+    EnsureCrossOriginFactory();
+    if (!current_context.cross_origin_factory) {
+      mojo::Remote<network::mojom::URLLoaderClient>(std::move(client))
+          ->OnComplete(network::URLLoaderCompletionStatus(net::ERR_FAILED));
+      return;
+    }
+
     base::UmaHistogramEnumeration(
         "Prefetch.RecursivePrefetch.TokenLookupResult",
         RecursivePrefetchTokenLookupResult::kSuccess);
@@ -275,6 +275,11 @@ void PrefetchURLLoaderServiceContext::CreatePrefetchLoaderAndStart(
       prefetched_signed_exchange_cache =
           current_context.prefetched_signed_exchange_cache;
 
+  if (!accept_langs_.has_value()) {
+    accept_langs_ =
+        GetContentClient()->browser()->GetAcceptLangs(browser_context_);
+  }
+
   // base::Unretained is safe here since |this| owns the loader.
   auto loader = std::make_unique<PrefetchURLLoader>(
       request_id, options, current_context.frame_tree_node_id, resource_request,
@@ -290,7 +295,7 @@ void PrefetchURLLoaderServiceContext::CreatePrefetchLoaderAndStart(
           base::Unretained(this), resource_request,
           current_context.frame_tree_node_id),
       browser_context_, std::move(prefetched_signed_exchange_cache),
-      accept_langs_,
+      *accept_langs_,
       base::BindOnce(
           &GenerateRecursivePrefetchToken,
           current_context.weak_ptr_factory.GetWeakPtr()));
@@ -325,15 +330,16 @@ bool PrefetchURLLoaderServiceContext::IsValidCrossOriginPrefetch(
 
   // The request initiator has to match the request_initiator_origin_lock - it
   // has to be the same origin as the last committed origin in the frame.
+  // Do not call `ReportBadMessage` here because `GetLastCommittedOrigin()` can
+  // legitimately differ from `request_initiator` (e.g. if the prefetch IPC
+  // arrives on the standalone URLLoaderFactory pipe before
+  // `DidCommitProvisionalLoad` updates the frame's committed origin, or if a
+  // child frame/window uses a pipe cloned from its parent/opener).
   const BindContext& current_context = *current_bind_context();
-  // Presence of |render_frame_host| is guaranteed by the caller - the caller
-  // calls earlier EnsureCrossOriginFactory which has the same DCHECK.
   CHECK(current_context.render_frame_host, base::NotFatalUntil::M160);
   if (!resource_request.request_initiator->opaque() &&
       resource_request.request_initiator.value() !=
           current_context.render_frame_host->GetLastCommittedOrigin()) {
-    loader_factory_receivers_->ReportBadMessage(
-        "Prefetch/IsValidCrossOrigin: frame origin mismatch");
     return false;
   }
 

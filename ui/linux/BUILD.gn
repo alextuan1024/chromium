@@ -4,9 +4,45 @@
 
 import("//build/config/features.gni")
 import("//build/config/linux/gtk/gtk.gni")
+import("//build/config/ui.gni")
 import("//ui/qt/qt.gni")
 
 assert(is_linux)
+
+config("linux_key_bindings_handler_config") {
+  if (use_glib && use_gio) {
+    defines = [ "USE_GSETTINGS" ]
+  }
+}
+
+source_set("linux_key_bindings_handler") {
+  public = [ "linux_key_bindings_handler.h" ]
+  sources = [ "linux_key_bindings_handler.cc" ]
+  public_configs = [ ":linux_key_bindings_handler_config" ]
+  public_deps = [ "//base" ]
+  deps = [
+    "//ui/base/ime:ime_types",
+    "//ui/events",
+  ]
+  if (use_glib && use_gio) {
+    public_deps += [ "//ui/base/glib" ]
+  }
+}
+
+source_set("linux_key_bindings_handler_unittests") {
+  testonly = true
+  sources = [ "linux_key_bindings_handler_unittest.cc" ]
+  deps = [
+    ":linux_key_bindings_handler",
+    "//base",
+    "//base/test:test_support",
+    "//testing/gtest",
+    "//ui/base/ime:ime_types",
+    "//ui/events",
+    "//ui/events:dom_keycode_converter",
+    "//ui/gfx/geometry",
+  ]
+}
 
 component("linux_ui") {
   defines = [ "IS_LINUX_UI_IMPL" ]
@@ -54,6 +90,7 @@ component("linux_ui_factory") {
   ]
 
   deps = [
+    ":linux_key_bindings_handler",
     "//base",
     "//ui/base",
     "//ui/base/ime/linux",
@@ -82,6 +119,20 @@ source_set("display_server_utils") {
     "//third_party/angle:angle_gpu_info_util",
     "//ui/base:features",
     "//ui/base:ozone_buildflags",
+    "//ui/gfx:gfx_switches",
+    "//ui/ozone",
+  ]
+}
+
+source_set("display_server_utils_unittests") {
+  testonly = true
+  sources = [ "display_server_utils_unittest.cc" ]
+  deps = [
+    ":display_server_utils",
+    "//base",
+    "//testing/gtest",
+    "//ui/base:ozone_buildflags",
+    "//ui/gfx:gfx_switches",
     "//ui/ozone",
   ]
 }
@@ -107,10 +158,10 @@ if (use_dbus) {
   # Observes the system color scheme and accent color via the
   # org.freedesktop.portal.Settings D-Bus interface, applying them to
   # NativeTheme.
-  source_set("dark_mode_manager") {
+  source_set("portal_settings") {
     sources = [
-      "dark_mode_manager_linux.cc",
-      "dark_mode_manager_linux.h",
+      "portal_settings_linux.cc",
+      "portal_settings_linux.h",
     ]
     deps = [
       ":linux_ui",
@@ -123,11 +174,11 @@ if (use_dbus) {
     ]
   }
 
-  source_set("dark_mode_manager_unittests") {
+  source_set("portal_settings_unittests") {
     testonly = true
-    sources = [ "dark_mode_manager_linux_unittest.cc" ]
+    sources = [ "portal_settings_linux_unittest.cc" ]
     deps = [
-      ":dark_mode_manager",
+      ":portal_settings",
       ":test_support",
       "//base",
       "//base/test:test_support",

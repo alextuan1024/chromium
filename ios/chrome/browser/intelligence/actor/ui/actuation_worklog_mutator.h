@@ -7,11 +7,16 @@
 
 #import <Foundation/Foundation.h>
 
+@class ActuationInterventionAction;
+
 // Mutator protocol for user actions triggered within the actuation worklog.
 @protocol ActuationWorklogMutator <NSObject>
 
 // Requests stopping the active actuation task.
 - (void)stopActuation;
+
+// Called when the user triggers `action` on the active intervention UI.
+- (void)didTriggerInterventionAction:(ActuationInterventionAction*)action;
 
 @end
 

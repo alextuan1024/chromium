@@ -41,6 +41,7 @@ import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.CriteriaHelper;
+import org.chromium.base.test.util.DisableIf;
 import org.chromium.base.test.util.HistogramWatcher;
 import org.chromium.blink.mojom.RpContext;
 import org.chromium.blink.mojom.RpMode;
@@ -52,6 +53,7 @@ import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetTestSupport;
 import org.chromium.content.webid.IdentityRequestDialogDismissReason;
+import org.chromium.ui.base.DeviceFormFactor;
 import org.chromium.ui.modaldialog.DialogDismissalCause;
 import org.chromium.ui.modaldialog.ModalDialogManager;
 
@@ -66,6 +68,7 @@ import java.util.Collections;
 @RunWith(ChromeJUnit4ClassRunner.class)
 @Batch(Batch.PER_CLASS)
 @CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
+@DisableIf.Device(DeviceFormFactor.AUTOMOTIVE) // crbug.com/462792872
 public class AccountSelectionButtonModeIntegrationTest extends AccountSelectionIntegrationTestBase {
     @Before
     @Override
@@ -305,6 +308,38 @@ public class AccountSelectionButtonModeIntegrationTest extends AccountSelectionI
 
         verify(mMockBridge, never()).onDismissed(anyInt());
         verify(mMockBridge).onAccountSelected(any());
+    }
+
+    /**
+     * Tests that the single-account chooser for a new user doesn't show the disclosure text when
+     * the IdP doesn't support adding an account, and that clicking continue shows it on the request
+     * permission dialog. Regression test for crbug.com/579901494.
+     */
+    @Test
+    @MediumTest
+    public void testAccountChooserWithoutAddAccountForNewUser() {
+        runOnUiThreadBlocking(
+                () -> {
+                    mAccountSelection.showAccounts(
+                            new RelyingPartyData(EXAMPLE_ETLD_PLUS_ONE, "", null),
+                            Arrays.asList(mNewBob),
+                            Arrays.asList(mIdpData),
+                            /* newAccounts= */ Collections.emptyList());
+                    mAccountSelection.getMediator().setComponentShowTime(-1000);
+                });
+        pollUiThread(() -> getBottomSheetState() == BottomSheetController.SheetState.HALF);
+
+        // The single-account chooser shows the continue button without the disclosure text.
+        assertEquals(HeaderType.SIGN_IN, mAccountSelection.getMediator().getHeaderType());
+        onView(withId(R.id.account_selection_continue_btn)).check(matches(isDisplayed()));
+        onView(withId(R.id.user_data_sharing_consent)).check(matches(not(isDisplayed())));
+
+        // Clicking continue shows the request permission dialog with the disclosure text.
+        clickContinueButton();
+        assertEquals(
+                HeaderType.REQUEST_PERMISSION_MODAL,
+                mAccountSelection.getMediator().getHeaderType());
+        onView(withId(R.id.user_data_sharing_consent)).check(matches(isDisplayed()));
     }
 
     @Test

@@ -35,6 +35,7 @@
 #include "cc/mojom/render_frame_metadata.mojom.h"
 #include "components/input/event_with_latency_info.h"
 #include "components/input/input_disposition_handler.h"
+#include "components/input/input_router_client.h"
 #include "components/input/input_router_impl.h"
 #include "components/input/render_input_router.h"
 #include "components/input/render_input_router_client.h"
@@ -75,6 +76,7 @@
 #include "ui/base/ime/text_input_mode.h"
 #include "ui/base/ime/text_input_type.h"
 #include "ui/base/mojom/menu_source_type.mojom-forward.h"
+#include "ui/gfx/geometry/point_f.h"
 #include "ui/gfx/native_ui_types.h"
 #include "ui/latency/latency_info.h"
 #include "url/origin.h"
@@ -246,15 +248,21 @@ class CONTENT_EXPORT RenderWidgetHostImpl
   const viz::FrameSinkId& GetFrameSinkId() override;
   std::optional<GlobalRenderFrameHostId> GetPopupCreatorFrameId()
       const override;
+  void set_popup_creator_frame_id_for_testing(
+      std::optional<GlobalRenderFrameHostId> id) {
+    popup_creator_frame_id_ = id;
+  }
   void UpdateTextDirection(base::i18n::TextDirection direction) override;
   void NotifyTextDirection() override;
   void SetExternallySourcedComposition(
       const std::u16string& text,
       const std::vector<ui::ImeTextSpan>& ime_text_spans,
+      const gfx::Range& replacement_range,
       const GlobalDOMNodeId& target_dom_node_id,
-      base::OnceClosure on_complete) override;
+      base::OnceCallback<void(const gfx::Range&)> on_complete) override;
   void CommitExternallySourcedComposition(
       const std::u16string& text,
+      const gfx::Range& replacement_range,
       const GlobalDOMNodeId& target_dom_node_id,
       base::OnceClosure on_complete) override;
   void PasteIntoNode(const std::u16string& text,
@@ -335,8 +343,8 @@ class CONTENT_EXPORT RenderWidgetHostImpl
                       const gfx::PointF& screen_point,
                       int key_modifiers,
                       base::OnceClosure callback) override;
-  void DragSourceEndedAt(const gfx::PointF& client_pt,
-                         const gfx::PointF& screen_pt,
+  void DragSourceEndedAt(const std::optional<gfx::PointF>& client_pt,
+                         const std::optional<gfx::PointF>& screen_pt,
                          ui::mojom::DragOperation operation,
                          base::OnceClosure callback) override;
   void DragSourceSystemDragEnded() override;
@@ -874,7 +882,8 @@ class CONTENT_EXPORT RenderWidgetHostImpl
       const gfx::Range& range,
       const std::optional<std::vector<gfx::Rect>>& character_bounds) override;
   void OnImeCancelComposition() override;
-  void OnStartStylusWriting() override;
+  void OnStartStylusWriting(
+      const std::optional<input::StylusWritingProperties>& properties) override;
   void OnUnconfirmedTapConvertedToTap() override;
   void UpdateElementFocusForStylusWriting(
 #if BUILDFLAG(IS_WIN)
@@ -957,6 +966,12 @@ class CONTENT_EXPORT RenderWidgetHostImpl
   // Called during frame eviction to return all SurfaceIds in the frame tree.
   // Marks all views in the frame tree as evicted.
   std::vector<viz::SurfaceId> CollectSurfaceIdsForEviction();
+
+  // Validates a renderer's attempt to notify user activation in a frame. It
+  // removes one expected user activation notification if available and returns
+  // true; otherwise, it returns false. See
+  // `AddExpectedUserActivationNotification()`.
+  bool RemoveExpectedUserActivationNotificationIfAvailable();
 
   const mojo::AssociatedRemote<blink::mojom::FrameWidget>&
   GetAssociatedFrameWidget();
@@ -1139,12 +1154,26 @@ class CONTENT_EXPORT RenderWidgetHostImpl
  private:
   FRIEND_TEST_ALL_PREFIXES(FullscreenDetectionTest,
                            EncompassingDivNotFullscreen);
+  FRIEND_TEST_ALL_PREFIXES(NavigationControllerTest,
+                           VisuallyNonEmptyCompositorFrameRevertsPendingURL);
+  FRIEND_TEST_ALL_PREFIXES(
+      NavigationControllerTest,
+      VisuallyNonEmptyCompositorFrameAfterFailRevertsPendingURL);
+  FRIEND_TEST_ALL_PREFIXES(NavigationControllerTest,
+                           VisuallyNonEmptyCompositorFrameWithoutPendingEntry);
+  FRIEND_TEST_ALL_PREFIXES(NavigationControllerTest,
+                           VisuallyNonEmptyCompositorFrameAfterReportedAccess);
+  FRIEND_TEST_ALL_PREFIXES(
+      NavigationControllerTest,
+      VisuallyNonEmptyCompositorFrameAfterBrowserInitiatedAbort);
+  FRIEND_TEST_ALL_PREFIXES(NavigationControllerTest,
+                           VisuallyNonEmptyCompositorFrameWithFeatureDisabled);
+  FRIEND_TEST_ALL_PREFIXES(NavigationControllerTest,
+                           VisuallyNonEmptyCompositorFrameAfterCommitIsNoOp);
   FRIEND_TEST_ALL_PREFIXES(RenderWidgetHostTest,
                            DoNotAcceptPopupBoundsUntilScreenRectsAcked);
   FRIEND_TEST_ALL_PREFIXES(RenderWidgetHostTest,
                            DontPostponeInputEventAckTimeout);
-  FRIEND_TEST_ALL_PREFIXES(RenderWidgetHostTest,
-                           PopupBoundsAreClampedToTheDisplay);
   FRIEND_TEST_ALL_PREFIXES(RenderWidgetHostTest, RendererExitedNoDrag);
   FRIEND_TEST_ALL_PREFIXES(RenderWidgetHostTest,
                            StopAndStartInputEventAckTimeout);
@@ -1162,6 +1191,8 @@ class CONTENT_EXPORT RenderWidgetHostImpl
                            ScrollBubblingWithTouchMoveInjection);
   FRIEND_TEST_ALL_PREFIXES(RenderWidgetHostTest, EventDispatchPostDetach);
   FRIEND_TEST_ALL_PREFIXES(RenderWidgetHostTest, InputEventRWHLatencyComponent);
+  FRIEND_TEST_ALL_PREFIXES(RenderWidgetHostTest,
+                           ExpectedUserActivationNotification);
   FRIEND_TEST_ALL_PREFIXES(DevToolsAgentHostImplTest,
                            NoUnresponsiveDialogInInspectedContents);
   FRIEND_TEST_ALL_PREFIXES(RenderWidgetHostViewMacTest,
@@ -1217,7 +1248,8 @@ class CONTENT_EXPORT RenderWidgetHostImpl
   // IPC message handlers
   void OnClose();
   void OnUpdateScreenRectsAck();
-  void OnUpdateDragOperation(DragOperationCallback callback,
+  void OnUpdateDragOperation(uint64_t drag_target_session_id,
+                             DragOperationCallback callback,
                              ui::mojom::DragOperation current_op,
                              bool document_is_handling_drag);
 
@@ -1267,6 +1299,10 @@ class CONTENT_EXPORT RenderWidgetHostImpl
       const content::CopyFromSurfaceResult& result);
 
   void OnSnapshotReceived(int snapshot_id, gfx::Image image);
+
+  // Completes all pending snapshots with an empty image. Used when the view
+  // they would be taken from goes away with the renderer.
+  void FailPendingSnapshots();
 
   // This is called after the renderer attempts to focus content eligible for
   // handwriting via mojom::blink::FrameWidget::OnStartStylusWriting. If content
@@ -1319,6 +1355,61 @@ class CONTENT_EXPORT RenderWidgetHostImpl
   // has a view and is the owner for the FrameSinkId assigned to it.
   void MaybeDispatchBufferedFrameSinkRequest();
 
+  // Asks Viz to report the first CompositorFrame with visually non-empty
+  // content for this widget's FrameSinkId, if this widget is for a main frame
+  // initial empty document. Must be called before CreateCompositorFrameSink()
+  // is sent for the same FrameSinkId. See https://crbug.com/40055319.
+  void MaybeRequestNonEmptyCompositorFrameNotification();
+
+  // Withdraws any request made by
+  // MaybeRequestNonEmptyCompositorFrameNotification(), once the notification
+  // can no longer tell us anything about the initial empty document (e.g.,
+  // after a cross-document navigation commits). Requires a non-null `view_`.
+  void CancelNonEmptyCompositorFrameNotification();
+
+  // Returns true if this widget is for a main frame initial empty document
+  // whose first visually non-empty CompositorFrame tells us it is no longer
+  // safe to show a renderer-initiated pending URL.
+  bool ShouldRequestNonEmptyCompositorFrameNotification() const;
+
+  // Called when Viz reports that this widget activated a CompositorFrame with
+  // visually non-empty content, having been armed by
+  // MaybeRequestNonEmptyCompositorFrameNotification(). Also called directly by
+  // tests.
+  void OnFirstVisuallyNonEmptyCompositorFrame();
+
+  void UpdateFullscreenGrantCount();
+
+  // Adds one to `expected_user_activation_notifications_` when forwarding
+  // selected input events, and also sets a timer that allows a renderer to
+  // "claim" the expected activation notification within a limited time
+  // (`kUserActivationVerificationTimeout`).
+  //
+  // This deliberately tracks the earliest event in a touch sequence (to be
+  // precise, touch start instead of touch end as per the user activation spec)
+  // to support long-press and also a legacy notification call from a
+  // gesture-tap-down handler. This would cause a false notification rejection
+  // after a very-long press lasting beyond
+  // `kUserActivationVerificationTimeout`, which is a corner case we can ignore.
+  //
+  // Because of the above, we need to call this even for the events that are not
+  // dispatched to the renderer. The browser may not dispatch the earliest event
+  // in the sequence as an optimization (e.g. because there is no event
+  // listener), but a notification call from a latter event could still be
+  // expected.
+  //
+  // TODO(https://crbug.com/40091540): WebContentsImpl has a "parallel" user
+  // activation tracker through HandleUserInteractionForInputEvent which is
+  // primarily used for OS clipboard messages. We need to consolidate that
+  // tracker into RenderWidgetHostImpl. Not sure why gesture scroll begin events
+  // are included there, this is incompatible with the web exposed user
+  // activation state here.
+  void AddExpectedUserActivationNotification(const blink::WebInputEvent& event);
+
+  // Clears `expected_user_activation_notifications_`. This is called after
+  // navigations or timeouts.
+  void ClearExpectedUserActivationNotifications();
+
   raw_ptr<FrameTree> frame_tree_;
 
   // RenderWidgetHost are either:
@@ -1353,7 +1444,7 @@ class CONTENT_EXPORT RenderWidgetHostImpl
 
   // Our delegate, which wants to know mainly about keyboard events.
   // It will remain non-null until DetachDelegate() is called.
-  raw_ptr<RenderWidgetHostDelegate, FlakyDanglingUntriaged> delegate_;
+  raw_ptr<RenderWidgetHostDelegate> delegate_;
 
   // The delegate of the owner of this object.
   // This member is non-null if and only if this RenderWidgetHost is associated
@@ -1433,6 +1524,13 @@ class CONTENT_EXPORT RenderWidgetHostImpl
 
   // Visual properties that were most recently sent to the renderer.
   std::unique_ptr<blink::VisualProperties> old_visual_properties_;
+
+  // Tracks the last observed value of `delegate_->IsFullscreen()` and
+  // increments `fullscreen_grant_count_` each time fullscreen is entered so
+  // that fullscreen transitions coalesced while waiting for a visual properties
+  // ack are still detected.
+  bool was_fullscreen_ = false;
+  uint64_t fullscreen_grant_count_ = 0;
 
   // True if the render widget host should track the render widget's size as
   // opposed to visa versa.
@@ -1654,6 +1752,10 @@ class CONTENT_EXPORT RenderWidgetHostImpl
       this};
   mojo::AssociatedRemote<blink::mojom::FrameWidget> blink_frame_widget_;
 
+  // Identifies the current renderer drag-target session. Enter starts a new
+  // session, while leave and drop invalidate pending enter/over replies.
+  uint64_t drag_target_session_id_ = 0;
+
   // If this is initialized with a popup this member will be valid and
   // manages the lifecycle of the popup in blink.
   mojo::AssociatedReceiver<blink::mojom::PopupWidgetHost>
@@ -1681,6 +1783,20 @@ class CONTENT_EXPORT RenderWidgetHostImpl
   std::optional<InitialFrameSinkPipes> initial_frame_sink_pipes_;
 
   std::optional<GlobalRenderFrameHostId> popup_creator_frame_id_;
+
+  // The time limit for browser verification of user activation notification
+  // signal from the renderer, counting from the latest dispatch of a relevant
+  // input event to the renderer.
+  static constexpr base::TimeDelta kUserActivationVerificationTimeout =
+      base::Seconds(30);
+
+  // Counter for expected user activation notification calls.
+  //
+  // TODO(https://crbug.com/577959346): Prevent unlimited accumulation of this.
+  int expected_user_activation_notifications_ = 0;
+
+  // Timer to reset `expected_user_activation_notifications_` after a delay.
+  base::OneShotTimer expected_user_activation_notification_timer_;
 
   base::WeakPtrFactory<RenderWidgetHostImpl> weak_factory_{this};
 };

@@ -91,48 +91,6 @@ TEST_F(PageNodeImplTest, RemoveFrame) {
   EXPECT_EQ(0u, GraphImplOperations::GetFrameNodes(page_node.get()).size());
 }
 
-TEST_F(PageNodeImplTest, GetLastVisibilityChangeTime) {
-  MockSinglePageInSingleProcessGraph mock_graph(graph());
-
-  base::TimeTicks t0 = base::TimeTicks::Now();
-  mock_graph.page->SetIsVisible(true);
-  EXPECT_TRUE(mock_graph.page->IsVisible());
-  AdvanceClock(base::Seconds(42));
-  EXPECT_EQ(t0, mock_graph.page->GetLastVisibilityChangeTime());
-
-  base::TimeTicks t1 = base::TimeTicks::Now();
-  mock_graph.page->SetIsVisible(false);
-  AdvanceClock(base::Seconds(23));
-  EXPECT_EQ(t1, mock_graph.page->GetLastVisibilityChangeTime());
-  EXPECT_FALSE(mock_graph.page->IsVisible());
-}
-
-TEST_F(PageNodeImplTest, GetTimeSinceLastAudibleChange) {
-  MockSinglePageInSingleProcessGraph mock_graph(graph());
-  EXPECT_FALSE(mock_graph.page->IsAudible());
-  EXPECT_EQ(std::nullopt, mock_graph.page->GetTimeSinceLastAudibleChange());
-
-  mock_graph.page->SetIsAudible(true);
-  EXPECT_TRUE(mock_graph.page->IsAudible());
-  AdvanceClock(base::Seconds(42));
-  EXPECT_EQ(base::Seconds(42),
-            mock_graph.page->GetTimeSinceLastAudibleChange());
-
-  mock_graph.page->SetIsAudible(false);
-  AdvanceClock(base::Seconds(23));
-  EXPECT_EQ(base::Seconds(23),
-            mock_graph.page->GetTimeSinceLastAudibleChange());
-  EXPECT_FALSE(mock_graph.page->IsAudible());
-
-  // Test a page that's audible at creation.
-  auto audible_page = CreateNode<PageNodeImpl>(
-      nullptr, /*browser_context_id=*/base::UnguessableToken(), GURL(),
-      PagePropertyFlags{PagePropertyFlag::kIsAudible});
-  AdvanceClock(base::Seconds(56));
-  EXPECT_EQ(base::Seconds(56), audible_page->GetTimeSinceLastAudibleChange());
-  EXPECT_TRUE(audible_page->IsAudible());
-}
-
 TEST_F(PageNodeImplTest, GetTimeSinceLastNavigation) {
   MockSinglePageInSingleProcessGraph mock_graph(graph());
   // Before any commit events, timedelta should be 0.
@@ -282,9 +240,71 @@ using ::testing::_;
 using ::testing::DoAll;
 using ::testing::InSequence;
 using ::testing::Invoke;
-using ::testing::InvokeWithoutArgs;
 
 }  // namespace
+
+TEST_F(PageNodeImplTest, GetVisibilityState) {
+  MockSinglePageInSingleProcessGraph mock_graph(graph());
+
+  base::TimeTicks t0 = base::TimeTicks::Now();
+  mock_graph.page->SetIsVisible(true);
+  EXPECT_TRUE(mock_graph.page->IsVisible());
+  AdvanceClock(base::Seconds(42));
+  EXPECT_EQ((PageNode::VisibilityState{true, t0}),
+            mock_graph.page->GetVisibilityState());
+
+  base::TimeTicks t1 = base::TimeTicks::Now();
+  MockObserver obs(graph());
+  EXPECT_CALL(obs, OnIsVisibleChanged(ToPublic(mock_graph.page.get())))
+      .WillOnce([&](const PageNode* page_node) {
+        EXPECT_EQ((PageNode::VisibilityState{false, t1}),
+                  page_node->GetVisibilityState());
+      });
+  mock_graph.page->SetIsVisible(false);
+  AdvanceClock(base::Seconds(23));
+  EXPECT_EQ((PageNode::VisibilityState{false, t1}),
+            mock_graph.page->GetVisibilityState());
+  EXPECT_FALSE(mock_graph.page->IsVisible());
+}
+
+TEST_F(PageNodeImplTest, GetAudibleState) {
+  MockSinglePageInSingleProcessGraph mock_graph(graph());
+  EXPECT_FALSE(mock_graph.page->IsAudible());
+  EXPECT_EQ((PageNode::AudibleState{false, std::nullopt}),
+            mock_graph.page->GetAudibleState());
+
+  base::TimeTicks t0 = base::TimeTicks::Now();
+  mock_graph.page->SetIsAudible(true);
+  EXPECT_TRUE(mock_graph.page->IsAudible());
+  AdvanceClock(base::Seconds(42));
+  EXPECT_EQ((PageNode::AudibleState{true, t0}),
+            mock_graph.page->GetAudibleState());
+
+  base::TimeTicks t1 = base::TimeTicks::Now();
+  {
+    MockObserver obs(graph());
+    EXPECT_CALL(obs, OnIsAudibleChanged(ToPublic(mock_graph.page.get())))
+        .WillOnce([&](const PageNode* page_node) {
+          EXPECT_EQ((PageNode::AudibleState{false, t1}),
+                    page_node->GetAudibleState());
+        });
+    mock_graph.page->SetIsAudible(false);
+  }
+  AdvanceClock(base::Seconds(23));
+  EXPECT_EQ((PageNode::AudibleState{false, t1}),
+            mock_graph.page->GetAudibleState());
+  EXPECT_FALSE(mock_graph.page->IsAudible());
+
+  // Test a page that's audible at creation.
+  base::TimeTicks t2 = base::TimeTicks::Now();
+  auto audible_page = CreateNode<PageNodeImpl>(
+      nullptr, /*browser_context_id=*/base::UnguessableToken(), GURL(),
+      PagePropertyFlags{PagePropertyFlag::kIsAudible});
+  AdvanceClock(base::Seconds(56));
+  EXPECT_EQ((PageNode::AudibleState{true, t2}),
+            audible_page->GetAudibleState());
+  EXPECT_TRUE(audible_page->IsAudible());
+}
 
 TEST_F(PageNodeImplTest, ObserverWorks) {
   auto process = CreateNode<ProcessNodeImpl>();
@@ -298,11 +318,10 @@ TEST_F(PageNodeImplTest, ObserverWorks) {
 
   // Remove observers at the head and tail of the list inside a callback, and
   // expect that `obs` is still notified correctly.
-  EXPECT_CALL(head_obs, OnBeforePageNodeAdded(_))
-      .WillOnce(InvokeWithoutArgs([&] {
-        graph()->RemovePageNodeObserver(&head_obs);
-        graph()->RemovePageNodeObserver(&tail_obs);
-      }));
+  EXPECT_CALL(head_obs, OnBeforePageNodeAdded(_)).WillOnce([&] {
+    graph()->RemovePageNodeObserver(&head_obs);
+    graph()->RemovePageNodeObserver(&tail_obs);
+  });
   // `tail_obs` should not be notified as it was removed.
   EXPECT_CALL(tail_obs, OnBeforePageNodeAdded(_)).Times(0);
 
@@ -405,8 +424,9 @@ TEST_F(PageNodeImplTest, ObserverWorks) {
   EXPECT_EQ(raw_page_node, obs.TakeNotifiedPageNode());
 
   // Re-entrant iteration should work.
-  EXPECT_CALL(obs, OnIsFocusedChanged(raw_page_node))
-      .WillOnce(InvokeWithoutArgs([&] { page_node->SetIsVisible(false); }));
+  EXPECT_CALL(obs, OnIsFocusedChanged(raw_page_node)).WillOnce([&] {
+    page_node->SetIsVisible(false);
+  });
   EXPECT_CALL(obs, OnIsVisibleChanged(raw_page_node));
   page_node->SetIsFocused(false);
 
@@ -517,6 +537,30 @@ TEST_F(PageNodeImplTest, IsHoldingBlockingIndexedDBLock) {
   EXPECT_CALL(obs, OnPageIsHoldingBlockingIndexedDBLockChanged(raw_page_node));
   page_node->SetIsHoldingBlockingIndexedDBLockForTesting(false);
   EXPECT_FALSE(page_node->IsHoldingBlockingIndexedDBLock());
+}
+
+TEST_F(PageNodeImplTest, IsUserOrBrowserInitiatedLoad) {
+  auto page_node = CreateNode<PageNodeImpl>();
+  const PageNode* raw_page_node = page_node.get();
+
+  // Defaults to true.
+  EXPECT_TRUE(raw_page_node->IsUserOrBrowserInitiatedLoad());
+
+  MockObserver obs(graph());
+
+  // Setting the same value doesn't notify.
+  EXPECT_CALL(obs, OnIsUserOrBrowserInitiatedLoadChanged(_)).Times(0);
+  page_node->SetIsUserOrBrowserInitiatedLoad(true);
+  testing::Mock::VerifyAndClearExpectations(&obs);
+
+  EXPECT_CALL(obs, OnIsUserOrBrowserInitiatedLoadChanged(raw_page_node));
+  page_node->SetIsUserOrBrowserInitiatedLoad(false);
+  EXPECT_FALSE(raw_page_node->IsUserOrBrowserInitiatedLoad());
+  testing::Mock::VerifyAndClearExpectations(&obs);
+
+  EXPECT_CALL(obs, OnIsUserOrBrowserInitiatedLoadChanged(raw_page_node));
+  page_node->SetIsUserOrBrowserInitiatedLoad(true);
+  EXPECT_TRUE(raw_page_node->IsUserOrBrowserInitiatedLoad());
 }
 
 }  // namespace performance_manager

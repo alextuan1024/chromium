@@ -9,7 +9,10 @@
 
 #include "base/no_destructor.h"
 #include "build/build_config.h"
+#include "chrome/browser/themes/theme_service_aura_linux.h"
 #include "chrome/browser/ui/browser_init_state.h"
+#include "chrome/browser/ui/exclusive_access/exclusive_access_manager.h"
+#include "chrome/browser/ui/exclusive_access/fullscreen_controller.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/frame/browser_frame_view_linux.h"
 #include "chrome/browser/ui/views/frame/browser_native_widget_aura_linux.h"
@@ -101,7 +104,8 @@ void BrowserDesktopWindowTreeHostLinux::AddAdditionalInitProperties(
   views::DesktopWindowTreeHostLinux::AddAdditionalInitProperties(params,
                                                                  properties);
   auto* profile = browser_view_->browser()->GetProfile();
-  const auto* linux_ui_theme = ui::LinuxUiTheme::GetForProfile(profile);
+  const auto* linux_ui_theme =
+      ThemeServiceAuraLinux::GetLinuxUiThemeForProfile(profile);
   properties->prefer_dark_theme =
       linux_ui_theme && linux_ui_theme->PreferDarkTheme();
 }
@@ -113,11 +117,6 @@ BrowserDesktopWindowTreeHostLinux::AsDesktopWindowTreeHost() {
 
 bool BrowserDesktopWindowTreeHostLinux::UsesNativeSystemMenu() const {
   return false;
-}
-
-void BrowserDesktopWindowTreeHostLinux::FrameTypeChanged() {
-  DesktopWindowTreeHostPlatform::FrameTypeChanged();
-  UpdateFrameHints();
 }
 
 void BrowserDesktopWindowTreeHostLinux::TabDraggingKindChanged(
@@ -151,6 +150,37 @@ void BrowserDesktopWindowTreeHostLinux::TabDraggingKindChanged(
 bool BrowserDesktopWindowTreeHostLinux::SupportsClientFrameShadow() const {
   return platform_window()->CanSetDecorationInsets() &&
          views::Widget::IsWindowCompositingSupported();
+}
+
+gfx::Insets BrowserDesktopWindowTreeHostLinux::GetInvisibleFrameInsets(
+    bool restored) const {
+  auto state = platform_window()->GetPlatformWindowState();
+  // Minimized windows keep the geometry of the state they were minimized
+  // from.
+  if (state == ui::PlatformWindowState::kMinimized) {
+    state = state_before_minimized_;
+  }
+  if (state != ui::PlatformWindowState::kMaximized &&
+      state != ui::PlatformWindowState::kFullScreen) {
+    return GetNormalStateInvisibleFrameInsets();
+  }
+  // Maximized and fullscreen windows have no invisible frame insets.
+  if (!restored) {
+    return gfx::Insets();
+  }
+  // The restored bounds are the bounds from before the window was maximized or
+  // made fullscreen, so use the insets from that time. The insets cannot be
+  // calculated now: the frame layout depends on the tiled state, which X11
+  // window managers also set for maximized windows.
+  return restored_invisible_frame_insets_.value_or(
+      GetNormalStateInvisibleFrameInsets());
+}
+
+gfx::Insets BrowserDesktopWindowTreeHostLinux::GetInvisibleFrameInsetsInDIP()
+    const {
+  return browser_widget_
+             ? browser_widget_->GetInvisibleFrameInsets(/*restored=*/false)
+             : gfx::Insets();
 }
 
 void BrowserDesktopWindowTreeHostLinux::UpdateFrameHints() {
@@ -265,28 +295,81 @@ bool BrowserDesktopWindowTreeHostLinux::IsOverrideRedirect(
 
 gfx::Insets BrowserDesktopWindowTreeHostLinux::CalculateInsetsInDIP(
     ui::PlatformWindowState window_state) const {
-  // If we are not showing frame, the insets should be zero.
-  if (!browser_widget_ ||
+  // If we are not showing frame, the insets should be zero. Without
+  // client-side shadows, the frame border is opaque and part of the visible
+  // window, so it is not a decoration inset either. platform_window() is still
+  // null while the platform window initializes (e.g. WaylandWindow queries the
+  // insets from Initialize()); keep the frame insets in that case.
+  if (!browser_widget_ || (platform_window() && !SupportsClientFrameShadow()) ||
       !IsShowingFrame(native_widget_->UseCustomFrame(), window_state)) {
     return gfx::Insets();
   }
 
-  return static_cast<BrowserFrameView*>(browser_widget_->GetFrameView())
-      ->RestoredMirroredFrameBorderInsets();
+  BrowserFrameView* frame_view = browser_widget_->GetFrameView();
+  return frame_view ? frame_view->RestoredMirroredFrameBorderInsets()
+                    : gfx::Insets();
+}
+
+gfx::Insets
+BrowserDesktopWindowTreeHostLinux::GetNormalStateInvisibleFrameInsets() const {
+  if (browser_widget_ && browser_widget_->invisible_frame_insets_override()) {
+    return *browser_widget_->invisible_frame_insets_override();
+  }
+  // On X11, the frame insets are published as _GTK_FRAME_EXTENTS, and window
+  // managers that support it position and size the window by the area inside
+  // them. Wayland compositors cannot be asked for a toplevel position, so
+  // nothing is translated there.
+  if (!GetX11Extension() || !platform_window()->CanSetDecorationInsets()) {
+    return gfx::Insets();
+  }
+  return CalculateInsetsInDIP(ui::PlatformWindowState::kNormal);
 }
 
 void BrowserDesktopWindowTreeHostLinux::OnWindowStateChanged(
     ui::PlatformWindowState old_state,
     ui::PlatformWindowState new_state) {
+  if (new_state == ui::PlatformWindowState::kMinimized &&
+      old_state != ui::PlatformWindowState::kMinimized) {
+    state_before_minimized_ = old_state;
+  }
+  const auto is_normal = [](ui::PlatformWindowState state) {
+    return state == ui::PlatformWindowState::kNormal ||
+           state == ui::PlatformWindowState::kUnknown;
+  };
+  // The tiled state, which affects the insets, is not updated yet, so this
+  // gets the insets that were published in the normal state.
+  if (is_normal(old_state) && !is_normal(new_state)) {
+    restored_invisible_frame_insets_ = GetNormalStateInvisibleFrameInsets();
+  }
+
   if (!browser_view_) {
     return;
   }
 
   DesktopWindowTreeHostLinux::OnWindowStateChanged(old_state, new_state);
 
-  bool fullscreen_changed = new_state == ui::PlatformWindowState::kFullScreen ||
-                            old_state == ui::PlatformWindowState::kFullScreen;
-  if (old_state != new_state && fullscreen_changed) {
+  // Minimizing a fullscreen window does not exit fullscreen. This way it can
+  // be properly restored to fullscreen when unminimized.
+  bool fullscreen_to_minimized =
+      old_state == ui::PlatformWindowState::kFullScreen &&
+      new_state == ui::PlatformWindowState::kMinimized;
+
+  ExclusiveAccessManager* manager =
+      browser_view_->browser()
+          ? ExclusiveAccessManager::From(browser_view_->browser())
+          : nullptr;
+
+  bool minimized_fullscreen_to_non_fullscreen =
+      old_state == ui::PlatformWindowState::kMinimized &&
+      new_state != ui::PlatformWindowState::kFullScreen && manager &&
+      manager->fullscreen_controller()->IsControllerInitiatedFullscreen();
+
+  bool notify_fullscreen_changed =
+      new_state == ui::PlatformWindowState::kFullScreen ||
+      (old_state == ui::PlatformWindowState::kFullScreen &&
+       !fullscreen_to_minimized) ||
+      minimized_fullscreen_to_non_fullscreen;
+  if (old_state != new_state && notify_fullscreen_changed) {
     // If the browser view initiated this state change,
     // BrowserView::ProcessFullscreen will no-op, so this call is harmless.
     browser_view_->FullscreenStateChanging();

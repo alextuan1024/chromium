@@ -20,6 +20,7 @@
 #import "ios/chrome/test/earl_grey/scoped_block_popups_pref.h"
 #import "ios/net/url_test_util.h"
 #import "ios/testing/earl_grey/earl_grey_test.h"
+#import "ios/testing/test_tag_registry.h"
 #import "ios/web/common/features.h"
 #import "net/http/http_response_headers.h"
 #import "net/test/embedded_test_server/default_handlers.h"
@@ -99,6 +100,7 @@ id<GREYMatcher> TabWithTitle(const std::string& tab_title) {
 }
 
 // Tests that page successfully loads.
+TAG_SMOKE_TEST(BrowsingTestCase, testLoad);
 - (void)testLoad {
   const GURL URL = self.testServer->GetURL("/echo");
   [ChromeEarlGrey loadURL:URL];
@@ -120,6 +122,7 @@ id<GREYMatcher> TabWithTitle(const std::string& tab_title) {
 }
 
 // Tests that page successfully reloads.
+TAG_SMOKE_TEST(BrowsingTestCase, testReload);
 - (void)testReload {
   GURL URL = self.testServer->GetURL(kReloadTestUrl);
   [ChromeEarlGrey loadURL:URL];
@@ -186,9 +189,7 @@ id<GREYMatcher> TabWithTitle(const std::string& tab_title) {
 // Tests that clicking a link with URL changed by onclick uses the href of the
 // anchor tag instead of the one specified in JavaScript. Also verifies a new
 // tab is opened by target '_blank'.
-// TODO(crbug.com/41299306): WKWebView does not open a new window as expected by
-// this test.
-- (void)DISABLED_testBrowsingPreventDefaultWithLinkOpenedByJavascript {
+- (void)testBrowsingPreventDefaultWithLinkOpenedByJavascript {
   // Create map of canned responses and set up the test HTML server.
   std::map<GURL, std::string> responses;
   const GURL URL =
@@ -225,8 +226,7 @@ id<GREYMatcher> TabWithTitle(const std::string& tab_title) {
 
 // Tests tapping a link that navigates to a page that immediately navigates
 // again via document.location.href.
-// TODO(crbug.com/40234734): Flaky on iPhone.
-- (void)DISABLED_testBrowsingWindowDataLinkScriptRedirect {
+- (void)testBrowsingWindowDataLinkScriptRedirect {
   // Create map of canned responses and set up the test HTML server.
   std::map<GURL, std::string> responses;
   const GURL URL = self.testServer->GetURL("/windowDataLinkScriptRedirect");
@@ -264,6 +264,7 @@ id<GREYMatcher> TabWithTitle(const std::string& tab_title) {
 
 // Tests that a link with a JavaScript-based navigation changes the page and
 // that the back button works as expected afterwards.
+TAG_SMOKE_TEST(BrowsingTestCase, testBrowsingJavaScriptBasedNavigation);
 - (void)testBrowsingJavaScriptBasedNavigation {
   std::map<GURL, std::string> responses;
   const GURL URL = self.testServer->GetURL("/origin");
@@ -370,8 +371,7 @@ id<GREYMatcher> TabWithTitle(const std::string& tab_title) {
 
 // Tests that evaluating user JavaScript that causes navigation correctly
 // modifies history.
-// TODO(crbug.com/362621166): Test is flaky.
-- (void)DISABLED_testBrowsingUserJavaScriptNavigation {
+- (void)testBrowsingUserJavaScriptNavigation {
   // TODO(crbug.com/40511873): Keyboard entry inside the omnibox fails only on
   // iPad.
   if ([ChromeEarlGrey isIPadIdiom]) {
@@ -415,8 +415,7 @@ id<GREYMatcher> TabWithTitle(const std::string& tab_title) {
 }
 
 // Tests that evaluating non-navigation user JavaScript doesn't affect history.
-// TODO(crbug.com/362621166): Test is flaky.
-- (void)DISABLED_testBrowsingUserJavaScriptWithoutNavigation {
+- (void)testBrowsingUserJavaScriptWithoutNavigation {
   // TODO(crbug.com/40511873): Keyboard entry inside the omnibox fails only on
   // iPad.
   if ([ChromeEarlGrey isIPadIdiom]) {

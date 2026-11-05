@@ -167,7 +167,12 @@
   grid-template-columns: 100%;
   grid-template-rows: auto 1fr;
   height: 100%;
-  overflow: hidden;
+  /* Use clip rather than hidden so the app is not a scroll container.
+   * The composebox glow (search-animated-glow) overflows below the panel,
+   * and with hidden a programmatic scroll (e.g. focusing the composebox
+   * input) could scroll the toolbar out of view with no way to scroll back.
+   */
+  overflow: clip;
 }
 
 :host([is-ai-page_]) {
@@ -219,7 +224,7 @@
 
   /* Panel surface colors */
   --search-background-color: var(--surface-background-color);
-  --search-background-color-rgb: 34, 36, 42;
+  --search-background-color-rgb: 34, 36, 43;
 
   /* Composebox colors */
   --color-sds-comp-input-aim-action-neutral-dark: #2a2b36;
@@ -284,6 +289,7 @@
   --color-composebox-context-menu-text: rgba(227, 227, 227, 1);
 
   /* Toolbar Menu colors  */
+  --toolbar-button-icon-color: var(--on-surface-subtle-text-color);
   --toolbar-menu-background-color: var(--surface-background-color);
   --toolbar-divider-color: var(--divider-variant-color);
   --toolbar-text-color: var(--on-surface-default-text-color);
@@ -396,7 +402,7 @@
 
 /* Disable scroll for zero state. */
 :host([is-zero-state_]) {
-  overflow: hidden;
+  overflow: clip;
 }
 
 error-page {
@@ -622,11 +628,6 @@ error-page {
     height: 30%;
   }
 
-  :host([is-zero-state_]:not([enable-native-zero-state-suggestions_])
-      [is-shown-in-tab_]) #flexCenterContainer {
-    height: calc(30% - 88px);
-  }
-
   :host([is-zero-state_]:not([enable-native-zero-state-suggestions_]):not([is-shown-in-tab_]))
       #flexCenterContainer {
     padding-top: 50px;
@@ -713,12 +714,6 @@ error-page {
 :host([is-zero-state_]) #composeboxHeaderWrapper {
   display: flex;
   opacity: 0;
-}
-
-:host([is-initial-frame-load_]:not([is-shown-in-tab_])) #composebox,
-:host([is-initial-frame-load_]:not([is-shown-in-tab_])) #composeboxHeaderWrapper {
-  visibility: hidden;
-  pointer-events: none;
 }
 
 @keyframes zero-state-header-text {

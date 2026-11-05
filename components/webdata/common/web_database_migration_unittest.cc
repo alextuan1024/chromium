@@ -30,6 +30,8 @@
 #include "components/autofill/core/common/autofill_constants.h"
 #include "components/os_crypt/async/browser/test_utils.h"
 #include "components/os_crypt/async/common/test_encryptor.h"
+#include "components/payments/core/web_app_manifest_section_table.h"
+#include "components/payments/core/web_payments_table.h"
 #include "components/search_engines/keyword_table.h"
 #include "components/search_engines/template_url_data.h"
 #include "components/signin/public/webdata/token_service_table.h"
@@ -37,9 +39,12 @@
 #include "components/webdata/common/web_database.h"
 #include "sql/statement.h"
 #include "sql/test/test_helpers.h"
+#include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace {
+
+using ::testing::HasSubstr;
 
 // To make the comparison with golden files less whitespace sensitive:
 // - Remove SQLite quotes: http://www.sqlite.org/lang_keywords.html.
@@ -99,6 +104,8 @@ class WebDatabaseMigrationTest : public testing::Test {
     autofill::ValuablesTable valuables_table;
     KeywordTable keyword_table;
     TokenServiceTable token_service_table;
+    payments::WebAppManifestSectionTable web_app_manifest_section_table;
+    payments::WebPaymentsTable web_payments_table;
 
     WebDatabase db;
     db.AddTable(&address_autofill_table);
@@ -109,6 +116,8 @@ class WebDatabaseMigrationTest : public testing::Test {
     db.AddTable(&keyword_table);
     db.AddTable(&token_service_table);
     db.AddTable(&valuables_table);
+    db.AddTable(&web_app_manifest_section_table);
+    db.AddTable(&web_payments_table);
 
     // This causes the migration to occur.
     ASSERT_EQ(sql::INIT_OK, db.Init(GetDatabasePath(), encryptor_));
@@ -253,6 +262,12 @@ TEST_F(WebDatabaseMigrationTest, MigrateEmptyToCurrent) {
     EXPECT_TRUE(connection.DoesTableExist("keywords"));
     EXPECT_TRUE(connection.DoesTableExist("meta"));
     EXPECT_TRUE(connection.DoesTableExist("token_service"));
+    EXPECT_TRUE(connection.DoesTableExist("web_app_manifest_section"));
+    EXPECT_TRUE(connection.DoesTableExist("payment_method_manifest"));
+    EXPECT_TRUE(
+        connection.DoesTableExist("secure_payment_confirmation_instrument"));
+    EXPECT_TRUE(connection.DoesTableExist(
+        "secure_payment_confirmation_browser_bound_key"));
     // The web_apps and web_apps_icons tables are obsolete as of version 58.
     EXPECT_FALSE(connection.DoesTableExist("web_apps"));
     EXPECT_FALSE(connection.DoesTableExist("web_app_icons"));
@@ -1535,7 +1550,7 @@ TEST_P(WebDatabaseMigrationTestEncryption, MigrateVersion136ToCurrent) {
   ASSERT_NO_FATAL_FAILURE(LoadDatabase(FILE_PATH_LITERAL("version_136.sql")));
   const char kTestUrl[] = "chrome://test/?q={searchTerms}";
   const std::string_view kTestKeyword = "@testing";
-  const TemplateURLID kTestId = 1;
+  const TemplateURLID kTestId(1);
   {
     sql::Database connection(sql::test::kTestTag);
     ASSERT_TRUE(connection.Open(GetDatabasePath()));
@@ -1544,7 +1559,7 @@ TEST_P(WebDatabaseMigrationTestEncryption, MigrateVersion136ToCurrent) {
 
     // Insert a keyword to test that it is migrated correctly.
     ASSERT_TRUE(connection.ExecuteScriptForTesting(base::StrCat(
-        {"INSERT INTO keywords VALUES(", base::NumberToString(kTestId),
+        {"INSERT INTO keywords VALUES(", base::NumberToString(kTestId.value()),
          ",'Test','", kTestKeyword, "','','", kTestUrl,
          "',1,'',0,0,'','',0,0,0,'','[]','','','','','',0,0,1,2,0,0);"})));
   }
@@ -1596,7 +1611,7 @@ INSTANTIATE_TEST_SUITE_P(/*empty*/,
 // enabled.
 TEST_F(WebDatabaseMigrationTest, MigrateVersion136ToCurrentBadUrl) {
   ASSERT_NO_FATAL_FAILURE(LoadDatabase(FILE_PATH_LITERAL("version_136.sql")));
-  const TemplateURLID kTestId = 99;
+  const TemplateURLID kTestId(99);
   {
     sql::Database connection(sql::test::kTestTag);
     ASSERT_TRUE(connection.Open(GetDatabasePath()));
@@ -1605,7 +1620,7 @@ TEST_F(WebDatabaseMigrationTest, MigrateVersion136ToCurrentBadUrl) {
 
     // Insert a keyword to test that it is migrated correctly.
     ASSERT_TRUE(connection.ExecuteScriptForTesting(base::StrCat(
-        {"INSERT INTO keywords VALUES(", base::NumberToString(kTestId),
+        {"INSERT INTO keywords VALUES(", base::NumberToString(kTestId.value()),
          ",'Test','@test','','", /*url=*/"",
          "',1,'',0,0,'','',0,0,0,'','[]','','','','','',0,0,1,2,0,0);"})));
   }
@@ -1969,7 +1984,7 @@ TEST_F(WebDatabaseMigrationTest, MigrateVersion151ToCurrent) {
   ASSERT_NO_FATAL_FAILURE(LoadDatabase(FILE_PATH_LITERAL("version_151.sql")));
   const char kTestUrl[] = "chrome://test/?q={searchTerms}";
   const std::string_view kTestKeyword = "@testing";
-  const TemplateURLID kTestId = 1;
+  const TemplateURLID kTestId(1);
   const int kTestStarterPackId = 1234;
   const int kTestEnforcedByPolicy = 1;
   {
@@ -1982,8 +1997,9 @@ TEST_F(WebDatabaseMigrationTest, MigrateVersion151ToCurrent) {
         {"INSERT INTO keywords (id, short_name, keyword, favicon_url, url, "
          "safe_for_autoreplace, url_hash, starter_pack_id, enforced_by_policy) "
          "VALUES (",
-         base::NumberToString(kTestId), ",'Test','", kTestKeyword, "','','",
-         kTestUrl, "',1, NULL,", base::NumberToString(kTestStarterPackId), ",",
+         base::NumberToString(kTestId.value()), ",'Test','", kTestKeyword,
+         "','','", kTestUrl, "',1, NULL,",
+         base::NumberToString(kTestStarterPackId), ",",
          base::NumberToString(kTestEnforcedByPolicy), ");"})));
   }
   {
@@ -2000,7 +2016,7 @@ TEST_F(WebDatabaseMigrationTest, MigrateVersion151ToCurrent) {
     sql::Statement stmt(connection.GetUniqueStatement(
         base::StrCat({"SELECT url, keyword, starter_pack_id, "
                       "enforced_by_policy FROM keywords WHERE id=",
-                      base::NumberToString(kTestId)})));
+                      base::NumberToString(kTestId.value())})));
     EXPECT_TRUE(stmt.Step());
     EXPECT_EQ(kTestUrl, stmt.ColumnString(0));
     EXPECT_EQ(kTestKeyword, stmt.ColumnString(1));
@@ -2083,19 +2099,18 @@ TEST_F(WebDatabaseMigrationTest, MigrateVersion153ToCurrent) {
 }
 
 // Version 155 adds the method_name column to the web_app_manifest_section table
-// in components/payments/content. That table is not known to webdata_common (it
-// is registered via WebDataServiceWrapper in components/webdata_services), so
-// its migration is tested in
-// WebAppManifestSectionTableTest.MigrationVersion154ToCurrent.
-//
-// TODO(crbug.com/559592119): Refactor code locations to allow testing
-// //components/payments tables in the same place as other tables.
+// and clears existing entries that lacked a method_name.
 TEST_F(WebDatabaseMigrationTest, MigrateVersion154ToCurrent) {
   ASSERT_NO_FATAL_FAILURE(LoadDatabase(FILE_PATH_LITERAL("version_154.sql")));
   {
     sql::Database connection(sql::test::kTestTag);
     ASSERT_TRUE(connection.Open(GetDatabasePath()));
     EXPECT_EQ(154, VersionFromConnection(&connection));
+    EXPECT_FALSE(
+        connection.DoesColumnExist("web_app_manifest_section", "method_name"));
+    ASSERT_TRUE(connection.Execute(
+        "INSERT INTO web_app_manifest_section (expire_date, id, min_version, "
+        "fingerprints) VALUES (9999999, 'com.legacy', 1, X'0102')"));
   }
   DoMigration();
   {
@@ -2103,6 +2118,13 @@ TEST_F(WebDatabaseMigrationTest, MigrateVersion154ToCurrent) {
     ASSERT_TRUE(connection.Open(GetDatabasePath()));
     EXPECT_EQ(WebDatabase::kCurrentVersionNumber,
               VersionFromConnection(&connection));
+    EXPECT_TRUE(
+        connection.DoesColumnExist("web_app_manifest_section", "method_name"));
+
+    sql::Statement s(connection.GetUniqueStatement(
+        "SELECT COUNT(*) FROM web_app_manifest_section"));
+    ASSERT_TRUE(s.Step());
+    EXPECT_EQ(0, s.ColumnInt(0));
   }
 }
 
@@ -2188,10 +2210,8 @@ TEST_F(WebDatabaseMigrationTest, MigrateVersion155ToCurrent) {
     ASSERT_TRUE(offer_data_stmt.Step());
     EXPECT_EQ(0, offer_data_stmt.ColumnInt(0));
 
-    sql::Statement eligible_stmt(connection.GetUniqueStatement(
-        "SELECT COUNT(*) FROM offer_eligible_instrument"));
-    ASSERT_TRUE(eligible_stmt.Step());
-    EXPECT_EQ(0, eligible_stmt.ColumnInt(0));
+    // `offer_eligible_instrument` is dropped entirely by version 158.
+    EXPECT_FALSE(connection.DoesTableExist("offer_eligible_instrument"));
 
     sql::Statement domain_stmt(connection.GetUniqueStatement(
         "SELECT COUNT(*) FROM offer_merchant_domain"));
@@ -2270,6 +2290,221 @@ TEST_F(WebDatabaseMigrationTest, MigrateVersion156ToCurrent) {
         "entity_guid = 'orphan-guid'"));
     ASSERT_TRUE(s_orphan_meta.Step());
     EXPECT_EQ(0, s_orphan_meta.ColumnInt(0));
+  }
+}
+
+// Version 158 changes the type of the `offer_id` columns from an integer to a
+// string, which requires the offer tables to be recreated.
+TEST_F(WebDatabaseMigrationTest, MigrateVersion157ToCurrent) {
+  ASSERT_NO_FATAL_FAILURE(LoadDatabase(FILE_PATH_LITERAL("version_157.sql")));
+
+  // Verify pre-conditions.
+  {
+    sql::Database connection(sql::test::kTestTag);
+    ASSERT_TRUE(connection.Open(GetDatabasePath()));
+    EXPECT_EQ(157, VersionFromConnection(&connection));
+
+    // The offer tables declare `offer_id` as an integer column.
+    const std::string schema = connection.GetSchema();
+    EXPECT_THAT(schema,
+                HasSubstr("CREATE TABLE offer_data (offer_id UNSIGNED LONG"));
+    EXPECT_THAT(schema, HasSubstr("CREATE TABLE offer_eligible_instrument "
+                                  "(offer_id UNSIGNED LONG"));
+    EXPECT_THAT(schema, HasSubstr("CREATE TABLE offer_merchant_domain "
+                                  "(offer_id UNSIGNED LONG"));
+
+    // Offers stored by an older client are not carried over by the migration.
+    ASSERT_TRUE(connection.Execute(
+        "INSERT INTO offer_data (offer_id, offer_reward_amount, expiry, "
+        "offer_details_url, promo_code) VALUES (123, '5%', 100, "
+        "'https://example.com', 'PROMO');"));
+    ASSERT_TRUE(connection.Execute(
+        "INSERT INTO offer_merchant_domain (offer_id, merchant_domain) VALUES "
+        "(123, 'https://example.com');"));
+  }
+
+  DoMigration();
+
+  // Verify post-conditions.
+  {
+    sql::Database connection(sql::test::kTestTag);
+    ASSERT_TRUE(connection.Open(GetDatabasePath()));
+    EXPECT_EQ(WebDatabase::kCurrentVersionNumber,
+              VersionFromConnection(&connection));
+
+    // Expect that the compatible version number increased: older clients read
+    // `offer_id` as an integer, so they must not be allowed to open the
+    // migrated database.
+    sql::MetaTable meta_table;
+    ASSERT_TRUE(meta_table.Init(&connection, WebDatabase::kCurrentVersionNumber,
+                                WebDatabase::kCurrentVersionNumber));
+
+    // The remaining offer tables now declare `offer_id` as a string column.
+    const std::string schema = connection.GetSchema();
+    EXPECT_THAT(schema, HasSubstr("CREATE TABLE offer_data (offer_id VARCHAR"));
+    EXPECT_THAT(
+        schema,
+        HasSubstr("CREATE TABLE offer_merchant_domain (offer_id VARCHAR"));
+
+    // `offer_eligible_instrument` is dropped without being recreated.
+    EXPECT_FALSE(connection.DoesTableExist("offer_eligible_instrument"));
+
+    // The rows written by the older client are gone; offers are server-provided
+    // data that the next sync repopulates.
+    for (const char* table : {"offer_data", "offer_merchant_domain"}) {
+      sql::Statement s(connection.GetUniqueStatement(
+          base::StrCat({"SELECT COUNT(*) FROM ", table})));
+      ASSERT_TRUE(s.Step());
+      EXPECT_EQ(0, s.ColumnInt(0)) << table;
+    }
+  }
+}
+
+// Version 159 adds the autofill_ai_entities_metadata_wallet table.
+TEST_F(WebDatabaseMigrationTest, MigrateVersion158ToCurrent) {
+  ASSERT_NO_FATAL_FAILURE(LoadDatabase(FILE_PATH_LITERAL("version_158.sql")));
+  {
+    sql::Database connection(sql::test::kTestTag);
+    ASSERT_TRUE(connection.Open(GetDatabasePath()));
+    EXPECT_EQ(158, VersionFromConnection(&connection));
+    EXPECT_FALSE(
+        connection.DoesTableExist("autofill_ai_entities_metadata_wallet"));
+  }
+
+  DoMigration();
+
+  {
+    sql::Database connection(sql::test::kTestTag);
+    ASSERT_TRUE(connection.Open(GetDatabasePath()));
+    EXPECT_EQ(WebDatabase::kCurrentVersionNumber,
+              VersionFromConnection(&connection));
+    EXPECT_TRUE(
+        connection.DoesTableExist("autofill_ai_entities_metadata_wallet"));
+    EXPECT_TRUE(connection.DoesColumnExist(
+        "autofill_ai_entities_metadata_wallet", "entity_guid"));
+    EXPECT_TRUE(connection.DoesColumnExist(
+        "autofill_ai_entities_metadata_wallet", "management_url"));
+  }
+}
+
+// Version 160 recreates the offer tables with a `NOT NULL` `issue_time` column
+// in `offer_data`.
+TEST_F(WebDatabaseMigrationTest, MigrateVersion159ToCurrent) {
+  ASSERT_NO_FATAL_FAILURE(LoadDatabase(FILE_PATH_LITERAL("version_159.sql")));
+
+  // Verify pre-conditions.
+  {
+    sql::Database connection(sql::test::kTestTag);
+    ASSERT_TRUE(connection.Open(GetDatabasePath()));
+    EXPECT_EQ(159, VersionFromConnection(&connection));
+    EXPECT_FALSE(connection.DoesColumnExist("offer_data", "issue_time"));
+
+    ASSERT_TRUE(connection.Execute(
+        "INSERT INTO offer_data (offer_id, offer_reward_amount, expiry, "
+        "offer_details_url, promo_code) VALUES ('123', '5%', 100, "
+        "'https://example.com', 'PROMO');"));
+    ASSERT_TRUE(connection.Execute(
+        "INSERT INTO offer_merchant_domain (offer_id, merchant_domain) VALUES "
+        "('123', 'https://example.com');"));
+  }
+
+  DoMigration();
+
+  // Verify post-conditions.
+  {
+    sql::Database connection(sql::test::kTestTag);
+    ASSERT_TRUE(connection.Open(GetDatabasePath()));
+    EXPECT_EQ(WebDatabase::kCurrentVersionNumber,
+              VersionFromConnection(&connection));
+
+    // Old versions cannot insert offers without an `issue_time`, so the
+    // compatible version number is updated.
+    sql::MetaTable meta_table;
+    ASSERT_TRUE(meta_table.Init(&connection, WebDatabase::kCurrentVersionNumber,
+                                WebDatabase::kCurrentVersionNumber));
+
+    EXPECT_TRUE(connection.DoesColumnExist("offer_data", "issue_time"));
+
+    // The tables are recreated, so existing offers are dropped. They are
+    // repopulated by the next sync.
+    for (const char* table : {"offer_data", "offer_merchant_domain"}) {
+      sql::Statement s(connection.GetUniqueStatement(
+          base::StrCat({"SELECT COUNT(*) FROM ", table})));
+      ASSERT_TRUE(s.Step());
+      EXPECT_EQ(0, s.ColumnInt(0)) << table;
+    }
+  }
+}
+
+// Version 161 adds the `legal_message_token` column to
+// `autofill_ai_entities_metadata_wallet`.
+TEST_F(WebDatabaseMigrationTest, MigrateVersion160ToCurrent) {
+  ASSERT_NO_FATAL_FAILURE(LoadDatabase(FILE_PATH_LITERAL("version_160.sql")));
+  {
+    sql::Database connection(sql::test::kTestTag);
+    ASSERT_TRUE(connection.Open(GetDatabasePath()));
+    EXPECT_EQ(160, VersionFromConnection(&connection));
+    EXPECT_FALSE(connection.DoesColumnExist(
+        "autofill_ai_entities_metadata_wallet", "legal_message_token"));
+  }
+
+  DoMigration();
+
+  {
+    sql::Database connection(sql::test::kTestTag);
+    ASSERT_TRUE(connection.Open(GetDatabasePath()));
+    EXPECT_EQ(WebDatabase::kCurrentVersionNumber,
+              VersionFromConnection(&connection));
+    EXPECT_TRUE(connection.DoesColumnExist(
+        "autofill_ai_entities_metadata_wallet", "legal_message_token"));
+  }
+}
+
+// Version 162 adds the `issuer_name` column to `offer_data`.
+TEST_F(WebDatabaseMigrationTest, MigrateVersion161ToCurrent) {
+  ASSERT_NO_FATAL_FAILURE(LoadDatabase(FILE_PATH_LITERAL("version_161.sql")));
+
+  // Verify pre-conditions.
+  {
+    sql::Database connection(sql::test::kTestTag);
+    ASSERT_TRUE(connection.Open(GetDatabasePath()));
+    EXPECT_EQ(161, VersionFromConnection(&connection));
+    EXPECT_FALSE(connection.DoesColumnExist("offer_data", "issuer_name"));
+
+    ASSERT_TRUE(connection.Execute(
+        "INSERT INTO offer_data (offer_id, offer_reward_amount, expiry, "
+        "offer_details_url, promo_code, issue_time) VALUES ('123', '5%', 100, "
+        "'https://example.com', 'PROMO', 50);"));
+    ASSERT_TRUE(connection.Execute(
+        "INSERT INTO offer_merchant_domain (offer_id, merchant_domain) VALUES "
+        "('123', 'https://example.com');"));
+  }
+
+  DoMigration();
+
+  // Verify post-conditions.
+  {
+    sql::Database connection(sql::test::kTestTag);
+    ASSERT_TRUE(connection.Open(GetDatabasePath()));
+    EXPECT_EQ(WebDatabase::kCurrentVersionNumber,
+              VersionFromConnection(&connection));
+    EXPECT_TRUE(connection.DoesColumnExist("offer_data", "issuer_name"));
+
+    // Old versions cannot insert offers without an `issuer_name`, so the
+    // compatible version number is updated.
+    sql::MetaTable meta_table;
+    ASSERT_TRUE(meta_table.Init(&connection, WebDatabase::kCurrentVersionNumber,
+                                WebDatabase::kCurrentVersionNumber));
+    EXPECT_EQ(162, meta_table.GetCompatibleVersionNumber());
+
+    // The tables are recreated, so existing offers are dropped. They are
+    // repopulated by the next sync.
+    for (const char* table : {"offer_data", "offer_merchant_domain"}) {
+      sql::Statement s(connection.GetUniqueStatement(
+          base::StrCat({"SELECT COUNT(*) FROM ", table})));
+      ASSERT_TRUE(s.Step());
+      EXPECT_EQ(0, s.ColumnInt(0)) << table;
+    }
   }
 }
 }  // anonymous namespace

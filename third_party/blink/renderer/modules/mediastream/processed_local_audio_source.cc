@@ -37,7 +37,6 @@
 #include "third_party/blink/renderer/modules/webrtc/webrtc_audio_device_impl.h"
 #include "third_party/blink/renderer/platform/mediastream/audio_service_audio_processor_proxy.h"
 #include "third_party/blink/renderer/platform/scheduler/public/post_cross_thread_task.h"
-#include "third_party/blink/renderer/platform/wtf/cross_thread_copier_base.h"
 #include "third_party/blink/renderer/platform/wtf/cross_thread_functional.h"
 #include "third_party/webrtc/media/base/media_channel.h"
 
@@ -311,7 +310,8 @@ bool ProcessedLocalAudioSource::EnsureSourceIsStarted() {
   source_->Start();
 
   // Register this source with the WebRtcAudioDeviceImpl.
-  rtc_audio_device->AddAudioCapturer(this);
+  rtc_audio_device_ = rtc_audio_device;
+  rtc_audio_device_->AddAudioCapturer(this);
 
   return true;
 }
@@ -324,11 +324,15 @@ void ProcessedLocalAudioSource::EnsureSourceIsStopped() {
 
   scoped_refptr<media::AudioCapturerSource> source_to_stop(std::move(source_));
 
-  if (dependency_factory_) {
-    dependency_factory_->GetWebRtcAudioDevice()->RemoveAudioCapturer(this);
+  if (rtc_audio_device_) {
+    rtc_audio_device_->RemoveAudioCapturer(this);
+    rtc_audio_device_ = nullptr;
   }
 
   source_to_stop->Stop();
+  // `Stop()` joins the audio capture thread, so no concurrent
+  // `StopSourceOnError()` call can race with `InvalidatePendingErrorCallbacks`.
+  InvalidatePendingErrorCallbacks();
 
   if (media_stream_audio_processor_) {
     // Stop the audio processor to avoid feeding render data into the processor.

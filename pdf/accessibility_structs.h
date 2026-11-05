@@ -10,12 +10,11 @@
 #include <string>
 #include <vector>
 
-#include "base/containers/fixed_flat_map.h"
 #include "base/memory/raw_ptr.h"
 #include "pdf/page_character_index.h"
 #include "pdf/pdf_accessibility_constants.h"
-#include "third_party/skia/include/core/SkBitmap.h"
 #include "ui/gfx/geometry/point.h"
+#include "ui/gfx/geometry/point_f.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/rect_f.h"
 
@@ -86,12 +85,6 @@ struct AccessibilityTextRunInfo {
                            const gfx::RectF& bounds,
                            AccessibilityTextDirection direction,
                            const AccessibilityTextStyleInfo& style);
-  AccessibilityTextRunInfo(uint32_t start_index,
-                           uint32_t len,
-                           const gfx::RectF& bounds,
-                           AccessibilityTextDirection direction,
-                           const AccessibilityTextStyleInfo& style,
-                           bool is_searchified);
   AccessibilityTextRunInfo(const AccessibilityTextRunInfo& other);
   ~AccessibilityTextRunInfo();
 
@@ -101,6 +94,7 @@ struct AccessibilityTextRunInfo {
   AccessibilityTextDirection direction = AccessibilityTextDirection::kNone;
   AccessibilityTextStyleInfo style;
   bool is_searchified = false;
+  std::string language;
 };
 
 struct AccessibilityImageInfo {
@@ -175,6 +169,7 @@ struct AccessibilityDocInfo {
   std::unique_ptr<AccessibilityStructureElement> structure_tree_root;
   bool text_accessible = false;
   bool text_copyable = false;
+  std::string language;
 };
 
 struct AccessibilityPageInfo {
@@ -238,33 +233,40 @@ struct AccessibilityHighlightInfo {
   AccessibilityTextRunRangeInfo text_range;
 };
 
+// Represents a composite graphic (a PDF Form XObject, such as a chart or
+// diagram) that combines graphical primitives with embedded visible text, as
+// opposed to `AccessibilityImageInfo`, which represents a single bitmap image
+// object.
+struct AccessibilityFormGraphicInfo {
+  // Bounding box of the graphic.
+  gfx::RectF bounds;
+  AccessibilityTextRunRangeInfo text_range;
+};
+
+// A straight line segment stroked on a page, such as a table border, column
+// divider, or decorative separator, in the same pixel coordinates as
+// `AccessibilityTextRunInfo::bounds`.
+struct AccessibilityLineSegment {
+  friend bool operator==(const AccessibilityLineSegment&,
+                         const AccessibilityLineSegment&) = default;
+
+  gfx::PointF start;
+  gfx::PointF end;
+};
+
 struct AccessibilityPageObjects {
   AccessibilityPageObjects();
-  AccessibilityPageObjects(
-      const std::vector<AccessibilityLinkInfo>& links,
-      const std::vector<AccessibilityImageInfo>& images,
-      const std::vector<AccessibilityHighlightInfo>& highlights);
   AccessibilityPageObjects(const AccessibilityPageObjects& other);
   ~AccessibilityPageObjects();
 
   std::vector<AccessibilityLinkInfo> links;
   std::vector<AccessibilityImageInfo> images;
   std::vector<AccessibilityHighlightInfo> highlights;
-};
-
-enum class FocusObjectType {
-  kNone = 0,
-  kDocument = 1,
-  kLink = 2,
-  kHighlight = 3,
-  kTextField = 4,
-  kMaxValue = kTextField,
-};
-
-struct AccessibilityFocusInfo {
-  FocusObjectType focused_object_type = FocusObjectType::kNone;
-  uint32_t focused_object_page_index = 0;
-  uint32_t focused_annotation_index_in_page = 0;
+  std::vector<AccessibilityFormGraphicInfo> graphics;
+  std::vector<AccessibilityLineSegment> line_segments;
+  // Filled axis-aligned rectangles, in the same pixel coordinates as
+  // `AccessibilityTextRunInfo::bounds`.
+  std::vector<gfx::RectF> filled_rects;
 };
 
 struct AccessibilityViewportInfo {
@@ -276,9 +278,7 @@ struct AccessibilityViewportInfo {
   double scale = 0.0;
   gfx::Point scroll;
   gfx::Point offset;
-  uint32_t orientation = 0;
   Selection selection;
-  AccessibilityFocusInfo focus_info;
 };
 
 enum class AccessibilityAction {
@@ -326,17 +326,6 @@ enum class AccessibilityScrollAlignment {
 
 struct AccessibilityActionData {
   AccessibilityActionData();
-  AccessibilityActionData(
-      AccessibilityAction action,
-      AccessibilityAnnotationType annotation_type,
-      const gfx::Point& target_point,
-      const gfx::Rect& target_rect,
-      uint32_t annotation_index,
-      uint32_t page_index,
-      AccessibilityScrollAlignment horizontal_scroll_alignment,
-      AccessibilityScrollAlignment vertical_scroll_alignment,
-      const PageCharacterIndex& selection_start_index,
-      const PageCharacterIndex& selection_end_index);
   AccessibilityActionData(const AccessibilityActionData& other);
   ~AccessibilityActionData();
 

@@ -22,6 +22,7 @@ source_set("skills") {
   ]
 
   deps = [
+    "//chrome/browser/glic",
     "//chrome/browser/optimization_guide",
     "//chrome/browser/profiles:profile",
     "//chrome/browser/signin",
@@ -121,6 +122,7 @@ source_set("browser_tests") {
       "skills_dialog_launcher_browsertest.cc",
       "skills_functional_browsertest.cc",
       "skills_functional_browsertest.h",
+      "skills_geic_browsertest.cc",
       "skills_ui_tab_controller_browsertest.cc",
       "skills_ui_window_controller_browsertest.cc",
     ]
@@ -129,24 +131,30 @@ source_set("browser_tests") {
     ":public",
     ":skills",
     ":ui",
+    "//chrome/app:generated_resources",
     "//chrome/browser/glic",
     "//chrome/browser/glic/test_support",
-    "//chrome/browser/ui",
+    "//chrome/browser/net",
     "//chrome/browser/ui/browser_window",
     "//chrome/test:test_support",
     "//components/skills:features",
     "//components/skills/internal",
     "//components/skills/public",
     "//components/skills/public:mojo_bindings",
+    "//ui/base",
   ]
   if (!is_android) {
     deps += [
       "//chrome/browser/signin",
+      "//chrome/browser/ui:browser_actions",
       "//chrome/browser/ui:browser_window_header",
       "//chrome/browser/ui/toasts",
       "//chrome/browser/ui/toasts/api:toasts",
+      "//chrome/browser/ui/views/frame:browser_view_header",
       "//chrome/browser/ui/webui",
       "//chrome/browser/ui/webui/skills",
+      "//components/policy/core/browser",
+      "//components/policy/core/common:test_support",
       "//components/signin/public/identity_manager:test_support",
     ]
   }
@@ -219,6 +227,8 @@ source_set("unit_tests") {
     "//chrome/browser/optimization_guide:test_support",
     "//chrome/browser/profiles:profile",
     "//chrome/test:test_support",
+    "//chrome/test/base:chrome_render_view_host_test_harness",
+    "//chrome/test/base:testing_browser_process",
     "//components/keyed_service/core",
     "//components/skills:features",
     "//components/skills/mocks",

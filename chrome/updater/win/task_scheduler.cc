@@ -8,8 +8,10 @@
 #include <oleauto.h>
 #include <security.h>
 #include <shlobj.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <taskschd.h>
+#include <wchar.h>
 #include <wrl/client.h>
 
 #include <memory>
@@ -1414,15 +1416,6 @@ class TaskSchedulerV2 final : public TaskScheduler {
 };
 
 }  // namespace
-
-TaskScheduler::TaskInfo::TaskInfo() = default;
-TaskScheduler::TaskInfo::TaskInfo(const TaskScheduler::TaskInfo&) = default;
-TaskScheduler::TaskInfo::TaskInfo(TaskScheduler::TaskInfo&&) = default;
-TaskScheduler::TaskInfo& TaskScheduler::TaskInfo::operator=(
-    const TaskScheduler::TaskInfo&) = default;
-TaskScheduler::TaskInfo& TaskScheduler::TaskInfo::operator=(
-    TaskScheduler::TaskInfo&&) = default;
-TaskScheduler::TaskInfo::~TaskInfo() = default;
 
 // static.
 [[nodiscard]] scoped_refptr<TaskScheduler> TaskScheduler::CreateInstance(

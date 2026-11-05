@@ -4,24 +4,22 @@
 
 #include "chrome/browser/ttc/app/conversation_impl.h"
 
+#include <optional>
+#include <string>
 #include <utility>
+#include <vector>
 
+#include "base/check.h"
 #include "base/functional/bind.h"
 #include "base/notimplemented.h"
-#include "base/numerics/byte_conversions.h"
-#include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ttc/app/audio_controller.h"
-#include "chrome/browser/ttc/app/ttc_mes_client.h"
+#include "chrome/browser/ttc/app/public/audio_controller.h"
 #include "chrome/browser/ttc/core/session_controller.h"
+#include "chrome/browser/ttc/core/states.h"
+#include "components/actor/core/journal_details_builder.h"
+#include "components/ttc/app/public/error_codes.h"
+#include "components/ttc/app/public/session_journal.h"
 
 namespace ttc {
-
-ConversationImpl::ConversationImpl(SessionController& session_controller)
-    : backend_(std::make_unique<TtcMesClient>(session_controller.GetProfile(),
-                                              this)),
-      audio_controller_(std::make_unique<AudioController>(
-          AudioController::GetDefaultAudioStreamFactoryBinder())),
-      session_controller_(session_controller) {}
 
 ConversationImpl::ConversationImpl(
     std::unique_ptr<TtcBackend> backend,
@@ -29,165 +27,263 @@ ConversationImpl::ConversationImpl(
     SessionController& session_controller)
     : backend_(std::move(backend)),
       audio_controller_(std::move(audio_controller)),
-      session_controller_(session_controller) {
-  if (backend_) {
-    backend_->set_observer(this);
-  }
+      session_controller_(session_controller),
+      speaker_tracker_(base::BindRepeating(&ConversationImpl::OnSpeakerChanged,
+                                           base::Unretained(this))) {
+  CHECK(backend_);
+  CHECK(audio_controller_);
+  backend_->BindConversation(*this);
 }
 
 ConversationImpl::~ConversationImpl() {
   Stop();
 }
 
-void ConversationImpl::AddObserver(Conversation::Observer* observer) {
-  observers_.AddObserver(observer);
-}
-
-void ConversationImpl::RemoveObserver(Conversation::Observer* observer) {
-  observers_.RemoveObserver(observer);
-}
-
 void ConversationImpl::Start() {
-  if (audio_controller_) {
-    audio_capture_subscription_ =
-        audio_controller_->AddAudioCaptureListener(base::BindRepeating(
-            &ConversationImpl::OnCapturedAudio, base::Unretained(this)));
-    playback_completion_subscription_ =
-        audio_controller_->AddPlaybackCompletionListener(base::BindRepeating(
-            &ConversationImpl::OnPlaybackCompleted, base::Unretained(this)));
-    audio_controller_->StartCapture();
-  }
-
-  if (backend_) {
-    backend_->Connect();
-  }
+  audio_controller_observation_.Observe(audio_controller_.get());
+  backend_->Connect(this);
 }
 
 void ConversationImpl::Stop() {
-  audio_capture_subscription_ = {};
-  playback_completion_subscription_ = {};
+  audio_controller_observation_.Reset();
+  hotl_audio_sink_.Reset();
 
-  if (audio_controller_) {
-    audio_controller_->StopCapture();
-    audio_controller_->StopPlayback();
-  }
+  audio_controller_->StopCapture();
+  audio_controller_->StopPlayback();
+  playback_status_reporter_.reset();
 
-  if (backend_ && backend_->is_connected()) {
+  if (backend_->is_transport_connected()) {
     backend_->Close();
   }
 }
 
-bool ConversationImpl::is_connected() const {
-  return backend_ && backend_->is_connected();
-}
-
 void ConversationImpl::SendTextInput(const std::string& text) {
-  if (backend_) {
-    backend_->SendTextInput(text);
-  }
+  backend_->SendTextInput(text);
 }
 
 void ConversationImpl::SendContextUpdate(
     const GURL& url,
     const std::string& title,
     const optimization_guide::proto::AnnotatedPageContent& apc) {
-  if (backend_) {
-    backend_->SendContextUpdate(url, title, apc);
-  }
+  backend_->SendContextUpdate(url, title, apc);
 }
 
-void ConversationImpl::SendToolSetUpdate(
-    const std::vector<ToolDefinition>& tools) {
-  if (backend_) {
-    backend_->SendToolSetUpdate(tools);
-  }
-}
-
-void ConversationImpl::OnPageContextChanged() {
+void ConversationImpl::OnPageContextInvalidated() {
   NOTIMPLEMENTED();
 }
 
-std::vector<uint8_t> Downsample48kHzTo16kHz(
-    base::span<const uint8_t> pcm_data) {
-  if (pcm_data.size() < sizeof(int16_t) * 3 ||
-      pcm_data.size() % sizeof(int16_t) != 0) {
-    return {};
+void ConversationImpl::SetMicMuted(bool muted) {
+  if (muted) {
+    audio_controller_->StopCapture();
+  } else {
+    audio_controller_->StartCapture(/*device_id=*/"");
   }
-  size_t num_samples = pcm_data.size() / sizeof(int16_t);
-  size_t out_samples = num_samples / 3;
-  std::vector<int16_t> downsampled_samples(out_samples);
-  for (size_t i = 0; i < out_samples; ++i) {
-    int16_t s0 = base::I16FromLittleEndian(
-        pcm_data.subspan((i * 3) * sizeof(int16_t)).first<2>());
-    int16_t s1 = base::I16FromLittleEndian(
-        pcm_data.subspan((i * 3 + 1) * sizeof(int16_t)).first<2>());
-    int16_t s2 = base::I16FromLittleEndian(
-        pcm_data.subspan((i * 3 + 2) * sizeof(int16_t)).first<2>());
-    int32_t sum = static_cast<int32_t>(s0) + static_cast<int32_t>(s1) +
-                  static_cast<int32_t>(s2);
-    downsampled_samples[i] = static_cast<int16_t>(sum / 3);
-  }
-  auto out_bytes = base::as_byte_span(downsampled_samples);
-  return std::vector<uint8_t>(out_bytes.begin(), out_bytes.end());
 }
 
-void ConversationImpl::OnCapturedAudio(const std::vector<uint8_t>& pcm_data,
-                                       const media::AudioParameters& params) {
-  if (!backend_) {
+void ConversationImpl::SetHotlAudioSink(HotlAudioSinkCallback sink) {
+  hotl_audio_sink_ = std::move(sink);
+}
+
+SessionJournal& ConversationImpl::GetJournal() {
+  return session_controller_->GetJournal();
+}
+
+void ConversationImpl::OnCapturedAudio(base::span<const int16_t> pcm_data,
+                                       const media::AudioParameters& params,
+                                       float energy) {
+  session_controller_->UserAudioLevelUpdate(energy);
+
+  if (hotl_audio_sink_) {
+    // Avoid logging local confirmation audio to the persistent session journal.
+    // Copy the callback locally to protect against synchronous re-entrancy
+    // (e.g. if the sink unregisters itself upon matching a keyword).
+    HotlAudioSinkCallback sink = hotl_audio_sink_;
+    sink.Run(pcm_data, params);
     return;
   }
-  if (params.sample_rate() == 48000 && pcm_data.size() >= sizeof(int16_t) * 3) {
-    backend_->SendAudioChunk(Downsample48kHzTo16kHz(pcm_data));
-    return;
-  }
+
+  audio_logger_.OnCapturedAudio(base::as_bytes(pcm_data), params,
+                                speaker_tracker_.speaker());
   backend_->SendAudioChunk(pcm_data);
 }
 
-void ConversationImpl::OnPlaybackCompleted(int64_t sequence_number) {
-  if (backend_) {
-    backend_->ReportPlaybackStatus(sequence_number);
+void ConversationImpl::OnCaptureStarted() {
+  session_controller_->OnMicCaptureChanged(/*capturing=*/true);
+}
+
+void ConversationImpl::OnCaptureStopped() {
+  audio_logger_.OnCaptureStopped();
+
+  // No more audio levels arrive, so settle the UI at silence.
+  session_controller_->UserAudioLevelUpdate(0.0f);
+  session_controller_->OnMicCaptureChanged(/*capturing=*/false);
+}
+
+void ConversationImpl::OnCaptureMuted(bool muted, bool at_stream_start) {
+  session_controller_->OnSystemMicMuteChanged(muted, at_stream_start);
+}
+
+void ConversationImpl::OnModelAudioEnvelopeReady(
+    const AudioEnvelope& envelope) {
+  session_controller_->OnModelAudioEnvelopeReady(envelope);
+}
+
+void ConversationImpl::OnPlaybackProgress(base::TimeDelta played_duration,
+                                          bool did_fully_drain_queue) {
+  if (playback_status_reporter_) {
+    playback_status_reporter_->OnPlaybackProgress(played_duration,
+                                                  did_fully_drain_queue);
   }
 }
 
-void ConversationImpl::OnStreamingStateChanged(
-    bool connected,
-    const std::string& session_id,
-    const std::string& error_message) {
-  for (auto& observer : observers_) {
-    observer.OnConversationStateChanged(connected, session_id, error_message);
+void ConversationImpl::OnAudioError(ErrorCode error) {
+  session_controller_->OnError(error);
+}
+
+void ConversationImpl::OnPlaybackError() {
+  if (playback_status_reporter_) {
+    playback_status_reporter_->OnPlaybackError();
   }
+}
+
+void ConversationImpl::OnBackendInitialized() {
+  if (session_controller_->GetSessionLifecycle() ==
+      SessionLifecycle::kFinished) {
+    return;
+  }
+  std::optional<std::string> session_id = backend_->GetSessionId();
+  if (!session_id.has_value()) {
+    session_controller_->GetJournal().Log("TtcBackendMissingSessionId", {});
+    session_controller_->OnError(ErrorCode::kInternalBackendError);
+    backend_->Close();
+    return;
+  }
+  CHECK(!session_id->empty());
+  session_controller_->SetSessionId(*session_id);
+  backend_->SendToolSetUpdate(session_controller_->GetToolDefinitions());
+  audio_controller_->StartCapture(/*device_id=*/"");
+  session_controller_->SetSessionLifecycle(SessionLifecycle::kLive);
+}
+
+void ConversationImpl::OnBackendClosed() {
+  session_controller_->GetJournal().Log("TtcBackendClosed", {});
+  session_controller_->EndSessionAsync();
+}
+
+void ConversationImpl::OnBackendError(ErrorCode error) {
+  session_controller_->OnError(error);
 }
 
 void ConversationImpl::OnTranscriptions(
     const std::string& input_transcription,
     const std::string& output_transcription) {
-  for (auto& observer : observers_) {
-    observer.OnTranscriptions(input_transcription, output_transcription);
+  if (!input_transcription.empty()) {
+    session_controller_->OnInputTranscription(input_transcription);
+  }
+  if (!output_transcription.empty()) {
+    session_controller_->OnOutputTranscription(output_transcription);
   }
 }
 
-void ConversationImpl::OnAudioOutput(const std::vector<uint8_t>& audio_data,
+void ConversationImpl::OnAudioOutput(base::span<const int16_t> audio_data,
                                      int64_t sequence_number) {
-  if (audio_controller_) {
-    audio_controller_->PlayAudio(audio_data, sequence_number);
+  // See SetHotlAudioSink(). The dropped audio is handled like an interrupted
+  // turn: it is never played, so its playback is never reported.
+  if (hotl_audio_sink_) {
+    return;
   }
+  audio_controller_->PlayAudio(audio_data);
 }
 
 void ConversationImpl::OnGenerationStateChanged(bool started,
                                                 bool completed,
                                                 bool interrupted) {
-  if (interrupted && audio_controller_) {
+  session_controller_->GetJournal().Log("TtcGenerationStateChanged",
+                                        actor::JournalDetailsBuilder()
+                                            .Add("started", started)
+                                            .Add("completed", completed)
+                                            .Add("interrupted", interrupted)
+                                            .Build());
+  if (interrupted) {
+    audio_controller_->ClearPlaybackQueue();
+    session_controller_->OnModelInterrupted();
+  }
+  if (started) {
+    session_controller_->OnModelTurnStarted();
+  }
+  if (completed) {
+    session_controller_->OnModelTurnComplete();
+  }
+}
+
+void ConversationImpl::OnModelTurnStateUpdate(ModelTurnStateUpdate update,
+                                              int64_t generation_id) {
+  speaker_tracker_.OnModelTurnStateUpdate(update);
+
+  if (update == ModelTurnStateUpdate::kInterrupted) {
     audio_controller_->ClearPlaybackQueue();
   }
-  for (auto& observer : observers_) {
-    observer.OnGenerationStateChanged(started, completed, interrupted);
+
+  switch (update) {
+    case ModelTurnStateUpdate::kTurnStarted:
+      playback_status_reporter_ = std::make_unique<PlaybackStatusReporter>(
+          generation_id,
+          base::BindRepeating(&ConversationImpl::SendPlaybackStatusReport,
+                              base::Unretained(this)));
+      break;
+    case ModelTurnStateUpdate::kGenerationCompleted:
+      if (playback_status_reporter_) {
+        playback_status_reporter_->OnGenerationCompleted(
+            audio_controller_->is_playing());
+      }
+      break;
+    case ModelTurnStateUpdate::kInterrupted:
+      if (playback_status_reporter_) {
+        playback_status_reporter_->OnInterrupted();
+      }
+      break;
+    case ModelTurnStateUpdate::kTurnCompleted:
+      if (playback_status_reporter_) {
+        playback_status_reporter_->CompleteIfNeeded();
+        playback_status_reporter_.reset();
+      }
+      break;
   }
+}
+
+void ConversationImpl::OnUserTurnStateUpdate(UserTurnStateUpdate update) {
+  speaker_tracker_.OnUserTurnStateUpdate(update);
+}
+
+void ConversationImpl::OnSpeakerChanged(Speaker old_speaker,
+                                        Speaker new_speaker) {
+  if (old_speaker == Speaker::kUser) {
+    audio_logger_.DumpToJournal(session_controller_->GetJournal());
+  }
+  session_controller_->OnSpeakerChanged(new_speaker);
+}
+
+void ConversationImpl::SendPlaybackStatusReport(
+    base::TimeDelta playback_progress,
+    bool playback_complete,
+    int64_t generation_id) {
+  backend_->ReportPlaybackStatus(playback_progress, playback_complete,
+                                 generation_id);
 }
 
 void ConversationImpl::OnToolCall(const ToolRequest& tool_request,
                                   ToolResponseCallback response_callback) {
   session_controller_->ProcessToolCall(tool_request,
                                        std::move(response_callback));
+}
+
+void ConversationImpl::OnToolCallBatch(
+    std::vector<PendingToolCall> tool_calls) {
+  session_controller_->ProcessToolCallBatch(std::move(tool_calls));
+}
+
+void ConversationImpl::OnJournalEvent(const ServerJournalEvent& journal_event) {
+  session_controller_->GetJournal().HandleServerJournalEvent(journal_event);
 }
 
 }  // namespace ttc

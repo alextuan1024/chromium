@@ -4,6 +4,8 @@
 
 #import "ios/chrome/browser/autofill/form_input_accessory/coordinator/form_input_accessory_mediator.h"
 
+#import <optional>
+
 #import "base/apple/foundation_util.h"
 #import "base/containers/fixed_flat_set.h"
 #import "base/feature_list.h"
@@ -17,9 +19,6 @@
 #import "components/autofill/core/browser/data_manager/personal_data_manager.h"
 #import "components/autofill/core/browser/data_model/addresses/autofill_profile.h"
 #import "components/autofill/core/browser/data_model/payments/credit_card.h"
-#import "components/autofill/ios/browser/autofill_client_ios.h"
-#import "components/autofill/ios/browser/autofill_driver_ios.h"
-#import "components/autofill/ios/browser/autofill_java_script_feature.h"
 #import "components/autofill/ios/browser/form_suggestion.h"
 #import "components/autofill/ios/browser/form_suggestion_provider.h"
 #import "components/autofill/ios/browser/personal_data_manager_observer_bridge.h"
@@ -38,11 +37,9 @@
 #import "components/webauthn/ios/ios_webauthn_credentials_delegate_factory.h"
 #import "components/webauthn/ios/passkey_suggestion_utils.h"
 #import "ios/chrome/browser/autofill/form_input_accessory/coordinator/form_input_accessory_mediator_handler.h"
-#import "ios/chrome/browser/autofill/form_input_accessory/coordinator/keyboard_accessory_optional_update_scheduler.h"
 #import "ios/chrome/browser/autofill/form_input_accessory/public/form_input_accessory_chromium_text_data.h"
 #import "ios/chrome/browser/autofill/form_input_accessory/ui/form_input_accessory_consumer.h"
 #import "ios/chrome/browser/autofill/form_input_accessory/ui/form_suggestion_view.h"
-#import "ios/chrome/browser/autofill/model/autofill_ai_util.h"
 #import "ios/chrome/browser/autofill/model/bottom_sheet/autofill_bottom_sheet_observer_bridge.h"
 #import "ios/chrome/browser/autofill/model/bottom_sheet/autofill_bottom_sheet_tab_helper.h"
 #import "ios/chrome/browser/autofill/model/features.h"
@@ -55,7 +52,6 @@
 #import "ios/chrome/browser/shared/coordinator/chrome_coordinator/chrome_coordinator.h"
 #import "ios/chrome/browser/shared/model/application_context/application_context.h"
 #import "ios/chrome/browser/shared/model/prefs/pref_backed_boolean.h"
-#import "ios/chrome/browser/shared/model/prefs/pref_names.h"
 #import "ios/chrome/browser/shared/model/web_state_list/web_state_list.h"
 #import "ios/chrome/browser/shared/model/web_state_list/web_state_list_observer_bridge.h"
 #import "ios/chrome/browser/shared/public/commands/security_alert_commands.h"
@@ -63,11 +59,10 @@
 #import "ios/chrome/common/credential_provider/net_util.h"
 #import "ios/chrome/common/ui/elements/form_input_accessory_view.h"
 #import "ios/chrome/common/ui/reauthentication/reauthentication_event.h"
-#import "ios/chrome/common/ui/reauthentication/reauthentication_module.h"
+#import "ios/chrome/common/ui/reauthentication/reauthentication_protocol.h"
 #import "ios/chrome/grit/ios_strings.h"
 #import "ios/web/common/url_scheme_util.h"
 #import "ios/web/public/js_messaging/web_frame.h"
-#import "ios/web/public/js_messaging/web_frames_manager.h"
 #import "ios/web/public/navigation/navigation_context.h"
 #import "ios/web/public/web_state.h"
 #import "ios/web/public/web_state_observer_bridge.h"
@@ -76,7 +71,6 @@
 #import "url/gurl.h"
 
 using ActivityType = autofill::FormActivityParams::ActivityType;
-using autofill::FieldGlobalId;
 using autofill::Suggestion;
 using autofill::SuggestionType;
 using base::UmaHistogramEnumeration;
@@ -155,7 +149,6 @@ bool IsStateless() {
     CRWWebStateObserver,
     FormActivityObserver,
     FormInputAccessoryViewDelegate,
-    KeyboardAccessoryOptionalUpdateSchedulerDelegate,
     PasswordCounterObserver,
     PersonalDataManagerObserver,
     WebStateListObserving>
@@ -184,7 +177,8 @@ bool IsStateless() {
 @property(nonatomic, assign) web::WebState* webState;
 
 // Reauthentication Module used for re-authentication.
-@property(nonatomic, strong) ReauthenticationModule* reauthenticationModule;
+@property(nonatomic, strong) id<ReauthenticationProtocol>
+    reauthenticationModule;
 
 // Used to present alerts.
 @property(nonatomic, weak) id<SecurityAlertCommands> securityAlertHandler;
@@ -247,10 +241,6 @@ bool IsStateless() {
   // Set to nil if there are no current suggestions. Only used when Stateless.
   __weak id<FormSuggestionProvider> _currentSuggestionProvider;
 
-  // The scheduler for optional updates.
-  std::optional<KeyboardAccessoryOptionalUpdateScheduler>
-      _optionalUpdateScheduler;
-
   // Whether the mediator has been disconnected.
   BOOL _isDisconnected;
 }
@@ -267,7 +257,7 @@ bool IsStateless() {
           (scoped_refptr<password_manager::PasswordStoreInterface>)
               accountPasswordStore
       securityAlertHandler:(id<SecurityAlertCommands>)securityAlertHandler
-    reauthenticationModule:(ReauthenticationModule*)reauthenticationModule
+    reauthenticationModule:(id<ReauthenticationProtocol>)reauthenticationModule
          engagementTracker:(feature_engagement::Tracker*)engagementTracker {
   self = [super init];
   if (self) {
@@ -296,16 +286,7 @@ bool IsStateless() {
         _webStateObserverBridge =
             std::make_unique<web::WebStateObserverBridge>(self);
         webState->AddObserver(_webStateObserverBridge.get());
-
-        autofill::AutofillClientIOS* client =
-            autofill::AutofillClientIOS::FromWebState(webState);
-        consumer.atMemoryButtonHidden =
-            !autofill::IsAutofillAtMemorySearchUIEnabled(client);
-      } else {
-        consumer.atMemoryButtonHidden = YES;
       }
-    } else {
-      consumer.atMemoryButtonHidden = YES;
     }
     _formNavigationHandler = [[FormInputAccessoryViewHandler alloc] init];
     _formNavigationHandler.webState = _webState;
@@ -373,8 +354,6 @@ bool IsStateless() {
     }
 
     _currentSuggestionProvider = nil;
-
-    _optionalUpdateScheduler.emplace(self);
   }
   return self;
 }
@@ -390,7 +369,6 @@ bool IsStateless() {
 
 - (void)disconnect {
   _isDisconnected = YES;
-  _optionalUpdateScheduler->CancelOptionalUpdate();
   _formActivityObserverBridge.reset();
   _autofillBottomSheetObserverBridge.reset();
   _personalDataManagerObserver = nullptr;
@@ -426,26 +404,6 @@ bool IsStateless() {
          autofill::FormActivityParams::FieldType::kObfuscated;
 }
 
-- (std::optional<FieldGlobalId>)lastFocusedFieldGlobalId {
-  if (!_hasLastSeenParams || !_lastSeenParams.field_renderer_id || !_webState) {
-    return std::nullopt;
-  }
-  web::WebFrame* frame = autofill::AutofillJavaScriptFeature::GetInstance()
-                             ->GetWebFramesManager(_webState)
-                             ->GetFrameWithId(_lastSeenParams.frame_id);
-  if (!frame ||
-      !GURL::SchemeIsCryptographic(frame->GetSecurityOrigin().scheme())) {
-    return std::nullopt;
-  }
-  autofill::AutofillDriverIOS* driver =
-      autofill::AutofillDriverIOS::FromWebStateAndWebFrame(_webState, frame);
-  if (!driver) {
-    return std::nullopt;
-  }
-  return FieldGlobalId(driver->GetFrameToken(),
-                       _lastSeenParams.field_renderer_id);
-}
-
 - (autofill::FillingProduct)currentProviderMainFillingProduct {
   return IsStateless() ? _currentSuggestionProvider.mainFillingProduct
                        : self.currentProvider.mainFillingProduct;
@@ -471,6 +429,7 @@ bool IsStateless() {
 }
 
 - (void)resetSuggestions {
+  _suggestionsHaveBeenShown = NO;
   [self.consumer showAccessorySuggestions:@[]];
   [self updateSuggestionsIfNeeded];
 }
@@ -530,6 +489,15 @@ bool IsStateless() {
     didRegisterFormActivity:(const autofill::FormActivityParams&)params
                     inFrame:(web::WebFrame*)frame {
   DCHECK_EQ(_webState, webState);
+
+  // Ignore form_changed events to prevent gestureless form changes from
+  // invalidating the accessory view or overwriting the active keyboard
+  // accessory's target web frame ID.
+  if (params.type == ActivityType::kFormChanged) {
+    return;
+  }
+
+  BOOL hadValidActivity = self.validActivityForAccessoryView;
   self.validActivityForAccessoryView = NO;
 
   // Return early if `params` is not complete.
@@ -556,12 +524,6 @@ bool IsStateless() {
     return;
   }
 
-  // Ignore form_changed events to prevent gestureless form changes from
-  // overwriting the active keyboard accessory's target web frame ID.
-  if (params.type == ActivityType::kFormChanged) {
-    return;
-  }
-
   BOOL isDefaultViewEnabled =
       ui::GetDeviceFormFactor() == ui::DEVICE_FORM_FACTOR_PHONE;
   BOOL isSelectOne =
@@ -581,6 +543,7 @@ bool IsStateless() {
   [self setLastFocusFormActivityWebFrameID:frame];
 
   if (isSelectOne && isDefaultViewEnabled) {
+    _suggestionsHaveBeenShown = NO;
     [self.consumer showNavigationButtons];
     return;
   }
@@ -592,10 +555,11 @@ bool IsStateless() {
   }
 
   // Check if we need to reload input views after using an input which did not
-  // require the keyboard accessory to show up. Err on the side of calling
-  // "reloadInputViews" if the input field types are unrecognized.
-  if (!InputTriggersKeyboard(_lastSeenParams.field_type,
-                             /*default_value=*/false) &&
+  // require the keyboard accessory to show up, or if the accessory view was
+  // previously inactive. Err on the side of calling `reloadInputViews` if the
+  // input field types are unrecognized.
+  if ((!hadValidActivity || !InputTriggersKeyboard(_lastSeenParams.field_type,
+                                                   /*default_value=*/false)) &&
       InputTriggersKeyboard(params.field_type, /*default_value=*/true)) {
     [self reloadFirstResponderInputViews];
   }
@@ -640,12 +604,6 @@ bool IsStateless() {
 - (void)formInputAccessoryViewDidTapAddressManualFillButton:
     (FormInputAccessoryView*)sender {
   [self.consumer addressManualFillButtonPressed:sender.addressManualFillButton];
-}
-
-- (void)formInputAccessoryViewDidTapAtMemoryManualFillButton:
-    (FormInputAccessoryView*)sender {
-  [self.consumer
-      atMemoryManualFillButtonPressed:sender.atMemoryManualFillButton];
 }
 
 - (FormInputAccessoryViewTextData*)textDataforFormInputAccessoryView:
@@ -710,14 +668,14 @@ bool IsStateless() {
 
   BOOL enabledBeforeUpdate = _suggestionsEnabled;
   _suggestionsEnabled = enabled;
-  if (base::FeatureList::IsEnabled(
+  if (!enabled) {
+    return;
+  }
+  if (!enabledBeforeUpdate || !_suggestionsHaveBeenShown ||
+      !base::FeatureList::IsEnabled(
           kThrottleFormInputAccessorySuggestionRefresh)) {
-    if (enabled && !enabledBeforeUpdate) {
-      // Only update suggestions if the suggestions went from disabled to
-      // enabled.
-      [self updateSuggestionsIfNeeded];
-    }
-  } else if (enabled) {
+    // Only update suggestions if the suggestions went from disabled to
+    // enabled, or if suggestions have not yet been shown.
     [self updateSuggestionsIfNeeded];
   }
 }
@@ -786,15 +744,9 @@ bool IsStateless() {
       self.provider = tabHelper->GetAccessoryViewProvider();
     }
     _formNavigationHandler.webState = webState;
-
-    autofill::AutofillClientIOS* client =
-        autofill::AutofillClientIOS::FromWebState(webState);
-    self.consumer.atMemoryButtonHidden =
-        !autofill::IsAutofillAtMemorySearchUIEnabled(client);
   } else {
     self.webState = nullptr;
     self.provider = nil;
-    self.consumer.atMemoryButtonHidden = YES;
     self.consumer.contentEditable = NO;
   }
 }
@@ -804,6 +756,7 @@ bool IsStateless() {
 - (void)reset {
   _lastSeenParams = autofill::FormActivityParams();
   _hasLastSeenParams = NO;
+  _suggestionsHaveBeenShown = NO;
   self.consumer.contentEditable = NO;
   [self.consumer showAccessorySuggestions:@[]];
 
@@ -820,9 +773,6 @@ bool IsStateless() {
                           webState:(web::WebState*)webState {
   DCHECK_EQ(webState, self.webState);
   DCHECK(_hasLastSeenParams);
-
-  _optionalUpdateScheduler->RestartCooldownTimer();
-  _optionalUpdateScheduler->CancelOptionalUpdate();
 
   __weak id<FormInputSuggestionsProvider> weakProvider = self.provider;
   __weak __typeof(self) weakSelf = self;
@@ -892,6 +842,7 @@ bool IsStateless() {
   // Post it to the consumer.
   self.consumer.mainFillingProduct = mainFillingProduct;
   self.consumer.currentFieldId = _lastSeenParams.field_renderer_id;
+  _suggestionsHaveBeenShown = suggestions.count > 0;
   [self.consumer showAccessorySuggestions:suggestions];
   if (firstSuggestion) {
     SuggestionProviderType providerType =
@@ -1165,42 +1116,6 @@ bool IsStateless() {
 - (SuggestionProviderType)getProviderTypeFromSuggestion:
     (FormSuggestion*)suggestion {
   return IsStateless() ? suggestion.provider.type : self.currentProvider.type;
-}
-
-// Schedules an optional update to happen after a short delay.
-// Optional updates are updates requested as the result of a `keyboardWillShow`
-// event. Such updates are not tied to any specific feature. It used to trigger
-// an immediate -retrieveSuggestions call, which can be redundant. With the
-// scheduler, we are adding a delay and a cooldown timer to it to
-// 1. avoid calling -retrieveSuggestions too often which leads to costly UI
-// refreshes.
-// 2. avoid triggering a -retrieveSuggestions call with stale data just before
-// -webState:didRegisterFormActivity:inFrame:.
-//
-// The graph below shows the timeline of optional updates.
-//           suggestions                     update
-//             request                         ^
-//    delay    v    cooldown period       delay
-//  +------+...+---------------------+---------+.....
-//  ^      :   :          ^          ^   ^
-//  :      v   v          :          :   :
-//  : update   update optional       :   :
-//  :                  update        : optional
-//  optional         (rejected)      : update (reset delay)
-//  update                         optional
-//  (scheduled)                     update
-//                                (scheduled)
-// In the graph above:
-
-// An optional update is scheduled and after a short delay:
-// 1. triggers a -retrieveSuggestions call if it is not in a cooldown period.
-// 2. is rejected if it is in a cooldown period.
-//
-// A new optional update resets the delay to start again.
-// -retrieveSuggestions restarts the cooldown period, also cancels all pending
-// the optional update.
-- (void)scheduleOptionalUpdate {
-  _optionalUpdateScheduler->ScheduleOptionalUpdate();
 }
 
 - (void)openCreditCardEditForSuggestion:(FormSuggestion*)suggestion {

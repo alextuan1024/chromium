@@ -5,6 +5,8 @@
 #include "chrome/browser/ash/accessibility/accessibility_manager.h"
 
 #include <optional>
+#include <string>
+#include <string_view>
 
 #include "ash/constants/ash_extension_constants.h"
 #include "ash/constants/ash_features.h"
@@ -37,12 +39,12 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/profiles/profile_test_util.h"
-#include "chrome/browser/speech/speech_recognition_constants.h"
 #include "chrome/browser/speech/speech_recognition_test_helper.h"
 #include "chrome/test/base/interactive_test_utils.h"
 #include "chrome/test/base/mixin_based_in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
+#include "chromeos/ash/experiences/extensions/browser/speech/speech_recognition_constants.h"
 #include "components/account_id/account_id.h"
 #include "components/live_caption/pref_names.h"
 #include "components/policy/core/common/mock_configuration_policy_provider.h"
@@ -93,22 +95,23 @@ constexpr char kSodaUnsupportedLocale[] = "af-ZA";
 
 // Dictation notification titles and descriptions. '*'s are used as placeholders
 // for languages, which are substituted in at a later time.
-std::u16string kDictationAllDlcsDownloadedTitle = u"* speech files downloaded";
-std::u16string kDictationAllDlcsDownloadedDesc =
+constexpr char16_t kDictationAllDlcsDownloadedTitle[] =
+    u"* speech files downloaded";
+constexpr char16_t kDictationAllDlcsDownloadedDesc[] =
     u"Speech is now processed locally and Dictation works offline";
-std::u16string kDictationNoDlcsDownloadedTitle =
+constexpr char16_t kDictationNoDlcsDownloadedTitle[] =
     u"Couldn't download * speech files";
-std::u16string kDictationNoDlcsDownloadedDesc =
+constexpr char16_t kDictationNoDlcsDownloadedDesc[] =
     u"Download will be attempted later. Speech will be sent to Google for "
     u"processing for now.";
-std::u16string kDicationOnlyPumpkinDownloadedTitle =
+constexpr char16_t kDicationOnlyPumpkinDownloadedTitle[] =
     u"* speech files partially downloaded";
-std::u16string kDicationOnlyPumpkinDownloadedDesc =
+constexpr char16_t kDicationOnlyPumpkinDownloadedDesc[] =
     u"Download will be attempted later. Speech will be sent to Google for "
     u"processing for now.";
-std::u16string kDictationOnlySodaDownloadedTitle =
+constexpr char16_t kDictationOnlySodaDownloadedTitle[] =
     u"* speech files partially downloaded";
-std::u16string kDictationOnlySodaDownloadedDesc =
+constexpr char16_t kDictationOnlySodaDownloadedDesc[] =
     u"Speech is processed locally and dictation works offline, but some voice "
     u"commands won’t work.";
 
@@ -405,11 +408,11 @@ std::optional<bool> GetDictationOfflineNudgePref(const std::string& locale) {
 }
 
 void AssertDictationNotificationShown(const std::u16string& display_language,
-                                      const std::u16string& title,
-                                      const std::u16string& description,
+                                      std::u16string_view title,
+                                      std::u16string_view description,
                                       bool is_critical) {
   // Replace the '*' placeholder in `title` with `display_name`.
-  std::u16string new_title = title;
+  std::u16string new_title(title);
   ASSERT_TRUE(
       base::ReplaceChars(new_title, u"*", display_language, &new_title));
 
@@ -544,7 +547,7 @@ class AccessibilityManagerTest : public MixinBasedInProcessBrowserTest {
   }
 
   ChromeVoxPanel* GetChromeVoxPanel() {
-    return AccessibilityManager::Get()->chromevox_panel_;
+    return AccessibilityManager::Get()->chromevox_panel_.get();
   }
 
   base::HistogramTester histogram_tester_;
@@ -1017,7 +1020,7 @@ IN_PROC_BROWSER_TEST_F(AccessibilityManagerTest,
 
 // POC: ChromeVoxPanelWebContentsObserver::DidFinishNavigation() dispatches
 // EnterFullscreen()/Focus() purely on GetLastCommittedURL().GetRef() with no
-// origin check, and AccessibilityPanel (the WebContentsDelegate) does not
+// origin check, and ChromeVoxPanel (the WebContentsDelegate) does not
 // contain renderer-initiated cross-process navigations. Once arbitrary web
 // content commits in the panel WebContents, '#fullscreen' grants it a
 // fullscreen, activatable, keyboard-focused surface in
@@ -2114,7 +2117,8 @@ IN_PROC_BROWSER_TEST_P(AccessibilityManagerUserTypeTest, BrailleWhenLoggedIn) {
   prefs.InitUserPrefsForTesting(
       static_cast<sync_preferences::PrefServiceSyncable*>(
           GetActiveUserProfile()->GetPrefs()),
-      user_manager::UserManager::Get()->GetActiveUser(),
+      BrowserContextHelper::Get()->GetUserByBrowserContext(
+          GetActiveUserProfile()),
       UserSessionManager::GetInstance()->GetDefaultIMEState(
           GetActiveUserProfile()));
 

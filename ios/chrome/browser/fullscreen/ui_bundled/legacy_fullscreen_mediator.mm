@@ -67,7 +67,7 @@ void LegacyFullscreenMediator::SetIsBrowserTraitCollectionUpdating(
 }
 
 void LegacyFullscreenMediator::EnterFullscreen() {
-  if (model_->enabled()) {
+  if (model_->enabled() && !AreCGFloatsEqual(model_->progress(), 0.0)) {
     fullscreen_enter_trigger_ =
         FullscreenModeTransitionTrigger::kUserControlled;
     AnimateWithStyle(FullscreenAnimatorStyle::ENTER_FULLSCREEN);
@@ -76,7 +76,8 @@ void LegacyFullscreenMediator::EnterFullscreen() {
 
 void LegacyFullscreenMediator::ExitFullscreen(
     FullscreenModeTransitionTrigger trigger) {
-  if (model_->IsForceFullscreenMode()) {
+  if (model_->IsForceFullscreenMode() ||
+      AreCGFloatsEqual(model_->progress(), 1.0)) {
     return;
   }
   // Instruct the model to ignore the remainder of the current scroll when
@@ -95,6 +96,7 @@ void LegacyFullscreenMediator::ForceEnterFullscreen(
   if (trigger == FullscreenModeTransitionTrigger::kForcedByUser) {
     model_->set_manually_forced(true);
   }
+  bool was_force_fullscreen = model_->IsForceFullscreenMode();
   model_->SetForceFullscreenMode(true);
   model_->SetInsetsUpdateEnabled(insets_update_enabled);
   // Disable fullscreen because:
@@ -103,7 +105,13 @@ void LegacyFullscreenMediator::ForceEnterFullscreen(
   // - Fullscreen should not resize the toolbar it's above the keyboard.
   model_->IncrementDisabledCounter();
   model_->ForceEnterFullscreen();
-  RecordFullscreenEnterMode();
+  // Only record the transition into forced fullscreen if forced fullscreen mode
+  // was not already active (e.g. to avoid double-counting when Find in Page and
+  // keyboard management for the secondary toolbar simultaneously request
+  // forced fullscreen).
+  if (!was_force_fullscreen) {
+    RecordFullscreenEnterMode();
+  }
 }
 
 void LegacyFullscreenMediator::ForceExitFullscreen(
@@ -113,8 +121,15 @@ void LegacyFullscreenMediator::ForceExitFullscreen(
   model_->SetForceFullscreenMode(false);
   model_->SetInsetsUpdateEnabled(true);
   model_->DecrementDisabledCounter();
+  model_->AnimationEndedWithProgress(1.0);
   ExitFullscreenWithoutAnimation();
-  RecordFullscreenExitMode();
+  // Only record the exit transition once all callers (e.g. Find in Page and
+  // secondary toolbar keyboard management) have finished forcing fullscreen
+  // mode.
+  if (!model_->IsForceFullscreenMode()) {
+    fullscreen_exit_trigger_ = trigger;
+    RecordFullscreenExitMode();
+  }
 }
 
 void LegacyFullscreenMediator::ExitFullscreenWithoutAnimation() {
@@ -244,6 +259,8 @@ void LegacyFullscreenMediator::FullscreenModelScrollEventEnded(
           FullscreenModeTransitionTrigger::kUserInitiatedFinishedByCode;
       AnimateWithStyle(FullscreenAnimatorStyle::EXIT_FULLSCREEN);
     } else {
+      fullscreen_enter_trigger_ =
+          FullscreenModeTransitionTrigger::kUserInitiatedFinishedByCode;
       AnimateWithStyle(FullscreenAnimatorStyle::ENTER_FULLSCREEN);
     }
     return;
@@ -274,6 +291,7 @@ void LegacyFullscreenMediator::FullscreenModelWasReset(FullscreenModel* model) {
     return;
   }
   fullscreen_enter_trigger_ = std::nullopt;
+  fullscreen_exit_trigger_ = std::nullopt;
   has_reached_bottom_once_ = false;
   // Stop any in-progress animations.  Don't update the model because this
   // callback occurs after the model's state is reset, and updating the model
@@ -336,9 +354,9 @@ void LegacyFullscreenMediator::AnimateWithStyle(FullscreenAnimatorStyle style) {
 
     // Histogram for entering or exiting Fullscreen mode based on
     // FullscreenModeTransitionTrigger value.
-    if (mediator->model_->progress() == 0) {
+    if (AreCGFloatsEqual(mediator->model_->progress(), 0.0)) {
       mediator->RecordFullscreenEnterMode();
-    } else if (mediator->model_->progress() == 1) {
+    } else if (AreCGFloatsEqual(mediator->model_->progress(), 1.0)) {
       mediator->RecordFullscreenExitMode();
     }
     for (auto& observer : mediator->observers_) {
@@ -378,6 +396,8 @@ void LegacyFullscreenMediator::StopAnimating(bool update_model) {
   }
   [animator_ stopAnimation:YES];
   animator_ = nil;
+  fullscreen_enter_trigger_ = std::nullopt;
+  fullscreen_exit_trigger_ = std::nullopt;
 }
 
 void LegacyFullscreenMediator::ResizeHorizontalInsets() {
@@ -406,6 +426,8 @@ LegacyFullscreenMediator::AnimatorStyleFromScrollDirection(
                  ? FullscreenAnimatorStyle::ENTER_FULLSCREEN
                  : FullscreenAnimatorStyle::EXIT_FULLSCREEN;
     case FullscreenModelScrollDirection::kDown:
+      fullscreen_enter_trigger_ =
+          FullscreenModeTransitionTrigger::kUserInitiatedFinishedByCode;
       return FullscreenAnimatorStyle::ENTER_FULLSCREEN;
   }
 }

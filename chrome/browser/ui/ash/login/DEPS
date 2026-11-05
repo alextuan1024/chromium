@@ -24,18 +24,15 @@ include_rules = [
   "+chrome/browser/ash/tpm",
   "+chrome/browser/browser_process.h",
   "+chrome/browser/browser_process_platform_part.h",
-  "+chrome/browser/media/webrtc",
   "+chrome/browser/password_manager",
   "+chrome/browser/profiles",
   "+chrome/browser/renderer_preferences_util.h",
   "+chrome/browser/safe_browsing",
   "+chrome/browser/sessions",
-  "+chrome/browser/signin",
   "+chrome/browser/themes",
   "+chrome/browser/ui/ash/keyboard",
   "+chrome/browser/ui/ash/system",
   "+chrome/browser/ui/ash/wallpaper",
-  "+chrome/browser/ui/chrome_pages.h",
   "+chrome/browser/ui/chrome_web_modal_dialog_manager_delegate.h",
   "+chrome/browser/ui/dialogs/browser_dialogs.h",
   "+chrome/browser/ui/webui/ash/diagnostics_dialog",
@@ -46,19 +43,14 @@ include_rules = [
   "+chrome/browser/ui/webui/ash/system_web_dialog/system_web_dialog_delegate.h",
   "+chrome/browser/ui/webui/chrome_web_contents_handler.h",
   "+chrome/browser/ui/webui/feedback",
-  "+chrome/common",
   "+chrome/grit",
+
+  "+components/webrtc/media_capture_dispatcher.h",
 ]
 
 specific_include_rules = {
   # TODO(crbug.com/403154552): Avoid g_browser_process->GetFeatures().
   "user_adding_screen\\.cc": [
-    "+chrome/browser/global_features.h",
-  ],
-  "login_display_host_mojo\\.cc": [
-    "+chrome/browser/global_features.h",
-  ],
-  "login_display_host_webui\\.cc": [
     "+chrome/browser/global_features.h",
   ],
   "fake_login_display_host\\.cc": [
@@ -68,6 +60,7 @@ specific_include_rules = {
   ".*_(browser|unit)test\\.cc": [
     "+chrome/browser/global_features.h",
     "+chrome/browser/ui/browser_window.h",
+    "+chrome/browser/ui/chrome_pages.h",
     "+chrome/test/base",
   ],
   "fake_.*\\.cc": [

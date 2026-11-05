@@ -26,6 +26,7 @@
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/rect_conversions.h"
 #include "ui/gfx/geometry/size.h"
+#include "ui/gfx/geometry/size_conversions.h"
 #include "ui/gfx/geometry/size_f.h"
 #include "ui/gfx/geometry/transform.h"
 #include "ui/gfx/gpu_fence.h"
@@ -84,7 +85,18 @@ uint32_t TranslatePriority(gfx::OverlayPriorityHint priority_hint) {
   return priority;
 }
 
-const wl_fixed_t kMinusOne = wl_fixed_from_int(-1);
+// Returns `color_space`, or Rec709 if it is invalid and the content is video.
+gfx::ColorSpace GetColorSpaceWithVideoDefault(
+    const gfx::ColorSpace& color_space,
+    bool contains_video) {
+  if (color_space.IsValid() || !contains_video) {
+    return color_space;
+  }
+  // Not all video content contains colorspace information.
+  // In this case, default to Rec709.
+  // Maybe use Rec601 for SD video if it becomes an issue.
+  return gfx::ColorSpace::CreateREC709();
+}
 
 }  // namespace
 
@@ -106,7 +118,7 @@ WaylandSurface::WaylandSurface(WaylandConnection* connection,
 WaylandSurface::~WaylandSurface() = default;
 
 void WaylandSurface::RequestExplicitRelease(ExplicitReleaseCallback callback) {
-  DCHECK(!next_explicit_release_request_);
+  CHECK(!next_explicit_release_request_, base::NotFatalUntil::M163);
   next_explicit_release_request_ = std::move(callback);
 }
 
@@ -219,7 +231,7 @@ bool WaylandSurface::Initialize() {
 }
 
 void WaylandSurface::UnsetRootWindow() {
-  DCHECK(surface_);
+  CHECK(surface_, base::NotFatalUntil::M163);
   root_window_ = nullptr;
 }
 
@@ -230,9 +242,10 @@ void WaylandSurface::SetRootWindow(WaylandWindow* window) {
 void WaylandSurface::set_acquire_fence(gfx::GpuFenceHandle acquire_fence) {
   // WaylandBufferManagerGPU knows if the synchronization is not available and
   // must disallow clients to use explicit synchronization.
-  DCHECK(!apply_state_immediately_);
-  DCHECK(connection_->SupportsExplicitSync() ||
-         connection_->UseImplicitSyncInterop());
+  CHECK(!apply_state_immediately_, base::NotFatalUntil::M163);
+  CHECK(connection_->SupportsExplicitSync() ||
+            connection_->UseImplicitSyncInterop(),
+        base::NotFatalUntil::M163);
   if (!acquire_fence.is_null() &&
       // linux-drm-syncobj explicit sync expects that a fence is always set,
       // even if it has been signaled already.
@@ -248,7 +261,7 @@ void WaylandSurface::set_acquire_fence(gfx::GpuFenceHandle acquire_fence) {
 }
 
 bool WaylandSurface::AttachBuffer(WaylandBufferHandle* buffer_handle) {
-  DCHECK(!apply_state_immediately_);
+  CHECK(!apply_state_immediately_, base::NotFatalUntil::M163);
   if (!buffer_handle) {
     pending_state_.buffer = nullptr;
     pending_state_.buffer_id = 0;
@@ -271,7 +284,7 @@ bool WaylandSurface::AttachBuffer(WaylandBufferHandle* buffer_handle) {
 }
 
 void WaylandSurface::UpdateBufferDamageRegion(const gfx::Rect& damage_px) {
-  DCHECK(!apply_state_immediately_);
+  CHECK(!apply_state_immediately_, base::NotFatalUntil::M163);
   pending_state_.damage_px.push_back(damage_px);
 }
 
@@ -388,7 +401,7 @@ bool WaylandSurface::IsViewportScaled(const State& state) {
 wl::Object<wl_region> WaylandSurface::CreateAndAddRegion(
     const std::vector<gfx::Rect>& region_px,
     float buffer_scale) {
-  DCHECK(root_window_);
+  CHECK(root_window_, base::NotFatalUntil::M163);
   wl::Object<wl_region> region(
       wl_compositor_create_region(connection_->compositor()));
 
@@ -493,16 +506,16 @@ void WaylandSurface::OnFenceAvailable(uint32_t buffer_id,
 
 wl::Object<wl_subsurface> WaylandSurface::CreateSubsurface(
     WaylandSurface* parent) {
-  DCHECK(parent);
+  CHECK(parent, base::NotFatalUntil::M163);
   wl_subcompositor* subcompositor = connection_->subcompositor();
-  DCHECK(subcompositor);
+  CHECK(subcompositor, base::NotFatalUntil::M163);
   wl::Object<wl_subsurface> subsurface(wl_subcompositor_get_subsurface(
       subcompositor, surface_.get(), parent->surface_.get()));
   return subsurface;
 }
 
 std::optional<bool> WaylandSurface::ApplyPendingState() {
-  DCHECK(!apply_state_immediately_);
+  CHECK(!apply_state_immediately_, base::NotFatalUntil::M163);
   bool needs_commit = false;
 
   if (pending_state_.buffer_id != state_.buffer_id) {
@@ -511,7 +524,11 @@ std::optional<bool> WaylandSurface::ApplyPendingState() {
         case WaylandBufferHandle::SyncMethod::kSyncobj:
           // We need to try setting explicit sync first so that we don't attach
           // the buffer if there is a failure when setting explicit sync.
-          if (!SetExplicitSync().has_value()) {
+          if (std::optional<bool> explicit_sync = SetExplicitSync();
+              explicit_sync.has_value()) {
+            pending_state_.buffer->set_attached_with_explicit_sync(
+                *explicit_sync);
+          } else {
             // There was a failure while trying to set explicit sync. So we need
             // to early-out and discard this frame and show the previous frame.
             AttachBuffer(nullptr);
@@ -563,13 +580,13 @@ std::optional<bool> WaylandSurface::ApplyPendingState() {
   }
 
   if (pending_state_.opacity != state_.opacity) {
-    DCHECK(blending());
+    CHECK(blending(), base::NotFatalUntil::M163);
     zcr_blending_v1_set_alpha(blending(),
                               wl_fixed_from_double(pending_state_.opacity));
     needs_commit = true;
   }
   if (pending_state_.use_blending != state_.use_blending) {
-    DCHECK(blending());
+    CHECK(blending(), base::NotFatalUntil::M163);
     zcr_blending_v1_set_blending(blending(),
                                  pending_state_.use_blending
                                      ? ZCR_BLENDING_V1_BLENDING_EQUATION_PREMULT
@@ -578,7 +595,7 @@ std::optional<bool> WaylandSurface::ApplyPendingState() {
   }
 
   if (pending_state_.priority_hint != state_.priority_hint) {
-    DCHECK(overlay_priority_surface());
+    CHECK(overlay_priority_surface(), base::NotFatalUntil::M163);
     overlay_prioritized_surface_set_overlay_priority(
         overlay_priority_surface(),
         TranslatePriority(pending_state_.priority_hint));
@@ -655,6 +672,20 @@ std::optional<bool> WaylandSurface::ApplyPendingState() {
                       .size());
     gfx::Size new_size_dip = gfx::ScaleToFlooredSize(
         old_size_px, 1.f / pending_state_.buffer_scale_float);
+    // When ui_scale != 1.0, rounding UI DIP bounds up to an integer can make
+    // `buffer_size_px` 1-2px larger than the window's Wayland DIP surface size
+    // even at integer `buffer_scale_float`. Clamp `new_size_dip` to the
+    // latched Wayland surface size so the committed root surface does not
+    // exceed the configured Wayland geometry.
+    const auto& latched_state = root_window_->latched_state();
+    if (!old_size_px.IsEmpty() && latched_state.ui_scale != 1.0f) {
+      const gfx::Size max_size_dip =
+          gfx::ToRoundedSize(wl::ApplyWaylandTransform(
+              gfx::SizeF(
+                  root_window_->GetSurfaceSizeInWaylandDIP(latched_state)),
+              wl::ToWaylandTransform(pending_state_.buffer_transform)));
+      new_size_dip.SetToMin(max_size_dip);
+    }
     gfx::Size new_size_px = gfx::ScaleToRoundedSize(
         new_size_dip, pending_state_.buffer_scale_float);
     if (new_size_px != old_size_px) {
@@ -690,7 +721,7 @@ std::optional<bool> WaylandSurface::ApplyPendingState() {
     surface_scale_set_ = applying_surface_scale;
     needs_commit = true;
   }
-  DCHECK_GE(surface_scale_set_, 1);
+  CHECK_GE(surface_scale_set_, 1, base::NotFatalUntil::M163);
 
   gfx::RectF viewport_src_dip;
   wl_fixed_t src_to_set[4] = {wl_fixed_from_int(-1), wl_fixed_from_int(-1),
@@ -704,7 +735,7 @@ std::optional<bool> WaylandSurface::ApplyPendingState() {
         wl::ToWaylandTransform(pending_state_.buffer_transform));
     viewport_src_dip =
         gfx::ScaleRect(crop_transformed, bounds.width(), bounds.height());
-    DCHECK(viewport());
+    CHECK(viewport(), base::NotFatalUntil::M163);
 
     // It not completely unexpected to stretch a texture more than the smallest
     // fixed point can represent. The two cases here are solid color buffers
@@ -784,7 +815,7 @@ std::optional<bool> WaylandSurface::ApplyPendingState() {
     UNSAFE_TODO(memcpy(dst_set_, dst_to_set, 2 * sizeof(*dst_to_set)));
   }
 
-  DCHECK_LE(pending_state_.damage_px.size(), 1u);
+  CHECK_LE(pending_state_.damage_px.size(), 1u, base::NotFatalUntil::M163);
   if (pending_state_.damage_px.empty() ||
       pending_state_.damage_px.back().IsEmpty()) {
     pending_state_.damage_px.clear();
@@ -792,7 +823,7 @@ std::optional<bool> WaylandSurface::ApplyPendingState() {
     return needs_commit;
   }
 
-  DCHECK(pending_state_.buffer);
+  CHECK(pending_state_.buffer, base::NotFatalUntil::M163);
 
   gfx::Rect damage = ScaleToEnclosingRect(
       pending_state_.damage_px.back(), 1.f / GetWaylandScale(pending_state_));
@@ -844,7 +875,7 @@ void WaylandSurface::OnEnter(void* data,
                              wl_surface* surface,
                              wl_output* output) {
   auto* self = static_cast<WaylandSurface*>(data);
-  DCHECK(self);
+  CHECK(self, base::NotFatalUntil::M163);
 
   // The compositor can send a null output. See https://crbug.com/1332540.
   if (!output) {
@@ -855,9 +886,9 @@ void WaylandSurface::OnEnter(void* data,
   auto* wayland_output =
       static_cast<WaylandOutput*>(wl_output_get_user_data(output));
 
-  DCHECK_NE(self->connection_->wayland_output_manager()->GetOutput(
-                wayland_output->output_id()),
-            nullptr);
+  CHECK_NE(self->connection_->wayland_output_manager()->GetOutput(
+               wayland_output->output_id()),
+           nullptr, base::NotFatalUntil::M163);
 
   if (auto it = std::ranges::find(self->entered_outputs_,
                                   wayland_output->output_id());
@@ -875,7 +906,7 @@ void WaylandSurface::OnLeave(void* data,
                              wl_surface* surface,
                              wl_output* output) {
   auto* self = static_cast<WaylandSurface*>(data);
-  DCHECK(self);
+  CHECK(self, base::NotFatalUntil::M163);
 
   // The compositor can send a null output. See https://crbug.com/1332540.
   if (!output) {
@@ -893,7 +924,7 @@ void WaylandSurface::OnPreferredScale(void* data,
                                       wp_fractional_scale_v1* fractional_scale,
                                       uint32_t scale) {
   auto* self = static_cast<WaylandSurface*>(data);
-  DCHECK(self);
+  CHECK(self, base::NotFatalUntil::M163);
 
   if (!self->connection_->UsePerSurfaceScaling()) {
     VLOG(1) << "Per-surface scaling is disabled.";
@@ -929,15 +960,28 @@ void WaylandSurface::RemoveEnteredOutput(uint32_t output_id) {
 
 void WaylandSurface::SetImageDescription(const gfx::ColorSpace& color_space,
                                          const gfx::HDRMetadata& hdr_metadata) {
-  if (color_space.IsValid() || !pending_state_.contains_video) {
-    pending_state_.color_space = color_space;
-  } else {
-    // Not all video content contains colorspace information.
-    // In this case, default to Rec709.
-    // Maybe use Rec601 for SD video if it becomes an issue.
-    pending_state_.color_space = gfx::ColorSpace::CreateREC709();
-  }
+  pending_state_.color_space =
+      GetColorSpaceWithVideoDefault(color_space, pending_state_.contains_video);
   pending_state_.hdr_metadata = hdr_metadata;
+}
+
+bool WaylandSurface::EnsureImageDescription(
+    const gfx::ColorSpace& color_space,
+    const gfx::HDRMetadata& hdr_metadata,
+    bool contains_video,
+    base::OnceClosure on_ready) {
+  if (!wp_color_management_surface_) {
+    return true;
+  }
+  const gfx::ColorSpace surface_color_space =
+      GetColorSpaceWithVideoDefault(color_space, contains_video);
+  // ApplyPendingState() only sets the image description when it changes.
+  if (surface_color_space == state_.color_space &&
+      hdr_metadata == state_.hdr_metadata) {
+    return true;
+  }
+  return wp_color_management_surface_->EnsureImageDescription(
+      surface_color_space, hdr_metadata, std::move(on_ready));
 }
 
 }  // namespace ui

@@ -1061,6 +1061,34 @@ targets.binaries.console_test_launcher(
 )
 
 targets.binaries.generated_script(
+    name = "devtools_api_tests",
+    label = "//third_party/devtools-frontend/src/test/api:devtools_api_tests",
+    skip_usage_check = True,
+    module_scheme = "mocha",
+)
+
+targets.binaries.generated_script(
+    name = "devtools_e2e_tests",
+    label = "//third_party/devtools-frontend/src/test/e2e:devtools_e2e_tests",
+    skip_usage_check = True,
+    module_scheme = "mocha",
+)
+
+targets.binaries.generated_script(
+    name = "devtools_node_unit_tests",
+    label = "//third_party/devtools-frontend/src/test/unit:devtools_node_unit_tests",
+    skip_usage_check = True,
+    module_scheme = "mocha",
+)
+
+targets.binaries.generated_script(
+    name = "devtools_unit_tests",
+    label = "//third_party/devtools-frontend/src/test/unit:devtools_unit_tests",
+    skip_usage_check = True,
+    module_scheme = "mocha",
+)
+
+targets.binaries.generated_script(
     name = "disk_usage_tast_test",
     label = "//chromeos:disk_usage_tast_test",
     # All references have been moved to starlark
@@ -1398,6 +1426,14 @@ targets.binaries.generated_script(
 )
 
 targets.binaries.generated_script(
+    name = "ios_chrome_all_eg2tests_module",
+    label = "//ios/chrome/test/earl_grey2:ios_chrome_all_eg2tests_module",
+    # All references have been moved to starlark
+    skip_usage_check = True,
+    module_scheme = "xctest",
+)
+
+targets.binaries.generated_script(
     name = "ios_chrome_bookmarks_eg2tests_module",
     label = "//ios/chrome/test/earl_grey2:ios_chrome_bookmarks_eg2tests_module",
     # All references have been moved to starlark
@@ -1426,6 +1462,12 @@ targets.binaries.generated_script(
     label = "//ios/chrome/test/earl_grey2:ios_chrome_signin_eg2tests_module",
     # All references have been moved to starlark
     skip_usage_check = True,
+    module_scheme = "xctest",
+)
+
+targets.binaries.generated_script(
+    name = "ios_chrome_perf_benchmarks_eg2tests_module",
+    label = "//ios/chrome/test/earl_grey2:ios_chrome_perf_benchmarks_eg2tests_module",
     module_scheme = "xctest",
 )
 
@@ -1813,7 +1855,6 @@ targets.binaries.generated_script(
 targets.binaries.generated_script(
     name = "ondevice_api_scrape_tests",
     label = "//components/optimization_guide/internal/testing:ondevice_api_scrape_tests",
-    skip_usage_check = True,
     module_scheme = "flat",
 )
 
@@ -1846,25 +1887,6 @@ targets.binaries.generated_script(
     module_scheme = "webtest",
 )
 
-# Same as chrome_ai_wpt_tests, but downloads a pre-built chrome at runtime
-# instead of building one, so it can run on bots that don't build chrome.
-targets.binaries.generated_script(
-    name = "chrome_ai_wpt_tests_light",
-    label = "//components/optimization_guide/internal/testing:chrome_ai_wpt_tests_light",
-    results_handler = "layout tests",
-    args = [
-        "--results-directory",
-        "${ISOLATED_OUTDIR}",
-    ],
-    merge = targets.merge(
-        script = "//third_party/blink/tools/merge_web_test_results.py",
-        args = [
-            "--verbose",
-        ],
-    ),
-    module_scheme = "webtest",
-)
-
 targets.binaries.generated_script(
     name = "one_time_tokens_junit_tests",
     label = "//components/one_time_tokens/android/backend/sms:one_time_tokens_junit_tests",
@@ -1876,8 +1898,6 @@ targets.binaries.generated_script(
 targets.binaries.console_test_launcher(
     name = "openscreen_unittests",
     label = "//chrome/browser/media/router:openscreen_unittests",
-    # All references have been moved to starlark
-    skip_usage_check = True,
     module_scheme = "gtest",
 )
 
@@ -1929,7 +1949,7 @@ targets.binaries.generated_script(
 
 targets.binaries.script(
     name = "partition_alloc_perftests",
-    label = "//base/allocator/partition_allocator/src/partition_alloc:partition_alloc_perftests",
+    label = "//base:partition_alloc_perftests",
     script = "//testing/scripts/run_performance_tests.py",
     skip_usage_check = True,
     args = [
@@ -1977,7 +1997,7 @@ targets.binaries.script(
         "--ui-test-action-timeout=60000",
         "--ui-test-action-max-timeout=60000",
         "--test-launcher-timeout=60000",
-        "--gtest_filter=*/TabCapturePerformanceTest.*:*/CastV2PerformanceTest.*",
+        "--gtest_filter=*/TabCapturePerformanceTest.*",
     ],
 )
 
@@ -2547,6 +2567,13 @@ targets.binaries.generated_script(
         result_format = "single",
     ),
     module_scheme = "single",
+)
+
+targets.binaries.generated_script(
+    name = "views_examples_mac_signing_tests",
+    label = "//chrome/views_examples/mac/signing:views_examples_mac_signing_tests",
+    skip_usage_check = True,
+    module_scheme = "pyunit",
 )
 
 targets.binaries.windowed_test_launcher(

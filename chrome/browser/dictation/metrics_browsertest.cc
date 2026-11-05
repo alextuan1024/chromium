@@ -4,9 +4,11 @@
 
 #include "chrome/browser/dictation/metrics.h"
 
+#include <vector>
+
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/run_until.h"
-#include "chrome/browser/dictation/dictation_browser_test_base.h"
+#include "chrome/browser/dictation/dictation_interactive_browser_test_base.h"
 #include "chrome/browser/dictation/dictation_keyed_service.h"
 #include "chrome/browser/dictation/listener_stream_provider.h"
 #include "chrome/browser/dictation/session_controller.h"
@@ -14,12 +16,14 @@
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/tabs/tab_enums.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
+#include "chrome/browser/ui/views/dictation/dictation_bubble_ui.h"
 #include "chrome/common/extensions/api/dictation_private.h"
 #include "content/public/browser/editable_level.h"
 #include "content/public/browser/focused_node_details.h"
 #include "content/public/browser/global_dom_node_id.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/test/browser_test.h"
+#include "content/public/test/browser_test_utils.h"
 #include "third_party/blink/public/common/dom/dom_node_id.h"
 #include "third_party/blink/public/common/input/web_keyboard_event.h"
 #include "third_party/blink/public/mojom/input/focus_type.mojom.h"
@@ -29,7 +33,11 @@
 
 namespace dictation {
 
-class DictationMetricsBrowserTest : public DictationBrowserTestBase {};
+class DictationMetricsBrowserTest : public DictationInteractiveBrowserTestBase {
+ public:
+  DictationMetricsBrowserTest() = default;
+  ~DictationMetricsBrowserTest() override = default;
+};
 
 IN_PROC_BROWSER_TEST_F(DictationMetricsBrowserTest,
                        RecordMetricsOnSessionStart) {
@@ -103,7 +111,9 @@ IN_PROC_BROWSER_TEST_F(
 
 // Note: DictationUrlCategory::kGlic is tested in
 // DictationGlicBrowserTest.RecordsSessionUrlCategoryGlic in
-// dictation_keyed_service_browsertest.cc.
+// dictation_keyed_service_browsertest.cc, and
+// kPageContextEligibilityHistogramName is tested in DictationContextBrowserTest
+// in dictation_context_browsertest.cc.
 IN_PROC_BROWSER_TEST_F(DictationMetricsBrowserTest,
                        RecordSessionUrlCategoryWebOnSessionStart) {
   base::HistogramTester histogram_tester;
@@ -113,6 +123,19 @@ IN_PROC_BROWSER_TEST_F(DictationMetricsBrowserTest,
 
   histogram_tester.ExpectUniqueSample(kSessionUrlCategoryHistogramName,
                                       DictationUrlCategory::kWeb, 1);
+}
+
+IN_PROC_BROWSER_TEST_F(DictationMetricsBrowserTest,
+                       RecordSessionUrlCategoryWebUIOnSessionStart) {
+  base::HistogramTester histogram_tester;
+
+  ASSERT_TRUE(content::NavigateToURL(web_contents(), GURL("chrome://version")));
+
+  SimulateInvokeViaContextMenu(web_contents()->GetPrimaryMainFrame(),
+                               blink::DOMNodeIdType(123));
+
+  histogram_tester.ExpectUniqueSample(kSessionUrlCategoryHistogramName,
+                                      DictationUrlCategory::kWebUI, 1);
 }
 
 IN_PROC_BROWSER_TEST_F(DictationMetricsBrowserTest,
@@ -139,7 +162,8 @@ IN_PROC_BROWSER_TEST_F(DictationMetricsBrowserTest,
   SimulateInvokeViaContextMenu(web_contents()->GetPrimaryMainFrame(),
                                blink::DOMNodeIdType(123));
 
-  session_controller()->UiRequestEndActiveStream();
+  RunTestSequence(
+      PressButton(DictationBubbleUi::kDoneButtonElementIdForTesting));
 
   histogram_tester.ExpectUniqueSample(kStreamExitReasonHistogramName,
                                       DictationStreamExitStatus::kUserDone, 1);
@@ -166,6 +190,44 @@ IN_PROC_BROWSER_TEST_F(DictationMetricsBrowserTest,
 }
 
 IN_PROC_BROWSER_TEST_F(DictationMetricsBrowserTest,
+                       RecordStreamStartLatencyOnTranscribing) {
+  base::HistogramTester histogram_tester;
+
+  SimulateInvokeViaContextMenu(web_contents()->GetPrimaryMainFrame(),
+                               blink::DOMNodeIdType(123));
+  ExtensionWaitForStreamStart(profile(),
+                              attached_stream()->stream_id_for_testing());
+  histogram_tester.ExpectTotalCount(kStreamStartLatencyHistogramName, 0);
+
+  ExtensionSendStreamStateUpdate(
+      profile(), attached_stream()->stream_id_for_testing(),
+      extensions::api::dictation_private::StreamState::kTranscribing);
+  WaitForSessionState(SessionState::kTranscribing);
+
+  histogram_tester.ExpectTotalCount(kStreamStartLatencyHistogramName, 1);
+
+  // The recorded latency should be non-zero.
+  std::vector<base::Bucket> buckets =
+      histogram_tester.GetAllSamples(kStreamStartLatencyHistogramName);
+  ASSERT_EQ(buckets.size(), 1u);
+  EXPECT_GT(buckets[0].min, 0);
+}
+
+IN_PROC_BROWSER_TEST_F(DictationMetricsBrowserTest,
+                       RecordStreamAbandonedBeforeListening) {
+  base::HistogramTester histogram_tester;
+
+  SimulateInvokeViaContextMenu(web_contents()->GetPrimaryMainFrame(),
+                               blink::DOMNodeIdType(123));
+  RunTestSequence(
+      PressButton(DictationBubbleUi::kDoneButtonElementIdForTesting));
+
+  histogram_tester.ExpectTotalCount(
+      kStreamAbandonedBeforeListeningHistogramName, 1);
+  histogram_tester.ExpectTotalCount(kStreamStartLatencyHistogramName, 0);
+}
+
+IN_PROC_BROWSER_TEST_F(DictationMetricsBrowserTest,
                        RecordMetricsOnStreamExitUserDoneEscapeKey) {
   base::HistogramTester histogram_tester;
 
@@ -189,7 +251,8 @@ IN_PROC_BROWSER_TEST_F(DictationMetricsBrowserTest,
   SimulateInvokeViaContextMenu(web_contents()->GetPrimaryMainFrame(),
                                blink::DOMNodeIdType(123));
 
-  session_controller()->UiRequestEndSession();
+  RunTestSequence(
+      PressButton(DictationBubbleUi::kCloseButtonElementIdForTesting));
 
   histogram_tester.ExpectUniqueSample(kStreamExitReasonHistogramName,
                                       DictationStreamExitStatus::kUserCancelled,

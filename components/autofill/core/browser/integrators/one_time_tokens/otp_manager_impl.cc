@@ -11,8 +11,9 @@
 #include <utility>
 #include <vector>
 
+#include "base/check.h"
 #include "base/command_line.h"
-#include "base/feature_list.h"
+#include "base/containers/span.h"
 #include "base/functional/bind.h"
 #include "base/memory/weak_ptr.h"
 #include "base/metrics/histogram_functions.h"
@@ -20,11 +21,16 @@
 #include "base/task/sequenced_task_runner.h"
 #include "base/time/time.h"
 #include "base/types/expected.h"
+#include "components/affiliations/core/browser/affiliation_service.h"
+#include "components/affiliations/core/browser/domain_matching/domain_relation_checker.h"
 #include "components/autofill/core/browser/autofill_field.h"
+#include "components/autofill/core/browser/autofill_trigger_source.h"
 #include "components/autofill/core/browser/field_types.h"
 #include "components/autofill/core/browser/form_structure.h"
 #include "components/autofill/core/browser/foundations/autofill_client.h"
+#include "components/autofill/core/browser/foundations/autofill_driver.h"
 #include "components/autofill/core/browser/foundations/browser_autofill_manager.h"
+#include "components/autofill/core/browser/integrators/one_time_tokens/form_cache_query_util.h"
 #include "components/autofill/core/browser/integrators/one_time_tokens/otp_field_detector.h"
 #include "components/autofill/core/browser/integrators/one_time_tokens/otp_metrics_tracker.h"
 #include "components/autofill/core/browser/integrators/one_time_tokens/otp_phish_guard_delegate.h"
@@ -32,24 +38,27 @@
 #include "components/autofill/core/common/autofill_internals/log_message.h"
 #include "components/autofill/core/common/autofill_internals/logging_scope.h"
 #include "components/autofill/core/common/autofill_prefs.h"
+#include "components/autofill/core/common/form_data.h"
 #include "components/autofill/core/common/form_field_data.h"
 #include "components/autofill/core/common/logging/log_buffer.h"
 #include "components/autofill/core/common/logging/log_macros.h"
 #include "components/autofill/core/common/unique_ids.h"
+#include "components/one_time_tokens/core/browser/gmail_otp_backend.h"
+#include "components/one_time_tokens/core/browser/gmail_otp_flow.h"
+#include "components/one_time_tokens/core/browser/gmail_otp_retriever.h"
+#include "components/one_time_tokens/core/browser/gmail_otp_service.h"
 #include "components/one_time_tokens/core/browser/one_time_token.h"
-#include "components/one_time_tokens/core/browser/one_time_token_log_sink.h"
 #include "components/one_time_tokens/core/browser/one_time_token_retrieval_error.h"
-#include "components/one_time_tokens/core/browser/one_time_token_service.h"
 #include "components/one_time_tokens/core/browser/one_time_token_type.h"
+#include "components/one_time_tokens/core/browser/sms_otp_service.h"
 #include "components/one_time_tokens/core/browser/util/expiring_subscription.h"
 #include "components/one_time_tokens/core/common/one_time_token_switches.h"
 
 using one_time_tokens::ExpiringSubscriptionHandle;
 using one_time_tokens::OneTimeToken;
 using one_time_tokens::OneTimeTokenRetrievalError;
-using one_time_tokens::OneTimeTokenService;
-using one_time_tokens::OneTimeTokenSource;
 using one_time_tokens::OneTimeTokenType;
+using one_time_tokens::SmsOtpService;
 
 namespace autofill {
 
@@ -59,37 +68,35 @@ std::string GetMockOtpValue() {
   return base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
       one_time_tokens::switches::kMockOtpValue);
 }
+
 }  // namespace
 
 OtpManagerImpl::OtpManagerImpl(BrowserAutofillManager& owner,
-                               OneTimeTokenService* one_time_token_service)
-    : owner_(owner), one_time_token_service_(one_time_token_service) {
+                               SmsOtpService* sms_otp_service)
+    : owner_(owner), sms_otp_service_(sms_otp_service) {
   autofill_manager_observation_.Observe(&owner);
-  if (one_time_token_service_) {
-    if (owner_->driver().GetParent() == nullptr &&
-        !owner_->driver().IsEmbedded()) {
-      if (one_time_token_service_->log_sink()) {
-        log_subscription_ = one_time_token_service_->log_sink()->AddLogHandler(
-            base::BindRepeating(&OtpManagerImpl::OnLogMessage,
-                                weak_ptr_factory_.GetWeakPtr()));
-      }
-    }
-    gmail_otp_tickle_subscription_ =
-        one_time_token_service_->SubscribeToTickles(
-            OneTimeTokenSource::kGmail,
-            base::Time::Now() + kGmailOtpTickleSubscriptionDuration,
-            base::BindRepeating(&OtpManagerImpl::OnTickleReceived,
-                                weak_ptr_factory_.GetWeakPtr()));
+  if (PrefService* prefs = owner_->client().GetPrefs()) {
+    pref_change_registrar_.Init(prefs);
+    pref_change_registrar_.Add(
+        prefs::kAutofillGmailOtpFillingEnabled,
+        base::BindRepeating(
+            &OtpManagerImpl::OnGmailOtpFillingEnabledPrefChanged,
+            weak_ptr_factory_.GetWeakPtr()));
   }
 }
 
-OtpManagerImpl::~OtpManagerImpl() = default;
+OtpManagerImpl::~OtpManagerImpl() {
+  if (last_pending_get_suggestions_callback_) {
+    std::move(last_pending_get_suggestions_callback_).Run({});
+  }
+}
 
 void OtpManagerImpl::GetOtpSuggestions(
     const FormStructure& form,
     const FormFieldData& field,
     OtpManagerImpl::GetOtpSuggestionsCallback callback) {
-  if (owner_->driver().IsEmbedded() || field.origin().opaque() ||
+  if (!sms_otp_service_ || !IsActiveNonEmbeddedDriver(owner_->driver()) ||
+      !OtpFieldDetector::IsOtpField(form, field) ||
       !OtpFieldDetector::IsOtpForm(form)) {
     std::move(callback).Run({});
     return;
@@ -100,10 +107,16 @@ void OtpManagerImpl::GetOtpSuggestions(
     LOG_AF(owner_->client().GetCurrentLogManager())
         << LoggingScope::kOneTimeTokens
         << "Using mock OTP value from command line switch.";
-    std::move(callback).Run({std::move(mock_otp)});
+    std::move(callback).Run(
+        {OneTimeToken(OneTimeTokenType::kSmsOtp, std::move(mock_otp),
+                      base::TimeTicks::Now())});
     return;
   }
 
+  if (last_pending_get_suggestions_callback_) {
+    std::move(last_pending_get_suggestions_callback_).Run({});
+  }
+  is_gmail_phish_guard_pending_ = false;
   last_pending_frame_token_ = field.host_frame();
   last_pending_get_suggestions_callback_ = std::move(callback);
 
@@ -113,36 +126,159 @@ void OtpManagerImpl::GetOtpSuggestions(
 }
 
 void OtpManagerImpl::GetRecentOtpsAndRenewSubscription() {
-  if (!one_time_token_service_ || !GetMockOtpValue().empty()) {
-    return;
+  CHECK(sms_otp_service_);
+
+  one_time_tokens::GmailOtpBackend* gmail_otp_backend =
+      owner_->client().GetGmailOtpBackend();
+
+  const base::Time expiration_time =
+      base::Time::Now() + kGmailOtpTickleSubscriptionDuration;
+  if (gmail_otp_tickle_subscription_.IsAlive()) {
+    gmail_otp_tickle_subscription_.SetExpirationTime(expiration_time);
+  } else if (gmail_otp_backend) {
+    gmail_otp_tickle_subscription_ = gmail_otp_backend->SubscribeToTickles(
+        expiration_time, base::BindRepeating(&OtpManagerImpl::OnTickleReceived,
+                                             weak_ptr_factory_.GetWeakPtr()));
   }
 
-  one_time_token_service_->GetRecentOneTimeTokens(base::BindRepeating(
-      &OtpManagerImpl::OnOneTimeTokenReceived, weak_ptr_factory_.GetWeakPtr()));
+  if (UserOptedIntoGmailOtpFilling()) {
+    if (std::optional<OneTimeToken> token = SelectMostRecentToken();
+        token && !token->value().empty()) {
+      LOG_AF(owner_->client().GetCurrentLogManager())
+          << LoggingScope::kOneTimeTokens
+          << "Delivering cached Gmail OTP suggestion.";
+      OnOneTimeTokenReceived(std::move(*token));
+    } else {
+      MaybeRetrieveGmailOtp();
+    }
+  }
 
+  // Gmail OTPs are retrieved from the `GmailOtpService` via
+  // `GmailOtpRetriever` (verifying domain affiliation against the frame
+  // origin). Therefore, only SMS OTPs are taken from the `SmsOtpService`
+  // and any unverified Gmail OTPs returned by it are dropped.
+  // This may call OnOneTimeTokenReceived() zero times, but ...
+  sms_otp_service_->GetRecentOneTimeTokens(base::BindRepeating(
+      [](base::WeakPtr<OtpManagerImpl> self,
+         base::expected<OneTimeToken, OneTimeTokenRetrievalError> result) {
+        if (self && (!result.has_value() ||
+                     result->type() == OneTimeTokenType::kSmsOtp)) {
+          self->OnOneTimeTokenReceived(std::move(result));
+        }
+      },
+      weak_ptr_factory_.GetWeakPtr()));
+
+  // ... this guarantees at least one call of OnOneTimeTokenReceived().
   if (sms_otp_subscription_.IsAlive()) {
     sms_otp_subscription_.SetExpirationTime(base::Time::Now() +
                                             kSmsOtpSubscriptionDuration);
   } else {
-    sms_otp_subscription_ = one_time_token_service_->Subscribe(
-        OneTimeTokenSource::kOnDeviceSms,
-        base::Time::Now() + kSmsOtpSubscriptionDuration,
-        base::BindRepeating(&OtpManagerImpl::OnOneTimeTokenReceived,
-                            weak_ptr_factory_.GetWeakPtr()),
-        /*expiration_callback=*/base::DoNothing());
+    sms_error_during_subscribe_ = false;
+    one_time_tokens::ExpiringSubscription subscription =
+        sms_otp_service_->Subscribe(
+            base::Time::Now() + kSmsOtpSubscriptionDuration,
+            /*callback=*/
+            base::BindRepeating(&OtpManagerImpl::OnOneTimeTokenReceived,
+                                weak_ptr_factory_.GetWeakPtr()),
+            /*expiration_callback=*/
+            base::BindOnce(
+                [](base::WeakPtr<OtpManagerImpl> self) {
+                  if (!self) {
+                    return;
+                  }
+                  CHECK(!self->sms_otp_subscription_.IsAlive());
+                  self->OnOneTimeTokenReceived(base::unexpected(
+                      OneTimeTokenRetrievalError::kSubscriptionExpired));
+                },
+                weak_ptr_factory_.GetWeakPtr()));
+    if (!sms_error_during_subscribe_) {
+      sms_otp_subscription_ = std::move(subscription);
+    }
+  }
+}
+
+void OtpManagerImpl::MaybeRetrieveGmailOtp() {
+  // If a Gmail OTP retrieval is already in flight (e.g. initiated upon tickle
+  // arrival while the field was focused), do not start a concurrent one. The
+  // in-flight retriever will deliver the token to any pending suggestions
+  // callback upon completion.
+  if (gmail_otp_retriever_) {
+    return;
   }
 
-  if (gmail_otp_tickle_subscription_.IsAlive()) {
-    gmail_otp_tickle_subscription_.SetExpirationTime(
-        base::Time::Now() + kGmailOtpTickleSubscriptionDuration);
-  } else {
-    gmail_otp_tickle_subscription_ =
-        one_time_token_service_->SubscribeToTickles(
-            OneTimeTokenSource::kGmail,
-            base::Time::Now() + kGmailOtpTickleSubscriptionDuration,
-            base::BindRepeating(&OtpManagerImpl::OnTickleReceived,
-                                weak_ptr_factory_.GetWeakPtr()));
+  affiliations::AffiliationService* affiliation_service =
+      owner_->client().GetAffiliationService();
+  one_time_tokens::GmailOtpService* gmail_otp_service =
+      owner_->client().GetGmailOtpService();
+  if (std::optional<OneTimeToken> token = SelectMostRecentToken();
+      affiliation_service && gmail_otp_service &&
+      gmail_otp_service->GetBackend() && (!token || token->value().empty()) &&
+      UserOptedIntoGmailOtpFilling()) {
+    auto checker = std::make_unique<affiliations::DomainRelationChecker>(
+        *affiliation_service);
+    // On form detection or opt-in, this fetch can start while a non-OTP field
+    // (e.g. the email field) has focus. `GetTargetOtpField()` returns null
+    // then, so fall back to the first OTP field and match senders against its
+    // origin. The OTP is cached and offered once the user focuses that field.
+    const AutofillField* target_field = GetTargetOtpField();
+    if (!target_field) {
+      target_field = FirstEligibleOtpField(*owner_).autofill_field;
+    }
+    const url::Origin frame_origin =
+        (target_field && !target_field->origin().opaque())
+            ? target_field->origin()
+            : owner_->client().GetLastCommittedPrimaryMainFrameOrigin();
+    gmail_otp_retriever_ = one_time_tokens::GmailOtpRetriever::CreateAndStart(
+        *gmail_otp_service->GetBackend(), std::move(checker), frame_origin,
+        one_time_tokens::GmailOtpFlow::kAutofill,
+        owner_->driver().GetPageUkmSourceId(), /*allow_psl_matching=*/true,
+        base::BindOnce(&OtpManagerImpl::OnGmailOtpRetrieved,
+                       weak_ptr_factory_.GetWeakPtr()));
   }
+}
+
+void OtpManagerImpl::ClearGmailOtpState() {
+  gmail_otp_retriever_.reset();
+  last_retrieved_gmail_otp_.reset();
+  last_triggered_otp_value_.clear();
+  gmail_phish_guard_weak_ptr_factory_.InvalidateWeakPtrs();
+  is_gmail_phish_guard_pending_ = false;
+  if (!sms_otp_subscription_.IsAlive()) {
+    CancelPendingGetSuggestionsCallbackAsync();
+  }
+}
+
+void OtpManagerImpl::ClearStateOnOtpFormExit() {
+  ClearGmailOtpState();
+  sms_phish_guard_weak_ptr_factory_.InvalidateWeakPtrs();
+  CancelPendingGetSuggestionsCallbackAsync();
+}
+
+void OtpManagerImpl::CancelPendingGetSuggestionsCallbackAsync() {
+  if (!last_pending_get_suggestions_callback_) {
+    return;
+  }
+  is_gmail_phish_guard_pending_ = false;
+  // Post the callback asynchronously to prevent re-entrancy when notifying
+  // `Observer::OnAfterAskForValuesToFill` from inside an
+  // `AutofillManager::Observer` notification loop.
+  base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+      FROM_HERE,
+      base::BindOnce(std::move(last_pending_get_suggestions_callback_),
+                     std::vector<OneTimeToken>{}));
+}
+
+void OtpManagerImpl::OnGmailOtpFillingEnabledPrefChanged() {
+  if (!UserOptedIntoGmailOtpFilling()) {
+    ClearGmailOtpState();
+    return;
+  }
+  if (!sms_otp_service_ || !IsActiveNonEmbeddedDriver(owner_->driver()) ||
+      !IsOtpFieldDetected() || AnyOtpFieldContainsTypedInput() ||
+      !HasOtpForm(*owner_)) {
+    return;
+  }
+  MaybeRetrieveGmailOtp();
 }
 
 void OtpManagerImpl::OnFieldTypesDetermined(
@@ -150,25 +286,38 @@ void OtpManagerImpl::OnFieldTypesDetermined(
     FormGlobalId form_id,
     AutofillManager::Observer::FieldTypeSource source,
     bool small_forms_were_parsed) {
-  // On non-android platforms and in tests the backend may be not initialized.
-  // Furthermore, do not retrieve or subscribe to OTPs for embedded frame trees
-  // (such as fenced frames or GuestViews).
-  if (!one_time_token_service_ || manager.driver().IsEmbedded()) {
+  // On non-Android platforms and in tests the backend may be not initialized.
+  // Furthermore, do not retrieve or subscribe to OTPs for embedded or inactive
+  // frames (such as fenced frames, GuestViews, BFCache, or prerender).
+  if (!sms_otp_service_ || !IsActiveNonEmbeddedDriver(manager.driver())) {
     return;
   }
 
   const FormStructure* form = owner_->FindCachedFormById(form_id);
-  if (!form) {
+  if (!form || !OtpFieldDetector::IsOtpForm(*form)) {
+    if (!form ||
+        std::ranges::none_of(
+            form->fields(), [](const std::unique_ptr<AutofillField>& f) {
+              return f->Type().GetTypes().contains(ONE_TIME_CODE) &&
+                     !f->IsPasswordInputElement();
+            })) {
+      otp_form_ids_.erase(form_id);
+    }
+    if (!HasOtpForm(manager)) {
+      ClearStateOnOtpFormExit();
+    }
     return;
   }
 
-  if (!OtpFieldDetector::IsOtpForm(*form)) {
+  otp_form_ids_.insert(form_id);
+
+  if (!GetMockOtpValue().empty()) {
     return;
   }
 
   std::vector<FieldGlobalId> otp_field_ids;
   for (const auto& field : form->fields()) {
-    if (field->Type().GetTypes().contains(ONE_TIME_CODE)) {
+    if (OtpFieldDetector::IsOtpField(*form, *field)) {
       otp_field_ids.push_back(field->global_id());
     }
   }
@@ -191,15 +340,16 @@ void OtpManagerImpl::OnFieldTypesDetermined(
 void OtpManagerImpl::OnBeforeFocusOnFormField(AutofillManager& manager,
                                               FormGlobalId form,
                                               FieldGlobalId field) {
-  if (last_pending_get_suggestions_callback_) {
-    // Post the callback asynchronously to prevent re-entrancy when notifying
-    // `Observer::OnAfterAskForValuesToFill` from inside this
-    // `Observer::OnBeforeFocusOnFormField` notification loop.
-    base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
-        FROM_HERE,
-        base::BindOnce(std::move(last_pending_get_suggestions_callback_),
-                       std::vector<std::string>{}));
+  currently_focused_form_id_ = form;
+  if (currently_focused_field_id_ != field) {
+    currently_focused_field_id_ = field;
+    // Reset deduplication state when focus changes so the same OTP can be
+    // suggested again if the user focuses another OTP field or re-focuses this
+    // one.
+    last_triggered_otp_value_.clear();
   }
+
+  CancelPendingGetSuggestionsCallbackAsync();
 }
 
 // This is a workaround to prevent the Keyboard Accessory from popping up when
@@ -207,21 +357,83 @@ void OtpManagerImpl::OnBeforeFocusOnFormField(AutofillManager& manager,
 // TODO(crbug.com/451991285): Remove this method once we switch to using
 // observers instead of delaying the callback.
 void OtpManagerImpl::OnBeforeFocusOnNonFormField(AutofillManager& manager) {
-  if (last_pending_get_suggestions_callback_) {
-    // Post the callback asynchronously to prevent re-entrancy when notifying
-    // `Observer::OnAfterAskForValuesToFill` from inside this
-    // `Observer::OnBeforeFocusOnNonFormField` notification loop.
-    base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
-        FROM_HERE,
-        base::BindOnce(std::move(last_pending_get_suggestions_callback_),
-                       std::vector<std::string>{}));
+  currently_focused_form_id_.reset();
+  currently_focused_field_id_.reset();
+  last_triggered_otp_value_.clear();
+
+  CancelPendingGetSuggestionsCallbackAsync();
+}
+
+void OtpManagerImpl::OnBeforeFormsSeen(
+    AutofillManager& manager,
+    base::span<const FormGlobalId> updated_forms,
+    base::span<const FormGlobalId> removed_forms) {
+  if (removed_forms.empty()) {
+    return;
+  }
+  bool removed_otp_form = false;
+  for (FormGlobalId form_id : removed_forms) {
+    const bool was_tracked = otp_form_ids_.erase(form_id) > 0;
+    const FormStructure* cached_form = manager.FindCachedFormById(form_id);
+    if (was_tracked ||
+        (cached_form && OtpFieldDetector::IsOtpForm(*cached_form))) {
+      removed_otp_form = true;
+    }
+  }
+  if (!removed_otp_form) {
+    return;
+  }
+  bool has_remaining_otp_form = false;
+  manager.ForEachCachedForm([&](const FormStructure& form) {
+    if (!has_remaining_otp_form &&
+        !std::ranges::contains(removed_forms, form.global_id()) &&
+        OtpFieldDetector::IsOtpForm(form)) {
+      has_remaining_otp_form = true;
+    }
+  });
+  if (!has_remaining_otp_form) {
+    ClearStateOnOtpFormExit();
   }
 }
 
-void OtpManagerImpl::OnTickleReceived(OneTimeTokenSource source) {
+void OtpManagerImpl::OnAfterFormsSeen(
+    AutofillManager& manager,
+    base::span<const FormGlobalId> updated_forms,
+    base::span<const FormGlobalId> removed_forms) {
+  if (updated_forms.empty()) {
+    return;
+  }
+  if (!HasOtpForm(manager)) {
+    ClearStateOnOtpFormExit();
+  }
+}
+
+void OtpManagerImpl::OnAfterFormSubmitted(AutofillManager& manager,
+                                          const FormData& form) {
+  const FormStructure* form_structure =
+      manager.FindCachedFormById(form.global_id());
+  const bool was_otp_form = form_structure
+                                ? otp_form_ids_.contains(form.global_id())
+                                : otp_form_ids_.erase(form.global_id()) > 0;
+  if (was_otp_form ||
+      (form_structure && OtpFieldDetector::IsOtpForm(*form_structure))) {
+    ClearStateOnOtpFormExit();
+  }
+}
+
+// Verifies preconditions (OTP field presence, user consent, no existing input,
+// etc.) and starts an asynchronous Gmail OTP retrieval for the target field's
+// origin.
+void OtpManagerImpl::OnTickleReceived() {
   LOG_AF(owner_->client().GetCurrentLogManager())
-      << LoggingScope::kOneTimeTokens
-      << "Tickle received for source: " << static_cast<int>(source);
+      << LoggingScope::kOneTimeTokens << "Gmail OTP tickle received.";
+  if (!IsActiveNonEmbeddedDriver(owner_->driver())) {
+    LOG_AF(owner_->client().GetCurrentLogManager())
+        << LoggingScope::kOneTimeTokens
+        << "OTP tickle received but frame is embedded or inactive. Skipping "
+           "payload fetch.";
+    return;
+  }
   if (!IsOtpFieldDetected()) {
     LOG_AF(owner_->client().GetCurrentLogManager())
         << LoggingScope::kOneTimeTokens
@@ -243,73 +455,206 @@ void OtpManagerImpl::OnTickleReceived(OneTimeTokenSource source) {
            "Skipping payload fetch.";
     return;
   }
+  const AutofillField* target_field = GetTargetOtpField();
+  if (!target_field) {
+    LOG_AF(owner_->client().GetCurrentLogManager())
+        << LoggingScope::kOneTimeTokens
+        << "OTP tickle received but no target OTP field found. "
+           "Skipping payload fetch.";
+    return;
+  }
+  if (gmail_otp_retriever_) {
+    LOG_AF(owner_->client().GetCurrentLogManager())
+        << LoggingScope::kOneTimeTokens
+        << "GmailOtpRetriever is already in flight. Skipping token retrieval "
+           "on tickle.";
+    return;
+  }
+
+  affiliations::AffiliationService* affiliation_service =
+      owner_->client().GetAffiliationService();
+  one_time_tokens::GmailOtpService* gmail_otp_service =
+      owner_->client().GetGmailOtpService();
+  if (!affiliation_service || !gmail_otp_service ||
+      !gmail_otp_service->GetBackend()) {
+    LOG_AF(owner_->client().GetCurrentLogManager())
+        << LoggingScope::kOneTimeTokens
+        << "OTP tickle received but AffiliationService or GmailOtpService is "
+           "missing. Skipping payload fetch.";
+    return;
+  }
+
+  LOG_AF(owner_->client().GetCurrentLogManager())
+      << LoggingScope::kOneTimeTokens
+      << "Starting GmailOtpRetriever on tickle arrival.";
+  auto checker = std::make_unique<affiliations::DomainRelationChecker>(
+      *affiliation_service);
+  const url::Origin frame_origin =
+      target_field->origin().opaque()
+          ? owner_->client().GetLastCommittedPrimaryMainFrameOrigin()
+          : target_field->origin();
+  gmail_otp_retriever_ = one_time_tokens::GmailOtpRetriever::CreateAndStart(
+      *gmail_otp_service->GetBackend(), std::move(checker), frame_origin,
+      one_time_tokens::GmailOtpFlow::kAutofill,
+      owner_->driver().GetPageUkmSourceId(), /*allow_psl_matching=*/true,
+      base::BindOnce(&OtpManagerImpl::OnGmailOtpRetrieved,
+                     weak_ptr_factory_.GetWeakPtr()));
+}
+
+void OtpManagerImpl::OnGmailOtpRetrieved(
+    base::expected<one_time_tokens::GmailOtpRetriever::Result,
+                   OneTimeTokenRetrievalError> result) {
+  base::SequencedTaskRunner::GetCurrentDefault()->DeleteSoon(
+      FROM_HERE, std::move(gmail_otp_retriever_));
+  if (!result) {
+    LOG_AF(owner_->client().GetCurrentLogManager())
+        << LoggingScope::kOneTimeTokens
+        << "OTP retrieval resulted in a failure. Error code: "
+        << std::to_underlying(result.error());
+    if (!sms_otp_subscription_.IsAlive()) {
+      OnOneTimeTokenReceived(base::unexpected(result.error()));
+    }
+    return;
+  }
+  if (result->token.value().empty()) {
+    LOG_AF(owner_->client().GetCurrentLogManager())
+        << LoggingScope::kOneTimeTokens
+        << "Retrieved an empty OTP value, no suggestions will be generated.";
+    if (!sms_otp_subscription_.IsAlive()) {
+      OnOneTimeTokenReceived(
+          base::unexpected(OneTimeTokenRetrievalError::kUnknown));
+    }
+    return;
+  }
+
+  if (UserOptedIntoGmailOtpFilling()) {
+    last_retrieved_gmail_otp_ = result->token;
+  }
+  OnOneTimeTokenReceived(std::move(result->token));
 }
 
 void OtpManagerImpl::OnOneTimeTokenReceived(
-    OneTimeTokenSource backend_type,
     base::expected<OneTimeToken, OneTimeTokenRetrievalError> token_or_error) {
-  // If token_or_error holds an error, run the callback with empty otp value.
-  if (!token_or_error.has_value()) {
-    if (!last_pending_get_suggestions_callback_.is_null()) {
+  // An SMS error or expiry ends the SMS OTP subscription, and Gmail failures
+  // are forwarded here only once it has ended. Keep the pending callback while
+  // a Gmail OTP may still answer it; on Desktop (no SMS backend), only for a
+  // pending PhishGuard check, as a late Gmail OTP triggers suggestions itself.
+  if (!token_or_error) {
+    sms_error_during_subscribe_ = true;
+    sms_otp_subscription_.Cancel();
+    const bool is_waiting_for_gmail_otp =
+        is_gmail_phish_guard_pending_ ||
+        (gmail_otp_retriever_ &&
+         token_or_error.error() !=
+             OneTimeTokenRetrievalError::kSmsOtpBackendPlatformNotSupported);
+    if (last_pending_get_suggestions_callback_ && !is_waiting_for_gmail_otp) {
       std::move(last_pending_get_suggestions_callback_).Run({});
     }
     return;
   }
 
-  // If we are here, token_or_error holds a OneTimeToken, we check if the
-  // callback is valid.
-  if (!last_pending_get_suggestions_callback_) {
+  if (!IsActiveNonEmbeddedDriver(owner_->driver())) {
+    if (last_pending_get_suggestions_callback_) {
+      is_gmail_phish_guard_pending_ = false;
+      std::move(last_pending_get_suggestions_callback_).Run({});
+    }
     return;
   }
 
-  OneTimeToken& token = token_or_error.value();
+  OneTimeToken& token = *token_or_error;
+  const bool is_gmail_otp = token.type() == OneTimeTokenType::kGmail;
+  if (!is_gmail_otp && (!last_pending_get_suggestions_callback_ ||
+                        is_gmail_phish_guard_pending_)) {
+    return;
+  }
+
+  // Do not process or deliver Gmail OTPs (including previously cached tokens)
+  // if the user has not opted into Gmail OTP filling or opted out after a token
+  // was cached.
+  if (is_gmail_otp && !UserOptedIntoGmailOtpFilling()) {
+    last_retrieved_gmail_otp_.reset();
+    if (last_pending_get_suggestions_callback_) {
+      is_gmail_phish_guard_pending_ = false;
+      std::move(last_pending_get_suggestions_callback_).Run({});
+    }
+    return;
+  }
+
+  LocalFrameToken frame_token = last_pending_frame_token_;
+  if (!last_pending_get_suggestions_callback_) {
+    const AutofillField* target_field = GetTargetOtpField();
+    if (!target_field) {
+      return;
+    }
+    frame_token = target_field->host_frame();
+  }
+
   if (!token.value().empty()) {
     owner_->GetOtpFormEventLogger().OnOtpAvailable();
+  }
+
+  base::OnceCallback<void(OneTimeTokensPhishGuardVerdict)> show_suggestions;
+  switch (token.type()) {
+    case OneTimeTokenType::kGmail:
+      show_suggestions =
+          base::BindOnce(&OtpManagerImpl::MaybeShowOtpSuggestionsForGmail,
+                         gmail_phish_guard_weak_ptr_factory_.GetWeakPtr(),
+                         std::move(token), frame_token);
+      break;
+    case OneTimeTokenType::kSmsOtp:
+      show_suggestions =
+          base::BindOnce(&OtpManagerImpl::MaybeShowOtpSuggestionsForSms,
+                         sms_phish_guard_weak_ptr_factory_.GetWeakPtr(),
+                         std::move(token), frame_token);
+      break;
   }
 
   // We run PhishGuard check to make sure OTPs are not shown to users on
   // potential phishing sites.
   if (OtpPhishGuardDelegate* delegate =
           owner_->client().GetOtpPhishGuardDelegate()) {
-    phish_guard_check_start_time_ = base::TimeTicks::Now();
+    if (is_gmail_otp && last_pending_get_suggestions_callback_) {
+      is_gmail_phish_guard_pending_ = true;
+    }
+    base::TimeTicks start_time = base::TimeTicks::Now();
     base::UmaHistogramBoolean(
         "Autofill.OneTimeTokens.PhishGuard.CheckPerformed", true);
     LOG_AF(owner_->client().GetCurrentLogManager())
         << LoggingScope::kOneTimeTokens
         << "PhishGuard check initiated for OTP token delivery.";
     delegate->StartOtpPhishGuardCheck(
-        last_pending_frame_token_,
+        frame_token,
         base::BindOnce(
-            [](base::WeakPtr<OtpManagerImpl> self, OneTimeToken token,
-               bool is_phishing_site) {
-              if (self) {
-                self->MaybeShowOtpSuggestions(
-                    std::move(token),
-                    is_phishing_site
-                        ? OneTimeTokensPhishGuardVerdict::kPhishing
-                        : OneTimeTokensPhishGuardVerdict::kNotPhishing);
+            [](base::OnceCallback<void(OneTimeTokensPhishGuardVerdict)>
+                   show_suggestions,
+               base::TimeTicks start_time, bool is_phishing_site) {
+              if (show_suggestions.IsCancelled()) {
+                return;
               }
+              base::UmaHistogramTimes(
+                  "Autofill.OneTimeTokens.PhishGuard.Latency",
+                  base::TimeTicks::Now() - start_time);
+              std::move(show_suggestions)
+                  .Run(is_phishing_site
+                           ? OneTimeTokensPhishGuardVerdict::kPhishing
+                           : OneTimeTokensPhishGuardVerdict::kNotPhishing);
             },
-            weak_ptr_factory_.GetWeakPtr(), std::move(token)));
+            std::move(show_suggestions), start_time));
   } else {
     base::UmaHistogramBoolean(
         "Autofill.OneTimeTokens.PhishGuard.CheckPerformed", false);
-    MaybeShowOtpSuggestions(std::move(token),
-                            OneTimeTokensPhishGuardVerdict::kUnknown);
+    std::move(show_suggestions).Run(OneTimeTokensPhishGuardVerdict::kUnknown);
   }
 }
 
-void OtpManagerImpl::MaybeShowOtpSuggestions(
+void OtpManagerImpl::MaybeShowOtpSuggestionsForSms(
     OneTimeToken token,
+    LocalFrameToken frame_token,
     OneTimeTokensPhishGuardVerdict verdict) {
   LOG_AF(owner_->client().GetCurrentLogManager())
       << LoggingScope::kOneTimeTokens
-      << "PhishGuard check completed with verdict: " << verdict;
-  if (!phish_guard_check_start_time_.is_null()) {
-    base::UmaHistogramTimes(
-        "Autofill.OneTimeTokens.PhishGuard.Latency",
-        base::TimeTicks::Now() - phish_guard_check_start_time_);
-  }
+      << "PhishGuard check completed with verdict: "
+      << OneTimeTokensPhishGuardVerdictToStringView(verdict);
 
   base::UmaHistogramEnumeration("Autofill.OneTimeTokens.PhishGuard.Verdict",
                                 verdict);
@@ -321,12 +666,27 @@ void OtpManagerImpl::MaybeShowOtpSuggestions(
     return;
   }
 
-  std::vector<std::string> suggestions;
-  if (!token.value().empty()) {
-    suggestions.emplace_back(std::move(token).value());
+  // If a new suggestion request was started for a different frame or a Gmail
+  // OTP PhishGuard check is now pending for
+  // `last_pending_get_suggestions_callback_`, ignore this result so we neither
+  // deliver an OTP to an unverified frame nor consume the callback while
+  // `is_gmail_phish_guard_pending_` is set.
+  if (last_pending_frame_token_ != frame_token ||
+      is_gmail_phish_guard_pending_) {
+    return;
   }
 
-  if (IsOtpDeliveryBlocked()) {
+  std::vector<OneTimeToken> suggestions;
+  if (!token.value().empty()) {
+    suggestions.push_back(std::move(token));
+  }
+
+  if (!IsActiveNonEmbeddedDriver(owner_->driver())) {
+    LOG_AF(owner_->client().GetCurrentLogManager())
+        << LoggingScope::kOneTimeTokens << LogMessage::kSuggestionSuppressed
+        << "Reason: Frame is inactive.";
+    suggestions.clear();
+  } else if (IsOtpDeliveryBlocked()) {
     LOG_AF(owner_->client().GetCurrentLogManager())
         << LoggingScope::kOneTimeTokens << LogMessage::kSuggestionSuppressed
         << "Reason: OTP delivery is blocked due to the WebOTP API.";
@@ -340,10 +700,125 @@ void OtpManagerImpl::MaybeShowOtpSuggestions(
     LOG_AF(owner_->client().GetCurrentLogManager())
         << LoggingScope::kOneTimeTokens
         << "Delivering OTP suggestion to UI. Token length: "
-        << suggestions[0].size() << " (value omitted for privacy).";
+        << suggestions[0].value().size() << " (value omitted for privacy).";
   }
 
   std::move(last_pending_get_suggestions_callback_).Run(std::move(suggestions));
+}
+
+void OtpManagerImpl::MaybeShowOtpSuggestionsForGmail(
+    OneTimeToken token,
+    LocalFrameToken frame_token,
+    OneTimeTokensPhishGuardVerdict verdict) {
+  LOG_AF(owner_->client().GetCurrentLogManager())
+      << LoggingScope::kOneTimeTokens
+      << "PhishGuard check completed with verdict: "
+      << OneTimeTokensPhishGuardVerdictToStringView(verdict);
+
+  base::UmaHistogramEnumeration("Autofill.OneTimeTokens.PhishGuard.Verdict",
+                                verdict);
+
+  // `OnOneTimeTokenReceived()` checks consent before binding this callback, and
+  // revoking consent while PhishGuard is in flight synchronously runs
+  // `OnGmailOtpFillingEnabledPrefChanged()` -> `ClearGmailOtpState()`, which
+  // invalidates `gmail_phish_guard_weak_ptr_factory_`.
+  CHECK(UserOptedIntoGmailOtpFilling());
+
+  // Reactive path: a UI suggestion callback is currently pending.
+  if (last_pending_get_suggestions_callback_) {
+    // If a new suggestion request was started for a different frame while this
+    // PhishGuard check was in flight, ignore this stale result so we neither
+    // deliver an OTP to an unverified frame nor cancel the new frame's pending
+    // callback.
+    if (last_pending_frame_token_ != frame_token) {
+      return;
+    }
+    is_gmail_phish_guard_pending_ = false;
+    std::vector<OneTimeToken> suggestions;
+    if (verdict == OneTimeTokensPhishGuardVerdict::kPhishing) {
+      last_retrieved_gmail_otp_.reset();
+      LOG_AF(owner_->client().GetCurrentLogManager())
+          << LoggingScope::kOneTimeTokens << LogMessage::kSuggestionSuppressed
+          << "Reason: PhishGuard verdict is phishing.";
+    } else if (!IsActiveNonEmbeddedDriver(owner_->driver())) {
+      LOG_AF(owner_->client().GetCurrentLogManager())
+          << LoggingScope::kOneTimeTokens << LogMessage::kSuggestionSuppressed
+          << "Reason: Frame is inactive.";
+    } else if (!token.value().empty()) {
+      LOG_AF(owner_->client().GetCurrentLogManager())
+          << LoggingScope::kOneTimeTokens
+          << "Delivering OTP suggestion to UI. Token length: "
+          << token.value().size() << " (value omitted for privacy).";
+      last_triggered_otp_value_ = token.value();
+      suggestions.push_back(std::move(token));
+    }
+    std::move(last_pending_get_suggestions_callback_)
+        .Run(std::move(suggestions));
+    return;
+  }
+
+  // Proactive path: no UI callback is pending, so trigger suggestions via the
+  // renderer if the OTP and target field are eligible.
+  if (verdict == OneTimeTokensPhishGuardVerdict::kPhishing) {
+    last_retrieved_gmail_otp_.reset();
+    LOG_AF(owner_->client().GetCurrentLogManager())
+        << LoggingScope::kOneTimeTokens << LogMessage::kSuggestionSuppressed
+        << "Reason: PhishGuard verdict is phishing.";
+    return;
+  }
+
+  if (token.value().empty()) {
+    return;
+  }
+
+  if (!IsActiveNonEmbeddedDriver(owner_->driver())) {
+    LOG_AF(owner_->client().GetCurrentLogManager())
+        << LoggingScope::kOneTimeTokens << LogMessage::kSuggestionSuppressed
+        << "Reason: Frame is inactive.";
+    return;
+  }
+
+  const AutofillField* target_field = GetTargetOtpField();
+  if (!target_field || target_field->host_frame() != frame_token) {
+    LOG_AF(owner_->client().GetCurrentLogManager())
+        << LoggingScope::kOneTimeTokens
+        << "Target OTP field is missing or frame has changed. "
+           "Skipping proactive suggestion trigger.";
+    return;
+  }
+
+  if (AnyOtpFieldContainsTypedInput()) {
+    LOG_AF(owner_->client().GetCurrentLogManager())
+        << LoggingScope::kOneTimeTokens
+        << "OTP field contains user input. Skipping proactive suggestion "
+           "trigger.";
+    return;
+  }
+
+  if (token.value() == last_triggered_otp_value_) {
+    LOG_AF(owner_->client().GetCurrentLogManager())
+        << LoggingScope::kOneTimeTokens
+        << "OTP token matches the last triggered value. Skipping duplicate "
+           "trigger.";
+    return;
+  }
+
+  last_triggered_otp_value_ = std::move(token).value();
+  LOG_AF(owner_->client().GetCurrentLogManager())
+      << LoggingScope::kOneTimeTokens
+      << "Proactively triggering suggestions via renderer for OTP field.";
+  owner_->driver().RendererShouldTriggerSuggestions(
+      target_field->global_id(),
+      AutofillSuggestionTriggerSource::kGmailOneTimePasswordAvailable);
+}
+
+const AutofillField* OtpManagerImpl::GetTargetOtpField() const {
+  if (currently_focused_field_id_) {
+    return FindOtpField(*owner_, currently_focused_form_id_,
+                        *currently_focused_field_id_)
+        .autofill_field;
+  }
+  return FirstEligibleOtpField(*owner_).autofill_field;
 }
 
 bool OtpManagerImpl::IsOtpDeliveryBlocked() {
@@ -356,17 +831,7 @@ bool OtpManagerImpl::IsOtpFieldDetected() const {
 }
 
 bool OtpManagerImpl::AnyOtpFieldContainsTypedInput() const {
-  bool has_typed_input = false;
-  owner_->ForEachCachedForm([&has_typed_input](const FormStructure& form) {
-    if (has_typed_input) {
-      return;
-    }
-    has_typed_input = std::ranges::any_of(form.fields(), [](const auto& field) {
-      return field->Type().GetTypes().contains(ONE_TIME_CODE) &&
-             field->all_modifiers().contains(FieldModifier::kUser);
-    });
-  });
-  return has_typed_input;
+  return autofill::AnyOtpFieldContainsTypedInput(*owner_);
 }
 
 bool OtpManagerImpl::UserOptedIntoGmailOtpFilling() const {
@@ -374,32 +839,15 @@ bool OtpManagerImpl::UserOptedIntoGmailOtpFilling() const {
   return prefs && prefs::IsAutofillGmailOtpFillingEnabled(prefs);
 }
 
-std::optional<one_time_tokens::OneTimeToken>
-OtpManagerImpl::SelectMostRecentToken() const {
-  if (received_otps_.empty()) {
+std::optional<OneTimeToken> OtpManagerImpl::SelectMostRecentToken() const {
+  if (!last_retrieved_gmail_otp_ ||
+      last_retrieved_gmail_otp_->on_device_arrival_time().is_null() ||
+      base::TimeTicks::Now() -
+              last_retrieved_gmail_otp_->on_device_arrival_time() >
+          one_time_tokens::kCacheDurationForOldTokens) {
     return std::nullopt;
   }
-  return *std::ranges::max_element(
-      received_otps_, {},
-      &one_time_tokens::OneTimeToken::on_device_arrival_time);
-}
-
-void OtpManagerImpl::OnLogMessage(std::string_view message) {
-  LOG_AF(owner_->client().GetCurrentLogManager())
-      << LoggingScope::kOneTimeTokens << message;
-}
-
-LogBuffer& operator<<(LogBuffer& buffer,
-                      OneTimeTokensPhishGuardVerdict verdict) {
-  switch (verdict) {
-    case OneTimeTokensPhishGuardVerdict::kUnknown:
-      return buffer << "kUnknown";
-    case OneTimeTokensPhishGuardVerdict::kPhishing:
-      return buffer << "kPhishing";
-    case OneTimeTokensPhishGuardVerdict::kNotPhishing:
-      return buffer << "kNotPhishing";
-  }
-  NOTREACHED();
+  return last_retrieved_gmail_otp_;
 }
 
 }  // namespace autofill

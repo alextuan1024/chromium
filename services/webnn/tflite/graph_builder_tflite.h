@@ -8,6 +8,7 @@
 #include <concepts>
 #include <cstdint>
 #include <map>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -774,14 +775,14 @@ class GraphBuilderTflite final {
       const mojom::Clamp& clamp);
   base::expected<OperatorOffset, std::string> SerializeConv2d(
       const mojom::Conv2d& conv2d);
-  base::expected<OperatorOffset, std::string> SerializeConcat(
+  base::expected<std::optional<OperatorOffset>, std::string> SerializeConcat(
       const mojom::Concat& concat);
   base::expected<OperatorOffset, std::string> SerializeCumulativeSum(
       const mojom::CumulativeSum& cumulative_sum);
   base::expected<OperatorOffset, std::string> SerializeElementWiseBinary(
       const mojom::ElementWiseBinary& op);
-  base::expected<OperatorOffset, std::string> SerializeElementWiseUnary(
-      const mojom::ElementWiseUnary& op);
+  base::expected<std::optional<OperatorOffset>, std::string>
+  SerializeElementWiseUnary(const mojom::ElementWiseUnary& op);
   base::expected<OperatorOffset, std::string> SerializeElu(
       const mojom::Elu& elu);
   base::expected<OperatorOffset, std::string> SerializeErf(
@@ -823,33 +824,43 @@ class GraphBuilderTflite final {
       const mojom::HardSigmoid& hard_sigmoid);
   base::expected<OperatorOffset, std::string> SerializeHardSwish(
       const mojom::HardSwish& hard_swish);
-  // Returns Null OperatorOffset if the operation is elided, otherwise returns
-  // the OperatorOffset of the serialized operation.
-  base::expected<OperatorOffset, std::string> SerializeIdentityOperation(
-      OperandId input_operand_id,
-      OperandId output_operand_id);
+  // Returns std::nullopt if the operation is elided (no TFLite operator is
+  // created), otherwise the OperatorOffset of the serialized operation.
+  base::expected<std::optional<OperatorOffset>, std::string>
+  SerializeIdentityOperation(OperandId input_operand_id,
+                             OperandId output_operand_id);
 
   base::expected<OperatorOffset, std::string> SerializeInstanceNormalization(
       const mojom::InstanceNormalization& instance_normalization);
+  bool CanSerializeInstanceNormalizationAsComposite(
+      const mojom::InstanceNormalization& instance_normalization);
+  // Emits an `odml.group_norm` composite with `num_groups == channels`, which
+  // ML Drift lowers to a dedicated group-size-1 kernel for instance norm.
+  base::expected<OperatorOffset, std::string>
+  SerializeInstanceNormalizationAsComposite(
+      const mojom::InstanceNormalization& instance_normalization);
   base::expected<OperatorOffset, std::string> SerializeLayerNormalization(
+      const mojom::LayerNormalization& layer_normalization);
+  bool CanSerializeLayerNormalizationAsComposite(
       const mojom::LayerNormalization& layer_normalization);
   // Emits a `BuiltinOperator_STABLEHLO_COMPOSITE` operator named
   // `odml.group_norm` with `sub_type = 1` (LayerNorm), which LiteRT lowers to
-  // the fused ML Drift `layer_norm` kernel. Returns `std::nullopt` if the
-  // operation doesn't meet the kernel's preconditions, in which case the
-  // caller should fall back to emulating layer normalization with primitives.
-  std::optional<OperatorOffset> SerializeLayerNormalizationAsComposite(
+  // the fused ML Drift `layer_norm` kernel.
+  base::expected<OperatorOffset, std::string>
+  SerializeLayerNormalizationAsComposite(
       const mojom::LayerNormalization& layer_normalization);
-  // Appends a decomposition subgraph for layer normalization (innermost axis,
-  // primitive operators) and returns its subgraph index, which composite
-  // operators reference as a fallback when no delegate claims them.
+  // Appends a primitive-op decomposition subgraph over `reduction_axes` and
+  // returns its index, used as the composite's fallback when undelegated. The
+  // subgraph signature is `[input, scale?, bias?] -> [output]`.
   base::expected<int32_t, std::string>
-  SerializeLayerNormalizationDecompositionSubgraph(
+  SerializeNormalizationDecompositionSubgraph(
       base::span<const int32_t> input_dimensions,
+      base::span<const int32_t> reduction_axes,
       ::tflite::TensorType tensor_type,
       float epsilon,
       bool has_scale,
-      bool has_bias);
+      bool has_bias,
+      std::string_view subgraph_name);
   base::expected<OperatorOffset, std::string> SerializeLeakyRelu(
       const mojom::LeakyRelu& leaky_relu);
   base::expected<OperatorOffset, std::string> SerializeLinear(
@@ -890,7 +901,7 @@ class GraphBuilderTflite final {
       const mojom::Resample2d& resample2d);
   base::expected<OperatorOffset, std::string> SerializeReshape(
       const mojom::Reshape& reshape);
-  base::expected<OperatorOffset, std::string> SerializeReverse(
+  base::expected<std::optional<OperatorOffset>, std::string> SerializeReverse(
       const mojom::Reverse& reverse);
   base::expected<OperatorOffset, std::string> SerializeScatterElements(
       const mojom::ScatterElements& scatter_elements);

@@ -31,6 +31,7 @@
 #include "ash/webui/personalization_app/mojom/personalization_app_mojom_traits.h"
 #include "base/barrier_closure.h"
 #include "base/check.h"
+#include "base/containers/linear_find.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/logging.h"
@@ -38,8 +39,6 @@
 #include "base/notimplemented.h"
 #include "base/task/sequenced_task_runner.h"
 #include "chrome/browser/ash/system_web_apps/apps/personalization_app/ambient_video_albums.h"
-#include "chrome/browser/ash/system_web_apps/apps/personalization_app/personalization_app_manager.h"
-#include "chrome/browser/ash/system_web_apps/apps/personalization_app/personalization_app_manager_factory.h"
 #include "chrome/browser/ash/system_web_apps/apps/personalization_app/personalization_app_utils.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chromeos/ash/components/system/statistics_provider.h"
@@ -99,14 +98,7 @@ PersonalizationAppAmbientProviderImpl::PersonalizationAppAmbientProviderImpl(
 }
 
 PersonalizationAppAmbientProviderImpl::
-    ~PersonalizationAppAmbientProviderImpl() {
-  if (page_viewed_) {
-    ::ash::personalization_app::PersonalizationAppManagerFactory::
-        GetForBrowserContext(profile_)
-            ->MaybeStartHatsTimer(
-                ::ash::personalization_app::HatsSurveyType::kScreensaver);
-  }
-}
+    ~PersonalizationAppAmbientProviderImpl() = default;
 
 void PersonalizationAppAmbientProviderImpl::BindInterface(
     mojo::PendingReceiver<ash::personalization_app::mojom::AmbientProvider>
@@ -335,10 +327,6 @@ void PersonalizationAppAmbientProviderImpl::SetAlbumSelected(
   UpdateSettings();
   OnTopicSourceChanged();
   OnAlbumsChanged();
-}
-
-void PersonalizationAppAmbientProviderImpl::SetPageViewed() {
-  page_viewed_ = true;
 }
 
 void PersonalizationAppAmbientProviderImpl::FetchSettingsAndAlbums() {
@@ -704,26 +692,15 @@ void PersonalizationAppAmbientProviderImpl::OnMachineStatisticsReady() {
 ash::PersonalAlbum*
 PersonalizationAppAmbientProviderImpl::FindPersonalAlbumById(
     const std::string& album_id) {
-  auto it = std::ranges::find(personal_albums_.albums, album_id,
-                              &ash::PersonalAlbum::album_id);
-
-  if (it == personal_albums_.albums.end()) {
-    return nullptr;
-  }
-
-  return &(*it);
+  return base::LinearFind(personal_albums_.albums, album_id,
+                          &ash::PersonalAlbum::album_id);
 }
 
 ash::ArtSetting* PersonalizationAppAmbientProviderImpl::FindArtAlbumById(
     const std::string& album_id) {
-  auto it = std::ranges::find(settings_->art_settings, album_id,
-                              &ash::ArtSetting::album_id);
-  // Album does not exist any more.
-  if (it == settings_->art_settings.end()) {
-    return nullptr;
-  }
-
-  return &(*it);
+  // Album may not exist any more.
+  return base::LinearFind(settings_->art_settings, album_id,
+                          &ash::ArtSetting::album_id);
 }
 
 void PersonalizationAppAmbientProviderImpl::ResetLocalSettings() {

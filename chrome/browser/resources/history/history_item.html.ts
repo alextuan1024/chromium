@@ -13,13 +13,28 @@ export function getHtml(this: HistoryItemElement) {
   <div id="background-clip" aria-hidden="true">
     <div id="background"></div>
   </div>
-  <div id="date-accessed" class="card-title" role="row">
+  <div id="date-accessed" class="card-title" role="row"
+      aria-expanded="${this.isCollapsibleDayCardsEnabled_ ?
+          !this.isCardCollapsed : ''}"
+      aria-controls="${this.isCollapsibleDayCardsEnabled_ ?
+          'card-collapse' : ''}"
+      @click="${this.onCardHeadingClick_}">
     <div role="rowheader">
       <div role="heading" aria-level="2">
         ${this.cardTitle_()}
       </div>
     </div>
+    ${this.isCollapsibleDayCardsEnabled_ ? html`
+      <cr-icon-button id="cardCollapseButton"
+          iron-icon="${this.getCardCollapseIcon_()}"
+          title="${this.getCardCollapseTitle_()}"
+          aria-label="${this.getCardCollapseTitle_()}"
+          aria-expanded="${!this.isCardCollapsed}">
+      </cr-icon-button>
+    ` : ''}
   </div>
+  <cr-collapse id="card-collapse" ?opened="${!this.isCardCollapsed}"
+      no-animation>
   <div role="row" @mousedown="${this.onRowMousedown_}"
       @click="${this.onRowClick_}">
     <div id="item-container" focus-row-container>
@@ -94,19 +109,25 @@ export function getHtml(this: HistoryItemElement) {
               <div class="critical-actions-list" role="list"
                   aria-label="$i18n{geminiKeyBrowsingActionsTitle}">
                 ${this.getCriticalActions_().map((action, index) => html`
-                  <div class="critical-action-row" role="listitem"
-                      data-index="${index}" focus-row-control
+                  <div
+                      class="critical-action-row ${
+                          this.hasLinkout_(action) ? 'with-linkout' : ''}"
+                      role="listitem" data-index="${index}" focus-row-control
                       focus-type="critical-action" tabindex="0"
                       aria-label="${action.label}"
-                      aria-describedby="critical-action-icon-${index}"
+                      aria-describedby="${this.hasLinkout_(action) ?
+                          `critical-action-icon-${index}` :
+                          ''}"
                       @click="${this.onCriticalActionClick_}"
                       @keydown="${this.onCriticalActionKeydown_}">
                     <span class="critical-action-label">${action.label}</span>
-                    <cr-icon id="critical-action-icon-${index}"
-                        class="critical-action-button" icon="cr:open-in-new"
-                        role="img" title="${action.tooltip}" aria-label="${
-                            this.getCriticalActionAriaLabel_(action)}">
-                    </cr-icon>
+                    ${this.hasLinkout_(action) ? html`
+                      <cr-icon id="critical-action-icon-${index}"
+                          class="critical-action-button" icon="cr:open-in-new"
+                          role="img" title="${action.tooltip}" aria-label="${
+                              this.getCriticalActionAriaLabel_(action)}">
+                      </cr-icon>
+                    ` : ''}
                   </div>
                 `)}
               </div>
@@ -139,13 +160,15 @@ export function getHtml(this: HistoryItemElement) {
           typed count: ${this.item?.debug.typedCount}
         </div>
         <div class="debug-info"
-            hidden="${!this.item?.debug.isUrlInLocalDatabase}">
+            ?hidden="${!this.item?.debug.isUrlInLocalDatabase}">
           visit count: ${this.item?.debug.visitCount}
         </div>
       </div>
     ` : ''}
-    <div id="time-gap-separator" ?hidden="${!this.hasTimeGap}"></div>
+    <div id="time-gap-separator"
+        ?hidden="${!this.hasTimeGap || this.isExpanded_}"></div>
   </div>
+  </cr-collapse>
 </div>
 <!--_html_template_end_-->`;
   // clang-format on

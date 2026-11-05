@@ -57,6 +57,7 @@
 #include "content/browser/web_package/signed_exchange_request_handler.h"
 #include "content/browser/web_package/signed_exchange_utils.h"
 #include "content/browser/webui/url_data_manager_backend.h"
+#include "content/common/features.h"
 #include "content/common/navigation_params_utils.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/browser_task_traits.h"
@@ -84,11 +85,12 @@
 #include "content/public/common/url_utils.h"
 #include "content/public/common/webplugininfo.h"
 #include "media/media_buildflags.h"
-#include "mojo/public/cpp/bindings/receiver.h"
+#include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/remote.h"
 #include "net/base/features.h"
 #include "net/base/load_flags.h"
 #include "net/base/load_timing_info.h"
+#include "net/base/net_errors.h"
 #include "net/cert/sct_status_flags.h"
 #include "net/cert/signed_certificate_timestamp_and_status.h"
 #include "net/cookies/cookie_setting_override.h"
@@ -107,6 +109,8 @@
 #include "services/network/public/cpp/features.h"
 #include "services/network/public/cpp/parsed_headers.h"
 #include "services/network/public/cpp/request_destination.h"
+#include "services/network/public/cpp/resource_request.h"
+#include "services/network/public/cpp/single_request_url_loader_factory.h"
 #include "services/network/public/cpp/url_loader_completion_status.h"
 #include "services/network/public/cpp/url_loader_factory_builder.h"
 #include "services/network/public/cpp/url_util.h"
@@ -122,6 +126,7 @@
 #include "third_party/blink/public/common/storage_key/storage_key.h"
 #include "third_party/blink/public/mojom/service_worker/service_worker_router_rule.mojom.h"
 #include "url/origin.h"
+#include "url/url_constants.h"
 
 #if BUILDFLAG(IS_ANDROID)
 #include "content/browser/android/content_url_loader_factory.h"
@@ -374,15 +379,14 @@ std::unique_ptr<network::ResourceRequest> CreateResourceRequest(
   return new_request;
 }
 
-// Called for requests that we don't have a URLLoaderFactory for.
-void UnknownSchemeCallback(
-    bool handled_externally,
+// Called for terminal requests that complete immediately with a network error.
+void CompleteWithNetErrorCallback(
+    net::Error net_error,
     const network::ResourceRequest& /* resource_request */,
-    mojo::PendingReceiver<network::mojom::URLLoader> receiver,
+    mojo::PendingReceiver<network::mojom::URLLoader> /* receiver */,
     mojo::PendingRemote<network::mojom::URLLoaderClient> client) {
   mojo::Remote<network::mojom::URLLoaderClient>(std::move(client))
-      ->OnComplete(network::URLLoaderCompletionStatus(
-          handled_externally ? net::ERR_ABORTED : net::ERR_UNKNOWN_URL_SCHEME));
+      ->OnComplete(network::URLLoaderCompletionStatus(net_error));
 }
 
 void LogQueueTimeHistogram(std::string_view name,
@@ -560,8 +564,6 @@ void CheckParsedHeadersEquals(const network::mojom::ParsedHeadersPtr& lhs,
   CHECK(mojo::Equals(adjusted_lhs->reporting_endpoints,
                      rhs->reporting_endpoints));
   CHECK(mojo::Equals(adjusted_lhs->cookie_indices, rhs->cookie_indices));
-  CHECK(mojo::Equals(adjusted_lhs->avail_language, rhs->avail_language));
-  CHECK(mojo::Equals(adjusted_lhs->content_language, rhs->content_language));
   CHECK(mojo::Equals(adjusted_lhs->no_vary_search_with_parse_error,
                      rhs->no_vary_search_with_parse_error));
   CHECK(mojo::Equals(adjusted_lhs->allow_cross_origin_event_reporting,
@@ -710,8 +712,13 @@ void NavigationURLLoaderImpl::Start() {
           url_loader_factory::Create(
               ContentBrowserClient::URLLoaderFactoryType::kNavigation,
               url_loader_factory::TerminalParams::ForNonNetwork(
-                  CreateWebUIURLLoaderFactory(
-                      frame_tree_node->current_frame_host(), scheme, {}),
+                  CreateWebUIURLLoaderFactoryWithoutOriginLock(
+                      WebUIURLLoaderFactoryPasskey::GetPassKey(),
+                      frame_tree_node->current_frame_host(), scheme, {},
+                      base::FeatureList::IsEnabled(
+                          features::kPrioritizeWebUINavigationURLLoader)
+                          ? GetNavigationNetworkResponseTaskRunner()
+                          : nullptr),
                   network::mojom::kBrowserProcessId),
               url_loader_factory::ContentClientParams(
                   browser_context_, frame_tree_node->current_frame_host(),
@@ -1163,7 +1170,9 @@ void NavigationURLLoaderImpl::StartNonInterceptedRequest(
   // redirect. No interceptors wanted to intercept the redirected request,
   // so let the loader just follow the redirect.
   if (loader_holder_.url_loader()) {
-    CHECK(!redirect_info_.new_url.is_empty(), base::NotFatalUntil::M160);
+    // TODO(crbug.com/579071902): CHECK-exclusion: Convert to a CHECK once we
+    // are confident it won't be triggered.
+    DCHECK(!redirect_info_.new_url.is_empty());
     // TODO(https://crbug.com/434182226): Turn this to `CHECK()`.
     DUMP_WILL_BE_CHECK_EQ(loader_holder_.state(),
                           LoaderHolder::State::kLoadingViaLoader);
@@ -1265,8 +1274,13 @@ NavigationURLLoaderImpl::CreateNonNetworkLoaderFactory(
                       devtools_instrumentation::
                           WillCreateURLLoaderFactoryParams::ForFrame(frame))
                 : std::nullopt;
+    // The content:// factory is chosen per URL by
+    // ContentBrowserClient::IsContentSchemeURLNavigationAllowed(), so it must
+    // not be reused from the per-scheme cache.
+    const bool is_cacheable =
+        !resource_request.url.SchemeIs(url::kContentScheme);
     return std::make_pair(
-        /*is_cacheable=*/true,
+        is_cacheable,
         url_loader_factory::Create(
             ContentBrowserClient::URLLoaderFactoryType::kNavigation,
             url_loader_factory::TerminalParams::ForNonNetwork(
@@ -1327,7 +1341,9 @@ NavigationURLLoaderImpl::CreateNonNetworkLoaderFactory(
           ContentBrowserClient::URLLoaderFactoryType::kNavigation,
           url_loader_factory::TerminalParams::ForNonNetwork(
               base::MakeRefCounted<network::SingleRequestURLLoaderFactory>(
-                  base::BindOnce(UnknownSchemeCallback, handled)),
+                  base::BindOnce(&CompleteWithNetErrorCallback,
+                                 handled ? net::ERR_ABORTED
+                                         : net::ERR_UNKNOWN_URL_SCHEME)),
               network::mojom::kBrowserProcessId)));
 }
 
@@ -2067,8 +2083,6 @@ void NavigationURLLoaderImpl::ParseHeaders(
   // - Network
   // - ServiceWorker
   // - WebUI
-  base::UmaHistogramBoolean("Navigation.URLLoader.InMainPath",
-                            static_cast<bool>(head->parsed_headers));
   if (head->parsed_headers) {
 #ifndef NDEBUG
     // In debug mode, force reparsing the headers and check that they match.
@@ -2269,7 +2283,18 @@ NavigationURLLoaderImpl::CreateTerminalNonNetworkLoaderFactory(
   }
 
 #if BUILDFLAG(IS_ANDROID)
-  if (url.GetScheme() == url::kContentScheme) {
+  if (url.SchemeIs(url::kContentScheme)) {
+    if (!GetContentClient()->browser()->IsContentSchemeURLNavigationAllowed(
+            url)) {
+      // A null factory would fall through to external protocol handling
+      // (Android intent dispatch), so fail with a terminal error instead.
+      mojo::PendingRemote<network::mojom::URLLoaderFactory> pending_remote;
+      base::MakeRefCounted<network::SingleRequestURLLoaderFactory>(
+          base::BindOnce(&CompleteWithNetErrorCallback,
+                         net::ERR_BLOCKED_BY_CLIENT))
+          ->Clone(pending_remote.InitWithNewPipeAndPassReceiver());
+      return pending_remote;
+    }
     return ContentURLLoaderFactory::Create();
   }
 #endif
@@ -2324,6 +2349,11 @@ NavigationURLLoaderImpl::CreateNetworkLoaderFactory(
     // `allow-same-site-none-cookies` value in its sandbox policy.
     cookie_overrides.Put(
         net::CookieSettingOverride::kAllowSameSiteNoneCookiesInSandbox);
+  }
+  WebContents* web_contents =
+      WebContents::FromFrameTreeNodeId(frame_tree_node->frame_tree_node_id());
+  if (web_contents && web_contents->IsPrivileged()) {
+    cookie_overrides.Put(net::CookieSettingOverride::kForceAllowCookies);
   }
 
   if (header_client) {

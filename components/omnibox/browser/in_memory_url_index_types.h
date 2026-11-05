@@ -7,9 +7,8 @@
 
 #include <stddef.h>
 
-#include <map>
+#include <cstdint>
 #include <string>
-#include <unordered_map>
 #include <vector>
 
 #include "base/containers/flat_set.h"
@@ -116,8 +115,11 @@ Char16Set Char16SetFromString16(const std::u16string& uni_word);
 
 // Support for InMemoryURLIndex Private Data -----------------------------------
 
-// An index into a list of all of the words we have indexed.
-typedef size_t WordID;
+// An index into a list of all of the words we have indexed. It is 32 bits
+// rather than size_t to halve the storage of every WordIDSet (the bulk of
+// CharWordIDMap and HistoryIDWordMap) on 64-bit platforms.
+// URLIndexPrivateData::AddNewWordToWordList() CHECKs that new IDs fit.
+using WordID = uint32_t;
 
 // A map allowing a WordID to be determined given a word.
 typedef absl::flat_hash_map<std::u16string, WordID> WordMap;
@@ -159,7 +161,7 @@ struct HistoryInfoMapValue {
 };
 
 // A map from history_id to the history's URL and title.
-typedef std::unordered_map<HistoryID, HistoryInfoMapValue> HistoryInfoMap;
+typedef absl::flat_hash_map<HistoryID, HistoryInfoMapValue> HistoryInfoMap;
 
 // A map from history_id to URL and page title word start metrics.
 struct RowWordStarts {
@@ -180,6 +182,8 @@ struct RowWordStarts {
   WordStarts url_word_starts_;
   WordStarts title_word_starts_;
 };
-typedef std::map<HistoryID, RowWordStarts> WordStartsMap;
+// Only ever accessed by key, so a flat hash map gives average O(1) lookups
+// without a separate heap allocation per row.
+using WordStartsMap = absl::flat_hash_map<HistoryID, RowWordStarts>;
 
 #endif  // COMPONENTS_OMNIBOX_BROWSER_IN_MEMORY_URL_INDEX_TYPES_H_

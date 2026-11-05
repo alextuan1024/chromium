@@ -5,6 +5,8 @@
 import {CrLitElement} from '//resources/lit/v3_0/lit.rollup.js';
 import type {PropertyValues} from '//resources/lit/v3_0/lit.rollup.js';
 
+import {AMPLITUDE_DECAY_RATE, applySensitivityEasing, clamp, getAmbientSimulatedMotion, makeSimulatedAudioBump, MS_PER_FRAME, SPEECH_RECEIVED_BUMP_DURATION_MULT, SPEECH_RECEIVED_BUMP_DURATION_OFFSET, SPEECH_RECEIVED_BUMP_MAX_VOL_MULT, SPEECH_RECEIVED_BUMP_MAX_VOL_OFFSET, triggerSyllableBumps, updateBumpsAndGetSum} from './audio_simulation_utils.js';
+import type {Bump} from './audio_simulation_utils.js';
 import {getCss} from './audio_wave.css.js';
 import {getHtml} from './audio_wave.html.js';
 
@@ -29,19 +31,9 @@ const WAVE_SIDE_MARGIN_PEAK: number = 10;
 const STROKE_WIDTH: number = 3;
 const SPEECH_RECEIVED_VOL_SPIKE: number = 0.4;
 
-/* Audio simulation math and heuristics (Bézier easing, syllable counting,
- * bump summation) have been extracted to audio_simulation_utils.ts so they
- * can be shared across Search WebUI components. Re-exporting here for
- * backwards compatibility with existing consumers and tests.
- */
-import type {Bump} from './audio_simulation_utils.js';
-import {AMPLITUDE_DECAY_RATE, applySensitivityEasing, clamp, getAmbientSimulatedMotion, makeSimulatedAudioBump, MS_PER_FRAME, SPEECH_RECEIVED_BUMP_DURATION_MULT, SPEECH_RECEIVED_BUMP_DURATION_OFFSET, SPEECH_RECEIVED_BUMP_MAX_VOL_MULT, SPEECH_RECEIVED_BUMP_MAX_VOL_OFFSET, triggerSyllableBumps, updateBumpsAndGetSum} from './audio_simulation_utils.js';
-
 const SMOOTHING_WINDOW_SIZE: number = 3;
 const SMOOTHING_BUFFER_SIZE: number = 5;
 
-export type {Bump} from './audio_simulation_utils.js';
-export {AMPLITUDE_DECAY_RATE, applySensitivityEasing, bezierEasing, CIRCLE_RAD, clamp, countSyllablesHeuristic, FRAME_LATENCY, getAmbientSimulatedMotion, makeSimulatedAudioBump, MAX_FRAMES_PER_SYLLABLE, MIN_FRAMES_PER_SYLLABLE, MS_PER_FRAME, SPEECH_RECEIVED_BUMP_DURATION_MULT, SPEECH_RECEIVED_BUMP_DURATION_OFFSET, SPEECH_RECEIVED_BUMP_MAX_VOL_MULT, SPEECH_RECEIVED_BUMP_MAX_VOL_OFFSET, SYLLABLE_BUMP_DURATION_MULT, SYLLABLE_BUMP_DURATION_OFFSET, SYLLABLE_BUMP_MAX_VOL_MULT, SYLLABLE_BUMP_MAX_VOL_OFFSET, triggerSyllableBumps} from './audio_simulation_utils.js';
 /*
  * Linear Interpolation that maps one unit to another unit, like volume to px.
  */
@@ -132,20 +124,10 @@ export class AudioWaveElement extends CrLitElement {
   private decayingAmplitude_: number = 0;
   private frame_: number = 0;
   private lastUpdateTime_: number = performance.now();
-  private lastWordCount_: number = 0;
+  private lastSyllableCount_: number = 0;
 
   private volumeHistory_: number[] = [];
   private activeSimulatedBumps_: Bump[] = [];
-
-  /* True means first syllable has already been heard. False means
-   * have not heard syllable yet, even if receivedSpeech is true
-   * (can be noise, not speech first heard). Default is true since default case
-   * is that first word is spoken, and receivedSpeech creates the bump instead
-   * of transcript. This needs to be true to avoid double counting the first
-   * bump in transcript and receivedSpeech. The remaining bumps are processed
-   * via transcript.
-   */
-  private firstSyllable_: boolean = true;
 
   /* Observe width changes per element with a recent size change. */
   private resizeObserver: ResizeObserver = new ResizeObserver((entries) => {
@@ -177,12 +159,8 @@ export class AudioWaveElement extends CrLitElement {
       /* Speech recognition's speech state is changed before it outputs a
        * transcript. If received speech (but not results) for first time,
        * add a bump so do not have to wait for transcript to come in
-       * from speech webkit. This avoids a delay. If the transcript is
-       * still blank, even after it is updated, set firstSyllable_ to false
-       * since no word has been received yet and we do not want the default
-       * of skipping the first syllable due to receivedSpeech beceoming true.
+       * from speech webkit.
        */
-
       if (this.receivedSpeech) {
         this.decayingAmplitude_ = SPEECH_RECEIVED_VOL_SPIKE;
 
@@ -194,10 +172,6 @@ export class AudioWaveElement extends CrLitElement {
             SPEECH_RECEIVED_BUMP_DURATION_OFFSET, this.frame_,
             SPEECH_RECEIVED_BUMP_MAX_VOL_MULT,
             SPEECH_RECEIVED_BUMP_MAX_VOL_OFFSET);
-        if (this.transcript === '') {
-          // Do measure since was not a word.
-          this.firstSyllable_ = false;
-        }
       }
     }
     if (changedProperties.has('transcript')) {
@@ -207,6 +181,7 @@ export class AudioWaveElement extends CrLitElement {
 
   protected onStartListen_() {
     this.isExpanding_ = true;
+    this.lastSyllableCount_ = 0;
 
     this.volumeHistory_ = new Array(SMOOTHING_BUFFER_SIZE).fill(0.001);
 
@@ -220,6 +195,8 @@ export class AudioWaveElement extends CrLitElement {
   protected onStopListen_() {
     this.frame_ = 0;
     this.decayingAmplitude_ = 0;
+    this.lastSyllableCount_ = 0;
+    this.activeSimulatedBumps_ = [];
 
     if (this.animationFrameId_ !== null) {
       cancelAnimationFrame(this.animationFrameId_);
@@ -391,35 +368,11 @@ export class AudioWaveElement extends CrLitElement {
     }
   }
 
-  protected handleNewWords_() {
-    const trimmedTranscript = this.transcript.trim();
-    if (trimmedTranscript === '') {
-      // In case if input gets cleared, reset animation.
-      this.lastWordCount_ = 0;
-      return;
-    }
-    const words = trimmedTranscript.split(/\s+/);
-    const currentWordCount = words.length;
-
-    // Ignore shorter and same word counts (due to interim result changes).
-    if (currentWordCount <= this.lastWordCount_) {
-      this.lastWordCount_ = currentWordCount;
-      return;
-    }
-
-    // Find completely new words not seen before.
-    const newWordCount = currentWordCount - this.lastWordCount_;
-    const newWords = words.slice(-newWordCount);  // Get last nth new words.
-    this.lastWordCount_ = currentWordCount;
-
-    this.triggerSyllableBumps_(newWords);
-  }
-
   // Delegated to audio_simulation_utils.ts for shared syllable bump logic.
-  protected triggerSyllableBumps_(words: string[]) {
-    const {firstSyllable} = triggerSyllableBumps(
-        this.activeSimulatedBumps_, words, this.frame_, this.firstSyllable_);
-    this.firstSyllable_ = firstSyllable;
+  protected handleNewWords_() {
+    this.lastSyllableCount_ = triggerSyllableBumps(
+        this.activeSimulatedBumps_, this.transcript, this.lastSyllableCount_,
+        this.frame_);
   }
 
   // Delegated to audio_simulation_utils.ts for backwards compatibility with

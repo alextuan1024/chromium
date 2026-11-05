@@ -9,28 +9,26 @@
 #include <map>
 #include <memory>
 #include <optional>
-#include <set>
 #include <string>
 #include <vector>
 
-#include "base/memory/raw_ptr.h"
-#include "base/memory/safe_ref.h"
+#include "base/functional/callback.h"
 #include "base/scoped_observation.h"
 #include "base/threading/sequence_bound.h"
+#include "base/timer/timer.h"
 #include "base/values.h"
 #include "chrome/common/read_anything/read_anything.mojom.h"
 #include "chrome/renderer/accessibility/read_anything/read_aloud_app_model.h"
 #include "chrome/renderer/accessibility/read_anything/read_anything_app_model.h"
+#include "chrome/renderer/accessibility/read_anything/read_anything_distiller.h"
 #include "content/public/renderer/render_frame_observer.h"
 #include "gin/wrappable.h"
 #include "mojo/public/cpp/bindings/receiver.h"
 #include "mojo/public/cpp/bindings/remote.h"
 #include "services/metrics/public/cpp/ukm_source_id.h"
 #include "third_party/skia/include/core/SkBitmap.h"
-#include "third_party/skia/include/core/SkColor.h"
 #include "ui/accessibility/ax_location_and_scroll_updates.h"
 #include "ui/accessibility/ax_node_id_forward.h"
-#include "ui/accessibility/ax_node_position.h"
 #include "ui/accessibility/ax_position.h"
 #include "ui/accessibility/ax_tree_observer.h"
 #include "ui/accessibility/ax_tree_update_forward.h"
@@ -46,16 +44,13 @@ class AXTree;
 }  // namespace ui
 
 namespace ukm {
-class MojoUkmRecorder;
+class UkmRecorder;
 }  // namespace ukm
 
 class AXTreeDistiller;
 class DependencyParserModel;
-struct DistillationRequest;
-struct DistillationResult;
 class ReadAnythingAppControllerReadabilityTest;
 class ReadAnythingAppControllerTest;
-class ReadAnythingDistiller;
 class ReadAnythingDistillerFactory;
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -149,12 +144,6 @@ class ReadAnythingAppController
       const ui::AXTreeID& tree_id,
       const std::vector<ui::AXTreeUpdate>& updates,
       const std::vector<ui::AXEvent>& events) override;
-  void AccessibilityLocationChangesReceived(
-      const ui::AXTreeID& tree_id,
-      ui::AXLocationAndScrollUpdates& details) override;
-  void AccessibilityLocationChangesReceived(
-      const ui::AXTreeID& tree_id,
-      const ui::AXLocationAndScrollUpdates& details) override;
   void OnActiveAXTreeIDChanged(const ui::AXTreeID& tree_id,
                                ukm::SourceId ukm_source_id,
                                bool is_pdf) override;
@@ -181,14 +170,19 @@ class ReadAnythingAppController
   void SetLanguageCode(const std::string& code) override;
   void SetDefaultLanguageCode(const std::string& code) override;
   void ScreenAIServiceReady() override;
-  void OnGetPresentationState(
-      read_anything::mojom::ReadAnythingPresentationState presentation_state)
-      override;
   void OnGetVoicePackInfo(
       read_anything::mojom::VoicePackInfoPtr voice_pack_info) override;
-  void OnReadingModeHidden(bool tab_active) override;
+  void OnReadingModeHidden(bool tab_active,
+                           read_anything::mojom::ReadAnythingPresentationState
+                               presentation_state) override;
   void OnReadingModeShown(
-      read_anything::mojom::ReadAnythingOpenTrigger open_trigger) override;
+      read_anything::mojom::ReadAnythingOpenTrigger open_trigger,
+      read_anything::mojom::ReadAnythingPresentationState presentation_state)
+      override;
+  void OnPresentationTransitioned(
+      read_anything::mojom::ReadAnythingOpenTrigger open_trigger,
+      read_anything::mojom::ReadAnythingPresentationState presentation_state)
+      override;
   void OnTabWillDetach() override;
   void OnTabMuteStateChange(bool muted) override;
   void UpdateContent(const std::string& title,
@@ -196,6 +190,8 @@ class ReadAnythingAppController
   void OnReadabilityDistillationStateChanged(
       read_anything::mojom::ReadAnythingDistillationState new_state) override;
   void OnMainFrameSameDocumentNavigation(const GURL& url) override;
+  void OnTranslationStateChanged(bool is_translated) override;
+  void OnTranslationFailed() override;
 
 #if BUILDFLAG(IS_CHROMEOS)
   void OnDeviceLocked() override;
@@ -234,6 +230,7 @@ class ReadAnythingAppController
   void OnFontSizeReset();
   void OnLinksEnabledToggled();
   void OnTranslationRequested();
+  void OnSendFeedback();
   void OnImagesEnabledToggled();
   int LetterSpacing() const;
   int LineSpacing() const;
@@ -283,6 +280,7 @@ class ReadAnythingAppController
   int InImmersiveOverlayPresentationState() const;
   int DistillationTypeScreen2x() const;
   int DistillationTypeReadability() const;
+  bool IsInSelectionMode() const;
   std::string GetStoredVoice() const;
   std::vector<std::string> GetLanguagesEnabledInPref() const;
   std::vector<ui::AXNodeID> GetChildren(ui::AXNodeID ax_node_id) const;
@@ -295,12 +293,10 @@ class ReadAnythingAppController
   std::string GetDocumentUrl() const;
   std::string GetHtmlId(ui::AXNodeID ax_node_id) const;
   std::string GetAltText(ui::AXNodeID ax_node_id) const;
-  std::string GetDomDistillerTitle() const;
-  std::string GetDomDistillerContentHtml() const;
+  std::string GetReadabilityTitle() const;
+  std::string GetReadabilityContentHtml() const;
   // Serializes accessibility tree anchors into a V8 object for the frontend.
-  v8::Local<v8::Value> GetDomDistillerAnchors() const;
-  // Returns the presentation through the OnGetPresentationState callback.
-  void SendGetPresentationStateRequest() const;
+  v8::Local<v8::Value> GetReadabilityAnchors() const;
   // The results of these are sent back via UntrustedPage::OnGetVoicePackInfo.
 
   void SendPinStateRequest();
@@ -308,11 +304,11 @@ class ReadAnythingAppController
   void SendInstallVoicePackRequest(const std::string& language) const;
   void SendUninstallVoiceRequest(const std::string& language) const;
 
-  bool IsSpeechTreeInitialized();
   bool ShouldBold(ui::AXNodeID ax_node_id) const;
   bool IsOverline(ui::AXNodeID ax_node_id) const;
+  bool IsSuperscript(ui::AXNodeID ax_node_id) const;
+  bool IsSubscript(ui::AXNodeID ax_node_id) const;
   bool IsLeafNode(ui::AXNodeID ax_node_id) const;
-  bool IsReadAnythingPinned() const;
   void OnConnected();
   void OnCopy() const;
   void OnScroll(bool on_selection) const;
@@ -322,7 +318,7 @@ class ReadAnythingAppController
                          ui::AXNodeID focus_node_id,
                          int focus_offset);
   void OnCollapseSelection();
-  bool MaybeHasKeyPointsSection() const;
+  v8::Local<v8::Value> GetOriginalPageMetrics();
   std::string GetKeyPointsRegex() const;
   void AttemptLogEarlySelection(bool from_side_panel);
   void OnDistilled(int word_count);
@@ -330,14 +326,16 @@ class ReadAnythingAppController
   v8::Local<v8::Value> GetAXMapping(int index);
   bool IsGoogleDocs() const;
   bool IsPdf() const;
+  bool IsContentTranslated() const;
+  // The model's TranslationState, as an int for the WebUI.
+  int GetTranslationState() const;
   bool IsImprovedReadAloudEnabled() const;
   bool IsReadAnythingImprovedUiEnabled() const;
   bool IsReadAnythingTranslateEntryPointEnabled() const;
+  bool IsReadAnythingSendFeedbackEnabled() const;
+  bool IsTranslatePdfEnabled() const;
   bool IsReadAnythingReadAloudExperimentalPlaybackUiEnabled() const;
-  bool IsTsTextSegmentationEnabled() const;
   bool IsReadabilityEnabled() const;
-  bool IsReadabilitySelectTextEnabled() const;
-  bool IsLineFocusEnabled() const;
   bool IsReadabilityWithLinksEnabled() const;
   bool IsPhraseHighlightingEnabled() const;
   void OnLetterSpacingChange(int value);
@@ -359,6 +357,7 @@ class ReadAnythingAppController
   v8::Local<v8::Value> GetImageBitmap(ui::AXNodeID node_id);
   void OnIsSpeechActiveChanged(bool is_speech_active);
   void OnIsAudioCurrentlyPlayingChanged(bool is_audio_currently_playing);
+  void OnAiPlaybackStateChanged(bool enabled);
   std::string GetValidatedFontName(const std::string& font) const;
   std::vector<std::string> GetAllFonts() const;
   void OnNoTextContent();
@@ -383,26 +382,24 @@ class ReadAnythingAppController
       const std::string& locale,
       const std::string& display_locale) const;
 
-  // Returns a list of nodes and ranges representing the next nodes that should
-  // be spoken and highlighted with Read Aloud. The ranges are represented as a
-  // start offset and a length. Multiple nodes are returned if the segment spans
-  // over more than one node. This defaults to returning the first granularity
-  // until MovePositionTo<Next,Previous>Granularity() moves the position. If the
-  // the current processed_granularity_index_ has not been calculated yet,
-  // GetNextNodes() is called which updates the AXPosition.
-  v8::Local<v8::Value> GetCurrentTextSegments();
-
-  // Returns the actual text content representing by the nodes returned by
-  // GetCurrentTextSegments().
-  std::u16string GetCurrentTextContent();
-
-  int GetAccessibleBoundary(const std::u16string& text, int max_text_length);
-
   // Called when a new dependency parser model file has been loaded and is
   // available.
   void UpdateDependencyParserModel(base::File model_file);
 
   void OnDependencyParserModelAvailabilityChecked(bool is_available);
+
+  // Asynchronously calculates phrase boundaries for each of `sentences` using
+  // the dependency parser model. The result is sent to WebUI via
+  // chrome.readingMode.onPhraseBoundariesReady(), along with `request_id` so
+  // that WebUI can match the result to its request.
+  void RequestPhraseBoundaries(int request_id,
+                               const std::vector<std::u16string>& sentences);
+
+  // Sends the phrase boundaries calculated by RequestPhraseBoundaries() to
+  // WebUI. `boundaries` has one entry per requested sentence, each containing
+  // the start offsets of the phrases in that sentence.
+  void OnPhraseBoundariesComputed(int request_id,
+                                  std::vector<std::vector<int>> boundaries);
 
   base::SequenceBound<DependencyParserModel>&
   GetDependencyParserModelForTesting();
@@ -413,26 +410,6 @@ class ReadAnythingAppController
 
   // Called when distillation completes from the active ReadAnythingDistiller.
   void OnDistillationComplete(const DistillationResult& result);
-
-  // Inits the AXPosition with a starting node.
-  // TODO(crbug.com/40927698): We should be able to use AXPosition in a way
-  // where this isn't needed.
-  void InitAXPositionWithNode(const ui::AXNodeID& starting_node_id);
-
-  // Increments the processed_granularity_index_, updating ReadAloud's state of
-  // the current granularity to refer to the next granularity. The current
-  // behavior allows the client to increment past the end of the page's content.
-  void MovePositionToNextGranularity();
-
-  // Decrements the processed_granularity_index_,updating ReadAloud's state of
-  // the current granularity to refer to the previous granularity
-  void MovePositionToPreviousGranularity();
-
-  void ResetGranularityIndex();
-
-  // Preprocess the text on the current page for speech to be used by
-  // Read Aloud.
-  void PreprocessTextForSpeech();
 
   void Draw(bool recompute_display_nodes);
 
@@ -446,6 +423,17 @@ class ReadAnythingAppController
  private:
   friend ReadAnythingAppControllerTest;
   friend ReadAnythingAppControllerReadabilityTest;
+
+  // A selection that the side panel asked the main page to set.
+  struct SelectionRequest {
+    ui::AXNodeID anchor_node_id;
+    int anchor_offset;
+    ui::AXNodeID focus_node_id;
+    int focus_offset;
+
+    bool operator==(const SelectionRequest&) const = default;
+  };
+
   // The fallback language code if GetLanguageCodeForSpeech has an error.
   // However, this may be the same value as GetLanguageCodeForSpeech.
   const std::string& GetDefaultLanguageCodeForSpeech() const;
@@ -460,10 +448,22 @@ class ReadAnythingAppController
 
   // Initiates distillation by ensuring the active distiller matches the
   // model's next distillation method and dispatching the `request`.
+  // DOM-based engines (Readability) that distill in the browser process do not
+  // need an AXTree and only read `request.reason`; tree-based engines
+  // (Screen2x) require a populated `request.tree`.
   void ExecuteDistillation(const DistillationRequest& request);
+
+  // Forwards a Readability distillation request, and the reason for it, to the
+  // browser process via `page_handler_`. Passed as a callback to
+  // ReadAnythingDistillerFactory.
+  void RequestReadabilityDistillation(
+      read_anything::mojom::ReadabilityDistillationReason reason,
+      read_anything::mojom::UntrustedPageHandler::
+          RequestReadabilityDistillationCallback callback);
 
   void DrawSelection();
   void DrawEmptyState();
+  void DrawReadabilityContent();
 
   // Helper function that restarts the distillation logging timer and triggers a
   // new distillation if the tree is ready.
@@ -473,15 +473,21 @@ class ReadAnythingAppController
   // preparation for a new content distillation.
   void PrepareForNewContentDistillation();
 
-  // Returns the initial distillation method state based on feature flags and
-  // page type (e.g. if it's PDF).
-  ReadAnythingAppModel::DistillationMethod GetInitialDistillationMethod(
-      bool is_pdf) const;
+  // Returns the initial distillation method based on feature flags and the
+  // active tree's page type (e.g. if it's a PDF).
+  ReadAnythingAppModel::DistillationMethod GetInitialDistillationMethod() const;
 
   void ExecuteJavaScript(const std::string& script);
 
+  // Updates the model's translation state and notifies the WebUI if it
+  // changed.
+  void SetTranslationState(ReadAnythingAppModel::TranslationState state);
+
   // Returns true if a draw occurred.
   bool PostProcessSelection();
+
+  // Handles the browser's reply to a selection request from the side panel.
+  void OnSelectionRequestHandled(bool applied);
 
   // Signals that the side panel has finished loading and it's safe to show
   // the UI to avoid loading artifacts.
@@ -502,19 +508,24 @@ class ReadAnythingAppController
       const std::vector<ui::AXEvent>& events);
 
   // Triggers the text mapping algorithm if both the accessibility tree and the
-  // rendered text blocks from the WebUI are ready if
-  // IsReadabilitySelectTextEnabled.
+  // rendered text blocks from the WebUI are ready if IsReadabilityEnabled.
   void MaybeMapRenderedTextToTree();
 
   // Helper for forwarding reading mode hide events to the webui so we can
   // perform cleaning operations on it.
   void ReadingModeWillClose();
 
-  // Helper method for recording all reading mode per-session metrics. If
-  // reading mode is hidden, this will no-op unless overridden with the
-  // recently_hidden parameter.
-  void RecordSessionMetricsIfShownOrRecentlyHidden(
-      bool recently_hidden = false);
+  // Applies the presentation state that a lifecycle message carries.
+  void ApplyPresentationState(
+      read_anything::mojom::ReadAnythingPresentationState presentation_state);
+
+  // Applies what the entry point that opened Reading Mode asks for, both when
+  // it's shown and when it moves to the other presentation.
+  void ApplyOpenTrigger(
+      read_anything::mojom::ReadAnythingOpenTrigger open_trigger);
+
+  // Records the per-session metrics if Reading Mode is shown.
+  void RecordSessionMetricsIfShown();
 
   // Records the number of selections that occurred for the active page. Called
   // when the active tree changes.
@@ -530,26 +541,13 @@ class ReadAnythingAppController
   // accurate for voices that don't support word boundaries.
   void RecordEstimatedWordsHeard();
 
-  void RecordScreen2xDistillationStatus(bool just_hidden);
+  void RecordScreen2xDistillationStatus();
   void RecordDistillationStatus(
       read_anything::mojom::DistillationStatus status);
 
-  // Given a boundary position within the current granularity, identifies the
-  // nodes that needs to be highlighted (e.g. until the word boundary), and
-  // returns a list containing nodes and the ranges within those nodes. The
-  // ranges are represented as a start offset and a length. Multiple nodes are
-  // returned if the highlight spans over more than one node. This allows us to
-  // correctly position the highlight within the current text segment. The
-  // return value is thus a list containing node id, start, and length.
-  //
-  //  If the `phrases` argument is `true`, the text ranges for the containing
-  //  phrase are returned, otherwise the text ranges for the word are returned.
-  //
-  // Note that this is only needed for custom granularity highlighting. Sentence
-  // highlighting is able to be handled directly in WebUI because the entire
-  // speech segment is highlighted at once.
-  v8::Local<v8::Value> GetHighlightForCurrentSegmentIndex(int index,
-                                                          bool phrases);
+  // Starts the delay for recording the Screen2x distillation status, unless
+  // it's already running or the page's status was already recorded.
+  void MaybeStartDistillationStatusTimer();
 
   // Helpers for logging UmaHistograms based on times recorded in WebUI.
   void IncrementMetricCount(const std::string& metric);
@@ -570,7 +568,16 @@ class ReadAnythingAppController
 
   void OnUrlInformationSet();
 
+  // Called when the delayed redraw after the user types on the page is due
+  // (see post_user_entry_draw_timer_).
+  void OnPostUserEntryDrawTimerFired();
+
   void OnPdfDebounceFinished();
+
+  // Returns whether the active PDF's distilled content can be reported as
+  // kDistillationWithContent, which waits for the whole PDF to load when
+  // translate::kEnableTranslatePdf is enabled.
+  bool ShouldReportPdfContent() const;
 
   // Logs the time it took for the AXTree to become ready after the active
   // tree ID changed.
@@ -582,8 +589,6 @@ class ReadAnythingAppController
   // This function is expected to be called just once. There would be a mismatch
   // between the training protos and the screenshot if it runs more than once.
   void DistillAndScreenshot();
-
-  bool IsHidden() const;
 
   // TODO(crbug.com/554114724): Remove `distiller_` once the
   // ReadAnythingDistiller refactoring is complete and enabled by default.
@@ -633,8 +638,8 @@ class ReadAnythingAppController
       std::unique_ptr<base::ScopedObservation<ui::AXTree, ui::AXTreeObserver>>>
       tree_observers_;
 
-  // For metrics logging
-  std::unique_ptr<ukm::MojoUkmRecorder> ukm_recorder_;
+  // For metrics logging. A ukm::MojoUkmRecorder, except in tests.
+  std::unique_ptr<ukm::UkmRecorder> ukm_recorder_;
 
   // The time when the renderer constructor is first triggered.
   base::TimeTicks renderer_load_triggered_time_ms_;
@@ -642,9 +647,10 @@ class ReadAnythingAppController
   // The time when the WebUI connects i.e. when onConnected is called.
   base::TimeTicks web_ui_connected_time_ms_;
 
-  // Flag to ensure the AXTree ready metric is logged only once per active
-  // tree change. Initially set as true to make sure that the variable reset is
-  // called before trying to log the metric.
+  // Whether the AXTree ready metric was recorded for the current active tree,
+  // or won't be because the tree's readiness can't be timed (see
+  // AccessibilityEventReceived() and OnActiveAXTreeIDChanged()). Initially
+  // true, so that nothing is recorded before the first active tree.
   bool ax_tree_ready_for_current_active_tree_recorded_ = true;
 
   // Flag to ensure the AXTree ready metric is measured only once per active
@@ -676,18 +682,21 @@ class ReadAnythingAppController
   // is re-triggered multiple times before completion. Used for logging.
   int distillation_attempts_;
 
-  // The distilled title result of DOM distiller distillation.
-  std::string dom_distiller_title_;
-
   // Tracks whether the distillation status for the current active tree
   // navigation has already been recorded.
   bool has_logged_distillation_status_ = false;
 
-  // The distilled content result of DOM distiller distillation.
-  std::string dom_distiller_content_html_;
-
   std::optional<ReadAnythingAppModel::DistillationMethod>
       forced_distillation_method_for_testing_;
+
+  // The last selection that the side panel asked the main page to set, or
+  // nullopt if a collapse was requested since. It may still be in flight only
+  // while the model has unprocessed selections from reading mode, so it's only
+  // compared against then. The count already drops to 0 when pending requests
+  // become stale, e.g. when the active tree changes or the user selects in the
+  // main page, so this isn't reset then. If the browser drops this request
+  // while others are pending, resending it waits for the count to drop to 0.
+  std::optional<SelectionRequest> last_selection_request_;
 
   // As a subclass of RenderFrameObserver, all objects of this class are stored
   // in data structure and should not get deallocated as long as the object is

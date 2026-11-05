@@ -12,10 +12,12 @@ import android.content.res.ColorStateList;
 import android.view.View;
 
 import androidx.annotation.ColorInt;
+import androidx.annotation.Px;
 
 import org.chromium.base.Callback;
 import org.chromium.base.ValueChangedCallback;
 import org.chromium.base.lifetime.Destroyable;
+import org.chromium.base.supplier.MonotonicObservableSupplier;
 import org.chromium.base.supplier.NonNullObservableSupplier;
 import org.chromium.base.supplier.NullableObservableSupplier;
 import org.chromium.base.supplier.ObservableSuppliers;
@@ -26,6 +28,7 @@ import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabCreationState;
 import org.chromium.chrome.browser.tab.TabLaunchType;
+import org.chromium.chrome.browser.tab.TabLaunchTypeUtils;
 import org.chromium.chrome.browser.tab.TabSelectionType;
 import org.chromium.chrome.browser.tab_ui.RecyclerViewPosition;
 import org.chromium.chrome.browser.tabmodel.TabModel;
@@ -37,6 +40,7 @@ import org.chromium.chrome.browser.tasks.tab_management.TabListEditorCoordinator
 import org.chromium.chrome.browser.tasks.tab_management.TabListMediator.TabListLayoutType;
 import org.chromium.chrome.browser.tasks.tab_management.TabProperties.TabActionState;
 import org.chromium.chrome.browser.tasks.tab_management.TabUiMetricsHelper.TabListEditorExitMetricGroups;
+import org.chromium.chrome.browser.ui.edge_to_edge.EdgeToEdgeController;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager.ParentOverrideSlot;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
@@ -45,6 +49,7 @@ import org.chromium.components.browser_ui.desktop_windowing.DesktopWindowStateMa
 import org.chromium.components.browser_ui.desktop_windowing.DesktopWindowStateManager.AppHeaderObserver;
 import org.chromium.components.browser_ui.widget.selectable_list.SelectionDelegate;
 import org.chromium.components.browser_ui.widget.selectable_list.SelectionDelegate.SelectionObserver;
+import org.chromium.ui.edge_to_edge.EdgeToEdgePadAdjuster;
 import org.chromium.ui.modelutil.ListModelChangeProcessor;
 import org.chromium.ui.modelutil.MVCListAdapter;
 import org.chromium.ui.modelutil.PropertyKey;
@@ -81,6 +86,24 @@ class TabListEditorMediator
     private final ArrayList<String> mVisibleTabGroups = new ArrayList<>();
     private final TabListEditorLayout mTabListEditorLayout;
     private final @Nullable DesktopWindowStateManager mDesktopWindowStateManager;
+    private final @Nullable MonotonicObservableSupplier<EdgeToEdgeController> mEdgeToEdgeSupplier;
+    private final Callback<EdgeToEdgeController> mEdgeToEdgeControllerCallback =
+            this::onEdgeToEdgeControllerChanged;
+    private final EdgeToEdgePadAdjuster mEdgeToEdgePadAdjuster =
+            new EdgeToEdgePadAdjuster() {
+                @Override
+                public void overrideBottomInset(@Px int inset) {}
+
+                @Override
+                public void overrideTopInset(@Px int inset) {
+                    if (mEdgeToEdgeTopInset == inset) return;
+                    mEdgeToEdgeTopInset = inset;
+                    updateTopMargin();
+                }
+
+                @Override
+                public void destroy() {}
+            };
     private final @CreationMode int mCreationMode;
     private final SelectionObserver<TabListEditorItemSelectionId> mSelectionObserver;
     private final @Nullable ItemPickerSelectionHandler mSelectionHandler;
@@ -94,7 +117,10 @@ class TabListEditorMediator
     private @Nullable NavigationProvider mNavigationProvider;
     private @TabActionState int mTabActionState;
     private @Nullable LifecycleObserver mLifecycleObserver;
+    private @Nullable EdgeToEdgeController mEdgeToEdgeController;
     private boolean mHasSnackbarOverride;
+    private int mAppHeaderHeight;
+    private @Px int mEdgeToEdgeTopInset;
 
     private final View.OnClickListener mNavigationClickListener =
             _ -> {
@@ -127,6 +153,7 @@ class TabListEditorMediator
             TabListEditorLayout tabListEditorLayout,
             @TabActionState int initialTabActionState,
             @Nullable DesktopWindowStateManager desktopWindowStateManager,
+            @Nullable MonotonicObservableSupplier<EdgeToEdgeController> edgeToEdgeSupplier,
             @CreationMode int creationMode,
             @Nullable ItemPickerSelectionHandler itemPickerSelectionHandler) {
         mContext = context;
@@ -139,6 +166,7 @@ class TabListEditorMediator
         mTabListEditorLayout = tabListEditorLayout;
         mTabActionState = initialTabActionState;
         mDesktopWindowStateManager = desktopWindowStateManager;
+        mEdgeToEdgeSupplier = edgeToEdgeSupplier;
         mCreationMode = creationMode;
         mSelectionHandler = itemPickerSelectionHandler;
         mEnableDoneButtonObserver =
@@ -165,24 +193,8 @@ class TabListEditorMediator
                             @TabCreationState int creationState,
                             boolean markedForSelection) {
                         TabModel tabModel = mCurrentTabModelSupplier.get();
-                        if (tabModel == null || !tabModel.isTabModelRestored()) return;
-                        // When tab is added due to
-                        // 1) multi-window close
-                        // 2) moving between multiple windows
-                        // 3) NTP at startup
-                        // force hiding the selection editor.
-                        if (type == TabLaunchType.FROM_RESTORE
-                                || type == TabLaunchType.FROM_REPARENTING
-                                || type == TabLaunchType.FROM_REPARENTING_BACKGROUND
-                                || type == TabLaunchType.FROM_STARTUP) {
-                            assumeNonNull(mNavigationProvider);
-                            mNavigationProvider.goBack();
-                        }
-                    }
-
-                    @Override
-                    public void willCloseTab(Tab tab, boolean didCloseAlone) {
-                        if (mTabActionState != TabProperties.TabActionState.CLOSABLE) {
+                        if (tabModel == null || !tabModel.isTabStateInitialized()) return;
+                        if (TabLaunchTypeUtils.shouldNavigateBackFromTabListEditor(type)) {
                             assumeNonNull(mNavigationProvider);
                             mNavigationProvider.goBack();
                         }
@@ -230,6 +242,9 @@ class TabListEditorMediator
             if (mDesktopWindowStateManager.getAppHeaderState() != null) {
                 onAppHeaderStateChanged(mDesktopWindowStateManager.getAppHeaderState());
             }
+        }
+        if (mEdgeToEdgeSupplier != null) {
+            mEdgeToEdgeSupplier.addSyncObserverAndCallIfNonNull(mEdgeToEdgeControllerCallback);
         }
     }
 
@@ -316,11 +331,13 @@ class TabListEditorMediator
             @Nullable RecyclerViewPosition recyclerViewPosition) {
         assert mNavigationProvider != null : "NavigationProvider must be set before calling #show";
         // Reparent the snackbarManager to use the selection editor layout to avoid layering issues.
-        mHasSnackbarOverride = true;
-        mSnackbarManager.pushParentViewOverride(
-                ParentOverrideSlot.TAB_LIST_EDITOR,
-                mTabListEditorLayout,
-                /* additionalBottomMarginPxSupplier= */ null);
+        if (!mHasSnackbarOverride) {
+            mHasSnackbarOverride = true;
+            mSnackbarManager.pushParentViewOverride(
+                    ParentOverrideSlot.TAB_LIST_EDITOR,
+                    mTabListEditorLayout,
+                    /* additionalBottomMarginPxSupplier= */ null);
+        }
         // Records to a histogram the time since an instance of TabListEditor was last opened
         // within an activity lifespan.
         TabUiMetricsHelper.recordEditorTimeSinceLastShownHistogram();
@@ -330,6 +347,7 @@ class TabListEditorMediator
         mVisibleTabs.addAll(tabs);
         mVisibleTabGroups.clear();
         mVisibleTabGroups.addAll(tabGroupSyncIds);
+        mSelectionDelegate.clearSelection();
 
         mResetHandler.resetWithListOfTabs(
                 tabs, tabGroupSyncIds, recyclerViewPosition, /* quickMode= */ false);
@@ -512,7 +530,22 @@ class TabListEditorMediator
     /** AppHeaderObserver implementation */
     @Override
     public void onAppHeaderStateChanged(AppHeaderState newState) {
-        mModel.set(TabListEditorProperties.TOP_MARGIN, newState.getAppHeaderHeight());
+        mAppHeaderHeight = newState.getAppHeaderHeight();
+        updateTopMargin();
+    }
+
+    private void onEdgeToEdgeControllerChanged(EdgeToEdgeController edgeToEdgeController) {
+        if (mEdgeToEdgeController != null) {
+            mEdgeToEdgeController.unregisterAdjuster(mEdgeToEdgePadAdjuster);
+        }
+        mEdgeToEdgeController = edgeToEdgeController;
+        if (mEdgeToEdgeController != null) {
+            mEdgeToEdgeController.registerAdjuster(mEdgeToEdgePadAdjuster);
+        }
+    }
+
+    private void updateTopMargin() {
+        mModel.set(TabListEditorProperties.TOP_MARGIN, mAppHeaderHeight + mEdgeToEdgeTopInset);
     }
 
     @Override
@@ -543,6 +576,13 @@ class TabListEditorMediator
 
         if (mDesktopWindowStateManager != null) {
             mDesktopWindowStateManager.removeObserver(this);
+        }
+        if (mEdgeToEdgeSupplier != null) {
+            mEdgeToEdgeSupplier.removeObserver(mEdgeToEdgeControllerCallback);
+        }
+        if (mEdgeToEdgeController != null) {
+            mEdgeToEdgeController.unregisterAdjuster(mEdgeToEdgePadAdjuster);
+            mEdgeToEdgeController = null;
         }
         if (mSelectionHandler != null) {
             mSelectionHandler

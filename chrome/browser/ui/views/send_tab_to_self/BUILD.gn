@@ -2,36 +2,27 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
+import("//components/signin/features.gni")
+
 assert(is_win || is_mac || is_linux || is_chromeos)
 
 source_set("send_tab_to_self") {
   public = [
     "send_tab_to_self_bubble_controller.h",
     "send_tab_to_self_bubble_device_button.h",
-    "send_tab_to_self_bubble_view.h",
     "send_tab_to_self_device_picker_bubble_view.h",
     "send_tab_to_self_no_target_device_bubble_view.h",
-    "send_tab_to_self_promo_bubble_view.h",
-    "send_tab_to_self_toolbar_bubble_controller.h",
-    "send_tab_to_self_toolbar_bubble_view.h",
   ]
   sources = [
-    "manage_account_devices_link_view.cc",
-    "manage_account_devices_link_view.h",
     "send_tab_to_self_bubble.cc",
     "send_tab_to_self_bubble_controller.cc",
     "send_tab_to_self_bubble_device_button.cc",
-    "send_tab_to_self_bubble_view.cc",
     "send_tab_to_self_device_picker_bubble_view.cc",
     "send_tab_to_self_no_target_device_bubble_view.cc",
-    "send_tab_to_self_promo_bubble_view.cc",
-    "send_tab_to_self_toolbar_bubble_controller.cc",
-    "send_tab_to_self_toolbar_bubble_view.cc",
   ]
 
   public_deps = [
     "//base",
-    "//chrome/browser/ui/media_router",
     "//chrome/browser/ui/views/controls",
     "//chrome/browser/ui/views/location_bar",
     "//components/send_tab_to_self",
@@ -47,23 +38,18 @@ source_set("send_tab_to_self") {
     "//chrome/app/vector_icons",
     "//chrome/browser:primitives",
     "//chrome/browser/send_tab_to_self",
-    "//chrome/browser/sharing_hub",
     "//chrome/browser/signin",
     "//chrome/browser/sync",
     "//chrome/browser/ui:browser_actions",
+    "//chrome/browser/ui:browser_window_header",
     "//chrome/browser/ui/actions",
     "//chrome/browser/ui/browser_window",
     "//chrome/browser/ui/send_tab_to_self",
-    "//chrome/browser/ui/sharing_hub",
-    "//chrome/browser/ui/signin",
     "//chrome/browser/ui/views:layout_provider",
     "//chrome/browser/ui/views/frame:toolbar_button_provider",
-    "//chrome/browser/ui/views/sharing_hub",
     "//chrome/browser/ui/views/toolbar",
-    "//chrome/browser/user_education",
-    "//components/pref_registry",
-    "//components/prefs",
     "//components/signin/public/base",
+    "//components/signin/public/base:signin_buildflags",
     "//components/signin/public/identity_manager",
     "//components/strings",
     "//components/url_formatter",
@@ -73,6 +59,12 @@ source_set("send_tab_to_self") {
     "//ui/strings:ui_strings",
     "//ui/strings:ui_strings_grit",
   ]
+
+  if (enable_dice_support) {
+    public += [ "send_tab_to_self_promo_bubble_view.h" ]
+    sources += [ "send_tab_to_self_promo_bubble_view.cc" ]
+    public_deps += [ "//chrome/browser/ui/signin" ]
+  }
 }
 
 source_set("browser_tests") {
@@ -81,7 +73,6 @@ source_set("browser_tests") {
   sources = [
     "send_tab_to_self_bubble_browsertest.cc",
     "send_tab_to_self_bubble_controller_browsertest.cc",
-    "send_tab_to_self_toolbar_bubble_view_browsertest.cc",
   ]
   deps = [
     ":send_tab_to_self",
@@ -89,7 +80,6 @@ source_set("browser_tests") {
     "//base/test:test_support",
     "//chrome/app:command_ids",
     "//chrome/app/vector_icons",
-    "//chrome/browser/notifications:test_support",
     "//chrome/browser/profiles:profile",
     "//chrome/browser/renderer_context_menu",
     "//chrome/browser/send_tab_to_self",
@@ -97,8 +87,8 @@ source_set("browser_tests") {
     "//chrome/browser/signin:signin_browser_test_base",
     "//chrome/browser/signin:test_support",
     "//chrome/browser/sync",
-    "//chrome/browser/ui",
     "//chrome/browser/ui:browser_actions",
+    "//chrome/browser/ui:browser_commands",
     "//chrome/browser/ui:browser_window_header",
     "//chrome/browser/ui/browser_window",
     "//chrome/browser/ui/send_tab_to_self",
@@ -106,13 +96,15 @@ source_set("browser_tests") {
     "//chrome/browser/ui/tabs:tab_strip",
     "//chrome/browser/ui/toasts",
     "//chrome/browser/ui/toasts/api:toasts",
+    "//chrome/browser/ui/views/frame:browser_view_header",
     "//chrome/browser/ui/views/toolbar",
+    "//chrome/browser/ui/views/toolbar:test_support",
     "//chrome/test:test_support",
-    "//chrome/test:test_support_ui",
     "//components/keyed_service/content",
     "//components/keyed_service/core",
     "//components/send_tab_to_self",
     "//components/send_tab_to_self:test_support",
+    "//components/signin/public/base",
     "//components/signin/public/base:signin_buildflags",
     "//components/signin/public/identity_manager",
     "//components/strings:components_strings",
@@ -123,11 +115,11 @@ source_set("browser_tests") {
     "//google_apis",
     "//testing/gmock",
     "//testing/gtest",
+    "//ui/actions",
     "//ui/base",
     "//ui/events:events_base",
     "//ui/gfx",
     "//ui/gfx:test_support",
-    "//ui/strings:ui_strings",
     "//ui/views",
     "//ui/views:test_support",
   ]
@@ -140,13 +132,11 @@ source_set("interactive_ui_tests") {
   deps = [
     ":send_tab_to_self",
     "//chrome/browser/sync",
-    "//chrome/browser/ui",
     "//chrome/browser/ui/browser_window",
     "//chrome/browser/ui/send_tab_to_self",
     "//chrome/browser/ui/toasts",
     "//chrome/browser/ui/views/send_tab_to_self",
     "//chrome/test:test_support",
-    "//chrome/test:test_support_ui",
     "//components/keyed_service/content",
     "//components/send_tab_to_self",
     "//components/send_tab_to_self:test_support",
@@ -162,8 +152,10 @@ source_set("unit_tests") {
   sources = [
     "send_tab_to_self_device_picker_bubble_view_unittest.cc",
     "send_tab_to_self_no_target_device_bubble_view_unittest.cc",
-    "send_tab_to_self_promo_bubble_view_unittest.cc",
   ]
+  if (enable_dice_support) {
+    sources += [ "send_tab_to_self_promo_bubble_view_unittest.cc" ]
+  }
   deps = [
     ":send_tab_to_self",
     "//base",
@@ -172,10 +164,8 @@ source_set("unit_tests") {
     "//chrome/browser/profiles:profile",
     "//chrome/browser/signin",
     "//chrome/browser/signin:test_support",
-    "//chrome/browser/ui/signin",
     "//chrome/test:test_support",
     "//components/send_tab_to_self",
-    "//components/signin/public/base:signin_buildflags",
     "//components/signin/public/identity_manager",
     "//components/signin/public/identity_manager:test_support",
     "//components/strings:components_strings",
@@ -191,4 +181,7 @@ source_set("unit_tests") {
     "//ui/views",
     "//ui/views:test_support",
   ]
+  if (enable_dice_support) {
+    deps += [ "//chrome/browser/ui/signin" ]
+  }
 }

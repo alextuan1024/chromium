@@ -55,7 +55,6 @@
 #include "third_party/blink/public/mojom/context_menu/context_menu.mojom-blink.h"
 #include "third_party/blink/public/mojom/devtools/devtools_agent.mojom-blink-forward.h"
 #include "third_party/blink/public/mojom/devtools/inspector_issue.mojom-blink-forward.h"
-#include "third_party/blink/public/mojom/fenced_frame/fenced_frame.mojom-blink-forward.h"
 #include "third_party/blink/public/mojom/frame/find_in_page.mojom-blink-forward.h"
 #include "third_party/blink/public/mojom/frame/lifecycle.mojom-blink-forward.h"
 #include "third_party/blink/public/mojom/frame/tree_scope_type.mojom-blink.h"
@@ -71,12 +70,12 @@
 #include "third_party/blink/public/web/web_navigation_control.h"
 #include "third_party/blink/public/web/web_performance_metrics_for_nested_contexts.h"
 #include "third_party/blink/public/web/web_performance_metrics_for_reporting.h"
+#include "third_party/blink/public/web/web_performance_timings.h"
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/core/editing/forward.h"
 #include "third_party/blink/renderer/core/exported/web_input_method_controller_impl.h"
 #include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/core/frame/web_remote_frame_impl.h"
-#include "third_party/blink/renderer/platform/heap/self_keep_alive.h"
 #include "third_party/blink/renderer/platform/wtf/casting.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
 #include "ui/gfx/geometry/rect_f.h"
@@ -85,7 +84,6 @@ namespace blink {
 
 class ChromePrintContext;
 class FindInPage;
-class HTMLFencedFrameElement;
 class LocalFrameClientImpl;
 class ResourceError;
 class ScrollableArea;
@@ -116,7 +114,6 @@ class CORE_EXPORT WebLocalFrameImpl final
       public WebNavigationControl {
  public:
   // WebFrame overrides:
-  void Close(DetachReason detach_reason) override;
   WebView* View() const override;
   v8::Local<v8::Object> GlobalProxy(v8::Isolate* isolate) const override;
   bool IsLoading() const override;
@@ -127,6 +124,7 @@ class CORE_EXPORT WebLocalFrameImpl final
       WebLocalFrameClient*,
       InterfaceRegistry*,
       const LocalFrameToken& frame_token) override;
+  void Close(DetachReason detach_reason) override;
   WebLocalFrameClient* Client() const override { return client_; }
   void SetAutofillClient(WebAutofillClient*) override;
   WebAutofillClient* AutofillClient() override;
@@ -310,13 +308,19 @@ class CORE_EXPORT WebLocalFrameImpl final
   void UsageCountChromeLoadTimes(const WebString& metric) override;
   void UsageCountChromeCSI(const WebString& metric) override;
   bool DispatchedPagehideAndStillHidden() const override;
+#if BUILDFLAG(IS_ANDROID)
+  void PostEmbedderMessageEvent(
+      const WebSecurityOrigin& target_origin,
+      std::vector<MessagePortDescriptor> ports,
+      base::UnsafeSharedMemoryRegion region) override;
+#endif
   FrameScheduler* Scheduler() const override;
   scheduler::WebAgentGroupScheduler* GetAgentGroupScheduler() const override;
   scoped_refptr<base::SingleThreadTaskRunner> GetTaskRunner(TaskType) override;
   void PostIdleTask(
       const base::Location&,
       base::OnceCallback<void(base::TimeTicks deadline)>) override;
-  WebInputMethodController* GetInputMethodController() override;
+  WebInputMethodControllerImpl* GetInputMethodController() override;
   std::unique_ptr<WebAssociatedURLLoader> CreateAssociatedURLLoader(
       const WebAssociatedURLLoaderOptions&) override;
   void DeprecatedStopLoading() override;
@@ -347,6 +351,7 @@ class CORE_EXPORT WebLocalFrameImpl final
       const override;
   WebPerformanceMetricsForNestedContexts PerformanceMetricsForNestedContexts()
       const override;
+  WebPerformanceTimings PerformanceTimings() const override;
   bool IsAdFrame() const override;
   bool IsAdScriptInStack() const override;
   void SetAdEvidence(const FrameAdEvidence& ad_evidence) override;
@@ -361,14 +366,12 @@ class CORE_EXPORT WebLocalFrameImpl final
       const std::vector<uint32_t>* pages = nullptr) override;
   gfx::Rect GetSelectionBoundsRectForTesting() const override;
   gfx::Point GetPositionInViewportForTesting() const override;
-  void WasHidden() override;
-  void WasShown() override;
   void SetAllowsCrossBrowsingInstanceFrameLookup() override;
   void NotifyUserActivation(
       mojom::blink::UserActivationNotificationType notification_type) override;
   bool HasStickyUserActivation() override;
   bool HasTransientUserActivation() override;
-  bool ConsumeTransientUserActivation(UserActivationUpdateSource) override;
+  bool ConsumeTransientUserActivation(UserActivationUpdateScope) override;
   bool LastActivationWasRestricted() const override;
 #if BUILDFLAG(IS_WIN)
   WebFontFamilyNames GetWebFontFamilyNames() const override;
@@ -436,6 +439,8 @@ class CORE_EXPORT WebLocalFrameImpl final
   bool IsFeatureEnabled(
       const network::mojom::PermissionsPolicyFeature&) const override;
 
+  bool IsInBackForwardCache() const override;
+
   void InitializeCoreFrame(
       Page&,
       FrameOwner*,
@@ -500,13 +505,8 @@ class CORE_EXPORT WebLocalFrameImpl final
   LocalFrame* CreateChildFrame(const AtomicString& name,
                                HTMLFrameOwnerElement*);
 
-  RemoteFrame* CreateFencedFrame(
-      HTMLFencedFrameElement*,
-      mojo::PendingAssociatedReceiver<mojom::blink::FencedFrameOwnerHost>);
-
   void DidChangeContentsSize(const gfx::Size&);
 
-  bool HasDevToolsOverlays() const;
   void UpdateDevToolsOverlaysPrePaint();
   void PaintDevToolsOverlays(GraphicsContext&);
 
@@ -596,6 +596,8 @@ class CORE_EXPORT WebLocalFrameImpl final
   void RemoveObserver(WebLocalFrameObserver* observer);
 
   void WillSendSubmitEvent(const WebFormElement& form);
+  void WasHidden();
+  void WasShown();
 
  protected:
   // WebLocalFrame protected overrides:
@@ -737,11 +739,6 @@ class CORE_EXPORT WebLocalFrameImpl final
       spell_check_panel_host_client_;
 
   mojom::BackForwardCacheNotRestoredReasonsPtr not_restored_reasons_;
-
-  // Oilpan: WebLocalFrameImpl must remain alive until close() is called.
-  // Accomplish that by keeping a self-referential Persistent<>. It is
-  // cleared upon close().
-  SelfKeepAlive<WebLocalFrameImpl> self_keep_alive_{{}, this};
 
 #if DCHECK_IS_ON()
   // True if DispatchBeforePrintEvent() was called, and

@@ -86,9 +86,6 @@
 #include "third_party/blink/renderer/platform/webrtc/convert_to_webrtc_video_frame_buffer.h"
 #include "third_party/blink/renderer/platform/webrtc/webrtc_video_frame_adapter.h"
 #include "third_party/blink/renderer/platform/webrtc/webrtc_video_utils.h"
-#include "third_party/blink/renderer/platform/wtf/cross_thread_copier_base.h"
-#include "third_party/blink/renderer/platform/wtf/cross_thread_copier_gfx.h"
-#include "third_party/blink/renderer/platform/wtf/cross_thread_copier_std.h"
 #include "third_party/blink/renderer/platform/wtf/cross_thread_functional.h"
 #include "third_party/blink/renderer/platform/wtf/deque.h"
 #include "third_party/blink/renderer/platform/wtf/functional.h"
@@ -239,15 +236,7 @@ class RefCountedWritableSharedMemoryMapping
   RefCountedWritableSharedMemoryMapping& operator=(
       const RefCountedWritableSharedMemoryMapping&) = delete;
 
-  const base::span<const uint8_t> AsSpan() const { return mapping_; }
-  const base::span<uint8_t> AsSpan() { return mapping_; }
-
-  const unsigned char* front() const {
-    return static_cast<const unsigned char*>(mapping_.memory());
-  }
-  unsigned char* front() {
-    return static_cast<unsigned char*>(mapping_.memory());
-  }
+  base::span<const uint8_t> AsSpan() const { return mapping_; }
   size_t size() const { return mapping_.size(); }
 
  private:
@@ -271,7 +260,7 @@ class EncodedDataWrapper : public webrtc::EncodedImageBufferInterface {
     DCHECK(reuse_buffer_callback_);
     std::move(reuse_buffer_callback_).Run();
   }
-  const uint8_t* data() const override { return mapping_->front(); }
+  const uint8_t* data() const override { return mapping_->AsSpan().data(); }
   size_t size() const override { return size_; }
 
  private:
@@ -1990,6 +1979,8 @@ void RTCVideoEncoder::Impl::BitstreamBufferReady(
         media::EncoderStatus status = FillGenericFrameInfo(info, metadata);
         if (!status.is_ok()) {
           NotifyErrorStatus(status);
+        } else {
+          image.SetTemporalIndex(info.generic_frame_info->temporal_id);
         }
       }
       break;
@@ -2485,6 +2476,11 @@ void RTCVideoEncoder::Impl::EncodeOneFrameWithNativeInput(
 void RTCVideoEncoder::Impl::DoNativeEncodeWithNativeInput(
     FrameChunk frame_chunk,
     scoped_refptr<media::VideoFrame> frame) {
+  if (!video_encoder_) {
+    // Accelerated pool path may call this asynchronously after the encoder has
+    // been destroyed.
+    return;
+  }
   frame->set_timestamp(base::Microseconds(frame_chunk.timestamp_us));
 
   if (!failed_timestamp_match_) {

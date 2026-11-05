@@ -99,8 +99,8 @@
 #include "third_party/blink/renderer/core/html/track/video_track_list.h"
 #include "third_party/blink/renderer/core/html_names.h"
 #include "third_party/blink/renderer/core/inspector/console_message.h"
-#include "third_party/blink/renderer/core/keywords.h"
 #include "third_party/blink/renderer/core/intersection_observer/intersection_observer.h"
+#include "third_party/blink/renderer/core/keywords.h"
 #include "third_party/blink/renderer/core/layout/layout_media.h"
 #include "third_party/blink/renderer/core/loader/lazy_media_helper.h"
 #include "third_party/blink/renderer/core/loader/mixed_content_checker.h"
@@ -126,6 +126,7 @@
 #include "third_party/blink/renderer/platform/widget/frame_widget.h"
 #include "third_party/blink/renderer/platform/wtf/casting.h"
 #include "third_party/blink/renderer/platform/wtf/functional.h"
+#include "third_party/blink/renderer/platform/wtf/text/format.h"
 #include "third_party/blink/renderer/platform/wtf/text/strcat.h"
 #include "third_party/blink/renderer/platform/wtf/vector.h"
 #include "ui/accessibility/accessibility_features.h"
@@ -264,10 +265,8 @@ String BuildElementErrorMessage(const String& error) {
   // collection and aggregation of UA-specific-error codes from
   // MediaError.message by web apps. WebMediaPlayer::GetErrorMessage() should
   // similarly conform to this format.
-  DEFINE_STATIC_LOCAL(const String, element_error_prefix,
-                      ("MEDIA_ELEMENT_ERROR: "));
   StringBuilder builder;
-  builder.Append(element_error_prefix);
+  builder.Append(String::FromLiteral<"MEDIA_ELEMENT_ERROR: ">());
   builder.Append(error);
   return builder.ToString();
 }
@@ -854,18 +853,37 @@ void HTMLMediaElement::ParseAttribute(
         params.reason == AttributeModificationReason::kByParser) {
       muted_ = true;
     }
+    // The simplest behavior would be if setting the muted content attribute
+    // always muted playback, but that may not be web compatible. Measure how
+    // often the content attribute is set by script and muted_ is still false at
+    // the next microtask checkpoint.
+    if (params.reason == AttributeModificationReason::kDirectly &&
+        !params.new_value.IsNull() && !muted_) {
+      GetDocument().GetAgent().event_loop()->EnqueueMicrotask(
+          BindOnce(&HTMLMediaElement::CheckMutedAttributeWouldMute,
+                   WrapWeakPersistent(this)));
+    }
   } else if (name == html_names::kLoadingAttr &&
              RuntimeEnabledFeatures::LazyLoadVideoAndAudioEnabled()) {
-    // If the loading attribute is changed to eager while deferred, load now.
-    LoadingAttributeValue loading = GetLoadingAttributeValue(params.new_value);
-    LoadingAttributeValue old_loading =
-        GetLoadingAttributeValue(params.old_value);
-    if (loading == LoadingAttributeValue::kEager &&
-        old_loading != LoadingAttributeValue::kEager) {
+    // If the loading attribute's state changes to eager while deferred, load
+    // now. The missing value default and the invalid value default are both
+    // the Eager state, so any value other than "lazy" means eager.
+    // https://html.spec.whatwg.org/#attr-media-loading
+    auto is_lazy = [](const AtomicString& value) {
+      return GetLoadingAttributeValue(value) == LoadingAttributeValue::kLazy;
+    };
+    if (is_lazy(params.old_value) && !is_lazy(params.new_value)) {
       LoadDeferredMediaIfNeeded();
     }
   } else {
     HTMLElement::ParseAttribute(params);
+  }
+}
+
+void HTMLMediaElement::CheckMutedAttributeWouldMute() {
+  if (FastHasAttribute(html_names::kMutedAttr) && !muted_) {
+    UseCounter::Count(GetDocument(),
+                      WebFeature::kHTMLMediaElementMutedAttributeWouldMute);
   }
 }
 
@@ -925,8 +943,7 @@ Node::InsertionNotificationRequest HTMLMediaElement::InsertedInto(
     if (lazy_media_load_state_ == LazyMediaLoadState::kDeferred) {
       LazyMediaHelper::StartMonitoring(this);
     } else if ((!FastGetAttribute(html_names::kSrcAttr).empty() ||
-                src_object_stream_descriptor_ ||
-                src_object_media_source_handle_) &&
+                HasSrcObject()) &&
                network_state_ == kNetworkEmpty) {
       ignore_preload_none_ = false;
       InvokeLoadAlgorithm();
@@ -1325,7 +1342,7 @@ void HTMLMediaElement::SelectMediaResource() {
 
   // 6 - If the media element has an assigned media provider object, then let
   //     mode be object.
-  if (src_object_stream_descriptor_ || src_object_media_source_handle_) {
+  if (HasSrcObject()) {
     mode = kObject;
   } else if (FastHasAttribute(html_names::kSrcAttr)) {
     // Otherwise, if the media element has no assigned media provider object
@@ -1643,11 +1660,12 @@ bool HTMLMediaElement::IsValidBuiltinCommand(HTMLElement& invoker,
 }
 
 bool HTMLMediaElement::HandleCommandInternal(HTMLElement& invoker,
-                                             CommandEventType command) {
+                                             CommandEventType command,
+                                             UIEvent* activate_event) {
   if (!IsValidBuiltinCommand(invoker, command)) {
     return false;
   }
-  if (HTMLElement::HandleCommandInternal(invoker, command)) {
+  if (HTMLElement::HandleCommandInternal(invoker, command, activate_event)) {
     return true;
   }
 
@@ -2952,8 +2970,9 @@ void HTMLMediaElement::setPlaybackRate(double rate,
     // DOMException and don't update the value.
     exception_state.ThrowDOMException(
         DOMExceptionCode::kNotSupportedError,
-        StrCat({"The provided playback rate (", String::Number(rate),
-                ") is not in the supported playback range."}));
+        Format("The provided playback rate ({:g}) is not in the supported "
+               "playback range.",
+               rate));
 
     // Do not update |playback_rate_|.
     return;
@@ -3066,8 +3085,7 @@ void HTMLMediaElement::LoadDeferredTracks() {
 }
 
 bool HTMLMediaElement::HasMediaSources() const {
-  return FastHasAttribute(html_names::kSrcAttr) ||
-         src_object_stream_descriptor_ || src_object_media_source_handle_ ||
+  return FastHasAttribute(html_names::kSrcAttr) || HasSrcObject() ||
          Traversal<HTMLSourceElement>::FirstChild(*this);
 }
 
@@ -3856,13 +3874,11 @@ KURL HTMLMediaElement::SelectNextSourceChild(
     // 2. If candidate does not have a src attribute, or if its src
     // attribute's value is the empty string ... jump down to the failed
     // step below
-    const AtomicString& src_value =
-        source->FastGetAttribute(html_names::kSrcAttr);
     if (should_log) {
       DVLOG(3) << "selectNextSourceChild(" << *this << ") - 'src' is "
                << UrlForLoggingMedia(media_url);
     }
-    if (src_value.empty()) {
+    if (source->FastGetAttribute(html_names::kSrcAttr).empty()) {
       goto checkAgain;
     }
 
@@ -3877,7 +3893,11 @@ KURL HTMLMediaElement::SelectNextSourceChild(
     // 4. Let urlRecord be the result of encoding-parsing a URL given
     // candidate's src attribute's value, relative to candidate's node document
     // when the src attribute was last changed.
-    media_url = source->GetDocument().CompleteURL(src_value);
+    // Note: Do not cache `kSrcAttr` in a local reference across step 3, as
+    // `MediaQueryMatches()` can trigger style/layout updates that mutate
+    // attributes or reallocate the element's attribute buffer.
+    media_url = source->GetDocument().CompleteURL(
+        source->FastGetAttribute(html_names::kSrcAttr));
 
     // 5. If urlRecord is failure, then end the synchronous section, and jump
     // down to the failed with elements step below.
@@ -3933,10 +3953,11 @@ void HTMLMediaElement::SourceWasAdded(HTMLSourceElement* source) {
   DVLOG(3) << "sourceWasAdded(" << *this << ") - 'src' is "
            << UrlForLoggingMedia(url);
 
-  // We should only consider a <source> element when there is not src attribute
-  // at all.
-  if (FastHasAttribute(html_names::kSrcAttr))
+  // We should only consider a <source> element when there is neither a
+  // srcObject nor a src attribute at all.
+  if (FastHasAttribute(html_names::kSrcAttr) || HasSrcObject()) {
     return;
+  }
 
   // 4.8.8 - If a source element is inserted as a child of a media element that
   // has no src attribute and whose networkState has the value NETWORK_EMPTY,
@@ -3962,8 +3983,17 @@ void HTMLMediaElement::SourceWasAdded(HTMLSourceElement* source) {
   if (next_child_node_to_consider_)
     return;
 
-  if (load_state_ != kWaitingForSource)
+  // Step 21 ("Wait until the node after pointer is a node other than the end of
+  // the list") only applies when the resource selection algorithm is in the
+  // source elements section and waiting at the Wait step, which sets
+  // networkState to NETWORK_NO_SOURCE. If networkState is not NETWORK_NO_SOURCE
+  // (e.g. NETWORK_IDLE after a decode error where MediaEngineError() aborted
+  // resource selection but set load_state_ = kWaitingForSource), we must not
+  // resume candidate selection.
+  if (load_state_ != kWaitingForSource ||
+      network_state_ != HTMLMediaElement::kNetworkNoSource) {
     return;
+  }
 
   // 4.8.9.5, resource selection algorithm, source elements section:
   // 21. Wait until the node after pointer is a node other than the end of the
@@ -3997,6 +4027,12 @@ void HTMLMediaElement::SourceWasRemoved(HTMLSourceElement* source) {
   KURL url = source->GetNonEmptyURLAttribute(html_names::kSrcAttr);
   DVLOG(3) << "sourceWasRemoved(" << *this << ") - 'src' is "
            << UrlForLoggingMedia(url);
+
+  // We should only consider a <source> element when there is neither a
+  // srcObject nor a src attribute at all.
+  if (FastHasAttribute(html_names::kSrcAttr) || HasSrcObject()) {
+    return;
+  }
 
   if (source != current_source_node_ && source != next_child_node_to_consider_)
     return;
@@ -4189,6 +4225,19 @@ WebTimeRanges HTMLMediaElement::SeekableInternal() const {
 
 TimeRanges* HTMLMediaElement::seekable() const {
   return MakeGarbageCollected<TimeRanges>(SeekableInternal());
+}
+
+bool HTMLMediaElement::CanSeekTo(double time) const {
+  WebTimeRanges seekable_ranges = SeekableInternal();
+  // WebMediaPlayerImpl::Seekable() returns a single [0.0, 0.0] range for
+  // non-seekable finite streaming sources solely to allow looping to work.
+  // Do not treat this special [0.0, 0.0] range as seekable for user/control
+  // seeks.
+  if (seekable_ranges.size() == 1 && seekable_ranges[0].start == 0.0 &&
+      seekable_ranges[0].end == 0.0) {
+    return false;
+  }
+  return seekable_ranges.Contain(time);
 }
 
 bool HTMLMediaElement::PotentiallyPlaying() const {
@@ -4846,9 +4895,11 @@ void HTMLMediaElement::Trace(Visitor* visitor) const {
   visitor->Trace(media_player_receiver_set_);
   visitor->Trace(opener_document_);
   visitor->Trace(opener_context_observer_);
+  visitor->Trace(remote_playback_client_);
   Supplementable<HTMLMediaElement>::Trace(visitor);
   HTMLElement::Trace(visitor);
   ExecutionContextLifecycleStateObserver::Trace(visitor);
+  MediaPlayerClient::Trace(visitor);
 }
 
 void HTMLMediaElement::CreatePlaceholderTracksIfNecessary() {
@@ -5095,9 +5146,11 @@ void HTMLMediaElement::AudioSourceProviderImpl::ProvideInput(
     return;
   }
 
-  // Wrap the AudioBus channel data using span.
+  // Wrap the AudioBus channel data using span. Inline up to 8 channels (e.g.
+  // 7.1 surround) on the stack to avoid heap allocations for common layouts.
+  constexpr wtf_size_t kInlineChannelCapacity = 8;
   unsigned n = bus->NumberOfChannels();
-  std::vector<base::span<float>> web_audio_data(n);
+  Vector<base::span<float>, kInlineChannelCapacity> web_audio_data(n);
   for (unsigned i = 0; i < n; ++i) {
     web_audio_data[i] = bus->Channel(i)->MutableSpan().first(
         base::checked_cast<size_t>(frames_to_process));
@@ -5346,17 +5399,26 @@ void HTMLMediaElement::RequestPause(bool triggered_by_user) {
 void HTMLMediaElement::RequestSeekForward(base::TimeDelta seek_time) {
   double seconds = seek_time.InSecondsF();
   DCHECK_GE(seconds, 0) << "Attempted to seek by a negative number of seconds";
-  setCurrentTime(currentTime() + seconds);
+  double time = std::min(currentTime() + seconds, duration());
+  if (CanSeekTo(time)) {
+    setCurrentTime(time);
+  }
 }
 
 void HTMLMediaElement::RequestSeekBackward(base::TimeDelta seek_time) {
   double seconds = seek_time.InSecondsF();
   DCHECK_GE(seconds, 0) << "Attempted to seek by a negative number of seconds";
-  setCurrentTime(currentTime() - seconds);
+  double time = std::max(currentTime() - seconds, EarliestPossiblePosition());
+  if (CanSeekTo(time)) {
+    setCurrentTime(time);
+  }
 }
 
 void HTMLMediaElement::RequestSeekTo(base::TimeDelta seek_time) {
-  setCurrentTime(seek_time.InSecondsF());
+  double time = std::min(seek_time.InSecondsF(), duration());
+  if (CanSeekTo(time)) {
+    setCurrentTime(time);
+  }
 }
 
 void HTMLMediaElement::RequestMute(bool mute) {

@@ -4,8 +4,11 @@
 
 #include "chrome/browser/metrics/chrome_metrics_service_client.h"
 
+#include <stdint.h>
+
 #include <string>
 
+#include "base/containers/span.h"
 #include "base/files/file_path.h"
 #include "base/metrics/persistent_histogram_allocator.h"
 #include "base/process/process_handle.h"
@@ -19,7 +22,7 @@
 #include "chrome/common/chrome_features.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile_manager.h"
-#include "components/crash/core/common/shared_memory_user_stream_reader.h"
+#include "components/crash/core/app/crash_reporter_client.h"
 #include "components/metrics/client_info.h"
 #include "components/metrics/content/subprocess_metrics_provider.h"
 #include "components/metrics/dwa/dwa_recorder.h"
@@ -27,11 +30,11 @@
 #include "components/metrics/metrics_features.h"
 #include "components/metrics/metrics_service.h"
 #include "components/metrics/metrics_state_manager.h"
-#include "components/metrics/system_profile_user_stream.h"
 #include "components/metrics/test/test_enabled_state_provider.h"
 #include "components/metrics/unsent_log_store.h"
 #include "components/prefs/testing_pref_service.h"
 #include "components/regional_capabilities/regional_capabilities_switches.h"
+#include "components/site_token_provider/features.h"
 #include "components/ukm/ukm_service.h"
 #include "components/ukm/ukm_test_helper.h"
 
@@ -48,11 +51,11 @@
 #include "components/variations/synthetic_trial_registry.h"
 #include "content/public/test/browser_task_environment.h"
 #include "extensions/buildflags/buildflags.h"
+#include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 #if !BUILDFLAG(IS_ANDROID)
 #include "components/component_updater/mock_component_updater_service.h"
-#include "testing/gmock/include/gmock/gmock.h"
 #endif
 
 #if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
@@ -82,6 +85,19 @@ std::unique_ptr<KeyedService> BuildTestSyncService(
     content::BrowserContext* context) {
   return std::make_unique<syncer::TestSyncService>();
 }
+
+class MockCrashReporterClient : public crash_reporter::CrashReporterClient {
+ public:
+  MockCrashReporterClient() { crash_reporter::SetCrashReporterClient(this); }
+  ~MockCrashReporterClient() override {
+    crash_reporter::SetCrashReporterClient(nullptr);
+  }
+
+  MOCK_METHOD(bool,
+              WriteUserStreamData,
+              (uint32_t user_stream_type, base::span<const uint8_t> data),
+              (override));
+};
 
 }  // namespace
 
@@ -137,7 +153,8 @@ class ChromeMetricsServiceClientTest : public testing::Test {
     scoped_feature_list_.InitWithFeatures(
         {features::kUmaStorageDimensions,
          features::kClassManagementEnabledMetricsProvider,
-         metrics::dwa::kDwaFeature, switches::kDynamicProfileCountry},
+         metrics::dwa::kDwaFeature, switches::kDynamicProfileCountry,
+         site_token_provider::features::kSiteTokenProviderEnabled},
         {});
 
     // ChromeOs Metrics Provider require g_login_state and power manager client
@@ -147,13 +164,19 @@ class ChromeMetricsServiceClientTest : public testing::Test {
 #elif BUILDFLAG(IS_WIN)
     scoped_feature_list_.InitWithFeatures(
         {metrics::dwa::kDwaFeature, switches::kDynamicProfileCountry,
-         features::kSystemPdhMetrics},
+         features::kSystemPdhMetrics,
+         site_token_provider::features::kSiteTokenProviderEnabled},
         {});
 #elif BUILDFLAG(IS_ANDROID)
-    scoped_feature_list_.InitWithFeatures({metrics::dwa::kDwaFeature}, {});
+    scoped_feature_list_.InitWithFeatures(
+        {metrics::dwa::kDwaFeature,
+         site_token_provider::features::kSiteTokenProviderEnabled},
+        {});
 #else
     scoped_feature_list_.InitWithFeatures(
-        {metrics::dwa::kDwaFeature, switches::kDynamicProfileCountry}, {});
+        {metrics::dwa::kDwaFeature, switches::kDynamicProfileCountry,
+         site_token_provider::features::kSiteTokenProviderEnabled},
+        {});
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
 #if !BUILDFLAG(IS_ANDROID)
@@ -242,7 +265,7 @@ TEST_F(ChromeMetricsServiceClientTest, TestRegisterUKMProviders) {
   // Test that UKM service has initialized all its metrics providers listed in
   // ChromeMetricsServiceClient::RegisterUKMProviders, for all platform with one
   // exception on ChromeOS.
-  size_t expected_providers = 10;
+  size_t expected_providers = 11;
 #if BUILDFLAG(IS_CHROMEOS)
   // ChromeOSMetricsProvider
   expected_providers++;
@@ -328,9 +351,8 @@ TEST_F(ChromeMetricsServiceClientTest, TestRegisterMetricsServiceProviders) {
   // PersonalizationAppThemeMetricsProvider, PrinterMetricsProvider,
   // FamilyUserMetricsProvider, FamilyLinkUserMetricsProvider,
   // UpdateEngineMetricsProvider, OsSettingsMetricsProvider,
-  // UserTypeByDeviceTypeMetricsProvider, WallpaperMetricsProvider,
-  // and VmmMetricsProvider.
-  expected_providers += 16;
+  // UserTypeByDeviceTypeMetricsProvider, and WallpaperMetricsProvider.
+  expected_providers += 15;
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
 #if !BUILDFLAG(IS_CHROMEOS)
@@ -365,6 +387,9 @@ TEST_F(ChromeMetricsServiceClientTest, TestRegisterMetricsServiceProviders) {
 #endif
 
   // GlicMetricsProvider
+  expected_providers += 1;
+
+  // SiteTokenProviderMetricsProvider
   expected_providers += 1;
 
   std::unique_ptr<TestChromeMetricsServiceClient>
@@ -608,29 +633,16 @@ TEST_F(ChromeMetricsServiceClientTest,
   base::test::ScopedFeatureList local_feature_list;
   local_feature_list.InitAndEnableFeature(
       metrics::features::kSharedMemorySystemProfileMinidump);
-
-  // Initialize the stream region first.
-  metrics::SystemProfileUserStream::Get().Initialize();
-  base::ReadOnlySharedMemoryRegion shared_region =
-      metrics::SystemProfileUserStream::Get().DuplicateSharedMemoryRegion();
-  ASSERT_TRUE(shared_region.IsValid());
+  MockCrashReporterClient crash_reporter_client;
 
   std::unique_ptr<TestChromeMetricsServiceClient> client =
       TestChromeMetricsServiceClient::Create(metrics_state_manager_.get(),
                                              synthetic_trial_registry_.get());
 
   std::string test_environment = "test_environment_payload";
+  EXPECT_CALL(crash_reporter_client,
+              WriteUserStreamData(0x4B6B0003u,
+                                  testing::ElementsAreArray(
+                                      base::as_byte_span(test_environment))));
   client->OnEnvironmentUpdate(&test_environment);
-
-  base::ReadOnlySharedMemoryMapping mapping = shared_region.Map();
-  ASSERT_TRUE(mapping.IsValid());
-
-  std::optional<crash_reporter::UserStreamData> stream_data =
-      crash_reporter::ExtractSharedMemoryUserStreamData(
-          mapping.GetMemoryAsSpan<const uint8_t>());
-  ASSERT_TRUE(stream_data.has_value());
-  EXPECT_EQ(stream_data->user_stream_type, 0x4B6B0003u);
-  EXPECT_EQ(
-      std::string(stream_data->payload.begin(), stream_data->payload.end()),
-      test_environment);
 }

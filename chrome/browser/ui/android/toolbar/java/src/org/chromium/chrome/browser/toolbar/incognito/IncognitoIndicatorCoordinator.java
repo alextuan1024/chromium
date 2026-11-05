@@ -8,15 +8,21 @@ import static android.view.View.VISIBLE;
 
 import android.animation.Animator;
 import android.content.Context;
+import android.content.res.ColorStateList;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.drawable.ColorDrawable;
+import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.ViewStub;
+import android.widget.ImageView;
+import android.widget.TextView;
 
 import androidx.annotation.VisibleForTesting;
+import androidx.core.widget.ImageViewCompat;
 
+import org.chromium.base.DeviceInfo;
 import org.chromium.base.metrics.RecordUserAction;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
@@ -27,19 +33,26 @@ import org.chromium.chrome.browser.theme.ThemeColorProvider;
 import org.chromium.chrome.browser.toolbar.R;
 import org.chromium.chrome.browser.toolbar.top.ToolbarChild;
 import org.chromium.chrome.browser.toolbar.top.ToolbarLayout;
-import org.chromium.chrome.browser.toolbar.top.ToolbarUtils;
+import org.chromium.chrome.browser.ui.theme.BrandedColorScheme;
 import org.chromium.chrome.browser.user_education.IphCommandBuilder;
 import org.chromium.chrome.browser.user_education.UserEducationHelper;
 import org.chromium.components.browser_ui.widget.BrowserUiListMenuUtils;
 import org.chromium.components.browser_ui.widget.ListItemBuilder;
+import org.chromium.components.browser_ui.widget.containment.ContainerStyle;
+import org.chromium.components.browser_ui.widget.containment.ContainmentItemController;
+import org.chromium.components.browser_ui.widget.containment.ContainmentViewStyler;
+import org.chromium.components.browser_ui.widget.text.TextViewWithCompoundDrawables;
 import org.chromium.components.feature_engagement.EventConstants;
 import org.chromium.components.feature_engagement.FeatureConstants;
 import org.chromium.components.feature_engagement.Tracker;
+import org.chromium.components.signin.SigninFeatureMap;
+import org.chromium.components.signin.SigninFeatures;
 import org.chromium.ui.listmenu.BasicListMenu;
 import org.chromium.ui.listmenu.ListMenu.Delegate;
 import org.chromium.ui.listmenu.ListMenuItemProperties;
 import org.chromium.ui.modelutil.MVCListAdapter.ModelList;
 import org.chromium.ui.widget.AnchoredPopupWindow;
+import org.chromium.ui.widget.AnchoredPopupWindow.HorizontalOrientation;
 import org.chromium.ui.widget.ViewRectProvider;
 
 import java.util.Collection;
@@ -100,6 +113,14 @@ public class IncognitoIndicatorCoordinator extends ToolbarChild
     }
 
     @Override
+    public void onTintChanged(
+            @Nullable ColorStateList tint,
+            @Nullable ColorStateList activityFocusTint,
+            @BrandedColorScheme int brandedColorScheme) {
+        updateTint(activityFocusTint);
+    }
+
+    @Override
     public void onIncognitoStateChanged(boolean isIncognito) {
         super.onIncognitoStateChanged(isIncognito);
         if (mIsIncognitoBranded != null && mIsIncognitoBranded == isIncognito) return;
@@ -139,6 +160,7 @@ public class IncognitoIndicatorCoordinator extends ToolbarChild
             mIncognitoIndicator.setOnClickListener(this);
             mIncognitoIndicator.setOnLongClickListener(this);
             mIncognitoIndicator.setOnContextClickListener(this);
+            updateTint(mTopUiThemeColorProvider.getActivityFocusTint());
         }
 
         if (mIncognitoIndicator != null) {
@@ -147,6 +169,14 @@ public class IncognitoIndicatorCoordinator extends ToolbarChild
                 triggerIPH();
             }
         }
+    }
+
+    private void updateTint(@Nullable ColorStateList activityFocusTint) {
+        if (mIncognitoIndicator == null || activityFocusTint == null) return;
+        ImageView icon = mIncognitoIndicator.findViewById(R.id.incognito_indicator_icon);
+        ImageViewCompat.setImageTintList(icon, activityFocusTint);
+        TextView text = mIncognitoIndicator.findViewById(R.id.incognito_indicator_text);
+        text.setTextColor(activityFocusTint);
     }
 
     @Override
@@ -164,7 +194,6 @@ public class IncognitoIndicatorCoordinator extends ToolbarChild
 
     @Override
     public int updateVisibility(int availableWidth, int widthMeasureSpec, int heightMeasureSpec) {
-        assert ToolbarUtils.isToolbarTabletResizeRefactorEnabled();
         // Hide and consume no width if the desktop-like incognito window feature is not enabled,
         // or if the device is not in incognito mode. Do not cache the width of the indicator.
         if (!IncognitoUtils.shouldOpenIncognitoAsWindow()
@@ -251,44 +280,84 @@ public class IncognitoIndicatorCoordinator extends ToolbarChild
                         R.color.toolbar_text_box_background_incognito,
                         null);
 
-        int measuredWidth = menu.getMenuDimensions()[0];
-        mMenuWindow =
+        showMenuWindow(context, menu.getContentView(), menu.getMenuDimensions()[0]);
+    }
+
+    /**
+     * Create and display the Incognito card menu containing the Incognito card and the Close
+     * Incognito windows action row, anchored to the Incognito indicator.
+     *
+     * @param context The context of the Incognito menu.
+     */
+    private void createAndShowIncognitoCardMenu(Context context) {
+        if (mIncognitoIndicator == null) return;
+
+        View contentView = LayoutInflater.from(context).inflate(R.layout.incognito_menu, null);
+        TextViewWithCompoundDrawables closeButton =
+                contentView.findViewById(R.id.close_all_incognito_windows_button);
+        assert closeButton != null;
+        closeButton.setText(
+                getCloseAllIncognitoWindowsTitle(context, mIncognitoWindowCountSupplier.get()));
+        closeButton.setOnClickListener(
+                v -> {
+                    RecordUserAction.record("MobileIncognitoIndicatorCloseAllWindows");
+                    if (mMenuWindow != null) {
+                        mMenuWindow.dismiss();
+                    }
+                    IncognitoTabHostUtils.closeAllIncognitoTabs();
+                });
+        ContainerStyle style =
+                new ContainmentItemController(context)
+                        .createStandardBuilder(
+                                /* isTop= */ true, /* isBottom= */ true, /* isSingleLine= */ true)
+                        .build();
+        ContainmentViewStyler.applyBackgroundStyle(closeButton, style);
+        ContainmentViewStyler.applyMargins(closeButton, style);
+
+        int menuWidth = context.getResources().getDimensionPixelSize(R.dimen.account_menu_width);
+        showMenuWindow(context, contentView, menuWidth);
+    }
+
+    private void showMenuWindow(Context context, View contentView, int desiredWidth) {
+        if (mIncognitoIndicator == null) return;
+
+        AnchoredPopupWindow.Builder builder =
                 new AnchoredPopupWindow.Builder(
                                 context,
                                 mIncognitoIndicator,
                                 new ColorDrawable(Color.TRANSPARENT),
-                                menu::getContentView,
+                                (_) -> contentView,
                                 new ViewRectProvider(mIncognitoIndicator))
                         .addOnDismissListener(
                                 () -> {
                                     if (mIncognitoIndicator != null) {
                                         mIncognitoIndicator.setSelected(false);
                                     }
+                                    mMenuWindow = null;
                                 })
                         .setAnimateFromAnchor(true)
                         .setDismissOnScreenSizeChange(true)
-                        .setDismissOnTouchInteraction(true)
                         .setFocusable(true)
                         .setTouchModal(true)
-                        .setDesiredContentWidth(measuredWidth)
+                        .setDesiredContentWidth(desiredWidth)
                         .setHorizontalOverlapAnchor(true)
                         .setPreferredHorizontalOrientation(
-                                AnchoredPopupWindow.HorizontalOrientation.MAX_AVAILABLE_SPACE)
-                        .setVerticalOverlapAnchor(false)
-                        .build();
+                                HorizontalOrientation.MAX_AVAILABLE_SPACE)
+                        .setVerticalOverlapAnchor(false);
+        if (isIncognitoCardEnabled()) {
+            builder.setOutsideTouchable(true);
+        } else {
+            builder.setDismissOnTouchInteraction(true);
+        }
+        mMenuWindow = builder.build();
 
         mMenuWindow.show();
     }
 
     @VisibleForTesting
     ModelList buildMenuItems(Context context) {
-        int incognitoWindowCount = mIncognitoWindowCountSupplier.get();
         String title =
-                context.getResources()
-                        .getQuantityString(
-                                R.plurals.menu_close_all_incognito_windows,
-                                incognitoWindowCount,
-                                incognitoWindowCount);
+                getCloseAllIncognitoWindowsTitle(context, mIncognitoWindowCountSupplier.get());
         ModelList itemList = new ModelList();
         itemList.add(
                 new ListItemBuilder()
@@ -297,6 +366,15 @@ public class IncognitoIndicatorCoordinator extends ToolbarChild
                         .withIsIncognito(true)
                         .build());
         return itemList;
+    }
+
+    private static String getCloseAllIncognitoWindowsTitle(
+            Context context, int incognitoWindowCount) {
+        return context.getResources()
+                .getQuantityString(
+                        R.plurals.menu_close_all_incognito_windows,
+                        incognitoWindowCount,
+                        incognitoWindowCount);
     }
 
     @Override
@@ -318,7 +396,11 @@ public class IncognitoIndicatorCoordinator extends ToolbarChild
         RecordUserAction.record("MobileIncognitoIndicatorClicked");
         Context context = mIncognitoIndicator.getContext();
         mIncognitoIndicator.setSelected(true);
-        createAndShowMenu(context, buildMenuItems(context));
+        if (isIncognitoCardEnabled()) {
+            createAndShowIncognitoCardMenu(context);
+        } else {
+            createAndShowMenu(context, buildMenuItems(context));
+        }
     }
 
     @Override
@@ -331,6 +413,13 @@ public class IncognitoIndicatorCoordinator extends ToolbarChild
     public boolean onContextClick(View view) {
         onClick(view);
         return true;
+    }
+
+    private boolean isIncognitoCardEnabled() {
+        return DeviceInfo.isDesktop()
+                && SigninFeatureMap.isEnabled(SigninFeatures.SIGNIN_BUTTON_PROFILE_MENU)
+                && SigninFeatureMap.isEnabled(
+                        SigninFeatures.SIGNIN_BUTTON_PROFILE_MENU_REFINEMENTS);
     }
 
     private void triggerIPH() {

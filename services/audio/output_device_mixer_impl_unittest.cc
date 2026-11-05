@@ -171,7 +171,7 @@ class MockMixingGraph : public MixingGraph {
 
   void SimulateOnMoreData() {
     auto audio_bus = media::AudioBus::Create(2, 480);
-    on_more_data_cb_.Run(*audio_bus.get(), base::TimeDelta());
+    on_more_data_cb_.Run(*audio_bus, base::TimeDelta());
   }
 
  private:
@@ -709,7 +709,6 @@ TEST_P(OutputDeviceMixerImplTest,
 
   int stream_count = GetParam();
   std::vector<StreamUnderTest> streams_under_test;
-  std::set<MixTrackMock*> playing_stream_mocks;
   for (int i = 0; i < stream_count; ++i) {
     streams_under_test.push_back(CreateNextStreamUnderTest(mixer.get()));
     OpenAndVerifyStreamUnderTest(streams_under_test.back(),

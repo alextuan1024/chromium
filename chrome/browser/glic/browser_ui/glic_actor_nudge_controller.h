@@ -17,7 +17,7 @@ class BrowserWindowInterface;
 namespace glic {
 
 class GlicSplitButtonController;
-class GlicSplitButtonViewDelegate;
+class GlicSplitButtonDelegate;
 
 // Controller that handles Glic Actor notification/nudge handling.
 // TODO(crbug.com/431015299): Move GlicNudgeController logic into this
@@ -38,8 +38,8 @@ class GlicActorNudgeController {
 
   // TODO(crbug.com/511309088): Remove these and have the split button
   // controller keep the delegates.
-  void SetHorizontalTabsDelegate(GlicSplitButtonViewDelegate* delegate);
-  void SetVerticalTabsDelegate(GlicSplitButtonViewDelegate* delegate);
+  void SetHorizontalTabsDelegate(GlicSplitButtonDelegate* delegate);
+  void SetVerticalTabsDelegate(GlicSplitButtonDelegate* delegate);
 
   base::WeakPtr<GlicActorNudgeController> GetWeakPtr();
 
@@ -53,17 +53,16 @@ class GlicActorNudgeController {
   void UpdateCurrentActorNudgeState();
 
  protected:
-  virtual void ShowGlicActorTaskIcon();
-  virtual void HideGlicActorTaskIcon();
-  virtual void SetGlicActorNudgeLabel(const std::u16string& nudge_label);
-  virtual void TriggerGlicActorNudge(const std::u16string& nudge_label);
+  virtual void ShowGlicSecondaryButton();
+  virtual void HideGlicSecondaryButton();
+  virtual void SetGlicSecondaryNudgeLabel(const std::u16string& nudge_label);
+  virtual void TriggerGlicSecondaryNudge(const std::u16string& nudge_label);
   virtual void ShowBubble();
   virtual void CloseBubble();
   virtual bool IsShowingNudge();
-  virtual void OnBubbleVisibilityChange(bool is_bubble_open);
 
  private:
-  // Subscribe to updates from the GlicActorTaskIconManager.
+  // Subscribe to updates from the LegacyGlicActivityManager.
   void RegisterActorNudgeStateCallback();
 
   // Only update the nudge label if it's already showing, otherwise retrigger
@@ -71,8 +70,7 @@ class GlicActorNudgeController {
   void UpdateNudgeLabelOrRetrigger(std::u16string nudge_label,
                                    bool show_bubble);
 
-  void CallOnBoth(
-      base::RepeatingCallback<void(GlicSplitButtonViewDelegate&)> fn);
+  void CallOnBoth(base::RepeatingCallback<void(GlicSplitButtonDelegate&)> fn);
 
   raw_ptr<Profile> profile_;
   raw_ptr<BrowserWindowInterface> browser_;
@@ -80,8 +78,6 @@ class GlicActorNudgeController {
 
   std::vector<base::CallbackListSubscription>
       actor_nudge_state_change_callback_subscription_;
-  std::vector<base::CallbackListSubscription>
-      bubble_visibility_change_subscription_;
 
   ::ui::ScopedUnownedUserData<GlicActorNudgeController> scoped_data_holder_;
 

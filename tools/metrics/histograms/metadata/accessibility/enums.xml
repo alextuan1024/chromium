@@ -267,7 +267,7 @@ chromium-metrics-reviews@google.com.
   <int value="42" label="Table Bounds"/>
 </enum>
 
-<!-- LINT.ThenChange(//content/browser/accessibility/web_contents_accessibility_android.cc:AccessibilityPredicateType) -->
+<!-- LINT.ThenChange(//content/browser/accessibility/web_contents_accessibility_base.cc:AccessibilityPredicateType) -->
 
 <!-- LINT.IfChange(AccessibilityRole)-->
 
@@ -1669,7 +1669,7 @@ Unknown properties are collapsed to zero. -->
   <int value="3" label="Content Too Short"/>
 </enum>
 
-<!-- LINT.ThenChange(//components/dom_distiller/core/distiller_page.h:DistillationParseResult) -->
+<!-- LINT.ThenChange(//components/web_distiller/core/distiller_page.h:DistillationParseResult) -->
 
 <!-- LINT.IfChange(DistillationResult)-->
 
@@ -1686,9 +1686,9 @@ Unknown properties are collapsed to zero. -->
              desktop version of the site."/>
 </enum>
 
-<!-- LINT.ThenChange(//chrome/android/java/src/org/chromium/chrome/browser/dom_distiller/ReaderModeManager.java:DistillationResult) -->
+<!-- LINT.ThenChange(//chrome/android/java/src/org/chromium/chrome/browser/reader_mode/ReaderModeManager.java:DistillationResult) -->
 
-<!-- LINT.IfChange(DomDistillerEntryPoint)-->
+<!-- LINT.IfChange(ReaderModeEntryPoint)-->
 
 <enum name="DomDistillerEntryPoint">
   <summary>Describes the end-state of the distillation result.</summary>
@@ -1699,7 +1699,7 @@ Unknown properties are collapsed to zero. -->
   <int value="4" label="Through the context menu"/>
 </enum>
 
-<!-- LINT.ThenChange(//chrome/android/java/src/org/chromium/chrome/browser/dom_distiller/ReaderModeManager.java:DomDistillerEntryPoint) -->
+<!-- LINT.ThenChange(//chrome/android/java/src/org/chromium/chrome/browser/reader_mode/ReaderModeManager.java:ReaderModeEntryPoint) -->
 
 <!-- LINT.IfChange(JAWSMajorVersion)-->
 
@@ -1784,9 +1784,8 @@ Unknown properties are collapsed to zero. -->
   <int value="36" label="Toggle immersive mode (not implemented)"/>
   <int value="37" label="Exit immersive mode (not implemented)"/>
   <int value="38" label="Open developer tools"/>
-  <int value="39" label="Open developer tools console (not implemented)"/>
-  <int value="40"
-      label="Open developer tools element inspection (not implemented)"/>
+  <int value="39" label="Open developer tools console"/>
+  <int value="40" label="Open developer tools element inspection"/>
   <int value="41" label="Toggle showing developer tools (not implemented)"/>
   <int value="42" label="View page source"/>
   <int value="43" label="Open task manager"/>
@@ -1816,6 +1815,7 @@ Unknown properties are collapsed to zero. -->
   <int value="66" label="Tab search start anchored side UI"/>
   <int value="67" label="Keyboard focus switch row of top elements reverse"/>
   <int value="68" label="Open file"/>
+  <int value="69" label="Toggle vertical tabs collapse state"/>
 </enum>
 
 <!-- LINT.ThenChange(//chrome/android/java/src/org/chromium/chrome/browser/KeyboardShortcuts.java:KeyboardShortcutsSemanticMeaning) -->
@@ -2347,6 +2347,18 @@ Unknown properties are collapsed to zero. -->
 
 <!-- LINT.ThenChange(//chrome/common/read_anything/read_anything.mojom:LineSpacing) -->
 
+<!-- LINT.IfChange(ReadAnythingMathMlDistillationStatus) -->
+
+<enum name="ReadAnythingMathMlDistillationStatus">
+  <int value="0" label="Only MathML"/>
+  <int value="1" label="Mixed (MathML and fallback)"/>
+  <int value="2" label="Only fallback"/>
+  <int value="3" label="Not distilled (Readability)"/>
+  <int value="4" label="Not distilled (Screen2x)"/>
+</enum>
+
+<!-- LINT.ThenChange(//chrome/browser/resources/side_panel/read_anything/shared/metrics_browser_proxy.ts:ReadAnythingMathMlDistillationStatus) -->
+
 <!-- LINT.IfChange(ReadAnythingNewPage) -->
 
 <enum name="ReadAnythingNewPage">
@@ -2435,6 +2447,7 @@ Unknown properties are collapsed to zero. -->
 
 <enum name="ReadAnythingSettingsAction">
   <int value="0" label="Translate entrypoint"/>
+  <int value="1" label="Send feedback"/>
 </enum>
 
 <!-- LINT.ThenChange(//chrome/browser/resources/side_panel/read_anything/shared/metrics_browser_proxy.ts:ReadAnythingSettingsAction) -->
@@ -2510,7 +2523,7 @@ Unknown properties are collapsed to zero. -->
   <int value="6" label="The action was clicked"/>
 </enum>
 
-<!-- LINT.ThenChange(//chrome/android/java/src/org/chromium/chrome/browser/dom_distiller/ReaderModeMetrics.java:ReaderModeContextualPageActionEvent) -->
+<!-- LINT.ThenChange(//chrome/android/java/src/org/chromium/chrome/browser/reader_mode/ReaderModeMetrics.java:ReaderModeContextualPageActionEvent) -->
 
 <!-- LINT.IfChange(ReaderModePrefsFontFamily) -->
 
@@ -2521,7 +2534,7 @@ Unknown properties are collapsed to zero. -->
   <int value="3" label="Lexend"/>
 </enum>
 
-<!-- LINT.ThenChange(//components/dom_distiller/core/mojom/distilled_page_prefs.mojom:ReaderModePrefsFontFamily) -->
+<!-- LINT.ThenChange(//components/web_distiller/core/mojom/distilled_page_prefs.mojom:ReaderModePrefsFontFamily) -->
 
 <!-- LINT.IfChange(ReaderModePrefsTheme) -->
 
@@ -2531,7 +2544,7 @@ Unknown properties are collapsed to zero. -->
   <int value="2" label="Sepia"/>
 </enum>
 
-<!-- LINT.ThenChange(//components/dom_distiller/core/mojom/distilled_page_prefs.mojom:ReaderModePrefsTheme) -->
+<!-- LINT.ThenChange(//components/web_distiller/core/mojom/distilled_page_prefs.mojom:ReaderModePrefsTheme) -->
 
 <!-- LINT.IfChange(SodaLanguageCode) -->
 
@@ -2575,6 +2588,18 @@ Unknown properties are collapsed to zero. -->
 </enum>
 
 <!-- LINT.ThenChange(//components/soda/constants.h:LanguageCode) -->
+
+<!-- LINT.IfChange(SodaTfLiteDelegateStatus) -->
+
+<enum name="SodaTfLiteDelegateStatus">
+  <int value="0" label="Not delegated (delegate not requested)"/>
+  <int value="1" label="Delegate success (all TFLite sessions delegated)"/>
+  <int value="2"
+      label="Delegate fallback (at least one TFLite session on built-in
+             kernels)"/>
+</enum>
+
+<!-- LINT.ThenChange(//chrome/services/speech/speech_recognition_recognizer_impl.cc:SodaTfLiteDelegateStatus) -->
 
 <!-- LINT.IfChange(TextToSpeechEvent) -->
 
@@ -3073,6 +3098,18 @@ Unknown properties are collapsed to zero. -->
   <int value="2122159670" label="agent-windows.exe"/>
   <int value="2144042677" label="lzsmartrec.exe"/>
 </enum>
+
+<!-- LINT.IfChange(WebSpeechDownloadActivationOutcome) -->
+
+<enum name="WebSpeechDownloadActivationOutcome">
+  <int value="0" label="Blocked: no transient user activation"/>
+  <int value="1" label="Blocked: no sticky activation"/>
+  <int value="2" label="Relaxed: allowed with sticky activation only"/>
+  <int value="3"
+      label="Allowed: no sticky activation (sticky requirement disabled)"/>
+</enum>
+
+<!-- LINT.ThenChange(//third_party/blink/renderer/modules/speech/speech_recognition.cc:WebSpeechDownloadActivationOutcome, //third_party/blink/renderer/modules/speech/speech_recognition_test.cc:WebSpeechDownloadActivationOutcome) -->
 
 </enums>
 

@@ -8,6 +8,7 @@
 #include <utility>
 
 #include "base/command_line.h"
+#include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/metrics/user_metrics.h"
 #include "build/build_config.h"
@@ -36,7 +37,7 @@
 #include "chrome/browser/ui/web_applications/app_browser_controller.h"
 #include "chrome/common/chrome_switches.h"
 #include "ui/base/hit_test.h"
-#include "ui/base/mojom/menu_source_type.mojom-forward.h"
+#include "ui/base/mojom/menu_source_type.mojom-shared.h"
 #include "ui/base/mojom/window_show_state.mojom.h"
 #include "ui/base/ui_base_features.h"
 #include "ui/color/color_provider_key.h"
@@ -53,11 +54,12 @@
 #endif
 
 #if BUILDFLAG(IS_LINUX)
+#include "chrome/browser/themes/theme_service_aura_linux.h"
 #include "ui/linux/linux_ui.h"
+#include "ui/views/views_features.h"
 #endif
 
 #if BUILDFLAG(IS_WIN)
-#include "base/feature_list.h"
 #include "content/public/browser/desktop_capture_pip_utils.h"
 #include "media/base/media_switches.h"
 #include "media/capture/capture_switches.h"
@@ -142,8 +144,7 @@ void BrowserWidget::InitBrowserWidget() {
   params.delegate = browser_view_;
 
   BrowserWindowInterface* browser = browser_view_->browser();
-  if (browser->GetType() ==
-      BrowserWindowInterface::Type::TYPE_PICTURE_IN_PICTURE) {
+  if (browser->GetType() == BrowserWindowInterface::Type::TYPE_FLOATING) {
     params.z_order = ui::ZOrderLevel::kFloatingWindow;
     params.visible_on_all_workspaces = true;
 #if !BUILDFLAG(IS_WIN)
@@ -182,6 +183,8 @@ void BrowserWidget::InitBrowserWidget() {
       SessionServiceBrowserHelper::From(browser)->platform_session_data();
 #endif
 
+  // The saved window bounds of a window that is shown maximized.
+  std::optional<gfx::Rect> saved_maximized_window_bounds;
   if (browser_native_widget_->ShouldRestorePreviousBrowserWidgetState()) {
     if (browser->GetType() == BrowserWindowInterface::Type::TYPE_NORMAL ||
         browser->GetType() == BrowserWindowInterface::Type::TYPE_DEVTOOLS ||
@@ -194,6 +197,9 @@ void BrowserWidget::InitBrowserWidget() {
       // repositioned to the saved bounds in Widget::SetInitialBounds.
       chrome::GetSavedWindowBoundsAndShowState(browser, &params.bounds,
                                                &params.show_state);
+      if (params.show_state == ui::mojom::WindowShowState::kMaximized) {
+        saved_maximized_window_bounds = params.bounds;
+      }
 
       params.workspace = BrowserInitState::From(browser)->initial_workspace();
       if (browser_native_widget_->ShouldUseInitialVisibleOnAllWorkspaces()) {
@@ -218,24 +224,43 @@ void BrowserWidget::InitBrowserWidget() {
     }
   }
 
+#if BUILDFLAG(IS_LINUX)
+  // Pre-select the Linux native theme before `Init()` so initial view
+  // attachment uses the final `NativeTheme`.
+  if (base::FeatureList::IsEnabled(
+          views::features::kSkipRedundantSetNativeThemeUpdate)) {
+    SelectNativeTheme();
+  }
+#endif
+
   Init(std::move(params));
 
-  if (auto* const glass_frame_service = GlassFrameService::GetInstance()) {
-    glass_frame_subscription_ =
-        glass_frame_service->RegisterGlassFrameEligibilityChangedCallback(
-            browser_view_->browser(),
-            base::BindRepeating(&BrowserWidget::OnGlassFrameEligibilityChanged,
-                                base::Unretained(this)));
+  // A window that is shown maximized is mapped with the bounds passed to
+  // Init(), and the window manager restores it to these bounds. The saved
+  // bounds exclude the invisible frame insets, so convert them to widget
+  // bounds now that the insets are known. Widget::SetInitialBounds() does not
+  // set the bounds of a window that is shown maximized.
+  if (saved_maximized_window_bounds &&
+      !saved_maximized_window_bounds->IsEmpty()) {
+    const gfx::Insets insets = GetInvisibleFrameInsets(/*restored=*/true);
+    if (!insets.IsEmpty()) {
+      gfx::Rect widget_bounds = *saved_maximized_window_bounds;
+      widget_bounds.Inset(-insets);
+      SetBounds(widget_bounds);
+    }
   }
 
 #if BUILDFLAG(IS_LINUX)
-  SelectNativeTheme();
+  if (!base::FeatureList::IsEnabled(
+          views::features::kSkipRedundantSetNativeThemeUpdate)) {
+    SelectNativeTheme();
+  }
 #else
   SetNativeTheme(ui::NativeTheme::GetInstanceForNativeUi());
 #endif
 
   if (!browser_native_widget_->UsesNativeSystemMenu()) {
-    DCHECK(non_client_view());
+    CHECK(non_client_view(), base::NotFatalUntil::M162);
     non_client_view()->set_context_menu_controller(this);
   }
 }
@@ -271,8 +296,15 @@ bool BrowserWidget::HandleKeyboardEvent(
 }
 
 void BrowserWidget::UserChangedTheme(BrowserThemeChangeType theme_change_type) {
-  if (base::FeatureList::IsEnabled(features::kThemeChangeOptimization)) {
+  if (base::FeatureList::IsEnabled(features::kThemeChangeOptimization) &&
+      theme_change_type != BrowserThemeChangeType::kNativeTheme) {
+    // Force ThemeChanged() to run for browser/webapp theme updates because
+    // custom ThemeProvider image/tint assets may change without changing
+    // ColorProviderKey.
     ResetLastColorProviderKey();
+    for (views::Widget* widget : GetAllOwnedWidgets(GetNativeView())) {
+      widget->ResetLastColorProviderKey();
+    }
   }
 
   // kWebAppTheme is triggered by web apps and will only change colors, not the
@@ -455,7 +487,7 @@ void BrowserWidget::ShowContextMenuForViewImpl(
   // Do not show context menu for Document picture-in-picture browser. Context:
   // http://b/274862709.
   if (browser_view_->browser()->GetType() ==
-      BrowserWindowInterface::Type::TYPE_PICTURE_IN_PICTURE) {
+      BrowserWindowInterface::Type::TYPE_FLOATING) {
     return;
   }
 
@@ -500,6 +532,12 @@ ui::MenuModel* BrowserWidget::GetSystemMenuModel() {
   return menu_model_builder_->menu_model();
 }
 
+gfx::Insets BrowserWidget::GetInvisibleFrameInsets(bool restored) const {
+  return browser_native_widget_
+             ? browser_native_widget_->GetInvisibleFrameInsets(restored)
+             : gfx::Insets();
+}
+
 void BrowserWidget::SetTabDragKind(TabDragKind tab_drag_kind) {
   if (tab_drag_kind_ == tab_drag_kind) {
     return;
@@ -523,9 +561,12 @@ void BrowserWidget::OnNativeThemeUpdated(ui::NativeTheme* observed_theme) {
 }
 
 ui::ColorProviderKey BrowserWidget::GetColorProviderKey() const {
-  auto key = Widget::GetColorProviderKey();
+  // Pass nullptr for `custom_theme` since `key.custom_theme` is populated
+  // below via `GetCustomTheme()`.
+  ui::ColorProviderKey key = GetNativeTheme()->GetColorProviderKey(nullptr);
 
-  Profile* profile = browser_view_->browser()->GetProfile();
+  BrowserWindowInterface* const browser = browser_view_->browser();
+  Profile* const profile = browser->GetProfile();
   const auto* theme_service = ThemeServiceFactory::GetForProfile(profile);
   CHECK(theme_service);
 
@@ -543,12 +584,15 @@ ui::ColorProviderKey BrowserWidget::GetColorProviderKey() const {
   }
 
   // Apply BrowserWidget overrides:
-  key.app_controller =
-      web_app::AppBrowserController::From(browser_view_->browser());
+  auto* app_controller = web_app::AppBrowserController::From(browser);
+  if (app_controller) {
+    key.app_controller = app_controller;
+    key.app_background_color = app_controller->GetBackgroundColor();
+  }
 
 #if BUILDFLAG(IS_CHROMEOS)
   // ChromeOS SystemWebApps use the OS theme all the time.
-  if (web_app::GetSystemWebAppType(browser_view_->browser()).has_value()) {
+  if (app_controller && app_controller->system_app()) {
     return key;
   }
 #endif  // BUILDFLAG(IS_CHROMEOS)
@@ -563,13 +607,6 @@ ui::ColorProviderKey BrowserWidget::GetColorProviderKey() const {
     key.frame_style = ui::ColorProviderKey::FrameStyle::kSystem;
   }
 #endif
-
-  if (auto* const glass_frame_service = GlassFrameService::GetInstance()) {
-    if (glass_frame_service->IsBrowserWindowEligible(
-            browser_view_->browser())) {
-      key.frame_style = ui::ColorProviderKey::FrameStyle::kGlass;
-    }
-  }
 
   return key;
 }
@@ -592,8 +629,8 @@ void BrowserWidget::SelectNativeTheme() {
   // display_override so the web contents can blend with the overlay by using
   // the developer-provided theme color for a better experience. Context:
   // https://crbug.com/40771982.
-  const auto* linux_ui_theme =
-      ui::LinuxUiTheme::GetForWindow(GetNativeWindow());
+  const auto* linux_ui_theme = ThemeServiceAuraLinux::GetLinuxUiThemeForProfile(
+      browser_view_->GetProfile());
   SetNativeTheme(linux_ui_theme &&
                          !browser_view_->AppUsesWindowControlsOverlay()
                      ? linux_ui_theme->GetNativeTheme()
@@ -615,12 +652,6 @@ void BrowserWidget::OnTouchUiChanged() {
     non_client_view()->InvalidateLayout();
   }
   GetRootView()->InvalidateLayout();
-}
-
-void BrowserWidget::OnGlassFrameEligibilityChanged(bool is_eligible) {
-  // TODO(crbug.com/40280130): Update to NotifyColorProviderChanged() once it
-  // properly triggers ThemeChanged().
-  ThemeChanged();
 }
 
 bool BrowserWidget::RegenerateFrameOnThemeChange(

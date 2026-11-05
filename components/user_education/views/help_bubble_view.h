@@ -80,6 +80,8 @@ class HelpBubbleView : public views::BubbleDialogDelegateView {
   HelpBubbleView& operator=(const HelpBubbleView&) = delete;
   ~HelpBubbleView() override;
 
+  bool CanActivateViaAccelerator() const;
+
   // Creates a help bubble view.
   static HelpBubbleViewInfo Create(
       const HelpBubbleDelegate* delegate,
@@ -99,7 +101,6 @@ class HelpBubbleView : public views::BubbleDialogDelegateView {
   // BubbleDialogDelegateView:
   std::u16string GetAccessibleWindowTitle() const override;
   void OnWidgetActivationChanged(views::Widget* widget, bool active) override;
-  void OnThemeChanged() override;
   gfx::Size CalculatePreferredSize(
       const views::SizeBounds& available_size) const override;
   gfx::Rect GetAnchorRect() const override;

@@ -64,7 +64,6 @@ domain Browser
       smartCard
       speakerSelection
       storageAccess
-      topLevelStorageAccess
       videoCapture
       vr
       wakeLockScreen
@@ -230,9 +229,10 @@ domain Browser
   # frame and is removed when the DevTools session that created it disconnects.
   experimental command addMockCamera
     parameters
-      # Required non-empty identifier for the mock camera. This is mapped to an
-      # internal virtual-device identifier and is not the MediaDeviceInfo.deviceId
-      # exposed to the page.
+      # Required non-empty identifier for the mock camera within the current
+      # DevTools session. Different sessions can use the same identifier
+      # without replacing each other's cameras. This is not the
+      # MediaDeviceInfo.deviceId exposed to the page.
       string deviceId
 
   # Chrome histogram bucket.
@@ -336,12 +336,6 @@ domain Browser
   experimental command executeBrowserCommand
     parameters
       BrowserCommandId commandId
-
-  # Allows a site to use privacy sandbox features that require enrollment
-  # without the site actually being enrolled. Only supported on page targets.
-  command addPrivacySandboxEnrollmentOverride
-    parameters
-      string url
 
   # Gets the current globally-applied privacy control status
   # See https://www.w3.org/TR/gpc/#get-global-privacy-control

@@ -27,6 +27,10 @@ class DataTransferEndpoint;
 struct FileInfo;
 }  // namespace ui
 
+namespace user_manager {
+class User;
+}  // namespace user_manager
+
 namespace file_manager::util {
 
 // Absolute path for FuseBox media mount point (sans a trailing slash).
@@ -77,9 +81,29 @@ extern const char kShareCacheMountPointName[];
 // chrome:// URL or the legacy Chrome App chrome-extension:// URL.
 const url::Origin& GetFilesAppOrigin();
 
+// Returns the default downloads directory used on linux-chromeos, i.e. when
+// not running on a ChromeOS device. There, this is used as the MyFiles and
+// Downloads folder of the primary user, unless
+// --use-myfiles-in-user-data-dir-for-testing is specified.
+// This is computed from the XDG user directory and base::DIR_HOME, and should
+// be the same as DownloadPrefs::GetDefaultDownloadDirectory().
+const base::FilePath& GetDefaultDownloadDirectoryForLinuxChromeOS();
+
+// Gets the absolute path for the 'Downloads' folder for the `user`.
+// The `user`'s home directory must be mounted, i.e., `user.username_hash()`
+// must not be empty.
+base::FilePath GetDownloadsFolder(const user_manager::User& user);
+
+// Gets the absolute path for the 'MyFiles' folder for the `user`.
+// The `user`'s home directory must be mounted, i.e., `user.username_hash()`
+// must not be empty.
+base::FilePath GetMyFilesFolder(const user_manager::User& user);
+
+// DEPRECATED: Use GetDownloadsFolder(const user_manager::User&) instead.
 // Gets the absolute path for the 'Downloads' folder for the |profile|.
 base::FilePath GetDownloadsFolderForProfile(Profile* profile);
 
+// DEPRECATED: Use GetMyFilesFolder(const user_manager::User&) instead.
 // Gets the absolute path for the 'MyFiles' folder for the |profile|.
 base::FilePath GetMyFilesFolderForProfile(Profile* profile);
 
@@ -111,18 +135,6 @@ bool MigratePathFromOldFormat(Profile* profile,
                               const base::FilePath& old_path,
                               base::FilePath* new_path);
 
-// Converts |old_path| in <cryptohome>/Downloads[/*] to |new_path| in
-// <cryptohome/MyFiles/Downloads[*].  Returns true if path is changed else
-// returns false if |old_path| was not inside Downloads, and |new_path| is
-// undefined.
-//
-// Introduced in M73.  This code updates values stored in prefs.
-// TODO(crbug.com/41430020) Remove this when no users are running M72 or
-// earlier.
-bool MigrateFromDownloadsToMyFiles(Profile* profile,
-                                   const base::FilePath& old_path,
-                                   base::FilePath* new_path);
-
 // Convers |old_path| in /special/drive-<hash> to |new_path| in
 // /media/fuse/drivefs-<id>. Returns true if path is changed else
 // returns false if |old_path| was not inside Drive, and |new_path| is
@@ -131,15 +143,31 @@ bool MigrateToDriveFs(Profile* profile,
                       const base::FilePath& old_path,
                       base::FilePath* new_path);
 
+// The canonical mount point name for "Downloads" folder of the `user`.
+std::string GetDownloadsMountPointName(const user_manager::User& user);
+
+// DEPRECATED: Use GetDownloadsMountPointName(const user_manager::User&)
+// instead.
 // The canonical mount point name for "Downloads" folder.
 std::string GetDownloadsMountPointName(Profile* profile);
 
+// The canonical mount point name for "ShareCache" folder of the `user`.
+std::string GetShareCacheMountPointName(const user_manager::User& user);
+
+// DEPRECATED: Use GetShareCacheMountPointName(const user_manager::User&)
+// instead.
 // The canonical mount point name for "ShareCache" folder.
 std::string GetShareCacheMountPointName(Profile* profile);
 
 // The canonical mount point name for ARC "Play files" folder.
 std::string GetAndroidFilesMountPointName();
 
+// The canonical mount point name for crostini "Linux files" folder of the
+// `user`.
+std::string GetCrostiniMountPointName(const user_manager::User& user);
+
+// DEPRECATED: Use GetCrostiniMountPointName(const user_manager::User&)
+// instead.
 // The canonical mount point name for crostini "Linux files" folder.
 std::string GetCrostiniMountPointName(Profile* profile);
 
@@ -150,6 +178,12 @@ bool IsBruschettaMountPointName(const std::string& name,
                                 Profile* profile,
                                 guest_os::GuestId* guest_id = nullptr);
 
+// The canonical mount point name for the Guest OS `id` of the `user`.
+std::string GetGuestOsMountPointName(const user_manager::User& user,
+                                     const guest_os::GuestId& id);
+
+// DEPRECATED: Use GetGuestOsMountPointName(const user_manager::User&, ...)
+// instead.
 // The canonical mount point name for the Guest OS `id`.
 std::string GetGuestOsMountPointName(Profile* profile,
                                      const guest_os::GuestId& id);

@@ -23,6 +23,14 @@
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/gfx/gpu_fence.h"
 
+#if BUILDFLAG(IS_WIN)
+#include <windows.h>
+
+#include "base/memory/unsafe_shared_memory_region.h"
+#include "base/win/scoped_handle.h"
+#include "ui/gfx/gpu_memory_buffer_handle.h"
+#endif
+
 namespace gpu {
 
 namespace {
@@ -336,6 +344,49 @@ TEST(ClientSharedImageTest, ExportAndImport) {
             static_cast<uint32_t>(GL_TEXTURE_2D));
 }
 
+#if BUILDFLAG(IS_WIN)
+// An imported DXGI image without a shared memory pool, as
+// TestSharedImageInterface and ImportUnowned() produce, cannot read pixels
+// back from the GPU. It must still serve premapped mappings, and fail any
+// other mapping without crashing.
+TEST(ClientSharedImageTest, ImportedDXGIImageWithoutPoolMapsOnlyPremapped) {
+  auto sii = base::MakeRefCounted<TestSharedImageInterface>();
+  constexpr uint8_t kMarker = 0x5a;
+
+  // Attach a premapped region to a stand-in DXGI handle, as video capture does.
+  auto region = base::UnsafeSharedMemoryRegion::Create(kSize.GetArea() * 3 / 2);
+  ASSERT_TRUE(region.IsValid());
+  auto region_mapping = region.Map();
+  for (auto& byte : region_mapping.GetMemoryAsSpan<uint8_t>()) {
+    byte = kMarker;
+  }
+  gfx::DXGIHandle dxgi_handle(base::win::ScopedHandle(::CreateEvent(
+      nullptr, /*bManualReset=*/TRUE, /*bInitialState=*/FALSE, nullptr)));
+  ASSERT_TRUE(dxgi_handle.IsValid());
+  dxgi_handle = dxgi_handle.CloneWithRegion(std::move(region));
+
+  auto client_si = sii->CreateSharedImage(
+      CreateSharedImageInfo(viz::MultiPlaneFormat::kNV12,
+                            SHARED_IMAGE_USAGE_DISPLAY_READ),
+      kNullSurfaceHandle, gfx::BufferUsage::SCANOUT_VEA_CPU_READ,
+      gfx::GpuMemoryBufferHandle(std::move(dxgi_handle)));
+  ASSERT_TRUE(client_si);
+  auto imported_si =
+      sii->ImportSharedImage(client_si->Export(/*with_buffer_handle=*/true));
+  ASSERT_EQ(imported_si->GetGpuMemoryBufferType(), gfx::DXGI_SHARED_HANDLE);
+
+  // Not premapped: this needs a readback, which needs a pool.
+  imported_si->SetUsePreMappedMemory(false);
+  EXPECT_FALSE(imported_si->Map());
+
+  // Premapped: served from the region that came with the handle.
+  imported_si->SetUsePreMappedMemory(true);
+  auto scoped_mapping = imported_si->Map();
+  ASSERT_TRUE(scoped_mapping);
+  EXPECT_EQ(scoped_mapping->GetMemoryForPlane(0)[0], kMarker);
+}
+#endif
+
 TEST(ClientSharedImageTest, MakeUnowned) {
   auto sii = base::MakeRefCounted<TestSharedImageInterface>();
 
@@ -411,8 +462,8 @@ TEST(ClientSharedImageTest, GetTextureTarget_MultiplanarFormats) {
   }
 }
 
-#if BUILDFLAG(IS_OZONE)
-// On Ozone, the target for native buffers should be used if a
+#if BUILDFLAG(IS_OZONE) || BUILDFLAG(IS_ANDROID)
+// On Ozone/Android, the target for native buffers should be used if a
 // multiplanar format with external sampling is passed.
 TEST(ClientSharedImageTest,
      GetTextureTarget_MultiplanarFormatsWithExternalSampling) {
@@ -439,6 +490,29 @@ TEST(ClientSharedImageTest,
               static_cast<uint32_t>(GL_TEXTURE_EXTERNAL_OES));
 #endif
   }
+}
+
+TEST(ClientSharedImageTest,
+     MultiplanarFormatWithExternalSamplerSharedMemoryHandle) {
+  auto sii = base::MakeRefCounted<TestSharedImageInterface>();
+
+  const SharedImageUsageSet kUsage =
+      SHARED_IMAGE_USAGE_RASTER_WRITE | SHARED_IMAGE_USAGE_DISPLAY_READ;
+
+  auto format = viz::MultiPlaneFormat::kNV12;
+  format.SetPrefersExternalSampler();
+  SharedImageInfo si_info(format, gfx::Size(100, 100), gfx::ColorSpace(),
+                          kUsage, "TestClearExternalSamplerHandle");
+  EXPECT_EQ(si_info.alpha_type, kPremul_SkAlphaType);
+
+  gfx::GpuMemoryBufferHandle handle =
+      TestSharedImageInterface::CreateGMBHandle(format, gfx::Size(100, 100));
+  auto client_si =
+      sii->CreateSharedImage(si_info, kNullSurfaceHandle,
+                             gfx::BufferUsage::GPU_READ, std::move(handle));
+  ASSERT_TRUE(client_si);
+  EXPECT_FALSE(client_si->format().PrefersExternalSampler());
+  EXPECT_EQ(client_si->alpha_type(), kUnpremul_SkAlphaType);
 }
 #endif
 
@@ -676,14 +750,15 @@ TEST(ClientSharedImageTest, DestroySharedImage_AutomaticSyncTokenManagement) {
   SyncToken token2(ns, cmd_id2, /*release_count=*/200);
 
   client_si->EndExport(SharedImageExportResult::CreateForTesting(token1));
+  // In automatic mode, UpdateDestructionSyncToken is effectively a no-op and
+  // any SyncToken passed into it should be ignored.
   client_si->UpdateDestructionSyncToken(token2);
-  // Passing an empty SyncToken should not clear previously tracked SyncTokens.
   client_si->UpdateDestructionSyncToken(SyncToken());
 
   client_si.reset();
 
   EXPECT_THAT(sii->MostRecentDestroyTokens(),
-              testing::UnorderedElementsAre(creation_token, token1, token2));
+              testing::UnorderedElementsAre(creation_token, token1));
 }
 
 }  // namespace gpu

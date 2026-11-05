@@ -21,6 +21,7 @@
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/task_environment.h"
 #include "base/test/test_file_util.h"
+#include "base/time/time.h"
 #include "base/values.h"
 #include "build/build_config.h"
 #include "components/services/storage/indexed_db/locks/partitioned_lock.h"
@@ -67,11 +68,6 @@ class MockBlobStorageContext : public ::storage::mojom::BlobStorageContext {
   void RegisterFromDataItem(mojo::PendingReceiver<::blink::mojom::Blob> blob,
                             const std::string& uuid,
                             storage::mojom::BlobDataItemPtr item) override {
-    NOTREACHED();
-  }
-  void RegisterFromMemory(mojo::PendingReceiver<::blink::mojom::Blob> blob,
-                          const std::string& uuid,
-                          ::mojo_base::BigBuffer data) override {
     NOTREACHED();
   }
   void WriteBlobToFile(mojo::PendingRemote<::blink::mojom::Blob> blob,
@@ -207,7 +203,16 @@ TEST_F(DatabaseConnectionTest, TooNew) {
   const std::u16string kDbName{u"test db"};
   auto connection = OpenDb(kDbName);
   ASSERT_NO_FATAL_FAILURE(InitializeDbWithOneRecord(*connection));
+
+  connection.reset();
+  connection = OpenDb(kDbName);
+  task_environment_.FastForwardBy(
+      DatabaseConnection::GetDestructionGracePeriodForTesting());
+  histograms.ExpectUniqueSample(
+      "IndexedDB.SQLite.ConnectionDestructionGracePeriodWasUseful", true, 1);
   DropDbAndDestructDatabaseConnection(std::move(connection));
+  histograms.ExpectBucketCount(
+      "IndexedDB.SQLite.ConnectionDestructionGracePeriodWasUseful", false, 1);
   const base::FilePath db_path = GetDatabasePath(kDbName);
   ASSERT_TRUE(base::PathExists(db_path));
   histograms.ExpectUniqueSample(
@@ -235,7 +240,11 @@ TEST_F(DatabaseConnectionTest, TooNew) {
 
   // The database should be nuked because of the compatible version check, but
   // it is automatically recreated.
+  task_environment_.FastForwardBy(base::Seconds(3));
   connection = OpenDb(kDbName);
+  histograms.ExpectUniqueTimeSample(
+      "IndexedDB.SQLite.ConnectionReopenedAfterDestruction", base::Seconds(3),
+      1);
   // Note that this would fail if the object store still existed (i.e. if the
   // original DB hadn't been deleted).
   ASSERT_NO_FATAL_FAILURE(InitializeDbWithOneRecord(*connection));

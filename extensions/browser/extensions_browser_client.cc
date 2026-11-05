@@ -63,6 +63,11 @@ void ExtensionsBrowserClient::AddAPIProvider(
 
 void ExtensionsBrowserClient::StartTearDown() {}
 
+bool ExtensionsBrowserClient::IsolatedModeReplacesIncognito(
+    content::BrowserContext* context) const {
+  return false;
+}
+
 scoped_refptr<update_client::UpdateClient>
 ExtensionsBrowserClient::CreateUpdateClient(
     scoped_refptr<update_client::Configurator> configurator) {
@@ -417,6 +422,16 @@ gfx::NativeWindow ExtensionsBrowserClient::GetNativeWindowForFunction(
 }
 
 bool ExtensionsBrowserClient::IsLazyKeyedServiceInstantiationEnabled() const {
+  return false;
+}
+
+bool ExtensionsBrowserClient::
+    IsLazySocketAndUsbKeyedServiceInstantiationEnabled() const {
+  return false;
+}
+
+bool ExtensionsBrowserClient::
+    IsLazyChromeOSResourceKeyedServiceInstantiationEnabled() const {
   return false;
 }
 

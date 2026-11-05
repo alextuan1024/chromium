@@ -9,23 +9,17 @@
 #include "chrome/grit/generated_resources.h"
 #include "components/password_manager/core/browser/password_manager_constants.h"
 #include "components/password_manager/core/browser/password_sync_util.h"
-#include "components/sync/base/features.h"
 #include "ui/base/l10n/l10n_util.h"
-
-constexpr char kWebPasswordManagerPromoId[] = "passwords_on_web_promo";
 
 WebPasswordManagerPromo::WebPasswordManagerPromo(
     const syncer::SyncService* sync_service) {
   sync_enabled_ =
-      syncer::IsReplaceSyncPromosWithSignInPromosEnabled()
-          ? password_manager::sync_util::GetPasswordSyncState(sync_service) !=
-                password_manager::sync_util::SyncState::kNotActive
-          : password_manager::sync_util::IsSyncFeatureActiveIncludingPasswords(
-                sync_service);
+      password_manager::sync_util::GetPasswordSyncState(sync_service) ==
+      password_manager::sync_util::SyncState::kActiveWithNormalEncryption;
 }
 
 std::string WebPasswordManagerPromo::GetCardID() const {
-  return kWebPasswordManagerPromoId;
+  return password_manager::kWebPasswordManagerPromoId;
 }
 
 password_manager::NotificationCardType

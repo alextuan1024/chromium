@@ -35,7 +35,6 @@
 
 namespace {
 
-using testing::InvokeWithoutArgs;
 using testing::Return;
 using MediaDrmOriginId = MediaDrmOriginIdManager::MediaDrmOriginId;
 
@@ -51,6 +50,10 @@ constexpr base::TimeDelta kStartupDelay = base::Minutes(1);
 
 class MediaDrmOriginIdManagerTest : public testing::Test {
  public:
+  void TearDown() override {
+    task_environment_.FastForwardBy(base::TimeDelta());
+  }
+
   // By default MediaDrmOriginIdManager will attempt to pre-provision origin
   // IDs at startup. For most tests this should be disabled.
   void Initialize(bool enable_preprovision_at_startup = false) {
@@ -118,7 +121,7 @@ class MediaDrmOriginIdManagerTest : public testing::Test {
     auto& dict = GetDict(kMediaDrmOriginIds);
     DVLOG(1) << DisplayPref(dict);
     const auto* list = dict.FindList(kAvailableOriginIds);
-    EXPECT_TRUE(list);
+    ASSERT_TRUE(list);
     EXPECT_EQ(list->size(), kExpectedPreferenceListSize);
   }
 
@@ -134,7 +137,7 @@ class MediaDrmOriginIdManagerTest : public testing::Test {
     const auto* list = dict.FindList(kAvailableOriginIds);
     // PreProvision() should have pre-provisioned
     // |kExpectedPreferenceListSize| origin IDs.
-    EXPECT_TRUE(list);
+    ASSERT_TRUE(list);
     EXPECT_EQ(list->size(), kExpectedPreferenceListSize);
   }
 
@@ -167,7 +170,7 @@ TEST_F(MediaDrmOriginIdManagerTest, DisablePreProvisioningAtStartup) {
 
 TEST_F(MediaDrmOriginIdManagerTest, OneOriginId) {
   EXPECT_CALL(*this, GetProvisioningResult())
-      .WillRepeatedly(InvokeWithoutArgs(&base::UnguessableToken::Create));
+      .WillRepeatedly(&base::UnguessableToken::Create);
   Initialize();
 
   EXPECT_TRUE(GetOriginId());
@@ -175,7 +178,7 @@ TEST_F(MediaDrmOriginIdManagerTest, OneOriginId) {
 
 TEST_F(MediaDrmOriginIdManagerTest, TwoOriginIds) {
   EXPECT_CALL(*this, GetProvisioningResult())
-      .WillRepeatedly(InvokeWithoutArgs(&base::UnguessableToken::Create));
+      .WillRepeatedly(&base::UnguessableToken::Create);
   Initialize();
 
   MediaDrmOriginId origin_id1 = GetOriginId();
@@ -190,7 +193,7 @@ TEST_F(MediaDrmOriginIdManagerTest, PreProvision) {
   // pre-provisioned several origin IDs and populate the preference. On devices
   // that don't, the list will be empty.
   EXPECT_CALL(*this, GetProvisioningResult())
-      .WillRepeatedly(InvokeWithoutArgs(&base::UnguessableToken::Create));
+      .WillRepeatedly(&base::UnguessableToken::Create);
   Initialize();
 
   PreProvision();
@@ -204,7 +207,7 @@ TEST_F(MediaDrmOriginIdManagerTest, PreProvisionAtStartup) {
   // that pre-provisioning actually runs at profile creation (on devices
   // that support it).
   EXPECT_CALL(*this, GetProvisioningResult())
-      .WillRepeatedly(InvokeWithoutArgs(&base::UnguessableToken::Create));
+      .WillRepeatedly(&base::UnguessableToken::Create);
   Initialize(true);
 
   DVLOG(1) << "Advancing Time";
@@ -235,7 +238,7 @@ TEST_F(MediaDrmOriginIdManagerTest, PreProvisionFailAtStartup) {
 
   // Now let provisioning succeed.
   EXPECT_CALL(*this, GetProvisioningResult())
-      .WillRepeatedly(InvokeWithoutArgs(&base::UnguessableToken::Create));
+      .WillRepeatedly(&base::UnguessableToken::Create);
 
   // Trigger a network connection to force pre-provisioning to run again.
   network::TestNetworkConnectionTracker::GetInstance()->SetConnectionType(
@@ -253,7 +256,7 @@ TEST_F(MediaDrmOriginIdManagerTest, GetOriginIdCreatesList) {
   // and fill up the list. This is independent of whether the device supports
   // per-application provisioning or not.
   EXPECT_CALL(*this, GetProvisioningResult())
-      .WillRepeatedly(InvokeWithoutArgs(&base::UnguessableToken::Create));
+      .WillRepeatedly(&base::UnguessableToken::Create);
   Initialize();
 
   GetOriginId();
@@ -268,7 +271,7 @@ TEST_F(MediaDrmOriginIdManagerTest, OriginIdNotInList) {
   // of pre-provisioned origin IDs (asynchronously). It doesn't matter if the
   // device supports per-application provisioning or not.
   EXPECT_CALL(*this, GetProvisioningResult())
-      .WillRepeatedly(InvokeWithoutArgs(&base::UnguessableToken::Create));
+      .WillRepeatedly(&base::UnguessableToken::Create);
   Initialize();
 
   MediaDrmOriginId origin_id = GetOriginId();
@@ -278,6 +281,7 @@ TEST_F(MediaDrmOriginIdManagerTest, OriginIdNotInList) {
   DVLOG(1) << "Checking preference " << kMediaDrmOriginIds;
   auto& dict = GetDict(kMediaDrmOriginIds);
   auto* list = dict.FindList(kAvailableOriginIds);
+  ASSERT_TRUE(list);
   EXPECT_FALSE(std::ranges::contains(
       *list, base::UnguessableTokenToValue(origin_id.value())));
 }
@@ -303,7 +307,7 @@ TEST_F(MediaDrmOriginIdManagerTest, ProvisioningSuccessAfterFail) {
   // Provisioning fails, so GetOriginId() returns an empty origin ID.
   EXPECT_CALL(*this, GetProvisioningResult())
       .WillOnce(Return(std::nullopt))
-      .WillRepeatedly(InvokeWithoutArgs(&base::UnguessableToken::Create));
+      .WillRepeatedly(&base::UnguessableToken::Create);
   Initialize();
 
   EXPECT_FALSE(GetOriginId());
@@ -332,7 +336,7 @@ TEST_F(MediaDrmOriginIdManagerTest, NetworkChange) {
 
   EXPECT_CALL(*this, GetProvisioningResult())
       .WillOnce(Return(std::nullopt))
-      .WillRepeatedly(InvokeWithoutArgs(&base::UnguessableToken::Create));
+      .WillRepeatedly(&base::UnguessableToken::Create);
   Initialize();
 
   EXPECT_FALSE(GetOriginId());
@@ -422,7 +426,7 @@ TEST_F(MediaDrmOriginIdManagerTest, InvalidEntry) {
   // and fill up the list. This is independent of whether the device supports
   // per-application provisioning or not.
   EXPECT_CALL(*this, GetProvisioningResult())
-      .WillRepeatedly(InvokeWithoutArgs(&base::UnguessableToken::Create));
+      .WillRepeatedly(&base::UnguessableToken::Create);
   Initialize();
 
   EXPECT_TRUE(GetOriginId());
@@ -460,7 +464,7 @@ TEST_F(MediaDrmOriginIdManagerTest, NetworkChangeBackoff) {
   // 2. Subsequent successful attempts.
   EXPECT_CALL(*this, GetProvisioningResult())
       .WillOnce(Return(std::nullopt))
-      .WillRepeatedly(InvokeWithoutArgs(&base::UnguessableToken::Create));
+      .WillRepeatedly(&base::UnguessableToken::Create);
 
   Initialize();
 

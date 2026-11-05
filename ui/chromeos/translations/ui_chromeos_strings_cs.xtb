@@ -519,10 +519,10 @@
 <translation id="5045550434625856497">Nesprávné heslo</translation>
 <translation id="5059127710849015030">nepálština (přepis)</translation>
 <translation id="5068919226082848014">Pizza</translation>
+<translation id="5075336522277785691">Rozšíření <ph name="EXTENSION_NAME" /> nastavilo pravidla přepsání proxy serveru</translation>
 <translation id="5081517858322016911">Budou vymazány soubory o celkové velikosti <ph name="TOTAL_FILE_SIZE" /></translation>
 <translation id="508423945471810158">Přesouvání <ph name="NUMBER_OF_ITEMS" /> položek do složky <ph name="FOLDER_NAME" /></translation>
 <translation id="509429900233858213">Došlo k chybě.</translation>
-<translation id="5102922915594634436">Spravovat synchronizované složky</translation>
 <translation id="5109254780565519649">Došlo k chybě. Některé položky možná nebyly obnoveny.</translation>
 <translation id="5110329002213341433">angličtina (Kanada)</translation>
 <translation id="5119780910075847424">Synchronizace je pozastavena</translation>
@@ -557,7 +557,6 @@
 <translation id="5305688511332277257">Není nainstalován žádný certifikát</translation>
 <translation id="5317780077021120954">Uložit</translation>
 <translation id="5318819489018851358">Sdílet s Linuxem</translation>
-<translation id="5330145655348521461">Tyto soubory jsou otevřeny na jiné ploše. Chcete-li je zobrazit, přejděte do profilu <ph name="USER_NAME" /> (<ph name="MAIL_ADDRESS" />).</translation>
 <translation id="5330512191124428349">Zobrazit informace</translation>
 <translation id="535792325654997756">Člověk s kočkami</translation>
 <translation id="5358764674931277">Snímková frekvence</translation>
@@ -698,7 +697,6 @@
 <translation id="636254897931573416">Neplatná hodnota shody přípony domény</translation>
 <translation id="6364301859968397756">Úložiště organizace je plné</translation>
 <translation id="6367976544441405720">Dodávka</translation>
-<translation id="637062427944097960">Tento soubor je otevřen na jiné ploše. Chcete-li jej zobrazit, přejděte do profilu <ph name="USER_NAME" /> (<ph name="MAIL_ADDRESS" />).</translation>
 <translation id="6394388407447716302">Pouze pro čtení</translation>
 <translation id="6395575651121294044">Počet položek: <ph name="NUMBER_OF_FILES" /></translation>
 <translation id="6407769893376380348">Soubor <ph name="FILE_NAME" /> nelze přesunout, protože je zašifrovaný.</translation>

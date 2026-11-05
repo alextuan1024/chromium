@@ -11,7 +11,10 @@ import androidx.annotation.IntDef;
 import androidx.annotation.StringRes;
 
 import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.signin.services.DisplayableProfileData;
+import org.chromium.components.signin.base.AccountInfo;
+import org.chromium.components.sync.UserActionableError;
 import org.chromium.ui.modelutil.PropertyKey;
 import org.chromium.ui.modelutil.PropertyModel;
 import org.chromium.ui.modelutil.PropertyModel.WritableBooleanPropertyKey;
@@ -27,13 +30,20 @@ public class AccountMenuProperties {
     private AccountMenuProperties() {}
 
     /** Item types supported by the Account Menu RecyclerView. */
-    @IntDef({ItemType.MENU_ITEM, ItemType.DIVIDER, ItemType.PROMO_CARD, ItemType.IDENTITY_CARD})
+    @IntDef({
+        ItemType.MENU_ITEM,
+        ItemType.DIVIDER,
+        ItemType.PROMO_CARD,
+        ItemType.IDENTITY_CARD,
+        ItemType.ERROR_CARD
+    })
     @Retention(RetentionPolicy.SOURCE)
     public @interface ItemType {
         int MENU_ITEM = 0;
         int DIVIDER = 1;
         int PROMO_CARD = 2;
         int IDENTITY_CARD = 3;
+        int ERROR_CARD = 4;
     }
 
     /** Properties for menu items in the Account Menu. */
@@ -56,21 +66,43 @@ public class AccountMenuProperties {
         public static final WritableObjectPropertyKey<OnClickListener> CLICK_LISTENER =
                 new WritableObjectPropertyKey<>();
 
+        /**
+         * Whether this item is at the top of a containment section. An item with both {@code
+         * IS_SECTION_TOP} and {@code IS_SECTION_BOTTOM} set to true is a standalone single-item
+         * section; an item with both set to false is a middle item.
+         */
+        public static final WritableBooleanPropertyKey IS_SECTION_TOP =
+                new WritableBooleanPropertyKey();
+
+        /** Whether this item is at the bottom of a containment section. */
+        public static final WritableBooleanPropertyKey IS_SECTION_BOTTOM =
+                new WritableBooleanPropertyKey();
+
         public static final PropertyKey[] ALL_KEYS = {
-            TITLE_ID, START_ICON_ID, CLICK_LISTENER, SHOW_ICON_BADGE
+            TITLE_ID,
+            START_ICON_ID,
+            CLICK_LISTENER,
+            SHOW_ICON_BADGE,
+            IS_SECTION_TOP,
+            IS_SECTION_BOTTOM
         };
 
         private MenuItemProperties() {}
 
         /** Factory helper to create a MenuItem PropertyModel. */
         public static PropertyModel createModel(
-                @StringRes int titleId, @DrawableRes int iconId, OnClickListener clickListener) {
-            return new PropertyModel.Builder(ALL_KEYS)
-                    .with(TITLE_ID, titleId)
-                    .with(START_ICON_ID, iconId)
-                    .with(CLICK_LISTENER, clickListener)
-                    .with(SHOW_ICON_BADGE, false)
-                    .build();
+                @StringRes int titleId,
+                @DrawableRes int iconId,
+                OnClickListener clickListener,
+                boolean isSectionTop,
+                boolean isSectionBottom) {
+            return createModel(
+                    titleId,
+                    iconId,
+                    clickListener,
+                    /* showIconBadge= */ false,
+                    isSectionTop,
+                    isSectionBottom);
         }
 
         /** TODO(crbug.com/555648510): Remove this method error cards are implemented. */
@@ -78,12 +110,16 @@ public class AccountMenuProperties {
                 @StringRes int titleId,
                 @DrawableRes int iconId,
                 OnClickListener clickListener,
-                boolean showIconBadge) {
+                boolean showIconBadge,
+                boolean isSectionTop,
+                boolean isSectionBottom) {
             return new PropertyModel.Builder(ALL_KEYS)
                     .with(TITLE_ID, titleId)
                     .with(START_ICON_ID, iconId)
                     .with(CLICK_LISTENER, clickListener)
                     .with(SHOW_ICON_BADGE, showIconBadge)
+                    .with(IS_SECTION_TOP, isSectionTop)
+                    .with(IS_SECTION_BOTTOM, isSectionBottom)
                     .build();
         }
     }
@@ -112,13 +148,64 @@ public class AccountMenuProperties {
         public static final WritableObjectPropertyKey<DisplayableProfileData> PROFILE_DATA =
                 new WritableObjectPropertyKey<>();
 
-        public static final PropertyKey[] ALL_KEYS = {PROFILE_DATA};
+        /** Whether the managed header should be displayed on the card. */
+        public static final WritableBooleanPropertyKey SHOULD_DISPLAY_MANAGED_HEADER =
+                new WritableBooleanPropertyKey();
+
+        /** Click listener for the managed header button. */
+        public static final WritableObjectPropertyKey<OnClickListener>
+                MANAGED_HEADER_CLICK_LISTENER = new WritableObjectPropertyKey<>();
+
+        public static final PropertyKey[] ALL_KEYS = {
+            PROFILE_DATA, SHOULD_DISPLAY_MANAGED_HEADER, MANAGED_HEADER_CLICK_LISTENER
+        };
 
         private IdentityCardProperties() {}
 
         /** Factory helper to create an IdentityCard PropertyModel. */
         public static PropertyModel createModel(DisplayableProfileData profileData) {
             return new PropertyModel.Builder(ALL_KEYS).with(PROFILE_DATA, profileData).build();
+        }
+
+        /**
+         * Factory helper to create an IdentityCard PropertyModel with managed header display state
+         * and click listener.
+         */
+        public static PropertyModel createModel(
+                DisplayableProfileData profileData,
+                boolean shouldDisplayManagedHeader,
+                @Nullable OnClickListener onManagedHeaderClickListener) {
+            return new PropertyModel.Builder(ALL_KEYS)
+                    .with(PROFILE_DATA, profileData)
+                    .with(SHOULD_DISPLAY_MANAGED_HEADER, shouldDisplayManagedHeader)
+                    .with(MANAGED_HEADER_CLICK_LISTENER, onManagedHeaderClickListener)
+                    .build();
+        }
+    }
+
+    /** Properties for the sync error card item in the Account Menu. */
+    public static class ErrorCardProperties {
+        /** Holds the sync {@link UserActionableError} type. */
+        public static final WritableIntPropertyKey TYPE = new WritableIntPropertyKey();
+
+        /** Holds the primary account the error applies to. */
+        public static final WritableObjectPropertyKey<AccountInfo> ACCOUNT_INFO =
+                new WritableObjectPropertyKey<>();
+
+        public static final WritableObjectPropertyKey<Runnable> BUTTON_CLICK_ACTION =
+                new WritableObjectPropertyKey<>();
+
+        public static final PropertyKey[] ALL_KEYS = {TYPE, ACCOUNT_INFO, BUTTON_CLICK_ACTION};
+
+        private ErrorCardProperties() {}
+
+        public static PropertyModel createModel(
+                @UserActionableError int type, AccountInfo accountInfo, Runnable onButtonClick) {
+            return new PropertyModel.Builder(ALL_KEYS)
+                    .with(TYPE, type)
+                    .with(ACCOUNT_INFO, accountInfo)
+                    .with(BUTTON_CLICK_ACTION, onButtonClick)
+                    .build();
         }
     }
 }

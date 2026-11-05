@@ -5,17 +5,21 @@
 package org.chromium.chrome.browser.actor.ui;
 
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 
 import android.app.Activity;
 
-import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
@@ -28,6 +32,7 @@ import org.mockito.junit.MockitoRule;
 import org.robolectric.Robolectric;
 
 import org.chromium.base.Callback;
+import org.chromium.base.JniOnceCallback;
 import org.chromium.base.UserDataHost;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.Features.EnableFeatures;
@@ -38,7 +43,6 @@ import org.chromium.chrome.browser.actor.ui.ActorUiTabController.ActorOverlaySta
 import org.chromium.chrome.browser.actor.ui.ActorUiTabController.HandoffButtonState;
 import org.chromium.chrome.browser.actor.ui.ActorUiTabController.UiTabState;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
-import org.chromium.chrome.browser.glic.GlicEnabling;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.ui.base.WindowAndroid;
@@ -46,6 +50,7 @@ import org.chromium.ui.modaldialog.ModalDialogManager;
 import org.chromium.ui.modaldialog.ModalDialogManager.ModalDialogType;
 import org.chromium.ui.modaldialog.ModalDialogProperties;
 import org.chromium.ui.modelutil.PropertyModel;
+import org.chromium.url.GURL;
 
 /** Tests for {@link ActorUiTabController}. */
 @RunWith(BaseRobolectricTestRunner.class)
@@ -58,7 +63,9 @@ public class ActorUiTabControllerTest {
     @Mock private ModalDialogManager mModalDialogManager;
     @Mock private Profile mProfile;
     @Mock private ActorKeyedService mActorKeyedService;
+    @Mock private ActorUiTabController.Natives mNatives;
     @Mock private Callback<Boolean> mCallback;
+    @Mock private JniOnceCallback<Boolean> mNavigationConfirmedCallback;
 
     @Captor private ArgumentCaptor<PropertyModel> mPropertyModelCaptor;
 
@@ -76,14 +83,46 @@ public class ActorUiTabControllerTest {
         doReturn(mActivity).when(mTab).getContext();
         doReturn(mProfile).when(mTab).getProfile();
         ActorKeyedServiceFactory.setForTesting(mActorKeyedService);
-        GlicEnabling.setEnabledForTesting(true);
+        ActorUiTabController.setActorUiSupportedForTesting(true);
 
         mController = ActorUiTabController.from(mTab);
     }
 
-    @After
-    public void tearDown() {
-        GlicEnabling.setEnabledForTesting(false);
+    @Test
+    public void testFrom_returnsNullWhenNotSupported() {
+        ActorUiTabController.setActorUiSupportedForTesting(false);
+        Tab newTab = mock(Tab.class);
+        doReturn(new UserDataHost()).when(newTab).getUserDataHost();
+        doReturn(mProfile).when(newTab).getProfile();
+
+        assertNull(ActorUiTabController.from(newTab));
+    }
+
+    @Test
+    public void testFrom_returnsExistingControllerWhenSupportTurnedOff() {
+        ActorUiTabController.setActorUiSupportedForTesting(false);
+
+        assertSame(mController, ActorUiTabController.from(mTab));
+    }
+
+    @Test
+    public void testFrom_cachesSupportPerProfile() {
+        ActorUiTabController.setActorUiSupportedForTesting(null);
+        ActorUiTabControllerJni.setInstanceForTesting(mNatives);
+        Profile profile = mock(Profile.class);
+        doReturn(true).when(mNatives).isActorUiSupported(profile);
+
+        Tab tab1 = mock(Tab.class);
+        doReturn(new UserDataHost()).when(tab1).getUserDataHost();
+        doReturn(profile).when(tab1).getProfile();
+
+        Tab tab2 = mock(Tab.class);
+        doReturn(new UserDataHost()).when(tab2).getUserDataHost();
+        doReturn(profile).when(tab2).getProfile();
+
+        assertNotNull(ActorUiTabController.from(tab1));
+        assertNotNull(ActorUiTabController.from(tab2));
+        verify(mNatives, times(1)).isActorUiSupported(profile);
     }
 
     @Test
@@ -151,6 +190,33 @@ public class ActorUiTabControllerTest {
 
         // Verify callback was executed with false.
         verify(mCallback).onResult(false);
+    }
+
+    @Test
+    public void testMaybeDeferNavigation_showsDialog() {
+        assertTrue(
+                ActorUiTabController.maybeDeferNavigation(
+                        mTab, GURL.emptyGURL(), mNavigationConfirmedCallback));
+        verify(mModalDialogManager)
+                .showDialog(mPropertyModelCaptor.capture(), eq(ModalDialogType.APP));
+        verify(mNavigationConfirmedCallback, never()).destroy();
+
+        PropertyModel model = mPropertyModelCaptor.getValue();
+        model.get(ModalDialogProperties.CONTROLLER)
+                .onClick(model, ModalDialogProperties.ButtonType.POSITIVE);
+        verify(mNavigationConfirmedCallback).onResult(true);
+    }
+
+    @Test
+    public void testMaybeDeferNavigation_noWindow_destroysCallback() {
+        doReturn(null).when(mTab).getWindowAndroid();
+
+        assertFalse(
+                ActorUiTabController.maybeDeferNavigation(
+                        mTab, GURL.emptyGURL(), mNavigationConfirmedCallback));
+        verify(mModalDialogManager, never()).showDialog(any(), anyInt());
+        verify(mNavigationConfirmedCallback, never()).onResult(any());
+        verify(mNavigationConfirmedCallback).destroy();
     }
 
     @Test

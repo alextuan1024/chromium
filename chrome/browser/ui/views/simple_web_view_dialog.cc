@@ -32,8 +32,8 @@
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/base/theme_provider.h"
-#include "ui/base/window_open_disposition.h"
 #include "ui/color/color_id.h"
 #include "ui/display/display.h"
 #include "ui/display/screen.h"
@@ -49,7 +49,7 @@
 #include "ui/views/widget/widget_delegate.h"
 
 #if BUILDFLAG(SAFE_BROWSING_AVAILABLE)
-#include "chrome/browser/safe_browsing/chrome_password_reuse_detection_manager_client.h"
+#include "chrome/browser/safe_browsing/password_protection/chrome_password_reuse_detection_manager_client.h"
 #endif
 
 namespace {
@@ -233,7 +233,7 @@ void SimpleWebViewDialog::Init() {
   // Reload button.
   auto reload = std::make_unique<ReloadButton>(
       /*profile=*/nullptr, command_updater_.get(),
-      /*window_metrics_manager=*/nullptr);
+      /*metrics_dispatcher=*/nullptr);
   reload->SetTriggerableEventFlags(ui::EF_LEFT_MOUSE_BUTTON |
                                    ui::EF_MIDDLE_MOUSE_BUTTON);
   reload->SetTooltipText(l10n_util::GetStringUTF16(IDS_TOOLTIP_RELOAD));
@@ -278,7 +278,7 @@ SimpleWebViewDialog::MakeWidgetDelegate() {
 
 void SimpleWebViewDialog::StartLoad(const GURL& url) {
   WebContents* web_contents = GetWebViewWebContents();
-  DCHECK(web_contents);
+  CHECK(web_contents, base::NotFatalUntil::M162);
 
   // Create the password manager and autofill client that are needed.
   autofill::ChromeAutofillClient::CreateForWebContents(web_contents);
@@ -295,7 +295,7 @@ void SimpleWebViewDialog::StartLoad(const GURL& url) {
 
 std::unique_ptr<views::View> SimpleWebViewDialog::TakeView(
     std::unique_ptr<views::SimpleWebView> self) {
-  DCHECK_EQ(this, self.get());
+  CHECK_EQ(this, self.get(), base::NotFatalUntil::M162);
   self.release();
   return base::WrapUnique<views::View>(this);
 }
@@ -356,9 +356,10 @@ content::WebContents* SimpleWebViewDialog::GetActiveWebContents() const {
   return web_view_->web_contents();
 }
 
-void SimpleWebViewDialog::HandleCommandWithDisposition(int id,
-                                                       WindowOpenDisposition,
-                                                       base::TimeTicks) {
+void SimpleWebViewDialog::HandleCommandWithDisposition(
+    int id,
+    ui::mojom::WindowOpenDisposition,
+    base::TimeTicks) {
   WebContents* web_contents = web_view_->web_contents();
   switch (id) {
     case IDC_BACK:

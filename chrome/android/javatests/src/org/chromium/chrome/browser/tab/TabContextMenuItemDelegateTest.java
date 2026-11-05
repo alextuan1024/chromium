@@ -6,6 +6,7 @@ package org.chromium.chrome.browser.tab;
 
 import static androidx.test.espresso.intent.Intents.intended;
 import static androidx.test.espresso.intent.Intents.intending;
+import static androidx.test.espresso.intent.Intents.times;
 import static androidx.test.espresso.intent.matcher.IntentMatchers.anyIntent;
 import static androidx.test.espresso.intent.matcher.IntentMatchers.hasAction;
 import static androidx.test.espresso.intent.matcher.IntentMatchers.hasCategories;
@@ -21,83 +22,80 @@ import static org.junit.Assert.assertTrue;
 import android.app.Activity;
 import android.app.Instrumentation.ActivityResult;
 import android.content.Intent;
+import android.net.Uri;
 import android.os.Build;
 
 import androidx.test.espresso.intent.Intents;
 import androidx.test.filters.SmallTest;
-import androidx.test.runner.lifecycle.Stage;
 
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
+import org.mockito.Mock;
+import org.mockito.junit.MockitoJUnit;
+import org.mockito.junit.MockitoRule;
 
-import org.chromium.base.CallbackUtils;
 import org.chromium.base.ThreadUtils;
-import org.chromium.base.test.util.ApplicationTestUtils;
-import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.base.test.util.DoNotBatch;
 import org.chromium.base.test.util.MinAndroidSdkLevel;
 import org.chromium.base.test.util.Restriction;
 import org.chromium.chrome.browser.ChromeTabbedActivity;
+import org.chromium.chrome.browser.bookmarks.BookmarkModel;
 import org.chromium.chrome.browser.flags.ActivityType;
-import org.chromium.chrome.browser.flags.ChromeSwitches;
-import org.chromium.chrome.browser.multiwindow.MultiInstanceManager.CloseWindowAppSource;
 import org.chromium.chrome.browser.multiwindow.MultiWindowTestHelper;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.chrome.test.transit.ChromeTransitTestRules;
 import org.chromium.chrome.test.transit.FreshCtaTransitTestRule;
+import org.chromium.chrome.test.transit.page.CtaPageStation;
+import org.chromium.chrome.test.transit.page.WebPageStation;
+import org.chromium.components.bookmarks.BookmarkId;
+import org.chromium.components.bookmarks.BookmarkItem;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
 import org.chromium.content_public.common.Referrer;
 import org.chromium.ui.base.DeviceFormFactor;
 import org.chromium.ui.modaldialog.DialogDismissalCause;
 import org.chromium.ui.modaldialog.ModalDialogManager;
+import org.chromium.ui.modaldialog.ModalDialogProperties;
+import org.chromium.ui.modelutil.PropertyModel;
 import org.chromium.ui.test.util.DeviceRestriction;
 import org.chromium.url.GURL;
 
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.List;
 import java.util.function.Supplier;
 
 /** Integration tests for {@link TabContextMenuItemDelegate}. */
 @RunWith(ChromeJUnit4ClassRunner.class)
-@CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
 @DoNotBatch(reason = "This class runs tests that create new activities.")
 public class TabContextMenuItemDelegateTest {
     @Rule
-    public final FreshCtaTransitTestRule mActivityTestRule =
+    public FreshCtaTransitTestRule mActivityTestRule =
             ChromeTransitTestRules.freshChromeTabbedActivityRule();
 
+    @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
+
+    @Mock private Runnable mContextMenuCopyLinkObserver;
+    private WebPageStation mInitialPage;
     private ModalDialogManager mModalDialogManager;
     private TabContextMenuItemDelegate mContextMenuDelegate;
-    private List<ChromeTabbedActivity> mExtraTabbedActivities;
 
     @Before
     public void setUp() {
-        ChromeTabbedActivity cta = mActivityTestRule.startOnBlankPage().getActivity();
+        mInitialPage = mActivityTestRule.startOnBlankPage();
+        ChromeTabbedActivity cta = mInitialPage.getActivity();
         CriteriaHelper.pollUiThread(cta.getTabModelSelectorSupplier().get()::isTabStateInitialized);
 
         mModalDialogManager = cta.getModalDialogManager();
-        mExtraTabbedActivities = new ArrayList<>();
     }
 
     @After
     public void tearDown() {
         ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    mModalDialogManager.dismissAllDialogs(DialogDismissalCause.ACTIVITY_DESTROYED);
-                    // Cleanup extra activities that were created.
-                    for (ChromeTabbedActivity activity : mExtraTabbedActivities) {
-                        var multiInstanceManager = activity.getMultiInstanceMangerForTesting();
-                        multiInstanceManager.closeWindows(
-                                Collections.singletonList(activity.getWindowId()),
-                                CloseWindowAppSource.OTHER);
-                    }
-                });
+                () ->
+                        mModalDialogManager.dismissAllDialogs(
+                                DialogDismissalCause.ACTIVITY_DESTROYED));
     }
 
     @Test
@@ -137,18 +135,14 @@ public class TabContextMenuItemDelegateTest {
         createContextMenuForCurrentTab();
 
         // Open a new window when there is only one existing window.
-        ChromeTabbedActivity secondActivity =
-                ApplicationTestUtils.waitForActivityWithClass(
-                        ChromeTabbedActivity.class,
-                        Stage.RESUMED,
-                        () ->
-                                mContextMenuDelegate.openInOtherWindow(
-                                        new GURL("about:blank"),
-                                        new Referrer("about:blank", 0),
-                                        /* isIncognito= */ false,
-                                        /* preferNew= */ false,
-                                        /* additionalNavigationParams= */ null));
-        mExtraTabbedActivities.add(secondActivity);
+        MultiWindowTestHelper.waitForNewChromeTabbedActivity(
+                () ->
+                        mContextMenuDelegate.openInOtherWindow(
+                                new GURL("about:blank"),
+                                new Referrer("about:blank", 0),
+                                /* isIncognito= */ false,
+                                /* preferNew= */ false,
+                                /* additionalNavigationParams= */ null));
 
         // Don't show instance picker dialog when there is only one other window.
         ThreadUtils.runOnUiThreadBlocking(
@@ -166,10 +160,7 @@ public class TabContextMenuItemDelegateTest {
 
         // Create a third window. The instance picker dialog should be shown when there are at least
         // two other windows.
-        ChromeTabbedActivity thirdActivity =
-                MultiWindowTestHelper.createNewChromeTabbedActivity(
-                        mActivityTestRule.getActivity());
-        mExtraTabbedActivities.add(thirdActivity);
+        MultiWindowTestHelper.createNewChromeTabbedActivity(mActivityTestRule.getActivity());
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
                     mContextMenuDelegate.openInOtherWindow(
@@ -195,18 +186,14 @@ public class TabContextMenuItemDelegateTest {
     public void testOpenInOtherWindow_PreferNew_CreatesNewWindow() {
         createContextMenuForCurrentTab();
 
-        ChromeTabbedActivity activity =
-                ApplicationTestUtils.waitForActivityWithClass(
-                        ChromeTabbedActivity.class,
-                        Stage.RESUMED,
-                        () ->
-                                mContextMenuDelegate.openInOtherWindow(
-                                        new GURL("about:blank"),
-                                        new Referrer("about:blank", 0),
-                                        /* isIncognito= */ false,
-                                        /* preferNew= */ true,
-                                        /* additionalNavigationParams= */ null));
-        mExtraTabbedActivities.add(activity);
+        MultiWindowTestHelper.waitForNewChromeTabbedActivity(
+                () ->
+                        mContextMenuDelegate.openInOtherWindow(
+                                new GURL("about:blank"),
+                                new Referrer("about:blank", 0),
+                                /* isIncognito= */ false,
+                                /* preferNew= */ true,
+                                /* additionalNavigationParams= */ null));
     }
 
     @Test
@@ -234,12 +221,205 @@ public class TabContextMenuItemDelegateTest {
         }
     }
 
-    private void createContextMenuForCurrentTab() {
+    @Test
+    @SmallTest
+    public void testOnReadLater_AddsToReadingList() {
+        createContextMenuForCurrentTab();
+        GURL testUrl = new GURL("https://example.com/sample_article");
+        String testTitle = "Sample Article";
+
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
+                    mContextMenuDelegate.onReadLater(testUrl, testTitle);
+                });
+
+        CriteriaHelper.pollUiThread(
+                () -> {
                     ChromeTabbedActivity cta = mActivityTestRule.getActivity();
+                    BookmarkModel bookmarkModel =
+                            BookmarkModel.getForProfile(
+                                    cta.getActivityTab().getProfile().getOriginalProfile());
+                    if (!bookmarkModel.isBookmarkModelLoaded()) {
+                        return false;
+                    }
+                    BookmarkId readingListFolder = bookmarkModel.getDefaultReadingListFolder();
+                    if (readingListFolder == null) {
+                        return false;
+                    }
+                    for (BookmarkId id : bookmarkModel.getChildIds(readingListFolder)) {
+                        BookmarkItem item = bookmarkModel.getBookmarkById(id);
+                        if (item != null && item.getUrl().equals(testUrl)) {
+                            return true;
+                        }
+                    }
+                    return false;
+                });
+    }
+
+    @Test
+    @SmallTest
+    public void testSendEmailMessage_Regular_LaunchesDirectly() {
+        createContextMenuForCurrentTab();
+
+        Intents.init();
+        try {
+            intending(anyIntent()).respondWith(new ActivityResult(Activity.RESULT_OK, null));
+
+            ThreadUtils.runOnUiThreadBlocking(
+                    () -> {
+                        mContextMenuDelegate.onSendEmailMessage(
+                                new GURL("mailto:test@example.com"));
+                    });
+
+            assertFalse(mModalDialogManager.isShowing());
+            intended(
+                    allOf(
+                            hasAction(Intent.ACTION_VIEW),
+                            hasData(Uri.parse("mailto:test@example.com"))));
+        } finally {
+            Intents.release();
+        }
+    }
+
+    @Test
+    @SmallTest
+    public void testSendEmailMessage_Incognito_ShowsLeaveIncognitoDialog() {
+        createContextMenuForNewIncognitoTab();
+
+        Intents.init();
+        try {
+            intending(anyIntent()).respondWith(new ActivityResult(Activity.RESULT_OK, null));
+
+            // Cancel the Leave Incognito dialog -> intent should not be fired.
+            ThreadUtils.runOnUiThreadBlocking(
+                    () -> {
+                        mContextMenuDelegate.onSendEmailMessage(
+                                new GURL("mailto:test@example.com"));
+                        assertTrue(mModalDialogManager.isShowing());
+                        PropertyModel dialogModel = mModalDialogManager.getCurrentDialogForTest();
+                        dialogModel
+                                .get(ModalDialogProperties.CONTROLLER)
+                                .onClick(dialogModel, ModalDialogProperties.ButtonType.NEGATIVE);
+                        assertFalse(mModalDialogManager.isShowing());
+                    });
+
+            intended(hasData(Uri.parse("mailto:test@example.com")), times(0));
+
+            // Confirm the Leave Incognito dialog -> intent should be fired.
+            ThreadUtils.runOnUiThreadBlocking(
+                    () -> {
+                        mContextMenuDelegate.onSendEmailMessage(
+                                new GURL("mailto:test@example.com"));
+                        assertTrue(mModalDialogManager.isShowing());
+                        PropertyModel dialogModel = mModalDialogManager.getCurrentDialogForTest();
+                        dialogModel
+                                .get(ModalDialogProperties.CONTROLLER)
+                                .onClick(dialogModel, ModalDialogProperties.ButtonType.POSITIVE);
+                        assertFalse(mModalDialogManager.isShowing());
+                    });
+
+            intended(
+                    allOf(
+                            hasAction(Intent.ACTION_VIEW),
+                            hasData(Uri.parse("mailto:test@example.com"))));
+        } finally {
+            Intents.release();
+        }
+    }
+
+    @Test
+    @SmallTest
+    public void testSendTextMessage_Incognito_ShowsLeaveIncognitoDialog() {
+        createContextMenuForNewIncognitoTab();
+
+        Intents.init();
+        try {
+            intending(anyIntent()).respondWith(new ActivityResult(Activity.RESULT_OK, null));
+
+            ThreadUtils.runOnUiThreadBlocking(
+                    () -> {
+                        mContextMenuDelegate.onSendTextMessage(new GURL("tel:1234567890"));
+                        assertTrue(mModalDialogManager.isShowing());
+                        PropertyModel dialogModel = mModalDialogManager.getCurrentDialogForTest();
+                        dialogModel
+                                .get(ModalDialogProperties.CONTROLLER)
+                                .onClick(dialogModel, ModalDialogProperties.ButtonType.POSITIVE);
+                        assertFalse(mModalDialogManager.isShowing());
+                    });
+
+            intended(allOf(hasAction(Intent.ACTION_VIEW), hasData(Uri.parse("sms:1234567890"))));
+        } finally {
+            Intents.release();
+        }
+    }
+
+    @Test
+    @SmallTest
+    public void testCall_Incognito_ShowsLeaveIncognitoDialog() {
+        createContextMenuForNewIncognitoTab();
+
+        Intents.init();
+        try {
+            intending(anyIntent()).respondWith(new ActivityResult(Activity.RESULT_OK, null));
+
+            ThreadUtils.runOnUiThreadBlocking(
+                    () -> {
+                        mContextMenuDelegate.onCall(new GURL("tel:1234567890"));
+                        assertTrue(mModalDialogManager.isShowing());
+                        PropertyModel dialogModel = mModalDialogManager.getCurrentDialogForTest();
+                        dialogModel
+                                .get(ModalDialogProperties.CONTROLLER)
+                                .onClick(dialogModel, ModalDialogProperties.ButtonType.POSITIVE);
+                        assertFalse(mModalDialogManager.isShowing());
+                    });
+
+            intended(allOf(hasAction(Intent.ACTION_VIEW), hasData(Uri.parse("tel:1234567890"))));
+        } finally {
+            Intents.release();
+        }
+    }
+
+    @Test
+    @SmallTest
+    public void testAddToContacts_Incognito_ShowsLeaveIncognitoDialog() {
+        createContextMenuForNewIncognitoTab();
+
+        Intents.init();
+        try {
+            intending(anyIntent()).respondWith(new ActivityResult(Activity.RESULT_OK, null));
+
+            ThreadUtils.runOnUiThreadBlocking(
+                    () -> {
+                        mContextMenuDelegate.onAddToContacts(new GURL("mailto:test@example.com"));
+                        assertTrue(mModalDialogManager.isShowing());
+                        PropertyModel dialogModel = mModalDialogManager.getCurrentDialogForTest();
+                        dialogModel
+                                .get(ModalDialogProperties.CONTROLLER)
+                                .onClick(dialogModel, ModalDialogProperties.ButtonType.POSITIVE);
+                        assertFalse(mModalDialogManager.isShowing());
+                    });
+
+            intended(hasAction(Intent.ACTION_INSERT));
+        } finally {
+            Intents.release();
+        }
+    }
+
+    private void createContextMenuForCurrentTab() {
+        createContextMenu(mInitialPage);
+    }
+
+    private void createContextMenuForNewIncognitoTab() {
+        createContextMenu(mInitialPage.openNewIncognitoTabOrWindowFast());
+    }
+
+    private void createContextMenu(CtaPageStation pageStation) {
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    ChromeTabbedActivity cta = pageStation.getActivity();
+                    mModalDialogManager = cta.getModalDialogManager();
                     var rootUiCoordinator = cta.getRootUiCoordinatorForTesting();
-                    var tab = cta.getActivityTab();
+                    var tab = pageStation.getTab();
                     var tabModelSelector = cta.getTabModelSelectorSupplier().get();
                     var ephemeralTabCoordinatorSupplier =
                             rootUiCoordinator.getEphemeralTabCoordinatorSupplier();
@@ -254,9 +434,10 @@ public class TabContextMenuItemDelegateTest {
                                     tab,
                                     tabModelSelector,
                                     ephemeralTabCoordinatorSupplier,
-                                    CallbackUtils.emptyRunnable(),
+                                    mContextMenuCopyLinkObserver,
                                     snackbarManagerSupplier,
-                                    bottomSheetControllerSupplier);
+                                    bottomSheetControllerSupplier,
+                                    /* printingDelegate= */ null);
                 });
         assertNotNull(mContextMenuDelegate);
     }

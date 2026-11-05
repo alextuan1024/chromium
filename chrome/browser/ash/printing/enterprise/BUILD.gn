@@ -28,14 +28,12 @@ static_library("enterprise") {
     "print_servers_provider_factory.h",
   ]
 
-  public_deps = [ "//chrome/browser:browser_public_dependencies" ]
-
   deps = [
     ":managed_printer_proto",
     ":print_job_options_proto",
+    "//ash/constants",
     "//chrome/browser/ash/profiles",
     "//chrome/browser/profiles",
-    "//chrome/common:constants",
     "//chromeos/ash/components/settings",
     "//chromeos/printing",
     "//components/device_event_log",
@@ -71,6 +69,7 @@ source_set("unit_tests") {
     "//chrome/browser/ash/profiles",
     "//chrome/browser/ash/settings",
     "//chrome/browser/ash/settings:test_support",
+    "//chrome/browser/policy",
     "//chrome/test:test_support",
     "//chromeos/ash/components/settings",
     "//chromeos/printing",

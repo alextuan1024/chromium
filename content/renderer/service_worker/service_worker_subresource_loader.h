@@ -25,6 +25,7 @@
 #include "net/traffic_annotation/network_traffic_annotation.h"
 #include "net/url_request/redirect_info.h"
 #include "services/network/public/cpp/resource_request.h"
+#include "services/network/public/mojom/blocked_by_response_reason.mojom-forward.h"
 #include "services/network/public/mojom/url_loader.mojom.h"
 #include "services/network/public/mojom/url_loader_factory.mojom.h"
 #include "services/network/public/mojom/url_response_head.mojom-forward.h"
@@ -80,6 +81,7 @@ class CONTENT_EXPORT ServiceWorkerSubresourceLoader
   void OnConnectionClosed() override;
 
  private:
+  class CachedMetadataReader;
   class StreamWaiter;
   enum class Status {
     kNotStarted,
@@ -136,8 +138,9 @@ class CONTENT_EXPORT ServiceWorkerSubresourceLoader
                    int intra_priority_value) override;
 
   int StartBlobReading(mojo::ScopedDataPipeConsumerHandle* body_pipe);
-  void OnSideDataReadingComplete(mojo::ScopedDataPipeConsumerHandle data_pipe,
-                                 std::optional<mojo_base::BigBuffer> metadata);
+  void OnCachedMetadataReadingComplete(
+      mojo::ScopedDataPipeConsumerHandle data_pipe,
+      std::optional<mojo_base::BigBuffer> metadata);
   void OnBodyReadingComplete(int net_error);
 
   void SetCommitResponsibility(FetchResponseFrom fetch_response_from) override;
@@ -154,9 +157,13 @@ class CONTENT_EXPORT ServiceWorkerSubresourceLoader
   // Sends net::ERR_INSUFFICIENT_RESOURCES when it can't be created.
   void CommitEmptyResponseAndComplete() override;
 
-  // Calls url_loader_client_->OnComplete(). Expected to be called after
-  // CommitResponseHeaders (i.e. status_ == kSentHeader).
-  void CommitCompleted(int error_code, const char* reason) override;
+  using ServiceWorkerResourceLoader::CommitCompleted;
+  // Calls url_loader_client_->OnComplete(). |reason| will be recorded as an
+  // argument of TRACE_EVENT.
+  void CommitCompleted(int error_code,
+                       const char* reason,
+                       std::optional<network::mojom::BlockedByResponseReason>
+                           blocked_by_response_reason) override;
 
   // Calls url_loader_client_->OnReceiveRedirect(). Sends too many redirects
   // error if it hits the redirect limit.
@@ -239,8 +246,9 @@ class CONTENT_EXPORT ServiceWorkerSubresourceLoader
   // The blob needs to be held while it's read to keep it alive.
   mojo::Remote<blink::mojom::Blob> body_as_blob_;
   uint64_t body_as_blob_size_;
-  // The blob needs to be held while it's read to keep it alive.
-  mojo::Remote<blink::mojom::Blob> side_data_as_blob_;
+  std::unique_ptr<CachedMetadataReader> cached_metadata_reader_;
+  mojo::PendingRemote<network::mojom::CacheStorageSideDataWriter>
+      cache_storage_side_data_writer_;
 
   scoped_refptr<ControllerServiceWorkerConnector> controller_connector_;
 
@@ -252,7 +260,7 @@ class CONTENT_EXPORT ServiceWorkerSubresourceLoader
       controller_connector_observation_{this};
   bool fetch_request_restarted_;
   bool body_reading_complete_;
-  bool side_data_reading_complete_;
+  bool cached_metadata_reading_complete_ = false;
 
   // These are given by the constructor (as the params for
   // URLLoaderFactory::CreateLoaderAndStart).

@@ -44,8 +44,12 @@
 #include "services/metrics/public/cpp/ukm_source_id.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "ui/base/page_transition_types.h"
-#include "ui/base/window_open_disposition.h"
+
+#if BUILDFLAG(IS_MAC)
+#include "ui/base/test/scoped_fake_nswindow_fullscreen.h"
+#endif
 
 namespace metrics {
 
@@ -205,6 +209,12 @@ class TabUsageScenarioTrackerBrowserTest : public InProcessBrowserTest {
   std::unique_ptr<TabUsageScenarioTracker> tab_usage_scenario_tracker_;
 
  private:
+#if BUILDFLAG(IS_MAC)
+  // Fake NSWindow fullscreen transitions to avoid asynchronous AppKit Space
+  // transitions that can cause spurious window occlusion updates on Mac.
+  ui::test::ScopedFakeNSWindowFullscreen fake_fullscreen_window_;
+#endif
+
   // TODO(https://crbug.com/423465927): Explore a better approach to make the
   // existing tests run with the prewarm feature enabled.
   test::ScopedPrewarmFeatureList prewarm_feature_list_{
@@ -690,15 +700,8 @@ IN_PROC_BROWSER_TEST_F(TabUsageScenarioTrackerBrowserTest, TabAudio) {
             interval_data.source_id_for_longest_visible_origin_duration);
 }
 
-// TODO(https://crbug.com/448444906): There's a race condition in this test
-// between the two calls to ResetIntervalData() that manifests on Mac.
-#if BUILDFLAG(IS_MAC)
-#define MAYBE_FullScreenVideoClosed DISABLED_FullScreenVideoClosed
-#else
-#define MAYBE_FullScreenVideoClosed FullScreenVideoClosed
-#endif
 IN_PROC_BROWSER_TEST_F(TabUsageScenarioTrackerBrowserTest,
-                       MAYBE_FullScreenVideoClosed) {
+                       FullScreenVideoClosed) {
   // Play fullscreen video in a tab and close it while it's playing, ensure that
   // things are tracked properly.
   EXPECT_TRUE(
@@ -816,7 +819,7 @@ IN_PROC_BROWSER_TEST_F(TabUsageScenarioTrackerBrowserTest,
   ui_test_utils::BrowserCreatedObserver browser_created_observer;
   ui_test_utils::NavigateToURLWithDisposition(
       browser(), embedded_test_server()->GetURL("/title2.html"),
-      WindowOpenDisposition::NEW_WINDOW,
+      ui::mojom::WindowOpenDisposition::kNewWindow,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_BROWSER);
   BrowserWindowInterface* const browser2 = browser_created_observer.Wait();
 

@@ -74,6 +74,9 @@ public class DevToolsActivityTest {
                                         () ->
                                                 DevToolsWindowAndroid.openDevTools(
                                                         inspectedContents)));
+        CriteriaHelper.pollUiThread(
+                activity::didFinishNativeInitialization,
+                "DevToolsActivity did not finish native initialization.");
 
         // DevToolsActivity gets closed when the inspected tab closes.
         runOnUiThreadBlocking(
@@ -83,9 +86,9 @@ public class DevToolsActivityTest {
                     tabModel.commitAllTabClosures();
                 });
         CriteriaHelper.pollUiThread(
-                () -> {
-                    return activity.isDestroyed();
-                },
-                "DevToolsActivity wasn't closed.");
+                activity::isDestroyed,
+                "DevToolsActivity wasn't closed.",
+                CriteriaHelper.DEFAULT_MAX_TIME_TO_POLL_LONG,
+                CriteriaHelper.DEFAULT_POLLING_INTERVAL);
     }
 }

@@ -656,21 +656,6 @@ TEST_F(DevicePolicyDecoderTest,
           device_user_initiated_flex_system_firmware_updates_enabled_value));
 }
 
-TEST_F(DevicePolicyDecoderTest, DeviceSystemAecEnabled) {
-  em::ChromeDeviceSettingsProto device_policy;
-
-  DecodeUnsetDevicePolicyTestHelper(device_policy,
-                                    key::kDeviceSystemAecEnabled);
-
-  base::Value device_system_aec_enabled_value(true);
-  device_policy.mutable_device_system_aec_enabled()
-      ->set_device_system_aec_enabled(
-          device_system_aec_enabled_value.GetBool());
-
-  DecodeDevicePolicyTestHelper(device_policy, key::kDeviceSystemAecEnabled,
-                               std::move(device_system_aec_enabled_value));
-}
-
 TEST_F(DevicePolicyDecoderTest,
        DecodeDeviceLocalAccountsWithoutEphemeralModeField) {
   em::ChromeDeviceSettingsProto device_policy;
@@ -1057,6 +1042,63 @@ TEST_F(DevicePolicyDecoderTest, DecodeDeviceLoginScreenPreferSlowCiphers) {
   DecodeDevicePolicyTestHelper(device_policy,
                                key::kDeviceLoginScreenPreferSlowCiphers,
                                std::move(deviceloginscreenpreferslowciphers));
+}
+
+TEST_F(DevicePolicyDecoderTest, DeviceMaxUserProfiles) {
+  em::ChromeDeviceSettingsProto device_policy;
+  DecodeUnsetDevicePolicyTestHelper(device_policy, key::kDeviceMaxUserProfiles);
+
+  device_policy.mutable_devicemaxuserprofiles()->set_value(5);
+  DecodeDevicePolicyTestHelper(device_policy, key::kDeviceMaxUserProfiles,
+                               base::Value(5));
+}
+
+TEST_F(DevicePolicyDecoderTest, DeviceMetricsReportingEnabled) {
+  em::ChromeDeviceSettingsProto device_policy;
+
+  {
+    PolicyBundle bundle;
+    PolicyMap& policies = bundle.Get(PolicyNamespace(POLICY_DOMAIN_CHROME, ""));
+    DecodeDevicePolicy(device_policy,
+                       /*external_data_manager=*/nullptr, &policies);
+    const PolicyMap::Entry* entry =
+        policies.Get(key::kDeviceMetricsReportingEnabled);
+    ASSERT_NE(entry, nullptr);
+    PolicyMap::Entry expected_entry(
+        POLICY_LEVEL_MANDATORY, POLICY_SCOPE_MACHINE,
+        POLICY_SOURCE_ENTERPRISE_DEFAULT, base::Value(true), nullptr);
+    EXPECT_TRUE(entry->Equals(expected_entry));
+  }
+
+  device_policy.mutable_metrics_enabled()->set_metrics_enabled(false);
+  {
+    PolicyBundle bundle;
+    PolicyMap& policies = bundle.Get(PolicyNamespace(POLICY_DOMAIN_CHROME, ""));
+    DecodeDevicePolicy(device_policy,
+                       /*external_data_manager=*/nullptr, &policies);
+    const PolicyMap::Entry* entry =
+        policies.Get(key::kDeviceMetricsReportingEnabled);
+    ASSERT_NE(entry, nullptr);
+    PolicyMap::Entry expected_entry(POLICY_LEVEL_MANDATORY,
+                                    POLICY_SCOPE_MACHINE, POLICY_SOURCE_CLOUD,
+                                    base::Value(false), nullptr);
+    EXPECT_TRUE(entry->Equals(expected_entry));
+  }
+
+  device_policy.mutable_metrics_enabled()->set_metrics_enabled(true);
+  {
+    PolicyBundle bundle;
+    PolicyMap& policies = bundle.Get(PolicyNamespace(POLICY_DOMAIN_CHROME, ""));
+    DecodeDevicePolicy(device_policy,
+                       /*external_data_manager=*/nullptr, &policies);
+    const PolicyMap::Entry* entry =
+        policies.Get(key::kDeviceMetricsReportingEnabled);
+    ASSERT_NE(entry, nullptr);
+    PolicyMap::Entry expected_entry(POLICY_LEVEL_MANDATORY,
+                                    POLICY_SCOPE_MACHINE, POLICY_SOURCE_CLOUD,
+                                    base::Value(true), nullptr);
+    EXPECT_TRUE(entry->Equals(expected_entry));
+  }
 }
 
 }  // namespace policy

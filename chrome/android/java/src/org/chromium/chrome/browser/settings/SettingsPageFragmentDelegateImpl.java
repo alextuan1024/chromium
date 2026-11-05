@@ -25,6 +25,7 @@ import androidx.appcompat.widget.Toolbar;
 import androidx.fragment.app.Fragment;
 import androidx.fragment.app.FragmentActivity;
 import androidx.fragment.app.FragmentManager;
+import androidx.fragment.app.FragmentTransaction;
 import androidx.preference.PreferenceFragmentCompat;
 import androidx.recyclerview.widget.RecyclerView;
 
@@ -93,6 +94,7 @@ public class SettingsPageFragmentDelegateImpl
     private final Tab mTab;
 
     private @Nullable SettingsHostFragment mSettingsHostFragment;
+    private @Nullable SettingsInTabNavigationDelegate mSettingsNavigationDelegate;
     private FragmentManager.@Nullable FragmentLifecycleCallbacks mTitleUpdaterLifecycleCallbacks;
     private FragmentManager.@Nullable FragmentLifecycleCallbacks mSettingsMetricsReporter;
     private FragmentManager.@Nullable FragmentLifecycleCallbacks mOptionsMenuLifecycleCallbacks;
@@ -160,10 +162,6 @@ public class SettingsPageFragmentDelegateImpl
             String initialUrl,
             Function<View, @Nullable EdgeToEdgePadAdjuster> padAdjusterGenerator,
             boolean attachToContainer) {
-        if (!initialUrl.isEmpty()) {
-            mPendingUrl = initialUrl;
-        }
-
         FragmentManager fragmentManager =
                 ((FragmentActivity) mActivity).getSupportFragmentManager();
 
@@ -269,36 +267,27 @@ public class SettingsPageFragmentDelegateImpl
                         mModalDialogSupplier,
                         () -> mSearchCoordinator);
 
-        mSettingsHostFragment =
-                (SettingsHostFragment) fragmentManager.findFragmentByTag(mFragmentTag);
-        if (mSettingsHostFragment == null) {
-            mSettingsHostFragment = new SettingsHostFragment();
-            // Set the dependency provider before executing the transaction so child fragments
-            // created during attachment (e.g. MainSettings) have their dependencies attached
-            // before creating their preferences.
-            mSettingsHostFragment.setDependencyProvider(dependencyProvider);
-            if (attachToContainer) {
-                // In standalone test activities, attach directly to the container because tests
-                // expect immediate view attachment.
-                fragmentManager
-                        .beginTransaction()
-                        .add(fragmentContainer.getId(), mSettingsHostFragment, mFragmentTag)
-                        .commitAllowingStateLoss();
-            } else {
-                // Add the fragment without a container using two-parameter add() to prevent
-                // multiple settings tabs from colliding on the same container ID during activity
-                // recreation.
-                fragmentManager
-                        .beginTransaction()
-                        .add(mSettingsHostFragment, mFragmentTag)
-                        .commitAllowingStateLoss();
-            }
-            // Execute the transaction so mSettingsHostFragment creates its view and getView() is
-            // non-null below.
-            fragmentManager.executePendingTransactions();
-        } else {
-            mSettingsHostFragment.setDependencyProvider(dependencyProvider);
+        if (ChromeFeatureList.sSettingsInTabUrlNav.isEnabled()) {
+            mSettingsNavigationDelegate = new SettingsInTabNavigationDelegate(mTab);
         }
+
+        // A host fragment that the FragmentManager restored across an activity recreation (e.g. a
+        // theme change) has saved state but no save callback yet; one still bound to a live
+        // SettingsPage in this activity has a callback.
+        SettingsHostFragment existingHostFragment =
+                (SettingsHostFragment) fragmentManager.findFragmentByTag(mFragmentTag);
+        boolean isRestoredHostFragment =
+                existingHostFragment != null
+                        && existingHostFragment.getSavedInstanceState() != null
+                        && !existingHostFragment.hasSaveInstanceStateCallback();
+
+        mSettingsHostFragment =
+                createOrReuseHostFragment(
+                        fragmentManager,
+                        existingHostFragment,
+                        fragmentContainer,
+                        attachToContainer,
+                        dependencyProvider);
         mSettingsHostFragment.setSaveInstanceStateCallback(this::onSaveInstanceState);
         if (mSettingsHostFragment.isAttachedToActivity()) {
             attachEdgeToEdgeAdjusters(mSettingsHostFragment.getHostFragmentManager());
@@ -314,17 +303,15 @@ public class SettingsPageFragmentDelegateImpl
             fragmentContainer.addView(hostView, layoutParams);
         }
 
-        if (ChromeFeatureList.sSettingsInTabUrlNav.isEnabled()) {
-            mSettingsHostFragment.setSettingsNavigation(new SettingsInTabNavigationDelegate(mTab));
-            if (mTab.getUrl() != null && !mTab.getUrl().isEmpty()) {
-                String restoredUrl = mTab.getUrl().getSpec();
-                if (restoredUrl != null && !restoredUrl.isEmpty()) {
-                    // Capture and apply the restored tab URL (e.g. "chrome://settings/appearance")
-                    // during tab initialization or session restore to synchronize the displayed
-                    // settings fragment with the restored WebContents URL.
-                    updateForUrl(restoredUrl);
-                }
-            }
+        // The restored fragments are the source of truth for a restored host: pages opened from
+        // search do not change the tab URL, so re-applying it would close search and reset them.
+        // https://crbug.com/578622279
+        if (ChromeFeatureList.sSettingsInTabUrlNav.isEnabled() && !isRestoredHostFragment) {
+            // Prefer the URL being loaded: Tab.loadUrl() shows the native page before the
+            // navigation commits, so the tab may still report the previous URL.
+            String url = initialUrl;
+            if (url.isEmpty() && mTab.getUrl() != null) url = mTab.getUrl().getSpec();
+            if (!url.isEmpty()) updateForUrl(url);
         }
 
         if (mSettingsHostFragment.isAdded()) {
@@ -381,6 +368,59 @@ public class SettingsPageFragmentDelegateImpl
         }
     }
 
+    /**
+     * Returns the {@link SettingsHostFragment} for this tab, creating and committing it if the tab
+     * does not have one yet.
+     *
+     * <p>A host is reused when the {@link FragmentManager} outlived this delegate, e.g. across an
+     * activity recreation: the fragment is restored from the manager while every dependency it was
+     * given is bound to the activity that has just gone away, so both branches have to hand it the
+     * new ones.
+     */
+    private SettingsHostFragment createOrReuseHostFragment(
+            FragmentManager fragmentManager,
+            @Nullable SettingsHostFragment existingHostFragment,
+            ViewGroup fragmentContainer,
+            boolean attachToContainer,
+            FragmentDependencyProvider dependencyProvider) {
+        if (existingHostFragment != null) {
+            attachHostDependencies(existingHostFragment, dependencyProvider);
+            return existingHostFragment;
+        }
+
+        SettingsHostFragment hostFragment = new SettingsHostFragment();
+        // Attach before executing the transaction: the host creates its initial child fragments
+        // (MultiColumnSettings, MainSettings) during it, and they read both the dependency
+        // provider and the URL-aware SettingsNavigation in onFragmentAttached(), before they
+        // create their preferences.
+        attachHostDependencies(hostFragment, dependencyProvider);
+
+        FragmentTransaction transaction = fragmentManager.beginTransaction();
+        if (attachToContainer) {
+            // In standalone test activities, attach directly to the container because tests expect
+            // immediate view attachment.
+            transaction.add(fragmentContainer.getId(), hostFragment, mFragmentTag);
+        } else {
+            // Add the fragment without a container using two-parameter add() to prevent multiple
+            // settings tabs from colliding on the same container ID during activity recreation.
+            transaction.add(hostFragment, mFragmentTag);
+        }
+        transaction.commitAllowingStateLoss();
+
+        // Execute the transaction so the host creates its view and getView() is non-null for the
+        // caller.
+        fragmentManager.executePendingTransactions();
+        return hostFragment;
+    }
+
+    private void attachHostDependencies(
+            SettingsHostFragment hostFragment, FragmentDependencyProvider dependencyProvider) {
+        hostFragment.setDependencyProvider(dependencyProvider);
+        if (mSettingsNavigationDelegate != null) {
+            hostFragment.setSettingsNavigation(mSettingsNavigationDelegate);
+        }
+    }
+
     @Override
     public void updateForUrl(String url) {
         if (!ChromeFeatureList.sSettingsInTabUrlNav.isEnabled()) return;
@@ -399,8 +439,25 @@ public class SettingsPageFragmentDelegateImpl
 
         mPendingUrl = null;
 
-        SettingsFragmentRegistry.Resolution resolution = SettingsFragmentRegistry.resolve(url);
-        var fragmentClass = resolution.fragmentClass;
+        // A Url arriving while search is open is the user asking to go somewhere else: an omnibox
+        // edit, a restored tab, a redirect. Let search stand down first, rather than replacing the
+        // page it is showing and purging the back stack it holds its own pages on underneath it.
+        if (mSearchCoordinator != null) {
+            mSearchCoordinator.exitSearchIfOpen();
+        }
+
+        // A settings URL is user editable and is replayed from history, so it may be missing
+        // arguments its page cannot do without, or name data that has since been deleted. Let the
+        // registry decide, and send the user to the fallback page rather than crashing.
+        SettingsFragmentRegistry.Resolution resolution =
+                SettingsFragmentRegistry.resolve(url, mProfile);
+        if (resolution.redirectUrl != null && mSettingsNavigationDelegate != null) {
+            // Replace rather than push: the entry being left is not a page the user can return to.
+            mSettingsNavigationDelegate.redirectFromNavigation(resolution.redirectUrl);
+            return;
+        }
+        var fragmentClass =
+                resolution.fragmentClass != null ? resolution.fragmentClass : MainSettings.class;
 
         // If navigating to root chrome://settings URL (e.g. via Omnibox),
         // clear any stored initial subpage URL on attached host fragment
@@ -423,6 +480,19 @@ public class SettingsPageFragmentDelegateImpl
 
     @Override
     public void destroySettings() {
+        // TODO(crbug.com/566898692): Replace this workaround with a proper fix.
+        // When the tab is detached from the activity, e.g. by TabReparentingController before a
+        // theme change or fold/unfold recreates the activity, TabImpl freezes and destroys this
+        // page *before* the activity saves its instance state. Keep the host fragment in the
+        // FragmentManager so that its state (including the open detail page) is saved, restored
+        // and adopted by the new SettingsPage once the tab is re-attached. Snapshot the per-tab
+        // UI state now, because the objects that provide it are destroyed below.
+        boolean keepHostFragment = mSettingsHostFragment != null && mTab.isDetachedFromActivity();
+        Bundle savedStateSnapshot = new Bundle();
+        if (keepHostFragment) {
+            onSaveInstanceState(savedStateSnapshot);
+        }
+
         assert mActivity instanceof ActivityLifecycleDispatcherProvider;
         ((ActivityLifecycleDispatcherProvider) mActivity).getLifecycleDispatcher().unregister(this);
 
@@ -487,8 +557,13 @@ public class SettingsPageFragmentDelegateImpl
             // destroy the shared host fragment or clear its callbacks.
             boolean isAdoptedByNewPage =
                     isUrlNavEnabled && mTab.getNativePage() instanceof SettingsPage;
-            if (!isAdoptedByNewPage) {
+            if (keepHostFragment) {
+                mSettingsHostFragment.setSaveInstanceStateCallback(
+                        outState -> outState.putAll(savedStateSnapshot));
+                mSettingsHostFragment.setSearchOpenSupplier(null);
+            } else if (!isAdoptedByNewPage) {
                 mSettingsHostFragment.setSaveInstanceStateCallback(null);
+                mSettingsHostFragment.setSearchOpenSupplier(null);
                 if (isUrlNavEnabled) {
                     mSettingsHostFragment.setSettingsNavigation(null);
                 }
@@ -670,7 +745,7 @@ public class SettingsPageFragmentDelegateImpl
                         mToolbar,
                         this::isTwoColumnSettingsVisible,
                         multiColumnSettings,
-                        containmentHelper.getItemDecorations(),
+                        containmentHelper,
                         mProfile,
                         this::updateFirstVisibleTitle,
                         mModalDialogSupplier,
@@ -685,6 +760,11 @@ public class SettingsPageFragmentDelegateImpl
                     () -> assumeNonNull(mSearchCoordinator).initializeSearchUi(savedInstanceState));
         }
         multiColumnSettings.addObserver(mSearchCoordinator);
+
+        // Navigation asks the host whether search is open, so that pages opened from search stay
+        // on the fragment back stack instead of moving the tab.
+        mSettingsHostFragment.setSearchOpenSupplier(
+                () -> mSearchCoordinator != null && mSearchCoordinator.isSearchOpen());
     }
 
     private void updateFirstVisibleTitle(int index) {
@@ -777,7 +857,8 @@ public class SettingsPageFragmentDelegateImpl
                 return BackPressResult.SUCCESS;
             }
             // When Url Navigation is enabled, the back press should not close the sliding
-            // pane, instead the back press should route to the Chrome navigation stack.
+            // pane, instead the back press should route to the Chrome navigation stack (see
+            // shouldNavigateUpOnBack()).
             // This keeps the UI in-sync with the Url, while keep compatibility with the
             // old navigation stack (e.g., still used for search results)
             if (!ChromeFeatureList.sSettingsInTabUrlNav.isEnabled()) {
@@ -794,7 +875,33 @@ public class SettingsPageFragmentDelegateImpl
                 return BackPressResult.SUCCESS;
             }
         }
+        if (shouldNavigateUpOnBack()) {
+            assumeNonNull(mSettingsNavigationDelegate).navigateUp();
+            return BackPressResult.SUCCESS;
+        }
         return BackPressResult.FAILURE;
+    }
+
+    /**
+     * Returns whether a back press navigates up within settings rather than going back in the tab's
+     * history.
+     *
+     * <p>With URL navigation, this is the case on a subpage in single-column layout, i.e. whenever
+     * the toolbar shows a back button, which presses back. A subpage may have been opened directly
+     * from outside settings, e.g. "Edit homepage" on the NTP, and going back in the tab's history
+     * would then leave settings for the NTP rather than return to main settings, which is what the
+     * user expects from a subpage that slid in over main settings. Elsewhere, e.g. in two-column
+     * layout where main settings stays on screen, back presses go back in the tab's history.
+     */
+    private boolean shouldNavigateUpOnBack() {
+        if (!ChromeFeatureList.sSettingsInTabUrlNav.isEnabled()
+                || mSettingsNavigationDelegate == null) {
+            return false;
+        }
+        MultiColumnSettings multiColumnSettings = getMultiColumnSettings();
+        return multiColumnSettings != null
+                && !multiColumnSettings.isTwoColumn()
+                && multiColumnSettings.isLayoutOpen();
     }
 
     private void updateBackPressState() {
@@ -813,6 +920,8 @@ public class SettingsPageFragmentDelegateImpl
                     if (slidingPane != null && slidingPane.isSlideable() && slidingPane.isOpen()) {
                         canHandle = true;
                     }
+                } else {
+                    canHandle = shouldNavigateUpOnBack();
                 }
             } else if (mSettingsHostFragment != null
                     && mSettingsHostFragment.isAttachedToActivity()) {

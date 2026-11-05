@@ -55,6 +55,13 @@ class ChromeMainDelegate : public content::ContentMainDelegate {
   ~ChromeMainDelegate() override;
 
  protected:
+#if !BUILDFLAG(IS_ANDROID)
+  // Does not record startup metrics; for use in tests where
+  // ChromeUnitTestSuite::Initialize() has already recorded application start
+  // time.
+  ChromeMainDelegate();
+#endif
+
   // content::ContentMainDelegate:
   std::optional<int> BasicStartupComplete() override;
   void PreSandboxStartup() override;
@@ -99,7 +106,7 @@ class ChromeMainDelegate : public content::ContentMainDelegate {
 
   void InitializeMemorySystem();
 
-  bool IsInitFeatureListEarly() override;
+  bool DidPerformEarlyInitialization() override;
 
 #if !defined(BUILDING_CHROME_RENDERER)
   std::unique_ptr<ChromeContentBrowserClient> chrome_content_browser_client_;

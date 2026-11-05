@@ -134,7 +134,9 @@ void DisplayOverlayController::SetDisplayMode(DisplayMode mode) {
 
     case DisplayMode::kView: {
       CHECK(!rich_nudge_widget_, base::NotFatalUntil::M160);
-      CHECK(!target_widget_, base::NotFatalUntil::M160);
+      // TODO(crbug.com/578062293): CHECK-exclusion: Convert to a CHECK once we
+      // are confident it won't be triggered.
+      DCHECK(!target_widget_);
       CHECK(!button_options_widget_, base::NotFatalUntil::M160);
       RemoveActionHighlightWidget();
       RemoveDeleteEditShortcutWidget();
@@ -797,7 +799,9 @@ void DisplayOverlayController::UpdateButtonPlacementNudgeAnchorRect() {
 }
 
 void DisplayOverlayController::AddTargetWidget(ActionType action_type) {
-  CHECK(!target_widget_, base::NotFatalUntil::M160);
+  // TODO(crbug.com/574592580): CHECK-exclusion: Convert to a CHECK once we
+  // are confident it won't be triggered.
+  DCHECK(!target_widget_);
 
   target_widget_ = CreateTransientWidget(touch_injector_->window(),
                                          /*widget_name=*/kInputMapping,

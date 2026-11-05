@@ -451,7 +451,7 @@ WebContents* PrintPreviewHandler::preview_web_contents() {
 
 PrefService* PrintPreviewHandler::GetPrefs() {
   auto* prefs = Profile::FromWebUI(web_ui())->GetPrefs();
-  DCHECK(prefs);
+  CHECK(prefs, base::NotFatalUntil::M162);
   return prefs;
 }
 
@@ -585,7 +585,7 @@ void PrintPreviewHandler::HandleGetPrinterCapabilities(
 }
 
 void PrintPreviewHandler::HandleGetPreview(const base::ListValue& args) {
-  DCHECK_EQ(2U, args.size());
+  CHECK_EQ(2U, args.size(), base::NotFatalUntil::M162);
 
   // All of the conditions below should be guaranteed by the print preview
   // javascript.
@@ -618,6 +618,8 @@ void PrintPreviewHandler::HandleGetPreview(const base::ListValue& args) {
   // headers and footers are to be displayed.
   std::optional<bool> display_header_footer_opt =
       settings.FindBool(kSettingHeaderFooterEnabled);
+  // TODO(crbug.com/580229748): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
   DCHECK(display_header_footer_opt);
   if (display_header_footer_opt.value_or(false)) {
     settings.Set(kSettingHeaderFooterTitle, initiator->GetTitle());
@@ -672,7 +674,7 @@ void PrintPreviewHandler::HandleDoPrint(const base::ListValue& args) {
     RejectJavascriptCallback(base::Value(callback_id), base::Value("NO_DATA"));
     return;
   }
-  DCHECK(data->size());
+  CHECK(data->size(), base::NotFatalUntil::M162);
 
   // After validating `settings`, record metrics.
   std::optional<bool> maybe_is_pdf = IsPrintingPdf();
@@ -718,11 +720,12 @@ void PrintPreviewHandler::HandleDoPrint(const base::ListValue& args) {
                                      weak_factory_.GetWeakPtr());
 
   enterprise_data_protection::PrintIfAllowedByPolicy(
-      data, GetInitiator(), std::move(device_name), scan_context,
+      std::move(data), GetInitiator(), std::move(device_name), scan_context,
       std::move(on_verdict), std::move(hide_preview));
 
 #else
-  FinishHandleDoPrint(user_action, std::move(settings), data, callback_id);
+  FinishHandleDoPrint(user_action, std::move(settings), std::move(data),
+                      callback_id);
 #endif  // BUILDFLAG(ENTERPRISE_CONTENT_ANALYSIS)
 }
 
@@ -734,7 +737,8 @@ void PrintPreviewHandler::OnVerdictByEnterprisePolicy(
     const std::string& callback_id,
     bool allowed) {
   if (allowed) {
-    FinishHandleDoPrint(user_action, std::move(settings), data, callback_id);
+    FinishHandleDoPrint(user_action, std::move(settings), std::move(data),
+                        callback_id);
   } else {
     OnPrintResult(callback_id, base::Value("NOT_ALLOWED"));
   }
@@ -753,7 +757,7 @@ void PrintPreviewHandler::FinishHandleDoPrint(
   PrinterHandler* handler =
       GetPrinterHandler(GetPrinterTypeForUserAction(user_action));
   handler->StartPrint(print_preview_ui()->initiator_title(),
-                      std::move(settings), data,
+                      std::move(settings), std::move(data),
                       base::BindOnce(&PrintPreviewHandler::OnPrintResult,
                                      weak_factory_.GetWeakPtr(), callback_id));
 }
@@ -835,7 +839,7 @@ void PrintPreviewHandler::GetLocaleInformation(base::DictValue* settings) {
     thousands_delimiter.clear();
   }
   size_t decimal_pos = number_format.find('6') + 1;
-  DCHECK_NE(number_format[decimal_pos], '7');
+  CHECK_NE(number_format[decimal_pos], '7', base::NotFatalUntil::M162);
   std::u16string decimal_delimiter = number_format.substr(decimal_pos, 1);
   settings->Set(kDecimalDelimiter, decimal_delimiter);
   settings->Set(kThousandsDelimiter, thousands_delimiter);
@@ -1002,7 +1006,7 @@ void PrintPreviewHandler::OnPrintPreviewFailed(int request_id) {
 
   // Keep track of failures.
   bool inserted = preview_failures_.insert(request_id).second;
-  DCHECK(inserted);
+  CHECK(inserted, base::NotFatalUntil::M162);
   RejectJavascriptCallback(base::Value(callback_id),
                            base::Value("PREVIEW_FAILED"));
 }
@@ -1137,11 +1141,12 @@ PdfPrinterHandler* PrintPreviewHandler::GetPdfPrinterHandler() {
 
 void PrintPreviewHandler::OnAddedPrinters(mojom::PrinterType printer_type,
                                           base::ListValue printers) {
-  DCHECK(printer_type == mojom::PrinterType::kExtension ||
-         printer_type == mojom::PrinterType::kLocal);
+  CHECK(printer_type == mojom::PrinterType::kExtension ||
+            printer_type == mojom::PrinterType::kLocal,
+        base::NotFatalUntil::M162);
   // Save the count here, as `printers` gets moved below.
   const size_t printer_count = printers.size();
-  DCHECK(printer_count);
+  CHECK(printer_count, base::NotFatalUntil::M162);
   FireWebUIListener("printers-added",
                     base::Value(static_cast<int>(printer_type)), printers);
 

@@ -519,10 +519,10 @@
 <translation id="5045550434625856497">Neispravna lozinka</translation>
 <translation id="5059127710849015030">nepalski, transliteracija</translation>
 <translation id="5068919226082848014">Pica</translation>
+<translation id="5075336522277785691">Dodatak <ph name="EXTENSION_NAME" /> je podesio pravila za zamenu proksija</translation>
 <translation id="5081517858322016911"><ph name="TOTAL_FILE_SIZE" /> datoteka će se izbrisati</translation>
 <translation id="508423945471810158">Stavke (<ph name="NUMBER_OF_ITEMS" />) se premeštaju u folder <ph name="FOLDER_NAME" /></translation>
 <translation id="509429900233858213">Došlo je do greške.</translation>
-<translation id="5102922915594634436">Upravljajte sinhronizovanim folderima</translation>
 <translation id="5109254780565519649">Došlo je do greške. Neke stavke možda nisu vraćene.</translation>
 <translation id="5110329002213341433">engleski (Kanada)</translation>
 <translation id="5119780910075847424">Sinhronizacija je pauzirana</translation>
@@ -558,7 +558,6 @@
 <translation id="5305688511332277257">Ništa nije instalirano</translation>
 <translation id="5317780077021120954">Sačuvaj</translation>
 <translation id="5318819489018851358">Deli sa Linux-om</translation>
-<translation id="5330145655348521461">Ove datoteke su otvorene na drugom profilu. Pređite na <ph name="USER_NAME" /> (<ph name="MAIL_ADDRESS" />) da biste ih pogledali.</translation>
 <translation id="5330512191124428349">Preuzmi podatke</translation>
 <translation id="535792325654997756">Osoba sa mačkama</translation>
 <translation id="5358764674931277">Brzina kadrova</translation>
@@ -699,7 +698,6 @@
 <translation id="636254897931573416">Nevažeća vrednost podudaranja sufiksa domena</translation>
 <translation id="6364301859968397756">Memorijski prostor organizacije je popunjen</translation>
 <translation id="6367976544441405720">Kombi</translation>
-<translation id="637062427944097960">Ova datoteka je otvorena na drugom profilu. Pređite na <ph name="USER_NAME" /> (<ph name="MAIL_ADDRESS" />) da biste je pogledali.</translation>
 <translation id="6394388407447716302">Samo za čitanje</translation>
 <translation id="6395575651121294044">Stavki: <ph name="NUMBER_OF_FILES" /></translation>
 <translation id="6407769893376380348">Premeštanje fajla <ph name="FILE_NAME" /> nije uspelo zato što je šifrovan.</translation>

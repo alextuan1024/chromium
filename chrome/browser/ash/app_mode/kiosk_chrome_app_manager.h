@@ -15,11 +15,11 @@
 #include "base/files/scoped_temp_dir.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/time/time.h"
+#include "chrome/browser/ash/app_mode/chrome_kiosk_app_installer.h"
 #include "chrome/browser/ash/app_mode/kiosk_app_manager_base.h"
 #include "chrome/browser/ash/app_mode/kiosk_app_types.h"
 #include "chrome/browser/ash/extensions/external_cache.h"
 #include "chrome/browser/ash/extensions/external_cache_delegate.h"
-#include "chrome/browser/chromeos/app_mode/chrome_kiosk_app_installer.h"
 #include "components/account_id/account_id.h"
 #include "components/pref_registry/pref_registry_syncable.h"
 #include "extensions/browser/updater/extension_downloader_delegate.h"
@@ -104,7 +104,6 @@ class KioskChromeAppManager : public KioskAppManagerBase,
   //     "auto_login_enabled": true  //
   //   }
   static const char kKioskDictionaryName[];
-  static const char kKeyAutoLoginState[];
 
   // Returns the manager instance. Crashes if it is not yet initialized.
   static KioskChromeAppManager* Get();

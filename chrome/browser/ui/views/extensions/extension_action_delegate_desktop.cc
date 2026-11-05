@@ -30,6 +30,8 @@ ExtensionActionDelegateDesktop::ExtensionActionDelegateDesktop(
 
 ExtensionActionDelegateDesktop::~ExtensionActionDelegateDesktop() {
   // Should have already unregistered.
+  // TODO(crbug.com/581985710): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
   DCHECK(!action_keybinding_);
 }
 
@@ -46,7 +48,7 @@ void ExtensionActionDelegateDesktop::DoTriggerPopup(
     PopupShowAction show_action,
     bool by_user,
     ShowPopupCallback callback) {
-  DCHECK_EQ(this, GetPopupOwnerDelegate());
+  CHECK_EQ(this, GetPopupOwnerDelegate(), base::NotFatalUntil::M162);
 
   // Always hide the current popup, even if it's not owned by this extension.
   // Only one popup should be visible at a time.
@@ -98,7 +100,8 @@ void ExtensionActionDelegateDesktop::ShowPopup(
 }
 
 void ExtensionActionDelegateDesktop::OnPopupClosed() {
-  DCHECK(popup_host_observation_.IsObservingSource(popup_host_.get()));
+  CHECK(popup_host_observation_.IsObservingSource(popup_host_.get()),
+        base::NotFatalUntil::M162);
   popup_host_observation_.Reset();
   popup_host_ = nullptr;
   has_opened_popup_ = false;
@@ -176,7 +179,7 @@ void ExtensionActionDelegateDesktop::HidePopup() {
   }
 }
 
-gfx::NativeView ExtensionActionDelegateDesktop::GetPopupNativeView() {
+gfx::NativeView ExtensionActionDelegateDesktop::GetPopupNativeViewForTesting() {
   if (!popup_host_ || !popup_host_->view()) {
     return gfx::NativeView();
   }

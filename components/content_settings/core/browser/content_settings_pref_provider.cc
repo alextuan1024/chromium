@@ -67,6 +67,9 @@ constexpr char kGeolocationMigrateExceptionsPref[] =
 
 constexpr char kObsoleteTpcdHeuristicsGrantsPref[] =
     "profile.content_settings.exceptions.3pcd_heuristics_grants";
+// Deprecated 10/2026. Remove after 10/2027.
+constexpr char kObsoleteTopLevelStorageAccessExceptionsPref[] =
+    "profile.content_settings.exceptions.top_level_storage_access";
 
 #if !BUILDFLAG(IS_IOS)
 constexpr char kObsoleteTpcdTrialExceptionsPref[] =
@@ -86,6 +89,9 @@ constexpr char kLocalNetworkAccessMigrateExceptionsPref[] =
     "profile.content_settings.exceptions.has_migrated_local_network_access";
 constexpr char kObsoleteTrackingProtectionExceptionsPref[] =
     "profile.content_settings.exceptions.tracking_protection";
+// Deprecated 11/2026. Remove after 11/2027.
+constexpr char kObsoleteReducedAcceptLanguageExceptionsPref[] =
+    "profile.content_settings.exceptions.reduced_accept_language";
 #endif  // !BUILDFLAG(IS_IOS)
 
 }  // namespace
@@ -127,12 +133,16 @@ void PrefProvider::RegisterProfilePrefs(
       kObsoleteFederatedIdentityActiveSesssionExceptionsPref);
   registry->RegisterDictionaryPref(kObsoletePrivateNetworkChooserDataPref);
   registry->RegisterDictionaryPref(kObsoleteTpcdHeuristicsGrantsPref);
+  registry->RegisterDictionaryPref(
+      kObsoleteTopLevelStorageAccessExceptionsPref);
 #if !BUILDFLAG(IS_IOS)
   registry->RegisterDictionaryPref(kObsoleteTpcdTrialExceptionsPref);
   registry->RegisterDictionaryPref(kObsoleteTopLevelTpcdTrialExceptionsPref);
   registry->RegisterDictionaryPref(
       kObsoleteTopLevelTpcdOriginTrialExceptionsPref);
   registry->RegisterDictionaryPref(kObsoleteTrackingProtectionExceptionsPref);
+  registry->RegisterDictionaryPref(
+      kObsoleteReducedAcceptLanguageExceptionsPref);
   // TODO(https://crbug.com/367181093): clean this up.
   registry->RegisterBooleanPref(kBug364820109AlreadyWorkedAroundPref, false);
   registry->RegisterBooleanPref(kLocalNetworkAccessMigrateExceptionsPref,
@@ -354,7 +364,7 @@ bool PrefProvider::UpdateLastVisitTime(
                rule.secondary_pattern == secondary_pattern;
       },
       [&](Rule& rule) -> bool {
-        // TODO(crbug.com/40267370): Re-add the DCHECK to ensure the existing
+        // TODO(crbug.com/496258594): Re-add the DCHECK to ensure the existing
         // `last_visited` is not null.
         rule.metadata.set_last_visited(GetCoarseVisitedTime(clock_->Now()));
         return true;
@@ -520,12 +530,14 @@ void PrefProvider::DiscardOrMigrateObsoletePreferences() {
   prefs_->ClearPref(kObsoleteFederatedIdentityActiveSesssionExceptionsPref);
   prefs_->ClearPref(kObsoletePrivateNetworkChooserDataPref);
   prefs_->ClearPref(kObsoleteTpcdHeuristicsGrantsPref);
+  prefs_->ClearPref(kObsoleteTopLevelStorageAccessExceptionsPref);
 
 #if !BUILDFLAG(IS_IOS)
   prefs_->ClearPref(kObsoleteTpcdTrialExceptionsPref);
   prefs_->ClearPref(kObsoleteTopLevelTpcdTrialExceptionsPref);
   prefs_->ClearPref(kObsoleteTopLevelTpcdOriginTrialExceptionsPref);
   prefs_->ClearPref(kObsoleteTrackingProtectionExceptionsPref);
+  prefs_->ClearPref(kObsoleteReducedAcceptLanguageExceptionsPref);
   // TODO(https://crbug.com/367181093): clean this up.
   prefs_->ClearPref(kBug364820109AlreadyWorkedAroundPref);
 #endif  // !BUILDFLAG(IS_IOS)

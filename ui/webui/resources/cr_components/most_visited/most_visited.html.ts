@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import {html} from '//resources/lit/v3_0/lit.rollup.js';
+import {html, nothing, repeat} from '//resources/lit/v3_0/lit.rollup.js';
 
 import type {MostVisitedElement} from './most_visited.js';
 
@@ -10,10 +10,14 @@ export function getHtml(this: MostVisitedElement) {
   // clang-format off
   return html`<!--_html_template_start_-->
 <div id="container" ?hidden="${!this.visible_}"
+    role="${this.inReorderMode_ ? 'application' : nothing}"
     .style="--tile-background-color: ${this.getBackgroundColorStyle_()};
             --column-count: ${this.columnCount_};
             --row-count: ${this.rowCount_};">
-  ${this.tiles_.map((item, index) => html`
+  ${repeat(
+      this.tiles_,
+      (item) => `${item.url}:${this.isFromEnterpriseShortcut_(item.source)}`,
+      (item, index) => html`
     <div class="tile" ?query-tile="${item.isQueryTile}"
         ?hidden="${this.isHidden_(index)}" title="${item.title}"
         @dragstart="${this.onDragstart_}" @touchstart="${this.onTouchstart_}"
@@ -21,22 +25,29 @@ export function getHtml(this: MostVisitedElement) {
         @mouseleave="${this.onTileMouseleave_}"
         @mousedown="${this.onTileMousedown_}" @keydown="${this.onTileKeydown_}"
         draggable="${!this.nonEditable}" data-index="${index}">
-      <a href="${item.url}" aria-label="${item.title}" draggable="false"></a>
+      <a href="${this.inReorderMode_ ? '' : item.url}"
+          aria-label="${this.getTileAriaLabel_(item.title)}" draggable="false">
+      </a>
+      <div class="drag-pan-icon" aria-hidden="true"
+          ?hidden="${!this.inReorderMode_ ||
+              (!this.customLinksEnabled_ &&
+               !this.isFromEnterpriseShortcut_(item.source))}">
+      </div>
       <cr-icon-button id="actionMenuButton" class="icon-more-vert"
           title="${this.getMoreActionText_(item.title)}"
-          @click="${this.onTileActionButtonClick_}" tabindex="0" ?hidden="${
-              this.nonEditable ||
-                  (!this.customLinksEnabled_ &&
-                   !this.isFromEnterpriseShortcut_(item.source))}"
+          @click="${this.onTileActionButtonClick_}" tabindex="0"
+          ?hidden="${this.nonEditable || this.inReorderMode_ ||
+              (!this.customLinksEnabled_ &&
+               !this.isFromEnterpriseShortcut_(item.source))}"
           data-index="${index}">
       </cr-icon-button>
       <cr-icon-button id="removeButton" class="icon-clear"
           title="${this.getRemoveButtonText_(item.title)}"
-          @click="${this.onTileRemoveButtonClick_}" tabindex="0" ?hidden="${
-              this.nonEditable ||
-                  (this.customLinksEnabled_ ||
-                   this.isFromEnterpriseShortcut_(item.source))}"
-          data-index="${index}">
+          @click="${this.onTileRemoveButtonClick_}" tabindex="0"
+          ?hidden="${this.nonEditable ||
+              (this.customLinksEnabled_ ||
+               this.isFromEnterpriseShortcut_(item.source))}"
+          ?disabled="${this.inReorderMode_}" data-index="${index}">
       </cr-icon-button>
       <div class="tile-icon">
         <img src="${this.getFaviconUrl_(item.url)}" draggable="false"
@@ -57,7 +68,8 @@ export function getHtml(this: MostVisitedElement) {
     </div>
   `)}
   <cr-button id="addShortcut" tabindex="0" @click="${this.onAddClick_}"
-      ?hidden="${!this.showAdd_}" @keydown="${this.onAddShortcutKeydown_}"
+      ?hidden="${!this.showAdd_}" ?disabled="${this.inReorderMode_}"
+      @keydown="${this.onAddShortcutKeydown_}"
       aria-label="${this.i18n('addLinkTitle')}"
       title="${this.i18n('addLinkTitle')}" noink>
     <div class="tile-icon tile-icon-container">
@@ -69,7 +81,8 @@ export function getHtml(this: MostVisitedElement) {
   </cr-button>
   <div>
     <cr-button id="showMore" tabindex="0" @click="${this.onShowMoreClick_}"
-        ?hidden="${!this.showShowMore_}" @keydown="${this.onShowMoreKeydown_}"
+        ?hidden="${!this.showShowMore_}" ?disabled="${this.inReorderMode_}"
+        @keydown="${this.onShowMoreKeydown_}"
         aria-label="${this.i18n('showMore')}" title="${this.i18n('showMore')}"
         noink>
       <div class="tile-icon tile-icon-container">
@@ -80,7 +93,8 @@ export function getHtml(this: MostVisitedElement) {
       </div>
     </cr-button>
     <cr-button id="showLess" tabindex="0" @click="${this.onShowLessClick_}"
-        ?hidden="${!this.showShowLess_}" @keydown="${this.onShowLessKeydown_}"
+        ?hidden="${!this.showShowLess_}" ?disabled="${this.inReorderMode_}"
+        @keydown="${this.onShowLessKeydown_}"
         aria-label="${this.i18n('showLess')}" title="${this.i18n('showLess')}"
         noink>
       <div class="tile-icon tile-icon-container">
@@ -113,9 +127,9 @@ export function getHtml(this: MostVisitedElement) {
           ?invalid="${this.dialogTileUrlInvalid_}"
           .errorMessage="${this.dialogTileUrlError_}" spellcheck="false"
           type="url" @blur="${this.onDialogTileUrlBlur_}"
-          @value-changed="${this.onDialogTileUrlValueChanged_}" ?readonly="${
-              this.dialogIsReadonly_ ||
-                  this.isFromEnterpriseShortcut_(this.dialogSource_)}">
+          @value-changed="${this.onDialogTileUrlValueChanged_}"
+          ?readonly="${this.dialogIsReadonly_ ||
+              this.isFromEnterpriseShortcut_(this.dialogSource_)}">
       </cr-input>
     </div>
     <div slot="button-container">
@@ -134,12 +148,21 @@ export function getHtml(this: MostVisitedElement) {
         @click="${this.onViewOrEditClick_}">
       ${this.actionMenuViewOrEditTitle_}
     </button>
+    ${this.shortcutsReorderEnabled ? html`
+      <button id="actionMenuReorder" class="dropdown-item"
+          @click="${this.onReorderClick_}">
+        ${this.i18n('shortcutReorder')}
+      </button>
+    ` : ''}
     <button id="actionMenuRemove" class="dropdown-item"
         @click="${this.onRemoveClick_}"
         ?disabled="${this.actionMenuRemoveDisabled_}">
       ${this.i18n('linkRemove')}
     </button>
   </cr-action-menu>
+</div>
+<div id="announcer" class="sr-only" aria-live="polite" aria-atomic="true">
+  ${this.reorderAnnouncement_}
 </div>
 <cr-toast-manager id="toastManager" duration="10000">
   <cr-button id="undo" aria-label="${this.i18n('undoDescription')}"

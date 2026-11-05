@@ -4,16 +4,26 @@
 
 #include "net/test/two_qwac_cert_binding_builder.h"
 
+#include <optional>
+#include <utility>
+#include <vector>
+
 #include "base/base64.h"
 #include "base/base64url.h"
 #include "base/json/json_string_value_serializer.h"
+#include "crypto/ecdsa_utils.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/boringssl/src/include/openssl/ec_key.h"
+#include "third_party/boringssl/src/include/openssl/evp.h"
 #include "third_party/boringssl/src/include/openssl/rsa.h"
 
 namespace net {
 
 TwoQwacCertBindingBuilder::TwoQwacCertBindingBuilder()
-    : cert_chain_(CertBuilder::CreateSimpleChain(2)) {
+    : TwoQwacCertBindingBuilder(2) {}
+
+TwoQwacCertBindingBuilder::TwoQwacCertBindingBuilder(size_t chain_length)
+    : cert_chain_(CertBuilder::CreateSimpleChain(chain_length)) {
   GetLeafBuilder()->SetCertificatePolicies({"0.4.0.194112.1.6"});  // QNCP-w-gen
   GetLeafBuilder()->SetQwacQcStatements({bssl::der::Input(kEtsiQctWebOid)});
   GetLeafBuilder()->SetExtendedKeyUsages({bssl::der::Input(kIdKpTlsBinding)});
@@ -143,6 +153,14 @@ void TwoQwacCertBindingBuilder::GenerateSignature() {
   sig.resize(len);
   ASSERT_TRUE(EVP_DigestSignFinal(ctx.get(), sig.data(), &len));
   sig.resize(len);
+  if (sig_alg_ == JwsSigAlg::kEcdsaP256Sha256) {
+    EC_KEY* ec_key = EVP_PKEY_get0_EC_KEY(key);
+    ASSERT_TRUE(ec_key);
+    std::optional<std::vector<uint8_t>> raw_sig =
+        crypto::ConvertEcdsaDerSignatureToRaw(EC_KEY_get0_group(ec_key), sig);
+    ASSERT_TRUE(raw_sig.has_value());
+    sig = *std::move(raw_sig);
+  }
   signature_b64_ = std::string();
   base::Base64UrlEncode(sig, base::Base64UrlEncodePolicy::OMIT_PADDING,
                         &*signature_b64_);

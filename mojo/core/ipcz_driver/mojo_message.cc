@@ -29,7 +29,8 @@ constexpr int kGrowthFactor = 2;
 
 bool FixGeometricBufferGrowthIsEnabled() {
   static const bool kIsEnabled =
-      base::FeatureList::IsEnabled(kMojoFixGeometricBufferGrowth);
+      base::FeatureList::IsEnabled(kMojoFixGeometricBufferGrowth) ||
+      base::FeatureList::IsEnabled(kMojoFixGeometricBufferGrowth2);
   return kIsEnabled;
 }
 
@@ -171,6 +172,7 @@ MojoResult MojoMessage::ReserveCapacity(uint32_t payload_buffer_size,
 
   data_storage_size_ = std::max(payload_buffer_size, uint32_t{kMinBufferSize});
   DataPtr new_storage(new uint8_t[data_storage_size_]);
+  data_ = {};
   data_storage_ = std::move(new_storage);
   data_ = UNSAFE_TODO(base::span(base::unchecked, data_storage_.get(), 0u));
 
@@ -208,6 +210,7 @@ MojoResult MojoMessage::AppendData(uint32_t additional_num_bytes,
     std::ranges::copy(UNSAFE_TODO(base::span(base::unchecked,
                                              data_storage_.get(), copy_size)),
                       new_storage.get());
+    data_ = {};
     data_storage_ = std::move(new_storage);
   }
   data_ = UNSAFE_TODO(
@@ -394,7 +397,6 @@ std::unique_ptr<MojoMessage> MojoMessage::UnwrapFrom(MojoMessage& message) {
   }
 
   void* buffer;
-  std::vector<IpczHandle> handles(num_handles);
   auto new_message = std::make_unique<ipcz_driver::MojoMessage>();
   const MojoResult append_result = new_message->AppendData(
       base::checked_cast<uint32_t>(num_bytes), nullptr, 0, &buffer, nullptr,

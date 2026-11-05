@@ -27,6 +27,18 @@ namespace enterprise_net {
 
 class EnterpriseNetworkAuthService;
 
+// LINT.IfChange(EnterpriseProvisioningDomainRefreshTrigger)
+enum class ProvisioningDomainRefreshTrigger {
+  kInitialOrPolicy = 0,
+  kProactiveExpiry = 1,
+  kTransientRetry = 2,
+  kNetworkChange = 3,
+  kAccountChange = 4,
+  kManual = 5,
+  kMaxValue = kManual,
+};
+// LINT.ThenChange(//tools/metrics/histograms/metadata/enterprise/enums.xml:EnterpriseProvisioningDomainRefreshTrigger)
+
 // Autonomous state machine managing the lifecycle, refreshing, and route
 // preservation of a single Provisioning Domain (PvD).
 class ProxyProvisioningDomainManager {
@@ -36,6 +48,11 @@ class ProxyProvisioningDomainManager {
     // Called when the managed Provisioning Domain's state changes.
     virtual void OnProvisioningDomainStateChanged(
         ProxyProvisioningDomainManager* domain_manager) = 0;
+  };
+
+  struct FailureDetails {
+    bool invalid_policy = false;
+    std::optional<ProvisioningDomainFetchError> fetch_error;
   };
 
   using GetURLLoaderFactoryCallback =
@@ -64,7 +81,8 @@ class ProxyProvisioningDomainManager {
   // Forces a new refresh for this Provisioning Domain.
   // Cancels any in-flight refresh before starting a new one.
   // Used in cases such as refreshing configs upon network or account change.
-  void ForceRefresh();
+  void ForceRefresh(ProvisioningDomainRefreshTrigger trigger =
+                        ProvisioningDomainRefreshTrigger::kManual);
 
   // Cancels any in-flight refresh workflow.
   void CancelRefresh();
@@ -73,10 +91,15 @@ class ProxyProvisioningDomainManager {
   const ProvisioningDomainProxyConfig& fetched_config() const {
     return fetched_config_;
   }
+  const std::optional<FailureDetails>& last_failure() const {
+    return last_failure_;
+  }
   ProvisioningDomainProxyConfig::State state() const {
     return fetched_config_.state;
   }
-  bool is_refresh_in_progress() const { return fetcher_ != nullptr; }
+  bool is_refresh_in_progress() const {
+    return fetcher_ != nullptr || is_initial_refresh_pending_;
+  }
 
   bool IsExpirationTimerRunningForTesting() const {
     return expiration_timer_.IsRunning();
@@ -91,23 +114,27 @@ class ProxyProvisioningDomainManager {
  private:
   // Initiates a refresh for this Provisioning Domain if one is not
   // already in-progress. Scheduled internally on TTL expiration or creation.
-  void Refresh();
+  void Refresh(ProvisioningDomainRefreshTrigger trigger);
 
   // Schedules a proactive refresh timer based on the current state and
   // expiration TTL.
   void ScheduleProactiveRefresh();
-  void StartRefreshInternal(bool force);
+  void StartRefreshInternal(bool force,
+                            ProvisioningDomainRefreshTrigger trigger);
+  void CancelRefreshInternal();
   void OnRefreshComplete(ProvisioningDomainFetchResult result);
   void TransitionToState(ProvisioningDomainProxyConfig::State new_state);
   void NotifyIfStateChanged();
 
   const ProvisioningDomainConfig policy_;
   ProvisioningDomainProxyConfig fetched_config_;
+  std::optional<FailureDetails> last_failure_;
 
   const raw_ptr<EnterpriseNetworkAuthService> auth_service_;
   GetURLLoaderFactoryCallback url_loader_factory_callback_;
   scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory_;
   std::unique_ptr<ProvisioningDomainFetcher> fetcher_;
+  bool is_initial_refresh_pending_ = false;
   base::OneShotTimer expiration_timer_;
   int consecutive_transient_failures_ = 0;
 

@@ -28,10 +28,11 @@
 #include "content/public/browser/context_menu_params.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents_observer.h"
-#include "content/public/browser/web_contents_user_data.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "mojo/public/cpp/bindings/receiver.h"
+#include "ui/base/unowned_user_data/scoped_unowned_user_data.h"
+#include "ui/base/unowned_user_data/unowned_user_data_host.h"
 
 namespace content {
 class Page;
@@ -44,13 +45,16 @@ class OptimizationGuideDecider;
 class RemoteModelExecutor;
 }  // namespace optimization_guide
 
+namespace tabs {
+class TabInterface;
+}  // namespace tabs
+
 class ComposeEnabling;
 
 // An implementation of `ComposeClient` for Desktop and Android.
 class ChromeComposeClient
     : public compose::ComposeClient,
       public content::WebContentsObserver,
-      public content::WebContentsUserData<ChromeComposeClient>,
       public autofill::AutofillManager::Observer,
       public compose::mojom::ComposeClientUntrustedPageHandler,
       public compose::ProactiveNudgeTracker::Delegate,
@@ -99,9 +103,17 @@ class ChromeComposeClient
     base::WeakPtrFactory<FieldChangeObserver> weak_ptr_factory_{this};
   };
 
+  DECLARE_USER_DATA(ChromeComposeClient);
+
+  ChromeComposeClient(tabs::TabInterface& tab,
+                      content::WebContents* web_contents);
   ChromeComposeClient(const ChromeComposeClient&) = delete;
   ChromeComposeClient& operator=(const ChromeComposeClient&) = delete;
   ~ChromeComposeClient() override;
+
+  static ChromeComposeClient* From(tabs::TabInterface* tab);
+  static ChromeComposeClient* FromWebContents(
+      content::WebContents* web_contents);
 
   // compose::ComposeClient:
   compose::ComposeManager& GetManager() override;
@@ -187,8 +199,7 @@ class ChromeComposeClient
 
   // compose::ProactiveNudgeTracker::Delegate implementation.
   void ShowProactiveNudge(autofill::FormGlobalId form,
-                          autofill::FieldGlobalId field,
-                          compose::ComposeEntryPoint entry_point) override;
+                          autofill::FieldGlobalId field) override;
 
   // Returns the Compose optimization guide hints for the current URL.
   // compose::ProactiveNudgeTracker::Delegate implementation.
@@ -221,6 +232,7 @@ class ChromeComposeClient
 
  protected:
   explicit ChromeComposeClient(content::WebContents* web_contents);
+  content::WebContents& GetWebContents() const { return *web_contents(); }
   optimization_guide::RemoteModelExecutor* GetModelExecutor();
   optimization_guide::ModelQualityLogsUploaderService*
   GetModelQualityLogsUploaderService();
@@ -230,8 +242,8 @@ class ChromeComposeClient
   std::unique_ptr<ComposeEnabling> compose_enabling_;
 
  private:
-  friend class content::WebContentsUserData<ChromeComposeClient>;
   friend class ChromeComposeClientBrowserTest;
+  friend class ChromeComposeClientTest;
   FRIEND_TEST_ALL_PREFIXES(ChromeComposeClientTest,
                            TestComposeQualityFeedbackPositive);
   FRIEND_TEST_ALL_PREFIXES(ChromeComposeClientTest,
@@ -368,12 +380,10 @@ class ChromeComposeClient
   // yet.
   base::TimeTicks page_change_time_;
 
-  compose::ComposeEntryPoint most_recent_nudge_entry_point_ =
-      compose::ComposeEntryPoint::kProactiveNudge;
+  std::optional<ui::ScopedUnownedUserData<ChromeComposeClient>>
+      scoped_unowned_user_data_;
 
   base::WeakPtrFactory<ChromeComposeClient> weak_ptr_factory_{this};
-
-  WEB_CONTENTS_USER_DATA_KEY_DECL();
 };
 
 #endif  // CHROME_BROWSER_COMPOSE_CHROME_COMPOSE_CLIENT_H_

@@ -519,10 +519,10 @@
 <translation id="5045550434625856497">Nepareiza parole</translation>
 <translation id="5059127710849015030">Nepāliešu, transliterācija</translation>
 <translation id="5068919226082848014">Pica</translation>
+<translation id="5075336522277785691">Paplašinājums <ph name="EXTENSION_NAME" /> iestatīja starpniekservera ignorēšanas kārtulas</translation>
 <translation id="5081517858322016911">Tiks dzēsti <ph name="TOTAL_FILE_SIZE" /> failu.</translation>
 <translation id="508423945471810158">Notiek pārvietošana uz mapi <ph name="FOLDER_NAME" />. Pārvietojamo vienumu skaits: <ph name="NUMBER_OF_ITEMS" />.</translation>
 <translation id="509429900233858213">Radās kļūda.</translation>
-<translation id="5102922915594634436">Pārvaldīt sinhronizētās mapes</translation>
 <translation id="5109254780565519649">Radās kļūda. Iespējams, daži vienumi netika atjaunoti.</translation>
 <translation id="5110329002213341433">Angļu (Kanāda)</translation>
 <translation id="5119780910075847424">Sinhronizācija ir pārtraukta</translation>
@@ -558,7 +558,6 @@
 <translation id="5305688511332277257">Nav instalēts</translation>
 <translation id="5317780077021120954">Saglabāt</translation>
 <translation id="5318819489018851358">Kopīgot pakalpojumā Linux</translation>
-<translation id="5330145655348521461">Šie faili tika atvērti citā darbvirsmā. Lai skatītu šo darbvirsmu, izmantojiet profilu <ph name="USER_NAME" /> (<ph name="MAIL_ADDRESS" />).</translation>
 <translation id="5330512191124428349">Iegūt informāciju</translation>
 <translation id="535792325654997756">Persona ar kaķiem</translation>
 <translation id="5358764674931277">Kadri sekundē</translation>
@@ -699,7 +698,6 @@
 <translation id="636254897931573416">Nederīga domēna sufiksa atbilstības vērtība.</translation>
 <translation id="6364301859968397756">Organizācijas krātuve ir pilna</translation>
 <translation id="6367976544441405720">Furgons</translation>
-<translation id="637062427944097960">Šis fails tika atvērts citā darbvirsmā. Lai skatītu šo darbvirsmu, izmantojiet profilu <ph name="USER_NAME" /> (<ph name="MAIL_ADDRESS" />).</translation>
 <translation id="6394388407447716302">Tikai lasāma</translation>
 <translation id="6395575651121294044"><ph name="NUMBER_OF_FILES" /> vienumi</translation>
 <translation id="6407769893376380348">Failu “<ph name="FILE_NAME" />” nevarēja pārvietot, jo tas ir šifrēts.</translation>

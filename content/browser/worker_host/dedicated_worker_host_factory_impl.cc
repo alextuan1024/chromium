@@ -18,6 +18,7 @@
 #include "content/browser/worker_host/dedicated_worker_service_impl.h"
 #include "content/browser/worker_host/worker_util.h"
 #include "content/public/browser/content_browser_client.h"
+#include "content/public/browser/disallow_activation_reason.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/common/content_client.h"
 #include "mojo/public/cpp/bindings/message.h"
@@ -62,7 +63,7 @@ void DedicatedWorkerHostFactoryImpl::Create(
     const base::UnguessableToken& creator_network_restrictions_id) {
   // The factory deletes itself when the receiver is disconnected or when the
   // ancestor RenderFrameHost commits a cross-document navigation.
-  new DedicatedWorkerHostFactoryImpl(
+  base::MakeSelfDeleting<DedicatedWorkerHostFactoryImpl>(
       ancestor_render_frame_host, std::move(receiver), worker_process_id,
       creator, std::move(ancestor_document), creator_storage_key,
       isolation_info, std::move(creator_client_security_state),
@@ -81,8 +82,9 @@ DedicatedWorkerHostFactoryImpl::DedicatedWorkerHostFactoryImpl(
     network::mojom::ClientSecurityStatePtr creator_client_security_state,
     const PolicyContainerPolicies& creator_policies,
     base::WeakPtr<CrossOriginEmbedderPolicyReporter> creator_coep_reporter,
-    const base::UnguessableToken& creator_network_restrictions_id)
-    : DocumentService(ancestor_render_frame_host, std::move(receiver)),
+    const base::UnguessableToken& creator_network_restrictions_id,
+    base::SelfDeletingPassKey key)
+    : DocumentService(ancestor_render_frame_host, std::move(receiver), key),
       worker_process_id_(worker_process_id),
       creator_(creator),
       ancestor_document_(std::move(ancestor_document)),
@@ -112,6 +114,15 @@ void DedicatedWorkerHostFactoryImpl::CreateWorkerHostAndStartScriptLoad(
       "DedicatedWorkerHostFactoryImpl::CreateWorkerHostAndStartScriptLoad",
       "script_url", script_url);
   CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
+
+  // `DocumentService` remains bound when the document enters the back/forward
+  // cache, so the ancestor document may have become inactive after this
+  // factory was created. Disallow starting a new worker while inactive.
+  if (render_frame_host().IsInactiveAndDisallowActivation(
+          DisallowActivationReasonId::kCreateDedicatedWorker)) {
+    return;
+  }
+
   base::TimeTicks start_time = base::TimeTicks::Now();
 
   // This function is known to be heap allocation heavy and performance

@@ -519,10 +519,10 @@
 <translation id="5045550434625856497">Verkeerde wagwoord</translation>
 <translation id="5059127710849015030">Nepalese transliterasie</translation>
 <translation id="5068919226082848014">Pizza</translation>
+<translation id="5075336522277785691"><ph name="EXTENSION_NAME" /> het ignoreerreëls vir instaanbediener gestel</translation>
 <translation id="5081517858322016911"><ph name="TOTAL_FILE_SIZE" /> se lêers sal uitgevee word</translation>
 <translation id="508423945471810158">Skuif <ph name="NUMBER_OF_ITEMS" /> items nou na <ph name="FOLDER_NAME" /> toe</translation>
 <translation id="509429900233858213">'n Fout het voorgekom.</translation>
-<translation id="5102922915594634436">Bestuur gesinkroniseerde vouers</translation>
 <translation id="5109254780565519649">Iets was fout. Sommige items is dalk nie teruggestel nie.</translation>
 <translation id="5110329002213341433">Engels (Kanada)</translation>
 <translation id="5119780910075847424">Sinkronisering is onderbreek</translation>
@@ -558,7 +558,6 @@
 <translation id="5305688511332277257">Niks geïnstalleer nie</translation>
 <translation id="5317780077021120954">Berg</translation>
 <translation id="5318819489018851358">Deel met Linux</translation>
-<translation id="5330145655348521461">Hierdie lêers het op 'n ander werkskerm oopgemaak. Beweeg na <ph name="USER_NAME" /> (<ph name="MAIL_ADDRESS" />) om dit te bekyk.</translation>
 <translation id="5330512191124428349">Kry inligting</translation>
 <translation id="535792325654997756">Persoon met katte</translation>
 <translation id="5358764674931277">Raamtempo</translation>
@@ -699,7 +698,6 @@
 <translation id="636254897931573416">Ongeldige passingwaarde vir domein-agtervoegsel</translation>
 <translation id="6364301859968397756">Organisasie se berging is vol</translation>
 <translation id="6367976544441405720">Afleweringvoertuig</translation>
-<translation id="637062427944097960">Hierdie lêer het op 'n ander werkskerm oopgemaak. Beweeg na <ph name="USER_NAME" /> (<ph name="MAIL_ADDRESS" />) om dit te bekyk.</translation>
 <translation id="6394388407447716302">Leesalleen</translation>
 <translation id="6395575651121294044"><ph name="NUMBER_OF_FILES" /> items</translation>
 <translation id="6407769893376380348"><ph name="FILE_NAME" /> kon nie geskuif word nie omdat dit geënkripteer is.</translation>

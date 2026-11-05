@@ -37,15 +37,45 @@ namespace profiles {
 // Checks if multiple profiles is enabled.
 bool IsMultipleProfilesEnabled();
 
+#if BUILDFLAG(IS_ANDROID)
+// Returns whether Android profile startup supports multiple profiles
+// (features::kAndroidMultiprofileStartupData). Android startup code paths that
+// are only needed for multiple profiles should check this instead of a feature
+// directly, so the gating lives in one place. This is independent of
+// IsMultipleProfilesEnabled(), which follows kAndroidMultiprofile on Android.
+bool IsAndroidMultiprofileStartupDataEnabled();
+
+// The Java SharedPreferences key that holds the base name of the profile that
+// Chrome is expected to start with, so that Java can read it before native is
+// initialized. Must match
+// ChromePreferenceKeys.PROFILES_LAST_USED_PROFILE_BASE_NAME.
+inline constexpr char kLastUsedProfileBaseNameSharedPreferenceKey[] =
+    "Chrome.Profiles.LastUsedProfileBaseName";
+
+// Writes `base_name` to kLastUsedProfileBaseNameSharedPreferenceKey. Called
+// when Chrome starts with a profile, and, with AndroidMultiprofileStartupData,
+// from SetLastUsedProfile().
+void WriteLastUsedProfileBaseName(const base::FilePath& base_name);
+#endif
+
 // Returns the path to the default profile directory, based on the given
 // user data directory.
 base::FilePath GetDefaultProfileDir(const base::FilePath& user_data_dir);
+
+// Returns the base name of the last used profile recorded in `local_state`.
+// Falls back to the initial profile if none is recorded or it names the system
+// profile. On Android with AndroidMultiprofileStartupData enabled, it also
+// falls back unless the name has an entry in ProfileAttributesStorage
+// (prefs::kProfileAttributes in `local_state`).
+base::FilePath GetLastUsedProfileBaseName(const PrefService& local_state);
 
 // Register multi-profile related preferences in Local State.
 void RegisterPrefs(PrefRegistrySimple* registry);
 
 // Sets the last used profile pref to |profile_dir|, unless |profile_dir| is the
-// System Profile directory, which is an invalid last used profile.
+// System Profile directory, which is an invalid last used profile. On Android
+// with AndroidMultiprofileStartupData, also writes the base name of the profile
+// that Chrome will start with, see WriteLastUsedProfileBaseName().
 void SetLastUsedProfile(const base::FilePath& profile_dir);
 
 // Returns true if the profile is a regular profile and specifically not an Ash

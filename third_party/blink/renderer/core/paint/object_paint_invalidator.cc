@@ -51,10 +51,6 @@ ObjectPaintInvalidatorWithContext::ComputePaintInvalidationReason() {
   // saved.
   bool previous_visibility_visible = object_.PreviousVisibilityVisible();
   object_.GetMutableForPainting().UpdatePreviousVisibilityVisible();
-  if (object_.VisualRectRespectsVisibility() && !previous_visibility_visible &&
-      object_.StyleRef().Visibility() != EVisibility::kVisible) {
-    return PaintInvalidationReason::kNone;
-  }
 
   if (!object_.ShouldCheckForPaintInvalidation() && !context_.subtree_flags) {
     // No paint invalidation flag. No paint invalidation is needed.
@@ -62,11 +58,21 @@ ObjectPaintInvalidatorWithContext::ComputePaintInvalidationReason() {
   }
 
   if (context_.subtree_flags &
-      PaintInvalidatorContext::kSubtreeFullInvalidation)
+      PaintInvalidatorContext::kSubtreeFullInvalidation) {
     return PaintInvalidationReason::kSubtree;
+  }
 
-  if (context_.fragment_data->PaintOffset() != context_.old_paint_offset)
+  // Even if `object_` is invisible, it may paint a mask (kSVGMask) or
+  // mask-based clip-path (kSVGClip) that affects its visible descendants.
+  if (object_.VisualRectRespectsVisibility() && !previous_visibility_visible &&
+      object_.Style().Visibility() != EVisibility::kVisible &&
+      !object_.HasMask() && !object_.HasClipPath()) {
+    return PaintInvalidationReason::kNone;
+  }
+
+  if (context_.fragment_data->PaintOffset() != context_.old_paint_offset) {
     return PaintInvalidationReason::kLayout;
+  }
 
   if (object_.ShouldDoFullPaintInvalidation()) {
     return object_.PaintInvalidationReasonForPrePaint();
@@ -77,8 +83,8 @@ ObjectPaintInvalidatorWithContext::ComputePaintInvalidationReason() {
 
   // Force full paint invalidation if the object has background-clip:text to
   // update the background on any change in the subtree.
-  if (object_.StyleRef().BackgroundClip() == EFillBox::kText ||
-      object_.StyleRef().BackgroundClip() == EFillBox::kBorderAreaText) {
+  if (object_.Style().BackgroundClip() == EFillBox::kText ||
+      object_.Style().BackgroundClip() == EFillBox::kBorderAreaText) {
     return PaintInvalidationReason::kBackground;
   }
 

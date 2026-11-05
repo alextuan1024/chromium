@@ -5,6 +5,7 @@
 #include "third_party/blink/renderer/platform/fonts/typesetting_features.h"
 
 #include <array>
+#include <utility>
 
 #include "third_party/blink/renderer/platform/wtf/text/string_builder.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
@@ -13,22 +14,20 @@ namespace blink {
 
 namespace {
 
-std::array<const char*, kMaxTypesettingFeatureIndex + 1> kFeatureNames = {
-    "Kerning", "Ligatures", "Caps"};
+constexpr std::array<const char*, TypesettingFeatures::kValueCount>
+    kFeatureNames = {"Kerning", "Ligatures", "Caps"};
 
 }  // namespace
 
 String ToString(TypesettingFeatures features) {
   StringBuilder builder;
-  int featureCount = 0;
-  for (int i = 0; i <= kMaxTypesettingFeatureIndex; i++) {
-    if (features & (1 << i)) {
-      if (featureCount++ > 0)
-        builder.Append(",");
-      builder.Append(kFeatureNames[i]);
-    }
+  StringView delimiter;
+  for (TypesettingFeature feature : features) {
+    builder.Append(delimiter);
+    builder.Append(kFeatureNames[std::to_underlying(feature)]);
+    delimiter = ",";
   }
-  return builder.ToString();
+  return builder.ReleaseString();
 }
 
 }  // namespace blink

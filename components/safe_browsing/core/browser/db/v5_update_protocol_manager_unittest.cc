@@ -96,11 +96,8 @@ class V5UpdateProtocolManagerTest : public PlatformTest {
   void SetLastResponseTime(V5UpdateProtocolManager* pm, base::Time time) {
     pm->last_response_time_ = time;
   }
-  size_t GetUpdateErrorCount(V5UpdateProtocolManager* pm) {
-    return pm->update_error_count_;
-  }
-  size_t GetUpdateBackOffMult(V5UpdateProtocolManager* pm) {
-    return pm->update_back_off_mult_;
+  int GetUpdateErrorCount(V5UpdateProtocolManager* pm) {
+    return pm->backoff_entry_->failure_count();
   }
   bool IsUpdateScheduled(V5UpdateProtocolManager* pm) {
     return pm->IsUpdateScheduled();
@@ -207,8 +204,7 @@ TEST_F(V5UpdateProtocolManagerTest, TestGetUpdatesErrorHandlingNetwork) {
   const std::vector<ExpectedV5Update> expected_updates;
   auto pm(CreateProtocolManager(expected_updates));
 
-  EXPECT_EQ(0ul, GetUpdateErrorCount(pm.get()));
-  EXPECT_EQ(1ul, GetUpdateBackOffMult(pm.get()));
+  EXPECT_EQ(0, GetUpdateErrorCount(pm.get()));
   expect_callback_to_be_called_ = false;
 
   pm->ScheduleNextUpdate(std::make_unique<StoreStateMap>(*store_state_map_));
@@ -221,8 +217,7 @@ TEST_F(V5UpdateProtocolManagerTest, TestGetUpdatesErrorHandlingNetwork) {
       test_url_loader_factory_.GetPendingRequest(0)->request.url, status,
       network::mojom::URLResponseHead::New(), "");
 
-  EXPECT_EQ(1ul, GetUpdateErrorCount(pm.get()));
-  EXPECT_EQ(1ul, GetUpdateBackOffMult(pm.get()));
+  EXPECT_EQ(1, GetUpdateErrorCount(pm.get()));
   EXPECT_TRUE(IsUpdateScheduled(pm.get()));
 
   histogram_tester.ExpectUniqueSample(
@@ -249,8 +244,7 @@ TEST_F(V5UpdateProtocolManagerTest, TestGetUpdatesErrorHandlingTimeout) {
   const std::vector<ExpectedV5Update> expected_updates;
   auto pm(CreateProtocolManager(expected_updates));
 
-  EXPECT_EQ(0ul, GetUpdateErrorCount(pm.get()));
-  EXPECT_EQ(1ul, GetUpdateBackOffMult(pm.get()));
+  EXPECT_EQ(0, GetUpdateErrorCount(pm.get()));
   expect_callback_to_be_called_ = false;
 
   pm->ScheduleNextUpdate(std::make_unique<StoreStateMap>(*store_state_map_));
@@ -271,8 +265,7 @@ TEST_F(V5UpdateProtocolManagerTest, TestGetUpdatesErrorHandlingTimeout) {
   // Update should time out after 15 minutes.
   task_environment_.FastForwardBy(base::Minutes(15));
   EXPECT_TRUE(IsUpdateScheduled(pm.get()));
-  EXPECT_EQ(1ul, GetUpdateErrorCount(pm.get()));
-  EXPECT_EQ(1ul, GetUpdateBackOffMult(pm.get()));
+  EXPECT_EQ(1, GetUpdateErrorCount(pm.get()));
 
   histogram_tester.ExpectUniqueSample(
       "SafeBrowsing.V5Update.Result",
@@ -297,8 +290,7 @@ TEST_F(V5UpdateProtocolManagerTest, TestGetUpdatesErrorHandlingResponseCode) {
   const std::vector<ExpectedV5Update> expected_updates;
   auto pm(CreateProtocolManager(expected_updates));
 
-  EXPECT_EQ(0ul, GetUpdateErrorCount(pm.get()));
-  EXPECT_EQ(1ul, GetUpdateBackOffMult(pm.get()));
+  EXPECT_EQ(0, GetUpdateErrorCount(pm.get()));
   expect_callback_to_be_called_ = false;
 
   pm->ScheduleNextUpdate(std::make_unique<StoreStateMap>(*store_state_map_));
@@ -310,8 +302,7 @@ TEST_F(V5UpdateProtocolManagerTest, TestGetUpdatesErrorHandlingResponseCode) {
       test_url_loader_factory_.GetPendingRequest(0)->request.url.spec(),
       std::string(), net::HTTP_NO_CONTENT);
 
-  EXPECT_EQ(1ul, GetUpdateErrorCount(pm.get()));
-  EXPECT_EQ(1ul, GetUpdateBackOffMult(pm.get()));
+  EXPECT_EQ(1, GetUpdateErrorCount(pm.get()));
   EXPECT_TRUE(IsUpdateScheduled(pm.get()));
 
   histogram_tester.ExpectUniqueSample(
@@ -336,8 +327,7 @@ TEST_F(V5UpdateProtocolManagerTest, TestGetUpdatesWithOneBackoff) {
 
   auto pm(CreateProtocolManager(expected_updates));
 
-  EXPECT_EQ(0ul, GetUpdateErrorCount(pm.get()));
-  EXPECT_EQ(1ul, GetUpdateBackOffMult(pm.get()));
+  EXPECT_EQ(0, GetUpdateErrorCount(pm.get()));
   expect_callback_to_be_called_ = false;
 
   pm->ScheduleNextUpdate(std::make_unique<StoreStateMap>(*store_state_map_));
@@ -350,9 +340,8 @@ TEST_F(V5UpdateProtocolManagerTest, TestGetUpdatesWithOneBackoff) {
       test_url_loader_factory_.GetPendingRequest(0)->request.url.spec(),
       std::string(), net::HTTP_NO_CONTENT);
 
-  // One error detected but still same multiplier.
-  EXPECT_EQ(1ul, GetUpdateErrorCount(pm.get()));
-  EXPECT_EQ(1ul, GetUpdateBackOffMult(pm.get()));
+  // One error detected.
+  EXPECT_EQ(1, GetUpdateErrorCount(pm.get()));
   // New update automatically scheduled.
   EXPECT_TRUE(IsUpdateScheduled(pm.get()));
 
@@ -378,8 +367,7 @@ TEST_F(V5UpdateProtocolManagerTest, TestGetUpdatesWithOneBackoff) {
       response_data, net::HTTP_OK);
 
   // Error goes back to 0.
-  EXPECT_EQ(0ul, GetUpdateErrorCount(pm.get()));
-  EXPECT_EQ(1ul, GetUpdateBackOffMult(pm.get()));
+  EXPECT_EQ(0, GetUpdateErrorCount(pm.get()));
   // No new update automatically scheduled.
   EXPECT_FALSE(IsUpdateScheduled(pm.get()));
 }
@@ -446,8 +434,7 @@ TEST_F(V5UpdateProtocolManagerTest, TestGetUpdatesNoError) {
 
   auto pm(CreateProtocolManager(expected_updates));
 
-  EXPECT_EQ(0ul, GetUpdateErrorCount(pm.get()));
-  EXPECT_EQ(1ul, GetUpdateBackOffMult(pm.get()));
+  EXPECT_EQ(0, GetUpdateErrorCount(pm.get()));
   expect_callback_to_be_called_ = true;
 
   pm->ScheduleNextUpdate(std::make_unique<StoreStateMap>(*store_state_map_));
@@ -460,8 +447,7 @@ TEST_F(V5UpdateProtocolManagerTest, TestGetUpdatesNoError) {
       test_url_loader_factory_.GetPendingRequest(0)->request.url.spec(),
       response_data, net::HTTP_OK);
 
-  EXPECT_EQ(0ul, GetUpdateErrorCount(pm.get()));
-  EXPECT_EQ(1ul, GetUpdateBackOffMult(pm.get()));
+  EXPECT_EQ(0, GetUpdateErrorCount(pm.get()));
   EXPECT_FALSE(IsUpdateScheduled(pm.get()));
 
   histogram_tester.ExpectUniqueSample(
@@ -612,8 +598,7 @@ TEST_F(V5UpdateProtocolManagerTest,
 
   auto pm(CreateProtocolManager(expected_updates));
 
-  EXPECT_EQ(0ul, GetUpdateErrorCount(pm.get()));
-  EXPECT_EQ(1ul, GetUpdateBackOffMult(pm.get()));
+  EXPECT_EQ(0, GetUpdateErrorCount(pm.get()));
   expect_callback_to_be_called_ = true;
 
   // Update #1
@@ -627,8 +612,7 @@ TEST_F(V5UpdateProtocolManagerTest,
       test_url_loader_factory_.GetPendingRequest(0)->request.url.spec(),
       response_data, net::HTTP_OK);
 
-  EXPECT_EQ(0ul, GetUpdateErrorCount(pm.get()));
-  EXPECT_EQ(1ul, GetUpdateBackOffMult(pm.get()));
+  EXPECT_EQ(0, GetUpdateErrorCount(pm.get()));
   EXPECT_FALSE(IsUpdateScheduled(pm.get()));
 
   // Update #2
@@ -642,8 +626,7 @@ TEST_F(V5UpdateProtocolManagerTest,
       test_url_loader_factory_.GetPendingRequest(0)->request.url.spec(),
       response_data, net::HTTP_OK);
 
-  EXPECT_EQ(0ul, GetUpdateErrorCount(pm.get()));
-  EXPECT_EQ(1ul, GetUpdateBackOffMult(pm.get()));
+  EXPECT_EQ(0, GetUpdateErrorCount(pm.get()));
   EXPECT_FALSE(IsUpdateScheduled(pm.get()));
 
   // Teardown will confirm the callback was called.
@@ -658,8 +641,7 @@ TEST_F(V5UpdateProtocolManagerTest, TestBackToBackGetUpdatesWithWaitDuration) {
 
   auto pm(CreateProtocolManager(expected_updates));
 
-  EXPECT_EQ(0ul, GetUpdateErrorCount(pm.get()));
-  EXPECT_EQ(1ul, GetUpdateBackOffMult(pm.get()));
+  EXPECT_EQ(0, GetUpdateErrorCount(pm.get()));
   expect_callback_to_be_called_ = true;
 
   // Update #1
@@ -674,8 +656,7 @@ TEST_F(V5UpdateProtocolManagerTest, TestBackToBackGetUpdatesWithWaitDuration) {
       test_url_loader_factory_.GetPendingRequest(0)->request.url.spec(),
       response_data, net::HTTP_OK);
 
-  EXPECT_EQ(0ul, GetUpdateErrorCount(pm.get()));
-  EXPECT_EQ(1ul, GetUpdateBackOffMult(pm.get()));
+  EXPECT_EQ(0, GetUpdateErrorCount(pm.get()));
   EXPECT_FALSE(IsUpdateScheduled(pm.get()));
 
   // Update #2
@@ -691,8 +672,7 @@ TEST_F(V5UpdateProtocolManagerTest, TestBackToBackGetUpdatesWithWaitDuration) {
       test_url_loader_factory_.GetPendingRequest(0)->request.url.spec(),
       response_data, net::HTTP_OK);
 
-  EXPECT_EQ(0ul, GetUpdateErrorCount(pm.get()));
-  EXPECT_EQ(1ul, GetUpdateBackOffMult(pm.get()));
+  EXPECT_EQ(0, GetUpdateErrorCount(pm.get()));
   EXPECT_FALSE(IsUpdateScheduled(pm.get()));
 
   // Teardown will confirm the callback was called.
@@ -1017,7 +997,8 @@ TEST_F(V5UpdateProtocolManagerTest, TestResponseParsingInvalidRiceField) {
                                      V4OperationResult::PARSE_ERROR, 1);
 }
 
-TEST_F(V5UpdateProtocolManagerTest, TestResponseParsingMissingChecksum) {
+TEST_F(V5UpdateProtocolManagerTest,
+       TestResponseParsingMissingChecksum_Additions) {
   base::HistogramTester histogram_tester;
   expect_callback_to_be_called_ = false;
   auto pm = CreateProtocolManager(/*expected_updates=*/{});
@@ -1033,6 +1014,44 @@ TEST_F(V5UpdateProtocolManagerTest, TestResponseParsingMissingChecksum) {
 
   // Add additions (changes) but NO checksum.
   hash_list->mutable_additions_four_bytes();
+
+  std::string response_data;
+  response.SerializeToString(&response_data);
+
+  pm->ScheduleNextUpdate(std::make_unique<StoreStateMap>(*store_state_map_));
+  task_environment_.FastForwardBy(base::Minutes(10));
+
+  EXPECT_FALSE(IsUpdateScheduled(pm.get()));
+  test_url_loader_factory_.SimulateResponseForPendingRequest(
+      test_url_loader_factory_.GetPendingRequest(0)->request.url.spec(),
+      response_data, net::HTTP_OK);
+  EXPECT_TRUE(IsUpdateScheduled(pm.get()));
+
+  histogram_tester.ExpectUniqueSample(
+      "SafeBrowsing.V5Update.Parse.Result",
+      V5UpdateProtocolManager::V5ParseResult::kChecksumMissingError, 1);
+  histogram_tester.ExpectUniqueSample(
+      "SafeBrowsing.V5Update.Result",
+      V5UpdateProtocolManager::V5OperationResult::kParseError, 1);
+}
+
+TEST_F(V5UpdateProtocolManagerTest,
+       TestResponseParsingMissingChecksum_RemovalsOnly) {
+  base::HistogramTester histogram_tester;
+  expect_callback_to_be_called_ = false;
+  auto pm = CreateProtocolManager(/*expected_updates=*/{});
+
+  ListIdentifier malware(SBThreatType::SB_THREAT_TYPE_URL_MALWARE);
+  store_state_map_ =
+      std::make_unique<std::unordered_map<ListIdentifier, std::string>>();
+  (*store_state_map_)[malware] = "state";
+
+  V5::BatchGetHashListsResponse response;
+  V5::HashList* hash_list = response.add_hash_lists();
+  hash_list->set_name(GetV5ListName(malware));
+
+  // Add removals (changes) but NO checksum.
+  hash_list->mutable_compressed_removals();
 
   std::string response_data;
   response.SerializeToString(&response_data);
@@ -1090,6 +1109,88 @@ TEST_F(V5UpdateProtocolManagerTest, TestResponseParsingInvalidChecksumSize) {
   histogram_tester.ExpectUniqueSample(
       "SafeBrowsing.V5Update.Result",
       V5UpdateProtocolManager::V5OperationResult::kParseError, 1);
+}
+
+TEST_F(V5UpdateProtocolManagerTest, TestResponseParsingValidAdditions) {
+  base::HistogramTester histogram_tester;
+  expect_callback_to_be_called_ = true;
+
+  ListIdentifier malware(SBThreatType::SB_THREAT_TYPE_URL_MALWARE);
+  std::vector<ExpectedV5Update> expected_updates = {
+      {malware, "new_state_1", true}};
+  auto pm = CreateProtocolManager(expected_updates);
+
+  store_state_map_ =
+      std::make_unique<std::unordered_map<ListIdentifier, std::string>>();
+  (*store_state_map_)[malware] = "state";
+
+  V5::BatchGetHashListsResponse response;
+  V5::HashList* hash_list = response.add_hash_lists();
+  hash_list->set_name(GetV5ListName(malware));
+  hash_list->set_version("new_state_1");
+  hash_list->set_partial_update(true);
+  hash_list->mutable_additions_four_bytes();
+  hash_list->set_sha256_checksum(std::string(32, 'a'));
+
+  std::string response_data;
+  response.SerializeToString(&response_data);
+
+  pm->ScheduleNextUpdate(std::make_unique<StoreStateMap>(*store_state_map_));
+  task_environment_.FastForwardBy(base::Minutes(10));
+
+  EXPECT_FALSE(IsUpdateScheduled(pm.get()));
+  test_url_loader_factory_.SimulateResponseForPendingRequest(
+      test_url_loader_factory_.GetPendingRequest(0)->request.url.spec(),
+      response_data, net::HTTP_OK);
+  EXPECT_FALSE(IsUpdateScheduled(pm.get()));
+
+  histogram_tester.ExpectUniqueSample(
+      "SafeBrowsing.V5Update.Parse.Result",
+      V5UpdateProtocolManager::V5ParseResult::kSuccess, 1);
+  histogram_tester.ExpectUniqueSample(
+      "SafeBrowsing.V5Update.Result",
+      V5UpdateProtocolManager::V5OperationResult::kSuccess, 1);
+}
+
+TEST_F(V5UpdateProtocolManagerTest, TestResponseParsingValidRemovalsOnly) {
+  base::HistogramTester histogram_tester;
+  expect_callback_to_be_called_ = true;
+
+  ListIdentifier malware(SBThreatType::SB_THREAT_TYPE_URL_MALWARE);
+  std::vector<ExpectedV5Update> expected_updates = {
+      {malware, "new_state_1", true}};
+  auto pm = CreateProtocolManager(expected_updates);
+
+  store_state_map_ =
+      std::make_unique<std::unordered_map<ListIdentifier, std::string>>();
+  (*store_state_map_)[malware] = "state";
+
+  V5::BatchGetHashListsResponse response;
+  V5::HashList* hash_list = response.add_hash_lists();
+  hash_list->set_name(GetV5ListName(malware));
+  hash_list->set_version("new_state_1");
+  hash_list->set_partial_update(true);
+  hash_list->mutable_compressed_removals();
+  hash_list->set_sha256_checksum(std::string(32, 'a'));
+
+  std::string response_data;
+  response.SerializeToString(&response_data);
+
+  pm->ScheduleNextUpdate(std::make_unique<StoreStateMap>(*store_state_map_));
+  task_environment_.FastForwardBy(base::Minutes(10));
+
+  EXPECT_FALSE(IsUpdateScheduled(pm.get()));
+  test_url_loader_factory_.SimulateResponseForPendingRequest(
+      test_url_loader_factory_.GetPendingRequest(0)->request.url.spec(),
+      response_data, net::HTTP_OK);
+  EXPECT_FALSE(IsUpdateScheduled(pm.get()));
+
+  histogram_tester.ExpectUniqueSample(
+      "SafeBrowsing.V5Update.Parse.Result",
+      V5UpdateProtocolManager::V5ParseResult::kSuccess, 1);
+  histogram_tester.ExpectUniqueSample(
+      "SafeBrowsing.V5Update.Result",
+      V5UpdateProtocolManager::V5OperationResult::kSuccess, 1);
 }
 
 TEST_F(V5UpdateProtocolManagerTest, FastUpdateCommandLineSwitch) {

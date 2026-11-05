@@ -460,13 +460,13 @@ TEST_F(JSONWebKeyTest, Base64UrlEncoding) {
   std::string encoded_text = base::Base64Encode(
       std::string(reinterpret_cast<const char*>(&data1[0]), std::size(data1)));
   EXPECT_EQ(encoded_text, "+/37/fv9+w==");
-  EXPECT_NE(encoded_text.find('+'), std::string::npos);
-  EXPECT_NE(encoded_text.find('/'), std::string::npos);
-  EXPECT_NE(encoded_text.find('='), std::string::npos);
+  EXPECT_TRUE(encoded_text.contains('+'));
+  EXPECT_TRUE(encoded_text.contains('/'));
+  EXPECT_TRUE(encoded_text.contains('='));
 
   // base64url characters '-' and '_' not in base64 encoding.
-  EXPECT_EQ(encoded_text.find('-'), std::string::npos);
-  EXPECT_EQ(encoded_text.find('_'), std::string::npos);
+  EXPECT_FALSE(encoded_text.contains('-'));
+  EXPECT_FALSE(encoded_text.contains('_'));
 
   CreateLicenseAndExpect(data1, CdmSessionType::kTemporary,
                          "{\"kids\":[\"-_37_fv9-w\"],\"type\":\"temporary\"}");
@@ -579,7 +579,6 @@ TEST_F(JSONWebKeyTest, CreateInitData) {
                            0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10};
 
   KeyIdList key_ids;
-  std::string error_message;
 
   key_ids.emplace_back(std::begin(data1), std::end(data1));
   std::vector<uint8_t> init_data1;
@@ -602,4 +601,3 @@ TEST_F(JSONWebKeyTest, CreateInitData) {
 }
 
 }  // namespace media
-

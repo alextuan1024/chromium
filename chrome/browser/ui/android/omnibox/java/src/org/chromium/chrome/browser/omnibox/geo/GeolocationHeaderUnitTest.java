@@ -26,6 +26,7 @@ import com.google.android.gms.location.Granularity;
 import com.google.android.gms.location.LocationListener;
 import com.google.android.gms.location.LocationRequest;
 import com.google.android.gms.location.LocationServices;
+import com.google.android.gms.location.Priority;
 
 import org.junit.Before;
 import org.junit.Rule;
@@ -50,9 +51,9 @@ import org.chromium.components.browser_ui.site_settings.PermissionSetting;
 import org.chromium.components.browser_ui.site_settings.WebsitePreferenceBridge;
 import org.chromium.components.browser_ui.site_settings.WebsitePreferenceBridgeJni;
 import org.chromium.components.content_settings.ContentSetting;
+import org.chromium.components.content_settings.ContentSettingSource;
 import org.chromium.components.content_settings.ContentSettingsType;
 import org.chromium.components.omnibox.OmniboxFeatureList;
-import org.chromium.components.omnibox.OmniboxFeatures;
 import org.chromium.components.permissions.PermissionsAndroidFeatureList;
 import org.chromium.components.search_engines.TemplateUrlService;
 import org.chromium.content_public.browser.BrowserContextHandle;
@@ -67,6 +68,8 @@ public class GeolocationHeaderUnitTest {
     private static final double LOCATION_LAT = 20.3;
     private static final double LOCATION_LONG = 155.8;
     private static final float LOCATION_ACCURACY = 20f;
+    private static final float COARSE_ACCURACY =
+            GeolocationHeader.COARSE_LOCATION_ACCURACY_THRESHOLD_METERS;
     private static final long LOCATION_TIME = 400;
     // Encoded location for LOCATION_LAT, LOCATION_LONG, LOCATION_ACCURACY and LOCATION_TIME.
     // Textproto contents for precise location:
@@ -128,7 +131,8 @@ public class GeolocationHeaderUnitTest {
                         new PermissionSetting(
                                 new GeolocationSetting(ContentSetting.ALLOW, ContentSetting.ALLOW),
                                 null,
-                                false));
+                                false,
+                                ContentSettingSource.NONE));
         lenient()
                 .when(
                         mWebsitePreferenceBridgeJniMock.isDseOrigin(
@@ -206,6 +210,28 @@ public class GeolocationHeaderUnitTest {
 
         String header =
                 GeolocationHeader.getGeoHeader(SEARCH_URL, mProfileMock, mTemplateUrlServiceMock);
+        assertNull(header);
+    }
+
+    @Test
+    public void testConsistentHeaderApproximate_AppPermissionCoarse() {
+        setSiteGeolocationPermissions(
+                /* approximate= */ ContentSetting.ALLOW, /* precise= */ ContentSetting.BLOCK);
+        GeolocationHeader.setAppPermissionsForTesting(/* hasCoarse= */ true, /* hasFine= */ false);
+
+        String header =
+                GeolocationHeader.getGeoHeader(SEARCH_URL, mProfileMock, mTemplateUrlServiceMock);
+        assertEquals("X-Geo: w " + ENCODED_PROTO_LOCATION_COARSE, header);
+    }
+
+    @Test
+    @DisableFeatures(OmniboxFeatureList.OMNIBOX_X_GEO_FAIL_CLOSED_ON_PRECISE_LEAK)
+    public void testConsistentHeaderApproximate_KillSwitchDisabled() {
+        setSiteGeolocationPermissions(
+                /* approximate= */ ContentSetting.ALLOW, /* precise= */ ContentSetting.BLOCK);
+
+        String header =
+                GeolocationHeader.getGeoHeader(SEARCH_URL, mProfileMock, mTemplateUrlServiceMock);
         assertEquals("X-Geo: w " + ENCODED_PROTO_LOCATION_COARSE, header);
     }
 
@@ -213,6 +239,7 @@ public class GeolocationHeaderUnitTest {
     public void testConsistentHeader_ApproximateAllow_PreciseAsk() {
         setSiteGeolocationPermissions(
                 /* approximate= */ ContentSetting.ALLOW, /* precise= */ ContentSetting.ASK);
+        GeolocationHeader.setAppPermissionsForTesting(/* hasCoarse= */ true, /* hasFine= */ false);
         String header =
                 GeolocationHeader.getGeoHeader(SEARCH_URL, mProfileMock, mTemplateUrlServiceMock);
         assertEquals("X-Geo: w " + ENCODED_PROTO_LOCATION_COARSE, header);
@@ -247,7 +274,8 @@ public class GeolocationHeaderUnitTest {
                         new PermissionSetting(
                                 new GeolocationSetting(ContentSetting.ALLOW, ContentSetting.ALLOW),
                                 null,
-                                /* isOneTime= */ true));
+                                /* isOneTime= */ true,
+                                ContentSettingSource.NONE));
 
         String header =
                 GeolocationHeader.getGeoHeader(SEARCH_URL, mProfileMock, mTemplateUrlServiceMock);
@@ -339,13 +367,6 @@ public class GeolocationHeaderUnitTest {
     }
 
     @Test
-    @DisableFeatures(OmniboxFeatureList.USE_FUSED_LOCATION_PROVIDER)
-    public void testPrimeLocationForGeoHeader() {
-        GeolocationHeader.primeLocationForGeoHeaderIfEnabled(mProfileMock, mTemplateUrlServiceMock);
-        assertEquals(1, mRefreshLastKnownLocationCount);
-    }
-
-    @Test
     public void testPrimeLocationForGeoHeaderPermissionOff() {
         GeolocationHeader.setAppPermissionsForTesting(/* hasCoarse= */ false, /* hasFine= */ false);
         GeolocationHeader.primeLocationForGeoHeaderIfEnabled(mProfileMock, mTemplateUrlServiceMock);
@@ -371,12 +392,8 @@ public class GeolocationHeaderUnitTest {
                         eq(null));
 
         LocationRequest actualRequest = mLocationRequestCaptor.getValue();
-        assertEquals(
-                OmniboxFeatures.sGeolocationRequestMaxLocationAge.getValue(),
-                actualRequest.getMaxUpdateAgeMillis());
-        assertEquals(
-                OmniboxFeatures.sGeolocationRequestPriority.getValue(),
-                actualRequest.getPriority());
+        assertEquals(GeolocationHeader.REFRESH_LOCATION_AGE, actualRequest.getMaxUpdateAgeMillis());
+        assertEquals(Priority.PRIORITY_BALANCED_POWER_ACCURACY, actualRequest.getPriority());
         assertEquals(Granularity.GRANULARITY_PERMISSION_LEVEL, actualRequest.getGranularity());
 
         Location mockLocation = generateMockLocation("network", LOCATION_TIME);
@@ -439,11 +456,15 @@ public class GeolocationHeaderUnitTest {
         LocationRequest actualRequest = mLocationRequestCaptor.getValue();
         assertEquals(Granularity.GRANULARITY_COARSE, actualRequest.getGranularity());
 
-        Location mockLocation = generateMockLocation("network", LOCATION_TIME);
-        mLocationListenerCaptor.getValue().onLocationChanged(mockLocation);
+        Location coarseLocation = generateMockLocation("network", LOCATION_TIME, COARSE_ACCURACY);
+        mLocationListenerCaptor.getValue().onLocationChanged(coarseLocation);
         assertEquals(
-                mockLocation,
+                coarseLocation,
                 GeolocationHeader.getLastKnownLocation(/* hasFineSitePermission= */ false));
+
+        Location preciseLocation = generateMockLocation("network", LOCATION_TIME);
+        mLocationListenerCaptor.getValue().onLocationChanged(preciseLocation);
+        assertNull(GeolocationHeader.getLastKnownLocation(/* hasFineSitePermission= */ false));
         assertEquals(0, mRefreshLastKnownLocationCount);
     }
 
@@ -521,7 +542,8 @@ public class GeolocationHeaderUnitTest {
                         new PermissionSetting(
                                 new GeolocationSetting(approximate, precise),
                                 null,
-                                /* isOneTime= */ false));
+                                /* isOneTime= */ false,
+                                ContentSettingSource.NONE));
     }
 
     private void checkOldLocation(String expectedHeader) {
@@ -535,10 +557,14 @@ public class GeolocationHeaderUnitTest {
     }
 
     private Location generateMockLocation(String provider, long time) {
+        return generateMockLocation(provider, time, LOCATION_ACCURACY);
+    }
+
+    private Location generateMockLocation(String provider, long time, float accuracy) {
         Location location = new Location(provider);
         location.setLatitude(LOCATION_LAT);
         location.setLongitude(LOCATION_LONG);
-        location.setAccuracy(LOCATION_ACCURACY);
+        location.setAccuracy(accuracy);
         location.setTime(time);
         location.setElapsedRealtimeNanos(
                 SystemClock.elapsedRealtimeNanos() + 1000000 * (time - System.currentTimeMillis()));

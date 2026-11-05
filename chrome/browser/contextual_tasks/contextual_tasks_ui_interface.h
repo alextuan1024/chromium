@@ -5,6 +5,7 @@
 #ifndef CHROME_BROWSER_CONTEXTUAL_TASKS_CONTEXTUAL_TASKS_UI_INTERFACE_H_
 #define CHROME_BROWSER_CONTEXTUAL_TASKS_CONTEXTUAL_TASKS_UI_INTERFACE_H_
 
+#include "base/memory/weak_ptr.h"
 #include "base/observer_list.h"
 #include "chrome/browser/contextual_tasks/aim_message_poster.h"
 #include "chrome/browser/contextual_tasks/task_info_delegate.h"
@@ -28,6 +29,10 @@ class InputStateModel;
 namespace lens {
 class ClientToAimMessage;
 }  // namespace lens
+
+namespace contextual_tasks_toolbar::mojom {
+class Page;
+}
 
 namespace contextual_tasks {
 class ContextualTasksComposeboxHandlerInterface;
@@ -68,6 +73,9 @@ class ContextualTasksUIInterface : public TaskInfoDelegate,
   // Notifies the UI that the WebContents has moved between the side panel and
   // a tab.
   virtual void OnSidePanelStateChanged() = 0;
+
+  // Called when the side panel is opened to focus the composebox input.
+  virtual void FocusComposebox() {}
 
   // Called when the active tab has been changed (e.g. new page loaded or title
   // change). This is used to update the UI for both tab/side panel modes.
@@ -131,6 +139,9 @@ class ContextualTasksUIInterface : public TaskInfoDelegate,
   // Returns the Mojo remote used to communicate with the WebUI page.
   virtual mojo::Remote<contextual_tasks::mojom::Page>& GetPageRemote() = 0;
 
+  // Returns the Mojo remote used to communicate with the Toolbar WebUI page.
+  virtual contextual_tasks_toolbar::mojom::Page* GetToolbarPageRemote() = 0;
+
   // Fetches and assumes unique ownership of the pre-configured input state
   // model attached to the WebContents for the current task. Subsequent calls
   // for the same task will return nullptr.
@@ -139,7 +150,7 @@ class ContextualTasksUIInterface : public TaskInfoDelegate,
 
   // Fetches the restored tab IDs attached to the WebContents for the
   // current task.
-  virtual std::vector<int32_t> GetRestoredTabIds() = 0;
+  virtual const std::vector<int32_t>& GetRestoredTabIds() = 0;
 
   // Notifies the UI that restored tabs have been successfully fetched from the
   // database.
@@ -176,6 +187,10 @@ class ContextualTasksUIInterface : public TaskInfoDelegate,
   // restored tabs are only populated once.
   virtual bool is_history_thread_loading() const = 0;
   virtual void set_is_history_thread_loading(bool loading) = 0;
+
+  // Returns a weak pointer for callers that need to reference this UI from
+  // asynchronous tasks, since the UI can be destroyed before they run.
+  virtual base::WeakPtr<ContextualTasksUIInterface> GetWeakPtr() = 0;
 };
 
 }  // namespace contextual_tasks

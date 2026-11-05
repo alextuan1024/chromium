@@ -6,6 +6,7 @@
 
 #include <map>
 #include <memory>
+#include <vector>
 
 #include "base/metrics/statistics_recorder.h"
 #include "base/run_loop.h"
@@ -13,6 +14,7 @@
 #include "base/test/bind.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
+#include "build/build_config.h"
 #include "chrome/browser/page_load_metrics/page_load_metrics_initialize.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_command_controller.h"
@@ -26,10 +28,11 @@
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/waap/initial_webui_window_metrics_manager.h"
 #include "chrome/browser/ui/waap/waap_ui_metrics_service.h"
+#include "chrome/browser/ui/waap/window_creation.h"
 #include "chrome/browser/ui/webui/metrics_reporter/metrics_reporter.h"
 #include "chrome/browser/ui/webui/metrics_reporter/metrics_reporter_service.h"
 #include "chrome/browser/ui/webui/webui_embedding_context.h"
-#include "chrome/browser/ui/webui/webui_toolbar/adapters/navigation_controls_state_fetcher_impl.h"
+#include "chrome/browser/ui/webui/webui_toolbar/adapters/toolbar_state_fetcher_impl.h"
 #include "chrome/browser/ui/webui/webui_toolbar/webui_toolbar_test_utils.h"
 #include "chrome/browser/ui/webui/webui_toolbar/webui_toolbar_ui.h"
 #include "chrome/common/chrome_features.h"
@@ -56,9 +59,13 @@
 #include "services/metrics/public/cpp/ukm_builders.h"
 #include "services/metrics/public/cpp/ukm_source.h"
 #include "testing/gmock/include/gmock/gmock.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "ui/base/page_transition_types.h"
-#include "ui/base/window_open_disposition.h"
 #include "url/gurl.h"
+
+#if BUILDFLAG(IS_WIN)
+#include "ui/base/ui_base_features.h"
+#endif  // BUILDFLAG(IS_WIN)
 
 namespace {
 
@@ -120,11 +127,10 @@ class ToolbarDependencyProvider : public WebUIToolbarUI::DependencyProvider {
     return nullptr;
   }
 
-  std::unique_ptr<toolbar_ui_api::NavigationControlsStateFetcher>
-  GetNavigationControlsStateFetcher() override {
-    return std::make_unique<toolbar_ui_api::NavigationControlsStateFetcherImpl>(
-        base::BindLambdaForTesting(
-            []() { return CreateValidNavigationControlsState(); }));
+  std::unique_ptr<toolbar_ui_api::ToolbarStateFetcher> GetToolbarStateFetcher()
+      override {
+    return std::make_unique<toolbar_ui_api::ToolbarStateFetcherImpl>(
+        base::BindLambdaForTesting([]() { return CreateValidToolbarState(); }));
   }
 
   std::unique_ptr<toolbar_ui_api::IconTableFetcher> GetIconTableFetcher()
@@ -168,8 +174,16 @@ class InitialWebUIPageLoadMetricsObserverBrowserTest
     : public InProcessBrowserTest {
  public:
   InitialWebUIPageLoadMetricsObserverBrowserTest() {
+    std::vector<base::test::FeatureRef> disabled_features;
+#if BUILDFLAG(IS_WIN)
+    // Native window occlusion is calculated asynchronously, so an occlusion
+    // update can arrive after a test calls WasHidden() and make the tab visible
+    // again via WebContents::UpdateWebContentsVisibility().
+    disabled_features.push_back(features::kCalculateNativeWinOcclusion);
+#endif  // BUILDFLAG(IS_WIN)
     feature_list_.InitWithFeatures(
-        {features::kInitialWebUI, features::kWebUIReloadButton}, {});
+        {features::kInitialWebUI, features::kWebUIReloadButton},
+        disabled_features);
   }
 
   InitialWebUIPageLoadMetricsObserverBrowserTest(
@@ -691,7 +705,7 @@ IN_PROC_BROWSER_TEST_F(InitialWebUIPageLoadMetricsObserverBrowserTest,
   content::WebContents* contents =
       NavigateAndWaitForMetrics(url, /*close_tab=*/false);
   content::TestNavigationObserver reload_observer(contents);
-  chrome::Reload(browser(), WindowOpenDisposition::CURRENT_TAB);
+  chrome::Reload(browser(), ui::mojom::WindowOpenDisposition::kCurrentTab);
   reload_observer.Wait();
 
   browser()->GetTabStripModel()->CloseWebContents(contents, 0);
@@ -760,13 +774,13 @@ IN_PROC_BROWSER_TEST_F(InitialWebUIPageLoadMetricsObserverBrowserTest,
   // Create a new window
   BrowserWindowCreateParams params(browser()->GetProfile(),
                                    /*from_user_gesture=*/true);
-  BrowserWindowInterface* new_browser = CreateBrowserWindow(std::move(params));
+  BrowserWindowInterface* new_browser =
+      waap::CreateBrowserWindowAndRecordCreationSource(
+          std::move(params), waap::NewWindowCreationSource::kNewEmptyWindow);
 
   auto* manager = InitialWebUIWindowMetricsManager::From(new_browser);
   ASSERT_TRUE(manager);
   manager->SkipStartupForTesting();
-  manager->SetWindowCreationInfo(
-      waap::NewWindowCreationSource::kBrowserInitiated, base::TimeTicks::Now());
 
   // Define expected metrics
   const std::string first_paint_metric =

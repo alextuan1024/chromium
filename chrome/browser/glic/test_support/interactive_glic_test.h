@@ -7,9 +7,11 @@
 
 #include <algorithm>
 #include <map>
+#include <ostream>
 #include <sstream>
 #include <string_view>
 
+#include "base/command_line.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_forward.h"
@@ -28,6 +30,7 @@
 #include "chrome/browser/glic/glic_pref_names.h"
 #include "chrome/browser/glic/host/glic.mojom.h"
 #include "chrome/browser/glic/host/glic_cookie_synchronizer.h"
+#include "chrome/browser/glic/host/glic_no_webview_contents_manager.h"
 #include "chrome/browser/glic/host/glic_page_handler.h"
 #include "chrome/browser/glic/host/host.h"
 #include "chrome/browser/glic/public/features.h"
@@ -71,13 +74,9 @@
 
 #if BUILDFLAG(IS_CHROMEOS)
 #include "chromeos/constants/chromeos_features.h"
-#include "components/sync/base/features.h"
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
 namespace glic::test {
-
-extern const InteractiveBrowserTestApi::DeepQuery kPathToMockGlicCloseButton;
-extern const InteractiveBrowserTestApi::DeepQuery kPathToGuestPanel;
 
 enum class TargetWebContents {
   kGlicWebUi,
@@ -144,7 +143,6 @@ class InteractiveGlicTestMixin : public T {
          // it.
          {features::kGlicLiveMode, {}},
 #if BUILDFLAG(IS_CHROMEOS)
-         {syncer::kReplaceSyncPromosWithSignInPromos, {}},
          { chromeos::features::kFeatureManagementGlic,
            {} }
 #endif  // BUILDFLAG(IS_CHROMEOS)
@@ -171,6 +169,15 @@ class InteractiveGlicTestMixin : public T {
 
   ~InteractiveGlicTestMixin() override = default;
 
+  void SetUpCommandLine(base::CommandLine* command_line) override {
+    T::SetUpCommandLine(command_line);
+    // Binds the Glic HTTPS server so the guest URL is known here. Fixtures
+    // that configure its certificate (e.g. `SetCertHostnames()`) must do so
+    // before this, e.g. in their constructor or `SetUp()`.
+    CHECK(glic_test_environment_.InitializeEmbeddedTestServers(
+        &Test::embedded_https_test_server()));
+  }
+
   void SetUpBrowserContextKeyedServices(
       content::BrowserContext* context) override {
     T::SetUpBrowserContextKeyedServices(context);
@@ -186,12 +193,16 @@ class InteractiveGlicTestMixin : public T {
 
     LOG(INFO) << "InteractiveGlicTest: done setting up";
 
-    SidePanelCoordinator::From(browser())->DisableAnimationsForTesting();
+    SidePanelUI::From(browser())->DisableAnimationsForTesting();
   }
 
   void TearDownOnMainThread() override {
     instance_tracker_.SetProfile(nullptr);
     T::TearDownOnMainThread();
+  }
+
+  bool IsNoWebviewEnabled() {
+    return GlicKeyedService::IsNoWebviewEnabled(this->browser()->GetProfile());
   }
 
   auto WaitForAndInstrumentGlic(GlicInstrumentMode instrument_mode) {
@@ -209,7 +220,7 @@ class InteractiveGlicTestMixin : public T {
     Api::MultiStep steps;
     switch (instrument_mode) {
       case GlicInstrumentMode::kHostAndContents:
-        if (features::IsGlicNoWebviewEnabled()) {
+        if (IsNoWebviewEnabled()) {
           // In NoWebview mode, the guest WebContents is loaded directly into
           // GlicView (top-level), so we instrument GlicView as both the host
           // and contents rather than looking for an inner <webview>.
@@ -286,21 +297,8 @@ class InteractiveGlicTestMixin : public T {
     Api::MultiStep steps;
     switch (instrument_mode) {
       case GlicInstrumentMode::kHostAndContents:
-        if (features::IsGlicNoWebviewEnabled()) {
-          steps = Api::Steps(
-              WaitForGlicOpen(),
-              WaitUntil(
-                  [this]() -> std::string {
-                    GlicInstanceImpl* instance = GetGlicInstanceImpl();
-                    if (!instance) {
-                      return "No glic instance";
-                    }
-                    if (!instance->host().IsWebClientConnected()) {
-                      return "Glic host not ready";
-                    }
-                    return "ready";
-                  },
-                  "ready", "WaitForWebClientConnected"));
+        if (IsNoWebviewEnabled()) {
+          steps = Api::Steps(WaitForGlicOpen(), WaitForWebClientConnected());
         } else {
           steps = Api::Steps(WaitForGlicOpen(),
                              WaitForWebUIState(mojom::WebUiState::kReady));
@@ -333,7 +331,7 @@ class InteractiveGlicTestMixin : public T {
 
     switch (instrument_mode) {
       case GlicInstrumentMode::kHostAndContents:
-        if (features::IsGlicNoWebviewEnabled()) {
+        if (IsNoWebviewEnabled()) {
           // In NoWebview mode, the guest WebContents is loaded directly into
           // GlicView (top-level), so we instrument GlicView as both the host
           // and contents rather than looking for an inner <webview>.
@@ -351,8 +349,7 @@ class InteractiveGlicTestMixin : public T {
                   Api::WaitForWebContentsReady(kGlicContentsElementId))),
               Api::WaitForState(internal::kGlicInstanceCoordinatorState,
                                 GlicPanelState::kOpen),
-              Api::StopObservingState(internal::kGlicInstanceCoordinatorState)
-              /*, WaitForElementVisible(kPathToGuestPanel)*/);
+              Api::StopObservingState(internal::kGlicInstanceCoordinatorState));
         } else {
           // In Webview mode, GlicView hosts the WebUI (kGlicHostElementId)
           // and the guest WebContents (kGlicContentsElementId) is embedded
@@ -371,8 +368,7 @@ class InteractiveGlicTestMixin : public T {
                   Api::WaitForWebContentsReady(kGlicContentsElementId))),
               Api::WaitForState(internal::kGlicInstanceCoordinatorState,
                                 GlicPanelState::kOpen),
-              Api::StopObservingState(internal::kGlicInstanceCoordinatorState)
-              /*, WaitForElementVisible(kPathToGuestPanel)*/);
+              Api::StopObservingState(internal::kGlicInstanceCoordinatorState));
         }
         break;
       case GlicInstrumentMode::kHostOnly:
@@ -433,7 +429,6 @@ class InteractiveGlicTestMixin : public T {
     // NOTE: The use of "Api::" here is required because this is a template
     // class with weakly-specified base class; it is not necessary in derived
     // test classes.
-    const std::string kConversationId = "conversation_id_default";
     auto steps =
         Api::Steps(Api::Log("Opening glic window"), CheckGlicIsClosed(),
                    // Technically, this toggles the window, but we've
@@ -778,7 +773,7 @@ class InteractiveGlicTestMixin : public T {
           if (!GetGlicInstance()) {
             return GlicWindowMode::kAttached;
           }
-          return GetGlicInstance()->GetPanelState().kind ==
+          return GetGlicInstance()->GetPanelState()->kind ==
                          mojom::PanelStateKind::kAttached
                      ? GlicWindowMode::kAttached
                      : GlicWindowMode::kDetached;
@@ -918,6 +913,59 @@ class InteractiveGlicTestMixin : public T {
     return steps;
   }
 
+  auto WaitForWebClientConnected() {
+    return WaitUntil(
+        [this]() -> std::string {
+          GlicInstanceImpl* instance = GetGlicInstanceImpl();
+          if (!instance) {
+            return "No glic instance";
+          }
+          if (IsNoWebviewEnabled()) {
+            auto* manager = static_cast<GlicNoWebviewContentsManager*>(
+                instance->host().contents_manager());
+            if (!manager ||
+                manager->guest_state().get() !=
+                    GlicNoWebviewContentsManager::GuestState::kReady) {
+              return "Glic guest not ready";
+            }
+          }
+          if (!instance->host().IsWebClientConnected()) {
+            return "Glic host not ready";
+          }
+          return "ready";
+        },
+        "ready", "WaitForWebClientConnected");
+  }
+
+  auto WaitForErrorPanelType(
+      std::optional<mojom::ErrorPanelType> expected_type) {
+    CHECK(IsNoWebviewEnabled())
+        << "WaitForErrorPanelType only works with GlicNoWebview";
+    auto type_to_string =
+        [](std::optional<mojom::ErrorPanelType> type) -> std::string {
+      if (!type) {
+        return "none";
+      }
+      std::stringstream ss;
+      ss << *type;
+      return ss.str();
+    };
+    return WaitUntil(
+        [this, type_to_string]() -> std::string {
+          auto* instance = GetGlicInstanceImpl();
+          if (!instance) {
+            return "no instance";
+          }
+          auto* manager = static_cast<GlicNoWebviewContentsManager*>(
+              instance->host().contents_manager());
+          if (!manager) {
+            return "no contents manager";
+          }
+          return type_to_string(manager->error_type());
+        },
+        type_to_string(expected_type), "WaitForErrorPanelType");
+  }
+
   auto WaitForWebUIState(mojom::WebUiState state) {
     std::stringstream ss;
     ss << state;
@@ -1013,12 +1061,13 @@ class InteractiveGlicTestMixin : public T {
         desc);
   }
 
+  // Must be called before `SetUpCommandLine()`.
   void SetGlicPagePath(const std::string& glic_page_path) {
     glic_test_environment_.SetGlicPagePath(glic_page_path);
   }
 
   // Adds a query param to the URL that will be used to load the mock glic.
-  // Must be called before `SetUpOnMainThread()`. Both `key` and `value` (if
+  // Must be called before `SetUpCommandLine()`. Both `key` and `value` (if
   // specified) will be URL-encoded for safety.
   void AddMockGlicQueryParam(const std::string_view& key,
                              const std::string_view& value = "") {
@@ -1026,7 +1075,6 @@ class InteractiveGlicTestMixin : public T {
   }
 
   GURL GetGuestURL() { return glic_test_environment_.GetGuestURL(); }
-
 
   // `InteractiveGlicTestMixin` is configured to operate a single browser, but
   // it can change which browser it operates. This changes the browser to be

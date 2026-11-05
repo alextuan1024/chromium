@@ -24,19 +24,6 @@ class Accelerator;
 namespace omnibox_everywhere {
 namespace prefs {
 
-// Stages of the Omnibox Everywhere First Run Experience (FRE).
-enum class FreStage {
-  // FRE is complete or inactive.
-  kNone = 0,
-  // Stage 1: Two-row modal card (Value prop + Where to find).
-  kIntroModal = 1,
-  // Stage 2: One-row chin with shortcut selector dropdown & "Set as shortcut"
-  // CTA.
-  kShortcutSetupChin = 2,
-  // Stage 3: One-row educational chin showing active shortcut reminder.
-  kShortcutReminderChin = 3,
-};
-
 // Returns true if the ephemeral model (close/hide on focus loss) is enabled.
 bool IsEphemeralModelEnabled();
 
@@ -106,58 +93,34 @@ inline constexpr char kFreIntroDismissed[] =
     "omnibox_everywhere.fre_intro_dismissed";
 inline constexpr char kFreIntroImpressionCount[] =
     "omnibox_everywhere.fre_intro_impression_count";
-inline constexpr int kMaxFreIntroImpressions = 2;
 
 // Preferences for Stage 2: Shortcut Setup Chin.
 inline constexpr char kFreShortcutSetupDismissed[] =
     "omnibox_everywhere.fre_shortcut_setup_dismissed";
 inline constexpr char kFreShortcutSetupImpressionCount[] =
     "omnibox_everywhere.fre_shortcut_setup_impression_count";
-// TODO(crbug.com/563029405): Make FRE impression caps configurable via Finch
-// parameters.
-inline constexpr int kMaxFreShortcutSetupImpressions = 1;
 
 // Preferences for Stage 3: Shortcut Reminder Chin.
 inline constexpr char kFreShortcutReminderDismissed[] =
     "omnibox_everywhere.fre_shortcut_reminder_dismissed";
 inline constexpr char kFreShortcutReminderImpressionCount[] =
     "omnibox_everywhere.fre_shortcut_reminder_impression_count";
-inline constexpr int kMaxFreShortcutReminderImpressions = 3;
-
-// Legacy maximum number of impressions.
-inline constexpr int kMaxFreImpressions = 3;
 
 // Boolean preference specifying whether the user has accepted the screenshot
 // sharing disclosure dialog in Omnibox Everywhere.
 inline constexpr char kScreenshotDisclosureAccepted[] =
     "omnibox_everywhere.screenshot_disclosure_accepted";
 
+// Boolean profile preference specifying whether the Omnibox Everywhere NTP
+// promo has been completed.
+inline constexpr char kNtpPromoCompleted[] =
+    "omnibox_everywhere.ntp_promo_completed";
+
 // Registers Local State preferences for Omnibox Everywhere.
 void RegisterLocalStatePrefs(PrefRegistrySimple* registry);
 
 // Registers Profile preferences for Omnibox Everywhere.
 void RegisterProfilePrefs(user_prefs::PrefRegistrySyncable* registry);
-
-// TODO(crbug.com/559175507): Introduce a dedicated onboarding controller to
-// encapsulate FRE state machine transitions and pref observation.
-// Returns the active FRE stage for the profile.
-FreStage GetCurrentFreStage(Profile* profile,
-                            PrefService* local_state = nullptr);
-
-// Increments the impression count for the currently active FRE stage.
-void IncrementFreImpression(Profile* profile,
-                            PrefService* local_state = nullptr);
-
-// Records that the specified FRE stage was dismissed (or marks overall FRE
-// completed).
-void OnFreStageDismissed(Profile* profile,
-                         FreStage stage,
-                         PrefService* local_state = nullptr);
-
-// Marks the specified FRE stage as completed (as opposed to dismissed via 'X').
-// For example, configuring a shortcut outside the chin (e.g. via Settings)
-// completes Stage 2 and advances past it without skipping downstream stages.
-void MarkFreStageCompleted(Profile* profile, FreStage stage);
 
 // Returns the configured global hotkey accelerator for Omnibox Everywhere from
 // local state, or an empty accelerator if unset or invalid.

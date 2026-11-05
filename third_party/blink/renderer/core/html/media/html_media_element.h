@@ -107,6 +107,7 @@ class TextTrackList;
 class TimeRanges;
 class VideoTrack;
 class VideoTrackList;
+class UIEvent;
 class V8CanPlayTypeResult;
 class V8TextTrackKind;
 
@@ -202,6 +203,9 @@ class CORE_EXPORT HTMLMediaElement
       std::variant<MediaStreamDescriptor*, MediaSourceHandle*>;
   void SetSrcObjectVariant(SrcObjectVariant src_object_variant);
   SrcObjectVariant GetSrcObjectVariant() const;
+  bool HasSrcObject() const {
+    return src_object_stream_descriptor_ || src_object_media_source_handle_;
+  }
 
   enum NetworkState {
     kNetworkEmpty,
@@ -258,6 +262,7 @@ class CORE_EXPORT HTMLMediaElement
   TimeRanges* played();
   WebTimeRanges SeekableInternal() const;
   TimeRanges* seekable() const;
+  bool CanSeekTo(double time) const;
   bool ended() const;
   bool Autoplay() const;
   bool Loop() const;
@@ -342,7 +347,6 @@ class CORE_EXPORT HTMLMediaElement
   using HTMLElement::GetExecutionContext;
 
   bool IsFullscreen() const;
-  virtual bool UsesOverlayFullscreenVideo() const { return false; }
 
   bool HasClosedCaptions() const;
   bool TextTracksVisible() const;
@@ -447,7 +451,8 @@ class CORE_EXPORT HTMLMediaElement
   bool IsValidBuiltinCommand(HTMLElement& invoker,
                              CommandEventType command) override;
   bool HandleCommandInternal(HTMLElement& invoker,
-                             CommandEventType command) override;
+                             CommandEventType command,
+                             UIEvent* activate_event) override;
 
   // media::RemotePlaybackClientWrapper overrides:
   std::string GetActivePresentationId() override;
@@ -801,6 +806,10 @@ class CORE_EXPORT HTMLMediaElement
 
   void OnRemovedFromDocumentTimerFired(TimerBase*);
 
+  // Checks whether the muted content attribute is present but muted_ is false,
+  // and triggers a use counter if that is the case.
+  void CheckMutedAttributeWouldMute();
+
   void SetError(MediaError* error);
   void ReportCurrentTimeToMediaSource();
 
@@ -1022,7 +1031,7 @@ class CORE_EXPORT HTMLMediaElement
 
   // AudioSourceProviderImpl wraps a WebAudioSourceProvider.
   // provideInput() calls into Chromium to get a rendered audio stream.
-  class AudioSourceProviderImpl final : public AudioSourceProvider {
+  class CORE_EXPORT AudioSourceProviderImpl final : public AudioSourceProvider {
     DISALLOW_NEW();
 
    public:
@@ -1077,7 +1086,6 @@ class CORE_EXPORT HTMLMediaElement
   friend class AutoplayPolicy;
   friend class AutoplayUmaHelperTest;
   friend class Internals;
-  friend class TrackDisplayUpdateScope;
   friend class MediaControlsImplTest;
   friend class HTMLMediaElementTest;
   friend class HTMLMediaElementEventListenersTest;
@@ -1091,8 +1099,7 @@ class CORE_EXPORT HTMLMediaElement
 
   Member<AutoplayPolicy> autoplay_policy_;
 
-  raw_ptr<RemotePlaybackClient, UnprotectedInRelease | DanglingUntriaged>
-      remote_playback_client_ = nullptr;
+  Member<RemotePlaybackClient> remote_playback_client_;
 
   Member<MediaControls> media_controls_;
   Member<HTMLMediaElementControlsList> controls_list_;
@@ -1125,12 +1132,9 @@ class CORE_EXPORT HTMLMediaElement
 template <>
 struct DowncastTraits<HTMLMediaElement> {
   static bool AllowFrom(const Node& node) {
-    auto* html_element = DynamicTo<HTMLElement>(node);
-    return html_element && AllowFrom(*html_element);
-  }
-  static bool AllowFrom(const HTMLElement& html_element) {
-    return html_element.HasTagName(html_names::kAudioTag) ||
-           html_element.HasTagName(html_names::kVideoTag);
+    const ElementType type = node.GetElementType();
+    return type == ElementType::kHTMLAudioElement ||
+           type == ElementType::kHTMLVideoElement;
   }
 };
 

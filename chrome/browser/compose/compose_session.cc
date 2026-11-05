@@ -43,7 +43,7 @@
 #include "components/compose/core/browser/compose_utils.h"
 #include "components/compose/core/browser/config.h"
 #include "components/content_extraction/content/browser/inner_text.h"
-#include "components/optimization_guide/core/model_execution/feature_keys.h"
+#include "components/optimization_guide/core/feature_registry/feature_keys.h"
 #include "components/optimization_guide/core/model_execution/multimodal_message.h"
 #include "components/optimization_guide/core/model_execution/optimization_guide_model_execution_error.h"
 #include "components/optimization_guide/core/model_execution/remote_model_executor.h"
@@ -64,8 +64,8 @@
 #include "ui/accessibility/ax_mode.h"
 #include "ui/accessibility/ax_tree_update.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "ui/base/page_transition_types.h"
-#include "ui/base/window_open_disposition.h"
 #include "ui/gfx/geometry/rect_f.h"
 
 namespace {
@@ -890,7 +890,7 @@ void ComposeSession::OpenBugReportingLink() {
   }
   web_contents_->OpenURL(
       content::OpenURLParams::CreateBrowserInitiated(
-          GURL(url), WindowOpenDisposition::NEW_FOREGROUND_TAB,
+          GURL(url), ui::mojom::WindowOpenDisposition::kNewForegroundTab,
           ui::PAGE_TRANSITION_LINK),
       /*navigation_handle_callback=*/{});
 }
@@ -909,7 +909,8 @@ void ComposeSession::OpenComposeLearnMorePage() {
   web_contents_->OpenURL(
       content::OpenURLParams::CreateBrowserInitiated(
           GURL(kComposeLearnMorePageURL),
-          WindowOpenDisposition::NEW_FOREGROUND_TAB, ui::PAGE_TRANSITION_LINK),
+          ui::mojom::WindowOpenDisposition::kNewForegroundTab,
+          ui::PAGE_TRANSITION_LINK),
       /*navigation_handle_callback=*/{});
 }
 
@@ -917,7 +918,8 @@ void ComposeSession::OpenEnterpriseComposeLearnMorePage() {
   web_contents_->OpenURL(
       content::OpenURLParams::CreateBrowserInitiated(
           GURL(kEnterpriseComposeLearnMorePageURL),
-          WindowOpenDisposition::NEW_FOREGROUND_TAB, ui::PAGE_TRANSITION_LINK),
+          ui::mojom::WindowOpenDisposition::kNewForegroundTab,
+          ui::PAGE_TRANSITION_LINK),
       /*navigation_handle_callback=*/{});
 }
 
@@ -933,7 +935,7 @@ void ComposeSession::OpenFeedbackSurveyLink() {
   }
   web_contents_->OpenURL(
       content::OpenURLParams::CreateBrowserInitiated(
-          GURL(url), WindowOpenDisposition::NEW_FOREGROUND_TAB,
+          GURL(url), ui::mojom::WindowOpenDisposition::kNewForegroundTab,
           ui::PAGE_TRANSITION_LINK),
       /*navigation_handle_callback=*/{});
 }
@@ -941,7 +943,8 @@ void ComposeSession::OpenFeedbackSurveyLink() {
 void ComposeSession::OpenSignInPage() {
   web_contents_->OpenURL(
       content::OpenURLParams::CreateBrowserInitiated(
-          GURL(kSignInPageURL), WindowOpenDisposition::NEW_FOREGROUND_TAB,
+          GURL(kSignInPageURL),
+          ui::mojom::WindowOpenDisposition::kNewForegroundTab,
           ui::PAGE_TRANSITION_LINK),
       /*navigation_handle_callback=*/{});
 }

@@ -43,6 +43,7 @@ import org.chromium.base.FileUtils;
 import org.chromium.base.IntentUtils;
 import org.chromium.base.Log;
 import org.chromium.base.PackageManagerUtils;
+import org.chromium.base.StrictModeContext;
 import org.chromium.base.TriState;
 import org.chromium.build.annotations.Contract;
 import org.chromium.build.annotations.NullMarked;
@@ -70,6 +71,7 @@ import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabLaunchType;
 import org.chromium.chrome.browser.tabmodel.document.ChromeAsyncTabLauncher;
 import org.chromium.chrome.browser.ui.native_page.NativePage;
+import org.chromium.chrome.browser.util.BrowserUiUtils;
 import org.chromium.chrome.browser.util.ChromeAccessibilityUtil;
 import org.chromium.components.background_task_scheduler.TaskIds;
 import org.chromium.components.download.DownloadState;
@@ -77,6 +79,7 @@ import org.chromium.components.download.ResumeMode;
 import org.chromium.components.embedder_support.util.UrlConstants;
 import org.chromium.components.feature_engagement.EventConstants;
 import org.chromium.components.feature_engagement.Tracker;
+import org.chromium.components.offline_items_collection.ContentId;
 import org.chromium.components.offline_items_collection.FailState;
 import org.chromium.components.offline_items_collection.LaunchLocation;
 import org.chromium.components.offline_items_collection.LegacyHelpers;
@@ -296,7 +299,7 @@ public class DownloadUtils {
                     origin);
         } else {
             // Otherwise, the download can be started immediately.
-            OfflinePageDownloadBridge.startDownload(tab, origin);
+            OfflinePageDownloadBridge.startDownload(tab, origin, fromAppMenu);
         }
         tracker.notifyEvent(EventConstants.DOWNLOAD_PAGE_STARTED);
     }
@@ -348,13 +351,25 @@ public class DownloadUtils {
 
         // It's ok to use blocking calls on main thread here, since the user is waiting to open or
         // share the file to other apps.
-        boolean isOnSDCard = DownloadDirectoryProvider.isDownloadOnSDCard(filePath);
-        if (isOnSDCard) {
-            // Use custom file provider to generate content URI for download on SD card.
-            return DownloadFileProvider.createContentUri(filePath);
+        try (StrictModeContext ignored = StrictModeContext.allowDiskReads()) {
+            boolean isOnSDCard = DownloadDirectoryProvider.isDownloadOnSDCard(filePath);
+            if (isOnSDCard) {
+                // Use custom file provider to generate content URI for download on SD card.
+                return DownloadFileProvider.createContentUri(filePath);
+            }
+            // Use FileProvider to generate content URI or file URI.
+            Uri uri = FileUtils.getUriForFile(new File(filePath));
+            if (UrlConstants.CONTENT_SCHEME.equals(uri.getScheme())) {
+                return uri;
+            }
+            // Fall back to DownloadFileProvider for files in the app-private primary download
+            // directory that are not covered by FileProvider.
+            Uri downloadProviderUri = DownloadFileProvider.createContentUri(filePath);
+            if (UrlConstants.CONTENT_SCHEME.equals(downloadProviderUri.getScheme())) {
+                return downloadProviderUri;
+            }
+            return uri;
         }
-        // Use FileProvider to generate content URI or file URI.
-        return FileUtils.getUriForFile(new File(filePath));
     }
 
     /**
@@ -419,6 +434,45 @@ public class DownloadUtils {
     }
 
     /**
+     * Opens a completed download in a new Chrome tab if Chrome can display its format (e.g. PDFs,
+     * images or web pages), even when another app is the default for it. Unlike {@link #openItem},
+     * which prefers the default app on desktop, opens nothing otherwise. Incognito downloads open
+     * in an incognito tab.
+     *
+     * @param offlineItem The completed download to open.
+     * @param context The context used to open the download.
+     * @param otrProfileId The {@link OtrProfileId} of the download. Null if in regular mode.
+     * @param source The location from which the download was opened.
+     * @return Whether the download was opened in Chrome.
+     */
+    public static boolean openItemInChrome(
+            OfflineItem offlineItem,
+            Context context,
+            @Nullable OtrProfileId otrProfileId,
+            @DownloadOpenSource int source) {
+        // Only regular downloads have a file Chrome can load; e.g. offline pages open differently.
+        ContentId id = offlineItem.id;
+        String filePath = offlineItem.filePath;
+        if (id == null || filePath == null || !LegacyHelpers.isLegacyDownload(id)) return false;
+        DownloadManagerService service = DownloadManagerService.getDownloadManagerService();
+        if (!service.isDownloadOpenableInBrowser(
+                offlineItem.mimeType, OtrProfileId.isOffTheRecord(otrProfileId))) {
+            return false;
+        }
+        DownloadOpenRequest req =
+                DownloadOpenRequest.builder(context, filePath)
+                        .mimeType(offlineItem.mimeType)
+                        .downloadGuid(id.id)
+                        .otrProfileId(otrProfileId)
+                        .source(source)
+                        .build();
+        if (!openInChromeInternal(req)) return false;
+        DownloadMetrics.recordDownloadOpen(source, offlineItem.mimeType);
+        service.updateLastAccessTime(id.id, otrProfileId);
+        return true;
+    }
+
+    /**
      * Opens a file using a {@link DownloadOpenRequest}. Attempts the provided MIME type, then falls
      * back to one inferred from the file extension.
      *
@@ -480,7 +534,10 @@ public class DownloadUtils {
         DownloadManagerService service = DownloadManagerService.getDownloadManagerService();
         boolean isIncognito = OtrProfileId.isOffTheRecord(req.mOtrProfileId);
 
-        if (ChromeFeatureList.isEnabled(ChromeFeatureList.OPEN_DOWNLOAD_IN_PREFERRED_APP)) {
+        // TODO(crbug.com/521890621): Remove isDesktop() check to enable on all form factors once
+        // the non-desktop rollout is complete.
+        if (ChromeFeatureList.isEnabled(ChromeFeatureList.OPEN_DOWNLOAD_IN_PREFERRED_APP)
+                || DeviceInfo.isDesktop()) {
             Intent targetIntent = createViewIntent(req);
             Context context = req.mContext;
             String chromePackage = context.getPackageName();
@@ -631,19 +688,26 @@ public class DownloadUtils {
         }
         String normalizedMimeType = Intent.normalizeMimeType(req.mMimeType);
 
-        // Sharing for media files is disabled on automotive.
+        // Sharing for media files is disabled on automotive, and external app handlers are
+        // disabled on automotive and AAP.
         boolean isAutomotive = DeviceInfo.isAutomotive();
+        boolean isAutomotiveProjected = BrowserUiUtils.isAndroidAutoProjected(req.mContext);
         Intent intent =
                 MediaViewerUtils.getMediaViewerIntent(
                         /* displayUri= */ fileUri,
                         /* contentUri= */ contentUri,
                         normalizedMimeType,
-                        !isAutomotive,
-                        !isAutomotive,
+                        /* allowExternalAppHandlers= */ !isAutomotive && !isAutomotiveProjected,
+                        /* allowShareAction= */ !isAutomotive,
+                        OtrProfileId.isOffTheRecord(req.mOtrProfileId),
                         req.mContext);
         if (intent != null) {
-            IntentHandler.startActivityForTrustedIntent(req.mContext, intent);
-            return true;
+            try {
+                IntentHandler.startActivityForTrustedIntent(req.mContext, intent);
+                return true;
+            } catch (Exception e) {
+                Log.e(TAG, "Cannot start activity to open file", e);
+            }
         }
         return false;
     }
@@ -722,9 +786,8 @@ public class DownloadUtils {
         }
         boolean isIncognito = OtrProfileId.isOffTheRecord(otrProfileId);
         // TODO(https://crbug.com/327680567): Ensure the pdf page is opened in the intended window.
-        if (!ChromeFeatureList.isEnabled(ChromeFeatureList.OPEN_DOWNLOAD_IN_PREFERRED_APP)
-                && PdfUtils.shouldOpenPdfInline(isIncognito)
-                && newMimeType.equals(MimeTypeUtils.PDF_MIME_TYPE)) {
+        if (PdfUtils.shouldOpenPdfInline(isIncognito)
+                && MimeTypeUtils.PDF_MIME_TYPE.equalsIgnoreCase(newMimeType)) {
             String fileUri = getUriForItem(filePath).toString();
             String encodedPdfUrl = PdfUtils.encodePdfPageUrl(fileUri);
             assertNonNull(encodedPdfUrl);
@@ -1021,8 +1084,11 @@ public class DownloadUtils {
     }
 
     private static boolean openDownloadInFilesAppIfNoHandlerFound() {
+        // TODO(crbug.com/521890621): Remove isDesktop() check to enable on all form factors once
+        // the non-desktop rollout is complete.
         return ChromeFeatureList.isEnabled(
-                ChromeFeatureList.OPEN_DOWNLOAD_IN_FILES_APP_IF_NO_HANDLER_FOUND);
+                        ChromeFeatureList.OPEN_DOWNLOAD_IN_FILES_APP_IF_NO_HANDLER_FOUND)
+                || DeviceInfo.isDesktop();
     }
 
     @NativeMethods

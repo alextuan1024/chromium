@@ -4,6 +4,8 @@
 
 #import "ios/chrome/browser/universal_optout/model/universal_optout_service_factory.h"
 
+#import <utility>
+
 #import "base/check_deref.h"
 #import "base/feature_list.h"
 #import "base/functional/bind.h"
@@ -18,32 +20,19 @@
 
 namespace universal_optout {
 
-// static
-UniversalOptOutServiceFactory* UniversalOptOutServiceFactory::GetInstance() {
-  static base::NoDestructor<UniversalOptOutServiceFactory> instance;
-  return instance.get();
-}
-
-// static
-UniversalOptOutService* UniversalOptOutServiceFactory::GetForProfile(
-    ProfileIOS* profile) {
-  return GetInstance()->GetServiceForProfileAs<UniversalOptOutService>(
-      profile, /*create=*/true);
-}
-
-UniversalOptOutServiceFactory::UniversalOptOutServiceFactory()
-    : ProfileKeyedServiceFactoryIOS("UniversalOptOutService",
-                                    ProfileSelection::kRedirectedInIncognito,
-                                    ServiceCreation::kCreateWithProfile,
-                                    TestingCreation::kNoServiceForTests) {
+UniversalOptOutServiceFactory::UniversalOptOutServiceFactory(PassKey key)
+    : TypedProfileKeyedServiceFactoryIOS(
+          std::move(key),
+          "UniversalOptOutService",
+          ProfileSelection::kRedirectedInIncognito,
+          ServiceCreation::kCreateWithProfile,
+          TestingCreation::kNoServiceForTests) {
   DependsOn(IdentityManagerFactory::GetInstance());
 }
 
-UniversalOptOutServiceFactory::~UniversalOptOutServiceFactory() = default;
-
 std::unique_ptr<KeyedService>
 UniversalOptOutServiceFactory::BuildServiceInstanceFor(
-    ProfileIOS* profile) const {
+    ProfileIOS& profile) const {
   if (!base::FeatureList::IsEnabled(features::kUniversalOptOut)) {
     return nullptr;
   }
@@ -55,7 +44,7 @@ UniversalOptOutServiceFactory::BuildServiceInstanceFor(
   }
 
   return std::make_unique<UniversalOptOutService>(
-      CHECK_DEREF(profile->GetPrefs()), *variations_service,
+      CHECK_DEREF(profile.GetPrefs()), *variations_service,
       CHECK_DEREF(IdentityManagerFactory::GetForProfile(profile)),
       base::BindRepeating(
           [](base::WeakPtr<ProfileIOS> weak_profile, bool enabled) {
@@ -65,9 +54,13 @@ UniversalOptOutServiceFactory::BuildServiceInstanceFor(
                   base::FeatureList::IsEnabled(
                       features::kUniversalOptOutSettings);
               web::SetUniversalOptOutEnabled(profile, effective_enabled);
+              if (profile->HasOffTheRecordProfile()) {
+                web::SetUniversalOptOutEnabled(
+                    profile->GetOffTheRecordProfile(), effective_enabled);
+              }
             }
           },
-          profile->AsWeakPtr()));
+          profile.AsWeakPtr()));
 }
 
 }  // namespace universal_optout

@@ -12,6 +12,7 @@
 #include "ash/constants/ash_pref_names.h"
 #include "ash/constants/ash_switches.h"
 #include "ash/login/resources/grit/ash_login_strings.h"
+#include "ash/strings/grit/ash_strings.h"
 #include "base/check_deref.h"
 #include "base/command_line.h"
 #include "base/functional/bind.h"
@@ -35,7 +36,6 @@
 #include "chrome/browser/ui/webui/ash/login/l10n_util.h"
 #include "chrome/browser/ui/webui/ash/login/oobe_ui.h"
 #include "chrome/browser/ui/webui/ash/login/reset_screen_handler.h"
-#include "chrome/grit/branded_strings.h"
 #include "chrome/grit/chrome_unscaled_resources.h"
 #include "chrome/grit/generated_resources.h"
 #include "chromeos/ash/components/settings/cros_settings.h"
@@ -71,7 +71,7 @@ WelcomeScreenHandler::~WelcomeScreenHandler() = default;
 void WelcomeScreenHandler::Show() {
   // TODO(crbug.com/1105387): Part of initial screen logic.
   if (local_state_->GetBoolean(ash::prefs::kFactoryResetRequested)) {
-    DCHECK(LoginDisplayHost::default_host());
+    CHECK(LoginDisplayHost::default_host(), base::NotFatalUntil::M162);
     LoginDisplayHost::default_host()->StartWizard(ResetView::kScreenId);
     return;
   }
@@ -267,19 +267,21 @@ void WelcomeScreenHandler::GetAdditionalParameters(base::DictValue* dict) {
   base::ListValue language_list = language_list_.Clone();
 
   if (language_list.empty()) {
-    language_list =
-        GetMinimalUILanguageList(application_locale_storage_->Get());
+    language_list = GetMinimalUILanguageList(
+        application_locale_storage_->GetTag().tag_string());
   }
 
   dict->Set("languageList", std::move(language_list));
   dict->Set("inputMethodsList",
-            GetAndActivateOobeInputMethods(application_locale_storage_->Get(),
-                                           selected_input_method,
-                                           input_method_manager));
+            GetAndActivateOobeInputMethods(
+                std::string(application_locale_storage_->GetTag().tag_string()),
+                selected_input_method, input_method_manager));
   dict->Set("timezoneList", GetTimezoneList());
-  dict->Set("demoModeCountryList",
-            DemoSession::GetCountryList(local_state_.get(),
-                                        application_locale_storage_->Get()));
+  dict->Set(
+      "demoModeCountryList",
+      DemoSession::GetCountryList(
+          local_state_.get(),
+          std::string(application_locale_storage_->GetTag().tag_string())));
 
   // If this switch is set allow to open advanced options and configure device
   // requisition.

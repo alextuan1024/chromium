@@ -23,6 +23,7 @@
 #include "third_party/blink/renderer/core/css/css_property_value_set.h"
 #include "third_party/blink/renderer/core/css/css_style_sheet.h"
 #include "third_party/blink/renderer/core/css/parser/css_parser.h"
+#include "third_party/blink/renderer/core/css/property_registry.h"
 #include "third_party/blink/renderer/core/css/style_engine.h"
 #include "third_party/blink/renderer/core/css/style_rule.h"
 #include "third_party/blink/renderer/core/css/style_rule_counter_style.h"
@@ -80,6 +81,7 @@ StyleSheetContents::StyleSheetContents(const CSSParserContext* context,
       is_mutable_(false),
       has_font_face_rule_(false),
       has_media_queries_(false),
+      has_mixin_rules_(false),
       has_single_owner_document_(true),
       is_used_from_text_cache_(false),
       is_used_from_resource_cache_(false),
@@ -101,10 +103,17 @@ StyleSheetContents::StyleSheetContents(const StyleSheetContents& o)
       is_mutable_(false),
       has_font_face_rule_(o.has_font_face_rule_),
       has_media_queries_(o.has_media_queries_),
+      has_mixin_rules_(o.has_mixin_rules_),
       has_single_owner_document_(true),
       is_used_from_text_cache_(false),
       is_used_from_resource_cache_(false),
-      parser_context_(o.parser_context_) {
+      parser_context_(o.parser_context_),
+      source_map_url_(o.source_map_url_) {
+  if (o.private_property_registry_) {
+    private_property_registry_ =
+        o.private_property_registry_->CopyPrivateRegistry();
+  }
+
   for (unsigned i = 0; i < pre_import_layer_statement_rules_.size(); ++i) {
     pre_import_layer_statement_rules_[i] = To<StyleRuleLayerStatement>(
         o.pre_import_layer_statement_rules_[i]->Clone(
@@ -222,6 +231,16 @@ void StyleSheetContents::SetHasMediaQueries() {
   }
 }
 
+void StyleSheetContents::SetHasMixinRules() {
+  if (has_mixin_rules_) {
+    return;
+  }
+  has_mixin_rules_ = true;
+  if (StyleSheetContents* parent_sheet = ParentStyleSheet()) {
+    parent_sheet->SetHasMixinRules();
+  }
+}
+
 StyleRuleBase* StyleSheetContents::RuleAt(unsigned index) const {
   SECURITY_DCHECK(index < RuleCount());
 
@@ -265,6 +284,14 @@ void StyleSheetContents::ClearRules() {
   import_rules_.clear();
   namespace_rules_.clear();
   child_rules_.clear();
+  private_property_registry_ = nullptr;
+}
+
+PropertyRegistry& StyleSheetContents::EnsurePrivatePropertyRegistry() {
+  if (!private_property_registry_) {
+    private_property_registry_ = MakeGarbageCollected<PropertyRegistry>();
+  }
+  return *private_property_registry_;
 }
 
 wtf_size_t StyleSheetContents::ReplaceChildRuleIfExists(
@@ -572,17 +599,6 @@ bool StyleSheetContents::HasSingleOwnerNode() const {
   return RootStyleSheet()->HasOneClient();
 }
 
-Node* StyleSheetContents::SingleOwnerNode() const {
-  StyleSheetContents* root = RootStyleSheet();
-  if (!root->HasOneClient()) {
-    return nullptr;
-  }
-  if (root->loading_clients_.size()) {
-    return (*root->loading_clients_.begin())->ownerNode();
-  }
-  return (*root->completed_clients_.begin())->ownerNode();
-}
-
 Document* StyleSheetContents::SingleOwnerDocument() const {
   StyleSheetContents* root = RootStyleSheet();
   return root->ClientSingleOwnerDocument();
@@ -592,7 +608,7 @@ CSSStyleSheet* StyleSheetContents::ClientInTreeScope(
     const TreeScope& tree_scope) const {
   auto is_in_tree_scope = [&](CSSStyleSheet* sheet,
                               const TreeScope& tree_scope) -> bool {
-    return sheet->IsAdoptedByTreeScope(tree_scope) ||
+    return sheet->IsReferencedByTreeScope(tree_scope) ||
            (sheet->ownerNode() != nullptr &&
             sheet->ownerNode()->GetTreeScope() == tree_scope);
   };
@@ -616,18 +632,20 @@ Document* StyleSheetContents::AnyOwnerDocument() const {
 }
 
 static bool ChildRulesHaveFailedOrCanceledSubresources(
-    const base::span<const Member<StyleRuleBase>>& rules) {
+    const base::span<const Member<StyleRuleBase>>& rules,
+    ResourceFetcher* fetcher) {
   for (const StyleRuleBase* rule : rules) {
     switch (rule->GetType()) {
       case StyleRuleBase::kStyle:
-        if (To<StyleRule>(rule)->PropertiesHaveFailedOrCanceledSubresources()) {
+        if (To<StyleRule>(rule)->PropertiesHaveFailedOrCanceledSubresources(
+                fetcher)) {
           return true;
         }
         break;
       case StyleRuleBase::kFontFace:
         if (To<StyleRuleFontFace>(rule)
                 ->Properties()
-                .HasFailedOrCanceledSubresources()) {
+                .HasFailedOrCanceledSubresources(fetcher)) {
           return true;
         }
         break;
@@ -638,7 +656,7 @@ static bool ChildRulesHaveFailedOrCanceledSubresources(
       case StyleRuleBase::kScope:
       case StyleRuleBase::kStartingStyle:
         if (ChildRulesHaveFailedOrCanceledSubresources(
-                To<StyleRuleGroup>(rule)->ChildRules())) {
+                To<StyleRuleGroup>(rule)->ChildRules(), fetcher)) {
           return true;
         }
         break;
@@ -665,7 +683,6 @@ static bool ChildRulesHaveFailedOrCanceledSubresources(
       case StyleRuleBase::kCustomMedia:
       case StyleRuleBase::kLocation:
         break;
-      case StyleRuleBase::kResult:
       case StyleRuleBase::kApplyMixin:
       case StyleRuleBase::kContents:
       case StyleRuleBase::kPrivate:
@@ -673,8 +690,8 @@ static bool ChildRulesHaveFailedOrCanceledSubresources(
         // Do we need to do a new name lookup then?
         break;
       case StyleRuleBase::kCounterStyle:
-        if (To<StyleRuleCounterStyle>(rule)
-                ->HasFailedOrCanceledSubresources()) {
+        if (To<StyleRuleCounterStyle>(rule)->HasFailedOrCanceledSubresources(
+                fetcher)) {
           return true;
         }
         break;
@@ -683,9 +700,10 @@ static bool ChildRulesHaveFailedOrCanceledSubresources(
   return false;
 }
 
-bool StyleSheetContents::HasFailedOrCanceledSubresources() const {
+bool StyleSheetContents::HasFailedOrCanceledSubresources(
+    ResourceFetcher* fetcher) const {
   DCHECK(IsCacheableForResource());
-  return ChildRulesHaveFailedOrCanceledSubresources(child_rules_);
+  return ChildRulesHaveFailedOrCanceledSubresources(child_rules_, fetcher);
 }
 
 Document* StyleSheetContents::ClientAnyOwnerDocument() const {
@@ -727,6 +745,14 @@ void StyleSheetContents::RegisterClient(CSSStyleSheet* sheet) {
     //
     // https://drafts.csswg.org/cssom/#dom-cssstylesheet-replacesync
     // https://drafts.csswg.org/cssom/#dom-cssstylesheet-replace
+    completed_clients_.insert(sheet);
+  } else if (sheet->LoadCompleted()) {
+    // The sheet has already finished loading and is now switching contents,
+    // e.g. copy-on-write in CSSStyleSheet::WillMutateRules(), or restoring
+    // the original contents in CSSStyleSheet::EndQuietMutation(). Nothing
+    // will call ClientLoadCompleted() for it again, so registering it as a
+    // loading client would make LoadCompleted() return false (and thus
+    // IsCacheableForResource()) for these contents forever.
     completed_clients_.insert(sheet);
   } else {
     loading_clients_.insert(sheet);
@@ -846,7 +872,8 @@ static bool ExtractMixinsFromSheet(const StyleSheetContents& contents,
                                    MixinMap& mixins) {
   bool found = false;
   for (const StyleRuleImport* import_rule : contents.ImportRules()) {
-    if (!import_rule->GetStyleSheet()) {
+    if (!import_rule->GetStyleSheet() ||
+        !import_rule->GetStyleSheet()->HasMixinRules()) {
       continue;
     }
     if (!import_rule->IsSupported()) {
@@ -865,6 +892,10 @@ static bool ExtractMixinsFromSheet(const StyleSheetContents& contents,
 }
 
 MixinMap& StyleSheetContents::ExtractMixins(const MediaQueryEvaluator& medium) {
+  if (!HasMixinRules()) {
+    DCHECK(!mixins_.HasMixins());
+    return mixins_;
+  }
   if (has_cached_mixins_ &&
       !medium.DidResultsChange(mixins_.media_query_set_results)) {
     return mixins_;
@@ -936,10 +967,18 @@ void StyleSheetContents::StartMutation() {
   }
 }
 
-void StyleSheetContents::ClearRuleSet() {
-  if (has_cached_mixins_) {
-    has_cached_mixins_ = false;
+void StyleSheetContents::InvalidateCachedMixins() {
+  if (!has_cached_mixins_) {
+    return;
   }
+  has_cached_mixins_ = false;
+  if (mixins_.HasMixins()) {
+    ++mixin_cache_revision_;
+  }
+}
+
+void StyleSheetContents::ClearRuleSet() {
+  InvalidateCachedMixins();
 
   if (StyleSheetContents* parent_sheet = ParentStyleSheet()) {
     parent_sheet->ClearRuleSet();
@@ -995,6 +1034,7 @@ void StyleSheetContents::Trace(Visitor* visitor) const {
   visitor->Trace(rule_set_);
   visitor->Trace(referenced_from_resource_);
   visitor->Trace(parser_context_);
+  visitor->Trace(private_property_registry_);
   visitor->Trace(rule_set_diff_);
 }
 

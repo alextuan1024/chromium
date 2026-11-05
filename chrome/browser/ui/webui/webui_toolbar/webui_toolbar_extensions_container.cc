@@ -5,29 +5,51 @@
 #include "chrome/browser/ui/webui/webui_toolbar/webui_toolbar_extensions_container.h"
 
 #include <optional>
+#include <utility>
 
 #include "base/callback_list.h"
+#include "base/containers/span.h"
 #include "base/feature_list.h"
 #include "base/logging.h"
+#include "base/metrics/histogram_functions.h"
+#include "base/metrics/user_metrics.h"
+#include "base/metrics/user_metrics_action.h"
 #include "base/notimplemented.h"
+#include "base/notreached.h"
 #include "base/numerics/checked_math.h"
 #include "base/strings/strcat.h"
 #include "base/strings/utf_string_conversions.h"
+#include "chrome/browser/extensions/extension_action_runner.h"
 #include "chrome/browser/extensions/extension_view_host.h"
+#include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/extensions/extension_action_view_model.h"
+#include "chrome/browser/ui/extensions/extensions_toolbar_view_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/toolbar/toolbar_actions_model.h"
+#include "chrome/browser/ui/ui_features.h"
+#include "chrome/browser/ui/user_education/browser_user_education_interface.h"
 #include "chrome/browser/ui/views/extensions/extension_action_delegate_desktop.h"
 #include "chrome/browser/ui/views/extensions/extensions_menu_coordinator.h"
 #include "chrome/browser/ui/views/extensions/extensions_menu_view.h"
+#include "chrome/browser/ui/views/frame/browser_view.h"
+#include "chrome/browser/ui/views/permissions/chip/permission_chip_constants.h"
+#include "chrome/browser/ui/views/toolbar/toolbar_view.h"
 #include "chrome/browser/ui/webui/util/image_util.h"
 #include "chrome/browser/ui/webui/webui_toolbar/icon_table.h"
+#include "chrome/common/pref_names.h"
+#include "chrome/grit/generated_resources.h"
 #include "components/browser_apis/ui_controllers/toolbar/icon_handle.h"
+#include "components/feature_engagement/public/feature_constants.h"
+#include "components/prefs/pref_service.h"
+#include "components/user_education/common/feature_promo/feature_promo_controller.h"
+#include "components/user_education/common/feature_promo/feature_promo_result.h"
 #include "content/public/browser/web_ui.h"
 #include "extensions/common/extension_features.h"
 #include "mojo/public/cpp/bindings/clone_traits.h"
+#include "ui/base/base_window.h"
+#include "ui/base/l10n/l10n_util.h"
 #include "ui/base/models/image_model_utils.h"
 #include "ui/base/mojom/menu_source_type.mojom.h"
 #include "ui/views/controls/menu/menu_item_view.h"
@@ -35,79 +57,19 @@
 #include "ui/views/controls/menu/menu_runner.h"
 #include "ui/webui/tracked_element/tracked_element_web_ui.h"
 
-class WebUIToolbarExtensionsContainer::ActionInfo {
- public:
-  ActionInfo(WebUIToolbarExtensionsContainer& extensions_container,
-             BrowserWindowInterface& browser,
-             std::unique_ptr<ExtensionActionViewModel> model)
-      : extensions_container_(extensions_container),
-        browser_(browser),
-        model_(std::move(model)),
-        model_subscription_(
-            model_->RegisterIconUpdateObserver(base::BindRepeating(
-                &WebUIToolbarExtensionsContainer::NotifyOfOneAction,
-                base::Unretained(extensions_container_),
-                model_->GetId()))) {}
-
-  ui::TrackedElement* GetAnchor() {
-    return extensions_container_->GetExtensionAnchor(model_->GetId());
-  }
-
-  ExtensionActionViewModel* model() { return model_.get(); }
-
-  WebUIBubbleReopenSuppressor& reopen_suppressor() {
-    return reopen_suppressor_;
-  }
-
-  extensions_bar::mojom::ExtensionActionInfoPtr ToMojo() {
-    content::WebContents* web_contents =
-        browser_->GetTabStripModel()->GetActiveWebContents();
-    auto result = extensions_bar::mojom::ExtensionActionInfo::New();
-    result->id = model_->GetId();
-    result->accessible_name = model_->GetAccessibleName(web_contents);
-    result->tooltip = model_->GetTooltip(web_contents);
-    result->is_visible =
-        extensions_container_->IsActionVisibleOnToolbar(result->id);
-
-    if (result->is_visible) {
-      ui::ImageModel icon_model =
-          model_->GetIcon(web_contents, gfx::Size(20, 20));
-      if (!model_->IsEnabled(web_contents)) {
-        icon_model = ui::GetDefaultDisabledIconFromImageModel(
-            icon_model, extensions_container_->widget_->GetColorProvider());
-      }
-      icon_handle_ =
-          extensions_container_->icon_table_->RegisterImageModelTryReuse(
-              icon_model, icon_handle_);
-      result->icon = icon_handle_;
-    } else {
-      icon_handle_ = toolbar_ui_api::IconHandle();
-      result->icon = icon_handle_;
-    }
-    return result;
-  }
-
- private:
-  const raw_ref<WebUIToolbarExtensionsContainer> extensions_container_;
-  const raw_ref<BrowserWindowInterface> browser_;
-  std::unique_ptr<ExtensionActionViewModel> model_;
-  base::CallbackListSubscription model_subscription_;
-  toolbar_ui_api::IconHandle icon_handle_;
-  WebUIBubbleReopenSuppressor reopen_suppressor_;
-};
-
 // This is based on ExtensionContextMenuController.
 class WebUIToolbarExtensionsContainer::ContextMenu {
  public:
   static std::unique_ptr<ContextMenu> MaybeCreate(
       WebUIToolbarExtensionsContainer& extensions_container,
       const std::string& action_id) {
-    auto it = extensions_container.actions_.find(action_id);
-    CHECK(it != extensions_container.actions_.end());
+    ToolbarActionViewModel* action =
+        extensions_container.GetActionForId(action_id);
+    CHECK(action);
 
-    ui::MenuModel* model = it->second->model()->GetContextMenu(
-        extensions::ExtensionContextMenuModel::ContextMenuSource::
-            kToolbarAction);
+    ui::MenuModel* model =
+        action->GetContextMenu(extensions::ExtensionContextMenuModel::
+                                   ContextMenuSource::kToolbarAction);
 
     // It's possible the action doesn't have a context menu.
     if (!model) {
@@ -115,7 +77,7 @@ class WebUIToolbarExtensionsContainer::ContextMenu {
     }
 
     return base::WrapUnique(
-        new ContextMenu(action_id, *it->second, model, extensions_container));
+        new ContextMenu(action_id, model, extensions_container));
   }
 
   // This is in two steps so that `context_menu_` in the container gets
@@ -130,21 +92,22 @@ class WebUIToolbarExtensionsContainer::ContextMenu {
 
     extensions_container_->OnContextMenuShownFromToolbar(action_id_);
 
-    menu_runner_->RunMenuAt(main_widget, nullptr,
-                            action_info_->GetAnchor()->GetScreenBounds(),
-                            views::MenuAnchorPosition::kTopLeft, source);
+    // An unpinned action has no toolbar button (e.g. when triggered via its
+    // keyboard shortcut), so fall back to the extensions menu button.
+    menu_runner_->RunMenuAt(
+        main_widget, nullptr,
+        extensions_container_->GetReferenceButtonForPopup(action_id_)
+            .GetAnchorRect(),
+        views::MenuAnchorPosition::kTopLeft, source);
   }
 
   const std::string& action_id() const { return action_id_; }
 
  private:
   ContextMenu(const std::string& action_id,
-              ActionInfo& action_info,
               ui::MenuModel* model,
               WebUIToolbarExtensionsContainer& extensions_container)
-      : action_id_(action_id),
-        action_info_(action_info),
-        extensions_container_(extensions_container) {
+      : action_id_(action_id), extensions_container_(extensions_container) {
     menu_adapter_ = std::make_unique<views::MenuModelAdapter>(
         model, base::BindRepeating(&ContextMenu::OnMenuClosed,
                                    weak_ptr_factory_.GetWeakPtr()));
@@ -159,12 +122,85 @@ class WebUIToolbarExtensionsContainer::ContextMenu {
   }
 
   std::string action_id_;
-  const raw_ref<ActionInfo> action_info_;
   const raw_ref<WebUIToolbarExtensionsContainer> extensions_container_;
   std::unique_ptr<views::MenuModelAdapter> menu_adapter_;
   std::unique_ptr<views::MenuRunner> menu_runner_;
 
   base::WeakPtrFactory<ContextMenu> weak_ptr_factory_{this};
+};
+
+class WebUIToolbarExtensionsContainer::ActionInfo {
+ public:
+  ActionInfo(WebUIToolbarExtensionsContainer& extensions_container,
+             BrowserWindowInterface& browser,
+             ToolbarActionViewModel& model)
+      : extensions_container_(extensions_container),
+        browser_(browser),
+        model_(model),
+        model_subscription_(
+            model_->RegisterIconUpdateObserver(base::BindRepeating(
+                &WebUIToolbarExtensionsContainer::NotifyOfOneAction,
+                base::Unretained(extensions_container_),
+                model_->GetId()))) {
+    model_->RegisterCommand();
+  }
+
+  ~ActionInfo() { model_->UnregisterCommand(); }
+
+  ui::TrackedElement* GetAnchor() {
+    return extensions_container_->GetExtensionAnchor(model_->GetId());
+  }
+
+  ToolbarActionViewModel* model() { return &model_.get(); }
+
+  // Returns the icon to show in the toolbar for this action on the active tab,
+  // greyed out if the action is disabled there.
+  ui::ImageModel GetIconModel() {
+    content::WebContents* web_contents =
+        browser_->GetTabStripModel()->GetActiveWebContents();
+    ui::ImageModel icon_model =
+        model_->GetIcon(web_contents, gfx::Size(20, 20));
+    if (!model_->IsEnabled(web_contents)) {
+      icon_model = ui::GetDefaultDisabledIconFromImageModel(
+          icon_model, extensions_container_->widget_->GetColorProvider());
+    }
+    return icon_model;
+  }
+
+  extensions_bar::mojom::ExtensionActionInfoPtr ToMojo() {
+    content::WebContents* web_contents =
+        browser_->GetTabStripModel()->GetActiveWebContents();
+    const std::string& id = model_->GetId();
+    auto result = extensions_bar::mojom::ExtensionActionInfo::New();
+    result->id = extensions_bar::mojom::ExtensionActionId::NewExtensionId(id);
+    result->accessible_name = model_->GetAccessibleName(web_contents);
+    result->tooltip = model_->GetTooltip(web_contents);
+    result->force_visible = extensions_container_->ShouldForceVisibility(id);
+    result->is_visible = extensions_container_->IsActionVisibleOnToolbar(id);
+    result->is_pinned_by_default_iph_anchor =
+        extensions_container_->pinned_by_default_iph_extension_id_ == id;
+    result->highlighted =
+        extensions_container_->context_menu_ &&
+        extensions_container_->context_menu_->action_id() == id;
+
+    if (result->is_visible) {
+      icon_handle_ =
+          extensions_container_->icon_table_->RegisterImageModelTryReuse(
+              GetIconModel(), icon_handle_);
+      result->icon = icon_handle_;
+    } else {
+      icon_handle_ = toolbar_ui_api::IconHandle();
+      result->icon = icon_handle_;
+    }
+    return result;
+  }
+
+ private:
+  const raw_ref<WebUIToolbarExtensionsContainer> extensions_container_;
+  const raw_ref<BrowserWindowInterface> browser_;
+  const raw_ref<ToolbarActionViewModel> model_;
+  base::CallbackListSubscription model_subscription_;
+  toolbar_ui_api::IconHandle icon_handle_;
 };
 
 WebUIToolbarExtensionsContainer::AnchoredWidget::AnchoredWidget(
@@ -192,20 +228,38 @@ WebUIToolbarExtensionsContainer::WebUIToolbarExtensionsContainer(
       web_contents_(web_contents),
       push_icon_table_updates_(push_icon_table_updates),
       icon_table_(icon_table),
-      model_(*ToolbarActionsModel::Get(browser.GetProfile())),
+      toolbar_view_model_(this,
+                          &browser,
+                          ToolbarActionsModel::Get(browser.GetProfile())),
       extensions_menu_coordinator_(
           base::FeatureList::IsEnabled(
               extensions_features::kExtensionsMenuAccessControl)
-              ? std::make_unique<ExtensionsMenuCoordinator>(&browser, this)
+              ? std::make_unique<ExtensionsMenuCoordinator>(
+                    &browser,
+                    &toolbar_view_model_)
               : nullptr) {
-  CreateActions();
-  observe_actions_.Observe(&model_.get());
+  request_access_button_ = extensions_bar::mojom::ExtensionActionInfo::New();
+  request_access_button_->id =
+      extensions_bar::mojom::ExtensionActionId::NewRequestAccessButton(
+          request_access_sequence_number_);
+  request_access_button_->is_visible = false;
+  request_access_button_->force_visible = false;
+  request_access_button_->highlighted = false;
+  request_access_button_->flat_edge = extensions_bar::mojom::FlatEdge::kEnd;
+
+  toolbar_view_model_observation_.Observe(&toolbar_view_model_);
+  if (toolbar_view_model_.AreActionsInitialized()) {
+    OnActionsInitialized();
+  }
+  if (content::WebContents* active_web_contents =
+          browser_->GetTabStripModel()->GetActiveWebContents()) {
+    active_web_contents_ = active_web_contents->GetWeakPtr();
+    UpdateRequestAccessButton(*active_web_contents);
+  }
 }
 
 WebUIToolbarExtensionsContainer::~WebUIToolbarExtensionsContainer() {
-  for (const auto& [_, action] : actions_) {
-    action->model()->UnregisterCommand();
-  }
+  actions_.clear();
 
   // Create a copy of the anchored widgets, since |anchored_widgets_| will
   // be modified by closing them.
@@ -219,7 +273,7 @@ WebUIToolbarExtensionsContainer::~WebUIToolbarExtensionsContainer() {
   }
   // The widgets should close synchronously (resulting in OnWidgetClosing()),
   // so |anchored_widgets_| should now be empty.
-  DCHECK(anchored_widgets_.empty());
+  CHECK(anchored_widgets_.empty(), base::NotFatalUntil::M162);
   CHECK(!views::WidgetObserver::IsInObserverList());
 }
 
@@ -231,15 +285,14 @@ void WebUIToolbarExtensionsContainer::SetObserver(
 
 ToolbarActionViewModel* WebUIToolbarExtensionsContainer::GetActionForId(
     const std::string& action_id) {
-  auto it = actions_.find(action_id);
-  return it != actions_.end() ? it->second->model() : nullptr;
+  return toolbar_view_model_.GetActionForId(action_id);
 }
 
 void WebUIToolbarExtensionsContainer::HideActivePopup() {
   if (popup_owner_) {
     popup_owner_->HidePopup();
   }
-  DCHECK(!popup_owner_);
+  CHECK(!popup_owner_, base::NotFatalUntil::M162);
 }
 
 void WebUIToolbarExtensionsContainer::CloseExtensionsMenuIfOpen() {
@@ -254,16 +307,29 @@ void WebUIToolbarExtensionsContainer::CloseExtensionsMenuIfOpen() {
 bool WebUIToolbarExtensionsContainer::ShowToolbarActionPopupForAPICall(
     const std::string& action_id,
     ShowPopupCallback callback) {
-  NOTIMPLEMENTED();
-  return true;
+  return toolbar_view_model_.ShowToolbarActionPopupForAPICall(
+      action_id, std::move(callback));
+}
+
+bool WebUIToolbarExtensionsContainer::CanShowToolbarActionPopupForAPICall(
+    const ToolbarActionsModel::ActionId& action_id) {
+  // Mirrors ExtensionsToolbarDesktop::CanShowToolbarActionPopupForAPICall():
+  // don't interrupt an action that's already popped out, and only show popups
+  // in the active window.
+  return !popped_out_action_ && browser_->GetWindow()->IsActive();
+}
+
+std::unique_ptr<ExtensionActionViewModel>
+WebUIToolbarExtensionsContainer::CreateActionViewModel(
+    const ToolbarActionsModel::ActionId& action_id,
+    ExtensionsContainer* extensions_container) {
+  return ExtensionActionViewModel::Create(
+      action_id, &browser_.get(),
+      std::make_unique<ExtensionActionDelegateDesktop>(
+          &browser_.get(), extensions_container, this));
 }
 
 void WebUIToolbarExtensionsContainer::ToggleExtensionsMenu() {
-  ToggleExtensionsMenu(/*is_pointer_interaction=*/false);
-}
-
-void WebUIToolbarExtensionsContainer::ToggleExtensionsMenu(
-    bool is_pointer_interaction) {
   if (extensions_menu_coordinator_ &&
       extensions_menu_coordinator_->IsShowing()) {
     extensions_menu_coordinator_->Hide();
@@ -273,28 +339,137 @@ void WebUIToolbarExtensionsContainer::ToggleExtensionsMenu(
     return;
   }
 
-  if (extensions_menu_reopen_suppressor_.ShouldSuppressBubbleShow(
-          is_pointer_interaction)) {
-    return;
-  }
-
-  views::Widget* menu_widget = nullptr;
   if (extensions_menu_coordinator_) {
     extensions_menu_coordinator_->Show(
         views::BubbleAnchor(GetExtensionsMenuButtonAnchor()), this);
-    menu_widget = extensions_menu_coordinator_->GetExtensionsMenuWidget();
   } else {
-    menu_widget = ExtensionsMenuView::ShowBubble(
+    ExtensionsMenuView::ShowBubble(
         views::BubbleAnchor(GetExtensionsMenuButtonAnchor()), &browser_.get(),
-        this, this);
-  }
-  if (menu_widget) {
-    extensions_menu_reopen_suppressor_.Observe(menu_widget);
+        &toolbar_view_model_, this);
   }
 }
 
 bool WebUIToolbarExtensionsContainer::HasAnyExtensions() const {
-  return !actions_.empty();
+  return toolbar_view_model_.HasAnyExtensions();
+}
+
+void WebUIToolbarExtensionsContainer::ShowPinnedByDefaultIPH(
+    const std::string& extension_id) {
+  if (!base::FeatureList::IsEnabled(features::kExtensionsPinnedByDefault) ||
+      !browser_->GetProfile()->GetPrefs()->GetBoolean(
+          prefs::kExtensionsPinnedByDefault)) {
+    return;
+  }
+
+  if (!actions_.contains(extension_id) ||
+      !IsActionVisibleOnToolbar(extension_id)) {
+    return;
+  }
+
+  // Don't interrupt a popped out action (which may be waiting to show a popup,
+  // or already showing one) to show the IPH.
+  if (popped_out_action_) {
+    return;
+  }
+
+  // Only one extension can be the anchor at a time. If there's already an IPH
+  // request, whether it's waiting for its anchor, queued, or showing, keep it
+  // and ignore this one. Replacing it would require aborting the earlier promo,
+  // and the IPH system only allows one instance of a promo to be queued or
+  // shown at a time.
+  if (pinned_by_default_iph_extension_id_) {
+    return;
+  }
+
+  // This causes the WebUI button to register
+  // kExtensionsPinnedByDefaultElementId, and forces the button to be visible,
+  // even if it would otherwise be hidden due to overflow (see
+  // ShouldForceVisibility()).
+  pinned_by_default_iph_extension_id_ = extension_id;
+  NotifyOfOneAction(extension_id);
+
+  // Wait for the button to register kExtensionsPinnedByDefaultElementId and,
+  // like views, for any animations to finish so that the button is in its
+  // final location.
+  NotifyActionPoppedOut(
+      extension_id,
+      base::BindOnce(
+          &WebUIToolbarExtensionsContainer::ShowPinnedByDefaultIPHNow,
+          weak_ptr_factory_.GetWeakPtr(), extension_id));
+}
+
+void WebUIToolbarExtensionsContainer::ShowPinnedByDefaultIPHNow(
+    const std::string& extension_id) {
+  // Bail if the anchor has since been cleared or moved to another extension.
+  if (pinned_by_default_iph_extension_id_ != extension_id) {
+    return;
+  }
+
+  // Clears the anchor, unless it has since moved to another extension.
+  auto clear_anchor = base::BindRepeating(
+      [](base::WeakPtr<WebUIToolbarExtensionsContainer> container,
+         const std::string& extension_id) {
+        if (container &&
+            container->pinned_by_default_iph_extension_id_ == extension_id) {
+          container->ClearPinnedByDefaultIphAnchor();
+        }
+      },
+      weak_ptr_factory_.GetWeakPtr(), extension_id);
+
+  user_education::FeaturePromoParams params(
+      feature_engagement::kIPHExtensionsPinnedByDefaultFeature);
+  params.close_callback = base::BindOnce(clear_anchor);
+  params.show_promo_result_callback = base::BindOnce(
+      [](base::RepeatingClosure clear_anchor,
+         user_education::FeaturePromoResult result) {
+        if (!result) {
+          clear_anchor.Run();
+        }
+      },
+      clear_anchor);
+  BrowserUserEducationInterface::From(&browser_.get())
+      ->MaybeShowFeaturePromo(std::move(params));
+}
+
+void WebUIToolbarExtensionsContainer::ClearPinnedByDefaultIphAnchor() {
+  std::optional<std::string> old_extension_id =
+      std::exchange(pinned_by_default_iph_extension_id_, std::nullopt);
+  if (!old_extension_id) {
+    return;
+  }
+  if (actions_.contains(*old_extension_id)) {
+    NotifyOfOneAction(*old_extension_id);
+  }
+  // Inform `observer_` of the cancellation. The IPH pop out callback, if any,
+  // is run. If there is a callback, that means ShowPinnedByDefaultIPHNow() will
+  // be called, which does nothing, since `pinned_by_default_iph_extension_id_`
+  // has been cleared.
+  //
+  // The callback is run rather than destroyed because the wrapper treats IPH
+  // and PopOutAction() callbacks the same, and the latter must always be run.
+  //
+  // If there's no pending IPH callback, this is a no-op, since there can't be a
+  // pending PopOutAction() callback while `pinned_by_default_iph_extension_id_`
+  // is set.
+  if (observer_) {
+    observer_->OnPopOutCancelled();
+  }
+}
+
+void WebUIToolbarExtensionsContainer::CancelPinnedByDefaultIph() {
+  if (!pinned_by_default_iph_extension_id_) {
+    return;
+  }
+  // Clear the anchor first, so the promo's callbacks, which may be run
+  // synchronously when it's aborted, do nothing.
+  ClearPinnedByDefaultIphAnchor();
+  // If the promo has already been requested, remove it from the queue, or close
+  // it if it's showing. Otherwise, this does nothing.
+  if (BrowserUserEducationInterface* user_education =
+          BrowserUserEducationInterface::From(&browser_.get())) {
+    user_education->AbortFeaturePromo(
+        feature_engagement::kIPHExtensionsPinnedByDefaultFeature);
+  }
 }
 
 std::optional<extensions::ExtensionId>
@@ -308,7 +483,7 @@ bool WebUIToolbarExtensionsContainer::IsVisible() const {
 
 void WebUIToolbarExtensionsContainer::OnContextMenuShownFromToolbar(
     const std::string& action_id) {
-  DCHECK_EQ(action_id, context_menu_->action_id());
+  CHECK_EQ(action_id, context_menu_->action_id(), base::NotFatalUntil::M162);
   NotifyOfOneAction(action_id);
 }
 
@@ -320,62 +495,50 @@ void WebUIToolbarExtensionsContainer::OnContextMenuClosedFromToolbar() {
 
 bool WebUIToolbarExtensionsContainer::IsActionVisibleOnToolbar(
     const std::string& action_id) const {
-  if (model_->IsActionPinned(action_id) || popped_out_action_ == action_id ||
-      (context_menu_ && context_menu_->action_id() == action_id)) {
-    return true;
-  }
-
-  for (const auto& anchored_widget : anchored_widgets_) {
-    if (anchored_widget.extension_id == action_id) {
-      return true;
-    }
-  }
-
-  return false;
+  CHECK_NE(action_id, kExtensionsRequestAccessButtonActionId);
+  return std::ranges::contains(toolbar_view_model_.GetPinnedActionIds(),
+                               action_id) ||
+         ShouldForceVisibility(action_id);
 }
 
 void WebUIToolbarExtensionsContainer::UndoPopOut() {
   std::string old_popped_out = std::move(popped_out_action_).value();
   popped_out_action_ = std::nullopt;
   NotifyOfOneAction(old_popped_out);
+  // This synchronously runs the pending PopOutAction() callback, if any.
+  if (observer_) {
+    observer_->OnPopOutCancelled();
+  }
 }
 
 void WebUIToolbarExtensionsContainer::SetPopupOwner(
     ToolbarActionViewModel* popup_owner) {
   // We should never be setting a popup owner when one already exists, and
   // never unsetting one when one wasn't set.
-  DCHECK((popup_owner_ != nullptr) ^ (popup_owner != nullptr));
+  CHECK((popup_owner_ != nullptr) ^ (popup_owner != nullptr),
+        base::NotFatalUntil::M162);
   popup_owner_ = popup_owner;
 }
 
 void WebUIToolbarExtensionsContainer::PopOutAction(
     const extensions::ExtensionId& action_id,
     base::OnceClosure closure) {
-  DCHECK(!popped_out_action_.has_value());
+  CHECK(!popped_out_action_.has_value(), base::NotFatalUntil::M162);
+  // Cancel any IPH, since popped out actions take priority over it.
+  CancelPinnedByDefaultIph();
   popped_out_action_ = action_id;
   NotifyOfOneAction(action_id);
-  NotifyActionPoppedOut(std::move(closure));
+  NotifyActionPoppedOut(action_id, std::move(closure));
 }
 
 void WebUIToolbarExtensionsContainer::ShowContextMenuAsFallback(
     const extensions::ExtensionId& action_id) {
-  ShowContextMenu(ui::mojom::MenuSourceType::kNone, action_id);
+  ShowContextMenuForAction(ui::mojom::MenuSourceType::kNone, action_id);
 }
 
 void WebUIToolbarExtensionsContainer::OnPopupShown(
     const extensions::ExtensionId& action_id,
-    bool by_user) {
-  auto it = actions_.find(action_id);
-  if (it != actions_.end()) {
-    gfx::NativeView native_view = it->second->model()->GetPopupNativeView();
-    if (native_view) {
-      if (views::Widget* widget =
-              views::Widget::GetTopLevelWidgetForNativeView(native_view)) {
-        it->second->reopen_suppressor().Observe(widget);
-      }
-    }
-  }
-}
+    bool by_user) {}
 
 void WebUIToolbarExtensionsContainer::OnPopupClosed(
     const extensions::ExtensionId& action_id) {}
@@ -398,6 +561,12 @@ WebUIToolbarExtensionsContainer::GetExtensionsButtonAnchor() {
   if (ui::TrackedElement* anchor = GetExtensionsMenuButtonAnchor()) {
     return views::BubbleAnchor(anchor);
   }
+  if (BrowserView* browser_view =
+          BrowserView::GetBrowserViewForBrowser(&browser_.get())) {
+    if (browser_view->toolbar()) {
+      return views::BubbleAnchor(browser_view->toolbar());
+    }
+  }
   return views::BubbleAnchor(GetWidget()->GetRootView());
 }
 
@@ -407,29 +576,51 @@ views::BubbleBorder::Arrow WebUIToolbarExtensionsContainer::GetPopupArrow()
 }
 
 void WebUIToolbarExtensionsContainer::CollapseConfirmation() {
-  NOTIMPLEMENTED();
+  if (!IsRequestAccessButtonShowingConfirmation()) {
+    return;
+  }
+
+  ResetRequestAccessButtonConfirmation();
+  if (content::WebContents* web_contents =
+          browser_->GetTabStripModel()->GetActiveWebContents()) {
+    UpdateRequestAccessButton(*web_contents);
+  }
 }
 
-void WebUIToolbarExtensionsContainer::OnToolbarModelInitialized() {
+void WebUIToolbarExtensionsContainer::OnActionsInitialized() {
+  CHECK(actions_.empty());
   CreateActions();
 }
 
-void WebUIToolbarExtensionsContainer::OnToolbarActionAdded(
+void WebUIToolbarExtensionsContainer::OnActionAdded(
     const ToolbarActionsModel::ActionId& id) {
   CreateActionForId(id);
   NotifyOfOneAction(id);
 }
 
-void WebUIToolbarExtensionsContainer::OnToolbarActionRemoved(
+void WebUIToolbarExtensionsContainer::OnActionRemoved(
     const ToolbarActionsModel::ActionId& id) {
+  bool pop_out_cancelled = false;
   if (popped_out_action_ == id) {
     popped_out_action_ = std::nullopt;
+    pop_out_cancelled = true;
   }
   if (context_menu_ && context_menu_->action_id() == id) {
     context_menu_.reset();
   }
-  actions_[id]->model()->UnregisterCommand();
-  actions_.erase(id);
+  // The action may be removed (e.g. the extension uninstalled) while its popup
+  // is showing. ToolbarActionView does this in its destructor for the Views
+  // container; there's no per-action view here, so hide the popup explicitly
+  // before destroying the model, which expects not to be showing a popup.
+  // `popped_out_action_` was cleared above, so this doesn't re-enter
+  // UndoPopOut().
+  auto it = actions_.find(id);
+  CHECK(it != actions_.end());
+  it->second->model()->HidePopup();
+  actions_.erase(it);
+  if (pinned_by_default_iph_extension_id_ == id) {
+    ClearPinnedByDefaultIphAnchor();
+  }
 
   std::vector<toolbar_ui_api::mojom::IconUpdatePtr> icon_updates;
   if (push_icon_table_updates_) {
@@ -441,15 +632,64 @@ void WebUIToolbarExtensionsContainer::OnToolbarActionRemoved(
   } else if (observer_) {
     observer_->OnActionRemoved(std::move(icon_updates), id);
   }
+
+  // Notify after the action has been fully removed. This also means that the
+  // pending PopOutAction() callback, if bound to the removed action's delegate,
+  // will be a no-op.
+  if (pop_out_cancelled && observer_) {
+    observer_->OnPopOutCancelled();
+  }
 }
 
-void WebUIToolbarExtensionsContainer::OnToolbarActionUpdated(
+void WebUIToolbarExtensionsContainer::OnActionUpdated(
     const ToolbarActionsModel::ActionId& id) {
   NotifyOfOneAction(id);
 }
 
-void WebUIToolbarExtensionsContainer::OnToolbarPinnedActionsChanged() {
+void WebUIToolbarExtensionsContainer::OnPinnedActionsChanged() {
   NotifyOfAllActions();
+}
+
+void WebUIToolbarExtensionsContainer::OnActiveWebContentsChanged(
+    bool is_same_document,
+    content::WebContents* web_contents) {
+  // Same-document navigations can't change the origin, so they can't affect
+  // the request access button.
+  if (is_same_document) {
+    return;
+  }
+
+  const bool active_tab_changed = active_web_contents_.get() != web_contents;
+  active_web_contents_ = web_contents ? web_contents->GetWeakPtr() : nullptr;
+
+  // Like ExtensionsToolbarDesktop, collapse the confirmation when switching
+  // tabs or navigating to a different origin, but not when navigating within
+  // the same origin (e.g. the reload after access is granted).
+  if (IsRequestAccessButtonShowingConfirmation() &&
+      (active_tab_changed || !web_contents ||
+       !confirmation_origin_->IsSameOriginWith(
+           web_contents->GetPrimaryMainFrame()->GetLastCommittedOrigin()))) {
+    CollapseConfirmation();
+  }
+  if (web_contents) {
+    UpdateRequestAccessButton(*web_contents);
+  }
+  NotifyOfAllActions();
+}
+
+void WebUIToolbarExtensionsContainer::OnRequestAccessButtonParamsChanged(
+    content::WebContents* web_contents) {
+  if (!web_contents) {
+    return;
+  }
+  UpdateRequestAccessButton(*web_contents);
+}
+
+void WebUIToolbarExtensionsContainer::OnToolbarControlStateUpdated() {
+  if (content::WebContents* web_contents =
+          browser_->GetTabStripModel()->GetActiveWebContents()) {
+    UpdateRequestAccessButton(*web_contents);
+  }
 }
 
 void WebUIToolbarExtensionsContainer::Bind(
@@ -483,6 +723,10 @@ void WebUIToolbarExtensionsContainer::NotifyOfAllActions() {
 
   std::vector<extensions_bar::mojom::ExtensionActionInfoPtr> updates;
   for (const auto& id : GetOrderedActionIds()) {
+    if (id == kExtensionsRequestAccessButtonActionId) {
+      updates.push_back(request_access_button_->Clone());
+      continue;
+    }
     auto it = actions_.find(id);
     if (it != actions_.end()) {
       updates.push_back(it->second->ToMojo());
@@ -513,7 +757,11 @@ void WebUIToolbarExtensionsContainer::NotifyOfOneAction(
   }
 
   std::vector<extensions_bar::mojom::ExtensionActionInfoPtr> update;
-  update.push_back(actions_[id]->ToMojo());
+  if (id == kExtensionsRequestAccessButtonActionId) {
+    update.push_back(request_access_button_->Clone());
+  } else {
+    update.push_back(actions_[id]->ToMojo());
+  }
   std::vector<toolbar_ui_api::mojom::IconUpdatePtr> icon_updates;
   if (push_icon_table_updates_) {
     icon_updates = icon_table_->TakePendingUpdates();
@@ -527,6 +775,20 @@ void WebUIToolbarExtensionsContainer::NotifyOfOneAction(
   }
 }
 
+// static
+std::string WebUIToolbarExtensionsContainer::GetActionKey(
+    const extensions_bar::mojom::ExtensionActionId& id) {
+  switch (id.which()) {
+    case extensions_bar::mojom::ExtensionActionId::Tag::kExtensionId:
+      return id.get_extension_id();
+    case extensions_bar::mojom::ExtensionActionId::Tag::kExtensionsMenuButton:
+      return std::string();
+    case extensions_bar::mojom::ExtensionActionId::Tag::kRequestAccessButton:
+      return kExtensionsRequestAccessButtonActionId;
+  }
+  NOTREACHED();
+}
+
 ui::TrackedElement*
 WebUIToolbarExtensionsContainer::GetExtensionsMenuButtonAnchor() const {
   return GetExtensionAnchor("");
@@ -534,16 +796,32 @@ WebUIToolbarExtensionsContainer::GetExtensionsMenuButtonAnchor() const {
 
 ui::ElementIdentifier WebUIToolbarExtensionsContainer::GetElementId(
     std::string_view extension_id) {
-  return extension_id.empty() ? kExtensionsMenuButtonElementId
-                              : kToolbarActionViewElementId;
+  if (extension_id.empty()) {
+    return kExtensionsMenuButtonElementId;
+  }
+  if (extension_id == kExtensionsRequestAccessButtonActionId) {
+    return kExtensionsRequestAccessButtonElementId;
+  }
+  return kToolbarActionViewElementId;
+}
+
+std::string WebUIToolbarExtensionsContainer::GetSecondaryElementId(
+    std::string_view extension_id) {
+  return base::StrCat({"ext:", extension_id});
 }
 
 ui::TrackedElement* WebUIToolbarExtensionsContainer::GetExtensionAnchor(
     std::string_view extension_id) const {
-  const std::string secondary_id = base::StrCat({"ext:", extension_id});
+  return GetExtensionElement(GetElementId(extension_id), extension_id);
+}
+
+ui::TrackedElement* WebUIToolbarExtensionsContainer::GetExtensionElement(
+    ui::ElementIdentifier element_id,
+    std::string_view extension_id) const {
+  const std::string secondary_id = GetSecondaryElementId(extension_id);
   for (ui::TrackedElement* element :
        ui::ElementTracker::GetElementTracker()->GetAllMatchingElements(
-           GetElementId(extension_id),
+           element_id,
            views::ElementTrackerViews::GetContextForWidget(GetWidget()))) {
     if (element->GetSecondaryIdentifier() == secondary_id) {
       return element;
@@ -556,59 +834,70 @@ views::Widget* WebUIToolbarExtensionsContainer::GetWidget() const {
   return widget_;
 }
 
+gfx::ImageSkia WebUIToolbarExtensionsContainer::GetActionIconForTesting(
+    const std::string& action_id) {
+  auto it = actions_.find(action_id);
+  CHECK(it != actions_.end());
+  return it->second->GetIconModel().Rasterize(widget_->GetColorProvider());
+}
+
 void WebUIToolbarExtensionsContainer::NotifyActionPoppedOut(
+    const std::string& action_id,
     base::OnceClosure closure) {
   if (page_) {
     page_->ActionPoppedOut(std::move(closure));
   } else if (observer_) {
-    observer_->OnActionPoppedOut(std::move(closure));
+    observer_->OnActionPoppedOut(action_id, std::move(closure));
   } else {
     std::move(closure).Run();
   }
 }
 
 void WebUIToolbarExtensionsContainer::ExecuteUserAction(
-    const std::string& id,
-    bool is_pointer_interaction) {
-  auto it = actions_.find(id);
-  CHECK(it != actions_.end());
-  if (it->second->reopen_suppressor().ShouldSuppressBubbleShow(
-          is_pointer_interaction)) {
-    return;
-  }
-  it->second->model()->ExecuteUserAction(
-      ToolbarActionViewModel::InvocationSource::kToolbarButton);
-}
-
-void WebUIToolbarExtensionsContainer::OnPointerDown(const std::string& id) {
-  if (id.empty()) {
-    extensions_menu_reopen_suppressor_.OnMousePressed();
-    return;
-  }
-  auto it = actions_.find(id);
-  if (it != actions_.end()) {
-    it->second->reopen_suppressor().OnMousePressed();
+    extensions_bar::mojom::ExtensionActionIdPtr id) {
+  switch (id->which()) {
+    case extensions_bar::mojom::ExtensionActionId::Tag::kExtensionId:
+      toolbar_view_model_.ExecuteUserAction(
+          id->get_extension_id(),
+          ToolbarActionViewModel::InvocationSource::kToolbarButton);
+      return;
+    case extensions_bar::mojom::ExtensionActionId::Tag::kExtensionsMenuButton:
+      ToggleExtensionsMenu();
+      return;
+    case extensions_bar::mojom::ExtensionActionId::Tag::kRequestAccessButton:
+      OnRequestAccessButtonPressed(id->get_request_access_button());
+      return;
   }
 }
 
 void WebUIToolbarExtensionsContainer::ShowContextMenu(
     ui::mojom::MenuSourceType source,
-    const std::string& id) {
-  context_menu_ = ContextMenu::MaybeCreate(*this, id);
+    extensions_bar::mojom::ExtensionActionIdPtr id) {
+  // Only extension actions have context menus.
+  if (!id->is_extension_id()) {
+    return;
+  }
+  ShowContextMenuForAction(source, id->get_extension_id());
+}
+
+void WebUIToolbarExtensionsContainer::ShowContextMenuForAction(
+    ui::mojom::MenuSourceType source,
+    const std::string& action_id) {
+  context_menu_ = ContextMenu::MaybeCreate(*this, action_id);
   if (context_menu_) {
     context_menu_->Show(GetWidget(), source);
   }
 }
 
-void WebUIToolbarExtensionsContainer::ToggleExtensionsMenuFromWebUI(
-    bool is_pointer_interaction) {
-  ToggleExtensionsMenu(is_pointer_interaction);
+void WebUIToolbarExtensionsContainer::ToggleExtensionsMenuFromWebUI() {
+  ToggleExtensionsMenu();
 }
 
 void WebUIToolbarExtensionsContainer::MoveExtensionAction(
     const std::string& extension_id,
     int32_t target_index) {
-  const auto& pinned_action_ids = model_->pinned_action_ids();
+  base::span<const ToolbarActionsModel::ActionId> pinned_action_ids =
+      toolbar_view_model_.GetPinnedActionIds();
   auto iter = std::ranges::find(pinned_action_ids, extension_id);
   if (iter == pinned_action_ids.end()) {
     return;
@@ -617,13 +906,14 @@ void WebUIToolbarExtensionsContainer::MoveExtensionAction(
       target_index >= static_cast<int32_t>(pinned_action_ids.size())) {
     return;
   }
-  model_->MovePinnedAction(extension_id, target_index);
+  toolbar_view_model_.MovePinnedAction(extension_id, target_index);
 }
 
 void WebUIToolbarExtensionsContainer::MoveExtensionActionBy(
     const std::string& extension_id,
     int32_t delta) {
-  const auto& pinned_action_ids = model_->pinned_action_ids();
+  base::span<const ToolbarActionsModel::ActionId> pinned_action_ids =
+      toolbar_view_model_.GetPinnedActionIds();
   auto iter = std::ranges::find(pinned_action_ids, extension_id);
   if (iter == pinned_action_ids.end()) {
     return;
@@ -637,7 +927,7 @@ void WebUIToolbarExtensionsContainer::MoveExtensionActionBy(
   }
   if (target_index >= 0 &&
       target_index < static_cast<int32_t>(pinned_action_ids.size())) {
-    model_->MovePinnedAction(extension_id, target_index);
+    toolbar_view_model_.MovePinnedAction(extension_id, target_index);
   }
 }
 
@@ -645,17 +935,20 @@ std::vector<std::string> WebUIToolbarExtensionsContainer::GetOrderedActionIds()
     const {
   std::vector<std::string> ordered;
   base::flat_set<std::string> added;
-  for (const auto& id : model_->pinned_action_ids()) {
+  for (const auto& id : toolbar_view_model_.GetPinnedActionIds()) {
     ordered.push_back(id);
     added.insert(id);
   }
-  for (const auto& action_id : model_->action_ids()) {
+  base::span<const ToolbarActionsModel::ActionId> all_action_ids =
+      toolbar_view_model_.GetAllActionIds();
+  for (const auto& action_id : all_action_ids) {
     if (IsActionVisibleOnToolbar(action_id) && !added.contains(action_id)) {
       ordered.push_back(action_id);
       added.insert(action_id);
     }
   }
-  for (const auto& action_id : model_->action_ids()) {
+  ordered.push_back(kExtensionsRequestAccessButtonActionId);
+  for (const auto& action_id : all_action_ids) {
     if (!added.contains(action_id)) {
       ordered.push_back(action_id);
     }
@@ -665,12 +958,12 @@ std::vector<std::string> WebUIToolbarExtensionsContainer::GetOrderedActionIds()
 
 void WebUIToolbarExtensionsContainer::CreateActions() {
   // If the model isn't initialized yet, it will eventually call
-  // OnToolbarModelInitialized() and we'll try again.
-  if (!model_->actions_initialized()) {
+  // OnActionsInitialized() and we'll try again.
+  if (!toolbar_view_model_.AreActionsInitialized()) {
     return;
   }
 
-  for (const auto& action_id : model_->action_ids()) {
+  for (const auto& action_id : toolbar_view_model_.GetAllActionIds()) {
     CreateActionForId(action_id);
   }
   NotifyOfAllActions();
@@ -678,31 +971,11 @@ void WebUIToolbarExtensionsContainer::CreateActions() {
 
 void WebUIToolbarExtensionsContainer::CreateActionForId(
     const ToolbarActionsModel::ActionId& action_id) {
-  auto action_info = std::make_unique<ActionInfo>(
-      *this, browser_.get(),
-      ExtensionActionViewModel::Create(
-          action_id, &browser_.get(),
-          std::make_unique<ExtensionActionDelegateDesktop>(&browser_.get(),
-                                                           this, this)));
-  if (suppression_threshold_for_testing_) {
-    action_info->reopen_suppressor()
-        .SetSuppressionThresholdForTesting(  // IN-TEST
-            *suppression_threshold_for_testing_);
-  }
-  action_info->model()->RegisterCommand();
-  actions_[action_id] = std::move(action_info);
-}
-
-void WebUIToolbarExtensionsContainer::SetSuppressionThresholdForTesting(
-    base::TimeDelta threshold) {
-  suppression_threshold_for_testing_ = threshold;
-  extensions_menu_reopen_suppressor_
-      .SetSuppressionThresholdForTesting(  // IN-TEST
-          threshold);
-  for (const auto& [_, action] : actions_) {
-    action->reopen_suppressor().SetSuppressionThresholdForTesting(  // IN-TEST
-        threshold);
-  }
+  ToolbarActionViewModel* model =
+      toolbar_view_model_.GetActionModelForId(action_id);
+  CHECK(model);
+  actions_[action_id] =
+      std::make_unique<ActionInfo>(*this, browser_.get(), *model);
 }
 
 void WebUIToolbarExtensionsContainer::ShowWidgetForExtension(
@@ -781,4 +1054,155 @@ void WebUIToolbarExtensionsContainer::AnchorAndShowWidgetImmediately(
     bubble_delegate->SetAnchor(views::BubbleAnchor(anchor));
   }
   widget->Show();
+}
+
+bool WebUIToolbarExtensionsContainer::ShouldForceVisibility(
+    const std::string& action_id) const {
+  if (popped_out_action_ == action_id ||
+      (context_menu_ && context_menu_->action_id() == action_id)) {
+    return true;
+  }
+
+  // Unlike Views, where the pinned-by-default IPH fails to show if its anchor
+  // has overflowed, force the IPH's anchor to be visible. Otherwise, the IPH
+  // would remain pending until the button fits on the toolbar, since
+  // ShowPinnedByDefaultIPH() waits for the button to be shown.
+  if (pinned_by_default_iph_extension_id_ == action_id) {
+    return true;
+  }
+
+  for (const auto& anchored_widget : anchored_widgets_) {
+    if (anchored_widget.extension_id == action_id) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+void WebUIToolbarExtensionsContainer::UpdateRequestAccessButton(
+    content::WebContents& web_contents) {
+  if (!base::FeatureList::IsEnabled(
+          extensions_features::kExtensionsMenuAccessControl)) {
+    return;
+  }
+
+  // Button is never visible when actions cannot be shown in toolbar.
+  ToolbarActionsModel* model = ToolbarActionsModel::Get(browser_->GetProfile());
+  if (model && !model->CanShowActionsInToolbar(*browser_)) {
+    if (request_access_button_->is_visible) {
+      request_access_button_->is_visible = false;
+      NotifyOfOneAction(kExtensionsRequestAccessButtonActionId);
+    }
+    return;
+  }
+
+  // Don't update the button if the confirmation message is currently showing;
+  // it'll go away after a few seconds. Once the confirmation is collapsed,
+  // button should be updated again.
+  if (IsRequestAccessButtonShowingConfirmation()) {
+    return;
+  }
+
+  ExtensionsToolbarViewModel::RequestAccessButtonParams button_params =
+      toolbar_view_model_.GetRequestAccessButtonParams(&web_contents);
+
+  if (request_access_extension_ids_ != button_params.extension_ids ||
+      request_access_origin_ != button_params.origin) {
+    // Invalidate presses of the button made while it showed the old state.
+    ++request_access_sequence_number_;
+    request_access_button_->id =
+        extensions_bar::mojom::ExtensionActionId::NewRequestAccessButton(
+            request_access_sequence_number_);
+  }
+  request_access_extension_ids_ = button_params.extension_ids;
+  request_access_origin_ = button_params.origin;
+
+  const bool is_visible = !request_access_extension_ids_.empty();
+  const bool visibility_changed =
+      (request_access_button_->is_visible != is_visible);
+
+  request_access_button_->is_visible = is_visible;
+  request_access_button_->tooltip = button_params.tooltip_text;
+  request_access_button_->text = l10n_util::GetStringFUTF16Int(
+      IDS_EXTENSIONS_REQUEST_ACCESS_BUTTON,
+      static_cast<int>(request_access_extension_ids_.size()));
+
+  if (visibility_changed) {
+    // Update all icons so that extensions menu button also updates so we can
+    // add/remove the split button appearance.
+    NotifyOfAllActions();
+  } else if (is_visible) {
+    NotifyOfOneAction(kExtensionsRequestAccessButtonActionId);
+  }
+}
+
+void WebUIToolbarExtensionsContainer::OnRequestAccessButtonPressed(
+    uint32_t sequence_number) {
+  if (IsRequestAccessButtonShowingConfirmation()) {
+    return;
+  }
+
+  // Ignore presses of the button made while it showed outdated state, e.g.
+  // before another extension requested access, so that access is only granted
+  // to the extensions that the user saw.
+  if (sequence_number != request_access_sequence_number_) {
+    return;
+  }
+
+  BrowserUserEducationInterface::From(&browser_.get())
+      ->NotifyFeaturePromoFeatureUsed(
+          feature_engagement::kIPHExtensionsRequestAccessButtonFeature,
+          FeaturePromoFeatureUsedAction::kClosePromoIfPresent);
+
+  content::WebContents* web_contents =
+      browser_->GetTabStripModel()->GetActiveWebContents();
+  if (!web_contents) {
+    return;
+  }
+
+  if (!extensions::ExtensionActionRunner::GetForWebContents(web_contents)) {
+    return;
+  }
+
+  if (!request_access_origin_.IsSameOriginWith(
+          web_contents->GetPrimaryMainFrame()->GetLastCommittedOrigin())) {
+    return;
+  }
+
+  confirmation_origin_ = request_access_origin_;
+
+  // Grant the permission.
+  CHECK_GT(request_access_extension_ids_.size(), 0u, base::NotFatalUntil::M162);
+  toolbar_view_model_.GrantSiteAccess(
+      web_contents, request_access_extension_ids_, request_access_origin_);
+
+  // Show confirmation of permission grant.
+  request_access_button_->text = l10n_util::GetStringUTF16(
+      IDS_EXTENSIONS_REQUEST_ACCESS_BUTTON_DISMISSED_TEXT);
+  NotifyOfOneAction(kExtensionsRequestAccessButtonActionId);
+
+  base::TimeDelta collapse_duration =
+      remove_confirmation_for_testing_ ? base::Seconds(0)
+                                       : kPermissionConfirmationDisplayDuration;
+  request_access_collapse_timer_.Start(
+      FROM_HERE, collapse_duration,
+      base::BindOnce(&WebUIToolbarExtensionsContainer::CollapseConfirmation,
+                     base::Unretained(this)));
+
+  base::RecordAction(base::UserMetricsAction(
+      "Extensions.Toolbar.ExtensionsActivatedFromRequestAccessButton"));
+  base::UmaHistogramCounts100(
+      "Extensions.Toolbar.ExtensionsActivatedFromRequestAccessButton",
+      request_access_extension_ids_.size());
+}
+
+bool WebUIToolbarExtensionsContainer::IsRequestAccessButtonShowingConfirmation()
+    const {
+  return confirmation_origin_.has_value();
+}
+
+void WebUIToolbarExtensionsContainer::ResetRequestAccessButtonConfirmation() {
+  confirmation_origin_ = std::nullopt;
+  request_access_collapse_timer_.Stop();
 }

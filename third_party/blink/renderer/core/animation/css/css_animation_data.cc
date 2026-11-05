@@ -65,15 +65,12 @@ bool CSSAnimationData::NamesMatch(const CSSAnimationData& other) const {
                             });
 }
 
-const StyleTimeline& CSSAnimationData::InitialTimeline() {
-  DEFINE_STATIC_LOCAL(const StyleTimeline, timeline, (CSSValueID::kAuto));
-  return timeline;
+StyleTimeline CSSAnimationData::InitialTimeline() {
+  return StyleTimeline(CSSValueID::kAuto);
 }
 
-const StyleTimeline& CSSAnimationData::InitialTimelineTriggerSource() {
-  DEFINE_STATIC_LOCAL(const StyleTimeline, timeline_trigger_source,
-                      (CSSValueID::kAuto));
-  return timeline_trigger_source;
+StyleTimeline CSSAnimationData::InitialTimelineTriggerSource() {
+  return StyleTimeline(CSSValueID::kAuto);
 }
 
 bool CSSAnimationData::AnimationsMatchForStyleRecalc(
@@ -85,6 +82,7 @@ bool CSSAnimationData::AnimationsMatchForStyleRecalc(
          fill_mode_list_ == other.fill_mode_list_ &&
          range_start_list_ == other.range_start_list_ &&
          range_end_list_ == other.range_end_list_ &&
+         navigation_behavior_ == other.navigation_behavior_ &&
          TimingMatchForStyleRecalc(other) && TriggersMatchForStyleRecalc(other);
 }
 

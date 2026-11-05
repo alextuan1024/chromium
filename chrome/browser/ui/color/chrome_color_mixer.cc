@@ -30,58 +30,28 @@
 
 namespace {
 
-// This differs from ui::SelectColorBasedOnInput in that we're checking if the
-// input transform is *not* dark under the assumption that the background color
-// *is* dark from a potential custom theme. Additionally, if the mode is
-// explicitly dark just select the correct color for that mode.
-ui::ColorTransform SelectColorBasedOnDarkInputOrMode(
-    bool dark_mode,
-    ui::ColorTransform input_transform,
-    ui::ColorTransform dark_mode_color_transform,
-    ui::ColorTransform light_mode_color_transform) {
-  const auto generator = [](bool dark_mode, ui::ColorTransform input_transform,
-                            ui::ColorTransform dark_mode_color_transform,
-                            ui::ColorTransform light_mode_color_transform,
-                            SkColor input_color, const ui::ColorMixer& mixer) {
-    const SkColor transform_color = input_transform.Run(input_color, mixer);
-    const SkColor dark_mode_color =
-        dark_mode_color_transform.Run(input_color, mixer);
-    const SkColor light_mode_color =
-        light_mode_color_transform.Run(input_color, mixer);
-    const SkColor result_color =
-        dark_mode || !color_utils::IsDark(transform_color) ? dark_mode_color
-                                                           : light_mode_color;
-    DVLOG(2) << "ColorTransform SelectColorBasedOnDarkColorOrMode:"
-             << " Dark Mode: " << dark_mode
-             << " Transform Color: " << ui::SkColorName(transform_color)
-             << " Dark Mode Color: " << ui::SkColorName(dark_mode_color)
-             << " Light Mode Color: " << ui::SkColorName(light_mode_color)
-             << " Result Color: " << ui::SkColorName(result_color);
-    return result_color;
-  };
-  return base::BindRepeating(generator, dark_mode, std::move(input_transform),
-                             std::move(dark_mode_color_transform),
-                             std::move(light_mode_color_transform));
-}
-
 // Determines a color to use for Actor Ui components based on the tab frame
-// color used in custom themes. In the near-white case, we default to use an
-// accent color instead.
-ui::ColorTransform SelectActorUiColorBasedOnNearWhiteInput() {
+// color used in custom themes. In the near-white or near-black case, we default
+// to use `fallback_color_id` instead to ensure visibility.
+ui::ColorTransform SelectActorUiColor(ui::ColorId fallback_color_id) {
   return base::BindRepeating(
-      [](SkColor input_color, const ui::ColorMixer& mixer) {
+      [](ui::ColorId fallback_color_id, SkColor input_color,
+         const ui::ColorMixer& mixer) {
         const SkColor frame_color = mixer.GetResultColor(ui::kColorFrameActive);
 
-        // 1.0f is white. For near-white scenarios, we want to use the accent
-        // color to ensure visibility.
+        // 1.0f is identical contrast. For near-white or near-black scenarios,
+        // we want to use the fallback color to ensure visibility.
         constexpr float kThreshold = 1.1f;
         if (color_utils::GetContrastRatio(frame_color, SK_ColorWHITE) <
-            kThreshold) {
-          return mixer.GetResultColor(ui::kColorAccent);
+                kThreshold ||
+            color_utils::GetContrastRatio(frame_color, SK_ColorBLACK) <
+                kThreshold) {
+          return mixer.GetResultColor(fallback_color_id);
         }
 
         return frame_color;
-      });
+      },
+      fallback_color_id);
 }
 
 // Blend the custom color (based on the tab frame of a custom theme) on
@@ -171,7 +141,8 @@ TabGroupColorParams CreateColorParams(
     SkColor outline_light,
     SkColor bm_dark,
     SkColor bm_light,
-    std::optional<SkColor> alt_fg_light = std::nullopt) {
+    std::optional<SkColor> alt_fg_light = std::nullopt,
+    std::optional<SkColor> alt_outline_light = std::nullopt) {
   if (use_alternate_palette) {
     return {active,
             inactive,
@@ -185,7 +156,7 @@ TabGroupColorParams CreateColorParams(
             alt_fg_dark,
             alt_fg_light.value_or(alt_light),
             alt_dark,
-            alt_light,
+            alt_outline_light.value_or(alt_light),
             alt_chip_dark,
             alt_chip_light};
   } else {
@@ -306,7 +277,8 @@ void AddChromeColorMixer(ui::ColorProvider* provider,
           gfx::kGoogleYellow600, gfx::kGoogleYellow100, gfx::kGoogleGrey800,
           gfx::kGoogleYellow300, gfx::kGoogleYellow600,
           SkColorSetRGB(0x55, 0x4B, 0x30), gfx::kGoogleYellow050,
-          gfx::kTabGroupYellowTextLightMode)};
+          gfx::kTabGroupYellowTextLightMode,
+          gfx::kTabGroupYellowOutlineLightMode)};
 
   for (const auto& params : tab_group_color_params_all) {
     mixer[params.active_frame_id] =
@@ -315,9 +287,6 @@ void AddChromeColorMixer(ui::ColorProvider* provider,
     mixer[params.inactive_frame_id] =
         ui::SelectBasedOnDarkInput(kColorTabBackgroundInactiveFrameInactive,
                                    params.base_dark, params.base_light);
-    mixer[params.context_menu_id] = SelectColorBasedOnDarkInputOrMode(
-        dark_mode, kColorBookmarkBarForeground, params.base_dark,
-        params.base_light);
     mixer[params.saved_fg_id] =
         ui::SelectBasedOnDarkInput(kColorBookmarkBarBackground,
                                    params.saved_fg_dark, params.saved_fg_light);
@@ -328,23 +297,26 @@ void AddChromeColorMixer(ui::ColorProvider* provider,
         kColorBookmarkBarBackground, params.bookmark_bar_dark,
         params.bookmark_bar_light);
 
+    mixer[params.context_menu_id] = {params.active_frame_id};
     mixer[params.dialog_id] = {params.context_menu_id};
   }
 
   mixer[kColorActorUiHandoffButtonBackground] = {ui::kColorSysSurface};
   mixer[kColorActorUiHandoffButtonBorder] =
-      SelectActorUiColorBasedOnNearWhiteInput();
+      SelectActorUiColor(ui::kColorSysActorUiBorder);
   mixer[kColorActorUiHandoffButtonForeground] = {ui::kColorSysOnSurface};
-  mixer[kColorActorUiOverlayBorder] = SelectActorUiColorBasedOnNearWhiteInput();
+  mixer[kColorActorUiOverlayBorder] =
+      SelectActorUiColor(ui::kColorSysActorUiBorder);
   mixer[kColorActorUiOverlayBorderGlow] =
-      SelectActorUiColorBasedOnNearWhiteInput();
+      SelectActorUiColor(ui::kColorSysActorUiGradientEnd);
   mixer[kColorActorUiScrimStart] = GetActorUiScrimColor(
       /*alpha=*/0x66);
   mixer[kColorActorUiScrimMiddle] = GetActorUiScrimColor(
       /*alpha=*/0x00);
   mixer[kColorActorUiScrimEnd] = GetActorUiScrimColor(
       /*alpha=*/0x26);
-  mixer[kColorActorUiMagicCursor] = SelectActorUiColorBasedOnNearWhiteInput();
+  mixer[kColorActorUiMagicCursor] =
+      SelectActorUiColor(ui::kColorSysActorUiBorder);
   mixer[kColorAppMenuHighlightSeverityLow] = AdjustHighlightColorForContrast(
       ui::kColorAlertLowSeverity, kColorToolbar);
   mixer[kColorAppMenuHighlightSeverityHigh] = {
@@ -354,17 +326,20 @@ void AddChromeColorMixer(ui::ColorProvider* provider,
   mixer[kColorAppMenuHighlightPrimary] = {ui::kColorButtonBackgroundProminent};
   mixer[kColorAppMenuExpandedForegroundPrimary] = {
       ui::kColorButtonForegroundProminent};
-  mixer[kColorAppMenuChipBackground] = {ui::kColorSysBaseContainer};
+  mixer[kColorAppMenuChipBackground] = {ui::kColorSysTonalContainer};
   mixer[kColorAppMenuChipBackgroundHovered] = {ui::GetResultingPaintColor(
       ui::kColorSysStateHoverOnSubtle, kColorAppMenuChipBackground)};
   mixer[kColorAppMenuChipForeground] = {ui::kColorSysOnTonalContainer};
   mixer[kColorAppMenuYourChromeBackground] = {ui::kColorSysBaseContainer};
+  mixer[kColorAppMenuYourChromeForeground] = {
+      ui::kColorSysOnBaseTonalContainer};
   mixer[kColorAppMenuToolsAndActionsBackground] = {
       ui::kColorSysNeutralContainer};
+  mixer[kColorAppMenuToolsAndActionsForeground] = {ui::kColorSysOnSurface};
   mixer[kColorAppMenuBlockButtonBackground] = {ui::kColorSysSurface};
   mixer[kColorAppMenuBlockButtonBackgroundHovered] = {
       ui::kColorSysStateHoverOnSubtle};
-  mixer[kColorAppMenuBlockButtonBorder] = {ui::kColorSysInversePrimary};
+  mixer[kColorAppMenuBlockButtonBorder] = {ui::kColorSysTonalOutline};
   mixer[kColorAppMenuBlockButtonForeground] = {ui::kColorSysPrimary};
   mixer[kColorAppMenuFooterButtonForeground] = {ui::kColorSysPrimary};
   mixer[kColorAppMenuFooterButtonForegroundHovered] = {ui::kColorSysPrimary};
@@ -459,8 +434,6 @@ void AddChromeColorMixer(ui::ColorProvider* provider,
   mixer[kColorExtensionMenuPinButtonIconDisabled] = ui::SetAlpha(
       kColorExtensionMenuPinButtonIcon, gfx::kDisabledControlAlpha);
   mixer[kColorExtensionsMenuContainerBackground] = {ui::kColorSysSurface3};
-  mixer[kColorFeatureFirstRunInfoContainerBackground] = {ui::kColorSysSurface3};
-  mixer[kColorFeatureFirstRunIconColor] = {ui::kColorSysOnSurfaceSubtle};
   mixer[kColorFeaturePromoBubbleBackground] = {gfx::kGoogleBlue700};
   mixer[kColorFeaturePromoBubbleButtonBorder] = {gfx::kGoogleGrey300};
   mixer[kColorFeaturePromoBubbleCloseButtonInkDrop] = {gfx::kGoogleBlue300};
@@ -503,6 +476,9 @@ void AddChromeColorMixer(ui::ColorProvider* provider,
   mixer[kColorGlicModalForeground] = {dark_mode
                                           ? SkColorSetRGB(0x30, 0x30, 0x30)
                                           : SkColorSetRGB(0xF2, 0xF2, 0xF2)};
+  mixer[kColorGlicPlaceholderElem] = {dark_mode
+                                          ? SkColorSetRGB(0x33, 0x34, 0x38)
+                                          : SkColorSetRGB(0xEF, 0xF3, 0xFA)};
   // Gradient colors used for underlines on active tabs.
   constexpr color_utils::HSL start{-1.0, -1.0, 0.6};
   constexpr color_utils::HSL end{-1.0, -1.0, 0.4};
@@ -526,6 +502,10 @@ void AddChromeColorMixer(ui::ColorProvider* provider,
   mixer[kColorInfoBarContentAreaSeparator] =
       ui::AlphaBlend(kColorInfoBarButtonIcon, kColorInfoBarBackground, 0x3A);
   mixer[kColorInfoBarForeground] = {kColorToolbarText};
+  mixer[kColorInfoBarQueuedCountPillBackground] = ui::BlendTowardMaxContrast(
+      kColorInfoBarBackground, gfx::kGoogleGreyAlpha100);
+  mixer[kColorInfoBarQueuedCountPillForeground] = ui::AlphaBlend(
+      kColorInfoBarForeground, kColorInfoBarQueuedCountPillBackground, 0xB3);
   // kColorInfoBarIcon is referenced in //components/infobars, so
   // we can't use a color id from the chrome namespace. Here we're
   // overriding the default color with something more suitable.
@@ -665,6 +645,24 @@ void AddChromeColorMixer(ui::ColorProvider* provider,
       ui::GetResultingPaintColor(kColorQuickAnswersReportQueryButtonBackground,
                                  ui::kColorPrimaryBackground),
       color_utils::kMinimumReadableContrastRatio);
+  mixer[kColorOrganizerPanelBackground] = {ui::kColorFrameActive};
+  const ui::ColorTransform foreground = ui::SelectBasedOnDarkInput(
+      kColorOrganizerPanelBackground,
+      /*output_transform_for_dark_input=*/ui::kColorRefNeutral90,
+      /*output_transform_for_light_input=*/ui::kColorRefNeutral10);
+  const ui::ColorTransform foreground_subtle = ui::SelectBasedOnDarkInput(
+      kColorOrganizerPanelBackground,
+      /*output_transform_for_dark_input=*/ui::kColorRefNeutral80,
+      /*output_transform_for_light_input=*/ui::kColorRefNeutral30);
+  mixer[kColorOrganizerPanelForeground] = ui::BlendForMinContrast(
+      foreground, kColorOrganizerPanelBackground,
+      ui::GetColorWithMaxContrast(kColorOrganizerPanelBackground));
+  mixer[kColorOrganizerPanelForegroundSubtle] = ui::BlendForMinContrast(
+      foreground_subtle, kColorOrganizerPanelBackground,
+      ui::GetColorWithMaxContrast(kColorOrganizerPanelBackground));
+  mixer[kColorOrganizerPanelDivider] =
+      ui::AlphaBlend(kColorOrganizerPanelForeground,
+                     kColorOrganizerPanelBackground, 0.2f * SK_AlphaOPAQUE);
   mixer[kColorScreenshotCapturedImageBackground] = {ui::kColorBubbleBackground};
   mixer[kColorScreenshotCapturedImageBorder] = {ui::kColorMidground};
   mixer[kColorShareThisTabAudioToggleBackground] = {
@@ -793,8 +791,6 @@ void AddChromeColorMixer(ui::ColorProvider* provider,
   mixer[kColorThumbnailTabStripBackgroundInactive] = {ui::kColorFrameInactive};
   mixer[kColorToolbar] = {dark_mode ? SkColorSetRGB(0x35, 0x36, 0x3A)
                                     : SK_ColorWHITE};
-  mixer[kColorToolbarContextualTasksButtonShadow] = {
-      ui::SetAlpha(ui::kColorShadowBase, 0x255 * 17 / 100)};
   mixer[kColorToolbarButtonBackgroundHighlightedDefault] =
       ui::SetAlpha(ui::GetColorWithMaxContrast(kColorToolbarButtonText), 0xCC);
   mixer[kColorAvatarButtonHighlightIncognito] = {

@@ -9,8 +9,9 @@
 #include "base/metrics/histogram_functions.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/threading/thread_checker.h"
+#include "services/network/public/mojom/content_security_policy.mojom-blink.h"
+#include "services/network/public/mojom/source_location.mojom-blink.h"
 #include "services/network/public/mojom/web_sandbox_flags.mojom-blink.h"
-#include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/mojom/devtools/inspector_issue.mojom-blink.h"
 #include "third_party/blink/public/mojom/fetch/fetch_api_request.mojom-blink.h"
 #include "third_party/blink/public/mojom/loader/content_security_notifier.mojom-blink.h"
@@ -64,7 +65,7 @@ namespace {
 //
 // Unlike the ContentSecurityPolicy bound to ExecutionContext (which is
 // used for insideSettings fetch), OutsideSettingsCSPDelegate shouldn't
-// access WorkerOrWorkletGlobalScope (except for logging).
+// access WorkerOrWorkletGlobalScope (except for reporting).
 //
 // For details of outsideSettings/insideSettings fetch, see README.md.
 class OutsideSettingsCSPDelegate final
@@ -74,13 +75,13 @@ class OutsideSettingsCSPDelegate final
   OutsideSettingsCSPDelegate(
       const FetchClientSettingsObject& outside_settings_object,
       UseCounter& use_counter,
-      WorkerOrWorkletGlobalScope& global_scope_for_logging)
+      WorkerOrWorkletGlobalScope& global_scope_for_reporting)
       : outside_settings_object_(&outside_settings_object),
         use_counter_(use_counter),
-        global_scope_for_logging_(&global_scope_for_logging) {}
+        global_scope_for_reporting_(&global_scope_for_reporting) {}
 
   void Trace(Visitor* visitor) const override {
-    visitor->Trace(global_scope_for_logging_);
+    visitor->Trace(global_scope_for_reporting_);
     visitor->Trace(use_counter_);
     visitor->Trace(outside_settings_object_);
   }
@@ -134,11 +135,9 @@ class OutsideSettingsCSPDelegate final
   void DispatchViolationEvent(const SecurityPolicyViolationEventInit&,
                               Element*) override {
     DCHECK_CALLED_ON_VALID_THREAD(worker_thread_checker_);
-    // TODO(crbug/928964): Fire an event on the parent context.
-    // Before OutsideSettingsCSPDelegate was introduced, the event had been
-    // fired on WorkerGlobalScope, which had been virtually no-op because
-    // there can't be no event handlers yet.
-    // Currently, no events are fired.
+    // The event is dispatched on the context that created the worker or
+    // worklet, when ReportViolationOnOutsideSettingsIfNeeded() reports the
+    // violation on it. Otherwise, no events are dispatched.
   }
 
   void PostViolationReport(const SecurityPolicyViolationEventInit&,
@@ -147,7 +146,9 @@ class OutsideSettingsCSPDelegate final
                            const Vector<String>& report_endpoints,
                            bool use_reporting_api) override {
     DCHECK_CALLED_ON_VALID_THREAD(worker_thread_checker_);
-    // TODO(crbug/929370): Support POSTing violation reports from a Worker.
+    // The report is posted by the context that created the worker or worklet,
+    // when ReportViolationOnOutsideSettingsIfNeeded() reports the violation on
+    // it. Otherwise, no reports are posted.
   }
 
   void Count(WebFeature feature) override {
@@ -157,7 +158,7 @@ class OutsideSettingsCSPDelegate final
 
   void AddConsoleMessage(ConsoleMessage* message) override {
     DCHECK_CALLED_ON_VALID_THREAD(worker_thread_checker_);
-    global_scope_for_logging_->AddConsoleMessage(message);
+    global_scope_for_reporting_->AddConsoleMessage(message);
   }
 
   void ReportBlockedScriptExecutionToInspector(
@@ -178,18 +179,34 @@ class OutsideSettingsCSPDelegate final
 
   void AddInspectorIssue(AuditsIssue issue) override {
     DCHECK_CALLED_ON_VALID_THREAD(worker_thread_checker_);
-    global_scope_for_logging_->AddInspectorIssue(std::move(issue));
+    global_scope_for_reporting_->AddInspectorIssue(std::move(issue));
   }
 
   bool ScriptSrcExtendedHashesEnabled() override { return false; }
+
+  bool ReportViolationOnOutsideSettingsIfNeeded(
+      CSPDirectiveName effective_type,
+      const String& console_message,
+      const KURL& blocked_url,
+      const Vector<String>& report_endpoints,
+      bool use_reporting_api,
+      const String& header,
+      network::mojom::ContentSecurityPolicyType header_type,
+      const SourceLocation* source_location) override {
+    DCHECK_CALLED_ON_VALID_THREAD(worker_thread_checker_);
+    return global_scope_for_reporting_
+        ->ReportViolationOnOutsideSettingsIfNeeded(
+            effective_type, console_message, blocked_url, report_endpoints,
+            use_reporting_api, header, header_type, source_location);
+  }
 
  private:
   const Member<const FetchClientSettingsObject> outside_settings_object_;
   const Member<UseCounter> use_counter_;
 
-  // |global_scope_for_logging_| should be used only for AddConsoleMessage() and
-  // AddInspectorIssue().
-  const Member<WorkerOrWorkletGlobalScope> global_scope_for_logging_;
+  // |global_scope_for_reporting_| should be used only for AddConsoleMessage(),
+  // AddInspectorIssue(), and ReportViolationOnOutsideSettingsIfNeeded().
+  const Member<WorkerOrWorkletGlobalScope> global_scope_for_reporting_;
 
   THREAD_CHECKER(worker_thread_checker_);
 };
@@ -206,7 +223,7 @@ enum class WorkerOrWorkletInterfaceNameType {
   kLayoutWorkletGlobalScope = 6,
   kPaintWorkletGlobalScope = 7,
   kShadowRealmGlobalScope = 8,
-  kSharedStorageWorkletGlobalScope = 9,
+  kSharedStorageWorkletGlobalScope = 9,  // Deprecated.
 
   kMaxValue = kSharedStorageWorkletGlobalScope,
 };
@@ -240,6 +257,7 @@ WorkerOrWorkletGlobalScope::WorkerOrWorkletGlobalScope(
           isolate,
           /*is_default_world_of_isolate=*/is_default_world_of_isolate)),
       v8_cache_options_(v8_cache_options),
+      outside_settings_reporter_(this),
       reporting_proxy_(reporting_proxy) {
   GetSecurityContext().SetIsWorkerLoadedFromDataURL(
       is_worker_loaded_from_data_url);
@@ -319,8 +337,6 @@ void WorkerOrWorkletGlobalScope::CountUse(WebFeature feature) {
       type = WorkerOrWorkletInterfaceNameType::kPaintWorkletGlobalScope;
     } else if (IsShadowRealmGlobalScope()) {
       type = WorkerOrWorkletInterfaceNameType::kShadowRealmGlobalScope;
-    } else if (IsSharedStorageWorkletGlobalScope()) {
-      type = WorkerOrWorkletInterfaceNameType::kSharedStorageWorkletGlobalScope;
     }
 
     base::UmaHistogramEnumeration("ServiceWorker.CountUse.CallerInterface",
@@ -548,6 +564,43 @@ void WorkerOrWorkletGlobalScope::SetOutsideContentSecurityPolicies(
   outside_content_security_policies_ = std::move(policies);
 }
 
+void WorkerOrWorkletGlobalScope::SetOutsideSettingsReporter(
+    mojo::PendingRemote<mojom::blink::OutsideContextCSPViolationReporter>
+        reporter) {
+  if (!reporter) {
+    return;
+  }
+  outside_settings_reporter_.Bind(std::move(reporter),
+                                  GetTaskRunner(TaskType::kNetworking));
+}
+
+bool WorkerOrWorkletGlobalScope::ReportViolationOnOutsideSettingsIfNeeded(
+    CSPDirectiveName effective_type,
+    const String& console_message,
+    const KURL& blocked_url,
+    const Vector<String>& report_endpoints,
+    bool use_reporting_api,
+    const String& header,
+    network::mojom::ContentSecurityPolicyType header_type,
+    const SourceLocation* source_location) {
+  DCHECK(IsContextThread());
+  if (!outside_settings_reporter_.is_bound()) {
+    return false;
+  }
+  outside_settings_reporter_->ReportCSPViolation(
+      network::mojom::blink::CSPViolation::New(
+          ContentSecurityPolicy::GetDirectiveName(effective_type),
+          console_message.IsNull() ? g_empty_string : console_message,
+          blocked_url, report_endpoints, use_reporting_api, header, header_type,
+          network::mojom::blink::SourceLocation::New(
+              source_location && !source_location->Url().IsNull()
+                  ? source_location->Url()
+                  : g_empty_string,
+              source_location ? source_location->LineNumber() : 0,
+              source_location ? source_location->ColumnNumber() : 0)));
+  return true;
+}
+
 void WorkerOrWorkletGlobalScope::InitContentSecurityPolicyFromVector(
     Vector<network::mojom::blink::ContentSecurityPolicyPtr> policies) {
   if (!GetContentSecurityPolicy()) {
@@ -654,6 +707,7 @@ void WorkerOrWorkletGlobalScope::Trace(Visitor* visitor) const {
   visitor->Trace(resource_fetchers_);
   visitor->Trace(subresource_filter_);
   visitor->Trace(script_controller_);
+  visitor->Trace(outside_settings_reporter_);
   EventTarget::Trace(visitor);
   ExecutionContext::Trace(visitor);
 }

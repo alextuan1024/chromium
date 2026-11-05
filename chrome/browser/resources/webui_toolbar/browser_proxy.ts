@@ -2,35 +2,21 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import '//resources/js/cr.js';
-
 import {BrowserControlsService} from '/shared/browser_controls_api.mojom-webui.js';
 import type {BrowserControlsServiceInterface} from '/shared/browser_controls_api.mojom-webui.js';
-import {EventDispositionFlag} from '/shared/browser_controls_api_data_model.mojom-webui.js';
 import type {IconUpdate} from '/shared/icon_handle.mojom-webui.js';
+import type {PermissionChipDelegate} from '/shared/permission_chip_delegate.js';
 import {ToolbarUIObserverCallbackRouter, ToolbarUIService} from '/shared/toolbar_ui_api.mojom-webui.js';
-import type {ToolbarUIServiceInterface} from '/shared/toolbar_ui_api.mojom-webui.js';
-import {ContextMenuType} from '/shared/toolbar_ui_api_data_model.mojom-webui.js';
-import type {BackForwardButtonState, FocusRequestTarget, NavigationControlsState, OmniboxViewState, ReloadControlState} from '/shared/toolbar_ui_api_data_model.mojom-webui.js';
+import type {ToolbarUIServiceInterface, ToolbarUIServiceRemote} from '/shared/toolbar_ui_api.mojom-webui.js';
+import {PermissionAction, PermissionChipTheme, PermissionPromptStyle, SecurityChipRole} from '/shared/toolbar_ui_api_data_model.mojom-webui.js';
+import type {FocusRequestTarget, LhsChipIdentifier, LocationBarState, PermissionChipState, ToolbarState} from '/shared/toolbar_ui_api_data_model.mojom-webui.js';
 
-export {
-  ContextMenuType,
-  EventDispositionFlag,
-};
-export type {
-  BackForwardButtonState,
-  IconUpdate,
-  NavigationControlsState,
-  OmniboxViewState,
-  ReloadControlState,
-};
+export type ToolbarStateListener = (icons: IconUpdate[], state: ToolbarState) =>
+    void;
 
-export type NavigationControlsStateListener =
-    (icons: IconUpdate[], state: NavigationControlsState) => void;
-
-export type NavigationControlsStateListenerHandle = number;
-export const INVALID_NAVIGATION_CONTROLS_STATE_LISTENER_HANDLE:
-    NavigationControlsStateListenerHandle = -1;
+export type ToolbarStateListenerHandle = number;
+export const INVALID_TOOLBAR_STATE_LISTENER_HANDLE: ToolbarStateListenerHandle =
+    -1;
 /*
  * Listener type for invocations to
  *    toolbar_ui_api.mojom.ToolbarUIObserver.OnFocusRequested method.
@@ -58,12 +44,203 @@ export type ShowSplitTabsContextMenuHandle = number;
 export const INVALID_SHOW_SPLIT_TABS_CONTEXT_MENU_HANDLE:
     ShowSplitTabsContextMenuHandle = -1;
 
-import type {PermissionChipDelegate} from '/shared/permission_chip_delegate.js';
-import type {LhsChipIdentifier} from '/shared/toolbar_ui_api_data_model.mojom-webui.js';
+/**
+ * Keys corresponding to initial toolbar state values provided by the browser.
+ */
+export enum ToolbarStateKey {
+  IS_NAVIGATION_LOADING = 'isNavigationLoading',
+  RELOAD_CAN_SHOW_MENU = 'reloadCanShowMenu',
+  BACK_BUTTON_ENABLED = 'backButtonEnabled',
+  FORWARD_BUTTON_ENABLED = 'forwardButtonEnabled',
+  HOME_BUTTON_SHOULD_BE_SHOWN = 'homeButtonShouldBeShown',
+  BATTERY_SAVER_BUTTON_VISIBLE = 'batterySaverButtonVisible',
+  LAYOUT_CONSTANTS_VERSION = 'layoutConstantsVersion',
+  TOUCH_UI = 'touchUi',
+  INITIAL_WEBUI_SURFACE_SYNC_ENABLED = 'initialWebUISurfaceSyncEnabled',
+  IS_FALLBACK_PREWARMING = 'isFallbackPrewarming',
+  IS_PROFILE_ELIGIBLE_FOR_GLIC = 'isProfileEligibleForGlic',
+  CAN_SHOW_AVATAR_FOR_PROFILE = 'canShowAvatarForProfile',
+  IS_UNBOUND = 'isUnbound',
+  COLORS_CSS = 'colorsCss',
+}
+
+/**
+ * Schema mapping `ToolbarStateKey` entries to their respective value types in
+ * the initial state dictionary.
+ */
+export interface ToolbarFlatStateSchema {
+  [ToolbarStateKey.IS_NAVIGATION_LOADING]: boolean;
+  [ToolbarStateKey.RELOAD_CAN_SHOW_MENU]: boolean;
+  [ToolbarStateKey.BACK_BUTTON_ENABLED]: boolean;
+  [ToolbarStateKey.FORWARD_BUTTON_ENABLED]: boolean;
+  [ToolbarStateKey.HOME_BUTTON_SHOULD_BE_SHOWN]: boolean;
+  [ToolbarStateKey.BATTERY_SAVER_BUTTON_VISIBLE]: boolean;
+  [ToolbarStateKey.LAYOUT_CONSTANTS_VERSION]: number;
+  [ToolbarStateKey.TOUCH_UI]: boolean;
+  [ToolbarStateKey.INITIAL_WEBUI_SURFACE_SYNC_ENABLED]: boolean;
+  [ToolbarStateKey.IS_FALLBACK_PREWARMING]: boolean;
+  [ToolbarStateKey.IS_PROFILE_ELIGIBLE_FOR_GLIC]: boolean;
+  [ToolbarStateKey.CAN_SHOW_AVATAR_FOR_PROFILE]: boolean;
+  [ToolbarStateKey.IS_UNBOUND]: boolean;
+  [ToolbarStateKey.COLORS_CSS]: string;
+}
+
+/**
+ * Profile-derived state delivered on the frame channel when an unbound toolbar
+ * spare is bound to a window's user profile.
+ */
+export interface BoundProfileState {
+  isProfileEligibleForGlic?: boolean;
+  canShowAvatarForProfile?: boolean;
+  homeButtonShouldBeShown?: boolean;
+  colorsCss?: string;
+}
+
+declare global {
+  interface Window {
+    __webuiToolbarApplyBoundProfile?: (state: BoundProfileState) => void;
+    __webuiToolbarBoundProfile?: BoundProfileState;
+  }
+}
+
+function createDefaultPermissionChipState(): PermissionChipState {
+  return {
+    isVisible: false,
+    iconName: '',
+    message: '',
+    tooltip: '',
+    theme: PermissionChipTheme.kUnspecified,
+    userDecision: PermissionAction.kUnspecified,
+    shouldShowBlockedIcon: false,
+    promptStyle: PermissionPromptStyle.kUnspecified,
+    isFullyCollapsed: false,
+    accessibilityName: '',
+    stateToken: 0,
+  };
+}
+
+// Returns a new default LocationBarState, used before the first state is
+// received from the browser. Returns a fresh object on every call so callers
+// never share nested objects/arrays.
+export function createDefaultLocationBarState(): LocationBarState {
+  return {
+    omniboxViewState: {
+      browserVersion: 0,
+      uiVersion: 0,
+      formattedFullUrl: '',
+      textPieces: [],
+      placeholder: null,
+      inlineAutocompletion: '',
+      additionalText: '',
+      a11yFriendlySuggestionText: '',
+      selection: null,
+      textIsUrl: false,
+      userInputInProgress: false,
+      hasTemporaryText: false,
+    },
+    locationBarFlags: {
+      userInputInProgress: false,
+      popupOpen: false,
+      forceAimButtonFocusRing: false,
+      isVirtualKeyboardVisible: false,
+    },
+    selectedKeyword: null,
+    lhsChipsState: {
+      securityChip: {
+        icon: {handleId: 0n},
+        securityLevel: 0,
+        text: '',
+        tooltip: '',
+        accessibilityState: {
+          role: SecurityChipRole.kButton,
+          label: '',
+          description: '',
+        },
+        isClickable: false,
+        isTextDangerous: false,
+        isVisible: true,
+        isContextMenuVisible: false,
+      },
+      activityIndicators: [],
+      permissionDashboard: {
+        indicatorChip: createDefaultPermissionChipState(),
+        requestChip: createDefaultPermissionChipState(),
+        isDividerVisible: false,
+      },
+    },
+    contentSettingImageStates: [],
+    pageActionStates: [],
+  };
+}
+
+/**
+ * Wraps the parsed initial toolbar state dictionary and provides typed getters.
+ */
+export class InitialStateReader {
+  private state_: Record<string, unknown>;
+
+  constructor(state: Record<string, unknown> = {}) {
+    this.state_ = state;
+  }
+
+  static fromJson(jsonString: string): InitialStateReader {
+    if (jsonString) {
+      try {
+        const parsed = JSON.parse(jsonString);
+        if (parsed && typeof parsed === 'object') {
+          return new InitialStateReader(parsed as Record<string, unknown>);
+        }
+      } catch {
+        // Fall through to empty state.
+      }
+    }
+    return new InitialStateReader();
+  }
+
+  /**
+   * Determines whether the specified `key` is present in the initial toolbar
+   * state dictionary.
+   */
+  hasKey(key: ToolbarStateKey): boolean {
+    return key in this.state_;
+  }
+
+  /**
+   * Reads a boolean property for the given `key` from the initial state
+   * dictionary. Returns `false` if the property is missing or not a boolean.
+   */
+  getBoolean<K extends keyof ToolbarFlatStateSchema>(key: K): boolean {
+    const val = this.state_[key];
+    return typeof val === 'boolean' ? val : false;
+  }
+
+  /**
+   * Reads a numeric property for the given `key` from the initial state
+   * dictionary. Returns `0` if the property is missing or not a number.
+   */
+  getInteger<K extends keyof ToolbarFlatStateSchema>(key: K): number {
+    const val = this.state_[key];
+    return typeof val === 'number' ? val : 0;
+  }
+
+  /**
+   * Reads a string property for the given `key` from the initial state
+   * dictionary. Returns `''` if the property is missing or not a string.
+   */
+  getString<K extends keyof ToolbarFlatStateSchema>(key: K): string {
+    const val = this.state_[key];
+    return typeof val === 'string' ? val : '';
+  }
+}
 
 export interface BrowserProxy extends PermissionChipDelegate {
   browserControlsHandler: BrowserControlsServiceInterface;
   toolbarUIHandler: ToolbarUIServiceInterface;
+
+  /**
+   * Returns the parsed and cached initial toolbar state reader.
+   */
+  getInitialState(): InitialStateReader;
 
   /**
    * Records a value in a histogram.
@@ -74,29 +251,38 @@ export interface BrowserProxy extends PermissionChipDelegate {
   recordInHistogram(histogramName: string, value: number, maxValue: number):
       void;
 
-  addNavigationStateListener(listener: NavigationControlsStateListener):
-      NavigationControlsStateListenerHandle;
+  addToolbarStateListener(listener: ToolbarStateListener):
+      ToolbarStateListenerHandle;
   addFocusRequestListener(listener: FocusRequestListener): FocusRequestHandle;
   addShowSplitTabsContextMenuListener(
       listener: ShowSplitTabsContextMenuListener):
       ShowSplitTabsContextMenuHandle;
 
-  removeNavigationStateListener(handle: NavigationControlsStateListenerHandle):
-      void;
+  removeToolbarStateListener(handle: ToolbarStateListenerHandle): void;
   removeFocusRequestListener(handle: FocusRequestHandle): void;
   removeShowSplitTabsContextMenuListener(
       handle: ShowSplitTabsContextMenuHandle): void;
+
+  /**
+   * Resolves once the browser has dispatched every message sent so far on the
+   * ToolbarUIService pipe (e.g. onOmniboxAction). For tests that need the
+   * browser-side state to reflect what this page has already sent.
+   */
+  flushToolbarUiHandlerForTesting(): Promise<void>;
 }
 
 export class BrowserProxyImpl implements BrowserProxy {
   private callbackRouter: ToolbarUIObserverCallbackRouter;
+  private toolbarUIRemote: ToolbarUIServiceRemote;
+  private initialState_: InitialStateReader|null = null;
   browserControlsHandler: BrowserControlsServiceInterface;
   toolbarUIHandler: ToolbarUIServiceInterface;
 
   private constructor() {
     this.callbackRouter = new ToolbarUIObserverCallbackRouter();
     this.browserControlsHandler = BrowserControlsService.getRemote();
-    this.toolbarUIHandler = ToolbarUIService.getRemote();
+    this.toolbarUIRemote = ToolbarUIService.getRemote();
+    this.toolbarUIHandler = this.toolbarUIRemote;
   }
 
   onChipClicked(id: LhsChipIdentifier, isPointer: boolean, stateToken: number) {
@@ -123,6 +309,14 @@ export class BrowserProxyImpl implements BrowserProxy {
     this.toolbarUIHandler.onLhsChipCollapseAnimationEnded(id);
   }
 
+  getInitialState(): InitialStateReader {
+    if (!this.initialState_) {
+      this.initialState_ =
+          InitialStateReader.fromJson(chrome.getVariableValue('initialState'));
+    }
+    return this.initialState_;
+  }
+
   /**
    * Records a value in a histogram.
    * @param histogramName The name of the histogram.
@@ -130,15 +324,13 @@ export class BrowserProxyImpl implements BrowserProxy {
    * @param maxValue The maximum value of the histogram.
    */
   recordInHistogram(histogramName: string, value: number, maxValue: number) {
-    chrome.send(
-        'metricsHandler:recordInHistogram', [histogramName, value, maxValue]);
+    chrome.histograms.recordEnumerationValue(histogramName, value, maxValue);
   }
 
-  addNavigationStateListener(listener: NavigationControlsStateListener) {
+  addToolbarStateListener(listener: ToolbarStateListener) {
     const handle =
-        this.callbackRouter.onNavigationControlsStateChanged.addListener(
-            listener);
-    this.toolbarUIHandler.bind().then(fence => {
+        this.callbackRouter.onToolbarStateChanged.addListener(listener);
+    this.toolbarUIHandler.getInitialState().then(fence => {
       listener(fence.icons, fence.state);
       this.callbackRouter.$.bindHandle(fence.updateStream.handle);
     });
@@ -146,7 +338,7 @@ export class BrowserProxyImpl implements BrowserProxy {
   }
 
   addFocusRequestListener(listener: FocusRequestListener) {
-    // This assumes addNavigationStateListener will happen or has happened to
+    // This assumes addToolbarStateListener will happen or has happened to
     // actually connect the router.
     return this.callbackRouter.onFocusRequested.addListener(listener);
   }
@@ -156,8 +348,8 @@ export class BrowserProxyImpl implements BrowserProxy {
     return this.callbackRouter.showSplitTabsContextMenu.addListener(listener);
   }
 
-  removeNavigationStateListener(handle: NavigationControlsStateListenerHandle) {
-    if (handle !== INVALID_NAVIGATION_CONTROLS_STATE_LISTENER_HANDLE) {
+  removeToolbarStateListener(handle: ToolbarStateListenerHandle) {
+    if (handle !== INVALID_TOOLBAR_STATE_LISTENER_HANDLE) {
       this.callbackRouter.removeListener(handle);
     }
   }
@@ -173,6 +365,10 @@ export class BrowserProxyImpl implements BrowserProxy {
     if (handle !== INVALID_SHOW_SPLIT_TABS_CONTEXT_MENU_HANDLE) {
       this.callbackRouter.removeListener(handle);
     }
+  }
+
+  flushToolbarUiHandlerForTesting(): Promise<void> {
+    return this.toolbarUIRemote.$.flushForTesting();
   }
 
   static getInstance(): BrowserProxy {

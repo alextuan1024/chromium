@@ -55,7 +55,7 @@ public class SendTabToSelfTabCardLabelDataUnitTest {
     @Before
     public void setUp() {
         PersistedTabDataConfiguration.setUseTestConfig(true);
-        mContext = RuntimeEnvironment.application;
+        mContext = RuntimeEnvironment.getApplication();
         mUserDataHost = new UserDataHost();
         when(mTab.getUserDataHost()).thenReturn(mUserDataHost);
         when(mTab.getProfile()).thenReturn(mProfile);
@@ -308,7 +308,7 @@ public class SendTabToSelfTabCardLabelDataUnitTest {
 
         // Cleanup storage.
         PersistedTabDataConfiguration.TEST_CONFIG
-                .getStorage()
+                .getStorage(mProfile)
                 .delete(
                         14,
                         PersistedTabDataConfiguration.SEND_TAB_TO_SELF_TAB_CARD_LABEL_DATA.getId());

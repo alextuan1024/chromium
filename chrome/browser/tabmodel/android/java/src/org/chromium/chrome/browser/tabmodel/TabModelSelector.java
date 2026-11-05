@@ -4,6 +4,8 @@
 
 package org.chromium.chrome.browser.tabmodel;
 
+import org.jni_zero.JniPtr;
+
 import org.chromium.base.supplier.MonotonicObservableSupplier;
 import org.chromium.base.supplier.NonNullObservableSupplier;
 import org.chromium.base.supplier.NullableObservableSupplier;
@@ -24,9 +26,6 @@ import java.util.List;
  */
 @NullMarked
 public interface TabModelSelector {
-    /** Should be called when the app starts showing a view with multiple tabs. */
-    void onTabsViewShown();
-
     /**
      * Set the current model. This won't cause an animation, but will still change the stack that is
      * currently visible if the tab switcher is open.
@@ -64,8 +63,8 @@ public interface TabModelSelector {
     /**
      * Convenience function to get the current tab id on the current model.
      *
-     * @return Id of the current tab or {@link Tab#INVALID_TAB_ID} if no tab is selected or the
-     *     model is not initialized.
+     * @return Id of the current tab or {@link Tab#INVALID_TAB_ID} if no tab is active or the model
+     *     is not initialized.
      */
     int getCurrentTabId();
 
@@ -99,14 +98,16 @@ public interface TabModelSelector {
     boolean isIncognitoSelected();
 
     /**
-     * @return If the current {@link TabModel} is Incognito branded.
-     * @see {@link Profile#isIncognitoBranded()}
+     * Returns whether the current {@link TabModel} is Incognito branded.
+     *
+     * @see Profile#isIncognitoBranded()
      */
     boolean isIncognitoBrandedModelSelected();
 
     /**
-     * @return If the current {@link TabModel} is off the record.
-     * @see {@link Profile#isOffTheRecord()}
+     * Returns whether the current {@link TabModel} is off the record.
+     *
+     * @see Profile#isOffTheRecord()
      */
     boolean isOffTheRecordModelSelected();
 
@@ -137,10 +138,8 @@ public interface TabModelSelector {
      * getModel(isIncognito).getTabRemover().closeTabs()}.
      *
      * @param tabClosureParams A {@link TabClosureParams} for a single tab.
-     * @param allowDialog Whether to show a tab removal dialog see {@link TabRemover}
-     * @return true if the tab was found and closed.
      */
-    boolean tryCloseTab(TabClosureParams tabClosureParams, boolean allowDialog);
+    void closeTab(TabClosureParams tabClosureParams);
 
     /** Get total tab count across all tab models */
     int getTotalTabCount();
@@ -174,9 +173,7 @@ public interface TabModelSelector {
      */
     void commitAllTabClosures();
 
-    /**
-     * @return Whether the tab state for this {@link TabModelSelector} has been initialized.
-     */
+    /** Returns whether the tab state for this {@link TabModelSelector} has been initialized. */
     boolean isTabStateInitialized();
 
     /**
@@ -192,9 +189,19 @@ public interface TabModelSelector {
     boolean isReparentingInProgress();
 
     /**
+     * Silently detaches a tab being reparented across Activity recreation from its model before
+     * insertion into the destination Activity's model. {@link #enterReparentingMode()} must have
+     * been called beforehand.
+     *
+     * @param tab The tab to detach for reparenting.
+     */
+    void detachTabForReparenting(Tab tab);
+
+    /**
      * Subscribe an {@link IncognitoTabModelObserver} to events that the {@link IncognitoTabModel}
-     * in this selector emits.  The model could be observed directly, but observing the
-     * selector allows an observer to subscribe itself before the model is created.
+     * in this selector emits. The model could be observed directly, but observing the selector
+     * allows an observer to subscribe itself before the model is created.
+     *
      * @param incognitoObserver The observer to subscribe.
      */
     void addIncognitoTabModelObserver(IncognitoTabModelObserver incognitoObserver);
@@ -214,7 +221,8 @@ public interface TabModelSelector {
             IncognitoTabModelObserver.IncognitoReauthDialogDelegate incognitoReauthDialogDelegate);
 
     /** Returns the {@link TabModel} for the associated {@link TabStripCollection}. */
-    @Nullable TabModel getTabModelForTabStripCollection(TabStripCollection tabStripCollection);
+    @Nullable TabModel getTabModelForTabStripCollection(
+            JniPtr<TabStripCollection> tabStripCollection);
 
     /**
      * This method adds {@link TabModelObserver} to both {@link TabModel}s. Caches the observer
@@ -230,9 +238,6 @@ public interface TabModelSelector {
      * @param observer {@link TabModelObserver} to remove.
      */
     void removeObserverFromAllModels(TabModelObserver observer);
-
-    /** Reset the internal tab model list to allow initialization again. */
-    void resetTabModelListForTesting(); // IN-TEST
 
     /** Destroy all owned {@link TabModel}s and {@link Tab}s referenced by this selector. */
     @TabDestroyStatus

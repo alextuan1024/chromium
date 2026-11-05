@@ -231,7 +231,11 @@ inline LayoutStateScenePassKey PassKey() {
 #pragma mark - UIResponder
 
 - (BOOL)canBecomeFirstResponder {
-  return YES;
+  // Only claim first responder when Tab Grid or App Bar has key commands to
+  // handle. When browser layout is active, child view controllers (e.g. BVC)
+  // handle keyboard input.
+  return _tabGridViewController.keyCommands.count > 0 ||
+         _appBar.keyCommands.count > 0;
 }
 
 - (NSArray<UIKeyCommand*>*)keyCommands {
@@ -824,6 +828,15 @@ inline LayoutStateScenePassKey PassKey() {
   ];
 
   _assistantSheetConstraints = sheetConstraints;
+  // With fullscreen refactoring, the app content container is only positioned
+  // by constraints. The default constraints are deactivated while the
+  // Assistant is presented, and without Chrome Next IA no fill constraints
+  // replace them, so the app content must be kept filling the view here.
+  if (IsFullscreenRefactoringEnabled() && !IsChromeNextIaEnabled()) {
+    [self setupDefaultConstraints];
+    _assistantSheetConstraints = [sheetConstraints
+        arrayByAddingObjectsFromArray:_baseAssistantConstraints];
+  }
 }
 
 // Dismissal callback method for the first IA promo IPH.

@@ -8,6 +8,7 @@ import "components/browser_apis/browser_controls/browser_controls_api_data_model
 import "components/browser_apis/ui_controllers/toolbar/extensions_bar_data_model.mojom";
 import "components/browser_apis/ui_controllers/toolbar/icon_handle.mojom";
 import "components/content_settings/core/common/content_settings_types.mojom";
+import "mojo/public/mojom/base/empty.mojom";
 import "mojo/public/mojom/base/string16.mojom";
 import "mojo/public/mojom/base/time.mojom";
 import "skia/public/mojom/skcolor.mojom";
@@ -58,8 +59,16 @@ enum ContextMenuType {
   kPinnedActionSidePanelShowMerchantTrust,
   kPinnedActionSendSharedTabGroupFeedback,
   kPinnedActionSidePanelShowComments,
+  kPinnedActionShowAiOverlayDialog,
+  kPinnedActionTtcToolbar,
+  kPinnedActionGlicSmartSelection,
+  kPinnedActionSidePanelShowHistory,
+  kPinnedActionShowChromeLabs,
+  kPinnedActionSidePanelShowGlic,
   // App Menu Button
   kAppMenu,
+  // Glic Button
+  kGlic,
 };
 
 struct BackForwardButtonState {
@@ -133,6 +142,9 @@ struct OmniboxActionTextInput {
   // viewed as actually changing the URL).
   bool unelision = false;
 
+  // If true, this change was a paste.
+  bool paste = false;
+
   gfx.mojom.Range selection;
 };
 
@@ -163,18 +175,9 @@ struct OmniboxActionPointer {
 };
 
 struct OmniboxActionDropText {
-  // The text or URL (e.g. from a link drop) to be dropped into the omnibox.
-  //
-  // String16 is used here instead of url.mojom.Url for two reasons:
-  // 1. Parity with the native Omnibox: The backend classification logic in
-  //    `AutocompleteClassifier::Classify` (and the broader autocomplete
-  //    controller) expects raw user input as a string to distinguish between
-  //    search queries and various URL forms.
-  // 2. Handling sanitization: Blink's renderer-side sanitization (e.g. in
-  //    `RenderProcessHostImpl::FilterURL`) replaces restricted URLs like
-  //    `javascript:` with `about:blank#blocked` in the `text/uri-list` format.
-  //    Using a string allows the WebUI to fall back to `text/plain` to recover
-  //    the raw input for proper processing in the browser process.
+  // The plain text (`text/plain`) dropped into the omnibox. Like the native
+  // omnibox, the browser collapses its whitespace and strips `javascript:`
+  // schemes before showing it.
   mojo_base.mojom.String16 text;
 };
 
@@ -191,8 +194,15 @@ union OmniboxAction {
   OmniboxActionTextInput text_input;
   OmniboxActionKey key;
   OmniboxActionPointer pointer;
+  // A drop is reported as a single action, preferring a URL, then files, then
+  // plain text, like OmniboxViewViews::PerformDrop().
   OmniboxActionDropText drop_text;
+  // Notifies the browser a URL (`text/uri-list`) was dropped into the omnibox.
+  // The browser uses the URL it captured from the drag.
+  mojo_base.mojom.Empty drop_url;
   OmniboxActionDropFile drop_file;
+  // Notifies the browser the user started dragging text out of the omnibox.
+  mojo_base.mojom.Empty drag_start;
 };
 
 struct ReloadControlState {
@@ -245,11 +255,6 @@ struct PerformanceInterventionControlState {
   // Whether the button should be shown.
   // Corresponds to `OverflowableButtonState.shouldBeShown`.
   bool should_be_shown;
-  // Boolean that keeps track if the intervention button icon should be shown
-  // in the active color. The intervention button should show the active color
-  // when it becomes visible and stay in the active color until the user clicks
-  // on the button.
-  bool is_active;
 };
 
 // State of media button that shows up in toolbar when a tab is playing media.
@@ -261,6 +266,19 @@ struct MediaControlState {
   bool should_be_shown = false;
   // Whether the context menu is currently showing.
   bool is_context_menu_visible = false;
+
+  // When true, the button is exempt from overflow logic, which normally hides
+  // the button and adds it to the overflow menu when there's insufficient space
+  // for it to fit.
+  //
+  // If `should_be_shown` is false, should not be set.
+  //
+  // Set while the browser is attempting to show the media dialog, and while
+  // that dialog is open, since the dialog is anchored to the button and so
+  // needs it to remain visible.
+  //
+  // Corresponds to `OverflowableButtonState.preventOverflow`.
+  bool? prevent_overflow;
 };
 
 // State of the battery saver button that shows up in toolbar when battery saver
@@ -269,6 +287,63 @@ struct BatterySaverControlState {
   // Whether the button should be shown.
   // Corresponds to `OverflowableButtonState.shouldBeShown`.
   bool should_be_shown;
+
+  // When true, the button is exempt from overflow logic, which normally hides
+  // the button and adds it to the overflow menu when there's insufficient space
+  // for it to fit.
+  //
+  // If `should_be_shown` is false, should not be set.
+  //
+  // Set while the browser is attempting to show the battery saver bubble, and
+  // while that bubble is open, since the bubble is anchored to the button and
+  // so needs it to remain visible.
+  //
+  // Corresponds to `OverflowableButtonState.preventOverflow`.
+  bool? prevent_overflow;
+};
+
+// State of the Glic button in the toolbar.
+struct GlicButtonState {
+  // Whether the Glic panel is currently open.
+  bool open = false;
+  // Whether the Glic button should be shown in the toolbar (i.e., when it is
+  // both pinned and eligible to be displayed in the toolbar).
+  bool should_show = false;
+  // Whether the context menu is currently visible.
+  bool is_context_menu_visible = false;
+  // Whether the button background should match the toolbar instead of using
+  // the highlighted Glic chip background. Mirrors
+  // `glic::ToolbarGlicButton::UpdateStyle()`.
+  bool should_match_toolbar_style = false;
+  // Whether a custom (extension) theme is in use, in which case the button
+  // uses the avatar button highlight colors regardless of
+  // `should_match_toolbar_style`. Mirrors
+  // `glic::GlicButton::ShouldApplyCustomThemeFallback()`.
+  bool use_custom_theme_fallback = false;
+  // Dynamic nudge label to display in the button when a nudge is active, if
+  // available. This string is for display only and must not be
+  // programmatically parsed.
+  string? nudge_label;
+  // Whether the Glic button is joined with the actor task icon as a split
+  // button (collapsed to icon-only with a flattened trailing edge).
+  bool is_split = false;
+};
+
+// State of the Glic actor task icon (the autobrowse task indicator) in the
+// toolbar. It is only shown next to the Glic button, forming a split button.
+struct GlicActorTaskIconState {
+  // Whether the icon should be shown (i.e. an actor task is active).
+  bool should_show = false;
+  // Nudge text to display next to the icon when a nudge is active, if
+  // available. This string is for display only and must not be
+  // programmatically parsed.
+  string? nudge_label;
+  // Tooltip and accessible name for the icon. This string is for display only
+  // and must not be programmatically parsed.
+  string tooltip;
+  // Whether the icon is in its pressed state (i.e. while the actor task list
+  // bubble is showing).
+  bool is_pressed = false;
 };
 
 // The type of icon state for the app menu. These values drive the visual
@@ -279,7 +354,7 @@ struct BatterySaverControlState {
 enum AppMenuIconType {
   kNone,
   kUpgradeNotification,
-  kGlobalError, // e.g. sign-in error.
+  kGlobalError,  // e.g. sign-in error.
 };
 
 // The severity level of the app menu icon (e.g., for updates or errors).
@@ -341,6 +416,17 @@ struct AvatarControlState {
   mojo_base.mojom.String16 accessibility_description;
   bool enabled = true;
   bool has_linear_gradient_ring = false;
+
+  // When true, the button is exempt from overflow logic, which normally hides
+  // the button and adds it to the overflow menu when there's insufficient space
+  // for it to fit.
+  //
+  // Set while the browser is waiting to show a bubble anchored to the avatar
+  // button (e.g., the profile menu), and while that bubble is open, since the
+  // bubble needs the button to remain visible.
+  //
+  // Corresponds to `OverflowableButtonState.preventOverflow`.
+  bool prevent_overflow = false;
 };
 
 // Current state related to and managed by the overflow button.
@@ -381,10 +467,10 @@ enum ContentSettingImageType {
   kStorageAccess = 19,
   // kMidi = 20, // Deprecated.
   kNotifications = 21,
-  [EnableIf=is_chromeos]
-  kSmartCard = 22,
-  [EnableIf=is_win]
-  kProtectedMediaIdentifier = 23,
+
+  [EnableIf=enable_smart_card] kSmartCard = 22,
+
+  [EnableIf=is_win] kProtectedMediaIdentifier = 23,
 };
 
 // These fields correspond to the accessors of ContentSettingImageModel.
@@ -403,12 +489,6 @@ struct ContentSettingImageState {
   // the user (i.e. turn off JavaScript) -- the icon should change to indicate
   // the blocked status.
   bool is_blocked;
-
-  // If true, the bubble is visible, so the icon should be highlighted.
-  //
-  // TODO: crbug.com/489109708 - Consider removing `is_bubble_visible` if we
-  // can use element tracking for highlighting instead.
-  bool is_bubble_visible;
 
   // Explanatory text that animates in if non empty.
   mojo_base.mojom.String16 explanatory_string;
@@ -459,12 +539,13 @@ enum PageActionId {
   kActionFederation,
   kActionGlicContextualCueing,
   kActionAnchoredContextualCue,
-  kActionWebAuthnAmbientSignin,
   kActionAutofillPayment,
   kActionShowPaymentsChurnedUsersBubble,
   kActionFakePageActionForDebug,
   kActionWalletReminderNotice,
+  kActionGmailOtpOptIn,
 };
+
 // LINT.ThenChange(//chrome/browser/ui/page_action/page_action_properties_provider.cc:kPageActionProperties,//chrome/browser/ui/page_action/action_ids.h:kActionIds)
 
 // The input modality that causes the page action to trigger: click, keyboard
@@ -521,6 +602,9 @@ struct PageActionState {
 
   // Overrides background color from its usual behavior.
   skia.mojom.SkColor? background_color_override;
+
+  // Overrides foreground (icon and text) color from its usual behavior.
+  skia.mojom.SkColor? foreground_color_override;
 
   // The TrackedElement id to use for the page action icon button. Used for
   // element tracking.
@@ -612,6 +696,9 @@ struct OmniboxViewState {
   // This is the same as `user_input_in_progress` in LocationBarFlags, but also
   // included here for convenience.
   bool user_input_in_progress = false;
+
+  // True if temporary text is being displayed, i.e. from suggestions.
+  bool has_temporary_text = false;
 };
 
 struct LocationBarFlags {
@@ -644,36 +731,82 @@ struct SelectedKeywordState {
 
 // Enum of all supported pinned toolbar actions.
 enum PinnedToolbarAction {
- kUnspecified, // Unused; triggers assert if used.
- kNewIncognitoWindow,
- kShowPasswordsBubbleOrPage,
- kShowPaymentsBubbleOrPage,
- kShowAddressesBubbleOrPage,
- kSidePanelShowBookmarks,
- kSidePanelShowReadingList,
- kSidePanelShowHistoryCluster,
- kShowDownloads,
- kClearBrowsingData,
- kPrint,
- kSidePanelShowLensOverlayResults,
- kShowTranslate,
- kQrCodeGenerator,
- kRouteMedia,
- kSidePanelShowReadAnything,
- kCopyUrl,
- kSendTabToSelf,
- kTaskManager,
- kDevTools,
- kTabSearch,
- kSidePanelShowContextualTasks,
- kSidePanelShowLens,
- kSidePanelShowAboutThisSite,
- kSidePanelShowCustomizeChrome,
- kSidePanelShowShoppingInsights,
- kSidePanelShowMerchantTrust,
- kSendSharedTabGroupFeedback,
- kSidePanelShowComments,
- kDivider, // A divider; not a clickable action.
+  kUnspecified,  // Unused; triggers assert if used.
+  kNewIncognitoWindow,
+  kShowPasswordsBubbleOrPage,
+  kShowPaymentsBubbleOrPage,
+  kShowAddressesBubbleOrPage,
+  kSidePanelShowBookmarks,
+  kSidePanelShowReadingList,
+  kSidePanelShowHistoryCluster,
+  kShowDownloads,
+  kClearBrowsingData,
+  kPrint,
+  kSidePanelShowLensOverlayResults,
+  kShowTranslate,
+  kQrCodeGenerator,
+  kRouteMedia,
+  kSidePanelShowReadAnything,
+  kCopyUrl,
+  kSendTabToSelf,
+  kTaskManager,
+  kDevTools,
+  kTabSearch,
+  kSidePanelShowContextualTasks,
+  kSidePanelShowLens,
+  kSidePanelShowAboutThisSite,
+  kSidePanelShowCustomizeChrome,
+  kSidePanelShowShoppingInsights,
+  kSidePanelShowMerchantTrust,
+  kSendSharedTabGroupFeedback,
+  kSidePanelShowComments,
+  kShowAiOverlayDialog,
+  kTtcToolbar,
+  kGlicSmartSelectionToolbar,
+  kSidePanelShowHistory,
+  kShowChromeLabs,
+  kSidePanelShowGlic,
+  kDivider,  // A divider; not a clickable action.
+};
+
+// The status of the progress ring drawn around a pinned toolbar action
+// button's icon. Currently only the downloads button draws a progress ring.
+// Mirrors ActionItemProgressRingStatus in
+// //chrome/browser/ui/views/toolbar/download_button.h
+// (kIdle is omitted because idle is represented by a null
+// DownloadProgressRingState).
+enum DownloadProgressRingStatus {
+  // A static, solid ring is drawn. Used while the button is dormant, so that
+  // the ring doesn't have to be animated in browser windows the user isn't
+  // looking at.
+  kDormant,
+  // An indeterminate, continuously spinning ring is drawn.
+  kScanning,
+  // A determinate ring, filled according to `progress_percentage`, is drawn.
+  kDownloading,
+};
+
+// Describes the progress ring drawn around a pinned toolbar action button's
+// icon.
+struct DownloadProgressRingState {
+  DownloadProgressRingStatus status;
+
+  // How much of the ring to fill, in percent within [0, 100]. Only meaningful
+  // when `status` is kDownloading.
+  uint8? progress_percentage;
+};
+
+// Visual style used to indicate that a pinned toolbar action button is engaged
+// (`activated`). Mirrors `ActionItemEngagedIndicatorStyle` in
+// //chrome/browser/ui/views/toolbar/pinned_action_toolbar_button.h.
+enum PinnedToolbarActionEngagedIndicatorStyle {
+  // Colors the button icon with `--color-toolbar-action-item-engaged` and shows
+  // an underline status indicator below the icon.
+  kUnderline,
+  // Shows a circular background highlight
+  // (`--color-avatar-button-highlight-default`) behind the button when not
+  // highlighted (`is-menu-open`).
+  kCircleHighlight,
 };
 
 // The state of a pinned toolbar action button that should be displayed.
@@ -690,6 +823,12 @@ struct PinnedToolbarActionState {
   // Should this button appear activated?
   bool activated;
 
+  // Visual style used to indicate that the action is engaged when `activated`
+  // is true. Mirrors `kActionItemEngagedIndicatorStyleKey` and
+  // `PinnedActionToolbarButton::SetEngagedIndicatorStyle()`.
+  PinnedToolbarActionEngagedIndicatorStyle engaged_indicator_style =
+      PinnedToolbarActionEngagedIndicatorStyle.kUnderline;
+
   // Tooltip text to display on hover.
   mojo_base.mojom.String16 tooltip;
 
@@ -701,6 +840,20 @@ struct PinnedToolbarActionState {
 
   // The icon to display.
   IconHandle icon;
+
+  // The progress ring to draw around the icon, if any. Null if this action
+  // never draws a progress ring.
+  DownloadProgressRingState? progress_ring;
+
+  // The number to show in the badge drawn over the icon, if any. Null if this
+  // action has no badge.
+  int32? badge_number;
+
+  // Delta (in dp) applied to the default toolbar button icon size when
+  // rendering `icon`. Always non-positive. Mirrors
+  // `chrome::kActionItemIconSizeDeltaKey` and
+  // PinnedActionToolbarButton::GetIconSize().
+  int32 icon_size_delta = 0;
 };
 
 struct LocationBarState {
@@ -763,6 +916,8 @@ enum PermissionAction {
 
 struct PermissionChipState {
   bool is_visible;
+  // The chip's icon as an iconset id (e.g.
+  // "webui-toolbar-shared:content_paste"), or empty for no icon.
   string icon_name;
   mojo_base.mojom.String16 message;
   mojo_base.mojom.String16 tooltip;
@@ -841,10 +996,10 @@ struct LhsChipsState {
   // Multiple indicators can be active (e.g., Camera + Mic).
   array<ContentSettingImageState> activity_indicators;
 
-  PermissionDashboardState? permission_dashboard;
+  PermissionDashboardState permission_dashboard;
 };
 
-struct NavigationControlsState {
+struct ToolbarState {
   ReloadControlState reload_control_state;
   SplitTabsControlState split_tabs_control_state;
   BackForwardControlState back_forward_control_state;
@@ -867,6 +1022,19 @@ struct NavigationControlsState {
 
   // This is true if we're in touch mode.
   bool touch_ui = false;
+
+  // State of the Glic button in the toolbar.
+  GlicButtonState glic_button_state;
+
+  // State of the Glic actor task icon in the toolbar.
+  GlicActorTaskIconState glic_actor_task_icon_state;
+
+  // True while toolbar button icons should use the inactive color because the
+  // browser window is inactive. Only ever true on platforms where
+  // views::PlatformStyle::kInactiveWidgetControlsAppearDisabled is set (Mac),
+  // matching native toolbar buttons, which use kColorToolbarButtonIconInactive
+  // in that case.
+  bool controls_appear_inactive = false;
 };
 
 enum FocusRequestTarget {

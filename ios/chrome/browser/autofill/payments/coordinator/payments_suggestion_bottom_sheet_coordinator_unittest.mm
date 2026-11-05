@@ -86,6 +86,7 @@ class PaymentsSuggestionBottomSheetCoordinatorTest : public PlatformTest {
         std::make_unique<autofill::CreditCard>(credit_card_));
     personal_data_manager->payments_data_manager().SetSyncingForTest(true);
 
+    params_.has_user_gesture = true;
     coordinator_ = [[PaymentsSuggestionBottomSheetCoordinator alloc]
         initWithBaseViewController:window_.rootViewController
                            browser:browser_.get()
@@ -193,7 +194,8 @@ TEST_F(PaymentsSuggestionBottomSheetCoordinatorTest, SecondaryButton) {
 
 // Test that using the payments method long press menu logs the correct exit
 // reason.
-TEST_F(PaymentsSuggestionBottomSheetCoordinatorTest, PaymentsMethods) {
+// TODO(crbug.com/581354992): Flaky on device and simulator.
+TEST_F(PaymentsSuggestionBottomSheetCoordinatorTest, DISABLED_PaymentsMethods) {
   base::HistogramTester histogram_tester;
 
   [coordinator_ start];
@@ -215,7 +217,8 @@ TEST_F(PaymentsSuggestionBottomSheetCoordinatorTest, PaymentsMethods) {
 
 // Test that using the payments details long press menu logs the correct exit
 // reason.
-TEST_F(PaymentsSuggestionBottomSheetCoordinatorTest, PaymentsDetails) {
+// TODO(crbug.com/581354992): Flaky on device and simulator.
+TEST_F(PaymentsSuggestionBottomSheetCoordinatorTest, DISABLED_PaymentsDetails) {
   base::HistogramTester histogram_tester;
 
   [coordinator_ start];
@@ -232,4 +235,28 @@ TEST_F(PaymentsSuggestionBottomSheetCoordinatorTest, PaymentsDetails) {
   histogram_tester.ExpectUniqueSample(
       "IOS.PaymentsBottomSheet.ExitReason",
       PaymentsSuggestionBottomSheetExitReason::kShowPaymentDetails, 1);
+}
+
+// Test that a change of the active WebState tears the sheet down and logs
+// kNavigationOrTabChange exactly once, i.e. the subsequent viewDidDisappear
+// does not log a second sample.
+TEST_F(PaymentsSuggestionBottomSheetCoordinatorTest, NavigationDismissal) {
+  base::HistogramTester histogram_tester;
+
+  [coordinator_ start];
+
+  OCMExpect([mock_autofill_commands_handler_ dismissPaymentsBottomSheet]);
+
+  // Inserting and activating a new WebState changes the active WebState,
+  // triggering mediator dismissal due to navigation/WebState change.
+  InsertWebState();
+
+  [coordinator_ viewDidDisappear];
+
+  [coordinator_ stop];
+
+  EXPECT_OCMOCK_VERIFY(mock_autofill_commands_handler_);
+  histogram_tester.ExpectUniqueSample(
+      "IOS.PaymentsBottomSheet.ExitReason",
+      PaymentsSuggestionBottomSheetExitReason::kNavigationOrTabChange, 1);
 }

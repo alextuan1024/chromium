@@ -4,6 +4,7 @@
 
 #include "third_party/blink/renderer/core/frame/csp/content_security_policy.h"
 
+#include "base/memory/raw_ptr_exclusion.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/with_feature_override.h"
@@ -65,6 +66,83 @@ class MockReportingContext : public ReportingContext {
  private:
   HeapVector<Member<Report>> reports_;
 };
+
+class ReentrancyCSPDelegate final : public TestCSPDelegate {
+ public:
+  enum class Trigger { kNone, kBlockedScript, kInspectorIssue };
+
+  void ArmReallocation(ContentSecurityPolicy* csp,
+                       Trigger trigger,
+                       const String& header) {
+    csp_ = csp;
+    trigger_ = trigger;
+    header_to_add_ = header;
+  }
+
+  const Vector<String>& blocked_directives() const {
+    return blocked_directives_;
+  }
+  wtf_size_t inspector_issue_count() const { return inspector_issue_count_; }
+
+  void AddInspectorIssue(AuditsIssue) override {
+    ++inspector_issue_count_;
+    MaybeReallocate(Trigger::kInspectorIssue);
+  }
+
+  void ReportBlockedScriptExecutionToInspector(
+      const String& directive_text) override {
+    blocked_directives_.push_back(directive_text);
+    MaybeReallocate(Trigger::kBlockedScript);
+  }
+
+  void Trace(Visitor* visitor) const override {
+    visitor->Trace(csp_);
+    TestCSPDelegate::Trace(visitor);
+  }
+
+ private:
+  void MaybeReallocate(Trigger trigger) {
+    if (trigger_ != trigger) {
+      return;
+    }
+    trigger_ = Trigger::kNone;
+    const auto* initial_data = csp_->GetParsedPolicies().data();
+    for (int i = 0; i < 64 && csp_->GetParsedPolicies().data() == initial_data;
+         ++i) {
+      csp_->AddPolicies(ParseContentSecurityPolicies(
+          header_to_add_, ContentSecurityPolicyType::kEnforce,
+          ContentSecurityPolicySource::kMeta, *GetSecurityOrigin()));
+    }
+    EXPECT_NE(csp_->GetParsedPolicies().data(), initial_data);
+  }
+
+  Member<ContentSecurityPolicy> csp_;
+  Trigger trigger_ = Trigger::kNone;
+  String header_to_add_;
+  Vector<String> blocked_directives_;
+  wtf_size_t inspector_issue_count_ = 0;
+};
+
+template <typename Fn>
+void RunWithReentrantAddPolicies(const SecurityOrigin& origin,
+                                 const char* first_header,
+                                 ContentSecurityPolicyType first_type,
+                                 const char* second_header,
+                                 ReentrancyCSPDelegate::Trigger trigger,
+                                 Fn&& check) {
+  auto* policy = MakeGarbageCollected<ContentSecurityPolicy>();
+  auto* delegate = MakeGarbageCollected<ReentrancyCSPDelegate>();
+  policy->BindToDelegate(*delegate);
+  policy->AddPolicies(ParseContentSecurityPolicies(
+      first_header, first_type, ContentSecurityPolicySource::kHTTP, origin));
+  policy->AddPolicies(ParseContentSecurityPolicies(
+      second_header, ContentSecurityPolicyType::kEnforce,
+      ContentSecurityPolicySource::kHTTP, origin));
+  delegate->ArmReallocation(policy, trigger, second_header);
+  check(policy, delegate);
+  EXPECT_EQ(delegate->inspector_issue_count(), 2u);
+  EXPECT_GT(policy->GetParsedPolicies().size(), 2u);
+}
 
 }  // namespace
 
@@ -603,7 +681,8 @@ TEST_F(ContentSecurityPolicyTest, NonceMultiplePolicy) {
 TEST_F(ContentSecurityPolicyTest, DirectiveType) {
   struct TestCase {
     CSPDirectiveName type;
-    const String& name;
+    // RAW_PTR_EXCLUSION: Stack-scoped.
+    RAW_PTR_EXCLUSION const String& name;
   } cases[] = {
       {CSPDirectiveName::BaseURI, "base-uri"},
       {CSPDirectiveName::BlockAllMixedContent, "block-all-mixed-content"},
@@ -1441,32 +1520,6 @@ TEST_F(ContentSecurityPolicyTest, UnsafeHashesMetric) {
   }
 }
 
-TEST_F(ContentSecurityPolicyTest, TreatAsPublicAddressMetric) {
-  struct TestCase {
-    const char* header;
-    bool expected_use_counted;
-  } cases[] = {
-      {"script-src 'self'", false},
-      {"treat-as-public-address", true},
-  };
-
-  for (const auto& test : cases) {
-    SCOPED_TRACE(testing::Message() << "Header: `" << test.header << "`");
-    csp = MakeGarbageCollected<ContentSecurityPolicy>();
-    csp->AddPolicies(ParseContentSecurityPolicies(
-        test.header, ContentSecurityPolicyType::kEnforce,
-        ContentSecurityPolicySource::kHTTP, *secure_origin));
-    auto dummy = std::make_unique<DummyPageHolder>();
-    csp->BindToDelegate(
-        dummy->GetFrame().DomWindow()->GetContentSecurityPolicyDelegate());
-
-    EXPECT_EQ(
-        test.expected_use_counted,
-        dummy->GetDocument().IsUseCounted(
-            WebFeature::kLocalNetworkAccessShouldTreatAsPublicAddressCsp));
-  }
-}
-
 TEST_F(ContentSecurityPolicyTest, UrlEvalHashesMetric) {
   base::test::ScopedFeatureList feature_list;
   feature_list.InitWithFeatures({network::features::kCSPScriptSrcHashesInV1},
@@ -1973,7 +2026,7 @@ TEST_F(ContentSecurityPolicyTest, AddHashReportSanitization) {
       ContentSecurityPolicySource::kHTTP, *secure_origin));
 
   HashMap<HashAlgorithm, String> hashes;
-  hashes.insert(kHashAlgorithmSha256, "some-hash");
+  hashes.insert(HashAlgorithm::kSha256, "some-hash");
 
   // An extension URL should be sanitized in the report.
   KURL extension_url("chrome-extension://abcdefghijklmnop/script.js");
@@ -2000,6 +2053,165 @@ TEST_F(ContentSecurityPolicyTest, AddHashReportSanitization) {
   // This expectation will also FAIL if url is not sanitized (fragment will
   // remain).
   EXPECT_EQ("https://example.test/script.js", body->subresourceURL());
+}
+
+TEST_F(ContentSecurityPolicyTest, ReportViolationBypassingScheme) {
+  SchemeRegistry::RegisterURLSchemeAsBypassingContentSecurityPolicy(
+      "chrome-extension");
+
+  auto* policy = MakeGarbageCollected<ContentSecurityPolicy>();
+  policy->BindToDelegate(execution_context->GetContentSecurityPolicyDelegate());
+  policy->AddPolicies(ParseContentSecurityPolicies(
+      "script-src 'none'", ContentSecurityPolicyType::kEnforce,
+      ContentSecurityPolicySource::kHTTP, *secure_origin));
+
+  const KURL chrome_extension_url("chrome-extension://abcdefg/script.js");
+  SourceLocation* source_location = MakeGarbageCollected<SourceLocation>(
+      chrome_extension_url.GetString(), String(), 1, 1, nullptr);
+
+  // Trigger a CSP violation report for a chrome-extension resource in
+  // example.test. The report should be dropped.
+  execution_context->SetURL(KURL("https://example.test"));
+  policy->ReportViolation(
+      CSPDirectiveName::ScriptSrc, /*blocked_url=*/KURL(),
+      /*report_endpoints=*/Vector<String>(), /*use_reporting_api=*/false,
+      /*header=*/"script-src 'none'", ContentSecurityPolicyType::kEnforce,
+      ContentSecurityPolicyViolationType::kInlineViolation, source_location);
+
+  EXPECT_EQ(0u, policy->violation_reports_sent_.size());
+
+  // Trigger a CSP violation report for a chrome-extension resource in
+  // chrome-extension itself. Now the report should be sent.
+  execution_context->SetURL(KURL("chrome-extension://abcdefg"));
+  policy->ReportViolation(
+      CSPDirectiveName::ScriptSrc, /*blocked_url=*/KURL(),
+      /*report_endpoints=*/Vector<String>(), /*use_reporting_api=*/false,
+      /*header=*/"script-src 'none'", ContentSecurityPolicyType::kEnforce,
+      ContentSecurityPolicyViolationType::kInlineViolation, source_location);
+  EXPECT_EQ(1u, policy->violation_reports_sent_.size());
+
+  SchemeRegistry::
+      RemoveURLSchemeRegisteredAsBypassingContentSecurityPolicyForTest(
+          "chrome-extension");
+}
+
+TEST_F(ContentSecurityPolicyTest, HashesToReport) {
+  static_assert(sizeof(HashAlgorithmSet) == 1);
+  EXPECT_TRUE(csp->HashesToReport().empty());
+
+  csp->AddPolicies(ParseContentSecurityPolicies(
+      "script-src 'self'", ContentSecurityPolicyType::kEnforce,
+      ContentSecurityPolicySource::kHTTP, *secure_origin));
+  EXPECT_TRUE(csp->HashesToReport().empty());
+
+  csp->AddPolicies(ParseContentSecurityPolicies(
+      "script-src 'report-sha256'", ContentSecurityPolicyType::kEnforce,
+      ContentSecurityPolicySource::kHTTP, *secure_origin));
+  EXPECT_EQ(HashAlgorithmSet({HashAlgorithm::kSha256}), csp->HashesToReport());
+
+  csp->AddPolicies(ParseContentSecurityPolicies(
+      "default-src 'report-sha384'; script-src 'report-sha512'",
+      ContentSecurityPolicyType::kReport, ContentSecurityPolicySource::kHTTP,
+      *secure_origin));
+  EXPECT_EQ(HashAlgorithmSet({HashAlgorithm::kSha256, HashAlgorithm::kSha512}),
+            csp->HashesToReport());
+}
+
+TEST_F(ContentSecurityPolicyTest, ReentrantAddPoliciesDuringScriptBlocking) {
+  auto verify = [&](const char* label, auto fn) {
+    SCOPED_TRACE(label);
+    RunWithReentrantAddPolicies(
+        *secure_origin, "script-src 'self'",
+        ContentSecurityPolicyType::kEnforce, "script-src 'none'",
+        ReentrancyCSPDelegate::Trigger::kBlockedScript,
+        [&](ContentSecurityPolicy* policy, ReentrancyCSPDelegate* delegate) {
+          EXPECT_FALSE(fn(policy));
+          EXPECT_EQ(delegate->blocked_directives(),
+                    (Vector<String>{"script-src 'self'", "script-src 'none'"}));
+        });
+  };
+
+  verify("AllowEval", [](ContentSecurityPolicy* policy) {
+    return policy->AllowEval(ReportingDisposition::kReport,
+                             ContentSecurityPolicy::kWillThrowException,
+                             "1 + 1");
+  });
+
+  auto* document = Document::CreateForTest(*execution_context);
+  auto* element =
+      MakeGarbageCollected<HTMLScriptElement>(*document, CreateElementFlags());
+  verify("AllowInline", [&](ContentSecurityPolicy* policy) {
+    return policy->AllowInline(
+        ContentSecurityPolicy::InlineType::kScript, element, "alert(1)",
+        /*nonce=*/String(), secure_url.GetString(),
+        TextPosition::MinimumPosition(), ReportingDisposition::kReport);
+  });
+
+  verify("AllowWasmCodeGeneration", [](ContentSecurityPolicy* policy) {
+    return policy->AllowWasmCodeGeneration(
+        ReportingDisposition::kReport,
+        ContentSecurityPolicy::kWillThrowException, "wasm");
+  });
+}
+
+TEST_F(ContentSecurityPolicyTest,
+       ReentrantAddPoliciesDuringViolationReporting) {
+  const KURL disallowed_url("https://not-example.test/resource");
+  auto verify = [&](const char* label, const char* first_header,
+                    ContentSecurityPolicyType first_type,
+                    const char* second_header, auto fn) {
+    SCOPED_TRACE(label);
+    RunWithReentrantAddPolicies(*secure_origin, first_header, first_type,
+                                second_header,
+                                ReentrancyCSPDelegate::Trigger::kInspectorIssue,
+                                [&](ContentSecurityPolicy* policy,
+                                    ReentrancyCSPDelegate*) { fn(policy); });
+  };
+
+  verify("AllowFromSource", "img-src 'self'",
+         ContentSecurityPolicyType::kEnforce, "img-src 'none'",
+         [&](ContentSecurityPolicy* policy) {
+           EXPECT_FALSE(policy->AllowImageFromSource(
+               disallowed_url, disallowed_url,
+               ResourceRequest::RedirectStatus::kNoRedirect));
+         });
+
+  // Report-only first policy ensures AllowRequest(PREFETCH)'s all_of advances
+  // past the re-entrant callback to the second policy.
+  verify("AllowRequest", "default-src 'self'",
+         ContentSecurityPolicyType::kReport, "default-src 'none'",
+         [&](ContentSecurityPolicy* policy) {
+           EXPECT_FALSE(policy->AllowRequest(
+               mojom::blink::RequestContextType::PREFETCH,
+               network::mojom::RequestDestination::kEmpty,
+               network::mojom::RequestMode::kCors, disallowed_url, String(),
+               IntegrityMetadataSet(), kParserInserted, disallowed_url,
+               ResourceRequest::RedirectStatus::kNoRedirect));
+         });
+
+  verify("AllowTrustedTypePolicy", "trusted-types allowed",
+         ContentSecurityPolicyType::kEnforce, "trusted-types other",
+         [](ContentSecurityPolicy* policy) {
+           ContentSecurityPolicy::AllowTrustedTypePolicyDetails details;
+           EXPECT_FALSE(policy->AllowTrustedTypePolicy(
+               "blocked", /*is_duplicate=*/false, details));
+         });
+
+  verify(
+      "AllowTrustedTypeAssignmentFailure", "require-trusted-types-for 'script'",
+      ContentSecurityPolicyType::kEnforce, "require-trusted-types-for 'script'",
+      [](ContentSecurityPolicy* policy) {
+        EXPECT_FALSE(
+            policy->AllowTrustedTypeAssignmentFailure("sink violation"));
+      });
+
+  verify("ReportMixedContent", "block-all-mixed-content",
+         ContentSecurityPolicyType::kEnforce, "block-all-mixed-content",
+         [](ContentSecurityPolicy* policy) {
+           policy->ReportMixedContent(
+               KURL("http://example.test/insecure.png"),
+               ResourceRequest::RedirectStatus::kNoRedirect);
+         });
 }
 
 }  // namespace blink

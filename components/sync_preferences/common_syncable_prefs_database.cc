@@ -20,13 +20,14 @@
 #include "components/language/core/browser/pref_names.h"
 #include "components/metrics/demographics/user_demographics.h"
 #include "components/metrics/metrics_pref_names.h"
-#include "components/ntp_tiles/pref_names.h"
+#include "components/ntp_tiles/custom_links_pref_names.h"
 #include "components/omnibox/browser/omnibox_prefs.h"
 #include "components/password_manager/core/common/password_manager_pref_names.h"
 #include "components/payments/core/payment_prefs.h"
 #include "components/safe_browsing/core/common/safe_browsing_prefs.h"
 #include "components/saved_tab_groups/public/pref_names.h"
 #include "components/sharing_message/pref_names.h"
+#include "components/site_token_provider/site_token_provider_prefs.h"
 #include "components/subscription_eligibility/subscription_eligibility_prefs.h"
 #include "components/sync/base/data_type.h"
 #include "components/sync/base/features.h"
@@ -34,6 +35,7 @@
 #include "components/translate/core/browser/translate_pref_names.h"
 #include "components/translate/core/browser/translate_prefs.h"
 #include "components/variations/service/google_groups_manager_prefs.h"
+#include "components/web_distiller/core/pref_names.h"
 
 namespace sync_preferences {
 
@@ -165,7 +167,7 @@ enum {
   kPrefTranslateRecentTargets = 115,
   kBookmarkBarVisibilityState = 116,
   kSyncableAccountScopedPrefForTesting = 117,  // For tests.
-  kAutofillAtMemoryTriggerInfo = 118,
+  // kAutofillAtMemoryTriggerInfo = 118, (deprecated)
   kAutofillGmailOtpFillingEnabled = 119,
   kAutofillGmailOtpFillingActivationDismissalTimestamp = 120,
   kDriveConsentState = 121,
@@ -174,6 +176,16 @@ enum {
   kAutofillAtMemoryDoubleCtrlTriggerEnabled = 124,
   kAutofillAtMemoryShortcut = 125,
   kSubscriptionEligibilitySubscriptionBenefits = 126,
+  kCustomLinksInitializedMobile = 127,
+  kCustomLinksListMobile = 128,
+  kSiteTokenProviderPref = 129,
+  kReaderForAccessibility = 130,
+  kSafeBrowsingNoProtectionDisabledTimestamp = 131,
+  kSafeBrowsingPreNoProtectionState = 132,
+  kSafeBrowsingNoProtectionDisabledPermanently = 133,
+  kSafeBrowsingNoProtectionReminderDismissed = 134,
+  kSafeBrowsingNoProtectionReminderLastShown = 135,
+  kSafeBrowsingNoProtectionReminderCount = 136,
   // New entries should be added above this line.
   kSubscriptionEligibilityAiSubscriptionTier =
       100338,  // (different ID as it's a move from //chrome)
@@ -291,6 +303,14 @@ constexpr auto kCommonSyncablePrefsAllowlist =
           WriteBehavior::kWriteToBoth}},
         {ntp_tiles::prefs::kCustomLinksList,
          {syncable_prefs_ids::kCustomLinksList, syncer::PREFERENCES,
+          PrefSensitivity::kSensitiveRequiresHistory, MergeBehavior::kNone,
+          WriteBehavior::kWriteToBoth}},
+        {ntp_tiles::prefs::kCustomLinksInitializedMobile,
+         {syncable_prefs_ids::kCustomLinksInitializedMobile,
+          syncer::PREFERENCES, PrefSensitivity::kNone, MergeBehavior::kNone,
+          WriteBehavior::kWriteToBoth}},
+        {ntp_tiles::prefs::kCustomLinksListMobile,
+         {syncable_prefs_ids::kCustomLinksListMobile, syncer::PREFERENCES,
           PrefSensitivity::kSensitiveRequiresHistory, MergeBehavior::kNone,
           WriteBehavior::kWriteToBoth}},
         {omnibox::kKeywordSpaceTriggeringEnabled,
@@ -469,6 +489,30 @@ constexpr auto kCommonSyncablePrefsAllowlist =
          {syncable_prefs_ids::kSafeBrowsingEnhanced, syncer::PREFERENCES,
           PrefSensitivity::kNone, MergeBehavior::kNone,
           WriteBehavior::kWriteToBoth}},
+        {prefs::kSafeBrowsingNoProtectionDisabledTimestamp,
+         {syncable_prefs_ids::kSafeBrowsingNoProtectionDisabledTimestamp,
+          syncer::PREFERENCES, PrefSensitivity::kNone, MergeBehavior::kNone,
+          WriteBehavior::kWriteToBoth}},
+        {prefs::kSafeBrowsingPreNoProtectionState,
+         {syncable_prefs_ids::kSafeBrowsingPreNoProtectionState,
+          syncer::PREFERENCES, PrefSensitivity::kNone, MergeBehavior::kNone,
+          WriteBehavior::kWriteToBoth}},
+        {prefs::kSafeBrowsingNoProtectionDisabledPermanently,
+         {syncable_prefs_ids::kSafeBrowsingNoProtectionDisabledPermanently,
+          syncer::PREFERENCES, PrefSensitivity::kNone, MergeBehavior::kNone,
+          WriteBehavior::kWriteToBoth}},
+        {prefs::kSafeBrowsingNoProtectionReminderDismissed,
+         {syncable_prefs_ids::kSafeBrowsingNoProtectionReminderDismissed,
+          syncer::PREFERENCES, PrefSensitivity::kNone, MergeBehavior::kNone,
+          WriteBehavior::kWriteToBoth}},
+        {prefs::kSafeBrowsingNoProtectionReminderLastShown,
+         {syncable_prefs_ids::kSafeBrowsingNoProtectionReminderLastShown,
+          syncer::PREFERENCES, PrefSensitivity::kNone, MergeBehavior::kNone,
+          WriteBehavior::kWriteToBoth}},
+        {prefs::kSafeBrowsingNoProtectionReminderCount,
+         {syncable_prefs_ids::kSafeBrowsingNoProtectionReminderCount,
+          syncer::PREFERENCES, PrefSensitivity::kNone, MergeBehavior::kNone,
+          WriteBehavior::kWriteToBoth}},
 #if BUILDFLAG(IS_ANDROID)
         {autofill::prefs::kFacilitatedPaymentsPix,
          {syncable_prefs_ids::kFacilitatedPaymentsPix, syncer::PREFERENCES,
@@ -548,10 +592,6 @@ constexpr auto kCommonSyncablePrefsAllowlist =
           syncer::PRIORITY_PREFERENCES,
           PrefSensitivity::kExemptFromUserControlWhileSignedIn,
           MergeBehavior::kNone, WriteBehavior::kWriteToBoth}},
-        {autofill::prefs::kAutofillAtMemoryTriggerInfo,
-         {syncable_prefs_ids::kAutofillAtMemoryTriggerInfo, syncer::PREFERENCES,
-          PrefSensitivity::kNone, MergeBehavior::kNone,
-          WriteBehavior::kWriteToBoth}},
         {autofill::prefs::kAutofillGmailOtpFillingEnabled,
          {syncable_prefs_ids::kAutofillGmailOtpFillingEnabled,
           syncer::PREFERENCES, PrefSensitivity::kNone, MergeBehavior::kNone,
@@ -575,6 +615,15 @@ constexpr auto kCommonSyncablePrefsAllowlist =
           WriteBehavior::kWriteToBoth}},
         {autofill::prefs::kAutofillAtMemoryShortcut,
          {syncable_prefs_ids::kAutofillAtMemoryShortcut, syncer::PREFERENCES,
+          PrefSensitivity::kNone, MergeBehavior::kNone,
+          WriteBehavior::kWriteToBoth}},
+        {site_token_provider::prefs::kSiteTokenProviderPref,
+         {syncable_prefs_ids::kSiteTokenProviderPref,
+          syncer::PRIORITY_PREFERENCES,
+          PrefSensitivity::kExemptFromUserControlWhileSignedIn,
+          MergeBehavior::kNone, WriteBehavior::kWriteToBoth}},
+        {web_distiller::prefs::kReaderForAccessibility,
+         {syncable_prefs_ids::kReaderForAccessibility, syncer::PREFERENCES,
           PrefSensitivity::kNone, MergeBehavior::kNone,
           WriteBehavior::kWriteToBoth}},
     });

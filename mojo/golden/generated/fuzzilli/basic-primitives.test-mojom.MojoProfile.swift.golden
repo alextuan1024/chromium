@@ -10,8 +10,6 @@
 //     basic-primitives.test-mojom
 //
 
-private let mojoPrefix = "golden."
-
 ///
 /// Interfaces
 ///
@@ -28,9 +26,10 @@ extension ILType {
         ])
     fileprivate static let jsGoldenPrimaryRemoteWrapper: ILType = .object(
         ofGroup: "golden.PrimaryRemoteWrapper",
-        withMethods: ["close", "isBound", "associateAndPassReceiver"])
-    fileprivate static let jsGoldenPrimaryPendingReceiver: ILType = .object(
-        ofGroup: "golden.PrimaryPendingReceiver")
+        withMethods: [
+          "close",
+          "isBound",
+        ])
 }
 
 extension ObjectGroup {
@@ -42,13 +41,13 @@ extension ObjectGroup {
         methods: [
             "methodWithPrimitives": [
                 .plain(.boolean),
-                .plain(.integer),
-                .plain(.integer),
-                .plain(.integer),
+                .plain(.jsInt8),
+                .plain(.jsInt16),
+                .plain(.jsInt32),
                 .plain(.bigint),
-                .plain(.integer),
-                .plain(.integer),
-                .plain(.integer),
+                .plain(.jsUint8),
+                .plain(.jsUint16),
+                .plain(.jsUint32),
                 .plain(.bigint),
                 .plain(.float),
                 .plain(.float),
@@ -56,13 +55,13 @@ extension ObjectGroup {
             ] => .jsPromise(resolvingTo: .jsGoldenPrimary_MethodWithPrimitives_ResponseParams),
             "methodWithNullablePrimitives": [
                 .either(.boolean, .undefined),
-                .either(.integer, .undefined),
-                .either(.integer, .undefined),
-                .either(.integer, .undefined),
+                .either(.jsInt8, .undefined),
+                .either(.jsInt16, .undefined),
+                .either(.jsInt32, .undefined),
                 .either(.bigint, .undefined),
-                .either(.integer, .undefined),
-                .either(.integer, .undefined),
-                .either(.integer, .undefined),
+                .either(.jsUint8, .undefined),
+                .either(.jsUint16, .undefined),
+                .either(.jsUint32, .undefined),
                 .either(.bigint, .undefined),
                 .either(.float, .undefined),
                 .either(.float, .undefined),
@@ -73,12 +72,14 @@ extension ObjectGroup {
                 .plain(.jsMojoDataPipeProducerHandle),
                 .plain(.jsMojoDataPipeConsumerHandle),
                 .plain(.jsMojoSharedBufferHandle),
+                .plain(.jsMojoPlatformHandle),
             ] => .jsPromise(resolvingTo: .jsGoldenPrimary_MethodWithHandles_ResponseParams),
             "methodWithNullableHandles": [
                 .either(.jsMojoHandle, .undefined),
                 .either(.jsMojoDataPipeProducerHandle, .undefined),
                 .either(.jsMojoDataPipeConsumerHandle, .undefined),
                 .either(.jsMojoSharedBufferHandle, .undefined),
+                .either(.jsMojoPlatformHandle, .undefined),
             ] => .jsPromise(resolvingTo: .jsGoldenPrimary_MethodWithNullableHandles_ResponseParams),
         ]
     )
@@ -90,16 +91,7 @@ extension ObjectGroup {
         methods: [
             "close": [] => .undefined,
             "isBound": [] => .boolean,
-            "associateAndPassReceiver": [] => .jsGoldenPrimaryPendingReceiver,
-        ]
-    )
-
-    fileprivate static let goldenPrimaryPendingReceiver = ObjectGroup(
-        name: "golden.PrimaryPendingReceiver",
-        instanceType: .jsGoldenPrimaryPendingReceiver,
-        properties: [:],
-        methods: [:]
-    )
+        ])
 }
 
 ///
@@ -145,6 +137,7 @@ extension ILType {
             "dataPipeProducerRes",
             "dataPipeConsumerRes",
             "sharedBufferRes",
+            "platformRes",
         ])
     fileprivate static let jsGoldenPrimary_MethodWithNullableHandles_ResponseParams: ILType = .object(
         ofGroup: "golden.Primary_MethodWithNullableHandles_ResponseParams",
@@ -153,6 +146,7 @@ extension ILType {
             "dataPipeProducerRes",
             "dataPipeConsumerRes",
             "sharedBufferRes",
+            "platformRes",
         ])
 }
 
@@ -162,13 +156,13 @@ extension ObjectGroup {
         instanceType: .jsGoldenPrimary_MethodWithPrimitives_ResponseParams,
         properties: [
             "boolRes": .boolean,
-            "int8Res": .integer,
-            "int16Res": .integer,
-            "int32Res": .integer,
+            "int8Res": .jsInt8,
+            "int16Res": .jsInt16,
+            "int32Res": .jsInt32,
             "int64Res": .bigint,
-            "uint8Res": .integer,
-            "uint16Res": .integer,
-            "uint32Res": .integer,
+            "uint8Res": .jsUint8,
+            "uint16Res": .jsUint16,
+            "uint32Res": .jsUint32,
             "uint64Res": .bigint,
             "floatRes": .float,
             "doubleRes": .float,
@@ -181,13 +175,13 @@ extension ObjectGroup {
         instanceType: .jsGoldenPrimary_MethodWithNullablePrimitives_ResponseParams,
         properties: [
             "boolRes": .boolean,
-            "int8Res": .integer,
-            "int16Res": .integer,
-            "int32Res": .integer,
+            "int8Res": .jsInt8,
+            "int16Res": .jsInt16,
+            "int32Res": .jsInt32,
             "int64Res": .bigint,
-            "uint8Res": .integer,
-            "uint16Res": .integer,
-            "uint32Res": .integer,
+            "uint8Res": .jsUint8,
+            "uint16Res": .jsUint16,
+            "uint32Res": .jsUint32,
             "uint64Res": .bigint,
             "floatRes": .float,
             "doubleRes": .float,
@@ -203,6 +197,7 @@ extension ObjectGroup {
             "dataPipeProducerRes": .jsMojoDataPipeProducerHandle,
             "dataPipeConsumerRes": .jsMojoDataPipeConsumerHandle,
             "sharedBufferRes": .jsMojoSharedBufferHandle,
+            "platformRes": .jsMojoPlatformHandle,
         ],
         methods: [:]
     )
@@ -214,6 +209,7 @@ extension ObjectGroup {
             "dataPipeProducerRes": .jsMojoDataPipeProducerHandle,
             "dataPipeConsumerRes": .jsMojoDataPipeConsumerHandle,
             "sharedBufferRes": .jsMojoSharedBufferHandle,
+            "platformRes": .jsMojoPlatformHandle,
         ],
         methods: [:]
     )
@@ -222,10 +218,12 @@ extension ObjectGroup {
 ///
 /// Generators
 ///
-// TODO(crbug.com/500386713) Consider using mojoBuiltins or another list instead of regex
+/// Names of every ObjectGroup registered by this profile.
+private let mojoTargetGroups = Set(mojoObjectGroups.map { $0.name })
+
 private func isTargetObject(type: ILType) -> Bool {
     guard type.Is(.object()), let group = type.group else { return false }
-    return group.starts(with: mojoPrefix)
+    return mojoTargetGroups.contains(group)
 }
 
 /// Mojo variant of the builtin `MethodCallGenerator` that operates only on
@@ -250,7 +248,7 @@ private let MojoMethodCallGenerator = CodeGenerator("MojoMethodCallGenerator") {
     let methodName = b.type(of: obj).randomMethod()!
     let signatures = b.methodSignatures(of: methodName, on: obj)
     let signature = chooseUniform(from: signatures)
-    let arguments = b.findOrGenerateArguments(forSignature: signature)
+    let arguments = b.findOrGenerateArguments(forSignature: signature, maxNumberOfVariablesToGenerate: 1000)
     b.callMethod(methodName, on: obj, withArgs: arguments, guard: false)
 }
 
@@ -269,18 +267,32 @@ private let MojoPropertyRetrievalGenerator = CodeGenerator(
     b.getProperty(propertyName, of: obj)
 }
 
+/// Every ObjectGroup registered by this profile. Also used by `isTargetObject`
+/// to decide which variables the Mojo generators operate on.
+private let mojoObjectGroups: [ObjectGroup] = [
+    .goldenPrimaryRemote,
+    .goldenPrimaryRemoteWrapper,
+    .goldenPrimaryMethodWithPrimitivesResponseParams,
+    .goldenPrimaryMethodWithNullablePrimitivesResponseParams,
+    .goldenPrimaryMethodWithHandlesResponseParams,
+    .goldenPrimaryMethodWithNullableHandlesResponseParams,
+] + commonMojoObjectGroups
+
 private let mojoBuiltins: [String: ILType] = [
     /// Profiles declare this method, a wrapper method around `getRemote` that follows
     /// the Singleton pattern, in `codePrefix`. This method ensures: (1) `getRemote`
     /// is only called once, and (2) the remote is saved to a global variable so it
     /// can be closed at the end of the program.
     "getOrCreatePrimaryRemote": .function([] => .jsGoldenPrimaryRemote),
+    /// Declared in `codePrefix`. `MojoAsyncFunctionGenerator` pushes the promise
+    /// of every async function it emits, and `codeSuffix` awaits them all. Typed
+    /// as an opaque object Fuzzilli does not use it as a general-purpose array.
+    "mojoAsyncFunctionPromises": .object(withMethods: ["push"]),
 ]
 
 private let keepGenerators = [
     "IntegerGenerator", "StringGenerator", "TernaryOperationGenerator",
-    "PlainFunctionGenerator", "AsyncFunctionGenerator", "AwaitGenerator",
-    "SubroutineReturnGenerator", "TryCatchGenerator",
+    "PlainFunctionGenerator", "SubroutineReturnGenerator", "TryCatchGenerator",
 ]
 
 private let mojoDisabledGenerators: [String] = CodeGenerators.map { $0.name }
@@ -296,16 +308,46 @@ let mojoPrimaryProfile = Profile(
     ],
     maxExecsBeforeRespawn: 50,
     timeout: Timeout.interval(11000, 11000),
+    // The first statement tells js_in_process_fuzzer which Mojo scripts page to
+    // load before running the program.
     codePrefix: """
+        // --- Begin program prefix ---
+        'mojo-scripts-page: /gen/basic-primitives.test-mojom-scripts-page.html';
         let globalRemote = null;
+        const mojoAsyncFunctionPromises = [];
         function getOrCreatePrimaryRemote() {
             if (!globalRemote) {
                 globalRemote = golden.Primary.getRemote();
             }
             return globalRemote;
         }
+        // --- End program prefix ---
         """,
-    codeSuffix: "if (globalRemote) {globalRemote.$.close()}",
+    codeSuffix: """
+        // --- Begin program suffix ---
+        // ExecJs awaits the promise returned by the last statement, so the
+        // async functions run to completion (including code after `await`)
+        // before the primary remote is closed. The leading `;` stops this from
+        // being parsed as a call on the program's last line.
+        //
+        // Errors thrown in async functions do not fail the program on their
+        // own. Without rethrowing them here, Fuzzilli would keep programs,
+        // accepting mutations and minimizations on them. Mojo/API errors are
+        // not rethrown. These errors result from states that, with additional
+        // mutation, may uncover bugs.
+        ;(async () => {
+            const results = await Promise.allSettled(mojoAsyncFunctionPromises);
+            if (globalRemote) {globalRemote.$.close()}
+            for (const result of results) {
+                const error = result.reason
+                if (result.status === 'rejected' &&
+                    (error instanceof TypeError || error instanceof ReferenceError)) {
+                    throw result.reason;
+                }
+            }
+        })();
+        // --- End program suffix ---
+        """,
     ecmaVersion: v8Profile.ecmaVersion,
     startupTests: [
         ("fuzzilli('FUZZILLI_PRINT', 'test')", .shouldSucceed),
@@ -328,18 +370,9 @@ let mojoPrimaryProfile = Profile(
         "ExplorationMutator", "ProbingMutator", "PropertyAccessorMutator"
     ],
     additionalBuiltins: mojoBuiltins.merging(commonMojoBuiltins) { (existing, _) in existing },
-    additionalObjectGroups: [
-        .goldenPrimaryRemote,
-        .goldenPrimaryRemoteWrapper,
-        .goldenPrimaryPendingReceiver,
-        .goldenPrimaryMethodWithPrimitivesResponseParams,
-        .goldenPrimaryMethodWithNullablePrimitivesResponseParams,
-        .goldenPrimaryMethodWithHandlesResponseParams,
-        .goldenPrimaryMethodWithNullableHandlesResponseParams,
-    ] + commonMojoObjectGroups,
+    additionalObjectGroups: mojoObjectGroups,
     additionalEnumerations: [
     ] + commonMojoEnumerations,
-    additionalOptionsBags: [
-    ] + commonMojoOptionsBags,
+    additionalOptionsBags: [] + commonMojoOptionsBags,
     optionalPostProcessor: nil
 )

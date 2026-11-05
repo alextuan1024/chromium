@@ -4,18 +4,18 @@
 
 import 'chrome://signout-confirmation/signout_confirmation.js';
 
-import {SignoutConfirmationBrowserProxyImpl} from 'chrome://signout-confirmation/signout_confirmation.js';
+import {browserProxyFactory} from 'chrome://signout-confirmation/signout_confirmation.js';
 import type {ExtensionsSectionElement, PageRemote, SignoutConfirmationAppElement} from 'chrome://signout-confirmation/signout_confirmation.js';
 import {assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chai_assert.js';
 import {keyDownOn} from 'chrome://webui-test/keyboard_mock_interactions.js';
 import type {ModifiersParam} from 'chrome://webui-test/keyboard_mock_interactions.js';
-import {isChildVisible, isVisible} from 'chrome://webui-test/test_util.js';
+import {isChildVisible, isVisible, microtasksFinished} from 'chrome://webui-test/test_util.js';
 
-import {TestSignoutConfirmationBrowserProxy} from './test_signout_confirmation_browser_proxy.js';
+import {TestSignoutConfirmationHandler} from './test_signout_confirmation_browser_proxy.js';
 
 suite('SignoutConfirmationViewTest', function() {
   let signoutConfirmationApp: SignoutConfirmationAppElement;
-  let testProxy: TestSignoutConfirmationBrowserProxy;
+  let testHandler: TestSignoutConfirmationHandler;
   let callbackRouterRemote: PageRemote;
 
   function keyDown(item: HTMLElement, key: string, modifiers?: ModifiersParam) {
@@ -23,10 +23,10 @@ suite('SignoutConfirmationViewTest', function() {
   }
 
   setup(function() {
-    testProxy = new TestSignoutConfirmationBrowserProxy();
-    callbackRouterRemote =
-        testProxy.callbackRouter.$.bindNewPipeAndPassRemote();
-    SignoutConfirmationBrowserProxyImpl.setInstance(testProxy);
+    testHandler = new TestSignoutConfirmationHandler();
+    const {instance, remote} = browserProxyFactory.createForTest(testHandler);
+    browserProxyFactory.setInstance(instance);
+    callbackRouterRemote = remote;
 
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
     signoutConfirmationApp = document.createElement('signout-confirmation-app');
@@ -42,7 +42,7 @@ suite('SignoutConfirmationViewTest', function() {
       hasUnsyncedData: false,
     });
 
-    return testProxy.handler.whenCalled('updateViewHeight');
+    return testHandler.whenCalled('updateViewHeight');
   });
 
   test('HeaderContent', function() {
@@ -58,6 +58,33 @@ suite('SignoutConfirmationViewTest', function() {
     assertTrue(isChildVisible(signoutConfirmationApp, '#cancelButton'));
   });
 
+  test('HiddenBeforeDataReceived', async function() {
+    testHandler.reset();
+    document.body.innerHTML = window.trustedTypes!.emptyHTML;
+    const uninitializedApp = document.createElement('signout-confirmation-app');
+    document.body.append(uninitializedApp);
+    await microtasksFinished();
+
+    assertFalse(isChildVisible(uninitializedApp, '#signoutConfirmationDialog'));
+    assertEquals(0, testHandler.getCallCount('updateViewHeight'));
+
+    callbackRouterRemote.sendSignoutConfirmationData({
+      dialogTitle: 'title',
+      dialogSubtitle: 'subtitle',
+      acceptButtonLabel: 'accept',
+      cancelButtonLabel: 'cancel',
+      verifyButtonLabel: '',
+      accountExtensions: [],
+      hasUnsyncedData: false,
+    });
+    await testHandler.whenCalled('updateViewHeight');
+
+    assertTrue(isChildVisible(uninitializedApp, '#signoutConfirmationDialog'));
+    assertEquals(
+        uninitializedApp.$.acceptButton,
+        uninitializedApp.shadowRoot.activeElement);
+  });
+
   test('ExtensionsSectionVisible', async function() {
     assertTrue(isVisible(signoutConfirmationApp));
 
@@ -66,7 +93,7 @@ suite('SignoutConfirmationViewTest', function() {
     assertFalse(isChildVisible(signoutConfirmationApp, 'extensions-section'));
 
     // Reset the handler.
-    testProxy.handler.reset();
+    testHandler.reset();
 
     // Send an update containing one account extension.
     callbackRouterRemote.sendSignoutConfirmationData({
@@ -84,7 +111,7 @@ suite('SignoutConfirmationViewTest', function() {
 
     // Wait for the new data to actually be updated in the component by waiting
     // for a height update triggered by receipt of the new data.
-    await testProxy.handler.whenCalled('updateViewHeight');
+    await testHandler.whenCalled('updateViewHeight');
 
     // The extensions section should now be visible.
     const extensionsSection =
@@ -97,8 +124,7 @@ suite('SignoutConfirmationViewTest', function() {
     // Verify the tooltip text format.
     const crTooltip = extensionsSection.shadowRoot.querySelector('cr-tooltip');
     assertTrue(!!crTooltip);
-    const tooltipInner = crTooltip.shadowRoot.querySelector('#tooltip');
-    assertTrue(!!tooltipInner);
+    const tooltipInner = crTooltip.$.tooltip;
     const computedStyle = window.getComputedStyle(tooltipInner);
     assertEquals('20px', computedStyle.getPropertyValue('line-height'));
     assertEquals('13px', computedStyle.getPropertyValue('font-size'));
@@ -110,24 +136,21 @@ suite('SignoutConfirmationViewTest', function() {
 
     // Accept the dialog.
     signoutConfirmationApp.$.acceptButton.click();
-    const uninstallAccountExtensions =
-        await testProxy.handler.whenCalled('accept');
+    const uninstallAccountExtensions = await testHandler.whenCalled('accept');
     assertTrue(uninstallAccountExtensions);
   });
 
   test('ClickAccept', async function() {
     assertTrue(isVisible(signoutConfirmationApp));
     signoutConfirmationApp.$.acceptButton.click();
-    const uninstallAccountExtensions =
-        await testProxy.handler.whenCalled('accept');
+    const uninstallAccountExtensions = await testHandler.whenCalled('accept');
     assertFalse(uninstallAccountExtensions);
   });
 
   test('ClickCancel', async function() {
     assertTrue(isVisible(signoutConfirmationApp));
     signoutConfirmationApp.$.cancelButton.click();
-    const uninstallAccountExtensions =
-        await testProxy.handler.whenCalled('cancel');
+    const uninstallAccountExtensions = await testHandler.whenCalled('cancel');
     assertFalse(uninstallAccountExtensions);
   });
 
@@ -139,7 +162,7 @@ suite('SignoutConfirmationViewTest', function() {
     assertFalse(isChildVisible(signoutConfirmationApp, '#verifyReauthButton'));
 
     // Reset the handler.
-    testProxy.handler.reset();
+    testHandler.reset();
 
     // Send an update containing `verifyButtonLabel` not empty.
     callbackRouterRemote.sendSignoutConfirmationData({
@@ -154,20 +177,20 @@ suite('SignoutConfirmationViewTest', function() {
 
     // Wait for the new data to actually be updated in the component by waiting
     // for a height update triggered by receipt of the new data.
-    await testProxy.handler.whenCalled('updateViewHeight');
+    await testHandler.whenCalled('updateViewHeight');
 
     // The verify reauth button should now be visible.
     assertTrue(isChildVisible(signoutConfirmationApp, '#verifyReauthButton'));
 
     // Click the button.
     signoutConfirmationApp.$.verifyReauthButton.click();
-    await testProxy.handler.whenCalled('performReauth');
+    await testHandler.whenCalled('performReauth');
   });
 
   test('CloseDialog', function() {
     assertTrue(isVisible(signoutConfirmationApp));
     keyDown(signoutConfirmationApp, 'Escape');
-    return testProxy.handler.whenCalled('close');
+    return testHandler.whenCalled('close');
   });
 
   test('CancelButtonVisibility', async function() {
@@ -175,7 +198,7 @@ suite('SignoutConfirmationViewTest', function() {
 
     // Case 1: verifyButtonLabel set.
     // In this case, the Cancel button should be visible.
-    testProxy.handler.reset();
+    testHandler.reset();
     callbackRouterRemote.sendSignoutConfirmationData({
       dialogTitle: 'title',
       dialogSubtitle: 'subtitle',
@@ -185,12 +208,12 @@ suite('SignoutConfirmationViewTest', function() {
       accountExtensions: [],
       hasUnsyncedData: true,
     });
-    await testProxy.handler.whenCalled('updateViewHeight');
+    await testHandler.whenCalled('updateViewHeight');
     assertTrue(isChildVisible(signoutConfirmationApp, '#cancelButton'));
 
     // Case 2: verifyButtonLabel empty.
     // In this case, the Cancel button should be visible(2 - button layout).
-    testProxy.handler.reset();
+    testHandler.reset();
     callbackRouterRemote.sendSignoutConfirmationData({
       dialogTitle: 'title',
       dialogSubtitle: 'subtitle',
@@ -200,7 +223,7 @@ suite('SignoutConfirmationViewTest', function() {
       accountExtensions: [],
       hasUnsyncedData: false,
     });
-    await testProxy.handler.whenCalled('updateViewHeight');
+    await testHandler.whenCalled('updateViewHeight');
     assertTrue(isChildVisible(signoutConfirmationApp, '#cancelButton'));
   });
 
@@ -213,7 +236,7 @@ suite('SignoutConfirmationViewTest', function() {
         isChildVisible(signoutConfirmationApp, '#unsyncedAccountExtensions'));
 
     // Reset the handler.
-    testProxy.handler.reset();
+    testHandler.reset();
 
     // Send an update with unsynced data but no account extensions.
     callbackRouterRemote.sendSignoutConfirmationData({
@@ -228,14 +251,14 @@ suite('SignoutConfirmationViewTest', function() {
 
     // Wait for the new data to actually be updated in the component by waiting
     // for a height update triggered by receipt of the new data.
-    await testProxy.handler.whenCalled('updateViewHeight');
+    await testHandler.whenCalled('updateViewHeight');
 
     // Text should still not be shown because there are no account extensions.
     assertFalse(
         isChildVisible(signoutConfirmationApp, '#unsyncedAccountExtensions'));
 
     // Repeat the above except we now have an unsynced account extension.
-    testProxy.handler.reset();
+    testHandler.reset();
     callbackRouterRemote.sendSignoutConfirmationData({
       dialogTitle: 'title',
       dialogSubtitle: 'subtitle',
@@ -248,7 +271,7 @@ suite('SignoutConfirmationViewTest', function() {
       }],
       hasUnsyncedData: true,
     });
-    await testProxy.handler.whenCalled('updateViewHeight');
+    await testHandler.whenCalled('updateViewHeight');
 
     // Text should now be shown..
     assertTrue(

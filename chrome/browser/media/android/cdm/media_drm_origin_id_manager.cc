@@ -140,7 +140,7 @@ bool IsAndroidR() {
 
 bool ShouldAttemptProvisioning(base::DictValue& origin_id_dict) {
   DVLOG(3) << __func__;
-  DCHECK(IsAndroidR());
+  CHECK(IsAndroidR(), base::NotFatalUntil::M161);
 
   const base::Value* token_value =
       origin_id_dict.Find(kLastProvisioningAttemptTimeToken);
@@ -163,7 +163,7 @@ bool ShouldAttemptProvisioning(base::DictValue& origin_id_dict) {
 
 void SetLastProvisioningTime(base::DictValue& origin_id_dict) {
   DVLOG(3) << __func__;
-  DCHECK(IsAndroidR());
+  CHECK(IsAndroidR(), base::NotFatalUntil::M161);
 
   origin_id_dict.Set(kLastProvisioningAttemptTimeToken,
                      base::TimeToValue(base::Time::Now()));
@@ -171,7 +171,7 @@ void SetLastProvisioningTime(base::DictValue& origin_id_dict) {
 
 void RemoveLastProvisioningTime(base::DictValue& origin_id_dict) {
   DVLOG(3) << __func__;
-  DCHECK(IsAndroidR());
+  CHECK(IsAndroidR(), base::NotFatalUntil::M161);
 
   origin_id_dict.Remove(kLastProvisioningAttemptTimeToken);
 }
@@ -225,7 +225,7 @@ class MediaDrmProvisionHelper {
       std::unique_ptr<network::PendingSharedURLLoaderFactory>
           pending_shared_url_loader_factory) {
     DVLOG(1) << __func__;
-    DCHECK(pending_shared_url_loader_factory);
+    CHECK(pending_shared_url_loader_factory, base::NotFatalUntil::M161);
     create_fetcher_cb_ =
         base::BindRepeating(&content::CreateProvisionFetcherWithUserAgent,
                             network::SharedURLLoaderFactory::Create(
@@ -247,7 +247,7 @@ class MediaDrmProvisionHelper {
     if (!result.has_value()) {
       // Unable to create mediaDrm for L3, so try L1.
       DVLOG(1) << "Unable to create MediaDrmBridge for L3, CreateCdmStatus: "
-               << (media::StatusCodeType)result.code();
+               << static_cast<int>(result.error());
       ProvisionLevel1(false);
       return;
     }
@@ -279,7 +279,7 @@ class MediaDrmProvisionHelper {
       // Unable to create MediaDrm for L1, so quit. Note that L3 provisioning
       // may or may not have worked.
       DVLOG(1) << "Unable to create MediaDrmBridge for L1, CreateCdmStatus: "
-               << (media::StatusCodeType)result.code();
+               << static_cast<int>(result.error());
       ProvisionDone(L3_success, false);
       return;
     }
@@ -472,7 +472,7 @@ MediaDrmOriginIdManager::MediaDrmOriginIdManager(
     base::PassKey<MediaDrmOriginIdManagerFactory>)
     : pref_service_(pref_service) {
   DVLOG(1) << __func__;
-  DCHECK(pref_service_);
+  CHECK(pref_service_, base::NotFatalUntil::M161);
 
   // This manager can be started when the user's profile is loaded, if
   // |kMediaDrmPreprovisioning| is enabled. If that flag is not set, then this
@@ -602,7 +602,7 @@ void MediaDrmOriginIdManager::GetOriginId(ProvisionedOriginIdCB callback) {
 void MediaDrmOriginIdManager::StartProvisioningAsync(bool run_in_background) {
   DVLOG(1) << __func__ << " run_in_background: " << run_in_background;
   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
-  DCHECK(is_provisioning_);
+  CHECK(is_provisioning_, base::NotFatalUntil::M161);
 
   // Run StartProvisioning() later. This is done on a separate thread to avoid
   // scroll jank, especially when pre-provisioning is happening (as the origin
@@ -650,7 +650,7 @@ void MediaDrmOriginIdManager::OriginIdProvisioned(
   DVLOG(1) << __func__
            << " origin_id: " << (origin_id ? origin_id->ToString() : "null");
   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
-  DCHECK(is_provisioning_);
+  CHECK(is_provisioning_, base::NotFatalUntil::M161);
 
   // On Android R, clear |kLastProvisioningAttemptTimeToken| as provisioning()
   // didn't crash.

@@ -11,6 +11,7 @@
 #include "base/callback_list.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
+#include "base/functional/callback_helpers.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/numerics/safe_conversions.h"
@@ -20,6 +21,7 @@
 #include "base/test/run_until.h"
 #include "base/test/values_test_util.h"
 #include "base/time/time.h"
+#include "build/branding_buildflags.h"
 #include "build/build_config.h"
 #include "chrome/app/chrome_command_ids.h"
 #include "chrome/app/vector_icons/vector_icons.h"
@@ -28,7 +30,7 @@
 #include "chrome/browser/policy/dm_token_utils.h"
 #include "chrome/browser/preloading/scoped_prewarm_feature_list.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/safe_browsing/chrome_enterprise_url_lookup_service_factory.h"
+#include "chrome/browser/safe_browsing/realtime/chrome_enterprise_url_lookup_service_factory.h"
 #include "chrome/browser/ui/actions/chrome_action_id.h"
 #include "chrome/browser/ui/browser_actions.h"
 #include "chrome/browser/ui/browser_command_controller.h"
@@ -46,6 +48,8 @@
 #include "chrome/browser/ui/exclusive_access/fullscreen_controller.h"
 #include "chrome/browser/ui/find_bar/find_bar.h"
 #include "chrome/browser/ui/find_bar/find_bar_controller.h"
+#include "chrome/browser/ui/global_error/global_error_service.h"
+#include "chrome/browser/ui/global_error/global_error_service_factory.h"
 #include "chrome/browser/ui/navigator/browser_navigator.h"
 #include "chrome/browser/ui/performance_controls/tab_resource_usage_tab_helper.h"
 #include "chrome/browser/ui/recently_audible_helper.h"
@@ -60,6 +64,7 @@
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/views/bookmarks/bookmark_bar_view.h"
 #include "chrome/browser/ui/views/bookmarks/bookmark_bar_view_observer.h"
+#include "chrome/browser/ui/views/frame/base_tab_strip_region_view.h"
 #include "chrome/browser/ui/views/frame/browser_frame_view.h"
 #include "chrome/browser/ui/views/frame/contents_container_view.h"
 #include "chrome/browser/ui/views/frame/immersive_mode_tester.h"
@@ -70,13 +75,23 @@
 #include "chrome/browser/ui/views/frame/tab_strip_region_view.h"
 #include "chrome/browser/ui/views/frame/toolbar_button_provider.h"
 #include "chrome/browser/ui/views/frame/top_container_view.h"
+#include "chrome/browser/ui/views/fullscreen_control/fullscreen_control_host.h"
 #include "chrome/browser/ui/views/infobars/infobar_container_view.h"
+#include "chrome/browser/ui/views/interaction/browser_elements_views.h"
 #include "chrome/browser/ui/views/location_bar/location_bar_view.h"
+#include "chrome/browser/ui/views/omnibox/omnibox_view_views.h"
 #include "chrome/browser/ui/views/side_panel/side_panel.h"
 #include "chrome/browser/ui/views/side_panel/side_panel_coordinator.h"
+#include "chrome/browser/ui/views/tab_modal_confirm_dialog_views.h"
+#include "chrome/browser/ui/views/tabs/common/tab_strip_collection_controller.h"
+#include "chrome/browser/ui/views/tabs/common/tab_view.h"
+#include "chrome/browser/ui/views/tabs/tab.h"
 #include "chrome/browser/ui/views/tabs/tab/tab_accessibility.h"
+#include "chrome/browser/ui/views/tabs/tab/tab_close_button.h"
 #include "chrome/browser/ui/views/tabs/tab_strip.h"
+#include "chrome/browser/ui/views/toolbar/app_menu_control.h"
 #include "chrome/browser/ui/views/toolbar/toolbar_view.h"
+#include "chrome/browser/ui/views/toolbar/webui_test_utils.h"
 #include "chrome/browser/ui/window_metadata/window_metadata_controller.h"
 #include "chrome/common/chrome_features.h"
 #include "chrome/common/pref_names.h"
@@ -86,13 +101,13 @@
 #include "chrome/test/base/chrome_test_path_utils.h"
 #include "chrome/test/base/chrome_test_utils.h"
 #include "chrome/test/base/in_process_browser_test.h"
-#include "chrome/test/base/test_browser_window.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/bookmarks/common/bookmark_bar_visibility_state.h"
 #include "components/bookmarks/common/bookmark_pref_names.h"
 #include "components/enterprise/connectors/core/common.h"
 #include "components/enterprise/connectors/core/connectors_prefs.h"
 #include "components/enterprise/data_controls/core/browser/test_utils.h"
+#include "components/enterprise/isolated_mode/isolated_mode_features.h"
 #include "components/keyed_service/content/browser_context_dependency_manager.h"
 #include "components/policy/core/common/policy_pref_names.h"
 #include "components/policy/core/common/policy_types.h"
@@ -125,7 +140,11 @@
 #include "ui/actions/action_id.h"
 #include "ui/actions/actions.h"
 #include "ui/base/accelerators/accelerator.h"
+#include "ui/base/base_window.h"
 #include "ui/base/buildflags.h"
+#include "ui/base/clipboard/clipboard.h"
+#include "ui/base/clipboard/test/clipboard_test_util.h"
+#include "ui/base/clipboard/test/test_clipboard.h"
 #include "ui/base/interaction/element_identifier.h"
 #include "ui/base/interaction/element_tracker.h"
 #include "ui/base/l10n/l10n_util.h"
@@ -143,12 +162,15 @@
 #include "ui/views/bubble/bubble_dialog_model_host.h"
 #include "ui/views/controls/button/label_button.h"
 #include "ui/views/controls/button/md_text_button.h"
+#include "ui/views/controls/label.h"
+#include "ui/views/controls/textfield/textfield.h"
 #include "ui/views/controls/webview/webview.h"
 #include "ui/views/focus/focus_manager.h"
 #include "ui/views/test/views_test_utils.h"
 #include "ui/views/test/widget_activation_waiter.h"
 #include "ui/views/view_class_properties.h"
 #include "ui/views/view_utils.h"
+#include "ui/views/window/dialog_client_view.h"
 #include "url/url_constants.h"
 
 #if defined(USE_AURA)
@@ -161,10 +183,19 @@
 #include "ui/ozone/public/ozone_platform.h"
 #endif
 
+#if BUILDFLAG(IS_MAC)
+#include "ui/base/test/scoped_fake_nswindow_fullscreen.h"
+#endif
+
 #if BUILDFLAG(IS_CHROMEOS)
 #include "chrome/browser/ash/boca/on_task/on_task_locked_controller.h"
 #include "chrome/browser/ui/ash/test_util.h"
+#include "chrome/browser/ui/chromeos/locked_state/locked_state_controller.h"
 #endif
+
+#if BUILDFLAG(GOOGLE_CHROME_BRANDING) && !BUILDFLAG(IS_CHROMEOS)
+#include "chrome/test/base/scoped_channel_override.h"
+#endif  // BUILDFLAG(GOOGLE_CHROME_BRANDING) && !BUILDFLAG(IS_CHROMEOS)
 
 #if BUILDFLAG(IS_WIN)
 
@@ -182,9 +213,10 @@ IN_PROC_BROWSER_TEST_F(BrowserViewPipTest, DynamicStatePropagation) {
   content::ScopedPipExclusionOverride exclusion_override(false);
 
   // Create a PIP browser.
-  BrowserWindowCreateParams params(
-      BrowserWindowInterface::TYPE_PICTURE_IN_PICTURE, browser()->GetProfile(),
-      /*from_user_gesture=*/true);
+  BrowserWindowCreateParams params =
+      BrowserWindowCreateParams::CreateForPictureInPicture(
+          "", /*trusted_source=*/false, browser()->GetProfile(),
+          /*user_gesture=*/true);
   BrowserWindowInterface* pip_browser = CreateBrowserWindow(std::move(params));
   pip_browser->GetWindow()->Show();
   BrowserView* pip_browser_view =
@@ -207,9 +239,10 @@ IN_PROC_BROWSER_TEST_F(BrowserViewPipTest, InitialStateVerification) {
   content::ScopedPipExclusionOverride exclusion_override(true);
 
   // Create a PIP browser.
-  BrowserWindowCreateParams params(
-      BrowserWindowInterface::TYPE_PICTURE_IN_PICTURE, browser()->GetProfile(),
-      /*from_user_gesture=*/true);
+  BrowserWindowCreateParams params =
+      BrowserWindowCreateParams::CreateForPictureInPicture(
+          "", /*trusted_source=*/false, browser()->GetProfile(),
+          /*user_gesture=*/true);
   BrowserWindowInterface* pip_browser = CreateBrowserWindow(std::move(params));
   pip_browser->GetWindow()->Show();
   BrowserView* pip_browser_view =
@@ -236,9 +269,10 @@ IN_PROC_BROWSER_TEST_F(BrowserViewPipDisabledTest, FeatureFlagEnforcement) {
   content::ScopedPipExclusionOverride exclusion_override(false);
 
   // Create a PIP browser.
-  BrowserWindowCreateParams params(
-      BrowserWindowInterface::TYPE_PICTURE_IN_PICTURE, browser()->GetProfile(),
-      /*from_user_gesture=*/true);
+  BrowserWindowCreateParams params =
+      BrowserWindowCreateParams::CreateForPictureInPicture(
+          "", /*trusted_source=*/false, browser()->GetProfile(),
+          /*user_gesture=*/true);
   BrowserWindowInterface* pip_browser = CreateBrowserWindow(std::move(params));
   pip_browser->GetWindow()->Show();
   BrowserView* pip_browser_view =
@@ -312,9 +346,7 @@ class BrowserViewTest : public InProcessBrowserTest {
         ->devtools_web_view();
   }
 
-  views::WebView* contents_web_view() {
-    return browser_view()->contents_web_view();
-  }
+  views::View* contents_web_view() { return browser_view()->GetContentsView(); }
 
   content::WebContents* active_web_contents() {
     return browser()->GetTabStripModel()->GetActiveWebContents();
@@ -395,19 +427,16 @@ class TestWebContentsObserver : public content::WebContentsObserver {
   raw_ptr<content::WebContents, DanglingUntriaged> other_;
 };
 
-// Waits for a different view to claim focus within a widget with the
-// specified name.
+// Waits for a view matching (or contained within) the specified
+// `ui::ElementIdentifier` in `browser` to claim focus.
 class TestFocusChangeWaiter : public views::FocusChangeListener {
  public:
-  TestFocusChangeWaiter(views::FocusManager* focus_manager,
-                        const std::string& expected_widget_name)
-      : focus_manager_(focus_manager),
-        expected_widget_name_(expected_widget_name) {
-    if (auto* current_focused_view = focus_manager->GetFocusedView()) {
-      previous_view_id_ = current_focused_view->GetID();
-    } else {
-      previous_view_id_ = -1;
-    }
+  TestFocusChangeWaiter(BrowserWindowInterface* browser,
+                        ui::ElementIdentifier expected_element_id)
+      : browser_elements_(BrowserElementsViews::From(browser)),
+        focus_manager_(
+            browser_elements_->GetPrimaryWindowWidget()->GetFocusManager()),
+        expected_element_id_(expected_element_id) {
     focus_manager_->AddFocusChangeListener(this);
   }
 
@@ -417,25 +446,40 @@ class TestFocusChangeWaiter : public views::FocusChangeListener {
     focus_manager_->RemoveFocusChangeListener(this);
   }
 
-  void Wait() { run_loop_.Run(); }
+  // Waits until a view matching or inside `expected_element_id_` is focused.
+  void Wait() {
+    // Focus may have already moved to the target element before `Wait()` is
+    // called (for example, synchronously when the dialog is created and shown),
+    // in which case `OnDidChangeFocus()` has already fired and we can return
+    // immediately without running `run_loop_`.
+    if (IsExpectedElementFocused(focus_manager_->GetFocusedView())) {
+      return;
+    }
+    run_loop_.Run();
+  }
 
  private:
+  bool IsExpectedElementFocused(views::View* focused_view) const {
+    if (!focused_view) {
+      return false;
+    }
+    views::View* expected_view =
+        browser_elements_->GetView(expected_element_id_);
+    return expected_view && expected_view->Contains(focused_view);
+  }
+
   // views::FocusChangeListener:
   void OnDidChangeFocus(views::View* focused_before,
                         views::View* focused_now) override {
-    if (focused_now && focused_now->GetID() != previous_view_id_) {
-      views::Widget* widget = focused_now->GetWidget();
-      if (widget && widget->GetName() == expected_widget_name_) {
-        run_loop_.Quit();
-      }
+    if (IsExpectedElementFocused(focused_now)) {
+      run_loop_.Quit();
     }
   }
 
+  raw_ptr<BrowserElementsViews> browser_elements_;
   raw_ptr<views::FocusManager> focus_manager_;
   base::RunLoop run_loop_;
-  int previous_view_id_;
-  std::string expected_widget_name_;
-  base::WeakPtrFactory<TestFocusChangeWaiter> weak_factory_{this};
+  ui::ElementIdentifier expected_element_id_;
 };
 
 class TestTabModalConfirmDialogDelegate : public TabModalConfirmDialogDelegate {
@@ -486,19 +530,43 @@ IN_PROC_BROWSER_TEST_F(BrowserViewTest, CloseWithTabsStartWithActive) {
 }
 
 #if BUILDFLAG(IS_CHROMEOS)
-IN_PROC_BROWSER_TEST_F(BrowserViewTest, OnTaskLockedBrowserView) {
-  ash::boca::OnTaskLockedController::From(browser())->set_locked_for_on_task(
-      true);
+class BrowserViewOnTaskTest : public BrowserViewTest,
+                              public testing::WithParamInterface<bool> {
+ public:
+  BrowserViewOnTaskTest() {
+    scoped_feature_list_.InitWithFeatureState(
+        features::kUseUnifiedLockedStateController, GetParam());
+  }
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_;
+};
+
+IN_PROC_BROWSER_TEST_P(BrowserViewOnTaskTest, OnTaskLockedBrowserView) {
+  if (features::IsUseUnifiedLockedStateControllerEnabled()) {
+    chromeos::LockedStateController::From(browser())->Lock(
+        chromeos::LockedState::kOnTaskPrepared);
+  } else {
+    ash::boca::OnTaskLockedController::From(browser())->set_locked_for_on_task(
+        true);
+  }
   EXPECT_FALSE(browser_view()->CanMinimize());
   EXPECT_FALSE(browser_view()->ShouldShowCloseButton());
 }
 
-IN_PROC_BROWSER_TEST_F(BrowserViewTest, OnTaskUnlockedBrowserView) {
-  ash::boca::OnTaskLockedController::From(browser())->set_locked_for_on_task(
-      false);
+IN_PROC_BROWSER_TEST_P(BrowserViewOnTaskTest, OnTaskUnlockedBrowserView) {
+  if (features::IsUseUnifiedLockedStateControllerEnabled()) {
+    chromeos::LockedStateController::From(browser())->Unlock(
+        chromeos::LockedState::kOnTaskLocked);
+  } else {
+    ash::boca::OnTaskLockedController::From(browser())->set_locked_for_on_task(
+        false);
+  }
   EXPECT_TRUE(browser_view()->CanMinimize());
   EXPECT_TRUE(browser_view()->ShouldShowCloseButton());
 }
+
+INSTANTIATE_TEST_SUITE_P(All, BrowserViewOnTaskTest, testing::Bool());
 #endif
 
 // Verifies that page and devtools WebViews are being correctly laid out
@@ -678,6 +746,18 @@ IN_PROC_BROWSER_TEST_F(BrowserViewTest, FindBarBoundingBoxLocationBar) {
   EXPECT_GT(find_bar_bounds.height(), 0);
 }
 
+IN_PROC_BROWSER_TEST_F(BrowserViewTest, ClosesAppMenuOnGlobalErrorsChanged) {
+  AppMenuControl* app_menu_control =
+      browser_view()->toolbar_button_provider()->GetAppMenuControl();
+  ASSERT_TRUE(app_menu_control);
+  app_menu_control->ShowMenu();
+  EXPECT_TRUE(app_menu_control->IsMenuShowing());
+
+  GlobalErrorServiceFactory::GetForProfile(browser()->GetProfile())
+      ->NotifyErrorsChanged();
+  EXPECT_FALSE(app_menu_control->IsMenuShowing());
+}
+
 // Test the find bar's bounding box when the location bar is not visible.
 IN_PROC_BROWSER_TEST_F(BrowserViewTest, FindBarBoundingBoxNoLocationBar) {
   BrowserWindowCreateParams params(BrowserWindowInterface::TYPE_POPUP,
@@ -766,7 +846,7 @@ IN_PROC_BROWSER_TEST_F(BrowserViewTest,
   BrowserWindowCreateParams params =
       BrowserWindowCreateParams::CreateForPictureInPicture(
           "PipApp", /*trusted_source=*/true, browser()->GetProfile(),
-          /*user_gesture=*/true);
+          /*from_user_gesture=*/true);
   BrowserWindowInterface* pip_browser = CreateBrowserWindow(std::move(params));
   pip_browser->GetWindow()->Show();
   BrowserView* pip_browser_view =
@@ -805,8 +885,7 @@ IN_PROC_BROWSER_TEST_F(BrowserViewHostedAppTest, Layout) {
 
   // The tabstrip, toolbar and bookmark bar should not be visible for hosted
   // apps.
-  EXPECT_FALSE(
-      app_browser_view->horizontal_tab_strip_for_testing()->GetVisible());
+  EXPECT_FALSE(app_browser_view->tab_strip_view()->GetVisible());
   EXPECT_FALSE(app_browser_view->toolbar()->GetVisible());
   EXPECT_FALSE(app_browser_view->IsBookmarkBarVisible());
 
@@ -998,6 +1077,74 @@ IN_PROC_BROWSER_TEST_F(BrowserViewTest, UpdateWindowTitle) {
             window_title.substr(0, user_title2.size()));
 }
 
+IN_PROC_BROWSER_TEST_F(BrowserViewTest, AccessibleWindowTitleIncognito) {
+  BrowserWindowInterface* incognito_browser = CreateIncognitoBrowser();
+  EXPECT_TRUE(incognito_browser->GetProfile()->IsIncognitoProfile());
+  auto window_title = BrowserView::GetBrowserViewForBrowser(incognito_browser)
+                          ->GetAccessibleWindowTitle();
+  EXPECT_TRUE(window_title.contains(u"Incognito"));
+}
+
+class BrowserViewIsolatedTest : public BrowserViewTest {
+ public:
+  void SetUpCommandLine(base::CommandLine* command_line) override {
+    BrowserViewTest::SetUpCommandLine(command_line);
+    command_line->AppendSwitch(
+        enterprise_isolated_mode::switches::
+            kForceEnterpriseIsolatedModeReplacesIncognito);
+  }
+
+ private:
+#if BUILDFLAG(GOOGLE_CHROME_BRANDING) && !BUILDFLAG(IS_CHROMEOS)
+  chrome::ScopedChannelOverride channel_override_{
+      chrome::ScopedChannelOverride::Channel::kDev};
+#endif  // BUILDFLAG(GOOGLE_CHROME_BRANDING) && !BUILDFLAG(IS_CHROMEOS)
+};
+
+IN_PROC_BROWSER_TEST_F(BrowserViewIsolatedTest, AccessibleWindowTitleIsolated) {
+  BrowserWindowInterface* isolated_browser = CreateIncognitoBrowser();
+  EXPECT_TRUE(
+      isolated_browser->GetProfile()->IsEnterpriseIsolatedModeProfile());
+  auto window_title = BrowserView::GetBrowserViewForBrowser(isolated_browser)
+                          ->GetAccessibleWindowTitle();
+  EXPECT_TRUE(window_title.contains(u"Isolated"));
+}
+
+#if !BUILDFLAG(IS_MAC)
+// In Isolated mode, the New Incognito Window accelerator (Ctrl+Shift+N) opens
+// an Isolated window.
+IN_PROC_BROWSER_TEST_F(BrowserViewIsolatedTest,
+                       NewIncognitoWindowAcceleratorOpensIsolatedWindow) {
+  const ui::Accelerator kNewIncognitoWindowAccel(
+      ui::VKEY_N, ui::EF_PLATFORM_ACCELERATOR | ui::EF_SHIFT_DOWN);
+
+  ui_test_utils::BrowserCreatedObserver browser_created_observer;
+  EXPECT_TRUE(browser_view()->AcceleratorPressed(kNewIncognitoWindowAccel));
+  BrowserWindowInterface* const isolated_browser =
+      browser_created_observer.Wait();
+  ASSERT_TRUE(isolated_browser);
+  EXPECT_TRUE(
+      isolated_browser->GetProfile()->IsEnterpriseIsolatedModeProfile());
+}
+
+// Same as above, but triggered from within an Isolated window.
+IN_PROC_BROWSER_TEST_F(BrowserViewIsolatedTest,
+                       NewIncognitoWindowAcceleratorFromIsolatedWindow) {
+  BrowserWindowInterface* const isolated_browser = CreateIncognitoBrowser();
+  ASSERT_TRUE(
+      isolated_browser->GetProfile()->IsEnterpriseIsolatedModeProfile());
+  const ui::Accelerator kNewIncognitoWindowAccel(
+      ui::VKEY_N, ui::EF_PLATFORM_ACCELERATOR | ui::EF_SHIFT_DOWN);
+
+  ui_test_utils::BrowserCreatedObserver browser_created_observer;
+  EXPECT_TRUE(BrowserView::GetBrowserViewForBrowser(isolated_browser)
+                  ->AcceleratorPressed(kNewIncognitoWindowAccel));
+  BrowserWindowInterface* const new_browser = browser_created_observer.Wait();
+  ASSERT_TRUE(new_browser);
+  EXPECT_TRUE(new_browser->GetProfile()->IsEnterpriseIsolatedModeProfile());
+}
+#endif  // !BUILDFLAG(IS_MAC)
+
 IN_PROC_BROWSER_TEST_F(BrowserViewTest, WindowTitleOmitsLowMemoryUsage) {
   scoped_refptr<TabResourceUsage> tab_resource_usage =
       base::MakeRefCounted<TabResourceUsage>();
@@ -1006,9 +1153,15 @@ IN_PROC_BROWSER_TEST_F(BrowserViewTest, WindowTitleOmitsLowMemoryUsage) {
   tabs::TabData memory_usage;
   memory_usage.tab_resource_usage = tab_resource_usage;
 
-  Tab* const tab =
-      browser_view()->horizontal_tab_strip_for_testing()->tab_at(0);
-  tab->SetDataForTesting(std::move(memory_usage));
+  views::View* anchor_view = browser_view()->tab_strip_view()->GetTabAnchorView(
+      browser()->GetTabStripModel()->GetTabAtIndex(0)->GetHandle());
+  if (TabView* tab_view = views::AsViewClass<TabView>(anchor_view)) {
+    tab_view->SetDataForTesting(std::move(memory_usage));
+  } else {
+    Tab* tab = views::AsViewClass<Tab>(anchor_view);
+    ASSERT_TRUE(tab);
+    tab->SetDataForTesting(std::move(memory_usage));
+  }
 
   // Expect that low memory usage isn't in the accessible window title.
   EXPECT_FALSE(browser_view()->GetAccessibleWindowTitle().contains(
@@ -1388,7 +1541,13 @@ IN_PROC_BROWSER_TEST_F(BrowserViewTest, TitleAndLoadState) {
   content::TestNavigationObserver navigation_watcher(
       contents, 1, content::MessageLoopRunner::QuitMode::DEFERRED);
 
-  TabStrip* tab_strip = browser_view()->horizontal_tab_strip_for_testing();
+  auto get_network_state = [&]() {
+    return browser_view()
+        ->tab_strip_view()
+        ->GetTabData(
+            browser()->GetTabStripModel()->GetTabAtIndex(0)->GetHandle())
+        .network_state;
+  };
   // Navigate without blocking.
   const GURL test_url = chrome_test_utils::GetTestUrl(
       base::FilePath(base::FilePath::kCurrentDirectory),
@@ -1396,18 +1555,15 @@ IN_PROC_BROWSER_TEST_F(BrowserViewTest, TitleAndLoadState) {
   contents->GetController().LoadURL(test_url, content::Referrer(),
                                     ui::PAGE_TRANSITION_LINK, std::string());
   EXPECT_TRUE(browser()->GetTabStripModel()->TabsNeedLoadingUI());
-  EXPECT_EQ(tabs::TabNetworkState::kWaiting,
-            tab_strip->tab_at(0)->data().network_state);
+  EXPECT_EQ(tabs::TabNetworkState::kWaiting, get_network_state());
   EXPECT_EQ(test_title, title_watcher.WaitAndGetTitle());
   EXPECT_TRUE(browser()->GetTabStripModel()->TabsNeedLoadingUI());
-  EXPECT_EQ(tabs::TabNetworkState::kLoading,
-            tab_strip->tab_at(0)->data().network_state);
+  EXPECT_EQ(tabs::TabNetworkState::kLoading, get_network_state());
 
   // Now block for the navigation to complete.
   navigation_watcher.Wait();
   EXPECT_FALSE(browser()->GetTabStripModel()->TabsNeedLoadingUI());
-  EXPECT_EQ(tabs::TabNetworkState::kNone,
-            tab_strip->tab_at(0)->data().network_state);
+  EXPECT_EQ(tabs::TabNetworkState::kNone, get_network_state());
 }
 
 // Verifies a tab should show its favicon.
@@ -1426,10 +1582,20 @@ IN_PROC_BROWSER_TEST_F(BrowserViewTest, ShowFaviconInTab) {
 // On Mac, voiceover treats tab modal dialogs as native windows, so setting an
 // accessible title for tab-modal dialogs is not necessary.
 #if !BUILDFLAG(IS_MAC)
+class BrowserViewDesktopWidgetDisabledTest : public BrowserViewTest {
+ public:
+  BrowserViewDesktopWidgetDisabledTest() {
+    feature_list_.InitAndDisableFeature(features::kTabModalUsesDesktopWidget);
+  }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+};
 
 // Open a tab-modal dialog and check that the accessibility tree only contains
 // the dialog.
-IN_PROC_BROWSER_TEST_F(BrowserViewTest, GetAccessibleTabModalDialogTree) {
+IN_PROC_BROWSER_TEST_F(BrowserViewDesktopWidgetDisabledTest,
+                       GetAccessibleTabModalDialogTree) {
   content::ScopedAccessibilityModeOverride ax_mode_override(
       ui::kAXModeComplete);
   ui::AXPlatformNode* ax_node = ui::AXPlatformNode::FromNativeViewAccessible(
@@ -1443,6 +1609,10 @@ IN_PROC_BROWSER_TEST_F(BrowserViewTest, GetAccessibleTabModalDialogTree) {
     return;
   }
 #endif
+  if (features::IsWebUIAppMenuButtonEnabled()) {
+    ASSERT_TRUE(WaitForWebUIToolbarAccessibilityNode(
+        browser(), l10n_util::GetStringUTF8(IDS_ACCNAME_APP)));
+  }
 
   // There is no dialog, but the browser UI should be visible. So we expect the
   // browser's app menu button and no "OK" button from a dialog.
@@ -1463,8 +1633,8 @@ IN_PROC_BROWSER_TEST_F(BrowserViewTest, GetAccessibleTabModalDialogTree) {
   // Waiting for the dialog to be shown should ensure that the first
   // condition is met. But we also need to wait for the focus to change
   // or the second condition flakily fails.
-  TestFocusChangeWaiter focus_waiter(browser_view()->GetFocusManager(),
-                                     "MessageBoxView");
+  TestFocusChangeWaiter focus_waiter(browser(),
+                                     views::DialogClientView::kTopViewId);
   TabModalConfirmDialog::Create(std::move(delegate), contents);
   focus_waiter.Wait();
 
@@ -1476,6 +1646,60 @@ IN_PROC_BROWSER_TEST_F(BrowserViewTest, GetAccessibleTabModalDialogTree) {
   EXPECT_NE(ui::AXPlatformNodeTestHelper::FindChildByName(ax_node, "OK"),
             nullptr);
 }
+
+class BrowserViewDesktopWidgetEnabledTest : public BrowserViewTest {
+ public:
+  BrowserViewDesktopWidgetEnabledTest() {
+    feature_list_.InitAndEnableFeature(features::kTabModalUsesDesktopWidget);
+  }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+};
+
+// Open a tab-modal dialog and check there are separate accessibility trees for
+// the browser and the dialog.
+IN_PROC_BROWSER_TEST_F(BrowserViewDesktopWidgetEnabledTest,
+                       GetAccessibleTabModalDialogTree) {
+  content::ScopedAccessibilityModeOverride ax_mode_override(
+      ui::kAXModeComplete);
+  ui::AXPlatformNode* ax_node = ui::AXPlatformNode::FromNativeViewAccessible(
+      browser_view()->GetWidget()->GetRootView()->GetNativeViewAccessible());
+// We expect this conversion to be safe on Windows, but can't guarantee that it
+// is safe on other platforms.
+#if BUILDFLAG(IS_WIN)
+  ASSERT_TRUE(ax_node);
+#else
+  if (!ax_node) {
+    return;
+  }
+#endif
+  if (features::IsWebUIAppMenuButtonEnabled()) {
+    ASSERT_TRUE(WaitForWebUIToolbarAccessibilityNode(
+        browser(), l10n_util::GetStringUTF8(IDS_ACCNAME_APP)));
+  }
+
+  content::WebContents* contents = browser_view()->GetActiveWebContents();
+  auto delegate = std::make_unique<TestTabModalConfirmDialogDelegate>(contents);
+
+  auto* dialog = static_cast<TabModalConfirmDialogViews*>(
+      TabModalConfirmDialog::Create(std::move(delegate), contents));
+  ui::AXPlatformNode* dialog_ax_node =
+      ui::AXPlatformNode::FromNativeViewAccessible(
+          dialog->GetWidget()->GetRootView()->GetNativeViewAccessible());
+  ASSERT_TRUE(dialog_ax_node);
+  // When using a desktop widget, the dialog has its own root accessibility
+  // node, while the browser's accessibility tree retains the browser UI.
+  EXPECT_NE(ui::AXPlatformNodeTestHelper::FindChildByName(
+                ax_node, l10n_util::GetStringUTF8(IDS_ACCNAME_APP)),
+            nullptr);
+  EXPECT_EQ(ui::AXPlatformNodeTestHelper::FindChildByName(
+                dialog_ax_node, l10n_util::GetStringUTF8(IDS_ACCNAME_APP)),
+            nullptr);
+  EXPECT_NE(ui::AXPlatformNodeTestHelper::FindChildByName(dialog_ax_node, "OK"),
+            nullptr);
+}
+
 #endif  // !BUILDFLAG(IS_MAC)
 
 // Tests that a content area scrim is shown when a tab modal dialog is active.
@@ -1677,6 +1901,9 @@ IN_PROC_BROWSER_TEST_F(BrowserViewTest, DragNotSupportedInFullscreen) {
     GTEST_SKIP() << "Wayland doesn't support drag and drop in fullscreen";
   }
 #endif
+#if BUILDFLAG(IS_MAC)
+  ui::test::ScopedFakeNSWindowFullscreen fake_fullscreen;
+#endif
   // Add enough tabs to create two split views.
   chrome::AddTabAt(browser(), GURL(), -1, true);
   // Add tabs to splits.
@@ -1729,7 +1956,8 @@ IN_PROC_BROWSER_TEST_F(BrowserViewTest, ScrimForTabModalInSplitView) {
   // Swapping the tab with the tab modal dialog into the inactive spot in the
   // split should show the scrim but not change the active tab.
   browser()->GetTabStripModel()->UpdateTabInSplit(
-      browser()->GetTabStripModel()->GetTabAtIndex(1), 2,
+      browser()->GetTabStripModel()->GetTabAtIndex(1)->GetHandle(),
+      browser()->GetTabStripModel()->GetTabAtIndex(2)->GetHandle(),
       TabStripModel::SplitUpdateType::kSwap);
   EXPECT_EQ(0, browser()->GetTabStripModel()->active_index());
   EXPECT_TRUE(
@@ -1878,7 +2106,25 @@ IN_PROC_BROWSER_TEST_F(BrowserViewTest,
 
 #if BUILDFLAG(IS_MAC)
 
+IN_PROC_BROWSER_TEST_F(BrowserViewTest, FullscreenControlHostLeakOnMac) {
+  // Set up the state a failed enter leaves behind without starting fullscreen.
+  browser_view()->PrepareFullscreen(true);
+
+  auto* host = FullscreenControlHost::From(browser());
+  ASSERT_TRUE(host);
+  EXPECT_TRUE(host->HasEventMonitorForTesting());
+  EXPECT_FALSE(browser_view()->IsFullscreen());
+
+  // Simulate AppKit failing to enter fullscreen, which calls
+  // BrowserView::FullscreenStateChanged() with the window still windowed.
+  browser_view()->FullscreenStateChanged();
+
+  EXPECT_FALSE(host->HasEventMonitorForTesting());
+}
+
 IN_PROC_BROWSER_TEST_F(BrowserViewTest, SplitViewFullscreenLayout) {
+  ui::test::ScopedFakeNSWindowFullscreen fake_fullscreen;
+
   // Disable always show toolbar in fullscreen
   chrome::SetAlwaysShowToolbarInFullscreenForTesting(browser(), false);
 
@@ -2259,6 +2505,310 @@ IN_PROC_BROWSER_TEST_F(BrowserViewDeferLayoutTest, DeferLayoutWhileInvisible) {
   EXPECT_TRUE(browser_view2->is_startup_layout_disabled_for_testing());
 
   // Once shown, subsequent layout requests are never deferred.
+  browser_view2->InvalidateLayout();
+  widget2->LayoutRootViewIfNecessary();
+  EXPECT_FALSE(browser_view2->is_layout_deferred_for_testing());
+
+  widget2->CloseNow();
+}
+
+IN_PROC_BROWSER_TEST_F(BrowserViewDeferLayoutTest,
+                       NoDeferLayoutOnSizeChangeWhileInvisible) {
+  BrowserWindowInterface* browser2 = CreateBrowserWindow(
+      BrowserWindowCreateParams(browser()->GetProfile(),
+                                /*from_user_gesture=*/true));
+  BrowserView* browser_view2 = BrowserView::GetBrowserViewForBrowser(browser2);
+  views::Widget* widget2 = browser_view2->GetWidget();
+  ASSERT_FALSE(widget2->IsVisible());
+
+  // Trigger initial layout pass.
+  widget2->LayoutRootViewIfNecessary();
+
+  chrome::AddTabAt(browser2, GURL("about:blank"), -1, true);
+  widget2->LayoutRootViewIfNecessary();
+  EXPECT_FALSE(browser_view2->GetContentsSize().IsEmpty());
+
+  // Subsequent layout without size change is deferred.
+  browser_view2->InvalidateLayout();
+  widget2->LayoutRootViewIfNecessary();
+  EXPECT_TRUE(browser_view2->is_layout_deferred_for_testing());
+
+  // Changing the widget's size while invisible must not defer layout, so child
+  // views are updated with the new size. Shrink the widget bounds to avoid
+  // hitting display work area limits on smaller test screens (e.g. Windows VMs
+  // or ChromeOS).
+  const gfx::Size original_client_size = browser_view2->size();
+  const gfx::Size original_contents_size = browser_view2->GetContentsSize();
+  gfx::Rect bounds = widget2->GetWindowBoundsInScreen();
+  bounds.set_width(bounds.width() - 100);
+  bounds.set_height(bounds.height() - 100);
+  widget2->SetBounds(bounds);
+  widget2->LayoutRootViewIfNecessary();
+  EXPECT_EQ(browser_view2->size().width(), original_client_size.width() - 100);
+  EXPECT_EQ(browser_view2->size().height(),
+            original_client_size.height() - 100);
+  EXPECT_EQ(browser_view2->GetContentsSize().width(),
+            original_contents_size.width() - 100);
+  EXPECT_EQ(browser_view2->GetContentsSize().height(),
+            original_contents_size.height() - 100);
+
+  // Subsequent layout without size change should be deferred again.
+  browser_view2->InvalidateLayout();
+  widget2->LayoutRootViewIfNecessary();
+  EXPECT_TRUE(browser_view2->is_layout_deferred_for_testing());
+
+  widget2->CloseNow();
+}
+
+IN_PROC_BROWSER_TEST_F(BrowserViewDeferLayoutTest,
+                       NoDeferLayoutForNonNormalWindow) {
+  BrowserWindowCreateParams params(BrowserWindowInterface::TYPE_POPUP,
+                                   browser()->GetProfile(),
+                                   /*user_gesture=*/true);
+  BrowserWindowInterface* popup = CreateBrowserWindow(std::move(params));
+  BrowserView* popup_view = BrowserView::GetBrowserViewForBrowser(popup);
+  views::Widget* popup_widget = popup_view->GetWidget();
+  ASSERT_FALSE(popup_widget->IsVisible());
+
+  // Non-normal windows should have startup layout deferral disabled.
+  EXPECT_TRUE(popup_view->is_startup_layout_disabled_for_testing());
+
+  popup_widget->LayoutRootViewIfNecessary();
+  EXPECT_FALSE(popup_view->is_layout_deferred_for_testing());
+
+  chrome::AddTabAt(popup, GURL("about:blank"), -1, true);
+  popup_view->InvalidateLayout();
+  popup_widget->LayoutRootViewIfNecessary();
+  EXPECT_FALSE(popup_view->is_layout_deferred_for_testing());
+
+  popup_widget->CloseNow();
+}
+
+#if !BUILDFLAG(IS_MAC)
+IN_PROC_BROWSER_TEST_F(BrowserViewTest, CutCopyPasteFocusedNativeViews) {
+  ui::TestClipboard::CreateForCurrentThread();
+  base::ScopedClosureRunner destroy_clipboard(
+      base::BindOnce(&ui::Clipboard::DestroyClipboardForCurrentThread));
+
+  // 1. Focusing a tab's close button and invoking Cut/Copy/Paste must not click
+  // the button or close the tab (regression test for crbug.com/582411426).
+  chrome::AddTabAt(browser(), GURL(url::kAboutBlankURL), -1, true);
+  ASSERT_EQ(2, browser()->GetTabStripModel()->count());
+  if (auto* const tabstrip =
+          browser_view()->horizontal_tab_strip_for_testing()) {
+    tabstrip->StopAnimating();
+  } else if (auto* const base_region =
+                 views::AsViewClass<BaseTabStripRegionView>(
+                     browser_view()->tab_strip_view())) {
+    if (auto* controller = base_region->GetTabStripCollectionController()) {
+      controller->animation_coordinator().StopAllAnimationsForTesting();
+    }
+  }
+  views::test::RunScheduledLayout(browser_view());
+
+  browser_view()->GetWidget()->Activate();
+  views::test::WaitForWidgetActive(browser_view()->GetWidget(), true);
+  views::FocusManager* focus_manager = browser_view()->GetFocusManager();
+
+  views::View* active_tab_view =
+      browser_view()->tab_strip_view()->GetTabAnchorView(
+          browser()
+              ->GetTabStripModel()
+              ->GetTabAtIndex(browser()->GetTabStripModel()->active_index())
+              ->GetHandle());
+  views::Button* close_button = nullptr;
+  if (auto* const tab = views::AsViewClass<Tab>(active_tab_view)) {
+    close_button = tab->close_button();
+  } else if (auto* const tab_view =
+                 views::AsViewClass<TabView>(active_tab_view)) {
+    close_button = tab_view->close_button_for_testing();
+  }
+  ASSERT_TRUE(close_button);
+  focus_manager->SetFocusedView(close_button);
+  ASSERT_EQ(close_button, focus_manager->GetFocusedView());
+  ASSERT_TRUE(close_button->CanHandleAccelerators());
+
+  browser_view()->Cut();
+  browser_view()->Copy();
+  browser_view()->Paste();
+  EXPECT_EQ(2, browser()->GetTabStripModel()->count());
+
+  // 2. Focusing a Button (even a default button that registers VKEY_RETURN) and
+  // invoking Cut/Copy/Paste must not trigger its click callback.
+  int button_clicks = 0;
+  auto* test_button =
+      browser_view()->AddChildView(std::make_unique<views::MdTextButton>(
+          base::BindRepeating([](int* clicks) { ++(*clicks); }, &button_clicks),
+          u"Test Button"));
+  test_button->SetIsDefault(true);
+  test_button->SizeToPreferredSize();
+  test_button->RequestFocus();
+  ASSERT_EQ(test_button, focus_manager->GetFocusedView());
+  ASSERT_TRUE(test_button->CanHandleAccelerators());
+
+  browser_view()->Cut();
+  browser_view()->Copy();
+  browser_view()->Paste();
+  EXPECT_EQ(0, button_clicks);
+
+  // 3. Focusing a selectable Label and invoking Copy must still copy its
+  // selected text even though Labels do not register Ctrl+C with FocusManager.
+  auto* selectable_label = browser_view()->AddChildView(
+      std::make_unique<views::Label>(u"selectable_label_text"));
+  ASSERT_TRUE(selectable_label->SetSelectable(true));
+  selectable_label->SizeToPreferredSize();
+  selectable_label->SetFocusBehavior(views::View::FocusBehavior::ALWAYS);
+  selectable_label->RequestFocus();
+  selectable_label->SelectAll();
+  ASSERT_EQ(selectable_label, focus_manager->GetFocusedView());
+  ASSERT_TRUE(focus_manager->GetFocusedView()->CanHandleAccelerators());
+
+  browser_view()->Copy();
+  EXPECT_EQ(u"selectable_label_text",
+            ui::clipboard_test_util::ReadText(
+                ui::Clipboard::GetForCurrentThread(),
+                ui::ClipboardBuffer::kCopyPaste, /*data_dst=*/nullptr));
+
+  // 4. Focusing a Textfield (Omnibox) must still execute Cut/Copy/Paste.
+  OmniboxViewViews* omnibox_view =
+      browser_view()->GetLocationBarView()->omnibox_view();
+  omnibox_view->RequestFocus();
+  ASSERT_EQ(omnibox_view, focus_manager->GetFocusedView());
+  omnibox_view->SetUserText(u"omnibox_edit_text");
+  omnibox_view->SelectAll(false);
+
+  browser_view()->Copy();
+  EXPECT_EQ(u"omnibox_edit_text",
+            ui::clipboard_test_util::ReadText(
+                ui::Clipboard::GetForCurrentThread(),
+                ui::ClipboardBuffer::kCopyPaste, /*data_dst=*/nullptr));
+
+  browser_view()->Cut();
+  EXPECT_EQ(u"", omnibox_view->GetText());
+
+  browser_view()->Paste();
+  EXPECT_TRUE(base::test::RunUntil(
+      [&]() { return omnibox_view->GetText() == u"omnibox_edit_text"; }));
+
+  browser_view()->RemoveChildViewT(selectable_label);
+  browser_view()->RemoveChildViewT(test_button);
+}
+
+namespace {
+
+class TestAcceleratorWebView : public views::WebView {
+  METADATA_HEADER(TestAcceleratorWebView, views::WebView)
+
+ public:
+  explicit TestAcceleratorWebView(content::BrowserContext* browser_context)
+      : views::WebView(browser_context) {
+    SetFocusBehavior(FocusBehavior::ALWAYS);
+  }
+  bool AcceleratorPressed(const ui::Accelerator& accelerator) override {
+    accelerator_pressed_ = true;
+    return true;
+  }
+  bool accelerator_pressed() const { return accelerator_pressed_; }
+
+ private:
+  bool accelerator_pressed_ = false;
+};
+
+BEGIN_METADATA(TestAcceleratorWebView)
+END_METADATA
+
+}  // namespace
+
+IN_PROC_BROWSER_TEST_F(BrowserViewTest, CutCopyPasteFocusedViewRouting) {
+  ui::TestClipboard::CreateForCurrentThread();
+  base::ScopedClosureRunner destroy_clipboard(
+      base::BindOnce(&ui::Clipboard::DestroyClipboardForCurrentThread));
+
+  browser_view()->GetWidget()->Activate();
+  views::test::WaitForWidgetActive(browser_view()->GetWidget(), true);
+
+  // 1. When a views::WebView is focused, CutCopyPaste should not forward
+  // raw accelerators to the WebView's AcceleratorPressed().
+  auto* test_web_view = browser_view()->AddChildView(
+      std::make_unique<TestAcceleratorWebView>(browser()->GetProfile()));
+  test_web_view->RequestFocus();
+  ASSERT_EQ(test_web_view, browser_view()->GetFocusManager()->GetFocusedView());
+
+  browser_view()->Copy();
+  EXPECT_FALSE(test_web_view->accelerator_pressed());
+
+  // 2. When a native Textfield (Omnibox) is focused, CutCopyPaste should
+  // execute the edit command directly on it.
+  OmniboxViewViews* omnibox_view =
+      browser_view()->GetLocationBarView()->omnibox_view();
+  omnibox_view->RequestFocus();
+  ASSERT_EQ(omnibox_view, browser_view()->GetFocusManager()->GetFocusedView());
+  omnibox_view->SetUserText(u"copy_test_text");
+  omnibox_view->SelectAll(false);
+
+  browser_view()->Copy();
+
+  std::u16string clipboard_text = ui::clipboard_test_util::ReadText(
+      ui::Clipboard::GetForCurrentThread(), ui::ClipboardBuffer::kCopyPaste,
+      /*data_dst=*/nullptr);
+  EXPECT_EQ(u"copy_test_text", clipboard_text);
+
+  // 3. When an active child widget has focus, CutCopyPaste should use the
+  // child widget's FocusManager and execute the command on its focused view.
+  auto child_widget_delegate = std::make_unique<views::WidgetDelegate>();
+  auto* child_textfield = child_widget_delegate->SetContentsView(
+      std::make_unique<views::Textfield>());
+  child_textfield->SetAccessibleName(u"Child Textfield");
+  auto child_widget = std::make_unique<views::Widget>();
+  views::Widget::InitParams params(
+      views::Widget::InitParams::CLIENT_OWNS_WIDGET,
+      views::Widget::InitParams::TYPE_WINDOW);
+  params.delegate = child_widget_delegate.get();
+  params.parent = browser_view()->GetWidget()->GetNativeView();
+  child_widget->Init(std::move(params));
+
+  child_widget->Show();
+  child_widget->Activate();
+  views::test::WaitForWidgetActive(child_widget.get(), true);
+
+  child_textfield->RequestFocus();
+  ASSERT_EQ(child_textfield, child_widget->GetFocusManager()->GetFocusedView());
+  child_textfield->SetText(u"child_widget_text");
+  child_textfield->SelectAll(false);
+
+  browser_view()->Copy();
+
+  clipboard_text = ui::clipboard_test_util::ReadText(
+      ui::Clipboard::GetForCurrentThread(), ui::ClipboardBuffer::kCopyPaste,
+      /*data_dst=*/nullptr);
+  EXPECT_EQ(u"child_widget_text", clipboard_text);
+
+  child_widget.reset();
+  browser_view()->RemoveChildViewT(test_web_view);
+}
+#endif  // !BUILDFLAG(IS_MAC)
+
+// A window created for a tab drag is placed from its tab strip before it is
+// shown, so it must not defer layout while invisible.
+IN_PROC_BROWSER_TEST_F(BrowserViewDeferLayoutTest,
+                       NoDeferLayoutForTabDraggingWindow) {
+  BrowserWindowCreateParams params(browser()->GetProfile(),
+                                   /*from_user_gesture=*/true);
+  params.in_tab_dragging = true;
+  BrowserWindowInterface* browser2 = CreateBrowserWindow(std::move(params));
+  BrowserView* browser_view2 = BrowserView::GetBrowserViewForBrowser(browser2);
+  views::Widget* widget2 = browser_view2->GetWidget();
+  ASSERT_FALSE(widget2->IsVisible());
+
+  EXPECT_TRUE(browser_view2->is_startup_layout_disabled_for_testing());
+
+  widget2->LayoutRootViewIfNecessary();
+  chrome::AddTabAt(browser2, GURL("about:blank"), -1, true);
+  widget2->LayoutRootViewIfNecessary();
+  ASSERT_FALSE(browser_view2->GetContentsSize().IsEmpty());
+
+  // A normal window would defer this layout: it is hidden, its size has not
+  // changed, and its contents already have bounds.
   browser_view2->InvalidateLayout();
   widget2->LayoutRootViewIfNecessary();
   EXPECT_FALSE(browser_view2->is_layout_deferred_for_testing());

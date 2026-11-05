@@ -398,7 +398,7 @@ void SimpleSynchronousEntry::OpenEntry(
         out_results->stream_prefetch_data);
   }
   if (out_results->result != net::OK) {
-    sync_entry->Doom();
+    sync_entry->Doom(/*sparse_file_may_be_unchecked=*/true);
     sync_entry->CloseFiles();
     out_results->sync_entry = nullptr;
     out_results->unbound_file_operations =
@@ -437,7 +437,7 @@ void SimpleSynchronousEntry::CreateEntry(
   }
   if (out_results->result != net::OK) {
     if (out_results->result != net::ERR_FILE_EXISTS)
-      sync_entry->Doom();
+      sync_entry->Doom(/*sparse_file_may_be_unchecked=*/true);
     sync_entry->CloseFiles();
     out_results->unbound_file_operations =
         std::move(sync_entry->unbound_file_operations_);
@@ -486,7 +486,7 @@ void SimpleSynchronousEntry::OpenOrCreateEntry(
         if (optimistic_create) {
           // In this case, ::OpenOrCreateEntry already returned claiming it made
           // a new entry. Try extra-hard to make that the actual case.
-          sync_entry->Doom();
+          sync_entry->Doom(/*sparse_file_may_be_unchecked=*/true);
           sync_entry->CloseFiles();
           file_operations = std::move(sync_entry->unbound_file_operations_);
           sync_entry = nullptr;
@@ -498,7 +498,7 @@ void SimpleSynchronousEntry::OpenOrCreateEntry(
         break;
       default:
         // Trouble. Fail this time.
-        sync_entry->Doom();
+        sync_entry->Doom(/*sparse_file_may_be_unchecked=*/true);
         sync_entry->CloseFiles();
         out_results->unbound_file_operations =
             std::move(sync_entry->unbound_file_operations_);
@@ -545,14 +545,14 @@ int SimpleSynchronousEntry::DeleteEntryFilesInternal(
   return deleted_well ? net::OK : net::ERR_FAILED;
 }
 
-int SimpleSynchronousEntry::Doom() {
+int SimpleSynchronousEntry::Doom(bool sparse_file_may_be_unchecked) {
   BackendFileOperations* file_operations = nullptr;
   ScopedFileOperationsBinding binding(this, &file_operations);
-  return DoomInternal(file_operations);
+  return DoomInternal(file_operations, sparse_file_may_be_unchecked);
 }
 
-int SimpleSynchronousEntry::DoomInternal(
-    BackendFileOperations* file_operations) {
+int SimpleSynchronousEntry::DoomInternal(BackendFileOperations* file_operations,
+                                         bool sparse_file_may_be_unchecked) {
   if (entry_file_key_.doom_generation != 0u) {
     // Already doomed.
     return true;
@@ -582,6 +582,13 @@ int SimpleSynchronousEntry::DoomInternal(
       FilePath new_name =
           path_.AppendASCII(GetSparseFilenameFromEntryFileKey(entry_file_key_));
       ok = file_operations->ReplaceFile(old_name, new_name, &out_error) && ok;
+    } else if (sparse_file_may_be_unchecked) {
+      FilePath to_delete =
+          path_.AppendASCII(GetSparseFilenameFromEntryFileKey(orig_key));
+      ok = file_operations->DeleteFile(to_delete,
+                                       BackendFileOperations::DeleteFileMode::
+                                           kEnsureImmediateAvailability) &&
+           ok;
     }
 
     SIMPLE_CACHE_UMA(TIMES, "DiskDoomLatency", cache_type_,
@@ -1518,8 +1525,9 @@ int SimpleSynchronousEntry::InitializeForOpen(
       // knowing what our key is. We must therefore read the header immediately
       // to discover it, so SimpleEntryImpl can make it available to
       // disk_cache::Entry::GetKey().
-      if (!file.IsOK() || !CheckHeaderAndKey(file.get(), i))
+      if (!file.IsOK() || !CheckHeaderAndKey(file.get(), i)) {
         return net::ERR_FAILED;
+      }
     } else {
       // If we do know which key were are looking for, we still need to
       // check that the file actually has it (rather than just being a hash
@@ -1535,8 +1543,9 @@ int SimpleSynchronousEntry::InitializeForOpen(
       int ret_value_stream_0 = ReadAndValidateStream0AndMaybe1(
           file_operations, out_entry_stat->data_size(1), out_entry_stat,
           stream_prefetch_data);
-      if (ret_value_stream_0 != net::OK)
+      if (ret_value_stream_0 != net::OK) {
         return ret_value_stream_0;
+      }
     } else {
       out_entry_stat->set_data_size(
           2, GetDataSizeFromFileSize(key_size, out_entry_stat->data_size(2)));
@@ -2017,6 +2026,21 @@ bool SimpleSynchronousEntry::ScanSparseFile(CacheFile* sparse_file,
 
   if (header.version != kSimpleSparseEntryVersion) {
     DLOG(WARNING) << "Sparse file unreadable version.";
+    return false;
+  }
+
+  size_t expected_header_size = GetHeaderSize(header.key_length);
+  if (expected_header_size > static_cast<size_t>(sparse_file->GetLength())) {
+    return false;
+  }
+
+  std::vector<char> key_data(header.key_length);
+  if (!sparse_file->ReadAndCheck(sizeof(header),
+                                 base::as_writable_byte_span(key_data))) {
+    return false;
+  }
+
+  if (key_.has_value() && *key_ != base::as_string_view(key_data)) {
     return false;
   }
 

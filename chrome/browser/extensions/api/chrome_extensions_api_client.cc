@@ -17,6 +17,7 @@
 #include "build/build_config.h"
 #include "build/chromeos_buildflags.h"
 #include "chrome/browser/extensions/api/automation_internal/chrome_automation_internal_api_delegate.h"
+#include "chrome/browser/extensions/api/cookies/chrome_cookies_api_delegate.h"
 #include "chrome/browser/extensions/api/declarative_content/chrome_content_rules_registry.h"
 #include "chrome/browser/extensions/api/declarative_content/default_content_predicate_evaluators.h"
 #include "chrome/browser/extensions/api/management/chrome_management_api_delegate.h"
@@ -31,6 +32,7 @@
 #include "chrome/browser/extensions/extension_tab_util.h"
 #include "chrome/browser/extensions/system_display/display_info_provider.h"
 #include "chrome/browser/favicon/favicon_utils.h"
+#include "chrome/browser/search/search.h"
 #include "chrome/browser/supervised_user/supervised_user_extensions_delegate_impl.h"
 #include "chrome/browser/supervised_user/supervised_user_service_factory.h"
 #include "chrome/browser/tab_list/tab_list_interface.h"
@@ -39,7 +41,6 @@
 #include "chrome/browser/ui/webui/devtools/devtools_ui.h"
 #include "chrome/common/buildflags.h"
 #include "chrome/common/url_constants.h"
-#include "chrome/common/webui_url_constants.h"
 #include "components/signin/core/browser/signin_header_helper.h"
 #include "components/value_store/value_store_factory.h"
 #include "content/public/browser/browser_context.h"
@@ -61,8 +62,8 @@
 #include "pdf/buildflags.h"
 #include "printing/buildflags/buildflags.h"
 #include "services/network/public/mojom/fetch_api.mojom-shared.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "ui/base/page_transition_types.h"
-#include "ui/base/window_open_disposition.h"
 #include "url/gurl.h"
 
 #if BUILDFLAG(ENABLE_GUEST_VIEW)
@@ -93,6 +94,7 @@
 #endif
 
 #if BUILDFLAG(IS_CHROMEOS)
+#include "chrome/browser/chromeos/policy/dlp/dlp_content_tab_helper.h"
 #include "chrome/browser/extensions/api/file_handlers/non_native_file_system_delegate_chromeos.h"
 #include "chrome/browser/extensions/api/file_system/chrome_file_system_delegate_ash.h"
 #include "chrome/browser/extensions/api/file_system/consent_provider_impl.h"
@@ -137,22 +139,32 @@ void ChromeExtensionsAPIClient::AttachWebContentsHelpers(
 #if BUILDFLAG(ENABLE_PRINTING)
   printing::InitializePrintingForWebContents(web_contents);
 #endif
+#if BUILDFLAG(IS_CHROMEOS)
+  policy::DlpContentTabHelper::MaybeCreateForWebContents(web_contents);
+#endif
 }
 
 bool ChromeExtensionsAPIClient::ShouldHideResponseHeader(
     const GURL& url,
     const std::string& header_name) const {
-  // Gaia may send a OAUth2 authorization code in the Dice response header,
+  // Gaia may send a OAuth2 authorization code in the Dice response header,
   // which could allow an extension to generate a refresh token for the account.
-  return url.host() == GaiaUrls::GetInstance()->gaia_url().host() &&
-         base::CompareCaseInsensitiveASCII(header_name,
-                                           signin::kDiceResponseHeader) == 0;
+  // Also hide the Mirror response header, which triggers browser account
+  // management UI and actions.
+  // Trailing dots are ignored on both hosts, as in URLPattern::MatchesHost().
+  return base::TrimString(url.host(), ".", base::TRIM_TRAILING) ==
+             base::TrimString(GaiaUrls::GetInstance()->gaia_url().host(), ".",
+                              base::TRIM_TRAILING) &&
+         (base::EqualsCaseInsensitiveASCII(header_name,
+                                           signin::kDiceResponseHeader) ||
+          base::EqualsCaseInsensitiveASCII(
+              header_name, signin::kChromeManageAccountsHeader));
 }
 
 bool ChromeExtensionsAPIClient::ShouldHideBrowserNetworkRequest(
     content::BrowserContext* context,
     const WebRequestInfo& request) const {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
 
   // Note: browser initiated non-navigation requests are hidden from extensions.
   // But we do still need to protect some sensitive sub-frame navigation
@@ -173,16 +185,12 @@ bool ChromeExtensionsAPIClient::ShouldHideBrowserNetworkRequest(
       is_browser_request && DevToolsUI::IsFrontendResourceURL(request.url);
 
   // Hide requests made by the browser on behalf of the NTP.
-  is_sensitive_request |=
-      is_browser_request &&
-      request.initiator ==
-          url::Origin::Create(chrome::ChromeUINewTabURLAsGURL());
+  is_sensitive_request |= is_browser_request && request.initiator.has_value() &&
+                          search::IsNewTabOrigin(*request.initiator);
 
   // Hide requests made by the browser on behalf of the 1P WebUI NTP.
-  is_sensitive_request |=
-      is_browser_request &&
-      request.initiator ==
-          url::Origin::Create(chrome::ChromeUINewTabPageURLAsGURL());
+  is_sensitive_request |= is_browser_request && request.initiator.has_value() &&
+                          search::IsNewTabPageOrigin(*request.initiator);
 
   // Android does not support instant.
 #if !BUILDFLAG(IS_ANDROID)
@@ -205,7 +213,7 @@ void ChromeExtensionsAPIClient::NotifyWebRequestWithheld(
     int render_process_id,
     int render_frame_id,
     const ExtensionId& extension_id) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
 
   // Track down the ExtensionActionRunner and the extension. Since this is
   // asynchronous, we could hit a null anywhere along the path.
@@ -266,11 +274,11 @@ void ChromeExtensionsAPIClient::UpdateActionCount(
   const Extension* extension =
       ExtensionRegistry::Get(context)->enabled_extensions().GetByID(
           extension_id);
-  DCHECK(extension);
+  CHECK(extension, base::NotFatalUntil::M161);
 
   ExtensionAction* action =
       ExtensionActionManager::Get(context)->GetExtensionAction(*extension);
-  DCHECK(action);
+  CHECK(action, base::NotFatalUntil::M161);
 
   action->SetDNRActionCount(tab_id, action_count);
 
@@ -295,7 +303,7 @@ void ChromeExtensionsAPIClient::ClearActionCount(
     const Extension& extension) {
   ExtensionAction* action =
       ExtensionActionManager::Get(context)->GetExtensionAction(extension);
-  DCHECK(action);
+  CHECK(action, base::NotFatalUntil::M161);
 
   action->ClearDNRActionCountForAllTabs();
 
@@ -336,7 +344,7 @@ void ChromeExtensionsAPIClient::OpenFileUrlForTesting(
   // Open the file URL in the current tab.
   content::OpenURLParams params =
       content::OpenURLParams::CreateBrowserInitiated(
-          file_url, WindowOpenDisposition::CURRENT_TAB,
+          file_url, ui::mojom::WindowOpenDisposition::kCurrentTab,
           ui::PAGE_TRANSITION_FROM_API);
   web_contents->OpenURL(params, /*navigation_handle_callback=*/{});
 }
@@ -461,6 +469,13 @@ MessagingDelegate* ChromeExtensionsAPIClient::GetMessagingDelegate() {
     messaging_delegate_ = std::make_unique<ChromeMessagingDelegate>();
   }
   return messaging_delegate_.get();
+}
+
+CookiesApiDelegate* ChromeExtensionsAPIClient::GetCookiesApiDelegate() {
+  if (!cookies_api_delegate_) {
+    cookies_api_delegate_ = std::make_unique<ChromeCookiesApiDelegate>();
+  }
+  return cookies_api_delegate_.get();
 }
 
 // The APIs that require these methods are not supported on Android.

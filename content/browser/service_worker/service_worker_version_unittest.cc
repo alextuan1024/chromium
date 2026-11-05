@@ -49,6 +49,7 @@
 #include "net/cookies/site_for_cookies.h"
 #include "services/metrics/public/cpp/ukm_recorder.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/blink/public/common/features_generated.h"
 #include "third_party/blink/public/common/service_worker/embedded_worker_status.h"
 #include "third_party/blink/public/common/service_worker/service_worker_router_rule.h"
 #include "third_party/blink/public/common/storage_key/storage_key.h"
@@ -59,6 +60,7 @@
 #include "third_party/blink/public/mojom/service_worker/service_worker_installed_scripts_manager.mojom.h"
 #include "third_party/blink/public/mojom/service_worker/service_worker_registration.mojom.h"
 #include "third_party/blink/public/mojom/service_worker/service_worker_registration_options.mojom.h"
+#include "ui/gfx/geometry/size.h"
 
 namespace content {
 namespace service_worker_version_unittest {
@@ -1130,9 +1132,9 @@ TEST_P(ServiceWorkerVersionTest, RequestNowTimeout) {
   EXPECT_EQ(blink::ServiceWorkerStatusCode::kErrorTimeout, status.value());
 
   service_worker->FlushForTesting();
-  // Should try to set idle timeout if the last request has expired and is
-  // CONTINUE_ON_TIMEOUT.
-  EXPECT_TRUE(service_worker->idle_delay().has_value());
+  // Non-external CONTINUE_ON_TIMEOUT requests do not call AddKeepAlive(), so
+  // ClearKeepAlive() should not be sent when they expire.
+  EXPECT_FALSE(service_worker->idle_delay().has_value());
 
   EXPECT_FALSE(version_->FinishRequest(request_id, /*was_handled=*/true));
 
@@ -1945,6 +1947,30 @@ TEST_P(ServiceWorkerVersionTest, FailToStart_RestartStalledWorker) {
       version_->version_id()));
 }
 
+// Like FailToStart_RestartStalledWorker, but starting the worker is disallowed
+// by the time it stops, so it must not be restarted (crbug.com/531900625).
+TEST_P(ServiceWorkerVersionTest, FailToStart_DoNotRestartDisallowedWorker) {
+  std::optional<blink::ServiceWorkerStatusCode> status;
+  base::RunLoop run_loop;
+  // Stall in starting.
+  auto* client = helper_->AddNewPendingInstanceClient<
+      DelayedFakeEmbeddedWorkerInstanceClient>(helper_.get());
+  client->UnblockStopWorker();
+  version_->StartWorker(
+      ServiceWorkerMetrics::EventType::FETCH_MAIN_FRAME,
+      ReceiveServiceWorkerStatus(&status, run_loop.QuitClosure()));
+  base::RunLoop().RunUntilIdle();
+
+  DisallowServiceWorkerWithLogsContentBrowserClient test_browser_client;
+  ScopedContentBrowserClientSetting browser_client_setting(
+      &test_browser_client);
+  version_->StopWorker(base::DoNothing());
+  run_loop.Run();
+
+  EXPECT_EQ(blink::ServiceWorkerStatusCode::kErrorDisallowed, status.value());
+  EXPECT_EQ(blink::EmbeddedWorkerStatus::kStopped, version_->running_status());
+}
+
 TEST_P(ServiceWorkerVersionTest, InstalledFetchEventHandlerExists) {
   auto* service_worker =
       helper_->AddNewPendingServiceWorker<FakeServiceWorker>(helper_.get());
@@ -2162,6 +2188,54 @@ TEST_P(ServiceWorkerVersionTest, StaleRequestTerminationWithExternalKeepalive) {
   EXPECT_NE(blink::EmbeddedWorkerStatus::kRunning, version_->running_status());
 }
 
+TEST_P(ServiceWorkerVersionTest,
+       ClearKeepAliveAfterNonExternalRequestFinishes) {
+  using Result = ServiceWorkerExternalRequestResult;
+  using TimeoutType = ServiceWorkerExternalRequestTimeoutType;
+
+  auto* service_worker =
+      helper_->AddNewPendingServiceWorker<FakeServiceWorker>(helper_.get());
+  ASSERT_EQ(blink::ServiceWorkerStatusCode::kOk,
+            StartServiceWorker(version_.get()));
+  service_worker->RunUntilInitializeGlobalScope();
+  ASSERT_EQ(blink::EmbeddedWorkerStatus::kRunning, version_->running_status());
+  version_->endpoint()->SetIdleDelay(base::Seconds(30));
+
+  // Start a standard (non-external) request such as ACTIVATE.
+  int request_id = version_->StartRequest(
+      ServiceWorkerMetrics::EventType::ACTIVATE, base::DoNothing());
+
+  // Start an external request, which sends AddKeepAlive() and clears the
+  // worker's idle delay.
+  const base::Uuid uuid = base::Uuid::GenerateRandomV4();
+  EXPECT_EQ(Result::kOk,
+            version_->StartExternalRequest(uuid, TimeoutType::kDefault));
+  service_worker->FlushForTesting();
+  EXPECT_FALSE(service_worker->idle_delay().has_value());
+
+  // Finish the external request while the ACTIVATE request is still in flight.
+  // ClearKeepAlive() should not be sent yet because HasWorkInBrowser() is true.
+  EXPECT_EQ(Result::kOk, version_->FinishExternalRequest(uuid));
+  service_worker->FlushForTesting();
+  EXPECT_FALSE(service_worker->idle_delay().has_value());
+
+  // When the remaining non-external request finishes and HasWorkInBrowser()
+  // becomes false, ClearKeepAlive() must be sent so the renderer schedules its
+  // idle timer.
+  EXPECT_TRUE(version_->FinishRequest(request_id, /*was_handled=*/true));
+  service_worker->FlushForTesting();
+  EXPECT_EQ(base::Seconds(30), service_worker->idle_delay());
+
+  // Subsequent non-external requests finishing should not re-send
+  // ClearKeepAlive().
+  version_->endpoint()->SetIdleDelay(base::Seconds(0));
+  int next_request_id = version_->StartRequest(
+      ServiceWorkerMetrics::EventType::ACTIVATE, base::DoNothing());
+  EXPECT_TRUE(version_->FinishRequest(next_request_id, /*was_handled=*/true));
+  service_worker->FlushForTesting();
+  EXPECT_EQ(base::Seconds(0), service_worker->idle_delay());
+}
+
 // Tests worker lifetime with ServiceWorkerVersion::StartExternalRequest.
 TEST_P(ServiceWorkerVersionTest, WorkerLifetimeWithExternalRequest) {
   SetupTestTickClock();
@@ -2172,6 +2246,9 @@ TEST_P(ServiceWorkerVersionTest, WorkerLifetimeWithExternalRequest) {
           bool expect_running) {
         SCOPED_TRACE(testing::Message()
                      << std::boolalpha << "expect_running: " << expect_running);
+        auto* service_worker =
+            helper_->AddNewPendingServiceWorker<FakeServiceWorker>(
+                helper_.get());
         {
           // Start worker.
           base::RunLoop run_loop;
@@ -2195,6 +2272,8 @@ TEST_P(ServiceWorkerVersionTest, WorkerLifetimeWithExternalRequest) {
         tick_clock_.Advance(kTestTimeoutBeyondRequestTimeout);
         version_->timeout_timer_.user_task().Run();
         base::RunLoop().RunUntilIdle();
+        service_worker->FlushForTesting();
+        EXPECT_EQ(!expect_running, service_worker->idle_delay().has_value());
 
         version_->OnPongFromWorker();  // Avoids ping timeout.
         const bool worker_stopped_or_stopping = version_->OnRequestTermination(
@@ -2725,7 +2804,9 @@ TEST_P(ServiceWorkerVersionTest, OpenPaymentHandlerWindow_WithPendingEvent) {
                          const std::optional<std::string>&>
       future;
 
-  service_worker->host()->OpenPaymentHandlerWindow(url, future.GetCallback());
+  service_worker->host()->OpenPaymentHandlerWindow(
+      url, blink::mojom::PaymentHandlerOpenWindowOptions::New(),
+      future.GetCallback());
   EXPECT_TRUE(future.Wait());
 
   EXPECT_FALSE(bad_message_observer.got_bad_message());
@@ -2752,7 +2833,9 @@ TEST_P(ServiceWorkerVersionTest, OpenPaymentHandlerWindow_CrossOrigin) {
                          const std::optional<std::string>&>
       future;
 
-  service_worker->host()->OpenPaymentHandlerWindow(url, future.GetCallback());
+  service_worker->host()->OpenPaymentHandlerWindow(
+      url, blink::mojom::PaymentHandlerOpenWindowOptions::New(),
+      future.GetCallback());
 
   EXPECT_EQ(
       "Received PaymentRequestEvent#openWindow() request for a cross-origin "
@@ -2778,12 +2861,127 @@ TEST_P(ServiceWorkerVersionTest, OpenPaymentHandlerWindow_NoPendingEvent) {
                          const std::optional<std::string>&>
       future;
 
-  service_worker->host()->OpenPaymentHandlerWindow(url, future.GetCallback());
+  service_worker->host()->OpenPaymentHandlerWindow(
+      url, blink::mojom::PaymentHandlerOpenWindowOptions::New(),
+      future.GetCallback());
 
   EXPECT_EQ(
       "Received PaymentRequestEvent#openWindow() request without a pending "
       "PaymentRequestEvent.",
       bad_message_observer.WaitForBadMessage());
+}
+
+TEST_P(ServiceWorkerVersionTest,
+       OpenPaymentHandlerWindow_PreferredSizeWithFeatureEnabled) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(
+      blink::features::kPaymentHandlerStaticCustomSize);
+
+  auto* service_worker =
+      helper_->AddNewPendingServiceWorker<FakeServiceWorker>(helper_.get());
+  ASSERT_EQ(blink::ServiceWorkerStatusCode::kOk,
+            StartServiceWorker(version_.get()));
+  service_worker->RunUntilInitializeGlobalScope();
+  version_->SetStatus(ServiceWorkerVersion::ACTIVATED);
+
+  mojo::test::BadMessageObserver bad_message_observer;
+
+  // Simulate a pending PAYMENT_REQUEST event.
+  int request_id = version_->StartRequest(
+      ServiceWorkerMetrics::EventType::PAYMENT_REQUEST, base::DoNothing());
+
+  GURL url = scope_.Resolve("payment_handler.html");
+  auto options = blink::mojom::PaymentHandlerOpenWindowOptions::New();
+  options->preferred_inner_size = gfx::Size(400, 600);
+  base::test::TestFuture<bool, ServiceWorkerClientInfoPtr,
+                         const std::optional<std::string>&>
+      future;
+
+  service_worker->host()->OpenPaymentHandlerWindow(url, std::move(options),
+                                                   future.GetCallback());
+  EXPECT_TRUE(future.Wait());
+
+  EXPECT_FALSE(bad_message_observer.got_bad_message());
+
+  // Clean up the pending request.
+  version_->FinishRequest(request_id, /*was_handled=*/true);
+}
+
+TEST_P(ServiceWorkerVersionTest,
+       OpenPaymentHandlerWindow_PreferredSizeWithFeatureDisabled) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndDisableFeature(
+      blink::features::kPaymentHandlerStaticCustomSize);
+
+  auto* service_worker =
+      helper_->AddNewPendingServiceWorker<FakeServiceWorker>(helper_.get());
+  ASSERT_EQ(blink::ServiceWorkerStatusCode::kOk,
+            StartServiceWorker(version_.get()));
+  service_worker->RunUntilInitializeGlobalScope();
+  version_->SetStatus(ServiceWorkerVersion::ACTIVATED);
+
+  mojo::test::BadMessageObserver bad_message_observer;
+
+  // Simulate a pending PAYMENT_REQUEST event, so that the request reaches the
+  // preferred size checks.
+  int request_id = version_->StartRequest(
+      ServiceWorkerMetrics::EventType::PAYMENT_REQUEST, base::DoNothing());
+
+  GURL url = scope_.Resolve("payment_handler.html");
+  auto options = blink::mojom::PaymentHandlerOpenWindowOptions::New();
+  options->preferred_inner_size = gfx::Size(400, 600);
+  base::test::TestFuture<bool, ServiceWorkerClientInfoPtr,
+                         const std::optional<std::string>&>
+      future;
+
+  service_worker->host()->OpenPaymentHandlerWindow(url, std::move(options),
+                                                   future.GetCallback());
+
+  EXPECT_EQ(
+      "Received PaymentRequestEvent#openWindow() request with a preferred "
+      "size while PaymentHandlerStaticCustomSize is disabled.",
+      bad_message_observer.WaitForBadMessage());
+
+  // Clean up the pending request.
+  version_->FinishRequest(request_id, /*was_handled=*/true);
+}
+
+TEST_P(ServiceWorkerVersionTest, OpenPaymentHandlerWindow_ZeroPreferredSize) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(
+      blink::features::kPaymentHandlerStaticCustomSize);
+
+  auto* service_worker =
+      helper_->AddNewPendingServiceWorker<FakeServiceWorker>(helper_.get());
+  ASSERT_EQ(blink::ServiceWorkerStatusCode::kOk,
+            StartServiceWorker(version_.get()));
+  service_worker->RunUntilInitializeGlobalScope();
+  version_->SetStatus(ServiceWorkerVersion::ACTIVATED);
+
+  mojo::test::BadMessageObserver bad_message_observer;
+
+  // Simulate a pending PAYMENT_REQUEST event, so that the request reaches the
+  // preferred size checks.
+  int request_id = version_->StartRequest(
+      ServiceWorkerMetrics::EventType::PAYMENT_REQUEST, base::DoNothing());
+
+  GURL url = scope_.Resolve("payment_handler.html");
+  auto options = blink::mojom::PaymentHandlerOpenWindowOptions::New();
+  options->preferred_inner_size = gfx::Size(0, 600);
+  base::test::TestFuture<bool, ServiceWorkerClientInfoPtr,
+                         const std::optional<std::string>&>
+      future;
+
+  service_worker->host()->OpenPaymentHandlerWindow(url, std::move(options),
+                                                   future.GetCallback());
+
+  EXPECT_EQ(
+      "Received PaymentRequestEvent#openWindow() request with a non-positive "
+      "preferred size.",
+      bad_message_observer.WaitForBadMessage());
+
+  // Clean up the pending request.
+  version_->FinishRequest(request_id, /*was_handled=*/true);
 }
 
 class ServiceWorkerVersionFencedFrameTest : public ServiceWorkerVersionTest {
@@ -2866,7 +3064,9 @@ TEST_P(ServiceWorkerVersionFencedFrameTest, OpenPaymentHandlerWindow_Rejected) {
                          const std::optional<std::string>&>
       future;
 
-  service_worker->host()->OpenPaymentHandlerWindow(url, future.GetCallback());
+  service_worker->host()->OpenPaymentHandlerWindow(
+      url, blink::mojom::PaymentHandlerOpenWindowOptions::New(),
+      future.GetCallback());
 
   EXPECT_EQ(
       "Received PaymentRequestEvent#openWindow() request from a fenced frame.",

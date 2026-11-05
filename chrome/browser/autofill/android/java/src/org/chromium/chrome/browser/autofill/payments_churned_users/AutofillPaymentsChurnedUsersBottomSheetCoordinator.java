@@ -9,7 +9,7 @@ import android.view.View;
 
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
-import org.chromium.chrome.browser.autofill.R;
+import org.chromium.components.autofill.AutofillEnableResurrectingPaymentsUsersTreatmentArm;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
 import org.chromium.ui.modelutil.PropertyKey;
 import org.chromium.ui.modelutil.PropertyModel;
@@ -20,36 +20,51 @@ import org.chromium.ui.modelutil.PropertyModelChangeProcessor;
 public class AutofillPaymentsChurnedUsersBottomSheetCoordinator {
     private final AutofillPaymentsChurnedUsersBottomSheetMediator mMediator;
     private final AutofillPaymentsChurnedUsersBottomSheetView mView;
-    private final PropertyModel mModel;
     private @Nullable
             PropertyModelChangeProcessor<
                     PropertyModel, AutofillPaymentsChurnedUsersBottomSheetView, PropertyKey>
             mModelChangeProcessor;
 
+    /** Delegate to receive user action callbacks from the bottom sheet. */
+    /*package*/ interface Delegate {
+        /** Called when the user clicks the accept ("Turn on") button. */
+        void onUiAccepted();
+
+        /**
+         * Called after the post-accept loading state completes and the confirmation snackbar should
+         * be shown.
+         */
+        void onShowConfirmation();
+
+        /** Called when the user clicks the cancel ("No thanks") button. */
+        void onUiCanceled();
+
+        /** Called when the user passively dismisses the bottom sheet (e.g. swipe down, scrim). */
+        void onUiDismissed();
+
+        /** Called when the bottom sheet could not be shown. */
+        void onUiNotShown();
+    }
+
     public AutofillPaymentsChurnedUsersBottomSheetCoordinator(
-            Context context, BottomSheetController bottomSheetController) {
+            Context context,
+            BottomSheetController bottomSheetController,
+            @AutofillEnableResurrectingPaymentsUsersTreatmentArm int treatmentArm,
+            Delegate delegate) {
         mView = new AutofillPaymentsChurnedUsersBottomSheetView(context);
 
         AutofillPaymentsChurnedUsersBottomSheetContent content =
                 new AutofillPaymentsChurnedUsersBottomSheetContent(mView.getContentView());
 
-        // TODO(crbug.com/558881009): The title string is currently hardcoded to the convenience
-        // title for this skeleton. Modify this to dynamically select the appropriate title.
-        mModel =
-                new PropertyModel.Builder(
-                                AutofillPaymentsChurnedUsersBottomSheetProperties.ALL_KEYS)
-                        .with(
-                                AutofillPaymentsChurnedUsersBottomSheetProperties.TITLE,
-                                context.getString(
-                                        R.string.autofill_churned_users_bubble_convenience_title))
-                        .build();
-
         mMediator =
-                new AutofillPaymentsChurnedUsersBottomSheetMediator(bottomSheetController, content);
+                new AutofillPaymentsChurnedUsersBottomSheetMediator(
+                        context, bottomSheetController, content, treatmentArm, delegate);
 
         mModelChangeProcessor =
                 PropertyModelChangeProcessor.create(
-                        mModel, mView, AutofillPaymentsChurnedUsersBottomSheetViewBinder::bind);
+                        mMediator.getModel(),
+                        mView,
+                        AutofillPaymentsChurnedUsersBottomSheetViewBinder::bind);
     }
 
     public void requestShowContent() {
@@ -66,5 +81,9 @@ public class AutofillPaymentsChurnedUsersBottomSheetCoordinator {
 
     View getContentViewForTesting() {
         return mView.getContentView();
+    }
+
+    PropertyModel getModelForTesting() {
+        return mMediator.getModel();
     }
 }

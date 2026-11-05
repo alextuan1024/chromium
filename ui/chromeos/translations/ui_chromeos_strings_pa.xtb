@@ -519,10 +519,10 @@
 <translation id="5045550434625856497">ਗਲਤ ਪਾਸਵਰਡ</translation>
 <translation id="5059127710849015030">ਨੇਪਾਲੀ ਲਿਪੀਅੰਤਰਨ</translation>
 <translation id="5068919226082848014">ਪੀਜ਼ਾ</translation>
+<translation id="5075336522277785691"><ph name="EXTENSION_NAME" /> ਨੇ ਪ੍ਰੌਕਸੀ ਓਵਰਰਾਈਡ ਨਿਯਮ ਸੈੱਟ ਕੀਤੇ ਹਨ</translation>
 <translation id="5081517858322016911"><ph name="TOTAL_FILE_SIZE" /> ਫ਼ਾਈਲਾਂ ਮਿਟਾ ਦਿੱਤੀਆਂ ਜਾਣਗੀਆਂ</translation>
 <translation id="508423945471810158"><ph name="NUMBER_OF_ITEMS" /> ਆਈਟਮਾਂ ਨੂੰ <ph name="FOLDER_NAME" /> ਵਿੱਚ ਲਿਜਾਇਆ ਜਾ ਰਿਹਾ ਹੈ</translation>
 <translation id="509429900233858213">ਇੱਕ ਗੜਬੜ ਹੋਈ</translation>
-<translation id="5102922915594634436">ਸਿੰਕ ਕੀਤੇ ਫੋਲਡਰਾਂ ਦਾ ਪ੍ਰਬੰਧਨ ਕਰੋ</translation>
 <translation id="5109254780565519649">ਕੋਈ ਗੜਬੜ ਹੋ ਗਈ। ਸ਼ਾਇਦ ਕੁਝ ਆਈਟਮਾਂ ਮੁੜ-ਬਹਾਲ ਨਹੀਂ ਹੋਈਆਂ।</translation>
 <translation id="5110329002213341433">ਅੰਗਰੇਜ਼ੀ (ਕੈਨੇਡਾ)</translation>
 <translation id="5119780910075847424">ਸਿੰਕ ਰੋਕਿਆ ਗਿਆ</translation>
@@ -558,7 +558,6 @@
 <translation id="5305688511332277257">ਕੋਈ ਇੰਸਟੌਲ ਨਹੀਂ ਕੀਤਾ</translation>
 <translation id="5317780077021120954">ਰੱਖਿਅਤ ਕਰੋ</translation>
 <translation id="5318819489018851358">Linux ਨਾਲ ਸਾਂਝਾ ਕਰੋ</translation>
-<translation id="5330145655348521461">ਇਹ ਫਾਈਲਾਂ ਇੱਕ ਵੱਖਰੇ ਡੈਸਕਟਾਪ ਤੇ ਖੁੱਲ੍ਹੀਆਂ ਹੋਈਆਂ ਹਨ। ਇਸਨੂੰ ਦੇਖਣ ਲਈ <ph name="USER_NAME" /> (<ph name="MAIL_ADDRESS" />) 'ਤੇ ਹਲਚਲ ਕਰੋ।</translation>
 <translation id="5330512191124428349">ਜਾਣਕਾਰੀ ਪ੍ਰਾਪਤ ਕਰੋ</translation>
 <translation id="535792325654997756">ਬਿੱਲੀਆਂ ਨਾਲ ਵਿਅਕਤੀ</translation>
 <translation id="5358764674931277">ਫ੍ਰੇਮ ਰੇਟ</translation>
@@ -699,7 +698,6 @@
 <translation id="636254897931573416">ਡੋੋਮੇਨ ਪਿਛੇਤਰ ਦੇ ਮਿਲਾਨ ਵਾਲਾ ਮੁੱਲ ਅਵੈਧ ਹੈ</translation>
 <translation id="6364301859968397756">ਸੰਸਥਾ ਦੀ ਸਟੋਰੇਜ ਭਰ ਗਈ ਹੈ</translation>
 <translation id="6367976544441405720">ਵੈਨ</translation>
-<translation id="637062427944097960">ਇਹ ਫਾਈਲ ਇੱਕ ਵੱਖਰੇ ਡੈਸਕਟਾਪ 'ਤੇ ਖੁੱਲੀ ਹੋਈ ਹੈ। ਇਸਨੂੰ ਦੇਖਣ ਲਈ <ph name="USER_NAME" /> (<ph name="MAIL_ADDRESS" />) 'ਤੇ ਹਲਚਲ ਕਰੋ।</translation>
 <translation id="6394388407447716302">ਸਿਰਫ਼ ਪੜ੍ਹਨ ਲਈ</translation>
 <translation id="6395575651121294044"><ph name="NUMBER_OF_FILES" /> ਆਈਟਮਾਂ</translation>
 <translation id="6407769893376380348"><ph name="FILE_NAME" /> ਨੂੰ ਕਿਸੇ ਹੋਰ ਥਾਂ 'ਤੇ ਨਹੀਂ ਲਿਜਾਇਆ ਜਾ ਸਕਿਆ ਕਿਉਂਕਿ ਇਹ ਇਨਕ੍ਰਿਪਟਡ ਹੈ।</translation>

@@ -10,8 +10,8 @@ import '//resources/cr_elements/cr_button/cr_button.js';
 import '//resources/cr_elements/cr_icon/cr_icon.js';
 import '//resources/cr_elements/icons.html.js';
 import '//resources/cr_elements/cr_toast/cr_toast.js';
+import '//resources/cr_elements/cr_toggle/cr_toggle.js';
 
-import type {CrButtonElement} from '//resources/cr_elements/cr_button/cr_button.js';
 import type {CrToastElement} from '//resources/cr_elements/cr_toast/cr_toast.js';
 import {assertNotReached} from '//resources/js/assert.js';
 import {loadTimeData} from '//resources/js/load_time_data.js';
@@ -62,14 +62,6 @@ export function saveStoredUpdateOptions(
       getUpdateOptionsStorageKey(appId), JSON.stringify(options));
 }
 
-export interface IwaDevAppElement {
-  $: {
-    installButton: CrButtonElement,
-    installDialog: IwaDevInstallDialogElement,
-    toast: CrToastElement,
-  };
-}
-
 export class IwaDevAppElement extends CrLitElement {
   static get is() {
     return 'iwa-dev-app';
@@ -88,7 +80,9 @@ export class IwaDevAppElement extends CrLitElement {
 
   static override get properties() {
     return {
+      iwaEnabled_: {type: Boolean},
       devModeEnabled_: {type: Boolean},
+      devModeToggleChecked_: {type: Boolean, state: true},
       devToolsRestrictedByAdmin_: {type: Boolean},
       installedApps_: {type: Array},
       hasFetchedApps_: {type: Boolean, state: true},
@@ -98,7 +92,11 @@ export class IwaDevAppElement extends CrLitElement {
     };
   }
 
+  protected accessor iwaEnabled_: boolean =
+      loadTimeData.getBoolean('isIwaEnabled');
   protected accessor devModeEnabled_: boolean =
+      loadTimeData.getBoolean('isIwaDevModeEnabled');
+  protected accessor devModeToggleChecked_: boolean =
       loadTimeData.getBoolean('isIwaDevModeEnabled');
   protected accessor devToolsRestrictedByAdmin_: boolean =
       loadTimeData.getBoolean('isDevToolsRestrictedByAdmin');
@@ -141,18 +139,25 @@ export class IwaDevAppElement extends CrLitElement {
       this.toastMessage_ = `Update failed: ${errorMsg}`;
     } finally {
       await timerPromise;
-      this.$.toast.show();
+      this.shadowRoot.querySelector<CrToastElement>('#toast')!.show();
       this.updatingAppIds_ =
           this.updatingAppIds_.filter(id => id !== app.appId);
     }
   }
 
-  protected async onRequestUninstall_(
-      e: CustomEvent<{app: IwaDevModeAppInfo}>) {
+  protected async onRequestLaunch_(e: CustomEvent<{appId: string}>) {
+    const result = await this.browserProxy_.handler.launchApp(e.detail.appId);
+    if (!result.success) {
+      this.toastMessage_ = 'Failed to launch app.';
+      this.shadowRoot.querySelector<CrToastElement>('#toast')!.show();
+    }
+  }
+
+  protected async onRequestUninstall_(e: CustomEvent<{appId: string}>) {
     const result =
-        await this.browserProxy_.handler.uninstallApp(e.detail.app.appId);
+        await this.browserProxy_.handler.uninstallApp(e.detail.appId);
     if (result.success) {
-      removeStoredUpdateOptions(e.detail.app.appId);
+      removeStoredUpdateOptions(e.detail.appId);
     }
   }
 
@@ -197,12 +202,27 @@ export class IwaDevAppElement extends CrLitElement {
       const errorMsg = (err as {message?: string})?.message || String(err);
       this.toastMessage_ = `Failed to set update channel: ${errorMsg}`;
     } finally {
-      this.$.toast.show();
+      this.shadowRoot.querySelector<CrToastElement>('#toast')!.show();
     }
   }
 
   protected onOpenInstallDialogClick_() {
-    this.$.installDialog.showDialog();
+    this.shadowRoot.querySelector<IwaDevInstallDialogElement>(
+                       '#installDialog')!.showDialog();
+  }
+
+  protected async onDevModeToggleChange_(e: CustomEvent<boolean>) {
+    this.devModeToggleChecked_ = e.detail;
+    await this.browserProxy_.handler.setIwaDevModeEnabled(
+        this.devModeToggleChecked_);
+  }
+
+  protected onRelaunchClick_() {
+    this.browserProxy_.handler.restartBrowser();
+  }
+
+  protected getDevModeToggleTooltip_(): string {
+    return this.iwaEnabled_ ? '' : 'Enable Isolated Web Apps flag first.';
   }
 
   protected async onRequestInstallFromDevProxy_(e: CustomEvent<{url: Url}>) {
@@ -212,7 +232,7 @@ export class IwaDevAppElement extends CrLitElement {
 
   protected async onRequestInstallFromLocalBundle_() {
     await this.processInstallRequest_(
-        this.browserProxy_.handler.selectAndInstallAppFromLocalWebBundle());
+        this.browserProxy_.handler.installStagedLocalWebBundle());
   }
 
   protected onRequestParseUpdateManifestFromUrl_(e: CustomEvent<{
@@ -236,14 +256,15 @@ export class IwaDevAppElement extends CrLitElement {
   }
 
   private processInstallRequest_(installPromise: Promise<Empty>) {
-    const dialog = this.$.installDialog;
+    const dialog = this.shadowRoot.querySelector<IwaDevInstallDialogElement>(
+        '#installDialog')!;
     dialog.startInstallation();
 
     return installPromise
         .then(() => {
           dialog.onInstallationFinished(null);
           this.toastMessage_ = 'Installation successful!';
-          this.$.toast.show();
+          this.shadowRoot.querySelector<CrToastElement>('#toast')!.show();
         })
         .catch(err => {
           const errorMessage =

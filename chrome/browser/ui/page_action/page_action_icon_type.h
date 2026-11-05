@@ -7,8 +7,13 @@
 
 // Used for histograms, do not reorder. When adding to this enum, please also
 // modify the corresponding references in
-// tools/metrics/histograms/metadata/page/enums.xml and
-// tools/metrics/histograms/metadata/page/histograms.xml.
+// tools/metrics/histograms/metadata/page/enums.xml.
+//
+// The PageActionType variants in
+// tools/metrics/histograms/metadata/page/histograms.xml are not derived from
+// this enum. They list the PageActionProperties::histogram_name values from
+// chrome/browser/ui/page_action/page_action_properties_provider.cc, and
+// PageActionPropertiesProviderTest checks that the two match.
 //
 // LINT.IfChange(PageActionIconType)
 enum class PageActionIconType {
@@ -36,7 +41,7 @@ enum class PageActionIconType {
   kVirtualCardEnroll = 21,
   kFilledCardInformation = 22,
   kZoom = 23,
-  kSaveIban = 24,
+  // DEPRECATED: kSaveIban = 24,
   kMandatoryReauth = 25,
   kPriceInsights = 26,
   // DEPRECATED: kReadAnything = 27,
@@ -56,13 +61,14 @@ enum class PageActionIconType {
   kFederation = 41,
   kGlic = 42,
   kAnchoredContextualCue = 43,
-  kWebAuthnAmbientSignin = 44,
+  // DEPRECATED: kWebAuthnAmbientSignin = 44,
   kAutofillPayment = 45,
   kMultistepFilter = 46,
   kPaymentsChurnedUsers = 47,
   kFakePageActionForDebug = 48,
   kWalletReminderNotice = 49,
-  kMaxValue = kWalletReminderNotice,
+  kGmailOtpOptIn = 50,
+  kMaxValue = kGmailOtpOptIn,
 };
 // LINT.ThenChange(//tools/metrics/histograms/metadata/page/enums.xml:PageActionIconType)
 

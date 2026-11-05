@@ -7,13 +7,12 @@
 #import <UIKit/UIKit.h>
 
 #import <algorithm>
-#import <array>
 #import <string>
+#import <vector>
 
 #import "base/metrics/field_trial_params.h"
 #import "base/strings/sys_string_conversions.h"
 #import "base/strings/utf_string_conversions.h"
-#import "components/application_locale_storage/application_locale_storage.h"
 #import "components/omnibox/browser/actions/omnibox_action_in_suggest.h"
 #import "components/omnibox/browser/autocomplete_match.h"
 #import "components/omnibox/browser/autocomplete_provider.h"
@@ -25,15 +24,11 @@
 #import "ios/chrome/browser/omnibox/model/suggestions/suggest_action.h"
 #import "ios/chrome/browser/omnibox/public/omnibox_ui_features.h"
 #import "ios/chrome/browser/omnibox/public/omnibox_util.h"
-#import "ios/chrome/browser/shared/model/application_context/application_context.h"
 #import "ios/chrome/common/NSString+Chromium.h"
 #import "ios/chrome/common/ui/colors/semantic_color_names.h"
+#import "third_party/omnibox_proto/formatted_string.pb.h"
 
 namespace {
-
-/// Locales with reverse color logic (red for positive, green for negative).
-constexpr std::array<std::string_view, 4> kReverseColorLocales = {
-    "zh-CN", "zh-TW", "ja-JP", "ko-KR"};
 
 /// The color of the main text of a suggest cell.
 UIColor* SuggestionTextColor() {
@@ -52,13 +47,82 @@ UIColor* DimColorIncognito() {
   return UIColor.whiteColor;
 }
 
+/// Returns the suggestion text color for the server color type `color_type`.
+/// `COLOR_SUGGEST_HINT_TEXT` and `COLOR_SUGGEST_ACTION_HIGH` get the secondary
+/// and blue colors. Every other type, including `COLOR_SUGGEST_QUERY_TEXT`,
+/// gets the primary text color.
+UIColor* ColorTypeToSuggestionTextColor(
+    omnibox::FormattedString::ColorType color_type) {
+  switch (color_type) {
+    case omnibox::FormattedString::COLOR_SUGGEST_HINT_TEXT:
+      return SuggestionDetailTextColor();
+    case omnibox::FormattedString::COLOR_SUGGEST_ACTION_HIGH:
+      return [UIColor colorNamed:kBlueColor];
+    default:
+      return SuggestionTextColor();
+  }
+}
+
+/// Applies the colors and bolding of the fragments in `formatted_string` to
+/// `text`. Does nothing if `text` is not the text of `formatted_string`, since
+/// the fragment indices only apply to that text. Fragments without a color keep
+/// the color `text` already has.
+void ApplyFormattedString(const omnibox::FormattedString& formatted_string,
+                          NSMutableAttributedString* text) {
+  if (formatted_string.fragments().empty() ||
+      ![text.string
+          isEqualToString:[NSString cr_fromString:formatted_string.text()]]) {
+    return;
+  }
+  // Fragments without a start index can't be placed in the text.
+  std::vector<const omnibox::FormattedString::FormattedStringFragment*>
+      fragments;
+  fragments.reserve(formatted_string.fragments_size());
+  for (const auto& fragment : formatted_string.fragments()) {
+    if (fragment.has_start_index()) {
+      fragments.push_back(&fragment);
+    }
+  }
+  for (size_t i = 0; i < fragments.size(); ++i) {
+    const omnibox::FormattedString::FormattedStringFragment& fragment =
+        *fragments[i];
+    // Each fragment runs until the next one starts or the text ends, whichever
+    // comes first. The indices are UTF-16 offsets, like NSString's.
+    const NSUInteger start = fragment.start_index();
+    const NSUInteger next_start = i + 1 < fragments.size()
+                                      ? fragments[i + 1]->start_index()
+                                      : text.length;
+    const NSUInteger end = std::min(next_start, text.length);
+    if (start >= end) {
+      continue;
+    }
+    const NSRange range = NSMakeRange(start, end - start);
+    if (fragment.is_bolded()) {
+      UIFont* font = [text attribute:NSFontAttributeName
+                             atIndex:start
+                      effectiveRange:nullptr];
+      UIFontDescriptor* bold_font_descriptor = [font.fontDescriptor
+          fontDescriptorWithSymbolicTraits:UIFontDescriptorTraitBold];
+      if (bold_font_descriptor) {
+        [text addAttribute:NSFontAttributeName
+                     value:[UIFont fontWithDescriptor:bold_font_descriptor
+                                                 size:0]
+                     range:range];
+      }
+    }
+    if (fragment.has_color() &&
+        fragment.color() != omnibox::FormattedString::COLOR_UNKNOWN) {
+      [text addAttribute:NSForegroundColorAttributeName
+                   value:ColorTypeToSuggestionTextColor(fragment.color())
+                   range:range];
+    }
+  }
+}
+
 }  // namespace
 
 @implementation AutocompleteMatchFormatter {
   AutocompleteMatch _match;
-  /// Whether the current locale uses the reverse color logic (red for positive,
-  /// green for negative).
-  BOOL _isReverseColorLogic;
 }
 @synthesize suggestionSectionId;
 @synthesize actionsInSuggest;
@@ -67,19 +131,12 @@ UIColor* DimColorIncognito() {
   self = [super init];
   if (self) {
     _match = AutocompleteMatch(match);
-    _isReverseColorLogic = std::ranges::contains(
-        kReverseColorLocales,
-        GetApplicationContext()->GetApplicationLocaleStorage()->Get());
   }
   return self;
 }
 
 + (instancetype)formatterWithMatch:(const AutocompleteMatch&)match {
   return [[self alloc] initWithMatch:match];
-}
-
-+ (NSAttributedString*)spacerAttributedString {
-  return [[NSAttributedString alloc] initWithString:@"  "];
 }
 
 #pragma mark - NSObject
@@ -101,63 +158,60 @@ UIColor* DimColorIncognito() {
   return _match.SupportsDeletion();
 }
 
-- (BOOL)hasAnswer {
-  return _match.answer_template.has_value();
-}
-
 - (BOOL)isURL {
   return !AutocompleteMatch::IsSearchType(_match.type);
 }
 
 - (NSAttributedString*)detailText {
-  if (self.hasAnswer) {
-    return [self answerDetailText];
-  } else {
-    // The detail text should be the URL (`_match.contents`) for non-search
-    // suggestions and the entity type (`_match.description`) for search entity
-    // suggestions. For all other search suggestions, `_match.description` is
-    // the name of the currently selected search engine, which for mobile we
-    // suppress.
-    NSString* detailText = nil;
-    if (self.isURL) {
-      detailText = base::SysUTF16ToNSString(_match.contents);
-    } else if (_match.type == AutocompleteMatchType::SEARCH_SUGGEST_ENTITY) {
-      detailText = base::SysUTF16ToNSString(_match.description);
-    } else if (_match.suggest_template &&
-               _match.suggest_template->has_secondary_text()) {
-      detailText = [NSString
-          cr_fromString:_match.suggest_template->secondary_text().text()];
-    }
-
-    if (!detailText.length) {
-      return nil;
-    }
-    const ACMatchClassifications* classifications =
-        self.isURL ? &_match.contents_class : nullptr;
-    // The suggestion detail color should match the main text color for entity
-    // suggestions. For non-search suggestions (URLs), a highlight color is used
-    // instead.
-    UIColor* suggestionDetailTextColor = nil;
-
-    if (_match.suggest_template &&
-        _match.suggest_template->has_secondary_text()) {
-      suggestionDetailTextColor = SuggestionDetailTextColor();
-    } else if (_match.type != AutocompleteMatchType::SEARCH_SUGGEST_ENTITY) {
-      suggestionDetailTextColor = SuggestionDetailTextColor();
-    } else {
-      suggestionDetailTextColor = SuggestionTextColor();
-    }
-    DCHECK(suggestionDetailTextColor);
-    return [self attributedStringWithString:detailText
-                            classifications:classifications
-                                  smallFont:YES
-                                      color:suggestionDetailTextColor
-                                   dimColor:DimColor()];
+  // The detail text should be the URL (`_match.contents`) for non-search
+  // suggestions, the entity type (`_match.description`) for search entity
+  // suggestions, or secondary text from `_match.suggest_template` (e.g. for
+  // answers or rich suggestions). For regular search suggestions, the search
+  // engine name is suppressed on mobile in AutocompleteController.
+  NSString* detailText = nil;
+  if (self.isURL) {
+    detailText = base::SysUTF16ToNSString(_match.contents);
+  } else if (_match.type ==
+             omnibox::AutocompleteMatchType::kSearchSuggestEntity) {
+    detailText = base::SysUTF16ToNSString(_match.description);
+  } else if (_match.suggest_template &&
+             _match.suggest_template->has_secondary_text()) {
+    detailText = [NSString
+        cr_fromString:_match.suggest_template->secondary_text().text()];
   }
-}
 
-- (NSAttributedString*)answerDetailText {
-  return [[NSAttributedString alloc] initWithString:@""];
+  if (!detailText.length) {
+    return nil;
+  }
+  const ACMatchClassifications* classifications =
+      self.isURL ? &_match.contents_class : nullptr;
+  // The suggestion detail color should match the main text color for entity
+  // suggestions. For non-search suggestions (URLs), a highlight color is used
+  // instead.
+  UIColor* suggestionDetailTextColor = nil;
+
+  if (_match.suggest_template &&
+      _match.suggest_template->has_secondary_text()) {
+    suggestionDetailTextColor = SuggestionDetailTextColor();
+  } else if (_match.type !=
+             omnibox::AutocompleteMatchType::kSearchSuggestEntity) {
+    suggestionDetailTextColor = SuggestionDetailTextColor();
+  } else {
+    suggestionDetailTextColor = SuggestionTextColor();
+  }
+  DCHECK(suggestionDetailTextColor);
+  NSMutableAttributedString* attributedDetailText =
+      [self attributedStringWithString:detailText
+                       classifications:classifications
+                             smallFont:YES
+                                 color:suggestionDetailTextColor
+                              dimColor:DimColor()];
+  if (_match.suggest_template &&
+      _match.suggest_template->has_secondary_text()) {
+    ApplyFormattedString(_match.suggest_template->secondary_text(),
+                         attributedDetailText);
+  }
+  return attributedDetailText;
 }
 
 - (id<OmniboxIcon>)icon {
@@ -167,7 +221,22 @@ UIColor* DimColorIncognito() {
   return icon;
 }
 
+- (BOOL)wrapPrimaryText {
+  return _match.suggest_template &&
+         _match.suggest_template->has_wrap_primary_text() &&
+         _match.suggest_template->wrap_primary_text();
+}
+
+- (BOOL)wrapSecondaryText {
+  return _match.suggest_template &&
+         _match.suggest_template->has_wrap_secondary_text() &&
+         _match.suggest_template->wrap_secondary_text();
+}
+
 - (NSInteger)numberOfLines {
+  if (self.wrapSecondaryText) {
+    return 2;
+  }
   return 1;
 }
 
@@ -181,60 +250,55 @@ UIColor* DimColorIncognito() {
 }
 
 - (NSAttributedString*)text {
-  if (self.hasAnswer) {
-    return [self answerText];
-  } else {
-    // The text should be search term (`_match.contents`) for searches,
-    // otherwise page title (`_match.description`).
-    std::u16string textString =
-        self.isURL ? _match.description : _match.contents;
+  // The text should be search term (`_match.contents`) for searches,
+  // otherwise page title (`_match.description`).
+  std::u16string textString = self.isURL ? _match.description : _match.contents;
 
-    // Clipboard suggestion "Text you copied" text is stored in description.
-    // The content is empty as iOS doesn't access the clipboard when creating
-    // the match.
-    if (_match.type == AutocompleteMatchType::CLIPBOARD_TEXT ||
-        _match.type == AutocompleteMatchType::CLIPBOARD_IMAGE) {
-      textString = _match.description;
-    }
+  // Clipboard suggestion "Text you copied" text is stored in description.
+  // The content is empty as iOS doesn't access the clipboard when creating
+  // the match.
+  if (_match.type == omnibox::AutocompleteMatchType::kClipboardText ||
+      _match.type == omnibox::AutocompleteMatchType::kClipboardImage) {
+    textString = _match.description;
+  }
 
-    NSString* text = base::SysUTF16ToNSString(textString);
+  NSString* text = base::SysUTF16ToNSString(textString);
 
-    // If for some reason the title is empty, copy the detailText.
-    if ([text length] == 0 && [self.detailText length] != 0) {
-      text = [self.detailText string];
-    }
+  // If for some reason the title is empty, copy the detailText.
+  if ([text length] == 0 && [self.detailText length] != 0) {
+    text = [self.detailText string];
+  }
 
-    const ACMatchClassifications* textClassifications =
-        !self.isURL ? &_match.contents_class : &_match.description_class;
-    UIColor* suggestionTextColor = SuggestionTextColor();
-    UIColor* dimColor = self.incognito ? DimColorIncognito() : DimColor();
+  const ACMatchClassifications* textClassifications =
+      !self.isURL ? &_match.contents_class : &_match.description_class;
+  UIColor* suggestionTextColor = SuggestionTextColor();
+  UIColor* dimColor = self.incognito ? DimColorIncognito() : DimColor();
 
-    NSAttributedString* attributedText =
-        [self attributedStringWithString:text
-                         classifications:textClassifications
+  NSMutableAttributedString* attributedText =
+      [self attributedStringWithString:text
+                       classifications:textClassifications
+                             smallFont:NO
+                                 color:suggestionTextColor
+                              dimColor:dimColor];
+  if (_match.suggest_template && _match.suggest_template->has_primary_text()) {
+    ApplyFormattedString(_match.suggest_template->primary_text(),
+                         attributedText);
+  }
+
+  if (self.isTailSuggestion || self.isMultimodal) {
+    NSMutableAttributedString* mutableString =
+        [[NSMutableAttributedString alloc] init];
+    NSAttributedString* tailSuggestPrefix =
+        [self attributedStringWithString:@"... "
+                         classifications:NULL
                                smallFont:NO
                                    color:suggestionTextColor
                                 dimColor:dimColor];
-
-    if (self.isTailSuggestion || self.isMultimodal) {
-      NSMutableAttributedString* mutableString =
-          [[NSMutableAttributedString alloc] init];
-      NSAttributedString* tailSuggestPrefix =
-          [self attributedStringWithString:@"... "
-                           classifications:NULL
-                                 smallFont:NO
-                                     color:suggestionTextColor
-                                  dimColor:dimColor];
-      [mutableString appendAttributedString:tailSuggestPrefix];
-      [mutableString appendAttributedString:attributedText];
-      attributedText = mutableString;
-    }
-    return attributedText;
+    [mutableString appendAttributedString:tailSuggestPrefix];
+    [mutableString appendAttributedString:attributedText];
+    attributedText = mutableString;
   }
-}
-
-- (NSAttributedString*)answerText {
-  return [[NSAttributedString alloc] initWithString:@""];
+  return attributedText;
 }
 
 - (NSAttributedString*)omniboxPreviewText {
@@ -255,22 +319,25 @@ UIColor* DimColorIncognito() {
     return YES;
   }
 
-  return _match.type == AutocompleteMatchType::BOOKMARK_TITLE ||
-         _match.type == AutocompleteMatchType::CALCULATOR ||
-         _match.type == AutocompleteMatchType::HISTORY_BODY ||
-         _match.type == AutocompleteMatchType::HISTORY_CLUSTER ||
-         _match.type == AutocompleteMatchType::HISTORY_KEYWORD ||
-         _match.type == AutocompleteMatchType::HISTORY_TITLE ||
-         _match.type == AutocompleteMatchType::HISTORY_URL ||
-         _match.type == AutocompleteMatchType::NAVSUGGEST ||
-         _match.type == AutocompleteMatchType::NAVSUGGEST_PERSONALIZED ||
-         _match.type == AutocompleteMatchType::PHYSICAL_WEB_DEPRECATED ||
-         _match.type == AutocompleteMatchType::SEARCH_HISTORY ||
-         _match.type == AutocompleteMatchType::SEARCH_SUGGEST ||
-         _match.type == AutocompleteMatchType::SEARCH_SUGGEST_ENTITY ||
-         _match.type == AutocompleteMatchType::SEARCH_SUGGEST_PERSONALIZED ||
-         _match.type == AutocompleteMatchType::SEARCH_SUGGEST_TAIL ||
-         _match.type == AutocompleteMatchType::STARTER_PACK;
+  return _match.type == omnibox::AutocompleteMatchType::kBookmarkTitle ||
+         _match.type == omnibox::AutocompleteMatchType::kCalculator ||
+         _match.type == omnibox::AutocompleteMatchType::kHistoryBody ||
+         _match.type == omnibox::AutocompleteMatchType::kHistoryCluster ||
+         _match.type == omnibox::AutocompleteMatchType::kHistoryKeyword ||
+         _match.type == omnibox::AutocompleteMatchType::kHistoryTitle ||
+         _match.type == omnibox::AutocompleteMatchType::kHistoryUrl ||
+         _match.type == omnibox::AutocompleteMatchType::kNavsuggest ||
+         _match.type ==
+             omnibox::AutocompleteMatchType::kNavsuggestPersonalized ||
+         _match.type ==
+             omnibox::AutocompleteMatchType::kPhysicalWebDeprecated ||
+         _match.type == omnibox::AutocompleteMatchType::kSearchHistory ||
+         _match.type == omnibox::AutocompleteMatchType::kSearchSuggest ||
+         _match.type == omnibox::AutocompleteMatchType::kSearchSuggestEntity ||
+         _match.type ==
+             omnibox::AutocompleteMatchType::kSearchSuggestPersonalized ||
+         _match.type == omnibox::AutocompleteMatchType::kSearchSuggestTail ||
+         _match.type == omnibox::AutocompleteMatchType::kStarterPack;
 }
 
 - (BOOL)isTabMatch {
@@ -291,7 +358,8 @@ UIColor* DimColorIncognito() {
 }
 
 - (NSString*)matchTypeIconAccessibilityIdentifier {
-  return base::SysUTF8ToNSString(AutocompleteMatchType::ToString(_match.type));
+  return base::SysUTF8ToNSString(
+      omnibox::AutocompleteMatchTypeToString(_match.type));
 }
 
 - (BOOL)isMatchTypeSearch {
@@ -299,12 +367,14 @@ UIColor* DimColorIncognito() {
 }
 
 - (BOOL)isWrapping {
-  // Don't allow wrapping on entities, unless it uses a template icon.
-  BOOL hasTemplateIcon =
-      _match.suggest_template && _match.suggest_template->has_type_icon();
-  BOOL isEntity = _match.type == AutocompleteMatchType::SEARCH_SUGGEST_ENTITY &&
-                  !hasTemplateIcon;
-  return self.isMatchTypeSearch && !self.hasAnswer && !isEntity;
+  if (_match.suggest_template &&
+      _match.suggest_template->has_wrap_primary_text()) {
+    return _match.suggest_template->wrap_primary_text();
+  }
+  // Don't allow wrapping on entities.
+  BOOL isEntity =
+      _match.type == omnibox::AutocompleteMatchType::kSearchSuggestEntity;
+  return self.isMatchTypeSearch && !isEntity;
 }
 
 - (CrURL*)destinationUrl {
@@ -318,7 +388,7 @@ UIColor* DimColorIncognito() {
 #pragma mark tail suggest
 
 - (BOOL)isTailSuggestion {
-  return _match.type == AutocompleteMatchType::SEARCH_SUGGEST_TAIL;
+  return _match.type == omnibox::AutocompleteMatchType::kSearchSuggestTail;
 }
 
 - (NSString*)commonPrefix {
@@ -329,85 +399,6 @@ UIColor* DimColorIncognito() {
 }
 
 #pragma mark helpers
-
-#pragma mark FormattedStringFragment styling
-
-// Converts an attributed string fragment proto into an attributedString
-- (NSAttributedString*)
-    attributedStringForFragment:
-        (omnibox::FormattedString::FormattedStringFragment)fragment
-                          color:(UIColor*)defaultColor
-         useDeemphasizedStyling:(BOOL)useDeemphasizedStyling {
-  NSDictionary* attributes =
-      [self formattingAttributesForFragment:fragment
-                     useDeemphasizedStyling:useDeemphasizedStyling];
-
-  NSAttributedString* result = [[NSAttributedString alloc]
-      initWithString:base::SysUTF8ToNSString(fragment.text())
-          attributes:attributes];
-
-  return result;
-}
-
-/// Return correct formatting attributes for the fragment proto.
-/// `useDeemphasizedStyling` is necessary because some styles (e.g. PRIMARY)
-/// should take their color from the surrounding line; they don't have a fixed
-/// color.
-- (NSDictionary<NSAttributedStringKey, id>*)
-    formattingAttributesForFragment:
-        (omnibox::FormattedString::FormattedStringFragment)fragment
-             useDeemphasizedStyling:(BOOL)useDeemphasizedStyling {
-  UIFontDescriptor* defaultFontDescriptor =
-      useDeemphasizedStyling
-          ? [[UIFontDescriptor
-                preferredFontDescriptorWithTextStyle:UIFontTextStyleSubheadline]
-                fontDescriptorWithSymbolicTraits:
-                    UIFontDescriptorTraitTightLeading]
-          : [UIFontDescriptor
-                preferredFontDescriptorWithTextStyle:UIFontTextStyleBody];
-  UIColor* defaultColor = useDeemphasizedStyling ? SuggestionDetailTextColor()
-                                                 : SuggestionTextColor();
-
-  omnibox::FormattedString::ColorType color = fragment.color();
-  switch (color) {
-    case omnibox::FormattedString::COLOR_ON_SURFACE_POSITIVE:
-      return @{
-        NSFontAttributeName : [UIFont fontWithDescriptor:defaultFontDescriptor
-                                                    size:0],
-        NSForegroundColorAttributeName : [UIColor colorNamed:kGreenColor],
-      };
-    case omnibox::FormattedString::COLOR_ON_SURFACE_NEGATIVE:
-      return @{
-        NSFontAttributeName : [UIFont fontWithDescriptor:defaultFontDescriptor
-                                                    size:0],
-        NSForegroundColorAttributeName : [UIColor colorNamed:kRedColor],
-      };
-    case omnibox::FormattedString::COLOR_PRIMARY: {
-      // Calculate a slightly smaller font. The ratio here is somewhat
-      // arbitrary. Proportions from 5/9 to 5/7 all look pretty good.
-      CGFloat ratio = 5.0 / 9.0;
-      UIFont* defaultFont = [UIFont fontWithDescriptor:defaultFontDescriptor
-                                                  size:0];
-      UIFontDescriptor* superiorFontDescriptor = [defaultFontDescriptor
-          fontDescriptorWithSize:defaultFontDescriptor.pointSize * ratio];
-      CGFloat baselineOffset =
-          defaultFont.capHeight - defaultFont.capHeight * ratio;
-      return @{
-        NSFontAttributeName : [UIFont fontWithDescriptor:superiorFontDescriptor
-                                                    size:0],
-        NSBaselineOffsetAttributeName :
-            [NSNumber numberWithFloat:baselineOffset],
-        NSForegroundColorAttributeName : defaultColor,
-      };
-    }
-    default:
-      return @{
-        NSFontAttributeName : [UIFont fontWithDescriptor:defaultFontDescriptor
-                                                    size:0],
-        NSForegroundColorAttributeName : defaultColor,
-      };
-  }
-}
 
 /// Create a formatted string given text and classifications.
 - (NSMutableAttributedString*)

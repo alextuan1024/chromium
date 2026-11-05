@@ -5,6 +5,8 @@
 #ifndef CHROME_BROWSER_DEVTOOLS_DEVTOOLS_POLICY_DIALOG_H_
 #define CHROME_BROWSER_DEVTOOLS_DEVTOOLS_POLICY_DIALOG_H_
 
+#include <stddef.h>
+
 #include <map>
 #include <memory>
 
@@ -24,7 +26,13 @@ class DevToolsPolicyDialog {
     virtual void OnDialogDestroyed(DevToolsPolicyDialog* dialog) {}
   };
 
-  static void Show(content::WebContents* web_contents);
+  // Shows the policy dialog for `web_contents` unless one is already open for
+  // that tab. `web_contents` must not be null; it is not retained beyond the
+  // lifetime of the dialog, which is closed when the tab is destroyed. Returns
+  // true if a new dialog was shown. Callers that only need the dialog (e.g.
+  // view-source entry points) may ignore the result; it exists so
+  // `DevToolsWindow` can avoid double-counting repeated attempts.
+  static bool Show(content::WebContents* web_contents);
 
   static void TestOnlyCloseDialog(content::WebContents* web_contents);
 

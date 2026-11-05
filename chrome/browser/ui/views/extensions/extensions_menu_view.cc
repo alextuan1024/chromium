@@ -9,12 +9,12 @@
 #include "base/auto_reset.h"
 #include "base/check_deref.h"
 #include "base/feature_list.h"
+#include "base/functional/bind.h"
 #include "base/i18n/case_conversion.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/chrome_pages.h"
 #include "chrome/browser/ui/extensions/extension_action_view_model.h"
-#include "chrome/browser/ui/tabs/tab_change_type.h"
-#include "chrome/browser/ui/tabs/tab_strip_model.h"
+#include "chrome/browser/ui/tab_ui_helper.h"
 #include "chrome/browser/ui/toolbar/toolbar_action_view_model.h"
 #include "chrome/browser/ui/views/bubble_menu_item_factory.h"
 #include "chrome/browser/ui/views/chrome_layout_provider.h"
@@ -63,7 +63,8 @@ bool CompareExtensionMenuItemViews(const ExtensionMenuItemView* a,
 // should only be used when the view is known to be one). It is only used as an
 // extra measure to prevent bad static casts.
 ExtensionMenuItemView* GetAsMenuItemView(views::View* view) {
-  DCHECK(views::IsViewClass<ExtensionMenuItemView>(view));
+  CHECK(views::IsViewClass<ExtensionMenuItemView>(view),
+        base::NotFatalUntil::M162);
   return static_cast<ExtensionMenuItemView*>(view);
 }
 
@@ -96,7 +97,10 @@ ExtensionsMenuView::ExtensionsMenuView(
           extensions::SitePermissionsHelper::SiteInteraction::kGranted} {
   toolbar_model_observation_.Observe(toolbar_model_.get());
   if (!extensions_container_->GetActiveWebContents()) {
-    browser_->GetTabStripModel()->AddObserver(this);
+    active_tab_subscription_ =
+        browser_->RegisterActiveTabDidChange(base::BindRepeating(
+            &ExtensionsMenuView::OnActiveTabChanged, base::Unretained(this)));
+    UpdateActiveTabSubscription(browser_->GetActiveTabInterface());
   }
   set_margins(gfx::Insets(0));
 
@@ -117,8 +121,10 @@ ExtensionsMenuView::ExtensionsMenuView(
 
   SetEnableArrowKeyTraversal(true);
 
-  // Let anchor view's MenuButtonController handle the highlight.
-  set_highlight_button_when_shown(false);
+  if (anchor.GetIfView()) {
+    // Let anchor view's MenuButtonController handle the highlight.
+    set_highlight_button_when_shown(false);
+  }
 
   set_fixed_width(views::LayoutProvider::Get()->GetDistanceMetric(
       views::DISTANCE_BUBBLE_PREFERRED_WIDTH));
@@ -129,13 +135,10 @@ ExtensionsMenuView::ExtensionsMenuView(
 
 ExtensionsMenuView::~ExtensionsMenuView() {
   if (!g_allow_testing_dialogs) {
-    DCHECK_EQ(g_extensions_dialog, this);
+    CHECK_EQ(g_extensions_dialog, this, base::NotFatalUntil::M162);
   }
   g_extensions_dialog = nullptr;
   extensions_menu_items_.clear();
-
-  // Note: No need to call TabStripModel::RemoveObserver(), because it's handled
-  // directly within TabStripModelObserver::~TabStripModelObserver().
 }
 
 void ExtensionsMenuView::Populate() {
@@ -285,7 +288,7 @@ ExtensionsMenuView::Section* ExtensionsMenuView::GetSectionForSiteInteraction(
       section = &has_access_;
       break;
   }
-  DCHECK(section);
+  CHECK(section, base::NotFatalUntil::M162);
   return section;
 }
 
@@ -329,7 +332,7 @@ void ExtensionsMenuView::CreateAndInsertNewItem(
   extensions_menu_items_.insert(item);
   InsertMenuItem(item);
   // Sanity check that the item was added.
-  DCHECK(Contains(item));
+  CHECK(Contains(item), base::NotFatalUntil::M162);
 }
 
 void ExtensionsMenuView::InsertMenuItem(ExtensionMenuItemView* menu_item) {
@@ -402,11 +405,13 @@ void ExtensionsMenuView::SanityCheck() {
       auto* menu_item = GetAsMenuItemView(view);
       auto site_interaction =
           menu_item->view_model()->GetSiteInteraction(web_contents);
-      DCHECK_EQ(section, GetSectionForSiteInteraction(site_interaction));
+      CHECK_EQ(section, GetSectionForSiteInteraction(site_interaction),
+               base::NotFatalUntil::M162);
       menu_items.push_back(menu_item);
     }
-    DCHECK(std::is_sorted(menu_items.begin(), menu_items.end(),
-                          CompareExtensionMenuItemViews));
+    CHECK(std::is_sorted(menu_items.begin(), menu_items.end(),
+                         CompareExtensionMenuItemViews),
+          base::NotFatalUntil::M162);
   };
 
   check_section(&has_access_);
@@ -414,15 +419,17 @@ void ExtensionsMenuView::SanityCheck() {
   check_section(&cant_access_);
 
   const base::flat_set<std::string>& action_ids = toolbar_model_->action_ids();
-  DCHECK_EQ(action_ids.size(), extensions_menu_items_.size());
+  CHECK_EQ(action_ids.size(), extensions_menu_items_.size(),
+           base::NotFatalUntil::M162);
 
   // Check that all items are owned by the view hierarchy, and that each
   // corresponds to an item in the model (since we already checked that the size
   // is equal for |action_ids| and |extensions_menu_items_|, this implicitly
   // guarantees that we have a view per item in |action_ids| as well).
   for (ExtensionMenuItemView* item : extensions_menu_items_) {
-    DCHECK(Contains(item));
-    DCHECK(action_ids.contains(item->view_model()->GetId()));
+    CHECK(Contains(item), base::NotFatalUntil::M162);
+    CHECK(action_ids.contains(item->view_model()->GetId()),
+          base::NotFatalUntil::M162);
   }
 #endif
 }
@@ -432,16 +439,20 @@ std::u16string ExtensionsMenuView::GetAccessibleWindowTitle() const {
   return std::u16string();
 }
 
-void ExtensionsMenuView::OnTabChangedAt(tabs::TabInterface* tab,
-                                        TabChangeType change_type) {
+void ExtensionsMenuView::OnActiveTabChanged(BrowserWindowInterface* browser) {
+  UpdateActiveTabSubscription(browser->GetActiveTabInterface());
   Update();
 }
 
-void ExtensionsMenuView::OnTabStripModelChanged(
-    TabStripModel* tab_strip_model,
-    const TabStripModelChange& change,
-    const TabStripSelectionChange& selection) {
-  Update();
+void ExtensionsMenuView::UpdateActiveTabSubscription(tabs::TabInterface* tab) {
+  active_tab_ui_subscription_ = base::CallbackListSubscription();
+  if (tab) {
+    if (TabUIHelper* const tab_ui_helper = TabUIHelper::From(tab)) {
+      active_tab_ui_subscription_ =
+          tab_ui_helper->AddTabUIChangeCallback(base::BindRepeating(
+              &ExtensionsMenuView::Update, base::Unretained(this)));
+    }
+  }
 }
 
 void ExtensionsMenuView::OnToolbarActionAdded(
@@ -461,7 +472,7 @@ void ExtensionsMenuView::OnToolbarActionRemoved(
                                 });
   CHECK(iter != extensions_menu_items_.end());
   ExtensionMenuItemView* const view = *iter;
-  DCHECK(Contains(view));
+  CHECK(Contains(view), base::NotFatalUntil::M162);
   view->parent()->RemoveChildViewT(view);
   extensions_menu_items_.erase(iter);
 
@@ -476,7 +487,7 @@ void ExtensionsMenuView::OnToolbarActionUpdated(
 }
 
 void ExtensionsMenuView::OnToolbarModelInitialized() {
-  DCHECK(extensions_menu_items_.empty());
+  CHECK(extensions_menu_items_.empty(), base::NotFatalUntil::M162);
   Populate();
 }
 
@@ -512,11 +523,12 @@ views::Widget* ExtensionsMenuView::ShowBubble(
     BrowserWindowInterface* browser,
     ExtensionsContainer* extensions_container,
     ExtensionsContainerViews* extensions_container_views) {
-  DCHECK(!g_extensions_dialog);
+  CHECK(!g_extensions_dialog, base::NotFatalUntil::M162);
   // Experiment `kExtensionsMenuAccessControl` is introducing a new menu. Check
   // `ExtensionsMenuView` is only constructed when the experiment is disabled.
-  DCHECK(!base::FeatureList::IsEnabled(
-      extensions_features::kExtensionsMenuAccessControl));
+  CHECK(!base::FeatureList::IsEnabled(
+            extensions_features::kExtensionsMenuAccessControl),
+        base::NotFatalUntil::M162);
   g_extensions_dialog = new ExtensionsMenuView(
       anchor, browser, extensions_container, extensions_container_views);
   views::Widget* widget =
@@ -529,7 +541,8 @@ content::WebContents* ExtensionsMenuView::GetActiveWebContents() const {
   if (auto* web_contents = extensions_container_->GetActiveWebContents()) {
     return web_contents;
   }
-  return browser_->GetTabStripModel()->GetActiveWebContents();
+  tabs::TabInterface* const active_tab = browser_->GetActiveTabInterface();
+  return active_tab ? active_tab->GetContents() : nullptr;
 }
 
 // static

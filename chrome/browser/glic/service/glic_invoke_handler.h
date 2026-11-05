@@ -6,6 +6,8 @@
 #define CHROME_BROWSER_GLIC_SERVICE_GLIC_INVOKE_HANDLER_H_
 
 #include <memory>
+#include <optional>
+#include <string>
 #include <variant>
 #include <vector>
 
@@ -16,6 +18,7 @@
 #include "base/memory/weak_ptr.h"
 #include "base/scoped_observation.h"
 #include "base/timer/timer.h"
+#include "chrome/browser/glic/glic_enums.h"
 #include "chrome/browser/glic/host/host.h"
 #include "chrome/browser/glic/public/glic_instance.h"
 #include "chrome/browser/glic/public/glic_invoke_options.h"
@@ -31,6 +34,13 @@ class GlicInstanceImpl;
 
 class SequentialTaskGroup;
 enum class GlicTaskType;
+
+// Formats best-effort internal diagnostic context for invocation error
+// callbacks (carries no stability guarantee).
+std::string FormatInvokeDiagnosticInfo(
+    std::optional<GlicTaskType> last_active_task,
+    std::optional<ClientLoadState> client_load_state_at_start,
+    std::optional<ClientLoadErrorReason> client_load_error_reason);
 
 // Handles an invocation of Glic, parsing options and communicating with the
 // instance's host.
@@ -57,6 +67,9 @@ class GlicInvokeHandler {
   static ResolvedTarget ResolveTargetSurface(Profile* profile,
                                              const Target& target);
 
+  // Returns the embedder type `resolved_target` will be shown in.
+  static EmbedderType GetEmbedderType(const ResolvedTarget& resolved_target);
+
   // `tab` must be non-nullptr.
   // `completion_callback` should be called exactly once and results in
   // destruction of `this`.
@@ -79,9 +92,9 @@ class GlicInvokeHandler {
   // Cancels the invocation, generating an error callback.
   void Cancel(GlicInvokeError error);
 
-  void set_completion_callback(CompletionCallback completion_callback) {
-    completion_callback_ = std::move(completion_callback);
-  }
+  // Cancels the invocation because its instance is being removed for `reason`.
+  // Fails with the matching kInstanceDestroyed* error.
+  void CancelForInstanceRemoval(InstanceRemovalReason reason);
 
   // Returns the task type of the last active task, if the invocation sequence
   // is currently running or failed. Returns std::nullopt if no tasks have been
@@ -92,22 +105,48 @@ class GlicInvokeHandler {
   // See RequiresClientInvoke().
   bool requires_client_invoke() const { return requires_client_invoke_; }
 
+  // Whether this invocation is waiting (or will wait) on the user completing
+  // the FRE in the panel before it can finish.
+  bool NeedsFreCompletion() const;
+
+  // The metrics invocation ID for this invocation.
+  uint64_t invocation_id() const { return metrics_->GetInvocationId(); }
+
  private:
+  // Describes the actor surface in `options_.target.actuation_target`.
+  struct ActuationSurface {
+    // The handle is null when `options_.target.actuation_target` holds a
+    // mojom::ActuationTarget.
+    actor::ActorSurfaceHandle handle;
+    // True when `handle` is a surface other than the invoked tab, such as a
+    // headless surface. This is false for every mojom::ActuationTarget value,
+    // including kNewTab.
+    bool differs_from_invoked_tab = false;
+  };
+
   bool IsFloatingTarget() const;
   bool IsTabTarget() const;
   tabs::TabInterface& GetTab() const;
   mojom::InvokeOptionsPtr CreateMojoOptions();
   bool IsActuatingFeatureMode() const;
+  // Returns the actor surface in `options_.target.actuation_target` and
+  // whether it is a surface other than the invoked tab.
+  ActuationSurface GetActuationSurface() const;
 
   // Deletes `this`. Exactly one of these methods will be called.
   void OnSuccess();
   void OnError(GlicInvokeError error);
+  // The timeout timer fired. Ends the invocation with kTimeout, or with
+  // kSignInRequired if it spent the time waiting for the user to sign in.
+  void OnTimeout();
 
   void OnTabWillDetach(tabs::TabInterface* tab,
                        tabs::TabInterface::DetachReason reason);
-  void OnInstanceWillBeDestroyed(GlicInstance* instance);
   void OnConversationInfoChanged(const mojom::ConversationInfo& info);
   void OnActuatingChanged(bool actuating);
+  void OnShowInstanceCompleted(bool panel_opened);
+  bool WasPanelOpened() const;
+  // The coordinator cancels `this` before destroying the instance.
   const base::raw_ref<GlicInstanceImpl> instance_;
   ResolvedTarget resolved_target_;
   GlicInvokeOptions options_;
@@ -118,7 +157,8 @@ class GlicInvokeHandler {
   const bool requires_client_invoke_;
 
   bool should_wait_for_load_ = false;
-  base::CallbackListSubscription instance_destruction_subscription_;
+  bool panel_opened_by_show_ = false;
+  std::optional<ClientLoadState> client_load_state_at_start_;
   base::CallbackListSubscription tab_destruction_subscription_;
   base::CallbackListSubscription conversation_subscription_;
   base::CallbackListSubscription actuating_subscription_;

@@ -15,6 +15,7 @@
 #include "partition_alloc/partition_alloc_check.h"
 #include "partition_alloc/partition_alloc_constants.h"
 #include "partition_alloc/partition_alloc_forward.h"
+#include "partition_alloc/partition_alloc_public_constants.h"
 #include "partition_alloc/partition_page_constants.h"
 
 namespace partition_alloc::internal {
@@ -37,7 +38,7 @@ struct PartitionBucket {
 
   SlotSpanMetadata* empty_slot_spans_head;
   SlotSpanMetadata* decommitted_slot_spans_head;
-  uint32_t slot_size;
+  size_t slot_size;
   uint32_t num_system_pages_per_slot_span
       : kPartitionNumSystemPagesPerSlotSpanBits;
   uint32_t num_full_slot_spans : 24;
@@ -67,7 +68,7 @@ struct PartitionBucket {
 
   // Public API.
   PA_COMPONENT_EXPORT(PARTITION_ALLOC)
-  void Init(uint32_t new_slot_size);
+  void Init(size_t new_slot_size);
 
   // Sets |is_already_zeroed| to true if the allocation was satisfied by
   // requesting (a) new page(s) from the operating system, or false otherwise.
@@ -151,7 +152,8 @@ struct PartitionBucket {
 
     const size_t offset_in_slot =
         ((offset_in_slot_span * slot_size_reciprocal) >> kReciprocalShift);
-    PA_DCHECK(offset_in_slot_span / slot_size == offset_in_slot);
+    PA_DCHECK(offset_in_slot * slot_size <= offset_in_slot_span);
+    PA_DCHECK(offset_in_slot_span - offset_in_slot * slot_size < slot_size);
 
     return offset_in_slot;
   }

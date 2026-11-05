@@ -113,7 +113,7 @@ void PushMessagingNotificationManager::EnforceUserVisibleOnlyRequirements(
     int64_t service_worker_registration_id,
     EnforceRequirementsCallback message_handled_callback,
     bool user_visible_only_bypass) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M162);
 
   if (ShouldBypassUserVisibleOnlyRequirement(origin,
                                              user_visible_only_bypass)) {
@@ -142,7 +142,7 @@ void PushMessagingNotificationManager::DidCountVisibleNotifications(
     bool user_visible_only_bypass,
     bool success,
     int notification_count) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M162);
   // TODO(johnme): Hiding an existing notification should also count as a useful
   // user-visible action done in response to a push message - but make sure that
   // sending two messages in rapid succession which show then hide a
@@ -155,13 +155,13 @@ void PushMessagingNotificationManager::DidCountVisibleNotifications(
 
   // Sites with a currently visible tab don't need to show notifications.
 #if BUILDFLAG(IS_ANDROID)
-  for (TabModel* model : TabModelList::models()) {
-    Profile* profile = model->GetProfile();
-    if (IsTabVisible(profile, model->GetActiveWebContents(), origin)) {
+  TabModelList::ForEach(profile_, [&](TabModel* model) {
+    if (IsTabVisible(profile_, model->GetActiveWebContents(), origin)) {
       notification_needed = false;
-      break;
+      return false;
     }
-  }
+    return true;
+  });
 #else
   ForEachCurrentBrowserWindowInterfaceOrderedByActivation(
       [this, &origin, &notification_needed](BrowserWindowInterface* browser) {
@@ -239,7 +239,7 @@ void PushMessagingNotificationManager::ProcessSilentPush(
     int64_t service_worker_registration_id,
     EnforceRequirementsCallback message_handled_callback,
     bool silent_push_allowed) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M162);
   LogSilentPushEvent(SilentPushEvent::kSilentRequest);
 
   // If the origin was allowed to issue a silent push, just return.
@@ -273,7 +273,7 @@ void PushMessagingNotificationManager::DidWriteNotificationData(
     EnforceRequirementsCallback message_handled_callback,
     bool success,
     const std::string& notification_id) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M162);
   if (!success)
     DLOG(ERROR) << "Writing forced notification to database should not fail";
 

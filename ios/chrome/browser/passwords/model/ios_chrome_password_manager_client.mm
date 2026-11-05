@@ -20,6 +20,7 @@
 #import "components/autofill/core/browser/logging/log_manager.h"
 #import "components/autofill/core/browser/logging/log_router.h"
 #import "components/autofill/ios/browser/autofill_client_ios.h"
+#import "components/device_reauth/device_auth_availability_checker.h"
 #import "components/device_reauth/device_authenticator.h"
 #import "components/enterprise/connectors/core/features.h"
 #import "components/enterprise/connectors/core/reporting_event_router.h"
@@ -41,11 +42,14 @@
 #import "components/webauthn/ios/features.h"
 #import "components/webauthn/ios/ios_webauthn_credentials_delegate_factory.h"
 #import "components/webauthn/ios/passkey_tab_helper.h"
+#import "ios/chrome/browser/device_reauth/model/ios_device_auth_availability_checker.h"
 #import "ios/chrome/browser/device_reauth/model/ios_device_authenticator.h"
 #import "ios/chrome/browser/device_reauth/model/ios_device_authenticator_factory.h"
 #import "ios/chrome/browser/device_reauth/model/reauthentication_service.h"
 #import "ios/chrome/browser/device_reauth/model/reauthentication_service_factory.h"
 #import "ios/chrome/browser/enterprise/connectors/reporting/ios_reporting_event_router_factory.h"
+#import "ios/chrome/browser/intelligence/actor/model/actor_tab_helper.h"
+#import "ios/chrome/browser/intelligence/actor/public/actor_control_state.h"
 #import "ios/chrome/browser/metrics/model/ios_profile_metrics_service_factory.h"
 #import "ios/chrome/browser/passwords/model/features.h"
 #import "ios/chrome/browser/passwords/model/ios_chrome_account_password_store_factory.h"
@@ -115,9 +119,24 @@ bool IOSChromePasswordManagerClient::PromptUserToChooseCredentials(
 }
 
 bool IOSChromePasswordManagerClient::IsReauthBeforeFillingRequired(
+    device_reauth::DeviceAuthAvailabilityChecker* checker) {
+  CHECK(checker);
+  return checker->CanAuthenticateWithBiometricOrScreenLock();
+}
+
+bool IOSChromePasswordManagerClient::IsReauthBeforeFillingRequiredLegacy(
     device_reauth::DeviceAuthenticator* authenticator) {
   CHECK(authenticator);
   return authenticator->CanAuthenticateWithBiometricOrScreenLock();
+}
+
+std::unique_ptr<device_reauth::DeviceAuthAvailabilityChecker>
+IOSChromePasswordManagerClient::GetDeviceAuthAvailabilityChecker() {
+  ProfileIOS* profile = bridge_.profile;
+  CHECK(profile);
+  id<ReauthenticationProtocol> reauthModule =
+      ReauthenticationServiceFactory::GetForProfile(profile)->GetReauthModule();
+  return CreateIOSDeviceAuthAvailabilityChecker(reauthModule);
 }
 
 std::unique_ptr<device_reauth::DeviceAuthenticator>
@@ -285,6 +304,16 @@ bool IOSChromePasswordManagerClient::IsPasswordChangeOngoing() {
   return false;
 }
 
+bool IOSChromePasswordManagerClient::IsActorTaskActive() {
+  web::WebState* web_state = bridge_.webState;
+  if (!web_state) {
+    return false;
+  }
+  ActorTabHelper* actor_tab_helper = ActorTabHelper::FromWebState(web_state);
+  return actor_tab_helper && actor_tab_helper->GetControlState() ==
+                                 actor::ActorControlState::kActorControlled;
+}
+
 void IOSChromePasswordManagerClient::MaybeReportEnterpriseLoginEvent(
     const GURL& url,
     bool is_federated,
@@ -301,7 +330,8 @@ void IOSChromePasswordManagerClient::MaybeReportEnterpriseLoginEvent(
 
   // The router is responsible for checking if the reporting of this event type
   // is enabled by the admin.
-  router->OnLoginEvent(url, is_federated, federated_origin, login_user_name);
+  router->OnLoginEvent(url, is_federated, federated_origin, login_user_name,
+                       /*initiator=*/std::nullopt);
 }
 
 void IOSChromePasswordManagerClient::MaybeReportEnterprisePasswordBreachEvent(

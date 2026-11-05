@@ -75,7 +75,7 @@ MediaCaptureDevicesDispatcher* MediaCaptureDevicesDispatcher::GetInstance() {
 MediaCaptureDevicesDispatcher::MediaCaptureDevicesDispatcher()
     : is_device_enumeration_disabled_(false),
       media_stream_capture_indicator_(new MediaStreamCaptureIndicator()) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M161);
 
 #if BUILDFLAG(IS_ANDROID)
   if (base::FeatureList::IsEnabled(kAndroidMediaPicker)) {
@@ -122,24 +122,12 @@ void MediaCaptureDevicesDispatcher::RegisterProfilePrefs(
                                std::string());
 }
 
-void MediaCaptureDevicesDispatcher::AddObserver(Observer* observer) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
-  if (!observers_.HasObserver(observer)) {
-    observers_.AddObserver(observer);
-  }
-}
-
-void MediaCaptureDevicesDispatcher::RemoveObserver(Observer* observer) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
-  observers_.RemoveObserver(observer);
-}
-
 void MediaCaptureDevicesDispatcher::ProcessMediaAccessRequest(
     content::WebContents* web_contents,
     const content::MediaStreamRequest& request,
     content::MediaResponseCallback callback,
     const extensions::Extension* extension) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M161);
 
 #if BUILDFLAG(IS_ANDROID)
   // Kill switch for getDisplayMedia() on browser side to prevent renderer from
@@ -172,12 +160,20 @@ void MediaCaptureDevicesDispatcher::ProcessMediaAccessRequest(
                           nullptr);
 }
 
+void MediaCaptureDevicesDispatcher::ProcessMediaAccessRequest(
+    content::WebContents* web_contents,
+    const content::MediaStreamRequest& request,
+    content::MediaResponseCallback callback) {
+  ProcessMediaAccessRequest(web_contents, request, std::move(callback),
+                            /*extension=*/nullptr);
+}
+
 #if defined(TOOLKIT_VIEWS)
 void MediaCaptureDevicesDispatcher::ProcessSelectAudioOutputRequest(
     BrowserWindowInterface* browser,
     const content::SelectAudioOutputRequest& request,
     content::SelectAudioOutputCallback callback) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M161);
   picker_views_ = SelectAudioOutputPicker::Create(request);
   picker_views_->Show(browser, request, std::move(callback));
 }
@@ -187,7 +183,7 @@ bool MediaCaptureDevicesDispatcher::CheckMediaAccessPermission(
     content::RenderFrameHost* render_frame_host,
     const url::Origin& security_origin,
     blink::mojom::MediaStreamType type) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M161);
   return CheckMediaAccessPermission(render_frame_host, security_origin, type,
                                     nullptr);
 }
@@ -197,7 +193,7 @@ bool MediaCaptureDevicesDispatcher::CheckMediaAccessPermission(
     const url::Origin& security_origin,
     blink::mojom::MediaStreamType type,
     const extensions::Extension* extension) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M161);
   for (const auto& handler : media_access_handlers_) {
     if (handler->SupportsStreamType(render_frame_host, type, extension)) {
       return handler->CheckMediaAccessPermission(
@@ -213,7 +209,7 @@ void MediaCaptureDevicesDispatcher::DisableDeviceEnumerationForTesting() {
 
 const MediaStreamDevices&
 MediaCaptureDevicesDispatcher::GetAudioCaptureDevices() const {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M161);
   if (is_device_enumeration_disabled_ || !test_audio_devices_.empty())
     return test_audio_devices_;
 
@@ -222,7 +218,7 @@ MediaCaptureDevicesDispatcher::GetAudioCaptureDevices() const {
 
 const MediaStreamDevices&
 MediaCaptureDevicesDispatcher::GetVideoCaptureDevices() const {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M161);
   if (is_device_enumeration_disabled_ || !test_video_devices_.empty())
     return test_video_devices_;
 
@@ -233,7 +229,7 @@ const std::optional<blink::MediaStreamDevice>
 MediaCaptureDevicesDispatcher::GetPreferredAudioDeviceForBrowserContext(
     content::BrowserContext* context,
     const std::vector<std::string>& eligible_device_ids) const {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M161);
   auto audio_devices = GetAudioCaptureDevices();
   if (!eligible_device_ids.empty()) {
     audio_devices =
@@ -252,7 +248,7 @@ const std::optional<blink::MediaStreamDevice>
 MediaCaptureDevicesDispatcher::GetPreferredVideoDeviceForBrowserContext(
     content::BrowserContext* context,
     const std::vector<std::string>& eligible_device_ids) const {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M161);
   auto video_devices = GetVideoCaptureDevices();
   if (!eligible_device_ids.empty()) {
     video_devices =
@@ -273,7 +269,7 @@ MediaCaptureDevicesDispatcher::GetMediaStreamCaptureIndicator() {
 }
 
 void MediaCaptureDevicesDispatcher::OnAudioCaptureDevicesChanged() {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M161);
   content::GetUIThreadTaskRunner({})->PostTask(
       FROM_HERE,
       base::BindOnce(
@@ -282,7 +278,7 @@ void MediaCaptureDevicesDispatcher::OnAudioCaptureDevicesChanged() {
 }
 
 void MediaCaptureDevicesDispatcher::OnVideoCaptureDevicesChanged() {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M161);
   content::GetUIThreadTaskRunner({})->PostTask(
       FROM_HERE,
       base::BindOnce(
@@ -297,7 +293,7 @@ void MediaCaptureDevicesDispatcher::OnMediaRequestStateChanged(
     const GURL& security_origin,
     blink::mojom::MediaStreamType stream_type,
     content::MediaRequestState state) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M161);
   content::GetUIThreadTaskRunner({})->PostTask(
       FROM_HERE,
       base::BindOnce(
@@ -313,7 +309,7 @@ void MediaCaptureDevicesDispatcher::OnCreatingAudioStream(int render_process_id,
     return;
   }
 
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M161);
   content::GetUIThreadTaskRunner({})->PostTask(
       FROM_HERE,
       base::BindOnce(
@@ -323,14 +319,16 @@ void MediaCaptureDevicesDispatcher::OnCreatingAudioStream(int render_process_id,
 
 void MediaCaptureDevicesDispatcher::NotifyAudioDevicesChangedOnUIThread() {
   MediaStreamDevices devices = GetAudioCaptureDevices();
-  for (auto& observer : observers_)
+  for (auto& observer : observers()) {
     observer.OnUpdateAudioDevices(devices);
+  }
 }
 
 void MediaCaptureDevicesDispatcher::NotifyVideoDevicesChangedOnUIThread() {
   MediaStreamDevices devices = GetVideoCaptureDevices();
-  for (auto& observer : observers_)
+  for (auto& observer : observers()) {
     observer.OnUpdateVideoDevices(devices);
+  }
 }
 
 void MediaCaptureDevicesDispatcher::UpdateMediaRequestStateOnUIThread(
@@ -339,7 +337,7 @@ void MediaCaptureDevicesDispatcher::UpdateMediaRequestStateOnUIThread(
     int page_request_id,
     blink::mojom::MediaStreamType stream_type,
     content::MediaRequestState state) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M161);
   for (const auto& handler : media_access_handlers_) {
     if (handler->SupportsStreamType(content::RenderFrameHost::FromID(
                                         render_process_id, render_frame_id),
@@ -350,7 +348,7 @@ void MediaCaptureDevicesDispatcher::UpdateMediaRequestStateOnUIThread(
     }
   }
 
-  for (auto& observer : observers_) {
+  for (auto& observer : observers()) {
     observer.OnRequestUpdate(render_process_id, render_frame_id, stream_type,
                              state);
   }
@@ -359,15 +357,16 @@ void MediaCaptureDevicesDispatcher::UpdateMediaRequestStateOnUIThread(
 void MediaCaptureDevicesDispatcher::OnCreatingAudioStreamOnUIThread(
     int render_process_id,
     int render_frame_id) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
-  for (auto& observer : observers_)
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M161);
+  for (auto& observer : observers()) {
     observer.OnCreatingAudioStream(render_process_id, render_frame_id);
+  }
 }
 
 bool MediaCaptureDevicesDispatcher::IsInsecureCapturingInProgress(
     int render_process_id,
     int render_frame_id) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M161);
 
   for (const auto& handler : media_access_handlers_) {
     if (handler->IsInsecureCapturingInProgress(render_process_id,
@@ -393,7 +392,7 @@ void MediaCaptureDevicesDispatcher::OnSetCapturingLinkSecured(
     int page_request_id,
     blink::mojom::MediaStreamType stream_type,
     bool is_secure) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M161);
 
   if (!blink::IsVideoScreenCaptureMediaType(stream_type))
     return;
@@ -412,8 +411,9 @@ void MediaCaptureDevicesDispatcher::UpdateVideoScreenCaptureStatus(
     int page_request_id,
     blink::mojom::MediaStreamType stream_type,
     bool is_secure) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
-  DCHECK(blink::IsVideoScreenCaptureMediaType(stream_type));
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M161);
+  CHECK(blink::IsVideoScreenCaptureMediaType(stream_type),
+        base::NotFatalUntil::M161);
 
   for (const auto& handler : media_access_handlers_) {
     if (handler->SupportsStreamType(content::RenderFrameHost::FromID(

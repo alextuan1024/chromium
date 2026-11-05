@@ -22,12 +22,9 @@
 #include "media/audio/mac/audio_device_listener_mac.h"
 #include "third_party/abseil-cpp/absl/container/flat_hash_set.h"
 
-namespace base {
-
-namespace apple {
+namespace base::apple {
 class ScopedObjCClassSwizzler;
-}  // namespace apple
-}  // namespace base
+}  // namespace base::apple
 
 namespace media {
 
@@ -58,6 +55,7 @@ class MEDIA_EXPORT AudioManagerMac : public AudioManagerApple {
   std::string GetAssociatedOutputDeviceID(
       const std::string& input_device_id) override;
   const std::string_view GetName() override;
+  bool UsesQueuedOutputStream(const AudioParameters& params) const override;
 
   // Implementation of AudioManagerBase.
   AudioOutputStream* MakeLinearOutputStream(
@@ -87,11 +85,11 @@ class MEDIA_EXPORT AudioManagerMac : public AudioManagerApple {
   // lower than the current device buffer size. The buffer size can also be
   // modified under other conditions. See comments in the corresponding cc-file
   // for more details.
-  // Returns false if an error occurred.
-  bool MaybeChangeBufferSize(AudioDeviceID device_id,
-                             AudioUnit audio_unit,
-                             AudioUnitElement element,
-                             size_t desired_buffer_size) override;
+  // Returns noErr if successful or the OSStatus error code.
+  OSStatus MaybeChangeBufferSize(AudioDeviceID device_id,
+                                 AudioUnit audio_unit,
+                                 AudioUnitElement element,
+                                 size_t desired_buffer_size) override;
   base::TimeDelta GetDeferStreamStartTimeout() const override;
   void StopAmplitudePeakTrace() override;
 
@@ -102,7 +100,8 @@ class MEDIA_EXPORT AudioManagerMac : public AudioManagerApple {
   double GetMaxInputVolume(AudioDeviceID device_id) override;
 
   // Sets the microphone analog volume, with range [0.0, 1.0] inclusive.
-  void SetInputVolume(AudioDeviceID device_id, double volume) override;
+  // Returns noErr if successful or the OSStatus error code.
+  OSStatus SetInputVolume(AudioDeviceID device_id, double volume) override;
 
   // Returns the microphone analog volume, with range [0.0, 1.0] inclusive.
   double GetInputVolume(AudioDeviceID device_id) override;
@@ -132,8 +131,6 @@ class MEDIA_EXPORT AudioManagerMac : public AudioManagerApple {
   static AudioDeviceID FindFirstOutputSubdevice(
       AudioDeviceID aggregate_device_id);
 
-  static int GetMinAudioBufferSizeMacOS(int min_buffer_size, int sample_rate);
-
   // Returns a vector with the IDs of all devices related to the given
   // |device_id|. The vector is empty if there are no related devices or
   // if there is an error.
@@ -151,22 +148,6 @@ class MEDIA_EXPORT AudioManagerMac : public AudioManagerApple {
   // As of Nov 2025, this is still helpful, see https://crbug.com/447640763.
   enum { kStartDelayInSecsForPowerEvents = 5 };
   bool ShouldDeferStreamStart() const override;
-
-  // True if the device is on battery power.
-  bool IsOnBatteryPower() const;
-
-  // Number of times the device has resumed from power suspension.
-  size_t GetNumberOfResumeNotifications() const;
-
-  // True if the device is suspending.
-  bool IsSuspending() const;
-
-  // Number of constructed output and input streams.
-  size_t output_streams() const { return output_streams_.size(); }
-  size_t low_latency_input_streams() const {
-    return low_latency_input_streams_.size();
-  }
-  size_t basic_input_streams() const { return basic_input_streams_.size(); }
 
   // Manage device capabilities for ambient noise reduction. These functionality
   // currently implemented on the Mac platform.

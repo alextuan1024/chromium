@@ -35,12 +35,11 @@ import org.chromium.components.browser_ui.settings.search.SettingsIndexData;
 import org.chromium.components.browser_ui.site_settings.AllSiteSettings;
 import org.chromium.components.browser_ui.site_settings.SingleCategorySettings;
 import org.chromium.components.browser_ui.site_settings.SiteSettingsCategory;
-import org.chromium.components.dom_distiller.core.DistilledPagePrefs;
-import org.chromium.components.dom_distiller.core.DomDistillerFeatures;
-import org.chromium.components.omnibox.OmniboxFeatures;
 import org.chromium.components.prefs.PrefChangeRegistrar;
 import org.chromium.components.prefs.PrefChangeRegistrar.PrefObserver;
 import org.chromium.components.user_prefs.UserPrefs;
+import org.chromium.components.web_distiller.core.DistilledPagePrefs;
+import org.chromium.components.web_distiller.core.WebDistillerFeatures;
 import org.chromium.content_public.browser.ContentFeatureList;
 import org.chromium.content_public.browser.ContentFeatureMap;
 import org.chromium.ui.base.UiAndroidFeatureList;
@@ -90,7 +89,6 @@ public class AccessibilitySettings extends PreferenceFragmentCompat
     private ChromeSwitchPreference mPageZoomAlwaysShowPref;
     private ChromeSwitchPreference mForceEnableZoomPref;
     private ChromeSwitchPreference mCaretBrowsingPref;
-    private ChromeSwitchPreference mJumpStartOmnibox;
     private @Nullable AccessibilitySettingsDelegate mDelegate;
     private double mPageZoomLatestDefaultZoomPrefValue;
     private ChromeSwitchPreference mTouchpadOverscrollHistoryNavigationPref;
@@ -117,17 +115,7 @@ public class AccessibilitySettings extends PreferenceFragmentCompat
         mPageTitle.set(getString(R.string.prefs_accessibility));
 
         assertNonNull(mDelegate);
-        // TODO(crbug.com/439911511): Add PageZoomPreference directly to the xml file instead.
-        // Create the page zoom preference.
-        if (mDelegate.shouldUseSlider()) {
-            mPageZoomDefaultZoomPref = new PageZoomSliderPreference(getContext(), null);
-        } else {
-            mPageZoomDefaultZoomPref = new PageZoomSeekbarPreference(getContext(), null);
-        }
-        mPageZoomDefaultZoomPref.setKey(PREF_PAGE_ZOOM_DEFAULT_ZOOM);
-        mPageZoomDefaultZoomPref.setOrder(-1);
-        getPreferenceScreen().addPreference(mPageZoomDefaultZoomPref);
-
+        mPageZoomDefaultZoomPref = findPreference(PREF_PAGE_ZOOM_DEFAULT_ZOOM);
         mPageZoomAlwaysShowPref = findPreference(PREF_PAGE_ZOOM_ALWAYS_SHOW);
         mPageZoomIncludeOSAdjustment = findPreference(PREF_PAGE_ZOOM_INCLUDE_OS_ADJUSTMENT);
 
@@ -148,11 +136,6 @@ public class AccessibilitySettings extends PreferenceFragmentCompat
         mForceEnableZoomPref.setOnPreferenceChangeListener(this);
         mForceEnableZoomPref.setChecked(
                 mDelegate.getForceEnableZoomAccessibilityDelegate().getValue());
-
-        mJumpStartOmnibox = findPreference(OmniboxFeatures.KEY_JUMP_START_OMNIBOX);
-        mJumpStartOmnibox.setOnPreferenceChangeListener(this);
-        mJumpStartOmnibox.setChecked(OmniboxFeatures.isJumpStartOmniboxEnabled());
-        mJumpStartOmnibox.setVisible(shouldShowJumpStartOmniboxPref());
 
         ChromeSwitchPreference readerForAccessibilityPref =
                 findPreference(PREF_READER_FOR_ACCESSIBILITY);
@@ -275,6 +258,9 @@ public class AccessibilitySettings extends PreferenceFragmentCompat
             PageZoomUma.logSettingsDefaultZoomLevelChangedHistogram();
             PageZoomUma.logSettingsDefaultZoomLevelValueHistogram(
                     mPageZoomLatestDefaultZoomPrefValue);
+            if (mDelegate != null) {
+                mDelegate.notifyPageZoomUsed();
+            }
         }
 
         super.onStop();
@@ -306,10 +292,9 @@ public class AccessibilitySettings extends PreferenceFragmentCompat
                     mDelegate.getBrowserContextHandle(), (Integer) newValue);
         } else if (PREF_PAGE_ZOOM_ALWAYS_SHOW.equals(preference.getKey())) {
             PageZoomUtils.setShouldAlwaysShowZoomMenuItem((Boolean) newValue);
+            mDelegate.notifyPageZoomUsed();
         } else if (PREF_PAGE_ZOOM_INCLUDE_OS_ADJUSTMENT.equals(preference.getKey())) {
             // TODO(mschillaci): Implement the override behavior for OS level.
-        } else if (OmniboxFeatures.KEY_JUMP_START_OMNIBOX.equals(preference.getKey())) {
-            OmniboxFeatures.setJumpStartOmniboxEnabled((Boolean) newValue);
         } else if (PREF_CARET_BROWSING.equals(preference.getKey())) {
             mDelegate.setCaretBrowsingEnabled((Boolean) newValue);
         } else if (PREF_TOUCHPAD_OVERSCROLL_HISTORY_NAVIGATION.equals(preference.getKey())) {
@@ -339,10 +324,6 @@ public class AccessibilitySettings extends PreferenceFragmentCompat
         return mPrefObserver;
     }
 
-    private static boolean shouldShowJumpStartOmniboxPref() {
-        return OmniboxFeatures.sJumpStartOmnibox.isEnabled();
-    }
-
     private static boolean shouldShowPageZoomV2() {
         return ContentFeatureMap.isEnabled(ContentFeatureList.ACCESSIBILITY_PAGE_ZOOM_V2);
     }
@@ -356,7 +337,7 @@ public class AccessibilitySettings extends PreferenceFragmentCompat
     }
 
     private static boolean shouldShowReadingModeToggleLinks() {
-        return DomDistillerFeatures.sReaderModeToggleLinks.isEnabled();
+        return WebDistillerFeatures.sReaderModeToggleLinks.isEnabled();
     }
 
     public static final BaseSearchIndexProvider SEARCH_INDEX_DATA_PROVIDER =
@@ -405,9 +386,6 @@ public class AccessibilitySettings extends PreferenceFragmentCompat
                 subViewPos,
                 R.string.page_zoom_preview_title,
                 R.string.page_zoom_preview_text_summary);
-        if (!shouldShowJumpStartOmniboxPref()) {
-            indexData.removeEntryForKey(prefFragment, OmniboxFeatures.KEY_JUMP_START_OMNIBOX);
-        }
         if (!shouldShowPageZoomV2()) {
             indexData.removeEntryForKey(prefFragment, PREF_PAGE_ZOOM_INCLUDE_OS_ADJUSTMENT);
         }
@@ -433,7 +411,7 @@ public class AccessibilitySettings extends PreferenceFragmentCompat
         String id = PreferenceParser.createUniqueId(parentFragment, key);
         Context context = ContextUtils.getApplicationContext();
         String title = context.getString(titleId);
-        indexData.addEntry(
+        indexData.updateEntry(
                 id,
                 new SettingsIndexData.Entry.Builder(id, key, title, parentFragment)
                         .setSummary(context.getString(summaryId))

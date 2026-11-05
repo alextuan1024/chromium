@@ -54,13 +54,44 @@ Note that it does not make sense to use a compromised higher-privilege process
 to compromise a lower-privilege process (e.g., escaping from the GPU process to
 compromise a renderer process).
 
+### Hypothetical Observers, Delegates, and Re-entrancy {#hypothetical-observers}
+
 Do not assume the existence of hypothetical, flawed observers in the browser
 process. A report describing how a `content/public` API (e.g.,
 `WebContentsObserver`) could be misused (e.g., "what if an observer deletes
 `this` or makes a re-entrant call into the navigation logic") should be filed as
 a Feature Request for hardening security, not as a vulnerability, unless you can
 point to a specific, reachable instance of that misuse currently existing in the
-Chromium codebase.
+Chromium codebase. For an example of such a Feature Request, see
+[issue 575343800](https://crbug.com/575343800).
+
+This applies to all observer and delegate interfaces that `//content` calls
+into, such as `WebContentsObserver`, `WebContentsDelegate`, and
+`ContentBrowserClient`. In particular:
+
+* **Patched browser code is not evidence.** A crash or ASan report that only
+  reproduces after modifying browser process code does not show that a bug is
+  reachable. This includes injected deletions or calls (e.g., gated by an
+  environment variable), test-only observers that destroy objects during a
+  notification, and custom unit tests or browser tests that do the same.
+  Patches are only acceptable for simulating a compromised renderer (see the
+  [reporting guidelines](https://chromium.googlesource.com/chromium/src/+/main/docs/security/vrp-faq.md#Best-Practices-for-Security-Bug-Reporting)).
+* **Name the real code path.** A vulnerability report must identify the
+  existing observer, delegate, or embedder code in Chromium that destroys the
+  object (or re-enters `//content`), and show how a web page or a compromised
+  renderer can reach it. Being in the same class as a previously fixed bug is
+  not enough: each call site needs its own reachable trigger.
+* **Some cases are already safe crashes.** For example, destroying a
+  `WebContents` while it is notifying its observers hits a `CHECK` in
+  `~WebContentsImpl`, which is a safe crash rather than a use-after-free.
+* **Nested message loops.** Native OS nested message loops (e.g., inside COM,
+  Win32, or IME calls) do not run Chromium tasks or Mojo messages unless the
+  code explicitly allows it (e.g., with
+  `base::CurrentThread::ScopedAllowApplicationTasksInNativeNestedLoop`).
+  Simulating such a loop with a `base::RunLoop` that runs posted tasks does not
+  show that the destruction can happen in production. See
+  [content/browser/SECURITY.md](https://chromium.googlesource.com/chromium/src/+/main/content/browser/SECURITY.md)
+  for more details.
 
 ### High-Priority Vulnerabilities
 
@@ -101,9 +132,13 @@ generally lower priority. Examples include:
   are enforced via Site Isolation), typically allowing CSRF-like attacks but not
   direct access to the cookies.
 * **Cross-Origin Information Leaks (No Direct Read):** Side channels or limited
-  leaks (e.g., sniffing cross-origin layout or detecting whether a cross-origin
-  resource is cached) that do not allow direct reading of sensitive cross-site
-  data.
+  leaks that do not allow direct reading of sensitive cross-site data. Some
+  examples include:
+  * Sniffing cross-origin layout.
+  * Detecting whether a cross-origin resource is cached.
+  * Knowledge of an `UnguessableToken` the origin should not have access to,
+    such as a `RemoteFrameToken` meant for a different process, or a
+   `LocalFrameToken` sent to a process that doesn't host that frame.
 * **UI Spoofing via Unvalidated IPCs:** A compromised renderer supplying
   unvalidated strings via IPC to manipulate native browser UI. While spoofing
   the Omnibox or permission prompts is severe, spoofing on surfaces that aren't
@@ -165,6 +200,19 @@ functional bugs (unless a broader boundary is broken):
   access to unpartitioned storage and third-party cookies via JavaScript, but
   network requests from the document (or workers) must reflect the revoked
   permission.
+* **Client Hints (`Accept-CH` / `Critical-CH`):** Client Hints and their
+  persistence (`ContentSettingsType::CLIENT_HINTS`) are a content-negotiation
+  and privacy mechanism, not a process-isolated security boundary. High-entropy
+  client hints expose device and user-agent properties that are already
+  accessible to active scripts via JavaScript APIs (e.g.,
+  `navigator.userAgentData.getHighEntropyValues()`), and any site can already
+  trigger `Accept-CH` persistence for a third-party origin via a top-level
+  redirect. Additionally, Client Hints intentionally propagate main-frame
+  context and policies (`main_frame_origin`, `is_outermost_main_frame`, and
+  `PermissionsPolicy`) to subframes, subresources, preloads, and network-service
+  interceptors. Issues where preloading, prefetching, or subresource fetches
+  persist or inherit `Accept-CH` state should be filed as functional bugs rather
+  than security vulnerabilities.
 
 
 ## Mitigating Factors
@@ -226,6 +274,34 @@ implementation mistakes in these patterns in the code base:
   the IPC was sent by an inactive `RenderFrameHost` (e.g., pending deletion),
   acting on `current_frame_host()` may unintentionally apply the action to the
   *new*, potentially cross-origin document.
+* **Missing Navigation Initiators:** The initiator `RenderFrameHost` of a
+  navigation can be deleted or navigate away before the browser handles the
+  request. If the initiator cannot be found, do not substitute
+  `frame_tree_node->current_frame_host()`. That is the target frame, not the
+  initiator. Instead, use the `NavigationRequest`'s `InitiatorNavigationState`
+  to track the state needed after the initiator is gone, or treat the initiator
+  as unknown and fail closed.
+* **Re-entrancy:** A call to a delegate, an observer, a Mojo callback, or the
+  embedder can re-enter and destroy `this`, the frame, the widget, the
+  `FrameTree`, or the `WebContents` while the caller is still on the stack. In
+  general, observers and delegates should not synchronously destroy these
+  objects, and doing so is usually a bug in the observer or delegate. A report
+  about a hypothetical observer that does this is not a vulnerability (see
+  [Hypothetical Observers, Delegates, and Re-entrancy](#hypothetical-observers)
+  and https://crbug.com/575343800). Some calls do
+  allow it, though. Code that makes such calls must handle this. Only add
+  handling where a call is actually known to allow deletion. Do not add
+  `WeakPtr` checks speculatively after every external call. Common options:
+  * Forbid deletion by contract: `CHECK` that the object is not destroyed or
+    re-entered during the call, so a violation crashes safely instead of
+    causing memory errors. Examples:
+    `NavigationControllerImpl::ScopedPendingEntryReentrancyGuard`, and the
+    `CHECK(!observers_.is_notifying_observers())` in `~WebContentsImpl()`.
+  * Detect deletion: take a `WeakPtr` before the call and stop if it is null
+    afterward. Drawbacks: every use after every call needs a check, each
+    object that can be destroyed needs its own `WeakPtr`, returning early
+    can leave an operation half done, and every caller on the stack may need
+    to handle the deletion as well.
 
 ## Terminology and Categorization
 

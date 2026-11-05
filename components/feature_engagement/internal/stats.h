@@ -22,6 +22,7 @@ namespace stats {
 // The failure reasons are not mutually exclusive.
 // Out-dated entries shouldn't be deleted but marked as obselete.
 // LINT.IfChange(TriggerHelpUIResult)
+// GENERATED_JAVA_ENUM_PACKAGE: org.chromium.components.feature_engagement
 enum class TriggerHelpUIResult {
   // The help UI is triggered.
   SUCCESS = 0,
@@ -68,8 +69,11 @@ enum class TriggerHelpUIResult {
   // Groups conditions are not satisfied.
   FAILURE_GROUPS_PRECONDITION_UNMET = 14,
 
+  // Blocked by enterprise policy.
+  FAILURE_BLOCKED_BY_ENTERPRISE_POLICY = 15,
+
   // Last entry for the enum.
-  COUNT = 15,
+  COUNT = 16,
 };
 // LINT.ThenChange(//tools/metrics/histograms/enums.xml:TriggerHelpUIResult)
 
@@ -103,12 +107,6 @@ void RecordUserDismiss();
 
 // Records when the user dismisses or snoozes the snoozable in-product help UI.
 void RecordUserSnoozeAction(Tracker::SnoozeAction snooze_action);
-
-// Records the result of database updates.
-void RecordDbUpdate(bool success, StoreType type);
-
-// Record database init.
-void RecordDbInitEvent(bool success, StoreType type);
 
 // Records events database load event.
 void RecordEventDbLoadEvent(bool success, const std::vector<Event>& events);

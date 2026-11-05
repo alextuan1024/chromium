@@ -23,12 +23,12 @@
 #include "chrome/browser/platform_util.h"
 #include "chrome/browser/ui/webui/ash/settings/os_settings_features_util.h"
 #include "chrome/browser/ui/webui/ash/settings/pages/storage/device_storage_util.h"
-#include "chrome/grit/generated_resources.h"
 #include "chromeos/ash/components/cryptohome/cryptohome_parameters.h"
 #include "chromeos/ash/components/dbus/cryptohome/UserDataAuth.pb.h"
 #include "chromeos/ash/components/dbus/userdataauth/userdataauth_client.h"
 #include "chromeos/ash/components/disks/disk.h"
 #include "chromeos/ash/experiences/arc/arc_features.h"
+#include "chromeos/ash/experiences/settings_ui/resources/grit/ash_settings_strings.h"
 #include "components/user_manager/user_names.h"
 #include "content/public/browser/web_ui_data_source.h"
 #include "ui/base/l10n/l10n_util.h"
@@ -89,7 +89,7 @@ StorageHandler::~StorageHandler() {
 }
 
 void StorageHandler::RegisterMessages() {
-  DCHECK(web_ui());
+  CHECK(web_ui(), base::NotFatalUntil::M162);
 
   web_ui()->RegisterMessageCallback(
       "updateAndroidEnabled",
@@ -137,7 +137,8 @@ void StorageHandler::OnJavascriptDisallowed() {
   // Ensure that pending callbacks do not complete and cause JS to be evaluated.
   weak_ptr_factory_.InvalidateWeakPtrs();
 
-  DCHECK(arc_observation_.IsObservingSource(arc::ArcSessionManager::Get()));
+  CHECK(arc_observation_.IsObservingSource(arc::ArcSessionManager::Get()),
+        base::NotFatalUntil::M162);
   arc_observation_.Reset();
 
   StopObservingEvents();

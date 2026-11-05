@@ -7,7 +7,6 @@
  * information.
  */
 
-import '/shared/settings/prefs/prefs.js';
 // <if expr="not is_chromeos">
 import '../relaunch_confirmation_dialog.js';
 // </if>
@@ -50,7 +49,6 @@ export const ABOUT_PAGE_PRIVACY_POLICY_URL: string =
 
 export interface SettingsAboutPageElement {
   $: {
-    productLogo: HTMLImageElement,
     // <if expr="not is_chromeos">
     deprecationWarning: HTMLElement,
     updateStatusMessage: HTMLElement,
@@ -93,7 +91,11 @@ export class SettingsAboutPageElement extends SettingsAboutPageElementBase
       showRelaunch_: {type: Boolean},
       // </if>
 
+      settingsRefresh2026Enabled_: {type: Boolean},
+
+      // <if expr="_google_chrome">
       feedbackAllowedPref_: {type: Object},
+      // </if>
     };
   }
 
@@ -126,8 +128,13 @@ export class SettingsAboutPageElement extends SettingsAboutPageElementBase
   protected accessor showRelaunch_: boolean = false;
   // </if>
 
+  protected accessor settingsRefresh2026Enabled_: boolean =
+      loadTimeData.getString('settingsRefresh2026') !== '';
+
+  // <if expr="_google_chrome">
   protected accessor feedbackAllowedPref_:
       chrome.settingsPrivate.PrefObject<boolean>|undefined;
+  // </if>
 
   private aboutBrowserProxy_: AboutPageBrowserProxy =
       AboutPageBrowserProxyImpl.getInstance();
@@ -302,7 +309,10 @@ export class SettingsAboutPageElement extends SettingsAboutPageElementBase
     }
   }
 
+  // </if>
+
   protected shouldShowThrobber_(): boolean {
+    // <if expr="not is_chromeos">
     if (this.obsoleteSystemInfo_.endOfLine) {
       return false;
     }
@@ -314,8 +324,11 @@ export class SettingsAboutPageElement extends SettingsAboutPageElementBase
       default:
         return false;
     }
+    // </if>
+    // <if expr="is_chromeos">
+    return false;
+    // </if>
   }
-  // </if>
 
   private checkStatus_(status: UpdateStatus): boolean {
     return this.currentUpdateStatusEvent_!.status === status;
@@ -325,15 +338,20 @@ export class SettingsAboutPageElement extends SettingsAboutPageElementBase
     window.location.href = loadTimeData.getString('managementPageUrl');
   }
 
-  protected onProductLogoClick_() {
-    this.$.productLogo.animate(
-        {
-          transform: ['none', 'rotate(-10turn)'],
-        },
-        {
-          duration: 500,
-          easing: 'cubic-bezier(1, 0, 0, 1)',
-        });
+  protected onProductLogoClick_(event: PointerEvent) {
+    // Cast currentTarget to HTMLElement so TypeScript knows it can be animated
+    const logo = event.currentTarget as HTMLElement;
+
+    if (logo) {
+      logo.animate(
+          {
+            transform: ['none', 'rotate(-10turn)'],
+          },
+          {
+            duration: 500,
+            easing: 'cubic-bezier(1, 0, 0, 1)',
+          });
+    }
   }
 
   // <if expr="_google_chrome">

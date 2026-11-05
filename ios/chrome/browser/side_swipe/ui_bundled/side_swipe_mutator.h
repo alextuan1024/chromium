@@ -17,6 +17,14 @@
 // Performs navigation in the specified direction.
 - (void)navigateInDirection:(NavigationDirection)direction;
 
+// Notifies the mutator that a native WKWebView edge swipe started in the
+// specified `direction`.
+- (void)webViewEdgeSwipeDidStartInDirection:(NavigationDirection)direction;
+
+// Notifies the mutator that a native WKWebView edge swipe was cancelled or
+// failed.
+- (void)webViewEdgeSwipeDidCancel;
+
 @end
 
 #endif  // IOS_CHROME_BROWSER_SIDE_SWIPE_UI_BUNDLED_SIDE_SWIPE_MUTATOR_H_

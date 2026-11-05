@@ -8,11 +8,17 @@
     "service_worker": "background.js",
     "type": "module"
   },
+  // Runs a separate instance in each off-the-record profile, which binds to
+  // that profile's ContextualTasksExtensionBridge.
+  "incognito": "split",
   "permissions": [
     "contextualTasksPrivate",
     "metricsPrivate",
     "favicon"
   ],
+  "back_forward_cache": {
+    "supported": true
+  },
   "host_permissions": [
     "chrome://resources/*"
   ],
@@ -22,22 +28,36 @@
   "externally_connectable": {
     // LINT.IfChange(AllowedOrigins)
     "matches": [
-      "https://google.com/search*",
-      "https://www.google.com/search*",
-      "https://*.borg.google.com/search*",
+      "https://*.google.com/search*",
       "https://*.corp.google.com/search*",
-      "https://*.prod.google.com/search*"
+      "https://*.prod.google.com/search*",
+      "https://*.googlers.com/search*"
+// <if expr="not is_official_build">
+      ,"http://localhost/*",
+      "file:///*"
+// </if>
     ]
-    // LINT.ThenChange(post_message_handler.ts:AllowedOrigins)
+    // LINT.ThenChange(background.ts:AllowedOrigins)
   },
   "web_accessible_resources": [
     {
+      // The Search page mounts each of these by hardcoded URL, so the
+      // filenames are a contract. Renaming one here without renaming it
+      // there leaves Search mounting an iframe for a document that does
+      // not exist, which fails silently.
+      // LINT.IfChange(SearchMountedResources)
       "resources": [
-        "chip.html",
-        "favicons.html",
+        "context_library.html",
         "lens_button.html",
+        "lens_chip.html",
         "tab_picker.html"
       ],
+      // LINT.ThenChange(
+      //   //depot/google3/java/com/google/search/next/aim/ui/chrome/cobrowse/context_library.sfc.tsx,
+      //   //depot/google3/java/com/google/search/next/aim/ui/chrome/cobrowse/lens_button.sfc.tsx,
+      //   //depot/google3/java/com/google/search/next/aim/ui/chrome/cobrowse/lens_chip.sfc.tsx,
+      //   //depot/google3/java/com/google/search/next/aim/ui/chrome/cobrowse/tab_picker_menu_item.sfc.tsx
+      // )
       // LINT.IfChange(WebAccessibleMatches)
       "matches": [
         "https://*.google.com/*",
@@ -49,7 +69,7 @@
         "file:///*"
 // </if>
       ]
-      // LINT.ThenChange(post_message_handler.ts:AllowedOrigins)
+      // LINT.ThenChange(background.ts:AllowedOrigins)
     }
   ]
 }

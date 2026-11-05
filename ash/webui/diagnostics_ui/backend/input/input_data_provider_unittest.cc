@@ -14,7 +14,6 @@
 #include "ash/public/cpp/tablet_mode.h"
 #include "ash/shell.h"
 #include "ash/system/diagnostics/diagnostics_log_controller.h"
-#include "ash/system/diagnostics/fake_diagnostics_browser_delegate.h"
 #include "ash/system/diagnostics/keyboard_input_log.h"
 #include "ash/system/diagnostics/log_test_helpers.h"
 #include "ash/test/ash_test_base.h"
@@ -46,7 +45,6 @@
 #include "chromeos/ash/components/mojo_service_manager/fake_mojo_service_manager.h"
 #include "chromeos/ash/components/system/fake_statistics_provider.h"
 #include "chromeos/ash/components/system/statistics_provider.h"
-#include "chromeos/ash/components/test/ash_test_suite.h"
 #include "chromeos/dbus/power/fake_power_manager_client.h"
 #include "chromeos/dbus/power/power_manager_client.h"
 #include "content/public/test/browser_task_environment.h"
@@ -659,8 +657,6 @@ class InputDataProviderTest : public AshTestBase {
     scoped_feature_list_->InitAndEnableFeature(
         features::kEnableExternalKeyboardsInDiagnostics);
 
-    ui::ResourceBundle::CleanupSharedInstance();
-    AshTestSuite::LoadTestResources();
     AshTestBase::SetUp();
 
     // Note: some init for creating widgets is performed in base SetUp
@@ -676,8 +672,7 @@ class InputDataProviderTest : public AshTestBase {
         CreateTestWidget(views::Widget::InitParams::WIDGET_OWNS_NATIVE_WIDGET);
     provider_ = std::make_unique<TestInputDataProvider>(
         widget_.get(), watchers_, &event_rewriter_delegate_);
-    DiagnosticsLogController::Initialize(
-        std::make_unique<FakeDiagnosticsBrowserDelegate>());
+    DiagnosticsLogController::Initialize();
 
     // Apply these early, in SetUp; delaying until
     // FakeInputDeviceInfoHelper::GetDeviceInfo() is not appropriate, as

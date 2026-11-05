@@ -61,7 +61,7 @@ export class SettingsMemoryPageElement extends SettingsMemoryPageElementBase {
       [MemorySaverModeState.DISABLED];
   protected accessor numericCheckedValue_: MemorySaverModeState =
       MemorySaverModeState.ENABLED;
-  protected accessor memorySaverStatePref_: chrome.settingsPrivate.PrefObject|
+  private accessor memorySaverStatePref_: chrome.settingsPrivate.PrefObject|
       undefined;
 
   private metricsProxy_: PerformanceMetricsProxy =
@@ -100,7 +100,7 @@ export class SettingsMemoryPageElement extends SettingsMemoryPageElementBase {
 
   protected showSendFeedbackButton_(): boolean {
     // <if expr="_google_chrome">
-    return true;
+    return loadTimeData.getString('settingsRefresh2026') === '';
     // </if>
     // <if expr="not _google_chrome">
     return false;

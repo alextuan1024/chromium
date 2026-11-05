@@ -8,7 +8,6 @@
 #include <glib.h>
 #include <pango/pango.h>
 
-#include <array>
 #include <cmath>
 #include <memory>
 #include <optional>
@@ -20,9 +19,9 @@
 #include "base/command_line.h"
 #include "base/compiler_specific.h"
 #include "base/containers/flat_map.h"
+#include "base/containers/span.h"
 #include "base/debug/leak_annotations.h"
 #include "base/environment.h"
-#include "base/files/file_path.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/logging.h"
@@ -37,13 +36,12 @@
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "third_party/skia/include/core/SkShader.h"
-#include "ui/base/cursor/cursor_factory.h"
 #include "ui/base/glib/glib_cast.h"
+#include "ui/base/glib/gsettings.h"
 #include "ui/base/ime/input_method.h"
 #include "ui/base/ime/linux/fake_input_method_context.h"
 #include "ui/base/ime/linux/linux_input_method_context.h"
 #include "ui/base/ime/text_edit_commands.h"
-#include "ui/base/ime/text_input_flags.h"
 #include "ui/base/ozone_buildflags.h"
 #include "ui/base/ui_base_switches.h"
 #include "ui/color/color_id.h"
@@ -67,7 +65,6 @@
 #include "ui/gfx/skbitmap_operations.h"
 #include "ui/gtk/gtk_color_mixers.h"
 #include "ui/gtk/gtk_compat.h"
-#include "ui/gtk/gtk_key_bindings_handler.h"
 #include "ui/gtk/gtk_ui_platform.h"
 #include "ui/gtk/gtk_ui_platform_stub.h"
 #include "ui/gtk/gtk_util.h"
@@ -82,6 +79,7 @@
 #include "ui/gtk/window_frame_provider_gtk.h"
 #include "ui/linux/cursor_theme_manager_observer.h"
 #include "ui/linux/device_scale_factor_observer.h"
+#include "ui/linux/linux_key_bindings_handler.h"
 #include "ui/linux/linux_ui.h"
 #include "ui/linux/linux_ui_delegate.h"
 #include "ui/linux/nav_button_provider.h"
@@ -106,8 +104,6 @@ namespace gtk {
 
 namespace {
 
-constexpr double kDefaultDPI = 96;
-
 // The unknown content type.
 constexpr char kUnknownContentType[] = "application/octet-stream";
 
@@ -126,29 +122,32 @@ gfx::FontRenderParams GetGtkFontRenderParams() {
   gfx::FontRenderParams params;
   params.antialiasing = antialias != 0;
 
-  if (hinting == 0 || !hint_style ||
-      UNSAFE_TODO(strcmp(hint_style, "hintnone")) == 0) {
+  if (hinting == 0 || !hint_style) {
     params.hinting = gfx::FontRenderParams::HINTING_NONE;
-  } else if (UNSAFE_TODO(strcmp(hint_style, "hintslight")) == 0) {
+  } else if (const std::string_view style(hint_style); style == "hintnone") {
+    params.hinting = gfx::FontRenderParams::HINTING_NONE;
+  } else if (style == "hintslight") {
     params.hinting = gfx::FontRenderParams::HINTING_SLIGHT;
-  } else if (UNSAFE_TODO(strcmp(hint_style, "hintmedium")) == 0) {
+  } else if (style == "hintmedium") {
     params.hinting = gfx::FontRenderParams::HINTING_MEDIUM;
-  } else if (UNSAFE_TODO(strcmp(hint_style, "hintfull")) == 0) {
+  } else if (style == "hintfull") {
     params.hinting = gfx::FontRenderParams::HINTING_FULL;
   } else {
     LOG(WARNING) << "Unexpected gtk-xft-hintstyle \"" << hint_style << "\"";
     params.hinting = gfx::FontRenderParams::HINTING_NONE;
   }
 
-  if (!rgba || UNSAFE_TODO(strcmp(rgba, "none")) == 0) {
+  if (!rgba) {
     params.subpixel_rendering = gfx::FontRenderParams::SUBPIXEL_RENDERING_NONE;
-  } else if (UNSAFE_TODO(strcmp(rgba, "rgb")) == 0) {
+  } else if (const std::string_view rgba_str(rgba); rgba_str == "none") {
+    params.subpixel_rendering = gfx::FontRenderParams::SUBPIXEL_RENDERING_NONE;
+  } else if (rgba_str == "rgb") {
     params.subpixel_rendering = gfx::FontRenderParams::SUBPIXEL_RENDERING_RGB;
-  } else if (UNSAFE_TODO(strcmp(rgba, "bgr")) == 0) {
+  } else if (rgba_str == "bgr") {
     params.subpixel_rendering = gfx::FontRenderParams::SUBPIXEL_RENDERING_BGR;
-  } else if (UNSAFE_TODO(strcmp(rgba, "vrgb")) == 0) {
+  } else if (rgba_str == "vrgb") {
     params.subpixel_rendering = gfx::FontRenderParams::SUBPIXEL_RENDERING_VRGB;
-  } else if (UNSAFE_TODO(strcmp(rgba, "vbgr")) == 0) {
+  } else if (rgba_str == "vbgr") {
     params.subpixel_rendering = gfx::FontRenderParams::SUBPIXEL_RENDERING_VBGR;
   } else {
     LOG(WARNING) << "Unexpected gtk-xft-rgba \"" << rgba << "\"";
@@ -159,6 +158,17 @@ gfx::FontRenderParams GetGtkFontRenderParams() {
   g_free(rgba);
 
   return params;
+}
+
+const char* GdkBackendName(ui::LinuxUiBackend backend) {
+  switch (backend) {
+    case ui::LinuxUiBackend::kX11:
+      return "x11";
+    case ui::LinuxUiBackend::kWayland:
+      return "wayland";
+    default:
+      return nullptr;
+  }
 }
 
 std::unique_ptr<GtkUiPlatform> CreateGtkUiPlatform(ui::LinuxUiBackend backend) {
@@ -178,137 +188,15 @@ std::unique_ptr<GtkUiPlatform> CreateGtkUiPlatform(ui::LinuxUiBackend backend) {
   }
 }
 
-int GetXftDpi() {
-  int dpi = -1;
-  g_object_get(gtk_settings_get_default(), "gtk-xft-dpi", &dpi, nullptr);
-  return dpi < 0 ? 0 : dpi;
-}
-
-double FontScale() {
-  double resolution = 0;
-  if (const int dpi = GetXftDpi()) {
-    resolution = dpi / 1024.0;
-  } else {
-    GdkScreen* screen = gdk_screen_get_default();
-    resolution = gdk_screen_get_resolution(screen);
+const ui::ColorProvider* GetGtkColorProvider(size_t system_theme_version) {
+  ui::ColorProviderKey key;
+  // Match `NativeThemeGtk::CalculatePreferredColorScheme()`.
+  if (IsGtkThemeDark()) {
+    key.color_mode = ui::ColorProviderKey::ColorMode::kDark;
   }
-  const double font_scale = resolution > 0 ? resolution / kDefaultDPI : 1.0;
-  // Round to the nearest 1/64th so that UI can losslessly multiply and divide
-  // the scale factor.
-  return std::round(font_scale * 64) / 64;
-}
-
-// Some misconfigured systems have missing or corrupted schemas, see
-// https://crbug.com/434763642. Avoid initializing GTK in this case to prevent
-// a crash.
-bool IsValidSchema(ui::LinuxUiBackend backend) {
-  struct GFreeDeleter {
-    void operator()(gchar* ptr) const { g_free(ptr); }
-  };
-  struct GVariantDeleter {
-    void operator()(GVariant* ptr) const { g_variant_unref(ptr); }
-  };
-  struct GSettingsSchemaKeyDeleter {
-    void operator()(GSettingsSchemaKey* ptr) const {
-      g_settings_schema_key_unref(ptr);
-    }
-  };
-  struct GSettingsSchemaDeleter {
-    void operator()(GSettingsSchema* ptr) const {
-      g_settings_schema_unref(ptr);
-    }
-  };
-
-  struct {
-    const char* interface;
-    std::array<const char*, 3> keys;
-  } static constexpr kInterfaces[] = {
-      {"org.gnome.desktop.interface",
-       {"font-antialiasing", "font-hinting", "font-rgba-order"}},
-      {"org.gnome.settings-daemon.plugins.xsettings",
-       {"antialiasing", "hinting", "rgba-order"}},
-  };
-
-  if (backend != ui::LinuxUiBackend::kWayland) {
-    // The GTK codepath using these schemas is only used on Wayland.
-    return true;
-  }
-
-  auto* source = g_settings_schema_source_get_default();
-  if (!source) {
-    return true;
-  }
-
-  for (const auto& interface : kInterfaces) {
-    std::unique_ptr<GSettingsSchema, GSettingsSchemaDeleter> schema(
-        g_settings_schema_source_lookup(source, interface.interface,
-                                        /*recursive=*/true));
-    if (!schema) {
-      // Not an error, try the next schema.
-      continue;
-    }
-
-    for (const char* key_string : interface.keys) {
-      // Checking for the key first is required, otherwise
-      // g_settings_schema_get_key() could crash.
-      if (!g_settings_schema_has_key(schema.get(), key_string)) {
-        LOG(ERROR) << "Schema " << interface.interface << " does not have key "
-                   << key_string;
-        return false;
-      }
-
-      std::unique_ptr<GSettingsSchemaKey, GSettingsSchemaKeyDeleter> key(
-          g_settings_schema_get_key(schema.get(), key_string));
-      if (!key) {
-        LOG(ERROR) << "Schema " << interface.interface << " has key "
-                   << key_string << ", but g_settings_schema_get_key() failed";
-        return false;
-      }
-
-      std::unique_ptr<GVariant, GVariantDeleter> range(
-          g_settings_schema_key_get_range(key.get()));
-      if (!range) {
-        LOG(ERROR) << "Schema " << interface.interface << " key " << key_string
-                   << " has no range, but it is required";
-        return false;
-      }
-
-      char* type_string = nullptr;
-      g_variant_get(range.get(), "(sv)", &type_string, nullptr);
-      std::unique_ptr<gchar, GFreeDeleter> type_string_deleter(type_string);
-      if (!type_string || type_string != std::string_view("enum")) {
-        LOG(ERROR) << "Schema " << interface.interface << " key " << key_string
-                   << " must be an enum";
-        return false;
-      }
-    }
-
-    // Valid schema. Return now since GTK uses the first present schema.
-    return true;
-  }
-
-  // No schema found. This is acceptable, because GTK will fallback to using
-  // default values.
-  return true;
-}
-
-std::string GetSettingsStringProperty(const char* property_name) {
-  gchar* prop_value = nullptr;
-  g_object_get(gtk_settings_get_default(), property_name, &prop_value, nullptr);
-  std::string prop_string;
-  if (prop_value) {
-    prop_string = prop_value;
-    g_free(prop_value);
-  }
-  return prop_string;
-}
-
-std::string GetIconThemeName() {
-  return GetSettingsStringProperty("gtk-icon-theme-name");
-}
-
-std::string GetThemeName() {
-  return GetSettingsStringProperty("gtk-theme-name");
+  key.system_theme = ui::SystemTheme::kGtk;
+  key.system_theme_version = system_theme_version;
+  return ui::ColorProviderManager::Get().GetColorProviderFor(key);
 }
 
 }  // namespace
@@ -321,21 +209,18 @@ GtkUi::~GtkUi() {
 
 bool GtkUi::Initialize() {
   const auto* delegate = ui::LinuxUiDelegate::GetInstance();
-  DCHECK(delegate);
+  CHECK(delegate, base::NotFatalUntil::M163);
   const auto backend = delegate->GetBackend();
 
-  if (!IsValidSchema(backend)) {
+  // The GTK codepath using these schemas is only used on Wayland.
+  if (backend == ui::LinuxUiBackend::kWayland &&
+      !ui::AreGdkWaylandFontSchemasValid()) {
     return false;
   }
 
   if (!LoadGtk(backend) || !GtkCheckVersion(3, 20)) {
     return false;
   }
-
-  // The GtkSettings interceptor must be installed early (before GTK
-  // initialization like gtk_init_check()) to intercept and sanitize
-  // settings such as gtk-modules when initial XSETTINGS are read.
-  InstallGtkSettingsInterceptor();
 
   // Gtk initialization through pango may call FcInit() before we get to that.
   // Retrieve global FontConfig config here to call FcInit() with configuration
@@ -348,9 +233,6 @@ bool GtkUi::Initialize() {
   // do it once it is ready.
   std::unique_ptr<base::Environment> env(base::Environment::Create());
   env->SetVar("NO_AT_BRIDGE", "1");
-  // GTK's module loading mechanism can be bypassed with the GTK_MODULES
-  // environment variable, so unset it here.
-  env->UnSetVar("GTK_MODULES");
 
   // When GDK opens the display during gtk_init() it probes it for OpenGL
   // support (GLX/EGL version and extension queries), which loads the GL
@@ -365,16 +247,25 @@ bool GtkUi::Initialize() {
   if (!GtkCheckVersion(4) && !env->HasVar(kGdkGl)) {
     disable_gdk_gl_probe.emplace(kGdkGl, "disable");
   }
+  // GDK_BACKEND takes precedence over gdk_set_allowed_backends(), so force it
+  // to the platform's backend while GDK opens the display, and restore it
+  // afterwards for the same reason as GDK_GL.
+  std::optional<base::ScopedEnvironmentVariableOverride> gdk_backend;
+  if (const char* name = GdkBackendName(backend)) {
+    gdk_backend.emplace("GDK_BACKEND", name);
+  }
   // gtk_init_check() modifies argv, so make a copy first.
   CmdLineArgs cmd_line = CopyCmdLine(*base::CommandLine::ForCurrentProcess());
   const bool initialized =
       GtkInitFromCommandLine(&cmd_line.argc, cmd_line.argv.data());
+  gdk_backend.reset();
   disable_gdk_gl_probe.reset();
   if (!initialized) {
     return false;
   }
 
   os_settings_provider_ = std::make_unique<OsSettingsProviderGtk>();
+  SelectFileDialogLinuxGtk::EnsureActivationKeyTracking();
   ui::ColorProviderManager::Get().AppendColorProviderInitializer(
       base::BindRepeating(&GtkUi::AddGtkNativeColorMixer,
                           base::Unretained(this)));
@@ -395,19 +286,6 @@ bool GtkUi::Initialize() {
   };
 
   GtkSettings* settings = gtk_settings_get_default();
-  // Pin `gtk-modules` to an empty string with APPLICATION source priority
-  // to prevent XSETTINGS updates from loading GTK modules.
-  g_object_set(settings, "gtk-modules", "", nullptr);
-  SanitizeIconThemeName();
-  SanitizeThemeName();
-  SanitizeCursorThemeName();
-  SanitizeCursorThemeSize();
-
-  if (!GtkCheckVersion(4)) {
-    SanitizeKeyThemeName();
-    connect(settings, "notify::gtk-key-theme-name",
-            &GtkUi::OnKeyThemeNameChanged);
-  }
   connect(settings, "notify::gtk-theme-name", &GtkUi::OnThemeChanged);
   connect(settings, "notify::gtk-icon-theme-name", &GtkUi::OnThemeChanged);
   connect(settings, "notify::gtk-application-prefer-dark-theme",
@@ -421,8 +299,10 @@ bool GtkUi::Initialize() {
   connect(settings, "notify::gtk-enable-primary-paste",
           &GtkUi::OnPrimaryPasteChanged);
 
-  // Listen for DPI changes, if supported.
-  if (GetXftDpi() > 0) {
+  // Listen for DPI changes, if supported.  GdkScreen was removed in GTK4, so
+  // `gtk-xft-dpi` is the only DPI source there, even if it's currently unset
+  // (eg. on Wayland without the xdg-desktop-portal Settings interface).
+  if (GtkCheckVersion(4) || GetXftDpi() > 0) {
     connect(settings, "notify::gtk-xft-dpi", &GtkUi::OnGtkXftDpiChanged);
   } else {
     GdkScreen* screen = gdk_screen_get_default();
@@ -445,7 +325,7 @@ bool GtkUi::Initialize() {
     }
   }
 
-  LoadGtkValues();
+  UpdateDeviceScaleFactor();
 
   // We must build this after GTK gets initialized.
   settings_provider_ = std::make_unique<SettingsProviderGtk>(this);
@@ -472,7 +352,7 @@ void GtkUi::InitializeFontSettings() {
   double pango_size =
       pango_font_description_get_size(desc) / static_cast<double>(PANGO_SCALE);
   if (GtkCheckVersion(4)) {
-    pango_size /= FontScale();
+    pango_size /= GetFontScale();
   }
   double size_pixels;
   if (pango_font_description_get_size_is_absolute(desc)) {
@@ -487,7 +367,7 @@ void GtkUi::InitializeFontSettings() {
     query.point_size = std::round(pango_size);
   }
   if (!platform_->IncludeFontScaleInDeviceScale()) {
-    size_pixels *= FontScale();
+    size_pixels *= GetFontScale();
   }
 
   query.style = gfx::Font::NORMAL;
@@ -514,17 +394,32 @@ ui::NativeTheme* GtkUi::GetNativeTheme() const {
 }
 
 bool GtkUi::GetColor(int id, SkColor* color, bool use_custom_frame) const {
-  for (const ColorMap& color_map :
-       {colors_,
-        use_custom_frame ? custom_frame_colors_ : native_frame_colors_}) {
-    auto it = color_map.find(id);
-    if (it != color_map.end()) {
-      *color = it->second;
+  switch (id) {
+    case ThemeProperties::COLOR_TAB_BACKGROUND_ACTIVE_FRAME_ACTIVE:
+    case ThemeProperties::COLOR_TAB_BACKGROUND_ACTIVE_FRAME_INACTIVE: {
+      const SkColor frame_color = SkColorSetA(
+          GetBgColor(use_custom_frame ? "headerbar.header-bar.titlebar"
+                                      : "menubar"),
+          SK_AlphaOPAQUE);
+      // Compose the window color on the frame color to ensure the resulting
+      // tab color is opaque.
+      *color = color_utils::GetResultingPaintColor(GetBgColor(""), frame_color);
       return true;
     }
+    case ThemeProperties::COLOR_TAB_FOREGROUND_INACTIVE_FRAME_ACTIVE:
+      *color = GetFgColor(use_custom_frame
+                              ? "headerbar.header-bar.titlebar label.title"
+                              : "menubar label.title");
+      return true;
+    case ThemeProperties::COLOR_TAB_FOREGROUND_INACTIVE_FRAME_INACTIVE:
+      *color =
+          GetFgColor(use_custom_frame
+                         ? "headerbar.header-bar.titlebar:backdrop label.title"
+                         : "menubar:backdrop label.title");
+      return true;
+    default:
+      return false;
   }
-
-  return false;
 }
 
 bool GtkUi::GetDisplayProperty(int id, int* result) const {
@@ -536,33 +431,35 @@ bool GtkUi::GetDisplayProperty(int id, int* result) const {
 }
 
 void GtkUi::GetFocusRingColor(SkColor* color) const {
-  *color = focus_ring_color_;
+  *color = GetGtkColorProvider(native_theme_->system_color_version())
+               ->GetColor(ui::kColorFocusableBorderFocused);
 }
 
 void GtkUi::GetActiveSelectionBgColor(SkColor* color) const {
-  *color = active_selection_bg_color_;
+  *color = GetGtkColorProvider(native_theme_->system_color_version())
+               ->GetColor(ui::kColorTextfieldSelectionBackground);
 }
 
 void GtkUi::GetActiveSelectionFgColor(SkColor* color) const {
-  *color = active_selection_fg_color_;
+  *color = GetGtkColorProvider(native_theme_->system_color_version())
+               ->GetColor(ui::kColorTextfieldSelectionForeground);
 }
 
 void GtkUi::GetInactiveSelectionBgColor(SkColor* color) const {
-  *color = inactive_selection_bg_color_;
+  *color = GetBgColor(
+      "textview.view:backdrop "
+      "text:backdrop selection:backdrop");
 }
 
 void GtkUi::GetInactiveSelectionFgColor(SkColor* color) const {
-  *color = inactive_selection_fg_color_;
+  *color = GetFgColor(
+      "textview.view:backdrop "
+      "text:backdrop selection:backdrop");
 }
 
 gfx::Image GtkUi::GetIconForContentType(const std::string& content_type,
                                         int dip_size,
                                         float scale) const {
-  if (!IsValidThemeName(ThemeProperty::kIconThemeName,
-                        GetIconThemeName().c_str())) {
-    return gfx::Image();
-  }
-
   // This call doesn't take a reference.
   GtkIconTheme* theme = GetDefaultIconTheme();
 
@@ -618,8 +515,10 @@ gfx::Image GtkUi::GetIconForContentType(const std::string& content_type,
       if (!surface) {
         continue;
       }
-      DCHECK_EQ(cairo_surface_get_type(surface), CAIRO_SURFACE_TYPE_IMAGE);
-      DCHECK_EQ(cairo_image_surface_get_format(surface), CAIRO_FORMAT_ARGB32);
+      CHECK_EQ(cairo_surface_get_type(surface), CAIRO_SURFACE_TYPE_IMAGE,
+               base::NotFatalUntil::M163);
+      CHECK_EQ(cairo_image_surface_get_format(surface), CAIRO_FORMAT_ARGB32,
+               base::NotFatalUntil::M163);
 
       SkImageInfo image_info =
           SkImageInfo::Make(cairo_image_surface_get_width(surface),
@@ -676,11 +575,10 @@ gfx::FontRenderParams GtkUi::GetDefaultFontRenderParams() {
 }
 
 ui::SelectFileDialog* GtkUi::CreateSelectFileDialog(
-    void* listener,
+    ui::SelectFileDialogListener* listener,
     std::unique_ptr<ui::SelectFilePolicy> policy) const {
-  return new SelectFileDialogLinuxGtk(
-      static_cast<ui::SelectFileDialog::Listener*>(listener), std::move(policy),
-      platform_.get());
+  return new SelectFileDialogLinuxGtk(listener, std::move(policy),
+                                      platform_.get());
 }
 
 ui::LinuxUi::WindowFrameAction GtkUi::GetWindowFrameAction(
@@ -723,10 +621,16 @@ void GtkUi::SetShutdownCb(base::OnceClosure shutdown_cb) {
 }
 
 void GtkUi::SetDarkTheme(bool dark) {
+  // `g_object_set()` unconditionally resets GTK CSS values and emits
+  // `notify::gtk-application-prefer-dark-theme` even when the property already
+  // equals `dark`, causing an expensive full theme rebuild.
+  if (PreferDarkTheme() == dark) {
+    return;
+  }
   auto* settings = gtk_settings_get_default();
   g_object_set(settings, "gtk-application-prefer-dark-theme", dark, nullptr);
-  // OnThemeChanged() will be called via the
-  // notify::gtk-application-prefer-dark-theme handler to update the colors.
+  // `OnThemeChanged()` will be called via the
+  // `notify::gtk-application-prefer-dark-theme` handler to update the colors.
 }
 
 void GtkUi::SetColorScheme(std::optional<bool> prefer_dark) {
@@ -818,20 +722,26 @@ base::flat_map<std::string, std::string> GtkUi::GetKeyboardLayoutMap() {
                            : gdk_keymap_get_entries_for_keycode(
                                  keymap, keycode, &keys, &keyvals, &n_entries);
     if (success) {
-      for (gint i = 0; i < n_entries; ++i) {
+      const size_t num_entries = base::checked_cast<size_t>(n_entries);
+      // SAFETY: On success, GDK returns `keys` and `keyvals` as arrays of
+      // `n_entries` elements each.
+      const auto keys_span = UNSAFE_BUFFERS(base::span(keys, num_entries));
+      const auto keyvals_span =
+          UNSAFE_BUFFERS(base::span(keyvals, num_entries));
+      for (size_t i = 0; i < num_entries; ++i) {
         // There are 4 entries per layout group, one each for shift level 0..3.
         // We only care about the unshifted values (level = 0).
-        if (UNSAFE_TODO(keys[i]).level == 0) {
-          uint16_t unicode = gdk_keyval_to_unicode(UNSAFE_TODO(keyvals[i]));
+        if (keys_span[i].level == 0) {
+          uint16_t unicode = gdk_keyval_to_unicode(keyvals_span[i]);
           if (unicode == 0) {
             for (const auto& i_dead : kDeadKeyMapping) {
-              if (UNSAFE_TODO(keyvals[i]) == i_dead.gdk_key) {
+              if (keyvals_span[i] == i_dead.gdk_key) {
                 unicode = i_dead.unicode;
               }
             }
           }
           if (unicode != 0) {
-            layouts->GetLayout(UNSAFE_TODO(keys[i]).group)
+            layouts->GetLayout(keys_span[i].group)
                 ->AddKeyMapping(domcode, unicode);
           }
         }
@@ -855,67 +765,6 @@ std::string GtkUi::GetCursorThemeName() {
   return theme_string;
 }
 
-bool GtkUi::SanitizeIconThemeName() {
-  std::string theme = GetIconThemeName();
-  if (!IsValidThemeName(ThemeProperty::kIconThemeName, theme.c_str())) {
-    g_object_set(gtk_settings_get_default(), "gtk-icon-theme-name", "hicolor",
-                 nullptr);
-    return true;
-  }
-  return false;
-}
-
-bool GtkUi::SanitizeThemeName() {
-  std::string theme = GetThemeName();
-  if (!IsValidThemeName(ThemeProperty::kThemeName, theme.c_str())) {
-    g_object_set(gtk_settings_get_default(), "gtk-theme-name", "Adwaita",
-                 nullptr);
-    return true;
-  }
-  return false;
-}
-
-bool GtkUi::SanitizeKeyThemeName() {
-  gchar* name = nullptr;
-  g_object_get(gtk_settings_get_default(), "gtk-key-theme-name", &name,
-               nullptr);
-  std::string name_str;
-  if (name) {
-    name_str = name;
-    g_free(name);
-  }
-  if (!IsValidThemeName(ThemeProperty::kKeyThemeName, name_str.c_str())) {
-    g_object_set(gtk_settings_get_default(), "gtk-key-theme-name", nullptr,
-                 nullptr);
-    return true;
-  }
-  return false;
-}
-
-bool GtkUi::SanitizeCursorThemeName() {
-  std::string theme = GetCursorThemeName();
-  if (!IsValidThemeName(ThemeProperty::kCursorThemeName, theme.c_str())) {
-    g_object_set(gtk_settings_get_default(), "gtk-cursor-theme-name", "Adwaita",
-                 nullptr);
-    return true;
-  }
-  return false;
-}
-
-bool GtkUi::SanitizeCursorThemeSize() {
-  int size = GetCursorThemeSize();
-  if (!ui::IsValidCursorThemeSize(size)) {
-    g_object_set(gtk_settings_get_default(), "gtk-cursor-theme-size", 24,
-                 nullptr);
-    return true;
-  }
-  return false;
-}
-
-void GtkUi::OnKeyThemeNameChanged(GtkSettings* settings, GtkParamSpec* param) {
-  SanitizeKeyThemeName();
-}
-
 int GtkUi::GetCursorThemeSize() {
   gint size = 0;
   g_object_get(gtk_settings_get_default(), "gtk-cursor-theme-size", &size,
@@ -936,21 +785,9 @@ int GtkUi::GetCursorThemeSize() {
 
 ui::TextEditCommand GtkUi::GetTextEditCommandForEvent(const ui::Event& event,
                                                       int text_flags) {
-  // Skip mapping arrow keys to edit commands for vertical text fields in a
-  // renderer.  Blink handles them.  See crbug.com/484651.
-  if (text_flags & ui::TEXT_INPUT_FLAG_VERTICAL) {
-    ui::KeyboardCode code = event.AsKeyEvent()->key_code();
-    if (code == ui::VKEY_LEFT || code == ui::VKEY_RIGHT ||
-        code == ui::VKEY_UP || code == ui::VKEY_DOWN) {
-      return ui::TextEditCommand::INVALID_COMMAND;
-    }
-  }
-
-  // Ensure that we have a keyboard handler.
   if (!key_bindings_handler_) {
-    key_bindings_handler_ = std::make_unique<GtkKeyBindingsHandler>();
+    key_bindings_handler_ = std::make_unique<ui::LinuxKeyBindingsHandler>();
   }
-
   return key_bindings_handler_->MatchEvent(event);
 }
 
@@ -967,21 +804,15 @@ gfx::Size GtkUi::GetPdfPaperSize(printing::PrintingContextLinux* context) {
 
 void GtkUi::OnThemeChanged(GtkSettings* settings, GtkParamSpec* param) {
   ClearStyleColorCache();
-  if (SanitizeIconThemeName() || SanitizeThemeName()) {
-    return;  // Exit early; modifying the setting re-triggered this function
-  }
-  colors_.clear();
-  custom_frame_colors_.clear();
-  native_frame_colors_.clear();
-  LoadGtkValues();
+  UpdateDeviceScaleFactor();
+  // Recompute values derived from the theme (e.g. `NativeThemeGtk`'s color
+  // scheme) now that the cached colors have been cleared.
+  os_settings_provider_->OnThemeChanged();
   native_theme_->NotifyOnNativeThemeUpdated();
 }
 
 void GtkUi::OnCursorThemeNameChanged(GtkSettings* settings,
                                      GtkParamSpec* param) {
-  if (SanitizeCursorThemeName()) {
-    return;
-  }
   std::string cursor_theme_name = GetCursorThemeName();
   if (cursor_theme_name.empty()) {
     return;
@@ -993,9 +824,6 @@ void GtkUi::OnCursorThemeNameChanged(GtkSettings* settings,
 
 void GtkUi::OnCursorThemeSizeChanged(GtkSettings* settings,
                                      GtkParamSpec* param) {
-  if (SanitizeCursorThemeSize()) {
-    return;
-  }
   int cursor_theme_size = GetCursorThemeSize();
   if (!cursor_theme_size) {
     return;
@@ -1056,164 +884,6 @@ void GtkUi::OnMonitorsChanged(GListModel* list,
   UpdateDeviceScaleFactor();
 }
 
-void GtkUi::LoadGtkValues() {
-  // TODO(thomasanderson): GtkThemeService had a comment here about having to
-  // muck with the raw Prefs object to remove prefs::kCurrentThemeImages or else
-  // we'd regress startup time. Figure out how to do that when we can't access
-  // the prefs system from here.
-  UpdateDeviceScaleFactor();
-
-  // TODO(tluk): The below code sets various ThemeProvider colors for GTK. Some
-  // of these definitions leverage colors that were previously defined by
-  // NativeThemeGtk and are now defined as GTK ColorMixers. These ThemeProvider
-  // color definitions should be added as recipes to a browser ColorMixer once
-  // the Color Pipeline project begins rollout into c/b/ui. In the meantime
-  // use the ColorProvider instance from the ColorProviderManager corresponding
-  // to the theme bits associated with the NativeThemeGtk instance to ensure
-  // we do not regress existing behavior during the transition.
-  ui::ColorProviderKey key;
-  if (ui::OsSettingsProvider::Get().PreferredColorScheme() ==
-      ui::NativeTheme::PreferredColorScheme::kDark) {
-    key.color_mode = ui::ColorProviderKey::ColorMode::kDark;
-  }
-  // Some theme colors, e.g. COLOR_NTP_LINK, are derived from color provider
-  // colors. We assume that those sources' colors won't change with frame type.
-  key.system_theme = ui::SystemTheme::kGtk;
-  const auto* color_provider =
-      ui::ColorProviderManager::Get().GetColorProviderFor(key);
-
-  SkColor location_bar_border = GetBorderColor("entry");
-  if (SkColorGetA(location_bar_border)) {
-    colors_[ThemeProperties::COLOR_LOCATION_BAR_BORDER] = location_bar_border;
-  }
-
-  inactive_selection_bg_color_ = GetBgColor(
-      "textview.view:backdrop "
-      "text:backdrop selection:backdrop");
-  inactive_selection_fg_color_ = GetFgColor(
-      "textview.view:backdrop "
-      "text:backdrop selection:backdrop");
-
-  SkColor tab_border = GetBorderColor("button");
-  // Separates the toolbar from the bookmark bar or butter bars.
-  colors_[ThemeProperties::COLOR_TOOLBAR_CONTENT_AREA_SEPARATOR] = tab_border;
-  // Separates entries in the downloads bar.
-  colors_[ThemeProperties::COLOR_TOOLBAR_VERTICAL_SEPARATOR] = tab_border;
-
-  colors_[ThemeProperties::COLOR_NTP_BACKGROUND] =
-      color_provider->GetColor(ui::kColorTextfieldBackground);
-  colors_[ThemeProperties::COLOR_NTP_TEXT] =
-      color_provider->GetColor(ui::kColorTextfieldForeground);
-  colors_[ThemeProperties::COLOR_NTP_HEADER] = GetBorderColor("button");
-
-  SkColor tab_text_color = GetFgColor("label");
-  colors_[ThemeProperties::COLOR_TOOLBAR_BUTTON_ICON] = tab_text_color;
-  colors_[ThemeProperties::COLOR_TOOLBAR_BUTTON_ICON_HOVERED] = tab_text_color;
-  colors_[ThemeProperties::COLOR_TOOLBAR_BUTTON_ICON_PRESSED] = tab_text_color;
-  colors_[ThemeProperties::COLOR_TOOLBAR_TEXT] = tab_text_color;
-
-  colors_[ThemeProperties::COLOR_NTP_LINK] =
-      color_provider->GetColor(ui::kColorTextfieldSelectionBackground);
-
-  // Generate the colors that we pass to Blink.
-  focus_ring_color_ =
-      color_provider->GetColor(ui::kColorFocusableBorderFocused);
-
-  // Some GTK themes only define the text selection colors on the GtkEntry
-  // class, so we need to use that for getting selection colors.
-  active_selection_bg_color_ =
-      color_provider->GetColor(ui::kColorTextfieldSelectionBackground);
-  active_selection_fg_color_ =
-      color_provider->GetColor(ui::kColorTextfieldSelectionForeground);
-
-  // Generate colors that depend on whether or not a custom window frame is
-  // used.  These colors belong in |color_map| below, not |colors_|.
-  for (bool custom_frame : {false, true}) {
-    ColorMap& color_map =
-        custom_frame ? custom_frame_colors_ : native_frame_colors_;
-    const std::string header_selector =
-        custom_frame ? "headerbar.header-bar.titlebar" : "menubar";
-    const std::string header_selector_inactive = header_selector + ":backdrop";
-    const SkColor frame_color =
-        SkColorSetA(GetBgColor(header_selector), SK_AlphaOPAQUE);
-    const SkColor frame_color_inactive =
-        SkColorSetA(GetBgColor(header_selector_inactive), SK_AlphaOPAQUE);
-
-    color_map[ThemeProperties::COLOR_FRAME_ACTIVE] = frame_color;
-    color_map[ThemeProperties::COLOR_FRAME_INACTIVE] = frame_color_inactive;
-    color_map[ThemeProperties::COLOR_FRAME_ACTIVE_INCOGNITO] = frame_color;
-    color_map[ThemeProperties::COLOR_FRAME_INACTIVE_INCOGNITO] =
-        frame_color_inactive;
-
-    // Compose the window color on the frame color to ensure the resulting tab
-    // color is opaque.
-    SkColor tab_color =
-        color_utils::GetResultingPaintColor(GetBgColor(""), frame_color);
-
-    color_map[ThemeProperties::COLOR_TOOLBAR] = tab_color;
-    color_map[ThemeProperties::COLOR_TAB_BACKGROUND_ACTIVE_FRAME_ACTIVE] =
-        tab_color;
-    color_map[ThemeProperties::COLOR_TAB_BACKGROUND_ACTIVE_FRAME_INACTIVE] =
-        tab_color;
-
-    const SkColor background_tab_text_color =
-        GetFgColor(header_selector + " label.title");
-    const SkColor background_tab_text_color_inactive =
-        GetFgColor(header_selector_inactive + " label.title");
-
-    color_map[ThemeProperties::COLOR_TAB_FOREGROUND_INACTIVE_FRAME_ACTIVE] =
-        background_tab_text_color;
-    color_map[ThemeProperties::
-                  COLOR_TAB_FOREGROUND_INACTIVE_FRAME_ACTIVE_INCOGNITO] =
-        background_tab_text_color;
-    color_map[ThemeProperties::COLOR_TAB_FOREGROUND_INACTIVE_FRAME_INACTIVE] =
-        background_tab_text_color_inactive;
-    color_map[ThemeProperties::
-                  COLOR_TAB_FOREGROUND_INACTIVE_FRAME_INACTIVE_INCOGNITO] =
-        background_tab_text_color_inactive;
-
-    // These colors represent the border drawn around tabs and between
-    // the tabstrip and toolbar.
-    SkColor toolbar_top_separator =
-        GetBorderColor(header_selector + " separator.vertical.titlebutton");
-    SkColor toolbar_top_separator_inactive = GetBorderColor(
-        header_selector + ":backdrop separator.vertical.titlebutton");
-
-    auto toolbar_top_separator_has_good_contrast = [&]() {
-      // This constant is copied from chrome/browser/themes/theme_service.cc.
-      const float kMinContrastRatio = 2.f;
-
-      SkColor active = color_utils::GetResultingPaintColor(
-          toolbar_top_separator, frame_color);
-      SkColor inactive = color_utils::GetResultingPaintColor(
-          toolbar_top_separator_inactive, frame_color_inactive);
-      return color_utils::GetContrastRatio(frame_color, active) >=
-                 kMinContrastRatio &&
-             color_utils::GetContrastRatio(frame_color_inactive, inactive) >=
-                 kMinContrastRatio;
-    };
-
-    if (!toolbar_top_separator_has_good_contrast()) {
-      toolbar_top_separator = GetBorderColor(header_selector + " button");
-      toolbar_top_separator_inactive =
-          GetBorderColor(header_selector + ":backdrop button");
-    }
-
-    // If we can't get a contrasting stroke from the theme, have ThemeService
-    // provide a stroke color for us.
-    if (toolbar_top_separator_has_good_contrast()) {
-      color_map[ThemeProperties::COLOR_TAB_STROKE_FRAME_ACTIVE] =
-          toolbar_top_separator;
-      color_map[ThemeProperties::COLOR_TAB_STROKE_FRAME_INACTIVE] =
-          toolbar_top_separator_inactive;
-      color_map[ThemeProperties::COLOR_TOOLBAR_TOP_SEPARATOR_FRAME_ACTIVE] =
-          toolbar_top_separator;
-      color_map[ThemeProperties::COLOR_TOOLBAR_TOP_SEPARATOR_FRAME_INACTIVE] =
-          toolbar_top_separator_inactive;
-    }
-  }
-}
-
 void GtkUi::TrackMonitor(GdkMonitor* monitor) {
   auto connect = [&](const char* detailed_signal) {
     // Unretained() is safe since GtkUi will own the ScopedGSignal.
@@ -1234,7 +904,7 @@ display::DisplayConfig GtkUi::GetDisplayConfig() const {
   }
 
   const double font_scale =
-      platform_->IncludeFontScaleInDeviceScale() ? FontScale() : 1.0;
+      platform_->IncludeFontScaleInDeviceScale() ? GetFontScale() : 1.0;
 
   GdkDisplay* display = gdk_display_get_default();
   GdkMonitor* primary = nullptr;

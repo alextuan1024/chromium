@@ -14,6 +14,7 @@ source_set("browser_tests") {
 
   sources = [
     "generic_mime_handler_browsertest.cc",
+    "mime_handler_apitest.cc",
     "mime_handler_cookies_browsertest.cc",
     "mime_handler_process_isolation_browsertest.cc",
     "mime_handler_storage_partitioning_browsertest.cc",
@@ -27,9 +28,10 @@ source_set("browser_tests") {
     "//chrome/browser/plugins",
     "//chrome/browser/profiles:profile",
     "//chrome/browser/sessions",
-    "//chrome/browser/ui",
+    "//chrome/browser/ui:browser_commands",
     "//chrome/common:constants",
     "//chrome/test:test_support",
+    "//chrome/test/base:chrome_test_utils",
     "//components/content_settings/core/browser",
     "//components/content_settings/core/common",
     "//components/javascript_dialogs",
@@ -51,10 +53,6 @@ source_set("browser_tests") {
 
   if (enable_pdf) {
     sources += [ "mime_handler_fallback_browsertest.cc" ]
-    deps += [
-      "//chrome/browser/pdf:pdf_extension_test_utils",
-      "//extensions/browser/mime_handler",
-      "//pdf:features",
-    ]
+    deps += [ "//chrome/browser/pdf:pdf_extension_test_utils" ]
   }
 }

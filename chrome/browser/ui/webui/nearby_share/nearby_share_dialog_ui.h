@@ -8,17 +8,17 @@
 #include <memory>
 #include <vector>
 
+#include "ash/constants/webui_url_constants.h"
 #include "base/memory/raw_ptr.h"
 #include "chrome/browser/nearby_sharing/attachment.h"
 #include "chrome/browser/sharesheet/sharesheet_controller.h"
 #include "chrome/browser/ui/webui/nearby_share/nearby_share.mojom.h"
-#include "chrome/common/webui_url_constants.h"
 #include "chromeos/ash/services/nearby/public/mojom/nearby_share_settings.mojom.h"
 #include "content/public/browser/web_contents_delegate.h"
 #include "content/public/browser/webui_config.h"
 #include "content/public/common/url_constants.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
-#include "ui/views/controls/webview/unhandled_keyboard_event_handler.h"
+#include "ui/views/controls/webview/web_contents_delegate_views.h"
 #include "ui/webui/mojo_web_ui_controller.h"
 
 class NearbySharingService;
@@ -37,14 +37,15 @@ class NearbyShareDialogUIConfig
  public:
   NearbyShareDialogUIConfig()
       : DefaultWebUIConfig(content::kChromeUIScheme,
-                           chrome::kChromeUINearbyShareHost) {}
+                           ash::kChromeUINearbyShareHost) {}
 
   bool IsWebUIEnabled(content::BrowserContext* browser_context) override;
 };
 
 // The WebUI controller for chrome://nearby.
-class NearbyShareDialogUI : public ui::MojoWebUIController,
-                            content::WebContentsDelegate {
+class NearbyShareDialogUI
+    : public ui::MojoWebUIController,
+      public views::WebContentsDelegateViews<NearbyShareDialogUI> {
  public:
   explicit NearbyShareDialogUI(content::WebUI* web_ui);
   NearbyShareDialogUI(const NearbyShareDialogUI&) = delete;
@@ -69,8 +70,6 @@ class NearbyShareDialogUI : public ui::MojoWebUIController,
       mojo::PendingReceiver<nearby_share::mojom::ContactManager> receiver);
 
   // content::WebContentsDelegate:
-  bool HandleKeyboardEvent(content::WebContents* source,
-                           const input::NativeWebKeyboardEvent& event) override;
   void WebContentsCreated(content::WebContents* source_contents,
                           const content::GlobalRenderFrameHostId& opener_id,
                           const std::string& frame_name,
@@ -95,8 +94,6 @@ class NearbyShareDialogUI : public ui::MojoWebUIController,
 
   std::vector<std::unique_ptr<Attachment>> attachments_;
   raw_ptr<NearbySharingService> nearby_service_;
-  raw_ptr<views::WebView> web_view_ = nullptr;
-  views::UnhandledKeyboardEventHandler unhandled_keyboard_event_handler_;
 
   WEB_UI_CONTROLLER_TYPE_DECL();
 };

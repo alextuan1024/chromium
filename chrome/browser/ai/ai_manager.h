@@ -14,7 +14,9 @@
 #include "base/memory/weak_ptr.h"
 #include "base/scoped_observation.h"
 #include "base/supports_user_data.h"
+#include "base/types/expected.h"
 #include "base/types/pass_key.h"
+#include "build/build_config.h"
 #include "chrome/browser/ai/ai_context_bound_object_set.h"
 #include "chrome/browser/ai/ai_language_model.h"
 #include "chrome/browser/ai/ai_proofreader.h"
@@ -31,9 +33,14 @@
 #include "services/network/public/mojom/permissions_policy/permissions_policy_feature.mojom-shared.h"
 #include "services/on_device_model/public/mojom/download_observer.mojom-forward.h"
 #include "third_party/blink/public/mojom/ai/ai_common.mojom-forward.h"
+#include "third_party/blink/public/mojom/ai/ai_decision_model.mojom-forward.h"
 #include "third_party/blink/public/mojom/ai/ai_language_model.mojom-forward.h"
 #include "third_party/blink/public/mojom/ai/ai_manager.mojom.h"
 #include "third_party/blink/public/mojom/devtools/console_message.mojom-forward.h"
+
+#if !BUILDFLAG(IS_ANDROID)
+#include "chrome/browser/ai/decision_model_schema_compiler.h"
+#endif
 
 namespace base {
 class SupportsUserData;
@@ -54,6 +61,10 @@ class AIManager : public base::SupportsUserData::Data,
                   public blink::mojom::AIManager,
                   public content::RenderWidgetHostObserver {
  public:
+#if !BUILDFLAG(IS_ANDROID)
+  using DecisionModelBackend = blink::mojom::AIDecisionModelBackend;
+#endif
+
   using AILanguageModelOrCreationError =
       base::expected<std::unique_ptr<AILanguageModel>,
                      blink::mojom::AIManagerCreateClientError>;
@@ -119,10 +130,23 @@ class AIManager : public base::SupportsUserData::Data,
       mojo::PendingRemote<on_device_model::mojom::DownloadObserver> monitor)
       override;
   void CanCreateSemanticEmbedder(
+      blink::mojom::AISemanticEmbedderCreateOptionsPtr options,
       CanCreateSemanticEmbedderCallback callback) override;
   void CreateSemanticEmbedder(
       mojo::PendingRemote<blink::mojom::AIManagerCreateSemanticEmbedderClient>
           client,
+      blink::mojom::AISemanticEmbedderCreateOptionsPtr options,
+      mojo::PendingRemote<on_device_model::mojom::DownloadObserver> monitor)
+      override;
+  void GetSupportedEmbeddingSpaces(
+      GetSupportedEmbeddingSpacesCallback callback) override;
+  void CanCreateDecisionModel(
+      blink::mojom::AIDecisionModelCreateOptionsPtr options,
+      CanCreateDecisionModelCallback callback) override;
+  void CreateDecisionModel(
+      mojo::PendingRemote<blink::mojom::AIManagerCreateDecisionModelClient>
+          client,
+      blink::mojom::AIDecisionModelCreateOptionsPtr options,
       mojo::PendingRemote<on_device_model::mojom::DownloadObserver> monitor)
       override;
 
@@ -183,16 +207,60 @@ class AIManager : public base::SupportsUserData::Data,
   bool IsBlocked(std::optional<network::mojom::PermissionsPolicyFeature>
                      feature = std::nullopt);
 
-  void OnModelPathValidationComplete(const base::FilePath& model_path,
-                                     bool is_valid_path);
-
-  // Validates the overridden on-device model path if one is configured via
-  // switch.
-  void StartModelPathValidationIfOverrideSet();
-
   void OnSemanticEmbedderModelReady(
       mojo::PendingRemote<blink::mojom::AIManagerCreateSemanticEmbedderClient>
           client);
+
+#if !BUILDFLAG(IS_ANDROID)
+  // Validates `options` (setting `backend` if unset) and compiles the schema.
+  base::expected<DecisionModelSchemaCompiler::CompiledSchema,
+                 blink::mojom::ModelAvailabilityCheckResult>
+  CheckDecisionModelOptions(
+      blink::mojom::AIDecisionModelCreateOptionsPtr& options,
+      bool require_questions);
+
+  // Creates an `AILanguageModelDecisionModel` on the Prompt API's foundation
+  // model, once its assets are ready.
+  void CreateLanguageModelDecisionModel(
+      mojo::PendingRemote<blink::mojom::AIManagerCreateDecisionModelClient>
+          client,
+      DecisionModelSchemaCompiler::CompiledSchema schema,
+      mojo::PendingRemote<on_device_model::mojom::DownloadObserver> monitor);
+  // Creates the model on `model_client`, or replies with an error if the
+  // foundation model isn't available.
+  void OnDecisionModelLanguageModelReady(
+      mojo::PendingRemote<blink::mojom::AIManagerCreateDecisionModelClient>
+          client,
+      DecisionModelSchemaCompiler::CompiledSchema schema,
+      base::WeakPtr<optimization_guide::ModelClient> model_client);
+  // Creates an `AIEmbeddingGemmaV1DecisionModel` on the semantic embedder
+  // service, once its model is ready.
+  void CreateEmbeddingGemmaV1DecisionModel(
+      mojo::PendingRemote<blink::mojom::AIManagerCreateDecisionModelClient>
+          client,
+      DecisionModelSchemaCompiler::CompiledSchema schema,
+      mojo::PendingRemote<on_device_model::mojom::DownloadObserver> monitor);
+  void OnDecisionModelEmbedderReady(
+      mojo::PendingRemote<blink::mojom::AIManagerCreateDecisionModelClient>
+          client,
+      DecisionModelSchemaCompiler::CompiledSchema schema);
+
+  // Requests Laya model assets for `backend` and creates the decision model
+  // once its assets are ready.
+  void CreateLayaDecisionModel(
+      DecisionModelBackend backend,
+      mojo::PendingRemote<blink::mojom::AIManagerCreateDecisionModelClient>
+          client,
+      blink::mojom::AIDecisionModelCreateOptionsPtr options,
+      mojo::PendingRemote<on_device_model::mojom::DownloadObserver> monitor);
+  // Creates the Laya model on `model_client`, or replies with an error if the
+  // model isn't available.
+  void OnDecisionModelLayaReady(
+      mojo::PendingRemote<blink::mojom::AIManagerCreateDecisionModelClient>
+          client,
+      blink::mojom::AIDecisionModelCreateOptionsPtr options,
+      base::WeakPtr<optimization_guide::ModelClient> model_client);
+#endif
 
   // Creates an `AILanguageModel`, as a new session. Clones are created
   // internally within the `AILanguageModel` object.
@@ -234,16 +302,19 @@ class AIManager : public base::SupportsUserData::Data,
       mojo::PendingRemote<ClientRemoteInterface> client,
       std::unique_ptr<optimization_guide::OnDeviceSession> session);
 
+  // Checks the total initial input size (the input context prefilled via
+  // SetInput() plus the execution input) against the context window before
+  // prefilling the input context.
   template <typename ContextBoundObjectType,
             typename ContextBoundObjectReceiverInterface,
             typename ClientRemoteInterface,
             typename CreateOptionsPtrType>
-  void OnGotExecutionInputSizeInTokens(
+  void OnGotInitialInputSizeInTokens(
       CreateOptionsPtrType options,
       optimization_guide::MultimodalMessage initial_request,
       mojo::Remote<ClientRemoteInterface> client_remote,
       std::unique_ptr<optimization_guide::OnDeviceSession> session,
-      std::optional<uint32_t> result);
+      std::optional<optimization_guide::InputSizeInTokens> initial_input_size);
 
   template <typename ContextBoundObjectType,
             typename ContextBoundObjectReceiverInterface,
@@ -268,6 +339,7 @@ class AIManager : public base::SupportsUserData::Data,
       const std::string_view api_name,
       const base::flat_set<std::string>& default_supported_languages);
   void MaybeLogSpeedPreferenceMarkdownWarning();
+  void MaybeLogOnDeviceAiSettingsDisabledWarning();
 
   // |model_broker_client_| is keeping |CanCreateLanguageModel| callbacks alive
   // until it is destroyed, so we need to ensure those callbacks are safely
@@ -290,6 +362,14 @@ class AIManager : public base::SupportsUserData::Data,
   bool did_log_unsupported_language_error_ = false;
   bool did_log_experimental_language_warning_ = false;
   bool did_log_speed_preference_markdown_warning_ = false;
+  bool did_log_on_device_ai_settings_disabled_warning_ = false;
+
+  // Gates the Semantic Embedder API. Its model and process are browser-wide,
+  // so without this per-profile check, a page in a profile that has no
+  // OptimizationGuideKeyedService (the System profile, and ChromeOS's sign-in
+  // and lock-screen profiles) could use the API to download the model and
+  // start the embeddings process.
+  bool profile_has_optimization_guide_keyed_service_ = false;
 
   // Features that have attempted initialization in this session.
   base::flat_set<optimization_guide::mojom::OnDeviceFeature> tried_init_;

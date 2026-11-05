@@ -26,6 +26,8 @@
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/test/browser_test.h"
 #include "ui/events/base_event_utils.h"
+#include "ui/views/bubble/bubble_dialog_delegate_view.h"
+#include "ui/views/bubble/bubble_frame_view.h"
 #include "ui/views/controls/button/md_text_button.h"
 #include "ui/views/controls/styled_label.h"
 #include "ui/views/test/widget_test.h"
@@ -46,7 +48,7 @@ class MandatoryReauthBubbleViewUiTest : public InProcessBrowserTest {
     auto* web_contents = browser()->GetTabStripModel()->GetActiveWebContents();
     MandatoryReauthBubbleControllerImpl::CreateForWebContents(web_contents);
     MandatoryReauthBubbleControllerImpl* controller = GetController();
-    DCHECK(controller);
+    CHECK(controller, base::NotFatalUntil::M162);
   }
 
   void ShowBubble() {
@@ -125,7 +127,7 @@ class MandatoryReauthBubbleViewUiTest : public InProcessBrowserTest {
     auto* icon =
         provider->GetPageActionViewInterface(kActionAutofillMandatoryReauth);
 
-    DCHECK(icon);
+    CHECK(icon, base::NotFatalUntil::M162);
     return icon;
   }
 

@@ -282,14 +282,8 @@ std::string_view GetOsDriverVersion(const OrtEpDevice* ep_device) {
 
   auto [keys, values] = GetKeyValueSpans(ort_api, ep_metadata);
 
-  // For now, redefine the key for the EP OS driver version here according to
-  // https://github.com/microsoft/onnxruntime/blob/56c984ffc417987eafcd9efb252ab2c65f24398a/include/onnxruntime/core/session/onnxruntime_ep_device_ep_metadata_keys.h#L13
-  // TODO(crbug.com/474141335): Use the key from
-  // onnxruntime_ep_device_ep_metadata_keys.h once it's available.
-  constexpr std::string_view kOrtEpDeviceEpMetadataKeyOSDriverVersion =
-      "os_driver_version";
   for (auto [key, value] : std::views::zip(keys, values)) {
-    if (key == kOrtEpDeviceEpMetadataKeyOSDriverVersion) {
+    if (std::string_view(key) == kOrtEpDevice_EpMetadataKey_OSDriverVersion) {
       return std::string_view(value);
     }
   }
@@ -633,9 +627,13 @@ ConvertEpListForIntrospection(base::span<const OrtEpDevice* const> ep_devices) {
 
     auto [keys, values] = GetKeyValueSpans(ort_api, ep_metadata);
     for (auto [key, value] : std::views::zip(keys, values)) {
-      if (std::string_view(key) == "version") {
+      const std::string_view key_view(key);
+      if (key_view == kOrtEpDevice_EpMetadataKey_Version) {
         ep_details->version = value;
-        break;
+      } else if (key_view == kOrtEpDevice_EpMetadataKey_OSDriverVersion) {
+        ep_details->driver_version = value;
+      } else if (key_view == kOrtEpDevice_EpMetadataKey_LibraryPath) {
+        ep_details->library_path = value;
       }
     }
     ep_details->first_selected = false;
@@ -818,8 +816,9 @@ Environment::InitializeForCompilerProcess(const base::FilePath& ep_library_path,
   }
   // Ensure that the target device is registered in the environment.
   if (!env_result.value()->FindRegisteredEpDevice(target_device)) {
-    return base::unexpected(base::StrCat(
-        {"Target device not registered: ", target_device.ToSwitchValue()}));
+    return base::unexpected(
+        base::StrCat({"Target device not registered: [",
+                      target_device.ToSwitchValue(), "]."}));
   }
   // Warm up the target device for the compiler process to ensure that the
   // libraries required for offline compilation are preloaded.
@@ -935,12 +934,14 @@ base::expected<void, std::string> Environment::WarmupEpDeviceForCompilerProcess(
   auto* platform_functions = PlatformFunctions::GetInstance();
   const OrtCompileApi* ort_compile_api = platform_functions->ort_compile_api();
 
-  // Create the session options on the target device.
-  auto session_options =
-      SessionOptions::CreateForCompilation(target_device, this);
+  // Create minimal session options bound to the target device.
+  const OrtEpDevice* target_ort_device = FindRegisteredEpDevice(target_device);
+  CHECK(target_ort_device);
+  ScopedOrtSessionOptions session_options =
+      CreateTrivialModelSessionOptions(env_.get(), target_ort_device);
   ScopedOrtModelCompilationOptions compile_options;
   CHECK_STATUS(ort_compile_api->CreateModelCompilationOptionsFromSessionOptions(
-      env_.get(), session_options->get(),
+      env_.get(), session_options.get(),
       ScopedOrtModelCompilationOptions::Receiver(compile_options).get()));
   CHECK_STATUS(ort_compile_api->ModelCompilationOptions_SetInputModelFromBuffer(
       compile_options.get(), kTrivialModel, sizeof(kTrivialModel)));
@@ -1111,8 +1112,9 @@ std::optional<EpDeviceInfo> Environment::SelectEpDeviceForCompiler(
     }
   }
 
-  VLOG(1) << "[WebNN] Selected EP device for compiler: "
-          << selected_device_info.ToSwitchValue();
+  VLOG(1) << "[WebNN] Selected [" << selected_device_info.ToSwitchValue()
+          << "] for the Compiler process (requested: "
+          << DeviceTypeToString(OrtToWebnnDeviceType(device_type)) << ").";
 
   return selected_device_info;
 }
@@ -1215,6 +1217,14 @@ Environment::GetSelectedEpDetails(OrtHardwareDeviceType device_type) const {
   return ep_list;
 }
 
+std::vector<mojom::WebNNExecutionProviderDetailsPtr>
+Environment::GetEpDetailsForDevice(const OrtEpDevice* ep_device) const {
+  CHECK(ep_device);
+  auto ep_list = ConvertEpListForIntrospection(base::span_from_ref(ep_device));
+  ep_list.front()->first_selected = true;
+  return ep_list;
+}
+
 EpWorkarounds Environment::GetEpWorkarounds(
     OrtHardwareDeviceType device_type) const {
   EpWorkarounds workarounds;
@@ -1225,11 +1235,7 @@ EpWorkarounds Environment::GetEpWorkarounds(
       SelectEpDevices(registered_ep_devices, device_type);
   for (const auto* ep_device : selected_ep_devices) {
     CHECK(ep_device);
-    std::string_view ep_name = ort_api->EpDevice_EpName(ep_device);
-    const auto iter = kKnownEPs.find(ep_name);
-    if (iter != kKnownEPs.end()) {
-      workarounds |= iter->second.workarounds;
-    }
+    workarounds |= GetEpWorkaroundsForEp(ort_api->EpDevice_EpName(ep_device));
   }
   return workarounds;
 }

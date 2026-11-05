@@ -5,6 +5,7 @@
 #import "ios/chrome/browser/aim/model/aim_tab_helper.h"
 
 #import "base/memory/ptr_util.h"
+#import "base/test/metrics/user_action_tester.h"
 #import "base/test/scoped_feature_list.h"
 #import "components/omnibox/browser/mock_aim_eligibility_service.h"
 #import "components/omnibox/common/omnibox_features.h"
@@ -20,16 +21,6 @@
 #import "testing/gtest/include/gtest/gtest.h"
 #import "testing/platform_test.h"
 
-namespace {
-
-std::unique_ptr<KeyedService> BuildMockIOSChromeAimEligibilityService(
-    ProfileIOS* profile) {
-  return MockIOSChromeAimEligibilityService::CreateTestingProfileService(
-      profile);
-}
-
-}  // namespace
-
 class AimTabHelperTest : public PlatformTest {
  protected:
   AimTabHelperTest() {
@@ -42,7 +33,8 @@ class AimTabHelperTest : public PlatformTest {
         ios::TemplateURLServiceFactory::GetDefaultFactory());
     builder.AddTestingFactory(
         IOSChromeAimEligibilityServiceFactory::GetInstance(),
-        base::BindRepeating(&BuildMockIOSChromeAimEligibilityService));
+        base::BindRepeating(
+            &MockIOSChromeAimEligibilityService::CreateTestingProfileService));
     profile_ = std::move(builder).Build();
 
     web_state_.SetBrowserState(profile_.get());
@@ -194,4 +186,54 @@ TEST_F(AimTabHelperTest, DidFinishNavigation_FetchesEligibility) {
 
   AimTabHelper::FromWebState(&web_state_)
       ->DidFinishNavigation(&web_state_, &context);
+}
+
+// Tests that MobileAIModeSearchPerformed is recorded when navigating to an AIM
+// search URL and not duplicated on same-URL ref navigations.
+TEST_F(AimTabHelperTest, DidFinishNavigation_RecordsActionForAimUrl) {
+  base::UserActionTester user_action_tester;
+
+  web::FakeNavigationContext context;
+  context.SetUrl(GURL("https://www.google.com/search?q=test&udm=50"));
+  context.SetHasCommitted(true);
+  context.SetIsSameDocument(false);
+
+  AimTabHelper::FromWebState(&web_state_)
+      ->DidFinishNavigation(&web_state_, &context);
+  EXPECT_EQ(1,
+            user_action_tester.GetActionCount("MobileAIModeSearchPerformed"));
+
+  // Navigating to the same URL with a fragment should not record again.
+  context.SetUrl(GURL("https://www.google.com/search?q=test&udm=50#section"));
+  context.SetIsSameDocument(true);
+  AimTabHelper::FromWebState(&web_state_)
+      ->DidFinishNavigation(&web_state_, &context);
+  EXPECT_EQ(1,
+            user_action_tester.GetActionCount("MobileAIModeSearchPerformed"));
+}
+
+// Tests that MobileAIModeSearchPerformed is not recorded for a zero-state AIM
+// URL, and is recorded on a subsequent same-document AIM search navigation.
+TEST_F(AimTabHelperTest,
+       DidFinishNavigation_DoesNotRecordActionForZeroStateAimUrl) {
+  base::UserActionTester user_action_tester;
+
+  web::FakeNavigationContext context;
+  context.SetUrl(GURL("https://www.google.com/search?udm=50"));
+  context.SetHasCommitted(true);
+  context.SetIsSameDocument(false);
+
+  AimTabHelper::FromWebState(&web_state_)
+      ->DidFinishNavigation(&web_state_, &context);
+  EXPECT_EQ(0,
+            user_action_tester.GetActionCount("MobileAIModeSearchPerformed"));
+
+  // Submitting a query on the AIM page via same-document navigation should
+  // record the action.
+  context.SetUrl(GURL("https://www.google.com/search?q=test&udm=50"));
+  context.SetIsSameDocument(true);
+  AimTabHelper::FromWebState(&web_state_)
+      ->DidFinishNavigation(&web_state_, &context);
+  EXPECT_EQ(1,
+            user_action_tester.GetActionCount("MobileAIModeSearchPerformed"));
 }

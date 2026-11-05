@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "base/compiler_specific.h"
+#include "base/memory/raw_ptr.h"
 #include "components/gcm_driver/gcm_app_handler.h"
 
 namespace base {
@@ -17,6 +18,8 @@ class RunLoop;
 }
 
 namespace gcm {
+
+class GCMDriver;
 
 class FakeGCMAppHandler : public GCMAppHandler {
  public:
@@ -42,7 +45,6 @@ class FakeGCMAppHandler : public GCMAppHandler {
 
   const Event& received_event() const { return received_event_; }
   const std::string& app_id() const { return app_id_; }
-  const std::string& acked_message_id() const { return acked_message_id_; }
   const IncomingMessage& message() const;
   const GCMClient::SendErrorDetails& send_error_details() const {
     return send_error_details_;
@@ -50,6 +52,10 @@ class FakeGCMAppHandler : public GCMAppHandler {
   const std::vector<ReceivedMessage>& received_messages() const {
     return received_messages_;
   }
+  int shutdown_count() const { return shutdown_count_; }
+
+  // Configures `ShutdownHandler()` to call `driver->RemoveAppHandler(app_id)`.
+  void RemoveAppHandlerOnShutdown(GCMDriver* driver, std::string app_id);
 
   void WaitForNotification();
 
@@ -65,8 +71,6 @@ class FakeGCMAppHandler : public GCMAppHandler {
   void OnMessageDecryptionFailed(const std::string& app_id,
                                  const std::string& message_id,
                                  const std::string& error_message) override;
-  void OnSendAcknowledged(const std::string& app_id,
-                          const std::string& message_id) override;
 
  private:
   void ClearResults();
@@ -75,9 +79,11 @@ class FakeGCMAppHandler : public GCMAppHandler {
 
   Event received_event_;
   std::string app_id_;
-  std::string acked_message_id_;
   GCMClient::SendErrorDetails send_error_details_;
   std::vector<ReceivedMessage> received_messages_;
+  raw_ptr<GCMDriver> driver_for_shutdown_ = nullptr;
+  std::string app_id_to_remove_on_shutdown_;
+  int shutdown_count_ = 0;
 };
 
 }  // namespace gcm

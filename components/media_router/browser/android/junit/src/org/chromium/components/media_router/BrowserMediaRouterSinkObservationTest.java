@@ -48,7 +48,7 @@ public class BrowserMediaRouterSinkObservationTest extends BrowserMediaRouterTes
         mBrowserMediaRouter.onSinksReceived(SOURCE_ID1, mRouteProvider, new ArrayList<>());
 
         List<MediaSink> sinkList = new ArrayList<>();
-        MediaSink sink = new MediaSink(SINK_ID1, SINK_NAME1, null);
+        MediaSink sink = new MediaSink(SINK_ID1, SINK_NAME1);
         sinkList.add(sink);
         mBrowserMediaRouter.onSinksReceived(SOURCE_ID1, mRouteProvider, sinkList);
 
@@ -81,7 +81,7 @@ public class BrowserMediaRouterSinkObservationTest extends BrowserMediaRouterTes
         mBrowserMediaRouter.onSinksReceived(SOURCE_ID1, mRouteProvider, new ArrayList<>());
 
         List<MediaSink> sinkList = new ArrayList<>();
-        MediaSink sink = new MediaSink(SINK_ID1, SINK_NAME1, null);
+        MediaSink sink = new MediaSink(SINK_ID1, SINK_NAME1);
         sinkList.add(sink);
         mBrowserMediaRouter.onSinksReceived(SOURCE_ID2, mRouteProvider, sinkList);
 
@@ -130,5 +130,26 @@ public class BrowserMediaRouterSinkObservationTest extends BrowserMediaRouterTes
     @CommandLineFlags.Add({BaseSwitches.ENABLE_LOW_END_DEVICE_MODE})
     public void testIsLowRamDevice() {
         assertFalse(mBrowserMediaRouter.startObservingMediaSinks(SOURCE_ID1, "origin"));
+    }
+
+    @Test
+    @Feature({"MediaRouter"})
+    public void testLocalNetworkPermissionPlaceholderSink() {
+        BrowserMediaRouter.setNeedsLocalNetworkPermissionForTesting(true);
+        assertTrue(BrowserMediaRouter.shouldReportPlaceholderSink());
+
+        mBrowserMediaRouter.onSinksReceived(SOURCE_ID1, mRouteProvider, new ArrayList<>());
+        assertEquals("placeholder-urn", mBrowserMediaRouter.getSinkUrn(SOURCE_ID1, 0));
+        assertEquals("placeholder-sink", mBrowserMediaRouter.getSinkName(SOURCE_ID1, 0));
+
+        // After denial, placeholder sink should no longer be reported.
+        BrowserMediaRouter.onLocalNetworkPermissionResult(false);
+        assertFalse(BrowserMediaRouter.shouldReportPlaceholderSink());
+
+        // Reset and verify grant refreshes provider and clears placeholder need.
+        BrowserMediaRouter.setNeedsLocalNetworkPermissionForTesting(true);
+        assertTrue(BrowserMediaRouter.shouldReportPlaceholderSink());
+        BrowserMediaRouter.onLocalNetworkPermissionResult(true);
+        assertFalse(BrowserMediaRouter.shouldReportPlaceholderSink());
     }
 }

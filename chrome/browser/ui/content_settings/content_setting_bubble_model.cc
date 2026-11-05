@@ -30,7 +30,6 @@
 #include "chrome/browser/content_settings/page_specific_content_settings_delegate.h"
 #include "chrome/browser/custom_handlers/protocol_handler_registry_factory.h"
 #include "chrome/browser/download/download_request_limiter.h"
-#include "chrome/browser/infobars/infobar_features.h"
 #include "chrome/browser/media/webrtc/media_capture_devices_dispatcher.h"
 #include "chrome/browser/media/webrtc/permission_bubble_media_access_handler.h"
 #include "chrome/browser/permissions/permission_actions_history_factory.h"
@@ -38,7 +37,6 @@
 #include "chrome/browser/permissions/quiet_notification_permission_ui_config.h"
 #include "chrome/browser/permissions/system/system_permission_settings.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/collected_cookies_infobar_delegate.h"
 #include "chrome/browser/ui/content_settings/content_setting_bubble_model_delegate.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/url_identity.h"
@@ -56,7 +54,6 @@
 #include "components/content_settings/core/common/content_settings_types.h"
 #include "components/content_settings/core/common/content_settings_utils.h"
 #include "components/custom_handlers/protocol_handler_registry.h"
-#include "components/infobars/content/content_infobar_manager.h"
 #include "components/permissions/constants.h"
 #include "components/permissions/features.h"
 #include "components/permissions/permission_decision_auto_blocker.h"
@@ -90,20 +87,20 @@
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/common/loader/network_utils.h"
 #include "third_party/blink/public/common/permissions/permission_utils.h"
+#include "third_party/blink/public/public_buildflags.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/resource/resource_bundle.h"
 #include "ui/base/ui_base_features.h"
-#include "ui/base/window_open_disposition.h"
 #include "ui/base/window_open_disposition_utils.h"
 #include "ui/events/event.h"
 #include "ui/gfx/vector_icon_types.h"
 #include "ui/resources/grit/ui_resources.h"
 
 #if BUILDFLAG(IS_MAC)
-#include "base/apple/bundle_locations.h"
 #include "base/mac/mac_util.h"
+#include "chrome/browser/apps/app_shim/app_shim_manager_mac.h"
 #include "chrome/browser/permissions/system/system_media_capture_permissions_mac.h"
-#include "chrome/browser/web_applications/os_integration/mac/web_app_shortcut_mac.h"
+#include "chrome/browser/web_applications/os_integration/mac/app_shim_registry.h"
 #include "chrome/browser/web_applications/web_app_tab_helper.h"
 #endif
 
@@ -214,7 +211,7 @@ void SetAllowRunningInsecureContent(
 
 constexpr UrlIdentity::TypeSet allowed_types = {
     UrlIdentity::Type::kDefault, UrlIdentity::Type::kFile,
-    UrlIdentity::Type::kIsolatedWebApp};
+    UrlIdentity::Type::kIsolatedWebApp, UrlIdentity::Type::kChromeExtension};
 
 std::u16string GetUrlForDisplay(
     Profile* profile,
@@ -354,7 +351,7 @@ void ContentSettingSimpleBubbleModel::SetTitle() {
   };
 
   int title_id = [&]() {
-#if BUILDFLAG(IS_CHROMEOS)
+#if BUILDFLAG(ENABLE_SMART_CARD)
     if (content_type() == ContentSettingsType::SMART_CARD_GUARD) {
       return IDS_ACCESSED_SMART_CARD_READER_TITLE;
     }
@@ -410,7 +407,7 @@ void ContentSettingSimpleBubbleModel::SetMessage() {
   };
 
   int message_id = [&]() {
-#if BUILDFLAG(IS_CHROMEOS)
+#if BUILDFLAG(ENABLE_SMART_CARD)
     if (content_type() == ContentSettingsType::SMART_CARD_GUARD) {
       return IDS_ACCESSED_SMART_CARD_READER_BODY;
     }
@@ -523,12 +520,20 @@ void ContentSettingMixedScriptBubbleModel::SetManageText() {
 
 namespace {
 
-// These states must match the order of appearance of the radio buttons
-// in the XIB file for the Mac port.
+// These states must match the order of the radio buttons.
+//
+// TODO(crbug.com/553146562): The bubble offers only "Allow" (register as the
+// default) and "Deny" (refuse). The registry also supports registering a
+// handler as a non-default option the user can pick later in settings
+// (OnDenyRegisterProtocolHandler(), despite its name); the bubble used to
+// reach it through a button labelled "Deny", a grant under a refusal's name.
+// Offering it again needs an honestly labelled third option, i.e. new
+// strings. Until then IDS_REGISTER_PROTOCOL_HANDLER_IGNORE has no user, and
+// the names below predate the change: RPH_BLOCK is the "Deny" radio, and
+// IgnoreProtocolHandler() performs its refusal.
 enum RPHState {
   RPH_ALLOW = 0,
   RPH_BLOCK,
-  RPH_IGNORE,
 };
 
 }  // namespace
@@ -542,18 +547,21 @@ ContentSettingRPHBubbleModel::ContentSettingRPHBubbleModel(
                                       ContentSettingsType::PROTOCOL_HANDLERS),
       registry_(registry),
       pending_handler_(
-          custom_handlers::ProtocolHandler::EmptyProtocolHandler()),
-      previous_handler_(
           custom_handlers::ProtocolHandler::EmptyProtocolHandler()) {
   auto* content_settings =
       PageSpecificContentSettingsDelegate::FromWebContents(web_contents());
   pending_handler_ = content_settings->pending_protocol_handler();
-  previous_handler_ = content_settings->previous_protocol_handler();
 
   std::u16string protocol = pending_handler_.GetProtocolDisplayName();
 
-  // Note that we ignore the |title| parameter.
-  if (previous_handler_.IsEmpty()) {
+  // The handler being replaced is read from the registry rather than
+  // remembered from when the request arrived: the registry may have changed
+  // since, for instance through chrome://settings/handlers. Note that we
+  // ignore the |title| parameter.
+  const custom_handlers::ProtocolHandler& current_default =
+      registry_ ? registry_->GetHandlerFor(pending_handler_.protocol())
+                : custom_handlers::ProtocolHandler::EmptyProtocolHandler();
+  if (current_default.IsEmpty()) {
     set_title(l10n_util::GetStringFUTF16(
         IDS_REGISTER_PROTOCOL_HANDLER_CONFIRM,
         base::UTF8ToUTF16(pending_handler_.url().GetHost()), protocol));
@@ -561,29 +569,24 @@ ContentSettingRPHBubbleModel::ContentSettingRPHBubbleModel(
     set_title(l10n_util::GetStringFUTF16(
         IDS_REGISTER_PROTOCOL_HANDLER_CONFIRM_REPLACE,
         base::UTF8ToUTF16(pending_handler_.url().GetHost()), protocol,
-        base::UTF8ToUTF16(previous_handler_.url().GetHost())));
+        base::UTF8ToUTF16(current_default.url().GetHost())));
   }
 
   std::u16string radio_allow_label =
       l10n_util::GetStringUTF16(IDS_REGISTER_PROTOCOL_HANDLER_ACCEPT);
   std::u16string radio_deny_label =
       l10n_util::GetStringUTF16(IDS_REGISTER_PROTOCOL_HANDLER_DENY);
-  std::u16string radio_ignore_label =
-      l10n_util::GetStringUTF16(IDS_REGISTER_PROTOCOL_HANDLER_IGNORE);
 
   const GURL& url = GetPage().GetMainDocument().GetLastCommittedURL();
   RadioGroup radio_group;
   radio_group.url = url;
 
-  radio_group.radio_items = {radio_allow_label, radio_deny_label,
-                             radio_ignore_label};
+  radio_group.radio_items = {radio_allow_label, radio_deny_label};
   ContentSetting setting = content_settings->pending_protocol_handler_setting();
   if (setting == CONTENT_SETTING_ALLOW) {
     radio_group.default_item = RPH_ALLOW;
-  } else if (setting == CONTENT_SETTING_BLOCK) {
-    radio_group.default_item = RPH_BLOCK;
   } else {
-    radio_group.default_item = RPH_IGNORE;
+    radio_group.default_item = RPH_BLOCK;
   }
 
   set_radio_group(radio_group);
@@ -604,6 +607,10 @@ void ContentSettingRPHBubbleModel::CommitChanges() {
 void ContentSettingRPHBubbleModel::RegisterProtocolHandler() {
   // A no-op if the handler hasn't been ignored, but needed in case the user
   // selects sequences like register/ignore/register.
+  // TODO(crbug.com/553146562): Move this into
+  // OnAcceptRegisterProtocolHandler(), so that accepting revokes an earlier
+  // refusal from any surface, e.g. "Set as default" in
+  // chrome://settings/handlers, and not only from this bubble.
   registry_->RemoveIgnoredHandler(pending_handler_);
 
   registry_->OnAcceptRegisterProtocolHandler(pending_handler_);
@@ -611,34 +618,19 @@ void ContentSettingRPHBubbleModel::RegisterProtocolHandler() {
       ->set_pending_protocol_handler_setting(CONTENT_SETTING_ALLOW);
 }
 
-void ContentSettingRPHBubbleModel::UnregisterProtocolHandler() {
-  registry_->OnDenyRegisterProtocolHandler(pending_handler_);
-  PageSpecificContentSettingsDelegate::FromWebContents(web_contents())
-      ->set_pending_protocol_handler_setting(CONTENT_SETTING_BLOCK);
-  ClearOrSetPreviousHandler();
-}
-
 void ContentSettingRPHBubbleModel::IgnoreProtocolHandler() {
+  // Refusing also undoes an "Allow" chosen earlier in the same bubble: the
+  // registry removes the handler and hands the default back to the previous
+  // one, so nothing has to be remembered or restored here.
   registry_->OnIgnoreRegisterProtocolHandler(pending_handler_);
   PageSpecificContentSettingsDelegate::FromWebContents(web_contents())
-      ->set_pending_protocol_handler_setting(CONTENT_SETTING_DEFAULT);
-  ClearOrSetPreviousHandler();
-}
-
-void ContentSettingRPHBubbleModel::ClearOrSetPreviousHandler() {
-  if (previous_handler_.IsEmpty()) {
-    registry_->ClearDefault(pending_handler_.protocol());
-  } else {
-    registry_->OnAcceptRegisterProtocolHandler(previous_handler_);
-  }
+      ->set_pending_protocol_handler_setting(CONTENT_SETTING_BLOCK);
 }
 
 void ContentSettingRPHBubbleModel::PerformActionForSelectedItem() {
   if (selected_item() == RPH_ALLOW) {
     RegisterProtocolHandler();
   } else if (selected_item() == RPH_BLOCK) {
-    UnregisterProtocolHandler();
-  } else if (selected_item() == RPH_IGNORE) {
     IgnoreProtocolHandler();
   } else {
     NOTREACHED();
@@ -693,9 +685,9 @@ void ContentSettingSingleRadioGroup::SetRadioGroup() {
     allowed = false;
   }
 
-  DCHECK(!allowed ||
-         PageSpecificContentSettings::GetForPage(GetPage())->IsContentAllowed(
-             content_type()));
+  CHECK(!allowed || PageSpecificContentSettings::GetForPage(GetPage())
+                        ->IsContentAllowed(content_type()),
+        base::NotFatalUntil::M162);
 
   RadioGroup radio_group;
   radio_group.url = url;
@@ -923,14 +915,7 @@ void ContentSettingCookiesBubbleModel::CommitChanges() {
   // On some plattforms e.g. MacOS X it is possible to close a tab while the
   // cookies settings bubble is open. This resets the web contents to NULL.
   if (settings_changed()) {
-    if (infobars::IsInfoBarMigrated(
-            infobars::InfoBarDelegate::COLLECTED_COOKIES_INFOBAR_DELEGATE)) {
-      PageSpecificSiteDataDialogController::ShowCollectedCookiesInfoBar(
-          web_contents());
-    } else {
-      CollectedCookiesInfoBarDelegate::Create(
-          infobars::ContentInfoBarManager::FromWebContents(web_contents()));
-    }
+    PageSpecificSiteDataDialogController::ShowInfoBar(web_contents());
   }
   ContentSettingSingleRadioGroup::CommitChanges();
 }
@@ -1125,10 +1110,10 @@ void ContentSettingMediaStreamBubbleModel::OnManageButtonClicked() {
 void ContentSettingMediaStreamBubbleModel::OnDoneButtonClicked() {
   if (ShouldShowSystemMediaPermissions()) {
 #if BUILDFLAG(IS_MAC)
-    DCHECK(CameraAccessed() || MicrophoneAccessed());
+    CHECK(CameraAccessed() || MicrophoneAccessed(), base::NotFatalUntil::M162);
 
     base::RecordAction(UserMetricsAction("Media.OpenPreferencesClicked"));
-    DCHECK(ShouldShowSystemMediaPermissions());
+    CHECK(ShouldShowSystemMediaPermissions(), base::NotFatalUntil::M162);
 
     if (CameraAccessed()) {
       base::mac::OpenSystemSettingsPane(
@@ -1330,7 +1315,7 @@ void ContentSettingMediaStreamBubbleModel::UpdateSettings(
 #if BUILDFLAG(IS_MAC)
 void ContentSettingMediaStreamBubbleModel::
     InitializeSystemMediaPermissionBubble() {
-  DCHECK(CameraAccessed() || MicrophoneAccessed());
+  CHECK(CameraAccessed() || MicrophoneAccessed(), base::NotFatalUntil::M162);
   base::RecordAction(
       base::UserMetricsAction("Media.ShowSystemMediaPermissionBubble"));
   int title_id = 0;
@@ -1508,6 +1493,23 @@ ContentSettingNotificationsBubbleModel::ContentSettingNotificationsBubbleModel(
     : ContentSettingSimpleBubbleModel(delegate,
                                       page,
                                       ContentSettingsType::NOTIFICATIONS) {
+  base::RecordAction(
+      base::UserMetricsAction("ContentSettings.NotificationsDialog.Shown"));
+  if (std::optional<webapps::AppId> app_id =
+          web_app::WebAppTabHelper::GetAppIdForNotificationAttribution(
+              web_contents())) {
+    if (apps::AppShimManager* app_shim_manager = apps::AppShimManager::Get()) {
+      app_shim_manager->SynchronizeNotificationPermissionStatus(*app_id);
+    }
+    // `SynchronizeNotificationPermissionStatus()` is asynchronous, so this
+    // reads the status cached in `AppShimRegistry` prior to that sync. If macOS
+    // permission was already decided outside Chrome, clicking "Allow" will just
+    // cause the app shim to report the updated status without showing a prompt.
+    should_request_system_permission_ =
+        AppShimRegistry::Get()->GetNotificationPermissionStatusForApp(
+            *app_id) ==
+        AppShimRegistry::NotificationPermissionStatus::kNotDetermined;
+  }
   set_title(l10n_util::GetStringUTF16(IDS_NOTIFICATIONS_TURNED_OFF_IN_MACOS));
   AddListItem(ContentSettingBubbleModel::ListItem(
       &(features::IsRoundedIconsEnabled()
@@ -1517,22 +1519,79 @@ ContentSettingNotificationsBubbleModel::ContentSettingNotificationsBubbleModel(
       l10n_util::GetStringUTF16(IDS_TURNED_OFF), /*has_link=*/false,
       /*has_blocked_badge=*/false, 0));
   set_manage_text_style(ContentSettingBubbleModel::ManageTextStyle::kNone);
-  set_done_button_text(l10n_util::GetStringUTF16(IDS_OPEN_SETTINGS_LINK));
+  set_done_button_text(l10n_util::GetStringUTF16(
+      should_request_system_permission_ ? IDS_PERMISSION_ALLOW
+                                        : IDS_OPEN_SETTINGS_LINK));
+  // Omit the "Don't allow" button when the Chrome NOTIFICATIONS setting cannot
+  // be modified by the user (e.g. force-allowed by policy). Keep
+  // `is_user_modifiable` true so `ContentSettingBubbleContents` does not
+  // relabel the primary "Allow" / "System settings" button to "Got it".
+  if (GetSettingManagedByUser(GetPage().GetMainDocument().GetLastCommittedURL(),
+                              ContentSettingsType::NOTIFICATIONS, GetProfile(),
+                              nullptr)) {
+    set_cancel_button_text(
+        l10n_util::GetStringUTF16(IDS_PERMISSION_DONT_ALLOW));
+  }
 }
 
 ContentSettingNotificationsBubbleModel::
-    ~ContentSettingNotificationsBubbleModel() = default;
+    ~ContentSettingNotificationsBubbleModel() {
+  base::RecordAction(
+      base::UserMetricsAction("ContentSettings.NotificationsDialog.Closed"));
+}
 
 void ContentSettingNotificationsBubbleModel::OnDoneButtonClicked() {
-  std::string bundle_identifier = base::apple::MainBundleIdentifier();
-  if (std::optional<webapps::AppId> app_id =
-          web_app::WebAppTabHelper::GetAppIdForNotificationAttribution(
-              web_contents());
-      app_id.has_value()) {
-    bundle_identifier = web_app::GetBundleIdentifierForShim(*app_id);
+  if (!web_contents()) {
+    return;
   }
-  base::mac::OpenSystemSettingsPane(
-      base::mac::SystemSettingsPane::kNotifications, bundle_identifier);
+
+  if (should_request_system_permission_) {
+    base::RecordAction(base::UserMetricsAction(
+        "ContentSettings.NotificationsDialog.AllowClicked"));
+    if (std::optional<webapps::AppId> app_id =
+            web_app::WebAppTabHelper::GetAppIdForNotificationAttribution(
+                web_contents());
+        app_id.has_value()) {
+      if (apps::AppShimManager* app_shim_manager =
+              apps::AppShimManager::Get()) {
+        app_shim_manager->ShowNotificationPermissionRequest(
+            *app_id,
+            base::BindOnce([](mac_notifications::mojom::RequestPermissionResult
+                                  result) {
+              base::UmaHistogramEnumeration(
+                  "Notifications.Permissions.AppShim.OSPermissionRequestResult."
+                  "FromNotificationsBubble",
+                  result);
+            }));
+      }
+    }
+    return;
+  }
+
+  base::RecordAction(base::UserMetricsAction(
+      "ContentSettings.NotificationsDialog.OpenSystemSettingsClicked"));
+  system_permission_settings::OpenSystemSettings(
+      web_contents(), ContentSettingsType::NOTIFICATIONS);
+}
+
+void ContentSettingNotificationsBubbleModel::OnCancelButtonClicked() {
+  base::RecordAction(base::UserMetricsAction(
+      "ContentSettings.NotificationsDialog.DontAllowClicked"));
+  if (!web_contents() || !GetProfile()) {
+    return;
+  }
+
+  const GURL& url = GetPage().GetMainDocument().GetLastCommittedURL();
+  permissions::PermissionUmaUtil::ScopedRevocationReporter
+      scoped_revocation_reporter(GetProfile(), url, GURL(),
+                                 ContentSettingsType::NOTIFICATIONS,
+                                 permissions::PermissionSourceUI::PAGE_ACTION);
+  HostContentSettingsMapFactory::GetForProfile(GetProfile())
+      ->SetContentSettingDefaultScope(
+          url, GURL(), ContentSettingsType::NOTIFICATIONS,
+          CONTENT_SETTING_BLOCK,
+          CreateConstraintsForAutoRevocation(ContentSettingsType::NOTIFICATIONS,
+                                             CONTENT_SETTING_BLOCK));
 }
 #endif
 
@@ -1575,7 +1634,7 @@ void ContentSettingSubresourceFilterBubbleModel::OnManageCheckboxChecked(
 }
 
 void ContentSettingSubresourceFilterBubbleModel::OnLearnMoreClicked() {
-  DCHECK(delegate());
+  CHECK(delegate(), base::NotFatalUntil::M162);
   subresource_filter::ContentSubresourceFilterThrottleManager::LogAction(
       subresource_filter::SubresourceFilterAction::kClickedLearnMore);
   delegate()->ShowLearnMorePage(ContentSettingsType::ADS);
@@ -1654,7 +1713,7 @@ void ContentSettingDownloadsBubbleModel::SetRadioGroup() {
   const std::u16string& display_url =
       GetUrlForDisplay(GetProfile(), download_origin);
 
-  DCHECK(download_request_limiter);
+  CHECK(download_request_limiter, base::NotFatalUntil::M162);
 
   RadioGroup radio_group;
   radio_group.url = download_origin;
@@ -1681,7 +1740,7 @@ void ContentSettingDownloadsBubbleModel::SetRadioGroup() {
 void ContentSettingDownloadsBubbleModel::SetTitle() {
   DownloadRequestLimiter* download_request_limiter =
       g_browser_process->download_request_limiter();
-  DCHECK(download_request_limiter);
+  CHECK(download_request_limiter, base::NotFatalUntil::M162);
 
   switch (download_request_limiter->GetDownloadUiStatus(web_contents())) {
     case DownloadRequestLimiter::DOWNLOAD_UI_ALLOWED:
@@ -1763,7 +1822,7 @@ ContentSettingQuietRequestBubbleModel::ContentSettingQuietRequestBubbleModel(
     return;
   }
   CHECK_GT(manager->Requests().size(), 0u);
-  DCHECK_EQ(manager->Requests().size(), 1u);
+  CHECK_EQ(manager->Requests().size(), 1u, base::NotFatalUntil::M162);
   request_type_ = manager->Requests()[0]->request_type();
   quiet_ui_reason_ = quiet_ui_reason;
   prm_observation_.Observe(manager);
@@ -1781,8 +1840,9 @@ ContentSettingQuietRequestBubbleModel::ContentSettingQuietRequestBubbleModel(
   set_title(l10n_util::GetStringUTF16(bubble_title_string_id));
   switch (*quiet_ui_reason_) {
     case QuietUiReason::kEnabledInPrefs:
-      DCHECK(*request_type_ == permissions::RequestType::kNotifications ||
-             *request_type_ == permissions::RequestType::kGeolocation);
+      CHECK(*request_type_ == permissions::RequestType::kNotifications ||
+                *request_type_ == permissions::RequestType::kGeolocation,
+            base::NotFatalUntil::M162);
       set_message(l10n_util::GetStringUTF16(
           *request_type_ == permissions::RequestType::kNotifications
               ? IDS_NOTIFICATIONS_QUIET_PERMISSION_BUBBLE_DESCRIPTION
@@ -1794,7 +1854,8 @@ ContentSettingQuietRequestBubbleModel::ContentSettingQuietRequestBubbleModel(
           base::UserMetricsAction("Notifications.Quiet.AnimatedIconClicked"));
       break;
     case QuietUiReason::kTriggeredByCrowdDeny:
-      DCHECK_EQ(*request_type_, permissions::RequestType::kNotifications);
+      CHECK_EQ(*request_type_, permissions::RequestType::kNotifications,
+               base::NotFatalUntil::M162);
       set_message(l10n_util::GetStringUTF16(
           IDS_NOTIFICATIONS_QUIET_PERMISSION_BUBBLE_CROWD_DENY_DESCRIPTION));
       set_done_button_text(l10n_util::GetStringUTF16(
@@ -1805,7 +1866,8 @@ ContentSettingQuietRequestBubbleModel::ContentSettingQuietRequestBubbleModel(
       break;
     case QuietUiReason::kTriggeredDueToAbusiveRequests:
     case QuietUiReason::kTriggeredDueToAbusiveContent:
-      DCHECK_EQ(*request_type_, permissions::RequestType::kNotifications);
+      CHECK_EQ(*request_type_, permissions::RequestType::kNotifications,
+               base::NotFatalUntil::M162);
       set_message(l10n_util::GetStringUTF16(
           IDS_NOTIFICATIONS_QUIET_PERMISSION_BUBBLE_ABUSIVE_DESCRIPTION));
       // TODO(crbug.com/40131070): It is rather confusing to have the `Cancel`
@@ -1820,7 +1882,8 @@ ContentSettingQuietRequestBubbleModel::ContentSettingQuietRequestBubbleModel(
           base::UserMetricsAction("Notifications.Quiet.StaticIconClicked"));
       break;
     case QuietUiReason::kTriggeredDueToDisruptiveBehavior:
-      DCHECK_EQ(*request_type_, permissions::RequestType::kNotifications);
+      CHECK_EQ(*request_type_, permissions::RequestType::kNotifications,
+               base::NotFatalUntil::M162);
       set_message(l10n_util::GetStringUTF16(
           IDS_NOTIFICATIONS_QUIET_PERMISSION_BUBBLE_DISRUPTIVE_DESCRIPTION));
       set_cancel_button_text(l10n_util::GetStringUTF16(
@@ -1953,7 +2016,8 @@ void ContentSettingQuietRequestBubbleModel::OnLearnMoreClicked() {
     // We only show learn more button for Notification quiet ui dialog when it
     // is triggered due to abusive requests or contents. We don't have any learn
     // more button for the geolocation quiet ui dialogs.
-    DCHECK_EQ(*request_type_, permissions::RequestType::kNotifications);
+    CHECK_EQ(*request_type_, permissions::RequestType::kNotifications,
+             base::NotFatalUntil::M162);
     delegate()->ShowLearnMorePage(ContentSettingsType::NOTIFICATIONS);
   }
 }
@@ -1965,7 +2029,7 @@ void ContentSettingQuietRequestBubbleModel::OnDoneButtonClicked() {
   }
   permissions::PermissionRequestManager* manager =
       permissions::PermissionRequestManager::FromWebContents(web_contents());
-  DCHECK_EQ(manager->Requests().size(), 1u);
+  CHECK_EQ(manager->Requests().size(), 1u, base::NotFatalUntil::M162);
 
   // GEOLOCATION_WITH_OPTIONS is currently not supported on desktop.
   //
@@ -2010,7 +2074,8 @@ void ContentSettingQuietRequestBubbleModel::OnCancelButtonClicked() {
     case QuietUiReason::kTriggeredDueToAbusiveRequests:
     case QuietUiReason::kTriggeredDueToAbusiveContent:
     case QuietUiReason::kTriggeredDueToDisruptiveBehavior:
-      DCHECK_EQ(*request_type_, permissions::RequestType::kNotifications);
+      CHECK_EQ(*request_type_, permissions::RequestType::kNotifications,
+               base::NotFatalUntil::M162);
       manager->Accept(/*prompt_options=*/std::monostate());
       base::RecordAction(
           base::UserMetricsAction("Notifications.Quiet.ShowForSiteClicked"));
@@ -2066,7 +2131,7 @@ ContentSettingBubbleModel::CreateContentSettingBubbleModel(
     case ContentSettingsType::STORAGE_ACCESS:
       return std::make_unique<ContentSettingStorageAccessBubbleModel>(delegate,
                                                                       page);
-#if BUILDFLAG(IS_CHROMEOS)
+#if BUILDFLAG(ENABLE_SMART_CARD)
     case ContentSettingsType::SMART_CARD_GUARD:
       return std::make_unique<ContentSettingSimpleBubbleModel>(delegate, page,
                                                                content_type);

@@ -22,14 +22,8 @@ class ProfileIOS;
 // Client for handling send tab notifications.
 class SendTabPushNotificationClient : public PushNotificationClient {
  public:
-  // Constructor for when multi-Profile push notification handling is enabled.
-  // Associates this client instance with a specific user `profile`. This should
-  // only be called when `IsMultiProfilePushNotificationHandlingEnabled()`
-  // returns YES.
+  // Associates this client instance with a specific user `profile`.
   explicit SendTabPushNotificationClient(ProfileIOS* profile);
-  // Legacy constructor for when multi-Profile push notification handling is
-  // disabled. The client will operate without being tied to a specific Profile.
-  SendTabPushNotificationClient();
   ~SendTabPushNotificationClient() override;
 
   // Override PushNotificationClient.
@@ -45,7 +39,7 @@ class SendTabPushNotificationClient : public PushNotificationClient {
   // Extracts the scroll text fragment if present and opens the URL in a new
   // tab.
   void LoadSendTabUrlInNewTab(const GURL& url,
-                              std::string_view identifier,
+                              std::string_view entry_guid,
                               Browser* browser);
 
   // Subscriptions for delayed actions.

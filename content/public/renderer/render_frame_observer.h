@@ -81,10 +81,6 @@ class CONTENT_EXPORT RenderFrameObserver {
   // Called when a load is explicitly stopped by the user or browser.
   virtual void OnStop() {}
 
-  // Called when the RenderFrame visiblity is changed.
-  virtual void WasHidden() {}
-  virtual void WasShown() {}
-
   // Navigation callbacks.
   //
   // Each navigation starts with a DidStartNavigation call. Then it may be
@@ -146,13 +142,6 @@ class CONTENT_EXPORT RenderFrameObserver {
   virtual void DidMatchCSS(
       const std::vector<blink::WebString>& newly_matching_selectors,
       const std::vector<blink::WebString>& stopped_matching_selectors) {}
-
-  // Called when the RenderFrame creates a FencedFrame and provides the
-  // RemoteFrameToken to identify the `blink::RemoteFrame` to the inner
-  // RenderFrame. This is called immediately after the FencedFrame is created
-  // in the browser and the `blink::RemoteFrame` initialized in this renderer.
-  virtual void DidCreateFencedFrame(
-      const blink::RemoteFrameToken& placeholder_token) {}
 
   // Called when same-document navigation finishes.
   // This is the only callback for same-document navigations,
@@ -230,7 +219,8 @@ class CONTENT_EXPORT RenderFrameObserver {
 
   // Notifications when a cpu timing update becomes available, when a frame
   // has performed at least 100ms of tasks.
-  virtual void DidChangeCpuTiming(base::TimeDelta time) {}
+  virtual void DidChangeCpuTiming(base::TimeDelta time,
+                                  base::TimeDelta ad_time) {}
 
   // Notification when the renderer uses a particular code path during a page
   // load. This is used for metrics collection.

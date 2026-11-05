@@ -14,12 +14,19 @@
 #include "chrome/browser/sessions/tab_restore_service_factory.h"
 #include "chrome/browser/sync/sync_service_factory.h"
 #include "chrome/browser/tab_group_sync/tab_group_sync_service_factory.h"
+#include "chrome/browser/ui/actions/actions_util.h"
 #include "chrome/browser/ui/actions/chrome_action_id.h"
 #include "chrome/browser/ui/browser_actions.h"
+#include "chrome/browser/ui/safety_hub/menu_notification_service_factory.h"
+#include "chrome/grit/generated_resources.h"
 #include "chrome/test/base/testing_profile.h"
 #include "components/saved_tab_groups/test_support/fake_tab_group_sync_service.h"
 #include "components/sync/test/test_sync_service.h"
 #include "ui/actions/actions.h"
+#include "ui/base/l10n/l10n_util.h"
+
+MockAppMenuDragAndDropHost::MockAppMenuDragAndDropHost() = default;
+MockAppMenuDragAndDropHost::~MockAppMenuDragAndDropHost() = default;
 
 ActionAppMenuTestBase::ActionAppMenuTestBase() = default;
 ActionAppMenuTestBase::~ActionAppMenuTestBase() = default;
@@ -27,6 +34,8 @@ ActionAppMenuTestBase::~ActionAppMenuTestBase() = default;
 void ActionAppMenuTestBase::SetUp() {
   ChromeViewsTestBase::SetUp();
   profile_ = std::make_unique<TestingProfile>();
+  SafetyHubMenuNotificationServiceFactory::GetInstance()->SetTestingFactory(
+      profile_.get(), BrowserContextKeyedServiceFactory::TestingFactory());
   SyncServiceFactory::GetInstance()->SetTestingFactory(
       profile_.get(),
       base::BindRepeating(
@@ -64,23 +73,42 @@ void ActionAppMenuTestBase::SetUp() {
 
   // Create test ActionItems as children of a root ActionItem.
   auto root = actions::ActionItem::Builder().Build();
-  auto add_action = [&root, this](actions::ActionId action_id,
-                                  std::u16string text) {
-    root->AddChild(actions::ActionItem::Builder(
-                       base::BindRepeating(
-                           &MockActionCallback::Call,
-                           base::Unretained(&mock_action_invoked_), action_id))
-                       .SetActionId(action_id)
-                       .SetText(text)
-                       .SetEnabled(true)
-                       .SetVisible(action_id != kActionUpgradeDialog)
-                       .Build());
-  };
+  auto add_action =
+      [&root, this](actions::ActionId action_id, std::u16string text,
+                    std::optional<std::u16string> short_title = std::nullopt) {
+        auto item =
+            actions::ActionItem::Builder(
+                base::BindRepeating(&MockActionCallback::Call,
+                                    base::Unretained(&mock_action_invoked_),
+                                    action_id))
+                .SetActionId(action_id)
+                .SetText(text)
+                .SetTooltipText(text)
+                .SetAccessibleName(text)
+                .SetEnabled(true)
+                .SetVisible(action_id != kActionUpgradeDialog &&
+                            action_id != kActionScheduledRestartDialog &&
+                            action_id != kActionGlobalError &&
+                            action_id != kActionSetBrowserAsDefault &&
+                            action_id != kActionSkillsAndExtensionsSubmenu &&
+                            action_id != kActionChromeEnterpriseReleaseNotes)
+                .Build();
+        if (short_title.has_value()) {
+          item->SetProperty(actions::kShortTitleTextKey, *short_title);
+        }
+        root->AddChild(std::move(item));
+      };
 
   add_action(kActionNewTab, u"New Tab");
   add_action(kActionNewWindow, u"New Window");
-  add_action(kActionNewIncognitoWindow, u"New Incognito Window");
-  add_action(kActionNewIsolatedWindow, u"New Isolated Window");
+  add_action(
+      kActionNewIncognitoWindow,
+      chrome::GetCleanText(l10n_util::GetStringUTF16(IDS_NEW_INCOGNITO_WINDOW)),
+      l10n_util::GetStringUTF16(IDS_APP_MENU_BLOCK_INCOGNITO));
+  add_action(
+      kActionNewIsolatedWindow,
+      chrome::GetCleanText(l10n_util::GetStringUTF16(IDS_NEW_ISOLATED_WINDOW)),
+      l10n_util::GetStringUTF16(IDS_APP_MENU_BLOCK_ISOLATED));
   add_action(kActionProfileSubmenu, u"Profile");
   add_action(kActionManageGoogleAccount, u"Manage your Google Account");
   add_action(kActionCustomizeChrome, u"Customize Chrome");
@@ -94,14 +122,22 @@ void ActionAppMenuTestBase::SetUp() {
   add_action(kActionShowSyncPassphraseDialog, u"Enter passphrase");
   add_action(kActionShowSigninWhenPaused, u"Sign in again");
   add_action(kActionUpgradeDialog, u"Update Chrome");
+  add_action(kActionScheduledRestartDialog, u"Relaunch later...");
+  add_action(kActionGlobalError, u"Global error");
+  add_action(kActionOpenSafetyHub, u"Safety Hub");
+  add_action(kActionSafetyHubManageExtensions, u"Manage extensions");
+  add_action(kActionSafetyHubShowPasswordCheckup, u"Check passwords");
+  add_action(kActionSetBrowserAsDefault, u"Set Chrome as default browser");
   add_action(kActionPasswordsAndAutofillSubmenu, u"Passwords and autofill");
   add_action(kActionShowPasswordManager, u"Password Manager");
   add_action(kActionShowPaymentMethods, u"Payment methods");
   add_action(kActionShowContactInfo, u"Addresses and more");
   add_action(kActionShowIdentityDocs, u"Identity docs");
   add_action(kActionShowTravel, u"Travel");
+  add_action(kActionShowOffersAndLoyaltyCards, u"Offers and loyalty cards");
   add_action(kActionShowHistory, u"History");
   add_action(kActionRecentTabsSubmenu, u"Recent Tabs");
+  add_action(kActionOtherDeviceTabsSubmenu, u"Other device tabs");
   add_action(kActionShowDownloadsPage, u"Downloads");
   add_action(kActionBookmarksSubmenu, u"Bookmarks and Lists");
   add_action(kActionBookmarkThisTab, u"Bookmark This Tab");
@@ -122,6 +158,8 @@ void ActionAppMenuTestBase::SetUp() {
   add_action(kActionExtensionsSubmenuVisitChromeWebStore,
              u"Visit Chrome Web Store");
   add_action(kActionFindExtensions, u"Find Extensions");
+  add_action(kActionSkillsAndExtensionsSubmenu, u"Extensions and skills");
+  add_action(kActionManageSkills, u"Your skills");
   add_action(kActionClearBrowsingData, u"Clear Browsing Data");
   add_action(kActionSavedTabGroupsSubmenu, u"Tab Groups");
   add_action(kActionCreateNewTabGroup, u"New Tab Group");
@@ -132,6 +170,9 @@ void ActionAppMenuTestBase::SetUp() {
   add_action(kActionPrint, u"Print");
   add_action(kActionOpenGlic, u"Open Glic");
   add_action(kActionShowLensOverlayFromAppMenu, u"Lens Overlay");
+  add_action(kActionAskGoogleAboutThisPageFromAppMenu,
+             u"Ask Google about this page");
+  add_action(kActionContextualTasksSubmenu, u"Search with Google");
   add_action(kActionShowTranslate, u"Translate");
   add_action(kActionFindAndEditSubmenu, u"Find and edit");
   add_action(kActionFind, u"Find");
@@ -162,8 +203,8 @@ void ActionAppMenuTestBase::SetUp() {
   add_action(kActionProfilingEnabled, u"Profiling enabled");
   add_action(kActionShowChromeLabs, u"Chrome Labs");
   add_action(kActionRecentTabsSeeDeviceTabs, u"See Device Tabs");
-  add_action(kActionRecentTabsLoginForDeviceTabs, u"Login for Device Tabs");
   add_action(kActionSidePanelShowHistoryCluster, u"History Clusters");
+  add_action(kActionSidePanelShowHistory, u"History");
   add_action(kActionSidePanelShowTabsFromOtherDevices,
              u"Tabs from Other Devices");
   add_action(kActionOptions, u"Settings");
@@ -175,10 +216,21 @@ void ActionAppMenuTestBase::SetUp() {
   add_action(kActionReportUnsafeSite, u"Report Unsafe Site");
   add_action(kActionExit, u"Exit");
   add_action(kActionShowManagementPage, u"Managed by your organization");
+  add_action(kActionChromeEnterpriseReleaseNotes,
+             u"Chrome Enterprise release notes");
   add_action(kActionZoomSubmenu, u"Zoom");
   add_action(kActionZoomMinus, u"Zoom Out");
+  add_action(kActionZoomNormal, u"100%");
   add_action(kActionZoomPlus, u"Zoom In");
   add_action(kActionFullscreen, u"Fullscreen");
+  add_action(kActionOpenInChrome, u"Open in Chrome");
+  add_action(kActionWebAppMenuAppInfo, u"App Info");
+  add_action(kActionUninstallWebApp, u"Uninstall");
+  add_action(kActionWebAppUpgradeDialog, u"Review update");
+  add_action(kActionWebAppShowExtensions, u"Extensions");
+#if BUILDFLAG(IS_CHROMEOS)
+  add_action(kActionMoveToDesksSubmenu, u"Move window to desk");
+#endif
 
   actions::ActionManager::Get().AddAction(std::move(root));
 
@@ -198,4 +250,21 @@ void ActionAppMenuTestBase::TearDown() {
   profile_.reset();
   actions::ActionManager::Get().ResetActions();
   ChromeViewsTestBase::TearDown();
+}
+
+actions::BaseAction* ActionAppMenuTestBase::FindBaseAction(
+    actions::BaseAction* parent,
+    actions::ActionId action_id) {
+  if (!parent) {
+    return nullptr;
+  }
+  for (const auto& child : parent->GetChildren().children()) {
+    if (child->GetActionItem()->GetActionId() == action_id) {
+      return child.get();
+    }
+    if (actions::BaseAction* found = FindBaseAction(child.get(), action_id)) {
+      return found;
+    }
+  }
+  return nullptr;
 }

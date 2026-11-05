@@ -901,8 +901,11 @@ base::win::ShortcutProperties TranslateShortcutProperties(
     shortcut_properties.set_working_dir(properties.target.DirName());
   }
 
-  if (properties.has_arguments())
+  if (properties.has_arguments()) {
     shortcut_properties.set_arguments(properties.arguments);
+  } else if (properties.has_arguments_to_merge()) {
+    shortcut_properties.set_arguments_to_merge(properties.arguments);
+  }
 
   if (properties.has_description())
     shortcut_properties.set_description(properties.description);
@@ -1161,6 +1164,7 @@ bool ShortcutOpListOrRemoveUnknownArgs(
       switches::kApp,
       switches::kAppId,
       switches::kProfileDirectory,
+      switches::kSourceShortcutLocation,
   };
   base::CommandLine desired_args(base::CommandLine::NO_PROGRAM);
   desired_args.CopySwitchesFrom(current_args, kept_switches);
@@ -1345,7 +1349,6 @@ bool RegisterChromeBrowserImpl(const base::FilePath& chrome_exe,
                                     &progid_and_appreg_entries);
     GetShellIntegrationEntries(chrome_exe, suffix, &shell_entries);
     GetDirectLaunchEntries(chrome_exe, &shell_entries);
-    const std::wstring html_prog_id = GetBrowserProgId(suffix);
     return ShellUtil::AddRegistryEntries(root, progid_and_appreg_entries,
                                          best_effort_no_rollback) &&
            ShellUtil::AddRegistryEntries(root, shell_entries,
@@ -2290,9 +2293,6 @@ bool ShellUtil::AddFileAssociations(
 
 // static
 bool ShellUtil::DeleteFileAssociations(const std::wstring& app_prog_id) {
-  const std::wstring app_prog_id_path =
-      base::StrCat({kRegClasses, kFilePathSeparator, app_prog_id});
-
   // Get the list of file handler ProgIds for the app. Do this before the
   // `app_prog_id` key is deleted.
   const std::vector<std::wstring> file_handler_prog_ids =
@@ -2499,8 +2499,6 @@ std::wstring ShellUtil::GetAppName(const std::wstring& prog_id) {
 // static
 base::FilePath ShellUtil::GetApplicationPathForProgId(
     const std::wstring& prog_id) {
-  std::wstring prog_id_path =
-      base::StrCat({kRegClasses, kFilePathSeparator, prog_id});
   std::wstring shell_open_key =
       base::StrCat({kRegClasses, kFilePathSeparator, prog_id, kRegShellOpen});
   std::wstring command_line;

@@ -42,6 +42,9 @@ void AuthenticatorRequestClientDelegate::SetRelyingPartyId(const std::string&) {
 void AuthenticatorRequestClientDelegate::SetUIPresentation(
     UIPresentation ui_presentation) {}
 
+void AuthenticatorRequestClientDelegate::SetAmbientChipOnly(
+    bool ambient_chip_only) {}
+
 bool AuthenticatorRequestClientDelegate::DoesBlockRequestOnFailure(
     InterestingFailureReason reason) {
   return false;
@@ -51,6 +54,10 @@ void AuthenticatorRequestClientDelegate::OnTransactionSuccessful(
     RequestSource request_source,
     device::FidoRequestType request_type,
     device::AuthenticatorType authenticator_type) {}
+
+void AuthenticatorRequestClientDelegate::OnTransactionFailed(
+    std::optional<device::AuthenticatorType> authenticator_type,
+    InterestingFailureReason reason) {}
 
 void AuthenticatorRequestClientDelegate::RegisterActionCallbacks(
     base::OnceClosure cancel_callback,

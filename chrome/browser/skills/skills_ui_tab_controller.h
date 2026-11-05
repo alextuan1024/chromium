@@ -11,7 +11,7 @@
 
 #include "base/memory/weak_ptr.h"
 #include "base/timer/timer.h"
-#include "chrome/browser/glic/host/glic.mojom.h"
+#include "chrome/browser/glic/host/glic.mojom-forward.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/skills/skills_service_factory.h"
 #include "chrome/browser/skills/skills_ui_tab_controller_interface.h"
@@ -50,7 +50,6 @@ class SkillsUiTabController : public SkillsUiTabControllerInterface,
  public:
   explicit SkillsUiTabController(tabs::TabInterface& tab);
   ~SkillsUiTabController() override;
-  DECLARE_USER_DATA(SkillsUiTabController);
 
   // Opens the skills dialog.
   void ShowDialog(Skill skill,
@@ -66,10 +65,16 @@ class SkillsUiTabController : public SkillsUiTabControllerInterface,
                    bool auto_submit) override;
   void SendPrompt(std::string_view prompt) override;
 
-  // SkillsDialogDelegate override:
+  // SkillsDialogDelegate & SkillsUiTabControllerInterface override:
   void CloseDialog() override;
   void OnSkillSaved(const std::string& skill_id) override;
+  void OnSkillSaved(const std::string& skill_id,
+                    const std::string& skill_name,
+                    const std::string& skill_icon) override;
   void OnSkillDeleted(const std::string& skill_id) override;
+  void OnSkillDeleted(const std::string& skill_id,
+                      base::OnceCallback<void(bool)> callback) override;
+  void InvokeSkill(std::string_view skill_id) override;
   BrowserWindowInterface* GetBrowserWindowInterface() override;
 
   // views::WidgetObserver override:
@@ -120,8 +125,6 @@ class SkillsUiTabController : public SkillsUiTabControllerInterface,
   // The Widget represents the window.
   // CLIENT_OWNS_WIDGET ensures stability during tab reparenting/dragging.
   std::unique_ptr<views::Widget> dialog_widget_;
-
-  ::ui::ScopedUnownedUserData<SkillsUiTabController> scoped_unowned_user_data_;
 
   std::unique_ptr<glic::Target> target_;
   std::string last_invoked_skill_id_for_testing_;

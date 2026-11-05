@@ -38,8 +38,6 @@ const DesktopMediaSourceViewStyle& GetGenericScreenStyle();
 const DesktopMediaSourceViewStyle& GetSingleScreenStyle();
 
 // Dialog view used for DesktopMediaPickerImpl.
-//
-// TODO(crbug.com/40637301): Consider renaming this class.
 class DesktopMediaPickerDialogView : public views::DialogDelegateView,
                                      public views::TabbedPaneListener {
   METADATA_HEADER(DesktopMediaPickerDialogView, views::DialogDelegateView)
@@ -170,9 +168,6 @@ class DesktopMediaPickerDialogView : public views::DialogDelegateView,
   // distinguishes the reason for its absence.
   void RecordAudioToggleUma(const content::DesktopMediaID& source);
 
-  // Helper for UMA-tracking of how often a user shares a discarded tab.
-  void RecordTabDiscardedStatusUma(const content::DesktopMediaID& source);
-
   // Counts the number of sources of a given type.
   // * Returns nullopt if such sources are not offered to the user due to
   //   a configuration of the picker.
@@ -268,9 +263,6 @@ class DesktopMediaPickerDialogView : public views::DialogDelegateView,
 };
 
 // Implementation of DesktopMediaPicker for Views.
-//
-// TODO(crbug.com/40637301): Consider merging with DesktopMediaPickerController
-// and naming the merged class just DesktopMediaPicker.
 class DesktopMediaPickerImpl : public DesktopMediaPicker {
  public:
   DesktopMediaPickerImpl();

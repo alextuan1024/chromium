@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "base/component_export.h"
+#include "base/dcheck_is_on.h"
 #include "base/memory/raw_ptr.h"
 #include "build/build_config.h"
 #include "ui/base/accelerators/accelerator.h"
@@ -75,6 +76,12 @@ class COMPONENT_EXPORT(UI_BASE) AcceleratorManager {
   // Returns whether |accelerator| is already registered.
   bool IsRegistered(const Accelerator& accelerator) const;
 
+#if DCHECK_IS_ON()
+  // Returns the number of accelerators |target| is registered for. This walks
+  // every registered accelerator, so use it only in DCHECKs.
+  size_t GetAcceleratorCountForTarget(AcceleratorTarget* target) const;
+#endif
+
   // Activates the target associated with the specified accelerator.
   // First, AcceleratorPressed handler of the most recently registered target
   // is called, and if that handler processes the event (i.e. returns true),
@@ -91,7 +98,8 @@ class COMPONENT_EXPORT(UI_BASE) AcceleratorManager {
 
 #if BUILDFLAG(IS_CHROMEOS)
   void SetUsePositionalLookup(bool use_positional_lookup) {
-    DCHECK(::features::IsImprovedKeyboardShortcutsEnabled());
+    CHECK(::features::IsImprovedKeyboardShortcutsEnabled(),
+          base::NotFatalUntil::M163);
     accelerators_.set_use_positional_lookup(use_positional_lookup);
   }
 #endif  // BUILDFLAG(IS_CHROMEOS)

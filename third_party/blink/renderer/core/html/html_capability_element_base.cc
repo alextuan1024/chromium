@@ -17,6 +17,7 @@
 #include "third_party/blink/public/strings/grit/blink_strings.h"
 #include "third_party/blink/public/strings/grit/permission_element_strings.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_permission_state.h"
+#include "third_party/blink/renderer/core/accessibility/ax_object_cache.h"
 #include "third_party/blink/renderer/core/css/css_selector.h"
 #include "third_party/blink/renderer/core/css/font_size_functions.h"
 #include "third_party/blink/renderer/core/css/properties/css_property_instances.h"
@@ -117,8 +118,15 @@ constexpr float kDefaultMaxPercentRadiusHeight = 50;
 // with the layout in unsupported ways. Additionally, all "table" styles are
 // also not allowed.
 constexpr EDisplay kInvalidDisplayStyles[] = {
-    EDisplay::kContents, EDisplay::kInline,   EDisplay::kListItem,
-    EDisplay::kRuby,     EDisplay::kRubyText,
+    EDisplay::kContents,
+    EDisplay::kInline,
+    EDisplay::kListItem,
+    EDisplay::kInlineListItem,
+    EDisplay::kFlowRootListItem,
+    EDisplay::kInlineFlowRootListItem,
+    EDisplay::kRuby,
+    EDisplay::kBlockRuby,
+    EDisplay::kRubyText,
 };
 
 // Helper to get `PermissionsPolicyFeature` from permission name
@@ -426,6 +434,7 @@ bool HTMLCapabilityElementBase::CanGeneratePseudoElement(PseudoId id) const {
   switch (id) {
     case PseudoId::kPseudoIdAfter:
     case PseudoId::kPseudoIdBefore:
+    case PseudoId::kPseudoIdMarker:
     case PseudoId::kPseudoIdCheckMark:
     case PseudoId::kPseudoIdPickerIcon:
     case PseudoId::kPseudoIdExpandIcon:
@@ -488,6 +497,42 @@ void HTMLCapabilityElementBase::SetPreciseLocation(bool is_precise_location) {
                              kDefaultDisableTimeout);
   is_precise_location_ = is_precise_location;
   UpdateAppearance();
+}
+
+bool HTMLCapabilityElementBase::IsIconOnly() const {
+  if (IsHTMLInstallElement() || IsHTMLUserMediaElement() ||
+      !RuntimeEnabledFeatures::CapabilityElementIconOnlyModeEnabled(
+          GetDocument().GetExecutionContext())) {
+    return false;
+  }
+  return EqualIgnoringAsciiCase(FastGetAttribute(html_names::kDisplayhintAttr),
+                                "icon-only") ||
+         EqualIgnoringAsciiCase(FastGetAttribute(html_names::kDisplaymodeAttr),
+                                "icon-only");
+}
+
+const String& HTMLCapabilityElementBase::AccessibleLabel() const {
+  return accessible_label_;
+}
+
+void HTMLCapabilityElementBase::SetPermissionText(const String& text) {
+  bool label_changed = accessible_label_ != text;
+  accessible_label_ = text;
+  String displayed_text = IsIconOnly() ? g_empty_string : text;
+  if (permission_text_span_ &&
+      permission_text_span_->textContent() != displayed_text) {
+    permission_text_span_->setInnerText(displayed_text);
+    label_changed = true;
+  }
+  if (label_changed) {
+    if (AXObjectCache* cache = GetDocument().ExistingAXObjectCache()) {
+      if (LayoutObject* layout_object = GetLayoutObject()) {
+        cache->TextChanged(layout_object);
+      } else {
+        cache->MarkElementDirty(this);
+      }
+    }
+  }
 }
 
 void HTMLCapabilityElementBase::UpdatePermissionStatus() {
@@ -658,13 +703,25 @@ bool HTMLCapabilityElementBase::MaybeRegisterPageEmbeddedPermissionControl() {
     return false;
   }
 
+  // `CreateEmbeddedPermissionRequestDescriptor()` computes `BoundsInWidget()`,
+  // which forces a synchronous style and layout update. That update can
+  // re-entrantly register this control, detach the frame, or change whether
+  // the element is rendered, so re-verify these conditions afterwards.
+  auto descriptor = CreateEmbeddedPermissionRequestDescriptor();
+  if (embedded_permission_control_receiver_.is_bound()) {
+    return true;
+  }
+  if (!GetDocument().GetFrame() || !IsRendered()) {
+    return false;
+  }
+
   mojo::PendingRemote<EmbeddedPermissionControlClient> client;
   embedded_permission_control_receiver_.Bind(
       client.InitWithNewPipeAndPassReceiver(), GetTaskRunner());
   CHECK(embedded_permission_control_receiver_.is_bound());
   GetPermissionService()->RegisterPageEmbeddedPermissionControl(
-      mojo::Clone(permission_descriptors_),
-      CreateEmbeddedPermissionRequestDescriptor(), std::move(client));
+      mojo::Clone(permission_descriptors_), std::move(descriptor),
+      std::move(client));
   return true;
 }
 
@@ -688,6 +745,15 @@ void HTMLCapabilityElementBase::ParseAttribute(
 
   if (params.name == html_names::kPreciselocationAttr) {
     SetPreciseLocation(params.new_value != nullptr);
+  } else if (params.name == html_names::kDisplayhintAttr ||
+             params.name == html_names::kDisplaymodeAttr) {
+    if (!IsHTMLInstallElement() && !IsHTMLUserMediaElement() &&
+        RuntimeEnabledFeatures::CapabilityElementIconOnlyModeEnabled(
+            GetDocument().GetExecutionContext()) &&
+        EqualIgnoringAsciiCase(params.old_value, "icon-only") !=
+            EqualIgnoringAsciiCase(params.new_value, "icon-only")) {
+      UpdateAppearance();
+    }
   }
 
   HTMLElement::ParseAttribute(params);
@@ -935,6 +1001,12 @@ void HTMLCapabilityElementBase::AdjustStyle(ComputedStyleBuilder& builder) {
   builder.ResetTextCombine();
   builder.UpdateFontOrientation();
 
+  // Reset inherited SVG marker properties so ancestors cannot attach arbitrary
+  // <marker> graphics onto the internal permission icon's SVG path vertices.
+  builder.SetMarkerStartResource(nullptr);
+  builder.SetMarkerMidResource(nullptr);
+  builder.SetMarkerEndResource(nullptr);
+
   // To prevent CSS :visited history leaks and ensure the button remains
   // fully legible and active in all states, we force the element to pretend
   // it is not inside a visited link. This automatically makes all
@@ -1035,13 +1107,42 @@ String HTMLCapabilityElementBase::GetActivationErrorMessage() const {
   return error_message;
 }
 
+bool HTMLCapabilityElementBase::HasActivationBehavior() const {
+  if (!RuntimeEnabledFeatures::CleanUpActivationBehaviorEnabled()) {
+    return false;
+  }
+  return !fallback_mode_;
+}
+
+void HTMLCapabilityElementBase::RunActivationBehavior(
+    Event& event,
+    EventDispatchHandlingState* handling_state) {
+  if (!RuntimeEnabledFeatures::CleanUpActivationBehaviorEnabled()) {
+    HTMLElement::RunActivationBehavior(event, handling_state);
+    return;
+  }
+  if (event.defaultPrevented() || event.DefaultHandled()) {
+    return;
+  }
+  if (fallback_mode_) {
+    HTMLElement::RunActivationBehavior(event, handling_state);
+    return;
+  }
+
+  HandleActivation(
+      event,
+      blink::BindOnce(&HTMLCapabilityElementBase::RequestPageEmbededPermissions,
+                      WrapWeakPersistent(this)));
+}
+
 void HTMLCapabilityElementBase::DefaultEventHandler(Event& event) {
   if (fallback_mode_) {
     HTMLElement::DefaultEventHandler(event);
     return;
   }
 
-  if (event.type() == event_type_names::kDOMActivate) {
+  if (!RuntimeEnabledFeatures::CleanUpActivationBehaviorEnabled() &&
+      event.type() == event_type_names::kDOMActivate) {
     HandleActivation(
         event, blink::BindOnce(
                    &HTMLCapabilityElementBase::RequestPageEmbededPermissions,
@@ -1061,9 +1162,15 @@ void HTMLCapabilityElementBase::RequestPageEmbededPermissions() {
   CHECK_LE(permission_descriptors_.size(), 2U);
   pending_request_created_ = base::TimeTicks::Now();
 
+  // `CreateEmbeddedPermissionRequestDescriptor()` forces a synchronous layout
+  // update, which may detach the frame or make the element unrendered.
+  auto descriptor = CreateEmbeddedPermissionRequestDescriptor();
+  if (!GetDocument().GetFrame() || !IsRendered()) {
+    return;
+  }
+
   GetPermissionService()->RequestPageEmbeddedPermission(
-      mojo::Clone(permission_descriptors_),
-      CreateEmbeddedPermissionRequestDescriptor(),
+      mojo::Clone(permission_descriptors_), std::move(descriptor),
       BindOnce(&HTMLCapabilityElementBase::OnEmbeddedPermissionsDecided,
                WrapWeakPersistent(this)));
 }
@@ -1340,27 +1447,23 @@ HTMLCapabilityElementBase::GetClickingEnabledState() const {
 
 void HTMLCapabilityElementBase::RefreshDisableReasonsAndUpdateTimer() {
   base::TimeTicks now = base::TimeTicks::Now();
+  clicking_disabled_reasons_.erase_if(
+      [&now](const auto& it) { return it.value <= now; });
+
   base::TimeTicks max_time_ticks = base::TimeTicks::Min();
   DisableReason reason = DisableReason::kUnknown;
-  HashMap<DisableReason, base::TimeTicks> swap_clicking_disabled_reasons;
-  for (auto it = clicking_disabled_reasons_.begin();
-       it != clicking_disabled_reasons_.end(); ++it) {
-    if (it->value == base::TimeTicks::Max()) {
-      StopTimerDueToIndefiniteReason(it->key);
+  for (const auto& it : clicking_disabled_reasons_) {
+    if (it.value == base::TimeTicks::Max()) {
+      StopTimerDueToIndefiniteReason(it.key);
       return;
     }
 
-    if (it->value < now) {
+    if (it.value <= max_time_ticks) {
       continue;
     }
 
-    swap_clicking_disabled_reasons.Set(it->key, it->value);
-    if (it->value <= max_time_ticks) {
-      continue;
-    }
-
-    max_time_ticks = it->value;
-    reason = it->key;
+    max_time_ticks = it.value;
+    reason = it.key;
   }
   // Restart the timer to match with  "longest alive, not indefinitely disabling
   // reason". That's the one has the max timeticks on
@@ -1370,7 +1473,6 @@ void HTMLCapabilityElementBase::RefreshDisableReasonsAndUpdateTimer() {
                                                           max_time_ticks - now);
   }
 
-  clicking_disabled_reasons_.swap(swap_clicking_disabled_reasons);
   MaybeDispatchValidationChangeEvent();
 }
 
@@ -1386,10 +1488,7 @@ void HTMLCapabilityElementBase::OnIntersectionChanged(
   // bound is clipped by the viewport or styling effects). In this case, the
   // `isVisible` false means the element is occluded by something else or has
   // distorted visual effect applied.
-  // Note: It's unlikely we'll encounter an empty target rectangle (height or
-  // width is 0), but if it happens, we can consider the element as visible.
-  if (!latest_observation->isVisible() &&
-      !latest_observation->GetGeometry().TargetRect().IsEmpty()) {
+  if (!latest_observation->isVisible()) {
     new_intersection_visibility =
         latest_observation->intersectionRatio() >= kIntersectionThreshold
             ? IntersectionVisibility::kOccludedOrDistorted
@@ -1650,7 +1749,7 @@ HTMLCapabilityElementBase::GetRecentlyAttachedTimeoutRemaining() const {
   base::TimeTicks now = base::TimeTicks::Now();
   auto it = clicking_disabled_reasons_.find(
       DisableReason::kRecentlyAttachedToLayoutTree);
-  if (it == clicking_disabled_reasons_.end()) {
+  if (it == clicking_disabled_reasons_.end() || it->value <= now) {
     return std::nullopt;
   }
 

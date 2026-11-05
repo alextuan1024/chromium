@@ -12,10 +12,15 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.eq;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 import android.content.Context;
+import android.content.pm.ActivityInfo;
+import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
+import android.graphics.drawable.Drawable;
 
 import androidx.test.core.app.ApplicationProvider;
 
@@ -30,16 +35,16 @@ import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
-import org.chromium.base.test.util.Features.DisableFeatures;
+import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.autofill.AutofillImageFetcher;
 import org.chromium.chrome.browser.autofill.AutofillImageFetcherFactory;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.profiles.ProfileManager;
 import org.chromium.chrome.browser.ui.messages.snackbar.Snackbar;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManagerProvider;
+import org.chromium.components.autofill.AutofillFeatures;
 import org.chromium.components.autofill.payments.AccountType;
 import org.chromium.components.autofill.payments.BankAccount;
 import org.chromium.components.autofill.payments.Ewallet;
@@ -53,6 +58,7 @@ import java.util.List;
 
 /** Unit tests for {@link FacilitatedPaymentsPaymentMethodsViewBridge}. */
 @RunWith(BaseRobolectricTestRunner.class)
+@EnableFeatures(AutofillFeatures.AUTOFILL_ENABLE_GRADIENT_GOOGLE_LOGOS)
 public class FacilitatedPaymentsPaymentMethodsViewBridgeTest {
     private static final List<BankAccount> BANK_ACCOUNTS =
             List.of(
@@ -104,7 +110,9 @@ public class FacilitatedPaymentsPaymentMethodsViewBridgeTest {
                             .setAccountDisplayName("account display name 2")
                             .build());
 
-    private static final ResolveInfo[] APPS = {new ResolveInfo(), new ResolveInfo()};
+    private static final ResolveInfo[] APPS = {
+        createPaymentApp("Payment App 1"), createPaymentApp("Payment App 2")
+    };
 
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
 
@@ -188,12 +196,6 @@ public class FacilitatedPaymentsPaymentMethodsViewBridgeTest {
         FacilitatedPaymentsPaymentMethodsView content = contentCaptor.getValue();
         assertThat(content.getContentView(), notNullValue());
         assertThat(
-                content.getSheetContentDescription(mApplicationContext),
-                equalTo(
-                        mApplicationContext.getString(
-                                R.string
-                                        .facilitated_payments_payment_methods_bottom_sheet_content_description)));
-        assertThat(
                 content.getSheetFullHeightAccessibilityStringId(),
                 equalTo(R.string.facilitated_payments_payment_methods_bottom_sheet_full_height));
         assertThat(
@@ -202,7 +204,6 @@ public class FacilitatedPaymentsPaymentMethodsViewBridgeTest {
     }
 
     @Test
-    @DisableFeatures({ChromeFeatureList.FACILITATED_PAYMENTS_ENABLE_A2A_PAYMENT})
     public void requestShowContentForPaymentLink_callsControllerRequestShowContent() {
         mViewBridge.requestShowContentForPaymentLink(EWALLETS, APPS);
 
@@ -212,7 +213,6 @@ public class FacilitatedPaymentsPaymentMethodsViewBridgeTest {
     }
 
     @Test
-    @DisableFeatures({ChromeFeatureList.FACILITATED_PAYMENTS_ENABLE_A2A_PAYMENT})
     public void requestShowContentForPaymentLink_callsControllerRequestShowContent_nullAppArray() {
         mViewBridge.requestShowContentForPaymentLink(EWALLETS, null);
 
@@ -222,7 +222,6 @@ public class FacilitatedPaymentsPaymentMethodsViewBridgeTest {
     }
 
     @Test
-    @DisableFeatures({ChromeFeatureList.FACILITATED_PAYMENTS_ENABLE_A2A_PAYMENT})
     public void requestShowContentForPaymentLink_bottomSheetContentImplIsStubbed() {
         mViewBridge.requestShowContentForPaymentLink(EWALLETS, APPS);
 
@@ -233,12 +232,6 @@ public class FacilitatedPaymentsPaymentMethodsViewBridgeTest {
         FacilitatedPaymentsPaymentMethodsView content = contentCaptor.getValue();
 
         assertThat(content.getContentView(), notNullValue());
-        assertThat(
-                content.getSheetContentDescription(mApplicationContext),
-                equalTo(
-                        mApplicationContext.getString(
-                                R.string
-                                        .facilitated_payments_payment_methods_bottom_sheet_content_description)));
         assertThat(
                 content.getSheetFullHeightAccessibilityStringId(),
                 equalTo(R.string.facilitated_payments_payment_methods_bottom_sheet_full_height));
@@ -312,5 +305,17 @@ public class FacilitatedPaymentsPaymentMethodsViewBridgeTest {
                         .PIX);
 
         verify(mSnackbarManager).showSnackbar(any(Snackbar.class));
+    }
+
+    private static ResolveInfo createPaymentApp(String appLabel) {
+        ActivityInfo activityInfo = new ActivityInfo();
+        activityInfo.packageName = "some.payment.app";
+        activityInfo.name = "RandomActivity";
+
+        ResolveInfo resolveInfo = mock(ResolveInfo.class);
+        resolveInfo.activityInfo = activityInfo;
+        when(resolveInfo.loadLabel(any(PackageManager.class))).thenReturn(appLabel);
+        when(resolveInfo.loadIcon(any(PackageManager.class))).thenReturn(mock(Drawable.class));
+        return resolveInfo;
     }
 }

@@ -4,34 +4,42 @@
 
 #include "content/browser/webid/navigation_interceptor.h"
 
-#include "base/auto_reset.h"
+#include <cstdint>
+#include <memory>
+#include <optional>
+#include <string>
+#include <string_view>
+#include <utility>
+#include <vector>
+
+#include "base/check_op.h"
 #include "base/compiler_specific.h"
+#include "base/functional/bind.h"
 #include "base/functional/callback.h"
-#include "base/logging.h"
-#include "base/strings/string_split.h"
+#include "base/location.h"
+#include "base/memory/weak_ptr.h"
+#include "base/task/sequenced_task_runner.h"
 #include "base/values.h"
 #include "content/browser/renderer_host/frame_tree_node.h"
 #include "content/browser/webid/flags.h"
 #include "content/browser/webid/identity_registry.h"
 #include "content/browser/webid/request_service.h"
 #include "content/browser/webid/webid_utils.h"
-#include "content/public/browser/content_browser_client.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_handle.h"
+#include "content/public/browser/navigation_throttle_registry.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/webid/federated_embedder_login_request.h"
 #include "content/public/browser/webid/identity_credential_source.h"
-#include "content/public/common/content_client.h"
-#include "mojo/public/cpp/bindings/remote.h"
-#include "net/base/url_util.h"
+#include "net/base/schemeful_site.h"
 #include "net/http/http_response_headers.h"
 #include "net/http/structured_headers.h"
-#include "services/data_decoder/public/cpp/data_decoder.h"
 #include "services/network/public/cpp/resource_request_body.h"
-#include "services/service_manager/public/cpp/interface_provider.h"
 #include "third_party/blink/public/mojom/webid/federated_request.mojom.h"
+#include "ui/base/page_transition_types.h"
 #include "url/gurl.h"
+#include "url/origin.h"
 
 namespace content::webid {
 
@@ -61,7 +69,7 @@ std::optional<std::string> TakeIfString(
 }  // namespace
 
 using MediationRequirement = ::password_manager::CredentialMediationRequirement;
-using RequestTokenCallback = Request::RequestTokenCallback;
+using RequestTokenCallback = RequestHandler::RequestTokenCallback;
 
 // static
 void NavigationInterceptor::MaybeCreateAndAdd(
@@ -174,6 +182,21 @@ NavigationThrottle::ThrottleCheckResult NavigationInterceptor::ProcessRequest(
     return PROCEED;
   }
 
+  const std::optional<url::Origin>& initiator_origin =
+      navigation_handle()->GetInitiatorOrigin();
+  if (!initiator_origin ||
+      !initiator_origin->IsSameOriginWith(rfh->GetLastCommittedOrigin())) {
+    // The FedCM request is made on behalf of `rfh`, the document currently
+    // shown in the navigated frame, so only intercept navigations that a
+    // document with the same origin initiated. Otherwise, a document could
+    // start a request on behalf of a cross-origin document that it is allowed
+    // to navigate, e.g. its popup. Popups that the RP opens are still
+    // intercepted, because their initial empty document inherits the RP's
+    // origin. Navigations without an initiator origin, e.g. ones the user
+    // starts from the browser UI, are not intercepted.
+    return PROCEED;
+  }
+
   // We intercept if the user explicitly enabled interception, or if there is
   // an active embedder login request.
   bool has_embedder_login_request = HasEmbedderLoginRequest(rfh);
@@ -203,37 +226,44 @@ NavigationThrottle::ThrottleCheckResult NavigationInterceptor::ProcessRequest(
     return PROCEED;
   }
 
+  // Handle the headers asynchronously rather than synchronously inside
+  // `WillRedirectRequest()`/`WillProcessResponse()`, as starting a FedCM token
+  // request (showing/closing UI) or invoking the embedder login callback may
+  // synchronously destroy the `WebContents`, and `NavigationThrottle` requires
+  // the `WebContents` to remain alive during throttle check methods.
   if (connection_status_header) {
     // It's possible that both headers are present. In that case, if there's no
     // embedder login request, we should just proceed.
     if (has_embedder_login_request) {
-      data_decoder::DataDecoder::ParseStructuredHeaderDictionaryIsolated(
-          *connection_status_header,
-          base::BindOnce(&NavigationInterceptor::OnConnectionStatusHeaderParsed,
-                         weak_ptr_factory_.GetWeakPtr(), intercepted_url));
+      base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+          FROM_HERE,
+          base::BindOnce(&NavigationInterceptor::HandleConnectionStatusHeader,
+                         weak_ptr_factory_.GetWeakPtr(), intercepted_url,
+                         *std::move(connection_status_header)));
     } else {
       return PROCEED;
     }
   } else if (intercept_header) {
-    data_decoder::DataDecoder::ParseStructuredHeaderDictionaryIsolated(
-        *intercept_header,
-        base::BindOnce(&NavigationInterceptor::OnHeaderParsed,
-                       weak_ptr_factory_.GetWeakPtr(), intercepted_url));
+    base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE,
+        base::BindOnce(&NavigationInterceptor::HandleInterceptHeader,
+                       weak_ptr_factory_.GetWeakPtr(), intercepted_url,
+                       *std::move(intercept_header)));
   } else {
     return PROCEED;
   }
 
-  // TODO(http://crbug.com/455614294): Ideally, we'd like to cancel the
+  // TODO(https://crbug.com/455614294): Ideally, we'd like to cancel the
   // navigation early on so that the spinner stops. However, we need to
   // defer here because cancelling will destroy this object before the
-  // async header parsing and token request complete.
+  // async header handling and token request complete.
 
   return DEFER;
 }
 
-void NavigationInterceptor::OnConnectionStatusHeaderParsed(
+void NavigationInterceptor::HandleConnectionStatusHeader(
     const GURL& intercepted_url,
-    base::expected<net::structured_headers::Dictionary, std::string> result) {
+    const std::string& header) {
   RenderFrameHost* rfh = document_.AsRenderFrameHostIfValid();
   if (!rfh) {
     // The document is no longer valid, likely because the target frame has
@@ -250,26 +280,33 @@ void NavigationInterceptor::OnConnectionStatusHeaderParsed(
     return;
   }
 
-  if (!result.has_value()) {
+  std::optional<net::structured_headers::Dictionary> dict =
+      net::structured_headers::ParseDictionary(header);
+  if (!dict.has_value()) {
     // The header was available, but malformed.
     // Cancel the navigation because it is a developer error.
     CancelDeferredNavigation(CANCEL);
     return;
   }
 
-  if (const std::string* status = GetIfString(*result, "status");
+  if (const std::string* status = GetIfString(*dict, "status");
       status && *status == "connected") {
     // The server can send this header without embedder login request.
     if (net::SchemefulSite::IsSameSite(embedder_login_request->idp_origin(),
                                        url::Origin::Create(intercepted_url))) {
-      const std::string* account_id = GetIfString(*result, "account_id");
+      const std::string* account_id = GetIfString(*dict, "account_id");
 
+      base::WeakPtr<NavigationInterceptor> weak_this =
+          weak_ptr_factory_.GetWeakPtr();
       if (account_id && *account_id == embedder_login_request->account_id()) {
         embedder_login_request->OnFederatedResultReceived(
             FederatedLoginResult::kSuccess);
       } else {
         embedder_login_request->OnFederatedResultReceived(
             FederatedLoginResult::kExpectedAccountNotPresent);
+      }
+      if (!weak_this) {
+        return;
       }
     }
   }
@@ -278,9 +315,8 @@ void NavigationInterceptor::OnConnectionStatusHeaderParsed(
   Resume();
 }
 
-void NavigationInterceptor::OnHeaderParsed(
-    const GURL& intercepted_url,
-    base::expected<net::structured_headers::Dictionary, std::string> result) {
+void NavigationInterceptor::HandleInterceptHeader(const GURL& intercepted_url,
+                                                  const std::string& header) {
   RenderFrameHost* rfh = document_.AsRenderFrameHostIfValid();
   if (!rfh) {
     // The document is no longer valid, likely because the target frame has
@@ -290,7 +326,9 @@ void NavigationInterceptor::OnHeaderParsed(
     return;
   }
 
-  if (!result.has_value()) {
+  std::optional<net::structured_headers::Dictionary> dict =
+      net::structured_headers::ParseDictionary(header);
+  if (!dict.has_value()) {
     // The header was available, but malformed.
     // Cancel the navigation because it is a developer error.
     CancelDeferredNavigation(CANCEL);
@@ -299,7 +337,7 @@ void NavigationInterceptor::OnHeaderParsed(
 
   RequestBuilder request_builder;
   auto idp_get_params_vector =
-      request_builder.Build(intercepted_url, *std::move(result));
+      request_builder.Build(intercepted_url, *std::move(dict));
 
   if (!idp_get_params_vector) {
     // The header was available, parsed, but contained an invalid set of
@@ -310,17 +348,19 @@ void NavigationInterceptor::OnHeaderParsed(
   }
 
   should_cancel_ = false;
+  is_handling_intercept_header_ = true;
 
-  bool started = false;
-  {
-    base::AutoReset<bool> inside_guard(&is_inside_onheaderparsed_, true);
-    started = request_initiator_.Run(
-        rfh, std::move(*idp_get_params_vector),
-        password_manager::CredentialMediationRequirement::kOptional,
-        navigation_handle(), intercepted_url,
-        base::BindOnce(&NavigationInterceptor::OnTokenResponse,
-                       weak_ptr_factory_.GetWeakPtr()));
+  base::WeakPtr<NavigationInterceptor> weak_this =
+      weak_ptr_factory_.GetWeakPtr();
+  const bool started = request_initiator_.Run(
+      rfh, std::move(*idp_get_params_vector),
+      password_manager::CredentialMediationRequirement::kOptional,
+      navigation_handle(), intercepted_url,
+      base::BindOnce(&NavigationInterceptor::OnTokenResponse, weak_this));
+  if (!weak_this) {
+    return;
   }
+  is_handling_intercept_header_ = false;
 
   // If the synchronous callback requested a cancellation, perform it now.
   if (should_cancel_) {
@@ -342,21 +382,22 @@ void NavigationInterceptor::OnTokenResponse(
     return;
   }
 
-  if (is_inside_onheaderparsed_) {
+  if (is_handling_intercept_header_) {
     // If the callback evaluates synchronously inside `Run()`, we cannot call
     // `CancelDeferredNavigation(CANCEL)` immediately because that would
     // synchronously destroy this `NavigationInterceptor` instance while
-    // `OnHeaderParsed` is still using the instance to continue its execution,
-    // leading to a UAF. Instead, signal an intent to cancel and let
-    // `OnHeaderParsed` perform the cancellation after `Run()` finishes.
+    // `HandleInterceptHeader()` is still using the instance to continue its
+    // execution, leading to a UAF. Instead, signal an intent to cancel and let
+    // `HandleInterceptHeader()` perform the cancellation after `Run()`
+    // finishes.
     should_cancel_ = true;
     return;
   }
 
   // The token response is not used in the navigation interception flow because
   // the IdP is expected to respond with a "redirect_to" field which is handled
-  // in Request.
-  // We cancel this specific navigation, assuming that the Request
+  // in RequestHandler.
+  // We cancel this specific navigation, assuming that the RequestHandler
   // will have already started a new navigation.
   CancelDeferredNavigation(CANCEL);
 }

@@ -74,7 +74,6 @@ enum PseudoId : uint8_t {
   kPseudoIdInterestButton,
   kPseudoIdMarker,
   kPseudoIdBackdrop,
-  kPseudoIdOverscrollBackdrop,
   kPseudoIdSelection,
   kPseudoIdScrollbar,
   kPseudoIdScrollMarker,
@@ -103,6 +102,9 @@ enum PseudoId : uint8_t {
 
   // Internal IDs follow:
   kPseudoIdFirstLineInherited,
+  // Only used as a key to store precomputed hover styles in the
+  // PseudoElementStyleCache.
+  kPseudoIdPrecomputedHover,
 
   // These five must be together, due to code in
   // CollectMatchingRulesInternal().
@@ -338,6 +340,8 @@ enum class BackgroundEdgeOrigin : unsigned { kTop, kRight, kBottom, kLeft };
 enum class QuoteType : unsigned { kOpen, kClose, kNoOpen, kNoClose };
 
 enum class EAnimPlayState : unsigned { kPlaying, kPaused };
+
+enum class EAnimationNavigationBehavior : unsigned { kAbrupt, kContinuous };
 
 enum class OffsetRotationType : unsigned { kAuto, kFixed };
 
@@ -632,12 +636,12 @@ enum class TryTactic : uint8_t {
 
 typedef V8AnimationTriggerBehavior::Enum EAnimationTriggerBehavior;
 
-// TODO(crbug.com/332933527): Support anchors-valid.
-static const size_t kPositionVisibilityBits = 2;
+static const size_t kPositionVisibilityBits = 3;
 enum class PositionVisibility : uint8_t {
   kAlways = 0x0,
-  kAnchorsVisible = 0x1,
-  kNoOverflow = 0x2,
+  kAnchorValid = 0x1,
+  kAnchorVisible = 0x2,
+  kNoOverflow = 0x4,
 };
 inline PositionVisibility operator|(PositionVisibility a,
                                     PositionVisibility b) {

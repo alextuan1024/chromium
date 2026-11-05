@@ -12,7 +12,6 @@ import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 import static org.chromium.chrome.browser.tasks.tab_management.TabUiTestHelper.enterTabSwitcher;
-import static org.chromium.chrome.browser.tasks.tab_management.TabUiTestHelper.leaveTabSwitcher;
 import static org.chromium.chrome.test.util.ChromeTabUtils.getTabCountOnUiThread;
 
 import android.os.Build.VERSION_CODES;
@@ -43,9 +42,6 @@ import org.chromium.chrome.browser.ChromeTabbedActivity;
 import org.chromium.chrome.browser.ChromeTabbedActivity2;
 import org.chromium.chrome.browser.app.tabmodel.TabModelOrchestrator;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
-import org.chromium.chrome.browser.layouts.LayoutManager;
-import org.chromium.chrome.browser.layouts.LayoutTestUtils;
-import org.chromium.chrome.browser.layouts.LayoutType;
 import org.chromium.chrome.browser.multiwindow.MultiWindowTestHelper;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabLaunchType;
@@ -68,7 +64,6 @@ import java.util.concurrent.TimeoutException;
  * or multiple activities. For additional tests see {@link UndoTabModelUnitTest}.
  */
 @RunWith(ChromeJUnit4ClassRunner.class)
-@CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
 @Batch(Batch.PER_CLASS)
 public class UndoTabModelTest {
     @Rule
@@ -117,6 +112,8 @@ public class UndoTabModelTest {
                                     .closeTabs(
                                             TabClosureParams.closeAllTabs()
                                                     .allowUndo(false)
+                                                    .tabClosingSource(
+                                                            TabClosingSource.GRID_TAB_SWITCHER)
                                                     .build(),
                                             /* allowDialog= */ false);
                             return selector.getModel(false).getCount();
@@ -128,18 +125,6 @@ public class UndoTabModelTest {
                         selector.selectModel(false);
                         selector.getModel(false).setIndex(0, TabSelectionType.FROM_USER);
                     });
-        }
-        LayoutManager layoutManager = cta.getLayoutManager();
-        boolean shouldLeaveTabSwitcher =
-                ThreadUtils.runOnUiThreadBlocking(
-                        () -> {
-                            return layoutManager.isLayoutVisible(LayoutType.HUB)
-                                    && !layoutManager.isLayoutStartingToHide(LayoutType.HUB);
-                        });
-        if (shouldLeaveTabSwitcher) {
-            leaveTabSwitcher(cta);
-        } else {
-            LayoutTestUtils.waitForLayout(cta.getLayoutManager(), LayoutType.BROWSING);
         }
     }
 
@@ -253,7 +238,10 @@ public class UndoTabModelTest {
                     // Take action.
                     model.getTabRemover()
                             .closeTabs(
-                                    TabClosureParams.closeTab(tab).allowUndo(undoable).build(),
+                                    TabClosureParams.closeTab(tab)
+                                            .allowUndo(undoable)
+                                            .tabClosingSource(TabClosingSource.GRID_TAB_SWITCHER)
+                                            .build(),
                                     /* allowDialog= */ false);
                 });
 
@@ -392,8 +380,8 @@ public class UndoTabModelTest {
     }
 
     /**
-     * Test opening recently closed tab when we have multiple windows. | Action | Result 1. Create
-     * second window. | 2. Open tab in window 1. | 3. Open tab in window 2. | 4. Close tab in window
+     * Test opening recently closed tab when we have multiple windows. | Action | Result 1. Open tab
+     * in window 1. | 2. Create second window. | 3. Open tab in window 2. | 4. Close tab in window
      * 1. | 5. Close tab in window 2. | 6. Restore tab. | Tab restored in window 2. 7. Restore tab.
      * | Tab restored in window 1.
      */
@@ -403,13 +391,18 @@ public class UndoTabModelTest {
     @DisableIf.Build(sdk_is_greater_than = VERSION_CODES.R) // https://crbug.com/40215137
     @CommandLineFlags.Add(ChromeSwitches.DISABLE_TAB_MERGING_FOR_TESTING)
     public void testOpenRecentlyClosedTabMultiWindow() throws TimeoutException {
+        // Open the first window's tab while it is in front. Once the second window covers it, the
+        // first window stops drawing and its page would never get hit test data.
+        ChromeTabUtils.fullyLoadUrlInNewTab(
+                InstrumentationRegistry.getInstrumentation(),
+                mActivityTestRule.getActivity(),
+                TEST_URL_0,
+                false);
+
         final ChromeTabbedActivity2 secondActivity =
                 MultiWindowTestHelper.createSecondChromeTabbedActivity(
                         mActivityTestRule.getActivity());
 
-        // Wait for the second window to be fully initialized.
-        CriteriaHelper.pollUiThread(
-                () -> secondActivity.getTabModelSelector().isTabStateInitialized());
         // First window context.
         final TabModelSelector firstSelector =
                 mActivityTestRule.getActivity().getTabModelSelector();
@@ -419,12 +412,6 @@ public class UndoTabModelTest {
         final TabModelSelector secondSelector = secondActivity.getTabModelSelector();
         final TabModel secondModel = secondSelector.getModel(false);
 
-        // Create tabs.
-        ChromeTabUtils.fullyLoadUrlInNewTab(
-                InstrumentationRegistry.getInstrumentation(),
-                mActivityTestRule.getActivity(),
-                TEST_URL_0,
-                false);
         ChromeTabUtils.fullyLoadUrlInNewTab(
                 InstrumentationRegistry.getInstrumentation(), secondActivity, TEST_URL_1, false);
 
@@ -510,9 +497,6 @@ public class UndoTabModelTest {
         final ChromeTabbedActivity2 secondActivity =
                 MultiWindowTestHelper.createSecondChromeTabbedActivity(
                         mActivityTestRule.getActivity());
-        // Wait for the second window to be fully initialized.
-        CriteriaHelper.pollUiThread(
-                () -> secondActivity.getTabModelSelector().isTabStateInitialized());
 
         // First window context.
         final TabModelSelector firstSelector =
@@ -601,6 +585,8 @@ public class UndoTabModelTest {
                                 .closeTabs(
                                         TabClosureParams.closeTabs(tabs)
                                                 .allowUndo(undoable)
+                                                .tabClosingSource(
+                                                        TabClosingSource.GRID_TAB_SWITCHER)
                                                 .build(),
                                         /* allowDialog= */ false),
                 undoable);
@@ -613,7 +599,11 @@ public class UndoTabModelTest {
                 () ->
                         model.getTabRemover()
                                 .closeTabs(
-                                        TabClosureParams.closeAllTabs().allowUndo(undoable).build(),
+                                        TabClosureParams.closeAllTabs()
+                                                .allowUndo(undoable)
+                                                .tabClosingSource(
+                                                        TabClosingSource.GRID_TAB_SWITCHER)
+                                                .build(),
                                         /* allowDialog= */ false),
                 undoable);
     }
@@ -1915,6 +1905,7 @@ public class UndoTabModelTest {
                             .closeTabs(
                                     TabClosureParams.closeTabs(List.of(tab0, tab1))
                                             .allowUndo(true)
+                                            .tabClosingSource(TabClosingSource.GRID_TAB_SWITCHER)
                                             .withUndoRunnable(undoRunnable)
                                             .build(),
                                     /* allowDialog= */ false);
@@ -1931,6 +1922,7 @@ public class UndoTabModelTest {
                             .closeTabs(
                                     TabClosureParams.closeAllTabs()
                                             .allowUndo(true)
+                                            .tabClosingSource(TabClosingSource.GRID_TAB_SWITCHER)
                                             .withUndoRunnable(undoRunnable)
                                             .build(),
                                     /* allowDialog= */ false);

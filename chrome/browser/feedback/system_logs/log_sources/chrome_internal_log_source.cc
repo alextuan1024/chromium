@@ -62,7 +62,20 @@
 #include "chromeos/ash/components/settings/cros_settings_names.h"
 #include "chromeos/ash/components/system/statistics_provider.h"
 #include "chromeos/version/version_loader.h"
+#include "components/session_manager/core/session.h"
+#include "components/session_manager/core/session_manager.h"
+#include "components/user_manager/user.h"
+#include "components/user_manager/user_manager.h"
 #include "third_party/icu/source/i18n/unicode/timezone.h"
+#else
+#include "base/base64.h"
+#include "base/feature_list.h"
+#include "components/variations/net/variations_command_line.h"
+#endif  // BUILDFLAG(IS_CHROMEOS)
+
+#if BUILDFLAG(IS_CHROMEOS) || \
+    (BUILDFLAG(IS_WIN) && BUILDFLAG(GOOGLE_CHROME_BRANDING))
+#include "base/strings/stringprintf.h"
 #endif
 
 #if BUILDFLAG(IS_WIN)
@@ -71,20 +84,13 @@
 #include "ui/base/win/hidden_window.h"
 
 #if BUILDFLAG(GOOGLE_CHROME_BRANDING)
-#include "base/strings/stringprintf.h"
 #include "chrome/browser/google/google_update_win.h"
-#endif
-#endif
+#endif  // BUILDFLAG(GOOGLE_CHROME_BRANDING)
+#endif  // BUILDFLAG(IS_WIN)
 
 #if BUILDFLAG(IS_MAC)
 #include "base/mac/mac_util.h"
 #include "chrome/browser/updater/updater.h"
-#endif
-
-#if !BUILDFLAG(IS_CHROMEOS)
-#include "base/base64.h"
-#include "base/feature_list.h"
-#include "components/variations/net/variations_command_line.h"
 #endif
 
 namespace system_logs {
@@ -146,15 +152,17 @@ constexpr char kCpuArch[] = "cpu_arch";
 #if BUILDFLAG(IS_CHROMEOS)
 
 std::string GetPrimaryAccountTypeString() {
-  DCHECK(user_manager::UserManager::Get());
-  const user_manager::User* primary_user =
-      user_manager::UserManager::Get()->GetPrimaryUser();
+  const auto* primary_session =
+      session_manager::SessionManager::Get()->GetPrimarySession();
 
   // In case we're on the login screen, we won't have a logged in user.
-  if (!primary_user)
+  if (!primary_session) {
     return "none";
+  }
 
-  switch (primary_user->GetType()) {
+  const user_manager::User* primary_user =
+      user_manager::UserManager::Get()->FindUser(primary_session->account_id());
+  switch (CHECK_DEREF(primary_user).GetType()) {
     case user_manager::UserType::kRegular:
       return "regular";
     case user_manager::UserType::kGuest:
@@ -213,10 +221,10 @@ std::string GetDisplayInfoString(const ash::DisplayUnitInfo& display_info) {
 void PopulateEntriesAsync(std::unique_ptr<SystemLogsResponse> response,
                           SysLogsSourceCallback callback) {
   auto populate_entries = [](SystemLogsResponse* response) {
-    DCHECK(response);
+    CHECK(response, base::NotFatalUntil::M161);
 
     auto* stats = ash::system::StatisticsProvider::GetInstance();
-    DCHECK(stats);
+    CHECK(stats, base::NotFatalUntil::M161);
 
     // Get the HWID.
     std::optional<std::string_view> hwid =
@@ -417,8 +425,8 @@ ChromeInternalLogSource::ChromeInternalLogSource()
 ChromeInternalLogSource::~ChromeInternalLogSource() = default;
 
 void ChromeInternalLogSource::Fetch(SysLogsSourceCallback callback) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-  DCHECK(!callback.is_null());
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
+  CHECK(!callback.is_null(), base::NotFatalUntil::M161);
 
   auto response = std::make_unique<SystemLogsResponse>();
   response->emplace(kChromeVersionTag, GetChromeVersionString());

@@ -7,40 +7,81 @@
 #include <optional>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "base/check_deref.h"
-#include "base/feature_list.h"
 #include "base/strings/string_view_rust.h"
-#include "base/strings/utf_string_conversions.h"
+#include "build/build_config.h"
 #include "components/facilitated_payments/core/browser/facilitated_payments_client.h"
+#include "components/facilitated_payments/core/metrics/facilitated_payments_metrics.h"
+#include "components/facilitated_payments/core/validation/payment_qr_validator_cxx.rs.h"
+
+#if BUILDFLAG(IS_ANDROID)
+#include "base/strings/utf_string_conversions.h"
 #include "components/facilitated_payments/core/browser/payment_link_manager.h"
 #include "components/facilitated_payments/core/browser/pix_manager.h"
-#include "components/facilitated_payments/core/features/features.h"
-#include "components/facilitated_payments/core/metrics/facilitated_payments_metrics.h"
-#include "components/facilitated_payments/core/validation/pix_code_validator.h"
-#include "components/facilitated_payments/core/validation/pix_validator_cxx.rs.h"
+#endif  // BUILDFLAG(IS_ANDROID)
 
 namespace payments::facilitated {
 
 namespace {
 
-// Not all possible result variants are mapped to results for metrics: things
-// that might result in a lot of false positives from random clipboard text are
-// not logged. The most important is to try to capture error cases that might
-// indicate unsupported Pix codes.
-std::optional<PixCodeRustValidationResult>
-ConvertRustPixQrCodeResultToResultForMetrics(PixQrCodeResult type) {
+QrCodeScheme TranslateRustPaymentQrCodeScheme(PaymentQrCodeScheme scheme) {
+  switch (scheme) {
+    case PaymentQrCodeScheme::Unknown:
+      return QrCodeScheme::kUnknown;
+    case PaymentQrCodeScheme::Pix:
+      return QrCodeScheme::kPix;
+    case PaymentQrCodeScheme::DuitNow:
+      return QrCodeScheme::kDuitNow;
+    case PaymentQrCodeScheme::PromptPay:
+      return QrCodeScheme::kPromptPay;
+    case PaymentQrCodeScheme::Qris:
+      return QrCodeScheme::kQris;
+    case PaymentQrCodeScheme::ShopeePay:
+      return QrCodeScheme::kShopeePay;
+    case PaymentQrCodeScheme::MoMo:
+      return QrCodeScheme::kMoMo;
+  }
+}
+
+QrCodeValidationResult TranslateRustPaymentQrCodeValidationResult(
+    PaymentQrCodeValidationResult result) {
+  switch (result) {
+    case PaymentQrCodeValidationResult::Valid:
+      return QrCodeValidationResult::kValid;
+    case PaymentQrCodeValidationResult::ValidPixStatic:
+      return QrCodeValidationResult::kValidPixStatic;
+    case PaymentQrCodeValidationResult::ValidPixDynamic:
+      return QrCodeValidationResult::kValidPixDynamic;
+    case PaymentQrCodeValidationResult::NotPaymentCode:
+      return QrCodeValidationResult::kNotPaymentCode;
+    case PaymentQrCodeValidationResult::UnsupportedScheme:
+      return QrCodeValidationResult::kUnsupportedScheme;
+    case PaymentQrCodeValidationResult::FailedTlvParsing:
+      return QrCodeValidationResult::kFailedTlvParsing;
+    case PaymentQrCodeValidationResult::FailedCrcCheck:
+      return QrCodeValidationResult::kFailedCrcCheck;
+    case PaymentQrCodeValidationResult::EmptyAdditionalDataFieldTemplate:
+      return QrCodeValidationResult::kEmptyAdditionalDataFieldTemplate;
+  }
+}
+
+#if BUILDFLAG(IS_ANDROID)
+// Translates the raw validation result, returning `std::nullopt` for
+// uninteresting inputs (i.e. filtering out results that indicate the text was
+// never a payment code to begin with, while keeping those that might indicate
+// Pix codes that need to be supported).
+std::optional<PixCodeRustValidationResult> TranslateRustPixQrCodeResult(
+    PixQrCodeResult type) {
   switch (type) {
     case PixQrCodeResult::Dynamic:
       return PixCodeRustValidationResult::kDynamic;
     case PixQrCodeResult::Static:
       return PixCodeRustValidationResult::kStatic;
     case PixQrCodeResult::NotPaymentCode:
-      return std::nullopt;
     case PixQrCodeResult::MissingPayloadFormatIndicator:
-      return std::nullopt;
     case PixQrCodeResult::InvalidMerchantPresentedCode:
-      return std::nullopt;
     case PixQrCodeResult::MissingGloballyUniqueIdentifier:
       return std::nullopt;
     case PixQrCodeResult::NonPixMerchantPresentedCode:
@@ -53,6 +94,7 @@ ConvertRustPixQrCodeResultToResultForMetrics(PixQrCodeResult type) {
       return PixCodeRustValidationResult::kUnknownPixCodeType;
   }
 }
+#endif  // BUILDFLAG(IS_ANDROID)
 
 }  // namespace
 
@@ -64,6 +106,19 @@ FacilitatedPaymentsDriver::FacilitatedPaymentsDriver(
 
 FacilitatedPaymentsDriver::~FacilitatedPaymentsDriver() = default;
 
+void FacilitatedPaymentsDriver::OnPaymentQrCodesDetected(
+    const std::vector<std::string>& qr_codes) const {
+  // Each QR code is logged, since a page can show codes of several schemes.
+  for (const std::string& qr_code : qr_codes) {
+    PaymentQrCodeValidation validation =
+        validate_payment_qr_code(base::StringViewToRustSlice(qr_code));
+    LogQrCodeValidationResult(
+        TranslateRustPaymentQrCodeScheme(validation.scheme),
+        TranslateRustPaymentQrCodeValidationResult(validation.result));
+  }
+}
+
+#if BUILDFLAG(IS_ANDROID)
 void FacilitatedPaymentsDriver::DidNavigateToOrAwayFromPage() const {
   if (pix_manager_) {
     pix_manager_->Reset();
@@ -84,25 +139,13 @@ void FacilitatedPaymentsDriver::OnTextCopiedToClipboard(
     return;
   }
   std::string copied_text_utf8 = base::UTF16ToUTF8(copied_text);
-  // Even if the feature is not enabled, always run the Rust validator to log
-  // metrics about whether or not the results agree.
-  std::optional<PixCodeRustValidationResult> rust_validation_result =
-      ConvertRustPixQrCodeResultToResultForMetrics(
+  std::optional<PixCodeRustValidationResult> validation_result =
+      TranslateRustPixQrCodeResult(
           get_pix_qr_code_type(base::StringViewToRustSlice(copied_text_utf8)));
-  if (rust_validation_result) {
-    LogPaymentCodeRustValidationResult(*rust_validation_result);
-  }
-  // When using the C++ validator, perform a fast but incomplete test first,
-  // since full C++ validation requires a utility process.
-  if (base::FeatureList::IsEnabled(kUseRustPixCodeValidator)) {
-    // If the Rust validator is enabled, bail out now if there is nothing
-    // interesting to log for metrics.
-    if (!rust_validation_result) {
-      return;
-    }
-  } else if (!PixCodeValidator::ContainsPixIdentifier(copied_text_utf8)) {
+  if (!validation_result) {
     return;
   }
+  LogPaymentCodeRustValidationResult(*validation_result);
   if (iframe_url.has_value()) {
     if (iframe_url->is_empty()) {
       LogPixIframeUrlType(PixIframeUrlType::kEmpty);
@@ -128,7 +171,7 @@ void FacilitatedPaymentsDriver::OnTextCopiedToClipboard(
   }
   pix_manager_->OnPixCodeCopiedToClipboard(
       main_frame_url, iframe_url, main_frame_origin, is_same_origin,
-      rust_validation_result, std::move(copied_text_utf8), ukm_source_id);
+      *validation_result, std::move(copied_text_utf8), ukm_source_id);
 }
 
 void FacilitatedPaymentsDriver::TriggerPaymentLinkPushPayment(
@@ -153,5 +196,6 @@ void FacilitatedPaymentsDriver::SetPaymentLinkManagerForTesting(
     std::unique_ptr<PaymentLinkManager> payment_link_manager) {
   payment_link_manager_ = std::move(payment_link_manager);
 }
+#endif  // BUILDFLAG(IS_ANDROID)
 
 }  // namespace payments::facilitated

@@ -10,10 +10,10 @@
 #include <memory>
 #include <set>
 #include <string>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
+#include "base/check_op.h"
 #include "base/containers/flat_set.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/raw_ptr_exclusion.h"
@@ -25,6 +25,7 @@
 #include "cc/layers/layer_impl.h"
 #include "cc/layers/layer_list_iterator.h"
 #include "cc/metrics/event_metrics.h"
+#include "cc/paint/deferred_value_map.h"
 #include "cc/resources/ui_resource_client.h"
 #include "cc/trees/browser_controls_params.h"
 #include "cc/trees/layer_tree_host.h"
@@ -255,6 +256,12 @@ class CC_EXPORT LayerTreeImpl {
     Iterator it_;
   };
   size_t num_layers() const { return layer_list_.size(); }
+  // Returns the layer at |index| in the layer list. |index| is bounds-checked
+  // against num_layers().
+  LayerImpl* LayerAtIndex(size_t index) const {
+    CHECK_LT(index, num_layers());
+    return layer_list_[index].get();
+  }
   using const_iterator = IteratorAdapter<OwnedLayerImplList::const_iterator>;
   using const_reverse_iterator =
       IteratorAdapter<OwnedLayerImplList::const_reverse_iterator>;
@@ -371,6 +378,19 @@ class CC_EXPORT LayerTreeImpl {
 
   SkColor4f background_color() const { return background_color_; }
   void set_background_color(SkColor4f color) { background_color_ = color; }
+
+  const DeferredValueMap& deferred_values() const {
+    DCHECK(!IsRecycleTree());
+    return deferred_values_;
+  }
+  DeferredValueMap& deferred_values_mutable() {
+    DCHECK(IsSyncTree());
+    return deferred_values_;
+  }
+  void SetDeferredValues(const DeferredValueMap& values) {
+    DCHECK(!IsRecycleTree());
+    deferred_values_.CopyFrom(values);
+  }
 
   gfx::OverlayTransform display_transform_hint() const {
     return display_transform_hint_;
@@ -528,6 +548,15 @@ class CC_EXPORT LayerTreeImpl {
   void set_ui_resource_request_queue(UIResourceRequestQueue queue);
 
   const RenderSurfaceList& GetRenderSurfaceList() const;
+  // Returns the render surface list computed by the most recent
+  // UpdateDrawProperties(), even if draw properties have since been marked
+  // dirty. LayerTreeHostImpl uses this after PrepareToDraw(), while the list
+  // still describes the frame being drawn but draw properties can already be
+  // dirty (e.g. from HUD updates, view transition requests or copy requests).
+  // Prefer GetRenderSurfaceList() everywhere else.
+  const RenderSurfaceList& GetLastComputedRenderSurfaceList() const {
+    return render_surface_list_;
+  }
   RenderSurfaceImpl* GetRenderSurface(int effect_id);
   const RenderSurfaceImpl* GetRenderSurface(int effect_id) const;
   const Region& UnoccludedScreenSpaceRegion() const;
@@ -725,6 +754,13 @@ class CC_EXPORT LayerTreeImpl {
 
   void DidUpdateScrollOffset(ElementId id,
                              bool pushed_from_main_or_pending_tree);
+  // Sets the snap targets of the snap container scroll node with
+  // `scroll_element_id`. When called on the active tree, this also updates the
+  // pending tree (or the recycle tree) so that they don't overwrite the active
+  // tree's snap targets with stale ones when activated. Returns whether the
+  // snap targets changed on this tree.
+  bool SetTargetSnapAreaElementIds(ElementId scroll_element_id,
+                                   TargetSnapAreaElementIds snap_target_ids);
 
   // See LayerTreeHost.
   bool have_scroll_event_handlers() const {
@@ -914,6 +950,7 @@ class CC_EXPORT LayerTreeImpl {
   raw_ptr<HeadsUpDisplayLayerImpl> hud_layer_;
   PropertyTrees property_trees_;
   SkColor4f background_color_;
+  DeferredValueMap deferred_values_;
 
   ViewportPropertyIds viewport_property_ids_;
 
@@ -988,8 +1025,6 @@ class CC_EXPORT LayerTreeImpl {
   // support of mask layers.
 
   OwnedLayerImplList layer_list_;
-  // Maps from layer id to layer.
-  // LayerImplMap layer_id_map_;
 
   struct ScrollbarLayerIds {
     int horizontal = Layer::INVALID_ID;

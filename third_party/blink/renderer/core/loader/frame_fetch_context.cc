@@ -38,7 +38,6 @@ BASE_FEATURE(kFastMemoryCacheWithDevTools, base::FEATURE_ENABLED_BY_DEFAULT);
 #include <memory>
 #include <optional>
 
-#include "base/command_line.h"
 #include "base/feature_list.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/metrics/histogram_functions.h"
@@ -58,7 +57,6 @@ BASE_FEATURE(kFastMemoryCacheWithDevTools, base::FEATURE_ENABLED_BY_DEFAULT);
 #include "third_party/blink/public/common/client_hints/client_hints.h"
 #include "third_party/blink/public/common/device_memory/approximated_device_memory.h"
 #include "third_party/blink/public/common/permissions_policy/document_policy_features.h"
-#include "third_party/blink/public/common/switches.h"
 #include "third_party/blink/public/mojom/fetch/fetch_api_request.mojom-blink.h"
 #include "third_party/blink/public/mojom/loader/request_context_frame_type.mojom-blink.h"
 #include "third_party/blink/public/platform/modules/service_worker/web_service_worker_network_provider.h"
@@ -131,7 +129,6 @@ BASE_FEATURE(kFastMemoryCacheWithDevTools, base::FEATURE_ENABLED_BY_DEFAULT);
 #include "third_party/blink/renderer/platform/network/http_names.h"
 #include "third_party/blink/renderer/platform/network/mime/mime_type_registry.h"
 #include "third_party/blink/renderer/platform/network/network_state_notifier.h"
-#include "third_party/blink/renderer/platform/network/network_utils.h"
 #include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/weborigin/scheme_registry.h"
 #include "third_party/blink/renderer/platform/wtf/std_lib_extras.h"
@@ -149,17 +146,16 @@ namespace {
 // https://www.rfc-editor.org/rfc/rfc8941.html.
 const AtomicString SerializeStringHeader(const std::string& str) {
   std::string output = net::structured_headers::SerializeItem(
-                           net::structured_headers::Item(
-                               net::structured_headers::Item::string, str))
+                           net::structured_headers::ItemView(
+                               net::structured_headers::ItemView::string, str))
                            .value_or(std::string());
 
   return AtomicString(output.c_str());
 }
 
 AtomicString GenerateBoolHeaderValue(bool value) {
-  const std::string output = net::structured_headers::SerializeItem(
-                                 net::structured_headers::Item(value))
-                                 .value_or(std::string());
+  const std::string output =
+      net::structured_headers::SerializeItem(value).value_or(std::string());
   return AtomicString(output.c_str());
 }
 
@@ -252,8 +248,7 @@ struct FrameFetchContext::FrozenState final : GarbageCollected<FrozenState> {
               const String& user_agent,
               base::optional_ref<const UserAgentMetadata> user_agent_metadata,
               bool is_isolated_svg_chrome_client,
-              bool is_prerendering,
-              const String& reduced_accept_language)
+              bool is_prerendering)
       : url(url),
         content_security_policy(content_security_policy),
         site_for_cookies(std::move(site_for_cookies)),
@@ -263,8 +258,7 @@ struct FrameFetchContext::FrozenState final : GarbageCollected<FrozenState> {
         user_agent(user_agent),
         user_agent_metadata(user_agent_metadata.CopyAsOptional()),
         is_isolated_svg_chrome_client(is_isolated_svg_chrome_client),
-        is_prerendering(is_prerendering),
-        reduced_accept_language(reduced_accept_language) {}
+        is_prerendering(is_prerendering) {}
 
   const KURL url;
   const scoped_refptr<const SecurityOrigin> parent_security_origin;
@@ -277,7 +271,6 @@ struct FrameFetchContext::FrozenState final : GarbageCollected<FrozenState> {
   const std::optional<UserAgentMetadata> user_agent_metadata;
   const bool is_isolated_svg_chrome_client;
   const bool is_prerendering;
-  const String reduced_accept_language;
 
   void Trace(Visitor* visitor) const {
     visitor->Trace(content_security_policy);
@@ -924,35 +917,6 @@ void FrameFetchContext::AddClientHintsIfNecessary(
   }
 }
 
-void FrameFetchContext::AddReducedAcceptLanguageIfNecessary(
-    ResourceRequest& request) {
-  // If the feature is enabled, then reduce accept language are allowed only on
-  // http and https.
-  if (!(base::FeatureList::IsEnabled(
-            network::features::kReduceAcceptLanguage) ||
-        base::FeatureList::IsEnabled(
-            network::features::kReduceAcceptLanguageHTTP))) {
-    return;
-  }
-
-  // Skip if enterprise policy disabled the feature.
-  if (base::CommandLine::ForCurrentProcess()->HasSwitch(
-          blink::switches::kDisableReduceAcceptLanguage)) {
-    return;
-  }
-
-  if (!request.Url().ProtocolIsInHttpFamily()) {
-    return;
-  }
-
-  const String& reduced_accept_language = GetReducedAcceptLanguage();
-  if (!reduced_accept_language.empty() &&
-      request.HttpHeaderField(http_names::kAcceptLanguage).empty()) {
-    request.SetHttpHeaderField(http_names::kAcceptLanguage,
-                               AtomicString(reduced_accept_language));
-  }
-}
-
 void FrameFetchContext::WillSendRequest(ResourceRequest& resource_request) {
   // Set upstream url based on the request's redirect info.
   KURL upstream_url;
@@ -1008,7 +972,6 @@ void FrameFetchContext::UpgradeResourceRequestForLoader(
     ResourceRequest& request,
     const ResourceLoaderOptions& options) {
   AddClientHintsIfNecessary(resource_width, request);
-  AddReducedAcceptLanguageIfNecessary(request);
 }
 
 bool FrameFetchContext::StartSpeculativeImageDecode(Resource* resource) {
@@ -1319,7 +1282,7 @@ const FeatureContext* FrameFetchContext::GetFeatureContext() const {
   return document_ ? document_->GetExecutionContext() : nullptr;
 }
 
-HashSet<HashAlgorithm> FrameFetchContext::CSPHashesToReport() const {
+HashAlgorithmSet FrameFetchContext::CSPHashesToReport() const {
   return GetContentSecurityPolicy()->HashesToReport();
 }
 
@@ -1352,24 +1315,6 @@ const ClientHintsPreferences& FrameFetchContext::GetClientHintsPreferences()
   return frame->GetClientHintsPreferences();
 }
 
-String FrameFetchContext::GetReducedAcceptLanguage() const {
-  if (GetResourceFetcherProperties().IsDetached()) {
-    return frozen_state_->reduced_accept_language;
-  }
-  LocalFrame* frame = document_->GetFrame();
-  DCHECK(frame);
-  // If accept language override from inspector emulation, set Accept-Language
-  // header as the overridden value.
-  String override_accept_language;
-  probe::ApplyAcceptLanguageOverride(Probe(), &override_accept_language);
-  if (override_accept_language.empty()) {
-    String expanded_language = network_utils::ExpandLanguageList(
-        frame->GetReducedAcceptLanguage().GetString());
-    return network_utils::GenerateAcceptLanguageHeader(expanded_language);
-  }
-  return network_utils::GenerateAcceptLanguageHeader(override_accept_language);
-}
-
 float FrameFetchContext::GetDevicePixelRatio() const {
   if (GetResourceFetcherProperties().IsDetached()) {
     return frozen_state_->device_pixel_ratio;
@@ -1391,7 +1336,7 @@ FetchContext* FrameFetchContext::Detach() {
       Url(), GetContentSecurityPolicy(), GetSiteForCookies(),
       GetTopFrameOrigin(), client_hints_prefs, GetDevicePixelRatio(),
       GetUserAgent(), GetUserAgentMetadata(), IsIsolatedSVGChromeClient(),
-      IsPrerendering(), GetReducedAcceptLanguage());
+      IsPrerendering());
   document_loader_ = nullptr;
   document_ = nullptr;
   return this;
@@ -1423,11 +1368,12 @@ ResourceAnnotations FrameFetchContext::CalculateResourceAnnotations(
     return annotations;
   }
 
-  const KURL& url =
-      alias_url.has_value() ? alias_url.value() : resource_request.Url();
+  // Always pass `resource_request.Url()` (rather than `alias_url`) so that
+  // `AdTracker` records known ad scripts under the actual request URL that V8
+  // compiles and executes, rather than a DNS CNAME alias.
   annotations.ad_provenance =
       GetFrame()->GetAdTracker()->CalculateIfAdSubresource(
-          document_->domWindow(), url, type, initiator_info,
+          document_->domWindow(), resource_request.Url(), type, initiator_info,
           std::move(annotations.ad_provenance), scan_javascript_stack);
   return annotations;
 }

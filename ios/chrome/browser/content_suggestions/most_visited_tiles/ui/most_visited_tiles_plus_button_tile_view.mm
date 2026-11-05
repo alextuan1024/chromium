@@ -21,16 +21,16 @@
   self = [super initWithConfiguration:config];
   if (self) {
     self.imageBackgroundView.clipsToBounds = YES;
-    if (IsNewTabPageUICleanupEnabled()) {
+    self.imageBackgroundView.layer.cornerRadius =
+        MostVisitedIconContainerCornerRadius();
+
+    if (IsNewTabPageUICleanupEnabled() ||
+        GetAimButtonRefactorArm() == AimButtonRefactorArm::kAimAsModule) {
       self.titleLabel.numberOfLines = 1;
-      self.imageBackgroundView.layer.cornerRadius =
-          kMostVisitedTileImageContainerSquareCornerRadius;
-      [self setImageBackgroundSize:kMagicStackImageContainerWidth];
+      [self setImageBackgroundSize:MostVisitedIconContainerSize()];
       [self setTitleSpacing:MostVisitedIconTitleSpacing()];
-    } else {
-      self.imageBackgroundView.layer.cornerRadius =
-          kMagicStackImageContainerWidth / 2;
     }
+
     [self addGestureRecognizer:[[UITapGestureRecognizer alloc]
                                    initWithTarget:self
                                            action:@selector(handleTap)]];
@@ -48,13 +48,17 @@
 
   NewTabPageColorPalette* colorPalette =
       [self.traitCollection objectForNewTabPageTrait];
+  BOOL hasBackground =
+      GetAimButtonRefactorArm() != AimButtonRefactorArm::kAimAsModule;
 
   if (colorPalette) {
-    self.imageBackgroundView.tintColor = colorPalette.primaryColor;
+    self.imageBackgroundView.tintColor =
+        hasBackground ? colorPalette.primaryColor : UIColor.clearColor;
     self.iconView.tintColor = colorPalette.monogramColor;
   } else {
     self.imageBackgroundView.tintColor =
-        [UIColor colorNamed:kNTPRedesignTileBackgroundColor];
+        hasBackground ? [UIColor colorNamed:kNTPRedesignTileBackgroundColor]
+                      : UIColor.clearColor;
     self.iconView.tintColor = [UIColor colorNamed:kBlue600Color];
   }
 }

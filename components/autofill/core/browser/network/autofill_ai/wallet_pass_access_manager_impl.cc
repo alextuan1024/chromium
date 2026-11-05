@@ -8,15 +8,18 @@
 #include <optional>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 #include "base/check.h"
 #include "base/check_deref.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
+#include "base/functional/callback_helpers.h"
 #include "base/location.h"
 #include "base/memory/weak_ptr.h"
 #include "base/notreached.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/task/sequenced_task_runner.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/types/expected.h"
 #include "base/types/optional_ref.h"
@@ -26,6 +29,8 @@
 #include "components/autofill/core/browser/data_model/autofill_ai/entity_instance.h"
 #include "components/autofill/core/browser/data_model/autofill_ai/entity_type.h"
 #include "components/autofill/core/browser/data_model/autofill_ai/entity_type_names.h"
+#include "components/autofill/core/browser/integrators/autofill_ai/autofill_ai_wallet_util.h"
+#include "components/autofill/core/browser/integrators/autofill_ai/metrics/autofill_ai_metrics.h"
 #include "components/autofill/core/browser/network/autofill_ai/private_pass_conversion_util.h"
 #include "components/autofill/core/browser/payments/legal_message_line.h"
 #include "components/consent_auditor/consent_auditor.h"
@@ -33,6 +38,7 @@
 #include "components/wallet/core/browser/proto/common.pb.h"
 #include "components/wallet/core/browser/proto/private_pass.pb.h"
 #include "third_party/abseil-cpp/absl/container/flat_hash_map.h"
+#include "third_party/abseil-cpp/absl/container/flat_hash_set.h"
 
 namespace autofill {
 
@@ -131,16 +137,22 @@ ToGetDetailsForUpsertPassResponse(
     return base::unexpected(response.error());
   }
   LegalMessageLines legal_message_lines;
+  std::string legal_message_token;
   if (response->legal_message) {
     if (!LegalMessageLine::Parse(LegalMessageToDict(*response->legal_message),
                                  &legal_message_lines,
                                  /*escape_apostrophes=*/true)) {
       return base::unexpected(WalletRequestError::kParseResponseFailed);
     }
+    if (response->legal_message->has_token()) {
+      legal_message_token =
+          std::move(*response->legal_message->mutable_token());
+    }
   }
   return WalletPassAccessManager::GetDetailsForUpsertPassResponse{
       .legal_message_lines = std::move(legal_message_lines),
-      .context_token = std::move(response->context_token).value_or(""),
+      .legal_message_token = std::move(legal_message_token),
+      .user_eligibility = response->user_eligibility,
   };
 }
 
@@ -220,13 +232,95 @@ void WalletPassAccessManagerImpl::GetUnmaskedWalletEntityInstance(
           .Then(std::move(callback)));
 }
 
+void WalletPassAccessManagerImpl::PreloadDetailsForUpsertPass(
+    EntityType entity_type) {
+  PassType pass_type = PassTypeFromEntityType(entity_type);
+
+  // Avoid duplicate network requests.
+  if (upsert_details_cache_.contains(pass_type) ||
+      !in_flight_preloads_.insert(pass_type).second) {
+    return;
+  }
+
+  LogWalletNoticeFunnelEvent(
+      AutofillAiWalletNoticeFunnelEvents::kFetchingUpsertDetails,
+      /*in_settings=*/true);
+  FetchDetailsForUpsertPass(
+      pass_type,
+      base::BindOnce(
+          &WalletPassAccessManagerImpl::OnPreloadDetailsForUpsertPassComplete,
+          weak_factory_.GetWeakPtr(), pass_type));
+}
+
+std::optional<WalletPassAccessManager::GetDetailsForUpsertPassResponse>
+WalletPassAccessManagerImpl::ExtractPreloadedDetailsForUpsertPass(
+    EntityType entity_type) {
+  const PassType pass_type = PassTypeFromEntityType(entity_type);
+  const bool was_in_flight = in_flight_preloads_.contains(pass_type);
+  std::optional<GetDetailsForUpsertPassResponse> response =
+      ConsumeCachedDetailsForUpsertPass(entity_type);
+  if (response.has_value()) {
+    LogUpsertDetailsCacheStatus(AutofillAiUpsertDetailsCacheStatus::kHit);
+    return response;
+  }
+
+  LogUpsertDetailsCacheStatus(
+      was_in_flight
+          ? AutofillAiUpsertDetailsCacheStatus::kMissRequestInFlight
+          : AutofillAiUpsertDetailsCacheStatus::kMissNoRequestInFlight);
+
+  return std::nullopt;
+}
+
 void WalletPassAccessManagerImpl::GetDetailsForUpsertPass(
     EntityType entity_type,
     GetDetailsForUpsertPassCallback callback) {
+  CHECK(callback);
+  PassType pass_type = PassTypeFromEntityType(entity_type);
+
+  if (std::optional<GetDetailsForUpsertPassResponse> cached_response =
+          ConsumeCachedDetailsForUpsertPass(entity_type)) {
+    base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE,
+        base::BindOnce(std::move(callback), *std::move(cached_response)));
+    return;
+  }
+
+  // If no cached response is available, initiate a direct fetch for the active
+  // consumer. If a background preload is already in flight, this fetch runs
+  // concurrently rather than coalescing. Preloading is opportunistic and
+  // designed to warm the cache; decoupling foreground fetches ensures the
+  // consumer receives an isolated, single-use `legal_message_token` without
+  // introducing callback synchronization across async boundaries. Any
+  // in-flight preload completing later remains cached for subsequent
+  // operations.
+  FetchDetailsForUpsertPass(pass_type, std::move(callback));
+}
+
+std::optional<WalletPassAccessManager::GetDetailsForUpsertPassResponse>
+WalletPassAccessManagerImpl::ConsumeCachedDetailsForUpsertPass(
+    EntityType entity_type) {
+  // Google Wallet `legal_message_token`s are single-use tokens bound to a
+  // specific upsert operation. Once read by an active consumer, the cached
+  // entry must be removed so that subsequent flows do not attempt to reuse an
+  // expired or spent token.
+  absl::flat_hash_map<PassType, GetDetailsForUpsertPassResponse>::node_type
+      node = upsert_details_cache_.extract(PassTypeFromEntityType(entity_type));
+  if (node.empty()) {
+    return std::nullopt;
+  }
+  // A cache hit means some caller opted into preloading this type, so refill
+  // the cache for the next flow instead of leaving it cold.
+  PreloadDetailsForUpsertPass(entity_type);
+  return std::move(node.mapped());
+}
+
+void WalletPassAccessManagerImpl::FetchDetailsForUpsertPass(
+    wallet::WalletHttpClient::PassType pass_type,
+    GetDetailsForUpsertPassCallback callback) {
   http_client_->GetDetailsForUpsertPass(
-      PassTypeFromEntityType(entity_type),
-      base::BindOnce(&ToGetDetailsForUpsertPassResponse)
-          .Then(std::move(callback)));
+      pass_type, base::BindOnce(&ToGetDetailsForUpsertPassResponse)
+                     .Then(std::move(callback)));
 }
 
 base::OnceCallback<std::optional<EntityInstance>(
@@ -319,6 +413,30 @@ void WalletPassAccessManagerImpl::CacheUnmaskResult(EntityInstance entity) {
           },
           weak_factory_.GetWeakPtr(), id),
       kCacheTTL);
+}
+
+// Google Wallet `legal_message_token`s and legal disclosure lines are issued
+// for a specific pass type and validate that the user was presented with the
+// required disclosures before upserting a pass. Because they do not depend on
+// any client-side entity instances, responses are safely cached regardless of
+// any intervening changes to `EntityDataManager`.
+void WalletPassAccessManagerImpl::OnPreloadDetailsForUpsertPassComplete(
+    wallet::WalletHttpClient::PassType pass_type,
+    base::expected<GetDetailsForUpsertPassResponse,
+                   wallet::WalletHttpClient::WalletRequestError> response) {
+  in_flight_preloads_.erase(pass_type);
+
+  const bool is_valid =
+      response.has_value() && IsValidUpsertPassDetailsResponse(*response);
+  LogWalletNoticeFunnelEvent(
+      is_valid ? AutofillAiWalletNoticeFunnelEvents::kUpsertDetailsFetchSuccess
+               : AutofillAiWalletNoticeFunnelEvents::kUpsertDetailsFetchError,
+      /*in_settings=*/true);
+
+  if (is_valid) {
+    upsert_details_cache_.insert_or_assign(pass_type,
+                                           std::move(response).value());
+  }
 }
 
 void WalletPassAccessManagerImpl::OnEntityInstancesChanged() {

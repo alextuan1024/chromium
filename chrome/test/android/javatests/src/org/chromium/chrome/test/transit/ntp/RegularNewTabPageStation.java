@@ -4,6 +4,7 @@
 
 package org.chromium.chrome.test.transit.ntp;
 
+import static androidx.test.espresso.matcher.ViewMatchers.isAssignableFrom;
 import static androidx.test.espresso.matcher.ViewMatchers.withId;
 
 import static org.chromium.base.test.transit.Condition.whether;
@@ -17,6 +18,7 @@ import org.chromium.base.test.transit.TripBuilder;
 import org.chromium.base.test.transit.ViewElement;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.ntp.NewTabPage;
+import org.chromium.chrome.browser.ntp.search.SearchBoxContainerView;
 import org.chromium.chrome.browser.omnibox.UrlBar;
 import org.chromium.chrome.browser.suggestions.SiteSuggestion;
 import org.chromium.chrome.browser.url_constants.UrlConstantResolver;
@@ -40,13 +42,13 @@ public class RegularNewTabPageStation extends CtaPageStation {
     public ViewElement<View> logoElement;
     public Element<NewTabPage> nativePageElement;
 
-    public RegularNewTabPageStation(Config config) {
+    public RegularNewTabPageStation(Config config, boolean nativeNtp) {
         super(
                 config.withIncognito(false)
                         .withExpectedUrlSubstring(
-                                UrlOverrideUtils.isWebUiNtpOverrideEnabled()
-                                        ? UrlConstantResolver.getOriginalNtpUrl()
-                                        : UrlConstantResolver.getOriginalNativeNtpUrl()));
+                                nativeNtp
+                                        ? UrlConstantResolver.getOriginalNativeNtpUrl()
+                                        : UrlConstantResolver.getOriginalNtpUrl()));
 
         declareElementFactory(
                 mActivityElement,
@@ -58,9 +60,18 @@ public class RegularNewTabPageStation extends CtaPageStation {
                     }
                 });
 
-        if (!UrlOverrideUtils.isWebUiNtpOverrideEnabled()) {
+        if (nativeNtp) {
             logoElement = declareView(withId(R.id.search_provider_logo));
-            searchBoxElement = declareView(withId(R.id.search_box));
+            // Scoped to the NTP's own fakebox class: R.id.search_box is also used by the Hub
+            // toolbar (and by bookmarks and settings search boxes), and an unscoped matcher
+            // here would match the Hub's search box while leaving the NTP for the Hub.
+            // TODO(crbug.com/570644422): Replace isAssignableFrom(SearchBoxContainerView.class)
+            // with SearchBoxContainerView.class once ViewSpec includes isAssignableFrom() in its
+            // generated Matcher<View>.
+            searchBoxElement =
+                    declareView(
+                            withId(R.id.search_box),
+                            isAssignableFrom(SearchBoxContainerView.class));
             ntpMicButtonElement = declareOptionalView(withId(R.id.voice_search_button));
 
             nativePageElement =
@@ -75,12 +86,21 @@ public class RegularNewTabPageStation extends CtaPageStation {
     }
 
     public static Builder<RegularNewTabPageStation> newBuilder() {
-        return new Builder<>(RegularNewTabPageStation::new);
+        return new Builder<>(
+                c ->
+                        new RegularNewTabPageStation(
+                                c, /* nativeNtp= */ !UrlOverrideUtils.isWebUiNtpOverrideEnabled()));
+    }
+
+    public static Builder<RegularNewTabPageStation> newNativeNtpBuilder() {
+        return new Builder<>(c -> new RegularNewTabPageStation(c, /* nativeNtp= */ true));
     }
 
     /** Opens the app menu by pressing the toolbar "..." button */
     public RegularNewTabPageAppMenuFacility openAppMenu() {
-        return menuButtonElement.clickTo().enterFacility(new RegularNewTabPageAppMenuFacility());
+        return toolbar.menuButtonElement
+                .clickTo()
+                .enterFacility(new RegularNewTabPageAppMenuFacility());
     }
 
     /**
@@ -114,6 +134,11 @@ public class RegularNewTabPageStation extends CtaPageStation {
 
     @Override
     protected TripBuilder clickUrlBarOrSearchBarTo() {
+        // searchBoxElement is only declared for the native NTP. The WebUI NTP has no native
+        // search box, so use the toolbar URL bar instead.
+        if (searchBoxElement == null) {
+            return urlBarElement.clickTo();
+        }
         return searchBoxElement.clickTo();
     }
 }

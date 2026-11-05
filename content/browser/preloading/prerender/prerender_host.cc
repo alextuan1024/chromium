@@ -681,7 +681,12 @@ bool PrerenderHost::StartPrerendering() {
 
 void PrerenderHost::DidStartNavigation(NavigationHandle* navigation_handle) {
   auto* navigation_request = NavigationRequest::From(navigation_handle);
-  CHECK(navigation_request->IsInPrerenderedMainFrame());
+  if (!navigation_request->IsInPrerenderedMainFrame()) {
+    UpdateDevtoolsAttemptForSubFrame(navigation_request->GetFrameTreeNodeId(),
+                                     navigation_handle->GetURL(),
+                                     PreloadingTriggeringOutcome::kRunning);
+    return;
+  }
 
   // Do nothing for the initial navigation.
   if (IsInitialNavigation(*navigation_request)) {
@@ -736,9 +741,10 @@ void PrerenderHost::ReadyToCommitNavigation(
           blink::mojom::WebFeature::kPrerender2CrossOriginIframes);
     }
 
-    if (IsPrerenderActivationBeaconEnabled(
+    if (GetPrerenderActivationBeaconFeatureState(
             navigation_request->GetURL(),
-            navigation_request->GetResponseHeaders())) {
+            navigation_request->GetResponseHeaders()) ==
+        PreloadActivationBeaconFeatureState::kEnabled) {
       activation_beacon_url_ = FindActivationBeaconURL(*navigation_request);
     }
   }
@@ -811,12 +817,18 @@ void PrerenderHost::DidFinishNavigation(NavigationHandle* navigation_handle) {
   // The prerendered contents are considered ready for activation when the
   // main frame navigation reaches DidFinishNavigation and the prerender host
   // has not been canceled yet.
-  if (is_prerender_main_frame && !final_status_) {
-    CHECK(!is_ready_for_activation_);
-    is_ready_for_activation_ = true;
+  if (!final_status_) {
+    if (is_prerender_main_frame) {
+      CHECK(!is_ready_for_activation_);
+      is_ready_for_activation_ = true;
 
-    // Prerender is ready to activate. Set the status to kReady.
-    SetTriggeringOutcome(PreloadingTriggeringOutcome::kReady);
+      // Prerender is ready to activate. Set the status to kReady.
+      SetTriggeringOutcome(PreloadingTriggeringOutcome::kReady);
+    } else if (navigation_request->HasCommitted()) {
+      UpdateDevtoolsAttemptForSubFrame(navigation_request->GetFrameTreeNodeId(),
+                                       navigation_handle->GetURL(),
+                                       PreloadingTriggeringOutcome::kReady);
+    }
   }
 }
 
@@ -833,7 +845,8 @@ std::unique_ptr<StoredPage> PrerenderHost::Activate(
         PreloadActivationReportManager::GetOrCreateForBrowserContext(
             web_contents_->GetBrowserContext());
     manager->ReportActivation(activation_beacon_url_,
-                              GetFrameTree()->root()->current_frame_host());
+                              GetFrameTree()->root()->current_frame_host(),
+                              PreloadActivationReportType::kPrerender);
     GetContentClient()->browser()->LogWebFeatureForCurrentPage(
         GetFrameTree()->root()->current_frame_host(),
         blink::mojom::WebFeature::kPrefetchAndPrerenderActivationBeacon);
@@ -849,6 +862,27 @@ std::unique_ptr<StoredPage> PrerenderHost::Activate(
   FrameTree::NodeRange node_range = GetFrameTree()->Nodes();
   std::vector<FrameTreeNode*> subframe_nodes(std::next(node_range.begin()),
                                              node_range.end());
+
+  // Delete the RenderFrameHosts in the subframes' pending deletion lists (i.e.,
+  // the ones swapped out on navigation and still waiting for unload
+  // completion), as if their unload timeout expired. They are owned by the
+  // RenderFrameHostManagers of `subframe_nodes`, so they would be moved to
+  // `target_frame_tree` along with the subframes. However,
+  // FrameTreeNode::SetFrameTree() below doesn't update their FrameTree (nor
+  // the ones of their descendants), which would dangle once the prerendering
+  // FrameTree is destroyed, while they can still receive messages from the
+  // renderer (see https://crbug.com/583734992). The RenderFrameHosts in the
+  // root's pending deletion list are not moved, and are deleted when the
+  // prerendering FrameTree is shut down.
+  //
+  // This needs to happen before TakePrerenderedPage() below, as deleting a
+  // RenderFrameHost notifies observers.
+  //
+  // TODO(crbug.com/40177949): Consider moving these RenderFrameHosts to
+  // `target_frame_tree` instead, so that their unload handlers can complete.
+  for (FrameTreeNode* subframe_node : subframe_nodes) {
+    subframe_node->render_manager()->ClearRFHsPendingShutdown();
+  }
 
   // Before the root's current_frame_host is cleared, collect the replication
   // state so that it can be used for post-activation validation.
@@ -919,14 +953,9 @@ std::unique_ptr<StoredPage> PrerenderHost::Activate(
   // associated frame tree. Note that subframe proxies don't need their
   // FrameTrees independently updated, since their FrameTreeNodes don't
   // change, and FrameTree references in those FrameTreeNodes will be updated
-  // through RenderFrameHosts.
-  //
-  // TODO(crbug.com/40177949): Need to investigate if and how
-  // pending delete RenderFrameHost objects should be handled if prerendering
-  // runs all of the unload handlers; they are not currently handled here.
-  // This is because pending delete RenderFrameHosts can still receive and
-  // process some messages while the RenderFrameHost FrameTree and
-  // FrameTreeNode are stale.
+  // through RenderFrameHosts. The RenderFrameHosts in the subframes' pending
+  // deletion lists don't need to be updated either, as they were deleted
+  // above.
   for (FrameTreeNode* subframe_node : subframe_nodes) {
     subframe_node->SetFrameTree(target_frame_tree);
   }
@@ -1538,8 +1567,23 @@ void PrerenderHost::SetTriggeringOutcome(PreloadingTriggeringOutcome outcome) {
   }
 }
 
-void PrerenderHost::SetFailureReason(
-    const PrerenderCancellationReason& reason) {
+void PrerenderHost::UpdateDevtoolsAttemptForSubFrame(
+    FrameTreeNodeId ftn_id,
+    const GURL& url,
+    PreloadingTriggeringOutcome outcome) {
+  if (!AllowCrossOriginSubframeNavigation() || url.IsAboutBlank()) {
+    return;
+  }
+  if (devtools_attempt_) {
+    PrerenderAttributes attributes = attributes_;
+    attributes.prerendering_url = url;
+    devtools_attempt_->SetTriggeringOutcome(attributes, outcome, ftn_id);
+  }
+}
+
+void PrerenderHost::SetFailureReason(const PrerenderCancellationReason& reason,
+                                     std::optional<GURL> subframe_url,
+                                     FrameTreeNodeId subframe_ftn_id) {
   switch (reason.final_status()) {
     // When adding a new failure reason, consider whether it should be
     // propagated to `attempt_`. Most values should be propagated, but we
@@ -1639,6 +1683,14 @@ void PrerenderHost::SetFailureReason(
         devtools_attempt_.reset();
       }
 
+      return;
+    case PrerenderFinalStatus::kPrefetchFailedCrossOriginSubframe:
+      if (devtools_attempt_ && subframe_url.has_value()) {
+        PrerenderAttributes attributes = attributes_;
+        attributes.prerendering_url = *subframe_url;
+        devtools_attempt_->SetFailureReason(attributes, reason,
+                                            subframe_ftn_id);
+      }
       return;
     case PrerenderFinalStatus::kActivated:
       // The activation path does not call this method, so it should never reach
@@ -1844,8 +1896,6 @@ void PrerenderHost::OnWaitingForHeadersFinished(
 }
 
 bool PrerenderHost::ShouldAbortNavigationBecausePrefetchUnavailable() const {
-  CHECK(features::UsePrefetchPrerenderIntegration());
-
   auto is_ineligibility_admissible =
       [](PreloadingEligibility prefetch_eligibility) -> bool {
     switch (prefetch_eligibility) {
@@ -2065,9 +2115,10 @@ void PrerenderHost::UpgradeToFullPrerender() {
   }
 
   upgraded_to_full_prerender_ = true;
-
-  // TODO(502133187): Notify DevTools that the prerender-until-script attempt
-  // has been upgraded.
+  if (devtools_attempt_) {
+    devtools_attempt_->SetEffectiveAction(
+        attributes_, blink::mojom::SpeculationAction::kPrerender);
+  }
 
   // Send the upgrade IPC to every RenderViewHost in the prerender frame tree,
   // mirroring how PageImpl::Activate propagates activation. This ensures all

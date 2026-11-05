@@ -132,7 +132,7 @@ ConnectorsService::ConnectorsService(
     content::BrowserContext* context,
     std::unique_ptr<ConnectorsManagerBase> manager)
     : ConnectorsServiceBase(std::move(manager)), context_(context) {
-  DCHECK(context_);
+  CHECK(context_, base::NotFatalUntil::M161);
 }
 
 ConnectorsService::~ConnectorsService() = default;
@@ -196,7 +196,8 @@ std::optional<AnalysisSettings> ConnectorsService::GetAnalysisSettings(
     const storage::FileSystemURL& source_url,
     const storage::FileSystemURL& destination_url,
     AnalysisConnector connector) {
-  DCHECK_EQ(connector, AnalysisConnector::FILE_TRANSFER);
+  CHECK_EQ(connector, AnalysisConnector::FILE_TRANSFER,
+           base::NotFatalUntil::M161);
   if (!ConnectorsEnabled()) {
     return std::nullopt;
   }
@@ -219,12 +220,11 @@ std::string ConnectorsService::GetManagementDomain() {
   std::optional<policy::PolicyScope> scope;
   for (const char* scope_pref :
        {enterprise_connectors::kEnterpriseRealTimeUrlCheckScope,
-#if !BUILDFLAG(IS_ANDROID)
         AnalysisConnectorScopePref(AnalysisConnector::FILE_ATTACHED),
-#endif
         AnalysisConnectorScopePref(AnalysisConnector::FILE_DOWNLOADED),
 #if !BUILDFLAG(IS_ANDROID)
         AnalysisConnectorScopePref(AnalysisConnector::BULK_DATA_ENTRY),
+        AnalysisConnectorScopePref(AnalysisConnector::DATA_COPIED),
         AnalysisConnectorScopePref(AnalysisConnector::PRINT),
 #endif
         kOnSecurityEventScopePref}) {

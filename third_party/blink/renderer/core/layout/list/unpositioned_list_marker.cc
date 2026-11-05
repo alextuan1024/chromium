@@ -31,8 +31,8 @@ LayoutUnit UnpositionedListMarker::InlineOffset(
   LayoutObject* list_item =
       marker_layout_object_->Marker().ListItem(*marker_layout_object_);
   auto margins = ListMarker::InlineMarginsForOutside(
-      list_item->GetDocument(), marker_layout_object_->StyleRef(),
-      list_item->StyleRef(), marker_inline_size);
+      list_item->GetDocument(), marker_layout_object_->Style(),
+      list_item->Style(), marker_inline_size);
   return margins.first;
 }
 
@@ -125,7 +125,8 @@ void UnpositionedListMarker::AddToBox(
     items_builder->AddListMarker(marker_physical_fragment, marker_offset);
     return;
   }
-  container_builder->AddResult(marker_layout_result, marker_offset);
+  container_builder->AddResult(marker_layout_result, marker_offset,
+                               /*margins=*/BoxStrut());
 }
 
 void UnpositionedListMarker::AddToBoxWithoutLineBoxes(
@@ -145,7 +146,8 @@ void UnpositionedListMarker::AddToBoxWithoutLineBoxes(
 
   DCHECK(container_builder);
   DCHECK(!container_builder->ItemsBuilder());
-  container_builder->AddResult(marker_layout_result, offset);
+  container_builder->AddResult(marker_layout_result, offset,
+                               /*margins=*/BoxStrut());
 
   // Whether the list marker should affect the block size or not is not
   // well-defined, but 3 out of 4 impls do.
@@ -184,7 +186,7 @@ LayoutUnit UnpositionedListMarker::ComputeIntrudedFloatOffset(
   const LayoutUnit available_size =
       container_builder->ChildAvailableSize().inline_size;
   DCHECK(marker_layout_object_);
-  const TextDirection direction = marker_layout_object_->StyleRef().Direction();
+  const TextDirection direction = marker_layout_object_->Style().Direction();
   const LayoutOpportunity opportunity =
       space.GetExclusionSpace().FindLayoutOpportunity(
           origin_offset, available_size, direction);
@@ -209,7 +211,7 @@ LayoutUnit UnpositionedListMarker::ComputeIntrudedFloatOffset(
 // marker's margin-top.
 void UnpositionedListMarker::CheckMargin() const {
   DCHECK(marker_layout_object_);
-  DCHECK(marker_layout_object_->StyleRef().MarginBlockStart().IsZero());
+  DCHECK(marker_layout_object_->Style().MarginBlockStart().IsZero());
 }
 #endif
 

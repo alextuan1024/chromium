@@ -6,6 +6,7 @@ package org.chromium.chrome.browser.ntp_customization.theme.daily_refresh;
 
 import static org.chromium.chrome.browser.ntp_customization.NtpCustomizationUtils.NtpBackgroundType.THEME_COLLECTION;
 
+import android.content.Context;
 import android.graphics.Bitmap;
 
 import androidx.annotation.ColorInt;
@@ -22,6 +23,9 @@ import org.chromium.chrome.browser.ntp_customization.NtpCustomizationUtils.NtpBa
 import org.chromium.chrome.browser.ntp_customization.theme.chrome_colors.NtpThemeColorInfo.NtpThemeColorId;
 import org.chromium.chrome.browser.ntp_customization.theme.theme_collections.CustomBackgroundInfo;
 import org.chromium.chrome.browser.ntp_customization.theme.upload_image.BackgroundImageInfo;
+import org.chromium.chrome.browser.ntp_customization.theme_sync.data.NtpBackgroundDataColor;
+import org.chromium.chrome.browser.ntp_customization.theme_sync.data.NtpBackgroundDataManager;
+import org.chromium.chrome.browser.ntp_customization.theme_sync.data.PlatformType;
 
 import java.util.concurrent.Executor;
 
@@ -36,6 +40,10 @@ public class NtpThemeDailyRefreshManager {
     }
 
     private boolean mIsDailyUpdateApplied;
+    // Whether a due daily refresh of a theme collection should be skipped because the next image
+    // hasn't been completely prefetched, e.g., the fetch failed or the process was killed before it
+    // completed.
+    private boolean mShouldSkipDailyRefreshForThemeCollection;
     private @Nullable Long mLastDailyUpdateTimestamp;
     private @Nullable @NtpThemeColorId Integer mNtpThemeColorId;
 
@@ -66,7 +74,7 @@ public class NtpThemeDailyRefreshManager {
      * Get the primary theme color for a theme collection. If a daily refresh has been applied, it
      * retrieves the color for the refreshed theme.
      */
-    public @ColorInt int getNtpThemeColorForThemeCollection() {
+    public @Nullable @ColorInt Integer getNtpThemeColorForThemeCollection() {
         if (mIsDailyUpdateApplied) {
             return NtpCustomizationUtils
                     .getDailyRefreshCustomizedPrimaryColorFromSharedPreference();
@@ -131,13 +139,26 @@ public class NtpThemeDailyRefreshManager {
 
     /**
      * Checks if daily refresh for a theme collection should be applied and updates the status if
-     * needed.
+     * needed. The refresh is only applied if the next image has been prefetched. The daily refresh
+     * info is only saved after the image file has been completely written. Otherwise, it is skipped
+     * and the next image is fetched again in {@link #maybeSaveDailyRefreshAndReset}.
      */
     @VisibleForTesting
     public void maybeApplyDailyRefreshForThemeCollection() {
-        if (isDailyRefreshEnabled(THEME_COLLECTION)) {
-            setDailyUpdateStatusForThemeCollection(TimeUtils.currentTimeMillis());
+        if (!isDailyRefreshEnabled(THEME_COLLECTION)) {
+            return;
         }
+
+        // The refresh is skipped if the next image hasn't been prefetched, e.g., the fetch failed,
+        // or the process was killed or the write failed before the image file was completely
+        // written, since the daily refresh info is only saved after the image file. The current
+        // image is kept. The timestamp is still updated so that the daily refresh isn't applied
+        // later in this process, after the activity theme and the NTP background have been loaded
+        // from the current image.
+        boolean isPrefetched =
+                NtpCustomizationUtils.getDailyRefreshCustomBackgroundInfoFromSharedPreference()
+                        != null;
+        setDailyUpdateStatusForThemeCollection(TimeUtils.currentTimeMillis(), isPrefetched);
     }
 
     @VisibleForTesting
@@ -196,41 +217,93 @@ public class NtpThemeDailyRefreshManager {
     }
 
     /**
-     * Sets the internal state to indicate that a daily refresh for a Theme Collection has been
-     * applied.
+     * Sets the internal state to indicate that a due daily refresh for a Theme Collection has been
+     * applied or skipped.
      *
      * @param timestamp The timestamp of the refresh.
+     * @param shouldApply Whether the refresh should be applied, i.e., the next image has been
+     *     prefetched. If so, the getters return the prefetched daily refresh data until it's
+     *     committed in {@link #maybeSaveDailyRefreshAndReset}. Otherwise, the refresh is skipped.
      */
     @VisibleForTesting
-    void setDailyUpdateStatusForThemeCollection(long timestamp) {
+    void setDailyUpdateStatusForThemeCollection(long timestamp, boolean shouldApply) {
         mLastDailyUpdateTimestamp = timestamp;
-        mIsDailyUpdateApplied = true;
+        mIsDailyUpdateApplied = shouldApply;
+        mShouldSkipDailyRefreshForThemeCollection = !shouldApply;
         mNtpThemeColorId = null;
     }
 
-    /** Saves the existing daily refresh settings to the SharedPreference and resets. */
-    public void maybeSaveDailyRefreshAndReset(Runnable onDailyRefreshThemeCollectionApplied) {
-        if (!mIsDailyUpdateApplied || !NtpCustomizationUtils.isNtpThemeCustomizationEnabled()) {
+    /**
+     * Saves the existing daily refresh settings to the SharedPreference and resets.
+     *
+     * @param context The Activity context used to build the theme history entry of a rotated Chrome
+     *     color; theme colors mustn't be resolved with the application context. It isn't retained.
+     * @param onDailyRefreshThemeCollectionApplied Run if the background is a theme collection and a
+     *     daily refresh was applied or skipped, to fetch the image for the next daily refresh.
+     */
+    public void maybeSaveDailyRefreshAndReset(
+            Context context, Runnable onDailyRefreshThemeCollectionApplied) {
+        if ((!mIsDailyUpdateApplied && !mShouldSkipDailyRefreshForThemeCollection)
+                || !NtpCustomizationUtils.isNtpThemeCustomizationEnabled()) {
             return;
         }
 
         if (mNtpThemeColorId != null) {
             NtpCustomizationUtils.setNtpThemeColorIdToSharedPreference(mNtpThemeColorId);
-            mNtpThemeColorId = null;
+            maybeReplaceDailyRefreshChromeColorInHistory(context, mNtpThemeColorId);
         }
 
         if (NtpCustomizationUtils.getNtpBackgroundTypeFromSharedPreference() == THEME_COLLECTION) {
-            NtpCustomizationUtils.commitThemeCollectionDailyRefresh();
+            // A skipped daily refresh has no prefetched image to commit. A stale daily refresh
+            // image file may exist, which mustn't replace the current image.
+            if (mIsDailyUpdateApplied) {
+                NtpCustomizationUtils.commitThemeCollectionDailyRefresh();
+            }
             onDailyRefreshThemeCollectionApplied.run();
         }
 
         if (mLastDailyUpdateTimestamp != null) {
             NtpCustomizationUtils.setDailyRefreshTimestampToSharedPreference(
                     mLastDailyUpdateTimestamp);
-            mLastDailyUpdateTimestamp = null;
         }
+        discardPendingDailyRefresh();
+    }
 
+    /**
+     * Replaces the local theme history entry of the Chrome color with daily refresh with the
+     * rotated color, so that the entry highlighted in the theme history shows the current color.
+     * The entry is found by {@link NtpBackgroundDataColor#equals}, which matches any Chrome color
+     * with daily refresh, so there is at most one such entry, and it keeps the platform type it was
+     * selected from. No-op if there is no such entry or NTP theme sync is disabled, in which case
+     * there is no history.
+     *
+     * @param context The Activity context, see {@link #maybeSaveDailyRefreshAndReset}.
+     * @param colorId The rotated color ID that was just saved to the SharedPreference.
+     */
+    private static void maybeReplaceDailyRefreshChromeColorInHistory(
+            Context context, @NtpThemeColorId int colorId) {
+        if (!NtpCustomizationUtils.isNTPCustomizationSyncEnabled()) return;
+
+        new NtpBackgroundDataManager(context)
+                .maybeReplaceUserSelectedBackgroundInPlace(
+                        new NtpBackgroundDataColor(
+                                context,
+                                PlatformType.ANDROID,
+                                colorId,
+                                /* isChromeColorDailyRefreshEnabled= */ true));
+    }
+
+    /**
+     * Discards a daily refresh that was applied in memory but not saved to SharedPreferences yet.
+     * Called when the background in SharedPreferences is replaced, e.g. by a synced theme or a
+     * local selection, so that the getters stop returning the stale rotation and {@link
+     * #maybeSaveDailyRefreshAndReset} doesn't save it over the new background.
+     */
+    public void discardPendingDailyRefresh() {
         mIsDailyUpdateApplied = false;
+        mShouldSkipDailyRefreshForThemeCollection = false;
+        mLastDailyUpdateTimestamp = null;
+        mNtpThemeColorId = null;
     }
 
     public static NtpThemeDailyRefreshManager createInstanceForTesting() {
@@ -246,6 +319,10 @@ public class NtpThemeDailyRefreshManager {
 
     public boolean getIsDailyUpdateAppliedForTesting() {
         return mIsDailyUpdateApplied;
+    }
+
+    public boolean getShouldSkipDailyRefreshForThemeCollectionForTesting() {
+        return mShouldSkipDailyRefreshForThemeCollection;
     }
 
     public @Nullable Long getLastDailyUpdateTimestampForTesting() {

@@ -17,7 +17,6 @@
 #include "components/omnibox/browser/omnibox_popup_selection.h"
 #include "ui/accessibility/ax_node_data.h"
 #include "ui/base/metadata/metadata_header_macros.h"
-#include "ui/base/window_open_disposition.h"
 #include "ui/gfx/font_list.h"
 #include "ui/gfx/image/image.h"
 #include "ui/views/view.h"
@@ -93,6 +92,7 @@ class OmniboxPopupViewViews : public views::View,
   void OnSelectionChanged(OmniboxPopupSelection old_selection,
                           OmniboxPopupSelection new_selection) override;
   void OnMatchIconUpdated(size_t match_index) override;
+  void OnMatchRichImageUpdated(size_t match_index) override;
   void OnContentsChanged() override;
   void OnCharTyped(base::TimeTicks timestamp) override {}
 

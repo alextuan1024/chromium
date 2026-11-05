@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <ranges>
 #include <string>
 #include <tuple>
 #include <unordered_set>
@@ -17,7 +18,6 @@
 #include "base/check.h"
 #include "base/check_op.h"
 #include "base/command_line.h"
-#include "base/containers/adapters.h"
 #include "base/debug/crash_logging.h"
 #include "base/debug/dump_without_crashing.h"
 #include "base/feature_list.h"
@@ -34,6 +34,7 @@
 #include "base/unguessable_token.h"
 #include "build/build_config.h"
 #include "components/viz/common/features.h"
+#include "content/browser/agent_cluster_key.h"
 #include "content/browser/back_forward_cache/back_forward_cache_metrics.h"
 #include "content/browser/devtools/render_frame_devtools_agent_host.h"
 #include "content/browser/preloading/prefetch/prefetch_features.h"
@@ -370,55 +371,6 @@ void TraceShouldSwapBrowsingInstanceResult(FrameTreeNodeId frame_tree_node_id,
       });
 }
 
-// This method tries to find a process for |new_instance| to reuse by starting
-// from |rfh|'s outermost main frame, and then iterating through all the
-// embedded fenced frame FrameTrees and trying to reuse their BrowsingInstance's
-// default process (if one is set). By setting a process for |new_instance|, it
-// is also setting its BrowsingInstance's default process, and as a result, it
-// gets these groups of BrowsingInstances to share the same default process.
-//
-// Note that it is possible for a fenced frame BrowsingInstance to get assigned
-// a default process first, before its embedder (for example: if the embedder
-// only had a frame at an isolated site, which embeds a fenced frame at a
-// non-isolated site). If we were to assign the embedder BrowsingInstance a
-// default process later (from the previous example, if the embedder added a
-// non-isolated iframe), we would iterate through the entire set of FrameTrees
-// and find and reuse the fenced frame BrowsingInstance's default process.
-//
-// TODO(crbug.com/40232875): There are certain scenarios where this won't work,
-// see bug for an example scenario/proposed fix.
-void ReuseDefaultProcessFromDifferentBrowsingInstanceIfPossible(
-    scoped_refptr<SiteInstanceImpl> new_instance,
-    RenderFrameHostImpl* rfh) {
-  CHECK(!new_instance->RequiresDedicatedProcess());
-  CHECK(!new_instance->HasProcess());
-  RenderFrameHostImpl* root = rfh->GetOutermostMainFrame();
-  root->ForEachRenderFrameHostImplWithAction(
-      [site_instance = std::move(new_instance),
-       root](RenderFrameHostImpl* rfhi) {
-        if (rfhi->GetParent())
-          return RenderFrameHost::FrameIterationAction::kContinue;
-
-        // Avoid traversing through any embedded pages that aren't fenced
-        // frames. Note that we use rfhi->GetParentOrOuterDocumentOrEmbedder()
-        // instead of rfhi->GetParentOrOuterDocument() to avoid traversing
-        // through guests.
-        if (rfhi != root && rfhi->GetParentOrOuterDocumentOrEmbedder() &&
-            !rfhi->IsNestedWithinFencedFrame())
-          return RenderFrameHost::FrameIterationAction::kSkipChildren;
-
-        if (RenderProcessHost* default_process =
-                rfhi->GetSiteInstance()
-                    ->GetDefaultProcessForBrowsingInstance()) {
-          site_instance->ReuseExistingProcessIfPossible(default_process);
-          if (site_instance->HasProcess())
-            return RenderFrameHost::FrameIterationAction::kStop;
-        }
-
-        return RenderFrameHost::FrameIterationAction::kContinue;
-      });
-}
-
 // These values are persisted to logs. Entries should not be renumbered and
 // numeric values should never be reused.
 //
@@ -683,6 +635,7 @@ void RecordWastedSpeculativeRFHCase(bool from_ad_click,
 
 void RecordWastedAndReplacementRFHDiff(
     bool from_ad_click,
+    bool is_ad_tagged_by_host_filter,
     scoped_refptr<SiteInstanceImpl> wasted_rfh_site_instance,
     scoped_refptr<SiteInstanceImpl> new_site_instance) {
   std::string initiator_types[] = {"All",
@@ -716,6 +669,25 @@ void RecordWastedAndReplacementRFHDiff(
         base::StrCat({"Navigation.", initiator_type,
                       ".WastedSpeculativeRFH.ReplacementRFHCreatedNewProcess"}),
         (!new_rph || new_rph->GetRenderFrameHostCount() == 0));
+
+    const SiteInfo& wasted_site_info = wasted_rfh_site_instance->GetSiteInfo();
+    const SiteInfo& new_site_info = new_site_instance->GetSiteInfo();
+    bool wasted_rfh_was_origin_keyed_by_default =
+        wasted_site_info.agent_cluster_key().oac_status() ==
+        AgentClusterKey::OACStatus::kOriginKeyedByDefault;
+    bool replacement_rfh_is_site_keyed_by_default =
+        new_site_info.agent_cluster_key().oac_status() ==
+        AgentClusterKey::OACStatus::kSiteKeyedByDefault;
+
+    bool is_ad_excluded_from_origin_isolation =
+        is_ad_tagged_by_host_filter && wasted_rfh_was_origin_keyed_by_default &&
+        replacement_rfh_is_site_keyed_by_default &&
+        wasted_site_info.GetNonOriginKeyedEquivalentForMetrics(
+            wasted_rfh_site_instance->GetIsolationContext()) == new_site_info;
+    base::UmaHistogramBoolean(
+        base::StrCat({"Navigation.", initiator_type,
+                      ".WastedSpeculativeRFH.ExcludedAdsFromOriginIsolation"}),
+        is_ad_excluded_from_origin_isolation);
   }
 }
 
@@ -1186,8 +1158,7 @@ void RenderFrameHostManager::DidChangeOpener(
   FrameTreeNode* opener = nullptr;
   if (opener_frame_token) {
     RenderFrameHostImpl* opener_rfhi = RenderFrameHostImpl::FromFrameToken(
-        source_site_instance_group->process()->GetDeprecatedID(),
-        *opener_frame_token);
+        source_site_instance_group->process()->GetID(), *opener_frame_token);
     // If |opener_rfhi| is null, the opener RFH has already disappeared.  In
     // this case, clear the opener rather than keeping the old opener around.
     if (opener_rfhi) {
@@ -1441,14 +1412,6 @@ void RenderFrameHostManager::UnloadOldFrame(
       bool is_same_process =
           (old_render_frame_host->GetProcess() ==
            frame_tree_node_->current_frame_host()->GetProcess());
-      if (old_render_frame_host->GetSiteInstance()->IsSameSiteWithURL(
-              frame_tree_node_->current_url())) {
-        base::UmaHistogramBoolean("BackForwardCache.ProcessReuse.SameSite",
-                                  is_same_process);
-      } else {
-        base::UmaHistogramBoolean("BackForwardCache.ProcessReuse.CrossSite",
-                                  is_same_process);
-      }
       if (old_render_frame_host->GetSiteInstance()
               ->GetRelatedActiveContentsCount() > 0) {
         SCOPED_CRASH_KEY_NUMBER("rvh-double", "related_active_contents",
@@ -1595,8 +1558,7 @@ void RenderFrameHostManager::ActivatePrerender(
   BackForwardCacheMetrics* back_forward_cache_metrics =
       render_frame_host_->GetBackForwardCacheMetrics();
   if (back_forward_cache_metrics)
-    back_forward_cache_metrics->SetBrowsingInstanceSwapResult(std::nullopt,
-                                                              nullptr);
+    back_forward_cache_metrics->SetBrowsingInstanceSwapResult(std::nullopt);
 
   RestorePage(std::move(stored_page));
 }
@@ -1633,7 +1595,14 @@ void RenderFrameHostManager::RestorePage(
 }
 
 void RenderFrameHostManager::ClearRFHsPendingShutdown() {
-  pending_delete_hosts_.clear();
+  // Move the pending-delete RenderFrameHosts to a local set before destroying
+  // them so that `pending_delete_hosts_` is already empty while their
+  // destructors run, and verify that nothing re-entrantly adds new entries to
+  // `pending_delete_hosts_` during destruction (see https://crbug.com/567160164).
+  RFHPendingDeleteSet pending_delete_hosts;
+  pending_delete_hosts_.swap(pending_delete_hosts);
+  pending_delete_hosts.clear();
+  CHECK(pending_delete_hosts_.empty());
 }
 
 void RenderFrameHostManager::ClearWebUIInstances() {
@@ -1745,12 +1714,6 @@ void RenderFrameHostManager::DidCreateNavigationRequest(
               request->GetNavigationId(), request->IsInOutermostMainFrame()));
       if (result.has_value()) {
         CHECK(result.value());
-      } else if (result.error() ==
-                 GetFrameHostForNavigationFailed::kBlockedByPendingCommit) {
-        frame_tree_node_->render_manager()
-            ->speculative_frame_host()
-            ->RecordMetricsForBlockedGetFrameHostAttempt(
-                /* commit_attempt=*/false);
       }
     }
     base::UmaHistogramEnumeration("Navigation.DeferSpeculativeRFHAction",
@@ -2106,7 +2069,8 @@ RenderFrameHostManager::GetFrameHostForNavigation(
         // TODO(crbug.com/401175298): Figure out how the speculative RFH can be
         // gone at this point.
         RecordWastedAndReplacementRFHDiff(
-            from_ad_click, speculative_render_frame_host_->GetSiteInstance(),
+            from_ad_click, request->IsAdTaggedByHostFilter(),
+            speculative_render_frame_host_->GetSiteInstance(),
             render_frame_host_->GetSiteInstance());
       }
     } else if (!speculative_render_frame_host_ ||
@@ -2127,7 +2091,8 @@ RenderFrameHostManager::GetFrameHostForNavigation(
         // TODO(crbug.com/401175298): Figure out how the speculative RFH can be
         // gone at this point.
         RecordWastedAndReplacementRFHDiff(
-            from_ad_click, speculative_render_frame_host_->GetSiteInstance(),
+            from_ad_click, request->IsAdTaggedByHostFilter(),
+            speculative_render_frame_host_->GetSiteInstance(),
             dest_site_instance);
       }
     } else {
@@ -2339,9 +2304,8 @@ RenderFrameHostManager::GetFrameHostForNavigation(
         request->state() >= NavigationRequest::WILL_PROCESS_RESPONSE
             ? request->GetOriginToCommit().value()
             : request->GetTentativeOriginAtRequestTime();
-    if (!policy->CanAccessOrigin(
-            navigation_rfh->GetProcess()->GetDeprecatedID(), origin_to_commit,
-            ChildProcessSecurityPolicyImpl::AccessType::kCanCommitNewOrigin)) {
+    if (!policy->CanCommitNewOrigin(navigation_rfh->GetProcess()->GetID(),
+                                    origin_to_commit)) {
       SCOPED_CRASH_KEY_STRING256("GetFrameHostForNav", "lock_url",
                                  process_lock.ToString());
       SCOPED_CRASH_KEY_STRING64(
@@ -2695,31 +2659,15 @@ RenderFrameHostManager::SiteInstanceDescriptor::SiteInstanceDescriptor(
 }
 
 void RenderFrameHostManager::CleanupSpeculativeRfhForRenderProcessGone() {
-  // The speculative RFH will be always cleaned up. If the feature
-  // ResumeNavigationWithSpeculativeRFHProcessGone is enabled, we will
-  // resume the navigation if it has not received the network response
-  // yet. A new RFH will be created when the navigation calls
-  // GetFrameHostForNavigation in
-  // NavigationRequest::SelectFrameHostForOnResponseStarted.
-  // See crbug.com/453878130 for the experiment progress of the feature.
+  // TODO(crbug.com/41268960): This should just clean up the speculative
+  // RFH without canceling the request.
   if (frame_tree_node_->navigation_request()) {
-    bool may_resume = frame_tree_node_->navigation_request()->state() <
-                      NavigationRequest::NavigationState::WILL_PROCESS_RESPONSE;
-    base::UmaHistogramBoolean("Navigation.SpeculativeRFHProcessGone.MayResume",
-                              may_resume);
-    if (!may_resume ||
-        !base::FeatureList::IsEnabled(
-            features::kResumeNavigationWithSpeculativeRFHProcessGone)) {
-      // TODO(crbug.com/41268960): This might cancel an unrelated
-      // NavigationRequest. Maybe check if the navigation request uses the
-      // speculative RFH first?
-      frame_tree_node_->navigation_request()->set_net_error(net::ERR_ABORTED);
-      frame_tree_node_->ResetNavigationRequest(
-          NavigationDiscardReason::kRenderProcessGone);
-    } else {
-      frame_tree_node_->navigation_request()->SetAssociatedRFHType(
-          NavigationRequest::AssociatedRenderFrameHostType::NONE);
-    }
+    // TODO(crbug.com/41268960): This might cancel an unrelated
+    // NavigationRequest. Maybe check if the navigation request uses the
+    // speculative RFH first?
+    frame_tree_node_->navigation_request()->set_net_error(net::ERR_ABORTED);
+    frame_tree_node_->ResetNavigationRequest(
+        NavigationDiscardReason::kRenderProcessGone);
   }
   // It's possible that we are far enough into the navigation that
   // TransferNavigationRequestOwnership has already been called then the
@@ -2799,6 +2747,14 @@ RenderFrameHostManager::ShouldSwapBrowsingInstancesForNavigation(
         ShouldSwapBrowsingInstance::kNo_SameDocumentNavigation);
   }
 
+  // If this is an error page that must stay in the current process (see
+  // DetermineSiteInstanceForURL), do not swap BrowsingInstances, as the error
+  // page must reuse `current_instance`.
+  if (error_page_process == ErrorPageProcess::kCurrentProcess) {
+    return BrowsingContextGroupSwap::CreateNoSwap(
+        ShouldSwapBrowsingInstance::kNo_AlreadyHasMatchingBrowsingInstance);
+  }
+
   // Check for reasons to swap processes even if we are in a process model that
   // doesn't usually swap (e.g., process-per-tab).  Any time we return true,
   // the new URL will be rendered in a new SiteInstance AND BrowsingInstance.
@@ -2835,7 +2791,7 @@ RenderFrameHostManager::ShouldSwapBrowsingInstancesForNavigation(
   // For security, we should transition between processes when one is a Web UI
   // page and one isn't, or if the WebUI types differ.
   if (ChildProcessSecurityPolicyImpl::GetInstance()->HasWebUIBindings(
-          render_frame_host_->GetProcess()->GetDeprecatedID()) ||
+          render_frame_host_->GetProcess()->GetID()) ||
       WebUIControllerFactoryRegistry::GetInstance()->UseWebUIForURL(
           browser_context, current_effective_url)) {
     // If so, force a swap if destination is not an acceptable URL for Web UI.
@@ -3176,8 +3132,9 @@ RenderFrameHostManager::GetSiteInstanceForNavigation(
   // process-per-tab model, such as WebUI pages.
 
   // First determine the effective URL of the current RenderFrameHost. This is
-  // the last URL it successfully committed. If it has yet to commit a URL, this
-  // falls back to the Site URL of its SiteInstance.
+  // the last URL it successfully committed. If it has yet to commit a URL, or
+  // if it has committed about:blank, this falls back to the Site URL of its
+  // SiteInstance.
   // Note: the effective URL of the current RenderFrameHost may differ from the
   // URL of the last committed NavigationEntry, which cannot be used to decide
   // whether to use a new SiteInstance. This happens when navigating a subframe,
@@ -3185,10 +3142,11 @@ RenderFrameHostManager::GetSiteInstanceForNavigation(
   // navigation to replace a crashed RenderFrameHost.
   BrowserContext* browser_context =
       GetNavigationController().GetBrowserContext();
+  const GURL& last_successful_url = render_frame_host_->last_successful_url();
   const GURL& current_effective_url =
-      !render_frame_host_->last_successful_url().is_empty()
-          ? SiteInstanceImpl::GetEffectiveURL(
-                browser_context, render_frame_host_->last_successful_url())
+      (!last_successful_url.is_empty() && !last_successful_url.IsAboutBlank())
+          ? SiteInstanceImpl::GetEffectiveURL(browser_context,
+                                              last_successful_url)
           : render_frame_host_->GetSiteInstance()->GetSiteInfo().site_url();
 
   // Determine if the current RenderFrameHost is in view source mode.
@@ -3221,7 +3179,7 @@ RenderFrameHostManager::GetSiteInstanceForNavigation(
     if (BackForwardCacheMetrics* back_forward_cache_metrics =
             render_frame_host_->GetBackForwardCacheMetrics()) {
       back_forward_cache_metrics->SetBrowsingInstanceSwapResult(
-          should_swap_result->reason(), render_frame_host_.get());
+          should_swap_result->reason());
     }
   }
 
@@ -3443,20 +3401,6 @@ RenderFrameHostManager::GetSiteInstanceForNavigation(
       // new_instance tries to create a renderer process.
       new_instance->SetCOOPReuseProcessFailed();
     }
-  }
-
-  // We want fenced frame BrowsingInstances to share the same default
-  // process with their embedding BrowsingInstance. The code below forces
-  // SiteInstances in the embedder and fenced frame BrowsingInstances to
-  // share the same default process when they don't need a dedicated process.
-  // With sites that do require a dedicated process, we reuse processes via the
-  // subframe reuse policy (we set the reuse policy to
-  // kReusePendingOrCommittedSiteSubframe).
-  if (!current_frame_host()->IsOutermostMainFrame() &&
-      !new_instance->HasProcess() &&
-      !new_instance->RequiresDedicatedProcess()) {
-    ReuseDefaultProcessFromDifferentBrowsingInstanceIfPossible(
-        new_instance, current_frame_host());
   }
 
   return new_instance;
@@ -4802,7 +4746,7 @@ void RenderFrameHostManager::CreateRenderFrameProxyAndAncestorChainIfNeeded(
   // Create proxies, from the top-level frame down to the initially specified
   // subframe. TODO(crbug.com/40186710): Verify that the behavior is
   // correct if the frame is pending deletion.
-  for (FrameTreeNode* node : base::Reversed(ancestor_chain)) {
+  for (FrameTreeNode* node : std::views::reverse(ancestor_chain)) {
     node->render_manager()->CreateRenderFrameProxy(
         group, node->current_frame_host()->browsing_context_state(),
         /*navigation_metrics_token=*/std::nullopt);
@@ -5621,6 +5565,14 @@ void RenderFrameHostManager::CommitPending(
         render_widget_host_view_base->is_evicted();
   }
 
+  // Update the Surface Embed view before notifying observers of the swap.
+  if (render_frame_host_->IsInPrimaryMainFrame() &&
+      new_view->IsRenderWidgetHostViewChildFrame()) {
+    delegate_->NotifySwappedRWHVChildFrameFromRenderManager(
+        static_cast<RenderWidgetHostViewChildFrame*>(new_view),
+        allow_paint_holding);
+  }
+
   // Notify that we've swapped RenderFrameHosts. We do this before shutting down
   // the RFH so that we can clean up RendererResources related to the RFH first.
   delegate_->NotifySwappedFromRenderManager(old_render_frame_host.get(),
@@ -5734,9 +5686,6 @@ void RenderFrameHostManager::CommitPending(
     }
   }
 
-  bool is_child_view = static_cast<RenderWidgetHostViewBase*>(new_view)
-                           ->IsRenderWidgetHostViewChildFrame();
-
   // If this is a subframe or inner frame tree, it should have a
   // CrossProcessFrameConnector created already.  Use it to link the new RFH's
   // view to the proxy that belongs to the parent frame's SiteInstance. If this
@@ -5751,12 +5700,6 @@ void RenderFrameHostManager::CommitPending(
     proxy_to_parent_or_outer_delegate->SetChildRWHView(
         static_cast<RenderWidgetHostViewChildFrame*>(new_view),
         old_size ? &*old_size : nullptr, allow_paint_holding);
-  } else if (is_child_view) {
-    // Only use this mechanism when there is no proxy to parent or outer
-    // delegate. Otherwise we will partially duplicate SetChildRWHView work.
-    delegate_->NotifySwappedRWHVChildFrameFromRenderManager(
-        static_cast<RenderWidgetHostViewChildFrame*>(new_view),
-        allow_paint_holding);
   }
 
   UpdateViewVisibilityAfterCommit(/*was_same_render_frame_host=*/false);
@@ -5980,7 +5923,7 @@ void RenderFrameHostManager::CreateOpenerProxies(
   // this node first and this node last.  In the common case without cycles,
   // this will ensure that each tree's openers are created before the tree's
   // nodes need to reference them.
-  for (FrameTree* tree : base::Reversed(opener_frame_trees)) {
+  for (FrameTree* tree : std::views::reverse(opener_frame_trees)) {
     tree->root()->render_manager()->CreateOpenerProxiesForFrameTree(
         group, skip_this_node, browsing_context_state,
         navigation_metrics_token);
@@ -6191,21 +6134,20 @@ void RenderFrameHostManager::CreateNewFrameForInnerDelegateAttachIfNecessary() {
 void RenderFrameHostManager::NotifyPrepareForInnerDelegateAttachComplete(
     bool success) {
   CHECK(is_attaching_inner_delegate());
-  int32_t process_id = success
-                           ? render_frame_host_->GetProcess()->GetDeprecatedID()
-                           : ChildProcessHost::kInvalidUniqueID;
-  int32_t routing_id =
-      success ? render_frame_host_->GetRoutingID() : IPC::mojom::kRoutingIdNone;
+  GlobalRenderFrameHostToken frame_token;
+  if (success) {
+    frame_token = render_frame_host_->GetGlobalFrameToken();
+  }
   // Invoking the callback asynchronously to meet the APIs promise.
   GetUIThreadTaskRunner({})->PostTask(
       FROM_HERE,
       base::BindOnce(
           [](RenderFrameHost::PrepareForInnerWebContentsAttachCallback callback,
-             int32_t process_id, int32_t routing_id) {
+             const GlobalRenderFrameHostToken& frame_token) {
             std::move(callback).Run(
-                RenderFrameHostImpl::FromID(process_id, routing_id));
+                RenderFrameHostImpl::FromFrameToken(frame_token));
           },
-          std::move(attach_inner_delegate_callback_), process_id, routing_id));
+          std::move(attach_inner_delegate_callback_), frame_token));
 }
 
 NavigationControllerImpl& RenderFrameHostManager::GetNavigationController() {

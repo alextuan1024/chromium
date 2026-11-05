@@ -21,8 +21,8 @@ public class AppRestrictionsProvider extends AbstractAppRestrictionsProvider {
     private static final String TAG = "AppResProvider";
 
     /**
-     * Get the app restriction information from provided user manager, and record some timing
-     * metrics on its runtime.
+     * Get the app restriction information from provided user manager.
+     *
      * @param userManager UserManager service from Android System service
      * @param packageName package name for target application.
      * @return The restrictions for the provided package name, an empty bundle if they are not

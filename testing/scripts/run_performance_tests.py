@@ -57,9 +57,7 @@ if sys.platform == 'darwin':
   import plistlib
 
 # vpython-provided modules.
-# pylint: disable=import-error
 import requests
-# pylint: enable=import-error
 
 import common
 
@@ -74,14 +72,14 @@ if (PERF_DIR / 'crossbench_result_converter.py').exists():
   import crossbench_result_converter
 else:
   print('Optional crossbench_result_converter not available.')
-import generate_legacy_perf_dashboard_json
-from core import path_util
-from core import results_merger
+import generate_legacy_perf_dashboard_json  # noqa: E402
+from core import path_util  # noqa: E402
+from core import results_merger  # noqa: E402
 
 sys.path.append(str(CHROMIUM_SRC_DIR / 'testing'))
 # //testing imports.
-import xvfb
-import test_env
+import xvfb  # noqa: E402
+import test_env  # noqa: E402
 
 THIRD_PARTY_DIR = CHROMIUM_SRC_DIR / 'third_party'
 CATAPULT_DIR = THIRD_PARTY_DIR / 'catapult'
@@ -102,7 +100,7 @@ ALUM_RUNNER = CHROMIUM_SRC_DIR / 'tools/perf/web_tests_cuj.py'
 ADB_TOOL = THIRD_PARTY_DIR / 'android_sdk/public/platform-tools/adb'
 BUNDLETOOL = (
   THIRD_PARTY_DIR / 'android_build_tools/bundletool/cipd/bundletool.jar'
-)  # pylint: disable=line-too-long
+)
 GSUTIL_DIR = THIRD_PARTY_DIR / 'catapult/third_party/gsutil'
 PAGE_SETS_DATA = CHROMIUM_SRC_DIR / 'tools/perf/page_sets/data'
 PERF_TOOLS = ['benchmarks', 'executables', 'crossbench']
@@ -130,6 +128,7 @@ GTEST_CONVERSION_WHITELIST = [
   'gpu_perftests',
   'load_library_perf_tests',
   'net_perftests',
+  'partition_alloc_perftests',
   'browser_tests',
   'services_perftests',
   # TODO(jmadill): Remove once migrated. http://anglebug.com/5124
@@ -141,8 +140,6 @@ GTEST_CONVERSION_WHITELIST = [
   'wayland_client_perftests',
   'xr.vr.common_perftests',
 ]
-
-# pylint: disable=useless-object-inheritance
 
 
 class OutputFilePaths(object):
@@ -276,20 +273,14 @@ class GtestCommandGenerator(object):
       return ['--gtest_filter=' + ':'.join(filter_list)]
     return []
 
-  # pylint: disable=no-self-use
   def _generate_repeat_args(self):
     # TODO(crbug.com/40608634): Support --isolated-script-test-repeat.
     return []
 
-  # pylint: enable=no-self-use
-
-  # pylint: disable=no-self-use
   def _generate_also_run_disabled_tests_args(self):
     # TODO(crbug.com/40608634): Support
     # --isolated-script-test-also-run-disabled-tests.
     return []
-
-  # pylint: enable=no-self-use
 
   def _generate_output_args(self, output_dir):
     output_args = []
@@ -334,7 +325,7 @@ def write_simple_test_results(return_code, output_filepath, benchmark_name):
     json.dump(output_json, fh)
 
 
-def upload_simple_test_results(return_code, benchmark_name):
+def upload_simple_test_results(return_code, benchmark_name, duration=None):
   # TODO(crbug.com/40144432): Fix to upload results for each test rather than
   # this summary.
   try:
@@ -354,18 +345,23 @@ def upload_simple_test_results(return_code, benchmark_name):
     'caseNameComponents': [benchmark_name],
   }
 
-  result_json = {
-    'testResults': [
-      {
-        'testId': benchmark_name,
-        'expected': not return_code,
-        'status': 'FAIL' if return_code else 'PASS',
-        'summaryHtml': summary,
-        'tags': [{'key': 'exit_code', 'value': str(return_code)}],
-        'testIdStructured': struct_test_dict,
-      }
-    ]
+  test_result = {
+    'testId': benchmark_name,
+    'expected': not return_code,
+    'status': 'FAIL' if return_code else 'PASS',
+    'summaryHtml': summary,
+    'tags': [{'key': 'exit_code', 'value': str(return_code)}],
+    'testIdStructured': struct_test_dict,
   }
+  if duration is not None:
+    # Callers measure elapsed time using time.time(), which is a wall-clock
+    # timer (not monotonic) and can jump backward if the system clock is
+    # adjusted (e.g. via NTP). Clamp to 0.0 because ResultSink rejects
+    # negative durations, and format with fixed decimal places to avoid
+    # scientific notation. ResultDB takes duration in seconds.
+    test_result['duration'] = '%.9fs' % max(0.0, float(duration))
+
+  result_json = {'testResults': [test_result]}
 
   res = requests.post(
     url='http://%s/prpc/luci.resultsink.v1.Sink/ReportTestResults'
@@ -437,7 +433,7 @@ def execute_gtest_perf_test(
       )
       with open(output_paths.perf_results, 'w') as fh:
         fh.write(graph_json_string)
-  except Exception:  # pylint: disable=broad-except
+  except Exception:
     traceback.print_exc()
     return_code = 1
   if os.path.exists(output_paths.perf_results):
@@ -445,9 +441,7 @@ def execute_gtest_perf_test(
     if executable_name in GTEST_CONVERSION_WHITELIST:
       # //third_party/catapult/tracing imports.
       with path_util.SysPath(path_util.GetTracingDir()):
-        # pylint: disable=no-name-in-module,import-outside-toplevel
         from tracing.value import gtest_json_converter
-        # pylint: enable=no-name-in-module,import-outside-toplevel
       gtest_json_converter.ConvertGtestJsonFile(
         output_paths.perf_results, label=results_label
       )
@@ -457,11 +451,15 @@ def execute_gtest_perf_test(
       % output_paths.name
     )
     return_code = 1
+  # time.time() is not monotonic; clamp to 0.0 in case of clock adjustments.
+  duration = max(0.0, time.time() - start)
   write_simple_test_results(
     return_code, output_paths.test_results, output_paths.name
   )
   if not is_unittest:
-    upload_simple_test_results(return_code, output_paths.name)
+    upload_simple_test_results(
+      return_code, output_paths.name, duration=duration
+    )
 
   print_duration(
     'executing gtest %s' % command_generator.executable_name, start
@@ -683,7 +681,7 @@ def execute_telemetry_benchmark(
     csv_file_path = os.path.join(temp_dir, 'results.csv')
     if os.path.isfile(csv_file_path):
       shutil.move(csv_file_path, output_paths.csv_perf_results)
-  except Exception:  # pylint: disable=broad-except
+  except Exception:
     print(
       'The following exception may have prevented the code from '
       'outputing structured test results and perf results output:'
@@ -794,6 +792,149 @@ def get_shard_map_settings(bot, benchmark_type, benchmark_name):
   return None
 
 
+_ADDITIVE_SHARD_FLAGS = frozenset({'--extra-browser-args'})
+_DASH_VALUE_FLAGS = frozenset(
+  {
+    '--extra-browser-args',
+    '--js-flags',
+    '--stories',
+    '--story',
+    '--story-tag',
+    '--story-tags',
+  }
+)
+# Crossbench flag aliases and mutually-exclusive groups that configure the same
+# underlying setting, so overriding with any spelling supersedes the shard flag.
+_FLAG_CONFLICT_GROUPS = (
+  frozenset({'--cuj-config', '--cujs-config'}),
+  frozenset({'--env', '--env-config'}),
+  frozenset(
+    {
+      '--cool-down',
+      '--cool-down-threshold',
+      '--cool-down-time',
+      '--cooldown',
+      '--cooldown-threshold',
+      '--cooldown-time',
+      '--no-cool-down',
+    }
+  ),
+  frozenset(
+    {
+      '--disable-field-trial-config',
+      '--disable-field-trials',
+      '--enable-field-trial-config',
+      '--enable-field-trials',
+    }
+  ),
+  frozenset(
+    {
+      '--file-server',
+      '--fileserver',
+      '--local-file-server',
+      '--local-fileserver',
+      '--network',
+      '--network-config',
+      '--web-page-replay',
+      '--wpr',
+    }
+  ),
+  frozenset({'-r', '--invocations', '--repeat', '--repetitions'}),
+  frozenset(
+    {
+      '--no-splash',
+      '--nosplash',
+      '--splash',
+      '--splash-screen',
+      '--splashscreen',
+    }
+  ),
+  frozenset({'--all', '--stories', '--story', '--story-tag', '--story-tags'}),
+)
+_CANONICAL_FLAG_KEYS = {
+  flag: group_id
+  for group_id, group in enumerate(_FLAG_CONFLICT_GROUPS)
+  for flag in group
+}
+
+
+def _canonical_flag_key(flag_name):
+  return _CANONICAL_FLAG_KEYS.get(flag_name, flag_name)
+
+
+def _iter_cli_flag_groups(args):
+  """Yields (flag_name, tokens) groups from a list of CLI arguments."""
+  i = 0
+  while i < len(args):
+    arg = args[i]
+    if arg == '--':
+      yield None, list(args[i:])
+      break
+    if not arg.startswith('-') or arg == '-':
+      yield None, [arg]
+      i += 1
+      continue
+    if '=' in arg:
+      yield arg.split('=', 1)[0], [arg]
+      i += 1
+      continue
+    if i + 1 < len(args) and args[i + 1] != '--':
+      if arg in _DASH_VALUE_FLAGS and args[i + 1].startswith('-'):
+        yield arg, [arg, args[i + 1]]
+        i += 2
+        continue
+      if not args[i + 1].startswith('-'):
+        j = i + 2
+        while j < len(args) and not args[j].startswith('-'):
+          j += 1
+        yield arg, list(args[i:j])
+        i = j
+        continue
+    yield arg, [arg]
+    i += 1
+
+
+def _pop_flag_group(args, target_flag):
+  """Removes and returns the CLI token group for `target_flag`, or None."""
+  matches = []
+  kept_args = []
+  for flag_name, tokens in _iter_cli_flag_groups(args):
+    if flag_name == target_flag:
+      matches.append(tokens)
+    else:
+      kept_args.extend(tokens)
+  if not matches:
+    return None
+  if len(matches) != 1:
+    raise ValueError(f'Expects exactly one {target_flag} on command line')
+  args[:] = kept_args
+  return matches[0]
+
+
+def _merge_shard_and_passthrough_args(shard_args, passthrough_args):
+  """Merges shard map arguments with job passthrough arguments.
+
+  Flags present in `passthrough_args` supersede matching (or mutually-exclusive
+  alias) flags from `shard_args`, except for `--extra-browser-args`, which
+  `CrossbenchTest` parses with `action='extend'` (and which Pinpoint
+  unconditionally injects on every job).
+  """
+  if not shard_args:
+    return list(passthrough_args)
+  overridden_keys = {
+    _canonical_flag_key(flag_name)
+    for flag_name, _ in _iter_cli_flag_groups(passthrough_args)
+    if flag_name and flag_name not in _ADDITIVE_SHARD_FLAGS
+  }
+  kept_shard_args = []
+  for flag_name, tokens in _iter_cli_flag_groups(shard_args):
+    if (
+      flag_name is None or _canonical_flag_key(flag_name) not in overridden_keys
+    ):
+      kept_shard_args.extend(tokens)
+  return kept_shard_args + list(passthrough_args)
+
+
 class CrossbenchTest(object):
   """This class is for running Crossbench tests.
 
@@ -869,7 +1010,9 @@ class CrossbenchTest(object):
       self.options.bot, 'crossbench', self.options.benchmark_display_name
     )
     if settings:
-      self.options.passthrough_args += settings.get('arguments', [])
+      self.options.passthrough_args = _merge_shard_and_passthrough_args(
+        settings.get('arguments', []), self.options.passthrough_args
+      )
 
   def _parse_arguments(self):
     parser = argparse.ArgumentParser()
@@ -937,23 +1080,24 @@ class CrossbenchTest(object):
     )
 
   def _get_network_arg(self, args):
-    if _arg := _get_arg(args, '--network='):
-      return [_arg]
-    if _arg := _get_arg(args, '--fileserver'):
-      return self._create_fileserver_network(_arg)
+    if network_tokens := _pop_flag_group(args, '--network'):
+      return network_tokens
+    if fileserver_tokens := _pop_flag_group(args, '--fileserver'):
+      return self._create_fileserver_network(fileserver_tokens)
     if self.cb_options.wpr:
       return self._create_wpr_network()
+    if any(
+      _canonical_flag_key(flag_name) == _canonical_flag_key('--network')
+      for flag_name, _ in _iter_cli_flag_groups(args)
+      if flag_name
+    ):
+      return []
     if self.options.benchmarks.startswith('motionmark') and not self.is_android:
       # TODO(crbug.com/413452730): Enable local file server in all platforms.
       return []
-    if (self.options.benchmarks in self.BENCHMARK_FILESERVERS) and not (
-      self.options.benchmarks.startswith('speedometer')
-      and sys.platform == 'darwin'
-    ):
+    if self.options.benchmarks in self.BENCHMARK_FILESERVERS:
       # Use file server when it is available.
-      arg = '--fileserver'
-      args.append(arg)
-      return self._create_fileserver_network(arg)
+      return self._create_fileserver_network(['--fileserver'])
     return []
 
   def _create_env_arg(self):
@@ -966,27 +1110,28 @@ class CrossbenchTest(object):
     if self.is_android:
       # Set Android CPU governor due to crbug.com/487175106.
       # In most cases, use "performance" to be consistent with Telemetry.
-      # But for CBB (indicated by using official build of Chrome),
-      # use "sched_pixel", which is the default mode for Pixel Tablets
-      # (see crbug.com/495679726).
-      if self.cb_options.official_browser:
+      # But for CBB (indicated by using official build of Chrome), or for
+      # idle power regression tests, use "sched_pixel", which is the default
+      # mode for Pixel Tablets (see crbug.com/495679726).
+      is_web_power = self.options.benchmarks.startswith('web-power')
+      if self.cb_options.official_browser or is_web_power:
         power_mode = 'sched_pixel'
       else:
         power_mode = 'performance'
       return [f'--env={{"cpu_power_mode":"{power_mode}"}}']
     return []
 
-  def _create_fileserver_network(self, arg):
-    if '=' in arg:
-      fileserver_path = arg.split('=', 1)[1]
+  def _create_fileserver_network(self, tokens):
+    if '=' in tokens[0]:
+      fileserver_path = tokens[0].split('=', 1)[1]
+    elif len(tokens) > 1:
+      fileserver_path = tokens[1]
     else:
       benchmark = self.options.benchmarks
       if benchmark not in self.BENCHMARK_FILESERVERS:
         raise ValueError(f'fileserver does not support {benchmark}')
       fileserver_path = self.BENCHMARK_FILESERVERS.get(benchmark)
     fileserver_relative_path = str(CHROMIUM_SRC_DIR / fileserver_path)
-    # Replacing --fileserver with --network.
-    self.options.passthrough_args.remove(arg)
     return [
       _create_network_json(
         'local', path=fileserver_relative_path, url='http://localhost:0'
@@ -1007,12 +1152,15 @@ class CrossbenchTest(object):
     ]
 
   def _check_for_embedder_arg(self):
-    embedder_arg = _get_arg(self.options.passthrough_args, '--embedder=')
-    if embedder_arg:
-      embedder_package_name = embedder_arg.split('=', 1)[1]
-      # This will affect browser arg, but is not to be passed by itself
-      self.options.passthrough_args.remove(embedder_arg)
-      return embedder_package_name
+    # This will affect browser arg, but is not to be passed by itself.
+    if embedder_tokens := _pop_flag_group(
+      self.options.passthrough_args, '--embedder'
+    ):
+      if '=' in embedder_tokens[0]:
+        return embedder_tokens[0].split('=', 1)[1]
+      if len(embedder_tokens) > 1:
+        return embedder_tokens[1]
+      raise ValueError('--embedder argument is missing!')
     return None
 
   def _find_browser(self, browser_arg):
@@ -1189,7 +1337,7 @@ class CrossbenchTest(object):
         while bottom_of_log:
           print(f'    {bottom_of_log.popleft()}')
         print('See the complete logs in the CAS Outputs')
-    except Exception:  # pylint: disable=broad-except
+    except Exception:
       print(
         'The following exception may have prevented the code from '
         'outputing structured test results and perf results output:'
@@ -1197,6 +1345,8 @@ class CrossbenchTest(object):
       print(traceback.format_exc())
       infra_failure = True
 
+    # time.time() is not monotonic; clamp to 0.0 in case of clock adjustments.
+    duration = max(0.0, time.time() - start)
     if self.options.luci_chromium:
       write_simple_test_results(
         return_code, self.options.isolated_script_test_output, display_name
@@ -1206,7 +1356,7 @@ class CrossbenchTest(object):
         return_code, output_paths.test_results, display_name
       )
       if not is_unittest:
-        upload_simple_test_results(return_code, display_name)
+        upload_simple_test_results(return_code, display_name, duration=duration)
 
     print_duration(f'Executing benchmark: {benchmark}', start)
 
@@ -1498,13 +1648,11 @@ def get_browser_versions(isolated_out_dir):
         'driver': '/usr/bin/safaridriver',
         'prefix': 'Included with Safari ',
       },
-      # pylint: disable=line-too-long
       'technology-preview': {
         'plist': '/Applications/Safari Technology Preview.app/Contents/Info.plist',
         'driver': '/Applications/Safari Technology Preview.app/Contents/MacOS/safaridriver',
         'prefix': 'Included with Safari Technology Preview ',
       },
-      # pylint: enable=line-too-long
     }
     for channel, info in channels.items():
       driver_version = subprocess.run(
@@ -1515,11 +1663,9 @@ def get_browser_versions(isolated_out_dir):
       ).stdout.strip()
       prefix = info['prefix']
       if not driver_version.startswith(prefix):
-        # pylint: disable=line-too-long
         print(
           f'Missing expected prefix from Safari {channel} output: {driver_version}'
         )
-        # pylint: enable=line-too-long
         return 1
       driver_version = driver_version[len(prefix) :]
       # For Safari stable, the version reported by safaridriver is complete and

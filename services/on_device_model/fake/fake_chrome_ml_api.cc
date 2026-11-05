@@ -8,9 +8,12 @@
 #include "base/files/file.h"
 #include "base/files/file_util.h"
 #include "base/logging.h"
+#include "base/no_destructor.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/stringprintf.h"
+#include "base/synchronization/lock.h"
+#include "base/thread_annotations.h"
 #include "services/on_device_model/ml/chrome_ml.h"
 #include "services/on_device_model/ml/chrome_ml_api.h"
 #include "third_party/abseil-cpp/absl/functional/overload.h"
@@ -41,6 +44,8 @@ std::string PieceToString(const ml::InputPiece& piece) {
                 return "ToolCall: ";
               case ml::Token::kToolResponse:
                 return "ToolResponse: ";
+              case ml::Token::kThought:
+                return "Thought: ";
             }
           },
           [](const SkBitmap& bitmap) -> std::string {
@@ -169,6 +174,8 @@ struct FakeModelInstance {
   ml::ModelBackendType backend_type;
   ml::ModelPerformanceHint performance_hint;
   std::string model_data;
+  std::string mtp_drafter_cache_data;
+  std::string mtp_drafter_program_cache_data;
 };
 
 struct FakeSessionInstance {
@@ -195,9 +202,36 @@ struct FakeCancelInstance {
 ChromeMLModel SessionCreateModel(const ChromeMLModelDescriptor* descriptor,
                                  uintptr_t context,
                                  ChromeMLScheduleFn schedule) {
+  std::string model_data;
+  std::string mtp_drafter_cache_data;
+  std::string mtp_drafter_program_cache_data;
+  if (descriptor->model_data) {
+    if (descriptor->model_data->weights_file != base::kInvalidPlatformFile) {
+      model_data = ReadFile(descriptor->model_data->weights_file);
+    } else if (descriptor->model_data->model_path &&
+               descriptor->model_data->model_path[0] != '\0') {
+      base::ReadFileToString(
+          base::FilePath::FromUTF8Unsafe(descriptor->model_data->model_path),
+          &model_data);
+    }
+    if (descriptor->model_data->mtp_drafter_cache_file !=
+        base::kInvalidPlatformFile) {
+      mtp_drafter_cache_data =
+          ReadFile(descriptor->model_data->mtp_drafter_cache_file);
+    }
+    if (descriptor->model_data->mtp_drafter_program_cache_file !=
+        base::kInvalidPlatformFile) {
+      mtp_drafter_program_cache_data =
+          ReadFile(descriptor->model_data->mtp_drafter_program_cache_file);
+    }
+  }
   return reinterpret_cast<ChromeMLModel>(new FakeModelInstance{
       .backend_type = descriptor->backend_type,
       .performance_hint = descriptor->performance_hint,
+      .model_data = std::move(model_data),
+      .mtp_drafter_cache_data = std::move(mtp_drafter_cache_data),
+      .mtp_drafter_program_cache_data =
+          std::move(mtp_drafter_program_cache_data),
   });
 }
 
@@ -269,13 +303,7 @@ bool SessionAppend(ChromeMLSession session,
     std::visit(
         absl::Overload{
             [&](ml::Token token) {
-              if (token == ml::Token::kSystem) {
-                in_system_prompt = true;
-              } else if (token == ml::Token::kUser ||
-                         token == ml::Token::kModel ||
-                         token == ml::Token::kEnd) {
-                in_system_prompt = false;
-              }
+              in_system_prompt = token == ml::Token::kSystem;
             },
             [&](const SkBitmap&) { CHECK(instance->enable_image_input); },
             [&](const ml::AudioBuffer&) {
@@ -361,6 +389,24 @@ bool SessionGenerate(ChromeMLSession session,
   if (instance->allow_speculative_decoding) {
     OutputChunk("SpeculativeDecodingAllowed");
   }
+  if (!instance->model_instance->mtp_drafter_cache_data.empty()) {
+    OutputChunk("MTP drafter cache: " +
+                instance->model_instance->mtp_drafter_cache_data);
+  }
+  if (!instance->model_instance->mtp_drafter_program_cache_data.empty()) {
+    OutputChunk("MTP drafter program cache: " +
+                instance->model_instance->mtp_drafter_program_cache_data);
+  }
+
+  if (options->enable_thinking) {
+    std::string thought_str =
+        "Thinking (budget=" +
+        base::NumberToString(options->thinking_token_budget) + ")";
+    ChromeMLExecutionOutput thought_output = {};
+    thought_output.status = ChromeMLExecutionStatus::kInProgress;
+    thought_output.thought = thought_str.c_str();
+    (*options->output_fn)(&thought_output);
+  }
 
   if (!instance->context.empty()) {
     for (const std::string& context : instance->context) {
@@ -413,6 +459,8 @@ bool SessionExecuteModel(ChromeMLSession session,
       .max_output_tokens = options->max_output_tokens,
       .constraint = options->constraint,
       .output_fn = options->execution_output_fn,
+      .enable_thinking = options->enable_thinking,
+      .thinking_token_budget = options->thinking_token_budget,
   };
   return SessionGenerate(session, &gen_opts, cancel);
 }
@@ -531,16 +579,47 @@ void DestroyGpuDelegate(TfLiteDelegate* delegate) {}
 
 struct FakeASRStream {
   ChromeMLASRStreamOutputFn output_fn;
+  std::string polisher_data;
 };
+
+struct LastAsrStreamOptionsState {
+  base::Lock lock;
+  std::optional<CapturedAsrStreamOptions> options GUARDED_BY(lock);
+};
+
+LastAsrStreamOptionsState& GetLastAsrStreamOptionsState() {
+  static base::NoDestructor<LastAsrStreamOptionsState> state;
+  return *state;
+}
 
 ChromeMLASRStream ASRCreateStream(ChromeMLSession session,
                                   const ChromeMLASRStreamOptions* options) {
+  CHECK(options);
+  {
+    auto& state = GetLastAsrStreamOptionsState();
+    base::AutoLock auto_lock(state.lock);
+    state.options = CapturedAsrStreamOptions{
+        .sample_rate_hz = options->sample_rate_hz,
+        .decoder_prefill_backoff = options->decoder_prefill_backoff,
+        .enable_token_stability = options->enable_token_stability,
+        .interim_token_holdback = options->interim_token_holdback,
+        .interim_release_silence_ms = options->interim_release_silence_ms,
+        .interim_stability_steps = options->interim_stability_steps,
+        .enable_draft_verification = options->enable_draft_verification,
+        .final_decoder_prefill_backoff = options->final_decoder_prefill_backoff,
+    };
+  }
   if (options->sample_rate_hz == 0) {
     return 0;
   }
   auto* stream = new FakeASRStream();
   if (options->output_fn) {
     stream->output_fn = *options->output_fn;
+  }
+  if (options->polisher_model != 0) {
+    auto* polisher_instance =
+        reinterpret_cast<FakeModelInstance*>(options->polisher_model);
+    stream->polisher_data = polisher_instance->model_data;
   }
   return reinterpret_cast<ChromeMLASRStream>(stream);
 }
@@ -549,9 +628,13 @@ void ASRAddAudioChunk(ChromeMLASRStream stream, ml::AudioBuffer* audio_buffer) {
   auto* fake_stream = reinterpret_cast<FakeASRStream*>(stream);
   CHECK(fake_stream);
   if (fake_stream->output_fn) {
+    std::string transcript_str(kFakeAsrTranscript);
+    if (!fake_stream->polisher_data.empty()) {
+      transcript_str += " (Polisher: " + fake_stream->polisher_data + ")";
+    }
     ChromeMLASRStreamOutput output;
     ChromeMLASRStreamOutputTranscript transcript{
-        .transcript = kFakeAsrTranscript,
+        .transcript = transcript_str.c_str(),
         .is_final = true,
         .from_timestamp_micros = kFakeAsrStartTimeMicros,
         .to_timestamp_micros = kFakeAsrEndTimeMicros,
@@ -604,6 +687,18 @@ const ChromeMLAPI g_api = {
 const ChromeMLAPI* GetFakeMlApi() {
   g_api.SetConstraintFns(ml::GetConstraintFns());
   return &g_api;
+}
+
+std::optional<CapturedAsrStreamOptions> GetLastAsrStreamOptionsForTesting() {
+  auto& state = GetLastAsrStreamOptionsState();
+  base::AutoLock auto_lock(state.lock);
+  return state.options;
+}
+
+void ResetLastAsrStreamOptionsForTesting() {
+  auto& state = GetLastAsrStreamOptionsState();
+  base::AutoLock auto_lock(state.lock);
+  state.options.reset();
 }
 
 base::AutoReset<bool> EnableCalculateTokensDecodedForTesting() {

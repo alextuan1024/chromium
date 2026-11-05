@@ -40,6 +40,7 @@
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "mojo/public/cpp/bindings/receiver.h"
 #include "mojo/public/cpp/bindings/remote.h"
+#include "ui/base/interaction/element_identifier.h"
 #include "ui/native_theme/native_theme.h"
 #include "ui/native_theme/native_theme_observer.h"
 
@@ -94,8 +95,6 @@ class NewTabPageHandler
                     segmentation_platform::SegmentationPlatformService*
                         segmentation_platform_service,
                     content::WebContents* web_contents,
-                    const base::Time& ntp_navigation_start_time,
-                    base::TimeTicks ntp_navigation_start_time_ticks,
                     const std::vector<ntp::ModuleIdDetail>* module_id_details);
 
   NewTabPageHandler(const NewTabPageHandler&) = delete;
@@ -103,9 +102,15 @@ class NewTabPageHandler
 
   ~NewTabPageHandler() override;
 
-  // Histograms being recorded when a module is dismissed or restored.
+  // Returns the element identifiers that New Tab Page help bubbles can anchor
+  // to. Hosts register these with the page's TrackedElementHandler.
+  static std::vector<ui::ElementIdentifier> GetTrackedElementIds();
+
+  // Returns whether `profile`'s primary account is managed.
+  static bool IsManagedProfile(Profile* profile);
+
+  // Histograms being recorded when a module is dismissed.
   static const char kModuleDismissedHistogram[];
-  static const char kModuleRestoredHistogram[];
   // Histograms being recorded when auto removal/undo event is triggered.
   static const char kModuleAutoRemovalHistogram[];
   static const char kModuleAutoRemovalUndoneHistogram[];
@@ -129,7 +134,6 @@ class NewTabPageHandler
   void GetMostVisitedSettings(GetMostVisitedSettingsCallback callback) override;
   void GetDoodle(GetDoodleCallback callback) override;
   void OnDismissModule(const std::string& module_id) override;
-  void OnRestoreModule(const std::string& module_id) override;
   void SetModulesVisible(bool visible) override;
   void SetModulesDisabled(const std::vector<std::string>& module_ids,
                           bool disabled,
@@ -213,7 +217,9 @@ class NewTabPageHandler
   void MaybeLaunchInteractionSurvey(std::string_view interaction,
                                     const std::string& module_id,
                                     int delay_time_ms = 0);
+#if !BUILDFLAG(IS_ANDROID)
   void MaybeShowWebstoreToast();
+#endif  // !BUILDFLAG(IS_ANDROID)
 
   void RecordModuleInteraction(const std::string& module_id);
 
@@ -251,10 +257,8 @@ class NewTabPageHandler
   bool SyncMicrosoftModulesWithAuth();
 
   NTPUserDataLogger logger_;
-#if !BUILDFLAG(IS_ANDROID)
   base::ScopedObservation<ThemeService, ThemeServiceObserver>
       theme_service_observation_{this};
-#endif
   base::ScopedObservation<MicrosoftAuthService, MicrosoftAuthServiceObserver>
       microsoft_auth_service_observation_{this};
 #if !BUILDFLAG(IS_ANDROID)
@@ -275,7 +279,6 @@ class NewTabPageHandler
   raw_ptr<Profile> const profile_;
   raw_ptr<content::WebContents> const web_contents_;
   std::unique_ptr<NewTabPageFeaturePromoHelper> feature_promo_helper_;
-  base::Time ntp_navigation_start_time_;
   raw_ptr<const std::vector<ntp::ModuleIdDetail>> const module_id_details_;
   std::unordered_map<const network::SimpleURLLoader*,
                      std::unique_ptr<network::SimpleURLLoader>>

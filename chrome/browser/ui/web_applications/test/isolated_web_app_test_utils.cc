@@ -26,6 +26,7 @@
 #include "chrome/browser/web_applications/isolated_web_apps/commands/install_isolated_web_app_command.h"
 #include "chrome/browser/web_applications/isolated_web_apps/install/isolated_web_app_install_source.h"
 #include "chrome/browser/web_applications/isolated_web_apps/isolated_web_app_url_info.h"
+#include "chrome/browser/web_applications/isolated_web_apps/iwa_command_scheduler.h"
 #include "chrome/browser/web_applications/isolated_web_apps/iwa_permissions_policy_cache.h"
 #include "chrome/browser/web_applications/isolated_web_apps/test/key_distribution/test_utils.h"
 #include "chrome/browser/web_applications/test/web_app_test_utils.h"
@@ -57,8 +58,8 @@
 #include "third_party/blink/public/common/permissions_policy/policy_helper_public.h"
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "third_party/skia/include/core/SkStream.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/base/page_transition_types.h"
-#include "ui/base/window_open_disposition.h"
 #include "ui/views/controls/label.h"
 #include "ui/views/controls/styled_label.h"
 #include "ui/views/test/widget_test.h"
@@ -178,7 +179,7 @@ content::RenderFrameHost*
 IsolatedWebAppBrowserTestHarness::NavigateToURLInNewTab(
     BrowserWindowInterface* window,
     const GURL& url,
-    WindowOpenDisposition disposition) {
+    ui::mojom::WindowOpenDisposition disposition) {
   auto new_contents = content::WebContents::Create(
       content::WebContents::CreateParams(browser()->GetProfile()));
   window->GetTabStripModel()->AppendWebContents(std::move(new_contents),
@@ -194,7 +195,7 @@ UpdateDiscoveryTaskResultWaiter::UpdateDiscoveryTaskResultWaiter(
     : expected_app_id_(expected_app_id),
       callback_(std::move(callback)),
       provider_(provider) {
-  observation_.Observe(&provider.isolated_web_app_update_manager());
+  observation_.Observe(&IsolatedWebAppUpdateManager::From(provider));
 }
 
 UpdateDiscoveryTaskResultWaiter::~UpdateDiscoveryTaskResultWaiter() = default;
@@ -217,7 +218,7 @@ UpdateApplyTaskResultWaiter::UpdateApplyTaskResultWaiter(
     : expected_app_id_(expected_app_id),
       callback_(std::move(callback)),
       provider_(provider) {
-  observation_.Observe(&provider.isolated_web_app_update_manager());
+  observation_.Observe(&IsolatedWebAppUpdateManager::From(provider));
 }
 
 UpdateApplyTaskResultWaiter::~UpdateApplyTaskResultWaiter() = default;
@@ -253,12 +254,13 @@ IsolatedWebAppUrlInfo InstallDevModeProxyIsolatedWebApp(
 
   auto url_info = IsolatedWebAppUrlInfo::CreateFromSignedWebBundleId(
       web_package::SignedWebBundleId::CreateRandomForProxyMode());
-  WebAppProvider::GetForWebApps(profile)->scheduler().InstallIsolatedWebApp(
-      url_info,
-      IsolatedWebAppInstallSource::FromDevUi(IwaSourceProxy(proxy_origin)),
-      /*expected_version=*/std::nullopt,
-      /*optional_keep_alive=*/nullptr,
-      /*optional_profile_keep_alive=*/nullptr, future.GetCallback());
+  IwaCommandScheduler::From(*WebAppProvider::GetForWebApps(profile))
+      .InstallIsolatedWebApp(
+          url_info,
+          IsolatedWebAppInstallSource::FromDevUi(IwaSourceProxy(proxy_origin)),
+          /*expected_version=*/std::nullopt,
+          /*optional_keep_alive=*/nullptr,
+          /*optional_profile_keep_alive=*/nullptr, future.GetCallback());
 
   CHECK(future.Get().has_value()) << future.Get().error();
 

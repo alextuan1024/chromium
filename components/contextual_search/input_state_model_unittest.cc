@@ -5,15 +5,21 @@
 #include "components/contextual_search/input_state_model.h"
 
 #include <memory>
+#include <string>
 #include <vector>
 
+#include "base/functional/bind.h"
 #include "base/memory/raw_ptr.h"
 #include "base/test/mock_callback.h"
 #include "base/test/scoped_feature_list.h"
 #include "components/contextual_search/contextual_search_session_handle.h"
+#include "components/contextual_search/contextual_search_types.h"
 #include "components/contextual_search/mock_contextual_search_context_controller.h"
 #include "components/contextual_search/mock_contextual_search_session_handle.h"
 #include "components/contextual_search/pref_names.h"
+#include "components/lens/lens_overlay_mime_type.h"
+#include "components/omnibox/common/composebox_features.h"
+#include "components/omnibox/common/input_state.h"
 #include "components/omnibox/common/omnibox_features.h"
 #include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/testing_pref_service.h"
@@ -241,6 +247,7 @@ TEST_F(InputStateModelTest, TestInitialization) {
   EXPECT_TRUE(state.disabled_tools.empty());
   EXPECT_TRUE(state.disabled_models.empty());
   EXPECT_TRUE(state.disabled_input_types.empty());
+  EXPECT_EQ(state.max_total_inputs, 0);
 }
 
 TEST_F(InputStateModelTest,
@@ -266,11 +273,11 @@ TEST_F(InputStateModelTest,
 TEST_F(InputStateModelTest, TestSubscribeAndNotify) {
   base::MockCallback<InputStateModel::Subscriber> mock_subscriber;
   base::CallbackListSubscription subscription =
-      input_state_model_->subscribe(mock_subscriber.Get());
+      input_state_model_->Subscribe(mock_subscriber.Get());
 
   EXPECT_CALL(mock_subscriber, Run(testing::_)).Times(1);
   // Setting a tool notifies subscribers.
-  input_state_model_->setActiveTool(ToolMode::TOOL_MODE_UNSPECIFIED);
+  input_state_model_->SetActiveTool(ToolMode::TOOL_MODE_UNSPECIFIED);
 }
 
 TEST_F(InputStateModelTest, DefaultToFirstAllowedModel) {
@@ -398,6 +405,46 @@ TEST_F(InputStateModelTest, ParsesActiveToolFromUrl) {
             omnibox::ToolMode::TOOL_MODE_UNSPECIFIED);
 }
 
+// A tool's `udm` dropped for `nem` doesn't stop it being recognized.
+TEST_F(InputStateModelTest, ParsesActiveToolFromUrl_NemStandsInForUdm) {
+  omnibox::SearchboxConfig config;
+
+  auto* canvas_config = config.add_tool_configs();
+  canvas_config->set_tool(omnibox::ToolMode::TOOL_MODE_CANVAS);
+  auto* canvas_rc_param = canvas_config->add_aim_url_params();
+  canvas_rc_param->set_param_key("rc");
+  canvas_rc_param->set_param_value("1");
+  auto* canvas_udm_param = canvas_config->add_aim_url_params();
+  canvas_udm_param->set_param_key("udm");
+  canvas_udm_param->set_param_value("50");
+
+  // A tool identified by `udm` alone.
+  auto* aim_config = config.add_tool_configs();
+  aim_config->set_tool(omnibox::ToolMode::TOOL_MODE_AIM);
+  auto* aim_param = aim_config->add_aim_url_params();
+  aim_param->set_param_key("udm");
+  aim_param->set_param_value("50");
+
+  auto tool_for_url = [&](const char* url) {
+    return InputStateModel(session_handle_, config, GURL(url),
+                           /*is_off_the_record=*/false,
+                           /*is_signed_in=*/false,
+                           /*browser_identity_matches_aim_identity=*/false)
+        .get_state_for_testing()
+        .active_tool;
+  };
+
+  // Canvas's `udm` was dropped for `nem`.
+  EXPECT_EQ(tool_for_url("https://example.com/?rc=1&nem=143"),
+            omnibox::ToolMode::TOOL_MODE_CANVAS);
+  // Without `nem`, Canvas still needs its `udm`.
+  EXPECT_EQ(tool_for_url("https://example.com/?rc=1"),
+            omnibox::ToolMode::TOOL_MODE_UNSPECIFIED);
+  // A `udm`-only tool doesn't match a `nem` URL.
+  EXPECT_EQ(tool_for_url("https://example.com/?nem=143"),
+            omnibox::ToolMode::TOOL_MODE_UNSPECIFIED);
+}
+
 TEST_F(InputStateModelTest, HidesToolsFromMenu) {
   omnibox::SearchboxConfig config;
   auto* tool_config = config.add_tool_configs();
@@ -419,6 +466,36 @@ TEST_F(InputStateModelTest, HidesToolsFromMenu) {
   // allowed.
   EXPECT_THAT(state.allowed_tools, testing::UnorderedElementsAre(
                                        omnibox::ToolMode::TOOL_MODE_IMAGE_GEN));
+}
+
+TEST_F(InputStateModelTest, GetAllowedTools) {
+  omnibox::SearchboxConfig config;
+  config.add_tool_configs()->set_tool(omnibox::ToolMode::TOOL_MODE_DEEP_SEARCH);
+  config.add_tool_configs()->set_tool(omnibox::ToolMode::TOOL_MODE_IMAGE_GEN);
+  config.add_tool_configs()->set_tool(
+      omnibox::ToolMode::TOOL_MODE_IMAGE_GEN_UPLOAD);
+  auto* hidden_config = config.add_tool_configs();
+  hidden_config->set_tool(omnibox::ToolMode::TOOL_MODE_CANVAS);
+  hidden_config->set_hide_from_menu(true);
+
+  // Hidden tools and `TOOL_MODE_IMAGE_GEN_UPLOAD` are never allowed.
+  EXPECT_THAT(
+      InputStateModel::GetAllowedTools(config, /*is_off_the_record=*/false),
+      testing::ElementsAre(omnibox::ToolMode::TOOL_MODE_DEEP_SEARCH,
+                           omnibox::ToolMode::TOOL_MODE_IMAGE_GEN));
+  // `TOOL_MODE_IMAGE_GEN` is not allowed off the record.
+  EXPECT_THAT(
+      InputStateModel::GetAllowedTools(config, /*is_off_the_record=*/true),
+      testing::ElementsAre(omnibox::ToolMode::TOOL_MODE_DEEP_SEARCH));
+
+  // Matches the allowed tools of a model built from the same config.
+  input_state_model_ = std::make_unique<InputStateModel>(
+      session_handle_, config, active_url_, /*is_off_the_record=*/false,
+      /*is_signed_in=*/true,
+      /*browser_identity_matches_aim_identity=*/true);
+  EXPECT_EQ(
+      input_state_model_->get_state_for_testing().allowed_tools,
+      InputStateModel::GetAllowedTools(config, /*is_off_the_record=*/false));
 }
 
 TEST_F(InputStateModelTest, UpdateToolFromUrl) {
@@ -512,7 +589,7 @@ TEST_F(InputStateModelTest, UserRemovedTool_PreventsStaleUrlReactivatingTool) {
             omnibox::ToolMode::TOOL_MODE_CANVAS);
 
   // User explicitly removes/exits Canvas.
-  state_model->setActiveTool(omnibox::ToolMode::TOOL_MODE_UNSPECIFIED);
+  state_model->SetActiveTool(omnibox::ToolMode::TOOL_MODE_UNSPECIFIED);
   EXPECT_EQ(state_model->get_state_for_testing().active_tool,
             omnibox::ToolMode::TOOL_MODE_UNSPECIFIED);
 
@@ -554,9 +631,9 @@ TEST_F(
   EXPECT_EQ(state_model->get_state_for_testing().active_tool,
             omnibox::ToolMode::TOOL_MODE_UNSPECIFIED);
 
-  // Calling `setActiveTool(TOOL_MODE_UNSPECIFIED)` when tool is already
+  // Calling `SetActiveTool(TOOL_MODE_UNSPECIFIED)` when tool is already
   // `UNSPECIFIED` should not record Canvas as removed.
-  state_model->setActiveTool(omnibox::ToolMode::TOOL_MODE_UNSPECIFIED);
+  state_model->SetActiveTool(omnibox::ToolMode::TOOL_MODE_UNSPECIFIED);
 
   // `UpdateStateFromUrl` with a Canvas URL on the same thread should properly
   // match Canvas.
@@ -617,7 +694,7 @@ TEST_F(InputStateModelTest,
             omnibox::ToolMode::TOOL_MODE_CANVAS);
 
   // User explicitly modifies tool (e.g. removes Canvas).
-  state_model->setActiveTool(omnibox::ToolMode::TOOL_MODE_UNSPECIFIED);
+  state_model->SetActiveTool(omnibox::ToolMode::TOOL_MODE_UNSPECIFIED);
   EXPECT_EQ(state_model->get_state_for_testing().active_tool,
             omnibox::ToolMode::TOOL_MODE_UNSPECIFIED);
   EXPECT_FALSE(state_model->get_state_for_testing().is_canvas_query_submitted);
@@ -718,7 +795,7 @@ TEST_F(InputStateModelTest, ModelWithAllowAllToolsIsNotDisabled) {
   input_state_model_->SetPrefService(&pref_service_);
 
   // Select Deep Search tool.
-  input_state_model_->setActiveTool(omnibox::ToolMode::TOOL_MODE_DEEP_SEARCH);
+  input_state_model_->SetActiveTool(omnibox::ToolMode::TOOL_MODE_DEEP_SEARCH);
   const auto& state = input_state_model_->get_state_for_testing();
 
   // Pro model should be disabled as it doesn't support Deep Search.
@@ -828,14 +905,14 @@ class InputStateModelCompatibilityTest : public InputStateModelTest {
 
     // Create the model *after* the config is set up.
     InputStateModelTest::SetUp();
-    input_state_model_->setActiveModel(
+    input_state_model_->SetActiveModel(
         omnibox::ModelMode::MODEL_MODE_UNSPECIFIED);
   }
 };
 
 TEST_F(InputStateModelCompatibilityTest, SelectTool) {
   // Select Deep Search.
-  input_state_model_->setActiveTool(omnibox::ToolMode::TOOL_MODE_DEEP_SEARCH);
+  input_state_model_->SetActiveTool(omnibox::ToolMode::TOOL_MODE_DEEP_SEARCH);
   const auto& new_state = input_state_model_->get_state_for_testing();
 
   // Both models should be disabled because neither supports Deep Search.
@@ -859,7 +936,7 @@ TEST_F(InputStateModelCompatibilityTest, SelectTool) {
 
 TEST_F(InputStateModelCompatibilityTest, SelectModel) {
   // Select Gemini.
-  input_state_model_->setActiveModel(
+  input_state_model_->SetActiveModel(
       omnibox::ModelMode::MODEL_MODE_GEMINI_REGULAR);
   const auto& new_state = input_state_model_->get_state_for_testing();
 
@@ -887,7 +964,7 @@ TEST_F(InputStateModelCompatibilityTest, SelectImageInput) {
       .WillByDefault(testing::Return(file_infos));
 
   // Trigger an update.
-  input_state_model_->setActiveTool(omnibox::ToolMode::TOOL_MODE_UNSPECIFIED);
+  input_state_model_->SetActiveTool(omnibox::ToolMode::TOOL_MODE_UNSPECIFIED);
   const auto& new_state = input_state_model_->get_state_for_testing();
 
   // With an image, tools that don't support images are disabled.
@@ -913,13 +990,36 @@ TEST_F(InputStateModelCompatibilityTest, SelectTabInput) {
       .WillByDefault(testing::Return(file_infos));
 
   // Pro supports tabs, but regular Gemini does not.
-  input_state_model_->setActiveModel(omnibox::ModelMode::MODEL_MODE_GEMINI_PRO);
+  input_state_model_->SetActiveModel(omnibox::ModelMode::MODEL_MODE_GEMINI_PRO);
   const auto& new_state = input_state_model_->get_state_for_testing();
 
   // Gemini regular should be disabled.
   EXPECT_THAT(
       new_state.disabled_models,
       UnorderedElementsAre(omnibox::ModelMode::MODEL_MODE_GEMINI_REGULAR));
+}
+
+TEST_F(InputStateModelCompatibilityTest,
+       SelectPendingTabTokenDisablesIncompatibleItems) {
+  // Simulate adding a tab token whose asynchronous `GetPageContext` has not yet
+  // completed (so `GetUploadedContextFileInfos()` is still empty while
+  // `GetUploadedContextTokens()` contains the pending token).
+  session_handle_.GetUploadedContextTokensForTesting().push_back(
+      base::UnguessableToken::Create());
+  ON_CALL(session_handle_, GetUploadedContextFileInfos())
+      .WillByDefault(testing::Return(std::vector<FileInfo>{}));
+
+  input_state_model_->OnContextChanged();
+  const auto& new_state = input_state_model_->get_state_for_testing();
+
+  // Incompatible models and tools should be disabled immediately.
+  EXPECT_THAT(
+      new_state.disabled_models,
+      UnorderedElementsAre(omnibox::ModelMode::MODEL_MODE_GEMINI_REGULAR));
+  EXPECT_THAT(new_state.disabled_tools,
+              UnorderedElementsAre(omnibox::ToolMode::TOOL_MODE_DEEP_SEARCH,
+                                   omnibox::ToolMode::TOOL_MODE_CANVAS,
+                                   omnibox::ToolMode::TOOL_MODE_IMAGE_GEN));
 }
 
 TEST_F(InputStateModelTest, GetAdditionalQueryParams) {
@@ -956,44 +1056,233 @@ TEST_F(InputStateModelTest, GetAdditionalQueryParams) {
   input_state_model_->SetPrefService(&pref_service_);
 
   // No tool or model added.
-  input_state_model_->setActiveTool(omnibox::ToolMode::TOOL_MODE_UNSPECIFIED);
-  input_state_model_->setActiveModel(
+  input_state_model_->SetActiveTool(omnibox::ToolMode::TOOL_MODE_UNSPECIFIED);
+  input_state_model_->SetActiveModel(
       omnibox::ModelMode::MODEL_MODE_UNSPECIFIED);
   EXPECT_THAT(input_state_model_->GetAdditionalQueryParams(),
               testing::UnorderedElementsAre(testing::Pair("udm", "50")));
 
   // Deep Search added.
-  input_state_model_->setActiveTool(omnibox::ToolMode::TOOL_MODE_DEEP_SEARCH);
+  input_state_model_->SetActiveTool(omnibox::ToolMode::TOOL_MODE_DEEP_SEARCH);
   EXPECT_THAT(input_state_model_->GetAdditionalQueryParams(),
               testing::UnorderedElementsAre(testing::Pair("dr", "1"),
                                             testing::Pair("udm", "50")));
 
   // Canvas added.
-  input_state_model_->setActiveTool(omnibox::ToolMode::TOOL_MODE_CANVAS);
+  input_state_model_->SetActiveTool(omnibox::ToolMode::TOOL_MODE_CANVAS);
   EXPECT_THAT(input_state_model_->GetAdditionalQueryParams(),
               testing::UnorderedElementsAre(testing::Pair("rc", "1"),
                                             testing::Pair("udm", "50")));
 
   // Image Gen added.
-  input_state_model_->setActiveTool(omnibox::ToolMode::TOOL_MODE_IMAGE_GEN);
+  input_state_model_->SetActiveTool(omnibox::ToolMode::TOOL_MODE_IMAGE_GEN);
   EXPECT_THAT(input_state_model_->GetAdditionalQueryParams(),
               testing::UnorderedElementsAre(testing::Pair("imgn", "1"),
                                             testing::Pair("udm", "50")));
 
   // Reset all tools.
-  input_state_model_->setActiveTool(omnibox::ToolMode::TOOL_MODE_UNSPECIFIED);
+  input_state_model_->SetActiveTool(omnibox::ToolMode::TOOL_MODE_UNSPECIFIED);
 
   // Set a model, should have query params.
-  input_state_model_->setActiveModel(omnibox::ModelMode::MODEL_MODE_GEMINI_PRO);
+  input_state_model_->SetActiveModel(omnibox::ModelMode::MODEL_MODE_GEMINI_PRO);
   EXPECT_THAT(input_state_model_->GetAdditionalQueryParams(),
               testing::UnorderedElementsAre(testing::Pair("nem", "143")));
 
   // Deep Search and Gemini Pro added. Both tool and model should be in params.
-  input_state_model_->setActiveTool(omnibox::ToolMode::TOOL_MODE_DEEP_SEARCH);
-  input_state_model_->setActiveModel(omnibox::ModelMode::MODEL_MODE_GEMINI_PRO);
+  input_state_model_->SetActiveTool(omnibox::ToolMode::TOOL_MODE_DEEP_SEARCH);
+  input_state_model_->SetActiveModel(omnibox::ModelMode::MODEL_MODE_GEMINI_PRO);
   EXPECT_THAT(input_state_model_->GetAdditionalQueryParams(),
               testing::UnorderedElementsAre(testing::Pair("dr", "1"),
                                             testing::Pair("nem", "143")));
+}
+
+// `udm` (e.g. from a tool) is dropped when a model adds `nem`.
+TEST_F(InputStateModelTest, GetAdditionalQueryParams_NemDropsUdm) {
+  auto* canvas_config = config_.add_tool_configs();
+  canvas_config->set_tool(omnibox::ToolMode::TOOL_MODE_CANVAS);
+  auto* canvas_rc_param = canvas_config->add_aim_url_params();
+  canvas_rc_param->set_param_key("rc");
+  canvas_rc_param->set_param_value("1");
+  auto* canvas_udm_param = canvas_config->add_aim_url_params();
+  canvas_udm_param->set_param_key("udm");
+  canvas_udm_param->set_param_value("50");
+
+  auto* gemini_pro_config = config_.add_model_configs();
+  gemini_pro_config->set_model(omnibox::ModelMode::MODEL_MODE_GEMINI_PRO);
+  auto* gp_param = gemini_pro_config->add_aim_url_params();
+  gp_param->set_param_key("nem");
+  gp_param->set_param_value("143");
+
+  // Recreate the model with the new config.
+  input_state_model_ = std::make_unique<InputStateModel>(
+      session_handle_, config_, active_url_, /*is_off_the_record=*/false,
+      /*is_signed_in=*/false,
+      /*browser_identity_matches_aim_identity=*/false);
+  input_state_model_->SetPrefService(&pref_service_);
+
+  // Canvas, no model: `udm` is kept.
+  input_state_model_->SetActiveTool(omnibox::ToolMode::TOOL_MODE_CANVAS);
+  input_state_model_->SetActiveModel(
+      omnibox::ModelMode::MODEL_MODE_UNSPECIFIED);
+  EXPECT_THAT(input_state_model_->GetAdditionalQueryParams(),
+              testing::UnorderedElementsAre(testing::Pair("rc", "1"),
+                                            testing::Pair("udm", "50")));
+
+  // Canvas + a `nem` model: `udm` is dropped.
+  input_state_model_->SetActiveModel(omnibox::ModelMode::MODEL_MODE_GEMINI_PRO);
+  EXPECT_THAT(input_state_model_->GetAdditionalQueryParams(),
+              testing::UnorderedElementsAre(testing::Pair("rc", "1"),
+                                            testing::Pair("nem", "143")));
+}
+
+// A tool and the model (or the no-model default) can both set `udm=50`; the
+// params keep a single `udm`.
+TEST_F(InputStateModelTest, GetAdditionalQueryParams_DuplicateUdmMerges) {
+  auto* canvas_config = config_.add_tool_configs();
+  canvas_config->set_tool(omnibox::ToolMode::TOOL_MODE_CANVAS);
+  auto* canvas_rc_param = canvas_config->add_aim_url_params();
+  canvas_rc_param->set_param_key("rc");
+  canvas_rc_param->set_param_value("1");
+  auto* canvas_udm_param = canvas_config->add_aim_url_params();
+  canvas_udm_param->set_param_key("udm");
+  canvas_udm_param->set_param_value("50");
+
+  auto* regular_config = config_.add_model_configs();
+  regular_config->set_model(omnibox::ModelMode::MODEL_MODE_GEMINI_REGULAR);
+  auto* regular_param = regular_config->add_aim_url_params();
+  regular_param->set_param_key("udm");
+  regular_param->set_param_value("50");
+
+  // Recreate the model with the new config.
+  input_state_model_ = std::make_unique<InputStateModel>(
+      session_handle_, config_, active_url_, /*is_off_the_record=*/false,
+      /*is_signed_in=*/false,
+      /*browser_identity_matches_aim_identity=*/false);
+  input_state_model_->SetPrefService(&pref_service_);
+
+  // Canvas's `udm=50` and the no-model default `udm=50`.
+  input_state_model_->SetActiveTool(omnibox::ToolMode::TOOL_MODE_CANVAS);
+  input_state_model_->SetActiveModel(
+      omnibox::ModelMode::MODEL_MODE_UNSPECIFIED);
+  EXPECT_THAT(input_state_model_->GetAdditionalQueryParams(),
+              testing::UnorderedElementsAre(testing::Pair("rc", "1"),
+                                            testing::Pair("udm", "50")));
+
+  // Canvas's `udm=50` and the model's `udm=50`.
+  input_state_model_->SetActiveModel(
+      omnibox::ModelMode::MODEL_MODE_GEMINI_REGULAR);
+  EXPECT_THAT(input_state_model_->GetAdditionalQueryParams(),
+              testing::UnorderedElementsAre(testing::Pair("rc", "1"),
+                                            testing::Pair("udm", "50")));
+}
+
+// Tools with `disable_active_model_selection` omit the active model's
+// `aim_url_params` (like `arv`) and emit `udm=50`, while keeping `active_model`
+// intact when the tool is cleared.
+TEST_F(InputStateModelTest,
+       GetAdditionalQueryParams_DisableActiveModelSelectionOmitsArv) {
+  auto* deep_search_config = config_.add_tool_configs();
+  deep_search_config->set_tool(omnibox::ToolMode::TOOL_MODE_DEEP_SEARCH);
+  deep_search_config->set_disable_active_model_selection(true);
+  auto* deep_search_param = deep_search_config->add_aim_url_params();
+  deep_search_param->set_param_key("tool_param");
+  deep_search_param->set_param_value("1");
+
+  auto* gemini_pro_config = config_.add_model_configs();
+  gemini_pro_config->set_model(omnibox::ModelMode::MODEL_MODE_GEMINI_PRO);
+  auto* gemini_pro_udm = gemini_pro_config->add_aim_url_params();
+  gemini_pro_udm->set_param_key("udm");
+  gemini_pro_udm->set_param_value("50");
+  auto* gemini_pro_arv = gemini_pro_config->add_aim_url_params();
+  gemini_pro_arv->set_param_key("arv");
+  gemini_pro_arv->set_param_value("3");
+
+  input_state_model_ = std::make_unique<InputStateModel>(
+      session_handle_, config_, active_url_, /*is_off_the_record=*/false,
+      /*is_signed_in=*/false,
+      /*browser_identity_matches_aim_identity=*/false);
+  input_state_model_->SetPrefService(&pref_service_);
+  input_state_model_->SetActiveModel(omnibox::ModelMode::MODEL_MODE_GEMINI_PRO);
+  EXPECT_THAT(input_state_model_->GetAdditionalQueryParams(),
+              testing::UnorderedElementsAre(testing::Pair("udm", "50"),
+                                            testing::Pair("arv", "3")));
+
+  // Selecting a tool with `disable_active_model_selection` omits `arv=3` and
+  // emits `udm=50` + the tool's param while preserving `active_model`.
+  input_state_model_->SetActiveTool(omnibox::ToolMode::TOOL_MODE_DEEP_SEARCH);
+  EXPECT_EQ(input_state_model_->GetInputState().active_model,
+            omnibox::ModelMode::MODEL_MODE_GEMINI_PRO);
+  EXPECT_THAT(input_state_model_->GetAdditionalQueryParams(),
+              testing::UnorderedElementsAre(testing::Pair("tool_param", "1"),
+                                            testing::Pair("udm", "50")));
+
+  // Clearing the tool restores the preserved model's URL params.
+  input_state_model_->SetActiveTool(omnibox::ToolMode::TOOL_MODE_UNSPECIFIED);
+  EXPECT_EQ(input_state_model_->GetInputState().active_model,
+            omnibox::ModelMode::MODEL_MODE_GEMINI_PRO);
+  EXPECT_THAT(input_state_model_->GetAdditionalQueryParams(),
+              testing::UnorderedElementsAre(testing::Pair("udm", "50"),
+                                            testing::Pair("arv", "3")));
+}
+
+// Tools with `disable_active_model_selection` omit a model's `nem` param and
+// keep `udm=50`, restoring `nem` when the tool is cleared.
+TEST_F(InputStateModelTest,
+       GetAdditionalQueryParams_DisableActiveModelSelectionOmitsNem) {
+  auto* deep_search_config = config_.add_tool_configs();
+  deep_search_config->set_tool(omnibox::ToolMode::TOOL_MODE_DEEP_SEARCH);
+  deep_search_config->set_disable_active_model_selection(true);
+  auto* deep_search_param = deep_search_config->add_aim_url_params();
+  deep_search_param->set_param_key("tool_param");
+  deep_search_param->set_param_value("1");
+
+  auto* canvas_config = config_.add_tool_configs();
+  canvas_config->set_tool(omnibox::ToolMode::TOOL_MODE_CANVAS);
+  canvas_config->set_disable_active_model_selection(true);
+  auto* canvas_param = canvas_config->add_aim_url_params();
+  canvas_param->set_param_key("tool_param");
+  canvas_param->set_param_value("2");
+  auto* canvas_udm = canvas_config->add_aim_url_params();
+  canvas_udm->set_param_key("udm");
+  canvas_udm->set_param_value("50");
+
+  auto* gemini_pro_config = config_.add_model_configs();
+  gemini_pro_config->set_model(omnibox::ModelMode::MODEL_MODE_GEMINI_PRO);
+  auto* gemini_pro_param = gemini_pro_config->add_aim_url_params();
+  gemini_pro_param->set_param_key("nem");
+  gemini_pro_param->set_param_value("143");
+
+  input_state_model_ = std::make_unique<InputStateModel>(
+      session_handle_, config_, active_url_, /*is_off_the_record=*/false,
+      /*is_signed_in=*/false,
+      /*browser_identity_matches_aim_identity=*/false);
+  input_state_model_->SetPrefService(&pref_service_);
+  input_state_model_->SetActiveModel(omnibox::ModelMode::MODEL_MODE_GEMINI_PRO);
+  EXPECT_THAT(input_state_model_->GetAdditionalQueryParams(),
+              testing::UnorderedElementsAre(testing::Pair("nem", "143")));
+
+  // Tool without `udm` emits `udm=50` + tool param and omits `nem=143`.
+  input_state_model_->SetActiveTool(omnibox::ToolMode::TOOL_MODE_DEEP_SEARCH);
+  EXPECT_EQ(input_state_model_->GetInputState().active_model,
+            omnibox::ModelMode::MODEL_MODE_GEMINI_PRO);
+  EXPECT_THAT(input_state_model_->GetAdditionalQueryParams(),
+              testing::UnorderedElementsAre(testing::Pair("tool_param", "1"),
+                                            testing::Pair("udm", "50")));
+
+  // Tool already carrying `udm=50` keeps `udm=50` because `nem=143` is omitted.
+  input_state_model_->SetActiveTool(omnibox::ToolMode::TOOL_MODE_CANVAS);
+  EXPECT_EQ(input_state_model_->GetInputState().active_model,
+            omnibox::ModelMode::MODEL_MODE_GEMINI_PRO);
+  EXPECT_THAT(input_state_model_->GetAdditionalQueryParams(),
+              testing::UnorderedElementsAre(testing::Pair("tool_param", "2"),
+                                            testing::Pair("udm", "50")));
+
+  // Clearing the tool restores `nem=143`.
+  input_state_model_->SetActiveTool(omnibox::ToolMode::TOOL_MODE_UNSPECIFIED);
+  EXPECT_EQ(input_state_model_->GetInputState().active_model,
+            omnibox::ModelMode::MODEL_MODE_GEMINI_PRO);
+  EXPECT_THAT(input_state_model_->GetAdditionalQueryParams(),
+              testing::UnorderedElementsAre(testing::Pair("nem", "143")));
 }
 
 TEST_F(InputStateModelCompatibilityTest, PolicyDisablesInputs) {
@@ -1026,7 +1315,7 @@ TEST_F(InputStateModelCompatibilityTest, PolicyDisablesInputs) {
       omnibox::InputType::INPUT_TYPE_DRIVE,
   };
   local_model->set_state_for_testing(local_state);
-  local_model->setActiveModel(omnibox::ModelMode::MODEL_MODE_UNSPECIFIED);
+  local_model->SetActiveModel(omnibox::ModelMode::MODEL_MODE_UNSPECIFIED);
   auto new_state = local_model->get_state_for_testing();
 
   // Verify: Inputs remain allowed and are not disabled.
@@ -1040,7 +1329,7 @@ TEST_F(InputStateModelCompatibilityTest, PolicyDisablesInputs) {
           contextual_search::SearchContentSharingSettingsValue::kDisabled));
 
   // Trigger update.
-  local_model->setActiveModel(omnibox::ModelMode::MODEL_MODE_UNSPECIFIED);
+  local_model->SetActiveModel(omnibox::ModelMode::MODEL_MODE_UNSPECIFIED);
   new_state = local_model->get_state_for_testing();
 
   // Verify: Restricted inputs are removed from the allowed list entirely.
@@ -1063,7 +1352,7 @@ TEST_F(InputStateModelCompatibilityTest, PolicyDisablesInputs) {
   local_model->set_state_for_testing(local_state);
 
   // Trigger update.
-  local_model->setActiveModel(omnibox::ModelMode::MODEL_MODE_UNSPECIFIED);
+  local_model->SetActiveModel(omnibox::ModelMode::MODEL_MODE_UNSPECIFIED);
   new_state = local_model->get_state_for_testing();
 
   // Verify: Inputs are restored and enabled.
@@ -1084,7 +1373,7 @@ TEST_F(InputStateModelCompatibilityTest, MaxTotalInputsDisablesInputs) {
       /*is_signed_in=*/false,
       /*browser_identity_matches_aim_identity=*/false);
   input_state_model_->SetPrefService(&pref_service_);
-  input_state_model_->setActiveModel(
+  input_state_model_->SetActiveModel(
       omnibox::ModelMode::MODEL_MODE_UNSPECIFIED);
 
   // Simulate adding two images.
@@ -1118,6 +1407,57 @@ TEST_F(InputStateModelCompatibilityTest, MaxTotalInputsDisablesInputs) {
   // Image input should still be disabled due to max_instance.
   EXPECT_THAT(final_state.disabled_input_types,
               UnorderedElementsAre(omnibox::InputType::INPUT_TYPE_LENS_IMAGE));
+}
+
+TEST_F(InputStateModelCompatibilityTest,
+       DefaultMaxTotalInputsWhenUnsetInRuleSet) {
+  config_.mutable_rule_set()->clear_max_total_inputs();
+  input_state_model_ = std::make_unique<InputStateModel>(
+      session_handle_, config_, active_url_, /*is_off_the_record=*/false,
+      /*is_signed_in=*/false,
+      /*browser_identity_matches_aim_identity=*/false);
+  input_state_model_->SetPrefService(&pref_service_);
+  input_state_model_->SetActiveModel(
+      omnibox::ModelMode::MODEL_MODE_UNSPECIFIED);
+
+  const auto& initial_state = input_state_model_->get_state_for_testing();
+  EXPECT_EQ(initial_state.max_total_inputs, omnibox::kDefaultMaxTotalInputs);
+  EXPECT_TRUE(initial_state.disabled_input_types.empty());
+
+  // Simulate adding `kDefaultMaxTotalInputs - 1` files.
+  std::vector<FileInfo> file_infos(omnibox::kDefaultMaxTotalInputs - 1);
+  for (auto& file_info : file_infos) {
+    file_info.mime_type = lens::MimeType::kPdf;
+  }
+  ON_CALL(session_handle_, GetUploadedContextFileInfos())
+      .WillByDefault(testing::Return(file_infos));
+
+  input_state_model_->OnContextChanged();
+  EXPECT_TRUE(
+      input_state_model_->get_state_for_testing().disabled_input_types.empty());
+
+  // Adding one more file reaches `kDefaultMaxTotalInputs` and disables all
+  // allowed input types.
+  file_infos.emplace_back();
+  file_infos.back().mime_type = lens::MimeType::kPdf;
+  ON_CALL(session_handle_, GetUploadedContextFileInfos())
+      .WillByDefault(testing::Return(file_infos));
+
+  input_state_model_->OnContextChanged();
+  EXPECT_THAT(input_state_model_->get_state_for_testing().disabled_input_types,
+              UnorderedElementsAre(omnibox::InputType::INPUT_TYPE_LENS_IMAGE,
+                                   omnibox::InputType::INPUT_TYPE_LENS_FILE,
+                                   omnibox::InputType::INPUT_TYPE_BROWSER_TAB));
+
+  // If no inputs are allowed, `max_total_inputs` should be 0.
+  config_.clear_input_type_configs();
+  auto model_without_inputs = std::make_unique<InputStateModel>(
+      session_handle_, config_, active_url_, /*is_off_the_record=*/false,
+      /*is_signed_in=*/false,
+      /*browser_identity_matches_aim_identity=*/false);
+  EXPECT_TRUE(model_without_inputs->get_state_for_testing()
+                  .allowed_input_types.empty());
+  EXPECT_EQ(model_without_inputs->get_state_for_testing().max_total_inputs, 0);
 }
 
 TEST_F(InputStateModelCompatibilityTest,
@@ -1174,7 +1514,7 @@ TEST_F(InputStateModelCompatibilityTest, ToolWithAllowAllInputs) {
       /*is_signed_in=*/false,
       /*browser_identity_matches_aim_identity=*/false);
   input_state_model_->SetPrefService(&pref_service_);
-  input_state_model_->setActiveModel(
+  input_state_model_->SetActiveModel(
       omnibox::ModelMode::MODEL_MODE_UNSPECIFIED);
 
   // Simulate adding a file.
@@ -1214,7 +1554,7 @@ TEST_F(InputStateModelCompatibilityTest, ToolWithSpecificInputs) {
       /*is_signed_in=*/false,
       /*browser_identity_matches_aim_identity=*/false);
   input_state_model_->SetPrefService(&pref_service_);
-  input_state_model_->setActiveModel(
+  input_state_model_->SetActiveModel(
       omnibox::ModelMode::MODEL_MODE_UNSPECIFIED);
 
   // Simulate adding a file, which is not allowed by Canvas.
@@ -1257,7 +1597,7 @@ TEST_F(InputStateModelCompatibilityTest, ToolWithSpecificInputs) {
 
 TEST_F(InputStateModelTest, ImageGenUploadActive) {
   // 1. Set active tool to IMAGE_GEN without any image input.
-  input_state_model_->setActiveTool(omnibox::ToolMode::TOOL_MODE_IMAGE_GEN);
+  input_state_model_->SetActiveTool(omnibox::ToolMode::TOOL_MODE_IMAGE_GEN);
   auto state = input_state_model_->get_state_for_testing();
   EXPECT_EQ(state.active_tool, omnibox::ToolMode::TOOL_MODE_IMAGE_GEN);
   EXPECT_FALSE(state.image_gen_upload_active);
@@ -1270,13 +1610,13 @@ TEST_F(InputStateModelTest, ImageGenUploadActive) {
       .WillByDefault(testing::Return(file_infos));
 
   // 3. Set active tool to IMAGE_GEN again, now with an image input.
-  input_state_model_->setActiveTool(omnibox::ToolMode::TOOL_MODE_IMAGE_GEN);
+  input_state_model_->SetActiveTool(omnibox::ToolMode::TOOL_MODE_IMAGE_GEN);
   state = input_state_model_->get_state_for_testing();
   EXPECT_EQ(state.active_tool, omnibox::ToolMode::TOOL_MODE_IMAGE_GEN);
   EXPECT_TRUE(state.image_gen_upload_active);
 
   // 4. Set a different tool and verify image_gen_upload_active is reset.
-  input_state_model_->setActiveTool(omnibox::ToolMode::TOOL_MODE_DEEP_SEARCH);
+  input_state_model_->SetActiveTool(omnibox::ToolMode::TOOL_MODE_DEEP_SEARCH);
   state = input_state_model_->get_state_for_testing();
   EXPECT_EQ(state.active_tool, omnibox::ToolMode::TOOL_MODE_DEEP_SEARCH);
   EXPECT_FALSE(state.image_gen_upload_active);
@@ -1426,7 +1766,7 @@ TEST_F(InputStateModelCompatibilityTest,
       /*is_signed_in=*/false,
       /*browser_identity_matches_aim_identity=*/false);
   input_state_model_->SetPrefService(&pref_service_);
-  input_state_model_->setActiveModel(
+  input_state_model_->SetActiveModel(
       omnibox::ModelMode::MODEL_MODE_UNSPECIFIED);
 
   // Now they should be enabled initially.
@@ -1499,7 +1839,7 @@ TEST_F(InputStateModelCompatibilityTest,
       /*is_signed_in=*/false,
       /*browser_identity_matches_aim_identity=*/false);
   input_state_model_->SetPrefService(&pref_service_);
-  input_state_model_->setActiveModel(
+  input_state_model_->SetActiveModel(
       omnibox::ModelMode::MODEL_MODE_UNSPECIFIED);
 
   // Initially, browser tab input should not be disabled.
@@ -1509,7 +1849,7 @@ TEST_F(InputStateModelCompatibilityTest,
                   omnibox::InputType::INPUT_TYPE_BROWSER_TAB)));
 
   // Select Canvas.
-  input_state_model_->setActiveTool(omnibox::ToolMode::TOOL_MODE_CANVAS);
+  input_state_model_->SetActiveTool(omnibox::ToolMode::TOOL_MODE_CANVAS);
   state = input_state_model_->get_state_for_testing();
 
   // Browser tab input should be disabled.
@@ -1517,14 +1857,14 @@ TEST_F(InputStateModelCompatibilityTest,
               testing::Contains(omnibox::InputType::INPUT_TYPE_BROWSER_TAB));
 
   // Reset tool.
-  input_state_model_->setActiveTool(omnibox::ToolMode::TOOL_MODE_UNSPECIFIED);
+  input_state_model_->SetActiveTool(omnibox::ToolMode::TOOL_MODE_UNSPECIFIED);
   state = input_state_model_->get_state_for_testing();
   EXPECT_THAT(state.disabled_input_types,
               testing::Not(testing::Contains(
                   omnibox::InputType::INPUT_TYPE_BROWSER_TAB)));
 
   // Select Gemini Pro.
-  input_state_model_->setActiveModel(omnibox::ModelMode::MODEL_MODE_GEMINI_PRO);
+  input_state_model_->SetActiveModel(omnibox::ModelMode::MODEL_MODE_GEMINI_PRO);
   state = input_state_model_->get_state_for_testing();
 
   // Browser tab input should be disabled.
@@ -1724,7 +2064,7 @@ TEST_F(InputStateModelTest, UpdateConfig) {
 
   int notify_count = 0;
   base::CallbackListSubscription subscription =
-      model->subscribe(base::BindRepeating(
+      model->Subscribe(base::BindRepeating(
           [](int* count, const InputState&) { (*count)++; }, &notify_count));
 
   // Updating with another empty config should return false and not notify.
@@ -1767,83 +2107,59 @@ TEST_F(InputStateModelTest, UpdateConfig) {
 
 TEST_F(InputStateModelTest, SetLensCrop_AddsCropAndNotifies) {
   int notify_count = 0;
-  auto subscription = input_state_model_->subscribe(base::BindRepeating(
+  auto subscription = input_state_model_->Subscribe(base::BindRepeating(
       [](int* count, const omnibox::InputState&) { (*count)++; },
       &notify_count));
 
-  input_state_model_->SetLensCrop("crop_1", "data:image/png;base64,abc");
+  input_state_model_->SetLensCrop("data:image/png;base64,abc");
   EXPECT_EQ(1, notify_count);
-  EXPECT_EQ("data:image/png;base64,abc",
-            input_state_model_->GetLensCrop("crop_1"));
-  EXPECT_EQ(std::nullopt, input_state_model_->GetLensCrop("nonexistent"));
+  EXPECT_EQ("data:image/png;base64,abc", input_state_model_->GetLensCrop());
   ASSERT_TRUE(input_state_model_->lens_crop().has_value());
-  EXPECT_EQ("crop_1", input_state_model_->lens_crop()->data_id);
   EXPECT_EQ("data:image/png;base64,abc",
             input_state_model_->lens_crop()->data_uri);
 }
 
 TEST_F(InputStateModelTest, SetLensCrop_ReplaceSemantics) {
   int notify_count = 0;
-  auto subscription = input_state_model_->subscribe(base::BindRepeating(
+  auto subscription = input_state_model_->Subscribe(base::BindRepeating(
       [](int* count, const omnibox::InputState&) { (*count)++; },
       &notify_count));
 
-  input_state_model_->SetLensCrop("crop_1", "data:image/png;base64,first");
+  input_state_model_->SetLensCrop("data:image/png;base64,first");
   EXPECT_EQ(1, notify_count);
-  EXPECT_EQ("data:image/png;base64,first",
-            input_state_model_->GetLensCrop("crop_1"));
+  EXPECT_EQ("data:image/png;base64,first", input_state_model_->GetLensCrop());
 
-  // Setting a second crop replaces the first (decision 5: only ever one region
-  // crop).
-  input_state_model_->SetLensCrop("crop_2", "data:image/png;base64,second");
+  // Setting a second crop replaces the first (only ever one region crop).
+  input_state_model_->SetLensCrop("data:image/png;base64,second");
   EXPECT_EQ(2, notify_count);
-  EXPECT_EQ(std::nullopt, input_state_model_->GetLensCrop("crop_1"));
-  EXPECT_EQ("data:image/png;base64,second",
-            input_state_model_->GetLensCrop("crop_2"));
+  EXPECT_EQ("data:image/png;base64,second", input_state_model_->GetLensCrop());
   ASSERT_TRUE(input_state_model_->lens_crop().has_value());
-  EXPECT_EQ("crop_2", input_state_model_->lens_crop()->data_id);
   EXPECT_EQ("data:image/png;base64,second",
             input_state_model_->lens_crop()->data_uri);
 }
 
 TEST_F(InputStateModelTest, RemoveLensCrop_RemovesAndNotifies) {
-  input_state_model_->SetLensCrop("crop_1", "data:image/png;base64,abc");
-  EXPECT_TRUE(input_state_model_->GetLensCrop("crop_1").has_value());
+  input_state_model_->SetLensCrop("data:image/png;base64,abc");
+  EXPECT_TRUE(input_state_model_->GetLensCrop().has_value());
 
   int notify_count = 0;
-  auto subscription = input_state_model_->subscribe(base::BindRepeating(
+  auto subscription = input_state_model_->Subscribe(base::BindRepeating(
       [](int* count, const omnibox::InputState&) { (*count)++; },
       &notify_count));
 
-  input_state_model_->RemoveLensCrop("crop_1");
+  input_state_model_->RemoveLensCrop();
   EXPECT_EQ(1, notify_count);
-  EXPECT_EQ(std::nullopt, input_state_model_->GetLensCrop("crop_1"));
+  EXPECT_EQ(std::nullopt, input_state_model_->GetLensCrop());
   EXPECT_FALSE(input_state_model_->lens_crop().has_value());
 
-  // Removing non-existent does not notify.
-  input_state_model_->RemoveLensCrop("nonexistent");
+  // Removing when already empty does not notify.
+  input_state_model_->RemoveLensCrop();
   EXPECT_EQ(1, notify_count);
 }
 
-TEST_F(InputStateModelTest, ClearLensCrops_ClearsAndNotifies) {
-  input_state_model_->SetLensCrop("crop_1", "data:image/png;base64,abc");
-
-  int notify_count = 0;
-  auto subscription = input_state_model_->subscribe(base::BindRepeating(
-      [](int* count, const omnibox::InputState&) { (*count)++; },
-      &notify_count));
-
-  input_state_model_->ClearLensCrop();
-  EXPECT_EQ(1, notify_count);
-  EXPECT_FALSE(input_state_model_->lens_crop().has_value());
-
-  // Clearing when empty does not notify.
-  input_state_model_->ClearLensCrop();
-  EXPECT_EQ(1, notify_count);
-}
 
 TEST_F(InputStateModelTest, CopyConstructorPreservesLensCrops) {
-  input_state_model_->SetLensCrop("crop_1", "data:image/png;base64,preserved");
+  input_state_model_->SetLensCrop("data:image/png;base64,preserved");
 
   MockContextualSearchSessionHandle new_session_handle;
   auto new_controller =
@@ -1854,10 +2170,427 @@ TEST_F(InputStateModelTest, CopyConstructorPreservesLensCrops) {
       .WillByDefault(testing::Return(empty_file_info_list_));
 
   InputStateModel copy(*input_state_model_, new_session_handle);
-  EXPECT_EQ("data:image/png;base64,preserved", copy.GetLensCrop("crop_1"));
+  EXPECT_EQ("data:image/png;base64,preserved", copy.GetLensCrop());
   ASSERT_TRUE(copy.lens_crop().has_value());
-  EXPECT_EQ("crop_1", copy.lens_crop()->data_id);
   EXPECT_EQ("data:image/png;base64,preserved", copy.lens_crop()->data_uri);
+}
+
+TEST_F(InputStateModelTest, SetIdentityStateUpdatesAllowedInputTypes) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitWithFeatures({omnibox::kComposeboxDriveContextMenuOption},
+                                {});
+
+  omnibox::SearchboxConfig config;
+  config.add_input_type_configs()->set_input_type(
+      omnibox::InputType::INPUT_TYPE_DRIVE);
+
+  auto model = std::make_unique<InputStateModel>(
+      session_handle_, config, GURL("https://www.google.com"),
+      /*is_off_the_record=*/false, /*is_signed_in=*/false,
+      /*browser_identity_matches_aim_identity=*/false);
+
+  EXPECT_THAT(
+      model->GetInputState().allowed_input_types,
+      testing::Not(testing::Contains(omnibox::InputType::INPUT_TYPE_DRIVE)));
+
+  model->SetIdentityState(/*is_signed_in=*/true,
+                          /*browser_identity_matches_aim_identity=*/true);
+  EXPECT_THAT(model->GetInputState().allowed_input_types,
+              testing::Contains(omnibox::InputType::INPUT_TYPE_DRIVE));
+
+  model->SetIdentityState(/*is_signed_in=*/false,
+                          /*browser_identity_matches_aim_identity=*/false);
+  EXPECT_THAT(
+      model->GetInputState().allowed_input_types,
+      testing::Not(testing::Contains(omnibox::InputType::INPUT_TYPE_DRIVE)));
+}
+
+TEST_F(InputStateModelTest, UpdatesSessionHandleCurrentUrl) {
+  omnibox::SearchboxConfig config;
+  GURL initial_url("https://www.google.com/search?q=initial&authuser=1");
+  auto model = std::make_unique<InputStateModel>(
+      session_handle_, config, initial_url, /*is_off_the_record=*/false,
+      /*is_signed_in=*/true,
+      /*browser_identity_matches_aim_identity=*/true);
+  EXPECT_EQ(session_handle_.current_url(), initial_url);
+
+  GURL updated_url("https://www.google.com/search?q=updated&authuser=1");
+  model->UpdateStateFromUrl(updated_url);
+  EXPECT_EQ(session_handle_.current_url(), updated_url);
+
+  MockContextualSearchSessionHandle new_session_handle;
+  auto new_controller =
+      std::make_unique<MockContextualSearchContextController>();
+  ON_CALL(new_session_handle, GetController())
+      .WillByDefault(testing::Return(new_controller.get()));
+  ON_CALL(*new_controller, GetFileInfoList())
+      .WillByDefault(testing::Return(empty_file_info_list_));
+
+  InputStateModel copy(*model, new_session_handle);
+  EXPECT_EQ(new_session_handle.current_url(), updated_url);
+}
+
+TEST_F(InputStateModelTest, WillFulfillInAimDefaultsToTrue) {
+  EXPECT_TRUE(input_state_model_->GetInputState().will_fulfill_in_aim);
+}
+
+class InputStateModelDynamicAimTest : public InputStateModelTest {
+ protected:
+  void SetUp() override {
+    InputStateModelTest::SetUp();
+    config_.mutable_rule_set();
+    AddModel(omnibox::ModelMode::MODEL_MODE_GEMINI_REGULAR, "udm", "50");
+    AddTool(omnibox::ToolMode::TOOL_MODE_IMAGE_GEN, "imgn", "1");
+    AddTool(omnibox::ToolMode::TOOL_MODE_CANVAS, "udm", "50");
+    input_state_model_ = std::make_unique<InputStateModel>(
+        session_handle_, config_, active_url_, /*is_off_the_record=*/false,
+        /*is_signed_in=*/false,
+        /*browser_identity_matches_aim_identity=*/false);
+  }
+
+  void AddModel(omnibox::ModelMode model, const char* key, const char* value) {
+    auto* config = config_.add_model_configs();
+    config->set_model(model);
+    auto* param = config->add_aim_url_params();
+    param->set_param_key(key);
+    param->set_param_value(value);
+  }
+
+  void AddTool(omnibox::ToolMode tool, const char* key, const char* value) {
+    auto* config = config_.add_tool_configs();
+    config->set_tool(tool);
+    auto* param = config->add_aim_url_params();
+    param->set_param_key(key);
+    param->set_param_value(value);
+  }
+
+  // Attaches `images` images and `tabs` tabs.
+  void SetInputs(int images, int tabs = 0) {
+    std::vector<FileInfo> files;
+    for (int i = 0; i < images; ++i) {
+      FileInfo info;
+      info.mime_type = lens::MimeType::kImage;
+      info.mime_type_string = "image/png";
+      files.push_back(std::move(info));
+    }
+    for (int i = 0; i < tabs; ++i) {
+      FileInfo info;
+      info.tab_url = GURL("https://example.com");
+      files.push_back(std::move(info));
+    }
+    ON_CALL(session_handle_, GetUploadedContextFileInfos())
+        .WillByDefault(testing::Return(files));
+    input_state_model_->OnContextChanged();
+  }
+
+  bool WillFulfillInAim() {
+    return input_state_model_->GetInputState().will_fulfill_in_aim;
+  }
+  omnibox::ModelMode ActiveModel() {
+    return input_state_model_->GetInputState().active_model;
+  }
+};
+
+TEST_F(InputStateModelDynamicAimTest, DisabledKeepsAimBehavior) {
+  EXPECT_TRUE(WillFulfillInAim());
+  input_state_model_->SetActiveTool(omnibox::ToolMode::TOOL_MODE_IMAGE_GEN);
+  SetInputs(/*images=*/1);
+  EXPECT_TRUE(WillFulfillInAim());
+}
+
+TEST_F(InputStateModelDynamicAimTest, EnableRoutesToSrpWithoutModel) {
+  // A model set before opting in doesn't count as entering AI Mode.
+  input_state_model_->SetActiveModel(
+      omnibox::ModelMode::MODEL_MODE_GEMINI_REGULAR);
+
+  base::MockCallback<InputStateModel::Subscriber> subscriber;
+  auto subscription = input_state_model_->Subscribe(subscriber.Get());
+  EXPECT_CALL(subscriber,
+              Run(testing::Field(&InputState::will_fulfill_in_aim, false)));
+  input_state_model_->EnableDynamicAimFulfillment();
+  EXPECT_FALSE(WillFulfillInAim());
+  EXPECT_EQ(ActiveModel(), omnibox::ModelMode::MODEL_MODE_UNSPECIFIED);
+
+  // A config refresh keeps "no model".
+  AddModel(omnibox::ModelMode::MODEL_MODE_GEMINI_PRO, "nem", "143");
+  EXPECT_CALL(subscriber, Run).Times(testing::AnyNumber());
+  input_state_model_->UpdateConfig(config_);
+  EXPECT_EQ(ActiveModel(), omnibox::ModelMode::MODEL_MODE_UNSPECIFIED);
+}
+
+TEST_F(InputStateModelDynamicAimTest, AimModeStaysOnUntilModelCleared) {
+  input_state_model_->EnableDynamicAimFulfillment();
+
+  input_state_model_->SetActiveTool(omnibox::ToolMode::TOOL_MODE_IMAGE_GEN);
+  EXPECT_FALSE(WillFulfillInAim());
+
+  // Canvas goes to AIM and shows the default model...
+  input_state_model_->SetActiveTool(omnibox::ToolMode::TOOL_MODE_CANVAS);
+  EXPECT_TRUE(WillFulfillInAim());
+  EXPECT_EQ(ActiveModel(), omnibox::ModelMode::MODEL_MODE_GEMINI_REGULAR);
+  // ...and stays in AIM after Canvas is removed and through a config refresh.
+  input_state_model_->SetActiveTool(omnibox::ToolMode::TOOL_MODE_UNSPECIFIED);
+  EXPECT_TRUE(WillFulfillInAim());
+  AddModel(omnibox::ModelMode::MODEL_MODE_GEMINI_PRO, "nem", "143");
+  input_state_model_->UpdateConfig(config_);
+  EXPECT_TRUE(WillFulfillInAim());
+  EXPECT_EQ(ActiveModel(), omnibox::ModelMode::MODEL_MODE_GEMINI_REGULAR);
+
+  // Clearing the model (e.g. on close) leaves AI Mode.
+  input_state_model_->SetActiveModel(
+      omnibox::ModelMode::MODEL_MODE_UNSPECIFIED);
+  EXPECT_FALSE(WillFulfillInAim());
+  EXPECT_EQ(ActiveModel(), omnibox::ModelMode::MODEL_MODE_UNSPECIFIED);
+
+  // Picking a model enters AI Mode too.
+  input_state_model_->SetActiveModel(
+      omnibox::ModelMode::MODEL_MODE_GEMINI_REGULAR);
+  EXPECT_TRUE(WillFulfillInAim());
+}
+
+TEST_F(InputStateModelDynamicAimTest, AttachmentsRouteByMode) {
+  input_state_model_->EnableDynamicAimFulfillment();
+
+  // Default mode (single image).
+  SetInputs(/*images=*/1);
+  EXPECT_FALSE(WillFulfillInAim());
+  EXPECT_EQ(ActiveModel(), omnibox::ModelMode::MODEL_MODE_UNSPECIFIED);
+
+  // Two images go to AIM and show the default model; removing one stays in
+  // AIM.
+  SetInputs(/*images=*/2);
+  EXPECT_TRUE(WillFulfillInAim());
+  EXPECT_EQ(ActiveModel(), omnibox::ModelMode::MODEL_MODE_GEMINI_REGULAR);
+  SetInputs(/*images=*/1);
+  EXPECT_TRUE(WillFulfillInAim());
+
+  // Tabs always go to AIM, even right after the model is cleared.
+  SetInputs(/*images=*/0, /*tabs=*/1);
+  input_state_model_->SetActiveModel(
+      omnibox::ModelMode::MODEL_MODE_UNSPECIFIED);
+  EXPECT_TRUE(WillFulfillInAim());
+}
+
+// Before the first server config, queries go to AI Mode without entering it.
+TEST_F(InputStateModelDynamicAimTest, ColdStartDoesNotEnterAimMode) {
+  input_state_model_ = std::make_unique<InputStateModel>(
+      session_handle_, omnibox::SearchboxConfig(), active_url_,
+      /*is_off_the_record=*/false, /*is_signed_in=*/false,
+      /*browser_identity_matches_aim_identity=*/false);
+  input_state_model_->EnableDynamicAimFulfillment();
+  EXPECT_TRUE(WillFulfillInAim());
+
+  input_state_model_->UpdateConfig(config_);
+  EXPECT_FALSE(WillFulfillInAim());
+  EXPECT_EQ(ActiveModel(), omnibox::ModelMode::MODEL_MODE_UNSPECIFIED);
+}
+
+// Entering AI Mode before the model opts in or has its models shows the default
+// model once it does.
+TEST_F(InputStateModelDynamicAimTest, EnterAimModeShowsDefaultModel) {
+  input_state_model_ = std::make_unique<InputStateModel>(
+      session_handle_, omnibox::SearchboxConfig(), active_url_,
+      /*is_off_the_record=*/false, /*is_signed_in=*/false,
+      /*browser_identity_matches_aim_identity=*/false);
+  input_state_model_->EnterAimMode();
+  input_state_model_->EnableDynamicAimFulfillment();
+  input_state_model_->UpdateConfig(config_);
+  EXPECT_TRUE(WillFulfillInAim());
+  EXPECT_EQ(ActiveModel(), omnibox::ModelMode::MODEL_MODE_GEMINI_REGULAR);
+
+  // Clearing the model (e.g. on close) leaves AI Mode.
+  input_state_model_->SetActiveModel(
+      omnibox::ModelMode::MODEL_MODE_UNSPECIFIED);
+  EXPECT_FALSE(WillFulfillInAim());
+}
+
+// With no model shown, the default model's rule limits tools, since routing
+// picks that model if a tool switches the query to AI Mode.
+TEST_F(InputStateModelDynamicAimTest, DefaultModelRuleLimitsToolsWithoutModel) {
+  auto* model_rule = config_.mutable_model_configs(0)->mutable_rule();
+  model_rule->set_model(omnibox::ModelMode::MODEL_MODE_GEMINI_REGULAR);
+  model_rule->add_allowed_tools(omnibox::ToolMode::TOOL_MODE_IMAGE_GEN);
+  model_rule->set_allow_all_input_types(true);
+  for (auto& tool_config : *config_.mutable_tool_configs()) {
+    tool_config.mutable_rule()->set_tool(tool_config.tool());
+    tool_config.mutable_rule()->set_allow_all_input_types(true);
+  }
+  input_state_model_->UpdateConfig(config_);
+  input_state_model_->EnableDynamicAimFulfillment();
+
+  ASSERT_EQ(ActiveModel(), omnibox::ModelMode::MODEL_MODE_UNSPECIFIED);
+  EXPECT_THAT(input_state_model_->GetInputState().disabled_tools,
+              testing::ElementsAre(omnibox::ToolMode::TOOL_MODE_CANVAS));
+}
+
+// The copy made for the next surface doesn't keep the opt-in.
+TEST_F(InputStateModelDynamicAimTest, CopyDoesNotKeepOptIn) {
+  input_state_model_->EnableDynamicAimFulfillment();
+  ASSERT_FALSE(WillFulfillInAim());
+
+  InputStateModel copy(*input_state_model_, session_handle_);
+  EXPECT_FALSE(copy.dynamic_aim_fulfillment_enabled());
+  EXPECT_TRUE(copy.GetInputState().will_fulfill_in_aim);
+}
+
+class InputStateModelHintTextTest : public InputStateModelTest {
+ protected:
+  static constexpr char kHintText[] = "What's on your mind?";
+  static constexpr char kPersonalizedHintText[] =
+      "Hi Camille, what's on your mind?";
+
+  void SetUp() override {
+    InputStateModelTest::SetUp();
+    config_.mutable_rule_set();
+    config_.set_hint_text(kHintText);
+    config_.set_personalized_hint_text(kPersonalizedHintText);
+  }
+
+  std::unique_ptr<InputStateModel> CreateModel(
+      bool is_off_the_record,
+      bool is_signed_in,
+      bool browser_identity_matches_aim_identity) {
+    return std::make_unique<InputStateModel>(
+        session_handle_, config_, active_url_, is_off_the_record, is_signed_in,
+        browser_identity_matches_aim_identity);
+  }
+};
+
+TEST_F(InputStateModelHintTextTest,
+       UsesPersonalizedHintTextWhenIdentityMatches) {
+  base::test::ScopedFeatureList feature_list(
+      omnibox::kComposeboxPersonalizedHintText);
+
+  std::unique_ptr<InputStateModel> model = CreateModel(
+      /*is_off_the_record=*/false, /*is_signed_in=*/true,
+      /*browser_identity_matches_aim_identity=*/true);
+  EXPECT_EQ(kPersonalizedHintText, model->GetInputState().hint_text);
+
+  InputStateModel copied_model(*model, session_handle_);
+  EXPECT_EQ(kPersonalizedHintText, copied_model.GetInputState().hint_text);
+}
+
+TEST_F(InputStateModelHintTextTest,
+       UsesDefaultHintTextWhenIdentityMismatchOrSignedOutOrOffTheRecord) {
+  base::test::ScopedFeatureList feature_list(
+      omnibox::kComposeboxPersonalizedHintText);
+
+  EXPECT_EQ(kHintText,
+            CreateModel(/*is_off_the_record=*/false, /*is_signed_in=*/true,
+                        /*browser_identity_matches_aim_identity=*/false)
+                ->GetInputState()
+                .hint_text);
+  EXPECT_EQ(kHintText,
+            CreateModel(/*is_off_the_record=*/false, /*is_signed_in=*/false,
+                        /*browser_identity_matches_aim_identity=*/false)
+                ->GetInputState()
+                .hint_text);
+  EXPECT_EQ(kHintText,
+            CreateModel(/*is_off_the_record=*/true, /*is_signed_in=*/true,
+                        /*browser_identity_matches_aim_identity=*/true)
+                ->GetInputState()
+                .hint_text);
+}
+
+TEST_F(InputStateModelHintTextTest,
+       UsesDefaultHintTextWhenPersonalizedHintTextIsEmpty) {
+  base::test::ScopedFeatureList feature_list(
+      omnibox::kComposeboxPersonalizedHintText);
+  config_.clear_personalized_hint_text();
+
+  std::unique_ptr<InputStateModel> model = CreateModel(
+      /*is_off_the_record=*/false, /*is_signed_in=*/true,
+      /*browser_identity_matches_aim_identity=*/true);
+  EXPECT_EQ(kHintText, model->GetInputState().hint_text);
+}
+
+TEST_F(InputStateModelHintTextTest, UsesDefaultHintTextWhenFeatureDisabled) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndDisableFeature(omnibox::kComposeboxPersonalizedHintText);
+
+  std::unique_ptr<InputStateModel> model = CreateModel(
+      /*is_off_the_record=*/false, /*is_signed_in=*/true,
+      /*browser_identity_matches_aim_identity=*/true);
+  EXPECT_EQ(kHintText, model->GetInputState().hint_text);
+}
+
+TEST_F(InputStateModelHintTextTest,
+       SetIdentityStateUpdatesHintTextAndNotifiesSubscribers) {
+  base::test::ScopedFeatureList feature_list(
+      omnibox::kComposeboxPersonalizedHintText);
+
+  std::unique_ptr<InputStateModel> model = CreateModel(
+      /*is_off_the_record=*/false, /*is_signed_in=*/false,
+      /*browser_identity_matches_aim_identity=*/false);
+  EXPECT_EQ(kHintText, model->GetInputState().hint_text);
+
+  int notify_count = 0;
+  std::string last_notified_hint_text;
+  auto subscription = model->Subscribe(base::BindRepeating(
+      [](int* count, std::string* last_hint, const InputState& state) {
+        (*count)++;
+        *last_hint = state.hint_text;
+      },
+      &notify_count, &last_notified_hint_text));
+
+  model->SetIdentityState(/*is_signed_in=*/true,
+                          /*browser_identity_matches_aim_identity=*/true);
+  EXPECT_EQ(1, notify_count);
+  EXPECT_EQ(kPersonalizedHintText, last_notified_hint_text);
+
+  model->SetIdentityState(/*is_signed_in=*/true,
+                          /*browser_identity_matches_aim_identity=*/false);
+  EXPECT_EQ(2, notify_count);
+  EXPECT_EQ(kHintText, last_notified_hint_text);
+}
+
+TEST_F(InputStateModelHintTextTest, UpdateConfigUpdatesPersonalizedHintText) {
+  base::test::ScopedFeatureList feature_list(
+      omnibox::kComposeboxPersonalizedHintText);
+
+  std::unique_ptr<InputStateModel> model = CreateModel(
+      /*is_off_the_record=*/false, /*is_signed_in=*/true,
+      /*browser_identity_matches_aim_identity=*/true);
+  ASSERT_EQ(kPersonalizedHintText, model->GetInputState().hint_text);
+
+  config_.set_personalized_hint_text("Hi Alex, what's on your mind?");
+  EXPECT_TRUE(model->UpdateConfig(config_));
+  EXPECT_EQ("Hi Alex, what's on your mind?", model->GetInputState().hint_text);
+}
+
+TEST_F(InputStateModelDynamicAimTest,
+       DisableActiveModelSelectionPreservesModel) {
+  AddModel(omnibox::ModelMode::MODEL_MODE_GEMINI_PRO, "nem", "143");
+  auto* deep_search_config = config_.add_tool_configs();
+  deep_search_config->set_tool(omnibox::ToolMode::TOOL_MODE_DEEP_SEARCH);
+  deep_search_config->set_disable_active_model_selection(true);
+  auto* deep_search_param = deep_search_config->add_aim_url_params();
+  deep_search_param->set_param_key("tool_param");
+  deep_search_param->set_param_value("1");
+  auto* deep_search_udm = deep_search_config->add_aim_url_params();
+  deep_search_udm->set_param_key("udm");
+  deep_search_udm->set_param_value("50");
+  input_state_model_->UpdateConfig(config_);
+  input_state_model_->EnableDynamicAimFulfillment();
+
+  input_state_model_->SetActiveModel(omnibox::ModelMode::MODEL_MODE_GEMINI_PRO);
+  ASSERT_TRUE(WillFulfillInAim());
+  ASSERT_EQ(ActiveModel(), omnibox::ModelMode::MODEL_MODE_GEMINI_PRO);
+
+  // Selecting the tool omits `nem=143` while preserving `active_model`.
+  input_state_model_->SetActiveTool(omnibox::ToolMode::TOOL_MODE_DEEP_SEARCH);
+  EXPECT_TRUE(WillFulfillInAim());
+  EXPECT_EQ(ActiveModel(), omnibox::ModelMode::MODEL_MODE_GEMINI_PRO);
+  EXPECT_THAT(input_state_model_->GetAdditionalQueryParams(),
+              testing::UnorderedElementsAre(testing::Pair("tool_param", "1"),
+                                            testing::Pair("udm", "50")));
+
+  // Clearing the tool keeps `active_model` and restores `nem=143`.
+  input_state_model_->SetActiveTool(omnibox::ToolMode::TOOL_MODE_UNSPECIFIED);
+  EXPECT_TRUE(WillFulfillInAim());
+  EXPECT_EQ(ActiveModel(), omnibox::ModelMode::MODEL_MODE_GEMINI_PRO);
+  EXPECT_THAT(input_state_model_->GetAdditionalQueryParams(),
+              testing::UnorderedElementsAre(testing::Pair("nem", "143")));
 }
 
 }  // namespace contextual_search

@@ -56,6 +56,8 @@
 #include "third_party/blink/renderer/core/inspector/console_message.h"
 #include "third_party/blink/renderer/core/mathml_names.h"
 #include "third_party/blink/renderer/core/sanitizer/sanitizer.h"
+#include "third_party/blink/renderer/core/script/script_element_base.h"
+#include "third_party/blink/renderer/core/script/script_loader.h"
 #include "third_party/blink/renderer/core/svg_names.h"
 #include "third_party/blink/renderer/core/xlink_names.h"
 #include "third_party/blink/renderer/core/xml_names.h"
@@ -65,6 +67,7 @@
 #include "third_party/blink/renderer/platform/bindings/v8_per_isolate_data.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/instrumentation/use_counter.h"
+#include "third_party/blink/renderer/platform/network/http_names.h"
 #include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/text/platform_locale.h"
 #include "third_party/blink/renderer/platform/wtf/text/character_names.h"
@@ -80,6 +83,19 @@ namespace {
 
 inline bool IsHTMLSpaceOrReplacementCharacter(UChar character) {
   return IsHTMLSpace<UChar>(character) || character == kReplacementCharacter;
+}
+
+bool IsCSPMetaTagForPreload(AtomicHTMLToken* token) {
+  DCHECK_EQ(token->GetType(), HTMLToken::kStartTag);
+  if (token->GetHTMLTag() != HTMLTag::kMeta) {
+    return false;
+  }
+
+  Attribute* equiv_attribute =
+      token->GetAttributeItem(html_names::kHttpEquivAttr);
+  return equiv_attribute &&
+         EqualIgnoringAsciiCase(equiv_attribute->Value(),
+                                http_names::kContentSecurityPolicy);
 }
 
 enum class FeatureResetMode {
@@ -416,6 +432,10 @@ HTMLTreeBuilder::HTMLTreeBuilder(HTMLDocumentParser* parser,
     template_insertion_modes_.push_back(kTemplateContentsMode);
 
   ResetInsertionModeAppropriately();
+
+  // The first token is tokenized before ConstructTree(), so initialize the
+  // tokenizer flags from the context element now.
+  UpdateTokenizerFlags();
 }
 
 HTMLTreeBuilder::~HTMLTreeBuilder() = default;
@@ -477,18 +497,24 @@ void HTMLTreeBuilder::ConstructTree(AtomicHTMLToken* token) {
   if (parser_->IsDetached())
     return;
 
+  UpdateTokenizerFlags();
+}
+
+void HTMLTreeBuilder::UpdateTokenizerFlags() {
+  bool in_non_html_namespace = false;
   bool in_foreign_content = false;
   if (!tree_.IsEmpty()) {
     HTMLStackItem* adjusted_current_node = AdjustedCurrentStackItem();
+    in_non_html_namespace = !adjusted_current_node->IsInHTMLNamespace();
     in_foreign_content =
-        !adjusted_current_node->IsInHTMLNamespace() &&
+        in_non_html_namespace &&
         !HTMLElementStack::IsHTMLIntegrationPoint(adjusted_current_node) &&
         !HTMLElementStack::IsMathMLTextIntegrationPoint(adjusted_current_node);
   }
 
   parser_->tokenizer().SetForceNullCharacterReplacement(
       GetInsertionMode() == kTextMode || in_foreign_content);
-  parser_->tokenizer().SetShouldAllowCDATA(in_foreign_content);
+  parser_->tokenizer().SetShouldAllowCDATA(in_non_html_namespace);
 }
 
 void HTMLTreeBuilder::ProcessToken(AtomicHTMLToken* token) {
@@ -879,26 +905,33 @@ void HTMLTreeBuilder::ProcessStartTagForInBody(AtomicHTMLToken* token) {
         bool add_select_end_tag =
             !RuntimeEnabledFeatures::InputInSelectEnabled();
 
-        if (parent_select || parent_option_optgroup) {
-          if (RuntimeEnabledFeatures::InputInSelectEnabled()) {
-            add_select_end_tag = true;
-          }
-        } else {
+        // TODO(crbug.com/396300371): Obsolete and remove these use counters
+        // after the InputInSelect flag is removed.
+        if (!parent_select && !parent_option_optgroup) {
           UseCounter::Count(tree_.CurrentNode()->GetDocument(),
                             WebFeature::kInputParsedAncestorSelect);
         }
-
         if (parent_select && !parent_select->WasOptionInserted()) {
-          if (RuntimeEnabledFeatures::InputInSelectEnabled()) {
-            // <input> tags are allowed inside <select> if they come before any
-            // of the <option>s.
-            add_select_end_tag = false;
-          }
           UseCounter::Count(tree_.CurrentNode()->GetDocument(),
                             WebFeature::kInputParsedParentSelectNoOptions);
         }
 
-        if (add_select_end_tag) {
+        if (!add_select_end_tag) {
+          // After this feature is enabled, website maintainers will likely
+          // still want a console message to help them fix their sites in case
+          // they are broken. After the InputInSelect flag is removed, we can
+          // remove this console message.
+          tree_.OpenElements()->TopNode()->AddConsoleMessage(
+              mojom::blink::ConsoleMessageSource::kJavaScript,
+              mojom::blink::ConsoleMessageLevel::kWarning,
+              "An <input> tag was parsed within an open <select> tag. Previous "
+              "versions of this browser automatically inserted a </select> end "
+              "tag before the <input>, but this browser now keeps the <input> "
+              "inside the <select>. If the <input> is not meant to be inside "
+              "the <select>, please add the missing </select> end tag before "
+              "it. This warning is temporary and will be removed in a future "
+              "version of this browser.");
+        } else {
           tree_.OpenElements()->TopNode()->AddConsoleMessage(
               mojom::blink::ConsoleMessageSource::kJavaScript,
               mojom::blink::ConsoleMessageLevel::kWarning,
@@ -1618,6 +1651,12 @@ void HTMLTreeBuilder::ProcessStartTag(AtomicHTMLToken* token) {
           DCHECK(did_process);
           return;
         }
+        case HTMLTag::kHead:
+          if (!RuntimeEnabledFeatures::
+                  HTMLParserIgnoreHeadInNoscriptEnabled()) {
+            break;
+          }
+          [[fallthrough]];
         case HTMLTag::kNoscript:
           ParseError(token);
           return;
@@ -2021,11 +2060,12 @@ void HTMLTreeBuilder::ResetInsertionModeAppropriately() {
     const HTMLTag tag = item->GetHTMLTag();
     if (item->IsHTMLNamespace()) {
       switch (tag) {
-        case HTMLTag::kTemplate:
-          return SetInsertionMode(template_insertion_modes_.back());
         case HTMLTag::kTd:
         case HTMLTag::kTh:
-          return SetInsertionMode(kInCellMode);
+          if (!last) {
+            return SetInsertionMode(kInCellMode);
+          }
+          break;
         case HTMLTag::kTr:
           return SetInsertionMode(kInRowMode);
         case HTMLTag::kTbody:
@@ -2038,12 +2078,13 @@ void HTMLTreeBuilder::ResetInsertionModeAppropriately() {
           return SetInsertionMode(kInColumnGroupMode);
         case HTMLTag::kTable:
           return SetInsertionMode(kInTableMode);
+        case HTMLTag::kTemplate:
+          return SetInsertionMode(template_insertion_modes_.back());
         case HTMLTag::kHead:
-          if (!fragment_context_.FragmentTarget() ||
-              fragment_context_.ContextElement() != item->GetNode()) {
+          if (!last) {
             return SetInsertionMode(kInHeadMode);
           }
-          return SetInsertionMode(kInBodyMode);
+          break;
         case HTMLTag::kBody:
           return SetInsertionMode(kInBodyMode);
         case HTMLTag::kFrameset:
@@ -2904,7 +2945,16 @@ void HTMLTreeBuilder::ProcessEndOfFile(AtomicHTMLToken* token) {
       ParseError(token);
       if (tree_.CurrentStackItem()->MatchesHTMLTag(HTMLTag::kScript)) {
         // Mark the script element as "already started".
-        DVLOG(1) << "Not implemented.";
+        // TODO(crbug.com/491743369): This is spec-mandated for all parsers,
+        // but it is a web-visible behavior change for the main document parser
+        // (an unclosed <script src> at EOF currently executes). Apply it to
+        // the main document parser too, behind its own feature flag.
+        if (IsParsingFragment()) {
+          if (ScriptLoader* loader =
+                  ScriptLoaderFromElement(tree_.CurrentElement())) {
+            loader->SetAlreadyStarted();
+          }
+        }
       }
       Element* el = tree_.OpenElements()->Top();
       if (IsA<HTMLTextAreaElement>(el))
@@ -2983,11 +3033,17 @@ bool HTMLTreeBuilder::ProcessStartTagForInHead(AtomicHTMLToken* token) {
     case HTMLTag::kBasefont:
     case HTMLTag::kBgsound:
     case HTMLTag::kLink:
-    case HTMLTag::kMeta:
+    case HTMLTag::kMeta: {
+      const bool is_csp_meta_for_preload =
+          !IsParsingTemplateContents() && IsCSPMetaTagForPreload(token);
       tree_.InsertSelfClosingHTMLElementDestroyingToken(token);
+      if (is_csp_meta_for_preload) {
+        parser_->DidProcessCSPMetaTagForPreload();
+      }
       // Note: The custom processing for the <meta> tag is done in
       // HTMLMetaElement::process().
       return true;
+    }
     case html_names::HTMLTag::kCommand:
       if (RuntimeEnabledFeatures::HTMLCommandElementRemovalEnabled()) {
         return false;
@@ -3209,8 +3265,16 @@ void HTMLTreeBuilder::Flush() {
   // we use an exponential backoff strategy. We always want to avoid the
   // O(n^2) string copies for text documents, because they generate a single
   // <pre> with a potentially very large amount of content.
+  //
+  // Fragment parsers (e.g. streamHTML()) always flush: each chunk corresponds
+  // to a write() whose resolution should reflect the DOM, and no text may be
+  // left in pending_text_ if the writer is dropped without close()/abort().
+  // The O(n^2) concern above only applies when a single raw-text run spans
+  // many chunks; synchronous fragment parsing flushes at most once per
+  // Append(), so it is not affected.
   const bool defer_text_run =
-      (insertion_mode_ == kTextMode) || is_text_document_;
+      ((insertion_mode_ == kTextMode) || is_text_document_) &&
+      !IsParsingFragment();
   if (defer_text_run && DeferTreeBuilderFlushEnabled()) {
     base::TimeTicks now = base::TimeTicks::Now();
 

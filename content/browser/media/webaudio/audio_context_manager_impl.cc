@@ -36,19 +36,22 @@ void AudioContextManagerImpl::Create(
 
   // The object is bound to the lifetime of |render_frame_host| and the mojo
   // connection. See DocumentService for details.
-  new AudioContextManagerImpl(*render_frame_host, std::move(receiver));
+  base::MakeSelfDeleting<AudioContextManagerImpl>(*render_frame_host,
+                                                  std::move(receiver));
 }
 
 AudioContextManagerImpl& AudioContextManagerImpl::CreateForTesting(
     RenderFrameHost& render_frame_host,
     mojo::PendingReceiver<blink::mojom::AudioContextManager> receiver) {
-  return *new AudioContextManagerImpl(render_frame_host, std::move(receiver));
+  return *base::MakeSelfDeleting<AudioContextManagerImpl>(render_frame_host,
+                                                          std::move(receiver));
 }
 
 AudioContextManagerImpl::AudioContextManagerImpl(
     RenderFrameHost& render_frame_host,
-    mojo::PendingReceiver<blink::mojom::AudioContextManager> receiver)
-    : DocumentService(render_frame_host, std::move(receiver)),
+    mojo::PendingReceiver<blink::mojom::AudioContextManager> receiver,
+    base::SelfDeletingPassKey key)
+    : DocumentService(render_frame_host, std::move(receiver), key),
       clock_(base::DefaultTickClock::GetInstance()) {}
 
 AudioContextManagerImpl::~AudioContextManagerImpl() {
@@ -73,11 +76,12 @@ void AudioContextManagerImpl::AudioContextAudiblePlaybackStarted(
     return;
   }
 
-  // Reject audibility assertions if the frame has no active audio output
-  // streams.
+  // Reject audibility assertions if the frame is inactive (e.g., in
+  // BackForwardCache) or has no active audio output streams.
   auto& render_frame_host_impl =
       static_cast<RenderFrameHostImpl&>(render_frame_host());
-  if (!render_frame_host_impl.HasMediaStreams(
+  if (!render_frame_host_impl.IsActive() ||
+      !render_frame_host_impl.HasMediaStreams(
           RenderFrameHostImpl::MediaStreamType::kPlayingAudioStream)) {
     return;
   }
@@ -127,9 +131,11 @@ void AudioContextManagerImpl::RecordAudibleTime(base::TimeDelta audible_time) {
   CHECK(!render_frame_host().IsInLifecycleState(
       RenderFrameHost::LifecycleState::kPrerendering));
 
+  // IsInPrimaryMainFrame() is false once a frame leaves kActive; checking
+  // !GetParentOrOuterDocument() matches GetPageUkmSourceId() across freezes.
   ukm::builders::Media_WebAudio_AudioContext_AudibleTime(
       render_frame_host().GetPageUkmSourceId())
-      .SetIsMainFrame(render_frame_host().IsInPrimaryMainFrame())
+      .SetIsMainFrame(!render_frame_host().GetParentOrOuterDocument())
       .SetAudibleTime(GetBucketedTimeInMilliseconds(audible_time))
       .Record(ukm_recorder);
 }

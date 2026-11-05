@@ -17,31 +17,13 @@ void FakeDataDecoderService::BindImageDecoder(
   FAIL();
 }
 
-void FakeDataDecoderService::BindStructuredHeadersParser(
-    mojo::PendingReceiver<data_decoder::mojom::StructuredHeadersParser>
-        receiver) {
-  FAIL();
-}
-
 void FakeDataDecoderService::BindXmlParser(
     mojo::PendingReceiver<data_decoder::mojom::XmlParser> receiver) {
   FAIL();
 }
 
-void FakeDataDecoderService::BindWebBundleParserFactory(
-    mojo::PendingReceiver<web_package::mojom::WebBundleParserFactory>
-        receiver) {
-  FAIL();
-}
-
 void FakeDataDecoderService::BindGzipper(
     mojo::PendingReceiver<data_decoder::mojom::Gzipper> receiver) {
-  FAIL();
-}
-
-void FakeDataDecoderService::BindPixCodeValidator(
-    mojo::PendingReceiver<payments::facilitated::mojom::PixCodeValidator>
-        receiver) {
   FAIL();
 }
 

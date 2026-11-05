@@ -56,7 +56,7 @@ component("platform") {
       "platform_channel_server_posix.cc",
       "socket_utils_posix.cc",
     ]
-    deps += [ "//net" ]
+    deps += [ "//net/base:sockaddr_util" ]
   }
 
   if (is_fuchsia) {
@@ -68,8 +68,6 @@ component("platform") {
     sources += [ "named_platform_channel.cc" ]
     public += [ "named_platform_channel.h" ]
   }
-
-  configs += [ "//build/config/compiler:wexit_time_destructors" ]
 
   defines = [ "IS_MOJO_CPP_PLATFORM_IMPL" ]
 }

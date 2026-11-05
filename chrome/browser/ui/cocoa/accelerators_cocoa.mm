@@ -130,8 +130,7 @@ ui::Accelerator AcceleratorForCloseWindow() {
 }
 
 ui::Accelerator AcceleratorForEnterFullscreen() {
-  return ui::Accelerator(ui::VKEY_F, ui::EF_COMMAND_DOWN | ui::EF_CONTROL_DOWN |
-                                         ui::EF_FUNCTION_DOWN);
+  return ui::Accelerator(ui::VKEY_F, ui::EF_FUNCTION_DOWN);
 }
 
 }  // namespace
@@ -142,14 +141,14 @@ AcceleratorsCocoa::AcceleratorsCocoa() {
 
     auto result =
         accelerators_.insert(std::make_pair(entry.command_id, accelerator));
-    DCHECK(result.second);
+    CHECK(result.second, base::NotFatalUntil::M162);
   }
 
   accelerators_[IDC_CLOSE_WINDOW] = AcceleratorForCloseWindow();
 
   auto result = accelerators_.insert(
       std::make_pair(IDC_FULLSCREEN, AcceleratorForEnterFullscreen()));
-  DCHECK(result.second);
+  CHECK(result.second, base::NotFatalUntil::M162);
 
   if (!base::i18n::IsRTL()) {
     return;

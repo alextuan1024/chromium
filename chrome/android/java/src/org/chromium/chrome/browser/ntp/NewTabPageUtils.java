@@ -12,7 +12,7 @@ import androidx.annotation.IntDef;
 
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.chrome.R;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
+import org.chromium.chrome.browser.flags.ChromeFeatures;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
@@ -42,14 +42,41 @@ public class NewTabPageUtils {
         int NUM_ENTRIES = 4;
     }
 
-    /** Action chips options for NTP Aurora V2. */
-    @IntDef({ActionChips.DEFAULT, ActionChips.INCOGNITO, ActionChips.CANVAS})
+    /**
+     * Action chips options for NTP Aurora V2. These values are also recorded to the
+     * NewTabPage.Composeplate.Buttons.Impression histogram, where DEFAULT stands for the AI Mode
+     * button. Entries should not be renumbered and numeric values should never be reused.
+     */
+    // LINT.IfChange(ActionChips)
+    @IntDef({
+        ActionChips.DEFAULT,
+        ActionChips.INCOGNITO,
+        ActionChips.CREATE_IMAGE,
+        ActionChips.GALLERY
+    })
     @Retention(RetentionPolicy.SOURCE)
     public @interface ActionChips {
         int DEFAULT = 0;
         int INCOGNITO = 1;
-        int CANVAS = 2;
-        int NUM_ENTRIES = 3;
+        int CREATE_IMAGE = 2;
+        int GALLERY = 3;
+        int NUM_ENTRIES = 4;
+    }
+
+    // LINT.ThenChange(//tools/metrics/histograms/metadata/new_tab_page/enums.xml:NtpActionChips)
+
+    /**
+     * Returns the view whose top margin controls the MVT section's vertical spacing. In the
+     * beside-MVT layout, the parent container (composeplate_and_mvt_container) owns the top margin
+     * for the entire row.
+     */
+    public static View getTilesLayoutTopMarginTargetView(View mvTilesContainerLayout) {
+        if (isBesideMvtModuleEnabled()
+                && mvTilesContainerLayout.getParent() instanceof View parentView
+                && parentView.getId() == R.id.composeplate_and_mvt_container) {
+            return parentView;
+        }
+        return mvTilesContainerLayout;
     }
 
     /**
@@ -61,9 +88,10 @@ public class NewTabPageUtils {
      */
     public static void updateTilesLayoutTopMargin(
             View view, boolean shouldShowLogo, boolean isLff) {
+        View targetView = getTilesLayoutTopMarginTargetView(view);
         ViewGroup.MarginLayoutParams marginLayoutParams =
-                (ViewGroup.MarginLayoutParams) view.getLayoutParams();
-        Resources resources = view.getResources();
+                (ViewGroup.MarginLayoutParams) targetView.getLayoutParams();
+        Resources resources = targetView.getResources();
         int topMargin =
                 resources.getDimensionPixelSize(
                         (shouldShowLogo || isLff)
@@ -71,30 +99,153 @@ public class NewTabPageUtils {
                                 : R.dimen.tile_layout_no_logo_top_margin);
 
         marginLayoutParams.topMargin = topMargin;
-        view.setLayoutParams(marginLayoutParams);
+        targetView.setLayoutParams(marginLayoutParams);
     }
 
     /** Returns the {@link PaddingStyle} for NTP Aurora. */
     public static @PaddingStyle int getPaddingStyleForAurora() {
-        return ChromeFeatureList.sNtpAuroraPaddingStyle.getValue();
+        return ChromeFeatures.NtpAuroraPaddingStyle.getValue();
     }
 
-    /** Returns the space in pixels for NTP sections based on the Aurora padding style. */
+    /**
+     * Returns the space in pixels between NTP sections based on the Aurora padding style. In the
+     * NTP Aurora V2 layouts without the composeplate row, this includes extra space that keeps the
+     * feed aligned, see {@link #shouldKeepFeedAlignedWithoutComposeplate()}.
+     */
     public static int getNtpSectionPaddingPx(Resources resources) {
         if (NewTabPageUtils.getPaddingStyleForAurora() == PaddingStyle.DEFAULT) {
             return resources.getDimensionPixelSize(R.dimen.ntp_section_top_margin);
         } else {
-            return resources.getDimensionPixelSize(R.dimen.ntp_section_top_margin_small);
+            return resources.getDimensionPixelSize(R.dimen.ntp_section_top_margin_small)
+                    + getNtpSectionPaddingDeltaPx(resources);
         }
     }
 
     /** Returns whether the Aurora layout is enabled. */
     public static boolean isNtpAuroraEnabled() {
-        return ChromeFeatureList.sNtpAurora.isEnabled();
+        return ChromeFeatures.NtpAurora.isEnabled();
+    }
+
+    /** Returns whether the Aurora layout V2 is enabled. */
+    public static boolean isNtpAuroraV2Enabled() {
+        return ChromeFeatures.NtpAurora.isEnabled() && ChromeFeatures.NtpAuroraV2.isEnabled();
     }
 
     /** Returns whether the Aurora layout with updated button colors is enabled. */
     public static boolean isNtpAuroraButtonColorEnabled() {
-        return isNtpAuroraEnabled() && ChromeFeatureList.sNtpAuroraChangeButtonColor.getValue();
+        return isNtpAuroraEnabled() && ChromeFeatures.NtpAuroraChangeButtonColor.getValue();
+    }
+
+    /**
+     * Returns the type of the action chip to show on the NTP, which is set by the "action_chips"
+     * param of NTP Aurora V2. Returns {@link ActionChips#DEFAULT} if NTP Aurora V2 is disabled.
+     */
+    public static @ActionChips int getMerchandisingChipsType() {
+        if (!isNtpAuroraV2Enabled()) return ActionChips.DEFAULT;
+
+        return ChromeFeatures.NtpAuroraV2ActionChips.getValue();
+    }
+
+    /**
+     * Returns whether clicking the AI Mode button on the NTP should redirect to the AI Mode
+     * omnibox, which is the case when a valid, non-default action chip type is enabled.
+     */
+    public static boolean isAiModeButtonRedirectEnabled() {
+        @ActionChips int chipType = getMerchandisingChipsType();
+        return chipType > ActionChips.DEFAULT && chipType < ActionChips.NUM_ENTRIES;
+    }
+
+    /** Returns the {@link LayoutType} for NTP Aurora V2. */
+    public static @LayoutType int getLayoutTypeForAuroraV2() {
+        if (!isNtpAuroraV2Enabled()) {
+            return LayoutType.DEFAULT;
+        }
+        return ChromeFeatures.NtpAuroraV2LayoutType.getValue();
+    }
+
+    /** Returns whether the beside-MVT layout is enabled. */
+    public static boolean isBesideMvtModuleEnabled() {
+        return getLayoutTypeForAuroraV2() == LayoutType.BESIDE_MVT;
+    }
+
+    /** Returns whether the inside-MVT AI Mode tile is enabled. */
+    public static boolean isAiModeTileInsideMvt() {
+        return getLayoutTypeForAuroraV2() == LayoutType.INSIDE_MVT;
+    }
+
+    /**
+     * Returns whether the composeplate buttons are removed in NTP Aurora V2. {@link
+     * LayoutType#BESIDE_MVT} is excluded because it still uses a composeplate view beside the MVT.
+     */
+    public static boolean isComposeplateRemovedInAuroraV2() {
+        @LayoutType int layoutType = getLayoutTypeForAuroraV2();
+        return layoutType == LayoutType.REMOVE || layoutType == LayoutType.INSIDE_MVT;
+    }
+
+    /**
+     * Returns the extra top margin in pixels for the logo or doodle, or 0 if {@link
+     * #shouldKeepFeedAlignedWithoutComposeplate()} is false.
+     */
+    public static int getLogoTopMarginDeltaPx(Resources resources) {
+        if (!shouldKeepFeedAlignedWithoutComposeplate()) return 0;
+
+        if (getPaddingStyleForAurora() == PaddingStyle.SMALL) {
+            return resources.getDimensionPixelSize(
+                    R.dimen.ntp_aurora_v2_logo_top_margin_delta_small);
+        }
+        return resources.getDimensionPixelSize(R.dimen.ntp_aurora_v2_logo_top_margin_delta_large);
+    }
+
+    /**
+     * Returns the extra bottom margin in pixels for the logo, or 0 if {@link
+     * #shouldKeepFeedAlignedWithoutComposeplate()} is false.
+     */
+    public static int getLogoBottomMarginDeltaPx(Resources resources) {
+        if (!shouldKeepFeedAlignedWithoutComposeplate()) return 0;
+
+        if (getPaddingStyleForAurora() == PaddingStyle.SMALL) {
+            return resources.getDimensionPixelSize(
+                    R.dimen.ntp_aurora_v2_logo_bottom_margin_delta_small);
+        }
+        return resources.getDimensionPixelSize(
+                R.dimen.ntp_aurora_v2_logo_bottom_margin_delta_large);
+    }
+
+    /**
+     * Returns the extra top margin in pixels for the MVT container, or 0 if {@link
+     * #shouldKeepFeedAlignedWithoutComposeplate()} is false.
+     */
+    public static int getMvtTopMarginDeltaPx(Resources resources) {
+        if (!shouldKeepFeedAlignedWithoutComposeplate()) return 0;
+
+        if (getPaddingStyleForAurora() == PaddingStyle.SMALL) {
+            return resources.getDimensionPixelSize(
+                    R.dimen.ntp_aurora_v2_mvt_top_margin_delta_small);
+        }
+        return resources.getDimensionPixelSize(R.dimen.ntp_aurora_v2_mvt_top_margin_delta_large);
+    }
+
+    /**
+     * Returns whether the feed should be kept at the same position as in the default layout, even
+     * though the non-default {@link LayoutType}s of NTP Aurora V2 don't show the standalone
+     * composeplate row. When true, the row's height is added back as extra spacing between the
+     * other sections. The spacing is designed on top of the NTP Aurora padding styles, so it is
+     * skipped for {@link PaddingStyle#DEFAULT}.
+     */
+    private static boolean shouldKeepFeedAlignedWithoutComposeplate() {
+        return isNtpAuroraEnabled()
+                && getPaddingStyleForAurora() != PaddingStyle.DEFAULT
+                && getLayoutTypeForAuroraV2() != LayoutType.DEFAULT;
+    }
+
+    /**
+     * Returns the extra space in pixels between NTP sections, which applies both between the MVT
+     * and the magic stack and between the last section and the feed, or 0 if {@link
+     * #shouldKeepFeedAlignedWithoutComposeplate()} is false.
+     */
+    private static int getNtpSectionPaddingDeltaPx(Resources resources) {
+        if (!shouldKeepFeedAlignedWithoutComposeplate()) return 0;
+
+        return resources.getDimensionPixelSize(R.dimen.ntp_aurora_v2_section_padding_delta);
     }
 }

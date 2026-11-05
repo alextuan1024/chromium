@@ -17,7 +17,6 @@
 #import "ios/chrome/browser/shared/coordinator/scene/scene_state.h"
 #import "ios/chrome/browser/shared/coordinator/scene/test/fake_scene_state.h"
 #import "ios/chrome/browser/shared/model/browser/browser.h"
-#import "ios/chrome/browser/shared/model/browser/browser_provider.h"
 #import "ios/chrome/browser/shared/model/browser/browser_provider_interface.h"
 #import "ios/chrome/browser/shared/model/prefs/browser_prefs.h"
 #import "ios/chrome/browser/shared/model/prefs/pref_names.h"
@@ -27,6 +26,7 @@
 #import "ios/chrome/browser/shared/public/commands/picture_in_picture_commands.h"
 #import "ios/chrome/browser/shared/public/commands/promos_manager_commands.h"
 #import "ios/chrome/browser/shared/public/commands/scene_commands.h"
+#import "ios/chrome/browser/shared/public/commands/scene_sign_in_commands.h"
 #import "ios/chrome/browser/signin/model/authentication_service.h"
 #import "ios/chrome/browser/signin/model/authentication_service_factory.h"
 #import "ios/chrome/browser/sync/model/sync_service_factory.h"
@@ -88,8 +88,7 @@ class PromosManagerCoordinatorTest : public PlatformTest {
 
   // Initializes a new `PromosManagerCoordinator` for testing.
   void CreatePromosManagerCoordinator() {
-    Browser* browser =
-        scene_state_.browserProviderInterface.mainBrowserProvider.browser;
+    Browser* browser = scene_state_.browserProviderInterface.mainBrowser;
     mock_pip_handler_ = OCMProtocolMock(@protocol(PictureInPictureCommands));
     [browser->GetCommandDispatcher()
         startDispatchingToTarget:mock_pip_handler_
@@ -103,6 +102,11 @@ class PromosManagerCoordinatorTest : public PlatformTest {
     [browser->GetCommandDispatcher()
         startDispatchingToTarget:mock_scene_handler_
                      forProtocol:@protocol(SceneCommands)];
+    mock_scene_sign_in_handler_ =
+        OCMProtocolMock(@protocol(SceneSignInCommands));
+    [browser->GetCommandDispatcher()
+        startDispatchingToTarget:mock_scene_sign_in_handler_
+                     forProtocol:@protocol(SceneSignInCommands)];
 
     coordinator_ = [[PromosManagerCoordinator alloc]
         initWithBaseViewController:view_controller_
@@ -136,6 +140,7 @@ class PromosManagerCoordinatorTest : public PlatformTest {
   id mock_pip_handler_;
   id mock_promos_manager_handler_;
   id mock_scene_handler_;
+  id mock_scene_sign_in_handler_;
 };
 
 }  // namespace

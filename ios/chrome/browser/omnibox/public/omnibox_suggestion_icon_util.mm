@@ -56,6 +56,9 @@ UIImage* GetOmniboxSuggestionIcon(OmniboxSuggestionIconType icon_type) {
     case OmniboxSuggestionIconType::kNotesSpark:
       symbol = SymbolLineThreeSpark;
       break;
+    case OmniboxSuggestionIconType::kPromptSuggestion:
+      symbol = SymbolPromptSuggestion;
+      break;
     case OmniboxSuggestionIconType::kCount:
       NOTREACHED();
   }
@@ -65,7 +68,6 @@ UIImage* GetOmniboxSuggestionIcon(OmniboxSuggestionIconType icon_type) {
 
 #if BUILDFLAG(IOS_USE_BRANDED_ASSETS)
 UIImage* GetBrandedGoogleIconForOmnibox() {
-  return MakeSymbolMonochrome(
-      SymbolWithPointSize(SymbolGoogleIcon, kSymbolSize));
+  return SymbolWithPointSize(SymbolGoogleIconMonochrome, kSymbolSize);
 }
 #endif  // BUILDFLAG(IOS_USE_BRANDED_ASSETS)

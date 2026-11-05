@@ -10,7 +10,6 @@
 
 #include "base/functional/callback.h"
 #include "chrome/browser/chrome_browser_main_extra_parts.h"
-#include "chrome/common/buildflags.h"
 #include "chromeos/ash/components/login/readahead/login_readahead_performer.h"
 #include "chromeos/components/mahi/public/cpp/mahi_media_app_content_manager.h"
 
@@ -60,6 +59,10 @@ class GameModeController;
 
 namespace policy {
 class DisplaySettingsHandler;
+}
+
+namespace ui {
+class HeatmapPalmDetector;
 }
 
 class AccessibilityControllerClient;
@@ -184,6 +187,8 @@ class ChromeBrowserMainExtraPartsAsh : public ChromeBrowserMainExtraParts {
       mahi_media_app_content_manager_;
   std::optional<ash::LoginReadaheadPerformer> login_readahead_performer_;
 
+  std::unique_ptr<ui::HeatmapPalmDetector> heatmap_palm_detector_;
+
   std::unique_ptr<internal::ChromeShelfControllerInitializer>
       chrome_shelf_controller_initializer_;
   std::unique_ptr<DesksClient> desks_client_;
@@ -220,11 +225,6 @@ class ChromeBrowserMainExtraPartsAsh : public ChromeBrowserMainExtraParts {
   base::OnceClosure post_browser_start_callback_;
 
   std::unique_ptr<ash::VideoConferenceManagerAsh> video_conference_manager_ash_;
-
-  // Once Sanitize is completed, ash is restarted. After ash has restarted, we
-  // should check if the restart has happened right after a sanitize. If that is
-  // the case, sanitize done dialog should be shown to the user.
-  void CheckIfSanitizeCompleted();
 };
 
 #endif  // CHROME_BROWSER_UI_ASH_MAIN_EXTRA_PARTS_CHROME_BROWSER_MAIN_EXTRA_PARTS_ASH_H_

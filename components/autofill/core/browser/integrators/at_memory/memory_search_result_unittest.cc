@@ -5,17 +5,13 @@
 #include "components/autofill/core/browser/integrators/at_memory/memory_search_result.h"
 
 #include <string>
-#include <vector>
 
-#include "base/functional/bind.h"
-#include "base/functional/callback.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace autofill {
 
 
 TEST(MemorySearchResultTest, ObfuscatesIban) {
-  std::u16string raw_iban = u"DE91 1000 0000 0123 4567 89";
   std::u16string obfuscated_value = u"DE\u2006\u2022\u20226789";
   MemorySearchResult result(MemoryDataType::kIban, u"IBAN", obfuscated_value);
   result.is_obfuscated = true;

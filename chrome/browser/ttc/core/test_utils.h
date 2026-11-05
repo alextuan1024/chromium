@@ -6,11 +6,11 @@
 #define CHROME_BROWSER_TTC_CORE_TEST_UTILS_H_
 
 #include <string>
-#include <vector>
 
-#include "chrome/browser/ttc/app/public/conversation.h"
-#include "chrome/browser/ttc/app/public/tool_types.h"
 #include "components/optimization_guide/proto/features/common_quality_data.pb.h"
+#include "components/ttc/app/public/conversation.h"
+#include "components/ttc/app/public/session_journal.h"
+#include "components/ttc/app/public/tool_types.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "url/gurl.h"
 
@@ -21,11 +21,8 @@ class MockConversation : public Conversation {
   MockConversation();
   ~MockConversation() override;
 
-  MOCK_METHOD(void, AddObserver, (Observer*), (override));
-  MOCK_METHOD(void, RemoveObserver, (Observer*), (override));
   MOCK_METHOD(void, Start, (), (override));
   MOCK_METHOD(void, Stop, (), (override));
-  MOCK_METHOD(bool, is_connected, (), (const, override));
   MOCK_METHOD(void, SendTextInput, (const std::string&), (override));
   MOCK_METHOD(void,
               SendContextUpdate,
@@ -33,11 +30,10 @@ class MockConversation : public Conversation {
                const std::string&,
                const optimization_guide::proto::AnnotatedPageContent&),
               (override));
-  MOCK_METHOD(void,
-              SendToolSetUpdate,
-              (const std::vector<ToolDefinition>&),
-              (override));
-  MOCK_METHOD(void, OnPageContextChanged, (), (override));
+  MOCK_METHOD(void, OnPageContextInvalidated, (), (override));
+  MOCK_METHOD(void, SetMicMuted, (bool), (override));
+  MOCK_METHOD(void, SetHotlAudioSink, (HotlAudioSinkCallback), (override));
+  MOCK_METHOD(SessionJournal&, GetJournal, (), (override));
 };
 
 // Runs the message loop for a short amount of time. Useful to check something

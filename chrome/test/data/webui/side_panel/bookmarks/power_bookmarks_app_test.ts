@@ -5,7 +5,7 @@
 import 'chrome://bookmarks-side-panel.top-chrome/power_bookmarks_list.js';
 import 'chrome://bookmarks-side-panel.top-chrome/power_bookmarks_app.js';
 
-import {SortOrder, ViewType} from 'chrome://bookmarks-side-panel.top-chrome/bookmarks.mojom-webui.js';
+import {ActionSource, SortOrder, ViewType} from 'chrome://bookmarks-side-panel.top-chrome/bookmarks.mojom-webui.js';
 import {BookmarksApiProxyImpl} from 'chrome://bookmarks-side-panel.top-chrome/bookmarks_api_proxy.js';
 import type {PowerBookmarkRowElement} from 'chrome://bookmarks-side-panel.top-chrome/power_bookmark_row.js';
 import {BOOKMARK_ROW_LOAD_EVENT} from 'chrome://bookmarks-side-panel.top-chrome/power_bookmark_row.js';
@@ -164,7 +164,6 @@ suite('General', () => {
       emptyBodyFolder: 'folder body',
       emptyTitleGuest: 'guest title',
       emptyBodyGuest: 'guest body',
-      isBookmarksMigrationUiChanges: false,
     });
 
     const app = document.createElement('power-bookmarks-app');
@@ -261,6 +260,25 @@ suite('General', () => {
       assertTrue(renderedRowsB > 0);
       assertTrue(renderedRowsB < listB.items.length);
       assertEquals(0, listA.querySelectorAll('power-bookmark-row').length);
+    });
+
+    test('SearchFilterClearsItemSizeToPreventClipping', async () => {
+      const listA = powerBookmarksApp.$.bookmarksList.$.listA;
+      assertEquals(36, listA.itemSize);
+
+      await performSearch('bookmark');
+      await microtasksFinished();
+
+      // In search mode, itemSize must be undefined so cr-lazy-list measures
+      // actual rendered heights to accommodate filter headings without
+      // clipping.
+      assertEquals(undefined, listA.itemSize);
+
+      // Clearing search restores itemSize to the default for the current view
+      // type.
+      await performSearch('');
+      await microtasksFinished();
+      assertEquals(36, listA.itemSize);
     });
 
     test('RebuildsKeyboardNavigationOnBookmarkNodeAdded', async () => {
@@ -1103,7 +1121,8 @@ suite('General', () => {
 
 
     test('EditBookmarks', async () => {
-      const bookmark = getBookmarkWithId(powerBookmarksApp, '3')!;
+      const bookmarkId = '3';
+      const bookmark = getBookmarkWithId(powerBookmarksApp, bookmarkId)!;
       const contextMenu = powerBookmarksApp.$.contextMenu;
       const editClicked = eventToPromise('edit-clicked', contextMenu);
 
@@ -1126,16 +1145,19 @@ suite('General', () => {
       await editClicked;
       await microtasksFinished();
 
-      // The edit dialog is opened.
-      const editDialog = powerBookmarksApp.$.editDialog;
-      assertTrue(editDialog.$.dialog.open);
-      assertEquals(bookmark.title, editDialog.$.nameInput.inputElement.value);
-      assertEquals(bookmark.url, editDialog.$.urlInput.inputElement.value);
+      // The native edit dialog is opened.
+      assertEquals(1, bookmarksApi.getCallCount('contextMenuEdit'));
+      assertEquals(
+          bookmarkId, bookmarksApi.getArgs('contextMenuEdit')[0][0][0]);
+      assertEquals(
+          ActionSource.kBookmark,
+          bookmarksApi.getArgs('contextMenuEdit')[0][1]);
     });
 
     test('MoveBookmarks', async () => {
+      const bookmarkId = '3';
       const bookmarks = [
-        getBookmarkWithId(powerBookmarksApp, '3')!,
+        getBookmarkWithId(powerBookmarksApp, bookmarkId)!,
         getBookmarkWithId(powerBookmarksApp, '5')!,
       ];
       const contextMenu = powerBookmarksApp.$.contextMenu;
@@ -1160,9 +1182,13 @@ suite('General', () => {
       await editClicked;
       await microtasksFinished();
 
-      // The edit dialog is opened.
-      const editDialog = powerBookmarksApp.$.editDialog;
-      assertTrue(editDialog.$.dialog.open);
+      // The native move dialog is opened.
+      assertEquals(1, bookmarksApi.getCallCount('contextMenuMove'));
+      assertEquals(
+          bookmarkId, bookmarksApi.getArgs('contextMenuMove')[0][0][0]);
+      assertEquals(
+          ActionSource.kBookmark,
+          bookmarksApi.getArgs('contextMenuMove')[0][1]);
     });
 
     test('LogsBookmarkCountMetric', async () => {
@@ -1368,6 +1394,124 @@ suite('General', () => {
       await microtasksFinished();
 
       assertFalse(powerBookmarksApp.$.contextMenu.isOpen());
+    });
+
+    test('DynamicManagedFolderLifecycleAndPolicyGuard', async () => {
+      document.body.innerHTML = window.trustedTypes!.emptyHTML;
+      const customApi = new TestBookmarksApiProxy();
+      customApi.setAllBookmarks([
+        ...structuredClone(FOLDERS),
+        {
+          id: 'SIDE_PANEL_MANAGED_BOOKMARKS_ID',
+          parentId: 'SIDE_PANEL_ROOT_BOOKMARK_ID',
+          index: 2,
+          title: 'Managed bookmarks',
+          url: null,
+          dateAdded: null,
+          dateLastUsed: null,
+          unmodifiable: true,
+          children: [],
+        },
+      ]);
+      BookmarksApiProxyImpl.setInstance(customApi);
+
+      const app = document.createElement('power-bookmarks-app');
+      const recordedPromise = eventToPromise('bookmark-count-recorded', app);
+      const parentElement = document.createElement('div');
+      parentElement.style.height = '500px';
+      parentElement.appendChild(app);
+      document.body.appendChild(parentElement);
+
+      await customApi.whenCalled('getAllBookmarks');
+      await recordedPromise;
+      await microtasksFinished();
+      powerBookmarksApp = app;
+
+      // Empty managed folder is hidden at top level.
+      assertEquals(
+          undefined, getBookmarkWithId(app, 'SIDE_PANEL_MANAGED_BOOKMARKS_ID'));
+
+      // Changing managed folder title while empty does not crash or reveal it.
+      customApi.callbackRouterRemote.onBookmarkNodeChanged(
+          'SIDE_PANEL_MANAGED_BOOKMARKS_ID', 'Managed by corp', '');
+      await microtasksFinished();
+      assertEquals(
+          undefined, getBookmarkWithId(app, 'SIDE_PANEL_MANAGED_BOOKMARKS_ID'));
+
+      // Adding a managed child exposes the managed folder.
+      customApi.callbackRouterRemote.onBookmarkNodeAdded({
+        id: 'managed_1',
+        title: 'Corp Link',
+        index: 0,
+        parentId: 'SIDE_PANEL_MANAGED_BOOKMARKS_ID',
+        url: 'https://corp.example.com/',
+        children: null,
+        dateAdded: 10,
+        dateLastUsed: null,
+        unmodifiable: true,
+      });
+      await microtasksFinished();
+      assertTrue(!!getBookmarkWithId(app, 'SIDE_PANEL_MANAGED_BOOKMARKS_ID'));
+
+      // Opening the dynamically populated managed folder, updating its title,
+      // and receiving live additions must keep activeFolderPath and UI in sync,
+      // while policy guards block New Folder and Add Current Tab.
+      await openBookmark('SIDE_PANEL_MANAGED_BOOKMARKS_ID');
+      await microtasksFinished();
+      customApi.callbackRouterRemote.onBookmarkNodeChanged(
+          'SIDE_PANEL_MANAGED_BOOKMARKS_ID', 'Managed Renamed', '');
+      await microtasksFinished();
+      const activeTitle =
+          app.$.bookmarksList.$.heading.shadowRoot.querySelector(
+              '#folder-header .title-span.active');
+      assertTrue(!!activeTitle);
+      assertEquals('Managed Renamed', activeTitle.textContent.trim());
+
+      customApi.callbackRouterRemote.onBookmarkNodeAdded({
+        id: 'managed_2',
+        title: 'Corp Link 2',
+        index: 1,
+        parentId: 'SIDE_PANEL_MANAGED_BOOKMARKS_ID',
+        url: 'https://corp2.example.com/',
+        children: null,
+        dateAdded: 11,
+        dateLastUsed: null,
+        unmodifiable: true,
+      });
+      await microtasksFinished();
+      assertTrue(!!getBookmarkWithId(app, 'managed_2'));
+
+      getAddNewFolderButton().click();
+      await microtasksFinished();
+      assertTrue(app.$.disabledFeatureDialog.open);
+      assertEquals(0, customApi.getCallCount('createFolder'));
+
+      app.$.disabledFeatureDialog.close();
+      app.shadowRoot.querySelector<HTMLElement>(
+                        '#addCurrentTabButton')!.click();
+      await microtasksFinished();
+      assertTrue(app.$.disabledFeatureDialog.open);
+      assertEquals(0, customApi.getCallCount('bookmarkCurrentTabInFolder'));
+
+      // Navigate back and remove the managed children; the folder hides again.
+      const folderHeader =
+          app.$.bookmarksList.$.heading.shadowRoot.querySelector(
+              '#folder-header');
+      assertTrue(!!folderHeader);
+      const backButton =
+          folderHeader.shadowRoot!.querySelector<HTMLElement>('#backButton');
+      assertTrue(!!backButton);
+      const backRecorded =
+          eventToPromise('bookmark-count-recorded', app.$.bookmarksList);
+      backButton.click();
+      await backRecorded;
+      await microtasksFinished();
+
+      customApi.callbackRouterRemote.onBookmarkNodesRemoved(
+          ['managed_1', 'managed_2']);
+      await microtasksFinished();
+      assertEquals(
+          undefined, getBookmarkWithId(app, 'SIDE_PANEL_MANAGED_BOOKMARKS_ID'));
     });
 
     test('ShowUiOnlyCalledOnce', async () => {

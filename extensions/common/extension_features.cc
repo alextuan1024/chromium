@@ -14,6 +14,9 @@ namespace extensions_features {
 // API Features
 ///////////////////////////////////////////////////////////////////////////////
 
+BASE_FEATURE(kApiAlarmsClearAllReturnUndefined,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+
 BASE_FEATURE(kApiTabsSplitView, base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kApiContentSettingsClipboard, base::FEATURE_ENABLED_BY_DEFAULT);
@@ -28,6 +31,8 @@ BASE_FEATURE(kApiOdfsConfigPrivate, base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kApiContextualTasksPrivate, base::FEATURE_DISABLED_BY_DEFAULT);
 
+BASE_FEATURE(kApiContextualTasksPrivateAba, base::FEATURE_DISABLED_BY_DEFAULT);
+
 BASE_FEATURE(kApiGlicPrivate, base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kApiEnterpriseReportingPrivateOnDataMaskingRulesTriggered,
@@ -39,8 +44,7 @@ BASE_FEATURE(kApiEnterpriseReportingPrivateReportForceSaveToCloudEventHandled,
 BASE_FEATURE(kApiGlicAccessFromGoogleWebpage,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
-BASE_FEATURE(kApiGlicAccessFromPromotionPage,
-             base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kApiGlicAccessFromPromotionPage, base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kApiGlicAccessFromWebContinuity,
              base::FEATURE_DISABLED_BY_DEFAULT);
@@ -84,6 +88,8 @@ BASE_FEATURE(kApiProxyOverrideRulesPrivate, base::FEATURE_ENABLED_BY_DEFAULT);
 BASE_FEATURE(kApiRuntimeGetPlatformInfoNaClArch,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
+BASE_FEATURE(kApiRuntimeGetDocumentId, base::FEATURE_DISABLED_BY_DEFAULT);
+
 BASE_FEATURE(kWebRequestSecurityInfo, base::FEATURE_DISABLED_BY_DEFAULT);
 
 BASE_FEATURE(kWebRequestPerContextEventDispatch,
@@ -101,7 +107,13 @@ BASE_FEATURE(kApiDesktopAndroidNativeMessagingBypassExtensionAllowlist,
 
 // For historical reasons, this includes some APIs. Please don't add more.
 
-BASE_FEATURE(kAllowWithholdingExtensionPermissionsOnInstall,
+BASE_FEATURE(kAvoidCloneMutableExtensionFunctionArgs,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
+BASE_FEATURE(kExtensionInstallSiteAccessOptions,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
+BASE_FEATURE(kBackForwardCacheForComponentExtensionFrames,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
 BASE_FEATURE(kBlockBackgroundContentsOffExtentNavigation,
@@ -114,9 +126,13 @@ BASE_FEATURE(kCheckingNoExtensionIdInExtensionIpcs,
 BASE_FEATURE(kComponentExtensionAllowWorkerChromeResources,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
-BASE_FEATURE(kCWSReviewPromptingNativeUI,
-             "CWSReviewPromptingNativeUI",
-             base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kCrxInstallerVerifyReloadedManifest,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+
+BASE_FEATURE(kCWSReviewPromptingNativeUI, base::FEATURE_DISABLED_BY_DEFAULT);
+
+BASE_FEATURE(kDeclarativeNetRequestRestrictResponseHeaderValueMatching,
+             base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kEnableWebHidInWebView, base::FEATURE_ENABLED_BY_DEFAULT);
 
@@ -124,13 +140,13 @@ BASE_FEATURE(kExtensionAutoRejectIncognitoConnectability,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kExtensionAsyncListenerRegistration,
-             base::FEATURE_DISABLED_BY_DEFAULT);
-
-// TODO(crbug.com/561948316): Remove this kill switch in M160.
-BASE_FEATURE(kExtensionDebuggerStrictPolicyRestrictions,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
-BASE_FEATURE(kExtensionDisableUnsupportedDeveloper,
+BASE_FEATURE(kExtensionDebuggerStrictPolicyRestrictions,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
+// TODO(crbug.com/578677350): Remove this kill switch in M161.
+BASE_FEATURE(kExtensionDownloaderPublisherProofByUpdateUrl,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kExtensionLocalizationGuid, base::FEATURE_ENABLED_BY_DEFAULT);
@@ -158,7 +174,10 @@ BASE_FEATURE_PARAM(size_t,
                    "max_script_size",
                    0);
 
-BASE_FEATURE(kExtensionProtocolHandlers, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kExtensionOpenTabSetInitiatorOrigin,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+
+BASE_FEATURE(kExtensionProtocolHandlers, base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kExtensionTabContextMenu, base::FEATURE_ENABLED_BY_DEFAULT);
 
@@ -187,6 +206,10 @@ BASE_FEATURE(kLaunchWindowsNativeHostsDirectly,
 BASE_FEATURE(kSafeBrowsingCrxAllowlistAutoDisable,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
+BASE_FEATURE(kWebRequestProxyMoveResponse, base::FEATURE_DISABLED_BY_DEFAULT);
+
+BASE_FEATURE(kWebRequestProxyNavigationResponseTaskRunner,
+             base::FEATURE_DISABLED_BY_DEFAULT);
 
 // TODO(https://crbug.com/328494022): Disable this on ChromeOS, too, and then
 // eventually remove it.
@@ -246,6 +269,9 @@ BASE_FEATURE(kExtensionBrowserNamespaceOnWebPages,
 BASE_FEATURE(kExtensionContentVerificationUsesExtensionRoot,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
+BASE_FEATURE(kExtensionContentVerificationReportsMissingManifest,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+
 BASE_FEATURE(kEnableShouldShowPromotion, base::FEATURE_DISABLED_BY_DEFAULT);
 
 BASE_FEATURE(kSearchEngineExplicitChoiceDialog,
@@ -271,5 +297,11 @@ BASE_FEATURE(kShareEventArgsOnDispatch, base::FEATURE_DISABLED_BY_DEFAULT);
 BASE_FEATURE(kOptimizeWebRequestProxy, base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kUseSha256ForExtensionHashes, base::FEATURE_DISABLED_BY_DEFAULT);
+
+BASE_FEATURE(kRestrictGeneratedPathsInWebAccessibleResources,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+
+BASE_FEATURE(kRestrictMessagingReceiverFramesToExtensionProcesses,
+             base::FEATURE_ENABLED_BY_DEFAULT);
 
 }  // namespace extensions_features

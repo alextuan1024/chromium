@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # Copyright 2024 The Chromium Authors
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
@@ -6,6 +6,7 @@
 import unittest
 
 import setup_modules  # pylint: disable=unused-import
+
 
 import chromium_src.tools.metrics.common.codegen_shared as codegen_shared
 

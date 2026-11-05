@@ -244,6 +244,12 @@ inline constexpr char kWebKitSerifFontFamilyArabic[] =
     "webkit.webprefs.fonts.serif.Arab";
 inline constexpr char kWebKitSansSerifFontFamilyArabic[] =
     "webkit.webprefs.fonts.sansserif.Arab";
+inline constexpr char kWebKitStandardFontFamilyArabicNastaliq[] =
+    "webkit.webprefs.fonts.standard.Aran";
+inline constexpr char kWebKitSerifFontFamilyArabicNastaliq[] =
+    "webkit.webprefs.fonts.serif.Aran";
+inline constexpr char kWebKitSansSerifFontFamilyArabicNastaliq[] =
+    "webkit.webprefs.fonts.sansserif.Aran";
 #if BUILDFLAG(IS_WIN)
 inline constexpr char kWebKitStandardFontFamilyCyrillic[] =
     "webkit.webprefs.fonts.standard.Cyrl";
@@ -465,119 +471,12 @@ inline constexpr char kMandatoryExtensionsForIncognitoNavigation[] =
 inline constexpr char kAttestationExtensionAllowlist[] =
     "attestation.extension_allowlist";
 
-// A boolean specifying whether the Desk API is enabled for third party web
-// applications. If set to true, the Desk API bridge component extension will be
-// installed.
-inline constexpr char kDeskAPIThirdPartyAccessEnabled[] =
-    "desk_api.third_party_access_enabled";
-
 inline constexpr char kDeskAPIDeskSaveAndShareEnabled[] =
     "desk_api.desk_save_and_share_enabled";
-
-// A list of third party web application domains allowed to use the Desk API.
-inline constexpr char kDeskAPIThirdPartyAllowlist[] =
-    "desk_api.third_party_allowlist";
-
-// The list of extensions allowed to skip print job confirmation dialog when
-// they use the chrome.printing.submitJob() function. Note that this used to be
-// `kPrintingAPIExtensionsWhitelist`, hence the difference between the variable
-// name and the string value.
-inline constexpr char kPrintingAPIExtensionsAllowlist[] =
-    "printing.printing_api_extensions_whitelist";
-
-
-// A boolean specifying whether the insights extension is enabled. If set to
-// true, the CCaaS Chrome component extension will be installed.
-inline constexpr char kInsightsExtensionEnabled[] =
-    "insights_extension_enabled";
-
-
-// A boolean pref which turns on the mediaplayer.
-inline constexpr char kLabsMediaplayerEnabled[] = "settings.labs.mediaplayer";
-
-// A string pref that contains version where "What's new" promo was shown.
-inline constexpr char kChromeOSReleaseNotesVersion[] =
-    "settings.release_notes.version";
-
-
-
-// A boolean pref. If set to true, the Unified Desktop feature is made
-// available and turned on by default, which allows applications to span
-// multiple screens. Users may turn the feature off and on in the settings
-// while this is set to true.
-inline constexpr char kUnifiedDesktopEnabledByDefault[] =
-    "settings.display.unified_desktop_enabled_by_default";
-
-// A boolean pref. If set to true, the Exclude Display in Mirror Mode feature
-// is made available to the user, which allows a display to be excluded in
-// mirror mode. Users may turn the feature off and on in the settings while
-// this is set to true.
-inline constexpr char kAllowExcludeDisplayInMirrorMode[] =
-    "settings.display.allow_exclude_display_in_mirror_mode";
-
-// A boolean pref. Indicates if we've already shown a notification to inform the
-// current user about the quick unlock feature.
-inline constexpr char kPinUnlockFeatureNotificationShown[] =
-    "pin_unlock_feature_notification_shown";
-// A boolean pref. Indicates if we've already shown a notification to inform the
-// current user about the fingerprint unlock feature.
-inline constexpr char kFingerprintUnlockFeatureNotificationShown[] =
-    "fingerprint_unlock_feature_notification_shown";
-
-// Boolean pref indicating whether someone can cast to the device.
-inline constexpr char kCastReceiverEnabled[] = "cast_receiver.enabled";
-
-// String pref indicating what is the minimum version of Chrome required to
-// allow user sign in. If the string is empty or blank no restrictions will
-// be applied. See base::Version for exact string format.
-inline constexpr char kMinimumAllowedChromeVersion[] = "minimum_req.version";
-
-// Boolean preference that triggers chrome://settings/androidApps/details to be
-// opened on user session start.
-inline constexpr char kShowArcSettingsOnSessionStart[] =
-    "start_arc_settings_on_session_start";
-
-
-// Dictionary preference that maps language to default voice name preferences
-// for the users's text-to-speech settings. For example, this might map
-// 'en-US' to 'Chrome OS US English'.
-inline constexpr char kTextToSpeechLangToVoiceName[] =
-    "settings.tts.lang_to_voice_name";
-
-// Double preference that controls the default text-to-speech voice rate,
-// where 1.0 is an unchanged rate, and for example, 0.5 is half as fast,
-// and 2.0 is twice as fast.
-inline constexpr char kTextToSpeechRate[] = "settings.tts.speech_rate";
-
-// Double preference that controls the default text-to-speech voice pitch,
-// where 1.0 is unchanged, and for example 0.5 is lower, and 2.0 is
-// higher-pitched.
-inline constexpr char kTextToSpeechPitch[] = "settings.tts.speech_pitch";
-
-// Double preference that controls the default text-to-speech voice volume
-// relative to the system volume, where lower than 1.0 is quieter than the
-// system volume, and higher than 1.0 is louder.
-inline constexpr char kTextToSpeechVolume[] = "settings.tts.speech_volume";
-
 
 // A string pref storing the path of device wallpaper image file.
 inline constexpr char kDeviceWallpaperImageFilePath[] =
     "policy.device_wallpaper_image_file_path";
-
-// A boolean pref for enabling/disabling App reinstall recommendations in Zero
-// State Launcher by policy.
-inline constexpr char kAppReinstallRecommendationEnabled[] =
-    "zero_state_app_install_recommendation.enabled";
-
-// A boolean pref that when set to true, prevents the browser window from
-// launching at the start of the session.
-inline constexpr char kStartupBrowserWindowLaunchSuppressed[] =
-    "startup_browser_window_launch_suppressed";
-
-// A string pref stored in local state. Set and read by extensions using the
-// chrome.login API.
-inline constexpr char kLoginExtensionApiDataForNextLoginAttempt[] =
-    "extensions_api.login.data_for_next_login_attempt";
 
 // This boolean controls whether the first window shown on first run should be
 // unconditionally maximized, overriding the heuristic that normally chooses the
@@ -591,12 +490,6 @@ inline constexpr char kOOMKillsDailyCount[] = "oom_kills.daily_count";
 // Integer pref used by the metrics::DailyEvent owned by
 // memory::OOMKillsMonitor.
 inline constexpr char kOOMKillsDailySample[] = "oomkills.daily_sample";
-
-// List pref containing extension IDs that are exempt from the restricted
-// managed guest session clean-up procedure.
-inline constexpr char
-    kRestrictedManagedGuestSessionExtensionCleanupExemptList[] =
-        "restricted_managed_guest_session_extension_cleanup_exempt_list";
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
 // A boolean pref set to true if a Home button to open the Home pages should be
@@ -690,35 +583,14 @@ inline constexpr char kAutogeneratedThemeColor[] = "autogenerated.theme.color";
 // is used to restore the local theme upon signout.
 inline constexpr char kSavedLocalTheme[] = "browser.theme.saved_local_theme";
 
-// Flag denoting whether or not migration from syncing theme prefs to
-// non-syncing counter-parts is done. See crbug.com/356148174.
-inline constexpr char kSyncingThemePrefsMigratedToNonSyncing[] =
-    "syncing_theme_prefs_migrated_to_non_syncing";
-
-// A one-off flag (set to true by default) marking whether or not the incoming
-// syncing theme prefs should be read. The syncing theme prefs will be read only
-// once per client to honor the previously set theme in the account. See
-// crbug.com/356148174.
-inline constexpr char kShouldReadIncomingSyncingThemePrefs[] =
-    "should_read_incoming_syncing_theme_prefs";
-
 // Enum tracking the color scheme preference for the browser.
-// Use `kBrowserColorScheme` only.
-inline constexpr char kDeprecatedBrowserColorSchemeDoNotUse[] =
-    "browser.theme.color_scheme";
 inline constexpr char kBrowserColorScheme[] = "browser.theme.color_scheme2";
 
 // SkColor used to theme the browser for Chrome Refresh. The value
 // SK_ColorTRANSPARENT means the user color has not been set.
-// Use `kUserColor` only.
-inline constexpr char kDeprecatedUserColorDoNotUse[] =
-    "browser.theme.user_color";
 inline constexpr char kUserColor[] = "browser.theme.user_color2";
 
 // Enum tracking the color variant preference for the browser.
-// Use `kBrowserColorVariant` only.
-inline constexpr char kDeprecatedBrowserColorVariantDoNotUse[] =
-    "browser.theme.color_variant";
 inline constexpr char kBrowserColorVariant[] = "browser.theme.color_variant2";
 
 // Boolean pref tracking whether chrome follows the system's color theme.
@@ -726,9 +598,6 @@ extern inline constexpr char kBrowserFollowsSystemThemeColors[] =
     "browser.theme.follows_system_colors";
 
 // Boolean pref tracking whether the grayscale theme has been enabled.
-// Use `kGrayscaleThemeEnabled` only.
-inline constexpr char kDeprecatedGrayscaleThemeEnabledDoNotUse[] =
-    "browser.theme.is_grayscale";
 inline constexpr char kGrayscaleThemeEnabled[] = "browser.theme.is_grayscale2";
 
 // Boolean pref which persists whether the extensions_ui is in developer mode
@@ -1108,9 +977,6 @@ inline constexpr char kPushMessagingUnsubscribedEntriesList[] =
 inline constexpr char kGCMProductCategoryForSubtypes[] =
     "gcm.product_category_for_subtypes";
 
-// Whether a user is allowed to use Easy Unlock.
-inline constexpr char kEasyUnlockAllowed[] = "easy_unlock.allowed";
-
 // Define the IP handling policy override that WebRTC should follow. When not
 // set, it defaults to "default".
 inline constexpr char kWebRTCIPHandlingPolicy[] = "webrtc.ip_handling_policy";
@@ -1187,10 +1053,14 @@ inline constexpr char kDataUrlInSvgUseEnabled[] =
 inline constexpr char kPartitionedBlobUrlUsage[] =
     "profile.content_settings.partitioned_blob_url_usage";
 
-// Boolean value indicating if the Reduce Accept-Language feature should be
-// enabled. Defaults to network::features::kReduceAcceptLanguage field trial.
-inline constexpr char kReduceAcceptLanguageEnabled[] =
-    "profile.reduce_accept_language_enabled";
+// Boolean indicating that the user dismissed the XSLT deprecation warning
+// banner with the "don't show this again" checkbox checked.
+// TODO(crbug.com/560233256): This pref is temporary, and is only required
+// before XSLT is disabled by default in M158. It can be removed in M158, or
+// whenever XSLT is disabled by default (other than for origin trials and
+// enterprise policy).
+inline constexpr char kXSLTDeprecationBannerSuppressed[] =
+    "profile.xslt_deprecation_banner_suppressed";
 
 // Boolean indicating if JS dialogs triggered from a different origin iframe
 // should be blocked. Has no effect if
@@ -1199,14 +1069,25 @@ inline constexpr char kSuppressDifferentOriginSubframeJSDialogs[] =
     "suppress_different_origin_subframe_js_dialogs";
 
 // Enum indicating if the user agent reduction feature should be forced enabled
-// or disabled. Defaults to blink::features::kReduceUserAgent field trial.
+// or disabled.
 inline constexpr char kUserAgentReduction[] = "user_agent_reduction";
+
+// Stores the mapping of side panel IDs to their widths.
+inline constexpr char kSidePanelIdToWidth[] = "side_panel.id_to_width";
 
 #if !BUILDFLAG(IS_ANDROID)
 // Boolean determining whether the organizer panel entrypoint is displayed in
 // the tab strip.
 inline constexpr char kOrganizerPanelEntrypointEnabled[] =
     "organizer_panel.entrypoint_enabled";
+// Dictionary mapping organizer panel section IDs to a boolean indicating
+// whether the section is expanded.
+inline constexpr char kOrganizerPanelSectionsExpanded[] =
+    "organizer_panel.sections_expanded";
+// Dictionary mapping organizer panel section IDs to a boolean indicating
+// whether the section shows all items.
+inline constexpr char kOrganizerPanelSectionsShowAll[] =
+    "organizer_panel.sections_show_all";
 inline constexpr char kProjectsPanelEntrypointEnabled[] =
     "projects_panel.entrypoint_enabled";
 
@@ -1222,8 +1103,6 @@ inline constexpr char kSidePanelAlignmentOverrides[] =
 // a button in the toolbar.
 inline constexpr char kSidePanelCompanionEntryPinnedToToolbar[] =
     "side_panel.companion_pinned_to_toolbar";
-// Stores the mapping of side panel IDs to their widths.
-inline constexpr char kSidePanelIdToWidth[] = "side_panel.id_to_width";
 // Corresponds to the enterprise policy.
 inline constexpr char kGoogleSearchSidePanelEnabled[] =
     "side_panel.google_search_side_panel_enabled";
@@ -1270,6 +1149,11 @@ inline constexpr char kVerticalTabsCollapsedState[] =
 // width. Only used during startup when session restore is not used.
 inline constexpr char kVerticalTabsUncollapsedWidth[] =
     "vertical_tabs.uncollapsed_width";
+
+// Time representing the last time the everything menu button in the vertical
+// tab strip top container was pressed.
+inline constexpr char kVerticalTabsEverythingMenuLastPressed[] =
+    "vertical_tabs.everything_menu_last_pressed";
 #endif  // !BUILDFLAG(IS_ANDROID)
 
 #if BUILDFLAG(ENABLE_COMPOSE)
@@ -1568,7 +1452,18 @@ inline constexpr char kRestartInBackgroundOnShutdown[] =
 // to the user, used for nudge cooldown calculations.
 inline constexpr char kScheduledRestartLastNudgeTime[] =
     "restart.scheduled_restart_last_nudge_time";
+
+// Dictionary holding the HaTS product-specific data and a timestamp for a
+// Scheduled Restart survey that is delivered after a "Restart now" relaunch.
+// Cleared as soon as it is read after session restore.
+inline constexpr char kScheduledRestartHatsPendingSurvey[] =
+    "restart.scheduled_restart_hats_pending_survey";
 #endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+
+// Pref name for controlling presentation of promotions, including full-tab
+// promotional and/or educational content.
+// This preference replaces browser.promotional_tabs_enabled.
+inline constexpr char kPromotionsEnabled[] = "browser.promotions_enabled";
 
 #if !BUILDFLAG(IS_ANDROID)
 #if !BUILDFLAG(IS_CHROMEOS)
@@ -1584,11 +1479,6 @@ inline constexpr char kCommandLineFlagSecurityWarningsEnabled[] =
 // `NTPFooterExtensionAttributionEnabled` policy.
 inline constexpr char kNTPFooterExtensionAttributionEnabled[] =
     "ntp_footer.settings.extension_attribution";
-
-// Pref name for controlling presentation of promotions, including full-tab
-// promotional and/or educational content.
-// This preference replaces browser.promotional_tabs_enabled.
-inline constexpr char kPromotionsEnabled[] = "browser.promotions_enabled";
 
 // Boolean that specifies whether or not showing the unsupported OS warning is
 // suppressed. False by default. Controlled by the SuppressUnsupportedOSWarning
@@ -1606,6 +1496,11 @@ static_assert(std::string_view(kWasRestarted) ==
 // Dictionary containing the number of tabs and windows before a restart.
 inline constexpr char kPreSmartRestartSessionState[] =
     "session.pre_smart_restart_session_state";
+
+// Dictionary containing the number of profiles with open windows before a
+// restart.
+inline constexpr char kPreSmartRestartProfileCounts[] =
+    "session.pre_smart_restart_profile_counts";
 
 #if BUILDFLAG(IS_MAC)
 // Boolean preference controlling zero window relaunch per enterprise policy.
@@ -1665,10 +1560,6 @@ inline constexpr char kNtpCollapsedSnapshotDocument[] =
 inline constexpr char kNtpCollapsedSyncPromo[] = "ntp.collapsed_sync_promo";
 #endif  // BUILDFLAG(IS_ANDROID)
 
-// Holds info for New Tab Page custom background
-// Use `kNtpCustomBackgroundDict` only.
-inline constexpr char kDeprecatedNtpCustomBackgroundDictDoNotUse[] =
-    "ntp.custom_background_dict";
 // Number of times the user has opened the side panel with the customize chrome
 // button.
 inline constexpr char kNtpCustomizeChromeButtonOpenCount[] =
@@ -1694,9 +1585,6 @@ inline constexpr char kNtpCustomizeChromeIPHAutoOpened[] =
     "NewTabPage.CustomizeChromeIPHAutoOpened";
 // List keeping track of modules not allowed to show on New Tab Page.
 inline constexpr char kNtpHiddenModules[] = "NewTabPage.HiddenModules";
-// Time the Microsoft files module was last dismissed.
-inline constexpr char kNtpMicrosoftFilesModuleLastDismissedTime[] =
-    "NewTabPage.MicrosoftFilesModuleLastDismissedTime";
 // The next time file suggestions can be requested after hitting a throttling
 // error.
 inline constexpr char kNtpMicrosoftFilesModuleRetryAfterTime[] =
@@ -1721,8 +1609,6 @@ inline constexpr char kNtpOutlookCalendarLastAttachmentRequestSuccess[] =
 inline constexpr char kNtpOutlookCalendarLastAttachmentRequestTime[] =
     "NewTabPage.OutlookCalendar.LastAttachmentRequestTime";
 // Time the Outlook Calendar module was last dismissed.
-inline constexpr char kNtpOutlookCalendarLastDismissedTime[] =
-    "NewTabPage.OutlookCalendar.LastDismissedTime";
 // The next time a user's Outlook calendar data can be requested after hitting a
 // throttling error.
 inline constexpr char kNtpOutlookCalendarRetryAfterTime[] =
@@ -1946,13 +1832,6 @@ inline constexpr char kWebAppsPreviouslyAppSupportedLinks[] =
     "web_apps.previously_app_supported_links";
 #endif
 
-#if BUILDFLAG(IS_MAC)
-// A boolean that indicates whether ad-hoc code signing should be used for
-// PWA app shims. This is managed by enterprise policy.
-inline constexpr char kWebAppsUseAdHocCodeSigningForAppShims[] =
-    "web_apps.use_adhoc_code_signing_for_app_shims";
-#endif  // BUILDFLAG(IS_MAC)
-
 // The default audio capture device used by the Media content setting.
 // TODO(crbug.com/311205211): Remove this once users have been migrated to
 // `kAudioInputUserPreferenceRanking`.
@@ -2017,6 +1896,8 @@ inline constexpr char kAuthSchemes[] = "auth.schemes";
 // from "auth.schemes".
 inline constexpr char kAllHttpAuthSchemesAllowedForOrigins[] =
     "auth.http_auth_allowed_for_origins";
+inline constexpr char kAllHttpAuthSchemesAllowedForProxies[] =
+    "auth.http_auth_allowed_for_proxies";
 
 // Boolean that specifies whether to disable CNAME lookups when generating
 // Kerberos SPN.
@@ -2279,6 +2160,12 @@ inline constexpr char kSameOriginTabCaptureAllowedByOrigins[] =
 // Boolean determining whether the glass frame is enabled.
 inline constexpr char kGlassFrameEnabled[] = "glass_frame.enabled";
 
+// Int64 pref used by the metrics::DailyEvent owned by
+// GlassFrameMetricsReporter to record the last time daily glass frame
+// metrics were sampled.
+inline constexpr char kGlassFrameDailySample[] =
+    "glass_frame.last_daily_sample";
+
 #if BUILDFLAG(IS_CHROMEOS)
 // An any-api scoped refresh token for enterprise-enrolled devices.  Allows
 // for connection to Google APIs when the user isn't logged in.  Currently used
@@ -2292,19 +2179,12 @@ inline constexpr char kDeviceRobotAnyApiRefreshTokenV2[] =
 inline constexpr char kDeviceRefreshTokenAnyApiIsV3Used[] =
     "device_refresh_token_is_v3_used.any-api";
 
-
-
-
-
-
-
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
 // String which specifies where to store the disk cache.
 inline constexpr char kDiskCacheDir[] = "browser.disk_cache_dir";
 // Pref name for the policy specifying the maximal cache size.
 inline constexpr char kDiskCacheSize[] = "browser.disk_cache_size";
-
 
 // Pref name for the policy controlling whether to enable Media Router.
 inline constexpr char kEnableMediaRouter[] = "media_router.enable_media_router";
@@ -2423,6 +2303,14 @@ inline constexpr char kNotifyWhenAppsKeepChromeAlive[] =
 // Set to true if background mode is enabled on this browser.
 inline constexpr char kBackgroundModeEnabled[] = "background_mode.enabled";
 
+#if BUILDFLAG(IS_LINUX)
+// Set to true while the XDG Background portal has autostart enabled for the
+// browser, so that a stale autostart entry can be removed on the next startup
+// if there are no longer any background apps.
+inline constexpr char kBackgroundModePortalAutostartGranted[] =
+    "background_mode.portal_autostart_granted";
+#endif
+
 // Set to true if hardware acceleration mode is enabled on this browser.
 inline constexpr char kHardwareAccelerationModeEnabled[] =
     "hardware_acceleration_mode.enabled";
@@ -2441,8 +2329,21 @@ inline constexpr char kPreviousIsolationState[] = "isolation_state.previous";
 inline constexpr char kHardwareAccelerationModePrevious[] =
     "hardware_acceleration_mode_previous";
 
-
 #if !BUILDFLAG(IS_ANDROID)
+// A boolean specifying whether dynamic child module patching is enabled.
+inline constexpr char kDynamicPatchingEnabled[] =
+    "child_module.dynamic_patching_enabled";
+
+// A dictionary tracking blocklisted dynamic child module versions that caused
+// crash loops, scoped to the current base browser version.
+// Schema:
+// {
+//   "base_version": string (e.g. "147.0.7727.51"),
+//   "versions": list of strings (e.g. ["147.0.7727.52", ...])
+// }
+inline constexpr char kDynamicPatchingBlocklist[] =
+    "child_module.dynamic_patching_blocklist";
+
 // A boolean where true means that the browser has previously attempted to
 // enable autoupdate and failed, so the next out-of-date browser start should
 // not prompt the user to enable autoupdate, it should offer to reinstall Chrome
@@ -2473,6 +2374,11 @@ inline constexpr char kNetworkProfileLastWarningTime[] =
 // shell_integration::win::MigrateTaskbarPins() completed.
 inline constexpr char kShortcutMigrationVersion[] =
     "browser.shortcut_migration_version";
+
+// The last time at which shell_integration::win::MigrateTaskbarPins()
+// completed.
+inline constexpr char kShortcutMigrationTime[] =
+    "browser.shortcut_migration_time";
 #endif  // BUILDFLAG(IS_WIN)
 
 // An integer that is incremented whenever changes are made to app shortcuts.
@@ -2509,6 +2415,9 @@ inline constexpr char kWatchdogExtensionActive[] =
 // given by the PartnerBookmarksProvider and either the user-visible renamed
 // title or an empty string if the bookmark node was removed.
 inline constexpr char kPartnerBookmarkMappings[] = "partnerbookmarks.mappings";
+
+// Boolean that is true when the AppStoreRatingEnabled policy is enabled.
+inline constexpr char kAppRatingPolicyEnabled[] = "app_rating_policy_enabled";
 #endif  // BUILDFLAG(IS_ANDROID)
 
 // Whether DNS Quick Check is disabled in proxy resolution.
@@ -2556,20 +2465,9 @@ inline constexpr char kBrowserShowProfilePickerOnStartup[] =
 inline constexpr char kSigninInterceptionEnabled[] =
     "signin.interception_enabled";
 
-#if BUILDFLAG(IS_CHROMEOS)
-// A dictionary pref of the echo offer check flag. It sets offer info when
-// an offer is checked.
-inline constexpr char kEchoCheckedOffers[] = "EchoCheckedOffers";
-#endif  // BUILDFLAG(IS_CHROMEOS)
-
 #if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 // Policy that indicates how to handle animated images.
 inline constexpr char kAnimationPolicy[] = "settings.a11y.animation_policy";
-
-// Boolean pref indicating whether extension DOM activity logging is enabled
-// for enterprise telemetry.
-inline constexpr char kExtensionDOMActivityLoggingEnabled[] =
-    "enterprise_reporting.extension_dom_activity_logging_enabled";
 
 // A list of URLs (for U2F) or domains (for webauthn) that automatically permit
 // direct attestation of a Security Key.
@@ -2980,7 +2878,6 @@ inline constexpr char kOriginAgentClusterDefaultEnabled[] =
 // sent by this client, across all profiles.
 inline constexpr char kSCTAuditingHashdanceReportCount[] =
     "sct_auditing.hashdance_report_count";
-
 
 #if !BUILDFLAG(IS_ANDROID)
 // An integer count of how many times the user has seen the memory saver mode

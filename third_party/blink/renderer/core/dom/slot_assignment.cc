@@ -4,7 +4,9 @@
 
 #include "third_party/blink/renderer/core/dom/slot_assignment.h"
 
+#include "base/auto_reset.h"
 #include "third_party/blink/renderer/core/accessibility/ax_object_cache.h"
+#include "third_party/blink/renderer/core/display_lock/display_lock_document_state.h"
 #include "third_party/blink/renderer/core/display_lock/display_lock_utilities.h"
 #include "third_party/blink/renderer/core/dom/element_traversal.h"
 #include "third_party/blink/renderer/core/dom/flat_tree_traversal_forbidden_scope.h"
@@ -60,6 +62,7 @@ void SlotAssignment::DidRemoveSlot(HTMLSlotElement& slot) {
   if (owner_->IsManualSlotting()) {
     auto& candidates = slot.ManuallyAssignedNodes();
     if (candidates.size()) {
+      SetNeedsAssignmentRecalc();
       slot.DidSlotChangeAfterRemovedFromShadowTree();
     }
     return;
@@ -232,6 +235,15 @@ void SlotAssignment::SetNeedsAssignmentRecalc() {
 void SlotAssignment::RecalcAssignment() {
   if (!needs_assignment_recalc_)
     return;
+  // DidRecalcAssignedNodes() below can run script that re-enters here, which
+  // would rebuild slots_ while the outer call is iterating it. Bail out; the
+  // recalc stays pending and runs on the next lifecycle update. This is a
+  // stopgap: script should not run here at all. Remove this or upgrade it to a
+  // CHECK once the remaining sources are gone (crbug.com/574469802).
+  if (in_recalc_assignment_) {
+    return;
+  }
+  base::AutoReset<bool> in_recalc(&in_recalc_assignment_, true);
   {
     NestingLevelIncrementer slot_assignment_recalc_depth(
         owner_->GetDocument().SlotAssignmentRecalcDepth());
@@ -268,13 +280,15 @@ void SlotAssignment::RecalcAssignment() {
     }
 
     if (owner_->IsManualSlotting()) {
-      // |children_to_clear| starts with the list of all light-dom children of
-      // the host that are *currently slotted*. Any of those that aren't slotted
-      // during this recalc will then have their flat tree data cleared.
+      // |children_to_clear| starts with the list of all slottable light-dom
+      // children of the host. Any of those that aren't slotted during this
+      // recalc will then have their flat tree data cleared and detach their
+      // layout trees.
       HeapHashSet<Member<Node>> children_to_clear;
       for (Node& child : NodeTraversal::ChildrenOf(owner_->host())) {
-        if (!child.GetFlatTreeNodeData())
+        if (!child.IsSlotable()) {
           continue;
+        }
         children_to_clear.insert(&child);
       }
 
@@ -330,18 +344,18 @@ void SlotAssignment::RecalcAssignment() {
           .RemoveShadowRootNeedingRecalc(*owner_);
     }
 
-    for (auto& slot : Slots()) {
-      // TODO(crbug.com/1208573): Consider if we really need to be using
-      // IsInLockedSubtreeCrossingFrames, or if
-      // LockedInclusiveAncestorPreventingStyleWithinTreeScope is good enough
-      // as-is.
-      //
-      // If we have an ancestor that blocks style recalc, we should let
-      // DidRecalcAssignNodes know this, since we may need to do work that
-      // would otherwise be done in layout tree building.
-      slot->DidRecalcAssignedNodes(
-          !!DisplayLockUtilities::
-               LockedInclusiveAncestorPreventingStyleWithinTreeScope(*slot));
+    // Defense in depth: script is not supposed to run here, but
+    // DidRecalcAssignedNodes() still can (crbug.com/574469802) and add or
+    // remove slots. Iterate over a copy and skip slots that left this root.
+    const bool has_display_locks = owner_->GetDocument()
+                                       .GetDisplayLockDocumentState()
+                                       .LockedDisplayLockCount() > 0;
+    const HeapVector<Member<HTMLSlotElement>> slots = Slots();
+    for (auto& slot : slots) {
+      if (slot->ContainingShadowRoot() != owner_) {
+        continue;
+      }
+      slot->DidRecalcAssignedNodes(has_display_locks);
     }
   }
 
@@ -383,12 +397,23 @@ HTMLSlotElement* SlotAssignment::FindSlotByName(
 }
 
 HTMLSlotElement* SlotAssignment::FindSlotInManualSlotting(Node& node) {
+  if (!node.IsChildOfShadowHost() || node.parentElement() != owner_->host()) {
+    return nullptr;
+  }
+  // User-agent manual-slotting shadow roots (<details>, <select>, <optgroup>)
+  // do not set `node.ManuallyAssignedSlot()` in `HTMLSlotElement::Assign()` so
+  // they do not clobber imperative author `slot.assign()` associations. Look
+  // up the node directly in the UA slots' `ManuallyAssignedNodes()` sets.
+  if (owner_->IsUserAgent()) {
+    for (HTMLSlotElement* slot : Slots()) {
+      if (slot->ManuallyAssignedNodes().Contains(&node)) {
+        return slot;
+      }
+    }
+    return nullptr;
+  }
   auto* slot = node.ManuallyAssignedSlot();
-  if (slot && slot->ContainingShadowRoot() == owner_ &&
-      node.IsChildOfShadowHost() && node.parentElement() == owner_->host())
-    return slot;
-
-  return nullptr;
+  return (slot && slot->ContainingShadowRoot() == owner_) ? slot : nullptr;
 }
 
 void SlotAssignment::CollectSlots() {

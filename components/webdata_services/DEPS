@@ -3,7 +3,7 @@ include_rules = [
   "+components/keyed_service/content",
   "+components/keyed_service/core",
   "+components/password_manager/core/browser/webdata",
-  "+components/payments/content",
+  "+components/payments/core",
   "+components/search_engines",
   "+components/signin/public/webdata",
   "+components/sync",
@@ -14,7 +14,7 @@ include_rules = [
 ]
 
 specific_include_rules = {
-  ".*test.(cc|h)": [
+  ".*test\\.(cc|h)": [
     "+components/os_crypt/async/browser/test_utils.h"
   ],
 }

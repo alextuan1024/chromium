@@ -33,8 +33,10 @@
 #include "third_party/blink/renderer/core/trustedtypes/trusted_type_policy_factory.h"
 #include "third_party/blink/renderer/core/xlink_names.h"
 #include "third_party/blink/renderer/platform/bindings/exception_state.h"
+#include "third_party/blink/renderer/platform/heap/persistent.h"
 #include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/weborigin/kurl.h"
+#include "third_party/blink/renderer/platform/wtf/std_lib_extras.h"
 
 namespace blink {
 
@@ -93,8 +95,19 @@ Sanitizer* Sanitizer::CreateEmpty() {
       std::make_unique<HashSet<AtomicString>>();
   sanitizer->data_attrs_ = SanitizerBoolWithAbsence::kAbsent;
   sanitizer->comments_ = SanitizerBoolWithAbsence::kAbsent;
+  sanitizer->javascript_urls_ = SanitizerBoolWithAbsence::kAbsent;
   DCHECK(sanitizer->isValid());
   return sanitizer;
+}
+
+bool Sanitizer::IsEmpty(const SanitizerConfig* config) {
+  return !config ||
+         (!config->hasElements() && !config->hasRemoveElements() &&
+          !config->hasReplaceWithChildrenElements() &&
+          !config->hasProcessingInstructions() &&
+          !config->hasRemoveProcessingInstructions() &&
+          !config->hasAttributes() && !config->hasRemoveAttributes() &&
+          !config->hasComments() && !config->hasDataAttributes());
 }
 
 Sanitizer* Sanitizer::Clone() const {
@@ -113,7 +126,8 @@ Sanitizer::Sanitizer(std::unique_ptr<SanitizerNameSet> allow_elements,
                      std::unique_ptr<HashSet<AtomicString>> allow_pi,
                      std::unique_ptr<HashSet<AtomicString>> remove_pi,
                      bool allow_data_attrs,
-                     bool allow_comments)
+                     bool allow_comments,
+                     bool allow_javascript_urls)
     : allow_elements_(allow_elements.release()),
       remove_elements_(remove_elements.release()),
       replace_elements_(replace_elements.release()),
@@ -126,7 +140,10 @@ Sanitizer::Sanitizer(std::unique_ptr<SanitizerNameSet> allow_elements,
       data_attrs_(allow_data_attrs ? SanitizerBoolWithAbsence::kTrue
                                    : SanitizerBoolWithAbsence::kFalse),
       comments_(allow_comments ? SanitizerBoolWithAbsence::kTrue
-                               : SanitizerBoolWithAbsence::kFalse) {
+                               : SanitizerBoolWithAbsence::kFalse),
+      javascript_urls_(allow_javascript_urls
+                           ? SanitizerBoolWithAbsence::kTrue
+                           : SanitizerBoolWithAbsence::kFalse) {
   if (remove_attrs_) {
     data_attrs_ = SanitizerBoolWithAbsence::kAbsent;
   }
@@ -199,17 +216,28 @@ bool Sanitizer::removeAttribute(
   return RemoveAttribute(getFrom(attribute));
 }
 
-void Sanitizer::setComments(bool comments) {
+bool Sanitizer::setComments(bool comments) {
+  const SanitizerBoolWithAbsence old_comments = comments_;
   comments_ = comments ? SanitizerBoolWithAbsence::kTrue
                        : SanitizerBoolWithAbsence::kFalse;
+  return comments_ != old_comments;
 }
 
-void Sanitizer::setDataAttributes(bool data_attributes) {
+bool Sanitizer::setDataAttributes(bool data_attributes) {
+  const SanitizerBoolWithAbsence old_data_attrs = data_attrs_;
   data_attrs_ = data_attributes ? SanitizerBoolWithAbsence::kTrue
                                 : SanitizerBoolWithAbsence::kFalse;
+  return data_attrs_ != old_data_attrs;
 }
 
-void Sanitizer::removeUnsafe() {
+bool Sanitizer::setJavascriptURLs(bool javascript_urls) {
+  const SanitizerBoolWithAbsence old_javascript_urls = javascript_urls_;
+  javascript_urls_ = javascript_urls ? SanitizerBoolWithAbsence::kTrue
+                                     : SanitizerBoolWithAbsence::kFalse;
+  return javascript_urls_ != old_javascript_urls;
+}
+
+bool Sanitizer::removeUnsafe() {
   DCHECK(isValid());
   const Sanitizer* baseline = SanitizerBuiltins::GetBaseline();
 
@@ -226,13 +254,20 @@ void Sanitizer::removeUnsafe() {
   CHECK(!baseline->allow_processing_instructions_);
   CHECK(baseline->remove_processing_instructions_->empty());
 
+  bool changed = false;
   for (const QualifiedName& name : *(baseline->remove_elements_)) {
-    RemoveElement(name);
+    if (RemoveElement(name)) {
+      changed = true;
+    }
   }
   for (const QualifiedName& name : *(baseline->remove_attrs_)) {
-    RemoveAttribute(name);
+    if (RemoveAttribute(name)) {
+      changed = true;
+    }
   }
+  javascript_urls_ = SanitizerBoolWithAbsence::kFalse;
   DCHECK(isValid());
+  return changed;
 }
 
 bool SanitizerAtomicStringLessThan(const AtomicString& a,
@@ -429,6 +464,10 @@ SanitizerConfig* Sanitizer::get() const {
   }
   if (comments_ != SanitizerBoolWithAbsence::kAbsent) {
     config->setComments(comments_ == SanitizerBoolWithAbsence::kTrue);
+  }
+  if (javascript_urls_ != SanitizerBoolWithAbsence::kAbsent) {
+    config->setJavascriptURLs(javascript_urls_ ==
+                              SanitizerBoolWithAbsence::kTrue);
   }
 
   return config;
@@ -919,7 +958,9 @@ void Sanitizer::SanitizeJavascriptNavigationAttributes(Element* element,
                                                        Mode safe) const {
   // Special treatment of javascript: URLs when used for navigation.
   // https://wicg.github.io/sanitizer-api/#sanitize-core, Steps 1.5.9.5
-  if (safe == Mode::kUnsafe) {
+  if (RuntimeEnabledFeatures::SanitizerJavascriptURLsEnabled()
+          ? AllowJavascriptURLs()
+          : (safe == Mode::kUnsafe)) {
     return;
   }
 
@@ -948,40 +989,7 @@ void Sanitizer::SanitizeJavascriptNavigationAttributes(Element* element,
   }
 }
 
-void Sanitizer::SanitizeTemplate(Node* node, Mode safe) const {
-  // https://wicg.github.io/sanitizer-api/#sanitize-core,
-  // Step 1.5.5: Recurse into template content.
-  if (IsA<HTMLTemplateElement>(node)) {
-    Node* content = To<HTMLTemplateElement>(node)->content();
-    if (content) {
-      Sanitize(content, safe);
-    }
-  }
-  // Step 1.5.6: Recurse into shadow.
-  if (node->GetShadowRoot()) {
-    Node* shadow_root = &node->GetShadowRoot()->RootNode();
-    CHECK(shadow_root);
-    Sanitize(shadow_root, safe);
-  }
-}
-
-void Sanitizer::SanitizeSafe(Node* root) const {
-  // TODO(vogelheim): This is hideously inefficient, but very easy to implement.
-  // We'll use this for now, so we can fully build out tests & other
-  // infrastructure, and worry about efficiency later.
-  CHECK(!root->GetDocument().IsActive());
-  Sanitizer* safe = MakeGarbageCollected<Sanitizer>();
-  safe->setFrom(*this);
-  safe->removeUnsafe();
-  safe->Sanitize(root, Mode::kSafe);
-}
-
-void Sanitizer::SanitizeUnsafe(Node* root) const {
-  CHECK(!root->GetDocument().IsActive());
-  Sanitize(root, Mode::kUnsafe);
-}
-
-Sanitizer::Action Sanitizer::ActionForNode(Node* node, Node* root) const {
+Sanitizer::Action Sanitizer::ActionForNode(Node* node) const {
   switch (node->getNodeType()) {
     case Node::NodeType::kElementNode: {
       // Step 5: Child implements Element.
@@ -1034,7 +1042,6 @@ Sanitizer::Action Sanitizer::ActionForNode(Node* node, Node* root) const {
     case Node::NodeType::kDocumentTypeNode:
       // Step 2: If child implement DocumentType, then continue.
       // Should only happen when parsing full documents w/ parseHTML.
-      DCHECK(root->IsDocumentNode());
       return Action::kKeep;
     default:
       // Step 1: Assert: child implements Text, Comment, Element, DocType.
@@ -1058,51 +1065,8 @@ void ReplaceWithChildren(Node& node) {
 }
 }  // namespace
 
-void Sanitizer::Sanitize(Node* root, Mode safe) const {
-  // https://wicg.github.io/sanitizer-api/#sanitize-core
-  // This is structured a little differently than the spec, for better
-  // readability. For step 1.5, we may call into helper methods.
-
-  SanitizeTemplate(root, safe);
-  Node* node = NodeTraversal::Next(*root);
-  while (node) {
-    switch (ActionForNode(node, root)) {
-      case Action::kKeepElement: {
-        // This performs Steps 5.5 - 5.9:
-        CHECK_EQ(node->getNodeType(), Node::NodeType::kElementNode);
-        ProcessElement(To<Element>(node), safe);
-        SanitizeTemplate(node, safe);
-        node = NodeTraversal::Next(*node);
-        break;
-      }
-      case Action::kKeep: {
-        CHECK_NE(node->getNodeType(), Node::NodeType::kElementNode);
-        node = NodeTraversal::Next(*node);
-        break;
-      }
-      case Action::kReplaceWithChildren: {
-        // Steps 5.2.*:
-        CHECK_EQ(node->getNodeType(), Node::NodeType::kElementNode);
-        Node* next_node = node->firstChild();
-        if (!next_node) {
-          next_node = NodeTraversal::Next(*node);
-        }
-        ReplaceWithChildren(*node);
-        node = next_node;
-        break;
-      }
-      case Action::kDrop: {
-        Node* next_node = NodeTraversal::NextSkippingChildren(*node);
-        node->parentNode()->removeChild(node);
-        node = next_node;
-        break;
-      }
-    }
-  }
-}
-
 Sanitizer::Action Sanitizer::SanitizeSingleNode(Node* node, Mode safe) const {
-  Action action = ActionForNode(node, node);
+  Action action = ActionForNode(node);
   if (action == Action::kKeepElement) {
     ProcessElement(To<Element>(node), safe);
     return Action::kKeep;
@@ -1112,7 +1076,7 @@ Sanitizer::Action Sanitizer::SanitizeSingleNode(Node* node, Mode safe) const {
 }
 
 bool Sanitizer::setFrom(const SanitizerConfig* config,
-                        bool allowCommentsPIsAndDataAttributes) {
+                        bool permissive_defaults) {
   // https://wicg.github.io/sanitizer-api/#configuration-set
   //
   // Since our internal representation is quite different from the external
@@ -1219,11 +1183,11 @@ bool Sanitizer::setFrom(const SanitizerConfig* config,
           remove_processing_instructions_->insert(target).is_new_entry;
     }
   }
-  setComments(config->getCommentsOr(allowCommentsPIsAndDataAttributes));
+  setComments(config->getCommentsOr(permissive_defaults));
   if (allow_attrs_ || config->hasDataAttributes()) {
-    setDataAttributes(
-        config->getDataAttributesOr(allowCommentsPIsAndDataAttributes));
+    setDataAttributes(config->getDataAttributesOr(permissive_defaults));
   }
+  setJavascriptURLs(config->getJavascriptURLsOr(permissive_defaults));
 
   // https://wicg.github.io/sanitizer-api/#sanitizer-canonicalize-the-configuration,
   // steps 1 + 2.
@@ -1235,7 +1199,7 @@ bool Sanitizer::setFrom(const SanitizerConfig* config,
   }
   // step 3:
   if (!allow_processing_instructions_ && !remove_processing_instructions_) {
-    if (allowCommentsPIsAndDataAttributes) {
+    if (permissive_defaults) {
       remove_processing_instructions_ =
           std::make_unique<HashSet<AtomicString>>();
     } else {
@@ -1272,6 +1236,7 @@ void Sanitizer::setFrom(const Sanitizer& other) {
   remove_attrs_per_element_ = other.remove_attrs_per_element_;
   data_attrs_ = other.data_attrs_;
   comments_ = other.comments_;
+  javascript_urls_ = other.javascript_urls_;
   allow_processing_instructions_ =
       other.allow_processing_instructions_
           ? std::make_unique<HashSet<AtomicString>>(
@@ -1486,6 +1451,9 @@ bool Sanitizer::isValid() const {
 }
 
 bool Sanitizer::AllowIsAttribute(const QualifiedName& element_name) const {
+  if (!IsElementAllowed(element_name)) {
+    return false;
+  }
   const auto allow_per_element_iter =
       allow_attrs_per_element_.find(element_name);
   const SanitizerNameSet* allow_per_element =
@@ -1505,7 +1473,7 @@ bool Sanitizer::AllowIsAttribute(const QualifiedName& element_name) const {
 void StreamingSanitizer::DidParseDocument(Document* document) {
   Element* root = document->documentElement();
   CHECK(root);
-  switch (sanitizer_->ActionForNode(root, root)) {
+  switch (sanitizer_->ActionForNode(root)) {
     case Sanitizer::Action::kKeepElement:
       sanitizer_->ProcessElement(root, mode_);
       break;
@@ -1524,15 +1492,20 @@ void StreamingSanitizer::DidParseDocument(Document* document) {
 StreamingSanitizer* StreamingSanitizer::SafeFor(StreamingSanitizer* parent) {
   CHECK(RuntimeEnabledFeatures::DeclarativeFragmentEnabled());
   if (!parent) {
-    return MakeGarbageCollected<StreamingSanitizer>(
-        SanitizerBuiltins::GetDefaultSafe(), Sanitizer::Mode::kSafe);
+    DEFINE_STATIC_LOCAL(Persistent<Sanitizer>, default_fragment_safe, ([] {
+                          Sanitizer* s = Sanitizer::CreateEmpty();
+                          s->setComments(true);
+                          s->removeUnsafe();
+                          return s;
+                        }()));
+    return MakeGarbageCollected<StreamingSanitizer>(default_fragment_safe.Get(),
+                                                    Sanitizer::Mode::kSafe);
   }
 
   if (parent->mode_ == Sanitizer::Mode::kSafe) {
     return parent;
   }
-  Sanitizer* clone = MakeGarbageCollected<Sanitizer>();
-  clone->setFrom(*parent->sanitizer_);
+  Sanitizer* clone = parent->sanitizer_->Clone();
   clone->removeUnsafe();
   return MakeGarbageCollected<StreamingSanitizer>(clone,
                                                   Sanitizer::Mode::kSafe);

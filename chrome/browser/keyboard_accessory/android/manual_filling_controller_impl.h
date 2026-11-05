@@ -41,7 +41,7 @@ class ManualFillingControllerImpl
 
   // ManualFillingController:
   void NotifyFocusedInputChanged(
-      autofill::FieldRendererId focused_field_id,
+      autofill::FieldGlobalId focused_field_id,
       autofill::mojom::FocusedFieldType focused_field_type) override;
   autofill::FieldGlobalId GetLastFocusedFieldId() const override;
   void UpdateSourceAvailability(FillingSource source,
@@ -53,7 +53,8 @@ class ManualFillingControllerImpl
   void ShowAccessorySheetTab(
       const autofill::AccessoryTabType& tab_type) override;
   void SetSelectedSuggestion(std::optional<int> suggestion_index) override;
-  bool NavigateSuggestions(autofill::NavigationDirection direction) override;
+  bool Navigate(autofill::NavigationAction action) override;
+  bool AcceptFallback() override;
   void OnFillingTriggered(
       autofill::AccessoryTabType type,
       const autofill::AccessorySheetField& selection) override;
@@ -148,7 +149,7 @@ class ManualFillingControllerImpl
   // This set contains sources to be shown to the user.
   base::flat_set<FillingSource> available_sources_;
 
-  // The unique renderer ID of the last known selected field.
+  // The global ID of the last known selected field.
   autofill::FieldGlobalId last_focused_field_id_;
 
   // Type of the last known selected field. Helps to determine UI visibility.

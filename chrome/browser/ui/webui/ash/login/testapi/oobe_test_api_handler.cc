@@ -5,8 +5,10 @@
 #include "chrome/browser/ui/webui/ash/login/testapi/oobe_test_api_handler.h"
 
 #include <optional>
+#include <utility>
 
 #include "ash/constants/ash_features.h"
+#include "ash/constants/ash_login_pref_names.h"
 #include "ash/constants/ash_switches.h"
 #include "ash/display/cros_display_config.h"
 #include "ash/public/cpp/input_device_settings_controller.h"
@@ -28,11 +30,12 @@
 #include "chrome/browser/ash/login/screens/network_screen.h"
 #include "chrome/browser/ash/login/screens/split_modifier_keyboard_info_screen.h"
 #include "chrome/browser/ash/login/startup_utils.h"
+#include "chrome/browser/ash/login/wizard_context.h"
 #include "chrome/browser/ash/login/wizard_controller.h"
 #include "chrome/browser/ash/policy/enrollment/enrollment_requisition_manager.h"
-#include "chrome/browser/browser_process.h"
 #include "chrome/browser/ui/ash/login/login_display_host.h"
 #include "chrome/browser/ui/ash/login/login_screen_client_impl.h"
+#include "chrome/browser/ui/webui/ash/login/enrollment_screen_handler.h"
 #include "chrome/browser/ui/webui/ash/login/hid_detection_screen_handler.h"
 #include "chromeos/ash/components/install_attributes/install_attributes.h"
 #include "chromeos/ash/components/login/auth/public/saml_password_attributes.h"
@@ -49,8 +52,13 @@
 
 namespace ash {
 
-OobeTestAPIHandler::OobeTestAPIHandler(PrefService* local_state)
-    : local_state_(CHECK_DEREF(local_state)) {}
+OobeTestAPIHandler::OobeTestAPIHandler(
+    PrefService* local_state,
+    MetricsServiceGetter metrics_service_getter)
+    : local_state_(CHECK_DEREF(local_state)),
+      metrics_service_getter_(std::move(metrics_service_getter)) {
+  CHECK(metrics_service_getter_);
+}
 OobeTestAPIHandler::~OobeTestAPIHandler() = default;
 
 void OobeTestAPIHandler::DeclareLocalizedValues(
@@ -101,10 +109,22 @@ void OobeTestAPIHandler::GetAdditionalParameters(base::DictValue* dict) {
   dict->Set("testapi_isFingerprintSupported",
             quick_unlock::IsFingerprintSupported());
 
-  dict->Set("testapi_shouldSkipAiIntro", AiIntroScreen::ShouldBeSkipped());
+  // These parameters are usually computed before anybody has signed in, but
+  // this also runs post-login when the UI is reloaded in another locale or
+  // the dialog is created lazily, and then the screens answer for the user
+  // being onboarded, as they did when they read the active user's prefs.
+  const WizardContext* const wizard_context =
+      LoginDisplayHost::default_host()
+          ? LoginDisplayHost::default_host()->GetWizardContext()
+          : nullptr;
+  const user_manager::User* const onboarding_user =
+      wizard_context ? wizard_context->onboarding_user.get() : nullptr;
+
+  dict->Set("testapi_shouldSkipAiIntro",
+            AiIntroScreen::ShouldBeSkipped(onboarding_user));
 
   dict->Set("testapi_shouldSkipGeminiIntro",
-            GeminiIntroScreen::ShouldBeSkipped());
+            GeminiIntroScreen::ShouldBeSkipped(onboarding_user));
 
   // TODO(bohdanty): Remove in a follow-up CL to prevent CQ from breaking.
   dict->Set("testapi_shouldSkipSplitModifierKeyboardInfo",
@@ -159,6 +179,15 @@ void OobeTestAPIHandler::LoginWithPin(const std::string& username,
 
 void OobeTestAPIHandler::AdvanceToScreen(const std::string& screen) {
   VLOG(1) << "AdvanceToScreen(" << screen << ")";
+  // Advancing directly to the enrollment screen in tests bypasses
+  // `AutoEnrollmentCheckScreen`, leaving `kAutoEnrollmentCheckExited` false.
+  // Mark it exited so `OnEnrollmentFinished()` /
+  // `PerformOOBECompletedActions()` allow marking OOBE completed instead of
+  // treating enrollment as a bypass.
+  if (features::IsOobeAutoEnrollmentCheckForcedEnabled() &&
+      screen == EnrollmentScreenView::kScreenId.name) {
+    local_state_->SetBoolean(prefs::kAutoEnrollmentCheckExited, true);
+  }
   LoginDisplayHost::default_host()->StartWizard(OobeScreenId(screen));
 }
 
@@ -267,11 +296,9 @@ void OobeTestAPIHandler::HandleGetShouldSkipTouchpadScroll(
 
 void OobeTestAPIHandler::HandleGetMetricsClientID(
     const std::string& callback_id) {
-  std::string client_id;
-  // TODO(crbug.com/489929275): Avoid using g_browser_process.
-  if (g_browser_process->metrics_service()) {
-    client_id = g_browser_process->metrics_service()->GetClientId();
-  }
+  ::metrics::MetricsService* metrics_service = metrics_service_getter_.Run();
+  CHECK(metrics_service);
+  std::string client_id = metrics_service->GetClientId();
 
   // Early in OOBE `metrics_service()->GetClientId()` will return an empty
   // string. If that's the case look for the client ID in the preference

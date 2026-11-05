@@ -76,9 +76,8 @@ class PemFileCertStore {
 
     for (const auto& cert : certs) {
       bssl::CertErrors errors;
-      auto parsed = bssl::ParsedCertificate::Create(
-          bssl::UpRef(cert->cert_buffer()),
-          x509_util::DefaultParseCertificateOptions(), &errors);
+      auto parsed = x509_util::CreateParsedCertificate(
+          bssl::UpRef(cert->cert_buffer()), &errors);
       if (!parsed) {
         LOG(ERROR) << file_name << ": " << errors.ToDebugString();
         continue;
@@ -149,10 +148,6 @@ class SystemTrustStoreChromeWithUnOwnedSystemStore : public SystemTrustStore {
     return trust_store_chrome_->Contains(trust_anchor);
   }
 
-  bool IsKnownMtcAnchor(const bssl::MTCAnchor* anchor) const override {
-    return trust_store_chrome_->ContainsMTCAnchor(anchor);
-  }
-
   bool IsLocallyTrustedRoot(
       const bssl::ParsedCertificate* trust_anchor) override {
     return non_crs_trust_store_collection_.GetTrust(trust_anchor)
@@ -189,11 +184,11 @@ class SystemTrustStoreChromeWithUnOwnedSystemStore : public SystemTrustStore {
   bool IsMtcCosignerPolicySatisfied(
       const bssl::ParsedCertificate& target_cert,
       base::Time current_time,
-      const bssl::MTCAnchor* mtc_anchor,
+      const bssl::ParsedCertificate& mtc_ca_cert,
       base::span<const std::vector<uint8_t>> valid_additional_cosigners,
       const NetLogWithSource& net_log) const override {
     return trust_store_chrome_->IsMtcCosignerPolicySatisfied(
-        target_cert, current_time, mtc_anchor, valid_additional_cosigners,
+        target_cert, current_time, mtc_ca_cert, valid_additional_cosigners,
         net_log);
   }
 
@@ -308,9 +303,8 @@ class FuchsiaSystemCerts {
 
     for (const auto& cert : certs) {
       bssl::CertErrors errors;
-      auto parsed = bssl::ParsedCertificate::Create(
-          bssl::UpRef(cert->cert_buffer()),
-          x509_util::DefaultParseCertificateOptions(), &errors);
+      auto parsed = x509_util::CreateParsedCertificate(
+          bssl::UpRef(cert->cert_buffer()), &errors);
       CHECK(parsed) << errors.ToDebugString();
       system_trust_store_.AddTrustAnchor(std::move(parsed));
     }
@@ -341,10 +335,6 @@ class SystemTrustStoreFuchsia : public SystemTrustStore {
 
   bool IsKnownRoot(const bssl::ParsedCertificate* trust_anchor) const override {
     return GetFuchsiaRootCerts().system_trust_store()->Contains(trust_anchor);
-  }
-
-  bool IsKnownMtcAnchor(const bssl::MTCAnchor* anchor) const override {
-    return false;
   }
 };
 

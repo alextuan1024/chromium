@@ -201,7 +201,7 @@ bool CanUseUpdateSubresource(const std::vector<SkPixmap>& pixmaps) {
   return true;
 }
 
-Microsoft::WRL::ComPtr<ID3D11Device> GetD3D11Device(
+Microsoft::WRL::ComPtr<ID3D11Device> GetDawnD3D11Device(
     const wgpu::Device& device,
     wgpu::BackendType backend_type,
     const bool is_graphite_device) {
@@ -328,12 +328,15 @@ class D3DImageBacking::PersistentGraphiteDawnAccess
   PersistentGraphiteDawnAccess(scoped_refptr<SharedContextState> context_state,
                                wgpu::Device device,
                                wgpu::Texture texture,
-                               wgpu::SharedTextureMemory texture_memory);
+                               wgpu::SharedTextureMemory texture_memory,
+                               bool is_multi_plane);
 
-  // Must be called once after construction. Since constructor cannot return
-  // error, this provides a way to initialize the access and return a result.
+  // Must be called after construction. Since constructor cannot return error,
+  // this provides a way to initialize the access and return a result.
   bool BeginAccess(bool is_cleared,
                    scoped_refptr<gfx::D3DSharedFence> wait_fence = nullptr);
+
+  bool access_begun() const { return access_begun_; }
 
   // Force EndAccess and invalidate the persistent access. It's invalid to use
   // this persistent access afterwards.
@@ -371,6 +374,8 @@ class D3DImageBacking::PersistentGraphiteDawnAccess
   wgpu::Device device_;
   wgpu::Texture texture_;
   wgpu::SharedTextureMemory texture_memory_;
+  const bool is_multi_plane_;
+  bool access_begun_ = false;
   // Flag indicates whether should flush graphite's submits before accessing
   // the backing in ANGLE/WebGPU.
   bool need_flush_commands_ = false;
@@ -380,11 +385,13 @@ D3DImageBacking::PersistentGraphiteDawnAccess::PersistentGraphiteDawnAccess(
     scoped_refptr<SharedContextState> context_state,
     wgpu::Device device,
     wgpu::Texture texture,
-    wgpu::SharedTextureMemory texture_memory)
+    wgpu::SharedTextureMemory texture_memory,
+    bool is_multi_plane)
     : context_state_(std::move(context_state)),
       device_(std::move(device)),
       texture_(std::move(texture)),
-      texture_memory_(std::move(texture_memory)) {}
+      texture_memory_(std::move(texture_memory)),
+      is_multi_plane_(is_multi_plane) {}
 
 bool D3DImageBacking::PersistentGraphiteDawnAccess::BeginAccess(
     bool is_cleared,
@@ -409,10 +416,12 @@ bool D3DImageBacking::PersistentGraphiteDawnAccess::BeginAccess(
   }
 
   if (texture_memory_.BeginAccess(texture_, &desc) == wgpu::Status::Success) {
+    access_begun_ = true;
     return true;
   }
 
   LOG(ERROR) << "SharedTextureMemory::BeginAccess() failed.";
+  access_begun_ = false;
   texture_memory_ = nullptr;
   texture_ = nullptr;
   return false;
@@ -424,11 +433,15 @@ D3DImageBacking::PersistentGraphiteDawnAccess::~PersistentGraphiteDawnAccess() {
 
 void D3DImageBacking::PersistentGraphiteDawnAccess::Invalidate() {
   if (!texture_memory_ || texture_memory_.IsDeviceLost()) {
+    access_begun_ = false;
     return;
   }
 
-  wgpu::SharedTextureMemoryEndAccessState end_state = {};
-  texture_memory_.EndAccess(texture_, &end_state);
+  if (access_begun_) {
+    wgpu::SharedTextureMemoryEndAccessState end_state = {};
+    texture_memory_.EndAccess(texture_, &end_state);
+    access_begun_ = false;
+  }
 
   texture_memory_ = nullptr;
   texture_ = nullptr;
@@ -457,9 +470,18 @@ bool D3DImageBacking::PersistentGraphiteDawnAccess::WaitForDCompBeforeWrite(
     return true;
   }
 
-  // Temporarily end Dawn's access.
-  wgpu::SharedTextureMemoryEndAccessState end_state = {};
-  texture_memory_.EndAccess(texture_, &end_state);
+  bool is_cleared = false;
+  if (access_begun_) {
+    // Temporarily end Dawn's access.
+    wgpu::SharedTextureMemoryEndAccessState end_state = {};
+    texture_memory_.EndAccess(texture_, &end_state);
+    access_begun_ = false;
+
+    // Sanity check that EndAccess() didn't forward prior fences because we
+    // didn't submit. There should be only one fence exported (owned by Dawn).
+    CHECK_LE(end_state.fenceCount, 1u);
+    is_cleared = end_state.initialized;
+  }
 
   // Restart BeginAccess to pass the fence to Dawn.
   // When Dawn's submit() is called after this point, it will wait for the fence
@@ -469,20 +491,24 @@ bool D3DImageBacking::PersistentGraphiteDawnAccess::WaitForDCompBeforeWrite(
   // only got here because of an exclusive write access, there shouldn't be any
   // concurrent dcomp texture access in the middle between the prior write
   // access and current write access.
-
-  // Sanity check that EndAccess() didn't forward prior fences because we didn't
-  // submit. There should be only one fence exported (owned by Dawn).
-  CHECK_LE(end_state.fenceCount, 1u);
-  return BeginAccess(end_state.initialized,
-                     std::move(dcomp_texture_available_fence));
+  return BeginAccess(is_cleared, std::move(dcomp_texture_available_fence));
 }
 
 bool D3DImageBacking::PersistentGraphiteDawnAccess::SetCleared(
     bool is_cleared) {
   // The only way to notify Dawn about init status is via STM.BeginAccess. So
   // end Dawn's access temporarily and BeginAccess again.
-  wgpu::SharedTextureMemoryEndAccessState end_state = {};
-  texture_memory_.EndAccess(texture_, &end_state);
+  if (access_begun_) {
+    wgpu::SharedTextureMemoryEndAccessState end_state = {};
+    texture_memory_.EndAccess(texture_, &end_state);
+    access_begun_ = false;
+  }
+
+  // Multiplanar textures cannot have Dawn access begun until they are
+  // initialized.
+  if (is_multi_plane_ && !is_cleared) {
+    return true;
+  }
 
   // Call Dawn's BeginAccess again.
   return BeginAccess(is_cleared);
@@ -532,7 +558,8 @@ D3DImageBacking::CreateGLTexture(
     Microsoft::WRL::ComPtr<ID3D11Texture2D> d3d11_texture,
     GLenum texture_target,
     unsigned array_slice,
-    unsigned plane_index) {
+    unsigned plane_index,
+    bool is_multi_plane_format) {
   gl::GLApi* const api = gl::g_current_gl_context;
   gl::ScopedRestoreTexture scoped_restore(api, texture_target);
 
@@ -549,18 +576,24 @@ D3DImageBacking::CreateGLTexture(
   api->glTexParameteriFn(texture_target, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
   api->glTexParameteriFn(texture_target, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
-  const EGLint egl_attrib_list[] = {
+  // EGL_D3D11_TEXTURE_PLANE_ANGLE only applies to multi-planar YUV textures
+  // (NV12/P010/P016); packed single-plane YUV formats (Y410/Y210) have no
+  // planes and ANGLE rejects the attribute for them.
+  std::vector<EGLint> egl_attribs = {
       EGL_TEXTURE_INTERNAL_FORMAT_ANGLE,
       static_cast<EGLint>(gl_format_desc.image_internal_format),
       EGL_D3D11_TEXTURE_ARRAY_SLICE_ANGLE,
       static_cast<EGLint>(array_slice),
-      EGL_D3D11_TEXTURE_PLANE_ANGLE,
-      static_cast<EGLint>(plane_index),
-      EGL_NONE};
+  };
+  if (is_multi_plane_format) {
+    egl_attribs.push_back(EGL_D3D11_TEXTURE_PLANE_ANGLE);
+    egl_attribs.push_back(static_cast<EGLint>(plane_index));
+  }
+  egl_attribs.push_back(EGL_NONE);
 
   auto egl_image = gl::MakeScopedEGLImage(
       EGL_NO_CONTEXT, EGL_D3D11_TEXTURE_ANGLE,
-      static_cast<EGLClientBuffer>(d3d11_texture.Get()), egl_attrib_list);
+      static_cast<EGLClientBuffer>(d3d11_texture.Get()), egl_attribs.data());
 
   if (!egl_image.get()) {
     LOG(ERROR) << "Failed to create an EGL image";
@@ -814,6 +847,7 @@ bool D3DImageBacking::UploadFromMemory(const std::vector<SkPixmap>& pixmaps) {
         pixmaps[0].addr(), pixmaps[0].rowBytes(), /*SrcDepthPitch=*/0,
         D3D11_COPY_DISCARD);
 
+    MarkClearedAfterUpload();
     return true;
   }
 
@@ -857,6 +891,7 @@ bool D3DImageBacking::UploadFromMemory(const std::vector<SkPixmap>& pixmaps) {
   device_context->Unmap(staging_texture, 0);
   device_context->CopyResource(d3d11_texture_.Get(), staging_texture);
 
+  MarkClearedAfterUpload();
   return true;
 }
 
@@ -968,6 +1003,15 @@ std::unique_ptr<DawnImageRepresentation> D3DImageBacking::ProduceDawn(
     wgpu::BackendType backend_type,
     std::vector<wgpu::TextureFormat> view_formats,
     scoped_refptr<SharedContextState> context_state) {
+  // Dawn can't import packed YUV textures yet, and a failed import loses the
+  // Dawn device, and with it the Graphite context.
+  // TODO(crbug.com/537818862): Import them through their aliased formats.
+  if (format() == viz::SinglePlaneFormat::kY210) {
+    LOG(ERROR) << "Dawn doesn't support " << format().ToString()
+               << " shared images";
+    return nullptr;
+  }
+
 #if BUILDFLAG(DAWN_ENABLE_BACKEND_OPENGLES)
   if (backend_type == wgpu::BackendType::OpenGLES) {
     std::unique_ptr<GLTextureImageRepresentationBase> gl_representation =
@@ -1001,11 +1045,8 @@ std::unique_ptr<DawnImageRepresentation> D3DImageBacking::ProduceDawn(
         dawn_context_provider->GetDevice().Get() == device.Get();
 
     Microsoft::WRL::ComPtr<ID3D11Device> dawn_d3d11_device =
-        GetD3D11Device(device, backend_type, is_graphite_device);
-    const bool use_keyed_mutex =
-        d3d11_texture_desc_.MiscFlags & D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX;
+        GetDawnD3D11Device(device, backend_type, is_graphite_device);
     Microsoft::WRL::ComPtr<ID3D12Resource> unwrapped_d3d12_resource;
-    // Unwrapping is not allowed if the texture is used with a keyed mutex.
     // If there is no texture_d3d11_device_, it is safe to assume that the
     // resource was created with the Dawn D3D12 device.
     // TODO(crbug.com/543937339): This logic can be simplified by making
@@ -1014,8 +1055,6 @@ std::unique_ptr<DawnImageRepresentation> D3DImageBacking::ProduceDawn(
     // wrapping it when the D3D11 texture is required. That way only
     // UploadTo/FromMemory related operations will need D3D11On12.
     if (backend_type == wgpu::BackendType::D3D12 &&
-        !(dxgi_shared_handle_state_ &&
-          dxgi_shared_handle_state_->has_keyed_mutex()) &&
         texture_device_can_use_d3d12_ &&
         (!texture_d3d11_device_ ||
          (texture_d3d11_device_ == dawn_d3d11_device))) {
@@ -1041,6 +1080,8 @@ std::unique_ptr<DawnImageRepresentation> D3DImageBacking::ProduceDawn(
         const HANDLE shared_handle =
             dxgi_shared_handle_state_->GetSharedHandle();
         CHECK(base::win::HandleTraits::IsHandleValid(shared_handle));
+        const bool use_keyed_mutex = d3d11_texture_desc_.MiscFlags &
+                                     D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX;
         shared_texture_memory = CreateDawnSharedTextureMemory(
             device, use_keyed_mutex, shared_handle);
       }
@@ -1144,10 +1185,15 @@ void D3DImageBacking::InitPersistentGraphiteDawnAccess(
   persistent_graphite_dawn_access_ =
       base::MakeRefCounted<PersistentGraphiteDawnAccess>(
           std::move(context_state), std::move(device), std::move(texture),
-          std::move(shared_texture_memory));
+          std::move(shared_texture_memory), format().is_multi_plane());
 
-  if (!persistent_graphite_dawn_access_->BeginAccess(
-          /*is_cleared=*/ClearedRectInternal() == gfx::Rect(size()))) {
+  // Multiplanar textures cannot have Dawn access begun until they are
+  // initialized. If this backing is not yet cleared (e.g. lazily allocated in
+  // CompoundImageBacking before UploadFromMemory runs), defer BeginAccess until
+  // NotifyGraphiteAboutInitializedStatus() or BeginAccessDawn().
+  const bool is_cleared = ClearedRectInternal() == gfx::Rect(size());
+  if ((!format().is_multi_plane() || is_cleared) &&
+      !persistent_graphite_dawn_access_->BeginAccess(is_cleared)) {
     persistent_graphite_dawn_access_.reset();
   }
 }
@@ -1355,6 +1401,12 @@ wgpu::Texture D3DImageBacking::BeginAccessDawn(
   // is already open.
   if (persistent_graphite_dawn_access_) {
     if (persistent_graphite_dawn_access_->IsGraphiteDevice(device)) {
+      if (!persistent_graphite_dawn_access_->access_begun() &&
+          !persistent_graphite_dawn_access_->BeginAccess(
+              /*is_cleared=*/ClearedRectInternal() == gfx::Rect(size()))) {
+        persistent_graphite_dawn_access_.reset();
+        return nullptr;
+      }
       if (dcomp_texture_ && write_access) {
         // For dcomp, we only need to wait for dcomp read fence before we write.
         // We don't need to signal any fence after that so it's still safe to
@@ -1379,21 +1431,18 @@ wgpu::Texture D3DImageBacking::BeginAccessDawn(
   const bool is_graphite_device =
       backend_type == wgpu::BackendType::D3D12 && d3d12_resource_;
   Microsoft::WRL::ComPtr<ID3D11Device> dawn_d3d11_device =
-      GetD3D11Device(device, backend_type, is_graphite_device);
+      GetDawnD3D11Device(device, backend_type, is_graphite_device);
 
   // Dawn access is allowed without shared handle for single device scenarios.
   CHECK(dxgi_shared_handle_state_ ||
         dawn_d3d11_device == texture_d3d11_device_);
 
   if (backend_type == wgpu::BackendType::D3D12) {
-    // Unwrapping is not allowed if the texture is used with a keyed mutex.
     // If there is no texture_d3d11_device_, it is safe to assume that the
     // resource was created with the Dawn D3D12 device.
     // TODO(crbug.com/543937339): This logic can be simplified by making
     // texture_d3d11_device_ a variant as well.
-    if (!(dxgi_shared_handle_state_ &&
-          dxgi_shared_handle_state_->has_keyed_mutex()) &&
-        texture_device_can_use_d3d12_ &&
+    if (texture_device_can_use_d3d12_ &&
         (!texture_d3d11_device_ ||
          (texture_d3d11_device_ == dawn_d3d11_device))) {
       auto unwrapped_d3d12_resource = EnsureD3D12Resource();
@@ -1621,6 +1670,21 @@ void D3DImageBacking::CheckForDawnDeviceLoss(
   }
 }
 
+void D3DImageBacking::MarkClearedAfterUpload() {
+  SetClearedRectInternal(gfx::Rect(size()));
+  // Notifying Graphite ends and restarts Dawn's persistent access. Skip that
+  // round trip if Dawn already considers the texture initialized. This queries
+  // Dawn directly rather than ClearedRectInternal(), which may have been
+  // updated via SetClearedRect() without notifying Dawn.
+  if (persistent_graphite_dawn_access_ &&
+      persistent_graphite_dawn_access_->access_begun() &&
+      dawn::native::IsTextureSubresourceInitialized(
+          persistent_graphite_dawn_access_->texture().Get(), 0, 1, 0, 1)) {
+    return;
+  }
+  NotifyGraphiteAboutInitializedStatus();
+}
+
 void D3DImageBacking::NotifyGraphiteAboutInitializedStatus() {
   // Since we keep Dawn's access open indefinitely for Graphite, we need to
   // notify Dawn that the texture's content is already initialized externally or
@@ -1759,8 +1823,10 @@ bool D3DImageBacking::BeginAccessD3D(const D3DAccessObject& access_device,
   return true;
 }
 
-void D3DImageBacking::EndAccessD3D(const D3DAccessObject& access_device,
-                                   bool is_overlay_access) {
+void D3DImageBacking::EndAccessD3D(
+    const D3DAccessObject& access_device,
+    bool is_overlay_access,
+    scoped_refptr<gfx::D3DSharedFence> external_fence) {
   const bool is_texture_device = IsSameAccessObject(access_device);
   // If shared handle is not present, we can only access on the same device.
   AutoLock auto_lock(this);
@@ -1770,7 +1836,13 @@ void D3DImageBacking::EndAccessD3D(const D3DAccessObject& access_device,
   // the texture on one device or using a keyed mutex. The fence is lazily
   // created on the first access from another device in GetPendingWaitFences().
   D3DSharedFenceSet signaled_fence;
-  if (use_cross_device_fence_synchronization()) {
+  if (external_fence) {
+    // External fences are created and owned outside of D3DImageBacking. We
+    // avoid caching them in `signaled_fence_map_` as it would cause the backing
+    // to re-signal them; hence publish them directly as a write fence and avoid
+    // the `signaled_fence_map_` lookup.
+    signaled_fence.insert(std::move(external_fence));
+  } else if (use_cross_device_fence_synchronization()) {
     auto& signal_fence = signaled_fence_map_[access_device];
     // If the accessing device was not the texture's original device, create
     // the fence so that future access of the backing waits for all pending work
@@ -2220,7 +2292,7 @@ D3DImageBacking::ProduceGLTexturePassthrough(SharedImageManager* manager,
       // Creating the GL texture doesn't require exclusive access to the
       // underlying D3D11 texture.
       holder = CreateGLTexture(gl_format_desc, d3d11_texture, texture_target_,
-                               array_slice_, plane);
+                               array_slice_, plane, format().is_multi_plane());
       if (!holder) {
         LOG(ERROR) << "Failed to create GL texture for plane: " << plane;
         return nullptr;

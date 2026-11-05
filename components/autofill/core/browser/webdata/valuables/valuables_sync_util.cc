@@ -8,7 +8,6 @@
 #include <utility>
 #include <vector>
 
-#include "base/strings/string_number_conversions.h"
 #include "base/time/time.h"
 #include "components/autofill/core/browser/data_model/valuables/loyalty_card.h"
 #include "components/autofill/core/browser/data_model/valuables/valuable_types.h"
@@ -150,24 +149,62 @@ void TrimOffer(sync_pb::Offer& offer) {
   offer.clear_offer_title_image_url();
   offer.clear_issuer_domains();
   offer.clear_description();
+  offer.clear_issue_time_unix_epoch_micros();
 }
 // LINT.ThenChange(//components/sync/protocol/autofill_valuable_specifics.proto:Offer)
 
 }  // namespace
 
+std::unique_ptr<syncer::EntityData> CreateEntityDataFromOfferData(
+    const AutofillOfferData& offer,
+    const sync_pb::AutofillValuableSpecifics& base_specifics) {
+  AutofillValuableSpecifics offer_specifics =
+      CreateSpecificsFromOfferData(offer, base_specifics);
+  std::unique_ptr<syncer::EntityData> entity_data =
+      std::make_unique<syncer::EntityData>();
+  entity_data->name = offer_specifics.id();
+  *entity_data->specifics.mutable_autofill_valuable() =
+      std::move(offer_specifics);
+
+  return entity_data;
+}
+
+AutofillValuableSpecifics CreateSpecificsFromOfferData(
+    const AutofillOfferData& offer,
+    const sync_pb::AutofillValuableSpecifics& base_specifics) {
+  AutofillValuableSpecifics specifics = base_specifics;
+  specifics.set_id(offer.GetOfferId());
+  specifics.set_pass_view_url(
+      offer.GetOfferDetailsUrl().possibly_invalid_spec());
+  sync_pb::Offer* offer_proto = specifics.mutable_offer();
+  offer_proto->set_offer_code(offer.GetPromoCode());
+  offer_proto->set_offer_short_title(offer.GetOfferShortTitle());
+  offer_proto->set_issuer_name(offer.issuer_name());
+  offer_proto->set_description(offer.GetDisplayStrings().value_prop_text);
+  offer_proto->set_expiration_time_unix_epoch_micros(
+      (offer.GetExpiry() - base::Time::UnixEpoch()).InMicroseconds());
+  offer_proto->set_issue_time_unix_epoch_micros(
+      (offer.GetIssueTime() - base::Time::UnixEpoch()).InMicroseconds());
+  for (const GURL& merchant_origin : offer.GetMerchantOrigins()) {
+    *offer_proto->add_issuer_domains() = merchant_origin.spec();
+  }
+
+  return specifics;
+}
+
 AutofillOfferData CreateOfferDataFromValuableSpecifics(
     const sync_pb::AutofillValuableSpecifics& specifics) {
   const sync_pb::Offer& offer_proto = specifics.offer();
-  int64_t offer_id = 0;
-  base::StringToInt64(specifics.id(), &offer_id);
-  // `PaymentsAutofillTable` persists the expiry with millisecond precision.
-  // Truncate here so that an offer read back from the database compares equal
-  // to the one built from the specifics. Otherwise every full sync would
-  // consider the offers changed and rewrite them.
   base::Time expiry =
       base::Time::UnixEpoch() +
-      base::Milliseconds(offer_proto.expiration_time_unix_epoch_micros() /
-                         base::Time::kMicrosecondsPerMillisecond);
+      base::Microseconds(offer_proto.expiration_time_unix_epoch_micros());
+  // The issue time is optional. If it is missing (or not positive), it is left
+  // null, i.e. unknown.
+  base::Time issue_time;
+  if (offer_proto.issue_time_unix_epoch_micros() > 0) {
+    issue_time = base::Time::UnixEpoch() +
+                 base::Microseconds(offer_proto.issue_time_unix_epoch_micros());
+  }
   // Offers with issuer domains that don't parse into a URL are rejected by
   // `ValuableSyncBridge::IsEntityDataValid()`.
   std::vector<GURL> merchant_origins;
@@ -179,11 +216,12 @@ AutofillOfferData CreateOfferDataFromValuableSpecifics(
   display_strings.value_prop_text = offer_proto.description();
 
   return AutofillOfferData(
-      offer_id, expiry, std::move(merchant_origins),
+      specifics.id(), expiry, std::move(merchant_origins),
       /*offer_details_url=*/GURL(specifics.pass_view_url()),
       std::move(display_strings),
       /*promo_code=*/offer_proto.offer_code(),
-      /*offer_reward_amount=*/offer_proto.offer_short_title());
+      /*offer_short_title=*/offer_proto.offer_short_title(), issue_time,
+      /*issuer_name=*/offer_proto.issuer_name());
 }
 
 std::unique_ptr<syncer::EntityData> CreateEntityDataFromLoyaltyCard(
@@ -277,7 +315,7 @@ AutofillValuableSpecifics TrimAutofillValuableSpecificsDataForCaching(
   trimmed_specifics.clear_id();
   trimmed_specifics.clear_is_editable();
   trimmed_specifics.clear_serialized_chrome_valuables_metadata();
-  trimmed_specifics.clear_context_token();
+  trimmed_specifics.clear_legal_message_token();
   trimmed_specifics.clear_pass_view_url();
 
   switch (trimmed_specifics.valuable_data_case()) {

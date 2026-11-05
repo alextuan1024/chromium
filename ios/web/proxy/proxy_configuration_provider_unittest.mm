@@ -108,9 +108,7 @@ ProxyRule ProxyRuleFor(
 class ProxyConfigurationProviderTest : public PlatformTest {
  public:
   ProxyConfigurationProviderTest()
-      : web_client_(std::make_unique<FakeWebClient>()) {
-    browser_state_.SetWebKitStorageID(base::Uuid::GenerateRandomV4());
-  }
+      : web_client_(std::make_unique<FakeWebClient>()) {}
   ~ProxyConfigurationProviderTest() override = default;
 
   void SetUp() override {
@@ -118,6 +116,19 @@ class ProxyConfigurationProviderTest : public PlatformTest {
     if (!@available(iOS 17.0, *)) {
       GTEST_SKIP() << "ProxyConfigurationProvider requires iOS 17.0+";
     }
+  }
+
+  void TearDown() override {
+    // Ensure no proxyConfigurations outlive these tests to avoid flake of
+    // unrelated tests.
+    if (@available(iOS 17.0, *)) {
+      WKWebViewConfigurationProvider& config_provider =
+          WKWebViewConfigurationProvider::FromBrowserState(&browser_state_);
+      WKWebsiteDataStore* data_store = config_provider.GetWebsiteDataStore();
+      data_store.proxyConfigurations = @[];
+    }
+
+    PlatformTest::TearDown();
   }
 
  protected:
@@ -277,18 +288,21 @@ TEST_F(ProxyConfigurationProviderTest, HttpsProxyConfigurationSupported) {
 // will break traffic steering for Enterprise Secure Gateway, causing
 // corporate requests to bypass the gateway or fail to connect.
 TEST_F(ProxyConfigurationProviderTest, UndocumentedNativeMatcherBehaviors) {
-  ProxyConfigurationProvider& provider =
-      ProxyConfigurationProvider::FromBrowserState(&browser_state_);
+  if (@available(iOS 17.0, *)) {
+    ProxyConfigurationProvider& provider =
+        ProxyConfigurationProvider::FromBrowserState(&browser_state_);
 
-  provider.UpdateProxyConfiguration({
-      ProxyRuleFor("secure-proxy.corp.com", 443,
-                   {"*.apple.com", "apple.com", "192.168.1.1", "[2001:db8::1]"},
-                   net::ProxyServer::SCHEME_HTTPS),
-  });
+    provider.UpdateProxyConfiguration({
+        ProxyRuleFor(
+            "secure-proxy.corp.com", 443,
+            {"*.apple.com", "apple.com", "192.168.1.1", "[2001:db8::1]"},
+            net::ProxyServer::SCHEME_HTTPS),
+    });
 
-  VerifyNativeProxyConfigurations(
-      &browser_state_, {{.match_domains = {"*.apple.com", "apple.com",
-                                           "192.168.1.1", "[2001:db8::1]"}}});
+    VerifyNativeProxyConfigurations(
+        &browser_state_, {{.match_domains = {"*.apple.com", "apple.com",
+                                             "192.168.1.1", "[2001:db8::1]"}}});
+  }
 }
 
 }  // namespace web

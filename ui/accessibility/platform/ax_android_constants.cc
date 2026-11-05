@@ -12,7 +12,7 @@ const char kAXAbsListViewClassname[] = "android.widget.AbsListView";
 const char kAXAlertDialogClassname[] = "android.app.AlertDialog";
 const char kAXButtonClassname[] = "android.widget.Button";
 const char kAXCheckBoxClassname[] = "android.widget.CheckBox";
-const char kAXCheckedTextViewClassname[] = " android.widget.CheckedTextView";
+const char kAXCheckedTextViewClassname[] = "android.widget.CheckedTextView";
 const char kAXCompoundButtonClassname[] = "android.widget.CompoundButton";
 const char kAXDatePickerClassname[] = "android.widget.DatePicker";
 const char kAXEditTextClassname[] = "android.widget.EditText";
@@ -28,6 +28,7 @@ const char kAXMultiAutoCompleteTextViewClassname[] =
     "android.widget.MultiAutoCompleteTextView";
 const char kAXNavigationViewClassname[] =
     "com.google.android.material.navigation.NavigationView";
+const char kAXNoteClassname[] = "android.accessibility.role.Note";
 const char kAXPagerClassname[] = "android.support.v4.view.ViewPager";
 const char kAXProgressBarClassname[] = "android.widget.ProgressBar";
 const char kAXRadioButtonClassname[] = "android.widget.RadioButton";

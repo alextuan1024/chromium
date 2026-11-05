@@ -192,7 +192,7 @@ public class TabGroupListMediator {
      * @param context Used to load resources and create views.
      * @param modelList Side effect is adding items to this list.
      * @param propertyModel Properties for the empty state.
-     * @param filter Used to read current tab groups.
+     * @param tabModel Used to read current tab groups.
      * @param faviconResolver Used to fetch favicon images for some tabs.
      * @param tabGroupSyncService Used to fetch synced copy of tab groups.
      * @param dataSharingService Used to fetch shared group data.
@@ -276,24 +276,22 @@ public class TabGroupListMediator {
         if (mPersistentVersioningMessageMediator != null) {
             mPersistentVersioningMessageMediator.queueMessageIfNeeded();
         }
+        if (mTabGroupSyncService == null) {
+            return;
+        }
 
         GroupWindowChecker sortUtil =
                 new GroupWindowChecker(mContext, mTabGroupSyncService, mTabModel);
         List<GroupWindowInfo> sortedTabGroups =
                 sortUtil.getSortedGroupList(
-                        this::shouldShowGroupByState,
-                        (GroupWindowInfo a, GroupWindowInfo b) ->
-                                Long.compare(b.lastModifiedTimeMs, a.lastModifiedTimeMs));
+                        this::shouldShowGroupByState, GroupWindowChecker.UPDATE_TIME_COMPARATOR);
         for (GroupWindowInfo groupInfo : sortedTabGroups) {
             if (groupInfo.syncId == null) continue;
-            SavedTabGroup savedTabGroup =
-                    assumeNonNull(mTabGroupSyncService).getGroup(groupInfo.syncId);
-            if (savedTabGroup == null) continue;
 
             TabGroupRowMediator rowMediator =
                     new TabGroupRowMediator(
                             mContext,
-                            savedTabGroup,
+                            groupInfo,
                             mTabModel,
                             assumeNonNull(mTabGroupSyncService),
                             mDataSharingService,
@@ -302,7 +300,17 @@ public class TabGroupListMediator {
                             mTabGroupUiActionHandler,
                             mActionConfirmationManager,
                             mFaviconResolver,
-                            () -> sortUtil.getState(savedTabGroup),
+                            () -> {
+                                sortUtil.invalidate();
+                                SavedTabGroup savedGroup =
+                                        mTabGroupSyncService.getGroup(groupInfo.syncId);
+                                if (savedGroup != null) {
+                                    return sortUtil.getState(savedGroup);
+                                }
+                                return groupInfo.localId != null
+                                        ? sortUtil.getState(groupInfo.localId)
+                                        : GroupWindowState.HIDDEN;
+                            },
                             mEnableContainment,
                             mDataSharingTabManager);
             ListItem listItem = new ListItem(RowType.TAB_GROUP, rowMediator.getModel());
@@ -321,6 +329,9 @@ public class TabGroupListMediator {
     }
 
     private boolean shouldShowGroupByState(@GroupWindowState int groupWindowState) {
-        return groupWindowState != GroupWindowState.IN_ANOTHER;
+        if (groupWindowState == GroupWindowState.IN_ANOTHER) {
+            return TabGroupUiUtils.isRemoteGroupOperationsEnabled();
+        }
+        return true;
     }
 }

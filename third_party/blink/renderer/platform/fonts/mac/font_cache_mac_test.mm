@@ -12,6 +12,9 @@
 #include "third_party/blink/renderer/platform/fonts/mac/font_matcher_mac.h"
 #include "third_party/blink/renderer/platform/fonts/simple_font_data.h"
 #include "third_party/blink/renderer/platform/testing/font_test_base.h"
+#include "third_party/blink/renderer/platform/testing/runtime_enabled_features_test_helpers.h"
+#include "third_party/blink/renderer/platform/testing/scoped_default_locale.h"
+#include "third_party/blink/renderer/platform/text/layout_locale.h"
 
 namespace blink {
 
@@ -64,6 +67,10 @@ class FontCacheMacTest
   size_t PlatformDataCacheSize() {
     return FontCache::Get().font_platform_data_cache_.map_.size();
   }
+
+  size_t CharacterFallbackCacheSize() {
+    return FontCache::Get().character_fallback_cache_.size();
+  }
 };
 
 INSTANTIATE_TEST_SUITE_P(SystemUISyntheticBold,
@@ -84,7 +91,7 @@ TEST_F(FontCacheMacTest, SystemUIEmojiTextPresentationUsesAppleSymbols) {
 
   const SimpleFontData* fallback_font = font_cache.FallbackFontForCharacter(
       font_description, U'\U0001F310', system_ui_font,
-      FontFallbackPriority::kEmojiTextWithVS);
+      FontFallbackPriority::kEmojiTextWithVs);
   ASSERT_TRUE(fallback_font);
   EXPECT_EQ(fallback_font->PlatformData().FontFamilyName(),
             String::FromUtf8("Apple Symbols"));
@@ -122,6 +129,86 @@ TEST_F(FontCacheMacTest, UnavailableFontCaching) {
   // The font should no longer be marked as unavailable after invalidation.
   font_cache.Invalidate();
   EXPECT_FALSE(font_cache.IsFontFamilyUnavailable(non_existent_family));
+}
+
+TEST_F(FontCacheMacTest, NonIdeographicCharacterFallbackCache) {
+  FontCache& font_cache = FontCache::Get();
+  font_cache.Invalidate();
+
+  FontDescription font_description;
+  const SimpleFontData* primary_font =
+      font_cache.GetFontData(font_description, AtomicString("Helvetica"));
+  ASSERT_TRUE(primary_font);
+  EXPECT_EQ(CharacterFallbackCacheSize(), 0u);
+
+  // U+3042 HIRAGANA LETTER A is non-ideographic and requires fallback from
+  // Helvetica.
+  const SimpleFontData* first_fallback = font_cache.FallbackFontForCharacter(
+      font_description, U'\u3042', primary_font);
+  ASSERT_TRUE(first_fallback);
+  EXPECT_EQ(CharacterFallbackCacheSize(), 1u);
+
+  const SimpleFontData* second_fallback = font_cache.FallbackFontForCharacter(
+      font_description, U'\u3042', primary_font);
+  EXPECT_EQ(first_fallback, second_fallback);
+  EXPECT_EQ(CharacterFallbackCacheSize(), 1u);
+
+  font_cache.Invalidate();
+  EXPECT_EQ(CharacterFallbackCacheSize(), 0u);
+}
+
+TEST_F(FontCacheMacTest, FallbackFontForCharacterArabicNastaliqDefaultLocale) {
+  ScopedNastaliqScriptForTest scoped_feature(true);
+  FontCache& font_cache = FontCache::Get();
+  font_cache.Invalidate();
+
+  FontDescription base_description;
+  base_description.SetGenericFamily(FontDescription::kStandardFamily);
+  const AtomicString nastaliq_family("Noto Nastaliq Urdu");
+  if (!font_cache.GetFontData(base_description, nastaliq_family)) {
+    GTEST_SKIP() << nastaliq_family << " is not available on this system.";
+  }
+  const SimpleFontData* primary_font =
+      font_cache.GetLastResortFallbackFont(base_description);
+  ASSERT_TRUE(primary_font);
+
+  constexpr UChar32 kTestChar = 0x0627;  // U+0627 ARABIC LETTER ALEF
+  auto fallback_family = [&](const char* content_locale) -> String {
+    FontDescription description = base_description;
+    if (content_locale) {
+      description.SetLocale(LayoutLocale::Get(AtomicString(content_locale)));
+    }
+    const SimpleFontData* font_data = font_cache.FallbackFontForCharacter(
+        description, kTestChar, primary_font);
+    return font_data ? font_data->PlatformData().FontFamilyName() : String();
+  };
+
+  {
+    ScopedDefaultLocale default_locale("ur-PK");
+    EXPECT_EQ(nastaliq_family, fallback_family(nullptr));
+    for (const char* locale_str : {"ur", "ks", "ar-Aran"}) {
+      EXPECT_EQ(nastaliq_family, fallback_family(locale_str)) << locale_str;
+    }
+    EXPECT_EQ(CharacterFallbackCacheSize(), 1u);
+
+    for (const char* locale_str : {"ar", "ar-Arab", "ur-Arab", "fa", "en"}) {
+      const String family = fallback_family(locale_str);
+      EXPECT_FALSE(family.empty()) << locale_str;
+      EXPECT_NE(nastaliq_family, family) << locale_str;
+    }
+    EXPECT_EQ(CharacterFallbackCacheSize(), 2u);
+  }
+
+  {
+    ScopedDefaultLocale default_locale("en-US");
+    EXPECT_EQ(nastaliq_family, fallback_family("ur"));
+    EXPECT_EQ(nastaliq_family, fallback_family("ar-Aran"));
+    for (const char* locale_str : {"ar", "ar-Arab", "ur-Arab", "fa", "en"}) {
+      const String family = fallback_family(locale_str);
+      EXPECT_FALSE(family.empty()) << locale_str;
+      EXPECT_NE(nastaliq_family, family) << locale_str;
+    }
+  }
 }
 
 }  // namespace blink

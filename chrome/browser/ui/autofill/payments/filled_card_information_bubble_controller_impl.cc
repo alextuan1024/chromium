@@ -8,7 +8,6 @@
 #include "chrome/browser/ui/actions/chrome_action_id.h"
 #include "chrome/browser/ui/autofill/autofill_bubble_base.h"
 #include "chrome/browser/ui/autofill/autofill_bubble_handler.h"
-#include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
@@ -23,9 +22,9 @@
 #include "ui/base/clipboard/clipboard.h"
 #include "ui/base/clipboard/scoped_clipboard_writer.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "ui/base/page_transition_types.h"
 #include "ui/base/resource/resource_bundle.h"
-#include "ui/base/window_open_disposition.h"
 
 namespace autofill {
 
@@ -91,7 +90,7 @@ void FilledCardInformationBubbleControllerImpl::SetupAndShowBubble(
 void FilledCardInformationBubbleControllerImpl::SetupBubbleState(
     FilledCardInformationBubbleOptions options) {
   was_bubble_shown_ = false;
-  DCHECK(options.IsValid());
+  CHECK(options.IsValid());
   options_ = std::move(options);
   is_user_gesture_ = false;
   should_icon_be_visible_ = true;
@@ -229,7 +228,8 @@ bool FilledCardInformationBubbleControllerImpl::ShouldIconBeVisible() const {
 void FilledCardInformationBubbleControllerImpl::OnLinkClicked() {
   web_contents()->OpenURL(
       content::OpenURLParams::CreateBrowserInitiated(
-          GetLearnMoreUrl(), WindowOpenDisposition::NEW_FOREGROUND_TAB,
+          GetLearnMoreUrl(),
+          ui::mojom::WindowOpenDisposition::kNewForegroundTab,
           ui::PAGE_TRANSITION_LINK),
       /*navigation_handle_callback=*/{});
 }
@@ -363,7 +363,11 @@ void FilledCardInformationBubbleControllerImpl::
 FilledCardInformationBubbleControllerImpl::
     FilledCardInformationBubbleControllerImpl(
         content::WebContents* web_contents)
-    : AutofillBubbleControllerBase(web_contents),
+    : AutofillBubbleControllerBase(
+          web_contents,
+          PageActionConfig{.action_id = kActionFilledCardInformation,
+                           .should_manage_visibility = true,
+                           .should_sync_bubble_showing_state = true}),
       content::WebContentsUserData<FilledCardInformationBubbleControllerImpl>(
           *web_contents) {}
 
@@ -373,24 +377,6 @@ void FilledCardInformationBubbleControllerImpl::PrimaryPageChanged(
   bubble_has_been_shown_ = false;
   UpdatePageActionIcon();
   HideBubble(/*initiated_by_bubble_manager=*/false);
-}
-
-void FilledCardInformationBubbleControllerImpl::OnVisibilityChanged(
-    content::Visibility visibility) {
-  if (IsBubbleManagerEnabled()) {
-    // BubbleManager will handle the effects of tab changes.
-    return;
-  }
-
-  // If the bubble hasn't been shown yet due to changing the tab during
-  // kFilledCardInformationBubbleDelay, show the bubble after switching back
-  // to the tab.
-  if (visibility == content::Visibility::VISIBLE && !bubble_has_been_shown_ &&
-      should_icon_be_visible_) {
-    QueueOrShowBubble();
-  } else if (visibility == content::Visibility::HIDDEN) {
-    HideBubble(/*initiated_by_bubble_manager=*/false);
-  }
 }
 
 bool FilledCardInformationBubbleControllerImpl::ShouldReshowOnTabVisible()
@@ -405,11 +391,6 @@ bool FilledCardInformationBubbleControllerImpl::ShouldReshowOnTabVisible()
 bool FilledCardInformationBubbleControllerImpl::ShouldShowPageAction() {
   return ShouldIconBeVisible();
 }
-
-std::optional<actions::ActionId>
-FilledCardInformationBubbleControllerImpl::GetActionIdForPageAction() {
-  return kActionFilledCardInformation;
-}
 #endif  // !BUILDFLAG(IS_ANDROID)
 
 void FilledCardInformationBubbleControllerImpl::DoShowBubble() {
@@ -421,14 +402,9 @@ void FilledCardInformationBubbleControllerImpl::DoShowBubble() {
   // clicks the icon during the delay.
   weak_ptr_factory_.InvalidateWeakPtrs();
 
-  BrowserWindowInterface* browser =
-      GlobalBrowserCollection::GetInstance()->FindBrowserWithTab(
-          web_contents());
-  SetBubbleView(*BrowserWindow::FromBrowser(browser)
-                     ->GetAutofillBubbleHandler()
-                     ->ShowFilledCardInformationBubble(web_contents(), this,
-                                                       is_user_gesture_));
-  DCHECK(bubble_view());
+  SetBubbleView(*GetAutofillBubbleHandler()->ShowFilledCardInformationBubble(
+      web_contents(), this, is_user_gesture_));
+  CHECK(bubble_view(), base::NotFatalUntil::M162);
   bubble_has_been_shown_ = true;
 
   autofill_metrics::LogFilledCardInformationBubbleShown(is_user_gesture_);

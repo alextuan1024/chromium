@@ -12,6 +12,7 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 
 import android.content.Context;
+import android.content.ContextWrapper;
 import android.os.Build;
 import android.view.WindowManager;
 import android.window.InputTransferToken;
@@ -39,12 +40,13 @@ public class SuggestionsOmtInputAnchorUnitTest {
     @Mock private WindowManager mWindowManager;
     @Mock private InputTransferToken mFromToken;
     @Mock private InputTransferToken mToToken;
+    @Mock private Runnable mOnTouchTransferred;
 
     @Before
     public void setUp() {
         Context context = ContextUtils.getApplicationContext();
         ContextUtils.initApplicationContextForTests(
-                new android.content.ContextWrapper(context) {
+                new ContextWrapper(context) {
                     @Override
                     public Object getSystemService(String name) {
                         if (Context.WINDOW_SERVICE.equals(name)) {
@@ -64,11 +66,13 @@ public class SuggestionsOmtInputAnchorUnitTest {
                         .build();
 
         // Execute transfer touch on SDK level prior to Baklava.
-        boolean result = SuggestionsOmtInputAnchor.transferTouch(mFromToken, mToToken);
+        boolean result =
+                SuggestionsOmtInputAnchor.transferTouch(mFromToken, mToToken, mOnTouchTransferred);
 
-        // Verify that execution returns false without calling WindowManager.
+        // Verify that execution returns false without calling WindowManager or callback.
         assertFalse(result);
         verify(mWindowManager, never()).transferTouchGesture(any(), any());
+        verify(mOnTouchTransferred, never()).run();
         watcher.assertExpected();
     }
 
@@ -85,11 +89,13 @@ public class SuggestionsOmtInputAnchorUnitTest {
         doReturn(true).when(mWindowManager).transferTouchGesture(mFromToken, mToToken);
 
         // Execute transfer touch on Baklava.
-        boolean result = SuggestionsOmtInputAnchor.transferTouch(mFromToken, mToToken);
+        boolean result =
+                SuggestionsOmtInputAnchor.transferTouch(mFromToken, mToToken, mOnTouchTransferred);
 
-        // Verify that execution succeeds and delegates to WindowManager.
+        // Verify that execution succeeds and notifies callback.
         assertTrue(result);
         verify(mWindowManager).transferTouchGesture(mFromToken, mToToken);
+        verify(mOnTouchTransferred).run();
         watcher.assertExpected();
     }
 
@@ -106,11 +112,13 @@ public class SuggestionsOmtInputAnchorUnitTest {
         doReturn(false).when(mWindowManager).transferTouchGesture(mFromToken, mToToken);
 
         // Execute transfer touch on Baklava.
-        boolean result = SuggestionsOmtInputAnchor.transferTouch(mFromToken, mToToken);
+        boolean result =
+                SuggestionsOmtInputAnchor.transferTouch(mFromToken, mToToken, mOnTouchTransferred);
 
-        // Verify that failure is propagated back to caller.
+        // Verify that failure is propagated back to caller and callback is not notified.
         assertFalse(result);
         verify(mWindowManager).transferTouchGesture(mFromToken, mToToken);
+        verify(mOnTouchTransferred, never()).run();
         watcher.assertExpected();
     }
 
@@ -119,7 +127,7 @@ public class SuggestionsOmtInputAnchorUnitTest {
     public void transferTouch_nullWindowManagerOnBaklava() {
         Context context = ContextUtils.getApplicationContext();
         ContextUtils.initApplicationContextForTests(
-                new android.content.ContextWrapper(context) {
+                new ContextWrapper(context) {
                     @Override
                     public Object getSystemService(String name) {
                         return null;
@@ -132,9 +140,11 @@ public class SuggestionsOmtInputAnchorUnitTest {
                         .build();
 
         // When WindowManager is unavailable on Baklava, transferTouch should return false cleanly.
-        boolean result = SuggestionsOmtInputAnchor.transferTouch(mFromToken, mToToken);
+        boolean result =
+                SuggestionsOmtInputAnchor.transferTouch(mFromToken, mToToken, mOnTouchTransferred);
 
         assertFalse(result);
+        verify(mOnTouchTransferred, never()).run();
         watcher.assertExpected();
     }
 }

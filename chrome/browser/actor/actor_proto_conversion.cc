@@ -6,15 +6,19 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <iterator>
+#include <map>
 #include <memory>
 #include <optional>
-#include <variant>
+#include <string>
+#include <utility>
 
 #include "base/barrier_closure.h"
 #include "base/base64.h"
+#include "base/containers/flat_set.h"
+#include "base/feature_list.h"
 #include "base/functional/callback.h"
 #include "base/functional/callback_helpers.h"
-#include "base/metrics/histogram_functions.h"
 #include "base/no_destructor.h"
 #include "base/notimplemented.h"
 #include "base/numerics/safe_conversions.h"
@@ -22,23 +26,32 @@
 #include "base/trace_event/trace_event.h"
 #include "base/types/expected.h"
 #include "base/types/expected_macros.h"
+#include "base/unguessable_token.h"
 #include "chrome/browser/actor/actor_keyed_service.h"
 #include "chrome/browser/actor/actor_metrics.h"
+#include "chrome/browser/actor/actor_surface.h"
+#include "chrome/browser/actor/actor_surface_handle.h"
 #include "chrome/browser/actor/actor_task.h"
-#include "chrome/browser/actor/tools/attempt_form_filling_tool_request.h"
-#include "chrome/browser/actor/tools/attempt_login_tool_request.h"
-#include "chrome/browser/actor/tools/attempt_otp_filling_tool_request.h"
+#include "chrome/browser/actor/tool_request_variant.h"
+#include "chrome/browser/actor/tools/autofill/attempt_form_filling/attempt_form_filling_tool_request.h"
 #include "chrome/browser/actor/tools/click_tool_request.h"
 #include "chrome/browser/actor/tools/drag_and_release_tool_request.h"
+#include "chrome/browser/actor/tools/execute_js_tool_request.h"
+#include "chrome/browser/actor/tools/file_upload_tool_request.h"
+#include "chrome/browser/actor/tools/gemini_panel_tool_request.h"
 #include "chrome/browser/actor/tools/history_tool_request.h"
 #include "chrome/browser/actor/tools/load_and_extract_content_tool_request.h"
 #include "chrome/browser/actor/tools/media_control_tool_request.h"
 #include "chrome/browser/actor/tools/move_mouse_tool_request.h"
 #include "chrome/browser/actor/tools/navigate_tool_request.h"
+#include "chrome/browser/actor/tools/one_time_token/attempt_otp_filling_tool_request.h"
+#include "chrome/browser/actor/tools/password_manager/attempt_login/attempt_login_tool_request.h"
+#include "chrome/browser/actor/tools/password_manager/change_password/change_password_tool_request.h"
 #include "chrome/browser/actor/tools/script_tool_request.h"
 #include "chrome/browser/actor/tools/scroll_to_tool_request.h"
 #include "chrome/browser/actor/tools/scroll_tool_request.h"
 #include "chrome/browser/actor/tools/select_tool_request.h"
+#include "chrome/browser/actor/tools/site_based_search_tool_request.h"
 #include "chrome/browser/actor/tools/tab_management_tool_request.h"
 #include "chrome/browser/actor/tools/tool_request.h"
 #include "chrome/browser/actor/tools/translate_page_tool_request.h"
@@ -47,6 +60,8 @@
 #include "chrome/browser/actor/tools/window_management_tool_request.h"
 #include "chrome/browser/page_content_annotations/multi_source_page_context_fetcher.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/tab_list/tab_list_interface.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/common/actor.mojom-shared.h"
 #include "chrome/common/actor/action_result.h"
 #include "chrome/common/actor/actor_constants.h"
@@ -60,27 +75,28 @@
 #include "components/actor/public/mojom/actor_types.mojom.h"
 #include "components/autofill/core/common/autofill_features.h"
 #include "components/optimization_guide/content/browser/page_content_proto_provider.h"
+#include "components/optimization_guide/content/browser/page_content_proto_util.h"
 #include "components/optimization_guide/proto/features/actions_data.pb.h"
 #include "components/optimization_guide/proto/features/common_quality_data.pb.h"
 #include "components/origin_gating/core/task_policy_config.h"
+#include "components/page_content_annotations/content/page_context_fetcher.h"
+#include "components/page_content_annotations/content/page_context_fetcher_metrics.h"
 #include "components/password_manager/core/browser/features/password_features.h"
 #include "components/sessions/core/session_id.h"
+#include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/content_features.h"
 #include "net/base/schemeful_site.h"
-#include "ui/base/window_open_disposition.h"
+#include "third_party/abseil-cpp/absl/container/flat_hash_set.h"
+#include "third_party/abseil-cpp/absl/functional/overload.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 
 #if !BUILDFLAG(SKIP_ANDROID_UNMIGRATED_ACTOR_FILES)
-#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/profile_browser_collection.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #else
-#include "chrome/browser/tab_list/tab_list_interface.h"
-#include "chrome/browser/ui/android/tab_model/tab_model.h"
-#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
-#include "components/tabs/public/tab_interface.h"
 #endif
 
 namespace actor {
@@ -96,12 +112,15 @@ using apc::ActivateWindowAction;
 using apc::AttemptFormFillingAction;
 using apc::AttemptLoginAction;
 using apc::AttemptOtpFillingAction;
+using apc::ChangePasswordAction;
 using apc::ClickAction;
+using apc::ClickToUploadAction;
 using apc::CloseTabAction;
 using apc::CloseWindowAction;
 using apc::CreateTabAction;
 using apc::CreateWindowAction;
 using apc::DragAndReleaseAction;
+using apc::ExecuteJsAction;
 using apc::HistoryBackAction;
 using apc::HistoryForwardAction;
 using apc::LoadAndExtractContentAction;
@@ -115,11 +134,13 @@ using apc::SelectAction;
 using apc::TranslatePageAction;
 using apc::TypeAction;
 using apc::WaitAction;
+using ::optimization_guide::AIPageContentExtractionStatus;
 using ::optimization_guide::DocumentIdentifierUserData;
 using ::page_content_annotations::FetchPageContextError;
 using ::page_content_annotations::FetchPageContextOptions;
 using ::page_content_annotations::FetchPageContextResult;
 using ::page_content_annotations::FetchPageContextResultCallbackArg;
+using ::page_content_annotations::ScreenshotCaptureStatus;
 using ::tabs::TabHandle;
 using ::tabs::TabInterface;
 
@@ -130,13 +151,15 @@ struct PageScopedParams {
   TabHandle tab_handle;
 };
 
+// Returns the actor surface targeted by `action`. The proto's `tab_id` holds an
+// actor surface ID; the field name predates actor surfaces.
 template <class T>
-TabHandle GetTabHandle(const T& action) {
+ActorSurfaceHandle GetActorSurfaceHandle(const T& action) {
   if (!action.has_tab_id()) {
-    return TabHandle::Null();
+    return ActorSurfaceHandle::Null();
   }
 
-  return TabHandle(action.tab_id());
+  return ActorSurfaceHandle::FromRawValue(action.tab_id());
 }
 
 std::optional<PageTarget> ToPageTarget(
@@ -175,9 +198,9 @@ AttemptOtpFillingToolRequest::OtpType ToActorOtpType(
 
 base::expected<std::unique_ptr<ToolRequest>, mojom::ActionResultCode>
 CreateClickRequest(const ClickAction& action) {
-  TabHandle tab_handle = GetTabHandle(action);
+  ActorSurfaceHandle actor_surface_handle = GetActorSurfaceHandle(action);
 
-  if (tab_handle == TabHandle::Null()) {
+  if (actor_surface_handle.is_null()) {
     return base::unexpected(mojom::ActionResultCode::kTabWentAway);
   }
   if (!action.has_target()) {
@@ -236,17 +259,17 @@ CreateClickRequest(const ClickAction& action) {
     return base::unexpected(mojom::ActionResultCode::kArgumentsInvalid);
   }
 
-  return std::make_unique<ClickToolRequest>(tab_handle, target.value(), type,
-                                            count);
+  return std::make_unique<ClickToolRequest>(actor_surface_handle,
+                                            target.value(), type, count);
 }
 
 std::unique_ptr<ToolRequest> CreateTypeRequest(const TypeAction& action) {
   using TypeMode = TypeToolRequest::Mode;
 
-  TabHandle tab_handle = GetTabHandle(action);
+  ActorSurfaceHandle actor_surface_handle = GetActorSurfaceHandle(action);
 
   if (!action.has_target() || !action.has_text() || !action.has_mode() ||
-      !action.has_follow_by_enter() || tab_handle == TabHandle::Null()) {
+      !action.has_follow_by_enter() || actor_surface_handle.is_null()) {
     return nullptr;
   }
 
@@ -275,7 +298,7 @@ std::unique_ptr<ToolRequest> CreateTypeRequest(const TypeAction& action) {
   if (!target.has_value()) {
     return nullptr;
   }
-  return std::make_unique<TypeToolRequest>(tab_handle, target.value(),
+  return std::make_unique<TypeToolRequest>(actor_surface_handle, target.value(),
                                            action.text(),
                                            action.follow_by_enter(), mode);
 }
@@ -284,9 +307,9 @@ base::expected<std::unique_ptr<ToolRequest>, mojom::ActionResultCode>
 CreateScrollRequest(const ScrollAction& action) {
   using Direction = ScrollToolRequest::Direction;
 
-  TabHandle tab_handle = GetTabHandle(action);
+  ActorSurfaceHandle actor_surface_handle = GetActorSurfaceHandle(action);
 
-  if (tab_handle == TabHandle::Null()) {
+  if (actor_surface_handle.is_null()) {
     return base::unexpected(mojom::ActionResultCode::kTabWentAway);
   }
   if (!action.has_direction()) {
@@ -301,13 +324,13 @@ CreateScrollRequest(const ScrollAction& action) {
     target = ToPageTarget(action.target());
   } else {
     // Scroll action may omit a target which means "target the viewport".
-    TabInterface* tab = tab_handle.Get();
-    if (!tab) {
+    ActorSurface* actor_surface = actor_surface_handle.Get();
+    if (!actor_surface) {
       return nullptr;
     }
     std::string document_identifier =
         DocumentIdentifierUserData::GetOrCreateForCurrentDocument(
-            tab->GetContents()->GetPrimaryMainFrame())
+            actor_surface->GetWebContents()->GetPrimaryMainFrame())
             ->serialized_token();
 
     target.emplace(
@@ -343,14 +366,14 @@ CreateScrollRequest(const ScrollAction& action) {
       break;
   }
 
-  return std::make_unique<ScrollToolRequest>(tab_handle, target.value(),
-                                             direction, action.distance());
+  return std::make_unique<ScrollToolRequest>(
+      actor_surface_handle, target.value(), direction, action.distance());
 }
 
 std::unique_ptr<ToolRequest> CreateMoveMouseRequest(
     const MoveMouseAction& action) {
-  TabHandle tab_handle = GetTabHandle(action);
-  if (!action.has_target() || tab_handle == TabHandle::Null()) {
+  ActorSurfaceHandle actor_surface_handle = GetActorSurfaceHandle(action);
+  if (!action.has_target() || actor_surface_handle.is_null()) {
     return nullptr;
   }
 
@@ -359,13 +382,14 @@ std::unique_ptr<ToolRequest> CreateMoveMouseRequest(
     return nullptr;
   }
 
-  return std::make_unique<MoveMouseToolRequest>(tab_handle, target.value());
+  return std::make_unique<MoveMouseToolRequest>(actor_surface_handle,
+                                                target.value());
 }
 
 std::unique_ptr<ToolRequest> CreateScrollToRequest(
     const ScrollToAction& action) {
-  TabHandle tab_handle = GetTabHandle(action);
-  if (!action.has_target() || tab_handle == TabHandle::Null()) {
+  ActorSurfaceHandle actor_surface_handle = GetActorSurfaceHandle(action);
+  if (!action.has_target() || actor_surface_handle.is_null()) {
     return nullptr;
   }
 
@@ -374,15 +398,16 @@ std::unique_ptr<ToolRequest> CreateScrollToRequest(
     return nullptr;
   }
 
-  return std::make_unique<ScrollToToolRequest>(tab_handle, target.value());
+  return std::make_unique<ScrollToToolRequest>(actor_surface_handle,
+                                               target.value());
 }
 
 std::unique_ptr<ToolRequest> CreateDragAndReleaseRequest(
     const DragAndReleaseAction& action) {
-  TabHandle tab_handle = GetTabHandle(action);
+  ActorSurfaceHandle actor_surface_handle = GetActorSurfaceHandle(action);
 
   if (!action.has_from_target() || !action.has_to_target() ||
-      tab_handle == TabHandle::Null()) {
+      actor_surface_handle.is_null()) {
     return nullptr;
   }
 
@@ -397,13 +422,13 @@ std::unique_ptr<ToolRequest> CreateDragAndReleaseRequest(
   }
 
   return std::make_unique<DragAndReleaseToolRequest>(
-      tab_handle, from_target.value(), to_target.value());
+      actor_surface_handle, from_target.value(), to_target.value());
 }
 
 std::unique_ptr<ToolRequest> CreateSelectRequest(const SelectAction& action) {
-  TabHandle tab_handle = GetTabHandle(action);
+  ActorSurfaceHandle actor_surface_handle = GetActorSurfaceHandle(action);
   if (!action.has_value() || !action.has_target() ||
-      tab_handle == TabHandle::Null()) {
+      actor_surface_handle.is_null()) {
     return nullptr;
   }
 
@@ -412,21 +437,27 @@ std::unique_ptr<ToolRequest> CreateSelectRequest(const SelectAction& action) {
     return nullptr;
   }
 
-  return std::make_unique<SelectToolRequest>(tab_handle, target.value(),
-                                             action.value());
+  return std::make_unique<SelectToolRequest>(actor_surface_handle,
+                                             target.value(), action.value());
 }
 
 std::unique_ptr<ToolRequest> CreateNavigateRequest(
     const NavigateAction& action) {
-  TabHandle tab_handle = GetTabHandle(action);
-  if (!action.has_url() || tab_handle == TabHandle::Null()) {
+  if (!action.has_url()) {
     return nullptr;
   }
 
-  return std::make_unique<NavigateToolRequest>(tab_handle, GURL(action.url()));
+  ActorSurfaceHandle actor_surface_handle = GetActorSurfaceHandle(action);
+  // A navigate either names the tab to navigate, or opens a new tab (in the
+  // most recently active window).
+  if (actor_surface_handle.is_null() != action.has_new_surface()) {
+    return nullptr;
+  }
+
+  return std::make_unique<NavigateToolRequest>(
+      actor_surface_handle, GURL(action.url()), action.has_new_surface());
 }
 
-#if !BUILDFLAG(SKIP_ANDROID_UNMIGRATED_ACTOR_FILES)
 std::unique_ptr<ToolRequest> CreateCreateTabRequest(
     const CreateTabAction& action) {
   if (!action.has_window_id()) {
@@ -437,30 +468,30 @@ std::unique_ptr<ToolRequest> CreateCreateTabRequest(
 
   // TODO(bokan): Is the foreground bit always set? If not, should this return
   // an error or default to what? For now we default to foreground.
-  WindowOpenDisposition disposition =
+  ::ui::mojom::WindowOpenDisposition disposition =
       !action.has_foreground() || action.foreground()
-          ? WindowOpenDisposition::NEW_FOREGROUND_TAB
-          : WindowOpenDisposition::NEW_BACKGROUND_TAB;
+          ? ::ui::mojom::WindowOpenDisposition::kNewForegroundTab
+          : ::ui::mojom::WindowOpenDisposition::kNewBackgroundTab;
 
   return std::make_unique<CreateTabToolRequest>(window_id, disposition);
 }
 
 std::unique_ptr<ToolRequest> CreateActivateTabRequest(
     const ActivateTabAction& action) {
-  tabs::TabHandle tab_handle = GetTabHandle(action);
-  if (tab_handle == TabHandle::Null()) {
+  ActorSurfaceHandle actor_surface_handle = GetActorSurfaceHandle(action);
+  if (actor_surface_handle.is_null()) {
     return nullptr;
   }
-  return std::make_unique<ActivateTabToolRequest>(tab_handle);
+  return std::make_unique<ActivateTabToolRequest>(actor_surface_handle);
 }
 
 std::unique_ptr<ToolRequest> CreateCloseTabRequest(
     const CloseTabAction& action) {
-  tabs::TabHandle tab_handle = GetTabHandle(action);
-  if (tab_handle == TabHandle::Null()) {
+  ActorSurfaceHandle actor_surface_handle = GetActorSurfaceHandle(action);
+  if (actor_surface_handle.is_null()) {
     return nullptr;
   }
-  return std::make_unique<CloseTabToolRequest>(tab_handle);
+  return std::make_unique<CloseTabToolRequest>(actor_surface_handle);
 }
 
 std::unique_ptr<ToolRequest> CreateCreateWindowRequest(
@@ -486,6 +517,7 @@ std::unique_ptr<ToolRequest> CreateActivateWindowRequest(
   return std::make_unique<ActivateWindowToolRequest>(action.window_id());
 }
 
+#if !BUILDFLAG(SKIP_ANDROID_UNMIGRATED_ACTOR_FILES)
 std::unique_ptr<ToolRequest> CreateLoadAndExtractContentRequest(
     const LoadAndExtractContentAction& action) {
   if (!base::FeatureList::IsEnabled(
@@ -500,42 +532,83 @@ std::unique_ptr<ToolRequest> CreateLoadAndExtractContentRequest(
 
   return std::make_unique<LoadAndExtractContentToolRequest>(std::move(urls));
 }
+
 #endif  // !BUILDFLAG(SKIP_ANDROID_UNMIGRATED_ACTOR_FILES)
+
+base::expected<std::unique_ptr<ToolRequest>, mojom::ActionResultCode>
+CreateClickToUploadRequest(const ClickToUploadAction& action) {
+  if (!base::FeatureList::IsEnabled(actor::kGlicActorFileUploadTool)) {
+    return base::unexpected(mojom::ActionResultCode::kToolUnknown);
+  }
+
+  ActorSurfaceHandle actor_surface_handle = GetActorSurfaceHandle(action);
+  if (actor_surface_handle.is_null()) {
+    return base::unexpected(mojom::ActionResultCode::kTabWentAway);
+  }
+
+  if (!action.has_target()) {
+    return base::unexpected(mojom::ActionResultCode::kArgumentsInvalid);
+  }
+
+  std::optional<PageTarget> target = ToPageTarget(action.target());
+  if (!target) {
+    return base::unexpected(mojom::ActionResultCode::kArgumentsInvalid);
+  }
+
+  if (action.files().empty()) {
+    return base::unexpected(mojom::ActionResultCode::kFileUploadEmptyFileList);
+  }
+
+  std::vector<FileUploadSource> files;
+  files.reserve(action.files_size());
+  for (const ClickToUploadAction::File& file : action.files()) {
+    // The download URL is the only way to obtain the file contents.
+    if (!file.has_download_url()) {
+      return base::unexpected(mojom::ActionResultCode::kArgumentsInvalid);
+    }
+    files.emplace_back(GURL(file.download_url()), file.file_name());
+  }
+
+  return std::make_unique<FileUploadToolRequest>(actor_surface_handle, *target,
+                                                 std::move(files));
+}
 
 std::unique_ptr<ToolRequest> CreateBackRequest(
     const HistoryBackAction& action) {
-  tabs::TabHandle tab_handle = GetTabHandle(action);
-  if (tab_handle == TabHandle::Null()) {
+  ActorSurfaceHandle actor_surface_handle = GetActorSurfaceHandle(action);
+  if (actor_surface_handle.is_null()) {
     return nullptr;
   }
-  return std::make_unique<HistoryToolRequest>(
-      tab_handle, HistoryToolRequest::Direction::kBack);
+  return std::make_unique<HistoryBackToolRequest>(actor_surface_handle);
 }
 
 std::unique_ptr<ToolRequest> CreateForwardRequest(
     const HistoryForwardAction& action) {
-  tabs::TabHandle tab_handle = GetTabHandle(action);
-  if (tab_handle == TabHandle::Null()) {
+  ActorSurfaceHandle actor_surface_handle = GetActorSurfaceHandle(action);
+  if (actor_surface_handle.is_null()) {
     return nullptr;
   }
-  return std::make_unique<HistoryToolRequest>(
-      tab_handle, HistoryToolRequest::Direction::kForward);
+  return std::make_unique<HistoryForwardToolRequest>(actor_surface_handle);
 }
 
 std::unique_ptr<ToolRequest> CreateWaitRequest(const WaitAction& action) {
   const base::TimeDelta wait_time =
       action.has_wait_time_ms() ? base::Milliseconds(action.wait_time_ms())
                                 : base::Seconds(3);
-  const tabs::TabHandle observe_tab_handle =
-      action.has_observe_tab_id() ? TabHandle(action.observe_tab_id())
-                                  : TabHandle::Null();
-  return std::make_unique<WaitToolRequest>(wait_time, observe_tab_handle);
+  // `observe_tab_id` holds an actor surface ID; the proto field predates actor
+  // surfaces.
+  const ActorSurfaceHandle observe_actor_surface_handle =
+      action.has_observe_tab_id()
+          ? ActorSurfaceHandle::FromRawValue(action.observe_tab_id())
+          : ActorSurfaceHandle::Null();
+  return std::make_unique<WaitToolRequest>(wait_time,
+                                           observe_actor_surface_handle);
 }
 
 std::unique_ptr<ToolRequest> CreateAttemptLoginRequest(
     const AttemptLoginAction& action) {
-  const tabs::TabHandle tab_handle = GetTabHandle(action);
-  if (tab_handle == TabHandle::Null()) {
+  const ActorSurfaceHandle actor_surface_handle = GetActorSurfaceHandle(action);
+  if (actor_surface_handle.is_null()) {
     return nullptr;
   }
 
@@ -570,8 +643,8 @@ std::unique_ptr<ToolRequest> CreateAttemptLoginRequest(
     }
   }
 
-  return std::make_unique<AttemptLoginToolRequest>(tab_handle, password_button,
-                                                   sign_in_with_google_button);
+  return std::make_unique<AttemptLoginToolRequest>(
+      actor_surface_handle, password_button, sign_in_with_google_button);
 }
 
 std::unique_ptr<ToolRequest> CreateAttemptFormFillingRequest(
@@ -580,8 +653,8 @@ std::unique_ptr<ToolRequest> CreateAttemptFormFillingRequest(
     return nullptr;
   }
 
-  const tabs::TabHandle tab_handle = GetTabHandle(action);
-  if (tab_handle == TabHandle::Null()) {
+  const ActorSurfaceHandle actor_surface_handle = GetActorSurfaceHandle(action);
+  if (actor_surface_handle.is_null()) {
     return nullptr;
   }
 
@@ -646,8 +719,9 @@ std::unique_ptr<ToolRequest> CreateAttemptFormFillingRequest(
     requests.push_back(request);
   }
 
-  return std::make_unique<AttemptFormFillingToolRequest>(tab_handle,
-                                                         std::move(requests));
+  return std::make_unique<AttemptFormFillingToolRequest>(
+      actor_surface_handle, std::move(requests),
+      action.credit_card_opaque_token());
 }
 
 std::unique_ptr<ToolRequest> CreateAttemptOtpFillingRequest(
@@ -657,8 +731,8 @@ std::unique_ptr<ToolRequest> CreateAttemptOtpFillingRequest(
     return nullptr;
   }
 
-  const tabs::TabHandle tab_handle = GetTabHandle(action);
-  if (tab_handle == TabHandle::Null()) {
+  const ActorSurfaceHandle actor_surface_handle = GetActorSurfaceHandle(action);
+  if (actor_surface_handle.is_null()) {
     return nullptr;
   }
 
@@ -677,8 +751,66 @@ std::unique_ptr<ToolRequest> CreateAttemptOtpFillingRequest(
   }
 
   return std::make_unique<AttemptOtpFillingToolRequest>(
-      tab_handle, std::move(trigger_fields), action.for_signin(),
+      actor_surface_handle, std::move(trigger_fields), action.for_signin(),
       ToActorOtpType(action.predicted_otp_type()));
+}
+
+std::unique_ptr<ToolRequest> CreateChangePasswordRequest(
+    const ChangePasswordAction& action) {
+  if (!base::FeatureList::IsEnabled(
+          password_manager::features::kChangePasswordTool)) {
+    return nullptr;
+  }
+
+  const ActorSurfaceHandle actor_surface_handle = GetActorSurfaceHandle(action);
+  if (actor_surface_handle.is_null()) {
+    return nullptr;
+  }
+
+  std::optional<PageTarget> current_password_field;
+  if (action.has_current_password_field()) {
+    current_password_field = ToPageTarget(action.current_password_field());
+    if (!current_password_field) {
+      return nullptr;
+    }
+  }
+
+  std::optional<PageTarget> new_password_field;
+  if (action.has_new_password_field()) {
+    new_password_field = ToPageTarget(action.new_password_field());
+    if (!new_password_field) {
+      return nullptr;
+    }
+  }
+
+  std::optional<PageTarget> confirm_new_password_field;
+  if (action.has_confirm_new_password_field()) {
+    confirm_new_password_field =
+        ToPageTarget(action.confirm_new_password_field());
+    if (!confirm_new_password_field) {
+      return nullptr;
+    }
+  }
+
+  // Require at least one password field target otherwise the tool would
+  // either be a no-op or act as a plain click tool.
+  if (!current_password_field && !new_password_field &&
+      !confirm_new_password_field) {
+    return nullptr;
+  }
+
+  std::optional<PageTarget> confirm_button;
+  if (action.has_confirm_button()) {
+    confirm_button = ToPageTarget(action.confirm_button());
+    if (!confirm_button) {
+      return nullptr;
+    }
+  }
+
+  return std::make_unique<ChangePasswordToolRequest>(
+      actor_surface_handle, std::move(current_password_field),
+      std::move(new_password_field), std::move(confirm_new_password_field),
+      std::move(confirm_button));
 }
 
 std::unique_ptr<ToolRequest> CreateScriptToolRequest(
@@ -687,68 +819,91 @@ std::unique_ptr<ToolRequest> CreateScriptToolRequest(
     return nullptr;
   }
 
-  const tabs::TabHandle tab_handle = GetTabHandle(action);
-  if (tab_handle == TabHandle::Null()) {
+  const ActorSurfaceHandle actor_surface_handle = GetActorSurfaceHandle(action);
+  if (actor_surface_handle.is_null()) {
     return nullptr;
   }
 
-  // TODO(khushalsagar): Remove once the callers are setting up this ID
-  // correctly.
-  std::optional<base::UnguessableToken> document_identifier;
-  if (action.has_document_identifier()) {
-    document_identifier = base::UnguessableToken::DeserializeFromString(
-        action.document_identifier().serialized_token());
-  } else {
-    auto* main_rfh = tab_handle.Get()->GetContents()->GetPrimaryMainFrame();
-    document_identifier = optimization_guide::DocumentIdentifierUserData::
-                              GetOrCreateForCurrentDocument(main_rfh)
-                                  ->token();
+  if (!action.has_document_identifier()) {
+    return nullptr;
   }
 
+  std::optional<base::UnguessableToken> document_identifier =
+      base::UnguessableToken::DeserializeFromString(
+          action.document_identifier().serialized_token());
   if (!document_identifier) {
     return nullptr;
   }
 
-  return std::make_unique<ScriptToolRequest>(tab_handle, *document_identifier,
-                                             action.tool_name(),
-                                             action.input_arguments());
+  return std::make_unique<ScriptToolRequest>(
+      actor_surface_handle, *document_identifier, action.tool_name(),
+      action.input_arguments());
+}
+
+base::expected<std::unique_ptr<ToolRequest>, mojom::ActionResultCode>
+CreateExecuteJsRequest(const ExecuteJsAction& action) {
+  if (!base::FeatureList::IsEnabled(actor::kActorExecuteJsTool)) {
+    return base::unexpected(mojom::ActionResultCode::kToolUnknown);
+  }
+
+  const ActorSurfaceHandle actor_surface_handle = GetActorSurfaceHandle(action);
+  if (actor_surface_handle.is_null()) {
+    return base::unexpected(mojom::ActionResultCode::kTabWentAway);
+  }
+
+  if (action.script_code().empty()) {
+    return base::unexpected(mojom::ActionResultCode::kArgumentsInvalid);
+  }
+
+  std::optional<base::UnguessableToken> document_identifier =
+      base::UnguessableToken::DeserializeFromString(
+          action.document_identifier().serialized_token());
+  if (!document_identifier) {
+    return nullptr;
+  }
+
+  base::TimeDelta timeout = kExecuteJsDefaultTimeout;
+  if (action.timeout_ms() > 0) {
+    timeout =
+        std::min(base::Milliseconds(action.timeout_ms()), kExecuteJsMaxTimeout);
+  }
+
+  return std::make_unique<ExecuteJsToolRequest>(
+      actor_surface_handle, *document_identifier, action.script_code(),
+      base::checked_cast<uint32_t>(timeout.InMilliseconds()));
 }
 
 std::unique_ptr<ToolRequest> CreateMediaControlRequest(
     const MediaControlAction& action) {
-  const tabs::TabHandle tab_handle = GetTabHandle(action);
-  if (tab_handle == TabHandle::Null()) {
+  const ActorSurfaceHandle actor_surface_handle = GetActorSurfaceHandle(action);
+  if (actor_surface_handle.is_null()) {
     return nullptr;
   }
 
-  MediaControl media_control;
   switch (action.media_control_action_case()) {
     case MediaControlAction::kPlay:
-      media_control = PlayMedia();
-      break;
+      return std::make_unique<PlayMediaToolRequest>(actor_surface_handle);
     case MediaControlAction::kPause:
-      media_control = PauseMedia();
-      break;
+      return std::make_unique<PauseMediaToolRequest>(actor_surface_handle);
     case MediaControlAction::kSeek:
-      media_control = SeekMedia{.seek_time_milliseconds =
-                                    action.seek().seek_time_milliseconds()};
-      break;
+      return std::make_unique<SeekMediaToolRequest>(
+          actor_surface_handle,
+          base::Milliseconds(action.seek().seek_time_milliseconds()));
     default:
       return nullptr;
   }
-
-  return std::make_unique<MediaControlToolRequest>(tab_handle, media_control);
 }
 
 std::unique_ptr<ToolRequest> CreateTranslatePageRequest(
     const TranslatePageAction& action) {
-  const tabs::TabHandle tab_handle = GetTabHandle(action);
-  if (tab_handle == TabHandle::Null()) {
+  const ActorSurfaceHandle actor_surface_handle = GetActorSurfaceHandle(action);
+  if (actor_surface_handle.is_null()) {
     return nullptr;
   }
 
   return std::make_unique<TranslatePageToolRequest>(
-      tab_handle, action.has_target_language() ? action.target_language() : "");
+      actor_surface_handle,
+      action.has_target_language() ? action.target_language() : "");
 }
 
 class ActorJournalFetchPageProgressListener
@@ -846,7 +1001,6 @@ CreateToolRequest(const optimization_guide::proto::Action& action) {
       const WaitAction& wait_action = action.wait();
       return CreateWaitRequest(wait_action);
     }
-#if !BUILDFLAG(SKIP_ANDROID_UNMIGRATED_ACTOR_FILES)
     case optimization_guide::proto::Action::kCreateTab: {
       const CreateTabAction& create_tab_action = action.create_tab();
       return CreateCreateTabRequest(create_tab_action);
@@ -859,7 +1013,6 @@ CreateToolRequest(const optimization_guide::proto::Action& action) {
       const ActivateTabAction& activate_tab_action = action.activate_tab();
       return CreateActivateTabRequest(activate_tab_action);
     }
-#endif  // !BUILDFLAG(SKIP_ANDROID_UNMIGRATED_ACTOR_FILES)
     case optimization_guide::proto::Action::kAttemptLogin: {
       const AttemptLoginAction& attempt_login_action = action.attempt_login();
       return CreateAttemptLoginRequest(attempt_login_action);
@@ -874,9 +1027,18 @@ CreateToolRequest(const optimization_guide::proto::Action& action) {
           action.attempt_otp_filling();
       return CreateAttemptOtpFillingRequest(attempt_otp_fill_action);
     }
+    case optimization_guide::proto::Action::kChangePassword: {
+      const ChangePasswordAction& change_password_action =
+          action.change_password();
+      return CreateChangePasswordRequest(change_password_action);
+    }
     case optimization_guide::proto::Action::kScriptTool: {
       const ScriptToolAction& script_tool_action = action.script_tool();
       return CreateScriptToolRequest(script_tool_action);
+    }
+    case optimization_guide::proto::Action::kExecuteJs: {
+      const ExecuteJsAction& execute_js_action = action.execute_js();
+      return CreateExecuteJsRequest(execute_js_action);
     }
     case optimization_guide::proto::Action::kScrollTo: {
       const ScrollToAction& scroll_to_action = action.scroll_to();
@@ -891,7 +1053,6 @@ CreateToolRequest(const optimization_guide::proto::Action& action) {
           action.translate_page();
       return CreateTranslatePageRequest(translate_page_action);
     }
-#if !BUILDFLAG(SKIP_ANDROID_UNMIGRATED_ACTOR_FILES)
     case optimization_guide::proto::Action::kCreateWindow: {
       const CreateWindowAction& create_window_action = action.create_window();
       return CreateCreateWindowRequest(create_window_action);
@@ -905,6 +1066,7 @@ CreateToolRequest(const optimization_guide::proto::Action& action) {
           action.activate_window();
       return CreateActivateWindowRequest(activate_window_action);
     }
+#if !BUILDFLAG(SKIP_ANDROID_UNMIGRATED_ACTOR_FILES)
     case optimization_guide::proto::Action::kLoadAndExtractContent: {
       const LoadAndExtractContentAction& load_and_extract_content_action =
           action.load_and_extract_content();
@@ -912,6 +1074,11 @@ CreateToolRequest(const optimization_guide::proto::Action& action) {
           load_and_extract_content_action);
     }
 #endif  // !BUILDFLAG(SKIP_ANDROID_UNMIGRATED_ACTOR_FILES)
+    case optimization_guide::proto::Action::kClickToUpload: {
+      const ClickToUploadAction& click_to_upload_action =
+          action.click_to_upload();
+      return CreateClickToUploadRequest(click_to_upload_action);
+    }
     case optimization_guide::proto::Action::kYieldToUser:
       NOTIMPLEMENTED();
       break;
@@ -925,6 +1092,91 @@ CreateToolRequest(const optimization_guide::proto::Action& action) {
 
   return base::unexpected(mojom::ActionResultCode::kArgumentsInvalid);
 }
+
+using ActuationCapability = apc::RuleMetadata::ActuationCapability;
+
+// A callable that maps a `T` tool request to `kCapability`. Used to build
+// `kGetCapabilityFn` below.
+template <typename T, ActuationCapability kCapability>
+constexpr auto ToCapability =
+    [](const T&) -> ActuationCapability { return kCapability; };
+
+// `CAPABILITY_UNKNOWN` is never added to a rule's `allowed_tools`, so it is
+// never allowed by a `TaskPolicyConfig`.
+template <typename T>
+constexpr auto ToUnknown =
+    ToCapability<T, apc::RuleMetadata::CAPABILITY_UNKNOWN>;
+
+// Maps each `ToolRequestVariant` alternative to its `ActuationCapability`. The
+// build flags mirror `ToolRequestVariant`, which omits those types on Android.
+constexpr absl::Overload kGetCapabilityFn{
+    ToCapability<ActivateTabToolRequest,
+                 apc::RuleMetadata::CAPABILITY_ACTIVATE_TAB>,
+    ToCapability<AttemptLoginToolRequest,
+                 apc::RuleMetadata::CAPABILITY_ATTEMPT_LOGIN>,
+    ToCapability<AttemptFormFillingToolRequest,
+                 apc::RuleMetadata::CAPABILITY_ATTEMPT_FORM_FILLING>,
+    ToCapability<AttemptOtpFillingToolRequest,
+                 apc::RuleMetadata::CAPABILITY_ATTEMPT_OTP_FILLING>,
+    ToCapability<ChangePasswordToolRequest,
+                 apc::RuleMetadata::CAPABILITY_CHANGE_PASSWORD>,
+    ToCapability<ClickToolRequest, apc::RuleMetadata::CAPABILITY_CLICK>,
+    ToCapability<CloseTabToolRequest, apc::RuleMetadata::CAPABILITY_CLOSE_TAB>,
+    ToCapability<CreateTabToolRequest,
+                 apc::RuleMetadata::CAPABILITY_CREATE_TAB>,
+    ToCapability<DragAndReleaseToolRequest,
+                 apc::RuleMetadata::CAPABILITY_DRAG_AND_RELEASE>,
+    ToCapability<ExecuteJsToolRequest,
+                 apc::RuleMetadata::CAPABILITY_EXECUTE_JS>,
+    ToCapability<FileUploadToolRequest,
+                 apc::RuleMetadata::CAPABILITY_CLICK_TO_UPLOAD>,
+    ToCapability<HistoryBackToolRequest, apc::RuleMetadata::CAPABILITY_BACK>,
+    ToCapability<HistoryForwardToolRequest,
+                 apc::RuleMetadata::CAPABILITY_FORWARD>,
+    ToCapability<MoveMouseToolRequest,
+                 apc::RuleMetadata::CAPABILITY_MOVE_MOUSE>,
+    ToCapability<NavigateToolRequest, apc::RuleMetadata::CAPABILITY_NAVIGATE>,
+    ToCapability<PauseMediaToolRequest,
+                 apc::RuleMetadata::CAPABILITY_MEDIA_CONTROL>,
+    ToCapability<PlayMediaToolRequest,
+                 apc::RuleMetadata::CAPABILITY_MEDIA_CONTROL>,
+    ToCapability<ScriptToolRequest, apc::RuleMetadata::CAPABILITY_SCRIPT_TOOL>,
+    ToCapability<ScrollToolRequest, apc::RuleMetadata::CAPABILITY_SCROLL>,
+    ToCapability<ScrollToToolRequest, apc::RuleMetadata::CAPABILITY_SCROLL_TO>,
+    ToCapability<SeekMediaToolRequest,
+                 apc::RuleMetadata::CAPABILITY_MEDIA_CONTROL>,
+    ToCapability<SelectToolRequest, apc::RuleMetadata::CAPABILITY_SELECT>,
+    ToCapability<TranslatePageToolRequest,
+                 apc::RuleMetadata::CAPABILITY_TRANSLATE_PAGE>,
+    ToCapability<TypeToolRequest, apc::RuleMetadata::CAPABILITY_TYPE>,
+    ToCapability<WaitToolRequest, apc::RuleMetadata::CAPABILITY_WAIT>,
+    ToCapability<ActivateWindowToolRequest,
+                 apc::RuleMetadata::CAPABILITY_ACTIVATE_WINDOW>,
+    ToCapability<CloseWindowToolRequest,
+                 apc::RuleMetadata::CAPABILITY_CLOSE_WINDOW>,
+    ToCapability<CreateWindowToolRequest,
+                 apc::RuleMetadata::CAPABILITY_CREATE_WINDOW>,
+#if !BUILDFLAG(SKIP_ANDROID_UNMIGRATED_ACTOR_FILES)
+    ToCapability<LoadAndExtractContentToolRequest,
+                 apc::RuleMetadata::CAPABILITY_LOAD_AND_EXTRACT_CONTENT>,
+#endif  // !BUILDFLAG(SKIP_ANDROID_UNMIGRATED_ACTOR_FILES)
+
+    // Tools that don't have an `ActuationCapability` in the proto yet.
+    ToUnknown<AddBookmarkToolRequest>,
+    ToUnknown<CloseGeminiPanelToolRequest>,
+    ToUnknown<EnterFullscreenToolRequest>,
+    ToUnknown<ExitFullscreenToolRequest>,
+    ToUnknown<FindAndHighlightToolRequest>,
+    ToUnknown<OpenKnownPageToolRequest>,
+    ToUnknown<OpenUrlToolRequest>,
+    ToUnknown<PerformSearchToolRequest>,
+    ToUnknown<PromptGeminiPanelToolRequest>,
+    ToUnknown<ReloadPageToolRequest>,
+    ToUnknown<RemoveBookmarkToolRequest>,
+    ToUnknown<ScrollPageToolRequest>,
+    ToUnknown<SiteBasedSearchToolRequest>,
+    ToUnknown<SwitchTabToolRequest>,
+};
 
 }  // namespace
 
@@ -960,6 +1212,119 @@ bool ValidateActionsAreScriptTools(
       return false;
     }
   }
+  return true;
+}
+
+namespace {
+
+tabs::TabInterface* FindTabForDocumentIdentifier(
+    Profile& profile,
+    std::string_view token,
+    tabs::TabInterface* active_tab) {
+  if (token.empty() ||
+      !base::UnguessableToken::DeserializeFromString(token).has_value()) {
+    return nullptr;
+  }
+
+  if (active_tab && active_tab->GetContents() &&
+      active_tab->GetContents()->GetBrowserContext() == &profile &&
+      optimization_guide::GetRenderFrameForDocumentIdentifier(
+          *active_tab->GetContents(), token)) {
+    return active_tab;
+  }
+
+  tabs::TabInterface* matching_tab = nullptr;
+  auto check_browser = [&token, &matching_tab,
+                        active_tab](BrowserWindowInterface* browser) {
+    TabListInterface* tab_list = TabListInterface::From(browser);
+    if (!tab_list) {
+      return true;
+    }
+    const std::vector<tabs::TabInterface*> tabs = tab_list->GetAllTabs();
+    auto it = std::ranges::find_if(tabs, [&](tabs::TabInterface* tab) {
+      return tab && tab != active_tab && tab->GetContents() &&
+             optimization_guide::GetRenderFrameForDocumentIdentifier(
+                 *tab->GetContents(), token);
+    });
+    if (it != tabs.end()) {
+      matching_tab = *it;
+      return false;
+    }
+    return true;
+  };
+
+#if !BUILDFLAG(SKIP_ANDROID_UNMIGRATED_ACTOR_FILES)
+  if (auto* browser_collection =
+          ProfileBrowserCollection::GetForProfile(&profile)) {
+    browser_collection->ForEach(check_browser,
+                                BrowserCollection::Order::kActivation);
+  }
+#else
+  GlobalBrowserCollection::GetInstance()->ForEach(
+      [&profile, &check_browser](BrowserWindowInterface* browser) {
+        if (browser->GetProfile() != &profile) {
+          return true;
+        }
+        return check_browser(browser);
+      },
+      BrowserCollection::Order::kActivation);
+#endif
+  return matching_tab;
+}
+
+}  // namespace
+
+// Normally tab IDs should be pre-populated before action execution; this
+// function exists primarily to support the Glic experimental triggering path
+// where callers provide document identifiers instead of tab IDs.
+// TODO(crbug.com/541366310): Remove or consolidate once callers populate tab
+// IDs directly.
+bool PopulateTabIdsForScriptToolActions(
+    Profile& profile,
+    optimization_guide::proto::Actions& actions,
+    tabs::TabInterface* active_tab) {
+  CHECK(base::FeatureList::IsEnabled(
+      features::kGlicExperimentalTriggeringScriptTools));
+  std::map<std::string, tabs::TabInterface*, std::less<>> resolved_tabs;
+
+  for (auto& action : *actions.mutable_actions()) {
+    if (action.action_case() !=
+        optimization_guide::proto::Action::kScriptTool) {
+      continue;
+    }
+
+    auto& script_tool = *action.mutable_script_tool();
+    if (script_tool.has_tab_id() && script_tool.tab_id() > 0) {
+      continue;
+    }
+
+    if (!script_tool.has_document_identifier() ||
+        script_tool.document_identifier().serialized_token().empty()) {
+      return false;
+    }
+
+    const std::string& doc_token =
+        script_tool.document_identifier().serialized_token();
+
+    auto [it, inserted] = resolved_tabs.try_emplace(doc_token, nullptr);
+    if (inserted) {
+      it->second = FindTabForDocumentIdentifier(profile, doc_token, active_tab);
+    }
+    tabs::TabInterface* tab = it->second;
+
+    if (!tab) {
+      return false;
+    }
+
+    // `tab_id` holds an actor surface ID.
+    ActorSurfaceHandle actor_surface_handle =
+        ActorSurfaceHandle::From(tab->GetHandle());
+    if (actor_surface_handle.is_null()) {
+      return false;
+    }
+    script_tool.set_tab_id(actor_surface_handle.raw_value());
+  }
+
   return true;
 }
 
@@ -1072,14 +1437,16 @@ ConvertLocation(const optimization_guide::proto::Location& location) {
 
 base::expected<origin_gating::TaskPolicyConfig::Rule, std::string_view>
 ConvertRule(const optimization_guide::proto::LocationRule& location_rule) {
-  std::vector<origin_gating::TaskPolicyConfig::Location> navigation_sources;
+  absl::flat_hash_set<origin_gating::TaskPolicyConfig::Location>
+      navigation_sources;
+  navigation_sources.reserve(location_rule.navigation_sources_size());
   for (const auto& nav_source : location_rule.navigation_sources()) {
     if (!nav_source.has_source()) {
       return base::unexpected("NavigationSource has no source location set");
     }
     ASSIGN_OR_RETURN(origin_gating::TaskPolicyConfig::Location source,
                      ConvertLocation(nav_source.source()));
-    navigation_sources.emplace_back(source);
+    navigation_sources.insert(source);
   }
   origin_gating::TaskPolicyConfig::Rule::ResourceSet resources;
   for (const auto& resource : location_rule.metadata().accessible_resources()) {
@@ -1092,19 +1459,9 @@ ConvertRule(const optimization_guide::proto::LocationRule& location_rule) {
         break;
     }
   }
-  origin_gating::TaskPolicyConfig::Rule::CapabilitySet capabilities;
-  for (const auto& capability : location_rule.metadata().capabilities()) {
-    switch (capability) {
-      case optimization_guide::proto::RuleMetadata::CAPABILITY_ALL:
-        capabilities.Put(
-            origin_gating::TaskPolicyConfig::Rule::Capability::kAll);
-        break;
-      case optimization_guide::proto::RuleMetadata::CAPABILITY_UNKNOWN:
-        break;
-    }
-  }
-  return origin_gating::TaskPolicyConfig::Rule(std::move(navigation_sources),
-                                               resources, capabilities);
+  return origin_gating::TaskPolicyConfig::Rule(
+      std::move(navigation_sources), resources,
+      ConvertCapabilitiesToTools(location_rule.metadata()));
 }
 
 apc::TabObservation::TabObservationResult ToTabObservationResult(
@@ -1122,7 +1479,7 @@ apc::TabObservation::TabObservationResult ToTabObservationResult(
 }
 
 void FetchCallback(
-    TabHandle tab_handle,
+    ActorSurfaceHandle actor_surface_handle,
     base::WeakPtr<Profile> profile,
     TaskId task_id,
     base::RepeatingClosure barrier,
@@ -1142,7 +1499,7 @@ void FetchCallback(
   }
 
   auto* actor_service = actor::ActorKeyedService::Get(profile.get());
-  TabInterface* const tab = tab_handle.Get();
+  ActorSurface* const actor_surface = actor_surface_handle.Get();
 
   if (!GetTabObservationResultOverrideForTesting().is_null()) {
     // TODO(bokan): result might not have a value in which case this CHECKs (but
@@ -1152,7 +1509,7 @@ void FetchCallback(
     return;
   }
 
-  if (!tab || !tab->GetContents()) {
+  if (!actor_surface || !actor_surface->GetWebContents()) {
     actor_service->GetJournal().Log(GURL(), task_id, "FetchCallback",
                                     JournalDetailsBuilder()
                                         .Add("tabId", tab_observation->id())
@@ -1163,7 +1520,7 @@ void FetchCallback(
     return;
   }
 
-  if (tab->GetContents()->IsCrashed()) {
+  if (actor_surface->GetWebContents()->IsCrashed()) {
     actor_service->GetJournal().Log(GURL(), task_id, "FetchCallback",
                                     JournalDetailsBuilder()
                                         .Add("tabId", tab_observation->id())
@@ -1189,17 +1546,27 @@ void FetchCallback(
 
   FetchPageContextResult& fetch_result = **result;
   bool has_apc = fetch_result.annotated_page_content_result.has_value();
+  RecordPageContextApcStatus(
+      has_apc ? optimization_guide::AIPageContentExtractionStatus::kSuccess
+              : fetch_result.annotated_page_content_result.error().status);
   tab_observation->set_annotated_page_content_result(
       has_apc ? apc::TabObservation::ANNOTATED_PAGE_CONTENT_OK
-              : apc::TabObservation::ANNOTATED_PAGE_CONTENT_ERROR);
+              : ToAnnotatedPageContentResult(
+                    fetch_result.annotated_page_content_result.error().status));
 
   bool has_screenshot = fetch_result.screenshot_result.has_value();
   bool screenshot_required =
       !base::FeatureList::IsEnabled(actor::kGlicActorSkipScreenshot);
+  if (screenshot_required) {
+    RecordPageContextScreenshotStatus(
+        has_screenshot
+            ? page_content_annotations::ScreenshotCaptureStatus::kSuccess
+            : fetch_result.screenshot_result.error().status);
+  }
   tab_observation->set_screenshot_result(
       has_screenshot || !screenshot_required
           ? apc::TabObservation::SCREENSHOT_OK
-          : apc::TabObservation::SCREENSHOT_ERROR);
+          : ToScreenshotResult(fetch_result.screenshot_result.error().status));
 
   // Context for actor observations should always have an APC. It should also
   // have a screenshot unless it was skipped.
@@ -1261,6 +1628,49 @@ TabObservationResultOverrideCallback&
 GetTabObservationResultOverrideForTesting() {
   static base::NoDestructor<TabObservationResultOverrideCallback> callback;
   return *callback;
+}
+
+apc::TabObservation::AnnotatedPageContentResult ToAnnotatedPageContentResult(
+    AIPageContentExtractionStatus status) {
+  switch (status) {
+    case AIPageContentExtractionStatus::kSuccess:
+      return apc::TabObservation::ANNOTATED_PAGE_CONTENT_OK;
+    case AIPageContentExtractionStatus::kMainFrameTimeout:
+      return apc::TabObservation::ANNOTATED_PAGE_CONTENT_TIMEOUT;
+    case AIPageContentExtractionStatus::kUnknown:
+    case AIPageContentExtractionStatus::kMainFrameNotLive:
+    case AIPageContentExtractionStatus::
+        kMainFrameEmptyOrDisconnectedRendererResponse:
+    case AIPageContentExtractionStatus::kMainFrameRedacted:
+    case AIPageContentExtractionStatus::kMainFrameTornDown:
+    case AIPageContentExtractionStatus::kAttributeTypeMismatch:
+    case AIPageContentExtractionStatus::kMissingIframeData:
+    case AIPageContentExtractionStatus::kSubframeTornDown:
+    case AIPageContentExtractionStatus::kIframeNotChildOfCurrentFrame:
+    case AIPageContentExtractionStatus::kRemoteFrameHasChildNodes:
+    case AIPageContentExtractionStatus::kRemoteFrameHasInlineContent:
+    case AIPageContentExtractionStatus::kLocalFrameMissingContent:
+    case AIPageContentExtractionStatus::kUnexpectedIframeInPopup:
+      return apc::TabObservation::ANNOTATED_PAGE_CONTENT_ERROR;
+  }
+}
+
+apc::TabObservation::ScreenshotResult ToScreenshotResult(
+    ScreenshotCaptureStatus status) {
+  switch (status) {
+    case ScreenshotCaptureStatus::kSuccess:
+      return apc::TabObservation::SCREENSHOT_OK;
+    case ScreenshotCaptureStatus::kTimeout:
+      return apc::TabObservation::SCREENSHOT_TIMEOUT;
+    case ScreenshotCaptureStatus::kUnknown:
+    case ScreenshotCaptureStatus::kNoViewOrSurface:
+    case ScreenshotCaptureStatus::kCopyFromSurfaceError:
+    case ScreenshotCaptureStatus::kPaintPreviewError:
+    case ScreenshotCaptureStatus::kRedactionError:
+    case ScreenshotCaptureStatus::kEncodingError:
+    case ScreenshotCaptureStatus::kBlockedByEnterprisePolicy:
+      return apc::TabObservation::SCREENSHOT_ERROR;
+  }
 }
 
 std::optional<
@@ -1386,6 +1796,7 @@ void BuildActionsResultWithObservations(
     response->set_index_of_failed_action(*index_of_failed_action);
   }
   CopyScriptToolResults(*response, action_results);
+  CopyExecuteJsResults(*response, action_results);
 
   for (const auto& action_result : action_results) {
     if (IsOk(*action_result.result)) {
@@ -1462,14 +1873,13 @@ void BuildActionsResultWithObservations(
         // Treat the first window as active.
         window_observation->set_active(response->windows_size() == 1);
 
-        if (TabModel* tab_model =
-                static_cast<TabModel*>(TabListInterface::From(browser))) {
-          if (tabs::TabInterface* active_tab = tab_model->GetActiveTab()) {
+        if (TabListInterface* tab_list = TabListInterface::From(browser)) {
+          if (tabs::TabInterface* active_tab = tab_list->GetActiveTab()) {
             window_observation->set_activated_tab_id(
                 active_tab->GetHandle().raw_value());
           }
 
-          for (const tabs::TabInterface* tab : tab_model->GetAllTabs()) {
+          for (const tabs::TabInterface* tab : tab_list->GetAllTabs()) {
             window_observation->add_tab_ids(tab->GetHandle().raw_value());
           }
         }
@@ -1479,44 +1889,52 @@ void BuildActionsResultWithObservations(
       BrowserCollection::Order::kActivation);
 #endif
 
-  absl::flat_hash_map<tabs::TabInterface*, apc::TabObservation*> tabs_to_fetch;
+  absl::flat_hash_map<ActorSurfaceHandle, apc::TabObservation*> tabs_to_fetch;
 
-  ActorTask::TabHandleSet last_acted_tabs = task.GetLastActedTabs();
-  for (const tabs::TabHandle& handle : last_acted_tabs) {
+  const ActorTask::ActorSurfaceHandleSet last_acted_actor_surfaces =
+      task.GetLastActedActorSurfaces();
+  for (ActorSurfaceHandle actor_surface_handle : last_acted_actor_surfaces) {
     // Include a TabObservation entry for acted on tabs. If the tab no longer
     // exists or the fetch context failed, the observation will be empty.
     // TODO(crbug.com/434263095): We should probably avoid capturing
     // observations if an action fails with kUrlBlocked. That might be better
     // implemented by not putting the tab into the LastActedTabs set.
-    TabInterface* tab = handle.Get();
-    if (!tab) {
+    // TODO(b/565820285): Decide how to handle headless surfaces here: observe
+    // them, or skip them until headless observation is supported.
+    TabHandle tab_handle = actor_surface_handle.GetTabHandle();
+    if (tab_handle == TabHandle::Null()) {
+      continue;
+    }
+
+    ActorSurface* actor_surface = actor_surface_handle.Get();
+    if (!actor_surface) {
       apc::TabObservation* tab_observation = response->add_tabs();
-      tab_observation->set_id(handle.raw_value());
+      tab_observation->set_id(tab_handle.raw_value());
       tab_observation->set_result(
           apc::TabObservation::TAB_OBSERVATION_TAB_WENT_AWAY);
       actor_service->GetJournal().Log(GURL(), task.id(), "TabObservationFailed",
                                       JournalDetailsBuilder()
-                                          .Add("tabId", handle.raw_value())
+                                          .Add("tabId", tab_handle.raw_value())
                                           .AddError("TabWentAway")
                                           .Build());
-    } else if (!tab->GetContents()
+    } else if (!actor_surface->GetWebContents()
                     ->GetPrimaryMainFrame()
                     ->IsRenderFrameLive()) {
       // TODO(crbug.com/392167142): We should also handle the crashed subframes.
       // However we don't want unrelated subframe crash to terminate the task.
       apc::TabObservation* tab_observation = response->add_tabs();
-      tab_observation->set_id(handle.raw_value());
+      tab_observation->set_id(tab_handle.raw_value());
       tab_observation->set_result(
           apc::TabObservation::TAB_OBSERVATION_PAGE_CRASHED);
       actor_service->GetJournal().Log(GURL(), task.id(), "TabObservationFailed",
                                       JournalDetailsBuilder()
-                                          .Add("tabId", handle.raw_value())
+                                          .Add("tabId", tab_handle.raw_value())
                                           .AddError("Page crashed")
                                           .Build());
     } else {
       apc::TabObservation* tab_observation = response->add_tabs();
-      tabs_to_fetch.emplace(tab, tab_observation);
-      tab_observation->set_id(tab->GetHandle().raw_value());
+      tabs_to_fetch.emplace(actor_surface_handle, tab_observation);
+      tab_observation->set_id(tab_handle.raw_value());
       if (skip_async_observation_information) {
         tab_observation->set_result(apc::TabObservation::TAB_OBSERVATION_OK);
       }
@@ -1533,8 +1951,8 @@ void BuildActionsResultWithObservations(
     // because they're intended to be used only from the LoadAndExtractTool,
     // which doesn't add any tabs to the task's set, and is always the only
     // action in the task. Still, if there is overlap, use the new observation.
-    tabs::TabHandle handle(tab_observation.id());
-    if (last_acted_tabs.contains(handle)) {
+    if (last_acted_actor_surfaces.contains(
+            ActorSurfaceHandle::From(TabHandle(tab_observation.id())))) {
       continue;
     }
 
@@ -1544,7 +1962,7 @@ void BuildActionsResultWithObservations(
   actor_service->GetJournal().Log(
       GURL(), task.id(), "Observing Tabs",
       JournalDetailsBuilder()
-          .Add("tab_observations", last_acted_tabs.size())
+          .Add("tab_observations", last_acted_actor_surfaces.size())
           .Add("tabs_to_fetch", tabs_to_fetch.size())
           .Build());
 
@@ -1563,15 +1981,16 @@ void BuildActionsResultWithObservations(
                      task.id(), skip_async_observation_information,
                      screenshot_collection_options, std::move(response),
                      std::move(journal_entry)));
-  for (auto& [tab, tab_observation] : tabs_to_fetch) {
+  for (auto& [actor_surface_handle, tab_observation] : tabs_to_fetch) {
     // tab_observation can be Unretained because the underlying APC is owned
     // by the barrier which is ref-counted.
-    actor_service->RequestTabObservation(
-        *tab, task.id(), screenshot_collection_options,
-        base::BindOnce(FetchCallback, tab->GetHandle(), profile->GetWeakPtr(),
-                       task.id(), barrier, base::Unretained(tab_observation),
-                       action_results, actions_start_time,
-                       base::TimeTicks::Now(), base::Unretained(latency_info)));
+    actor_service->RequestActorSurfaceObservation(
+        actor_surface_handle, task.id(), screenshot_collection_options,
+        base::BindOnce(FetchCallback, actor_surface_handle,
+                       profile->GetWeakPtr(), task.id(), barrier,
+                       base::Unretained(tab_observation), action_results,
+                       actions_start_time, base::TimeTicks::Now(),
+                       base::Unretained(latency_info)));
   }
 }
 
@@ -1606,6 +2025,50 @@ CreateActorJournalFetchPageProgressListener(
                                                                  task_id);
 }
 
+absl::flat_hash_set<origin_gating::ClientTool> GetAllActorTools() {
+  using optimization_guide::proto::RuleMetadata;
+  absl::flat_hash_set<origin_gating::ClientTool> tools;
+  for (int i = RuleMetadata::ActuationCapability_MIN;
+       i <= RuleMetadata::ActuationCapability_MAX; ++i) {
+    if (!RuleMetadata::ActuationCapability_IsValid(i)) {
+      continue;
+    }
+    auto cap = static_cast<ActuationCapability>(i);
+    if (cap == RuleMetadata::CAPABILITY_UNKNOWN ||
+        cap == RuleMetadata::CAPABILITY_ALL) {
+      continue;
+    }
+    tools.insert(origin_gating::ClientTool(cap));
+  }
+  return tools;
+}
+
+absl::flat_hash_set<origin_gating::ClientTool> ConvertCapabilitiesToTools(
+    const optimization_guide::proto::RuleMetadata& metadata) {
+  auto capabilities = base::MakeFlatSet<ActuationCapability>(
+      metadata.capabilities(), std::less<>(), [](int capability) {
+        if (!apc::RuleMetadata::ActuationCapability_IsValid(capability)) {
+          VLOG(1) << "Ignoring unknown actuation capability: " << capability;
+          return apc::RuleMetadata::CAPABILITY_UNKNOWN;
+        }
+        return static_cast<ActuationCapability>(capability);
+      });
+  if (capabilities.contains(apc::RuleMetadata::CAPABILITY_ALL)) {
+    return GetAllActorTools();
+  }
+  capabilities.erase(apc::RuleMetadata::CAPABILITY_UNKNOWN);
+  absl::flat_hash_set<origin_gating::ClientTool> tools;
+  std::ranges::transform(
+      capabilities, std::inserter(tools, tools.end()),
+      [](ActuationCapability cap) { return origin_gating::ClientTool(cap); });
+  return tools;
+}
+
+origin_gating::ClientTool GetClientToolForRequest(const ToolRequest& request) {
+  return origin_gating::ClientTool(
+      std::visit(kGetCapabilityFn, ConvertToVariant(request)));
+}
+
 origin_gating::TaskPolicyConfig ConvertAgentContainerConfig(
     const optimization_guide::proto::AgentContainerConfig& config) {
   origin_gating::TaskPolicyConfig::LocationRules location_rules;
@@ -1630,15 +2093,19 @@ origin_gating::TaskPolicyConfig ConvertAgentContainerConfig(
       VLOG(1) << "Duplicate rule for " << destination.ToDebugString();
     }
   }
-  return origin_gating::TaskPolicyConfig(std::move(location_rules));
+  return origin_gating::TaskPolicyConfig(
+      /*location_rules=*/std::move(location_rules),
+      /*navigate_tool=*/origin_gating::ClientTool(
+          apc::RuleMetadata::CAPABILITY_NAVIGATE));
 }
 
-std::optional<mojom::ActionResultCode> MaybeGetErrorCodeForTab(
-    tabs::TabInterface* tab_interface) {
-  if (!tab_interface || !tab_interface->GetContents() ||
-      tab_interface->GetContents()->IsBeingDestroyed()) {
+std::optional<mojom::ActionResultCode> MaybeGetErrorCodeForActorSurface(
+    ActorSurface* actor_surface) {
+  content::WebContents* contents =
+      actor_surface ? actor_surface->GetWebContents() : nullptr;
+  if (!contents || contents->IsBeingDestroyed()) {
     return mojom::ActionResultCode::kTabWentAway;
-  } else if (tab_interface->GetContents()->IsCrashed()) {
+  } else if (contents->IsCrashed()) {
     return mojom::ActionResultCode::kRendererCrashed;
   }
   return std::nullopt;

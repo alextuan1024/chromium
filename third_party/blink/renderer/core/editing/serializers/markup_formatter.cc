@@ -27,6 +27,7 @@
 
 #include "third_party/blink/renderer/core/editing/serializers/markup_formatter.h"
 
+#include "base/memory/raw_ptr_exclusion.h"
 #include "third_party/blink/renderer/core/dom/cdata_section.h"
 #include "third_party/blink/renderer/core/dom/comment.h"
 #include "third_party/blink/renderer/core/dom/document.h"
@@ -52,7 +53,8 @@ namespace {
 
 struct EntityDescription {
   UChar entity;
-  const std::string& reference;
+  // RAW_PTR_EXCLUSION: #global-scope
+  RAW_PTR_EXCLUSION const std::string& reference;
   EntityMask mask;
 };
 
@@ -164,23 +166,27 @@ MarkupFormatter::MarkupFormatter(ResolveUrls resolve_urls_method,
 
 String MarkupFormatter::ResolveUrlIfNeeded(const Element& element,
                                            const Attribute& attribute) const {
-  String value = attribute.Value();
-  switch (resolve_urls_method_) {
-    case ResolveUrls::kAll:
-      if (element.IsURLAttribute(attribute))
-        return element.GetDocument().CompleteURL(value).GetString();
-      break;
-
-    case ResolveUrls::kNonLocal:
-      if (element.IsURLAttribute(attribute) &&
-          !element.GetDocument().Url().IsLocalFile())
-        return element.GetDocument().CompleteURL(value).GetString();
-      break;
-
-    case ResolveUrls::kNone:
-      break;
+  const String value = attribute.Value();
+  // Preserve the original value when URL resolution is disabled.
+  if (resolve_urls_method_ == ResolveUrls::kNone) {
+    return value;
   }
-  return value;
+
+  // Treat non-URL attributes as literal values rather than relative URLs.
+  if (!element.IsURLAttribute(attribute)) {
+    return value;
+  }
+
+  // Leave file-document URLs unchanged when only non-local URLs are requested.
+  if (resolve_urls_method_ == ResolveUrls::kNonLocal &&
+      element.GetDocument().Url().IsLocalFile()) {
+    return value;
+  }
+
+  const KURL completed_url = element.GetDocument().CompleteURL(value);
+  // Keep the raw spelling so reparsing retains dangling-markup detection.
+  return completed_url.PotentiallyDanglingMarkup() ? value
+                                                   : completed_url.GetString();
 }
 
 void MarkupFormatter::AppendStartMarkup(const Node& node,

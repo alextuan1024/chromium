@@ -290,8 +290,9 @@ void FormSubmissionTracker::FormControlDidChangeImpl(
   WebFormControlElement element =
       form_util::GetFormControlByRendererId(element_id);
   // This function may be called asynchronously, so a navigation may have
-  // happened. Since this event isn't submission-related.
-  if (!form_util::IsOwnedByFrame(element, unsafe_render_frame())) {
+  // happened. Since this event isn't submission-related, we can ignore it.
+  if (WebDocument document = GetDocument();
+      !document || !element || document != element.GetDocument()) {
     return;
   }
   WebFormElement form = element.GetOwningFormForAutofill();
@@ -300,9 +301,9 @@ void FormSubmissionTracker::FormControlDidChangeImpl(
   } else {
     UpdateLastInteractedElement(element);
   }
-  std::move(callback).Run(
-      element, SynchronousFormCache(form_util::GetFormRendererId(form),
-                                    provisionally_saved_form()));
+  SynchronousFormCache form_cache(form_util::GetFormRendererId(form),
+                                  provisionally_saved_form());
+  std::move(callback).Run(element, form_cache);
 }
 
 void FormSubmissionTracker::DidCommitProvisionalLoad(
@@ -410,7 +411,8 @@ void FormSubmissionTracker::WillSubmitForm(const WebFormElement& form) {
   // form submission event. If we didn't, we would send |form| to an
   // AutofillAgent and then to a ContentAutofillDriver etc. which haven't seen
   // this form before. See crbug.com/1240247#c13 for details.
-  if (!form_util::IsOwnedByFrame(form, unsafe_render_frame())) {
+  if (WebDocument document = GetDocument();
+      !document || !form || document != form.GetDocument()) {
     return;
   }
   FireFormSubmission(mojom::SubmissionSource::FORM_SUBMISSION, form);
@@ -446,38 +448,35 @@ void FormSubmissionTracker::FireFormSubmission(
 
   std::optional<FormData> form_data =
       GetSubmittedForm(source, submitted_form_element);
-
-  if (form_data) {
-    FireHostSubmitEvents(*form_data, source);
+  if (!form_data) {
+    return;
   }
 
-  if (form_data) {
-    switch (source) {
-      // Resetting here would hurt PasswordManager submissions because it
-      // ignores FORM_SUBMISSION.
-      case mojom::SubmissionSource::FORM_SUBMISSION:
-      // Resetting here would hurt Autofill submissions because it ignores
-      // DOM_MUTATION_AFTER_AUTOFILL.
-      case mojom::SubmissionSource::DOM_MUTATION_AFTER_AUTOFILL:
-        break;
-      // Resetting here would hurt PasswordManager submissions because it
-      // ignores PROBABLY_FORM_SUBMITTED.
-      case mojom::SubmissionSource::PROBABLY_FORM_SUBMITTED:
-        // TODO(crbug.com/40281981): Figure out if this is still needed, and
-        // document the reason, otherwise remove.
-        OnFormNoLongerSubmittable();
-        break;
-      case mojom::SubmissionSource::SAME_DOCUMENT_NAVIGATION:
-      case mojom::SubmissionSource::XHR_SUCCEEDED:
-      case mojom::SubmissionSource::FRAME_DETACHED:
-        // TODO(crbug.com/40281981): Figure out if this is still needed, and
-        // document the reason, otherwise remove.
-        ResetLastInteractedElements();
-        OnFormNoLongerSubmittable();
-        break;
-      case mojom::SubmissionSource::NONE:
-        NOTREACHED();
-    }
+  FireHostSubmitEvents(*form_data, source);
+  switch (source) {
+    // Resetting here would hurt PasswordManager submissions because it ignores
+    // FORM_SUBMISSION and PROBABLY_FORM_SUBMITTED.
+    case mojom::SubmissionSource::FORM_SUBMISSION:
+    case mojom::SubmissionSource::PROBABLY_FORM_SUBMITTED:
+    // Resetting here would hurt Autofill submissions because it ignores
+    // DOM_MUTATION_AFTER_AUTOFILL.
+    case mojom::SubmissionSource::DOM_MUTATION_AFTER_AUTOFILL:
+    // Resetting here is irrelevant because frame detachment immediately
+    // destroys the render frame and `this`.
+    case mojom::SubmissionSource::FRAME_DETACHED:
+      break;
+    case mojom::SubmissionSource::SAME_DOCUMENT_NAVIGATION:
+    case mojom::SubmissionSource::XHR_SUCCEEDED:
+      // Both Autofill and PasswordManager treat these as final submission
+      // signals while the document remains alive. Reset state so that
+      // subsequent interactions/submissions on the same page (e.g., multi-step
+      // flows sharing a <form> or unowned FormRendererId()) can be effectively
+      // tracked as new submissions.
+      ResetLastInteractedElements();
+      OnFormNoLongerSubmittable();
+      break;
+    case mojom::SubmissionSource::NONE:
+      NOTREACHED();
   }
 }
 
@@ -625,24 +624,19 @@ std::optional<FormData> FormSubmissionTracker::GetSubmittedForm(
 
   // Behavior when the submission is a result of a detached iframe:
   // - Look at the cached form and don't try extracting the form from the frame
-  //   since the frame became disconnected.
-  // TODO(crbug.com/40281981): Investigate following the default behavior for
-  // this source (i.e. trying to extract anyways).
+  //   since the frame's document was already shutdown.
   if (source == mojom::SubmissionSource::FRAME_DETACHED) {
     LogSubmittedFormMetric(source, cached_form ? SubmittedFormType::kCached
                                                : SubmittedFormType::kNull);
     return cached_form;
   }
 
-  WebDocument document = GetDocument();
-  std::optional<FormData> extracted_form = form_util::ExtractFormData(
-      document,
+  std::optional<FormData> extracted_form = autofill_agent_->ExtractFormData(
+      GetDocument(),
       submitted_form_element.has_value()
-          ? *submitted_form_element
-          : form_util::GetFormByRendererId(last_interacted_.form_id),
-      autofill_agent_->field_data_manager(),
-      autofill_agent_->GetCallTimerState(kGetSubmittedForm),
-      autofill_agent_->button_titles_cache());
+          ? form_util::GetFormRendererId(*submitted_form_element)
+          : last_interacted_.form_id,
+      kGetSubmittedForm);
 
   // - Return null if there was no interaction so far and no `form_element` is
   //   provided.
@@ -664,20 +658,18 @@ void FormSubmissionTracker::UpdateLastInteractedElement(
 
   // `document` is the WebDocument of `element`'s element. It is not
   // necessarily the same as the current frame's document.
-  //
-  // `form_element` is null if `element` is a FieldRendererId.
-  auto [document, form_element] = std::visit(
+  WebDocument document = std::visit(
       absl::Overload{
           [this](WebFormElement form) {
             CHECK(form);
             last_interacted_.form_id = form_util::GetFormRendererId(form);
-            return std::pair(form.GetDocument(), form);
+            return form.GetDocument();
           },
           [this](WebFormControlElement form_control) {
             CHECK(form_control);
             last_interacted_.formless_element_id =
                 form_util::GetFieldRendererId(form_control);
-            return std::pair(form_control.GetDocument(), WebFormElement());
+            return form_control.GetDocument();
           },
       },
       element);
@@ -686,11 +678,9 @@ void FormSubmissionTracker::UpdateLastInteractedElement(
   // We use the element's `document`, not the current frame's document, because
   // `element_id` may refer to an element that is not in the current frame's
   // document.
-  last_interacted_.saved_state = form_util::ExtractFormData(
-      document, form_element, autofill_agent_->field_data_manager(),
-      autofill_agent_->GetCallTimerState(
-          CallTimerState::CallSite::kUpdateLastInteractedElement),
-      autofill_agent_->button_titles_cache());
+  last_interacted_.saved_state = autofill_agent_->ExtractFormData(
+      document, last_interacted_.form_id,
+      CallTimerState::CallSite::kUpdateLastInteractedElement);
 }
 
 void FormSubmissionTracker::ResetLastInteractedElements() {

@@ -23,7 +23,7 @@
 #include "components/password_manager/core/browser/leak_detection/leak_detection_request_utils.h"
 #include "components/password_manager/core/browser/leak_detection/mock_leak_detection_check_factory.h"
 #include "components/password_manager/core/browser/leak_detection_dialog_utils.h"
-#include "components/password_manager/core/browser/password_change_service_interface.h"
+#include "components/password_manager/core/browser/password_change/password_change_service_interface.h"
 #include "components/password_manager/core/browser/password_form.h"
 #include "components/password_manager/core/browser/password_manager_test_utils.h"
 #include "components/password_manager/core/browser/password_store/mock_password_store_interface.h"
@@ -75,26 +75,29 @@ class MockPasswordManagerClient : public StubPasswordManagerClient {
   MockPasswordManagerClient() = default;
   ~MockPasswordManagerClient() override = default;
 
-  MOCK_METHOD(bool, IsOffTheRecord, (), (const override));
-  MOCK_METHOD(PrefService*, GetPrefs, (), (const override));
+  MOCK_METHOD(bool, IsOffTheRecord, (), (const, override));
+  MOCK_METHOD(PrefService*, GetPrefs, (), (const, override));
   MOCK_METHOD(void,
               NotifyUserCredentialsWereLeaked,
               (LeakedPasswordDetails details),
               (override));
-  MOCK_METHOD(const syncer::SyncService*, GetSyncService, (), (const override));
+  MOCK_METHOD(const syncer::SyncService*,
+              GetSyncService,
+              (),
+              (const, override));
   MOCK_METHOD(PasswordStoreInterface*,
               GetAccountPasswordStore,
               (),
-              (const override));
+              (const, override));
   MOCK_METHOD(PasswordStoreInterface*,
               GetProfilePasswordStore,
               (),
-              (const override));
+              (const, override));
   MOCK_METHOD(PasswordChangeServiceInterface*,
               GetPasswordChangeService,
               (),
-              (const override));
-  MOCK_METHOD(version_info::Channel, GetChannel, (), (const override));
+              (const, override));
+  MOCK_METHOD(version_info::Channel, GetChannel, (), (const, override));
   MOCK_METHOD(affiliations::AffiliationService*,
               GetAffiliationService,
               (),
@@ -113,16 +116,20 @@ class MockLeakDetectionCheck : public LeakDetectionCheck {
 
 class MockPasswordChangeService : public PasswordChangeServiceInterface {
  public:
-  MOCK_METHOD(bool, IsPasswordChangeAvailable, (), (const override));
+  MOCK_METHOD(bool, IsPasswordChangeAvailable, (), (const, override));
   MOCK_METHOD(bool,
               IsPasswordChangeSupported,
               (const PasswordForm&, bool),
-              (const override));
+              (const, override));
   MOCK_METHOD(void,
               RecordLoginAttemptQuality,
               (password_manager::LogInWithChangedPasswordOutcome, const GURL&),
-              (const override));
+              (const, override));
   MOCK_METHOD(void, AddChangePasswordUrlOverride, (const GURL&), (override));
+  MOCK_METHOD(PasswordChangeCredentialsProvider*,
+              GetCredentialsProviderForActorSurface,
+              (int32_t),
+              (override));
 };
 
 }  // namespace
@@ -836,8 +843,6 @@ TEST_F(LeakDetectionDelegateTest, LeakDetectionDoneWithChangePwdFlag) {
 }
 
 TEST_F(LeakDetectionDelegateTest, ApcNotSuggestedWhenFederatedLoginDetected) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndEnableFeature(features::kPreventAPCOnFederatedLogin);
   const PasswordForm form = CreateTestForm();
 
   MockPasswordChangeService mock_password_change_service;

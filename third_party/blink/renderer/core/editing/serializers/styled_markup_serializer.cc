@@ -56,6 +56,7 @@
 #include "third_party/blink/renderer/core/layout/layout_object.h"
 #include "third_party/blink/renderer/core/mathml/mathml_element.h"
 #include "third_party/blink/renderer/core/mathml_names.h"
+#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_builder.h"
 
 namespace blink {
@@ -86,6 +87,22 @@ template <>
 bool HandleSelectionBoundary<EditingInFlatTreeStrategy>(const Node& node) {
   ShadowRoot* root = node.GetShadowRoot();
   return root && root->IsUserAgent();
+}
+
+// Returns true if something in `node` is selected: `past_end` is not inside
+// `node`, or some rendered content of `node` comes before `past_end`.
+template <typename Strategy>
+bool HasSelectedContent(const Node& node, const Node* past_end) {
+  if (!past_end || !Strategy::IsDescendantOf(*past_end, node)) {
+    return true;
+  }
+  for (const Node* n = Strategy::Next(node); n && n != past_end;
+       n = Strategy::Next(*n)) {
+    if (n->GetLayoutObject() && !Strategy::IsDescendantOf(*past_end, *n)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 }  // namespace
@@ -214,7 +231,13 @@ String StyledMarkupSerializer<Strategy>::CreateMarkup() {
       CreateVisiblePosition(start_);
   const VisiblePositionTemplate<Strategy> visible_end =
       CreateVisiblePosition(end_);
-  if (ShouldAnnotate() && NeedInterchangeNewlineAfter(visible_start)) {
+  const bool start_in_foreign_content =
+      RuntimeEnabledFeatures::SkipHtmlInterchangeInForeignContentEnabled() &&
+      visible_start.DeepEquivalent().AnchorNode() &&
+      IsInForeignContentForSerialization(
+          *visible_start.DeepEquivalent().AnchorNode());
+  if (ShouldAnnotate() && !start_in_foreign_content &&
+      NeedInterchangeNewlineAfter(visible_start)) {
     markup_accumulator.AppendInterchangeNewline();
     if (visible_start.DeepEquivalent() ==
         PreviousPositionOf(visible_end).DeepEquivalent())
@@ -227,6 +250,21 @@ String StyledMarkupSerializer<Strategy>::CreateMarkup() {
                                 *past_end)) >= 0) {
       // This condition hits in editing/pasteboard/copy-display-none.html.
       return markup_accumulator.TakeResults();
+    }
+
+    if (RuntimeEnabledFeatures::SkipHtmlInterchangeInForeignContentEnabled() &&
+        first_node && IsInForeignContentForSerialization(*first_node)) {
+      Node* highest_math_node = nullptr;
+      for (Node& runner : Strategy::InclusiveAncestorsOf(*first_node)) {
+        if (auto* mathml_element = DynamicTo<MathMLElement>(runner)) {
+          if (mathml_element->HasTagName(mathml_names::kMathTag)) {
+            highest_math_node = mathml_element;
+          }
+        }
+      }
+      if (highest_math_node) {
+        first_node = highest_math_node;
+      }
     }
   }
 
@@ -261,7 +299,11 @@ String StyledMarkupSerializer<Strategy>::CreateMarkup() {
     // Also include all of the ancestors of lastClosed up to this special
     // ancestor.
     // FIXME: What is ancestor?
-    for (ContainerNode* ancestor = Strategy::Parent(*last_closed); ancestor;
+    for (ContainerNode* ancestor = Strategy::Parent(*last_closed);
+         ancestor && (!RuntimeEnabledFeatures::
+                          SkipHtmlInterchangeInForeignContentEnabled() ||
+                      Strategy::IsDescendantOf(
+                          *last_closed, *highest_node_to_be_serialized_));
          ancestor = Strategy::Parent(*ancestor)) {
       // Skip wrapping with <mtr> (MathML table row) during ancestor wrapping
       // when it was already serialized during the traversal phase,
@@ -273,8 +315,10 @@ String StyledMarkupSerializer<Strategy>::CreateMarkup() {
       // This may also be needed for <mlabeledtr> and <matrixrow> but these
       // elements are currently not supported - absent in mathml_names.h
       auto* mathml_element = DynamicTo<MathMLElement>(ancestor);
-      if (mathml_element &&
-          mathml_element->HasTagName(mathml_names::kMtrTag)) {
+      if (mathml_element && mathml_element->HasTagName(mathml_names::kMtrTag) &&
+          (!RuntimeEnabledFeatures::
+               SkipHtmlInterchangeInForeignContentEnabled() ||
+           !first_node || !Strategy::IsDescendantOf(*first_node, *ancestor))) {
         if (ancestor == highest_node_to_be_serialized_) {
           break;
         }
@@ -345,11 +389,18 @@ String StyledMarkupSerializer<Strategy>::CreateMarkup() {
     traverser.WrapWithNode(To<ContainerNode>(*last_closed_), style);
   }
 
+  const bool end_in_foreign_content =
+      RuntimeEnabledFeatures::SkipHtmlInterchangeInForeignContentEnabled() &&
+      ((visible_end.DeepEquivalent().AnchorNode() &&
+        IsInForeignContentForSerialization(
+            *visible_end.DeepEquivalent().AnchorNode())) ||
+       (last_closed && IsInForeignContentForSerialization(*last_closed)));
   // FIXME: The interchange newline should be placed in the block that it's in,
   // not after all of the content, unconditionally.
   if (!(last_closed && IsA<HTMLBRElement>(*last_closed)) && ShouldAnnotate() &&
-      NeedInterchangeNewlineAt(visible_end))
+      !end_in_foreign_content && NeedInterchangeNewlineAt(visible_end)) {
     markup_accumulator.AppendInterchangeNewline();
+  }
 
   return markup_accumulator.TakeResults();
 }
@@ -439,6 +490,16 @@ Node* StyledMarkupTraverser<Strategy>::Traverse(Node* start_node,
         // Don't write out empty block containers that aren't fully selected
         // unless the block container only contains br element or is a part of
         // table.
+        continue;
+      }
+      if (RuntimeEnabledFeatures::
+              SkipSerializingUnselectedTablePartElementsEnabled() &&
+          IsTablePartElement(n) &&
+          !HasSelectedContent<Strategy>(*n, past_end)) {
+        // Don't write out a table part that has nothing selected in it. This
+        // happens when the selection ends at the end of a table row, and the
+        // visible end moves to the start of the next row.
+        next = past_end;
         continue;
       }
       bool should_skip_unselectable_node = false;
@@ -643,6 +704,10 @@ void StyledMarkupTraverser<Strategy>::AppendEndMarkup(Node& node) {
 template <typename Strategy>
 bool StyledMarkupTraverser<Strategy>::ShouldApplyWrappingStyle(
     const Node& node) const {
+  if (RuntimeEnabledFeatures::SkipHtmlInterchangeInForeignContentEnabled() &&
+      node.IsTextNode() && IsInForeignContentForSerialization(node)) {
+    return false;
+  }
   return last_closed_ &&
          Strategy::Parent(*last_closed_) == Strategy::Parent(node) &&
          wrapping_style_ && wrapping_style_->Style();

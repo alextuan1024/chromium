@@ -9,13 +9,14 @@
 #include <set>
 
 #include "base/timer/timer.h"
+#include "chrome/browser/actor/actor_surface_handle.h"
 #include "chrome/browser/actor/tools/tool.h"
 #include "chrome/common/chrome_render_frame.mojom.h"
 #include "components/actor/public/mojom/actor_types.mojom-forward.h"
-#include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/weak_document_ptr.h"
 #include "content/public/browser/web_contents_observer.h"
 #include "mojo/public/cpp/bindings/associated_remote.h"
+#include "third_party/blink/public/common/tokens/tokens.h"
 
 namespace actor {
 
@@ -25,7 +26,7 @@ class ScriptToolHost : public Tool, content::WebContentsObserver {
  public:
   ScriptToolHost(TaskId task_id,
                  ToolDelegate& tool_delegate,
-                 tabs::TabHandle target_tab,
+                 ActorSurfaceHandle target_actor_surface_handle,
                  const base::UnguessableToken& target_document_id,
                  mojom::ToolActionPtr action);
   ~ScriptToolHost() override;
@@ -44,9 +45,7 @@ class ScriptToolHost : public Tool, content::WebContentsObserver {
   std::string DebugString() const override;
   GURL JournalURL() const override;
   std::string JournalEvent() const override;
-  void UpdateTaskBeforeInvoke(ActorTask& task,
-                              ToolCallback callback) const override;
-  tabs::TabHandle GetTargetTab() const override;
+  ActorSurfaceHandle GetTargetActorSurface() const override;
 
  private:
   enum class Lifecycle {
@@ -59,8 +58,6 @@ class ScriptToolHost : public Tool, content::WebContentsObserver {
 
   // WebContentsObserver implementation.
   void RenderFrameDeleted(content::RenderFrameHost* rfh) override;
-  void OnTabWillBeRemoved(tabs::TabInterface* tab,
-                          tabs::TabInterface::DetachReason reason);
   void DidStartNavigation(
       content::NavigationHandle* navigation_handle) override;
   void DidFinishNavigation(
@@ -83,11 +80,11 @@ class ScriptToolHost : public Tool, content::WebContentsObserver {
 
   // Unique ID for this tool execution, used to track task attribution
   // across microtasks and navigations.
-  base::UnguessableToken execution_id_;
+  blink::ToolInvocationToken execution_id_;
   // The ID of a navigation that was triggered by this script tool, if any.
   std::optional<int64_t> active_navigation_id_;
   Lifecycle lifecycle_{Lifecycle::kInitial};
-  tabs::TabHandle target_tab_;
+  ActorSurfaceHandle actor_surface_handle_;
   const base::UnguessableToken target_document_id_;
   const mojom::ToolActionPtr action_;
   ToolCallback tool_done_callback_;
@@ -121,7 +118,6 @@ class ScriptToolHost : public Tool, content::WebContentsObserver {
   // Timer to enforce a timeout when waiting for a cross-document navigation
   // to commit and finish parsing.
   base::OneShotTimer cross_document_timeout_timer_;
-  base::CallbackListSubscription tab_will_detach_subscription_;
   base::WeakPtrFactory<ScriptToolHost> weak_ptr_factory_{this};
 };
 

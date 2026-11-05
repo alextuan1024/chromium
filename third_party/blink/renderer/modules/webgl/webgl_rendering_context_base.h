@@ -62,6 +62,7 @@
 #include "third_party/blink/renderer/platform/heap/collection_support/heap_vector.h"
 #include "third_party/blink/renderer/platform/scheduler/public/frame_or_worker_scheduler.h"
 #include "third_party/blink/renderer/platform/timer.h"
+#include "third_party/blink/renderer/platform/wtf/casting.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
 #include "third_party/skia/include/core/SkData.h"
 
@@ -94,6 +95,7 @@ class ScriptState;
 class V8PredefinedColorSpace;
 class V8UnionHTMLCanvasElementOrOffscreenCanvas;
 class VideoFrame;
+class VideoFrameAcceleratedSnapshotPool;
 class WebGLActiveInfo;
 class WebGLBuffer;
 class WebGLCompressedTextureASTC;
@@ -428,12 +430,6 @@ class MODULES_EXPORT WebGLRenderingContextBase
                   ImageBitmap*,
                   ExceptionState&);
 
-  void texElementImage2D(GLenum target,
-                         GLenum internalformat,
-                         const V8UnionElementOrElementImage* element,
-                         const WebGLCopyElementImageConfig* config,
-                         ExceptionState& exception_state);
-
   void texElementSubImage2D(GLenum target,
                             GLint level,
                             GLint xoffset,
@@ -606,7 +602,7 @@ class MODULES_EXPORT WebGLRenderingContextBase
 
   Extensions3DUtil* ExtensionsUtil();
 
-  void Reshape(int width, int height) override;
+  void Reshape(gfx::Size old_size, gfx::Size new_size) override;
 
   void MarkLayerComposited() override;
 
@@ -722,11 +718,10 @@ class MODULES_EXPORT WebGLRenderingContextBase
   // CanvasRenderingContext implementation.
   bool IsComposited() const override { return true; }
   void PageVisibilityChanged() override;
-  void SizeChanged() override;
   scoped_refptr<StaticBitmapImage> PaintRenderingResultsToSnapshot(
       SourceDrawingBuffer source_buffer) override;
   void ClearMarkedCanvasDirty() override { marked_canvas_dirty_ = false; }
-  scoped_refptr<CanvasResource> PaintRenderingResultsToResource(
+  scoped_refptr<ExportedCanvasResource> PaintRenderingResultsToResource(
       SourceDrawingBuffer source_buffer,
       FlushReason reason) override;
 
@@ -744,7 +739,7 @@ class MODULES_EXPORT WebGLRenderingContextBase
 
   cc::Layer* CcLayer() const override;
   void Stop() override;
-  scoped_refptr<CanvasResource> GetResourceForPushFrame(
+  scoped_refptr<ExportedCanvasResource> GetResourceForPushFrame(
       bool& should_call_push_frame) override;
 
   // DrawingBuffer::Client implementation.
@@ -864,6 +859,10 @@ class MODULES_EXPORT WebGLRenderingContextBase
   HeapTaskRunnerTimer<WebGLRenderingContextBase> restore_timer_;
 
   bool destruction_in_progress_ = false;
+  // Tracks whether ActivateContext() was ever called for this context, so
+  // Dispose() does not restore an evicted context when disposing an
+  // uninitialized context whose initial CreateDrawingBuffer() failed.
+  bool was_activated_ = false;
   bool marked_canvas_dirty_;
   // For performance reasons we must separately track whether we've
   // copied WebGL's drawing buffer to the canvas's backing store, for
@@ -910,21 +909,22 @@ class MODULES_EXPORT WebGLRenderingContextBase
 
   Vector<GLenum> compressed_texture_formats_;
 
-  // Fixed-size cache of reusable snapshot providers for image and video
+  // Fixed-size cache of reusable snapshot pools for image and video
   // texImage2D calls.
-  class LRUCanvasNon2DResourceProviderCache {
+  class LRUVideoFrameAcceleratedSnapshotPoolCache {
    public:
-    LRUCanvasNon2DResourceProviderCache(wtf_size_t capacity);
+    explicit LRUVideoFrameAcceleratedSnapshotPoolCache(wtf_size_t capacity);
+    ~LRUVideoFrameAcceleratedSnapshotPoolCache();
     // The pointer returned is owned by the image buffer map.
-    CanvasNon2DResourceProvider* GetCanvasNon2DResourceProvider(
+    VideoFrameAcceleratedSnapshotPool* GetVideoFrameAcceleratedSnapshotPool(
         const CanvasSnapshotInfo& info);
 
    private:
     void BubbleToFront(wtf_size_t idx);
     const wtf_size_t capacity_;
-    Vector<std::unique_ptr<CanvasNon2DResourceProvider>> providers_;
+    Vector<std::unique_ptr<VideoFrameAcceleratedSnapshotPool>> pools_;
   };
-  LRUCanvasNon2DResourceProviderCache generated_video_cache_{4};
+  LRUVideoFrameAcceleratedSnapshotPoolCache generated_video_cache_{4};
 
   GLint max_texture_size_;
   GLint max_cube_map_texture_size_;
@@ -1853,8 +1853,6 @@ class MODULES_EXPORT WebGLRenderingContextBase
                          ConsoleDisplayPreference = kDisplayInConsole);
   void EmitGLWarning(const char* function, const char* reason);
 
-  String EnsureNotNull(const String&) const;
-
   // Enable or disable the depth and stencil test based on the user's
   // setting and whether the current FBO has a depth and stencil
   // buffer.
@@ -1888,8 +1886,6 @@ class MODULES_EXPORT WebGLRenderingContextBase
                                        GLsizei height,
                                        const char* function_name);
 
-  friend class WebGLStateRestorer;
-  friend class WebGLRenderingContextEvictionManager;
 
   static void ActivateContext(WebGLRenderingContextBase*);
   static void DeactivateContext(WebGLRenderingContextBase*);
@@ -1972,15 +1968,13 @@ class MODULES_EXPORT WebGLRenderingContextBase
                                 Platform::WebGLContextType,
                                 Platform::WebGLContextInfo*);
 
-  scoped_refptr<ExternalCanvasResource> ExportLowLatencyCanvasResource(
-      SourceDrawingBuffer source_buffer);
-
   CanvasNon2DResourceProvider* GetSharedImageResourceProvider();
 
   // Attempts to copy the most recent rendering results from the drawing buffer
   // into a CanvasResource. Returns the resource if the copy succeeded;
   // otherwise returns nullptr.
-  scoped_refptr<CanvasResource> CopyRenderingResultsFromDrawingBufferToResource(
+  scoped_refptr<ExportedCanvasResource>
+  CopyRenderingResultsFromDrawingBufferToResource(
       SourceDrawingBuffer source_buffer);
   void TexImageHelperMediaVideoFrame(
       TexImageParams,
@@ -2003,6 +1997,7 @@ class MODULES_EXPORT WebGLRenderingContextBase
   bool IsPaintable() const final { return GetDrawingBuffer(); }
 
   void HoldReferenceToDrawingBuffer(DrawingBuffer*);
+  void ForceLostContextFromDrawingBuffer(DrawingBuffer* failed_drawing_buffer);
 
   static void InitializeWebGLContextLimits(
       WebGraphicsContext3DProvider* context_provider);
@@ -2010,19 +2005,19 @@ class MODULES_EXPORT WebGLRenderingContextBase
 
   void Dispose() override;
 
-  void TexElementImage2DInternal(GLenum target,
-                                 std::optional<GLenum> internalformat,
-                                 GLint level,
-                                 GLint xoffset,
-                                 GLint yoffset,
-                                 std::optional<GLfloat> sx,
-                                 std::optional<GLfloat> sy,
-                                 std::optional<GLfloat> swidth,
-                                 std::optional<GLfloat> sheight,
-                                 std::optional<GLsizei> width,
-                                 std::optional<GLsizei> height,
-                                 const V8UnionElementOrElementImage* element,
-                                 ExceptionState& exception_state);
+  void TexElementSubImage2DInternal(GLenum target,
+                                    std::optional<GLenum> internalformat,
+                                    GLint level,
+                                    GLint xoffset,
+                                    GLint yoffset,
+                                    std::optional<GLfloat> sx,
+                                    std::optional<GLfloat> sy,
+                                    std::optional<GLfloat> swidth,
+                                    std::optional<GLfloat> sheight,
+                                    std::optional<GLsizei> width,
+                                    std::optional<GLsizei> height,
+                                    const V8UnionElementOrElementImage* element,
+                                    ExceptionState& exception_state);
 
   // Used to provide accelerated snapshots and CanvasResources holding the
   // current content.

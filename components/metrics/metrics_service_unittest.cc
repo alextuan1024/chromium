@@ -25,6 +25,7 @@
 #include "base/strings/to_string.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/test/metrics/histogram_tester.h"
+#include "base/test/run_until.h"
 #include "base/test/task_environment.h"
 #include "base/threading/platform_thread.h"
 #include "build/build_config.h"
@@ -39,6 +40,7 @@
 #include "components/metrics/metrics_state_manager.h"
 #include "components/metrics/metrics_upload_scheduler.h"
 #include "components/metrics/stability_metrics_helper.h"
+#include "components/metrics/stability_metrics_provider.h"
 #include "components/metrics/startup_visibility.h"
 #include "components/metrics/test/test_enabled_state_provider.h"
 #include "components/metrics/test/test_metrics_provider.h"
@@ -1173,6 +1175,36 @@ TEST_P(MetricsServiceTestWithStartupVisibility, InitialStabilityLogAfterCrash) {
                                      StabilityEventType::kBrowserCrash, 1);
 }
 
+#if BUILDFLAG(IS_WIN)
+TEST_F(MetricsServiceTest, SystemCrashRecordedAfterInitialization) {
+  EnableMetricsReporting();
+  ASSERT_TRUE(
+      base::WriteFile(user_data_dir_path().Append(kCleanExitBeaconFilename),
+                      CleanExitBeacon::CreateBeaconFileContentsForTesting(
+                          /*exited_cleanly=*/false, /*crash_streak=*/1)));
+
+  PrefService* local_state = GetLocalState();
+  local_state->SetTime(prefs::kStabilityBrowserLastLiveTimeStamp,
+                       base::Time::Now());
+  TestMetricsServiceClient client;
+  EnvironmentRecorder(local_state)
+      .SetBuildtimeAndVersion(MetricsLog::GetBuildTime(),
+                              client.GetVersionString());
+  TestMetricsService service(GetMetricsStateManager(user_data_dir_path()),
+                             &client, local_state);
+  service.stability_metrics_provider_
+      ->SetIsUncleanSystemSessionCallbackForTesting(
+          base::BindRepeating([](base::Time) { return true; }));
+  service.InitializeMetricsRecordingState();
+
+  EXPECT_EQ(0, local_state->GetInteger(prefs::kStabilitySystemCrashCount));
+  ASSERT_TRUE(base::test::RunUntil([&] {
+    return local_state->GetInteger(prefs::kStabilitySystemCrashCount) == 1;
+  }));
+  EXPECT_EQ(1, local_state->GetInteger(prefs::kStabilitySystemCrashCount));
+}
+#endif  // BUILDFLAG(IS_WIN)
+
 TEST_F(MetricsServiceTest, InitialLogsHaveOnDidCreateMetricsLogHistograms) {
   EnableMetricsReporting();
   TestMetricsServiceClient client;
@@ -1418,13 +1450,91 @@ TEST_F(MetricsServiceTest, OutOfBandLogUpload) {
   // Assert that the uploader is no longer uploading, and then trigger an
   // upload.
   EXPECT_FALSE(client.uploader()->is_uploading());
-  service.StartOutOfBandUploadIfPossible(
-      MetricsService::OutOfBandUploadPasskey());
+  EXPECT_EQ(MetricsService::RotateUmaLogResult::kSuccess,
+            service.StartOutOfBandUploadIfPossible(
+                MetricsService::OutOfBandUploadPasskey()));
 
   // Fast forward the time so that the upload loop starts uploading logs.
   task_environment_.FastForwardBy(unsent_log_interval);
   EXPECT_TRUE(client.uploader()->is_uploading());
   client.uploader()->CompleteUpload(200);
+}
+
+// Verify that calling RotateUmaLogForRuntimeMutability() closes the current log
+// and opens a new one when called after logs have started being sent, and is a
+// no-op if called too early. Also verify ShouldDelayRuntimeMutability() across
+// recording states and log rotation lifecycle states.
+TEST_F(MetricsServiceTest, RotateUmaLogForRuntimeMutability) {
+  EnableMetricsReporting();
+  TestMetricsServiceClient client;
+  TestMetricsService service(GetMetricsStateManager(), &client,
+                             GetLocalState());
+  service.InitializeMetricsRecordingState();
+
+  // Before Start(), recording is not active, so ShouldDelayRuntimeMutability()
+  // should return false.
+  ASSERT_FALSE(service.recording_active());
+  EXPECT_FALSE(service.ShouldDelayRuntimeMutability(
+      MetricsService::GetRuntimeMutabilityPassKeyForTesting()));
+
+  service.Start();
+  ASSERT_TRUE(service.recording_active());
+  ASSERT_EQ(TestMetricsService::INIT_TASK_SCHEDULED, service.state());
+
+  base::HistogramTester histogram_tester;
+
+  // Calling RotateUmaLogForRuntimeMutability() before logs have started being
+  // sent (ShouldDelayRuntimeMutability() is true) should be a no-op.
+  EXPECT_TRUE(service.ShouldDelayRuntimeMutability(
+      MetricsService::GetRuntimeMutabilityPassKeyForTesting()));
+  EXPECT_EQ(MetricsService::RotateUmaLogResult::kTooEarly,
+            service.RotateUmaLogForRuntimeMutability(
+                MetricsService::GetRuntimeMutabilityPassKeyForTesting()));
+  EXPECT_FALSE(service.LogStoreForTest()->has_unsent_logs());
+  histogram_tester.ExpectTotalCount(
+      "UMA.MetricsService.PushPendingLogsToPersistentStorageReason", 0);
+
+  // Fast forward the time until the initial init tasks run.
+  base::TimeDelta initialization_delay = service.GetInitializationDelay();
+  task_environment_.FastForwardBy(initialization_delay);
+  EXPECT_EQ(TestMetricsService::INIT_TASK_DONE, service.state());
+  EXPECT_TRUE(service.ShouldDelayRuntimeMutability(
+      MetricsService::GetRuntimeMutabilityPassKeyForTesting()));
+
+  // Fast forward until MetricsRotationScheduler completes the first ongoing
+  // log.
+  task_environment_.FastForwardBy(
+      base::Seconds(MetricsScheduler::GetInitialIntervalSeconds()) -
+      initialization_delay);
+  ASSERT_EQ(TestMetricsService::SENDING_LOGS, service.state());
+  EXPECT_FALSE(service.ShouldDelayRuntimeMutability(
+      MetricsService::GetRuntimeMutabilityPassKeyForTesting()));
+
+  // Stage and discard the first ongoing log.
+  MetricsLogStore* test_log_store = service.LogStoreForTest();
+  test_log_store->StageNextLog();
+  test_log_store->DiscardStagedLog();
+  EXPECT_FALSE(test_log_store->has_unsent_logs());
+
+  // Calling RotateUmaLogForRuntimeMutability() should now push the current log
+  // to persistent storage and open a new log.
+  EXPECT_EQ(MetricsService::RotateUmaLogResult::kSuccess,
+            service.RotateUmaLogForRuntimeMutability(
+                MetricsService::GetRuntimeMutabilityPassKeyForTesting()));
+  EXPECT_TRUE(test_log_store->has_unsent_logs());
+  histogram_tester.ExpectUniqueSample(
+      "UMA.MetricsService.PushPendingLogsToPersistentStorageReason",
+      MetricsLogsEventManager::CreateReason::kRuntimeMutability, 1);
+
+  // Stage and discard the log that was closed by
+  // RotateUmaLogForRuntimeMutability().
+  test_log_store->StageNextLog();
+  test_log_store->DiscardStagedLog();
+  EXPECT_FALSE(test_log_store->has_unsent_logs());
+
+  // Verify that a new log is open by staging the current log.
+  service.StageCurrentLogForTest();
+  EXPECT_TRUE(test_log_store->has_unsent_logs());
 }
 
 TEST_F(MetricsServiceTest,

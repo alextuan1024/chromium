@@ -464,6 +464,21 @@ chromium-metrics-reviews@google.com.
   <int value="12" label="kExpiredLogFileDuringSession"/>
 </enum>
 
+<enum name="WebRtcFallbackStartOutcome">
+  <summary>
+    Records how a capture with webrtc::FallbackDesktopCapturerWrapper started,
+    from webrtc::FallbackDesktopCapturerWrapper::StartOutcome. Main is the
+    primary capturer and Secondary is its fallback.
+  </summary>
+  <int value="0" label="MainWorked"/>
+  <int value="1" label="MainAcceptedSecondaryRejected"/>
+  <int value="2" label="MainRejectedSecondaryRejected"/>
+  <int value="3" label="MainRejectedSecondaryWorked"/>
+  <int value="4" label="MainRejectedSecondaryFailed"/>
+  <int value="5" label="MainStartErrorSecondaryWorked"/>
+  <int value="6" label="MainStartErrorSecondaryFailed"/>
+</enum>
+
 <enum name="WebRtcH264DecoderImplEvent">
   <int value="0" label="Init"/>
   <int value="1" label="Error"/>
@@ -477,12 +492,15 @@ chromium-metrics-reviews@google.com.
 <enum name="WebRtcLoggingUploadFailureReason">
   <summary>
     Failure reason can be either a response code (except 200 OK) for the upload
-    HTTP request, or another reason prior to uploading (values less than 100).
-    HTTP response codes copied from enum &quot;HttpResponseCode&quot;.
+    HTTP request, or a non-HTTP reason (values less than 100), such as an
+    invalid state, a network error, or a 200 OK response whose body is not a
+    valid report ID. HTTP response codes copied from enum
+    &quot;HttpResponseCode&quot;.
   </summary>
   <int value="0" label="Invalid state"/>
   <int value="1" label="Stored log not found"/>
   <int value="2" label="Network error"/>
+  <int value="3" label="Invalid report ID"/>
   <int value="100" label="100: Continue"/>
   <int value="101" label="101: Switching Protocols"/>
   <int value="102" label="102: Processing"/>
@@ -533,6 +551,12 @@ chromium-metrics-reviews@google.com.
   <int value="2102772693" label="Duo"/>
 </enum>
 
+<enum name="WebRtcNeuralResidualEchoEstimatorInitResult">
+  <int value="0" label="Success"/>
+  <int value="1" label="Model load failed"/>
+  <int value="2" label="Destroyed before resolved"/>
+</enum>
+
 <enum name="WebRtcPeerConnectionUsagePattern">
   <summary>
     These values are integers representing a set of flags indicating how the
@@ -556,6 +580,34 @@ chromium-metrics-reviews@google.com.
   <int value="157414" label="Data, Stun, SLD/SRD, local IPv6, remote MDNS"/>
   <int value="157670"
       label="Connected, Data, Stun, local IPv6, remote MDNS (triplicate)"/>
+</enum>
+
+<enum name="WebRtcPlayoutDelayModeBitmask">
+  <summary>
+    Bitmask of the playout delay modes that were used by a received video
+    stream, as signaled by the min/max delay in the playout-delay RTP header
+    extension. Bit 0 (1): Default, no playout delay signaled. Bit 1 (2): 0/0,
+    lowest possible delay. Bit 2 (4): 0/X, zero min delay and positive max
+    delay, low delay with some buffering in the rendering. Bit 3 (8): X/Y,
+    positive min and max delay. The value 0 is never recorded. Mirrors
+    PlayoutDelayModeBitmask in
+    third_party/webrtc/video/receive_statistics_proxy.cc.
+  </summary>
+  <int value="1" label="Default"/>
+  <int value="2" label="0/0"/>
+  <int value="3" label="Default | 0/0"/>
+  <int value="4" label="0/X"/>
+  <int value="5" label="Default | 0/X"/>
+  <int value="6" label="0/0 | 0/X"/>
+  <int value="7" label="Default | 0/0 | 0/X"/>
+  <int value="8" label="X/Y"/>
+  <int value="9" label="Default | X/Y"/>
+  <int value="10" label="0/0 | X/Y"/>
+  <int value="11" label="Default | 0/0 | X/Y"/>
+  <int value="12" label="0/X | X/Y"/>
+  <int value="13" label="Default | 0/X | X/Y"/>
+  <int value="14" label="0/0 | 0/X | X/Y"/>
+  <int value="15" label="Default | 0/0 | 0/X | X/Y"/>
 </enum>
 
 <enum name="WebRtcScalabilityMode">

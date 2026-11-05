@@ -7,35 +7,28 @@
 #include <memory>
 #include <utility>
 
+#include "base/check.h"
+#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
+
 namespace blink {
 
-ElementImage::ElementImage(std::unique_ptr<CanvasChildPaintRecord> record)
-    : record_(std::move(record)) {}
-
-double ElementImage::width() const {
-  if (!record_) {
-    return 0;
+ElementImage::ElementImage(std::unique_ptr<CanvasDrawablePaintRecord> record)
+    : record_(std::move(record)) {
+  if (RuntimeEnabledFeatures::ReadBackDisallowedMitigationEnabled()) {
+    CHECK(!record_ || !record_->record.has_read_back_disallowed_content());
   }
-  return record_->paint_state.box_size.width();
-}
-
-double ElementImage::height() const {
-  if (!record_) {
-    return 0;
-  }
-  return record_->paint_state.box_size.height();
 }
 
 void ElementImage::close() {
   record_.reset();
 }
 
-std::unique_ptr<CanvasChildPaintRecord> ElementImage::TransferPaintRecord() {
+std::unique_ptr<CanvasDrawablePaintRecord> ElementImage::TransferPaintRecord() {
   return std::move(record_);
 }
 
 DOMNodeId ElementImage::GetNodeId() const {
-  return record_ ? record_->paint_state.canvas_child_node_id
+  return record_ ? record_->paint_state.canvas_drawable_node_id
                  : kInvalidDOMNodeId;
 }
 

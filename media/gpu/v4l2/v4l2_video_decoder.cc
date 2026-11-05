@@ -69,7 +69,7 @@ constexpr size_t kInputBufferMaxSizeFor1080p = 2 * kInputBuferMaxSizeFor480p;
 constexpr size_t kInputBufferMaxSizeFor4k = 2 * kInputBufferMaxSizeFor1080p;
 
 // Input format V4L2 fourccs this class supports.
-const std::vector<uint32_t> kSupportedInputFourccs = {
+constexpr uint32_t kSupportedInputFourccs[] = {
     // V4L2 stateless formats
     V4L2_PIX_FMT_H264_SLICE,
 #if BUILDFLAG(ENABLE_HEVC_PARSER_AND_HW_DECODER)
@@ -91,6 +91,7 @@ const std::vector<uint32_t> kSupportedInputFourccs = {
 // These values are logged to UMA. Entries should not be renumbered and numeric
 // values should never be reused. Please keep in sync with
 // "V4l2VideoDecoderFunctions" in src/tools/metrics/histograms/enums.xml.
+// LINT.IfChange(V4l2VideoDecoderFunctions)
 enum class V4l2VideoDecoderFunctions {
   kInitializeBackend = 0,
   kSetupInputFormat = 1,
@@ -101,6 +102,7 @@ enum class V4l2VideoDecoderFunctions {
   kOtherV4l2VideoDecoderFunction = 5,
   kMaxValue = kOtherV4l2VideoDecoderFunction,
 };
+// LINT.ThenChange(//tools/metrics/histograms/metadata/media/enums.xml:V4l2VideoDecoderFunctions)
 
 constexpr std::array<const char*,
                      static_cast<size_t>(V4l2VideoDecoderFunctions::kMaxValue) +
@@ -687,7 +689,7 @@ CroStatus V4L2VideoDecoder::SetupOutputFormat(const gfx::Size& size,
   }
 
   // Ask the pipeline to pick the output format.
-  CroStatus::Or<PixelLayoutCandidate> status_or_output_format =
+  base::expected<PixelLayoutCandidate, CroStatus> status_or_output_format =
       client_->PickDecoderOutputFormat(
           candidates, visible_rect, aspect_ratio_.GetNaturalSize(visible_rect),
           /*output_size=*/std::nullopt, num_codec_reference_frames,

@@ -13,7 +13,6 @@
 #include "base/feature_list.h"
 #include "base/run_loop.h"
 #include "base/task/single_thread_task_runner.h"
-#include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
 #include "build/build_config.h"
 #include "components/autofill/content/renderer/autofill_agent_test_api.h"
@@ -158,11 +157,9 @@ TEST_P(FormSubmissionTrackerTest, FormlessXHRThenHide) {
       blink::mojom::UserActivationNotificationType::kTest);
   ExecuteJavaScriptForTests("document.getElementById('input1').focus();");
   test_api(autofill_agent()).TextFieldValueChanged(input1);
-
-  task_environment_.RunUntilIdle();
+  test_api(autofill_agent()).FlushAutofillDriverForTesting();
 
   form_tracker().AjaxSucceeded();
-  task_environment_.RunUntilIdle();
   // FormTracker should not think there is a submission because the <input>s are
   // still visible.
 
@@ -189,13 +186,12 @@ TEST_P(FormSubmissionTrackerTest, FormlessHideThenXhr) {
       blink::mojom::UserActivationNotificationType::kTest);
   ExecuteJavaScriptForTests("document.getElementById('input1').focus();");
   test_api(autofill_agent()).TextFieldValueChanged(input1);
-  task_environment_.RunUntilIdle();
+  test_api(autofill_agent()).FlushAutofillDriverForTesting();
 
   ExecuteJavaScriptForTests(
       "document.getElementById('input1').style.display = 'none';"
       "document.getElementById('input2').style.display = 'none';");
   ForceLayoutUpdate();
-  task_environment_.RunUntilIdle();
   // FormTracker should not think there is a submission because the page has not
   // done any XHRs.
 
@@ -204,7 +200,6 @@ TEST_P(FormSubmissionTrackerTest, FormlessHideThenXhr) {
               FireFormSubmission(mojom::SubmissionSource::XHR_SUCCEEDED, _))
       .Times(1);
   form_tracker().AjaxSucceeded();
-  task_environment_.RunUntilIdle();
 }
 
 // Check that if a SelectControlSelectionChanged() is called asynchronously
@@ -222,16 +217,16 @@ TEST_P(FormSubmissionTrackerTest, IgnoreSelectChangeInOldDocument) {
 
   EXPECT_CALL(autofill_driver(), SelectControlSelectionChanged);
   ExecuteJavaScriptForTests("document.getElementById('select').value = '1';");
-  task_environment_.RunUntilIdle();
+  test_api(autofill_agent()).FlushAutofillDriverForTesting();
 
   EXPECT_CALL(autofill_driver(), SelectControlSelectionChanged);
   ExecuteJavaScriptForTests("document.getElementById('select').value = '2';");
-  task_environment_.RunUntilIdle();
+  test_api(autofill_agent()).FlushAutofillDriverForTesting();
 
   EXPECT_CALL(autofill_driver(), SelectControlSelectionChanged).Times(0);
   ExecuteJavaScriptForTests("document.getElementById('select').value = '3';");
   LoadHTML(R"(<!DOCTYPE HTML><input>)");  // Turns the event into a no-op.
-  task_environment_.RunUntilIdle();
+  test_api(autofill_agent()).FlushAutofillDriverForTesting();
 }
 
 // Tests that a submission is fired upon starting a navigation resulting from
@@ -245,7 +240,7 @@ TEST_P(FormSubmissionTrackerTest, ProbablyFormSubmitted) {
   ExecuteJavaScriptForTests("document.getElementById('input1').value = '1';");
   blink::WebFormControlElement input1 = GetFormControlById("input1");
   test_api(autofill_agent()).TextFieldValueChanged(input1);
-  task_environment_.RunUntilIdle();
+  test_api(autofill_agent()).FlushAutofillDriverForTesting();
 
   EXPECT_CALL(
       form_tracker(),
@@ -279,7 +274,7 @@ TEST_P(FormSubmissionTrackerTest,
   ExecuteJavaScriptForTests("document.getElementById('input1').value = '1';");
   blink::WebFormControlElement input1 = GetFormControlById("input1");
   test_api(autofill_agent()).TextFieldValueChanged(input1);
-  task_environment_.RunUntilIdle();
+  test_api(autofill_agent()).FlushAutofillDriverForTesting();
 
   EXPECT_CALL(form_tracker(), FireFormSubmission).Times(0);
 
@@ -784,16 +779,11 @@ TEST_P(FormSubmissionTrackerTest,
   run_loop.Run();
 }
 
-#if BUILDFLAG(IS_MAC)
-#define MAYBE_NoLongerVisibleBothNoActions DISABLED_NoLongerVisibleBothNoActions
-#else
-#define MAYBE_NoLongerVisibleBothNoActions NoLongerVisibleBothNoActions
-#endif
 // Tests that completing an Ajax request and having the form with no action
 // specified disappear will trigger submission from Autofill's point of view,
 // even if there is still another form with no action in the page. It will
 // compare field data within the forms.
-TEST_P(FormSubmissionTrackerTest, MAYBE_NoLongerVisibleBothNoActions) {
+TEST_P(FormSubmissionTrackerTest, NoLongerVisibleBothNoActions) {
   LoadHTML(R"(
       <html>
         <form id='myForm'>
@@ -868,11 +858,8 @@ TEST_P(FormSubmissionTrackerTest, AjaxSucceeded_StillVisible) {
   SimulateUserInputChangeForElementById("fname", "Rick");
 
   EXPECT_CALL(autofill_driver(), FormSubmitted).Times(0);
-  base::RunLoop run_loop;
   form_tracker().AjaxSucceeded();
-  base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
-      FROM_HERE, run_loop.QuitClosure());
-  run_loop.Run();
+  test_api(autofill_agent()).FlushAutofillDriverForTesting();
 }
 
 // Tests that completing an Ajax request without any prior form interaction
@@ -892,11 +879,8 @@ TEST_P(FormSubmissionTrackerTest, AjaxSucceeded_NoFormInteractionInvisible) {
       "element.parentNode.removeChild(element);");
 
   EXPECT_CALL(autofill_driver(), FormSubmitted).Times(0);
-  base::RunLoop run_loop;
   form_tracker().AjaxSucceeded();
-  base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
-      FROM_HERE, run_loop.QuitClosure());
-  run_loop.Run();
+  test_api(autofill_agent()).FlushAutofillDriverForTesting();
 }
 
 // Tests that completing an Ajax request after having autofilled a form,
@@ -943,11 +927,8 @@ TEST_P(FormSubmissionTrackerTest, AjaxSucceeded_FilledFormStillVisible) {
   EXPECT_TRUE(SimulateFillForm());
 
   EXPECT_CALL(autofill_driver(), FormSubmitted).Times(0);
-  base::RunLoop run_loop;
   form_tracker().AjaxSucceeded();
-  base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
-      FROM_HERE, run_loop.QuitClosure());
-  run_loop.Run();
+  test_api(autofill_agent()).FlushAutofillDriverForTesting();
 }
 
 // Tests that completing an Ajax request without a form present will still
@@ -1047,7 +1028,7 @@ TEST_P(FormSubmissionTrackerTest, DynamicAutoCompleteOffFormSubmit) {
   ExecuteJavaScriptForTests(
       "document.getElementById('myForm')."
       "setAttribute('autocomplete', 'off');");
-  ASSERT_TRUE(base::test::RunUntil([&]() { return !form.AutoComplete(); }));
+  ASSERT_FALSE(form.AutoComplete());
 
   base::RunLoop run_loop;
   EXPECT_CALL(
@@ -1134,6 +1115,29 @@ TEST_P(FormSubmissionTrackerTest, FormSubmittedByProbablyFormSubmitted) {
       .WillOnce([&]() { run_loop.Quit(); });
   test_api(form_tracker()).DidStartNavigation(blink::kWebNavigationTypeOther);
   run_loop.Run();
+}
+
+// Tests that when a tracked <form> has no cached FormData and is removed from
+// the DOM before submission, GetSubmittedForm() does not fall back to
+// extracting unowned fields on the page.
+TEST_P(FormSubmissionTrackerTest,
+       RemovedFormDoesNotExtractUnownedFieldsOnSubmission) {
+  LoadHTML(R"(
+      <html>
+        <form id='myForm'></form>
+        <input type='text' id='unowned_field' value='unowned'>
+      </html>)");
+
+  blink::WebFormElement form =
+      GetWebElementById("myForm").DynamicTo<blink::WebFormElement>();
+  ASSERT_TRUE(form);
+  form_tracker().UpdateLastInteractedElement(form);
+  ASSERT_FALSE(test_api(form_tracker()).provisionally_saved_form().has_value());
+
+  EXPECT_CALL(autofill_driver(), FormSubmitted).Times(0);
+  ExecuteJavaScriptForTests("document.getElementById('myForm').remove();");
+  form_tracker().AjaxSucceeded();
+  test_api(autofill_agent()).FlushAutofillDriverForTesting();
 }
 
 }  // namespace

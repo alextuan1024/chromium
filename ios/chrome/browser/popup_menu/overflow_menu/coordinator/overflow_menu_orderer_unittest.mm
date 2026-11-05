@@ -13,7 +13,6 @@
 #import "ios/chrome/browser/popup_menu/overflow_menu/public/overflow_menu_action_provider.h"
 #import "ios/chrome/browser/popup_menu/overflow_menu/public/overflow_menu_constants.h"
 #import "ios/chrome/browser/popup_menu/overflow_menu/ui/ui_swift.h"
-#import "ios/chrome/browser/reader_mode/model/features.h"
 #import "ios/chrome/browser/shared/model/prefs/pref_names.h"
 #import "ios/web/public/test/web_task_environment.h"
 #import "testing/gtest_mac.h"
@@ -127,6 +126,8 @@ OverflowMenuAction* CreateOverflowMenuAction(
     : NSObject <OverflowMenuActionProvider>
 
 @property(nonatomic, assign) ActionRanking basePageActions;
+
+@property(nonatomic, assign) BOOL shouldShowLevelUpWalkthroughIPH;
 
 // By default, the provider will create a standard `OverflowMenuAction`
 // and return that in `-actionForActionType:`. This will override

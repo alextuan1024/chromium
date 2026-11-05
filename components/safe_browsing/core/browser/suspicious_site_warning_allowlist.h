@@ -11,6 +11,10 @@
 #include "base/time/time.h"
 #include "components/content_settings/core/browser/host_content_settings_map.h"
 
+namespace history {
+class DeletionInfo;
+}  // namespace history
+
 namespace safe_browsing {
 
 // These values are persisted to logs. Entries should not be renumbered and
@@ -42,6 +46,36 @@ enum class SuspiciousSiteWarningUserInteraction {
   kMaxValue = kDestroyed,
 };
 // LINT.ThenChange(//tools/metrics/histograms/metadata/safe_browsing/enums.xml:SuspiciousSiteWarningUserInteraction)
+
+// Represents user interaction choices for the suspicious site warning HaTS.
+enum class SuspiciousSiteWarningUserChoice {
+  kMarkAsSafe,
+  kBackToSafety,
+  kDismiss,
+  kManualNavigation,
+};
+
+const char* SuspiciousSiteWarningUserChoiceToString(
+    SuspiciousSiteWarningUserChoice choice);
+
+// Encapsulates user interaction state and metadata specific to a single
+// suspicious site warning presentation for HaTS surveys.
+struct SuspiciousSiteWarningSurveyState {
+  // Tracks if the user clicked the "Learn More" help center link.
+  bool learn_more_clicked = false;
+
+  // Tracks if the user has visited the suspicious site host previously.
+  bool repeat_visit = false;
+
+  // Tracks if a history query has already been dispatched for this navigation.
+  bool has_fetched_history = false;
+
+  // Tracks if the HaTS survey has already been triggered for this warning.
+  bool has_triggered_survey = false;
+
+  // Tracks accumulated prompt visible time across tab switches.
+  base::TimeDelta accumulated_visible_time;
+};
 
 // Stores local allowlist decisions for Suspicious Site Warnings (SSW).
 // When a user clicks "Mark as Safe" (or "Continue anyway") on an SSW warning,
@@ -85,6 +119,12 @@ class SuspiciousSiteWarningAllowlist {
 
   // Clears allowlist entries for the specified time range.
   void Clear(base::Time delete_begin, base::Time delete_end);
+
+  // Updates allowlist entries in response to browsing history deletions.
+  // Clears all entries if all history was deleted; otherwise revokes any
+  // allowlisted host whose remaining visit count in `deletion_info` is zero
+  // across all deleted origins for that host.
+  void OnHistoryDeletions(const history::DeletionInfo& deletion_info);
 
  private:
   scoped_refptr<HostContentSettingsMap> host_content_settings_map_;

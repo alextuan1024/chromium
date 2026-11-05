@@ -5,6 +5,7 @@
 #include "chrome/browser/net/profile_network_context_service.h"
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -32,19 +33,18 @@
 #include "base/trace_event/trace_event.h"
 #include "build/build_config.h"
 #include "build/chromeos_buildflags.h"
-#include "chrome/browser/browser_features.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/content_settings/cookie_settings_factory.h"
 #include "chrome/browser/content_settings/host_content_settings_map_factory.h"
 #include "chrome/browser/domain_reliability/service_factory.h"
-#include "chrome/browser/first_party_sets/first_party_sets_policy_service.h"
-#include "chrome/browser/first_party_sets/first_party_sets_policy_service_factory.h"
+#include "chrome/browser/net/disk_cache_dir_util.h"
 #include "chrome/browser/net/system_network_context_manager.h"
-#include "chrome/browser/privacy_sandbox/privacy_sandbox_settings_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/signin/signin_util.h"
 #include "chrome/browser/ssl/sct_reporting_service.h"
 #include "chrome/browser/ssl/sct_reporting_service_factory.h"
+#include "chrome/browser/ssl/ssl_config_overlay.h"
+#include "chrome/browser/ssl/ssl_config_service_manager.h"
 #include "chrome/browser/webid/federated_identity_permission_context.h"
 #include "chrome/browser/webid/federated_identity_permission_context_factory.h"
 #include "chrome/common/buildflags.h"
@@ -74,14 +74,12 @@
 #include "components/pref_registry/pref_registry_syncable.h"
 #include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/pref_service.h"
-#include "components/privacy_sandbox/privacy_sandbox_prefs.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/browser_thread.h"
-#include "content/public/browser/first_party_sets_handler.h"
 #include "content/public/browser/network_service_instance.h"
-#include "content/public/browser/reduce_accept_language_utils.h"
 #include "content/public/browser/shared_cors_origin_access_list.h"
 #include "content/public/browser/storage_partition.h"
+#include "content/public/common/content_features.h"
 #include "content/public/common/url_constants.h"
 #include "crypto/crypto_buildflags.h"
 #include "extensions/buildflags/buildflags.h"
@@ -98,7 +96,6 @@
 #include "services/network/public/cpp/cors/origin_access_list.h"
 #include "services/network/public/cpp/features.h"
 #include "services/network/public/mojom/cert_verifier_service.mojom.h"
-#include "services/network/public/mojom/first_party_sets_access_delegate.mojom.h"
 #include "services/network/public/mojom/network_context.mojom.h"
 #include "services/network/public/mojom/network_service.mojom.h"
 #include "third_party/blink/public/common/features.h"
@@ -114,9 +111,6 @@
 #include "chrome/browser/policy/networking/policy_cert_service.h"
 #include "chrome/browser/policy/networking/policy_cert_service_factory.h"
 #include "chrome/browser/policy/profile_policy_connector.h"
-#include "chrome/browser/ssl/ssl_config_overlay.h"
-#include "chrome/browser/ssl/ssl_config_service_manager.h"
-#include "chromeos/ash/components/browser_context_helper/browser_context_types.h"
 #include "chromeos/components/certificate_provider/certificate_provider.h"
 #include "chromeos/components/kiosk/kiosk_utils.h"
 #include "chromeos/constants/chromeos_features.h"
@@ -204,7 +198,7 @@ const char kHttpCacheFinchExperimentGroups[] =
 std::vector<std::string> TranslateStringArray(const base::ListValue& list) {
   std::vector<std::string> strings;
   for (const base::Value& value : list) {
-    DCHECK(value.is_string());
+    CHECK(value.is_string(), base::NotFatalUntil::M161);
     strings.push_back(value.GetString());
   }
   return strings;
@@ -234,9 +228,10 @@ bool IsAmbientAuthAllowedForProfile(Profile* profile) {
   }
 
   PrefService* local_state = g_browser_process->local_state();
-  DCHECK(local_state);
-  DCHECK(local_state->FindPreference(
-      prefs::kAmbientAuthenticationInPrivateModesEnabled));
+  CHECK(local_state, base::NotFatalUntil::M161);
+  CHECK(local_state->FindPreference(
+            prefs::kAmbientAuthenticationInPrivateModesEnabled),
+        base::NotFatalUntil::M161);
 
   net::AmbientAuthAllowedProfileTypes type =
       static_cast<net::AmbientAuthAllowedProfileTypes>(local_state->GetInteger(
@@ -272,7 +267,6 @@ void UpdateAntiAbuseSettings(Profile* profile) {
 bool IsContentSettingsTypeEnabled(ContentSettingsType type) {
   switch (type) {
     case ContentSettingsType::STORAGE_ACCESS:
-    case ContentSettingsType::TOP_LEVEL_STORAGE_ACCESS:
       return true;
     default:
       return content_settings::CookieSettings::GetContentSettingsTypes()
@@ -309,8 +303,7 @@ void UpdateCookieSettings(Profile* profile, ContentSettingsType type) {
   } else {
     settings = HostContentSettingsMapFactory::GetForProfile(profile)
                    ->GetSettingsForOneType(type);
-    if (type == ContentSettingsType::STORAGE_ACCESS ||
-        type == ContentSettingsType::TOP_LEVEL_STORAGE_ACCESS) {
+    if (type == ContentSettingsType::STORAGE_ACCESS) {
       // The network service only cares about "granted" settings, so we don't
       // bother to send any others.
       std::erase_if(settings, [](const auto& setting) {
@@ -544,7 +537,6 @@ ProfileNetworkContextService::ProfileNetworkContextService(Profile* profile)
 
   DisableQuicIfNotAllowed();
 
-#if BUILDFLAG(IS_CHROMEOS)
   base::RepeatingClosure ssl_compliance_changed_callback = base::BindRepeating(
       &ProfileNetworkContextService::UpdateSSLComplianceConfig,
       base::Unretained(this));
@@ -554,7 +546,6 @@ ProfileNetworkContextService::ProfileNetworkContextService(Profile* profile)
   profile_tls13_cipher_compliance_.Init(prefs::kPreferSlowCiphers,
                                         profile_prefs,
                                         ssl_compliance_changed_callback);
-#endif  // BUILDFLAG(IS_CHROMEOS)
 
   // Observe content settings so they can be synced to the network service.
   HostContentSettingsMapFactory::GetForProfile(profile_)->AddObserver(this);
@@ -670,13 +661,12 @@ void ProfileNetworkContextService::RegisterProfilePrefs(
   // Include user added platform certs by default.
   registry->RegisterBooleanPref(prefs::kCAPlatformIntegrationEnabled, true);
 #endif
-#if BUILDFLAG(IS_CHROMEOS)
-  // The following two prefs are primarily used (elsewhere) as local_state
-  // prefs, but they are also used here as Profile prefs, for the login screen
-  // Profile on ChromeOS. Their value is only used if managed.
+  // The following two prefs are registered both as local_state prefs (see
+  // SSLConfigServiceManager) and here as Profile prefs. The Profile-scoped pref
+  // holds the value that applies to this Profile's NetworkContexts. Their value
+  // is only used if managed.
   registry->RegisterStringPref(prefs::kPreferSlowKexAlgorithms, std::string());
   registry->RegisterStringPref(prefs::kPreferSlowCiphers, std::string());
-#endif
 }
 
 // static
@@ -719,11 +709,10 @@ void ProfileNetworkContextService::OnThirdPartyCookieBlockingChanged(
 }
 
 std::string ProfileNetworkContextService::ComputeAcceptLanguage() const {
-  return ComputeAcceptLanguageFromPref(
-      content::ReduceAcceptLanguageUtils::GetLanguagesWithMaxCount(
-          profile_->IsOffTheRecord() ? language::GetIncognitoLanguageList(
-                                           pref_accept_language_.GetValue())
-                                     : pref_accept_language_.GetValue()));
+  return ComputeAcceptLanguageFromPref(language::GetLanguagesWithMaxCount(
+      profile_->IsOffTheRecord()
+          ? language::GetIncognitoLanguageList(pref_accept_language_.GetValue())
+          : pref_accept_language_.GetValue()));
 }
 
 void ProfileNetworkContextService::UpdateReferrersEnabled() {
@@ -754,7 +743,6 @@ void ProfileNetworkContextService::UpdateCTPolicy() {
   // TODO(crbug.com/41392053): CT policy needs to be sent to both network
   // service and cert verifier service. Finish refactoring so that it is only
   // sent to cert verifier service.
-  std::vector<network::mojom::NetworkContext*> contexts;
   profile_->ForEachLoadedStoragePartition(
       [&](content::StoragePartition* storage_partition) {
         storage_partition->GetNetworkContext()->SetCTPolicy(GetCTPolicy());
@@ -1095,7 +1083,6 @@ void ProfileNetworkContextService::
       });
 }
 
-#if BUILDFLAG(IS_CHROMEOS)
 void ProfileNetworkContextService::ConfigureSSLComplianceSettings(
     network::mojom::SSLConfig* config) const {
   SSLConfigServiceManager::ConfigureSSLComplianceSettings(
@@ -1104,16 +1091,14 @@ void ProfileNetworkContextService::ConfigureSSLComplianceSettings(
 }
 
 void ProfileNetworkContextService::UpdateSSLComplianceConfig() {
+  // Clean up null or defunct overlays.
+  std::erase_if(ssl_config_overlays_, [](const auto& overlay) {
+    return overlay == nullptr || !overlay->IsBound();
+  });
   for (auto& overlay : ssl_config_overlays_) {
-    // Clean up a bit while we're iterating.
-    if (!overlay || !overlay->IsBound()) {
-      overlay.reset();
-      continue;
-    }
     overlay->Update();
   }
 }
-#endif  // BUILDFLAG(IS_CHROMEOS)
 
 // static
 network::mojom::CookieManagerParamsPtr
@@ -1190,6 +1175,13 @@ void ProfileNetworkContextService::FlushCachedClientCertIfNeeded(
         storage_partition->GetNetworkContext()->FlushCachedClientCertIfNeeded(
             host, certificate);
       });
+}
+
+std::optional<bool> ProfileNetworkContextService::IsProxyConfigured() const {
+  if (!proxy_config_monitor_) {
+    return std::nullopt;
+  }
+  return proxy_config_monitor_->IsProxyConfigured();
 }
 
 void ProfileNetworkContextService::FlushProxyConfigMonitorForTesting() {
@@ -1391,8 +1383,8 @@ void ProfileNetworkContextService::ConfigureNetworkContextParamsInternal(
     // Configure the HTTP cache path and size.
     base::FilePath base_cache_path;
     chrome::GetUserCacheDirectory(path, &base_cache_path);
-    base::FilePath disk_cache_dir =
-        local_state->GetFilePath(prefs::kDiskCacheDir);
+    const base::FilePath disk_cache_dir =
+        chrome_browser_net::GetDiskCacheDir(local_state);
     if (!disk_cache_dir.empty()) {
       base_cache_path = disk_cache_dir.Append(base_cache_path.BaseName());
     }
@@ -1582,23 +1574,6 @@ void ProfileNetworkContextService::ConfigureNetworkContextParamsInternal(
   network_context_params->block_trust_tokens =
       anti_abuse_content_setting == CONTENT_SETTING_BLOCK;
 
-  network_context_params->first_party_sets_access_delegate_params =
-      network::mojom::FirstPartySetsAccessDelegateParams::New();
-  network_context_params->first_party_sets_access_delegate_params->enabled =
-      PrivacySandboxSettingsFactory::GetForProfile(profile_)
-          ->AreRelatedWebsiteSetsEnabled();
-
-  mojo::Remote<network::mojom::FirstPartySetsAccessDelegate>
-      fps_access_delegate_remote;
-  network_context_params->first_party_sets_access_delegate_receiver =
-      fps_access_delegate_remote.BindNewPipeAndPassReceiver();
-
-  first_party_sets::FirstPartySetsPolicyService* fps_service =
-      first_party_sets::FirstPartySetsPolicyServiceFactory::
-          GetForBrowserContext(profile_);
-  DCHECK(fps_service);
-  fps_service->AddRemoteAccessDelegate(std::move(fps_access_delegate_remote));
-
   network_context_params->acam_preflight_spec_conformant =
       profile_->GetPrefs()->GetBoolean(
           prefs::kAccessControlAllowMethodsInCORSPreflightSpecConformant);
@@ -1632,18 +1607,14 @@ void ProfileNetworkContextService::ConfigureNetworkContextParamsInternal(
   }
 #endif
 
-#if BUILDFLAG(IS_CHROMEOS)
-  if (ash::IsSigninBrowserContext(profile_)) {
-    // base::Unretained is safe because the overlay is owned by `this`.
-    auto& overlay = ssl_config_overlays_.emplace_back(
-        std::make_unique<SSLConfigOverlay>(base::BindRepeating(
-            &ProfileNetworkContextService::ConfigureSSLComplianceSettings,
-            base::Unretained(this))));
-    if (!overlay->Init(network_context_params)) {
-      ssl_config_overlays_.pop_back();
-    }
+  // base::Unretained is safe because the overlay is owned by `this`.
+  auto& overlay = ssl_config_overlays_.emplace_back(
+      std::make_unique<SSLConfigOverlay>(base::BindRepeating(
+          &ProfileNetworkContextService::ConfigureSSLComplianceSettings,
+          base::Unretained(this))));
+  if (!overlay->Init(network_context_params)) {
+    ssl_config_overlays_.pop_back();
   }
-#endif  // BUILDFLAG(IS_CHROMEOS)
 }
 
 base::FilePath ProfileNetworkContextService::GetPartitionPath(
@@ -1710,6 +1681,10 @@ void ProfileNetworkContextService::Shutdown() {
   enable_referrers_.Destroy();
   pref_accept_language_.Destroy();
   quic_allowed_.Destroy();
+
+  ssl_config_overlays_.clear();
+  profile_key_exchange_compliance_.Destroy();
+  profile_tls13_cipher_compliance_.Destroy();
 
   proxy_config_monitor_ = nullptr;
 

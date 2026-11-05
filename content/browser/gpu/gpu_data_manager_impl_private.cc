@@ -19,10 +19,10 @@
 #include <array>
 #include <iterator>
 #include <memory>
+#include <ranges>
 #include <utility>
 
 #include "base/command_line.h"
-#include "base/containers/adapters.h"
 #include "base/containers/circular_deque.h"
 #include "base/debug/dump_without_crashing.h"
 #include "base/feature_list.h"
@@ -82,8 +82,6 @@
 #include "ui/gl/gl_features.h"
 #include "ui/gl/gl_implementation.h"
 #include "ui/gl/gl_switches.h"
-#include "ui/gl/gpu_preference.h"
-#include "ui/gl/gpu_switching_manager.h"
 
 #if BUILDFLAG(IS_ANDROID)
 #include "base/android/application_status_listener.h"
@@ -308,7 +306,9 @@ void UpdateFeatureStats(const gpu::GpuFeatureInfo& gpu_feature_info) {
       command_line.HasSwitch(switches::kDisableWebGL),
       (command_line.HasSwitch(switches::kDisableWebGL) ||
        command_line.HasSwitch(switches::kDisableWebGL2)),
-      !command_line.HasSwitch(switches::kEnableUnsafeWebGPU),
+      // WebGPU is turned off via the WebGPUService feature rather than a
+      // switch. In that case, its status is already kGpuFeatureStatusDisabled.
+      false,
   });
   for (size_t i = 0; i < kGpuFeatures.size(); ++i) {
     // We can't use UMA_HISTOGRAM_ENUMERATION here because the same name is
@@ -435,6 +435,14 @@ class HDRProxy {
 
 GpuDataManagerImplPrivate::GpuDataManagerImplPrivate(GpuDataManagerImpl* owner)
     : owner_(owner),
+#if BUILDFLAG(IS_MAC)
+      supports_gpu_mode_hardware_gl_(false),
+#elif BUILDFLAG(IS_ANDROID)
+      supports_gpu_mode_hardware_gl_(
+          !base::FeatureList::IsEnabled(features::kSkipVulkanBlocklist)),
+#else
+      supports_gpu_mode_hardware_gl_(true),
+#endif
       observer_list_(base::MakeRefCounted<GpuDataManagerObserverList>()) {
   CHECK(owner_, base::NotFatalUntil::M159);
   InitializeGpuModes();
@@ -442,10 +450,6 @@ GpuDataManagerImplPrivate::GpuDataManagerImplPrivate(GpuDataManagerImpl* owner)
   EnableIntelShaderCache();
 #endif  // BUILDFLAG(IS_WIN)
   base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
-  if (command_line->HasSwitch(switches::kDisableGpuCompositing)) {
-    SetGpuCompositingDisabled();
-  }
-
   if (command_line->HasSwitch(switches::kSingleProcess) ||
       command_line->HasSwitch(switches::kInProcessGPU)) {
     AppendGpuCommandLine(command_line, GPU_PROCESS_KIND_SANDBOXED);
@@ -500,7 +504,7 @@ void GpuDataManagerImplPrivate::InitializeGpuModes() {
       // support software compositing or sometimes fail dawn initialization.
       // TODO(b/323953910): Eliminate this fallback on each platform once
       // Graphite stability is sufficient on that platform.
-      if constexpr (kSupportsGpuModeHardwareGL) {
+      if (supports_gpu_mode_hardware_gl_) {
         fallback_modes_.push_back(gpu::GpuMode::HARDWARE_GL);
       }
       // When kLateGraphiteFeatureCheck is enabled, the browser gates hardware
@@ -579,25 +583,26 @@ bool GpuDataManagerImplPrivate::GpuAccessAllowed(std::string* reason) const {
       return true;
     default:
       if (reason) {
-        // If SwiftShader is allowed, then we are here because it was blocked.
-        if (SoftwareGLAllowed()) {
-          *reason = "GPU process crashed too many times with software GL.";
+        *reason = "GPU access is disabled ";
+        const bool software_gl_allowed = SoftwareGLAllowed();
+        // just running with --disable-gpu only will go to
+        // GpuMode::SOFTWARE_GL instead. Adding --disable-gpu and
+        // --disable-software-rasterizer makes GpuAccessAllowed false and it
+        // comes here.
+        if (!software_gl_allowed &&
+            base::CommandLine::ForCurrentProcess()->HasSwitch(
+                switches::kDisableGpu)) {
+          *reason +=
+              "through commandline switch --disable-gpu and "
+              "--disable-software-rasterizer.";
+        } else if (!software_gl_allowed && hardware_disabled_explicitly_) {
+          *reason += "in chrome://settings.";
+        } else if (gpu_crash_limit_reached_) {
+          *reason += "after the GPU process crash limit was reached.";
         } else {
-          *reason = "GPU access is disabled ";
-          // just running with --disable-gpu only will go to
-          // GpuMode::SOFTWARE_GL instead. Adding --disable-gpu and
-          // --disable-software-rasterizer makes GpuAccessAllowed false and it
-          // comes here.
-          if (base::CommandLine::ForCurrentProcess()->HasSwitch(
-                  switches::kDisableGpu)) {
-            *reason +=
-                "through commandline switch --disable-gpu and "
-                "--disable-software-rasterizer.";
-          } else if (hardware_disabled_explicitly_) {
-            *reason += "in chrome://settings.";
-          } else {
-            *reason += "due to frequent crashes.";
-          }
+          *reason +=
+              "because no usable hardware or software GPU "
+              "implementation is available.";
         }
       }
       return false;
@@ -733,7 +738,9 @@ void GpuDataManagerImplPrivate::RequestDawnInfo(bool delayed,
       },
       collect_metrics);
 
-  GetUIThreadTaskRunner({base::TaskPriority::BEST_EFFORT})
+  base::TaskPriority priority = delayed ? base::TaskPriority::BEST_EFFORT
+                                        : base::TaskPriority::USER_BLOCKING;
+  GetUIThreadTaskRunner({priority})
       ->PostDelayedTask(FROM_HERE, std::move(task), delta);
 }
 
@@ -1354,7 +1361,7 @@ void GpuDataManagerImplPrivate::UpdateGpuPreferences(
   }
 
   bool has_software_mode = false;
-  for (gpu::GpuMode mode : base::Reversed(fallback_modes_)) {
+  for (gpu::GpuMode mode : std::views::reverse(fallback_modes_)) {
     gpu::GrContextType type = gpu::GpuModeToGrContextType(mode);
     // kNone might be duplicated between SOFTWARE_GL and DISPLAY_COMPOSITOR gpu
     // modes, both of which can return kNone.
@@ -1436,8 +1443,6 @@ void GpuDataManagerImplPrivate::OnDisplayAdded(
     const display::Display& new_display) {
   base::AutoUnlock unlock(owner_->lock_);
 
-  // Notify observers in the browser process.
-  ui::GpuSwitchingManager::GetInstance()->NotifyDisplayAdded();
   // Pass the notification to the GPU process to notify observers there.
   GpuProcessHost::CallOnUI(FROM_HERE, GPU_PROCESS_KIND_SANDBOXED,
                            /*force_create=*/false ,
@@ -1451,8 +1456,6 @@ void GpuDataManagerImplPrivate::OnDisplaysRemoved(
     const display::Displays& removed_displays) {
   base::AutoUnlock unlock(owner_->lock_);
 
-  // Notify observers in the browser process.
-  ui::GpuSwitchingManager::GetInstance()->NotifyDisplayRemoved();
   // Pass the notification to the GPU process to notify observers there.
   GpuProcessHost::CallOnUI(FROM_HERE, GPU_PROCESS_KIND_SANDBOXED,
                            /*force_create=*/false ,
@@ -1467,8 +1470,6 @@ void GpuDataManagerImplPrivate::OnDisplayMetricsChanged(
     uint32_t changed_metrics) {
   base::AutoUnlock unlock(owner_->lock_);
 
-  // Notify observers in the browser process.
-  ui::GpuSwitchingManager::GetInstance()->NotifyDisplayMetricsChanged();
   // Pass the notification to the GPU process to notify observers there.
   GpuProcessHost::CallOnUI(FROM_HERE, GPU_PROCESS_KIND_SANDBOXED,
                            /*force_create=*/false ,
@@ -1646,6 +1647,7 @@ void GpuDataManagerImplPrivate::FallBackToNextGpuMode() {
 }
 
 void GpuDataManagerImplPrivate::FallBackToNextGpuModeDueToCrash() {
+  gpu_crash_limit_reached_ = true;
   FallBackToNextGpuMode();
 
   // If we fell back to sofware GL due to crashes and it is disabled with a

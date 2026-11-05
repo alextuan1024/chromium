@@ -4,15 +4,31 @@
 
 package org.chromium.chrome.test.transit;
 
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotEquals;
+import static org.junit.Assert.assertNotNull;
+
 import androidx.test.platform.app.InstrumentationRegistry;
 
 import com.google.errorprone.annotations.CheckReturnValue;
 
+import org.chromium.base.ThreadUtils;
+import org.chromium.base.test.transit.Facility;
 import org.chromium.base.test.transit.Station;
+import org.chromium.base.test.transit.Triggers;
 import org.chromium.base.test.transit.TripBuilder;
 import org.chromium.chrome.browser.ChromeTabbedActivity;
 import org.chromium.chrome.browser.app.ChromeActivity;
+import org.chromium.chrome.browser.tab.Tab;
+import org.chromium.chrome.browser.tabmodel.TabClosingSource;
 import org.chromium.chrome.browser.tabmodel.TabClosureParams;
+import org.chromium.chrome.browser.tabmodel.TabModel;
+import org.chromium.chrome.browser.tabmodel.TabModelSelector;
+import org.chromium.chrome.browser.tabmodel.TabModelUtils;
+import org.chromium.chrome.test.transit.hub.RegularTabSwitcherStation;
+import org.chromium.chrome.test.transit.hub.UndoSnackbarFacility;
+import org.chromium.chrome.test.transit.page.CtaPageStation;
+import org.chromium.chrome.test.transit.tabmodel.TabStateInitializedCondition;
 import org.chromium.chrome.test.util.MenuUtils;
 
 /** Collection of Chrome-specific Triggers to start Transitions. */
@@ -36,17 +52,85 @@ public class ChromeTriggers {
                                 menuId));
     }
 
-    /** Close all tabs in the current tab model programmatically. */
+    /**
+     * Closes all regular and incognito tabs programmatically and arrives at the regular tab
+     * switcher.
+     *
+     * @param station The current Station.
+     * @param facilities Facilities expected after closing, e.g. an {@link UndoSnackbarFacility}.
+     */
+    public static RegularTabSwitcherStation closeAllTabsProgrammatically(
+            Station<ChromeTabbedActivity> station, Facility<?>... facilities) {
+        TabModelSelector selector = station.getActivity().getTabModelSelector();
+        return station.runOnUiThreadTo(
+                        () -> {
+                            TabClosureParams params =
+                                    TabClosureParams.closeAllTabs()
+                                            .uponExit(false)
+                                            .tabClosingSource(TabClosingSource.GRID_TAB_SWITCHER)
+                                            .build();
+                            selector.getModel(/* incognito= */ false)
+                                    .getTabRemover()
+                                    .closeTabs(params, /* allowDialog= */ false);
+                            selector.getModel(/* incognito= */ true)
+                                    .getTabRemover()
+                                    .closeTabs(params, /* allowDialog= */ false);
+                        })
+                .arriveAt(
+                        new RegularTabSwitcherStation(
+                                /* regularTabsExist= */ false, /* incognitoTabsExist= */ false),
+                        facilities);
+    }
+
+    /**
+     * Selects the tab at |index| in the current tab model of |activity| programmatically and hops
+     * on at it.
+     *
+     * <p>For tests that don't hold a page Station; those should use {@link
+     * CtaPageStation#selectTabFast}. Waits for the tab state to be initialized first, since
+     * selecting a tab before tabs are restored (e.g. after Activity recreation) does nothing.
+     */
+    public static CtaPageStation selectTabProgrammatically(
+            ChromeTabbedActivity activity, int index) {
+        TabModelSelector selector = activity.getTabModelSelector();
+        Triggers.noopTo().waitFor(new TabStateInitializedCondition(() -> selector));
+        TabModel tabModel = ThreadUtils.runOnUiThreadBlocking(selector::getCurrentModel);
+        Tab tab = ThreadUtils.runOnUiThreadBlocking(() -> tabModel.getTabAt(index));
+        assertNotNull("No tab at index " + index, tab);
+        assertNotEquals(
+                "Tab at index " + index + " is already selected",
+                index,
+                (int) ThreadUtils.runOnUiThreadBlocking(tabModel::index));
+        CtaPageStation page =
+                Triggers.runOnUiThreadTo(() -> TabModelUtils.setIndex(tabModel, index))
+                        .hopOnTo(
+                                activity,
+                                CtaPageStation.newGenericBuilder()
+                                        .withIncognito(tabModel.isIncognitoBranded())
+                                        .initSelectingExistingTab()
+                                        .build());
+        // The page's TabSelectedCondition is fulfilled by any selected tab.
+        assertEquals(tab, page.getTab());
+        return page;
+    }
+
+    /**
+     * Close the current tab of |activity| programmatically, without undo.
+     *
+     * <p>Takes the activity separately from |station| for Stations that are not bound to a
+     * ChromeTabbedActivity, e.g. a Settings page shown in a tab.
+     */
     @CheckReturnValue
-    public static TripBuilder closeAllTabsProgrammaticallyTo(
-            Station<? extends ChromeTabbedActivity> station) {
+    public static TripBuilder closeCurrentTabProgrammaticallyTo(
+            Station<?> station, ChromeTabbedActivity activity) {
         return station.runOnUiThreadTo(
                 () ->
-                        station.getActivity()
-                                .getCurrentTabModel()
+                        activity.getCurrentTabModel()
                                 .getTabRemover()
                                 .closeTabs(
-                                        TabClosureParams.closeAllTabs().build(),
+                                        TabClosureParams.closeTab(activity.getActivityTab())
+                                                .allowUndo(false)
+                                                .build(),
                                         /* allowDialog= */ false));
     }
 }

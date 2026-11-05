@@ -18,7 +18,6 @@
 #include "chrome/browser/glic/public/glic_keyed_service.h"
 #include "chrome/browser/glic/public/glic_keyed_service_factory.h"
 #include "chrome/browser/glic/test_support/glic_browser_test.h"
-#include "chrome/browser/ui/omnibox/omnibox_next_features.h"
 #include "chrome/browser/ui/tabs/tab_enums.h"
 #include "chrome/common/chrome_features.h"
 #include "components/tabs/public/tab_interface.h"
@@ -35,14 +34,7 @@ namespace {
 class GlicDelegatingSharingManagerBrowserTest : public GlicBrowserTest {
  public:
   GlicDelegatingSharingManagerBrowserTest() {
-    scoped_feature_list_.InitWithFeatures(
-        /*enabled_features=*/
-        {features::kGlic},
-        /*disabled_features=*/
-        // TODO(crbug.com/452061489): Fix tests that fail when the WebUI Omnibox
-        // is enabled and then remove these two Features.
-        {omnibox::internal::kWebUIOmniboxPopup,
-         omnibox::internal::kWebUIOmniboxAimPopup});
+    scoped_feature_list_.InitWithFeatures({features::kGlic}, {});
   }
   ~GlicDelegatingSharingManagerBrowserTest() override = default;
 
@@ -192,7 +184,7 @@ IN_PROC_BROWSER_TEST_F(GlicDelegatingSharingManagerBrowserTest,
   auto pin_event_sub = manager_.AddTabPinningStatusEventCallback(
       pin_event_future.GetRepeatingCallback());
 
-  base::test::TestFuture<const std::vector<tabs::TabInterface*>&>
+  base::test::TestFuture<const std::vector<raw_ptr<tabs::TabInterface>>&>
       pinned_tabs_future;
   auto pinned_tabs_sub = manager_.AddPinnedTabsChangedCallback(
       pinned_tabs_future.GetRepeatingCallback());
@@ -525,9 +517,6 @@ class GlicStablePinningDelegatingSharingManagerBrowserTest
 
 // TODO(b:479854184): make this work on Android.
 #if BUILDFLAG(IS_ANDROID)
-#define MAYBE_StablePinningDelegateSwap DISABLED_StablePinningDelegateSwap
-// TODO(crbug.com/542347163): Re-enable test.
-#elif BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
 #define MAYBE_StablePinningDelegateSwap DISABLED_StablePinningDelegateSwap
 #else
 #define MAYBE_StablePinningDelegateSwap StablePinningDelegateSwap

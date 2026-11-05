@@ -133,6 +133,8 @@ WorkletGlobalScope::WorkletGlobalScope(
 
   SetOutsideContentSecurityPolicies(
       mojo::Clone(creation_params->outside_content_security_policies));
+  SetOutsideSettingsReporter(
+      std::move(creation_params->outside_settings_reporter));
 
   // https://drafts.css-houdini.org/worklets/#creating-a-workletglobalscope
   // Step 6: "Invoke the initialize a global object's CSP list algorithm given
@@ -168,7 +170,6 @@ WorkletGlobalScope::~WorkletGlobalScope() = default;
 const BrowserInterfaceBrokerProxy&
 WorkletGlobalScope::GetBrowserInterfaceBroker() const {
   if (browser_interface_broker_proxy_.is_bound()) {
-    CHECK(IsSharedStorageWorkletGlobalScope());
     return browser_interface_broker_proxy_;
   }
 
@@ -227,7 +228,9 @@ void WorkletGlobalScope::AddInspectorIssue(AuditsIssue issue) {
   }
 }
 
-void WorkletGlobalScope::ExceptionThrown(ErrorEvent* error_event) {
+void WorkletGlobalScope::ExceptionThrown(
+    ErrorEvent* error_event,
+    SanitizeScriptErrors sanitize_script_errors) {
   if (IsMainThreadWorkletGlobalScope()) {
     if (!frame_) {
       return;

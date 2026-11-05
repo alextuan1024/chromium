@@ -14,10 +14,8 @@
 #import "ios/chrome/browser/metrics/model/metrics_app_interface.h"
 #import "ios/chrome/browser/send_tab_to_self/ui/send_tab_to_self_constants.h"
 #import "ios/chrome/browser/shared/model/url/chrome_url_constants.h"
-#import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/signin/model/fake_system_identity.h"
 #import "ios/chrome/common/ui/button_stack/button_stack_constants.h"
-#import "ios/chrome/grit/ios_branded_strings.h"
 #import "ios/chrome/grit/ios_strings.h"
 #import "ios/chrome/test/earl_grey/chrome_earl_grey.h"
 #import "ios/chrome/test/earl_grey/chrome_earl_grey_ui.h"
@@ -33,9 +31,19 @@
 
 namespace {
 
-NSString* const kTargetDeviceName = @"My other device";
+NSString* const kTargetDeviceName = @"My target device";
+NSString* const kSecondTargetDeviceName = @"My second target device";
 NSString* const kRemoteDeviceName = @"remote_device";
 NSString* const kExampleURL = @"https://www.example.com/";
+
+NSString* const kInvokedEntryPointHistogram =
+    @"Sharing.SendTabToSelf.InvokedEntryPoint";
+NSString* const kSentEntryPointHistogram =
+    @"Sharing.SendTabToSelf.SentEntryPoint";
+NSString* const kActivatedEntryPointHistogram =
+    @"Sharing.SendTabToSelf.ActivatedEntryPoint";
+NSString* const kTimeOpenedToActivatedHistogram =
+    @"Sharing.SendTabToSelf.TimeOpenedToActivated";
 
 constexpr std::string_view kActivePagePath =
     "/send_tab_to_self/send_tab_to_self_active_page.html";
@@ -77,6 +85,16 @@ id<GREYMatcher> SnackbarWithMessageAndSubtext(NSString* message,
                     grey_descendant(grey_accessibilityLabel(message)),
                     grey_descendant(grey_accessibilityLabel(subtext)), nil);
 }
+
+// Returns a matcher for the success snackbar shown after sending a tab to
+// `device_name` for `user_email`.
+id<GREYMatcher> PostSendSuccessSnackbar(NSString* device_name,
+                                        NSString* user_email) {
+  NSString* message =
+      l10n_util::GetNSStringF(IDS_SEND_TAB_TO_SELF_POST_SEND_SUCCESS_TOAST,
+                              base::SysNSStringToUTF16(device_name));
+  return SnackbarWithMessageAndSubtext(message, user_email);
+}
 // Returns a matcher for an infobar banner label stack displaying `label`.
 id<GREYMatcher> InfobarBannerLabelsStack(NSString* label) {
   return grey_allOf(
@@ -104,9 +122,22 @@ void OpenTabGridAndWaitTillVisible() {
                       chrome_test_util::TabGridCellAtIndex(0)];
 }
 
+// Leaves the Tab Grid to bring the active WebState back to the foreground.
+void DismissTabGrid() {
+  [[EarlGrey selectElementWithMatcher:chrome_test_util::TabGridDoneButton()]
+      performAction:grey_tap()];
+  [ChromeEarlGreyUI waitForAppToIdle];
+}
+
 // Returns the localized label for the Send Tab to Self button.
 NSString* SendTabToSelfButtonLabel() {
   return l10n_util::GetNSString(IDS_SEND_TAB_TO_SELF);
+}
+
+// Returns a matcher for the "Send to your device" context menu item.
+id<GREYMatcher> SendToDevicesMenuItem() {
+  return chrome_test_util::ContextMenuItemWithAccessibilityLabelId(
+      IDS_SEND_TAB_TO_SELF);
 }
 
 // Taps the "Send tab to self" button in the open Activity (Share) Sheet.
@@ -163,16 +194,6 @@ void DismissSendTabToSelfModal() {
 
 - (AppLaunchConfiguration)appConfigurationForTestCase {
   AppLaunchConfiguration config = [super appConfigurationForTestCase];
-  config.features_enabled.push_back(
-      send_tab_to_self::kSendTabToSelfPropagateScrollPosition);
-  config.features_enabled.push_back(
-      send_tab_to_self::kSendTabToSelfPropagateFormFields);
-  config.features_enabled.push_back(
-      send_tab_to_self::kSendTabToSelfExtraEntryPoints);
-  config.features_enabled.push_back(
-      send_tab_to_self::kSendTabToSelfEnhancedBottomsheet);
-  config.features_enabled.push_back(
-      send_tab_to_self::kSendTabToSelfPostSendToast);
   config.features_enabled.push_back(
       send_tab_to_self::kSendTabToSelfIOSShareSheetDeviceList);
   return config;
@@ -306,8 +327,88 @@ void DismissSendTabToSelfModal() {
   DismissSendTabToSelfModal();
 }
 
-// Tests that when kSendTabToSelfPostSendToast is enabled, sending a tab to a
-// target device shows a success snackbar toast.
+// Tests that rotating the device to landscape mode does not truncate target
+// device names or action buttons in the
+// `SendTabToSelfBottomSheetViewController`.
+- (void)testDevicePickerBottomSheetInLandscapeWithoutTruncation {
+  // Configure multiple target devices with distinct timestamps to guarantee
+  // deterministic ordering in the bottom sheet.
+  [ChromeEarlGrey addFakeSyncServerDeviceInfo:kTargetDeviceName
+                         lastUpdatedTimestamp:base::Time::Now()];
+  [ChromeEarlGrey
+      addFakeSyncServerDeviceInfo:kSecondTargetDeviceName
+             lastUpdatedTimestamp:base::Time::Now() - base::Minutes(5)];
+
+  LoadActivePage(self.testServer);
+  FakeSystemIdentity* fakeIdentity = [FakeSystemIdentity fakeIdentity1];
+  [SigninEarlGrey signinWithFakeIdentity:fakeIdentity];
+
+  // Open the Share Sheet and tap "Send tab to self" to present the bottom
+  // sheet.
+  [ChromeEarlGreyUI shareCurrentPage];
+  TapSendTabToSelfInActivitySheet();
+
+  // Verify that the bottom sheet is presented in portrait and both target
+  // devices are visible.
+  [ChromeEarlGrey
+      waitForSufficientlyVisibleElementWithMatcher:grey_accessibilityLabel(
+                                                       kTargetDeviceName)];
+  [ChromeEarlGrey waitForSufficientlyVisibleElementWithMatcher:
+                      grey_accessibilityLabel(kSecondTargetDeviceName)];
+
+  // Rotate the device to landscape.
+  [EarlGrey rotateInterfaceToOrientation:UIInterfaceOrientationLandscapeLeft
+                                   error:nil];
+
+  // Verify that the interface orientation has updated to landscape.
+  GREYAssertEqual([ChromeEarlGrey interfaceOrientation],
+                  UIInterfaceOrientationLandscapeLeft,
+                  @"Interface orientation should be landscape left.");
+
+  // Verify that target device names and action buttons remain sufficiently
+  // visible and are not truncated in landscape mode. Since rotation waits for
+  // the app to idle, elements are verified immediately without polling.
+  [[EarlGrey
+      selectElementWithMatcher:grey_accessibilityLabel(kTargetDeviceName)]
+      assertWithMatcher:grey_sufficientlyVisible()];
+  [[EarlGrey
+      selectElementWithMatcher:grey_accessibilityLabel(kSecondTargetDeviceName)]
+      assertWithMatcher:grey_sufficientlyVisible()];
+  [[EarlGrey selectElementWithMatcher:grey_accessibilityID(
+                                          kSendTabToSelfModalSendButton)]
+      assertWithMatcher:grey_sufficientlyVisible()];
+  [[EarlGrey selectElementWithMatcher:grey_accessibilityID(
+                                          kSendTabToSelfModalCancelButton)]
+      assertWithMatcher:grey_sufficientlyVisible()];
+
+  // Select the second target device in landscape orientation.
+  [[EarlGrey
+      selectElementWithMatcher:grey_accessibilityLabel(kSecondTargetDeviceName)]
+      performAction:grey_tap()];
+
+  // Tap the Send button while in landscape orientation.
+  [[EarlGrey selectElementWithMatcher:grey_accessibilityID(
+                                          kSendTabToSelfModalSendButton)]
+      performAction:grey_tap()];
+
+  // Verify that the bottom sheet is dismissed.
+  [ChromeEarlGrey waitForUIElementToDisappearWithMatcher:
+                      grey_accessibilityID(kSendTabToSelfModalSendButton)];
+
+  // Wait for and verify the success snackbar message for the second device.
+  [ChromeEarlGrey
+      waitForSufficientlyVisibleElementWithMatcher:PostSendSuccessSnackbar(
+                                                       kSecondTargetDeviceName,
+                                                       fakeIdentity.userEmail)];
+
+  DismissSnackbar();
+
+  // Restore the device orientation to portrait.
+  [EarlGrey rotateInterfaceToOrientation:UIInterfaceOrientationPortrait
+                                   error:nil];
+}
+
+// Tests that sending a tab to a target device shows a success snackbar toast.
 - (void)testSendTabToSelfAndVerifySuccessSnackbar {
   FakeSystemIdentity* fakeIdentity = [FakeSystemIdentity fakeIdentity1];
   SetupActivePageAndOpenModal(self.testServer, kTargetDeviceName, fakeIdentity);
@@ -327,12 +428,10 @@ void DismissSendTabToSelfModal() {
                       grey_accessibilityID(kSendTabToSelfModalSendButton)];
 
   // Wait for and verify the success snackbar message.
-  NSString* snackbarMessage =
-      l10n_util::GetNSStringF(IDS_SEND_TAB_TO_SELF_POST_SEND_SUCCESS_TOAST,
-                              base::SysNSStringToUTF16(kTargetDeviceName));
-  [ChromeEarlGrey waitForSufficientlyVisibleElementWithMatcher:
-                      SnackbarWithMessageAndSubtext(snackbarMessage,
-                                                    fakeIdentity.userEmail)];
+  [ChromeEarlGrey
+      waitForSufficientlyVisibleElementWithMatcher:PostSendSuccessSnackbar(
+                                                       kTargetDeviceName,
+                                                       fakeIdentity.userEmail)];
 
   DismissSnackbar();
 }
@@ -375,8 +474,7 @@ void DismissSendTabToSelfModal() {
       kPageText, textFragment);
 }
 
-// Tests that when kSendTabToSelfPostSendToast is enabled, a network failure
-// during send displays an error snackbar toast.
+// Tests that a network failure during send displays an error snackbar toast.
 - (void)testSendTabToSelfAndVerifyErrorSnackbar {
   SetupActivePageAndOpenModal(self.testServer, kTargetDeviceName,
                               [FakeSystemIdentity fakeIdentity1]);
@@ -417,7 +515,8 @@ void DismissSendTabToSelfModal() {
 // snackbar toast.
 - (void)testShareTabViaDirectTargetInShareSheetAndVerifySuccessSnackbar {
   [self setupHistogramTester];
-  FakeSystemIdentity* fakeIdentity = [FakeSystemIdentity fakeIdentity1];
+  FakeSystemIdentity* fakeIdentity =
+      [FakeSystemIdentity fakeIdentityWithMissingNames];
   [ChromeEarlGrey addFakeSyncServerDeviceInfo:kTargetDeviceName
                          lastUpdatedTimestamp:base::Time::Now()];
   LoadActivePage(self.testServer);
@@ -435,12 +534,10 @@ void DismissSendTabToSelfModal() {
   [ChromeEarlGrey verifyActivitySheetNotVisible];
 
   // Wait for and verify the success snackbar message.
-  NSString* snackbarMessage =
-      l10n_util::GetNSStringF(IDS_SEND_TAB_TO_SELF_POST_SEND_SUCCESS_TOAST,
-                              base::SysNSStringToUTF16(kTargetDeviceName));
-  [ChromeEarlGrey waitForSufficientlyVisibleElementWithMatcher:
-                      SnackbarWithMessageAndSubtext(snackbarMessage,
-                                                    fakeIdentity.userEmail)];
+  [ChromeEarlGrey
+      waitForSufficientlyVisibleElementWithMatcher:PostSendSuccessSnackbar(
+                                                       kTargetDeviceName,
+                                                       fakeIdentity.userEmail)];
 
   // Verify that the modal device picker is bypassed and not presented.
   [[EarlGrey selectElementWithMatcher:grey_accessibilityID(
@@ -454,23 +551,23 @@ void DismissSendTabToSelfModal() {
                             forBucket:
                                 8  // ShareEntryPoint::kShareSheetDirectShare
                                    // is 8
-                         forHistogram:
-                             @"Sharing.SendTabToSelf.InvokedEntryPoint"],
-      @"Sharing.SendTabToSelf.InvokedEntryPoint histogram not logged.");
+                         forHistogram:kInvokedEntryPointHistogram],
+      @"%@ histogram not logged.", kInvokedEntryPointHistogram);
   GREYAssertNil(
       [MetricsAppInterface
           expectUniqueSampleWithCount:1
                             forBucket:
                                 8  // ShareEntryPoint::kShareSheetDirectShare
                                    // is 8
-                         forHistogram:@"Sharing.SendTabToSelf.SentEntryPoint"],
-      @"Sharing.SendTabToSelf.SentEntryPoint histogram not logged.");
+                         forHistogram:kSentEntryPointHistogram],
+      @"%@ histogram not logged.", kSentEntryPointHistogram);
 }
 
 // Tests that when network connectivity is lost, attempting to share a tab via a
 // direct target in the Share Sheet displays an error snackbar toast.
 - (void)testShareTabViaDirectTargetAndVerifyErrorSnackbarOnNetworkFailure {
-  FakeSystemIdentity* fakeIdentity = [FakeSystemIdentity fakeIdentity1];
+  FakeSystemIdentity* fakeIdentity =
+      [FakeSystemIdentity fakeIdentityWithMissingNames];
   [ChromeEarlGrey addFakeSyncServerDeviceInfo:kTargetDeviceName
                          lastUpdatedTimestamp:base::Time::Now()];
   LoadActivePage(self.testServer);
@@ -768,14 +865,11 @@ void DismissSendTabToSelfModal() {
       performAction:grey_longPress()];
 
   // Verify the "Send to your device" menu item shows up.
-  id<GREYMatcher> sendToDevicesMenuItem =
-      chrome_test_util::ContextMenuItemWithAccessibilityLabelId(
-          IDS_SEND_TAB_TO_SELF);
-  [[EarlGrey selectElementWithMatcher:sendToDevicesMenuItem]
-      assertWithMatcher:grey_sufficientlyVisible()];
+  [ChromeEarlGrey
+      waitForSufficientlyVisibleElementWithMatcher:SendToDevicesMenuItem()];
 
   // Tap the context menu item.
-  [[EarlGrey selectElementWithMatcher:sendToDevicesMenuItem]
+  [[EarlGrey selectElementWithMatcher:SendToDevicesMenuItem()]
       performAction:grey_tap()];
 
   // Verify that the device picker shows up.
@@ -785,6 +879,7 @@ void DismissSendTabToSelfModal() {
 
   // Clean up.
   DismissSendTabToSelfModal();
+  DismissTabGrid();
 }
 
 // Tests that when the "Send to your device" bottom sheet is opened from the tab
@@ -805,14 +900,11 @@ void DismissSendTabToSelfModal() {
       performAction:grey_longPress()];
 
   // Verify the "Send to your device" menu item shows up.
-  id<GREYMatcher> sendToDevicesMenuItem =
-      chrome_test_util::ContextMenuItemWithAccessibilityLabelId(
-          IDS_SEND_TAB_TO_SELF);
-  [[EarlGrey selectElementWithMatcher:sendToDevicesMenuItem]
-      assertWithMatcher:grey_sufficientlyVisible()];
+  [ChromeEarlGrey
+      waitForSufficientlyVisibleElementWithMatcher:SendToDevicesMenuItem()];
 
   // Tap the context menu item.
-  [[EarlGrey selectElementWithMatcher:sendToDevicesMenuItem]
+  [[EarlGrey selectElementWithMatcher:SendToDevicesMenuItem()]
       performAction:grey_tap()];
 
   // Verify that the device picker shows up.
@@ -847,14 +939,11 @@ void DismissSendTabToSelfModal() {
       performAction:grey_longPress()];
 
   // Verify the "Send to your device" menu item shows up.
-  id<GREYMatcher> sendToDevicesMenuItem =
-      chrome_test_util::ContextMenuItemWithAccessibilityLabelId(
-          IDS_SEND_TAB_TO_SELF);
-  [[EarlGrey selectElementWithMatcher:sendToDevicesMenuItem]
-      assertWithMatcher:grey_sufficientlyVisible()];
+  [ChromeEarlGrey
+      waitForSufficientlyVisibleElementWithMatcher:SendToDevicesMenuItem()];
 
   // Tap the context menu item.
-  [[EarlGrey selectElementWithMatcher:sendToDevicesMenuItem]
+  [[EarlGrey selectElementWithMatcher:SendToDevicesMenuItem()]
       performAction:grey_tap()];
 
   // Verify that the sign-in promo is visible.
@@ -877,6 +966,7 @@ void DismissSendTabToSelfModal() {
 
   // Clean up.
   DismissSendTabToSelfModal();
+  DismissTabGrid();
 }
 
 // Tests that long-pressing the defocused location view shows "Send to your
@@ -900,14 +990,11 @@ void DismissSendTabToSelfModal() {
       performAction:grey_longPress()];
 
   // Verify the "Send to your device" menu item shows up.
-  id<GREYMatcher> sendToDevicesMenuItem =
-      chrome_test_util::ContextMenuItemWithAccessibilityLabelId(
-          IDS_SEND_TAB_TO_SELF);
-  [[EarlGrey selectElementWithMatcher:sendToDevicesMenuItem]
-      assertWithMatcher:grey_sufficientlyVisible()];
+  [ChromeEarlGrey
+      waitForSufficientlyVisibleElementWithMatcher:SendToDevicesMenuItem()];
 
   // Tap the context menu item.
-  [[EarlGrey selectElementWithMatcher:sendToDevicesMenuItem]
+  [[EarlGrey selectElementWithMatcher:SendToDevicesMenuItem()]
       performAction:grey_tap()];
 
   // Verify that the device picker shows up.
@@ -921,66 +1008,6 @@ void DismissSendTabToSelfModal() {
 
 @end
 
-@interface SendTabToSelfCoordinatorPostSendToastDisabledTestCase
-    : ChromeTestCase
-@end
-
-@implementation SendTabToSelfCoordinatorPostSendToastDisabledTestCase
-
-- (AppLaunchConfiguration)appConfigurationForTestCase {
-  AppLaunchConfiguration config = [super appConfigurationForTestCase];
-  config.features_enabled.push_back(
-      send_tab_to_self::kSendTabToSelfPropagateScrollPosition);
-  config.features_enabled.push_back(
-      send_tab_to_self::kSendTabToSelfPropagateFormFields);
-  config.features_enabled.push_back(
-      send_tab_to_self::kSendTabToSelfExtraEntryPoints);
-  config.features_enabled.push_back(
-      send_tab_to_self::kSendTabToSelfEnhancedBottomsheet);
-  config.features_disabled.push_back(
-      send_tab_to_self::kSendTabToSelfPostSendToast);
-  return config;
-}
-
-- (void)setUp {
-  [super setUp];
-
-  GREYAssertTrue(self.testServer->Start(), @"Test server failed to start.");
-}
-
-// Tests that when kSendTabToSelfPostSendToast is disabled, sending a tab to a
-// target device displays the legacy snackbar message.
-- (void)testSendTabToSelfShowsLegacySnackbarWhenPostSendToastDisabled {
-  SetupActivePageAndOpenModal(self.testServer, kTargetDeviceName,
-                              [FakeSystemIdentity fakeIdentity1]);
-
-  // Verify the device is shown in the device picker.
-  [ChromeEarlGrey
-      waitForSufficientlyVisibleElementWithMatcher:grey_accessibilityLabel(
-                                                       kTargetDeviceName)];
-
-  // Tap "Send".
-  [[EarlGrey selectElementWithMatcher:grey_accessibilityID(
-                                          kSendTabToSelfModalSendButton)]
-      performAction:grey_tap()];
-
-  // Verify that the bottom sheet is dismissed.
-  [ChromeEarlGrey waitForUIElementToDisappearWithMatcher:
-                      grey_accessibilityID(kSendTabToSelfModalSendButton)];
-
-  // Wait for and verify the legacy snackbar message.
-  NSString* snackbarMessage =
-      l10n_util::GetNSStringF(IDS_IOS_SEND_TAB_TO_SELF_SNACKBAR_MESSAGE,
-                              base::SysNSStringToUTF16(kTargetDeviceName));
-  [ChromeEarlGrey
-      waitForSufficientlyVisibleElementWithMatcher:SnackbarWithMessage(
-                                                       snackbarMessage)];
-
-  DismissSnackbar();
-}
-
-@end
-
 @interface SendTabToSelfCoordinatorAutoOpenTestCase : ChromeTestCase
 @end
 
@@ -988,13 +1015,6 @@ void DismissSendTabToSelfModal() {
 
 - (AppLaunchConfiguration)appConfigurationForTestCase {
   AppLaunchConfiguration config = [super appConfigurationForTestCase];
-  config.features_enabled.push_back(
-      send_tab_to_self::kSendTabToSelfPropagateScrollPosition);
-  config.features_enabled.push_back(
-      send_tab_to_self::kSendTabToSelfPropagateFormFields);
-  config.features_enabled.push_back(
-      send_tab_to_self::kSendTabToSelfExtraEntryPoints);
-  config.features_enabled.push_back(send_tab_to_self::kSendTabToSelfAutoOpen);
   config.features_enabled.push_back(
       send_tab_to_self::kSendTabToSelfSupportAutoOpenInTabGrid);
   return config;
@@ -1017,9 +1037,8 @@ void DismissSendTabToSelfModal() {
   }];
 }
 
-// Tests that when kSendTabToSelfAutoOpen is enabled, receiving a shared tab
-// while active in the foreground automatically opens it as a background tab
-// and presents a snackbar banner.
+// Tests that receiving a shared tab while active in the foreground
+// automatically opens it as a background tab and presents a snackbar banner.
 - (void)testSendTabToSelfAutoOpenWhenReceivedInForeground {
   [ChromeEarlGrey addFakeSyncServerDeviceInfo:kTargetDeviceName
                          lastUpdatedTimestamp:base::Time::Now()];
@@ -1048,10 +1067,9 @@ void DismissSendTabToSelfModal() {
 
   // Verify that the activation metric has NOT been logged yet.
   GREYAssertNil(
-      [MetricsAppInterface
-          expectTotalCount:0
-              forHistogram:@"Sharing.SendTabToSelf.ActivatedEntryPoint"],
-      @"Sharing.SendTabToSelf.ActivatedEntryPoint logged prematurely.");
+      [MetricsAppInterface expectTotalCount:0
+                               forHistogram:kActivatedEntryPointHistogram],
+      @"%@ logged prematurely.", kActivatedEntryPointHistogram);
 
   // Tap "Open" on the banner and verify that the received tab is opened
   // directly in the foreground.
@@ -1073,16 +1091,14 @@ void DismissSendTabToSelfModal() {
                             forBucket:
                                 8  // ShareActivatedEntryPoint::kMobileMessageBanner
                                    // is 8
-                         forHistogram:
-                             @"Sharing.SendTabToSelf.ActivatedEntryPoint"],
-      @"Sharing.SendTabToSelf.ActivatedEntryPoint histogram not logged.");
+                         forHistogram:kActivatedEntryPointHistogram],
+      @"%@ histogram not logged.", kActivatedEntryPointHistogram);
 }
 
-// Tests that when kSendTabToSelfAutoOpen is enabled and a shared tab is
-// received while there is no active WebState
-// (e.g., when all tabs are closed), it is
-// not opened immediately but is automatically opened as a background tab when
-// an active WebState is brought back to the foreground.
+// Tests that when a shared tab is received while there is no active WebState
+// (e.g., when all tabs are closed), it is not opened immediately but is
+// automatically opened as a background tab when an active WebState is brought
+// back to the foreground.
 - (void)testSendTabToSelfAutoOpenWhenBroughtToForeground {
   [SigninEarlGrey signinWithFakeIdentity:[FakeSystemIdentity fakeIdentity1]];
   [ChromeEarlGrey addFakeSyncServerDeviceInfo:kTargetDeviceName
@@ -1125,10 +1141,12 @@ void DismissSendTabToSelfModal() {
   NSString* labelText =
       l10n_util::GetNSStringF(IDS_SEND_TAB_TO_SELF_INFOBAR_AUTO_OPEN_SUBTITLE,
                               base::SysNSStringToUTF16(kRemoteDeviceName));
-  [[EarlGrey
-      selectElementWithMatcher:grey_allOf(grey_accessibilityLabel(labelText),
-                                          grey_sufficientlyVisible(), nil)]
-      assertWithMatcher:grey_notNil()];
+  [ChromeEarlGrey
+      waitForSufficientlyVisibleElementWithMatcher:grey_accessibilityLabel(
+                                                       labelText)];
+
+  // Clean up: dismiss the Tab Grid.
+  DismissTabGrid();
 }
 
 // Tests that when a shared tab is auto-opened, its tab card in the Tab Grid
@@ -1159,10 +1177,9 @@ void DismissSendTabToSelfModal() {
   NSString* labelText =
       l10n_util::GetNSStringF(IDS_SEND_TAB_TO_SELF_INFOBAR_AUTO_OPEN_SUBTITLE,
                               base::SysNSStringToUTF16(kRemoteDeviceName));
-  [[EarlGrey
-      selectElementWithMatcher:grey_allOf(grey_accessibilityLabel(labelText),
-                                          grey_sufficientlyVisible(), nil)]
-      assertWithMatcher:grey_notNil()];
+  [ChromeEarlGrey
+      waitForSufficientlyVisibleElementWithMatcher:grey_accessibilityLabel(
+                                                       labelText)];
 
   // Tap the newly opened tab (index 1) to view it.
   [[EarlGrey selectElementWithMatcher:chrome_test_util::TabGridCellAtIndex(1)]
@@ -1175,6 +1192,9 @@ void DismissSendTabToSelfModal() {
       selectElementWithMatcher:grey_allOf(grey_accessibilityLabel(labelText),
                                           grey_sufficientlyVisible(), nil)]
       assertWithMatcher:grey_nil()];
+
+  // Clean up: dismiss the Tab Grid.
+  DismissTabGrid();
 }
 
 // Tests that the tab card activity label is correctly persisted and restored
@@ -1204,10 +1224,9 @@ void DismissSendTabToSelfModal() {
   NSString* labelText =
       l10n_util::GetNSStringF(IDS_SEND_TAB_TO_SELF_INFOBAR_AUTO_OPEN_SUBTITLE,
                               base::SysNSStringToUTF16(kRemoteDeviceName));
-  [[EarlGrey
-      selectElementWithMatcher:grey_allOf(grey_accessibilityLabel(labelText),
-                                          grey_sufficientlyVisible(), nil)]
-      assertWithMatcher:grey_notNil()];
+  [ChromeEarlGrey
+      waitForSufficientlyVisibleElementWithMatcher:grey_accessibilityLabel(
+                                                       labelText)];
 
   // Relaunch the app with the fake identity.
   RelaunchAppWithIdentity([self appConfigurationForTestCase],
@@ -1217,10 +1236,9 @@ void DismissSendTabToSelfModal() {
   OpenTabGridAndWaitTillVisible();
 
   // Verify that the label is still visible after restart.
-  [[EarlGrey
-      selectElementWithMatcher:grey_allOf(grey_accessibilityLabel(labelText),
-                                          grey_sufficientlyVisible(), nil)]
-      assertWithMatcher:grey_notNil()];
+  [ChromeEarlGrey
+      waitForSufficientlyVisibleElementWithMatcher:grey_accessibilityLabel(
+                                                       labelText)];
 
   // Tap the tab (index 1) to view it.
   [[EarlGrey selectElementWithMatcher:chrome_test_util::TabGridCellAtIndex(1)]
@@ -1236,6 +1254,9 @@ void DismissSendTabToSelfModal() {
                                                      labelText),
                                                  grey_sufficientlyVisible(),
                                                  nil)];
+
+  // Clean up: dismiss the Tab Grid.
+  DismissTabGrid();
 }
 
 // Tests that when a shared tab is auto-opened, the activation tracking survives
@@ -1275,15 +1296,13 @@ void DismissSendTabToSelfModal() {
 
   // Verify that the activation metrics histograms have NOT been logged yet.
   GREYAssertNil(
-      [MetricsAppInterface
-          expectTotalCount:0
-              forHistogram:@"Sharing.SendTabToSelf.ActivatedEntryPoint"],
-      @"Sharing.SendTabToSelf.ActivatedEntryPoint logged prematurely.");
+      [MetricsAppInterface expectTotalCount:0
+                               forHistogram:kActivatedEntryPointHistogram],
+      @"%@ logged prematurely.", kActivatedEntryPointHistogram);
   GREYAssertNil(
-      [MetricsAppInterface
-          expectTotalCount:0
-              forHistogram:@"Sharing.SendTabToSelf.TimeOpenedToActivated"],
-      @"Sharing.SendTabToSelf.TimeOpenedToActivated logged prematurely.");
+      [MetricsAppInterface expectTotalCount:0
+                               forHistogram:kTimeOpenedToActivatedHistogram],
+      @"%@ logged prematurely.", kTimeOpenedToActivatedHistogram);
 
   // Tap the restored background tab (index 1) to view/activate it.
   [[EarlGrey selectElementWithMatcher:chrome_test_util::TabGridCellAtIndex(1)]
@@ -1299,24 +1318,22 @@ void DismissSendTabToSelfModal() {
           expectUniqueSampleWithCount:1
                             forBucket:4  // ShareActivatedEntryPoint::kTabStrip
                                          // is 4
-                         forHistogram:
-                             @"Sharing.SendTabToSelf.ActivatedEntryPoint"],
-      @"Sharing.SendTabToSelf.ActivatedEntryPoint histogram not logged.");
+                         forHistogram:kActivatedEntryPointHistogram],
+      @"%@ histogram not logged.", kActivatedEntryPointHistogram);
 
   // 2. Sharing.SendTabToSelf.TimeOpenedToActivated should have exactly 1
   // sample.
   GREYAssertNil(
-      [MetricsAppInterface
-          expectTotalCount:1
-              forHistogram:@"Sharing.SendTabToSelf.TimeOpenedToActivated"],
-      @"Sharing.SendTabToSelf.TimeOpenedToActivated histogram not logged.");
+      [MetricsAppInterface expectTotalCount:1
+                               forHistogram:kTimeOpenedToActivatedHistogram],
+      @"%@ histogram not logged.", kTimeOpenedToActivatedHistogram);
 }
 
-// Tests that when both kSendTabToSelfAutoOpen and
-// kSendTabToSelfSupportAutoOpenInTabGrid are enabled, and a shared tab is
-// received while in the Tab Grid, it is opened immediately in the background
-// adjacent to the active tab, displays its activity badge in the switcher, and
-// does not display an infobar banner upon returning to the foreground.
+// Tests that when kSendTabToSelfSupportAutoOpenInTabGrid is enabled, and a
+// shared tab is received while in the Tab Grid, it is opened immediately in the
+// background adjacent to the active tab, displays its activity badge in the
+// switcher, and does not display an infobar banner upon returning to the
+// foreground.
 - (void)testSendTabToSelfAutoOpenWhenReceivedInTabGrid {
   [ChromeEarlGrey addFakeSyncServerDeviceInfo:kTargetDeviceName
                          lastUpdatedTimestamp:base::Time::Now()];
@@ -1363,9 +1380,7 @@ void DismissSendTabToSelfModal() {
   [ChromeEarlGrey waitForMainTabCount:3];
 
   // Leave the Tab Grid to bring the active WebState back to the foreground.
-  [[EarlGrey selectElementWithMatcher:chrome_test_util::TabGridDoneButton()]
-      performAction:grey_tap()];
-  [ChromeEarlGreyUI waitForAppToIdle];
+  DismissTabGrid();
 
   // Verify that no InfoBar message banner is displayed since the user already
   // saw the tab arrive in the Tab Grid.

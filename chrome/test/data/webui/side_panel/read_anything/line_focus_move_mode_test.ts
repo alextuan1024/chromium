@@ -4,9 +4,9 @@
 
 import {LineFocusCursorMoveMode, LineFocusLineStyleMode, LineFocusModel, LineFocusMovement, LineFocusNoneMoveMode, LineFocusStaticMoveMode, LineFocusStyle, LineFocusWindowStyleMode, ReadAloudNode} from 'chrome-untrusted://read-anything-side-panel.top-chrome/read_anything.js';
 import type {LineFocusMoveMode, MoveModeDelegate, NodeStore, SpeechController} from 'chrome-untrusted://read-anything-side-panel.top-chrome/read_anything.js';
-import {assertEquals, assertFalse, assertGT, assertLT, assertNotEquals, assertTrue} from 'chrome-untrusted://webui-test/chai_assert.js';
+import {assertDeepEquals, assertEquals, assertFalse, assertGT, assertLT, assertNotEquals, assertTrue} from 'chrome-untrusted://webui-test/chai_assert.js';
 
-import {setupTestEnvironment} from './common.js';
+import {applyContainerStyles, createShortContainer, setupTestEnvironment} from './common.js';
 import type {TestMetricsBrowserProxy} from './test_metrics_browser_proxy.js';
 import type {TestVisualBrowserProxy} from './test_visual_browser_proxy.js';
 
@@ -35,23 +35,6 @@ suite('LineFocusMoveMode', () => {
     return metricsBrowserProxy.getCallCount('incrementLineFocusSpeechLines');
   }
 
-  function applyContainerStyles(container: HTMLElement): void {
-    container.style.whiteSpace = 'pre';
-    container.style.width = 'max-content';
-    container.style.margin = '0';
-    container.style.fontSize = '20px';
-    container.style.lineHeight = '2';
-  }
-
-  function createShortContainer(): HTMLElement {
-    const container = document.createElement('p');
-    container.innerText =
-        'I\'ve heard it said\nThat people come into our lives\nfor a reason.\n';
-    applyContainerStyles(container);
-    document.body.appendChild(container);
-    return container;
-  }
-
   function createSuperscriptContainer(): HTMLElement {
     const container = document.createElement('p');
     applyContainerStyles(container);
@@ -67,73 +50,6 @@ suite('LineFocusMoveMode', () => {
     container.appendChild(text2);
     document.body.appendChild(container);
     return container;
-  }
-
-  // TODO(crbug.com/502069860): Remove this once flakiness is confirmed to be
-  // gone.
-  function getVisualLines(container: HTMLElement): string[] {
-    const walker = document.createTreeWalker(
-        container,
-        NodeFilter.SHOW_TEXT,
-        null,
-    );
-    const range = document.createRange();
-    const lines: string[] = [];
-    let currentLine = '';
-    let lastTop: number|null = null;
-
-    let node = walker.nextNode();
-    while (node) {
-      const text = node.textContent || '';
-      for (let i = 0; i < text.length; i++) {
-        range.setStart(node, i);
-        range.setEnd(node, i + 1);
-        const rect = range.getBoundingClientRect();
-        if (rect.width === 0 && rect.height === 0) {
-          continue;
-        }
-        if (lastTop === null) {
-          lastTop = rect.top;
-        } else if (Math.abs(rect.top - lastTop) > 2) {
-          lines.push(currentLine);
-          currentLine = '';
-          lastTop = rect.top;
-        }
-        currentLine += text[i];
-      }
-      node = walker.nextNode();
-    }
-    if (currentLine) {
-      lines.push(currentLine);
-    }
-    return lines;
-  }
-
-  // TODO(crbug.com/502069860): Remove this once flakiness is confirmed to be
-  // gone.
-  function logBoundsFailure(testName: string, container: HTMLElement) {
-    const rect = container.getBoundingClientRect();
-    const bounds = model.getTextBounds();
-    const visualLines = getVisualLines(container);
-    console.error(
-        `[${testName}] text bounds length is ${bounds.length}, expected 3.\n` +
-        `Container: width=${container.offsetWidth}px, height=${
-            container.offsetHeight}px, ` +
-        `rect=[left:${rect.left}, top:${rect.top}, width:${
-            rect.width}, height:${rect.height}], ` +
-        `computedStyle.whiteSpace="${
-            window.getComputedStyle(container).whiteSpace}"\n` +
-        `Window: innerWidth=${window.innerWidth}px, body.clientWidth=${
-            document.body.clientWidth}px\n` +
-        `Visual lines (${visualLines.length}):\n` +
-        visualLines.map((line, i) => `  [${i}]: "${line}"`).join('\n') + '\n' +
-        `HTML: ${container.outerHTML}\n` +
-        `Bounds: ${JSON.stringify(bounds.map(b => ({
-                                               top: b.top,
-                                               bottom: b.bottom,
-                                               left: b.left,
-                                               right: b.right,
-                                             })))}`);
   }
 
   function mockLinesCounters() {
@@ -153,6 +69,24 @@ suite('LineFocusMoveMode', () => {
     const rect2 = new DOMRect(0, 30, 100, 20);
     const rect3 = new DOMRect(0, 50, 100, 20);
     model.setTextBounds([rect1, rect2, rect3]);
+  }
+
+  function createScrolledContainer():
+      {scroller: HTMLElement, container: HTMLElement} {
+    const scroller = document.createElement('div');
+    scroller.className = 'sp-scroller';
+    Object.defineProperty(scroller, 'scrollTop', {
+      value: 0,
+      writable: true,
+    });
+    const container = createShortContainer();
+    scroller.appendChild(container);
+    document.body.appendChild(scroller);
+    return {scroller, container};
+  }
+
+  function getTextBoundsTops(): number[] {
+    return model.getTextBounds().map(rect => rect.top);
   }
 
   setup(() => {
@@ -223,12 +157,6 @@ suite('LineFocusMoveMode', () => {
       const container = createShortContainer();
 
       mode.onActivated(container, defaultHeight);
-
-      // TODO(crbug.com/502069860): Remove this once flakiness is confirmed to
-      // be gone.
-      if (model.getTextBounds().length !== 3) {
-        logBoundsFailure('static onActivated', container);
-      }
       assertEquals(defaultHeight, model.getMaxY());
       assertLT(model.getMinY(), defaultHeight);
       assertEquals(3, model.getTextBounds().length);
@@ -250,11 +178,19 @@ suite('LineFocusMoveMode', () => {
       assertTrue(notifiedContentPositionChange);
     });
 
-    test('onActivated notifies delegate of scroll buffer', () => {
+    test('onActivated updates scroll buffer before positions', () => {
       const container = createShortContainer();
+      const unpaddedTop = container.getBoundingClientRect().top;
+      delegate.notifyScrollBuffer = (buffer) => {
+        bufferValReceived = buffer;
+        container.style.paddingTop = buffer ? '100px' : '0px';
+      };
+
       mode.onActivated(container, defaultHeight);
+
       // Need to do a direct compare since the starting value is undefined.
       assertTrue(bufferValReceived === true);
+      assertGT(model.getTextBounds()[0]!.top, unpaddedTop + 90);
     });
 
     test('onActivated does not restart active session', () => {
@@ -273,7 +209,7 @@ suite('LineFocusMoveMode', () => {
       model.setMaxY(defaultHeight * 2);
       nodeStore.setDomNode(container, 1);
       const segments = [{
-        node: ReadAloudNode.create(container)!,
+        node: ReadAloudNode.create(container),
         start: 7,
         length: 5,
       }];
@@ -289,7 +225,7 @@ suite('LineFocusMoveMode', () => {
       const container = createShortContainer();
       nodeStore.setDomNode(container, 1);
       const segments = [{
-        node: ReadAloudNode.create(container)!,
+        node: ReadAloudNode.create(container),
         start: 7,
         length: 5,
       }];
@@ -300,6 +236,33 @@ suite('LineFocusMoveMode', () => {
       assertFalse(notifiedContentPositionChange);
       assertTrue(model.getInitiatedScroll());
     });
+
+    test(
+        'onWordBoundary scrolls using shifted bounds if scroller scrollTop ' +
+            'changed',
+        () => {
+          const {scroller, container} = createScrolledContainer();
+          mode.onTextLocationsChange(container, defaultHeight);
+          model.setTextBounds([new DOMRect(0, 50, 200, 20)]);
+          model.setFocalPoint(100);
+
+          // Simulate a scroll occurred prior to onWordBoundary.
+          scroller.scrollTop = 150;
+
+          nodeStore.setDomNode(container, 1);
+          const segments = [{
+            node: ReadAloudNode.create(container),
+            start: 0,
+            length: 5,
+          }];
+
+          mode.onWordBoundary(segments);
+
+          assertDeepEquals([50 - 150], getTextBoundsTops());
+          assertEquals(
+              styleMode.getFocalPointForRect(model.getTextBounds()[0]!) - 100,
+              scrollDiffReceived);
+        });
 
     test(
         'onWordBoundary aligns with line when word starts with superscript',
@@ -316,7 +279,7 @@ suite('LineFocusMoveMode', () => {
           assertLT(supRect.bottom, line2.bottom);
 
           const segments = [{
-            node: ReadAloudNode.create(sup)!,
+            node: ReadAloudNode.create(sup),
             start: 0,
             length: 1,
           }];
@@ -347,7 +310,7 @@ suite('LineFocusMoveMode', () => {
           assertLT(supCenter, line2Center);
 
           const segments = [{
-            node: ReadAloudNode.create(sup)!,
+            node: ReadAloudNode.create(sup),
             start: 0,
             length: 1,
           }];
@@ -364,27 +327,18 @@ suite('LineFocusMoveMode', () => {
       mockLinesCounters();
       nodeStore.setDomNode(container, 1);
       const segments1 = [{
-        node: ReadAloudNode.create(container)!,
+        node: ReadAloudNode.create(container),
         start: 0,
         length: 5,
       }];
       const segments2 = [{
-        node: ReadAloudNode.create(container)!,
+        node: ReadAloudNode.create(container),
         start: 5,
         length: 3,
       }];
 
       mode.onWordBoundary(segments1);
       assertLT(0, scrollDiffReceived);
-      // TODO(crbug.com/502069860): Remove this once flakiness is confirmed to
-      // be gone.
-      const callCount1 =
-          metricsBrowserProxy.getCallCount('incrementLineFocusSpeechLines');
-      if (callCount1 !== 1) {
-        console.error(`static onWordBoundary segment1 speech lines is ${
-            callCount1}, expected 1. Focal point: ${
-            model.getFocalPoint()}, scrollDiff: ${scrollDiffReceived}`);
-      }
       assertEquals(
           1, metricsBrowserProxy.getCallCount('incrementLineFocusSpeechLines'));
 
@@ -392,15 +346,6 @@ suite('LineFocusMoveMode', () => {
       model.setFocalPoint(model.getFocalPoint() + scrollDiffReceived);
       mode.onWordBoundary(segments2);
       assertLT(0, scrollDiffReceived);
-      // TODO(crbug.com/502069860): Remove this once flakiness is confirmed to
-      // be gone.
-      const callCount2 =
-          metricsBrowserProxy.getCallCount('incrementLineFocusSpeechLines');
-      if (callCount2 !== 1) {
-        console.error(`static onWordBoundary segment2 speech lines is ${
-            callCount2}, expected 1. Focal point: ${
-            model.getFocalPoint()}, scrollDiff: ${scrollDiffReceived}`);
-      }
       assertEquals(
           1, metricsBrowserProxy.getCallCount('incrementLineFocusSpeechLines'));
     });
@@ -488,10 +433,18 @@ suite('LineFocusMoveMode', () => {
           assertTrue(notifiedContentPositionChange);
         });
 
-    test('onTextLocationsChange updates scroll buffer', () => {
+    test('onTextLocationsChange updates scroll buffer before positions', () => {
       const container = createShortContainer();
+      const unpaddedTop = container.getBoundingClientRect().top;
+      delegate.notifyScrollBuffer = (buffer) => {
+        bufferValReceived = buffer;
+        container.style.paddingTop = buffer ? '100px' : '0px';
+      };
+
       mode.onTextLocationsChange(container, defaultHeight);
+
       assertEquals(true, bufferValReceived);
+      assertGT(model.getTextBounds()[0]!.top, unpaddedTop + 90);
     });
 
     test('onTextLocationsChange updates positions', () => {
@@ -499,11 +452,6 @@ suite('LineFocusMoveMode', () => {
 
       mode.onTextLocationsChange(container, defaultHeight);
 
-      // TODO(crbug.com/502069860): Remove this once flakiness is confirmed to
-      // be gone.
-      if (model.getTextBounds().length !== 3) {
-        logBoundsFailure('static onTextLocationsChange', container);
-      }
       assertEquals(defaultHeight, model.getMaxY());
       assertLT(model.getMinY(), defaultHeight);
       assertEquals(3, model.getTextBounds().length);
@@ -517,6 +465,74 @@ suite('LineFocusMoveMode', () => {
       assertTrue(notifiedVisualPositionChange);
       const center = styleMode.getCenterY();
       assertEquals(center, model.getFocalPoint());
+    });
+
+    test('onScroll shifts text bounds by scroll difference', () => {
+      const {scroller, container} = createScrolledContainer();
+      mode.onTextLocationsChange(container, defaultHeight);
+      setDefaultTextBounds();
+      const oldBounds = model.getTextBounds();
+
+      scroller.scrollTop = 15;
+      mode.onScroll();
+      assertDeepEquals([-5, 15, 35], getTextBoundsTops());
+
+      scroller.scrollTop = 5;
+      mode.onScroll();
+      assertDeepEquals([5, 25, 45], getTextBoundsTops());
+
+      // Previously returned rects are not mutated.
+      assertEquals(10, oldBounds[0]!.top);
+    });
+
+    test('onScroll does not reset scroll distance', () => {
+      const {scroller, container} = createScrolledContainer();
+      mode.onTextLocationsChange(container, defaultHeight);
+      model.setLastScrollTop(0);
+
+      scroller.scrollTop = 20;
+      mode.onScroll();
+      scroller.scrollTop = 40;
+      mode.onScroll();
+      assertEquals(0, model.getLastScrollTop());
+
+      mode.onScrollEnd(40);
+      assertEquals(
+          40, metricsBrowserProxy.getArgs('addLineFocusScrollDistance')[0]);
+    });
+
+    test('onScrollEnd re-measures text bounds', () => {
+      const container = createShortContainer();
+      mode.onTextLocationsChange(container, defaultHeight);
+      model.setTextBounds([new DOMRect(0, 500, 10, 10)]);
+
+      mode.onScrollEnd(0);
+
+      assertGT(model.getTextBounds().length, 0);
+      assertNotEquals(500, model.getTextBounds()[0]!.top);
+    });
+
+    test('onScrollEnd ignores pending scroll buffer adjustment', () => {
+      const {scroller, container} = createScrolledContainer();
+      delegate.notifyScrollBuffer = (buffer) => {
+        bufferValReceived = buffer;
+        if (buffer) {
+          scroller.scrollTop = 200;
+        }
+      };
+      model.setSessionActive(true);
+      model.setCurrentLineIndex(1);
+
+      mode.onTextLocationsChange(container, defaultHeight);
+      notifiedContentPositionChange = false;
+
+      mode.onScroll();
+      mode.onScrollEnd(200);
+
+      assertEquals(1, model.getCurrentLineIndex());
+      assertFalse(notifiedContentPositionChange);
+      assertEquals(
+          0, metricsBrowserProxy.getCallCount('addLineFocusScrollDistance'));
     });
 
     test('snapToNextLine scrolls by line', () => {
@@ -634,11 +650,6 @@ suite('LineFocusMoveMode', () => {
 
       mode.onActivated(container, defaultHeight);
 
-      // TODO(crbug.com/502069860): Remove this once flakiness is confirmed to
-      // be gone.
-      if (model.getTextBounds().length !== 3) {
-        logBoundsFailure('cursor onActivated', container);
-      }
       assertEquals(defaultHeight, model.getMaxY());
       assertLT(model.getMinY(), defaultHeight);
       assertEquals(3, model.getTextBounds().length);
@@ -668,6 +679,135 @@ suite('LineFocusMoveMode', () => {
       assertTrue(notifiedVisualPositionChange);
     });
 
+    test(
+        'onActivated from static shifts focal point when buffer removal ' +
+            'shifts content',
+        () => {
+          const container = createShortContainer();
+          container.style.paddingTop = '200px';
+          const staticMode =
+              new LineFocusStaticMoveMode(model, styleMode, delegate);
+          staticMode.onTextLocationsChange(container, defaultHeight);
+          model.setSessionActive(true);
+          model.setCurrentLineIndex(null);
+          model.setFocalPoint(
+              styleMode.getFocalPointForRect(model.getTextBounds()[1]!));
+          notifiedVisualPositionChange = false;
+
+          delegate.notifyScrollBuffer = (buffer) => {
+            bufferValReceived = buffer;
+            container.style.paddingTop = buffer ? '200px' : '0px';
+          };
+
+          mode.onActivated(container, defaultHeight);
+
+          assertEquals(
+              styleMode.getFocalPointForRect(model.getTextBounds()[1]!),
+              model.getFocalPoint());
+          assertTrue(notifiedVisualPositionChange);
+        });
+
+    test(
+        'onActivated from static keeps snapped window line focused at top',
+        () => {
+          const container = createShortContainer();
+          container.style.paddingTop = '200px';
+          model.setSessionActive(true);
+          model.setAdaptMultiLineWindow(false);
+          model.setCurrentLineIndex(0);
+          model.setFocalPoint(500);
+          delegate.notifyScrollBuffer = (buffer) => {
+            bufferValReceived = buffer;
+            container.style.paddingTop = buffer ? '200px' : '0px';
+          };
+
+          const windowMoveMode = createWindowMode();
+          windowMoveMode.onActivated(container, defaultHeight);
+
+          assertEquals(1, model.getCurrentLineIndex());
+          assertEquals(model.getTextBounds()[0]!.top, model.getTop());
+          assertTrue(notifiedVisualPositionChange);
+        });
+
+    test('onActivated updates lastScrollTop and resets initiatedScroll', () => {
+      const scroller = document.createElement('div');
+      scroller.className = 'sp-scroller';
+      Object.defineProperty(scroller, 'scrollTop', {
+        value: 120,
+        writable: true,
+      });
+      const container = createShortContainer();
+      scroller.appendChild(container);
+      document.body.appendChild(scroller);
+      model.setSessionActive(true);
+      model.setInitiatedScroll(true);
+      delegate.notifyScrollBuffer = (buffer) => {
+        bufferValReceived = buffer;
+        scroller.scrollTop = 45;
+      };
+
+      mode.onActivated(container, defaultHeight);
+
+      assertFalse(model.getInitiatedScroll());
+      assertEquals(45, model.getLastScrollTop());
+    });
+
+    test(
+        'onActivated from static clamps focal point to single line title',
+        () => {
+          const container = document.createElement('p');
+          container.innerText = 'Single line title';
+          applyContainerStyles(container);
+          container.style.paddingTop = '200px';
+          document.body.appendChild(container);
+          model.setSessionActive(true);
+          model.setCurrentLineIndex(null);
+          model.setFocalPoint(500);
+          delegate.notifyScrollBuffer = (buffer) => {
+            container.style.paddingTop = buffer ? '200px' : '0px';
+          };
+
+          mode.onActivated(container, defaultHeight);
+
+          assertEquals(
+              styleMode.getFocalPointForRect(model.getTextBounds()[0]!),
+              model.getFocalPoint());
+        });
+
+    test('onActivated clamps window focal point to last full window', () => {
+      const container = createShortContainer();
+      model.setSessionActive(true);
+      model.setCurrentLineIndex(null);
+      model.setFocalPoint(500);
+
+      createWindowMode().onActivated(container, defaultHeight);
+
+      // The 3-line window covers all 3 lines, so it centers on them.
+      const bounds = model.getTextBounds();
+      assertEquals(3, bounds.length);
+      assertEquals(
+          (bounds[0]!.top + bounds[2]!.bottom) / 2, model.getFocalPoint());
+    });
+
+    test(
+        'onActivated clamps snapped index when switching to underline on ' +
+            'single line',
+        () => {
+          const container = document.createElement('p');
+          container.innerText = 'Single line title';
+          applyContainerStyles(container);
+          document.body.appendChild(container);
+          model.setSessionActive(true);
+          model.setCurrentLineIndex(1);
+
+          mode.onActivated(container, defaultHeight);
+
+          assertEquals(0, model.getCurrentLineIndex());
+          assertEquals(
+              styleMode.getFocalPointForRect(model.getTextBounds()[0]!),
+              model.getFocalPoint());
+        });
+
     test('onActivated notifies delegate of no scroll buffer', () => {
       const container = createShortContainer();
       mode.onActivated(container, defaultHeight);
@@ -691,7 +831,7 @@ suite('LineFocusMoveMode', () => {
       model.setMaxY(defaultHeight * 2);
       nodeStore.setDomNode(container, 1);
       const segments = [{
-        node: ReadAloudNode.create(container)!,
+        node: ReadAloudNode.create(container),
         start: 0,
         length: 5,
       }];
@@ -717,7 +857,7 @@ suite('LineFocusMoveMode', () => {
           assertLT(supRect.bottom, line2.bottom);
 
           const segments = [{
-            node: ReadAloudNode.create(sup)!,
+            node: ReadAloudNode.create(sup),
             start: 0,
             length: 1,
           }];
@@ -746,7 +886,7 @@ suite('LineFocusMoveMode', () => {
           assertLT(supCenter, line2Center);
 
           const segments = [{
-            node: ReadAloudNode.create(sup)!,
+            node: ReadAloudNode.create(sup),
             start: 0,
             length: 1,
           }];
@@ -762,7 +902,7 @@ suite('LineFocusMoveMode', () => {
       model.setMaxY(10);
       nodeStore.setDomNode(container, 1);
       const segments = [{
-        node: ReadAloudNode.create(container)!,
+        node: ReadAloudNode.create(container),
         start: 0,
         length: 5,
       }];
@@ -779,37 +919,21 @@ suite('LineFocusMoveMode', () => {
       mockLinesCounters();
       nodeStore.setDomNode(container, 1);
       const segments1 = [{
-        node: ReadAloudNode.create(container)!,
+        node: ReadAloudNode.create(container),
         start: 5,
         length: 5,
       }];
       const segments2 = [{
-        node: ReadAloudNode.create(container)!,
+        node: ReadAloudNode.create(container),
         start: 12,
         length: 3,
       }];
 
       mode.onWordBoundary(segments1);
-      // TODO(crbug.com/502069860): Remove this once flakiness is confirmed to
-      // be gone.
-      const callCount1 =
-          metricsBrowserProxy.getCallCount('incrementLineFocusSpeechLines');
-      if (callCount1 !== 1) {
-        console.error(`cursor onWordBoundary segment1 speech lines is ${
-            callCount1}, expected 1. Focal point: ${model.getFocalPoint()}`);
-      }
       assertEquals(
           1, metricsBrowserProxy.getCallCount('incrementLineFocusSpeechLines'));
 
       mode.onWordBoundary(segments2);
-      // TODO(crbug.com/502069860): Remove this once flakiness is confirmed to
-      // be gone.
-      const callCount2 =
-          metricsBrowserProxy.getCallCount('incrementLineFocusSpeechLines');
-      if (callCount2 !== 1) {
-        console.error(`cursor onWordBoundary segment2 speech lines is ${
-            callCount2}, expected 1. Focal point: ${model.getFocalPoint()}`);
-      }
       assertEquals(
           1, metricsBrowserProxy.getCallCount('incrementLineFocusSpeechLines'));
     });
@@ -822,7 +946,7 @@ suite('LineFocusMoveMode', () => {
 
       nodeStore.setDomNode(container, 1);
       const segments = [{
-        node: ReadAloudNode.create(container)!,
+        node: ReadAloudNode.create(container),
         start: 0,
         length: 5,
       }];
@@ -841,7 +965,7 @@ suite('LineFocusMoveMode', () => {
 
           nodeStore.setDomNode(container, 1);
           const segments = [{
-            node: ReadAloudNode.create(container)!,
+            node: ReadAloudNode.create(container),
             start: 0,
             length: 5,
           }];
@@ -859,7 +983,7 @@ suite('LineFocusMoveMode', () => {
 
       nodeStore.setDomNode(container, 1);
       const segments = [{
-        node: ReadAloudNode.create(container)!,
+        node: ReadAloudNode.create(container),
         start: 0,
         length: 5,
       }];
@@ -872,17 +996,8 @@ suite('LineFocusMoveMode', () => {
     });
 
     test(
-        'onWordBoundary refreshes bounds if scroller scrollTop changed', () => {
-          const scroller = document.createElement('div');
-          scroller.className = 'sp-scroller';
-          Object.defineProperty(scroller, 'scrollTop', {
-            value: 0,
-            writable: true,
-          });
-          const container = createShortContainer();
-          scroller.appendChild(container);
-          document.body.appendChild(scroller);
-
+        'onWordBoundary shifts bounds if scroller scrollTop changed', () => {
+          const {scroller, container} = createScrolledContainer();
           mode.onActivated(container, defaultHeight);
           const customBounds = [new DOMRect(0, 50, 200, 20)];
           model.setTextBounds(customBounds);
@@ -893,16 +1008,47 @@ suite('LineFocusMoveMode', () => {
 
           nodeStore.setDomNode(container, 1);
           const segments = [{
-            node: ReadAloudNode.create(container)!,
+            node: ReadAloudNode.create(container),
             start: 0,
             length: 5,
           }];
 
           mode.onWordBoundary(segments);
 
-          // Last scroll top should be updated to match the new
-          // scroller.scrollTop.
-          assertEquals(150, model.getLastScrollTop());
+          // Cached bounds are shifted rather than recomputed, and lastScrollTop
+          // is left for scrollend.
+          assertDeepEquals([50 - 150], getTextBoundsTops());
+          assertEquals(0, model.getLastScrollTop());
+        });
+
+    test(
+        'onWordBoundary shifts focalPoint when instant recentering scrolls',
+        () => {
+          const {scroller, container} = createScrolledContainer();
+          mode.onActivated(container, defaultHeight);
+          model.setMaxY(10);
+          speechController.isSpeechActive = () => true;
+          delegate.notifyScroll = (diff, instant) => {
+            scrollDiffReceived = diff;
+            instantScrollReceived = instant;
+            if (instant) {
+              scroller.scrollTop += diff;
+            }
+          };
+
+          const preScrollLineBottom = model.getTextBounds()[0]!.bottom;
+          nodeStore.setDomNode(container, 1);
+          const segments = [{
+            node: ReadAloudNode.create(container),
+            start: 0,
+            length: 5,
+          }];
+
+          mode.onWordBoundary(segments);
+
+          assertGT(scrollDiffReceived, 0);
+          assertEquals(
+              preScrollLineBottom - scrollDiffReceived, model.getFocalPoint());
         });
 
     test('onMouseMove adds mouse distance', () => {
@@ -1094,11 +1240,6 @@ suite('LineFocusMoveMode', () => {
 
       mode.onTextLocationsChange(container, defaultHeight);
 
-      // TODO(crbug.com/502069860): Remove this once flakiness is confirmed to
-      // be gone.
-      if (model.getTextBounds().length !== 3) {
-        logBoundsFailure('cursor onTextLocationsChange', container);
-      }
       assertEquals(defaultHeight, model.getMaxY());
       assertLT(model.getMinY(), defaultHeight);
       assertEquals(3, model.getTextBounds().length);
@@ -1166,98 +1307,149 @@ suite('LineFocusMoveMode', () => {
     });
 
 
-    test(
-        'onTextLocationsChange shifts focalPoint by scrollDiff during smooth scroll',
-        () => {
-          // Create a scroller wrapper for the container.
-          const scroller = document.createElement('div');
-          scroller.className = 'sp-scroller';
-          Object.defineProperty(scroller, 'scrollTop', {
-            value: 0,
-            writable: true,
-          });
-          const container = createShortContainer();
-          scroller.appendChild(container);
+    test('onScroll shifts text bounds by scroll difference', () => {
+      const {scroller, container} = createScrolledContainer();
+      mode.onTextLocationsChange(container, defaultHeight);
+      setDefaultTextBounds();
+      const oldBounds = model.getTextBounds();
 
-          // Setup initial state: tracking the cursor, so current line index is
-          // null.
+      scroller.scrollTop = 15;
+      mode.onScroll();
+
+      assertDeepEquals([-5, 15, 35], getTextBoundsTops());
+      // Previously returned rects are not mutated.
+      assertEquals(10, oldBounds[0]!.top);
+    });
+
+    test(
+        'onScroll shifts focalPoint by scrollDiff during initiated scroll',
+        () => {
+          const {scroller, container} = createScrolledContainer();
+          scroller.scrollTop = 100;
+          mode.onTextLocationsChange(container, defaultHeight);
+          setDefaultTextBounds();
           model.setCurrentLineIndex(null);
           model.setFocalPoint(50);
-          model.setLastScrollTop(100);
           model.setInitiatedScroll(true);
-
-          // Scroller is at initial scroll position.
-          scroller.scrollTop = 100;
-          mode.onTextLocationsChange(container, defaultHeight);
           notifiedVisualPositionChange = false;
 
-          // Simulate next frame of scroll animation: scroller moved down 15px.
-          // So text physically moved up 15px on screen.
           scroller.scrollTop = 115;
-          mode.onTextLocationsChange(container, defaultHeight);
+          mode.onScroll();
 
-          // focalPoint should shift up by 15px (-15px) to track the text.
           assertEquals(50 - 15, model.getFocalPoint());
           assertTrue(notifiedVisualPositionChange);
         });
 
+    test('onScroll shifts focalPoint by scrollDiff during speech', () => {
+      const {scroller, container} = createScrolledContainer();
+      scroller.scrollTop = 100;
+      mode.onTextLocationsChange(container, defaultHeight);
+      setDefaultTextBounds();
+      speechController.isSpeechActive = () => true;
+      model.setCurrentLineIndex(null);
+      model.setFocalPoint(50);
+      model.setInitiatedScroll(false);
+      notifiedVisualPositionChange = false;
+
+      scroller.scrollTop = 115;
+      mode.onScroll();
+
+      assertEquals(50 - 15, model.getFocalPoint());
+      assertTrue(notifiedVisualPositionChange);
+    });
+
     test(
-        'onTextLocationsChange shifts focalPoint and notifies during speech scroll',
+        'onScroll does not shift focalPoint and clears snapped line during ' +
+            'manual scroll',
         () => {
-          const scroller = document.createElement('div');
-          scroller.className = 'sp-scroller';
-          Object.defineProperty(scroller, 'scrollTop', {
-            value: 0,
-            writable: true,
-          });
-          const container = createShortContainer();
-          scroller.appendChild(container);
-
-          speechController.isSpeechActive = () => true;
-
-          model.setCurrentLineIndex(null);
+          const {scroller, container} = createScrolledContainer();
+          scroller.scrollTop = 100;
+          mode.onTextLocationsChange(container, defaultHeight);
+          setDefaultTextBounds();
+          speechController.isSpeechActive = () => false;
+          model.setCurrentLineIndex(1);
           model.setFocalPoint(50);
-          model.setLastScrollTop(100);
           model.setInitiatedScroll(false);
-
-          scroller.scrollTop = 100;
-          mode.onTextLocationsChange(container, defaultHeight);
           notifiedVisualPositionChange = false;
 
           scroller.scrollTop = 115;
-          mode.onTextLocationsChange(container, defaultHeight);
+          mode.onScroll();
 
-          assertEquals(50 - 15, model.getFocalPoint());
+          assertEquals(null, model.getCurrentLineIndex());
+          assertEquals(50, model.getFocalPoint());
+          assertFalse(notifiedVisualPositionChange);
+        });
+
+    test(
+        'onScroll keeps focalPoint on current line during initiated scroll',
+        () => {
+          const {scroller, container} = createScrolledContainer();
+          mode.onTextLocationsChange(container, defaultHeight);
+          setDefaultTextBounds();
+          model.setCurrentLineIndex(1);
+          model.setInitiatedScroll(true);
+          const initialLineBottom = model.getTextBounds()[1]!.bottom;
+          notifiedVisualPositionChange = false;
+
+          scroller.scrollTop = 20;
+          mode.onScroll();
+
+          assertEquals(initialLineBottom - 20, model.getFocalPoint());
           assertTrue(notifiedVisualPositionChange);
         });
 
     test(
-        'onTextLocationsChange does not shift focalPoint during manual mouse scroll without speech',
+        'onScrollEnd notifies content position change without snapping ' +
+            'window for user scroll',
         () => {
-          const scroller = document.createElement('div');
-          scroller.className = 'sp-scroller';
-          Object.defineProperty(scroller, 'scrollTop', {
-            value: 0,
-            writable: true,
-          });
-          const container = createShortContainer();
-          scroller.appendChild(container);
-
+          mode = createWindowMode();
+          setDefaultTextBounds();
+          model.setAdaptMultiLineWindow(true);
+          model.setFocalPoint(25);
+          model.setTop(18);
+          model.setWindowHeight(42);
+          model.setInitiatedScroll(false);
           speechController.isSpeechActive = () => false;
 
-          model.setCurrentLineIndex(null);
-          model.setFocalPoint(50);
-          model.setLastScrollTop(100);
-          model.setInitiatedScroll(false);  // User scrolled manually.
+          mode.onScrollEnd(100);
 
-          scroller.scrollTop = 100;
-          mode.onTextLocationsChange(container, defaultHeight);
+          assertTrue(notifiedContentPositionChange);
+          assertFalse(notifiedVisualPositionChange);
+          assertEquals(18, model.getTop());
+          assertEquals(42, model.getWindowHeight());
+        });
 
-          scroller.scrollTop = 115;
-          mode.onTextLocationsChange(container, defaultHeight);
+    test(
+        'onScroll and onScrollEnd ignore pending scroll buffer adjustment',
+        () => {
+          const {scroller, container} = createScrolledContainer();
+          scroller.scrollTop = 40;
+          container.style.paddingTop = '200px';
+          model.setSessionActive(true);
+          model.setCurrentLineIndex(0);
+          delegate.notifyScrollBuffer = (buffer) => {
+            bufferValReceived = buffer;
+            container.style.paddingTop = buffer ? '200px' : '0px';
+            scroller.scrollTop = 0;
+          };
 
-          // focalPoint should not shift.
-          assertEquals(50, model.getFocalPoint());
+          mode.onActivated(container, defaultHeight);
+          notifiedContentPositionChange = false;
+          notifiedVisualPositionChange = false;
+
+          // The mouse is over the toolbar when switching modes from the menu.
+          mode.onMouseMoveInToolbar(300);
+          mode.onScroll();
+          mode.onScrollEnd(0);
+          // A repeated scrollend at the same position is also ignored.
+          mode.onScrollEnd(0);
+
+          assertEquals(0, model.getCurrentLineIndex());
+          assertFalse(notifiedContentPositionChange);
+          assertFalse(notifiedVisualPositionChange);
+          assertEquals(
+              0,
+              metricsBrowserProxy.getCallCount('addLineFocusScrollDistance'));
         });
 
     test(
@@ -1524,7 +1716,7 @@ suite('LineFocusMoveMode', () => {
       const container = createShortContainer();
       nodeStore.setDomNode(container, 1);
       const segments = [{
-        node: ReadAloudNode.create(container)!,
+        node: ReadAloudNode.create(container),
         start: 0,
         length: 5,
       }];
@@ -1538,6 +1730,19 @@ suite('LineFocusMoveMode', () => {
 
     test('onMouseMove does nothing', () => {
       mode.onMouseMove(101);
+      assertFalse(notifiedContentPositionChange);
+    });
+
+    test('onScroll does nothing', () => {
+      const {scroller, container} = createScrolledContainer();
+      mode.onTextLocationsChange(container, defaultHeight);
+      setDefaultTextBounds();
+
+      scroller.scrollTop = 15;
+      mode.onScroll();
+
+      assertDeepEquals([10, 30, 50], getTextBoundsTops());
+      assertFalse(notifiedVisualPositionChange);
       assertFalse(notifiedContentPositionChange);
     });
 

@@ -4,6 +4,8 @@
 
 package org.chromium.chrome.browser.ui.signin;
 
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
@@ -23,15 +25,12 @@ import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
-import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.chrome.browser.lifecycle.ActivityLifecycleDispatcher;
 import org.chromium.chrome.browser.preferences.Pref;
 import org.chromium.chrome.browser.prefs.LocalStatePrefs;
-import org.chromium.chrome.browser.prefs.LocalStatePrefsJni;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.test.util.browser.signin.AccountManagerTestRule;
-import org.chromium.components.prefs.PrefService;
 import org.chromium.components.signin.SigninFeatures;
 import org.chromium.components.signin.identitymanager.PrimaryAccountChangeEvent;
 import org.chromium.components.signin.metrics.SigninAccessPoint;
@@ -39,7 +38,6 @@ import org.chromium.components.signin.test.util.TestAccounts;
 
 /** Unit tests for {@link ForcedSigninController}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@DisableFeatures(SigninFeatures.FORCE_STARTUP_SIGNIN_PROMO)
 public class ForcedSigninControllerTest {
     @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
 
@@ -49,8 +47,6 @@ public class ForcedSigninControllerTest {
     @Mock private Profile mProfile;
     @Mock private SigninAndHistorySyncActivityLauncher mLauncher;
     @Mock private ActivityLifecycleDispatcher mActivityLifecycleDispatcher;
-    @Mock private LocalStatePrefs.Natives mLocalStatePrefsNativeMock;
-    @Mock private PrefService mLocalPrefsServiceMock;
     @Mock private Intent mSigninIntent;
     @Mock private Context mContext;
 
@@ -58,10 +54,6 @@ public class ForcedSigninControllerTest {
 
     @Before
     public void setUp() {
-        LocalStatePrefsJni.setInstanceForTesting(mLocalStatePrefsNativeMock);
-        LocalStatePrefs.setNativePrefsLoadedForTesting(true);
-        when(mLocalStatePrefsNativeMock.getPrefService()).thenReturn(mLocalPrefsServiceMock);
-        when(mLocalPrefsServiceMock.getBoolean(Pref.FORCE_BROWSER_SIGNIN)).thenReturn(false);
         when(mContext.getString(anyInt())).thenReturn("string");
 
         when(mLauncher.createFullscreenSigninIntent(
@@ -86,9 +78,8 @@ public class ForcedSigninControllerTest {
     }
 
     @Test
-    @EnableFeatures(SigninFeatures.SUPPORT_FORCED_SIGNIN_POLICY)
     public void testOnResumeWithNative_triggersPromoWhenForcedSigninRequired() {
-        when(mLocalPrefsServiceMock.getBoolean(Pref.FORCE_BROWSER_SIGNIN)).thenReturn(true);
+        LocalStatePrefs.get().setBoolean(Pref.FORCE_BROWSER_SIGNIN, true);
 
         mController.onResumeWithNative();
 
@@ -99,11 +90,10 @@ public class ForcedSigninControllerTest {
     }
 
     @Test
-    @EnableFeatures(SigninFeatures.SUPPORT_FORCED_SIGNIN_POLICY)
     public void testOnResumeWithNative_doesNotTriggerWhenSignedIn() {
         mAccountManagerTestRule.addAccount(TestAccounts.ACCOUNT1);
         mAccountManagerTestRule.getIdentityManager().setPrimaryAccount(TestAccounts.ACCOUNT1);
-        when(mLocalPrefsServiceMock.getBoolean(Pref.FORCE_BROWSER_SIGNIN)).thenReturn(true);
+        LocalStatePrefs.get().setBoolean(Pref.FORCE_BROWSER_SIGNIN, true);
 
         mController.onResumeWithNative();
 
@@ -112,20 +102,8 @@ public class ForcedSigninControllerTest {
     }
 
     @Test
-    @DisableFeatures(SigninFeatures.SUPPORT_FORCED_SIGNIN_POLICY)
-    public void testOnResumeWithNative_doesNotTriggerWhenFeatureDisabled() {
-        when(mLocalPrefsServiceMock.getBoolean(Pref.FORCE_BROWSER_SIGNIN)).thenReturn(true);
-
-        mController.onResumeWithNative();
-
-        verify(mLauncher, never()).createFullscreenSigninIntent(any(), any(), any(), anyInt());
-        verify(mContext, never()).startActivity(any());
-    }
-
-    @Test
-    @EnableFeatures(SigninFeatures.SUPPORT_FORCED_SIGNIN_POLICY)
     public void testOnResumeWithNative_doesNotTriggerWhenPrefDisabled() {
-        when(mLocalPrefsServiceMock.getBoolean(Pref.FORCE_BROWSER_SIGNIN)).thenReturn(false);
+        LocalStatePrefs.get().setBoolean(Pref.FORCE_BROWSER_SIGNIN, false);
 
         mController.onResumeWithNative();
 
@@ -134,9 +112,8 @@ public class ForcedSigninControllerTest {
     }
 
     @Test
-    @EnableFeatures(SigninFeatures.SUPPORT_FORCED_SIGNIN_POLICY)
     public void testOnPrimaryAccountCleared_TriggersPromo() {
-        when(mLocalPrefsServiceMock.getBoolean(Pref.FORCE_BROWSER_SIGNIN)).thenReturn(true);
+        LocalStatePrefs.get().setBoolean(Pref.FORCE_BROWSER_SIGNIN, true);
 
         mController.onPrimaryAccountChanged(
                 new PrimaryAccountChangeEvent(PrimaryAccountChangeEvent.Type.CLEARED));
@@ -148,12 +125,46 @@ public class ForcedSigninControllerTest {
     }
 
     @Test
-    @EnableFeatures(SigninFeatures.SUPPORT_FORCED_SIGNIN_POLICY)
     public void testOnPrimaryAccountSet_doesNotTriggerPromo() {
-        when(mLocalPrefsServiceMock.getBoolean(Pref.FORCE_BROWSER_SIGNIN)).thenReturn(true);
+        LocalStatePrefs.get().setBoolean(Pref.FORCE_BROWSER_SIGNIN, true);
 
         mController.onPrimaryAccountChanged(
                 new PrimaryAccountChangeEvent(PrimaryAccountChangeEvent.Type.SET));
+
+        verify(mLauncher, never()).createFullscreenSigninIntent(any(), any(), any(), anyInt());
+        verify(mContext, never()).startActivity(any());
+    }
+
+    @Test
+    public void testShowFullscreenSigninPromptIfRequired() {
+        LocalStatePrefs.get().setBoolean(Pref.FORCE_BROWSER_SIGNIN, true);
+
+        assertTrue(mController.showFullscreenSigninPromptIfRequired());
+
+        verify(mLauncher)
+                .createFullscreenSigninIntent(
+                        eq(mContext), eq(mProfile), any(), eq(SigninAccessPoint.FORCED_SIGNIN));
+        verify(mContext).startActivity(mSigninIntent);
+    }
+
+    @Test
+    public void testShowFullscreenSigninPromptIfRequired_doesNotTriggerWhenPrefDisabled() {
+        LocalStatePrefs.get().setBoolean(Pref.FORCE_BROWSER_SIGNIN, false);
+
+        assertFalse(mController.showFullscreenSigninPromptIfRequired());
+
+        verify(mLauncher, never()).createFullscreenSigninIntent(any(), any(), any(), anyInt());
+        verify(mContext, never()).startActivity(any());
+    }
+
+    /**
+     * The controller prompt is driven by the forced sign-in policy only: the startup promo flag is
+     * handled separately by {@link FullscreenSigninPromoLauncher#launchPromoIfForced}.
+     */
+    @Test
+    @EnableFeatures(SigninFeatures.FORCE_STARTUP_SIGNIN_PROMO)
+    public void testShowFullscreenSigninPromptIfRequired_ignoresStartupPromoFeature() {
+        assertFalse(mController.showFullscreenSigninPromptIfRequired());
 
         verify(mLauncher, never()).createFullscreenSigninIntent(any(), any(), any(), anyInt());
         verify(mContext, never()).startActivity(any());

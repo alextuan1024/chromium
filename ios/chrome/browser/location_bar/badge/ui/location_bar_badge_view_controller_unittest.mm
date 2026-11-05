@@ -6,6 +6,7 @@
 
 #import "base/test/scoped_feature_list.h"
 #import "ios/chrome/browser/contextual_panel/entrypoint/ui/contextual_panel_entrypoint_mutator.h"
+#import "ios/chrome/browser/contextual_panel/entrypoint/ui/contextual_panel_entrypoint_visibility_delegate.h"
 #import "ios/chrome/browser/contextual_panel/model/contextual_panel_item_configuration.h"
 #import "ios/chrome/browser/intelligence/features/features.h"
 #import "ios/chrome/browser/location_bar/badge/model/badge_type.h"
@@ -66,18 +67,41 @@ TEST_F(LocationBarBadgeViewControllerTest,
   EXPECT_OCMOCK_VERIFY(mock_contextual_panel_mutator_);
 }
 
-// Tests that the badge shows and hides correctly.
+// Tests that the badge shows and hides correctly and notifies
+// `visibilityDelegate` before mutating `view.hidden`.
 TEST_F(LocationBarBadgeViewControllerTest, ShowAndHideBadge) {
   [view_controller_ view];
+
+  id mock_visibility_delegate =
+      OCMProtocolMock(@protocol(ContextualPanelEntrypointVisibilityDelegate));
+  view_controller_.visibilityDelegate = mock_visibility_delegate;
+
   LocationBarBadgeConfiguration* config = [[LocationBarBadgeConfiguration alloc]
        initWithBadgeType:LocationBarBadgeType::kReaderMode
       accessibilityLabel:@"Reader Mode"
               badgeImage:[[UIImage alloc] init]];
   [view_controller_ setBadgeConfig:config];
+
+  __block BOOL view_hidden_when_show_delegate_called = NO;
+  OCMExpect([mock_visibility_delegate setContextualPanelEntrypointHidden:NO])
+      .andDo(^(NSInvocation*) {
+        view_hidden_when_show_delegate_called = view_controller_.view.hidden;
+      });
+
   [view_controller_ showBadge];
+  EXPECT_TRUE(view_hidden_when_show_delegate_called);
   EXPECT_FALSE(view_controller_.view.hidden);
+
+  __block BOOL view_hidden_when_hide_delegate_called = YES;
+  OCMExpect([mock_visibility_delegate setContextualPanelEntrypointHidden:YES])
+      .andDo(^(NSInvocation*) {
+        view_hidden_when_hide_delegate_called = view_controller_.view.hidden;
+      });
+
   [view_controller_ hideBadge];
+  EXPECT_FALSE(view_hidden_when_hide_delegate_called);
   EXPECT_TRUE(view_controller_.view.hidden);
+  EXPECT_OCMOCK_VERIFY(mock_visibility_delegate);
 }
 
 // Tests that the mutator is called when the badge is tapped.
@@ -108,4 +132,73 @@ TEST_F(LocationBarBadgeViewControllerTest, DismissIPHAnimated) {
   OCMExpect([mock_mutator_ dismissIPHAnimated:YES]);
   [mock_mutator_ dismissIPHAnimated:YES];
   EXPECT_OCMOCK_VERIFY(mock_mutator_);
+}
+
+// Fake visibility delegate used because OCMock cannot box C++ `std::optional`
+// parameters passed by value.
+@interface LocationBarBadgeViewControllerFakeVisibilityDelegate
+    : NSObject <ContextualPanelEntrypointVisibilityDelegate>
+@property(nonatomic, assign) std::optional<ContextualPanelItemType> itemType;
+@property(nonatomic, assign) std::optional<ContextualPanelItemType>
+    itemTypeWhenHidden;
+@property(nonatomic, assign) BOOL didHideEntrypoint;
+@end
+
+@implementation LocationBarBadgeViewControllerFakeVisibilityDelegate
+- (void)setContextualPanelEntrypointHidden:(BOOL)hidden {
+  if (hidden) {
+    _didHideEntrypoint = YES;
+    _itemTypeWhenHidden = _itemType;
+  }
+}
+- (void)setContextualPanelItemType:
+    (std::optional<ContextualPanelItemType>)itemType {
+  _itemType = itemType;
+}
+- (void)setContextualPanelCurrentlyAnimating:(BOOL)animating {
+  // No-op.
+}
+- (void)setContextualPanelEntrypointState:
+    (ContextualPanelEntrypointState)state {
+  // No-op.
+}
+@end
+
+// Tests that `contextualPanelItemType` is cleared when hiding a badge or
+// setting a non-Contextual-Panel badge configuration.
+TEST_F(LocationBarBadgeViewControllerTest,
+       ClearsContextualPanelItemTypeForNonContextualPanelBadges) {
+  [view_controller_ view];
+  LocationBarBadgeViewControllerFakeVisibilityDelegate* visibility_delegate =
+      [[LocationBarBadgeViewControllerFakeVisibilityDelegate alloc] init];
+  view_controller_.visibilityDelegate = visibility_delegate;
+
+  LocationBarBadgeConfiguration* reader_mode_config =
+      [[LocationBarBadgeConfiguration alloc]
+           initWithBadgeType:LocationBarBadgeType::kReaderMode
+          accessibilityLabel:@"Reader Mode"
+                  badgeImage:[[UIImage alloc] init]];
+  [view_controller_ setBadgeConfig:reader_mode_config];
+  [view_controller_
+      setContextualPanelItemType:ContextualPanelItemType::ReaderModeItem];
+  EXPECT_EQ(visibility_delegate.itemType,
+            ContextualPanelItemType::ReaderModeItem);
+
+  [view_controller_ hideBadge];
+  EXPECT_TRUE(visibility_delegate.didHideEntrypoint);
+  EXPECT_EQ(visibility_delegate.itemType, std::nullopt);
+  EXPECT_EQ(visibility_delegate.itemTypeWhenHidden, std::nullopt);
+
+  [view_controller_
+      setContextualPanelItemType:ContextualPanelItemType::ReaderModeItem];
+  ASSERT_EQ(visibility_delegate.itemType,
+            ContextualPanelItemType::ReaderModeItem);
+
+  LocationBarBadgeConfiguration* gemini_config =
+      [[LocationBarBadgeConfiguration alloc]
+           initWithBadgeType:LocationBarBadgeType::kGeminiContextualCueChip
+          accessibilityLabel:@"Ask Gemini"
+                  badgeImage:[[UIImage alloc] init]];
+  [view_controller_ setBadgeConfig:gemini_config];
+  EXPECT_EQ(visibility_delegate.itemType, std::nullopt);
 }

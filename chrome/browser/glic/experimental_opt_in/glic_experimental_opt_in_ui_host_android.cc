@@ -11,9 +11,11 @@
 #include "base/memory/raw_ptr.h"
 #include "base/task/sequenced_task_runner.h"
 #include "chrome/browser/android/tab_android.h"
+#include "chrome/browser/flags/android/chrome_session_state.h"
 #include "chrome/browser/glic/common/glic_navigation.h"
 #include "chrome/browser/glic/experimental_opt_in/glic_experimental_opt_in_ui_host_android.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/search/search.h"
 #include "chrome/browser/ui/android/tab_model/tab_model.h"
 #include "chrome/browser/ui/android/tab_model/tab_model_list.h"
 #include "chrome/browser/ui/navigator/browser_navigator_params.h"
@@ -21,8 +23,9 @@
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/web_contents.h"
+#include "third_party/jni_zero/jni_zero.h"
 #include "ui/android/window_android.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "url/gurl.h"
 
 // JNI headers must be included after standard headers.
@@ -32,26 +35,43 @@ namespace glic {
 
 namespace {
 
-tabs::TabInterface* GetActiveTab(Profile* profile) {
-  for (TabModel* model : TabModelList::models()) {
-    if (model->GetProfile() == profile && model->IsActiveModel()) {
-      return model->GetActiveTab();
+// Returns the tab model backing the window the user is currently looking at,
+// for `profile`.
+TabModel* GetActiveTabModel(Profile* profile) {
+  TabModel* active_model = nullptr;
+  TabModelList::ForEach(profile, [&](TabModel* model) {
+    if (model->IsActiveModel()) {
+      active_model = model;
+      return false;
     }
+    return true;
+  });
+  return active_model;
+}
+
+// Like GetActiveTabModel(), but restricted to models it is meaningful to open
+// a new tab in. Custom Tabs, Trusted Web Activities and web apps host a single
+// tab with no tab strip, so a tab inserted into them would be unreachable.
+// TabMatcherAndroid filters these out for the same reason.
+TabModel* GetActiveTabbedModel(Profile* profile) {
+  TabModel* model = GetActiveTabModel(profile);
+  if (!model ||
+      model->activity_type() != chrome::android::ActivityType::kTabbed) {
+    return nullptr;
   }
-  return nullptr;
+  return model;
+}
+
+tabs::TabInterface* GetActiveTab(Profile* profile) {
+  TabModel* model = GetActiveTabModel(profile);
+  return model ? model->GetActiveTab() : nullptr;
+}
+
+bool IsNewTabPageUrl(const GURL& url) {
+  return search::IsNewTabOrigin(url) || search::IsNTPURL(url);
 }
 
 }  // namespace
-
-void JNI_GlicExperimentalOptInUiCoordinator_OnDismissed(
-    JNIEnv* env,
-    int64_t nativeGlicExperimentalOptInUIHostAndroid) {
-  auto* host = reinterpret_cast<GlicExperimentalOptInUIHostAndroid*>(
-      nativeGlicExperimentalOptInUIHostAndroid);
-  if (host) {
-    host->OnDismissed();
-  }
-}
 
 GlicExperimentalOptInUIHostAndroid::GlicExperimentalOptInUIHostAndroid(
     Profile* profile,
@@ -104,9 +124,9 @@ void GlicExperimentalOptInUIHostAndroid::Show(
 
   JNIEnv* env = base::android::AttachCurrentThread();
   base::android::ScopedJavaLocalRef<jobject> java_obj =
-      Java_GlicExperimentalOptInUiCoordinator_show(
-          env, reinterpret_cast<intptr_t>(this), window_android,
-          opt_in_web_contents_.get());
+      Java_GlicExperimentalOptInUiCoordinator_show(env, jni_zero::MakeRaw(this),
+                                                   window_android,
+                                                   opt_in_web_contents_.get());
 
   if (!java_obj) {
     OnDismissed();
@@ -114,6 +134,7 @@ void GlicExperimentalOptInUIHostAndroid::Show(
   }
 
   java_dialog_.Reset(java_obj);
+  OnDialogOpened();
 }
 
 void GlicExperimentalOptInUIHostAndroid::Close(bool accepted) {
@@ -124,11 +145,16 @@ void GlicExperimentalOptInUIHostAndroid::Close(bool accepted) {
   }
 
   JNIEnv* env = base::android::AttachCurrentThread();
+  if (accepted) {
+    Java_GlicExperimentalOptInUiCoordinator_onOptInAccepted(env, java_dialog_);
+  }
   Java_GlicExperimentalOptInUiCoordinator_dismiss(env, java_dialog_);
 }
 
 void GlicExperimentalOptInUIHostAndroid::OnDismissed() {
+  RecordShowDurationOnClose();
   java_dialog_.Reset();
+  dialog_tab_ = tabs::TabHandle();
   if (opt_in_web_contents_) {
     base::SequencedTaskRunner::GetCurrentDefault()->DeleteSoon(
         FROM_HERE, std::move(opt_in_web_contents_));
@@ -143,14 +169,46 @@ void GlicExperimentalOptInUIHostAndroid::OpenLinkInNewTab(const GURL& url) {
   }
   std::unique_ptr<NavigateParams> params =
       std::make_unique<NavigateParams>(profile_, url, ui::PAGE_TRANSITION_LINK);
-  params->disposition = WindowOpenDisposition::NEW_POPUP;
+  params->disposition = ui::mojom::WindowOpenDisposition::kNewPopup;
   params->opened_by_another_window = true;
   glic::NavigateAsync(std::move(params), base::DoNothing());
 }
 
 content::WebContents*
 GlicExperimentalOptInUIHostAndroid::GetOrCreateSuitableWebContents() {
-  return nullptr;
+  // A dialog is already showing over a tab this host selected. Hand that same
+  // tab back instead of opening another one: Show() ignores the contents while
+  // a dialog is up, so a second tab would be left stranded behind the dialog
+  // after having pulled the user away from what they were looking at.
+  if (java_dialog_) {
+    if (tabs::TabInterface* dialog_tab = dialog_tab_.Get()) {
+      return dialog_tab->GetContents();
+    }
+    return nullptr;
+  }
+
+  TabModel* model = GetActiveTabbedModel(profile_);
+  if (!model) {
+    return nullptr;
+  }
+
+  // Show the dialog over an ordinary new tab page rather than over whatever
+  // the user is currently looking at. This deliberately differs from the
+  // desktop host, which anchors the dialog to a tab already showing the Gemini
+  // surface: on Clank a plain NTP is the intended backdrop. If the active tab
+  // is already an NTP (for example, opened by the external trigger intent
+  // fallback), reuse it instead of opening a duplicate tab.
+  tabs::TabInterface* target_tab = model->GetActiveTab();
+  if (!target_tab || !IsNewTabPageUrl(target_tab->GetURL())) {
+    target_tab =
+        model->OpenTab(GURL(chrome::kChromeUINewTabURL), model->GetTabCount(),
+                       /*foreground=*/true);
+  }
+  if (!target_tab) {
+    return nullptr;
+  }
+  dialog_tab_ = target_tab->GetHandle();
+  return target_tab->GetContents();
 }
 
 void GlicExperimentalOptInUIHostAndroid::SimulateDismissingForTesting() {

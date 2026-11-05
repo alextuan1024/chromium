@@ -71,6 +71,7 @@
 #ifndef BASE_MEMORY_WEAK_PTR_H_
 #define BASE_MEMORY_WEAK_PTR_H_
 
+#include <concepts>
 #include <cstddef>
 #include <type_traits>
 #include <utility>
@@ -114,6 +115,9 @@ class BASE_EXPORT TRIVIAL_ABI WeakReference {
 #if DCHECK_IS_ON()
     void DetachFromSequence();
     void BindToCurrentSequence();
+    // DCHECKs that the caller is on the bound sequence, as IsValid() does,
+    // without reading the flag.
+    void CheckCalledOnValidSequence() const;
 #endif
 
    private:
@@ -139,6 +143,14 @@ class BASE_EXPORT TRIVIAL_ABI WeakReference {
   // Returns whether the WeakReference is valid, meaning the WeakPtrFactory has
   // not invalidated the pointer. Unlike, RefIsMaybeValid(), this may only be
   // called from the same sequence as where the WeakPtr was created.
+#if !DCHECK_IS_ON()
+  // Safe to mark PURE_FUNCTION when DCHECKs are off: it only reads `flag_` and
+  // `flag_->invalidated_` with no side effects or virtual/templated calls, and
+  // invalidation must run on the same sequence so validity cannot change
+  // concurrently without an intervening call. Guarded by `!DCHECK_IS_ON()`
+  // because `Flag::IsValid()` binds and checks `sequence_checker_`.
+  PURE_FUNCTION
+#endif
   bool IsValid() const;
   // Returns false if the WeakReference is confirmed to be invalid. This call is
   // safe to make from any thread, e.g. to optimize away unnecessary work, but
@@ -148,6 +160,17 @@ class BASE_EXPORT TRIVIAL_ABI WeakReference {
   // Warning: as with any object, this call is only thread-safe if the WeakPtr
   // instance isn't being re-assigned or reset() racily with this call.
   bool MaybeValid() const;
+
+  // DCHECKs that the caller is on the sequence the WeakPtr is bound to, as
+  // IsValid() does, without reading the flag. Does nothing when DCHECKs are
+  // off.
+  void CheckCalledOnValidSequence() const {
+#if DCHECK_IS_ON()
+    if (flag_) {
+      flag_->CheckCalledOnValidSequence();
+    }
+#endif
+  }
 
  private:
   scoped_refptr<const Flag> flag_;
@@ -193,12 +216,16 @@ class WeakPtrFactory;
 //   if (foo)
 //     foo->method();
 //
-// WeakPtr intentionally doesn't implement operator== or operator<=>, because
-// comparisons of weak references are inherently unstable. If the comparison
-// takes validity into account, the result can change at any time as pointers
-// are invalidated. If it depends only on the underlying pointer value, even
-// after the pointer is invalidated, unrelated WeakPtrs can unexpectedly
-// compare equal if the address is reused.
+// WeakPtr intentionally doesn't implement operator== or operator<=> between
+// two WeakPtrs, because comparisons of weak references are inherently
+// unstable. If the comparison takes validity into account, the result can
+// change at any time as pointers are invalidated. If it depends only on the
+// underlying pointer value, even after the pointer is invalidated, unrelated
+// WeakPtrs can unexpectedly compare equal if the address is reused.
+//
+// A WeakPtr can be compared with a raw pointer, a raw_ptr or nullptr. That is
+// equivalent to comparing get() with it: validity is taken into account, so an
+// invalidated WeakPtr compares equal only to a null pointer.
 template <typename T>
 class TRIVIAL_ABI WeakPtr {
  public:
@@ -239,7 +266,7 @@ class TRIVIAL_ABI WeakPtr {
 
   // Provide access to the underlying T as a reference. Will CHECK() if the T
   // pointee is no longer alive.
-  T& operator*() const {
+  ALWAYS_INLINE T& operator*() const {
     CHECK(ref_.IsValid());
     return *ptr_;
   }
@@ -252,7 +279,7 @@ class TRIVIAL_ABI WeakPtr {
   }
 
   // Allow conditionals to test validity, e.g. if (weak_ptr) {...};
-  explicit operator bool() const { return get() != nullptr; }
+  ALWAYS_INLINE explicit operator bool() const { return ref_.IsValid(); }
 
   // Resets the WeakPtr to hold nothing.
   //
@@ -286,6 +313,44 @@ class TRIVIAL_ABI WeakPtr {
   // be used to distinguish a WeakPtr to a destroyed object from one that has
   // been explicitly set to null.
   bool WasInvalidated() const { return ptr_ && !ref_.IsValid(); }
+
+  // Compares a WeakPtr against a raw pointer. Equivalent to
+  // `lhs.get() == rhs`: true if and only if the WeakPtr is valid and points to
+  // `rhs`, or `rhs` is null and the WeakPtr is null or invalidated.
+  //
+  // When `rhs` points to `T` itself, the stored pointer is compared before the
+  // validity flag is read. In a linear scan (such as searching a container of
+  // WeakPtrs for a raw pointer) the pointers differ in the vast majority of
+  // iterations, so this returns without touching the flag's separate heap
+  // allocation, which would be a cache miss per entry. The flag is only read
+  // for a matching pointer, or for a null `rhs`. The sequence check that get()
+  // performs is kept in DCHECK builds.
+  //
+  // For a pointer to another type the stored pointer would have to be
+  // converted first, and converting to a virtual base reads the pointee, which
+  // may be gone. Those comparisons go through get(), which never converts a
+  // pointer to a destroyed object.
+  template <typename U>
+    requires std::equality_comparable_with<T*, const U*>
+  friend bool operator==(const WeakPtr& lhs, const U* rhs) {
+    if constexpr (std::same_as<std::remove_cv_t<T>, std::remove_cv_t<U>>) {
+      lhs.ref_.CheckCalledOnValidSequence();
+      if (lhs.ptr_ == rhs) {
+        return !rhs || lhs.ref_.IsValid();
+      }
+      return !rhs && !lhs.ref_.IsValid();
+    } else {
+      return lhs.get() == rhs;
+    }
+  }
+
+  // Same for a raw_ptr: it goes through the overload above, including its
+  // validity check.
+  template <typename U, RawPtrTraits Traits>
+    requires std::equality_comparable_with<T*, const U*>
+  friend bool operator==(const WeakPtr& lhs, const raw_ptr<U, Traits>& rhs) {
+    return lhs == rhs.get();
+  }
 
  private:
   template <typename U>

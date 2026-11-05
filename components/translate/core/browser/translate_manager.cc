@@ -15,12 +15,14 @@
 #include "base/functional/bind.h"
 #include "base/i18n/language_tag.h"
 #include "base/i18n/tag_converters.h"
+#include "base/location.h"
 #include "base/metrics/field_trial.h"
 #include "base/metrics/field_trial_params.h"
 #include "base/metrics/histogram.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_split.h"
+#include "base/task/sequenced_task_runner.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
 #include "components/language/core/browser/language_model.h"
@@ -187,6 +189,17 @@ void TranslateManager::InitiateTranslation(std::string_view page_lang) {
 }
 
 bool TranslateManager::CanManuallyTranslate(bool menu_logging) {
+  return CanManuallyTranslateInternal(menu_logging,
+                                      /*is_partial_translate=*/false);
+}
+
+bool TranslateManager::CanPartiallyTranslate() {
+  return CanManuallyTranslateInternal(/*menu_logging=*/false,
+                                      /*is_partial_translate=*/true);
+}
+
+bool TranslateManager::CanManuallyTranslateInternal(bool menu_logging,
+                                                    bool is_partial_translate) {
   bool can_translate = true;
 
   if (net::NetworkChangeNotifier::IsOffline()) {
@@ -210,9 +223,13 @@ bool TranslateManager::CanManuallyTranslate(bool menu_logging) {
     can_translate = false;
   }
 
-  // not supported MIME type pages currently cannot be translated.
+  // Not supported MIME type pages currently cannot be translated.
+  // Partial translation is supported on PDF pages regardless of whether
+  // full-page PDF translation (kEnableTranslatePdf) is enabled.
   // See bug: 217945, 1208340.
-  if (!IsMimeTypeSupported(translate_driver_->GetContentsMimeType())) {
+  const std::string& mime_type = translate_driver_->GetContentsMimeType();
+  if (!(is_partial_translate && mime_type == kPdfMimeType) &&
+      !IsMimeTypeSupported(mime_type)) {
     if (!menu_logging) {
       return false;
     }
@@ -224,17 +241,6 @@ bool TranslateManager::CanManuallyTranslate(bool menu_logging) {
 
   if (!translate_client_->IsTranslatableURL(
           translate_driver_->GetVisibleURL())) {
-    if (!menu_logging) {
-      return false;
-    }
-    TranslateBrowserMetrics::ReportMenuTranslationUnavailableReason(
-        TranslateBrowserMetrics::MenuTranslationUnavailableReason::
-            kURLNotTranslatable);
-    can_translate = false;
-  }
-
-  if (language_state_.pdf_translatability_status() ==
-      LanguageState::PdfTranslatabilityStatus::kUntranslatable) {
     if (!menu_logging) {
       return false;
     }
@@ -286,6 +292,12 @@ bool TranslateManager::CanManuallyTranslate(bool menu_logging) {
     can_translate = false;
   }
 
+  if (is_partial_translate &&
+      !TranslateLanguageList::IsSupportedPartialTranslateLanguage(
+          target_lang)) {
+    return false;
+  }
+
   if (menu_logging) {
     UMA_HISTOGRAM_BOOLEAN("Translate.MenuTranslation.IsAvailable",
                           can_translate);
@@ -314,6 +326,10 @@ bool TranslateManager::IsMimeTypeSupported(std::string_view mime_type) {
     return false;
   if (mime_type == "multipart/related")
     return false;
+  if (mime_type == kPdfMimeType &&
+      !base::FeatureList::IsEnabled(translate::kEnableTranslatePdf)) {
+    return false;
+  }
 
   return true;
 }
@@ -382,6 +398,27 @@ void TranslateManager::TranslatePage(std::string_view original_source_lang,
   // should be monitored and investigated if it increases.
   if (!translate_client_->IsTranslatableURL(page_url)) {
     base::debug::DumpWithoutCrashing();
+    return;
+  }
+
+  // Full page translation is not possible for PDFs that were determined to be
+  // untranslatable. This is checked here rather than in CanManuallyTranslate()
+  // so that partial translation remains available for such PDFs.
+  if (language_state_.pdf_translatability_status() ==
+      LanguageState::PdfTranslatabilityStatus::kUntranslatable) {
+    // Report the error asynchronously, like translation failures from the
+    // renderer. The translate bubble calls TranslatePage() and then switches
+    // its own view, so a synchronous error would be dropped (from the language
+    // selection view) or immediately replaced (from the translate tab).
+    base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE,
+        base::BindOnce(
+            &TranslateManager::ShowUntranslatablePdfError, GetWeakPtr(),
+            GetLanguageTagFromString(original_source_lang)
+                .value_or(GetKnownLanguageTag("und")),
+            GetLanguageTagFromString(target_lang)
+                .value_or(GetKnownLanguageTag("und")),
+            triggered_from_menu));
     return;
   }
 
@@ -459,6 +496,16 @@ void TranslateManager::TranslatePage(std::string_view original_source_lang,
                   translate_client_->GetPrefs());
 }
 
+void TranslateManager::ShowUntranslatablePdfError(LanguageTag source_lang,
+                                                  LanguageTag target_lang,
+                                                  bool triggered_from_menu) {
+  translate_client_->ShowTranslateUI(
+      translate::TRANSLATE_STEP_TRANSLATE_ERROR,
+      std::string(source_lang.tag_string()),
+      std::string(target_lang.tag_string()),
+      TranslateErrors::TRANSLATION_ERROR, triggered_from_menu);
+}
+
 void TranslateManager::RevertTranslation() {
   // Do nothing if the page is not translated.
   if (!GetLanguageState()->IsPageTranslated()) {
@@ -472,6 +519,8 @@ void TranslateManager::RevertTranslation() {
   language_state_.SetCurrentLanguage(language_state_.source_language());
 
   GetActiveTranslateMetricsLogger()->LogReversion();
+
+  translate_client_->RevertPdfTranslation();
 }
 
 void TranslateManager::DoTranslatePage(std::string_view translate_script,
@@ -862,10 +911,9 @@ const TranslateTriggerDecision TranslateManager::ComputePossibleOutcomes(
   // corresponding metrics in InitiateTranslation.
   TranslateTriggerDecision decision;
 
-  // If translation is disabled by the command line, we can return early to
-  // prevent further filtering and potential side effects.
-  if (base::CommandLine::ForCurrentProcess()->HasSwitch(
-          switches::kDisableTranslateTrigger)) {
+  // If translation triggering is disabled, we can return early to prevent
+  // further filtering and potential side effects.
+  if (!IsTranslateTriggerEnabled()) {
     decision.PreventAllTriggering();
     return decision;
   }

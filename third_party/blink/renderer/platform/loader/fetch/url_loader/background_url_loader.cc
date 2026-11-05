@@ -12,7 +12,6 @@
 #include "base/byte_size.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
-#include "base/metrics/histogram_functions.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/single_thread_task_runner.h"
@@ -21,7 +20,6 @@
 #include "services/network/public/cpp/url_loader_completion_status.h"
 #include "services/network/public/mojom/url_response_head.mojom.h"
 #include "third_party/blink/public/common/features.h"
-#include "third_party/blink/public/common/loader/background_resource_fetch_histograms.h"
 #include "third_party/blink/public/common/loader/mime_sniffing_throttle.h"
 #include "third_party/blink/public/common/loader/referrer_utils.h"
 #include "third_party/blink/public/mojom/navigation/renderer_eviction_reason.mojom-blink.h"
@@ -43,11 +41,6 @@
 #include "third_party/blink/renderer/platform/loader/fetch/url_loader/url_loader_client.h"
 #include "third_party/blink/renderer/platform/scheduler/public/post_cross_thread_task.h"
 #include "third_party/blink/renderer/platform/weborigin/scheme_registry.h"
-#include "third_party/blink/renderer/platform/wtf/cross_thread_copier.h"
-#include "third_party/blink/renderer/platform/wtf/cross_thread_copier_base.h"
-#include "third_party/blink/renderer/platform/wtf/cross_thread_copier_mojo.h"
-#include "third_party/blink/renderer/platform/wtf/cross_thread_copier_std.h"
-#include "third_party/blink/renderer/platform/wtf/cross_thread_copier_url.h"
 #include "third_party/blink/renderer/platform/wtf/cross_thread_functional.h"
 #include "third_party/blink/renderer/platform/wtf/deque.h"
 #include "third_party/blink/renderer/platform/wtf/forward.h"
@@ -67,16 +60,15 @@ namespace blink {
 
 namespace {
 
-BackgroundResourceFetchSupportStatus CanHandleRequestInternal(
-    const network::ResourceRequest& request,
-    const ResourceLoaderOptions& options,
-    bool is_prefech_only_document) {
+bool CanHandleRequestInternal(const network::ResourceRequest& request,
+                              const ResourceLoaderOptions& options,
+                              bool is_prefech_only_document) {
   if (options.synchronous_policy == kRequestSynchronously) {
-    return BackgroundResourceFetchSupportStatus::kUnsupportedSyncRequest;
+    return false;
   }
   // Currently, BackgroundURLLoader only supports GET requests.
   if (request.method != net::HttpRequestHeaders::kGetMethod) {
-    return BackgroundResourceFetchSupportStatus::kUnsupportedNonGetRequest;
+    return false;
   }
 
   // Currently, only supports HTTP family and blob URLs, plus WebUI URLs
@@ -104,7 +96,7 @@ BackgroundResourceFetchSupportStatus CanHandleRequestInternal(
   }
 
   if (!is_http_or_blob && !is_webui) {
-    return BackgroundResourceFetchSupportStatus::kUnsupportedNonHttpUrlRequest;
+    return false;
   }
 
   // 2. WebUI specific checks.
@@ -113,24 +105,23 @@ BackgroundResourceFetchSupportStatus CanHandleRequestInternal(
   // WebUIBundledCachedMetadataHandler, which the background loader path
   // bypasses.
   if (is_webui && CodeCacheFetcher::ShouldFetchWebUIBundledCodeCache(request)) {
-    return BackgroundResourceFetchSupportStatus::kUnsupportedNonHttpUrlRequest;
+    return false;
   }
 
   // Don't support keepalive request which must be handled aligning with the
   // page lifecycle states. It is difficult to handle in the background thread.
   if (request.keepalive) {
-    return BackgroundResourceFetchSupportStatus::kUnsupportedKeepAliveRequest;
+    return false;
   }
 
   // Currently prerender::NoStatePrefetchHelper doesn't work on the background
   // thread.
   if (is_prefech_only_document) {
-    return BackgroundResourceFetchSupportStatus::
-        kUnsupportedPrefetchOnlyDocument;
+    return false;
   }
 
   // TODO(crbug.com/1379780): Determine the range of supported requests.
-  return BackgroundResourceFetchSupportStatus::kSupported;
+  return true;
 }
 
 }  // namespace
@@ -519,6 +510,8 @@ class BackgroundURLLoader::Context
     DCHECK_CALLED_ON_VALID_SEQUENCE(main_thread_sequence_checker_);
     WebURLResponse response = WebURLResponse::Create(
         url_, *head, has_devtools_request_id_, request_id);
+    response.SetCacheStorageSideDataWriter(
+        std::move(head->cache_storage_side_data_writer));
     client_->DidReceiveResponse(response, std::move(body),
                                 std::move(cached_metadata));
   }
@@ -685,11 +678,7 @@ bool BackgroundURLLoader::CanHandleRequest(
     const ResourceLoaderOptions& options,
     bool is_prefech_only_document) {
   CHECK(IsMainThread());
-  auto result =
-      CanHandleRequestInternal(request, options, is_prefech_only_document);
-  base::UmaHistogramEnumeration(
-      kBackgroundResourceFetchSupportStatusHistogramName, result);
-  return result == BackgroundResourceFetchSupportStatus::kSupported;
+  return CanHandleRequestInternal(request, options, is_prefech_only_document);
 }
 
 BackgroundURLLoader::BackgroundURLLoader(

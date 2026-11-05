@@ -33,6 +33,7 @@
 
 #include <memory>
 
+#include "base/memory/raw_ptr_exclusion.h"
 #include "base/memory/scoped_refptr.h"
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/core/css/invalidation/invalidation_flags.h"
@@ -122,10 +123,6 @@ class CORE_EXPORT InvalidationSet
   void AddCustomPseudoName(const AtomicString& custom_pseudo_name);
   void AddAttribute(const AtomicString& attribute_local_name);
 
-  void SetInvalidationFlags(InvalidationFlags flags) {
-    invalidation_flags_ = flags;
-  }
-
   void SetWholeSubtreeInvalid();
   bool WholeSubtreeInvalid() const {
     return invalidation_flags_.WholeSubtreeInvalid();
@@ -177,12 +174,20 @@ class CORE_EXPORT InvalidationSet
     return invalidation_flags_.InvalidatesTreeCounting();
   }
 
+  void SetInvalidatesFocused() {
+    invalidation_flags_.SetInvalidatesFocused(true);
+  }
+  bool InvalidatesFocused() const {
+    return invalidation_flags_.InvalidatesFocused();
+  }
+
   bool IsEmpty() const {
     return HasEmptyBackings() &&
            !invalidation_flags_.InsertionPointCrossing() &&
            !invalidation_flags_.InvalidatesSlotted() &&
            !invalidation_flags_.InvalidatesParts() &&
-           !invalidation_flags_.InvalidatesTreeCounting();
+           !invalidation_flags_.InvalidatesTreeCounting() &&
+           !invalidation_flags_.InvalidatesFocused();
   }
 
   void WriteIntoTrace(perfetto::TracedValue context) const;
@@ -213,6 +218,7 @@ class CORE_EXPORT InvalidationSet
   //  I - Insertion point crossing.
   //  S - Invalidates slotted.
   //  P - Invalidates parts.
+  //  F - Invalidates the focused element.
   //  ~ - Max direct siblings is kDirectAdjacentMax.
   //  <integer> - Max direct siblings is specified number (omitted if 1).
   String ToString() const;
@@ -376,7 +382,8 @@ class CORE_EXPORT InvalidationSet
     void SetIsHashSet(Flags& flags) { flags.bits_ |= GetMask(); }
 
     AtomicString string_{};
-    HashSet<AtomicString>* hash_set_;
+    // RAW_PTR_EXCLUSION: #union
+    RAW_PTR_EXCLUSION HashSet<AtomicString>* hash_set_;
   };
 
  protected:

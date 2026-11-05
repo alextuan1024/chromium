@@ -81,10 +81,12 @@
 
 #if BUILDFLAG(IS_CHROMEOS)
 #include "ash/public/cpp/window_properties.h"  // nogncheck
+#include "chrome/browser/ui/views/picture_in_picture/picture_in_picture_pin_button.h"
 #include "chromeos/ui/base/app_types.h"
 #include "chromeos/ui/base/chromeos_ui_constants.h"
 #include "chromeos/ui/base/window_properties.h"
 #include "ui/aura/client/aura_constants.h"
+#include "ui/aura/env.h"
 #include "ui/aura/window.h"
 #endif
 
@@ -124,6 +126,14 @@ constexpr gfx::Size kFaviconSize(24, 24);
 
 // The size of the favicon image itself.
 constexpr gfx::Size kFaviconIconSize(16, 16);
+
+#if BUILDFLAG(IS_CHROMEOS)
+// Size and margins of the pin button. It is placed to the left of the
+// minimize button, which is placed 52px from the right edge.
+constexpr gfx::Size kPinButtonSize(24, 24);
+constexpr int kPinButtonHorizontalMargin = 76;
+constexpr int kPinButtonVerticalMargin = 5;
+#endif
 
 gfx::Size ScaleImageSizeToFitView(const gfx::Size& image_size,
                                   const gfx::Size& view_size) {
@@ -226,15 +236,30 @@ class OverlayWindowFrameView : public views::FrameView {
     return bounds();
   }
   int NonClientHitTest(const gfx::Point& point) override {
-    // Outside of the window bounds, do nothing.
-    if (!bounds().Contains(point)) {
-      return HTNOWHERE;
-    }
-
     constexpr int kResizeAreaCornerSize = 16;
     int window_component = GetHTComponentForFrame(
         point, gfx::Insets(kOverlayBorderThickness), kResizeAreaCornerSize,
         kResizeAreaCornerSize, GetWidget()->widget_delegate()->CanResize());
+
+    if (!bounds().Contains(point)) {
+#if BUILDFLAG(IS_CHROMEOS)
+      // Like other windows, the window can be resized from just outside of its
+      // bounds, where ash extends the hit region of the window.
+      gfx::Rect resize_outside_bounds = bounds();
+      int outside_size = chromeos::kResizeOutsideBoundsSize;
+      if (aura::Env::GetInstance()->is_touch_down()) {
+        outside_size *= chromeos::kResizeOutsideBoundsScaleForTouch;
+      }
+      resize_outside_bounds.Inset(-outside_size);
+      // `HTBORDER` means the window is not resizable.
+      if (resize_outside_bounds.Contains(point) &&
+          window_component != HTBORDER) {
+        return window_component;
+      }
+#endif
+      // Otherwise, outside of the window bounds, do nothing.
+      return HTNOWHERE;
+    }
 
     // The overlay controls should take and handle user interaction.
     VideoOverlayWindowViews* window =
@@ -281,7 +306,7 @@ class OverlayWindowFrameView : public views::FrameView {
   // views::ViewTargeterDelegate:
   bool DoesIntersectRect(const View* target,
                          const gfx::Rect& rect) const override {
-    DCHECK_EQ(target, this);
+    CHECK_EQ(target, this, base::NotFatalUntil::M162);
     return false;
   }
 
@@ -1017,6 +1042,9 @@ bool VideoOverlayWindowViews::ControlsHitTestContainsPoint(
       GetSkipAdControlsBounds().Contains(point) ||
       GetCloseControlsBounds().Contains(point) ||
       GetMinimizeControlsBounds().Contains(point) ||
+#if BUILDFLAG(IS_CHROMEOS)
+      GetPinControlsBounds().Contains(point) ||
+#endif
       GetPlayPauseControlsBounds().Contains(point) ||
       GetReplay10SecondsButtonBounds().Contains(point) ||
       GetForward10SecondsButtonBounds().Contains(point) ||
@@ -1063,7 +1091,7 @@ void VideoOverlayWindowViews::SetUpViews() {
   window_background_view->SetBackground(
       views::CreateLayerBasedSolidBackground(kColorPipWindowBackground));
   window_background_view->GetBackground()->SetInternalName(
-      "WindowBackgroundView");
+      "VideoOverlayWindowViews:WindowBackgroundView");
 
   auto video_view = std::make_unique<views::View>();
 
@@ -1289,35 +1317,39 @@ void VideoOverlayWindowViews::SetUpViews() {
   video_view->SetPaintToLayer(ui::LAYER_SURFACE);
   video_view->layer()->SetMasksToBounds(true);
   video_view->layer()->SetFillsBoundsOpaquely(false);
-  video_view->layer()->SetName("VideoView");
+  video_view->layer()->SetName("VideoOverlayWindowViews:VideoView");
 
   // views::View that holds the scrim, which appears with the controls. -------
   controls_scrim_view->SetPaintToLayer(ui::LAYER_TEXTURED);
   controls_scrim_view->layer()->SetFillsBoundsOpaquely(false);
-  controls_scrim_view->layer()->SetName("ControlsScrimView");
+  controls_scrim_view->layer()->SetName(
+      "VideoOverlayWindowViews:ControlsScrimView");
 
   // views::View that is a parent of all the controls. Makes hiding and showing
   // all the controls at once easier.
   controls_container_view->SetPaintToLayer(ui::LAYER_TEXTURED);
   controls_container_view->layer()->SetFillsBoundsOpaquely(false);
-  controls_container_view->layer()->SetName("ControlsContainerView");
+  controls_container_view->layer()->SetName(
+      "VideoOverlayWindowViews:ControlsContainerView");
 
   // The scrim for the top controls. ----------------------------------------
   controls_top_scrim_view->SetPaintToLayer(ui::LAYER_TEXTURED);
   controls_top_scrim_view->layer()->SetFillsBoundsOpaquely(false);
-  controls_top_scrim_view->layer()->SetName("ControlsTopScrimView");
+  controls_top_scrim_view->layer()->SetName(
+      "VideoOverlayWindowViews:ControlsTopScrimView");
 
   // The scrim for the bottom controls. -------------------------------------
   controls_bottom_scrim_view->SetPaintToLayer(ui::LAYER_TEXTURED);
   controls_bottom_scrim_view->layer()->SetFillsBoundsOpaquely(false);
-  controls_bottom_scrim_view->layer()->SetName("ControlsBottomScrimView");
+  controls_bottom_scrim_view->layer()->SetName(
+      "VideoOverlayWindowViews:ControlsBottomScrimView");
 
   // views::View that displays the window title. The window title consists of
   // the origin and favicon. Always displayed together with the controls top
   // scrim view.
   title_view->SetPaintToLayer(ui::LAYER_TEXTURED);
   title_view->layer()->SetFillsBoundsOpaquely(false);
-  title_view->layer()->SetName("TitleView");
+  title_view->layer()->SetName("VideoOverlayWindowViews:TitleView");
 
   // Set up proper layer order. The scrims and title are on a separate layer
   // from the controls so we can animate their opacity individually (so that we
@@ -1350,6 +1382,13 @@ void VideoOverlayWindowViews::SetUpViews() {
 
   origin_ = title_view_->AddChildView(std::move(origin));
 
+#if BUILDFLAG(IS_CHROMEOS)
+  if (PictureInPicturePinButton::IsEnabled()) {
+    pin_button_ = controls_container_view_->AddChildView(
+        std::make_unique<PictureInPicturePinButton>());
+    pin_button_->SetSize(kPinButtonSize);
+  }
+#endif
   minimize_button_ =
       controls_container_view_->AddChildView(std::move(minimize_button));
   back_to_tab_button_ =
@@ -1408,7 +1447,7 @@ void VideoOverlayWindowViews::OnRootViewReady() {
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
   GetRootView()->SetPaintToLayer(ui::LAYER_TEXTURED);
-  GetRootView()->layer()->SetName("RootView");
+  GetRootView()->layer()->SetName("VideoOverlayWindowViews:RootView");
   GetRootView()->layer()->SetMasksToBounds(true);
 
   views::View* const contents_view = GetContentsView();
@@ -1510,6 +1549,16 @@ void VideoOverlayWindowViews::OnUpdateControlsBounds() {
   constexpr int kTimestampHorizontalMargin = 16;
   constexpr int kTimestampVerticalMargin = 10;
   constexpr int kTimestampHeight = 16;
+#if BUILDFLAG(IS_CHROMEOS)
+  // TODO(crbug.com/581276704): Use this as `kOriginRightMargin` on ChromeOS
+  // when `ash::features::kPipAutoLayoutToggle` is enabled by default.
+  constexpr int kOriginRightMarginWithPinButton =
+      kOriginRightMargin + kPinButtonSize.width();
+  const int origin_right_margin =
+      pin_button_ ? kOriginRightMarginWithPinButton : kOriginRightMargin;
+#else
+  constexpr int origin_right_margin = kOriginRightMargin;
+#endif
 
   gfx::Rect bounds = GetBounds();
   bounds.set_origin({0, 0});
@@ -1540,7 +1589,7 @@ void VideoOverlayWindowViews::OnUpdateControlsBounds() {
           media::kVideoPipDisplaySmoothnessOptimization)) {
     title_view_->SetBoundsRect(
         {top_controls_bounds.x(), top_controls_bounds.y(),
-         top_controls_bounds.width() - kOriginRightMargin,
+         top_controls_bounds.width() - origin_right_margin,
          kFaviconTopMargin + kFaviconSize.height()});
   } else {
     title_view_->SetSize(bounds.size());
@@ -1566,11 +1615,20 @@ void VideoOverlayWindowViews::OnUpdateControlsBounds() {
                              kOriginTopMargin);
   origin_->SetPosition(origin_position);
   origin_->SetSize(
-      {top_controls_bounds.width() - origin_position.x() - kOriginRightMargin,
+      {top_controls_bounds.width() - origin_position.x() - origin_right_margin,
        kOriginHeight});
 
   minimize_button_->SetPosition(GetBounds().size());
   back_to_tab_button_->SetPosition(GetBounds().size());
+#if BUILDFLAG(IS_CHROMEOS)
+  if (pin_button_) {
+    // Place the pin button to the left of the minimize button.
+    pin_button_->SetPosition({top_controls_bounds.right() -
+                                  kPinButtonSize.width() -
+                                  kPinButtonHorizontalMargin,
+                              kPinButtonVerticalMargin});
+  }
+#endif
 
   const bool showing_vc_controls = show_toggle_camera_button_ ||
                                    show_toggle_microphone_button_ ||
@@ -1823,6 +1881,8 @@ gfx::Rect VideoOverlayWindowViews::GetBounds() {
 }
 
 void VideoOverlayWindowViews::UpdateNaturalSize(const gfx::Size& natural_size) {
+  // TODO(crbug.com/576771786): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
   DCHECK(!natural_size.IsEmpty());
   natural_size_ = natural_size;
   SetAspectRatio(gfx::SizeF(natural_size_));
@@ -2070,6 +2130,10 @@ gfx::Rect VideoOverlayWindowViews::GetMinimizeControlsBounds() {
 }
 
 #if BUILDFLAG(IS_CHROMEOS)
+gfx::Rect VideoOverlayWindowViews::GetPinControlsBounds() {
+  return pin_button_ ? pin_button_->GetMirroredBounds() : gfx::Rect();
+}
+
 gfx::Rect VideoOverlayWindowViews::GetResizeHandleControlsBounds() {
   return resize_handle_view_->GetMirroredBounds();
 }
@@ -2340,7 +2404,7 @@ const viz::FrameSinkId* VideoOverlayWindowViews::GetCurrentFrameSinkId() const {
 
 void VideoOverlayWindowViews::MaybeUnregisterFrameSinkHierarchy() {
   if (has_registered_frame_sink_hierarchy_) {
-    DCHECK(GetCurrentFrameSinkId());
+    CHECK(GetCurrentFrameSinkId(), base::NotFatalUntil::M162);
     GetCompositor()->RemoveChildFrameSink(*GetCurrentFrameSinkId());
     has_registered_frame_sink_hierarchy_ = false;
   }
@@ -2432,6 +2496,11 @@ void VideoOverlayWindowViews::SetLiveCaptionDialogVisibility(
   for (auto* control : controls_to_be_disabled_when_live_caption_is_open) {
     control->SetEnabled(!wanted_visibility);
   }
+#if BUILDFLAG(IS_CHROMEOS)
+  if (pin_button_) {
+    pin_button_->SetEnabled(!wanted_visibility);
+  }
+#endif
   // Handled separately since it's disabled by default and may not exist in some
   // configurations.
   if (toggle_mute_button_) {
@@ -2471,8 +2540,9 @@ bool VideoOverlayWindowViews::AreTitleAndScrimVisible() const {
 
   // If no animation is active, check the opacity of the layers. They should
   // also be in sync.
-  DCHECK_EQ(GetTitleView()->layer()->opacity(),
-            GetControlsTopScrimView()->layer()->opacity());
+  CHECK_EQ(GetTitleView()->layer()->opacity(),
+           GetControlsTopScrimView()->layer()->opacity(),
+           base::NotFatalUntil::M162);
   return GetTitleView()->layer()->opacity() > 0;
 }
 

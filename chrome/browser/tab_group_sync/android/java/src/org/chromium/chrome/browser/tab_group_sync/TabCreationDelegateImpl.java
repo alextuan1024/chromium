@@ -39,7 +39,7 @@ public class TabCreationDelegateImpl implements TabCreationDelegate {
     public @Nullable Tab createBackgroundTab(
             GURL url, String title, @Nullable Tab parent, int position) {
         LogUtils.log(TAG, "createBackgroundTab " + url);
-        LoadUrlParams loadUrlParams = new LoadUrlParams(url);
+        LoadUrlParams loadUrlParams = LoadUrlParams.createOpaqueRendererInitiatedParams(url);
         mNavigationTracker.setNavigationWasFromSync(loadUrlParams.getNavigationHandleUserData());
         // TODO(shaktisahu): TabLaunchType will be a different type for revisit surface?
         return mTabCreator.createNewTab(
@@ -48,7 +48,7 @@ public class TabCreationDelegateImpl implements TabCreationDelegate {
 
     @Override
     public void navigateToUrl(Tab tab, GURL url, String title, boolean isForegroundTab) {
-        LoadUrlParams loadUrlParams = new LoadUrlParams(url);
+        LoadUrlParams loadUrlParams = LoadUrlParams.createOpaqueRendererInitiatedParams(url);
         // TODO(shaktisahu): Since we are doing freezing tab now, the navigation handle will be
         // lost from the LoadUrlParams. However, tracking this navigation isn't as important
         // any more, since there will be no navigation and the only navigation will happen when

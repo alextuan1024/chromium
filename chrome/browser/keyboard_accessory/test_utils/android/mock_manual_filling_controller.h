@@ -23,7 +23,7 @@ class MockManualFillingController : public ManualFillingController {
 
   MOCK_METHOD((void),
               NotifyFocusedInputChanged,
-              (autofill::FieldRendererId, autofill::mojom::FocusedFieldType),
+              (autofill::FieldGlobalId, autofill::mojom::FocusedFieldType),
               (override));
   MOCK_METHOD((autofill::FieldGlobalId),
               GetLastFocusedFieldId,
@@ -43,10 +43,8 @@ class MockManualFillingController : public ManualFillingController {
               (const autofill::AccessoryTabType&),
               (override));
   MOCK_METHOD((void), SetSelectedSuggestion, (std::optional<int>), (override));
-  MOCK_METHOD((bool),
-              NavigateSuggestions,
-              (autofill::NavigationDirection),
-              (override));
+  MOCK_METHOD((bool), Navigate, (autofill::NavigationAction), (override));
+  MOCK_METHOD(bool, AcceptFallback, (), (override));
   MOCK_METHOD((void),
               OnFillingTriggered,
               (autofill::AccessoryTabType type,

@@ -55,6 +55,7 @@
 #include "third_party/blink/renderer/core/animation/document_timeline.h"
 #include "third_party/blink/renderer/core/animation/element_animations.h"
 #include "third_party/blink/renderer/core/animation/keyframe_effect.h"
+#include "third_party/blink/renderer/core/animation/keyframe_effect_model.h"
 #include "third_party/blink/renderer/core/animation/pending_animations.h"
 #include "third_party/blink/renderer/core/animation/scroll_timeline.h"
 #include "third_party/blink/renderer/core/animation/scroll_timeline_util.h"
@@ -317,6 +318,14 @@ class ScopedCommitStylesTiming {
 // Consider boundaries aligned if they round to the same integer pixel value.
 const double kScrollBoundaryTolerance = 0.5;
 
+// Returns true if none of the values of `effect` can change while it's in play,
+// e.g. for a `mix-blend-mode: plus-lighter` to `plus-lighter` animation. Such
+// an effect can only change at a phase boundary.
+bool HasOnlyStaticProperties(const KeyframeEffect* effect) {
+  const Element* target = effect ? effect->EffectTarget() : nullptr;
+  return target && effect->Model()->DynamicProperties(target).empty();
+}
+
 }  // namespace
 
 // static
@@ -427,6 +436,11 @@ Animation::Animation(ExecutionContext* execution_context,
   if (content_) {
     if (content_->GetAnimation()) {
       content_->GetAnimation()->setEffect(nullptr);
+      content_->SetIgnoreCssTimingProperties();
+      if (KeyframeEffect* keyframe_effect =
+              DynamicTo<KeyframeEffect>(content_.Get())) {
+        keyframe_effect->SetIgnoreCSSKeyframes();
+      }
     }
     content_->Attach(this);
   }
@@ -860,9 +874,15 @@ bool Animation::PreCommit(
       compositor_property_animations_have_no_effect_ =
           compositing_decision_.disposition &
           CompositorAnimations::kAnimationHasNoVisibleChange;
+      // A static effect has no visible change until a phase boundary, so it
+      // doesn't need main thread ticks even if it can't be composited for
+      // another reason, e.g. because it affects an !important property.
       animation_has_no_effect_ =
           compositing_decision_.disposition ==
-          CompositorAnimations::kAnimationHasNoVisibleChange;
+              CompositorAnimations::kAnimationHasNoVisibleChange ||
+          (compositor_property_animations_have_no_effect_ &&
+           RuntimeEnabledFeatures::SkipTickingStaticAnimationsEnabled() &&
+           HasOnlyStaticProperties(keyframe_effect));
       compositing_decision_.ReportHistogramsAndTracing(*this);
 
       DCHECK_EQ(V8AnimationPlayState::Enum::kRunning,
@@ -880,24 +900,21 @@ bool Animation::PreCommit(
   // paint apron, might be still in the kNeedsRepaint state. Once painted, the
   // animation may be able to start on the compositor.
   NativePaintWorkletReasons npw_reasons = GetNativePaintWorkletReasons();
-  if (should_start && !compositor_state_ &&
-      npw_reasons != NativePaintWorkletProperties::kNoPaintWorklet &&
-      compositing_decision_.disposition !=
-          CompositorAnimations::kAnimationHasNoVisibleChange) {
+  if (!compositor_state_ &&
+      npw_reasons != NativePaintWorkletProperties::kNoPaintWorklet) {
     KeyframeEffect* keyframe_effect = DynamicTo<KeyframeEffect>(content_.Get());
     Element* target =
         keyframe_effect ? keyframe_effect->EffectTarget() : nullptr;
     ElementAnimations* element_animations =
         target ? target->GetElementAnimations() : nullptr;
     if (element_animations) {
-      if (npw_reasons &
-          NativePaintWorkletProperties::kBackgroundColorPaintWorklet) {
-        element_animations->SetCompositedBackgroundColorStatus(
-            ElementAnimations::CompositedPaintStatus::kNotComposited);
+      if (NativePaintWorkletData* npw_data =
+              element_animations->GetBackgroundColorNpwData()) {
+        npw_data->NotifyNotComposited(this);
       }
-      if (npw_reasons & NativePaintWorkletProperties::kClipPathPaintWorklet) {
-        element_animations->SetCompositedClipPathStatus(
-            ElementAnimations::CompositedPaintStatus::kNotComposited);
+      if (NativePaintWorkletData* npw_data =
+              element_animations->GetClipPathNpwData()) {
+        npw_data->NotifyNotComposited(this);
       }
     }
   }
@@ -1139,6 +1156,15 @@ void Animation::CommitPendingPlay(AnimationTimeDelta ready_time) {
   //     animation with the did seek flag set to false, and the synchronously
   //     notify flag set to false.
   UpdateFinishedState(UpdateType::kContinuous, NotificationType::kAsync);
+
+  // Events, e.g. animationstart, aren't dispatched while play-pending (see
+  // IsEventDispatchAllowed()). An animation that doesn't tick on the main
+  // thread (see TimeToEffectChange()) needs a frame to dispatch them now,
+  // rather than at its next effect change.
+  if (animation_has_no_effect_ && content_ && content_->GetEventDelegate() &&
+      RuntimeEnabledFeatures::SkipTickingStaticAnimationsEnabled()) {
+    ForceServiceOnNextFrame();
+  }
 }
 
 // Microtask for pausing an animation.
@@ -1440,7 +1466,8 @@ void Animation::setEffect(AnimationEffect* new_effect) {
   if (new_effect == old_effect)
     return;
 
-  if (old_effect) {
+  if (old_effect &&
+      !RuntimeEnabledFeatures::SyncCrossDocumentAnimationTimingEnabled()) {
     Element* old_target = nullptr;
     Element* new_target = nullptr;
     if (auto* keyframe_effect = DynamicTo<KeyframeEffect>(new_effect)) {
@@ -2443,11 +2470,26 @@ void Animation::ClearOutdated() {
 }
 
 void Animation::SetOutdated() {
-  if (outdated_)
-    return;
-  outdated_ = true;
-  if (timeline_)
-    timeline_->SetOutdatedAnimation(this);
+  if (!outdated_) {
+    outdated_ = true;
+    if (timeline_) {
+      timeline_->SetOutdatedAnimation(this);
+    }
+  }
+  KeyframeEffect* keyframe_effect = DynamicTo<KeyframeEffect>(content_.Get());
+  Element* target = keyframe_effect ? keyframe_effect->EffectTarget() : nullptr;
+  bool cross_document_target =
+      RuntimeEnabledFeatures::SyncCrossDocumentAnimationTimingEnabled() &&
+      target && timeline_ && timeline_->GetDocument() != &target->GetDocument();
+  if (!timeline_ || cross_document_target) {
+    // Animations without a timeline or targeting an element in a different
+    // document from the timeline will not be ticked when the target document
+    // updates its animation timing. Synchronously update so that the animation
+    // is not left in an outdated state, which could trigger a style
+    // invalidation post-style and layout, e.g. mid-paint (see
+    // crbug.com/567645136).
+    Update(kTimingUpdateOnDemand);
+  }
 }
 
 void Animation::ForceServiceOnNextFrame() {
@@ -2767,8 +2809,7 @@ Animation::NativePaintWorkletReasons Animation::GetNativePaintWorkletReasons()
     // TODO(kevers): There is room to optimize here as if in forced color mode
     // and forced colors are active for the element, we can optimize out the
     // animation as having no visual effect.
-    if (RuntimeEnabledFeatures::CompositeBGColorAnimationEnabled() &&
-        GetDocument() && !GetDocument()->InForcedColorsMode() &&
+    if (GetDocument() && !GetDocument()->InForcedColorsMode() &&
         keyframe_effect->Affects(
             PropertyHandle(GetCSSPropertyBackgroundColor()))) {
       reasons |= kBackgroundColorPaintWorklet;
@@ -2937,6 +2978,10 @@ void Animation::UpdateAutoAlignedStartTime() {
 }
 
 bool Animation::OnValidateSnapshot(bool snapshot_changed) {
+  if (!timeline_) {
+    return true;
+  }
+  AnimationTimeline* initial_timeline = timeline_;
   bool needs_update = snapshot_changed;
 
   // Track a change in duration and update hold time if required.
@@ -2966,15 +3011,36 @@ bool Animation::OnValidateSnapshot(bool snapshot_changed) {
     if (keyframe_effect->target()) {
       if (style_dependent_range_start_) {
         DCHECK(range_start_);
-        range_changed |= range_start_->UpdateOffset(
-            keyframe_effect->target(), style_dependent_range_start_);
+        TimelineOffset range_start = *range_start_;
+        CSSValue* range_start_css = style_dependent_range_start_;
+        bool updated = range_start.UpdateOffset(keyframe_effect->target(),
+                                                range_start_css);
+        if (timeline_ == initial_timeline && range_start_ &&
+            style_dependent_range_start_ == range_start_css) {
+          range_start_ = range_start;
+          range_changed |= updated;
+        }
       }
-      if (style_dependent_range_end_) {
+      // Updating a style-dependent offset may synchronously recalculate slot
+      // assignments and run script that detaches the animation or modifies its
+      // effect or range offsets.
+      if (style_dependent_range_end_ && timeline_ == initial_timeline &&
+          effect() == keyframe_effect && keyframe_effect->target()) {
         DCHECK(range_end_);
-        range_changed |= range_end_->UpdateOffset(keyframe_effect->target(),
-                                                  style_dependent_range_end_);
+        TimelineOffset range_end = *range_end_;
+        CSSValue* range_end_css = style_dependent_range_end_;
+        bool updated =
+            range_end.UpdateOffset(keyframe_effect->target(), range_end_css);
+        if (timeline_ == initial_timeline && range_end_ &&
+            style_dependent_range_end_ == range_end_css) {
+          range_end_ = range_end;
+          range_changed |= updated;
+        }
       }
     }
+  }
+  if (timeline_ != initial_timeline) {
+    return true;
   }
 
   bool needs_new_start_time = false;
@@ -3236,21 +3302,6 @@ void Animation::RestartAnimationOnCompositor(CompositorPendingReason reason) {
   SetCompositorPending(reason);
 }
 
-bool Animation::CompositorPendingCancelOrEffectChange() const {
-  if (!compositor_state_) {
-    return false;
-  }
-  if (compositor_state_->pending_action == CompositorAction::kCancel) {
-    return true;
-  }
-
-  if (compositor_state_->effect_changed) {
-    return true;
-  }
-
-  return false;
-}
-
 void Animation::CancelIncompatibleAnimationsOnCompositor() {
   VERIFY_PAINT_CLEAN_LOG_ONCE()
   if (auto* keyframe_effect = DynamicTo<KeyframeEffect>(content_.Get()))
@@ -3271,10 +3322,14 @@ bool Animation::Update(TimingUpdateReason reason) {
   // time of an animation also involves:
   //   * Running the update an animation’s finished state procedure.
   //   * Queueing animation events.
-
   if (!Outdated() && reason == kTimingUpdateForAnimationFrame &&
-      IsInDisplayLockedSubtree())
-    return true;
+      IsInDisplayLockedSubtree()) {
+    // IsInDisplayLockedSubtree() may trigger slot assignment recalc and update
+    // animation state.
+    if (!Outdated()) {
+      return !inactive_;
+    }
+  }
 
   ClearOutdated();
   bool idle =
@@ -3306,15 +3361,21 @@ bool Animation::Update(TimingUpdateReason reason) {
     // animation. This is known to occur when a retargeted transition is
     // finished before PreCommit has run the first time and a compositor state
     // has been created.
-    if (!inactive_ && !HasActiveAnimationsOnCompositor()) {
+    if (!inactive_ && !HasActiveAnimationsOnCompositor() &&
+        CompositorPending()) {
+      // TODO(kevers): Revisit this special casing for guarding against a stale
+      // compositing decision. The compositing decision should be linked to the
+      // animation and not the element. When the animation changes, we should
+      // reset. Otherwise, a compositor decision on a finished animation should
+      // remain firm.
       UpdateCompositedPaintStatus(
           CompositorPendingReason::kPendingEffectChange);
     }
 
     // Animations linked to scroll-timelines remain active since a scroll update
     // can effectively roll back time.
-    if (reason == kTimingUpdateForAnimationFrame &&
-        (idle || !timeline_ || timeline_->IsMonotonicallyIncreasing())) {
+    if (idle || (reason == kTimingUpdateForAnimationFrame &&
+                 (!timeline_ || timeline_->IsMonotonicallyIncreasing()))) {
       inactive_ = true;
     }
   }
@@ -3422,7 +3483,6 @@ void Animation::cancel() {
   start_time_ = std::nullopt;
 
   SetCompositorPending(CompositorPendingReason::kPendingCancel);
-  SetOutdated();
 
   // Force dispatch of canceled event.
   if (content_)
@@ -4052,6 +4112,19 @@ const HeapHashSet<WeakMember<AnimationTrigger>>& Animation::GetTriggers() {
 }
 
 void Animation::DisassociateTriggers() {
+  if (auto* css_animation = DynamicTo<CSSAnimation>(this)) {
+    // Style changes, including changes to animation-trigger, don't attach the
+    // animation to triggers again, just as they don't revive a cancelled
+    // animation otherwise.
+    css_animation->SetIgnoreCSSTrigger(true);
+    css_animation->SetTriggerAttachments(nullptr);
+    css_animation->NamedTriggerAttachments().clear();
+    if (GetDocument()) {
+      GetDocument()
+          ->GetDocumentAnimations()
+          .RemoveCSSAnimationNeedingTriggerAttachment(css_animation);
+    }
+  }
   HeapHashSet<WeakMember<AnimationTrigger>> triggers;
   triggers.swap(triggers_);
   for (AnimationTrigger* trigger : triggers) {

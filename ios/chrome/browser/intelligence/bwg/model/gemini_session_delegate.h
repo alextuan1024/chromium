@@ -11,6 +11,9 @@
 #import "ios/chrome/browser/intelligence/bwg/utils/gemini_constants.h"
 #import "ios/public/provider/chrome/browser/bwg/gemini_api.h"
 
+@class GeminiChatMessageRequest;
+@class GeminiChatMessageResponse;
+
 // TODO(crbug.com/481711842): Replace this enum and its gemini_metrics.h
 // equivalent with an enum in gemini_constants.h
 // The feedback type for Gemini queries.
@@ -49,7 +52,7 @@ typedef NS_ENUM(NSInteger, GeminiCancelType) {
 
 // Delegate for Gemini session events. Keep up to date with GCR's
 // SessionDelegate.
-@protocol GeminiSessionDelegate
+@protocol GeminiSessionDelegate <NSObject>
 
 // Whether the current session is the first session.
 @property(nonatomic, assign) BOOL isFirstSession;
@@ -103,6 +106,16 @@ typedef NS_ENUM(NSInteger, GeminiCancelType) {
                    sessionID:(NSString*)sessionID
               conversationID:(NSString*)conversationID;
 @optional
+// Called when the processing status changes with a dormant reason and optional
+// error details.
+- (void)didUpdateProcessingStatus:(ios::provider::GeminiClientMode)processStatus
+                    dormantReason:
+                        (ios::provider::GeminiDormantReason)dormantReason
+                            error:(NSError*)error
+                        errorCode:(ios::provider::GeminiErrorCode)errorCode
+                        sessionID:(NSString*)sessionID
+                   conversationID:(NSString*)conversationID;
+
 // Called when the processing status changes with a dormant reason.
 - (void)didUpdateProcessingStatus:(ios::provider::GeminiClientMode)processStatus
                     dormantReason:
@@ -189,6 +202,34 @@ typedef NS_ENUM(NSInteger, GeminiCancelType) {
 
 // Called when request is received from SDK to dismiss the UI.
 - (void)didRequestDismissal;
+
+// Called when the user taps the "View" button in the response ready collapsed
+// state.
+- (void)didTapResponseReadyViewButton;
+
+// Called when loading a previous conversation finishes.
+- (void)didFinishLoadingConversationWithID:(NSString*)conversationID
+                                     error:(NSError*)error;
+
+// Called when the page context attachment state in the input plate changes.
+- (void)inputPlateDidChangePageContextAttachment:(BOOL)isAttached;
+
+// Called when the Nano Banana attachment selection in the input plate changes.
+- (void)inputPlateDidChangeNanoBananaAttachment:(BOOL)isSelected;
+
+#pragma mark - Chat Message Interception
+
+// Called on the main thread when the user submits a chat message, before it is
+// sent to Gemini. `completion` must be called exactly once, on the main thread,
+// and currently synchronously as the Gemini SDK does not yet support
+// asynchronous interception. Passing nil, or a response with `shouldConsume`
+// set to NO, sends the message normally.
+// Intentionally optional so that the ios_internal bridge and implementations
+// can land independently.
+// TODO(crbug.com/567036317): Make required once the API is finalized.
+- (void)handleChatMessageRequest:(GeminiChatMessageRequest*)request
+                      completion:(void (^)(GeminiChatMessageResponse* response))
+                                     completion;
 
 @end
 

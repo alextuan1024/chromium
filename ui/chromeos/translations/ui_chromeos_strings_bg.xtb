@@ -519,10 +519,10 @@
 <translation id="5045550434625856497">Грешна парола</translation>
 <translation id="5059127710849015030">Непалски (транслитерация)</translation>
 <translation id="5068919226082848014">Пица</translation>
+<translation id="5075336522277785691"><ph name="EXTENSION_NAME" /> зададе правила за замяна на прокси сървъра</translation>
 <translation id="5081517858322016911">Ще бъдат изтрити файлове, заемащи <ph name="TOTAL_FILE_SIZE" /></translation>
 <translation id="508423945471810158"><ph name="NUMBER_OF_ITEMS" /> елемента се преместват в(ъв) „<ph name="FOLDER_NAME" />“</translation>
 <translation id="509429900233858213">Възникна грешка.</translation>
-<translation id="5102922915594634436">Управление на синхронизираните папки</translation>
 <translation id="5109254780565519649">Възникна грешка. Някои елементи може да не са възстановени.</translation>
 <translation id="5110329002213341433">Английски (Канада)</translation>
 <translation id="5119780910075847424">Синхронизирането е на пауза</translation>
@@ -558,7 +558,6 @@
 <translation id="5305688511332277257">Няма инсталирани</translation>
 <translation id="5317780077021120954">Запазване</translation>
 <translation id="5318819489018851358">Споделяне с Linux</translation>
-<translation id="5330145655348521461">Тези файлове се отвориха на друг работен плот. Преминете към <ph name="USER_NAME" /> (<ph name="MAIL_ADDRESS" />), за да ги прегледате.</translation>
 <translation id="5330512191124428349">Получаване на информация</translation>
 <translation id="535792325654997756">Човек с котки</translation>
 <translation id="5358764674931277">Скорост на кадрите</translation>
@@ -699,7 +698,6 @@
 <translation id="636254897931573416">Невалидна стойност в списъка със съответствия на суфикса на домейна</translation>
 <translation id="6364301859968397756">Хранилището на организацията е пълно</translation>
 <translation id="6367976544441405720">Микробус</translation>
-<translation id="637062427944097960">Този файл се отвори на друг работен плот. Преминете към <ph name="USER_NAME" /> (<ph name="MAIL_ADDRESS" />), за да го прегледате.</translation>
 <translation id="6394388407447716302">Само за четене</translation>
 <translation id="6395575651121294044"><ph name="NUMBER_OF_FILES" /> елемента</translation>
 <translation id="6407769893376380348">Файлът <ph name="FILE_NAME" /> не бе преместен, защото е шифрован.</translation>

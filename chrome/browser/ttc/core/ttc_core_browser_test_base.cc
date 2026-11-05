@@ -71,7 +71,8 @@ MockConversation* TtcCoreBrowserTestBase::conversation() {
 
 // static
 std::unique_ptr<Conversation> TtcCoreBrowserTestBase::MakeMockConversation(
-    Profile*) {
+    SessionController&,
+    std::unique_ptr<AudioController>) {
   return std::make_unique<testing::NiceMock<MockConversation>>();
 }
 

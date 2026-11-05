@@ -29,16 +29,15 @@ import org.chromium.base.MathUtils;
 import org.chromium.build.annotations.Initializer;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
+import org.chromium.chrome.browser.flags.ChromeFeatures;
 import org.chromium.chrome.browser.lens.LensEntryPoint;
-import org.chromium.chrome.browser.omnibox.fusebox.FuseboxCoordinator.FuseboxLayoutMode;
-import org.chromium.chrome.browser.omnibox.fusebox.FuseboxCoordinator.FuseboxState;
+import org.chromium.chrome.browser.omnibox.fusebox.Fusebox.FuseboxLayoutMode;
+import org.chromium.chrome.browser.omnibox.fusebox.Fusebox.FuseboxState;
 import org.chromium.chrome.browser.omnibox.status.StatusCoordinator;
 import org.chromium.chrome.browser.omnibox.status.StatusView;
 import org.chromium.chrome.browser.omnibox.styles.OmniboxResourceProvider;
 import org.chromium.chrome.browser.omnibox.suggestions.AutocompleteCoordinator;
-import org.chromium.chrome.browser.omnibox.voice.VoiceRecognitionIntentHandler;
-import org.chromium.chrome.browser.ui.theme.BrandedColorScheme;
+import org.chromium.chrome.browser.omnibox.voice.VoiceRecognitionIntentHandler.VoiceInteractionSource;
 import org.chromium.chrome.browser.util.BrowserUiUtils;
 import org.chromium.components.browser_ui.widget.CompositeTouchDelegate;
 import org.chromium.components.browser_ui.widget.chips.ChipView;
@@ -68,6 +67,7 @@ public class LocationBarLayout extends ConstraintLayout {
     protected AutocompleteCoordinator mAutocompleteCoordinator;
 
     protected LocationBarDataProvider mLocationBarDataProvider;
+    protected OmniboxResourceProvider mResourceProvider;
 
     protected StatusCoordinator mStatusCoordinator;
 
@@ -188,6 +188,7 @@ public class LocationBarLayout extends ConstraintLayout {
      * @param locationBarDataProvider Provider of LocationBar data, e.g. url and title.
      * @param windowAndroid WindowAndroid object for the window in which the LocationBarLayout is
      *     rendered.
+     * @param resourceProvider Shared provider of Omnibox resources.
      */
     @Initializer
     @CallSuper
@@ -196,11 +197,13 @@ public class LocationBarLayout extends ConstraintLayout {
             UrlBarCoordinator urlCoordinator,
             StatusCoordinator statusCoordinator,
             LocationBarDataProvider locationBarDataProvider,
-            WindowAndroid windowAndroid) {
+            WindowAndroid windowAndroid,
+            OmniboxResourceProvider resourceProvider) {
         mAutocompleteCoordinator = autocompleteCoordinator;
         mUrlCoordinator = urlCoordinator;
         mStatusCoordinator = statusCoordinator;
         mLocationBarDataProvider = locationBarDataProvider;
+        mResourceProvider = resourceProvider;
     }
 
     @VisibleForTesting(otherwise = VisibleForTesting.PROTECTED)
@@ -231,30 +234,28 @@ public class LocationBarLayout extends ConstraintLayout {
         mDeleteButton.setBackgroundResource(resourceId);
     }
 
-    /* package */ void updateVisualsForState(@BrandedColorScheme int brandedColorScheme) {
-        updateActivationChipVisuals(brandedColorScheme);
+    /* package */ void updateVisualsForState() {
+        updateActivationChipVisuals();
     }
 
-    private void updateActivationChipVisuals(@BrandedColorScheme int brandedColorScheme) {
-        Context context = getContext();
-        @ColorInt
-        int buttonColor =
-                OmniboxResourceProvider.getColorSurfaceContainerHigh(context, brandedColorScheme);
-        @ColorInt
-        int buttonColorHovered =
-                OmniboxResourceProvider.getColorSurfaceContainerHighest(
-                        context, brandedColorScheme);
+    private void updateActivationChipVisuals() {
+        @ColorInt int buttonColor = mResourceProvider.getColorSurfaceContainerHigh();
+        @ColorInt int buttonColorHovered = mResourceProvider.getColorSurfaceContainerHighest();
         int[] backgroundColors = new int[] {buttonColorHovered, buttonColor};
 
         mActivationChip.setBackgroundTintList(new ColorStateList(HOVER_STATES, backgroundColors));
 
-        @ColorInt
-        int colorOnSurface = OmniboxResourceProvider.getColorOnSurface(context, brandedColorScheme);
-        mActivationChip.setIconTint(ColorStateList.valueOf(colorOnSurface));
-        @ColorInt
-        int focusRingColor = OmniboxResourceProvider.getColorPrimary(context, brandedColorScheme);
-        mActivationChip.setForegroundTintList(ColorStateList.valueOf(focusRingColor));
+        @ColorInt int colorOnSurface = mResourceProvider.getColorOnSurface();
         mActivationChip.setTextColor(colorOnSurface);
+        boolean shouldTintIcon =
+                mSearchEngineService == null
+                        || mSearchEngineService.getAiModeButtonIconSupplier().get().getIconRes()
+                                != 0;
+        if (shouldTintIcon) {
+            mActivationChip.setIconTint(ColorStateList.valueOf(colorOnSurface));
+        }
+        @ColorInt int focusRingColor = mResourceProvider.getColorPrimary();
+        mActivationChip.setForegroundTintList(ColorStateList.valueOf(focusRingColor));
     }
 
     /* package */ void setLensButtonTint(ColorStateList colorStateList) {
@@ -483,7 +484,7 @@ public class LocationBarLayout extends ConstraintLayout {
             int fakeSearchBoxStartPadding =
                     getResources()
                             .getDimensionPixelSize(
-                                    ChromeFeatureList.sNtpAurora.isEnabled()
+                                    ChromeFeatures.NtpAurora.isEnabled()
                                             ? R.dimen.fake_search_box_start_padding
                                             : R.dimen.fake_search_box_start_padding_legacy);
             translationX +=
@@ -507,7 +508,7 @@ public class LocationBarLayout extends ConstraintLayout {
 
     /** Returns the source of Voice Recognition interactions. */
     public int getVoiceRecognitionSource() {
-        return VoiceRecognitionIntentHandler.VoiceInteractionSource.OMNIBOX;
+        return VoiceInteractionSource.OMNIBOX;
     }
 
     /** Returns the entrypoint used to launch Lens. */
@@ -634,8 +635,18 @@ public class LocationBarLayout extends ConstraintLayout {
         return mNavigateButton;
     }
 
-    /* package */ void setActivationChipVisibility(boolean shouldShow) {
-        setButtonVisibility(mActivationChip, shouldShow);
+    /* package */ void setAiModeButtonState(@AiModeButtonState int state) {
+        setButtonVisibility(mActivationChip, state != AiModeButtonState.HIDDEN);
+    }
+
+    /**
+     * Sets the icon identifying AI Mode, shown at the start of the AI Mode button.
+     *
+     * @param icon The icon to display.
+     * @param tintWithTextColor Whether to tint the icon to match the button's text color.
+     */
+    /* package */ void setAiModeButtonIcon(@Nullable Drawable icon, boolean tintWithTextColor) {
+        mActivationChip.setIconWithTint(icon, tintWithTextColor);
     }
 
     /* package */ void setActivationChipCompact(boolean isCompact) {

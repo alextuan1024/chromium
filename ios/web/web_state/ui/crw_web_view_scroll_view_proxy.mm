@@ -176,6 +176,7 @@ static int gAnyContext = 0;
 }
 
 - (void)dealloc {
+  [self.underlyingScrollView setDelegate:nil];
   [self.class stopObservingScrollView:self.underlyingScrollView proxy:self];
 }
 
@@ -288,6 +289,50 @@ static int gAnyContext = 0;
   }
 }
 
+- (CGPoint)contentOffset {
+  return self.underlyingScrollView.contentOffset;
+}
+
+- (void)setContentOffset:(CGPoint)contentOffset {
+  self.underlyingScrollView.contentOffset = contentOffset;
+}
+
+- (UIEdgeInsets)contentInset {
+  return self.underlyingScrollView.contentInset;
+}
+
+- (void)setContentInset:(UIEdgeInsets)contentInset {
+  self.underlyingScrollView.contentInset = contentInset;
+}
+
+- (BOOL)isDecelerating {
+  return self.underlyingScrollView.decelerating;
+}
+
+- (BOOL)isDragging {
+  return self.underlyingScrollView.dragging;
+}
+
+- (BOOL)isTracking {
+  return self.underlyingScrollView.tracking;
+}
+
+- (BOOL)isZooming {
+  return self.underlyingScrollView.zooming;
+}
+
+- (CGSize)contentSize {
+  return self.underlyingScrollView.contentSize;
+}
+
+- (void)setContentSize:(CGSize)contentSize {
+  self.underlyingScrollView.contentSize = contentSize;
+}
+
+- (CGRect)frame {
+  return self.underlyingScrollView.frame;
+}
+
 - (BOOL)clipsToBounds {
   return self.underlyingScrollView.clipsToBounds;
 }
@@ -306,6 +351,10 @@ static int gAnyContext = 0;
       setContentInsetAdjustmentBehavior:contentInsetAdjustmentBehavior];
 }
 
+- (UIPanGestureRecognizer*)panGestureRecognizer {
+  return self.underlyingScrollView.panGestureRecognizer;
+}
+
 - (NSArray<__kindof UIView*>*)subviews {
   return [self.underlyingScrollView subviews];
 }
@@ -314,7 +363,7 @@ static int gAnyContext = 0;
 
 + (NSArray*)scrollViewObserverKeyPaths {
   CHECK(web::features::ShouldUseBroadcasterForSmoothScrolling());
-  return @[ @"frame", @"contentSize", @"contentInset" ];
+  return @[ @"frame", @"contentSize" ];
 }
 
 + (void)startObservingScrollView:(UIScrollView*)scrollView
@@ -379,11 +428,17 @@ static int gAnyContext = 0;
   DCHECK_EQ(object, self.underlyingScrollView);
   CHECK(web::features::ShouldUseBroadcasterForSmoothScrolling());
 
+  NSValue* oldValue =
+      base::apple::ObjCCast<NSValue>(change[NSKeyValueChangeOldKey]);
+  NSValue* newValue =
+      base::apple::ObjCCast<NSValue>(change[NSKeyValueChangeNewKey]);
+  // If the value is unchanged, return without notifying observers.
+  if ([newValue isEqualToValue:oldValue]) {
+    return;
+  }
+
   if ([keyPath isEqualToString:@"frame"]) {
     [_observers webViewScrollViewFrameDidChange:self];
-  }
-  if ([keyPath isEqualToString:@"contentInset"]) {
-    [_observers webViewScrollViewDidResetContentInset:self];
   }
   if ([keyPath isEqualToString:@"contentSize"]) {
     [_observers webViewScrollViewDidResetContentSize:self];

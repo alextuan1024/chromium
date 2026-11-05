@@ -8,6 +8,7 @@
 #include <stdint.h>
 
 #include <algorithm>
+#include <cmath>
 #include <memory>
 #include <string>
 #include <utility>
@@ -18,6 +19,7 @@
 #include "base/memory/memory_pressure_listener_registry.h"
 #include "base/memory/ptr_util.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory_coordinator/memory_pressure_source.h"
 #include "base/run_loop.h"
 #include "base/synchronization/lock.h"
 #include "base/synchronization/waitable_event.h"
@@ -416,8 +418,9 @@ TEST_F(TextureLayerWithResourceTest, AffectedByHdr) {
   test_resource2_.ExpectRelease();
   EXPECT_CALL(*layer_tree_host_, SetNeedsCommit(_)).Times(AtLeast(1));
 
-  // sRGB with extended range is affected by HDR parameters.
-  test_resource1_.resource.hdr_metadata.extended_range.emplace(5.f, 5.f);
+  // sRGB with AGTM metadata is affected by HDR parameters.
+  test_resource1_.resource.hdr_metadata.SetExtendedRangeWithHeadroom(
+      std::log2(5.f));
   test_layer->SetTransferableResource(test_resource1_.resource,
                                       test_resource1_.release_callback);
   Mock::VerifyAndClearExpectations(layer_tree_host_.get());
@@ -1603,7 +1606,7 @@ class SoftwareTextureLayerPurgeMemoryTest : public SoftwareTextureLayerTest {
     // Call OnPurgeMemory() to ensure that the same layer doesn't get
     // registered again on the next draw.
     if (step_ == 1)
-      base::MemoryPressureListener::SimulatePressureNotification(
+      memory_pressure_source_.SetMemoryPressureLevel(
           base::MEMORY_PRESSURE_LEVEL_CRITICAL);
   }
 
@@ -1617,6 +1620,7 @@ class SoftwareTextureLayerPurgeMemoryTest : public SoftwareTextureLayerTest {
     SoftwareTextureLayerTest::AfterTest();
   }
 
+  base::MemoryPressureSource memory_pressure_source_;
   base::MemoryPressureListenerRegistry memory_pressure_listener_registry_;
   int step_ = 0;
   int verified_frames_ = 0;
@@ -1920,5 +1924,80 @@ class TextureLayerUpdateAfterPaintEventTest : public LayerTreeTest,
 };
 
 SINGLE_AND_MULTI_THREAD_TEST_F(TextureLayerUpdateAfterPaintEventTest);
+
+class TextureLayerDisposeDuringWillCommitTest : public LayerTreeTest,
+                                                TextureLayerClient {
+ public:
+  bool PrepareTransferableResource(
+      viz::TransferableResource* resource,
+      viz::ReleaseCallback* release_callback) override {
+    ++num_transferred_resources_;
+    *resource = viz::TransferableResource();
+    return true;
+  }
+
+  void SetupTree() override {
+    SetInitialRootBounds(gfx::Size(100, 100));
+    LayerTreeTest::SetupTree();
+    texture_layer_ = TextureLayer::Create(
+        this, TextureLayer::PrepareResourceBehavior::kAfterPaintEvent);
+    texture_layer_->SetIsDrawable(true);
+    texture_layer_->SetContentsOpaque(true);
+    texture_layer_->SetBounds(gfx::Size(100, 100));
+    texture_layer_->SetBackgroundColor(SkColors::kRed);
+    layer_tree_host()->root_layer()->AddChild(texture_layer_);
+    texture_layer_id_ = static_cast<uint32_t>(texture_layer_->id());
+    if (layer_tree_host()->IsUsingLayerLists()) {
+      CopyProperties(layer_tree_host()->root_layer(), texture_layer_.get());
+    }
+  }
+
+  void BeginTest() override { PostSetNeedsCommitToMainThread(); }
+
+  void WillBeginMainFrame() override {
+    if (num_commits_ == 0) {
+      texture_layer_->SetNeedsDisplayRect({0, 0, 7, 11});
+    }
+  }
+
+  void WillCommit(const CommitState& cs) override {
+    if (num_commits_ == 0) {
+      EXPECT_TRUE(layer_tree_host()->in_will_commit());
+      ASSERT_TRUE(texture_layer_);
+      TextureLayer* raw_layer = texture_layer_.get();
+      layer_tree_host()->ScheduleLayerForPostCommitDisposal(texture_layer_);
+      texture_layer_->ClearClient();
+      texture_layer_ = nullptr;
+      // Removal from the layer tree is deferred until the commit completes.
+      EXPECT_NE(raw_layer->parent(), nullptr);
+      EXPECT_EQ(raw_layer->layer_tree_host(), layer_tree_host());
+    }
+  }
+
+  void DidCommit() override {
+    ++num_commits_;
+    if (num_commits_ == 1) {
+      EXPECT_EQ(num_transferred_resources_.load(), 0u);
+      EXPECT_EQ(layer_tree_host()->LayerById(texture_layer_id_), nullptr);
+    }
+  }
+
+  void CommitCompleteOnThread(LayerTreeHostImpl* host_impl) override {
+    if (host_impl->sync_tree()->source_frame_number() == 0) {
+      EXPECT_NE(host_impl->sync_tree()->LayerById(texture_layer_id_), nullptr);
+    } else {
+      EXPECT_EQ(host_impl->sync_tree()->LayerById(texture_layer_id_), nullptr);
+      EndTest();
+    }
+  }
+
+ private:
+  int num_commits_ = 0;
+  uint32_t texture_layer_id_ = 0;
+  scoped_refptr<TextureLayer> texture_layer_;
+  std::atomic<uint32_t> num_transferred_resources_ = 0u;
+};
+
+SINGLE_AND_MULTI_THREAD_TEST_F(TextureLayerDisposeDuringWillCommitTest);
 }  // namespace
 }  // namespace cc

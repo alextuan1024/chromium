@@ -76,17 +76,13 @@ gfx::RectF LayoutSVGRect::UpdateShapeFromElement() {
   ClearPath();
   SetGeometryType(GeometryType::kEmpty);
 
-  const ComputedStyle& style = StyleRef();
+  const ComputedStyle& style = Style();
   SetGeometryDependsOnViewport(CalculateGeometryDependsOnViewport(style));
 
   const SVGViewportResolver viewport_resolver(*this);
   const gfx::PointF origin =
       PointForLengthPair(style.X(), style.Y(), viewport_resolver, style);
-  const gfx::Vector2dF size = VectorForLengthPair(style.Width(), style.Height(),
-                                                  viewport_resolver, style);
-  // Spec: "A negative value is an error." gfx::SizeF() clamps negative
-  // width/height to 0.
-  const gfx::RectF bounding_box(origin, gfx::SizeF(size.x(), size.y()));
+  const gfx::RectF bounding_box(origin, UsedSize());
 
   // Spec: "A value of zero disables rendering of the element."
   if (!bounding_box.IsEmpty()) {
@@ -102,6 +98,17 @@ gfx::RectF LayoutSVGRect::UpdateShapeFromElement() {
     }
   }
   return bounding_box;
+}
+
+gfx::SizeF LayoutSVGRect::UsedSize() const {
+  NOT_DESTROYED();
+  const ComputedStyle& style = Style();
+  const SVGViewportResolver viewport_resolver(*this);
+  const gfx::Vector2dF size = VectorForLengthPair(style.Width(), style.Height(),
+                                                  viewport_resolver, style);
+  // Spec: "A negative value is an error." gfx::SizeF() clamps negative
+  // width/height to 0.
+  return gfx::SizeF(size.x(), size.y());
 }
 
 bool LayoutSVGRect::CanUseStrokeHitTestFastPath() const {
@@ -137,7 +144,7 @@ bool LayoutSVGRect::ShapeDependentFillContains(const HitTestLocation& location,
 // Returns true if the stroke is continuous and definitely uses miter joins.
 bool LayoutSVGRect::DefinitelyHasSimpleStroke() const {
   NOT_DESTROYED();
-  const ComputedStyle& style = StyleRef();
+  const ComputedStyle& style = Style();
 
   // The four angles of a rect are 90 degrees. Using the formula at:
   // http://www.w3.org/TR/SVG/painting.html#StrokeMiterlimitProperty

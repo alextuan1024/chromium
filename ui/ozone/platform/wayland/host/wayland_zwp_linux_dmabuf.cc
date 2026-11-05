@@ -105,7 +105,7 @@ WaylandZwpLinuxDmabuf::Tranche::Tranche() = default;
 
 WaylandZwpLinuxDmabuf::Tranche::~Tranche() = default;
 
-void WaylandZwpLinuxDmabuf::CreateBuffer(const base::ScopedFD& fd,
+void WaylandZwpLinuxDmabuf::CreateBuffer(const std::vector<base::ScopedFD>& fds,
                                          const gfx::Size& size,
                                          const std::vector<uint32_t>& strides,
                                          const std::vector<uint32_t>& offsets,
@@ -120,7 +120,7 @@ void WaylandZwpLinuxDmabuf::CreateBuffer(const base::ScopedFD& fd,
       zwp_linux_dmabuf_v1_create_params(zwp_linux_dmabuf_.get()));
 
   for (size_t i = 0; i < planes_count; i++) {
-    zwp_linux_buffer_params_v1_add(params.get(), fd.get(), i /* plane id */,
+    zwp_linux_buffer_params_v1_add(params.get(), fds[i].get(), i /* plane id */,
                                    offsets[i], strides[i], modifiers[i] >> 32,
                                    modifiers[i] & UINT32_MAX);
   }
@@ -183,8 +183,11 @@ void WaylandZwpLinuxDmabuf::NotifyRequestCreateBufferDone(
     return item.first.get();
   });
   CHECK(it != pending_params_.end());
-  std::move(it->second).Run(wl::Object<wl_buffer>(new_buffer));
+  // Erase the entry before running the callback, as the callback may re-enter
+  // CreateBuffer() and modify `pending_params_`, which would invalidate `it`.
+  wl::OnRequestBufferCallback callback = std::move(it->second);
   pending_params_.erase(it);
+  std::move(callback).Run(wl::Object<wl_buffer>(new_buffer));
   connection_->Flush();
 }
 

@@ -205,6 +205,10 @@ void WebRTCInternals::OnPeerConnectionAdded(GlobalRenderFrameHostId frame_id,
   // TODO(tommi): Consider changing this design so that webrtc-internals has
   // minimal impact if chrome://webrtc-internals isn't open.
 
+  // The enterprise.webrtc extension API forwards this dictionary to
+  // onPeerConnectionAdded listeners unchanged, so these key names are part of
+  // that API. A record that stops matching PeerConnectionRecord is dropped.
+  // LINT.IfChange
   base::DictValue dict;
   dict.Set("rid", frame_id.child_id.value());
   dict.Set("lid", lid);
@@ -214,6 +218,7 @@ void WebRTCInternals::OnPeerConnectionAdded(GlobalRenderFrameHostId frame_id,
   dict.Set("isOpen", true);
   dict.Set("connected", false);
   dict.Set("timestamp", base::Time::Now().InMillisecondsFSinceUnixEpoch());
+  // LINT.ThenChange(//chrome/common/extensions/api/enterprise_webrtc.webidl)
 
   if (!observers_.empty())
     SendUpdate("add-peer-connection", dict.Clone());
@@ -324,6 +329,11 @@ void WebRTCInternals::PruneOldGetUserMediaRequests() {
   }
 }
 
+// The enterprise.webrtc extension API exposes these entries through
+// getSnapshot. webrtc_diagnostics_impl.cc renames the keys to camelCase
+// first, so a key added here needs a row in that table too. A required key
+// the snapshot cannot supply fails a CHECK.
+// LINT.IfChange
 void WebRTCInternals::OnGetMedia(std::string_view request_type,
                                  GlobalRenderFrameHostId frame_id,
                                  base::ProcessId pid,
@@ -446,6 +456,7 @@ void WebRTCInternals::OnGetMediaFailure(std::string_view request_type,
       host->AddObserver(this);
   }
 }
+// LINT.ThenChange(//content/browser/webrtc/webrtc_diagnostics_impl.cc,//chrome/common/extensions/api/enterprise_webrtc.webidl)
 
 void WebRTCInternals::OnGetUserMedia(GlobalRenderFrameHostId frame_id,
                                      base::ProcessId pid,
@@ -538,6 +549,7 @@ void WebRTCInternals::RemoveObserver(WebRTCInternalsUIObserver* observer) {
   // TODO(tommi): Consider removing all the peer_connection_data().
   for (auto& dictionary : peer_connection_data())
     FreeLogList(&dictionary);
+  current_state_requested_ = false;
 }
 
 void WebRTCInternals::AddConnectionsObserver(
@@ -568,6 +580,17 @@ void WebRTCInternals::UpdateObserver(WebRTCInternalsUIObserver* observer) {
   }
   UpdateWakeLock();
   UpdateStatsTimer();
+}
+
+void WebRTCInternals::MaybeRequestCurrentState() {
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
+  if (current_state_requested_) {
+    return;
+  }
+  current_state_requested_ = true;
+  for (auto* host : PeerConnectionTrackerHost::GetAllHosts()) {
+    host->GetCurrentState();
+  }
 }
 
 void WebRTCInternals::EnableAudioDebugRecordings(
@@ -841,7 +864,9 @@ void WebRTCInternals::OnRendererExit(int render_process_id) {
 
 void WebRTCInternals::EnableAudioDebugRecordingsOnAllRenderProcessHosts() {
   CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
-  CHECK(!audio_debug_recording_session_, base::NotFatalUntil::M160);
+  // TODO(crbug.com/583556053): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
+  DCHECK(!audio_debug_recording_session_);
   mojo::PendingRemote<audio::mojom::DebugRecording> debug_recording;
   content::GetAudioService().BindDebugRecording(
       debug_recording.InitWithNewPipeAndPassReceiver());

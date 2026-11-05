@@ -22,6 +22,7 @@
 #include "build/build_config.h"
 #include "ui/accessibility/ax_enums.mojom-forward.h"
 #include "ui/base/class_property.h"
+#include "ui/base/interaction/anchored_dialog_registry.h"
 #include "ui/base/interaction/element_highlighter.h"
 #include "ui/base/interaction/element_tracker.h"
 #include "ui/base/metadata/metadata_header_macros.h"
@@ -86,10 +87,6 @@ class WebBubbleView;
 class WebUIBubbleDialogView;
 FORWARD_DECLARE_TEST(InProcessBrowserTest,
                      RunsScheduledLayoutOnAnchoredBubbles);
-
-namespace ambient_signin {
-class AmbientSigninBubbleView;
-}
 
 namespace arc {
 class ArcSplashScreenDialogView;
@@ -163,10 +160,6 @@ class CastDialogView;
 class MediaRemotingDialogView;
 }  // namespace media_router
 
-namespace send_tab_to_self {
-class SendTabToSelfToolbarBubbleView;
-}
-
 namespace toasts {
 class ToastView;
 }
@@ -220,7 +213,9 @@ FORWARD_DECLARE_TEST(InteractionTestUtilViewsTest, ActivateSurface);
 FORWARD_DECLARE_TEST(InteractionTestUtilViewsTest, Confirm);
 }  // namespace test
 
-class VIEWS_EXPORT BubbleDialogDelegate : public DialogDelegate {
+class VIEWS_EXPORT BubbleDialogDelegate
+    : public DialogDelegate,
+      public ui::AnchoredDialogRegistry::FocusTarget {
  public:
   BubbleDialogDelegate(
       BubbleAnchor anchor,
@@ -243,6 +238,12 @@ class VIEWS_EXPORT BubbleDialogDelegate : public DialogDelegate {
   std::unique_ptr<FrameView> CreateFrameView(Widget* widget) override;
   ClientView* CreateClientView(Widget* widget) override;
   ax::mojom::Role GetAccessibleWindowRole() final;
+
+  // ui::AnchoredDialogRegistry::FocusTarget:
+  // Moves focus into the bubble the same way views::FocusManager does when
+  // focus traversal enters a dialog anchored to a View: to the first focusable
+  // view, or to the last one if `reverse` is true.
+  bool FocusFromAnchor(bool reverse) override;
 
   // Create and initialize the bubble Widget with proper bounds.
   // It's preferred to used `CLIENT_OWNS_WIDGET` as ownership. With
@@ -322,6 +323,10 @@ class VIEWS_EXPORT BubbleDialogDelegate : public DialogDelegate {
   void SetAnchor(BubbleAnchor anchor);
   BubbleAnchor GetAnchor() const;
 
+  // Returns the focus-traversable BubbleDialogDelegate anchored to `anchor`, or
+  // nullptr if none exists.
+  static BubbleDialogDelegate* GetAnchoredDialog(BubbleAnchor anchor);
+
   // Returns true when this is anchored on the same thing in `anchor`; this is
   // needed since GetAnchor() can return different representations than what
   // was initially passed in.
@@ -368,8 +373,9 @@ class VIEWS_EXPORT BubbleDialogDelegate : public DialogDelegate {
   // are also changing the anchor rect, or similar.
   void SetArrowWithoutResizing(BubbleBorder::Arrow arrow);
 
-  // Whether the arrow will be automatically adjusted if needed to fit the
-  // bubble on screen. Has no effect if the bubble has no arrow.
+  // Whether the arrow will be automatically adjusted and the bubble bounds
+  // clamped if needed to fit the bubble within the available screen bounds
+  // (work area).
   bool adjust_if_offscreen() const { return adjust_if_offscreen_; }
   void set_adjust_if_offscreen(bool adjust) { adjust_if_offscreen_ = adjust; }
 
@@ -379,8 +385,48 @@ class VIEWS_EXPORT BubbleDialogDelegate : public DialogDelegate {
   // Bubbles may optionally have a shadow. Only some platforms support drawing
   // custom shadows on a bubble.
 
+  struct ShadowConfiguration {
+    BubbleBorder::Shadow shadow_type = BubbleBorder::DIALOG_SHADOW;
+    // Custom MD shadow elevation. A null value yields the default BubbleBorder
+    // MD shadow.
+    std::optional<int> elevation = std::nullopt;
+    // Whether to avoid the bubble's shadow overlapping the anchor.
+    bool avoid_overlap_shadow = false;
+  };
+
   BubbleBorder::Shadow GetShadow() const;
-  void set_shadow(BubbleBorder::Shadow shadow) { shadow_ = shadow; }
+  // Returns the shadow configuration as set. Unlike GetShadow(), this does not
+  // account for platform support (e.g. window compositing).
+  const ShadowConfiguration& shadow_config() const { return shadow_config_; }
+  void set_shadow_config(const ShadowConfiguration& shadow_config) {
+    shadow_config_ = shadow_config;
+  }
+  // DEPRECATED: Use set_shadow_config() instead. Existing callers will be
+  // migrated and this method removed. Only updates the shadow type; other
+  // ShadowConfiguration fields are left unchanged.
+  void set_shadow(BubbleBorder::Shadow shadow) {
+    shadow_config_.shadow_type = shadow;
+  }
+
+  //////////////////////////////////////////////////////////////////////////////
+  // Border style:
+  //
+  // Bubbles may optionally customize the insets and stroke of their border.
+
+  struct BorderStyle {
+    // Explicit border insets. A null value yields the default BubbleBorder
+    // insets, which are derived from the shadow and elevation.
+    std::optional<gfx::Insets> insets = std::nullopt;
+    // Whether to draw the border stroke. If null, the stroke is drawn only when
+    // the bubble has a shadow (i.e. GetShadow() is not NO_SHADOW) and no custom
+    // ShadowConfiguration::elevation is set.
+    std::optional<bool> draw_border_stroke = std::nullopt;
+  };
+
+  const BorderStyle& border_style() const { return border_style_; }
+  // Must be called before the bubble's widget is created (i.e. before
+  // CreateBubble()). Calling it afterwards has no effect.
+  void set_border_style(const BorderStyle& style) { border_style_ = style; }
 
   // Call this method to inform BubbleDialogDelegate that the return value of
   // GetAnchorRect() has changed. You only need to do this if you have
@@ -448,6 +494,13 @@ class VIEWS_EXPORT BubbleDialogDelegate : public DialogDelegate {
   // the anchor widget.
   void SetHighlightedElement(ui::ElementIdentifier id);
 
+  // Same as above, but looks up `id` in `context` instead of the context based
+  // on the anchor widget. Use this when the element lives in a different
+  // context than the anchor widget, e.g. an element in a WebUI that has its own
+  // element context.
+  void SetHighlightedElement(ui::ElementIdentifier id,
+                             ui::ElementContext context);
+
   // The bubble's parent window - this can only be usefully set before creating
   // the bubble's widget. If there is one, the bubble will be stacked above it,
   // and it will become the Views parent window for the bubble.
@@ -466,8 +519,15 @@ class VIEWS_EXPORT BubbleDialogDelegate : public DialogDelegate {
   bool accept_events() const { return accept_events_; }
   void set_accept_events(bool accept_events) { accept_events_ = accept_events; }
 
-  // Whether focus can traverse from the anchor view into the bubble. Only
-  // meaningful if there is an anchor view.
+  // Whether the bubble accepts drag and drop.
+  bool accept_drag_drop() const { return accept_drag_drop_; }
+  void set_accept_drag_drop(bool accept_drag_drop) {
+    accept_drag_drop_ = accept_drag_drop;
+  }
+
+  // Whether focus can traverse from the anchor into the bubble. Only meaningful
+  // if there is an anchor view, or an anchor that is a non-Views TrackedElement
+  // (see ui::AnchoredDialogRegistry).
   // TODO(pbos): See if this can be inferred from if the bubble is activatable
   // or if there's anything focusable within the dialog. This is currently used
   // for bubbles that should never receive focus and we should be able have
@@ -478,6 +538,7 @@ class VIEWS_EXPORT BubbleDialogDelegate : public DialogDelegate {
   // if fixing that bug removes the need for this for other dialogs.
   void set_focus_traversable_from_anchor_view(bool focusable) {
     focus_traversable_from_anchor_view_ = focusable;
+    UpdateAnchoredDialogRegistration();
   }
 
   // If this is true and either:
@@ -643,6 +704,8 @@ class VIEWS_EXPORT BubbleDialogDelegate : public DialogDelegate {
   FRIEND_TEST_ALL_PREFIXES(BubbleDialogDelegateViewTest,
                            DelayedHighlightByElement);
   FRIEND_TEST_ALL_PREFIXES(BubbleDialogDelegateViewTest,
+                           HighlightByElementInExplicitContext);
+  FRIEND_TEST_ALL_PREFIXES(BubbleDialogDelegateViewTest,
                            AnchorChangeChangesHighlight);
   FRIEND_TEST_ALL_PREFIXES(BubbleDialogDelegateViewTest,
                            MultipleBubbleAnchorHighlightTestInOrder);
@@ -680,6 +743,13 @@ class VIEWS_EXPORT BubbleDialogDelegate : public DialogDelegate {
   void UpdateHighlightedButton(bool highlight);
 
   void SetAnchoredDialogKey();
+  void ClearAnchoredDialogKey();
+
+  // Keeps `anchored_dialog_registration_` in sync: a bubble that is anchored to
+  // a non-Views TrackedElement is inserted into that element's focus order
+  // while it is visible and focus-traversable from its anchor. Called whenever
+  // any of these might have changed.
+  void UpdateAnchoredDialogRegistration();
 
   gfx::Rect GetDesiredBubbleBounds();
 
@@ -687,10 +757,14 @@ class VIEWS_EXPORT BubbleDialogDelegate : public DialogDelegate {
   void SetResolvedHighlightedElement(ui::TrackedElement* element);
 
   BubbleBorder::Arrow arrow_ = BubbleBorder::NONE;
-  BubbleBorder::Shadow shadow_;
+  ShadowConfiguration shadow_config_;
+  BorderStyle border_style_;
   ui::ColorVariant color_ = ui::kColorBubbleBackground;
   raw_ptr<Widget> anchor_widget_ = nullptr;
-  raw_ptr<ui::TrackedElement> anchor_tracked_element_ = nullptr;
+  ui::SafeElementReference anchor_tracked_element_;
+  // Set while this bubble is in the focus order of `anchor_tracked_element_`.
+  std::unique_ptr<ui::AnchoredDialogRegistry::Registration>
+      anchored_dialog_registration_;
   std::unique_ptr<AnchorViewObserver> anchor_view_observer_;
   std::unique_ptr<AnchorWidgetObserver> anchor_widget_observer_;
   std::unique_ptr<BubbleWidgetObserver> bubble_widget_observer_;
@@ -720,6 +794,7 @@ class VIEWS_EXPORT BubbleDialogDelegate : public DialogDelegate {
   mutable std::optional<gfx::Rect> anchor_rect_;
 
   bool accept_events_ = true;
+  bool accept_drag_drop_ = true;
   gfx::NativeView parent_window_ = gfx::NativeView();
 
   // By default, all BubbleDialogDelegates have parent windows.
@@ -875,7 +950,6 @@ class VIEWS_EXPORT BubbleDialogDelegateView : public View,
   friend class ::WebUIBubbleDialogView;
   FRIEND_TEST_ALL_PREFIXES(::InProcessBrowserTest,
                            RunsScheduledLayoutOnAnchoredBubbles);
-  friend class ::ambient_signin::AmbientSigninBubbleView;
   friend class ::arc::ArcSplashScreenDialogView;
   friend class ::arc::BaseDialogDelegateView;
   friend class ::arc::ResizeConfirmationDialogView;
@@ -920,7 +994,6 @@ class VIEWS_EXPORT BubbleDialogDelegateView : public View,
   friend class ::lens::LensRegionSearchInstructionsView;
   friend class ::media_router::CastDialogView;
   friend class ::media_router::MediaRemotingDialogView;
-  friend class ::send_tab_to_self::SendTabToSelfToolbarBubbleView;
   friend class ::toasts::ToastView;
   friend class ::ui::ime::AnnouncementView;
   friend class ::ui::ime::CandidateWindowView;

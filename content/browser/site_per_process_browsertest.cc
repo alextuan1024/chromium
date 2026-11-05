@@ -116,10 +116,10 @@
 #include "content/public/test/content_browser_test_content_browser_client.h"
 #include "content/public/test/content_browser_test_utils.h"
 #include "content/public/test/content_mock_cert_verifier.h"
-#include "content/public/test/fenced_frame_test_util.h"
 #include "content/public/test/hit_test_region_observer.h"
 #include "content/public/test/navigation_handle_observer.h"
 #include "content/public/test/policy_container_utils.h"
+#include "content/public/test/popup_test_utils.h"
 #include "content/public/test/render_frame_host_test_support.h"
 #include "content/public/test/test_devtools_protocol_client.h"
 #include "content/public/test/test_frame_navigation_observer.h"
@@ -186,6 +186,10 @@
 #if defined(USE_AURA)
 #include "content/browser/renderer_host/render_widget_host_view_aura.h"
 #include "ui/aura/window.h"
+#endif
+
+#if BUILDFLAG(IS_WIN)
+#include "ui/base/ui_base_features.h"
 #endif
 
 #if BUILDFLAG(IS_ANDROID)
@@ -501,9 +505,16 @@ SitePerProcessBrowserTestBase::SitePerProcessBrowserTestBase() {
   // Overlay scrollbar will be turned off with both conditions satisfied:
   // 1) feature flag `kOverlayScrollbar` is off
   // 2) always show scrollbar preference setting on.
-  feature_list_.InitWithFeatures(
-      /*enabled_features=*/{},
-      /*disabled_features=*/{features::kOverlayScrollbar});
+  std::vector<base::test::FeatureRef> disabled_features = {
+      features::kOverlayScrollbar};
+#if BUILDFLAG(IS_WIN)
+  // Native window occlusion is calculated asynchronously on Windows, so an
+  // occlusion update can arrive after a test calls
+  // UpdateWebContentsVisibility(Visibility::HIDDEN) and make the WebContents
+  // visible again.
+  disabled_features.push_back(features::kCalculateNativeWinOcclusion);
+#endif
+  feature_list_.InitWithFeatures(/*enabled_features=*/{}, disabled_features);
 #endif
 }
 
@@ -1755,6 +1766,8 @@ IN_PROC_BROWSER_TEST_P(SitePerProcessBrowserTest, ProcessTransferAfterError) {
   // TODO(mustaq): Why does the |back_load_observer.Wait()| below time out
   // without the user activation?
   EXPECT_TRUE(ExecJs(root, "// No-op script"));
+  RenderFrameDeletedObserver error_page_deleted_observer(
+      child->current_frame_host());
   NavigateIframeToURL(shell()->web_contents(), "child-0", url_b);
   EXPECT_TRUE(observer.last_navigation_succeeded());
   EXPECT_EQ(url_b, observer.last_navigation_url());
@@ -1766,7 +1779,15 @@ IN_PROC_BROWSER_TEST_P(SitePerProcessBrowserTest, ProcessTransferAfterError) {
             child->current_origin().Serialize() + '/');
 
   // Ensure that we have created a new process for the subframe.
-  if (base::FeatureList::IsEnabled(features::kIsolateSubframeErrorPages)) {
+  if (SiteIsolationPolicy::IsErrorPageIsolationEnabled(
+          /*in_main_frame=*/false)) {
+    // With subframe error page isolation, the error page was in its own
+    // SiteInstanceGroup, so its RenderFrameHost was replaced and is now pending
+    // deletion. Its SiteInstanceGroup's proxies are only deleted once that
+    // RenderFrameHost is deleted, which happens asynchronously after its unload
+    // ACK. Wait for this to happen to avoid flakily observing leftover proxies.
+    // See https://crbug.com/566001008.
+    error_page_deleted_observer.WaitUntilDeleted();
     EXPECT_EQ(
         " Site A ------------ proxies for C\n"
         "   +--Site C ------- proxies for A\n"
@@ -3847,90 +3868,6 @@ IN_PROC_BROWSER_TEST_P(SitePerProcessBrowserTest,
   EXPECT_EQ(named_frame_url, foo_root->current_url());
 }
 
-class SitePerProcessFencedFrameTest : public SitePerProcessBrowserTestBase {
- public:
-  SitePerProcessFencedFrameTest() {
-    fenced_frame_helper_ =
-        std::make_unique<content::test::FencedFrameTestHelper>();
-  }
-
-  void SetUpOnMainThread() override {
-    SitePerProcessBrowserTestBase::SetUpOnMainThread();
-    https_server_.ServeFilesFromSourceDirectory(GetTestDataFilePath());
-    ASSERT_TRUE(https_server_.Start());
-  }
-
- protected:
-  net::EmbeddedTestServer& https_server() { return https_server_; }
-
-  content::RenderFrameHost* CreateFencedFrame(content::RenderFrameHost* parent,
-                                              const GURL& url) {
-    if (fenced_frame_helper_) {
-      return fenced_frame_helper_->CreateFencedFrame(parent, url);
-    }
-
-    // FencedFrameTestHelper only supports the MPArch version of fenced frames.
-    // So need to maually create a fenced frame for the ShadowDOM version.
-    content::TestNavigationManager navigation(web_contents(), url);
-
-    constexpr char kAddFencedFrameScript[] = R"({
-        const fenced_frame = document.createElement('fencedframe');
-        fenced_frame.src = $1;
-        document.body.appendChild(fenced_frame);
-    })";
-    EXPECT_TRUE(ExecJs(parent, content::JsReplace(kAddFencedFrameScript, url)));
-    EXPECT_TRUE(navigation.WaitForNavigationFinished());
-
-    return ChildFrameAt(parent, 0);
-  }
-
- private:
-  base::test::ScopedFeatureList feature_list_;
-  std::unique_ptr<content::test::FencedFrameTestHelper> fenced_frame_helper_;
-  net::EmbeddedTestServer https_server_{net::EmbeddedTestServer::TYPE_HTTPS};
-};
-
-IN_PROC_BROWSER_TEST_F(SitePerProcessFencedFrameTest,
-                       PopupFromFencedFrameDoesNotCreateProxy) {
-  GURL main_url(embedded_test_server()->GetURL("/title1.html"));
-  EXPECT_TRUE(NavigateToURL(shell(), main_url));
-
-  // It is safe to obtain the root frame tree node here, as it doesn't change.
-  FrameTreeNode* root = web_contents()->GetPrimaryFrameTree().root();
-
-  // Create a fenced frame.
-  GURL fenced_frame_url(https_server().GetURL("/fenced_frames/title1.html"));
-  RenderFrameHost* fenced_frame_host = CreateFencedFrame(
-      web_contents()->GetPrimaryMainFrame(), fenced_frame_url);
-  EXPECT_NE(nullptr, fenced_frame_host);
-
-  // Open a popup named "foo" from the fenced frame.
-  Shell* popup_shell =
-      OpenPopup(fenced_frame_host, GURL(url::kAboutBlankURL), "foo", "", false);
-  EXPECT_TRUE(popup_shell);
-
-  // Check that the popup from the fenced frame didn't create a proxy.
-  // Opening popups from fenced frames forces noopener, which makes named
-  // frames not discoverable.
-  FrameTreeNode* popup_root =
-      static_cast<WebContentsImpl*>(popup_shell->web_contents())
-          ->GetPrimaryFrameTree()
-          .root();
-  EXPECT_EQ(nullptr, popup_root->opener());
-
-  SiteInstanceImpl* site_instance =
-      root->current_frame_host()->GetSiteInstance();
-  EXPECT_FALSE(popup_root->current_frame_host()
-                   ->browsing_context_state()
-                   ->GetRenderFrameProxyHost(site_instance->group()));
-
-  SiteInstanceImpl* embedder_site_instance =
-      static_cast<RenderFrameHostImpl*>(fenced_frame_host)->GetSiteInstance();
-  EXPECT_FALSE(popup_root->current_frame_host()
-                   ->browsing_context_state()
-                   ->GetRenderFrameProxyHost(embedder_site_instance->group()));
-}
-
 // Similar to DiscoverNamedFrameFromAncestorOfOpener, but check that if a
 // window is created without a name and acquires window.name later, it will
 // still be discoverable from its opener's ancestors.  Also, instead of using
@@ -5253,6 +5190,17 @@ IN_PROC_BROWSER_TEST_P(
   // browser process. They should not have been inherited (for about:blank).
   EXPECT_EQ(network::mojom::WebSandboxFlags::kNone,
             foo_root->current_frame_host()->active_sandbox_flags());
+
+  // The opener's sandbox comes from the iframe's sandbox attribute, not CSP,
+  // so with allow-popups-to-escape-sandbox, neither the popup's browsing
+  // context nor its initial empty document is sandboxed. So the popup should
+  // get the opener's origin as is (opaque, since the opener is sandboxed), and
+  // no sandbox origin token. See https://crbug.com/486082219.
+  EXPECT_EQ(root->child_at(0)->current_frame_host()->GetLastCommittedOrigin(),
+            foo_root->current_frame_host()->GetLastCommittedOrigin());
+  EXPECT_FALSE(foo_root->current_frame_host()
+                   ->last_sandbox_origin_token_for_testing()
+                   .has_value());
 }
 
 // Verify that popup frames opened from sandboxed documents with the
@@ -5305,6 +5253,22 @@ IN_PROC_BROWSER_TEST_P(
   // browser process. They should have been inherited.
   EXPECT_EQ(expected_flags,
             foo_root->current_frame_host()->active_sandbox_flags());
+
+  // The popup's browsing context isn't sandboxed, but its initial empty
+  // document inherits the opener's CSP sandbox (checked above), so the
+  // renderer gives it an opaque origin with the opener as the precursor. The
+  // browser should too, derived from the same sandbox origin token, so that
+  // the nonces match as well. See https://crbug.com/486082219.
+  url::Origin popup_origin =
+      foo_root->current_frame_host()->GetLastCommittedOrigin();
+  EXPECT_TRUE(popup_origin.opaque());
+  EXPECT_EQ(url::SchemeHostPort(main_url),
+            popup_origin.GetTupleOrPrecursorTupleIfOpaque());
+  const std::optional<base::UnguessableToken> token =
+      foo_root->current_frame_host()->last_sandbox_origin_token_for_testing();
+  ASSERT_TRUE(token.has_value());
+  ASSERT_TRUE(popup_origin.GetNonceForTesting());
+  EXPECT_EQ(*token, *popup_origin.GetNonceForTesting());
 }
 
 // Test that subresources with certificate errors get reported to the
@@ -6605,15 +6569,10 @@ IN_PROC_BROWSER_TEST_P(SitePerProcessBrowserTest,
   EXPECT_TRUE(pending_process->Shutdown(0));
   crash_observer.Wait();
 
-  // The navigation may or may not get canceled, depending on whether the
-  // feature ResumeNavigationWithSpeculativeRFHProcessGone is enabled. However
-  // the navigation will never commit and hence the b.com RVH should not be
-  // active.
+  // Since the navigation above didn't commit, the b.com RenderViewHost in the
+  // main tab should still not be active.
   EXPECT_FALSE(rvh->is_active());
-  if (!base::FeatureList::IsEnabled(
-          features::kResumeNavigationWithSpeculativeRFHProcessGone)) {
-    EXPECT_EQ(net::ERR_ABORTED, handle_observer.net_error_code());
-  }
+  EXPECT_EQ(net::ERR_ABORTED, handle_observer.net_error_code());
 
   // Navigate popup to b.com to recreate the b.com process.  When creating
   // opener proxies, |rvh| should be reused as a swapped out RVH.  In
@@ -8173,8 +8132,6 @@ IN_PROC_BROWSER_TEST_P(SitePerProcessBrowserTest,
   RenderFrameProxyHost* root_proxy =
       iframe_node->render_manager()->GetProxyToParent();
   EXPECT_TRUE(root_proxy->IsInertForTesting());
-
-  std::string focused_element;
 
   // Attempt to change focus in the inert subframe. This should work.
   // The setTimeout ensures that the inert bit can propagate before the
@@ -11766,8 +11723,11 @@ class GpuInfoUpdateObserver : public GpuDataManagerObserver {
 
 // Checks if RenderInputRouterDelegate mojo connection is reset when GPU process
 // restarts.
+// TODO(crbug.com/439855865, crbug.com/544000851): Re-enable once
+// cc::slim::LayerTreeImpl resets frame_sink_ on GPU process crash so
+// HostFrameSinkManager reconnects on restart.
 IN_PROC_BROWSER_TEST_P(AndroidInputBrowserTest,
-                       RestartingGPUProcessResetsMojoConnection) {
+                       DISABLED_RestartingGPUProcessResetsMojoConnection) {
   // Return early if transferring input to Viz isn't supported.
   if (!input::InputUtils::IsTransferInputToVizSupported()) {
     return;

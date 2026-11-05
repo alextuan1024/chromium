@@ -133,9 +133,6 @@ const char kDisableGestureRequirementForPresentation[] =
 // then the GPU process won't launch.
 const char kDisableGpu[]                    = "disable-gpu";
 
-// Prevent the compositor from using its GPU implementation.
-const char kDisableGpuCompositing[]         = "disable-gpu-compositing";
-
 // Disable proactive early init of GPU process.
 const char kDisableGpuEarlyInit[]           = "disable-gpu-early-init";
 
@@ -233,7 +230,13 @@ const char kDisableRemoteFonts[]            = "disable-remote-fonts";
 // Disables the RemotePlayback API.
 const char kDisableRemotePlaybackAPI[]      = "disable-remote-playback-api";
 
-// Prevent renderer process backgrounding when set.
+// Prevent renderer process backgrounding when set. Renderer processes keep a
+// foreground priority at the OS level, and renderers are never told that they
+// are backgrounded or hidden.
+//
+// The browser still computes each renderer process's priority as usual (e.g.
+// RenderProcessHost::GetPriority()), so that tests can verify the priority
+// policy without being slowed down by actual backgrounding.
 const char kDisableRendererBackgrounding[]  = "disable-renderer-backgrounding";
 
 // Whether the ResourceScheduler is disabled.  Note this is only useful for C++
@@ -269,9 +272,6 @@ const char kDisableV8IdleTasks[]            = "disable-v8-idle-tasks";
 // This switch has no effect unless --user-data-dir (as defined by the content
 // embedder) is also present.
 const char kDisableWebSecurity[]            = "disable-web-security";
-
-// Disable the video decoder from drawing directly to a texture.
-const char kDisableZeroCopyDxgiVideo[]      = "disable-zero-copy-dxgi-video";
 
 // Specifies if the |DOMAutomationController| needs to be bound in the
 // renderer. This binding happens on per-frame basis and hence can potentially
@@ -572,21 +572,6 @@ const char kProcessType[]                   = "type";
 // Handle to shared memory containing the pseudonymization salt, passed to
 // child processes at launch. See https://crbug.com/40850085.
 const char kPseudonymizationSaltHandle[] = "pseudonymization-salt-handle";
-
-// Enables or disables pull-to-refresh gesture in response to vertical
-// overscroll.
-// Set the value to '0' to disable the feature, set to '1' to enable it for both
-// touchpad and touchscreen, and set to '2' to enable it only for touchscreen.
-// Defaults to disabled.
-const char kPullToRefresh[] = "pull-to-refresh";
-
-// Reduce the accept-language for HTTP header and JS navigator.languages, and
-// only most preferred language: https://github.com/Tanych/accept-language.
-const char kReduceAcceptLanguage[] = "reduce-accept-language";
-
-// Reduce the accept-language for HTTP header, and only send most preferred
-// language in the request header: https://github.com/Tanych/accept-language.
-const char kReduceAcceptLanguageHTTP[] = "reduce-accept-language-http";
 
 // Reduce the minor version number in the User-Agent string. This flag
 // implements phase 4 of User-Agent reduction:

@@ -551,6 +551,13 @@ general rules of thumb can be helpful in navigating how to structure changes:
 
 ## Tips
 
+### Accountability of authors and reviewers in the age of agents
+
+Agentic tools make creating CLs and design docs much cheaper, shifting
+engineering costs onto scarce expert human reviewers. Please read our guidance
+on [author and reviewer accountability][accountability] for how to communicate
+candidly and balance responsibilities effectively.
+
 ### Review etiquette
 
 During the lifetime of a review, you may want to rebase your change onto a newer
@@ -575,9 +582,9 @@ feature in order to receive email notifications.
 ## Appendix: CL footer reference {#cl-footer-reference}
 
 Chromium stores a lot of information in footers at the bottom of commit
-messages. With the exception of `R=`, these footers are only valid in the
-last paragraph of a commit message; any footers separated from the last
-line of the message by whitespace or non-footer lines will be ignored.
+messages. These footers are only valid in the last paragraph of a commit
+message; any footers separated from the last line of the message by
+whitespace or non-footer lines will be ignored.
 This includes everything from the unique `Change-Id` which identifies a
 Gerrit change, to more useful metadata like bugs the change helps fix,
 trybots which should be run to test the change, and more. This section
@@ -596,12 +603,6 @@ formats.
     project prefix.
 * **Fixed:** The same as `Bug:`, but will automatically close the
   bug(s) as fixed when the CL lands.
-* **R=**
-  * This footer is _deprecated_ in the Chromium project; it was
-    deprecated when code review migrated to Gerrit. Instead, use
-    `-r foo@example.com` when running `git cl upload`.
-  * A comma-separated list of reviewer email addresses (e.g.
-    foo@example.com, bar@example.com).
 * **Cq-Include-Trybots:**
   * A comma-separated list of trybots which should be triggered and
     checked by the CQ in addition to the normal set.
@@ -653,6 +654,7 @@ formats.
     given commit diverged from main.
 
 [//]: # (the reference link section should be alphabetically sorted)
+[accountability]: accountability.md
 [becoming-a-committer]: https://www.chromium.org/getting-involved/become-a-committer/
 [checkout-and-build]: https://chromium.googlesource.com/chromium/src/+/main/docs/#checking-out-and-building
 [chrome-dd-review-process]: http://go/chrome-dd-review-process

@@ -47,6 +47,7 @@
 #include "third_party/blink/renderer/core/html/forms/html_input_element.h"
 #include "third_party/blink/renderer/core/html/forms/html_option_element.h"
 #include "third_party/blink/renderer/core/html/html_menu_item_element.h"
+#include "third_party/blink/renderer/core/html/html_menu_item_element_base.h"
 #include "third_party/blink/renderer/core/html/html_quote_element.h"
 #include "third_party/blink/renderer/core/input/event_handler.h"
 #include "third_party/blink/renderer/core/input_type_names.h"
@@ -94,10 +95,12 @@ PseudoElement* PseudoElement::Create(Element* parent,
                                      PseudoId pseudo_id,
                                      const AtomicString& pseudo_argument) {
   if (pseudo_id == kPseudoIdCheckMark) {
-    if (!IsA<HTMLOptionElement>(parent) && !IsA<HTMLMenuItemElement>(parent) &&
+    if (!IsA<HTMLOptionElement>(parent) &&
+        !IsA<HTMLMenuItemCheckableElementBase>(parent) &&
         !IsA<HTMLInputElement>(parent)) {
       // The `::checkmark` pseudo-element should only be created for option,
-      // menuitem, and input (checkbox and radio) elements.
+      // menuitemcheckbox, menuitemradio, and input (checkbox and radio)
+      // elements.
       return nullptr;
     }
   }
@@ -122,7 +125,7 @@ PseudoElement* PseudoElement::Create(Element* parent,
   if (pseudo_id == kPseudoIdInterestButton) {
     CHECK(RuntimeEnabledFeatures::HTMLInterestForInterestButtonPseudoEnabled(
         parent->GetDocument().GetExecutionContext()));
-    if (!parent->InterestForElement()) {
+    if (!parent->InterestForElement(Element::InterestForType::kExplicitOnly)) {
       // The `::interest-button` pseudo-element should only be created for
       // elements with the `interestfor` attribute.
       return nullptr;
@@ -153,9 +156,8 @@ PseudoElement* PseudoElement::Create(Element* parent,
          pseudo_id == kPseudoIdCheckMark || pseudo_id == kPseudoIdPickerIcon ||
          pseudo_id == kPseudoIdExpandIcon ||
          pseudo_id == kPseudoIdInterestButton ||
-         pseudo_id == kPseudoIdBackdrop ||
-         pseudo_id == kPseudoIdOverscrollBackdrop ||
-         pseudo_id == kPseudoIdMarker || pseudo_id == kPseudoIdColumn ||
+         pseudo_id == kPseudoIdBackdrop || pseudo_id == kPseudoIdMarker ||
+         pseudo_id == kPseudoIdColumn ||
          pseudo_id == kPseudoIdOverscrollAreaParent);
   return MakeGarbageCollected<PseudoElement>(parent, pseudo_id,
                                              pseudo_argument);
@@ -195,11 +197,6 @@ const QualifiedName& PseudoElementTagName(PseudoId pseudo_id) {
                           (AtomicString("::backdrop")));
       return backdrop;
     }
-    case kPseudoIdOverscrollBackdrop: {
-      DEFINE_STATIC_LOCAL(QualifiedName, overscroll_backdrop,
-                          (AtomicString("::overscroll-backdrop")));
-      return overscroll_backdrop;
-    }
     case kPseudoIdColumn: {
       DEFINE_STATIC_LOCAL(QualifiedName, first_letter,
                           (AtomicString("::column")));
@@ -223,6 +220,11 @@ const QualifiedName& PseudoElementTagName(PseudoId pseudo_id) {
       DEFINE_STATIC_LOCAL(QualifiedName, scroll_marker_group,
                           (AtomicString("::scroll-marker-group")));
       return scroll_marker_group;
+    }
+    case kPseudoIdScrollButton: {
+      DEFINE_STATIC_LOCAL(QualifiedName, scroll_button,
+                          (AtomicString("::scroll-button")));
+      return scroll_button;
     }
     case kPseudoIdScrollButtonBlockStart: {
       DEFINE_STATIC_LOCAL(QualifiedName, scroll_button_block_start,
@@ -328,6 +330,11 @@ PseudoId PseudoElement::GetPseudoIdForStyling() const {
   return ResolvePseudoIdAlias(pseudo_id_);
 }
 
+std::pair<PseudoId, AtomicString>
+PseudoElement::GetSelectorPseudoIdAndArgument() const {
+  return {GetPseudoIdForStyling(), GetPseudoArgument()};
+}
+
 bool PseudoElement::IsWebExposed(PseudoId pseudo_id, const Node* parent) {
   switch (pseudo_id) {
     case kPseudoIdMarker:
@@ -347,8 +354,8 @@ PseudoElement::PseudoElement(Element* parent,
     : Element(PseudoElementTagName(ResolvePseudoIdAlias(pseudo_id)),
               &parent->GetDocument(),
               kCreateElement),
-      pseudo_id_(pseudo_id),
-      pseudo_argument_(pseudo_argument) {
+      pseudo_argument_(pseudo_argument),
+      pseudo_id_(pseudo_id) {
   DCHECK_NE(pseudo_id, kPseudoIdNone);
   parent->GetTreeScope().AdoptIfNeeded(*this);
   SetParentNode(parent);
@@ -517,7 +524,7 @@ PseudoElement::AttachLayoutTreeScope::AttachLayoutTreeScope(
     return;
   }
   if (const ComputedStyle* adjusted_style =
-          element->AdjustedLayoutStyle(*style, parent->StyleRef())) {
+          element->AdjustedLayoutStyle(*style, parent->Style())) {
     original_style_ = style;
     element->SetComputedStyle(adjusted_style);
   }
@@ -536,21 +543,24 @@ void PseudoElement::AttachLayoutTree(AttachContext& context) {
   //
   // - #container
   //   - ::-internal-overscroll-area-parent
-  //     - ::overscroll-backdrop
+  //     - ::backdrop
   //     - #item
-  if (pseudo_id_ == kPseudoIdOverscrollBackdrop) {
-    CHECK(RuntimeEnabledFeatures::OverscrollGesturesEnabled());
+  if (pseudo_id_ == kPseudoIdBackdrop) {
     Element& originating = UltimateOriginatingElement();
-    if (PseudoElement* overscroll_parent =
-            originating.GetPseudoElement(kPseudoIdOverscrollAreaParent)) {
-      if (context.parent != overscroll_parent->GetLayoutObject()) {
-        AttachContext redirected_context(context);
-        redirected_context.parent = overscroll_parent->GetLayoutObject();
-        redirected_context.previous_in_flow = nullptr;
-        redirected_context.next_sibling = originating.GetLayoutObject();
-        redirected_context.next_sibling_valid = true;
-        AttachLayoutTree(redirected_context);
-        return;
+    if (!originating.IsInTopLayer()) {
+      if (PseudoElement* overscroll_parent =
+              originating.GetPseudoElement(kPseudoIdOverscrollAreaParent)) {
+        CHECK(RuntimeEnabledFeatures::OverscrollAreasEnabled(
+            GetExecutionContext()));
+        if (context.parent != overscroll_parent->GetLayoutObject()) {
+          AttachContext redirected_context(context);
+          redirected_context.parent = overscroll_parent->GetLayoutObject();
+          redirected_context.previous_in_flow = nullptr;
+          redirected_context.next_sibling = originating.GetLayoutObject();
+          redirected_context.next_sibling_valid = true;
+          AttachLayoutTree(redirected_context);
+          return;
+        }
       }
     }
   }
@@ -589,7 +599,7 @@ void PseudoElement::AttachLayoutTree(AttachContext& context) {
   DCHECK(layout_object->Parent());
   DCHECK(CanHaveGeneratedChildren(*layout_object->Parent()));
 
-  const ComputedStyle& style = layout_object->StyleRef();
+  const ComputedStyle& style = layout_object->Style();
   switch (GetPseudoId()) {
     case kPseudoIdMarker: {
       if (ListMarker* marker = ListMarker::Get(layout_object))
@@ -729,20 +739,33 @@ bool PseudoElement::CanHaveNestedPseudoElement() const {
 }
 
 // Keep in sync with CanHaveNestedPseudoElement.
-bool PseudoElement::CanGeneratePseudoElement(PseudoId pseudo_id) const {
-  switch (GetPseudoId()) {
+// static
+bool PseudoElement::CanGeneratePseudoElement(PseudoId parent_pseudo_id,
+                                             PseudoId pseudo_id) {
+  switch (parent_pseudo_id) {
     case kPseudoIdBefore:
     case kPseudoIdAfter:
-      if (pseudo_id != kPseudoIdMarker)
-        return false;
-      break;
+      return pseudo_id == kPseudoIdMarker;
     case kPseudoIdColumn:
-      if (pseudo_id != kPseudoIdScrollMarker) {
-        return false;
-      }
-      break;
+      return pseudo_id == kPseudoIdScrollMarker;
+    case kPseudoIdViewTransition:
+      return pseudo_id == kPseudoIdViewTransitionGroup;
+    case kPseudoIdViewTransitionGroup:
+      return pseudo_id == kPseudoIdViewTransitionImagePair ||
+             pseudo_id == kPseudoIdViewTransitionGroupChildren;
+    case kPseudoIdViewTransitionGroupChildren:
+      return pseudo_id == kPseudoIdViewTransitionGroup;
+    case kPseudoIdViewTransitionImagePair:
+      return pseudo_id == kPseudoIdViewTransitionOld ||
+             pseudo_id == kPseudoIdViewTransitionNew;
     default:
       return false;
+  }
+}
+
+bool PseudoElement::CanGeneratePseudoElement(PseudoId pseudo_id) const {
+  if (!CanGeneratePseudoElement(GetPseudoId(), pseudo_id)) {
+    return false;
   }
   return Element::CanGeneratePseudoElement(pseudo_id);
 }
@@ -754,22 +777,29 @@ Node* PseudoElement::InnerNodeForHitTesting() {
   return parent;
 }
 
-// static
-bool PseudoElement::SupportsHitTesting(PseudoId pseudo_id) {
+bool PseudoElement::SupportsHitTesting() const {
   // Returns true for pseudo-elements that should participate in hit testing.
   // This gates whether the pseudo appears via InnerPossiblyPseudoElement().
   // Event targeting (which pseudo keeps event.RawTarget vs resolves to
   // originating) is determined by HasActivationBehavior() in
   // EventTargetRespectingTargetRules.
-  switch (pseudo_id) {
+  switch (pseudo_id_) {
     case kPseudoIdBackdrop:
-      return RuntimeEnabledFeatures::CSSPseudoElementBackdropEnabled();
+      if (RuntimeEnabledFeatures::CSSPseudoElementBackdropEnabled()) {
+        return true;
+      }
+      if (isConnected() &&
+          UltimateOriginatingElement().IsValidOverscrollArea()) {
+        DCHECK(RuntimeEnabledFeatures::OverscrollAreasEnabled(
+            GetExecutionContext()));
+        return true;
+      }
+      return false;
     case kPseudoIdBefore:
     case kPseudoIdAfter:
     case kPseudoIdMarker:
       return RuntimeEnabledFeatures::PseudoElementsHitTestableEnabled();
     case kPseudoIdInterestButton:
-    case kPseudoIdOverscrollBackdrop:
     case kPseudoIdScrollMarker:
     case kPseudoIdScrollMarkerGroupBefore:
     case kPseudoIdScrollMarkerGroupAfter:
@@ -787,10 +817,6 @@ bool PseudoElement::SupportsHitTesting(PseudoId pseudo_id) {
     default:
       return false;
   }
-}
-
-bool PseudoElement::SupportsHitTesting() const {
-  return SupportsHitTesting(pseudo_id_);
 }
 
 void PseudoElement::AccessKeyAction(
@@ -840,7 +866,6 @@ bool PseudoElementLayoutObjectIsNeeded(PseudoId pseudo_id,
     case kPseudoIdScrollMarkerGroupBefore:
     case kPseudoIdScrollMarkerGroupAfter:
     case kPseudoIdBackdrop:
-    case kPseudoIdOverscrollBackdrop:
     case kPseudoIdViewTransition:
     case kPseudoIdViewTransitionGroup:
     case kPseudoIdViewTransitionGroupChildren:
@@ -893,16 +918,14 @@ void PseudoElement::RetargetAnimations() {
 
 void PseudoElement::DefaultEventHandler(Event& event) {
   if (event.type() == event_type_names::kClick && !event.DefaultHandled() &&
-      RuntimeEnabledFeatures::OverscrollGesturesEnabled()) {
-    if (GetPseudoId() == kPseudoIdOverscrollBackdrop) {
-      if (isConnected()) {
-        if (Element* container =
-                UltimateOriginatingElement().GetOverscrollContainer()) {
-          if (auto* tracker = container->GetOverscrollAreaTracker()) {
-            tracker->CloseAllAreas();
-            event.SetDefaultHandled();
-          }
-        }
+      GetPseudoId() == kPseudoIdBackdrop && isConnected()) {
+    if (Element* container =
+            UltimateOriginatingElement().GetOverscrollContainer()) {
+      DCHECK(RuntimeEnabledFeatures::OverscrollAreasEnabled(
+          GetExecutionContext()));
+      if (auto* tracker = container->GetOverscrollAreaTracker()) {
+        tracker->CloseAllAreas();
+        event.SetDefaultHandled();
       }
     }
   }

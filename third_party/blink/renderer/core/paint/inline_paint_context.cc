@@ -4,7 +4,8 @@
 
 #include "third_party/blink/renderer/core/paint/inline_paint_context.h"
 
-#include "base/containers/adapters.h"
+#include <ranges>
+
 #include "third_party/blink/renderer/core/layout/inline/inline_cursor.h"
 
 namespace blink {
@@ -103,10 +104,10 @@ wtf_size_t InlinePaintContext::SyncDecoratingBox(
           // e.g., fast/css/first-letter.html
           //       tables/mozilla/bugs/bug126742.html
           if (decorations->size() == parent_decorations.size() &&
-              (style->GetTextDecorationLine() == TextDecorationLine::kNone ||
+              (!style->IsDecoratingBoxIncludingPrecomputedHover() ||
                // Conceptually text nodes don't have styles, but |LayoutText|
-               // has a style of its parent. Ignore |GetTextDecorationLine| for
-               // |LayoutText|.
+               // has a style of its parent. Ignore
+               // |IsDecoratingBoxIncludingPrecomputedHover| for |LayoutText|.
                // http/tests/devtools/service-workers/service-workers-view.js
                IsA<LayoutText>(layout_object))) {
             if (&parent_decorations == stop_at_)
@@ -123,9 +124,9 @@ wtf_size_t InlinePaintContext::SyncDecoratingBox(
             return 0;
           }
           if (decorations->size() == 1 &&
-              decorations->front().Lines() == style->GetTextDecorationLine()) {
+              style->IsDecoratingBoxIncludingPrecomputedHover()) {
             inline_context_->ClearDecoratingBoxes(&saved_decorating_boxes_);
-            PushDecoratingBox(item, *layout_object, *style, *decorations);
+            PushDecoratingBox(item, *layout_object, *style);
             return 1;
           }
 
@@ -167,10 +168,8 @@ wtf_size_t InlinePaintContext::SyncDecoratingBox(
         const auto* layout_inline = To<LayoutInline>(parent);
         // Except when |AppliedTextDecorations| is duplicated instead of
         // shared, see above.
-        if (!(parent_decorations.size() == parent->Parent()
-                                               ->StyleRef()
-                                               .AppliedTextDecorations()
-                                               .size() &&
+        if (!(parent_decorations.size() ==
+                  parent->Parent()->Style().AppliedTextDecorations().size() &&
               parent_style.GetTextDecorationLine() ==
                   TextDecorationLine::kNone) &&
             !IsA<LayoutText>(layout_object)) {
@@ -194,8 +193,8 @@ wtf_size_t InlinePaintContext::SyncDecoratingBox(
           style.BaseTextDecorationData();
       if (base_decorations == &parent_decorations) {
         DCHECK_EQ(decorations.size(), parent_decorations.size() + 1);
-        DCHECK_NE(style.GetTextDecorationLine(), TextDecorationLine::kNone);
-        PushDecoratingBox(item, layout_object, style, decorations);
+        DCHECK(style.IsDecoratingBoxIncludingPrecomputedHover());
+        PushDecoratingBox(item, layout_object, style);
         return 1;
       }
 
@@ -204,16 +203,16 @@ wtf_size_t InlinePaintContext::SyncDecoratingBox(
         // When the normal style and `::first-line` have different decorations,
         // the normal style inherits from the parent, and the `:first-line`
         // inherits from the normal style, resulting two decorating boxes.
-        DCHECK_NE(style.GetTextDecorationLine(), TextDecorationLine::kNone);
-        PushDecoratingBox(item, layout_object, style, *base_decorations);
-        PushDecoratingBox(item, layout_object, style, decorations);
+        DCHECK(style.IsDecoratingBoxIncludingPrecomputedHover());
+        PushDecoratingBox(item, layout_object, style);
+        PushDecoratingBox(item, layout_object, style);
         return 2;
       }
 
       // The style engine may create a clone, not an inherited decorations,
       // such as a `<span>` in `::first-line`.
       if (decorations.size() == parent_decorations.size() + 1) {
-        PushDecoratingBox(item, layout_object, style, decorations);
+        PushDecoratingBox(item, layout_object, style);
         return 1;
       }
 
@@ -222,7 +221,7 @@ wtf_size_t InlinePaintContext::SyncDecoratingBox(
       if (decorations.size() > parent_decorations.size()) {
         const wtf_size_t count = decorations.size() - parent_decorations.size();
         for (wtf_size_t i = 0; i < count; ++i) {
-          PushDecoratingBox(item, layout_object, style, decorations);
+          PushDecoratingBox(item, layout_object, style);
         }
         return count;
       }
@@ -233,8 +232,7 @@ wtf_size_t InlinePaintContext::SyncDecoratingBox(
 
     void PushDecoratingBox(const FragmentItem* item,
                            const LayoutObject& layout_object,
-                           const ComputedStyle& style,
-                           const AppliedTextDecorationVector& decorations) {
+                           const ComputedStyle& style) {
       DCHECK(!item || item->GetLayoutObject() == &layout_object);
       if (!item) {
         // If the item is not known, it is either a culled inline or it is found
@@ -247,9 +245,7 @@ wtf_size_t InlinePaintContext::SyncDecoratingBox(
         item = line_cursor_->Current().Item();
       }
       DCHECK(item);
-      inline_context_->PushDecoratingBox(
-          item->ContentOffsetInContainerFragment(), style, item->GetUsedFont(),
-          &decorations);
+      inline_context_->PushDecoratingBox(*item, style, item->GetUsedFont());
     }
 
     InlinePaintContext* inline_context_;
@@ -290,7 +286,7 @@ void InlinePaintContext::PushDecoratingBoxAncestors(
     if (current.IsLineBox()) {
       SetLineBox(cursor);
       DecoratingBoxList saved_decorating_boxes;
-      for (const FragmentItem* item : base::Reversed(ancestor_items)) {
+      for (const FragmentItem* item : std::views::reverse(ancestor_items)) {
         SyncDecoratingBox(*item, saved_decorating_boxes);
       }
       return;
@@ -347,8 +343,7 @@ void InlinePaintContext::SetLineBox(const InlineCursor& line_cursor) {
   // https://drafts.csswg.org/css-text-decor-3/#line-decoration, EXAMPLE 1 in
   // the spec, and crbug.com/855589.
   for (wtf_size_t i = 0; i < applied_text_decorations.size(); ++i) {
-    decorating_boxes_.emplace_back(offset, style, used_font,
-                                   &applied_text_decorations);
+    decorating_boxes_.emplace_back(offset, style, used_font);
   }
 }
 

@@ -34,6 +34,7 @@
 #include <optional>
 #include <utility>
 
+#include "base/no_destructor.h"
 #include "base/notreached.h"
 #include "third_party/blink/public/platform/web_isolated_world_info.h"
 #include "third_party/blink/renderer/platform/bindings/dom_data_store.h"
@@ -42,7 +43,6 @@
 #include "third_party/blink/renderer/platform/weborigin/security_origin.h"
 #include "third_party/blink/renderer/platform/wtf/hash_map.h"
 #include "third_party/blink/renderer/platform/wtf/hash_traits.h"
-#include "third_party/blink/renderer/platform/wtf/std_lib_extras.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_hash.h"
 #include "third_party/blink/renderer/platform/wtf/thread_specific.h"
 
@@ -65,9 +65,8 @@ static_assert(IsMainWorldId(kMainDOMWorldId),
 using WorldMap = HeapHashMap<int, WeakMember<DOMWrapperWorld>>;
 static WorldMap& GetWorldMap() {
   using WorldMapWrapper = DisallowNewWrapper<WorldMap>;
-  DEFINE_THREAD_SAFE_STATIC_LOCAL(ThreadSpecific<Persistent<WorldMapWrapper>>,
-                                  map, ());
-  Persistent<WorldMapWrapper>& persistent_map = *map;
+  static base::NoDestructor<ThreadSpecific<Persistent<WorldMapWrapper>>> map;
+  Persistent<WorldMapWrapper>& persistent_map = **map;
   if (!persistent_map) {
     persistent_map = MakeGarbageCollected<WorldMapWrapper>();
   }
@@ -191,8 +190,8 @@ typedef HashMap<int, scoped_refptr<SecurityOrigin>>
     IsolatedWorldSecurityOriginMap;
 static IsolatedWorldSecurityOriginMap& IsolatedWorldSecurityOrigins() {
   DCHECK(IsMainThread());
-  DEFINE_STATIC_LOCAL(IsolatedWorldSecurityOriginMap, map, ());
-  return map;
+  static base::NoDestructor<IsolatedWorldSecurityOriginMap> map;
+  return *map;
 }
 
 static scoped_refptr<SecurityOrigin> GetIsolatedWorldSecurityOrigin(
@@ -232,8 +231,8 @@ void DOMWrapperWorld::SetIsolatedWorldSecurityOrigin(
 typedef HashMap<int, String> IsolatedWorldStableIdMap;
 static IsolatedWorldStableIdMap& IsolatedWorldStableIds() {
   DCHECK(IsMainThread());
-  DEFINE_STATIC_LOCAL(IsolatedWorldStableIdMap, map, ());
-  return map;
+  static base::NoDestructor<IsolatedWorldStableIdMap> map;
+  return *map;
 }
 
 String DOMWrapperWorld::NonMainWorldStableId() const {
@@ -252,8 +251,8 @@ void DOMWrapperWorld::SetNonMainWorldStableId(int32_t world_id,
 typedef HashMap<int, String> IsolatedWorldHumanReadableNameMap;
 static IsolatedWorldHumanReadableNameMap& IsolatedWorldHumanReadableNames() {
   DCHECK(IsMainThread());
-  DEFINE_STATIC_LOCAL(IsolatedWorldHumanReadableNameMap, map, ());
-  return map;
+  static base::NoDestructor<IsolatedWorldHumanReadableNameMap> map;
+  return *map;
 }
 
 String DOMWrapperWorld::NonMainWorldHumanReadableName() const {
@@ -268,6 +267,27 @@ void DOMWrapperWorld::SetNonMainWorldHumanReadableName(
     const String& human_readable_name) {
   DCHECK(!IsMainWorldId(world_id));
   IsolatedWorldHumanReadableNames().Set(world_id, human_readable_name);
+}
+
+typedef HashMap<int, String> IsolatedWorldEmbedderWorldIdMap;
+static IsolatedWorldEmbedderWorldIdMap& IsolatedWorldEmbedderWorldIds() {
+  DCHECK(IsMainThread());
+  static base::NoDestructor<IsolatedWorldEmbedderWorldIdMap> map;
+  return *map;
+}
+
+String DOMWrapperWorld::NonMainWorldEmbedderWorldId() const {
+  DCHECK(!IsMainWorld());
+  const auto& map = IsolatedWorldEmbedderWorldIds();
+  const auto it = map.find(GetWorldId());
+  return it != map.end() ? it->value : String();
+}
+
+void DOMWrapperWorld::SetNonMainWorldEmbedderWorldId(
+    int32_t world_id,
+    const String& embedder_world_id) {
+  DCHECK(!IsMainWorldId(world_id));
+  IsolatedWorldEmbedderWorldIds().Set(world_id, embedder_world_id);
 }
 
 constinit thread_local int next_world_id =

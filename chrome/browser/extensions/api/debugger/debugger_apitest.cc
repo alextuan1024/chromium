@@ -42,7 +42,6 @@
 #include "chrome/browser/profiles/profile_test_util.h"
 #include "chrome/browser/pwc/privileged_web_contents.h"
 #include "chrome/browser/pwc/pwc_component_policy.h"
-#include "chrome/browser/pwc/pwc_features.mojom-features.h"
 #include "chrome/browser/tab_list/tab_list_interface.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/common/chrome_paths.h"
@@ -52,6 +51,7 @@
 #include "chrome/test/base/browser_closed_waiter.h"
 #include "chrome/test/base/testing_profile.h"
 #include "components/crx_file/id_util.h"
+#include "components/guest_view/buildflags/buildflags.h"
 #include "components/infobars/content/content_infobar_manager.h"
 #include "components/infobars/core/infobar.h"
 #include "components/infobars/core/infobar_delegate.h"
@@ -90,23 +90,43 @@
 #include "ui/base/base_window.h"
 #include "url/origin.h"
 
+#if BUILDFLAG(ENABLE_GUEST_VIEW)
+#include "base/memory/ref_counted_memory.h"
+#include "chrome/browser/extensions/tab_helper.h"
+#include "chrome/common/webui_url_constants.h"
+#include "components/guest_view/browser/guest_view_base.h"
+#include "components/guest_view/browser/guest_view_manager_delegate.h"
+#include "components/guest_view/browser/test_guest_view_manager.h"
+#include "content/public/browser/web_ui.h"
+#include "content/public/browser/web_ui_controller.h"
+#include "content/public/browser/web_ui_data_source.h"
+#include "content/public/browser/webui_config.h"
+#include "content/public/common/bindings_policy.h"
+#include "content/public/common/content_features.h"
+#include "content/public/test/scoped_web_ui_controller_factory_registration.h"
+#include "extensions/browser/guest_view/extensions_guest_view_manager_delegate.h"
+#include "extensions/browser/guest_view/web_view/web_view_guest.h"
+#include "extensions/browser/test_event_router_observer.h"
+#endif  // BUILDFLAG(ENABLE_GUEST_VIEW)
+
 #if BUILDFLAG(IS_ANDROID)
 #include "components/messages/android/message_enums.h"
 #include "components/messages/android/message_wrapper.h"
 #include "components/messages/android/mock_message_dispatcher_bridge.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #else
+#include "base/i18n/rtl.h"
+#include "base/strings/utf_string_conversions.h"
 #include "chrome/browser/extensions/api/debugger/extension_dev_tools_infobar_delegate.h"
 #include "chrome/browser/infobars/infobar_features.h"
+#include "chrome/grit/generated_resources.h"
+#include "components/infobars/core/confirm_infobar_delegate.h"
+#include "ui/base/l10n/l10n_util.h"
 #endif
 
 #if BUILDFLAG(ENABLE_PDF)
-#include "base/test/scoped_feature_list.h"
-#include "base/test/with_feature_override.h"
-#include "chrome/browser/pdf/pdf_extension_test_util.h"
 #include "chrome/browser/pdf/test_mime_handler_stream_manager.h"
 #include "chrome/test/base/ui_test_utils.h"
-#include "pdf/pdf_features.h"
 #endif  // BUILDFLAG(ENABLE_PDF)
 
 #if BUILDFLAG(IS_CHROMEOS)
@@ -163,6 +183,10 @@ using testing::Eq;
 
 class DebuggerApiTest : public ExtensionApiTest {
  protected:
+  DebuggerApiTest() {
+    feature_list_.InitAndDisableFeature(
+        extensions_features::kDisableExtensionsOnChromeUrlsSwitch);
+  }
   ~DebuggerApiTest() override = default;
 
   void SetUpCommandLine(base::CommandLine* command_line) override;
@@ -200,6 +224,7 @@ class DebuggerApiTest : public ExtensionApiTest {
   // |extension_|.
   TestExtensionDir test_extension_dir_;
   base::SimpleTestTickClock clock_;
+  base::test::ScopedFeatureList feature_list_;
 };
 
 void DebuggerApiTest::SetUpCommandLine(base::CommandLine* command_line) {
@@ -322,16 +347,7 @@ testing::AssertionResult DebuggerApiTest::RunAttachFunctionOnTarget(
   return testing::AssertionSuccess();
 }
 
-class PwcDebuggerApiTest : public DebuggerApiTest {
- public:
-  PwcDebuggerApiTest() {
-    feature_list_.InitAndEnableFeature(
-        pwc::mojom::features::kPrivilegedWebContents);
-  }
-
- private:
-  base::test::ScopedFeatureList feature_list_;
-};
+using PwcDebuggerApiTest = DebuggerApiTest;
 
 // An extension with the "debugger" permission cannot attach to, or even
 // enumerate, a privileged WebContents (see //chrome's PrivilegedWebContents):
@@ -394,6 +410,56 @@ IN_PROC_BROWSER_TEST_F(DebuggerApiTest,
   // to debug any extension.
   command_line()->AppendSwitch(switches::kExtensionsOnChromeURLs);
   EXPECT_TRUE(RunAttachFunction(other_ext_url, std::string()));
+}
+
+IN_PROC_BROWSER_TEST_F(DebuggerApiTest,
+                       DebuggerCannotClearOtherExtensionStorage) {
+  base::FilePath path;
+  ASSERT_TRUE(base::PathService::Get(chrome::DIR_TEST_DATA, &path));
+  path = path.AppendASCII("extensions").AppendASCII("simple_with_popup");
+  const Extension* another_extension = LoadExtension(path);
+  ASSERT_TRUE(another_extension);
+
+  GURL regular_url = embedded_test_server()->GetURL("/simple.html");
+  content::WebContents* web_contents = GetActiveWebContents();
+  ASSERT_TRUE(NavigateToURL(web_contents, regular_url));
+
+  int tab_id = sessions::SessionTabHelper::IdForTab(web_contents).id();
+  auto attach_function = base::MakeRefCounted<DebuggerAttachFunction>();
+  attach_function->set_extension(extension());
+  ASSERT_TRUE(api_test_utils::RunFunction(
+      attach_function.get(),
+      base::StringPrintf(R"([{"tabId": %d}, "1.3"])", tab_id), profile()))
+      << attach_function->GetError();
+
+  std::string other_ext_origin = another_extension->origin().Serialize();
+  std::string other_ext_storage_key = other_ext_origin + "/";
+
+  auto clear_origin_cmd = base::MakeRefCounted<DebuggerSendCommandFunction>();
+  clear_origin_cmd->set_extension(extension());
+  std::string clear_origin_args =
+      base::StringPrintf(R"([{"tabId": %d}, "Storage.clearDataForOrigin", )"
+                         R"({"origin": "%s", "storageTypes": "all"}])",
+                         tab_id, other_ext_origin.c_str());
+  std::string origin_error = api_test_utils::RunFunctionAndReturnError(
+      clear_origin_cmd.get(), clear_origin_args, profile());
+  EXPECT_THAT(origin_error, testing::HasSubstr("Permission denied"));
+
+  auto clear_key_cmd = base::MakeRefCounted<DebuggerSendCommandFunction>();
+  clear_key_cmd->set_extension(extension());
+  std::string clear_key_args =
+      base::StringPrintf(R"([{"tabId": %d}, "Storage.clearDataForStorageKey", )"
+                         R"({"storageKey": "%s", "storageTypes": "all"}])",
+                         tab_id, other_ext_storage_key.c_str());
+  std::string key_error = api_test_utils::RunFunctionAndReturnError(
+      clear_key_cmd.get(), clear_key_args, profile());
+  EXPECT_THAT(key_error, testing::HasSubstr("Permission denied"));
+
+  auto detach_function = base::MakeRefCounted<DebuggerDetachFunction>();
+  detach_function->set_extension(extension());
+  EXPECT_TRUE(api_test_utils::RunFunction(
+      detach_function.get(), base::StringPrintf(R"([{"tabId": %d}])", tab_id),
+      profile()));
 }
 
 IN_PROC_BROWSER_TEST_F(DebuggerFileAccessApiTest,
@@ -617,8 +683,9 @@ IN_PROC_BROWSER_TEST_F(DebuggerApiTest,
   PermissionsData::SetDefaultPolicyHostRestrictions(
       util::GetBrowserContextId(profile()), default_blocked_hosts,
       URLPatternSet());
-  EXPECT_TRUE(RunAttachFunction(blob_web_contents,
-                                "Host access is restricted by policy."));
+  EXPECT_TRUE(RunAttachFunction(
+      blob_web_contents,
+      "This page cannot be scripted due to an ExtensionsSettings policy."));
 }
 
 IN_PROC_BROWSER_TEST_F(DebuggerApiTest,
@@ -996,6 +1063,64 @@ IN_PROC_BROWSER_TEST_F(DebuggerApiTest,
   EXPECT_EQ(0u, manager->infobars().size());
 }
 
+// Regression test for https://crbug.com/514078071: truncating a long extension
+// name must not strip the PDF that terminates a directional override in it,
+// which would otherwise visually reverse the rest of the infobar message.
+IN_PROC_BROWSER_TEST_F(DebuggerApiTest,
+                       InfoBarTerminatesDirectionalFormattingInLongName) {
+  // Put an RLO before the 1000 character truncation point, and make the name
+  // long enough that the PDF appended by name sanitization is truncated away.
+  const std::u16string name = std::u16string(980, u'A') +
+                              base::i18n::kRightToLeftOverride +
+                              u".won efas si emorhC" + std::u16string(40, u'B');
+  TestExtensionDir test_dir;
+  test_dir.WriteManifest(base::StringPrintf(
+      R"({
+           "name": "%s",
+           "version": "0.1",
+           "manifest_version": 2,
+           "permissions": ["debugger"]
+         })",
+      base::UTF16ToUTF8(name).c_str()));
+  scoped_refptr<const Extension> extension =
+      LoadExtension(test_dir.UnpackedPath());
+  ASSERT_TRUE(extension);
+
+  const int tab_id =
+      sessions::SessionTabHelper::IdForTab(GetActiveWebContents()).id();
+  auto attach_function = base::MakeRefCounted<DebuggerAttachFunction>();
+  attach_function->set_extension(extension);
+  ASSERT_TRUE(api_test_utils::RunFunction(
+      attach_function.get(),
+      base::StringPrintf(R"([{"tabId": %d}, "1.1"])", tab_id), profile()));
+
+  infobars::ContentInfoBarManager* manager =
+      infobars::ContentInfoBarManager::FromWebContents(GetActiveWebContents());
+  ASSERT_EQ(1u, manager->infobars().size());
+  ConfirmInfoBarDelegate* delegate =
+      manager->infobars()[0]->delegate()->AsConfirmInfoBarDelegate();
+  ASSERT_TRUE(delegate);
+  const std::u16string message = delegate->GetMessageText();
+
+  // Split the message into the part containing the (truncated) extension name
+  // and the trailing, security-relevant part of the message template.
+  size_t name_offset = 0;
+  const std::u16string message_template = l10n_util::GetStringFUTF16(
+      IDS_DEV_TOOLS_INFOBAR_LABEL, std::u16string(), &name_offset);
+  const std::u16string suffix = message_template.substr(name_offset);
+  ASSERT_FALSE(suffix.empty());
+  ASSERT_TRUE(message.ends_with(suffix)) << base::UTF16ToUTF8(message);
+  ASSERT_NE(std::u16string::npos,
+            message.find(base::i18n::kRightToLeftOverride));
+
+  // All directional formatting must be terminated before the suffix.
+  const std::u16string prefix =
+      message.substr(0, message.size() - suffix.size());
+  std::u16string terminated_prefix = prefix;
+  base::i18n::EnsureTerminatedDirectionalFormatting(&terminated_prefix);
+  EXPECT_EQ(prefix, terminated_prefix);
+}
+
 // Android does not support multiple profiles in Chrome. User switching is
 // handled at the OS level.
 class CrossProfileDebuggerApiTest : public DebuggerApiTest {
@@ -1166,8 +1291,9 @@ IN_PROC_BROWSER_TEST_F(DebuggerApiTest, TestDefaultPolicyBlockedHosts) {
       util::GetBrowserContextId(profile()), default_blocked_hosts,
       URLPatternSet());
 
-  EXPECT_TRUE(RunAttachFunction(url, "Host access is restricted by policy.",
-                                /*ignore_navigation_errors=*/true));
+  EXPECT_TRUE(RunAttachFunction(
+      url, "This page cannot be scripted due to an ExtensionsSettings policy.",
+      /*ignore_navigation_errors=*/true));
 }
 
 class DebuggerExtensionApiTest : public ExtensionApiTest {
@@ -1220,47 +1346,136 @@ IN_PROC_BROWSER_TEST_F(DebuggerExtensionApiTest, AttachToEmptyUrls) {
 }
 
 #if BUILDFLAG(ENABLE_PDF)
-class DebuggerExtensionApiPdfTest : public base::test::WithFeatureOverride,
-                                    public DebuggerExtensionApiTest {
+class DebuggerExtensionApiPdfTest : public DebuggerExtensionApiTest {
  public:
-  DebuggerExtensionApiPdfTest()
-      : base::test::WithFeatureOverride(chrome_pdf::features::kPdfOopif) {}
-};
-
-// Test that the debuggers can attach to the PDF embedder frame.
-IN_PROC_BROWSER_TEST_P(DebuggerExtensionApiPdfTest, AttachToPdf) {
-  ASSERT_TRUE(RunExtensionTest("debugger_attach_to_pdf")) << message_;
-}
-
-// TODO(crbug.com/40268279): Stop testing both modes after OOPIF PDF viewer
-// launches.
-INSTANTIATE_FEATURE_OVERRIDE_TEST_SUITE(DebuggerExtensionApiPdfTest);
-
-class DebuggerExtensionApiOopifPdfTest : public DebuggerExtensionApiTest {
- public:
-  DebuggerExtensionApiOopifPdfTest() {
-    feature_list_.InitAndEnableFeature(chrome_pdf::features::kPdfOopif);
-  }
-
-  pdf::TestMimeHandlerStreamManager* GetTestMimeHandlerStreamManager() {
-    return factory_.GetTestMimeHandlerStreamManager(GetActiveWebContents());
+  testing::AssertionResult LoadPdf(const GURL& pdf_url) {
+    if (!ui_test_utils::NavigateToURL(browser(), pdf_url)) {
+      return testing::AssertionFailure() << "NavigateToURL failed";
+    }
+    content::WebContents* web_contents = GetActiveWebContents();
+    return factory_.GetTestMimeHandlerStreamManager(web_contents)
+        ->WaitUntilPdfLoaded(web_contents->GetPrimaryMainFrame());
   }
 
  private:
-  base::test::ScopedFeatureList feature_list_;
   pdf::TestMimeHandlerStreamManagerFactory factory_;
 };
 
+// Test that the debuggers can attach to the PDF embedder frame.
+IN_PROC_BROWSER_TEST_F(DebuggerExtensionApiPdfTest, AttachToPdf) {
+  ASSERT_TRUE(RunExtensionTest("debugger_attach_to_pdf")) << message_;
+}
+
+// Test that extensions cannot attach directly or via Target.setAutoAttach to
+// the inner PDF extension frame or PDF content frame, while still being able to
+// attach to the outer PDF embedder tab.
+IN_PROC_BROWSER_TEST_F(DebuggerExtensionApiPdfTest,
+                       CannotAttachToInnerPdfFrames) {
+  TestExtensionDir test_extension_dir;
+  test_extension_dir.WriteManifest(
+      R"({
+         "name": "debugger",
+         "version": "0.1",
+         "manifest_version": 3,
+         "permissions": ["debugger"]
+       })");
+  const Extension* extension = LoadExtension(test_extension_dir.UnpackedPath());
+  ASSERT_TRUE(extension);
+
+  GURL pdf_url(embedded_test_server()->GetURL("/pdf/test.pdf"));
+  ASSERT_TRUE(LoadPdf(pdf_url));
+
+  scoped_refptr<content::DevToolsAgentHost> pdf_extension_host;
+  scoped_refptr<content::DevToolsAgentHost> pdf_content_host;
+  for (const auto& host : content::DevToolsAgentHost::GetOrCreateAll()) {
+    if (host->GetURL().SchemeIs(extensions::kExtensionScheme) &&
+        host->GetURL().GetHost() == extension_misc::kPdfExtensionId) {
+      pdf_extension_host = host;
+    } else if (host->GetProcessHost() && host->GetProcessHost()->IsPdf()) {
+      pdf_content_host = host;
+    }
+  }
+  ASSERT_TRUE(pdf_extension_host);
+  ASSERT_TRUE(pdf_content_host);
+
+  // Direct attachment to the PDF extension frame must be rejected.
+  {
+    auto attach_function = base::MakeRefCounted<DebuggerAttachFunction>();
+    attach_function->set_extension(extension);
+    EXPECT_FALSE(api_test_utils::RunFunction(
+        attach_function.get(),
+        base::StringPrintf(R"([{"targetId": "%s"}, "1.3"])",
+                           pdf_extension_host->GetId().c_str()),
+        profile()));
+    EXPECT_EQ("Cannot attach to this target.", attach_function->GetError());
+    EXPECT_FALSE(pdf_extension_host->IsAttached());
+  }
+
+  // Direct attachment to the PDF content frame must be rejected.
+  {
+    auto attach_function = base::MakeRefCounted<DebuggerAttachFunction>();
+    attach_function->set_extension(extension);
+    EXPECT_FALSE(api_test_utils::RunFunction(
+        attach_function.get(),
+        base::StringPrintf(R"([{"targetId": "%s"}, "1.3"])",
+                           pdf_content_host->GetId().c_str()),
+        profile()));
+    EXPECT_EQ("Cannot attach to this target.", attach_function->GetError());
+    EXPECT_FALSE(pdf_content_host->IsAttached());
+  }
+
+  // Attaching to the outer PDF embedder tab succeeds, and neither
+  // Target.setAutoAttach nor Target.attachToTarget may attach to the inner PDF
+  // extension or content frames.
+  int tab_id =
+      sessions::SessionTabHelper::IdForTab(GetActiveWebContents()).id();
+  auto attach_function = base::MakeRefCounted<DebuggerAttachFunction>();
+  attach_function->set_extension(extension);
+  ASSERT_TRUE(api_test_utils::RunFunction(
+      attach_function.get(),
+      base::StringPrintf(R"([{"tabId": %d}, "1.3"])", tab_id), profile()));
+
+  auto send_command = base::MakeRefCounted<DebuggerSendCommandFunction>();
+  send_command->set_extension(extension);
+  ASSERT_TRUE(api_test_utils::RunFunction(
+      send_command.get(),
+      base::StringPrintf(
+          R"([{"tabId": %d}, "Target.setAutoAttach", )"
+          R"({"autoAttach": true, "waitForDebuggerOnStart": false, )"
+          R"("flatten": true}])",
+          tab_id),
+      profile()));
+
+  EXPECT_FALSE(pdf_extension_host->IsAttached());
+  EXPECT_FALSE(pdf_content_host->IsAttached());
+
+  for (const auto& restricted_host : {pdf_extension_host, pdf_content_host}) {
+    auto attach_to_target = base::MakeRefCounted<DebuggerSendCommandFunction>();
+    attach_to_target->set_extension(extension);
+    std::string error = api_test_utils::RunFunctionAndReturnError(
+        attach_to_target.get(),
+        base::StringPrintf(
+            R"([{"tabId": %d}, "Target.attachToTarget", {"targetId": "%s"}])",
+            tab_id, restricted_host->GetId().c_str()),
+        profile());
+    EXPECT_THAT(error, testing::HasSubstr("Not allowed"));
+    EXPECT_FALSE(restricted_host->IsAttached());
+  }
+
+  auto detach_function = base::MakeRefCounted<DebuggerDetachFunction>();
+  detach_function->set_extension(extension);
+  EXPECT_TRUE(api_test_utils::RunFunction(
+      detach_function.get(), base::StringPrintf(R"([{"tabId": %d}])", tab_id),
+      profile()));
+}
+
 // Test that the inner PDF frames, i.e. the PDF extension frame and the PDF
 // content frame, aren't visible targets, while the PDF embedder frame is.
-IN_PROC_BROWSER_TEST_F(DebuggerExtensionApiOopifPdfTest, GetTargets) {
+IN_PROC_BROWSER_TEST_F(DebuggerExtensionApiPdfTest, GetTargets) {
   GURL pdf_url(embedded_test_server()->GetURL("/pdf/test.pdf"));
 
   // Load a full-page PDF.
-  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), pdf_url));
-  content::WebContents* web_contents = GetActiveWebContents();
-  ASSERT_TRUE(GetTestMimeHandlerStreamManager()->WaitUntilPdfLoaded(
-      web_contents->GetPrimaryMainFrame()));
+  ASSERT_TRUE(LoadPdf(pdf_url));
 
   // Get targets.
   base::ListValue targets = RunGetTargets(profile());
@@ -1860,4 +2075,507 @@ IN_PROC_BROWSER_TEST_F(
       << message_;
 }
 
+#if BUILDFLAG(ENABLE_GUEST_VIEW)
+
+namespace {
+
+// Allow-listed WebUI for <webview> in chrome/.../_api_features.json.
+constexpr const char* kTestWebUIHost = chrome::kChromeUIChromeSigninHost;
+constexpr const char* kTestWebUIURL = chrome::kChromeUIChromeSigninURL;
+
+// A custom WebUIController hosting a <webview> to test debugger restrictions.
+class TestWebUIController : public content::WebUIController {
+ public:
+  explicit TestWebUIController(content::WebUI* web_ui)
+      : content::WebUIController(web_ui) {
+    web_ui->SetBindings(
+        content::BindingsPolicySet({content::BindingsPolicyValue::kWebUi}));
+    content::WebContents* wc = web_ui->GetWebContents();
+    extensions::TabHelper::CreateForWebContents(wc);
+    content::WebUIDataSource* s = content::WebUIDataSource::CreateAndAdd(
+        wc->GetBrowserContext(), kTestWebUIHost);
+    s->SetRequestFilter(
+        base::BindRepeating([](const std::string& p) { return p.empty(); }),
+        base::BindRepeating(
+            [](const std::string&,
+               content::WebUIDataSource::GotDataCallback cb) {
+              std::move(cb).Run(base::MakeRefCounted<base::RefCountedString>(
+                  "<!DOCTYPE html><webview src=\"about:blank\"></webview>"));
+            }));
+  }
+
+ private:
+  WEB_UI_CONTROLLER_TYPE_DECL();
+};
+
+WEB_UI_CONTROLLER_TYPE_IMPL(TestWebUIController)
+
+class TestWebUIConfig
+    : public content::DefaultWebUIConfig<TestWebUIController> {
+ public:
+  TestWebUIConfig()
+      : DefaultWebUIConfig(content::kChromeUIScheme, kTestWebUIHost) {}
+};
+
+class TestGuestViewManagerDelegate
+    : public extensions::ExtensionsGuestViewManagerDelegate {
+ public:
+  bool IsGuestAvailableToContext(const guest_view::GuestViewBase*)
+      const override {
+    return true;
+  }
+};
+
+}  // namespace
+
+// Tests chrome.debugger access to <webview> guests inside privileged WebUI.
+class WebViewGuestDebuggerApiTest : public DebuggerApiTest,
+                                    public testing::WithParamInterface<bool> {
+ public:
+  WebViewGuestDebuggerApiTest() {
+    guest_view_feature_list_.InitWithFeatureState(features::kGuestViewMPArch,
+                                                  GetParam());
+  }
+
+  void SetUpOnMainThread() override {
+    DebuggerApiTest::SetUpOnMainThread();
+    web_ui_config_registration_ =
+        std::make_unique<content::ScopedWebUIConfigRegistration>(
+            std::make_unique<TestWebUIConfig>());
+  }
+
+ protected:
+  guest_view::TestGuestViewManager* GetGuestViewManager() {
+    return factory_.GetOrCreateTestGuestViewManager(
+        profile(), std::make_unique<TestGuestViewManagerDelegate>());
+  }
+
+  scoped_refptr<content::DevToolsAgentHost> GetGuestAgentHost() {
+    auto hosts = content::DevToolsAgentHost::GetOrCreateAll();
+    auto it = std::ranges::find(hosts, content::DevToolsAgentHost::kTypeGuest,
+                                &content::DevToolsAgentHost::GetType);
+    return it != hosts.end() ? *it : nullptr;
+  }
+
+  void CreateWebUiGuestView() {
+    auto* manager = GetGuestViewManager();
+    ASSERT_TRUE(NavigateToURL(GetActiveWebContents(), GURL(kTestWebUIURL)));
+    auto* view = manager->WaitForSingleGuestViewCreated();
+    ASSERT_TRUE(view && manager->WaitUntilAttachedAndLoaded(view));
+  }
+
+  bool HasTargetId(const std::string& target_id) {
+    auto fn = base::MakeRefCounted<DebuggerGetTargetsFunction>();
+    fn->set_extension(extension());
+    auto val = api_test_utils::RunFunctionAndReturnSingleResult(fn.get(), "[]",
+                                                                profile());
+    return val && val->is_list() &&
+           std::ranges::any_of(val->GetList(), [&](const auto& item) {
+             const std::string* id = item.GetDict().FindString("id");
+             return id && *id == target_id;
+           });
+  }
+
+ private:
+  base::test::ScopedFeatureList guest_view_feature_list_;
+  guest_view::TestGuestViewManagerFactory factory_;
+  std::unique_ptr<content::ScopedWebUIConfigRegistration>
+      web_ui_config_registration_;
+};
+
+// Tests that attach() refuses to attach to a WebUI-hosted <webview> guest.
+IN_PROC_BROWSER_TEST_P(WebViewGuestDebuggerApiTest,
+                       CannotAttachToWebUiWebViewGuest) {
+  CreateWebUiGuestView();
+  auto attach = base::MakeRefCounted<DebuggerAttachFunction>();
+  attach->set_extension(extension());
+  EXPECT_EQ(manifest_errors::kCannotAccessChromeUrl,
+            api_test_utils::RunFunctionAndReturnError(
+                attach.get(),
+                base::StringPrintf(R"([{"targetId": "%s"}, "1.1"])",
+                                   GetGuestAgentHost()->GetId().c_str()),
+                profile()));
+}
+
+// Tests that chrome.debugger.getTargets() omits WebUI <webview> guests.
+IN_PROC_BROWSER_TEST_P(WebViewGuestDebuggerApiTest,
+                       WebUiWebViewGuestExcludedFromGetTargets) {
+  CreateWebUiGuestView();
+  EXPECT_FALSE(HasTargetId(GetGuestAgentHost()->GetId()));
+}
+
+// Verifies attached session cannot reach WebUI guest via Target.attachToTarget.
+IN_PROC_BROWSER_TEST_P(WebViewGuestDebuggerApiTest,
+                       AlreadyAttachedSessionCannotReachWebUiWebViewGuest) {
+  CreateWebUiGuestView();
+  auto* new_wc = content::WebContents::FromRenderFrameHost(
+      NavigateToURLInNewTab(GURL("about:blank")));
+  int tab_id = sessions::SessionTabHelper::IdForTab(new_wc).id();
+
+  auto attach = base::MakeRefCounted<DebuggerAttachFunction>();
+  attach->set_extension(extension());
+  ASSERT_TRUE(api_test_utils::RunFunction(
+      attach.get(), base::StringPrintf(R"([{"tabId": %d}, "1.3"])", tab_id),
+      profile()));
+
+  auto send_cmd = base::MakeRefCounted<DebuggerSendCommandFunction>();
+  send_cmd->set_extension(extension());
+  EXPECT_THAT(
+      api_test_utils::RunFunctionAndReturnError(
+          send_cmd.get(),
+          base::StringPrintf(
+              R"([{"tabId": %d}, "Target.attachToTarget", )"
+              R"({"targetId": "%s", "flatten": true}])",
+              tab_id, GetGuestAgentHost()->GetId().c_str()),
+          profile()),
+      testing::HasSubstr("Not allowed"));
+}
+
+// Control test: verifies that a <webview> guest embedded in an ordinary
+// extension page (not restricted WebUI) is enumerable and attachable by its
+// own extension.
+// Because the <webview> HTML tag is restricted to apps/allowlisted WebUIs,
+// this attaches a WebViewGuest directly to a subframe via GuestViewManager.
+IN_PROC_BROWSER_TEST_P(WebViewGuestDebuggerApiTest,
+                       ControlExtensionWebViewGuestAllowed) {
+  content::WebContents* wc = GetActiveWebContents();
+  ASSERT_TRUE(NavigateToURL(wc, extension()->GetResourceURL("test_file.html")));
+  ASSERT_TRUE(content::ExecJs(
+      wc, "document.body.appendChild(document.createElement('iframe'));"));
+  auto* main = wc->GetPrimaryMainFrame();
+  auto* frame = content::ChildFrameAt(main, 0);
+  ASSERT_TRUE(frame);
+
+  auto* guest_manager = GetGuestViewManager();
+  base::test::TestFuture<std::unique_ptr<guest_view::GuestViewBase>> future;
+  guest_manager->CreateGuestAndTransferOwnership(
+      extensions::WebViewGuest::Type, main, nullptr, base::DictValue(),
+      future.GetCallback());
+  auto owned = future.Take();
+  auto* raw = owned.get();
+  base::DictValue params;
+  params.Set("src", "about:blank");
+  static_cast<guest_view::GuestViewManager*>(guest_manager)
+      ->AttachGuest(main->GetProcess()->GetID(), frame->GetRoutingID(),
+                    raw->guest_instance_id(), params);
+  base::RunLoop loop;
+  raw->AttachToOuterWebContentsFrame(std::move(owned), frame,
+                                     frame->GetRoutingID(), false,
+                                     loop.QuitClosure());
+  loop.Run();
+  ASSERT_TRUE(guest_manager->WaitUntilAttachedAndLoaded(raw));
+
+  EXPECT_TRUE(HasTargetId(GetGuestAgentHost()->GetId()));
+
+  auto attach = base::MakeRefCounted<DebuggerAttachFunction>();
+  attach->set_extension(extension());
+  EXPECT_TRUE(api_test_utils::RunFunction(
+      attach.get(),
+      base::StringPrintf(R"([{"targetId": "%s"}, "1.1"])",
+                         GetGuestAgentHost()->GetId().c_str()),
+      profile()));
+}
+
+// Tests that workers running in a WebUI-hosted guest partition cannot be
+// attached to or enumerated.
+IN_PROC_BROWSER_TEST_P(WebViewGuestDebuggerApiTest,
+                       CannotAttachToOrEnumerateWebUiWebViewGuestWorkers) {
+  if (GetParam()) {
+    GTEST_SKIP() << "MPArch implementation skipped. https://crbug.com/40202416";
+  }
+
+  CreateWebUiGuestView();
+  auto* guest_view = GetGuestViewManager()->GetLastGuestViewCreated();
+  ASSERT_TRUE(guest_view);
+
+  GURL guest_url =
+      embedded_test_server()->GetURL("/workers/fetch_from_service_worker.html");
+  ASSERT_TRUE(content::NavigateToURLFromRenderer(
+      guest_view->GetGuestMainFrame(), guest_url));
+
+  ASSERT_EQ(true, content::EvalJs(guest_view->GetGuestMainFrame(), R"(
+        new Promise(resolve => {
+          const worker = new Worker('/workers/post_ready.js');
+          worker.onmessage = () => resolve(true);
+          window.dedicatedWorker = worker;
+        });
+      )"));
+
+  ASSERT_EQ(true, content::EvalJs(guest_view->GetGuestMainFrame(), R"(
+        new Promise(resolve => {
+          const sw = new SharedWorker('/workers/shared_post_ready.js');
+          sw.port.onmessage = () => resolve(true);
+          sw.port.start();
+          window.sharedWorker = sw;
+        });
+      )"));
+
+  ASSERT_EQ("ready",
+            content::EvalJs(guest_view->GetGuestMainFrame(), "setup();"));
+
+  scoped_refptr<content::DevToolsAgentHost> dedicated_worker_host;
+  scoped_refptr<content::DevToolsAgentHost> shared_worker_host;
+  scoped_refptr<content::DevToolsAgentHost> service_worker_host;
+  for (const auto& host : content::DevToolsAgentHost::GetOrCreateAll()) {
+    if (host->GetType() == content::DevToolsAgentHost::kTypeDedicatedWorker) {
+      dedicated_worker_host = host;
+    } else if (host->GetType() ==
+                   content::DevToolsAgentHost::kTypeSharedWorker &&
+               host->GetURL().spec().contains("shared_post_ready.js")) {
+      shared_worker_host = host;
+    } else if (host->GetType() ==
+                   content::DevToolsAgentHost::kTypeServiceWorker &&
+               host->GetURL().spec().contains("fetch_from_service_worker.js")) {
+      service_worker_host = host;
+    }
+  }
+  ASSERT_TRUE(dedicated_worker_host);
+  ASSERT_TRUE(shared_worker_host);
+  ASSERT_TRUE(service_worker_host);
+
+  EXPECT_FALSE(HasTargetId(GetGuestAgentHost()->GetId()));
+  EXPECT_FALSE(HasTargetId(dedicated_worker_host->GetId()));
+  EXPECT_FALSE(HasTargetId(shared_worker_host->GetId()));
+  EXPECT_FALSE(HasTargetId(service_worker_host->GetId()));
+
+  for (const auto& worker_host :
+       {dedicated_worker_host, shared_worker_host, service_worker_host}) {
+    auto attach = base::MakeRefCounted<DebuggerAttachFunction>();
+    attach->set_extension(extension());
+    EXPECT_EQ(manifest_errors::kCannotAccessChromeUrl,
+              api_test_utils::RunFunctionAndReturnError(
+                  attach.get(),
+                  base::StringPrintf(R"([{"targetId": "%s"}, "1.1"])",
+                                     worker_host->GetId().c_str()),
+                  profile()));
+  }
+}
+
+// Control test: verifies that workers running in a <webview> guest embedded in
+// an ordinary extension page (not restricted WebUI) are enumerable and
+// attachable by its own extension.
+IN_PROC_BROWSER_TEST_P(WebViewGuestDebuggerApiTest,
+                       ControlExtensionWebViewGuestWorkersAllowed) {
+  if (GetParam()) {
+    GTEST_SKIP() << "MPArch implementation skipped. https://crbug.com/40202416";
+  }
+
+  content::WebContents* wc = GetActiveWebContents();
+  ASSERT_TRUE(NavigateToURL(wc, extension()->GetResourceURL("test_file.html")));
+  ASSERT_TRUE(content::ExecJs(
+      wc, "document.body.appendChild(document.createElement('iframe'));"));
+  auto* main = wc->GetPrimaryMainFrame();
+  auto* frame = content::ChildFrameAt(main, 0);
+  ASSERT_TRUE(frame);
+
+  // Because the <webview> HTML tag is restricted to platform apps and
+  // allowlisted WebUIs (which the test extension lacks), attach a WebViewGuest
+  // directly to an extension subframe via GuestViewManager.
+  auto* guest_manager = GetGuestViewManager();
+  base::test::TestFuture<std::unique_ptr<guest_view::GuestViewBase>> future;
+  guest_manager->CreateGuestAndTransferOwnership(
+      extensions::WebViewGuest::Type, main, nullptr, base::DictValue(),
+      future.GetCallback());
+  auto owned = future.Take();
+  auto* raw = owned.get();
+  base::DictValue params;
+  params.Set("src", "about:blank");
+  static_cast<guest_view::GuestViewManager*>(guest_manager)
+      ->AttachGuest(main->GetProcess()->GetID(), frame->GetRoutingID(),
+                    raw->guest_instance_id(), params);
+  base::RunLoop loop;
+  raw->AttachToOuterWebContentsFrame(std::move(owned), frame,
+                                     frame->GetRoutingID(), false,
+                                     loop.QuitClosure());
+  loop.Run();
+  ASSERT_TRUE(guest_manager->WaitUntilAttachedAndLoaded(raw));
+
+  GURL guest_url =
+      embedded_test_server()->GetURL("/workers/fetch_from_service_worker.html");
+  ASSERT_TRUE(
+      content::NavigateToURLFromRenderer(raw->GetGuestMainFrame(), guest_url));
+
+  ASSERT_EQ(true, content::EvalJs(raw->GetGuestMainFrame(), R"(
+        new Promise(resolve => {
+          const worker = new Worker('/workers/post_ready.js');
+          worker.onmessage = () => resolve(true);
+          window.dedicatedWorker = worker;
+        });
+      )"));
+
+  ASSERT_EQ(true, content::EvalJs(raw->GetGuestMainFrame(), R"(
+        new Promise(resolve => {
+          const sw = new SharedWorker('/workers/shared_post_ready.js');
+          sw.port.onmessage = () => resolve(true);
+          sw.port.start();
+          window.sharedWorker = sw;
+        });
+      )"));
+
+  ASSERT_EQ("ready", content::EvalJs(raw->GetGuestMainFrame(), "setup();"));
+
+  scoped_refptr<content::DevToolsAgentHost> dedicated_worker_host;
+  scoped_refptr<content::DevToolsAgentHost> shared_worker_host;
+  scoped_refptr<content::DevToolsAgentHost> service_worker_host;
+  for (const auto& host : content::DevToolsAgentHost::GetOrCreateAll()) {
+    if (host->GetType() == content::DevToolsAgentHost::kTypeDedicatedWorker) {
+      dedicated_worker_host = host;
+    } else if (host->GetType() ==
+                   content::DevToolsAgentHost::kTypeSharedWorker &&
+               host->GetURL().spec().contains("shared_post_ready.js")) {
+      shared_worker_host = host;
+    } else if (host->GetType() ==
+                   content::DevToolsAgentHost::kTypeServiceWorker &&
+               host->GetURL().spec().contains("fetch_from_service_worker.js")) {
+      service_worker_host = host;
+    }
+  }
+  ASSERT_TRUE(dedicated_worker_host);
+  ASSERT_TRUE(shared_worker_host);
+  ASSERT_TRUE(service_worker_host);
+
+  for (const auto& worker_host :
+       {dedicated_worker_host, shared_worker_host, service_worker_host}) {
+    EXPECT_TRUE(HasTargetId(worker_host->GetId()));
+    auto attach = base::MakeRefCounted<DebuggerAttachFunction>();
+    attach->set_extension(extension());
+    EXPECT_TRUE(api_test_utils::RunFunction(
+        attach.get(),
+        base::StringPrintf(R"([{"targetId": "%s"}, "1.1"])",
+                           worker_host->GetId().c_str()),
+        profile()));
+  }
+}
+
+// Tests that a session already attached to a normal tab cannot auto-attach
+// to or receive CDP events for WebUI guest workers.
+IN_PROC_BROWSER_TEST_P(
+    WebViewGuestDebuggerApiTest,
+    AlreadyAttachedSessionCannotAutoAttachToWebUiWebViewGuestWorker) {
+  if (GetParam()) {
+    GTEST_SKIP() << "MPArch implementation skipped. https://crbug.com/40202416";
+  }
+
+  CreateWebUiGuestView();
+  auto* guest_view = GetGuestViewManager()->GetLastGuestViewCreated();
+  ASSERT_TRUE(guest_view);
+
+  GURL guest_url =
+      embedded_test_server()->GetURL("/workers/fetch_from_service_worker.html");
+  ASSERT_TRUE(content::NavigateToURLFromRenderer(
+      guest_view->GetGuestMainFrame(), guest_url));
+
+  ASSERT_EQ(true, content::EvalJs(guest_view->GetGuestMainFrame(), R"(
+        new Promise(resolve => {
+          const worker = new Worker('/workers/post_ready.js');
+          worker.onmessage = () => resolve(true);
+          window.dedicatedWorker = worker;
+        });
+      )"));
+
+  ASSERT_EQ(true, content::EvalJs(guest_view->GetGuestMainFrame(), R"(
+        new Promise(resolve => {
+          const sw = new SharedWorker('/workers/shared_post_ready.js');
+          sw.port.onmessage = () => resolve(true);
+          sw.port.start();
+          window.sharedWorker = sw;
+        });
+      )"));
+
+  ASSERT_EQ("ready",
+            content::EvalJs(guest_view->GetGuestMainFrame(), "setup();"));
+
+  scoped_refptr<content::DevToolsAgentHost> service_worker_host;
+  scoped_refptr<content::DevToolsAgentHost> dedicated_worker_host;
+  scoped_refptr<content::DevToolsAgentHost> shared_worker_host;
+  for (const auto& host : content::DevToolsAgentHost::GetOrCreateAll()) {
+    if (host->GetType() == content::DevToolsAgentHost::kTypeServiceWorker &&
+        host->GetURL().spec().contains("fetch_from_service_worker.js")) {
+      service_worker_host = host;
+    } else if (host->GetType() ==
+               content::DevToolsAgentHost::kTypeDedicatedWorker) {
+      dedicated_worker_host = host;
+    } else if (host->GetType() ==
+                   content::DevToolsAgentHost::kTypeSharedWorker &&
+               host->GetURL().spec().contains("shared_post_ready.js")) {
+      shared_worker_host = host;
+    }
+  }
+  ASSERT_TRUE(service_worker_host);
+  ASSERT_TRUE(dedicated_worker_host);
+  ASSERT_TRUE(shared_worker_host);
+
+  content::RenderFrameHost* second_tab_rfh =
+      NavigateToURLInNewTab(GURL("about:blank"));
+  ASSERT_TRUE(second_tab_rfh);
+  int second_tab_id =
+      sessions::SessionTabHelper::IdForTab(
+          content::WebContents::FromRenderFrameHost(second_tab_rfh))
+          .id();
+
+  auto attach_second = base::MakeRefCounted<DebuggerAttachFunction>();
+  attach_second->set_extension(extension());
+  ASSERT_TRUE(api_test_utils::RunFunction(
+      attach_second.get(),
+      base::StringPrintf(R"([{"tabId": %d}, "1.3"])", second_tab_id),
+      profile()));
+
+  for (const auto& worker_host :
+       {dedicated_worker_host, shared_worker_host, service_worker_host}) {
+    auto send_cmd_attach = base::MakeRefCounted<DebuggerSendCommandFunction>();
+    send_cmd_attach->set_extension(extension());
+    std::string attach_error = api_test_utils::RunFunctionAndReturnError(
+        send_cmd_attach.get(),
+        base::StringPrintf(
+            R"([{"tabId": %d}, "Target.attachToTarget", )"
+            R"({"targetId": "%s", "flatten": true}])",
+            second_tab_id, worker_host->GetId().c_str()),
+        profile());
+    EXPECT_THAT(attach_error, testing::HasSubstr("Not allowed"));
+  }
+
+  extensions::TestEventRouterObserver event_observer(
+      extensions::EventRouter::Get(profile()));
+
+  ASSERT_TRUE(NavigateToURL(
+      content::WebContents::FromRenderFrameHost(second_tab_rfh), guest_url));
+
+  auto send_cmd_auto_attach =
+      base::MakeRefCounted<DebuggerSendCommandFunction>();
+  send_cmd_auto_attach->set_extension(extension());
+  ASSERT_TRUE(api_test_utils::RunFunction(
+      send_cmd_auto_attach.get(),
+      base::StringPrintf(
+          R"([{"tabId": %d}, "Target.setAutoAttach", )"
+          R"({"autoAttach": true, "waitForDebuggerOnStart": false, )"
+          R"("flatten": true}])",
+          second_tab_id),
+      profile()));
+
+  for (const auto& event : event_observer.all_events()) {
+    std::string event_str = base::WriteJson(event->args()).value_or("");
+    EXPECT_THAT(event_str,
+                testing::Not(testing::HasSubstr(service_worker_host->GetId())));
+    EXPECT_THAT(event_str,
+                testing::Not(testing::HasSubstr(GetGuestAgentHost()->GetId())));
+    EXPECT_THAT(
+        event_str,
+        testing::Not(testing::HasSubstr(dedicated_worker_host->GetId())));
+    EXPECT_THAT(event_str,
+                testing::Not(testing::HasSubstr(shared_worker_host->GetId())));
+  }
+
+  base::RunLoop().RunUntilIdle();
+  EXPECT_FALSE(service_worker_host->IsAttached());
+
+  auto detach_second = base::MakeRefCounted<DebuggerDetachFunction>();
+  detach_second->set_extension(extension());
+  EXPECT_TRUE(api_test_utils::RunFunction(
+      detach_second.get(),
+      base::StringPrintf(R"([{"tabId": %d}])", second_tab_id), profile()));
+}
+
+INSTANTIATE_TEST_SUITE_P(All, WebViewGuestDebuggerApiTest, testing::Bool());
+
+#endif  // BUILDFLAG(ENABLE_GUEST_VIEW)
 }  // namespace extensions

@@ -10,8 +10,10 @@
 
 #include "base/json/json_reader.h"
 #include "base/test/bind.h"
+#include "base/test/scoped_feature_list.h"
 #include "base/test/test_future.h"
 #include "base/values.h"
+#include "build/build_config.h"
 #include "chrome/test/base/testing_profile.h"
 #include "components/enterprise/buildflags/buildflags.h"
 #include "content/public/test/browser_task_environment.h"
@@ -19,6 +21,11 @@
 #include "mojo/public/cpp/bindings/remote.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+
+#if BUILDFLAG(IS_ANDROID)
+#include "base/android/device_info.h"
+#include "chrome/browser/enterprise/connectors/device_trust/device_trust_features.h"
+#endif  // BUILDFLAG(IS_ANDROID)
 
 #if BUILDFLAG(ENTERPRISE_PROXY)
 #include "chrome/browser/enterprise/net/enterprise_proxy_service_factory.h"
@@ -45,6 +52,14 @@ class ConnectorsInternalsPageHandlerTest : public testing::Test {
       : task_environment_(base::test::TaskEnvironment::TimeSource::MOCK_TIME) {}
 
   void SetUp() override {
+#if BUILDFLAG(IS_ANDROID)
+    // `IsDeviceTrustConnectorAndroidEnabled()` also depends on
+    // `kDeviceTrustConnectorDesktopFormFactors` on desktop form factors. Pin a
+    // non-desktop form factor so that these tests behave the same on all
+    // Android devices.
+    base::android::device_info::set_is_desktop_for_testing(false);
+#endif  // BUILDFLAG(IS_ANDROID)
+
 #if BUILDFLAG(ENTERPRISE_PROXY)
     EnterpriseProxyServiceFactory::GetInstance()->SetTestingFactory(
         &profile_,
@@ -58,6 +73,12 @@ class ConnectorsInternalsPageHandlerTest : public testing::Test {
     handler_ = std::make_unique<ConnectorsInternalsPageHandler>(
         page_handler_.BindNewPipeAndPassReceiver(), &profile_);
   }
+
+#if BUILDFLAG(IS_ANDROID)
+  void TearDown() override {
+    base::android::device_info::reset_is_desktop_for_testing();
+  }
+#endif  // BUILDFLAG(IS_ANDROID)
 
  protected:
   content::BrowserTaskEnvironment task_environment_;
@@ -161,6 +182,40 @@ TEST_F(ConnectorsInternalsPageHandlerTest, RefreshProvisioningDomainConfigs) {
   EXPECT_TRUE(state->pvd_configs.empty());
 #endif
 }
+
+#if BUILDFLAG(IS_ANDROID)
+TEST_F(ConnectorsInternalsPageHandlerTest,
+       GetDeviceTrustState_FeatureDisabled) {
+  base::test::ScopedFeatureList scoped_features;
+  scoped_features.InitAndDisableFeature(kDeviceTrustConnectorAndroid);
+
+  base::test::TestFuture<connectors_internals::mojom::DeviceTrustStatePtr>
+      future;
+  page_handler_->GetDeviceTrustState(future.GetCallback());
+  auto state = future.Take();
+
+  EXPECT_FALSE(state->is_enabled);
+  EXPECT_TRUE(state->policy_enabled_levels.empty());
+  EXPECT_EQ(
+      state->key_info->is_key_manager_initialized,
+      connectors_internals::mojom::KeyManagerInitializedValue::UNSUPPORTED);
+}
+
+TEST_F(ConnectorsInternalsPageHandlerTest, GetDeviceTrustState_NoService) {
+  base::test::ScopedFeatureList scoped_features;
+  scoped_features.InitAndEnableFeature(kDeviceTrustConnectorAndroid);
+
+  // No DeviceTrustService is created for testing profiles, so the handler is
+  // expected to gracefully return an unsupported state.
+  base::test::TestFuture<connectors_internals::mojom::DeviceTrustStatePtr>
+      future;
+  page_handler_->GetDeviceTrustState(future.GetCallback());
+  auto state = future.Take();
+
+  EXPECT_FALSE(state->is_enabled);
+  EXPECT_TRUE(state->policy_enabled_levels.empty());
+}
+#endif  // BUILDFLAG(IS_ANDROID)
 
 }  // namespace
 

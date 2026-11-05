@@ -27,8 +27,6 @@ static_library("arc") {
     "icon_decode_request.h",
   ]
 
-  public_deps = [ "//chrome/browser:browser_public_dependencies" ]
-
   deps = [
     ":arc_util",
     "//ash",
@@ -69,14 +67,12 @@ static_library("arc") {
     "//chrome/browser/ash/login/session",
     "//chrome/browser/ash/platform_keys/key_permissions",
     "//chrome/browser/chromeos/arc",
-    "//chrome/browser/consent_auditor",
     "//chrome/browser/profiles:profile",
     "//chrome/browser/resources:component_extension_resources_grit",
     "//chrome/browser/signin",
     "//chrome/browser/ui/extensions",
     "//chrome/browser/ui/webui:theme_source",
     "//chrome/browser/ui/webui/ash/diagnostics_dialog",
-    "//chrome/common",
     "//chromeos/ash/components/browser_context_helper",
     "//chromeos/ash/components/dbus",
     "//chromeos/ash/components/demo_mode",
@@ -155,6 +151,7 @@ source_set("unit_tests") {
     "//components/session_manager/test:test_support",
     "//components/sync_preferences:test_support",
     "//components/user_manager",
+    "//components/user_manager:multi_user",
     "//content/test:test_support",
     "//testing/gmock",
     "//testing/gtest",
@@ -176,7 +173,6 @@ source_set("unit_tests") {
     "//chrome/browser/ash/arc/instance_throttle:unit_tests",
     "//chrome/browser/ash/arc/intent_helper:unit_tests",
     "//chrome/browser/ash/arc/locked_fullscreen:unit_tests",
-    "//chrome/browser/ash/arc/memory_pressure:unit_tests",
     "//chrome/browser/ash/arc/nearby_share:unit_tests",
     "//chrome/browser/ash/arc/net:unit_tests",
     "//chrome/browser/ash/arc/notification:unit_tests",
@@ -187,8 +183,9 @@ source_set("unit_tests") {
     "//chrome/browser/ash/arc/sharesheet:unit_tests",
     "//chrome/browser/ash/arc/tracing:unit_tests",
     "//chrome/browser/ash/arc/tts:unit_tests",
-    "//chrome/browser/ash/arc/vmm:unit_tests",
     "//chrome/browser/ash/arc/wallpaper:unit_tests",
+    "//chrome/test/base:browser_with_test_window_test",
+    "//chrome/test/base:testing_browser_process",
   ]
 }
 
@@ -203,7 +200,6 @@ group("browser_tests") {
     "//chrome/browser/ash/arc/intent_helper:browser_tests",
     "//chrome/browser/ash/arc/session:browser_tests",
     "//chrome/browser/ash/arc/user_session:browser_tests",
-    "//chrome/browser/ash/arc/vmm:browser_tests",
   ]
 }
 
@@ -236,8 +232,6 @@ source_set("arc_util") {
 }
 
 source_set("arc_util_impl") {
-  public_deps = [ "//chrome/browser:browser_public_dependencies" ]
-
   sources = [ "arc_util.cc" ]
 
   deps = [
@@ -266,6 +260,7 @@ source_set("arc_util_impl") {
     "//chromeos/components/mgs",
     "//components/embedder_support:user_agent",
     "//components/prefs",
+    "//components/session_manager/core",
     "//components/user_manager",
     "//content/public/browser",
     "//content/public/common",

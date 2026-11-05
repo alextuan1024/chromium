@@ -5,6 +5,7 @@
 import '//resources/cr_elements/cr_icon/cr_icon.js';
 import './icons.js';
 
+import {TrackedElementManager} from '//resources/js/tracked_element/tracked_element_manager.js';
 import {ensureTransitionEndEvent} from '//resources/js/util.js';
 import {CrLitElement} from '//resources/lit/v3_0/lit.rollup.js';
 import type {PropertyValues} from '//resources/lit/v3_0/lit.rollup.js';
@@ -177,6 +178,7 @@ export class PermissionChipElement extends PermissionChipElementBase {
     if (!this.chipState) {
       return;
     }
+    TrackedElementManager.getInstance().notifyElementActivated(this);
     // Note:'click' event dispatches using PointerEvents. Keyboard clicks
     // (Enter/Space) also dispatch PointerEvents, but they have an empty
     // pointerType (""). We only want to suppress true pointer interactions
@@ -263,49 +265,11 @@ export class PermissionChipElement extends PermissionChipElementBase {
     this.style.setProperty('--chip-fg-color', fgColor);
   }
 
+  // The browser resolves the chip's vector icon to an id in the
+  // `webui-toolbar-shared` iconset (see `WebUIPermissionChip::SetChipIcon()`),
+  // or sends an empty string when the chip has no icon.
   protected getIconName_(): string {
-    if (!this.chipState || !this.chipState.iconName) {
-      return '';
-    }
-
-    let iconName = '';
-    switch (this.chipState.iconName) {
-      case 'kLocationOnIcon':
-      case 'kLocationOnChromeRefreshOldIcon':
-        iconName = 'location_on';
-        break;
-      case 'kLocationOffIcon':
-      case 'kLocationOffChromeRefreshOldIcon':
-        iconName = 'location_off';
-        break;
-      case 'kVideocamIcon':
-      case 'kVideocamChromeRefreshOldIcon':
-        iconName = 'videocam';
-        break;
-      case 'kVideocamOffIcon':
-      case 'kVideocamOffChromeRefreshOldIcon':
-        iconName = 'videocam_off';
-        break;
-      case 'kMicIcon':
-      case 'kMicChromeRefreshOldIcon':
-        iconName = 'mic';
-        break;
-      case 'kMicOffIcon':
-      case 'kMicOffChromeRefreshOldIcon':
-        iconName = 'mic_off';
-        break;
-      case 'kNotificationsIcon':
-      case 'kNotificationsChromeRefreshOldIcon':
-        iconName = 'notifications';
-        break;
-      case 'kNotificationsOffIcon':
-      case 'kNotificationsOffChromeRefreshOldIcon':
-        iconName = 'notifications_off';
-        break;
-      default:
-        break;
-    }
-    return iconName ? `webui-toolbar-shared:${iconName}` : '';
+    return this.chipState?.iconName || '';
   }
 }
 

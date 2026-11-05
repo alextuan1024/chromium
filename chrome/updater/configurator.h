@@ -66,6 +66,7 @@ class Configurator : public update_client::Configurator {
   std::string GetChannel() const override;
   std::string GetLang() const override;
   std::string GetOSLongName() const override;
+  std::string GetDeviceFormFactor() const override;
   base::flat_map<std::string, std::string> ExtraRequestParams() const override;
   std::string GetDownloadPreference() const override;
   scoped_refptr<update_client::NetworkFetcherFactory> GetNetworkFetcherFactory()
@@ -115,8 +116,11 @@ class Configurator : public update_client::Configurator {
   scoped_refptr<update_client::UnzipperFactory> unzip_factory_;
   scoped_refptr<update_client::PatcherFactory> patch_factory_;
   scoped_refptr<update_client::CrxCache> crx_cache_;
-  scoped_refptr<UpdaterEventLogger> event_logger_;
   const std::optional<bool> is_managed_device_;
+
+  // Null if remote event logging isn't allowed. Declared after the members that
+  // it uses, so that it is destroyed before them.
+  std::unique_ptr<RemoteEventLogging> remote_event_logging_;
 };
 
 }  // namespace updater

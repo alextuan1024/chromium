@@ -104,14 +104,6 @@ class COMPONENT_EXPORT(SODA_INSTALLER) SodaInstallerImplChromeOS
   base::FilePath soda_lib_path_;
 
   base::flat_map<LanguageCode, base::FilePath> installed_language_paths_;
-
-  struct LanguageInfo {
-    std::string dlc_name;
-    LanguageCode language_code;
-  };
-  base::flat_map<std::string, LanguageInfo> ConstructAvailableLanguages() const;
-
-  base::flat_map<std::string, LanguageInfo> available_languages_;
 };
 
 }  // namespace speech

@@ -181,16 +181,14 @@ void RegisterProfilePrefs(user_prefs::PrefRegistrySyncable* registry) {
       kAutofillAmountExtractionAiTermsSeen, false,
       user_prefs::PrefRegistrySyncable::SYNCABLE_PREF);
 
-  registry->RegisterDictionaryPref(
-      kAutofillAtMemoryTriggerInfo,
-      base::DictValue().Set("trigger", "@@").Set("is_shortcut", false),
-      user_prefs::PrefRegistrySyncable::SYNCABLE_PREF);
   registry->RegisterBooleanPref(
       kAutofillAtMemoryDoubleCtrlTriggerEnabled,
       features::kAutofillAtMemoryDoubleCtrlDefaultPref.Get(),
       user_prefs::PrefRegistrySyncable::SYNCABLE_PREF);
   registry->RegisterStringPref(kAutofillAtMemoryShortcut, "",
                                user_prefs::PrefRegistrySyncable::SYNCABLE_PREF);
+  registry->RegisterIntegerPref(kAutofillAtMemoryShortcutPromoImpressionCount,
+                                0);
 
   registry->RegisterDictionaryPref(
       kAutofillHomeMetadata,
@@ -306,11 +304,7 @@ bool IsAutofillGmailOtpFillingEnabled(const PrefService* prefs) {
 }
 
 void SetAutofillGmailOtpFillingEnabled(PrefService* prefs, bool enabled) {
-  if (prefs->GetBoolean(kAutofillGmailOtpFillingEnabled) == enabled) {
-    return;
-  }
   prefs->SetBoolean(kAutofillGmailOtpFillingEnabled, enabled);
-  base::UmaHistogramBoolean("Autofill.GmailOtpOptIn.SettingsChange", enabled);
 }
 
 base::Time GetAutofillGmailOtpFillingActivationDismissalTimestamp(

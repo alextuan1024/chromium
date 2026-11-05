@@ -85,6 +85,7 @@
 #include "gpu/command_buffer/service/vertex_attrib_manager.h"
 #include "gpu/config/gpu_finch_features.h"
 #include "gpu/config/gpu_preferences.h"
+#include "third_party/abseil-cpp/absl/cleanup/cleanup.h"
 #include "third_party/perfetto/include/perfetto/tracing/track.h"
 #include "ui/gfx/buffer_types.h"
 #include "ui/gfx/color_space.h"
@@ -341,6 +342,28 @@ class ScopedPixelUnpackState {
 
  private:
   raw_ptr<ContextState> state_;
+};
+
+// Temporarily resets UNPACK_ROW_LENGTH and UNPACK_IMAGE_HEIGHT in the real
+// driver to their initial values (0) around a compressed texture upload,
+// restoring the tracked values when it goes out of scope. Unlike
+// ScopedPixelUnpackState it does not unbind the pixel unpack buffer:
+// compressed uploads legitimately source from it. See the comment in
+// DoCompressedTexImage for why compressed dispatches need this.
+class ScopedCompressedUnpackStateScrub {
+ public:
+  explicit ScopedCompressedUnpackStateScrub(ContextState* state);
+
+  ScopedCompressedUnpackStateScrub(const ScopedCompressedUnpackStateScrub&) =
+      delete;
+  ScopedCompressedUnpackStateScrub& operator=(
+      const ScopedCompressedUnpackStateScrub&) = delete;
+
+  ~ScopedCompressedUnpackStateScrub();
+
+ private:
+  raw_ptr<ContextState> state_;
+  bool active_ = false;
 };
 
 // Encapsulates an OpenGL texture.
@@ -787,8 +810,6 @@ class GLES2DecoderImpl : public GLES2Decoder, public ErrorStateClient {
 
   // Workarounds
   void OnFboChanged() const;
-  void ApplyRecreateFboWorkaroundIfNeeded() const;
-  void OnUseFramebuffer() const;
   void UpdateFramebufferSRGB(Framebuffer* framebuffer);
 
   // TODO(gman): Cache these pointers?
@@ -900,10 +921,6 @@ class GLES2DecoderImpl : public GLES2Decoder, public ErrorStateClient {
   // Get the service side ID for the bound read framebuffer.
   // If it's back buffer, 0 is returned.
   GLuint GetBoundReadFramebufferServiceId();
-
-  // Get the service side ID for the bound draw framebuffer.
-  // If it's back buffer, 0 is returned.
-  GLuint GetBoundDrawFramebufferServiceId() const;
 
   // Get the format/type of the currently bound frame buffer (either FBO or
   // regular back buffer).
@@ -2048,6 +2065,8 @@ class GLES2DecoderImpl : public GLES2Decoder, public ErrorStateClient {
 
   // Returns false if a GL error occurred. textures_set is always modified
   // appropriately to indicate whether textures were set, even on failure.
+  // Callers must call RestoreStateForTextures() whenever textures_set is true,
+  // including when this returns false.
   bool PrepareTexturesForRender(bool* textures_set, const char* function_name);
   void RestoreStateForTextures();
 
@@ -2114,31 +2133,16 @@ class GLES2DecoderImpl : public GLES2Decoder, public ErrorStateClient {
                                    GLsizei drawcount);
 
   GLenum GetBindTargetForSamplerType(GLenum type) {
-    switch (type) {
-      case GL_SAMPLER_2D:
-      case GL_SAMPLER_2D_SHADOW:
-      case GL_INT_SAMPLER_2D:
-      case GL_UNSIGNED_INT_SAMPLER_2D:
-        return GL_TEXTURE_2D;
-      case GL_SAMPLER_CUBE:
-      case GL_SAMPLER_CUBE_SHADOW:
-      case GL_INT_SAMPLER_CUBE:
-      case GL_UNSIGNED_INT_SAMPLER_CUBE:
-        return GL_TEXTURE_CUBE_MAP;
-      case GL_SAMPLER_EXTERNAL_OES:
-      case GL_SAMPLER_EXTERNAL_2D_Y2Y_EXT:
-        return GL_TEXTURE_EXTERNAL_OES;
-      case GL_SAMPLER_2D_RECT_ANGLE:
-        return GL_TEXTURE_RECTANGLE_ANGLE;
-      case GL_SAMPLER_3D:
-      case GL_INT_SAMPLER_3D:
-      case GL_UNSIGNED_INT_SAMPLER_3D:
-        return GL_TEXTURE_3D;
-      case GL_SAMPLER_2D_ARRAY:
-      case GL_SAMPLER_2D_ARRAY_SHADOW:
-      case GL_INT_SAMPLER_2D_ARRAY:
-      case GL_UNSIGNED_INT_SAMPLER_2D_ARRAY:
-        return GL_TEXTURE_2D_ARRAY;
+    GLenum target = GLES2Util::GetTextureTargetForSamplerType(type);
+    // The validating decoder only supports ES3.0 sampler types.
+    switch (target) {
+      case GL_TEXTURE_2D:
+      case GL_TEXTURE_CUBE_MAP:
+      case GL_TEXTURE_EXTERNAL_OES:
+      case GL_TEXTURE_RECTANGLE_ANGLE:
+      case GL_TEXTURE_3D:
+      case GL_TEXTURE_2D_ARRAY:
+        return target;
       default:
         NOTREACHED();
     }
@@ -2283,7 +2287,10 @@ class GLES2DecoderImpl : public GLES2Decoder, public ErrorStateClient {
   const SamplerState& GetSamplerStateForTextureUnit(GLenum target, GLuint unit);
 
   // Helper method to call glClear workaround.
-  void ClearFramebufferForWorkaround(GLbitfield mask);
+  // Clears the framebuffer via a blit on drivers where glClear is broken.
+  // Returns false if the blit failed, in which case the targeted attachments
+  // must not be recorded as cleared.
+  bool ClearFramebufferForWorkaround(GLbitfield mask);
 
   bool SupportsSeparateFramebufferBinds() const {
     return (feature_info_->feature_flags().chromium_framebuffer_multisample ||
@@ -2512,7 +2519,8 @@ class GLES2DecoderImpl : public GLES2Decoder, public ErrorStateClient {
   };
 
   // A table of CommandInfo for all the commands.
-  static const CommandInfo command_info[kNumCommands - kFirstGLES2Command];
+  static const std::array<CommandInfo, kNumCommands - kFirstGLES2Command>
+      command_info;
 
   // Most recent generation of the TextureManager.  If this no longer matches
   // the current generation when our context becomes current, then we'll rebind
@@ -2528,7 +2536,9 @@ class GLES2DecoderImpl : public GLES2Decoder, public ErrorStateClient {
   base::WeakPtrFactory<GLES2DecoderImpl> weak_ptr_factory_{this};
 };
 
-constexpr GLES2DecoderImpl::CommandInfo GLES2DecoderImpl::command_info[] = {
+constexpr std::array<GLES2DecoderImpl::CommandInfo,
+                     kNumCommands - kFirstGLES2Command>
+    GLES2DecoderImpl::command_info = {{
 #define GLES2_CMD_OP(name)                                   \
   {                                                          \
     &GLES2DecoderImpl::Handle##name, cmds::name::kArgFlags,  \
@@ -2536,9 +2546,9 @@ constexpr GLES2DecoderImpl::CommandInfo GLES2DecoderImpl::command_info[] = {
         sizeof(cmds::name) / sizeof(CommandBufferEntry) - 1, \
   }                                                          \
   , /* NOLINT */
-    GLES2_COMMAND_LIST(GLES2_CMD_OP)
+        GLES2_COMMAND_LIST(GLES2_CMD_OP)
 #undef GLES2_CMD_OP
-};
+    }};
 
 ScopedGLErrorSuppressor::ScopedGLErrorSuppressor(
     const char* function_name, ErrorState* error_state)
@@ -2570,6 +2580,7 @@ class ScopedBufferReattacher {
   };
 
   void Initialize();
+  void RestoreBindings();
 
   raw_ptr<GLES2DecoderImpl> decoder_;
   raw_ptr<TextureRef> texture_ref_ = nullptr;
@@ -2675,6 +2686,10 @@ void ScopedBufferReattacher::Initialize() {
           GL_FRAMEBUFFER, attachment_point, GL_RENDERBUFFER, 0);
     }
   }
+
+  if (!saved_attachments_.empty()) {
+    RestoreBindings();
+  }
 }
 
 ScopedBufferReattacher::~ScopedBufferReattacher() {
@@ -2711,13 +2726,25 @@ ScopedBufferReattacher::~ScopedBufferReattacher() {
     }
   }
 
-  // Restore bindings.
+  RestoreBindings();
+}
+
+void ScopedBufferReattacher::RestoreBindings() {
+  // Restore bindings. A null tracked framebuffer means the client has the
+  // default framebuffer bound, which on this decoder is the emulated
+  // backbuffer, not driver FBO 0 (see RestoreCurrentFramebufferBindings and
+  // RestoreFramebufferBindings). Restoring raw FBO 0 here desyncs the driver
+  // binding from the tracked state and lets the pending backbuffer clear
+  // (backbuffer_needs_clear_bits_) be consumed against the wrong framebuffer.
   if (old_read_fbo_ == old_draw_fbo_) {
-    GLuint service_id = old_read_fbo_ ? old_read_fbo_->service_id() : 0;
+    GLuint service_id = old_read_fbo_ ? old_read_fbo_->service_id()
+                                      : decoder_->GetBackbufferServiceId();
     decoder_->api()->glBindFramebufferEXTFn(GL_FRAMEBUFFER, service_id);
   } else {
-    GLuint read_id = old_read_fbo_ ? old_read_fbo_->service_id() : 0;
-    GLuint draw_id = old_draw_fbo_ ? old_draw_fbo_->service_id() : 0;
+    GLuint read_id = old_read_fbo_ ? old_read_fbo_->service_id()
+                                   : decoder_->GetBackbufferServiceId();
+    GLuint draw_id = old_draw_fbo_ ? old_draw_fbo_->service_id()
+                                   : decoder_->GetBackbufferServiceId();
     decoder_->api()->glBindFramebufferEXTFn(GL_READ_FRAMEBUFFER, read_id);
     decoder_->api()->glBindFramebufferEXTFn(GL_DRAW_FRAMEBUFFER, draw_id);
   }
@@ -2826,6 +2853,33 @@ ScopedPixelUnpackState::ScopedPixelUnpackState(ContextState* state)
 
 ScopedPixelUnpackState::~ScopedPixelUnpackState() {
   state_->RestoreUnpackState();
+}
+
+ScopedCompressedUnpackStateScrub::ScopedCompressedUnpackStateScrub(
+    ContextState* state)
+    : state_(state) {
+  DCHECK(state_);
+  // These are ES3 pixel store parameters, forwarded to the real driver only
+  // while a pixel unpack buffer is bound; without one the driver already
+  // holds their initial values. Deliberately wider than the minimum: like
+  // ContextState::PushTextureUnpackState() (and ANGLE's compressed entry
+  // points, which always use an empty PixelUnpackState), the scrub runs
+  // whenever a pixel unpack buffer is bound, even if the tracked values are
+  // already the defaults, so the guarantee does not depend on the tracked
+  // state mirroring the driver state.
+  active_ = state_->bound_pixel_unpack_buffer.get() != nullptr;
+  if (active_) {
+    state_->SetUnpackParametersForCompressedTexImage();
+  }
+}
+
+ScopedCompressedUnpackStateScrub::~ScopedCompressedUnpackStateScrub() {
+  // Re-applies the tracked unpack geometry (the client's values while a pixel
+  // unpack buffer is bound) — the same logic used everywhere else the service
+  // restores this state.
+  if (active_) {
+    state_->UpdateUnpackParameters();
+  }
 }
 
 BackTexture::BackTexture(GLES2DecoderImpl* decoder)
@@ -3276,8 +3330,7 @@ gpu::ContextResult GLES2DecoderImpl::Initialize(
   GLint alpha_bits = 0;
 
   if (offscreen) {
-    offscreen_target_color_format_ =
-        workarounds().disable_gl_rgb_format ? GL_RGBA : GL_RGB;
+    offscreen_target_color_format_ = GL_RGB;
 
     max_offscreen_framebuffer_size_ =
         std::min(renderbuffer_manager()->max_renderbuffer_size(),
@@ -3459,8 +3512,7 @@ Capabilities GLES2DecoderImpl::GetCapabilities() {
   caps.disable_mac_swangle_rgbx =
       feature_info_->feature_flags().disable_mac_swangle_rgbx;
   caps.texture_format_etc1_npot =
-      feature_info_->feature_flags().oes_compressed_etc1_rgb8_texture &&
-      !workarounds().etc1_power_of_two_only;
+      feature_info_->feature_flags().oes_compressed_etc1_rgb8_texture;
   caps.sync_query = feature_info_->feature_flags().chromium_sync_query;
 
   // Only query the kEnableMSAAOnNewIntelGPUs feature flag if the host device
@@ -3808,8 +3860,6 @@ bool GLES2DecoderImpl::InitializeShaderTranslator() {
   ShCompileOptions driver_bug_workarounds{};
   if (workarounds().init_gl_position_in_vertex_shader)
     driver_bug_workarounds.initGLPosition = true;
-  if (workarounds().scalarize_vec_and_mat_constructor_args)
-    driver_bug_workarounds.scalarizeVecAndMatConstructorArgs = true;
   if (workarounds().dont_use_loops_to_initialize_variables)
     driver_bug_workarounds.dontUseLoopsToInitializeVariables = true;
   if (workarounds().remove_dynamic_indexing_of_swizzled_vector)
@@ -3818,7 +3868,11 @@ bool GLES2DecoderImpl::InitializeShaderTranslator() {
     driver_bug_workarounds.validatePerStageMaxUniformBlocks = true;
   }
   if (workarounds().limit_output_varyings_at_compile_time) {
+#if ANGLE_SH_VERSION < 429
     driver_bug_workarounds.limitOutputVaryingsTo256 = true;
+#else
+    driver_bug_workarounds.limitVaryingsAtCompileTime = true;
+#endif
   }
 
   // Initialize uninitialized locals and shared variables by default
@@ -3957,7 +4011,9 @@ void GLES2DecoderImpl::DeleteBuffersHelper(GLsizei n,
 
 void GLES2DecoderImpl::FlushQueriesBeforeDeletingOrUnbindingFboWorkaround() {
   if (workarounds().flush_queries_before_deleting_or_unbinding_fbo &&
-      HasPendingQueries()) {
+      query_manager_ &&
+      (query_manager_->HaveActiveQueries() ||
+       query_manager_->HavePendingQueries())) {
     GLsync sync = api()->glFenceSyncFn(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
     if (sync) {
       api()->glClientWaitSyncFn(sync, GL_SYNC_FLUSH_COMMANDS_BIT, 0);
@@ -4273,9 +4329,6 @@ bool GLES2DecoderImpl::CheckBoundDrawFramebufferValid(
     }
   }
 
-  if (!SupportsSeparateFramebufferBinds())
-    OnUseFramebuffer();
-
   UpdateFramebufferSRGB(framebuffer);
   return true;
 }
@@ -4351,20 +4404,6 @@ GLuint GLES2DecoderImpl::GetBoundReadFramebufferServiceId() {
   Framebuffer* framebuffer = GetBoundReadFramebuffer();
   if (framebuffer) {
     return framebuffer->service_id();
-  }
-  if (surface_.get()) {
-    return surface_->GetBackingFramebufferObject();
-  }
-  return 0;
-}
-
-GLuint GLES2DecoderImpl::GetBoundDrawFramebufferServiceId() const {
-  Framebuffer* framebuffer = GetBoundDrawFramebuffer();
-  if (framebuffer) {
-    return framebuffer->service_id();
-  }
-  if (offscreen_target_frame_buffer_.get()) {
-    return offscreen_target_frame_buffer_->id();
   }
   if (surface_.get()) {
     return surface_->GetBackingFramebufferObject();
@@ -4840,10 +4879,15 @@ bool GLES2DecoderImpl::ResizeOffscreenFramebuffer(const gfx::Size& size) {
     return false;
   }
 
-  // Reallocate the offscreen target buffers.
+  // Reallocate the offscreen target buffers. Upload zeros rather than relying
+  // on the glClear below: on drivers with the gl_clear_broken workaround
+  // glClear is unreliable, and the workaround's draw-based clear isn't
+  // available yet because this runs from Initialize() before
+  // |clear_framebuffer_blit_| is created. AllocateStorage() marks the level as
+  // cleared, so it would never be lazily cleared later.
   DCHECK(offscreen_target_color_format_);
   if (!offscreen_target_color_texture_->AllocateStorage(
-          offscreen_size_, offscreen_target_color_format_, false)) {
+          offscreen_size_, offscreen_target_color_format_, /*zero=*/true)) {
     LOG(ERROR) << "GLES2DecoderImpl::ResizeOffscreenFramebuffer failed "
                << "to allocate storage for offscreen target color texture.";
     return false;
@@ -4928,8 +4972,8 @@ error::Error GLES2DecoderImpl::DoCommandsImpl(unsigned int num_commands,
 
     const unsigned int arg_count = size - 1;
     unsigned int command_index = command - kFirstGLES2Command;
-    if (command_index < std::size(command_info)) {
-      const CommandInfo& info = UNSAFE_TODO(command_info[command_index]);
+    if (command_index < command_info.size()) {
+      const CommandInfo& info = command_info[command_index];
       unsigned int info_arg_count = static_cast<unsigned int>(info.arg_count);
       if ((info.arg_flags == cmd::kFixed && arg_count == info_arg_count) ||
           (info.arg_flags == cmd::kAtLeastN && arg_count >= info_arg_count)) {
@@ -5009,13 +5053,11 @@ void GLES2DecoderImpl::DoFinish() {
   api()->glFinishFn();
   ProcessPendingReadPixels(true);
   ProcessPendingQueries(true);
-  ApplyRecreateFboWorkaroundIfNeeded();
 }
 
 void GLES2DecoderImpl::DoFlush() {
   api()->glFlushFn();
   ProcessPendingQueries(false);
-  ApplyRecreateFboWorkaroundIfNeeded();
 }
 
 void GLES2DecoderImpl::DoActiveTexture(GLenum texture_unit) {
@@ -5327,7 +5369,7 @@ void GLES2DecoderImpl::ClearAllAttributes() const {
 }
 
 void GLES2DecoderImpl::RestoreAllAttributes() const {
-  state_.RestoreVertexAttribs(nullptr);
+  state_.RestoreVertexAttribs();
 }
 
 void GLES2DecoderImpl::SetIgnoreCachedStateForTest(bool ignore) {
@@ -5345,95 +5387,8 @@ uint32_t GLES2DecoderImpl::GetAndClearBackbufferClearBitsForTest() {
   return clear_bits;
 }
 
-void GLES2DecoderImpl::ApplyRecreateFboWorkaroundIfNeeded() const {
-  if (!workarounds().recreate_fbo_upon_flush) {
-    return;
-  }
-
-  Framebuffer* draw_fbo = framebuffer_state_.bound_draw_framebuffer.get();
-  if (!draw_fbo || draw_fbo->service_id() == 0) {
-    return;
-  }
-
-  bool need_workaround = false;
-
-  const GLenum attachments[] = {GL_DEPTH_ATTACHMENT, GL_STENCIL_ATTACHMENT};
-  for (GLenum attachment_point : attachments) {
-    const Framebuffer::Attachment* attachment =
-        draw_fbo->GetAttachment(attachment_point);
-    if (!attachment) {
-      continue;
-    }
-
-    if (attachment->IsRenderbufferAttachment()) {
-      need_workaround = true;
-      break;
-    } else if (attachment->IsTextureAttachment()) {
-      GLuint client_id = attachment->object_name();
-      const TextureRef* texture_ref = texture_manager()->GetTexture(client_id);
-      if (texture_ref) {
-        const Texture* texture = texture_ref->texture();
-        if (texture->HasImmutableStorage()) {
-          GLenum target = attachment->target();
-          GLint level = attachment->level();
-          if (!texture->IsLevelCleared(target, level)) {
-            need_workaround = true;
-            break;
-          }
-        }
-      }
-    }
-  }
-
-  if (need_workaround) {
-    framebuffer_manager_.get()->RecreateFramebufferServiceId(draw_fbo);
-    if (framebuffer_state_.bound_read_framebuffer.get() == draw_fbo) {
-      api()->glBindFramebufferEXTFn(GL_FRAMEBUFFER, draw_fbo->service_id());
-      draw_fbo->ReattachAttachments(GL_FRAMEBUFFER);
-      api()->glReadBufferFn(draw_fbo->read_buffer());
-    } else {
-      api()->glBindFramebufferEXTFn(GL_DRAW_FRAMEBUFFER,
-                                    draw_fbo->service_id());
-      draw_fbo->ReattachAttachments(GL_DRAW_FRAMEBUFFER);
-    }
-  }
-}
-
 void GLES2DecoderImpl::OnFboChanged() const {
-  state_.fbo_binding_for_scissor_workaround_dirty = true;
   state_.stencil_state_changed_since_validation = true;
-
-  if (workarounds().flush_on_framebuffer_change) {
-    api()->glFlushFn();
-    ApplyRecreateFboWorkaroundIfNeeded();
-  }
-}
-
-// Called after the FBO is checked for completeness.
-void GLES2DecoderImpl::OnUseFramebuffer() const {
-  if (!state_.fbo_binding_for_scissor_workaround_dirty)
-    return;
-  state_.fbo_binding_for_scissor_workaround_dirty = false;
-
-  if (workarounds().force_update_scissor_state_when_binding_fbo0 &&
-      GetBoundDrawFramebufferServiceId() == 0) {
-    // The theory is that FBO0 keeps some internal (in HW regs maybe?) scissor
-    // test state, but the driver forgets to update it with GL_SCISSOR_TEST
-    // when FBO0 gets bound. (So it stuck with whatever state we last switched
-    // from it.)
-    // If the internal scissor test state was enabled, it does update its
-    // internal scissor rect with GL_SCISSOR_BOX though.
-    if (state_.enable_flags.cached_scissor_test) {
-      // The driver early outs if the new state matches previous state so some
-      // shake up is needed.
-      api()->glDisableFn(GL_SCISSOR_TEST);
-      api()->glEnableFn(GL_SCISSOR_TEST);
-    } else {
-      // Ditto.
-      api()->glEnableFn(GL_SCISSOR_TEST);
-      api()->glDisableFn(GL_SCISSOR_TEST);
-    }
-  }
 }
 
 void GLES2DecoderImpl::DoBindFramebuffer(GLenum target, GLuint client_id) {
@@ -6580,9 +6535,6 @@ bool GLES2DecoderImpl::GetHelper(
 bool GLES2DecoderImpl::GetNumValuesReturnedForGLGet(
     GLenum pname, GLsizei* num_values) {
   *num_values = 0;
-  if (state_.GetStateAsGLint(pname, nullptr, num_values)) {
-    return true;
-  }
   return GetHelper(pname, nullptr, num_values);
 }
 
@@ -6609,9 +6561,10 @@ void GLES2DecoderImpl::DoGetFloatv(GLenum pname,
                                    GLfloat* params,
                                    GLsizei params_size) {
   DCHECK(params);
-  GLsizei num_written = 0;
-  if (state_.GetStateAsGLfloat(pname, params, &num_written)) {
-    DCHECK_EQ(num_written, params_size);
+  // TODO(crbug.com/40285824): Pass `params` as a span.
+  base::span<GLfloat> params_span =
+      UNSAFE_TODO(base::span(params, base::checked_cast<size_t>(params_size)));
+  if (state_.GetStateAsGLfloat(pname, params_span)) {
     return;
   }
 
@@ -6628,7 +6581,7 @@ void GLES2DecoderImpl::DoGetFloatv(GLenum pname,
   auto values = base::HeapArray<GLint>::WithSize(params_size);
   DoGetIntegerv(pname, values.data(), params_size);
   for (GLsizei ii = 0; ii < params_size; ++ii) {
-    UNSAFE_TODO(params[ii]) = static_cast<GLfloat>(values[ii]);
+    params_span[ii] = static_cast<GLfloat>(values[ii]);
   }
 }
 
@@ -6664,14 +6617,19 @@ void GLES2DecoderImpl::DoGetInteger64v(GLenum pname,
 void GLES2DecoderImpl::DoGetIntegerv(GLenum pname,
                                      GLint* params,
                                      GLsizei params_size) {
-  GLsizei num_written = 0;
   if (params_size == 0) {
     return;
   }
 
   DCHECK(params);
-  if (state_.GetStateAsGLint(pname, params, &num_written) ||
-      GetHelper(pname, params, &num_written)) {
+  // TODO(crbug.com/40285824): Pass `params` as a span.
+  base::span<GLint> params_span =
+      UNSAFE_TODO(base::span(params, base::checked_cast<size_t>(params_size)));
+  if (state_.GetStateAsGLint(pname, params_span)) {
+    return;
+  }
+  GLsizei num_written = 0;
+  if (GetHelper(pname, params, &num_written)) {
     DCHECK_EQ(num_written, params_size);
     return;
   }
@@ -7353,6 +7311,11 @@ bool GLES2DecoderImpl::ClearUnclearedAttachments(GLenum target,
     return false;
   }
 
+  // Set when a clear issued below failed. A failed clear leaves the attachment
+  // holding whatever was previously in that GPU memory, so the "cleared"
+  // bookkeeping must not be committed for it.
+  bool clear_failed = false;
+
   bool cleared_int_renderbuffers = false;
   Framebuffer* draw_framebuffer = GetBoundDrawFramebuffer();
   if (framebuffer->HasUnclearedIntRenderbufferAttachments()) {
@@ -7365,98 +7328,131 @@ bool GLES2DecoderImpl::ClearUnclearedAttachments(GLenum target,
     state_.SetDeviceCapabilityState(GL_SCISSOR_TEST, false);
     ClearDeviceWindowRectangles();
 
-    // TODO(zmo): Assume DrawBuffers() does not affect ClearBuffer().
-    framebuffer->ClearUnclearedIntRenderbufferAttachments(
-        renderbuffer_manager());
+    // Drain pre-existing driver errors into the wrapper so they are still
+    // reported to the client, and so that any error observed by the clears
+    // below is attributable to those clears.
+    LOCAL_COPY_REAL_GL_ERRORS_TO_WRAPPER("ClearUnclearedAttachments");
 
+    // TODO(zmo): Assume DrawBuffers() does not affect ClearBuffer().
+    GLenum int_clear_error =
+        framebuffer->ClearUnclearedIntRenderbufferAttachments(
+            renderbuffer_manager());
+    if (int_clear_error != GL_NO_ERROR) {
+      // Report the failure through the wrapper so that GL_OUT_OF_MEMORY runs
+      // OnOutOfMemoryError() and lose_context_when_out_of_memory_ applies.
+      LOCAL_SET_GL_ERROR(int_clear_error, "ClearUnclearedAttachments",
+                         "failed to clear integer renderbuffer attachment");
+      clear_failed = true;
+    }
+
+    // Set even when the clear failed: this tracks that the block above
+    // dirtied GL state (draw framebuffer binding, color mask, scissor test,
+    // window rectangles), not that the attachments ended up cleared. It is
+    // what drives the state restoration below, which must run on both the
+    // success and the failure path.
     cleared_int_renderbuffers = true;
   }
 
   GLbitfield clear_bits = 0;
   bool reset_draw_buffers = false;
   bool rebound_draw_for_clear = cleared_int_renderbuffers;
-  if (framebuffer->HasUnclearedColorAttachments()) {
-    // We should always use alpha == 0 here, because 1) some draw buffers may
-    // have alpha and some may not; 2) we won't have the same situation as the
-    // back buffer where alpha channel exists but is not requested.
-    api()->glClearColorFn(0.0f, 0.0f, 0.0f, 0.0f);
-    state_.SetDeviceColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
-    clear_bits |= GL_COLOR_BUFFER_BIT;
+  if (!clear_failed) {
+    if (framebuffer->HasUnclearedColorAttachments()) {
+      // We should always use alpha == 0 here, because 1) some draw buffers may
+      // have alpha and some may not; 2) we won't have the same situation as the
+      // back buffer where alpha channel exists but is not requested.
+      api()->glClearColorFn(0.0f, 0.0f, 0.0f, 0.0f);
+      state_.SetDeviceColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+      clear_bits |= GL_COLOR_BUFFER_BIT;
 
-    if (SupportsDrawBuffers()) {
-      // Ensure |framebuffer| is bound as DRAW before preparing draw buffers.
-      // Otherwise glDrawBuffersARB mutates the wrong FBO's state, causing
-      // the glClear to skip clearing uncleared attachments.
+      if (SupportsDrawBuffers()) {
+        // Ensure |framebuffer| is bound as DRAW before preparing draw buffers.
+        // Otherwise glDrawBuffersARB mutates the wrong FBO's state, causing
+        // the glClear to skip clearing uncleared attachments.
+        if (!rebound_draw_for_clear && target == GL_READ_FRAMEBUFFER &&
+            draw_framebuffer != framebuffer) {
+          BindFramebuffer(GL_DRAW_FRAMEBUFFER, framebuffer->service_id());
+          rebound_draw_for_clear = true;
+        }
+        reset_draw_buffers =
+            framebuffer
+                ->PrepareDrawBuffersForClearingUninitializedAttachments();
+      }
+    }
+
+    const Framebuffer::Attachment* depth_attachment =
+        framebuffer->GetAttachment(GL_DEPTH_ATTACHMENT);
+    const Framebuffer::Attachment* stencil_attachment =
+        framebuffer->GetAttachment(GL_STENCIL_ATTACHMENT);
+    bool clear_depth = depth_attachment && !depth_attachment->cleared();
+    bool clear_stencil = stencil_attachment && !stencil_attachment->cleared();
+
+    // A packed depth-stencil image attached at only one of the depth/stencil
+    // points must be bound and cleared at both points so that both components
+    // are initialized before the image is marked as cleared.
+    GLenum filled_depth_stencil_point = 0;
+    if (clear_depth && !stencil_attachment &&
+        (GLES2Util::GetChannelsForFormat(depth_attachment->internal_format()) &
+         GLES2Util::kStencil) != 0) {
+      filled_depth_stencil_point = GL_STENCIL_ATTACHMENT;
+      Framebuffer::BindAttachmentToPoint(target, GL_STENCIL_ATTACHMENT,
+                                         depth_attachment);
+      clear_stencil = true;
+    } else if (clear_stencil && !depth_attachment &&
+               (GLES2Util::GetChannelsForFormat(
+                    stencil_attachment->internal_format()) &
+                GLES2Util::kDepth) != 0) {
+      filled_depth_stencil_point = GL_DEPTH_ATTACHMENT;
+      Framebuffer::BindAttachmentToPoint(target, GL_DEPTH_ATTACHMENT,
+                                         stencil_attachment);
+      clear_depth = true;
+    }
+
+    if (clear_stencil) {
+      api()->glClearStencilFn(0);
+      state_.SetDeviceStencilMaskSeparate(GL_FRONT, kDefaultStencilMask);
+      state_.SetDeviceStencilMaskSeparate(GL_BACK, kDefaultStencilMask);
+      clear_bits |= GL_STENCIL_BUFFER_BIT;
+    }
+
+    if (clear_depth) {
+      api()->glClearDepthFn(1.0f);
+      state_.SetDeviceDepthMask(GL_TRUE);
+      clear_bits |= GL_DEPTH_BUFFER_BIT;
+    }
+
+    if (clear_bits) {
       if (!rebound_draw_for_clear && target == GL_READ_FRAMEBUFFER &&
           draw_framebuffer != framebuffer) {
+        // TODO(zmo): There is no guarantee that an FBO that is complete on the
+        // READ attachment will be complete as a DRAW attachment.
         BindFramebuffer(GL_DRAW_FRAMEBUFFER, framebuffer->service_id());
-        rebound_draw_for_clear = true;
       }
-      reset_draw_buffers =
-          framebuffer->PrepareDrawBuffersForClearingUninitializedAttachments();
+      state_.SetDeviceCapabilityState(GL_SCISSOR_TEST, false);
+      ClearDeviceWindowRectangles();
+      if (workarounds().gl_clear_broken) {
+        clear_failed = !ClearFramebufferForWorkaround(clear_bits);
+      } else {
+        // Drain any pre-existing driver errors so the check below only reflects
+        // errors generated by this clear.
+        LOCAL_COPY_REAL_GL_ERRORS_TO_WRAPPER("ClearUnclearedAttachments");
+        api()->glClearFn(clear_bits);
+        // GL_OUT_OF_MEMORY can be raised by any command (ES 3.2 section 2.3.1),
+        // and leaves the results of that command undefined. A clear that failed
+        // this way leaves the attachment holding whatever was previously in
+        // that GPU memory - drivers that defer physical allocation until first
+        // use can fail here under VRAM pressure. Routing the error through
+        // PeekGLError also makes OnOutOfMemoryError() fire so
+        // lose_context_when_out_of_memory_ applies.
+        clear_failed =
+            LOCAL_PEEK_GL_ERROR("ClearUnclearedAttachments") != GL_NO_ERROR;
+      }
     }
-  }
 
-  const Framebuffer::Attachment* depth_attachment =
-      framebuffer->GetAttachment(GL_DEPTH_ATTACHMENT);
-  const Framebuffer::Attachment* stencil_attachment =
-      framebuffer->GetAttachment(GL_STENCIL_ATTACHMENT);
-  bool clear_depth = depth_attachment && !depth_attachment->cleared();
-  bool clear_stencil = stencil_attachment && !stencil_attachment->cleared();
-
-  // A packed depth-stencil image attached at only one of the depth/stencil
-  // points must be bound and cleared at both points so that both components
-  // are initialized before the image is marked as cleared.
-  GLenum filled_depth_stencil_point = 0;
-  if (clear_depth && !stencil_attachment &&
-      (GLES2Util::GetChannelsForFormat(depth_attachment->internal_format()) &
-       GLES2Util::kStencil) != 0) {
-    filled_depth_stencil_point = GL_STENCIL_ATTACHMENT;
-    Framebuffer::BindAttachmentToPoint(target, GL_STENCIL_ATTACHMENT,
-                                       depth_attachment);
-    clear_stencil = true;
-  } else if (clear_stencil && !depth_attachment &&
-             (GLES2Util::GetChannelsForFormat(
-                  stencil_attachment->internal_format()) &
-              GLES2Util::kDepth) != 0) {
-    filled_depth_stencil_point = GL_DEPTH_ATTACHMENT;
-    Framebuffer::BindAttachmentToPoint(target, GL_DEPTH_ATTACHMENT,
-                                       stencil_attachment);
-    clear_depth = true;
-  }
-
-  if (clear_stencil) {
-    api()->glClearStencilFn(0);
-    state_.SetDeviceStencilMaskSeparate(GL_FRONT, kDefaultStencilMask);
-    state_.SetDeviceStencilMaskSeparate(GL_BACK, kDefaultStencilMask);
-    clear_bits |= GL_STENCIL_BUFFER_BIT;
-  }
-
-  if (clear_depth) {
-    api()->glClearDepthFn(1.0f);
-    state_.SetDeviceDepthMask(GL_TRUE);
-    clear_bits |= GL_DEPTH_BUFFER_BIT;
-  }
-
-  if (clear_bits) {
-    if (!rebound_draw_for_clear && target == GL_READ_FRAMEBUFFER &&
-        draw_framebuffer != framebuffer) {
-      // TODO(zmo): There is no guarantee that an FBO that is complete on the
-      // READ attachment will be complete as a DRAW attachment.
-      BindFramebuffer(GL_DRAW_FRAMEBUFFER, framebuffer->service_id());
+    if (filled_depth_stencil_point) {
+      Framebuffer::BindAttachmentToPoint(target, filled_depth_stencil_point,
+                                         nullptr);
     }
-    state_.SetDeviceCapabilityState(GL_SCISSOR_TEST, false);
-    ClearDeviceWindowRectangles();
-    if (workarounds().gl_clear_broken) {
-      ClearFramebufferForWorkaround(clear_bits);
-    } else {
-      api()->glClearFn(clear_bits);
-    }
-  }
-
-  if (filled_depth_stencil_point) {
-    Framebuffer::BindAttachmentToPoint(target, filled_depth_stencil_point,
-                                       nullptr);
   }
 
   if (cleared_int_renderbuffers || clear_bits) {
@@ -7470,12 +7466,20 @@ bool GLES2DecoderImpl::ClearUnclearedAttachments(GLenum target,
     }
   }
 
-  framebuffer_manager()->MarkAttachmentsAsCleared(
-      framebuffer, renderbuffer_manager(), texture_manager());
-
   if (rasterizer_discard_enabled) {
     state_.SetDeviceCapabilityState(GL_RASTERIZER_DISCARD, true);
   }
+
+  // Only commit the cleared state once the clear is known to have landed.
+  // Marking attachments cleared after a failed clear would let a subsequent
+  // ReadPixels()/draw read uninitialized GPU memory and hand it to the client.
+  if (clear_failed) {
+    return false;
+  }
+
+  framebuffer_manager()->MarkAttachmentsAsCleared(
+      framebuffer, renderbuffer_manager(), texture_manager());
+
   return true;
 }
 
@@ -9506,12 +9510,15 @@ void GLES2DecoderImpl::RestoreStateForTextures() {
         if (!texture_ref ||
             !texture_manager()->CanRenderWithSampler(
                 texture_ref, sampler_state)) {
+          // PrepareTexturesForRender() may have bound a black texture to the
+          // target matching the sampler type (if it exited early on an earlier
+          // sampler, rebinding the tracked texture is a no-op). Rebind the
+          // sampler's target rather than texture_unit.bind_target, which may
+          // be a different target bound more recently on this unit.
           api()->glActiveTextureFn(GL_TEXTURE0 + texture_unit_index);
-          // Get the texture_ref info that was previously bound here.
-          texture_ref =
-              texture_unit.GetInfoForTarget(texture_unit.bind_target);
-          api()->glBindTextureFn(texture_unit.bind_target,
-                                 texture_ref ? texture_ref->service_id() : 0);
+          api()->glBindTextureFn(
+              GetBindTargetForSamplerType(uniform_info->type),
+              texture_ref ? texture_ref->service_id() : 0);
           continue;
         }
       }
@@ -9875,7 +9882,15 @@ ALWAYS_INLINE error::Error GLES2DecoderImpl::DoMultiDrawArrays(
   // normally but just to pass OpenGL ES 2 conformance where there's no
   // basevertex and baseinstance support.
   {
-    bool textures_set;
+    bool textures_set = false;
+    // PrepareTexturesForRender() can replace texture bindings even when it
+    // fails, so restore them on every exit path to keep the driver's bindings
+    // in sync with the tracked state.
+    absl::Cleanup restore_textures = [this, &textures_set] {
+      if (textures_set) {
+        RestoreStateForTextures();
+      }
+    };
     if (!PrepareTexturesForRender(&textures_set, function_name)) {
       return error::kNoError;
     }
@@ -9917,9 +9932,7 @@ ALWAYS_INLINE error::Error GLES2DecoderImpl::DoMultiDrawArrays(
           transform_feedback_vertices);
     }
 
-    if (textures_set) {
-      RestoreStateForTextures();
-    }
+    std::move(restore_textures).Invoke();
     // only reset base vertex and base instance shader variable when it's
     // possibly non-zero
     if (option == DrawArraysOption::UseBaseInstance) {
@@ -10134,18 +10147,19 @@ ALWAYS_INLINE error::Error GLES2DecoderImpl::DoMultiDrawElements(
   // normally But just to pass OpenGL ES 2 conformance where there's no
   // basevertex and baseinstance support.
   {
-    bool textures_set;
+    bool textures_set = false;
+    // PrepareTexturesForRender() can replace texture bindings even when it
+    // fails, so restore them on every exit path to keep the driver's bindings
+    // in sync with the tracked state.
+    absl::Cleanup restore_textures = [this, &textures_set] {
+      if (textures_set) {
+        RestoreStateForTextures();
+      }
+    };
     if (!PrepareTexturesForRender(&textures_set, function_name)) {
       return error::kNoError;
     }
     ApplyDirtyState();
-    // TODO(gman): Refactor to hide these details in BufferManager or
-    // VertexAttribManager.
-    bool used_client_side_array = false;
-    if (element_array_buffer->IsClientSideArray()) {
-      used_client_side_array = true;
-      api()->glBindBufferFn(GL_ELEMENT_ARRAY_BUFFER, 0);
-    }
     if (!ValidateAndAdjustDrawBuffers(function_name)) {
       return error::kNoError;
     }
@@ -10168,9 +10182,6 @@ ALWAYS_INLINE error::Error GLES2DecoderImpl::DoMultiDrawElements(
         continue;
       }
       const GLvoid* indices = reinterpret_cast<const GLvoid*>(offset);
-      if (used_client_side_array) {
-        indices = element_array_buffer->GetRange(offset, 0);
-      }
       if (draw_id_location >= 0) {
         api()->glUniform1iFn(draw_id_location, draw_id);
       }
@@ -10198,13 +10209,7 @@ ALWAYS_INLINE error::Error GLES2DecoderImpl::DoMultiDrawElements(
         feature_info_->feature_flags().emulate_primitive_restart_fixed_index) {
       api()->glDisableFn(GL_PRIMITIVE_RESTART);
     }
-    if (used_client_side_array) {
-      api()->glBindBufferFn(GL_ELEMENT_ARRAY_BUFFER,
-                            element_array_buffer->service_id());
-    }
-    if (textures_set) {
-      RestoreStateForTextures();
-    }
+    std::move(restore_textures).Invoke();
     // only reset base vertex and base instance shader variable when it's
     // possibly non-zero
     if (option == DrawElementsOption::UseBaseVertexBaseInstance) {
@@ -11485,6 +11490,16 @@ void GLES2DecoderImpl::FinishReadPixels(GLsizei width,
   }
 
   if (buffer != 0) {
+    // The fence completed, but if the context was reset while the readback was
+    // queued, the pack buffer's backing store was never written by the GPU and
+    // mapping it would deliver uninitialized driver memory. Drop the result,
+    // so `pixels` keeps its previous renderer-provided content and success is
+    // never set.
+    if (workarounds().check_graphics_reset_status_after_readback &&
+        !WasContextLost() && CheckResetStatus()) {
+      group_->LoseContexts(error::kUnknown);
+      return;
+    }
     api()->glBindBufferFn(GL_PIXEL_PACK_BUFFER, buffer);
     void* data;
     if (features().map_buffer_range) {
@@ -11620,6 +11635,14 @@ error::Error GLES2DecoderImpl::HandleReadPixels(uint32_t immediate_data_size,
       return error::kOutOfBounds;
     }
   }
+
+  // Destination window in shared memory (when pixels_shm_id != 0); kept for
+  // the reset-status scrub below because the readback loops advance `pixels`.
+  // SAFETY: `pixels` was returned by GetSharedMemoryAs validated for exactly
+  // `pixels_size` bytes.
+  base::span<uint8_t> pixels_dest =
+      pixels ? UNSAFE_BUFFERS(base::span(pixels, pixels_size))
+             : base::span<uint8_t>();
 
   Result* result = nullptr;
   if (result_shm_id != 0) {
@@ -11906,6 +11929,20 @@ error::Error GLES2DecoderImpl::HandleReadPixels(uint32_t immediate_data_size,
     } else {
       api()->glReadPixelsFn(x, y, width, height, format, type, pixels);
     }
+  }
+  // Some drivers complete a readback where the GPU work was discarded by a
+  // queue-group fatal as if it succeeded, then CPU-copy a never-written driver
+  // staging surface into the destination with no GL error. The reset is latched
+  // by ARB/EXT_robustness before the blocked read returns, so polling here is
+  // decisive; after a reset the context is "unusable for almost all purposes"
+  // (ES 3.2 sec. 2.3.2) and the result must not be delivered. Scrub the
+  // shared-memory destination the driver may already have written.
+  if (pixels_shm_id != 0 &&
+      workarounds().check_graphics_reset_status_after_readback &&
+      !WasContextLost() && CheckResetStatus()) {
+    std::ranges::fill(pixels_dest, 0);
+    group_->LoseContexts(error::kUnknown);
+    return error::kLostContext;
   }
   if (pixels_shm_id != 0) {
     GLenum error = LOCAL_PEEK_GL_ERROR(func_name);
@@ -12448,6 +12485,10 @@ bool GLES2DecoderImpl::ClearLevel(Texture* texture,
     tile_height = height;
   }
 
+  // Drain any pre-existing driver errors so the post-upload check below only
+  // reflects errors generated by this clear sequence.
+  LOCAL_COPY_REAL_GL_ERRORS_TO_WRAPPER("glClearLevel");
+
   api()->glBindTextureFn(texture->target(), texture->service_id());
   {
     // Add extra scope to destroy zero and the object it owns right
@@ -12471,7 +12512,13 @@ bool GLES2DecoderImpl::ClearLevel(Texture* texture,
       texture_manager()->GetTextureInfoForTarget(&state_, texture->target());
   api()->glBindTextureFn(texture->target(),
                          bound_texture ? bound_texture->service_id() : 0);
-  DCHECK(glGetError() == GL_NO_ERROR);
+
+  // Do not report the level as cleared if the upload failed. Routing the error
+  // through PeekGLError also ensures OnOutOfMemoryError() fires so
+  // lose_context_when_out_of_memory_ applies.
+  if (LOCAL_PEEK_GL_ERROR("glClearLevel") != GL_NO_ERROR) {
+    return false;
+  }
   return true;
 }
 
@@ -12577,6 +12624,10 @@ bool GLES2DecoderImpl::ClearCompressedTextureLevel(Texture* texture,
     }
 
     LOCAL_COPY_REAL_GL_ERRORS_TO_WRAPPER("ClearCompressedTextureLevel");
+    // This zero-fill sources from CPU memory, but the client's unpack
+    // geometry is still resident in the real driver and must not influence a
+    // compressed upload; see the comment in DoCompressedTexImage.
+    ScopedCompressedUnpackStateScrub scrub(&state_);
     api()->glCompressedTexSubImage2DFn(target, level, 0, 0, width, height,
                                        format, zero.size(), zero.data());
     // Some compressed formats are not supported by CompressedTexSubImage*
@@ -12643,6 +12694,10 @@ bool GLES2DecoderImpl::ClearCompressedTextureLevel3D(Texture* texture,
     }
 
     LOCAL_COPY_REAL_GL_ERRORS_TO_WRAPPER("ClearCompressedTextureLevel3D");
+    // This zero-fill sources from CPU memory, but the client's unpack
+    // geometry is still resident in the real driver and must not influence a
+    // compressed upload; see the comment in DoCompressedTexImage.
+    ScopedCompressedUnpackStateScrub scrub(&state_);
     api()->glCompressedTexSubImage3DFn(target, level, 0, 0, 0, width, height,
                                        depth, format, zero.size(), zero.data());
     // Some compressed formats are not supported by CompressedTexSubImage*
@@ -13393,6 +13448,21 @@ error::Error GLES2DecoderImpl::DoCompressedTexImage(
           format_info->decompressed_type, decompressed_data.data());
     }
   } else {
+    // Per OpenGL ES 3.2, "All pixel storage modes are ignored when decoding
+    // a compressed texture image" (sec. 8.7; SubImage data is "interpreted
+    // as though ... provided to CompressedTexImage*", and sec. 8.4.1 defines
+    // unpack state as pertaining only to TexImage*, TexSubImage*, and
+    // ReadPixels), so UNPACK_ROW_LENGTH and UNPACK_IMAGE_HEIGHT must never
+    // influence a compressed upload. With a PIXEL_UNPACK buffer bound,
+    // however, the renderer-supplied values are resident in the real driver
+    // (see HandlePixelStorei), so they are scrubbed to their initial values
+    // (0, table 8.1) around the dispatch. ANGLE's frontend has applied this
+    // same neutralization to its compressed entry points since 2021
+    // (crbug.com/1267496), so the passthrough decoder is already protected.
+    // The other compressed dispatch sites (DoCompressedTexSubImage and the
+    // ClearCompressedTextureLevel paths) reference this comment.
+    // https://crbug.com/562279351
+    ScopedCompressedUnpackStateScrub scrub(&state_);
     bool reset_base_level = workarounds().reset_base_level_for_astc_image &&
                             IsASTCFormat(internal_format) &&
                             texture->base_level() != 0;
@@ -13859,6 +13929,9 @@ error::Error GLES2DecoderImpl::DoCompressedTexSubImage(
                                decompressed_data.data());
     }
   } else {
+    // Compressed uploads must ignore client unpack state; see the comment in
+    // DoCompressedTexImage.
+    ScopedCompressedUnpackStateScrub scrub(&state_);
     bool reset_base_level = workarounds().reset_base_level_for_astc_image &&
                             IsASTCFormat(format) && texture->base_level() != 0;
     if (reset_base_level) {
@@ -14081,29 +14154,6 @@ void GLES2DecoderImpl::DoCopyTexImage2D(
 
   GLenum final_internal_format = TextureManager::AdjustTexInternalFormat(
       feature_info_.get(), internal_format, type);
-  if (workarounds().force_int_or_srgb_cube_texture_complete &&
-      texture->target() == GL_TEXTURE_CUBE_MAP &&
-      (GLES2Util::IsIntegerFormat(final_internal_format) ||
-       GLES2Util::GetColorEncodingFromInternalFormat(final_internal_format) ==
-           GL_SRGB)) {
-    TextureManager::DoTexImageArguments args = {
-        target,
-        level,
-        final_internal_format,
-        width,
-        height,
-        1,
-        border,
-        format,
-        type,
-        nullptr,
-        pixels_size,
-        0,
-        TextureManager::DoTexImageArguments::CommandType::kTexImage2D};
-    texture_manager()->WorkaroundCopyTexImageCubeMap(
-        &texture_state_, &state_, error_state_.get(), &framebuffer_state_,
-        texture_ref, func_name, args);
-  }
 
   if (src.x() != x || src.y() != y ||
       src.width() != width || src.height() != height ||
@@ -15777,6 +15827,13 @@ void GLES2DecoderImpl::ReadBackBuffersIntoShadowCopies(
       group_->LoseContexts(error::kUnknown);
       return;
     }
+    if (workarounds().check_graphics_reset_status_after_readback &&
+        CheckResetStatus()) {
+      // Refuse shadow-copy delivery across a device reset; the mapped bytes
+      // may not have been produced.
+      group_->LoseContexts(error::kUnknown);
+      return;
+    }
     UNSAFE_TODO(memcpy(shadow, mapped, buffer->size()));
     bool unmap_ok = api()->glUnmapBufferFn(GL_ARRAY_BUFFER);
     if (unmap_ok == GL_FALSE) {
@@ -16396,7 +16453,8 @@ void GLES2DecoderImpl::CopySubTextureHelper(const char* function_name,
 
   // Use DRAW instead of COPY if the workaround is enabled.
   if (method == CopyTextureMethod::DIRECT_COPY &&
-      workarounds().prefer_draw_to_copy) {
+      workarounds().prefer_draw_to_copy &&
+      (dest_level == 0 || feature_info_->IsWebGL2OrES3Context())) {
     method = CopyTextureMethod::DIRECT_DRAW;
   }
 
@@ -17062,9 +17120,7 @@ GLsync GLES2DecoderImpl::DoFenceSync(GLenum condition, GLbitfield flags) {
     LOCAL_SET_GL_ERROR(GL_INVALID_VALUE, function_name, "invalid flags");
     return 0;
   }
-  GLsync sync = api()->glFenceSyncFn(condition, flags);
-  ApplyRecreateFboWorkaroundIfNeeded();
-  return sync;
+  return api()->glFenceSyncFn(condition, flags);
 }
 
 GLsizei GLES2DecoderImpl::InternalFormatSampleCountsHelper(
@@ -17245,6 +17301,17 @@ error::Error GLES2DecoderImpl::HandleGetBufferSubDataCHROMIUM(
     return error::kNoError;
   }
 
+  if (workarounds().check_graphics_reset_status_after_readback &&
+      CheckResetStatus()) {
+    // The driver reset underneath the blocking map: the mapped bytes may
+    // never have been written by the readback that was supposed to produce
+    // them (ES 3.2 section 2.3.2: a reset can occur at any point and is
+    // observable via GetGraphicsResetStatus before other commands report
+    // CONTEXT_LOST). Do not deliver them. crbug.com/558109451
+    group_->LoseContexts(error::kUnknown);
+    return error::kLostContext;
+  }
+
   UNSAFE_TODO(memcpy(mem, ptr, size));
 
   api()->glUnmapBufferFn(target);
@@ -17377,7 +17444,7 @@ const SamplerState& GLES2DecoderImpl::GetSamplerStateForTextureUnit(
   return default_sampler_state_;
 }
 
-void GLES2DecoderImpl::ClearFramebufferForWorkaround(GLbitfield mask) {
+bool GLES2DecoderImpl::ClearFramebufferForWorkaround(GLbitfield mask) {
   ScopedGLErrorSuppressor suppressor("GLES2DecoderImpl::ClearWorkaround",
                                      error_state_.get());
   clear_framebuffer_blit_->ClearFramebuffer(
@@ -17385,6 +17452,20 @@ void GLES2DecoderImpl::ClearFramebufferForWorkaround(GLbitfield mask) {
       gfx::Size(viewport_max_width_, viewport_max_height_), mask,
       state_.color_clear_red, state_.color_clear_green, state_.color_clear_blue,
       state_.color_clear_alpha, state_.depth_clear, state_.stencil_clear);
+  // |suppressor|'s destructor silently discards GL_OUT_OF_MEMORY and
+  // GL_CONTEXT_LOST_KHR, so peek here while the failure is still observable.
+  // Callers that commit "cleared" bookkeeping must be able to tell that the
+  // blit failed, otherwise an attachment that still holds uninitialized GPU
+  // memory would be recorded as cleared. Peeking also routes GL_OUT_OF_MEMORY
+  // through OnOutOfMemoryError() so lose_context_when_out_of_memory_ applies.
+  //
+  // The suppressor is deliberately kept: it is what keeps the blit's errors
+  // from being attributed to unrelated later commands for the callers that
+  // ignore the result. Surfacing the first error to those callers is bounded,
+  // because ClearRealGLErrors() NOTREACHED()s on anything other than
+  // GL_OUT_OF_MEMORY and GL_CONTEXT_LOST_KHR, i.e. the code already asserts
+  // that those are the only errors this blit can produce.
+  return LOCAL_PEEK_GL_ERROR("ClearFramebufferForWorkaround") == GL_NO_ERROR;
 }
 
 void GLES2DecoderImpl::RestoreAllExternalTextureBindingsIfNeeded() {
@@ -17415,8 +17496,13 @@ void GLES2DecoderImpl::RestoreAllExternalTextureBindingsIfNeeded() {
 }
 
 void GLES2DecoderImpl::DoContextVisibilityHintCHROMIUM(GLboolean visibility) {
-  if (feature_info_->IsWebGLContext())
+  if (feature_info_->IsWebGLContext()) {
     context_->SetVisibility(visibility == GL_TRUE);
+    if (visibility == GL_FALSE &&
+        feature_info_->feature_flags().angle_trim_memory) {
+      api()->glTrimMemoryANGLEFn(GL_MEMORY_TRIM_HIGH_ANGLE);
+    }
+  }
 }
 
 scoped_refptr<gpu::Buffer> GLES2DecoderImpl::GetShmBuffer(uint32_t shm_id) {

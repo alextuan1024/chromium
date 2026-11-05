@@ -10,6 +10,7 @@
 #include "ash/wm/desks/desks_util.h"
 #include "ash/wm/window_state.h"
 #include "ash/wm/window_util.h"
+#include "base/containers/flat_set.h"
 #include "base/memory/raw_ptr.h"
 #include "ui/aura/client/aura_constants.h"
 #include "ui/aura/env.h"
@@ -21,19 +22,36 @@
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/transform.h"
 #include "ui/views/widget/widget.h"
-#include "ui/wm/core/shadow_controller.h"
+#include "ui/wm/core/decoration_controller.h"
 #include "ui/wm/core/window_util.h"
 
 namespace ash {
 namespace {
 
-void EnsureAllChildrenAreVisible(ui::Layer* layer) {
-  for (ui::Layer* child : layer->children()) {
-    EnsureAllChildrenAreVisible(child);
+void CollectWindowLayers(const aura::Window* window,
+                         base::flat_set<const ui::Layer*>& window_layers) {
+  window_layers.insert(window->layer());
+  for (const aura::Window* child : window->children()) {
+    CollectWindowLayers(child, window_layers);
+  }
+}
+
+void EnsureWindowLayersAreVisible(
+    const base::flat_set<const ui::Layer*>& window_layers,
+    const ui::Layer* src_layer,
+    ui::Layer* mirror_layer) {
+  if (window_layers.contains(src_layer)) {
+    mirror_layer->SetVisible(true);
+    mirror_layer->SetOpacity(1.f);
+  } else if (!mirror_layer->visible()) {
+    return;
   }
 
-  layer->SetVisible(true);
-  layer->SetOpacity(1);
+  CHECK_EQ(src_layer->children().size(), mirror_layer->children().size());
+  for (size_t i = 0; i < src_layer->children().size(); ++i) {
+    EnsureWindowLayersAreVisible(window_layers, src_layer->children()[i],
+                                 mirror_layer->children()[i]);
+  }
 }
 
 void DeleteNode(ui::Layer* node) {
@@ -57,7 +75,8 @@ void DeleteNode(ui::Layer* node) {
 void ExcludeShadowContainer(ui::Layer* root, ui::Layer* shadow_layer) {
   std::vector<ui::Layer*> to_remove;
   for (ui::Layer* child : root->children()) {
-    if (child->name() == "Shadow Parent Container" ||
+    if (child->name() == "Decoration-Shadow:Container" ||
+        child->name() == "Decoration-ShadowWithHighlightBorder:Container" ||
         (shadow_layer && child->bounds() == shadow_layer->bounds() &&
          (child->bounds().x() < 0 || child->bounds().y() < 0))) {
       to_remove.push_back(child);
@@ -89,6 +108,9 @@ WindowMirrorView::~WindowMirrorView() {
     DCHECK(source_->layer());
     source_->RemoveObserver(this);
   }
+  if (target_) {
+    target_->RemoveObserver(this);
+  }
 }
 
 void WindowMirrorView::RecreateMirrorLayers() {
@@ -114,9 +136,14 @@ std::unique_ptr<ui::Layer> WindowMirrorView::RecreateLayer() {
 }
 
 void WindowMirrorView::OnWindowDestroying(aura::Window* window) {
-  CHECK_EQ(source_, window);
-  source_->RemoveObserver(this);
-  source_ = nullptr;
+  if (source_ == window) {
+    source_->RemoveObserver(this);
+    source_ = nullptr;
+  }
+  if (target_ == window) {
+    target_->RemoveObserver(this);
+    target_ = nullptr;
+  }
 }
 
 gfx::Size WindowMirrorView::CalculatePreferredSize(
@@ -167,6 +194,7 @@ void WindowMirrorView::AddedToWidget() {
   // Set and insert the new target window associated with this mirror view.
   target_ = GetWidget()->GetNativeWindow();
   target_->TrackOcclusionState();
+  target_->AddObserver(this);
 
   if (source_) {
     // Force the occlusion tracker to treat the source as visible.
@@ -179,7 +207,10 @@ void WindowMirrorView::AddedToWidget() {
 }
 
 void WindowMirrorView::RemovedFromWidget() {
-  target_ = nullptr;
+  if (target_) {
+    target_->RemoveObserver(this);
+    target_ = nullptr;
+  }
 }
 
 ui::Layer* WindowMirrorView::GetMirrorLayerForTesting() {
@@ -193,12 +224,6 @@ void WindowMirrorView::InitLayerOwner() {
   layer_owner_ = wm::MirrorLayers(source_, sync_bounds_);
   layer_owner_->root()->SetOpacity(1.f);
 
-  if (exclude_shadow_) {
-    ui::Shadow* shadow = ::wm::ShadowController::GetShadowForWindow(source_);
-    ExcludeShadowContainer(layer_owner_->root(),
-                           shadow ? shadow->layer() : nullptr);
-  }
-
   SetPaintToLayer();
 
   ui::Layer* mirror_layer = GetMirrorLayer();
@@ -208,7 +233,16 @@ void WindowMirrorView::InitLayerOwner() {
   // offscreen or is on an inactive desk.
   if (window_util::IsMinimizedOrTucked(source_) ||
       !desks_util::BelongsToActiveDesk(source_)) {
-    EnsureAllChildrenAreVisible(mirror_layer);
+    base::flat_set<const ui::Layer*> window_layers;
+    CollectWindowLayers(source_, window_layers);
+    EnsureWindowLayersAreVisible(window_layers, source_->layer(), mirror_layer);
+  }
+
+  if (exclude_shadow_) {
+    ui::Decoration* decoration =
+        ::wm::DecorationController::GetDecorationForWindow(source_);
+    ExcludeShadowContainer(layer_owner_->root(),
+                           decoration ? decoration->layer() : nullptr);
   }
 
   DeprecatedLayoutImmediately();

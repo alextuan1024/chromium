@@ -14,7 +14,7 @@ import '//resources/cr_components/composebox/file_carousel.js';
 import '//resources/cr_components/search/animated_glow.js';
 import '//resources/cr_elements/cr_icon_button/cr_icon_button.js';
 
-import {ComposeboxFile, GlifAnimationState, recordBoolean, recordUserAction, TabUploadOrigin} from '//resources/cr_components/composebox/common.js';
+import {ComposeboxFile, GlifAnimationState, recordBoolean, recordUserAction} from '//resources/cr_components/composebox/common.js';
 import type {TabUpload} from '//resources/cr_components/composebox/common.js';
 import type {PageHandlerRemote} from '//resources/cr_components/composebox/composebox.mojom-webui.js';
 import type {ComposeboxDropdownElement} from '//resources/cr_components/composebox/composebox_dropdown.js';
@@ -24,7 +24,6 @@ import {ComposeboxEmbedderMixin} from '//resources/cr_components/composebox/comp
 import {ComposeboxProxyImpl} from '//resources/cr_components/composebox/composebox_proxy.js';
 import {ToolMode} from '//resources/cr_components/composebox/composebox_query.mojom-webui.js';
 import type {ContextualEntrypointAndMenuElement} from '//resources/cr_components/composebox/contextual_entrypoint_and_menu.js';
-import type {ErrorScrimElement} from '//resources/cr_components/composebox/error_scrim.js';
 import type {ComposeboxFileCarouselElement} from '//resources/cr_components/composebox/file_carousel.js';
 import type {GlowAnimationState} from '//resources/cr_components/search/constants.js';
 import {EventTracker} from '//resources/js/event_tracker.js';
@@ -32,6 +31,7 @@ import {loadTimeData} from '//resources/js/load_time_data.js';
 import {debounceEnd} from '//resources/js/util.js';
 import {CrLitElement} from '//resources/lit/v3_0/lit.rollup.js';
 import type {PropertyValues} from '//resources/lit/v3_0/lit.rollup.js';
+import {TabAttachmentSource} from '//resources/mojo/components/omnibox/browser/searchbox.mojom-webui.js';
 import type {AutocompleteResult, PageCallbackRouter as SearchboxPageCallbackRouter, PageHandlerRemote as SearchboxPageHandlerRemote, TabInfo} from '//resources/mojo/components/omnibox/browser/searchbox.mojom-webui.js';
 import type {UnguessableToken} from '//resources/mojo/mojo/public/mojom/base/unguessable_token.mojom-webui.js';
 
@@ -43,7 +43,7 @@ import {getHtml} from './contextual_tasks_inner_composebox.html.js';
 const RESIZE_EVENT_DEBOUNCE_TIMEOUT_MS = 20;
 
 // Inner-element contract the `contextual-tasks-composebox` wrapper invokes on
-// its `#composebox` child; both `<cr-composebox>` and this fork satisfy it.
+// its `#composebox` child.
 export interface ContextualTasksInnerComposeboxInterface {
   animationState: GlowAnimationState;
   canSubmitFilesAndInput: boolean;
@@ -98,8 +98,6 @@ export interface ContextualTasksInnerComposeboxElement {
     composebox: HTMLElement,
     matches: ComposeboxDropdownElement,
     fileInputs: ComposeboxFileInputsElement,
-    carousel: ComposeboxFileCarouselElement,
-    errorScrim: ErrorScrimElement,
   };
 }
 
@@ -174,6 +172,12 @@ export class
   private get webUIOmniboxAskGAboutThisPageEnabled_(): boolean {
     return loadTimeData.valueExists('webUIOmniboxAskGAboutThisPageEnabled') &&
         loadTimeData.getBoolean('webUIOmniboxAskGAboutThisPageEnabled');
+  }
+
+  private get contextualTasksUpdatedEntryPointsEnabled_(): boolean {
+    return loadTimeData.valueExists(
+               'contextualTasksUpdatedEntryPointsEnabled') &&
+        loadTimeData.getBoolean('contextualTasksUpdatedEntryPointsEnabled');
   }
 
   override getPageHandler(): PageHandlerRemote {
@@ -309,21 +313,9 @@ export class
 
   override onAutocompleteResultChanged(result: AutocompleteResult) {
     // Reuse the mixin's dropdown/selection logic, but notify the wrapper via
-    // `result-changed` only for accepted results (mirrors cr-composebox).
+    // `result-changed` only for accepted results.
     const isValidResult =
         !this.submitting && result.queryId === this.activeQueryId;
-    if (isValidResult && this.composeboxNoFlickerSuggestionsFix &&
-        this.showTypedSuggest &&
-        !this.haveReceivedSynchronousAutocompleteResponse) {
-      // First typed-suggest response can collapse the dropdown; carry over
-      // the prior non-verbatim matches.
-      if (this.result && this.result.matches.length > 0 &&
-          result.matches.length <= 1) {
-        result.matches.push(...this.result.matches.filter(
-            match => match.type !== 'search-what-you-typed'));
-      }
-      this.haveReceivedSynchronousAutocompleteResponse = true;
-    }
     super.onAutocompleteResultChanged(result);
     if (isValidResult) {
       this.fire('result-changed', result);
@@ -346,10 +338,16 @@ export class
       }
       return;
     }
-    // AutoSuggestedTabContext is routed differently for Omnibox Page Action.
-    // when it opens a side panel to cobrowse.
-    const askGAndPageAction = this.webUIOmniboxAskGAboutThisPageEnabled_ &&
-        invocationSource === 'OmniboxPageAction' && this.isSidePanel;
+    // AutoSuggestedTabContext is routed differently for Ask Google entry points
+    // (except homework action chip) when opening a side panel to cobrowse.
+    const isUpdatedEntryPoint =
+        this.contextualTasksUpdatedEntryPointsEnabled_ &&
+        (invocationSource === 'ContentAreaContextMenuPageAskGoogle' ||
+         invocationSource === 'AppMenuAskGoogle');
+    const isOmniboxAskG = this.webUIOmniboxAskGAboutThisPageEnabled_ &&
+        invocationSource === 'OmniboxPageAction';
+    const askGAndPageAction =
+        (isOmniboxAskG || isUpdatedEntryPoint) && this.isSidePanel;
 
     // We should delete the automatic active tab if it is different from the
     // current tab when webUIOmniboxAskGAboutThisPageEnabled_ is true. Make sure
@@ -431,7 +429,7 @@ export class
             title: tab.title,
             url: tab.url,
             delayUpload: !askGAndPageAction,
-            origin: TabUploadOrigin.AUTO_ACTIVE,
+            origin: TabAttachmentSource.kAutoActive,
           } as TabUpload,
           /*replaceAutoActiveTabToken=*/ true);
 

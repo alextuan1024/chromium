@@ -70,6 +70,7 @@ component("controller") {
     "performance_manager/v8_detailed_memory_reporter_impl.h",
     "performance_manager/v8_worker_memory_reporter.cc",
     "performance_manager/v8_worker_memory_reporter.h",
+    "web_memory_features.cc",
   ]
 
   if (is_linux || is_chromeos) {
@@ -127,7 +128,9 @@ component("controller") {
   # adding/editing *.idl files, especially because it's very easy to forget to
   # add generated bindings files to the lists defined in
   # generated_in_{core,modules}.gni. Hence, run the check scripts here.
-  deps += [
+  # Use data_deps so they don't become order-only .harddeps that block
+  # downstream C++ compilation.
+  data_deps = [
     "//third_party/blink/renderer/bindings:check_generated_file_list",
     "//third_party/blink/renderer/bindings:validate_web_idl",
   ]
@@ -267,6 +270,7 @@ source_set("blink_unittests_sources") {
   testonly = true
 
   sources = [
+    "//third_party/blink/renderer/platform/bindings/v8_external_memory_accounter_test.cc",
     "//third_party/blink/renderer/platform/testing/main_thread_isolate_unittest.cc",
     "//third_party/blink/renderer/platform/testing/task_environment_unittest.cc",
     "crash_memory_metrics_reporter_impl_test.cc",

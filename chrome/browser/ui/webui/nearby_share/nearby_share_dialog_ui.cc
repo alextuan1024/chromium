@@ -6,6 +6,7 @@
 
 #include <string>
 
+#include "ash/constants/webui_url_constants.h"
 #include "base/strings/string_split.h"
 #include "chrome/browser/nearby_sharing/contacts/nearby_share_contact_manager.h"
 #include "chrome/browser/nearby_sharing/file_attachment.h"
@@ -24,7 +25,6 @@
 #include "chrome/browser/ui/webui/plural_string_handler.h"
 #include "chrome/browser/ui/webui/sanitized_image/sanitized_image_source.h"
 #include "chrome/browser/ui/webui/theme_source.h"
-#include "chrome/common/webui_url_constants.h"
 #include "chrome/grit/generated_resources.h"
 #include "chrome/grit/nearby_share_dialog_resources.h"
 #include "chrome/grit/nearby_share_dialog_resources_map.h"
@@ -68,14 +68,15 @@ bool NearbyShareDialogUIConfig::IsWebUIEnabled(
 NearbyShareDialogUI::NearbyShareDialogUI(content::WebUI* web_ui)
     : ui::MojoWebUIController(web_ui, /*enable_chrome_send=*/true) {
   Profile* profile = Profile::FromWebUI(web_ui);
-  DCHECK(NearbySharingServiceFactory::IsNearbyShareSupportedForBrowserContext(
-      profile));
+  CHECK(NearbySharingServiceFactory::IsNearbyShareSupportedForBrowserContext(
+            profile),
+        base::NotFatalUntil::M162);
 
   nearby_service_ = NearbySharingServiceFactory::GetForBrowserContext(profile);
 
   content::WebUIDataSource* html_source =
       content::WebUIDataSource::CreateAndAdd(profile,
-                                             chrome::kChromeUINearbyShareHost);
+                                             ash::kChromeUINearbyShareHost);
 
   content::URLDataSource::Add(profile,
                               std::make_unique<SanitizedImageSource>(profile));
@@ -138,8 +139,9 @@ void NearbyShareDialogUI::SetAttachments(
 
 void NearbyShareDialogUI::SetWebView(views::WebView* web_view) {
   CHECK(web_view);
-  web_view_ = web_view;
-  web_view_->GetWebContents()->SetDelegate(this);
+  web_view->GetWebContents()->SetDelegate(this);
+  SetReferenceView(web_view);
+  SetAcceleratorHandling(views::WebContentsAcceleratorHandling::kEnabled);
 }
 
 void NearbyShareDialogUI::BindInterface(
@@ -164,17 +166,6 @@ void NearbyShareDialogUI::BindInterface(
       NearbySharingServiceFactory::GetForBrowserContext(
           Profile::FromWebUI(web_ui()));
   nearby_sharing_service->GetContactManager()->Bind(std::move(receiver));
-}
-
-bool NearbyShareDialogUI::HandleKeyboardEvent(
-    content::WebContents* source,
-    const input::NativeWebKeyboardEvent& event) {
-  if (!web_view_) {
-    return false;
-  }
-
-  return unhandled_keyboard_event_handler_.HandleKeyboardEvent(
-      event, web_view_->GetFocusManager());
 }
 
 void NearbyShareDialogUI::WebContentsCreated(

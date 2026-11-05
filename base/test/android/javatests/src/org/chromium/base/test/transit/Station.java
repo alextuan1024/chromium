@@ -7,6 +7,11 @@ package org.chromium.base.test.transit;
 import static org.chromium.base.test.transit.Condition.whether;
 
 import android.app.Activity;
+import android.content.pm.ActivityInfo;
+import android.content.res.Configuration;
+import android.graphics.Rect;
+import android.os.Build;
+import android.view.View;
 
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
@@ -33,9 +38,7 @@ public abstract class Station<HostActivityT extends Activity> extends Conditiona
     private static int sLastStationId;
 
     private final int mId;
-    // All facilities that have ever been entered. Exited ones remain so that the history is can
-    // be queried.
-    private final List<Facility<?>> mFacilities = new ArrayList<>();
+    private final List<Facility<?>> mDefaultFacilities = new ArrayList<>();
     private final String mName;
     private final @Nullable Class<HostActivityT> mActivityClass;
 
@@ -58,19 +61,21 @@ public abstract class Station<HostActivityT extends Activity> extends Conditiona
         }
     }
 
-    protected List<Facility<?>> getFacilitiesWithPhase(@Phase int phase) {
-        List<Facility<?>> facilities = new ArrayList<>();
-        for (Facility<?> facility : mFacilities) {
-            if (facility.getPhase() == phase) {
-                facilities.add(facility);
-            }
-        }
-        return facilities;
+    /**
+     * Declare a Facility that is entered together with this Station in every Trip to it.
+     *
+     * <p>Call before the Station is transitioned to, e.g. in its constructor. Passing the same
+     * Facility to {@link TripBuilder#arriveAt(Station, Facility[])} as well is fine; it is entered
+     * once.
+     */
+    protected <FacilityT extends Facility<?>> FacilityT declareDefaultFacility(FacilityT facility) {
+        assertInPhase(Phase.NEW);
+        mDefaultFacilities.add(facility);
+        return facility;
     }
 
-    void registerFacility(Facility<?> facility) {
-        facility.setHostStation(this);
-        mFacilities.add(facility);
+    List<Facility<?>> getDefaultFacilities() {
+        return mDefaultFacilities;
     }
 
     @Override
@@ -108,9 +113,22 @@ public abstract class Station<HostActivityT extends Activity> extends Conditiona
         assertInPhase(Phase.NEW);
         if (mActivityElement != null) {
             originStation.assertInPhase(Phase.ACTIVE);
-            ActivityElement<?> originActivityElement = originStation.getActivityElement();
+            ActivityElement<? extends Activity> originActivityElement =
+                    originStation.getActivityElement();
             if (originActivityElement != null) {
-                mActivityElement.requireToBeInSameTask(originActivityElement.value());
+                Activity originActivity = originActivityElement.value();
+                Class<?> declaredClass = mActivityElement.getActivityClass();
+                Class<?> originClass = originActivity.getClass();
+                // The origin Activity may be a subclass of the class this Station declares: a
+                // second window is a ChromeTabbedActivity2, while the Station declares
+                // ChromeTabbedActivity. Matching by exact class would skip it and then match the
+                // first window, which is in a different task, so the transition could never
+                // complete.
+                if (!declaredClass.equals(originClass)
+                        && declaredClass.isInstance(originActivity)) {
+                    mActivityElement.allowSubclasses();
+                }
+                mActivityElement.requireToBeInSameTask(originActivity);
             } else {
                 mActivityElement.requireNoParticularTask();
             }
@@ -121,6 +139,19 @@ public abstract class Station<HostActivityT extends Activity> extends Conditiona
         assertInPhase(Phase.NEW);
         if (mActivityElement != null) {
             mActivityElement.requireToBeInNewTask();
+        }
+    }
+
+    /**
+     * Resolve this Station's Activity to |activity| instead of searching for one by class.
+     *
+     * <p>Used when hopping on Public Transit: the caller already holds the Activity it is acting
+     * on, and searching by class is ambiguous once a second window is open.
+     */
+    void requireActivityInstance(Activity activity) {
+        assertInPhase(Phase.NEW);
+        if (mActivityElement != null) {
+            mActivityElement.requireInstance(activity);
         }
     }
 
@@ -162,5 +193,70 @@ public abstract class Station<HostActivityT extends Activity> extends Conditiona
                                                 activity.getWindow()
                                                         .getDecorView()
                                                         .hasWindowFocus())));
+    }
+
+    /**
+     * Rotates the activity to the given orientation and waits for the orientation and layout to
+     * settle.
+     *
+     * @param orientation Either {@link Configuration#ORIENTATION_LANDSCAPE} or {@link
+     *     Configuration#ORIENTATION_PORTRAIT}.
+     */
+    public void rotateTo(int orientation) {
+        assert orientation == Configuration.ORIENTATION_LANDSCAPE
+                        || orientation == Configuration.ORIENTATION_PORTRAIT
+                : "Incorrect orientation supplied: " + orientation;
+        int screenOrientation =
+                orientation == Configuration.ORIENTATION_LANDSCAPE
+                        ? ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+                        : ActivityInfo.SCREEN_ORIENTATION_PORTRAIT;
+        Condition settledCondition =
+                UiThreadCondition.from(
+                        "Station orientation and layout settled: " + orientation,
+                        () -> checkRotationSettled(orientation));
+        HostActivityT activity = getActivity();
+        if (activity.getResources().getConfiguration().orientation == orientation) {
+            noopTo().waitFor(settledCondition);
+            return;
+        }
+        runTo(() -> activity.setRequestedOrientation(screenOrientation))
+                .withPossiblyAlreadyFulfilled()
+                .waitFor(settledCondition);
+    }
+
+    private ConditionStatus checkRotationSettled(int orientation) {
+        HostActivityT activity = getActivity();
+        if (activity.getResources().getConfiguration().orientation != orientation) {
+            return Condition.notFulfilled("Orientation not updated yet");
+        }
+        View decorView = activity.getWindow().getDecorView();
+        if (!areDecorBoundsSettled(activity, decorView, orientation)) {
+            return Condition.notFulfilled("DecorView bounds not settled for configuration");
+        }
+        if (decorView.isLayoutRequested()) {
+            return Condition.notFulfilled("DecorView layout pending");
+        }
+        return Condition.fulfilled();
+    }
+
+    private static boolean areDecorBoundsSettled(
+            Activity activity, View decorView, int orientation) {
+        int width = decorView.getWidth();
+        int height = decorView.getHeight();
+        if (width <= 0 || height <= 0) {
+            return false;
+        }
+        // WindowMetrics#getBounds is available on API 30+ (Android R+). On API 30+, match the
+        // decor view bounds directly against the window metrics for the configuration.
+        // On API 29, compare aspect ratio against orientation to ensure the orientation
+        // change dimensions have taken effect.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            Rect bounds = activity.getWindowManager().getCurrentWindowMetrics().getBounds();
+            if (!bounds.isEmpty()) {
+                return width == bounds.width() && height == bounds.height();
+            }
+        }
+        boolean isLandscape = orientation == Configuration.ORIENTATION_LANDSCAPE;
+        return width != height && isLandscape == (width > height);
     }
 }

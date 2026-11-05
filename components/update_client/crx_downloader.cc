@@ -7,16 +7,19 @@
 #include <stdint.h>
 
 #include <iterator>
+#include <ostream>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "base/check_op.h"
+#include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/functional/callback_helpers.h"
 #include "base/location.h"
+#include "base/logging.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/thread_pool.h"
 #include "base/trace_event/trace_event.h"
@@ -45,11 +48,6 @@ CrxDownloader::~CrxDownloader() {
               perfetto::TerminatingFlow::FromPointer(this));
 }
 
-void CrxDownloader::set_progress_callback(
-    const ProgressCallback& progress_callback) {
-  progress_callback_ = progress_callback;
-}
-
 GURL CrxDownloader::url() const {
   return current_url_ != urls_.end() ? *current_url_ : GURL();
 }
@@ -70,15 +68,18 @@ CrxDownloader::download_metrics() const {
 base::OnceClosure CrxDownloader::StartDownloadFromUrl(
     const GURL& url,
     const std::string& expected_hash,
+    ProgressCallback progress_callback,
     DownloadCallback download_callback) {
   std::vector<GURL> urls;
   urls.push_back(url);
-  return StartDownload(urls, expected_hash, std::move(download_callback));
+  return StartDownload(urls, expected_hash, progress_callback,
+                       std::move(download_callback));
 }
 
 base::OnceClosure CrxDownloader::StartDownload(
     const std::vector<GURL>& urls,
     const std::string& expected_hash,
+    ProgressCallback progress_callback,
     DownloadCallback download_callback) {
   TRACE_EVENT("update_client", "CrxDownloader::StartDownload",
               perfetto::Flow::FromPointer(this));
@@ -103,8 +104,39 @@ base::OnceClosure CrxDownloader::StartDownload(
   expected_hash_ = expected_hash;
   current_url_ = urls_.begin();
   download_callback_ = std::move(download_callback);
+  progress_callback_ = progress_callback;
 
-  return DoStartDownload(*current_url_);
+  StartAttempt(*current_url_);
+  return base::BindOnce(&CrxDownloader::CancelDownload, this);
+}
+
+void CrxDownloader::StartAttempt(const GURL& url) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  is_attempt_in_progress_ = true;
+  base::OnceClosure cancel_attempt_callback = DoStartDownload(url);
+  if (is_attempt_in_progress_) {
+    cancel_attempt_callback_ = std::move(cancel_attempt_callback);
+  }
+}
+
+void CrxDownloader::CancelDownload() {
+  TRACE_EVENT("update_client", "CrxDownloader::CancelDownload",
+              perfetto::Flow::FromPointer(this));
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+
+  if (is_cancelled_) {
+    return;
+  }
+  is_cancelled_ = true;
+  if (cancel_attempt_callback_) {
+    std::move(cancel_attempt_callback_).Run();
+  }
+}
+
+void CrxDownloader::FinishDownload(const Result& result) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  main_task_runner()->PostTask(
+      FROM_HERE, base::BindOnce(std::move(download_callback_), result));
 }
 
 void CrxDownloader::OnDownloadComplete(
@@ -115,10 +147,9 @@ void CrxDownloader::OnDownloadComplete(
               perfetto::Flow::FromPointer(this));
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
-  // Release any references held by the progress callback, in case the
-  // CrxDownloader outlives the receiver of the progress_callback. (This is
-  // often the case in tests.)
-  progress_callback_.Reset();
+  // The attempt is over: a later cancellation must not run its callback.
+  is_attempt_in_progress_ = false;
+  cancel_attempt_callback_.Reset();
 
   if (result.error) {
     main_task_runner()->PostTask(
@@ -150,11 +181,14 @@ void CrxDownloader::OnDownloadComplete(
           [](scoped_refptr<CrxDownloader> downloader, Result result,
              DownloadMetrics download_metrics, CrxDownloaderError error) {
             if (error == CrxDownloaderError::NONE) {
+              VLOG(1) << "Download succeeded: " << download_metrics
+                      << ", file: " << result.response;
               downloader->download_metrics_.push_back(download_metrics);
-              downloader->main_task_runner()->PostTask(
-                  FROM_HERE,
-                  base::BindOnce(std::move(downloader->download_callback_),
-                                 result));
+              // This includes a cancelled download whose downloader could not
+              // interrupt the transfer: the verified file is reported, which
+              // keeps it available to downloaders that cache it, such as the
+              // macOS background downloader.
+              downloader->FinishDownload(result);
               return;
             }
             result.response.clear();
@@ -190,13 +224,24 @@ void CrxDownloader::HandleDownloadError(
   CHECK(result.response.empty());
   CHECK_NE(0, download_metrics.error);
 
+  VLOG(1) << "Download failed: " << download_metrics;
+
   download_metrics_.push_back(download_metrics);
 
   // Prevent the downloader from attempting other URLs or falling back to
   // other downloader types (like BITS) once a cancellation is triggered.
   if (result.error == std::to_underlying(CrxDownloaderError::CANCELLED)) {
-    main_task_runner()->PostTask(
-        FROM_HERE, base::BindOnce(std::move(download_callback_), result));
+    FinishDownload(result);
+    return;
+  }
+
+  // The downloader may ignore the cancellation and fail later with another
+  // error. Don't start a new transfer in that case.
+  if (is_cancelled_) {
+    // The metrics keep the actual error and extra code of the transfer.
+    Result cancelled_result;
+    cancelled_result.error = std::to_underlying(CrxDownloaderError::CANCELLED);
+    FinishDownload(cancelled_result);
     return;
   }
 
@@ -213,21 +258,50 @@ void CrxDownloader::HandleDownloadError(
 
   // Try downloading from another url from the list.
   if (current_url_ != urls_.end()) {
-    DoStartDownload(*current_url_);
+    StartAttempt(*current_url_);
     return;
   }
 
   // Try downloading using the next downloader.
   if (successor_ && !urls_.empty()) {
-    successor_->StartDownload(urls_, expected_hash_,
-                              std::move(download_callback_));
+    cancel_attempt_callback_ =
+        successor_->StartDownload(urls_, expected_hash_, progress_callback_,
+                                  std::move(download_callback_));
     return;
   }
 
   // The download ends here since there is no url nor downloader to handle this
   // download request further.
-  main_task_runner()->PostTask(
-      FROM_HERE, base::BindOnce(std::move(download_callback_), result));
+  FinishDownload(result);
+}
+
+std::ostream& operator<<(
+    std::ostream& os,
+    CrxDownloader::DownloadMetrics::Downloader downloader) {
+  switch (downloader) {
+    case CrxDownloader::DownloadMetrics::kNone:
+      return os << "none";
+    case CrxDownloader::DownloadMetrics::kUrlFetcher:
+      return os << "direct";
+    case CrxDownloader::DownloadMetrics::kBits:
+      return os << "bits";
+    case CrxDownloader::DownloadMetrics::kBackgroundMac:
+      return os << "nsurlsession_background";
+    case CrxDownloader::DownloadMetrics::kDeliveryOptimization:
+      return os << "delivery_optimization";
+  }
+  return os << "unknown(" << std::to_underlying(downloader) << ")";
+}
+
+std::ostream& operator<<(std::ostream& os,
+                         const CrxDownloader::DownloadMetrics& metrics) {
+  return os << "DownloadMetrics{url=" << metrics.url.spec()
+            << ", downloader=" << metrics.downloader
+            << ", error=" << metrics.error
+            << ", extra_code1=" << metrics.extra_code1
+            << ", downloaded_bytes=" << metrics.downloaded_bytes
+            << ", total_bytes=" << metrics.total_bytes
+            << ", download_time_ms=" << metrics.download_time_ms << "}";
 }
 
 }  // namespace update_client

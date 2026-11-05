@@ -27,6 +27,7 @@
 #include "base/task/single_thread_task_runner.h"
 #include "base/test/bind.h"
 #include "base/test/mock_callback.h"
+#include "base/test/run_until.h"
 #include "base/test/scoped_command_line.h"
 #include "build/build_config.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -44,6 +45,7 @@
 #include "ui/events/event.h"
 #include "ui/events/types/event_type.h"
 #include "ui/gfx/geometry/insets.h"
+#include "ui/gfx/geometry/point.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/rect_f.h"
 #include "ui/gfx/geometry/transform.h"
@@ -89,7 +91,6 @@ using ::testing::_;
 using ::testing::DoAll;
 using ::testing::ElementsAre;
 using ::testing::Eq;
-using ::testing::InvokeWithoutArgs;
 using ::testing::Mock;
 using ::testing::Return;
 using ::testing::SaveArg;
@@ -249,6 +250,7 @@ class WaylandWindowTest : public WaylandTest {
     WaylandTestBase::SyncDisplay();
     window->OnSequencePoint(viz_seq);
     window->root_surface()->ApplyPendingState();
+    window->OnFrameCommitted(viz_seq);
   }
 
   void InitializeWithSupportedHitTestValues(std::vector<int>* hit_tests) {
@@ -421,12 +423,14 @@ class WaylandWindowTest : public WaylandTest {
     CHECK(connection_->buffer_manager_host());
 
     auto interface_ptr = connection_->buffer_manager_host()->BindInterface();
-    buffer_manager_gpu_->Initialize(std::move(interface_ptr), {},
-                                    /*supports_dma_buf=*/false,
-                                    /*supports_viewporter=*/true,
-                                    /*supports_acquire_fence=*/false,
-                                    /*supports_overlays=*/true,
-                                    /*supports_single_pixel_buffer=*/true);
+    buffer_manager_gpu_->Initialize(
+        std::move(interface_ptr), {},
+        ozone::mojom::WaylandBufferManagerCapabilities::New(
+            /*supports_dma_buf=*/false, /*supports_viewporter=*/true,
+            /*supports_acquire_fence=*/false, /*supports_overlays=*/true,
+            /*supports_single_pixel_buffer=*/true,
+            /*compositor_tone_maps_using_clli=*/false,
+            /*compositor_tone_maps_using_mdcv=*/false));
 
     const uint32_t buffer_id = ++buffer_id_gen_;
     auto length = buffer_size.width() * buffer_size.height() * 4;
@@ -511,6 +515,16 @@ TEST_P(WaylandWindowTest, SetTitle) {
     auto* surface = server->GetObject<wl::MockSurface>(id);
     ASSERT_TRUE(surface);
     EXPECT_EQ("hello", surface->xdg_surface()->xdg_toplevel()->title());
+  });
+}
+
+TEST_P(WaylandWindowTest, SetWindowClassChangesAppId) {
+  window_->SetWindowClass("name", "Class", "new-app-id");
+  EXPECT_EQ("new-app-id", window_->GetWindowUniqueId());
+  PostToServerAndWait([id = surface_id_](wl::TestWaylandServerThread* server) {
+    auto* surface = server->GetObject<wl::MockSurface>(id);
+    ASSERT_TRUE(surface);
+    EXPECT_EQ("new-app-id", surface->xdg_surface()->xdg_toplevel()->app_id());
   });
 }
 
@@ -628,6 +642,27 @@ TEST_P(WaylandWindowTest, HandleTiledEdges) {
 
     VerifyAndClearExpectations();
   }
+}
+
+// Checks that a configure only changing the tiled edges is not merged into an
+// in-flight request for the same bounds. Otherwise the tiling change is lost,
+// and the delegate is not notified when it is reverted.
+TEST_P(WaylandWindowTest, HandleTiledEdgesOnlyConfigure) {
+  constexpr gfx::Size kSize{700, 500};
+
+  // Resizing produces a new frame, so this request stays in flight.
+  SendConfigureEvent(surface_id_, kSize, InitializeWlArrayWithActivatedState());
+  ASSERT_NE(window_->applied_state(), window_->latched_state());
+
+  EXPECT_CALL(delegate_,
+              OnWindowTiledStateChanged(WindowTiledEdges{.left = true}));
+  SendConfigureEvent(surface_id_, kSize,
+                     MakeStateArray({XDG_TOPLEVEL_STATE_ACTIVATED,
+                                     XDG_TOPLEVEL_STATE_TILED_LEFT}));
+
+  EXPECT_CALL(delegate_, OnWindowTiledStateChanged(WindowTiledEdges{}));
+  SendConfigureEvent(surface_id_, kSize, InitializeWlArrayWithActivatedState());
+  VerifyAndClearExpectations();
 }
 
 TEST_P(WaylandWindowTest, DisregardUnpassedWindowConfigure) {
@@ -1109,9 +1144,9 @@ void WaylandWindowTest::DoMinimizeTest(bool async_state) {
   // TODO(tonikito): Improve filtering of delegate notification here.
   ui::PlatformWindowState state;
   EXPECT_CALL(delegate_, OnWindowStateChanged(_, _))
-      .WillRepeatedly(DoAll(SaveArg<0>(&state), InvokeWithoutArgs([&]() {
-                              EXPECT_EQ(state, PlatformWindowState::kMinimized);
-                            })));
+      .WillRepeatedly(DoAll(SaveArg<0>(&state), [&]() {
+        EXPECT_EQ(state, PlatformWindowState::kMinimized);
+      }));
   SendConfigureEvent(surface_id_, {0, 0}, states);
 
   // And one last time to ensure the behaviour.
@@ -1156,6 +1191,302 @@ TEST_P(WaylandWindowTest, ServerInitiatedRestoreFromMinimizedState) {
   window_->HandleToplevelConfigureWithOrigin(0, 0, 0, 0, {});
   window_->HandleSurfaceConfigure(4);
   EXPECT_EQ(PlatformWindowState::kMinimized, window_->GetPlatformWindowState());
+}
+
+// Regression test for crbug.com/557572360. The compositor may send a configure
+// before it processes set_minimized, e.g. its reply to an earlier
+// set_maximized. Such a configure still carries the activated state, but must
+// not be interpreted as the compositor restoring the window.
+TEST_P(WaylandWindowTest, StaleActivatedConfigureDoesNotUnminimize) {
+  constexpr gfx::Size kMaximizedSize{800, 600};
+  EXPECT_CALL(delegate_, OnBoundsChanged(_)).Times(testing::AnyNumber());
+  EXPECT_CALL(delegate_, OnWindowStateChanged(_, _))
+      .Times(testing::AnyNumber());
+
+  auto active = InitializeWlArrayWithActivatedState();
+  SendConfigureEvent(surface_id_, {0, 0}, active);
+  AdvanceFrameToCurrent(window_.get(), delegate_);
+  ASSERT_EQ(PlatformWindowState::kNormal, window_->GetPlatformWindowState());
+
+  window_->Maximize();
+  ASSERT_EQ(PlatformWindowState::kMaximized, window_->GetPlatformWindowState());
+
+  // Queue the compositor's reply to set_maximized. The client does not
+  // dispatch it until after Minimize(), so it was sent before the compositor
+  // received set_minimized.
+  auto active_maximized = MakeStateArray(
+      {XDG_TOPLEVEL_STATE_ACTIVATED, XDG_TOPLEVEL_STATE_MAXIMIZED});
+  connection_->RoundTripQueue();
+  server_.Post(
+      base::BindLambdaForTesting([&, id = surface_id_, size = kMaximizedSize](
+                                     wl::TestWaylandServerThread* server) {
+        auto* xdg_surface =
+            server->GetObject<wl::MockSurface>(id)->xdg_surface();
+        wl::ScopedWlArray states(active_maximized);
+        xdg_toplevel_send_configure(xdg_surface->xdg_toplevel()->resource(),
+                                    size.width(), size.height(), states.get());
+        xdg_surface_send_configure(xdg_surface->resource(),
+                                   server->GetNextSerial());
+      }));
+  server_.FlushForTesting();
+
+  window_->Minimize();
+  EXPECT_EQ(PlatformWindowState::kMinimized, window_->GetPlatformWindowState());
+
+  // Dispatch the stale configure. The window must remain minimized.
+  SyncDisplay();
+  AdvanceFrameToCurrent(window_.get(), delegate_);
+  EXPECT_EQ(PlatformWindowState::kMinimized, window_->GetPlatformWindowState());
+
+  // The configure the compositor sends after minimizing the window deactivates
+  // it. The window must still remain minimized.
+  auto maximized = MakeStateArray({XDG_TOPLEVEL_STATE_MAXIMIZED});
+  SendConfigureEvent(surface_id_, kMaximizedSize, maximized);
+  AdvanceFrameToCurrent(window_.get(), delegate_);
+  EXPECT_EQ(PlatformWindowState::kMinimized, window_->GetPlatformWindowState());
+
+  // Restoring the window must return it to the maximized state.
+  PostToServerAndWait([id = surface_id_](wl::TestWaylandServerThread* server) {
+    wl::MockSurface* mock_surface = server->GetObject<wl::MockSurface>(id);
+    ASSERT_TRUE(mock_surface);
+    EXPECT_CALL(*mock_surface->xdg_surface()->xdg_toplevel(), SetMaximized());
+  });
+  window_->Restore();
+  EXPECT_EQ(PlatformWindowState::kMaximized, window_->GetPlatformWindowState());
+  SyncDisplay();
+}
+
+// Regression test for crbug.com/571648519. With kAsyncFullscreenWindowState
+// disabled, SetFullscreen(true) applies kFullScreen immediately. A configure
+// sent by the compositor before it processed set_fullscreen must not drop the
+// window back out of fullscreen or lose previously_maximized_.
+TEST_P(WaylandWindowTest, StaleConfigureDoesNotExitFullscreen) {
+  constexpr gfx::Size kNormalSize{800, 600};
+  constexpr gfx::Size kMaximizedSize{1280, 800};
+  constexpr gfx::Size kFullscreenSize{1920, 1080};
+  EXPECT_CALL(delegate_, OnBoundsChanged(_)).Times(testing::AnyNumber());
+  EXPECT_CALL(delegate_, OnWindowStateChanged(_, _))
+      .Times(testing::AnyNumber());
+
+  auto active = InitializeWlArrayWithActivatedState();
+  SendConfigureEvent(surface_id_, {0, 0}, active);
+  AdvanceFrameToCurrent(window_.get(), delegate_);
+  ASSERT_EQ(PlatformWindowState::kNormal, window_->GetPlatformWindowState());
+
+  window_->Maximize();
+  ASSERT_EQ(PlatformWindowState::kMaximized, window_->GetPlatformWindowState());
+
+  // A stale maximized configure is still acked, so its configured geometry must
+  // be obeyed (otherwise compositors such as Weston raise
+  // xdg_wm_base.invalid_surface_state).
+  PostToServerAndWait([id = surface_id_, size = kMaximizedSize](
+                          wl::TestWaylandServerThread* server) {
+    wl::MockSurface* mock_surface = server->GetObject<wl::MockSurface>(id);
+    ASSERT_TRUE(mock_surface);
+    wl::MockXdgSurface* xdg_surface = mock_surface->xdg_surface();
+    EXPECT_CALL(*xdg_surface, SetWindowGeometry(gfx::Rect(size)));
+    EXPECT_CALL(*xdg_surface, AckConfigure(_));
+  });
+
+  // Queue the compositor's reply to set_maximized before the client calls
+  // SetFullscreen(true), so it predates set_fullscreen on the server.
+  auto active_maximized = MakeStateArray(
+      {XDG_TOPLEVEL_STATE_ACTIVATED, XDG_TOPLEVEL_STATE_MAXIMIZED});
+  server_.Post(
+      base::BindLambdaForTesting([&, id = surface_id_, size = kMaximizedSize](
+                                     wl::TestWaylandServerThread* server) {
+        auto* xdg_surface =
+            server->GetObject<wl::MockSurface>(id)->xdg_surface();
+        wl::ScopedWlArray states(active_maximized);
+        xdg_toplevel_send_configure(xdg_surface->xdg_toplevel()->resource(),
+                                    size.width(), size.height(), states.get());
+        xdg_surface_send_configure(xdg_surface->resource(),
+                                   server->GetNextSerial());
+      }));
+  server_.FlushForTesting();
+
+  window_->SetFullscreen(true, display::kInvalidDisplayId);
+  EXPECT_EQ(PlatformWindowState::kFullScreen,
+            window_->GetPlatformWindowState());
+
+  // Dispatch the stale configure. The window must remain fullscreen while
+  // acking the maximized configure's size.
+  SyncDisplay();
+  AdvanceFrameToCurrent(window_.get(), delegate_);
+  EXPECT_EQ(PlatformWindowState::kFullScreen,
+            window_->GetPlatformWindowState());
+  EXPECT_EQ(gfx::Rect(kMaximizedSize), window_->GetBoundsInDIP());
+  PostToServerAndWait([id = surface_id_](wl::TestWaylandServerThread* server) {
+    wl::MockSurface* mock_surface = server->GetObject<wl::MockSurface>(id);
+    ASSERT_TRUE(mock_surface);
+    Mock::VerifyAndClearExpectations(mock_surface->xdg_surface());
+  });
+
+  // Dispatch the compositor's fullscreen configure.
+  auto active_fullscreen = MakeStateArray(
+      {XDG_TOPLEVEL_STATE_ACTIVATED, XDG_TOPLEVEL_STATE_FULLSCREEN});
+  SendConfigureEvent(surface_id_, kFullscreenSize, active_fullscreen);
+  AdvanceFrameToCurrent(window_.get(), delegate_);
+  EXPECT_EQ(PlatformWindowState::kFullScreen,
+            window_->GetPlatformWindowState());
+
+  // Exiting fullscreen must still restore to maximized.
+  PostToServerAndWait([id = surface_id_](wl::TestWaylandServerThread* server) {
+    wl::MockSurface* mock_surface = server->GetObject<wl::MockSurface>(id);
+    ASSERT_TRUE(mock_surface);
+    EXPECT_CALL(*mock_surface->xdg_surface()->xdg_toplevel(),
+                UnsetFullscreen());
+    EXPECT_CALL(*mock_surface->xdg_surface()->xdg_toplevel(), SetMaximized());
+  });
+  window_->SetFullscreen(false, display::kInvalidDisplayId);
+  EXPECT_EQ(PlatformWindowState::kMaximized, window_->GetPlatformWindowState());
+  SyncDisplay();
+  PostToServerAndWait([id = surface_id_](wl::TestWaylandServerThread* server) {
+    wl::MockSurface* mock_surface = server->GetObject<wl::MockSurface>(id);
+    ASSERT_TRUE(mock_surface);
+    Mock::VerifyAndClearExpectations(
+        mock_surface->xdg_surface()->xdg_toplevel());
+  });
+
+  // Once the sync after set_fullscreen has completed, a compositor-initiated
+  // configure without fullscreen must still exit fullscreen.
+  window_->SetFullscreen(true, display::kInvalidDisplayId);
+  SyncDisplay();
+  auto normal_active = InitializeWlArrayWithActivatedState();
+  SendConfigureEvent(surface_id_, kNormalSize, normal_active);
+  AdvanceFrameToCurrent(window_.get(), delegate_);
+  EXPECT_EQ(PlatformWindowState::kNormal, window_->GetPlatformWindowState());
+
+  // Same race while an earlier configure is still in in_flight_requests_
+  // (processed, but not yet latched) when SetFullscreen(true) runs, so
+  // GetLatestRequestedState() still reports the unlatched state.
+  window_->Maximize();
+  SendConfigureEvent(surface_id_, {1000, 700}, active_maximized);
+  connection_->RoundTripQueue();
+  server_.Post(
+      base::BindLambdaForTesting([&, id = surface_id_, size = kMaximizedSize](
+                                     wl::TestWaylandServerThread* server) {
+        auto* xdg_surface =
+            server->GetObject<wl::MockSurface>(id)->xdg_surface();
+        wl::ScopedWlArray states(active_maximized);
+        xdg_toplevel_send_configure(xdg_surface->xdg_toplevel()->resource(),
+                                    size.width(), size.height(), states.get());
+        xdg_surface_send_configure(xdg_surface->resource(),
+                                   server->GetNextSerial());
+      }));
+  server_.FlushForTesting();
+
+  window_->SetFullscreen(true, display::kInvalidDisplayId);
+  SyncDisplay();
+  AdvanceFrameToCurrent(window_.get(), delegate_);
+  EXPECT_EQ(PlatformWindowState::kFullScreen,
+            window_->GetPlatformWindowState());
+  EXPECT_EQ(gfx::Rect(kMaximizedSize), window_->GetBoundsInDIP());
+
+  window_->SetFullscreen(false, display::kInvalidDisplayId);
+  EXPECT_EQ(PlatformWindowState::kMaximized, window_->GetPlatformWindowState());
+  SyncDisplay();
+
+  // A stale 0x0 configure (such as the initial configure sent before the
+  // compositor saw set_fullscreen) must keep non-empty bounds and not trip
+  // XdgSurface::SetWindowGeometry().
+  connection_->RoundTripQueue();
+  server_.Post(base::BindLambdaForTesting(
+      [id = surface_id_](wl::TestWaylandServerThread* server) {
+        auto* xdg_surface =
+            server->GetObject<wl::MockSurface>(id)->xdg_surface();
+        wl::ScopedWlArray empty_states({});
+        xdg_toplevel_send_configure(xdg_surface->xdg_toplevel()->resource(), 0,
+                                    0, empty_states.get());
+        xdg_surface_send_configure(xdg_surface->resource(),
+                                   server->GetNextSerial());
+      }));
+  server_.FlushForTesting();
+
+  window_->SetFullscreen(true, display::kInvalidDisplayId);
+  SyncDisplay();
+  AdvanceFrameToCurrent(window_.get(), delegate_);
+  EXPECT_EQ(PlatformWindowState::kFullScreen,
+            window_->GetPlatformWindowState());
+  EXPECT_FALSE(window_->GetBoundsInDIP().IsEmpty());
+}
+
+// Regression test for crbug.com/582849861. Compositors such as Mutter echo the
+// last committed window geometry on state-only configures (e.g. activation).
+// Such configures arriving before a client-initiated resize frame has committed
+// and synced must not overwrite the client-requested bounds.
+TEST_P(WaylandWindowTest, StaleConfigureDoesNotRevertClientBounds) {
+  const auto kInsets = gfx::Insets::TLBR(10, 16, 32, 16);
+  EXPECT_CALL(delegate_, CalculateInsetsInDIP(_))
+      .WillRepeatedly(Return(gfx::Insets()));
+  EXPECT_CALL(delegate_, CalculateInsetsInDIP(PlatformWindowState::kNormal))
+      .WillRepeatedly(Return(kInsets));
+  EXPECT_CALL(delegate_, OnBoundsChanged(_)).Times(testing::AnyNumber());
+  EXPECT_CALL(delegate_, OnWindowStateChanged(_, _))
+      .Times(testing::AnyNumber());
+  EXPECT_CALL(delegate_, OnWindowTiledStateChanged(_))
+      .Times(testing::AnyNumber());
+
+  auto active = InitializeWlArrayWithActivatedState();
+  SendConfigureEvent(surface_id_, {0, 0}, active);
+  AdvanceFrameToCurrent(window_.get(), delegate_);
+  const gfx::Rect initial_bounds = window_->GetBoundsInDIP();
+  const gfx::Size initial_geometry_size(
+      initial_bounds.width() - kInsets.width(),
+      initial_bounds.height() - kInsets.height());
+
+  constexpr gfx::Rect kClientResizedBounds{1017, 746};
+  window_->SetBoundsInDIP(kClientResizedBounds);
+  EXPECT_EQ(kClientResizedBounds, window_->GetBoundsInDIP());
+
+  // 1) A configure echoing the pre-resize geometry before the resized frame
+  // commits must not clobber the client-requested bounds.
+  SendConfigureEvent(surface_id_, initial_geometry_size, active);
+  EXPECT_EQ(kClientResizedBounds, window_->GetBoundsInDIP());
+
+  // 2) A configure queued on the server before the resized frame commits and
+  // its wl_display.sync completes must also keep the client-requested bounds.
+  server_.Post(base::BindLambdaForTesting(
+      [&, id = surface_id_,
+       size = initial_geometry_size](wl::TestWaylandServerThread* server) {
+        auto* xdg_surface =
+            server->GetObject<wl::MockSurface>(id)->xdg_surface();
+        wl::ScopedWlArray states(active);
+        xdg_toplevel_send_configure(xdg_surface->xdg_toplevel()->resource(),
+                                    size.width(), size.height(), states.get());
+        xdg_surface_send_configure(xdg_surface->resource(),
+                                   server->GetNextSerial());
+      }));
+  server_.FlushForTesting();
+
+  AdvanceFrameToCurrent(window_.get(), delegate_);
+  SyncDisplay();
+  AdvanceFrameToCurrent(window_.get(), delegate_);
+  EXPECT_EQ(kClientResizedBounds, window_->GetBoundsInDIP());
+
+  // 3) Once the frame commit and sync have completed, a compositor configure
+  // back to the initial geometry size is obeyed.
+  SendConfigureEvent(surface_id_, initial_geometry_size, active);
+  AdvanceFrameToCurrent(window_.get(), delegate_);
+  EXPECT_EQ(initial_bounds, window_->GetBoundsInDIP());
+
+  // 4) Interactive resizes (XDG_TOPLEVEL_STATE_RESIZING) and server-chosen
+  // sizes distinct from the stale geometry are always obeyed immediately.
+  constexpr gfx::Rect kSecondClientBounds{900, 700};
+  window_->SetBoundsInDIP(kSecondClientBounds);
+  auto active_resizing = MakeStateArray(
+      {XDG_TOPLEVEL_STATE_ACTIVATED, XDG_TOPLEVEL_STATE_RESIZING});
+  SendConfigureEvent(surface_id_, initial_geometry_size, active_resizing);
+  AdvanceFrameToCurrent(window_.get(), delegate_);
+  EXPECT_EQ(initial_bounds, window_->GetBoundsInDIP());
+
+  window_->SetBoundsInDIP(kSecondClientBounds);
+  constexpr gfx::Size kServerSize{640, 480};
+  SendConfigureEvent(surface_id_, kServerSize, active);
+  AdvanceFrameToCurrent(window_.get(), delegate_);
+  EXPECT_EQ(gfx::Rect(kServerSize.width() + kInsets.width(),
+                      kServerSize.height() + kInsets.height()),
+            window_->GetBoundsInDIP());
 }
 
 // Regression test for crbug.com/396148609. A minimized window is not visible,
@@ -1392,6 +1723,8 @@ void WaylandWindowTest::DoStartWithFullscreenTest(bool async_state) {
     wl::ScopedWlArray states = InitializeWlArrayWithActivatedState();
     states.AddStateToWlArray(XDG_TOPLEVEL_STATE_FULLSCREEN);
     SendConfigureEvent(surface_id, {0, 0}, states);
+    AdvanceFrameToCurrent(window.get(), delegate);
+    EXPECT_EQ(window->GetBoundsInDIP(), gfx::Rect(100, 100));
   }
 
   EXPECT_EQ(window->GetPlatformWindowState(), PlatformWindowState::kFullScreen);
@@ -1476,6 +1809,8 @@ void WaylandWindowTest::DoStartMaximizedTest(bool async_state) {
     wl::ScopedWlArray states = InitializeWlArrayWithActivatedState();
     states.AddStateToWlArray(XDG_TOPLEVEL_STATE_MAXIMIZED);
     SendConfigureEvent(surface_id, {0, 0}, states);
+    AdvanceFrameToCurrent(window.get(), delegate);
+    EXPECT_EQ(window->GetBoundsInDIP(), gfx::Rect(100, 100));
   }
 
   EXPECT_EQ(window->GetPlatformWindowState(), PlatformWindowState::kMaximized);
@@ -1769,6 +2104,42 @@ TEST_P(WaylandWindowTest, SetMaximizedFullscreenAndRestoreAsync) {
   base::test::ScopedFeatureList feature_list;
   feature_list.InitAndEnableFeature(features::kAsyncFullscreenWindowState);
   DoSetMaximizedFullscreenAndRestoreTest(/*async_state=*/true);
+}
+
+// Some compositors drop the maximized state when a maximized window goes
+// fullscreen. Leaving fullscreen must still return the window to maximized.
+TEST_P(WaylandWindowTest, ExitFullscreenWithoutMaximizedStateAsync) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(features::kAsyncFullscreenWindowState);
+  constexpr gfx::Size kMaximizedSize{800, 600};
+  EXPECT_CALL(delegate_, OnBoundsChanged(_)).Times(testing::AnyNumber());
+  EXPECT_CALL(delegate_, OnWindowStateChanged(_, _))
+      .Times(testing::AnyNumber());
+
+  auto active_maximized = MakeStateArray(
+      {XDG_TOPLEVEL_STATE_ACTIVATED, XDG_TOPLEVEL_STATE_MAXIMIZED});
+  window_->Maximize();
+  SendConfigureEvent(surface_id_, kMaximizedSize, active_maximized);
+  AdvanceFrameToCurrent(window_.get(), delegate_);
+  ASSERT_EQ(PlatformWindowState::kMaximized, window_->GetPlatformWindowState());
+
+  auto active_fullscreen = MakeStateArray(
+      {XDG_TOPLEVEL_STATE_ACTIVATED, XDG_TOPLEVEL_STATE_FULLSCREEN});
+  window_->SetFullscreen(true, display::kInvalidDisplayId);
+  SendConfigureEvent(surface_id_, kMaximizedSize, active_fullscreen);
+  AdvanceFrameToCurrent(window_.get(), delegate_);
+  ASSERT_EQ(PlatformWindowState::kFullScreen,
+            window_->GetPlatformWindowState());
+
+  PostToServerAndWait([id = surface_id_](wl::TestWaylandServerThread* server) {
+    wl::MockSurface* mock_surface = server->GetObject<wl::MockSurface>(id);
+    ASSERT_TRUE(mock_surface);
+    wl::MockXdgTopLevel* toplevel = mock_surface->xdg_surface()->xdg_toplevel();
+    EXPECT_CALL(*toplevel, UnsetFullscreen());
+    EXPECT_CALL(*toplevel, SetMaximized());
+  });
+  window_->SetFullscreen(false, display::kInvalidDisplayId);
+  SyncDisplay();
 }
 
 TEST_P(WaylandWindowTest, RestoreBoundsAfterMaximize) {
@@ -2935,6 +3306,41 @@ TEST_P(WaylandWindowTest, DispatchWindowMove) {
       HTCAPTION, gfx::Point());
 }
 
+// The compositor takes over the touch sequence that starts an interactive move
+// and need not send wl_touch.up for it, so it must be ended at the handoff.
+TEST_P(WaylandWindowTest, DispatchWindowMoveCancelsTouches) {
+  PostToServerAndWait([](wl::TestWaylandServerThread* server) {
+    wl_seat_send_capabilities(server->seat()->resource(),
+                              WL_SEAT_CAPABILITY_TOUCH);
+  });
+  ASSERT_TRUE(connection_->seat()->touch());
+
+  std::vector<EventType> touch_events;
+  EXPECT_CALL(delegate_, DispatchEvent(_))
+      .WillRepeatedly([&touch_events](Event* event) {
+        if (event->IsTouchEvent()) {
+          touch_events.push_back(event->type());
+        }
+      });
+
+  PostToServerAndWait([id = surface_id_](wl::TestWaylandServerThread* server) {
+    wl::MockSurface* surface = server->GetObject<wl::MockSurface>(id);
+    auto* touch_resource = server->seat()->touch()->resource();
+    wl_touch_send_down(touch_resource, server->GetNextSerial(),
+                       server->GetNextTime(), surface->resource(), /*id=*/0,
+                       wl_fixed_from_int(10), wl_fixed_from_int(10));
+    wl_touch_send_frame(touch_resource);
+  });
+  ASSERT_EQ(1u, connection_->event_source()->GetActiveTouchPointIds().size());
+
+  ui::GetWmMoveResizeHandler(*window_)->DispatchHostWindowDragMovement(
+      HTCAPTION, gfx::Point());
+
+  EXPECT_TRUE(connection_->event_source()->GetActiveTouchPointIds().empty());
+  EXPECT_THAT(touch_events, ::testing::ElementsAre(EventType::kTouchPressed,
+                                                   EventType::kTouchCancelled));
+}
+
 // Makes sure hit tests are converted into right edges.
 TEST_P(WaylandWindowTest, DispatchWindowResize) {
   std::vector<int> hit_test_values;
@@ -2972,6 +3378,103 @@ TEST_P(WaylandWindowTest, DispatchWindowResize) {
                                                              gfx::Point());
     }
   }
+}
+
+// Regression test for crbug.com/482979605: an in-flight wl_pointer.button
+// press arriving after a toplevel window is hidden must not crash when the
+// delegate triggers an interactive resize or move while `xdg_toplevel_` is
+// null.
+TEST_P(WaylandWindowTest, DispatchWindowResizeAfterHide) {
+  PostToServerAndWait([](wl::TestWaylandServerThread* server) {
+    wl_seat_send_capabilities(server->seat()->resource(),
+                              WL_SEAT_CAPABILITY_POINTER);
+  });
+  ASSERT_TRUE(connection_->seat()->pointer());
+
+  PostToServerAndWait([id = surface_id_](wl::TestWaylandServerThread* server) {
+    wl::MockSurface* surface = server->GetObject<wl::MockSurface>(id);
+    auto* pointer_resource = server->seat()->pointer()->resource();
+    wl_pointer_send_enter(pointer_resource, server->GetNextSerial(),
+                          surface->resource(), wl_fixed_from_int(10),
+                          wl_fixed_from_int(10));
+    wl_pointer_send_frame(pointer_resource);
+  });
+
+  int mouse_press_count = 0;
+  EXPECT_CALL(delegate_, DispatchEvent(_))
+      .Times(::testing::AnyNumber())
+      .WillRepeatedly([&](Event* event) {
+        if (event->type() == EventType::kMousePressed) {
+          ++mouse_press_count;
+          ui::GetWmMoveResizeHandler(*window_)->DispatchHostWindowDragMovement(
+              mouse_press_count == 1 ? HTTOPRIGHT : HTCAPTION, gfx::Point());
+        }
+      });
+
+  connection_->RoundTripQueue();
+  server_.Post(
+      base::BindLambdaForTesting([](wl::TestWaylandServerThread* server) {
+        auto* pointer_resource = server->seat()->pointer()->resource();
+        for (int i = 0; i < 2; ++i) {
+          wl_pointer_send_button(pointer_resource, server->GetNextSerial(),
+                                 server->GetNextTime(), BTN_LEFT,
+                                 WL_POINTER_BUTTON_STATE_PRESSED);
+          wl_pointer_send_frame(pointer_resource);
+          wl_pointer_send_button(pointer_resource, server->GetNextSerial(),
+                                 server->GetNextTime(), BTN_LEFT,
+                                 WL_POINTER_BUTTON_STATE_RELEASED);
+          wl_pointer_send_frame(pointer_resource);
+        }
+      }));
+  server_.FlushForTesting();
+
+  window_->Hide();
+  SyncDisplay();
+  EXPECT_EQ(mouse_press_count, 2);
+}
+
+// Regression test for crbug.com/482979605: during asynchronous Widget::Close()
+// (PrepareForShutdown() + Hide()), capture must be released and in-flight
+// pointer events must not be dispatched to the closing window's delegate.
+TEST_P(WaylandWindowTest, PrepareForShutdownStopsEventDispatch) {
+  PostToServerAndWait([](wl::TestWaylandServerThread* server) {
+    wl_seat_send_capabilities(server->seat()->resource(),
+                              WL_SEAT_CAPABILITY_POINTER);
+  });
+  ASSERT_TRUE(connection_->seat()->pointer());
+
+  PostToServerAndWait([id = surface_id_](wl::TestWaylandServerThread* server) {
+    wl::MockSurface* surface = server->GetObject<wl::MockSurface>(id);
+    auto* pointer_resource = server->seat()->pointer()->resource();
+    wl_pointer_send_enter(pointer_resource, server->GetNextSerial(),
+                          surface->resource(), wl_fixed_from_int(10),
+                          wl_fixed_from_int(10));
+    wl_pointer_send_frame(pointer_resource);
+  });
+  window_->SetCapture();
+  ASSERT_TRUE(window_->HasCapture());
+
+  connection_->RoundTripQueue();
+  server_.Post(
+      base::BindLambdaForTesting([](wl::TestWaylandServerThread* server) {
+        auto* pointer_resource = server->seat()->pointer()->resource();
+        wl_pointer_send_button(pointer_resource, server->GetNextSerial(),
+                               server->GetNextTime(), BTN_LEFT,
+                               WL_POINTER_BUTTON_STATE_PRESSED);
+        wl_pointer_send_frame(pointer_resource);
+        wl_pointer_send_button(pointer_resource, server->GetNextSerial(),
+                               server->GetNextTime(), BTN_LEFT,
+                               WL_POINTER_BUTTON_STATE_RELEASED);
+        wl_pointer_send_frame(pointer_resource);
+      }));
+  server_.FlushForTesting();
+
+  EXPECT_CALL(delegate_, OnLostCapture());
+  EXPECT_CALL(delegate_, DispatchEvent(_)).Times(0);
+  window_->PrepareForShutdown();
+  EXPECT_FALSE(window_->HasCapture());
+  window_->Hide();
+  SyncDisplay();
 }
 
 class WaylandWindowTestNoFractionalScale : public WaylandWindowTest {
@@ -3870,6 +4373,102 @@ TEST_P(WaylandWindowTest, SizeConstraintsExternal) {
   EXPECT_CALL(delegate_, OnBoundsChanged(Eq(kDefaultBoundsChange)));
 
   SendConfigureEvent(surface_id_, even_greater_bounds.size(), state);
+  EXPECT_EQ(window_->GetBoundsInDIP(), gfx::Rect(kMaxSize));
+}
+
+// Regression test for crbug.com/576504456: maximized geometry must be obeyed
+// exactly and fullscreen geometry is an upper bound, rather than clamping to
+// client size constraints (otherwise compositors such as Weston raise
+// xdg_wm_base.invalid_surface_state).
+TEST_P(WaylandWindowTest, SizeConstraintsIgnoredWhenMaximizedOrFullscreen) {
+  constexpr gfx::Size kMinSize{100, 100};
+  constexpr gfx::Size kMaxSize{300, 300};
+
+  ON_CALL(delegate_, GetMinimumSizeForWindow()).WillByDefault(Return(kMinSize));
+  ON_CALL(delegate_, GetMaximumSizeForWindow()).WillByDefault(Return(kMaxSize));
+
+  window_->SetBoundsInDIP({0, 0, 200, 200});
+  AdvanceFrameToCurrent(window_.get(), delegate_);
+  VerifyAndClearExpectations();
+
+  gfx::Rect maximized_bounds(kMaxSize);
+  maximized_bounds.Outset(10);
+  maximized_bounds.set_origin({0, 0});
+
+  PostToServerAndWait([id = surface_id_, bounds = maximized_bounds](
+                          wl::TestWaylandServerThread* server) {
+    wl::MockSurface* mock_surface = server->GetObject<wl::MockSurface>(id);
+    ASSERT_TRUE(mock_surface);
+    wl::MockXdgSurface* xdg_surface = mock_surface->xdg_surface();
+    EXPECT_CALL(*xdg_surface, SetWindowGeometry(gfx::Rect(bounds.size())));
+    EXPECT_CALL(*xdg_surface, AckConfigure(_));
+  });
+
+  auto maximized_state = MakeStateArray(
+      {XDG_TOPLEVEL_STATE_ACTIVATED, XDG_TOPLEVEL_STATE_MAXIMIZED});
+  SendConfigureEvent(surface_id_, maximized_bounds.size(), maximized_state);
+  AdvanceFrameToCurrent(window_.get(), delegate_);
+  EXPECT_EQ(window_->GetBoundsInDIP(), maximized_bounds);
+  VerifyAndClearExpectations();
+
+  gfx::Rect fullscreen_bounds(kMinSize);
+  fullscreen_bounds.Inset(10);
+  fullscreen_bounds.set_origin({0, 0});
+
+  PostToServerAndWait([id = surface_id_, bounds = fullscreen_bounds](
+                          wl::TestWaylandServerThread* server) {
+    wl::MockSurface* mock_surface = server->GetObject<wl::MockSurface>(id);
+    ASSERT_TRUE(mock_surface);
+    wl::MockXdgSurface* xdg_surface = mock_surface->xdg_surface();
+    EXPECT_CALL(*xdg_surface, SetWindowGeometry(gfx::Rect(bounds.size())));
+    EXPECT_CALL(*xdg_surface, AckConfigure(_));
+  });
+
+  auto fullscreen_state = MakeStateArray(
+      {XDG_TOPLEVEL_STATE_ACTIVATED, XDG_TOPLEVEL_STATE_FULLSCREEN});
+  SendConfigureEvent(surface_id_, fullscreen_bounds.size(), fullscreen_state);
+  AdvanceFrameToCurrent(window_.get(), delegate_);
+  EXPECT_EQ(window_->GetBoundsInDIP(), fullscreen_bounds);
+  VerifyAndClearExpectations();
+
+  // Regression test for crbug.com/580653140: a 0x0 configure while maximized or
+  // fullscreen (where the compositor leaves size selection to the client or
+  // updates only state flags such as activation) must retain the current bounds
+  // rather than setting empty bounds and crashing
+  // XdgSurface::SetWindowGeometry.
+  ON_CALL(delegate_, CalculateInsetsInDIP(PlatformWindowState::kMaximized))
+      .WillByDefault(Return(gfx::Insets(5)));
+  PostToServerAndWait([id = surface_id_, bounds = fullscreen_bounds](
+                          wl::TestWaylandServerThread* server) {
+    wl::MockSurface* mock_surface = server->GetObject<wl::MockSurface>(id);
+    ASSERT_TRUE(mock_surface);
+    wl::MockXdgSurface* xdg_surface = mock_surface->xdg_surface();
+    gfx::Rect expected_geometry(bounds.size());
+    expected_geometry.Inset(gfx::Insets(5));
+    EXPECT_CALL(*xdg_surface, SetWindowGeometry(expected_geometry));
+    EXPECT_CALL(*xdg_surface, AckConfigure(_));
+  });
+
+  SendConfigureEvent(surface_id_, {0, 0}, maximized_state);
+  AdvanceFrameToCurrent(window_.get(), delegate_);
+  EXPECT_EQ(window_->GetBoundsInDIP(), fullscreen_bounds);
+  VerifyAndClearExpectations();
+
+  PostToServerAndWait([id = surface_id_, bounds = fullscreen_bounds](
+                          wl::TestWaylandServerThread* server) {
+    wl::MockSurface* mock_surface = server->GetObject<wl::MockSurface>(id);
+    ASSERT_TRUE(mock_surface);
+    wl::MockXdgSurface* xdg_surface = mock_surface->xdg_surface();
+    EXPECT_CALL(*xdg_surface, SetWindowGeometry(gfx::Rect(bounds.size())));
+    EXPECT_CALL(*xdg_surface, AckConfigure(_));
+  });
+
+  auto deactivated_fullscreen_state =
+      MakeStateArray({XDG_TOPLEVEL_STATE_FULLSCREEN});
+  SendConfigureEvent(surface_id_, {0, 0}, deactivated_fullscreen_state);
+  AdvanceFrameToCurrent(window_.get(), delegate_);
+  EXPECT_EQ(window_->GetBoundsInDIP(), fullscreen_bounds);
+  VerifyAndClearExpectations();
 }
 
 TEST_P(WaylandWindowTest, OnSizeConstraintsChanged) {
@@ -3962,16 +4561,172 @@ TEST_P(WaylandWindowTest, DestroysCreatesPopupsOnHideShow) {
   });
 }
 
+// Compositors such as Mutter raise a fatal protocol error if a parent surface
+// is unmapped while a child popup is still mapped. Verify that hiding a popup
+// hides all of its child popups, even ones that are no longer tracked as the
+// parent's `child_popup()` (e.g. a submenu and a tooltip shown at once).
+TEST_P(WaylandWindowTest, HidingPopupHidesAllChildPopups) {
+  MockWaylandPlatformWindowDelegate menu_delegate(connection_.get());
+  auto menu = CreateWaylandWindowWithParams(PlatformWindowType::kMenu,
+                                            gfx::Rect(50, 50), &menu_delegate,
+                                            window_->GetWidget());
+  ASSERT_TRUE(menu);
+
+  MockWaylandPlatformWindowDelegate submenu_delegate(connection_.get());
+  auto submenu = CreateWaylandWindowWithParams(
+      PlatformWindowType::kMenu, gfx::Rect(10, 10, 20, 20), &submenu_delegate,
+      menu->GetWidget());
+  ASSERT_TRUE(submenu);
+  EXPECT_EQ(menu->child_popup(), submenu->AsWaylandPopup());
+
+  // Showing a tooltip over the menu replaces the submenu as `child_popup()`.
+  MockWaylandPlatformWindowDelegate tooltip_delegate(connection_.get());
+  auto tooltip = CreateWaylandWindowWithParams(
+      PlatformWindowType::kTooltip, gfx::Rect(5, 5, 10, 10), &tooltip_delegate,
+      menu->GetWidget());
+  ASSERT_TRUE(tooltip);
+  EXPECT_EQ(menu->child_popup(), tooltip->AsWaylandPopup());
+
+  // Hiding the tooltip must not drop tracking of the still-visible submenu.
+  tooltip->Hide();
+  EXPECT_FALSE(tooltip->IsVisible());
+  EXPECT_TRUE(submenu->IsVisible());
+
+  const uint32_t submenu_surface_id = submenu->root_surface()->get_surface_id();
+  PostToServerAndWait([submenu_surface_id](
+                          wl::TestWaylandServerThread* server) {
+    auto* mock_surface = server->GetObject<wl::MockSurface>(submenu_surface_id);
+    ASSERT_TRUE(mock_surface->xdg_surface());
+    EXPECT_TRUE(mock_surface->xdg_surface()->xdg_popup());
+  });
+
+  // Show the tooltip again so that the menu has two visible child popups, only
+  // one of which is `child_popup()`.
+  tooltip->Show(false);
+  ASSERT_TRUE(tooltip->IsVisible());
+  EXPECT_EQ(menu->child_popup(), tooltip->AsWaylandPopup());
+
+  menu->Hide();
+  EXPECT_FALSE(menu->IsVisible());
+  EXPECT_FALSE(submenu->IsVisible());
+  EXPECT_FALSE(tooltip->IsVisible());
+
+  const uint32_t tooltip_surface_id = tooltip->root_surface()->get_surface_id();
+  PostToServerAndWait([submenu_surface_id, tooltip_surface_id](
+                          wl::TestWaylandServerThread* server) {
+    EXPECT_FALSE(
+        server->GetObject<wl::MockSurface>(submenu_surface_id)->xdg_surface());
+    EXPECT_FALSE(
+        server->GetObject<wl::MockSurface>(tooltip_surface_id)->xdg_surface());
+  });
+}
+
+// Verify that destroying a visible popup hides its child popups first.
+TEST_P(WaylandWindowTest, DestroyingPopupHidesChildPopups) {
+  MockWaylandPlatformWindowDelegate menu_delegate(connection_.get());
+  auto menu = CreateWaylandWindowWithParams(PlatformWindowType::kMenu,
+                                            gfx::Rect(50, 50), &menu_delegate,
+                                            window_->GetWidget());
+  ASSERT_TRUE(menu);
+
+  MockWaylandPlatformWindowDelegate submenu_delegate(connection_.get());
+  auto submenu = CreateWaylandWindowWithParams(
+      PlatformWindowType::kMenu, gfx::Rect(10, 10, 20, 20), &submenu_delegate,
+      menu->GetWidget());
+  ASSERT_TRUE(submenu);
+  ASSERT_TRUE(submenu->IsVisible());
+
+  menu.reset();
+  EXPECT_FALSE(submenu->IsVisible());
+
+  const uint32_t submenu_surface_id = submenu->root_surface()->get_surface_id();
+  PostToServerAndWait([submenu_surface_id](
+                          wl::TestWaylandServerThread* server) {
+    EXPECT_FALSE(
+        server->GetObject<wl::MockSurface>(submenu_surface_id)->xdg_surface());
+  });
+}
+
+// Popups parented to a bubble use the bubble's toplevel as their xdg parent.
+// Verify that hiding the toplevel hides such popups.
+TEST_P(WaylandWindowTest, HidingToplevelHidesPopupsParentedToBubbles) {
+  MockWaylandPlatformWindowDelegate toplevel_delegate(connection_.get());
+  auto toplevel = CreateWaylandWindowWithParams(
+      PlatformWindowType::kWindow, gfx::Rect(200, 200), &toplevel_delegate);
+  ASSERT_TRUE(toplevel);
+
+  MockWaylandPlatformWindowDelegate bubble_delegate(connection_.get());
+  auto bubble = CreateWaylandWindowWithParams(
+      PlatformWindowType::kBubble, gfx::Rect(10, 10, 100, 100),
+      &bubble_delegate, toplevel->GetWidget());
+  ASSERT_TRUE(bubble);
+  ASSERT_TRUE(bubble->AsWaylandBubble());
+
+  MockWaylandPlatformWindowDelegate menu_delegate(connection_.get());
+  auto menu = CreateWaylandWindowWithParams(
+      PlatformWindowType::kMenu, gfx::Rect(20, 20, 50, 50), &menu_delegate,
+      bubble->GetWidget());
+  ASSERT_TRUE(menu);
+  ASSERT_TRUE(menu->IsVisible());
+  EXPECT_EQ(menu->GetXdgParentWindow(), toplevel.get());
+  EXPECT_FALSE(toplevel->child_popup());
+
+  toplevel->Hide();
+  EXPECT_FALSE(menu->IsVisible());
+
+  const uint32_t menu_surface_id = menu->root_surface()->get_surface_id();
+  PostToServerAndWait([menu_surface_id](wl::TestWaylandServerThread* server) {
+    EXPECT_FALSE(
+        server->GetObject<wl::MockSurface>(menu_surface_id)->xdg_surface());
+  });
+}
+
+// Destroying a bubble disconnects its child popups from their xdg parent.
+// Verify that such popups are hidden.
+TEST_P(WaylandWindowTest, DestroyingBubbleHidesChildPopups) {
+  MockWaylandPlatformWindowDelegate toplevel_delegate(connection_.get());
+  auto toplevel = CreateWaylandWindowWithParams(
+      PlatformWindowType::kWindow, gfx::Rect(200, 200), &toplevel_delegate);
+  ASSERT_TRUE(toplevel);
+
+  MockWaylandPlatformWindowDelegate bubble_delegate(connection_.get());
+  auto bubble = CreateWaylandWindowWithParams(
+      PlatformWindowType::kBubble, gfx::Rect(10, 10, 100, 100),
+      &bubble_delegate, toplevel->GetWidget());
+  ASSERT_TRUE(bubble);
+  ASSERT_TRUE(bubble->AsWaylandBubble());
+
+  MockWaylandPlatformWindowDelegate menu_delegate(connection_.get());
+  auto menu = CreateWaylandWindowWithParams(
+      PlatformWindowType::kMenu, gfx::Rect(20, 20, 50, 50), &menu_delegate,
+      bubble->GetWidget());
+  ASSERT_TRUE(menu);
+  ASSERT_TRUE(menu->IsVisible());
+  EXPECT_EQ(menu->GetXdgParentWindow(), toplevel.get());
+
+  bubble.reset();
+  EXPECT_FALSE(menu->IsVisible());
+  EXPECT_FALSE(menu->parent_window());
+
+  const uint32_t menu_surface_id = menu->root_surface()->get_surface_id();
+  PostToServerAndWait([menu_surface_id](wl::TestWaylandServerThread* server) {
+    EXPECT_FALSE(
+        server->GetObject<wl::MockSurface>(menu_surface_id)->xdg_surface());
+  });
+}
+
 TEST_P(WaylandWindowTest, ReattachesBackgroundOnShow) {
   EXPECT_TRUE(connection_->buffer_manager_host());
 
   auto interface_ptr = connection_->buffer_manager_host()->BindInterface();
-  buffer_manager_gpu_->Initialize(std::move(interface_ptr), {},
-                                  /*supports_dma_buf=*/false,
-                                  /*supports_viewporter=*/true,
-                                  /*supports_acquire_fence=*/false,
-                                  /*supports_overlays=*/true,
-                                  /*supports_single_pixel_buffer=*/true);
+  buffer_manager_gpu_->Initialize(
+      std::move(interface_ptr), {},
+      ozone::mojom::WaylandBufferManagerCapabilities::New(
+          /*supports_dma_buf=*/false, /*supports_viewporter=*/true,
+          /*supports_acquire_fence=*/false, /*supports_overlays=*/true,
+          /*supports_single_pixel_buffer=*/true,
+          /*compositor_tone_maps_using_clli=*/false,
+          /*compositor_tone_maps_using_mdcv=*/false));
 
   // Setup wl_buffers.
   constexpr uint32_t buffer_id1 = 1;
@@ -4600,12 +5355,14 @@ TEST_P(WaylandWindowTest, NoDuplicateViewporterRequests) {
   EXPECT_TRUE(connection_->buffer_manager_host());
 
   auto interface_ptr = connection_->buffer_manager_host()->BindInterface();
-  buffer_manager_gpu_->Initialize(std::move(interface_ptr), {},
-                                  /*supports_dma_buf=*/false,
-                                  /*supports_viewporter=*/true,
-                                  /*supports_acquire_fence=*/false,
-                                  /*supports_overlays=*/true,
-                                  /*supports_single_pixel_buffer=*/true);
+  buffer_manager_gpu_->Initialize(
+      std::move(interface_ptr), {},
+      ozone::mojom::WaylandBufferManagerCapabilities::New(
+          /*supports_dma_buf=*/false, /*supports_viewporter=*/true,
+          /*supports_acquire_fence=*/false, /*supports_overlays=*/true,
+          /*supports_single_pixel_buffer=*/true,
+          /*compositor_tone_maps_using_clli=*/false,
+          /*compositor_tone_maps_using_mdcv=*/false));
 
   // Setup wl_buffers.
   constexpr uint32_t buffer_id = 1;
@@ -5495,6 +6252,215 @@ TEST_P(WaylandWindowTest, UiScale_HandleServerTriggeredBoundsChange) {
   EXPECT_EQ(window_->root_surface()->state_.buffer_scale_float, 1.0f);
 }
 
+// Verifies that client-side decoration insets, which are in UI DIP, are scaled
+// by ui_scale when handling server-triggered configures and when computing the
+// window geometry. Otherwise, part of the transparent decoration area would be
+// included in the window geometry, causing visible gaps around tiled windows.
+TEST_P(WaylandWindowTest, UiScale_DecorationInsets) {
+  ASSERT_TRUE(connection_->IsUiScaleEnabled());
+
+  // Initialize surface preferred scale.
+  PostToServerAndWait([id = surface_id_](wl::TestWaylandServerThread* server) {
+    wl::MockSurface* mock_surface = server->GetObject<wl::MockSurface>(id);
+    ASSERT_TRUE(mock_surface);
+    ASSERT_TRUE(mock_surface->fractional_scale());
+    mock_surface->fractional_scale()->SendPreferredScale(1.0f);
+  });
+  WaylandTestBase::SyncDisplay();
+  EXPECT_EQ(1.0f, window_->GetPreferredScaleFactor().value_or(0));
+
+  // Set font scale to 1.25.
+  connection_->window_manager()->SetFontScale(1.25f);
+  VerifyAndClearExpectations();
+
+  constexpr gfx::Insets kInsets(10);
+  ON_CALL(delegate_, CalculateInsetsInDIP(PlatformWindowState::kNormal))
+      .WillByDefault(Return(kInsets));
+
+  // Emulate a server-triggered bounds change. The configured size is the window
+  // geometry size in Wayland DIP, so the resulting UI DIP bounds must be that
+  // size downscaled by ui_scale, plus the decoration insets.
+  constexpr uint32_t kConfigureSerial = 56u;
+  SendConfigureEvent(surface_id_, gfx::Size(1000, 1000), wl::ScopedWlArray({}),
+                     kConfigureSerial);
+  VerifyAndClearExpectations();
+  EXPECT_EQ(1.25f, window_->applied_state().ui_scale);
+  EXPECT_EQ(1.0f, window_->applied_state().window_scale);
+  EXPECT_EQ(gfx::Size(820, 820), window_->applied_state().bounds_dip.size());
+  EXPECT_EQ(gfx::Size(1025, 1025), window_->applied_state().size_px);
+
+  // The window geometry must exclude the decoration insets scaled by ui_scale,
+  // ie: 12.5 Wayland DIP on each side rather than 10, and its size must match
+  // the configured one.
+  PostToServerAndWait([id = surface_id_](wl::TestWaylandServerThread* server) {
+    wl::MockSurface* mock_surface = server->GetObject<wl::MockSurface>(id);
+    EXPECT_CALL(*mock_surface->xdg_surface(),
+                SetWindowGeometry(gfx::Rect(13, 13, 1000, 1000)));
+    EXPECT_CALL(*mock_surface->xdg_surface(),
+                AckConfigure(Eq(kConfigureSerial)));
+  });
+  CreateBufferAndPresentAsNewFrame(window_.get(), delegate_,
+                                   /*buffer_size=*/gfx::Size(1025, 1025),
+                                   /*buffer_scale=*/1.25f);
+  VerifyAndClearExpectations();
+}
+
+// Verifies that popup window geometry offsets also scale UI-DIP decoration
+// insets by ui_scale.
+TEST_P(WaylandWindowTest, UiScale_PopupDecorationInsets) {
+  ASSERT_TRUE(connection_->IsUiScaleEnabled());
+
+  connection_->window_manager()->SetFontScale(1.25f);
+  WaylandTestBase::SyncDisplay();
+  VerifyAndClearExpectations();
+
+  testing::NiceMock<MockWaylandPlatformWindowDelegate> menu_delegate(
+      connection_.get());
+  ON_CALL(menu_delegate, CalculateInsetsInDIP(PlatformWindowState::kNormal))
+      .WillByDefault(Return(gfx::Insets(10)));
+  ui::OwnedWindowAnchor anchor{
+      .anchor_rect = gfx::Rect(100, 100, 20, 20),
+      .anchor_position = OwnedWindowAnchorPosition::kBottomRight,
+      .anchor_gravity = OwnedWindowAnchorGravity::kBottomLeft};
+  EXPECT_CALL(menu_delegate, GetOwnedWindowAnchorAndRectInDIP())
+      .WillOnce(Return(anchor));
+
+  auto menu_window = CreateWaylandWindowWithParams(
+      PlatformWindowType::kMenu, gfx::Rect(100, 100, 40, 80), &menu_delegate,
+      window_->GetWidget());
+  ASSERT_TRUE(menu_window);
+  const uint32_t menu_surface_id =
+      menu_window->root_surface()->get_surface_id();
+
+  constexpr uint32_t kConfigureSerial = 57u;
+  PostToServerAndWait(
+      [id = menu_surface_id](wl::TestWaylandServerThread* server) {
+        auto* surface = server->GetObject<wl::MockSurface>(id);
+        ASSERT_TRUE(surface);
+        auto* xdg_surface = surface->xdg_surface();
+        ASSERT_TRUE(xdg_surface);
+        ASSERT_TRUE(xdg_surface->xdg_popup()->resource());
+        xdg_popup_send_configure(xdg_surface->xdg_popup()->resource(), 100, 100,
+                                 100, 200);
+        xdg_surface_send_configure(xdg_surface->resource(), kConfigureSerial);
+      });
+
+  // 100x200 Wayland DIP geometry / 1.25 = 80x160 UI DIP + 20 UI DIP insets =
+  // 100x180 UI DIP bounds -> 125x225 px.
+  EXPECT_EQ(gfx::Size(100, 180),
+            menu_window->applied_state().bounds_dip.size());
+  EXPECT_EQ(gfx::Size(125, 225), menu_window->applied_state().size_px);
+
+  PostToServerAndWait([menu_surface_id](wl::TestWaylandServerThread* server) {
+    wl::MockSurface* mock_surface =
+        server->GetObject<wl::MockSurface>(menu_surface_id);
+    ASSERT_TRUE(mock_surface->xdg_surface());
+    EXPECT_CALL(*mock_surface->xdg_surface(),
+                SetWindowGeometry(gfx::Rect(13, 13, 100, 200)));
+    EXPECT_CALL(*mock_surface->xdg_surface(),
+                AckConfigure(Eq(kConfigureSerial)));
+  });
+  CreateBufferAndPresentAsNewFrame(menu_window.get(), menu_delegate,
+                                   /*buffer_size=*/gfx::Size(125, 225),
+                                   /*buffer_scale=*/1.25f);
+  VerifyAndClearExpectations(menu_delegate, menu_surface_id);
+}
+
+// Verifies size constraints are resent, multiplied by ui_scale, when the font
+// scale changes.
+TEST_P(WaylandWindowTest, UiScale_SizeConstraints) {
+  ASSERT_TRUE(connection_->IsUiScaleEnabled());
+
+  constexpr gfx::Size kMinSize{400, 300};
+  constexpr gfx::Size kMaxSize{800, 600};
+  ON_CALL(delegate_, GetMinimumSizeForWindow()).WillByDefault(Return(kMinSize));
+  ON_CALL(delegate_, GetMaximumSizeForWindow()).WillByDefault(Return(kMaxSize));
+
+  connection_->window_manager()->SetFontScale(1.25f);
+  PostToServerAndWait([id = surface_id_](wl::TestWaylandServerThread* server) {
+    auto* mock_surface = server->GetObject<wl::MockSurface>(id);
+    auto* mock_xdg_toplevel = mock_surface->xdg_surface()->xdg_toplevel();
+    EXPECT_EQ(gfx::Size(500, 375), mock_xdg_toplevel->min_size());
+    EXPECT_EQ(gfx::Size(1000, 750), mock_xdg_toplevel->max_size());
+  });
+}
+
+// Verifies a fixed-size toplevel advertises min == max == its window geometry
+// size with a fractional ui_scale, and keeps them in sync when it changes, so
+// the server does not clamp the window below its contents.
+TEST_P(WaylandWindowTest, UiScale_FixedSizeWindow) {
+  ASSERT_TRUE(connection_->IsUiScaleEnabled());
+
+  connection_->window_manager()->SetFontScale(1.1875f);
+
+  constexpr gfx::Size kSize{500, 380};
+  testing::NiceMock<MockWaylandPlatformWindowDelegate> delegate(
+      connection_.get());
+  ON_CALL(delegate, GetMinimumSizeForWindow()).WillByDefault(Return(kSize));
+  ON_CALL(delegate, GetMaximumSizeForWindow()).WillByDefault(Return(kSize));
+  auto window = CreateWaylandWindowWithParams(PlatformWindowType::kWindow,
+                                              gfx::Rect(kSize), &delegate);
+  ASSERT_TRUE(window);
+  const uint32_t surface_id = window->root_surface()->get_surface_id();
+  ActivateSurface(surface_id);
+
+  // 500x380 * 1.1875 = 593.75x451.25, rounded down like the window geometry.
+  EXPECT_EQ(gfx::Size(593, 451), window->applied_state().geometry_size_dip);
+  PostToServerAndWait([surface_id](wl::TestWaylandServerThread* server) {
+    auto* mock_surface = server->GetObject<wl::MockSurface>(surface_id);
+    auto* mock_xdg_toplevel = mock_surface->xdg_surface()->xdg_toplevel();
+    EXPECT_EQ(gfx::Size(593, 451), mock_xdg_toplevel->min_size());
+    EXPECT_EQ(gfx::Size(593, 451), mock_xdg_toplevel->max_size());
+  });
+
+  // The window can't shrink in DIP when the font scale grows, so it grows in
+  // window geometry coordinates instead, along with its constraints.
+  connection_->window_manager()->SetFontScale(1.25f);
+  PostToServerAndWait([surface_id](wl::TestWaylandServerThread* server) {
+    auto* mock_surface = server->GetObject<wl::MockSurface>(surface_id);
+    auto* mock_xdg_toplevel = mock_surface->xdg_surface()->xdg_toplevel();
+    EXPECT_EQ(gfx::Size(625, 475), mock_xdg_toplevel->min_size());
+    EXPECT_EQ(gfx::Size(625, 475), mock_xdg_toplevel->max_size());
+    EXPECT_CALL(*mock_surface->xdg_surface(),
+                SetWindowGeometry(gfx::Rect(625, 475)));
+  });
+  CreateBufferAndPresentAsNewFrame(window.get(), delegate,
+                                   /*buffer_size=*/gfx::Size(625, 475),
+                                   /*buffer_scale=*/1.25f);
+  VerifyAndClearExpectations(delegate, surface_id);
+}
+
+// Verifies size constraints match the window geometry when the window has
+// decoration insets, which are in UI DIP and so removed before scaling.
+TEST_P(WaylandWindowTest, UiScale_SizeConstraintsWithInsets) {
+  ASSERT_TRUE(connection_->IsUiScaleEnabled());
+
+  constexpr gfx::Size kMinSize{420, 320};
+  ON_CALL(delegate_, CalculateInsetsInDIP(_))
+      .WillByDefault(Return(gfx::Insets(10)));
+  ON_CALL(delegate_, GetMinimumSizeForWindow()).WillByDefault(Return(kMinSize));
+
+  connection_->window_manager()->SetFontScale(1.25f);
+  // (420x320 - 20x20) * 1.25 = 500x375.
+  PostToServerAndWait([id = surface_id_](wl::TestWaylandServerThread* server) {
+    auto* mock_surface = server->GetObject<wl::MockSurface>(id);
+    EXPECT_EQ(gfx::Size(500, 375),
+              mock_surface->xdg_surface()->xdg_toplevel()->min_size());
+  });
+}
+
+// Verifies the window can be deleted from OnStateUpdate() while handling a font
+// scale change.
+TEST_P(WaylandWindowTest, UiScale_DeleteWindowFromOnStateUpdate) {
+  delegate_.set_on_state_update_callback(base::BindLambdaForTesting([&]() {
+    window_.reset();
+    return false;
+  }));
+
+  connection_->window_manager()->SetFontScale(1.25f);
+  EXPECT_FALSE(window_);
+}
+
 TEST_P(WaylandWindowTest, UiScale_InitScaleAndBounds) {
   ASSERT_TRUE(connection_->IsUiScaleEnabled());
 
@@ -5715,6 +6681,52 @@ TEST_P(WaylandWindowTest, UiScale_HandlePopupGeometry) {
             gfx::Point(110, 110));
   // Screen API uses UI DIP coordinates.
   EXPECT_EQ(screen_->GetCursorScreenPoint(), gfx::Point(88, 88));
+
+  // Verify that repositioning the popup via SetBoundsInDIP scales the new
+  // origin and anchor rect by `ui_scale` (1.25f), reuses `geometry_size_dip`
+  // (rounding fractional dimensions down without leaking fractional origin
+  // remainders into size), and round-trips through `HandlePopupConfigure()`
+  // without shrinking or +1 DIP rounding drift. Regression test for
+  // https://crbug.com/504686729.
+  ui::OwnedWindowAnchor updated_anchor{
+      .anchor_rect = gfx::Rect(120, 120, 40, 40),
+      .anchor_position = OwnedWindowAnchorPosition::kBottomRight,
+      .anchor_gravity = OwnedWindowAnchorGravity::kBottomLeft};
+  EXPECT_CALL(menu_delegate, GetOwnedWindowAnchorAndRectInDIP())
+      .WillOnce(Return(updated_anchor));
+  menu_window->SetBoundsInDIP(gfx::Rect(121, 120, 41, 61));
+  PostToServerAndWait([menu_surface_id](wl::TestWaylandServerThread* server) {
+    auto* surface = server->GetObject<wl::MockSurface>(menu_surface_id);
+    ASSERT_TRUE(surface);
+    auto* xdg_surface = surface->xdg_surface();
+    ASSERT_TRUE(xdg_surface);
+    auto* popup = xdg_surface->xdg_popup();
+    ASSERT_TRUE(popup);
+    ASSERT_TRUE(popup->resource());
+    EXPECT_EQ(popup->anchor_rect(), gfx::Rect(150, 150, 50, 50));
+    EXPECT_EQ(popup->size(), gfx::Size(51, 76));
+
+    xdg_popup_send_configure(popup->resource(), 151, 150, popup->size().width(),
+                             popup->size().height());
+    xdg_surface_send_configure(xdg_surface->resource(),
+                               kLatestConfigureSerial + 1);
+  });
+  EXPECT_EQ(menu_window->applied_state().bounds_dip.size(), gfx::Size(41, 61));
+
+  // Verify that repositioning when `GetOwnedWindowAnchorAndRectInDIP()` returns
+  // `std::nullopt` clears the previously set anchor and falls back to default
+  // anchoring.
+  EXPECT_CALL(menu_delegate, GetOwnedWindowAnchorAndRectInDIP())
+      .WillOnce(Return(std::nullopt));
+  menu_window->SetBoundsInDIP(gfx::Rect(100, 100, 40, 60));
+  PostToServerAndWait([menu_surface_id](wl::TestWaylandServerThread* server) {
+    auto* popup = GetTestXdgPopupByWindow(server, menu_surface_id);
+    ASSERT_TRUE(popup);
+    EXPECT_EQ(popup->anchor_rect(), gfx::Rect(125, 125, 1, 1));
+    EXPECT_EQ(popup->size(), gfx::Size(50, 75));
+    EXPECT_EQ(popup->anchor(), XDG_POSITIONER_ANCHOR_TOP_LEFT);
+    EXPECT_EQ(popup->gravity(), XDG_POSITIONER_GRAVITY_BOTTOM_RIGHT);
+  });
 }
 
 TEST_P(WaylandWindowTest, UiScale_SanitizeFontScale) {
@@ -5761,6 +6773,201 @@ TEST_P(WaylandWindowTest, UiScale_ForceDeviceScaleFactor) {
   Mock::VerifyAndClearExpectations(&delegate_);
   EXPECT_EQ(2.0f, connection_->window_manager()->DetermineUiScale());
   EXPECT_EQ(window_->applied_state(), previous_state);
+  display::Display::ResetForceDeviceScaleFactorForTesting();
+}
+
+// Regression test for crbug.com/579974754: when maximized with a fractional
+// font/UI scale (< 1.0 or > 1.0), xdg_surface.set_window_geometry and the
+// committed root wl_surface size must match the exact Wayland DIP bounds
+// configured by the compositor rather than overshooting by 1 DIP due to
+// UI-DIP ceiling.
+TEST_P(WaylandWindowTest, UiScale_MaximizedGeometryAndViewportNoOvershoot) {
+  ASSERT_TRUE(connection_->IsUiScaleEnabled());
+
+  PostToServerAndWait([id = surface_id_](wl::TestWaylandServerThread* server) {
+    wl::MockSurface* mock_surface = server->GetObject<wl::MockSurface>(id);
+    ASSERT_TRUE(mock_surface);
+    ASSERT_TRUE(mock_surface->fractional_scale());
+    mock_surface->fractional_scale()->SendPreferredScale(1.0f);
+  });
+  WaylandTestBase::SyncDisplay();
+  Mock::VerifyAndClearExpectations(&delegate_);
+
+  // 58/64 (0.90625) matches the sanitized ui_scale for GNOME
+  // text-scaling-factor = 0.9.
+  constexpr float kFontScale090 = 58.0f / 64.0f;
+  connection_->window_manager()->SetFontScale(kFontScale090);
+  WaylandTestBase::SyncDisplay();
+  Mock::VerifyAndClearExpectations(&delegate_);
+  ASSERT_EQ(kFontScale090, window_->applied_state().ui_scale);
+
+  // Configure maximized at 2560x1408 Wayland DIPs with window_scale = 1.0.
+  // ceil(2560 / 0.90625) = 2825 UI DIPs -> ceil(2825 * 0.90625) = 2561 px,
+  // so both window geometry and root surface viewport must stay at 2560x1408.
+  constexpr uint32_t kMaximizedSerial = 71u;
+  SendConfigureEvent(surface_id_, gfx::Size(2560, 1408),
+                     wl::ScopedWlArray({XDG_TOPLEVEL_STATE_MAXIMIZED,
+                                        XDG_TOPLEVEL_STATE_ACTIVATED}),
+                     kMaximizedSerial);
+  VerifyAndClearExpectations();
+  EXPECT_EQ(gfx::Size(2825, 1554), window_->applied_state().bounds_dip.size());
+  EXPECT_EQ(gfx::Size(2561, 1409), window_->applied_state().size_px);
+
+  PostToServerAndWait([id = surface_id_](wl::TestWaylandServerThread* server) {
+    wl::MockSurface* mock_surface = server->GetObject<wl::MockSurface>(id);
+    ASSERT_TRUE(mock_surface);
+    ASSERT_TRUE(mock_surface->xdg_surface());
+    ASSERT_TRUE(mock_surface->viewport());
+    EXPECT_CALL(*mock_surface->xdg_surface(),
+                SetWindowGeometry(gfx::Rect(2560, 1408)));
+    EXPECT_CALL(*mock_surface->xdg_surface(),
+                AckConfigure(Eq(kMaximizedSerial)));
+    EXPECT_CALL(*mock_surface->viewport(), SetSource(0, 0, 2560, 1408));
+    EXPECT_CALL(*mock_surface->viewport(), SetDestination(_, _)).Times(0);
+  });
+  CreateBufferAndPresentAsNewFrame(window_.get(), delegate_,
+                                   /*buffer_size=*/gfx::Size(2561, 1409),
+                                   /*buffer_scale=*/kFontScale090);
+  VerifyAndClearExpectations();
+
+  // Ack the frame callback and switch surface preferred scale to 1.25,
+  // producing a 3201x1761 buffer that must crop to 3200x1760 with viewport
+  // destination 2560x1408.
+  PostToServerAndWait([id = surface_id_](wl::TestWaylandServerThread* server) {
+    wl::MockSurface* mock_surface = server->GetObject<wl::MockSurface>(id);
+    ASSERT_TRUE(mock_surface);
+    mock_surface->SendFrameCallback();
+    mock_surface->fractional_scale()->SendPreferredScale(1.25f);
+  });
+  WaylandTestBase::SyncDisplay();
+  EXPECT_EQ(gfx::Size(3201, 1761), window_->applied_state().size_px);
+
+  PostToServerAndWait([id = surface_id_](wl::TestWaylandServerThread* server) {
+    wl::MockSurface* mock_surface = server->GetObject<wl::MockSurface>(id);
+    ASSERT_TRUE(mock_surface);
+    EXPECT_CALL(*mock_surface->viewport(), SetSource(0, 0, 3200, 1760));
+    EXPECT_CALL(*mock_surface->viewport(), SetDestination(2560, 1408));
+  });
+  CreateBufferAndPresentAsNewFrame(window_.get(), delegate_,
+                                   /*buffer_size=*/gfx::Size(3201, 1761),
+                                   /*buffer_scale=*/1.25f * kFontScale090);
+  VerifyAndClearExpectations();
+
+  PostToServerAndWait([id = surface_id_](wl::TestWaylandServerThread* server) {
+    wl::MockSurface* mock_surface = server->GetObject<wl::MockSurface>(id);
+    ASSERT_TRUE(mock_surface);
+    mock_surface->SendFrameCallback();
+  });
+  WaylandTestBase::SyncDisplay();
+
+  // Changing font scale to 1.5 while already maximized (without a new server
+  // configure) must preserve the 2560x1408 Wayland geometry even though no
+  // integer UI DIP size multiplies by 1.5 back to 2560x1408.
+  connection_->window_manager()->SetFontScale(1.5f);
+  WaylandTestBase::SyncDisplay();
+  EXPECT_EQ(gfx::Size(1707, 939), window_->applied_state().bounds_dip.size());
+  EXPECT_EQ(gfx::Size(3201, 1761), window_->applied_state().size_px);
+
+  PostToServerAndWait([id = surface_id_](wl::TestWaylandServerThread* server) {
+    wl::MockSurface* mock_surface = server->GetObject<wl::MockSurface>(id);
+    ASSERT_TRUE(mock_surface);
+    EXPECT_CALL(*mock_surface->xdg_surface(),
+                SetWindowGeometry(gfx::Rect(2560, 1408)));
+    EXPECT_CALL(*mock_surface->viewport(), SetSource(_, _, _, _)).Times(0);
+    EXPECT_CALL(*mock_surface->viewport(), SetDestination(_, _)).Times(0);
+  });
+  CreateBufferAndPresentAsNewFrame(window_.get(), delegate_,
+                                   /*buffer_size=*/gfx::Size(3201, 1761),
+                                   /*buffer_scale=*/1.25f * 1.5f);
+  VerifyAndClearExpectations();
+
+  // Resetting font scale to 1.0 restores exact 2560x1408 UI DIP bounds without
+  // cumulative rounding drift.
+  connection_->window_manager()->SetFontScale(1.0f);
+  WaylandTestBase::SyncDisplay();
+  EXPECT_EQ(gfx::Size(2560, 1408), window_->applied_state().bounds_dip.size());
+}
+
+// Regression test for crbug.com/579974754: repeated server configures echoing
+// the client's window geometry (as Mutter sends on focus changes) must not
+// cause a normal window to grow by 1 DIP per configure when ui_scale != 1.0.
+TEST_P(WaylandWindowTest, UiScale_RepeatedServerConfiguresDoNotGrowWindow) {
+  ASSERT_TRUE(connection_->IsUiScaleEnabled());
+
+  constexpr float kFontScale090 = 58.0f / 64.0f;
+  connection_->window_manager()->SetFontScale(kFontScale090);
+  WaylandTestBase::SyncDisplay();
+  Mock::VerifyAndClearExpectations(&delegate_);
+
+  const gfx::Insets kShadowInsets = gfx::Insets::TLBR(10, 10, 14, 10);
+  ON_CALL(delegate_, CalculateInsetsInDIP(PlatformWindowState::kNormal))
+      .WillByDefault(Return(kShadowInsets));
+
+  constexpr uint32_t kSerial1 = 81u;
+  SendConfigureEvent(surface_id_, gfx::Size(1000, 800),
+                     wl::ScopedWlArray({XDG_TOPLEVEL_STATE_ACTIVATED}),
+                     kSerial1);
+  const gfx::Size initial_bounds_dip =
+      window_->applied_state().bounds_dip.size();
+  // Decoration insets are in UI DIP, so they are added after converting the
+  // configured size: ceil(1000 / 0.90625) + 20 x ceil(800 / 0.90625) + 24.
+  EXPECT_EQ(gfx::Size(1124, 907), initial_bounds_dip);
+  const gfx::Size initial_size_px = window_->applied_state().size_px;
+
+  PostToServerAndWait([id = surface_id_](wl::TestWaylandServerThread* server) {
+    wl::MockSurface* mock_surface = server->GetObject<wl::MockSurface>(id);
+    ASSERT_TRUE(mock_surface);
+    EXPECT_CALL(*mock_surface->xdg_surface(),
+                SetWindowGeometry(gfx::Rect(9, 9, 1000, 800)));
+    EXPECT_CALL(*mock_surface->xdg_surface(), AckConfigure(Eq(kSerial1)));
+  });
+  CreateBufferAndPresentAsNewFrame(window_.get(), delegate_,
+                                   /*buffer_size=*/initial_size_px,
+                                   /*buffer_scale=*/kFontScale090);
+  VerifyAndClearExpectations();
+
+  // Subsequent focus-change configures echoing 1000x800 must be a no-op on
+  // bounds and window geometry.
+  EXPECT_CALL(delegate_, OnBoundsChanged(_)).Times(0);
+  SendConfigureEvent(surface_id_, gfx::Size(1000, 800), wl::ScopedWlArray({}),
+                     82u);
+  SendConfigureEvent(surface_id_, gfx::Size(1000, 800),
+                     wl::ScopedWlArray({XDG_TOPLEVEL_STATE_ACTIVATED}), 83u);
+  VerifyAndClearExpectations();
+  EXPECT_EQ(initial_bounds_dip, window_->applied_state().bounds_dip.size());
+  EXPECT_EQ(initial_size_px, window_->applied_state().size_px);
+}
+
+// Tests that the window geometry derived from client-requested bounds maps back
+// to the same bounds, so a server configure echoing that geometry does not grow
+// the window by 1 DIP when ui_scale != 1.0.
+TEST_P(WaylandWindowTest, UiScale_ClientResizeDoesNotGrowOnConfigure) {
+  ASSERT_TRUE(connection_->IsUiScaleEnabled());
+
+  constexpr float kFontScale090 = 58.0f / 64.0f;
+  connection_->window_manager()->SetFontScale(kFontScale090);
+  WaylandTestBase::SyncDisplay();
+  Mock::VerifyAndClearExpectations(&delegate_);
+
+  // floor(1000 * ui_scale) x floor(800 * ui_scale) = 906x725.
+  const gfx::Rect kBounds(1000, 800);
+  PostToServerAndWait([id = surface_id_](wl::TestWaylandServerThread* server) {
+    wl::MockSurface* mock_surface = server->GetObject<wl::MockSurface>(id);
+    ASSERT_TRUE(mock_surface);
+    EXPECT_CALL(*mock_surface->xdg_surface(),
+                SetWindowGeometry(gfx::Rect(906, 725)));
+  });
+  window_->SetBoundsInDIP(kBounds);
+  AdvanceFrameToCurrent(window_.get(), delegate_);
+  VerifyAndClearExpectations();
+  EXPECT_EQ(kBounds.size(), window_->applied_state().bounds_dip.size());
+
+  // ceil(906 / ui_scale) x ceil(725 / ui_scale) = 1000x800.
+  EXPECT_CALL(delegate_, OnBoundsChanged(_)).Times(0);
+  SendConfigureEvent(surface_id_, gfx::Size(906, 725),
+                     wl::ScopedWlArray({XDG_TOPLEVEL_STATE_ACTIVATED}), 91u);
+  VerifyAndClearExpectations();
+  EXPECT_EQ(kBounds.size(), window_->applied_state().bounds_dip.size());
 }
 
 // Regression POC: WaylandToplevelWindow::HandleToplevelConfigure() continues to
@@ -5780,8 +6987,9 @@ TEST_P(WaylandWindowTest, HandleToplevelConfigureSyncCloseOnDeactivate) {
   // OnActivationChanged(false) — exactly what happens in production when a
   // WidgetObserver calls Widget::CloseNow() on deactivation, leading to
   // DesktopWindowTreeHostPlatform::OnClosed -> SetPlatformWindow(nullptr).
-  EXPECT_CALL(delegate_, OnActivationChanged(Eq(false)))
-      .WillOnce(InvokeWithoutArgs([this]() { window_.reset(); }));
+  EXPECT_CALL(delegate_, OnActivationChanged(Eq(false))).WillOnce([this]() {
+    window_.reset();
+  });
 
   // Don't try to talk to the server after the window has been torn down
   // mid-dispatch.
@@ -5848,11 +7056,10 @@ TEST_P(WaylandWindowTest, WaylandBubbleActivateBubbleUaf) {
   EXPECT_CALL(delegate_, OnActivationChanged(::testing::_))
       .Times(::testing::AnyNumber());
 
-  EXPECT_CALL(delegate_, OnActivationChanged(false))
-      .WillOnce(::testing::InvokeWithoutArgs([&]() {
-        wayland_bubble.reset();
-        window_.reset();
-      }));
+  EXPECT_CALL(delegate_, OnActivationChanged(false)).WillOnce([&]() {
+    wayland_bubble.reset();
+    window_.reset();
+  });
 
   // This should not crash and should return safely.
   window_->ActivateBubble(wayland_bubble->AsWaylandBubble());
@@ -5876,11 +7083,10 @@ TEST_P(WaylandWindowTest, WaylandBubbleRemoveBubbleUaf) {
   EXPECT_CALL(delegate_, OnActivationChanged(::testing::_))
       .Times(::testing::AnyNumber());
 
-  EXPECT_CALL(delegate_, OnActivationChanged(true))
-      .WillOnce(::testing::InvokeWithoutArgs([&]() {
-        wayland_bubble.reset();
-        window_.reset();
-      }));
+  EXPECT_CALL(delegate_, OnActivationChanged(true)).WillOnce([&]() {
+    wayland_bubble.reset();
+    window_.reset();
+  });
 
   // This should not crash and should return safely.
   window_->RemoveBubble(wayland_bubble->AsWaylandBubble());
@@ -5924,6 +7130,422 @@ TEST_P(WaylandWindowTest, WaylandBubbleShowUaf) {
   wayland_bubble->Show(false);
 }
 
+TEST_P(WaylandWindowTest, WaylandBubbleActivateUaf) {
+  MockWaylandPlatformWindowDelegate bubble_delegate(connection_.get());
+  gfx::Rect bubble_bounds(10, 10, 50, 50);
+  auto wayland_bubble =
+      CreateWaylandWindowWithParams(PlatformWindowType::kBubble, bubble_bounds,
+                                    &bubble_delegate, window_->GetWidget());
+  ASSERT_TRUE(wayland_bubble);
+
+  EXPECT_CALL(bubble_delegate, OnActivationChanged(true)).WillOnce([&]() {
+    wayland_bubble.reset();
+  });
+
+  // This should not crash if the bubble is destroyed during Activate().
+  wayland_bubble->Activate();
+  EXPECT_FALSE(wayland_bubble);
+}
+
+TEST_P(WaylandWindowTest, WaylandBubbleDeactivateUaf) {
+  MockWaylandPlatformWindowDelegate bubble_delegate(connection_.get());
+  gfx::Rect bubble_bounds(10, 10, 50, 50);
+  auto wayland_bubble =
+      CreateWaylandWindowWithParams(PlatformWindowType::kBubble, bubble_bounds,
+                                    &bubble_delegate, window_->GetWidget());
+  ASSERT_TRUE(wayland_bubble);
+
+  wayland_bubble->Activate();
+  EXPECT_TRUE(wayland_bubble->IsActive());
+
+  // Verify normal deactivation updates state without destroying the bubble.
+  wayland_bubble->Deactivate();
+  EXPECT_FALSE(wayland_bubble->IsActive());
+
+  wayland_bubble->Activate();
+  EXPECT_TRUE(wayland_bubble->IsActive());
+
+  EXPECT_CALL(bubble_delegate, OnActivationChanged(false)).WillOnce([&]() {
+    wayland_bubble.reset();
+  });
+
+  // This should not crash if the bubble is destroyed during Deactivate().
+  wayland_bubble->Deactivate();
+  EXPECT_FALSE(wayland_bubble);
+}
+
+TEST_P(WaylandWindowTest, WaylandBubbleHideUaf) {
+  MockWaylandPlatformWindowDelegate bubble_delegate(connection_.get());
+  gfx::Rect bubble_bounds(10, 10, 50, 50);
+  auto wayland_bubble =
+      CreateWaylandWindowWithParams(PlatformWindowType::kBubble, bubble_bounds,
+                                    &bubble_delegate, window_->GetWidget());
+  ASSERT_TRUE(wayland_bubble);
+  EXPECT_TRUE(wayland_bubble->IsVisible());
+
+  wayland_bubble->Activate();
+  EXPECT_TRUE(wayland_bubble->IsActive());
+
+  // Verify normal Hide() deactivates and hides the bubble.
+  wayland_bubble->Hide();
+  EXPECT_FALSE(wayland_bubble->IsActive());
+  EXPECT_FALSE(wayland_bubble->IsVisible());
+
+  wayland_bubble->Show(false);
+  EXPECT_TRUE(wayland_bubble->IsVisible());
+  wayland_bubble->Activate();
+  EXPECT_TRUE(wayland_bubble->IsActive());
+
+  EXPECT_CALL(bubble_delegate, OnActivationChanged(false)).WillOnce([&]() {
+    wayland_bubble.reset();
+  });
+
+  // This should not crash if the bubble is destroyed during Hide().
+  wayland_bubble->Hide();
+  EXPECT_FALSE(wayland_bubble);
+}
+
+// Verifies that when a WaylandBubble is hidden and destroyed during a
+// compositor-initiated parent state transition (such as exiting fullscreen via
+// a window manager shortcut), its wl_subsurface switches to synchronized mode,
+// detaches its buffer, and remains alive until the parent surface commits the
+// frame latching that configure. See crbug.com/409838505.
+TEST_P(WaylandWindowTest, WaylandBubbleUnmapSyncedWithParentConfigureAndFrame) {
+  const gfx::Size kFullscreenSize(1280, 800);
+  const gfx::Size kRestoredSize(1026, 755);
+  const gfx::Size kBubbleSize(425, 55);
+  auto interface_ptr = connection_->buffer_manager_host()->BindInterface();
+  buffer_manager_gpu_->Initialize(
+      std::move(interface_ptr), {},
+      ozone::mojom::WaylandBufferManagerCapabilities::New(
+          /*supports_dma_buf=*/false, /*supports_viewporter=*/true,
+          /*supports_acquire_fence=*/false, /*supports_overlays=*/true,
+          /*supports_single_pixel_buffer=*/true,
+          /*compositor_tone_maps_using_clli=*/false,
+          /*compositor_tone_maps_using_mdcv=*/false));
+  auto present_root_frame = [&](WaylandWindow* target_window,
+                                const gfx::Size& buffer_size, int64_t viz_seq) {
+    const uint32_t buffer_id = ++buffer_id_gen_;
+    buffer_manager_gpu_->CreateShmBasedBuffer(
+        MakeFD(), buffer_size.width() * buffer_size.height() * 4, buffer_size,
+        buffer_id);
+    // The buffer is created and the frame is committed through asynchronous
+    // mojo calls to the host, so wait for each of them to be processed.
+    WaylandBufferHandle* buffer = nullptr;
+    ASSERT_TRUE(base::test::RunUntil([&]() {
+      buffer = connection_->buffer_manager_host()->EnsureBufferHandle(
+          target_window->root_surface(), buffer_id);
+      return buffer != nullptr;
+    }));
+    std::vector<wl::WaylandOverlayConfig> overlays;
+    wl::WaylandOverlayConfig root_config;
+    root_config.z_order = INT32_MIN;
+    root_config.buffer_id = buffer->id();
+    root_config.bounds_rect = gfx::RectF(gfx::SizeF(buffer_size));
+    root_config.damage_region = gfx::Rect(buffer_size);
+    overlays.push_back(std::move(root_config));
+    gfx::FrameData frame_data(viz_seq);
+    target_window->CommitOverlays(++frame_id_gen_, std::move(frame_data),
+                                  overlays);
+    ASSERT_TRUE(base::test::RunUntil([&]() {
+      return target_window->root_surface()->buffer_id() == buffer_id;
+    }));
+    WaylandTestBase::SyncDisplay();
+  };
+
+  // Enter fullscreen on the parent toplevel window and latch it.
+  auto fullscreen_states = MakeStateArray(
+      {XDG_TOPLEVEL_STATE_FULLSCREEN, XDG_TOPLEVEL_STATE_ACTIVATED});
+  SendConfigureEvent(surface_id_, kFullscreenSize, fullscreen_states, 10u);
+  const int64_t fullscreen_viz_seq = delegate_.viz_seq();
+  present_root_frame(window_.get(), kFullscreenSize, fullscreen_viz_seq);
+  PostToServerAndWait([id = surface_id_](wl::TestWaylandServerThread* server) {
+    server->GetObject<wl::MockSurface>(id)->SendFrameCallback();
+  });
+  WaylandTestBase::SyncDisplay();
+
+  // Show the fullscreen exit instruction bubble and attach a buffer to it.
+  testing::NiceMock<MockWaylandPlatformWindowDelegate> bubble_delegate(
+      connection_.get());
+  auto wayland_bubble = CreateWaylandWindowWithParams(
+      PlatformWindowType::kBubble, gfx::Rect({427, 40}, kBubbleSize),
+      &bubble_delegate, window_->GetWidget());
+  ASSERT_TRUE(wayland_bubble);
+  const uint32_t bubble_surface_id =
+      wayland_bubble->root_surface()->get_surface_id();
+  present_root_frame(wayland_bubble.get(), kBubbleSize, /*viz_seq=*/-1);
+
+  PostToServerAndWait([bubble_surface_id](wl::TestWaylandServerThread* server) {
+    auto* bubble_surface =
+        server->GetObject<wl::MockSurface>(bubble_surface_id);
+    ASSERT_TRUE(bubble_surface);
+    ASSERT_TRUE(bubble_surface->sub_surface());
+    EXPECT_FALSE(bubble_surface->sub_surface()->sync());
+    EXPECT_NE(bubble_surface->attached_buffer(), nullptr);
+  });
+
+  // Simulate WM-initiated fullscreen exit: during OnWindowStateChanged,
+  // BrowserView::PrepareFullscreen(false) closes the bubble (calling Hide()
+  // synchronously, followed by widget destruction before the resized parent
+  // frame is produced by Viz).
+  EXPECT_CALL(delegate_, OnWindowStateChanged(PlatformWindowState::kFullScreen,
+                                              PlatformWindowState::kNormal))
+      .WillOnce([&]() { wayland_bubble->Hide(); });
+
+  constexpr uint32_t kUnfullscreenSerial = 11u;
+  auto restored_states = InitializeWlArrayWithActivatedState();
+  SendConfigureEvent(surface_id_, kRestoredSize, restored_states,
+                     kUnfullscreenSerial);
+  const int64_t unfullscreen_viz_seq = delegate_.viz_seq();
+  EXPECT_FALSE(wayland_bubble->IsVisible());
+
+  // Destroy the WaylandBubble before the parent frame arrives (matching
+  // views::Widget::CloseNow posted task).
+  wayland_bubble.reset();
+  connection_->Flush();
+
+  // The bubble's wl_surface and wl_subsurface must remain alive in synchronized
+  // mode with a null buffer attached until the parent commits the frame for
+  // `unfullscreen_viz_seq`.
+  PostToServerAndWait([bubble_surface_id](wl::TestWaylandServerThread* server) {
+    auto* bubble_surface =
+        server->GetObject<wl::MockSurface>(bubble_surface_id);
+    ASSERT_TRUE(bubble_surface);
+    ASSERT_TRUE(bubble_surface->sub_surface());
+    EXPECT_TRUE(bubble_surface->sub_surface()->sync());
+    EXPECT_EQ(bubble_surface->attached_buffer(), nullptr);
+  });
+
+  // An earlier pre-configure frame (`fullscreen_viz_seq`) does not latch the
+  // unfullscreen configure and therefore must not destroy the subsurface yet.
+  present_root_frame(window_.get(), kFullscreenSize, fullscreen_viz_seq);
+  PostToServerAndWait([id = surface_id_](wl::TestWaylandServerThread* server) {
+    server->GetObject<wl::MockSurface>(id)->SendFrameCallback();
+  });
+  WaylandTestBase::SyncDisplay();
+
+  PostToServerAndWait([bubble_surface_id](wl::TestWaylandServerThread* server) {
+    auto* bubble_surface =
+        server->GetObject<wl::MockSurface>(bubble_surface_id);
+    ASSERT_TRUE(bubble_surface);
+    EXPECT_TRUE(bubble_surface->sub_surface());
+  });
+
+  // Committing the resized parent frame that latches `unfullscreen_viz_seq`
+  // acks the configure and destroys the deferred bubble subsurface and surface.
+  present_root_frame(window_.get(), kRestoredSize, unfullscreen_viz_seq);
+
+  PostToServerAndWait([bubble_surface_id](wl::TestWaylandServerThread* server) {
+    EXPECT_EQ(server->GetObject<wl::MockSurface>(bubble_surface_id), nullptr);
+  });
+}
+
+TEST_P(WaylandWindowTest,
+       WaylandBubbleHideShowReuseDuringPendingParentConfigure) {
+  testing::NiceMock<MockWaylandPlatformWindowDelegate> bubble_delegate(
+      connection_.get());
+  auto wayland_bubble = CreateWaylandWindowWithParams(
+      PlatformWindowType::kBubble, gfx::Rect(10, 10, 50, 50), &bubble_delegate,
+      window_->GetWidget());
+  ASSERT_TRUE(wayland_bubble);
+  const uint32_t bubble_surface_id =
+      wayland_bubble->root_surface()->get_surface_id();
+
+  auto* buffer =
+      CreateTestShmBuffer(gfx::Size(50, 50), wayland_bubble->root_surface());
+  ASSERT_TRUE(buffer);
+  std::vector<wl::WaylandOverlayConfig> overlays;
+  wl::WaylandOverlayConfig root_config;
+  root_config.z_order = INT32_MIN;
+  root_config.buffer_id = buffer->id();
+  root_config.bounds_rect = gfx::RectF(50, 50);
+  root_config.damage_region = gfx::Rect(50, 50);
+  overlays.push_back(std::move(root_config));
+  wayland_bubble->CommitOverlays(++frame_id_gen_, gfx::FrameData(-1), overlays);
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return wayland_bubble->root_surface()->buffer_id() == buffer->id();
+  }));
+  WaylandTestBase::SyncDisplay();
+
+  // When the parent has no in-flight configure, Hide() must attach a null
+  // buffer and commit before destroying the wl_subsurface (Weston raises a
+  // protocol error on wl_surface reuse if unmapped without attaching a null
+  // buffer first).
+  PostToServerAndWait([bubble_surface_id](wl::TestWaylandServerThread* server) {
+    auto* bubble_surface =
+        server->GetObject<wl::MockSurface>(bubble_surface_id);
+    ASSERT_TRUE(bubble_surface);
+    testing::InSequence seq;
+    EXPECT_CALL(*bubble_surface, Attach(nullptr, 0, 0))
+        .WillOnce([bubble_surface]() {
+          ASSERT_NE(bubble_surface->sub_surface(), nullptr);
+          EXPECT_FALSE(bubble_surface->sub_surface()->sync());
+        });
+    EXPECT_CALL(*bubble_surface, Commit()).WillOnce([bubble_surface]() {
+      ASSERT_NE(bubble_surface->sub_surface(), nullptr);
+      EXPECT_FALSE(bubble_surface->sub_surface()->sync());
+    });
+  });
+  wayland_bubble->Hide();
+  EXPECT_FALSE(wayland_bubble->IsVisible());
+  PostToServerAndWait([bubble_surface_id](wl::TestWaylandServerThread* server) {
+    auto* bubble_surface =
+        server->GetObject<wl::MockSurface>(bubble_surface_id);
+    ASSERT_TRUE(bubble_surface);
+    testing::Mock::VerifyAndClearExpectations(bubble_surface);
+    EXPECT_FALSE(bubble_surface->sub_surface());
+  });
+
+  wayland_bubble->Show(false);
+  EXPECT_TRUE(wayland_bubble->IsVisible());
+
+  // Send an unlatched resize configure to the parent.
+  auto states = InitializeWlArrayWithActivatedState();
+  SendConfigureEvent(surface_id_, {500, 300}, states, 12u);
+
+  // Hiding while the parent configure is in flight switches the subsurface to
+  // sync mode before attaching the null buffer and keeps it alive.
+  PostToServerAndWait([bubble_surface_id](wl::TestWaylandServerThread* server) {
+    auto* bubble_surface =
+        server->GetObject<wl::MockSurface>(bubble_surface_id);
+    ASSERT_TRUE(bubble_surface);
+    testing::InSequence seq;
+    EXPECT_CALL(*bubble_surface, Attach(nullptr, 0, 0))
+        .WillOnce([bubble_surface]() {
+          ASSERT_NE(bubble_surface->sub_surface(), nullptr);
+          EXPECT_TRUE(bubble_surface->sub_surface()->sync());
+        });
+    EXPECT_CALL(*bubble_surface, Commit()).WillOnce([bubble_surface]() {
+      ASSERT_NE(bubble_surface->sub_surface(), nullptr);
+      EXPECT_TRUE(bubble_surface->sub_surface()->sync());
+    });
+  });
+  wayland_bubble->Hide();
+  EXPECT_FALSE(wayland_bubble->IsVisible());
+  PostToServerAndWait([bubble_surface_id](wl::TestWaylandServerThread* server) {
+    auto* bubble_surface =
+        server->GetObject<wl::MockSurface>(bubble_surface_id);
+    ASSERT_TRUE(bubble_surface);
+    testing::Mock::VerifyAndClearExpectations(bubble_surface);
+    ASSERT_TRUE(bubble_surface->sub_surface());
+    EXPECT_TRUE(bubble_surface->sub_surface()->sync());
+  });
+
+  // Showing the same bubble again before the parent latches must cleanly
+  // replace the pending subsurface without protocol errors.
+  wayland_bubble->Show(false);
+  EXPECT_TRUE(wayland_bubble->IsVisible());
+  PostToServerAndWait([bubble_surface_id](wl::TestWaylandServerThread* server) {
+    auto* bubble_surface =
+        server->GetObject<wl::MockSurface>(bubble_surface_id);
+    ASSERT_TRUE(bubble_surface);
+    ASSERT_TRUE(bubble_surface->sub_surface());
+    EXPECT_FALSE(bubble_surface->sub_surface()->sync());
+  });
+
+  // Hide again and advance the parent sequence point; the pending subsurface
+  // must now be destroyed while `wayland_bubble`'s wl_surface stays alive.
+  wayland_bubble->Hide();
+  AdvanceFrameToCurrent(window_.get(), delegate_);
+  connection_->Flush();
+  PostToServerAndWait([bubble_surface_id](wl::TestWaylandServerThread* server) {
+    auto* bubble_surface =
+        server->GetObject<wl::MockSurface>(bubble_surface_id);
+    ASSERT_TRUE(bubble_surface);
+    EXPECT_FALSE(bubble_surface->sub_surface());
+  });
+}
+
+TEST_P(WaylandWindowTest, WaylandBubbleDirectDestroyGpuCrashAndNestedParent) {
+  testing::NiceMock<MockWaylandPlatformWindowDelegate> bubble_delegate(
+      connection_.get());
+  auto wayland_bubble = CreateWaylandWindowWithParams(
+      PlatformWindowType::kBubble, gfx::Rect(10, 10, 50, 50), &bubble_delegate,
+      window_->GetWidget());
+  ASSERT_TRUE(wayland_bubble);
+  const uint32_t bubble_surface_id =
+      wayland_bubble->root_surface()->get_surface_id();
+
+  auto* buffer =
+      CreateTestShmBuffer(gfx::Size(50, 50), wayland_bubble->root_surface());
+  ASSERT_TRUE(buffer);
+  std::vector<wl::WaylandOverlayConfig> overlays;
+  wl::WaylandOverlayConfig root_config;
+  root_config.z_order = INT32_MIN;
+  root_config.buffer_id = buffer->id();
+  root_config.bounds_rect = gfx::RectF(50, 50);
+  root_config.damage_region = gfx::Rect(50, 50);
+  overlays.push_back(std::move(root_config));
+  wayland_bubble->CommitOverlays(++frame_id_gen_, gfx::FrameData(-1), overlays);
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return wayland_bubble->root_surface()->buffer_id() == buffer->id();
+  }));
+  WaylandTestBase::SyncDisplay();
+
+  // Send an unlatched resize configure to `window_`.
+  auto states = InitializeWlArrayWithActivatedState();
+  SendConfigureEvent(surface_id_, {500, 300}, states, 15u);
+
+  // A nested bubble whose direct parent (`wayland_bubble`) has no in-flight
+  // configure of its own must not defer destruction against `window_`'s
+  // per-window `viz_seq`.
+  testing::NiceMock<MockWaylandPlatformWindowDelegate> nested_delegate(
+      connection_.get());
+  auto nested_bubble = CreateWaylandWindowWithParams(
+      PlatformWindowType::kBubble, gfx::Rect(15, 15, 20, 20), &nested_delegate,
+      wayland_bubble->GetWidget());
+  ASSERT_TRUE(nested_bubble);
+  const uint32_t nested_surface_id =
+      nested_bubble->root_surface()->get_surface_id();
+  const uint32_t nested_buffer_id = ++buffer_id_gen_;
+  buffer_manager_gpu_->CreateShmBasedBuffer(
+      MakeFD(), 20 * 20 * 4, gfx::Size(20, 20), nested_buffer_id);
+  WaylandBufferHandle* nested_buffer = nullptr;
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    nested_buffer = connection_->buffer_manager_host()->EnsureBufferHandle(
+        nested_bubble->root_surface(), nested_buffer_id);
+    return nested_buffer != nullptr;
+  }));
+  std::vector<wl::WaylandOverlayConfig> nested_overlays;
+  wl::WaylandOverlayConfig nested_root_config;
+  nested_root_config.z_order = INT32_MIN;
+  nested_root_config.buffer_id = nested_buffer->id();
+  nested_root_config.bounds_rect = gfx::RectF(20, 20);
+  nested_root_config.damage_region = gfx::Rect(20, 20);
+  nested_overlays.push_back(std::move(nested_root_config));
+  nested_bubble->CommitOverlays(++frame_id_gen_, gfx::FrameData(-1),
+                                nested_overlays);
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return nested_bubble->root_surface()->buffer_id() == nested_buffer->id();
+  }));
+  WaylandTestBase::SyncDisplay();
+  nested_bubble.reset();
+  connection_->Flush();
+  PostToServerAndWait([nested_surface_id](wl::TestWaylandServerThread* server) {
+    EXPECT_EQ(server->GetObject<wl::MockSurface>(nested_surface_id), nullptr);
+  });
+
+  // Destroying `wayland_bubble` directly (without `Hide()`) while `window_` has
+  // an unlatched configure must switch to sync mode, attach a null buffer, and
+  // keep the surface and subsurface alive until released.
+  wayland_bubble.reset();
+  PostToServerAndWait([bubble_surface_id](wl::TestWaylandServerThread* server) {
+    auto* bubble_surface =
+        server->GetObject<wl::MockSurface>(bubble_surface_id);
+    ASSERT_TRUE(bubble_surface);
+    ASSERT_TRUE(bubble_surface->sub_surface());
+    EXPECT_TRUE(bubble_surface->sub_surface()->sync());
+    EXPECT_EQ(bubble_surface->attached_buffer(), nullptr);
+  });
+
+  // GPU-process crash (`seq == -1` via `OnChannelDestroyed()`) releases all
+  // pending subsurface destroys immediately.
+  window_->OnChannelDestroyed();
+  PostToServerAndWait([bubble_surface_id](wl::TestWaylandServerThread* server) {
+    EXPECT_EQ(server->GetObject<wl::MockSurface>(bubble_surface_id), nullptr);
+  });
+}
+
 TEST_P(WaylandWindowTest, WaylandPopupShowUaf) {
   MockWaylandPlatformWindowDelegate popup_delegate(connection_.get());
   PlatformWindowInitProperties properties;
@@ -5954,8 +7576,7 @@ TEST_P(WaylandWindowTest, WaylandToplevelWindowOnPaintAsActiveChangedUaf) {
   ASSERT_TRUE(toplevel_window);
 
   EXPECT_CALL(toplevel_delegate, OnPaintAsActiveChanged(::testing::_))
-      .WillOnce(
-          ::testing::InvokeWithoutArgs([&]() { toplevel_window.reset(); }));
+      .WillOnce([&]() { toplevel_window.reset(); });
 
   WaylandWindow::WindowStates window_states;
   window_states.is_activated = true;
@@ -5975,11 +7596,60 @@ TEST_P(WaylandWindowTest, WaylandToplevelWindowTriggerStateChangesUaf) {
 
   EXPECT_CALL(toplevel_delegate,
               OnWindowStateChanged(::testing::_, ::testing::_))
-      .WillOnce(
-          ::testing::InvokeWithoutArgs([&]() { toplevel_window.reset(); }));
+      .WillOnce([&]() { toplevel_window.reset(); });
 
   // This should not crash.
   toplevel_window->Maximize();
+}
+
+// Verifies that initializing a toplevel window under UI scale != 1.0 before
+// frame insets are available (matching Widget::Init creating PlatformWindow
+// before FrameView) queries insets once without clamping an empty surface, and
+// updates window geometry once insets become non-empty on initial configure.
+TEST_P(WaylandWindowTest, UiScale_InitializeBeforeFrameInsetsReady) {
+  ASSERT_TRUE(connection_->IsUiScaleEnabled());
+
+  constexpr float kFontScale090 = 58.0f / 64.0f;
+  connection_->window_manager()->SetFontScale(kFontScale090);
+  WaylandTestBase::SyncDisplay();
+
+  testing::NiceMock<MockWaylandPlatformWindowDelegate> init_delegate(
+      connection_.get());
+  EXPECT_CALL(init_delegate, CalculateInsetsInDIP(PlatformWindowState::kNormal))
+      .WillOnce(Return(gfx::Insets()));
+
+  PlatformWindowInitProperties properties(gfx::Rect(0, 0, 800, 600));
+  properties.type = PlatformWindowType::kWindow;
+  auto new_window = init_delegate.CreateWaylandWindow(connection_.get(),
+                                                      std::move(properties));
+  ASSERT_TRUE(new_window);
+  Mock::VerifyAndClearExpectations(&init_delegate);
+  EXPECT_EQ(gfx::Size(725, 543), new_window->latched_state().geometry_size_dip);
+
+  new_window->Show(false);
+  WaylandTestBase::SyncDisplay();
+
+  const gfx::Insets kShadowInsets = gfx::Insets::TLBR(10, 10, 14, 10);
+  ON_CALL(init_delegate, CalculateInsetsInDIP(PlatformWindowState::kNormal))
+      .WillByDefault(Return(kShadowInsets));
+
+  const uint32_t new_surface_id = new_window->root_surface()->get_surface_id();
+  constexpr uint32_t kInitSerial = 91u;
+  PostToServerAndWait([id = new_surface_id](
+                          wl::TestWaylandServerThread* server) {
+    wl::MockSurface* mock_surface = server->GetObject<wl::MockSurface>(id);
+    ASSERT_TRUE(mock_surface);
+    ASSERT_TRUE(mock_surface->xdg_surface());
+    EXPECT_CALL(*mock_surface->xdg_surface(),
+                SetWindowGeometry(gfx::Rect(9, 9, 706, 522)));
+    EXPECT_CALL(*mock_surface->xdg_surface(), AckConfigure(Eq(kInitSerial)));
+  });
+
+  SendConfigureEvent(new_surface_id, gfx::Size(0, 0),
+                     wl::ScopedWlArray({XDG_TOPLEVEL_STATE_ACTIVATED}),
+                     kInitSerial);
+  AdvanceFrameToCurrent(new_window.get(), init_delegate);
+  VerifyAndClearExpectations(init_delegate, new_surface_id);
 }
 
 INSTANTIATE_TEST_SUITE_P(XdgVersionStableTest,

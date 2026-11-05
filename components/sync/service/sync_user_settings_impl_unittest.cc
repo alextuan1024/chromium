@@ -144,15 +144,13 @@ class SyncUserSettingsImplTest : public testing::Test {
     ON_CALL(delegate_, GetSyncAccountStateForPrefs)
         .WillByDefault(Return(sync_account_state));
 
-    if (IsReplaceSyncPromosWithSignInPromosEnabled()) {
-      // Enabling `kBookmarks`, `kReadingList` and `kExtensions` require a
-      // sign-in pref to be set. This is handled in the `PrimaryAccountManager`
-      // on Sign-in/startup. Set manually for this unittest.
-      SigninPrefs(pref_service_)
-          .SetBookmarksExplicitBrowserSignin(kTestGaiaId, true);
-      SigninPrefs(pref_service_)
-          .SetExtensionsExplicitBrowserSignin(kTestGaiaId, true);
-    }
+    // Enabling `kBookmarks`, `kReadingList` and `kExtensions` require a
+    // sign-in pref to be set. This is handled in the `PrimaryAccountManager`
+    // on Sign-in/startup. Set manually for this unittest.
+    SigninPrefs(pref_service_)
+        .SetBookmarksExplicitBrowserSignin(kTestGaiaId, true);
+    SigninPrefs(pref_service_)
+        .SetExtensionsExplicitBrowserSignin(kTestGaiaId, true);
   }
 
   std::unique_ptr<SyncUserSettingsImpl> MakeSyncUserSettings(
@@ -208,62 +206,10 @@ TEST_F(SyncUserSettingsImplTest, GetSelectedTypesWhileSignedOut) {
   EXPECT_TRUE(MakeSyncUserSettings(GetUserTypes())->GetSelectedTypes().empty());
 }
 
-// kReplaceSyncPromosWithSignInPromos has been enabled by default on mobile
-// platforms for a long time, so the feature-disabled case is not worth testing.
-#if !BUILDFLAG(IS_IOS) && !BUILDFLAG(IS_ANDROID)
-TEST_F(SyncUserSettingsImplTest,
-       DefaultSelectedTypesWhileSignedIn_SyncToSigninDisabled) {
+TEST_F(SyncUserSettingsImplTest, DefaultSelectedTypesWhileSignedIn) {
   base::test::ScopedFeatureList feature_list;
   feature_list.InitWithFeatures(
       /*enabled_features=*/{switches::kSyncEnableBookmarksInTransportMode,
-                            kReadingListEnableSyncTransportModeUponSignIn,
-                            kSeparateLocalAndAccountSearchEngines,
-                            syncer::kSeparateLocalAndAccountThemes,
-                            switches::kEnablePreferencesAccountStorage},
-      /*disabled_features=*/{kReplaceSyncPromosWithSignInPromos,
-                             kReplaceSyncPromosWithSigninPromosNewSignin});
-
-  std::unique_ptr<SyncUserSettingsImpl> sync_user_settings =
-      MakeSyncUserSettings(GetUserTypes());
-  SetSyncAccountState(SyncPrefs::SyncAccountState::kSignedInWithoutSyncConsent);
-
-  UserSelectableTypeSet expected_types = {UserSelectableType::kPasswords,
-                                          UserSelectableType::kAutofill,
-                                          UserSelectableType::kPayments};
-
-  EXPECT_THAT(sync_user_settings->GetSelectedTypes(),
-              ContainerEq(expected_types));
-
-  // Some types may be enabled via opt-in.
-  pref_service_.SetBoolean(
-      ::prefs::kPrefsThemesSearchEnginesAccountStorageEnabled, true);
-  expected_types.Put(UserSelectableType::kPreferences);
-  expected_types.Put(UserSelectableType::kThemes);
-  EXPECT_THAT(sync_user_settings->GetSelectedTypes(),
-              ContainerEq(expected_types));
-
-#if !BUILDFLAG(IS_CHROMEOS)
-  SigninPrefs(pref_service_)
-      .SetBookmarksExplicitBrowserSignin(kTestGaiaId, true);
-  expected_types.Put(UserSelectableType::kBookmarks);
-  expected_types.Put(UserSelectableType::kReadingList);
-  EXPECT_THAT(sync_user_settings->GetSelectedTypes(),
-              ContainerEq(expected_types));
-#endif  // !BUILDFLAG(IS_CHROMEOS)
-}
-#endif  // !BUILDFLAG(IS_IOS) && !BUILDFLAG(IS_ANDROID)
-
-TEST_F(SyncUserSettingsImplTest,
-       DefaultSelectedTypesWhileSignedIn_SyncToSigninEnabled) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitWithFeatures(
-      /*enabled_features=*/{switches::kSyncEnableBookmarksInTransportMode,
-                            kReplaceSyncPromosWithSignInPromos,
-#if !BUILDFLAG(IS_IOS) && !BUILDFLAG(IS_ANDROID)
-                            kReadingListEnableSyncTransportModeUponSignIn,
-                            kSeparateLocalAndAccountSearchEngines,
-                            syncer::kSeparateLocalAndAccountThemes,
-#endif
                             switches::kEnablePreferencesAccountStorage},
       /*disabled_features=*/{});
 
@@ -276,9 +222,14 @@ TEST_F(SyncUserSettingsImplTest,
 
   UserSelectableTypeSet expected_disabled_types = {};
 
-#if BUILDFLAG(IS_IOS) || BUILDFLAG(IS_ANDROID)
-  // Themes is not supported on mobile.
+#if BUILDFLAG(IS_ANDROID)
+  // Themes is not supported on Android.
   expected_disabled_types.Put(UserSelectableType::kThemes);
+#elif BUILDFLAG(IS_IOS)
+  // Themes is only supported on iOS when kSyncThemesIos is enabled.
+  if (!base::FeatureList::IsEnabled(syncer::kSyncThemesIos)) {
+    expected_disabled_types.Put(UserSelectableType::kThemes);
+  }
 #endif
 #if !BUILDFLAG(IS_CHROMEOS)
   // History, Tabs and Saved Tab Groups are enabled by default on ChromeOS,
@@ -315,11 +266,7 @@ TEST_F(SyncUserSettingsImplTest, SetSelectedTypeInTransportMode) {
 }
 
 #if BUILDFLAG(IS_CHROMEOS)
-TEST_F(SyncUserSettingsImplTest,
-       SetSelectedTypeInTransportModeChromeOsWithReplaceSyncPromosEnabled) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndEnableFeature(kReplaceSyncPromosWithSignInPromos);
-
+TEST_F(SyncUserSettingsImplTest, SetSelectedTypeInTransportModeChromeOs) {
   SetSyncAccountState(SyncPrefs::SyncAccountState::kSignedInWithoutSyncConsent);
   std::unique_ptr<SyncUserSettingsImpl> sync_user_settings =
       MakeSyncUserSettings(GetUserTypes());
@@ -346,42 +293,6 @@ TEST_F(SyncUserSettingsImplTest,
   EXPECT_THAT(
       sync_user_settings->GetSelectedTypes(),
       ContainerEq(Difference(default_types, {UserSelectableType::kPayments})));
-}
-
-TEST_F(SyncUserSettingsImplTest,
-       SetSelectedTypeInTransportModeChromeOsWithReplaceSyncPromosDisabled) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndDisableFeature(kReplaceSyncPromosWithSignInPromos);
-
-  // Measure default syncing user types first.
-  SetSyncAccountState(SyncPrefs::SyncAccountState::kSyncing);
-  std::unique_ptr<SyncUserSettingsImpl> sync_user_settings =
-      MakeSyncUserSettings(GetUserTypes());
-  const UserSelectableTypeSet default_syncing_types =
-      sync_user_settings->GetSelectedTypes();
-  ASSERT_TRUE(default_syncing_types.Has(UserSelectableType::kPayments));
-
-  // Switch to transport mode for the actual test.
-  SetSyncAccountState(SyncPrefs::SyncAccountState::kSignedInWithoutSyncConsent);
-  const UserSelectableTypeSet default_transport_types =
-      sync_user_settings->GetSelectedTypes();
-  ASSERT_TRUE(default_transport_types.Has(UserSelectableType::kPayments));
-
-  // Exactly one notification is expected when the type is changed.
-  EXPECT_CALL(delegate_, OnSelectedTypesChanged()).Times(1);
-
-  sync_user_settings->SetSelectedType(UserSelectableType::kPayments, false);
-
-  // The active types (for account) should be updated.
-  EXPECT_THAT(sync_user_settings->GetSelectedTypes(),
-              ContainerEq(Difference(default_transport_types,
-                                     {UserSelectableType::kPayments})));
-
-  // The syncing user types should NOT be updated (should still be
-  // default_syncing_types).
-  SetSyncAccountState(SyncPrefs::SyncAccountState::kSyncing);
-  EXPECT_THAT(sync_user_settings->GetSelectedTypes(),
-              ContainerEq(default_syncing_types));
 }
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
@@ -620,6 +531,16 @@ TEST_F(SyncUserSettingsImplTest, ShouldSyncSessionsOnlyIfOpenTabsIsSelected) {
   ASSERT_FALSE(AlwaysPreferredUserTypes().Has(HISTORY_DELETE_DIRECTIVES));
   ASSERT_FALSE(AlwaysPreferredUserTypes().Has(SESSIONS));
 
+  // With kSpellcheckSeparateLocalAndAccountDictionaries, DICTIONARY is
+  // controlled by the History opt-in instead of Preferences. See
+  // GetUserSelectableTypeInfo() in user_selectable_type.cc.
+  DataTypeSet history_types = {HISTORY, HISTORY_DELETE_DIRECTIVES, USER_EVENTS,
+                               JOURNEY};
+  if (base::FeatureList::IsEnabled(
+          kSpellcheckSeparateLocalAndAccountDictionaries)) {
+    history_types.Put(DICTIONARY);
+  }
+
   std::unique_ptr<SyncUserSettingsImpl> sync_user_settings =
       MakeSyncUserSettings(GetUserTypes());
 
@@ -639,18 +560,14 @@ TEST_F(SyncUserSettingsImplTest, ShouldSyncSessionsOnlyIfOpenTabsIsSelected) {
 #if BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_IOS)
   // For android and iOS, we enable SAVED_TAB_GROUP under OpenTabs as well.
   EXPECT_EQ(GetPreferredUserTypes(*sync_user_settings),
-            Union(AlwaysPreferredUserTypes(),
-                  {COLLABORATION_GROUP, HISTORY, HISTORY_DELETE_DIRECTIVES,
-                   SAVED_TAB_GROUP, SHARED_COMMENT, SHARED_TAB_GROUP_DATA,
-                   SESSIONS, USER_EVENTS, SHARED_TAB_GROUP_ACCOUNT_DATA,
-                   WORKSPACE_DESK, ENCRYPTED_TAB_CONTEXT_CONTAINER,
-                   ENCRYPTED_TAB_CONTEXT_ITEM, NOTEBOOK, JOURNEY}));
+            Union(Union(AlwaysPreferredUserTypes(), history_types),
+                  {COLLABORATION_GROUP, SAVED_TAB_GROUP, SHARED_COMMENT,
+                   SHARED_TAB_GROUP_DATA, SESSIONS,
+                   SHARED_TAB_GROUP_ACCOUNT_DATA, WORKSPACE_DESK, NOTEBOOK}));
 #else
   EXPECT_EQ(GetPreferredUserTypes(*sync_user_settings),
-            Union(AlwaysPreferredUserTypes(),
-                  {HISTORY, HISTORY_DELETE_DIRECTIVES, SESSIONS, USER_EVENTS,
-                   WORKSPACE_DESK, ENCRYPTED_TAB_CONTEXT_CONTAINER,
-                   ENCRYPTED_TAB_CONTEXT_ITEM, NOTEBOOK, JOURNEY}));
+            Union(Union(AlwaysPreferredUserTypes(), history_types),
+                  {SESSIONS, WORKSPACE_DESK, NOTEBOOK}));
 #endif  // BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_IOS)
 
   // History only: SESSIONS-related types are gone.
@@ -658,26 +575,22 @@ TEST_F(SyncUserSettingsImplTest, ShouldSyncSessionsOnlyIfOpenTabsIsSelected) {
       /*sync_everything=*/false,
       /*types=*/{UserSelectableType::kHistory});
   EXPECT_EQ(GetPreferredUserTypes(*sync_user_settings),
-            Union(AlwaysPreferredUserTypes(),
-                  {HISTORY, HISTORY_DELETE_DIRECTIVES, USER_EVENTS, JOURNEY}));
+            Union(AlwaysPreferredUserTypes(), history_types));
 
   // OpenTabs only: HISTORY-related types are gone.
   sync_user_settings->SetSelectedTypes(
       /*sync_everything=*/false,
       /*types=*/{UserSelectableType::kTabs});
 #if BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_IOS)
-  EXPECT_EQ(
-      GetPreferredUserTypes(*sync_user_settings),
-      Union(AlwaysPreferredUserTypes(),
-            {COLLABORATION_GROUP, SAVED_TAB_GROUP, SESSIONS,
-             SHARED_TAB_GROUP_DATA, SHARED_TAB_GROUP_ACCOUNT_DATA,
-             WORKSPACE_DESK, SHARED_COMMENT, ENCRYPTED_TAB_CONTEXT_CONTAINER,
-             ENCRYPTED_TAB_CONTEXT_ITEM, NOTEBOOK}));
-#else
   EXPECT_EQ(GetPreferredUserTypes(*sync_user_settings),
             Union(AlwaysPreferredUserTypes(),
-                  {SESSIONS, WORKSPACE_DESK, ENCRYPTED_TAB_CONTEXT_CONTAINER,
-                   ENCRYPTED_TAB_CONTEXT_ITEM, NOTEBOOK}));
+                  {COLLABORATION_GROUP, SAVED_TAB_GROUP, SESSIONS,
+                   SHARED_TAB_GROUP_DATA, SHARED_TAB_GROUP_ACCOUNT_DATA,
+                   WORKSPACE_DESK, SHARED_COMMENT, NOTEBOOK}));
+#else
+  EXPECT_EQ(
+      GetPreferredUserTypes(*sync_user_settings),
+      Union(AlwaysPreferredUserTypes(), {SESSIONS, WORKSPACE_DESK, NOTEBOOK}));
 #endif  // BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_IOS)
 
 // SavedTabGroups enabled on desktop. It should enable both saved tab groups and
@@ -821,12 +734,8 @@ TEST_F(SyncUserSettingsImplTest, SyncFeatureDisabledViaDashboard) {
   EXPECT_FALSE(sync_user_settings->IsSyncFeatureDisabledViaDashboard());
 }
 
-TEST_F(
-    SyncUserSettingsImplTest,
-    SetSyncFeatureDisabledViaDashboard_SignedInWithoutSyncConsentWithTheFlagEnabled) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndEnableFeature(syncer::kReplaceSyncPromosWithSignInPromos);
-
+TEST_F(SyncUserSettingsImplTest,
+       SetSyncFeatureDisabledViaDashboard_SignedInWithoutSyncConsent) {
   SetSyncAccountState(SyncPrefs::SyncAccountState::kSignedInWithoutSyncConsent);
   std::unique_ptr<SyncUserSettingsImpl> sync_user_settings =
       MakeSyncUserSettings(GetUserTypes());
@@ -841,17 +750,13 @@ TEST_F(
 
   EXPECT_FALSE(sync_user_settings->IsSyncAllOsTypesEnabled());
   EXPECT_TRUE(sync_user_settings->GetSelectedOsTypes().empty());
-  // When the flag is enabled and user is not syncing, the dashboard reset does
-  // NOT clear preferred browser types.
+  // When the user is not syncing, the dashboard reset does NOT clear preferred
+  // browser types.
   EXPECT_TRUE(sync_user_settings->GetPreferredDataTypes().HasAll(
       {NIGORI, DEVICE_INFO, PASSWORDS}));
 }
 
-TEST_F(SyncUserSettingsImplTest,
-       SetSyncFeatureDisabledViaDashboard_SyncingWithTheFlagEnabled) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndEnableFeature(syncer::kReplaceSyncPromosWithSignInPromos);
-
+TEST_F(SyncUserSettingsImplTest, SetSyncFeatureDisabledViaDashboard_Syncing) {
   SetSyncAccountState(SyncPrefs::SyncAccountState::kSyncing);
   std::unique_ptr<SyncUserSettingsImpl> sync_user_settings =
       MakeSyncUserSettings(GetUserTypes());
@@ -865,36 +770,8 @@ TEST_F(SyncUserSettingsImplTest,
   sync_user_settings->SetSyncFeatureDisabledViaDashboard();
 
   EXPECT_TRUE(sync_user_settings->IsSyncAllOsTypesEnabled());
-  // Even when the feature is enabled, if the user is syncing, the dashboard
-  // reset clears preferred browser types. Only a minimal set of datatypes
-  // should sync.
-  EXPECT_TRUE(sync_user_settings->GetPreferredDataTypes().HasAll(
-      {NIGORI, DEVICE_INFO}));
-  EXPECT_FALSE(sync_user_settings->GetPreferredDataTypes().Has(BOOKMARKS));
-  EXPECT_FALSE(sync_user_settings->GetPreferredDataTypes().Has(PASSWORDS));
-}
-
-TEST_F(SyncUserSettingsImplTest,
-       SetSyncFeatureDisabledViaDashboard_SyncingWithTheFlagDisabled) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndDisableFeature(
-      syncer::kReplaceSyncPromosWithSignInPromos);
-
-  SetSyncAccountState(SyncPrefs::SyncAccountState::kSyncing);
-  std::unique_ptr<SyncUserSettingsImpl> sync_user_settings =
-      MakeSyncUserSettings(GetUserTypes());
-
-  // Ensure OS types are enabled by default.
-  ASSERT_TRUE(sync_user_settings->IsSyncAllOsTypesEnabled());
-  // Ensure browser types are enabled by default.
-  ASSERT_TRUE(sync_user_settings->GetPreferredDataTypes().HasAll(
-      {NIGORI, DEVICE_INFO, BOOKMARKS, PASSWORDS}));
-
-  sync_user_settings->SetSyncFeatureDisabledViaDashboard();
-
-  EXPECT_TRUE(sync_user_settings->IsSyncAllOsTypesEnabled());
-  // When the feature is disabled, the dashboard reset clears preferred browser
-  // types.  Only a minimal set of datatypes should sync.
+  // If the user is syncing, the dashboard reset clears preferred browser types.
+  // Only a minimal set of datatypes should sync.
   EXPECT_TRUE(sync_user_settings->GetPreferredDataTypes().HasAll(
       {NIGORI, DEVICE_INFO}));
   EXPECT_FALSE(sync_user_settings->GetPreferredDataTypes().Has(BOOKMARKS));

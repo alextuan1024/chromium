@@ -9,11 +9,16 @@
 #include <string>
 #include <vector>
 
+#include "base/command_line.h"
 #include "base/feature_list.h"
+#include "base/files/file_path.h"
 #include "base/functional/bind.h"
+#include "base/json/json_file_value_serializer.h"
 #include "base/json/values_util.h"
+#include "base/logging.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/strings/string_util.h"
+#include "base/threading/thread_restrictions.h"
 #include "base/time/time.h"
 #include "base/values.h"
 #include "components/prefs/pref_service.h"
@@ -23,6 +28,7 @@
 #include "components/signin/public/identity_manager/tribool.h"
 #include "components/universal_optout/features.h"
 #include "components/universal_optout/prefs.h"
+#include "components/universal_optout/switches.h"
 
 namespace universal_optout {
 
@@ -78,7 +84,7 @@ EligibilityCategory GetEligibilityCategory(const base::DictValue& history_dict,
   bool is_recent_eligible =
       recent_total_days > 0 &&
       (static_cast<double>(recent_eligible_days) / recent_total_days >=
-       UniversalOptOutService::kEligibilityThresholdRatio);
+       features::kEligibilityThresholdRatio.Get());
   if (is_recent_eligible) {
     return EligibilityCategory::kEligible;
   }
@@ -86,7 +92,7 @@ EligibilityCategory GetEligibilityCategory(const base::DictValue& history_dict,
   bool is_trailing_eligible =
       trailing_total_days > 0 &&
       (static_cast<double>(trailing_eligible_days) / trailing_total_days >=
-       UniversalOptOutService::kEligibilityThresholdRatio);
+       features::kTrailingEligibilityThresholdRatio.Get());
   if (is_trailing_eligible) {
     return EligibilityCategory::kTrailingEligible;
   }
@@ -127,6 +133,8 @@ UniversalOptOutService::UniversalOptOutService(
   if (opt_out_changed_callback_) {
     OnOptOutPrefChanged();
   }
+
+  MaybeOverrideHistoryFromCommandLine();
   RecordLocationAndUpdateEligibility();
   RecordStartupMetrics();
 }
@@ -147,7 +155,17 @@ void UniversalOptOutService::OnOptOutPrefChanged() {
 }
 
 void UniversalOptOutService::OnSeedFetched() {
-  RecordLocationAndUpdateEligibility();
+  if (!base::FeatureList::IsEnabled(
+          features::kUniversalOptOutUpdateOnGeoLocationChanged)) {
+    RecordLocationAndUpdateEligibility();
+  }
+}
+
+void UniversalOptOutService::OnCountryOrAdminAreaChanged() {
+  if (base::FeatureList::IsEnabled(
+          features::kUniversalOptOutUpdateOnGeoLocationChanged)) {
+    RecordLocationAndUpdateEligibility();
+  }
 }
 
 void UniversalOptOutService::OnVariationsServiceDestroyed() {
@@ -156,6 +174,10 @@ void UniversalOptOutService::OnVariationsServiceDestroyed() {
 }
 
 bool UniversalOptOutService::IsEligible() const {
+  if (features::kForceEligible.Get()) {
+    return true;
+  }
+
   signin::Tribool capability = GetAccountCapabilityEligibility();
   // If the capability is known, use it. Otherwise, fall back to location
   // history.
@@ -175,6 +197,59 @@ void UniversalOptOutService::RecordLocationAndUpdateEligibility() {
   UpdateEligibility(current_day);
 }
 
+void UniversalOptOutService::MaybeOverrideHistoryFromCommandLine() {
+  const base::CommandLine* command_line =
+      base::CommandLine::ForCurrentProcess();
+  if (!command_line->HasSwitch(switches::kUniversalOptOutHistoryJsonPath)) {
+    return;
+  }
+
+  base::FilePath json_path = command_line->GetSwitchValuePath(
+      switches::kUniversalOptOutHistoryJsonPath);
+  if (json_path.empty()) {
+    return;
+  }
+
+  JSONFileValueDeserializer deserializer(json_path);
+  int error_code;
+  std::string error_message;
+  std::unique_ptr<base::Value> json_content =
+      deserializer.Deserialize(&error_code, &error_message);
+  if (!json_content || !json_content->is_dict()) {
+    LOG(ERROR)
+        << "Failed to load Universal Opt-Out eligibility history JSON from "
+        << json_path << ": " << error_message << " (" << error_code << ")";
+    return;
+  }
+
+  const base::DictValue* dict = json_content->GetDict().FindDict(
+      prefs::kUniversalOptOutEligibilityHistory);
+
+  if (!dict) {
+    LOG(ERROR) << "Failed to find " << prefs::kUniversalOptOutEligibilityHistory
+               << " in JSON from " << json_path;
+    return;
+  }
+
+  ScopedDictPrefUpdate history_update(
+      &pref_service_.get(), prefs::kUniversalOptOutEligibilityHistory);
+
+  // Override the history dict with the values from the JSON file.
+  history_update->clear();
+  for (auto [key, value] : *dict) {
+    if (!value.is_bool()) {
+      continue;
+    }
+
+    base::Time record_day;
+    if (base::Time::FromUTCString(key.c_str(), &record_day)) {
+      std::string day_key =
+          base::TimeToValue(record_day.UTCMidnight()).GetString();
+      history_update->Set(day_key, value.GetBool());
+    }
+  }
+}
+
 void UniversalOptOutService::RecordLocation(
     base::Time current_day,
     ScopedDictPrefUpdate& history_update) {
@@ -189,7 +264,12 @@ void UniversalOptOutService::RecordLocation(
   if (!geo_level1.empty()) {
     std::string day_key = base::TimeToValue(current_day).GetString();
     bool is_eligible = IsEligibleLocation(geo_level1);
-    history_update->Set(day_key, is_eligible);
+    // Only record the day's eligibility if it is unset, or if it changed from
+    // ineligible to eligible. Once a user has been eligible at some point
+    // during a day, that day remains eligible.
+    std::optional<bool> existing = history_update->FindBool(day_key);
+    history_update->Set(
+        day_key, is_eligible || (existing.has_value() && existing.value()));
   }
 }
 
@@ -230,18 +310,19 @@ void UniversalOptOutService::UpdateEligibility(base::Time current_day) {
 
   bool currently_eligible =
       pref_service_->GetBoolean(prefs::kUniversalOptOutEligible);
-  bool is_opt_out_enabled =
-      pref_service_->GetBoolean(prefs::kUniversalOptOutEnabled);
 
-  bool new_eligible = currently_eligible;
-  if (currently_eligible) {
-    if (!is_opt_out_enabled && category == EligibilityCategory::kIneligible) {
-      new_eligible = false;
-    }
-  } else {
-    if (category == EligibilityCategory::kEligible) {
+  bool new_eligible;
+  switch (category) {
+    case EligibilityCategory::kEligible:
       new_eligible = true;
-    }
+      break;
+    case EligibilityCategory::kTrailingEligible:
+      // In the trailing window, preserve the current eligibility state.
+      new_eligible = currently_eligible;
+      break;
+    case EligibilityCategory::kIneligible:
+      new_eligible = false;
+      break;
   }
 
   if (new_eligible != currently_eligible) {
@@ -268,6 +349,9 @@ signin::Tribool UniversalOptOutService::GetAccountCapabilityEligibility()
 
 void UniversalOptOutService::RecordStartupMetrics() {
   base::UmaHistogramBoolean(kProfileEligibilityStartupHistogram, IsEligible());
+  base::UmaHistogramBoolean(
+      kToggleStateStartupHistogram,
+      pref_service_->GetBoolean(prefs::kUniversalOptOutEnabled));
 
   signin::Tribool capability = GetAccountCapabilityEligibility();
   EligibilitySystem system;

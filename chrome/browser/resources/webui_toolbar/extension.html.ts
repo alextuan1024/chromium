@@ -8,19 +8,24 @@ import type {ExtensionElement} from './extension.js';
 
 export function getHtml(this: ExtensionElement) {
   return html`<!--_html_template_start_-->
-  <cr-button class="iph-visual-target" type="button"
-      tabindex="-1"
-      ?is-menu-open="${this.trackedHighlighted}"
-      title="${this.state.tooltip}"
-      aria-label="${this.state.accessibleName || this.state.tooltip}"
-      draggable="${this.isDraggable()}"
-      @dragstart="${this.onDragstart}"
-      @dragend="${this.onDragend}"
-      @keydown="${this.onKeydown}"
-      @pointerdown="${this.onPointerdown_}"
-      @click="${this.onClick_}"
-      @contextmenu="${this.onContextmenu_}">
-      <icon-from-table .iconHandle="${this.state.icon}"></icon-from-table>
-  </cr-button>
+<toolbar-chip-button id="button"
+    class="${this.hasHelpBubble ? 'help-anchor-highlight' : ''}"
+    ?is-menu-open="${this.state.highlighted || this.trackedHighlighted}"
+    .tooltip="${this.state.tooltip}" .buttonTabIndex="${0}"
+    .ariaLabel="${this.state.accessibleName || this.state.tooltip}"
+    .ariaHasPopup="${'menu'}" .flatEdge="${this.getFlatEdge_()}"
+    ?has-label="${!!this.state.text}" draggable="${this.isDraggable()}"
+    @dragstart="${this.onDragstart}" @dragend="${this.onDragend}"
+    @keydown="${this.onKeydown}"
+    @pointerdown="${this.highlightTracker.onPointerdown}"
+    @click="${this.onClick_}" @contextmenu="${this.onContextmenu_}">
+  ${this.state.icon && this.state.icon.handleId !== 0n ? html`
+    <icon-from-table slot="prefix-icon" .iconHandle="${this.state.icon}">
+    </icon-from-table>
+  ` : ''}
+  ${this.state.text ? html`
+    <span id="text">${this.state.text}</span>
+  ` : ''}
+</toolbar-chip-button>
 <!--_html_template_end_-->`;
 }

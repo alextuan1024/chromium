@@ -4,23 +4,29 @@
 
 #include "chrome/browser/ui/autofill/chrome_autofill_client.h"
 
+#include <memory>
 #include <optional>
 #include <utility>
 
 #include "base/containers/flat_set.h"
 #include "base/functional/bind.h"
+#include "base/functional/callback_helpers.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/raw_ref.h"
+#include "base/test/mock_callback.h"
 #include "base/test/scoped_feature_list.h"
+#include "base/test/test_future.h"
 #include "base/test/values_test_util.h"
 #include "base/values.h"
 #include "build/build_config.h"
 #include "chrome/browser/affiliations/affiliation_service_factory.h"
+#include "chrome/browser/autofill/autofill_entity_data_manager_factory.h"
 #include "chrome/browser/autofill/cross_tab_copy_paste_tracker_factory.h"
 #include "chrome/browser/autofill/mock_autofill_agent.h"
 #include "chrome/browser/autofill/personal_data_manager_factory.h"
 #include "chrome/browser/autofill/ui/ui_util.h"
 #include "chrome/browser/personal_context/personal_context_eligibility_service_factory.h"
+#include "chrome/browser/ssl/chrome_security_state_util.h"
 #include "chrome/browser/ui/autofill/autofill_popup_controller_impl.h"
 #include "chrome/browser/ui/autofill/edit_address_profile_dialog_controller_impl.h"
 #include "chrome/browser/ui/autofill/popup_controller_common.h"
@@ -29,14 +35,16 @@
 #include "chrome/browser/ui/user_education/browser_user_education_interface.h"
 #include "chrome/browser/user_education/user_education_service.h"
 #include "chrome/browser/user_education/user_education_service_factory.h"
+#include "chrome/common/chrome_features.h"
 #include "chrome/common/webui_url_constants.h"
 #include "chrome/test/base/chrome_render_view_host_test_harness.h"
 #include "chrome/test/user_education/mock_browser_user_education_interface.h"
 #include "components/autofill/content/browser/autofill_test_util.h"
 #include "components/autofill/content/browser/test_autofill_client_injector.h"
 #include "components/autofill/content/browser/test_autofill_driver_injector.h"
-#include "components/autofill/content/browser/test_autofill_manager_injector.h"
 #include "components/autofill/content/browser/test_content_autofill_driver.h"
+#include "components/autofill/core/browser/actor/actor_autofill_manager.h"
+#include "components/autofill/core/browser/data_manager/autofill_ai/entity_data_manager.h"
 #include "components/autofill/core/browser/data_manager/test_personal_data_manager.h"
 #include "components/autofill/core/browser/data_model/addresses/autofill_profile.h"
 #include "components/autofill/core/browser/data_model/addresses/autofill_profile_test_api.h"
@@ -47,57 +55,85 @@
 #include "components/autofill/core/browser/filling/filling_product.h"
 #include "components/autofill/core/browser/foundations/test_autofill_manager_waiter.h"
 #include "components/autofill/core/browser/foundations/test_browser_autofill_manager.h"
+#include "components/autofill/core/browser/integrators/one_time_tokens/gmail_otp_opt_in_result.h"
 #include "components/autofill/core/browser/integrators/password_form_classification.h"
 #include "components/autofill/core/browser/metrics/cross_tab_copy_paste_tracker.h"
 #include "components/autofill/core/browser/payments/payments_autofill_client.h"
 #include "components/autofill/core/browser/test_utils/autofill_test_util.h"
+#include "components/autofill/core/browser/test_utils/entity_data_test_util.h"
 #include "components/autofill/core/browser/ui/mock_autofill_suggestion_delegate.h"
+#include "components/autofill/core/browser/webdata/autofill_ai/entity_table.h"
+#include "components/autofill/core/browser/webdata/autofill_webdata_service_test_helper.h"
 #include "components/autofill/core/common/autofill_features.h"
 #include "components/autofill/core/common/autofill_payments_features.h"
 #include "components/autofill/core/common/autofill_prefs.h"
 #include "components/autofill/core/common/autofill_test_util.h"
 #include "components/autofill/core/common/form_field_data.h"
 #include "components/autofill/core/common/unique_ids.h"
+#include "components/device_reauth/mock_device_auth_availability_checker.h"
 #include "components/feature_engagement/public/feature_constants.h"
+#include "components/password_manager/core/browser/features/password_features.h"
 #include "components/personal_context/core/personal_context_eligibility_service.h"
 #include "components/personal_context/core/personal_context_prefs.h"
 #include "components/personal_context/core/personal_context_types.h"
 #include "components/prefs/pref_service.h"
+#include "components/security_state/core/security_state.h"
 #include "components/sessions/content/session_tab_helper.h"
 #include "components/strings/grit/components_strings.h"
 #include "components/unified_consent/pref_names.h"
 #include "components/user_education/common/feature_promo/feature_promo_result.h"
 #include "content/public/browser/browser_context.h"
+#include "content/public/browser/navigation_controller.h"
+#include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/render_frame_host.h"
+#include "content/public/browser/ssl_status.h"
 #include "content/public/browser/web_contents.h"
+#include "content/public/browser/web_contents_delegate.h"
+#include "content/public/common/page_type.h"
 #include "content/public/test/navigation_simulator.h"
 #include "content/public/test/test_renderer_host.h"
 #include "content/public/test/test_utils.h"
 #include "content/public/test/web_contents_tester.h"
 #include "mojo/public/cpp/bindings/associated_receiver_set.h"
 #include "mojo/public/cpp/bindings/associated_remote.h"
+#include "net/base/net_errors.h"
+#include "net/cert/cert_status_flags.h"
+#include "net/test/cert_test_util.h"
+#include "net/test/test_data_directory.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/common/associated_interfaces/associated_interface_provider.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "url/gurl.h"
 
 #if BUILDFLAG(IS_ANDROID)
 #include "chrome/browser/ui/android/autofill/autofill_cvc_save_message_delegate.h"
 #include "chrome/browser/ui/android/autofill/autofill_save_card_bottom_sheet_bridge.h"
 #include "chrome/browser/ui/android/autofill/autofill_save_card_delegate_android.h"
+#include "chrome/browser/ui/android/autofill/autofill_snackbar_controller_impl.h"
+#include "chrome/browser/ui/android/autofill/autofill_snackbar_type.h"
+#include "chrome/browser/ui/android/autofill/email_verification_bottom_sheet_bridge.h"
+#include "chrome/browser/ui/autofill/email_verifier/email_verification_controller_test_api.h"
 #include "components/autofill/core/browser/payments/autofill_save_card_ui_info.h"
+#include "components/autofill/core/browser/ui/autofill_tapjacking_protector.h"
+#include "components/autofill/core/browser/ui/mock_autofill_tapjacking_protector.h"
+#include "ui/android/window_android.h"
 #else  // BUILDFLAG(IS_ANDROID)
 #include "chrome/browser/account_settings/account_setting_service_factory.h"
 #include "chrome/browser/actor/actor_keyed_service_factory.h"
 #include "chrome/browser/actor/actor_keyed_service_fake.h"
+#include "chrome/browser/actor/actor_surface_registry.h"
 #include "chrome/browser/glic/glic_profile_manager.h"
 #include "chrome/browser/glic/host/glic.mojom.h"
 #include "chrome/browser/glic/public/glic_enabling.h"
 #include "chrome/browser/glic/public/glic_invoke_options.h"
 #include "chrome/browser/glic/public/glic_keyed_service.h"
 #include "chrome/browser/glic/public/glic_keyed_service_factory.h"
+#include "chrome/browser/glic/public/glic_provider.h"
+#include "chrome/browser/glic/public/glic_provider_spec.h"
 #include "chrome/browser/glic/test_support/mock_glic_keyed_service.h"  // nogncheck
+#include "chrome/browser/glic/test_support/scoped_glic_provider_override.h"  // nogncheck
 #include "chrome/browser/profiles/profile_attributes_init_params.h"
 #include "chrome/browser/profiles/profile_attributes_storage.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
@@ -109,7 +145,6 @@
 #include "chrome/browser/ui/hats/mock_hats_service.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile_manager.h"
-#include "components/autofill/core/browser/foundations/mock_autofill_manager.h"
 #include "components/tabs/public/mock_tab_interface.h"
 #include "components/tabs/public/tab_interface.h"
 #endif  //   BUILDFLAG(IS_ANDROID)
@@ -128,12 +163,13 @@ using ::testing::Field;
 using ::testing::Ge;
 using ::testing::InSequence;
 using ::testing::Le;
+using ::testing::MockFunction;
+using ::testing::NiceMock;
 using ::testing::Pair;
 using ::testing::Property;
 using ::testing::Ref;
 using ::testing::Return;
 using ::testing::ReturnRef;
-using ::testing::UnorderedElementsAre;
 
 class MockPersonalContextEligibilityService
     : public personal_context::PersonalContextEligibilityService {
@@ -143,10 +179,12 @@ class MockPersonalContextEligibilityService
 
   MOCK_METHOD(void, AddObserver, (Observer*), (override));
   MOCK_METHOD(void, RemoveObserver, (Observer*), (override));
+  MOCK_METHOD(bool, IsInitialized, (), (const, override));
   MOCK_METHOD(personal_context::PersonalContextEligibilityState,
               GetEligibilityState,
               (),
               (override));
+  MOCK_METHOD(bool, IsEligibleForEncryption, (), (const, override));
   MOCK_METHOD(
       std::optional<personal_context::PersonalContextNonEligibilityReason>,
       GetNonEligibilityReason,
@@ -179,8 +217,8 @@ class MockAutofillFieldPromoController : public AutofillFieldPromoController {
   ~MockAutofillFieldPromoController() override = default;
   MOCK_METHOD(void, Show, (const gfx::RectF&), (override));
   MOCK_METHOD(void, Hide, (), (override));
-  MOCK_METHOD(bool, IsMaybeShowing, (), (const override));
-  MOCK_METHOD(const base::Feature&, GetFeaturePromo, (), (const override));
+  MOCK_METHOD(bool, IsMaybeShowing, (), (const, override));
+  MOCK_METHOD(const base::Feature&, GetFeaturePromo, (), (const, override));
 };
 #endif  // !BUILDFLAG(IS_ANDROID)
 
@@ -191,6 +229,7 @@ class TestChromeAutofillClient : public ChromeAutofillClient {
       : ChromeAutofillClient(web_contents) {}
   ~TestChromeAutofillClient() override = default;
 
+  using ChromeAutofillClient::GetEmailVerificationController;
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX) || \
     BUILDFLAG(IS_CHROMEOS)
   using ChromeAutofillClient::at_memory_copy_paste_observer;
@@ -410,131 +449,6 @@ TEST_F(ChromeAutofillClientTest, ClassifiesLoginFormOnChildFrame) {
 }
 
 #if !BUILDFLAG(IS_ANDROID)
-// Test that the hats service is called with the expected params for different
-// surveys. Note that Surveys are only launched on Desktop.
-TEST_F(ChromeAutofillClientTest, TriggerUserPerceptionOfAutofillAddressSurvey) {
-  MockHatsService* mock_hats_service = static_cast<MockHatsService*>(
-      HatsServiceFactory::GetInstance()->SetTestingFactoryAndUse(
-          profile(), base::BindRepeating(&BuildMockHatsService)));
-  EXPECT_CALL(*mock_hats_service, CanShowAnySurvey)
-      .WillRepeatedly(Return(true));
-
-  const SurveyStringData field_filling_stats_data;
-  EXPECT_CALL(*mock_hats_service,
-              LaunchDelayedSurveyForWebContents(
-                  kHatsSurveyTriggerAutofillAddressUserPerception, _, _, _,
-                  Ref(field_filling_stats_data), _, _, _, _, _));
-
-  client()->TriggerUserPerceptionOfAutofillSurvey(FillingProduct::kAddress,
-                                                  field_filling_stats_data);
-}
-
-// Test that the Autofill AI filling journey survey calls the hats service with
-// the expected params.
-TEST_F(ChromeAutofillClientTest,
-       TriggerUserAutofillAiFillingJourneySurvey_Vehicle_SuggestionAccepted) {
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitAndEnableFeature(features::kAutofillAiFillingSurvey);
-
-  MockHatsService* mock_hats_service = static_cast<MockHatsService*>(
-      HatsServiceFactory::GetInstance()->SetTestingFactoryAndUse(
-          profile(), base::BindRepeating(&BuildMockHatsService)));
-  EXPECT_CALL(*mock_hats_service, CanShowAnySurvey)
-      .WillRepeatedly(Return(true));
-
-  EXPECT_CALL(
-      *mock_hats_service,
-      LaunchDelayedSurveyForWebContents(
-          kHatsSurveyTriggerAutofillAiFilling, _, _,
-          Eq(SurveyBitsData({{"User accepted suggestion", true}})),
-          Eq(SurveyStringData({{"Entity type", "Vehicle"},
-                               {"Saved entities", "Vehicle"},
-                               {"Triggering field types", "NAME_FULL"}})),
-          _, _, _, _, _));
-
-  client()->TriggerAutofillAiFillingJourneySurvey(
-      /*suggestion_accepted=*/true, EntityType(EntityTypeName::kVehicle),
-      base::flat_set<EntityTypeName>({EntityTypeName::kVehicle}), {NAME_FULL});
-}
-
-// Test that all entities trigger generalized Autofill AI filling surveys.
-TEST_F(ChromeAutofillClientTest,
-       TriggerUserAutofillAiFillingJourneySurvey_SuggestionAccepted) {
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitAndEnableFeature(features::kAutofillAiFillingSurvey);
-
-  MockHatsService* mock_hats_service = static_cast<MockHatsService*>(
-      HatsServiceFactory::GetInstance()->SetTestingFactoryAndUse(
-          profile(), base::BindRepeating(&BuildMockHatsService)));
-  EXPECT_CALL(*mock_hats_service, CanShowAnySurvey)
-      .WillRepeatedly(Return(true));
-
-  EXPECT_CALL(
-      *mock_hats_service,
-      LaunchDelayedSurveyForWebContents(
-          kHatsSurveyTriggerAutofillAiFilling, _, _,
-          Eq(SurveyBitsData({{"User accepted suggestion", true}})),
-          Eq(SurveyStringData({{"Entity type", "Passport"},
-                               {"Saved entities", "Passport"},
-                               {"Triggering field types", "PASSPORT_NUMBER"}})),
-          _, _, _, _, _));
-
-  client()->TriggerAutofillAiFillingJourneySurvey(
-      /*suggestion_accepted=*/true, EntityType(EntityTypeName::kPassport),
-      base::flat_set<EntityTypeName>({EntityTypeName::kPassport}),
-      {PASSPORT_NUMBER});
-}
-
-TEST_F(
-    ChromeAutofillClientTest,
-    TriggerUserAutofillAiFillingJourneySurvey_FlightReservation_SuggestionDeclined) {
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitAndEnableFeature(features::kAutofillAiFillingSurvey);
-
-  MockHatsService* mock_hats_service = static_cast<MockHatsService*>(
-      HatsServiceFactory::GetInstance()->SetTestingFactoryAndUse(
-          profile(), base::BindRepeating(&BuildMockHatsService)));
-  EXPECT_CALL(*mock_hats_service, CanShowAnySurvey)
-      .WillRepeatedly(Return(true));
-
-  EXPECT_CALL(
-      *mock_hats_service,
-      LaunchDelayedSurveyForWebContents(
-          kHatsSurveyTriggerAutofillAiFilling, _, _,
-          Eq(SurveyBitsData({{"User accepted suggestion", false}})),
-          Eq(SurveyStringData(
-              {{"Entity type",
-                std::string(EntityType(EntityTypeName::kFlightReservation)
-                                .name_as_string())},
-               {"Triggering field types", "FLIGHT_RESERVATION_FLIGHT_NUMBER"},
-               {"Saved entities", "Passport,Flight Reservation"}})),
-          _, _, _, _, _));
-
-  client()->TriggerAutofillAiFillingJourneySurvey(
-      /*suggestion_accepted=*/false,
-      EntityType(EntityTypeName::kFlightReservation),
-      base::flat_set<EntityTypeName>(
-          {EntityTypeName::kPassport, EntityTypeName::kFlightReservation}),
-      FieldTypeSet({FLIGHT_RESERVATION_FLIGHT_NUMBER}));
-}
-
-TEST_F(ChromeAutofillClientTest,
-       TriggerUserPerceptionOfAutofillCreditCardSurvey) {
-  MockHatsService* mock_hats_service = static_cast<MockHatsService*>(
-      HatsServiceFactory::GetInstance()->SetTestingFactoryAndUse(
-          profile(), base::BindRepeating(&BuildMockHatsService)));
-  EXPECT_CALL(*mock_hats_service, CanShowAnySurvey)
-      .WillRepeatedly(Return(true));
-
-  const SurveyStringData field_filling_stats_data;
-  EXPECT_CALL(*mock_hats_service,
-              LaunchDelayedSurveyForWebContents(
-                  kHatsSurveyTriggerAutofillCreditCardUserPerception, _, _, _,
-                  Ref(field_filling_stats_data), _, _, _, _, _));
-
-  client()->TriggerUserPerceptionOfAutofillSurvey(FillingProduct::kCreditCard,
-                                                  field_filling_stats_data);
-}
 
 TEST_F(ChromeAutofillClientTest,
        CreditCardUploadCompleted_ShowConfirmationBubbleView_CardSaved) {
@@ -695,12 +609,26 @@ TEST_F(ChromeAutofillClientTest,
   }
 }
 
+class MockContentAutofillDriver : public TestContentAutofillDriver {
+ public:
+  using TestContentAutofillDriver::TestContentAutofillDriver;
+  ~MockContentAutofillDriver() override = default;
+
+  MOCK_METHOD(void,
+              TriggerFormExtractionInAllFrames,
+              (bool, base::OnceCallback<void(bool)>),
+              (override));
+};
+
 class ChromeAutofillClientTestWithMockWindow : public ChromeAutofillClientTest {
  public:
   ChromeAutofillClientTestWithMockWindow() {
-    scoped_feature_list_.InitAndEnableFeature(features::kAutofillActorMode);
-    manager_injector_ =
-        std::make_unique<TestAutofillManagerInjector<MockAutofillManager>>();
+    scoped_feature_list_.InitWithFeatures(
+        {features::kAutofillActorMode,
+         ::features::kLazyKeyedServiceInstantiation},
+        {});
+    driver_injector_ = std::make_unique<
+        TestAutofillDriverInjector<MockContentAutofillDriver>>();
   }
 
   TestingProfile::TestingFactories GetTestingFactories() const override {
@@ -741,7 +669,7 @@ class ChromeAutofillClientTestWithMockWindow : public ChromeAutofillClientTest {
   }
 
   void TearDown() override {
-    manager_injector_.reset();
+    driver_injector_.reset();
     ChromeAutofillClientTest::TearDown();
     profile_manager_.reset();
   }
@@ -817,8 +745,8 @@ class ChromeAutofillClientTestWithMockWindow : public ChromeAutofillClientTest {
                             web_contents),
         profile, mocks);
   }
-  std::unique_ptr<TestAutofillManagerInjector<MockAutofillManager>>
-      manager_injector_;
+  std::unique_ptr<TestAutofillDriverInjector<MockContentAutofillDriver>>
+      driver_injector_;
 
  private:
   TabAndWindowMocks main_mocks_;
@@ -875,7 +803,41 @@ TEST_F(ChromeAutofillClientTestWithMockWindow, OpenGeminiInSidebar) {
   client()->OpenGeminiInSidebar(u"test prompt");
 }
 
-// Tests that `OnActorTaskStateChange` calls `ReparseKnownForms` on all drivers
+// Like `ChromeAutofillClientTestWithMockWindow`, but the profile is latched to
+// Gemini Enterprise.
+class ChromeAutofillClientGeminiEnterpriseTest
+    : public ChromeAutofillClientTestWithMockWindow {
+ private:
+  glic::ScopedGlicProviderOverride provider_override_{
+      glic::GlicProvider::kGeminiEnterprise};
+};
+
+// Autofill doesn't open Gemini Enterprise.
+TEST_F(ChromeAutofillClientGeminiEnterpriseTest, GlicEntryPointsDisabled) {
+  glic::MockGlicKeyedService* mock_glic_service = SetUpMockGlicKeyedService();
+  ASSERT_TRUE(mock_glic_service);
+  ASSERT_TRUE(glic::GlicEnabling::IsEnabledForProfile(profile()));
+  ASSERT_EQ(glic::GetGlicProviderSpec(profile()).GetSettingsSectionId(),
+            glic::kGeminiEnterpriseSettingsSectionId);
+
+  EXPECT_FALSE(client()->IsGlicEnabled());
+  EXPECT_CALL(*mock_glic_service, Invoke).Times(0);
+  client()->OpenGeminiInSidebar(u"test prompt");
+}
+
+// Gemini Enterprise consent isn't reported to Autofill as Gemini in Chrome
+// consent.
+TEST_F(ChromeAutofillClientGeminiEnterpriseTest, GlicConsentNotReported) {
+  glic::MockGlicKeyedService* mock_glic_service = SetUpMockGlicKeyedService();
+  ASSERT_TRUE(mock_glic_service);
+  mock_glic_service->enabling().SetCompletedFre(
+      glic::prefs::FreStatus::kCompleted);
+  ASSERT_TRUE(glic::GlicEnabling::HasConsentedForProfile(profile()));
+
+  EXPECT_FALSE(client()->IsGlicConsented());
+}
+
+// Tests that `OnActorTaskStateChange` calls `TriggerFormExtractionInAllFrames`
 // when a new task gets assigned.
 TEST_F(ChromeAutofillClientTestWithMockWindow,
        OnActorTaskStateChange_ReparseForms) {
@@ -884,26 +846,79 @@ TEST_F(ChromeAutofillClientTestWithMockWindow,
           actor::ActorKeyedService::Get(profile()));
   ASSERT_TRUE(actor_service);
 
-  MockAutofillManager* mock_manager = (*manager_injector_)[web_contents()];
-  ASSERT_TRUE(mock_manager);
+  MockContentAutofillDriver* mock_driver = (*driver_injector_)[web_contents()];
+  ASSERT_TRUE(mock_driver);
 
   actor::TaskId task_id = actor_service->CreateTaskForTesting();
   actor::ActorTask* task = actor_service->GetTask(task_id);
   ASSERT_TRUE(task);
 
   // Associate the active tab with the task.
+  actor_service->GetSurfaceRegistry().OnTabCreated(mock_tab_interface());
   task->AddTab(mock_tab_interface().GetHandle(),
                /*stop_task_on_detach=*/true, base::DoNothing());
 
-  // Verify first call (assignment) triggers `ReparseKnownForms`.
-  EXPECT_CALL(*mock_manager, ReparseKnownForms()).Times(1);
-  actor_service->NotifyTaskStateChanged(*task);
-  testing::Mock::VerifyAndClearExpectations(mock_manager);
+  EXPECT_FALSE(client()->IsTabInActorMode());
 
-  // Verify second call (no new task) does NOT trigger ReparseKnownForms
-  EXPECT_CALL(*mock_manager, ReparseKnownForms()).Times(0);
+  MockFunction<void()> check;
+  {
+    InSequence s;
+    // First call (assignment) triggers `TriggerFormExtractionInAllFrames()`
+    // with actor mode already enabled.
+    EXPECT_CALL(*mock_driver,
+                TriggerFormExtractionInAllFrames(/*force=*/true, _))
+        .WillOnce([this]() { EXPECT_TRUE(client()->IsTabInActorMode()); });
+    EXPECT_CALL(check, Call);
+    // Second call (no new task) does not trigger
+    // `TriggerFormExtractionInAllFrames()`.
+    EXPECT_CALL(*mock_driver, TriggerFormExtractionInAllFrames).Times(0);
+  }
+
   actor_service->NotifyTaskStateChanged(*task);
-  testing::Mock::VerifyAndClearExpectations(mock_manager);
+  EXPECT_TRUE(client()->IsTabInActorMode());
+  check.Call();
+  actor_service->NotifyTaskStateChanged(*task);
+}
+
+// Tests that `OnActorTaskStateChange()` tracks whether the user controls the
+// task, so that user fills during a pause are not logged as critical actions.
+TEST_F(ChromeAutofillClientTestWithMockWindow,
+       OnActorTaskStateChange_TracksUserControl) {
+  actor::ActorKeyedServiceFake* actor_service =
+      static_cast<actor::ActorKeyedServiceFake*>(
+          actor::ActorKeyedService::Get(profile()));
+  ASSERT_TRUE(actor_service);
+
+  MockContentAutofillDriver* mock_driver = (*driver_injector_)[web_contents()];
+  ASSERT_TRUE(mock_driver);
+  EXPECT_CALL(*mock_driver, TriggerFormExtractionInAllFrames)
+      .Times(::testing::AnyNumber());
+
+  actor::TaskId task_id = actor_service->CreateTaskForTesting();
+  actor::ActorTask* task = actor_service->GetTask(task_id);
+  ASSERT_TRUE(task);
+
+  // Associate the active tab with the task.
+  actor_service->GetSurfaceRegistry().OnTabCreated(mock_tab_interface());
+  task->AddTab(mock_tab_interface().GetHandle(),
+               /*stop_task_on_detach=*/true, base::DoNothing());
+
+  actor_service->NotifyTaskStateChanged(*task);
+  ASSERT_TRUE(client()->GetActorAutofillManager()->active_actor_task());
+  EXPECT_FALSE(client()
+                   ->GetActorAutofillManager()
+                   ->active_actor_task()
+                   ->is_under_user_control);
+
+  // The user takes over.
+  actor_service->PauseTaskForTesting(task_id, /*from_actor=*/false);
+  actor_service->NotifyTaskStateChanged(*task);
+  ASSERT_TRUE(client()->GetActorAutofillManager()->active_actor_task());
+  EXPECT_TRUE(client()
+                  ->GetActorAutofillManager()
+                  ->active_actor_task()
+                  ->is_under_user_control);
+  EXPECT_TRUE(client()->IsTabInActorMode());
 }
 
 #endif  //  !BUILDFLAG(IS_ANDROID)
@@ -1391,5 +1406,374 @@ TEST_F(ChromeAutofillClientTest, GetAffiliationService) {
             client()->GetAffiliationService());
 }
 
+#if BUILDFLAG(IS_ANDROID)
+TEST_F(ChromeAutofillClientTest,
+       ShowAutofillAiSuggestionRemovedNotification_ActionCallbackTriggered) {
+  base::test::ScopedFeatureList feature_list(
+      features::kAutofillAmbientAutofillSuppression);
+
+  base::MockCallback<base::OnceClosure> on_undo_clicked;
+  EXPECT_CALL(on_undo_clicked, Run);
+
+  client()->ShowAutofillAiSuggestionRemovedNotification(
+      test::GetPassportEntityInstance(
+          {.record_type = EntityInstance::RecordType::kPersonalContext}),
+      on_undo_clicked.Get());
+
+  AutofillSnackbarControllerImpl* snackbar_controller =
+      client()->GetAutofillSnackbarController();
+  ASSERT_TRUE(snackbar_controller);
+  EXPECT_EQ(snackbar_controller->GetSnackbarType(),
+            AutofillSnackbarType::kAutofillAiSuppressionUndo);
+
+  // Triggering the action callback should invoke on_undo_clicked.
+  snackbar_controller->OnActionClicked();
+}
+
+TEST_F(ChromeAutofillClientTest, ShowTapjackingProtector) {
+  auto mock_protector = std::make_unique<MockAutofillTapjackingProtector>();
+  EXPECT_CALL(
+      *mock_protector,
+      Show(AutofillTapjackingProtector::AuthorizationType::kPayments, _));
+
+  client()->SetAutofillTapjackingProtectorImplForTesting(
+      std::move(mock_protector));
+
+  base::MockCallback<AutofillTapjackingProtector::AuthorizationCallback>
+      callback;
+  client()->ShowTapjackingProtector(
+      AutofillTapjackingProtector::AuthorizationType::kPayments,
+      callback.Get());
+}
+
+class MockEmailVerificationBottomSheetBridge
+    : public EmailVerificationBottomSheetBridge {
+ public:
+  explicit MockEmailVerificationBottomSheetBridge(
+      content::WebContents* web_contents)
+      : EmailVerificationBottomSheetBridge(web_contents) {}
+  ~MockEmailVerificationBottomSheetBridge() override = default;
+
+  MOCK_METHOD(void,
+              ShowJavaBottomSheet,
+              (const std::u16string& title, const std::u16string& description),
+              (override));
+  MOCK_METHOD(void, HideJavaBottomSheet, (), (override));
+};
+
+TEST_F(ChromeAutofillClientTest,
+       EmailVerification_DelegatesShowAndHidePopupToController) {
+  auto window = ui::WindowAndroid::CreateForTesting();
+  window->get()->AddChild(web_contents()->GetNativeView());
+
+  auto mock_bridge =
+      std::make_unique<MockEmailVerificationBottomSheetBridge>(web_contents());
+  MockEmailVerificationBottomSheetBridge* bridge_ptr = mock_bridge.get();
+  test_api(*client()->GetEmailVerificationController())
+      .set_bottom_sheet_bridge(std::move(mock_bridge));
+
+  EXPECT_CALL(*bridge_ptr, ShowJavaBottomSheet);
+  client()->ShowEmailVerificationPopup(
+      gfx::RectF(0, 0, 10, 10), url::Origin::Create(GURL("https://google.com")),
+      u"user@example.com", base::DoNothing());
+
+  EXPECT_CALL(*bridge_ptr, HideJavaBottomSheet);
+  client()->HideEmailVerificationPopup();
+}
+#endif  // BUILDFLAG(IS_ANDROID)
+
+class OpenUrlTestWebContentsDelegate : public content::WebContentsDelegate {
+ public:
+  content::WebContents* OpenURLFromTab(
+      content::WebContents* source,
+      const content::OpenURLParams& params,
+      base::OnceCallback<void(content::NavigationHandle&)>
+          navigation_handle_callback) override {
+    last_params_ = params;
+    return source;
+  }
+
+  const std::optional<content::OpenURLParams>& last_params() const {
+    return last_params_;
+  }
+
+ private:
+  std::optional<content::OpenURLParams> last_params_;
+};
+
+TEST_F(ChromeAutofillClientTest, OpenGmailForOtps) {
+  OpenUrlTestWebContentsDelegate delegate;
+  content::WebContentsDelegate* original_delegate =
+      web_contents()->GetDelegate();
+  base::ScopedClosureRunner reset_delegate(
+      base::BindOnce(&content::WebContents::SetDelegate,
+                     base::Unretained(web_contents()), original_delegate));
+  web_contents()->SetDelegate(&delegate);
+
+  client()->OpenGmailForOtps();
+
+  ASSERT_TRUE(delegate.last_params().has_value());
+  EXPECT_EQ(delegate.last_params()->url, GURL("https://mail.google.com"));
+  EXPECT_EQ(delegate.last_params()->disposition,
+            ui::mojom::WindowOpenDisposition::kNewForegroundTab);
+}
+
+TEST_F(ChromeAutofillClientTest,
+       ShowGmailOtpOptInBubble_WithoutTabInterface_RunsCallbackWithDiscarded) {
+  base::test::TestFuture<GmailOtpOptInResult> future;
+  client()->ShowGmailOtpOptInBubble(u"user@gmail.com", future.GetCallback());
+  EXPECT_FALSE(future.IsReady());
+  EXPECT_EQ(future.Get(), GmailOtpOptInResult::kDiscarded);
+}
+
+TEST_F(ChromeAutofillClientTest, GetOtpPhishGuardDelegate_FeatureEnabled) {
+  base::test::ScopedFeatureList feature_list(
+      password_manager::features::kOtpPhishGuard);
+  EXPECT_NE(client()->GetOtpPhishGuardDelegate(), nullptr);
+}
+
+TEST_F(ChromeAutofillClientTest, GetOtpPhishGuardDelegate_FeatureDisabled) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndDisableFeature(
+      password_manager::features::kOtpPhishGuard);
+  EXPECT_EQ(client()->GetOtpPhishGuardDelegate(), nullptr);
+}
+
+TEST_F(ChromeAutofillClientTest, GetOtpCoordinator_FeatureEnabled) {
+  base::test::ScopedFeatureList feature_list(features::kAutofillOtpCoordinator);
+  EXPECT_NE(client()->GetOtpCoordinator(), nullptr);
+}
+
+TEST_F(ChromeAutofillClientTest, GetOtpCoordinator_FeatureDisabled) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndDisableFeature(features::kAutofillOtpCoordinator);
+  EXPECT_EQ(client()->GetOtpCoordinator(), nullptr);
+}
+
+class ChromeAutofillClientReauthAvailabilityTest : public testing::Test {
+ protected:
+  using CheckerFactory =
+      ChromeAutofillClient::DeviceAuthAvailabilityCheckerFactoryForTesting;
+
+  std::unique_ptr<TestingProfile> BuildProfileWithEntityDataManager() {
+    return TestingProfile::Builder()
+        .AddTestingFactory(
+            AutofillEntityDataManagerFactory::GetInstance(),
+            base::BindRepeating(
+                [](AutofillWebDataServiceTestHelper* helper,
+                   content::BrowserContext* context)
+                    -> std::unique_ptr<KeyedService> {
+                  return std::make_unique<EntityDataManager>(
+                      Profile::FromBrowserContext(context)->GetPrefs(), nullptr,
+                      nullptr, helper->autofill_webdata_service(), nullptr,
+                      nullptr, nullptr, GeoIpCountryCode("US"));
+                },
+                base::Unretained(&webdata_helper_)))
+        .Build();
+  }
+
+  void SetCanAuthenticate(bool can_authenticate) {
+    ON_CALL(checker_factory_, Run).WillByDefault([can_authenticate]() {
+      auto checker = std::make_unique<
+          NiceMock<device_reauth::MockDeviceAuthAvailabilityChecker>>();
+      ON_CALL(*checker, CanAuthenticateWithBiometricOrScreenLock)
+          .WillByDefault(Return(can_authenticate));
+      return checker;
+    });
+  }
+
+  std::unique_ptr<content::WebContents> CreateWebContentsAndVerifyReauth(
+      Profile* profile,
+      int expected_queries,
+      bool expected_reauth) {
+    EXPECT_CALL(checker_factory_, Run).Times(expected_queries);
+    auto web_contents =
+        content::WebContentsTester::CreateTestWebContents(profile, nullptr);
+    EXPECT_EQ(AutofillEntityDataManagerFactory::GetForProfile(profile)
+                  ->GetReauthAvailability(),
+              expected_reauth);
+    testing::Mock::VerifyAndClearExpectations(&checker_factory_);
+    return web_contents;
+  }
+
+  content::BrowserTaskEnvironment task_environment_{
+      base::test::TaskEnvironment::TimeSource::MOCK_TIME};
+  content::RenderViewHostTestEnabler test_render_host_factories_;
+  test::AutofillUnitTestEnvironment autofill_environment_{
+      {.disable_server_communication = true}};
+  AutofillWebDataServiceTestHelper webdata_helper_{
+      std::make_unique<EntityTable>()};
+  TestAutofillClientInjector<TestChromeAutofillClient>
+      test_autofill_client_injector_;
+  base::test::ScopedFeatureList scoped_feature_list_{
+      {features::kAutofillAiWalletPrivatePasses,
+       password_manager::features::kDeviceReauthRefactor},
+      {}};
+  base::MockCallback<CheckerFactory> checker_factory_;
+  base::AutoReset<CheckerFactory> reset_checker_factory_{
+      ChromeAutofillClient::SetDeviceAuthAvailabilityCheckerFactoryForTesting(
+          checker_factory_.Get())};
+};
+
+TEST_F(ChromeAutofillClientReauthAvailabilityTest,
+       QueriesReauthAvailabilityOncePerProfileWithinCacheDuration) {
+  auto profile1 = BuildProfileWithEntityDataManager();
+  auto profile2 = BuildProfileWithEntityDataManager();
+  EntityDataManager* edm1 =
+      AutofillEntityDataManagerFactory::GetForProfile(profile1.get());
+  EntityDataManager* edm2 =
+      AutofillEntityDataManagerFactory::GetForProfile(profile2.get());
+  ASSERT_TRUE(edm1);
+  ASSERT_TRUE(edm2);
+  ASSERT_NE(edm1, edm2);
+  EXPECT_EQ(edm1->GetReauthAvailability(), std::nullopt);
+  EXPECT_EQ(edm2->GetReauthAvailability(), std::nullopt);
+
+  SetCanAuthenticate(true);
+  auto wc1 = CreateWebContentsAndVerifyReauth(profile1.get(), 1, true);
+  auto wc2 = CreateWebContentsAndVerifyReauth(profile1.get(), 0, true);
+  // Incognito profiles share the original profile's `EntityDataManager`.
+  auto incognito_wc = CreateWebContentsAndVerifyReauth(
+      profile1->GetPrimaryOTRProfile(/*create_if_needed=*/true), 0, true);
+
+  SetCanAuthenticate(false);
+  auto p2_wc1 = CreateWebContentsAndVerifyReauth(profile2.get(), 1, false);
+  auto p2_wc2 = CreateWebContentsAndVerifyReauth(profile2.get(), 0, false);
+}
+
+TEST_F(ChromeAutofillClientReauthAvailabilityTest,
+       RequeriesReauthAvailabilityAfterCacheDurationExpires) {
+  auto profile = BuildProfileWithEntityDataManager();
+
+  SetCanAuthenticate(true);
+  auto wc1 = CreateWebContentsAndVerifyReauth(profile.get(), 1, true);
+
+  // Throttled before `kReauthAvailabilityCacheDuration` elapses.
+  SetCanAuthenticate(false);
+  task_environment_.FastForwardBy(
+      EntityDataManager::kReauthAvailabilityCacheDuration / 2);
+  auto wc2 = CreateWebContentsAndVerifyReauth(profile.get(), 0, true);
+
+  // Refreshed once the cache duration expires.
+  task_environment_.FastForwardBy(
+      EntityDataManager::kReauthAvailabilityCacheDuration / 2);
+  auto wc3 = CreateWebContentsAndVerifyReauth(profile.get(), 1, false);
+}
+
+TEST_F(ChromeAutofillClientReauthAvailabilityTest,
+       QueriesReauthAvailabilityWithAmbientAutofillEnabled) {
+  scoped_feature_list_.Reset();
+  scoped_feature_list_.InitWithFeatures(
+      {features::kAutofillAmbientAutofill,
+       password_manager::features::kDeviceReauthRefactor},
+      {features::kAutofillAiWalletPrivatePasses});
+
+  auto profile = BuildProfileWithEntityDataManager();
+  EXPECT_EQ(AutofillEntityDataManagerFactory::GetForProfile(profile.get())
+                ->GetReauthAvailability(),
+            std::nullopt);
+
+  SetCanAuthenticate(true);
+  auto wc1 = CreateWebContentsAndVerifyReauth(profile.get(), 1, true);
+  auto wc2 = CreateWebContentsAndVerifyReauth(profile.get(), 0, true);
+}
+
+// Tests that a pending HTTPS navigation does not make an HTTP context secure.
+TEST_F(ChromeAutofillClientTest,
+       IsContextSecure_HttpWithPendingHttpsNavigation) {
+  const GURL http_url("http://example.test/form.html");
+  const GURL https_url("https://secure.example.test/");
+
+  NavigateAndCommit(http_url);
+  EXPECT_FALSE(client()->IsContextSecure());
+
+  std::unique_ptr<content::NavigationSimulator> pending_nav =
+      content::NavigationSimulator::CreateBrowserInitiated(https_url,
+                                                           web_contents());
+  pending_nav->Start();
+
+  ASSERT_NE(web_contents()->GetController().GetVisibleEntry(), nullptr);
+  EXPECT_EQ(web_contents()->GetController().GetVisibleEntry()->GetURL(),
+            https_url);
+  EXPECT_EQ(web_contents()->GetLastCommittedURL(), http_url);
+  EXPECT_FALSE(client()->IsContextSecure());
+}
+
+// Tests that a pending navigation does not mask a DANGEROUS HTTPS state.
+TEST_F(ChromeAutofillClientTest,
+       IsContextSecure_DangerousHttpsWithPendingNavigation) {
+  const GURL https_url("https://broken.example.test/form.html");
+
+  NavigateAndCommit(https_url);
+  content::NavigationEntry* const entry =
+      web_contents()->GetController().GetLastCommittedEntry();
+  ASSERT_NE(entry, nullptr);
+  entry->GetSSL().certificate =
+      net::ImportCertFromFile(net::GetTestCertsDirectory(), "ok_cert.pem");
+  ASSERT_NE(entry->GetSSL().certificate, nullptr);
+  entry->GetSSL().cert_status = net::CERT_STATUS_DATE_INVALID;
+  entry->GetSSL().content_status = content::SSLStatus::RAN_INSECURE_CONTENT;
+
+  EXPECT_FALSE(client()->IsContextSecure());
+  EXPECT_EQ(client()->GetSecurityLevelForUmaHistograms(),
+            security_state::DANGEROUS);
+
+  std::unique_ptr<content::NavigationSimulator> pending_nav =
+      content::NavigationSimulator::CreateBrowserInitiated(
+          GURL("https://other.example.test/"), web_contents());
+  pending_nav->Start();
+
+  // While the visible entry is the uncommitted pending navigation (whose
+  // security level is NONE), Autofill must continue evaluating the committed
+  // document's DANGEROUS security state.
+  ASSERT_EQ(chrome_security_state::GetSecurityLevel(web_contents()),
+            security_state::NONE);
+  EXPECT_FALSE(client()->IsContextSecure());
+  EXPECT_EQ(client()->GetSecurityLevelForUmaHistograms(),
+            security_state::DANGEROUS);
+}
+
+// Tests that an HTTPS error page is not considered a secure context.
+TEST_F(ChromeAutofillClientTest, IsContextSecure_HttpsErrorPage) {
+  content::NavigationSimulator::NavigateAndFailFromBrowser(
+      web_contents(), GURL("https://unreachable.example.test/"),
+      net::ERR_CONNECTION_TIMED_OUT);
+
+  content::NavigationEntry* const entry =
+      web_contents()->GetController().GetLastCommittedEntry();
+  ASSERT_NE(entry, nullptr);
+  EXPECT_EQ(entry->GetPageType(), content::PAGE_TYPE_ERROR);
+  EXPECT_TRUE(web_contents()->GetLastCommittedURL().SchemeIsCryptographic());
+  EXPECT_FALSE(client()->IsContextSecure());
+}
+
+// Tests that a pending HTTP navigation does not degrade a SECURE HTTPS state.
+TEST_F(ChromeAutofillClientTest,
+       IsContextSecure_ValidHttpsWithPendingHttpNavigation) {
+  const GURL https_url("https://secure.example.test/form.html");
+
+  NavigateAndCommit(https_url);
+  content::NavigationEntry* const entry =
+      web_contents()->GetController().GetLastCommittedEntry();
+  ASSERT_NE(entry, nullptr);
+  entry->GetSSL().certificate =
+      net::ImportCertFromFile(net::GetTestCertsDirectory(), "ok_cert.pem");
+  ASSERT_NE(entry->GetSSL().certificate, nullptr);
+
+  EXPECT_TRUE(client()->IsContextSecure());
+  EXPECT_EQ(client()->GetSecurityLevelForUmaHistograms(),
+            security_state::SECURE);
+
+  std::unique_ptr<content::NavigationSimulator> pending_nav =
+      content::NavigationSimulator::CreateBrowserInitiated(
+          GURL("http://insecure.example.test/"), web_contents());
+  pending_nav->Start();
+
+  ASSERT_EQ(chrome_security_state::GetSecurityLevel(web_contents()),
+            security_state::NONE);
+  EXPECT_TRUE(client()->IsContextSecure());
+  EXPECT_EQ(client()->GetSecurityLevelForUmaHistograms(),
+            security_state::SECURE);
+}
 }  // namespace
 }  // namespace autofill

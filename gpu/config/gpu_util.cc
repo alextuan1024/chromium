@@ -312,7 +312,8 @@ GpuFeatureStatus GetSkiaGraphiteFeatureStatus(
   if (blocklisted_features.count(GPU_FEATURE_TYPE_SKIA_GRAPHITE)) {
     return kGpuFeatureStatusBlocklisted;
   }
-  if (gpu_preferences.gr_context_type != GrContextType::kGraphiteDawn) {
+  if (gpu_preferences.gr_context_type != GrContextType::kGraphiteDawn &&
+      gpu_preferences.gr_context_type != GrContextType::kGraphiteVulkan) {
     return kGpuFeatureStatusDisabled;
   }
   const bool can_use_graphite = [command_line]() -> bool {
@@ -404,7 +405,6 @@ void SetProcessGlWorkaroundsFromGpuFeatures(
 
   gl::GlWorkarounds workarounds = {
       .disable_d3d11 = is_enabled(DISABLE_D3D11),
-      .disable_metal = is_enabled(DISABLE_METAL),
 #if BUILDFLAG(IS_WIN)
       .disable_direct_composition_video_overlays =
           is_enabled(DISABLE_DIRECT_COMPOSITION_VIDEO_OVERLAYS),
@@ -628,7 +628,6 @@ GpuFeatureInfo ComputeGpuFeatureInfo(const GPUInfo& gpu_info,
 
     use_software_gl = gl::IsSoftwareGLImplementation(*requested_impl);
     if (use_software_gl) {
-      std::string use_gl = command_line->GetSwitchValueASCII(switches::kUseGL);
       std::string use_angle =
           command_line->GetSwitchValueASCII(switches::kUseANGLE);
       if (use_angle == gl::kANGLEImplementationSwiftShaderForWebGLName ||
@@ -804,7 +803,10 @@ GrContextType GpuModeToGrContextType(GpuMode mode) {
     case GpuMode::HARDWARE_VULKAN:
       return GrContextType::kVulkan;
     case GpuMode::HARDWARE_GRAPHITE:
-      return GrContextType::kGraphiteDawn;
+      return base::CommandLine::ForCurrentProcess()->HasSwitch(
+                 switches::kSkiaGraphiteVulkanBackend)
+                 ? GrContextType::kGraphiteVulkan
+                 : GrContextType::kGraphiteDawn;
     case GpuMode::UNKNOWN:
     case GpuMode::SOFTWARE_GL:
     case GpuMode::DISPLAY_COMPOSITOR:

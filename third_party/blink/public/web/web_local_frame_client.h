@@ -57,7 +57,6 @@
 #include "third_party/blink/public/common/user_agent/user_agent_metadata.h"
 #include "third_party/blink/public/mojom/browser_interface_broker.mojom-shared.h"
 #include "third_party/blink/public/mojom/devtools/console_message.mojom-forward.h"
-#include "third_party/blink/public/mojom/fenced_frame/fenced_frame.mojom-shared.h"
 #include "third_party/blink/public/mojom/frame/blocked_navigation_types.mojom-shared.h"
 #include "third_party/blink/public/mojom/frame/lifecycle.mojom-shared.h"
 #include "third_party/blink/public/mojom/frame/triggering_event_info.mojom-shared.h"
@@ -78,6 +77,7 @@
 #include "third_party/blink/public/platform/web_file_system_type.h"
 #include "third_party/blink/public/platform/web_media_player.h"
 #include "third_party/blink/public/platform/web_prescient_networking.h"
+#include "third_party/blink/public/platform/web_private_ptr.h"
 #include "third_party/blink/public/platform/web_set_sink_id_callbacks.h"
 #include "third_party/blink/public/platform/web_source_location.h"
 #include "third_party/blink/public/platform/web_url_error.h"
@@ -131,6 +131,7 @@ class WebDedicatedWorkerHostFactoryClient;
 class WebDocumentLoader;
 class WebEncryptedMediaClient;
 class WebLocalFrame;
+class WebLocalFrameImpl;
 class WebMediaPlayer;
 class WebMediaPlayerClient;
 class WebMediaPlayerEncryptedMediaClient;
@@ -290,9 +291,6 @@ class BLINK_EXPORT WebLocalFrameClient {
       FinishChildFrameCreationFn complete_creation) {
     return nullptr;
   }
-
-  // Notification a new fenced frame was created.
-  virtual void DidCreateFencedFrame(const blink::RemoteFrameToken& token) {}
 
   // Called when Blink cannot find a frame with the given name in the frame's
   // browsing instance.  This gives the embedder a chance to return a frame
@@ -630,7 +628,8 @@ class BLINK_EXPORT WebLocalFrameClient {
 
   // A cpu task or tasks completed.  Triggered when at least 100ms of wall time
   // was spent in tasks on the frame.
-  virtual void DidChangeCpuTiming(base::TimeDelta time) {}
+  virtual void DidChangeCpuTiming(base::TimeDelta time,
+                                  base::TimeDelta ad_time) {}
 
   // UseCounter ----------------------------------------------------------
   // Blink exhibited a certain loading behavior that the browser process will
@@ -836,12 +835,6 @@ class BLINK_EXPORT WebLocalFrameClient {
   // WebMeaningfulLayout for details.)
   virtual void DidMeaningfulLayout(WebMeaningfulLayout) {}
 
-  // Inform the widget that it was hidden.
-  virtual void WasHidden() {}
-
-  // Inform the widget that it was shown.
-  virtual void WasShown() {}
-
   virtual void OnFrameVisibilityChanged(mojom::FrameVisibility render_status) {}
 
   // Called after a navigation which set the shared memory region for
@@ -906,6 +899,15 @@ class BLINK_EXPORT WebLocalFrameClient {
 
   // Returns true if this frame is for the initial WebUI.
   virtual bool IsForInitialWebUI() const { return false; }
+
+#if INSIDE_BLINK
+  void SetImplForOwnership(WebLocalFrameImpl* frame);
+#endif
+
+ private:
+  // Keeps the associated `WebLocalFrameImpl` alive in Oilpan while attached to
+  // this client. Only used for lifetime ownership, not for accessing the frame.
+  WebPrivatePtrForGC<WebLocalFrameImpl> impl_for_ownership_;
 };
 
 }  // namespace blink

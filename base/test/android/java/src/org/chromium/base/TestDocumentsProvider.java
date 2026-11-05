@@ -58,6 +58,27 @@ public class TestDocumentsProvider extends DocumentsProvider {
                 DocumentsContract.Document.COLUMN_FLAGS,
             };
 
+    private static volatile boolean sSimulateLoading;
+    private static volatile String sDuplicateDisplayName;
+    private static volatile boolean sThrowSecurityException;
+    private static volatile String sLastCreatedMimeType;
+
+    public static void setSimulateLoadingForTesting(boolean simulateLoading) {
+        sSimulateLoading = simulateLoading;
+    }
+
+    public static void setDuplicateDisplayNameForTesting(String displayName) {
+        sDuplicateDisplayName = displayName;
+    }
+
+    public static void setThrowSecurityExceptionForTesting(boolean throwSecurityException) {
+        sThrowSecurityException = throwSecurityException;
+    }
+
+    public static String getLastCreatedMimeTypeForTesting() {
+        return sLastCreatedMimeType;
+    }
+
     // The authority cannot be static as its initialization depends on a Context. A ContentProvider
     // can be created before Application.onCreate() is called, which is where the static
     // application context in ContextUtils is set. Therefore, we must wait until the provider's
@@ -115,56 +136,115 @@ public class TestDocumentsProvider extends DocumentsProvider {
      * https://developer.android.com/reference/android/provider/DocumentsProvider.
      */
     public Cursor query(String[] projection, File[] files) {
+        if (sThrowSecurityException) {
+            throw new SecurityException("Simulated security exception");
+        }
         String[] resolvedProjection = projection == null ? DEFAULT_PROJECTION_FOR_TEST : projection;
         MatrixCursor cursor = new MatrixCursor(resolvedProjection);
-        for (File file : files) {
-            if (file.exists()) {
-                Object[] row = new Object[resolvedProjection.length];
-                for (int i = 0; i < resolvedProjection.length; i++) {
-                    String colName = resolvedProjection[i];
-                    if (DocumentsContract.Document.COLUMN_DOCUMENT_ID.equals(colName)) {
-                        row[i] = getDocumentId(file);
-                    } else if (DocumentsContract.Document.COLUMN_DISPLAY_NAME.equals(colName)) {
-                        row[i] = file.toPath().getFileName();
-                    } else if (DocumentsContract.Document.COLUMN_MIME_TYPE.equals(colName)) {
-                        row[i] = file.isDirectory() ? DocumentsContract.Document.MIME_TYPE_DIR : "";
-                    } else if (DocumentsContract.Document.COLUMN_SIZE.equals(colName)) {
-                        row[i] = file.length();
-                    } else if (DocumentsContract.Document.COLUMN_LAST_MODIFIED.equals(colName)) {
-                        row[i] = file.lastModified();
-                    } else if (DocumentsContract.Document.COLUMN_FLAGS.equals(colName)) {
-                        int flags = DocumentsContract.Document.FLAG_SUPPORTS_DELETE;
-                        if (file.isDirectory()) {
-                            flags |= DocumentsContract.Document.FLAG_DIR_SUPPORTS_CREATE;
-                        } else {
-                            flags |= DocumentsContract.Document.FLAG_SUPPORTS_WRITE;
-                        }
-                        row[i] = flags;
+        if (sSimulateLoading) {
+            Bundle extras = new Bundle();
+            extras.putBoolean(DocumentsContract.EXTRA_LOADING, true);
+            cursor.setExtras(extras);
+        }
+        if (files != null) {
+            for (File file : files) {
+                if (file.exists()) {
+                    addRowForFile(cursor, resolvedProjection, file, getDocumentId(file));
+                    String duplicateName = sDuplicateDisplayName;
+                    if (duplicateName != null
+                            && duplicateName.equals(file.toPath().getFileName().toString())) {
+                        addRowForFile(
+                                cursor,
+                                resolvedProjection,
+                                file,
+                                getDocumentId(file) + "#duplicate");
                     }
                 }
-                cursor.addRow(row);
             }
         }
         return cursor;
     }
 
+    private void addRowForFile(
+            MatrixCursor cursor, String[] resolvedProjection, File file, String docId) {
+        Object[] row = new Object[resolvedProjection.length];
+        for (int i = 0; i < resolvedProjection.length; i++) {
+            String colName = resolvedProjection[i];
+            if (DocumentsContract.Document.COLUMN_DOCUMENT_ID.equals(colName)) {
+                row[i] = docId;
+            } else if (DocumentsContract.Document.COLUMN_DISPLAY_NAME.equals(colName)) {
+                row[i] = file.toPath().getFileName().toString();
+            } else if (DocumentsContract.Document.COLUMN_MIME_TYPE.equals(colName)) {
+                row[i] = file.isDirectory() ? DocumentsContract.Document.MIME_TYPE_DIR : "";
+            } else if (DocumentsContract.Document.COLUMN_SIZE.equals(colName)) {
+                row[i] = file.length();
+            } else if (DocumentsContract.Document.COLUMN_LAST_MODIFIED.equals(colName)) {
+                row[i] = file.lastModified();
+            } else if (DocumentsContract.Document.COLUMN_FLAGS.equals(colName)) {
+                int flags = DocumentsContract.Document.FLAG_SUPPORTS_DELETE;
+                if (file.isDirectory()) {
+                    flags |= DocumentsContract.Document.FLAG_DIR_SUPPORTS_CREATE;
+                } else {
+                    flags |= DocumentsContract.Document.FLAG_SUPPORTS_WRITE;
+                }
+                row[i] = flags;
+            }
+        }
+        cursor.addRow(row);
+    }
+
     @Override
     public String createDocument(String parentDocumentId, String mimeType, String displayName)
             throws FileNotFoundException {
+        if (sThrowSecurityException) {
+            throw new SecurityException("Simulated security exception");
+        }
+        if (mimeType == null || mimeType.isEmpty()) {
+            throw new IllegalArgumentException("MIME type must not be empty");
+        }
+        sLastCreatedMimeType = mimeType;
         boolean isDirectory = DocumentsContract.Document.MIME_TYPE_DIR.equals(mimeType);
         File parent = getFile(parentDocumentId);
-        File child = new File(parent, displayName);
+        if (!parent.exists()) {
+            throw new FileNotFoundException("Parent does not exist: " + parentDocumentId);
+        }
+        if (!parent.isDirectory()) {
+            throw new IllegalArgumentException("Parent is not a directory: " + parentDocumentId);
+        }
+
+        File child = buildUniqueTarget(parent, displayName, isDirectory);
         try {
-            if (isDirectory) {
-                child.mkdirs();
-            } else {
-                parent.mkdirs();
-                child.createNewFile();
+            boolean created = isDirectory ? child.mkdir() : child.createNewFile();
+            if (!created) {
+                throw new FileNotFoundException("Failed to create document: " + displayName);
             }
-        } catch (Exception e) {
+        } catch (IOException e) {
             throw new FileNotFoundException(e.getMessage());
         }
         return getDocumentId(child);
+    }
+
+    private static File buildUniqueTarget(File parent, String displayName, boolean isDirectory) {
+        File candidate = new File(parent, displayName);
+        if (!candidate.exists()) {
+            return candidate;
+        }
+        String baseName = displayName;
+        String ext = "";
+        if (!isDirectory) {
+            int dotIndex = displayName.lastIndexOf('.');
+            if (dotIndex > 0 && dotIndex < displayName.length() - 1) {
+                baseName = displayName.substring(0, dotIndex);
+                ext = displayName.substring(dotIndex);
+            }
+        }
+        for (int index = 1; index < 1000; index++) {
+            candidate = new File(parent, baseName + " (" + index + ")" + ext);
+            if (!candidate.exists()) {
+                return candidate;
+            }
+        }
+        return candidate;
     }
 
     @Override

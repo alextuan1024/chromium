@@ -30,6 +30,7 @@ import argparse
 import logging
 from multiprocessing import cpu_count, Pool
 import os
+import posixpath
 import re
 import shutil
 import subprocess
@@ -39,6 +40,16 @@ import zipfile
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 _SRC_ROOT = os.path.abspath(os.path.join(_SCRIPT_DIR, '..', '..'))
 _GSUTIL_PY = os.path.join(_SRC_ROOT, 'third_party', 'depot_tools', 'gsutil.py')
+# Windows only: Pool(n) waits on n+2 handles, but WaitForMultipleObjects
+# takes at most 63. Match coverage.py's 56-worker cap (crbug.com/40755900).
+MAX_WIN_POOL_WORKERS = 56
+
+
+def _get_num_workers() -> int:
+  num_cpus = int(cpu_count())
+  if sys.platform == 'win32':
+    return min(num_cpus, MAX_WIN_POOL_WORKERS)
+  return num_cpus
 
 
 def _gsutil(cmd, cwd):
@@ -67,14 +78,15 @@ def _download_corpus(args):
   download_dir = args[1]
   corpora_type = args[2]
   url = CORPORA_BUCKET_BASE_URL_BY_TYPE[corpora_type]
+  # Use posixpath so Windows does not emit backslashes in gs:// URLs.
   if corpora_type == FUZZILLI_CORPORA_TYPE:
     # For a corpora file autozilli-1.tgz, it will be downloaded to
     # [DOWNLOAD_DIR]/autozilli-1/autozilli-1.tgz
     corpus_dir, _ = os.path.splitext(target)
-    corpus_url = os.path.join(url, target)
+    corpus_url = posixpath.join(url, target)
   else:
     corpus_dir = target
-    corpus_url = os.path.join(url, target, 'latest.zip')
+    corpus_url = posixpath.join(url, target, 'latest.zip')
 
   os.makedirs(os.path.join(download_dir, corpus_dir), exist_ok=True)
   cmd = ['cp', corpus_url, corpus_dir]
@@ -174,7 +186,8 @@ def Main():
 
   print("Corpora to download: " + str(corpora_to_download))
 
-  with Pool(cpu_count()) as p:
+  num_workers = _get_num_workers()
+  with Pool(num_workers) as p:
     results = p.map(
       _download_corpus,
       [
@@ -187,7 +200,7 @@ def Main():
     if args.corpora_type == FUZZILLI_CORPORA_TYPE
     else _unzip_corpus
   )
-  with Pool(cpu_count()) as p:
+  with Pool(num_workers) as p:
     results = p.map(
       unzip_func,
       [(corpus, args.download_dir) for corpus in corpora_to_download],

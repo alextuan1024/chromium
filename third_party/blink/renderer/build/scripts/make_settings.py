@@ -64,21 +64,25 @@ class MakeSettingsWriter(json5_generator.Writer):
         super(MakeSettingsWriter, self).__init__(json5_file_path, output_dir)
 
         self.json5_file.name_dictionaries.sort(
-            key=lambda entry: entry['name'].original)
+            key=lambda entry: entry['name'].original
+        )
 
         for setting in self.json5_file.name_dictionaries:
             # If 'initial' is a dict, extract a list of specified platforms.
             if isinstance(setting['initial'], dict):
-                assert 'default' in setting[
-                    'initial'], "a 'default' initial value is required for '{}'".format(
-                        setting['name'])
-                setting[
-                    'initial_platforms'] = self._platforms_with_initial_values(
-                        setting['initial'])
+                assert 'default' in setting['initial'], (
+                    "a 'default' initial value is required for '{}'".format(
+                        setting['name']
+                    )
+                )
+                setting['initial_platforms'] = (
+                    self._platforms_with_initial_values(setting['initial'])
+                )
 
         self._outputs = {
             'settings_base.cc': self.generate_cc,
             'settings_base.h': self.generate_h,
+            'web_settings_impl_set_from_strings.cc': self.generate_web_settings_impl_set_from_strings_cc,
         }
 
     def _platforms_with_initial_values(self, initial):
@@ -96,27 +100,36 @@ class MakeSettingsWriter(json5_generator.Writer):
             include_paths.update(setting['include_paths'])
         return list(sorted(include_paths))
 
-    @template_expander.use_jinja('templates/settings_base.cc.tmpl',
-                                 filters=filters)
+    @template_expander.use_jinja(
+        'templates/settings_base.cc.tmpl', filters=filters
+    )
     def generate_cc(self):
         return {
             'input_files': self._input_files,
             'settings': self.json5_file.name_dictionaries,
         }
 
-    @template_expander.use_jinja('templates/settings_base.h.tmpl',
-                                 filters=filters)
+    @template_expander.use_jinja(
+        'templates/settings_base.h.tmpl', filters=filters
+    )
     def generate_h(self):
         return {
-            'input_files':
-            self._input_files,
-            'include_paths':
-            self._get_include_paths(),
-            'settings':
-            self.json5_file.name_dictionaries,
-            'header_guard':
-            self.make_header_guard(self._relative_output_dir +
-                                   'settings_base.h')
+            'input_files': self._input_files,
+            'include_paths': self._get_include_paths(),
+            'settings': self.json5_file.name_dictionaries,
+            'header_guard': self.make_header_guard(
+                self._relative_output_dir + 'settings_base.h'
+            ),
+        }
+
+    @template_expander.use_jinja(
+        'templates/web_settings_impl_set_from_strings.cc.tmpl', filters=filters
+    )
+    def generate_web_settings_impl_set_from_strings_cc(self):
+        return {
+            'input_files': self._input_files,
+            'include_paths': self._get_include_paths(),
+            'settings': self.json5_file.name_dictionaries,
         }
 
 

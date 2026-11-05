@@ -14,14 +14,13 @@
 #include "components/page_load_metrics/browser/page_load_metrics_observer.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
+#include "content/public/browser/global_routing_id.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/common/content_features.h"
 #include "mojo/public/cpp/bindings/self_owned_receiver.h"
-#include "net/base/features.h"
 #include "net/base/schemeful_site.h"
 #include "net/cookies/cookie_partition_key.h"
-#include "net/cookies/cookie_util.h"
 #include "net/cookies/site_for_cookies.h"
 #include "third_party/blink/public/common/storage_key/storage_key.h"
 
@@ -40,8 +39,9 @@ void OnStorageAccessed(const content::GlobalRenderFrameHostToken& frame_token,
       content::RenderFrameHost::FromFrameToken(frame_token);
   content::WebContents* web_contents =
       content::WebContents::FromRenderFrameHost(render_frame_host);
-  if (!web_contents)
+  if (!web_contents) {
     return;
+  }
 
   page_load_metrics::MetricsWebContentsObserver* metrics_observer =
       page_load_metrics::MetricsWebContentsObserver::FromWebContents(
@@ -126,14 +126,17 @@ void ContentSettingsManagerImpl::Create(
         receiver,
     std::unique_ptr<Delegate> delegate) {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  const content::ChildProcessId render_process_id =
+      render_process_host->GetID();
+  const bool is_privileged_process = render_process_host->IsPrivileged();
+  auto cookie_settings =
+      delegate->GetCookieSettings(render_process_host->GetBrowserContext());
   base::ThreadPool::CreateSingleThreadTaskRunner(
       {base::TaskPriority::USER_BLOCKING})
       ->PostTask(FROM_HERE,
                  base::BindOnce(&ContentSettingsManagerImpl::CreateOnThread,
-                                render_process_host->GetDeprecatedID(),
-                                std::move(receiver),
-                                delegate->GetCookieSettings(
-                                    render_process_host->GetBrowserContext()),
+                                render_process_id, is_privileged_process,
+                                std::move(receiver), std::move(cookie_settings),
                                 std::move(delegate)));
 }
 
@@ -151,12 +154,21 @@ bool ContentSettingsManagerImpl::EvaluateStorageAccessPermission(
     const net::SiteForCookies& site_for_cookies,
     const url::Origin& top_frame_origin) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  // A browser context without cookie settings gets no storage access.
+  if (!cookie_settings_) {
+    return false;
+  }
+  // Privileged processes host trusted Chrome UI web content
+  // (PrivilegedWebContents) that ignores user-configured site settings and
+  // always allows storage access; see pwc::PwcPermissionDelegate in
+  // chrome/browser/pwc/pwc_permission_delegate.h.
+  if (is_privileged_process_) {
+    return true;
+  }
   GURL url = origin.GetURL();
 
   // TODO(crbug.com/40247160): Consider whether the following check should
   // get CookieSettingOverrides from the frame rather than default to none.
-
-  CookieSettingsBase::CookieSettingWithMetadata cookie_settings;
 
   net::SchemefulSite top_frame_site(top_frame_origin);
   std::optional<net::CookiePartitionKey> cookie_partition_key =
@@ -166,31 +178,9 @@ bool ContentSettingsManagerImpl::EvaluateStorageAccessPermission(
               !site_for_cookies.IsFirstParty(origin.GetURL())),
           /*nonce=*/std::nullopt);
 
-  bool allowed = cookie_settings_->IsFullCookieAccessAllowed(
+  return cookie_settings_->IsAnyStorageAccessAllowed(
       url, site_for_cookies, top_frame_origin, net::CookieSettingOverrides(),
-      cookie_partition_key, &cookie_settings);
-
-  // If storage partitioning is active, third-party partitioned storage is
-  // allowed by default, and access is only blocked due to general third-party
-  // cookie blocking (and not due to a user specified pattern) then we'll allow
-  // storage access.
-  if (base::FeatureList::IsEnabled(
-          net::features::kThirdPartyStoragePartitioning) &&
-      base::FeatureList::IsEnabled(
-          net::features::kThirdPartyPartitionedStorageAllowedByDefault) &&
-      !allowed && cookie_settings.BlockedByThirdPartyCookieBlocking()) {
-    allowed = true;
-  }
-
-  // Allow storage when --test-third-party-cookie-phaseout is used, but ensure
-  // that only partitioned storage is available. This developer flag is meant to
-  // simulate Chrome's behavior when 3P cookies are turned down to help
-  // developers test their site.
-  if (!allowed && net::cookie_util::IsForceThirdPartyCookieBlockingEnabled()) {
-    allowed = true;
-  }
-
-  return allowed;
+      cookie_partition_key);
 }
 
 void ContentSettingsManagerImpl::IsStorageAccessAllowed(
@@ -242,31 +232,34 @@ void ContentSettingsManagerImpl::OnContentBlocked(
 }
 
 ContentSettingsManagerImpl::ContentSettingsManagerImpl(
-    int render_process_id,
+    content::ChildProcessId render_process_id,
+    bool is_privileged_process,
     std::unique_ptr<Delegate> delegate,
     scoped_refptr<CookieSettings> cookie_settings)
     : delegate_(std::move(delegate)),
       render_process_id_(render_process_id),
-      cookie_settings_(cookie_settings) {
-  CHECK(cookie_settings_);
-}
+      is_privileged_process_(is_privileged_process),
+      cookie_settings_(std::move(cookie_settings)) {}
 
 ContentSettingsManagerImpl::ContentSettingsManagerImpl(
     const ContentSettingsManagerImpl& other)
     : delegate_(other.delegate_->Clone()),
       render_process_id_(other.render_process_id_),
+      is_privileged_process_(other.is_privileged_process_),
       cookie_settings_(other.cookie_settings_) {}
 
 // static
 void ContentSettingsManagerImpl::CreateOnThread(
-    int render_process_id,
+    content::ChildProcessId render_process_id,
+    bool is_privileged_process,
     mojo::PendingReceiver<content_settings::mojom::ContentSettingsManager>
         receiver,
     scoped_refptr<CookieSettings> cookie_settings,
     std::unique_ptr<Delegate> delegate) {
   mojo::MakeSelfOwnedReceiver(
       base::WrapUnique(new ContentSettingsManagerImpl(
-          render_process_id, std::move(delegate), cookie_settings)),
+          render_process_id, is_privileged_process, std::move(delegate),
+          std::move(cookie_settings))),
       std::move(receiver));
 }
 

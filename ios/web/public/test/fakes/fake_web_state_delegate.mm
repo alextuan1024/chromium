@@ -4,13 +4,14 @@
 
 #import "ios/web/public/test/fakes/fake_web_state_delegate.h"
 
+#import "ui/base/mojom/window_open_disposition.mojom-shared.h"
 
 namespace web {
 
 FakeOpenURLRequest::FakeOpenURLRequest()
     : params(GURL(),
              Referrer(),
-             WindowOpenDisposition::UNKNOWN,
+             ui::mojom::WindowOpenDisposition::kUnknown,
              ui::PAGE_TRANSITION_LINK,
              false) {}
 
@@ -150,6 +151,16 @@ void FakeWebStateDelegate::HandlePermissionsDecisionRequest(
     NSArray<NSNumber*>* permissions,
     WebStatePermissionDecisionHandler handler) {
   last_requested_permissions_ = permissions;
+  if (should_handle_permission_decision_) {
+    handler(permission_decision_);
+  }
+}
+
+void FakeWebStateDelegate::RequestGeolocationPermission(
+    WebState* source,
+    const GURL& origin,
+    WebStatePermissionDecisionHandler handler) {
+  last_requested_geolocation_origin_ = origin;
   if (should_handle_permission_decision_) {
     handler(permission_decision_);
   }

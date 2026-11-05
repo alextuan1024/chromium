@@ -105,11 +105,6 @@ class CONTENT_EXPORT MediaStreamManager
       blink::mojom::StreamDevicesSetPtr stream_devices_set,
       bool pan_tilt_zoom_allowed)>;
 
-  using OpenDeviceCallback =
-      base::OnceCallback<void(bool success,
-                              const std::string& label,
-                              const blink::MediaStreamDevice& device)>;
-
   using DeviceStoppedCallback =
       base::RepeatingCallback<void(const std::string& label,
                                    const blink::MediaStreamDevice& device)>;
@@ -287,24 +282,12 @@ class CONTENT_EXPORT MediaStreamManager
                         const std::string& device_id,
                         const base::UnguessableToken& session_id);
 
-  // Open a device identified by |device_id|. |type| must be either
-  // MEDIA_DEVICE_AUDIO_CAPTURE or MEDIA_DEVICE_VIDEO_CAPTURE.
-  // |device_stopped_callback| is set to receive device stopped notifications.
-  // The request is identified using string returned to the caller.
-  void OpenDevice(GlobalRenderFrameHostId render_frame_host_id,
-                  int requester_id,
-                  int page_request_id,
-                  const std::string& device_id,
-                  blink::mojom::MediaStreamType type,
-                  MediaDeviceSaltAndOrigin salt_and_origin,
-                  OpenDeviceCallback open_device_callback,
-                  DeviceStoppedCallback device_stopped_callback);
-
-  // Find |device_id| in the list of |requests_|, and returns its session id,
-  // or an empty base::UnguessableToken if not found. Must be called on the IO
-  // thread.
+  // Find `device_id` in the list of `requests_` for `render_frame_host_id`,
+  // and returns its session id, or an empty base::UnguessableToken if not
+  // found. Must be called on the IO thread.
   base::UnguessableToken VideoDeviceIdToSessionId(
-      const std::string& device_id) const;
+      const std::string& device_id,
+      GlobalRenderFrameHostId render_frame_host_id) const;
 
   // Called by UI to make sure the device monitor is started so that UI receive
   // notifications about device changes.
@@ -383,6 +366,16 @@ class CONTENT_EXPORT MediaStreamManager
   // capture device is plugged in or unplugged.
   void NotifyDevicesChanged(blink::mojom::MediaDeviceType stream_type,
                             const blink::WebMediaDeviceInfoArray& devices);
+
+  // Updates the audio or video input devices cached by MediaCaptureDevicesImpl.
+  // NotifyDevicesChanged() calls this before notifying observers of a
+  // device-list change.
+  // MediaDevicesManager also invokes it through a callback when a
+  // `kDevicesWithCapabilities` enumeration changes only camera control
+  // support for the existing devices.
+  void UpdateMediaCaptureDevicesCache(
+      blink::mojom::MediaDeviceType device_type,
+      const blink::WebMediaDeviceInfoArray& devices);
 
   // This method is called when an audio or video device is removed. It makes
   // sure all MediaStreams that use a removed device are stopped and that the
@@ -482,9 +475,6 @@ class CONTENT_EXPORT MediaStreamManager
       mojo::PendingReceiver<media::mojom::VideoCaptureHost> receiver);
   size_t num_video_capture_hosts() const { return video_capture_hosts_.size(); }
 
-  std::optional<url::Origin> GetOriginByVideoSessionId(
-      const base::UnguessableToken& session_id);
-
   bool IsSessionAllowedOnLockScreen(const base::UnguessableToken& session_id);
 
   // Validates that the renderer-supplied `session_id` is authorized for use by
@@ -541,8 +531,6 @@ class CONTENT_EXPORT MediaStreamManager
   class GenerateStreamsRequest;
   // Contains data specific for GetOpenDevice requests
   class GetOpenDeviceRequest;
-  // Contains data specific for OpenDevice requests
-  class OpenDeviceRequest;
 
   // |DeviceRequests| is a list to ensure requests are processed in the order
   // they arrive. The first member of the pair is the label of the
@@ -721,6 +709,9 @@ class CONTENT_EXPORT MediaStreamManager
   void FinalizeRequestFailed(DeviceRequests::const_iterator request_it,
                              blink::mojom::MediaStreamRequestResult result);
   void FinalizeChangeDevice(const std::string& label, DeviceRequest* request);
+  void CloseOldStreamDevices(const std::string& label,
+                             DeviceRequest* request,
+                             bool stop_capture_handle_tracking);
   void FinalizeMediaAccessRequest(
       DeviceRequests::const_iterator request_it,
       const blink::mojom::StreamDevicesSet& stream_devices_set);

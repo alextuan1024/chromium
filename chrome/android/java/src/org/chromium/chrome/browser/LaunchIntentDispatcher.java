@@ -13,6 +13,7 @@ import android.app.ActivityManager.RecentTaskInfo;
 import android.content.Context;
 import android.content.Intent;
 import android.net.Uri;
+import android.text.TextUtils;
 
 import androidx.annotation.IntDef;
 import androidx.annotation.VisibleForTesting;
@@ -30,7 +31,12 @@ import org.chromium.base.metrics.RecordUserAction;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.R;
+import org.chromium.chrome.browser.actor.ActorKeyedService;
+import org.chromium.chrome.browser.actor.ActorKeyedServiceFactory;
+import org.chromium.chrome.browser.actor.ActorTask;
 import org.chromium.chrome.browser.actor.ActorUtils;
+import org.chromium.chrome.browser.actor.foreground_service.ActorForegroundServiceController;
+import org.chromium.chrome.browser.app.tabwindow.TabWindowManagerSingleton;
 import org.chromium.chrome.browser.browserservices.SessionDataHolder;
 import org.chromium.chrome.browser.browserservices.SessionHandler;
 import org.chromium.chrome.browser.browserservices.intents.BrowserServicesIntentDataProvider.CustomTabsUiType;
@@ -46,16 +52,19 @@ import org.chromium.chrome.browser.document.ChromeLauncherActivity;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.glic.GlicEnabling;
+import org.chromium.chrome.browser.glic.GlicIntentConstants;
 import org.chromium.chrome.browser.init.ChromeBrowserInitializer;
+import org.chromium.chrome.browser.multiwindow.MultiInstanceManager.PersistedInstanceType;
 import org.chromium.chrome.browser.multiwindow.MultiWindowUtils;
 import org.chromium.chrome.browser.preferences.ChromePreferenceKeys;
 import org.chromium.chrome.browser.preferences.ChromeSharedPreferences;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.profiles.ProfileManager;
-import org.chromium.chrome.browser.ui.searchactivityutils.SearchActivityClient;
-import org.chromium.chrome.browser.ui.searchactivityutils.SearchActivityExtras.ResolutionType;
+import org.chromium.chrome.browser.tab.Tab;
+import org.chromium.chrome.browser.tab.TabId;
+import org.chromium.chrome.browser.tabwindow.TabWindowInfo;
+import org.chromium.chrome.browser.tabwindow.TabWindowManager;
 import org.chromium.chrome.browser.util.AndroidTaskUtils;
-import org.chromium.components.browser_ui.notifications.ForegroundServiceUtils;
 import org.chromium.components.embedder_support.util.UrlConstants;
 import org.chromium.components.externalauth.ExternalAuthUtils;
 import org.chromium.ui.widget.Toast;
@@ -75,11 +84,8 @@ public class LaunchIntentDispatcher {
     public static final String EXTRA_LAUNCH_MODE =
             "com.google.android.apps.chrome.EXTRA_LAUNCH_MODE";
 
-    private static final String START_ACTOR_FOREGROUND_SERVICE =
-            "org.chromium.chrome.browser.actor.START_ACTOR_FOREGROUND_SERVICE";
-
     private static final String GLIC_EXTERNAL_TRIGGERING_ACTION =
-            "org.chromium.chrome.browser.glic.EXTERNAL_TRIGGERING";
+            GlicIntentConstants.ACTION_EXTERNAL_TRIGGERING;
 
     private static final String TAG = "ActivityDispatcher";
 
@@ -107,23 +113,6 @@ public class LaunchIntentDispatcher {
     }
 
     /**
-     * Dispatches the intent to Search Activity.
-     *
-     * @param client SearchActivityClient instance
-     * @param currentActivity activity that received the intent
-     * @param intent intent to dispatch
-     * @return action to take
-     */
-    public static @Action int dispatchToSearchActivity(
-            SearchActivityClient client, Activity currentActivity, Intent intent) {
-        client.requestOmniboxForResult(
-                client.newIntentBuilder()
-                        .setResolutionType(ResolutionType.OPEN_OR_LAUNCH_CHROME)
-                        .build());
-        return Action.FINISH_ACTIVITY;
-    }
-
-    /**
      * Dispatches the intent to CustomTabActivity if the itent is a valid CustomTabActivity intent.
      */
     public static @Action int dispatchToCustomTabActivity(Activity currentActivity, Intent intent) {
@@ -138,6 +127,38 @@ public class LaunchIntentDispatcher {
         } else {
             return Action.CONTINUE;
         }
+    }
+
+    // These values are persisted to logs. Entries should not be renumbered and
+    // numeric values should never be reused.
+    @IntDef({
+        ExternalTriggerDispatchResult.STARTED_BACKGROUND_SERVICE,
+        ExternalTriggerDispatchResult.OPENED_FOREGROUND_TAB,
+        ExternalTriggerDispatchResult.ROUTED_TASK_INTERRUPT,
+        ExternalTriggerDispatchResult.REJECTED_NOT_GOOGLE_SIGNED,
+        ExternalTriggerDispatchResult.REJECTED_GLIC_DISABLED_FOR_PROFILE,
+        ExternalTriggerDispatchResult.TASK_INTERRUPT_TASK_NOT_FOUND,
+        ExternalTriggerDispatchResult.TASK_INTERRUPT_INTENT_CREATION_FAILED,
+        ExternalTriggerDispatchResult.NUM_ENTRIES
+    })
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface ExternalTriggerDispatchResult {
+        int STARTED_BACKGROUND_SERVICE = 0;
+        int OPENED_FOREGROUND_TAB = 1;
+        int ROUTED_TASK_INTERRUPT = 2;
+        int REJECTED_NOT_GOOGLE_SIGNED = 3;
+        int REJECTED_GLIC_DISABLED_FOR_PROFILE = 4;
+        int TASK_INTERRUPT_TASK_NOT_FOUND = 5;
+        int TASK_INTERRUPT_INTENT_CREATION_FAILED = 6;
+        int NUM_ENTRIES = 7;
+    }
+
+    private static void recordExternalTriggerDispatchResult(
+            @ExternalTriggerDispatchResult int result) {
+        RecordHistogram.recordEnumeratedHistogram(
+                "Glic.Android.ExternalTriggerIntent.DispatchResult",
+                result,
+                ExternalTriggerDispatchResult.NUM_ENTRIES);
     }
 
     /**
@@ -163,36 +184,133 @@ public class LaunchIntentDispatcher {
 
             if (!GlicEnabling.isEnabledForProfile(profile)) {
                 currentActivity.setResult(Activity.RESULT_CANCELED);
+                recordExternalTriggerDispatchResult(
+                        ExternalTriggerDispatchResult.REJECTED_GLIC_DISABLED_FOR_PROFILE);
                 return Action.FINISH_ACTIVITY;
             }
 
-            // TODO(b/557413667): It should be possible to warm up Glic instance here as
-            // well, in the future.
-            if (!GlicEnabling.experimentalOptInIsNeeded(profile)
-                    && ActorUtils.isBackgroundActuationEnabled()) {
-                Intent serviceIntent =
-                        new Intent(
-                                currentActivity,
-                                org.chromium.chrome.browser.actor.ActorForegroundService.class);
-                serviceIntent.setAction(START_ACTOR_FOREGROUND_SERVICE);
-                IntentUtils.addTrustedIntentExtras(serviceIntent);
-                ForegroundServiceUtils.getInstance().startForegroundService(serviceIntent);
-                // TODO(b/548905982): Ensure foreground service started before finishing activity.
-                currentActivity.setResult(Activity.RESULT_OK);
-                return Action.FINISH_ACTIVITY;
+            if (!GlicEnabling.experimentalOptInIsNeeded(profile)) {
+                // EXTRA_CONVERSATION_ID is only populated for task interrupts of already active
+                // tasks.
+                String conversationId =
+                        IntentUtils.safeGetStringExtra(
+                                intent, GlicIntentConstants.EXTRA_CONVERSATION_ID);
+                if (!TextUtils.isEmpty(conversationId)
+                        && ChromeFeatureList.sActorNotificationIntentRouting.isEnabled()) {
+                    return routeTaskInterrupt(currentActivity, profile, conversationId);
+                }
+
+                // TODO(b/557413667): It should be possible to warm up Glic instance here as
+                // well, in the future.
+                if (ActorUtils.isBackgroundActuationEnabled()) {
+                    ActorKeyedService actorService =
+                            ActorKeyedServiceFactory.getForProfile(profile);
+                    if (actorService != null) {
+                        actorService.addExternalTriggerPendingTask();
+                    }
+                    currentActivity.setResult(Activity.RESULT_OK);
+                    recordExternalTriggerDispatchResult(
+                            ExternalTriggerDispatchResult.STARTED_BACKGROUND_SERVICE);
+                    return Action.FINISH_ACTIVITY;
+                }
             }
 
-            return Action.CONTINUE;
+            Intent newTabIntent =
+                    ActorForegroundServiceController.get()
+                            .createTrustedPendingActorTaskNewTabIntent();
+            currentActivity.setResult(Activity.RESULT_OK);
+            recordExternalTriggerDispatchResult(
+                    ExternalTriggerDispatchResult.OPENED_FOREGROUND_TAB);
+            return dispatchToTabbedActivity(currentActivity, newTabIntent);
         } else {
             currentActivity.setResult(Activity.RESULT_CANCELED);
+            recordExternalTriggerDispatchResult(
+                    ExternalTriggerDispatchResult.REJECTED_NOT_GOOGLE_SIGNED);
             return Action.FINISH_ACTIVITY;
         }
     }
 
+    /**
+     * Routes an interrupt for an ongoing task to the window holding the tab it is acting on, so
+     * that the user is returned to that tab rather than to a newly opened window.
+     */
+    private static @Action int routeTaskInterrupt(
+            Activity currentActivity, Profile profile, String conversationId) {
+        ActorKeyedService actorService = ActorKeyedServiceFactory.getForProfile(profile);
+        // The sender may hold a conversation id whose task has already finished.
+        ActorTask task =
+                actorService == null ? null : actorService.getTaskByConversationId(conversationId);
+        if (task == null) {
+            currentActivity.setResult(Activity.RESULT_CANCELED);
+            recordExternalTriggerDispatchResult(
+                    ExternalTriggerDispatchResult.TASK_INTERRUPT_TASK_NOT_FOUND);
+            return Action.FINISH_ACTIVITY;
+        }
+
+        Intent bringToFrontIntent =
+                ActorForegroundServiceController.get().createTrustedBringTabToFrontIntent(task);
+        if (bringToFrontIntent == null) {
+            currentActivity.setResult(Activity.RESULT_CANCELED);
+            recordExternalTriggerDispatchResult(
+                    ExternalTriggerDispatchResult.TASK_INTERRUPT_INTENT_CREATION_FAILED);
+            return Action.FINISH_ACTIVITY;
+        }
+
+        int targetWindowId = resolveTargetWindowId(task);
+        if (targetWindowId != TabWindowManager.INVALID_WINDOW_ID) {
+            bringToFrontIntent.putExtra(IntentHandler.EXTRA_WINDOW_ID, targetWindowId);
+            if (MultiWindowUtils.launchIntentInInstance(bringToFrontIntent, targetWindowId)) {
+                currentActivity.setResult(Activity.RESULT_OK);
+                recordExternalTriggerDispatchResult(
+                        ExternalTriggerDispatchResult.ROUTED_TASK_INTERRUPT);
+                return Action.FINISH_ACTIVITY;
+            }
+            // Without this the launch below targets whichever task is on top rather than the
+            // one holding the resolved window.
+            bringToFrontIntent.addFlags(Intent.FLAG_ACTIVITY_MULTIPLE_TASK);
+        }
+
+        @Action int action = dispatchToTabbedActivity(currentActivity, bringToFrontIntent);
+        if (action != Action.CONTINUE) {
+            currentActivity.setResult(Activity.RESULT_OK);
+            recordExternalTriggerDispatchResult(
+                    ExternalTriggerDispatchResult.ROUTED_TASK_INTERRUPT);
+        }
+        return action;
+    }
+
+    /**
+     * Returns the window that should handle the interrupt, or {@link
+     * TabWindowManager#INVALID_WINDOW_ID} to let the launch decide.
+     */
+    private static int resolveTargetWindowId(ActorTask task) {
+        // A window whose task is gone must not be resurrected, so both candidates below are
+        // checked against the instances Android still reports as active.
+        Set<Integer> activeWindowIds =
+                MultiWindowUtils.getUsableInstanceIds(PersistedInstanceType.ACTIVE);
+
+        @TabId int targetTabId = task.getTargetTabId();
+        if (targetTabId != Tab.INVALID_TAB_ID) {
+            TabWindowInfo windowInfo =
+                    TabWindowManagerSingleton.getInstance().getTabWindowInfoById(targetTabId);
+            if (windowInfo != null && activeWindowIds.contains(windowInfo.windowId)) {
+                return windowInfo.windowId;
+            }
+        }
+
+        int backgroundWindowId =
+                ActorForegroundServiceController.get().getWindowIdForTask(task.getId());
+        if (backgroundWindowId != TabWindowManager.INVALID_WINDOW_ID
+                && activeWindowIds.contains(backgroundWindowId)) {
+            return backgroundWindowId;
+        }
+
+        return TabWindowManager.INVALID_WINDOW_ID;
+    }
+
     private LaunchIntentDispatcher(Activity activity, Intent intent) {
         mActivity = activity;
-        boolean unparcelFds = ChromeFeatureList.sUnparcelIntentFileDescriptors.isEnabled();
-        mIntent = assertNonNull(IntentUtils.sanitizeIntent(intent, unparcelFds));
+        mIntent = assertNonNull(IntentUtils.sanitizeIntent(intent));
     }
 
     /** When started with an intent, maybe pre-resolve the domain. */
@@ -212,8 +330,8 @@ public class LaunchIntentDispatcher {
         if (intent == null) return false;
         Log.w(
                 TAG,
-                "CustomTabsIntent#shouldAlwaysUseBrowserUI() = "
-                        + CustomTabsIntent.shouldAlwaysUseBrowserUI(intent));
+                "CustomTabsIntent#shouldAlwaysUseBrowserUI() = %b",
+                CustomTabsIntent.shouldAlwaysUseBrowserUI(intent));
         if (CustomTabsIntent.shouldAlwaysUseBrowserUI(intent)
                 || (!intent.hasExtra(CustomTabsIntent.EXTRA_SESSION)
                         && !AuthTabIntentDataProvider.isAuthTabIntent(intent))) {
@@ -341,6 +459,32 @@ public class LaunchIntentDispatcher {
                 ApiCompatibilityUtils.moveTaskToFront(mActivity, handler.getTaskId(), 0);
                 return true;
             }
+        } else if (SessionDataHolder.getInstance()
+                        .getActiveHandlerClassInCurrentTask(mIntent, mActivity)
+                == null) {
+            // For TWAs, if the handler is not in the current task (e.g. launched from a trampoline
+            // activity with different task affinity), route the intent directly to the existing
+            // handler and bring its task to the foreground instead of spawning a new document task.
+            // Note: The handler is matched by session token, so this relies on the client giving
+            // each TWA task its own deterministic session ID. Otherwise multiple TWA tasks of the
+            // same app would share a session and this could resolve to the wrong task.
+            SessionHandler handler = SessionDataHolder.getInstance().getHandlerForIntent(mIntent);
+            if (handler != null) {
+                Intent forwardedIntent = new Intent(mIntent);
+                forwardedIntent.removeExtra(IntentHandler.EXTRA_CCT_EARLY_NAV);
+                maybePutCallingAppPackage(forwardedIntent);
+                WebAppLaunchHandler.copyFilePermissions(mActivity, mIntent, forwardedIntent);
+                WebAppLaunchHandler.copyShareDataPermissions(mActivity, mIntent, forwardedIntent);
+                Uri extraReferrer = mActivity.getReferrer();
+                if (extraReferrer != null) {
+                    forwardedIntent.putExtra(
+                            IntentHandler.EXTRA_ACTIVITY_REFERRER, extraReferrer.toString());
+                }
+                if (handler.handleIntent(forwardedIntent)) {
+                    ApiCompatibilityUtils.moveTaskToFront(mActivity, handler.getTaskId(), 0);
+                    return true;
+                }
+            }
         }
 
         // Should not be set by external apps, remove if present.
@@ -351,7 +495,7 @@ public class LaunchIntentDispatcher {
         if (!startedNavigationEarly) maybePrefetchDnsInBackground();
 
         Intent intent = new Intent(mIntent);
-        boolean identityShared = maybePutCallingAppPackage(intent);
+        maybePutCallingAppPackage(intent);
 
         // Create and fire a launch intent.
         Intent launchIntent = createCustomTabActivityIntent(mActivity, intent);
@@ -372,14 +516,13 @@ public class LaunchIntentDispatcher {
         }
 
         mActivity.startActivity(launchIntent, null);
-        RecordHistogram.recordBooleanHistogram("CustomTabs.IdentityShared", identityShared);
         return true;
     }
 
     // Pass the target Activity the package name of the calling app.
     // EXTRA_LAUNCHED_FROM_PACKAGE: set only when identity sharing is enabled by the calling app
     // EXTRA_CALLING_ACTIVITY_PACKAGE: from either startActivityForResult or identity sharing
-    private boolean maybePutCallingAppPackage(Intent intent) {
+    private void maybePutCallingAppPackage(Intent intent) {
         // Strip EXTRA_CALLING_ACTIVITY_PACKAGE/EXTRA_LAUNCHED_FROM_PACKAGE if present on
         // the original intent so that it cannot be spoofed by CCT client apps.
         IntentUtils.safeRemoveExtra(intent, IntentHandler.EXTRA_CALLING_ACTIVITY_PACKAGE);
@@ -391,11 +534,9 @@ public class LaunchIntentDispatcher {
         if (packageName != null) {
             intent.putExtra(IntentHandler.EXTRA_CALLING_ACTIVITY_PACKAGE, packageName);
         }
-        boolean hasIdentitySharingPackageName = packageNameIdentitySharing != null;
-        if (hasIdentitySharingPackageName) {
+        if (packageNameIdentitySharing != null) {
             intent.putExtra(IntentHandler.EXTRA_LAUNCHED_FROM_PACKAGE, packageNameIdentitySharing);
         }
-        return hasIdentitySharingPackageName;
     }
 
     private boolean maybeStartNavigation() {

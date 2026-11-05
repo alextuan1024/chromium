@@ -5,6 +5,7 @@
 #ifndef EXTENSIONS_BROWSER_API_RUNTIME_RUNTIME_API_H_
 #define EXTENSIONS_BROWSER_API_RUNTIME_RUNTIME_API_H_
 
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
@@ -14,6 +15,7 @@
 #include "base/time/time.h"
 #include "base/timer/timer.h"
 #include "base/values.h"
+#include "base/version.h"
 #include "extensions/browser/api/runtime/runtime_api_delegate.h"
 #include "extensions/browser/browser_context_keyed_api_factory.h"
 #include "extensions/browser/events/lazy_event_dispatch_util.h"
@@ -30,10 +32,6 @@
 
 static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
-namespace base {
-class Version;
-}
-
 namespace content {
 class BrowserContext;
 }
@@ -48,6 +46,7 @@ struct PlatformInfo;
 
 class Extension;
 class ExtensionRegistry;
+enum class UnloadedExtensionReason;
 
 // Runtime API dispatches onStartup, onInstalled, and similar events to
 // extensions. There is one instance shared between a browser context and
@@ -121,8 +120,14 @@ class RuntimeAPI : public BrowserContextKeyedAPI,
   // ExtensionRegistryObserver implementation.
   void OnExtensionLoaded(content::BrowserContext* browser_context,
                          const Extension* extension) override;
+  void OnExtensionUnloaded(content::BrowserContext* browser_context,
+                           const Extension* extension,
+                           UnloadedExtensionReason reason) override;
   void OnExtensionEnabled(content::BrowserContext* browser_context,
                           const Extension* extension) override;
+  void OnExtensionReloaded(content::BrowserContext* browser_context,
+                           const Extension* extension) override;
+
   void OnExtensionUninstalled(content::BrowserContext* browser_context,
                               const Extension* extension,
                               UninstallReason reason) override;
@@ -132,6 +137,20 @@ class RuntimeAPI : public BrowserContextKeyedAPI,
       content::BrowserContext* browser_context,
       const Extension* extension,
       const base::Version& previous_version) override;
+
+  // Dispatches `runtime.onExtensionLoaded` with reason `kInstall` or `kUpdate`
+  // for the extension with `extension_id`, using its entry in
+  // `pending_install_load_versions_`. Does nothing if the entry is gone,
+  // because `OnExtensionUnloaded()` dropped it or an earlier posted task
+  // already dispatched it.
+  void MaybeDispatchInstallOrUpdateLoadedEvent(const ExtensionId& extension_id);
+
+  // Dispatches `runtime.onExtensionLoaded` with `reason` (`kStartup` or
+  // `kBrowserUpdate`) for the extension with `extension_id`. Does nothing if
+  // the extension is no longer in `pending_startup_load_extensions_`, because
+  // `OnExtensionEnabled()` or `OnExtensionUnloaded()` removed it.
+  void MaybeDispatchStartupLoadedEvent(const ExtensionId& extension_id,
+                                       api::runtime::OnLoadedReason reason);
 
   // Cancels any previously scheduled restart request.
   void MaybeCancelRunningDelayedRestartTimer();
@@ -174,6 +193,9 @@ class RuntimeAPI : public BrowserContextKeyedAPI,
       extension_registry_observation_{this};
   base::ScopedObservation<ProcessManager, ProcessManagerObserver>
       process_manager_observation_{this};
+  base::ScopedObservation<LazyEventDispatchUtil,
+                          LazyEventDispatchUtil::Observer>
+      lazy_event_dispatch_util_observation_{this};
 
   // The ID of the first extension to call the restartAfterDelay API. Any other
   // extensions to call this API after that will fail.
@@ -193,6 +215,27 @@ class RuntimeAPI : public BrowserContextKeyedAPI,
   // True if we should dispatch the chrome.runtime.onInstalled event with
   // reason "chrome_update" upon loading each extension.
   bool dispatch_chrome_updated_event_;
+
+  // True once initial startup extension loading has completed and
+  // `ExtensionSystem::ready()` has signaled.
+  bool startup_complete_ = false;
+
+  // Maps the ID of each extension whose `kInstall` or `kUpdate`
+  // `runtime.onExtensionLoaded` event is queued but not yet dispatched to its
+  // version from before the install or update (invalid for a fresh install).
+  // `kInstall` and `kUpdate` take precedence over other reasons, so these
+  // methods check it to skip a reason with lower precedence:
+  // - `OnExtensionEnabled()` doesn't dispatch `kEnable` when an extension that
+  //   was installed or updated while disabled is enabled.
+  // - `OnExtensionReloaded()` doesn't dispatch `kReload` when an extension is
+  //   reloaded through the install path, as an unpacked extension is.
+  std::map<ExtensionId, base::Version> pending_install_load_versions_;
+
+  // IDs of extensions whose `kStartup` or `kBrowserUpdate`
+  // `runtime.onExtensionLoaded` event is posted but not yet dispatched.
+  // `OnExtensionEnabled()` removes an extension that is enabled during startup,
+  // so that only `kEnable` is dispatched for it.
+  ExtensionIdSet pending_startup_load_extensions_;
 
   bool did_read_delayed_restart_preferences_;
   bool was_last_restart_due_to_delayed_restart_api_;
@@ -221,9 +264,34 @@ class RuntimeEventRouter {
                                        const base::Version& old_version,
                                        bool chrome_updated);
 
-  // Dispatches the onEnabled event to the given extension.
+  // Dispatches the `runtime.onEnabled` event to the extension with
+  // `extension_id` when it transitions from a disabled state to an enabled
+  // state. If `wait_for_lazy_context` is true and the extension's background
+  // context isn't ready, the dispatch waits until it is, so listeners that the
+  // background context registers while starting up receive the event.
+  // `RuntimeAPI::OnExtensionEnabled()` sets `wait_for_lazy_context` only when
+  // the extension was installed or updated while disabled, because that clears
+  // its persisted event listeners.
   static void DispatchOnEnabledEvent(MayBeDangling<void> context_id,
-                                     const ExtensionId& extension_id);
+                                     const ExtensionId& extension_id,
+                                     bool wait_for_lazy_context);
+
+  // Dispatches the `runtime.onExtensionLoaded` event to the extension with
+  // `extension_id` when it is added to the set of active extensions, as
+  // specified by the W3C WebExtensions proposal
+  // (https://github.com/w3c/webextensions/blob/main/proposals/runtime_on_load_on_enabled_events.md):
+  // - `reason` indicates why the extension was loaded (`kInstall`, `kUpdate`,
+  //   `kBrowserUpdate`, `kEnable`, `kStartup`, or `kReload`), following the
+  //   precedence `update > install > reload > enable > browser_update >
+  //   startup` when multiple reasons apply.
+  // - `previous_version` is included in the event details only when `reason` is
+  //   `kUpdate` (the version before the update) or `kEnable` (the extension's
+  //   current version).
+  static void DispatchOnExtensionLoadedEvent(
+      MayBeDangling<void> context_id,
+      const ExtensionId& extension_id,
+      api::runtime::OnLoadedReason reason,
+      const std::optional<std::string>& previous_version);
 
   // Dispatches the onUpdateAvailable event to the given extension.
   static void DispatchOnUpdateAvailableEvent(content::BrowserContext* context,

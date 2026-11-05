@@ -22,6 +22,7 @@
 #include "services/webnn/ort/platform_functions_ort.h"
 #include "services/webnn/ort/scoped_ort_types.h"
 #include "services/webnn/public/cpp/ep_device_info.h"
+#include "services/webnn/public/cpp/execution_providers_info.h"
 #include "services/webnn/webnn_constant_operand.h"
 
 namespace webnn::ort {
@@ -51,6 +52,7 @@ CompilerContextImplOrt::CompilerContextImplOrt(
     mojo::PendingRemote<mojom::WebNNModelLoader> model_loader)
     : service_(service),
       properties_(std::move(properties)),
+      ep_workarounds_(GetEpWorkaroundsForEp(target_device.ep_name)),
       options_(std::move(options)),
       model_loader_(std::move(model_loader)),
       // The environment is guaranteed to be initialized in PreSandboxInit().
@@ -104,7 +106,7 @@ void CompilerContextImplOrt::BuildGraph(
       env_->graph_compilation_task_runner().get(), FROM_HERE,
       base::BindOnce(&CompilerContextImplOrt::CompileOnBackgroundThread,
                      std::move(graph_info), session_options_, env_, properties_,
-                     std::move(constant_operands)),
+                     ep_workarounds_, std::move(constant_operands)),
       base::BindOnce(&CompilerContextImplOrt::DidCompile,
                      base::Unretained(this), std::move(wrapped_callback)));
 }
@@ -117,13 +119,15 @@ CompilerContextImplOrt::CompileOnBackgroundThread(
     scoped_refptr<SessionOptions> session_options,
     scoped_refptr<Environment> env,
     ContextProperties context_properties,
+    EpWorkarounds ep_workarounds,
     base::flat_map<OperandId, std::unique_ptr<WebNNConstantOperand>>
         constant_operands) {
   // Step 1: Build the ORT model from GraphInfo.
-  std::unique_ptr<ModelEditor::ModelInfo> model_info =
-      GraphBuilderOrt::CreateAndBuild(*graph_info,
-                                      std::move(context_properties),
-                                      std::move(constant_operands));
+  ASSIGN_OR_RETURN(
+      std::unique_ptr<ModelEditor::ModelInfo> model_info,
+      GraphBuilderOrt::CreateAndBuild(
+          *graph_info, std::move(context_properties), std::move(ep_workarounds),
+          std::move(constant_operands)));
 
   // Step 2: Compile the model using ORT Compile API.
   const OrtApi* ort_api = PlatformFunctions::GetInstance()->ort_api();

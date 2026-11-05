@@ -8,16 +8,18 @@
 #include <optional>
 
 #include "base/functional/callback.h"
-#include "base/memory/raw_ptr.h"
 #include "build/build_config.h"
+#include "chrome/browser/glic/widget/glic_loading_placeholder_controller.h"
+#include "chrome/browser/glic/widget/glic_loading_placeholder_view.h"
 #include "chrome/browser/pwc/privileged_web_contents.h"
 #include "content/public/browser/web_contents_delegate.h"
+#include "printing/buildflags/buildflags.h"
 #include "third_party/skia/include/core/SkRegion.h"
 #include "ui/base/interaction/element_identifier.h"
 #include "ui/base/metadata/metadata_header_macros.h"
+#include "ui/base/mojom/window_open_disposition.mojom-forward.h"
 #include "ui/gfx/geometry/rounded_corners_f.h"
 #include "ui/gfx/geometry/size.h"
-#include "ui/views/controls/webview/unhandled_keyboard_event_handler.h"
 #include "ui/views/controls/webview/webview.h"
 #include "ui/views/widget/unique_widget_ptr.h"
 
@@ -69,11 +71,22 @@ class GlicView : public views::WebView,
   void DraggableRegionsChanged(
       const std::vector<blink::mojom::DraggableRegionPtr>& regions,
       content::WebContents* contents) override;
+  bool HandleWindowCreation(
+      content::RenderFrameHost* opener,
+      const GURL& target_url,
+      ui::mojom::WindowOpenDisposition disposition,
+      const blink::mojom::WindowFeatures& features) override;
 
   // views::WebView:
   void SetWebContents(content::WebContents* web_contents) override;
+  void RenderFrameCreated(content::RenderFrameHost* render_frame_host) override;
+  void RenderFrameHostChanged(content::RenderFrameHost* old_host,
+                              content::RenderFrameHost* new_host) override;
 
   // views::View:
+  void RequestFocus() override;
+  FocusBehavior GetFocusBehavior() const override;
+  void OnBoundsChanged(const gfx::Rect& previous_bounds) override;
   void OnThemeChanged() override;
 
   bool IsPointWithinDraggableRegion(const gfx::Point& point);
@@ -87,6 +100,13 @@ class GlicView : public views::WebView,
     return background_radii_;
   }
 
+  void ConfigureLoadingPlaceholder(GlicLoadingPlaceholderView::Mode mode,
+                                   base::RepeatingClosure close_callback);
+  void SetShowingLoadingPlaceholder(bool showing);
+  bool IsShowingLoadingPlaceholder() const;
+  bool HasFocusInHierarchy() const;
+  GlicLoadingPlaceholderView* loading_placeholder_view_for_testing();
+
   bool AcceleratorPressed(const ui::Accelerator& accelerator) override;
 
   base::WeakPtr<GlicView> GetWeakPtr() {
@@ -94,19 +114,29 @@ class GlicView : public views::WebView,
   }
 
  private:
+  // Informs web_contents() of this view's contents size.
+  void UpdateWebContentsSize();
+
   void SetDraggableRegion(const SkRegion& region, bool for_webview);
 
   std::optional<SkColor> GetClientBackgroundColor();
 
   base::WeakPtr<ui::AcceleratorTarget> accelerator_delegate_;
   gfx::RoundedCornersF background_radii_;
+  GlicLoadingPlaceholderController loading_placeholder_controller_{this};
 
   // Defines the region of the view from which it can be dragged.
   SkRegion draggable_region_;
   SkRegion webview_draggable_region_;
 
   ZoomCallback zoom_changed_callback_;
-  views::UnhandledKeyboardEventHandler unhandled_keyboard_event_handler_;
+#if BUILDFLAG(ENABLE_PRINTING) && !BUILDFLAG(IS_ANDROID)
+  // Mirrors `views::UnhandledKeyboardEventHandler::ignore_next_char_event_`:
+  // consuming `kRawKeyDown`/`kKeyDown` in `HandleKeyboardEvent()` bypasses
+  // `WebView::HandleKeyboardEvent()`, so the paired `kChar` event must also be
+  // swallowed to keep it from falling through to native/menu accelerators.
+  bool ignore_next_char_event_ = false;
+#endif  // BUILDFLAG(ENABLE_PRINTING) && !BUILDFLAG(IS_ANDROID)
   base::WeakPtrFactory<GlicView> weak_ptr_factory_{this};
 };
 

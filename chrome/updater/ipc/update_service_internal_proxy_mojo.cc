@@ -15,6 +15,7 @@
 #include "base/logging.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/process/launch.h"
+#include "base/process/process.h"
 #include "base/task/bind_post_task.h"
 #include "base/task/task_traits.h"
 #include "base/task/thread_pool.h"
@@ -31,12 +32,14 @@
 #include "chrome/updater/updater_scope.h"
 #include "chrome/updater/util/util.h"
 #include "components/named_mojo_ipc_server/named_mojo_ipc_server_client_util.h"
+#include "mojo/public/c/system/invitation.h"
 #include "mojo/public/cpp/bindings/callback_helpers.h"
 #include "mojo/public/cpp/bindings/remote.h"
 #include "mojo/public/cpp/platform/named_platform_channel.h"
 #include "mojo/public/cpp/platform/platform_channel.h"
 #include "mojo/public/cpp/platform/platform_channel_endpoint.h"
 #include "mojo/public/cpp/system/isolated_connection.h"
+#include "mojo/public/cpp/system/message_pipe.h"
 
 #if BUILDFLAG(IS_WIN)
 #include <wrl/client.h>
@@ -93,15 +96,26 @@ void UpdateServiceInternalProxyMojoImpl::EnsureConnecting() {
       base::BindOnce(&ConnectMojo, scope_, /*internal=*/true,
                      base::Time::Now() + kConnectionTimeout,
                      base::BindPostTaskToCurrentDefault(base::BindOnce(
-                         &UpdateServiceInternalProxyMojoImpl::OnConnected, this,
+                         &UpdateServiceInternalProxyMojoImpl::OnConnected,
+                         weak_factory_.GetWeakPtr(),
                          remote_.BindNewPipeAndPassReceiver()))));
 }
 
 void UpdateServiceInternalProxyMojoImpl::OnDisconnected() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   VLOG(1) << __func__;
-  connection_.reset();
-  remote_.reset();
+  weak_factory_.InvalidateWeakPtrs();
+  // See comment in `UpdateServiceProxyMojoImpl::OnDisconnected`.
+#if BUILDFLAG(IS_WIN)
+  Microsoft::WRL::ComPtr<IUnknown> server = std::move(server_);
+#endif  // BUILDFLAG(IS_WIN)
+  std::unique_ptr<mojo::IsolatedConnection> connection = std::move(connection_);
+  mojo::Remote<mojom::UpdateServiceInternal> remote = std::move(remote_);
+  remote.reset();
+  connection.reset();
+#if BUILDFLAG(IS_WIN)
+  server.Reset();
+#endif  // BUILDFLAG(IS_WIN)
 }
 
 #if BUILDFLAG(IS_WIN)
@@ -115,11 +129,24 @@ void UpdateServiceInternalProxyMojoImpl::OnConnected(
     std::optional<mojo::PlatformChannelEndpoint> endpoint) {
 #endif  // BUILDFLAG(IS_WIN)
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  if (!remote_.is_bound()) {
+    LOG(ERROR) << "Remote was reset during connection initialization.";
+    return;
+  }
+
   if (!endpoint) {
     VLOG(2) << "No endpoint received.";
     remote_.reset();
     return;
   }
+
+  // See comment in `UpdateServiceProxyMojoImpl::OnConnected`.
+  MojoSendInvitationFlags invitation_flags = MOJO_SEND_INVITATION_FLAG_NONE;
+#if BUILDFLAG(IS_WIN)
+  if (IsSystemInstall(scope_)) {
+    invitation_flags = MOJO_SEND_INVITATION_FLAG_ELEVATED;
+  }
+#endif  // BUILDFLAG(IS_WIN)
 
   auto connection = std::make_unique<mojo::IsolatedConnection>();
   // Connect `remote_` to the RPC server by fusing its message pipe to the one
@@ -127,7 +154,9 @@ void UpdateServiceInternalProxyMojoImpl::OnConnected(
   if (!mojo::FusePipes(
           std::move(pending_receiver),
           mojo::PendingRemote<mojom::UpdateServiceInternal>(
-              connection->Connect(std::move(endpoint.value())), 0))) {
+              connection->Connect(std::move(endpoint.value()), base::Process(),
+                                  invitation_flags),
+              0))) {
     LOG(ERROR) << "Failed to fuse Mojo pipes for RPC.";
     remote_.reset();
     return;
@@ -136,7 +165,7 @@ void UpdateServiceInternalProxyMojoImpl::OnConnected(
   connection_ = std::move(connection);
 
 #if BUILDFLAG(IS_WIN)
-  server_ = server;
+  server_ = std::move(server);
 #endif  // BUILDFLAG(IS_WIN)
 
   // A weak pointer is used here to prevent remote_ from forming a reference

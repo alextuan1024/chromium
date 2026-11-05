@@ -25,6 +25,9 @@ inline constexpr char kAccountsPrefUsers[] = "cros.accounts.users";
 inline constexpr char kAccountsPrefEphemeralUsersEnabled[] =
     "cros.accounts.ephemeralUsersEnabled";
 
+inline constexpr char kAccountsPrefDeviceMaxUserProfiles[] =
+    "cros.accounts.deviceMaxUserProfiles";
+
 inline constexpr char kAccountsPrefDeviceLocalAccounts[] =
     "cros.accounts.deviceLocalAccounts";
 
@@ -129,10 +132,6 @@ inline constexpr char kDeviceChannelDowngradeBehavior[] =
 // Extended Automatic Updates.
 inline constexpr char kDeviceExtendedAutoUpdateEnabled[] =
     "cros.system.device_extended_auto_update_enabled";
-
-// This setting is used to enforce usage of system audio echo cancellation.
-inline constexpr char kDeviceSystemAecEnabled[] =
-    "cros.audio.device_system_aec_enabled";
 
 // A boolean pref that indicates whether OS & firmware version info should be
 // reported along with device policy requests.

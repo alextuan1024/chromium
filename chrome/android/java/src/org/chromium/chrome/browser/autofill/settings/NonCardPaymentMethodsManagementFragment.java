@@ -29,7 +29,6 @@ import org.chromium.chrome.browser.autofill.PersonalDataManager;
 import org.chromium.chrome.browser.autofill.PersonalDataManager.PersonalDataManagerObserver;
 import org.chromium.chrome.browser.autofill.PersonalDataManagerFactory;
 import org.chromium.chrome.browser.customtabs.CustomTabActivity;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.settings.ChromeBaseSettingsFragment;
 import org.chromium.chrome.browser.settings.search.ChromeBaseSearchIndexProvider;
@@ -120,10 +119,7 @@ public class NonCardPaymentMethodsManagementFragment extends ChromeBaseSettingsF
         mEwallets = mPersonalDataManager.getEwallets();
         // LINT.IfChange(PrefConditions)
         boolean addEwalletPref = mEwallets.length > 0;
-        boolean addA2aPref =
-                mPersonalDataManager.getFacilitatedPaymentsA2ATriggeredOncePref()
-                        && ChromeFeatureList.isEnabled(
-                                ChromeFeatureList.FACILITATED_PAYMENTS_ENABLE_A2A_PAYMENT);
+        boolean addA2aPref = mPersonalDataManager.getFacilitatedPaymentsA2ATriggeredOncePref();
         // LINT.ThenChange(:DynamicPrefConditions)
 
         // LINT.IfChange(EwalletPrefConditions)
@@ -134,6 +130,7 @@ public class NonCardPaymentMethodsManagementFragment extends ChromeBaseSettingsF
             ChromeSwitchPreference ewalletSwitch = new ChromeSwitchPreference(getStyledContext());
             ewalletSwitch.setChecked(isFacilitatedPaymentsEwalletEnabled);
             ewalletSwitch.setKey(PREFERENCE_KEY_EWALLET);
+            ewalletSwitch.setPersistent(false);
             ewalletSwitch.setTitle(R.string.settings_manage_other_financial_accounts_ewallet);
             ewalletSwitch.setOnPreferenceChangeListener(this);
             getPreferenceScreen().addPreference(ewalletSwitch);
@@ -149,6 +146,7 @@ public class NonCardPaymentMethodsManagementFragment extends ChromeBaseSettingsF
             ChromeSwitchPreference a2aSwitch = new ChromeSwitchPreference(getStyledContext());
             a2aSwitch.setChecked(mPersonalDataManager.getFacilitatedPaymentsA2AEnabledPref());
             a2aSwitch.setKey(PREFERENCE_KEY_A2A);
+            a2aSwitch.setPersistent(false);
             a2aSwitch.setTitle(R.string.settings_manage_non_card_payment_methods_a2a_title);
             a2aSwitch.setSummary(R.string.settings_manage_non_card_payment_methods_a2a_description);
             a2aSwitch.setOnPreferenceChangeListener(this);
@@ -169,7 +167,7 @@ public class NonCardPaymentMethodsManagementFragment extends ChromeBaseSettingsF
                         .getString(
                                 R.string.settings_ewallet_account_identifer,
                                 ewallet.getAccountDisplayName()));
-        ewalletPref.setWidgetLayoutResource(R.layout.autofill_server_data_label);
+        ewalletPref.setWidgetLayoutResource(AutofillUiUtils.getServerDataWidgetLayout());
         ewalletPref.setIcon(
                 AutofillUiUtils.getCardIcon(
                         getStyledContext(),
@@ -244,10 +242,7 @@ public class NonCardPaymentMethodsManagementFragment extends ChromeBaseSettingsF
                     // LINT.IfChange(DynamicPrefConditions)
                     boolean addEwalletPref = personalDataManager.getEwallets().length > 0;
                     boolean addA2aPref =
-                            personalDataManager.getFacilitatedPaymentsA2ATriggeredOncePref()
-                                    && ChromeFeatureList.isEnabled(
-                                            ChromeFeatureList
-                                                    .FACILITATED_PAYMENTS_ENABLE_A2A_PAYMENT);
+                            personalDataManager.getFacilitatedPaymentsA2ATriggeredOncePref();
                     // LINT.ThenChange()
 
                     String prefFrag = getPrefFragmentName();

@@ -39,7 +39,6 @@ class ChromeShellDelegate : public ash::ShellDelegate,
   ~ChromeShellDelegate() override;
 
   // ash::ShellDelegate:
-  bool CanShowWindowForUser(const aura::Window* window) const override;
   std::unique_ptr<ash::CaptureModeDelegate> CreateCaptureModeDelegate(
       PrefService* local_state) const override;
   std::unique_ptr<ash::ClipboardHistoryControllerDelegate>
@@ -72,7 +71,7 @@ class ChromeShellDelegate : public ash::ShellDelegate,
       const override;
   std::unique_ptr<ash::ScannerDelegate> CreateScannerDelegate() const override;
   scoped_refptr<network::SharedURLLoaderFactory>
-  GetBrowserProcessUrlLoaderFactory() const override;
+  GetBrowserProcessUrlLoaderFactory() override;
   void OpenKeyboardShortcutHelpPage() const override;
   bool CanGoBack(gfx::NativeWindow window) const override;
   void SetTabScrubberEnabled(bool enabled) override;

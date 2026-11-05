@@ -519,10 +519,10 @@
 <translation id="5045550434625856497">Vale salasõna</translation>
 <translation id="5059127710849015030">nepali (transliteratsioon)</translation>
 <translation id="5068919226082848014">Pitsa</translation>
+<translation id="5075336522277785691"><ph name="EXTENSION_NAME" /> määras puhverserveri alistamise reeglid.</translation>
 <translation id="5081517858322016911"><ph name="TOTAL_FILE_SIZE" /> jagu faile kustutatakse</translation>
 <translation id="508423945471810158"><ph name="NUMBER_OF_ITEMS" /> üksust teisaldatakse kausta <ph name="FOLDER_NAME" /></translation>
 <translation id="509429900233858213">Tekkis viga.</translation>
-<translation id="5102922915594634436">Sünkroonitud kaustade haldamine</translation>
 <translation id="5109254780565519649">Ilmnes viga. Mõnda üksust ei pruugitud taastada.</translation>
 <translation id="5110329002213341433">inglise (Kanada)</translation>
 <translation id="5119780910075847424">Sünkroonimine on peatatud</translation>
@@ -558,7 +558,6 @@
 <translation id="5305688511332277257">Pole ühtegi installitud</translation>
 <translation id="5317780077021120954">Salvesta</translation>
 <translation id="5318819489018851358">Jaga Linuxiga</translation>
-<translation id="5330145655348521461">Failid on avatud erinevatel töölaudadel. Faili vaatamiseks avage <ph name="USER_NAME" /> (<ph name="MAIL_ADDRESS" />).</translation>
 <translation id="5330512191124428349">Hangi teavet</translation>
 <translation id="535792325654997756">Kassidega inimene</translation>
 <translation id="5358764674931277">Kaadrisagedus</translation>
@@ -699,7 +698,6 @@
 <translation id="636254897931573416">Sobimatu domeenisufiksi vaste väärtus</translation>
 <translation id="6364301859968397756">Organisatsiooni salvestusruum on täis</translation>
 <translation id="6367976544441405720">Kaubik</translation>
-<translation id="637062427944097960">Fail on avatud muul töölaual. Selle vaatamiseks avage <ph name="USER_NAME" /> (<ph name="MAIL_ADDRESS" />).</translation>
 <translation id="6394388407447716302">Kirjutuskaitstud</translation>
 <translation id="6395575651121294044"><ph name="NUMBER_OF_FILES" /> üksust</translation>
 <translation id="6407769893376380348">Faili <ph name="FILE_NAME" /> ei saanud eemaldada, kuna see on krüpteeritud.</translation>

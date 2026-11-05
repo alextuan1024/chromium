@@ -63,7 +63,7 @@ chromium-metrics-reviews@google.com.
 </variants>
 
 <histogram name="WebCore.DistillabilityUs" units="microseconds"
-    expires_after="2027-02-07">
+    expires_after="2027-04-11">
   <owner>wychen@chromium.org</owner>
   <owner>gilmanmh@google.com</owner>
   <summary>
@@ -80,7 +80,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="WebCore.Document.execCommand" enum="MappedEditingCommands"
-    expires_after="2027-01-17">
+    expires_after="2027-03-21">
   <owner>kojii@chromium.org</owner>
   <owner>tkent@chromium.org</owner>
   <summary>
@@ -91,7 +91,7 @@ chromium-metrics-reviews@google.com.
 
 <histogram
     name="WebCore.Editing.SpellCheckUserActionLimitation.{Source}.{Action}"
-    enum="Boolean" expires_after="2027-01-10">
+    enum="Boolean" expires_after="2027-07-01">
   <owner>arichiv@chromium.org</owner>
   <owner>katabolism-finch@google.com</owner>
   <summary>
@@ -108,15 +108,6 @@ chromium-metrics-reviews@google.com.
     <variant name="Enablement"/>
     <variant name="Selection"/>
   </token>
-</histogram>
-
-<histogram name="WebCore.FindInPage.TaskDuration" units="ms"
-    expires_after="2023-05-07">
-  <owner>rakina@chromium.org</owner>
-  <summary>
-    Records how long one find-in-page task took from invocation start to end.
-    Emitted when a find-in-page task finished running.
-  </summary>
 </histogram>
 
 <histogram name="WebCore.IndexedDB.BackingStore.Action" enum="IDBAction"
@@ -413,17 +404,6 @@ chromium-metrics-reviews@google.com.
   <summary>
     What type of cache metadata we retrieved for a script. Recorded when we are
     about to compile a script.
-  </summary>
-</histogram>
-
-<histogram name="WebCore.Scripts.V8CodeCacheMetadata.Set"
-    enum="V8CodeCacheSetMetadataType" expires_after="2025-03-30">
-  <owner>marja@chromium.org</owner>
-  <owner>v8-runtime@google.com</owner>
-  <summary>
-    What type of cache metadata we set for a script. If we set multiple metadata
-    types for the same script, multiple samples are recorded. Recorded when we
-    set the metadata.
   </summary>
 </histogram>
 

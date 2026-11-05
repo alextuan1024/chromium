@@ -7,6 +7,7 @@
 #include <stddef.h>
 
 #include <string>
+#include <utility>
 
 #include "base/feature_list.h"
 #include "base/strings/strcat.h"
@@ -283,32 +284,67 @@ TEST(PhoneNumberUtilTest, FormatPhoneForResponse) {
 // Tests that phone numbers are correctly formatted in a national format.
 TEST(PhoneNumberUtilTest, FormatPhoneNationallyForDisplay) {
   // Invalid US and Brazilian numbers are not formatted.
-  EXPECT_EQ(i18n::FormatPhoneNationallyForDisplay("1234567890", "US"),
+  EXPECT_EQ(i18n::FormatPhoneNationallyForDisplay("1234567890", "US",
+                                                  PHONE_HOME_CITY_AND_NUMBER),
             "1234567890");
-  EXPECT_EQ(i18n::FormatPhoneNationallyForDisplay("(11) 13333-4444", "BR"),
+  EXPECT_EQ(i18n::FormatPhoneNationallyForDisplay("(11) 13333-4444", "BR",
+                                                  PHONE_HOME_CITY_AND_NUMBER),
             "(11) 13333-4444");
-  EXPECT_EQ(i18n::FormatPhoneNationallyForDisplay("(11) 13333-4444", "IN"),
+  EXPECT_EQ(i18n::FormatPhoneNationallyForDisplay("(11) 13333-4444", "IN",
+                                                  PHONE_HOME_CITY_AND_NUMBER),
             "(11) 13333-4444");
 
   // Valid US, Canadian, UK, and Brazilian numbers are nationally formatted.
-  EXPECT_EQ(i18n::FormatPhoneNationallyForDisplay("2024440000", "US"),
+  EXPECT_EQ(i18n::FormatPhoneNationallyForDisplay("2024440000", "US",
+                                                  PHONE_HOME_CITY_AND_NUMBER),
             "(202) 444-0000");
-  EXPECT_EQ(i18n::FormatPhoneNationallyForDisplay("+1(202)4440000", "US"),
+  EXPECT_EQ(i18n::FormatPhoneNationallyForDisplay("+1(202)4440000", "US",
+                                                  PHONE_HOME_CITY_AND_NUMBER),
             "(202) 444-0000");
-  EXPECT_EQ(i18n::FormatPhoneNationallyForDisplay("12024440000", "US"),
+  EXPECT_EQ(i18n::FormatPhoneNationallyForDisplay("12024440000", "US",
+                                                  PHONE_HOME_CITY_AND_NUMBER),
             "(202) 444-0000");
-  EXPECT_EQ(i18n::FormatPhoneNationallyForDisplay("(202)4440000", "US"),
+  EXPECT_EQ(i18n::FormatPhoneNationallyForDisplay("(202)4440000", "US",
+                                                  PHONE_HOME_CITY_AND_NUMBER),
             "(202) 444-0000");
-  EXPECT_EQ(i18n::FormatPhoneNationallyForDisplay("202-444-0000", "US"),
+  EXPECT_EQ(i18n::FormatPhoneNationallyForDisplay("202-444-0000", "US",
+                                                  PHONE_HOME_CITY_AND_NUMBER),
             "(202) 444-0000");
-  EXPECT_EQ(i18n::FormatPhoneNationallyForDisplay("+1(819)555 9999", "CA"),
+  EXPECT_EQ(i18n::FormatPhoneNationallyForDisplay("+1(819)555 9999", "CA",
+                                                  PHONE_HOME_CITY_AND_NUMBER),
             "(819) 555-9999");
-  EXPECT_EQ(i18n::FormatPhoneNationallyForDisplay("18195559999", "CA"),
+  EXPECT_EQ(i18n::FormatPhoneNationallyForDisplay("18195559999", "CA",
+                                                  PHONE_HOME_CITY_AND_NUMBER),
             "(819) 555-9999");
-  EXPECT_EQ(i18n::FormatPhoneNationallyForDisplay("+4402076014444", "UK"),
+  EXPECT_EQ(i18n::FormatPhoneNationallyForDisplay("+4402076014444", "UK",
+                                                  PHONE_HOME_CITY_AND_NUMBER),
             "020 7601 4444");
-  EXPECT_EQ(i18n::FormatPhoneNationallyForDisplay("2138835600", "BR"),
+  EXPECT_EQ(i18n::FormatPhoneNationallyForDisplay("2138835600", "BR",
+                                                  PHONE_HOME_CITY_AND_NUMBER),
             "(21) 3883-5600");
+}
+
+// Tests that phone numbers are correctly formatted in a national format
+// without trunk prefix.
+TEST(PhoneNumberUtilTest, FormatPhoneNationallyForDisplayWithoutTrunkPrefix) {
+  // Invalid number is not formatted.
+  EXPECT_EQ(
+      i18n::FormatPhoneNationallyForDisplay(
+          "5151231234", "US", PHONE_HOME_CITY_AND_NUMBER_WITHOUT_TRUNK_PREFIX),
+      "5151231234");
+  // Valid numbers are formatted without trunk prefix.
+  EXPECT_EQ(
+      i18n::FormatPhoneNationallyForDisplay(
+          "5152231234", "US", PHONE_HOME_CITY_AND_NUMBER_WITHOUT_TRUNK_PREFIX),
+      "(515) 223-1234");
+  EXPECT_EQ(i18n::FormatPhoneNationallyForDisplay(
+                "+4402076014444", "UK",
+                PHONE_HOME_CITY_AND_NUMBER_WITHOUT_TRUNK_PREFIX),
+            "20 7601 4444");
+  EXPECT_EQ(
+      i18n::FormatPhoneNationallyForDisplay(
+          "+4930123456", "DE", PHONE_HOME_CITY_AND_NUMBER_WITHOUT_TRUNK_PREFIX),
+      "30 123456");
 }
 
 // Tests that the phone numbers are correctly formatted to display to the user.
@@ -498,6 +534,47 @@ INSTANTIATE_TEST_SUITE_P(
         PhoneNumberFormatCase(u"1 415 555 5555", u"", u"+1 415-555-5555"),
         // If no country code is found, formats for US.
         PhoneNumberFormatCase(u"415-555-5555", u"", u"+1 415-555-5555")));
+
+// `PhoneObject` keeps the region hint and `infer_country_code` value it was
+// created with, even when parsing fails or infers a different region, so that
+// callers can use them as a cache key.
+TEST(PhoneNumberI18NTest, PhoneObjectKeepsCreationArguments) {
+  i18n::PhoneObject unparseable(u"1234", "US", /*infer_country_code=*/false);
+  EXPECT_FALSE(unparseable.IsValidNumber());
+  EXPECT_EQ(unparseable.region(), "");
+  EXPECT_EQ(unparseable.creation_region_hint(), "US");
+  EXPECT_FALSE(unparseable.infer_country_code_from_region_hint());
+
+  i18n::PhoneObject unknown_region(u"6501567890", "US",
+                                   /*infer_country_code=*/false);
+  EXPECT_TRUE(unknown_region.IsValidNumber());
+  EXPECT_EQ(unknown_region.region(), "ZZ");
+  EXPECT_EQ(unknown_region.creation_region_hint(), "US");
+
+  i18n::PhoneObject cross_region(u"+420 27-89.10.112", "US",
+                                 /*infer_country_code=*/true);
+  EXPECT_TRUE(cross_region.IsValidNumber());
+  EXPECT_EQ(cross_region.region(), "CZ");
+  EXPECT_EQ(cross_region.creation_region_hint(), "US");
+  EXPECT_TRUE(cross_region.infer_country_code_from_region_hint());
+
+  i18n::PhoneObject copy(cross_region);
+  EXPECT_EQ(copy.creation_region_hint(), "US");
+  EXPECT_TRUE(copy.infer_country_code_from_region_hint());
+
+  i18n::PhoneObject assigned;
+  assigned = unparseable;
+  EXPECT_EQ(assigned.creation_region_hint(), "US");
+  EXPECT_FALSE(assigned.infer_country_code_from_region_hint());
+
+  i18n::PhoneObject moved(std::move(copy));
+  EXPECT_EQ(moved.creation_region_hint(), "US");
+  EXPECT_TRUE(moved.infer_country_code_from_region_hint());
+
+  i18n::PhoneObject empty;
+  EXPECT_EQ(empty.creation_region_hint(), "");
+  EXPECT_FALSE(empty.infer_country_code_from_region_hint());
+}
 
 }  // namespace
 }  // namespace autofill

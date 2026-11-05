@@ -21,7 +21,7 @@
 #include "chrome/common/url_constants.h"
 #include "components/web_package/signed_web_bundles/signed_web_bundle_id.h"
 #include "components/webapps/isolated_web_apps/client.h"
-#include "components/webapps/isolated_web_apps/public/iwa_runtime_data_provider.h"
+#include "components/webapps/isolated_web_apps/key_distribution/iwa_runtime_data_provider.h"
 #include "components/webapps/isolated_web_apps/types/url_loading_types.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/isolated_web_apps_policy.h"
@@ -132,11 +132,11 @@ void GetIwaSourceForRequestImpl(
       IsolatedWebAppUrlInfo::CreateFromSignedWebBundleId(web_bundle_id)
           .app_id();
   auto* provider = WebAppProvider::GetForWebApps(profile.get());
+  auto& update_manager = IsolatedWebAppUpdateManager::From(*provider);
 
-  if (provider->isolated_web_app_update_manager().IsUpdateBeingApplied(
-          iwa_id)) {
+  if (update_manager.IsUpdateBeingApplied(iwa_id)) {
     // TODO(crbug.com/432676258): How likely is this case?
-    provider->isolated_web_app_update_manager().PrioritizeUpdateAndWait(
+    update_manager.PrioritizeUpdateAndWait(
         iwa_id,
         // We ignore whether or not the update was applied successfully - if
         // it succeeds, we send the request to the updated version. If it

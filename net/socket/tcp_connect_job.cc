@@ -5,8 +5,10 @@
 #include "net/socket/tcp_connect_job.h"
 
 #include <algorithm>
+#include <cstddef>
 #include <memory>
 #include <optional>
+#include <ranges>
 #include <set>
 #include <string_view>
 #include <utility>
@@ -14,7 +16,6 @@
 #include <vector>
 
 #include "base/check_op.h"
-#include "base/containers/adapters.h"
 #include "base/containers/flat_set.h"
 #include "base/containers/span.h"
 #include "base/containers/to_vector.h"
@@ -22,7 +23,9 @@
 #include "base/functional/bind.h"
 #include "base/location.h"
 #include "base/logging.h"
+#include "base/metrics/histogram_functions.h"
 #include "base/notreached.h"
+#include "base/numerics/safe_conversions.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/time/time.h"
 #include "base/trace_event/trace_event.h"
@@ -91,7 +94,7 @@ bool IsEndpointInFreshList(const IPEndPoint& endpoint,
 
 TcpConnectJob::ServiceEndpointOverride::ServiceEndpointOverride(
     ServiceEndpoint endpoint,
-    std::set<std::string> dns_aliases)
+    base::flat_set<std::string> dns_aliases)
     : endpoints({std::move(endpoint)}), dns_aliases(std::move(dns_aliases)) {}
 TcpConnectJob::ServiceEndpointOverride::ServiceEndpointOverride(
     ServiceEndpointOverride&&) = default;
@@ -119,7 +122,8 @@ TcpConnectJob::TcpConnectJob(
       params_(params),
       endpoint_override_(std::move(endpoint_result_override)),
       disable_stale_dns_(disable_stale_dns) {
-  fresh_state_.primary_connector = std::make_unique<Connector>(this, "first");
+  fresh_state_.primary_connector = std::make_unique<Connector>(
+      this, "first", /*created_by_slow_timer=*/false);
   DCHECK(base::FeatureList::IsEnabled(features::kHappyEyeballsV2));
   if (endpoint_override_) {
     UpdateSvcbOptional();
@@ -182,6 +186,14 @@ ServiceEndpoint TcpConnectJob::PassServiceEndpoint() {
   return std::move(final_service_endpoint_).value();
 }
 
+bool TcpConnectJob::HasStartedTcpAttempt() const {
+  return attempt_count_ > 0;
+}
+
+bool TcpConnectJob::IsWaitingOnPossibleAsyncDeletion() const {
+  return waiting_on_possible_async_deletion_count_ > 0;
+}
+
 base::TimeDelta TcpConnectJob::ConnectionTimeout() {
   // TODO(eroman): The use of this constant needs to be re-evaluated. The time
   // needed for TCPClientSocketXXX::Connect() can be arbitrarily long, since
@@ -218,6 +230,7 @@ size_t TcpConnectJob::GetStaleConnectorCountForTesting() const {
 
 int TcpConnectJob::ConnectInternal() {
   connect_timing_.domain_lookup_start = base::TimeTicks::Now();
+  job_start_time_ = connect_timing_.domain_lookup_start;
 
   int rv = OK;
   if (!endpoint_override_) {
@@ -251,6 +264,10 @@ void TcpConnectJob::ChangePriorityInternal(RequestPriority priority) {
   }
 }
 
+void TcpConnectJob::OnTimedOutInternal() {
+  RecordCompletionHistograms(ERR_TIMED_OUT, /*winning_connector=*/nullptr);
+}
+
 int TcpConnectJob::DoServiceEndpointsUpdated(
     std::optional<int> dns_request_final_result) {
   // SetDone() destroys the DNS request on completion, preventing this from
@@ -258,9 +275,14 @@ int TcpConnectJob::DoServiceEndpointsUpdated(
   CHECK(!is_done_);
   DCHECK(!dns_request_complete_);
 
+  if (dns_request_ && dns_request_->GetStaleInfo()) {
+    cache_staleness_ = *dns_request_->GetStaleInfo();
+  }
+
   // If we have fresh endpoints, try to promote any active stale connectors to
   // the fresh state, and clear unstarted stale attempts.
-  MaybePromoteStaleConnectors();
+  MaybePromoteStaleConnectors(
+      /*dns_request_finished=*/dns_request_final_result.has_value());
 
   // Reset progress through endpoint results, as new ones may have been inserted
   // before the one that was currently under consideration.
@@ -376,8 +398,9 @@ int TcpConnectJob::DoTryAdvanceWaitingConnectors() {
   if (IsDualRaceOptimisticDnsEnabled()) {
     if (dns_request_ && dns_request_->IsStaleWhileRefreshing()) {
       if (!stale_state_.primary_connector) {
-        stale_state_.primary_connector =
-            std::make_unique<Connector>(this, "stale_primary");
+        stale_state_.primary_connector = std::make_unique<Connector>(
+            this, "stale_primary", /*created_by_slow_timer=*/false);
+        stale_state_.primary_connector->set_started_with_stale_dns(true);
       }
     }
 
@@ -455,7 +478,11 @@ void TcpConnectJob::OnSlow(bool is_stale) {
   // Since the connectors may be flipped here, the static names of the
   // connectors for logging purposes are "first" and "second", rather than
   // "primary" and "ipv4".
-  state.ipv4_connector = std::make_unique<Connector>(this, "second");
+  state.ipv4_connector = std::make_unique<Connector>(
+      this, "second", /*created_by_slow_timer=*/true);
+  if (is_stale) {
+    state.ipv4_connector->set_started_with_stale_dns(true);
+  }
   if (!state.primary_connector->is_connecting_to_ipv6()) {
     std::swap(state.primary_connector, state.ipv4_connector);
   }
@@ -611,7 +638,7 @@ int TcpConnectJob::AdvanceConnectionState(ConnectionState& state,
   return ERR_IO_PENDING;
 }
 
-void TcpConnectJob::MaybePromoteStaleConnectors() {
+void TcpConnectJob::MaybePromoteStaleConnectors(bool dns_request_finished) {
   if (!IsDualRaceOptimisticDnsEnabled() || !dns_request_ ||
       dns_request_->IsStaleWhileRefreshing()) {
     return;
@@ -624,12 +651,23 @@ void TcpConnectJob::MaybePromoteStaleConnectors() {
   auto try_promote = [&](std::unique_ptr<Connector>& stale_connector,
                          std::unique_ptr<Connector>& fresh_connector) {
     if (stale_connector && !stale_connector->is_done()) {
+      bool matched = false;
+      if (stale_connector->current_address() && !results.empty()) {
+        matched =
+            IsEndpointInFreshList(*stale_connector->current_address(), results);
+        if (!stale_connector->recorded_ip_match_metrics() &&
+            (matched || dns_request_finished)) {
+          HostCache::RecordOptimisticDnsStaleIpMatchMetrics(
+              HostCache::OptimisticDnsProtocol::kTcp, matched,
+              cache_staleness_);
+          stale_connector->set_recorded_ip_match_metrics(true);
+        }
+      }
       if (!fresh_connector || fresh_connector->is_waiting_for_endpoint() ||
           fresh_connector->is_waiting_on_dns() || fresh_connector->is_done() ||
           !fresh_connector->current_address()) {
-        if (stale_connector->current_address() &&
-            IsEndpointInFreshList(*stale_connector->current_address(),
-                                  results)) {
+        if (matched) {
+          stale_connector->set_was_promoted_to_fresh_dns(true);
           fresh_connector = std::move(stale_connector);
         }
       }
@@ -764,7 +802,7 @@ TcpConnectJob::IPEndPointInfo TcpConnectJob::GetNextIPEndPoint(
           // hasn't been tried yet, which should tend to find any untried
           // addresses sooner.
           for (const auto& disallowed_endpoint :
-               base::Reversed(*disallowed_endpoints)) {
+               std::views::reverse(*disallowed_endpoints)) {
             if (!attempted_addresses_.contains(disallowed_endpoint)) {
               return base::unexpected(ERR_IO_PENDING);
             }
@@ -894,6 +932,24 @@ int TcpConnectJob::SetDone(int result, Connector* connector) {
     resolution_details_ = dns_request_->GetResolutionDetails();
   }
 
+  if (!disable_stale_dns_ && dns_request_ &&
+      !dns_request_->IsStaleWhileRefreshing() &&
+      !dns_request_->GetEndpointResults().empty()) {
+    for (Connector* c : {stale_state_.primary_connector.get(),
+                         stale_state_.ipv4_connector.get(),
+                         fresh_state_.primary_connector.get(),
+                         fresh_state_.ipv4_connector.get()}) {
+      if (c && c->started_with_stale_dns() && c->current_address() &&
+          !c->recorded_ip_match_metrics()) {
+        bool matched = IsEndpointInFreshList(
+            *c->current_address(), dns_request_->GetEndpointResults());
+        HostCache::RecordOptimisticDnsStaleIpMatchMetrics(
+            HostCache::OptimisticDnsProtocol::kTcp, matched, cache_staleness_);
+        c->set_recorded_ip_match_metrics(true);
+      }
+    }
+  }
+
   if (result == OK) {
     DCHECK(EndpointsCryptoReady());
     DCHECK(connector);
@@ -936,6 +992,47 @@ int TcpConnectJob::SetDone(int result, Connector* connector) {
 
     CHECK(!is_connected_via_stale_dns_.has_value());
     is_connected_via_stale_dns_ = calculate_is_connected_via_stale_dns();
+
+    if (dns_request_) {
+      auto calculate_freshness_status =
+          [&]() -> HostCache::UsedAnswerFreshnessStatus {
+        if (!disable_stale_dns_ && connector->started_with_stale_dns()) {
+          if (connector->was_promoted_to_fresh_dns()) {
+            return HostCache::UsedAnswerFreshnessStatus::
+                kExpiredCacheConfirmedByFreshDns;
+          }
+          if (!dns_request_->IsStaleWhileRefreshing() &&
+              !dns_request_->GetEndpointResults().empty()) {
+            if (connector->current_address() &&
+                IsEndpointInFreshList(*connector->current_address(),
+                                      dns_request_->GetEndpointResults())) {
+              return HostCache::UsedAnswerFreshnessStatus::
+                  kExpiredCacheConfirmedByFreshDns;
+            }
+            return HostCache::UsedAnswerFreshnessStatus::
+                kExpiredCacheDivergedFromFreshDns;
+          }
+          if (dns_request_complete_ &&
+              dns_request_->GetEndpointResults().empty()) {
+            return HostCache::UsedAnswerFreshnessStatus::
+                kExpiredCacheAfterFreshDnsFailed;
+          }
+          return HostCache::UsedAnswerFreshnessStatus::
+              kExpiredCacheFinishedBeforeFreshDns;
+        }
+        if ((resolution_details_.has_value() &&
+             resolution_details_->source == ResolutionSource::kCache) ||
+            (cache_staleness_.has_value() && !cache_staleness_->is_stale())) {
+          return HostCache::UsedAnswerFreshnessStatus::kValidFromCache;
+        }
+        return HostCache::UsedAnswerFreshnessStatus::kFreshFromNetwork;
+      };
+
+      used_answer_freshness_status_ = calculate_freshness_status();
+      HostCache::RecordUsedAnswerMetrics(HostCache::UsedAnswerProtocol::kTcp,
+                                         *used_answer_freshness_status_,
+                                         cache_staleness_);
+    }
   } else {
     // If there were no attempts, there were no usable addresses. Use `result`
     // in that case.
@@ -951,6 +1048,8 @@ int TcpConnectJob::SetDone(int result, Connector* connector) {
     // chronological order.
     result = connection_attempts_.back().result;
   }
+
+  RecordCompletionHistograms(result, connector);
 
   // Cancel all work, and any pending callbacks. Main methods all have
   // `CHECK(!is_done_)` to catch if they are incorrectly run after completion,
@@ -986,7 +1085,7 @@ bool TcpConnectJob::EndpointsCryptoReady() const {
   return true;
 }
 
-const std::set<std::string>& TcpConnectJob::GetDnsAliasResults() const {
+const base::flat_set<std::string>& TcpConnectJob::GetDnsAliasResults() const {
   if (dns_request_) {
     DCHECK(!endpoint_override_);
     return dns_request_->GetDnsAliasResults();
@@ -1001,6 +1100,69 @@ void TcpConnectJob::NotifyDelegateIfDone(int result) {
     DCHECK(is_done_);
     NotifyDelegateOfCompletion(result);
   }
+}
+
+void TcpConnectJob::OnAttemptStarted() {
+  if (attempt_count_ == 0 && !metrics_recorded_ && !endpoint_override_ &&
+      !job_start_time_.is_null()) {
+    base::UmaHistogramLongTimes100("Net.TcpConnectJob.TimeToFirstAttempt",
+                                   base::TimeTicks::Now() - job_start_time_);
+  }
+  ++attempt_count_;
+}
+
+void TcpConnectJob::RecordCompletionHistograms(
+    int result,
+    const Connector* winning_connector) {
+  if (metrics_recorded_ || endpoint_override_ || job_start_time_.is_null()) {
+    return;
+  }
+  metrics_recorded_ = true;
+
+  const base::TimeDelta elapsed = base::TimeTicks::Now() - job_start_time_;
+  if (result != OK) {
+    base::UmaHistogramLongTimes100("Net.TcpConnectJob.CompleteTime.Failed",
+                                   elapsed);
+    base::UmaHistogramCounts100("Net.TcpConnectJob.AttemptsPerJob.Failed",
+                                base::saturated_cast<int>(attempt_count_));
+    return;
+  }
+
+  CHECK(winning_connector);
+  CHECK_GE(winning_connector->attempts_started(), 1u);
+
+  base::UmaHistogramLongTimes100("Net.TcpConnectJob.CompleteTime.Succeeded",
+                                 elapsed);
+  base::UmaHistogramCounts100("Net.TcpConnectJob.AttemptsPerJob.Succeeded",
+                              base::saturated_cast<int>(attempt_count_));
+
+  SuccessSource source;
+  if (winning_connector->current_attempt_started_as_stale()) {
+    source = IsConnectedViaStaleDns() ? SuccessSource::kStaleConnector
+                                      : SuccessSource::kPromotedStaleConnector;
+  } else if (IsConnectedViaStaleDns()) {
+    source = SuccessSource::kStaleConnector;
+  } else if (winning_connector->created_by_slow_timer()) {
+    source = SuccessSource::kSlowTimerConnector;
+  } else if (winning_connector->attempts_started() > 1) {
+    source = SuccessSource::kInitialConnectorLaterAttempt;
+  } else {
+    source = SuccessSource::kInitialConnectorFirstAttempt;
+  }
+  base::UmaHistogramEnumeration("Net.TcpConnectJob.SuccessSource", source);
+
+  int superseded_count = 0;
+  for (const Connector* candidate :
+       {fresh_state_.primary_connector.get(), fresh_state_.ipv4_connector.get(),
+        stale_state_.primary_connector.get(),
+        stale_state_.ipv4_connector.get()}) {
+    if (candidate && candidate != winning_connector &&
+        candidate->has_in_flight_attempt()) {
+      ++superseded_count;
+    }
+  }
+  base::UmaHistogramExactLinear("Net.TcpConnectJob.SupersededAttemptCount",
+                                superseded_count, /*exclusive_max=*/4);
 }
 
 bool TcpConnectJob::IsConnectedViaStaleDns() const {

@@ -13,6 +13,7 @@
 #import "base/strings/sys_string_conversions.h"
 #import "base/test/ios/wait_util.h"
 #import "base/values.h"
+#import "components/enterprise/browser/enterprise_switches.h"
 #import "components/enterprise/browser/reporting/reporting_features.h"
 #import "components/policy/policy_constants.h"
 #import "components/strings/grit/components_strings.h"
@@ -152,10 +153,13 @@ NSString* SignalValue(const base::DictValue& signals, const char* key) {
 - (AppLaunchConfiguration)appConfigurationForTestCase {
   AppLaunchConfiguration config = [super appConfigurationForTestCase];
   config.relaunch_policy = NoForceRelaunchAndResetState;
+  config.additional_args.push_back(
+      base::StrCat({"--", switches::kEnableChromeBrowserCloudManagement}));
   return config;
 }
 
 - (void)tearDownHelper {
+  [PolicyAppInterface setUserCloudPolicyDataWithDomain:nil];
   [PolicyAppInterface clearPolicies];
   [super tearDownHelper];
 }
@@ -181,6 +185,7 @@ NSString* SignalValue(const base::DictValue& signals, const char* key) {
 // Tests that the device signals disclosure is shown in the profile reporting
 // section when profile reporting and security signals reporting are enabled.
 - (void)testManagementPageProfileSignalsDisclosure {
+  [PolicyAppInterface setUserCloudPolicyDataWithDomain:@"example.com"];
   MergeCloudUserPolicy(true, policy::key::kCloudProfileReportingEnabled);
   MergeCloudUserPolicy(true, policy::key::kUserSecuritySignalsReporting);
 
@@ -202,6 +207,7 @@ NSString* SignalValue(const base::DictValue& signals, const char* key) {
 // Tests that the device signals disclosure is shown in the browser reporting
 // section when browser level reporting is enabled.
 - (void)testManagementPageBrowserSignalsDisclosure {
+  [PolicyAppInterface setUserCloudPolicyDataWithDomain:@"example.com"];
   MergePolicy(true, policy::key::kCloudReportingEnabled);
 
   [ChromeEarlGrey loadURL:GURL(kChromeUIManagementURL)];

@@ -15,6 +15,8 @@
 #include "ui/base/unowned_user_data/scoped_unowned_user_data.h"
 #include "url/gurl.h"
 
+class Profile;
+
 namespace tabs {
 class TabInterface;
 }
@@ -25,13 +27,12 @@ class ActorKeyedService;
 
 namespace actor::ui {
 
-class ActorUiTabControllerAndroid : public ActorUiTabControllerInterface,
-                                    public ActorNavigationThrottle::Delegate {
+class ActorUiTabControllerAndroid : public ActorUiTabControllerInterface {
  public:
-  ActorUiTabControllerAndroid(tabs::TabInterface& tab,
-                              ActorKeyedService* actor_keyed_service);
+  static bool ShouldCreateForProfile(Profile* profile);
+
+  explicit ActorUiTabControllerAndroid(tabs::TabInterface& tab);
   ~ActorUiTabControllerAndroid() override;
-  DECLARE_USER_DATA(ActorUiTabControllerAndroid);
 
   // ActorUiTabControllerInterface implementation.
   void OnUiTabStateChange(const UiTabState& ui_tab_state,
@@ -40,18 +41,19 @@ class ActorUiTabControllerAndroid : public ActorUiTabControllerInterface,
   void SetActorTaskResume() override;
   base::WeakPtr<ActorUiTabControllerInterface> GetWeakPtr() override;
   UiTabState GetCurrentUiTabState() const override;
-
-  // ActorNavigationThrottle::Delegate:
-  bool MaybeDeferNavigation(const GURL& url,
+  bool MaybeDeferNavigation(tabs::TabInterface* tab,
+                            const GURL& url,
                             NavigationConfirmedCallback callback) override;
+
+  // Test hook to skip the navigation confirmation dialog.
+  static void SetSuppressNavigationDialogsForTesting(bool suppress);
+  static bool ShouldSuppressNavigationDialogsForTesting();
 
  private:
   const raw_ref<tabs::TabInterface> tab_;
   const raw_ptr<ActorKeyedService> actor_keyed_service_;
   UiTabState current_ui_tab_state_;
   scoped_refptr<base::SingleThreadTaskRunner> task_runner_;
-  ::ui::ScopedUnownedUserData<ActorUiTabControllerAndroid>
-      scoped_unowned_user_data_;
 
   base::WeakPtrFactory<ActorUiTabControllerAndroid> weak_factory_{this};
 };

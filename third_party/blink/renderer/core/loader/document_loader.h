@@ -49,7 +49,6 @@
 #include "third_party/blink/public/common/permissions_policy/document_policy.h"
 #include "third_party/blink/public/common/scheduler/task_attribution_id.h"
 #include "third_party/blink/public/common/subresource_load_metrics.h"
-#include "third_party/blink/public/mojom/fenced_frame/fenced_frame.mojom-blink.h"
 #include "third_party/blink/public/mojom/frame/triggering_event_info.mojom-blink-forward.h"
 #include "third_party/blink/public/mojom/loader/content_security_notifier.mojom-blink.h"
 #include "third_party/blink/public/mojom/loader/mhtml_load_result.mojom-blink-forward.h"
@@ -84,9 +83,9 @@
 #include "third_party/blink/renderer/core/permissions_policy/policy_helper.h"
 #include "third_party/blink/renderer/core/speculation_rules/speculation_rule_set.h"
 #include "third_party/blink/renderer/core/timing/performance_timeline_entry_id_generator.h"
-#include "third_party/blink/renderer/platform/allow_discouraged_type.h"
 #include "third_party/blink/renderer/platform/bindings/source_location.h"
 #include "third_party/blink/renderer/platform/exported/wrapped_resource_response.h"
+#include "third_party/blink/renderer/platform/heap/collection_support/heap_vector.h"
 #include "third_party/blink/renderer/platform/instrumentation/use_counter.h"
 #include "third_party/blink/renderer/platform/loader/fetch/client_hints_preferences.h"
 #include "third_party/blink/renderer/platform/loader/fetch/code_cache_host.h"
@@ -426,10 +425,10 @@ class CORE_EXPORT DocumentLoader : public GarbageCollected<DocumentLoader>,
   bool ConsumeTextFragmentToken();
 
   // Returns the text fragment to scroll to and clears it.
-  std::optional<String> TakeInternalScrollToTextFragment();
+  String TakeInternalScrollToTextFragment();
 
   bool HasInternalScrollToTextFragment() const {
-    return internal_scroll_to_text_fragment_.has_value();
+    return !internal_scroll_to_text_fragment_.IsNull();
   }
 
   // For testing purposes.
@@ -800,6 +799,10 @@ class CORE_EXPORT DocumentLoader : public GarbageCollected<DocumentLoader>,
   // window's SecurityContext.
   bool is_secure_context_root_ = false;
 
+  // Whether the document may bind RestrictedDeviceBoundSessionManager, from
+  // the commit params. Applied to the LocalDOMWindow for every new document.
+  bool can_use_device_bound_session_js_api_ = false;
+
   // Policy controlling script injection tracking and protections for this
   // document.
   mojom::blink::ScriptInjectionPolicy script_injection_policy_ =
@@ -828,7 +831,7 @@ class CORE_EXPORT DocumentLoader : public GarbageCollected<DocumentLoader>,
 
   // If set, the document should attempt to scroll this text fragment into view
   // upon load, without highlighting it.
-  std::optional<String> internal_scroll_to_text_fragment_;
+  String internal_scroll_to_text_fragment_;
 
   // See WebNavigationParams for definition.
   const bool was_discarded_ = false;
@@ -877,10 +880,8 @@ class CORE_EXPORT DocumentLoader : public GarbageCollected<DocumentLoader>,
   // the previously committed document did, and the navigation was same-site.
   bool should_have_sticky_user_activation_ = false;
 
-  std::vector<WebHistoryItem> navigation_api_back_entries_
-      ALLOW_DISCOURAGED_TYPE("Matches WebNavigationParams");
-  std::vector<WebHistoryItem> navigation_api_forward_entries_
-      ALLOW_DISCOURAGED_TYPE("Matches WebNavigationParams");
+  HeapVector<Member<HistoryItem>> navigation_api_back_entries_;
+  HeapVector<Member<HistoryItem>> navigation_api_forward_entries_;
   Member<HistoryItem> navigation_api_previous_entry_;
 
   // This is the interface that handles generated code cache
@@ -898,9 +899,6 @@ class CORE_EXPORT DocumentLoader : public GarbageCollected<DocumentLoader>,
   std::optional<Vector<KURL>> ad_auction_components_;
 
   std::unique_ptr<ExtraData> extra_data_;
-
-  // Reduced accept language for top-level frame.
-  const AtomicString reduced_accept_language_;
 
   const network::mojom::NavigationDeliveryType navigation_delivery_type_;
 

@@ -18,22 +18,23 @@
 #include "base/check.h"
 #include "base/compiler_specific.h"
 #include "base/containers/span.h"
+#include "base/feature_list.h"
 #include "base/i18n/string_search.h"
 #include "base/i18n/unicodestring.h"
 #include "base/notreached.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/strings/string_number_conversions.h"
-#include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
 #include "base/time/time.h"
 #include "components/autofill/core/common/autofill_clock.h"
+#include "components/autofill/core/common/autofill_features.h"
 #include "components/autofill/core/common/autofill_regex_constants.h"
 #include "components/autofill/core/common/autofill_regexes.h"
 #include "third_party/icu/source/common/unicode/locid.h"
+#include "third_party/icu/source/common/unicode/uchar.h"
 #include "third_party/icu/source/common/unicode/unistr.h"
 #include "third_party/icu/source/common/unicode/utypes.h"
 #include "third_party/icu/source/i18n/unicode/dtfmtsym.h"
-#include "third_party/icu/source/i18n/unicode/dtptngen.h"
 
 namespace autofill::data_util {
 
@@ -87,6 +88,33 @@ bool ConsumeSeparator(std::u16string_view& input,
   } else {
     return Consume(input, first_separator);
   }
+}
+
+bool IsWordChar(char16_t c) {
+  return u_isalnum(c) || c == u'_';
+}
+
+bool MatchesMonth(std::u16string icu_month, std::u16string_view input) {
+  if (icu_month.empty()) {
+    return false;
+  }
+  size_t match_index = 0;
+  size_t match_length = 0;
+  if (!base::i18n::StringSearchIgnoringCaseAndAccents(
+          std::move(icu_month), input, &match_index, &match_length)) {
+    return false;
+  }
+  if (!base::FeatureList::IsEnabled(
+          features::kAutofillParseMonthFromStringByWordBoundary)) {
+    return true;
+  }
+  // Verify that the `icu_month` is not a substring of a longer word.
+  const bool has_leading_boundary =
+      match_index == 0 || !IsWordChar(input[match_index - 1]);
+  const size_t match_end = match_index + match_length;
+  const bool has_trailing_boundary =
+      match_end == input.size() || !IsWordChar(input[match_end]);
+  return has_leading_boundary && has_trailing_boundary;
 }
 
 }  // namespace
@@ -307,6 +335,7 @@ std::optional<int> ParseMonthFromString(std::u16string_view text,
   icu::DateFormatSymbols date_format_symbols(locale, status);
   DCHECK(status == U_ZERO_ERROR || status == U_USING_FALLBACK_WARNING ||
          status == U_USING_DEFAULT_WARNING);
+
   // Full months (January, Janvier, etc.)
   const base::span<const icu::UnicodeString> months = [&] {
     int32_t num_months;
@@ -318,11 +347,7 @@ std::optional<int> ParseMonthFromString(std::u16string_view text,
         base::span(months, base::checked_cast<size_t>(num_months)));
   }();
   for (size_t i = 0; i < months.size(); ++i) {
-    const std::u16string icu_month(
-        base::i18n::UnicodeStringToString16(months[i]));
-    // We look for the ICU-defined month in `trimmed`.
-    if (base::i18n::StringSearchIgnoringCaseAndAccents(icu_month, trimmed,
-                                                       nullptr, nullptr)) {
+    if (MatchesMonth(base::i18n::UnicodeStringToString16(months[i]), trimmed)) {
       month = i + 1;  // Adjust from 0-indexed to 1-indexed.
       return GetExpirationMonth(month);
     }
@@ -343,9 +368,7 @@ std::optional<int> ParseMonthFromString(std::u16string_view text,
     std::u16string icu_month(
         base::i18n::UnicodeStringToString16(short_months[i]));
     base::TrimString(icu_month, u".", &icu_month);
-    // We look for the ICU-defined month in `trimmed_month`.
-    if (base::i18n::StringSearchIgnoringCaseAndAccents(icu_month, trimmed,
-                                                       nullptr, nullptr)) {
+    if (MatchesMonth(std::move(icu_month), trimmed)) {
       month = i + 1;  // Adjust from 0-indexed to 1-indexed.
       return GetExpirationMonth(month);
     }
@@ -374,39 +397,26 @@ bool ParseExpirationDate(std::u16string_view text,
     return false;
   }
 
-  std::u16string month_local;
-  std::u16string year_local;
-
-  // Check for a separator.
-  std::u16string found_separator;
-  const std::vector<std::u16string> kSeparators{u"-", u"/", u"|"};
-  for (const std::u16string& separator : kSeparators) {
-    if (text.find(separator) != std::u16string::npos) {
-      found_separator = separator;
-      break;
-    }
-  }
-
-  if (!found_separator.empty()) {
-    std::vector<std::u16string> month_year = base::SplitString(
-        text, found_separator, base::TRIM_WHITESPACE, base::SPLIT_WANT_ALL);
-    if (month_year.size() != 2) {
-      return false;
-    }
-    month_local = month_year[0];
-    year_local = month_year[1];
+  const size_t separator_pos = text.find_first_of(u"-/|");
+  std::u16string_view month_result;
+  std::u16string_view year_result;
+  if (separator_pos != std::u16string_view::npos) {
+    month_result =
+        base::TrimWhitespace(text.substr(0, separator_pos), base::TRIM_ALL);
+    year_result =
+        base::TrimWhitespace(text.substr(separator_pos + 1), base::TRIM_ALL);
   } else if (text.size() % 2 == 0) {
-    month_local = text.substr(0, 2);
-    year_local = text.substr(2);
+    month_result = text.substr(0, 2);
+    year_result = text.substr(2);
   } else {
     return false;
   }
 
   if (month) {
-    *month = std::move(month_local);
+    *month = month_result;
   }
   if (year) {
-    *year = std::move(year_local);
+    *year = year_result;
   }
   return true;
 }
@@ -444,26 +454,6 @@ std::u16string FindPossiblePhoneCountryCode(std::u16string_view text) {
   }
 
   return std::u16string();
-}
-
-std::optional<std::u16string> LocalizePattern(std::u16string_view pattern,
-                                              std::string_view locale) {
-  UErrorCode status = U_ZERO_ERROR;
-  icu::Locale icu_locale(std::string(locale).c_str());
-  if (icu_locale.isBogus()) {
-    return std::nullopt;
-  }
-  std::unique_ptr<icu::DateTimePatternGenerator> generator(
-      icu::DateTimePatternGenerator::createInstance(icu_locale, status));
-  if (U_FAILURE(status)) {
-    return std::nullopt;
-  }
-  icu::UnicodeString generated_pattern =
-      generator->getBestPattern(pattern, status);
-  if (U_FAILURE(status)) {
-    return std::nullopt;
-  }
-  return base::i18n::UnicodeStringToString16(generated_pattern);
 }
 
 }  // namespace autofill::data_util

@@ -4,26 +4,36 @@
 
 #include "chrome/browser/ui/views/toolbar/webui_avatar_toolbar_button.h"
 
+#include <utility>
+#include <vector>
+
+#include "base/check.h"
 #include "base/check_is_test.h"
+#include "base/check_op.h"
 #include "base/functional/bind.h"
 #include "base/task/single_thread_task_runner.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/ui/browser_element_identifiers.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/color/chrome_color_id.h"
+#include "chrome/browser/ui/interaction/browser_elements.h"
 #include "chrome/browser/ui/layout_constants.h"
+#include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/views/profiles/avatar_toolbar_button_state_manager.h"
 #include "chrome/browser/ui/views/profiles/profile_menu_coordinator.h"
 #include "chrome/browser/ui/views/toolbar/webui_toolbar_web_view.h"
 #include "components/browser_apis/ui_controllers/toolbar/toolbar_ui_api_data_model.mojom.h"
 #include "components/signin/public/base/signin_buildflags.h"
 #include "components/user_education/common/user_education_class_properties.h"
+#include "ui/base/interaction/element_tracker.h"
 #include "ui/base/models/image_model.h"
 #include "ui/base/models/image_model_utils.h"
 #include "ui/base/webui/web_ui_util.h"
 #include "ui/color/color_provider.h"
 #include "ui/views/accessibility/view_accessibility.h"
+#include "ui/views/bubble/bubble_anchor.h"
 #include "ui/views/view.h"
 
 namespace {
@@ -79,13 +89,13 @@ toolbar_ui_api::mojom::AvatarToolbarButtonState MapAvatarState(
 WebUIAvatarToolbarButton::WebUIAvatarToolbarButton(
     WebUIToolbarControlDelegate* delegate)
     : delegate_(delegate) {
-  EnsureProfileMenuCoordinatorObserved();
-  // Only build the state manager when `delegate_` provides a browser and
-  // ProfileManager exists -- lightweight test doubles don't set up a full
-  // browser_process environment (notably no ProfileManager), which
-  // AvatarToolbarButtonStateManager's initialization depends on.
-  if (delegate_->GetBrowser() && g_browser_process &&
-      g_browser_process->profile_manager()) {
+  // Only build the state manager when `WebUIAvatarButton` is enabled,
+  // `delegate_` provides a browser, and ProfileManager exists -- lightweight
+  // test doubles don't set up a full browser_process environment (notably no
+  // ProfileManager), which AvatarToolbarButtonStateManager's initialization
+  // depends on.
+  if (features::IsWebUIAvatarButtonEnabled() && delegate_->GetBrowser() &&
+      g_browser_process && g_browser_process->profile_manager()) {
     state_manager_ = std::make_unique<AvatarToolbarButtonStateManager>(
         *this, delegate_->GetBrowser());
     state_manager_->InitializeStates();
@@ -95,54 +105,10 @@ WebUIAvatarToolbarButton::WebUIAvatarToolbarButton(
 WebUIAvatarToolbarButton::~WebUIAvatarToolbarButton() = default;
 
 void WebUIAvatarToolbarButton::Initialize() {
-  EnsureProfileMenuCoordinatorObserved();
   if (delegate_->GetView()->GetWidget()) {
     CHECK(!is_initialized_);
     is_initialized_ = true;
     UpdateState();
-  }
-}
-
-void WebUIAvatarToolbarButton::OnClicked(bool is_pointer_interaction) {
-  EnsureProfileMenuCoordinatorObserved();
-  const bool suppress =
-      reopen_suppressor_.ShouldSuppressBubbleShow(is_pointer_interaction);
-  if (reopen_suppressor_.IsShowing()) {
-    reopen_suppressor_.Close();
-    return;
-  }
-  if (suppress) {
-    return;
-  }
-  ButtonPressed(/*is_source_accelerator=*/false);
-}
-
-void WebUIAvatarToolbarButton::OnMousePressed() {
-  EnsureProfileMenuCoordinatorObserved();
-  reopen_suppressor_.OnMousePressed();
-}
-
-void WebUIAvatarToolbarButton::OnProfileMenuShown(views::Widget* widget) {
-  reopen_suppressor_.Observe(widget);
-}
-
-void WebUIAvatarToolbarButton::OnProfileMenuCoordinatorDestroyed() {
-  profile_menu_observation_.Reset();
-}
-
-void WebUIAvatarToolbarButton::EnsureProfileMenuCoordinatorObserved() {
-  if (profile_menu_observation_.IsObserving()) {
-    return;
-  }
-  if (!delegate_->GetBrowser()) {
-    return;
-  }
-  if (auto* coordinator =
-          ProfileMenuCoordinator::From(delegate_->GetBrowser())) {
-    profile_menu_observation_.Observe(coordinator);
-    if (coordinator->IsShowing()) {
-      reopen_suppressor_.Observe(coordinator->GetProfileMenuWidget());
-    }
   }
 }
 
@@ -229,8 +195,18 @@ void WebUIAvatarToolbarButton::RemoveObserver(
 }
 
 void WebUIAvatarToolbarButton::ButtonPressed(bool is_source_accelerator) {
+  if (!IsButtonEnabled()) {
+    return;
+  }
+
   if (state_manager_ && delegate_->GetView()->GetWidget()) {
-    state_manager_->HandleButtonPressed(is_source_accelerator);
+    // Pressing the button typically shows a bubble anchored to it, so wait
+    // until the button is visible before handling the press. This is needed
+    // for presses from the overflow menu or accelerators while the button is
+    // overflowed.
+    RunWhenVisible(
+        base::BindOnce(&WebUIAvatarToolbarButton::OnButtonPressedAndVisible,
+                       weak_ptr_factory_.GetWeakPtr(), is_source_accelerator));
   }
 }
 
@@ -262,25 +238,9 @@ bool WebUIAvatarToolbarButton::HasExplicitButtonState() const {
   return state_manager_ && state_manager_->HasExplicitButtonState();
 }
 
-void WebUIAvatarToolbarButton::MaybeShowProfileSwitchIPH() {
-  if (state_manager_ && delegate_->GetView()->GetWidget()) {
-    state_manager_->MaybeShowProfileSwitchIPH();
-  }
+bool WebUIAvatarToolbarButton::IsReadyForIPH() const {
+  return state_manager_ && delegate_->GetView()->GetWidget();
 }
-
-#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
-void WebUIAvatarToolbarButton::MaybeShowSupervisedUserSignInIPH() {
-  if (state_manager_ && delegate_->GetView()->GetWidget()) {
-    state_manager_->MaybeShowSupervisedUserSignInIPH();
-  }
-}
-
-void WebUIAvatarToolbarButton::MaybeShowSignInBenefitsIPH() {
-  if (state_manager_ && delegate_->GetView()->GetWidget()) {
-    state_manager_->MaybeShowSignInBenefitsIPH();
-  }
-}
-#endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
 
 void WebUIAvatarToolbarButton::ClearActiveStateForTesting() {
   CHECK(state_manager_);
@@ -294,13 +254,6 @@ void WebUIAvatarToolbarButton::ForceShowingPromoForTesting() {
   CHECK(state_manager_);
   state_manager_->ForceShowingPromoForTesting();  // IN-TEST
 }
-
-bool WebUIAvatarToolbarButton::
-    GetStateAndFireSignedOutTriggerDelayTimerForTesting() {
-  CHECK(state_manager_);
-  return state_manager_
-      ->GetStateAndFireSignedOutTriggerDelayTimerForTesting();  // IN-TEST
-}
 #endif  // BUILDFLAG(ENABLE_DICE_SUPPORT)
 
 void WebUIAvatarToolbarButton::NotifyIPHPromoChanged(bool has_promo) {
@@ -311,6 +264,23 @@ void WebUIAvatarToolbarButton::NotifyIPHPromoChanged(bool has_promo) {
   if (state_manager_ && delegate_->GetView()->GetWidget()) {
     state_manager_->NotifyIPHPromoChanged(has_promo);
   }
+}
+
+void WebUIAvatarToolbarButton::OnControlsAppearInactiveChanged() {
+  UpdateState();
+}
+
+bool WebUIAvatarToolbarButton::IsButtonEnabled() const {
+  if (!state_manager_) {
+    return false;
+  }
+  bool is_enabled = true;
+#if BUILDFLAG(IS_CHROMEOS)
+  Profile* profile = delegate_->GetBrowser()->GetProfile();
+  is_enabled = profile->IsOffTheRecord() && !profile->IsGuestSession() &&
+               !profile->GetOTRProfileID().IsCaptivePortal();
+#endif
+  return is_enabled;
 }
 
 void WebUIAvatarToolbarButton::UpdateState() {
@@ -328,12 +298,7 @@ void WebUIAvatarToolbarButton::UpdateState() {
 
   state->state = MapAvatarState(state_manager_->GetActiveState());
 
-  bool is_enabled = true;
-#if BUILDFLAG(IS_CHROMEOS)
-  Profile* profile = delegate_->GetBrowser()->GetProfile();
-  is_enabled = profile->IsOffTheRecord() && !profile->IsGuestSession() &&
-               !profile->GetOTRProfileID().IsCaptivePortal();
-#endif
+  bool is_enabled = IsButtonEnabled();
 
   const ui::ColorProvider* const color_provider =
       delegate_->GetView()->GetColorProvider();
@@ -355,7 +320,9 @@ void WebUIAvatarToolbarButton::UpdateState() {
     auto [icon, icon_type] =
         state_provider->GetAvatarIcon(icon_size, icon_color, *color_provider);
 
-    if (!is_enabled) {
+    // Native AvatarToolbarButton uses this icon for STATE_DISABLED, which is
+    // also shown while the window is inactive on Mac.
+    if (!is_enabled || delegate_->GetState().controls_appear_inactive) {
       icon = ui::GetDefaultDisabledIconFromImageModel(icon);
     }
 
@@ -377,6 +344,7 @@ void WebUIAvatarToolbarButton::UpdateState() {
   state->accessibility_name = name;
   state->accessibility_description = description;
   state->enabled = is_enabled;
+  state->prevent_overflow = prevent_overflow_count_ > 0;
 
   if (delegate_) {
     delegate_->OnAvatarControlStateChanged(std::move(state));
@@ -385,4 +353,131 @@ void WebUIAvatarToolbarButton::UpdateState() {
 
 void WebUIAvatarToolbarButton::UpdateAccessibilityLabel() {
   UpdateState();
+}
+
+void WebUIAvatarToolbarButton::RunWhenVisible(WhenVisibleCallback callback) {
+  // In unit tests, there may be no browser object.
+  if (!delegate_->GetBrowser()) {
+    return;
+  }
+
+  // App windows (`ToolbarView::DisplayMode::kCustomTab`) never construct
+  // `WebUIToolbarWebView` and instead use `WebAppFrameToolbarView`'s Views
+  // `AvatarToolbarButton`.
+  //
+  // If the button is never shown for this profile (e.g., regular profiles on
+  // ChromeOS or DevTools windows), it will never become visible, so there's no
+  // point in waiting for it. Run `callback` immediately with the parent toolbar
+  // view as a fallback anchor, since the WebUI toolbar view itself may be
+  // hidden when no WebUI controls are shown.
+  if (!AvatarToolbarButtonInterface::CanShowForProfile(
+          delegate_->GetBrowser()->GetProfile())) {
+    views::View* view = delegate_->GetView();
+    views::View* anchor_view = (view && view->parent()) ? view->parent() : view;
+    std::move(callback).Run(views::BubbleAnchor(anchor_view),
+                            base::ScopedClosureRunner());
+    return;
+  }
+
+  // Prevent overflow even if the button is currently visible, as the caller
+  // may show a bubble anchored to it, and the button must remain visible as
+  // long as that bubble is open.
+  base::ScopedClosureRunner keep_visible = PreventOverflow();
+
+  if (ui::TrackedElement* element = GetVisibleButtonElement()) {
+    std::move(callback).Run(views::BubbleAnchor(element),
+                            std::move(keep_visible));
+    return;
+  }
+
+  // Otherwise, the button is not visible, most likely because it has
+  // overflowed. PreventOverflow() above will have pushed a state update telling
+  // the WebUI to show it, so wait until it's visible. `keep_visible` is bound
+  // to the callback, so overflow stays prevented while waiting.
+  pending_callbacks_.push_back(base::BindOnce(
+      [](WhenVisibleCallback cb, base::ScopedClosureRunner keep_visible,
+         views::BubbleAnchor anchor) {
+        std::move(cb).Run(anchor, std::move(keep_visible));
+      },
+      std::move(callback), std::move(keep_visible)));
+  if (!button_shown_subscription_) {
+    BrowserElements* const elements =
+        BrowserElements::From(delegate_->GetBrowser());
+    CHECK(elements);
+    button_shown_subscription_ =
+        ui::ElementTracker::GetElementTracker()->AddElementShownCallback(
+            kToolbarAvatarButtonElementId, elements->GetContext(),
+            base::BindRepeating(&WebUIAvatarToolbarButton::OnButtonShown,
+                                base::Unretained(this)));
+  }
+}
+
+base::ScopedClosureRunner WebUIAvatarToolbarButton::PreventOverflow() {
+  ++prevent_overflow_count_;
+  // Need to UpdateState() if we're starting to prevent overflow, to inform the
+  // WebUI. Otherwise, incrementing has no effect.
+  if (prevent_overflow_count_ == 1) {
+    UpdateState();
+  }
+  return base::ScopedClosureRunner(
+      base::BindOnce(&WebUIAvatarToolbarButton::OnPreventOverflowReleased,
+                     weak_ptr_factory_.GetWeakPtr()));
+}
+
+void WebUIAvatarToolbarButton::OnPreventOverflowReleased() {
+  CHECK_GT(prevent_overflow_count_, 0);
+  --prevent_overflow_count_;
+  // Need to UpdateState() if we're no longer preventing overflow, to inform the
+  // WebUI. Otherwise, decrementing is a no-op.
+  if (prevent_overflow_count_ == 0) {
+    UpdateState();
+  }
+}
+
+ui::TrackedElement* WebUIAvatarToolbarButton::GetVisibleButtonElement() {
+  BrowserElements* const elements =
+      BrowserElements::From(delegate_->GetBrowser());
+  // The BrowserElements class is owned by the browser, so should always exist
+  // as long as the browser does, and this class should be torn down with the
+  // browser.
+  CHECK(elements);
+  return elements->GetElement(kToolbarAvatarButtonElementId);
+}
+
+void WebUIAvatarToolbarButton::OnButtonShown(ui::TrackedElement* element) {
+  // ElementTracker passes nullptr to subsequent shown-callbacks if an earlier
+  // subscriber hid the element during notification.
+  if (!element) {
+    return;
+  }
+  // This is always true, because there's no way to cancel requests.
+  CHECK(!pending_callbacks_.empty());
+
+  button_shown_subscription_ = {};
+  std::vector<base::OnceCallback<void(views::BubbleAnchor)>> callbacks =
+      std::exchange(pending_callbacks_, {});
+
+  // Callbacks are not expected to synchronously destroy the button or hide the
+  // element.
+  base::WeakPtr<WebUIAvatarToolbarButton> self = weak_ptr_factory_.GetWeakPtr();
+  for (auto& callback : callbacks) {
+    CHECK(self);
+    std::move(callback).Run(views::BubbleAnchor(element));
+  }
+}
+
+void WebUIAvatarToolbarButton::OnButtonPressedAndVisible(
+    bool is_source_accelerator,
+    views::BubbleAnchor /*anchor*/,
+    base::ScopedClosureRunner keep_visible) {
+  // The widget may have been destroyed while waiting for the button to be
+  // shown.
+  if (!delegate_->GetView()->GetWidget()) {
+    return;
+  }
+
+  // `state_manager_` was checked before binding this method, and is not
+  // modified after construction, so cannot be nullptr.
+  state_manager_->HandleButtonPressed(is_source_accelerator,
+                                      std::move(keep_visible));
 }

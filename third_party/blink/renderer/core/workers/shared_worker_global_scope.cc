@@ -193,13 +193,15 @@ void SharedWorkerGlobalScope::Connect(MessagePortChannel channel) {
   DispatchEvent(*event);
 }
 
-void SharedWorkerGlobalScope::ExceptionThrown(ErrorEvent* event) {
-  WorkerGlobalScope::ExceptionThrown(event);
+void SharedWorkerGlobalScope::ExceptionThrown(
+    ErrorEvent* event,
+    SanitizeScriptErrors sanitize_script_errors) {
+  WorkerGlobalScope::ExceptionThrown(event, sanitize_script_errors);
   if (WorkerThreadDebugger* debugger =
-          WorkerThreadDebugger::From(GetThread()->GetIsolate()))
+          WorkerThreadDebugger::From(GetThread()->GetIsolate())) {
     debugger->ExceptionThrown(GetThread(), event);
+  }
 }
-
 void SharedWorkerGlobalScope::Trace(Visitor* visitor) const {
   WorkerGlobalScope::Trace(visitor);
 }
@@ -209,7 +211,10 @@ bool SharedWorkerGlobalScope::CrossOriginIsolatedCapability() const {
 }
 
 bool SharedWorkerGlobalScope::IsIsolatedContext() const {
-  return Agent::IsIsolatedContext();
+  // See `LocalDOMWindow::IsIsolatedContext()`. E.g., a data: URL shared worker
+  // created by an isolated context has an opaque origin, and is not one.
+  const SecurityOrigin* origin = GetSecurityOrigin();
+  return Agent::IsIsolatedContext() && origin && !origin->IsOpaque();
 }
 
 }  // namespace blink

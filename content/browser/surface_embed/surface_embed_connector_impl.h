@@ -73,6 +73,8 @@ class CONTENT_EXPORT SurfaceEmbedConnectorImpl
   // parent web contents is null.
   TextInputManager* GetTextInputManager();
 
+  WebContentsImpl* parent_web_contents() const;
+
   // SurfaceEmbedConnector:
   SurfaceEmbedConnector::Delegate* GetDelegate() override;
   void OnSynchronizeVisualProperties(
@@ -86,17 +88,18 @@ class CONTENT_EXPORT SurfaceEmbedConnectorImpl
   bool IsThrottledForTesting() override;
   bool IsSubtreeThrottledForTesting() override;
   bool IsDisplayLockedForTesting() override;
+  PinchGestureMode GetPinchGestureModeForTesting() const override;
+  void SetPinchGestureMode(PinchGestureMode mode) override;
   void SetParentAccessibilityInfo(ui::AXNodeID ax_node_id,
                                   const ui::AXTreeID& ax_tree_id) override;
   ui::AXTreeID GetParentAXTreeID() const override;
 
   // FrameConnector:
-  void SetKeepSurfaceAlive(bool keep_alive) override;
-  bool IsKeepingAlive() const override;
   void SetView(RenderWidgetHostViewChildFrame* view,
                bool allow_paint_holding) override;
   RenderWidgetHostViewBase* GetParentRenderWidgetHostView() override;
   RenderWidgetHostViewBase* GetRootRenderWidgetHostView() override;
+  input::RenderWidgetHostViewInput* GetPinchZoomTarget() override;
   void RenderProcessGone() override;
   void FirstSurfaceActivation(const viz::SurfaceInfo& surface_info) override;
   void SendIntrinsicSizingInfoToParent(
@@ -130,8 +133,8 @@ class CONTENT_EXPORT SurfaceEmbedConnectorImpl
   bool IsThrottled() override;
   bool IsSubtreeThrottled() override;
   bool IsDisplayLocked() override;
-  void DidUpdateVisualProperties(
-      const cc::RenderFrameMetadata& metadata) override;
+  void DidUpdateChildLocalSurfaceId(
+      const viz::LocalSurfaceId& child_local_surface_id) override;
   void SetVisibilityForChildViews(bool visible) override;
   void SetLocalFrameSize(const gfx::Size& local_frame_size) override;
   void SetRectInParentView(const gfx::Rect& rect_in_parent_view) override;
@@ -157,6 +160,10 @@ class CONTENT_EXPORT SurfaceEmbedConnectorImpl
   // Called by WebContentsImpl before the connector is cleared. Notifies the
   // parent WebContents.
   void OnDetachedFromParent();
+
+  // Updates whether the child's current surface is kept alive on the root
+  // compositor based on whether the child WebContents is being captured.
+  void UpdateKeepSurfaceAlive();
 
   // Returns nullptr if the focus is outside of this connector's child
   // WebContents.
@@ -192,12 +199,12 @@ class CONTENT_EXPORT SurfaceEmbedConnectorImpl
   SurfaceEmbedConnectorImpl(WebContents* child_web_contents,
                             WebContents* parent_web_contents,
                             RenderFrameHost* embedder_rfh,
-                            SurfaceEmbedConnector::Delegate* delegate);
+                            SurfaceEmbedConnector::Delegate* delegate,
+                            PinchGestureMode pinch_gesture_mode);
 
   static WebContentsImpl* GetParentWebContents(WebContentsImpl* web_contents);
   static WebContentsImpl* GetRootWebContents(WebContentsImpl* web_contents);
 
-  WebContentsImpl* parent_web_contents() const;
   WebContentsImpl* child_web_contents() const {
     return child_web_contents_.get();
   }
@@ -225,6 +232,7 @@ class CONTENT_EXPORT SurfaceEmbedConnectorImpl
   // The RenderFrameHost in the parent that hosts the embed element.
   base::WeakPtr<RenderFrameHostImpl> embedder_rfh_;
   raw_ptr<RenderWidgetHostViewChildFrame> view_ = nullptr;
+  PinchGestureMode pinch_gesture_mode_;
 
   // The last received FrameSinkId from the guest WebContents's view.
   viz::FrameSinkId frame_sink_id_;
@@ -266,10 +274,7 @@ class CONTENT_EXPORT SurfaceEmbedConnectorImpl
   bool subtree_throttled_ = false;
   bool display_locked_ = false;
 
-  void MaybeRefreshKeepSurfaceAlive();
-
   ui::Compositor::ScopedKeepSurfaceAliveCallback keep_surface_alive_;
-  bool should_keep_alive_ = false;
 };
 
 }  // namespace content

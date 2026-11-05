@@ -39,6 +39,7 @@
 
 #include <atomic>
 #include <memory>
+#include <string>
 #include <vector>
 
 #include "base/cancelable_callback.h"
@@ -77,6 +78,7 @@ class MEDIA_EXPORT AUAudioInputStream
   AUAudioInputStream(AudioManagerApple* manager,
                      const AudioParameters& input_params,
                      AudioDeviceID audio_device_id,
+                     const std::string& device_unique_id,
                      const AudioManager::LogCallback& log_callback);
 
   AUAudioInputStream(const AUAudioInputStream&) = delete;
@@ -106,7 +108,6 @@ class MEDIA_EXPORT AUAudioInputStream
   size_t requested_buffer_size() const {
     return input_params_.frames_per_buffer();
   }
-  AudioUnit audio_unit() const { return audio_unit_; }
 
   static bool IsEchoCancellationSupported(AudioDeviceID audio_device_id,
                                           const AudioParameters& params);
@@ -126,6 +127,9 @@ class MEDIA_EXPORT AUAudioInputStream
  private:
   bool OpenAUHAL();
   bool OpenVoiceProcessingAU();
+  // Attempts to set the IO buffer size of `audio_unit_` to the requested
+  // frames per buffer. Logs the error and returns false on failure.
+  bool ChangeBufferSize();
   void SetSystemAGC(bool enable);
 
   // Callback functions called on a real-time priority I/O thread from the audio
@@ -189,9 +193,6 @@ class MEDIA_EXPORT AUAudioInputStream
   // Reinitializes the AudioUnit to use a new output device.
   void ReinitializeVoiceProcessingAudioUnit();
 
-  // Adds extra UMA stats when it has been detected that startup failed.
-  void AddHistogramsForFailedStartup();
-
   // Called from the dtor and when the stream is reset.
   void ReportAndResetStats();
 
@@ -229,6 +230,9 @@ class MEDIA_EXPORT AUAudioInputStream
 
   // The UID refers to the current input audio device.
   const AudioDeviceID input_device_id_;
+
+  // Unique ID string of the audio input device (e.g. GUID or "default").
+  const std::string device_unique_id_;
 
   // Provides a mechanism for encapsulating one or more buffers of audio data.
   AudioBufferList audio_buffer_list_;

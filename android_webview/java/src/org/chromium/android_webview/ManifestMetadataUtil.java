@@ -92,7 +92,8 @@ public class ManifestMetadataUtil {
             mAppMultiProfileProfileNameTagKey =
                     getAppMultiProfileProfileNameTagKey(metadataHolderServiceMetadata);
             mForceSyncBrowserStartup = shouldForceSyncBrowserStartup(metadataHolderServiceMetadata);
-            mEnableContentRestriction = getContentRestrictionAppOptInPreference(metadataHolderServiceMetadata);
+            mEnableContentRestriction =
+                    getContentRestrictionAppOptInPreference(metadataHolderServiceMetadata);
         }
     }
 
@@ -209,7 +210,9 @@ public class ManifestMetadataUtil {
         if (metadataHolderServiceMetadata != null
                 && metadataHolderServiceMetadata.containsKey(
                         ENABLE_CONTENT_RESTRICTION_METADATA_NAME)) {
-            value = metadataHolderServiceMetadata.getBoolean(ENABLE_CONTENT_RESTRICTION_METADATA_NAME);
+            value =
+                    metadataHolderServiceMetadata.getBoolean(
+                            ENABLE_CONTENT_RESTRICTION_METADATA_NAME);
         } else {
             value = null;
         }
@@ -246,8 +249,8 @@ public class ManifestMetadataUtil {
     /**
      * Get the app level metadata bundle from the AndroidManifest.
      *
-     * @return Metadata bundle or {@code null} if no metadata was found;
      * @param context the Application context.
+     * @return Metadata bundle or {@code null} if no metadata was found.
      */
     @VisibleForTesting
     @Nullable
@@ -269,8 +272,8 @@ public class ManifestMetadataUtil {
      * Get metadata bundle from ApplicationManifest.xml registered to the {@link
      * ManifestMetadataUtil#METADATA_HOLDER_SERVICE_NAME} service.
      *
-     * @return Metadata bundle or {@code null} if no metadata was found.
      * @param context the Application context.
+     * @return Metadata bundle or {@code null} if no metadata was found.
      */
     @Nullable
     @VisibleForTesting

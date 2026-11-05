@@ -235,11 +235,6 @@ class NetworkContextConfigurationBrowserTest
 
   NetworkContextConfigurationBrowserTest()
       : https_server_(net::EmbeddedTestServer::TYPE_HTTPS) {
-    // TODO(crbug.com/334954143) Fix the tests when turning on the reduce
-    // accept-language feature.
-    scoped_feature_list_.InitWithFeatures(
-        {}, {network::features::kReduceAcceptLanguage});
-
     // Have to get a port before setting up the command line, but can only set
     // up the connection listener after there's a main thread, so can't start
     // the test server here.
@@ -765,7 +760,6 @@ class NetworkContextConfigurationBrowserTest
 
   // Used in tests that need a live request during browser shutdown.
   std::unique_ptr<network::SimpleURLLoader> live_during_shutdown_simple_loader_;
-  base::test::ScopedFeatureList scoped_feature_list_;
 };
 
 IN_PROC_BROWSER_TEST_P(NetworkContextConfigurationBrowserTest,
@@ -1856,7 +1850,6 @@ class NetworkContextConfigurationDataPacBrowserTest
   ~NetworkContextConfigurationDataPacBrowserTest() override = default;
 
   void SetUpCommandLine(base::CommandLine* command_line) override {
-    std::string contents;
     // Read in kPACScript contents.
     command_line->AppendSwitchASCII(switches::kProxyPacUrl,
                                     "data:," + GetPacScript());
@@ -1965,13 +1958,14 @@ class NetworkContextConfigurationProxySettingsBrowserTest
   void RunMaxConnectionsPerProxyTest() {
     // TODO(crbug.com/540592485): There's a linux specific issue with this test permutation.
     // It's unclear why and ideally we would fix the flake.
-#if BUILDFLAG(IS_LINUX)
-    if (GetParam().network_context_type ==
-            NetworkContextType::kOnDiskAppWithIncognitoProfile &&
+#if BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_MAC)
+    if ((GetParam().network_context_type ==
+             NetworkContextType::kOnDiskAppWithIncognitoProfile ||
+         GetParam().network_context_type == NetworkContextType::kInMemoryApp) &&
         GetParam().network_service_state == NetworkServiceState::kEnabled) {
       return;
     }
-#endif
+#endif  // BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_MAC)
 
     // At this point in the test, we've set up a proxy that points to our
     // embedded test server. We've also set things up to hang all incoming
@@ -2062,7 +2056,8 @@ class NetworkContextConfigurationProxySettingsBrowserTest
           /*throttling_profile_id=*/std::nullopt,
           /*network_restrictions_id=*/
           network::GetTestNetworkRestrictionsId(),
-          /*target_address_space=*/network::mojom::IPAddressSpace::kUnknown);
+          /*target_address_space=*/network::mojom::IPAddressSpace::kUnknown,
+          /*target_network=*/std::nullopt);
       waiters.emplace_back(std::move(client));
     }
     expected_connections_run_loop.Run();
@@ -2092,7 +2087,7 @@ class NetworkContextConfigurationProxySettingsBrowserTest
 
 // TODO(crbug.com/540592485): Enabled test once flakiness is fixed.
 IN_PROC_BROWSER_TEST_P(NetworkContextConfigurationProxySettingsBrowserTest,
-                       DISABLED_MaxConnectionsPerProxy) {
+                       MaxConnectionsPerProxy) {
   RunMaxConnectionsPerProxyTest();
 }
 

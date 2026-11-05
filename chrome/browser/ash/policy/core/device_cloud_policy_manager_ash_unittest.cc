@@ -10,6 +10,7 @@
 #include <memory>
 #include <utility>
 
+#include "ash/constants/ash_paths.h"
 #include "ash/constants/ash_switches.h"
 #include "base/check_deref.h"
 #include "base/command_line.h"
@@ -42,9 +43,8 @@
 #include "chrome/browser/device_identity/device_oauth2_token_service.h"
 #include "chrome/browser/device_identity/device_oauth2_token_service_factory.h"
 #include "chrome/browser/global_features.h"
+#include "chrome/browser/media/webrtc/media_capture_devices_dispatcher.h"
 #include "chrome/browser/policy/messaging_layer/public/report_client_test_util.h"
-#include "chrome/browser/prefs/browser_prefs.h"
-#include "chrome/common/chrome_paths.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile.h"
 #include "chromeos/ash/components/attestation/fake_certificate.h"
@@ -205,6 +205,10 @@ class DeviceCloudPolicyManagerAshTest
 
   void SetUp() override {
     DeviceSettingsTestBase::SetUp();
+
+    // StatusUploader observes webrtc::MediaCaptureDispatcher::GetInstance().
+    // Create it here, as ChromeBrowserMainParts does early in production.
+    MediaCaptureDevicesDispatcher::GetInstance();
 
     device_management_service_.ScheduleInitialization(0);
     base::RunLoop().RunUntilIdle();
@@ -720,7 +724,7 @@ class DeviceCloudPolicyManagerAshEnrollmentTest
 
     CHECK(temp_dir_.CreateUniqueTempDir());
     token_path_override_ = std::make_unique<base::ScopedPathOverride>(
-        chrome::FILE_CHROME_OS_DEVICE_REFRESH_TOKEN,
+        ash::FILE_DEVICE_REFRESH_TOKEN,
         temp_dir_.GetPath().Append("device_refresh_token"),
         /*is_absolute=*/true,
         /*create=*/false);

@@ -8,7 +8,6 @@
 #include <memory>
 #include <optional>
 
-#include "ash/constants/ash_features.h"
 #include "ash/system/notification_center/message_center_constants.h"
 #include "ash/system/notification_center/stacked_notification_bar.h"
 #include "ash/system/notification_center/views/message_center_scroll_bar.h"
@@ -67,24 +66,9 @@ NotificationCenterView::~NotificationCenterView() {
   scroller_->RemoveObserver(this);
 }
 
-void NotificationCenterView::Init() {
-  CHECK(!features::IsNotificationCenterControllerEnabled());
-  notification_list_view_->Init();
-  AddChildViews();
-}
-
-void NotificationCenterView::Init(
-    const std::vector<message_center::Notification*>& notifications) {
-  CHECK(features::IsNotificationCenterControllerEnabled() &&
-        !features::AreOngoingProcessesEnabled());
-  notification_list_view_->Init(notifications);
-  AddChildViews();
-}
-
 void NotificationCenterView::Init(
     const std::vector<message_center::Notification*>& unpinned_notifications,
     std::unique_ptr<views::View> pinned_notification_list_view) {
-  CHECK(features::AreOngoingProcessesEnabled());
   notification_list_view_->Init(unpinned_notifications);
 
   AddChildViews(std::move(pinned_notification_list_view));
@@ -99,10 +83,8 @@ void NotificationCenterView::AddChildViews(
           .SetOrientation(views::BoxLayout::Orientation::kVertical)
           .SetBetweenChildSpacing(kMessageCenterPadding)
           .Build();
-  if (features::AreOngoingProcessesEnabled()) {
-    scroller_contents_view->AddChildView(
-        std::move(pinned_notification_list_view));
-  }
+  scroller_contents_view->AddChildView(
+      std::move(pinned_notification_list_view));
   scroller_contents_view->AddChildView(notification_list_view_);
   scroller_->SetContents(std::move(scroller_contents_view));
   // Need to set the transparent background explicitly, since ScrollView has
@@ -161,7 +143,6 @@ void NotificationCenterView::OnNotificationSlidOut() {
 }
 
 void NotificationCenterView::OnNotificationAdded(const std::string& id) {
-  CHECK(features::IsNotificationCenterControllerEnabled());
   if (!notification_list_view_) {
     return;
   }
@@ -171,7 +152,6 @@ void NotificationCenterView::OnNotificationAdded(const std::string& id) {
 
 void NotificationCenterView::OnNotificationRemoved(const std::string& id,
                                                    bool by_user) {
-  CHECK(features::IsNotificationCenterControllerEnabled());
   if (!notification_list_view_) {
     return;
   }
@@ -180,7 +160,6 @@ void NotificationCenterView::OnNotificationRemoved(const std::string& id,
 }
 
 void NotificationCenterView::OnNotificationUpdated(const std::string& id) {
-  CHECK(features::IsNotificationCenterControllerEnabled());
   if (!notification_list_view_) {
     return;
   }

@@ -77,9 +77,7 @@ void DualLayerUserPrefStore::UnderlyingPrefStoreObserver::OnPrefValueChanged(
   // Note: Observers should only be notified if the effective value of a pref
   // changes.
   if (outer_->IsPrefKeyMergeable(key)) {
-    if (base::FeatureList::IsEnabled(
-            features::kOptimizeDualLayerUserPrefStoreMaybeMerge) &&
-        !outer_->UpdateMergedPrefCacheIfMergeable(key)) {
+    if (!outer_->UpdateMergedPrefCacheIfMergeable(key)) {
       // The effective value of the mergeable pref did not change.
       return;
     }
@@ -215,12 +213,10 @@ bool DualLayerUserPrefStore::GetValue(std::string_view key,
 base::DictValue DualLayerUserPrefStore::GetValues() const {
   base::DictValue values = local_pref_store_->GetValues();
 
-  if (base::FeatureList::IsEnabled(features::kAccountScopedPrefs)) {
-    for (const std::string& pref_name :
-         GetSyncablePrefNamesInStore(local_pref_store_.get())) {
-      if (!ShouldGetValueFromLocalStore(pref_name)) {
-        values.RemoveByDottedPath(pref_name);
-      }
+  for (const std::string& pref_name :
+       GetSyncablePrefNamesInStore(local_pref_store_.get())) {
+    if (!ShouldGetValueFromLocalStore(pref_name)) {
+      values.RemoveByDottedPath(pref_name);
     }
   }
 
@@ -517,22 +513,18 @@ bool DualLayerUserPrefStore::ShouldSetValueInAccountStore(
           .GetSyncablePrefMetadata(key);
   CHECK(metadata);
   bool is_pref_type_enabled = false;
-  if (base::FeatureList::IsEnabled(syncer::kSyncPreferencesUseSelectedTypes)) {
-    if (metadata->data_type() == syncer::PREFERENCES ||
-        metadata->data_type() == syncer::PRIORITY_PREFERENCES) {
-      is_pref_type_enabled = GetInterestingUserSelectedTypes().Has(
-          syncer::UserSelectableType::kPreferences);
-    }
-#if BUILDFLAG(IS_CHROMEOS)
-    if (metadata->data_type() == syncer::OS_PREFERENCES ||
-        metadata->data_type() == syncer::OS_PRIORITY_PREFERENCES) {
-      is_pref_type_enabled = GetInterestingUserSelectedOsTypes().Has(
-          syncer::UserSelectableOsType::kOsPreferences);
-    }
-#endif  // BUILDFLAG(IS_CHROMEOS)
-  } else {
-    is_pref_type_enabled = active_types_.contains(metadata->data_type());
+  if (metadata->data_type() == syncer::PREFERENCES ||
+      metadata->data_type() == syncer::PRIORITY_PREFERENCES) {
+    is_pref_type_enabled = GetInterestingUserSelectedTypes().Has(
+        syncer::UserSelectableType::kPreferences);
   }
+#if BUILDFLAG(IS_CHROMEOS)
+  if (metadata->data_type() == syncer::OS_PREFERENCES ||
+      metadata->data_type() == syncer::OS_PRIORITY_PREFERENCES) {
+    is_pref_type_enabled = GetInterestingUserSelectedOsTypes().Has(
+        syncer::UserSelectableOsType::kOsPreferences);
+  }
+#endif  // BUILDFLAG(IS_CHROMEOS)
   if (!is_pref_type_enabled &&
       // Checks if the pref already exists in the account store.
       // This is to handle cases where a pref might pre-exist before
@@ -589,15 +581,11 @@ void DualLayerUserPrefStore::EnableType(syncer::DataType data_type) {
         data_type == syncer::OS_PRIORITY_PREFERENCES
 #endif  // BUILDFLAG(IS_CHROMEOS)
   );
-  active_types_.insert(data_type);
+  active_types_.Put(data_type);
 }
 
 bool DualLayerUserPrefStore::ShouldSetValueInLocalStore(
     std::string_view key) const {
-  if (!base::FeatureList::IsEnabled(features::kAccountScopedPrefs)) {
-    // A preference `key` should always be writable to the local store.
-    return true;
-  }
   if (!pref_model_associator_client_) {
     // Safer this way.
     return true;
@@ -613,10 +601,6 @@ bool DualLayerUserPrefStore::ShouldSetValueInLocalStore(
 
 bool DualLayerUserPrefStore::ShouldGetValueFromLocalStore(
     std::string_view key) const {
-  if (!base::FeatureList::IsEnabled(features::kAccountScopedPrefs)) {
-    // A preference `key` should always be readable from the local store.
-    return true;
-  }
   if (!pref_model_associator_client_) {
     // Safer this way.
     return true;
@@ -641,7 +625,7 @@ void DualLayerUserPrefStore::DisableTypeAndClearAccountStore(
         data_type == syncer::OS_PRIORITY_PREFERENCES
 #endif  // BUILDFLAG(IS_CHROMEOS)
   );
-  active_types_.erase(data_type);
+  active_types_.Remove(data_type);
 
   if (!pref_model_associator_client_) {
     // No pref is treated as syncable in this case. No need to clear the account
@@ -710,13 +694,11 @@ void DualLayerUserPrefStore::DisableTypeAndClearAccountStore(
     // Clear any account-only prefs from the local store. There shouldn't be any
     // such prefs in the local store, but if there are due to some bug, this
     // will clear them.
-    if (base::FeatureList::IsEnabled(features::kAccountScopedPrefs)) {
-      for (const std::string& pref_name :
-           GetSyncablePrefNamesInStore(local_pref_store_.get())) {
-        if (!ShouldSetValueInLocalStore(pref_name)) {
-          local_pref_store_->RemoveValue(
-              pref_name, WriteablePrefStore::DEFAULT_PREF_WRITE_FLAGS);
-        }
+    for (const std::string& pref_name :
+         GetSyncablePrefNamesInStore(local_pref_store_.get())) {
+      if (!ShouldSetValueInLocalStore(pref_name)) {
+        local_pref_store_->RemoveValue(
+            pref_name, WriteablePrefStore::DEFAULT_PREF_WRITE_FLAGS);
       }
     }
   }
@@ -732,6 +714,38 @@ bool DualLayerUserPrefStore::IsPrefKeyMergeable(std::string_view key) const {
          syncable_prefs_database.IsPreferenceMergeable(key);
 }
 
+void DualLayerUserPrefStore::ApplyRemoteRemovalsToLocalStore(
+    std::string_view key,
+    const base::Value& new_account_value,
+    uint32_t flags) {
+  // Non-mergeable prefs use the account value as is; nothing to remove.
+  if (!IsPrefKeyMergeable(key)) {
+    return;
+  }
+  // Prefs not synced under the current consent (e.g. history-scoped prefs with
+  // History sync off) must keep their local value untouched.
+  if (!ShouldGetValueFromAccountStore(key)) {
+    return;
+  }
+  // A removal needs a previous account value to diff against and a local value
+  // to strip it from.
+  const base::Value* old_account_value = nullptr;
+  const base::Value* local_value = nullptr;
+  if (!account_pref_store_->GetValue(key, &old_account_value) ||
+      !local_pref_store_->GetValue(key, &local_value)) {
+    return;
+  }
+  if (!base::FeatureList::IsEnabled(features::kSyncUnmergeRemotePrefRemovals)) {
+    return;
+  }
+  if (std::optional<base::Value> updated_local =
+          helper::GetLocalValueAfterRemoteRemovals(
+              *pref_model_associator_client_, key, *local_value,
+              *old_account_value, new_account_value)) {
+    local_pref_store_->SetValue(key, std::move(*updated_local), flags);
+  }
+}
+
 const base::Value* DualLayerUserPrefStore::MaybeMerge(
     std::string_view pref_name,
     const base::Value& local_value,
@@ -742,9 +756,7 @@ const base::Value* DualLayerUserPrefStore::MaybeMerge(
   }
 
   const base::Value* merged_pref = nullptr;
-  if (base::FeatureList::IsEnabled(
-          features::kOptimizeDualLayerUserPrefStoreMaybeMerge) &&
-      merged_prefs_.GetValue(pref_name, &merged_pref)) {
+  if (merged_prefs_.GetValue(pref_name, &merged_pref)) {
     return merged_pref;
   }
 
@@ -770,9 +782,7 @@ base::Value* DualLayerUserPrefStore::MaybeMerge(std::string_view pref_name,
 
 bool DualLayerUserPrefStore::UpdateMergedPrefCacheIfMergeable(
     std::string_view key) const {
-  if (!base::FeatureList::IsEnabled(
-          features::kOptimizeDualLayerUserPrefStoreMaybeMerge) ||
-      !IsPrefKeyMergeable(key)) {
+  if (!IsPrefKeyMergeable(key)) {
     return false;
   }
 
@@ -893,8 +903,7 @@ std::vector<std::string> DualLayerUserPrefStore::GetSyncablePrefNamesInStore(
   return keys;
 }
 
-base::flat_set<syncer::DataType> DualLayerUserPrefStore::GetActiveTypesForTest()
-    const {
+syncer::DataTypeSet DualLayerUserPrefStore::GetActiveTypesForTest() const {
   return active_types_;
 }
 
@@ -1078,15 +1087,16 @@ void DualLayerUserPrefStore::OnSyncShutdown(syncer::SyncService* sync_service) {
   sync_service->RemoveObserver(this);
 }
 
-void DualLayerUserPrefStore::SetValueInAccountStoreOnly(std::string_view key,
-                                                        base::Value value,
-                                                        uint32_t flags) {
+void DualLayerUserPrefStore::SetValueFromSync(std::string_view key,
+                                              base::Value value,
+                                              uint32_t flags) {
   const base::Value* initial_value = nullptr;
   // Only notify if the effective value actually changes.
   bool should_notify =
       !GetValue(key, &initial_value) || (*initial_value != value);
   {
     base::AutoReset<bool> setting_prefs(&is_setting_prefs_, true);
+    ApplyRemoteRemovalsToLocalStore(key, value, flags);
     account_pref_store_->SetValue(key, std::move(value), flags);
   }
 

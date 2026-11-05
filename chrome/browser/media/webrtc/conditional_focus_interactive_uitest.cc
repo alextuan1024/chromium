@@ -15,6 +15,7 @@
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/common/chrome_switches.h"
 #include "chrome/test/base/in_process_browser_test.h"
+#include "chrome/test/base/interactive_test_utils.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/content_switches.h"
@@ -73,6 +74,7 @@ class ConditionalFocusInteractiveUiTest : public WebRtcTestBase {
 
   void SetUpOnMainThread() override {
     WebRtcTestBase::SetUpOnMainThread();
+    ASSERT_TRUE(ui_test_utils::BringBrowserWindowToFront(browser()));
 
     base::RunLoop run_loop;
     content::GetIOThreadTaskRunner({})->PostTaskAndReply(
@@ -138,7 +140,6 @@ class ConditionalFocusInteractiveUiTest : public WebRtcTestBase {
                FocusEnumValue focus_enum_value,
                bool on_correct_microtask = true,
                const std::string& expected_result = "capture-success") {
-    std::string script_result;
     EXPECT_EQ(content::EvalJs(
                   capturing_tab_->GetPrimaryMainFrame(),
                   base::StringPrintf("captureOtherTab(%d, '%s', %s);",
@@ -243,18 +244,9 @@ INSTANTIATE_TEST_SUITE_P(
     testing::Values(FocusEnumValue::kFocusCapturingApplication,
                     FocusEnumValue::kNoFocusChange));
 
-// TODO(crbug.com/40913269): Flaky on a TSan bot.
-#if BUILDFLAG(IS_LINUX) && \
-    (defined(THREAD_SANITIZER) || defined(MEMORY_SANITIZER))
-#define MAYBE_CapturedTabNotFocusedIfExplicitlyCallingNoFocus \
-  DISABLED_CapturedTabNotFocusedIfExplicitlyCallingNoFocus
-#else
-#define MAYBE_CapturedTabNotFocusedIfExplicitlyCallingNoFocus \
-  CapturedTabNotFocusedIfExplicitlyCallingNoFocus
-#endif
 IN_PROC_BROWSER_TEST_P(
     ConditionalFocusInteractiveUiTestWithFocusCapturingApplication,
-    MAYBE_CapturedTabNotFocusedIfExplicitlyCallingNoFocus) {
+    CapturedTabNotFocusedIfExplicitlyCallingNoFocus) {
   SetUpTestTabs();
   Capture(0, focus_behavior_);
   // Whereas calls to Wait() in previous tests served to minimize flakiness,
@@ -367,9 +359,10 @@ IN_PROC_BROWSER_TEST_F(ConditionalFocusInteractiveUiTest,
 }
 
 // TODO(crbug.com/40913269): Flaky on TSan, MSan, and mac bots.
+// TODO(crbug.com/570576679): Flaky on Linux ChromiumOS MSan bots.
 #if (BUILDFLAG(IS_LINUX) &&                                       \
      (defined(THREAD_SANITIZER) || defined(MEMORY_SANITIZER))) || \
-    BUILDFLAG(IS_MAC)
+    (BUILDFLAG(IS_CHROMEOS) && defined(MEMORY_SANITIZER)) || BUILDFLAG(IS_MAC)
 #define MAYBE_NoFocusBeforeCapture DISABLED_NoFocusBeforeCapture
 #else
 #define MAYBE_NoFocusBeforeCapture NoFocusBeforeCapture
@@ -387,18 +380,9 @@ IN_PROC_BROWSER_TEST_P(
   EXPECT_EQ(ActiveTab(), Tab::kCapturingTab);
 }
 
-// TODO(crbug.com/40913269): Flaky on TSan and MSan bots.
-#if BUILDFLAG(IS_LINUX) && \
-    (defined(THREAD_SANITIZER) || defined(MEMORY_SANITIZER))
-#define MAYBE_NoFocusAfterCaptureOverrideFocusBeforeCapture \
-  DISABLED_NoFocusAfterCaptureOverrideFocusBeforeCapture
-#else
-#define MAYBE_NoFocusAfterCaptureOverrideFocusBeforeCapture \
-  NoFocusAfterCaptureOverrideFocusBeforeCapture
-#endif
 IN_PROC_BROWSER_TEST_P(
     ConditionalFocusInteractiveUiTestWithFocusCapturingApplication,
-    MAYBE_NoFocusAfterCaptureOverrideFocusBeforeCapture) {
+    NoFocusAfterCaptureOverrideFocusBeforeCapture) {
   // Setup.
   SetUpTestTabs();
   CallSetFocusBehaviorBeforeCapture(FocusEnumValue::kFocusCapturedSurface,
@@ -411,7 +395,7 @@ IN_PROC_BROWSER_TEST_P(
 }
 
 // TODO(crbug.com/40913269): Flaky on a TSan and MSan bot.
-#if BUILDFLAG(IS_LINUX) && \
+#if (BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)) && \
     (defined(THREAD_SANITIZER) || defined(MEMORY_SANITIZER))
 #define MAYBE_FocusAfterCaptureOverrideNoFocusBeforeCapture \
   DISABLED_FocusAfterCaptureOverrideNoFocusBeforeCapture

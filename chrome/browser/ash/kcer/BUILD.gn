@@ -10,8 +10,6 @@ static_library("kcer") {
     "kcer_factory_ash.h",
   ]
 
-  public_deps = [ "//chrome/browser:browser_public_dependencies" ]
-
   deps = [
     "//ash",
     "//ash/constants",
@@ -21,8 +19,8 @@ static_library("kcer") {
     "//chrome/browser/ash/profiles",
     "//chrome/browser/net",
     "//chrome/browser/profiles:profile",
-    "//chrome/common",
     "//chromeos/ash/components/browser_context_helper",
+    "//chromeos/ash/components/dbus/userdataauth:userdataauth_proto",
     "//chromeos/ash/components/kcer",
     "//chromeos/ash/components/network",
     "//chromeos/ash/components/tpm",

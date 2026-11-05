@@ -26,7 +26,6 @@ android_library("nonembedded_java") {
     ":devui_java",
     ":services_java",
     ":util_java",
-    "//android_webview:android_webview_product_config_java",
     "//android_webview:common_aidl_java",
     "//android_webview:common_java",
     "//android_webview:common_platform_services_java",
@@ -129,6 +128,7 @@ android_library("services_java") {
     "//components/background_task_scheduler:background_task_scheduler_task_ids_java",
     "//components/metrics:metrics_java",
     "//components/minidump_uploader:minidump_uploader_java",
+    "//components/variations:variations_java",
     "//components/variations/android:variations_java",
     "//third_party/android_deps:com_google_code_findbugs_jsr305_java",
     "//third_party/android_deps:protobuf_lite_runtime_java",
@@ -190,7 +190,7 @@ source_set("nonembedded") {
   assert_no_deps = [ "//content/public" ]
 }
 
-# WebView icon used by upstream SystemWebView and Trichrome.
+# WebView icon used by upstream SystemWebView.
 android_resources("icon_resources") {
   sources = [
     "java/res_icon/drawable-hdpi/icon_webview.png",

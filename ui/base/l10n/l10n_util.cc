@@ -34,7 +34,6 @@
 #include "base/no_destructor.h"
 #include "base/notreached.h"
 #include "base/strings/strcat.h"
-#include "base/strings/string_number_conversions.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
 #include "base/strings/sys_string_conversions.h"
@@ -131,7 +130,22 @@ std::u16string GetDisplayNameForLocaleInternal(
 #endif  // BUILDFLAG(IS_IOS)
 }
 
-#if !BUILDFLAG(IS_APPLE)
+// Returns true if a display name for `locale` is available in the locale
+// `display_locale`.
+bool IsLocaleNameTranslated(const LanguageTag& locale,
+                            const LanguageTag& display_locale) {
+  std::u16string display_name =
+      GetDisplayNameForLocale(locale, display_locale, /*is_for_ui=*/false);
+  // Because ICU sets the error code to U_USING_DEFAULT_WARNING whether or not
+  // uloc_getDisplayName returns the actual translation or the default
+  // value (locale code), it is necessary to rely on this hack to tell whether
+  // the translation is available or not.  If ICU doesn't have a translated
+  // name for this locale, GetDisplayNameForLocale will just return the
+  // locale code.
+  return !base::IsStringASCII(display_name) ||
+         base::UTF16ToASCII(display_name) != locale.tag_string();
+}
+
 // Use --lang and the app pref on Windows.  On Linux, only look at the LC_*/LANG
 // environment variables.
 std::vector<LanguageTag> GetCandidates() {
@@ -141,8 +155,7 @@ std::vector<LanguageTag> GetCandidates() {
   candidates = l10n_util::GetLocaleOverrides();
   if (candidates.empty()) {
     // If no override was set, defer to ICU
-    return {base::i18n::IcuLocaleConverter::GetInstance().ToLanguageTag(
-        icu::Locale::getDefault())};
+    return {base::i18n::GetDefaultIcuLocale()};
   }
 #elif BUILDFLAG(IS_ANDROID)
   // On Android, query java.util.Locale for the default locale.
@@ -164,8 +177,6 @@ std::vector<LanguageTag> GetCandidates() {
 #endif  // BUILDFLAG(IS_WIN)
   return candidates;
 }
-
-#endif  // !BUILDFLAG(IS_APPLE)
 
 // Preferred locales are enabled everywhere but Linux systems with GLib. This
 // function parses `preferred_locale` into a `LanguageTag` if they are enabled.
@@ -210,23 +221,7 @@ std::optional<std::string> CheckAndResolveLocale(std::string_view locale,
       });
 }
 
-#if BUILDFLAG(IS_APPLE)
-std::string GetApplicationLocaleInternalMac(std::string_view pref_locale) {
-  std::optional<LanguageTag> preferred_locale_tag =
-      GetPreferredTag(pref_locale);
-
-  // The above should handle all of the cases Chrome normally hits, but for some
-  // unit tests, fallback is needed too.
-  if (!preferred_locale_tag) {
-    return "en-US";
-  }
-
-  return std::string(preferred_locale_tag->tag_string());
-}
-#endif
-
-#if !BUILDFLAG(IS_APPLE)
-std::string GetApplicationLocaleInternalNonMac(std::string_view pref_locale) {
+std::string GetApplicationLocaleInternal(std::string_view pref_locale) {
   // The `preferred_tag` is separated from the other candidates.
   std::optional<LanguageTag> preferred_tag = GetPreferredTag(pref_locale);
   // If `preferred_tag`, it attempts to get a match for it, even if it is not
@@ -238,9 +233,7 @@ std::string GetApplicationLocaleInternalNonMac(std::string_view pref_locale) {
     }
   }
 
-  std::vector<LanguageTag> candidates = GetCandidates();
-  std::optional<LanguageTag> matched_candidate;
-  for (const LanguageTag& candidate : candidates) {
+  for (const LanguageTag& candidate : GetCandidates()) {
     // If an exact match is found and resource-bundle data on-disk is found, it
     // is returned immediately.
     if (ui_l10n::GetPlatformLanguageMatcher().HasExactMatch(candidate) &&
@@ -248,34 +241,18 @@ std::string GetApplicationLocaleInternalNonMac(std::string_view pref_locale) {
       return std::string(candidate.tag_string());
     }
 
-    if (matched_candidate) {
-      continue;
-    }
     // If there was a match using `CheckAndResolveLocale`, it is stored but not
     // returned yet because the priority is to find a candidate that has an
     // exact match with a `ResourceBundle` locale.
     if (std::optional<LanguageTag> resolved = CheckAndResolveLocale(
             candidate, CheckLocaleMode::kVerifyLocalizationDataExists);
         resolved) {
-      matched_candidate = *resolved;
+      return std::string(resolved->tag_string());
     }
-  }
-
-  if (matched_candidate) {
-    return std::string(matched_candidate->tag_string());
   }
 
   // Fallback to "en-US"
   return IsResourceBundleLocale(GetKnownLanguageTag("en-US")) ? "en-US" : "";
-}
-#endif  // !BUILDFLAG(IS_APPLE)
-
-std::string GetApplicationLocaleInternal(std::string_view pref_locale) {
-#if BUILDFLAG(IS_APPLE)
-  return GetApplicationLocaleInternalMac(pref_locale);
-#else
-  return GetApplicationLocaleInternalNonMac(pref_locale);
-#endif
 }
 
 std::string GetApplicationLocale(std::string_view pref_locale,
@@ -289,20 +266,6 @@ std::string GetApplicationLocale(std::string_view pref_locale,
     }
   }
   return locale;
-}
-
-bool IsLocaleNameTranslated(std::string_view locale,
-                            std::string_view display_locale) {
-  std::u16string display_name =
-      l10n_util::GetDisplayNameForLocale(locale, display_locale, false);
-  // Because ICU sets the error code to U_USING_DEFAULT_WARNING whether or not
-  // uloc_getDisplayName returns the actual translation or the default
-  // value (locale code), it is necessary to rely on this hack to tell whether
-  // the translation is available or not.  If ICU doesn't have a translated
-  // name for this locale, GetDisplayNameForLocale will just return the
-  // locale code.
-  return !base::IsStringASCII(display_name) ||
-      base::UTF16ToASCII(display_name) != locale;
 }
 
 std::u16string GetDisplayNameForLocale(const LanguageTag& locale,
@@ -483,11 +446,11 @@ std::u16string GetStringFUTF16(int message_id,
 std::u16string GetStringFUTF16(int message_id,
                                const std::u16string& a,
                                size_t* offset) {
-  DCHECK(offset);
+  CHECK(offset, base::NotFatalUntil::M163);
   std::vector<size_t> offsets;
   std::vector<std::u16string> replacements = {a};
   std::u16string result = GetStringFUTF16(message_id, replacements, &offsets);
-  DCHECK_EQ(1u, offsets.size());
+  CHECK_EQ(1u, offsets.size(), base::NotFatalUntil::M163);
   *offset = offsets[0];
   return result;
 }
@@ -582,14 +545,31 @@ const std::vector<std::string>& GetUserFacingUILocaleList() {
 
 std::vector<std::string> GetAcceptLanguagesForLocale(
     std::string_view display_locale) {
+  // If `display_locale` is not a valid language tag, no language is filtered
+  // out.
+  std::optional<LanguageTag> display_locale_tag =
+      GetLanguageTagFromString(display_locale);
   std::vector<std::string> result;
   for (const LanguageTag& tag : GetAcceptLanguageTags()) {
-    if (!l10n_util::IsLocaleNameTranslated(tag.tag_string(), display_locale)) {
+    if (display_locale_tag &&
+        !IsLocaleNameTranslated(tag, *display_locale_tag)) {
       // TODO(jungshik) : Put them at the end of the list with language codes
       // enclosed by brackets instead of skipping.
       continue;
     }
     result.emplace_back(tag.tag_string());
+  }
+  return result;
+}
+
+std::vector<LanguageTag> GetAcceptLanguageTagsForLocale(
+    const LanguageTag& display_locale) {
+  std::vector<LanguageTag> result;
+  for (const LanguageTag& tag : GetAcceptLanguageTags()) {
+    if (!IsLocaleNameTranslated(tag, display_locale)) {
+      continue;
+    }
+    result.push_back(tag);
   }
   return result;
 }
@@ -609,25 +589,21 @@ bool IsPossibleAcceptLanguage(std::string_view locale) {
   return GetAcceptLanguageMatcher().Match(*tag).has_value();
 }
 
-bool IsAcceptLanguageDisplayable(std::string_view display_locale,
-                                 std::string_view locale) {
-  return IsPossibleAcceptLanguage(locale) &&
-         l10n_util::IsLocaleNameTranslated(locale, display_locale);
+bool IsAcceptLanguageDisplayable(const LanguageTag& display_locale,
+                                 const LanguageTag& locale) {
+  return GetAcceptLanguageMatcher().Match(locale).has_value() &&
+         IsLocaleNameTranslated(locale, display_locale);
 }
 
-std::vector<std::string> KeepAcceptedLanguages(
-    base::span<const std::string> languages) {
-  std::vector<std::string> filtered_languages;
-  std::ranges::copy_if(languages, std::back_inserter(filtered_languages),
-                       IsPossibleAcceptLanguage);
+std::vector<LanguageTag> KeepAcceptedLanguages(
+    base::span<const LanguageTag> languages) {
+  std::vector<LanguageTag> filtered_languages;
+  std::ranges::copy_if(
+      languages, std::back_inserter(filtered_languages),
+      [](const LanguageTag& language) {
+        return GetAcceptLanguageMatcher().Match(language).has_value();
+      });
   return filtered_languages;
-}
-
-int GetLocalizedContentsWidthInPixels(int pixel_resource_id) {
-  int width = 0;
-  base::StringToInt(l10n_util::GetStringUTF8(pixel_resource_id), &width);
-  DCHECK_GT(width, 0);
-  return width;
 }
 
 std::vector<std::string_view> GetAcceptLanguageListForTesting() {

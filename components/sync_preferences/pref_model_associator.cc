@@ -168,9 +168,7 @@ void PrefModelAssociator::InitPrefAndAssociate(
       // Else if account storage is disabled, this implies there exists both
       // server and local values. Merge them.
       base::Value new_value;
-      if (dual_layer_user_prefs_ &&
-          base::FeatureList::IsEnabled(
-              syncer::kSyncPreferencesUseSelectedTypes)) {
+      if (dual_layer_user_prefs_) {
         new_value = user_pref_value->Clone();
       } else {
         new_value = helper::MergePreference(client_.get(), pref_name,
@@ -572,11 +570,11 @@ bool PrefModelAssociator::SetPrefWithTypeCheck(std::string_view pref_name,
     return false;
   }
   if (dual_layer_user_prefs_) {
-    // `dual_layer_user_prefs_->SetValueInAccountStoreOnly()` is almost
-    // equivalent to `user_prefs_->SetValue()` except that if the effective
-    // value of the pref for the `dual_layer_user_prefs_` is unchanged, no
-    // notifications are sent out to its observers.
-    dual_layer_user_prefs_->SetValueInAccountStoreOnly(
+    // `dual_layer_user_prefs_->SetValueFromSync()` is almost equivalent to
+    // `user_prefs_->SetValue()` except that if the effective value of the
+    // pref for the `dual_layer_user_prefs_` is unchanged, no notifications
+    // are sent out to its observers.
+    dual_layer_user_prefs_->SetValueFromSync(
         pref_name, new_value.Clone(), pref_service_->GetWriteFlags(pref_name));
     return true;
   }

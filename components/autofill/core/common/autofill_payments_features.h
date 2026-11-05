@@ -18,15 +18,14 @@ COMPONENT_EXPORT(AUTOFILL)
 BASE_DECLARE_FEATURE(kAllowReentryFromRespondToDelegate);
 
 COMPONENT_EXPORT(AUTOFILL)
-BASE_DECLARE_FEATURE(kAutofillAddChromeUserContextFields);
-COMPONENT_EXPORT(AUTOFILL)
 BASE_DECLARE_FEATURE(kAutofillAiBasedAmountExtractionIgnoreSeenTermsForTesting);
-#if BUILDFLAG(IS_IOS)
 COMPONENT_EXPORT(AUTOFILL)
-BASE_DECLARE_FEATURE(kAutofillCreditCardScannerIos);
-#endif
+BASE_DECLARE_FEATURE(kAutofillCardScanningBugfixes);
 COMPONENT_EXPORT(AUTOFILL)
 BASE_DECLARE_FEATURE(kAutofillDisableBnplCountryCheckForTesting);
+COMPONENT_EXPORT(AUTOFILL)
+BASE_DECLARE_FEATURE(
+    kAutofillDisableWalletDirectOffersLocaleCountryCheckForTesting);
 COMPONENT_EXPORT(AUTOFILL)
 BASE_DECLARE_FEATURE(kAutofillEnableAiBasedAmountExtraction);
 COMPONENT_EXPORT(AUTOFILL)
@@ -63,6 +62,8 @@ BASE_DECLARE_FEATURE(kAutofillEnableCardBenefitsSync);
 COMPONENT_EXPORT(AUTOFILL)
 BASE_DECLARE_FEATURE(kAutofillEnableCardOnDeviceVerificationEnforcement);
 COMPONENT_EXPORT(AUTOFILL)
+BASE_DECLARE_FEATURE(kAutofillEnableCardholderNameFixFlow);
+COMPONENT_EXPORT(AUTOFILL)
 BASE_DECLARE_FEATURE(
     kAutofillEnableCvcStorageAndFillingStandaloneFormEnhancement);
 COMPONENT_EXPORT(AUTOFILL)
@@ -74,16 +75,11 @@ BASE_DECLARE_FEATURE(kAutofillEnableFpanRiskBasedAuthentication);
 COMPONENT_EXPORT(AUTOFILL)
 BASE_DECLARE_FEATURE(kAutofillEnableGradientGoogleLogos);
 COMPONENT_EXPORT(AUTOFILL)
-BASE_DECLARE_FEATURE(kAutofillEnableNewAmexNetworkArt);
-COMPONENT_EXPORT(AUTOFILL)
 BASE_DECLARE_FEATURE(kAutofillEnableNewCardBenefitsToggleText);
-#if BUILDFLAG(IS_ANDROID)
 COMPONENT_EXPORT(AUTOFILL)
-BASE_DECLARE_FEATURE(kAutofillEnableNewFopDisplayAndroid);
-#endif
-
+BASE_DECLARE_FEATURE(kAutofillEnableOAuth2TokenFix);
 COMPONENT_EXPORT(AUTOFILL)
-BASE_DECLARE_FEATURE(kAutofillEnableOffersInClankKeyboardAccessory);
+BASE_DECLARE_FEATURE(kAutofillEnableOffersAndLoyaltyCardsSettings);
 COMPONENT_EXPORT(AUTOFILL)
 BASE_DECLARE_FEATURE(kAutofillEnableOmniboxAutofill);
 COMPONENT_EXPORT(AUTOFILL)
@@ -116,8 +112,9 @@ BASE_DECLARE_FEATURE(kAutofillEnableWalletDirectOffers);
 COMPONENT_EXPORT(AUTOFILL)
 BASE_DECLARE_FEATURE(kAutofillEnableWalletDirectOffersNotificationBubble);
 COMPONENT_EXPORT(AUTOFILL)
+BASE_DECLARE_FEATURE(kAutofillEnableWalletGmailOffers);
+COMPONENT_EXPORT(AUTOFILL)
 BASE_DECLARE_FEATURE(kAutofillEnableWalletReminderNotice);
-COMPONENT_EXPORT(AUTOFILL) BASE_DECLARE_FEATURE(kAutofillFixCvcImport);
 #if BUILDFLAG(IS_IOS)
 // When enabled, skips empty CVCs in AutofillWalletCredentialSyncBridge instead
 // of failing a CHECK.
@@ -133,7 +130,7 @@ BASE_DECLARE_FEATURE(kAutofillParseVcnCardOnFileStandaloneCvcFields);
 COMPONENT_EXPORT(AUTOFILL)
 BASE_DECLARE_FEATURE(kAutofillPreferBuyNowPayLaterBlocklists);
 COMPONENT_EXPORT(AUTOFILL)
-BASE_DECLARE_FEATURE(kAutofillRetryImageFetchOnFailure);
+BASE_DECLARE_FEATURE(kAutofillRequireSecureContextForIbanManualFilling);
 #if BUILDFLAG(IS_IOS)
 COMPONENT_EXPORT(AUTOFILL)
 BASE_DECLARE_FEATURE(kAutofillSaveCardBottomSheetStrikeLimitIos);
@@ -144,19 +141,12 @@ COMPONENT_EXPORT(AUTOFILL)
 BASE_DECLARE_FEATURE(kAutofillSkipSaveCardForTabModalPopup);
 #if BUILDFLAG(IS_ANDROID)
 COMPONENT_EXPORT(AUTOFILL) BASE_DECLARE_FEATURE(kAutofillSyncEwalletAccounts);
-COMPONENT_EXPORT(AUTOFILL)
-BASE_DECLARE_FEATURE(kAutofillTouchToFillShowManualFillForVcnFix);
 #endif
 COMPONENT_EXPORT(AUTOFILL) BASE_DECLARE_FEATURE(kAutofillUpstream);
 COMPONENT_EXPORT(AUTOFILL)
 BASE_DECLARE_FEATURE(kAutofillUpstreamEnforceStrikeDelay);
 COMPONENT_EXPORT(AUTOFILL)
 extern const base::FeatureParam<int> kAutofillUpstreamEnforceStrikeDelayDays;
-
-// Return whether a [No thanks] button and new messaging is shown in the save
-// card bubbles. This will be called only on desktop platforms.
-COMPONENT_EXPORT(AUTOFILL)
-bool ShouldShowImprovedUserConsentForCreditCardSave();
 
 }  // namespace autofill::features
 

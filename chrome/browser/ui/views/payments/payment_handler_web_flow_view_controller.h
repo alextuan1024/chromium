@@ -9,6 +9,7 @@
 #include <optional>
 #include <string>
 
+#include "base/functional/callback_helpers.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/scoped_observation.h"
@@ -29,13 +30,14 @@
 #include "third_party/skia/include/core/SkColor.h"
 #include "ui/base/interaction/element_identifier.h"
 #include "ui/base/models/image_model.h"
-#include "ui/base/window_open_disposition.h"
-#include "ui/views/controls/webview/unhandled_keyboard_event_handler.h"
+#include "ui/base/mojom/window_open_disposition.mojom-forward.h"
+#include "ui/views/controls/webview/web_contents_delegate_views.h"
 #include "ui/views/view_tracker.h"
 #include "ui/views/widget/widget.h"
 #include "url/gurl.h"
 
 class LocationBarModel;
+class OneTimePermissionsTrackerHelper;
 class PermissionDashboardView;
 class PermissionPromptChipModel;
 class Profile;
@@ -65,7 +67,8 @@ class PaymentRequestState;
 // |target| inside a views::WebView control.
 class PaymentHandlerWebFlowViewController
     : public PaymentRequestSheetController,
-      public content::WebContentsDelegate,
+      public views::WebContentsDelegateViews<
+          PaymentHandlerWebFlowViewController>,
       public content::WebContentsObserver,
       public ChromeLocationBarModelDelegate,
       public IconLabelBubbleView::Delegate,
@@ -103,13 +106,6 @@ class PaymentHandlerWebFlowViewController
   };
   // This ctor forwards its first 3 args to PaymentRequestSheetController's
   // ctor.
-  // |payment_request_web_contents| is the page that initiated the
-  // PaymentRequest. It is used in two ways:
-  // - Its web developer console is used to print error messages.
-  // - When kPaymentHandlerModalDialogHost is disabled, its
-  //   WebContentsModalDialogHost is lent to the payment handler for the
-  //   display of modal dialogs initiated from the payment handler's web
-  //   content.
   // |profile| is the browser context used to create the new payment handler
   // WebContents object that will navigate to |target|.
   // |first_navigation_complete_callback| is invoked once the payment handler
@@ -118,7 +114,6 @@ class PaymentHandlerWebFlowViewController
       base::WeakPtr<PaymentRequestSpec> spec,
       base::WeakPtr<PaymentRequestState> state,
       base::WeakPtr<PaymentRequestDialogView> dialog,
-      content::WebContents* payment_request_web_contents,
       Profile* profile,
       GURL target,
       PaymentHandlerOpenWindowCallback first_navigation_complete_callback);
@@ -144,6 +139,7 @@ class PaymentHandlerWebFlowViewController
   bool GetSheetId(DialogViewID* sheet_id) override;
   bool DisplayDynamicBorderForHiddenContents() override;
   bool CanContentViewBeScrollable() override;
+  bool ShouldContentViewFillPane() override;
   void Stop() override;
   base::WeakPtr<PaymentRequestSheetController> GetWeakPtr() override;
 
@@ -157,13 +153,17 @@ class PaymentHandlerWebFlowViewController
       content::WebContents* source,
       std::unique_ptr<content::WebContents> new_contents,
       const GURL& target_url,
-      WindowOpenDisposition disposition,
+      ui::mojom::WindowOpenDisposition disposition,
       const blink::mojom::WindowFeatures& window_features,
       bool user_gesture,
       bool* was_blocked) override;
-  bool HandleKeyboardEvent(content::WebContents* source,
-                           const input::NativeWebKeyboardEvent& event) override;
   void CloseContents(content::WebContents* source) override;
+  // Handles window.resizeTo() from the payment handler's top-level page.
+  // Unlike other consumers of resizeTo(), which treat `bounds` as their outer
+  // window bounds, the requested size is interpreted as the inner size: the
+  // size of the payment handler WebContents.
+  void SetContentsBounds(content::WebContents* source,
+                         const gfx::Rect& bounds) override;
   void RequestMediaAccessPermission(
       content::WebContents* web_contents,
       const content::MediaStreamRequest& request,
@@ -261,6 +261,8 @@ class PaymentHandlerWebFlowViewController
   base::OneShotTimer indicator_dismiss_timer_;
   base::OneShotTimer delay_prompt_timer_;
   std::unique_ptr<PermissionPromptChipModel> chip_model_;
+  std::unique_ptr<OneTimePermissionsTrackerHelper>
+      one_time_permissions_tracker_helper_;
   std::unique_ptr<permissions::PermissionIndicatorsTabData>
       permission_indicators_tab_data_;
   base::WeakPtr<PaymentHandlerProgressBar> progress_bar_;
@@ -270,15 +272,16 @@ class PaymentHandlerWebFlowViewController
   // Used to present modal dialog triggered from the payment handler web view,
   // e.g. an authenticator dialog.
   PaymentHandlerModalDialogManagerDelegate dialog_manager_delegate_;
-  // A handler to handle unhandled keyboard messages coming back from the
-  // renderer process.
-  views::UnhandledKeyboardEventHandler unhandled_keyboard_event_handler_;
 
   // Helper which clips the views::WebView created by this class so that it has
   // rounded corners matching its parent dialog.
   //
   // TODO(crbug.com/344626785): Remove once WebViews obey parent clips.
   std::unique_ptr<RoundedCornerViewClipper> rounded_corner_clipper_;
+
+  // Keeps the parent tab's video recording alert active while the Payment
+  // Handler is capturing video.
+  base::ScopedClosureRunner video_recording_tab_alert_;
 
   // Must be the last member of a leaf class.
   base::WeakPtrFactory<PaymentHandlerWebFlowViewController> weak_ptr_factory_{

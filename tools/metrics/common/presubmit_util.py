@@ -14,9 +14,10 @@ import pathlib
 import pickle
 import shutil
 import sys
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, Iterable, List, Optional
 
 import setup_modules  # pylint: disable=unused-import
+
 
 import chromium_src.tools.metrics.common.diff_util as diff_util
 import chromium_src.tools.python.google.path_utils as path_utils
@@ -67,10 +68,10 @@ def DoPresubmit(
   # Save the original file content.
   logging.info('Loading %s...', os.path.relpath(xml_path))
   with open(xml_path, 'rb') as f:
-    original_xml = f.read()
+    original_bytes = f.read()
 
   # Check there are no CR ('\r') characters in the file.
-  if b'\r' in original_xml:
+  if b'\r' in original_bytes:
     logging.error(
       'DOS-style line endings (CR characters) detected - these are '
       'not allowed. Please run dos2unix %s',
@@ -78,7 +79,7 @@ def DoPresubmit(
     )
     return 1
 
-  original_xml = original_xml.decode('utf-8')
+  original_xml = original_bytes.decode('utf-8')
 
   try:
     pretty = prettyFn(original_xml)
@@ -322,7 +323,7 @@ PresubmitCheckMethod = Callable[..., List[Any]]
 
 def RunCheckWithCache(
   check_method: PresubmitCheckMethod,
-  check_id: int,
+  check_id: Any,
   input_api: Any,
   output_api: Any,
   cache_file_path: str,

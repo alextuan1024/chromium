@@ -25,13 +25,11 @@ import org.junit.runner.RunWith;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CallbackHelper;
-import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.DisableIf;
 import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.UserActionTester;
 import org.chromium.chrome.browser.browserservices.intents.BrowserServicesIntentDataProvider;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
-import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.profiles.ProfileManager;
 import org.chromium.chrome.browser.tab.Tab;
@@ -61,8 +59,8 @@ import java.util.List;
 
 /** Integration tests for ClearBrowsingDataPreferences. */
 @RunWith(ChromeJUnit4ClassRunner.class)
-@CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
 @Batch(Batch.PER_CLASS)
+@DisableIf.Device(DeviceFormFactor.DESKTOP) // https://crbug.com/563034351
 public class BrowsingDataBridgeTest {
     private static final String TEST_FILE_PATH_1 = "/chrome/test/data/browsing_data/a.html";
     private static final String TEST_FILE_PATH_2 = "/chrome/test/data/browsing_data/b.html";
@@ -323,6 +321,7 @@ public class BrowsingDataBridgeTest {
         // Check that frozen state was cleaned up.
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
+                    restored[0].destroy();
                     restored[0] =
                             TabStateExtractor.from(frozen[0])
                                     .contentsState
@@ -333,6 +332,7 @@ public class BrowsingDataBridgeTest {
         assertEquals(0, controller.getLastCommittedEntryIndex());
         assertThat(getUrls(controller), Matchers.contains(url2));
         assertNull(frozen[0].getWebContents());
+        ThreadUtils.runOnUiThreadBlocking(() -> restored[0].destroy());
     }
 
     /**

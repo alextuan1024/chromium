@@ -10,15 +10,21 @@
 #include "base/json/string_escape.h"
 #include "base/metrics/user_metrics.h"
 #include "base/metrics/user_metrics_action.h"
+#include "base/notreached.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/time/time.h"
+#include "base/timer/elapsed_timer.h"
 #include "chrome/browser/glic/common/glic_navigation.h"
+#include "chrome/browser/glic/glic_enums.h"
+#include "chrome/browser/glic/glic_net_log.h"
 #include "chrome/browser/glic/glic_profile_manager.h"
 #include "chrome/browser/glic/host/glic_overlay_ui.h"
+#include "chrome/browser/glic/host/glic_provider_change_relaunch.h"
 #include "chrome/browser/glic/host/glic_pwc_permission_delegate.h"
+#include "chrome/browser/glic/host/glic_pwc_policy_delegate.h"
 #include "chrome/browser/glic/host/glic_theme_util.h"
 #include "chrome/browser/glic/host/glic_web_contents_manager.h"
 #include "chrome/browser/glic/host/guest_source.h"
@@ -26,7 +32,11 @@
 #include "chrome/browser/glic/host/host.h"
 #include "chrome/browser/glic/public/features.h"
 #include "chrome/browser/glic/public/glic_enabling.h"
+#include "chrome/browser/glic/public/glic_instance.h"
 #include "chrome/browser/glic/public/glic_perf_traits_tracker.h"
+#include "chrome/browser/glic/public/glic_provider_change.h"
+#include "chrome/browser/glic/public/glic_provider_metrics.h"
+#include "chrome/browser/glic/public/glic_provider_spec.h"
 #include "chrome/browser/glic/service/metrics/glic_instance_metrics.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/pwc/privileged_web_contents.h"
@@ -48,31 +58,25 @@
 #include "content/public/browser/site_instance.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_ui.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "ui/base/page_transition_types.h"
-#include "ui/base/window_open_disposition.h"
 
 #if !BUILDFLAG(IS_ANDROID)
-#include "components/web_modal/web_contents_modal_dialog_manager.h"
+#include "chrome/browser/glic/widget/scoped_modal_dialog_manager_delegate.h"
 #include "ui/views/controls/webview/web_contents_set_background_color.h"
-#else
-#include "chrome/browser/glic/android/glic_navigation_utils_android.h"
+#endif
+
+#if BUILDFLAG(IS_ANDROID)
+#include "chrome/browser/actor/android/background_tabs/offscreen_rendering_manager_android.h"
+#include "chrome/browser/glic/android/settings/glic_navigation_utils_android.h"
+#include "ui/android/view_android.h"
+#include "ui/gfx/geometry/size_conversions.h"
 #endif
 
 namespace glic {
 
 namespace {
-class GlicPwcPolicyDelegate : public pwc::PwcPolicyDelegate {
- public:
-  ~GlicPwcPolicyDelegate() override = default;
-
-  bool IsNavigationAllowed(const url::Origin& origin) const override {
-    return IsGuestOriginAllowed(origin);
-  }
-
-  bool IsCapabilityOrigin(const url::Origin& origin) const override {
-    return IsOriginAllowedGlicApi(origin);
-  }
-};
+constexpr base::TimeDelta kHibernateDisconnectedClientDelay = base::Seconds(20);
 
 content::WebContents::CreateParams MakeOverlayCreateParams(
     Profile* profile,
@@ -118,15 +122,207 @@ ping();
   return base::UTF8ToUTF16(js);
 }
 
+// The relaunch panel variant for `pending_change`.
+mojom::ErrorPanelType ErrorForPendingProviderChange(
+    GlicProviderChange pending_change) {
+  switch (pending_change) {
+    case GlicProviderChange::kGeminiToGeic:
+      return mojom::ErrorPanelType::kPendingProviderChangeGeminiToGeic;
+    case GlicProviderChange::kGeicToGemini:
+      return mojom::ErrorPanelType::kPendingProviderChangeGeicToGemini;
+    case GlicProviderChange::kGeicToOtherGeic:
+      return mojom::ErrorPanelType::kPendingProviderChangeGeicToOtherGeic;
+    case GlicProviderChange::kNone:
+      NOTREACHED();
+  }
+}
+
+std::optional<mojom::ErrorPanelType> ErrorForProfileReadyState(
+    mojom::ProfileReadyState ready_state) {
+  switch (ready_state) {
+    case mojom::ProfileReadyState::kReady:
+      return std::nullopt;
+    case mojom::ProfileReadyState::kSignInRequired:
+      return mojom::ErrorPanelType::kSignIn;
+    case mojom::ProfileReadyState::kIneligibleAccount:
+      return mojom::ErrorPanelType::kIneligibleAccount;
+    case mojom::ProfileReadyState::kLocationMismatch:
+      return mojom::ErrorPanelType::kLocationMismatch;
+    case mojom::ProfileReadyState::kDisabledByAdmin:
+      return mojom::ErrorPanelType::kDisabledByAdmin;
+    case mojom::ProfileReadyState::kIneligible:
+    case mojom::ProfileReadyState::kUnknownError:
+      return mojom::ErrorPanelType::kUnavailable;
+  }
+}
+
+// Mirrors the webview client's mapping of ProfileReadyState to
+// ClientLoadErrorReason. Only called when ErrorForProfileReadyState() returns
+// an error.
+ClientLoadErrorReason ReasonForProfileReadyState(
+    mojom::ProfileReadyState ready_state) {
+  switch (ready_state) {
+    case mojom::ProfileReadyState::kReady:
+      NOTREACHED();
+    case mojom::ProfileReadyState::kSignInRequired:
+      return ClientLoadErrorReason::kSignIn;
+    case mojom::ProfileReadyState::kIneligibleAccount:
+      return ClientLoadErrorReason::kIneligibleAccount;
+    case mojom::ProfileReadyState::kLocationMismatch:
+      return ClientLoadErrorReason::kLocationMismatch;
+    case mojom::ProfileReadyState::kDisabledByAdmin:
+      return ClientLoadErrorReason::kDisabledByAdmin;
+    case mojom::ProfileReadyState::kIneligible:
+    case mojom::ProfileReadyState::kUnknownError:
+      return ClientLoadErrorReason::kUnavailable;
+  }
+}
+
+// A transient error is only displayed if the guest is not ready. A
+// non-transient error is displayed regardless.
+bool IsTransientError(mojom::ErrorPanelType error_type) {
+  switch (error_type) {
+    case mojom::ErrorPanelType::kOffline:
+    case mojom::ErrorPanelType::kError:
+    case mojom::ErrorPanelType::kUnavailable:
+      return true;
+    case mojom::ErrorPanelType::kIneligibleAccount:
+    case mojom::ErrorPanelType::kDisabledByAdmin:
+    case mojom::ErrorPanelType::kDisabledByAdminWithLink:
+    case mojom::ErrorPanelType::kSignIn:
+    case mojom::ErrorPanelType::kLocationMismatch:
+    case mojom::ErrorPanelType::kPendingProviderChangeGeminiToGeic:
+    case mojom::ErrorPanelType::kPendingProviderChangeGeicToGemini:
+    case mojom::ErrorPanelType::kPendingProviderChangeGeicToOtherGeic:
+      return false;
+  }
+}
+
+const char* ErrorPanelTypeToHistogramSuffix(mojom::ErrorPanelType error_type) {
+  switch (error_type) {
+    case mojom::ErrorPanelType::kOffline:
+      return "Offline";
+    case mojom::ErrorPanelType::kError:
+      return "Error";
+    case mojom::ErrorPanelType::kUnavailable:
+      return "Unavailable";
+    case mojom::ErrorPanelType::kIneligibleAccount:
+      return "IneligibleAccount";
+    case mojom::ErrorPanelType::kDisabledByAdmin:
+    case mojom::ErrorPanelType::kDisabledByAdminWithLink:
+      return "DisabledByAdmin";
+    case mojom::ErrorPanelType::kSignIn:
+      return "SignIn";
+    case mojom::ErrorPanelType::kLocationMismatch:
+      return "LocationMismatch";
+    case mojom::ErrorPanelType::kPendingProviderChangeGeminiToGeic:
+    case mojom::ErrorPanelType::kPendingProviderChangeGeicToGemini:
+    case mojom::ErrorPanelType::kPendingProviderChangeGeicToOtherGeic:
+      return "PendingProviderChange";
+  }
+}
+
+bool ShouldDisableLoadingOverlay(Profile* profile,
+                                 bool guest_main_page_loaded) {
+  if (!GetGlicProviderSpec(profile).SupportsSsr()) {
+    return false;
+  }
+  if (features::kGlicShowLoaderUntilMainPageOnload.Get()) {
+    return guest_main_page_loaded;
+  }
+  return true;
+}
+
 }  // namespace
+
+class GlicNoWebviewContentsManager::Metrics {
+ public:
+  explicit Metrics(Profile* profile) : metric_reporter_(profile) {}
+
+  void Update(DisplayState state,
+              std::optional<mojom::ErrorPanelType> error_type) {
+    const bool is_overlay_or_loading =
+        state == DisplayState::kShowingOverlay ||
+        state == DisplayState::kShowingNativeLoading;
+    const bool is_loading = is_overlay_or_loading && !error_type.has_value();
+    const std::optional<mojom::ErrorPanelType> visible_error =
+        is_overlay_or_loading ? error_type : std::nullopt;
+
+    // 1. Total overlay/placeholder duration (spans loading <-> error).
+    if (is_overlay_or_loading) {
+      if (!total_overlay_timer_) {
+        total_overlay_timer_.emplace();
+      }
+    } else if (total_overlay_timer_) {
+      metric_reporter_.RecordCustomTimes(
+          "Overlay.DisplayDuration", total_overlay_timer_->Elapsed(),
+          base::Milliseconds(1), base::Seconds(60), 50);
+      total_overlay_timer_.reset();
+    }
+
+    // 2. Loading duration.
+    if (is_loading) {
+      if (!loading_timer_) {
+        loading_timer_.emplace();
+      }
+    } else if (loading_timer_) {
+      const char* histogram =
+          state == DisplayState::kShowingGuest
+              ? "Overlay.DisplayDuration.LoadingAndCompleted"
+              : "Overlay.DisplayDuration.Loading";
+      metric_reporter_.RecordCustomTimes(histogram, loading_timer_->Elapsed(),
+                                         base::Milliseconds(1),
+                                         base::Seconds(60), 50);
+      loading_timer_.reset();
+    }
+
+    // 3. Error duration (also handles changing from one ErrorPanelType to
+    // another).
+    if (visible_error != active_error_type_) {
+      if (active_error_type_ && error_timer_) {
+        metric_reporter_.RecordLongTimes(
+            base::StrCat(
+                {"Overlay.DisplayDuration.",
+                 ErrorPanelTypeToHistogramSuffix(*active_error_type_)}),
+            error_timer_->Elapsed());
+      }
+      active_error_type_ = visible_error;
+      if (active_error_type_) {
+        error_timer_.emplace();
+      } else {
+        error_timer_.reset();
+      }
+    }
+  }
+
+ private:
+  GlicMetricReporter metric_reporter_;
+  std::optional<base::ElapsedTimer> total_overlay_timer_;
+  std::optional<base::ElapsedTimer> loading_timer_;
+  std::optional<base::ElapsedTimer> error_timer_;
+  std::optional<mojom::ErrorPanelType> active_error_type_;
+};
 
 ///////////////////////////////////////////////////////////////////////////////
 // GlicNoWebviewContentsManager::OverlayContentsManager:
 
 GlicNoWebviewContentsManager::OverlayContentsManager::OverlayContentsManager(
     Profile* profile,
-    GlicNoWebviewContentsManager* owner)
-    : profile_(profile), owner_(owner) {}
+    GlicNoWebviewContentsManager* owner,
+    ObservableValueView<std::optional<mojom::ErrorPanelType>>& error_type,
+    ObservableValueView<GuestState>& guest_state,
+    ObservableValueView<bool>& guest_main_page_loaded)
+    : profile_(profile),
+      owner_(owner),
+      error_type_(
+          error_type.Observe(this,
+                             &OverlayContentsManager::UpdateOverlayState)),
+      guest_state_(
+          guest_state.Observe(this,
+                              &OverlayContentsManager::UpdateOverlayState)),
+      guest_main_page_loaded_(guest_main_page_loaded.Observe(
+          this,
+          &OverlayContentsManager::UpdateOverlayState)) {}
 
 GlicNoWebviewContentsManager::OverlayContentsManager::
     ~OverlayContentsManager() {
@@ -138,6 +334,8 @@ GlicNoWebviewContentsManager::OverlayContentsManager::EnsureWebContents() {
   if (web_contents_) {
     return web_contents_.get();
   }
+  // The overlay is only created when Glic is visible (kShowingOverlay), so it
+  // is never created hidden regardless of `initially_hidden`.
   web_contents_ = content::WebContents::Create(
       MakeOverlayCreateParams(profile_, /*initially_hidden=*/false));
   CHECK(web_contents_);
@@ -155,10 +353,7 @@ GlicNoWebviewContentsManager::OverlayContentsManager::EnsureWebContents() {
 
   Observe(web_contents_.get());
   PrefsTabHelper::CreateForWebContents(web_contents_.get());
-#if !BUILDFLAG(IS_ANDROID)
-  web_modal::WebContentsModalDialogManager::CreateForWebContents(
-      web_contents_.get());
-#endif
+  CreateGlicOverlayData(web_contents_.get());
   web_contents_->SetSupportsDraggableRegions(true);
 
   // Load the overlay WebUI.
@@ -196,16 +391,63 @@ GlicNoWebviewContentsManager::OverlayContentsManager::GetOverlayUI() const {
              : nullptr;
 }
 
-std::optional<mojom::ErrorPanelType>
-GlicNoWebviewContentsManager::OverlayContentsManager::error_type() const {
-  return error_type_;
+void GlicNoWebviewContentsManager::OverlayContentsManager::ObservePanelState(
+    ObservableValueView<mojom::PanelState>& panel_state) {
+  panel_state_.emplace(
+      panel_state.Observe(this, &OverlayContentsManager::UpdateOverlayState));
+  UpdateOverlayState();
 }
 
-void GlicNoWebviewContentsManager::OverlayContentsManager::SetError(
-    mojom::ErrorPanelType error_type) {
-  error_type_ = error_type;
-  if (auto* overlay_ui = GetOverlayUI()) {
-    overlay_ui->SetOverlayState(mojom::OverlayState::NewError(error_type));
+mojom::OverlayStatePtr
+GlicNoWebviewContentsManager::OverlayContentsManager::DetermineOverlayState(
+    std::optional<mojom::ErrorPanelType> error_type,
+    GuestState guest_state,
+    std::optional<mojom::PanelStateKind> panel_state_kind,
+    Profile* profile,
+    bool guest_main_page_loaded) {
+  // Input 1: Active error state. An error panel always takes precedence.
+  if (error_type.has_value()) {
+    return mojom::OverlayState::NewError(*error_type);
+  }
+
+  // Input 2: Guest presentation. When the guest is ready, or displaying a
+  // login, security interstitial, or in-page error page, or when the loading
+  // overlay is disabled, the guest WebContents is shown and no overlay is
+  // needed.
+  if (guest_state != GuestState::kLoading ||
+      ShouldDisableLoadingOverlay(profile, guest_main_page_loaded)) {
+    return nullptr;
+  }
+
+  // Input 3: Panel state. When loading, detached panels show a floating
+  // skeleton; otherwise (attached to side panel or warming in background),
+  // show side panel.
+  mojom::LoadingStyle loading_style =
+      (panel_state_kind == mojom::PanelStateKind::kDetached)
+          ? mojom::LoadingStyle::kFloating
+          : mojom::LoadingStyle::kSidePanel;
+  return mojom::OverlayState::NewLoading(loading_style);
+}
+
+mojom::OverlayStatePtr
+GlicNoWebviewContentsManager::OverlayContentsManager::DetermineOverlayState() {
+  std::optional<mojom::PanelStateKind> panel_state_kind;
+  if (panel_state_) {
+    panel_state_kind = (*panel_state_)->kind;
+  }
+  return DetermineOverlayState(*error_type_, *guest_state_, panel_state_kind,
+                               profile_, *guest_main_page_loaded_);
+}
+
+void GlicNoWebviewContentsManager::OverlayContentsManager::
+    UpdateOverlayState() {
+  auto* overlay_ui = GetOverlayUI();
+  if (!overlay_ui) {
+    return;
+  }
+  mojom::OverlayStatePtr state = DetermineOverlayState();
+  if (state) {
+    overlay_ui->SetOverlayState(std::move(state));
   }
 }
 
@@ -228,25 +470,7 @@ bool GlicNoWebviewContentsManager::OverlayContentsManager::ShouldReloadOnShow()
   if (IsCrashed()) {
     return true;
   }
-  if (!error_type_.has_value()) {
-    return false;
-  }
-  switch (error_type_.value()) {
-    case mojom::ErrorPanelType::kOffline:
-    case mojom::ErrorPanelType::kError:
-    case mojom::ErrorPanelType::kUnavailable:
-      // Transient or recoverable failures: retrying with a fresh manager can
-      // succeed.
-      return true;
-    case mojom::ErrorPanelType::kIneligibleAccount:
-    case mojom::ErrorPanelType::kDisabledByAdmin:
-    case mojom::ErrorPanelType::kDisabledByAdminWithLink:
-    case mojom::ErrorPanelType::kSignIn:
-    case mojom::ErrorPanelType::kLocationMismatch:
-      // Deterministic / policy error states: retrying will produce the same
-      // error. The container should be attached to show the error panel UI.
-      return false;
-  }
+  return error_type_->has_value() && IsTransientError(error_type_->value());
 }
 
 void GlicNoWebviewContentsManager::OverlayContentsManager::RenderFrameCreated(
@@ -270,17 +494,12 @@ void GlicNoWebviewContentsManager::OverlayContentsManager::DidFinishNavigation(
     return;
   }
   overlay_ui->SetPageHandler(this);
-  if (error_type_) {
-    overlay_ui->SetOverlayState(mojom::OverlayState::NewError(*error_type_));
-  } else if (!owner_->is_guest_ready_) {
-    overlay_ui->SetOverlayState(
-        mojom::OverlayState::NewLoading(mojom::LoadingStyle::kSidePanel));
-  }
+  UpdateOverlayState();
 }
 
 void GlicNoWebviewContentsManager::OverlayContentsManager::
     PrimaryMainFrameWasResized(bool width_changed) {
-  if (owner_->is_guest_ready_ || !web_contents_ ||
+  if (guest_state_ != GuestState::kLoading || !web_contents_ ||
       !web_contents_->GetRenderWidgetHostView()) {
     return;
   }
@@ -295,6 +514,7 @@ void GlicNoWebviewContentsManager::OverlayContentsManager::
 }
 
 void GlicNoWebviewContentsManager::OverlayContentsManager::OnRetryClicked() {
+  base::RecordAction(base::UserMetricsAction("Glic.Overlay.RetryClicked"));
   if (owner_->host_) {
     // Asynchronously request reload on the host so that Mojo message dispatch
     // and caller promises complete before this manager is destroyed.
@@ -304,6 +524,7 @@ void GlicNoWebviewContentsManager::OverlayContentsManager::OnRetryClicked() {
 }
 
 void GlicNoWebviewContentsManager::OverlayContentsManager::OnSignInClicked() {
+  base::RecordAction(base::UserMetricsAction("Glic.Overlay.SignInClicked"));
   auto* identity_manager = IdentityManagerFactory::GetForProfile(profile_);
   std::string email;
   if (identity_manager) {
@@ -322,6 +543,8 @@ void GlicNoWebviewContentsManager::OverlayContentsManager::OnSignInClicked() {
 
 void GlicNoWebviewContentsManager::OverlayContentsManager::
     OnProfilePickerClicked() {
+  base::RecordAction(
+      base::UserMetricsAction("Glic.Overlay.ProfilePickerClicked"));
   GlicProfileManager::GetInstance()->ShowProfilePicker();
 }
 
@@ -329,18 +552,22 @@ void GlicNoWebviewContentsManager::OverlayContentsManager::OpenUrlAndClosePanel(
     const GURL& url) {
   auto params = std::make_unique<NavigateParams>(
       profile_, url, ui::PAGE_TRANSITION_AUTO_TOPLEVEL);
-  params->disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
+  params->disposition = ui::mojom::WindowOpenDisposition::kNewForegroundTab;
   glic::NavigateAsync(std::move(params), base::DoNothing());
   OnClosePanelClicked();
 }
 
 void GlicNoWebviewContentsManager::OverlayContentsManager::
     OnIneligibleAccountHelpClicked() {
+  base::RecordAction(
+      base::UserMetricsAction("Glic.Overlay.IneligibleAccountHelpClicked"));
   OpenUrlAndClosePanel(GURL(features::kGlicIneligibleAccountHelpUrl.Get()));
 }
 
 void GlicNoWebviewContentsManager::OverlayContentsManager::
     OnLocationMismatchHelpClicked() {
+  base::RecordAction(
+      base::UserMetricsAction("Glic.Overlay.LocationMismatchHelpClicked"));
   OpenUrlAndClosePanel(GURL(features::kGlicLocationMismatchHelpUrl.Get()));
 }
 
@@ -363,20 +590,48 @@ void GlicNoWebviewContentsManager::OverlayContentsManager::
   }
 }
 
+void GlicNoWebviewContentsManager::OverlayContentsManager::
+    OnShowErrorClicked() {
+  if (error_type_ != mojom::ErrorPanelType::kError ||
+      !GlicOverlayUI::IsShowErrorAllowed(profile_) ||
+      !owner_->guest_contents() || owner_->guest_contents()->IsCrashed()) {
+    return;
+  }
+  owner_->StopGuestBootstrap();
+  owner_->ShowGuestDirectly(GuestState::kGuestError);
+}
+
+void GlicNoWebviewContentsManager::OverlayContentsManager::OnRelaunchClicked() {
+  MaybeRelaunchForProviderChange(profile_);
+}
+
 GlicNoWebviewContentsManager::GlicNoWebviewContentsManager(
     Profile* profile,
+    GlicEnabling* enabling,
     bool initially_hidden)
     : profile_(profile),
-      overlay_manager_(profile, this),
+      enabling_(enabling),
+      metrics_(std::make_unique<Metrics>(profile)),
+      guest_state_{GuestState::kLoading},
+      error_type_subscription_(error_type_.AddObserver(
+          this,
+          &GlicNoWebviewContentsManager::UpdateDisplayState)),
+      overlay_manager_(profile,
+                       this,
+                       error_type_,
+                       guest_state_,
+                       guest_main_page_loaded_),
       privileged_guest_contents_(pwc::PrivilegedWebContents::Create(
           pwc::PrivilegedComponent::kGlic,
           profile,
-          std::make_unique<GlicPwcPolicyDelegate>())),
+          std::make_unique<GlicPwcPolicyDelegate>(profile),
+          {.initially_hidden = initially_hidden})),
       zoom_controller_(
-          privileged_guest_contents_->web_contents(),
+          privileged_guest_contents_.get(),
           profile ? profile->GetPrefs() : nullptr,
           base::BindRepeating(&GlicNoWebviewContentsManager::OnZoomLevelChange,
                               base::Unretained(this))) {
+  CHECK(enabling_);
   CHECK(privileged_guest_contents_);
   privileged_guest_contents_->SetPermissionDelegate(
       std::make_unique<GlicPwcPermissionDelegate>(profile));
@@ -395,17 +650,29 @@ GlicNoWebviewContentsManager::GlicNoWebviewContentsManager(
   }
 
   PrepareGlicGuestWebContents(*guest, *this);
-#if !BUILDFLAG(IS_ANDROID)
-  web_modal::WebContentsModalDialogManager::CreateForWebContents(guest);
-#endif
-
   web_client_manager_.AttachGuestContents(guest);
   web_client_manager_.SetDelegate(this);
 
-  LoadGuest();
+  profile_ready_subscription_ =
+      enabling_->RegisterProfileReadyStateChanged(base::BindRepeating(
+          &GlicNoWebviewContentsManager::OnProfileReadyStateChanged,
+          base::Unretained(this)));
+
+  UpdateForProfileReadyState(/*is_initial=*/true);
 }
 
-GlicNoWebviewContentsManager::~GlicNoWebviewContentsManager() = default;
+GlicNoWebviewContentsManager::~GlicNoWebviewContentsManager() {
+#if BUILDFLAG(IS_ANDROID)
+  if (guest_contents() &&
+      base::FeatureList::IsEnabled(features::kGlicAndroidOffscreenRendering)) {
+    actor::StopOffscreenRenderingForWebContents(guest_contents());
+  }
+#endif
+}
+
+content::WebContents* GlicNoWebviewContentsManager::webui_contents() const {
+  return overlay_contents();
+}
 
 content::WebContents* GlicNoWebviewContentsManager::guest_contents() const {
   return privileged_guest_contents_ ? privileged_guest_contents_->web_contents()
@@ -454,9 +721,28 @@ void GlicNoWebviewContentsManager::AttachToHost(Host* host) {
     SetHostForGuest(*guest_contents(), host);
   }
 
+  // A pending provider change takes priority over an error set before the
+  // contents were attached, which describes the latched provider.
+  if (!MaybeSetPendingProviderChangeError() && error_reason_.has_value()) {
+    host_->ClientLoadErrorOccurred(*error_reason_);
+  }
+
   web_client_manager_.AttachToHost(host);
+  overlay_manager_.ObservePanelState(host->instance().GetPanelState());
   // Move from warming pool state to attached-hidden state.
   UpdateDisplayState();
+}
+
+void GlicNoWebviewContentsManager::AttachModalDialogManagerDelegate(
+    ScopedModalDialogManagerDelegate& delegate) {
+#if !BUILDFLAG(IS_ANDROID)
+  if (auto* overlay = overlay_manager_.web_contents()) {
+    delegate.AddWebContents(overlay);
+  }
+  if (auto* guest = guest_contents()) {
+    delegate.AddWebContents(guest);
+  }
+#endif
 }
 
 base::CallbackListSubscription
@@ -465,20 +751,80 @@ GlicNoWebviewContentsManager::RegisterWebContentsChangedCallback(
   return web_contents_changed_callbacks_.Add(std::move(callback));
 }
 
+bool GlicNoWebviewContentsManager::IsShowingNativeLoading() const {
+  return state_ == DisplayState::kShowingNativeLoading;
+}
+
+base::CallbackListSubscription
+GlicNoWebviewContentsManager::RegisterNativeLoadingChangedCallback(
+    NativeLoadingChangedCallback callback) {
+  return native_loading_changed_callbacks_.Add(std::move(callback));
+}
+
 GlicWebClientManager& GlicNoWebviewContentsManager::web_client_manager() {
   return web_client_manager_;
 }
 
 bool GlicNoWebviewContentsManager::ShouldReloadOnShow() const {
-  if ((guest_contents() && guest_contents()->IsCrashed()) || is_guest_error_) {
+  if ((guest_contents() && guest_contents()->IsCrashed()) ||
+      guest_state_.get() == GuestState::kGuestError) {
     return true;
   }
   return overlay_manager_.ShouldReloadOnShow();
 }
 
+bool GlicNoWebviewContentsManager::IsCrashed() const {
+  return (guest_contents() && guest_contents()->IsCrashed()) ||
+         overlay_manager_.IsCrashed();
+}
+
 void GlicNoWebviewContentsManager::Zoom(mojom::ZoomAction zoom_action,
                                         ZoomSource source) {
   zoom_controller_.Zoom(zoom_action, source);
+}
+
+void GlicNoWebviewContentsManager::SetErrorCallback(
+    base::RepeatingClosure callback) {
+  error_callback_ = std::move(callback);
+  // `GlicWebContentsWarmingPool::TakeContainer()` passes a null `callback` to
+  // clear the warming pool's error handler; only post a task if a non-null
+  // callback was registered.
+  if (error_callback_ && ShouldReloadOnShow()) {
+    base::SequencedTaskRunner::GetCurrentDefault()->PostTask(FROM_HERE,
+                                                             error_callback_);
+  }
+}
+
+void GlicNoWebviewContentsManager::WaitForLoad(
+    base::OnceCallback<void(bool failed)> callback) {
+  const mojom::WebClientState state = web_client_state();
+  if (state == mojom::WebClientState::kResponsive ||
+      state == mojom::WebClientState::kUnresponsive) {
+    std::move(callback).Run(/*failed=*/false);
+    return;
+  }
+  if (HasClientLoadFailed()) {
+    std::move(callback).Run(/*failed=*/true);
+    return;
+  }
+  pending_wait_for_load_callbacks_.push_back(std::move(callback));
+}
+
+void GlicNoWebviewContentsManager::ResolvePendingWaitForLoadCallbacks() {
+  if (pending_wait_for_load_callbacks_.empty()) {
+    return;
+  }
+  const mojom::WebClientState state = web_client_state();
+  const bool is_ready = state == mojom::WebClientState::kResponsive ||
+                        state == mojom::WebClientState::kUnresponsive;
+  const bool is_failed = HasClientLoadFailed();
+  if (!is_ready && !is_failed) {
+    return;
+  }
+  auto callbacks = std::exchange(pending_wait_for_load_callbacks_, {});
+  for (auto& cb : callbacks) {
+    std::move(cb).Run(is_failed);
+  }
 }
 
 void GlicNoWebviewContentsManager::OnZoomLevelChange() {
@@ -492,12 +838,73 @@ void GlicNoWebviewContentsManager::NotifyWebContentsChanged() {
 }
 
 void GlicNoWebviewContentsManager::ApplySizeToGuest() {
-  if (cached_overlay_size_.IsEmpty() || !guest_contents() ||
-      !guest_contents()->GetRenderWidgetHostView()) {
+  if (!guest_contents()) {
     return;
   }
-  guest_contents()->GetRenderWidgetHostView()->SetSize(cached_overlay_size_);
-  guest_contents()->UpdateWebContentsVisibility(content::Visibility::VISIBLE);
+  gfx::Size target_size;
+  if (host_) {
+    target_size = host_->instance().GetPanelSize();
+    if (!target_size.IsEmpty()) {
+      cached_overlay_size_ = target_size;
+    }
+  }
+  if (target_size.IsEmpty()) {
+    target_size = cached_overlay_size_;
+  }
+  if (target_size.IsEmpty() &&
+      (base::FeatureList::IsEnabled(features::kGlicGuestInitialSize) ||
+       features::IsGlicNativeLoadingPlaceholderEnabled())) {
+    // Give the guest WebContents a non-zero initial viewport while warming in
+    // the background (or while native loading skips overlay WebContents
+    // creation) so Blink layout, ResizeObserver/IntersectionObserver callbacks,
+    // and async UI island hydration complete before the panel swaps to guest.
+    // The exact dimensions are not critical as long as the viewport is
+    // non-empty; 384x675 DIPs matches the default side panel width and lands in
+    // the same narrow-column CSS breakpoint (~352-412 DIPs) used across desktop
+    // side panel, floaty, and Android surfaces.
+    target_size = gfx::Size(384, 675);
+  }
+  if (target_size.IsEmpty()) {
+    return;
+  }
+#if BUILDFLAG(IS_ANDROID)
+  if (gfx::NativeView native_view = guest_contents()->GetNativeView()) {
+    gfx::Size size_px =
+        gfx::ScaleToCeiledSize(target_size, native_view->GetDipScale());
+    native_view->OnSizeChanged(size_px.width(), size_px.height());
+    native_view->OnPhysicalBackingSizeChanged(size_px);
+  }
+#else
+  // Resize the WebContentsView container bounds (and any active
+  // RenderWidgetHostView). Sizing the WebContentsView before
+  // `LoadURLWithParams()` ensures `WebContentsImpl::GetSizeForMainFrame()`
+  // returns `target_size` when creating both the initial RenderWidgetHostView
+  // and any speculative RenderWidgetHostView (e.g. for
+  // Cross-Origin-Opener-Policy or RenderDocument swaps), so the renderer never
+  // observes a 0x0 viewport.
+  guest_contents()->Resize(gfx::Rect(target_size));
+  if (content::RenderWidgetHostView* rwhv =
+          guest_contents()->GetRenderWidgetHostView()) {
+    rwhv->SetSize(target_size);
+  }
+#endif
+  // While the overlay is shown, the guest is not attached to a view, so mark it
+  // visible to let it load and render at full priority.
+  if (is_visible_) {
+    guest_contents()->UpdateWebContentsVisibility(content::Visibility::VISIBLE);
+  }
+}
+
+void GlicNoWebviewContentsManager::ShowGuestDirectly(GuestState state) {
+  CHECK_NE(state, GuestState::kLoading);
+  if (!error_type_->has_value() || IsTransientError(error_type_->value())) {
+    guest_state_.Set(state);
+  }
+  ClearTransientErrorState();
+  UpdateDisplayState();
+  if (error_callback_ && ShouldReloadOnShow()) {
+    error_callback_.Run();
+  }
 }
 
 GlicNoWebviewContentsManager::DisplayState
@@ -507,33 +914,82 @@ GlicNoWebviewContentsManager::CalculateDesiredState() const {
   }
   // When an overlay error is active, keep displaying the overlay UI regardless
   // of whether the guest client connects in the background.
-  if (overlay_manager_.error_type().has_value()) {
+  if (error_type_->has_value()) {
     return DisplayState::kShowingOverlay;
   }
-  if (is_guest_ready_) {
+  if (guest_state_ != GuestState::kLoading ||
+      ShouldDisableLoadingOverlay(profile_, *guest_main_page_loaded_)) {
     return DisplayState::kShowingGuest;
+  }
+  if (features::IsGlicNativeLoadingPlaceholderEnabled()) {
+    return DisplayState::kShowingNativeLoading;
   }
   return DisplayState::kShowingOverlay;
 }
 
-void GlicNoWebviewContentsManager::UpdateDisplayState() {
-  DisplayState desired = CalculateDesiredState();
-  if (state_ == desired) {
-    // If hidden/warming and the guest becomes ready, immediately reclaim any
-    // overlay WebContents that was previously allocated.
-    if (!is_visible_ && is_guest_ready_ &&
-        !overlay_manager_.error_type().has_value()) {
-      ScheduleOverlayDeletion(base::Milliseconds(0));
-    }
-    return;
+mojom::WebClientState GlicNoWebviewContentsManager::web_client_state() const {
+  GlicWebClientAccess* access = web_client_manager_.web_client_access();
+  return access ? access->web_client_state()
+                : mojom::WebClientState::kUninitialized;
+}
+
+bool GlicNoWebviewContentsManager::HasClientLoadFailed() const {
+  return CurrentClientLoadErrorReason().has_value();
+}
+
+std::optional<ClientLoadErrorReason>
+GlicNoWebviewContentsManager::CurrentClientLoadErrorReason() const {
+  // Unresponsiveness is deliberately not included: the client is still
+  // connected and can become responsive again without being reloaded.
+  if (error_type_->has_value()) {
+    return error_reason_;
   }
-  TransitionTo(desired);
+  if (web_client_state() == mojom::WebClientState::kError) {
+    return ClientLoadErrorReason::kClientError;
+  }
+  if (guest_state_ == GuestState::kGuestError) {
+    return ClientLoadErrorReason::kUnknown;
+  }
+  return std::nullopt;
+}
+
+void GlicNoWebviewContentsManager::UpdateClientLoadFailed() {
+  if (host_) {
+    if (std::optional<ClientLoadErrorReason> reason =
+            CurrentClientLoadErrorReason()) {
+      host_->SetClientLoadFailed(*reason);
+    } else {
+      host_->ClearClientLoadFailed();
+    }
+  }
+  ResolvePendingWaitForLoadCallbacks();
+}
+
+void GlicNoWebviewContentsManager::UpdateDisplayState() {
+  UpdateClientLoadFailed();
+  DisplayState desired = CalculateDesiredState();
+  if (state_ != desired) {
+    TransitionTo(desired);
+  }
+  metrics_->Update(state_, *error_type_);
+  UpdateLoadingTimer();
 }
 
 void GlicNoWebviewContentsManager::OnGuestNavigationStarted() {
   StopGuestBootstrap();
-  is_guest_ready_ = false;
-  is_guest_error_ = false;
+  guest_main_page_loaded_.Set(false);
+  guest_state_.Set(GuestState::kLoading);
+  ClearTransientErrorState();
+  UpdateClientLoadFailed();
+  // Allow the full loading time after navigation. UpdateDisplayState() will
+  // start the timer.
+  loading_timer_.Stop();
+  UpdateDisplayState();
+}
+
+void GlicNoWebviewContentsManager::OnGuestMainPageLoaded() {
+  guest_main_page_loaded_.Set(true);
+  UpdateDisplayState();
 }
 
 void GlicNoWebviewContentsManager::OnGuestNavigated(
@@ -542,40 +998,80 @@ void GlicNoWebviewContentsManager::OnGuestNavigated(
     mojom::GuestPageType page_type,
     bool is_initial_commit) {
   StopGuestBootstrap();
-  is_guest_error_ = false;
+  guest_main_page_loaded_.Set(false);
 
   switch (page_type) {
-    case mojom::GuestPageType::kLogin:
-      SetErrorState(mojom::ErrorPanelType::kSignIn);
-      break;
     case mojom::GuestPageType::kDisabledByAdmin:
-      SetErrorState(mojom::ErrorPanelType::kDisabledByAdminWithLink);
+      guest_state_.Set(GuestState::kLoading);
+      SetErrorState(mojom::ErrorPanelType::kDisabledByAdminWithLink,
+                    ClientLoadErrorReason::kDisabledByAdmin);
+      break;
+    case mojom::GuestPageType::kOffline:
+      guest_state_.Set(GuestState::kLoading);
+      SetErrorState(mojom::ErrorPanelType::kError,
+                    ClientLoadErrorReason::kOffline);
       break;
     case mojom::GuestPageType::kLoadError:
-      SetErrorState(mojom::ErrorPanelType::kError);
+      guest_state_.Set(GuestState::kLoading);
+      SetErrorState(mojom::ErrorPanelType::kError,
+                    ClientLoadErrorReason::kGuestLoadFailed);
+      break;
+    case mojom::GuestPageType::kHttpClientError:
+      guest_state_.Set(GuestState::kLoading);
+      SetErrorState(mojom::ErrorPanelType::kError,
+                    ClientLoadErrorReason::kGuestHttpClientError);
+      break;
+    case mojom::GuestPageType::kHttpServerError:
+      guest_state_.Set(GuestState::kLoading);
+      SetErrorState(mojom::ErrorPanelType::kError,
+                    ClientLoadErrorReason::kGuestHttpServerError);
+      break;
+    case mojom::GuestPageType::kOriginBlocked:
+      guest_state_.Set(GuestState::kLoading);
+      SetErrorState(mojom::ErrorPanelType::kError,
+                    ClientLoadErrorReason::kGuestOriginBlocked);
+      break;
+    case mojom::GuestPageType::kLogin:
+      // When the guest encounters a web login or proxy authentication page,
+      // present the guest WebContents directly so the user can enter
+      // credentials.
+      ShowGuestDirectly(GuestState::kLogin);
+      break;
+    case mojom::GuestPageType::kSecurityInterstitial:
+      // When the guest encounters a security interstitial (e.g. an enterprise
+      // warning page), present the guest WebContents directly so the user can
+      // interact with the interstitial.
+      ShowGuestDirectly(GuestState::kSecurityInterstitial);
       break;
     case mojom::GuestPageType::kGuestError:
-      // When the guest encounters an error page (/sorry/), present the guest
-      // WebContents directly so the user can see the error or solve a CAPTCHA.
-      is_guest_error_ = true;
-      is_guest_ready_ = true;
-      ApplySizeToGuest();
-      // Guest navigated to /sorry/ CAPTCHA; swap to guest directly so user can
-      // solve it.
-      UpdateDisplayState();
+      // When the guest encounters an in-page error (e.g. /sorry/ or CAPTCHA),
+      // present the guest WebContents directly so the user can see the error
+      // or solve the challenge.
+      ShowGuestDirectly(GuestState::kGuestError);
       break;
     case mojom::GuestPageType::kRegular:
       if (!is_api_allowed) {
-        SetErrorState(mojom::ErrorPanelType::kError);
-      } else if (!overlay_manager_.error_type().has_value()) {
-        ApplySizeToGuest();
-        StartGuestBootstrap();
+        guest_state_.Set(GuestState::kLoading);
+        SetErrorState(mojom::ErrorPanelType::kError,
+                      ClientLoadErrorReason::kGuestApiNotAllowed);
+      } else {
+        guest_state_.Set(GuestState::kLoading);
+        ClearTransientErrorState();
+        if (!error_type_->has_value()) {
+          StartGuestBootstrap();
+        }
+        UpdateDisplayState();
       }
       break;
   }
+
+  UpdateClientLoadFailed();
 }
 
 void GlicNoWebviewContentsManager::StartGuestBootstrap() {
+  if (GetGlicProviderSpec(profile_).SupportsApiBundleResource()) {
+    return;
+  }
   if (!guest_contents() || !guest_contents()->GetPrimaryMainFrame()) {
     return;
   }
@@ -585,6 +1081,9 @@ void GlicNoWebviewContentsManager::StartGuestBootstrap() {
 }
 
 void GlicNoWebviewContentsManager::StopGuestBootstrap() {
+  if (GetGlicProviderSpec(profile_).SupportsApiBundleResource()) {
+    return;
+  }
   if (!guest_contents() || !guest_contents()->GetPrimaryMainFrame()) {
     return;
   }
@@ -597,13 +1096,16 @@ void GlicNoWebviewContentsManager::StopGuestBootstrap() {
 void GlicNoWebviewContentsManager::OnGuestProcessGone(
     base::TerminationStatus status) {
   StopGuestBootstrap();
-  is_guest_ready_ = false;
-  SetErrorState(mojom::ErrorPanelType::kError);
+  guest_main_page_loaded_.Set(false);
+  guest_state_.Set(GuestState::kLoading);
+  SetErrorState(mojom::ErrorPanelType::kError,
+                ClientLoadErrorReason::kGuestProcessGone);
 }
 
 void GlicNoWebviewContentsManager::OnWebClientCreated() {
   StopGuestBootstrap();
-  is_guest_ready_ = true;
+  guest_state_.Set(GuestState::kReady);
+  ClearTransientErrorState();
   // Client script connected; swap to guest if visible and error-free.
   UpdateDisplayState();
 }
@@ -611,27 +1113,34 @@ void GlicNoWebviewContentsManager::OnWebClientCreated() {
 void GlicNoWebviewContentsManager::OnWebClientStateChanged(
     mojom::WebClientState state) {
   switch (state) {
+    case mojom::WebClientState::kWarmed:
+      StopGuestBootstrap();
+      [[fallthrough]];
     case mojom::WebClientState::kResponsive:
-      is_guest_ready_ = true;
+      guest_state_.Set(GuestState::kReady);
+      ClearTransientErrorState();
       // Client state became responsive; swap to guest if visible and
       // error-free.
       UpdateDisplayState();
       break;
     case mojom::WebClientState::kError:
-      is_guest_ready_ = false;
-      SetErrorState(mojom::ErrorPanelType::kError);
+      guest_state_.Set(GuestState::kLoading);
+      SetErrorState(mojom::ErrorPanelType::kError,
+                    ClientLoadErrorReason::kClientError);
       break;
     case mojom::WebClientState::kUninitialized:
-    case mojom::WebClientState::kWarmed:
     case mojom::WebClientState::kUnresponsive:
       break;
   }
 }
 
 void GlicNoWebviewContentsManager::LoadGuest() {
-  is_guest_ready_ = false;
-  is_guest_error_ = false;
-  GURL guest_url = GetGuestURL();
+  guest_main_page_loaded_.Set(false);
+  guest_state_.Set(GuestState::kLoading);
+  UpdateClientLoadFailed();
+  ApplySizeToGuest();
+  GURL guest_url = GetGuestURL(profile_);
+  net_log::LogDummyNetworkRequestForTrafficAnnotation(guest_url);
   guest_contents()->GetController().LoadURLWithParams(
       content::NavigationController::LoadURLParams(guest_url));
 }
@@ -640,59 +1149,177 @@ void GlicNoWebviewContentsManager::TransitionTo(DisplayState next_state) {
   if (state_ == next_state) {
     return;
   }
+  const bool was_native_loading = state_ == DisplayState::kShowingNativeLoading;
   state_ = next_state;
 
   switch (state_) {
     case DisplayState::kWarming:
     case DisplayState::kAttachedHidden:
-      // Debounce overlay deletion during transient hides (e.g. tab switches).
-      ScheduleOverlayDeletion(base::Milliseconds(100));
+      // If the guest is already ready to display, immediately reclaim the
+      // overlay. Otherwise debounce overlay deletion during transient hides
+      // (e.g. tab switches).
+      if (guest_state_ != GuestState::kLoading && !error_type_->has_value()) {
+        ScheduleOverlayDeletion(base::Milliseconds(0));
+      } else {
+        ScheduleOverlayDeletion(base::Milliseconds(100));
+      }
+      break;
+
+    case DisplayState::kShowingNativeLoading:
+      // Notify native loading observers before `NotifyWebContentsChanged()`
+      // clears `active_web_contents()` so embedders suppress inactive
+      // placeholders and hide native web views prior to detaching
+      // `WebContents`.
+      native_loading_changed_callbacks_.Notify(true);
+      // Do not call `EnsureOverlayContents()` for loading when the native
+      // placeholder is active. Reclaim any prior error overlay immediately.
+      ScheduleOverlayDeletion(base::Milliseconds(0));
+      NotifyWebContentsChanged();
+      loading_timer_.Stop();
       break;
 
     case DisplayState::kShowingOverlay:
       CancelOverlayDeletion();
       EnsureOverlayContents();
       NotifyWebContentsChanged();
+      // Restart timer when showing overlay to grant full visible loading
+      // duration.
+      if (!error_type_->has_value()) {
+        loading_timer_.Stop();
+      }
       break;
 
     case DisplayState::kShowingGuest:
       CancelOverlayDeletion();
       NotifyWebContentsChanged();
+      // Stop the timer so UpdateLoadingTimer() restarts it from zero if the
+      // guest is still loading (e.g. under kGlicSsr), granting the full visible
+      // loading duration.
+      loading_timer_.Stop();
       // Destroy the loading overlay once the guest is ready and swapped.
       ScheduleOverlayDeletion(base::Milliseconds(0));
       break;
   }
+
+  // When leaving native loading, notify after attaching the replacement
+  // `WebContents` (guest or error overlay) so embedders seamlessly transition.
+  if (was_native_loading) {
+    native_loading_changed_callbacks_.Notify(false);
+  }
+
+  // The guest is mounted only while it's the WebContents shown in the panel.
+  // Unlike <webview> mode, a visible panel can be showing the loading/error
+  // overlay WebContents instead, so visibility alone isn't enough here.
+  web_client_manager_.SetGuestMounted(state_ == DisplayState::kShowingGuest);
 }
 
 void GlicNoWebviewContentsManager::SetErrorState(
-    mojom::ErrorPanelType error_type) {
+    mojom::ErrorPanelType error_type,
+    ClientLoadErrorReason reason) {
+  // If we already have a deterministic / policy error state (like sign-in
+  // required, ineligible account, disabled by admin, location mismatch), do not
+  // overwrite it with a generic transient error (e.g. kError or kOffline).
+  if (error_type_->has_value() && !IsTransientError(error_type_->value()) &&
+      IsTransientError(error_type)) {
+    return;
+  }
   StopGuestBootstrap();
-  is_guest_ready_ = false;
-  overlay_manager_.SetError(error_type);
+  guest_state_.Set(GuestState::kLoading);
+  if (host_) {
+    host_->ClientLoadErrorOccurred(reason);
+  }
+  error_reason_ = reason;
+  error_type_.Set(error_type);
+
   // An error occurred; transition to overlay if visible, or record for when
   // shown.
   UpdateDisplayState();
+  if (error_callback_ && ShouldReloadOnShow()) {
+    error_callback_.Run();
+  }
+}
+
+void GlicNoWebviewContentsManager::ClearErrorState() {
+  error_reason_.reset();
+  error_type_.Set(std::nullopt);
+  UpdateDisplayState();
+}
+
+void GlicNoWebviewContentsManager::ClearTransientErrorState() {
+  if (error_type_->has_value() && IsTransientError(error_type_->value())) {
+    ClearErrorState();
+  }
+}
+
+void GlicNoWebviewContentsManager::UpdateForProfileReadyState(bool is_initial) {
+  // A pending provider change takes priority over profile errors, since a
+  // relaunch replaces the provider they describe.
+  if (MaybeSetPendingProviderChangeError()) {
+    return;
+  }
+  mojom::ProfileReadyState ready_state =
+      GlicEnabling::GetProfileReadyState(profile_);
+  if (std::optional<mojom::ErrorPanelType> error =
+          ErrorForProfileReadyState(ready_state)) {
+    SetErrorState(*error, ReasonForProfileReadyState(ready_state));
+  } else if (is_initial || error_type_->has_value()) {
+    // Transitioned back to ready while showing an error, or initially ready;
+    // ensure error state is cleared and load the guest.
+    ClearErrorState();
+    LoadGuest();
+  }
+}
+
+bool GlicNoWebviewContentsManager::MaybeSetPendingProviderChangeError() {
+  // Decided once per instance, when its host is created. Contents that aren't
+  // attached to a host yet (e.g. warmed) load normally until they attach.
+  GlicProviderChange pending_change =
+      host_ ? host_->pending_provider_change() : GlicProviderChange::kNone;
+  if (pending_change == GlicProviderChange::kNone) {
+    return false;
+  }
+  SetErrorState(ErrorForPendingProviderChange(pending_change),
+                ClientLoadErrorReason::kPendingProviderChange);
+  return true;
+}
+
+void GlicNoWebviewContentsManager::OnProfileReadyStateChanged() {
+  UpdateForProfileReadyState(/*is_initial=*/false);
 }
 
 void GlicNoWebviewContentsManager::SetVisibility(
     content::Visibility visibility) {
   is_visible_ = (visibility == content::Visibility::VISIBLE);
+  // Don't keep hidden guest contents, if they're not in a good state. Check on
+  // delay after hide.
+  if (is_visible_) {
+    unconnected_hibernation_timer_.Stop();
+  } else {
+    unconnected_hibernation_timer_.Start(
+        FROM_HERE, kHibernateDisconnectedClientDelay, this,
+        &GlicNoWebviewContentsManager::OnHibernationTimerExpired);
+  }
+
+  // Update the guest WebContents visibility before `UpdateDisplayState()` so
+  // that if transitioning to `kShowingGuest` requests a visual state callback
+  // (`InsertVisualStateCallback`) on an already-warmed guest, its
+  // `RenderWidgetHost` is already visible and ready to produce a frame.
+  if (guest_contents()) {
+    guest_contents()->UpdateWebContentsVisibility(visibility);
+  }
   // Re-evaluate display state on visibility change (swaps to guest/overlay
   // when visible, or tears down/debounces overlay when hidden).
   UpdateDisplayState();
 
   overlay_manager_.SetVisibility(visibility);
-  if (!is_guest_ready_ && is_visible_ && overlay_contents() &&
-      overlay_contents()->GetRenderWidgetHostView()) {
+  if (guest_state_.get() == GuestState::kLoading && is_visible_ &&
+      overlay_contents() && overlay_contents()->GetRenderWidgetHostView()) {
     gfx::Size size =
         overlay_contents()->GetRenderWidgetHostView()->GetVisibleViewportSize();
     if (!size.IsEmpty()) {
       cached_overlay_size_ = size;
       ApplySizeToGuest();
     }
-  }
-  if (guest_contents()) {
-    guest_contents()->UpdateWebContentsVisibility(visibility);
   }
 }
 
@@ -703,6 +1330,7 @@ content::WebContents* GlicNoWebviewContentsManager::active_web_contents()
       return guest_contents();
     case DisplayState::kShowingOverlay:
       return overlay_contents();
+    case DisplayState::kShowingNativeLoading:
     case DisplayState::kAttachedHidden:
     case DisplayState::kWarming:
       return nullptr;
@@ -745,6 +1373,35 @@ void GlicNoWebviewContentsManager::UpdateActuationTracker() {
   }
   glic::GlicPerfTraitsTracker::GetInstance()->NotifyActuationStateChanged(
       guest_contents(), state);
+}
+
+void GlicNoWebviewContentsManager::UpdateLoadingTimer() {
+  bool should_run_timer =
+      guest_state_ == GuestState::kLoading && !error_type_->has_value();
+  if (should_run_timer) {
+    if (!loading_timer_.IsRunning()) {
+      loading_timer_.Start(
+          FROM_HERE, GetMaxLoadingTime(),
+          base::BindOnce(&GlicNoWebviewContentsManager::OnLoadingTimeout,
+                         weak_ptr_factory_.GetWeakPtr()));
+    }
+  } else {
+    loading_timer_.Stop();
+  }
+}
+
+void GlicNoWebviewContentsManager::OnLoadingTimeout() {
+  if (!is_visible_ && guest_contents()) {
+    guest_contents()->Stop();
+  }
+  SetErrorState(mojom::ErrorPanelType::kError,
+                ClientLoadErrorReason::kClientLoadTimeout);
+}
+
+void GlicNoWebviewContentsManager::OnHibernationTimerExpired() {
+  if (host_ && !host_->IsWebClientConnected()) {
+    host_->Hibernate();
+  }
 }
 
 }  // namespace glic

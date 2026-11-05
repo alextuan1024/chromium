@@ -519,10 +519,10 @@
 <translation id="5045550434625856497">Palavra-passe incorrecta</translation>
 <translation id="5059127710849015030">Transliteração de nepalês</translation>
 <translation id="5068919226082848014">Piza</translation>
+<translation id="5075336522277785691"><ph name="EXTENSION_NAME" /> definiu regras de substituição de proxy</translation>
 <translation id="5081517858322016911"><ph name="TOTAL_FILE_SIZE" /> de ficheiros serão eliminados</translation>
 <translation id="508423945471810158">A mover <ph name="NUMBER_OF_ITEMS" /> itens para <ph name="FOLDER_NAME" />…</translation>
 <translation id="509429900233858213">Ocorreu um erro.</translation>
-<translation id="5102922915594634436">Gerir pastas sincronizadas</translation>
 <translation id="5109254780565519649">Ocorreu um erro. Alguns itens podem não ter sido restaurados.</translation>
 <translation id="5110329002213341433">Inglês (Canadá)</translation>
 <translation id="5119780910075847424">Sincronização pausada</translation>
@@ -558,7 +558,6 @@
 <translation id="5305688511332277257">Nenhum instalado</translation>
 <translation id="5317780077021120954">Guardar</translation>
 <translation id="5318819489018851358">Partilhar com Linux</translation>
-<translation id="5330145655348521461">Estes ficheiros foram abertos num ambiente de trabalho diferente. Mova para <ph name="USER_NAME" /> (<ph name="MAIL_ADDRESS" />) para ver.</translation>
 <translation id="5330512191124428349">Obter informações</translation>
 <translation id="535792325654997756">Pessoa com gatos</translation>
 <translation id="5358764674931277">Velocidade de fotogramas</translation>
@@ -699,7 +698,6 @@
 <translation id="636254897931573416">Valor da correspondência do sufixo do domínio inválido</translation>
 <translation id="6364301859968397756">Armazenamento da organização cheio</translation>
 <translation id="6367976544441405720">Carrinha</translation>
-<translation id="637062427944097960">Este ficheiro foi aberto num ambiente de trabalho diferente. Mova para <ph name="USER_NAME" /> (<ph name="MAIL_ADDRESS" />) para ver.</translation>
 <translation id="6394388407447716302">Só de leitura</translation>
 <translation id="6395575651121294044"><ph name="NUMBER_OF_FILES" /> itens</translation>
 <translation id="6407769893376380348">Não foi possível mover o ficheiro <ph name="FILE_NAME" /> porque está encriptado.</translation>
@@ -983,7 +981,7 @@
 <translation id="8425213833346101688">Alterar</translation>
 <translation id="8428213095426709021">Definições</translation>
 <translation id="8429998526804961548"><ph name="NUMBER_OF_ITEMS" /> pastas partilhadas com <ph name="VM_NAME" /></translation>
-<translation id="8431909052837336408">Alterar o PIN do cartão SIM</translation>
+<translation id="8431909052837336408">Altere o PIN do SIM</translation>
 <translation id="8452135315243592079">Cartão SIM em falta</translation>
 <translation id="8456681095658380701">Nome inválido</translation>
 <translation id="8457767749626250697">O SIM está bloqueado</translation>

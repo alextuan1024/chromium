@@ -78,8 +78,8 @@ source_set("unit_tests") {
   deps = [
     ":edit_items",
     ":ui",
-    "//components/autofill/core/browser:test_support",
-    "//components/sync:test_support",
+    "//base/test:test_support",
+    "//components/autofill/core/browser",
     "//ios/chrome/app/strings",
     "//ios/chrome/browser/autofill/autofill_ai/public",
     "//ios/chrome/browser/net/model:crurl",
@@ -88,6 +88,8 @@ source_set("unit_tests") {
     "//ios/chrome/browser/shared/ui/list_model",
     "//ios/chrome/browser/shared/ui/table_view:test_support",
     "//ios/chrome/browser/shared/ui/table_view/cells",
+    "//ios/chrome/test:test_support",
+    "//testing/gtest",
     "//third_party/ocmock",
   ]
 }

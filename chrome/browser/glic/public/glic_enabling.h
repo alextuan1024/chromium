@@ -8,20 +8,27 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
+#include <utility>
 
 #include "base/auto_reset.h"
 #include "base/callback_list.h"
+#include "base/check.h"
+#include "base/containers/flat_set.h"
 #include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
 #include "base/scoped_observation.h"
 #include "base/types/expected.h"
 #include "base/types/pass_key.h"
 #include "base/values.h"
+#include "build/build_config.h"
 #include "chrome/browser/glic/glic_enums.h"
 #include "chrome/browser/glic/glic_user_status_fetcher.h"
 #include "chrome/browser/glic/host/glic.mojom.h"
 #include "chrome/browser/glic/host/glic_webui.mojom.h"
 #include "chrome/browser/glic/public/features.h"
+#include "chrome/browser/glic/public/glic_provider.h"
+#include "chrome/browser/glic/public/glic_provider_change.h"
 #include "components/optimization_guide/core/optimization_guide_features.h"
 #include "components/prefs/pref_change_registrar.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
@@ -29,11 +36,20 @@
 #include "components/subscription_eligibility/subscription_eligibility_service.h"
 #include "components/sync_device_info/device_info.h"
 
+#if BUILDFLAG(IS_ANDROID)
+#include "ui/base/device_form_factor.h"
+#endif  // BUILDFLAG(IS_ANDROID)
+
 class AccountCapabilities;
 class Profile;
 class ProfileAttributesStorage;
 
 namespace glic {
+
+#if BUILDFLAG(IS_ANDROID)
+class BackgroundActuationCapability;
+#endif  // BUILDFLAG(IS_ANDROID)
+class GlicActorPolicyChecker;
 class GlicKeyedService;
 namespace prefs {
 enum class FreStatus;
@@ -46,31 +62,71 @@ enum class ProfileReadyState : int32_t;
 enum class InvocationSource : int32_t;
 }  // namespace mojom
 
-// This synthetic field trial is registered for users who are affected by the
-// kGlicEligibilitySeparateAccountCapability feature.
+// Trial and group names for the GlicHotkeyDefaultScope synthetic field trial.
+inline constexpr char kGlicHotkeyDefaultScopeTrialName[] =
+    "GlicHotkeyDefaultScope";
+inline constexpr char kGlicHotkeyDefaultLocalScopeGroupName[] =
+    "GlicHotkeyDefaultLocalScope";
+inline constexpr char kGlicHotkeyDefaultGlobalScopeGroupName[] =
+    "GlicHotkeyDefaultGlobalScope";
+
+// Feature flag kGlicCountryFiltering controls whether country filtering is
+// applied client side. Two finch params are used to control this, both are a
+// comma separated string.
+// disabled_countries:
+//   - Optional, default to empty.
+//   - The country must not be in this list to be enabled.
+// enabled_countries:
+//   - Optional, default to kDefaultEnabledCountries (see glic_enabling.h).
+//   - If the size is 1 and the string is "*", then all countries are enabled.
+//   - Otherwise, the country must be in this list to be enabled.
+
+// Feature flag kGlicMinorCountryFiltering controls country filtering for users
+// who cannot use adult features (e.g. minors). It uses the same finch params as
+// kGlicCountryFiltering (disabled_countries, enabled_countries), with
+// enabled_countries defaulting to kDefaultEnabledCountriesMinor (see
+// glic_enabling.h). Unlike kGlicCountryFiltering, if the feature is disabled
+// then all countries are blocked for these users.
+
+// Comma separated list of countries to enable Glic, by default, if country
+// filtering (kGlicCountryFiltering) is enabled.
 //
-// Users who have a different value for the "old" and "new" account capability
-// are added to this synthetic field trial, with the group corresponding to
-// their field trial group for the main
-// (kGlicEligibilitySeparateAccountCapability) feature.
-//
-// For example:
-// - GlicEligibilitySeparateAccountCapabilityAffectedUsers:Control contains
-// clients in the Control group of main experiment, where at least one profile
-// has a different value for the "old" and "new" account capability.
-// - GlicEligibilitySeparateAccountCapabilityAffectedUsers:Enabled contains
-// clients in the Enabled group of the main experiment, where at least one
-// profile has a different value for the "old" and "new" account capability.
-//
-// Clients in the Control or Enabled groups of the main experiment, where all
-// profiles have the same value for the "old" and "new" account capability, are
-// not added to this synthetic field trial.
-//
-// This synthetic trial is re-evaluated in each session, and takes into account
-// only loaded profiles.
-inline constexpr char
-    kGlicEligibilitySeparateAccountCapabilitySyntheticTrialName[] =
-        "GlicEligibilitySeparateAccountCapabilityAffectedUsers";
+// When changing this list, consider whether kDefaultEnabledCountriesMinor
+// should also be updated. This is enforced by the GlicEnablingCountryListTest
+// change-detector test in glic_enabling_unittest.cc.
+#if BUILDFLAG(IS_ANDROID)
+inline constexpr char kDefaultEnabledCountries[] = "us,in";
+#else
+inline constexpr char kDefaultEnabledCountries[] =
+    // Phase 1
+    "us,ca,nz,in,"
+    // Phase 2
+    "as,au,bd,bn,bt,cc,ck,cx,fj,fm,gu,hk,hm,id,jp,kh,ki,kr,la,lk,mh,mm,mn,mo,"
+    "mp,mv,my,nc,nf,np,nr,nu,pf,pg,ph,pk,pn,pw,sb,sg,th,tk,tl,to,tv,tw,vn,vu,"
+    "wf,ws,"
+    // Phase 3a
+    "ag,ar,bb,bo,br,bs,bz,cl,co,cr,dm,do,ec,gd,gt,gy,hn,ht,jm,kn,lc,mx,ni,pa,"
+    "pe,py,sr,sv,tt,uy,vc,ve,"
+    // Phase 3b
+    "ae,am,ao,aq,az,ba,bf,bh,bi,bj,bw,cd,cf,cg,ci,cm,cv,dj,dz,eg,eh,er,et,ga,"
+    "ge,gh,gm,gn,gq,gw,il,iq,jo,ke,kg,km,kw,kz,lb,lr,ls,ly,ma,md,me,mg,mk,ml,"
+    "mr,mu,mw,mz,na,ne,ng,om,pr,ps,qa,rs,rw,sa,sc,sd,sl,sn,so,ss,st,sz,td,tg,"
+    "tj,tm,tn,tz,ua,ug,um,uz,vi,xk,ye,za,zm,zw,"
+    // Phase 4
+    "ai,bm,fk,gb,gg,gi,gs,im,io,je,ky,ms,sh,tc,vg";
+#endif
+
+// Comma separated list of countries to enable Glic for users who cannot use
+// adult features (e.g. minors), by default, if minor country filtering
+// (kGlicMinorCountryFiltering) is enabled. Must be a subset of
+// kDefaultEnabledCountries.
+#if BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN)
+inline constexpr char kDefaultEnabledCountriesMinor[] =
+    "as,au,bd,bn,bt,ca,cc,ck,cx,fj,fm,gu,hk,hm,in,jp,kh,ki,la,lk,mh,mm,mn,mo,"
+    "mp,mv,my,nf,np,nr,nu,nz,pg,pk,pw,sb,tk,tl,to,tv,us,vu,ws";
+#else
+inline constexpr char kDefaultEnabledCountriesMinor[] = "";
+#endif
 
 // Delegate for GlicGlobalEnabling and GlicEnabling.
 class GlicEnablingDelegate {
@@ -92,6 +148,11 @@ class GlicEnablingDelegate {
   friend class GlicEnabling;
   static bool GetCountryEnablement(std::string_view permanent_country,
                                    std::string_view session_country);
+  // Same as GetCountryEnablement(), but for users who cannot use adult
+  // features (e.g. minors). Controlled by kGlicMinorCountryFiltering.
+  static bool GetCountryEnablementForMinorAccounts(
+      std::string_view permanent_country,
+      std::string_view session_country);
 };
 
 struct LastCheckedCountries {
@@ -111,19 +172,48 @@ class GlicGlobalEnabling {
   bool IsEnabledByGlobalCriteria() const;
   bool IsSystemRequirementMet() const;
   static bool IsOsVersionSupported();
+#if BUILDFLAG(IS_ANDROID)
+  // Returns whether Glic supports the given Android form factor. Foldables
+  // (`is_foldable`) are allowed in either posture without kGlicAndroidTablet,
+  // since ui::GetDeviceFormFactor() reports an unfolded foldable as a tablet.
+  static bool IsAndroidFormFactorAllowed(ui::DeviceFormFactor form_factor,
+                                         bool is_foldable);
+#endif  // BUILDFLAG(IS_ANDROID)
   bool IsLocaleEnabled() const { return locale_enablement_.value_or(true); }
   // Note that country checks are executed along profile-level checks because
   // country information may not be ready at startup and can change.
   bool IsCountryEnabled();
+  // Same as IsCountryEnabled(), but for users who cannot use adult features
+  // (e.g. minors).
+  bool IsCountryEnabledForMinorAccounts();
+  // Whether Auto Browse settings should show the country variant of the
+  // "things to consider" disclosure. Controlled by
+  // kGlicWebActuationDisclosureCountryVariant.
+  bool ShouldUseWebActuationDisclosureCountryVariant() const;
 
   void UpdateStateForTesting(
       std::unique_ptr<GlicEnablingDelegate> new_delegate);
 
  private:
+  using CountryEvaluator = bool (*)(std::string_view permanent_country,
+                                    std::string_view session_country);
+
+  // Shared implementation of IsCountryEnabled() and
+  // IsCountryEnabledForMinorAccounts(). Once `is_enabled` becomes true it
+  // remains true. Otherwise `evaluate` is re-run only when the current
+  // countries differ from `last_checked`.
+  bool IsCountryEnabledImpl(
+      CountryEvaluator evaluate,
+      bool& is_enabled,
+      std::optional<LastCheckedCountries>& last_checked_countries);
+
   std::unique_ptr<GlicEnablingDelegate> delegate_;
   std::optional<bool> locale_enablement_;
   bool is_country_enabled_ = false;
   std::optional<LastCheckedCountries> last_checked_countries_;
+  bool is_country_enabled_for_minor_accounts_ = false;
+  std::optional<LastCheckedCountries>
+      last_checked_countries_for_minor_accounts_;
 };
 
 // LINT.IfChange(RequiredExperimentalOptIn)
@@ -135,6 +225,20 @@ enum class RequiredExperimentalOptIn {
   kMaxValue = kNotNeeded,
 };
 // LINT.ThenChange(//tools/metrics/histograms/metadata/glic/enums.xml:GlicRequiredExperimentalOptIn)
+
+// Why experimental triggering isn't ready, i.e. why
+// GlicEnabling::GetExperimentalTriggeringState() isn't kReady. Logged to the
+// actor journal.
+enum class ExperimentalTriggeringNotReadyReason {
+  kNone,
+  kGlicNotEnabled,
+  kFeatureDisabled,
+  kDisabledBySparkPolicy,
+  kCannotActOnWeb,
+  kMissingGlicOptIn,
+  kMissingActuationOptIn,
+  kMissingExperimentalOptIn,
+};
 
 // Returns true if any Glic entry point (such as the tab strip button or the
 // OS-level shortcut) is enabled in settings.
@@ -170,6 +274,13 @@ class GlicEnabling final : public signin::IdentityManager::Observer,
                            public subscription_eligibility::
                                SubscriptionEligibilityService::Observer {
  public:
+  enum class EnablementMetricsPhase { kStartup, kSteadyState };
+
+  // Version of the Glic experimental triggering protocol implemented by this
+  // client. `GetExperimentalTriggeringVersion()` returns this value when
+  // experimental triggering is available (or `std::nullopt` when unavailable).
+  static constexpr int kExperimentalTriggeringProtocolVersion = 1;
+
   // Returns whether the global Glic feature is enabled for Chrome. This status
   // will not change at runtime.
   static bool IsEnabledByGlobalCriteria();
@@ -186,6 +297,9 @@ class GlicEnabling final : public signin::IdentityManager::Observer,
   // available only to adult users.
   static bool CanUseAdultFeatures(const AccountCapabilities& capabilities);
 
+  // Returns whether `profile` is eligible for the Android native FRE.
+  static bool IsProfileEligibleForNativeFre(Profile* profile);
+
   // Returns whether the OS version is supported.
   static bool IsOsVersionSupported();
   // Returns whether system requirements (like RAM and Chromebook hardware) are
@@ -194,6 +308,13 @@ class GlicEnabling final : public signin::IdentityManager::Observer,
   // Checks whether this client is likely a dogfooder, taking the ignore dogfood
   // feature into account.
   static bool IsLikelyDogfoodClient();
+
+#if BUILDFLAG(IS_CHROMEOS)
+  // Returns whether `profile` belongs to a ChromeOS regular or child user
+  // session. Returns false if `profile` is null, belongs to a guest, managed
+  // guest or kiosk session, or has no signed-in user.
+  static bool IsChromeOSProfileEligible(Profile* profile);
+#endif  // BUILDFLAG(IS_CHROMEOS)
 
   // Returns true if a profile is eligible for Glic. Some profiles - such as
   // incognito, guest, system profile, etc. - are never eligible. An eligible
@@ -245,6 +366,12 @@ class GlicEnabling final : public signin::IdentityManager::Observer,
   // Returns true if the profile has completed the FRE.
   static bool HasConsentedForProfile(Profile* profile);
 
+  // Registers the synthetic trial for default hotkey scope
+  // ("GlicHotkeyDefaultScope") based on the `prefs::kGlicDefaultHotkeyScope`
+  // local state pref if `kGlicHotkeyLocalScope` feature is enabled and the
+  // given profile has completed the First Run Experience (FRE).
+  static void RegisterDefaultHotkeyScopeSyntheticTrial(Profile* profile);
+
   // Returns true if the given profile has Glic enabled and has completed the
   // FRE. True implies that IsEnabledByGlobalCriteria(),
   // IsProfileEligible(profile), and IsEnabledForProfile(profile) are also true.
@@ -261,6 +388,17 @@ class GlicEnabling final : public signin::IdentityManager::Observer,
 
   // Same as IsReadyForProfile, but returns a more detailed state.
   static mojom::ProfileReadyState GetProfileReadyState(Profile* profile);
+
+  // Returns the provider change that a relaunch would apply to `profile`. Can
+  // change at runtime. Always `kNone` unless `kGeicProviderChangePrompt` is
+  // enabled.
+  //
+  // Doesn't consider whether `profile` is eligible for Glic, before or after
+  // the relaunch: the provider is latched regardless of eligibility, and
+  // enablement is computed for the latched provider, so it can't tell whether
+  // the profile would be eligible under the new one. Callers decide whether to
+  // act on the change.
+  static GlicProviderChange GetPendingProviderChange(Profile* profile);
 
   // If Glic has recovered to a ready state since the last check, logs the
   // previous unhealthy state as a recovery outcome on user interaction.
@@ -279,6 +417,11 @@ class GlicEnabling final : public signin::IdentityManager::Observer,
   // * The profile has completed the first run experience
   static bool ShouldShowSettingsPage(Profile* profile);
 
+  // Whether Auto Browse settings should show the country variant of the "things
+  // to consider" disclosure. Controlled by
+  // `features::kGlicWebActuationDisclosureCountryVariant`.
+  static bool ShouldUseWebActuationDisclosureCountryVariant();
+
   // The Glic Button is shown when:
   // * Glic is enabled for the client and profile
   // * OR the user has lost access for a reason that may be recoverable.
@@ -287,21 +430,27 @@ class GlicEnabling final : public signin::IdentityManager::Observer,
   // Whether the auto open for pdf flow is enabled.
   static bool IsAutoOpenForPdfEnabled(Profile* profile);
 
+  // Whether the PDF viewer's summarize button and its API are enabled for the
+  // profile. This includes the kPdfGlicSummarize flag.
+  static bool IsPdfSummarizeEnabled(Profile* profile);
+
   // Whether the tab web contents contextual menu item is enabled.
   static bool IsContextualMenuItemEnabled(Profile* profile,
                                           const std::u16string& selection_text);
 
-  // Whether the selection prompt is enabled.
-  static bool IsSelectionPromptEnabledForProfile(Profile* profile);
+  // Whether the inline cue is enabled.
+  static bool IsInlineCueEnabledForProfile(Profile* profile);
 
   // Returns true if Glic is enabled for the profile, the feature is enabled,
   // and the account is non-enterprise (or for Glic dev).
   static bool IsShareImageEnabledForProfile(Profile* profile);
 
-  // Returns the Gemini Enterprise settings, taking into account command line
-  // overrides.
-  static std::optional<glic::mojom::GeminiEnterpriseSettings>
-  GetGeminiEnterpriseSettings(Profile* profile);
+  // Returns true if the profile can be launched from OS-level entry points
+  // (the OS launcher and the OS-global hotkey): Glic is enabled and consented
+  // for the profile (see IsEnabledAndConsentForProfile()), and its provider
+  // supports `GlicFeature::kOsEntryPoints` (e.g. not Gemini Enterprise). This
+  // value can change at runtime.
+  static bool IsOsEntryPointEnabledForProfile(Profile* profile);
 
   // Whether the live mode and floaty window are enabled by flags.
   static bool IsLiveAndFloatyEnabledByFlags();
@@ -354,10 +503,6 @@ class GlicEnabling final : public signin::IdentityManager::Observer,
     // Whether share image functionality is allowed for this account type.
     bool share_image_allowed : 1 = true;
 
-    // Settings for Gemini Enterprise.
-    std::optional<glic::mojom::GeminiEnterpriseSettings>
-        gemini_enterprise_settings;
-
     // LINT.IfChange(FeatureDisabledReason)
     enum class FeatureDisabledReason {
       kFeatureFlagDisabled = 0,
@@ -397,10 +542,6 @@ class GlicEnabling final : public signin::IdentityManager::Observer,
       kMaxValue = kDisallowedByRemoteOther,
     };
 
-    // Record the state of this struct to UMA.
-    void RecordStartupMetrics() const;
-    void RecordSteadyStateMetrics() const;
-
     bool IsProfileEligible() const;
 
     // Returns true if Glic is fully enabled and allowed to run on this profile.
@@ -436,14 +577,7 @@ class GlicEnabling final : public signin::IdentityManager::Observer,
 
     bool EligibleForShareImage() const;
 
-    bool EligibleForGeminiEnterpriseSettings() const;
-
     bool DisallowedByAdmin() const;
-
-   private:
-    // `suffix` should be either "Startup" or "SteadyState".
-    void RecordMetrics(const std::string& suffix) const;
-    void RecordFeatureDisabledReason(const std::string& suffix) const;
   };
   static ProfileEnablement EnablementForProfile(Profile* profile);
 
@@ -451,9 +585,13 @@ class GlicEnabling final : public signin::IdentityManager::Observer,
       Profile* profile,
       ProfileAttributesStorage* profile_attributes_storage);
 
+  // `actor_policy_checker` may be null (e.g. if the actor framework is not
+  // available for `profile`), in which case the profile is treated as unable to
+  // act on the web. If non-null, it must outlive this object.
   GlicEnabling(base::PassKey<GlicKeyedService, GlicEnabling> pass_key,
                Profile* profile,
-               ProfileAttributesStorage* profile_attributes_storage);
+               ProfileAttributesStorage* profile_attributes_storage,
+               GlicActorPolicyChecker* actor_policy_checker);
   ~GlicEnabling() override;
 
   // Returns true if the given profile is allowed to use Glic. This is the
@@ -485,10 +623,13 @@ class GlicEnabling final : public signin::IdentityManager::Observer,
   // otherwise.
   bool HasConsented() const;
 
-  // Returns the FRE status.
+  // Returns the status of the FRE the profile's provider uses (see
+  // `GlicProviderSpec::GetFreStore()`).
   static prefs::FreStatus GetCompletedFre(Profile* profile);
   prefs::FreStatus GetCompletedFre() const;
-  // Sets the FRE status.
+  // Sets the status of the FRE the profile's provider uses (see
+  // `GlicProviderSpec::GetFreStore()`). Statuses that FRE doesn't support are
+  // ignored, e.g. the GEiC FRE can only be completed.
   void SetCompletedFre(prefs::FreStatus status);
 
   // Whether the Web Actuation Toggle (Auto Browse) should be shown in Settings.
@@ -520,9 +661,20 @@ class GlicEnabling final : public signin::IdentityManager::Observer,
   // Sets whether experimental triggering is enabled.
   void SetExperimentalTriggeringEnabled(bool enabled);
 
-  // Returns the state of experimental triggering.
+  // Returns the state of experimental triggering. This is reported to other
+  // devices via Sync, and is kUnavailable whenever the profile is not allowed
+  // to act on the web (see GlicActorPolicyChecker::CanActOnWeb()).
   syncer::DeviceInfo::GlicExperimentalTriggeringState
   GetExperimentalTriggeringState() const;
+
+  // Returns why `GetExperimentalTriggeringState()` is not `kReady` (or `kNone`
+  // when ready).
+  ExperimentalTriggeringNotReadyReason GetExperimentalTriggeringNotReadyReason()
+      const;
+
+  // Returns the capabilities supported for Glic experimental triggering, or
+  // an empty set if unavailable.
+  base::flat_set<std::string> GetExperimentalTriggeringCapabilities() const;
 
   // Returns the version of the Glic experimental triggering protocol
   // supported by the current client, or std::nullopt if unavailable.
@@ -535,25 +687,43 @@ class GlicEnabling final : public signin::IdentityManager::Observer,
   // them.
   void MaybeRecordStartupMetrics();
 
+  static void RecordSteadyStateMetrics(Profile* profile);
+
+  static void RecordProfileEnablementMetricsForTesting(
+      Profile* profile,
+      EnablementMetricsPhase phase,
+      const ProfileEnablement& enablement);
+
   // Records startup metrics related to profile ineligibility. Should only be
   // called once per profile.
   static void RecordProfileIneligibilityMetricsAtStartup(Profile* profile);
 
+  // The user status fetcher only exists if `features::kGlicUserStatusCheck` is
+  // enabled and the profile's provider requires Gemini account eligibility.
+  bool HasUserStatusFetcherForTesting() const {
+    return !!glic_user_status_fetcher_;
+  }
+
   void SetGlicUserStatusUrlForTest(const GURL& test_url) {
+    CHECK(glic_user_status_fetcher_);
     glic_user_status_fetcher_->SetGlicUserStatusUrlForTest(test_url);
   }
 
   void SetUserStatusFetchOverrideForTest(
       GlicUserStatusFetcher::FetchOverrideCallback fetch_override) {
+    CHECK(glic_user_status_fetcher_);
     glic_user_status_fetcher_->SetFetchOverrideForTest(
         std::move(fetch_override));
   }
 
   // Updates the user status when information suggests that it might have
   // changed recently. This is internally debounced to avoid excessive
-  // requests, for signals that might be received multiple times.
+  // requests, for signals that might be received multiple times. Does nothing
+  // if there is no user status fetcher.
   void UpdateUserStatusWithThrottling() {
-    glic_user_status_fetcher_->UpdateUserStatusWithThrottling();
+    if (glic_user_status_fetcher_) {
+      glic_user_status_fetcher_->UpdateUserStatusWithThrottling();
+    }
   }
 
   // RAII helper to temporarily bypass enablement checks during a test, and
@@ -591,6 +761,8 @@ class GlicEnabling final : public signin::IdentityManager::Observer,
   base::CallbackListSubscription RegisterOnExperimentalTriggeringEnabledChanged(
       ExperimentalTriggeringEnabledChangedCallback callback);
 
+  // Called when `GetExperimentalTriggeringState()` or
+  // `GetExperimentalTriggeringCapabilities()` might return a different value.
   using ExperimentalTriggeringStateChangedCallback = base::RepeatingClosure;
   base::CallbackListSubscription RegisterOnExperimentalTriggeringStateChanged(
       ExperimentalTriggeringStateChangedCallback callback);
@@ -609,6 +781,10 @@ class GlicEnabling final : public signin::IdentityManager::Observer,
   void OnGlicSettingsPolicyChanged();
   void OnUserEnabledActuationOnWebChanged();
   void OnExperimentalTriggeringEnabledChanged();
+  void OnActOnWebCapabilityChanged(bool can_act_on_web);
+  std::pair<syncer::DeviceInfo::GlicExperimentalTriggeringState,
+            ExperimentalTriggeringNotReadyReason>
+  ComputeExperimentalTriggeringState() const;
   void MaybeNotifyExperimentalTriggeringStateChanged();
 
   // IdentityManagerObserver:
@@ -619,6 +795,8 @@ class GlicEnabling final : public signin::IdentityManager::Observer,
 
   // subscription_eligibility::SubscriptionEligibilityService::Observer:
   void OnAiSubscriptionTierUpdated(int32_t new_subscription_tier) override;
+  void OnSubscriptionBenefitsUpdated(
+      const base::flat_set<std::string>& subscription_benefits) override;
 
   // Detects changes to capabilities.
   void OnExtendedAccountInfoUpdated(const AccountInfo& info) override;
@@ -642,14 +820,18 @@ class GlicEnabling final : public signin::IdentityManager::Observer,
 
   void MaybeNotifyProfileReadyStateChanged();
 
-#if BUILDFLAG(IS_CHROMEOS)
-  static bool IsChromeOSProfileEligible(Profile* profile);
-#endif  // BUILDFLAG(IS_CHROMEOS)
+  static void RecordProfileEnablementMetrics(
+      Profile* profile,
+      EnablementMetricsPhase phase,
+      const ProfileEnablement& enablement);
 
   bool recorded_startup_metrics_ = false;
 
   raw_ptr<Profile> profile_;
   raw_ptr<ProfileAttributesStorage> profile_attributes_storage_;
+  // Owned by the GlicKeyedService, which also owns this object. May be null.
+  raw_ptr<GlicActorPolicyChecker> actor_policy_checker_;
+  base::CallbackListSubscription act_on_web_capability_subscription_;
   using EnableChangedCallbackList = base::RepeatingCallbackList<void()>;
   EnableChangedCallbackList enable_changed_callback_list_;
   using OnConsentChangeCallbackList = base::RepeatingCallbackList<void()>;
@@ -683,9 +865,21 @@ class GlicEnabling final : public signin::IdentityManager::Observer,
       subscription_eligibility::SubscriptionEligibilityService,
       subscription_eligibility::SubscriptionEligibilityService::Observer>
       subscription_eligibility_service_observation_{this};
-  syncer::DeviceInfo::GlicExperimentalTriggeringState
+  std::optional<std::pair<syncer::DeviceInfo::GlicExperimentalTriggeringState,
+                          ExperimentalTriggeringNotReadyReason>>
       last_experimental_triggering_state_;
+  // The experimental triggering capabilities as of the last
+  // `ExperimentalTriggeringStateChangedCallback` notification. Observers are
+  // notified when either the state or the capabilities change.
+  base::flat_set<std::string> last_experimental_triggering_capabilities_;
   mojom::ProfileReadyState last_profile_ready_state_;
+#if BUILDFLAG(IS_ANDROID)
+  // Tracks the "background_actuation" capability. Only created while
+  // `GlicFeature::kExperimentalTriggering` is supported and
+  // `kGlicBackgroundActuation` is enabled.
+  std::unique_ptr<BackgroundActuationCapability>
+      background_actuation_capability_;
+#endif  // BUILDFLAG(IS_ANDROID)
 };
 
 }  // namespace glic

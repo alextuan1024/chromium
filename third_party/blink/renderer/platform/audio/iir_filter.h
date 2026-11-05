@@ -17,7 +17,7 @@ class PLATFORM_EXPORT IIRFilter final {
   // The maximum IIR filter order.  This also limits the number of feedforward
   // coefficients.  The maximum number of coefficients is 20 according to the
   // spec.
-  const static size_t kMaxOrder = 19;
+  static constexpr size_t kMaxOrder = 19;
   IIRFilter(const AudioDoubleArray* feedforward_coef,
             const AudioDoubleArray* feedback_coef);
   ~IIRFilter();
@@ -34,9 +34,6 @@ class PLATFORM_EXPORT IIRFilter final {
   double TailTime(double sample_rate,
                   bool is_filter_stable,
                   unsigned render_quantum_frames);
-
-  // Reset the internal state of the IIR filter to the initial state.
-  void ResetState();
 
  private:
   // Filter memory

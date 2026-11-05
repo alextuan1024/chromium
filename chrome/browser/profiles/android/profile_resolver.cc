@@ -4,14 +4,15 @@
 
 #include "chrome/browser/profiles/android/profile_resolver.h"
 
+#include <optional>
+#include <string>
+#include <utility>
+
 #include "base/android/callback_android.h"
-#include "base/android/jni_android.h"
 #include "base/android/jni_string.h"
-#include "base/android/scoped_java_ref.h"
 #include "base/files/file_path.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
-#include "base/functional/callback_helpers.h"
 #include "base/path_service.h"
 #include "chrome/browser/android/profile_key_startup_accessor.h"
 #include "chrome/browser/android/proto/profile_token.pb.h"
@@ -21,14 +22,10 @@
 #include "chrome/browser/profiles/profile_key_android.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/common/chrome_paths.h"
+#include "third_party/jni_zero/default_conversions.h"
 
-// Must come after all headers that specialize FromJniType() / ToJniType().
+// Must come after headers that provide symbols used by @JniType.
 #include "chrome/browser/profiles/android/jni_headers/ProfileResolver_jni.h"
-
-using base::android::ConvertJavaStringToUTF8;
-using base::android::ConvertUTF8ToJavaString;
-using base::android::JavaRef;
-using base::android::ScopedJavaLocalRef;
 
 namespace profile_resolver {
 
@@ -49,7 +46,7 @@ base::FilePath GetRelativeProfilePath(const base::FilePath& profile_path) {
   base::FilePath relative_path;
   bool success =
       GetUserDataDir().AppendRelativePath(profile_path, &relative_path);
-  DCHECK(success);
+  CHECK(success, base::NotFatalUntil::M162);
   return relative_path;
 }
 
@@ -78,25 +75,6 @@ void LookupProfileByToken(ProfileToken token_proto, ProfileCallback callback) {
 
 void ProfileToProfileKey(ProfileKeyCallback callback, Profile* profile) {
   std::move(callback).Run(profile ? profile->GetProfileKey() : nullptr);
-}
-
-void OnResolvedProfile(const JavaRef<jobject>& j_callback, Profile* profile) {
-  ScopedJavaLocalRef<jobject> j_profile;
-  if (profile) {
-    j_profile = profile->GetJavaObject();
-  }
-  base::android::RunObjectCallbackAndroid(j_callback, j_profile);
-}
-
-void OnResolvedProfileKey(const JavaRef<jobject>& j_callback,
-                          ProfileKey* profile_key) {
-  ScopedJavaLocalRef<jobject> j_profile_key;
-  if (profile_key) {
-    ProfileKeyAndroid* profile_key_android =
-        profile_key->GetProfileKeyAndroid();
-    j_profile_key = profile_key_android->GetJavaObject();
-  }
-  base::android::RunObjectCallbackAndroid(j_callback, j_profile_key);
 }
 
 }  // namespace
@@ -167,7 +145,7 @@ std::string TokenizeProfileKey(ProfileKey* profile_key) {
 
   // TODO(crbug.com/40753680): Does not currently support tokenization of
   // OTR ProfileKeys. They don't hold a OTRProfileID value.
-  DCHECK(!profile_key->IsOffTheRecord());
+  CHECK(!profile_key->IsOffTheRecord(), base::NotFatalUntil::M162);
 
   ProfileToken token_proto;
   token_proto.set_relative_path(
@@ -179,51 +157,34 @@ std::string TokenizeProfileKey(ProfileKey* profile_key) {
 }
 
 static void JNI_ProfileResolver_ResolveProfile(
-    JNIEnv* env,
-    const JavaRef<jstring>& j_token,
-    const JavaRef<jobject>& j_callback) {
-  if (!j_token.obj()) {
-    base::android::RunObjectCallbackAndroid(j_callback,
-                                            ScopedJavaLocalRef<jobject>());
+    std::optional<std::string> token,
+    base::OnceCallback<void(Profile*)> callback) {
+  if (!token) {
+    std::move(callback).Run(nullptr);
     return;
   }
 
-  std::string token = ConvertJavaStringToUTF8(env, j_token);
-  ResolveProfile(
-      std::move(token),
-      base::BindOnce(&OnResolvedProfile,
-                     base::android::ScopedJavaGlobalRef<jobject>(j_callback)));
+  ResolveProfile(std::move(*token), std::move(callback));
 }
 
 static void JNI_ProfileResolver_ResolveProfileKey(
-    JNIEnv* env,
-    const JavaRef<jstring>& j_token,
-    const JavaRef<jobject>& j_callback) {
-  if (!j_token.obj()) {
-    base::android::RunObjectCallbackAndroid(j_callback,
-                                            ScopedJavaLocalRef<jobject>());
+    std::optional<std::string> token,
+    base::OnceCallback<void(ProfileKey*)> callback) {
+  if (!token) {
+    std::move(callback).Run(nullptr);
     return;
   }
 
-  std::string token = ConvertJavaStringToUTF8(env, j_token);
-  ResolveProfileKey(
-      std::move(token),
-      base::BindOnce(&OnResolvedProfileKey,
-                     base::android::ScopedJavaGlobalRef<jobject>(j_callback)));
+  ResolveProfileKey(std::move(*token), std::move(callback));
 }
 
-static ScopedJavaLocalRef<jstring> JNI_ProfileResolver_TokenizeProfile(
-    JNIEnv* env,
-    Profile* profile) {
-  return ConvertUTF8ToJavaString(env, TokenizeProfile(profile));
+static std::string JNI_ProfileResolver_TokenizeProfile(Profile* profile) {
+  return TokenizeProfile(profile);
 }
 
-static ScopedJavaLocalRef<jstring> JNI_ProfileResolver_TokenizeProfileKey(
-    JNIEnv* env,
-    const JavaRef<jobject>& j_profile_key) {
-  ProfileKey* profile_key =
-      ProfileKeyAndroid::FromProfileKeyAndroid(j_profile_key);
-  return ConvertUTF8ToJavaString(env, TokenizeProfileKey(profile_key));
+static std::string JNI_ProfileResolver_TokenizeProfileKey(
+    ProfileKey* profile_key) {
+  return TokenizeProfileKey(profile_key);
 }
 
 }  // namespace profile_resolver

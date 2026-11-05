@@ -4,13 +4,18 @@
 
 #include "chrome/app/chrome_crash_reporter_client.h"
 
+#include <stdint.h>
+
 #include <optional>
 #include <utility>
+#include <vector>
 
 #include "base/command_line.h"
+#include "base/containers/span.h"
 #include "base/environment.h"
 #include "base/files/file_path.h"
 #include "base/logging.h"
+#include "base/memory/read_only_shared_memory_region.h"
 #include "base/no_destructor.h"
 #include "base/path_service.h"
 #include "base/strings/string_split.h"
@@ -24,7 +29,6 @@
 #include "chrome/common/env_vars.h"
 #include "chrome/installer/util/google_update_settings.h"
 #include "components/crash/core/common/crash_keys.h"
-#include "components/metrics/system_profile_user_stream.h"
 #include "components/version_info/version_info_values.h"
 #include "content/public/common/content_switches.h"
 
@@ -38,6 +42,7 @@
 #endif
 
 #if BUILDFLAG(IS_ANDROID)
+#include "base/android/device_info.h"
 #include "chrome/common/chrome_descriptors_android.h"
 #endif
 
@@ -136,7 +141,14 @@ void ChromeCrashReporterClient::GetProductInfo(ProductInfo* product_info) {
 
   const char* product_name = "";
 #if BUILDFLAG(IS_ANDROID)
-  product_name = "Chrome_Android";
+  // LINT.IfChange(AndroidCrashProductName)
+  product_name = base::android::device_info::is_desktop()
+                     ? "Chrome_Android_Desktop"
+                     : "Chrome_Android";
+  // LINT.ThenChange(
+  //   //chrome/android/java/src/org/chromium/chrome/browser/crash/ChromePureJavaExceptionReporter.java:AndroidCrashProductName,
+  //   //components/minidump_uploader/rewrite_minidumps_as_mimes.cc:AndroidCrashProductName
+  // )
 #elif BUILDFLAG(IS_CHROMEOS)
   product_name = "Chrome_ChromeOS";
 #elif BUILDFLAG(IS_LINUX)
@@ -237,16 +249,17 @@ bool ChromeCrashReporterClient::EnableBreakpadForProcess(
 
 std::vector<base::ReadOnlySharedMemoryRegion>
 ChromeCrashReporterClient::GetUserStreamSharedMemoryRegions() {
-  std::vector<base::ReadOnlySharedMemoryRegion> streams;
-
-  base::ReadOnlySharedMemoryRegion region =
-      metrics::SystemProfileUserStream::Get().DuplicateSharedMemoryRegion();
-  // `DuplicateSharedMemoryRegion()` can still fail if the OS exhausts its
-  // file descriptors (or Mach ports on Mac). In that case, gracefully degrade
-  // by dropping the user stream rather than causing an unnecessary crash.
-  if (region.IsValid()) {
-    streams.push_back(std::move(region));
+  if (!user_streams_) {
+    user_streams_.emplace();
   }
+  return user_streams_->GetSharedMemoryRegions();
+}
 
-  return streams;
+bool ChromeCrashReporterClient::WriteUserStreamData(
+    uint32_t user_stream_type,
+    base::span<const uint8_t> data) {
+  if (!user_streams_) {
+    return false;
+  }
+  return user_streams_->Write(user_stream_type, data);
 }

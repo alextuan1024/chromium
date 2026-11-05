@@ -7,26 +7,23 @@
  * 'all-sites' is the polymer element for showing the list of all sites under
  * Site Settings.
  */
-import 'chrome://resources/cr_elements/cr_action_menu/cr_action_menu.js';
 import 'chrome://resources/cr_elements/cr_button/cr_button.js';
 import 'chrome://resources/cr_elements/cr_dialog/cr_dialog.js';
 import 'chrome://resources/cr_elements/cr_icon/cr_icon.js';
-import 'chrome://resources/cr_elements/cr_lazy_render/cr_lazy_render.js';
 import 'chrome://resources/cr_elements/cr_search_field/cr_search_field.js';
 import 'chrome://resources/cr_elements/cr_shared_vars.css.js';
-import 'chrome://resources/cr_elements/md_select.css.js';
 import 'chrome://resources/polymer/v3_0/iron-list/iron-list.js';
+import '/shared/settings/md_select.css.js';
 import '../settings_shared.css.js';
 import '../settings_page/settings_subpage.js';
 import './all_sites_icons.html.js';
 import './clear_storage_dialog_shared.css.js';
+import './cr_lazy_render.js';
 import './site_entry.js';
 
-import type {CrActionMenuElement} from 'chrome://resources/cr_elements/cr_action_menu/cr_action_menu.js';
+import {WebUiListenerMixin} from '/shared/settings/web_ui_listener_mixin.js';
 import type {CrDialogElement} from 'chrome://resources/cr_elements/cr_dialog/cr_dialog.js';
-import type {CrLazyRenderElement} from 'chrome://resources/cr_elements/cr_lazy_render/cr_lazy_render.js';
 import {I18nMixin} from 'chrome://resources/cr_elements/i18n_mixin.js';
-import {WebUiListenerMixin} from 'chrome://resources/cr_elements/web_ui_listener_mixin.js';
 import {assert} from 'chrome://resources/js/assert.js';
 import type {IronListElement} from 'chrome://resources/polymer/v3_0/iron-list/iron-list.js';
 import {afterNextRender, PolymerElement} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
@@ -42,6 +39,7 @@ import {SettingsViewMixin} from '../settings_page/settings_view_mixin.js';
 
 import {getTemplate} from './all_sites.html.js';
 import {AllSitesAction2, AllSitesDialog, ContentSetting, SortMethod} from './constants.js';
+import type {CrLazyRenderElement} from './cr_lazy_render.js';
 import type {OriginInfo, SiteGroup} from './site_settings_browser_proxy.js';
 import {SiteSettingsMixin} from './site_settings_mixin.js';
 
@@ -55,7 +53,6 @@ interface ActionMenuModel {
   target: HTMLElement;
 }
 
-type OpenMenuEvent = CustomEvent<ActionMenuModel>;
 type RemoveSiteEvent = CustomEvent<ActionMenuModel>;
 
 interface SelectedItem {
@@ -65,7 +62,6 @@ interface SelectedItem {
 
 declare global {
   interface HTMLElementEventMap {
-    'open-menu': OpenMenuEvent;
     'remove-site': RemoveSiteEvent;
     'site-entry-selected': CustomEvent<SelectedItem>;
   }
@@ -79,15 +75,12 @@ export interface AllSitesElement {
     confirmClearAllData: CrLazyRenderElement<CrDialogElement>,
     confirmRemoveSite: CrLazyRenderElement<CrDialogElement>,
     listContainer: HTMLElement,
-    menu: CrLazyRenderElement<CrActionMenuElement>,
     sortMethod: HTMLSelectElement,
   };
 }
 
 const AllSitesElementBase = SettingsViewMixin(GlobalScrollTargetMixin(
     WebUiListenerMixin(I18nMixin(SiteSettingsMixin(PolymerElement)))));
-
-const RWS_RELATED_SEARCH_PREFIX: string = 'related:';
 
 export class AllSitesElement extends AllSitesElementBase {
   static get is() {
@@ -215,7 +208,6 @@ export class AllSitesElement extends AllSitesElementBase {
           this.selectedItem_ = e.detail;
         });
 
-    this.addEventListener('open-menu', this.onOpenMenu_.bind(this));
     this.addEventListener('remove-site', this.onRemoveSite_.bind(this));
 
     const sortParam = Router.getInstance().getQueryParameters().get('sort');
@@ -306,19 +298,9 @@ export class AllSitesElement extends AllSitesElementBase {
       siteGroupMap: Map<string, SiteGroup>, searchQuery: string): SiteGroup[] {
     const result = [];
     for (const [_groupingKey, siteGroup] of siteGroupMap) {
-      if (this.isRwsFiltered_()) {
-        const rwsOwnerFilter =
-            this.filter.substring(this.filter.indexOf(':') + 1);
-        // Checking `siteGroup.rwsOwner` to ensure that we're not matching with
-        // site entries that are not a member of a related website set.
-        if (siteGroup.rwsOwner && siteGroup.rwsOwner === rwsOwnerFilter) {
-          result.push(siteGroup);
-        }
-      } else {
-        if (siteGroup.origins.find(
-                originInfo => originInfo.origin.includes(searchQuery))) {
-          result.push(siteGroup);
-        }
+      if (siteGroup.origins.find(
+              originInfo => originInfo.origin.includes(searchQuery))) {
+        result.push(siteGroup);
       }
     }
     return this.sortSiteGroupList_(result);
@@ -444,48 +426,12 @@ export class AllSitesElement extends AllSitesElementBase {
     this.selectedItem_ = null;
   }
 
-  /**
-   * Open the overflow menu and ensure that the item is visible in the scroll
-   * pane when its menu is opened (it is possible to open off-screen items using
-   * keyboard shortcuts).
-   */
-  private onOpenMenu_(e: OpenMenuEvent) {
-    const index = e.detail.index;
-    const list = this.$.allSitesList;
-    if (index < list.firstVisibleIndex || index > list.lastVisibleIndex) {
-      list.scrollToIndex(index);
-    }
-    const target = e.detail.target;
-    this.actionMenuModel_ = e.detail;
-    this.$.menu.get().showAt(target);
-  }
-
   private shouldShowClearAllButton_(): boolean {
     return this.filteredList_.length > 0;
   }
 
-  private hasFilteredRwsSites_(): boolean {
-    return this.isRwsFiltered_() && this.filteredList_ &&
-        this.filteredList_.length > 0;
-  }
-
-  private onShowRelatedSites_() {
-    this.browserProxy.recordAction(AllSitesAction2.FILTER_BY_FPS_OWNER);
-    this.$.menu.get().close();
-    const siteGroup = this.filteredList_[this.actionMenuModel_!.index];
-    const searchParams = new URLSearchParams(
-        'searchSubpage=' +
-        encodeURIComponent(RWS_RELATED_SEARCH_PREFIX + siteGroup.rwsOwner!));
-    const currentRoute = Router.getInstance().getCurrentRoute();
-    Router.getInstance().navigateTo(currentRoute, searchParams);
-  }
-
   private onRemoveSite_(e: RemoveSiteEvent) {
     this.actionMenuModel_ = e.detail;
-    this.$.confirmRemoveSite.get().showModal();
-  }
-
-  private onRemove_() {
     this.$.confirmRemoveSite.get().showModal();
   }
 
@@ -509,12 +455,7 @@ export class AllSitesElement extends AllSitesElementBase {
     const siteGroupToUpdate = this.filteredList_[index];
 
     const updatedSiteGroup: SiteGroup = {
-      groupingKey: siteGroupToUpdate.groupingKey,
-      displayName: siteGroupToUpdate.displayName,
-      hasInstalledPWA: siteGroupToUpdate.hasInstalledPWA,
-      numCookies: siteGroupToUpdate.numCookies,
-      rwsOwner: siteGroupToUpdate.rwsOwner,
-      rwsNumMembers: siteGroupToUpdate.rwsNumMembers,
+      ...siteGroupToUpdate,
       origins: [],
     };
 
@@ -557,9 +498,6 @@ export class AllSitesElement extends AllSitesElementBase {
       siteGroupToUpdate.origins.forEach(originEntry => {
         this.resetPermissionsForOrigin_(originEntry.origin);
       });
-      if (updatedSiteGroup.rwsOwner) {
-        this.decrementRwsNumMembers_(updatedSiteGroup.rwsOwner);
-      }
     }
 
     this.updateSiteGroup_(index, updatedSiteGroup);
@@ -575,20 +513,6 @@ export class AllSitesElement extends AllSitesElementBase {
    */
   private isFiltered_(): boolean {
     return this.filter !== '';
-  }
-
-  /**
-   * Checks if a related website set search filter is applied.
-   * @return True if filter starts with `RWS_RELATED_SEARCH_PREFIX`.
-   */
-  private isRwsFiltered_(): boolean {
-    return this.filter.startsWith(RWS_RELATED_SEARCH_PREFIX);
-  }
-
-  private getRwsLearnMoreLabel_() {
-    const rwsOwner = this.filter.substring(this.filter.indexOf(':') + 1);
-    return loadTimeData.getStringF(
-        'siteSettingsRelatedWebsiteSetsLearnMore', rwsOwner);
   }
 
   /**
@@ -634,7 +558,6 @@ export class AllSitesElement extends AllSitesElementBase {
     chrome.metricsPrivate.recordUserAction('AllSites_DialogClosed');
     (e.target as HTMLElement).closest('cr-dialog')!.close();
     this.actionMenuModel_ = null;
-    this.$.menu.get().close();
   }
 
   private getRemoveSiteTitle_(): string {
@@ -735,8 +658,7 @@ export class AllSitesElement extends AllSitesElementBase {
 
   /**
    * Get the appropriate label for the clear data confirmation dialog, depending
-   * on whether any apps are installed, a filter is applied, and/or the RWS V2
-   * view is shown.
+   * on whether any apps are installed and/or a filter is applied.
    * @return The appropriate description for clear data confirmation dialog.
    */
   private getClearAllStorageDialogDescription_(): string {
@@ -761,7 +683,7 @@ export class AllSitesElement extends AllSitesElementBase {
    * Selects the appropriate string to display for the sign-out string in
    * confirmation popup based on whether a filter is applied.
    * @return The appropriate sign out confirmation string based on whether a
-   *     filter is applied and/or the RWS V2 view is shown.
+   *     filter is applied.
    */
   private getClearAllStorageDialogSignOutLabel_(): string {
     return this.i18n(
@@ -772,20 +694,6 @@ export class AllSitesElement extends AllSitesElementBase {
   private recordUserAction_(scopes: string[]) {
     chrome.metricsPrivate.recordUserAction(
         ['AllSites', ...scopes].filter(Boolean).join('_'));
-  }
-
-  /**
-   * Decrements the number of rws members for a given owner eTLD+1 by 1.
-   * @param rwsOwner The related website set owner.
-   */
-  private decrementRwsNumMembers_(rwsOwner: string) {
-    this.filteredList_.forEach((siteGroup, index) => {
-      if (siteGroup.rwsOwner === rwsOwner) {
-        this.set(
-            'filteredList_.' + index + '.rwsNumMembers',
-            siteGroup.rwsNumMembers! - 1);
-      }
-    });
   }
 
   /**
@@ -804,12 +712,8 @@ export class AllSitesElement extends AllSitesElementBase {
   private clearDataForSiteGroupIndex_(index: number) {
     const siteGroupToUpdate = this.filteredList_[index];
     const updatedSiteGroup: SiteGroup = {
-      groupingKey: siteGroupToUpdate.groupingKey,
-      displayName: siteGroupToUpdate.displayName,
-      hasInstalledPWA: siteGroupToUpdate.hasInstalledPWA,
+      ...siteGroupToUpdate,
       numCookies: 0,
-      rwsOwner: siteGroupToUpdate.rwsOwner,
-      rwsNumMembers: siteGroupToUpdate.rwsNumMembers,
       origins: [],
     };
 
@@ -856,9 +760,6 @@ export class AllSitesElement extends AllSitesElementBase {
     this.recordUserAction_([...scopes, installed, 'Confirm']);
     this.metricsBrowserProxy.recordDeleteBrowsingDataAction(
         DeleteBrowsingDataAction.SITES_SETTINGS_PAGE);
-    if (this.isRwsFiltered_()) {
-      this.browserProxy.recordAction(AllSitesAction2.DELETE_FOR_ENTIRE_FPS);
-    }
     for (let index = this.filteredList_.length - 1; index >= 0; index--) {
       this.clearDataForSiteGroupIndex_(index);
     }

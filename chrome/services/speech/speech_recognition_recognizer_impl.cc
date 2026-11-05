@@ -21,7 +21,6 @@
 #include "base/synchronization/lock.h"
 #include "base/task/bind_post_task.h"
 #include "base/task/sequenced_task_runner.h"
-#include "base/task/task_runner.h"
 #include "base/task/task_traits.h"
 #include "base/task/thread_pool.h"
 #include "base/time/time.h"
@@ -62,7 +61,47 @@ const char
 constexpr char kLiveCaptionLanguageCountHistogramName[] =
     "Accessibility.LiveCaption.LanguageCount";
 
+constexpr char kSodaTfLiteDelegateStatusHistogramName[] =
+    "Accessibility.LiveCaption.SodaTfLiteDelegateStatus";
+
 namespace {
+
+// Whether the ASR pipeline's TFLite sessions run on a TFLite delegate.
+// These values are persisted to logs. Entries should not be renumbered and
+// numeric values should never be reused.
+// LINT.IfChange(SodaTfLiteDelegateStatus)
+enum class SodaTfLiteDelegateStatus {
+  // No delegate was requested in the SODA config.
+  kNotDelegated = 0,
+  // The delegate was requested and every TFLite session runs on it.
+  kDelegateSuccess = 1,
+  // The delegate was requested but at least one TFLite session runs TFLite's
+  // built-in kernels.
+  kDelegateFallback = 2,
+  kMaxValue = kDelegateFallback,
+};
+// LINT.ThenChange(/tools/metrics/histograms/metadata/accessibility/enums.xml:SodaTfLiteDelegateStatus)
+
+// Records whether the ASR pipeline's TFLite sessions run on a TFLite delegate.
+void RecordTfLiteDelegateInfo(
+    const soda::chrome::SodaTfLiteDelegateInfo& info) {
+  const int total = info.tflite_session_count();
+  if (total <= 0) {
+    return;
+  }
+  SodaTfLiteDelegateStatus status;
+  // XNNPACK is the only delegate Chrome requests today. ResetSoda() sets
+  // enable_xnnpack_delegate in the SODA config if and only if this feature is
+  // enabled.
+  if (!base::FeatureList::IsEnabled(media::kSodaXnnpackDelegate)) {
+    status = SodaTfLiteDelegateStatus::kNotDelegated;
+  } else if (info.delegated_session_count() >= total) {
+    status = SodaTfLiteDelegateStatus::kDelegateSuccess;
+  } else {
+    status = SodaTfLiteDelegateStatus::kDelegateFallback;
+  }
+  base::UmaHistogramEnumeration(kSodaTfLiteDelegateStatusHistogramName, status);
+}
 
 struct SodaCallbacks {
   SpeechRecognitionRecognizerImpl::OnRecognitionEventCallback recognition;
@@ -154,10 +193,12 @@ void OnSodaResponse(const char* serialized_proto,
 
     if (result.has_timing_metrics()) {
       speech_recognition_result.timing_information = media::TimingInformation();
-      speech_recognition_result.timing_information->audio_start_time =
-          base::Microseconds(result.timing_metrics().audio_start_time_usec());
-      speech_recognition_result.timing_information->audio_end_time =
-          base::Microseconds(result.timing_metrics().event_end_time_usec());
+      speech_recognition_result.timing_information->audio_start_time = std::max(
+          base::Microseconds(result.timing_metrics().audio_start_time_usec()),
+          base::TimeDelta());
+      speech_recognition_result.timing_information->audio_end_time = std::max(
+          base::Microseconds(result.timing_metrics().event_end_time_usec()),
+          speech_recognition_result.timing_information->audio_start_time);
     }
 
     callbacks.recognition.Run(std::move(speech_recognition_result));
@@ -185,6 +226,11 @@ void OnSodaResponse(const char* serialized_proto,
 
   if (response.soda_type() == soda::chrome::SodaResponse::STOP) {
     callbacks.stop.Run();
+  }
+
+  if (response.soda_type() ==
+      soda::chrome::SodaResponse::TFLITE_DELEGATE_INFO) {
+    RecordTfLiteDelegateInfo(response.tflite_delegate_info());
   }
 }
 
@@ -223,7 +269,9 @@ SpeechRecognitionRecognizerImpl::~SpeechRecognitionRecognizerImpl() {
 void SpeechRecognitionRecognizerImpl::OnLanguagePackInstalled(
     base::flat_map<std::string, base::FilePath> config_paths) {
   config_paths_ = config_paths;
-  ResetSoda();
+  if (soda_client_ && soda_client_->IsInitialized()) {
+    ResetSoda();
+  }
 }
 
 void SpeechRecognitionRecognizerImpl::Create(
@@ -275,6 +323,27 @@ void SpeechRecognitionRecognizerImpl::OnRecognitionEvent(
     using SpeechTimestamp = SpeechTimestampEstimator::SpeechTimestamp;
     auto& timing_info = event.timing_information.value();
 
+    // SODA can emit negative or inverted audio timestamps (e.g. when
+    // subtracting preamble length or during text formatting alignment). Clamp
+    // timestamps so that `audio_start_time >= 0` and `audio_end_time >=
+    // audio_start_time`, as required by Mojo deserialization in
+    // TimingInformation StructTraits.
+    timing_info.audio_start_time =
+        std::max(timing_info.audio_start_time, base::TimeDelta());
+    timing_info.audio_end_time =
+        std::max(timing_info.audio_end_time, timing_info.audio_start_time);
+
+    if (timing_info.hypothesis_parts.has_value()) {
+      base::TimeDelta prev_offset = base::TimeDelta();
+      const base::TimeDelta max_offset =
+          timing_info.audio_end_time - timing_info.audio_start_time;
+      for (auto& part : *timing_info.hypothesis_parts) {
+        part.hypothesis_part_offset =
+            std::clamp(part.hypothesis_part_offset, prev_offset, max_offset);
+        prev_offset = part.hypothesis_part_offset;
+      }
+    }
+
     // During ResetSoda(), we reset `timestamp_estimator_`, and the next few
     // transcriptions might have missing or wrong timestamps, but they should
     // quickly return to being consistent.
@@ -301,6 +370,8 @@ void SpeechRecognitionRecognizerImpl::OnRecognitionEvent(
     }
     if (!media_timestamps.empty()) {
       timing_info.originating_media_timestamps = std::move(media_timestamps);
+    } else {
+      timing_info.originating_media_timestamps.reset();
     }
   }
 
@@ -314,6 +385,9 @@ void SpeechRecognitionRecognizerImpl::OnRecognitionEvent(
 void SpeechRecognitionRecognizerImpl::
     OnSpeechRecognitionRecognitionEventCallback(bool success) {
   is_client_requesting_speech_recognition_ = success;
+  if (!is_client_requesting_speech_recognition_ && soda_client_) {
+    soda_client_->Destroy();
+  }
 }
 
 void SpeechRecognitionRecognizerImpl::OnLanguageIdentificationEvent(
@@ -389,6 +463,9 @@ void SpeechRecognitionRecognizerImpl::SetSodaClientForTesting(
 
 void SpeechRecognitionRecognizerImpl::OnClientHostDisconnected() {
   is_client_requesting_speech_recognition_ = false;
+  if (soda_client_) {
+    soda_client_->Destroy();
+  }
 }
 
 void SpeechRecognitionRecognizerImpl::SendAudioToSpeechRecognitionService(
@@ -411,6 +488,9 @@ void SpeechRecognitionRecognizerImpl::SendAudioToSpeechRecognitionService(
       caption_bubble_visible_duration_ += duration;
     } else {
       caption_bubble_hidden_duration_ += duration;
+      if (soda_client_) {
+        soda_client_->Destroy();
+      }
       return;
     }
   }
@@ -455,7 +535,10 @@ void SpeechRecognitionRecognizerImpl::SendAudioToSpeechRecognitionService(
     // computations, once we're fairly sure the silence isn't meaningful.
     constexpr base::TimeDelta kSilenceThreshold = base::Seconds(10);
     if (now - last_non_empty_audio_time_ > kSilenceThreshold) {
-      // No nonzero data for several seconds. Don't send this buffer of zeroes.
+      // No nonzero data for several seconds. Don't send this buffer of zeroes,
+      // and release the SODA instance to free memory until non-empty audio
+      // resumes.
+      ReleaseSodaForSilence();
 
       // Forward `media_start_pts` since we can seek into the middle of long
       // stretches of silence.
@@ -483,6 +566,15 @@ void SpeechRecognitionRecognizerImpl::OnSpeechRecognitionError() {
 }
 
 void SpeechRecognitionRecognizerImpl::MarkDone() {
+  const bool already_marked_done = std::exchange(marked_done_, true);
+  if (soda_released_for_silence_) {
+    // SODA is already released, so notify the client directly.
+    if (!already_marked_done) {
+      speech_recognition_stopped_callback_.Run();
+    }
+    return;
+  }
+
   soda_client_->MarkDone();
 }
 
@@ -498,6 +590,7 @@ void SpeechRecognitionRecognizerImpl::UpdateRecognitionContext(
   }
 
   auto serialized = context.SerializeAsString();
+
   RecognitionContext serialized_recognition_context;
   serialized_recognition_context.recognition_context = serialized.c_str();
   serialized_recognition_context.recognition_context_size = serialized.size();
@@ -530,6 +623,9 @@ void SpeechRecognitionRecognizerImpl::
     mojo::ReportBadMessage(kInvalidAudioDataError);
     return;
   }
+  if (marked_done_) {
+    return;
+  }
 
   CHECK(soda_client_);
   if (!soda_client_->IsInitialized() ||
@@ -545,13 +641,20 @@ void SpeechRecognitionRecognizerImpl::OnLanguageChanged(
     const std::string& language) {
   std::optional<speech::SodaLanguagePackComponentConfig>
       language_component_config = GetLanguageComponentConfig(language);
-  if (!language_component_config.has_value())
+  if (!language_component_config.has_value()) {
     return;
+  }
 
   // Only reset SODA if the language changed.
-  if (language_component_config.value().language_name ==
-          primary_language_name_ ||
-      language_component_config.value().language_code == LanguageCode::kNone) {
+  std::string_view language_name = language_component_config->language_name;
+  if (language_name == primary_language_name_ ||
+      language_component_config->language_code == LanguageCode::kNone) {
+    return;
+  }
+
+  // Only change the language if the new language pack is installed.
+  auto it = config_paths_.find(language_name);
+  if (it == config_paths_.end() || it->second.empty()) {
     return;
   }
 
@@ -563,38 +666,28 @@ void SpeechRecognitionRecognizerImpl::OnLanguageChanged(
 
   // Changing the language requires a blocking call to check if the language
   // pack exists on the device.
-  scoped_refptr<base::SequencedTaskRunner> current_task_runner =
-      base::SequencedTaskRunner::GetCurrentDefault();
-
   task_runner_->PostTaskAndReplyWithResult(
-      FROM_HERE,
-      base::BindOnce(
-          [](const std::string& language) {
-            base::FilePath config_file_path =
-                GetLatestSodaLanguagePackDirectory(language);
-            return std::make_pair(config_file_path,
-                                  base::PathExists(config_file_path));
-          },
-          language),
-      base::BindOnce(
-          &SpeechRecognitionRecognizerImpl::ResetSodaWithNewLanguage,
-          weak_factory_.GetWeakPtr(),
-          std::string(language_component_config.value().language_name)));
+      FROM_HERE, base::BindOnce(&base::PathExists, it->second),
+      base::BindOnce(&SpeechRecognitionRecognizerImpl::ResetSodaWithNewLanguage,
+                     weak_factory_.GetWeakPtr(), std::string(language_name)));
 }
 
 void SpeechRecognitionRecognizerImpl::OnMaskOffensiveWordsChanged(
     bool mask_offensive_words) {
   mask_offensive_words_ = mask_offensive_words;
-  ResetSoda();
+  if (soda_client_ && soda_client_->IsInitialized()) {
+    ResetSoda();
+  }
 }
 
 void SpeechRecognitionRecognizerImpl::ResetSodaWithNewLanguage(
-    std::string language_name,
-    std::pair<base::FilePath, bool> config_and_exists) {
-  if (config_and_exists.second) {
-    config_paths_[language_name] = config_and_exists.first;
+    const std::string& language_name,
+    bool config_exists) {
+  if (config_exists) {
     primary_language_name_ = language_name;
-    ResetSoda();
+    if (soda_client_ && soda_client_->IsInitialized()) {
+      ResetSoda();
+    }
   }
 }
 
@@ -618,6 +711,10 @@ void SpeechRecognitionRecognizerImpl::RecordDuration() {
 }
 
 void SpeechRecognitionRecognizerImpl::ResetSoda() {
+  if (!is_client_requesting_speech_recognition_ || marked_done_) {
+    return;
+  }
+
   // Initialize the SODA instance.
   auto api_key = google_apis::GetSodaAPIKey();
 
@@ -648,6 +745,10 @@ void SpeechRecognitionRecognizerImpl::ResetSoda() {
   config_msg_.set_enable_speaker_change_detection(
       base::FeatureList::IsEnabled(media::kSpeakerChangeDetection));
   config_msg_.set_mask_offensive_words(mask_offensive_words_);
+  // Only set when enabled so the serialized config is unchanged otherwise.
+  if (base::FeatureList::IsEnabled(media::kSodaXnnpackDelegate)) {
+    config_msg_.set_enable_xnnpack_delegate(true);
+  }
   if (config_paths_.size() > 0 && options_->allow_multi_language) {
     auto* multilang_config = config_msg_.mutable_multilang_config();
     multilang_config->set_rewind_when_switching_language(true);
@@ -682,8 +783,25 @@ void SpeechRecognitionRecognizerImpl::ResetSoda() {
       reinterpret_cast<void*>(static_cast<uintptr_t>(soda_client_id_));
   CHECK(soda_client_);
   soda_client_->Reset(config, sample_rate_, channel_count_);
+  if (soda_client_->IsInitialized()) {
+    soda_released_for_silence_ = false;
+  }
 
   timestamp_estimator_ = std::make_unique<SpeechTimestampEstimator>();
+}
+
+void SpeechRecognitionRecognizerImpl::ReleaseSodaForSilence() {
+  if (!soda_client_ || marked_done_) {
+    return;
+  }
+
+  if (soda_client_->IsInitialized()) {
+    // Unregister first to drop the STOP event emitted during Destroy().
+    SodaClientRegistry::GetInstance()->Unregister(soda_client_id_);
+    soda_client_->Destroy();
+    soda_client_id_ = SodaClientRegistry::GetInstance()->Register(this);
+  }
+  soda_released_for_silence_ = true;
 }
 
 soda::chrome::ExtendedSodaConfigMsg*

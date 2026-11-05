@@ -10,6 +10,7 @@
 #include "third_party/blink/renderer/core/style/animated_source_properties_bitset.h"
 #include "third_party/blink/renderer/platform/sparse_vector.h"
 #include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
+#include "third_party/blink/renderer/platform/wtf/hash_functions.h"
 
 namespace blink {
 
@@ -36,6 +37,10 @@ struct CORE_EXPORT AnimatedSource {
     return animated_source.IsOwnedBy(element);
   }
 
+  constexpr uint32_t GetHash() const {
+    return HashInts(animated_source.GetHash(), has_untracked_dependencies);
+  }
+
   bool operator==(const AnimatedSource&) const = default;
 };
 
@@ -47,9 +52,60 @@ class CORE_EXPORT StyleAnimatedSources {
   DISALLOW_NEW();
 
  public:
+  struct Entry {
+    AnimatedSourceProperty key;
+    AnimatedSource value;
+  };
+
+  class ConstIterator {
+    STACK_ALLOCATED();
+
+   public:
+    using iterator_concept = std::forward_iterator_tag;
+    using value_type = Entry;
+    using difference_type = std::ptrdiff_t;
+    using SourceIterator = SparseVector<AnimatedSourceProperty,
+                                        AnimatedSourceHandle,
+                                        2>::const_iterator;
+
+    ConstIterator() = default;
+    ConstIterator(const StyleAnimatedSources* sources, SourceIterator current)
+        : sources_(sources), current_(current) {}
+
+    Entry operator*() const {
+      const auto entry = *current_;
+      return {entry.key,
+              {.animated_source = entry.value,
+               .has_untracked_dependencies =
+                   sources_->has_untracked_dependencies_.Has(entry.key)}};
+    }
+    ConstIterator& operator++() {
+      ++current_;
+      return *this;
+    }
+    ConstIterator operator++(int) {
+      ConstIterator copy = *this;
+      ++*this;
+      return copy;
+    }
+    bool operator==(const ConstIterator& other) const {
+      return current_ == other.current_;
+    }
+
+   private:
+    const StyleAnimatedSources* sources_ = nullptr;
+    SourceIterator current_;
+  };
+  using const_iterator = ConstIterator;
+
   StyleAnimatedSources() = default;
   StyleAnimatedSources(const StyleAnimatedSources&) = default;
   StyleAnimatedSources& operator=(const StyleAnimatedSources&) = default;
+
+  const_iterator begin() const {
+    return const_iterator(this, sources_.begin());
+  }
+  const_iterator end() const { return const_iterator(this, sources_.end()); }
 
   // Returns the source the given property's computed value is from or derived
   // from.
@@ -57,9 +113,8 @@ class CORE_EXPORT StyleAnimatedSources {
     if (!sources_.HasField(property)) {
       return {};
     }
-    const AnimatedSourceBits bit = BitForAnimatedSourceProperty(property);
     return {sources_.GetField(property),
-            (has_untracked_dependencies_ & bit) != 0};
+            has_untracked_dependencies_.Has(property)};
   }
 
   // Writes the source the given property's computed value is from or derived
@@ -69,6 +124,17 @@ class CORE_EXPORT StyleAnimatedSources {
   // Removes the source for the given property if it exists.
   void Clear(AnimatedSourceProperty property);
 
+  // Each yielded `AnimatedSource` includes its `has_untracked_dependencies_`
+  // bit.
+  uint32_t GetHash() const {
+    uint32_t hash = 0;
+    for (auto [property, source] : *this) {
+      AddIntToHash(hash, HashInt(property));
+      AddIntToHash(hash, source.GetHash());
+    }
+    return hash;
+  }
+
   bool operator==(const StyleAnimatedSources&) const = default;
 
  private:
@@ -77,8 +143,10 @@ class CORE_EXPORT StyleAnimatedSources {
   SparseVector<AnimatedSourceProperty, AnimatedSourceHandle, 2> sources_;
 
   // Which properties have `has_untracked_dependencies` set in `AnimatedSource`.
-  AnimatedSourceBits has_untracked_dependencies_ = 0;
+  AnimatedSourceBitset has_untracked_dependencies_;
 };
+
+static_assert(std::forward_iterator<StyleAnimatedSources::const_iterator>);
 
 }  // namespace blink
 

@@ -87,8 +87,6 @@ BASE_FEATURE(kLensOverlayEduActionChip, base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kLensOverlayKeyboardSelection, base::FEATURE_ENABLED_BY_DEFAULT);
 
-BASE_FEATURE(kLensOverlayPermissionBubbleAlt, base::FEATURE_ENABLED_BY_DEFAULT);
-
 BASE_FEATURE(kLensSearchNotFoundOnPageToast,
              "kLensSearchNotFoundOnPageToast",
              base::FEATURE_DISABLED_BY_DEFAULT);
@@ -107,9 +105,6 @@ BASE_FEATURE(kLensOverlayTextSelectionContextMenuEntrypoint,
 
 BASE_FEATURE(kLensOverlayForceEmptyCsbQuery, base::FEATURE_DISABLED_BY_DEFAULT);
 
-BASE_FEATURE(kLensSidePanelEnableWebviewResults,
-             base::FEATURE_DISABLED_BY_DEFAULT);
-
 BASE_FEATURE(kLensAimSuggestions, base::FEATURE_DISABLED_BY_DEFAULT);
 
 BASE_FEATURE(kLensAimSuggestionsGradientBackground,
@@ -119,7 +114,7 @@ BASE_FEATURE(kLensVideoCitations, base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kLensUpdatedFeedbackEntrypoint, base::FEATURE_ENABLED_BY_DEFAULT);
 
-BASE_FEATURE(kLensSidePanelUnification, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kLensSidePanelUnification, base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kLensOverlayNonBlockingPrivacyNotice,
              base::FEATURE_ENABLED_BY_DEFAULT);
@@ -127,9 +122,7 @@ BASE_FEATURE(kLensOverlayNonBlockingPrivacyNotice,
 BASE_FEATURE(kLensOverlayNonBlockingPrivacyNoticeForImageSearch,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
-BASE_FEATURE(kLensEnableWebpForImageUpload,
-             "LensEnableWebpForImageUpload",
-             base::FEATURE_ENABLED_BY_DEFAULT);
+BASE_FEATURE(kLensEnableWebpForImageUpload, base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kLensUseSeparateRequestIdForViewportImages,
              base::FEATURE_DISABLED_BY_DEFAULT);
@@ -149,6 +142,9 @@ BASE_FEATURE(kLensSendUrlsInComposeboxes,
 #endif
 );
 
+BASE_FEATURE(kLensSendDriveTabUrlsInComposeboxes,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
 BASE_FEATURE(kLensOnlySendAaiForModalityChips,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
@@ -157,6 +153,14 @@ const base::FeatureParam<bool> kLensOnlySendAaiExcludeRawAndDriveFiles{
 
 BASE_FEATURE(kLensRestrictAnnotatedPageContentToSameSiteFramesForNextQueries,
              base::FEATURE_DISABLED_BY_DEFAULT);
+
+BASE_FEATURE(kLensWakeHiddenTabForPageContentExtraction,
+#if BUILDFLAG(IS_ANDROID)
+             base::FEATURE_ENABLED_BY_DEFAULT
+#else
+             base::FEATURE_DISABLED_BY_DEFAULT
+#endif
+);
 
 BASE_FEATURE(kLensDeleteContextOnPageNavigation,
              base::FEATURE_ENABLED_BY_DEFAULT);
@@ -1238,10 +1242,6 @@ bool IsLensOverlayKeyboardSelectionEnabled() {
   return base::FeatureList::IsEnabled(kLensOverlayKeyboardSelection);
 }
 
-bool IsLensOverlayPermissionBubbleAltEnabled() {
-  return base::FeatureList::IsEnabled(kLensOverlayPermissionBubbleAlt);
-}
-
 bool IsLensSearchNotFoundOnPageToastEnabled() {
   return base::FeatureList::IsEnabled(kLensSearchNotFoundOnPageToast);
 }
@@ -1259,11 +1259,6 @@ bool IsLensOverlayTextSelectionContextMenuEntrypointContextualized() {
 bool IsLensOverlayForceEmptyCsbQueryEnabled() {
   return base::FeatureList::IsEnabled(kLensOverlayForceEmptyCsbQuery);
 }
-
-bool IsLensSidePanelWebviewResultsEnabled() {
-  return base::FeatureList::IsEnabled(kLensSidePanelEnableWebviewResults);
-}
-
 
 bool IsLensVideoCitationsEnabled() {
   return base::FeatureList::IsEnabled(kLensVideoCitations);
@@ -1303,6 +1298,10 @@ bool IsLensSendUrlsInComposeboxesEnabled() {
   return base::FeatureList::IsEnabled(kLensSendUrlsInComposeboxes);
 }
 
+bool IsLensSendDriveTabUrlsInComposeboxesEnabled() {
+  return base::FeatureList::IsEnabled(kLensSendDriveTabUrlsInComposeboxes);
+}
+
 bool IsLensOnlySendAaiForModalityChipsEnabled() {
   return base::FeatureList::IsEnabled(kLensOnlySendAaiForModalityChips);
 }
@@ -1312,7 +1311,6 @@ bool IsLensOnlySendAaiExcludeRawAndDriveFilesEnabled() {
 }
 
 BASE_FEATURE(kLensComposeboxIdentityDelegation,
-             "LensComposeboxIdentityDelegation",
              base::FEATURE_DISABLED_BY_DEFAULT);
 
 constexpr base::FeatureParam<std::string>

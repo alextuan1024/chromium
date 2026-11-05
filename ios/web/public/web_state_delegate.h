@@ -11,6 +11,7 @@
 #include <set>
 
 #include "base/functional/callback.h"
+#include "base/memory/raw_ptr.h"
 #include "build/blink_buildflags.h"
 #import "ios/web/public/navigation/form_warning_type.h"
 #import "ios/web/public/permissions/permissions.h"
@@ -93,6 +94,19 @@ class WebStateDelegate {
   virtual void HandlePermissionsDecisionRequest(
       WebState* source,
       NSArray<NSNumber*>* permissions,
+      WebStatePermissionDecisionHandler handler);
+
+  // Called when a web resource from `origin` requests the user's permission to
+  // access geolocation.
+  //
+  // This delegate method is only invoked on iOS 27 and later, where WebKit
+  // provides native geolocation permission delegation via WKUIDelegate.
+  //
+  // The delegate should use the `handler` function to answer the request to
+  // grant, deny geolocation permission, or show the default prompt.
+  virtual void RequestGeolocationPermission(
+      WebState* source,
+      const GURL& origin,
       WebStatePermissionDecisionHandler handler);
 
   // Called when a request receives an authentication challenge specified by
@@ -187,7 +201,7 @@ class WebStateDelegate {
   void Detach(WebState* source);
 
   // The WebStates for which `this` is currently a delegate.
-  std::set<WebState*> attached_states_;
+  std::set<raw_ptr<WebState>> attached_states_;
 };
 
 }  // namespace web

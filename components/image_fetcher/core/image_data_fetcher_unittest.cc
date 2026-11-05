@@ -5,23 +5,30 @@
 #include "components/image_fetcher/core/image_data_fetcher.h"
 
 #include <memory>
+#include <vector>
 
 #include "base/base64.h"
 #include "base/byte_size.h"
+#include "base/containers/span.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
+#include "base/functional/callback_helpers.h"
 #include "base/memory/ref_counted.h"
 #include "base/run_loop.h"
+#include "base/strings/string_view_util.h"
 #include "base/test/bind.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/task_environment.h"
+#include "base/test/test_future.h"
 #include "components/image_fetcher/core/request_metadata.h"
 #include "net/base/data_url.h"
+#include "net/base/net_errors.h"
 #include "net/http/http_response_headers.h"
 #include "net/http/http_status_code.h"
 #include "net/http/http_util.h"
 #include "net/traffic_annotation/network_traffic_annotation_test_helper.h"
 #include "services/network/public/cpp/weak_wrapper_shared_url_loader_factory.h"
+#include "services/network/public/mojom/url_loader_factory.mojom.h"
 #include "services/network/public/mojom/url_response_head.mojom.h"
 #include "services/network/test/test_url_loader_factory.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -38,6 +45,15 @@ const char kHistogramName[] = "ImageFetcher.RequestStatusCode";
 }  // namespace
 
 namespace image_fetcher {
+namespace {
+
+MATCHER_P(HasImageData, expected, "") {
+  return arg &&
+         testing::ExplainMatchResult(
+             expected, base::as_string_view(base::span(*arg)), result_listener);
+}
+
+}  // namespace
 
 class ImageDataFetcherTest : public testing::Test {
  public:
@@ -56,17 +72,17 @@ class ImageDataFetcherTest : public testing::Test {
 
   MOCK_METHOD(void,
               OnImageDataFetched,
-              (const std::string&, const RequestMetadata&),
+              (ImageData, const RequestMetadata&),
               ());
 
   MOCK_METHOD(void,
               OnImageDataFetchedFailedRequest,
-              (const std::string&, const RequestMetadata&),
+              (ImageData, const RequestMetadata&),
               ());
 
   MOCK_METHOD(void,
               OnImageDataFetchedMultipleRequests,
-              (const std::string&, const RequestMetadata&),
+              (ImageData, const RequestMetadata&),
               ());
 
  protected:
@@ -91,7 +107,8 @@ TEST_F(ImageDataFetcherTest, FetchImageData) {
   RequestMetadata expected_metadata;
   expected_metadata.mime_type = std::string("image/png");
   expected_metadata.http_response_code = net::HTTP_OK;
-  EXPECT_CALL(*this, OnImageDataFetched(content, expected_metadata));
+  EXPECT_CALL(*this,
+              OnImageDataFetched(HasImageData(content), expected_metadata));
 
   // Check to make sure the request is pending with proper flags, and
   // provide a response.
@@ -99,6 +116,10 @@ TEST_F(ImageDataFetcherTest, FetchImageData) {
   EXPECT_TRUE(test_url_loader_factory_.IsPending(kImageURL, &pending_request));
   EXPECT_EQ(pending_request->credentials_mode,
             network::mojom::CredentialsMode::kOmit);
+  ASSERT_EQ(test_url_loader_factory_.pending_requests()->size(), 1u);
+  EXPECT_EQ(test_url_loader_factory_.GetPendingRequest(0)->options &
+                network::mojom::kURLLoadOptionBlockLocalRequest,
+            0u);
 
   auto head = network::mojom::URLResponseHead::New();
   std::string raw_header =
@@ -116,6 +137,18 @@ TEST_F(ImageDataFetcherTest, FetchImageData) {
   histogram_tester().ExpectBucketCount(std::string(kHistogramName), 200, 1);
 }
 
+TEST_F(ImageDataFetcherTest, BlockLocalRequestsIsOptIn) {
+  ImageFetcherParams params(TRAFFIC_ANNOTATION_FOR_TESTS, kTestUmaClientName);
+  params.set_block_local_requests(true);
+  image_data_fetcher_.FetchImageData(GURL(kImageURL), base::DoNothing(),
+                                     params);
+
+  ASSERT_EQ(test_url_loader_factory_.NumPending(), 1);
+  EXPECT_NE(test_url_loader_factory_.GetPendingRequest(0)->options &
+                network::mojom::kURLLoadOptionBlockLocalRequest,
+            0u);
+}
+
 TEST_F(ImageDataFetcherTest, FetchImageDataWithDataUrl) {
   std::string data_url =
       "data:image/png;base64,"
@@ -127,10 +160,24 @@ TEST_F(ImageDataFetcherTest, FetchImageDataWithDataUrl) {
   std::string mime_type, expected, charset;
   EXPECT_TRUE(
       net::DataURL::Parse(GURL(data_url), &mime_type, &charset, &expected));
-  EXPECT_CALL(*this, OnImageDataFetched(expected, expected_metadata));
+  EXPECT_CALL(*this,
+              OnImageDataFetched(HasImageData(expected), expected_metadata));
 
   image_data_fetcher_.FetchImageData(
       GURL(data_url),
+      base::BindOnce(&ImageDataFetcherTest::OnImageDataFetched,
+                     base::Unretained(this)),
+      ImageFetcherParams(TRAFFIC_ANNOTATION_FOR_TESTS, kTestUmaClientName));
+}
+
+TEST_F(ImageDataFetcherTest, FetchImageDataWithInvalidDataUrl) {
+  RequestMetadata expected_metadata;
+  expected_metadata.net_error = net::ERR_INVALID_URL;
+  EXPECT_CALL(*this, OnImageDataFetched(HasImageData(std::string()),
+                                        expected_metadata));
+
+  image_data_fetcher_.FetchImageData(
+      GURL("data:;base64,aGVs_-_-"),
       base::BindOnce(&ImageDataFetcherTest::OnImageDataFetched,
                      base::Unretained(this)),
       ImageFetcherParams(TRAFFIC_ANNOTATION_FOR_TESTS, kTestUmaClientName));
@@ -143,12 +190,13 @@ TEST_F(ImageDataFetcherTest, FetchImageDataTrafficAnnotationOnly) {
       GURL(kImageURL),
       base::BindOnce(&ImageDataFetcherTest::OnImageDataFetched,
                      base::Unretained(this)),
-      TRAFFIC_ANNOTATION_FOR_TESTS, false);
+      TRAFFIC_ANNOTATION_FOR_TESTS, std::nullopt);
 
   RequestMetadata expected_metadata;
   expected_metadata.mime_type = std::string("image/png");
   expected_metadata.http_response_code = net::HTTP_OK;
-  EXPECT_CALL(*this, OnImageDataFetched(content, expected_metadata));
+  EXPECT_CALL(*this,
+              OnImageDataFetched(HasImageData(content), expected_metadata));
 
   // Check to make sure the request is pending with proper flags, and
   // provide a response.
@@ -156,6 +204,7 @@ TEST_F(ImageDataFetcherTest, FetchImageDataTrafficAnnotationOnly) {
   EXPECT_TRUE(test_url_loader_factory_.IsPending(kImageURL, &pending_request));
   EXPECT_EQ(pending_request->credentials_mode,
             network::mojom::CredentialsMode::kOmit);
+  EXPECT_FALSE(pending_request->request_initiator.has_value());
 
   auto head = network::mojom::URLResponseHead::New();
   std::string raw_header =
@@ -173,25 +222,30 @@ TEST_F(ImageDataFetcherTest, FetchImageDataTrafficAnnotationOnly) {
 
 TEST_F(ImageDataFetcherTest, FetchImageDataWithCookies) {
   std::string content = kURLResponseData;
+  url::Origin initiator = url::Origin::Create(GURL(kImageURL));
 
   image_data_fetcher_.FetchImageData(
       GURL(kImageURL),
       base::BindOnce(&ImageDataFetcherTest::OnImageDataFetched,
                      base::Unretained(this)),
       ImageFetcherParams(TRAFFIC_ANNOTATION_FOR_TESTS, kTestUmaClientName),
-      true);
+      initiator);
 
   RequestMetadata expected_metadata;
   expected_metadata.mime_type = std::string("image/png");
   expected_metadata.http_response_code = net::HTTP_OK;
-  EXPECT_CALL(*this, OnImageDataFetched(content, expected_metadata));
+  EXPECT_CALL(*this,
+              OnImageDataFetched(HasImageData(content), expected_metadata));
 
   // Check to make sure the request is pending with proper flags, and
   // provide a response.
   const network::ResourceRequest* pending_request;
-  EXPECT_TRUE(test_url_loader_factory_.IsPending(kImageURL, &pending_request));
+  ASSERT_TRUE(test_url_loader_factory_.IsPending(kImageURL, &pending_request));
   EXPECT_EQ(pending_request->credentials_mode,
-            network::mojom::CredentialsMode::kInclude);
+            network::mojom::CredentialsMode::kSameOrigin);
+  EXPECT_EQ(pending_request->request_initiator, initiator);
+  EXPECT_TRUE(pending_request->site_for_cookies.IsEquivalent(
+      net::SiteForCookies::FromOrigin(initiator)));
 
   auto head = network::mojom::URLResponseHead::New();
   std::string raw_header =
@@ -220,7 +274,8 @@ TEST_F(ImageDataFetcherTest, FetchImageData_NotFound) {
   expected_metadata.mime_type = std::string("image/png");
   expected_metadata.http_response_code = net::HTTP_NOT_FOUND;
   // For 404, expect an empty result even though correct image data is sent.
-  EXPECT_CALL(*this, OnImageDataFetched(std::string(), expected_metadata));
+  EXPECT_CALL(*this, OnImageDataFetched(HasImageData(std::string()),
+                                        expected_metadata));
 
   // Check to make sure the request is pending, and provide a response.
   EXPECT_TRUE(test_url_loader_factory_.IsPending(kImageURL));
@@ -253,7 +308,8 @@ TEST_F(ImageDataFetcherTest, FetchImageData_WithContentLocation) {
   expected_metadata.http_response_code = net::HTTP_NOT_FOUND;
   expected_metadata.content_location_header = "http://test-location/image.png";
   // For 404, expect an empty result even though correct image data is sent.
-  EXPECT_CALL(*this, OnImageDataFetched(std::string(), expected_metadata));
+  EXPECT_CALL(*this, OnImageDataFetched(HasImageData(std::string()),
+                                        expected_metadata));
 
   // Check to make sure the request is pending, and provide a response.
   EXPECT_TRUE(test_url_loader_factory_.IsPending(kImageURL));
@@ -282,8 +338,9 @@ TEST_F(ImageDataFetcherTest, FetchImageData_FailedRequest) {
 
   RequestMetadata expected_metadata;
   expected_metadata.http_response_code = RequestMetadata::RESPONSE_CODE_INVALID;
-  EXPECT_CALL(
-      *this, OnImageDataFetchedFailedRequest(std::string(), expected_metadata));
+  expected_metadata.net_error = net::ERR_INVALID_URL;
+  EXPECT_CALL(*this, OnImageDataFetchedFailedRequest(
+                         HasImageData(std::string()), expected_metadata));
 
   // Check to make sure the request is pending, and provide a response.
   EXPECT_TRUE(test_url_loader_factory_.IsPending(kImageURL));
@@ -298,7 +355,8 @@ TEST_F(ImageDataFetcherTest, FetchImageData_FailedRequest) {
 }
 
 TEST_F(ImageDataFetcherTest, FetchImageData_MultipleRequests) {
-  EXPECT_CALL(*this, OnImageDataFetchedMultipleRequests(testing::_, testing::_))
+  EXPECT_CALL(*this, OnImageDataFetchedMultipleRequests(
+                         HasImageData(testing::_), testing::_))
       .Times(2);
 
   image_data_fetcher_.FetchImageData(
@@ -319,6 +377,22 @@ TEST_F(ImageDataFetcherTest, FetchImageData_MultipleRequests) {
   base::RunLoop().RunUntilIdle();
 }
 
+TEST_F(ImageDataFetcherTest, PreservesByteBackedDataWithoutCopying) {
+  auto bytes = base::MakeRefCounted<base::RefCountedBytes>(
+      std::vector<uint8_t>{0, 128, 255});
+  base::test::TestFuture<ImageData, RequestMetadata> result;
+  image_data_fetcher_.FetchImageData(
+      GURL(kImageURL), result.GetCallback<ImageData, const RequestMetadata&>(),
+      ImageFetcherParams(TRAFFIC_ANNOTATION_FOR_TESTS, kTestUmaClientName));
+
+  image_data_fetcher_.InjectResultForTesting(RequestMetadata(), bytes);
+
+  ASSERT_TRUE(result.IsReady());
+  EXPECT_EQ(bytes.get(), result.Get<0>().get());
+  bytes.reset();
+  EXPECT_THAT(base::span(*result.Get<0>()), testing::ElementsAre(0, 128, 255));
+}
+
 TEST_F(ImageDataFetcherTest, FetchImageData_CancelFetchIfImageExceedsMaxSize) {
   const int64_t kMaxDownloadBytes = 1024;
   std::string oversize_download(kMaxDownloadBytes + 1, '#');
@@ -335,7 +409,9 @@ TEST_F(ImageDataFetcherTest, FetchImageData_CancelFetchIfImageExceedsMaxSize) {
   // code that would be impossible for a completed fetch.
   RequestMetadata expected_metadata;
   expected_metadata.http_response_code = RequestMetadata::RESPONSE_CODE_INVALID;
-  EXPECT_CALL(*this, OnImageDataFetched(std::string(), expected_metadata));
+  expected_metadata.net_error = net::ERR_INSUFFICIENT_RESOURCES;
+  EXPECT_CALL(*this, OnImageDataFetched(HasImageData(std::string()),
+                                        expected_metadata));
 
   EXPECT_TRUE(test_url_loader_factory_.IsPending(kImageURL));
   test_url_loader_factory_.AddResponse(kImageURL, oversize_download);
@@ -349,9 +425,7 @@ TEST_F(ImageDataFetcherTest, DeleteFromCallback) {
   heap_fetcher->FetchImageData(
       GURL(kImageURL),
       base::BindLambdaForTesting(
-          [&](const std::string&, const RequestMetadata&) {
-            heap_fetcher = nullptr;
-          }),
+          [&](ImageData, const RequestMetadata&) { heap_fetcher = nullptr; }),
       ImageFetcherParams(TRAFFIC_ANNOTATION_FOR_TESTS, kTestUmaClientName));
 
   test_url_loader_factory_.AddResponse(kImageURL, "");

@@ -14,6 +14,7 @@ import xml.etree.ElementTree as ET
 
 import setup_modules  # pylint: disable=unused-import
 
+
 import chromium_src.tools.metrics.common.path_util as path_util
 import chromium_src.tools.metrics.histograms.histogram_configuration_model as histogram_configuration_model
 import chromium_src.tools.metrics.histograms.histogram_paths as histogram_paths
@@ -76,6 +77,10 @@ _PREDEFINED_NAMES_MAPPING = {
   'WebUI': 'WebUI',
   'WebUITabStrip': 'WebUI',
 }
+
+# Maps a name part of nodes to either these nodes or a nested dict that splits
+# them by their next name part.
+_DocumentDict = dict[str, 'list[ET.Element] | _DocumentDict']
 
 
 def _ParseMergedXML():
@@ -238,7 +243,9 @@ def _AggregateMinorNodes(node_dict):
     node_dict['others'] = others
 
 
-def _BuildDocumentDict(nodes, depth):
+def _BuildDocumentDict(
+  nodes: list[ET.Element], depth: int
+) -> list[ET.Element] | _DocumentDict:
   """Recursively builds a document dict which will be written later.
 
   This function recursively builds a document dict which the key of the dict is
@@ -256,7 +263,7 @@ def _BuildDocumentDict(nodes, depth):
   if depth == TARGET_DEPTH:
     return nodes
 
-  temp_dict = document_dict = {}
+  temp_dict: dict[str, list[ET.Element]] = {}
   for node in nodes:
     name_part = _GetCamelCaseName(node, depth)
     if name_part not in temp_dict:
@@ -266,6 +273,7 @@ def _BuildDocumentDict(nodes, depth):
   # Aggregate keys with less than |AGGREGATE_THRESHOLD| values to 'others'.
   _AggregateMinorNodes(temp_dict)
 
+  document_dict: _DocumentDict = {}
   for key, nodes in temp_dict.items():
     if key == 'others':
       document_dict[key] = nodes

@@ -179,15 +179,10 @@ class ClosePromoButton : public views::ImageButton {
     constexpr float kCloseButtonFocusRingHaloThickness = 1.25f;
     views::FocusRing::Get(this)->SetHaloThickness(
         kCloseButtonFocusRingHaloThickness);
-  }
-
-  void OnThemeChanged() override {
-    views::ImageButton::OnThemeChanged();
-    const auto* color_provider = GetColorProvider();
-    views::InkDrop::Get(this)->SetBaseColor(color_provider->GetColor(
-        delegate_->GetHelpBubbleCloseButtonInkDropColorId()));
     views::FocusRing::Get(this)->SetColorId(
         delegate_->GetHelpBubbleForegroundColorId());
+    views::InkDrop::Get(this)->SetBaseColor(
+        delegate_->GetHelpBubbleCloseButtonInkDropColorId());
   }
 
  private:
@@ -433,6 +428,8 @@ HelpBubbleView::HelpBubbleView(
         0);
     icon_view_->SetPreferredSize(
         gfx::Size(kBodyIconBackgroundSize, kBodyIconBackgroundSize));
+    icon_view_->SetBackground(views::CreatePillBackground(
+        delegate->GetHelpBubbleForegroundColorId()));
     icon_view_->GetViewAccessibility().SetName(params.body_icon_alt_text);
   }
 
@@ -462,6 +459,8 @@ HelpBubbleView::HelpBubbleView(
 
   // Set common label properties.
   for (views::Label* label : labels_) {
+    label->SetBackgroundColor(delegate->GetHelpBubbleBackgroundColorId());
+    label->SetEnabledColor(delegate->GetHelpBubbleForegroundColorId());
     label->SetHorizontalAlignment(gfx::ALIGN_LEFT);
     label->SetMultiLine(true);
     label->SetElideBehavior(gfx::NO_ELIDE);
@@ -803,24 +802,6 @@ void HelpBubbleView::OnWidgetActivationChanged(views::Widget* widget,
   }
 }
 
-void HelpBubbleView::OnThemeChanged() {
-  views::BubbleDialogDelegateView::OnThemeChanged();
-
-  const auto* color_provider = GetColorProvider();
-  const SkColor foreground_color =
-      color_provider->GetColor(delegate_->GetHelpBubbleForegroundColorId());
-  if (icon_view_) {
-    icon_view_->SetBackground(views::CreatePillBackground(foreground_color));
-  }
-
-  const SkColor background_color =
-      color_provider->GetColor(delegate_->GetHelpBubbleBackgroundColorId());
-  for (views::Label* label : labels_) {
-    label->SetBackgroundColor(background_color);
-    label->SetEnabledColor(foreground_color);
-  }
-}
-
 gfx::Size HelpBubbleView::CalculatePreferredSize(
     const views::SizeBounds& available_size) const {
   const gfx::Size layout_manager_preferred_size =
@@ -862,6 +843,10 @@ gfx::Rect HelpBubbleView::GetAnchorRect() const {
   // Translate back to screen coordinates.
   result.Offset(default_anchor_rect.OffsetFromOrigin());
   return result;
+}
+
+bool HelpBubbleView::CanActivateViaAccelerator() const {
+  return !event_relay_ || event_relay_->AllowFocusViaAccelerator();
 }
 
 void HelpBubbleView::OnBeforeBubbleWidgetInit(views::Widget::InitParams* params,

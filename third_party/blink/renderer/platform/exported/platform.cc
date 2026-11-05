@@ -32,6 +32,7 @@
 
 #include <memory>
 
+#include "base/no_destructor.h"
 #include "base/notimplemented.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/single_thread_task_runner.h"
@@ -253,8 +254,8 @@ void Platform::CreateServiceWorkerSubresourceLoaderFactory(
     scoped_refptr<base::SequencedTaskRunner> task_runner) {}
 
 ThreadSafeBrowserInterfaceBrokerProxy* Platform::GetBrowserInterfaceBroker() {
-  DEFINE_STATIC_LOCAL(DefaultBrowserInterfaceBrokerProxy, proxy, ());
-  return &proxy;
+  static base::NoDestructor<DefaultBrowserInterfaceBrokerProxy> proxy;
+  return proxy.get();
 }
 
 void Platform::CreateAndSetCompositorThread() {
@@ -330,6 +331,8 @@ bool Platform::IsGpuRemoteDisconnected() {
 void Platform::EstablishGpuChannel(EstablishGpuChannelCallback callback) {
   std::move(callback).Run(nullptr);
 }
+
+void Platform::FlushGpuChannelIfEstablished() {}
 
 gfx::ColorSpace Platform::GetRenderingColorSpace() const {
   return {};

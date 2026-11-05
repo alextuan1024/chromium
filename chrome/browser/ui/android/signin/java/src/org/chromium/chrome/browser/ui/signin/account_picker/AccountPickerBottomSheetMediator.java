@@ -9,7 +9,10 @@ import static org.chromium.build.NullUtil.assertNonNull;
 import android.accounts.AccountManager;
 import android.app.Activity;
 import android.content.Intent;
+import android.net.Uri;
 import android.text.TextUtils;
+
+import androidx.browser.customtabs.CustomTabsIntent;
 
 import org.chromium.base.Callback;
 import org.chromium.base.CallbackController;
@@ -17,8 +20,11 @@ import org.chromium.base.DeviceInfo;
 import org.chromium.base.supplier.NonNullObservableSupplier;
 import org.chromium.base.supplier.ObservableSuppliers;
 import org.chromium.base.supplier.SettableNonNullObservableSupplier;
+import org.chromium.base.task.PostTask;
+import org.chromium.base.task.TaskTraits;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.signin.services.AccountPreviewDataService;
 import org.chromium.chrome.browser.signin.services.AccountPreviewPreference;
 import org.chromium.chrome.browser.signin.services.DisplayableProfileData;
@@ -29,6 +35,7 @@ import org.chromium.chrome.browser.signin.services.SigninFlowTimestampsLogger.Fl
 import org.chromium.chrome.browser.signin.services.SigninManager;
 import org.chromium.chrome.browser.signin.services.SigninMetricsUtils;
 import org.chromium.chrome.browser.signin.services.SigninPreferencesManager;
+import org.chromium.chrome.browser.ui.enterprise_signals_disclaimer.EnterpriseSignalsDisclaimerCoordinator;
 import org.chromium.chrome.browser.ui.signin.AccountPreviewPreferenceStringUtils;
 import org.chromium.chrome.browser.ui.signin.SigninUtils;
 import org.chromium.chrome.browser.ui.signin.account_picker.AccountPickerBottomSheetProperties.ViewState;
@@ -42,6 +49,7 @@ import org.chromium.components.signin.SigninFeatures;
 import org.chromium.components.signin.base.AccountInfo;
 import org.chromium.components.signin.base.CoreAccountInfo;
 import org.chromium.components.signin.identitymanager.IdentityManager;
+import org.chromium.components.signin.identitymanager.PrimaryAccountChangeEvent;
 import org.chromium.components.signin.metrics.AccountConsistencyPromoAction;
 import org.chromium.components.signin.metrics.SigninAccessPoint;
 import org.chromium.components.signin.metrics.SignoutReason;
@@ -61,7 +69,20 @@ public class AccountPickerBottomSheetMediator
                 AccountPickerBottomSheetView.BackPressListener,
                 AccountPickerDelegate.SigninStateController,
                 AccountsChangeObserver,
-                ProfileDataCache.Observer {
+                IdentityManager.Observer,
+                ProfileDataCache.Observer,
+                EnterpriseSignalsDisclaimerCoordinator.Delegate {
+
+    /** Delegate of the AccountPickerBottomSheetMediator. */
+    interface Delegate {
+        /**
+         * Sets up the management notice hosted by the {@link ViewState#CONFIRM_MANAGEMENT} screen
+         * for the given account.
+         *
+         * @param account The account being signed in.
+         */
+        void setUpManagementNoticeForAccount(CoreAccountInfo account);
+    }
 
     private final WindowAndroid mWindowAndroid;
     private final Activity mActivity;
@@ -69,6 +90,7 @@ public class AccountPickerBottomSheetMediator
     private final SigninManager mSigninManager;
     private final @Nullable AccountPreviewDataService mAccountPreviewDataService;
     private final AccountPickerDelegate mAccountPickerDelegate;
+    private final Delegate mDelegate;
     private final Runnable mDismissBottomSheet;
     private final AccountPickerBottomSheetStrings mAccountPickerBottomSheetStrings;
     private final DeviceLockActivityLauncher mDeviceLockActivityLauncher;
@@ -78,18 +100,23 @@ public class AccountPickerBottomSheetMediator
     private final AccountManagerFacade mAccountManagerFacade;
     private final boolean mIsSeamlessSignin;
     private @Nullable Runnable mRequestDisplayBottomSheet;
-    private @Nullable CoreAccountInfo mSelectedAccount;
-    private @Nullable CoreAccountInfo mDefaultAccount;
+    private @Nullable AccountInfo mSelectedAccount;
+    private @Nullable AccountInfo mDefaultAccount;
 
     // This field is used to save the added account email while the account info becomes available
     // in AccountManagerFacade for sign-in.
     private @Nullable String mPendingAddedAccountEmail;
     private boolean mAcceptedAccountManagement;
+    // Whether a sign-in started by this sheet is in progress.
+    private boolean mIsSigningIn;
+    // Whether another flow signed in while this sheet was shown, e.g. the forced sign-in screen.
+    // The sheet then closes without signing in.
+    private boolean mSignedInByAnotherFlow;
 
     // Properties for metrics recording.
     private final AccountPickerDismissalLogger mDismissalLogger;
     private @Nullable SigninFlowTimestampsLogger mSigninTimestampsLogger;
-    private @Nullable CoreAccountInfo mAddedAccount;
+    private @Nullable AccountInfo mAddedAccount;
     private final @SigninAccessPoint int mSigninAccessPoint;
     private boolean mInitializedWithNoAccount;
     // TODO(crbug.com/328747528): The web sign-in specific logic should be moved out of the bottom
@@ -113,7 +140,8 @@ public class AccountPickerBottomSheetMediator
             @AccountPickerLaunchMode int launchMode,
             boolean isWebSignin,
             @SigninAccessPoint int signinAccessPoint,
-            @Nullable CoreAccountId accountId) {
+            @Nullable CoreAccountId accountId,
+            Delegate delegate) {
         @ViewState int initialView;
         switch (launchMode) {
             case AccountPickerLaunchMode.CHOOSE_ACCOUNT:
@@ -143,7 +171,8 @@ public class AccountPickerBottomSheetMediator
                 initialView,
                 isWebSignin,
                 signinAccessPoint,
-                accountId);
+                accountId,
+                delegate);
     }
 
     static AccountPickerBottomSheetMediator createForSeamlessSignin(
@@ -157,7 +186,8 @@ public class AccountPickerBottomSheetMediator
             AccountPickerBottomSheetStrings accountPickerBottomSheetStrings,
             DeviceLockActivityLauncher deviceLockActivityLauncher,
             @SigninAccessPoint int signinAccessPoint,
-            CoreAccountId accountId) {
+            CoreAccountId accountId,
+            Delegate delegate) {
         return new AccountPickerBottomSheetMediator(
                 windowAndroid,
                 identityManager,
@@ -172,7 +202,8 @@ public class AccountPickerBottomSheetMediator
                 ViewState.NONE,
                 /* isWebSignin= */ false,
                 signinAccessPoint,
-                accountId);
+                accountId,
+                delegate);
     }
 
     private AccountPickerBottomSheetMediator(
@@ -189,18 +220,19 @@ public class AccountPickerBottomSheetMediator
             @ViewState int initialViewState,
             boolean isWebSignin,
             @SigninAccessPoint int signinAccessPoint,
-            @Nullable CoreAccountId accountId) {
+            @Nullable CoreAccountId accountId,
+            Delegate delegate) {
         mWindowAndroid = windowAndroid;
         mActivity = assertNonNull(windowAndroid.getActivity().get());
         mIdentityManager = identityManager;
         mSigninManager = signinManager;
         mAccountPreviewDataService = accountPreviewDataService;
         mAccountPickerDelegate = accountPickerDelegate;
+        mDelegate = delegate;
         mRequestDisplayBottomSheet = requestDisplayBottomSheet;
         mDismissBottomSheet = dismissBottomSheet;
         mAccountPickerBottomSheetStrings = accountPickerBottomSheetStrings;
-        mProfileDataCache =
-                ProfileDataCache.createWithDefaultImageSizeAndNoBadge(mActivity, identityManager);
+        mProfileDataCache = ProfileDataCache.createWithDefaultImageSize(mActivity, identityManager);
         mDeviceLockActivityLauncher = deviceLockActivityLauncher;
         mInitialViewState = initialViewState;
         mIsWebSignin = isWebSignin;
@@ -251,11 +283,12 @@ public class AccountPickerBottomSheetMediator
         mModel.addObserver(mModelPropertyChangedObserver);
         mProfileDataCache.addObserver(this);
         mAccountManagerFacade.addObserver(this);
+        mIdentityManager.addObserver(this);
     }
 
     /** Implements {@link AccountPickerCoordinator.Listener}. */
     @Override
-    public void onAccountSelected(CoreAccountInfo account) {
+    public void onAccountSelected(AccountInfo account) {
         assert !mIsSeamlessSignin
                 : "Account selection is not supported in the seamless sign-in flow.";
         if (mPendingAddedAccountEmail != null) {
@@ -364,6 +397,23 @@ public class AccountPickerBottomSheetMediator
         updateSelectedAccountData(profileData);
     }
 
+    /** Implements {@link IdentityManager.Observer}. */
+    @Override
+    public void onPrimaryAccountChanged(PrimaryAccountChangeEvent eventDetails) {
+        if (eventDetails.getEventTypeFor() != PrimaryAccountChangeEvent.Type.SET
+                || mIsSigningIn
+                || mSignedInByAnotherFlow) {
+            return;
+        }
+        // Another flow signed in while the sheet was shown. The sheet's sign-in is no longer
+        // needed, and starting it would first sign that account out. Closing is posted so that the
+        // sheet isn't torn down while the other flow is still notifying observers.
+        mSignedInByAnotherFlow = true;
+        PostTask.postTask(
+                TaskTraits.UI_DEFAULT,
+                mCallbackController.makeCancelable(this::closeAfterSigninByAnotherFlow));
+    }
+
     /** Implements {@link AccountPickerDelegate.SigninStateController controller}. */
     @Override
     public void showGenericError() {
@@ -401,6 +451,39 @@ public class AccountPickerBottomSheetMediator
         assertNonNull(mSigninTimestampsLogger).recordTimestamp(Event.SIGNIN_COMPLETED);
     }
 
+    /** Implements {@link EnterpriseSignalsDisclaimerCoordinator.Delegate}. */
+    @Override
+    public void showInfoPage(String url) {
+        assert url.startsWith("https://") : "URL must start with https://";
+        // Open the page in a Chrome custom tab on top of the sign-in UI, so that the user can
+        // return to the management notice after reading it.
+        CustomTabsIntent customTabsIntent =
+                new CustomTabsIntent.Builder().setShowTitle(true).build();
+        customTabsIntent.intent.setPackage(mActivity.getPackageName());
+        customTabsIntent.launchUrl(mActivity, Uri.parse(url));
+    }
+
+    /** Implements {@link EnterpriseSignalsDisclaimerCoordinator.Delegate}. */
+    @Override
+    public void onAccept() {
+        if (mModel.get(AccountPickerBottomSheetProperties.VIEW_STATE)
+                != ViewState.CONFIRM_MANAGEMENT) {
+            return;
+        }
+
+        onConfirmManagementAccepted();
+    }
+
+    /** Implements {@link EnterpriseSignalsDisclaimerCoordinator.Delegate}. */
+    @Override
+    public void onDecline() {
+        if (mModel.get(AccountPickerBottomSheetProperties.VIEW_STATE)
+                != ViewState.CONFIRM_MANAGEMENT) {
+            return;
+        }
+        onConfirmManagementCancelClicked();
+    }
+
     PropertyModel getModel() {
         return mModel;
     }
@@ -410,6 +493,7 @@ public class AccountPickerBottomSheetMediator
         mAccountPickerDelegate.onAccountPickerDestroy();
         mProfileDataCache.removeObserver(this);
         mAccountManagerFacade.removeObserver(this);
+        mIdentityManager.removeObserver(this);
         mModel.removeObserver(mModelPropertyChangedObserver);
     }
 
@@ -527,7 +611,7 @@ public class AccountPickerBottomSheetMediator
         mModel.set(AccountPickerBottomSheetProperties.SELECTED_ACCOUNT_DATA, null);
     }
 
-    private void setSelectedAccount(CoreAccountInfo account) {
+    private void setSelectedAccount(AccountInfo account) {
         mSelectedAccount = account;
         final var profileData = mProfileDataCache.getById(account.getId());
         updateSelectedAccountData(profileData);
@@ -544,8 +628,8 @@ public class AccountPickerBottomSheetMediator
     }
 
     /**
-     * Callback for the PropertyKey
-     * {@link AccountPickerBottomSheetProperties#ON_SELECTED_ACCOUNT_CLICKED}.
+     * Callback for the PropertyKey {@link
+     * AccountPickerBottomSheetProperties#ON_SELECTED_ACCOUNT_CLICKED}.
      */
     private void onSelectedAccountClicked() {
         assert !mIsSeamlessSignin;
@@ -556,36 +640,46 @@ public class AccountPickerBottomSheetMediator
     }
 
     /**
-     * Callback for the PropertyKey
-     * {@link AccountPickerBottomSheetProperties#ON_CONTINUE_AS_CLICKED}.
+     * Callback for the PropertyKey {@link
+     * AccountPickerBottomSheetProperties#ON_CONTINUE_AS_CLICKED}.
      */
     private void onContinueAsClicked() {
         @ViewState int viewState = mModel.get(AccountPickerBottomSheetProperties.VIEW_STATE);
-        if (viewState == ViewState.COLLAPSED_ACCOUNT_LIST) {
-            assert !mIsSeamlessSignin;
-            launchDeviceLockIfNeededAndSignIn();
-        } else if (viewState == ViewState.SIGNIN_GENERAL_ERROR) {
-            if (mAcceptedAccountManagement) {
-                // User already accepted account management and is re-trying login, so the
-                // management status check & confirmation sheet can be skipped.
-                startSigninTimestampLogging();
-                signInAfterCheckingManagement();
-            } else {
+        switch (viewState) {
+            case ViewState.COLLAPSED_ACCOUNT_LIST -> {
+                assert !mIsSeamlessSignin;
                 launchDeviceLockIfNeededAndSignIn();
             }
-        } else if (viewState == ViewState.NO_ACCOUNTS) {
-            assert !mIsSeamlessSignin;
-            addAccount();
-        } else if (viewState == ViewState.SIGNIN_AUTH_ERROR) {
-            assert !mIsSeamlessSignin;
-            updateCredentials();
-        } else if (viewState == ViewState.CONFIRM_MANAGEMENT) {
-            mAcceptedAccountManagement = true;
-            assertNonNull(mSigninTimestampsLogger).onManagementNoticeAccepted();
-            SigninMetricsUtils.logAccountConsistencyPromoAction(
-                    AccountConsistencyPromoAction.CONFIRM_MANAGEMENT_ACCEPTED, mSigninAccessPoint);
-            signInAfterCheckingManagement();
+            case ViewState.SIGNIN_GENERAL_ERROR -> {
+                if (mAcceptedAccountManagement) {
+                    // User already accepted account management and is re-trying login, so the
+                    // management status check & confirmation sheet can be skipped.
+                    startSigninTimestampLogging();
+                    signInAfterCheckingManagement();
+                } else {
+                    launchDeviceLockIfNeededAndSignIn();
+                }
+            }
+            case ViewState.NO_ACCOUNTS -> {
+                assert !mIsSeamlessSignin;
+                addAccount();
+            }
+            case ViewState.SIGNIN_AUTH_ERROR -> {
+                assert !mIsSeamlessSignin;
+                updateCredentials();
+            }
+            case ViewState.CONFIRM_MANAGEMENT -> onConfirmManagementAccepted();
+            default -> {}
         }
+    }
+
+    /** Called when the user accepts account management on the confirm management screen. */
+    private void onConfirmManagementAccepted() {
+        mAcceptedAccountManagement = true;
+        assertNonNull(mSigninTimestampsLogger).onManagementNoticeAccepted();
+        SigninMetricsUtils.logAccountConsistencyPromoAction(
+                AccountConsistencyPromoAction.CONFIRM_MANAGEMENT_ACCEPTED, mSigninAccessPoint);
+        signInAfterCheckingManagement();
     }
 
     /**
@@ -616,11 +710,9 @@ public class AccountPickerBottomSheetMediator
 
     void launchDeviceLockIfNeededAndSignIn() {
         if (DeviceInfo.isAutomotive()) {
-            var selectedAccountId =
-                    mSelectedAccount == null ? null : assertNonNull(mSelectedAccount).getId();
             mDeviceLockActivityLauncher.launchDeviceLockActivity(
                     mActivity,
-                    selectedAccountId,
+                    AccountInfo.getIdFrom(mSelectedAccount),
                     /* requireDeviceLockReauthentication= */ true,
                     mWindowAndroid,
                     (resultCode, data) -> {
@@ -651,6 +743,10 @@ public class AccountPickerBottomSheetMediator
                 mSelectedAccount,
                 mCallbackController.makeCancelable(
                         (Boolean isAccountManaged) -> {
+                            if (mSignedInByAnotherFlow) {
+                                // The sheet is closing because another flow signed in.
+                                return;
+                            }
                             assertNonNull(mSigninTimestampsLogger)
                                     .recordTimestamp(Event.MANAGEMENT_STATUS_LOADED);
                             if (isAccountManaged) {
@@ -666,6 +762,9 @@ public class AccountPickerBottomSheetMediator
     }
 
     private void shownConfirmManagementSheet() {
+        if (ChromeFeatureList.isEnabled(ChromeFeatureList.ANDROID_NEW_MANAGEMENT_NOTICE)) {
+            mDelegate.setUpManagementNoticeForAccount(assertNonNull(mSelectedAccount));
+        }
         mModel.set(AccountPickerBottomSheetProperties.VIEW_STATE, ViewState.CONFIRM_MANAGEMENT);
         if (mIsSeamlessSignin && mRequestDisplayBottomSheet != null) {
             mRequestDisplayBottomSheet.run();
@@ -673,14 +772,15 @@ public class AccountPickerBottomSheetMediator
     }
 
     private void signInAfterCheckingManagement() {
+        if (mSignedInByAnotherFlow) {
+            // The sheet is closing because another flow signed in. Don't replace that sign-in.
+            return;
+        }
         if (mSelectedAccount == null) {
             handleMissingSelectedAccountForSignIn();
             return;
         }
 
-        if (mAcceptedAccountManagement) {
-            mSigninManager.setUserAcceptedAccountManagement(true);
-        }
         mModel.set(AccountPickerBottomSheetProperties.VIEW_STATE, ViewState.SIGNIN_IN_PROGRESS);
 
         if (mInitializedWithNoAccount) {
@@ -710,17 +810,25 @@ public class AccountPickerBottomSheetMediator
             mSigninManager.signOut(SignoutReason.SIGNIN_RETRIGGERED);
         }
 
-        CoreAccountInfo selectedAccount = mSelectedAccount;
+        // Signing out clears the management acceptance, so set it after the sign-out above, right
+        // before signing in.
+        if (mAcceptedAccountManagement) {
+            mSigninManager.setUserAcceptedAccountManagement(true);
+        }
+
+        AccountInfo selectedAccount = mSelectedAccount;
+        mIsSigningIn = true;
         mSigninManager.signin(
                 selectedAccount,
                 mSigninAccessPoint,
                 new SigninManager.SignInCallback() {
                     @Override
                     public void onSignInComplete() {
+                        mIsSigningIn = false;
                         // Delegates can optionally run extra operations immediately after sign-in
                         // while the loading bottom sheet is still shown. For example, websignin
-                        // creates a WebSigninBridge which asynchronously awaits cookie sync. If
-                        // this fails reauthentication is necessary.
+                        // creates a WebSigninTrackerBridge which asynchronously awaits cookie sync.
+                        // If this fails reauthentication is necessary.
                         mAccountPickerDelegate.runPostSigninAction(
                                 selectedAccount,
                                 result -> handlePostSigninResult(selectedAccount, result));
@@ -728,13 +836,14 @@ public class AccountPickerBottomSheetMediator
 
                     @Override
                     public void onSignInAborted() {
+                        mIsSigningIn = false;
                         showGenericError();
                     }
                 });
     }
 
     private void handlePostSigninResult(
-            CoreAccountInfo signedInAccount, @PostSigninOperationResult int result) {
+            AccountInfo signedInAccount, @PostSigninOperationResult int result) {
         @ViewState int viewState = mModel.get(AccountPickerBottomSheetProperties.VIEW_STATE);
         assert viewState == ViewState.SIGNIN_IN_PROGRESS;
 
@@ -783,6 +892,17 @@ public class AccountPickerBottomSheetMediator
         mAccountPickerDelegate.onSignInCancel();
     }
 
+    /** Closes the sheet without signing in, after another flow signed in. */
+    private void closeAfterSigninByAnotherFlow() {
+        if (mIsSeamlessSignin) {
+            // Also prevents the seamless flow from displaying the sheet again later.
+            abandonSeamlessSignin();
+            return;
+        }
+        mDismissBottomSheet.run();
+        mAccountPickerDelegate.onSignInCancel();
+    }
+
     private void updateCredentials() {
         final Callback<Boolean> onUpdateCredentialsCompleted =
                 isSuccess -> {
@@ -808,7 +928,7 @@ public class AccountPickerBottomSheetMediator
                 && SigninFeatureMap.isEnabled(
                         SigninFeatures.ENABLE_ACCOUNT_PREVIEW_PREFERRED_ACCOUNT)) {
             AccountPreviewPreference preference =
-                    mAccountPreviewDataService.getPreferredAccountForPromo();
+                    mAccountPreviewDataService.getPreferredAccountForSignin();
             if (preference != null
                     && AccountUtils.findAccountByGaiaId(accounts, preference.getGaiaId()) != null) {
                 return preference;

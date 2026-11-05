@@ -47,6 +47,7 @@
 #include "components/offline_pages/core/offline_page_feature.h"
 #include "components/offline_pages/core/offline_page_item_utils.h"
 #include "components/offline_pages/core/offline_page_model.h"
+#include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/download_manager.h"
 #include "content/public/browser/download_request_utils.h"
@@ -63,9 +64,6 @@
 #include "chrome/android/chrome_jni_headers/OfflinePageDownloadBridge_jni.h"
 
 using base::android::AttachCurrentThread;
-using base::android::ConvertJavaStringToUTF8;
-using base::android::ConvertUTF16ToJavaString;
-using base::android::ConvertUTF8ToJavaString;
 using base::android::JavaRef;
 using base::android::ScopedJavaGlobalRef;
 using base::android::ScopedJavaLocalRef;
@@ -100,7 +98,7 @@ void OnShareInfoRetrieved(std::unique_ptr<OfflinePageShareHelper>,
 
 class DownloadUIAdapterDelegate : public DownloadUIAdapter::Delegate {
  public:
-  explicit DownloadUIAdapterDelegate(OfflinePageModel* model);
+  DownloadUIAdapterDelegate(OfflinePageModel* model, Profile* profile);
 
   // DownloadUIAdapter::Delegate
   bool IsVisibleInUI(const ClientId& client_id) override;
@@ -115,10 +113,12 @@ class DownloadUIAdapterDelegate : public DownloadUIAdapter::Delegate {
  private:
   // Not owned, cached service pointer.
   raw_ptr<OfflinePageModel> model_;
+  raw_ptr<Profile> profile_;
 };
 
-DownloadUIAdapterDelegate::DownloadUIAdapterDelegate(OfflinePageModel* model)
-    : model_(model) {}
+DownloadUIAdapterDelegate::DownloadUIAdapterDelegate(OfflinePageModel* model,
+                                                     Profile* profile)
+    : model_(model), profile_(profile) {}
 
 bool DownloadUIAdapterDelegate::IsVisibleInUI(const ClientId& client_id) {
   const std::string& name_space = client_id.name_space;
@@ -135,7 +135,7 @@ void DownloadUIAdapterDelegate::OpenItem(
   JNIEnv* env = AttachCurrentThread();
   Java_OfflinePageDownloadBridge_openItem(
       env, item.url.spec(), offline_id,
-      static_cast<int>(open_params.launch_location),
+      static_cast<int>(open_params.launch_location), profile_,
       open_params.open_in_incognito,
       offline_pages::ShouldOfflinePagesInDownloadHomeOpenInCct());
 }
@@ -205,8 +205,10 @@ void SavePageIfNotNavigatedAway(const GURL& url,
   // the tab. If unsuccessful, it'll enable the already-queued request for
   // background offliner. Same will happen if Chrome is terminated since
   // 'disabled' status of the request is RAM-stored info.
+  tabs::TabInterface* tab =
+      tabs::TabInterface::MaybeGetFromContents(web_contents);
   offline_pages::RecentTabHelper* tab_helper =
-      RecentTabHelper::FromWebContents(web_contents);
+      tab ? RecentTabHelper::From(tab) : nullptr;
   if (!tab_helper) {
     if (request_id != OfflinePageModel::kInvalidOfflineId &&
         request_coordinator) {
@@ -255,7 +257,7 @@ void DownloadAsFile(content::WebContents* web_contents, const GURL& url) {
       web_contents->GetController().GetLastCommittedEntry();
   // |entry| should not be null since otherwise an empty URL is returned from
   // calling GetLastCommittedURL and we should bail out earlier.
-  DCHECK(entry);
+  CHECK(entry, base::NotFatalUntil::M161);
   content::Referrer referrer =
       content::Referrer::SanitizeForRequest(url, entry->GetReferrer());
   dl_params->set_referrer(referrer.url);
@@ -272,7 +274,7 @@ void InitializeBackendOnProfileCreated(Profile* profile) {
   profile = profile->GetOriginalProfile();
   OfflinePageModel* offline_page_model =
       OfflinePageModelFactory::GetForBrowserContext(profile);
-  DCHECK(offline_page_model);
+  CHECK(offline_page_model, base::NotFatalUntil::M161);
 
   DownloadUIAdapter* adapter =
       DownloadUIAdapter::FromOfflinePageModel(offline_page_model);
@@ -280,15 +282,16 @@ void InitializeBackendOnProfileCreated(Profile* profile) {
   if (!adapter) {
     RequestCoordinator* request_coordinator =
         RequestCoordinatorFactory::GetForBrowserContext(profile);
-    DCHECK(request_coordinator);
+    CHECK(request_coordinator, base::NotFatalUntil::M161);
     offline_items_collection::OfflineContentAggregator* aggregator =
         OfflineContentAggregatorFactory::GetForKey(profile->GetProfileKey());
-    DCHECK(aggregator);
-    adapter = new DownloadUIAdapter(
-        aggregator, offline_page_model, request_coordinator,
-        std::make_unique<VisualsDecoderImpl>(
-            std::make_unique<ImageDecoderImpl>()),
-        std::make_unique<DownloadUIAdapterDelegate>(offline_page_model));
+    CHECK(aggregator, base::NotFatalUntil::M161);
+    adapter = new DownloadUIAdapter(aggregator, offline_page_model,
+                                    request_coordinator,
+                                    std::make_unique<VisualsDecoderImpl>(
+                                        std::make_unique<ImageDecoderImpl>()),
+                                    std::make_unique<DownloadUIAdapterDelegate>(
+                                        offline_page_model, profile));
     DownloadUIAdapter::AttachToOfflinePageModel(base::WrapUnique(adapter),
                                                 offline_page_model);
   }
@@ -296,21 +299,11 @@ void InitializeBackendOnProfileCreated(Profile* profile) {
 
 }  // namespace
 
-OfflinePageDownloadBridge::OfflinePageDownloadBridge(
-    JNIEnv* env,
-    const base::android::JavaRef<jobject>& obj)
-    : weak_java_ref_(env, obj) {}
-
-OfflinePageDownloadBridge::~OfflinePageDownloadBridge() = default;
-
-void OfflinePageDownloadBridge::Destroy(JNIEnv* env) {
-  delete this;
-}
-
 static void JNI_OfflinePageDownloadBridge_StartDownload(
     JNIEnv* env,
     const JavaRef<jobject>& j_tab,
-    const std::string& origin) {
+    const std::string& origin,
+    bool from_app_menu) {
   TabAndroid* tab = TabAndroid::GetNativeTab(env, j_tab);
   if (!tab)
     return;
@@ -336,9 +329,10 @@ static void JNI_OfflinePageDownloadBridge_StartDownload(
   // Off the record save page and save as enabled on desktop android are
   // handled via standard SavePackage.
   if (web_contents->GetBrowserContext()->IsOffTheRecord() ||
-      (base::FeatureList::IsEnabled(
-           download::features::kEnableDownloadSaveAsContextMenu) &&
-       base::android::device_info::is_desktop())) {
+      (!from_app_menu &&
+       base::FeatureList::IsEnabled(
+           download::features::kEnableDownloadSaveAsContextMenu)) ||
+      base::android::device_info::is_desktop()) {
     web_contents->OnSavePage();
     return;
   }
@@ -354,14 +348,10 @@ static void JNI_OfflinePageDownloadBridge_StartDownload(
                      origin));
 }
 
-static int64_t JNI_OfflinePageDownloadBridge_Init(
-    JNIEnv* env,
-    const base::android::JavaRef<jobject>& obj) {
+static void JNI_OfflinePageDownloadBridge_Init(JNIEnv* env) {
   ProfileKey* key = ::android::GetLastUsedRegularProfileKey();
   FullBrowserTransitionManager::Get()->RegisterCallbackOnProfileCreation(
       key, base::BindOnce(&InitializeBackendOnProfileCreated));
-
-  return reinterpret_cast<int64_t>(new OfflinePageDownloadBridge(env, obj));
 }
 
 // static

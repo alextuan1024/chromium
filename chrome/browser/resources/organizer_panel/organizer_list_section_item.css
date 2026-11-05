@@ -13,7 +13,27 @@
 
 #crUrlListItem {
   --organizer-list-section-item-trailing-icon-size_: 16px;
-  --organizer-list-section-item-trailing-button-size_: 24px;
+  --organizer-list-section-item-trailing-button-size_: 32px;
+  --cr-url-list-item-padding: 4px 8px;
+
+  border-radius: 8px;
+}
+
+#crUrlListItem:not([size=compact]):not([size=large]) {
+  --cr-url-list-item-height: 52px;
+}
+
+#crUrlListItem::part(iconContainer) {
+  background: none;
+  color: var(--color-organizer-panel-foreground-subtle,
+      var(--color-sys-on-surface-subtle));
+  margin-inline-end: 6px;
+  width: 28px;
+}
+
+#crUrlListItem::part(suffix) {
+  margin-inline-end: -4px;
+  padding-inline-end: 0;
 }
 
 #content {
@@ -32,6 +52,8 @@
 #trailingIcon {
   --iron-icon-height: var(--organizer-list-section-item-trailing-icon-size_);
   --iron-icon-width: var(--organizer-list-section-item-trailing-icon-size_);
+  color: var(--color-organizer-panel-foreground-subtle,
+      var(--color-sys-on-surface-subtle));
 }
 
 #trailingIcon.has-action-button {
@@ -41,23 +63,28 @@
 }
 
 #actionButton {
+  --cr-icon-button-fill-color: var(--color-organizer-panel-foreground-subtle,
+      var(--cr-secondary-text-color));
   --cr-icon-button-icon-size:
       var(--organizer-list-section-item-trailing-icon-size_);
   --cr-icon-button-margin-end: 0;
   --cr-icon-button-margin-start: 0;
-  --cr-icon-button-size:
-      var(--organizer-list-section-item-trailing-button-size_);
-  display: none;
+  --cr-icon-button-size: 0px;
+  opacity: 0;
+  pointer-events: none;
+  position: absolute;
 }
 
-:host(:hover) #actionButton,
 :host(.hovered) #actionButton,
 :host(:focus-within) #actionButton,
 #crUrlListItem.hovered #actionButton {
-  display: inline-flex;
+  --cr-icon-button-size:
+      var(--organizer-list-section-item-trailing-button-size_);
+  opacity: 1;
+  pointer-events: auto;
+  position: relative;
 }
 
-:host(:hover) #trailingIcon.has-action-button,
 :host(.hovered) #trailingIcon.has-action-button,
 :host(:focus-within) #trailingIcon.has-action-button,
 #crUrlListItem.hovered #trailingIcon.has-action-button {

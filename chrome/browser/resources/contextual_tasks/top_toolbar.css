@@ -57,6 +57,15 @@
   white-space: nowrap;
 }
 
+permission-dashboard {
+  flex-shrink: 0;
+  margin-inline-end: 8px;
+}
+
+permission-dashboard[hidden] {
+  display: none;
+}
+
 .top-toolbar-logo-container {
   flex: 0;
   height: 18px;
@@ -65,14 +74,18 @@
   width: 18px;
 }
 
-:host([is-side-panel-rearchitecture-enabled]) .top-toolbar-logo-container {
+/* Exclude [hidden] so display: flex does not override the HTML hidden
+ * attribute when permission chips are shown.
+ */
+:host([is-side-panel-rearchitecture-enabled])
+    .top-toolbar-logo-container:not([hidden]) {
   align-items: center;
   display: flex;
   flex: 0 0 auto;
   height: auto;
   justify-content: center;
+  margin: 0;
   margin-inline-end: 12px;
-  margin-right: 0;
   width: auto;
 }
 
@@ -101,8 +114,8 @@
 }
 
 :host([dark-mode]) .top-toolbar-logo-button.clickable {
-  background: var(--toolbar-background-color, #292a2d);
-  box-shadow: 0 0 6px 0 rgba(0, 0, 0, 0.6);
+  background: var(--toolbar-background-color, #22242b);
+  box-shadow: 0 0 6px 0 rgba(255, 255, 255, 0.25);
 }
 
 .top-toolbar-logo-button.clickable:focus-visible {
@@ -123,6 +136,13 @@
   display: none;
 }
 
+/* Pre-rearchitecture <contextual-tasks-app> drives dark mode explicitly via
+ * the dark-mode host attribute, whereas post-rearchitecture toolbar.html
+ * updates preferred_color_scheme directly via C++ and relies on
+ * @media (prefers-color-scheme: dark). Scoping the media query to
+ * [is-side-panel-rearchitecture-enabled] prevents OS dark mode from
+ * overriding light mode on pre-rearchitecture pages.
+ */
 :host([dark-mode]) .chrome-logo-light {
   display: none;
 }
@@ -131,7 +151,24 @@
   display: block;
 }
 
+@media (prefers-color-scheme: dark) {
+  :host([is-side-panel-rearchitecture-enabled])
+      .top-toolbar-logo-button.clickable {
+    background: var(--toolbar-background-color, #22242b);
+    box-shadow: 0 0 6px 0 rgba(255, 255, 255, 0.25);
+  }
+
+  :host([is-side-panel-rearchitecture-enabled]) .chrome-logo-light {
+    display: none;
+  }
+
+  :host([is-side-panel-rearchitecture-enabled]) .chrome-logo-dark {
+    display: block;
+  }
+}
+
 .top-toolbar-action-buttons {
+  align-items: center;
   flex: 0;
   display: flex;
   flex-direction: row;
@@ -162,4 +199,28 @@ cr-icon-button[hidden] {
 
 #overflowMenuButton.active {
   background-color: var(--cr-active-background-color);
+}
+
+.profile-indicator {
+  --cr-button-height: 32px;
+  align-items: center;
+  border: none;
+  border-radius: 50%;
+  box-sizing: border-box;
+  display: flex;
+  flex-shrink: 0;
+  height: 32px;
+  justify-content: center;
+  margin: 0;
+  min-width: 32px;
+  padding: 0;
+  width: 32px;
+}
+
+.profile-avatar-img {
+  border-radius: 50%;
+  display: block;
+  height: 20px;
+  object-fit: cover;
+  width: 20px;
 }

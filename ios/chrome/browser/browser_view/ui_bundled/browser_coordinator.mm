@@ -6,6 +6,7 @@
 
 #import <memory>
 #import <optional>
+#import <utility>
 
 #import "base/apple/foundation_util.h"
 #import "base/check.h"
@@ -32,7 +33,6 @@
 #import "components/google/core/common/google_util.h"
 #import "components/infobars/core/infobar.h"
 #import "components/infobars/core/infobar_manager.h"
-#import "components/password_manager/core/browser/ui/credential_ui_entry.h"
 #import "components/password_manager/core/common/password_manager_features.h"
 #import "components/prefs/pref_service.h"
 #import "components/profile_metrics/browser_profile_type.h"
@@ -40,15 +40,17 @@
 #import "components/segmentation_platform/embedder/home_modules/tips_manager/constants.h"
 #import "components/segmentation_platform/embedder/home_modules/tips_manager/signal_constants.h"
 #import "components/send_tab_to_self/metrics_util.h"
+#import "components/signin/public/base/consent_level.h"
 #import "components/signin/public/base/signin_metrics.h"
+#import "components/signin/public/base/signin_switches.h"
+#import "components/signin/public/identity_manager/identity_manager.h"
 #import "components/sync/service/sync_service.h"
 #import "components/translate/core/browser/translate_manager.h"
 #import "components/trusted_vault/trusted_vault_server_constants.h"
-#import "components/webauthn/ios/ios_passkey_client.h"
-#import "components/webauthn/ios/ios_passkey_client_commands.h"
 #import "ios/chrome/browser/app_bar/ui/app_bar_constants.h"
 #import "ios/chrome/browser/app_launcher/model/app_launcher_tab_helper_browser_presentation_provider.h"
 #import "ios/chrome/browser/app_store_rating/model/features.h"
+#import "ios/chrome/browser/authentication/signin/reauth/coordinator/signin_reauth_coordinator.h"
 #import "ios/chrome/browser/authentication/trusted_vault_reauthentication/coordinator/trusted_vault_reauthentication_coordinator.h"
 #import "ios/chrome/browser/authentication/trusted_vault_reauthentication/coordinator/trusted_vault_reauthentication_coordinator_delegate.h"
 #import "ios/chrome/browser/authentication/ui_bundled/continuation.h"
@@ -118,6 +120,7 @@
 #import "ios/chrome/browser/infobars/model/infobar_manager_impl.h"
 #import "ios/chrome/browser/intelligence/features/features.h"
 #import "ios/chrome/browser/intents/model/intents_donation_helper.h"
+#import "ios/chrome/browser/lens/ui_bundled/lens_coordinator.h"
 #import "ios/chrome/browser/lens_overlay/coordinator/lens_overlay_coordinator.h"
 #import "ios/chrome/browser/lens_overlay/coordinator/lens_view_finder_coordinator.h"
 #import "ios/chrome/browser/lens_overlay/model/lens_overlay_tab_helper.h"
@@ -134,7 +137,6 @@
 #import "ios/chrome/browser/overlays/model/public/overlay_presenter.h"
 #import "ios/chrome/browser/overscroll_actions/model/overscroll_actions_tab_helper.h"
 #import "ios/chrome/browser/overscroll_actions/ui_bundled/overscroll_actions_controller.h"
-#import "ios/chrome/browser/passwords/bottom_sheet/coordinator/credential_suggestion_bottom_sheet_coordinator.h"
 #import "ios/chrome/browser/passwords/model/password_controller_delegate.h"
 #import "ios/chrome/browser/popup_menu/coordinator/popup_menu_coordinator.h"
 #import "ios/chrome/browser/popup_menu/overflow_menu/public/features.h"
@@ -150,7 +152,6 @@
 #import "ios/chrome/browser/qr_scanner/coordinator/qr_scanner_legacy_coordinator.h"
 #import "ios/chrome/browser/reader_mode/coordinator/reader_mode_blur_overlay_coordinator.h"
 #import "ios/chrome/browser/reader_mode/coordinator/reader_mode_coordinator.h"
-#import "ios/chrome/browser/reader_mode/model/features.h"
 #import "ios/chrome/browser/reader_mode/model/reader_mode_browser_agent.h"
 #import "ios/chrome/browser/reader_mode/model/reader_mode_browser_agent_delegate.h"
 #import "ios/chrome/browser/reader_mode/model/reader_mode_tab_helper.h"
@@ -178,7 +179,6 @@
 #import "ios/chrome/browser/shared/coordinator/scene/state/browser_layout_state.h"
 #import "ios/chrome/browser/shared/coordinator/scene/state/scene_layout_state.h"
 #import "ios/chrome/browser/shared/model/browser/browser.h"
-#import "ios/chrome/browser/shared/model/browser/browser_provider.h"
 #import "ios/chrome/browser/shared/model/browser/browser_provider_interface.h"
 #import "ios/chrome/browser/shared/model/prefs/pref_names.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
@@ -201,6 +201,7 @@
 #import "ios/chrome/browser/shared/public/commands/omnibox_commands.h"
 #import "ios/chrome/browser/shared/public/commands/open_new_tab_command.h"
 #import "ios/chrome/browser/shared/public/commands/popup_menu_commands.h"
+#import "ios/chrome/browser/shared/public/commands/primary_account_reauth_commands.h"
 #import "ios/chrome/browser/shared/public/commands/qr_generation_commands.h"
 #import "ios/chrome/browser/shared/public/commands/quick_delete_commands.h"
 #import "ios/chrome/browser/shared/public/commands/reader_mode_chip_commands.h"
@@ -216,7 +217,6 @@
 #import "ios/chrome/browser/shared/public/commands/synced_set_up_commands.h"
 #import "ios/chrome/browser/shared/public/commands/text_zoom_commands.h"
 #import "ios/chrome/browser/shared/public/commands/toolbar_commands.h"
-#import "ios/chrome/browser/shared/public/commands/welcome_back_promo_commands.h"
 #import "ios/chrome/browser/shared/public/commands/whats_new_commands.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/shared/ui/elements/activity_overlay_coordinator.h"
@@ -232,6 +232,7 @@
 #import "ios/chrome/browser/signin/model/account_consistency_service_factory.h"
 #import "ios/chrome/browser/signin/model/authentication_service.h"
 #import "ios/chrome/browser/signin/model/authentication_service_factory.h"
+#import "ios/chrome/browser/signin/model/identity_manager_factory.h"
 #import "ios/chrome/browser/snackbar/ui_bundled/snackbar_coordinator.h"
 #import "ios/chrome/browser/snackbar/ui_bundled/snackbar_coordinator_delegate.h"
 #import "ios/chrome/browser/snapshots/model/model_swift.h"
@@ -260,6 +261,7 @@
 #import "ios/chrome/browser/url_loading/model/url_loading_notifier_browser_agent.h"
 #import "ios/chrome/browser/url_loading/model/url_loading_params.h"
 #import "ios/chrome/browser/view_source/model/view_source_browser_agent.h"
+#import "ios/chrome/browser/voice/model/voice_search_navigations_tab_helper.h"
 #import "ios/chrome/browser/voice/ui_bundled/text_to_speech_playback_controller.h"
 #import "ios/chrome/browser/voice/ui_bundled/text_to_speech_playback_controller_factory.h"
 #import "ios/chrome/browser/web/model/choose_file/choose_file_tab_helper.h"
@@ -281,12 +283,11 @@
 #import "ios/chrome/grit/ios_strings.h"
 #import "ios/public/provider/chrome/browser/fullscreen/fullscreen_api.h"
 #import "ios/public/provider/chrome/browser/signin/choice_api.h"
-#import "ios/public/provider/chrome/browser/text_zoom/text_zoom_api.h"
 #import "ios/public/provider/chrome/browser/voice_search/voice_search_api.h"
 #import "ios/public/provider/chrome/browser/voice_search/voice_search_controller.h"
+#import "ios/public/provider/chrome/browser/voice_search/voice_search_coordinator_delegate.h"
 #import "ios/web/public/web_state.h"
 #import "ios/web/public/web_state_id.h"
-#import "ui/base/device_form_factor.h"
 #import "ui/base/l10n/l10n_util.h"
 
 #if BUILDFLAG(ENABLE_SWIFT_CXX_INTEROP)
@@ -318,6 +319,7 @@ constexpr CGFloat kSnackbarFloatingBottomMargin = 10.0;
     OverscrollActionsControllerDelegate,
     PasswordControllerDelegate,
     PrerenderBrowserAgentDelegate,
+    PrimaryAccountReauthCommands,
     ReSigninPresenter,
     ReaderModeBrowserAgentDelegate,
     ReaderModeCommands,
@@ -326,13 +328,14 @@ constexpr CGFloat kSnackbarFloatingBottomMargin = 10.0;
     RecentTabsCoordinatorDelegate,
     RepostFormCoordinatorDelegate,
     RepostFormTabHelperDelegate,
-
+    SigninReauthCoordinatorDelegate,
     SnackbarCoordinatorDelegate,
     SnapshotGeneratorDelegate,
     SyncPresenterCommands,
     TextZoomCommands,
     TrustedVaultReauthenticationCoordinatorDelegate,
     URLLoadingDelegate,
+    VoiceSearchCoordinatorDelegate,
     WebNavigationNTPDelegate,
     WebUsageEnablerBrowserAgentObserving>
 
@@ -465,6 +468,7 @@ constexpr CGFloat kSnackbarFloatingBottomMargin = 10.0;
   KeyCommandsProvider* _keyCommandsProvider;
   BubblePresenterCoordinator* _bubblePresenterCoordinator;
   ToolbarAccessoryPresenter* _toolbarAccessoryPresenter;
+  LensCoordinator* _lensCoordinator;
   LensViewFinderCoordinator* _lensViewFinderCoordinator;
   LensOverlayCoordinator* _lensOverlayCoordinator;
   MainToolbarCoordinator* _toolbarCoordinator;
@@ -473,8 +477,13 @@ constexpr CGFloat kSnackbarFloatingBottomMargin = 10.0;
   raw_ptr<FullscreenController> _fullscreenController;
   BookmarksCoordinator* _bookmarksCoordinator;
   CredentialProviderPromoCoordinator* _credentialProviderPromoCoordinator;
-  // Used to display the Voice Search UI.  Nil if not visible.
+  // Used to display the legacy Voice Search UI.
+  // TODO(crbug.com/549858749): Remove once the legacy Voice Search UI is
+  // removed.
   id<VoiceSearchController> _voiceSearchController;
+  // Coordinator presenting the Voice Search UI. Nil if Voice Search isn't
+  // started.
+  ChromeCoordinator* _voiceSearchCoordinator;
   raw_ptr<UrlLoadingNotifierBrowserAgent> _urlLoadingNotifierBrowserAgent;
   id<OmniboxCommands> _omniboxCommandsHandler;
   LayoutGuideCenter* _layoutGuideCenter;
@@ -504,6 +513,8 @@ constexpr CGFloat kSnackbarFloatingBottomMargin = 10.0;
   PriceTrackingPromoCoordinator* _priceTrackingPromoCoordinator;
   TabGroupsPromoCoordinator* _tabGroupsPromoCoordinator;
   AutoDeletionCoordinator* _autoDeletionCoordinator;
+  SigninReauthCoordinator* _reauthCoordinator;
+  SyncPresenterCompletionCallback _reauthCoordinatorCompletion;
   TrustedVaultReauthenticationCoordinator*
       _trustedVaultReauthenticationCoordinator;
   SyncPresenterCompletionCallback
@@ -514,10 +525,6 @@ constexpr CGFloat kSnackbarFloatingBottomMargin = 10.0;
 
   // The coordinator for the notifications opt-in screen.
   NotificationsOptInCoordinator* _notificationsOptInCoordinator;
-
-  // The coordinator showing the multimodal composebox menu.
-  ComposeboxMenuCoordinator* _composeboxMenuCoordinator;
-
 }
 
 #pragma mark - SnackbarCoordinatorDelegate
@@ -708,6 +715,7 @@ constexpr CGFloat kSnackbarFloatingBottomMargin = 10.0;
   [super stop];
   self.active = NO;
   [self stopSigninCoordinator];
+  [self stopReauthCoordinator];
   [self uninstallDelegatesForBrowserState];
   [self uninstallDelegatesForBrowser];
   [self.tabEventsMediator disconnect];
@@ -726,6 +734,7 @@ constexpr CGFloat kSnackbarFloatingBottomMargin = 10.0;
   _modalHost = nil;
 
   [self.dispatcher stopDispatchingToTarget:self];
+  _dispatcher = nil;
   _webUsageEnablerObserver.reset();
   _activityOverlayCallback.RunAndReset();
 }
@@ -800,14 +809,23 @@ constexpr CGFloat kSnackbarFloatingBottomMargin = 10.0;
 
 - (void)signinCoordinatorCompletionWithCoordinator:
     (SigninCoordinator*)coordinator {
-  CHECK(!coordinator || _signinCoordinator == coordinator,
-        base::NotFatalUntil::M151);
+  CHECK(!coordinator || _signinCoordinator == coordinator);
   [self stopSigninCoordinator];
 }
 
 - (void)stopSigninCoordinator {
   [_signinCoordinator stop];
   _signinCoordinator = nil;
+}
+
+- (void)stopReauthCoordinator {
+  _reauthCoordinator.delegate = nil;
+  [_reauthCoordinator stop];
+  _reauthCoordinator = nil;
+
+  if (_reauthCoordinatorCompletion) {
+    std::exchange(_reauthCoordinatorCompletion, nil)();
+  }
 }
 
 - (void)stopTrustedVaultReauthentication {
@@ -959,6 +977,7 @@ constexpr CGFloat kSnackbarFloatingBottomMargin = 10.0;
     @protocol(FindInPageCommands),
     @protocol(ReaderModeCommands),
     @protocol(NewTabPageCommands),
+    @protocol(PrimaryAccountReauthCommands),
     @protocol(SyncPresenterCommands),
     @protocol(TextZoomCommands),
   ];
@@ -972,7 +991,6 @@ constexpr CGFloat kSnackbarFloatingBottomMargin = 10.0;
 - (void)startModalDispatching {
   _modalHost = [[BrowserModalHost alloc] initWithBrowser:self.browser];
   [_modalHost startHostingCommandProtocols];
-  _modalHost.passwordControllerDelegate = self;
 }
 
 // Creates the browser view controller dependencies.
@@ -1088,12 +1106,19 @@ constexpr CGFloat kSnackbarFloatingBottomMargin = 10.0;
       componentFactory:[[NewTabPageComponentFactory alloc] init]];
   _NTPCoordinator.toolbarDelegate = _toolbarCoordinator;
 
-  _lensViewFinderCoordinator =
-      [[LensViewFinderCoordinator alloc] initWithBrowser:browser];
+  if (IsLVFUnifiedExperienceEnabled(profile->GetPrefs())) {
+    _lensViewFinderCoordinator =
+        [[LensViewFinderCoordinator alloc] initWithBrowser:browser];
+  } else {
+    _lensCoordinator = [[LensCoordinator alloc] initWithBrowser:browser];
+  }
 
   _safeAreaProvider = [[SafeAreaProvider alloc] initWithBrowser:browser];
 
-  _voiceSearchController = ios::provider::CreateVoiceSearchController(browser);
+  if (!IsVoiceSearchEvolutionPhase1Enabled()) {
+    _voiceSearchController =
+        ios::provider::CreateVoiceSearchController(browser);
+  }
 
   _viewControllerDependencies.toolbarAccessoryPresenter =
       _toolbarAccessoryPresenter;
@@ -1156,8 +1181,14 @@ constexpr CGFloat kSnackbarFloatingBottomMargin = 10.0;
   // The Lens coordinator needs to be started before the primary toolbar
   // coordinator so that the LensCommands dispatcher is correctly registered in
   // time.
-  _lensViewFinderCoordinator.baseViewController = viewController;
-  [_lensViewFinderCoordinator start];
+  if (IsLVFUnifiedExperienceEnabled(self.profile->GetPrefs())) {
+    _lensViewFinderCoordinator.baseViewController = viewController;
+    [_lensViewFinderCoordinator start];
+  } else {
+    _lensCoordinator.baseViewController = viewController;
+    _lensCoordinator.delegate = viewController;
+    [_lensCoordinator start];
+  }
 
   _toolbarCoordinator.baseViewController = viewController;
   if (!IsChromeNextIaEnabled()) {
@@ -1220,8 +1251,13 @@ constexpr CGFloat kSnackbarFloatingBottomMargin = 10.0;
   [_lensOverlayCoordinator stop];
   _lensOverlayCoordinator = nil;
 
-  [_lensViewFinderCoordinator stop];
-  _lensViewFinderCoordinator = nil;
+  if (IsLVFUnifiedExperienceEnabled(self.profile->GetPrefs())) {
+    [_lensViewFinderCoordinator stop];
+    _lensViewFinderCoordinator = nil;
+  } else {
+    [_lensCoordinator stop];
+    _lensCoordinator = nil;
+  }
 
   // This can be removed if the browser agent guarenteed to be detroyed before
   // profile keyed objects.
@@ -1243,7 +1279,6 @@ constexpr CGFloat kSnackbarFloatingBottomMargin = 10.0;
   self.snackbarCoordinator = nil;
 
   _keyCommandsProvider = nil;
-  _dispatcher = nil;
   _layoutGuideCenter = nil;
   _webNavigationBrowserAgent = nil;
   _urlLoadingBrowserAgent = nil;
@@ -1424,6 +1459,7 @@ constexpr CGFloat kSnackbarFloatingBottomMargin = 10.0;
   [self dismissNotificationsOptIn];
   [self hideComposeboxImmediately:YES completion:nil];
   [self dismissMultimodalActionsMenu];
+  [self stopVoiceSearchCoordinator];
 
   [_readerModeCoordinator stop];
   _readerModeCoordinator = nil;
@@ -1497,8 +1533,12 @@ constexpr CGFloat kSnackbarFloatingBottomMargin = 10.0;
 // Resets the composebox state provider and coordinator. The
 // composeboxCoordinator should have been stopped before calling this method.
 - (void)resetComposebox {
+  BOOL hadComposebox = _composeboxCoordinator != nil;
   _browserOmniboxStateProvider.composeboxStateProvider = nil;
   _composeboxCoordinator = nil;
+  if (hadComposebox) {
+    self.viewController.visibilityState = BrowserViewVisibilityState::kVisible;
+  }
 }
 
 // Hides the compose box. If `immediately` is NO, the operation stops on the
@@ -1729,14 +1769,15 @@ constexpr CGFloat kSnackbarFloatingBottomMargin = 10.0;
   const TabGroup* group = webStateList->GetGroupOfWebStateAt(active_index);
   if (groupService && groupService->ShouldDisplayLastTabCloseAlert(group)) {
     web::WebState* webState = webStateList->GetWebStateAt(active_index);
-    BOOL isTablet = ui::GetDeviceFormFactor() == ui::DEVICE_FORM_FACTOR_TABLET;
+    BOOL isRegularXRegular = IsRegularXRegularSizeClass(self.viewController);
     SharedTabGroupLastTabAlertCommand* command =
         [[SharedTabGroupLastTabAlertCommand alloc]
                  initWithTabID:webState->GetUniqueIdentifier()
                        browser:self.browser
                          group:group
             baseViewController:self.viewController
-                    sourceView:isTablet ? nil : self.viewController.view
+                    sourceView:isRegularXRegular ? nil
+                                                 : self.viewController.view
                        closing:YES];
 
     id<SharedTabGroupLastTabAlertCommands> lastTabAlertHandler =
@@ -1776,6 +1817,9 @@ constexpr CGFloat kSnackbarFloatingBottomMargin = 10.0;
 }
 
 - (void)preloadVoiceSearch {
+  if (IsVoiceSearchEvolutionPhase1Enabled()) {
+    return;
+  }
   // Preload VoiceSearchController and views and view controllers needed
   // for voice search.
   [_voiceSearchController prepareToAppear];
@@ -1785,10 +1829,31 @@ constexpr CGFloat kSnackbarFloatingBottomMargin = 10.0;
   id<SceneCommands> sceneHandler =
       HandlerForProtocol(self.browser->GetCommandDispatcher(), SceneCommands);
   [sceneHandler stopAllVoiceSearch];
-  [_viewController startVoiceSearch];
+
+  if (!IsVoiceSearchEvolutionPhase1Enabled()) {
+    [_viewController startVoiceSearch];
+    return;
+  }
+
+  [IntentDonationHelper donateIntent:IntentType::kOpenVoiceSearch];
+
+  // Voice Search shouldn't be covered by other UI. The composebox is dismissed
+  // asynchronously, so wait for it before presenting Voice Search.
+  [self closeFindInPage];
+  __weak __typeof(self) weakSelf = self;
+  [self hideComposeboxImmediately:NO
+                       completion:^{
+                         [weakSelf startVoiceSearchCoordinator];
+                       }];
 }
 
 - (void)stopVoiceSearch {
+  if (IsVoiceSearchEvolutionPhase1Enabled()) {
+    // TODO(crbug.com/571184218): Stop spoken result playback.
+    [self stopVoiceSearchCoordinator];
+    return;
+  }
+
   if (!_voiceSearchController.audioPlaying) {
     return;
   }
@@ -1796,13 +1861,6 @@ constexpr CGFloat kSnackbarFloatingBottomMargin = 10.0;
   // Calling showVoiceSearch stops TTS audio if it is playing.
   [_viewController startVoiceSearch];
 }
-
-- (void)dismissPasswordSuggestions {
-  // TODO(crbug.com/543354673): Remove this.
-  [HandlerForProtocol(self.dispatcher, IOSPasskeyClientCommands)
-      dismissPasskeySuggestions];
-}
-
 
 - (void)legacyDismissCardUnmaskAuthentication {
   // TODO(crbug.com/543382844): Remove this.
@@ -1814,10 +1872,6 @@ constexpr CGFloat kSnackbarFloatingBottomMargin = 10.0;
   // TODO(crbug.com/543382844): Remove this.
   [HandlerForProtocol(self.dispatcher, AutofillCommands)
       dismissVirtualCardEnrollmentBottomSheet];
-}
-
-- (void)resetAutofillSuggestionsLoadingStates {
-  [self.formInputAccessoryCoordinator resetLoadingStates];
 }
 
 - (void)showOmniboxPositionChoice {
@@ -1939,10 +1993,12 @@ constexpr CGFloat kSnackbarFloatingBottomMargin = 10.0;
 
 - (void)showAddAccountWithAccessPoint:(signin_metrics::AccessPoint)accessPoint
                        prefilledEmail:(NSString*)email {
-  if (_signinCoordinator.viewWillPersist) {
+  if (_signinCoordinator.viewWillPersist ||
+      _reauthCoordinator.viewWillPersist) {
     return;
   }
-  [_signinCoordinator stop];
+  [self stopSigninCoordinator];
+  [self stopReauthCoordinator];
   SigninContextStyle contextStyle = SigninContextStyle::kDefault;
   _signinCoordinator = [SigninCoordinator
       addAccountCoordinatorWithBaseViewController:self.viewController
@@ -1955,34 +2011,16 @@ constexpr CGFloat kSnackbarFloatingBottomMargin = 10.0;
                                  DoNothingContinuationProvider()];
   __weak __typeof(self) weakSelf = self;
   _signinCoordinator.signinCompletion =
-      ^(SigninCoordinator* coordinator, SigninCoordinatorResult result,
-        id<SystemIdentity> identity) {
+      ^(SigninCoordinator* coordinator,
+        SigninCoordinatorResultOrIdentity result) {
         [weakSelf signinCoordinatorCompletionWithCoordinator:coordinator];
       };
   [_signinCoordinator start];
 }
 
-- (void)showMultimodalActionsMenu {
-  if (IsComposeboxPlusButtonBottomSheet()) {
-    [_composeboxMenuCoordinator stop];
-    _composeboxMenuCoordinator = [[ComposeboxMenuCoordinator alloc]
-        initWithBaseViewController:self.viewController
-                           browser:self.browser
-                        entrypoint:ComposeboxEntrypoint::kNTPPlusButton];
-    [_composeboxMenuCoordinator start];
-  } else {
-    [self showComposeboxFromEntrypoint:ComposeboxEntrypoint::kNTPPlusButton
-                             withQuery:nil];
-  }
-}
-
 - (void)dismissMultimodalActionsMenu {
-  if (_composeboxMenuCoordinator) {
-    [_composeboxMenuCoordinator stop];
-    _composeboxMenuCoordinator = nil;
-  } else {
-    [_composeboxCoordinator hideComposeboxMenu];
-  }
+  [_composeboxCoordinator hideComposeboxMenu];
+  [_omniboxCommandsHandler dismissOmniboxMultimodalActionsMenu];
 }
 
 - (void)showComposebox {
@@ -2010,6 +2048,8 @@ constexpr CGFloat kSnackbarFloatingBottomMargin = 10.0;
          composeboxAnimationBase:_toolbarCoordinator];
   [_composeboxCoordinator start];
   _browserOmniboxStateProvider.composeboxStateProvider = _composeboxCoordinator;
+  self.viewController.visibilityState =
+      BrowserViewVisibilityState::kCoveredByOmniboxPopup;
 }
 
 - (void)hideComposebox {
@@ -2051,6 +2091,7 @@ constexpr CGFloat kSnackbarFloatingBottomMargin = 10.0;
   [self cancelCollaborationFlows];
   [self.NTPCoordinator clearPresentedState];
   [self dismissMultimodalActionsMenu];
+  [self stopVoiceSearchCoordinator];
   // The composebox replaces the omnibox.
   if (dismissOmnibox) {
     [self hideComposebox];
@@ -2063,6 +2104,22 @@ constexpr CGFloat kSnackbarFloatingBottomMargin = 10.0;
       clearPresentedStateWithCompletion:completion
                          dismissOmnibox:dismissOmnibox
          dismissPresentedViewController:dismissPresentedViewController];
+}
+
+#pragma mark - Voice Search helpers
+
+// Starts the Voice Search coordinator on the browser view.
+- (void)startVoiceSearchCoordinator {
+  [self stopVoiceSearchCoordinator];
+  _voiceSearchCoordinator = ios::provider::CreateVoiceSearchCoordinator(
+      self.viewController, self.browser, self);
+  [_voiceSearchCoordinator start];
+}
+
+// Stops the Voice Search coordinator, if any.
+- (void)stopVoiceSearchCoordinator {
+  [_voiceSearchCoordinator stop];
+  _voiceSearchCoordinator = nil;
 }
 
 #pragma mark - ReaderModeCommands
@@ -2245,15 +2302,6 @@ constexpr CGFloat kSnackbarFloatingBottomMargin = 10.0;
 #pragma mark - AutofillSettingsNavigator
 
 - (void)openSettingsForPage:(AutofillSettingsPage)page {
-  [self openSettingsForPage:page completion:nil];
-}
-
-- (void)openSettingsForPage:(AutofillSettingsPage)page
-                 completion:(ProceduralBlock)completion {
-  // Only Enhanced Autofill settings report their dismissal; a completion for
-  // any other page would silently never run.
-  CHECK(!completion || page == AutofillSettingsPage::kEnhancedAutofill);
-
   id<SettingsCommands> settingsHandler =
       HandlerForProtocol(self.dispatcher, SettingsCommands);
   switch (page) {
@@ -2287,8 +2335,8 @@ constexpr CGFloat kSnackbarFloatingBottomMargin = 10.0;
                                                   AutofillSettingsReferrer::
                                                       kFillingFlowDropdown];
       break;
-    case AutofillSettingsPage::kEnhancedAutofill:
-      [settingsHandler showEnhancedAutofillSettingsWithCompletion:completion];
+    case AutofillSettingsPage::kSuggestionsFromGemini:
+      [settingsHandler showSuggestionsFromGemini];
       break;
     case AutofillSettingsPage::kSuggestionsFromGeminiHelpImprove:
       [settingsHandler showSuggestionsFromGeminiHelpImprove];
@@ -2328,7 +2376,7 @@ constexpr CGFloat kSnackbarFloatingBottomMargin = 10.0;
 - (void)closeTextZoom {
   web::WebState* activeWebState = self.activeWebState;
   if (activeWebState) {
-    if (ios::provider::IsTextZoomEnabled()) {
+    if (FontSizeTabHelper::IsTextZoomEnabled()) {
       FontSizeTabHelper* fontSizeTabHelper =
           FontSizeTabHelper::FromWebState(activeWebState);
       fontSizeTabHelper->SetTextZoomUIActive(false);
@@ -2522,22 +2570,61 @@ constexpr CGFloat kSnackbarFloatingBottomMargin = 10.0;
   return self.browserContentCoordinator.viewController.view;
 }
 
-#pragma mark - SyncPresenterCommands
+#pragma mark - PrimaryAccountReauthCommands
 
-- (void)showPrimaryAccountReauth {
-  [self showPrimaryAccountReauthWithDismissalCompletion:nil];
+- (void)showPrimaryAccountReauthWithAccessPoint:
+            (signin_metrics::AccessPoint)accessPoint
+                              reauthAccessPoint:
+                                  (signin_metrics::ReauthAccessPoint)
+                                      reauthAccessPoint {
+  [self showPrimaryAccountReauthWithAccessPoint:accessPoint
+                              reauthAccessPoint:reauthAccessPoint
+                            dismissalCompletion:nil];
 }
 
-- (void)showPrimaryAccountReauthWithDismissalCompletion:
-    (SyncPresenterCompletionCallback)completion {
-  if (_signinCoordinator.viewWillPersist) {
+- (void)showPrimaryAccountReauthWithAccessPoint:
+            (signin_metrics::AccessPoint)accessPoint
+                              reauthAccessPoint:
+                                  (signin_metrics::ReauthAccessPoint)
+                                      reauthAccessPoint
+                            dismissalCompletion:(ProceduralBlock)completion {
+  if (_signinCoordinator.viewWillPersist ||
+      _reauthCoordinator.viewWillPersist) {
     return;
   }
-  [_signinCoordinator stop];
+  [self stopSigninCoordinator];
+  [self stopReauthCoordinator];
+
+  if (base::FeatureList::IsEnabled(
+          switches::kMigrateToSigninReauthCoordinator)) {
+    Browser* regularBrowser = signin::GetRegularBrowser(self.browser);
+    signin::IdentityManager* identityManager =
+        IdentityManagerFactory::GetForProfile(regularBrowser->GetProfile());
+    CoreAccountInfo account =
+        identityManager->GetPrimaryAccountInfo(signin::ConsentLevel::kSignin);
+    if (account.IsEmpty()) {
+      // A sign-out was triggered in the meantime, don't do anything.
+      if (completion) {
+        completion();
+      }
+      return;
+    }
+
+    _reauthCoordinator = [[SigninReauthCoordinator alloc]
+        initWithBaseViewController:self.viewController
+                           browser:regularBrowser
+                           account:account
+                 reauthAccessPoint:reauthAccessPoint];
+    _reauthCoordinator.delegate = self;
+    _reauthCoordinatorCompletion = completion;
+    [_reauthCoordinator start];
+    return;
+  }
+
+  // TODO(crbug.com/471207686): Remove after MigrateToSigninReauthCoordinator
+  // is launched.
   signin_metrics::PromoAction promoAction =
       signin_metrics::PromoAction::PROMO_ACTION_NO_SIGNIN_PROMO;
-  signin_metrics::AccessPoint accessPoint =
-      signin_metrics::AccessPoint::kReauthInfoBar;
   SigninContextStyle style = SigninContextStyle::kDefault;
   Browser* regularBrowser = signin::GetRegularBrowser(self.browser);
   _signinCoordinator = [SigninCoordinator
@@ -2551,8 +2638,8 @@ constexpr CGFloat kSnackbarFloatingBottomMargin = 10.0;
 
   __weak __typeof(self) weakSelf = self;
   _signinCoordinator.signinCompletion =
-      ^(SigninCoordinator* coordinator, SigninCoordinatorResult result,
-        id<SystemIdentity> identity) {
+      ^(SigninCoordinator* coordinator,
+        SigninCoordinatorResultOrIdentity result) {
         [weakSelf signinCoordinatorCompletionWithCoordinator:coordinator];
 
         if (completion) {
@@ -2561,6 +2648,8 @@ constexpr CGFloat kSnackbarFloatingBottomMargin = 10.0;
       };
   [_signinCoordinator start];
 }
+
+#pragma mark - SyncPresenterCommands
 
 - (void)showSyncPassphraseSettings {
   [self showSyncPassphraseSettingsWithDismissalCompletion:nil];
@@ -2653,10 +2742,12 @@ constexpr CGFloat kSnackbarFloatingBottomMargin = 10.0;
 #pragma mark - ReSigninPresenter
 
 - (void)showReSignin {
-  if (_signinCoordinator.viewWillPersist) {
+  if (_signinCoordinator.viewWillPersist ||
+      _reauthCoordinator.viewWillPersist) {
     return;
   }
-  [_signinCoordinator stop];
+  [self stopSigninCoordinator];
+  [self stopReauthCoordinator];
   signin_metrics::AccessPoint accessPoint =
       signin_metrics::AccessPoint::kResigninInfobar;
   signin_metrics::PromoAction promoAction =
@@ -2674,8 +2765,8 @@ constexpr CGFloat kSnackbarFloatingBottomMargin = 10.0;
                                           DoNothingContinuationProvider()];
   __weak __typeof(self) weakSelf = self;
   _signinCoordinator.signinCompletion =
-      ^(SigninCoordinator* coordinator, SigninCoordinatorResult result,
-        id<SystemIdentity> identity) {
+      ^(SigninCoordinator* coordinator,
+        SigninCoordinatorResultOrIdentity result) {
         [weakSelf signinCoordinatorCompletionWithCoordinator:coordinator];
       };
   [_signinCoordinator start];
@@ -2947,7 +3038,9 @@ constexpr CGFloat kSnackbarFloatingBottomMargin = 10.0;
 }
 
 - (void)showHomeBackgroundCustomizationPromoWithUIHandler:
-    (id<PromosManagerUIHandler>)promosUIHandler {
+            (id<PromosManagerUIHandler>)promosUIHandler
+                                shouldAlertFETOfDismissal:
+                                    (BOOL)shouldAlertFETOfDismissal {
   // The promos manager tries to check if the current page is an NTP before
   // showing the promo, but asynchronous navigation can cause that to be
   // incorrect.
@@ -2956,7 +3049,9 @@ constexpr CGFloat kSnackbarFloatingBottomMargin = 10.0;
     return;
   }
   [_NTPCoordinator
-      showHomeBackgroundCustomizationPromoWithUIHandler:promosUIHandler];
+      showHomeBackgroundCustomizationPromoWithUIHandler:promosUIHandler
+                              shouldAlertFETOfDismissal:
+                                  shouldAlertFETOfDismissal];
 }
 
 #pragma mark - WebNavigationNTPDelegate
@@ -3130,22 +3225,6 @@ constexpr CGFloat kSnackbarFloatingBottomMargin = 10.0;
   return YES;
 }
 
-- (void)displaySavedPasswordList {
-  // TODO(crbug.com/544597154): Remove this method.
-  id<SettingsCommands> settingsHandler =
-      HandlerForProtocol(_dispatcher, SettingsCommands);
-  [settingsHandler
-      showSavedPasswordsSettingsFromViewController:self.viewController];
-}
-
-- (void)showPasswordDetailsForCredential:
-    (password_manager::CredentialUIEntry)credential {
-  // TODO(crbug.com/544597154): Remove this method.
-  id<SettingsCommands> settingsHandler =
-      HandlerForProtocol(_dispatcher, SettingsCommands);
-  [settingsHandler showPasswordDetailsForCredential:credential inEditMode:NO];
-}
-
 #pragma mark - RepostFormCoordinatorDelegate
 
 - (void)repostFormCoordinatorWantsToBeDismissed:
@@ -3184,7 +3263,6 @@ constexpr CGFloat kSnackbarFloatingBottomMargin = 10.0;
                     ->IsWebUsageEnabled();
 }
 
-
 #pragma mark - NotificationsOptInCoordinatorDelegate
 
 - (void)notificationsOptInScreenDidFinish:
@@ -3193,12 +3271,47 @@ constexpr CGFloat kSnackbarFloatingBottomMargin = 10.0;
   [self dismissNotificationsOptIn];
 }
 
+#pragma mark - SigninReauthCoordinatorDelegate
+
+- (void)reauthFinishedWithResult:(ReauthResult)result
+                          gaiaID:(const GaiaId*)gaiaID {
+  [self stopReauthCoordinator];
+}
+
 #pragma mark - TrustedVaultReauthenticationCoordinatorDelegate
 
 - (void)trustedVaultReauthenticationCoordinatorWantsToBeStopped:
     (TrustedVaultReauthenticationCoordinator*)coordinator {
   CHECK_EQ(coordinator, _trustedVaultReauthenticationCoordinator);
   [self stopTrustedVaultReauthentication];
+}
+
+#pragma mark - VoiceSearchCoordinatorDelegate
+
+- (void)voiceSearchCoordinator:(ChromeCoordinator*)coordinator
+             didRecognizeQuery:(NSString*)query {
+  CHECK_EQ(coordinator, _voiceSearchCoordinator);
+  [self stopVoiceSearchCoordinator];
+  if (web::WebState* activeWebState = self.activeWebState) {
+    VoiceSearchNavigationTabHelper::FromWebState(activeWebState)
+        ->WillLoadVoiceSearchResult();
+  }
+  _urlLoadingBrowserAgent->LoadURLForQuery(query);
+}
+
+- (void)voiceSearchCoordinator:(ChromeCoordinator*)coordinator
+        didRequestEditingQuery:(NSString*)query {
+  CHECK_EQ(coordinator, _voiceSearchCoordinator);
+  [self stopVoiceSearchCoordinator];
+  // TODO(crbug.com/571185104): Consider adding a Voice Search
+  // `ComposeboxEntrypoint` to measure the composebox sessions it starts.
+  [self showComposeboxFromEntrypoint:ComposeboxEntrypoint::kOther
+                           withQuery:query];
+}
+
+- (void)voiceSearchCoordinatorDidFinish:(ChromeCoordinator*)coordinator {
+  CHECK_EQ(coordinator, _voiceSearchCoordinator);
+  [self stopVoiceSearchCoordinator];
 }
 
 @end

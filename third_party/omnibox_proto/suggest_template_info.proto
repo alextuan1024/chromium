@@ -22,9 +22,9 @@ import "suggest_inventory.proto";
 import "tool_mode.proto";
 
 // Suggest Template rendering data.
-// Next ID: 12
+// Next ID: 16
 message SuggestTemplateInfo {
-  // LINT.IfChange(StandardSuggestStyle)
+// LINT.IfChange(StandardSuggestStyle)
   enum StandardSuggestStyle {
     SUGGEST_STYLE_UNSPECIFIED = 0;
     // Suggestions with query text only
@@ -36,12 +36,12 @@ message SuggestTemplateInfo {
     // Suggestions with rich image only (e.g. create image suggestions).
     RICH_IMAGE = 4;
   }
-  // LINT.ThenChange(//components/omnibox/browser/searchbox.mojom:SuggestStyle)
+// LINT.ThenChange(//components/omnibox/browser/searchbox.mojom:SuggestStyle)
 
   // The style of the suggestion.
   optional StandardSuggestStyle style = 1;
 
-  // Next ID: 18
+  // Next ID: 20
   enum IconType {
     // Unspecified.
     ICON_TYPE_UNSPECIFIED = 0;
@@ -91,6 +91,12 @@ message SuggestTemplateInfo {
     // Bolt icon, may be used for brainstorm suggestions.
     // Icon: Google Symbols:bolt
     BOLT = 17;
+    // Image create icon, used for create image suggestions.
+    // Icon: Luminous Symbols:image_create
+    IMAGE_CREATE = 18;
+    // Prompt suggestion icon, used for prompt suggestions.
+    // Icon: Google Symbols:prompt_suggestion
+    PROMPT_SUGGESTION = 19;
   }
 
   // The icon type of the suggestion, this is typically the icon in front of
@@ -234,4 +240,44 @@ message SuggestTemplateInfo {
 
   // Where to display the secondary text relative to the primary text.
   optional SecondaryTextPlacement secondary_text_placement = 11;
+
+  // Whether to wrap the secondary text to the next line. Currently only
+  // supports wrapping to 2 total lines. Only used for mobile currently.
+  optional bool wrap_secondary_text = 12;
+
+  // Whether to wrap the primary text to the next line. Currently only
+  // supports wrapping to 2 total lines. Only used for mobile currently.
+  optional bool wrap_primary_text = 13;
+
+  // Next ID: 4
+  enum ActionIconType {
+    ACTION_ICON_TYPE_UNSPECIFIED = 0;
+    // Query building icon (e.g. refine arrow).
+    QUERY_BUILDING = 1;
+    // Navigation arrow icon (e.g. forward chevron), used for AI Mode
+    // suggestions.
+    NAVIGATION_ARROW = 2;
+    // Blue dot icon, used for agentic suggestions that have a new update.
+    BLUE_DOT = 3;
+  }
+
+  // The icon on the right hand side of the suggestion.
+  optional ActionIconType action_icon = 14;
+
+  // Badge overlay specification for the type icon.
+  // Next ID: 2
+  message TypeIconBadge {
+    // Next ID: 2
+    enum BadgeType {
+      BADGE_TYPE_UNSPECIFIED = 0;
+      // Small dot badge indicator per Material 3 specs.
+      DOT = 1;
+    }
+
+    // The type of badge to render.
+    optional BadgeType badge_type = 1;
+  }
+
+  // Optional badge overlay associated with the type icon.
+  optional TypeIconBadge type_icon_badge = 15;
 }

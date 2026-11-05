@@ -340,6 +340,31 @@ INSTANTIATE_TEST_SUITE_P(,
                                              : "SyncFeatureEnabled";
                          });
 
+#if BUILDFLAG(IS_IOS)
+// Tests that IBANs are neither loaded, saved, nor logged on iOS.
+TEST_P(PaymentsDataManagerServerTest, IbansNotSupportedOnIos) {
+  payments_data_manager().SetSyncingForTest(true);
+
+  Iban local_iban = test::GetLocalIban();
+  ASSERT_TRUE(profile_autofill_table_->AddLocalIban(local_iban));
+  GetServerDataTable()->SetServerIbansForTesting({test::GetServerIban()});
+
+  Iban unsaved_iban;
+  unsaved_iban.set_value(std::u16string(test::kIbanValue16));
+  EXPECT_TRUE(payments_data_manager().AddAsLocalIban(unsaved_iban).empty());
+  EXPECT_FALSE(payments_data_manager().IsAutofillHasSeenIbanPrefEnabled());
+
+  base::HistogramTester histogram_tester;
+  ResetPaymentsDataManager(UseSyncTransportMode());
+
+  EXPECT_FALSE(test_api(payments_data_manager()).AreIbansSupported());
+  EXPECT_TRUE(payments_data_manager().GetLocalIbans().empty());
+  EXPECT_TRUE(payments_data_manager().GetServerIbans().empty());
+  EXPECT_TRUE(payments_data_manager().GetIbans().empty());
+  EXPECT_TRUE(payments_data_manager().GetOrderedIbansToSuggest().empty());
+  histogram_tester.ExpectTotalCount("Autofill.StoredIbanCount", 0);
+}
+#else
 // Test that server IBANs can be added and automatically loaded/cached.
 TEST_P(PaymentsDataManagerServerTest, AddAndReloadServerIbans) {
   Iban server_iban1 = test::GetServerIban();
@@ -353,10 +378,13 @@ TEST_P(PaymentsDataManagerServerTest, AddAndReloadServerIbans) {
 
   // Reset the PaymentsDataManager. This tests that the personal data was saved
   // to the web database, and that we can load the IBANs from the web database.
+  base::HistogramTester histogram_tester;
   ResetPaymentsDataManager(UseSyncTransportMode());
 
   // Verify that we've reloaded the IBANs from the web database.
+  EXPECT_TRUE(test_api(payments_data_manager()).AreIbansSupported());
   ExpectSameElements(expected_ibans, payments_data_manager().GetServerIbans());
+  histogram_tester.ExpectUniqueSample("Autofill.StoredIbanCount", 2, 1);
 }
 
 // Test that all (local and server) IBANs can be returned.
@@ -381,6 +409,7 @@ TEST_P(PaymentsDataManagerServerTest, GetIbans) {
                                         &server_iban1, &server_iban2};
   ExpectSameElements(all_ibans, payments_data_manager().GetIbans());
 }
+#endif  // BUILDFLAG(IS_IOS)
 
 // Tests that OnPaymentsDataLoaded is called after syncing.
 TEST_F(PaymentsDataManagerTest, OnPaymentsDataLoaded) {
@@ -420,10 +449,11 @@ TEST_F(PaymentsDataManagerTest,
 }
 
 // Verifies that a `syncer::AUTOFILL_VALUABLE` change triggers a `Refresh()`,
-// which reloads the offers written by the `ValuableSyncBridge`.
+// which reloads the offers written by the `ValuableSyncBridge`. The bridge
+// writes them into the profile database.
 TEST_F(PaymentsDataManagerTest, OnAutofillChangedBySync_AutofillValuable) {
   ASSERT_TRUE(payments_data_manager().GetAutofillOffers().empty());
-  GetServerDataTable()->SetAutofillOffers(
+  profile_autofill_table_->SetAutofillOffers(
       {test::GetPromoCodeOfferData(GURL("https://www.example.com"))});
 
   payments_data_manager().OnAutofillChangedBySync(syncer::AUTOFILL_VALUABLE);
@@ -432,6 +462,7 @@ TEST_F(PaymentsDataManagerTest, OnAutofillChangedBySync_AutofillValuable) {
   EXPECT_EQ(payments_data_manager().GetAutofillOffers().size(), 1u);
 }
 
+#if !BUILDFLAG(IS_IOS)
 // Test that a local IBAN is removed from suggestions when it has a matching
 // prefix and suffix (either equal or starting with) and the same length as a
 // server IBAN.
@@ -642,6 +673,7 @@ TEST_P(PaymentsDataManagerServerTest, RecordIbanUsage_ServerIban) {
   EXPECT_EQ(server_iban.usage_history().use_date(), kSomeLaterTime);
   EXPECT_EQ(server_iban.usage_history().modification_date(), kArbitraryTime);
 }
+#endif  // !BUILDFLAG(IS_IOS)
 
 TEST_F(PaymentsDataManagerTest, AddUpdateRemoveCreditCards) {
   CreditCard credit_card0(base::Uuid::GenerateRandomV4().AsLowercaseString());
@@ -1050,13 +1082,29 @@ TEST_F(PaymentsDataManagerTest, SetEmptyCreditCard) {
 
 // Tests that GetAutofillOffers returns all available offers.
 TEST_P(PaymentsDataManagerServerTest, GetAutofillOffers) {
-  // Add two card-linked offers and one promo code offer.
-  AddOfferDataForTest(test::GetCardLinkedOfferData1());
-  AddOfferDataForTest(test::GetCardLinkedOfferData2());
+  // Add three offers.
+  AddOfferDataForTest(test::GetPromoCodeOfferData(
+      GURL("http://www.example1.com"), /*is_expired=*/false, "111"));
+  AddOfferDataForTest(test::GetPromoCodeOfferData(
+      GURL("http://www.example2.com"), /*is_expired=*/false, "222"));
   AddOfferDataForTest(test::GetPromoCodeOfferData());
 
   // Should return all three.
   EXPECT_EQ(payments_data_manager().GetAutofillOffers().size(), 3U);
+}
+
+// Tests that offers are loaded from the profile database, which is where the
+// `ValuableSyncBridge` persists them. This must hold in sync transport mode
+// too, where the other server data lives in the ephemeral account database.
+TEST_P(PaymentsDataManagerServerTest, OffersAreLoadedFromProfileDatabase) {
+  ASSERT_TRUE(payments_data_manager().GetAutofillOffers().empty());
+  profile_autofill_table_->SetAutofillOffers(
+      {test::GetPromoCodeOfferData(GURL("https://www.example.com"))});
+
+  payments_data_manager().Refresh();
+  WaitForOnPaymentsDataChanged();
+
+  EXPECT_EQ(payments_data_manager().GetAutofillOffers().size(), 1U);
 }
 
 // Tests that GetActiveAutofillPromoCodeOffersForOrigin returns only active and
@@ -1066,8 +1114,6 @@ TEST_P(PaymentsDataManagerServerTest,
   base::test::ScopedFeatureList scoped_feature_list(
       features::kAutofillEnableWalletDirectOffers);
 
-  // Card-linked offers should not be returned.
-  AddOfferDataForTest(test::GetCardLinkedOfferData1());
   // Expired promo code offers should not be returned.
   AddOfferDataForTest(test::GetPromoCodeOfferData(
       /*origin=*/GURL("http://www.example.com"), /*is_expired=*/true));
@@ -1090,8 +1136,9 @@ TEST_P(PaymentsDataManagerServerTest,
 // Tests that GetAutofillOffers does not return any offers if
 // |IsAutofillWalletImportEnabled()| returns |false|.
 TEST_P(PaymentsDataManagerServerTest, GetAutofillOffers_WalletImportDisabled) {
-  // Add a card-linked offer and a promo code offer.
-  AddOfferDataForTest(test::GetCardLinkedOfferData1());
+  // Add two offers.
+  AddOfferDataForTest(test::GetPromoCodeOfferData(
+      GURL("http://www.example1.com"), /*is_expired=*/false, "111"));
   AddOfferDataForTest(test::GetPromoCodeOfferData());
 
   ASSERT_EQ(payments_data_manager().GetAutofillOffers().size(), 2U);
@@ -1107,8 +1154,9 @@ TEST_P(PaymentsDataManagerServerTest, GetAutofillOffers_WalletImportDisabled) {
 // `IsAutofillPaymentMethodsEnabled()` returns `false`.
 TEST_P(PaymentsDataManagerServerTest,
        GetAutofillOffers_AutofillCreditCardDisabled) {
-  // Add a card-linked offer and a promo code offer.
-  AddOfferDataForTest(test::GetCardLinkedOfferData1());
+  // Add two offers.
+  AddOfferDataForTest(test::GetPromoCodeOfferData(
+      GURL("http://www.example1.com"), /*is_expired=*/false, "111"));
   AddOfferDataForTest(test::GetPromoCodeOfferData());
 
   prefs::SetAutofillPaymentMethodsEnabled(prefs_.get(), false);
@@ -1166,6 +1214,23 @@ TEST_P(PaymentsDataManagerServerTest,
                   .empty());
 }
 
+// Tests that GetActiveAutofillPromoCodeOffersForOrigin does not return any
+// promo code offers if the locale and country are not supported.
+TEST_P(PaymentsDataManagerServerTest,
+       GetActiveAutofillPromoCodeOffersForOrigin_LocaleAndCountryNotSupported) {
+  base::test::ScopedFeatureList scoped_feature_list(
+      features::kAutofillEnableWalletDirectOffers);
+  ResetPaymentsDataManager(UseSyncTransportMode(), "fr-FR", "FR");
+
+  AddOfferDataForTest(test::GetPromoCodeOfferData(
+      /*origin=*/GURL("http://www.example.com")));
+
+  EXPECT_TRUE(payments_data_manager()
+                  .GetActiveAutofillPromoCodeOffersForOrigin(
+                      GURL("http://www.example.com"))
+                  .empty());
+}
+
 // Tests that GetActiveAutofillPromoCodeOffersForOrigin returns only active
 // and site-relevant wallet direct offers.
 TEST_P(PaymentsDataManagerServerTest,
@@ -1174,49 +1239,54 @@ TEST_P(PaymentsDataManagerServerTest,
   scoped_feature_list.InitAndEnableFeature(
       features::kAutofillEnableWalletDirectOffers);
 
-  // Card-linked offers should not be returned.
-  AddOfferDataForTest(test::GetCardLinkedOfferData1());
 
   DisplayStrings display_strings;
   display_strings.value_prop_text = "5% off on shoes";
 
   // Expired wallet direct offers should not be returned.
-  AddOfferDataForTest(AutofillOfferData::WalletDirectOffer(
-      /*offer_id=*/111, AutofillClock::Now() - base::Days(1),
+  AddOfferDataForTest(AutofillOfferData(
+      /*offer_id=*/"111", AutofillClock::Now() - base::Days(1),
       {GURL("http://www.example.com")}, GURL("https://pay.google.com"),
-      display_strings, "CODE111"));
+      display_strings, "CODE111", /*offer_short_title=*/"",
+      /*issue_time=*/base::Time(), /*issuer_name=*/"Merchant"));
 
   // Active wallet direct offers for a different site should not be returned.
-  AddOfferDataForTest(AutofillOfferData::WalletDirectOffer(
-      /*offer_id=*/222, AutofillClock::Now() + base::Days(35),
+  AddOfferDataForTest(AutofillOfferData(
+      /*offer_id=*/"222", AutofillClock::Now() + base::Days(35),
       {GURL("http://www.some-other-merchant.com")},
-      GURL("https://pay.google.com"), display_strings, "CODE222"));
+      GURL("https://pay.google.com"), display_strings, "CODE222",
+      /*offer_short_title=*/"",
+      /*issue_time=*/base::Time(), /*issuer_name=*/"Merchant"));
 
-  // Invalid wallet direct offers (empty value prop) should not be returned.
+  // Active wallet direct offers with empty value prop should still be returned.
   DisplayStrings empty_display_strings;
-  AddOfferDataForTest(AutofillOfferData::WalletDirectOffer(
-      /*offer_id=*/333, AutofillClock::Now() + base::Days(35),
+  AddOfferDataForTest(AutofillOfferData(
+      /*offer_id=*/"333", AutofillClock::Now() + base::Days(35),
       {GURL("http://www.example.com")}, GURL("https://pay.google.com"),
-      empty_display_strings, "CODE333"));
+      empty_display_strings, "CODE333", /*offer_short_title=*/"",
+      /*issue_time=*/base::Time(), /*issuer_name=*/"Merchant"));
 
   // Invalid wallet direct offers (empty promo code) should not be returned.
-  AddOfferDataForTest(AutofillOfferData::WalletDirectOffer(
-      /*offer_id=*/444, AutofillClock::Now() + base::Days(35),
+  AddOfferDataForTest(AutofillOfferData(
+      /*offer_id=*/"444", AutofillClock::Now() + base::Days(35),
       {GURL("http://www.example.com")}, GURL("https://pay.google.com"),
-      display_strings, ""));
+      display_strings, "", /*offer_short_title=*/"",
+      /*issue_time=*/base::Time(), /*issuer_name=*/"Merchant"));
 
   // Active wallet direct offers for example.com should be returned.
-  AddOfferDataForTest(AutofillOfferData::WalletDirectOffer(
-      /*offer_id=*/555, AutofillClock::Now() + base::Days(35),
+  AddOfferDataForTest(AutofillOfferData(
+      /*offer_id=*/"555", AutofillClock::Now() + base::Days(35),
       {GURL("http://www.example.com")}, GURL("https://pay.google.com"),
-      display_strings, "CODE555"));
+      display_strings, "CODE555", /*offer_short_title=*/"",
+      /*issue_time=*/base::Time(), /*issuer_name=*/"Merchant"));
 
-  // Only the valid, active, matching offer for example.com should be returned.
+  // Active matching offers for example.com should be returned.
   auto offers =
       payments_data_manager().GetActiveAutofillPromoCodeOffersForOrigin(
           GURL("http://www.example.com"));
-  ASSERT_EQ(offers.size(), 1U);
-  EXPECT_EQ(offers[0]->GetOfferId(), 555);
+  ASSERT_EQ(offers.size(), 2U);
+  EXPECT_EQ(offers[0]->GetOfferId(), "333");
+  EXPECT_EQ(offers[1]->GetOfferId(), "555");
 }
 
 // Tests that GetActiveAutofillPromoCodeOffersForOrigin does not return any
@@ -1611,6 +1681,54 @@ TEST_F(PaymentsDataManagerTest, LogStoredCreditCardMetrics) {
       "Autofill.StoredCreditCardCount.Server.WithVirtualCardMetadata", 1);
   histogram_tester.ExpectBucketCount(
       "Autofill.StoredCreditCardCount.Server.WithCardArtImage", 1, 1);
+}
+
+// Tests that the number of stored promo codes, in total and split by valid and
+// expired, is logged when payments data is loaded and Wallet direct offers are
+// enabled.
+TEST_F(PaymentsDataManagerTest,
+       LogStoredPaymentsDataMetrics_PromoCodes_WalletDirectOffersEnabled) {
+  base::test::ScopedFeatureList scoped_feature_list(
+      features::kAutofillEnableWalletDirectOffers);
+  profile_autofill_table_->SetAutofillOffers(
+      {test::GetPromoCodeOfferData(GURL("https://www.example.com"),
+                                   /*is_expired=*/false, /*offer_id=*/"333"),
+       test::GetPromoCodeOfferData(GURL("https://www.example.com"),
+                                   /*is_expired=*/true, /*offer_id=*/"444")});
+
+  // Reload the database, which will log the stored promo code counts.
+  base::HistogramTester histogram_tester;
+  ResetPaymentsDataManager();
+
+  ASSERT_EQ(payments_data_manager().GetAutofillOffers().size(), 2U);
+  histogram_tester.ExpectUniqueSample("Autofill.StoredPromoCodeCount", 2, 1);
+  histogram_tester.ExpectUniqueSample("Autofill.StoredPromoCodeCount.ValidCode",
+                                      1, 1);
+  histogram_tester.ExpectUniqueSample(
+      "Autofill.StoredPromoCodeCount.ExpiredCode", 1, 1);
+}
+
+// Tests that the number of stored promo codes is not logged when Wallet direct
+// offers are disabled.
+TEST_F(PaymentsDataManagerTest,
+       LogStoredPaymentsDataMetrics_PromoCodes_WalletDirectOffersDisabled) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndDisableFeature(
+      features::kAutofillEnableWalletDirectOffers);
+  profile_autofill_table_->SetAutofillOffers(
+      {test::GetPromoCodeOfferData(GURL("https://www.example.com"))});
+
+  // Reload the database, which would log the stored promo code counts if Wallet
+  // direct offers were enabled.
+  base::HistogramTester histogram_tester;
+  ResetPaymentsDataManager();
+
+  ASSERT_EQ(payments_data_manager().GetAutofillOffers().size(), 1U);
+  histogram_tester.ExpectTotalCount("Autofill.StoredPromoCodeCount", 0);
+  histogram_tester.ExpectTotalCount("Autofill.StoredPromoCodeCount.ValidCode",
+                                    0);
+  histogram_tester.ExpectTotalCount("Autofill.StoredPromoCodeCount.ExpiredCode",
+                                    0);
 }
 
 // Test that setting a null sync service returns only local credit cards.
@@ -3540,6 +3658,7 @@ TEST_F(PaymentsDataManagerTest, OnAcceptedLocalCreditCardSaveWithVerifiedData) {
   EXPECT_EQ(results[0]->GetRawInfo(CREDIT_CARD_NAME_FULL), u"B. Small");
 }
 
+#if !BUILDFLAG(IS_IOS)
 // Ensure that new IBANs can be updated and saved via
 // `OnAcceptedLocalIbanSave()`.
 TEST_F(PaymentsDataManagerTest, OnAcceptedLocalIbanSave) {
@@ -3604,6 +3723,7 @@ TEST_F(PaymentsDataManagerTest, OnAcceptedLocalIbanSave) {
   ResetPaymentsDataManager();
   ExpectSameElements(ibans, payments_data_manager().GetLocalIbans());
 }
+#endif  // !BUILDFLAG(IS_IOS)
 
 TEST_F(PaymentsDataManagerTest, IsKnownCard_MatchesMaskedServerCard) {
   // Add a masked server card.

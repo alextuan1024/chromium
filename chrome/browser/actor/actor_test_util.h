@@ -5,29 +5,35 @@
 #ifndef CHROME_BROWSER_ACTOR_ACTOR_TEST_UTIL_H_
 #define CHROME_BROWSER_ACTOR_ACTOR_TEST_UTIL_H_
 
+#include <stdint.h>
+
+#include <map>
 #include <memory>
 #include <optional>
+#include <string>
 #include <string_view>
 #include <type_traits>
 #include <vector>
 
 #include "base/base64.h"
 #include "base/callback_list.h"
+#include "base/scoped_observation.h"
 #include "base/strings/strcat.h"
 #include "base/test/test_future.h"
 #include "base/time/time.h"
 #include "base/types/expected.h"
 #include "chrome/browser/actor/actor_proto_conversion.h"
-#include "chrome/browser/actor/actor_tab_data.h"
+#include "chrome/browser/actor/actor_surface_tab_helper.h"
 #include "chrome/browser/actor/actor_task.h"
 #include "chrome/browser/actor/actor_task_delegate.h"
 #include "chrome/browser/actor/enterprise_policy_checker.h"
 #include "chrome/browser/actor/execution_engine.h"
-#include "chrome/browser/actor/tools/media_control_tool_request.h"
+#include "chrome/browser/actor/tools/scroll_tool_request.h"
 #include "chrome/browser/actor/tools/tool_request.h"
 #include "chrome/browser/actor/ui/event_dispatcher.h"
 #include "chrome/common/actor.mojom-forward.h"
 #include "chrome/common/actor/action_result.h"
+#include "components/actor/core/aggregated_journal.h"
 #include "components/actor/core/shared_types.h"
 #include "components/actor/core/task_id.h"
 #include "components/actor/public/mojom/actor_types.mojom.h"
@@ -190,9 +196,15 @@ optimization_guide::proto::Actions MakeScriptTool(
     const std::string& name,
     const std::string& input_arguments,
     std::optional<actor::TaskId> task_id = std::nullopt);
-optimization_guide::proto::Actions MakeMediaControl(
+optimization_guide::proto::Actions MakePlayMedia(
     tabs::TabHandle tab_handle,
-    MediaControl media_control,
+    std::optional<actor::TaskId> task_id = std::nullopt);
+optimization_guide::proto::Actions MakePauseMedia(
+    tabs::TabHandle tab_handle,
+    std::optional<actor::TaskId> task_id = std::nullopt);
+optimization_guide::proto::Actions MakeSeekMedia(
+    tabs::TabHandle tab_handle,
+    base::TimeDelta seek_time,
     std::optional<actor::TaskId> task_id = std::nullopt);
 optimization_guide::proto::Actions MakeTranslatePage(
     tabs::TabHandle tab_handle,
@@ -217,9 +229,8 @@ std::unique_ptr<ToolRequest> MakeClickRequest(
     mojom::ClickCount count = mojom::ClickCount::kSingle);
 std::unique_ptr<ToolRequest> MakeHistoryBackRequest(tabs::TabInterface& tab);
 std::unique_ptr<ToolRequest> MakeHistoryForwardRequest(tabs::TabInterface& tab);
-std::unique_ptr<ToolRequest> MakeHistoryReloadRequest(
-    tabs::TabInterface& tab,
-    bool bypass_cache = false);
+std::unique_ptr<ToolRequest> MakeReloadPageRequest(tabs::TabInterface& tab,
+                                                   bool bypass_cache = false);
 std::unique_ptr<ToolRequest> MakeMouseMoveRequest(content::RenderFrameHost& rfh,
                                                   int content_node_id);
 std::unique_ptr<ToolRequest> MakeMouseMoveRequest(tabs::TabInterface& tab,
@@ -228,6 +239,10 @@ std::unique_ptr<ToolRequest> MakeNavigateRequest(tabs::TabInterface& tab,
                                                  std::string_view target_url);
 std::unique_ptr<ToolRequest> MakePerformSearchRequest(tabs::TabInterface& tab,
                                                       std::string_view query);
+std::unique_ptr<ToolRequest> MakeSiteBasedSearchRequest(
+    tabs::TabInterface& tab,
+    std::string_view query,
+    std::optional<std::string> document_identifier = std::nullopt);
 std::unique_ptr<ToolRequest> MakeTypeRequest(content::RenderFrameHost& rfh,
                                              int content_node_id,
                                              std::string_view text,
@@ -236,14 +251,22 @@ std::unique_ptr<ToolRequest> MakeTypeRequest(tabs::TabInterface& tab,
                                              const gfx::Point& type_point,
                                              std::string_view text,
                                              bool follow_by_enter);
-std::unique_ptr<ToolRequest> MakeSelectRequest(content::RenderFrameHost& rfh,
-                                               int content_node_id,
-                                               std::string_view value);
+std::unique_ptr<ToolRequest> MakeSelectRequest(
+    content::RenderFrameHost& rfh,
+    int content_node_id,
+    std::string_view value,
+    mojom::SelectAction::OptionMatchMode match_mode =
+        mojom::SelectAction::OptionMatchMode::kValue);
 std::unique_ptr<ToolRequest> MakeScrollRequest(
     content::RenderFrameHost& rfh,
     std::optional<int> content_node_id,
     float scroll_offset_x,
     float scroll_offset_y);
+std::unique_ptr<ToolRequest> MakeScrollPageRequest(
+    content::RenderFrameHost& rfh,
+    std::optional<int> content_node_id,
+    ScrollPageToolRequest::Granularity granularity,
+    ScrollPageToolRequest::Direction direction);
 std::unique_ptr<ToolRequest> MakeScrollToRequest(content::RenderFrameHost& rfh,
                                                  int content_node_id);
 std::unique_ptr<ToolRequest> MakeDragAndReleaseRequest(
@@ -268,9 +291,10 @@ std::unique_ptr<ToolRequest> MakeScriptToolRequest(
     content::RenderFrameHost& rfh,
     const std::string& name,
     const std::string& input_arguments);
-std::unique_ptr<ToolRequest> MakeMediaControlRequest(
-    tabs::TabInterface& tab,
-    MediaControl media_control);
+std::unique_ptr<ToolRequest> MakePlayMediaRequest(tabs::TabInterface& tab);
+std::unique_ptr<ToolRequest> MakePauseMediaRequest(tabs::TabInterface& tab);
+std::unique_ptr<ToolRequest> MakeSeekMediaRequest(tabs::TabInterface& tab,
+                                                  base::TimeDelta seek_time);
 std::unique_ptr<ToolRequest> MakeTranslatePageRequest(tabs::TabInterface& tab);
 std::unique_ptr<ToolRequest> MakeTranslatePageRequest(
     tabs::TabInterface& tab,
@@ -308,6 +332,11 @@ void ExpectErrorResult(ActResultFuture& future,
 // Checks the standard disabled-target error and its reason-specific message.
 void ExpectElementDisabledResultWithReason(ActResultFuture& future,
                                            std::string_view reason);
+
+// Gets the DOM node matching `query_selector` in `rfh`, or returns
+// `std::nullopt` when the node ID or document identifier cannot be retrieved.
+std::optional<DomNode> GetDomNodeOnPage(content::RenderFrameHost& rfh,
+                                        std::string_view query_selector);
 
 // Sets up GLIC_ACTION_PAGE_BLOCK to block the given host via component updater.
 bool SetUpOptimizationGuideComponentBlocklist(const base::FilePath& path,
@@ -489,8 +518,10 @@ class ScopedMockTabObservationResult {
   ~ScopedMockTabObservationResult();
 };
 
-// Helper struct for unit tests that require a mock TabInterface and its
-// associated ActorTabData.
+// Helper struct for unit tests that require a mock TabInterface. When
+// `web_contents` is provided, the tab also gets an ActorSurfaceTabHelper so it
+// has a surface (and the surface's ActorTabData) in ActorSurfaceRegistry, as
+// real tabs do via TabFeatures.
 struct TestTabState {
   explicit TestTabState(content::WebContents* web_contents = nullptr);
   ~TestTabState();
@@ -502,7 +533,40 @@ struct TestTabState {
 
   tabs::MockTabInterface tab;
   ::ui::UnownedUserDataHost user_data_host;
-  std::unique_ptr<ActorTabData> tab_data;
+  std::unique_ptr<ActorSurfaceTabHelper> actor_surface_tab_helper;
+};
+
+// Records the entries added to an actor journal while it's alive.
+class ActorJournalRecorder : public AggregatedJournal::Observer {
+ public:
+  struct Entry {
+    Entry();
+    Entry(const Entry&);
+    Entry& operator=(const Entry&);
+    ~Entry();
+
+    mojom::JournalEntryType type = mojom::JournalEntryType::kInstant;
+    std::string event;
+    TaskId task_id;
+    uint64_t track_uuid = 0;
+    std::map<std::string, std::string> details;
+  };
+
+  explicit ActorJournalRecorder(AggregatedJournal& journal);
+  ActorJournalRecorder(const ActorJournalRecorder&) = delete;
+  ActorJournalRecorder& operator=(const ActorJournalRecorder&) = delete;
+  ~ActorJournalRecorder() override;
+
+  // Returns the recorded entries for `event`, in the order they were added.
+  std::vector<Entry> GetEntries(std::string_view event) const;
+
+  // AggregatedJournal::Observer:
+  void WillAddJournalEntry(const AggregatedJournal::Entry& entry) override;
+
+ private:
+  std::vector<Entry> entries_;
+  base::ScopedObservation<AggregatedJournal, AggregatedJournal::Observer>
+      observation_{this};
 };
 
 }  // namespace actor

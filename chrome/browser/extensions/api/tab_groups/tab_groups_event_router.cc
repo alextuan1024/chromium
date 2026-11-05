@@ -6,6 +6,7 @@
 
 #include <utility>
 
+#include "base/memory/scoped_refptr.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/values.h"
 #include "chrome/browser/extensions/extension_tab_util.h"
@@ -17,6 +18,7 @@
 #include "components/tabs/public/tab_group.h"
 #include "extensions/browser/event_router.h"
 #include "extensions/buildflags/buildflags.h"
+#include "extensions/common/event_args.h"
 
 #if BUILDFLAG(IS_ANDROID)
 #include "base/scoped_multi_source_observation.h"
@@ -49,33 +51,25 @@ class TabGroupsEventRouter::PlatformDelegate : public TabModelListObserver,
 
   ~PlatformDelegate() override {
     tab_model_observations_.RemoveAllObservations();
-    TabModelList::RemoveObserver(this);
+    TabModelList::RemoveObserver(this, profile_);
   }
 
   void Init() {
     // Equivalent to observing for new windows.
-    TabModelList::AddObserver(this);
+    TabModelList::AddObserver(this, profile_);
     // Add models for existing windows.
-    for (TabModel* model : TabModelList::models()) {
+    TabModelList::ForEach(profile_, [&](TabModel* model) {
       OnTabModelAdded(model);
-    }
+      return true;
+    });
   }
 
   // TabModelListObserver:
   void OnTabModelAdded(TabModel* model) override {
-    // We only want to observe tab models (i.e. windows) associated with this
-    // PlatformDelegate's profile. We should also ignore tab models that are
-    // non-standard as they have tabs that will never have WebContents. For
-    // example, imagine a regular window with a regular profile. It has one
-    // TabModelEventRouter associated with the profile and one PlatformDelegate.
-    // If we then create an incognito profile and window, we get a second
-    // TabModelEventRouter and PlatformDelegate. But we only want to observe the
-    // TabModel associated with the incognito profile, not the regular profile,
-    // otherwise we'll see event notifications twice (once per observer). See
-    // TestTabGroupEventsAcrossProfiles. Also ignore empty regular tab models
-    // for ephemeral or incognito CCTs as they are never mutated.
-    if (profile_ != model->GetProfile() ||
-        model->GetTabModelType() != TabModel::TabModelType::kStandard ||
+    // Ignore tab models that are non-standard as they have tabs that will never
+    // have `WebContents`, as well as empty regular tab models for ephemeral or
+    // incognito CCTs as they are never mutated.
+    if (model->GetTabModelType() != TabModel::TabModelType::kStandard ||
         model->IsEmptyRegularModelForEphemeralOrIncognitoCct()) {
       return;
     }
@@ -110,8 +104,7 @@ class TabGroupsEventRouter::PlatformDelegate : public TabModelListObserver,
     owner_->DispatchGroupRemoved(group_id);
   }
 
-  void OnTabGroupMoved(tab_groups::TabGroupId group_id,
-                       int old_index) override {
+  void OnTabGroupMoved(tab_groups::TabGroupId group_id) override {
     owner_->DispatchGroupMoved(group_id);
   }
 
@@ -210,9 +203,10 @@ void TabGroupsEventRouter::DispatchGroupCreated(tab_groups::TabGroupId group) {
     // May be nullopt in tests.
     return;
   }
-  auto args(api::tab_groups::OnCreated::Create(*tab_group));
+  auto event_args = base::MakeRefCounted<EventArgs>(
+      api::tab_groups::OnCreated::Create(*tab_group));
   DispatchEvent(events::TAB_GROUPS_ON_CREATED,
-                api::tab_groups::OnCreated::kEventName, std::move(args));
+                api::tab_groups::OnCreated::kEventName, std::move(event_args));
 }
 
 void TabGroupsEventRouter::DispatchGroupRemoved(tab_groups::TabGroupId group) {
@@ -222,9 +216,10 @@ void TabGroupsEventRouter::DispatchGroupRemoved(tab_groups::TabGroupId group) {
     // May be nullopt in tests.
     return;
   }
-  auto args(api::tab_groups::OnRemoved::Create(*tab_group));
+  auto event_args = base::MakeRefCounted<EventArgs>(
+      api::tab_groups::OnRemoved::Create(*tab_group));
   DispatchEvent(events::TAB_GROUPS_ON_REMOVED,
-                api::tab_groups::OnRemoved::kEventName, std::move(args));
+                api::tab_groups::OnRemoved::kEventName, std::move(event_args));
 }
 
 void TabGroupsEventRouter::DispatchGroupMoved(tab_groups::TabGroupId group) {
@@ -234,9 +229,10 @@ void TabGroupsEventRouter::DispatchGroupMoved(tab_groups::TabGroupId group) {
     // May be nullopt in tests.
     return;
   }
-  auto args(api::tab_groups::OnMoved::Create(*tab_group));
+  auto event_args = base::MakeRefCounted<EventArgs>(
+      api::tab_groups::OnMoved::Create(*tab_group));
   DispatchEvent(events::TAB_GROUPS_ON_MOVED,
-                api::tab_groups::OnMoved::kEventName, std::move(args));
+                api::tab_groups::OnMoved::kEventName, std::move(event_args));
 }
 
 void TabGroupsEventRouter::DispatchGroupUpdated(tab_groups::TabGroupId group) {
@@ -246,14 +242,15 @@ void TabGroupsEventRouter::DispatchGroupUpdated(tab_groups::TabGroupId group) {
     // May be nullopt in tests.
     return;
   }
-  auto args(api::tab_groups::OnUpdated::Create(*tab_group));
+  auto event_args = base::MakeRefCounted<EventArgs>(
+      api::tab_groups::OnUpdated::Create(*tab_group));
   DispatchEvent(events::TAB_GROUPS_ON_UPDATED,
-                api::tab_groups::OnUpdated::kEventName, std::move(args));
+                api::tab_groups::OnUpdated::kEventName, std::move(event_args));
 }
 
 void TabGroupsEventRouter::DispatchEvent(events::HistogramValue histogram_value,
                                          const std::string& event_name,
-                                         base::ListValue args) {
+                                         scoped_refptr<const EventArgs> args) {
   // |event_router_| can be null in tests.
   if (!event_router_) {
     return;

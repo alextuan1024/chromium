@@ -36,8 +36,8 @@
 #include "components/services/app_service/public/cpp/intent_util.h"
 #include "components/webapps/browser/launch_queue/launch_queue.h"
 #include "extensions/common/constants.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/base/page_transition_types.h"
-#include "ui/base/window_open_disposition.h"
 #include "ui/display/scoped_display_for_new_windows.h"
 #include "ui/display/types/display_constants.h"
 #include "url/gurl.h"
@@ -52,6 +52,62 @@
 namespace web_app {
 
 namespace {
+
+bool IsUserInitiatedLaunchSource(apps::LaunchSource source) {
+  switch (source) {
+    // User-initiated sources.
+    case apps::LaunchSource::kFromAppListGrid:
+    case apps::LaunchSource::kFromAppListGridContextMenu:
+    case apps::LaunchSource::kFromAppListQuery:
+    case apps::LaunchSource::kFromAppListQueryContextMenu:
+    case apps::LaunchSource::kFromAppListRecommendation:
+    case apps::LaunchSource::kFromParentalControls:
+    case apps::LaunchSource::kFromShelf:
+    case apps::LaunchSource::kFromFileManager:
+    case apps::LaunchSource::kFromLink:
+    case apps::LaunchSource::kFromOmnibox:
+    case apps::LaunchSource::kFromKeyboard:
+    case apps::LaunchSource::kFromMenu:
+    case apps::LaunchSource::kFromInstalledNotification:
+    case apps::LaunchSource::kFromSharesheet:
+    case apps::LaunchSource::kFromReleaseNotesNotification:
+    case apps::LaunchSource::kFromSmartTextContextMenu:
+    case apps::LaunchSource::kFromDiscoverTabNotification:
+    case apps::LaunchSource::kFromNewTabPage:
+    case apps::LaunchSource::kFromIntentUrl:
+    case apps::LaunchSource::kFromProtocolHandler:
+    case apps::LaunchSource::kFromUrlHandler:
+    case apps::LaunchSource::kFromLockScreen:
+    case apps::LaunchSource::kFromAppHomePage:
+    case apps::LaunchSource::kFromProfileMenu:
+    case apps::LaunchSource::kFromSysTrayCalendar:
+    case apps::LaunchSource::kFromInstaller:
+    case apps::LaunchSource::kFromWebInstallApi:
+      return true;
+
+    // Programmatic / system sources.
+    case apps::LaunchSource::kFromOsLogin:
+    case apps::LaunchSource::kFromCommandLine:
+    case apps::LaunchSource::kFromSparky:
+    case apps::LaunchSource::kFromFirstRun:
+    case apps::LaunchSource::kFromWelcomeTour:
+    case apps::LaunchSource::kFromFocusMode:
+    case apps::LaunchSource::kUnknown:
+    case apps::LaunchSource::kFromChromeInternal:
+    case apps::LaunchSource::kFromOtherApp:
+    case apps::LaunchSource::kFromTest:
+    case apps::LaunchSource::kFromArc:
+    case apps::LaunchSource::kFromFullRestore:
+    case apps::LaunchSource::kFromManagementApi:
+    case apps::LaunchSource::kFromKiosk:
+    case apps::LaunchSource::kFromBackgroundMode:
+    case apps::LaunchSource::kFromReparenting:
+    case apps::LaunchSource::kFromNavigationCapturing:
+    case apps::LaunchSource::kFromMigration:
+      return false;
+  }
+  NOTREACHED();
+}
 
 // Returns the most recently activated tabbed (TYPE_NORMAL) browser for
 // `profile`, filtered by `display_id` when it is not kInvalidDisplayId.
@@ -116,8 +172,17 @@ content::WebContents* WebAppLaunchProcess::CreateAndRun(
     WebAppRegistrar& registrar,
     OsIntegrationManager& os_integration_manager,
     const apps::AppLaunchParams& params) {
-  return WebAppLaunchProcess(profile, registrar, os_integration_manager, params)
-      .Run();
+  content::WebContents* web_contents =
+      WebAppLaunchProcess(profile, registrar, os_integration_manager, params)
+          .Run();
+  if (web_contents) {
+    // A launch can reuse a pinned home tab without navigating. Request
+    // revalidation even when no launch params will be delivered.
+    if (auto* tab_helper = WebAppTabHelper::FromWebContents(web_contents)) {
+      tab_helper->ScheduleOriginAssociationRevalidation(params.app_id);
+    }
+  }
+  return web_contents;
 }
 
 // static
@@ -164,8 +229,11 @@ content::WebContents* WebAppLaunchProcess::Run() {
 
   auto web_app_scope = registrar_->GetEffectiveScope(params_->app_id);
   CHECK(web_app_scope);
+  // File handling action URLs (`launch_url`) must be within the app's primary
+  // scope rather than `scope_extensions`.
   LaunchUrlInScopeResult in_scope_result =
-      web_app_scope->GetScopeScore(launch_url) > 0
+      web_app_scope->GetScopeScore(
+          launch_url, {.exclude_scope_extensions = is_file_handling}) > 0
           ? LaunchUrlInScopeResult::kInScope
           : LaunchUrlInScopeResult::kNotInScope;
 #if BUILDFLAG(IS_CHROMEOS)
@@ -217,9 +285,11 @@ content::WebContents* WebAppLaunchProcess::Run() {
   // During install, shortcut urls are required to be in-scope. But some users &
   // admins create custom shortcuts to launch weirdly configured apps with
   // out-of-scope but same-origin urls. So specifically also allow same-origin
-  // urls to be launched here, even if they are not in scope.
+  // urls to be launched here, even if they are not in scope, except for file
+  // handling launches whose action URL must be in the primary scope.
   if (in_scope_result == LaunchUrlInScopeResult::kNotInScope &&
-      !url::IsSameOriginWith(launch_url, web_app_scope->scope())) {
+      (is_file_handling ||
+       !url::IsSameOriginWith(launch_url, web_app_scope->scope()))) {
     launch_url = registrar_->GetAppStartUrl(params_->app_id);
     // If this was a file handler launch, then it would be unexpected that a
     // file handle exists if we are resetting the URL. Thus, reset to only a
@@ -241,13 +311,13 @@ content::WebContents* WebAppLaunchProcess::Run() {
     return nullptr;
   }
 
-  WindowOpenDisposition navigation_disposition =
+  ui::mojom::WindowOpenDisposition navigation_disposition =
       GetNavigationDisposition(is_new_browser);
   content::WebContents* existing_tab =
       browser->GetTabStripModel()->GetActiveWebContents();
   bool open_in_new_window =
       !existing_tab ||
-      navigation_disposition != WindowOpenDisposition::CURRENT_TAB;
+      navigation_disposition != ui::mojom::WindowOpenDisposition::kCurrentTab;
 
   auto* const app_controller = web_app::AppBrowserController::From(browser);
   if (app_controller && app_controller->IsUrlInHomeTabScope(launch_url)) {
@@ -261,7 +331,7 @@ content::WebContents* WebAppLaunchProcess::Run() {
       // URL is identical so no need for the navigation.
       return home_tab_web_contents;
     }
-    navigation_disposition = WindowOpenDisposition::CURRENT_TAB;
+    navigation_disposition = ui::mojom::WindowOpenDisposition::kCurrentTab;
   }
 
   webapps::LaunchParams launch_params;
@@ -272,8 +342,8 @@ content::WebContents* WebAppLaunchProcess::Run() {
   // In the case of prevent-close, we do not navigate but instead focus the
   // existing window.
   bool app_wants_focus_existing_without_navigation =
-     GetLaunchHandler().NeverNavigateExistingClients() ||
-     registrar_->IsPreventCloseEnabled(params_->app_id);
+      GetLaunchHandler().NeverNavigateExistingClients() ||
+      registrar_->IsPreventCloseEnabled(params_->app_id);
   if (!open_in_new_window && app_wants_focus_existing_without_navigation) {
     auto* tab_helper = WebAppTabHelper::FromWebContents(existing_tab);
     if (tab_helper->pending_launch_app_id() == params_->app_id) {
@@ -287,12 +357,21 @@ content::WebContents* WebAppLaunchProcess::Run() {
       return existing_tab;
     }
 
-    if (registrar_->IsUrlInAppExtendedScope(existing_tab->GetLastCommittedURL(),
+    // `CanBeUsedForFocusExisting()` is the single definition of whether a tab
+    // may be reused in place; it is shared with navigation capturing. It
+    // rejects documents that committed an opaque origin (e.g. those served
+    // with `Content-Security-Policy: sandbox`), which are cross-origin to the
+    // app, and documents that cannot set a launch consumer. Those fall through
+    // to navigating to the real target URL instead.
+    if (tab_helper->CanBeUsedForFocusExisting() &&
+        registrar_->IsUrlInAppExtendedScope(existing_tab->GetLastCommittedURL(),
                                             params_->app_id)) {
       // If the web contents is currently navigating then interrupt it. The
       // current page is now being used for this app launch.
       existing_tab->Stop();
       launch_params.set_started_new_navigation(false);
+      launch_params.set_user_initiated(
+          IsUserInitiatedLaunchSource(params_->launch_source));
       WebAppLaunchNavigationHandleUserData::DispatchLaunchParams(
           existing_tab, std::move(launch_params), params_->container,
           params_->launch_source);
@@ -313,7 +392,15 @@ content::WebContents* WebAppLaunchProcess::Run() {
           : NavigateParams(browser, url_to_navigate,
                            ui::PAGE_TRANSITION_AUTO_BOOKMARK);
   nav_params.disposition = navigation_disposition;
-  nav_params.initiator_origin = params_->initiator_origin;
+  // Only overwrite the initiator origin when the launch actually carries one.
+  // `NavigateParamsForShareTarget()` attributes share target navigations to the
+  // app itself, and share launches have no `initiator_origin`; assigning it
+  // unconditionally would reset that back to std::nullopt, which makes the
+  // navigation look like a user-typed URL to the network stack. See
+  // crbug.com/40061291.
+  if (params_->initiator_origin.has_value()) {
+    nav_params.initiator_origin = params_->initiator_origin;
+  }
   if (params_->initiator_origin.has_value() ||
       !params_->referrer_url.is_empty()) {
     nav_params.referrer = content::Referrer::SanitizeForRequest(
@@ -337,7 +424,7 @@ content::WebContents* WebAppLaunchProcess::Run() {
 }
 
 const apps::ShareTarget* WebAppLaunchProcess::MaybeGetShareTarget() const {
-  DCHECK(web_app_);
+  CHECK(web_app_, base::NotFatalUntil::M162);
   bool is_share_intent = params_->intent && params_->intent->IsShareIntent();
   return is_share_intent && web_app_->share_target().has_value()
              ? &web_app_->share_target().value()
@@ -346,7 +433,7 @@ const apps::ShareTarget* WebAppLaunchProcess::MaybeGetShareTarget() const {
 
 std::tuple<GURL, bool /*is_file_handling*/> WebAppLaunchProcess::GetLaunchUrl(
     const apps::ShareTarget* share_target) const {
-  DCHECK(web_app_);
+  CHECK(web_app_, base::NotFatalUntil::M162);
   GURL launch_url;
   bool is_file_handling = false;
   bool is_note_taking_intent =
@@ -372,26 +459,26 @@ std::tuple<GURL, bool /*is_file_handling*/> WebAppLaunchProcess::GetLaunchUrl(
     // This is a default launch.
     launch_url = registrar_->GetAppLaunchUrl(params_->app_id);
   }
-  DCHECK(launch_url.is_valid());
+  CHECK(launch_url.is_valid(), base::NotFatalUntil::M162);
 
   return {launch_url, is_file_handling};
 }
 
-WindowOpenDisposition WebAppLaunchProcess::GetNavigationDisposition(
+ui::mojom::WindowOpenDisposition WebAppLaunchProcess::GetNavigationDisposition(
     bool is_new_browser) const {
   // For prevent-close, we always want to focus the existing window
   if (registrar_->IsPreventCloseEnabled(params_->app_id)) {
-    return WindowOpenDisposition::CURRENT_TAB;
+    return ui::mojom::WindowOpenDisposition::kCurrentTab;
   }
 
   if (registrar_->IsTabbedWindowModeEnabled(params_->app_id)) {
-    return WindowOpenDisposition::NEW_FOREGROUND_TAB;
+    return ui::mojom::WindowOpenDisposition::kNewForegroundTab;
   }
 
   if (is_new_browser) {
     // By opening a new window we've already performed part of a "disposition",
     // the only remaining thing for Navigate() to do is navigate the new window.
-    return WindowOpenDisposition::CURRENT_TAB;
+    return ui::mojom::WindowOpenDisposition::kCurrentTab;
     // TODO(crbug.com/40762104): Use NEW_FOREGROUND_TAB instead of CURRENT_TAB.
     // The window has no tabs so it doesn't make sense to open the "current"
     // tab. We use it anyway because it happens to work.
@@ -404,18 +491,18 @@ WindowOpenDisposition WebAppLaunchProcess::GetNavigationDisposition(
   // If launch handler is routing to an existing client, we want to use the
   // existing WebContents rather than opening a new tab.
   if (GetLaunchHandler().TargetsExistingClients()) {
-    return WindowOpenDisposition::CURRENT_TAB;
+    return ui::mojom::WindowOpenDisposition::kCurrentTab;
   }
 
   // Only CURRENT_TAB and NEW_FOREGROUND_TAB dispositions are supported for web
   // app launches.
-  return params_->disposition == WindowOpenDisposition::CURRENT_TAB
-             ? WindowOpenDisposition::CURRENT_TAB
-             : WindowOpenDisposition::NEW_FOREGROUND_TAB;
+  return params_->disposition == ui::mojom::WindowOpenDisposition::kCurrentTab
+             ? ui::mojom::WindowOpenDisposition::kCurrentTab
+             : ui::mojom::WindowOpenDisposition::kNewForegroundTab;
 }
 
 LaunchHandler WebAppLaunchProcess::GetLaunchHandler() const {
-  DCHECK(web_app_);
+  CHECK(web_app_, base::NotFatalUntil::M162);
   return web_app_->launch_handler().value_or(LaunchHandler());
 }
 
@@ -438,22 +525,25 @@ BrowserWindowInterface* WebAppLaunchProcess::MaybeFindBrowserForLaunch() const {
     // tab).
     int64_t display_id = display::kInvalidDisplayId;
 #if BUILDFLAG(IS_CHROMEOS)
-    if (params_->disposition != WindowOpenDisposition::CURRENT_TAB) {
+    if (params_->disposition != ui::mojom::WindowOpenDisposition::kCurrentTab) {
       display_id = display::Screen::Get()->GetDisplayForNewWindows().id();
     }
 #endif
     return FindTabbedBrowser(&profile_.get(), display_id);
   }
 
-  if (params_->disposition == WindowOpenDisposition::NEW_WINDOW) {
+  // In the case of prevent-close, we do not want to create a new browser, but
+  // instead continue to find the existing browser window.
+  if (registrar_->IsPreventCloseEnabled(params_->app_id)) {
+    return AppBrowserController::FindForWebApp(*profile_, params_->app_id);
+  }
+
+  if (params_->disposition == ui::mojom::WindowOpenDisposition::kNewWindow) {
     return nullptr;
   }
 
-  // In the case of prevent-close, we do not want to create a new browser, but
-  // instead continue to find the existing browser window.
   if (!registrar_->IsTabbedWindowModeEnabled(params_->app_id) &&
-      GetLaunchClientMode() == LaunchHandler::ClientMode::kNavigateNew &&
-      !registrar_->IsPreventCloseEnabled(params_->app_id)) {
+      GetLaunchClientMode() == LaunchHandler::ClientMode::kNavigateNew) {
     return nullptr;
   }
 
@@ -469,7 +559,8 @@ BrowserWindowInterface* WebAppLaunchProcess::CreateBrowserForLaunch() {
 
   BrowserWindowCreateParams browser_params = web_app::CreateParamsForApp(
       params_->app_id,
-      /*is_popup=*/params_->disposition == WindowOpenDisposition::NEW_POPUP,
+      /*is_popup=*/params_->disposition ==
+          ui::mojom::WindowOpenDisposition::kNewPopup,
       /*trusted_source=*/true, /*window_bounds=*/gfx::Rect(),
       /*profile=*/&profile_.get(),
       /*user_gesture*/ true);

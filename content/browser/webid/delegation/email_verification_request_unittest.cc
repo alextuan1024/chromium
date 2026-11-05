@@ -22,18 +22,21 @@
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/storage_partition.h"
 #include "content/public/browser/weak_document_ptr.h"
+#include "content/public/common/content_features.h"
 #include "content/public/test/navigation_simulator.h"
 #include "content/public/test/test_renderer_host.h"
 #include "content/test/test_render_frame_host.h"
 #include "crypto/sha2.h"
 #include "crypto/sign.h"
-#include "net/base/schemeful_site.h"
 #include "net/http/structured_headers.h"
 #include "services/data_decoder/public/cpp/test_support/in_process_data_decoder.h"
 #include "services/network/test/test_network_context.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/common/features.h"
+#include "third_party/skia/include/core/SkBitmap.h"
+#include "third_party/skia/include/core/SkColor.h"
+#include "ui/gfx/image/image.h"
 #include "url/gurl.h"
 #include "url/origin.h"
 
@@ -49,6 +52,7 @@ using testing::WithArgs;
 void VerifyMessageSignature(const net::HttpRequestHeaders& extra_headers,
                             const std::string& authority,
                             const std::string& path,
+                            const std::string& expected_alg,
                             const std::string& post_data = "",
                             sdjwt::Jwk* out_jwk = nullptr) {
   // 1. Verify Content-Digest
@@ -171,6 +175,33 @@ void VerifyMessageSignature(const net::HttpRequestHeaders& extra_headers,
   }
 
   ASSERT_TRUE(public_key.has_value()) << "Failed to create public key";
+
+  // 2b. Verify the `alg` parameter.
+  // draft-hardt-httpbis-signature-key-08 Section 3.4 makes `alg` REQUIRED for
+  // every key conveyed via the `hwk` scheme, and Section 3.3 requires it to be
+  // a fully-specified identifier: verifiers take the algorithm from `alg`
+  // rather than deriving it from `kty` and `crv`.
+  auto alg_it = std::ranges::find_if(
+      sig_member_params, [](const auto& pair) { return pair.first == "alg"; });
+  ASSERT_NE(alg_it, sig_member_params.end())
+      << "Missing 'alg' parameter in Signature-Key";
+  const std::string* alg = alg_it->second.GetIfString();
+  ASSERT_TRUE(alg) << "'alg' parameter is not a string";
+  // RFC 9864 deprecated the polymorphic "EdDSA" identifier, and Section 3.3
+  // forbids it outright.
+  EXPECT_NE(*alg, "EdDSA")
+      << "The polymorphic EdDSA identifier is forbidden; use Ed25519";
+  // `kty`/`crv` agreement is covered implicitly: the key below is built from
+  // them, so a disagreement fails signature verification.
+  EXPECT_EQ(*alg, expected_alg);
+
+  // Section 3.4: "The `kid` parameter MUST NOT be used." The key is carried
+  // inline, so there is nothing for an identifier to select.
+  EXPECT_EQ(std::ranges::find_if(
+                sig_member_params,
+                [](const auto& pair) { return pair.first == "kid"; }),
+            sig_member_params.end())
+      << "'kid' MUST NOT be used with the hwk scheme";
 
   // 3. Verify Signature-Input
   std::optional<std::string> signature_input_header =
@@ -296,10 +327,190 @@ class EmailVerificationRequestTest : public RenderViewHostTestHarness {
   EmailVerificationRequestTest() = default;
 
  protected:
+  // Drives a full CheckIfVerifiable() + Verify() against an issuer that
+  // advertises `signing_alg_values_supported` and signs the EVT with an
+  // Ed25519 key under the header `alg` `evt_alg`. `out_status` receives the
+  // outcome, and `out_kb_jwt_alg` the `alg` the browser put in the KB-JWT
+  // header (left untouched when verification does not get that far).
+  void RunEd25519Verification(
+      const std::vector<std::string>& signing_alg_values_supported,
+      const std::string& evt_alg,
+      blink::mojom::EmailVerificationRequestResult* out_status,
+      std::string* out_kb_jwt_alg);
+
   const url::Origin kRpOrigin =
       url::Origin::Create(GURL("https://rp.example.com"));
   data_decoder::test::InProcessDataDecoder in_process_data_decoder_;
 };
+
+void EmailVerificationRequestTest::RunEd25519Verification(
+    const std::vector<std::string>& signing_alg_values_supported,
+    const std::string& evt_alg,
+    blink::mojom::EmailVerificationRequestResult* out_status,
+    std::string* out_kb_jwt_alg) {
+  NavigateAndCommit(GURL("https://rp.example.com"));
+
+  auto mock_dns_request_ptr = std::make_unique<NiceMock<MockDnsRequest>>();
+  NiceMock<MockDnsRequest>* mock_dns_request = mock_dns_request_ptr.get();
+  auto mock_network_manager_ptr =
+      std::make_unique<NiceMock<MockEmailVerifierNetworkRequestManager>>();
+  NiceMock<MockEmailVerifierNetworkRequestManager>* mock_network_manager =
+      mock_network_manager_ptr.get();
+  auto mock_idp_network_manager_ptr =
+      std::make_unique<NiceMock<MockIdpNetworkRequestManager>>();
+  NiceMock<MockIdpNetworkRequestManager>* mock_idp_network_manager =
+      mock_idp_network_manager_ptr.get();
+  EmailVerificationRequest email_verification_request(
+      std::move(mock_network_manager_ptr),
+      std::move(mock_idp_network_manager_ptr), std::move(mock_dns_request_ptr),
+      static_cast<RenderFrameHostImpl&>(*main_rfh()));
+
+  const std::string kEmail = "test@example.com";
+  const std::string kNonce = "test_nonce";
+  const GURL kIssuerUrl = GURL("https://issuer.example.com");
+  const GURL kIssuanceEndpoint = GURL("https://issuer.example.com/token");
+  const GURL kJwksUri = GURL("https://issuer.example.com/jwks");
+
+  auto issuer_key = crypto::keypair::PrivateKey::GenerateEd25519();
+
+  base::DictValue jwks;
+  base::ListValue keys;
+  auto jwk = sdjwt::ExportPublicKey(issuer_key);
+  ASSERT_TRUE(jwk);
+  base::DictValue key_dict = jwk->ToDict();
+  key_dict.Set("kid", "test_kid");
+  keys.Append(std::move(key_dict));
+  jwks.Set("keys", std::move(keys));
+
+  EXPECT_CALL(*mock_dns_request,
+              SendRequest("_email-verification.example.com", _))
+      .WillOnce(WithArgs<1>([&](DnsRequest::DnsRequestCallback callback) {
+        std::move(callback).Run(
+            std::vector<std::string>{"iss=issuer.example.com"});
+      }));
+
+  EXPECT_CALL(*mock_network_manager, FetchWellKnown(kIssuerUrl, _))
+      .WillOnce(WithArgs<1>(
+          [&](EmailVerifierNetworkRequestManager::FetchWellKnownCallback
+                  callback) {
+            EmailVerifierNetworkRequestManager::WellKnown well_known;
+            well_known.issuance_endpoint = kIssuanceEndpoint;
+            well_known.jwks_uri = kJwksUri;
+            well_known.signing_alg_values_supported =
+                signing_alg_values_supported;
+            std::move(callback).Run(FetchStatus{ParseStatus::kSuccess},
+                                    well_known);
+          }));
+
+  EXPECT_CALL(*mock_network_manager,
+              DownloadAndParseUncredentialedUrl(kJwksUri, _))
+      .WillRepeatedly(WithArgs<1>([&](ParseJsonCallback callback) {
+        std::move(callback).Run({ParseStatus::kSuccess}, jwks.Clone());
+      }));
+
+  const GURL kAccountsEndpoint = GURL("https://issuer.example.com/accounts");
+
+  EXPECT_CALL(*mock_idp_network_manager, FetchWellKnown(kIssuerUrl, _))
+      .WillOnce(WithArgs<1>(
+          [&](IdpNetworkRequestManager::FetchWellKnownCallback callback) {
+            IdpNetworkRequestManager::WellKnown well_known;
+            well_known.accounts = kAccountsEndpoint;
+            std::move(callback).Run(FetchStatus{ParseStatus::kSuccess},
+                                    well_known);
+          }));
+
+  EXPECT_CALL(*mock_idp_network_manager,
+              SendAccountsRequest(_, kAccountsEndpoint, _))
+      .WillOnce(WithArgs<2>(
+          [&](IdpNetworkRequestManager::AccountsRequestCallback callback) {
+            IdpNetworkRequestManager::AccountsResponse response;
+            auto account = base::MakeRefCounted<IdentityRequestAccount>(
+                "id", "email", "name", kEmail, "name", "given_name", GURL(),
+                "phone", "username", std::vector<std::string>(),
+                std::vector<std::string>(), std::vector<std::string>(),
+                std::vector<std::string>());
+            response.accounts.push_back(account);
+            std::move(callback).Run(FetchStatus{ParseStatus::kSuccess},
+                                    std::move(response));
+            return true;
+          }));
+
+  EXPECT_CALL(*mock_network_manager,
+              SendTokenRequest(kIssuanceEndpoint, _, _, _))
+      .WillRepeatedly(
+          [&](const GURL& url, const std::string& post_data,
+              const net::HttpRequestHeaders& extra_headers,
+              EmailVerifierNetworkRequestManager::TokenRequestCallback
+                  callback) {
+            sdjwt::Jwk verified_public_key;
+            // Whatever the issuer advertised, the browser conveys the
+            // fully-specified identifier in `Signature-Key`.
+            ASSERT_NO_FATAL_FAILURE(VerifyMessageSignature(
+                extra_headers, "issuer.example.com", "/token", "Ed25519",
+                post_data, &verified_public_key));
+
+            sdjwt::SdJwt token;
+            sdjwt::Header h;
+            h.typ = "evt+jwt";
+            h.kid = "test_kid";
+            h.alg = evt_alg;
+            sdjwt::Payload p;
+            p.iss = url::Origin::Create(kIssuerUrl).Serialize();
+            p.email = kEmail;
+            p.email_verified = true;
+            p.iat = base::Time::Now();
+            sdjwt::ConfirmationKey cnf;
+            // The issuer echoes back the key the browser conveyed, `alg`
+            // included.
+            cnf.jwk = verified_public_key;
+            p.cnf = cnf;
+
+            auto signer = sdjwt::CreateJwtSigner(issuer_key);
+            sdjwt::Jwt issued_jwt;
+            issued_jwt.header = *(h.ToJson());
+            issued_jwt.payload = *(p.ToJson());
+            EXPECT_TRUE(issued_jwt.Sign(std::move(signer)));
+            token.jwt = issued_jwt;
+
+            EmailVerifierNetworkRequestManager::TokenResult result;
+            result.token = base::Value(token.Serialize());
+            std::move(callback).Run(FetchStatus{ParseStatus::kSuccess},
+                                    std::move(result));
+          });
+
+  base::test::TestFuture<std::optional<EmailVerifier::Result>,
+                         blink::mojom::EmailVerificationRequestResult,
+                         base::TimeDelta>
+      is_verifiable;
+  base::test::TestFuture<void> on_dns_resolved;
+  email_verification_request.CheckIfVerifiable(
+      kEmail, on_dns_resolved.GetCallback(), is_verifiable.GetCallback());
+  auto issuer = is_verifiable.Get<0>();
+  ASSERT_TRUE(issuer.has_value());
+
+  base::test::TestFuture<std::optional<std::string>,
+                         blink::mojom::EmailVerificationRequestResult,
+                         base::TimeDelta>
+      future;
+  email_verification_request.Verify(*issuer, kNonce, future.GetCallback());
+  *out_status = future.Get<1>();
+
+  std::optional<std::string> result = future.Get<0>();
+  if (!result) {
+    return;
+  }
+
+  auto sd_jwt_kb = sdjwt::SdJwtKb::Parse(*result);
+  ASSERT_TRUE(sd_jwt_kb);
+  auto kb_jwt_json = sdjwt::Jwt::Parse(sd_jwt_kb->kb_jwt.Serialize().value());
+  ASSERT_TRUE(kb_jwt_json);
+  auto kb_jwt = sdjwt::Jwt::From(*kb_jwt_json);
+  ASSERT_TRUE(kb_jwt);
+  auto kb_header = sdjwt::Header::From(*base::JSONReader::ReadDict(
+      kb_jwt->header.value(), base::JSON_PARSE_CHROMIUM_EXTENSIONS));
+  ASSERT_TRUE(kb_header);
+  *out_kb_jwt_alg = kb_header->alg;
+}
 
 TEST_F(EmailVerificationRequestTest, SuccessfulVerification) {
   base::HistogramTester histogram_tester;
@@ -322,12 +533,9 @@ TEST_F(EmailVerificationRequestTest, SuccessfulVerification) {
 
   const std::string kEmail = "test@example.com";
   const std::string kNonce = "test_nonce";
-  const std::string kIssuer = "issuer.example.com";
   const GURL kIssuerUrl = GURL("https://issuer.example.com");
   const GURL kIssuanceEndpoint = GURL("https://issuer.example.com/token");
   const GURL kJwksUri = GURL("https://issuer.example.com/jwks");
-
-  const std::string kToken = "test_token";
 
   // Generate issuer key pair for signing and verification.
   auto issuer_key = crypto::keypair::PrivateKey::GenerateEd25519();
@@ -410,9 +618,9 @@ TEST_F(EmailVerificationRequestTest, SuccessfulVerification) {
         EXPECT_EQ(*email, kEmail);
 
         sdjwt::Jwk verified_public_key;
-        ASSERT_NO_FATAL_FAILURE(
-            VerifyMessageSignature(extra_headers, "issuer.example.com",
-                                   "/token", post_data, &verified_public_key));
+        ASSERT_NO_FATAL_FAILURE(VerifyMessageSignature(
+            extra_headers, "issuer.example.com", "/token", "Ed25519", post_data,
+            &verified_public_key));
 
         sdjwt::SdJwt token;
         sdjwt::Header h;
@@ -465,8 +673,8 @@ TEST_F(EmailVerificationRequestTest, SuccessfulVerification) {
   std::optional<std::string> result = future.Get<0>();
   base::Time after = base::Time::Now();
   ASSERT_TRUE(result.has_value());
-  EXPECT_EQ(issuer->issuer_site,
-            net::SchemefulSite(GURL("https://example.com")));
+  EXPECT_EQ(issuer->issuer_origin,
+            url::Origin::Create(GURL("https://issuer.example.com")));
 
   auto sd_jwt_kb = sdjwt::SdJwtKb::Parse(*result);
   ASSERT_TRUE(sd_jwt_kb);
@@ -504,6 +712,397 @@ TEST_F(EmailVerificationRequestTest, SuccessfulVerification) {
                    ->GetEmailVerificationRequestIssueCount(std::nullopt));
 }
 
+// The browser has to pick an Ed25519 key whichever spelling the issuer
+// advertises, and default to one when the issuer advertises nothing. Before
+// this was fixed only "EdDSA" matched, so a conformant issuer advertising
+// "Ed25519" got no key at all and every verification failed.
+TEST_F(EmailVerificationRequestTest, Ed25519AlgorithmSelection) {
+  const struct {
+    const char* name;
+    std::vector<std::string> advertised;
+    std::string evt_alg;
+  } kCases[] = {
+      {"fully-specified", {"Ed25519"}, "Ed25519"},
+      // Issuers that have not migrated yet advertise and sign with "EdDSA".
+      {"polymorphic", {"EdDSA"}, "EdDSA"},
+      // `signing_alg_values_supported` is optional and defaults to Ed25519
+      // rather than being an error.
+      {"unadvertised", {}, "Ed25519"},
+  };
+
+  for (const auto& test_case : kCases) {
+    SCOPED_TRACE(test_case.name);
+    // Sentinel: the failure this test guards against.
+    auto status =
+        EmailVerificationRequestResult::kWellKnownUnsupportedSigningAlgorithm;
+    std::string kb_jwt_alg;
+    ASSERT_NO_FATAL_FAILURE(RunEd25519Verification(
+        test_case.advertised, test_case.evt_alg, &status, &kb_jwt_alg));
+    EXPECT_EQ(status, EmailVerificationRequestResult::kSuccess);
+    // The browser never emits the deprecated identifier, even when the issuer
+    // does.
+    EXPECT_EQ(kb_jwt_alg, "Ed25519");
+  }
+}
+
+// The logo advertised by the issuer is downloaded and returned in the result.
+TEST_F(EmailVerificationRequestTest, IssuerLogoIsDownloaded) {
+  NavigateAndCommit(GURL("https://rp.example.com"));
+
+  auto mock_dns_request_ptr = std::make_unique<NiceMock<MockDnsRequest>>();
+  NiceMock<MockDnsRequest>* mock_dns_request = mock_dns_request_ptr.get();
+  auto mock_network_manager_ptr =
+      std::make_unique<NiceMock<MockEmailVerifierNetworkRequestManager>>();
+  NiceMock<MockEmailVerifierNetworkRequestManager>* mock_network_manager =
+      mock_network_manager_ptr.get();
+  auto mock_idp_network_manager_ptr =
+      std::make_unique<NiceMock<MockIdpNetworkRequestManager>>();
+  NiceMock<MockIdpNetworkRequestManager>* mock_idp_network_manager =
+      mock_idp_network_manager_ptr.get();
+  EmailVerificationRequest email_verification_request(
+      std::move(mock_network_manager_ptr),
+      std::move(mock_idp_network_manager_ptr), std::move(mock_dns_request_ptr),
+      static_cast<RenderFrameHostImpl&>(*main_rfh()));
+
+  const std::string kEmail = "test@example.com";
+  const GURL kIssuerUrl = GURL("https://issuer.example.com");
+  const GURL kAccountsEndpoint = GURL("https://issuer.example.com/accounts");
+  const GURL kLogoUrl = GURL("https://issuer.example.com/logo.png");
+  SkBitmap bitmap;
+  bitmap.allocN32Pixels(40, 40);
+  bitmap.eraseColor(SK_ColorRED);
+  const gfx::Image kLogo = gfx::Image::CreateFrom1xBitmap(bitmap);
+
+  EXPECT_CALL(*mock_dns_request,
+              SendRequest("_email-verification.example.com", _))
+      .WillOnce(WithArgs<1>([&](DnsRequest::DnsRequestCallback callback) {
+        std::move(callback).Run(
+            std::vector<std::string>{"iss=issuer.example.com"});
+      }));
+
+  EXPECT_CALL(*mock_network_manager, FetchWellKnown(kIssuerUrl, _))
+      .WillOnce(WithArgs<1>(
+          [&](EmailVerifierNetworkRequestManager::FetchWellKnownCallback
+                  callback) {
+            EmailVerifierNetworkRequestManager::WellKnown well_known;
+            well_known.issuance_endpoint =
+                GURL("https://issuer.example.com/token");
+            well_known.jwks_uri = GURL("https://issuer.example.com/jwks");
+            well_known.signing_alg_values_supported.push_back("EdDSA");
+            well_known.brand_icon_url = kLogoUrl;
+            std::move(callback).Run(FetchStatus{ParseStatus::kSuccess},
+                                    well_known);
+          }));
+
+  EXPECT_CALL(*mock_idp_network_manager, FetchWellKnown(kIssuerUrl, _))
+      .WillOnce(WithArgs<1>(
+          [&](IdpNetworkRequestManager::FetchWellKnownCallback callback) {
+            IdpNetworkRequestManager::WellKnown well_known;
+            well_known.accounts = kAccountsEndpoint;
+            std::move(callback).Run(FetchStatus{ParseStatus::kSuccess},
+                                    well_known);
+          }));
+
+  EXPECT_CALL(*mock_idp_network_manager,
+              SendAccountsRequest(_, kAccountsEndpoint, _))
+      .WillOnce(WithArgs<2>(
+          [&](IdpNetworkRequestManager::AccountsRequestCallback callback) {
+            IdpNetworkRequestManager::AccountsResponse response;
+            auto account = base::MakeRefCounted<IdentityRequestAccount>(
+                "id", "email", "name", kEmail, "name", "given_name", GURL(),
+                "phone", "username", std::vector<std::string>(),
+                std::vector<std::string>(), std::vector<std::string>(),
+                std::vector<std::string>());
+            response.accounts.push_back(account);
+            std::move(callback).Run(FetchStatus{ParseStatus::kSuccess},
+                                    std::move(response));
+            return true;
+          }));
+
+  EXPECT_CALL(*mock_idp_network_manager, DownloadAndDecodeImage(kLogoUrl, _))
+      .WillOnce(
+          WithArgs<1>([&](IdpNetworkRequestManager::ImageCallback callback) {
+            std::move(callback).Run(kLogo);
+          }));
+
+  base::test::TestFuture<std::optional<EmailVerifier::Result>,
+                         blink::mojom::EmailVerificationRequestResult,
+                         base::TimeDelta>
+      future;
+  email_verification_request.CheckIfVerifiable(kEmail, base::DoNothing(),
+                                               future.GetCallback());
+  EXPECT_EQ(future.Get<1>(), EmailVerificationRequestResult::kSuccess);
+  std::optional<EmailVerifier::Result> result = future.Get<0>();
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(result->brand_icon, kLogo);
+  EXPECT_EQ(result->brand_icon_url, kLogoUrl);
+}
+
+// A logo that fails to download or decode does not fail the request.
+TEST_F(EmailVerificationRequestTest, IssuerLogoDownloadFailureIsIgnored) {
+  NavigateAndCommit(GURL("https://rp.example.com"));
+
+  auto mock_dns_request_ptr = std::make_unique<NiceMock<MockDnsRequest>>();
+  NiceMock<MockDnsRequest>* mock_dns_request = mock_dns_request_ptr.get();
+  auto mock_network_manager_ptr =
+      std::make_unique<NiceMock<MockEmailVerifierNetworkRequestManager>>();
+  NiceMock<MockEmailVerifierNetworkRequestManager>* mock_network_manager =
+      mock_network_manager_ptr.get();
+  auto mock_idp_network_manager_ptr =
+      std::make_unique<NiceMock<MockIdpNetworkRequestManager>>();
+  NiceMock<MockIdpNetworkRequestManager>* mock_idp_network_manager =
+      mock_idp_network_manager_ptr.get();
+  EmailVerificationRequest email_verification_request(
+      std::move(mock_network_manager_ptr),
+      std::move(mock_idp_network_manager_ptr), std::move(mock_dns_request_ptr),
+      static_cast<RenderFrameHostImpl&>(*main_rfh()));
+
+  const std::string kEmail = "test@example.com";
+  const GURL kIssuerUrl = GURL("https://issuer.example.com");
+  const GURL kAccountsEndpoint = GURL("https://issuer.example.com/accounts");
+  const GURL kLogoUrl = GURL("https://issuer.example.com/logo.png");
+
+  EXPECT_CALL(*mock_dns_request,
+              SendRequest("_email-verification.example.com", _))
+      .WillOnce(WithArgs<1>([&](DnsRequest::DnsRequestCallback callback) {
+        std::move(callback).Run(
+            std::vector<std::string>{"iss=issuer.example.com"});
+      }));
+
+  EXPECT_CALL(*mock_network_manager, FetchWellKnown(kIssuerUrl, _))
+      .WillOnce(WithArgs<1>(
+          [&](EmailVerifierNetworkRequestManager::FetchWellKnownCallback
+                  callback) {
+            EmailVerifierNetworkRequestManager::WellKnown well_known;
+            well_known.issuance_endpoint =
+                GURL("https://issuer.example.com/token");
+            well_known.jwks_uri = GURL("https://issuer.example.com/jwks");
+            well_known.signing_alg_values_supported.push_back("EdDSA");
+            well_known.brand_icon_url = kLogoUrl;
+            std::move(callback).Run(FetchStatus{ParseStatus::kSuccess},
+                                    well_known);
+          }));
+
+  EXPECT_CALL(*mock_idp_network_manager, FetchWellKnown(kIssuerUrl, _))
+      .WillOnce(WithArgs<1>(
+          [&](IdpNetworkRequestManager::FetchWellKnownCallback callback) {
+            IdpNetworkRequestManager::WellKnown well_known;
+            well_known.accounts = kAccountsEndpoint;
+            std::move(callback).Run(FetchStatus{ParseStatus::kSuccess},
+                                    well_known);
+          }));
+
+  EXPECT_CALL(*mock_idp_network_manager,
+              SendAccountsRequest(_, kAccountsEndpoint, _))
+      .WillOnce(WithArgs<2>(
+          [&](IdpNetworkRequestManager::AccountsRequestCallback callback) {
+            IdpNetworkRequestManager::AccountsResponse response;
+            auto account = base::MakeRefCounted<IdentityRequestAccount>(
+                "id", "email", "name", kEmail, "name", "given_name", GURL(),
+                "phone", "username", std::vector<std::string>(),
+                std::vector<std::string>(), std::vector<std::string>(),
+                std::vector<std::string>());
+            response.accounts.push_back(account);
+            std::move(callback).Run(FetchStatus{ParseStatus::kSuccess},
+                                    std::move(response));
+            return true;
+          }));
+
+  EXPECT_CALL(*mock_idp_network_manager, DownloadAndDecodeImage(kLogoUrl, _))
+      .WillOnce(
+          WithArgs<1>([&](IdpNetworkRequestManager::ImageCallback callback) {
+            std::move(callback).Run(gfx::Image());
+          }));
+
+  base::test::TestFuture<std::optional<EmailVerifier::Result>,
+                         blink::mojom::EmailVerificationRequestResult,
+                         base::TimeDelta>
+      future;
+  email_verification_request.CheckIfVerifiable(kEmail, base::DoNothing(),
+                                               future.GetCallback());
+  EXPECT_EQ(future.Get<1>(), EmailVerificationRequestResult::kSuccess);
+  std::optional<EmailVerifier::Result> result = future.Get<0>();
+  ASSERT_TRUE(result.has_value());
+  EXPECT_TRUE(result->brand_icon.IsEmpty());
+  EXPECT_TRUE(result->brand_icon_url.is_empty());
+}
+
+// Without an advertised logo, nothing is downloaded.
+TEST_F(EmailVerificationRequestTest, NoIssuerLogo) {
+  NavigateAndCommit(GURL("https://rp.example.com"));
+
+  auto mock_dns_request_ptr = std::make_unique<NiceMock<MockDnsRequest>>();
+  NiceMock<MockDnsRequest>* mock_dns_request = mock_dns_request_ptr.get();
+  auto mock_network_manager_ptr =
+      std::make_unique<NiceMock<MockEmailVerifierNetworkRequestManager>>();
+  NiceMock<MockEmailVerifierNetworkRequestManager>* mock_network_manager =
+      mock_network_manager_ptr.get();
+  auto mock_idp_network_manager_ptr =
+      std::make_unique<NiceMock<MockIdpNetworkRequestManager>>();
+  NiceMock<MockIdpNetworkRequestManager>* mock_idp_network_manager =
+      mock_idp_network_manager_ptr.get();
+  EmailVerificationRequest email_verification_request(
+      std::move(mock_network_manager_ptr),
+      std::move(mock_idp_network_manager_ptr), std::move(mock_dns_request_ptr),
+      static_cast<RenderFrameHostImpl&>(*main_rfh()));
+
+  const std::string kEmail = "test@example.com";
+  const GURL kIssuerUrl = GURL("https://issuer.example.com");
+  const GURL kAccountsEndpoint = GURL("https://issuer.example.com/accounts");
+
+  EXPECT_CALL(*mock_dns_request,
+              SendRequest("_email-verification.example.com", _))
+      .WillOnce(WithArgs<1>([&](DnsRequest::DnsRequestCallback callback) {
+        std::move(callback).Run(
+            std::vector<std::string>{"iss=issuer.example.com"});
+      }));
+
+  EXPECT_CALL(*mock_network_manager, FetchWellKnown(kIssuerUrl, _))
+      .WillOnce(WithArgs<1>(
+          [&](EmailVerifierNetworkRequestManager::FetchWellKnownCallback
+                  callback) {
+            EmailVerifierNetworkRequestManager::WellKnown well_known;
+            well_known.issuance_endpoint =
+                GURL("https://issuer.example.com/token");
+            well_known.jwks_uri = GURL("https://issuer.example.com/jwks");
+            well_known.signing_alg_values_supported.push_back("EdDSA");
+            std::move(callback).Run(FetchStatus{ParseStatus::kSuccess},
+                                    well_known);
+          }));
+
+  EXPECT_CALL(*mock_idp_network_manager, FetchWellKnown(kIssuerUrl, _))
+      .WillOnce(WithArgs<1>(
+          [&](IdpNetworkRequestManager::FetchWellKnownCallback callback) {
+            IdpNetworkRequestManager::WellKnown well_known;
+            well_known.accounts = kAccountsEndpoint;
+            std::move(callback).Run(FetchStatus{ParseStatus::kSuccess},
+                                    well_known);
+          }));
+
+  EXPECT_CALL(*mock_idp_network_manager,
+              SendAccountsRequest(_, kAccountsEndpoint, _))
+      .WillOnce(WithArgs<2>(
+          [&](IdpNetworkRequestManager::AccountsRequestCallback callback) {
+            IdpNetworkRequestManager::AccountsResponse response;
+            auto account = base::MakeRefCounted<IdentityRequestAccount>(
+                "id", "email", "name", kEmail, "name", "given_name", GURL(),
+                "phone", "username", std::vector<std::string>(),
+                std::vector<std::string>(), std::vector<std::string>(),
+                std::vector<std::string>());
+            response.accounts.push_back(account);
+            std::move(callback).Run(FetchStatus{ParseStatus::kSuccess},
+                                    std::move(response));
+            return true;
+          }));
+
+  EXPECT_CALL(*mock_idp_network_manager, DownloadAndDecodeImage).Times(0);
+
+  base::test::TestFuture<std::optional<EmailVerifier::Result>,
+                         blink::mojom::EmailVerificationRequestResult,
+                         base::TimeDelta>
+      future;
+  email_verification_request.CheckIfVerifiable(kEmail, base::DoNothing(),
+                                               future.GetCallback());
+  EXPECT_EQ(future.Get<1>(), EmailVerificationRequestResult::kSuccess);
+  std::optional<EmailVerifier::Result> result = future.Get<0>();
+  ASSERT_TRUE(result.has_value());
+  EXPECT_TRUE(result->brand_icon.IsEmpty());
+  EXPECT_TRUE(result->brand_icon_url.is_empty());
+}
+
+// The logo is fetched even when the email does not match any of the user's
+// accounts at the issuer. The relying party can observe that the logo request
+// was made (e.g. through Connection-Allowlist reports), so fetching it only on
+// a match would reveal, before the user consents, that the user is signed in
+// to the issuer with the email entered in the relying party's form.
+TEST_F(EmailVerificationRequestTest, IssuerLogoIsFetchedIfEmailDoesNotMatch) {
+  NavigateAndCommit(GURL("https://rp.example.com"));
+
+  auto mock_dns_request_ptr = std::make_unique<NiceMock<MockDnsRequest>>();
+  NiceMock<MockDnsRequest>* mock_dns_request = mock_dns_request_ptr.get();
+  auto mock_network_manager_ptr =
+      std::make_unique<NiceMock<MockEmailVerifierNetworkRequestManager>>();
+  NiceMock<MockEmailVerifierNetworkRequestManager>* mock_network_manager =
+      mock_network_manager_ptr.get();
+  auto mock_idp_network_manager_ptr =
+      std::make_unique<NiceMock<MockIdpNetworkRequestManager>>();
+  NiceMock<MockIdpNetworkRequestManager>* mock_idp_network_manager =
+      mock_idp_network_manager_ptr.get();
+  EmailVerificationRequest email_verification_request(
+      std::move(mock_network_manager_ptr),
+      std::move(mock_idp_network_manager_ptr), std::move(mock_dns_request_ptr),
+      static_cast<RenderFrameHostImpl&>(*main_rfh()));
+
+  const std::string kEmail = "test@example.com";
+  const GURL kIssuerUrl = GURL("https://issuer.example.com");
+  const GURL kAccountsEndpoint = GURL("https://issuer.example.com/accounts");
+  const GURL kLogoUrl = GURL("https://issuer.example.com/logo.png");
+
+  EXPECT_CALL(*mock_dns_request,
+              SendRequest("_email-verification.example.com", _))
+      .WillOnce(WithArgs<1>([&](DnsRequest::DnsRequestCallback callback) {
+        std::move(callback).Run(
+            std::vector<std::string>{"iss=issuer.example.com"});
+      }));
+
+  EXPECT_CALL(*mock_network_manager, FetchWellKnown(kIssuerUrl, _))
+      .WillOnce(WithArgs<1>(
+          [&](EmailVerifierNetworkRequestManager::FetchWellKnownCallback
+                  callback) {
+            EmailVerifierNetworkRequestManager::WellKnown well_known;
+            well_known.issuance_endpoint =
+                GURL("https://issuer.example.com/token");
+            well_known.jwks_uri = GURL("https://issuer.example.com/jwks");
+            well_known.signing_alg_values_supported.push_back("EdDSA");
+            well_known.brand_icon_url = kLogoUrl;
+            std::move(callback).Run(FetchStatus{ParseStatus::kSuccess},
+                                    well_known);
+          }));
+
+  EXPECT_CALL(*mock_idp_network_manager, FetchWellKnown(kIssuerUrl, _))
+      .WillOnce(WithArgs<1>(
+          [&](IdpNetworkRequestManager::FetchWellKnownCallback callback) {
+            IdpNetworkRequestManager::WellKnown well_known;
+            well_known.accounts = kAccountsEndpoint;
+            std::move(callback).Run(FetchStatus{ParseStatus::kSuccess},
+                                    well_known);
+          }));
+
+  // The user is signed in to the issuer with a different email.
+  EXPECT_CALL(*mock_idp_network_manager,
+              SendAccountsRequest(_, kAccountsEndpoint, _))
+      .WillOnce(WithArgs<2>(
+          [&](IdpNetworkRequestManager::AccountsRequestCallback callback) {
+            IdpNetworkRequestManager::AccountsResponse response;
+            auto account = base::MakeRefCounted<IdentityRequestAccount>(
+                "id", "email", "name", "different@example.com", "name",
+                "given_name", GURL(), "phone", "username",
+                std::vector<std::string>(), std::vector<std::string>(),
+                std::vector<std::string>(), std::vector<std::string>());
+            response.accounts.push_back(account);
+            std::move(callback).Run(FetchStatus{ParseStatus::kSuccess},
+                                    std::move(response));
+            return true;
+          }));
+
+  // The logo is requested anyway.
+  EXPECT_CALL(*mock_idp_network_manager, DownloadAndDecodeImage(kLogoUrl, _))
+      .WillOnce(
+          WithArgs<1>([&](IdpNetworkRequestManager::ImageCallback callback) {
+            std::move(callback).Run(gfx::Image());
+          }));
+
+  base::test::TestFuture<std::optional<EmailVerifier::Result>,
+                         blink::mojom::EmailVerificationRequestResult,
+                         base::TimeDelta>
+      future;
+  email_verification_request.CheckIfVerifiable(kEmail, base::DoNothing(),
+                                               future.GetCallback());
+  // The email is not verifiable, so no result, and no logo, is returned.
+  EXPECT_FALSE(future.Get<0>().has_value());
+  EXPECT_EQ(future.Get<1>(), EmailVerificationRequestResult::kUserLoggedOut);
+}
+
 TEST_F(EmailVerificationRequestTest, CaseInsensitiveEmailMatch) {
   base::HistogramTester histogram_tester;
   NavigateAndCommit(GURL("https://rp.example.com"));
@@ -526,7 +1125,6 @@ TEST_F(EmailVerificationRequestTest, CaseInsensitiveEmailMatch) {
   const std::string kEmail = "test@issuer.example.com";
   const std::string kEmailUpper = "TEST@ISSUER.EXAMPLE.COM";
   const std::string kNonce = "test_nonce";
-  const std::string kIssuer = "issuer.example.com";
   const GURL kIssuerUrl = GURL("https://issuer.example.com");
   const GURL kIssuanceEndpoint = GURL("https://issuer.example.com/token");
   // Generate issuer key pair for signing and verification.
@@ -612,9 +1210,9 @@ TEST_F(EmailVerificationRequestTest, CaseInsensitiveEmailMatch) {
         EXPECT_EQ(*email, kEmail);
 
         sdjwt::Jwk verified_public_key;
-        ASSERT_NO_FATAL_FAILURE(
-            VerifyMessageSignature(extra_headers, "issuer.example.com",
-                                   "/token", post_data, &verified_public_key));
+        ASSERT_NO_FATAL_FAILURE(VerifyMessageSignature(
+            extra_headers, "issuer.example.com", "/token", "RS256", post_data,
+            &verified_public_key));
 
         sdjwt::SdJwt token;
         sdjwt::Header h;
@@ -652,8 +1250,8 @@ TEST_F(EmailVerificationRequestTest, CaseInsensitiveEmailMatch) {
                                                 future.GetCallback());
   std::optional<EmailVerifier::Result> result = future.Get<0>();
   ASSERT_TRUE(result.has_value());
-  EXPECT_EQ(result->issuer_site,
-            net::SchemefulSite(GURL("https://example.com")));
+  EXPECT_EQ(result->issuer_origin,
+            url::Origin::Create(GURL("https://issuer.example.com")));
 
   base::test::TestFuture<std::optional<std::string>,
                          blink::mojom::EmailVerificationRequestResult,
@@ -684,7 +1282,6 @@ TEST_F(EmailVerificationRequestTest, CrossOriginIssuanceEndpointRejected) {
       static_cast<RenderFrameHostImpl&>(*main_rfh()));
 
   const std::string kEmail = "test@example.com";
-  const std::string kNonce = "test_nonce";
   const GURL kIssuerUrl = GURL("https://issuer.example.com");
   const GURL kCrossOriginIssuanceEndpoint = GURL("https://attacker.com/token");
 
@@ -772,7 +1369,6 @@ TEST_F(EmailVerificationRequestTest, UserLoggedOut) {
       static_cast<RenderFrameHostImpl&>(*main_rfh()));
 
   const std::string kEmail = "test@example.com";
-  const std::string kNonce = "test_nonce";
   const GURL kIssuerUrl = GURL("https://issuer.example.com");
   const GURL kIssuanceEndpoint = GURL("https://issuer.example.com/token");
   const GURL kAccountsEndpoint = GURL("https://issuer.example.com/accounts");
@@ -1037,7 +1633,6 @@ TEST_F(EmailVerificationRequestTest, WebIdentityWellKnownHttpNotFound) {
       static_cast<RenderFrameHostImpl&>(*main_rfh()));
 
   const std::string kEmail = "test@example.com";
-  const std::string kNonce = "test_nonce";
   const GURL kIssuerUrl = GURL("https://issuer.example.com");
   const GURL kIssuanceEndpoint = GURL("https://issuer.example.com/token");
 
@@ -1106,7 +1701,6 @@ TEST_F(EmailVerificationRequestTest, OpaqueOriginRejected) {
       static_cast<RenderFrameHostImpl&>(*main_rfh()));
 
   const std::string kEmail = "test@example.com";
-  const std::string kNonce = "test_nonce";
 
   EXPECT_CALL(*mock_dns_request, SendRequest).Times(0);
   EXPECT_CALL(*mock_network_manager, FetchWellKnown).Times(0);
@@ -1143,7 +1737,6 @@ TEST_F(EmailVerificationRequestTest, DnsFetchFailed) {
       static_cast<RenderFrameHostImpl&>(*main_rfh()));
 
   const std::string kEmail = "test@example.com";
-  const std::string kNonce = "test_nonce";
 
   EXPECT_CALL(*mock_dns_request,
               SendRequest("_email-verification.example.com", _))
@@ -1163,6 +1756,113 @@ TEST_F(EmailVerificationRequestTest, DnsFetchFailed) {
       EmailVerificationRequestResult::kDnsFetchFailed, 1);
   EXPECT_EQ(0, static_cast<TestRenderFrameHost*>(main_rfh())
                    ->GetEmailVerificationRequestIssueCount(std::nullopt));
+}
+
+class EmailVerificationRequestDnsRecordTest
+    : public EmailVerificationRequestTest,
+      public ::testing::WithParamInterface<std::pair<std::string, bool>> {};
+
+// The DNS record must carry a bare host name, from which the issuer identifier
+// is derived:
+// https://dickhardt.github.io/email-verification/draft-hardt-email-verification.html#name-issuer-identifier
+// EVP-COMPLIANCE: EVP-3.2-M01
+TEST_P(EmailVerificationRequestDnsRecordTest, RequiresBareHost) {
+  auto [record, accepted] = GetParam();
+  NavigateAndCommit(GURL("https://rp.example.com"));
+
+  auto mock_dns_request_ptr = std::make_unique<NiceMock<MockDnsRequest>>();
+  NiceMock<MockDnsRequest>* mock_dns_request = mock_dns_request_ptr.get();
+  auto mock_network_manager_ptr =
+      std::make_unique<NiceMock<MockEmailVerifierNetworkRequestManager>>();
+  NiceMock<MockEmailVerifierNetworkRequestManager>* mock_network_manager =
+      mock_network_manager_ptr.get();
+  EmailVerificationRequest email_verification_request(
+      std::move(mock_network_manager_ptr),
+      std::make_unique<NiceMock<MockIdpNetworkRequestManager>>(),
+      std::move(mock_dns_request_ptr),
+      static_cast<RenderFrameHostImpl&>(*main_rfh()));
+
+  EXPECT_CALL(*mock_dns_request,
+              SendRequest("_email-verification.example.com", _))
+      .WillOnce(WithArgs<1>([&](DnsRequest::DnsRequestCallback callback) {
+        std::move(callback).Run(std::vector<std::string>{record});
+      }));
+  EXPECT_CALL(*mock_network_manager,
+              FetchWellKnown(GURL("https://issuer.example.com"), _))
+      .Times(accepted ? 1 : 0);
+
+  base::test::TestFuture<void> on_dns_resolved;
+  base::test::TestFuture<std::optional<EmailVerifier::Result>,
+                         blink::mojom::EmailVerificationRequestResult,
+                         base::TimeDelta>
+      future;
+  email_verification_request.CheckIfVerifiable(
+      "test@example.com", on_dns_resolved.GetCallback(), future.GetCallback());
+
+  EXPECT_EQ(on_dns_resolved.IsReady(), accepted);
+  EXPECT_EQ(future.IsReady(), !accepted);
+  if (future.IsReady()) {
+    EXPECT_EQ(future.Get<1>(),
+              EmailVerificationRequestResult::kDnsInvalidRecord);
+  }
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    All,
+    EmailVerificationRequestDnsRecordTest,
+    ::testing::Values(std::make_pair("iss=issuer.example.com", true),
+                      std::make_pair("iss=", false),
+                      std::make_pair("iss=Issuer.example.com", false),
+                      std::make_pair("iss=issuer.example.com:443", false),
+                      std::make_pair("iss=issuer.example.com:8443", false),
+                      std::make_pair("iss=issuer.example.com/", false),
+                      std::make_pair("iss=issuer.example.com/path", false),
+                      std::make_pair("iss=issuer.example.com?query", false),
+                      std::make_pair("iss=issuer.example.com#fragment", false),
+                      std::make_pair("iss=user@issuer.example.com", false),
+                      std::make_pair("iss=https://issuer.example.com", false),
+                      std::make_pair("iss= issuer.example.com", false),
+                      std::make_pair("iss=issuer%2Eexample.com", false)));
+
+// `kFedCmPreservePortsForTesting` used to let the record name a port. It no
+// longer does: the identifier has to be a bare host name whether or not the
+// flag is on.
+TEST_F(EmailVerificationRequestTest, DnsRecordRejectsPortWhenPreservingPorts) {
+  base::test::ScopedFeatureList feature_list(
+      features::kFedCmPreservePortsForTesting);
+  NavigateAndCommit(GURL("https://rp.example.com"));
+
+  auto mock_dns_request_ptr = std::make_unique<NiceMock<MockDnsRequest>>();
+  NiceMock<MockDnsRequest>* mock_dns_request = mock_dns_request_ptr.get();
+  auto mock_network_manager_ptr =
+      std::make_unique<NiceMock<MockEmailVerifierNetworkRequestManager>>();
+  NiceMock<MockEmailVerifierNetworkRequestManager>* mock_network_manager =
+      mock_network_manager_ptr.get();
+  EmailVerificationRequest email_verification_request(
+      std::move(mock_network_manager_ptr),
+      std::make_unique<NiceMock<MockIdpNetworkRequestManager>>(),
+      std::move(mock_dns_request_ptr),
+      static_cast<RenderFrameHostImpl&>(*main_rfh()));
+
+  EXPECT_CALL(*mock_dns_request,
+              SendRequest("_email-verification.example.com", _))
+      .WillOnce(WithArgs<1>([&](DnsRequest::DnsRequestCallback callback) {
+        std::move(callback).Run(
+            std::vector<std::string>{"iss=issuer.example.com:8443"});
+      }));
+  EXPECT_CALL(*mock_network_manager, FetchWellKnown).Times(0);
+
+  base::test::TestFuture<void> on_dns_resolved;
+  base::test::TestFuture<std::optional<EmailVerifier::Result>,
+                         blink::mojom::EmailVerificationRequestResult,
+                         base::TimeDelta>
+      future;
+  email_verification_request.CheckIfVerifiable(
+      "test@example.com", on_dns_resolved.GetCallback(), future.GetCallback());
+
+  EXPECT_FALSE(on_dns_resolved.IsReady());
+  ASSERT_TRUE(future.IsReady());
+  EXPECT_EQ(future.Get<1>(), EmailVerificationRequestResult::kDnsInvalidRecord);
 }
 
 TEST_F(EmailVerificationRequestTest, WellKnownHttpNotFound) {
@@ -1185,7 +1885,6 @@ TEST_F(EmailVerificationRequestTest, WellKnownHttpNotFound) {
       static_cast<RenderFrameHostImpl&>(*main_rfh()));
 
   const std::string kEmail = "test@example.com";
-  const std::string kNonce = "test_nonce";
   const GURL kIssuerUrl = GURL("https://issuer.example.com");
 
   EXPECT_CALL(*mock_dns_request,
@@ -1426,7 +2125,7 @@ TEST_P(EmailVerificationRequestJwksErrorTest, VerifyFailsOnJwksError) {
 
   EmailVerifier::Result issuer_result;
   issuer_result.email = "test@issuer.example.com";
-  issuer_result.issuer_site = net::SchemefulSite(kIssuerUrl);
+  issuer_result.issuer_origin = url::Origin::Create(kIssuerUrl);
   issuer_result.issuance_endpoint = kIssuanceEndpoint;
   issuer_result.jwks_uri = kJwksUri;
   issuer_result.signing_alg_values_supported.push_back("EdDSA");
@@ -1481,7 +2180,6 @@ TEST_F(EmailVerificationRequestTest, FencedFrameRejected) {
       static_cast<RenderFrameHostImpl&>(*fenced_frame));
 
   const std::string kEmail = "test@example.com";
-  const std::string kNonce = "test_nonce";
 
   base::test::TestFuture<std::optional<EmailVerifier::Result>,
                          blink::mojom::EmailVerificationRequestResult,
@@ -1515,7 +2213,6 @@ TEST_F(EmailVerificationRequestTest, CrossOriginFrameRejected) {
       static_cast<RenderFrameHostImpl&>(*cross_origin_iframe));
 
   const std::string kEmail = "test@example.com";
-  const std::string kNonce = "test_nonce";
 
   base::test::TestFuture<std::optional<EmailVerifier::Result>,
                          blink::mojom::EmailVerificationRequestResult,
@@ -1564,7 +2261,6 @@ TEST_F(EmailVerificationRequestTest, SameOriginFrameAllowed) {
       static_cast<RenderFrameHostImpl&>(*same_origin_iframe));
 
   const std::string kEmail = "test@example.com";
-  const std::string kNonce = "test_nonce";
   const GURL kIssuerUrl = GURL("https://issuer.example.com");
 
   EXPECT_CALL(*mock_dns_request_,
@@ -1642,7 +2338,6 @@ TEST_F(EmailVerificationRequestTest,
       static_cast<RenderFrameHostImpl&>(*iframe_a));
 
   const std::string kEmail = "test@example.com";
-  const std::string kNonce = "test_nonce";
 
   base::test::TestFuture<std::optional<EmailVerifier::Result>,
                          blink::mojom::EmailVerificationRequestResult,
@@ -1721,6 +2416,10 @@ TEST_F(EmailVerificationRequestTest, DnsResolvedCallbackNotCalledOnDnsFailure) {
 
 TEST(EmailVerificationRequestStaticTest, ValidEmail) {
   EXPECT_EQ(GetDomainFromEmail("test@example.com"), "example.com");
+}
+
+TEST(EmailVerificationRequestStaticTest, ValidEmailUppercaseDomain) {
+  EXPECT_EQ(GetDomainFromEmail("test@EXAMPLE.COM"), "example.com");
 }
 
 TEST(EmailVerificationRequestStaticTest, ValidEmailWithSubdomain) {

@@ -19,8 +19,13 @@
 #endif
 
 #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
+#include <dlfcn.h>
 #include <errno.h>
+#include <sys/stat.h>
+#include <sys/sysmacros.h>
 
+#include "base/files/file_enumerator.h"
+#include "base/strings/stringprintf.h"
 #include "content/common/gpu_pre_sandbox_hook_linux.h"
 #include "gpu/config/gpu_info_collector.h"  // nogncheck
 #include "sandbox/policy/features.h"
@@ -64,6 +69,40 @@ void UpdateSandboxOptionsForGpu(
     default:
       break;
   }
+}
+
+// Permissions needed by Vulkan drivers after the sandbox is engaged, not
+// granted by content::FilePermissionsForGpu() on non-ChromeOS Linux:
+// - DRM render nodes, opened read-write by vkCreateDevice() (e.g. Mesa ANV
+//   anv_CreateDevice()).
+// - The render nodes' sysfs directories, read by libdrm to identify devices.
+// - amdgpu.ids, read by libdrm_amdgpu to name AMD GPUs.
+// - The /dev/dri directory, listed with opendir() by libdrm's
+//   drmGetDeviceFromDevId(), which Mesa RADV radv_CreateDevice() calls since
+//   Mesa 26.2 to reopen the render node. Before that, drmGetDeviceFromDevId()
+//   calls readlink() on /sys/dev/char/<major>:<minor>/device/subsystem, which
+//   needs COMMAND_READLINK (see PreSandboxHook()).
+void AddVulkanDriverPermissions(
+    std::vector<sandbox::syscall_broker::BrokerFilePermission>& permissions) {
+  permissions.push_back(
+      sandbox::syscall_broker::BrokerFilePermission::ReadOnly("/dev/dri"));
+  base::FileEnumerator enumerator(base::FilePath("/dev/dri/"),
+                                  /*recursive=*/false,
+                                  base::FileEnumerator::FILES, "renderD*");
+  for (base::FilePath path = enumerator.Next(); !path.empty();
+       path = enumerator.Next()) {
+    permissions.push_back(
+        sandbox::syscall_broker::BrokerFilePermission::ReadWrite(path.value()));
+    struct stat st;
+    if (stat(path.value().c_str(), &st) == 0) {
+      permissions.push_back(
+          sandbox::syscall_broker::BrokerFilePermission::ReadOnlyRecursive(
+              base::StringPrintf("/sys/dev/char/%u:%u/", major(st.st_rdev),
+                                 minor(st.st_rdev))));
+    }
+  }
+  permissions.push_back(sandbox::syscall_broker::BrokerFilePermission::ReadOnly(
+      "/usr/share/libdrm/amdgpu.ids"));
 }
 #endif
 
@@ -154,6 +193,16 @@ bool PreSandboxInit() {
         }
       }
     }
+#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
+    // Pin the Vulkan loader selected by Dawn. Must run while `instance` is in
+    // scope: it holds the loader via VulkanInstance::mVulkanLib, dlopen()ed
+    // with RTLD_NOW and dlclose()d on destruction
+    // (third_party/dawn/src/dawn/common/DynamicLib.cpp). RTLD_NOLOAD finds it
+    // by SONAME without loading anything; RTLD_NODELETE keeps it loaded after
+    // `instance` is destroyed, so later dlopen("libvulkan.so.1") calls (e.g.
+    // content::LoadLibrariesForGpu()) reuse it instead of loading another copy.
+    dlopen("libvulkan.so.1", RTLD_NOW | RTLD_NOLOAD | RTLD_NODELETE);
+#endif
 #endif
   }
   return true;
@@ -192,19 +241,33 @@ bool PreSandboxHook(sandbox::policy::SandboxLinux::Options options) {
   file_permissions.push_back(
       sandbox::syscall_broker::BrokerFilePermission::ReadOnly(
           "/sys/devices/system/cpu/online"));
+  AddVulkanDriverPermissions(file_permissions);
 
+  // libdrm's drmGetDeviceFromDevId(), called by Mesa RADV's vkCreateDevice()
+  // since Mesa 26.2, resolves the render node's sysfs subsystem link with
+  // readlink(). The broker only allows readlink() on paths in
+  // `file_permissions` that are readable, such as the render nodes' sysfs
+  // directories added by AddVulkanDriverPermissions().
+  sandbox::syscall_broker::BrokerCommandSet command_set =
+      content::CommandSetForGPU(options);
+  command_set.set(sandbox::syscall_broker::COMMAND_READLINK);
   sandbox::policy::SandboxLinux::GetInstance()->StartBrokerProcess(
-      content::CommandSetForGPU(options), file_permissions, options);
-
-  if (!content::LoadLibrariesForGpu(options)) {
-    return false;
-  }
+      command_set, file_permissions, options);
 
   // Now that the broker process has been forked from a single-threaded process,
   // warm drivers and load internal libraries. Any threads spawned here will be
   // synchronized and covered when StartSeccompBPF() applies the Seccomp-BPF
   // filter via TSYNC immediately following this hook.
+  //
+  // Must run before content::LoadLibrariesForGpu(), whose
+  // dlopen("libvulkan.so.1") would otherwise load a loader other than Dawn's
+  // (e.g. the system one in non-component builds). Dawn would then load
+  // "<module_dir>/libvulkan.so.1" as a second copy.
   if (!PreSandboxInit()) {
+    return false;
+  }
+
+  if (!content::LoadLibrariesForGpu(options)) {
     return false;
   }
 

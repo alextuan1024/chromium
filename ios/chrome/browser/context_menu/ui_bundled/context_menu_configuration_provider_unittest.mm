@@ -11,7 +11,7 @@
 #import "base/test/scoped_feature_list.h"
 #import "components/enterprise/connectors/core/common.h"
 #import "components/enterprise/connectors/core/connectors_prefs.h"
-#import "components/optimization_guide/core/optimization_guide_enums.h"
+#import "components/optimization_guide/core/hints/optimization_guide_decision.h"
 #import "components/policy/core/common/policy_pref_names.h"
 #import "components/prefs/testing_pref_service.h"
 #import "components/signin/public/base/consent_level.h"
@@ -25,8 +25,8 @@
 #import "ios/chrome/browser/intelligence/bwg/model/gemini_service_factory.h"
 #import "ios/chrome/browser/intelligence/bwg/model/gemini_tab_helper.h"
 #import "ios/chrome/browser/intelligence/features/features.h"
+#import "ios/chrome/browser/menu/public/menu_histograms.h"
 #import "ios/chrome/browser/menu/ui_bundled/browser_action_factory.h"
-#import "ios/chrome/browser/menu/ui_bundled/menu_histograms.h"
 #import "ios/chrome/browser/optimization_guide/model/optimization_guide_service.h"
 #import "ios/chrome/browser/optimization_guide/model/optimization_guide_service_factory.h"
 #import "ios/chrome/browser/photos/model/photos_service_factory.h"
@@ -52,7 +52,7 @@
 #import "ios/chrome/browser/web/model/image_fetch/image_fetch_tab_helper.h"
 #import "ios/chrome/grit/ios_strings.h"
 #import "ios/chrome/test/ios_chrome_scoped_testing_local_state.h"
-#import "ios/components/enterprise/analysis/features.h"
+#import "ios/chrome/test/providers/intelligence/proto_wrappers/test_page_context_wrapper_api.h"
 #import "ios/web/public/test/fakes/fake_web_frame.h"
 #import "ios/web/public/test/fakes/fake_web_frames_manager.h"
 #import "ios/web/public/test/fakes/fake_web_state.h"
@@ -65,7 +65,6 @@
 #import "url/origin.h"
 
 namespace ios::provider {
-void SetMockProtectedUrl(bool is_protected);
 void SetMockFeatureModeDisabledByQuota(bool disabled);
 void SetMockRefillDateForFeatureMode(NSDate* date);
 }
@@ -203,7 +202,7 @@ class ContextMenuConfigurationProviderTest : public PlatformTest {
   }
 
   void TearDown() final {
-    ios::provider::SetMockProtectedUrl(false);
+    ios::provider::test::SetProtectedUrlForTesting(false);
     ios::provider::SetMockFeatureModeDisabledByQuota(false);
     ios::provider::SetMockRefillDateForFeatureMode(nil);
     [configuration_provider_ stop];
@@ -497,9 +496,6 @@ TEST_F(ContextMenuConfigurationProviderTest,
 // subtitle if download protection connector is enabled.
 TEST_F(ContextMenuConfigurationProviderTest,
        SaveImageBlockedWhenEnableFileDOwnloadConnector) {
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitAndEnableFeature(
-      enterprise_connectors::kEnableFileDownloadConnectorIOS);
 
   PrefService* pref_service = profile_->GetPrefs();
   SetDownloadConnectorsPref(pref_service, kDownloadConnectorsAnalysisPref);
@@ -536,9 +532,6 @@ TEST_F(ContextMenuConfigurationProviderTest,
 // has a download blocked subtitle if download protection connector is enabled.
 TEST_F(ContextMenuConfigurationProviderTest,
        AllOptionsToSaveImageBlockedWhenEnableFileDownloadConnector) {
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitAndEnableFeature(
-      enterprise_connectors::kEnableFileDownloadConnectorIOS);
 
   PrefService* pref_service = profile_->GetPrefs();
   SetDownloadConnectorsPref(pref_service, kDownloadConnectorsAnalysisPref);
@@ -647,7 +640,7 @@ TEST_F(ContextMenuConfigurationProviderTest, GeminiImageRemix_ProtectedURL) {
   web_state->SetCurrentURL(GURL("https://example.com"));
 
   // Verify that the action is added to the context menu on an unprotected URL.
-  ios::provider::SetMockProtectedUrl(false);
+  ios::provider::test::SetProtectedUrlForTesting(false);
   web::ContextMenuParams params = GetContextMenuParamsWithImageUrl(kImageUrl);
   UIMenu* menu = GetContextMenuForParams(params);
 
@@ -659,7 +652,7 @@ TEST_F(ContextMenuConfigurationProviderTest, GeminiImageRemix_ProtectedURL) {
   EXPECT_NE(indexOfGeminiAction, (NSUInteger)NSNotFound);
 
   // Verify that the action is not added to the context menu on a protected URL.
-  ios::provider::SetMockProtectedUrl(true);
+  ios::provider::test::SetProtectedUrlForTesting(true);
   UIMenu* protected_menu = GetContextMenuForParams(params);
 
   NSUInteger indexOfProtectedGeminiAction = [protected_menu.children
@@ -704,7 +697,7 @@ TEST_F(ContextMenuConfigurationProviderTest,
       l10n_util::GetNSString(IDS_IOS_GEMINI_IMAGE_CONTEXT_MENU_ENTRY_POINT);
   web_state->SetCurrentURL(GURL("https://example.com"));
 
-  ios::provider::SetMockProtectedUrl(false);
+  ios::provider::test::SetProtectedUrlForTesting(false);
   ios::provider::SetMockFeatureModeDisabledByQuota(true);
 
   NSDate* mock_date =
@@ -724,8 +717,9 @@ TEST_F(ContextMenuConfigurationProviderTest,
   // Verify that the action is disabled and displays the limit reset subtitle.
   EXPECT_TRUE(action.attributes & UIMenuElementAttributesDisabled);
   EXPECT_NE(action.subtitle, nil);
-  EXPECT_TRUE([action.subtitle
-      containsString:@"Images will be available again when your limit resets"]);
+  NSString* expected_prefix = l10n_util::GetNSStringF(
+      IDS_IOS_GEMINI_IMAGE_REMIX_LIMIT_RESET_SUBTITLE, std::u16string());
+  EXPECT_TRUE([action.subtitle hasPrefix:expected_prefix]);
 }
 
 // Tests that an image preview provider is created when given valid image params

@@ -5,6 +5,7 @@
 package org.chromium.chrome.browser.pdf;
 
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
@@ -38,6 +39,7 @@ import org.mockito.junit.MockitoRule;
 import org.robolectric.annotation.Config;
 import org.robolectric.shadows.ShadowDialog;
 import org.robolectric.shadows.ShadowLooper;
+import org.robolectric.shadows.ShadowToast;
 
 import org.chromium.base.UserDataHost;
 import org.chromium.base.lifetime.Destroyable;
@@ -57,6 +59,8 @@ import org.chromium.content_public.browser.LoadUrlParams;
 import org.chromium.ui.base.MimeTypeUtils;
 import org.chromium.ui.base.TestActivity;
 import org.chromium.url.GURL;
+import org.chromium.url.JUnitTestOrigins;
+import org.chromium.url.Origin;
 
 import java.io.File;
 
@@ -68,7 +72,8 @@ import java.io.File;
         instrumentedPackages = {"androidx.fragment.app", "androidx.pdf"},
         shadows = {
             PdfCoordinatorUnitTest.ShadowPdfViewerFragment.class,
-            PdfCoordinatorUnitTest.ShadowEditablePdfViewerFragment.class
+            PdfCoordinatorUnitTest.ShadowEditablePdfViewerFragment.class,
+            ShadowToast.class
         })
 public class PdfPageUnitTest {
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
@@ -127,7 +132,9 @@ public class PdfPageUnitTest {
 
     @After
     public void tearDown() throws Exception {
+        ShadowToast.reset();
         ChromeFileProvider.setGeneratedUriForTesting(null);
+        PdfContentProvider.cleanUpForTesting();
         PdfCoordinator.skipLoadPdfForTesting(false);
         if (mUserActionTester != null) {
             mUserActionTester.tearDown();
@@ -156,7 +163,7 @@ public class PdfPageUnitTest {
         Assert.assertEquals("Pdf page url should match.", encodedUrl, pdfPage.getUrl());
         Assert.assertFalse(
                 "Pdf should not be loaded when the view is not attached to window.",
-                ((PdfCoordinator) pdfPage.mPdfCoordinator).getIsPdfLoadedForTesting());
+                pdfPage.mPdfCoordinator.isPdfLoaded());
 
         // Simulate tab brought from background to foreground
         View view = pdfPage.mPdfCoordinator.getView();
@@ -165,7 +172,7 @@ public class PdfPageUnitTest {
         ShadowLooper.idleMainLooper();
         Assert.assertTrue(
                 "Pdf should be loaded when the view is attached to window.",
-                ((PdfCoordinator) pdfPage.mPdfCoordinator).getIsPdfLoadedForTesting());
+                pdfPage.mPdfCoordinator.isPdfLoaded());
         String jsonString = pdfPage.requestAssistContent(/* isWorkProfile= */ true);
         Assert.assertNotNull(
                 "Assist content should be generated when the pdf is ready to load", jsonString);
@@ -225,9 +232,44 @@ public class PdfPageUnitTest {
                         argThat(
                                 params ->
                                         params.getUrl().equals(PDF_LINK)
-                                                && params.getShouldReplaceCurrentEntry()),
+                                                && params.getShouldReplaceCurrentEntry()
+                                                && params.getInitiatorOrigin() == null),
                         eq(false));
         assertFalse("Transient file should be deleted on reload", tempFile.exists());
+
+        pdfPage.destroy();
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.INLINE_PDF_V2)
+    public void testReload_HttpPdf_PreservesInitiatorOrigin() throws Exception {
+        File tempFile = File.createTempFile("test_pdf", ".pdf");
+        tempFile.deleteOnExit();
+        Origin initiatorOrigin = JUnitTestOrigins.createTuple("https", "initiator.example", 443);
+        PdfInfo pdfInfo = PdfInfo.initReuse(/* preferReuse= */ false, initiatorOrigin);
+        PdfPage pdfPage =
+                new PdfPage(
+                        mMockNativePageHost,
+                        mMockTab,
+                        mActivity,
+                        mPdfPageUrl,
+                        pdfInfo,
+                        DEFAULT_TAB_TITLE,
+                        mPdfFragmentViewTracker);
+        Assert.assertEquals(initiatorOrigin, pdfPage.getInitiatorOrigin());
+        pdfPage.onDownloadComplete(FILE_NAME, tempFile.getAbsolutePath(), true);
+
+        pdfPage.reload();
+
+        verify(mMockNativePageHost)
+                .loadUrl(
+                        argThat(
+                                params ->
+                                        params.getUrl().equals(PDF_LINK)
+                                                && params.getShouldReplaceCurrentEntry()
+                                                && initiatorOrigin.equals(
+                                                        params.getInitiatorOrigin())),
+                        eq(false));
 
         pdfPage.destroy();
     }
@@ -266,6 +308,55 @@ public class PdfPageUnitTest {
 
     @Test
     @EnableFeatures(ChromeFeatureList.INLINE_PDF_V2)
+    public void testReload_HttpPdf_Incognito_CleansUpContentUri() throws Exception {
+        doReturn(true).when(mMockProfile).isOffTheRecord();
+        File tempFile = File.createTempFile("test_pdf", ".pdf");
+        PdfPage pdfPage =
+                new PdfPage(
+                        mMockNativePageHost,
+                        mMockTab,
+                        mActivity,
+                        mPdfPageUrl,
+                        mPdfInfo,
+                        DEFAULT_TAB_TITLE,
+                        mPdfFragmentViewTracker);
+        pdfPage.onDownloadComplete(FILE_NAME, tempFile.getAbsolutePath(), true);
+        assertTrue("Transient file should exist before reload", tempFile.exists());
+
+        View view = pdfPage.mPdfCoordinator.getView();
+        ViewGroup contentView = mActivity.findViewById(android.R.id.content);
+        contentView.addView(view);
+        ShadowLooper.idleMainLooper();
+        assertTrue(
+                "Pdf should be loaded when view is attached",
+                pdfPage.mPdfCoordinator.isPdfLoaded());
+
+        Uri uri = pdfPage.getUri();
+        assertNotNull(uri);
+        String streamId = uri.getLastPathSegment();
+        assertNotNull(streamId);
+        assertTrue(PdfContentProvider.hasStreamForTesting(streamId));
+
+        pdfPage.reload();
+
+        verify(mMockNativePageHost)
+                .loadUrl(
+                        argThat(
+                                params ->
+                                        params.getUrl().equals(PDF_LINK)
+                                                && params.getShouldReplaceCurrentEntry()),
+                        eq(true));
+        assertFalse("Transient file should be deleted on reload", tempFile.exists());
+        assertFalse(
+                "Content URI stream should be removed on reload in incognito",
+                PdfContentProvider.hasStreamForTesting(streamId));
+
+        contentView.removeView(view);
+        pdfPage.destroy();
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.INLINE_PDF_V2)
     public void testReload_ContentUri() throws Exception {
         String encodedUrl = PdfUtils.encodePdfPageUrl(CONTENT_URL);
         PdfPage pdfPage =
@@ -286,7 +377,7 @@ public class PdfPageUnitTest {
         ShadowLooper.idleMainLooper();
         Assert.assertTrue(
                 "Pdf should be loaded when the view is attached to window.",
-                ((PdfCoordinator) pdfPage.mPdfCoordinator).getIsPdfLoadedForTesting());
+                pdfPage.mPdfCoordinator.isPdfLoaded());
 
         PdfCoordinator.ChromePdfViewerFragment oldFragment =
                 ((PdfCoordinator) pdfPage.mPdfCoordinator).mChromePdfViewerFragment;
@@ -322,6 +413,46 @@ public class PdfPageUnitTest {
         pdfPage.destroy();
 
         assertFalse("Transient file should be deleted on destroy", tempFile.exists());
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.INLINE_PDF_V2)
+    public void testDestroy_WebPdf_Incognito_CleansUpContentUri() throws Exception {
+        doReturn(true).when(mMockProfile).isOffTheRecord();
+        File tempFile = File.createTempFile("test_pdf", ".pdf");
+        PdfPage pdfPage =
+                new PdfPage(
+                        mMockNativePageHost,
+                        mMockTab,
+                        mActivity,
+                        mPdfPageUrl,
+                        mPdfInfo,
+                        DEFAULT_TAB_TITLE,
+                        mPdfFragmentViewTracker);
+        pdfPage.onDownloadComplete(FILE_NAME, tempFile.getAbsolutePath(), true);
+        assertTrue("Transient file should exist before destroy", tempFile.exists());
+
+        View view = pdfPage.mPdfCoordinator.getView();
+        ViewGroup contentView = mActivity.findViewById(android.R.id.content);
+        contentView.addView(view);
+        ShadowLooper.idleMainLooper();
+        assertTrue(
+                "Pdf should be loaded when view is attached",
+                pdfPage.mPdfCoordinator.isPdfLoaded());
+
+        Uri uri = pdfPage.getUri();
+        assertNotNull(uri);
+        String streamId = uri.getLastPathSegment();
+        assertNotNull(streamId);
+        assertTrue(PdfContentProvider.hasStreamForTesting(streamId));
+
+        contentView.removeView(view);
+        pdfPage.destroy();
+
+        assertFalse("Transient file should be deleted on destroy", tempFile.exists());
+        assertFalse(
+                "Content URI stream should be removed on destroy in incognito",
+                PdfContentProvider.hasStreamForTesting(streamId));
     }
 
     @Test
@@ -395,7 +526,7 @@ public class PdfPageUnitTest {
         Assert.assertEquals("Pdf page url should match.", encodedUrl, pdfPage.getUrl());
         Assert.assertFalse(
                 "Pdf should not be loaded when the view is not attached to window.",
-                ((PdfCoordinator) pdfPage.mPdfCoordinator).getIsPdfLoadedForTesting());
+                pdfPage.mPdfCoordinator.isPdfLoaded());
 
         // Simulate tab brought from background to foreground
         View view = pdfPage.mPdfCoordinator.getView();
@@ -404,7 +535,7 @@ public class PdfPageUnitTest {
         ShadowLooper.idleMainLooper();
         Assert.assertTrue(
                 "Pdf should be loaded when the view is attached to window.",
-                ((PdfCoordinator) pdfPage.mPdfCoordinator).getIsPdfLoadedForTesting());
+                pdfPage.mPdfCoordinator.isPdfLoaded());
         contentView.removeView(view);
     }
 
@@ -560,7 +691,7 @@ public class PdfPageUnitTest {
         Assert.assertNotNull(pdfPage);
         Assert.assertFalse(
                 "Pdf should not be loaded when the download is not completed.",
-                ((PdfCoordinator) pdfPage.mPdfCoordinator).getIsPdfLoadedForTesting());
+                pdfPage.mPdfCoordinator.isPdfLoaded());
         Assert.assertNull(
                 "Assist content cannot be generated when the pdf is not ready to load",
                 pdfPage.requestAssistContent(/* isWorkProfile= */ false));
@@ -573,7 +704,7 @@ public class PdfPageUnitTest {
         Assert.assertEquals("Pdf page url should match.", pdfPageUrl, pdfPage.getUrl());
         Assert.assertFalse(
                 "Pdf should not be loaded when the view is not attached to window.",
-                ((PdfCoordinator) pdfPage.mPdfCoordinator).getIsPdfLoadedForTesting());
+                pdfPage.mPdfCoordinator.isPdfLoaded());
 
         // Simulate tab brought from background to foreground
         View view = pdfPage.mPdfCoordinator.getView();
@@ -582,7 +713,7 @@ public class PdfPageUnitTest {
         ShadowLooper.idleMainLooper();
         Assert.assertTrue(
                 "Pdf should be loaded when the view is attached to window.",
-                ((PdfCoordinator) pdfPage.mPdfCoordinator).getIsPdfLoadedForTesting());
+                pdfPage.mPdfCoordinator.isPdfLoaded());
         String jsonString = pdfPage.requestAssistContent(/* isWorkProfile= */ false);
         Assert.assertNotNull(
                 "Assist content should be generated when the pdf is ready to load", jsonString);
@@ -640,20 +771,64 @@ public class PdfPageUnitTest {
 
         Assert.assertTrue(
                 "Pdf should be loaded after download complete and attached.",
-                ((PdfCoordinator) pdfPage.mPdfCoordinator).getIsPdfLoadedForTesting());
+                pdfPage.mPdfCoordinator.isPdfLoaded());
 
         pdfPage.updateForUrl(mPdfPageUrl + "&new=1");
 
         Assert.assertFalse(
                 "Pdf load state should be reset for non-local pdf in updateForUrl.",
-                ((PdfCoordinator) pdfPage.mPdfCoordinator).getIsPdfLoadedForTesting());
+                pdfPage.mPdfCoordinator.isPdfLoaded());
 
         pdfPage.onDownloadComplete(FILE_NAME, FILE_PATH, true);
         ShadowLooper.idleMainLooper();
 
         Assert.assertTrue(
                 "Pdf should be loaded after new download complete.",
-                ((PdfCoordinator) pdfPage.mPdfCoordinator).getIsPdfLoadedForTesting());
+                pdfPage.mPdfCoordinator.isPdfLoaded());
+
+        contentView.removeView(view);
+        pdfPage.destroy();
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.PDF_REUSE_FRAGMENT)
+    public void testOnDownloadComplete_WhenAlreadyLoaded_ReusesFragment() throws Exception {
+        PdfPage pdfPage =
+                new PdfPage(
+                        mMockNativePageHost,
+                        mMockTab,
+                        mActivity,
+                        mPdfPageUrl,
+                        mPdfInfo,
+                        DEFAULT_TAB_TITLE,
+                        mPdfFragmentViewTracker);
+
+        pdfPage.onDownloadComplete(FILE_NAME, FILE_PATH, true);
+        View view = pdfPage.mPdfCoordinator.getView();
+        ViewGroup contentView = mActivity.findViewById(android.R.id.content);
+        contentView.addView(view);
+        ShadowLooper.idleMainLooper();
+
+        Assert.assertTrue(
+                "Pdf should be loaded after download complete and attached.",
+                pdfPage.mPdfCoordinator.isPdfLoaded());
+
+        // Simulate reload of identical URL without changes, where updateForUrl returns early.
+        pdfPage.updateForUrl(mPdfPageUrl);
+        Assert.assertTrue(
+                "Load state remains true for identical URL without changes.",
+                pdfPage.mPdfCoordinator.isPdfLoaded());
+
+        // When the download completes, onDownloadComplete should not assert and should reload
+        // document.
+        String newFilePath = FILE_PATH + "_new";
+        pdfPage.onDownloadComplete(FILE_NAME, newFilePath, true);
+        ShadowLooper.idleMainLooper();
+
+        Assert.assertTrue(
+                "Pdf should still be loaded after new download complete.",
+                pdfPage.mPdfCoordinator.isPdfLoaded());
+        Assert.assertEquals(newFilePath, pdfPage.mPdfCoordinator.getFilepath());
 
         contentView.removeView(view);
         pdfPage.destroy();
@@ -680,7 +855,7 @@ public class PdfPageUnitTest {
 
         Assert.assertTrue(
                 "Pdf should be loaded when attached to window.",
-                ((PdfCoordinator) pdfPage.mPdfCoordinator).getIsPdfLoadedForTesting());
+                pdfPage.mPdfCoordinator.isPdfLoaded());
 
         String newEncodedUrl = PdfUtils.encodePdfPageUrl(CONTENT_URL + "5");
         pdfPage.updateForUrl(newEncodedUrl);
@@ -688,7 +863,7 @@ public class PdfPageUnitTest {
 
         Assert.assertTrue(
                 "Pdf should be reloaded after updateForUrl on local PDF.",
-                ((PdfCoordinator) pdfPage.mPdfCoordinator).getIsPdfLoadedForTesting());
+                pdfPage.mPdfCoordinator.isPdfLoaded());
 
         contentView.removeView(view);
         pdfPage.destroy();
@@ -749,7 +924,7 @@ public class PdfPageUnitTest {
 
         Assert.assertTrue(
                 "Pdf should be loaded when attached to window.",
-                ((PdfCoordinator) pdfPage.mPdfCoordinator).getIsPdfLoadedForTesting());
+                pdfPage.mPdfCoordinator.isPdfLoaded());
 
         // Calling updateForUrl with identical URL and no changes should return early (no-op).
         pdfPage.updateForUrl(encodedUrl);
@@ -760,11 +935,136 @@ public class PdfPageUnitTest {
             Assert.assertFalse("Dialog should not be showing", latestDialog.isShowing());
         }
 
-        Assert.assertTrue(
-                "Pdf should remain loaded.",
-                ((PdfCoordinator) pdfPage.mPdfCoordinator).getIsPdfLoadedForTesting());
+        Assert.assertTrue("Pdf should remain loaded.", pdfPage.mPdfCoordinator.isPdfLoaded());
 
         contentView.removeView(view);
+        pdfPage.destroy();
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.PDF_REUSE_FRAGMENT)
+    public void testUpdateForUrl_IdenticalUrl_AfterChangesDiscarded_ReloadsLocalPdf()
+            throws Exception {
+        String encodedUrl = PdfUtils.encodePdfPageUrl(CONTENT_URL);
+        PdfPage pdfPage =
+                new PdfPage(
+                        mMockNativePageHost,
+                        mMockTab,
+                        mActivity,
+                        encodedUrl,
+                        mPdfInfo,
+                        DEFAULT_TAB_TITLE,
+                        mPdfFragmentViewTracker);
+
+        View view = pdfPage.mPdfCoordinator.getView();
+        ViewGroup contentView = mActivity.findViewById(android.R.id.content);
+        contentView.addView(view);
+        ShadowLooper.idleMainLooper();
+
+        Assert.assertTrue(pdfPage.mPdfCoordinator.isPdfLoaded());
+
+        // Simulate changes applied then discarded (e.g. user confirmed "Leave" on omnibox reload)
+        ((PdfCoordinator) pdfPage.mPdfCoordinator).onEditsApplied();
+        Assert.assertTrue(pdfPage.mPdfCoordinator.hasChanges());
+
+        pdfPage.mPdfCoordinator.discardChanges();
+        pdfPage.mPdfCoordinator.resetLoadState();
+        Assert.assertFalse(pdfPage.mPdfCoordinator.hasChanges());
+        Assert.assertFalse(pdfPage.mPdfCoordinator.isPdfLoaded());
+
+        // updateForUrl with same URL should reload since load state was reset, and not show dialog.
+        pdfPage.updateForUrl(encodedUrl);
+        ShadowLooper.idleMainLooper();
+
+        AlertDialog latestDialog = (AlertDialog) ShadowDialog.getLatestDialog();
+        if (latestDialog != null) {
+            Assert.assertFalse("Dialog should not be showing", latestDialog.isShowing());
+        }
+
+        Assert.assertTrue(
+                "Pdf should be reloaded after changes discarded.",
+                pdfPage.mPdfCoordinator.isPdfLoaded());
+
+        contentView.removeView(view);
+        pdfPage.destroy();
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.PDF_REUSE_FRAGMENT)
+    public void testUpdateForUrl_localAfterTransientDownload_updatesTitle() {
+        String localPageUrl = PdfUtils.encodePdfPageUrl(FILE_URL);
+        PdfPage pdfPage =
+                new PdfPage(
+                        mMockNativePageHost,
+                        mMockTab,
+                        mActivity,
+                        localPageUrl,
+                        mPdfInfo,
+                        DEFAULT_TAB_TITLE,
+                        mPdfFragmentViewTracker);
+        Assert.assertEquals(FILE_NAME, pdfPage.getTitle());
+
+        pdfPage.updateForUrl(mPdfPageUrl);
+        pdfPage.onDownloadComplete("transient.pdf", FILE_PATH, true);
+        Assert.assertEquals("transient.pdf", pdfPage.getTitle());
+        Assert.assertFalse(pdfPage.mPdfCoordinator.isPdfLoaded());
+        Assert.assertFalse(pdfPage.mPdfCoordinator.hasChanges());
+
+        pdfPage.updateForUrl(localPageUrl);
+        Assert.assertEquals(FILE_NAME, pdfPage.getTitle());
+        Assert.assertEquals(FILE_URL, pdfPage.getCanonicalFilepath());
+
+        String contentPageUrl = PdfUtils.encodePdfPageUrl(CONTENT_URL);
+        pdfPage.updateForUrl(contentPageUrl);
+        Assert.assertEquals(DEFAULT_TAB_TITLE, pdfPage.getTitle());
+        Assert.assertEquals(CONTENT_URL, pdfPage.getCanonicalFilepath());
+
+        pdfPage.destroy();
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.PDF_REUSE_FRAGMENT)
+    public void testUpdateForUrl_localToTransient_resetsTitleToDefault() {
+        String localPageUrl = PdfUtils.encodePdfPageUrl(FILE_URL);
+        PdfPage pdfPage =
+                new PdfPage(
+                        mMockNativePageHost,
+                        mMockTab,
+                        mActivity,
+                        localPageUrl,
+                        mPdfInfo,
+                        DEFAULT_TAB_TITLE,
+                        mPdfFragmentViewTracker);
+        Assert.assertEquals(FILE_NAME, pdfPage.getTitle());
+        Assert.assertFalse(pdfPage.mPdfCoordinator.isPdfLoaded());
+        Assert.assertFalse(pdfPage.mPdfCoordinator.hasChanges());
+
+        pdfPage.updateForUrl(mPdfPageUrl);
+        Assert.assertEquals(DEFAULT_TAB_TITLE, pdfPage.getTitle());
+
+        pdfPage.destroy();
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.PDF_REUSE_FRAGMENT)
+    public void testUpdateForUrl_sameTransientUrl_preservesPdfInfoFilename() {
+        PdfInfo pdfInfo = new PdfInfo("downloaded.pdf", FILE_PATH, true);
+        PdfPage pdfPage =
+                new PdfPage(
+                        mMockNativePageHost,
+                        mMockTab,
+                        mActivity,
+                        mPdfPageUrl,
+                        pdfInfo,
+                        DEFAULT_TAB_TITLE,
+                        mPdfFragmentViewTracker);
+        Assert.assertEquals("downloaded.pdf", pdfPage.getTitle());
+        Assert.assertFalse(pdfPage.mPdfCoordinator.isPdfLoaded());
+        Assert.assertFalse(pdfPage.mPdfCoordinator.hasChanges());
+
+        pdfPage.updateForUrl(mPdfPageUrl);
+        Assert.assertEquals("downloaded.pdf", pdfPage.getTitle());
+
         pdfPage.destroy();
     }
 
@@ -875,5 +1175,338 @@ public class PdfPageUnitTest {
                         mPdfFragmentViewTracker);
         pdfPage.download();
         verify(mMockNativePageHost).downloadUrl(PDF_LINK);
+    }
+
+    @Test
+    public void testOnDownloadFailed_NotifiesCoordinator() {
+        PdfPage pdfPage =
+                new PdfPage(
+                        mMockNativePageHost,
+                        mMockTab,
+                        mActivity,
+                        mPdfPageUrl,
+                        mPdfInfo,
+                        DEFAULT_TAB_TITLE,
+                        mPdfFragmentViewTracker);
+        pdfPage.onDownloadFailed();
+
+        Assert.assertEquals(
+                View.GONE,
+                pdfPage.mPdfCoordinator.getView().findViewById(R.id.progress_bar).getVisibility());
+        Assert.assertTrue(
+                ShadowToast.showedCustomToast(
+                        mActivity.getString(R.string.pdf_download_failed), R.id.toast_text));
+        pdfPage.destroy();
+    }
+
+    @Test
+    public void testTransientDownloadTime_RecordedOnceOnDownloadComplete() {
+        HistogramWatcher watcher =
+                HistogramWatcher.newSingleRecordWatcher("Android.Pdf.DownloadTime.Transient");
+        PdfPage pdfPage =
+                new PdfPage(
+                        mMockNativePageHost,
+                        mMockTab,
+                        mActivity,
+                        mPdfPageUrl,
+                        mPdfInfo,
+                        DEFAULT_TAB_TITLE,
+                        mPdfFragmentViewTracker);
+        pdfPage.onDownloadComplete(FILE_NAME, FILE_PATH, true);
+        watcher.assertExpected();
+
+        // Calling onDownloadComplete again should not re-record the metric.
+        HistogramWatcher noRecordsWatcher =
+                HistogramWatcher.newBuilder()
+                        .expectNoRecords("Android.Pdf.DownloadTime.Transient")
+                        .build();
+        pdfPage.onDownloadComplete(FILE_NAME, FILE_PATH, true);
+        noRecordsWatcher.assertExpected();
+
+        pdfPage.destroy();
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.PDF_REUSE_FRAGMENT)
+    public void testTransientDownloadTime_ReusedPageWithUpdateForUrl() {
+        PdfPage pdfPage =
+                new PdfPage(
+                        mMockNativePageHost,
+                        mMockTab,
+                        mActivity,
+                        mPdfPageUrl,
+                        mPdfInfo,
+                        DEFAULT_TAB_TITLE,
+                        mPdfFragmentViewTracker);
+        pdfPage.onDownloadComplete(FILE_NAME, FILE_PATH, true);
+
+        // Reusing the page with a new transient URL should reset the timestamp.
+        pdfPage.updateForUrl(mPdfPageUrl + "&new=1");
+
+        HistogramWatcher watcher =
+                HistogramWatcher.newSingleRecordWatcher("Android.Pdf.DownloadTime.Transient");
+        pdfPage.onDownloadComplete(FILE_NAME, FILE_PATH, true);
+        watcher.assertExpected();
+
+        pdfPage.destroy();
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.PDF_REUSE_FRAGMENT)
+    public void testTransientDownloadTime_ConstructedWithFilepath_DoesNotRecord() {
+        PdfInfo pdfInfoWithFile = new PdfInfo(FILE_NAME, FILE_PATH, true);
+        PdfPage pdfPage =
+                new PdfPage(
+                        mMockNativePageHost,
+                        mMockTab,
+                        mActivity,
+                        mPdfPageUrl,
+                        pdfInfoWithFile,
+                        DEFAULT_TAB_TITLE,
+                        mPdfFragmentViewTracker);
+
+        // NativePageFactory immediately calls updateForUrl before the view is attached.
+        pdfPage.updateForUrl(mPdfPageUrl);
+
+        // No download was in progress, so no metric should be recorded on completion.
+        HistogramWatcher watcher =
+                HistogramWatcher.newBuilder()
+                        .expectNoRecords("Android.Pdf.DownloadTime.Transient")
+                        .build();
+        pdfPage.onDownloadComplete(FILE_NAME, FILE_PATH, true);
+        watcher.assertExpected();
+
+        pdfPage.destroy();
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.PDF_REUSE_FRAGMENT)
+    public void testTransientDownloadTime_ReusedPage_SameUrl_PdfReuseFragmentEnabled() {
+        PdfPage pdfPage =
+                new PdfPage(
+                        mMockNativePageHost,
+                        mMockTab,
+                        mActivity,
+                        mPdfPageUrl,
+                        mPdfInfo,
+                        DEFAULT_TAB_TITLE,
+                        mPdfFragmentViewTracker);
+        pdfPage.onDownloadComplete(FILE_NAME, FILE_PATH, true);
+        View view = pdfPage.mPdfCoordinator.getView();
+        ViewGroup contentView = mActivity.findViewById(android.R.id.content);
+        contentView.addView(view);
+        ShadowLooper.idleMainLooper();
+
+        // Calling updateForUrl with identical URL without changes returns early and does not arm
+        // download timestamp.
+        pdfPage.updateForUrl(mPdfPageUrl);
+
+        HistogramWatcher watcher =
+                HistogramWatcher.newBuilder()
+                        .expectNoRecords("Android.Pdf.DownloadTime.Transient")
+                        .build();
+        pdfPage.onDownloadComplete(FILE_NAME, FILE_PATH + "_new", true);
+        watcher.assertExpected();
+
+        contentView.removeView(view);
+        pdfPage.destroy();
+    }
+
+    @Test
+    @DisableFeatures(ChromeFeatureList.PDF_REUSE_FRAGMENT)
+    public void testTransientDownloadTime_ReusedPage_SameUrl_PdfReuseFragmentDisabled() {
+        PdfPage pdfPage =
+                new PdfPage(
+                        mMockNativePageHost,
+                        mMockTab,
+                        mActivity,
+                        mPdfPageUrl,
+                        mPdfInfo,
+                        DEFAULT_TAB_TITLE,
+                        mPdfFragmentViewTracker);
+        pdfPage.onDownloadComplete(FILE_NAME, FILE_PATH, true);
+
+        // When PdfReuseFragment is disabled, updateForUrl returns early at the feature check and
+        // does not arm download timestamp.
+        pdfPage.updateForUrl(mPdfPageUrl);
+
+        HistogramWatcher watcher =
+                HistogramWatcher.newBuilder()
+                        .expectNoRecords("Android.Pdf.DownloadTime.Transient")
+                        .build();
+        pdfPage.onDownloadComplete(FILE_NAME, FILE_PATH + "_new", true);
+        watcher.assertExpected();
+
+        pdfPage.destroy();
+    }
+
+    @Test
+    public void testTransientDownloadTime_OnDownloadFailed_ResetsTimestamp() {
+        PdfPage pdfPage =
+                new PdfPage(
+                        mMockNativePageHost,
+                        mMockTab,
+                        mActivity,
+                        mPdfPageUrl,
+                        mPdfInfo,
+                        DEFAULT_TAB_TITLE,
+                        mPdfFragmentViewTracker);
+        pdfPage.onDownloadFailed();
+
+        // After failure, unexpected onDownloadComplete should not record metric.
+        HistogramWatcher watcher =
+                HistogramWatcher.newBuilder()
+                        .expectNoRecords("Android.Pdf.DownloadTime.Transient")
+                        .build();
+        pdfPage.onDownloadComplete(FILE_NAME, FILE_PATH, true);
+        watcher.assertExpected();
+
+        pdfPage.destroy();
+    }
+
+    @Test
+    public void testTransientDownloadTime_Destroy_ResetsTimestamp() {
+        PdfPage pdfPage =
+                new PdfPage(
+                        mMockNativePageHost,
+                        mMockTab,
+                        mActivity,
+                        mPdfPageUrl,
+                        mPdfInfo,
+                        DEFAULT_TAB_TITLE,
+                        mPdfFragmentViewTracker);
+        pdfPage.destroy();
+
+        // After destroy, late completion callback should not record metric.
+        HistogramWatcher watcher =
+                HistogramWatcher.newBuilder()
+                        .expectNoRecords("Android.Pdf.DownloadTime.Transient")
+                        .build();
+        pdfPage.onDownloadComplete(FILE_NAME, FILE_PATH, true);
+        watcher.assertExpected();
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.PDF_REUSE_FRAGMENT)
+    public void testTransientDownloadTime_LocalPdf_DoesNotRecord() {
+        PdfPage pdfPage =
+                new PdfPage(
+                        mMockNativePageHost,
+                        mMockTab,
+                        mActivity,
+                        mPdfPageUrl,
+                        mPdfInfo,
+                        DEFAULT_TAB_TITLE,
+                        mPdfFragmentViewTracker);
+
+        // Reusing the page with a local PDF while a transient download is pending should reset
+        // timestamp to 0.
+        String localPageUrl = PdfUtils.encodePdfPageUrl(CONTENT_URL);
+        pdfPage.updateForUrl(localPageUrl);
+
+        HistogramWatcher watcher =
+                HistogramWatcher.newBuilder()
+                        .expectNoRecords("Android.Pdf.DownloadTime.Transient")
+                        .build();
+        pdfPage.onDownloadComplete(FILE_NAME, FILE_PATH, true);
+        watcher.assertExpected();
+
+        pdfPage.destroy();
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.INLINE_PDF_V2)
+    public void testTransientDownloadTime_Reload_ResetsTimestamp() {
+        PdfPage pdfPage =
+                new PdfPage(
+                        mMockNativePageHost,
+                        mMockTab,
+                        mActivity,
+                        mPdfPageUrl,
+                        mPdfInfo,
+                        DEFAULT_TAB_TITLE,
+                        mPdfFragmentViewTracker);
+        pdfPage.onDownloadComplete(FILE_NAME, FILE_PATH, true);
+
+        // Calling reload on a transient PDF initiates a navigation to redownload the document.
+        // It does not set the download start timestamp prematurely before network navigation.
+        pdfPage.reload();
+
+        // Premature completion before response headers arrive / download starts should not record.
+        HistogramWatcher prematureWatcher =
+                HistogramWatcher.newBuilder()
+                        .expectNoRecords("Android.Pdf.DownloadTime.Transient")
+                        .build();
+        pdfPage.onDownloadComplete(FILE_NAME, FILE_PATH, true);
+        prematureWatcher.assertExpected();
+
+        // updateForUrl with identical URL does not arm the download start timestamp.
+        pdfPage.updateForUrl(mPdfPageUrl);
+
+        HistogramWatcher watcher =
+                HistogramWatcher.newBuilder()
+                        .expectNoRecords("Android.Pdf.DownloadTime.Transient")
+                        .build();
+        pdfPage.onDownloadComplete(FILE_NAME, FILE_PATH, true);
+        watcher.assertExpected();
+
+        pdfPage.destroy();
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.INLINE_PDF_V2)
+    public void testTransientDownloadTime_Reload_PendingDownload_ResetsTimestamp() {
+        PdfPage pdfPage =
+                new PdfPage(
+                        mMockNativePageHost,
+                        mMockTab,
+                        mActivity,
+                        mPdfPageUrl,
+                        mPdfInfo,
+                        DEFAULT_TAB_TITLE,
+                        mPdfFragmentViewTracker);
+
+        // Calling reload while an initial transient download is pending resets the timestamp.
+        pdfPage.reload();
+
+        HistogramWatcher watcher =
+                HistogramWatcher.newBuilder()
+                        .expectNoRecords("Android.Pdf.DownloadTime.Transient")
+                        .build();
+        pdfPage.onDownloadComplete(FILE_NAME, FILE_PATH, true);
+        watcher.assertExpected();
+
+        pdfPage.destroy();
+    }
+
+    @Test
+    @EnableFeatures({ChromeFeatureList.INLINE_PDF_V2, ChromeFeatureList.PDF_REUSE_FRAGMENT})
+    public void testTransientDownloadTime_Reload_ResetsTimestamp_PdfReuseFragmentEnabled() {
+        PdfPage pdfPage =
+                new PdfPage(
+                        mMockNativePageHost,
+                        mMockTab,
+                        mActivity,
+                        mPdfPageUrl,
+                        mPdfInfo,
+                        DEFAULT_TAB_TITLE,
+                        mPdfFragmentViewTracker);
+        pdfPage.onDownloadComplete(FILE_NAME, FILE_PATH, true);
+
+        // Calling reload initiates re-download and clears mTransientDownloadStartTimestamp.
+        pdfPage.reload();
+
+        // When PdfReuseFragment is enabled, resetLoadState() allows updateForUrl with the same URL
+        // to proceed into doUpdate, but identical URL does not arm the download timestamp.
+        pdfPage.updateForUrl(mPdfPageUrl);
+
+        HistogramWatcher watcher =
+                HistogramWatcher.newBuilder()
+                        .expectNoRecords("Android.Pdf.DownloadTime.Transient")
+                        .build();
+        pdfPage.onDownloadComplete(FILE_NAME, FILE_PATH, true);
+        watcher.assertExpected();
+
+        pdfPage.destroy();
     }
 }

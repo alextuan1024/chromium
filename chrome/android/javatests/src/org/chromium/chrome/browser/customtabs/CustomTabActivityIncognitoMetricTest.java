@@ -9,6 +9,7 @@ import android.content.Intent;
 import androidx.test.core.app.ApplicationProvider;
 import androidx.test.filters.MediumTest;
 
+import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
@@ -20,7 +21,6 @@ import org.chromium.base.test.util.HistogramWatcher;
 import org.chromium.chrome.browser.browserservices.intents.BrowserServicesIntentDataProvider;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
-import org.chromium.chrome.browser.incognito.IncognitoDataTestUtils;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.net.test.EmbeddedTestServerRule;
 
@@ -49,7 +49,12 @@ public class CustomTabActivityIncognitoMetricTest {
     @Before
     public void setUp() throws TimeoutException {
         mTestPage = mEmbeddedTestServerRule.getServer().getURL(TEST_PAGE);
-        IncognitoDataTestUtils.fireAndWaitForCctWarmup();
+        CustomTabsTestUtils.warmUpAndWait();
+    }
+
+    @After
+    public void tearDown() {
+        CustomTabsTestUtils.cleanupSessions();
     }
 
     private Intent createMinimalIncognitoCustomTabIntent() {

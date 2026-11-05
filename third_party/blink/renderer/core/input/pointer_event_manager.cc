@@ -13,6 +13,7 @@
 #include "third_party/blink/renderer/core/event_type_names.h"
 #include "third_party/blink/renderer/core/events/mouse_event.h"
 #include "third_party/blink/renderer/core/frame/event_handler_registry.h"
+#include "third_party/blink/renderer/core/frame/local_dom_window.h"
 #include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/core/frame/local_frame_view.h"
 #include "third_party/blink/renderer/core/html/canvas/html_canvas_element.h"
@@ -159,7 +160,10 @@ WebInputEventResult PointerEventManager::DispatchPointerEvent(
   bool should_filter = ShouldFilterEvent(pointer_event);
   // We are about to dispatch this event. It has to be trusted at this point.
   pointer_event->SetTrusted(true);
-  UIEventTiming event_timing(frame_, *pointer_event);
+  Node* target_node = target->ToNode();
+  LocalFrame* target_frame =
+      target_node ? target_node->GetDocument().GetFrame() : nullptr;
+  UIEventTiming event_timing(frame_.Get(), target_frame, *pointer_event);
 
   if (event_type == event_type_names::kPointerdown ||
       event_type == event_type_names::kPointerover ||
@@ -171,7 +175,7 @@ WebInputEventResult PointerEventManager::DispatchPointerEvent(
     }
   }
 
-  if (Node* target_node = target->ToNode()) {
+  if (target_node) {
     if (RuntimeEnabledFeatures::LightDismissFromClickEnabled()) {
       if (event_type == event_type_names::kPointerdown) {
         pointer_event_factory_->SetPointerDownTarget(
@@ -199,7 +203,12 @@ WebInputEventResult PointerEventManager::DispatchPointerEvent(
         target_element && !pointer_event->FromTouch() &&
         (event_type == event_type_names::kPointerover ||
          event_type == event_type_names::kPointerout)) {
-      target_element->HandlePointerEventsForInterestFor(event_type);
+      Node* newly_hovered_node = event_type == event_type_names::kPointerout &&
+                                         pointer_event->relatedTarget()
+                                     ? pointer_event->relatedTarget()->ToNode()
+                                     : nullptr;
+      target_element->HandlePointerEventsForInterestFor(event_type,
+                                                        newly_hovered_node);
     }
   }
 
@@ -263,9 +272,9 @@ void PointerEventManager::SendMouseAndPointerBoundaryEvents(
 }
 
 void PointerEventManager::SendBoundaryEvents(
-    EventTarget* exited_target,
+    Element* exited_target,
     bool original_exited_target_removed,
-    EventTarget* entered_target,
+    Element* entered_target,
     PointerEvent* pointer_event) {
   PointerEventBoundaryEventDispatcher boundary_event_dispatcher(this,
                                                                 pointer_event);
@@ -844,7 +853,8 @@ WebInputEventResult PointerEventManager::HandlePointerEvent(
       !non_hovering_pointers_canceled_ && pointer_event_target.target_frame) {
     LocalFrame::NotifyUserActivation(
         pointer_event_target.target_frame,
-        mojom::blink::UserActivationNotificationType::kInteraction);
+        mojom::blink::UserActivationNotificationType::kInteraction,
+        RuntimeEnabledFeatures::TrustedUserActivationTriggersEnabled());
   }
 
   if (!event.hovering && !IsAnyTouchActive()) {

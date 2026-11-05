@@ -6,7 +6,6 @@
 
 #include <cmath>
 
-#include "base/auto_reset.h"
 #include "base/strings/sys_string_conversions.h"
 #include "chrome/browser/actor/ui/actor_overlay_ui.h"
 #include "chrome/browser/glic/host/guest_util.h"
@@ -16,7 +15,6 @@
 #include "chrome/browser/renderer_host/chrome_render_widget_host_view_mac_history_swiping_control.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/tabs/inactive_window_mouse_event_controller.h"
-#include "chrome/browser/ui/tabs/public/tab_features.h"
 #include "chrome/common/url_constants.h"
 #include "chrome/common/webui_url_utils.h"
 #include "components/prefs/pref_service.h"
@@ -32,16 +30,17 @@
 #include "content/public/browser/render_view_host.h"
 #include "content/public/browser/render_widget_host.h"
 #include "content/public/browser/render_widget_host_view.h"
+#include "content/public/browser/user_browser_context.h"
 #include "content/public/browser/web_contents.h"
 #include "mojo/public/cpp/bindings/remote.h"
 #include "services/service_manager/public/cpp/interface_provider.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 
 @interface ChromeRenderWidgetHostViewMacDelegate () <HistorySwiperDelegate>
 
 @property(readonly) content::WebContents* webContents;
 @property(readonly) NSView* nsView;
-@property(readonly) PrefService* prefService;
+@property(readonly) PrefService* spellCheckPrefService;
 
 @end
 
@@ -52,10 +51,6 @@
 
   // Responsible for 2-finger swipes history navigation.
   HistorySwiper* __strong _historySwiper;
-
-  // A boolean set to true while resigning first responder status, to avoid
-  // infinite recursion in the case of reentrance.
-  BOOL _resigningFirstResponder;
 }
 
 - (instancetype)initWithRenderWidgetHost:
@@ -118,15 +113,17 @@
   return renderWidgetHostView->GetNativeView().GetNativeNSView();
 }
 
-- (PrefService*)prefService {
-  content::RenderWidgetHost* renderWidgetHost =
-      content::RenderWidgetHost::FromID(_widgetProcessId, _widgetRoutingId);
-  if (!renderWidgetHost) {
+- (PrefService*)spellCheckPrefService {
+  content::WebContents* webContents = self.webContents;
+  if (!webContents) {
     return nullptr;
   }
 
+  // Spellcheck settings belong to the user. For Top Chrome WebUIs in
+  // TopChromeWebUIProfile, the user BrowserContext differs from the
+  // BrowserContext of the WebContents.
   return Profile::FromBrowserContext(
-             renderWidgetHost->GetProcess()->GetBrowserContext())
+             content::GetUserBrowserContext(*webContents))
       ->GetPrefs();
 }
 
@@ -210,19 +207,19 @@
 
   webContents->BackNavigationLikely(
       content::preloading_predictor::kBackGestureNavigation,
-      WindowOpenDisposition::CURRENT_TAB);
+      ui::mojom::WindowOpenDisposition::kCurrentTab);
 }
 
 - (BOOL)validateUserInterfaceItem:(id<NSValidatedUserInterfaceItem>)item
                       isValidItem:(BOOL*)valid {
-  PrefService* pref = self.prefService;
+  PrefService* pref = self.spellCheckPrefService;
   if (!pref) {
     return NO;
   }
 
   const PrefService::Preference* spellCheckEnablePreference =
       pref->FindPreference(spellcheck::prefs::kSpellCheckEnable);
-  DCHECK(spellCheckEnablePreference);
+  CHECK(spellCheckEnablePreference, base::NotFatalUntil::M162);
   const bool spellCheckUserModifiable =
       spellCheckEnablePreference->IsUserModifiable();
 
@@ -339,7 +336,7 @@
 }
 
 - (void)toggleContinuousSpellChecking:(id)sender {
-  PrefService* pref = self.prefService;
+  PrefService* pref = self.spellCheckPrefService;
   if (!pref) {
     return;
   }
@@ -374,60 +371,16 @@
   [self makeAnyDialogKey];
 }
 
-// If the RenderWidgetHostView is asked to resign first responder while a dialog
-// child window is key (and not because the view itself is being hidden), then
-// the user performed some action which targets the browser window, like
-// clicking the omnibox or typing cmd+L. In that case, the browser window should
-// become key.
-- (void)resignFirstResponder {
-  if (self.nsView.hiddenOrHasHiddenAncestor) {
-    return;
-  }
-
-  content::WebContents* webContents = self.webContents;
-  if (!webContents) {
-    return;
-  }
-
-  web_modal::WebContentsModalDialogManager* manager =
-      web_modal::WebContentsModalDialogManager::FromWebContents(webContents);
-  if (!manager || !manager->IsDialogActive()) {
-    return;
-  }
-
-  NSWindow* browserWindow = self.nsView.window;
-  DCHECK(browserWindow);
-
-  // If the browser window is already key, there's nothing to do.
-  if (browserWindow.keyWindow) {
-    return;
-  }
-
-  // Otherwise, look for it in the key window's chain of parents.
-  NSWindow* keyWindowOrParent = NSApp.keyWindow;
-  while (keyWindowOrParent && keyWindowOrParent != browserWindow) {
-    keyWindowOrParent = keyWindowOrParent.parentWindow;
-  }
-
-  // If the browser window isn't among the parents, there's nothing to do.
-  if (keyWindowOrParent != browserWindow) {
-    return;
-  }
-
-  // Otherwise, temporarily set an ivar so that -windowDidBecomeKey, below,
-  // doesn't immediately make the dialog key.
-  base::AutoReset<BOOL> scoped(&_resigningFirstResponder, YES);
-
-  // …then make the browser window key.
-  [browserWindow makeKeyWindow];
-}
+// Note: there is intentionally no -resignFirstResponder counterpart. When focus
+// moves from the web contents to browser UI while a dialog is key, whatever
+// moved focus is responsible for making the browser window key: AppKit does so
+// for mouse clicks, and keyboard focus commands (e.g. cmd+L) do so in
+// browser_commands.cc. Guessing from the web contents' side misfires when focus
+// moves for other reasons, such as switching tabs.
 
 // If the browser window becomes key while the RenderWidgetHostView is first
 // responder, make the dialog key (if there is one).
 - (void)windowDidBecomeKey {
-  if (_resigningFirstResponder) {
-    return;
-  }
   NSView* view = self.nsView;
   if (view.window.firstResponder == view) {
     [self makeAnyDialogKey];
@@ -449,13 +402,11 @@
   // while the window is inactive.
   if (tabs::TabInterface* tab =
           tabs::TabInterface::MaybeGetFromContents(webContents)) {
-    if (tabs::TabFeatures* features = tab->GetTabFeatures()) {
-      if (tabs::InactiveWindowMouseEventController* inactive_event_controller =
-              features->inactive_window_mouse_event_controller()) {
-        if (inactive_event_controller
-                ->ShouldAcceptMouseEventsWhileWindowInactive()) {
-          return AcceptMouseEvents::kWhenInActiveApp;
-        }
+    if (tabs::InactiveWindowMouseEventController* inactive_event_controller =
+            tabs::InactiveWindowMouseEventController::From(tab)) {
+      if (inactive_event_controller
+              ->ShouldAcceptMouseEventsWhileWindowInactive()) {
+        return AcceptMouseEvents::kWhenInActiveApp;
       }
     }
   }

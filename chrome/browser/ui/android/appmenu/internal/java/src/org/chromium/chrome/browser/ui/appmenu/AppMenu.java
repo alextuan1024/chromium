@@ -15,6 +15,7 @@ import android.graphics.Rect;
 import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.Drawable;
 import android.os.SystemClock;
+import android.text.TextUtils;
 import android.view.Gravity;
 import android.view.KeyEvent;
 import android.view.LayoutInflater;
@@ -23,7 +24,6 @@ import android.view.View;
 import android.view.View.MeasureSpec;
 import android.view.View.OnKeyListener;
 import android.view.ViewGroup;
-import android.view.ViewParent;
 import android.view.WindowManager;
 import android.view.accessibility.AccessibilityNodeInfo;
 import android.widget.ImageButton;
@@ -36,7 +36,6 @@ import androidx.annotation.VisibleForTesting;
 import androidx.appcompat.content.res.AppCompatResources;
 
 import org.chromium.base.Callback;
-import org.chromium.base.DeviceInfo;
 import org.chromium.base.SysUtils;
 import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.base.task.PostTask;
@@ -58,9 +57,13 @@ import org.chromium.ui.hierarchicalmenu.FlyoutController;
 import org.chromium.ui.hierarchicalmenu.FlyoutController.FlyoutHandler;
 import org.chromium.ui.hierarchicalmenu.HierarchicalMenuController;
 import org.chromium.ui.interpolators.Interpolators;
+import org.chromium.ui.modelutil.MVCListAdapter.ListItem;
+import org.chromium.ui.modelutil.PropertyModel;
 import org.chromium.ui.widget.AnchoredPopupWindow;
 import org.chromium.ui.widget.FlyoutPopupSpecCalculator;
 import org.chromium.ui.widget.RectProvider;
+
+import java.util.List;
 
 /**
  * Shows a popup of menu items anchored to a host view.
@@ -127,19 +130,28 @@ class AppMenu implements OnKeyListener {
         /** Unusable space either above or below the anchor. */
         public final int anchorViewOffset;
 
+        /**
+         * Height from the top of {@link #visibleDisplayFrame} that the menu list must not cover,
+         * e.g. the top browser controls when the menu is anchored to the bottom bar. 0 means no
+         * constraint.
+         */
+        public final int reservedTopSpace;
+
         MenuSpec(
                 Rect visibleDisplayFrame,
                 Rect padding,
                 int footerHeight,
                 int headerHeight,
                 View anchorView,
-                int anchorViewOffset) {
+                int anchorViewOffset,
+                int reservedTopSpace) {
             this.visibleDisplayFrame = visibleDisplayFrame;
             this.padding = padding;
             this.footerHeight = footerHeight;
             this.headerHeight = headerHeight;
             this.anchorView = anchorView;
             this.anchorViewOffset = anchorViewOffset;
+            this.reservedTopSpace = reservedTopSpace;
         }
     }
 
@@ -268,9 +280,9 @@ class AppMenu implements OnKeyListener {
     private final int mVerticalFadeDistance;
     private final int mNegativeSoftwareVerticalOffset;
     private final int mChipHighlightExtension;
+    private final int mBottomBarMenuTopMargin;
     private final int[] mTempLocation;
     private final AppMenuVisibilityDelegate mVisibilityDelegate;
-    private final boolean mDisableVerticalScrollbar;
     private boolean mPositionBelowAnchor;
 
     private @Nullable Context mContext;
@@ -286,6 +298,7 @@ class AppMenu implements OnKeyListener {
     private @Nullable MenuSpec mMenuSpec;
     private final HierarchicalMenuController<AppMenuPopup> mHierarchicalMenuController;
     private @Nullable ValueAnimator mHeightAnimator;
+    private boolean mShouldHideShortcutHints;
 
     /**
      * Creates and sets up the App Menu.
@@ -296,20 +309,18 @@ class AppMenu implements OnKeyListener {
     AppMenu(
             AppMenuVisibilityDelegate visibilityDelegate,
             Resources res,
-            HierarchicalMenuController<AppMenuPopup> hierarchicalMenuController,
-            boolean disableVerticalScrollbar) {
+            HierarchicalMenuController<AppMenuPopup> hierarchicalMenuController) {
         mVisibilityDelegate = visibilityDelegate;
-        mDisableVerticalScrollbar = disableVerticalScrollbar;
 
         mNegativeSoftwareVerticalOffset =
                 res.getDimensionPixelSize(R.dimen.menu_negative_software_vertical_offset);
         mVerticalFadeDistance = res.getDimensionPixelSize(R.dimen.menu_vertical_fade_distance);
         mChipHighlightExtension =
                 res.getDimensionPixelOffset(R.dimen.menu_chip_highlight_extension);
+        mBottomBarMenuTopMargin = res.getDimensionPixelSize(R.dimen.bottom_bar_app_menu_top_margin);
 
         mTempLocation = new int[2];
         mHierarchicalMenuController = hierarchicalMenuController;
-        mPositionBelowAnchor = DeviceInfo.isDesktop();
     }
 
     /**
@@ -332,6 +343,13 @@ class AppMenu implements OnKeyListener {
      * @param isMenuIconAtStart Whether the menu is being shown from a menu icon positioned at the
      *     start.
      * @param addTopPaddingBeforeFirstRow Whether top padding is needed above the first row.
+     * @param isFromBottomBar Whether the menu is anchored to the bottom bar.
+     * @param reservedTopSpace Height from the top of {@code visibleDisplayFrame} that the menu list
+     *     must not cover (plus {@code R.dimen.bottom_bar_app_menu_top_margin}). 0 for no
+     *     constraint. Only honored when {@code isFromBottomBar} is true and the menu is not opened
+     *     by a permanent hardware button.
+     * @param isFromPointer Whether the menu was opened by a pointer device (mouse or trackpad). If
+     *     true, the menu is positioned below the anchor view.
      */
     void show(
             Context context,
@@ -346,6 +364,8 @@ class AppMenu implements OnKeyListener {
             @ControlsPosition int controlsPosition,
             boolean addTopPaddingBeforeFirstRow,
             boolean isFromBottomBar,
+            int reservedTopSpace,
+            boolean isFromPointer,
             FlyoutHandler<AppMenuPopup> flyoutHandler) {
         mContext = context;
         PopupWindow popup = new PopupWindow(context);
@@ -411,12 +431,6 @@ class AppMenu implements OnKeyListener {
         View contentView = createAppMenuContentView(context, addTopPaddingBeforeFirstRow);
         mListView = contentView.findViewById(R.id.app_menu_list);
 
-        if (mDisableVerticalScrollbar) {
-            // TODO(crbug.com/465107697) Move code to xml file once the feature is launched.
-            // Cleanup AppMenuDelegate too.
-            mListView.setVerticalScrollBarEnabled(false);
-        }
-
         if (SysUtils.isLowEndDevice()) {
             var sharedDrawable = AppCompatResources.getDrawable(context, R.drawable.popup_bg_8dp);
             if (sharedDrawable != null) {
@@ -430,17 +444,34 @@ class AppMenu implements OnKeyListener {
         Rect bgPadding = new Rect();
         contentView.getBackground().getPadding(bgPadding);
 
-        int itemWidth =
+        int contentWidth =
                 mAdapter == null
                         ? 0
                         : UiUtils.computeListAdapterContentDimensions(mAdapter, mListView)[0];
-        int contentWidth = itemWidth + bgPadding.left + bgPadding.right;
         int minWidth = context.getResources().getDimensionPixelSize(R.dimen.menu_width_min);
         int menuMaxWidth = context.getResources().getDimensionPixelSize(R.dimen.menu_width_max);
         int margin = context.getResources().getDimensionPixelSize(R.dimen.menu_horizontal_margin);
         int menuWidth =
                 UiUtils.computeMenuWidth(
                         contentWidth, minWidth, menuMaxWidth, margin, visibleDisplayFrame.width());
+        // Hide keyboard shortcuts when the menu is too narrow to fit all content without
+        // truncation.
+        mShouldHideShortcutHints = contentWidth > menuWidth;
+        if (mShouldHideShortcutHints && mAdapter != null) {
+            // Narrow menus need to hide shortcuts, but only recompute width if there were any
+            // keyboard shortcuts hidden to save cycles.
+            boolean didHideShortcuts = clearShortcutHints(mAdapter);
+            if (didHideShortcuts) {
+                contentWidth = UiUtils.computeListAdapterContentDimensions(mAdapter, mListView)[0];
+                menuWidth =
+                        UiUtils.computeMenuWidth(
+                                contentWidth,
+                                minWidth,
+                                menuMaxWidth,
+                                margin,
+                                visibleDisplayFrame.width());
+            }
+        }
 
         int popupWidth = menuWidth + bgPadding.left + bgPadding.right;
 
@@ -471,15 +502,12 @@ class AppMenu implements OnKeyListener {
         if (highlightedItemId != null) {
             View viewToHighlight = contentView.findViewById(highlightedItemId);
             HighlightParams highlightParams = new HighlightParams(HighlightShape.RECTANGLE);
-            if (viewToHighlight instanceof ChipView) {
-                ChipView chipViewToHighlight = (ChipView) viewToHighlight;
+            if (viewToHighlight instanceof ChipView chipViewToHighlight) {
                 highlightParams.setCornerRadius(chipViewToHighlight.getCornerRadius());
                 highlightParams.setHighlightExtension(mChipHighlightExtension);
                 // Set clip children and padding should be false to prevent the highlight from
                 // getting clipped.
-                ViewParent chipViewParent = chipViewToHighlight.getParent();
-                if (chipViewParent instanceof ViewGroup) {
-                    ViewGroup parentViewGroup = (ViewGroup) chipViewParent;
+                if (chipViewToHighlight.getParent() instanceof ViewGroup parentViewGroup) {
                     parentViewGroup.setClipToPadding(false);
                     parentViewGroup.setClipChildren(false);
                 }
@@ -503,8 +531,11 @@ class AppMenu implements OnKeyListener {
                         Math.abs(mTempLocation[1] - visibleDisplayFrame.top),
                         Math.abs(mTempLocation[1] - visibleDisplayFrame.bottom));
 
-        mPositionBelowAnchor = DeviceInfo.isDesktop();
+        mPositionBelowAnchor = isFromPointer;
 
+        // The cap's padding math assumes the bottom-bar branch of getPopupPosition(), which the
+        // permanent-button branch takes precedence over.
+        boolean usesBottomBarPositioning = isFromBottomBar && !isByPermanentButton;
         mMenuSpec =
                 new MenuSpec(
                         visibleDisplayFrame,
@@ -512,7 +543,8 @@ class AppMenu implements OnKeyListener {
                         footerHeight,
                         headerHeight,
                         anchorView,
-                        anchorViewOffset);
+                        anchorViewOffset,
+                        usesBottomBarPositioning ? reservedTopSpace : 0);
 
         if (mPositionBelowAnchor) {
             int spaceBelow =
@@ -627,7 +659,7 @@ class AppMenu implements OnKeyListener {
 
         final int lateralPadding = contentView.getPaddingLeft() + contentView.getPaddingRight();
         int maxWidth =
-                mContext.getResources().getDimensionPixelSize(R.dimen.menu_width_max)
+                mContext.getResources().getDimensionPixelSize(R.dimen.flyout_menu_max_width)
                         + lateralPadding;
         int menuWidth =
                 UiUtils.computeListAdapterContentDimensions(adapter, listView)[0] + lateralPadding;
@@ -839,6 +871,39 @@ class AppMenu implements OnKeyListener {
     }
 
     /**
+     * @return Whether shortcut hints should be hidden for the currently showing menu due to narrow
+     *     window width.
+     */
+    boolean shouldHideShortcutHints() {
+        return mShouldHideShortcutHints;
+    }
+
+    private static boolean clearShortcutHints(ListAdapter adapter) {
+        boolean cleared = false;
+        for (int i = 0; i < adapter.getCount(); i++) {
+            if (adapter.getItem(i) instanceof ListItem listItem) {
+                cleared |= clearShortcutHint(listItem.model);
+            }
+        }
+        return cleared;
+    }
+
+    static void clearShortcutHints(List<ListItem> items) {
+        for (ListItem item : items) {
+            clearShortcutHint(item.model);
+        }
+    }
+
+    private static boolean clearShortcutHint(PropertyModel model) {
+        if (model.containsKey(AppMenuItemProperties.SHORTCUT_TEXT)
+                && !TextUtils.isEmpty(model.get(AppMenuItemProperties.SHORTCUT_TEXT))) {
+            model.set(AppMenuItemProperties.SHORTCUT_TEXT, null);
+            return true;
+        }
+        return false;
+    }
+
+    /**
      * Recalculates and updates the height of the popup window while it is showing with an
      * animation.
      */
@@ -885,7 +950,17 @@ class AppMenu implements OnKeyListener {
                         - anchorViewImpactHeight;
 
         if (mIsByPermanentButton) availableScreenSpace -= mMenuSpec.padding.top;
-        if (availableScreenSpace <= 0 && sExceptionReporter != null) {
+        int uncappedScreenSpace = availableScreenSpace;
+        if (mMenuSpec.reservedTopSpace > 0) {
+            // availableScreenSpace already subtracts padding.bottom, but getPopupPosition() shifts
+            // the bottom-bar popup down by padding.bottom. Add it back so the list top sits at
+            // least reservedTopSpace + mBottomBarMenuTopMargin below visibleDisplayFrame.top.
+            availableScreenSpace -=
+                    mMenuSpec.reservedTopSpace + mBottomBarMenuTopMargin - mMenuSpec.padding.bottom;
+        }
+        // Report on the uncapped space: the cap can legitimately leave no room, in which case
+        // calculateHeightForItems() falls back to showing ~1.5 items past the cap.
+        if (uncappedScreenSpace <= 0 && sExceptionReporter != null) {
             String logMessage =
                     "there is no screen space for app menu, mIsByPermanentButton = "
                             + mIsByPermanentButton
@@ -902,7 +977,9 @@ class AppMenu implements OnKeyListener {
                             + ", footerHeight = "
                             + mMenuSpec.footerHeight
                             + ", headerHeight = "
-                            + mMenuSpec.headerHeight;
+                            + mMenuSpec.headerHeight
+                            + ", reservedTopSpace = "
+                            + mMenuSpec.reservedTopSpace;
             PostTask.postTask(
                     TaskTraits.BEST_EFFORT_MAY_BLOCK,
                     () -> sExceptionReporter.onResult(new Throwable(logMessage)));

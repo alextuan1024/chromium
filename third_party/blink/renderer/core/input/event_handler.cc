@@ -36,6 +36,7 @@
 #include "base/debug/dump_without_crashing.h"
 #include "base/trace_event/trace_event.h"
 #include "build/build_config.h"
+#include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/common/input/web_input_event.h"
 #include "third_party/blink/public/common/input/web_mouse_wheel_event.h"
 #include "third_party/blink/public/mojom/frame/user_activation_notification_type.mojom-blink.h"
@@ -62,6 +63,7 @@
 #include "third_party/blink/renderer/core/events/text_event.h"
 #include "third_party/blink/renderer/core/events/touch_event.h"
 #include "third_party/blink/renderer/core/frame/event_handler_registry.h"
+#include "third_party/blink/renderer/core/frame/local_dom_window.h"
 #include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/core/frame/local_frame_client.h"
 #include "third_party/blink/renderer/core/frame/local_frame_view.h"
@@ -90,6 +92,7 @@
 #include "third_party/blink/renderer/core/loader/resource/image_resource_content.h"
 #include "third_party/blink/renderer/core/page/autoscroll_controller.h"
 #include "third_party/blink/renderer/core/page/chrome_client.h"
+#include "third_party/blink/renderer/core/page/drag_controller.h"
 #include "third_party/blink/renderer/core/page/drag_state.h"
 #include "third_party/blink/renderer/core/page/frame_tree.h"
 #include "third_party/blink/renderer/core/page/page.h"
@@ -235,7 +238,7 @@ const ComputedStyle* GetComputedStyleFromScrollbar(
 
     if (const LayoutCustomScrollbarPart* scroll_corner_layout_object =
             scrollable_area->ScrollCorner()) {
-      return &scroll_corner_layout_object->StyleRef();
+      return &scroll_corner_layout_object->Style();
     }
   }
 
@@ -599,9 +602,8 @@ std::optional<ui::Cursor> EventHandler::SelectCursor(
   // style recalc, for the cursor.
   const ComputedStyle* area_style = nullptr;
   if (auto* area = DynamicTo<HTMLAreaElement>(node);
-      area && !hit_layout_object &&
-      RuntimeEnabledFeatures::HTMLAreaElementDisplayNoneEnabled()) {
-    area_style = area->GetComputedStyle();
+      area && !hit_layout_object) {
+    area_style = ComputedStyle::NullifyEnsured(area->GetComputedStyle());
     if (area_style) {
       HTMLImageElement* image = area->ImageElement();
       hit_layout_object = image ? image->GetLayoutObject() : nullptr;
@@ -615,7 +617,7 @@ std::optional<ui::Cursor> EventHandler::SelectCursor(
   const LayoutObject& layout_object = *hit_layout_object;
   if (!area_style && ShouldShowResizeForNode(layout_object, location)) {
     const LayoutBox* box = layout_object.EnclosingLayer()->GetLayoutBox();
-    EResize resize = box->StyleRef().UsedResize();
+    EResize resize = box->Style().UsedResize();
     switch (resize) {
       case EResize::kVertical:
         return NorthSouthResizeCursor();
@@ -649,7 +651,7 @@ std::optional<ui::Cursor> EventHandler::SelectCursor(
 
   const ComputedStyle& style = area_style        ? *area_style
                                : scrollbar_style ? *scrollbar_style
-                                                 : layout_object.StyleRef();
+                                                 : layout_object.Style();
 
   if (const CursorList* cursors = style.Cursors()) {
     for (const auto& cursor : *cursors) {
@@ -664,16 +666,15 @@ std::optional<ui::Cursor> EventHandler::SelectCursor(
       CHECK(style_image->CachedImage());
 
       float scale = style_image->ImageScaleFactor();
-      Image* image = style_image->CachedImage()->GetImage();
+      scoped_refptr<Image> image = style_image->CachedImage()->GetImage();
 
       const float device_scale_factor =
           page->GetChromeClient().GetScreenInfo(*frame_).device_scale_factor;
 
-      scoped_refptr<Image> svg_image_holder;
       // If the image is an SVG, then adjust the scale to reflect the device
       // scale factor so that the SVG can be rasterized in the native
       // resolution and scaled down to the correct size for the cursor.
-      if (auto* svg_image = DynamicTo<SVGImage>(image)) {
+      if (auto* svg_image = DynamicTo<SVGImage>(image.get())) {
         // Adjust the total scale factor. The image scale factor doesn't
         // really affect SVG images though (as is evident below), so this
         // should probably be dropped (scale should be set to the DPR).
@@ -689,12 +690,11 @@ std::optional<ui::Cursor> EventHandler::SelectCursor(
             kRespectImageOrientation);
 
         // TODO(fs): Should pass proper URL. Use StyleImage::GetImage.
-        svg_image_holder = SVGImageForContainer::Create(
+        image = SVGImageForContainer::Create(
             *svg_image, size_in_device_pixels, device_scale_factor, nullptr,
             frame_->GetDocument()
                 ->GetStyleEngine()
                 .ResolveColorSchemeForEmbedding(&style));
-        image = svg_image_holder.get();
       }
 
       // Reject empty and too large cursors.
@@ -896,8 +896,14 @@ WebInputEventResult EventHandler::HandleMousePressEvent(
   if (subframe) {
     WebInputEventResult result = PassMousePressEventToSubframe(mev, subframe);
     if (mouse_event_manager_->MousePressed()) {
-      capturing_mouse_events_element_ = mev.InnerElement();
-      capturing_subframe_element_ = mev.InnerElement();
+      if (RuntimeEnabledFeatures::SubframeMouseCaptureOwnerEnabled()) {
+        Element* subframe_owner = subframe->DeprecatedLocalOwner();
+        capturing_mouse_events_element_ =
+            subframe_owner ? subframe_owner : mev.InnerElement();
+      } else {
+        capturing_mouse_events_element_ = mev.InnerElement();
+      }
+      capturing_subframe_element_ = capturing_mouse_events_element_;
     }
 
     mouse_event_manager_->InvalidateClick();
@@ -922,7 +928,8 @@ WebInputEventResult EventHandler::HandleMousePressEvent(
   }
 
   LocalFrame::NotifyUserActivation(
-      frame_, mojom::blink::UserActivationNotificationType::kInteraction);
+      frame_, mojom::blink::UserActivationNotificationType::kInteraction,
+      RuntimeEnabledFeatures::TrustedUserActivationTriggersEnabled());
 
   if (RuntimeEnabledFeatures::MiddleClickAutoscrollEnabled()) {
     // We store whether middle click autoscroll is in progress before calling
@@ -2189,7 +2196,14 @@ WebInputEventResult EventHandler::SendContextMenuEvent(
 
   PhysicalOffset position_in_contents(v->ConvertFromRootFrame(
       gfx::ToFlooredPoint(event.PositionInRootFrame())));
-  HitTestRequest request(HitTestRequest::kActive);
+  HitTestRequest::HitTestRequestType hit_type = HitTestRequest::kActive;
+  if (RuntimeEnabledFeatures::LongPressReleasesActiveStateEnabled()) {
+    // This hit test must not modify the hover/active state. The input event
+    // handler calling into this method should have done it by now
+    // (https://crbug.com/358393574).
+    hit_type |= HitTestRequest::kReadOnly;
+  }
+  HitTestRequest request(hit_type);
   Document& document = *frame_->GetDocument();
   MouseEventWithHitTestResults mev =
       document.PerformMouseEventHitTest(request, position_in_contents, event);
@@ -2214,6 +2228,25 @@ WebInputEventResult EventHandler::SendContextMenuEvent(
     UseCounter::Count(document, WebFeature::kContextMenuEventDefaultPrevented);
   }
   return result;
+}
+
+// The contextmenu event is dispatched from the browser process or from
+// in-renderer touch selection code paths, without a real input event to
+// inherit the pointer type from.
+static bool IsTouchMenuSourceType(
+    ui::mojom::blink::MenuSourceType source_type) {
+  switch (source_type) {
+    case ui::mojom::blink::MenuSourceType::kTouch:
+    case ui::mojom::blink::MenuSourceType::kLongPress:
+    case ui::mojom::blink::MenuSourceType::kLongTap:
+    case ui::mojom::blink::MenuSourceType::kTouchEditMenu:
+    case ui::mojom::blink::MenuSourceType::kTouchHandle:
+    case ui::mojom::blink::MenuSourceType::kAdjustSelection:
+    case ui::mojom::blink::MenuSourceType::kAdjustSelectionReset:
+      return true;
+    default:
+      return false;
+  }
 }
 
 static bool ShouldShowContextMenuAtSelection(const FrameSelection& selection) {
@@ -2339,6 +2372,10 @@ WebInputEventResult EventHandler::ShowNonLocatedContextMenu(
       WebPointerProperties::Button::kNoButton, /* clickCount */ 0,
       WebInputEvent::kNoModifiers, base::TimeTicks::Now(), source_type);
   mouse_event.id = PointerEventFactory::kMouseId;
+  if (base::FeatureList::IsEnabled(features::kContextMenuPointerTypeForTouch) &&
+      IsTouchMenuSourceType(source_type)) {
+    mouse_event.pointer_type = WebPointerProperties::PointerType::kTouch;
+  }
 
   // TODO(dtapuska): Transition the mouseEvent to be created really in viewport
   // coordinates instead of root frame coordinates.
@@ -2468,17 +2505,30 @@ bool EventHandler::DefaultTabEventHandler(KeyboardEvent* event) {
 }
 
 void EventHandler::DragSourceEndedAt(
-    const WebMouseEvent& event,
+    const std::optional<WebMouseEvent>& event,
     ui::mojom::blink::DragOperation operation) {
-  // Asides from routing the event to the correct frame, the hit test is also an
-  // opportunity for Layer to update the :hover and :active pseudoclasses.
-  HitTestRequest request(HitTestRequest::kRelease);
-  MouseEventWithHitTestResults mev =
-      event_handling_util::PerformMouseEventHitTest(frame_, request, event);
+  if (event) {
+    // Asides from routing the event to the correct frame, the hit test is also
+    // an opportunity for Layer to update the :hover and :active pseudoclasses.
+    HitTestRequest request(HitTestRequest::kRelease);
+    MouseEventWithHitTestResults mev =
+        event_handling_util::PerformMouseEventHitTest(frame_, request, *event);
 
-  if (auto* target_frame = LocalFrameFromTargetNode(mev.InnerNode())) {
-    target_frame->GetEventHandler().DragSourceEndedAt(event, operation);
-    return;
+    if (auto* target_frame = LocalFrameFromTargetNode(mev.InnerNode())) {
+      target_frame->GetEventHandler().DragSourceEndedAt(event, operation);
+      return;
+    }
+  } else if (frame_->GetPage()) {
+    if (LocalDOMWindow* initiator =
+            frame_->GetPage()->GetDragController().drag_initiator()) {
+      if (LocalFrame* initiator_frame = initiator->GetFrame();
+          initiator_frame && initiator_frame != frame_ &&
+          initiator_frame->Tree().IsDescendantOf(frame_)) {
+        initiator_frame->GetEventHandler().DragSourceEndedAt(std::nullopt,
+                                                             operation);
+        return;
+      }
+    }
   }
 
   mouse_event_manager_->DragSourceEndedAt(event, operation);

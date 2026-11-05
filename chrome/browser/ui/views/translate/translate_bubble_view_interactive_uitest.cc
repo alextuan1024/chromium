@@ -159,16 +159,8 @@ class TranslateBubbleViewUITest
 
  protected:
   explicit TranslateBubbleViewUITest(bool enable_search_ui) {
-    if (enable_search_ui) {
-      scoped_feature_list_.InitWithFeatures(
-          {language::kTranslateOpenSettings,
-           translate::kTranslateLanguageSearchUI},
-          {});
-    } else {
-      scoped_feature_list_.InitWithFeatures(
-          {language::kTranslateOpenSettings},
-          {translate::kTranslateLanguageSearchUI});
-    }
+    scoped_feature_list_.InitWithFeatureState(
+        translate::kTranslateLanguageSearchUI, enable_search_ui);
   }
 
   base::test::ScopedFeatureList scoped_feature_list_;
@@ -238,7 +230,7 @@ class TranslateBubbleViewUITest
   }
 
   TranslateBubbleView* GetCurrentTranslateBubble() {
-    return TranslateBubbleController::From(browser())->GetTranslateBubble();
+    return TranslateController::From(browser())->GetTranslateBubble();
   }
 
   base::HistogramTester& histograms_tester() { return histograms_tester_; }

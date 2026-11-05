@@ -6,20 +6,21 @@
 #define CHROME_BROWSER_GLIC_EXPERIMENTAL_TRIGGERING_GLIC_EXPERIMENTAL_TRIGGERING_TRANSPORT_HANDLER_H_
 
 #include <memory>
+#include <string_view>
 #include <vector>
 
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "chrome/browser/glic/experimental_triggering/glic_experimental_triggering_types.h"
-#include "components/browser_actuator/public/common.h"
-#include "components/browser_actuator/public/transport_handler.h"
-#include "components/browser_actuator/public/transport_handler_factory.h"
+#include "components/stream_transport/public/common.h"
+#include "components/stream_transport/public/transport_handler.h"
+#include "components/stream_transport/public/transport_handler_factory.h"
 
 class Profile;
 
-namespace browser_actuator {
+namespace stream_transport {
 class TransportSession;
-}
+}  // namespace stream_transport
 
 namespace glic {
 
@@ -28,12 +29,12 @@ class GlicExperimentalTriggeringCoordinator;
 // TransportHandler for handling GlicExperimentalTriggering messages and
 // coordinating requests over a BrowserActuator TransportSession.
 class GlicExperimentalTriggeringTransportHandler
-    : public browser_actuator::TransportHandler {
+    : public stream_transport::TransportHandler {
  public:
   GlicExperimentalTriggeringTransportHandler(
       Profile* profile,
-      browser_actuator::TransportSession* session,
-      std::unique_ptr<GlicExperimentalTriggeringCoordinator> coordinator);
+      stream_transport::TransportSession* session,
+      base::WeakPtr<GlicExperimentalTriggeringCoordinator> coordinator);
   ~GlicExperimentalTriggeringTransportHandler() override;
 
   GlicExperimentalTriggeringTransportHandler(
@@ -41,23 +42,26 @@ class GlicExperimentalTriggeringTransportHandler
   GlicExperimentalTriggeringTransportHandler& operator=(
       const GlicExperimentalTriggeringTransportHandler&) = delete;
 
-  // browser_actuator::TransportHandler implementation:
-  void OnMessage(const google::protobuf::MessageLite& message) override;
+  // stream_transport::TransportHandler implementation:
+  void OnMessage(stream_transport::PayloadType payload_type,
+                 std::string_view serialized_payload) override;
 
  private:
   void SendResponse(ExperimentalTriggeringResponse response);
 
   const raw_ptr<Profile> profile_;
-  const raw_ptr<browser_actuator::TransportSession> session_;
-  std::unique_ptr<GlicExperimentalTriggeringCoordinator> coordinator_;
+  base::WeakPtr<GlicExperimentalTriggeringCoordinator> coordinator_;
   base::WeakPtrFactory<GlicExperimentalTriggeringTransportHandler>
       weak_ptr_factory_{this};
 };
 
 class GlicExperimentalTriggeringTransportHandlerFactory
-    : public browser_actuator::TransportHandlerFactory {
+    : public stream_transport::TransportHandlerFactory {
  public:
   explicit GlicExperimentalTriggeringTransportHandlerFactory(Profile* profile);
+  GlicExperimentalTriggeringTransportHandlerFactory(
+      Profile* profile,
+      std::unique_ptr<GlicExperimentalTriggeringCoordinator> coordinator);
   ~GlicExperimentalTriggeringTransportHandlerFactory() override;
 
   GlicExperimentalTriggeringTransportHandlerFactory(
@@ -65,15 +69,16 @@ class GlicExperimentalTriggeringTransportHandlerFactory
   GlicExperimentalTriggeringTransportHandlerFactory& operator=(
       const GlicExperimentalTriggeringTransportHandlerFactory&) = delete;
 
-  // browser_actuator::TransportHandlerFactory implementation:
-  browser_actuator::FactoryId GetFactoryId() const override;
-  std::vector<browser_actuator::PayloadType> GetSupportedPayloadTypes()
+  // stream_transport::TransportHandlerFactory implementation:
+  stream_transport::FactoryId GetFactoryId() const override;
+  std::vector<stream_transport::PayloadType> GetSupportedPayloadTypes()
       const override;
-  std::unique_ptr<browser_actuator::TransportHandler> OnNewSession(
-      browser_actuator::TransportSession* session) override;
+  std::unique_ptr<stream_transport::TransportHandler> OnNewSession(
+      stream_transport::TransportSession* session) override;
 
  private:
   const raw_ptr<Profile> profile_;
+  std::unique_ptr<GlicExperimentalTriggeringCoordinator> coordinator_;
 };
 
 }  // namespace glic

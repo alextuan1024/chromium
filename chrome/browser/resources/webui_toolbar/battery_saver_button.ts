@@ -8,15 +8,18 @@ import './icons.js';
 
 import type {CrIconButtonElement} from '//resources/cr_elements/cr_icon_button/cr_icon_button.js';
 import {loadTimeData} from '//resources/js/load_time_data.js';
+import {TrackedElementManager} from '//resources/js/tracked_element/tracked_element_manager.js';
 import {CrLitElement} from '//resources/lit/v3_0/lit.rollup.js';
+import {getContextMenuPosition, getContextMenuSourceType} from '/shared/toolbar_button.js';
+import {ContextMenuType} from '/shared/toolbar_ui_api_data_model.mojom-webui.js';
 import type {BatterySaverControlState} from '/shared/toolbar_ui_api_data_model.mojom-webui.js';
 
 import {getHtml} from './battery_saver_button.html.js';
-import {BrowserProxyImpl, ContextMenuType} from './browser_proxy.js';
+import {BrowserProxyImpl} from './browser_proxy.js';
 import type {BrowserProxy} from './browser_proxy.js';
+import type {OverflowableButtonState} from './overflowable_button.js';
 import {OverflowableButtonMixin} from './overflowable_button.js';
 import {getCss} from './toolbar_button.css.js';
-import {getContextMenuPosition, getContextMenuSourceType} from './toolbar_button.js';
 
 export interface BatterySaverButtonElement {
   $: {
@@ -46,8 +49,11 @@ export class BatterySaverButtonElement extends BatterySaverButtonElementBase {
     };
   }
 
-  override accessor state: BatterySaverControlState = {
+  override accessor state: BatterySaverControlState&OverflowableButtonState = {
+    // These fields are from OverflowableButtonState (in addition to
+    // BatterySaverControlState), and are used by OverflowableButtonMixin.
     shouldBeShown: false,
+    preventOverflow: false,
   };
 
   protected getLabel_(): string {
@@ -61,6 +67,7 @@ export class BatterySaverButtonElement extends BatterySaverButtonElementBase {
   private browserProxy_: BrowserProxy = BrowserProxyImpl.getInstance();
 
   protected onClick_(e: MouseEvent) {
+    TrackedElementManager.getInstance().notifyElementActivated(this);
     this.browserProxy_.toolbarUIHandler.showContextMenu(
         ContextMenuType.kBatterySaver, getContextMenuPosition(this),
         getContextMenuSourceType(e), /*showMenuToken=*/ null);

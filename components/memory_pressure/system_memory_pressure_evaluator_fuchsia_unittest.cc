@@ -11,6 +11,7 @@
 #include "base/fuchsia/test_component_context_for_process.h"
 #include "base/memory/memory_pressure_listener_registry.h"
 #include "base/memory/mock_memory_pressure_listener.h"
+#include "base/memory_coordinator/memory_pressure_source.h"
 #include "base/run_loop.h"
 #include "base/test/task_environment.h"
 #include "components/memory_pressure/multi_source_memory_pressure_monitor.h"
@@ -23,6 +24,7 @@ namespace {
 
 class MockMemoryPressureVoter : public MemoryPressureVoter {
  public:
+  MOCK_METHOD1(SetVote, void(base::MemoryPressureLevel));
   MOCK_METHOD2(SetVote, void(base::MemoryPressureLevel, bool));
 };
 
@@ -70,6 +72,7 @@ class SystemMemoryPressureEvaluatorFuchsiaTest
     ADD_FAILURE() << "Unexpected call to method: " << name;
   }
 
+  base::MemoryPressureSource memory_pressure_source_;
   base::MemoryPressureListenerRegistry memory_pressure_listener_registry_;
 
   base::test::SingleThreadTaskEnvironment task_environment_;
@@ -98,15 +101,12 @@ TEST_F(SystemMemoryPressureEvaluatorFuchsiaTest, Basic) {
       publish_provider(test_context_.additional_services(), this);
 
   auto voter = std::make_unique<MockMemoryPressureVoter>();
-  // NONE pressure will be reported once the first Watch() call returns, which
-  // should not notify listeners.
+  // NONE pressure will be reported once the first Watch() call returns.
   testing::InSequence s;
-  EXPECT_CALL(*voter, SetVote(base::MEMORY_PRESSURE_LEVEL_NONE, false));
-  EXPECT_CALL(*voter, SetVote(base::MEMORY_PRESSURE_LEVEL_CRITICAL, true));
-  // and then again when the fakes system level transitions from
-  // CRITICAL->NORMAL.
-  EXPECT_CALL(*voter, SetVote(base::MEMORY_PRESSURE_LEVEL_NONE, true));
-  EXPECT_CALL(*voter, SetVote(base::MEMORY_PRESSURE_LEVEL_MODERATE, true));
+  EXPECT_CALL(*voter, SetVote(base::MEMORY_PRESSURE_LEVEL_NONE));
+  EXPECT_CALL(*voter, SetVote(base::MEMORY_PRESSURE_LEVEL_CRITICAL));
+  EXPECT_CALL(*voter, SetVote(base::MEMORY_PRESSURE_LEVEL_NONE));
+  EXPECT_CALL(*voter, SetVote(base::MEMORY_PRESSURE_LEVEL_MODERATE));
 
   TestSystemMemoryPressureEvaluator evaluator(std::move(voter));
 
@@ -145,7 +145,8 @@ TEST_F(SystemMemoryPressureEvaluatorFuchsiaTest, Periodic) {
 
   // Verify that MODERATE pressure level is reported periodically.
   EXPECT_CALL(listener, OnMemoryPressure(base::MEMORY_PRESSURE_LEVEL_MODERATE));
-  task_environment_.FastForwardBy(evaluator.kRenotifyVotePeriod);
+  task_environment_.FastForwardBy(
+      MemoryPressureVoteAggregator::kModeratePressureCooldown);
   testing::Mock::VerifyAndClearExpectations(&listener);
 
   EXPECT_CALL(listener, OnMemoryPressure(base::MEMORY_PRESSURE_LEVEL_CRITICAL));
@@ -155,7 +156,8 @@ TEST_F(SystemMemoryPressureEvaluatorFuchsiaTest, Periodic) {
 
   // Verify that CRITICAL pressure level is reported periodically.
   EXPECT_CALL(listener, OnMemoryPressure(base::MEMORY_PRESSURE_LEVEL_CRITICAL));
-  task_environment_.FastForwardBy(evaluator.kRenotifyVotePeriod);
+  task_environment_.FastForwardBy(
+      MemoryPressureVoteAggregator::kCriticalPressureCooldown);
   testing::Mock::VerifyAndClearExpectations(&listener);
 
   EXPECT_CALL(listener, OnMemoryPressure(base::MEMORY_PRESSURE_LEVEL_NONE));
@@ -163,7 +165,8 @@ TEST_F(SystemMemoryPressureEvaluatorFuchsiaTest, Periodic) {
   EXPECT_EQ(evaluator.current_vote(), base::MEMORY_PRESSURE_LEVEL_NONE);
 
   // Verify that NONE pressure level is not reported periodically.
-  task_environment_.FastForwardBy(evaluator.kRenotifyVotePeriod);
+  task_environment_.FastForwardBy(
+      MemoryPressureVoteAggregator::kModeratePressureCooldown);
   testing::Mock::VerifyAndClearExpectations(&listener);
 }
 

@@ -9,6 +9,7 @@
 #include <bitset>
 #include <cstdint>
 #include <memory>
+#include <utility>
 
 #include "base/check.h"
 #include "base/functional/bind.h"
@@ -80,7 +81,7 @@ bool IsPortalMimeType(const std::string& mime_type) {
 
 DragOperation DndActionToDragOperation(uint32_t action) {
   // Prevent the usage of this function for an operation mask.
-  DCHECK_LE(std::bitset<32>(action).count(), 1u);
+  CHECK_LE(std::bitset<32>(action).count(), 1u, base::NotFatalUntil::M163);
   switch (action) {
     case WL_DATA_DEVICE_MANAGER_DND_ACTION_COPY:
       return DragOperation::kCopy;
@@ -135,10 +136,10 @@ WaylandDataDragController::WaylandDataDragController(
       window_manager_(connection->window_manager()),
       pointer_delegate_(pointer_delegate),
       touch_delegate_(touch_delegate) {
-  DCHECK(connection_);
-  DCHECK(window_manager_);
-  DCHECK(data_device_manager_);
-  DCHECK(data_device_);
+  CHECK(connection_, base::NotFatalUntil::M163);
+  CHECK(window_manager_, base::NotFatalUntil::M163);
+  CHECK(data_device_manager_, base::NotFatalUntil::M163);
+  CHECK(data_device_, base::NotFatalUntil::M163);
 
   // Start observing for potential destructions of windows involved in the
   // drag session, if there is any active. E.g: origin and entered window.
@@ -150,15 +151,16 @@ WaylandDataDragController::~WaylandDataDragController() {
   data_device_manager_->GetDevice()->ResetDragDelegate();
 }
 
-bool WaylandDataDragController::StartSession(const OSExchangeData& data,
-                                             int operations,
-                                             DragEventSource source) {
-  // TODO(crbug.com/340398746): Should be DCHECK'ed instead, though due to buggy
-  // compositors, eg: KWin 6, which do not send data_source.dnd_finish|cancelled
-  // in some cases, it was temporarily turned into this conditional avoid
-  // browser crashes. Revert once it stabilizes at compositors side.
-  if (state_ != State::kIdle) {
-    Reset();
+bool WaylandDataDragController::StartSession(
+    const OSExchangeData& data,
+    int operations,
+    DragEventSource source,
+    WaylandWindow* drag_handler_window) {
+  CHECK(drag_handler_window);
+  if (pending_drop_state_ == PendingDropState::kNone && IsDragInProgress()) {
+    LOG(WARNING) << "Cannot start a new drag session while an active drag "
+                    "is in progress.";
+    return false;
   }
 
   auto* origin_window = source == DragEventSource::kTouch
@@ -180,6 +182,17 @@ bool WaylandDataDragController::StartSession(const OSExchangeData& data,
     return false;
   }
 
+  if (pending_drop_state_ != PendingDropState::kNone) {
+    // Per wl_data_device.drop, the compositor's drag grab has already ended
+    // once drop arrives (even if leave has not arrived yet), so abort any
+    // stuck incoming drop fetch after serial validation succeeds.
+    auto weak_this = weak_factory_.GetWeakPtr();
+    AbortPendingDrop();
+    if (!weak_this || IsDragInProgress()) {
+      return false;
+    }
+  }
+
   VLOG(1) << "Starting Drag-and-Drop session. tracker_id=" << serial->value
           << ", data_source="
           << (source == DragEventSource::kMouse ? "mouse" : "touch")
@@ -188,6 +201,7 @@ bool WaylandDataDragController::StartSession(const OSExchangeData& data,
   state_ = State::kStarting;
   drag_source_ = source;
   origin_window_ = origin_window;
+  drag_handler_window_ = drag_handler_window;
 
   // Create new data source and offers |data|.
   offered_exchange_data_provider_ = data.provider().Clone();
@@ -312,7 +326,7 @@ void WaylandDataDragController::UpdateDragImage(const gfx::ImageSkia& image,
 
 bool WaylandDataDragController::ShouldReleaseCaptureForDrag(
     ui::OSExchangeData* data) const {
-  DCHECK(data);
+  CHECK(data, base::NotFatalUntil::M163);
   // For a window dragging session, we must not release capture to be able to
   // handle window dragging even when dragging out of the window.
   return !IsWindowDraggingSession(*data);
@@ -342,7 +356,8 @@ void WaylandDataDragController::DumpState(std::ostream& out) const {
 // Sessions initiated from Chromium, will have |data_source_| set. In which
 // case, |offered_exchange_data_provider_| is expected to be non-null as well.
 bool WaylandDataDragController::IsDragSource() const {
-  DCHECK(!data_source_ || offered_exchange_data_provider_);
+  CHECK(!data_source_ || offered_exchange_data_provider_,
+        base::NotFatalUntil::M163);
   return !!data_source_;
 }
 
@@ -370,7 +385,7 @@ void WaylandDataDragController::OnDragSurfaceFrame(void* data,
                                                    struct wl_callback* callback,
                                                    uint32_t time) {
   auto* self = static_cast<WaylandDataDragController*>(data);
-  DCHECK(self);
+  CHECK(self, base::NotFatalUntil::M163);
   self->DrawIconInternal();
   self->icon_frame_callback_.reset();
   self->connection_->Flush();
@@ -441,6 +456,18 @@ void WaylandDataDragController::DrawIconInternal() {
 
 void WaylandDataDragController::OnDragOffer(
     std::unique_ptr<WaylandDataOffer> offer) {
+  AbortPendingDropIfNeeded();
+  // If the previously entered `window_` was destroyed without a preceding
+  // `wl_data_device.leave`, drop the stale offer before accepting the new one.
+  // `OnWindowRemoved()` intentionally defers destroying `data_offer_` because
+  // it runs before `~WaylandSurface()` sends `wl_surface.destroy`, and some
+  // compositors (e.g. wlroots, Weston) treat destroying an active offer as
+  // cancelling the drag source.
+  if (!window_) {
+    data_offer_.reset();
+  }
+  // TODO(crbug.com/584191899): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
   DCHECK(!data_offer_);
   VLOG(1) << __FUNCTION__;
   data_offer_ = std::move(offer);
@@ -450,13 +477,14 @@ void WaylandDataDragController::OnDragEnter(WaylandWindow* window,
                                             const gfx::PointF& location,
                                             base::TimeTicks timestamp,
                                             uint32_t serial) {
-  DCHECK(window);
-  DCHECK(data_offer_);
+  CHECK(window, base::NotFatalUntil::M163);
+  CHECK(data_offer_, base::NotFatalUntil::M163);
   VLOG(1) << __FUNCTION__ << " is_source=" << IsDragSource();
 
   // Store the entered |window|. Its lifetime is monitored through
   // OnWindowRemoved, so that memory corruption issues are avoided.
   window_ = window;
+  pending_drop_state_ = PendingDropState::kNone;
 
   for (auto mime : data_offer_->mime_types()) {
     data_offer_->Accept(serial, mime);
@@ -465,7 +493,7 @@ void WaylandDataDragController::OnDragEnter(WaylandWindow* window,
   // Update the focused window to ensure the window under the cursor receives
   // drag motion events.
   if (pointer_grabber_for_window_drag_) {
-    DCHECK(drag_source_.has_value());
+    CHECK(drag_source_.has_value(), base::NotFatalUntil::M163);
     if (*drag_source_ == DragEventSource::kMouse) {
       pointer_delegate_->OnPointerFocusChanged(
           window, location, timestamp, wl::EventDispatchPolicy::kImmediate);
@@ -475,7 +503,7 @@ void WaylandDataDragController::OnDragEnter(WaylandWindow* window,
 
     pointer_grabber_for_window_drag_ =
         window_manager_->GetCurrentPointerOrTouchFocusedWindow();
-    DCHECK(pointer_grabber_for_window_drag_);
+    CHECK(pointer_grabber_for_window_drag_, base::NotFatalUntil::M163);
   }
 
   window_->OnDragEnter(
@@ -485,8 +513,8 @@ void WaylandDataDragController::OnDragEnter(WaylandWindow* window,
     // If the DND session was initiated from a Chromium window,
     // |offered_exchange_data_provider_| already holds the data to be exchanged,
     // so we don't need to read it through Wayland and can just copy it here.
-    DCHECK_EQ(state_, State::kStarted);
-    DCHECK(offered_exchange_data_provider_);
+    CHECK_EQ(state_, State::kStarted, base::NotFatalUntil::M163);
+    CHECK(offered_exchange_data_provider_, base::NotFatalUntil::M163);
     has_received_enter_ = true;
     window_->OnDragDataAvailable(std::make_unique<OSExchangeData>(
         offered_exchange_data_provider_->Clone()));
@@ -517,10 +545,12 @@ void WaylandDataDragController::OnDragMotion(const gfx::PointF& location,
   }
 
   // The session might have been cancelled in response to OnDragEnter() or
-  // OnDragDataAvailable().
-  if (!data_offer_) {
+  // OnDragDataAvailable(), or a drop may already be pending.
+  if (!data_offer_ || pending_drop_state_ != PendingDropState::kNone) {
     return;
   }
+
+  last_drag_location_ = location;
 
   // TODO(crbug.com/41492749): we should update the cursor position when some
   // data is dragged from another client. Currently `drag_source_` may be
@@ -534,7 +564,7 @@ void WaylandDataDragController::OnDragMotion(const gfx::PointF& location,
     }
   }
 
-  DCHECK(data_offer_);
+  CHECK(data_offer_, base::NotFatalUntil::M163);
   const int client_operations = window_->OnDragMotion(
       location, DndActionsToDragOperations(data_offer_->source_actions()));
 
@@ -544,34 +574,59 @@ void WaylandDataDragController::OnDragMotion(const gfx::PointF& location,
 void WaylandDataDragController::OnDragLeave(base::TimeTicks timestamp) {
   VLOG(1) << __FUNCTION__ << " window=" << !!window_
           << " fetching=" << (state_ == State::kFetching)
+          << " pending_drop=" << static_cast<int>(pending_drop_state_)
           << " is_source=" << IsDragSource();
+
+  if (state_ == State::kFetching &&
+      pending_drop_state_ != PendingDropState::kNone) {
+    // Compositors emit wl_data_device.leave right after wl_data_device.drop
+    // when ending the drag grab. Keep fetching and defer leave cleanup until
+    // OnDataFetchingFinished() delivers the drop.
+    pending_drop_state_ = PendingDropState::kDropAndLeave;
+    return;
+  }
 
   // For incoming drag sessions, i.e: originated in an external application,
   // reset state kIdle now. Otherwise, it'll be reset in OnDataSourceFinish.
   if (!IsDragSource()) {
     state_ = State::kIdle;
+    pending_drop_state_ = PendingDropState::kNone;
     CancelDataFetchingIfNeeded();
   }
 
-  if (!window_) {
-    return;
-  }
-
-  window_->OnDragLeave();
-  window_ = nullptr;
+  WaylandWindow* window = std::exchange(window_, nullptr);
   data_offer_.reset();
+  if (window) {
+    window->OnDragLeave();
+  }
 }
 
 void WaylandDataDragController::OnDragDrop(base::TimeTicks timestamp) {
-  VLOG(1) << __FUNCTION__ << " window=" << !!window_;
+  VLOG(1) << __FUNCTION__ << " window=" << !!window_
+          << " fetching=" << (state_ == State::kFetching);
   if (!window_) {
+    data_offer_.reset();
     return;
   }
 
+  if (state_ == State::kFetching) {
+    pending_drop_state_ = PendingDropState::kDrop;
+    return;
+  }
+
+  auto weak_this = weak_factory_.GetWeakPtr();
   window_->OnDragDrop();
+  if (!weak_this) {
+    return;
+  }
 
   // Might have already been reset if the drag was cancelled in response to the
   // OnDragDrop() above.
+  // TODO(crbug.com/40238823): Plumb drop acceptance from
+  // WmDropHandler::OnDragDrop() so deferred drops over targets that reject the
+  // data (after DesktopDragDropClientOzone::OnDragMotion() optimistically
+  // advertised DRAG_COPY | DRAG_MOVE while fetching) destroy the offer without
+  // calling FinishOffer().
   if (data_offer_) {
     // Offer must be finished and destroyed here as some compositors may delay
     // to send wl_data_source::finished|cancelled until owning client destroys
@@ -656,6 +711,7 @@ void WaylandDataDragController::OnDataSourceSend(
 void WaylandDataDragController::OnWindowRemoved(WaylandWindow* window) {
   if (window == window_) {
     window_ = nullptr;
+    AbortPendingDrop();
   }
 
   if (window == origin_window_) {
@@ -664,6 +720,10 @@ void WaylandDataDragController::OnWindowRemoved(WaylandWindow* window) {
       origin_surface_ = origin_window_->TakeWaylandSurface();
     }
     origin_window_ = nullptr;
+  }
+
+  if (window == drag_handler_window_) {
+    drag_handler_window_ = nullptr;
   }
 
   if (window == pointer_grabber_for_window_drag_) {
@@ -677,13 +737,13 @@ void WaylandDataDragController::PostDataFetchingTask(
     const scoped_refptr<CancelFlag>& cancel_flag) {
   using FetchingInfo = std::vector<std::pair<std::string, int>>;
 
-  DCHECK_EQ(state_, State::kFetching);
-  DCHECK(!cancel_flag->data.IsSet());
+  CHECK_EQ(state_, State::kFetching, base::NotFatalUntil::M163);
+  CHECK(!cancel_flag->data.IsSet(), base::NotFatalUntil::M163);
 
   // This check may fail if OnDragEnter() runs a nested loop or other blocking
   // call that results in calling back to WaylandDataDragController. For now,
   // assume this isn't the case, so |data_offer_| should be non-null.
-  DCHECK(data_offer_);
+  CHECK(data_offer_, base::NotFatalUntil::M163);
 
   FetchingInfo offered_data;
   for (const auto& mime_type : data_offer_->mime_types()) {
@@ -735,19 +795,20 @@ void WaylandDataDragController::PostDataFetchingTask(
       FROM_HERE,
       base::BindOnce(fetch_data_closure, std::move(offered_data), cancel_flag),
       base::BindOnce(&WaylandDataDragController::OnDataFetched,
-                     weak_factory_.GetWeakPtr(), start_time));
+                     weak_factory_.GetWeakPtr(), start_time, cancel_flag));
 }
 
 void WaylandDataDragController::OnDataFetched(
     base::TimeTicks start_time,
+    scoped_refptr<CancelFlag> cancel_flag,
     std::map<std::string, std::vector<uint8_t>> fetched_data) {
-  if (state_ != State::kFetching) {
+  if (cancel_flag->data.IsSet() || state_ != State::kFetching) {
     return;
   }
 
 #if BUILDFLAG(IS_LINUX)
-  // Check for portal data. We read the raw portal key from the FD on the
-  // background thread, and now we resolve it to actual paths on the UI thread.
+  // Check for portal data. The raw portal key is read from the FD on the
+  // background thread and resolved to actual paths on the UI thread.
   for (const char* mime : {kMimeTypePortalFileTransfer, kMimeTypePortalFiles}) {
     auto it = fetched_data.find(mime);
     if (it != fetched_data.end() && !it->second.empty()) {
@@ -756,20 +817,22 @@ void WaylandDataDragController::OnDataFetched(
           key_data,
           base::BindOnce(&WaylandDataDragController::OnPortalPathsExtracted,
                          weak_factory_.GetWeakPtr(), start_time,
-                         std::move(fetched_data)));
+                         std::move(cancel_flag), std::move(fetched_data)));
       return;
     }
   }
 #endif
 
-  OnPortalPathsExtracted(start_time, std::move(fetched_data), {});
+  OnPortalPathsExtracted(start_time, std::move(cancel_flag),
+                         std::move(fetched_data), {});
 }
 
 void WaylandDataDragController::OnPortalPathsExtracted(
     base::TimeTicks start_time,
+    scoped_refptr<CancelFlag> cancel_flag,
     std::map<std::string, std::vector<uint8_t>> fetched_data,
     std::vector<std::string> paths) {
-  if (state_ != State::kFetching) {
+  if (cancel_flag->data.IsSet() || state_ != State::kFetching) {
     return;
   }
 
@@ -793,35 +856,58 @@ void WaylandDataDragController::OnPortalPathsExtracted(
         mime_type);
   }
 
-  OnDataFetchingFinished(start_time,
+  OnDataFetchingFinished(start_time, std::move(cancel_flag),
                          std::make_unique<OSExchangeData>(std::move(provider)));
 }
 
 void WaylandDataDragController::OnDataFetchingFinished(
     base::TimeTicks timestamp,
+    scoped_refptr<CancelFlag> cancel_flag,
     std::unique_ptr<OSExchangeData> received_data) {
   // This is expected to be called only in incoming drag sessions.
-  DCHECK(!IsDragSource());
+  CHECK(!IsDragSource(), base::NotFatalUntil::M163);
+  CHECK(received_data);
   VLOG(1) << __func__ << " fetching=" << (state_ == State::kFetching)
+          << " pending_drop=" << static_cast<int>(pending_drop_state_)
           << " window=" << !!window_;
 
-  // Null `received_data` means the fetching task was cancelled. ie: drag leave
-  // arrived before data was fetched, in which case the `window_` was already
-  // notified and state already reset in OnDragLeave(), so just early out here.
-  if (!received_data) {
-    VLOG(1) << "fetching cancelled.";
-    return;
-  }
-
-  // Move to `kStarted` state, regardless it is possible or not to deliver it.
   state_ = State::kStarted;
+  const bool had_pending_drop = pending_drop_state_ != PendingDropState::kNone;
+  auto weak_this = weak_factory_.GetWeakPtr();
 
   // |window_| may have already been unset here if, eg: programmatically
   // destroyed by the application. See https://crbug.com/1487387.
-  if (!window_) {
-    return;
+  if (window_) {
+    window_->OnDragDataAvailable(std::move(received_data));
+    if (!weak_this) {
+      return;
+    }
+    if (!cancel_flag->data.IsSet()) {
+      const PendingDropState pending_drop_state =
+          std::exchange(pending_drop_state_, PendingDropState::kNone);
+      if (pending_drop_state != PendingDropState::kNone) {
+        OnDragDrop(timestamp);
+        if (!weak_this) {
+          return;
+        }
+        if (!cancel_flag->data.IsSet() &&
+            pending_drop_state == PendingDropState::kDropAndLeave) {
+          OnDragLeave(timestamp);
+          if (!weak_this) {
+            return;
+          }
+        }
+      }
+    }
   }
-  window_->OnDragDataAvailable(std::move(received_data));
+
+  if (data_fetch_cancel_flag_ == cancel_flag) {
+    data_fetch_cancel_flag_.reset();
+  }
+
+  if (had_pending_drop) {
+    connection_->Flush();
+  }
 }
 
 void WaylandDataDragController::CancelDataFetchingIfNeeded() {
@@ -833,14 +919,44 @@ void WaylandDataDragController::CancelDataFetchingIfNeeded() {
   }
 }
 
+bool WaylandDataDragController::AbortPendingDrop() {
+  if (pending_drop_state_ == PendingDropState::kNone) {
+    return false;
+  }
+  auto weak_this = weak_factory_.GetWeakPtr();
+  data_device_->ResetDragDelegateIfNotDragSource();
+  AbortPendingDropIfNeeded();
+  if (weak_this) {
+    connection_->Flush();
+  }
+  return true;
+}
+
+void WaylandDataDragController::AbortPendingDropIfNeeded() {
+  if (pending_drop_state_ == PendingDropState::kNone) {
+    return;
+  }
+  CancelDataFetchingIfNeeded();
+  data_offer_.reset();
+  pending_drop_state_ = PendingDropState::kNone;
+  state_ = State::kIdle;
+  if (WaylandWindow* window = std::exchange(window_, nullptr)) {
+    window->OnDragLeave();
+  }
+}
+
 void WaylandDataDragController::Reset() {
   if (state_ == State::kIdle) {
     return;
   }
 
+  CancelDataFetchingIfNeeded();
+  pending_drop_state_ = PendingDropState::kNone;
+
   data_source_.reset();
   data_offer_.reset();
   origin_window_ = nullptr;
+  drag_handler_window_ = nullptr;
   origin_surface_.reset();
   icon_buffer_.reset();
   icon_surface_.reset();
@@ -860,12 +976,21 @@ void WaylandDataDragController::Reset() {
 // conditionally depending on the state it would be transitioning to.
 void WaylandDataDragController::HandleDragEnd(DragResult result,
                                               base::TimeTicks timestamp) {
-  if (origin_window_) {
+  // Notify the window that runs the drag loop, rather than |origin_window_|:
+  // only the former can end the loop, and they differ when the drag started
+  // while the pointer or touch focus was on another window, e.g. a bubble.
+  if (drag_handler_window_) {
     DragOperation operation =
         (result == DragResult::kCompleted)
             ? DndActionToDragOperation(data_source_->dnd_action())
             : DragOperation::kNone;
-    origin_window_->OnDragSessionClose(operation);
+    drag_handler_window_->OnDragSessionClose(operation);
+    drag_handler_window_ = nullptr;
+  }
+
+  // |origin_window_| may have been removed while handling the session close
+  // above.
+  if (origin_window_) {
     // DnD handlers expect DragLeave to be sent for drag sessions that end up
     // with no data fetching (wl_data_source::cancelled event).
     if (result != DragResult::kCompleted) {
@@ -920,7 +1045,7 @@ WaylandDataDragController::GetAndValidateSerialForDrag(DragEventSource source) {
 
 WaylandExchangeDataProvider*
 WaylandDataDragController::GetOfferedExchangeDataProvider() {
-  DCHECK(offered_exchange_data_provider_);
+  CHECK(offered_exchange_data_provider_, base::NotFatalUntil::M163);
   return static_cast<WaylandExchangeDataProvider*>(
       offered_exchange_data_provider_.get());
 }
@@ -938,13 +1063,13 @@ void WaylandDataDragController::SetUpWindowDraggingSessionIfNeeded(
     return;
   }
 
-  DCHECK(origin_window_);
+  CHECK(origin_window_, base::NotFatalUntil::M163);
   pointer_grabber_for_window_drag_ = origin_window_;
 }
 
 void WaylandDataDragController::DispatchPointerRelease(
     base::TimeTicks timestamp) {
-  DCHECK(pointer_grabber_for_window_drag_);
+  CHECK(pointer_grabber_for_window_drag_, base::NotFatalUntil::M163);
   pointer_delegate_->OnPointerButtonEvent(
       EventType::kMouseReleased, EF_LEFT_MOUSE_BUTTON, timestamp,
       pointer_grabber_for_window_drag_, wl::EventDispatchPolicy::kImmediate,
@@ -958,7 +1083,7 @@ bool WaylandDataDragController::CanDispatchEvent(const PlatformEvent& event) {
 }
 
 uint32_t WaylandDataDragController::DispatchEvent(const PlatformEvent& event) {
-  DCHECK_NE(state_, State::kIdle);
+  CHECK_NE(state_, State::kIdle, base::NotFatalUntil::M163);
 
   // Currently, there's no reliable way in the protocol to determine when the
   // drag session has effectively started, so as a best-effort heuristic we

@@ -32,6 +32,7 @@
 
 #include "base/compiler_specific.h"
 #include "base/containers/span.h"
+#include "base/no_destructor.h"
 #include "base/synchronization/lock.h"
 #include "base/test/bind.h"
 #include "base/test/scoped_feature_list.h"
@@ -58,6 +59,7 @@
 #include "third_party/blink/renderer/platform/wtf/cross_thread_functional.h"
 #include "third_party/blink/renderer/platform/wtf/hash_traits.h"
 #include "third_party/blink/renderer/platform/wtf/ref_counted.h"
+#include "third_party/blink/renderer/platform/wtf/thread_specific.h"
 #include "v8/include/cppgc/internal/api-constants.h"
 
 namespace blink {
@@ -97,22 +99,23 @@ class IntWrapper : public GarbageCollected<IntWrapper> {
 };
 std::atomic_int IntWrapper::destructor_calls_{0};
 
-struct IntWrapperHashTraits : GenericHashTraits<IntWrapper> {
-  static uint32_t GetHash(const IntWrapper& key) {
-    return HashInt(static_cast<uint32_t>(key.Value()));
+struct IntWrapperHashTraits : GenericHashTraits<Member<IntWrapper>> {
+  static uint32_t GetHash(const Member<IntWrapper>& key) {
+    return HashInt(static_cast<uint32_t>(key->Value()));
   }
 };
 
 static_assert(IsTraceableV<IntWrapper>,
               "IsTraceable<> template failed to recognize trace method.");
-static_assert(IsTraceableV<HeapVector<IntWrapper>>,
-              "HeapVector<IntWrapper> must be traceable.");
-static_assert(IsTraceableV<HeapDeque<IntWrapper>>,
-              "HeapDeque<IntWrapper> must be traceable.");
-static_assert(IsTraceableV<HeapHashSet<IntWrapper, IntWrapperHashTraits>>,
-              "HeapHashSet<IntWrapper> must be traceable.");
+static_assert(IsTraceableV<HeapVector<Member<IntWrapper>>>,
+              "HeapVector<Member<IntWrapper>> must be traceable.");
+static_assert(IsTraceableV<HeapDeque<Member<IntWrapper>>>,
+              "HeapDeque<Member<IntWrapper>> must be traceable.");
+static_assert(
+    IsTraceableV<HeapHashSet<Member<IntWrapper>, IntWrapperHashTraits>>,
+    "HeapHashSet<Member<IntWrapper>> must be traceable.");
 static_assert(IsTraceableV<HeapHashMap<int, Member<IntWrapper>>>,
-              "HeapHashMap<int, IntWrapper> must be traceable.");
+              "HeapHashMap<int, Member<IntWrapper>> must be traceable.");
 
 }  // namespace
 
@@ -371,7 +374,8 @@ class ThreadedTesterBase {
 
  private:
   static void ThreadFunc(ThreadedTesterBase* tester, v8::Platform* platform) {
-    ThreadState::AttachCurrentThreadForTesting(platform);
+    cppgc::StackStartMarker stack_start_marker;
+    ThreadState::AttachCurrentThreadForTesting(platform, stack_start_marker);
     tester->RunThread();
     ThreadState::DetachCurrentThread();
     if (!tester->threads_to_finish_.Decrement())
@@ -1684,57 +1688,23 @@ class ThingWithDestructor {
 };
 int ThingWithDestructor::live_things_with_destructor_;
 
-// This test class served a more important role while Blink
-// was transitioned over to using Oilpan. That required classes
-// that were hybrid, both ref-counted and on the Oilpan heap
-// (the RefCountedGarbageCollected<> class providing just that.)
-//
-// There's no current need for having a ref-counted veneer on
-// top of a GCed class, but we preserve it here to exercise the
-// implementation technique that it used -- keeping an internal
-// "keep alive" persistent reference that is set & cleared across
-// ref-counting operations.
-//
-}  // namespace
-
-class RefCountedAndGarbageCollected final
-    : public GarbageCollected<RefCountedAndGarbageCollected> {
+class SimpleFinalizedObject final
+    : public GarbageCollected<SimpleFinalizedObject> {
  public:
-  RefCountedAndGarbageCollected() = default;
-  ~RefCountedAndGarbageCollected() { ++destructor_calls_; }
-
-  void AddRef() {
-    if (!ref_count_) [[unlikely]] {
-      keep_alive_ = this;
-    }
-    ++ref_count_;
-  }
-
-  void Release() {
-    DCHECK_GT(ref_count_, 0);
-    if (!--ref_count_)
-      keep_alive_.Clear();
-  }
-
-  void Trace(Visitor* visitor) const {}
+  SimpleFinalizedObject() = default;
+  ~SimpleFinalizedObject() { ++destructor_calls_; }
 
   static int destructor_calls_;
 
- private:
-  int ref_count_ = 0;
-  SelfKeepAlive<RefCountedAndGarbageCollected> keep_alive_{{}};
+  void Trace(Visitor* visitor) const {}
 };
-int RefCountedAndGarbageCollected::destructor_calls_ = 0;
-
-namespace {
+int SimpleFinalizedObject::destructor_calls_ = 0;
 
 static void HeapMapDestructorHelper(bool clear_maps) {
-  ThingWithDestructor::live_things_with_destructor_ = 0;
-
-  using RefMap = HeapHashMap<WeakMember<IntWrapper>,
-                             Member<RefCountedAndGarbageCollected>>;
-  using GCedRefMap = GCedHeapHashMap<WeakMember<IntWrapper>,
-                                     Member<RefCountedAndGarbageCollected>>;
+  using RefMap =
+      HeapHashMap<WeakMember<IntWrapper>, Member<SimpleFinalizedObject>>;
+  using GCedRefMap =
+      GCedHeapHashMap<WeakMember<IntWrapper>, Member<SimpleFinalizedObject>>;
   using Map = HeapHashMap<WeakMember<IntWrapper>, ThingWithDestructor>;
   using GCedMap = GCedHeapHashMap<WeakMember<IntWrapper>, ThingWithDestructor>;
 
@@ -1750,31 +1720,25 @@ static void HeapMapDestructorHelper(bool clear_maps) {
     RefMap stack_ref_map;
 
     TestSupportingGC::PreciselyCollectGarbage();
-    TestSupportingGC::PreciselyCollectGarbage();
 
     stack_map.insert(MakeGarbageCollected<IntWrapper>(42),
                      ThingWithDestructor(1729));
     stack_map.insert(luck, ThingWithDestructor(8128));
     stack_ref_map.insert(MakeGarbageCollected<IntWrapper>(42),
-                         MakeGarbageCollected<RefCountedAndGarbageCollected>());
-    stack_ref_map.insert(luck,
-                         MakeGarbageCollected<RefCountedAndGarbageCollected>());
+                         MakeGarbageCollected<SimpleFinalizedObject>());
+    stack_ref_map.insert(luck, MakeGarbageCollected<SimpleFinalizedObject>());
 
     base_line = ThingWithDestructor::live_things_with_destructor_;
-    ref_base_line = RefCountedAndGarbageCollected::destructor_calls_;
+    ref_base_line = SimpleFinalizedObject::destructor_calls_;
 
     // Although the heap maps are on-stack, we can't expect prompt
     // finalization of the elements, so when they go out of scope here we
     // will not necessarily have called the relevant destructors.
   }
 
-  // The RefCountedAndGarbageCollected things need an extra GC to discover
-  // that they are no longer ref counted.
-  TestSupportingGC::PreciselyCollectGarbage();
   TestSupportingGC::PreciselyCollectGarbage();
   EXPECT_EQ(base_line - 2, ThingWithDestructor::live_things_with_destructor_);
-  EXPECT_EQ(ref_base_line + 2,
-            RefCountedAndGarbageCollected::destructor_calls_);
+  EXPECT_EQ(ref_base_line + 2, SimpleFinalizedObject::destructor_calls_);
 
   // Now use maps kept alive with persistents. Here we don't expect any
   // destructors to be called before there have been GCs.
@@ -1782,11 +1746,11 @@ static void HeapMapDestructorHelper(bool clear_maps) {
   map->insert(MakeGarbageCollected<IntWrapper>(42), ThingWithDestructor(1729));
   map->insert(luck, ThingWithDestructor(8128));
   ref_map->insert(MakeGarbageCollected<IntWrapper>(42),
-                  MakeGarbageCollected<RefCountedAndGarbageCollected>());
-  ref_map->insert(luck, MakeGarbageCollected<RefCountedAndGarbageCollected>());
+                  MakeGarbageCollected<SimpleFinalizedObject>());
+  ref_map->insert(luck, MakeGarbageCollected<SimpleFinalizedObject>());
 
   base_line = ThingWithDestructor::live_things_with_destructor_;
-  ref_base_line = RefCountedAndGarbageCollected::destructor_calls_;
+  ref_base_line = SimpleFinalizedObject::destructor_calls_;
 
   luck.Clear();
   if (clear_maps) {
@@ -1795,17 +1759,11 @@ static void HeapMapDestructorHelper(bool clear_maps) {
   } else {
     map.Clear();      // Clear Persistent handle, not map.
     ref_map.Clear();  // Clear Persistent handle, not map.
-    TestSupportingGC::PreciselyCollectGarbage();
-    TestSupportingGC::PreciselyCollectGarbage();
   }
+  TestSupportingGC::PreciselyCollectGarbage();
 
   EXPECT_EQ(base_line - 2, ThingWithDestructor::live_things_with_destructor_);
-
-  // Need a GC to make sure that the RefCountedAndGarbageCollected thing
-  // noticies it's been decremented to zero.
-  TestSupportingGC::PreciselyCollectGarbage();
-  EXPECT_EQ(ref_base_line + 2,
-            RefCountedAndGarbageCollected::destructor_calls_);
+  EXPECT_EQ(ref_base_line + 2, SimpleFinalizedObject::destructor_calls_);
 }
 }  // namespace
 
@@ -2136,38 +2094,6 @@ TEST_F(HeapTest, WeakHeapHashSetToVector) {
   }
 }
 
-TEST_F(HeapTest, RefCountedGarbageCollected) {
-  RefCountedAndGarbageCollected::destructor_calls_ = 0;
-  {
-    scoped_refptr<RefCountedAndGarbageCollected> ref_ptr3;
-    {
-      Persistent<RefCountedAndGarbageCollected> persistent;
-      {
-        Persistent<RefCountedAndGarbageCollected> ref_ptr1 =
-            MakeGarbageCollected<RefCountedAndGarbageCollected>();
-        Persistent<RefCountedAndGarbageCollected> ref_ptr2 =
-            MakeGarbageCollected<RefCountedAndGarbageCollected>();
-        PreciselyCollectGarbage();
-        EXPECT_EQ(0, RefCountedAndGarbageCollected::destructor_calls_);
-        persistent = ref_ptr1.Get();
-      }
-      // Reference count is zero for both objects but one of
-      // them is kept alive by a persistent handle.
-      PreciselyCollectGarbage();
-      EXPECT_EQ(1, RefCountedAndGarbageCollected::destructor_calls_);
-      ref_ptr3 = persistent.Get();
-    }
-    // The persistent handle is gone but the ref count has been
-    // increased to 1.
-    PreciselyCollectGarbage();
-    EXPECT_EQ(1, RefCountedAndGarbageCollected::destructor_calls_);
-  }
-  // Both persistent handle is gone and ref count is zero so the
-  // object can be collected.
-  PreciselyCollectGarbage();
-  EXPECT_EQ(2, RefCountedAndGarbageCollected::destructor_calls_);
-}
-
 TEST_F(HeapTest, CollectionNesting) {
   ClearOutOldGarbage();
   std::array<int, 101> dummy_keys;
@@ -2263,17 +2189,6 @@ TEST_F(HeapTest, CollectionNesting3) {
 }
 
 namespace {
-class SimpleFinalizedObject final
-    : public GarbageCollected<SimpleFinalizedObject> {
- public:
-  SimpleFinalizedObject() = default;
-  ~SimpleFinalizedObject() { ++destructor_calls_; }
-
-  static int destructor_calls_;
-
-  void Trace(Visitor* visitor) const {}
-};
-int SimpleFinalizedObject::destructor_calls_ = 0;
 
 class VectorObject {
   DISALLOW_NEW();
@@ -2288,6 +2203,7 @@ class VectorObject {
 };
 
 class VectorObjectInheritedTrace : public VectorObject {};
+
 }  // namespace
 
 }  // namespace blink
@@ -3075,9 +2991,9 @@ class ThreadedClearOnShutdownTester : public ThreadedTesterBase {
   static HeapObjectSet& GetHeapObjectSet();
 
   static IntWrapper& ThreadSpecificIntWrapper() {
-    DEFINE_THREAD_SAFE_STATIC_LOCAL(ThreadSpecific<Persistent<IntWrapper>>,
-                                    int_wrapper, ());
-    Persistent<IntWrapper>& handle = *int_wrapper;
+    static base::NoDestructor<ThreadSpecific<Persistent<IntWrapper>>>
+        int_wrapper;
+    Persistent<IntWrapper>& handle = **int_wrapper;
     if (!handle) {
       handle = MakeGarbageCollected<IntWrapper>(42);
       LEAK_SANITIZER_IGNORE_OBJECT(&handle);
@@ -3114,9 +3030,9 @@ class ThreadedClearOnShutdownTester::HeapObject final
 
 ThreadedClearOnShutdownTester::WeakHeapObjectSet&
 ThreadedClearOnShutdownTester::GetWeakHeapObjectSet() {
-  DEFINE_THREAD_SAFE_STATIC_LOCAL(ThreadSpecific<Persistent<WeakHeapObjectSet>>,
-                                  singleton, ());
-  Persistent<WeakHeapObjectSet>& singleton_persistent = *singleton;
+  static base::NoDestructor<ThreadSpecific<Persistent<WeakHeapObjectSet>>>
+      singleton;
+  Persistent<WeakHeapObjectSet>& singleton_persistent = **singleton;
   if (!singleton_persistent) {
     singleton_persistent = MakeGarbageCollected<WeakHeapObjectSet>();
     LEAK_SANITIZER_IGNORE_OBJECT(&singleton_persistent);
@@ -3126,9 +3042,9 @@ ThreadedClearOnShutdownTester::GetWeakHeapObjectSet() {
 
 ThreadedClearOnShutdownTester::HeapObjectSet&
 ThreadedClearOnShutdownTester::GetHeapObjectSet() {
-  DEFINE_THREAD_SAFE_STATIC_LOCAL(ThreadSpecific<Persistent<HeapObjectSet>>,
-                                  singleton, ());
-  Persistent<HeapObjectSet>& singleton_persistent = *singleton;
+  static base::NoDestructor<ThreadSpecific<Persistent<HeapObjectSet>>>
+      singleton;
+  Persistent<HeapObjectSet>& singleton_persistent = **singleton;
   if (!singleton_persistent) {
     singleton_persistent = MakeGarbageCollected<HeapObjectSet>();
     LEAK_SANITIZER_IGNORE_OBJECT(&singleton_persistent);

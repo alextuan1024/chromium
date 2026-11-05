@@ -494,6 +494,14 @@ Starting worker: resources/global-interface-listing-worker.js
 [Worker]     method constructor
 [Worker]     method contains
 [Worker]     method item
+[Worker] interface DecisionModel
+[Worker]     static method availability
+[Worker]     static method create
+[Worker]     attribute @@toStringTag
+[Worker]     getter preference
+[Worker]     method constructor
+[Worker]     method decide
+[Worker]     method destroy
 [Worker] interface DecompressionStream
 [Worker]     attribute @@toStringTag
 [Worker]     getter readable
@@ -516,8 +524,6 @@ Starting worker: resources/global-interface-listing-worker.js
 [Worker]     method use
 [Worker] interface ElementImage
 [Worker]     attribute @@toStringTag
-[Worker]     getter height
-[Worker]     getter width
 [Worker]     method close
 [Worker]     method constructor
 [Worker] interface EncodedAudioChunk
@@ -954,7 +960,6 @@ Starting worker: resources/global-interface-listing-worker.js
 [Worker]     attribute @@toStringTag
 [Worker]     getter label
 [Worker]     method constructor
-[Worker]     method copyElementImageToTexture
 [Worker]     method copyExternalImageToTexture
 [Worker]     method drawElementImageToTexture
 [Worker]     method onSubmittedWorkDone
@@ -1125,6 +1130,15 @@ Starting worker: resources/global-interface-listing-worker.js
 [Worker] interface GPUValidationError : GPUError
 [Worker]     attribute @@toStringTag
 [Worker]     method constructor
+[Worker] interface GlyphRun
+[Worker]     attribute @@toStringTag
+[Worker]     getter end
+[Worker]     getter start
+[Worker]     getter width
+[Worker]     getter x
+[Worker]     getter y
+[Worker]     method constructor
+[Worker]     method textMetrics
 [Worker] interface HID : EventTarget
 [Worker]     attribute @@toStringTag
 [Worker]     getter onconnect
@@ -1590,7 +1604,7 @@ Starting worker: resources/global-interface-listing-worker.js
 [Worker]     method constructor
 [Worker]     method convertToBlob
 [Worker]     method getContext
-[Worker]     method getElementTransform
+[Worker]     method getElementImageDefaultSize
 [Worker]     method transferToImageBitmap
 [Worker]     method updateElementGeometry
 [Worker]     setter height
@@ -1651,6 +1665,8 @@ Starting worker: resources/global-interface-listing-worker.js
 [Worker]     method ellipse
 [Worker]     method endLayer
 [Worker]     method fill
+[Worker]     method fillGlyphRun
+[Worker]     method fillGlyphRuns
 [Worker]     method fillRect
 [Worker]     method fillText
 [Worker]     method fillTextCluster
@@ -1676,7 +1692,10 @@ Starting worker: resources/global-interface-listing-worker.js
 [Worker]     method scale
 [Worker]     method setLineDash
 [Worker]     method setTransform
+[Worker]     method shapeText
 [Worker]     method stroke
+[Worker]     method strokeGlyphRun
+[Worker]     method strokeGlyphRuns
 [Worker]     method strokeRect
 [Worker]     method strokeText
 [Worker]     method strokeTextCluster
@@ -1819,7 +1838,9 @@ Starting worker: resources/global-interface-listing-worker.js
 [Worker]     getter serverTiming
 [Worker]     getter transferSize
 [Worker]     getter workerCacheLookupStart
+[Worker]     getter workerFinalRouterSource
 [Worker]     getter workerFinalSourceType
+[Worker]     getter workerMatchedRouterSource
 [Worker]     getter workerMatchedSourceType
 [Worker]     getter workerRouterEvaluationStart
 [Worker]     getter workerStart
@@ -2183,7 +2204,10 @@ Starting worker: resources/global-interface-listing-worker.js
 [Worker] interface SemanticEmbedder
 [Worker]     static method availability
 [Worker]     static method create
+[Worker]     static method params
 [Worker]     attribute @@toStringTag
+[Worker]     getter embeddingSpace
+[Worker]     getter maxInputTokens
 [Worker]     method constructor
 [Worker]     method destroy
 [Worker]     method embed
@@ -2232,6 +2256,16 @@ Starting worker: resources/global-interface-listing-worker.js
 [Worker]     method unregister
 [Worker]     method update
 [Worker]     setter onupdatefound
+[Worker] interface ShapedText
+[Worker]     attribute @@toStringTag
+[Worker]     getter width
+[Worker]     method actualBoundingBox
+[Worker]     method advanceToPosition
+[Worker]     method constructor
+[Worker]     method glyphClusters
+[Worker]     method glyphRuns
+[Worker]     method positionToAdvance
+[Worker]     method selectionRects
 [Worker] interface SourceBuffer : EventTarget
 [Worker]     attribute @@toStringTag
 [Worker]     getter appendWindowEnd
@@ -2374,6 +2408,7 @@ Starting worker: resources/global-interface-listing-worker.js
 [Worker]     getter writable
 [Worker]     method constructor
 [Worker] interface TextDetector
+[Worker]     static method create
 [Worker]     attribute @@toStringTag
 [Worker]     method constructor
 [Worker]     method detect
@@ -3450,7 +3485,6 @@ Starting worker: resources/global-interface-listing-worker.js
 [Worker]     method stencilMaskSeparate
 [Worker]     method stencilOp
 [Worker]     method stencilOpSeparate
-[Worker]     method texElementImage2D
 [Worker]     method texElementSubImage2D
 [Worker]     method texImage2D
 [Worker]     method texImage3D
@@ -3955,7 +3989,6 @@ Starting worker: resources/global-interface-listing-worker.js
 [Worker]     method stencilMaskSeparate
 [Worker]     method stencilOp
 [Worker]     method stencilOpSeparate
-[Worker]     method texElementImage2D
 [Worker]     method texElementSubImage2D
 [Worker]     method texImage2D
 [Worker]     method texParameterf
@@ -4077,6 +4110,7 @@ Starting worker: resources/global-interface-listing-worker.js
 [Worker]     method createBidirectionalStream
 [Worker]     method createSendGroup
 [Worker]     method createUnidirectionalStream
+[Worker]     method exportKeyingMaterial
 [Worker]     method getStats
 [Worker]     setter anticipatedConcurrentIncomingBidirectionalStreams
 [Worker]     setter anticipatedConcurrentIncomingUnidirectionalStreams

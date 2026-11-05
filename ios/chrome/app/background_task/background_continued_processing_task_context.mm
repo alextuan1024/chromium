@@ -12,9 +12,12 @@
 #import "base/check.h"
 #import "base/check_op.h"
 #import "base/debug/dump_without_crashing.h"
+#import "base/functional/bind.h"
 #import "base/logging.h"
 #import "base/sequence_checker.h"
 #import "base/strings/sys_string_conversions.h"
+#import "base/timer/timer.h"
+#import "ios/chrome/app/background_mode_buildflags.h"
 #import "ios/chrome/app/background_task/background_continued_processing_task_configuration.h"
 
 namespace {
@@ -63,10 +66,15 @@ int64_t LinearUnitsForStep(int64_t stepCount,
       linearCeiling, static_cast<int64_t>(std::round(stepCount * stepRatio)));
 }
 
-// Returns the effective step count corresponding to `units` in the linear
-// progress phase of the discrete steps algorithm.
-int64_t LinearStepForUnits(int64_t units, double stepRatio) {
-  return static_cast<int64_t>(std::round(units / stepRatio));
+// Returns the smallest step whose `LinearUnitsForStep` exceeds `units`, i.e.
+// round(step * linearCeiling / expectedStepCount) > units, in integer math.
+int64_t NextLinearStepAboveUnits(int64_t units,
+                                 int64_t linearCeiling,
+                                 int64_t expectedStepCount) {
+  CHECK_GT(linearCeiling, 0);
+  const int64_t numerator = (2 * units + 1) * expectedStepCount;
+  const int64_t denominator = 2 * linearCeiling;
+  return (numerator + denominator - 1) / denominator;
 }
 
 }  // namespace
@@ -87,8 +95,10 @@ int64_t LinearStepForUnits(int64_t units, double stepRatio) {
   // Finish handler invoked upon task completion or expiration.
   ProceduralBlock _finishHandler;
 
+#if BUILDFLAG(IOS_BACKGROUND_CONTINUED_PROCESSING_ENABLED)
   // The underlying iOS background continued processing task provided by the OS.
   BGContinuedProcessingTask* _task API_AVAILABLE(ios(26.0));
+#endif  // BUILDFLAG(IOS_BACKGROUND_CONTINUED_PROCESSING_ENABLED)
 
   // The underlying `NSProgress` object tracking progress units.
   NSProgress* _progress;
@@ -96,9 +106,15 @@ int64_t LinearStepForUnits(int64_t units, double stepRatio) {
   // Expected number of progress steps in the linear progress phase.
   int64_t _expectedStepCount;
 
+  // Advances progress every `progressHeartbeatInterval` until completion.
+  base::RepeatingTimer _progressHeartbeatTimer;
+
   // Whether the task has concluded, either through completion, error, or
   // expiration.
   BOOL _completed;
+
+  // Whether the task was cancelled from the system-provided Live Activity.
+  BOOL _cancelled;
 
   // The reported outcome of the task completion.
   BOOL _successfulCompletion;
@@ -117,6 +133,7 @@ int64_t LinearStepForUnits(int64_t units, double stepRatio) {
   CHECK(taskIdentifier.length > 0);
   CHECK(configuration);
   CHECK(configuration.title.length > 0);
+  CHECK(configuration.subtitle);
   CHECK(configuration.expirationHandler);
   CHECK_GT(configuration.totalUnits, 0);
   CHECK_GT(configuration.expectedStepCount, 0);
@@ -131,7 +148,17 @@ int64_t LinearStepForUnits(int64_t units, double stepRatio) {
         [NSProgress progressWithTotalUnitCount:configuration.totalUnits];
     _expectedStepCount = configuration.expectedStepCount;
     _completed = NO;
+    _cancelled = NO;
     _successfulCompletion = NO;
+
+    if (configuration.progressHeartbeatInterval.is_positive()) {
+      __weak BackgroundContinuedProcessingTaskContext* weakSelf = self;
+      _progressHeartbeatTimer.Start(FROM_HERE,
+                                    configuration.progressHeartbeatInterval,
+                                    base::BindRepeating(^{
+                                      [weakSelf progressHeartbeatTick];
+                                    }));
+    }
   }
   return self;
 }
@@ -168,7 +195,7 @@ int64_t LinearStepForUnits(int64_t units, double stepRatio) {
     return;
   }
   _title = [title copy];
-  _subtitle = [subtitle copy];
+  _subtitle = [subtitle copy] ?: @"";
   [self updateUnderlyingTaskTitleAndSubtitle];
 }
 
@@ -196,11 +223,13 @@ int64_t LinearStepForUnits(int64_t units, double stepRatio) {
       std::clamp<int64_t>(completedUnits, 0, _progress.totalUnitCount);
   _progress.completedUnitCount = clampedUnits;
 
+#if BUILDFLAG(IOS_BACKGROUND_CONTINUED_PROCESSING_ENABLED)
   if (@available(iOS 26.0, *)) {
     if (_task) {
       _task.progress.completedUnitCount = clampedUnits;
     }
   }
+#endif  // BUILDFLAG(IOS_BACKGROUND_CONTINUED_PROCESSING_ENABLED)
 }
 
 - (void)incrementProgressByUnits:(int64_t)units {
@@ -233,8 +262,8 @@ int64_t LinearStepForUnits(int64_t units, double stepRatio) {
     // `linearCeiling`.
     const double stepRatio =
         static_cast<double>(linearCeiling) / _expectedStepCount;
-    const int64_t currentStep = LinearStepForUnits(currentUnits, stepRatio);
-    const int64_t nextStep = currentStep + 1;
+    const int64_t nextStep = NextLinearStepAboveUnits(
+        currentUnits, linearCeiling, _expectedStepCount);
     const int64_t computedUnits =
         LinearUnitsForStep(nextStep, stepRatio, linearCeiling);
     // Ensure positive progress (+1 unit minimum) even in low-resolution edge
@@ -257,12 +286,32 @@ int64_t LinearStepForUnits(int64_t units, double stepRatio) {
   [self setCompletedUnits:newUnits];
 }
 
+- (void)incrementHeartbeatProgress {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(_sequenceChecker);
+  // `totalUnits` is reserved for actual completion.
+  if (_completed ||
+      _progress.completedUnitCount >= _progress.totalUnitCount - 1) {
+    return;
+  }
+  [self setCompletedUnits:_progress.completedUnitCount + 1];
+}
+
 - (BOOL)isCompleted {
   DCHECK_CALLED_ON_VALID_SEQUENCE(_sequenceChecker);
   return _completed;
 }
 
+- (BOOL)isCancelled {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(_sequenceChecker);
+  return _cancelled;
+}
+
 - (void)setTaskCompletedWithSuccess:(BOOL)success {
+  [self setTaskCompletedWithSuccess:success fillProgress:YES];
+}
+
+- (void)setTaskCompletedWithSuccess:(BOOL)success
+                       fillProgress:(BOOL)fillProgress {
   DCHECK_CALLED_ON_VALID_SEQUENCE(_sequenceChecker);
   if (_completed) {
     DLOG(WARNING) << "Attempted to complete already completed task: "
@@ -270,14 +319,16 @@ int64_t LinearStepForUnits(int64_t units, double stepRatio) {
     return;
   }
 
-  if (success) {
+  if (success && fillProgress) {
     [self setCompletedUnits:_progress.totalUnitCount];
   }
 
   _completed = YES;
   _successfulCompletion = success;
   _expirationHandler = nil;
+  _progressHeartbeatTimer.Stop();
 
+#if BUILDFLAG(IOS_BACKGROUND_CONTINUED_PROCESSING_ENABLED)
   if (@available(iOS 26.0, *)) {
     if (_task) {
       _task.expirationHandler = nil;
@@ -288,6 +339,7 @@ int64_t LinearStepForUnits(int64_t units, double stepRatio) {
           cancelTaskRequestWithIdentifier:_taskIdentifier];
     }
   }
+#endif  // BUILDFLAG(IOS_BACKGROUND_CONTINUED_PROCESSING_ENABLED)
 
   ProceduralBlock finishHandler = _finishHandler;
   _finishHandler = nil;
@@ -296,6 +348,7 @@ int64_t LinearStepForUnits(int64_t units, double stepRatio) {
   }
 }
 
+#if BUILDFLAG(IOS_BACKGROUND_CONTINUED_PROCESSING_ENABLED)
 #pragma mark - Internal
 
 - (void)attachUnderlyingTask:(BGContinuedProcessingTask*)task
@@ -323,7 +376,6 @@ int64_t LinearStepForUnits(int64_t units, double stepRatio) {
         [weakSelf handleSystemExpiration];
       } else {
         DLOG(WARNING) << "BGTask expirationHandler invoked off main thread.";
-        base::debug::DumpWithoutCrashing();
         dispatch_async(dispatch_get_main_queue(), ^{
           [weakSelf handleSystemExpiration];
         });
@@ -335,20 +387,29 @@ int64_t LinearStepForUnits(int64_t units, double stepRatio) {
     _task.progress.completedUnitCount = _progress.completedUnitCount;
   }
 }
+#endif  // BUILDFLAG(IOS_BACKGROUND_CONTINUED_PROCESSING_ENABLED)
 
 #pragma mark - Private
+
+// Called by `_progressHeartbeatTimer`.
+- (void)progressHeartbeatTick {
+  [self incrementHeartbeatProgress];
+}
 
 // Propagates the cached title and subtitle to the underlying system task.
 - (void)updateUnderlyingTaskTitleAndSubtitle {
   DCHECK_CALLED_ON_VALID_SEQUENCE(_sequenceChecker);
+#if BUILDFLAG(IOS_BACKGROUND_CONTINUED_PROCESSING_ENABLED)
   if (@available(iOS 26.0, *)) {
     if (_task) {
       [_task updateTitle:_title subtitle:_subtitle ?: @""];
     }
   }
+#endif  // BUILDFLAG(IOS_BACKGROUND_CONTINUED_PROCESSING_ENABLED)
 }
 
-- (void)handleSystemExpiration {
+#if BUILDFLAG(IOS_BACKGROUND_CONTINUED_PROCESSING_ENABLED)
+- (void)handleSystemExpiration API_AVAILABLE(ios(26.0)) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(_sequenceChecker);
   if (_completed) {
     return;
@@ -356,6 +417,8 @@ int64_t LinearStepForUnits(int64_t units, double stepRatio) {
 
   _completed = YES;
   _successfulCompletion = NO;
+  _cancelled = _task.progress.cancelled;
+  _progressHeartbeatTimer.Stop();
 
   // Retain the handler in a local variable before nil-ing out the ivar to
   // avoid re-entrancy and retain issues during callback invocation.
@@ -366,12 +429,10 @@ int64_t LinearStepForUnits(int64_t units, double stepRatio) {
     handler();
   }
 
-  if (@available(iOS 26.0, *)) {
-    if (_task) {
-      _task.expirationHandler = nil;
-      [_task setTaskCompletedWithSuccess:NO];
-      _task = nil;
-    }
+  if (_task) {
+    _task.expirationHandler = nil;
+    [_task setTaskCompletedWithSuccess:NO];
+    _task = nil;
   }
 
   ProceduralBlock finishHandler = _finishHandler;
@@ -380,6 +441,7 @@ int64_t LinearStepForUnits(int64_t units, double stepRatio) {
     finishHandler();
   }
 }
+#endif  // BUILDFLAG(IOS_BACKGROUND_CONTINUED_PROCESSING_ENABLED)
 
 - (void)dealloc {
   if (_completed) {
@@ -390,6 +452,7 @@ int64_t LinearStepForUnits(int64_t units, double stepRatio) {
                    "without being marked as completed: "
                 << base::SysNSStringToUTF8(_taskIdentifier);
 
+#if BUILDFLAG(IOS_BACKGROUND_CONTINUED_PROCESSING_ENABLED)
   if (@available(iOS 26.0, *)) {
     if (_task) {
       _task.expirationHandler = nil;
@@ -399,6 +462,7 @@ int64_t LinearStepForUnits(int64_t units, double stepRatio) {
           cancelTaskRequestWithIdentifier:_taskIdentifier];
     }
   }
+#endif  // BUILDFLAG(IOS_BACKGROUND_CONTINUED_PROCESSING_ENABLED)
 }
 
 @end

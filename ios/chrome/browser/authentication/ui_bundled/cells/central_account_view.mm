@@ -4,15 +4,15 @@
 
 #import "ios/chrome/browser/authentication/ui_bundled/cells/central_account_view.h"
 
-#import "base/apple/foundation_util.h"
 #import "base/check_op.h"
 #import "base/strings/sys_string_conversions.h"
+#import "components/subscription_eligibility/ai_subscription_tier_names.h"
+#import "ios/chrome/browser/authentication/ui_bundled/cells/cells_swift.h"
 #import "ios/chrome/browser/authentication/ui_bundled/cells/signin_promo_view_constants.h"
-#import "ios/chrome/browser/settings/ui_bundled/cells/settings_cells_constants.h"
 #import "ios/chrome/browser/shared/ui/symbols/symbols.h"
-#import "ios/chrome/browser/shared/ui/util/uikit_ui_util.h"
 #import "ios/chrome/browser/signin/model/constants.h"
 #import "ios/chrome/browser/signin/model/signin_util.h"
+#import "ios/chrome/browser/signin/ui/avatar/ai_tier_avatar_content_configuration.h"
 #import "ios/chrome/browser/signin/ui/avatar/ai_tier_avatar_view.h"
 #import "ios/chrome/common/ui/colors/semantic_color_names.h"
 #import "ios/chrome/common/ui/table_view/table_view_cells_constants.h"
@@ -28,6 +28,8 @@ namespace {
 const CGFloat kEnterpriseIconSpacing = 4.0;
 // The vertical space between labels.
 const CGFloat kLabelVerticalSpacing = 2.0;
+// The vertical space between the avatar and the subscription chip.
+const CGFloat kSubscriptionChipTopSpacing = 4.0;
 
 // Returns a tinted version of the enterprise building icon.
 UIImage* GetEnterpriseIcon() {
@@ -60,15 +62,14 @@ UIImage* GetEnterpriseIcon() {
   NSLayoutConstraint* _topPaddingConstraint;
   // Management label.
   UILabel* _managementLabel;
-  // The full name of the AI tier.
-  NSString* _aiTierFullName;
+  // The accessibility description of the AI subscription membership, or nil if
+  // no AI tier is displayed.
+  NSString* _aiTierMembershipLabel;
 }
 
 - (instancetype)initWithFrame:(CGRect)frame
                   avatarImage:(UIImage*)avatarImage
-              showsAITierRing:(BOOL)showsAITierRing
-               aiTierFullName:(NSString*)aiTierFullName
-         subscriptionChipView:(UIView*)subscriptionChipView
+              displayedAiTier:(NSInteger)displayedAiTier
                          name:(NSString*)name
                         email:(NSString*)email
         managementDescription:(NSString*)managementDescription
@@ -78,7 +79,18 @@ UIImage* GetEnterpriseIcon() {
     CHECK(avatarImage);
     CHECK(email);
     _avatarImage = avatarImage;
-    _aiTierFullName = [aiTierFullName copy];
+    const subscription_eligibility::AiSubscriptionTierDisplayInfo tierInfo =
+        subscription_eligibility::GetAiSubscriptionTierDisplayInfo(
+            static_cast<int>(displayedAiTier));
+    BOOL showAITierViews = tierInfo.show_decoration;
+    // TODO(crbug.com/579375435): Fall back to a generic membership string when
+    // `full_membership_label` is empty (e.g. a tier unknown to this binary),
+    // once a translated one is available.
+    if (showAITierViews && !tierInfo.full_membership_label.empty()) {
+      _aiTierMembershipLabel = l10n_util::GetNSStringF(
+          IDS_IOS_ACCOUNT_VIEW_ACCESSIBILITY_LABEL_MEMBERSHIPS_AI_TIER,
+          tierInfo.full_membership_label);
+    }
     _name = name;
     _email = email;
     _useLargeMargins = useLargeMargins;
@@ -89,10 +101,14 @@ UIImage* GetEnterpriseIcon() {
 
     CGFloat avatarDiameter =
         GetSizeForIdentityAvatarSize(IdentityAvatarSize::Large).width;
+    AITierAvatarContentConfiguration* avatarConfiguration =
+        [[AITierAvatarContentConfiguration alloc]
+            initWithAvatarImage:_avatarImage
+                       diameter:avatarDiameter
+                       sizeType:AITierAvatarSizeTypeAvatar
+                showsAITierRing:showAITierViews];
     _avatarView =
-        [[AITierAvatarView alloc] initWithAvatarImage:_avatarImage
-                                       avatarDiameter:avatarDiameter
-                                      showsAITierRing:showsAITierRing];
+        [[AITierAvatarView alloc] initWithConfiguration:avatarConfiguration];
     [self addSubview:_avatarView];
 
     UILabel* titleLabel = [[UILabel alloc] init];
@@ -105,6 +121,8 @@ UIImage* GetEnterpriseIcon() {
         [UIFont preferredFontForTextStyle:UIFontTextStyleHeadline];
     titleLabel.textColor = [UIColor colorNamed:kTextPrimaryColor];
     titleLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    titleLabel.accessibilityIdentifier =
+        kCentralAccountViewTitleAccessibilityIdentifier;
     [self addSubview:titleLabel];
 
     UILabel* subtitleLabel = [[UILabel alloc] init];
@@ -117,6 +135,8 @@ UIImage* GetEnterpriseIcon() {
     subtitleLabel.font =
         [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote];
     subtitleLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    subtitleLabel.accessibilityIdentifier =
+        kCentralAccountViewSubtitleAccessibilityIdentifier;
     [self addSubview:subtitleLabel];
     CGFloat bottomMargin =
         _useLargeMargins
@@ -157,6 +177,8 @@ UIImage* GetEnterpriseIcon() {
       _managementLabel.font =
           [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote];
       _managementLabel.translatesAutoresizingMaskIntoConstraints = NO;
+      _managementLabel.accessibilityIdentifier =
+          kCentralAccountViewManagementDescriptionAccessibilityIdentifier;
 
       UIStackView* horizontalStack = [[UIStackView alloc]
           initWithArrangedSubviews:@[ managementIconView, _managementLabel ]];
@@ -206,7 +228,11 @@ UIImage* GetEnterpriseIcon() {
                                               constant:kLabelVerticalSpacing],
     ]];
 
-    if (subscriptionChipView) {
+    NSString* aiTierName =
+        showAITierViews ? base::SysUTF16ToNSString(tierInfo.badge_label) : nil;
+    if (aiTierName.length > 0) {
+      UIView* subscriptionChipView =
+          [[AISubscriptionChipWrapperView alloc] initWithText:aiTierName];
       // We track whether user interacts with this chip as if it were a button.
       // So we disable any accessibility features it may have on its own.
       UITapGestureRecognizer* tapRecognizer = [[UITapGestureRecognizer alloc]
@@ -223,7 +249,7 @@ UIImage* GetEnterpriseIcon() {
       [NSLayoutConstraint activateConstraints:@[
         [subscriptionChipView.topAnchor
             constraintEqualToAnchor:_avatarView.bottomAnchor
-                           constant:4.0],
+                           constant:kSubscriptionChipTopSpacing],
         [subscriptionChipView.centerXAnchor
             constraintEqualToAnchor:self.centerXAnchor],
         [titleLabel.topAnchor
@@ -243,30 +269,32 @@ UIImage* GetEnterpriseIcon() {
   return self;
 }
 
+- (void)updateTopPadding:(CGFloat)existingPadding {
+  CGFloat topPadding =
+      (_useLargeMargins ? kTableViewLargeVerticalSpacing : kTopLargePadding);
+  _topPaddingConstraint.constant = topPadding - existingPadding;
+  [self updateFrame];
+}
+
 #pragma mark - UIAccessibility
 
 - (NSString*)accessibilityLabel {
-  NSString* aiTierString = nil;
-  if (_aiTierFullName.length > 0) {
-    aiTierString = l10n_util::GetNSStringF(
-        IDS_IOS_ACCOUNT_VIEW_ACCESSIBILITY_LABEL_MEMBERSHIPS_AI_TIER,
-        base::SysNSStringToUTF16(_aiTierFullName));
-  }
+  NSString* aiTierString = _aiTierMembershipLabel;
 
   if (_name != nil) {
     // Both name and email are present.
-    if ([self managed]) {
+    if (_managementLabel) {
       if (aiTierString) {
         return l10n_util::GetNSStringF(
             IDS_IOS_ACCOUNT_VIEW_ACCESSIBILITY_LABEL_NAME_MANAGED_STATUS_AI_TIER,
             base::SysNSStringToUTF16(_name), base::SysNSStringToUTF16(_email),
-            base::SysNSStringToUTF16([self managementDescription]),
+            base::SysNSStringToUTF16(_managementLabel.text),
             base::SysNSStringToUTF16(aiTierString));
       } else {
         return l10n_util::GetNSStringF(
             IDS_IOS_ACCOUNT_VIEW_ACCESSIBILITY_LABEL_NAME_MANAGED_STATUS,
             base::SysNSStringToUTF16(_name), base::SysNSStringToUTF16(_email),
-            base::SysNSStringToUTF16([self managementDescription]));
+            base::SysNSStringToUTF16(_managementLabel.text));
       }
     } else {
       if (aiTierString) {
@@ -282,18 +310,18 @@ UIImage* GetEnterpriseIcon() {
     }
   } else {
     // Only email is present.
-    if ([self managed]) {
+    if (_managementLabel) {
       if (aiTierString) {
         return l10n_util::GetNSStringF(
             IDS_IOS_ACCOUNT_VIEW_ACCESSIBILITY_LABEL_MANAGED_STATUS_AI_TIER,
             base::SysNSStringToUTF16(_email),
-            base::SysNSStringToUTF16([self managementDescription]),
+            base::SysNSStringToUTF16(_managementLabel.text),
             base::SysNSStringToUTF16(aiTierString));
       } else {
         return l10n_util::GetNSStringF(
             IDS_IOS_ACCOUNT_VIEW_ACCESSIBILITY_LABEL_MANAGED_STATUS,
             base::SysNSStringToUTF16(_email),
-            base::SysNSStringToUTF16([self managementDescription]));
+            base::SysNSStringToUTF16(_managementLabel.text));
       }
     } else {
       if (aiTierString) {
@@ -308,6 +336,8 @@ UIImage* GetEnterpriseIcon() {
   }
 }
 
+#pragma mark - Private
+
 // Updates the frame size.
 - (void)updateFrame {
   CGSize size =
@@ -317,14 +347,6 @@ UIImage* GetEnterpriseIcon() {
   CGRect newFrame = CGRectZero;
   newFrame.size = size;
   self.frame = newFrame;
-}
-
-- (UIImage*)avatarImage {
-  return _avatarImage;
-}
-
-- (UIView*)avatarView {
-  return _avatarView;
 }
 
 - (NSString*)title {
@@ -340,27 +362,6 @@ UIImage* GetEnterpriseIcon() {
   }
   return nil;
 }
-
-- (NSString*)aiTierFullName {
-  return _aiTierFullName;
-}
-
-- (BOOL)managed {
-  return _managementLabel != nil;
-}
-
-- (NSString*)managementDescription {
-  return _managementLabel.text;
-}
-
-- (void)updateTopPadding:(CGFloat)existingPadding {
-  CGFloat topPadding =
-      (_useLargeMargins ? kTableViewLargeVerticalSpacing : kTopLargePadding);
-  _topPaddingConstraint.constant = topPadding - existingPadding;
-  [self updateFrame];
-}
-
-#pragma mark - Private
 
 - (void)subscriptionChipTapped:(UITapGestureRecognizer*)sender {
   [self.delegate centralAccountViewDidTapAISubscriptionChip:self];

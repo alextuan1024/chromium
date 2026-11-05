@@ -77,6 +77,10 @@ bool ShouldLoadMinimalAppUI() {
 
 void LoadMinimalAppUI(UIWindow* window) {}
 
+bool IsWindowSceneOnDuoCoverDisplay(UIWindowScene* scene) {
+  return false;
+}
+
 std::unique_ptr<ProfileOAuth2TokenService> GetOverriddenTokenService(
     PrefService* user_prefs,
     std::unique_ptr<ProfileOAuth2TokenServiceDelegate> delegate) {
@@ -111,6 +115,10 @@ std::unique_ptr<commerce::ShoppingService> CreateShoppingService(
 
 std::unique_ptr<gcm::GCMProfileService> CreateGCMProfileService(
     ProfileIOS* profile) {
+  return nullptr;
+}
+
+std::unique_ptr<ExtensionService> CreateExtensionService(ProfileIOS* profile) {
   return nullptr;
 }
 
@@ -156,6 +164,11 @@ std::unique_ptr<drive::DriveService> GetOverriddenDriveService() {
   return nullptr;
 }
 
+std::unique_ptr<signin::AccountPreviewDataService>
+GetOverriddenAccountPreviewDataService() {
+  return nullptr;
+}
+
 feature_engagement::FeatureActivation FETDemoModeOverride() {
   return feature_engagement::FeatureActivation::AllEnabled();
 }
@@ -196,6 +209,21 @@ void InjectFakeTabsInBrowser(Browser* browser) {
 }
 
 id<ReauthenticationProtocol> GetFakeReauthenticationModule() {
+  return nil;
+}
+
+UIViewController<ChromeLensViewFinderController>*
+GetOverriddenLensViewFinderController() {
+  return nil;
+}
+
+bool ShouldPauseStartupAtBackgroundStage() {
+  return false;
+}
+
+void UnpauseStartupAtBackgroundStage() {}
+
+ChromeConnectionOptions* GetOverriddenConnectionOptions() {
   return nil;
 }
 

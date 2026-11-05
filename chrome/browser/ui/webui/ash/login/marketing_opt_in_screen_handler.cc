@@ -10,7 +10,6 @@
 #include "base/command_line.h"
 #include "base/values.h"
 #include "chrome/browser/ash/login/screens/marketing_opt_in_screen.h"
-#include "chrome/grit/generated_resources.h"
 #include "components/login/localized_values_builder.h"
 #include "ui/chromeos/devicetype_utils.h"
 
@@ -21,7 +20,6 @@ namespace {
 constexpr char kOptInVisibility[] = "optInVisibility";
 constexpr char kOptInDefaultState[] = "optInDefaultState";
 constexpr char kLegalFooterVisibility[] = "legalFooterVisibility";
-constexpr char kCloudGamingDevice[] = "cloudGamingDevice";
 
 }  // namespace
 
@@ -34,12 +32,6 @@ void MarketingOptInScreenHandler::DeclareLocalizedValues(
     ::login::LocalizedValuesBuilder* builder) {
   builder->Add("marketingOptInScreenTitle",
                IDS_LOGIN_MARKETING_OPT_IN_SCREEN_TITLE);
-  builder->Add("marketingOptInScreenGameDeviceTitle",
-               IDS_LOGIN_MARKETING_OPT_IN_SCREEN_WITH_CLOUDGAMINGDEVICE_TITLE);
-  builder->AddF(
-      "marketingOptInScreenGameDeviceSubtitle",
-      IDS_LOGIN_MARKETING_OPT_IN_SCREEN_WITH_CLOUDGAMINGDEVICE_SUBTITLE,
-      ui::GetChromeOSDeviceName());
   builder->AddF("marketingOptInScreenSubtitle",
                 IDS_LOGIN_MARKETING_OPT_IN_SCREEN_SUBTITLE,
                 ui::GetChromeOSDeviceName());
@@ -49,10 +41,6 @@ void MarketingOptInScreenHandler::DeclareLocalizedValues(
   builder->Add(
       "marketingOptInGetChromebookUpdates",
       IDS_LOGIN_MARKETING_OPT_IN_SCREEN_GET_CHROMEBOOK_UPDATES_SIGN_ME_UP);
-  builder->AddF(
-      "marketingOptInGameDeviceUpdates",
-      IDS_LOGIN_MARKETING_OPT_IN_SCREEN_WITH_CLOUDGAMINGDEVICE_SIGN_ME_UP,
-      ui::GetChromeOSDeviceName());
   builder->Add("marketingOptInScreenAllSet", IDS_LOGIN_GET_STARTED);
   builder->Add("marketingOptInScreenUnsubscribeShort",
                IDS_LOGIN_MARKETING_OPT_IN_SCREEN_UNSUBSCRIBE_SHORT);
@@ -72,13 +60,11 @@ void MarketingOptInScreenHandler::DeclareLocalizedValues(
 
 void MarketingOptInScreenHandler::Show(bool opt_in_visible,
                                        bool opt_in_default_state,
-                                       bool legal_footer_visible,
-                                       bool cloud_gaming_enabled) {
+                                       bool legal_footer_visible) {
   base::DictValue data;
   data.Set(kOptInVisibility, opt_in_visible);
   data.Set(kOptInDefaultState, opt_in_default_state);
   data.Set(kLegalFooterVisibility, legal_footer_visible);
-  data.Set(kCloudGamingDevice, cloud_gaming_enabled);
 
   ShowInWebUI(std::move(data));
 }

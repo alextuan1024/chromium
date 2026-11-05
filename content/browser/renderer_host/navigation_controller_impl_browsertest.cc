@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "base/command_line.h"
+#include "base/containers/linear_find.h"
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
 #include "base/functional/bind.h"
@@ -32,6 +33,10 @@
 #include "base/threading/thread_restrictions.h"
 #include "base/values.h"
 #include "build/build_config.h"
+#include "components/viz/common/quads/compositor_frame.h"
+#include "components/viz/test/compositor_frame_helpers.h"
+#include "components/viz/test/fake_compositor_frame_sink_client.h"
+#include "content/browser/browser_url_handler_impl.h"
 #include "content/browser/process_lock.h"
 #include "content/browser/renderer_host/frame_navigation_entry.h"
 #include "content/browser/renderer_host/frame_tree.h"
@@ -54,6 +59,7 @@
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
+#include "content/public/browser/invalidate_type.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_details.h"
 #include "content/public/browser/render_frame_host.h"
@@ -94,6 +100,7 @@
 #include "net/test/embedded_test_server/expectation_handler.h"
 #include "net/test/embedded_test_server/http_request.h"
 #include "net/test/url_request/url_request_failed_job.h"
+#include "services/viz/public/mojom/compositing/compositor_frame_sink.mojom.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "third_party/blink/public/common/loader/referrer_utils.h"
 #include "third_party/blink/public/common/page_state/page_state_serialization.h"
@@ -15556,12 +15563,8 @@ class RequestMonitoringNavigationBrowserTest
       const GURL& url_to_find) {
     DCHECK(url_to_find.SchemeIsHTTPOrHTTPS());
 
-    auto it = std::ranges::find(accumulated_requests_, url_to_find,
-                                &net::test_server::HttpRequest::GetURL);
-    if (it == accumulated_requests_.end()) {
-      return nullptr;
-    }
-    return &*it;
+    return base::LinearFind(accumulated_requests_, url_to_find,
+                            &net::test_server::HttpRequest::GetURL);
   }
 
  protected:
@@ -19026,7 +19029,6 @@ IN_PROC_BROWSER_TEST_P(SandboxedNavigationControllerBrowserTest,
                             .root();
 
   std::string back_script = "history.back();";
-  std::string forward_script = "history.forward();";
 
   NavigationControllerImpl& controller = static_cast<NavigationControllerImpl&>(
       shell()->web_contents()->GetController());
@@ -21160,16 +21162,25 @@ IN_PROC_BROWSER_TEST_P(NavigationControllerBrowserTest,
 }
 
 IN_PROC_BROWSER_TEST_P(NavigationControllerBrowserTest,
-                       URLLoadReturnsNavigationHandle) {
+                       LoadURLWithParamsForResultReturnsNavigationHandle) {
   GURL url(embedded_test_server()->GetURL("/title1.html"));
 
   TestNavigationManager navigation_manager(shell()->web_contents(), url);
-  base::WeakPtr<NavigationHandle> navigation =
-      shell()->web_contents()->GetController().LoadURLWithParams(
-          NavigationController::LoadURLParams(url));
+  NavigationController::LoadURLParams params(url);
+  base::expected<base::WeakPtr<NavigationHandle>, NavigationNotStartedReason>
+      result =
+          shell()->web_contents()->GetController().LoadURLWithParamsForResult(
+              params);
 
   // The returned NavigationHandle should be valid.
-  EXPECT_TRUE(navigation);
+  ASSERT_TRUE(result.has_value());
+  base::WeakPtr<NavigationHandle> navigation = result.value();
+  ASSERT_TRUE(navigation);
+
+  // The navigation is already owned by the FrameTreeNode when the handle is
+  // returned, i.e. the handle refers to a navigation that is really in flight.
+  EXPECT_EQ(navigation.get(),
+            contents()->GetPrimaryFrameTree().root()->navigation_request());
 
   // Start the navigation and ensure that the NavigationHandle we saw matches
   // the one TestNavigationManager saw.
@@ -25371,5 +25382,349 @@ IN_PROC_BROWSER_TEST_P(
   RunReloadReplacesInitialEntryAfterCanceledNavigationTest(
       shell(), embedded_test_server(), ReloadType::BYPASSING_CACHE);
 }
+
+namespace {
+
+// Builds a CompositorFrame that CompositorFrame::HasVisuallyNonEmptyContent()
+// reports as non-empty (two SolidColorDrawQuads, rather than the single
+// background quad a blank document submits).
+viz::CompositorFrame MakeVisuallyNonEmptyCompositorFrame() {
+  constexpr gfx::Rect kOutputRect(0, 0, 100, 100);
+  return viz::CompositorFrameBuilder()
+      .AddRenderPass(
+          viz::RenderPassBuilder(kOutputRect)
+              .AddSolidColorQuad(kOutputRect, SkColors::kWhite)
+              .AddSolidColorQuad(gfx::Rect(0, 0, 10, 10), SkColors::kRed))
+      .Build();
+}
+
+// Leaves `contents` on an unmodified blank tab with a renderer-initiated
+// pending URL visible in place of about:blank.
+void StartPendingRendererInitiatedNavigationInNewTab(WebContentsImpl* contents,
+                                                     const GURL& url) {
+  NavigationController::LoadURLParams params(url);
+  params.is_renderer_initiated = true;
+  params.initiator_origin = url::Origin::Create(url);
+  params.transition_type = ui::PAGE_TRANSITION_LINK;
+  TestNavigationManager nav_manager(contents, url);
+  contents->GetController().LoadURLWithParams(params);
+  ASSERT_TRUE(nav_manager.WaitForRequestStart());
+
+  NavigationControllerImpl& controller = contents->GetController();
+  ASSERT_TRUE(controller.IsUnmodifiedBlankTab());
+  ASSERT_TRUE(controller.GetPendingEntry());
+  ASSERT_TRUE(controller.GetPendingEntry()->is_renderer_initiated());
+  ASSERT_EQ(controller.GetPendingEntry(), controller.GetVisibleEntry());
+  ASSERT_EQ(url, controller.GetVisibleEntry()->GetURL());
+}
+
+}  // namespace
+
+// The tests below submit CompositorFrames directly, which keeps them focused on
+// the browser and Viz plumbing and lets them cover frame sink lifetimes that a
+// non-compromised renderer cannot produce on demand. The attack itself is
+// covered end to end by the
+// NonEmptyCompositorFrameInInitialEmptyDocumentClearsPendingURL test in
+// SecurityExploitBrowserTest.
+
+// Verifies that a renderer cannot disarm the detection by asking for a new
+// CompositorFrameSink before drawing, which destroys the old
+// CompositorFrameSinkSupport in Viz. See https://crbug.com/40055319.
+IN_PROC_BROWSER_TEST_P(
+    NavigationControllerBrowserTest,
+    VisuallyNonEmptyCompositorFrameAfterRecreatingFrameSinkRevertsPendingURL) {
+  Shell* new_shell =
+      Shell::CreateNewWindow(shell()->web_contents()->GetBrowserContext(),
+                             GURL(), nullptr, gfx::Size(100, 100));
+  WebContentsImpl* new_contents =
+      static_cast<WebContentsImpl*>(new_shell->web_contents());
+  NavigationControllerImpl& controller = new_contents->GetController();
+
+  ASSERT_NO_FATAL_FAILURE(StartPendingRendererInitiatedNavigationInNewTab(
+      new_contents, embedded_test_server()->GetURL("/title1.html")));
+
+  // Recreate the CompositorFrameSink, as a renderer recovering from context
+  // loss would.
+  RenderWidgetHostImpl* rwh =
+      new_contents->GetPrimaryMainFrame()->GetRenderWidgetHost();
+  viz::FakeCompositorFrameSinkClient sink_client;
+  mojo::Remote<viz::mojom::CompositorFrameSink> compositor_frame_sink;
+  mojo::PendingRemote<blink::mojom::RenderInputRouterClient> rir_client;
+  std::ignore = rir_client.InitWithNewPipeAndPassReceiver();
+  rwh->CreateFrameSink(compositor_frame_sink.BindNewPipeAndPassReceiver(),
+                       sink_client.BindInterfaceRemote(),
+                       std::move(rir_client));
+  EXPECT_TRUE(controller.IsUnmodifiedBlankTab());
+
+  viz::LocalSurfaceId local_surface_id =
+      rwh->GetView()->GetLocalSurfaceId().is_valid()
+          ? rwh->GetView()->GetLocalSurfaceId()
+          : viz::LocalSurfaceId(1, 1, base::UnguessableToken::Create());
+  compositor_frame_sink->SubmitCompositorFrame(
+      local_surface_id, MakeVisuallyNonEmptyCompositorFrame(), std::nullopt, 0);
+
+  ASSERT_TRUE(base::test::RunUntil(
+      [&]() { return new_contents->HasAccessedInitialDocument(); }));
+  EXPECT_TRUE(controller.GetVisibleEntry()->IsInitialEntry());
+  EXPECT_EQ(GURL::EmptyGURL(), controller.GetVisibleEntry()->GetURL());
+}
+
+// Verifies that a renderer cannot suppress the notification by closing its
+// CompositorFrameSink pipe immediately after submitting a spoofed frame. The
+// surface has already activated and is still drawn, so the browser must still
+// be told. This test prevents a bypass found in an earlier
+// CompositorFrameSinkSupport-based approach. See https://crbug.com/40055319.
+IN_PROC_BROWSER_TEST_P(
+    NavigationControllerBrowserTest,
+    VisuallyNonEmptyCompositorFrameThenClosedSinkRevertsPendingURL) {
+  Shell* new_shell =
+      Shell::CreateNewWindow(shell()->web_contents()->GetBrowserContext(),
+                             GURL(), nullptr, gfx::Size(100, 100));
+  WebContentsImpl* new_contents =
+      static_cast<WebContentsImpl*>(new_shell->web_contents());
+  NavigationControllerImpl& controller = new_contents->GetController();
+
+  ASSERT_NO_FATAL_FAILURE(StartPendingRendererInitiatedNavigationInNewTab(
+      new_contents, embedded_test_server()->GetURL("/title1.html")));
+
+  RenderWidgetHostImpl* rwh =
+      new_contents->GetPrimaryMainFrame()->GetRenderWidgetHost();
+  // Held in an optional so the test can close the client pipe along with the
+  // sink, as a renderer tearing down its CompositorFrameSink would.
+  std::optional<viz::FakeCompositorFrameSinkClient> sink_client;
+  sink_client.emplace();
+  mojo::Remote<viz::mojom::CompositorFrameSink> compositor_frame_sink;
+  mojo::PendingRemote<blink::mojom::RenderInputRouterClient> rir_client;
+  std::ignore = rir_client.InitWithNewPipeAndPassReceiver();
+  rwh->CreateFrameSink(compositor_frame_sink.BindNewPipeAndPassReceiver(),
+                       sink_client->BindInterfaceRemote(),
+                       std::move(rir_client));
+
+  viz::LocalSurfaceId local_surface_id =
+      rwh->GetView()->GetLocalSurfaceId().is_valid()
+          ? rwh->GetView()->GetLocalSurfaceId()
+          : viz::LocalSurfaceId(1, 1, base::UnguessableToken::Create());
+  compositor_frame_sink->SubmitCompositorFrame(
+      local_surface_id, MakeVisuallyNonEmptyCompositorFrame(), std::nullopt, 0);
+
+  // Tear down the sink right after submitting, without ever drawing again.
+  compositor_frame_sink.reset();
+  sink_client.reset();
+
+  ASSERT_TRUE(base::test::RunUntil(
+      [&]() { return new_contents->HasAccessedInitialDocument(); }));
+  EXPECT_TRUE(controller.GetVisibleEntry()->IsInitialEntry());
+  EXPECT_EQ(GURL::EmptyGURL(), controller.GetVisibleEntry()->GetURL());
+}
+
+namespace {
+
+// Records the union of the InvalidateTypes passed to NavigationStateChanged().
+class RecordNavigationStateChangedDelegate : public WebContentsDelegate {
+ public:
+  RecordNavigationStateChangedDelegate() = default;
+  RecordNavigationStateChangedDelegate(
+      const RecordNavigationStateChangedDelegate&) = delete;
+  RecordNavigationStateChangedDelegate& operator=(
+      const RecordNavigationStateChangedDelegate&) = delete;
+  ~RecordNavigationStateChangedDelegate() override = default;
+
+  void NavigationStateChanged(WebContents* source,
+                              InvalidateTypes changed_flags) override {
+    ++call_count_;
+    changed_flags_ |= changed_flags;
+  }
+
+  int call_count() const { return call_count_; }
+  bool url_invalidated() const { return changed_flags_ & INVALIDATE_TYPE_URL; }
+
+  void Reset() {
+    call_count_ = 0;
+    changed_flags_ = 0;
+  }
+
+ private:
+  int call_count_ = 0;
+  int changed_flags_ = 0;
+};
+
+}  // namespace
+
+class NavigationControllerSkipUrlInvalidationBrowserTest
+    : public NavigationControllerBrowserTestBase,
+      public ::testing::WithParamInterface<bool> {
+ public:
+  NavigationControllerSkipUrlInvalidationBrowserTest() {
+    feature_list_.InitWithFeatureState(
+        features::kSkipUrlInvalidationForUnchangedSameDocumentReplacement,
+        IsFeatureEnabled());
+  }
+
+  bool IsFeatureEnabled() const { return GetParam(); }
+
+ protected:
+  // Runs `script` in the main frame, waits for the resulting same-document
+  // navigation to commit, and returns whether it invalidated the URL.
+  bool RunSameDocumentNavigationAndCheckUrlInvalidated(
+      RecordNavigationStateChangedDelegate& delegate,
+      const std::string& script) {
+    delegate.Reset();
+    FrameNavigateParamsCapturer capturer(
+        contents()->GetPrimaryFrameTree().root());
+    capturer.set_wait_for_load(false);
+    EXPECT_TRUE(ExecJs(shell(), script));
+    capturer.Wait();
+    EXPECT_TRUE(capturer.is_same_document());
+    EXPECT_GT(delegate.call_count(), 0);
+    return delegate.url_invalidated();
+  }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+};
+
+// Checks that a main frame same-document navigation that replaces the current
+// entry without changing its URL only invalidates the URL when the feature is
+// disabled, and that other same-document navigations always invalidate it.
+IN_PROC_BROWSER_TEST_P(NavigationControllerSkipUrlInvalidationBrowserTest,
+                       SameDocumentNavigations) {
+  GURL url(embedded_test_server()->GetURL("/title1.html"));
+  EXPECT_TRUE(NavigateToURL(shell(), url));
+
+  RecordNavigationStateChangedDelegate delegate;
+  contents()->SetDelegate(&delegate);
+
+  // history.replaceState() with the current URL.
+  EXPECT_EQ(!IsFeatureEnabled(),
+            RunSameDocumentNavigationAndCheckUrlInvalidated(
+                delegate, "history.replaceState({}, '', location.href)"));
+  EXPECT_EQ(url, contents()->GetLastCommittedURL());
+
+  // history.replaceState() with a different URL.
+  GURL replaced_url(embedded_test_server()->GetURL("/replaced"));
+  EXPECT_TRUE(RunSameDocumentNavigationAndCheckUrlInvalidated(
+      delegate, "history.replaceState({}, '', '/replaced')"));
+  EXPECT_EQ(replaced_url, contents()->GetLastCommittedURL());
+
+  // history.pushState() with the current URL creates a new entry.
+  EXPECT_TRUE(RunSameDocumentNavigationAndCheckUrlInvalidated(
+      delegate, "history.pushState({}, '', location.href)"));
+  EXPECT_EQ(replaced_url, contents()->GetLastCommittedURL());
+
+  // location.replace() to a new fragment changes the URL, whereas repeating it
+  // with the same fragment replaces the current entry without changing the URL.
+  GURL fragment_url(embedded_test_server()->GetURL("/replaced#foo"));
+  EXPECT_TRUE(RunSameDocumentNavigationAndCheckUrlInvalidated(
+      delegate, "location.replace('#foo')"));
+  EXPECT_EQ(fragment_url, contents()->GetLastCommittedURL());
+  EXPECT_EQ(!IsFeatureEnabled(),
+            RunSameDocumentNavigationAndCheckUrlInvalidated(
+                delegate, "location.replace('#foo')"));
+  EXPECT_EQ(fragment_url, contents()->GetLastCommittedURL());
+
+  // If the current entry's virtual URL changes during a same-document
+  // replacement (even when the real URL stays the same), the URL must still be
+  // invalidated.
+  NavigationEntryImpl* entry =
+      contents()->GetController().GetLastCommittedEntry();
+  const GURL virtual_url("http://virtual.example.com/");
+  BrowserURLHandlerImpl::URLHandler null_handler = nullptr;
+  BrowserURLHandlerImpl::URLHandler reset_to_real_url =
+      [](GURL* url, BrowserContext* browser_context) { return true; };
+  BrowserURLHandlerImpl::GetInstance()->AddHandlerPair(null_handler,
+                                                       reset_to_real_url);
+  entry->SetVirtualURL(virtual_url);
+  entry->set_update_virtual_url_with_url(true);
+  EXPECT_TRUE(RunSameDocumentNavigationAndCheckUrlInvalidated(
+      delegate, "history.replaceState({}, '', location.href)"));
+  EXPECT_EQ(fragment_url, entry->GetVirtualURL());
+  BrowserURLHandlerImpl::GetInstance()->RemoveHandlerForTesting(null_handler);
+
+  contents()->SetDelegate(shell());
+}
+
+// Verifies that when a browser-initiated navigation is pending, a same-document
+// history.replaceState() preserves the pending entry
+// (https://crbug.com/900036), skips INVALIDATE_TYPE_URL when the committed URL
+// is unchanged, and still invalidates the URL when the committed URL changes or
+// when the pending browser-initiated navigation later finishes or is canceled.
+IN_PROC_BROWSER_TEST_P(NavigationControllerSkipUrlInvalidationBrowserTest,
+                       SameDocumentReplaceStateWithPendingBrowserNavigation) {
+  GURL initial_url(embedded_test_server()->GetURL("/title1.html"));
+  EXPECT_TRUE(NavigateToURL(shell(), initial_url));
+
+  RecordNavigationStateChangedDelegate delegate;
+  contents()->SetDelegate(&delegate);
+  NavigationControllerImpl& controller = contents()->GetController();
+
+  // 1. Start a browser-initiated navigation and pause it before it commits, so
+  // that `pending_entry_` is active and visible.
+  GURL pending_url(embedded_test_server()->GetURL("/title2.html"));
+  TestNavigationManager stalled_navigation(contents(), pending_url);
+  controller.LoadURL(pending_url, Referrer(), ui::PAGE_TRANSITION_TYPED,
+                     std::string());
+  ASSERT_TRUE(stalled_navigation.WaitForRequestStart());
+  ASSERT_NE(nullptr, controller.GetPendingEntry());
+  EXPECT_EQ(pending_url, controller.GetPendingEntry()->GetURL());
+  EXPECT_EQ(pending_url, contents()->GetVisibleURL());
+
+  // 2. While the browser-initiated navigation is pending, an unchanged-URL
+  // history.replaceState() keeps the pending entry and only invalidates the URL
+  // when the feature is disabled.
+  EXPECT_EQ(
+      !IsFeatureEnabled(),
+      RunSameDocumentNavigationAndCheckUrlInvalidated(
+          delegate, "history.replaceState({step: 1}, '', location.href)"));
+  ASSERT_NE(nullptr, controller.GetPendingEntry());
+  EXPECT_EQ(pending_url, contents()->GetVisibleURL());
+  EXPECT_EQ(initial_url, contents()->GetLastCommittedURL());
+
+  // 3. A history.replaceState() that changes the committed entry's URL while
+  // the browser-initiated navigation is pending still invalidates the URL and
+  // preserves the pending entry.
+  GURL replaced_url(embedded_test_server()->GetURL("/replaced"));
+  EXPECT_TRUE(RunSameDocumentNavigationAndCheckUrlInvalidated(
+      delegate, "history.replaceState({step: 2}, '', '/replaced')"));
+  ASSERT_NE(nullptr, controller.GetPendingEntry());
+  EXPECT_EQ(pending_url, contents()->GetVisibleURL());
+  EXPECT_EQ(replaced_url, contents()->GetLastCommittedURL());
+
+  // 4. Canceling the pending browser-initiated navigation discards the pending
+  // entry, invalidates the URL, and reverts the visible URL to the replaced
+  // committed entry.
+  delegate.Reset();
+  contents()->Stop();
+  EXPECT_TRUE(delegate.url_invalidated());
+  EXPECT_EQ(nullptr, controller.GetPendingEntry());
+  EXPECT_EQ(replaced_url, contents()->GetVisibleURL());
+
+  // 5. Start another browser-initiated navigation, commit an unchanged-URL
+  // replaceState() while it is pending, and then let the browser-initiated
+  // navigation commit; the cross-document commit must invalidate the URL and
+  // update the visible URL.
+  TestNavigationManager committing_navigation(contents(), pending_url);
+  controller.LoadURL(pending_url, Referrer(), ui::PAGE_TRANSITION_TYPED,
+                     std::string());
+  ASSERT_TRUE(committing_navigation.WaitForRequestStart());
+  EXPECT_EQ(
+      !IsFeatureEnabled(),
+      RunSameDocumentNavigationAndCheckUrlInvalidated(
+          delegate, "history.replaceState({step: 3}, '', location.href)"));
+  EXPECT_EQ(pending_url, contents()->GetVisibleURL());
+
+  delegate.Reset();
+  ASSERT_TRUE(committing_navigation.WaitForNavigationFinished());
+  EXPECT_TRUE(committing_navigation.was_successful());
+  EXPECT_TRUE(delegate.url_invalidated());
+  EXPECT_EQ(nullptr, controller.GetPendingEntry());
+  EXPECT_EQ(pending_url, contents()->GetLastCommittedURL());
+  EXPECT_EQ(pending_url, contents()->GetVisibleURL());
+
+  contents()->SetDelegate(shell());
+}
+
+INSTANTIATE_TEST_SUITE_P(All,
+                         NavigationControllerSkipUrlInvalidationBrowserTest,
+                         ::testing::Bool());
 
 }  // namespace content

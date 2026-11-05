@@ -35,25 +35,11 @@ chromium-metrics-reviews@google.com.
 
 <!-- LINT.ThenChange(//chrome/android/java/src/org/chromium/chrome/browser/contextmenu/ChromeContextMenuPopulator.java:ContextualCustomActionType) -->
 
-<enum name="CustomTabsBrandingAppIdType">
-  <summary>Used by CustomTabs.Branding.AppIdType</summary>
-  <int value="0" label="INVALID"/>
-  <int value="1" label="PACKAGE_NAME"/>
-  <int value="2" label="REFERRER"/>
-</enum>
-
 <enum name="CustomTabsCloseCause">
   <int value="0" label="User action in Chrome (back press, close button)"/>
   <int value="1" label="User action in Android (home)"/>
   <int value="2" label="Auto-closed"/>
   <int value="3" label="AuthTab success"/>
-</enum>
-
-<enum name="CustomTabsConnection">
-  <int value="0" label="Disconnected from service w/o KeepAlive connection"/>
-  <int value="1" label="Disconnected from service with KeepAlive connection"/>
-  <int value="2" label="Connected to service w/o KeepAlive connection"/>
-  <int value="3" label="Connected to service with KeepAlive connection"/>
 </enum>
 
 <!--LINT.IfChange(CustomTabsFeatureUsed) -->
@@ -156,16 +142,6 @@ chromium-metrics-reviews@google.com.
 
 <!--LINT.ThenChange(//chrome/android/java/src/org/chromium/chrome/browser/customtabs/CustomTabsFeatureUsage.java:CustomTabsFeature) -->
 
-<enum name="CustomTabsMinimizedFeatureAvailability">
-  <int value="0" label="Available"/>
-  <int value="1"
-      label="(Obsolete) Unavailable: API level is too low. Removed 2024/02."/>
-  <int value="2" label="Unavailable: Low-end device"/>
-  <int value="3" label="Unavailable: System doesn't have PiP feature"/>
-  <int value="4" label="Unavailable: PiP permission isn't granted"/>
-  <int value="5" label="Unavailable: Device is on manufacturer exclude list"/>
-</enum>
-
 <!--LINT.IfChange(CustomTabsMtbHiddenReason) -->
 
 <enum name="CustomTabsMtbHiddenReason">
@@ -197,7 +173,7 @@ chromium-metrics-reviews@google.com.
 
 <enum name="CustomTabsOpenType">
   <int value="0" label="New"/>
-  <int value="1" label="Omnibox"/>
+  <int value="1" label="(Obsolete) Omnibox. Removed 2026/11."/>
   <int value="2" label="RestoreOk"/>
   <int value="3" label="RestoreFail"/>
 </enum>
@@ -276,22 +252,6 @@ chromium-metrics-reviews@google.com.
 
 <!--LINT.ThenChange(//chrome/android/java/src/org/chromium/chrome/browser/customtabs/CustomTabsTimeoutOutcome.java:CustomTabsResetTimeoutOutcome) -->
 
-<enum name="CustomTabsSessionDisconnectStatus">
-  <int value="0" label="Unknown"/>
-  <int value="1" label="Custom Tab in Foreground"/>
-  <int value="2" label="Custom Tab in Foreground, KEEP_ALIVE set"/>
-  <int value="3" label="Custom Tab in Background"/>
-  <int value="4" label="Custom Tab in Background, KEEP_ALIVE set"/>
-  <int value="5" label="Custom Tab in Foreground, the system is low on memory"/>
-  <int value="6"
-      label="Custom Tab in Foreground, KEEP_ALIVE set, the system is low on
-             memory"/>
-  <int value="7" label="Custom Tab in Background, the system is low on memory"/>
-  <int value="8"
-      label="Custom Tab in Background, KEEP_ALIVE set, the system is low on
-             memory"/>
-</enum>
-
 <!-- LINT.IfChange(FinishReason) -->
 
 <enum name="FinishReason">
@@ -353,23 +313,6 @@ chromium-metrics-reviews@google.com.
   <int value="2" label="High confidence."/>
   <int value="3" label="Low and High confidence."/>
   <int value="4" label="Invalid session."/>
-</enum>
-
-<enum name="PageInsightsEvent">
-  <int value="0" label="Tap on Page Insights tab from Overflow menu"/>
-  <int value="1" label="Page Insights is auto-triggered in Peek state"/>
-  <int value="2" label="Page Insights is in Peek state"/>
-  <int value="3" label="Page Insights is in Expanded state"/>
-  <int value="4" label="Dismiss Page Insights from Peek state"/>
-  <int value="5" label="Dismiss Page Insights from Expanded state"/>
-  <int value="6"
-      label="Tap on XSurface view in Page Insights feature that opens a new
-             URL"/>
-  <int value="7"
-      label="Tap on XSurface view in Page Insights feature that shares a URL"/>
-  <int value="8"
-      label="Tap on XSurface view in Page Insights feature that opens a new
-             child page within the feature"/>
 </enum>
 
 <enum name="TwaLaunchHandlerClientMode">

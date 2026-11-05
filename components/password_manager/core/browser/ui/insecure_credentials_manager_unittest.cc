@@ -14,7 +14,6 @@
 #include "base/test/mock_callback.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
-#include "base/timer/elapsed_timer.h"
 #include "build/build_config.h"
 #include "components/affiliations/core/browser/fake_affiliation_service.h"
 #include "components/affiliations/core/browser/mock_affiliation_service.h"
@@ -44,8 +43,6 @@ constexpr char16_t kPassword216[] =
 constexpr char16_t kWeakPassword1[] = u"123456";
 constexpr char16_t kWeakPassword216[] =
     u"abcdabcdabcdabcdabcdabcdabcdabcdabcdabcda";
-// Delay in milliseconds.
-constexpr int kDelay = 2;
 
 using affiliations::FacetURI;
 using ::testing::ElementsAre;
@@ -80,7 +77,21 @@ PasswordForm MakeSavedPassword(
 LeakCheckCredential MakeLeakCredential(std::u16string_view username,
                                        std::u16string_view password) {
   return LeakCheckCredential(std::u16string(username),
-                             std::u16string(password));
+                             PasswordString(std::u16string(password)));
+}
+
+CredentialUIEntry WithIssues(
+    CredentialUIEntry credential,
+    std::initializer_list<InsecureType> insecure_types) {
+  for (InsecureType insecure_type : insecure_types) {
+    credential.password_issues.insert({insecure_type, InsecurityMetadata()});
+  }
+  return credential;
+}
+
+CredentialUIEntry WithIssue(CredentialUIEntry credential,
+                            InsecureType insecure_type) {
+  return WithIssues(std::move(credential), {insecure_type});
 }
 
 class InsecureCredentialsManagerTest : public testing::TestWithParam<bool> {
@@ -111,13 +122,11 @@ class InsecureCredentialsManagerTest : public testing::TestWithParam<bool> {
     for (const auto& password : saved_passwords) {
       if (password.GetFirstSignonRealm() == signon_realm &&
           password.username == username) {
-        return password.password;
+        return password.password.value();
       }
     }
     return std::u16string();
   }
-
-  void AdvanceClock(base::TimeDelta time) { task_env_.AdvanceClock(time); }
 
  private:
   base::test::TaskEnvironment task_env_{
@@ -333,15 +342,13 @@ TEST_F(InsecureCredentialsManagerTest, StartWeakCheckOnEmptyPasswordsList) {
 
   RunUntilIdle();
   provider().StartWeakCheck();
-  AdvanceClock(base::Milliseconds(kDelay));
   RunUntilIdle();
 
   EXPECT_THAT(provider().GetInsecureCredentialEntries(), IsEmpty());
 
   histogram_tester.ExpectUniqueSample(
       "PasswordManager.WeakCheck.CheckedPasswords", 0, 1);
-  histogram_tester.ExpectUniqueSample("PasswordManager.WeakCheck.Time", kDelay,
-                                      1);
+  histogram_tester.ExpectTotalCount("PasswordManager.WeakCheck.Time", 1);
   histogram_tester.ExpectUniqueSample("PasswordManager.WeakCheck.WeakPasswords",
                                       0, 1);
 }
@@ -361,15 +368,13 @@ TEST_F(InsecureCredentialsManagerTest, WeakCredentialsNotFound) {
       IsEmpty());
 
   provider().StartWeakCheck();
-  AdvanceClock(base::Milliseconds(2 * kDelay));
   RunUntilIdle();
 
   EXPECT_THAT(provider().GetInsecureCredentialEntries(), IsEmpty());
 
   histogram_tester.ExpectUniqueSample(
       "PasswordManager.WeakCheck.CheckedPasswords", 2, 1);
-  histogram_tester.ExpectUniqueSample("PasswordManager.WeakCheck.Time",
-                                      2 * kDelay, 1);
+  histogram_tester.ExpectTotalCount("PasswordManager.WeakCheck.Time", 1);
   histogram_tester.ExpectUniqueSample("PasswordManager.WeakCheck.WeakPasswords",
                                       0, 1);
   histogram_tester.ExpectUniqueSample("PasswordManager.WeakCheck.PasswordScore",
@@ -391,16 +396,15 @@ TEST_F(InsecureCredentialsManagerTest, DetectedWeakCredential) {
       IsEmpty());
 
   provider().StartWeakCheck();
-  AdvanceClock(base::Milliseconds(kDelay));
   RunUntilIdle();
 
   EXPECT_THAT(provider().GetInsecureCredentialEntries(),
-              ElementsAre(CredentialUIEntry(passwords[0])));
+              ElementsAre(WithIssue(CredentialUIEntry(passwords[0]),
+                                    InsecureType::kWeak)));
 
   histogram_tester.ExpectUniqueSample(
       "PasswordManager.WeakCheck.CheckedPasswords", 2, 1);
-  histogram_tester.ExpectUniqueSample("PasswordManager.WeakCheck.Time", kDelay,
-                                      1);
+  histogram_tester.ExpectTotalCount("PasswordManager.WeakCheck.Time", 1);
   histogram_tester.ExpectUniqueSample("PasswordManager.WeakCheck.WeakPasswords",
                                       1, 1);
   histogram_tester.ExpectTotalCount("PasswordManager.WeakCheck.PasswordScore",
@@ -422,17 +426,17 @@ TEST_F(InsecureCredentialsManagerTest,
 
   base::HistogramTester histogram_tester;
   provider().StartWeakCheck();
-  AdvanceClock(base::Milliseconds(kDelay));
   RunUntilIdle();
 
-  EXPECT_THAT(provider().GetInsecureCredentialEntries(),
-              ElementsAre(CredentialUIEntry(passwords[0]),
-                          CredentialUIEntry(passwords[1])));
+  EXPECT_THAT(
+      provider().GetInsecureCredentialEntries(),
+      ElementsAre(
+          WithIssue(CredentialUIEntry(passwords[0]), InsecureType::kWeak),
+          WithIssue(CredentialUIEntry(passwords[1]), InsecureType::kWeak)));
 
   histogram_tester.ExpectUniqueSample(
       "PasswordManager.WeakCheck.CheckedPasswords", 2, 1);
-  histogram_tester.ExpectUniqueSample("PasswordManager.WeakCheck.Time", kDelay,
-                                      1);
+  histogram_tester.ExpectTotalCount("PasswordManager.WeakCheck.Time", 1);
   histogram_tester.ExpectUniqueSample("PasswordManager.WeakCheck.WeakPasswords",
                                       2, 1);
   histogram_tester.ExpectTotalCount("PasswordManager.WeakCheck.PasswordScore",
@@ -453,16 +457,15 @@ TEST_F(InsecureCredentialsManagerTest,
 
   base::HistogramTester histogram_tester;
   provider().StartWeakCheck();
-  AdvanceClock(base::Milliseconds(kDelay));
   RunUntilIdle();
 
   EXPECT_THAT(provider().GetInsecureCredentialEntries(),
-              ElementsAre(CredentialUIEntry(passwords[0])));
+              ElementsAre(WithIssue(CredentialUIEntry(passwords[0]),
+                                    InsecureType::kWeak)));
 
   histogram_tester.ExpectUniqueSample(
       "PasswordManager.WeakCheck.CheckedPasswords", 1, 1);
-  histogram_tester.ExpectUniqueSample("PasswordManager.WeakCheck.Time", kDelay,
-                                      1);
+  histogram_tester.ExpectTotalCount("PasswordManager.WeakCheck.Time", 1);
   histogram_tester.ExpectUniqueSample("PasswordManager.WeakCheck.WeakPasswords",
                                       1, 1);
   histogram_tester.ExpectUniqueSample("PasswordManager.WeakCheck.PasswordScore",
@@ -484,7 +487,6 @@ TEST_F(InsecureCredentialsManagerTest, BothWeakAndCompromisedCredentialsExist) {
 
   base::HistogramTester histogram_tester;
   provider().StartWeakCheck();
-  AdvanceClock(base::Milliseconds(kDelay));
   RunUntilIdle();
 
   std::vector<CredentialUIEntry> credentials;
@@ -501,8 +503,7 @@ TEST_F(InsecureCredentialsManagerTest, BothWeakAndCompromisedCredentialsExist) {
 
   histogram_tester.ExpectUniqueSample(
       "PasswordManager.WeakCheck.CheckedPasswords", 2, 1);
-  histogram_tester.ExpectUniqueSample("PasswordManager.WeakCheck.Time", kDelay,
-                                      1);
+  histogram_tester.ExpectTotalCount("PasswordManager.WeakCheck.Time", 1);
   histogram_tester.ExpectUniqueSample("PasswordManager.WeakCheck.WeakPasswords",
                                       1, 1);
   histogram_tester.ExpectTotalCount("PasswordManager.WeakCheck.PasswordScore",
@@ -524,18 +525,18 @@ TEST_F(InsecureCredentialsManagerTest, SingleCredentialIsWeakAndCompromised) {
 
   base::HistogramTester histogram_tester;
   provider().StartWeakCheck();
-  AdvanceClock(base::Milliseconds(kDelay));
   RunUntilIdle();
 
   EXPECT_THAT(provider().GetInsecureCredentialEntries(),
-              ElementsAre(CredentialUIEntry(passwords[0])));
+              ElementsAre(WithIssue(CredentialUIEntry(passwords[0]),
+                                    InsecureType::kWeak)));
   EXPECT_THAT(provider().GetInsecureCredentialEntries(),
-              ElementsAre(CredentialUIEntry(passwords[0])));
+              ElementsAre(WithIssue(CredentialUIEntry(passwords[0]),
+                                    InsecureType::kWeak)));
 
   histogram_tester.ExpectUniqueSample(
       "PasswordManager.WeakCheck.CheckedPasswords", 1, 1);
-  histogram_tester.ExpectUniqueSample("PasswordManager.WeakCheck.Time", kDelay,
-                                      1);
+  histogram_tester.ExpectTotalCount("PasswordManager.WeakCheck.Time", 1);
   histogram_tester.ExpectUniqueSample("PasswordManager.WeakCheck.WeakPasswords",
                                       1, 1);
   histogram_tester.ExpectUniqueSample("PasswordManager.WeakCheck.PasswordScore",
@@ -554,8 +555,8 @@ TEST_F(InsecureCredentialsManagerTest, SaveCompromisedPassword) {
 
   EXPECT_THAT(provider().GetInsecureCredentialEntries(), IsEmpty());
 
-  password_form.password_issues[InsecureType::kLeaked].create_time =
-      base::Time::Now();
+  password_form.password_issues[InsecureType::kLeaked] = InsecurityMetadata(
+      base::Time::Now(), IsMuted(false), TriggerBackendNotification(true));
   provider().SaveInsecureCredential(credential,
                                     TriggerBackendNotification(true));
   RunUntilIdle();
@@ -1006,7 +1007,7 @@ TEST_F(InsecureCredentialsManagerTest, UpdateCompromisedPassword) {
 
   CredentialUIEntry original_credential(password_form),
       updated_credential = original_credential;
-  updated_credential.password = kPassword216;
+  updated_credential.password = PasswordString(kPassword216);
   presenter().EditSavedCredentials(original_credential, updated_credential);
   RunUntilIdle();
 
@@ -1025,11 +1026,12 @@ TEST_F(InsecureCredentialsManagerTest, UpdatedWeakPasswordBecomesStrong) {
   provider().StartWeakCheck();
   RunUntilIdle();
   EXPECT_THAT(provider().GetInsecureCredentialEntries(),
-              ElementsAre(CredentialUIEntry(password_form)));
+              ElementsAre(WithIssue(CredentialUIEntry(password_form),
+                                    InsecureType::kWeak)));
 
   CredentialUIEntry original_credential(password_form),
       updated_credential = original_credential;
-  updated_credential.password = kPassword216;
+  updated_credential.password = PasswordString(kPassword216);
   presenter().EditSavedCredentials(original_credential, updated_credential);
   RunUntilIdle();
 
@@ -1048,16 +1050,17 @@ TEST_F(InsecureCredentialsManagerTest, UpdatedWeakPasswordRemainsWeak) {
   provider().StartWeakCheck();
   RunUntilIdle();
   EXPECT_THAT(provider().GetInsecureCredentialEntries(),
-              ElementsAre(CredentialUIEntry(password_form)));
+              ElementsAre(WithIssue(CredentialUIEntry(password_form),
+                                    InsecureType::kWeak)));
 
   CredentialUIEntry original_credential(password_form),
       updated_credential = original_credential;
-  updated_credential.password = kWeakPassword216;
+  updated_credential.password = PasswordString(kWeakPassword216);
   presenter().EditSavedCredentials(original_credential, updated_credential);
   RunUntilIdle();
 
   EXPECT_THAT(provider().GetInsecureCredentialEntries(),
-              ElementsAre(updated_credential));
+              ElementsAre(WithIssue(updated_credential, InsecureType::kWeak)));
 }
 
 // Verifies that GetInsecureCredentialEntries() returns sorted weak credentials
@@ -1077,11 +1080,16 @@ TEST_F(InsecureCredentialsManagerTest, GetWeakCredentialsReturnsSortedData) {
   provider().StartWeakCheck();
   RunUntilIdle();
 
-  EXPECT_THAT(provider().GetInsecureCredentialEntries(),
-              ElementsAre(CredentialUIEntry(password_forms[0]),
-                          CredentialUIEntry(password_forms[1]),
-                          CredentialUIEntry(password_forms[2]),
-                          CredentialUIEntry(password_forms[3])));
+  EXPECT_THAT(
+      provider().GetInsecureCredentialEntries(),
+      ElementsAre(WithIssues(CredentialUIEntry(password_forms[0]),
+                             {InsecureType::kWeak, InsecureType::kReused}),
+                  WithIssues(CredentialUIEntry(password_forms[1]),
+                             {InsecureType::kWeak, InsecureType::kReused}),
+                  WithIssues(CredentialUIEntry(password_forms[2]),
+                             {InsecureType::kWeak, InsecureType::kReused}),
+                  WithIssues(CredentialUIEntry(password_forms[3]),
+                             {InsecureType::kWeak, InsecureType::kReused})));
 }
 
 // Verifies that GetInsecureCredentialEntries() returns sorted weak credentials
@@ -1098,8 +1106,10 @@ TEST_F(InsecureCredentialsManagerTest, GetInsecureCredentialEntries) {
   RunUntilIdle();
 
   EXPECT_THAT(provider().GetInsecureCredentialEntries(),
-              ElementsAre(CredentialUIEntry(password_forms[0]),
-                          CredentialUIEntry(password_forms[1])));
+              ElementsAre(WithIssue(CredentialUIEntry(password_forms[0]),
+                                    InsecureType::kWeak),
+                          WithIssue(CredentialUIEntry(password_forms[1]),
+                                    InsecureType::kWeak)));
 }
 
 TEST_F(InsecureCredentialsManagerTest, GetInsecureCredentialsReused) {
@@ -1114,14 +1124,16 @@ TEST_F(InsecureCredentialsManagerTest, GetInsecureCredentialsReused) {
 
   base::HistogramTester histogram_tester;
   provider().StartReuseCheck();
-  AdvanceClock(base::Milliseconds(kDelay));
   RunUntilIdle();
 
-  EXPECT_THAT(provider().GetInsecureCredentialEntries(),
-              ElementsAre(CredentialUIEntry(form1), CredentialUIEntry(form2)));
+  EXPECT_THAT(
+      provider().GetInsecureCredentialEntries(),
+      ElementsAre(WithIssues(CredentialUIEntry(form1),
+                             {InsecureType::kWeak, InsecureType::kReused}),
+                  WithIssues(CredentialUIEntry(form2),
+                             {InsecureType::kWeak, InsecureType::kReused})));
 
-  histogram_tester.ExpectUniqueSample("PasswordManager.ReuseCheck.Time", kDelay,
-                                      1);
+  histogram_tester.ExpectTotalCount("PasswordManager.ReuseCheck.Time", 1);
 }
 
 TEST_F(InsecureCredentialsManagerTest, UpdatingReusedPasswordFixesTheIssue) {
@@ -1135,11 +1147,13 @@ TEST_F(InsecureCredentialsManagerTest, UpdatingReusedPasswordFixesTheIssue) {
   provider().StartReuseCheck();
   RunUntilIdle();
 
-  ASSERT_THAT(provider().GetInsecureCredentialEntries(),
-              ElementsAre(CredentialUIEntry(form1), CredentialUIEntry(form2)));
+  ASSERT_THAT(
+      provider().GetInsecureCredentialEntries(),
+      ElementsAre(WithIssue(CredentialUIEntry(form1), InsecureType::kReused),
+                  WithIssue(CredentialUIEntry(form2), InsecureType::kReused)));
 
   CredentialUIEntry updated_credential(form1);
-  updated_credential.password = kPassword216;
+  updated_credential.password = PasswordString(kPassword216);
   presenter().EditSavedCredentials(CredentialUIEntry(form1),
                                    updated_credential);
   RunUntilIdle();
@@ -1333,7 +1347,8 @@ TEST_F(InsecureCredentialsManagerWithTwoStoresTest,
   profile_store().AddLogin(FromPasswordForm(
       MakeSavedPassword(kExampleCom, kUsername1, kWeakPassword1)));
   account_store().AddLogin(FromPasswordForm(
-      MakeSavedPassword(kExampleCom, kUsername1, kWeakPassword1)));
+      MakeSavedPassword(kExampleCom, kUsername1, kWeakPassword1, u"",
+                        PasswordForm::Store::kAccountStore)));
   RunUntilIdle();
   provider().StartWeakCheck();
   RunUntilIdle();
@@ -1344,7 +1359,8 @@ TEST_F(InsecureCredentialsManagerWithTwoStoresTest,
       PasswordForm::Store::kProfileStore | PasswordForm::Store::kAccountStore;
 
   EXPECT_THAT(provider().GetInsecureCredentialEntries(),
-              ElementsAre(CredentialUIEntry(expected_form)));
+              ElementsAre(WithIssue(CredentialUIEntry(expected_form),
+                                    InsecureType::kWeak)));
 }
 
 }  // namespace password_manager

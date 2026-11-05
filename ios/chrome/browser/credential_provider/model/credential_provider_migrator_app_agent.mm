@@ -12,6 +12,7 @@
 #import "base/functional/callback.h"
 #import "base/functional/callback_helpers.h"
 #import "base/memory/raw_ptr.h"
+#import "base/task/sequenced_task_runner.h"
 #import "components/keyed_service/core/service_access_type.h"
 #import "components/password_manager/core/browser/features/password_manager_features_util.h"
 #import "components/password_manager/core/browser/password_form.h"
@@ -27,7 +28,6 @@
 #import "ios/chrome/browser/shared/model/browser/browser.h"
 #import "ios/chrome/browser/shared/model/browser/browser_list.h"
 #import "ios/chrome/browser/shared/model/browser/browser_list_factory.h"
-#import "ios/chrome/browser/shared/model/browser/browser_provider.h"
 #import "ios/chrome/browser/shared/model/browser/browser_provider_interface.h"
 #import "ios/chrome/browser/shared/model/profile/features.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
@@ -133,9 +133,19 @@ void MigrationCompleteForProfile(
         return IOSPasskeyModelFactory::GetForProfile(profile) == passkeyModel;
       });
 
-  if (iter != loadedProfiles.end()) {
-    [self migrateNextProfile];
+  if (iter == loadedProfiles.end()) {
+    return;
   }
+
+  // The migration writes back into `passkeyModel`, which would re-enter the
+  // observer list that is currently being iterated to deliver this very
+  // notification. Post the work instead so that it runs once the notification
+  // loop has unwound.
+  __weak __typeof__(self) weakSelf = self;
+  base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+      FROM_HERE, base::BindOnce(^{
+        [weakSelf migrateNextProfile];
+      }));
 }
 
 - (void)passkeyModelDidChange {

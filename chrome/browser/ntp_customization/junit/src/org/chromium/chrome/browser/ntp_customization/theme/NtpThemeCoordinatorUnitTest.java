@@ -5,6 +5,7 @@
 package org.chromium.chrome.browser.ntp_customization.theme;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -24,9 +25,12 @@ import android.content.Context;
 import android.content.res.Resources;
 import android.graphics.Bitmap;
 import android.view.ContextThemeWrapper;
+import android.view.View;
 
 import androidx.test.core.app.ApplicationProvider;
 
+import org.jni_zero.JniUniquePtr;
+import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
@@ -50,11 +54,11 @@ import org.chromium.chrome.browser.ntp_customization.NtpCustomizationUtils;
 import org.chromium.chrome.browser.ntp_customization.NtpCustomizationUtils.NtpBackgroundType;
 import org.chromium.chrome.browser.ntp_customization.R;
 import org.chromium.chrome.browser.ntp_customization.theme.chrome_colors.NtpChromeColorsCoordinator;
-import org.chromium.chrome.browser.ntp_customization.theme.chrome_colors.NtpThemeColorInfo.NtpThemeColorId;
 import org.chromium.chrome.browser.ntp_customization.theme.theme_collections.BackgroundCollection;
 import org.chromium.chrome.browser.ntp_customization.theme.theme_collections.CollectionImage;
 import org.chromium.chrome.browser.ntp_customization.theme.theme_collections.CustomBackgroundInfo;
 import org.chromium.chrome.browser.ntp_customization.theme.theme_collections.NtpThemeCollectionBridge;
+import org.chromium.chrome.browser.ntp_customization.theme.theme_collections.NtpThemeCollectionBridge.NativeNtpThemeCollectionBridge;
 import org.chromium.chrome.browser.ntp_customization.theme.theme_collections.NtpThemeCollectionBridgeJni;
 import org.chromium.chrome.browser.ntp_customization.theme.theme_collections.NtpThemeCollectionManager;
 import org.chromium.chrome.browser.ntp_customization.theme.theme_collections.NtpThemeCollectionsCoordinator;
@@ -78,7 +82,6 @@ public class NtpThemeCoordinatorUnitTest {
     @Mock private Runnable mDismissBottomSheet;
     @Mock private NtpThemeCollectionBridge.Natives mNtpThemeCollectionBridgeJniMock;
     @Mock private NtpCustomizationConfigManager mNtpCustomizationConfigManager;
-    @Mock private NtpThemeBottomSheetView mNtpThemeBottomSheetView;
     @Mock private Runnable mResetCustomizedThemeRunnable;
     @Mock private NtpThemeCollectionsCoordinator mNtpThemeCollectionsCoordinator;
     @Mock private ImageFetcher mImageFetcher;
@@ -91,6 +94,8 @@ public class NtpThemeCoordinatorUnitTest {
     private NtpThemeMediator mMediator;
     @Mock private ThemeBottomSheetObserver mMockObserver;
 
+    private JniUniquePtr<NativeNtpThemeCollectionBridge> mNativeNtpThemeCollectionBridge;
+
     @Before
     public void setUp() {
         mContext =
@@ -98,7 +103,9 @@ public class NtpThemeCoordinatorUnitTest {
                         ApplicationProvider.getApplicationContext(),
                         R.style.Theme_BrowserUI_DayNight);
         NtpThemeCollectionBridgeJni.setInstanceForTesting(mNtpThemeCollectionBridgeJniMock);
-        when(mNtpThemeCollectionBridgeJniMock.init(any(), any())).thenReturn(1L);
+        mNativeNtpThemeCollectionBridge = JniUniquePtr.createForTesting(1L);
+        when(mNtpThemeCollectionBridgeJniMock.init(any(), any()))
+                .thenReturn(mNativeNtpThemeCollectionBridge);
         NtpCustomizationConfigManager.setInstanceForTesting(mNtpCustomizationConfigManager);
         NtpCustomizationUtils.setImageFetcherForTesting(mImageFetcher);
 
@@ -108,9 +115,13 @@ public class NtpThemeCoordinatorUnitTest {
 
         mMediator = spy(mCoordinator.getMediatorForTesting());
         mCoordinator.setMediatorForTesting(mMediator);
-        mCoordinator.setNtpThemeBottomSheetViewForTesting(mNtpThemeBottomSheetView);
         mCoordinator.setNtpThemeCollectionsCoordinatorForTesting(mNtpThemeCollectionsCoordinator);
         mCoordinator.addThemeBottomSheetObserverForTesting(mMockObserver);
+    }
+
+    @After
+    public void tearDown() {
+        mNativeNtpThemeCollectionBridge.destroy();
     }
 
     @Test
@@ -125,9 +136,16 @@ public class NtpThemeCoordinatorUnitTest {
 
     @Test
     public void testDestroy() {
+        ArgumentCaptor<View> viewCaptor = ArgumentCaptor.forClass(View.class);
+        verify(mBottomSheetDelegate).registerBottomSheetLayout(eq(THEME), viewCaptor.capture());
+        NtpThemeBottomSheetView bottomSheetView = (NtpThemeBottomSheetView) viewCaptor.getValue();
+        View imageFromDiskSection = bottomSheetView.getItemBySectionType(IMAGE_FROM_DISK);
+        assertTrue(imageFromDiskSection.hasOnClickListeners());
+
         mCoordinator.destroy();
 
-        verify(mNtpThemeBottomSheetView).destroy();
+        // Destroying the bottom sheet view clears the section click listeners.
+        assertFalse(imageFromDiskSection.hasOnClickListeners());
     }
 
     @Test
@@ -249,9 +267,9 @@ public class NtpThemeCoordinatorUnitTest {
                 mock(NtpChromeColorsCoordinator.class);
         mCoordinator.setNtpChromeColorsCoordinatorForTesting(mockChromeColorsCoordinator);
         mCoordinator.addThemeBottomSheetObserverForTesting(mockChromeColorsCoordinator);
-        mCoordinator.onChromeColorSelected(NtpThemeColorId.NTP_COLORS_BLUE);
+        mCoordinator.onChromeColorSelected();
 
-        verify(mMediator).onChromeColorSelected(NtpThemeColorId.NTP_COLORS_BLUE);
+        verify(mMediator).onChromeColorSelected();
         // Verifies that notifyBottomSheetBackgroundTypeChanged() is called and triggers
         // onBackgroundTypeChanged() for all registered observers
         verify(mMockObserver).onBackgroundTypeChanged();
@@ -280,7 +298,6 @@ public class NtpThemeCoordinatorUnitTest {
         NtpThemeCoordinator coordinator =
                 new NtpThemeCoordinator(
                         spyContext, mBottomSheetDelegate, mProfile, mDismissBottomSheet);
-        coordinator.setNtpThemeBottomSheetViewForTesting(mNtpThemeBottomSheetView);
 
         Bitmap bitmap = Bitmap.createBitmap(10, 10, Bitmap.Config.ARGB_8888);
         coordinator.onImageSelectedForPreview(bitmap, FILE_ID_HASH);

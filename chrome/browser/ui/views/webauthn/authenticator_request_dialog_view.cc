@@ -90,7 +90,7 @@ void AuthenticatorRequestDialogView::Show() {
 
 void AuthenticatorRequestDialogView::ReplaceCurrentSheetWith(
     std::unique_ptr<AuthenticatorRequestSheetView> new_sheet) {
-  DCHECK(new_sheet);
+  CHECK(new_sheet, base::NotFatalUntil::M162);
 
   const bool is_sheet_transition = (sheet_ != nullptr);
   if (sheet_) {
@@ -116,7 +116,7 @@ void AuthenticatorRequestDialogView::ReplaceCurrentSheetWith(
 }
 
 void AuthenticatorRequestDialogView::UpdateUIForCurrentSheet() {
-  DCHECK(sheet_);
+  CHECK(sheet_, base::NotFatalUntil::M162);
 
   sheet_->ReInitChildViews();
 
@@ -233,14 +233,14 @@ void AuthenticatorRequestDialogView::UpdateUIForCurrentSheet() {
     if (show_spinner) {
       // Show the spinner and hide the button text.
       existing_container->SetVisible(true);
-      ok_button->SetBgColorIdOverride(ui::kColorButtonBackgroundProminent);
+      ok_button->SetBgColorOverride(ui::kColorButtonBackgroundProminent);
       ok_button->SetTextColor(views::Button::ButtonState::STATE_DISABLED,
                               ui::kColorButtonBackgroundProminent);
     } else {
       if (existing_container) {
         existing_container->SetVisible(false);
       }
-      ok_button->SetBgColorIdOverride(std::nullopt);
+      ok_button->SetBgColorOverride(std::nullopt);
     }
   }
 

@@ -129,6 +129,8 @@ TEST_F(HTMLMetaElementTest, ViewportFit_Cover_IsUseCounted) {
   // after data collected (end of '23)
   EXPECT_TRUE(GetDocument().IsUseCounted(
       WebFeature::kViewportFitCoverOrSafeAreaInsetBottom));
+  EXPECT_FALSE(GetDocument().IsUseCounted(
+      WebFeature::kViewportFitCoverAndSafeAreaInsetTop));
 }
 
 TEST_F(HTMLMetaElementTest, ColorSchemeProcessing_FirstWins) {
@@ -148,7 +150,7 @@ TEST_F(HTMLMetaElementTest, ColorSchemeProcessing_Remove) {
 
   ExpectPageColorSchemes(static_cast<ColorSchemeFlags>(ColorSchemeFlag::kDark));
 
-  GetDocument().getElementById(AtomicString("first-meta"))->remove();
+  GetElementById("first-meta")->remove();
 
   ExpectPageColorSchemes(
       static_cast<ColorSchemeFlags>(ColorSchemeFlag::kLight));
@@ -187,9 +189,8 @@ TEST_F(HTMLMetaElementTest, ColorSchemeProcessing_SetAttribute) {
 
   ExpectPageColorSchemes(static_cast<ColorSchemeFlags>(ColorSchemeFlag::kDark));
 
-  GetDocument()
-      .getElementById(AtomicString("meta"))
-      ->setAttribute(html_names::kContentAttr, AtomicString("light"));
+  GetElementById("meta")->setAttribute(html_names::kContentAttr,
+                                       AtomicString("light"));
 
   ExpectPageColorSchemes(
       static_cast<ColorSchemeFlags>(ColorSchemeFlag::kLight));
@@ -202,9 +203,7 @@ TEST_F(HTMLMetaElementTest, ColorSchemeProcessing_RemoveContentAttribute) {
 
   ExpectPageColorSchemes(static_cast<ColorSchemeFlags>(ColorSchemeFlag::kDark));
 
-  GetDocument()
-      .getElementById(AtomicString("meta"))
-      ->removeAttribute(html_names::kContentAttr);
+  GetElementById("meta")->removeAttribute(html_names::kContentAttr);
 
   ExpectPageColorSchemes(
       static_cast<ColorSchemeFlags>(ColorSchemeFlag::kNormal));
@@ -217,9 +216,7 @@ TEST_F(HTMLMetaElementTest, ColorSchemeProcessing_RemoveNameAttribute) {
 
   ExpectPageColorSchemes(static_cast<ColorSchemeFlags>(ColorSchemeFlag::kDark));
 
-  GetDocument()
-      .getElementById(AtomicString("meta"))
-      ->removeAttribute(html_names::kNameAttr);
+  GetElementById("meta")->removeAttribute(html_names::kNameAttr);
 
   ExpectPageColorSchemes(
       static_cast<ColorSchemeFlags>(ColorSchemeFlag::kNormal));

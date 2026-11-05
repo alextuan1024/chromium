@@ -23,7 +23,6 @@
 #include "components/signin/public/base/signin_metrics.h"
 #include "components/signin/public/base/signin_pref_names.h"
 #include "components/signin/public/base/signin_prefs.h"
-#include "components/signin/public/base/signin_switches.h"
 #include "components/signin/public/identity_manager/account_info.h"
 #include "components/signin/public/identity_manager/tribool.h"
 #include "google_apis/gaia/core_account_id.h"
@@ -109,7 +108,7 @@ void MaybeRecordWebSigninToChromeSigninTimes(
     signin_metrics::AccessPoint access_point) {
   std::string_view access_point_string;
   switch (access_point) {
-    case signin_metrics::AccessPoint::kAvatarBubbleSignInWithSyncPromo:
+    case signin_metrics::AccessPoint::kProfileMenuPrimaryButton:
       access_point_string = "ProfileMenu";
       break;
     case signin_metrics::AccessPoint::kPasswordBubble:
@@ -130,7 +129,6 @@ void MaybeRecordWebSigninToChromeSigninTimes(
     case signin_metrics::AccessPoint::kExtensionInstallBubble:
     case signin_metrics::AccessPoint::kExtensions:
     case signin_metrics::AccessPoint::kBookmarkManager:
-    case signin_metrics::AccessPoint::kAvatarBubbleSignIn:
     case signin_metrics::AccessPoint::kUserManager:
     case signin_metrics::AccessPoint::kFullscreenSigninPromo:
     case signin_metrics::AccessPoint::kRecentTabs:
@@ -210,6 +208,11 @@ void MaybeRecordWebSigninToChromeSigninTimes(
     case signin_metrics::AccessPoint::kLevelUp:
     case signin_metrics::AccessPoint::kSignoutUndoSnackbar:
     case signin_metrics::AccessPoint::kComposeboxDriveContextMenuOptionBubble:
+    case signin_metrics::AccessPoint::kAppSwitcherAISummarization:
+    case signin_metrics::AccessPoint::kGeminiExternalAppStoreEvent:
+    case signin_metrics::AccessPoint::kPasswordManagerCard:
+    case signin_metrics::AccessPoint::kEnterpriseProxy:
+    case signin_metrics::AccessPoint::kOtherDeviceTabsMenu:
       return;
   }
 
@@ -325,27 +328,8 @@ void SigninMetricsService::OnPrimaryAccountChanged(
 
   switch (event_details.GetEventTypeFor(signin::ConsentLevel::kSync)) {
     case signin::PrimaryAccountChangeEvent::Type::kNone:
+    case signin::PrimaryAccountChangeEvent::Type::kSet:
       break;
-    case signin::PrimaryAccountChangeEvent::Type::kSet: {
-      std::optional<signin_metrics::AccessPoint> access_point =
-          event_details.GetSetPrimaryAccountAccessPoint();
-      CHECK(access_point.has_value());
-      if (access_point == signin_metrics::AccessPoint::
-                              kHistorySyncOptinExpansionPillOnStartup) {
-        CHECK(switches::IsAvatarSyncPromoFeatureEnabled());
-        SigninPrefs signin_prefs(pref_service_.get());
-        const CoreAccountInfo& account =
-            event_details.GetCurrentState().primary_account;
-        base::UmaHistogramExactLinear(
-            "Signin.SyncOptIn.IdentityPill.SyncAtShowCount",
-            signin_prefs.GetSyncPromoIdentityPillShownCount(account.gaia),
-            // Arbitrary number that is higher than the possible show count that
-            // the promo can reach
-            // (`user_education::features::GetNewBadgeShowCount()`: 10).
-            /*exclusive_max=*/30);
-      }
-      break;
-    }
     case signin::PrimaryAccountChangeEvent::Type::kCleared:
       if (pref_service_->HasPrefPath(kSyncPausedStartTimePref)) {
         RecordPendingResolutionTime(
@@ -514,8 +498,7 @@ void SigninMetricsService::MaybeRecordMetricsForPromoShowCountAtSignin(
               ? SigninPrefs(pref_service_.get())
                     .GetAddressSigninPromoImpressionCount(account_info.gaia)
               : pref_service_->GetInteger(
-                    prefs::
-                        kAddressSignInPromoShownCountPerProfileForLimitsExperiment),
+                    prefs::kAddressSignInPromoShownCountPerProfile),
           /*min=*/1, /*exclusive_max=*/10, /*buckets=*/10);
       break;
     case signin_metrics::AccessPoint::kPasswordBubble:
@@ -525,8 +508,7 @@ void SigninMetricsService::MaybeRecordMetricsForPromoShowCountAtSignin(
               ? SigninPrefs(pref_service_.get())
                     .GetPasswordSigninPromoImpressionCount(account_info.gaia)
               : pref_service_->GetInteger(
-                    prefs::
-                        kPasswordSignInPromoShownCountPerProfileForLimitsExperiment),
+                    prefs::kPasswordSignInPromoShownCountPerProfile),
           /*min=*/1, /*exclusive_max=*/10, /*buckets=*/10);
       break;
     case signin_metrics::AccessPoint::kBookmarkBubble:
@@ -536,8 +518,7 @@ void SigninMetricsService::MaybeRecordMetricsForPromoShowCountAtSignin(
               ? SigninPrefs(pref_service_.get())
                     .GetBookmarkSigninPromoImpressionCount(account_info.gaia)
               : pref_service_->GetInteger(
-                    prefs::
-                        kBookmarkSignInPromoShownCountPerProfileForLimitsExperiment),
+                    prefs::kBookmarkSignInPromoShownCountPerProfile),
           /*min=*/1, /*exclusive_max=*/10, /*buckets=*/10);
       break;
     case signin_metrics::AccessPoint::kChromeSigninInterceptBubble: {

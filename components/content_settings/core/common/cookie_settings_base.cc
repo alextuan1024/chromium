@@ -11,9 +11,7 @@
 
 #include "base/check.h"
 #include "base/feature_list.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/notreached.h"
-#include "base/rand_util.h"
 #include "base/types/optional_ref.h"
 #include "base/types/optional_util.h"
 #include "build/build_config.h"
@@ -23,6 +21,7 @@
 #include "components/content_settings/core/common/content_settings_types.h"
 #include "components/content_settings/core/common/features.h"
 #include "components/privacy_sandbox/privacy_sandbox_features.h"
+#include "net/base/features.h"
 #include "net/base/net_errors.h"
 #include "net/base/schemeful_site.h"
 #include "net/base/url_util.h"
@@ -84,8 +83,13 @@ bool IsStorageAccessAllowedByPermissionsPolicy(
       network::mojom::PermissionsPolicyFeature::kStorageAccessAPI, origin);
 }
 
-}  // namespace
+// Returns true if third-party storage partitioning is active.
+bool IsThirdPartyPartitionedStorageEnabled() {
+  return base::FeatureList::IsEnabled(
+      net::features::kThirdPartyStoragePartitioning);
+}
 
+}  // namespace
 
 CookieSettingsBase::CookieSettingsBase() = default;
 
@@ -116,7 +120,6 @@ CookieSettingsBase::GetContentSettingsTypes() {
           ContentSettingsType::COOKIES,
           ContentSettingsType::LEGACY_COOKIE_ACCESS,
           ContentSettingsType::STORAGE_ACCESS,
-          ContentSettingsType::TOP_LEVEL_STORAGE_ACCESS,
           ContentSettingsType::FEDERATED_IDENTITY_SHARING,
           ContentSettingsType::LEGACY_COOKIE_SCOPE,
       });
@@ -231,6 +234,56 @@ bool CookieSettingsBase::IsFullCookieAccessAllowed(
   return IsAllowed(setting.cookie_setting());
 }
 
+bool CookieSettingsBase::IsAnyStorageAccessAllowed(
+    const GURL& url,
+    const net::SiteForCookies& site_for_cookies,
+    base::optional_ref<const url::Origin> top_frame_origin,
+    net::CookieSettingOverrides overrides,
+    base::optional_ref<const net::CookiePartitionKey> cookie_partition_key,
+    CookieSettingWithMetadata* cookie_settings) const {
+  // Storage access permissions are evaluated by reusing
+  // `IsFullCookieAccessAllowed()`. As a side effect of reusing this cookie
+  // helper, passing a nonced partition key causes `IsFullCookieAccessAllowed()`
+  // to immediately reject access because nonced contexts (e.g. FencedFrames or
+  // Credentialless iframes) cannot access unpartitioned cookies. However, such
+  // contexts are permitted to access partitioned storage (e.g. CacheStorage,
+  // IndexedDB) unless cookies/storage are explicitly blocked for the site. See:
+  // - https://wicg.github.io/anonymous-iframe/#proposal-credentials
+  // -
+  // https://github.com/WICG/fenced-frame/blob/master/explainer/fenced_frame.md#storage-and-communication
+  // We therefore intentionally omit the nonce when passing the
+  // `cookie_partition_key` so that `IsFullCookieAccessAllowed()` evaluates the
+  // site-level permission and populates the metadata properly without
+  // triggering the nonced-cookie rejection.
+  std::optional<net::CookiePartitionKey> nonceless_partition_key =
+      cookie_partition_key.CopyAsOptional();
+  if (net::CookiePartitionKey::HasNonce(cookie_partition_key)) {
+    nonceless_partition_key = net::CookiePartitionKey::FromStorageKeyComponents(
+        cookie_partition_key->site(),
+        net::CookiePartitionKey::BoolToAncestorChainBit(
+            cookie_partition_key->IsThirdParty()),
+        /*nonce=*/std::nullopt);
+  }
+
+  CookieSettingWithMetadata setting_with_metadata;
+  bool allow = IsFullCookieAccessAllowed(
+      url, site_for_cookies, top_frame_origin, overrides,
+      nonceless_partition_key, &setting_with_metadata);
+
+  if (cookie_settings) {
+    *cookie_settings = setting_with_metadata;
+  }
+
+  return allow ||
+         (setting_with_metadata.BlockedByThirdPartyCookieBlocking() &&
+          IsThirdPartyPartitionedStorageEnabled()) ||
+         // Allow storage when --test-third-party-cookie-phaseout is used, but
+         // ensure that only partitioned storage is available. This developer
+         // flag is meant to simulate Chrome's behavior when 3P cookies are
+         // turned down to help developers test their site.
+         net::cookie_util::IsForceThirdPartyCookieBlockingEnabled();
+}
+
 bool CookieSettingsBase::IsCookieSessionOnly(const GURL& origin) const {
   // Pass GURL() as first_party_url since we don't know the context and
   // don't want to match against (*, exception) pattern.
@@ -297,17 +350,6 @@ std::optional<bool> CookieSettingsBase::MaybeBlockThirdPartyCookiesPerModifiers(
   }
 }
 
-bool CookieSettingsBase::IsAllowedByTopLevelStorageAccessGrant(
-    const GURL& url,
-    const GURL& first_party_url,
-    net::CookieSettingOverrides overrides) const {
-  return overrides.Has(
-             net::CookieSettingOverride::kTopLevelStorageAccessGrantEligible) &&
-         GetContentSetting(url, first_party_url,
-                           ContentSettingsType::TOP_LEVEL_STORAGE_ACCESS,
-                           /*info=*/nullptr) == CONTENT_SETTING_ALLOW;
-}
-
 bool CookieSettingsBase::IsAllowedBySandboxValue(
     const GURL& url,
     const GURL& first_party_url,
@@ -353,11 +395,6 @@ CookieSettingsBase::DecideAccess(const GURL& url,
   }
 
   // Site controlled mechanisms (ex: web APIs, deprecation trial):
-  if (IsAllowedByTopLevelStorageAccessGrant(url, first_party_url, overrides)) {
-    return AllowAllCookies{
-        ThirdPartyCookieAllowMechanism::kAllowByTopLevelStorageAccess,
-    };
-  }
   if (IsAllowedByStorageAccessGrant(url, first_party_url, overrides)) {
     return AllowAllCookies{
         ThirdPartyCookieAllowMechanism::kAllowByStorageAccess,
@@ -389,10 +426,6 @@ CookieSettingsBase::GetCookieSettingInternal(
     const GURL& first_party_url,
     net::CookieSettingOverrides overrides,
     SettingInfo* info) const {
-  SCOPED_UMA_HISTOGRAM_TIMER_MICROS_SUBSAMPLED(
-      "ContentSettings.GetCookieSettingInternal.Duration",
-      base::ShouldRecordSubsampledMetric(0.1));
-
   // Apply http and https exceptions to ws and wss schemes.
   std::reference_wrapper<const GURL> url = request_url;
   GURL websocket_mapped_url;
@@ -402,7 +435,7 @@ CookieSettingsBase::GetCookieSettingInternal(
   }
 
   // Auto-allow in extensions or for WebUI embedding a secure origin.
-  if (ShouldAlwaysAllowCookies(url, first_party_url)) {
+  if (ShouldAlwaysAllowCookies(url, first_party_url, overrides)) {
     if (info) {
       *info = SettingInfo{};
     }

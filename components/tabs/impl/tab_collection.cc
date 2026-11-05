@@ -104,6 +104,9 @@ TabCollection::TabIterator::TabIterator(const tabs::TabCollection* root,
 
 TabCollection::TabIterator::TabIterator(const TabIterator& iterator) = default;
 
+TabCollection::TabIterator& TabCollection::TabIterator::operator=(
+    const TabIterator& iterator) = default;
+
 TabCollection::TabIterator::~TabIterator() = default;
 
 void TabCollection::TabIterator::Next() {
@@ -460,28 +463,29 @@ void TabCollection::NotifyOnChildrenRemoved(
     base::PassKey<TabCollection> pass_key,
     const Position& position,
     const TabCollectionNodes& handles,
-    TabCollection* stop_notification_root) {
+    TabCollection* stop_notification_root,
+    bool remove_for_detach) {
   if (stop_notification_root != nullptr && stop_notification_root == this) {
     return;
   }
 
   if (notify_immediately_) {
     observers_.Notify(&TabCollectionObserver::OnChildrenRemoved, position,
-                      handles);
+                      handles, remove_for_detach);
   } else if (!observers_.empty()) {
     pending_notifications_.push_back(base::BindOnce(
         [](const Position position,
            base::ObserverList<TabCollectionObserver>& observers,
-           const TabCollectionNodes& handles) {
+           const TabCollectionNodes& handles, bool remove_for_detach) {
           observers.Notify(&TabCollectionObserver::OnChildrenRemoved, position,
-                           handles);
+                           handles, remove_for_detach);
         },
-        position, std::ref(observers_), handles));
+        position, std::ref(observers_), handles, remove_for_detach));
   }
 
   if (parent_) {
     parent_->NotifyOnChildrenRemoved(pass_key, position, handles,
-                                     stop_notification_root);
+                                     stop_notification_root, remove_for_detach);
   }
 }
 
@@ -528,6 +532,7 @@ void TabCollection::DispatchPendingNotifications() {
 TabInterface* TabCollection::AddTab(ScopedTab tab, size_t index) {
   CHECK(tab);
   CHECK(supports_tabs_);
+  CHECK(!tab->GetParentCollection());
 
   TabInterface* inserted_tab = impl_->AddTab(std::move(tab), index);
   inserted_tab->OnReparented(this, GetPassKey());

@@ -5,6 +5,8 @@
 #ifndef CHROME_BROWSER_CONTEXT_HUB_FEATURES_H_
 #define CHROME_BROWSER_CONTEXT_HUB_FEATURES_H_
 
+#include <string>
+
 #include "base/feature_list.h"
 #include "base/time/time.h"
 
@@ -49,6 +51,24 @@ BASE_DECLARE_FEATURE_PARAM(size_t, kMaxMemoryBankEntries);
 // The maximum number of turns stored in the memory bank chat history cache.
 BASE_DECLARE_FEATURE_PARAM(size_t, kMaxMemoryBankChatHistoryTurns);
 
+// The maximum number of image entries per memory bank chat request whose images
+// are fetched and attached to the request. Any other image entries are sent
+// without image bytes.
+BASE_DECLARE_FEATURE_PARAM(size_t, kMaxMemoryBankChatImages);
+
+// The maximum width and height, in pixels, of each image attached to a memory
+// bank chat request. Larger images are downscaled to fit, preserving their
+// aspect ratio, before they are PNG-encoded; non-positive values disable
+// downscaling.
+BASE_DECLARE_FEATURE_PARAM(int, kMaxMemoryBankChatImageDimension);
+
+// The minimum similarity score a memory bank entry must reach to be returned by
+// semantic search. Defaults to 0.7.
+BASE_DECLARE_FEATURE_PARAM(double, kMemoryBankSearchScoreThreshold);
+
+// The maximum number of entries returned by memory bank semantic search.
+BASE_DECLARE_FEATURE_PARAM(size_t, kMaxMemoryBankSearchResults);
+
 // The maximum number of tab groups stored in the in-memory tab group store.
 BASE_DECLARE_FEATURE_PARAM(int, kMaxTabGroups);
 
@@ -69,6 +89,12 @@ BASE_DECLARE_FEATURE(kContextHubTabContextSyncStorage);
 // Overrides the timeout of the Context Memory Service FetchContext call for
 // smart search.
 BASE_DECLARE_FEATURE_PARAM(base::TimeDelta, kSmartSearchTimeout);
+
+// Whether the fishfood feedback UI and export flow are enabled for Topics.
+BASE_DECLARE_FEATURE_PARAM(bool, kTopicsFishfoodFeedback);
+
+// URL of the Google Form where raters upload exported Topics feedback JSON.
+BASE_DECLARE_FEATURE_PARAM(std::string, kTopicsFeedbackFormUrl);
 
 }  // namespace context_hub::features
 

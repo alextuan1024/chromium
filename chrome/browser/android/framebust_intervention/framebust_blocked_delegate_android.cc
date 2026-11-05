@@ -14,20 +14,24 @@
 #include "components/resources/android/theme_resources.h"
 #include "components/strings/grit/components_strings.h"
 #include "components/url_formatter/elide_url.h"
+#include "content/public/browser/initiator_navigation_state.h"
+#include "content/public/browser/page_navigator.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "ui/base/page_transition_types.h"
-#include "ui/base/window_open_disposition.h"
 
 namespace blocked_content {
 
 bool FramebustBlockedMessageDelegate::ShowMessage(
     const GURL& blocked_url,
     const std::optional<url::Origin>& initiator_origin,
+    scoped_refptr<content::InitiatorNavigationState> initiator_navigation_state,
     HostContentSettingsMap* settings_map,
     OutcomeCallback intervention_callback) {
   if (message_ != nullptr) {  // update description only
     blocked_url_ = blocked_url;
     initiator_origin_ = initiator_origin;
+    initiator_navigation_state_ = std::move(initiator_navigation_state);
     message_->SetDescription(url_formatter::FormatUrlForSecurityDisplay(
         blocked_url, url_formatter::SchemeDisplay::OMIT_CRYPTOGRAPHIC));
     return false;
@@ -37,6 +41,7 @@ bool FramebustBlockedMessageDelegate::ShowMessage(
   url_ = GetWebContents().GetLastCommittedURL();
   blocked_url_ = blocked_url;
   initiator_origin_ = initiator_origin;
+  initiator_navigation_state_ = std::move(initiator_navigation_state);
 
   // Unretained is safe because |this| will always outlive |message_| which owns
   // the callback.
@@ -53,6 +58,8 @@ bool FramebustBlockedMessageDelegate::ShowMessage(
 
   messages::MessageDispatcherBridge* message_dispatcher_bridge =
       messages::MessageDispatcherBridge::Get();
+  // TODO(crbug.com/583243551): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
   DCHECK(message_dispatcher_bridge->IsMessagesEnabledForEmbedder());
 
   message->SetSecondaryIconResourceId(
@@ -120,10 +127,11 @@ void FramebustBlockedMessageDelegate::HandleClick() {
 }
 
 void FramebustBlockedMessageDelegate::HandleOpenLink() {
-  content::OpenURLParams params(blocked_url_, content::Referrer(),
-                                WindowOpenDisposition::CURRENT_TAB,
-                                ui::PAGE_TRANSITION_LINK,
-                                /*is_renderer_initiated=*/true);
+  content::OpenURLParams params =
+      content::OpenURLParams::CreateRendererInitiated(
+          blocked_url_, ui::mojom::WindowOpenDisposition::kCurrentTab,
+          ui::PAGE_TRANSITION_LINK, content::Referrer(),
+          initiator_navigation_state_);
   params.initiator_origin = initiator_origin_;
   GetWebContents().OpenURL(params, /*navigation_handle_callback=*/{});
 

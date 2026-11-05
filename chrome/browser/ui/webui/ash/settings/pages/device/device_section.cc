@@ -30,14 +30,15 @@
 #include "chrome/browser/ui/webui/ash/settings/pages/device/inputs_section.h"
 #include "chrome/browser/ui/webui/ash/settings/pages/printing/printing_section.h"
 #include "chrome/browser/ui/webui/ash/settings/search/search_tag_registry.h"
-#include "chrome/grit/generated_resources.h"
 #include "chromeos/ash/components/demo_mode/utils/demo_session_utils.h"
+#include "chromeos/ash/experiences/settings_ui/resources/grit/ash_settings_strings.h"
 #include "chromeos/constants/chromeos_features.h"
 #include "chromeos/strings/grit/chromeos_strings.h"
 #include "components/user_manager/user_manager.h"
 #include "content/public/browser/web_ui.h"
 #include "content/public/browser/web_ui_data_source.h"
 #include "media/base/media_switches.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/webui/web_ui_util.h"
 #include "ui/display/display_features.h"
@@ -485,10 +486,6 @@ bool IsUnifiedDesktopAvailable() {
       ::switches::kEnableUnifiedDesktop);
 }
 
-bool IsDisplayPerformanceSupported() {
-  return ash::features::IsDisplayPerformanceModeEnabled();
-}
-
 bool DoesDeviceSupportAmbientColor() {
   return ash::features::IsAllowAmbientEQEnabled();
 }
@@ -516,10 +513,6 @@ bool IsShowForceRespectUiGainsToggleEnabled() {
     return false;
   }
   return base::FeatureList::IsEnabled(media::kShowForceRespectUiGainsToggle);
-}
-
-bool IsShowSpatialAudioToggleEnabled() {
-  return base::FeatureList::IsEnabled(ash::features::kShowSpatialAudioToggle);
 }
 
 void AddDeviceKeyboardStrings(content::WebUIDataSource* html_source) {
@@ -810,10 +803,12 @@ enum class TouchpadSensitivity {
 
 }  // namespace
 
-DeviceSection::DeviceSection(Profile* profile,
-                             SearchTagRegistry* search_tag_registry,
-                             CupsPrintersManager* printers_manager,
-                             PrefService* pref_service)
+DeviceSection::DeviceSection(
+    scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
+    Profile* profile,
+    SearchTagRegistry* search_tag_registry,
+    CupsPrintersManager* printers_manager,
+    PrefService* pref_service)
     : OsSettingsSection(profile, search_tag_registry),
       inputs_subsection_(
           profile,
@@ -823,7 +818,10 @@ DeviceSection::DeviceSection(Profile* profile,
               ? input_method::EditorMediatorFactory::GetInstance()
                     ->GetForProfile(profile)
               : nullptr),
-      printing_subsection_(profile, search_tag_registry, printers_manager) {
+      printing_subsection_(std::move(url_loader_factory),
+                           profile,
+                           search_tag_registry,
+                           printers_manager) {
   CHECK(profile);
   CHECK(search_tag_registry);
   CHECK(pref_service);
@@ -901,11 +899,6 @@ void DeviceSection::AddLoadTimeData(content::WebUIDataSource* html_source) {
 
   html_source->AddBoolean("isDemoSession",
                           ash::demo_mode::IsDeviceInDemoMode());
-
-
-  html_source->AddBoolean(
-      "enableAltClickAndSixPackCustomization",
-      ash::features::IsAltClickAndSixPackCustomizationEnabled());
 
   AddDevicePointersStrings(html_source);
   AddDeviceGraphicsTabletStrings(html_source);
@@ -1002,10 +995,8 @@ void DeviceSection::RegisterHierarchy(HierarchyGenerator* generator) const {
   };
   RegisterNestedSettingBulk(mojom::Subpage::kPointers, kPointersSettings,
                             generator);
-  if (ash::features::IsAltClickAndSixPackCustomizationEnabled()) {
-    generator->RegisterNestedSetting(
-        mojom::Setting::kTouchpadSimulateRightClick, mojom::Subpage::kPointers);
-  }
+  generator->RegisterNestedSetting(mojom::Setting::kTouchpadSimulateRightClick,
+                                   mojom::Subpage::kPointers);
 
   const int kKeyboardTitleStringID = IDS_OS_SETTINGS_KEYBOARD_AND_INPUTS_TITLE;
   // Per-device Keyboard.
@@ -1564,8 +1555,6 @@ void DeviceSection::AddDeviceDisplayStrings(
       {"displayScreenExtended", IDS_SETTINGS_DISPLAY_SCREEN_EXTENDED},
       {"displayScreenPrimary", IDS_SETTINGS_DISPLAY_SCREEN_PRIMARY},
       {"displayScreenTitle", IDS_SETTINGS_DISPLAY_SCREEN},
-      {"displayShinyPerformanceLabel",
-       IDS_SETTINGS_DISPLAY_SHINY_PERFORMANCE_LABEL},
       {"displaySizeSliderMaxLabel", IDS_SETTINGS_DISPLAY_ZOOM_SLIDER_MAXIMUM},
       {"displaySizeSliderMinLabel", IDS_SETTINGS_DISPLAY_ZOOM_SLIDER_MINIMUM},
       {"displayTitle", IDS_OS_SETTINGS_DISPLAY_TITLE},
@@ -1605,9 +1594,6 @@ void DeviceSection::AddDeviceDisplayStrings(
   html_source->AddBoolean("enableForceRespectUiGainsToggle",
                           IsShowForceRespectUiGainsToggleEnabled());
 
-  html_source->AddBoolean("enableSpatialAudioToggle",
-                          IsShowSpatialAudioToggleEnabled());
-
   html_source->AddBoolean(
       "enableAudioFocusSetting",
       base::FeatureList::IsEnabled(ash::features::kAudioFocusSetting));
@@ -1624,13 +1610,6 @@ void DeviceSection::AddDeviceDisplayStrings(
   html_source->AddBoolean(
       "enableDriveFsBulkPinning",
       drive::util::IsDriveFsBulkPinningAvailable(profile()));
-
-  html_source->AddBoolean(
-      "allowDisplayAlignmentApi",
-      base::FeatureList::IsEnabled(ash::features::kDisplayAlignAssist));
-
-  html_source->AddBoolean("isDisplayPerformanceSupported",
-                          IsDisplayPerformanceSupported());
 
   html_source->AddBoolean("opsDisplayScaleFactorEnabled",
                           IsOpsDisplayScaleFactorEnabled());

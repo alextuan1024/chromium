@@ -4,7 +4,11 @@
 
 package org.chromium.chrome.browser.tabmodel;
 
+import org.chromium.base.Callback;
 import org.chromium.base.Token;
+import org.chromium.base.supplier.NonNullObservableSupplier;
+import org.chromium.base.supplier.NullableObservableSupplier;
+import org.chromium.base.supplier.ObservableSuppliers;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.profiles.Profile;
@@ -12,6 +16,8 @@ import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabCreationState;
 import org.chromium.chrome.browser.tab.TabLaunchType;
 import org.chromium.chrome.browser.tab.TabSelectionType;
+import org.chromium.chrome.browser.tabmodel.undo.UndoClosureSnapshot;
+import org.chromium.components.tab_group_sync.TabGroupUiActionHandler;
 
 import java.util.List;
 
@@ -24,6 +30,44 @@ public class StubTabModel extends EmptyTabModel {
     private final boolean mIsIncognito;
     private final String mMessage;
     private final @Nullable Profile mProfile;
+    private final NonNullObservableSupplier<Integer> mTabCountSupplier =
+            ObservableSuppliers.alwaysZero();
+    private final TabRemover mTabRemover =
+            new TabRemover() {
+                @Override
+                public void closeTabs(
+                        TabClosureParams tabClosureParams,
+                        boolean allowDialog,
+                        @Nullable TabModelActionListener listener) {
+                    if (tabClosureParams.tabCloseType != TabCloseType.ALL) {
+                        throw error();
+                    }
+                }
+
+                @Override
+                public void prepareCloseTabs(
+                        TabClosureParams tabClosureParams,
+                        boolean allowDialog,
+                        @Nullable TabModelActionListener listener,
+                        Callback<TabClosureParams> onPreparedCallback) {
+                    if (tabClosureParams.tabCloseType != TabCloseType.ALL) {
+                        throw error();
+                    }
+                }
+
+                @Override
+                public void forceCloseTabs(TabClosureParams tabClosureParams) {
+                    if (tabClosureParams.tabCloseType != TabCloseType.ALL) {
+                        throw error();
+                    }
+                }
+
+                @Override
+                public void removeTab(
+                        Tab tab, boolean allowDialog, @Nullable TabModelActionListener listener) {
+                    throw error();
+                }
+            };
 
     public StubTabModel(boolean isIncognito, @Nullable Profile profile) {
         super();
@@ -59,6 +103,16 @@ public class StubTabModel extends EmptyTabModel {
         return mIsIncognito;
     }
 
+    @Override
+    public NullableObservableSupplier<Tab> getCurrentTabSupplier() {
+        return ObservableSuppliers.alwaysNull();
+    }
+
+    @Override
+    public NonNullObservableSupplier<Integer> getTabCountSupplier() {
+        return mTabCountSupplier;
+    }
+
     // Mutating methods that must throw to enforce isolation
 
     @Override
@@ -72,10 +126,7 @@ public class StubTabModel extends EmptyTabModel {
     }
 
     @Override
-    public void pinTab(
-            int tabId,
-            boolean showUngroupDialog,
-            @Nullable TabModelActionListener tabModelActionListener) {
+    public void pinTab(int tabId, boolean showUngroupDialog) {
         throw error();
     }
 
@@ -101,12 +152,17 @@ public class StubTabModel extends EmptyTabModel {
     }
 
     @Override
+    public void detachTabForReparenting(Tab tab) {
+        throw error();
+    }
+
+    @Override
     public @Nullable Tab duplicateTab(Tab tab) {
         throw error();
     }
 
     @Override
-    public void moveRelatedTabs(int id, int newIndex) {
+    public void moveGroupToIndex(Token tabGroupId, int newIndex) {
         throw error();
     }
 
@@ -121,14 +177,17 @@ public class StubTabModel extends EmptyTabModel {
     }
 
     @Override
-    public void mergeTabsToGroup(
-            int sourceTabId, int destinationTabId, boolean skipUpdateTabModel) {
+    public void mergeListOfTabsToGroup(
+            List<Tab> tabs, Tab destinationTab, @Nullable Integer indexInGroup, int notify) {
         throw error();
     }
 
     @Override
-    public void mergeListOfTabsToGroup(
-            List<Tab> tabs, Tab destinationTab, @Nullable Integer indexInGroup, int notify) {
+    public void mergeListOfTabsToExistingGroup(
+            List<Tab> tabs,
+            Token destinationGroupId,
+            @Nullable Integer indexInGroup,
+            @TabGroupMergeNotificationType int notify) {
         throw error();
     }
 
@@ -139,16 +198,27 @@ public class StubTabModel extends EmptyTabModel {
 
     @Override
     public boolean closeTabs(TabClosureParams tabClosureParams) {
+        if (tabClosureParams.tabCloseType == TabCloseType.ALL) {
+            return false;
+        }
         throw error();
     }
 
     @Override
     public TabRemover getTabRemover() {
-        throw error();
+        return mTabRemover;
     }
 
     @Override
     public TabUngrouper getTabUngrouper() {
+        throw error();
+    }
+
+    @Override
+    public int[] restoreClosedTabsForUndo(
+            UndoClosureSnapshot snapshot,
+            boolean reselect,
+            @Nullable TabGroupUiActionHandler tabGroupUiActionHandler) {
         throw error();
     }
 
@@ -178,6 +248,11 @@ public class StubTabModel extends EmptyTabModel {
         if (active) {
             throw error();
         }
+    }
+
+    @Override
+    public void notifyWillRemoveTabGroup(Token tabGroupId) {
+        throw error();
     }
 
     @Override

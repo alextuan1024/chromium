@@ -6,7 +6,6 @@
 
 #include <variant>
 
-#include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/task/single_thread_task_runner.h"
 #include "content/browser/connection_allowlist_utils.h"
@@ -124,7 +123,26 @@ void AddAdditionalRequestHeaders(network::ResourceRequest* resource_request,
   UpdateAdditionalHeadersForBrowserInitiatedRequest(
       &resource_request->headers, browser_context,
       /*should_update_existing_headers=*/false, renderer_preferences,
-      /*is_for_worker_script=*/true);
+      BrowserInitiatedRequestSource::kWorkerScript);
+}
+
+// Build `PolicyContainerPolicies` from the worker script response headers or
+// inherit from the creator for local schemes.
+PolicyContainerPolicies ComputePolicyContainerPoliciesForWorker(
+    const GURL& final_response_url,
+    network::mojom::URLResponseHead* response_head,
+    const PolicyContainerPolicies* creator_policies) {
+  PolicyContainerPolicies policies;
+  if (final_response_url.SchemeIsLocal() && creator_policies) {
+    policies = creator_policies->Clone();
+  } else if (response_head && response_head->parsed_headers) {
+    policies =
+        PolicyContainerPolicies(final_response_url, response_head, nullptr);
+  }
+  policies.connection_allowlists = GetConnectionAllowlistsForWorker(
+      final_response_url, response_head, creator_policies,
+      final_response_url.SchemeIsLocal());
+  return policies;
 }
 
 void DidCreateScriptLoader(
@@ -176,14 +194,12 @@ void DidCreateScriptLoader(
 
   // The load succeeded iff `main_script_load_params` is not nullptr.
   if (main_script_load_params) {
-    // TODO(crbug.com/41478971): Pass the PolicyContainerPolicies. It can
-    // be built from the
-    // `main_script_load_params.response_head->parsed_headers`.
-    PolicyContainerPolicies policies;
-    policies.connection_allowlists = GetConnectionAllowlistsForWorker(
+    // Note: Unlike in the spec, the referrer policy will be lazily calculated
+    // by the renderer in `(Shared/Dedicated)WorkerGlobalScope::Initialize()`.
+    // https://html.spec.whatwg.org/C/#creating-a-policy-container-from-a-fetch-response
+    PolicyContainerPolicies policies = ComputePolicyContainerPoliciesForWorker(
         final_response_url, main_script_load_params->response_head.get(),
-        base::OptionalToPtr(creator_policies),
-        final_response_url.SchemeIsLocal());
+        base::OptionalToPtr(creator_policies));
 
     std::move(callback).Run(std::make_optional<WorkerScriptFetcherResult>(
         std::move(subresource_loader_factories),
@@ -402,10 +418,11 @@ void WorkerScriptFetcher::CreateAndStart(
       *resource_request);
 
   WorkerScriptFetcher::CreateScriptLoader(
-      worker_process_id, worker_token, initial_request_url,
-      ancestor_render_frame_host, creator_render_frame_host,
-      trusted_isolation_info, std::move(client_security_state),
-      std::move(resource_request), std::move(factory_bundle_for_browser),
+      worker_process_id, worker_token, request_initiator_storage_key,
+      initial_request_url, ancestor_render_frame_host,
+      creator_render_frame_host, trusted_isolation_info,
+      std::move(client_security_state), std::move(resource_request),
+      std::move(factory_bundle_for_browser),
       std::move(subresource_loader_factories),
       std::move(service_worker_context), service_worker_handle,
       std::move(blob_url_loader_factory),
@@ -418,6 +435,7 @@ void WorkerScriptFetcher::CreateAndStart(
 void WorkerScriptFetcher::CreateScriptLoader(
     int worker_process_id,
     const DedicatedOrSharedWorkerToken& worker_token,
+    const blink::StorageKey& worker_storage_key,
     const GURL& initial_request_url,
     RenderFrameHostImpl& ancestor_render_frame_host,
     RenderFrameHostImpl* creator_render_frame_host,
@@ -596,8 +614,8 @@ void WorkerScriptFetcher::CreateScriptLoader(
   auto* script_fetcher = new WorkerScriptFetcher(
       std::make_unique<WorkerScriptLoaderFactory>(
           ChildProcessId::FromUnsafeValue(worker_process_id), worker_token,
-          trusted_isolation_info, service_worker_handle, browser_context_getter,
-          std::move(url_loader_factory)),
+          worker_storage_key, trusted_isolation_info, service_worker_handle,
+          browser_context_getter, std::move(url_loader_factory)),
       std::move(resource_request),
       base::BindOnce(DidCreateScriptLoader, std::move(callback),
                      std::move(subresource_loader_factories),
@@ -666,10 +684,10 @@ WorkerScriptFetcher::CreateFactoryBundle(
     auto requesting_scheme =
         creator_render_frame_host->GetLastCommittedOrigin().scheme();
     non_network_factories.emplace(
-        requesting_scheme,
-        CreateWebUIURLLoaderFactory(
-            creator_render_frame_host, requesting_scheme,
-            /*allowed_hosts=*/base::flat_set<std::string>()));
+        requesting_scheme, CreateWebUIURLLoaderFactory(
+                               creator_render_frame_host, requesting_scheme,
+                               /*allowed_hosts=*/base::flat_set<std::string>(),
+                               request_initiator_storage_key.origin()));
   }
 
   auto factory_bundle =
@@ -711,6 +729,16 @@ GURL WorkerScriptFetcher::DetermineFinalResponseUrl(
 
   // No redirection happened. The initial request URL was used for the response.
   return initial_request_url;
+}
+
+// static
+PolicyContainerPolicies
+WorkerScriptFetcher::ComputePolicyContainerPoliciesForTesting(
+    const GURL& final_response_url,
+    network::mojom::URLResponseHead* response_head,
+    const PolicyContainerPolicies* creator_policies) {
+  return ComputePolicyContainerPoliciesForWorker(
+      final_response_url, response_head, creator_policies);
 }
 
 WorkerScriptFetcher::WorkerScriptFetcher(

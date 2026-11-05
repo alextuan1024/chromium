@@ -3,10 +3,13 @@
 // found in the LICENSE file.
 package org.chromium.chrome.browser.sync;
 
+import static org.chromium.build.NullUtil.assertNonNull;
 import static org.chromium.build.NullUtil.assumeNonNull;
 
+import android.app.ActivityOptions;
 import android.app.PendingIntent;
 import android.content.Context;
+import android.content.Intent;
 import android.content.IntentSender;
 import android.text.TextUtils;
 
@@ -15,21 +18,24 @@ import androidx.fragment.app.Fragment;
 import androidx.preference.Preference;
 import androidx.preference.PreferenceFragmentCompat;
 
+import org.chromium.base.ApiCompatibilityUtils;
 import org.chromium.base.Log;
 import org.chromium.base.Promise;
 import org.chromium.base.metrics.RecordUserAction;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.signin.services.DisplayableProfileData;
-import org.chromium.components.browser_ui.settings.SettingsCustomTabLauncher;
+import org.chromium.components.browser_ui.util.CustomTabLauncher;
 import org.chromium.components.signin.base.CoreAccountInfo;
 import org.chromium.components.sync.BookmarksLimitExceededHelpClickedSource;
 import org.chromium.components.sync.SyncService;
 import org.chromium.components.sync.UserActionableError;
+import org.chromium.components.trusted_vault.SecurityDomainId;
 import org.chromium.components.trusted_vault.TrustedVaultClient;
 import org.chromium.components.trusted_vault.TrustedVaultUserActionTriggerForUMA;
+import org.chromium.google_apis.gaia.GoogleServiceAuthError;
+import org.chromium.google_apis.gaia.GoogleServiceAuthErrorState;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
@@ -38,9 +44,7 @@ import java.lang.annotation.RetentionPolicy;
 @NullMarked
 public class SyncSettingsUtils {
     private static final String MY_ACCOUNT_URL = "https://myaccount.google.com/smartlink/home";
-    private static final String LEGACY_SYNC_DASHBOARD_URL =
-            "https://www.google.com/settings/chrome/sync";
-    private static final String NEW_SYNC_DASHBOARD_URL = "https://chrome.google.com/data";
+    private static final String SYNC_DASHBOARD_URL = "https://chrome.google.com/data";
     private static final String TAG = "SyncSettingsUtils";
 
     @IntDef({TitlePreference.FULL_NAME, TitlePreference.EMAIL})
@@ -110,7 +114,7 @@ public class SyncSettingsUtils {
      * @param url The url link to open in the custom tab.
      */
     private static void openCustomTabWithURL(
-            Context context, SettingsCustomTabLauncher customTabLauncher, String url) {
+            Context context, CustomTabLauncher customTabLauncher, String url) {
         customTabLauncher.openUrlInCct(context, url);
     }
 
@@ -120,14 +124,8 @@ public class SyncSettingsUtils {
      * @param context The context to use for starting the intent.
      * @param customTabLauncher The launcher to use for opening the custom tab.
      */
-    public static void openSyncDashboard(
-            Context context, SettingsCustomTabLauncher customTabLauncher) {
-        openCustomTabWithURL(
-                context,
-                customTabLauncher,
-                ChromeFeatureList.isEnabled(ChromeFeatureList.SYNC_ENABLE_NEW_SYNC_DASHBOARD_URL)
-                        ? NEW_SYNC_DASHBOARD_URL
-                        : LEGACY_SYNC_DASHBOARD_URL);
+    public static void openSyncDashboard(Context context, CustomTabLauncher customTabLauncher) {
+        openCustomTabWithURL(context, customTabLauncher, SYNC_DASHBOARD_URL);
     }
 
     /**
@@ -138,8 +136,7 @@ public class SyncSettingsUtils {
      * @param context The context to use for starting the intent.
      * @param customTabLauncher The launcher to use for opening the custom tab.
      */
-    public static void openGoogleMyAccount(
-            Context context, SettingsCustomTabLauncher customTabLauncher) {
+    public static void openGoogleMyAccount(Context context, CustomTabLauncher customTabLauncher) {
         RecordUserAction.record("SyncPreferences_ManageGoogleAccountClicked");
         openCustomTabWithURL(context, customTabLauncher, MY_ACCOUNT_URL);
     }
@@ -160,7 +157,7 @@ public class SyncSettingsUtils {
             Context context,
             SyncService syncService,
             @BookmarksLimitExceededHelpClickedSource int source,
-            SettingsCustomTabLauncher customTabLauncher) {
+            CustomTabLauncher customTabLauncher) {
         assert syncService != null;
         syncService.acknowledgeBookmarksLimitExceededError(source);
         openCustomTabWithURL(context, customTabLauncher, BOOKMARKS_LIMIT_EXCEEDED_HELP_CENTER_URL);
@@ -224,12 +221,13 @@ public class SyncSettingsUtils {
      */
     public static void openTrustedVaultKeyRetrievalDialog(
             Fragment fragment, CoreAccountInfo accountInfo, int requestCode) {
-        TrustedVaultClient.get()
+        TrustedVaultClient.get(SecurityDomainId.CHROME_SYNC)
                 .recordKeyRetrievalTrigger(TrustedVaultUserActionTriggerForUMA.SETTINGS);
         openTrustedVaultDialogForPendingIntent(
                 fragment,
                 requestCode,
-                TrustedVaultClient.get().createKeyRetrievalIntent(accountInfo));
+                TrustedVaultClient.get(SecurityDomainId.CHROME_SYNC)
+                        .createKeyRetrievalIntent(accountInfo));
     }
 
     /**
@@ -243,13 +241,14 @@ public class SyncSettingsUtils {
      */
     public static void openTrustedVaultRecoverabilityDegradedDialog(
             Fragment fragment, CoreAccountInfo accountInfo, int requestCode) {
-        TrustedVaultClient.get()
+        TrustedVaultClient.get(SecurityDomainId.CHROME_SYNC)
                 .recordRecoverabilityDegradedFixTrigger(
                         TrustedVaultUserActionTriggerForUMA.SETTINGS);
         openTrustedVaultDialogForPendingIntent(
                 fragment,
                 requestCode,
-                TrustedVaultClient.get().createRecoverabilityDegradedIntent(accountInfo));
+                TrustedVaultClient.get(SecurityDomainId.CHROME_SYNC)
+                        .createRecoverabilityDegradedIntent(accountInfo));
     }
 
     /**
@@ -263,7 +262,10 @@ public class SyncSettingsUtils {
     public static void openTrustedVaultOptInDialog(
             Fragment fragment, CoreAccountInfo accountInfo, int requestCode) {
         openTrustedVaultDialogForPendingIntent(
-                fragment, requestCode, TrustedVaultClient.get().createOptInIntent(accountInfo));
+                fragment,
+                requestCode,
+                TrustedVaultClient.get(SecurityDomainId.CHROME_SYNC)
+                        .createOptInIntent(accountInfo));
     }
 
     /**
@@ -304,6 +306,43 @@ public class SyncSettingsUtils {
     }
 
     /**
+     * Launches the PendingIntent to resolve a device management error.
+     *
+     * @param context The context to use for starting the intent.
+     * @param syncService The {@link SyncService} providing the current auth error.
+     */
+    public static void openDeviceManagementResolution(Context context, SyncService syncService) {
+        GoogleServiceAuthError authError = syncService.getAuthError();
+        if (authError.getState() != GoogleServiceAuthErrorState.DEVICE_MANAGEMENT_ERROR) {
+            return;
+        }
+        // The internal code only reports DEVICE_MANAGEMENT_ERROR when GMS Core provides a
+        // resolution intent.
+        PendingIntent pendingIntent =
+                assertNonNull(authError.getDeviceManagementErrorDetails().getPendingIntent());
+
+        try {
+            // Opt in to background activity starts so the PendingIntent launch is not blocked on
+            // Android 16+.
+            // TODO(crbug.com/576128217): Use MODE_BACKGROUND_ACTIVITY_START_ALLOW_IF_VISIBLE
+            // instead of MODE_BACKGROUND_ACTIVITY_START_ALLOW_ALWAYS.
+            ActivityOptions options = ActivityOptions.makeBasic();
+            ApiCompatibilityUtils.setActivityOptionsBackgroundActivityStartAllowAlways(options);
+            // FLAG_ACTIVITY_NEW_TASK opens the resolution flow in a separate task (applied since
+            // the PendingIntent is mutable).
+            context.startIntentSender(
+                    pendingIntent.getIntentSender(),
+                    /* fillInIntent= */ null,
+                    /* flagsMask= */ Intent.FLAG_ACTIVITY_NEW_TASK,
+                    /* flagsValues= */ Intent.FLAG_ACTIVITY_NEW_TASK,
+                    /* extraFlags= */ 0,
+                    options.toBundle());
+        } catch (IntentSender.SendIntentException exception) {
+            Log.w(TAG, "Failed to launch device management resolution intent", exception);
+        }
+    }
+
+    /**
      * Gets the corresponding histogram name suffix for the error.
      *
      * @param error Error reason.
@@ -314,6 +353,8 @@ public class SyncSettingsUtils {
         switch (error) {
             case UserActionableError.SIGN_IN_NEEDS_UPDATE:
                 return ".AuthError";
+            case UserActionableError.DEVICE_MANAGEMENT_ERROR:
+                return ".DeviceManagementError";
             case UserActionableError.NEEDS_PASSPHRASE:
                 return ".PassphraseRequired";
             case UserActionableError.NEEDS_CLIENT_UPGRADE:

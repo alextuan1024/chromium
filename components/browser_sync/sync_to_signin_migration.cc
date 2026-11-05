@@ -30,10 +30,15 @@
 #include "components/sync/base/data_type_histogram.h"
 #include "components/sync/base/features.h"
 #include "components/sync/base/pref_names.h"
+#include "components/sync/base/user_selectable_type.h"
 #include "components/sync/service/sync_feature_status_for_migrations_recorder.h"
 #include "components/sync/service/sync_prefs.h"
 #include "extensions/buildflags/buildflags.h"
 #include "google_apis/gaia/gaia_id.h"
+
+#if BUILDFLAG(IS_CHROMEOS)
+#include "components/signin/public/base/signin_switches.h"
+#endif  // BUILDFLAG(IS_CHROMEOS)
 
 namespace browser_sync {
 
@@ -54,7 +59,8 @@ enum class SyncToSigninMigrationDecision {
   kUndoNotNecessary = 7,
   kMigrateForced = 8,
   kDontMigrateAuthError = 9,
-  kMaxValue = kDontMigrateAuthError
+  kDontMigrateChromeOsUndoSigninEnabled = 10,
+  kMaxValue = kDontMigrateChromeOsUndoSigninEnabled
 };
 // LINT.ThenChange(/tools/metrics/histograms/metadata/sync/enums.xml:SyncToSigninMigrationDecisionOverall)
 
@@ -105,6 +111,36 @@ enum class SyncSetupIncompleteMigrationDecision {
 // LINT.ThenChange(/tools/metrics/histograms/metadata/sync/enums.xml:SyncSetupIncompleteMigrationDecision)
 #endif  // !BUILDFLAG(IS_CHROMEOS)
 
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+// The state of the Reading List pref migration for a signed-in, non-syncing
+// user, as determined on startup by MaybeFixUpPreviouslyMigratedUser.
+// These values are persisted to logs. Entries should not be renumbered and
+// numeric values should never be reused.
+// LINT.IfChange(ReadingListPrefMigrationState)
+enum class ReadingListPrefMigrationState {
+  // The user was migrated before the migration handled Reading List, the toggle
+  // was still unset, and the fix-up enabled it.
+  kFixApplied = 0,
+  // The Sync-to-Signin migration itself already carried over the Reading List
+  // toggle, so no fix-up is needed.
+  kHandledBySyncToSigninMigration = 1,
+  // The Reading List toggle already has an explicit value, set either by the
+  // user or by an earlier run of the fix-up.
+  kExplicitlySet = 2,
+  // The Reading List toggle is still unset, but the fix-up feature is disabled,
+  // so nothing was done.
+  kFeatureDisabled = 3,
+  // This profile was never migrated from syncing to signed-in (or the migration
+  // was undone).
+  kNotMigrated = 4,
+  // A different account than the signed-in one was migrated, i.e. the user has
+  // since switched accounts.
+  kDifferentAccountMigrated = 5,
+  kMaxValue = kDifferentAccountMigrated
+};
+// LINT.ThenChange(/tools/metrics/histograms/metadata/sync/enums.xml:SyncToSigninMigrationReadingListPrefMigrationState)
+#endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+
 // See docs of the kFirstTimeTriedToMigrateSyncFeaturePausedToSignin pref.
 void SetFirstTimeTriedToMigrateSyncPaused(PrefService* pref_service) {
   const char* pref_name = syncer::prefs::internal::
@@ -138,6 +174,20 @@ SyncToSigninMigrationDecision GetSyncToSigninMigrationDecision(
       return SyncToSigninMigrationDecision::kUndoMigration;
     }
   }
+#if BUILDFLAG(IS_CHROMEOS)
+  // On ChromeOS, `kUndoChromeOsUseConsentLevelSignin` reverts all signed-in
+  // users back to `ConsentLevel::kSync` during session startup. If this profile
+  // was previously migrated by Sync-to-Signin migration, undo the migration
+  // cleanly here (before KeyedServices are created) rather than letting Ash
+  // flip the consent level mid-startup.
+  if (!pref_service
+           ->GetString(prefs::kGoogleServicesSyncingGaiaIdMigratedToSignedIn)
+           .empty() &&
+      base::FeatureList::IsEnabled(
+          switches::kUndoChromeOsUseConsentLevelSignin)) {
+    return SyncToSigninMigrationDecision::kUndoMigration;
+  }
+#endif  // BUILDFLAG(IS_CHROMEOS)
 
   if (pref_service->GetString(prefs::kGoogleServicesAccountId).empty()) {
     // Signed-out user, nothing to migrate.
@@ -203,10 +253,18 @@ SyncToSigninMigrationDecision GetSyncToSigninMigrationDecision(
 
   // Check the feature flag(s) last, so that metrics can record all the other
   // reasons to not do the migration, even with the flag disabled.
-  if (!syncer::IsReplaceSyncPromosWithSignInPromosEnabled() ||
-      !base::FeatureList::IsEnabled(switches::kMigrateSyncingUserToSignedIn)) {
+  if (!base::FeatureList::IsEnabled(switches::kMigrateSyncingUserToSignedIn)) {
     return SyncToSigninMigrationDecision::kDontMigrateFlagDisabled;
   }
+#if BUILDFLAG(IS_CHROMEOS)
+  // On ChromeOS, `kUndoChromeOsUseConsentLevelSignin` reverts signed-in users
+  // back to `ConsentLevel::kSync` during session startup. Skip the migration
+  // when it's enabled to prevent an infinite migration/revert loop with Ash.
+  if (base::FeatureList::IsEnabled(
+          switches::kUndoChromeOsUseConsentLevelSignin)) {
+    return SyncToSigninMigrationDecision::kDontMigrateChromeOsUndoSigninEnabled;
+  }
+#endif  // BUILDFLAG(IS_CHROMEOS)
 
   return forced ? SyncToSigninMigrationDecision::kMigrateForced
                 : SyncToSigninMigrationDecision::kMigrate;
@@ -267,7 +325,8 @@ void UndoSyncToSigninMigration(PrefService* pref_service) {
   pref_service->ClearPref(prefs::kGoogleServicesSyncingUserMigrationType);
 
   // Selected-data-types prefs: No reverse migration - the user will just go
-  // back to their previous Sync settings.
+  // back to their previous Sync settings (except on ChromeOS, where current
+  // browser and OS settings are preserved).
 
   // Bookmarks: The forward migration is an atomic file move. Either that
   // happened, in which case the Sync machinery will clean up the account store
@@ -289,6 +348,93 @@ void UndoSyncToSigninMigration(PrefService* pref_service) {
   pref_service->ClearPref(
       syncer::prefs::internal::kMigrateExtensionsFromLocalToAccount);
 }
+
+#if BUILDFLAG(IS_CHROMEOS)
+// Turns off all OS data types if `kSyncDisabledViaDashboard` is set. OS data
+// types don't support separate local and account storage, so otherwise, local
+// OS data would get uploaded to the account once Sync-the-transport starts
+// running. Signed-in non-syncing users get the same treatment when this pref is
+// set, see `SyncUserSettingsImpl::SetSyncFeatureDisabledViaDashboard()`.
+void DisableOsTypesIfSyncDisabledViaDashboard(PrefService* pref_service) {
+  syncer::SyncPrefs sync_prefs(pref_service);
+  if (!sync_prefs.IsSyncFeatureDisabledViaDashboard()) {
+    return;
+  }
+  sync_prefs.SetSelectedOsTypes(
+      /*sync_all_os_types=*/false,
+      /*registered_types=*/syncer::UserSelectableOsTypeSet::All(),
+      /*selected_types=*/syncer::UserSelectableOsTypeSet());
+}
+#endif  // BUILDFLAG(IS_CHROMEOS)
+
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+void RecordReadingListPrefMigrationState(ReadingListPrefMigrationState state) {
+  base::UmaHistogramEnumeration(
+      "Sync.SyncToSigninMigration.ReadingListPrefMigrationState", state);
+}
+
+// Applies fix-ups for users who were migrated in a previous browser run and
+// are still signed in with the migrated account. Records the resulting state to
+// Sync.SyncToSigninMigration.ReadingListPrefMigrationState in all cases, so
+// that the affected population can be measured independently of the feature
+// flag.
+void MaybeFixUpPreviouslyMigratedUser(PrefService* pref_service) {
+  const std::string& migrated_gaia_id = pref_service->GetString(
+      prefs::kGoogleServicesSyncingGaiaIdMigratedToSignedIn);
+  if (migrated_gaia_id.empty()) {
+    // This profile was never migrated, or the migration was already undone.
+    RecordReadingListPrefMigrationState(
+        ReadingListPrefMigrationState::kNotMigrated);
+    return;
+  }
+  if (migrated_gaia_id !=
+      pref_service->GetString(prefs::kGoogleServicesAccountId)) {
+    // A different account was migrated, and the user has since switched
+    // accounts.
+    RecordReadingListPrefMigrationState(
+        ReadingListPrefMigrationState::kDifferentAccountMigrated);
+    return;
+  }
+
+  // Before crbug.com/568406887 was fixed, the migration didn't carry over the
+  // Reading List toggle for "Sync everything" users, leaving Reading List
+  // disabled for them. Determine whether this user is affected.
+  if (pref_service->GetBoolean(
+          syncer::prefs::internal::kReadingListPrefMigratedToAccount)) {
+    // The user went through the fixed migration, which handled Reading List.
+    RecordReadingListPrefMigrationState(
+        ReadingListPrefMigrationState::kHandledBySyncToSigninMigration);
+    return;
+  }
+
+  syncer::SyncPrefs sync_prefs(pref_service);
+  const GaiaId gaia_id(migrated_gaia_id);
+  if (!sync_prefs.DoesTypeHaveDefaultValueForAccount(
+          syncer::UserSelectableType::kReadingList, gaia_id)) {
+    // The toggle was set explicitly, either by the user or by a previous run of
+    // this fix-up.
+    RecordReadingListPrefMigrationState(
+        ReadingListPrefMigrationState::kExplicitlySet);
+    return;
+  }
+  if (!base::FeatureList::IsEnabled(
+          switches::kEnableReadingListForMigratedUsers)) {
+    // The fix-up would apply, but the feature is disabled.
+    RecordReadingListPrefMigrationState(
+        ReadingListPrefMigrationState::kFeatureDisabled);
+    return;
+  }
+
+  // The toggle was never set, so enable it now. Note that
+  // kReadingListPrefMigratedToAccount is deliberately NOT set here, so that
+  // users who went through the fixed migration remain distinguishable from
+  // users who were fixed up by this function.
+  sync_prefs.SetSelectedTypeForAccount(syncer::UserSelectableType::kReadingList,
+                                       /*is_type_on=*/true, gaia_id);
+  RecordReadingListPrefMigrationState(
+      ReadingListPrefMigrationState::kFixApplied);
+}
+#endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
 
 const char* GetHistogramMigratingOrNotInfix(bool doing_migration) {
   return doing_migration ? "Migration." : "DryRun.";
@@ -376,6 +522,7 @@ void RecordMigrationType(PrefService* pref_service,
       break;
     case SyncToSigninMigrationDecision::kUndoMigration:
     case SyncToSigninMigrationDecision::kUndoNotNecessary:
+    case SyncToSigninMigrationDecision::kDontMigrateChromeOsUndoSigninEnabled:
       // No need to record the metric in this case.
       return;
   }
@@ -420,12 +567,19 @@ void MaybeMigrateSyncingUserToSignedInInternal(
       // Undo the migration (if appropriate) and nothing else.
       UndoSyncToSigninMigration(pref_service);
       return;
-    case SyncToSigninMigrationDecision::kDontMigrateNotSignedIn:
     case SyncToSigninMigrationDecision::kDontMigrateNotSyncing:
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+      // No migration needed. But the user may have been migrated in a previous
+      // browser run, in which case some fix-ups may be required.
+      MaybeFixUpPreviouslyMigratedUser(pref_service);
+#endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+      return;
+    case SyncToSigninMigrationDecision::kDontMigrateNotSignedIn:
     case SyncToSigninMigrationDecision::kDontMigrateSyncStatusUndefined:
     case SyncToSigninMigrationDecision::kDontMigrateSyncStatusInitializing:
     case SyncToSigninMigrationDecision::kDontMigrateAuthError:
     case SyncToSigninMigrationDecision::kUndoNotNecessary:
+    case SyncToSigninMigrationDecision::kDontMigrateChromeOsUndoSigninEnabled:
       // No migration, and no point in recording per-type metrics - we're done.
       return;
     case SyncToSigninMigrationDecision::kDontMigrateFlagDisabled:
@@ -553,6 +707,12 @@ void MaybeMigrateSyncingUserToSignedInInternal(
   // Migrate the global data type prefs (used for Sync-the-feature) over to the
   // account-specific ones.
   syncer::SyncPrefs::MigrateGlobalDataTypePrefsToAccount(pref_service, gaia_id);
+
+#if BUILDFLAG(IS_CHROMEOS)
+  // The OS data type prefs aren't account-specific, so they carry over as-is,
+  // unless `kSyncDisabledViaDashboard` is set.
+  DisableOsTypesIfSyncDisabledViaDashboard(pref_service);
+#endif  // BUILDFLAG(IS_CHROMEOS)
 
   // Ensure the prefs changes are persisted as soon as possible. (They get
   // persisted on shutdown anyway, but better make sure.)

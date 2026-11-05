@@ -23,7 +23,6 @@
 #include "components/prefs/pref_service.h"
 #include "components/signin/public/base/signin_switches.h"
 #include "components/sync/base/data_type.h"
-#include "components/sync/base/features.h"
 #include "components/sync/engine/sync_protocol_error.h"
 #include "components/sync/model/data_type_controller_delegate.h"
 #include "components/sync/model/type_entities_count.h"
@@ -125,10 +124,8 @@ class SyncErrorTest
   SyncErrorTest() : SyncTest(SINGLE_CLIENT) {
     if (GetSetupSyncMode() == SetupSyncMode::kSyncTransportOnly) {
       scoped_feature_list_.InitWithFeatures(
-          {syncer::kReplaceSyncPromosWithSignInPromos,
-           switches::kSyncEnableBookmarksInTransportMode,
-           switches::kEnablePreferencesAccountStorage,
-           syncer::kSeparateLocalAndAccountSearchEngines},
+          {switches::kSyncEnableBookmarksInTransportMode,
+           switches::kEnablePreferencesAccountStorage},
           {});
     }
   }
@@ -302,9 +299,6 @@ IN_PROC_BROWSER_TEST_P(SyncErrorTest, ClientDataObsoleteTest) {
   SetTitle(0, node1, u"new_title1");
   ASSERT_TRUE(UpdatedProgressMarkerChecker(GetSyncService(0)).Wait());
 
-  std::string description = "Not My Fault";
-  std::string url = "www.google.com";
-
   // Remember cache_guid before actionable error.
   syncer::SyncStatus status;
   GetSyncService(0)->QueryDetailedSyncStatusForDebugging(&status);
@@ -380,7 +374,7 @@ IN_PROC_BROWSER_TEST_P(SyncErrorTest,
 
   GetFakeServer()->TriggerCommitError(sync_pb::SyncEnums::TRANSIENT_ERROR);
   syncer::UserEventService* event_service =
-      browser_sync::UserEventServiceFactory::GetForProfile(GetProfile(0));
+      UserEventServiceFactory::GetForProfile(GetProfile(0));
   const sync_pb::UserEventSpecifics specifics =
       CreateTestEvent(base::Time::FromDeltaSinceWindowsEpoch(
           base::Microseconds(kUserEventTimeUsec)));
@@ -418,7 +412,7 @@ IN_PROC_BROWSER_TEST_P(SyncErrorTest,
                   .Wait())
       << "Non-tombstone entities: "
       << GetTypeNonTombstoneEntitiesCount(
-             browser_sync::UserEventServiceFactory::GetForProfile(GetProfile(0))
+             UserEventServiceFactory::GetForProfile(GetProfile(0))
                  ->GetControllerDelegate()
                  .get());
 }

@@ -17,7 +17,6 @@
 #include "ui/gfx/geometry/size.h"
 #include "ui/gfx/mojom/dxgi_info.mojom.h"
 #include "ui/gl/gl_export.h"
-#include "ui/gl/gpu_switching_observer.h"
 #include "ui/gl/solid_color_pool_base.h"
 
 namespace gl {
@@ -75,6 +74,10 @@ GL_EXPORT ID3D12CommandQueue* GetDirectCompositionD3D12CommandQueue();
 // blitting by DWM to the window redirection surface by using a flip mode swap
 // chain. Overridden with --disable-direct-composition.
 GL_EXPORT bool DirectCompositionSupported();
+
+// Returns true if the active direct composition device supports brushes and the
+// `DCompBrushes` feature is enabled.
+GL_EXPORT bool ShouldUseDirectCompositionBrushes();
 
 // Returns true if video overlays are supported and should be used. Overridden
 // with --enable-direct-composition-video-overlays and
@@ -167,10 +170,6 @@ struct DirectCompositionOverlayWorkarounds {
   // overlays to be used when YUV overlays are supported on Intel GPUs.
   bool enable_bgra8_overlays_with_yuv_overlay_support = false;
 
-  // Forces to enable NV12 overlay support regardless of the query results from
-  // IDXGIOutput3::CheckOverlaySupport().
-  bool force_nv12_overlay_support = false;
-
   // Forces to enable RGBA101010A2 overlay support regardless of the query
   // results from IDXGIOutput3::CheckOverlaySupport().
   bool force_rgb10a2_overlay_support = false;
@@ -190,10 +189,6 @@ struct DirectCompositionOverlayWorkarounds {
 };
 GL_EXPORT void SetDirectCompositionOverlayWorkarounds(
     const DirectCompositionOverlayWorkarounds& workarounds);
-
-// Returns true if the swap chain format is forced to be a YUV format via a GPU
-// workaround flag.
-GL_EXPORT bool IsSwapChainYuvFormatForced();
 
 // Returns monitor size.
 GL_EXPORT gfx::Size GetDirectCompositionPrimaryMonitorSize();
@@ -227,12 +222,11 @@ class GL_EXPORT DirectCompositionOverlayCapsObserver
   ~DirectCompositionOverlayCapsObserver() override = default;
 };
 
-// Upon receiving display notifications from ui::GpuSwitchingManager,
-// DirectCompositionOverlayCapsMonitor updates its overlay caps with the new
-// display setting and notifies DirectCompositionOverlayCapsObserver for the
-// overlay cap change.
-class GL_EXPORT DirectCompositionOverlayCapsMonitor
-    : public ui::GpuSwitchingObserver {
+// Upon receiving display change notifications, which the GPU service forwards
+// from the browser process, DirectCompositionOverlayCapsMonitor updates its
+// overlay caps with the new display setting and notifies
+// DirectCompositionOverlayCapsObserver for the overlay cap change.
+class GL_EXPORT DirectCompositionOverlayCapsMonitor {
  public:
   DirectCompositionOverlayCapsMonitor(
       const DirectCompositionOverlayCapsMonitor&) = delete;
@@ -249,16 +243,17 @@ class GL_EXPORT DirectCompositionOverlayCapsMonitor
   // Called when the overlay caps have changed.
   void NotifyOverlayCapsChanged();
 
-  // Implements GpuSwitchingObserver.
-  void OnDisplayAdded() override;
-  void OnDisplayRemoved() override;
-  void OnDisplayMetricsChanged() override;
+  // Called on the GPU main thread when a monitor is plugged in or unplugged,
+  // or when the display metrics change.
+  void OnDisplayAdded();
+  void OnDisplayRemoved();
+  void OnDisplayMetricsChanged();
 
  private:
   friend class base::NoDestructor<DirectCompositionOverlayCapsMonitor>;
 
   DirectCompositionOverlayCapsMonitor();
-  ~DirectCompositionOverlayCapsMonitor() override;
+  ~DirectCompositionOverlayCapsMonitor();
 
   scoped_refptr<
       base::ObserverListThreadSafe<DirectCompositionOverlayCapsObserver>>

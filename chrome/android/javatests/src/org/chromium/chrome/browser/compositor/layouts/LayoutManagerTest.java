@@ -44,14 +44,12 @@ import org.chromium.base.supplier.OneshotSupplierImpl;
 import org.chromium.base.supplier.SettableMonotonicObservableSupplier;
 import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CallbackHelper;
-import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.base.test.util.DisabledTest;
 import org.chromium.base.test.util.Feature;
 import org.chromium.base.test.util.Restriction;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.compositor.CompositorViewHolder;
-import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.hub.HubLayoutDependencyHolder;
 import org.chromium.chrome.browser.init.ChromeBrowserInitializer;
 import org.chromium.chrome.browser.layouts.LayoutStateProvider;
@@ -103,16 +101,16 @@ public class LayoutManagerTest implements MockTabModelDelegate {
     @Mock private HubLayoutDependencyHolder mHubLayoutDependencyHolder;
     @Mock private TabWindowManager mTabWindowManager;
     @Mock private ToolbarManager mToolbarManager;
-    @Mock private ViewGroup mContentView;
-    @Mock private CompositorViewHolder mCompositorViewHolder;
     @Mock private OverridableTabCount mOverridableTabCount;
 
+    private ViewGroup mContentView;
     private NonNullObservableSupplier<CompositorViewHolder> mCompositorViewHolderSupplier;
     private TabModelSelector mTabModelSelector;
     private OneshotSupplierImpl<TabSwitcher> mTabSwitcherSupplier;
     private Supplier<TabModelSelector> mTabModelSelectorSupplier;
     private LayoutManagerChrome mManager;
     private LayoutManagerChromePhone mManagerPhone;
+    private TabContentManager mTabContentManager;
 
     private final PointerProperties[] mProperties = new PointerProperties[2];
     private final PointerCoords[] mPointerCoords = new PointerCoords[2];
@@ -180,11 +178,13 @@ public class LayoutManagerTest implements MockTabModelDelegate {
             int standardIndexSelected,
             int incognitoIndexSelected,
             boolean incognitoSelected) {
-        mCompositorViewHolderSupplier = ObservableSuppliers.createNonNull(mCompositorViewHolder);
         Context context =
                 new ContextThemeWrapper(
                         ApplicationProvider.getApplicationContext(),
                         R.style.Theme_BrowserUI_DayNight);
+        mCompositorViewHolderSupplier =
+                ObservableSuppliers.createNonNull(
+                        new CompositorViewHolder(context, /* attrs= */ null));
 
         mDpToPx = context.getResources().getDisplayMetrics().density;
 
@@ -204,9 +204,11 @@ public class LayoutManagerTest implements MockTabModelDelegate {
         mTabModelSelector.selectModel(incognitoSelected);
 
         LayoutManagerHost layoutManagerHost = new MockLayoutHost(context);
-        TabContentManager tabContentManager =
-                new TabContentManager(context, null, false, null, mTabWindowManager);
-        tabContentManager.initWithNative();
+        if (mTabContentManager != null) {
+            mTabContentManager.destroy();
+        }
+        mTabContentManager = new TabContentManager(context, null, false, null, mTabWindowManager);
+        mTabContentManager.initWithNative();
 
         // Build a fake content container
         FrameLayout parentContainer = new FrameLayout(context);
@@ -234,9 +236,10 @@ public class LayoutManagerTest implements MockTabModelDelegate {
                         mContentView,
                         mToolbarManager,
                         mScrimVisibilitySupplier,
-                        new NoOpTopInsetProvider());
+                        new NoOpTopInsetProvider(),
+                        ObservableSuppliers.alwaysNull());
 
-        tabContentManagerSupplier.set(tabContentManager);
+        tabContentManagerSupplier.set(mTabContentManager);
         mManager = mManagerPhone;
         CompositorAnimationHandler.setTestingMode(true);
         mManager.init(
@@ -278,9 +281,11 @@ public class LayoutManagerTest implements MockTabModelDelegate {
         mTabModelSelector.selectModel(incognitoSelected);
 
         LayoutManagerHost layoutManagerHost = new MockLayoutHost(context);
-        TabContentManager tabContentManager =
-                new TabContentManager(context, null, false, null, mTabWindowManager);
-        tabContentManager.initWithNative();
+        if (mTabContentManager != null) {
+            mTabContentManager.destroy();
+        }
+        mTabContentManager = new TabContentManager(context, null, false, null, mTabWindowManager);
+        mTabContentManager.initWithNative();
 
         // Build a fake content container
         FrameLayout parentContainer = new FrameLayout(context);
@@ -301,7 +306,7 @@ public class LayoutManagerTest implements MockTabModelDelegate {
                         () -> mToolbarThemeColorProvider,
                         mHubLayoutDependencyHolder);
 
-        tabContentManagerSupplier.set(tabContentManager);
+        tabContentManagerSupplier.set(mTabContentManager);
         mManagerPhone = null;
         CompositorAnimationHandler.setTestingMode(true);
         mManager.init(
@@ -538,7 +543,6 @@ public class LayoutManagerTest implements MockTabModelDelegate {
     @MediumTest
     @Restriction(DeviceFormFactor.PHONE)
     @Feature({"Android-TabSwitcher"})
-    @CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
     public void testHubTabSwitcherLayout_Enabled() throws Exception {
         launchedChromeAndEnterTabSwitcher();
         ThreadUtils.runOnUiThreadBlocking(
@@ -729,7 +733,13 @@ public class LayoutManagerTest implements MockTabModelDelegate {
     @After
     public void tearDown() {
         ThreadUtils.runOnUiThreadBlocking(
-                () -> AccessibilityStateTestHelper.uninitializeForTesting());
+                () -> {
+                    if (mTabContentManager != null) {
+                        mTabContentManager.destroy();
+                        mTabContentManager = null;
+                    }
+                    AccessibilityStateTestHelper.uninitializeForTesting();
+                });
     }
 
     private void launchedChromeAndEnterTabSwitcher() {

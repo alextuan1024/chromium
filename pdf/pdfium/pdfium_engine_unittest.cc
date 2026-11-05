@@ -186,6 +186,11 @@ class MockTestClient : public TestClient {
               (override));
   MOCK_METHOD(bool, IsPrintPreview, (), (const override));
   MOCK_METHOD(void, DocumentFocusChanged, (bool), (override));
+  MOCK_METHOD(void, SetSelectedText, (const std::string&), (override));
+  MOCK_METHOD(void,
+              SelectionChanged,
+              (const gfx::Rect&, const gfx::Rect&, const gfx::Rect&),
+              (override));
   MOCK_METHOD(void, SetLinkUnderCursor, (const std::string&), (override));
   MOCK_METHOD(void, ScrollToX, (int, bool), (override));
   MOCK_METHOD(void, ScrollToY, (int, bool), (override));
@@ -831,7 +836,7 @@ TEST_P(PDFiumEngineTest, GetNamedDestination) {
   std::optional<PDFiumEngine::NamedDestination> valid_page_obj =
       engine->GetNamedDestination("ValidPageObj");
   ASSERT_TRUE(valid_page_obj.has_value());
-  EXPECT_EQ(0u, valid_page_obj->page);
+  EXPECT_EQ(0u, valid_page_obj->page_index);
   EXPECT_EQ("XYZ", valid_page_obj->view);
   ASSERT_EQ(3u, valid_page_obj->num_params);
   EXPECT_EQ(1.2f, valid_page_obj->params[2]);
@@ -845,7 +850,7 @@ TEST_P(PDFiumEngineTest, GetNamedDestination) {
   std::optional<PDFiumEngine::NamedDestination> valid_page_number =
       engine->GetNamedDestination("ValidPageNumber");
   ASSERT_TRUE(valid_page_number.has_value());
-  EXPECT_EQ(1u, valid_page_number->page);
+  EXPECT_EQ(1u, valid_page_number->page_index);
 
   // A destination with an out-of-range page number
   std::optional<PDFiumEngine::NamedDestination> invalid_page_number =
@@ -1080,7 +1085,7 @@ TEST_P(PDFiumEngineTest, LinkNavigates) {
   // Plugin size chosen so all pages of the document are visible.
   engine->PluginSizeUpdated({1024, 4096});
 
-  EXPECT_CALL(client, NavigateTo("", WindowOpenDisposition::CURRENT_TAB));
+  EXPECT_CALL(client, NavigateTo("", WindowOpenDisposition::kCurrentTab));
   constexpr gfx::PointF kMiddlePosition(100, 230);
   EXPECT_TRUE(engine->HandleInputEvent(
       CreateLeftClickWebMouseEventAtPosition(kMiddlePosition)));
@@ -1451,6 +1456,40 @@ TEST_P(PDFiumEngineSelectionTest, SelectTextBackwards) {
   constexpr char kExpectedText[] = "bye, world!\nHello, world!\nGoodby";
   EXPECT_EQ(GetPlatformTextExpectation(kExpectedText),
             engine->GetSelectedText());
+}
+
+TEST_P(PDFiumEngineSelectionTest, SelectionBoundingBoxIncludesAllLines) {
+  NiceMock<MockTestClient> mock_client(/*use_skia_renderer=*/GetParam());
+  std::unique_ptr<PDFiumEngine> engine =
+      InitializeEngine(&mock_client, FILE_PATH_LITERAL("hello_world2.pdf"));
+  ASSERT_TRUE(engine);
+  engine->PluginSizeUpdated({1024, 4096});
+
+  gfx::Rect last_left;
+  gfx::Rect last_right;
+  gfx::Rect last_bounding_box;
+  ON_CALL(mock_client, SelectionChanged)
+      .WillByDefault([&](const gfx::Rect& left, const gfx::Rect& right,
+                         const gfx::Rect& bounding_box) {
+        last_left = left;
+        last_right = right;
+        last_bounding_box = bounding_box;
+      });
+
+  // Select from the middle of the first line ("world!") to the start of the
+  // second line ("Good"), so `last_left.x()` is to the right of the second
+  // line's left edge and `last_right.x()` is to the left of the first line's
+  // right edge.
+  constexpr gfx::PointF kFirstLineMiddle(85, 120);
+  constexpr gfx::PointF kSecondLineStart(75, 420);
+  EXPECT_TRUE(engine->HandleInputEvent(
+      CreateLeftClickWebMouseEventAtPosition(kFirstLineMiddle)));
+  EXPECT_TRUE(engine->HandleInputEvent(
+      CreateMoveWebMouseEventToPosition(kSecondLineStart)));
+
+  EXPECT_FALSE(last_bounding_box.IsEmpty());
+  EXPECT_LT(last_bounding_box.x(), last_left.x());
+  EXPECT_GT(last_bounding_box.right(), last_right.x());
 }
 
 TEST_P(PDFiumEngineSelectionTest, SelectTextWithCopyRestriction) {
@@ -2675,6 +2714,61 @@ TEST_P(PDFiumEngineTabbingTest, RetainSelectionOnFocusNotInFormTextArea) {
             GetFocusedElementType(engine.get()));
   EXPECT_EQ(0, GetLastFocusedPage(engine.get()));
   EXPECT_EQ(1u, GetSelectionSize(engine.get()));
+}
+
+TEST_P(PDFiumEngineTabbingTest, ReportFormTextSelectionOnDoubleClick) {
+  NiceMock<MockTestClient> client(/*use_skia_renderer=*/GetParam());
+  std::unique_ptr<PDFiumEngine> engine =
+      InitializeEngine(&client, FILE_PATH_LITERAL("form_text_fields.pdf"));
+  ASSERT_TRUE(engine);
+  engine->PluginSizeUpdated({1024, 4096});
+
+  {
+    InSequence sequence;
+    EXPECT_CALL(client, SetSelectedText(""));
+    EXPECT_CALL(client, SetSelectedText("Text"));
+  }
+
+  // Tab into the page's form fields.
+  ASSERT_TRUE(HandleTabEvent(engine.get(), 0));
+  ASSERT_TRUE(HandleTabEvent(engine.get(), 0));
+  ASSERT_EQ(PDFiumEngineClient::FocusFieldType::kText,
+            FormFocusFieldType(engine.get()));
+
+  // Double click the "Text Box" widget, which holds "Text".
+  constexpr gfx::PointF kTextBoxPosition(170, 250);
+  SimulateMultiClick(*engine, kTextBoxPosition, 2);
+}
+
+TEST_P(PDFiumEngineTabbingTest, ReportSameFormTextSelectionAfterRefocus) {
+  NiceMock<MockTestClient> client(/*use_skia_renderer=*/GetParam());
+  std::unique_ptr<PDFiumEngine> engine =
+      InitializeEngine(&client, FILE_PATH_LITERAL("form_text_fields.pdf"));
+  ASSERT_TRUE(engine);
+  engine->PluginSizeUpdated({1024, 4096});
+
+  {
+    InSequence sequence;
+    EXPECT_CALL(client, SetSelectedText(""));
+    EXPECT_CALL(client, SetSelectedText("Text"));
+    EXPECT_CALL(client, SetSelectedText("")).Times(2);
+    EXPECT_CALL(client, SetSelectedText("Text"));
+  }
+
+  constexpr gfx::PointF kTextBoxPosition(170, 250);
+  ASSERT_TRUE(HandleTabEvent(engine.get(), 0));
+  ASSERT_TRUE(HandleTabEvent(engine.get(), 0));
+  SimulateMultiClick(*engine, kTextBoxPosition, 2);
+
+  // Leave and re-enter the plugin, as switching browser tabs does.
+  engine->UpdateFocus(/*has_focus=*/false);
+  ASSERT_EQ(PDFiumEngineClient::FocusFieldType::kNoFocus,
+            FormFocusFieldType(engine.get()));
+  engine->UpdateFocus(/*has_focus=*/true);
+  ASSERT_EQ(PDFiumEngineClient::FocusFieldType::kText,
+            FormFocusFieldType(engine.get()));
+
+  SimulateMultiClick(*engine, kTextBoxPosition, 2);
 }
 
 TEST_P(PDFiumEngineTabbingTest, TextDirectionOnFocusedFormField) {
@@ -4619,7 +4713,6 @@ TEST_P(PDFiumEngineInkDrawTextTest, DrawTextSavesMetadata) {
   ASSERT_EQ(2, obj_count);
 
   // Verify all text objects have a mark with the same textbox ID.
-  std::string textbox_id;
   for (int i = 0; i < obj_count; ++i) {
     FPDF_PAGEOBJECT obj = FPDFPage_GetObject(pdf_page, i);
     ASSERT_EQ(1, FPDFPageObj_CountMarks(obj));
@@ -5171,19 +5264,52 @@ TEST_P(PDFiumEngineInkDrawTextTest, ActualText) {
   EXPECT_EQ(PDFiumRange::AllTextOnPage(&page).GetText(), u"পরিকল্পনা");
 }
 
+TEST_P(PDFiumEngineInkDrawTextTest, DrawTextUpdatesTextRunsAndSelection) {
+  TestClient client(/*use_skia_renderer=*/GetParam());
+  std::unique_ptr<PDFiumEngine> engine =
+      InitializeEngine(&client, FILE_PATH_LITERAL("blank.pdf"));
+  ASSERT_TRUE(engine);
+  engine->PluginSizeUpdated({500, 500});
+  engine->set_next_textbox_id_for_testing(0);
+
+  PDFiumPage& page = GetPDFiumPage(*engine, 0);
+  FontId font_id = AddDefaultFont(engine.get());
+
+  // Draw "a".
+  DrawAndVerifyMarks(engine.get(), page, font_id,
+                     GetGlyphsForText("a", /*font_size=*/10.0f), InkTextId(0),
+                     /*expected_textbox_id=*/0);
+
+  // Select all text before drawing additional text.
+  engine->SelectAll();
+  ASSERT_EQ(engine->GetSelectedText(), "a");
+  engine->ClearTextSelection();
+
+  // Draw "b".
+  DrawAndVerifyMarks(engine.get(), page, font_id,
+                     GetGlyphsForText("b", /*font_size=*/10.0f), InkTextId(1),
+                     /*expected_textbox_id=*/1);
+
+  // Selecting all text again should include the newly drawn "b" without
+  // hanging.
+  engine->SelectAll();
+  EXPECT_EQ(engine->GetSelectedText(), "ab");
+}
+
 // Don't be concerned about any slight rendering differences in AGG vs. Skia,
 // covering one of these is sufficient for checking how data is written out.
 INSTANTIATE_TEST_SUITE_P(All,
                          PDFiumEngineInkDrawTextTest,
                          testing::Values(false));
 
-class PDFiumEngineInkDrawTextStrikethroughTest
+class PDFiumEngineInkDrawTextLineDecorationTest
     : public PDFiumEngineInkDrawTextTest {
  protected:
-  void TestDrawTextStrikethrough(int orientation,
-                                 float font_size,
-                                 float expected_stroke_width,
-                                 float expected_line_y) {
+  void TestDrawTextLineDecoration(bool is_strikethrough,
+                                  int orientation,
+                                  float font_size,
+                                  float expected_stroke_width,
+                                  float expected_line_y) {
     TestClient client(/*use_skia_renderer=*/GetParam());
     std::unique_ptr<PDFiumEngine> engine =
         InitializeEngine(&client, FILE_PATH_LITERAL("blank.pdf"));
@@ -5193,34 +5319,21 @@ class PDFiumEngineInkDrawTextStrikethroughTest
 
     constexpr int kPageIndex = 0;
     PDFiumPage& page = GetPDFiumPage(*engine, kPageIndex);
-
-    FontId font_id = AddDefaultFont(engine.get());
-    constexpr std::string_view kTextToDraw = "Hello!";
-    DrawTextData text_data = GetGlyphsForText(kTextToDraw, font_size);
-    ASSERT_FALSE(text_data.glyphs.empty());
-    ASSERT_FALSE(text_data.glyph_positions.empty());
-
     int initial_obj_count = FPDFPage_CountObjects(page.GetPage());
-
-    const gfx::RectF location = (orientation % 2 == 0)
-                                    ? gfx::RectF(100.0f, 20.0f)
-                                    : gfx::RectF(20.0f, 100.0f);
 
     InkTextBoxAttributes attributes = SampleInkTextBoxAttributes();
     attributes.rect = gfx::RectF(20.0f, 20.0f, 100.0f, 100.0f);
     attributes.css_font_size = font_size;
     attributes.orientation = orientation;
-    attributes.is_strikethrough = true;
+    if (is_strikethrough) {
+      attributes.is_strikethrough = true;
+    } else {
+      attributes.is_underline = true;
+    }
 
-    engine->DrawText(
-        kPageIndex, InkTextId(0),
-        {InkTextLine(InkTextInfo(font_id, text_data.glyphs,
-                                 text_data.glyph_positions, location,
-                                 /*is_horizontal=*/true, text_data.text))},
-        FontAscent(engine.get(), font_id, attributes.css_font_size),
-        /*pdf_zoom=*/1.0, attributes);
+    DrawSingleTextLine(engine.get(), kPageIndex, attributes);
 
-    // Strikethrough generates 2 page objects: text object and path object.
+    // Line decoration generates 2 page objects: text object and path object.
     int new_obj_count = FPDFPage_CountObjects(page.GetPage());
     ASSERT_EQ(new_obj_count, initial_obj_count + 2);
 
@@ -5231,14 +5344,50 @@ class PDFiumEngineInkDrawTextStrikethroughTest
     FPDF_PAGEOBJECTMARK mark = FPDFPageObj_GetMark(text_obj, 0);
     ASSERT_EQ(kInkTextAnnotationIdentifierKey,
               base::UTF16ToUTF8(GetPageObjectMarkName(mark)));
-    EXPECT_THAT(GetPageObjectMarkIntParam(mark, "IsStrikethrough"),
+    const std::string expected_mark_param =
+        is_strikethrough ? "IsStrikethrough" : "IsUnderline";
+    EXPECT_THAT(GetPageObjectMarkIntParam(mark, expected_mark_param),
                 Optional(1));
 
     FPDF_PAGEOBJECT path_obj =
         FPDFPage_GetObject(page.GetPage(), initial_obj_count + 1);
+    VerifyLineDecorationPath(path_obj, expected_stroke_width, expected_line_y);
+
+    // Discarding the text annotation must remove both the text object and the
+    // line decoration path object from the page.
+    engine->DiscardText(InkTextId(0));
+    EXPECT_EQ(initial_obj_count, FPDFPage_CountObjects(page.GetPage()));
+  }
+
+ private:
+  void DrawSingleTextLine(PDFiumEngine* engine,
+                          int page_index,
+                          const InkTextBoxAttributes& attributes) {
+    FontId font_id = AddDefaultFont(engine);
+    constexpr std::string_view kTextToDraw = "Hello!";
+    DrawTextData text_data =
+        GetGlyphsForText(kTextToDraw, attributes.css_font_size);
+    ASSERT_FALSE(text_data.glyphs.empty());
+    ASSERT_FALSE(text_data.glyph_positions.empty());
+
+    const gfx::RectF location = (attributes.orientation % 2 == 0)
+                                    ? gfx::RectF(100.0f, 20.0f)
+                                    : gfx::RectF(20.0f, 100.0f);
+    engine->DrawText(
+        page_index, InkTextId(0),
+        {InkTextLine(InkTextInfo(font_id, text_data.glyphs,
+                                 text_data.glyph_positions, location,
+                                 /*is_horizontal=*/true, text_data.text))},
+        FontAscent(engine, font_id, attributes.css_font_size),
+        /*pdf_zoom=*/1.0, attributes);
+  }
+
+  void VerifyLineDecorationPath(FPDF_PAGEOBJECT path_obj,
+                                float expected_stroke_width,
+                                float expected_line_y) {
     ASSERT_EQ(FPDF_PAGEOBJ_PATH, FPDFPageObj_GetType(path_obj));
 
-    // The mark must also be attached to the strikethrough path object so that
+    // The mark must also be attached to the line decoration path object so that
     // it is tracked and cleaned up properly on reload or erase.
     ASSERT_EQ(1, FPDFPageObj_CountMarks(path_obj));
     FPDF_PAGEOBJECTMARK path_mark = FPDFPageObj_GetMark(path_obj, 0);
@@ -5270,15 +5419,10 @@ class PDFiumEngineInkDrawTextStrikethroughTest
 
     constexpr float kExpectedRunWidth = 75.0f;
     EXPECT_FLOAT_EQ(kExpectedRunWidth, end_x - start_x);
-
-    // Discarding the text annotation must remove both the text object and the
-    // strikethrough path object from the page.
-    engine->DiscardText(InkTextId(0));
-    EXPECT_EQ(initial_obj_count, FPDFPage_CountObjects(page.GetPage()));
   }
 };
 
-TEST_P(PDFiumEngineInkDrawTextStrikethroughTest, Basic) {
+TEST_P(PDFiumEngineInkDrawTextLineDecorationTest, StrikethroughBasic) {
 #if BUILDFLAG(IS_WIN)
   constexpr float kExpectedLineY = 2.6975f;
 #elif BUILDFLAG(IS_MAC)
@@ -5286,11 +5430,12 @@ TEST_P(PDFiumEngineInkDrawTextStrikethroughTest, Basic) {
 #else
   constexpr float kExpectedLineY = 2.32f;
 #endif
-  TestDrawTextStrikethrough(/*orientation=*/0, /*font_size=*/10.0f,
-                            /*expected_stroke_width=*/0.75f, kExpectedLineY);
+  TestDrawTextLineDecoration(/*is_strikethrough=*/true, /*orientation=*/0,
+                             /*font_size=*/10.0f,
+                             /*expected_stroke_width=*/0.75f, kExpectedLineY);
 }
 
-TEST_P(PDFiumEngineInkDrawTextStrikethroughTest, Rotated) {
+TEST_P(PDFiumEngineInkDrawTextLineDecorationTest, StrikethroughRotated) {
 #if BUILDFLAG(IS_WIN)
   constexpr float kExpectedLineY = 2.6975f;
 #elif BUILDFLAG(IS_MAC)
@@ -5298,11 +5443,12 @@ TEST_P(PDFiumEngineInkDrawTextStrikethroughTest, Rotated) {
 #else
   constexpr float kExpectedLineY = 2.32f;
 #endif
-  TestDrawTextStrikethrough(/*orientation=*/1, /*font_size=*/10.0f,
-                            /*expected_stroke_width=*/0.75f, kExpectedLineY);
+  TestDrawTextLineDecoration(/*is_strikethrough=*/true, /*orientation=*/1,
+                             /*font_size=*/10.0f,
+                             /*expected_stroke_width=*/0.75f, kExpectedLineY);
 }
 
-TEST_P(PDFiumEngineInkDrawTextStrikethroughTest, SmallFontSize) {
+TEST_P(PDFiumEngineInkDrawTextLineDecorationTest, StrikethroughSmallFontSize) {
 #if BUILDFLAG(IS_WIN)
   constexpr float kExpectedLineY = 1.6185f;
 #elif BUILDFLAG(IS_MAC)
@@ -5310,11 +5456,12 @@ TEST_P(PDFiumEngineInkDrawTextStrikethroughTest, SmallFontSize) {
 #else
   constexpr float kExpectedLineY = 1.392f;
 #endif
-  TestDrawTextStrikethrough(/*orientation=*/0, /*font_size=*/6.0f,
-                            /*expected_stroke_width=*/0.45f, kExpectedLineY);
+  TestDrawTextLineDecoration(/*is_strikethrough=*/true, /*orientation=*/0,
+                             /*font_size=*/6.0f,
+                             /*expected_stroke_width=*/0.45f, kExpectedLineY);
 }
 
-TEST_P(PDFiumEngineInkDrawTextStrikethroughTest, LargeFontSize) {
+TEST_P(PDFiumEngineInkDrawTextLineDecorationTest, StrikethroughLargeFontSize) {
 #if BUILDFLAG(IS_WIN)
   constexpr float kExpectedLineY = 12.948f;
 #elif BUILDFLAG(IS_MAC)
@@ -5322,11 +5469,13 @@ TEST_P(PDFiumEngineInkDrawTextStrikethroughTest, LargeFontSize) {
 #else
   constexpr float kExpectedLineY = 11.136f;
 #endif
-  TestDrawTextStrikethrough(/*orientation=*/0, /*font_size=*/48.0f,
-                            /*expected_stroke_width=*/3.60f, kExpectedLineY);
+  TestDrawTextLineDecoration(/*is_strikethrough=*/true, /*orientation=*/0,
+                             /*font_size=*/48.0f,
+                             /*expected_stroke_width=*/3.60f, kExpectedLineY);
 }
 
-TEST_P(PDFiumEngineInkDrawTextStrikethroughTest, EmptyLineSkipped) {
+TEST_P(PDFiumEngineInkDrawTextLineDecorationTest,
+       StrikethroughEmptyLineSkipped) {
   TestClient client(/*use_skia_renderer=*/GetParam());
   std::unique_ptr<PDFiumEngine> engine =
       InitializeEngine(&client, FILE_PATH_LITERAL("blank.pdf"));
@@ -5356,7 +5505,7 @@ TEST_P(PDFiumEngineInkDrawTextStrikethroughTest, EmptyLineSkipped) {
   EXPECT_EQ(initial_obj_count + 2, FPDFPage_CountObjects(page.GetPage()));
 }
 
-TEST_P(PDFiumEngineInkDrawTextStrikethroughTest,
+TEST_P(PDFiumEngineInkDrawTextLineDecorationTest,
        EmojiWithoutFontDoesNotDrawStrikethrough) {
   TestClient client(/*use_skia_renderer=*/GetParam());
   std::unique_ptr<PDFiumEngine> engine =
@@ -5386,8 +5535,169 @@ TEST_P(PDFiumEngineInkDrawTextStrikethroughTest,
   EXPECT_EQ(initial_obj_count, FPDFPage_CountObjects(page.GetPage()));
 }
 
+TEST_P(PDFiumEngineInkDrawTextLineDecorationTest, UnderlineBasic) {
+  TestDrawTextLineDecoration(/*is_strikethrough=*/false, /*orientation=*/0,
+                             /*font_size=*/10.0f,
+                             /*expected_stroke_width=*/0.75f,
+                             /*expected_line_y=*/-0.75f);
+}
+
+TEST_P(PDFiumEngineInkDrawTextLineDecorationTest, UnderlineRotated) {
+  TestDrawTextLineDecoration(/*is_strikethrough=*/false, /*orientation=*/1,
+                             /*font_size=*/10.0f,
+                             /*expected_stroke_width=*/0.75f,
+                             /*expected_line_y=*/-0.75f);
+}
+
+TEST_P(PDFiumEngineInkDrawTextLineDecorationTest, UnderlineSmallFontSize) {
+  TestDrawTextLineDecoration(/*is_strikethrough=*/false, /*orientation=*/0,
+                             /*font_size=*/6.0f,
+                             /*expected_stroke_width=*/0.45f,
+                             /*expected_line_y=*/-0.45f);
+}
+
+TEST_P(PDFiumEngineInkDrawTextLineDecorationTest, UnderlineLargeFontSize) {
+  TestDrawTextLineDecoration(/*is_strikethrough=*/false, /*orientation=*/0,
+                             /*font_size=*/48.0f,
+                             /*expected_stroke_width=*/3.60f,
+                             /*expected_line_y=*/-3.60f);
+}
+
+TEST_P(PDFiumEngineInkDrawTextLineDecorationTest, UnderlineEmptyLineSkipped) {
+  TestClient client(/*use_skia_renderer=*/GetParam());
+  std::unique_ptr<PDFiumEngine> engine =
+      InitializeEngine(&client, FILE_PATH_LITERAL("blank.pdf"));
+  ASSERT_TRUE(engine);
+  constexpr int kPageIndex = 0;
+  PDFiumPage& page = GetPDFiumPage(*engine, kPageIndex);
+
+  FontId font_id = AddDefaultFont(engine.get());
+  DrawTextData text_data = GetGlyphsForText("Hello!", /*font_size=*/10.0f);
+
+  InkTextBoxAttributes attributes = SampleInkTextBoxAttributes();
+  attributes.is_underline = true;
+
+  // 1 line with text, 1 line without text.
+  std::vector<InkTextLine> lines;
+  lines.push_back(InkTextLine(InkTextInfo(
+      font_id, text_data.glyphs, text_data.glyph_positions,
+      gfx::RectF(100.0f, 20.0f), /*is_horizontal=*/true, text_data.text)));
+  lines.push_back(InkTextLine(gfx::RectF(50.0f, 20.0f), /*text_info=*/{}));
+
+  int initial_obj_count = FPDFPage_CountObjects(page.GetPage());
+  engine->DrawText(kPageIndex, InkTextId(0), lines,
+                   FontAscent(engine.get(), font_id, attributes.css_font_size),
+                   /*pdf_zoom=*/1.0, attributes);
+
+  // 2 objects added: 1 text object and 1 underline path.
+  EXPECT_EQ(initial_obj_count + 2, FPDFPage_CountObjects(page.GetPage()));
+}
+
+TEST_P(PDFiumEngineInkDrawTextLineDecorationTest,
+       EmojiWithoutFontDoesNotDrawUnderline) {
+  TestClient client(/*use_skia_renderer=*/GetParam());
+  std::unique_ptr<PDFiumEngine> engine =
+      InitializeEngine(&client, FILE_PATH_LITERAL("blank.pdf"));
+  ASSERT_TRUE(engine);
+  constexpr int kPageIndex = 0;
+  PDFiumPage& page = GetPDFiumPage(*engine, kPageIndex);
+
+  TestFont emoji_font = GetTestEmojiFont();
+  ASSERT_TRUE(emoji_font.serialized_font);
+  FontId id = emoji_font.font_id;
+  engine->AddFont(id, "NotoColorEmoji",
+                  gfx::SkDataToSpan(emoji_font.serialized_font));
+
+  DrawTextData text_data = GetGlyphsForText("?", /*font_size=*/10.0f);
+  InkTextBoxAttributes attributes = SampleInkTextBoxAttributes();
+  attributes.is_underline = true;
+
+  int initial_obj_count = FPDFPage_CountObjects(page.GetPage());
+  engine->DrawText(
+      kPageIndex, InkTextId(0),
+      {InkTextLine(InkTextInfo(id, text_data.glyphs, text_data.glyph_positions,
+                               gfx::RectF(100.0f, 20.0f),
+                               /*is_horizontal=*/true, u"\U0001F603"))},
+      /*ascent=*/8.0f, /*pdf_zoom=*/1.0, attributes);
+
+  EXPECT_EQ(initial_obj_count, FPDFPage_CountObjects(page.GetPage()));
+}
+
+TEST_P(PDFiumEngineInkDrawTextLineDecorationTest,
+       SimultaneousStrikethroughAndUnderline) {
+  TestClient client(/*use_skia_renderer=*/GetParam());
+  std::unique_ptr<PDFiumEngine> engine =
+      InitializeEngine(&client, FILE_PATH_LITERAL("blank.pdf"));
+  ASSERT_TRUE(engine);
+  constexpr int kPageIndex = 0;
+  PDFiumPage& page = GetPDFiumPage(*engine, kPageIndex);
+
+  FontId font_id = AddDefaultFont(engine.get());
+  constexpr float kFontSize = 10.0f;
+  DrawTextData text_data = GetGlyphsForText("Hello!", kFontSize);
+  ASSERT_FALSE(text_data.glyphs.empty());
+  ASSERT_FALSE(text_data.glyph_positions.empty());
+
+  int initial_obj_count = FPDFPage_CountObjects(page.GetPage());
+
+  const gfx::RectF location(100.0f, 20.0f);
+
+  InkTextBoxAttributes attributes = SampleInkTextBoxAttributes();
+  attributes.rect = gfx::RectF(20.0f, 20.0f, 100.0f, 100.0f);
+  attributes.css_font_size = kFontSize;
+  attributes.orientation = 0;
+  attributes.is_strikethrough = true;
+  attributes.is_underline = true;
+
+  engine->DrawText(
+      kPageIndex, InkTextId(0),
+      {InkTextLine(InkTextInfo(font_id, text_data.glyphs,
+                               text_data.glyph_positions, location,
+                               /*is_horizontal=*/true, text_data.text))},
+      FontAscent(engine.get(), font_id, attributes.css_font_size),
+      /*pdf_zoom=*/1.0, attributes);
+
+  // 3 page objects generated: 1 text object + 2 path objects (strikethrough and
+  // underline).
+  int new_obj_count = FPDFPage_CountObjects(page.GetPage());
+  ASSERT_EQ(new_obj_count, initial_obj_count + 3);
+
+  FPDF_PAGEOBJECT text_obj =
+      FPDFPage_GetObject(page.GetPage(), initial_obj_count);
+  ASSERT_EQ(FPDF_PAGEOBJ_TEXT, FPDFPageObj_GetType(text_obj));
+
+  FPDF_PAGEOBJECTMARK mark = FPDFPageObj_GetMark(text_obj, 0);
+  ASSERT_EQ(kInkTextAnnotationIdentifierKey,
+            base::UTF16ToUTF8(GetPageObjectMarkName(mark)));
+  EXPECT_THAT(GetPageObjectMarkIntParam(mark, "IsStrikethrough"), Optional(1));
+  EXPECT_THAT(GetPageObjectMarkIntParam(mark, "IsUnderline"), Optional(1));
+
+  FPDF_PAGEOBJECT path_obj1 =
+      FPDFPage_GetObject(page.GetPage(), initial_obj_count + 1);
+  ASSERT_EQ(FPDF_PAGEOBJ_PATH, FPDFPageObj_GetType(path_obj1));
+
+  FPDF_PAGEOBJECT path_obj2 =
+      FPDFPage_GetObject(page.GetPage(), initial_obj_count + 2);
+  ASSERT_EQ(FPDF_PAGEOBJ_PATH, FPDFPageObj_GetType(path_obj2));
+
+  // Both path objects must have the mark attached.
+  ASSERT_EQ(1, FPDFPageObj_CountMarks(path_obj1));
+  FPDF_PAGEOBJECTMARK path_mark1 = FPDFPageObj_GetMark(path_obj1, 0);
+  ASSERT_EQ(kInkTextAnnotationIdentifierKey,
+            base::UTF16ToUTF8(GetPageObjectMarkName(path_mark1)));
+
+  ASSERT_EQ(1, FPDFPageObj_CountMarks(path_obj2));
+  FPDF_PAGEOBJECTMARK path_mark2 = FPDFPageObj_GetMark(path_obj2, 0);
+  ASSERT_EQ(kInkTextAnnotationIdentifierKey,
+            base::UTF16ToUTF8(GetPageObjectMarkName(path_mark2)));
+
+  // Discarding the annotation removes all 3 objects.
+  engine->DiscardText(InkTextId(0));
+  EXPECT_EQ(initial_obj_count, FPDFPage_CountObjects(page.GetPage()));
+}
+
 INSTANTIATE_TEST_SUITE_P(All,
-                         PDFiumEngineInkDrawTextStrikethroughTest,
+                         PDFiumEngineInkDrawTextLineDecorationTest,
                          testing::Bool());
 
 using PDFiumEngineInkPrintTest = PDFiumTestBase;
@@ -6104,6 +6414,88 @@ TEST_P(PDFiumEngineHighlightTextFragmentTest, OnNewTextFragmentsSearchStarted) {
 
 INSTANTIATE_TEST_SUITE_P(All,
                          PDFiumEngineHighlightTextFragmentTest,
+                         testing::Bool());
+
+class PDFiumEngineHighlightSearchTermsTest
+    : public PDFiumEngineHighlightTextFragmentTest {
+ public:
+  std::unique_ptr<PDFiumEngine> InitializeMultiPagesPdfEngine(
+      TestClient& client) {
+    return InitializeEngine(&client,
+                            FILE_PATH_LITERAL("ink_text_multi_pages.pdf"));
+  }
+};
+
+TEST_P(PDFiumEngineHighlightSearchTermsTest, FindSortAndMergeTerms) {
+  NiceMock<SearchStringTestClient> client(GetParam());
+  std::unique_ptr<PDFiumEngine> engine = InitializeMultiPagesPdfEngine(client);
+  ASSERT_TRUE(engine);
+
+  // Out-of-order terms sort by ascending (page_index, char_index).
+  EXPECT_TRUE(engine->FindAndHighlightSearchTerms({"0", "Page", "Hello"}));
+  ASSERT_EQ(5u, engine->text_fragment_highlights_for_testing().size());
+  EXPECT_EQ(0u, engine->text_fragment_highlights_for_testing()[0].page_index());
+  EXPECT_EQ(0, engine->text_fragment_highlights_for_testing()[0].char_index());
+  EXPECT_EQ(0u, engine->text_fragment_highlights_for_testing()[1].page_index());
+  EXPECT_EQ(6, engine->text_fragment_highlights_for_testing()[1].char_index());
+  EXPECT_EQ(0u, engine->text_fragment_highlights_for_testing()[2].page_index());
+  EXPECT_EQ(11, engine->text_fragment_highlights_for_testing()[2].char_index());
+  EXPECT_EQ(2u, engine->text_fragment_highlights_for_testing()[3].page_index());
+  EXPECT_EQ(2u, engine->text_fragment_highlights_for_testing()[4].page_index());
+
+  // Overlapping/duplicate terms merge into one range per matching page.
+  EXPECT_TRUE(engine->FindAndHighlightSearchTerms(
+      {"Hello", "Hello Page", "Page", "Hello"}));
+  ASSERT_EQ(2u, engine->text_fragment_highlights_for_testing().size());
+  EXPECT_EQ(0, engine->text_fragment_highlights_for_testing()[0].char_index());
+  EXPECT_EQ(10, engine->text_fragment_highlights_for_testing()[0].char_count());
+  EXPECT_EQ(0, engine->text_fragment_highlights_for_testing()[1].char_index());
+  EXPECT_EQ(10, engine->text_fragment_highlights_for_testing()[1].char_count());
+}
+
+TEST_P(PDFiumEngineHighlightSearchTermsTest, ScrollToFirstSearchResult) {
+  NiceMock<SearchStringTestClient> client(GetParam());
+  std::unique_ptr<PDFiumEngine> engine = InitializeMultiPagesPdfEngine(client);
+  ASSERT_TRUE(engine);
+  engine->PluginSizeUpdated({200, 200});
+
+  // Matches on pages 0 and 2; starting at page 1 scrolls to page 2.
+  EXPECT_TRUE(engine->FindAndHighlightSearchTerms({"Hello"}));
+  int scroll_y_page2 = 0;
+  EXPECT_CALL(client, ScrollToY(testing::_, /*force_smooth_scroll=*/false))
+      .WillOnce(testing::SaveArg<0>(&scroll_y_page2));
+  engine->ScrollToFirstSearchResult(/*start_page_index=*/1u);
+  EXPECT_GT(scroll_y_page2, 400);
+  testing::Mock::VerifyAndClearExpectations(&client);
+
+  // Starting at page 2 for a match only on page 0 wraps around to page 0.
+  engine->ScrolledToYPosition(scroll_y_page2);
+  int scroll_y_page0 = 1000;
+  EXPECT_CALL(client, ScrollToY(testing::_, /*force_smooth_scroll=*/false))
+      .WillOnce(testing::SaveArg<0>(&scroll_y_page0));
+  EXPECT_TRUE(engine->FindAndHighlightSearchTerms({"Page 0"}));
+  engine->ScrollToFirstSearchResult(/*start_page_index=*/2u);
+  EXPECT_LT(scroll_y_page0, 300);
+}
+
+TEST_P(PDFiumEngineHighlightSearchTermsTest, DrawAndClearHighlights) {
+  NiceMock<SearchStringTestClient> client(GetParam());
+  std::unique_ptr<PDFiumEngine> engine = InitializePdfEngine(client);
+  ASSERT_TRUE(engine);
+
+  engine->FindAndHighlightTextFragments({"Spanner"});
+  EXPECT_CALL(client, OnNewTextFragmentsSearchStarted).Times(2);
+  EXPECT_TRUE(engine->FindAndHighlightSearchTerms(
+      {"Spanner: Google's Globally-Distributed Database"}));
+  DrawHighlightsAndCompare(*engine, 0, "spanner_text_start_end_highlight.png");
+
+  // Running a failed search clears existing highlights.
+  EXPECT_FALSE(engine->FindAndHighlightSearchTerms({"does_not_exist"}));
+  DrawAndExpectBlank(*engine, 0, kSpannerExpectedVisiblePageSize);
+}
+
+INSTANTIATE_TEST_SUITE_P(All,
+                         PDFiumEngineHighlightSearchTermsTest,
                          testing::Bool());
 
 }  // namespace chrome_pdf

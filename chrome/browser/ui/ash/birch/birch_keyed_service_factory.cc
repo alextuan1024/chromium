@@ -14,6 +14,7 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_selections.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
+#include "chrome/browser/sync/send_tab_to_self_sync_service_factory.h"
 #include "chrome/browser/sync/session_sync_service_factory.h"
 #include "chrome/browser/sync/sync_service_factory.h"
 #include "chrome/browser/ui/ash/birch/birch_keyed_service.h"
@@ -33,9 +34,10 @@ BirchKeyedServiceFactory::BirchKeyedServiceFactory()
           "BirchKeyedService",
           ProfileSelections::Builder()
               .WithRegular(ProfileSelection::kOriginalOnly)
-              // TODO(crbug.com/41488885): Check if this service is needed for
-              // Ash Internals.
-              .WithAshInternals(ProfileSelection::kOriginalOnly)
+              // Birch is a user-session feature, and the SyncService and
+              // SessionSyncService it depends on are not created for ash
+              // internal profiles either. Leave WithAshInternals at its
+              // default of kNone.
               .Build()) {
   DependsOn(FileSuggestKeyedServiceFactory::GetInstance());
   // Indirect dependency via BirchCalendarProvider.
@@ -49,6 +51,7 @@ BirchKeyedServiceFactory::BirchKeyedServiceFactory()
   // Indirect dependencies via BirchLastActiveProvider and
   // BirchMostVisitedProvider.
   DependsOn(HistoryServiceFactory::GetInstance());
+  DependsOn(SendTabToSelfSyncServiceFactory::GetInstance());
   DependsOn(FaviconServiceFactory::GetInstance());
 }
 
@@ -65,7 +68,12 @@ BirchKeyedServiceFactory::BuildServiceInstanceForBrowserContext(
   return std::make_unique<BirchKeyedService>(
       profile, IdentityManagerFactory::GetForProfile(profile),
       HistoryServiceFactory::GetForProfile(profile,
-                                           ServiceAccessType::EXPLICIT_ACCESS));
+                                           ServiceAccessType::EXPLICIT_ACCESS),
+      FaviconServiceFactory::GetForProfile(profile,
+                                           ServiceAccessType::EXPLICIT_ACCESS),
+      SendTabToSelfSyncServiceFactory::GetForProfile(profile),
+      SyncServiceFactory::GetForProfile(profile),
+      SessionSyncServiceFactory::GetForProfile(profile));
 }
 
 }  // namespace ash

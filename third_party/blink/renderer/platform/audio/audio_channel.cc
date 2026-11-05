@@ -28,21 +28,27 @@
 
 #include "third_party/blink/renderer/platform/audio/audio_channel.h"
 
+#include <math.h>
+
+#include "base/compiler_specific.h"
+#include "base/numerics/checked_math.h"
 #include "third_party/blink/renderer/platform/audio/vector_math.h"
 
 namespace blink {
 
 bool AudioChannel::TryAllocate(uint32_t length) {
-  if (!mem_buffer_) {
-    mem_buffer_ = std::make_unique<AudioFloatArray>();
-  }
-  if (!mem_buffer_->TryAllocate(length)) {
+  if (!mem_buffer_.TryAllocate(length)) {
     data_span_ = base::span<float>();
     return false;
   }
-  data_span_ = mem_buffer_->as_span();
+  data_span_ = mem_buffer_.as_span();
   silent_ = true;
   return true;
+}
+
+void AudioChannel::ResizeSmaller(uint32_t new_length) {
+  DCHECK_LE(new_length, data_span_.size());
+  data_span_ = data_span_.first(new_length);
 }
 
 void AudioChannel::Scale(float scale) {
@@ -50,7 +56,7 @@ void AudioChannel::Scale(float scale) {
     return;
   }
 
-  vector_math::Vsmul(Span(), scale, MutableSpan(), length());
+  vector_math::Vsmul(Span(), scale, MutableSpan());
 }
 
 void AudioChannel::CopyFrom(const AudioChannel* source_channel) {
@@ -104,8 +110,17 @@ void AudioChannel::SumFrom(const AudioChannel* source_channel) {
   if (IsSilent()) {
     CopyFrom(source_channel);
   } else {
-    vector_math::Vadd(Span(), source_channel->Span(), MutableSpan(), length());
+    vector_math::Vadd(Span(), source_channel->Span().first(length()),
+                      MutableSpan());
   }
+}
+
+float AudioChannel::MaxAbsValue() const {
+  if (IsSilent()) {
+    return 0;
+  }
+
+  return vector_math::Vmaxmgv(Span());
 }
 
 }  // namespace blink

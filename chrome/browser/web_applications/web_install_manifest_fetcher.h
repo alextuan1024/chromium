@@ -16,6 +16,7 @@
 #include "base/memory/weak_ptr.h"
 #include "base/types/expected.h"
 #include "chrome/browser/web_applications/model/web_install_manifest_fetch_error.h"
+#include "services/network/public/mojom/client_security_state.mojom.h"
 #include "url/gurl.h"
 #include "url/origin.h"
 
@@ -35,8 +36,8 @@ namespace web_app {
 
 // Fetches a web app manifest from a URL using SimpleURLLoader. Used for a
 // web-initiated manifest-first install flow to retrieve manifest JSON from the
-// browser process. Does not parse the manifest — returns raw content on
-// success.
+// browser process. Requires JSON Content-Type metadata, but does not parse the
+// manifest — returns raw content on success.
 class WebInstallManifestFetcher {
  public:
   using FetchCallback = base::OnceCallback<void(
@@ -44,8 +45,9 @@ class WebInstallManifestFetcher {
 
   WebInstallManifestFetcher(
       GURL manifest_url,
-      url::Origin initiator_origin,
-      scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory);
+      scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
+      std::optional<url::Origin> initiator_origin = std::nullopt,
+      network::mojom::ClientSecurityStatePtr client_security_state = nullptr);
 
   ~WebInstallManifestFetcher();
 
@@ -69,8 +71,9 @@ class WebInstallManifestFetcher {
   void OnManifestDownloaded(std::optional<std::string> manifest_content);
 
   GURL manifest_url_;
-  url::Origin initiator_origin_;
   scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory_;
+  std::optional<url::Origin> initiator_origin_;
+  network::mojom::ClientSecurityStatePtr client_security_state_;
 
   FetchCallback fetch_callback_;
   std::unique_ptr<network::SimpleURLLoader> simple_url_loader_;

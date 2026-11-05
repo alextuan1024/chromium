@@ -13,21 +13,21 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 
 import org.chromium.base.ThreadUtils;
+import org.chromium.base.test.transit.TripBuilder;
 import org.chromium.base.test.util.Batch;
-import org.chromium.base.test.util.CommandLineFlags;
-import org.chromium.base.test.util.DisableIf;
 import org.chromium.base.test.util.DisabledTest;
 import org.chromium.base.test.util.Feature;
 import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.base.test.util.Restriction;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
-import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.incognito.IncognitoUtils;
+import org.chromium.chrome.browser.settings.SettingsInTab;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.chrome.test.transit.AutoResetCtaTransitTestRule;
 import org.chromium.chrome.test.transit.ChromeTransitTestRules;
+import org.chromium.chrome.test.transit.ChromeTriggers;
 import org.chromium.chrome.test.transit.bookmarks.BookmarksPhoneStation;
 import org.chromium.chrome.test.transit.bookmarks.BookmarksTabletStation;
 import org.chromium.chrome.test.transit.ntp.IncognitoNewTabPageAppMenuFacility;
@@ -46,10 +46,10 @@ import java.io.IOException;
 
 /** Public Transit tests for the app menu. */
 @RunWith(ChromeJUnit4ClassRunner.class)
-@CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
 @Batch(Batch.PER_CLASS)
 // TODO: Add new tests when the flag is enabled.
 @EnableFeatures(ChromeFeatureList.ANDROID_THEME_MODULE)
+@DisableFeatures({ChromeFeatureList.ANDROID_BOTTOM_BAR, ChromeFeatureList.GLIC})
 public class TabbedAppMenuPTTest {
     @Rule
     public AutoResetCtaTransitTestRule mCtaTestRule =
@@ -58,7 +58,7 @@ public class TabbedAppMenuPTTest {
     @Rule
     public final ChromeRenderTestRule mRenderTestRule =
             ChromeRenderTestRule.Builder.withPublicCorpus()
-                    .setRevision(6)
+                    .setRevision(7)
                     .setDescription("App menu")
                     .setBugComponent(ChromeRenderTestRule.Component.UI_BROWSER_MOBILE_APP_MENU)
                     .build();
@@ -79,7 +79,6 @@ public class TabbedAppMenuPTTest {
      */
     @Test
     @LargeTest
-    @DisableIf.Device(DeviceFormFactor.DESKTOP) // https://crbug.com/562155107
     public void testOpenNewIncognitoTabOrWindow() {
         // openNewIncognitoTab() opens either an incognito tab or an incognito window.
         var incognitoNewTabPageStation =
@@ -118,25 +117,27 @@ public class TabbedAppMenuPTTest {
         bookmarks.pressBackTo().arriveAt(WebPageStation.newBuilder().initFrom(pageStation).build());
     }
 
-    /** Tests that "Settings" opens the SettingsActivity. */
+    /** Tests that "Settings" opens Settings, in a SettingsActivity or in a settings tab. */
     @Test
     @LargeTest
-    @DisableFeatures({
-        ChromeFeatureList.SETTINGS_IN_TAB, // crbug.com/521895796
-        ChromeFeatureList.SETTINGS_IN_TAB_DESKTOP // crbug.com/556881398
-    })
     public void testOpenSettings() {
         WebPageStation pageStation = mCtaTestRule.startOnBlankPage();
         Tab tab = pageStation.loadedTabElement.value();
         SettingsStation settings = pageStation.openRegularTabAppMenu().openSettings();
 
-        // Exit settings for the initial state rule to be able to reset state.
-        settings.pressBackTo()
-                .arriveAt(
-                        WebPageStation.newBuilder()
-                                .withIncognito(false)
-                                .withTabAlreadySelected(tab)
-                                .build());
+        // Exit settings for the initial state rule to be able to reset state. On desktop, back at
+        // the task root is handled by the system and does not close the settings tab, so close
+        // it programmatically instead.
+        TripBuilder exitSettings =
+                SettingsInTab.shouldOpenSettingsInTab()
+                        ? ChromeTriggers.closeCurrentTabProgrammaticallyTo(
+                                settings, mCtaTestRule.getActivity())
+                        : settings.pressBackTo();
+        exitSettings.arriveAt(
+                WebPageStation.newBuilder()
+                        .withIncognito(false)
+                        .withTabAlreadySelected(tab)
+                        .build());
     }
 
     /**
@@ -171,7 +172,7 @@ public class TabbedAppMenuPTTest {
     @Feature({"RenderTest"})
     public void testNewTabPageIncognitoAppMenuItems() throws IOException {
         IncognitoNewTabPageStation incognitoNewTabPage =
-                mCtaTestRule.startOnBlankPage().openNewIncognitoTabOrWindowFast();
+                mCtaTestRule.startOnBlankPage().openRegularTabAppMenu().openNewIncognitoTab();
         IncognitoNewTabPageAppMenuFacility menu = incognitoNewTabPage.openAppMenu();
 
         String appMenuGoldenId =
@@ -215,7 +216,6 @@ public class TabbedAppMenuPTTest {
     @LargeTest
     @Feature({"RenderTest"})
     @DisableFeatures(ChromeFeatureList.HOME_BUTTON_REMOVAL)
-    @DisableIf.Device(DeviceFormFactor.DESKTOP) // TODO(crbug.com/536994608): Re-enable once passing
     public void testWebPageIncognitoAppMenuItems() throws IOException {
         String appMenuGoldenId =
                 IncognitoUtils.shouldOpenIncognitoAsWindow()

@@ -206,11 +206,26 @@ class GlicAnnotationManagerUiTestBase : public InteractiveGlicTest {
       auto options = mojom::TabContextOptions::New();
       options->annotated_page_content = true;
 
-      FocusedTabData data =
-          GetHost()->GetSharingManagerInternal().GetFocusedTabData();
-      CHECK(data.focus());
+      GlicSharingManagerInternal* sharing_manager =
+          &GetHost()->GetSharingManagerInternal();
+      tabs::TabInterface* focused_tab =
+          sharing_manager->GetFocusedTabData().focus();
+      if (!focused_tab) {
+        base::RunLoop focus_run_loop(
+            base::RunLoop::Type::kNestableTasksAllowed);
+        auto subscription = sharing_manager->AddFocusedTabChangedCallback(
+            base::BindLambdaForTesting([&focus_run_loop, &focused_tab](
+                                           const FocusedTabData& tab_data) {
+              if (tab_data.focus()) {
+                focused_tab = tab_data.focus();
+                focus_run_loop.Quit();
+              }
+            }));
+        focus_run_loop.Run();
+      }
+      CHECK(focused_tab);
       FetchPageContext(
-          data.focus(), *options,
+          focused_tab, *options,
           base::BindLambdaForTesting(
               [&](base::expected<
                   glic::mojom::GetContextResultPtr,
@@ -711,25 +726,24 @@ class MAYBE_GlicAnnotationManagerUiTest
   }
   ~MAYBE_GlicAnnotationManagerUiTest() override = default;
 
-#define FORWARD_METRICS_CALL(method, ...)                               \
-  GlicKeyedServiceFactory::GetGlicKeyedService(browser()->GetProfile()) \
-      ->metrics()                                                       \
-      ->method(__VA_ARGS__);                                            \
-  GetGlicInstanceImpl()->instance_metrics().method(__VA_ARGS__);
-
+  // Mirrors the metrics calls made by GlicWebClientHandler.
   void OnUserInputSubmitted(
       mojom::WebClientMode mode,
       mojom::PromptType prompt_type = mojom::PromptType::kUnspecified) {
-    FORWARD_METRICS_CALL(OnUserInputSubmitted, mode, prompt_type);
+    GlicKeyedServiceFactory::GetGlicKeyedService(browser()->GetProfile())
+        ->metrics()
+        ->OnUserInputSubmitted();
+    GetGlicInstanceImpl()->instance_metrics().OnUserInputSubmitted(mode,
+                                                                   prompt_type);
   }
 
-  void OnResponseStarted() { FORWARD_METRICS_CALL(OnResponseStarted); }
+  void OnResponseStarted() {
+    GetGlicInstanceImpl()->instance_metrics().OnResponseStarted();
+  }
 
   void OnResponseStopped(mojom::ResponseStopCause cause) {
-    FORWARD_METRICS_CALL(OnResponseStopped, cause);
+    GetGlicInstanceImpl()->instance_metrics().OnResponseStopped(cause);
   }
-
-#undef FORWARD_METRICS_CALL
 
  private:
   base::test::ScopedFeatureList feature_list_;
@@ -748,13 +762,15 @@ class MAYBE_GlicAnnotationManagerWithFloatingWindowInLiveModeUiTest
     TrackFloatingGlicInstance();
   }
 
-  InteractiveGlicTest::MultiStep OpenGlicFloatingWindowInLiveMode() {
+  InteractiveGlicTest::MultiStep OpenGlicFloatingWindowInLiveMode(
+      std::optional<ui::ElementIdentifier> web_contents_id = kActiveTabId) {
     return Steps(OpenGlicFloatingWindow(), Do([&]() {
                    // This is to switch to using GlicFocusedTabManager (which is
                    // used by default with GlicMultiInstance disabled).
                    GetGlicInstanceImpl()->OnInteractionModeChange(
                        mojom::WebClientMode::kAudio);
-                 }));
+                 }),
+                 WaitUntilGlicFocusedTabIs(web_contents_id));
   }
 };
 
@@ -1286,9 +1302,17 @@ IN_PROC_BROWSER_TEST_F(
       // contents isn't visible.
       CheckResult(
           [&]() {
-            return content::EvalJs(
-                       GetHost()->webui_contents()->GetInnerWebContents()[0],
-                       R"js(
+            content::RenderFrameHost* frame = FindGlicGuestMainFrame();
+            if (!frame && GetHost() && GetHost()->webui_contents() &&
+                !GetHost()->webui_contents()->GetInnerWebContents().empty()) {
+              frame = GetHost()
+                          ->webui_contents()
+                          ->GetInnerWebContents()[0]
+                          ->GetPrimaryMainFrame();
+            }
+            CHECK(frame);
+            return content::EvalJs(frame,
+                                   R"js(
               new Promise(resolve => {
                 window.scrollToPromise.catch(e => {
                   resolve(e.reason);
@@ -1320,9 +1344,7 @@ IN_PROC_BROWSER_TEST_F(
         fake_service()->NotifyAttachment(
             gfx::Rect(20, 20), blink::mojom::AttachmentResult::kSuccess);
       }),
-      Do([&]() {
-        glic_service()->instance_coordinator().Close(CloseOptions());
-      }),
+      Do([&]() { GetGlicInstanceImpl()->Hibernate(); }),
       WaitForHide(kGlicViewElementId),
       Check([&]() { return !fake_service()->HighlightIsActive(); },
             "Annotations should be dropped"));
@@ -1408,7 +1430,7 @@ IN_PROC_BROWSER_TEST_F(MAYBE_GlicAnnotationManagerUiTest, RecordsSessionCount) {
 //  - not recorded if scrolling fails
 //  - recorded after scrolling starts
 //
-// This test manually calls `GlicMetrics` methods like `OnUserInputSubmitted`,
+// This test manually calls metrics methods like `OnUserInputSubmitted`,
 // `OnResponseStarted` and `OnResponseStopped` instead of doing it through
 // the test client for convenience and better control of timing. The order of
 // the method calls reflect the order of expected calls in practice.

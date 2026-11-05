@@ -69,6 +69,14 @@ uint32_t ComputeCheckedPeakBitrate(uint32_t target_bitrate) {
       std::numeric_limits<uint32_t>::max());
 }
 
+// The framerate to send to the accelerator. It is never 0, since some
+// accelerators CHECK or break their timestamps on a zero framerate.
+uint32_t ToVeaFramerate(std::optional<double> framerate) {
+  return std::max<uint32_t>(
+      1u, base::ClampRound<uint32_t>(
+              framerate.value_or(VideoEncodeAccelerator::kDefaultFramerate)));
+}
+
 Bitrate CreateBitrate(
     const std::optional<Bitrate>& requested_bitrate,
     const gfx::Size& frame_size,
@@ -101,9 +109,7 @@ VideoEncodeAccelerator::Config SetUpVeaConfig(
   Bitrate bitrate =
       CreateBitrate(opts.bitrate, opts.frame_size, supported_rc_modes);
   auto config = VideoEncodeAccelerator::Config(
-      format, opts.frame_size, profile, bitrate,
-      std::max<uint32_t>(1u, opts.framerate.value_or(
-                                 VideoEncodeAccelerator::kDefaultFramerate)),
+      format, opts.frame_size, profile, bitrate, ToVeaFramerate(opts.framerate),
       VideoEncodeAccelerator::Config::StorageType::kShmem,
       VideoEncodeAccelerator::Config::ContentType::kCamera);
   config.gop_length = opts.keyframe_interval;
@@ -187,10 +193,14 @@ VideoPixelFormat InputPixelFormat(VideoCodecProfile profile,
   }
   // AV1 profile 0 covers both 8 and 10 bit, so the requested bit depth is what
   // decides the input format, and the input format is in turn what tells the
-  // platform encoder which bit depth to code at. AV1 profile 1 is excluded: its
-  // 4:4:4 input format is 8 bit AYUV.
+  // platform encoder which bit depth to code at. AV1 profile 1 (high) is 4:4:4
+  // at the input's bit depth: 8 bit frames are converted to AYUV by the
+  // platform encoder, while 10 bit 4:4:4 frames arrive as P410LE.
   if (profile == AV1PROFILE_PROFILE_MAIN && opts.bit_depth.value_or(8) == 10) {
     return PIXEL_FORMAT_P010LE;
+  }
+  if (profile == AV1PROFILE_PROFILE_HIGH && opts.bit_depth.value_or(8) == 10) {
+    return PIXEL_FORMAT_P410LE;
   }
   return default_format;
 }
@@ -685,7 +695,8 @@ void VideoEncodeAcceleratorAdapter::EncodeOnAcceleratorThread(
   if (input_buffer_preference_ == InputBufferKind::CpuMemBuf)
     use_gpu_buffer = false;
 
-  EncoderStatus::Or<scoped_refptr<VideoFrame>> result(nullptr);
+  base::expected<scoped_refptr<VideoFrame>, EncoderStatus> result(
+      scoped_refptr<VideoFrame>(nullptr));
   if (use_gpu_buffer)
     result = PrepareGpuFrame(frame);
   else
@@ -732,19 +743,56 @@ void VideoEncodeAcceleratorAdapter::ChangeOptionsOnAcceleratorThread(
     OutputCB output_cb,
     EncoderStatusCB done_cb) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(accelerator_sequence_checker_);
-  DCHECK(active_encodes_.empty());
-  DCHECK(pending_encodes_.empty());
-  CHECK(state_ == State::kReadyToEncode);
+  const bool only_rates_changed =
+      options_.OnlyRatesChanged(options) && output_cb.is_null();
+  if (state_ == State::kNotInitialized ||
+      (!only_rates_changed &&
+       (state_ != State::kReadyToEncode || !active_encodes_.empty() ||
+        !pending_encodes_.empty()))) {
+    std::move(done_cb).Run(
+        EncoderStatus(EncoderStatus::Codes::kEncoderIllegalState,
+                      "Encoder can't change options now.")
+            .WithData("state", static_cast<int32_t>(state_)));
+    return;
+  }
 
-  if (options.bitrate && options_.bitrate &&
-      options.bitrate->mode() != options_.bitrate->mode()) {
+  const Bitrate current_bitrate =
+      CreateBitrate(options_.bitrate, options_.frame_size, supported_rc_modes_);
+  const Bitrate new_bitrate =
+      CreateBitrate(options.bitrate, options.frame_size, supported_rc_modes_);
+  if (new_bitrate.mode() != current_bitrate.mode()) {
     std::move(done_cb).Run(
         EncoderStatus(EncoderStatus::Codes::kEncoderUnsupportedConfig,
                       "Bitrate mode change is not supported.")
             .WithData("current bitrate",
-                      static_cast<int32_t>(options_.bitrate->mode()))
-            .WithData("new bitrate",
-                      static_cast<int32_t>(options.bitrate->mode())));
+                      static_cast<int32_t>(current_bitrate.mode()))
+            .WithData("new bitrate", static_cast<int32_t>(new_bitrate.mode())));
+    return;
+  }
+
+  if (only_rates_changed) {
+    const uint32_t current_framerate = ToVeaFramerate(options_.framerate);
+    options_ = options;
+
+    // The accelerator can't take new rates until it has finished initializing
+    // or reconfiguring, so send them once it is ready.
+    if (state_ == State::kInitializing || state_ == State::kReconfiguring) {
+      pending_rates_change_ = true;
+      std::move(done_cb).Run(EncoderStatus::Codes::kOk);
+      return;
+    }
+
+    // The VEA interface only requires an empty encoder for frame size changes,
+    // not rate changes, so encodes may be in flight here.
+    const uint32_t new_framerate = ToVeaFramerate(options_.framerate);
+
+    // Some accelerators update their rate control even when nothing changed, so
+    // skip calls that wouldn't change anything.
+    if (new_bitrate != current_bitrate || new_framerate != current_framerate) {
+      accelerator_->RequestEncodingParametersChange(new_bitrate, new_framerate,
+                                                    std::nullopt);
+    }
+    std::move(done_cb).Run(EncoderStatus::Codes::kOk);
     return;
   }
 
@@ -763,11 +811,7 @@ void VideoEncodeAcceleratorAdapter::ChangeOptionsOnAcceleratorThread(
     }
   }
 
-  Bitrate bitrate =
-      CreateBitrate(options.bitrate, options.frame_size, supported_rc_modes_);
-  uint32_t framerate = std::max<uint32_t>(
-      1u, base::ClampRound<uint32_t>(options.framerate.value_or(
-              VideoEncodeAccelerator::kDefaultFramerate)));
+  const uint32_t framerate = ToVeaFramerate(options.framerate);
 
   // When frame size is changed, run |done_cb| in |RequireBitstreamBuffers|
   // after bitstream buffer is re-initialized. At that time, reconfigure is done
@@ -775,8 +819,9 @@ void VideoEncodeAcceleratorAdapter::ChangeOptionsOnAcceleratorThread(
   if (new_frame_size.has_value()) {
     reconfigure_cb_ = std::move(done_cb);
   }
+  pending_rates_change_ = false;
   state_ = State::kReconfiguring;
-  accelerator_->RequestEncodingParametersChange(bitrate, framerate,
+  accelerator_->RequestEncodingParametersChange(new_bitrate, framerate,
                                                 new_frame_size);
 
 #if BUILDFLAG(USE_PROPRIETARY_CODECS)
@@ -811,6 +856,17 @@ void VideoEncodeAcceleratorAdapter::ChangeOptionsOnAcceleratorThread(
   }
 }
 
+void VideoEncodeAcceleratorAdapter::ApplyPendingRatesChange() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(accelerator_sequence_checker_);
+  if (!pending_rates_change_) {
+    return;
+  }
+  pending_rates_change_ = false;
+  accelerator_->RequestEncodingParametersChange(
+      CreateBitrate(options_.bitrate, options_.frame_size, supported_rc_modes_),
+      ToVeaFramerate(options_.framerate), std::nullopt);
+}
+
 void VideoEncodeAcceleratorAdapter::Flush(EncoderStatusCB done_cb) {
   DCHECK(!accelerator_task_runner_->RunsTasksInCurrentSequence());
   accelerator_task_runner_->PostTask(
@@ -822,13 +878,15 @@ void VideoEncodeAcceleratorAdapter::Flush(EncoderStatusCB done_cb) {
 void VideoEncodeAcceleratorAdapter::FlushOnAcceleratorThread(
     EncoderStatusCB done_cb) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(accelerator_sequence_checker_);
-  if (state_ != State::kReadyToEncode && state_ != State::kInitializing) {
+  if ((state_ != State::kReadyToEncode && state_ != State::kInitializing) ||
+      pending_flush_callback_) {
     std::move(done_cb).Run(EncoderStatus(
         EncoderStatus::Codes::kEncoderFailedFlush, "Encoder can't flush now"));
     return;
   }
 
-  if (active_encodes_.empty() && pending_encodes_.empty()) {
+  if (state_ == State::kReadyToEncode && active_encodes_.empty() &&
+      pending_encodes_.empty()) {
     // No active or pending encodes, nothing to flush.
     std::move(done_cb).Run(EncoderStatus::Codes::kOk);
     return;
@@ -886,6 +944,7 @@ void VideoEncodeAcceleratorAdapter::RequireBitstreamBuffers(
     InitCompleted(EncoderStatus::Codes::kOk);
   } else if (state_ == State::kReconfiguring) {
     state_ = State::kReadyToEncode;
+    ApplyPendingRatesChange();
     if (reconfigure_cb_) {
       std::move(reconfigure_cb_).Run(EncoderStatus::Codes::kOk);
     }
@@ -912,6 +971,28 @@ void VideoEncodeAcceleratorAdapter::BitstreamBufferReady(
 
   if (metadata.encoded_size)
     result.encoded_size = metadata.encoded_size;
+
+  if (metadata.qp >= 0) {
+    std::optional<double> max_qp;
+    switch (VideoCodecProfileToVideoCodec(profile_)) {
+      case VideoCodec::kH264:
+      case VideoCodec::kHEVC:
+        max_qp = 51.0;
+        break;
+      case VideoCodec::kVP8:
+        max_qp = 127.0;
+        break;
+      case VideoCodec::kVP9:
+      case VideoCodec::kAV1:
+        max_qp = 255.0;
+        break;
+      default:
+        break;
+    }
+    if (max_qp.has_value()) {
+      result.qp = std::clamp(metadata.qp / *max_qp, 0.0, 1.0);
+    }
+  }
 
   if (buffer_id < 0 ||
       buffer_id >= static_cast<int>(output_buffer_handles_.size())) {
@@ -1040,9 +1121,7 @@ void VideoEncodeAcceleratorAdapter::NotifyErrorStatus(
     const EncoderStatus& status) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(accelerator_sequence_checker_);
   CHECK(!status.is_ok());
-  MEDIA_LOG(ERROR, media_log_)
-      << "VEA adapter error. Code: " << static_cast<int32_t>(status.code())
-      << ". Message: " << status.message();
+  media_log_->NotifyError(status);
   if (state_ == State::kInitializing) {
     InitCompleted(status);
     return;
@@ -1056,8 +1135,9 @@ void VideoEncodeAcceleratorAdapter::NotifyErrorStatus(
     return;
   }
 
-  if (state_ == State::kFlushing)
+  if (state_ == State::kFlushing || pending_flush_callback_) {
     FlushCompleted(false);
+  }
 
   // Report the error to all encoding-done callbacks
   for (auto& encode : active_encodes_) {
@@ -1087,10 +1167,7 @@ void VideoEncodeAcceleratorAdapter::InitCompleted(EncoderStatus status) {
   }
 
   if (!status.is_ok()) {
-    MEDIA_LOG(ERROR, media_log_) << "VEA adapter initialization error. Code: "
-                                 << static_cast<int32_t>(status.code())
-                                 << ". Message: " << status.message();
-
+    media_log_->NotifyError(status);
     // Report the error to all encoding-done callbacks
     for (auto& encode : pending_encodes_) {
       std::move(encode->done_callback).Run(status);
@@ -1102,6 +1179,7 @@ void VideoEncodeAcceleratorAdapter::InitCompleted(EncoderStatus status) {
 
     DCHECK(active_encodes_.empty());
     pending_encodes_.clear();
+    pending_rates_change_ = false;
     state_ = State::kNotInitialized;
     return;
   }
@@ -1109,6 +1187,10 @@ void VideoEncodeAcceleratorAdapter::InitCompleted(EncoderStatus status) {
   state_ = State::kReadyToEncode;
   flush_support_ = accelerator_->IsFlushSupported();
   gpu_resize_supported_ = accelerator_->IsGpuFrameResizeSupported();
+
+  // Apply rates that changed during initialization before sending the encodes
+  // that were queued, so those frames use the new rates.
+  ApplyPendingRatesChange();
 
   // Send off the encodes that came in while we were waiting for initialization.
   for (auto& encode : pending_encodes_) {
@@ -1120,12 +1202,7 @@ void VideoEncodeAcceleratorAdapter::InitCompleted(EncoderStatus status) {
   // If a Flush() came in during initialization, transition to flushing now that
   // all the pending encodes have been sent.
   if (pending_flush_callback_) {
-    state_ = State::kFlushing;
-    if (flush_support_.value()) {
-      accelerator_->Flush(
-          base::BindOnce(&VideoEncodeAcceleratorAdapter::FlushCompleted,
-                         weak_factory_.GetWeakPtr()));
-    }
+    FlushOnAcceleratorThread(std::move(pending_flush_callback_));
   }
 }
 
@@ -1153,7 +1230,7 @@ T VideoEncodeAcceleratorAdapter::WrapCallback(T cb) {
 // Copy a frame into a shared mem buffer and resize it as the same time. Input
 // frames can I420, NV12, P010, or RGB.
 // They'll be converted to `input_pixel_format_` if needed.
-EncoderStatus::Or<scoped_refptr<VideoFrame>>
+base::expected<scoped_refptr<VideoFrame>, EncoderStatus>
 VideoEncodeAcceleratorAdapter::PrepareCpuFrame(
     scoped_refptr<VideoFrame> src_frame) {
   TRACE_EVENT0("media", "VideoEncodeAcceleratorAdapter::PrepareCpuFrame");
@@ -1181,8 +1258,9 @@ VideoEncodeAcceleratorAdapter::PrepareCpuFrame(
 
   std::unique_ptr<ReadOnlyRegionPool::Handle> handle =
       input_pool_->MaybeAllocateBuffer();
-  if (!handle || !handle->IsValid())
-    return EncoderStatus(EncoderStatus::Codes::kOutOfMemoryError);
+  if (!handle || !handle->IsValid()) {
+    return base::unexpected(EncoderStatus::Codes::kOutOfMemoryError);
+  }
 
   const base::WritableSharedMemoryMapping* mapping = handle->mapping();
   auto mapped_src_frame = src_frame->HasMappableSharedImage()
@@ -1192,13 +1270,14 @@ VideoEncodeAcceleratorAdapter::PrepareCpuFrame(
       input_pixel_format_, dest_coded_size, dest_visible_rect,
       dest_visible_rect.size(), *mapping, src_frame->timestamp());
 
-  if (!shared_frame || !mapped_src_frame)
-    return EncoderStatus(EncoderStatus::Codes::kSystemAPICallError);
+  if (!shared_frame || !mapped_src_frame) {
+    return base::unexpected(EncoderStatus::Codes::kSystemAPICallError);
+  }
 
   auto status =
       frame_converter_.ConvertAndScale(*mapped_src_frame, *shared_frame);
   if (!status.is_ok()) {
-    return status;
+    return base::unexpected(status);
   }
 
   shared_frame->set_hdr_metadata(src_frame->hdr_metadata());
@@ -1211,7 +1290,7 @@ VideoEncodeAcceleratorAdapter::PrepareCpuFrame(
 // Copy a frame into a GPU buffer and resize it as the same time. Input frames
 // can I420, NV12, P010, or RGB -- they'll be converted to
 // `input_pixel_format_` if needed.
-EncoderStatus::Or<scoped_refptr<VideoFrame>>
+base::expected<scoped_refptr<VideoFrame>, EncoderStatus>
 VideoEncodeAcceleratorAdapter::PrepareGpuFrame(
     scoped_refptr<VideoFrame> src_frame) {
   TRACE_EVENT0("media", "VideoEncodeAcceleratorAdapter::PrepareGpuFrame");
@@ -1248,14 +1327,10 @@ VideoEncodeAcceleratorAdapter::PrepareGpuFrame(
   auto gpu_frame = gmb_frame_pool_->MaybeCreateVideoFrame(
       dest_visible_rect.size(), color_space);
   if (!gpu_frame)
-    return EncoderStatus(EncoderStatus::Codes::kOutOfMemoryError);
+    return base::unexpected(EncoderStatus::Codes::kOutOfMemoryError);
 
   gpu_frame->set_timestamp(src_frame->timestamp());
   gpu_frame->metadata().MergeMetadataFrom(src_frame->metadata());
-  // `color_space` respects the ColorSpace set on `mapped_gpu_frame` over
-  // ConvertAndScale. It uses a default ColorSpace if the `src_frame`
-  // ColorSpace is Invalid.
-  gpu_frame->set_color_space(color_space);
   gpu_frame->set_hdr_metadata(src_frame->hdr_metadata());
 
   // Don't be scared. ConvertToMemoryMappedFrame() doesn't copy pixel data
@@ -1270,12 +1345,12 @@ VideoEncodeAcceleratorAdapter::PrepareGpuFrame(
                               ? ConvertToMemoryMappedFrame(src_frame)
                               : src_frame;
   if (!mapped_gpu_frame || !mapped_src_frame)
-    return EncoderStatus(EncoderStatus::Codes::kSystemAPICallError);
+    return base::unexpected(EncoderStatus::Codes::kSystemAPICallError);
 
   auto status =
       frame_converter_.ConvertAndScale(*mapped_src_frame, *mapped_gpu_frame);
   if (!status.is_ok()) {
-    return status;
+    return base::unexpected(status);
   }
 
   return gpu_frame;

@@ -55,6 +55,7 @@
 #include "base/compiler_specific.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
+#include "base/functional/callback_helpers.h"
 #include "base/i18n/base_i18n_switches.h"
 #include "base/json/json_reader.h"
 #include "base/json/values_util.h"
@@ -77,6 +78,7 @@
 #include "base/task/single_thread_task_runner.h"
 #include "base/time/time.h"
 #include "base/timer/timer.h"
+#include "base/types/optional_ref.h"
 #include "base/values.h"
 #include "build/build_config.h"
 #include "chrome/browser/ash/app_list/arc/arc_app_list_prefs.h"
@@ -117,6 +119,7 @@
 #include "chrome/browser/ash/printing/cups_printers_manager.h"
 #include "chrome/browser/ash/printing/cups_printers_manager_factory.h"
 #include "chrome/browser/ash/profiles/profile_helper.h"
+#include "chrome/browser/ash/settings/device_settings_service.h"
 #include "chrome/browser/ash/settings/stats_reporting_controller.h"
 #include "chrome/browser/ash/system/input_device_settings.h"
 #include "chrome/browser/ash/system_web_apps/system_web_app_manager.h"
@@ -127,6 +130,7 @@
 #include "chrome/browser/extensions/component_loader.h"
 #include "chrome/browser/global_features.h"
 #include "chrome/browser/policy/chrome_policy_conversions_client.h"
+#include "chrome/browser/policy/profile_policy_connector.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/ash/holding_space/holding_space_keyed_service.h"
 #include "chrome/browser/ui/ash/holding_space/holding_space_keyed_service_factory.h"
@@ -142,9 +146,6 @@
 #include "chrome/browser/ui/webui/ash/crostini_installer/crostini_installer_dialog.h"
 #include "chrome/browser/ui/webui/ash/crostini_installer/crostini_installer_ui.h"
 #include "chrome/browser/web_applications/web_app_provider.h"
-#include "chrome/browser/web_applications/web_app_registrar.h"
-#include "chrome/common/extensions/api/autotest_private.h"
-#include "chrome/common/pref_names.h"
 #include "chromeos/ash/components/browser_context_helper/annotated_account_id.h"
 #include "chromeos/ash/components/browser_delegate/browser_delegate.h"
 #include "chromeos/ash/components/dbus/dbus_thread_manager.h"
@@ -161,6 +162,7 @@
 #include "chromeos/ash/experiences/arc/session/arc_bridge_service.h"
 #include "chromeos/ash/experiences/arc/session/arc_service_manager.h"
 #include "chromeos/ash/experiences/arc/system_ui/arc_system_ui_bridge.h"
+#include "chromeos/ash/experiences/extensions/common/api/autotest_private.h"
 #include "chromeos/components/quick_answers/public/cpp/quick_answers_prefs.h"
 #include "chromeos/printing/printer_configuration.h"
 #include "chromeos/services/machine_learning/public/cpp/service_connection.h"
@@ -219,6 +221,7 @@
 #include "extensions/common/permissions/permissions_data.h"
 #include "mojo/public/cpp/bindings/receiver.h"
 #include "net/base/filename_util.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "services/viz/public/mojom/compositing/compositor_frame_sink.mojom-shared.h"
 #include "ui/aura/client/aura_constants.h"
 #include "ui/aura/env.h"
@@ -555,7 +558,7 @@ std::string SetAllowedPref(PrefService& local_state,
     CHECK(value.is_bool(), base::NotFatalUntil::M160);
   } else if (pref_name == ash::prefs::kLanguagePreloadEngines) {
     CHECK(value.is_string(), base::NotFatalUntil::M160);
-  } else if (pref_name == prefs::kPrintingAPIExtensionsAllowlist) {
+  } else if (pref_name == ash::prefs::kPrintingAPIExtensionsAllowlist) {
     CHECK(value.is_list(), base::NotFatalUntil::M160);
   } else if (pref_name == quick_answers::prefs::kQuickAnswersEnabled) {
     CHECK(value.is_bool(), base::NotFatalUntil::M160);
@@ -668,9 +671,7 @@ api::autotest_private::WindowStateType ToWindowStateType(
       return api::autotest_private::WindowStateType::kSecondarySnapped;
     case chromeos::WindowStateType::kPinned:
       return api::autotest_private::WindowStateType::kPinned;
-    case chromeos::WindowStateType::kLockedFullscreen:
-      // TODO(crbug.com/429215055): Rename to 'LockedFullscreen'. Update the IDL
-      // as well.
+    case chromeos::WindowStateType::kTrustedPinned:
       return api::autotest_private::WindowStateType::kTrustedPinned;
     case chromeos::WindowStateType::kPip:
       return api::autotest_private::WindowStateType::kPip;
@@ -2873,7 +2874,9 @@ ExtensionFunction::ResponseAction AutotestPrivateGetPrinterListFunction::Run() {
   Profile* profile = Profile::FromBrowserContext(browser_context());
   printers_manager_ = ash::CupsPrintersManager::Create(
       CHECK_DEREF(g_browser_process->local_state()),
-      g_browser_process->GetFeatures()->application_locale_storage(), profile);
+      g_browser_process->GetFeatures()->application_locale_storage(),
+      g_browser_process->shared_url_loader_factory(), profile,
+      profile->GetProfilePolicyConnector()->policy_service());
   printers_manager_->AddObserver(this);
 
   // Set up a timer to finish waiting after 10 seconds
@@ -4242,7 +4245,7 @@ class AutotestPrivateInstallPWAForCurrentURLFunction::PWABannerObserver
 
   void OnInstallableWebAppStatusUpdated(
       webapps::InstallableWebAppCheckResult result,
-      const std::optional<webapps::WebAppBannerData>& data) override {
+      base::optional_ref<const webapps::WebAppBannerData> data) override {
     switch (result) {
       case Installable::kNo:
         [[fallthrough]];
@@ -4841,25 +4844,45 @@ AutotestPrivateSetMetricsEnabledFunction::Run() {
 
   target_value_ = params->enabled;
 
-  Profile* profile = Profile::FromBrowserContext(browser_context());
+  // Wait until ownership status is loaded (`kOwnershipNone` or
+  // `kOwnershipTaken`) before reading or updating `StatsReportingController`.
+  ash::DeviceSettingsService::Get()->GetOwnershipStatusAsync(
+      base::IgnoreArgs<ash::DeviceSettingsService::OwnershipStatus>(
+          base::BindOnce(
+              &AutotestPrivateSetMetricsEnabledFunction::OnOwnershipStatusKnown,
+              this)));
 
-  bool value;
-  if (ash::CrosSettings::Get()->GetBoolean(ash::kStatsReportingPref, &value) &&
-      value == target_value_) {
-    VLOG(1) << "Value at target; returning early";
-    return RespondNow(NoArguments());
-  }
+  return RespondLater();
+}
+
+void AutotestPrivateSetMetricsEnabledFunction::OnOwnershipStatusKnown() {
+  Profile* profile = Profile::FromBrowserContext(browser_context());
 
   ash::StatsReportingController* stats_reporting_controller =
       ash::StatsReportingController::Get();
+
+  // Unlike `kStatsReportingPref`, `IsEnabled()` also reflects a pending value
+  // that is not persisted yet, e.g. one set in OOBE before ownership is taken.
+  if (stats_reporting_controller->IsEnabled() == target_value_) {
+    VLOG(1) << "Value at target; returning early";
+    Respond(NoArguments());
+    return;
+  }
+
+  // Before ownership is taken, `SetEnabled()` only stores a pending value that
+  // is persisted once ownership is taken, so don't wait for the store.
+  if (ash::DeviceSettingsService::Get()->GetOwnershipStatus() ==
+      ash::DeviceSettingsService::OwnershipStatus::kOwnershipNone) {
+    stats_reporting_controller->SetEnabled(profile, target_value_);
+    Respond(NoArguments());
+    return;
+  }
 
   stats_reporting_controller->SetOnDeviceSettingsStoredCallBack(base::BindOnce(
       &AutotestPrivateSetMetricsEnabledFunction::OnDeviceSettingsStored, this));
 
   // Set the preference to indicate metrics are enabled/disabled.
   stats_reporting_controller->SetEnabled(profile, target_value_);
-
-  return RespondLater();
 }
 
 void AutotestPrivateSetMetricsEnabledFunction::OnDeviceSettingsStored() {
@@ -6638,10 +6661,9 @@ void AutotestPrivateAPI::OnClipboardDataChanged() {
     return;
   }
 
-  std::unique_ptr<Event> event(
-      new Event(events::AUTOTESTPRIVATE_ON_CLIPBOARD_DATA_CHANGED,
-                api::autotest_private::OnClipboardDataChanged::kEventName,
-                base::ListValue()));
+  auto event = std::make_unique<Event>(
+      events::AUTOTESTPRIVATE_ON_CLIPBOARD_DATA_CHANGED,
+      api::autotest_private::OnClipboardDataChanged::kEventName, nullptr);
   event_router->BroadcastEvent(std::move(event));
 }
 

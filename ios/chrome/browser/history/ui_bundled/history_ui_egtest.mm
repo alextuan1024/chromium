@@ -6,6 +6,7 @@
 #import <XCTest/XCTest.h>
 
 #import "base/ios/ios_util.h"
+#import "base/strings/sys_string_conversions.h"
 #import "components/browsing_data/core/browsing_data_utils.h"
 #import "components/browsing_data/core/pref_names.h"
 #import "components/sync/base/command_line_switches.h"
@@ -13,7 +14,7 @@
 #import "ios/chrome/browser/authentication/test/signin_earl_grey.h"
 #import "ios/chrome/browser/authentication/test/signin_earl_grey_ui_test_util.h"
 #import "ios/chrome/browser/history/ui_bundled/history_ui_constants.h"
-#import "ios/chrome/browser/menu/ui_bundled/menu_action_type.h"
+#import "ios/chrome/browser/menu/public/menu_action_type.h"
 #import "ios/chrome/browser/metrics/model/metrics_app_interface.h"
 #import "ios/chrome/browser/popup_menu/public/popup_menu_constants.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
@@ -27,6 +28,7 @@
 #import "ios/chrome/test/earl_grey/chrome_matchers.h"
 #import "ios/chrome/test/earl_grey/chrome_test_case.h"
 #import "ios/testing/earl_grey/earl_grey_test.h"
+#import "ios/testing/test_tag_registry.h"
 #import "net/base/apple/url_conversions.h"
 
 using chrome_test_util::ButtonWithAccessibilityLabelId;
@@ -139,6 +141,7 @@ void ExpectContextMenuHistoryEntryActionsHistogram(int count,
 }
 
 // Tests that the history panel displays navigation history.
+TAG_SMOKE_TEST(HistoryUITestCase, testDisplayHistory);
 - (void)testDisplayHistory {
   [self addTestURLsToHistory];
   [ChromeCoordinatorAppInterface startHistoryCoordinator];
@@ -179,8 +182,7 @@ void ExpectContextMenuHistoryEntryActionsHistogram(int count,
                                           kHistorySearchScrimIdentifier)]
       assertWithMatcher:grey_notNil()];
 
-  NSString* searchString =
-      [NSString stringWithFormat:@"%s", _URL1.GetPath().c_str()];
+  NSString* searchString = base::SysUTF8ToNSString(_URL1.GetPath());
 
   [[EarlGrey selectElementWithMatcher:SearchIconButton()]
       performAction:grey_replaceText(searchString)];
@@ -367,9 +369,7 @@ void ExpectContextMenuHistoryEntryActionsHistogram(int count,
 
   [[EarlGrey selectElementWithMatcher:OpenLinkInNewWindowButton()]
       performAction:grey_tap()];
-  GREYAssert([ChromeCoordinatorAppInterface
-                 selectorWasDispatched:@"openNewWindowWithActivity:"],
-             @"Command was not dispatched");
+  [ChromeEarlGrey waitForForegroundWindowCount:2];
 
   // Assert that the Context Menu History Entry Actions metric is populated.
   ExpectContextMenuHistoryEntryActionsHistogram(
@@ -562,8 +562,7 @@ void ExpectContextMenuHistoryEntryActionsHistogram(int count,
   // Search for the first URL.
   [[EarlGrey selectElementWithMatcher:SearchIconButton()]
       performAction:grey_tap()];
-  NSString* searchString =
-      [NSString stringWithFormat:@"%s", _URL1.GetPath().c_str()];
+  NSString* searchString = base::SysUTF8ToNSString(_URL1.GetPath());
   [[EarlGrey selectElementWithMatcher:SearchIconButton()]
       performAction:grey_replaceText(searchString)];
 

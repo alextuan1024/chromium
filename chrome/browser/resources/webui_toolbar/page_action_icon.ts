@@ -3,16 +3,20 @@
 // found in the LICENSE file.
 
 import '/shared/icon_from_table.js';
+import './icons.js';
 import '//resources/cr_elements/cr_icon/cr_icon.js';
 import './toolbar_chip_button.js';
 
+import {assert} from '//resources/js/assert.js';
 import {skColorToRgba} from '//resources/js/color_utils.js';
+import {TrackedElementManager} from '//resources/js/tracked_element/tracked_element_manager.js';
 import {ensureTransitionEndEvent} from '//resources/js/util.js';
 import {CrLitElement} from '//resources/lit/v3_0/lit.rollup.js';
 import type {PropertyValues} from '//resources/lit/v3_0/lit.rollup.js';
 import {MenuSourceType} from '//resources/mojo/ui/base/mojom/menu_source_type.mojom-webui.js';
 import {AnimationTracker} from '/shared/animation_tracker.js';
 import {IconTable} from '/shared/icon_table.js';
+import {getClickSourceType, playIconAnimation} from '/shared/toolbar_button.js';
 import type {PageActionState} from '/shared/toolbar_ui_api_data_model.mojom-webui.js';
 import {PageActionAnimationStyle, PageActionId, PageActionTrigger} from '/shared/toolbar_ui_api_data_model.mojom-webui.js';
 import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
@@ -21,7 +25,7 @@ import {BrowserProxyImpl} from './browser_proxy.js';
 import type {BrowserProxy} from './browser_proxy.js';
 import {getCss} from './page_action_icon.css.js';
 import {getHtml} from './page_action_icon.html.js';
-import {getClickSourceType, HelpBubbleAnchorMixin, playIconAnimation, setHasHelpBubble} from './toolbar_button.js';
+import {ToolbarActionMixin} from './toolbar_action_mixin.js';
 import type {ToolbarChipButtonElement} from './toolbar_chip_button.js';
 
 export interface PageActionIconElement {
@@ -30,7 +34,30 @@ export interface PageActionIconElement {
   };
 }
 
-const PageActionIconElementBase = HelpBubbleAnchorMixin(CrLitElement);
+const initialState: PageActionState = {
+  pageActionId: PageActionId.kActionAiMode,
+  accessibleName: '',
+  tooltipText: '',
+  icon: {handleId: 0n},
+  text: '',
+  shouldShowChip: false,
+  shouldAnimateChipIn: false,
+  shouldAnimateChipOut: false,
+  backgroundColorOverride: null,
+  foregroundColorOverride: null,
+  identifier: {
+    nativeIdentifier: '',
+    secondaryIdentifier: '',
+  },
+  isActive: false,
+  tabSwitchToken: 0,
+  animationStyle: PageActionAnimationStyle.kStandard,
+  trailingIcon: null,
+  showTrailingIcon: false,
+};
+
+const PageActionIconElementBase =
+    ToolbarActionMixin(CrLitElement, initialState);
 
 export class PageActionIconElement extends PageActionIconElementBase {
   static get is() {
@@ -47,8 +74,6 @@ export class PageActionIconElement extends PageActionIconElementBase {
 
   static override get properties() {
     return {
-      state: {type: Object},
-
       // Draw a focus ring as if focused (e.g., the AI mode chip when the user
       // tabs through the Omnibox suggestions, keeping real focus in the text
       // field).
@@ -56,7 +81,6 @@ export class PageActionIconElement extends PageActionIconElementBase {
 
       // Some additional style attributes for the chip element.
       chipStyleOverride_: {type: String, state: true},
-      isHighlighted: {type: Boolean},
 
       glowUpEnabled: {type: Boolean},
 
@@ -64,29 +88,11 @@ export class PageActionIconElement extends PageActionIconElementBase {
     };
   }
 
-  accessor state: PageActionState = {
-    pageActionId: PageActionId.kActionAiMode,
-    accessibleName: '',
-    tooltipText: '',
-    icon: {handleId: 0n},
-    text: '',
-    shouldShowChip: false,
-    shouldAnimateChipIn: false,
-    shouldAnimateChipOut: false,
-    backgroundColorOverride: null,
-    identifier: {
-      nativeIdentifier: '',
-      secondaryIdentifier: '',
-    },
-    isActive: false,
-    tabSwitchToken: 0,
-    animationStyle: PageActionAnimationStyle.kStandard,
-    trailingIcon: null,
-    showTrailingIcon: false,
-  };
+  override getElementId(state: PageActionState): string|undefined {
+    return state.identifier?.nativeIdentifier || undefined;
+  }
 
   accessor forceFocusRing: boolean = false;
-  protected accessor isHighlighted: boolean = false;
 
   protected accessor chipStyleOverride_: string|null = null;
 
@@ -98,13 +104,17 @@ export class PageActionIconElement extends PageActionIconElementBase {
   private animatedIconColor_: string = '';
   private browserProxy_: BrowserProxy = BrowserProxyImpl.getInstance();
   private wasShowingChip_: boolean = false;
-  private registerHelpBubbleController_: AbortController|null = null;
   // Tracks the active 'endEvent' handler for the SVG animation to allow
   // cleanup.
   private animationEndHandler_: (() => void)|null = null;
   // Reference to the SVG animation element that currently has a listener
   // attached.
   private animationElement_: Element|null = null;
+  // Pending requestAnimationFrame ID scheduled to start the SVG animation.
+  private animationFrameId_: number|null = null;
+  // Monotonically increasing token used to invalidate in-flight async
+  // playIconAnimation_() continuations on tab switch, navigation, or detach.
+  private animationGeneration_: number = 0;
 
   override focus() {
     this.$.button.focus();
@@ -112,15 +122,12 @@ export class PageActionIconElement extends PageActionIconElementBase {
 
   override disconnectedCallback() {
     super.disconnectedCallback();
-    if (this.registerHelpBubbleController_) {
-      this.registerHelpBubbleController_.abort();
-      this.registerHelpBubbleController_ = null;
-    }
-    // Clean up animation event listeners on disconnect to prevent memory leaks
-    // when dynamic page action icons are detached from the DOM.
-    this.cleanupAnimationListener_();
-    this.activeIconAnimation_ = 'none';
+    // Cancel any pending or active icon animation on disconnect so detached
+    // elements do not leak listeners or fire stale requestAnimationFrame
+    // callbacks after <cr-icon id="animatedIcon"> unmounts.
+    this.cancelIconAnimation_();
   }
+
   override willUpdate(changedProperties: PropertyValues<this>): void {
     super.willUpdate(changedProperties);
 
@@ -134,48 +141,35 @@ export class PageActionIconElement extends PageActionIconElementBase {
       // and reset the animation state to avoid carrying over animations.
       const isTabSwitch =
           !oldState || this.state.tabSwitchToken !== oldState.tabSwitchToken;
+      const resetIconAnimation =
+          isTabSwitch || oldState.pageActionId !== this.state.pageActionId;
 
-      if (isTabSwitch) {
-        this.cleanupAnimationListener_();
-        this.activeIconAnimation_ = 'none';
+      if (resetIconAnimation) {
+        this.cancelIconAnimation_();
+        this.currentIconName_ = '';
       }
+      const styleOverrides: string[] = [];
       if (this.state.backgroundColorOverride) {
-        this.chipStyleOverride_ = `--toolbar-chip-bg-color: ${
-            skColorToRgba(this.state.backgroundColorOverride)};`;
-      } else {
-        this.chipStyleOverride_ = null;
+        styleOverrides.push(`--toolbar-chip-bg-color: ${
+            skColorToRgba(this.state.backgroundColorOverride)};`);
       }
+      if (this.state.foregroundColorOverride) {
+        styleOverrides.push(`--toolbar-chip-fg-color: ${
+            skColorToRgba(this.state.foregroundColorOverride)};`);
+      }
+      this.chipStyleOverride_ =
+          styleOverrides.length > 0 ? styleOverrides.join(' ') : null;
 
-      this.updateIconAnimationState_(isTabSwitch);
+      this.updateIconAnimationState_();
     }
   }
 
-  private updateIconAnimationState_(isTabSwitch: boolean) {
+  private updateIconAnimationState_() {
     const newIconName =
         IconTable.getInstance().getIconName(this.state.icon) || '';
     const newIconColor =
         IconTable.getInstance().getIconColor(this.state.icon) || '';
     const oldIconName = this.currentIconName_;
-
-    let playAnimation = false;
-    // Only play the bookmark transition icon animation if the feature is
-    // enabled, we have a previous icon state to compare against, and this
-    // update is not due to a tab switch.
-    if (this.state.pageActionId === PageActionId.kActionBookmarkThisTab &&
-        this.glowUpEnabled && oldIconName && !isTabSwitch) {
-      if (oldIconName !== newIconName) {
-        if (oldIconName === 'webui-toolbar:star' &&
-            newIconName === 'webui-toolbar:star_filled') {
-          this.activeIconAnimation_ = 'start';
-          playAnimation = true;
-        } else if (
-            oldIconName === 'webui-toolbar:star_filled' &&
-            newIconName === 'webui-toolbar:star') {
-          this.activeIconAnimation_ = 'end';
-          playAnimation = true;
-        }
-      }
-    }
 
     this.animatedIconColor_ = newIconColor;
 
@@ -183,8 +177,19 @@ export class PageActionIconElement extends PageActionIconElementBase {
       this.currentIconName_ = newIconName;
     }
 
-    if (playAnimation) {
-      this.playIconAnimation_();
+    // Only play the bookmark transition icon animation while connected if we
+    // have a previous icon state on the same tab and action to compare against.
+    if (this.isConnected &&
+        this.state.pageActionId === PageActionId.kActionBookmarkThisTab &&
+        this.glowUpEnabled && oldIconName && oldIconName !== newIconName) {
+      if (oldIconName === 'webui-toolbar:star' &&
+          newIconName === 'webui-toolbar:star_filled') {
+        this.playIconAnimation_('start');
+      } else if (
+          oldIconName === 'webui-toolbar:star_filled' &&
+          newIconName === 'webui-toolbar:star') {
+        this.playIconAnimation_('end');
+      }
     }
   }
   protected shouldShowLabel_(): boolean {
@@ -243,21 +248,6 @@ export class PageActionIconElement extends PageActionIconElementBase {
           ensureTransitionEndEvent(button);
         }
       }
-
-      const oldId = oldState?.identifier?.nativeIdentifier;
-      const newId = this.state.identifier?.nativeIdentifier;
-      if (oldId !== newId) {
-        if (this.registerHelpBubbleController_) {
-          this.registerHelpBubbleController_.abort();
-          this.registerHelpBubbleController_ = null;
-        }
-        if (oldId) {
-          this.unregisterHelpBubble(oldId);
-        }
-        if (newId) {
-          this.registerHelpBubble_(newId);
-        }
-      }
     }
   }
 
@@ -276,16 +266,44 @@ export class PageActionIconElement extends PageActionIconElementBase {
     return color ? `color: ${color};` : undefined;
   }
 
-  private async playIconAnimation_() {
+  private cancelIconAnimation_() {
+    ++this.animationGeneration_;
+    if (this.animationFrameId_ !== null) {
+      cancelAnimationFrame(this.animationFrameId_);
+      this.animationFrameId_ = null;
+    }
+    this.cleanupAnimationListener_();
+    this.activeIconAnimation_ = 'none';
+  }
+
+  private async playIconAnimation_(animation: 'start'|'end') {
+    this.cancelIconAnimation_();
+    this.activeIconAnimation_ = animation;
+    const generation = this.animationGeneration_;
+
     // Wait for Lit update to complete so the DOM has rendered the new
     // <cr-icon> containing the animated SVG, then wait for the cr-icon's
     // own update if necessary, and finally trigger the SVG animation.
     await this.updateComplete;
-    const crIcon = this.shadowRoot.querySelector<CrLitElement>('#animatedIcon');
-    if (crIcon) {
-      await crIcon.updateComplete;
+    if (generation !== this.animationGeneration_) {
+      return;
     }
-    requestAnimationFrame(() => {
+    const crIcon = this.shadowRoot.querySelector<CrLitElement>('#animatedIcon');
+    assert(crIcon);
+    await crIcon.updateComplete;
+    if (generation !== this.animationGeneration_) {
+      return;
+    }
+    this.animationFrameId_ = requestAnimationFrame(() => {
+      // Explicit cancellation is only needed before the animation starts (while
+      // awaiting Lit updates or this requestAnimationFrame), because unmounting
+      // #animatedIcon before playIconAnimation() runs would fail the
+      // assert(crIcon) inside playIconAnimation(). Once the SMIL animation has
+      // started,
+      // cancelIconAnimation_() removes the 'endEvent' listener and sets
+      // activeIconAnimation_ = 'none', which unmounts #animatedIcon from the
+      // shadow DOM and stops the SVG animation automatically.
+      this.animationFrameId_ = null;
       playIconAnimation(this);
       this.listenToAnimationEnd_();
     });
@@ -330,7 +348,11 @@ export class PageActionIconElement extends PageActionIconElementBase {
     return this.state.accessibleName;
   }
 
-  protected onClick_(e: Event) {
+  protected onClick_(e: PointerEvent) {
+    if (this.highlightTracker.shouldSkipClick(e)) {
+      return;
+    }
+    TrackedElementManager.getInstance().notifyElementActivated(this);
     this.browserProxy_.toolbarUIHandler.onPageActionClick(
         this.state.pageActionId, this.getPageActionTrigger_(e));
   }
@@ -349,49 +371,16 @@ export class PageActionIconElement extends PageActionIconElementBase {
     }
   }
 
-  protected onPointerdown_() {
-    this.browserProxy_.toolbarUIHandler.onPageActionPointerDown(
-        this.state.pageActionId);
-  }
-
-  // TODO(crbug.com/489109708): Deduplicate help bubble tracking logic across
-  // toolbar elements.
-  private async registerHelpBubble_(newId: string) {
-    this.registerHelpBubbleController_ = new AbortController();
-    const signal = this.registerHelpBubbleController_.signal;
-
-    const animations = this.getAnimations().filter(anim => {
-      const timing = anim.effect?.getTiming();
-      // Ignore infinite animations (e.g. pulsing for IPH).
-      return timing?.iterations !== Infinity && timing?.duration !== Infinity;
-    });
-
-    // Wait for any animations to complete, so button is in final location.
-    if (animations.length > 0) {
-      try {
-        await Promise.all(animations.map(a => a.finished));
-      } catch (e) {
-        // Ignore animation cancellation.
-      }
-    }
-
-    if (!signal.aborted) {
-      this.registerHelpBubble(newId, this.$.button, {
-        secondaryId: this.state.identifier?.secondaryIdentifier || undefined,
-        onHighlightChanged: (highlighted: boolean) => {
-          this.isHighlighted = highlighted;
-        },
-        onHelpBubbleShown: () => setHasHelpBubble(this, true),
-        onHelpBubbleHidden: () => setHasHelpBubble(this, false),
-      });
-      this.registerHelpBubbleController_ = null;
-    }
+  protected onPointerdown_(e: PointerEvent) {
+    this.highlightTracker.onPointerdown(e);
+    // Prevent us from taking focus, since that may cause the omnibox popup
+    // to close, and disable the AIM button in turn.
+    e.preventDefault();
   }
 
   protected getTooltip_(): string {
     return this.adjustTooltipForHelpBubble(this.state.tooltipText);
   }
-
   protected onPointerenter_() {
     this.fire('chip-pointerenter');
   }

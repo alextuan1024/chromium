@@ -8,6 +8,8 @@
 #import <CoreGraphics/CoreGraphics.h>
 #import <Foundation/Foundation.h>
 
+#import "ios/chrome/browser/intelligence/ui/intelligence_ui_constants.h"
+
 // Accessibility identifier for the actuation header view.
 inline constexpr NSString* const kActuationHeaderAccessibilityIdentifier =
     @"ActuationHeaderAccessibilityIdentifier";
@@ -25,17 +27,43 @@ inline constexpr NSString* const kCompactWorklogAccessibilityIdentifier =
 inline constexpr NSString* const kFullWorklogScrollViewAccessibilityIdentifier =
     @"FullWorklogScrollViewAccessibilityIdentifier";
 
+// Accessibility identifier for the actuation intervention card view.
+inline constexpr NSString* const
+    kActuationInterventionCardAccessibilityIdentifier =
+        @"ActuationInterventionCardAccessibilityIdentifier";
+
+// Accessibility identifier for the stack holding the intervention buttons.
+inline constexpr NSString* const
+    kActuationInterventionButtonStackAccessibilityIdentifier =
+        @"ActuationInterventionButtonStackAccessibilityIdentifier";
+
+// Accessibility identifier for the text field of the actor input plate.
+inline constexpr NSString* const
+    kActorInputPlateTextFieldAccessibilityIdentifier =
+        @"ActorInputPlateTextFieldAccessibilityIdentifier";
+
+// Accessibility identifier for the send button of the actor input plate.
+inline constexpr NSString* const
+    kActorInputPlateSendButtonAccessibilityIdentifier =
+        @"ActorInputPlateSendButtonAccessibilityIdentifier";
+
+// Returns the accessibility identifier of the button displaying the action at
+// `index` of `ActuationInterventionData.actions`.
+NSString* ActuationInterventionActionButtonAccessibilityIdentifier(
+    NSUInteger index);
+
 // TODO(crbug.com/553535673): Remove C++ namespace for UI constants.
 namespace intelligence::actor {
 
 // Standard spacing constants for worklog UI elements.
-inline constexpr CGFloat kSpacingTiny = 4.0;
-inline constexpr CGFloat kSpacingSmall = 8.0;
-inline constexpr CGFloat kSpacingMedium = 12.0;
-inline constexpr CGFloat kSpacingLarge = 16.0;
+inline constexpr CGFloat kSpacingTiny = kIntelligenceSpacingTiny;
+inline constexpr CGFloat kSpacingSmall = kIntelligenceSpacingSmall;
+inline constexpr CGFloat kSpacingMedium = kIntelligenceSpacingMedium;
+inline constexpr CGFloat kSpacingLarge = kIntelligenceSpacingLarge;
 
 // Layout dimension for the timeline gutter/connector lines.
-inline constexpr CGFloat kTimelineGutterWidth = 50.0;
+inline constexpr CGFloat kTimelineGutterWidth =
+    kIntelligenceHeaderLeadingIconContainerWidth;
 
 // The fixed layout height of the actor tool chip view.
 inline constexpr CGFloat kToolChipHeight = 32.0;

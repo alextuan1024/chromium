@@ -11,6 +11,8 @@
 
 #if BUILDFLAG(ENTERPRISE_PROXY)
 
+#include <string>
+
 #include "base/feature_list.h"
 #include "base/metrics/field_trial_params.h"
 
@@ -22,9 +24,24 @@ BASE_DECLARE_FEATURE(kEnableDynamicRouteFetching);
 // Feature flag controlling enterprise proxy error handling.
 BASE_DECLARE_FEATURE(kEnterpriseProxyErrorHandling);
 
+// Feature flag controlling whether trusted OS/platform management (e.g. AD, MDM
+// or EMM) counts as device management for the user affiliation check of
+// user-scoped ProxyOverrideRules and ProxyProvisioningDomains policies and of
+// extension-set proxy override rules. When disabled, only CBCM device
+// affiliation IDs mark the device as managed.
+BASE_DECLARE_FEATURE(kEnforceProxyAffiliationOnPlatformManagedDevices);
+
 // Feature param for the maximum size limit (in bytes) for Provisioning Domain
 // configuration downloads. Defaults to 3 MiB.
 extern const base::FeatureParam<int> kPvdConfigMaxSizeBytesParam;
+
+inline constexpr char kAllowedAuthDomainsParamName[] = "allowed_auth_domains";
+
+// Feature param to expand the list of allowed domains for PvD and proxies for
+// all OAuth token scopes. Expects a comma-separated list of domain patterns
+// (e.g. "https://*.example.com,*.custom.org"). Only applied on local/unknown,
+// canary, and dev channels (ignored on Beta and Stable).
+extern const base::FeatureParam<std::string> kAllowedAuthDomainsParam;
 
 inline constexpr char kForcedDisguisedErrorCodeParamName[] =
     "forced_disguised_error_code";
@@ -32,6 +49,12 @@ inline constexpr char kForcedDisguisedErrorCodeParamName[] =
 // Feature param to force a specific disguised HTTP error code (e.g. 403, 500,
 // 502, 503, 504). Defaults to 0 (disabled).
 extern const base::FeatureParam<int> kForcedDisguisedErrorCodeParam;
+
+inline constexpr char kForceSignInRequiredParamName[] =
+    "force_sign_in_required";
+
+// Feature param to force a sign-in required error. Defaults to false.
+extern const base::FeatureParam<bool> kForceSignInRequiredParam;
 
 // Return true if dynamic route fetching is enabled.
 bool IsDynamicRouteFetchingEnabled();
@@ -42,6 +65,10 @@ bool IsEnterpriseProxyErrorHandlingEnabled();
 // Returns the forced disguised error code if configured (> 0) and error
 // handling is enabled, or std::nullopt.
 std::optional<int> GetForcedDisguisedErrorCode();
+
+// Returns true if enterprise proxy error handling is enabled and forcing
+// sign-in required is enabled.
+bool ShouldForceSignInRequired();
 
 // Returns the maximum allowed size in bytes for Provisioning Domain
 // configuration downloads.

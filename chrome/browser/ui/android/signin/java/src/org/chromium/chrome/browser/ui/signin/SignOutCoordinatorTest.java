@@ -23,9 +23,13 @@ import static org.mockito.Mockito.when;
 
 import androidx.test.filters.MediumTest;
 import androidx.test.filters.SmallTest;
+import androidx.test.runner.lifecycle.Stage;
 
+import org.junit.After;
 import org.junit.Assert;
 import org.junit.Before;
+import org.junit.BeforeClass;
+import org.junit.ClassRule;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -39,7 +43,9 @@ import org.chromium.base.Callback;
 import org.chromium.base.DeviceInfo;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.BaseActivityTestRule;
+import org.chromium.base.test.util.ApplicationTestUtils;
 import org.chromium.base.test.util.Batch;
+import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.base.test.util.HistogramWatcher;
 import org.chromium.chrome.browser.browsing_data.BrowsingDataBridge;
@@ -60,6 +66,7 @@ import org.chromium.components.sync.DataType;
 import org.chromium.components.sync.SyncService;
 import org.chromium.components.sync.UserActionableError;
 import org.chromium.content_public.browser.test.NativeLibraryTestUtils;
+import org.chromium.ui.modaldialog.DialogDismissalCause;
 import org.chromium.ui.test.util.BlankUiTestActivity;
 import org.chromium.ui.test.util.MockitoHelper;
 
@@ -70,8 +77,8 @@ import java.util.Set;
 @RunWith(ChromeJUnit4ClassRunner.class)
 @Batch(Batch.PER_CLASS)
 public class SignOutCoordinatorTest {
-    @Rule
-    public final BaseActivityTestRule<BlankUiTestActivity> mActivityTestRule =
+    @ClassRule
+    public static final BaseActivityTestRule<BlankUiTestActivity> sActivityTestRule =
             new BaseActivityTestRule<>(BlankUiTestActivity.class);
 
     @Rule
@@ -87,11 +94,32 @@ public class SignOutCoordinatorTest {
     private final Set<Integer> mUnsyncedDataTypes = new HashSet<>();
     private SnackbarManager mSnackbarManager;
 
+    @BeforeClass
+    public static void setupSuite() {
+        NativeLibraryTestUtils.loadNativeLibraryAndInitBrowserProcess();
+        BlankUiTestActivity activity = sActivityTestRule.launchActivity(null);
+        ApplicationTestUtils.waitForActivityState(activity, Stage.RESUMED);
+    }
+
     @Before
     public void setUp() {
         BrowsingDataBridgeJni.setInstanceForTesting(mBrowsingDataBridgeJniMock);
-        NativeLibraryTestUtils.loadNativeLibraryAndInitBrowserProcess();
-        mActivityTestRule.launchActivity(null);
+        CriteriaHelper.pollUiThread(sActivityTestRule.getActivity()::hasWindowFocus);
+    }
+
+    @After
+    public void tearDown() {
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    if (mSnackbarManager != null) {
+                        mSnackbarManager.destroy();
+                        mSnackbarManager = null;
+                    }
+                    sActivityTestRule
+                            .getActivity()
+                            .getModalDialogManager()
+                            .dismissAllDialogs(DialogDismissalCause.ACTIVITY_DESTROYED);
+                });
     }
 
     @Test
@@ -188,8 +216,8 @@ public class SignOutCoordinatorTest {
                 .inRoot(isDialog())
                 .check(matches(isDisplayed()));
         String expectedMessage =
-                mActivityTestRule.getActivity().getString(R.string.sign_out_unsaved_data_message)
-                        + mActivityTestRule
+                sActivityTestRule.getActivity().getString(R.string.sign_out_unsaved_data_message)
+                        + sActivityTestRule
                                 .getActivity()
                                 .getString(R.string.sign_out_unsaved_data_message_with_checkbox);
         onView(withText(expectedMessage)).inRoot(isDialog()).check(matches(isDisplayed()));
@@ -404,7 +432,7 @@ public class SignOutCoordinatorTest {
         ThreadUtils.runOnUiThreadBlocking(
                 () ->
                         SignOutCoordinator.undoSignInWithSnackbar(
-                                mActivityTestRule.getActivity(),
+                                sActivityTestRule.getActivity(),
                                 mProfile,
                                 mSnackbarManager,
                                 signOutReason,
@@ -590,7 +618,7 @@ public class SignOutCoordinatorTest {
                             expectedThrowable,
                             () ->
                                     SignOutCoordinator.undoSignInWithSnackbar(
-                                            mActivityTestRule.getActivity(),
+                                            sActivityTestRule.getActivity(),
                                             mProfile,
                                             mSnackbarManager,
                                             reason,
@@ -626,7 +654,7 @@ public class SignOutCoordinatorTest {
                             Snackbar.UMA_SIGN_OUT, currentSnackbar.getIdentifierForTesting());
                     Assert.assertEquals(
                             currentSnackbar.getTextForTesting(),
-                            mActivityTestRule
+                            sActivityTestRule
                                     .getActivity()
                                     .getString(R.string.sign_out_snackbar_message));
                 });
@@ -652,13 +680,13 @@ public class SignOutCoordinatorTest {
                 () -> {
                     mSnackbarManager =
                             new SnackbarManager(
-                                    mActivityTestRule.getActivity(),
-                                    mActivityTestRule
+                                    sActivityTestRule.getActivity(),
+                                    sActivityTestRule
                                             .getActivity()
                                             .findViewById(android.R.id.content),
                                     null,
                                     null,
-                                    mActivityTestRule.getActivity().getModalDialogManager());
+                                    sActivityTestRule.getActivity().getModalDialogManager());
                 });
     }
 
@@ -671,9 +699,9 @@ public class SignOutCoordinatorTest {
         ThreadUtils.runOnUiThreadBlocking(
                 () ->
                         SignOutCoordinator.startSignOutFlow(
-                                mActivityTestRule.getActivity(),
+                                sActivityTestRule.getActivity(),
                                 mProfile,
-                                mActivityTestRule.getActivity().getModalDialogManager(),
+                                sActivityTestRule.getActivity().getModalDialogManager(),
                                 mSnackbarManager,
                                 signoutReason,
                                 showConfirmDialog,

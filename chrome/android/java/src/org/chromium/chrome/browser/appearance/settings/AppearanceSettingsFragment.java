@@ -14,6 +14,7 @@ import androidx.preference.Preference;
 import org.chromium.base.Callback;
 import org.chromium.base.ContextUtils;
 import org.chromium.base.DeviceInfo;
+import org.chromium.base.metrics.RecordUserAction;
 import org.chromium.base.supplier.MonotonicObservableSupplier;
 import org.chromium.base.supplier.ObservableSuppliers;
 import org.chromium.base.supplier.SettableMonotonicObservableSupplier;
@@ -22,10 +23,12 @@ import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.bookmarks.bar.BookmarkBarConstants;
 import org.chromium.chrome.browser.bookmarks.bar.BookmarkBarUtils;
+import org.chromium.chrome.browser.feature_engagement.TrackerFactory;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
-import org.chromium.chrome.browser.night_mode.NightModeMetrics.ThemeSettingsEntry;
+import org.chromium.chrome.browser.glic.GlicEnabling;
+import org.chromium.chrome.browser.homepage.HomepageManager;
 import org.chromium.chrome.browser.night_mode.NightModeUtils;
-import org.chromium.chrome.browser.night_mode.settings.ThemeSettingsFragment;
+import org.chromium.chrome.browser.preferences.ChromePreferenceKeys;
 import org.chromium.chrome.browser.preferences.Pref;
 import org.chromium.chrome.browser.preferences.PrefServiceUtil;
 import org.chromium.chrome.browser.profiles.Profile;
@@ -33,23 +36,40 @@ import org.chromium.chrome.browser.settings.ChromeBaseSettingsFragment;
 import org.chromium.chrome.browser.settings.ChromeManagedPreferenceDelegate;
 import org.chromium.chrome.browser.settings.search.ChromeBaseSearchIndexProvider;
 import org.chromium.chrome.browser.toolbar.adaptive.AdaptiveToolbarStatePredictor;
+import org.chromium.chrome.browser.toolbar.settings.AddressBarPreference;
+import org.chromium.chrome.browser.ui.bottombar.BottomBarActionEligibility;
+import org.chromium.chrome.browser.ui.bottombar.BottomBarConfigUtils;
+import org.chromium.chrome.browser.ui.vertical_tabs.VerticalTabUtils;
 import org.chromium.components.bookmarks.BookmarkBarVisibilityState;
 import org.chromium.components.browser_ui.settings.ChromeSwitchPreference;
 import org.chromium.components.browser_ui.settings.CustomDividerFragment;
 import org.chromium.components.browser_ui.settings.SettingsUtils;
 import org.chromium.components.browser_ui.settings.search.SettingsIndexData;
+import org.chromium.components.feature_engagement.EventConstants;
 import org.chromium.components.prefs.PrefChangeRegistrar;
 import org.chromium.components.prefs.PrefChangeRegistrar.PrefObserver;
 
 /** Fragment to manage appearance settings. */
 @NullMarked
 public class AppearanceSettingsFragment extends ChromeBaseSettingsFragment
-        implements CustomDividerFragment {
+        implements CustomDividerFragment, HomepageManager.HomepageStateListener {
 
+    public static final String PREF_ADDRESS_BAR = "address_bar";
     public static final String PREF_BOOKMARK_BAR = "bookmark_bar";
     public static final String PREF_BOOKMARK_BAR_SWITCH = "bookmark_bar_switch";
+    public static final String PREF_BOTTOM_BAR_SWITCH = "bottom_bar_switch";
+    public static final String PREF_GLIC_BOTTOM_BAR_BUTTON_SWITCH = "glic_bottom_bar_button_switch";
+    public static final String PREF_HOMEPAGE = "homepage";
     public static final String PREF_TOOLBAR_SHORTCUT = "toolbar_shortcut";
     public static final String PREF_UI_THEME = "ui_theme";
+    public static final String PREF_TAB_POSITION = "tab_position";
+
+    private static final String USER_ACTION_BOTTOM_BAR_ENABLED = "Settings.BottomBar.Enabled";
+    private static final String USER_ACTION_BOTTOM_BAR_DISABLED = "Settings.BottomBar.Disabled";
+    private static final String USER_ACTION_GLIC_BUTTON_ENABLED =
+            "Glic.Settings.BottomBarGlicButton.Enabled";
+    private static final String USER_ACTION_GLIC_BUTTON_DISABLED =
+            "Glic.Settings.BottomBarGlicButton.Disabled";
 
     private final SettableMonotonicObservableSupplier<String> mPageTitle =
             ObservableSuppliers.createMonotonic();
@@ -58,6 +78,8 @@ public class AppearanceSettingsFragment extends ChromeBaseSettingsFragment
     private @Nullable PrefChangeRegistrar mPrefChangeRegistrar;
     private @Nullable PrefObserver mPrefObserver;
     private @Nullable OnSharedPreferenceChangeListener mDevicePrefsListener;
+    private @Nullable OnSharedPreferenceChangeListener mAddressBarPreferenceListener;
+    private @Nullable OnSharedPreferenceChangeListener mTabPositionListener;
 
     @Override
     public void onCreatePreferences(@Nullable Bundle savedInstanceState, @Nullable String rootKey) {
@@ -68,8 +90,12 @@ public class AppearanceSettingsFragment extends ChromeBaseSettingsFragment
         // UserPrefs. For tablets, we use the local device preference.
         mUseProfileUserPrefs = DeviceInfo.isDesktop();
         initBookmarkBarPref();
+        initAddressBarPref();
         initToolbarShortcutPref();
-        initUiThemePref();
+        initBottomBarPref();
+        initGlicBottomBarButtonPref();
+        initHomepagePref();
+        initTabPositionPref();
     }
 
     @Override
@@ -90,13 +116,45 @@ public class AppearanceSettingsFragment extends ChromeBaseSettingsFragment
                     .unregisterOnSharedPreferenceChangeListener(mDevicePrefsListener);
             mDevicePrefsListener = null;
         }
+        if (mAddressBarPreferenceListener != null) {
+            ContextUtils.getAppSharedPreferences()
+                    .unregisterOnSharedPreferenceChangeListener(mAddressBarPreferenceListener);
+            mAddressBarPreferenceListener = null;
+        }
+        if (mTabPositionListener != null) {
+            ContextUtils.getAppSharedPreferences()
+                    .unregisterOnSharedPreferenceChangeListener(mTabPositionListener);
+            mTabPositionListener = null;
+        }
     }
 
     @Override
     public void onStart() {
         super.onStart();
         updateBookmarkBarPref();
+        updateAddressBarPref();
         updateUiThemePref();
+        updateBottomBarPref();
+        updateGlicBottomBarButtonPref();
+        if (shouldShowHomepagePref(getContext())) {
+            HomepageManager.getInstance().addListener(this);
+            updateHomepagePref();
+        }
+        updateTabPositionPref();
+
+        TrackerFactory.getTrackerForProfile(getProfile())
+                .notifyEvent(EventConstants.SETTINGS_APPEARANCE_OPENED);
+    }
+
+    @Override
+    public void onStop() {
+        super.onStop();
+        HomepageManager.getInstance().removeListener(this);
+    }
+
+    @Override
+    public void onHomepageStateUpdated() {
+        updateHomepagePref();
     }
 
     @Override
@@ -259,23 +317,134 @@ public class AppearanceSettingsFragment extends ChromeBaseSettingsFragment
                         });
     }
 
+    @SuppressWarnings("UseSharedPreferencesManagerFromChromeCheck")
+    private void initAddressBarPref() {
+        if (!shouldShowAddressBarPref(getContext())) {
+            removePreference(PREF_ADDRESS_BAR);
+            return;
+        }
+        mAddressBarPreferenceListener =
+                (sharedPreferences, key) -> {
+                    if (ChromePreferenceKeys.TOOLBAR_TOP_ANCHORED.equals(key)) {
+                        updateAddressBarPref();
+                    }
+                };
+        ContextUtils.getAppSharedPreferences()
+                .registerOnSharedPreferenceChangeListener(mAddressBarPreferenceListener);
+    }
+
+    private void updateAddressBarPref() {
+        Preference addressBarPref = findPreference(PREF_ADDRESS_BAR);
+        if (addressBarPref == null) return;
+        addressBarPref.setSummary(
+                AddressBarPreference.isToolbarConfiguredToShowOnTop()
+                        ? R.string.address_bar_settings_top
+                        : R.string.address_bar_settings_bottom);
+    }
+
     private void initToolbarShortcutPref() {
+        Context context = getContext();
+        if (BottomBarConfigUtils.shouldMoveToolbarSettingsToAppearance(context)) {
+            Preference toolbarShortcutPref = findPreference(PREF_TOOLBAR_SHORTCUT);
+            if (toolbarShortcutPref != null) {
+                toolbarShortcutPref.setTitle(R.string.address_bar_shortcut);
+            }
+        }
         shouldShowToolbarShortcutPrefAsync(
-                getContext(),
+                context,
                 getProfile(),
                 (shouldShow) -> {
                     if (!shouldShow) removePreference(PREF_TOOLBAR_SHORTCUT);
                 });
     }
 
-    private void initUiThemePref() {
-        // LINT.IfChange(InitPrefUiTheme)
-        findPreference(PREF_UI_THEME)
-                .getExtras()
-                .putInt(
-                        ThemeSettingsFragment.KEY_THEME_SETTINGS_ENTRY,
-                        ThemeSettingsEntry.SETTINGS);
-        // LINT.ThenChange(//chrome/android/java/src/org/chromium/chrome/browser/settings/MainSettings.java:InitPrefUiTheme)
+    private void initHomepagePref() {
+        if (!shouldShowHomepagePref(getContext())) {
+            removePreference(PREF_HOMEPAGE);
+        }
+    }
+
+    private void updateHomepagePref() {
+        Preference homepagePref = findPreference(PREF_HOMEPAGE);
+        if (homepagePref == null) return;
+        homepagePref.setSummary(
+                HomepageManager.getInstance().isHomepageEnabled()
+                        ? R.string.text_on
+                        : R.string.text_off);
+    }
+
+    /** Initializes the bottom bar switch, or removes it when it should not be offered. */
+    private void initBottomBarPref() {
+        if (!BottomBarConfigUtils.shouldShowSettingsToggle(getContext())) {
+            removePreference(PREF_BOTTOM_BAR_SWITCH);
+            return;
+        }
+        ChromeSwitchPreference bottomBarSwitch = findPreference(PREF_BOTTOM_BAR_SWITCH);
+        assert bottomBarSwitch != null;
+        bottomBarSwitch.setOnPreferenceChangeListener(
+                (pref, newValue) -> {
+                    boolean enabled = (boolean) newValue;
+                    BottomBarConfigUtils.setBottomBarUserEnabled(enabled);
+                    RecordUserAction.record(
+                            enabled
+                                    ? USER_ACTION_BOTTOM_BAR_ENABLED
+                                    : USER_ACTION_BOTTOM_BAR_DISABLED);
+                    updateGlicBottomBarButtonPref();
+                    return true;
+                });
+    }
+
+    /** Initializes the Gemini bottom bar button switch, or removes it when it is not offered. */
+    private void initGlicBottomBarButtonPref() {
+        if (!shouldOfferGlicBottomBarButtonPref(getContext(), getProfile())) {
+            removePreference(PREF_GLIC_BOTTOM_BAR_BUTTON_SWITCH);
+            return;
+        }
+        ChromeSwitchPreference glicSwitch = findPreference(PREF_GLIC_BOTTOM_BAR_BUTTON_SWITCH);
+        assert glicSwitch != null;
+        glicSwitch.setManagedPreferenceDelegate(
+                new ChromeManagedPreferenceDelegate(getProfile()) {
+                    @Override
+                    public boolean isPreferenceControlledByPolicy(Preference preference) {
+                        return GlicEnabling.isDisabledByPolicy(getProfile());
+                    }
+                });
+        glicSwitch.setOnPreferenceChangeListener(
+                (pref, newValue) -> {
+                    boolean enabled = (boolean) newValue;
+                    BottomBarConfigUtils.setGlicButtonEnabled(enabled);
+                    RecordUserAction.record(
+                            enabled
+                                    ? USER_ACTION_GLIC_BUTTON_ENABLED
+                                    : USER_ACTION_GLIC_BUTTON_DISABLED);
+                    return true;
+                });
+    }
+
+    /**
+     * Syncs the Gemini bottom bar button switch with the current prefs. The switch is shown only
+     * while the bottom bar is on, and is unchecked when Gemini is disabled by policy.
+     */
+    private void updateGlicBottomBarButtonPref() {
+        ChromeSwitchPreference glicSwitch = findPreference(PREF_GLIC_BOTTOM_BAR_BUTTON_SWITCH);
+        if (glicSwitch == null) return;
+        glicSwitch.setVisible(BottomBarConfigUtils.isBottomBarUserEnabled());
+        // Rows cache their card corners by position, so refresh them after a visibility change.
+        notifyPreferencesUpdated();
+        glicSwitch.setChecked(
+                !GlicEnabling.isDisabledByPolicy(getProfile())
+                        && BottomBarConfigUtils.isGlicButtonEnabled());
+    }
+
+    /**
+     * Syncs the bottom bar switch with the current pref value, if the switch is present. {@code
+     * TwoStatePreference#setChecked} does not invoke {@code OnPreferenceChangeListener}, so this
+     * does not record user actions when opening the fragment.
+     */
+    private void updateBottomBarPref() {
+        ChromeSwitchPreference bottomBarSwitch = findPreference(PREF_BOTTOM_BAR_SWITCH);
+        if (bottomBarSwitch == null) return;
+        bottomBarSwitch.setChecked(BottomBarConfigUtils.isBottomBarUserEnabled());
     }
 
     private void removePreference(String prefKey) {
@@ -313,6 +482,37 @@ public class AppearanceSettingsFragment extends ChromeBaseSettingsFragment
                                 getContext(), NightModeUtils.getThemeSetting()));
     }
 
+    /** Initializes the tab position preference row and listens for state changes. */
+    @SuppressWarnings("UseSharedPreferencesManagerFromChromeCheck")
+    private void initTabPositionPref() {
+        if (!VerticalTabUtils.isVerticalTabsEligible(getContext())) {
+            removePreference(PREF_TAB_POSITION);
+            return;
+        }
+        mTabPositionListener =
+                (sharedPreferences, key) -> {
+                    if (ChromePreferenceKeys.VERTICAL_TABS_ENABLED.equals(key)) {
+                        updateTabPositionPref();
+                    }
+                };
+        ContextUtils.getAppSharedPreferences()
+                .registerOnSharedPreferenceChangeListener(mTabPositionListener);
+    }
+
+    /** Updates the summary text on the tab position preference row based on current state. */
+    private void updateTabPositionPref() {
+        Context context = getContext();
+        if (!VerticalTabUtils.isVerticalTabsEligible(context)) {
+            return;
+        }
+        Preference tabPositionPref = findPreference(PREF_TAB_POSITION);
+        if (tabPositionPref != null) {
+            boolean isVertical = VerticalTabUtils.isVerticalTabsEnabled(context);
+            tabPositionPref.setSummary(
+                    isVertical ? R.string.tab_position_vertical : R.string.tab_position_horizontal);
+        }
+    }
+
     @Override
     public @AnimationType int getAnimationType() {
         return AnimationType.PROPERTY;
@@ -345,6 +545,28 @@ public class AppearanceSettingsFragment extends ChromeBaseSettingsFragment
         };
     }
 
+    static boolean shouldShowAddressBarPref(Context context) {
+        return BottomBarConfigUtils.shouldMoveToolbarSettingsToAppearance(context);
+    }
+
+    static boolean shouldOfferGlicBottomBarButtonPref(Context context, Profile profile) {
+        if (!BottomBarConfigUtils.shouldMoveToolbarSettingsToAppearance(context)
+                || !BottomBarConfigUtils.isBottomBarEligible(context)) {
+            return false;
+        }
+        // The bottom bar resolves the candidate action when it starts, which has not happened if
+        // Chrome started with the bottom bar off.
+        if (BottomBarActionEligibility.getCachedCandidateExtraAction() == null) {
+            BottomBarActionEligibility.getCandidateExtraAction(profile);
+        }
+        return BottomBarActionEligibility.shouldShowBottomBarGlicSetting(profile);
+    }
+
+    static boolean shouldShowHomepagePref(Context context) {
+        return BottomBarConfigUtils.shouldMoveToolbarSettingsToAppearance(context)
+                && HomepageManager.shouldShowHomepageSettings();
+    }
+
     static boolean shouldShowBookmarkPref(Context context) {
         return BookmarkBarUtils.isDeviceBookmarkBarCompatible(context);
     }
@@ -374,6 +596,10 @@ public class AppearanceSettingsFragment extends ChromeBaseSettingsFragment
                         Context context, SettingsIndexData indexData, Profile profile) {
                     String prefFragment = AppearanceSettingsFragment.class.getName();
 
+                    if (!shouldShowAddressBarPref(context)) {
+                        indexData.removeEntryForKey(prefFragment, PREF_ADDRESS_BAR);
+                    }
+
                     if (!shouldShowBookmarkPref(context)) {
                         indexData.removeEntryForKey(prefFragment, PREF_BOOKMARK_BAR);
                         indexData.removeEntryForKey(prefFragment, PREF_BOOKMARK_BAR_SWITCH);
@@ -385,6 +611,29 @@ public class AppearanceSettingsFragment extends ChromeBaseSettingsFragment
                                 getBookmarkBarVisibilityStateSummaryRes(profile));
                     } else {
                         indexData.removeEntryForKey(prefFragment, PREF_BOOKMARK_BAR);
+                    }
+
+                    if (!shouldShowHomepagePref(context)) {
+                        indexData.removeEntryForKey(prefFragment, PREF_HOMEPAGE);
+                    }
+
+                    if (!VerticalTabUtils.isVerticalTabsEligible(context)) {
+                        indexData.removeEntryForKey(prefFragment, PREF_TAB_POSITION);
+                    }
+
+                    if (!BottomBarConfigUtils.shouldShowSettingsToggle(context)) {
+                        indexData.removeEntryForKey(prefFragment, PREF_BOTTOM_BAR_SWITCH);
+                    }
+
+                    if (!shouldOfferGlicBottomBarButtonPref(context, profile)
+                            || !BottomBarConfigUtils.isBottomBarUserEnabled()) {
+                        indexData.removeEntryForKey(
+                                prefFragment, PREF_GLIC_BOTTOM_BAR_BUTTON_SWITCH);
+                    }
+
+                    if (BottomBarConfigUtils.shouldMoveToolbarSettingsToAppearance(context)) {
+                        indexData.updateEntryForKey(
+                                prefFragment, PREF_TOOLBAR_SHORTCUT, R.string.address_bar_shortcut);
                     }
 
                     shouldShowToolbarShortcutPrefAsync(

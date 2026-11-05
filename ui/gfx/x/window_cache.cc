@@ -5,9 +5,9 @@
 #include "ui/gfx/x/window_cache.h"
 
 #include <algorithm>
+#include <ranges>
 #include <vector>
 
-#include "base/containers/adapters.h"
 #include "base/functional/bind.h"
 #include "base/notreached.h"
 #include "base/run_loop.h"
@@ -16,7 +16,6 @@
 #include "ui/gfx/geometry/insets.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/vector2d.h"
-#include "ui/gfx/x/atom_cache.h"
 #include "ui/gfx/x/connection.h"
 #include "ui/gfx/x/event.h"
 #include "ui/gfx/x/xproto.h"
@@ -66,7 +65,7 @@ WindowCache* WindowCache::instance_ = nullptr;
 WindowCache::WindowCache(Connection* connection, Window root)
     : connection_(connection),
       root_(root),
-      gtk_frame_extents_(GetAtom("_GTK_FRAME_EXTENTS")) {
+      gtk_frame_extents_(connection_->GetAtom("_GTK_FRAME_EXTENTS")) {
   CHECK(!instance_) << "Only one WindowCache should be active at a time";
   instance_ = this;
 
@@ -157,7 +156,7 @@ Window WindowCache::GetWindowAtPoint(gfx::Point point_px,
     }
   }
 
-  for (Window child : base::Reversed(info->children)) {
+  for (Window child : std::views::reverse(info->children)) {
     Window ret = GetWindowAtPoint(point_px, child, ignore);
     if (ret != Window::None) {
       return ret;

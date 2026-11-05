@@ -6,6 +6,7 @@ package org.chromium.chrome.browser.tab_bottom_sheet;
 
 import static org.chromium.chrome.browser.tab_bottom_sheet.TabBottomSheetUtils.canResizeWebView;
 import static org.chromium.chrome.browser.tab_bottom_sheet.TabBottomSheetUtils.isActivityInactive;
+import static org.chromium.chrome.browser.tab_bottom_sheet.TabBottomSheetUtils.isEdgeToEdgeEnabled;
 
 import static java.lang.Math.max;
 
@@ -17,9 +18,11 @@ import android.view.GestureDetector;
 import android.view.LayoutInflater;
 import android.view.MotionEvent;
 import android.view.View;
+import android.view.ViewGroup.MarginLayoutParams;
 import android.view.Window;
 import android.view.accessibility.AccessibilityEvent;
 
+import androidx.annotation.ColorInt;
 import androidx.annotation.Px;
 
 import org.chromium.base.Log;
@@ -45,6 +48,8 @@ import org.chromium.ui.modaldialog.ModalDialogManager.ModalDialogManagerObserver
 import org.chromium.ui.modaldialog.ModalDialogManager.ModalDialogType;
 import org.chromium.ui.modelutil.PropertyModel;
 import org.chromium.ui.modelutil.PropertyModelChangeProcessor;
+
+import java.util.function.BooleanSupplier;
 
 /** Coordinator for the tab bottom sheet. */
 @NullMarked
@@ -74,6 +79,7 @@ public class TabBottomSheetCoordinator {
 
     private final Context mContext;
     private final BottomSheetController mBottomSheetController;
+    private final BooleanSupplier mCanCoverBottomControlsSupplier;
     private final TouchEventProvider mTouchEventProvider;
     private final PropertyModel mModel;
     private final CoBrowseViews mCoBrowseViews;
@@ -96,7 +102,6 @@ public class TabBottomSheetCoordinator {
 
     private boolean mIsShowingTabBottomSheet;
     private boolean mExpectingLayoutChange;
-    private boolean mInitialContainerSizeChanged;
     private boolean mPendingExpansion;
 
     private @Nullable KeyboardVisibilityListener mKeyboardVisibilityListener;
@@ -107,6 +112,8 @@ public class TabBottomSheetCoordinator {
      * @param context The context to use for creating views.
      * @param windowAndroid The {@link WindowAndroid} associated with the window.
      * @param bottomSheetController The {@link BottomSheetController} used to show the bottom sheet.
+     * @param canCoverBottomControlsSupplier Supplier indicating whether the bottom sheet can cover
+     *     the bottom browser controls.
      * @param touchEventProvider The {@link TouchEventProvider} used to observe touch events on the
      *     tab behind the bottom sheet.
      * @param coBrowseViews The views to be displayed within the bottom sheet. These should be
@@ -121,6 +128,7 @@ public class TabBottomSheetCoordinator {
             Context context,
             WindowAndroid windowAndroid,
             BottomSheetController bottomSheetController,
+            BooleanSupplier canCoverBottomControlsSupplier,
             TouchEventProvider touchEventProvider,
             CoBrowseViews coBrowseViews,
             SheetEventsCallback sheetEventsCallback,
@@ -128,6 +136,7 @@ public class TabBottomSheetCoordinator {
         mContext = context;
         mWindowAndroid = windowAndroid;
         mBottomSheetController = bottomSheetController;
+        mCanCoverBottomControlsSupplier = canCoverBottomControlsSupplier;
         mTouchEventProvider = touchEventProvider;
         mCoBrowseViews = coBrowseViews;
         mSheetEventsCallback = sheetEventsCallback;
@@ -148,6 +157,7 @@ public class TabBottomSheetCoordinator {
                 mContext.getResources()
                         .getDimensionPixelSize(R.dimen.tab_bottom_sheet_peek_corner_radius);
         mOutlineProvider = new RoundedCornerOutlineProvider(radius);
+        mOutlineProvider.setRoundingEdges(true, true, true, false);
         mCoBrowseViews.setPlaceholderAllowedSupplier(mPlaceholderAllowedSupplier);
     }
 
@@ -204,6 +214,12 @@ public class TabBottomSheetCoordinator {
         return mBottomSheetController.getSheetState() == BottomSheetController.SheetState.PEEK;
     }
 
+    /** Returns the background color of the sheet. */
+    @ColorInt
+    int getBackgroundColor() {
+        return mCoBrowseViews.getBackgroundColor();
+    }
+
     void destroy() {
         if (mIsShowingTabBottomSheet && mSheetContent != null) {
             mBottomSheetController.hideContent(mSheetContent, false, StateChangeReason.NONE);
@@ -213,9 +229,16 @@ public class TabBottomSheetCoordinator {
     }
 
     private void createSheetContent() {
+        if (mSheetContent != null) mSheetContent.destroy();
         mContentView = mCoBrowseViews.getView();
         mContentView.setOutlineProvider(mOutlineProvider);
         mContentView.setClipToOutline(true);
+        View webUiContainer = TabBottomSheetUtils.getWebUiContainer(mContentView);
+        if (webUiContainer != null
+                && webUiContainer.getLayoutParams() instanceof MarginLayoutParams params) {
+            params.topMargin = isEdgeToEdgeEnabled() ? 0 : mWebUiTopMargin;
+            webUiContainer.setLayoutParams(params);
+        }
         CoBrowseComponentProvider provider = mCoBrowseViews.getContentProvider();
         assert provider != null : "CoBrowseComponentProvider must not be null";
         mSheetContent =
@@ -229,11 +252,18 @@ public class TabBottomSheetCoordinator {
                                 .getDimensionPixelSize(R.dimen.tab_bottom_sheet_peek_height_total),
                         R.id.peek_view_container,
                         mOnBackPressed);
+        WebViewResizingHelper helper = mCoBrowseViews.getWebViewResizingHelper();
+        TabBottomSheetContent content = mSheetContent;
+        if (content != null) {
+            content.setCanCoverBottomControlsSupplier(mCanCoverBottomControlsSupplier);
+            if (helper != null) {
+                helper.setBottomSafeAreaInsetObserver(content::onBottomSafeAreaInsetChanged);
+            }
+        }
         mViewBinder =
                 PropertyModelChangeProcessor.create(
                         mModel, mContentView, TabBottomSheetViewBinder::bind);
         if (canResizeWebView()) {
-            WebViewResizingHelper helper = mCoBrowseViews.getWebViewResizingHelper();
             assert helper != null : "WebViewResizingHelper must not be null when resizing WebView";
             mResizingStrategy = ResizingStrategyFactory.create(helper);
         }
@@ -243,6 +273,7 @@ public class TabBottomSheetCoordinator {
         // Set peek height for touch arbitration.
         if (mSheetContent != null) {
             mMediator.setPeekHeight(mSheetContent.getPeekHeight());
+            mSheetContent.onBottomMarginChanged(mBottomSheetController.getContainerBottomMargin());
         }
         // Notify that the sheet is opened synchronously. The precise expansion state will be
         // refined once the posted task completes and layout is available.
@@ -259,7 +290,7 @@ public class TabBottomSheetCoordinator {
                         return;
                     }
                     updateRoundingEdges();
-                    setToFixedHeightOrFallback();
+                    updateContentHeight();
 
                     boolean isSheetHeightSufficient =
                             mMediator.isSheetHeightSufficient(getDesiredFixedHeight());
@@ -329,6 +360,8 @@ public class TabBottomSheetCoordinator {
         mModalDialogManagerObserver = null;
 
         if (mSheetContent != null) {
+            WebViewResizingHelper helper = mCoBrowseViews.getWebViewResizingHelper();
+            if (helper != null) helper.setBottomSafeAreaInsetObserver(null);
             mSheetContent.destroy();
             mSheetContent = null;
         }
@@ -435,7 +468,8 @@ public class TabBottomSheetCoordinator {
                 if (canResizeWebView()) {
                     assert mResizingStrategy != null;
                     mResizingStrategy.onSheetResizingStatusChanged(
-                            state == SheetState.SCROLLING && !mBottomSheetController.isSmallScreen());
+                            state == SheetState.SCROLLING
+                                    && !mBottomSheetController.isSmallScreen());
                 }
 
                 if (state != SheetState.SCROLLING && state != SheetState.NONE) {
@@ -460,16 +494,7 @@ public class TabBottomSheetCoordinator {
                     mBottomSheetController.collapseSheet(/* animate= */ true);
                     mExpectingLayoutChange = false;
                 }
-                if (canResizeWebView()) {
-                    if (mInitialContainerSizeChanged) {
-                        setToFlexibleHeight();
-                    } else {
-                        setToFixedHeightOrFallback();
-                    }
-                    mInitialContainerSizeChanged = true;
-                } else {
-                    setToFixedHeightOrFallback();
-                }
+                updateContentHeight();
                 updateRoundingEdges();
             }
 
@@ -479,25 +504,30 @@ public class TabBottomSheetCoordinator {
                     return;
                 }
 
+                mSheetContent.onBottomMarginChanged(bottomMargin);
                 if (!canResizeWebView()) {
-                    setToFixedHeightOrFallback();
+                    updateContentHeight();
                 }
             }
 
             @Override
             public void onSheetOffsetChanged(float heightFraction, float offsetPx) {
+                if (mSheetContent == null || !mIsShowingTabBottomSheet) {
+                    return;
+                }
+
                 if (mBottomSheetController.getSheetState() == SheetState.SCROLLING) {
                     mMediator.onSheetOffsetChanged(offsetPx);
                     if (canResizeWebView()) {
-                        assert mSheetContent != null;
                         assert mResizingStrategy != null;
+                        float topMargin = isEdgeToEdgeEnabled() ? 0 : mWebUiTopMargin;
                         float peekHeight = mSheetContent.getPeekHeight();
                         float halfRatio = mSheetContent.getHalfHeightRatio();
                         float halfHeight = mBottomSheetController.getContainerHeight() * halfRatio;
                         float fullHeight = mBottomSheetController.getMaxOffset();
                         mResizingStrategy.onSheetOffsetChanged(
-                                offsetPx - mWebUiTopMargin,
-                                peekHeight - mWebUiTopMargin,
+                                offsetPx - topMargin,
+                                peekHeight - topMargin,
                                 halfHeight,
                                 fullHeight);
                     }
@@ -578,6 +608,15 @@ public class TabBottomSheetCoordinator {
             }
 
             @Override
+            public boolean onSingleTapUp(MotionEvent e) {
+                if (mBottomSheetController.getSheetState() == SheetState.FULL) {
+                    collapseSheet();
+                    return true;
+                }
+                return false;
+            }
+
+            @Override
             public boolean onDoubleTap(MotionEvent e) {
                 collapseSheet();
                 return true;
@@ -647,23 +686,15 @@ public class TabBottomSheetCoordinator {
         if (keyboardDelegate == null) {
             return false;
         }
-        return keyboardDelegate.isKeyboardShowing(mCoBrowseViews.getView());
+        return keyboardDelegate.isKeyboardObscuring(mCoBrowseViews.getView());
     }
 
-    private void setToFlexibleHeight() {
+    private void updateContentHeight() {
         if (isActivityInactive(mWindowAndroid)) return;
-        mMediator.setToFlexibleHeight();
-    }
-
-    private void setToFixedHeightOrFallback() {
-        if (isActivityInactive(mWindowAndroid)) return;
-        @Px int fixedHeight = getDesiredFixedHeight();
-        mMediator.setToFixedHeight(fixedHeight);
-
-        // In the case the bottom sheet is unable to set to our desired fixed height, fallback to
-        // use of flexible heights.
-        if (canResizeWebView() && mBottomSheetController.getContainerHeight() != fixedHeight) {
-            setToFlexibleHeight();
+        if (canResizeWebView()) {
+            mMediator.setToFlexibleHeight();
+        } else {
+            mMediator.setToFixedHeight(getDesiredFixedHeight());
         }
     }
 
@@ -711,7 +742,7 @@ public class TabBottomSheetCoordinator {
     private void updateRoundingEdges() {
         if (mOutlineProvider == null) return;
 
-        boolean shouldRound = !mBottomSheetController.isFullWidth();
+        boolean shouldRound = !mBottomSheetController.isFullWidth() || mMediator.isNotPeeking();
         if (mOutlineProvider.isTopEdgeRounded() == shouldRound) {
             return;
         }

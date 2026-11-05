@@ -22,6 +22,7 @@
 #include "base/notreached.h"
 #include "base/strings/string_util.h"
 #include "base/synchronization/lock.h"
+#include "base/task/single_thread_task_runner.h"
 #include "chrome/browser/android/android_theme_resources.h"
 #include "chrome/browser/android/profile_key_startup_accessor.h"
 #include "chrome/browser/android/profile_key_util.h"
@@ -39,6 +40,7 @@
 #include "chrome/browser/download/download_ui_model.h"
 #include "chrome/browser/download/download_ui_safe_browsing_util.h"
 #include "chrome/browser/download/insecure_download_blocking.h"
+#include "chrome/browser/download/simple_download_manager_coordinator_factory.h"
 #include "chrome/browser/flags/android/chrome_feature_list.h"
 #include "chrome/browser/offline_pages/android/offline_page_bridge.h"
 #include "chrome/browser/permissions/permission_update_message_controller_android.h"
@@ -51,6 +53,7 @@
 #include "components/download/public/common/download_danger_type.h"
 #include "components/download/public/common/download_item.h"
 #include "components/download/public/common/download_source.h"
+#include "components/download/public/common/simple_download_manager_coordinator.h"
 #include "components/infobars/content/content_infobar_manager.h"
 #include "components/pdf/common/constants.h"
 #include "components/prefs/pref_service.h"
@@ -75,9 +78,11 @@
 #include "ui/base/device_form_factor.h"
 #include "ui/base/page_transition_types.h"
 #include "url/android/gurl_android.h"
+#include "url/origin.h"
+#include "url/url_constants.h"
 
 #if BUILDFLAG(SAFE_BROWSING_AVAILABLE)
-#include "components/safe_browsing/content/common/file_type_policies.h"
+#include "components/safe_browsing/content/common/file_type_policies/file_type_policies.h"
 #endif
 
 // Must come after all headers that specialize FromJniType() / ToJniType().
@@ -95,43 +100,53 @@ namespace {
 // Guards download_controller_
 base::LazyInstance<base::Lock>::DestructorAtExit g_download_controller_lock_;
 
-// Helper class for retrieving a DownloadManager.
-class DownloadManagerGetter : public DownloadManager::Observer {
+// Helper class for retrieving a SimpleDownloadManagerCoordinator.
+class DownloadCoordinatorGetter
+    : public download::SimpleDownloadManagerCoordinator::Observer {
  public:
-  explicit DownloadManagerGetter(DownloadManager* manager) : manager_(manager) {
-    manager_->AddObserver(this);
-  }
-
-  DownloadManagerGetter(const DownloadManagerGetter&) = delete;
-  DownloadManagerGetter& operator=(const DownloadManagerGetter&) = delete;
-
-  ~DownloadManagerGetter() override {
-    if (manager_) {
-      manager_->RemoveObserver(this);
+  explicit DownloadCoordinatorGetter(
+      download::SimpleDownloadManagerCoordinator* coordinator)
+      : coordinator_(coordinator) {
+    if (coordinator_) {
+      coordinator_->AddObserver(this);
     }
   }
 
-  void ManagerGoingDown(DownloadManager* manager) override {
-    manager_ = nullptr;
+  DownloadCoordinatorGetter(const DownloadCoordinatorGetter&) = delete;
+  DownloadCoordinatorGetter& operator=(const DownloadCoordinatorGetter&) =
+      delete;
+
+  ~DownloadCoordinatorGetter() override {
+    if (coordinator_) {
+      coordinator_->RemoveObserver(this);
+    }
   }
 
-  DownloadManager* manager() { return manager_; }
+  void OnManagerGoingDown(
+      download::SimpleDownloadManagerCoordinator* coordinator) override {
+    CHECK(coordinator_ == coordinator);
+    coordinator_->RemoveObserver(this);
+    coordinator_ = nullptr;
+  }
+
+  download::SimpleDownloadManagerCoordinator* coordinator() {
+    return coordinator_;
+  }
 
  private:
-  raw_ptr<DownloadManager> manager_;
+  raw_ptr<download::SimpleDownloadManagerCoordinator> coordinator_;
 };
 
-void RemoveDownloadItem(std::unique_ptr<DownloadManagerGetter> getter,
+void RemoveDownloadItem(std::unique_ptr<DownloadCoordinatorGetter> getter,
                         const std::string& guid) {
-  if (!getter->manager()) {
+  if (!getter->coordinator()) {
     return;
   }
-  DownloadItem* item = getter->manager()->GetDownloadByGuid(guid);
+  DownloadItem* item = getter->coordinator()->GetDownloadByGuid(guid);
   if (item) {
     item->Remove();
   }
 }
-
 
 bool ShouldOpenPdfInline(DownloadItem* item) {
   BrowserContext* context = content::DownloadItemUtils::GetBrowserContext(item);
@@ -197,18 +212,39 @@ bool isEnterpriseBlockDownloadDangerType(
 }
 // LINT.ThenChange(//components/browser_ui/util/android/java/src/org/chromium/components/browser_ui/util/DownloadUtils.java:isBlockedSensitiveDownload)
 
-ui::WindowAndroid* GetCurrentWindow() {
-  // Iterate through all tab models to find the active one.
-  for (const TabModel* model : TabModelList::models()) {
+ui::WindowAndroid* GetCurrentWindow(const Profile* profile) {
+  if (!profile) {
+    return nullptr;
+  }
+  // Iterate through all tab models for the profile to find the active one.
+  ui::WindowAndroid* window = nullptr;
+  TabModelList::ForEach(profile, [&window](TabModel* model) {
     if (!model->IsActiveModel()) {
-      continue;
+      return true;
     }
     content::WebContents* active_web_contents = model->GetActiveWebContents();
     if (active_web_contents) {
-      return active_web_contents->GetTopLevelNativeWindow();
+      window = active_web_contents->GetTopLevelNativeWindow();
+      if (window) {
+        return false;
+      }
     }
-  }
-  return nullptr;
+    return true;
+  });
+  return window;
+}
+
+bool HasMultipleLiveTabbedModels(const Profile* profile) {
+  int count = 0;
+  TabModelList::ForEach(profile, [&count](TabModel* model) {
+    if (model->GetTabModelType() == TabModel::TabModelType::kStandard &&
+        model->activity_type() == chrome::android::ActivityType::kTabbed &&
+        model->GetTabCount() > 0) {
+      return ++count < 2;
+    }
+    return true;
+  });
+  return count > 1;
 }
 
 }  // namespace
@@ -216,19 +252,22 @@ ui::WindowAndroid* GetCurrentWindow() {
 // static
 void DownloadController::ScheduleRemoveDownloadItem(
     download::DownloadItem* item) {
-  auto download_manager_getter = std::make_unique<DownloadManagerGetter>(
-      content::DownloadItemUtils::GetBrowserContext(item)
-          ->GetDownloadManager());
-  content::GetUIThreadTaskRunner({})->PostTask(
+  ProfileKey* profile_key = GetProfileKey(item);
+  if (!profile_key) {
+    return;
+  }
+  auto coordinator_getter = std::make_unique<DownloadCoordinatorGetter>(
+      SimpleDownloadManagerCoordinatorFactory::GetForKey(profile_key));
+  base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
       FROM_HERE,
-      base::BindOnce(&RemoveDownloadItem, std::move(download_manager_getter),
+      base::BindOnce(&RemoveDownloadItem, std::move(coordinator_getter),
                      item->GetGuid()));
 }
 
 static void JNI_DownloadController_CancelDownload(
     Profile* profile,
     const std::string& download_guid) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M161);
 
   DownloadManager* download_manager = profile->GetDownloadManager();
   if (download_manager) {
@@ -242,7 +281,7 @@ static void JNI_DownloadController_CancelDownload(
 static void JNI_DownloadController_DownloadUrl(
     const std::string& url,
     content::WebContents* web_contents) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M161);
 
   if (!web_contents) {
     return;
@@ -259,6 +298,48 @@ static void JNI_DownloadController_DownloadUrl(
     dl_params->set_download_source(download::DownloadSource::TOOLBAR_MENU);
     download_manager->DownloadUrl(std::move(dl_params));
   }
+}
+
+static void JNI_DownloadController_DownloadLocalFile(
+    const std::string& url,
+    const std::u16string& suggested_name,
+    content::WebContents* web_contents) {
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M161);
+  if (!web_contents) {
+    return;
+  }
+
+  const GURL gurl(url);
+  if (!gurl.SchemeIs(url::kContentScheme) && !gurl.SchemeIsFile()) {
+    // Only local files are supported; use DownloadUrl() for everything else.
+    return;
+  }
+
+  DownloadManager* download_manager =
+      web_contents->GetBrowserContext()->GetDownloadManager();
+  if (!download_manager) {
+    return;
+  }
+
+  std::unique_ptr<download::DownloadUrlParameters> dl_params =
+      content::DownloadRequestUtils::CreateDownloadForWebContentsMainFrame(
+          web_contents, gurl,
+          TRAFFIC_ANNOTATION_WITHOUT_PROTO("Download via toolbar menu"));
+  // The local file/URI was chosen by the browser, not by the frame's document,
+  // and `CreateDownloadForWebContentsMainFrame` is only used to associate the
+  // DownloadItem with `web_contents` (via `DownloadItemUtils::GetWebContents`).
+  // Clear `initiator` so:
+  // 1) `DownloadManagerImpl` treats this as a browser-vetted download and does
+  //    not require file-request permissions on the renderer process, and
+  // 2) `DownloadResponseHandler::OnReceiveResponse` does not wipe out
+  //    `suggested_name` due to an origin mismatch between the main frame (e.g.
+  //    `chrome-native://pdf/link?url=...`) and the `file://` or `content://`
+  //    download URL.
+  dl_params->set_initiator(std::nullopt);
+  dl_params->set_suggested_name(suggested_name);
+  dl_params->set_content_initiated(false);
+  dl_params->set_download_source(download::DownloadSource::TOOLBAR_MENU);
+  download_manager->DownloadUrl(std::move(dl_params));
 }
 
 // static
@@ -284,16 +365,37 @@ void DownloadController::CloseTabIfEmpty(content::WebContents* web_contents,
     return;
   }
 
-  // If the download is dangerous, don't close the tab now. The dangerous
-  // infobar needs to be shown.
-  if (download && download->IsDangerous() &&
+  // Sensitive content warnings still use a tab-modal dialog
+  // (PolicyWarningDownloadDialog), which would be automatically dismissed if
+  // the tab were closed here. Other dangerous downloads use an app-modal
+  // dialog (DangerousDownloadDialog) or download message and can safely close
+  // the empty tab.
+  if (download &&
+      download->GetDangerType() ==
+          download::DOWNLOAD_DANGER_TYPE_SENSITIVE_CONTENT_WARNING &&
       (download->GetState() != DownloadItem::CANCELLED)) {
     return;
   }
 
+  TabAndroid* tab = TabAndroid::FromWebContents(web_contents);
   TabModel* tab_model = TabModelList::GetTabModelForWebContents(web_contents);
-  if (!tab_model || tab_model->GetTabCount() == 1) {
-    return;
+  if (!tab_model) {
+    // Allow closing if the tab is temporarily detached from its TabModel (e.g.
+    // while being reparented to a new window).
+    if (!tab) {
+      return;
+    }
+  } else if (tab_model->GetTabCount() == 1) {
+    // Don't close the last tab in the sole window unless the tab was
+    // specifically created to open a link in a new window.
+    bool is_new_window_link =
+        tab && tab->GetTabLaunchTypeAtCreation() ==
+                   static_cast<int>(
+                       TabModel::TabLaunchType::FROM_LINK_CREATING_NEW_WINDOW);
+    if (!is_new_window_link &&
+        !HasMultipleLiveTabbedModels(tab_model->GetProfile())) {
+      return;
+    }
   }
 
   if (!download) {
@@ -341,7 +443,7 @@ void DownloadController::CreateAndroidDownload(
 void DownloadController::StartAndroidDownload(
     const content::WebContents::Getter& wc_getter,
     const DownloadInfo& info) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M161);
 
   JNIEnv* env = base::android::AttachCurrentThread();
   std::u16string file_name =
@@ -374,8 +476,9 @@ void DownloadController::OnDownloadStarted(DownloadItem* download_item) {
         JNIEnv* env = base::android::AttachCurrentThread();
         ScopedJavaLocalRef<jobject> j_item =
             DownloadManagerService::CreateJavaDownloadInfo(env, download_item);
-        Java_DownloadController_onPdfDownloadStarted(env, tab->GetJavaObject(),
-                                                     j_item);
+        Java_DownloadController_onPdfDownloadStarted(
+            env, tab->GetJavaObject(), j_item,
+            download_item->GetRequestInitiator());
         should_cancel_download = false;
       }
     }
@@ -417,23 +520,23 @@ void DownloadController::OnDownloadUpdated(DownloadItem* item) {
 
   if (item->IsDangerous() && (item->GetState() != DownloadItem::CANCELLED)) {
     DownloadItemModel model{item};
-    bool dialog_shown = false;
+    bool warning_shown = false;
     if (item->GetDangerType() ==
         download::DOWNLOAD_DANGER_TYPE_SENSITIVE_CONTENT_WARNING) {
-      dialog_shown = OnSensitiveDownload(item);
+      warning_shown = OnSensitiveDownload(item);
     } else if (isEnterpriseBlockDownloadDangerType(item->GetDangerType())) {
       // The download is deemed blocked by enterprise policy, do
       // nothing here so the download will fail the completion check.
     } else if (ShouldShowSafeBrowsingAndroidDownloadWarnings(
                    /*enable_for_telemetry=*/true)) {
-      dialog_shown = ShowDangerousDownloadWarning(model);
+      warning_shown = ShowDangerousDownloadWarning(model);
     } else {
       // Don't show notification for a dangerous download, as user can resume
       // the download after browser crash through notification.
-      dialog_shown = OnDangerousDownload(item);
+      warning_shown = ShowDangerousDownloadDialog(item);
     }
 
-    if (dialog_shown) {
+    if (warning_shown) {
       MaybeRecordDangerousDownloadWarningShown(model);
     }
     return;
@@ -452,6 +555,13 @@ void DownloadController::OnDownloadUpdated(DownloadItem* item) {
       OnDownloadComplete(item);
     }
   }
+
+  // Transient inline PDF downloads have no download notification, so tell
+  // the PDF page directly when the download fails. The early return above
+  // already guarantees that any transient item here is an inline PDF.
+  if (item->GetState() == DownloadItem::INTERRUPTED && item->IsTransient()) {
+    OnDownloadFailed(item);
+  }
 }
 
 void DownloadController::OnDownloadDestroyed(download::DownloadItem* item) {
@@ -465,15 +575,19 @@ bool DownloadController::ShowDangerousDownloadWarning(DownloadUIModel& model) {
   download::DownloadItem* item = model.GetDownloadItem();
   CHECK(item);
   // Schedule the dangerous download to be canceled after a time delay.
-  if (DownloadCoreService* download_core_service =
-          DownloadCoreServiceFactory::GetForBrowserContext(
-              content::DownloadItemUtils::GetBrowserContext(item));
-      download_core_service && model.IsEphemeralWarning()) {
-    if (ChromeDownloadManagerDelegate* delegate =
-            download_core_service->GetDownloadManagerDelegate();
-        delegate) {
-      delegate->ScheduleCancelForEphemeralWarning(item->GetGuid());
+  if (!safe_browsing::kMaliciousApkDownloadCheckTelemetryOnly.Get() &&
+      model.IsEphemeralWarning()) {
+    if (DownloadCoreService* download_core_service =
+            DownloadCoreServiceFactory::GetForBrowserContext(
+                content::DownloadItemUtils::GetBrowserContext(item))) {
+      if (ChromeDownloadManagerDelegate* delegate =
+              download_core_service->GetDownloadManagerDelegate()) {
+        delegate->ScheduleCancelForEphemeralWarning(item->GetGuid());
+      }
     }
+    // This ephemeral warning will be shown as a download message rather than a
+    // dialog.
+    return true;
   }
 
   // For generic filetype warnings, fall back to the DangerousDownloadDialog.
@@ -487,29 +601,9 @@ bool DownloadController::ShowDangerousDownloadWarning(DownloadUIModel& model) {
   return false;
 }
 
-bool DownloadController::OnDangerousDownload(download::DownloadItem* item) {
-  // The chrome.downloads extension API uses the dangerous download prompt
-  // shared by all extensions platforms (see download_danger_dialog.cc).
-  if (item->GetDownloadSource() == download::DownloadSource::EXTENSION_API) {
-    return false;
-  }
-
-  ui::WindowAndroid* window_android =
-      GetWindowHelper(item, /*should_schedule_removal=*/true,
-                      /*fallback_to_current_window=*/false);
-
-  if (!dangerous_download_bridge_) {
-    dangerous_download_bridge_ =
-        std::make_unique<DangerousDownloadDialogBridge>();
-  }
-  dangerous_download_bridge_->Show(item, window_android);
-  return (window_android != nullptr);
-}
-
 bool DownloadController::OnSensitiveDownload(download::DownloadItem* item) {
   ui::WindowAndroid* window_android =
-      GetWindowHelper(item, /*should_schedule_removal=*/true,
-                      /*fallback_to_current_window=*/false);
+      GetWindowHelper(item, /*should_schedule_removal=*/true);
 
   if (!policy_warning_download_bridge_) {
     policy_warning_download_bridge_ =
@@ -521,18 +615,19 @@ bool DownloadController::OnSensitiveDownload(download::DownloadItem* item) {
 
 bool DownloadController::ShowDangerousDownloadDialog(
     download::DownloadItem* item) {
+  // The chrome.downloads extension API uses the dangerous download prompt
+  // shared by all extensions platforms (see download_danger_dialog.cc).
   if (item->GetDownloadSource() == download::DownloadSource::EXTENSION_API) {
     return false;
   }
 
-  // Reached post-download (unlike OnDangerousDownload). If the original
-  // WebContents is missing, keep the download and fallback to showing the
-  // dialog in the current window.
+  // Check the current active window first (or if the originating tab is
+  // inactive).
   ui::WindowAndroid* window_android =
-      GetWindowHelper(item, /*should_schedule_removal=*/false,
-                      /*fallback_to_current_window=*/true);
+      GetCurrentWindow(Profile::FromBrowserContext(
+          content::DownloadItemUtils::GetBrowserContext(item)));
   if (!window_android) {
-    return false;
+    window_android = GetWindowHelper(item, /*should_schedule_removal=*/false);
   }
 
   if (!dangerous_download_bridge_) {
@@ -581,6 +676,28 @@ void DownloadController::OnDownloadComplete(download::DownloadItem* item) {
   }
   Java_DownloadController_onDownloadCompleted(
       env, tab ? tab->GetJavaObject() : nullptr, j_item, is_download_safe);
+}
+
+void DownloadController::OnDownloadFailed(download::DownloadItem* item) {
+  JNIEnv* env = base::android::AttachCurrentThread();
+  ScopedJavaLocalRef<jobject> j_item =
+      DownloadManagerService::CreateJavaDownloadInfo(env, item);
+  // Keep observing resumable downloads so a later auto-resumption still
+  // reaches OnDownloadComplete(); otherwise stop observing, as the
+  // COMPLETE path does.
+  if (!item->CanResume()) {
+    item->RemoveObserver(this);
+  }
+  TabAndroid* tab = nullptr;
+  // The primary page changed when the native page was shown, so use the
+  // original WebContents (see OnDownloadComplete()).
+  content::WebContents* web_contents =
+      content::DownloadItemUtils::GetOriginalWebContents(item);
+  if (web_contents) {
+    tab = TabAndroid::FromWebContents(web_contents);
+  }
+  Java_DownloadController_onDownloadFailed(
+      env, tab ? tab->GetJavaObject() : nullptr, j_item);
 }
 
 void DownloadController::StartContextMenuDownload(
@@ -633,8 +750,7 @@ bool DownloadController::ShouldShowAppVerificationPrompt(
 
 ui::WindowAndroid* DownloadController::GetWindowHelper(
     download::DownloadItem* item,
-    bool should_schedule_removal,
-    bool fallback_to_current_window) {
+    bool should_schedule_removal) {
   WebContents* web_contents = content::DownloadItemUtils::GetWebContents(item);
   if (should_schedule_removal && !web_contents) {
     ScheduleRemoveDownloadItem(item);
@@ -644,13 +760,7 @@ ui::WindowAndroid* DownloadController::GetWindowHelper(
 
   ui::ViewAndroid* view_android =
       web_contents ? web_contents->GetNativeView() : nullptr;
-  ui::WindowAndroid* window_android =
-      view_android ? view_android->GetWindowAndroid() : nullptr;
-
-  if (fallback_to_current_window && !window_android) {
-    window_android = GetCurrentWindow();
-  }
-  return window_android;
+  return view_android ? view_android->GetWindowAndroid() : nullptr;
 }
 
 DEFINE_JNI(DownloadController)

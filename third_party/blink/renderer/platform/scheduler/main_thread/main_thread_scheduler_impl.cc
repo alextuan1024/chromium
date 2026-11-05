@@ -61,7 +61,6 @@
 #include "third_party/blink/renderer/platform/scheduler/main_thread/main_thread_impl.h"
 #include "third_party/blink/renderer/platform/scheduler/main_thread/page_scheduler_impl.h"
 #include "third_party/blink/renderer/platform/scheduler/main_thread/pending_user_input.h"
-#include "third_party/blink/renderer/platform/scheduler/main_thread/task_type_names.h"
 #include "third_party/blink/renderer/platform/scheduler/main_thread/use_case.h"
 #include "third_party/blink/renderer/platform/scheduler/main_thread/widget_scheduler_impl.h"
 #include "third_party/blink/renderer/platform/scheduler/public/event_loop.h"
@@ -90,7 +89,12 @@ namespace scheduler {
 
 // When within 500ms of a committed load, busy loop more aggressively.
 BASE_FEATURE(kBusyLoopAggressiveAfterCommittedLoad,
-             base::FEATURE_DISABLED_BY_DEFAULT);
+#if BUILDFLAG(IS_ANDROID)
+             base::FEATURE_ENABLED_BY_DEFAULT
+#else
+             base::FEATURE_DISABLED_BY_DEFAULT
+#endif
+);
 
 namespace {
 constexpr base::TimeDelta kBusyLoopAggressiveTime = base::Milliseconds(500);
@@ -1973,10 +1977,6 @@ MainThreadSchedulerImpl::GetSchedulerHelperForTesting() {
   return &helper_;
 }
 
-IdleTimeEstimator* MainThreadSchedulerImpl::GetIdleTimeEstimatorForTesting() {
-  return &main_thread_only().idle_time_estimator;
-}
-
 base::SequencedTaskRunner* MainThreadSchedulerImpl::GetVirtualTimeTaskRunner() {
   return virtual_time_control_task_queue_->GetTaskRunnerWithDefaultTaskType()
       .get();
@@ -2577,6 +2577,15 @@ void MainThreadSchedulerImpl::OnPageFrozen(
           // |memory_purge_manager_| is a member of |this|, and will be deleted
           // first, so a raw pointer is safe here.
           weak_factory_.GetWeakPtr()));
+  memory_purge_manager_.SetOnAllPagesFrozenCallback(base::BindRepeating(
+      [](MainThreadSchedulerImpl* s, bool is_frozen) {
+        if (s->isolate()) {
+          s->isolate()->Freeze(is_frozen);
+        }
+      },
+      // |memory_purge_manager_| is a member of |this|, and will be deleted
+      // first, so a raw pointer is safe here.
+      base::Unretained(this)));
 #endif
   memory_purge_manager_.OnPageFrozen(called_from);
   UpdatePolicy();
@@ -2984,19 +2993,6 @@ const char* MainThreadSchedulerImpl::RAILModeToString(RAILMode rail_mode) {
       return "load";
   }
   NOTREACHED();
-}
-
-// static
-const char* MainThreadSchedulerImpl::TimeDomainTypeToString(
-    TimeDomainType domain_type) {
-  switch (domain_type) {
-    case TimeDomainType::kReal:
-      return "real";
-    case TimeDomainType::kVirtual:
-      return "virtual";
-    default:
-      NOTREACHED();
-  }
 }
 
 Vector<base::OnceClosure>&

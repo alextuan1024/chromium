@@ -4,6 +4,7 @@
 
 package org.chromium.chrome.browser.notifications;
 
+import static org.chromium.build.NullUtil.assertNonNull;
 import static org.chromium.build.NullUtil.assumeNonNull;
 
 import android.app.Notification;
@@ -78,12 +79,13 @@ public class NotificationSuspender {
     }
 
     /**
-     * Stores resources for all notifications from a given origin back into the native
+     * Stores resources for all notifications from the given origins back into the native
      * NotificationDatabase.
      *
-     * <p>This allows re-displaying these notification later.
+     * <p>This allows re-displaying these notifications later.
      *
-     * @param callback The origins for which all notification resources to store.
+     * @param origins The origins for which all notification resources are to be stored.
+     * @param callback The callback to be invoked with the IDs of the stored notifications.
      */
     public void storeNotificationResourcesFromOrigins(
             List<Uri> origins, Callback<List<String>> callback) {
@@ -103,13 +105,14 @@ public class NotificationSuspender {
             return new ArrayList<>();
         }
 
-        @Nullable String[] notificationIds = new String[notifications.size()];
+        String[] notificationIds = new String[notifications.size()];
         @Nullable String[] origins = new String[notifications.size()];
         @Nullable Bitmap[] resources = new Bitmap[notifications.size() * 3];
 
         for (int i = 0; i < notifications.size(); ++i) {
-            Notification notification = notifications.get(i).getNotification();
-            String tag = notifications.get(i).getMetadata().tag;
+            NotificationWrapper wrapper = notifications.get(i);
+            Notification notification = wrapper.getNotification();
+            String tag = assertNonNull(wrapper.getMetadata().tag);
             // Chromium's `notificationId` is used as the Android notification's tag.
             notificationIds[i] = tag;
             origins[i] = NotificationPlatformBridge.getOriginFromNotificationTag(tag);
@@ -120,7 +123,7 @@ public class NotificationSuspender {
 
         NotificationSuspenderJni.get()
                 .storeNotificationResources(mProfile, notificationIds, origins, resources);
-        return new ArrayList<>(Arrays.asList(notificationIds));
+        return Arrays.asList(notificationIds);
     }
 
     /**
@@ -241,7 +244,7 @@ public class NotificationSuspender {
         // instead. |origins| must be the same size as |notificationIds|.
         void storeNotificationResources(
                 @JniType("Profile*") @Nullable Profile profile,
-                @Nullable String[] notificationIds,
+                String[] notificationIds,
                 @Nullable String[] origins,
                 @Nullable Bitmap[] resources);
 

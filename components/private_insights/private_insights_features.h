@@ -18,13 +18,28 @@ namespace private_insights {
 COMPONENT_EXPORT(PRIVATE_INSIGHTS)
 BASE_DECLARE_FEATURE(kPrivateInsightsFeature);
 
+// Routes Contextual Cues uploads through the generic `UploadTask` /
+// `PendingEventsBatch` pipeline, which serializes events on the thread pool
+// and is population agnostic. When disabled, Contextual Cues uses the original
+// upload path, which is left unchanged (events serialized on the main
+// sequence). Populations added after Contextual Cues only ever use the new
+// pipeline; this flag exists to migrate the one pre-existing population
+// without disturbing its rollout.
+// TODO(b/576348553): Remove, along with the original path, once rolled out.
+COMPONENT_EXPORT(PRIVATE_INSIGHTS)
+BASE_DECLARE_FEATURE(kPrivateInsightsUploadTaskPipeline);
+
+// Enables the Storage Access population: when enabled (together with
+// `kPrivateInsightsFeature`), `StorageAccessLogEvent`s are queued and uploaded
+// to the population named by `kFcpPopulationNameStorageAccess`. When disabled
+// the population is not registered and `LogStorageAccessEvent()` is a no-op.
+// Rolled out independently of Contextual Cues.
+COMPONENT_EXPORT(PRIVATE_INSIGHTS)
+BASE_DECLARE_FEATURE(kPrivateInsightsStorageAccess);
+
 // The interval between periodic tasks run by PrivateInsightsService.
 COMPONENT_EXPORT(PRIVATE_INSIGHTS)
 extern const base::FeatureParam<base::TimeDelta> kPrivateInsightsUploadInterval;
-
-// Enables using Attestation Transparency Verifier in Private Insights.
-COMPONENT_EXPORT(PRIVATE_INSIGHTS)
-extern const base::FeatureParam<bool> kFcpUseAttestationTransparencyVerifier;
 
 // FCP client configuration parameters.
 
@@ -33,6 +48,9 @@ extern const base::FeatureParam<std::string> kFcpServerUri;
 
 COMPONENT_EXPORT(PRIVATE_INSIGHTS)
 extern const base::FeatureParam<std::string> kFcpPopulationNameContextualCues;
+
+COMPONENT_EXPORT(PRIVATE_INSIGHTS)
+extern const base::FeatureParam<std::string> kFcpPopulationNameStorageAccess;
 
 COMPONENT_EXPORT(PRIVATE_INSIGHTS)
 extern const base::FeatureParam<base::TimeDelta> kFcpConditionPollingPeriod;
@@ -68,10 +86,10 @@ COMPONENT_EXPORT(PRIVATE_INSIGHTS)
 extern const base::FeatureParam<base::TimeDelta> kFcpPermanentErrorsRetryDelay;
 
 COMPONENT_EXPORT(PRIVATE_INSIGHTS)
-extern const base::FeatureParam<bool> kFcpEnablePrivacyIdGeneration;
+extern const base::FeatureParam<int> kMaxContextualCueEvents;
 
 COMPONENT_EXPORT(PRIVATE_INSIGHTS)
-extern const base::FeatureParam<int> kMaxContextualCueEvents;
+extern const base::FeatureParam<int> kMaxStorageAccessEvents;
 
 }  // namespace private_insights
 

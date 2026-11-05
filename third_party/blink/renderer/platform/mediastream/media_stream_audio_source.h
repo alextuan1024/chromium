@@ -5,17 +5,23 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_PLATFORM_MEDIASTREAM_MEDIA_STREAM_AUDIO_SOURCE_H_
 #define THIRD_PARTY_BLINK_RENDERER_PLATFORM_MEDIASTREAM_MEDIA_STREAM_AUDIO_SOURCE_H_
 
-#include <limits>
+#include <cstddef>
 #include <memory>
+#include <optional>
 #include <string>
 
+#include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
+#include "base/time/time.h"
+#include "build/buildflag.h"
 #include "media/base/audio_capturer_source.h"
-#include "media/base/limits.h"
+#include "media/base/audio_parameters.h"
+#include "third_party/blink/public/common/mediastream/media_stream_request.h"
 #include "third_party/blink/public/platform/modules/mediastream/web_platform_media_stream_source.h"
 #include "third_party/blink/renderer/platform/mediastream/media_stream_audio_deliverer.h"
 #include "third_party/blink/renderer/platform/mediastream/media_stream_audio_processor_options.h"
 #include "third_party/blink/renderer/platform/platform_export.h"
+#include "third_party/blink/renderer/platform/wtf/vector.h"
 
 namespace base {
 class SingleThreadTaskRunner;
@@ -197,6 +203,14 @@ class PLATFORM_EXPORT MediaStreamAudioSource
   void StopSourceOnError(media::AudioCapturerSource::ErrorCode code,
                          const std::string& why);
 
+  // Invalidates any pending StopSourceOnError callbacks posted prior to a
+  // source change or stop of the underlying AudioCapturerSource.
+  // Precondition: Must only be called on `GetTaskRunner()` after stopping the
+  // underlying AudioCapturerSource (`Stop()` joins the capture thread), so no
+  // concurrent `StopSourceOnError()` call can race `GetWeakPtr()` against
+  // `InvalidateWeakPtrs()`.
+  void InvalidatePendingErrorCallbacks();
+
   // Sets muted state and notifies it to all registered tracks.
   void SetMutedState(bool state);
 
@@ -241,6 +255,11 @@ class PLATFORM_EXPORT MediaStreamAudioSource
   // Provides weak pointers so that MediaStreamAudioTracks won't call
   // StopAudioDeliveryTo() if this instance dies first.
   base::WeakPtrFactory<MediaStreamAudioSource> weak_factory_{this};
+
+  // Dedicated factory for StopSourceOnError() callbacks so pending error tasks
+  // from a stopped AudioCapturerSource can be cancelled without invalidating
+  // general weak pointers from `weak_factory_`.
+  base::WeakPtrFactory<MediaStreamAudioSource> error_weak_factory_{this};
 };
 
 }  // namespace blink

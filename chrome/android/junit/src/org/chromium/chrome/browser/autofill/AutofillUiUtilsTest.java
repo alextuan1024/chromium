@@ -18,8 +18,11 @@ import org.robolectric.RuntimeEnvironment;
 
 import org.chromium.base.ContextUtils;
 import org.chromium.base.test.BaseRobolectricTestRunner;
+import org.chromium.base.test.util.Features.DisableFeatures;
+import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.chrome.browser.autofill.AutofillUiUtils.ErrorType;
 import org.chromium.chrome.browser.autofill.AutofillUiUtils.IconSpecs;
+import org.chromium.components.autofill.AutofillFeatures;
 import org.chromium.components.autofill.ImageSize;
 import org.chromium.components.autofill.ImageType;
 import org.chromium.components.autofill.payments.LegalMessageLine;
@@ -39,7 +42,7 @@ public class AutofillUiUtilsTest {
 
     @Before
     public void setUp() {
-        mContext = RuntimeEnvironment.application;
+        mContext = RuntimeEnvironment.getApplication();
         mMonthInput = new EditText(mContext);
         mYearInput = new EditText(mContext);
         mThisMonth = Calendar.getInstance().get(Calendar.MONTH) + 1;
@@ -280,7 +283,7 @@ public class AutofillUiUtilsTest {
                         /* underlineLinks= */ false,
                         /* onClickCallback= */ null);
 
-        Assert.assertEquals("line1\nline2", spannableString.toString());
+        Assert.assertEquals("line1\n\nline2", spannableString.toString());
     }
 
     @Test
@@ -363,6 +366,21 @@ public class AutofillUiUtilsTest {
                 AutofillUiUtils.shouldShowCustomIcon(
                         new GURL("https://www.richcardart.com/richcardart.png"),
                         /* isVirtualCard= */ true));
+    }
+
+    @Test
+    @EnableFeatures(AutofillFeatures.AUTOFILL_ENABLE_GRADIENT_GOOGLE_LOGOS)
+    public void testGetServerDataWidgetLayout() {
+        Assert.assertEquals(
+                R.layout.autofill_server_data_gradient_label,
+                AutofillUiUtils.getServerDataWidgetLayout());
+    }
+
+    @Test
+    @DisableFeatures(AutofillFeatures.AUTOFILL_ENABLE_GRADIENT_GOOGLE_LOGOS)
+    public void testGetServerDataWidgetLayoutWithGradientGoogleLogosDisabled() {
+        Assert.assertEquals(
+                R.layout.autofill_server_data_label, AutofillUiUtils.getServerDataWidgetLayout());
     }
 
     private @ErrorType int getExpirationDateErrorForUserEnteredMonthAndYear() {

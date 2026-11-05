@@ -5,16 +5,24 @@
 #include "ui/decoration/decoration_util.h"
 
 #include <algorithm>
+#include <optional>
+#include <utility>
 #include <vector>
 
 #include "base/check.h"
 #include "base/check_op.h"
+#include "base/export_template.h"
 #include "base/numerics/safe_conversions.h"
 #include "cc/paint/paint_flags.h"
+#include "third_party/skia/include/core/SkPath.h"
 #include "third_party/skia/include/core/SkRRect.h"
+#include "ui/decoration/highlight_border_value.h"
 #include "ui/gfx/canvas.h"
+#include "ui/gfx/geometry/dip_util.h"
 #include "ui/gfx/geometry/insets.h"
+#include "ui/gfx/geometry/outsets.h"
 #include "ui/gfx/geometry/rect.h"
+#include "ui/gfx/geometry/rect_f.h"
 #include "ui/gfx/geometry/rounded_corners_f.h"
 #include "ui/gfx/geometry/skia_conversions.h"
 #include "ui/gfx/scoped_canvas.h"
@@ -23,16 +31,21 @@
 
 namespace ui::decoration {
 
-// static
-gfx::Insets ShadowGenerator::GetNineboxApertureInsets(
-    const gfx::ShadowValues& shadows,
-    const gfx::RoundedCornersF& rounded_corners) {
-  return GetNineboxApertureInsetsForShadows(shadows, rounded_corners);
+namespace {
+
+gfx::RoundedCornersF InsetRoundedCorners(const gfx::RoundedCornersF& corners,
+                                         float inset) {
+  return gfx::RoundedCornersF(std::max(0.0f, corners.upper_left() - inset),
+                              std::max(0.0f, corners.upper_right() - inset),
+                              std::max(0.0f, corners.lower_right() - inset),
+                              std::max(0.0f, corners.lower_left() - inset));
 }
 
+}  // namespace
+
 // static
-gfx::Insets ShadowGenerator::GetMargins(const gfx::ShadowValues& shadows) {
-  return gfx::ShadowValue::GetMargin(shadows);
+gfx::Outsets ShadowGenerator::GetMargins(const gfx::ShadowValues& shadows) {
+  return gfx::ShadowValue::GetMargin(shadows).ToOutsets();
 }
 
 // static
@@ -58,10 +71,11 @@ void ShadowGenerator::Draw(gfx::Canvas* canvas,
   canvas->sk_canvas()->drawRRect(r_rect, flags);
 }
 
-gfx::Insets GetNineboxApertureInsetsForShadows(
+// static
+gfx::Insets ShadowGenerator::GetNineboxApertureInsets(
     const gfx::ShadowValues& shadows,
     const gfx::RoundedCornersF& rounded_corners) {
-  DCHECK(!shadows.empty());
+  CHECK(!shadows.empty(), base::NotFatalUntil::M163);
 
   // We need enough space to render the full range of blur and the corner
   // rounding.
@@ -71,7 +85,8 @@ gfx::Insets GetNineboxApertureInsetsForShadows(
   // `is_pill_shaped` describes the shape of the content around which the
   // shadows are drawn, so their values must match.
   for (const auto& shadow : shadows) {
-    DCHECK_EQ(is_pill_shaped, shadow.is_pill_shaped());
+    CHECK_EQ(is_pill_shaped, shadow.is_pill_shaped(),
+             base::NotFatalUntil::M163);
   }
 #endif  // DCHECK_IS_ON()
   const gfx::Insets corner_insets = GetInsetsForRoundedCorners(rounded_corners);
@@ -114,5 +129,104 @@ gfx::Insets GetInsetsForRoundedCorners(
       base::ClampRound(std::max(rounded_corners.upper_right(),
                                 rounded_corners.lower_right())));
 }
+
+void DrawHighlightBorder(gfx::Canvas* canvas,
+                         const HighlightBorderValue& value,
+                         const gfx::RoundedCornersF& rounded_corners,
+                         const gfx::Rect& bounds) {
+  const int thickness = value.thickness();
+  CHECK_GT(thickness, 0, base::NotFatalUntil::M163);
+
+  cc::PaintFlags flags;
+  flags.setStrokeWidth(thickness);
+  flags.setColor(value.border_color());
+  flags.setStyle(cc::PaintFlags::kStroke_Style);
+  flags.setAntiAlias(true);
+
+  const float half_thickness = thickness / 2.0f;
+
+  // Scale bounds and corner radii with the device scale factor so the border
+  // matches the content, but keep the stroke width in physical pixels.
+  gfx::ScopedCanvas scoped_canvas(canvas);
+  const float dsf = canvas->UndoDeviceScaleFactor();
+  const gfx::RectF pixel_bounds = gfx::ConvertRectToPixels(bounds, dsf);
+  const gfx::RoundedCornersF scaled_radii =
+      gfx::ScaleRoundedCorners(rounded_corners, dsf);
+
+  // When rasterizing a pill into a ninebox image, `bounds` includes a 1 DIP
+  // center aperture on top of `2 * radius`. Insetting the radii by each ring's
+  // centerline inset matches the radii Skia scales a pill to at its true size
+  // and keeps the 1 DIP center aperture a straight segment rather than an arc.
+  const gfx::RoundedCornersF outer_radii =
+      value.is_pill_shaped() ? InsetRoundedCorners(scaled_radii, half_thickness)
+                             : scaled_radii;
+  const gfx::RoundedCornersF inner_radii =
+      value.is_pill_shaped()
+          ? InsetRoundedCorners(scaled_radii, thickness + half_thickness)
+          : scaled_radii;
+
+  gfx::RectF outer_border_bounds(pixel_bounds);
+  outer_border_bounds.Inset(half_thickness);
+  canvas->DrawPath(SkPath::RRect(gfx::RoundedRectFToSkRRect(outer_border_bounds,
+                                                            outer_radii)),
+                   flags);
+
+  gfx::RectF inner_border_bounds(pixel_bounds);
+  inner_border_bounds.Inset(thickness + half_thickness);
+  flags.setColor(value.highlight_color());
+  canvas->DrawPath(SkPath::RRect(gfx::RoundedRectFToSkRRect(inner_border_bounds,
+                                                            inner_radii)),
+                   flags);
+}
+
+// static
+gfx::Outsets HighlightBorderGenerator::GetMargins(
+    const HighlightBorderValue& value) {
+  CHECK_GT(value.thickness(), 0, base::NotFatalUntil::M163);
+  return gfx::Outsets();
+}
+
+// static
+gfx::Insets HighlightBorderGenerator::GetNineboxApertureInsets(
+    const HighlightBorderValue& value,
+    const gfx::RoundedCornersF& rounded_corners) {
+  CHECK_GT(value.thickness(), 0, base::NotFatalUntil::M163);
+
+  const gfx::Insets ring_insets(2 * value.thickness());
+  const gfx::Insets corner_insets = GetInsetsForRoundedCorners(rounded_corners);
+  if (!value.is_pill_shaped()) {
+    // Both rings' corner arcs end within two thicknesses plus the radius.
+    return ring_insets + corner_insets;
+  }
+
+  // For pill-shaped content, instead of allocating space separately for the
+  // rings and rounded corners, both rings can be drawn within the space already
+  // occupied by the corner's curvature (with their radii inset to stay
+  // concentric; see DrawHighlightBorder) so the patches do not overlap in
+  // NinePatchLayer.
+  return gfx::Insets::TLBR(
+      std::max(ring_insets.top(), corner_insets.top()),
+      std::max(ring_insets.left(), corner_insets.left()),
+      std::max(ring_insets.bottom(), corner_insets.bottom()),
+      std::max(ring_insets.right(), corner_insets.right()));
+}
+
+// static
+void HighlightBorderGenerator::Draw(gfx::Canvas* canvas,
+                                    const HighlightBorderValue& value,
+                                    const gfx::RoundedCornersF& rounded_corners,
+                                    const gfx::Rect& content_rect) {
+  DrawHighlightBorder(canvas, value, rounded_corners, content_rect);
+}
+
+template class EXPORT_TEMPLATE_DEFINE(COMPONENT_EXPORT(UI_DECORATION))
+    internal::DecorationCache<gfx::ShadowValues, ShadowGenerator>;
+
+template class EXPORT_TEMPLATE_DEFINE(COMPONENT_EXPORT(UI_DECORATION))
+    internal::DecorationCache<HighlightBorderValue, HighlightBorderGenerator>;
+
+template class EXPORT_TEMPLATE_DEFINE(COMPONENT_EXPORT(UI_DECORATION))
+    internal::DecorationCache<ShadowWithHighlightBorderValue,
+                              ShadowWithHighlightBorderGenerator>;
 
 }  // namespace ui::decoration

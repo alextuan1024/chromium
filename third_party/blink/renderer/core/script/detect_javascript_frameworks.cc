@@ -63,7 +63,8 @@ bool IsFrameworkIDUsed(Document& document, const AtomicString& framework_id) {
 
 inline void CheckIdMatches(Document& document,
                            JavaScriptFrameworkDetectionResult& result) {
-  DEFINE_STATIC_LOCAL(AtomicString, kReactId, ("react-root"));
+  DEFINE_STATIC_LOCAL(AtomicString, kReactId,
+                      (AtomicString::FromLiteral<"react-root">()));
   if (IsFrameworkIDUsed(document, AtomicString(kGatsbyId))) {
     result.detected_versions[JavaScriptFramework::kGatsby] =
         kNoFrameworkVersionDetected;
@@ -110,13 +111,18 @@ inline void CheckPropertyMatches(Element& element,
     return;
   }
 
-  DEFINE_STATIC_LOCAL(AtomicString, vue_string, ("__vue__"));
-  DEFINE_STATIC_LOCAL(AtomicString, vue_app_string, ("__vue_app__"));
-  DEFINE_STATIC_LOCAL(AtomicString, k_string, ("__k"));
+  DEFINE_STATIC_LOCAL(AtomicString, vue_string,
+                      (AtomicString::FromLiteral<"__vue__">()));
+  DEFINE_STATIC_LOCAL(AtomicString, vue_app_string,
+                      (AtomicString::FromLiteral<"__vue_app__">()));
+  DEFINE_STATIC_LOCAL(AtomicString, k_string,
+                      (AtomicString::FromLiteral<"__k">()));
   DEFINE_STATIC_LOCAL(AtomicString, reactRootContainer_string,
-                      ("_reactRootContainer"));
-  DEFINE_STATIC_LOCAL(AtomicString, reactListening_string, ("_reactListening"));
-  DEFINE_STATIC_LOCAL(AtomicString, reactFiber_string, ("__reactFiber"));
+                      (AtomicString::FromLiteral<"_reactRootContainer">()));
+  DEFINE_STATIC_LOCAL(AtomicString, reactListening_string,
+                      (AtomicString::FromLiteral<"_reactListening">()));
+  DEFINE_STATIC_LOCAL(AtomicString, reactFiber_string,
+                      (AtomicString::FromLiteral<"__reactFiber">()));
   for (uint32_t i = 0; i < property_names->Length(); ++i) {
     v8::Local<v8::Value> key;
     if (!property_names->Get(context, i).ToLocal(&key) || !key->IsString()) {
@@ -168,7 +174,7 @@ inline void CheckGlobalPropertyMatches(
     result.detected_versions[JavaScriptFramework::kVue] =
         kNoFrameworkVersionDetected;
   }
-  // TODO(npm): Add check for window.React.Component, not just window.React.
+  // TODO: Add check for window.React.Component, not just window.React.
   if (IsFrameworkVariableUsed(context, kReactData)) {
     result.detected_versions[JavaScriptFramework::kReact] =
         kNoFrameworkVersionDetected;
@@ -199,6 +205,10 @@ inline void CheckGlobalStringMatches(
       v8::String::NewFromUtf8Literal(isolate, "transformers.js_config");
   v8::Local<v8::String> media_pipe_string = v8::String::NewFromUtf8Literal(
       isolate, "addStringVectorToInputSidePacket");
+  v8::Local<v8::String> litert_string =
+      v8::String::NewFromUtf8Literal(isolate, "litert_wasm_internal.js");
+  v8::Local<v8::String> litert_lm_string =
+      v8::String::NewFromUtf8Literal(isolate, "liteRtLmWasm");
   if (tfjs_string->IsInStringTable(isolate)) {
     result.detected_versions[JavaScriptFramework::kTFJS] =
         kNoFrameworkVersionDetected;
@@ -211,16 +221,24 @@ inline void CheckGlobalStringMatches(
     result.detected_versions[JavaScriptFramework::kMediaPipe] =
         kNoFrameworkVersionDetected;
   }
+  if (litert_string->IsInStringTable(isolate)) {
+    result.detected_versions[JavaScriptFramework::kLiteRT] =
+        kNoFrameworkVersionDetected;
+  }
+  if (litert_lm_string->IsInStringTable(isolate)) {
+    result.detected_versions[JavaScriptFramework::kLiteRTLM] =
+        kNoFrameworkVersionDetected;
+  }
 }
 
 int64_t ExtractVersion(v8::Local<v8::RegExp> regexp,
                        v8::Local<v8::Context> context,
                        v8::Local<v8::Value> version) {
-  v8::Local<v8::Object> groups;
+  v8::Local<v8::Value> groups;
   v8::Local<v8::Value> major;
   v8::Local<v8::Value> minor;
   bool success =
-      regexp->Exec(context, version.As<v8::String>()).ToLocal(&groups);
+      regexp->ExecV2(context, version.As<v8::String>()).ToLocal(&groups);
   if (!success || !groups->IsArray()) {
     return kNoFrameworkVersionDetected;
   }
@@ -331,7 +349,7 @@ void DetectFrameworkVersions(Document& document,
   }
 
   if (generator_meta) {
-    const AtomicString& content = generator_meta->Content();
+    const AtomicString content = generator_meta->Content();
     if (!content.empty()) {
       if (content.starts_with("Wix")) {
         result.detected_versions[JavaScriptFramework::kWix] =
@@ -339,31 +357,27 @@ void DetectFrameworkVersions(Document& document,
       } else if (content.starts_with("Joomla")) {
         result.detected_versions[JavaScriptFramework::kJoomla] =
             kNoFrameworkVersionDetected;
-      } else {
-        constexpr char kWordpressPrefix[] = "WordPress ";
+      } else if (constexpr char kWordpressPrefix[] = "WordPress ";
+                 content.starts_with(kWordpressPrefix)) {
         constexpr size_t kWordpressPrefixLength =
             std::char_traits<char>::length(kWordpressPrefix);
 
-        if (content.starts_with(kWordpressPrefix)) {
-          StringView version_string = content;
-          version_string.remove_prefix(kWordpressPrefixLength);
-          result.detected_versions[JavaScriptFramework::kWordPress] =
-              ExtractVersion(version_regexp, context,
-                             V8String(isolate, version_string));
-        }
-
-        constexpr char kDrupalPrefix[] = "Drupal ";
+        StringView version_string = content;
+        version_string.remove_prefix(kWordpressPrefixLength);
+        result.detected_versions[JavaScriptFramework::kWordPress] =
+            ExtractVersion(version_regexp, context,
+                           V8String(isolate, version_string));
+      } else if (constexpr char kDrupalPrefix[] = "Drupal ";
+                 content.starts_with(kDrupalPrefix)) {
         constexpr size_t kDrupalPrefixLength =
             std::char_traits<char>::length(kDrupalPrefix);
 
-        if (content.starts_with(kDrupalPrefix)) {
-          StringView version_string(content, kDrupalPrefixLength);
-          version_string = version_string.substr(0, version_string.find(' '));
-          std::optional<int> version = StringToIntLoose(version_string);
-          result.detected_versions[JavaScriptFramework::kDrupal] =
-              version.has_value() ? ((*version & 0xff) << 8)
-                                  : kNoFrameworkVersionDetected;
-        }
+        StringView version_string(content, kDrupalPrefixLength);
+        version_string = version_string.substr(0, version_string.find(' '));
+        std::optional<int> version = StringToIntLoose(version_string);
+        result.detected_versions[JavaScriptFramework::kDrupal] =
+            version.has_value() ? ((*version & 0xff) << 8)
+                                : kNoFrameworkVersionDetected;
       }
     }
   }

@@ -13,6 +13,7 @@
 #import "base/functional/bind.h"
 #import "base/json/json_writer.h"
 #import "components/device_signals/core/browser/signals_aggregator.h"
+#import "components/device_signals/core/browser/user_permission_service.h"
 #import "components/enterprise/browser/reporting/chrome_profile_request_generator.h"
 #import "components/enterprise/browser/reporting/report_generation_config.h"
 #import "components/enterprise/browser/reporting/report_scheduler.h"
@@ -26,7 +27,11 @@
 #import "ios/chrome/browser/enterprise/connectors/device_trust/features.h"
 #import "ios/chrome/browser/enterprise/connectors/device_trust/model/device_trust_connector_service_factory_ios.h"
 #import "ios/chrome/browser/enterprise/connectors/device_trust/model/device_trust_service_factory_ios.h"
+#import "ios/chrome/browser/enterprise/proxy/model/enterprise_proxy_service_factory_ios.h"
 #import "ios/chrome/browser/enterprise/signals/model/ios_signals_aggregator_factory.h"
+#import "ios/chrome/browser/enterprise/signals/model/ios_user_permission_service_factory.h"
+#import "ios/chrome/browser/policy/model/browser_management_service.h"
+#import "ios/chrome/browser/policy/model/browser_management_service_factory.h"
 #import "ios/chrome/browser/policy/model/browser_policy_connector_ios.h"
 #import "ios/chrome/browser/policy/model/reporting/cloud_profile_reporting_service_factory_ios.h"
 #import "ios/chrome/browser/policy/model/reporting/cloud_profile_reporting_service_ios.h"
@@ -48,6 +53,17 @@ void ConnectorsInternalsPageHandler::GetDeviceTrustState(
 
   if (!base::FeatureList::IsEnabled(
           enterprise_connectors::features::kEnableIOSDeviceTrustConnector)) {
+    std::move(callback).Run(
+        enterprise_connectors::utils::CreateUnsupportedDeviceTrustState());
+    return;
+  }
+
+  // Device trust diagnostics are only shown for managed profiles. Check
+  // management rather than `IsEnabled()` so that managed profiles without an
+  // allowlist policy still see the signals.
+  policy::BrowserManagementService* management_service =
+      policy::BrowserManagementServiceFactory::GetForProfile(profile_);
+  if (!management_service || !management_service->IsManaged()) {
     std::move(callback).Run(
         enterprise_connectors::utils::CreateUnsupportedDeviceTrustState());
     return;
@@ -80,6 +96,16 @@ void ConnectorsInternalsPageHandler::OnSignalsCollected(
   base::JSONWriter::WriteWithOptions(
       signals, base::JSONWriter::OPTIONS_PRETTY_PRINT, &signals_json);
 
+  const device_signals::UserPermissionService* user_permission_service =
+      IOSUserPermissionServiceFactory::GetForProfile(profile_);
+  connectors_internals::mojom::ConsentMetadataPtr consent_metadata = nullptr;
+  if (user_permission_service) {
+    consent_metadata = connectors_internals::mojom::ConsentMetadata::New(
+        user_permission_service->CanCollectSignals() ==
+            device_signals::UserPermission::kGranted,
+        user_permission_service->HasUserConsented());
+  }
+
   std::vector<std::string> policy_enabled_levels =
       enterprise_connectors::utils::GetPolicyEnabledLevels(
           DeviceTrustConnectorServiceFactoryIOS::GetForProfile(profile_));
@@ -87,7 +113,7 @@ void ConnectorsInternalsPageHandler::OnSignalsCollected(
   connectors_internals::mojom::DeviceTrustStatePtr state =
       enterprise_connectors::utils::CreateDeviceTrustStateWithNoKey(
           is_device_trust_enabled, std::move(policy_enabled_levels),
-          std::move(signals_json));
+          std::move(signals_json), std::move(consent_metadata));
   std::move(callback).Run(std::move(state));
 }
 
@@ -145,9 +171,12 @@ void ConnectorsInternalsPageHandler::GetSignalsReportingState(
 
   PrefService* profile_prefs = profile_->GetPrefs();
 
-  // On iOS, signals collection is governed by administrative policies in
-  // managed contexts.
-  bool can_collect_all_signals = true;
+  const device_signals::UserPermissionService* user_permission_service =
+      IOSUserPermissionServiceFactory::GetForProfile(profile_);
+  bool can_collect_all_signals =
+      user_permission_service &&
+      user_permission_service->CanCollectReportSignals() ==
+          device_signals::UserPermission::kGranted;
 
   enterprise_reporting::CloudProfileReportingServiceIOS*
       profile_reporting_service = enterprise_reporting::
@@ -178,10 +207,22 @@ void ConnectorsInternalsPageHandler::GetSignalsReportingState(
       enterprise_connectors::utils::CreateSignalsReportingState(
           profile_prefs, profile_report_scheduler, can_collect_all_signals);
 
+  if (!state->signals_report_enabled) {
+    std::move(callback).Run(std::move(state));
+    return;
+  }
+
+  // Show the signals that were actually uploaded when available. Signals are
+  // only collected on demand as a fallback.
+  if (state->signals) {
+    std::move(callback).Run(std::move(state));
+    return;
+  }
+
   device_signals::SignalsAggregator* signals_aggregator =
       IOSSignalsAggregatorFactory::GetForProfile(profile_);
 
-  if (!state->signals_report_enabled || !signals_aggregator) {
+  if (!signals_aggregator) {
     std::move(callback).Run(std::move(state));
     return;
   }
@@ -218,35 +259,29 @@ void ConnectorsInternalsPageHandler::OnReportGenerated(
                    enterprise_reporting::ReportGenerationError> result) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
-  auto [error_info, signals_json] =
+  auto [error_info, signals] =
       enterprise_connectors::utils::ProcessReportGenerationResult(
           std::move(result));
   state->error_info = std::move(error_info);
-  state->signals_json = std::move(signals_json);
+  if (signals) {
+    state->signals = connectors_internals::mojom::Signals::New(
+        std::move(*signals),
+        connectors_internals::mojom::SignalsSource::kCollectedOnDemand);
+  }
   request_generator_.reset();
   std::move(callback).Run(std::move(state));
 }
 
 void ConnectorsInternalsPageHandler::GetProvisioningDomainState(
     GetProvisioningDomainStateCallback callback) {
-#if BUILDFLAG(ENTERPRISE_PROXY)
   std::move(callback).Run(
       enterprise_connectors::utils::GetProvisioningDomainState(
-          /*proxy_service=*/nullptr));
-#else
-  std::move(callback).Run(
-      connectors_internals::mojom::ProvisioningDomainState::New(
-          std::vector<
-              connectors_internals::mojom::ProvisioningDomainConfigPtr>()));
-#endif  // BUILDFLAG(ENTERPRISE_PROXY)
+          EnterpriseProxyServiceFactoryIOS::GetForProfile(profile_)));
 }
 
 void ConnectorsInternalsPageHandler::RefreshProvisioningDomainConfigs(
     RefreshProvisioningDomainConfigsCallback callback) {
-#if BUILDFLAG(ENTERPRISE_PROXY)
-  pvd_refresh_helper_.RefreshConfigs(/*proxy_service=*/nullptr,
-                                     std::move(callback));
-#else
-  GetProvisioningDomainState(std::move(callback));
-#endif  // BUILDFLAG(ENTERPRISE_PROXY)
+  pvd_refresh_helper_.RefreshConfigs(
+      EnterpriseProxyServiceFactoryIOS::GetForProfile(profile_),
+      std::move(callback));
 }

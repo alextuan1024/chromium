@@ -12,6 +12,7 @@
 #include "third_party/blink/renderer/core/loader/modulescript/module_script_creation_params.h"
 #include "third_party/blink/renderer/core/loader/modulescript/module_script_fetch_request.h"
 #include "third_party/blink/renderer/core/loader/modulescript/module_tree_linker_registry.h"
+#include "third_party/blink/renderer/core/probe/core_probes.h"
 #include "third_party/blink/renderer/core/script/module_script.h"
 #include "third_party/blink/renderer/platform/bindings/v8_throw_exception.h"
 #include "third_party/blink/renderer/platform/instrumentation/use_counter.h"
@@ -173,6 +174,10 @@ void ModuleTreeLinker::FetchRoot(const KURL& original_url,
   modulator_->SetAcquiringImportMapsState(
       Modulator::AcquiringImportMapsState::kAfterModuleScriptLoad);
 
+  async_task_context_.Schedule(
+      ExecutionContext::From(modulator_->GetScriptState()), "ModuleTreeLinker",
+      probe::AsyncTaskContext::StackOptions::kScan);
+
   AdvanceState(State::kFetchingSelf);
 
   KURL url = original_url;
@@ -263,6 +268,10 @@ void ModuleTreeLinker::FetchRootInline(
   // TODO(hiroshige): This should be done before |module_script| is created.
   modulator_->SetAcquiringImportMapsState(
       Modulator::AcquiringImportMapsState::kAfterModuleScriptLoad);
+
+  async_task_context_.Schedule(
+      ExecutionContext::From(modulator_->GetScriptState()), "ModuleTreeLinker",
+      probe::AsyncTaskContext::StackOptions::kScan);
 
   AdvanceState(State::kFetchingSelf);
 
@@ -373,7 +382,7 @@ void ModuleTreeLinker::NotifyModuleLoadFinished(
 // href="https://html.spec.whatwg.org/C/#fetch-the-descendants-of-a-module-script">
 // See also https://github.com/whatwg/html/pull/5658/ which adds ModuleRequest
 // and module type to the HTML spec.
-void ModuleTreeLinker::FetchDescendants(const ModuleScript* module_script) {
+void ModuleTreeLinker::FetchDescendants(ModuleScript* module_script) {
   DCHECK(module_script);
 
   if (AbortBeforeFinalizingIfNecessary(module_script)) {
@@ -434,6 +443,12 @@ void ModuleTreeLinker::FetchDescendants(const ModuleScript* module_script) {
   // <spec step="8">... These invocations of the internal module script graph
   // fetching procedure should be performed in parallel to each other.
   // ...</spec>
+  // Activate `module_script`'s `AsyncTaskContext` so each descendant's
+  // `ModuleScriptLoader::FetchInternal` captures this module as its initiating
+  // script in `ScriptAncestryTracker`.
+  probe::AsyncTask async_task(
+      ExecutionContext::From(modulator_->GetScriptState()),
+      module_script->AsyncTaskContext(), "FetchDescendants");
   for (const auto& module_request : module_requests) {
     // <spec
     // href="https://html.spec.whatwg.org/C/#descendant-script-fetch-options">
@@ -529,6 +544,10 @@ bool ModuleTreeLinker::AbortBeforeFinalizingIfNecessary(
 // <specdef
 // href="https://html.spec.whatwg.org/C/#fetch-the-descendants-of-and-link-a-module-script">
 void ModuleTreeLinker::Instantiate() {
+  probe::AsyncTask async_task(
+      ExecutionContext::From(modulator_->GetScriptState()),
+      &async_task_context_, "Instantiate");
+
   // [nospec] Abort the steps if the browsing context is discarded.
   if (!modulator_->HasValidContext()) {
     result_ = nullptr;

@@ -25,8 +25,8 @@
 #include "chrome/browser/safe_browsing/download_protection/download_request_maker.h"
 #include "chrome/browser/safe_browsing/download_protection/file_analyzer.h"
 #include "components/history/core/browser/history_service.h"
-#include "components/safe_browsing/content/browser/safe_browsing_navigation_observer_manager.h"
-#include "components/safe_browsing/content/browser/ui_manager.h"
+#include "components/safe_browsing/content/browser/interstitials/ui_manager.h"
+#include "components/safe_browsing/content/browser/navigation_observer/safe_browsing_navigation_observer_manager.h"
 #include "components/safe_browsing/core/browser/db/database_manager.h"
 #include "content/public/browser/browser_thread.h"
 #include "url/gurl.h"
@@ -136,11 +136,13 @@ class CheckClientDownloadRequestBase {
   // hooks with slightly different logic when they are called.
 
   // Called with the client download response as returned by the server, if one
-  // was returned and the returned verdict is unsafe (i.e. not safe or unknown).
+  // was returned and either the returned verdict is unsafe (i.e. not safe or
+  // unknown) or the download is from a registered app store.
   virtual void SetDownloadProtectionData(
       const std::string& token,
       const ClientDownloadResponse::Verdict& verdict,
-      const ClientDownloadResponse::TailoredVerdict& tailored_verdict) = 0;
+      const ClientDownloadResponse::TailoredVerdict& tailored_verdict,
+      bool is_registered_app_store) = 0;
 
   // TODO(crbug.com/397407934): Download feedback is not supported on Android
   // yet, but it will be.

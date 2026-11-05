@@ -5,11 +5,11 @@
 #include "chrome/browser/interstitials/enterprise_util.h"
 
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/safe_browsing/safe_browsing_navigation_observer_manager_factory.h"
+#include "chrome/browser/safe_browsing/navigation_observer/safe_browsing_navigation_observer_manager_factory.h"
 #include "components/enterprise/buildflags/buildflags.h"
 #include "components/enterprise/connectors/core/reporting_utils.h"
 #include "components/prefs/pref_service.h"
-#include "components/safe_browsing/content/browser/safe_browsing_navigation_observer_manager.h"
+#include "components/safe_browsing/content/browser/navigation_observer/safe_browsing_navigation_observer_manager.h"
 #include "components/safe_browsing/core/common/features.h"
 #include "components/sessions/content/session_tab_helper.h"
 #include "components/sessions/core/session_id.h"
@@ -22,6 +22,7 @@
 #endif  // BUILDFLAG(ENABLE_EXTENSIONS) && BUILDFLAG(SAFE_BROWSING_AVAILABLE)
 
 #if BUILDFLAG(ENTERPRISE_CONTENT_ANALYSIS) || BUILDFLAG(IS_ANDROID)
+#include "chrome/browser/enterprise/connectors/reporting/event_initiator_utils.h"
 #include "chrome/browser/enterprise/connectors/reporting/reporting_event_router_factory.h"
 #include "components/enterprise/connectors/core/reporting_event_router.h"
 #endif  // BUILDFLAG(ENTERPRISE_CONTENT_ANALYSIS) || BUILDFLAG(IS_ANDROID)
@@ -42,10 +43,11 @@ extensions::SafeBrowsingPrivateEventRouter* GetSafeBrowsingEventRouter(
 
   content::BrowserContext* browser_context = web_contents->GetBrowserContext();
   Profile* profile = Profile::FromBrowserContext(browser_context);
-  // In guest profile, IsOffTheRecord also returns true. So we need an
-  // additional check on IsGuestSession to ensure the event is sent in guest
-  // mode.
-  if (profile->IsOffTheRecord() && !profile->IsGuestSession()) {
+  // `IsOffTheRecord()` also returns true for guest and enterprise isolated mode
+  // profiles. Explicitly allow them to ensure events are still sent in those
+  // modes.
+  if (profile->IsOffTheRecord() && !profile->IsGuestSession() &&
+      !profile->IsEnterpriseIsolatedModeProfile()) {
     return nullptr;
   }
 
@@ -64,10 +66,11 @@ enterprise_connectors::ReportingEventRouter* GetReportingEventRouter(
 
   content::BrowserContext* browser_context = web_contents->GetBrowserContext();
   Profile* profile = Profile::FromBrowserContext(browser_context);
-  // In guest profile, IsOffTheRecord also returns true. So we need an
-  // additional check on IsGuestSession to ensure the event is sent in guest
-  // mode.
-  if (profile->IsOffTheRecord() && !profile->IsGuestSession()) {
+  // `IsOffTheRecord()` also returns true for guest and enterprise isolated mode
+  // profiles. Explicitly allow them to ensure events are still sent in those
+  // modes.
+  if (profile->IsOffTheRecord() && !profile->IsGuestSession() &&
+      !profile->IsEnterpriseIsolatedModeProfile()) {
     return nullptr;
   }
 
@@ -137,7 +140,8 @@ void MaybeTriggerSecurityInterstitialShownEvent(
   reporting_event_router->OnSecurityInterstitialShown(
       page_url, reason, net_error_code,
       prefs->GetBoolean(prefs::kSafeBrowsingProceedAnywayDisabled),
-      referrer_chain, tab_title);
+      referrer_chain, tab_title,
+      enterprise_connectors::GetActiveEventInitiatorInfo(web_contents));
 
 #endif  // BUILDFLAG(ENTERPRISE_CONTENT_ANALYSIS) || BUILDFLAG(IS_ANDROID)
 }
@@ -172,7 +176,8 @@ void MaybeTriggerSecurityInterstitialProceededEvent(
   }
 
   reporting_event_router->OnSecurityInterstitialProceeded(
-      page_url, reason, net_error_code, referrer_chain, tab_title);
+      page_url, reason, net_error_code, referrer_chain, tab_title,
+      enterprise_connectors::GetActiveEventInitiatorInfo(web_contents));
 #endif  // BUILDFLAG(ENTERPRISE_CONTENT_ANALYSIS) || BUILDFLAG(IS_ANDROID)
 }
 
@@ -193,8 +198,9 @@ void MaybeTriggerUrlFilteringInterstitialEvent(
     SetReferrerChain(web_contents, page_url, referrer_chain);
   }
 
-  router->OnUrlFilteringInterstitial(page_url, threat_type, rt_lookup_response,
-                                     referrer_chain, tab_title);
+  router->OnUrlFilteringInterstitial(
+      page_url, threat_type, rt_lookup_response, referrer_chain, tab_title,
+      enterprise_connectors::GetActiveEventInitiatorInfo(web_contents));
 #endif  // BUILDFLAG(ENTERPRISE_CONTENT_ANALYSIS)
 
 #if BUILDFLAG(IS_ANDROID)
@@ -207,8 +213,9 @@ void MaybeTriggerUrlFilteringInterstitialEvent(
     SetReferrerChain(web_contents, page_url, referrer_chain);
   }
 
-  router->OnUrlFilteringInterstitial(page_url, threat_type, rt_lookup_response,
-                                     referrer_chain, tab_title);
+  router->OnUrlFilteringInterstitial(
+      page_url, threat_type, rt_lookup_response, referrer_chain, tab_title,
+      enterprise_connectors::GetActiveEventInitiatorInfo(web_contents));
 #endif  // BUILDFLAG(IS_ANDROID)
 }
 #endif  // BUILDFLAG(SAFE_BROWSING_AVAILABLE)

@@ -39,7 +39,6 @@
 #include "base/task/single_thread_task_runner.h"
 #include "base/values.h"
 #include "chrome/browser/apps/app_service/app_service_proxy.h"
-#include "chrome/browser/apps/app_service/app_service_proxy_factory.h"
 #include "chrome/browser/apps/app_service/launch_utils.h"
 #include "chrome/browser/ash/drive/drive_integration_service.h"
 #include "chrome/browser/ash/drive/drive_integration_service_factory.h"
@@ -75,6 +74,8 @@
 #include "components/search/search.h"
 #include "components/search_engines/template_url_service.h"
 #include "components/services/app_service/public/cpp/app_launch_util.h"
+#include "components/session_manager/core/session.h"
+#include "components/session_manager/core/session_manager.h"
 #include "components/signin/public/identity_manager/access_token_info.h"
 #include "content/public/browser/audio_service.h"
 #include "content/public/browser/browser_thread.h"
@@ -100,7 +101,6 @@
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "ui/aura/window.h"
 #include "ui/base/l10n/l10n_util.h"
-#include "ui/base/window_open_disposition.h"
 #include "ui/gfx/codec/jpeg_codec.h"
 #include "ui/gfx/image/image_util.h"
 
@@ -262,13 +262,10 @@ bool NeedsDownscale(const gfx::Image& image) {
           image.Height() > lens::kMaxPixelsForImageSearch);
 }
 
-scoped_refptr<network::SharedURLLoaderFactory> GetSharedURLLoaderFactory() {
-  const user_manager::User* const active_user =
-      user_manager::UserManager::Get()->GetActiveUser();
-  CHECK(active_user);
-
+scoped_refptr<network::SharedURLLoaderFactory> GetSharedURLLoaderFactory(
+    const AccountId& account_id) {
   return ash::BrowserContextHelper::Get()
-      ->GetBrowserContextByUser(active_user)
+      ->GetBrowserContextByAccountId(account_id)
       ->GetDefaultStoragePartition()
       ->GetURLLoaderFactoryForBrowserProcess();
 }
@@ -398,18 +395,18 @@ ChromeCaptureModeDelegate::ChromeCaptureModeDelegate(
     ApplicationLocaleStorage* application_locale_storage)
     : local_state_(CHECK_DEREF(local_state)),
       application_locale_storage_(CHECK_DEREF(application_locale_storage)) {
-  DCHECK_EQ(g_instance, nullptr);
+  CHECK_EQ(g_instance, nullptr, base::NotFatalUntil::M162);
   g_instance = this;
 }
 
 ChromeCaptureModeDelegate::~ChromeCaptureModeDelegate() {
-  DCHECK_EQ(g_instance, this);
+  CHECK_EQ(g_instance, this, base::NotFatalUntil::M162);
   g_instance = nullptr;
 }
 
 // static
 ChromeCaptureModeDelegate* ChromeCaptureModeDelegate::Get() {
-  DCHECK(g_instance);
+  CHECK(g_instance, base::NotFatalUntil::M162);
   return g_instance;
 }
 
@@ -438,10 +435,10 @@ bool ChromeCaptureModeDelegate::InterruptVideoRecordingIfAny() {
 
 base::FilePath ChromeCaptureModeDelegate::GetUserDefaultDownloadsFolder()
     const {
-  DCHECK(ash::LoginState::Get()->IsUserLoggedIn());
+  CHECK(ash::LoginState::Get()->IsUserLoggedIn(), base::NotFatalUntil::M162);
 
   auto* profile = ProfileManager::GetActiveUserProfile();
-  DCHECK(profile);
+  CHECK(profile, base::NotFatalUntil::M162);
   if (!profile->GetDownloadManager()->GetBrowserContext()) {
     // Some browser tests use a |content::MockDownloadManager| which doesn't
     // have a browser context. In this case, just return an empty path.
@@ -606,12 +603,21 @@ base::FilePath ChromeCaptureModeDelegate::GetOneDriveVirtualPath() const {
 
 ChromeCaptureModeDelegate::PolicyCapturePath
 ChromeCaptureModeDelegate::GetPolicyCapturePath() const {
-  if (auto* profile = ProfileManager::GetActiveUserProfile()) {
-    auto* pref = profile->GetPrefs()->FindPreference(
-        ash::prefs::kCaptureModePolicySavePath);
+  // TODO(crbug.com/278643115): Take the account_id from the callers.
+  const session_manager::Session* const session =
+      session_manager::SessionManager::Get()->GetActiveSession();
+  const user_manager::User* const user =
+      session
+          ? user_manager::UserManager::Get()->FindUser(session->account_id())
+          : nullptr;
+  if (const PrefService* const prefs =
+          user ? user->GetProfilePrefs() : nullptr) {
+    const PrefService::Preference* pref =
+        prefs->FindPreference(ash::prefs::kCaptureModePolicySavePath);
     if (pref->IsManaged()) {
       const base::FilePath resolved_path =
-          policy::local_user_files::ResolvePath(pref->GetValue()->GetString());
+          policy::local_user_files::ResolvePath(*user,
+                                                pref->GetValue()->GetString());
       if (!resolved_path.empty()) {
         return {resolved_path, CapturePathEnforcement::kManaged};
       }
@@ -619,7 +625,7 @@ ChromeCaptureModeDelegate::GetPolicyCapturePath() const {
     if (pref->IsRecommended()) {
       const base::FilePath resolved_path =
           policy::local_user_files::ResolvePath(
-              pref->GetRecommendedValue()->GetString());
+              *user, pref->GetRecommendedValue()->GetString());
       if (!resolved_path.empty()) {
         return {resolved_path, CapturePathEnforcement::kRecommended};
       }
@@ -636,7 +642,7 @@ void ChromeCaptureModeDelegate::ConnectToVideoSourceProvider(
 
 void ChromeCaptureModeDelegate::GetDriveFsFreeSpaceBytes(
     ash::OnGotDriveFsFreeSpace callback) {
-  DCHECK(ash::LoginState::Get()->IsUserLoggedIn());
+  CHECK(ash::LoginState::Get()->IsUserLoggedIn(), base::NotFatalUntil::M162);
 
   drive::DriveIntegrationService* integration_service =
       drive::DriveIntegrationServiceFactory::FindForProfile(
@@ -709,18 +715,20 @@ void ChromeCaptureModeDelegate::FinalizeSavedFile(
     auto notification =
         std::make_unique<policy::skyvault::SkyvaultCaptureUploadNotification>(
             path, for_video);
-    auto notification_ptr = notification.get();
+    auto notification_weak_ptr = notification->GetWeakPtr();
     auto uploader = ash::cloud_upload::OdfsSkyvaultUploader::Upload(
         profile, path, policy::local_user_files::UploadTrigger::kScreenCapture,
         base::BindRepeating(
             &policy::skyvault::SkyvaultCaptureUploadNotification::
                 UpdateProgress,
-            notification->GetWeakPtr()),
+            notification_weak_ptr),
         base::BindOnce(&CaptureFileFinalized, path, std::move(callback),
                        std::move(notification)),
         thumbnail);
-    notification_ptr->SetCancelClosure(base::BindOnce(
-        &ash::cloud_upload::OdfsSkyvaultUploader::Cancel, uploader));
+    if (notification_weak_ptr) {
+      notification_weak_ptr->SetCancelClosure(base::BindOnce(
+          &ash::cloud_upload::OdfsSkyvaultUploader::Cancel, uploader));
+    }
     return;
   }
   std::move(callback).Run(/*success=*/true, path);
@@ -736,8 +744,8 @@ base::FilePath ChromeCaptureModeDelegate::RedirectFilePath(
     return odfs_temp_dir_.path().Append(path.BaseName());
   }
   if (!odfs_path.empty() && odfs_path.IsParent(path)) {
-    base::FilePath ret = path;
-    if (odfs_path.AppendRelativePath(odfs_temp_dir_.path(), &ret)) {
+    base::FilePath ret = odfs_temp_dir_.path();
+    if (odfs_path.AppendRelativePath(path, &ret)) {
       return ret;
     }
   }
@@ -766,9 +774,9 @@ void ChromeCaptureModeDelegate::DetectTextInImage(
     // Request `PerformOcr` asynchronously, so that it can be handled similarly
     // to the case where the OCR is not ready yet.
     base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
-        FROM_HERE, base::BindOnce(&ChromeCaptureModeDelegate::PerformOcr,
-                                  weak_ptr_factory_.GetWeakPtr(), image,
-                                  std::move(callback)));
+      FROM_HERE, base::BindOnce(&ChromeCaptureModeDelegate::PerformOcr,
+                                weak_ptr_factory_.GetWeakPtr(), image,
+                                std::move(callback)));
     return;
   }
 
@@ -814,7 +822,7 @@ void ChromeCaptureModeDelegate::SendLensWebRegionSearch(
       base::BindRepeating(
           &ChromeCaptureModeDelegate::OnAccessTokenAvailableForImageSearch,
           weak_ptr_factory_.GetWeakPtr(), image, is_standalone_session,
-          lens_request_id_),
+          lens_request_id_, account_id),
       AccessTokenPurpose::kImageSearch);
 }
 
@@ -826,19 +834,20 @@ void ChromeCaptureModeDelegate::DeleteRemoteFile(
     const base::FilePath& path,
     base::OnceCallback<void(bool)> callback) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  DCHECK(GetOneDriveMountPointPath().IsParent(path));
+  CHECK(GetOneDriveMountPointPath().IsParent(path), base::NotFatalUntil::M162);
   ash::cloud_upload::OdfsFileDeleter::Delete(path, std::move(callback));
 }
 
 bool ChromeCaptureModeDelegate::ActiveUserDefaultSearchProviderIsGoogle()
     const {
-  const user_manager::User* const active_user =
-      user_manager::UserManager::Get()->GetActiveUser();
-  CHECK(active_user);
+  // TODO(crbug.com/278643115): Take the account_id from the callers.
+  const auto* active_session =
+      session_manager::SessionManager::Get()->GetActiveSession();
+  CHECK(active_session);
 
   TemplateURLService* template_url_service =
-      ash::TemplateURLServiceProvider::Get().Find(active_user->GetAccountId());
-  DCHECK(template_url_service);
+      ash::TemplateURLServiceProvider::Get().Find(active_session->account_id());
+  CHECK(template_url_service);
 
   return search::DefaultSearchProviderIsGoogle(template_url_service);
 }
@@ -963,7 +972,7 @@ void ChromeCaptureModeDelegate::PrimaryAccountAccessTokenAvailable(
     GoogleServiceAuthError error,
     signin::AccessTokenInfo access_token_info) {
   // Reset token fetcher for the next request.
-  DCHECK(primary_account_token_fetcher_);
+  CHECK(primary_account_token_fetcher_, base::NotFatalUntil::M162);
   primary_account_token_fetcher_.reset();
 
   if (error.state() != GoogleServiceAuthError::NONE) {
@@ -1017,8 +1026,9 @@ void ChromeCaptureModeDelegate::OnAccessTokenAvailableForImageSearch(
     const gfx::Image& original_image,
     const bool is_standalone_session,
     const int request_id,
+    const AccountId& account_id,
     const std::string& access_token) {
-  DCHECK(!access_token.empty());
+  CHECK(!access_token.empty());
 
   // Create the POST request and add the access token for authentication.
   auto resource_request = std::make_unique<network::ResourceRequest>();
@@ -1035,19 +1045,16 @@ void ChromeCaptureModeDelegate::OnAccessTokenAvailableForImageSearch(
   }
 
   TemplateURLRef::PostContent post_content;
-  const user_manager::User* const active_user =
-      user_manager::UserManager::Get()->GetActiveUser();
-  CHECK(active_user);
 
   // Get the search provider (must be Google) so we can get the base URL for
   // image search.
   TemplateURLService* template_url_service =
-      ash::TemplateURLServiceProvider::Get().Find(active_user->GetAccountId());
-  DCHECK(template_url_service);
+      ash::TemplateURLServiceProvider::Get().Find(account_id);
+  CHECK(template_url_service);
   CHECK(search::DefaultSearchProviderIsGoogle(template_url_service));
   const TemplateURL* const default_provider =
       template_url_service->GetDefaultSearchProvider();
-  DCHECK(default_provider);
+  CHECK(default_provider);
 
   // Encode the image into the search args.
   TemplateURLRef::SearchTermsArgs search_args =
@@ -1106,7 +1113,7 @@ void ChromeCaptureModeDelegate::OnAccessTokenAvailableForImageSearch(
 
   if (!url_loader_factory_) {
     // Lazily create the URLLoaderFactory.
-    url_loader_factory_ = GetSharedURLLoaderFactory();
+    url_loader_factory_ = GetSharedURLLoaderFactory(account_id);
     CHECK(url_loader_factory_);
   }
 
@@ -1122,7 +1129,7 @@ void ChromeCaptureModeDelegate::OnAccessTokenAvailableForCopyText(
     const std::string vsr_id,
     const int request_id,
     const std::string& access_token) {
-  DCHECK(!access_token.empty());
+  CHECK(!access_token.empty(), base::NotFatalUntil::M162);
 
   // Create a new GET request for the text metadata.
   auto resource_request = std::make_unique<network::ResourceRequest>();

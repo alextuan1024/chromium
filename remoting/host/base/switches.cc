@@ -51,9 +51,9 @@ const char kInputSwitchName[] = "input";
 const char kOutputSwitchName[] = "output";
 
 const char kMojoPipeToken[] = "mojo-pipe-token";
-const char kCrashServerPipeHandle[] = "crash-server-pipe-handle";
 
 #if BUILDFLAG(IS_WIN)
+const char kCrashpadHandlerPipe[] = "crashpad-handler-pipe";
 const char kUsePeerConnectionProcessSwitch[] = "use-peer-connection-process";
 #endif  // BUILDFLAG(IS_WIN)
 
@@ -65,5 +65,9 @@ const char kCheckScreenRecordingPermissionSwitchName[] =
     "check-screen-recording-permission";
 const char kListAudioDevicesSwitchName[] = "list-audio-devices";
 #endif  // BUILDFLAG(IS_APPLE)
+
+const char kAgentStatusSwitchName[] = "agent-status";
+const char kTerminalIdSwitchName[] = "terminal-id";
+const char kTerminalTitleSwitchName[] = "terminal-title";
 
 }  // namespace remoting

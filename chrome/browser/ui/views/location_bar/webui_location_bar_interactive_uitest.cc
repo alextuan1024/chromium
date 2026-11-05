@@ -4,6 +4,7 @@
 
 #include "chrome/browser/ui/views/location_bar/webui_location_bar.h"
 
+#include "base/auto_reset.h"
 #include "base/memory/weak_ptr.h"
 #include "base/run_loop.h"
 #include "base/strings/stringprintf.h"
@@ -16,8 +17,10 @@
 #include "chrome/browser/preloading/preloading_features.h"
 #include "chrome/browser/ui/accelerator_utils.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
+#include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/omnibox/omnibox_next_features.h"
+#include "chrome/browser/ui/omnibox/omnibox_popup_webui_creation.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/toolbar_button_provider.h"
@@ -42,6 +45,7 @@
 #include "components/omnibox/browser/shortcuts_provider_test_util.h"
 #include "content/public/browser/render_view_host.h"
 #include "content/public/browser/render_widget_host.h"
+#include "content/public/browser/render_widget_host_view.h"
 #include "content/public/common/content_features.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
@@ -59,9 +63,19 @@
 #include "ui/base/page_transition_types.h"
 #include "ui/display/screen.h"
 #include "ui/gfx/range/range.h"
+#include "ui/views/interaction/element_tracker_views.h"
+#include "ui/views/interaction/mouse/interaction_test_util_mouse.h"
 #include "ui/views/mouse_constants.h"
 #include "ui/views/test/widget_test.h"
+#include "ui/views/widget/widget_observer.h"
 #include "ui/webui/tracked_element/interaction_test_util_web_ui.h"
+
+#if BUILDFLAG(IS_MAC)
+#include "base/functional/bind.h"
+#include "chrome/browser/ui/views/location_bar/webui_location_bar_interactive_uitest_mac.h"
+#include "ui/base/test/ui_controls.h"
+#include "ui/views/widget/widget.h"
+#endif
 
 namespace {
 
@@ -85,8 +99,13 @@ const WebContentsInteractionTestUtil::DeepQuery kOmniboxInputDeepQuery = {
 const WebContentsInteractionTestUtil::DeepQuery kFullPopupInputDeepQuery = {
     "omnibox-full-app", "omnibox-popup-searchbox", "cr-searchbox-input",
     "#input"};
+const WebContentsInteractionTestUtil::DeepQuery kAimPopupInputDeepQuery = {
+    "omnibox-aim-app", "#composebox", "#composeboxInput", "#input"};
 const WebContentsInteractionTestUtil::DeepQuery kOmniboxAdditionalText = {
     "toolbar-app", "location-bar", "readonly-omnibox", "#additionalText"};
+const WebContentsInteractionTestUtil::DeepQuery kFullPopupAdditionalText = {
+    "omnibox-full-app", "omnibox-popup-searchbox", "cr-searchbox-input",
+    "#additionalText"};
 const WebContentsInteractionTestUtil::DeepQuery kOmniboxInlineAutocomplete = {
     "toolbar-app", "location-bar", "readonly-omnibox", "#inlineAutocomplete"};
 const WebContentsInteractionTestUtil::DeepQuery kSearchKeywordText = {
@@ -142,6 +161,36 @@ class ViewWidthObserver
 };
 
 DEFINE_LOCAL_STATE_IDENTIFIER_VALUE(ViewWidthObserver, kViewWidth);
+
+// Counts how many times a widget has become active.
+class WidgetActivationCountObserver
+    : public ui::test::
+          ObservationStateObserver<int, views::Widget, views::WidgetObserver> {
+ public:
+  explicit WidgetActivationCountObserver(views::Widget* widget)
+      : ObservationStateObserver<int, views::Widget, views::WidgetObserver>(
+            widget) {}
+  ~WidgetActivationCountObserver() override = default;
+
+  // ObservationStateObserver:
+  int GetStateObserverInitialState() const override { return 0; }
+
+  // views::WidgetObserver:
+  void OnWidgetActivationChanged(views::Widget* widget, bool active) override {
+    if (active) {
+      OnStateObserverStateChanged(++activation_count_);
+    }
+  }
+  void OnWidgetDestroying(views::Widget* widget) override {
+    OnObservationStateObserverSourceDestroyed();
+  }
+
+ private:
+  int activation_count_ = 0;
+};
+
+DEFINE_LOCAL_STATE_IDENTIFIER_VALUE(WidgetActivationCountObserver,
+                                    kPopupWidgetActivationCount);
 
 class ClipboardTextObserver
     : public ui::test::ObservationStateObserver<std::u16string,
@@ -222,6 +271,14 @@ class PretendComposeInputMethod : public ui::MockInputMethod {
       text_input_client->SetCompositionText(ct);
       return ui::EventDispatchDetails();
     }
+    if (event->type() == ui::EventType::kKeyPressed &&
+        event->GetDomKey() == ui::DomKey::ENTER &&
+        text_input_client->HasCompositionText()) {
+      ui::EventDispatchDetails details =
+          ui::MockInputMethod::DispatchKeyEvent(event);
+      text_input_client->ConfirmCompositionText(/*keep_selection=*/true);
+      return details;
+    }
     return ui::MockInputMethod::DispatchKeyEvent(event);
   }
 
@@ -259,21 +316,20 @@ class WebUILocationBarInteractiveUiTest
       public testing::WithParamInterface<Mode> {
  public:
   WebUILocationBarInteractiveUiTest() {
-    // TODO(crbug.com/539786691): Re-enable kPrewarm once the feature is
-    // compatible with the test.
     if (mode() == Mode::kCutout) {
       feature_list_.InitWithFeatures(
           {features::kInitialWebUI, features::kWebUIReloadButton,
            features::kWebUILocationBar,
-           omnibox::internal::kWebUIOmniboxAimPopup},
-          {omnibox::kAimServerEligibilityEnabled, features::kPrewarm,
-           omnibox::kWebUIOmniboxFullPopup});
+           omnibox::internal::kWebUIOmniboxAimPopup, features::kPrewarm},
+          {omnibox::kAimServerEligibilityEnabled,
+           omnibox::internal::kWebUIOmniboxFullPopup});
     } else {
       feature_list_.InitWithFeatures(
           {features::kInitialWebUI, features::kWebUIReloadButton,
-           features::kWebUILocationBar, omnibox::kWebUIOmniboxFullPopup,
-           omnibox::internal::kWebUIOmniboxAimPopup},
-          {omnibox::kAimServerEligibilityEnabled, features::kPrewarm});
+           features::kWebUILocationBar,
+           omnibox::internal::kWebUIOmniboxFullPopup,
+           omnibox::internal::kWebUIOmniboxAimPopup, features::kPrewarm},
+          {omnibox::kAimServerEligibilityEnabled});
     }
   }
   ~WebUILocationBarInteractiveUiTest() override = default;
@@ -332,6 +388,14 @@ class WebUILocationBarInteractiveUiTest
     }
   }
 
+  const WebContentsInteractionTestUtil::DeepQuery& AdditionalText() {
+    if (mode() == Mode::kFull) {
+      return kFullPopupAdditionalText;
+    } else {
+      return kOmniboxAdditionalText;
+    }
+  }
+
   WebContentsInteractionTestUtil::DeepQuery DropdownContent() {
     if (mode() == Mode::kFull) {
       return WebContentsInteractionTestUtil::DeepQuery(
@@ -386,7 +450,7 @@ class WebUILocationBarInteractiveUiTest
               ->toolbar()
               ->location_bar());
       return location_bar->GetOmniboxPopupView()
-          ->presenter()
+          ->popup_host()
           ->GetWebUIContent();
     });
   }
@@ -422,7 +486,8 @@ class WebUILocationBarInteractiveUiTest
             kAIMWebContentsVisible,
             [this]() {
               auto* view = GetActiveAimPopupWebView().Run();
-              if (!view || !view->GetWidget()) {
+              if (!view || !view->GetWidget() ||
+                  !view->GetWidget()->IsActive()) {
                 return false;
               }
               auto* element =
@@ -437,7 +502,12 @@ class WebUILocationBarInteractiveUiTest
         InAnyContext(InstrumentNonTabWebView(kAimPopupWebViewId,
                                              GetActiveAimPopupWebView())),
         InSameContext(WaitForWebContentsReady(
-            kAimPopupWebViewId, GURL(chrome::kChromeUIOmniboxPopupAimURL))));
+            kAimPopupWebViewId, GURL(chrome::kChromeUIOmniboxPopupAimURL))),
+        InAnyContext(WaitForJsResultAt(kAimPopupWebViewId,
+                                       kAimPopupInputDeepQuery,
+                                       "(el) => {"
+                                       "  return el.matches(':focus-visible');"
+                                       "}")));
   }
 
   auto WaitForAimPopupHide() {
@@ -467,20 +537,23 @@ class WebUILocationBarInteractiveUiTest
   auto WaitForPopupHide() {
     if (mode() == Mode::kFull) {
       return Steps(InAnyContext(
-          PollState(
-              kPopupShort,
-              []() {
-                const ui::TrackedElement* el =
-                    ui::ElementTracker::GetElementTracker()
-                        ->GetElementInAnyContext(
-                            OmniboxPopupPresenterBase::kRoundedResultsFrame);
-                if (!el) {
-                  return true;
-                }
+          PollState(kPopupShort,
+                    [this]() {
+                      auto* view = GetActiveClassicPopupWebView().Run();
+                      if (!view || !view->GetWidget()) {
+                        return true;
+                      }
+                      const ui::TrackedElement* el =
+                          views::ElementTrackerViews::GetInstance()
+                              ->GetElementForView(
+                                  view, /* assign_temporary_id =*/true);
+                      if (!el) {
+                        return true;
+                      }
 
-                auto size = el->GetScreenBounds();
-                return size.height() <= 100;
-              }),
+                      auto size = el->GetScreenBounds();
+                      return size.height() <= 100;
+                    }),
           WaitForState(kPopupShort, true), StopObservingState(kPopupShort)));
     } else {
       return InAnyContext(
@@ -689,9 +762,15 @@ class WebUILocationBarInteractiveUiTest
 
     WebContentsInteractionTestUtil::StateChange text_matches;
     text_matches.event = kAdditionalTextOK;
-    text_matches.where = kOmniboxAdditionalText;
-    text_matches.test_function = content::JsReplace(kTemplate, expected_text);
-    return WaitForStateChange(kWebUIToolbarId, text_matches);
+    text_matches.where = AdditionalText();
+    if (mode() == Mode::kFull && expected_text.empty()) {
+      // With full, empty additional text just doesn't get an element.
+      text_matches.type =
+          WebContentsInteractionTestUtil::StateChange::Type::kDoesNotExist;
+    } else {
+      text_matches.test_function = content::JsReplace(kTemplate, expected_text);
+    }
+    return WaitForStateChange(InputWebContents(), text_matches);
   }
 
   // This checks for inline completion rendered as selection.
@@ -874,7 +953,8 @@ class WebUILocationBarInteractiveUiTest
   }
 
   gfx::Range GetBrowserSideSelection() {
-    auto* location_bar = browser()->GetFeatures().location_bar();
+    auto* location_bar =
+        BrowserWindow::FromBrowser(browser())->GetLocationBar();
     if (mode() == Mode::kFull) {
       // Full popup stores the selection it saves on tab switch in
       // PopupHandler rather than the OmniboxView.
@@ -930,6 +1010,32 @@ class WebUILocationBarInteractiveUiTest
   raw_ptr<views::View> popup_frame_ = nullptr;
 };
 
+// Creates the omnibox popups' WebContents before they are shown, as production
+// does, rather than only when shown, which is the default in browser tests (see
+// `InProcessBrowserTest`).
+// TODO(crbug.com/542347163): The tests using this fixture fail otherwise, which
+// indicates the WebUI location bar has a hidden dependency on a popup's
+// WebContents existing before it is shown. Either create the WebContents
+// explicitly where it is needed or remove the dependency, and move these tests
+// back to `WebUILocationBarInteractiveUiTest`.
+class WebUILocationBarEagerPopupInteractiveUiTest
+    : public WebUILocationBarInteractiveUiTest {
+ private:
+  base::AutoReset<bool> create_popup_webui_on_demand_ =
+      omnibox::SetCreatePopupWebUIOnDemandForTesting(false);
+};
+
+// Keeps every popup state change in its transition period for the whole test,
+// so that focus requests made during that period can be tested
+// deterministically.
+class WebUILocationBarPopupTransitionInteractiveUiTest
+    : public WebUILocationBarInteractiveUiTest {
+ private:
+  base::AutoReset<base::TimeDelta> popup_state_transition_duration_ =
+      WebUILocationBar::SetPopupStateTransitionDurationForTesting(
+          base::Hours(1));
+};
+
 class WebUILocationBarIMEInteractiveUiTest
     : public WebUILocationBarInteractiveUiTest {
  public:
@@ -974,8 +1080,18 @@ IN_PROC_BROWSER_TEST_P(WebUILocationBarInteractiveUiTest, ShowHidePopup) {
                   RemoveFocusFromPopup());
 }
 
+// TODO(crbug.com/572093164): Consistently times out on ChromeOS MSan.
+#if BUILDFLAG(IS_CHROMEOS) && defined(MEMORY_SANITIZER)
+#define MAYBE_ShowHideAIPopup DISABLED_ShowHideAIPopup
+#define MAYBE_ShowHideAIPopup2 DISABLED_ShowHideAIPopup2
+#else
+#define MAYBE_ShowHideAIPopup ShowHideAIPopup
+#define MAYBE_ShowHideAIPopup2 ShowHideAIPopup2
+#endif
+
 // Show and hide the omnibox AI mode popup.
-IN_PROC_BROWSER_TEST_P(WebUILocationBarInteractiveUiTest, ShowHideAIPopup) {
+IN_PROC_BROWSER_TEST_P(WebUILocationBarEagerPopupInteractiveUiTest,
+                       MAYBE_ShowHideAIPopup) {
   RunTestSequence(
       InstrumentTab(kTabId), WaitForWebContentsReady(kTabId),
       InstrumentNonTabWebView(kWebUIToolbarId, GetToolbarWebView()),
@@ -988,6 +1104,36 @@ IN_PROC_BROWSER_TEST_P(WebUILocationBarInteractiveUiTest, ShowHideAIPopup) {
       InAnyContext(SendKeyPress(InputWebContents(), ui::VKEY_BACK)),
       WaitTillOmniboxViewText(""),
       // Since text is empty, we should be able to see the AI mode button.
+      WaitForJsResultAt(
+          InputWebContents(), AIMButton(),
+          "el => (el.tooltip || el.title) === 'Ask AI Mode in Google Search'"),
+      // Click it.
+      ClickElement(InputWebContents(), AIMButton()),
+      // Should hide classic popup, show AIM one.
+      WaitForPopupHide(), WaitForAimPopupReady(),
+      // Press Esc to close it.
+      InAnyContext(SendKeyPress(kAimPopupWebViewId, ui::VKEY_ESCAPE)
+                       .SetMustRemainVisible(false)),
+      WaitForAimPopupHide());
+}
+
+// Show and hide the omnibox AI mode popup, with no user text
+IN_PROC_BROWSER_TEST_P(WebUILocationBarEagerPopupInteractiveUiTest,
+                       MAYBE_ShowHideAIPopup2) {
+  RunTestSequence(
+      InstrumentTab(kTabId), WaitForWebContentsReady(kTabId),
+      InstrumentNonTabWebView(kWebUIToolbarId, GetToolbarWebView()),
+      HandleAutofocus(), WaitTillOmniboxViewText("about:blank"),
+      WaitTillOmniboxViewSelection("about:blank", gfx::Range(11, 0)),
+      // Unfocus, want the popup that shows from focus in.
+      FocusTab(),
+      // Go to a URL that will give us a popup.
+      NavigateWebContents(kTabId, GURL("https://local.test")),
+      WaitTillOmniboxViewText("local.test", View::kStatic),
+      // Click to focus location bar.
+      MoveMouseTo(kOmniboxElementId), ClickMouse(), WaitTillOmniboxViewFocus(),
+      WaitForPopupShow(),
+      // We should see the AIM button.
       WaitForJsResultAt(
           InputWebContents(), AIMButton(),
           "el => (el.tooltip || el.title) === 'Ask AI Mode in Google Search'"),
@@ -1040,8 +1186,49 @@ IN_PROC_BROWSER_TEST_P(WebUILocationBarInteractiveUiTest, TabAIButton) {
   EXPECT_THAT(url.GetQuery(), testing::HasSubstr("aep="));
 }
 
+// Test that tabbing from the empty omnibox to the AIM button, with no
+// suggestions showing, shows the default search engine placeholder in the full
+// popup's input, like the Views omnibox does when the AIM button takes focus
+// away from it.
+IN_PROC_BROWSER_TEST_P(WebUILocationBarInteractiveUiTest,
+                       TabAIButtonShowsPlaceholder) {
+  if (mode() != Mode::kFull) {
+    GTEST_SKIP() << "Only the full popup hosts the input and the AIM button.";
+  }
+  const WebContentsInteractionTestUtil::DeepQuery kSearchbox = {
+      "omnibox-full-app", "omnibox-popup-searchbox"};
+  const char kPlaceholderVisibility[] =
+      "(el) => getComputedStyle(el, '::placeholder').visibility";
+
+  RunTestSequence(
+      InstrumentTab(kTabId), WaitForWebContentsReady(kTabId),
+      InstrumentNonTabWebView(kWebUIToolbarId, GetToolbarWebView()),
+      HandleAutofocus(), WaitTillOmniboxViewText("about:blank"),
+      WaitTillOmniboxViewFocus(),
+      WaitTillOmniboxViewSelection("about:blank", gfx::Range(11, 0)),
+      // Delete everything.
+      InAnyContext(SendKeyPress(InputWebContents(), ui::VKEY_DELETE)),
+      WaitTillOmniboxViewText(""),
+      // No placeholder while the input has focus.
+      WaitTillOmniboxViewPlaceholder(u""),
+      // With no suggestions, Tab moves focus to the AIM button itself.
+      WaitForJsResultAt(InputWebContents(), kSearchbox,
+                        "(el) => el.dropdownIsVisible", false),
+      InAnyContext(SendKeyPress(InputWebContents(), ui::VKEY_TAB)),
+      WaitForJsResultAt(InputWebContents(), AIMButtonOuter(),
+                        "(el) => el.matches(':focus-within')"),
+      // Now the blurred input shows the DSE placeholder.
+      WaitTillOmniboxViewPlaceholder(u"Ask Google or type a URL"),
+      WaitForJsResultAt(InputWebContents(), kFullPopupInputDeepQuery,
+                        kPlaceholderVisibility, "visible"),
+      // Shift+Tab back to the input clears it again.
+      InAnyContext(
+          SendKeyPress(InputWebContents(), ui::VKEY_TAB, ui::EF_SHIFT_DOWN)),
+      WaitTillOmniboxViewFocus(), WaitTillOmniboxViewPlaceholder(u""));
+}
+
 // Test that the popup shrinks when the browser window does.
-IN_PROC_BROWSER_TEST_P(WebUILocationBarInteractiveUiTest, Resize) {
+IN_PROC_BROWSER_TEST_P(WebUILocationBarEagerPopupInteractiveUiTest, Resize) {
   auto* browser_view = BrowserView::GetBrowserViewForBrowser(browser());
   RunTestSequence(InstrumentTab(kTabId), WaitForWebContentsReady(kTabId),
                   InstrumentNonTabWebView(kWebUIToolbarId, GetToolbarWebView()),
@@ -1066,10 +1253,8 @@ IN_PROC_BROWSER_TEST_P(WebUILocationBarInteractiveUiTest, Resize) {
 }
 
 // Use arrow keys to select between various suggestions.
-IN_PROC_BROWSER_TEST_P(WebUILocationBarInteractiveUiTest, NavigateSuggestions) {
-  FAILS_IN_MODE(Mode::kFull,
-                "Esc restore of default suggestion broken in full +"
-                " virtual focus; see crbug.com/559625534");
+IN_PROC_BROWSER_TEST_P(WebUILocationBarEagerPopupInteractiveUiTest,
+                       NavigateSuggestions) {
   RunTestSequence(
       InstrumentTab(kTabId), WaitForWebContentsReady(kTabId),
       InstrumentNonTabWebView(kWebUIToolbarId, GetToolbarWebView()),
@@ -1139,12 +1324,8 @@ IN_PROC_BROWSER_TEST_P(WebUILocationBarInteractiveUiTest, NavigateSuggestions) {
 // Use tab key to navigate suggestions, including the delete buttons, and
 // pressing space on one to delete an entry, as well as deleting an entry
 // via Shift-Delete.
-IN_PROC_BROWSER_TEST_P(WebUILocationBarInteractiveUiTest,
+IN_PROC_BROWSER_TEST_P(WebUILocationBarEagerPopupInteractiveUiTest,
                        NavigateSuggestionsTab) {
-  FAILS_IN_MODE(Mode::kFull,
-                "Shift-del to delete suggestion doesn't work in full "
-                "(crbug.com/559671477); also behavior on deleting with button "
-                " is different");
   history::HistoryService* history_service =
       HistoryServiceFactory::GetForProfile(this->browser()->GetProfile(),
                                            ServiceAccessType::EXPLICIT_ACCESS);
@@ -1225,12 +1406,72 @@ IN_PROC_BROWSER_TEST_P(WebUILocationBarInteractiveUiTest, InlineSuggestion) {
       WaitTillOmniboxViewText("local.test", View::kStatic));
 }
 
+// See crbug.com/579050376
+IN_PROC_BROWSER_TEST_P(WebUILocationBarInteractiveUiTest,
+                       InlineSuggestionDelete) {
+  history::HistoryService* history_service =
+      HistoryServiceFactory::GetForProfile(this->browser()->GetProfile(),
+                                           ServiceAccessType::EXPLICIT_ACCESS);
+  GURL url("https://local.test/");
+  history_service->AddPage(url, base::Time::Now(), history::SOURCE_BROWSED);
+  ui_test_utils::WaitForHistoryToLoad(history_service);
+
+  RunTestSequence(InstrumentTab(kTabId), WaitForWebContentsReady(kTabId),
+                  InstrumentNonTabWebView(kWebUIToolbarId, GetToolbarWebView()),
+                  EnsureNoPopup(), FocusOmnibox(),
+                  // Shouldn't have a popup visible yet.
+                  EnsureNoPopup(),
+                  // Type some text, it should show up.
+                  EnterText(u"https://local"), WaitForPopupShow(),
+                  WaitTillInlineComplete("https://local", ".test"),
+
+                  // Delete the suggestion with backspace
+                  InAnyContext(SendKeyPress(InputWebContents(), ui::VKEY_BACK)),
+                  WaitTillOmniboxViewText("https://local"),
+
+                  // Accept the input.
+                  SendEnter(),
+                  WaitForWebContentsNavigation(kTabId, GURL("https://local")));
+}
+
+// An inline suggestion where the case of one of the characters doesn't match.
+// See crbug.com/571658273
+IN_PROC_BROWSER_TEST_P(WebUILocationBarInteractiveUiTest,
+                       InlineSuggestionCaseMismatch) {
+  history::HistoryService* history_service =
+      HistoryServiceFactory::GetForProfile(this->browser()->GetProfile(),
+                                           ServiceAccessType::EXPLICIT_ACCESS);
+  GURL url("https://local.test/");
+  history_service->AddPage(url, base::Time::Now(), history::SOURCE_BROWSED);
+  ui_test_utils::WaitForHistoryToLoad(history_service);
+
+  RunTestSequence(
+      InstrumentTab(kTabId), WaitForWebContentsReady(kTabId),
+      InstrumentNonTabWebView(kWebUIToolbarId, GetToolbarWebView()),
+      EnsureNoPopup(), FocusOmnibox(),
+      // Shouldn't have a popup visible yet.
+      EnsureNoPopup(),
+      // Type some text, it should show up.
+      EnterText(u"https://local"), WaitForPopupShow(),
+      WaitTillInlineComplete("https://local", ".test"),
+
+      // Enter . to advance completion.
+      InAnyContext(SendKeyPress(InputWebContents(), ui::VKEY_OEM_PERIOD)),
+      WaitTillInlineComplete("https://local.", "test"),
+
+      // Now send an upper-case T.
+      InAnyContext(
+          SendKeyPress(InputWebContents(), ui::VKEY_T, ui::EF_SHIFT_DOWN)),
+      WaitTillInlineComplete("https://local.T", "est"),
+
+      // Accept it.
+      SendEnter(),
+      WaitForWebContentsNavigation(kTabId, GURL("https://local.test")),
+      WaitTillOmniboxViewText("local.test", View::kStatic));
+}
+
 IN_PROC_BROWSER_TEST_P(WebUILocationBarInteractiveUiTest,
                        FocusLocationNoDefaultSuggestion) {
-  FAILS_IN_MODE(Mode::kFull,
-                "Relies on additional text as a source for sync suggestions;"
-                "see crbug.com/525540275");
-
   auto shortcuts_backend =
       ShortcutsBackendFactory::GetForProfile(browser()->GetProfile());
   if (!shortcuts_backend->initialized()) {
@@ -1248,7 +1489,7 @@ IN_PROC_BROWSER_TEST_P(WebUILocationBarInteractiveUiTest,
         AutocompleteMatch::DocumentType::NONE, "www.cnn.com/index.html", "0,1",
         "CNN.com - Breaking News, U.S., World, Weather, Entertainment & Video",
         "0,0,19,2,23,0,38,2,45,0", ui::PAGE_TRANSITION_TYPED,
-        AutocompleteMatchType::HISTORY_TITLE, "", 1, 10}}};
+        omnibox::AutocompleteMatchType::kHistoryTitle, "", 1, 10}}};
   PopulateShortcutsBackendWithTestData(shortcuts_backend, test_shortcut);
 
   ui::Accelerator accelerator;
@@ -1259,9 +1500,8 @@ IN_PROC_BROWSER_TEST_P(WebUILocationBarInteractiveUiTest,
   RunTestSequence(
       InstrumentTab(kTabId), WaitForWebContentsReady(kTabId),
       InstrumentNonTabWebView(kWebUIToolbarId, GetToolbarWebView()),
-      WaitTillOmniboxViewText("about:blank", View::kStatic),
-      WaitTillOmniboxViewSelection("about:blank", gfx::Range(11, 0),
-                                   View::kStatic),
+      HandleAutofocus(), WaitTillOmniboxViewText("about:blank"),
+      WaitTillOmniboxViewSelection("about:blank", gfx::Range(11, 0)),
       // Unfocus, since we want to test us focusing.
       FocusTab(), NavigateWebContents(kTabId, GURL("https://www.cnn.com/")),
       WaitTillOmniboxViewText("cnn.com", View::kStatic),
@@ -1269,9 +1509,7 @@ IN_PROC_BROWSER_TEST_P(WebUILocationBarInteractiveUiTest,
       // this case).
       SendAccelerator(kBrowserViewElementId, accelerator),
       // Since we are checking for a negative, delay before checking.
-      DoWaitForTime(base::Milliseconds(500)),
-      CheckJsResultAt(kWebUIToolbarId, kOmniboxAdditionalText,
-                      "el => el.textContent === ''"));
+      DoWaitForTime(base::Milliseconds(500)), WaitTillAdditionalText(""));
 }
 
 // Faking composing the way PretendComposeInputMethod does doesn't appear to
@@ -1311,16 +1549,18 @@ IN_PROC_BROWSER_TEST_P(WebUILocationBarIMEInteractiveUiTest,
       WaitTillOmniboxViewText("local.t"),
       WaitTillStandaloneInlineComplete("est"),
 
-      // Accept it.
+      // First Enter commits the IME composition without navigating, and
+      // transitions inline completion from standalone span to the input.
+      InAnyContext(SendKeyPress(InputWebContents(), ui::VKEY_RETURN)),
+      WaitTillInlineComplete("local.t", "est"),
+
+      // Second Enter accepts the suggestion and navigates.
       InAnyContext(SendKeyPress(InputWebContents(), ui::VKEY_RETURN)),
       WaitForWebContentsNavigation(kTabId, GURL("https://local.test")),
       WaitTillOmniboxViewText("local.test"));
 }
 
 IN_PROC_BROWSER_TEST_P(WebUILocationBarInteractiveUiTest, AdditionalText) {
-  FAILS_IN_MODE(Mode::kFull,
-                "No additional text in full, it seems."
-                "See crbug.com/525540275");
   auto shortcuts_backend =
       ShortcutsBackendFactory::GetForProfile(browser()->GetProfile());
   if (!shortcuts_backend->initialized()) {
@@ -1338,7 +1578,7 @@ IN_PROC_BROWSER_TEST_P(WebUILocationBarInteractiveUiTest, AdditionalText) {
         AutocompleteMatch::DocumentType::NONE, "www.cnn.com/index.html", "0,1",
         "CNN.com - Breaking News, U.S., World, Weather, Entertainment & Video",
         "0,0,19,2,23,0,38,2,45,0", ui::PAGE_TRANSITION_TYPED,
-        AutocompleteMatchType::HISTORY_TITLE, "", 1, 10}}};
+        omnibox::AutocompleteMatchType::kHistoryTitle, "", 1, 10}}};
   PopulateShortcutsBackendWithTestData(shortcuts_backend, test_shortcut);
 
   RunTestSequence(InstrumentTab(kTabId), WaitForWebContentsReady(kTabId),
@@ -1357,8 +1597,7 @@ IN_PROC_BROWSER_TEST_P(WebUILocationBarInteractiveUiTest, AdditionalText) {
 // Use Ctrl-Alt-Enter to append www. and .com to URL and open it in new tab.
 IN_PROC_BROWSER_TEST_P(WebUILocationBarInteractiveUiTest, Modifiers) {
   FAILS_IN_MODE(Mode::kFull,
-                "Full popup doesn't appear to do Ctrl-Enter when oneline."
-                "See crbug.com/549864613");
+                "Full popup doesn't appear like Ctrl-Enter of https://google");
   RunTestSequence(InstrumentTab(kTabId), WaitForWebContentsReady(kTabId),
                   InstrumentNonTabWebView(kWebUIToolbarId, GetToolbarWebView()),
                   EnsureNoPopup(), FocusOmnibox(),
@@ -1383,7 +1622,14 @@ IN_PROC_BROWSER_TEST_P(WebUILocationBarInteractiveUiTest, ClickLocationIcon) {
   RunTestSequence(
       InstrumentTab(kTabId), WaitForWebContentsReady(kTabId),
       InstrumentNonTabWebView(kWebUIToolbarId, GetToolbarWebView()),
-      FocusWebContents(kWebUIToolbarId),
+      // In full mode, the location bar gets autofocused on startup, which
+      // opens the full popup and makes its widget active. Trying to focus the
+      // toolbar WebContents while that's going on can hang (e.g. on Mac), so
+      // move focus to the tab instead and wait for the popup to go away.
+      If([&]() { return mode() == Mode::kFull; },
+         Then(HandleAutofocus(), FocusTab(),
+              InAnyContext(WaitForHide(kClassicPopupWebViewId))),
+         Else(FocusWebContents(kWebUIToolbarId))),
       ExecuteJsAt(kWebUIToolbarId,
                   {"toolbar-app", "location-bar", "location-icon", "#button"},
                   "el => el.click()"),
@@ -1434,9 +1680,7 @@ IN_PROC_BROWSER_TEST_P(WebUILocationBarInteractiveUiTest, SearchAtKeyword) {
       // Omnibox text should should become empty, and a keyword chip
       // should show up.
       WaitTillOmniboxViewText(""), WaitTillSearchKeywordText("Search Tabs"),
-      // No placeholder in full yet, see http://crbug.com/534854816
-      WaitTillOmniboxViewPlaceholder(
-          mode() != Mode::kFull ? u"Enter a word or two" : u""),
+      WaitTillOmniboxViewPlaceholder(u"Enter a word or two"),
       InAnyContext(SendKeyPress(InputWebContents(), ui::VKEY_S)),
       WaitTillOmniboxViewText("s"), WaitTillSearchKeywordText("Search Tabs"),
       InAnyContext(SendKeyPress(InputWebContents(), ui::VKEY_BACK)),
@@ -1472,6 +1716,39 @@ IN_PROC_BROWSER_TEST_P(WebUILocationBarInteractiveUiTest, SearchKeyword) {
       EnsureNotPresent(InputWebContents(), SearchKeyword()));
 }
 
+// Tests that focus goes back to the open full popup when the browser window
+// takes activation right after the popup opened, e.g. when a click lands on the
+// browser window while the popup is still being shown.
+IN_PROC_BROWSER_TEST_P(WebUILocationBarPopupTransitionInteractiveUiTest,
+                       BrowserActivationRefocusesOpenPopup) {
+  if (mode() != Mode::kFull) {
+    GTEST_SKIP() << "Only the full popup takes activation from the browser.";
+  }
+  RunTestSequence(
+      InstrumentTab(kTabId), WaitForWebContentsReady(kTabId),
+      InstrumentNonTabWebView(kWebUIToolbarId, GetToolbarWebView()),
+      // The browser focuses the omnibox on about:blank, which opens the popup
+      // and focuses it. The browser window activating at startup restores
+      // focus to the toolbar during the transition period too, so this already
+      // needs focus to be handed back to the popup.
+      WaitForClassicPopupReady(), WaitTillOmniboxViewFocus(),
+      ObserveState(kPopupWidgetActivationCount,
+                   [this]() {
+                     return GetActiveClassicPopupWebView().Run()->GetWidget();
+                   }),
+      // Activating the browser window restores focus to the toolbar, while the
+      // popup is still in its transition period. The popup should take
+      // activation back.
+      Do([this]() {
+        BrowserView::GetBrowserViewForBrowser(browser())
+            ->GetWidget()
+            ->Activate();
+      }),
+      WaitForState(kPopupWidgetActivationCount, 1),
+      StopObservingState(kPopupWidgetActivationCount),
+      WaitTillOmniboxViewFocus());
+}
+
 // Tests that click-focusing the omnibox selects all (and accidentally
 // default focus behavior for about:blank pages).
 IN_PROC_BROWSER_TEST_P(WebUILocationBarInteractiveUiTest, ClickSelectsAll) {
@@ -1502,6 +1779,31 @@ IN_PROC_BROWSER_TEST_P(WebUILocationBarInteractiveUiTest, ClickSelectsAll) {
          Then(InAnyContext(WaitForShow(kClassicPopupWebViewId)))),
       InAnyContext(WaitTillOmniboxViewFocus()),
       WaitTillOmniboxViewSelection("about:blank", gfx::Range(11, 0)));
+}
+
+// Make sure that interacting with a zero-suggest suggestion doesn't
+// mess things up by trying to do an unelide.
+// See crbug.com/572584251
+IN_PROC_BROWSER_TEST_P(WebUILocationBarInteractiveUiTest, ZeroSuggestNoEnlide) {
+  RunTestSequence(
+      InstrumentTab(kTabId), WaitForWebContentsReady(kTabId),
+      InstrumentNonTabWebView(kWebUIToolbarId, GetToolbarWebView()),
+      HandleAutofocus(), WaitTillOmniboxViewText("about:blank"),
+      WaitTillOmniboxViewSelection("about:blank", gfx::Range(11, 0)),
+      // Unfocus, want the popup that shows from focus in.
+      FocusTab(),
+      // Go to a URL that will give us a popup.
+      NavigateWebContents(kTabId, GURL("https://local.test")),
+      WaitTillOmniboxViewText("local.test", View::kStatic),
+      // Click to focus location bar.
+      MoveMouseTo(kOmniboxElementId), ClickMouse(), WaitTillOmniboxViewFocus(),
+      WaitForPopupShow(),
+      // Select a suggestion from the zero-suggest dropdown, and then change
+      // caret position in it (which is an action that can trigger unelide).
+      InAnyContext(SendKeyPress(InputWebContents(), ui::VKEY_DOWN)),
+      WaitTillOmniboxViewText("Ask Google about this page"),
+      InAnyContext(SendKeyPress(InputWebContents(), ui::VKEY_LEFT)),
+      WaitTillOmniboxViewSelection("", gfx::Range(25, 25)));
 }
 
 IN_PROC_BROWSER_TEST_P(WebUILocationBarInteractiveUiTest, Placeholder) {
@@ -1602,9 +1904,6 @@ IN_PROC_BROWSER_TEST_P(WebUILocationBarInteractiveUiTest,
 
 IN_PROC_BROWSER_TEST_P(WebUILocationBarInteractiveUiTest,
                        RestoreSelectionTabSwitch) {
-  FAILS_IN_MODE(Mode::kFull,
-                "Our behavior on autofocus of location bar (since no restore) "
-                "overwrites full's restore of selection");
   RunTestSequence(
       InstrumentTab(kTabId), WaitForWebContentsReady(kTabId),
       InstrumentNonTabWebView(kWebUIToolbarId, GetToolbarWebView()),
@@ -1639,9 +1938,6 @@ IN_PROC_BROWSER_TEST_P(WebUILocationBarInteractiveUiTest,
 // Tests that if initial interaction just selected-all and didn't unelide
 // that moving the caret will unelide.
 IN_PROC_BROWSER_TEST_P(WebUILocationBarInteractiveUiTest, UnelideCaretMove) {
-  gfx::Range expected_final_selection =
-      mode() == Mode::kFull ? gfx::Range(0) : gfx::Range(8);
-
   RunTestSequence(
       InstrumentTab(kTabId), WaitForWebContentsReady(kTabId),
       InstrumentNonTabWebView(kWebUIToolbarId, GetToolbarWebView()),
@@ -1659,14 +1955,16 @@ IN_PROC_BROWSER_TEST_P(WebUILocationBarInteractiveUiTest, UnelideCaretMove) {
       WaitTillOmniboxViewText("local.test"),
       WaitTillOmniboxViewSelection("local.test", gfx::Range(10, 0)),
       // Press left-arrow. This should trigger unelision (and put
-      // the caret after the scheme).
+      // the caret after the scheme, i.e. at the start of the elided URL, in
+      // both modes).
       InAnyContext(SendKeyPress(InputWebContents(), ui::VKEY_LEFT)),
       WaitTillOmniboxViewText("https://local.test"),
-      WaitTillOmniboxViewSelection("", expected_final_selection));
+      WaitTillOmniboxViewSelection("", gfx::Range(8)));
 }
 
 // Test of Ctrl-K focus omnibox + activates default search shortcut.
-IN_PROC_BROWSER_TEST_P(WebUILocationBarInteractiveUiTest, FocusSearch) {
+IN_PROC_BROWSER_TEST_P(WebUILocationBarEagerPopupInteractiveUiTest,
+                       FocusSearch) {
   FAILS_IN_MODE(Mode::kFull,
                 "SearchboxHandler::QueryAutocomplete overwrites "
                 "KEYBOARD_SHORTCUT KeywordModeEntryMethod, breaking clearing "
@@ -1702,7 +2000,8 @@ IN_PROC_BROWSER_TEST_P(WebUILocationBarInteractiveUiTest, FocusSearch) {
 }
 
 // Test of Ctrl-K focus omnibox when the user has edited the text.
-IN_PROC_BROWSER_TEST_P(WebUILocationBarInteractiveUiTest, FocusSearch2) {
+IN_PROC_BROWSER_TEST_P(WebUILocationBarEagerPopupInteractiveUiTest,
+                       FocusSearch2) {
   ui::Accelerator accelerator;
   EXPECT_TRUE(
       AcceleratorProviderForBrowser(browser())->GetAcceleratorForCommandId(
@@ -1793,6 +2092,38 @@ IN_PROC_BROWSER_TEST_P(WebUILocationBarInteractiveUiTest, TypeWithMouseDown) {
       WaitTillOmniboxViewText("ww"));
 }
 
+// The sequence of Mouse Down/Mouse Up/Mouse Down/Mouse Up is supposed to do
+// a drag select (word-by-word, but this test isn't this precise).
+// See https://crbug.com/566216533
+IN_PROC_BROWSER_TEST_P(WebUILocationBarInteractiveUiTest, ClickDrag) {
+#if BUILDFLAG(IS_MAC)
+  // Mac likes to make selections non-directional by default, and this test
+  // has it setting one rather than our code.
+  const bool expect_no_dir = true;
+#else
+  const bool expect_no_dir = false;
+#endif
+
+  RunTestSequence(
+      InstrumentTab(kTabId), WaitForWebContentsReady(kTabId),
+      InstrumentNonTabWebView(kWebUIToolbarId, GetToolbarWebView()),
+      HandleAutofocus(), WaitTillOmniboxViewText("about:blank"),
+      WaitTillOmniboxViewSelection("about:blank", gfx::Range(11, 0)),
+      // We need to have a caret active, not a full-blown selection, to
+      // reproduce the bug.
+      InAnyContext(SendKeyPress(InputWebContents(), ui::VKEY_END)),
+      WaitTillOmniboxViewSelection("", gfx::Range(11)),
+
+      // Click in the middle, then click there again and drag to the left.
+      // This should select everything.
+      MoveMouseTo(kOmniboxElementId), ClickMouse(),
+      DragMouseTo(kOmniboxElementId, base::BindOnce([](ui::TrackedElement* el) {
+                    return el->GetScreenBounds().left_center();
+                  })),
+      WaitTillOmniboxViewSelection("about:blank", gfx::Range(11, 0),
+                                   View::kEditable, expect_no_dir));
+}
+
 // Test of selecting a word portion of URL with double-click select.
 // This is just a regular double-click. That it's the first word is
 // relevant, since we also need to make sure the selection isn't extended to
@@ -1871,6 +2202,66 @@ IN_PROC_BROWSER_TEST_P(WebUILocationBarInteractiveUiTest, DoubleClick2) {
       WaitTillOmniboxViewSelection("test", gfx::Range(14, 18)));
 }
 
+// TODO(crbug.com/469743571): Flaky or failing on Mac bots because opening the
+// popup between clicks exceeds the double-click timeout (kDoubleClickTimeMs =
+// 500ms).
+#define MAYBE_MacDoubleClick DISABLED_MacDoubleClick
+
+// Test to make sure we can turn a second-click of a two-click sequence where
+// the second click is to the popup into a double-click. This is run only on
+// Mac since that's where the code it covers is, and sending two separate clicks
+// is flakey on slow bots like ASAN ones, which tend to be non-Mac. The test
+// does work on at least Linux as well, though.
+IN_PROC_BROWSER_TEST_P(WebUILocationBarInteractiveUiTest,
+                       MAYBE_MacDoubleClick) {
+#if BUILDFLAG(IS_MAC)
+  // Mac likes to make selections non-directional by default, and this test
+  // has it setting one rather than our code.
+  const bool expect_no_dir = true;
+#else
+  const bool expect_no_dir = false;
+#endif
+  PORT_UNFINISHED(Mode::kFull, "Not yet ported");
+
+  RunTestSequence(
+      InstrumentTab(kTabId), WaitForWebContentsReady(kTabId),
+      InstrumentNonTabWebView(kWebUIToolbarId, GetToolbarWebView()),
+      HandleAutofocus(), WaitTillOmniboxViewText("about:blank"),
+      WaitTillOmniboxViewSelection("about:blank", gfx::Range(11, 0)),
+      FocusTab(), NavigateWebContents(kTabId, GURL("https://local.test")),
+      // Navigation will deactivate any full popup
+      WaitTillOmniboxViewText("local.test", View::kStatic),
+      WaitTillOmniboxViewSelection("", gfx::Range(10), View::kStatic),
+      InAnyContext(MoveMouseTo(kOmniboxElementId)), InSameContext(ClickMouse()),
+      WaitForPopupShow(),
+      // Make sure the second click goes to the right popup frame.
+      Do([&]() {
+        auto frames = views::ElementTrackerViews::GetInstance()
+                          ->GetAllMatchingViewsInAnyContext(
+                              OmniboxPopupPresenterBase::kRoundedResultsFrame);
+        views::View* popup_frame = nullptr;
+        for (views::View* candidate : frames) {
+          if (candidate->GetBoundsInScreen().height() > 100) {
+            popup_frame = candidate;
+          }
+        }
+        ASSERT_TRUE(popup_frame);
+        auto click_gesture =
+            views::test::InteractionTestUtilMouse::Click(ui_controls::LEFT);
+        gfx::NativeWindow native_window =
+            popup_frame->GetWidget()->GetNativeWindow();
+        ASSERT_TRUE(mouse_util().PerformGestures(
+            views::test::InteractionTestUtilMouse::GestureParams(native_window),
+            click_gesture));
+      }),
+      // The URL is unelided, and "test" is selected (since the mouse
+      // is in the middle of the element and the URL is short, it's the last
+      // word that gets selected).
+      WaitTillOmniboxViewText("https://local.test"),
+      WaitTillOmniboxViewSelection("test", gfx::Range(14, 18), View::kEditable,
+                                   expect_no_dir));
+}
+
 // The context menu tests don't appear to work on Mac.
 #if BUILDFLAG(IS_MAC)
 #define MAYBE_ContextMenu DISABLED_ContextMenu
@@ -1882,9 +2273,7 @@ IN_PROC_BROWSER_TEST_P(WebUILocationBarInteractiveUiTest, DoubleClick2) {
 
 // Test of location bar context menu; uses the 'Copy' item.
 IN_PROC_BROWSER_TEST_P(WebUILocationBarInteractiveUiTest, MAYBE_ContextMenu) {
-  FAILS_IN_MODE(Mode::kFull,
-                "Selection lost on right-click when uneliding; possibly "
-                "the same as crbug.com/549791744");
+  FAILS_IN_MODE(Mode::kFull, "Right-click goes to the wrong omnibox");
   RunTestSequence(
       InstrumentTab(kTabId), WaitForWebContentsReady(kTabId),
       InstrumentNonTabWebView(kWebUIToolbarId, GetToolbarWebView()),
@@ -1937,21 +2326,108 @@ IN_PROC_BROWSER_TEST_P(WebUILocationBarInteractiveUiTest, PasteSanitizesText) {
     writer.WriteText(u"  javascript:javascript:alert(1)\r\nhello world\n");
   }
 
-  ui::Accelerator paste_accel(ui::VKEY_V,
-#if BUILDFLAG(IS_MAC)
-                              ui::EF_COMMAND_DOWN
-#else
-                              ui::EF_CONTROL_DOWN
-#endif
-  );
-
   RunTestSequence(
       InstrumentNonTabWebView(kWebUIToolbarId, GetToolbarWebView()),
-      HandleAutofocus(), WaitTillOmniboxViewText("about:blank"),
+      HandleAutofocus(), WaitTillOmniboxViewFocus(),
+      WaitTillOmniboxViewText("about:blank"),
       WaitTillOmniboxViewSelection("about:blank", gfx::Range(11, 0)),
-      InAnyContext(SendAccelerator(InputWebContents(), paste_accel)),
+      InAnyContext(
+          WithElement(InputWebContents(),
+                      [](ui::TrackedElement* el) {
+                        AsInstrumentedWebContents(el)->web_contents()->Paste();
+                      })),
       WaitTillOmniboxViewText("alert(1) hello world"));
 }
+
+#if BUILDFLAG(IS_MAC)
+// Regression test for crbug.com/563226016. In macOS fullscreen, the WebUI
+// toolbar is hosted in the NSToolbarFullScreenWindow, which shares its first
+// responder with the browser window. If AppKit changes the browser window's
+// first responder without updating the fullscreen window, clicking the omnibox
+// synchronizes the first responder state. Then, the Omnibox should receive the
+// keyboard events.
+IN_PROC_BROWSER_TEST_P(WebUILocationBarInteractiveUiTest,
+                       FullscreenFirstResponderDivergenceRecovers) {
+  if (mode() == Mode::kFull) {
+    GTEST_SKIP() << "In full mode, the omnibox click focuses the popup web "
+                    "view rather than the toolbar web view.";
+  }
+  DEFINE_LOCAL_STATE_IDENTIFIER_VALUE(ui::test::PollingStateObserver<bool>,
+                                      kToolbarHasFocus);
+  DEFINE_LOCAL_CUSTOM_ELEMENT_EVENT_TYPE(kClickProcessed);
+  DEFINE_LOCAL_CUSTOM_ELEMENT_EVENT_TYPE(kTypedTextReceived);
+  RunTestSequence(
+      InstrumentTab(kTabId), WaitForWebContentsReady(kTabId),
+      InstrumentNonTabWebView(kWebUIToolbarId, GetToolbarWebView()),
+      HandleAutofocus(),
+      Do([this]() { ui_test_utils::ToggleFullscreenModeAndWait(browser()); }),
+      PollState(kToolbarHasFocus,
+                [this]() {
+                  return GetToolbarWebView()
+                      ->GetWebContents()
+                      ->GetRenderWidgetHostView()
+                      ->HasFocus();
+                }),
+      MoveMouseTo(kOmniboxElementId), ClickMouse(),
+      WaitForState(kToolbarHasFocus, true),
+      StopObservingState(kToolbarHasFocus),
+      // Open the omnibox popup. It covers the omnibox, so the click below is
+      // received by the popup and forwarded to the toolbar.
+      EnterText(u"input"), WaitForPopupShow(), Do([this]() {
+        // Make the tab contents the browser window's first responder behind
+        // the toolbar's back.
+        ASSERT_TRUE(
+            webui_location_bar_test::SetWindowFirstResponderWithoutResigning(
+                browser()
+                    ->GetTabStripModel()
+                    ->GetActiveWebContents()
+                    ->GetRenderWidgetHostView()
+                    ->GetNativeView()));
+      }),
+      InAnyContext(
+          EnsurePresent(OmniboxPopupPresenterBase::kRoundedResultsFrame)),
+      MoveMouseTo(kOmniboxElementId),
+      WithElement(
+          kBrowserViewElementId,
+          [](ui::TrackedElement* browser_view) {
+            // While the popup is open, real clicks on the omnibox land on the
+            // popup window and are forwarded to the toolbar. ui_controls picks
+            // the target window with +[NSWindow windowNumberAtPoint:], which
+            // skips the popup's transparent cutout, so send the click to the
+            // popup's window directly.
+            ui::TrackedElement* popup =
+                ui::ElementTracker::GetElementTracker()->GetElementInAnyContext(
+                    OmniboxPopupPresenterBase::kRoundedResultsFrame);
+            ASSERT_TRUE(popup);
+            ASSERT_TRUE(ui_controls::SendMouseEventsNotifyWhenDone(
+                ui_controls::LEFT, ui_controls::UP | ui_controls::DOWN,
+                base::BindOnce(
+                    [](ui::TrackedElement* el) {
+                      ui::ElementTracker::GetFrameworkDelegate()
+                          ->NotifyCustomEvent(el, kClickProcessed);
+                    },
+                    browser_view),
+                ui_controls::kNoAccelerator,
+                popup->AsA<views::TrackedElementViews>()
+                    ->view()
+                    ->GetWidget()
+                    ->GetNativeWindow()));
+          }),
+      // ui_controls sends key events synchronously but posts mouse events, so
+      // wait for the click before typing.
+      WaitForEvent(kBrowserViewElementId, kClickProcessed),
+      InAnyContext(SendKeyPress(kBrowserViewElementId, ui::VKEY_Z)),
+      // Where the click leaves the caret is not important, so only check that
+      // the typed character reached the omnibox.
+      WaitForStateChange(kWebUIToolbarId, [] {
+        WebContentsInteractionTestUtil::StateChange typed;
+        typed.event = kTypedTextReceived;
+        typed.where = kOmniboxInputDeepQuery;
+        typed.test_function = "(el) => el.value.includes('z')";
+        return typed;
+      }()));
+}
+#endif  // BUILDFLAG(IS_MAC)
 
 #if BUILDFLAG(IS_WIN)
 // The test fixture sets up ui_test_utils::BringBrowserWindowToFront to run
@@ -1966,6 +2442,22 @@ IN_PROC_BROWSER_TEST_P(WebUILocationBarInteractiveUiTest, PasteSanitizesText) {
 INSTANTIATE_TEST_SUITE_P(
     /* no prefix */,
     WebUILocationBarInteractiveUiTest,
+    ::testing::Values(MODES_TO_TEST),
+    [](const testing::TestParamInfo<Mode>& info) {
+      return ModeToString(info.param);
+    });
+
+INSTANTIATE_TEST_SUITE_P(
+    /* no prefix */,
+    WebUILocationBarEagerPopupInteractiveUiTest,
+    ::testing::Values(MODES_TO_TEST),
+    [](const testing::TestParamInfo<Mode>& info) {
+      return ModeToString(info.param);
+    });
+
+INSTANTIATE_TEST_SUITE_P(
+    /* no prefix */,
+    WebUILocationBarPopupTransitionInteractiveUiTest,
     ::testing::Values(MODES_TO_TEST),
     [](const testing::TestParamInfo<Mode>& info) {
       return ModeToString(info.param);

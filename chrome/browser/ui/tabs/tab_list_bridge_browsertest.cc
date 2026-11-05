@@ -25,6 +25,7 @@
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/sessions/core/session_id.h"
 #include "components/split_tabs/split_tab_id.h"
+#include "components/split_tabs/split_tab_visual_data.h"
 #include "components/tab_groups/tab_group_id.h"
 #include "components/tab_groups/tab_group_visual_data.h"
 #include "components/tabs/public/tab_group.h"
@@ -34,7 +35,7 @@
 #include "content/public/test/browser_test_utils.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 
 namespace {
 
@@ -161,8 +162,9 @@ void SetupTabs(BrowserWindowInterface* browser,
   ASSERT_TRUE(tab_strip_model);
 
   for (auto i = 0u; i < num_tabs; i++) {
-    auto disposition = i == 0u ? WindowOpenDisposition::CURRENT_TAB
-                               : WindowOpenDisposition::NEW_BACKGROUND_TAB;
+    auto disposition =
+        i == 0u ? ui::mojom::WindowOpenDisposition::kCurrentTab
+                : ui::mojom::WindowOpenDisposition::kNewBackgroundTab;
     ASSERT_TRUE(ui_test_utils::NavigateToURLWithDisposition(
         browser, GURL("about:blank"), disposition,
         ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP))
@@ -183,7 +185,7 @@ class TabListBridgeBrowserTest : public InProcessBrowserTest {
         std::make_unique<tab_groups::TabGroupSyncServiceInitializedObserver>(
             tab_groups::TabGroupSyncServiceFactory::GetForProfile(
                 GetProfile()));
-    observer->Wait();
+    ASSERT_TRUE(observer->Wait());
   }
 };
 
@@ -194,10 +196,10 @@ IN_PROC_BROWSER_TEST_F(TabListBridgeBrowserTest, GetTab) {
   const GURL url2("http://two.example");
 
   ASSERT_TRUE(ui_test_utils::NavigateToURLWithDisposition(
-      browser(), url1, WindowOpenDisposition::CURRENT_TAB,
+      browser(), url1, ui::mojom::WindowOpenDisposition::kCurrentTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP));
   ASSERT_TRUE(ui_test_utils::NavigateToURLWithDisposition(
-      browser(), url2, WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      browser(), url2, ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP));
 
   TabListInterface* tab_list_interface = TabListInterface::From(browser());
@@ -221,7 +223,7 @@ IN_PROC_BROWSER_TEST_F(TabListBridgeBrowserTest, GetActiveIndex) {
   EXPECT_EQ(0, tab_list_interface->GetActiveIndex());
 
   ASSERT_TRUE(ui_test_utils::NavigateToURLWithDisposition(
-      browser(), url, WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      browser(), url, ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP));
   EXPECT_EQ(1, tab_list_interface->GetActiveIndex());
 }
@@ -234,7 +236,7 @@ IN_PROC_BROWSER_TEST_F(TabListBridgeBrowserTest, ActivateTab) {
 
   // Add a second tab, which should be active (it opens in the foreground).
   ASSERT_TRUE(ui_test_utils::NavigateToURLWithDisposition(
-      browser(), url, WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      browser(), url, ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP));
   EXPECT_EQ(2, tab_list_interface->GetTabCount());
   EXPECT_EQ(1, tab_list_interface->GetActiveIndex());
@@ -257,7 +259,7 @@ IN_PROC_BROWSER_TEST_F(TabListBridgeBrowserTest, GetTabCount) {
   EXPECT_EQ(1, tab_list_interface->GetTabCount());
 
   ASSERT_TRUE(ui_test_utils::NavigateToURLWithDisposition(
-      browser(), url, WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      browser(), url, ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP));
   EXPECT_EQ(2, tab_list_interface->GetTabCount());
 }
@@ -272,7 +274,7 @@ IN_PROC_BROWSER_TEST_F(TabListBridgeBrowserTest, GetAllTabs) {
 
   // Navigate to one.example. This should be the only tab, initially.
   ASSERT_TRUE(ui_test_utils::NavigateToURLWithDisposition(
-      browser(), url1, WindowOpenDisposition::CURRENT_TAB,
+      browser(), url1, ui::mojom::WindowOpenDisposition::kCurrentTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP));
   EXPECT_THAT(tab_list_interface->GetAllTabs(),
               testing::ElementsAre(MatchesTab(url1)));
@@ -280,10 +282,10 @@ IN_PROC_BROWSER_TEST_F(TabListBridgeBrowserTest, GetAllTabs) {
   // Open two more tabs, for a total of three. All should be returned (in
   // order).
   ASSERT_TRUE(ui_test_utils::NavigateToURLWithDisposition(
-      browser(), url2, WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      browser(), url2, ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP));
   ASSERT_TRUE(ui_test_utils::NavigateToURLWithDisposition(
-      browser(), url3, WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      browser(), url3, ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP));
 
   EXPECT_THAT(tab_list_interface->GetAllTabs(),
@@ -301,13 +303,13 @@ IN_PROC_BROWSER_TEST_F(TabListBridgeBrowserTest, GetOpenerForTab) {
 
   // Open three tabs. All should be returned (in order).
   ASSERT_TRUE(ui_test_utils::NavigateToURLWithDisposition(
-      browser(), url1, WindowOpenDisposition::CURRENT_TAB,
+      browser(), url1, ui::mojom::WindowOpenDisposition::kCurrentTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP));
   ASSERT_TRUE(ui_test_utils::NavigateToURLWithDisposition(
-      browser(), url2, WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      browser(), url2, ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP));
   ASSERT_TRUE(ui_test_utils::NavigateToURLWithDisposition(
-      browser(), url3, WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      browser(), url3, ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP));
 
   // Focus the first tab.
@@ -335,20 +337,20 @@ IN_PROC_BROWSER_TEST_F(TabListBridgeBrowserTest, GetActiveTab) {
 
   // Navigate to one.example. This should be the only tab, initially.
   ASSERT_TRUE(ui_test_utils::NavigateToURLWithDisposition(
-      browser(), url1, WindowOpenDisposition::CURRENT_TAB,
+      browser(), url1, ui::mojom::WindowOpenDisposition::kCurrentTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP));
   EXPECT_THAT(tab_list_interface->GetActiveTab(), MatchesTab(url1));
 
   // Open a new tab in the background. The active tab should be unchanged.
   ASSERT_TRUE(ui_test_utils::NavigateToURLWithDisposition(
-      browser(), url2, WindowOpenDisposition::NEW_BACKGROUND_TAB,
+      browser(), url2, ui::mojom::WindowOpenDisposition::kNewBackgroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP));
   EXPECT_THAT(tab_list_interface->GetActiveTab(), MatchesTab(url1));
 
   // Open a new tab in the foreground. Now, the active tab should be the new
   // tab.
   ASSERT_TRUE(ui_test_utils::NavigateToURLWithDisposition(
-      browser(), url3, WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      browser(), url3, ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP));
   EXPECT_THAT(tab_list_interface->GetActiveTab(), MatchesTab(url3));
 }
@@ -378,12 +380,12 @@ IN_PROC_BROWSER_TEST_F(TabListBridgeBrowserTest, GetIndexOfTab) {
   tabs::TabInterface* tab0 = tab_list_interface->GetActiveTab();
 
   ASSERT_TRUE(ui_test_utils::NavigateToURLWithDisposition(
-      browser(), url, WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      browser(), url, ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP));
   tabs::TabInterface* tab1 = tab_list_interface->GetActiveTab();
 
   ASSERT_TRUE(ui_test_utils::NavigateToURLWithDisposition(
-      browser(), url, WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      browser(), url, ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP));
   tabs::TabInterface* tab2 = tab_list_interface->GetActiveTab();
 
@@ -407,10 +409,10 @@ IN_PROC_BROWSER_TEST_F(TabListBridgeBrowserTest, DuplicateTab) {
 
   // Open two tabs.
   ASSERT_TRUE(ui_test_utils::NavigateToURLWithDisposition(
-      browser(), url1, WindowOpenDisposition::CURRENT_TAB,
+      browser(), url1, ui::mojom::WindowOpenDisposition::kCurrentTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP));
   ASSERT_TRUE(ui_test_utils::NavigateToURLWithDisposition(
-      browser(), url2, WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      browser(), url2, ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP));
 
   TabListInterface* tab_list_interface = TabListInterface::From(browser());
@@ -438,7 +440,7 @@ IN_PROC_BROWSER_TEST_F(TabListBridgeBrowserTest, CloseTab) {
 
   const GURL url("http://one.example");
   ASSERT_TRUE(ui_test_utils::NavigateToURLWithDisposition(
-      browser(), url, WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      browser(), url, ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP));
   EXPECT_EQ(2, tab_list_interface->GetTabCount());
 
@@ -457,7 +459,7 @@ IN_PROC_BROWSER_TEST_F(TabListBridgeBrowserTest, DetachWebContents) {
 
   const GURL url("http://one.example");
   ASSERT_TRUE(ui_test_utils::NavigateToURLWithDisposition(
-      browser(), url, WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      browser(), url, ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP));
   EXPECT_EQ(2, tab_list_interface->GetTabCount());
 
@@ -480,13 +482,13 @@ IN_PROC_BROWSER_TEST_F(TabListBridgeBrowserTest, MoveTab) {
 
   // Open three tabs.
   ASSERT_TRUE(ui_test_utils::NavigateToURLWithDisposition(
-      browser(), url1, WindowOpenDisposition::CURRENT_TAB,
+      browser(), url1, ui::mojom::WindowOpenDisposition::kCurrentTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP));
   ASSERT_TRUE(ui_test_utils::NavigateToURLWithDisposition(
-      browser(), url2, WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      browser(), url2, ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP));
   ASSERT_TRUE(ui_test_utils::NavigateToURLWithDisposition(
-      browser(), url3, WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      browser(), url3, ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP));
 
   TabListInterface* tab_list_interface = TabListInterface::From(browser());
@@ -517,10 +519,10 @@ IN_PROC_BROWSER_TEST_F(TabListBridgeBrowserTest, MoveTabToWindow) {
 
   // Open two tabs.
   ASSERT_TRUE(ui_test_utils::NavigateToURLWithDisposition(
-      browser(), url1, WindowOpenDisposition::CURRENT_TAB,
+      browser(), url1, ui::mojom::WindowOpenDisposition::kCurrentTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP));
   ASSERT_TRUE(ui_test_utils::NavigateToURLWithDisposition(
-      browser(), url2, WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      browser(), url2, ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP));
 
   TabListInterface* source_list_interface = TabListInterface::From(browser());
@@ -563,17 +565,17 @@ IN_PROC_BROWSER_TEST_F(TabListBridgeBrowserTest, Observer_OnTabAdded) {
 
   // Navigate to one.example in the current tab.
   ASSERT_TRUE(ui_test_utils::NavigateToURLWithDisposition(
-      browser(), url1, WindowOpenDisposition::CURRENT_TAB,
+      browser(), url1, ui::mojom::WindowOpenDisposition::kCurrentTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP));
 
   // Open a new tab in the background.
   ASSERT_TRUE(ui_test_utils::NavigateToURLWithDisposition(
-      browser(), url2, WindowOpenDisposition::NEW_BACKGROUND_TAB,
+      browser(), url2, ui::mojom::WindowOpenDisposition::kNewBackgroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP));
 
   // Open a new tab in the foreground.
   ASSERT_TRUE(ui_test_utils::NavigateToURLWithDisposition(
-      browser(), url3, WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      browser(), url3, ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP));
 
   // We should have received two TAB_ADDED events.
@@ -593,17 +595,17 @@ IN_PROC_BROWSER_TEST_F(TabListBridgeBrowserTest, Observer_OnActiveTabChanged) {
 
   // Navigate to one.example in the current tab.
   ASSERT_TRUE(ui_test_utils::NavigateToURLWithDisposition(
-      browser(), url1, WindowOpenDisposition::CURRENT_TAB,
+      browser(), url1, ui::mojom::WindowOpenDisposition::kCurrentTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP));
 
   // Open a new tab in the background.
   ASSERT_TRUE(ui_test_utils::NavigateToURLWithDisposition(
-      browser(), url2, WindowOpenDisposition::NEW_BACKGROUND_TAB,
+      browser(), url2, ui::mojom::WindowOpenDisposition::kNewBackgroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP));
 
   // Open a new tab in the foreground.
   ASSERT_TRUE(ui_test_utils::NavigateToURLWithDisposition(
-      browser(), url3, WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      browser(), url3, ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP));
 
   // We should have received single ACTIVE_TAB_CHANGED event.
@@ -619,16 +621,16 @@ IN_PROC_BROWSER_TEST_F(TabListBridgeBrowserTest, HighlightTabs) {
   const GURL url4("http://four.example");
 
   ASSERT_TRUE(ui_test_utils::NavigateToURLWithDisposition(
-      browser(), url1, WindowOpenDisposition::CURRENT_TAB,
+      browser(), url1, ui::mojom::WindowOpenDisposition::kCurrentTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP));
   ASSERT_TRUE(ui_test_utils::NavigateToURLWithDisposition(
-      browser(), url2, WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      browser(), url2, ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP));
   ASSERT_TRUE(ui_test_utils::NavigateToURLWithDisposition(
-      browser(), url3, WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      browser(), url3, ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP));
   ASSERT_TRUE(ui_test_utils::NavigateToURLWithDisposition(
-      browser(), url4, WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      browser(), url4, ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP));
 
   TabStripModel* tab_strip_model = browser()->tab_strip_model();
@@ -643,6 +645,8 @@ IN_PROC_BROWSER_TEST_F(TabListBridgeBrowserTest, HighlightTabs) {
 
   TabListInterface* tab_list_interface = TabListInterface::From(browser());
   ASSERT_TRUE(tab_list_interface);
+  EXPECT_THAT(tab_list_interface->GetHighlightedTabs(),
+              testing::ElementsAre(MatchesTab(url4)));
 
   // Select the tabs with `url1` and `url2` and make the tab with `url2` the
   // active tab.
@@ -660,6 +664,16 @@ IN_PROC_BROWSER_TEST_F(TabListBridgeBrowserTest, HighlightTabs) {
   EXPECT_TRUE(tab_strip_model->IsTabSelected(1));
   EXPECT_FALSE(tab_strip_model->IsTabSelected(2));
   EXPECT_FALSE(tab_strip_model->IsTabSelected(3));
+  EXPECT_THAT(tab_list_interface->GetHighlightedTabs(),
+              testing::ElementsAre(MatchesTab(url1), MatchesTab(url2)));
+
+  // Highlight non-contiguous tabs and verify ascending strip index order.
+  tab_list_interface->HighlightTabs(
+      tab_list_interface->GetTab(2)->GetHandle(),
+      {tab_list_interface->GetTab(0)->GetHandle(),
+       tab_list_interface->GetTab(2)->GetHandle()});
+  EXPECT_THAT(tab_list_interface->GetHighlightedTabs(),
+              testing::ElementsAre(MatchesTab(url1), MatchesTab(url3)));
 }
 
 IN_PROC_BROWSER_TEST_F(TabListBridgeBrowserTest,
@@ -1002,39 +1016,71 @@ IN_PROC_BROWSER_TEST_F(TabListBridgeBrowserTest,
 }
 
 IN_PROC_BROWSER_TEST_F(TabListBridgeBrowserTest, CreateSplit) {
-  SetupTabs(browser(), 5);
+  SetupTabs(browser(), 10);
 
   TabStripModel* tab_strip_model = browser()->tab_strip_model();
   ASSERT_TRUE(tab_strip_model);
-  EXPECT_EQ("0 1 2 3 4",
+  EXPECT_EQ("0 1 2 3 4 5 6 7 8 9",
             GetTabStripStateString(tab_strip_model, /*annotate_groups=*/true));
 
   TabListInterface* tab_list_interface = TabListInterface::From(browser());
   ASSERT_TRUE(tab_list_interface);
 
-  // Splitting adjacent tabs (index 0 and index 1).
-  std::optional<split_tabs::SplitTabId> split_id1 =
-      tab_list_interface->CreateSplit(
-          {tab_list_interface->GetTab(0)->GetHandle(),
-           tab_list_interface->GetTab(1)->GetHandle()});
-  ASSERT_TRUE(split_id1.has_value());
-  EXPECT_EQ("0s 1s 2 3 4",
-            GetTabStripStateString(tab_strip_model, /*annotate_groups=*/true));
-  EXPECT_EQ(split_id1, tab_list_interface->GetTab(0)->GetSplit());
-  EXPECT_EQ(split_id1, tab_list_interface->GetTab(1)->GetSplit());
+  struct {
+    const char* description;
+    int first_tab_index;
+    int second_tab_index;
+    split_tabs::SplitTabLayout layout;
+    double split_ratio;
+    const char* expected_state;
+  } constexpr kTestCases[] = {
+      // Splitting adjacent tabs (index 0 and index 1) with horizontal
+      // (side-by-side) layout and default 0.5 split ratio.
+      {"Adjacent tabs with horizontal (side-by-side) layout", 0, 1,
+       split_tabs::SplitTabLayout::kSideBySide, 0.5, "0s 1s 2 3 4 5 6 7 8 9"},
+      // Splitting non-adjacent tabs (index 2 and index 4) with horizontal
+      // (side-by-side) layout and custom 0.3 split ratio repositions them so
+      // they become contiguous. This behavior is consistent with the underlying
+      // TabStripModel::AddToNewSplit implementation.
+      {"Non-adjacent tabs with horizontal (side-by-side) layout", 2, 4,
+       split_tabs::SplitTabLayout::kSideBySide, 0.3, "0s 1s 2s 4s 3 5 6 7 8 9"},
+      // Splitting adjacent tabs (index 5 and index 6) with vertical (stacked)
+      // layout and default 0.5 split ratio.
+      {"Adjacent tabs with vertical (stacked) layout", 5, 6,
+       split_tabs::SplitTabLayout::kStacked, 0.5, "0s 1s 2s 4s 3 5s 6s 7 8 9"},
+      // Splitting non-adjacent tabs (index 7 and index 9) with vertical
+      // (stacked) layout and custom 0.7 split ratio repositions them so they
+      // become contiguous.
+      {"Non-adjacent tabs with vertical (stacked) layout", 7, 9,
+       split_tabs::SplitTabLayout::kStacked, 0.7,
+       "0s 1s 2s 4s 3 5s 6s 7s 9s 8"},
+  };
 
-  // Splitting non-adjacent tabs (index 2 and index 4) repositions them so they
-  // become contiguous. This behavior is consistent with the underlying
-  // TabStripModel::AddToNewSplit implementation.
-  std::optional<split_tabs::SplitTabId> split_id2 =
-      tab_list_interface->CreateSplit(
-          {tab_list_interface->GetTab(2)->GetHandle(),
-           tab_list_interface->GetTab(4)->GetHandle()});
-  ASSERT_TRUE(split_id2.has_value());
-  EXPECT_EQ("0s 1s 2s 4s 3",
-            GetTabStripStateString(tab_strip_model, /*annotate_groups=*/true));
-  EXPECT_EQ(split_id2, tab_list_interface->GetTab(2)->GetSplit());
-  EXPECT_EQ(split_id2, tab_list_interface->GetTab(3)->GetSplit());
+  for (const auto& test_case : kTestCases) {
+    SCOPED_TRACE(test_case.description);
+    std::optional<split_tabs::SplitTabId> split_id =
+        tab_list_interface->CreateSplit(
+            {tab_list_interface->GetTab(test_case.first_tab_index)->GetHandle(),
+             tab_list_interface->GetTab(test_case.second_tab_index)
+                 ->GetHandle()},
+            split_tabs::SplitTabVisualData(test_case.layout,
+                                           test_case.split_ratio));
+    ASSERT_TRUE(split_id.has_value());
+    EXPECT_EQ(
+        test_case.expected_state,
+        GetTabStripStateString(tab_strip_model, /*annotate_groups=*/true));
+    EXPECT_EQ(
+        split_id,
+        tab_list_interface->GetTab(test_case.first_tab_index)->GetSplit());
+    EXPECT_EQ(
+        split_id,
+        tab_list_interface->GetTab(test_case.first_tab_index + 1)->GetSplit());
+    std::optional<split_tabs::SplitTabVisualData> visual_data =
+        tab_list_interface->GetSplitTabVisualData(*split_id);
+    ASSERT_TRUE(visual_data.has_value());
+    EXPECT_EQ(test_case.layout, visual_data->split_layout());
+    EXPECT_DOUBLE_EQ(test_case.split_ratio, visual_data->split_ratio());
+  }
 }
 
 IN_PROC_BROWSER_TEST_F(TabListBridgeBrowserTest, Unsplit) {
@@ -1048,7 +1094,8 @@ IN_PROC_BROWSER_TEST_F(TabListBridgeBrowserTest, Unsplit) {
   std::optional<split_tabs::SplitTabId> split_id =
       tab_list_interface->CreateSplit(
           {tab_list_interface->GetTab(0)->GetHandle(),
-           tab_list_interface->GetTab(1)->GetHandle()});
+           tab_list_interface->GetTab(1)->GetHandle()},
+          split_tabs::SplitTabVisualData());
   ASSERT_TRUE(split_id.has_value());
   EXPECT_EQ("0s 1s 2",
             GetTabStripStateString(tab_strip_model, /*annotate_groups=*/true));
@@ -1058,6 +1105,8 @@ IN_PROC_BROWSER_TEST_F(TabListBridgeBrowserTest, Unsplit) {
             GetTabStripStateString(tab_strip_model, /*annotate_groups=*/true));
   EXPECT_FALSE(tab_list_interface->GetTab(0)->GetSplit().has_value());
   EXPECT_FALSE(tab_list_interface->GetTab(1)->GetSplit().has_value());
+  EXPECT_FALSE(
+      tab_list_interface->GetSplitTabVisualData(*split_id).has_value());
 }
 
 IN_PROC_BROWSER_TEST_F(TabListBridgeBrowserTest, ListSplits) {
@@ -1070,7 +1119,8 @@ IN_PROC_BROWSER_TEST_F(TabListBridgeBrowserTest, ListSplits) {
   std::optional<split_tabs::SplitTabId> split_id =
       tab_list_interface->CreateSplit(
           {tab_list_interface->GetTab(0)->GetHandle(),
-           tab_list_interface->GetTab(1)->GetHandle()});
+           tab_list_interface->GetTab(1)->GetHandle()},
+          split_tabs::SplitTabVisualData());
   ASSERT_TRUE(split_id.has_value());
 
   std::set<split_tabs::SplitTabId> splits = tab_list_interface->ListSplits();
@@ -1088,7 +1138,7 @@ IN_PROC_BROWSER_TEST_F(TabListBridgeBrowserTest, OpenTab) {
   const GURL url4("about:blank?q=4");
 
   ASSERT_TRUE(ui_test_utils::NavigateToURLWithDisposition(
-      browser(), url1, WindowOpenDisposition::CURRENT_TAB,
+      browser(), url1, ui::mojom::WindowOpenDisposition::kCurrentTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP));
 
   TabStripModel* tab_strip_model = browser()->tab_strip_model();
@@ -1148,7 +1198,7 @@ IN_PROC_BROWSER_TEST_F(TabListBridgeBrowserTest, InsertWebContentsAt) {
 IN_PROC_BROWSER_TEST_F(TabListBridgeBrowserTest, DiscardTab) {
   ASSERT_TRUE(ui_test_utils::NavigateToURLWithDisposition(
       browser(), GURL("http://one.example"),
-      WindowOpenDisposition::NEW_BACKGROUND_TAB,
+      ui::mojom::WindowOpenDisposition::kNewBackgroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP));
 
   TabListInterface* tab_list_interface = TabListInterface::From(browser());
@@ -1281,12 +1331,12 @@ IN_PROC_BROWSER_TEST_F(TabListBridgeBrowserTest, Observer_OnTabRemoved) {
 
   // Navigate to one.example in the current tab.
   ASSERT_TRUE(ui_test_utils::NavigateToURLWithDisposition(
-      browser(), url1, WindowOpenDisposition::CURRENT_TAB,
+      browser(), url1, ui::mojom::WindowOpenDisposition::kCurrentTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP));
 
   // Open a new tab in the background.
   ASSERT_TRUE(ui_test_utils::NavigateToURLWithDisposition(
-      browser(), url2, WindowOpenDisposition::NEW_BACKGROUND_TAB,
+      browser(), url2, ui::mojom::WindowOpenDisposition::kNewBackgroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP));
 
   FakeObserver observer(tab_list_interface);
@@ -1310,17 +1360,17 @@ IN_PROC_BROWSER_TEST_F(TabListBridgeBrowserTest, Observer_OnTabMoved) {
 
   // Navigate to one.example in the current tab.
   ASSERT_TRUE(ui_test_utils::NavigateToURLWithDisposition(
-      browser(), url1, WindowOpenDisposition::CURRENT_TAB,
+      browser(), url1, ui::mojom::WindowOpenDisposition::kCurrentTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP));
 
   // Open a new tab in the background.
   ASSERT_TRUE(ui_test_utils::NavigateToURLWithDisposition(
-      browser(), url2, WindowOpenDisposition::NEW_BACKGROUND_TAB,
+      browser(), url2, ui::mojom::WindowOpenDisposition::kNewBackgroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP));
 
   // Open a third tab in the background.
   ASSERT_TRUE(ui_test_utils::NavigateToURLWithDisposition(
-      browser(), url3, WindowOpenDisposition::NEW_BACKGROUND_TAB,
+      browser(), url3, ui::mojom::WindowOpenDisposition::kNewBackgroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP));
 
   FakeObserver observer(tab_list_interface);
@@ -1375,7 +1425,7 @@ IN_PROC_BROWSER_TEST_F(TabListBridgeWebContentsDiscardDisabledBrowserTest,
                        WebContentsReplaced) {
   const GURL url1("http://one.example");
   ASSERT_TRUE(ui_test_utils::NavigateToURLWithDisposition(
-      browser(), url1, WindowOpenDisposition::CURRENT_TAB,
+      browser(), url1, ui::mojom::WindowOpenDisposition::kCurrentTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP));
 
   TabListInterface* tab_list_interface = TabListInterface::From(browser());

@@ -9,8 +9,8 @@
 
 #include "base/containers/queue.h"
 #include "base/functional/callback_forward.h"
-#include "base/memory/advanced_memory_safety_checks.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory/sanitized_object.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/time/time.h"
@@ -22,10 +22,11 @@
 namespace content::indexed_db {
 class Database;
 struct PendingConnection;
+class Transaction;
 
 class CONTENT_EXPORT ConnectionCoordinator {
   // TODO(crbug.com/498738402): Remove this macro.
-  ADVANCED_MEMORY_SAFETY_CHECKS();
+  SANITIZED_OBJECT();
 
  public:
   ConnectionCoordinator(Database* db, BucketContext& bucket_context);
@@ -54,11 +55,10 @@ class CONTENT_EXPORT ConnectionCoordinator {
   // pending connection.
   void OnVersionChangeIgnored();
 
-  void BindVersionChangeTransactionReceiver();
+  void OnUpgradeTransactionStarted(Transaction& transaction,
+                                   int64_t old_version);
 
-  void OnUpgradeTransactionStarted(int64_t old_version);
-
-  void OnUpgradeTransactionFinished(bool committed);
+  void OnUpgradeTransactionFinished(const Transaction& transaction);
 
   enum class ExecuteTaskResult {
     // There are more tasks to run, so ExecuteTask() should be called again.

@@ -4,6 +4,7 @@
 
 #include "chrome/enterprise_companion/event_logger.h"
 
+#include <stddef.h>
 #include <stdint.h>
 
 #include <algorithm>
@@ -388,7 +389,7 @@ class EventLoggerCookieHandlerImpl : public EventLoggerCookieHandler,
     if (change.cause == net::CookieChangeCause::INSERTED) {
       if (!cookie_file_.WriteAndCheck(
               0, base::as_byte_span(change.cookie.Value())) ||
-          !cookie_file_.SetLength(change.cookie.Value().length())) {
+          !cookie_file_.SetLength(change.cookie.ValueSize().InBytes())) {
         VLOG(1) << "Failed to write logging cookie: "
                 << change.cookie.DebugString();
       }

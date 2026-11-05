@@ -15,6 +15,7 @@
 
 #include <shellapi.h>
 #include <shlobj.h>
+#include <stddef.h>
 
 #include <optional>
 #include <string>
@@ -32,6 +33,7 @@
 #include "base/memory/ref_counted.h"
 #include "base/path_service.h"
 #include "base/strings/strcat.h"
+#include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/synchronization/waitable_event.h"
 #include "base/task/single_thread_task_runner.h"
@@ -138,13 +140,13 @@ void SendPing(int exit_code, int extra_code) {
           base::BindOnce(
               [](scoped_refptr<SendPingResult> result, int exit_code,
                  int extra_code) {
-                update_client::CrxComponent ping_data;
-                ping_data.app_id = kUpdaterAppId;
-                ping_data.version = base::Version(kUpdaterVersion);
-                ping_data.requires_network_encryption = false;
                 update_client::UpdateClientFactory(CreatePingConfigurator())
                     ->SendPing(
-                        ping_data,
+                        {
+                            .app_id = kUpdaterAppId,
+                            .version = base::Version(kUpdaterVersion),
+                            .requires_network_encryption = false,
+                        },
                         {
                             .event_type =
                                 update_client::protocol_request::kEventInstall,
@@ -241,7 +243,12 @@ BOOL CALLBACK OnResourceFound(HMODULE module,
     return FALSE;
   }
 
-  if (!StrStartsWith(name, kUpdaterArchivePrefix)) {
+  // `name` may be an integer resource ID rather than a string pointer (this
+  // also covers nullptr), so it must be checked before being treated as a
+  // string.
+  if (IS_INTRESOURCE(name) ||
+      !base::StartsWith(name, kUpdaterArchivePrefix,
+                        base::CompareCase::INSENSITIVE_ASCII)) {
     return FALSE;
   }
 

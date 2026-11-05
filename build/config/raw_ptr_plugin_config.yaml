@@ -8,3 +8,6 @@ check_raw_ptr_in_container:
     - "std::tuple"
     - "std::variant"
     - "std::list"
+    - "std::queue"
+    - "std::set"
+    - "base::internal::flat_tree"

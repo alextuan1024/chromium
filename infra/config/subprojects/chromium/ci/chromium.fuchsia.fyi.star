@@ -45,6 +45,7 @@ targets.settings_defaults.set(
 
 ci.builder(
     name = "fuchsia-fyi-arm64-dbg",
+    description_html = "Builds and runs Fuchsia ARM64 debug tests.",
     builder_spec = builder_config.builder_spec(
         gclient_config = builder_config.gclient_config(
             config = "chromium",
@@ -82,6 +83,7 @@ ci.builder(
         mixins = [
             "arm64",
             "docker",
+            "fuchsia-orchestrate",
             "linux-ubuntu",
         ],
         per_test_modifications = {
@@ -102,6 +104,11 @@ ci.builder(
             "content_browsertests": targets.mixin(swarming = targets.swarming(shards = 28)),
             "headless_shell_wpt_tests": targets.remove(
                 reason = "Wptrunner does not work on Fuchsia",
+            ),
+            "components_unittests": targets.mixin(
+                args = [
+                    "--test-launcher-filter-file=../../testing/buildbot/filters/fuchsia.debug.components_unittests.filter",
+                ],
             ),
             "compositor_unittests": targets.mixin(
                 args = [
@@ -148,6 +155,7 @@ ci.builder(
             ),
         },
     ),
+    ssd = None,
     free_space = free_space.high,
     console_view_entry = [
         consoles.console_view_entry(
@@ -162,6 +170,7 @@ ci.builder(
 
 ci.builder(
     name = "fuchsia-fyi-x64-asan",
+    description_html = "Builds and runs Fuchsia x64 release tests with AddressSanitizer.",
     builder_spec = builder_config.builder_spec(
         gclient_config = builder_config.gclient_config(
             config = "chromium",
@@ -198,7 +207,8 @@ ci.builder(
         # forces use of the passthrough decoder even if validating is specified.
         targets = "fuchsia_standard_passthrough_tests",
         mixins = [
-            "linux-jammy",
+            "fuchsia-orchestrate",
+            "linux-ubuntu",
             targets.mixin(
                 swarming = targets.swarming(
                     dimensions = {
@@ -219,6 +229,11 @@ ci.builder(
                     "--test-launcher-filter-file=../../testing/buildbot/filters/fuchsia.lsan.base_unittests.filter",
                 ],
             ),
+            "blink_unittests": targets.mixin(
+                swarming = targets.swarming(
+                    shards = 4,
+                ),
+            ),
             "chrome_wpt_tests": targets.remove(
                 reason = "Wptrunner does not work on Fuchsia",
             ),
@@ -229,9 +244,9 @@ ci.builder(
                 reason = "TODO(crbug.com/40241445): Enable on Fuchsia asan/clang builders",
             ),
             "content_unittests": targets.mixin(
-                args = [
-                    "--test-launcher-filter-file=../../testing/buildbot/filters/fuchsia.lsan.content_unittests.filter",
-                ],
+                swarming = targets.swarming(
+                    shards = 4,
+                ),
             ),
             "gin_unittests": targets.mixin(
                 args = [
@@ -251,6 +266,7 @@ ci.builder(
             ),
         },
     ),
+    ssd = None,
     console_view_entry = [
         consoles.console_view_entry(
             branch_selector = branches.selector.MAIN,
@@ -265,6 +281,7 @@ ci.builder(
 
 ci.builder(
     name = "fuchsia-fyi-x64-dbg-persistent-emulator",
+    description_html = "Builds and runs Fuchsia x64 debug tests using persistent emulators.",
     builder_spec = builder_config.builder_spec(
         gclient_config = builder_config.gclient_config(
             config = "chromium",
@@ -298,7 +315,7 @@ ci.builder(
         mixins = [
             "fuchsia-persistent-emulator",
             "fuchsia-orchestrate",
-            "linux-jammy",
+            "linux-ubuntu",
             targets.mixin(
                 swarming = targets.swarming(
                     dimensions = {
@@ -309,6 +326,7 @@ ci.builder(
             ),
         ],
     ),
+    ssd = None,
     free_space = free_space.high,
     console_view_entry = [
         consoles.console_view_entry(
@@ -368,8 +386,9 @@ ci.builder(
         ],
         mixins = [
             "fuchsia-large-device-spec",
+            "fuchsia-orchestrate",
             "isolate_profile_data",
-            "linux-jammy",
+            "linux-ubuntu",
             targets.mixin(
                 swarming = targets.swarming(
                     dimensions = {
@@ -401,6 +420,7 @@ ci.builder(
             ),
         },
     ),
+    ssd = None,
     console_view_entry = [
         consoles.console_view_entry(
             branch_selector = branches.selector.MAIN,

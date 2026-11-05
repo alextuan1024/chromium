@@ -120,6 +120,8 @@ TEST(FuseboxActionMojoUtilsTest, MapsSuggestInventoryValuesToMojo) {
       {omnibox::SUGGEST_INVENTORY_ADD_TAB, omnibox::SUGGEST_INVENTORY_ADD_TAB},
       {omnibox::SUGGEST_INVENTORY_AIM_IMAGES,
        omnibox::SUGGEST_INVENTORY_AIM_IMAGES},
+      {omnibox::SUGGEST_INVENTORY_IMAGE_GEN_SEASONAL_PROMO,
+       omnibox::SUGGEST_INVENTORY_IMAGE_GEN_SEASONAL_PROMO},
   };
   for (const auto& test_case : kCases) {
     omnibox::SuggestTemplateInfo::FuseboxAction proto;
@@ -128,6 +130,28 @@ TEST(FuseboxActionMojoUtilsTest, MapsSuggestInventoryValuesToMojo) {
     mojom::FuseboxActionPtr mojo_action = SyncFuseboxActionProtoToMojo(proto);
     ASSERT_TRUE(mojo_action);
     EXPECT_EQ(mojo_action->preferred_inventory, test_case.mojo_value);
+  }
+}
+
+TEST(FuseboxActionMojoUtilsTest, MapsQueryActionOverrideValuesToMojo) {
+  struct {
+    omnibox::SuggestTemplateInfo_FuseboxAction_QueryActionOverride proto_value;
+    mojom::QueryActionOverride mojo_value;
+  } kCases[] = {
+      {omnibox::SuggestTemplateInfo_FuseboxAction::QUERY_ACTION_DEFAULT,
+       mojom::QueryActionOverride::kDefault},
+      {omnibox::SuggestTemplateInfo_FuseboxAction::QUERY_ACTION_PASTE,
+       mojom::QueryActionOverride::kPaste},
+      {omnibox::SuggestTemplateInfo_FuseboxAction::QUERY_ACTION_HINT,
+       mojom::QueryActionOverride::kHint},
+  };
+  for (const auto& test_case : kCases) {
+    omnibox::SuggestTemplateInfo::FuseboxAction proto;
+    proto.set_query_action_override(test_case.proto_value);
+
+    mojom::FuseboxActionPtr mojo_action = SyncFuseboxActionProtoToMojo(proto);
+    ASSERT_TRUE(mojo_action);
+    EXPECT_EQ(mojo_action->query_action_override, test_case.mojo_value);
   }
 }
 

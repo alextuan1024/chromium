@@ -9,15 +9,6 @@
 
 namespace sync_preferences::features {
 
-// If enabled, supports account-scoping of preferences. That is, the values of
-// the specially tagged preferences will be cleared upon sign out.
-BASE_DECLARE_FEATURE(kAccountScopedPrefs);
-
-// If enabled, optimizes DualLayerUserPrefStore::MaybeMerge by caching merged
-// preference values in `merged_prefs_` and returning cached values when
-// available.
-BASE_DECLARE_FEATURE(kOptimizeDualLayerUserPrefStoreMaybeMerge);
-
 // Enables the CrossDevicePrefTracker, a KeyedService for tracking select
 // non-syncing Prefs across a user's devices.
 BASE_DECLARE_FEATURE(kEnableCrossDevicePrefTracker);
@@ -28,6 +19,10 @@ BASE_DECLARE_FEATURE(kEnableCrossDevicePrefTracker);
 // once `CrossDevicePrefTracker` debugging is complete and the feature is
 // stable.
 BASE_DECLARE_FEATURE(kCrossDevicePrefTrackerExtraLogs);
+
+// Propagates remote entry removals to the local store for mergeable prefs
+// (crbug.com/571967962).
+BASE_DECLARE_FEATURE(kSyncUnmergeRemotePrefRemovals);
 
 }  // namespace sync_preferences::features
 

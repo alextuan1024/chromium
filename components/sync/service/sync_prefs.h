@@ -238,10 +238,9 @@ class SyncPrefs {
   void SetPassphrasePromptMutedProductVersion(int major_version);
   void ClearPassphrasePromptMutedProductVersion();
 
-  // Migrates any user settings for pre-existing signed-in users, for the
-  // feature `kReplaceSyncPromosWithSignInPromos`. For signed-out users or
-  // syncing users, no migration is necessary - this also covers new users (or
-  // more precisely, new profiles).
+  // Migrates any user settings for pre-existing signed-in users. For signed-out
+  // users or syncing users, no migration is necessary - this also covers new
+  // users (or more precisely, new profiles).
   // This should be called early during browser startup.
   // Returns whether the migration ran, i.e. whether any user settings were set.
   bool MaybeMigratePrefsForSyncToSigninPart1(SyncAccountState account_state,
@@ -254,12 +253,6 @@ class SyncPrefs {
   // Returns whether the migration ran, i.e. whether any user settings were set.
   bool MaybeMigratePrefsForSyncToSigninPart2(const GaiaId& gaia_id,
                                              bool is_using_explicit_passphrase);
-
-  // Migrates kSyncEncryptionBootstrapToken to the gaia-keyed pref, for the
-  // feature `kSyncRememberCustomPassphraseAfterSignout`. This should be called
-  // early during browser startup.
-  // TODO(crbug.com/325201878): Clean up the migration logic and the old pref.
-  void MaybeMigrateCustomPassphrasePref(const GaiaId& gaia_id);
 
   // Should be called when Sync gets disabled / the user signs out. Clears any
   // temporary state from the above migration.

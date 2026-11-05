@@ -16,9 +16,6 @@
 namespace crostini {
 namespace prefs {
 
-// A boolean preference representing whether a user has opted in to use
-// Crostini (Called "Linux Apps" in UI).
-const char kCrostiniEnabled[] = "crostini.enabled";
 // A list representing the intent to create containers with
 // certain specifications. This will also store whether or not it's been
 // successfully run. If so, it will only remain as a historical record.
@@ -30,7 +27,6 @@ const char kCrostiniCreateOptionsContainerUsernameKey[] = "container_username";
 const char kCrostiniCreateOptionsDiskSizeBytesKey[] = "disk_size_bytes";
 const char kCrostiniCreateOptionsImageServerUrlKey[] = "image_server_url";
 const char kCrostiniCreateOptionsImageAliasKey[] = "image_alias";
-const char kCrostiniCreateOptionsAnsiblePlaybookKey[] = "ansible_playbook";
 const char kCrostiniCreateOptionsUsedKey[] = "used";
 
 // List of USB devices with their system guid, a name/description and their
@@ -68,10 +64,6 @@ const char kCrostiniDefaultContainerConfigured[] =
 // port forwarding into Crostini.
 const char kCrostiniPortForwardingAllowedByPolicy[] =
     "crostini.port_forwarding_allowed_by_policy";
-// A boolean preference representing a user level enterprise policy to allow
-// SSH in Terminal System App.
-const char kTerminalSshAllowedByPolicy[] =
-    "crostini.terminal_ssh_allowed_by_policy";
 
 // A boolean preference controlling Crostini usage reporting.
 const char kReportCrostiniUsageEnabled[] = "crostini.usage_reporting_enabled";

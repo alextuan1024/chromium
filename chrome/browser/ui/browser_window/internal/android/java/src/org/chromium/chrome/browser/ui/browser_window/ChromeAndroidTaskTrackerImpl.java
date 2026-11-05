@@ -8,8 +8,9 @@ import static org.chromium.build.NullUtil.assumeNonNull;
 
 import android.app.Activity;
 import android.app.ActivityOptions;
-import android.content.Context;
 import android.graphics.Rect;
+import android.os.Build.VERSION;
+import android.os.Build.VERSION_CODES;
 import android.os.Bundle;
 import android.util.ArrayMap;
 
@@ -29,9 +30,9 @@ import org.chromium.content_public.browser.WebContents;
 import org.chromium.ui.base.ActivityWindowAndroid;
 import org.chromium.ui.display.DisplayAndroid;
 import org.chromium.ui.display.DisplayUtil;
+import org.chromium.ui.mojom.WindowShowState;
 
 import java.util.ArrayList;
-import java.util.Collection;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
@@ -179,6 +180,15 @@ final class ChromeAndroidTaskTrackerImpl implements ChromeAndroidTaskTracker {
     }
 
     @Override
+    public void onActivityDestroyStarted(ActivityWindowAndroid activityWindowAndroid) {
+        ThreadUtils.assertOnUiThread();
+        var task = mTasks.get(getTaskId(activityWindowAndroid));
+        if (task != null) {
+            task.removeActivityScopedObjects(activityWindowAndroid);
+        }
+    }
+
+    @Override
     public void onActivityWindowAndroidDestroy(ActivityWindowAndroid activityWindowAndroid) {
         ThreadUtils.assertOnUiThread();
         int taskId = getTaskId(activityWindowAndroid);
@@ -187,8 +197,6 @@ final class ChromeAndroidTaskTrackerImpl implements ChromeAndroidTaskTracker {
         if (task == null) {
             return;
         }
-
-        task.removeActivityScopedObjects(activityWindowAndroid);
 
         // Destroy the ChromeAndroidTask if there is no ActivityWindowAndroid associated with it.
         //
@@ -217,25 +225,6 @@ final class ChromeAndroidTaskTrackerImpl implements ChromeAndroidTaskTracker {
         return mObservers.removeObserver(observer);
     }
 
-    /** Returns an array of the native {@code BrowserWindowInterface} addresses. */
-    long[] getAllNativeBrowserWindowPtrs() {
-        ThreadUtils.assertOnUiThread();
-        return getNativeBrowserWindowPtrs(getAllTasks());
-    }
-
-    /**
-     * Returns an array of the native {@code BrowserWindowInterface} addresses, sorted by the
-     * descending order of {@link ChromeAndroidTask#getLastActivatedTimeMillis()}.
-     */
-    long[] getNativeBrowserWindowPtrsOrderedByActivation() {
-        ThreadUtils.assertOnUiThread();
-        List<ChromeAndroidTask> tasks = getAllTasks();
-        tasks.sort(
-                Comparator.comparingLong(ChromeAndroidTask::getLastActivatedTimeMillis).reversed());
-
-        return getNativeBrowserWindowPtrs(tasks);
-    }
-
     /** Activates the second to last activated task, if there are at least two tasks. */
     void activatePenultimatelyActivatedTask() {
         ThreadUtils.assertOnUiThread();
@@ -250,7 +239,7 @@ final class ChromeAndroidTaskTrackerImpl implements ChromeAndroidTaskTracker {
 
     /** Count of tasks. */
     int countOfTasks() {
-        return getAllTasks().size();
+        return mTasks.size();
     }
 
     /** Returns all ALIVE Tasks. */
@@ -325,20 +314,6 @@ final class ChromeAndroidTaskTrackerImpl implements ChromeAndroidTaskTracker {
         return ApplicationStatus.getTaskId(activity);
     }
 
-    /** Returns an array of the native {@code BrowserWindowInterface} addresses. */
-    private long[] getNativeBrowserWindowPtrs(Collection<ChromeAndroidTask> chromeAndroidTasks) {
-        List<Long> ptrs = new ArrayList<>();
-        for (var task : chromeAndroidTasks) {
-            ptrs.addAll(task.getAllNativeBrowserWindowPtrs());
-        }
-
-        long[] nativeBrowserWindowPtrs = new long[ptrs.size()];
-        for (int i = 0; i < ptrs.size(); i++) {
-            nativeBrowserWindowPtrs[i] = ptrs.get(i);
-        }
-        return nativeBrowserWindowPtrs;
-    }
-
     @Nullable
     private Activity findSourceActivityForNewWindow() {
         // TODO(crbug.com/494034453) Don't just find the first activity.
@@ -393,8 +368,7 @@ final class ChromeAndroidTaskTrackerImpl implements ChromeAndroidTaskTracker {
             int pendingId, AndroidBrowserWindowCreateParams createParams, Activity sourceActivity) {
         Bundle extrasBundle = new Bundle();
         extrasBundle.putInt(EXTRA_PENDING_BROWSER_WINDOW_TASK_ID, pendingId);
-        ActivityOptions options =
-                getStartActivityOptions(sourceActivity, createParams.getInitialBoundsInDp());
+        ActivityOptions options = getStartActivityOptions(sourceActivity, createParams);
 
         WebContents webContents = createParams.takeWebContents();
         if (webContents != null) {
@@ -428,12 +402,13 @@ final class ChromeAndroidTaskTrackerImpl implements ChromeAndroidTaskTracker {
         var context = ContextUtils.getApplicationContext();
         Rect bounds = createParams.getInitialBoundsInDp();
         WindowFeatures features =
-                new WindowFeatures(bounds.left, bounds.top, bounds.width(), bounds.height());
+                bounds.isEmpty()
+                        ? new WindowFeatures()
+                        : new WindowFeatures(
+                                bounds.left, bounds.top, bounds.width(), bounds.height());
 
         Bundle extrasBundle = new Bundle();
         extrasBundle.putInt(EXTRA_PENDING_BROWSER_WINDOW_TASK_ID, pendingId);
-
-        ActivityOptions options = getStartActivityOptions(context, bounds);
 
         WebContents webContents = createParams.takeWebContents();
         if (webContents != null) {
@@ -443,31 +418,45 @@ final class ChromeAndroidTaskTrackerImpl implements ChromeAndroidTaskTracker {
                             createParams.getProfile(),
                             webContents,
                             features,
-                            extrasBundle,
-                            options != null ? options.toBundle() : null);
+                            extrasBundle);
         }
         return PopupCreatorFactory.getInstance()
                 .createNewPopup(
                         context,
                         createParams.getProfile().isIncognitoBranded(),
                         features,
-                        extrasBundle,
-                        options != null ? options.toBundle() : null);
+                        extrasBundle);
     }
 
+    /** Returns the {@link ActivityOptions} to launch a normal window with, or null if none. */
     private static @Nullable ActivityOptions getStartActivityOptions(
-            Context context, Rect initialBoundsInDp) {
-        if (initialBoundsInDp.isEmpty()) return null;
+            Activity sourceActivity, AndroidBrowserWindowCreateParams createParams) {
+        DisplayAndroid display = DisplayAndroid.getNonMultiDisplay(sourceActivity);
+        Rect launchBoundsInPx;
+        // For MAXIMIZED, launch with the source display's maximized bounds (initial bounds are
+        // ignored) so that the window shows up maximized right away. The OS only honors launch
+        // bounds in freeform, and the bounds may not match if the window ends up on another
+        // display, so ChromeAndroidTaskImpl#applyInitialShowState still maximizes the window
+        // after launch if needed.
+        if (createParams.getInitialShowState() == WindowShowState.MAXIMIZED
+                && VERSION.SDK_INT >= VERSION_CODES.R) {
+            launchBoundsInPx =
+                    ChromeAndroidTaskBoundsConstraints.getMaxBoundsInPx(
+                            sourceActivity.getWindowManager());
+        } else {
+            Rect initialBoundsInDp = createParams.getInitialBoundsInDp();
+            if (initialBoundsInDp.isEmpty()) return null;
+            launchBoundsInPx =
+                    new Rect(
+                            DisplayUtil.dpToPx(display, initialBoundsInDp.left),
+                            DisplayUtil.dpToPx(display, initialBoundsInDp.top),
+                            DisplayUtil.dpToPx(display, initialBoundsInDp.right),
+                            DisplayUtil.dpToPx(display, initialBoundsInDp.bottom));
+        }
 
         ActivityOptions options = ActivityOptions.makeBasic();
-        DisplayAndroid display = DisplayAndroid.getNonMultiDisplay(context);
         options.setLaunchDisplayId(display.getDisplayId());
-        options.setLaunchBounds(
-                new Rect(
-                        DisplayUtil.dpToPx(display, initialBoundsInDp.left),
-                        DisplayUtil.dpToPx(display, initialBoundsInDp.top),
-                        DisplayUtil.dpToPx(display, initialBoundsInDp.right),
-                        DisplayUtil.dpToPx(display, initialBoundsInDp.bottom)));
+        options.setLaunchBounds(launchBoundsInPx);
         return options;
     }
 }

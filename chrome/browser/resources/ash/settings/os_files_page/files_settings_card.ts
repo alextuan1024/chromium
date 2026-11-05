@@ -15,7 +15,6 @@ import '../controls/settings_toggle_button.js';
 import '../os_settings_page/settings_card.js';
 import '../settings_shared.css.js';
 
-import {PrefsMixin} from '/shared/settings/prefs/prefs_mixin.js';
 import {I18nMixin} from 'chrome://resources/ash/common/cr_elements/i18n_mixin.js';
 import {SmbBrowserProxyImpl} from 'chrome://resources/ash/common/smb_shares/smb_browser_proxy.js';
 import {assert} from 'chrome://resources/js/assert.js';
@@ -25,11 +24,13 @@ import {PolymerElement} from 'chrome://resources/polymer/v3_0/polymer/polymer_bu
 import {assertExhaustive} from '../assert_extras.js';
 import {DeepLinkingMixin} from '../common/deep_linking_mixin.js';
 import {RouteOriginMixin} from '../common/route_origin_mixin.js';
-import type {Route} from '../router.js';
+import type {BrowserProxy as OneDriveBrowserProxy} from '../mojom-webui/one_drive_handler.mojom-webui.js';
+import {browserProxyFactory as oneDriveProxyFactory} from '../mojom-webui/one_drive_handler.mojom-webui.js';
+import type {Route} from '../os_settings_routes.js';
+import {PrefsMixin} from '../prefs/prefs_mixin.js';
 import {Router, routes} from '../router.js';
 
 import {getTemplate} from './files_settings_card.html.js';
-import {OneDriveBrowserProxy} from './one_drive_browser_proxy.js';
 import {OneDriveConnectionState} from './one_drive_subpage.js';
 
 const FilesSettingsCardElementBase =
@@ -47,7 +48,6 @@ export class FilesSettingsCardElement extends FilesSettingsCardElementBase {
   static get properties() {
     return {
       bulkPinningPrefEnabled_: Boolean,
-      mirrorSyncPrefEnabled_: Boolean,
 
       driveDisabled_: Boolean,
 
@@ -55,14 +55,6 @@ export class FilesSettingsCardElement extends FilesSettingsCardElementBase {
         type: Boolean,
         value: () => {
           return loadTimeData.getBoolean('enableDriveFsBulkPinning');
-        },
-        readOnly: true,
-      },
-
-      isMirrorSyncEnabled_: {
-        type: Boolean,
-        value: () => {
-          return loadTimeData.getBoolean('enableDriveFsMirrorSync');
         },
         readOnly: true,
       },
@@ -113,15 +105,12 @@ export class FilesSettingsCardElement extends FilesSettingsCardElementBase {
        */
       'updateDriveDisabled_(prefs.gdata.disabled.value)',
       'updateBulkPinningPrefEnabled_(prefs.drivefs.bulk_pinning_enabled.value)',
-      'updateMirrorSyncPrefEnabled_(prefs.drivefs.enable_mirror_sync.value)',
     ];
   }
 
   declare private bulkPinningPrefEnabled_: boolean;
-  declare private mirrorSyncPrefEnabled_: boolean;
   declare private driveDisabled_: boolean;
   declare private isBulkPinningEnabled_: boolean;
-  declare private isMirrorSyncEnabled_: boolean;
   private oneDriveBrowserProxy_: OneDriveBrowserProxy|null = null;
   declare private oneDriveConnectionState_: OneDriveConnectionState;
   private oneDriveEmailAddress_: string|null = null;
@@ -138,7 +127,7 @@ export class FilesSettingsCardElement extends FilesSettingsCardElementBase {
     super();
 
     if (this.shouldShowOneDriveSettings_) {
-      this.oneDriveBrowserProxy_ = OneDriveBrowserProxy.getInstance();
+      this.oneDriveBrowserProxy_ = oneDriveProxyFactory.getInstance();
     }
   }
 
@@ -148,8 +137,8 @@ export class FilesSettingsCardElement extends FilesSettingsCardElementBase {
     if (this.shouldShowOneDriveSettings_) {
       assert(this.oneDriveBrowserProxy_);
       this.updateOneDriveEmail_();
-      this.oneDriveBrowserProxy_.observer.onODFSMountOrUnmount.addListener(
-          this.updateOneDriveEmail_.bind(this));
+      this.oneDriveBrowserProxy_.callbackRouter.onODFSMountOrUnmount
+          .addListener(this.updateOneDriveEmail_.bind(this));
     }
   }
 
@@ -195,17 +184,12 @@ export class FilesSettingsCardElement extends FilesSettingsCardElementBase {
     this.bulkPinningPrefEnabled_ = enabled;
   }
 
-  private updateMirrorSyncPrefEnabled_(enabled: boolean): void {
-    this.mirrorSyncPrefEnabled_ = enabled;
-  }
-
   private getGoogleDriveSubLabelInnerHtml_(): TrustedHTML {
     if (this.driveDisabled_) {
       return this.i18nAdvanced('googleDriveNotSignedInSublabel');
     }
 
-    return ((this.isBulkPinningEnabled_ && this.bulkPinningPrefEnabled_) ||
-            (this.isMirrorSyncEnabled_ && this.mirrorSyncPrefEnabled_)) ?
+    return (this.isBulkPinningEnabled_ && this.bulkPinningPrefEnabled_) ?
         this.i18nAdvanced('googleDriveFileSyncOnSublabel') :
         this.i18nAdvanced('googleDriveSignedInAs', {attrs: ['id']});
   }

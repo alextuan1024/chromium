@@ -160,6 +160,7 @@ void ReportSystemCodeUMA(const std::string& key_system, uint32_t system_code) {
 }
 
 // These are reported to UMA server. Do not renumber or reuse values.
+// LINT.IfChange(OutputProtectionStatus)
 enum OutputProtectionStatus {
   kQueried = 0,
   kNoExternalLink = 1,
@@ -167,6 +168,7 @@ enum OutputProtectionStatus {
   // Note: Only add new values immediately before this line.
   kStatusCount
 };
+// LINT.ThenChange(//tools/metrics/histograms/metadata/media/enums.xml:MediaOutputProtectionStatus)
 
 void ReportOutputProtectionUMA(OutputProtectionStatus status) {
   UMA_HISTOGRAM_ENUMERATION("Media.EME.OutputProtection", status,
@@ -503,8 +505,7 @@ void CdmAdapter::Decrypt(StreamType stream_type,
 
   scoped_refptr<DecoderBuffer> decrypted_buffer(
       DecoderBuffer::CopyFrom(AsSpan(decrypted_block->DecryptedBuffer())));
-  decrypted_buffer->set_timestamp(
-      base::Microseconds(decrypted_block->Timestamp()));
+  decrypted_buffer->CopyMetadataClearBufferFrom(*encrypted);
   std::move(decrypt_cb).Run(Decryptor::kSuccess, std::move(decrypted_buffer));
 }
 

@@ -4,6 +4,7 @@
 
 #include "chrome/browser/glic/suggestions/contextual_cueing_helper.h"
 
+#include "base/memory/weak_ptr.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
@@ -11,11 +12,12 @@
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/contextual_cueing/features.h"
 #include "chrome/browser/glic/browser_ui/glic_nudge_controller.h"
-#include "chrome/browser/glic/browser_ui/glic_split_button_view_delegate.h"
+#include "chrome/browser/glic/browser_ui/glic_split_button_delegate.h"
 #include "chrome/browser/glic/glic_pref_names.h"
 #include "chrome/browser/glic/host/host.h"
 #include "chrome/browser/glic/public/features.h"
 #include "chrome/browser/glic/public/glic_side_panel_coordinator.h"
+#include "chrome/browser/glic/public/provider_features.h"
 #include "chrome/browser/glic/suggestions/contextual_cueing_enums.h"
 #include "chrome/browser/glic/suggestions/contextual_cueing_features.h"
 #include "chrome/browser/glic/test_support/glic_browser_test.h"
@@ -48,8 +50,13 @@
 #include "chrome/browser/ui/views/tabs/glic/tab_strip_glic_button.h"
 #endif
 
-class FakeGlicNudgeDelegate : public glic::GlicSplitButtonViewDelegate {
+class FakeGlicNudgeDelegate : public glic::GlicSplitButtonDelegate {
  public:
+  ~FakeGlicNudgeDelegate() override {
+    if (controller_) {
+      controller_->SetHorizontalTabsDelegate(nullptr);
+    }
+  }
   void OnTriggerGlicNudgeUI(glic::NudgeParams params) override {
     last_nudge_label_ = params.label;
     if (!last_nudge_label_.empty()) {
@@ -67,6 +74,7 @@ class FakeGlicNudgeDelegate : public glic::GlicSplitButtonViewDelegate {
   std::string last_nudge_label_;
   bool is_showing_nudge_ = false;
   base::test::TestFuture<void> future_;
+  base::WeakPtr<glic::GlicNudgeController> controller_;
 };
 
 class ContextualCueingHelperBaseBrowserTest : public glic::GlicBrowserTest {
@@ -113,6 +121,7 @@ class ContextualCueingHelperBaseBrowserTest : public glic::GlicBrowserTest {
   }
 
   void SwapToFakeDelegate(FakeGlicNudgeDelegate& nudge_delegate) {
+    nudge_delegate.controller_ = glic_nudge_controller()->GetWeakPtr();
     glic_nudge_controller()->SetHorizontalTabsDelegate(&nudge_delegate);
   }
 
@@ -147,7 +156,8 @@ class ContextualCueingHelperBrowserTest
          {page_content_annotations::features::kAnnotatedPageContentExtraction,
           {}},
          {contextual_tasks::kContextualTasks, {}}},
-        {contextual_cueing::kContextualCueingV2});
+        {contextual_cueing::kContextualCueingV2,
+         features::kGlicHorizontalTabToolbarButton});
   }
 };
 

@@ -158,6 +158,8 @@ void AccountExtensionTracker::OnPrimaryAccountChanged(
           continue;
         }
 
+        // TODO(crbug.com/581636820): CHECK-exclusion: Convert to a CHECK once
+        // we are confident it won't be triggered.
         DCHECK(sync_util::ShouldSync(profile_, extension));
         SetAccountExtensionType(
             extension_from_promo,

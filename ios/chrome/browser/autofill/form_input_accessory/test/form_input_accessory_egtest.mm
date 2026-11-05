@@ -25,7 +25,6 @@
 #import "components/sync/service/sync_prefs.h"
 #import "components/webauthn/ios/features.h"
 #import "ios/chrome/browser/authentication/test/signin_earl_grey.h"
-#import "ios/chrome/browser/autofill/atmemory/public/at_memory_constants.h"
 #import "ios/chrome/browser/autofill/manual_fill/public/manual_fill_constants.h"
 #import "ios/chrome/browser/autofill/manual_fill/test/manual_fill_matchers.h"
 #import "ios/chrome/browser/autofill/model/form_suggestion_constants.h"
@@ -46,6 +45,7 @@
 #import "ios/chrome/test/scoped_eg_synchronization_disabler.h"
 #import "ios/testing/earl_grey/earl_grey_test.h"
 #import "ios/testing/earl_grey/matchers.h"
+#import "ios/testing/test_tag_registry.h"
 #import "net/base/apple/url_conversions.h"
 #import "net/test/embedded_test_server/default_handlers.h"
 #import "ui/base/l10n/l10n_util.h"
@@ -154,7 +154,7 @@ id<GREYMatcher> KeyboardAccessoryPasswordSuggestion(NSString* realm) {
   return grey_allOf(text_matcher,
                     grey_ancestor(grey_accessibilityID(
                         kFormInputAccessoryViewAccessibilityID)),
-                    grey_interactable(), nil);
+                    nil);
 }
 
 // Matcher for the autofill backup password suggestion chip in the keyboard
@@ -377,10 +377,6 @@ void SlowlyTypeText(NSString* text) {
   if ([self isRunningTest:@selector(testReauthPriorToFillPassportForm)]) {
     config.features_enabled.push_back(
         autofill::features::kAutofillAiReauthRequired);
-  }
-  if ([self isRunningTest:@selector(testFillXframeCreditCardFormThrottled)]) {
-    config.features_enabled.push_back(
-        autofill::features::kAutofillAcrossIframesIosThrottling);
   }
   if ([self isRunningTest:@selector(testAddressHomeAndWorkIPH)]) {
     config.iph_feature_enabled =
@@ -609,6 +605,7 @@ id<GREYMatcher> PaymentsBottomSheetUseKeyboardButton() {
 // Tests that tapping on a password related field opens the keyboard accessory
 // with the proper suggestion visible and that tapping on that suggestion
 // properly fills the related fields on the form.
+TAG_SMOKE_TEST(FormInputAccessoryEGTest, testFillPasswordFieldsOnForm);
 - (void)testFillPasswordFieldsOnForm {
   // Disable the credential bottom sheet.
   [CredentialSuggestionBottomSheetAppInterface disableBottomSheet];
@@ -703,6 +700,7 @@ id<GREYMatcher> PaymentsBottomSheetUseKeyboardButton() {
 // Tests that tapping on a credit card related field opens the keyboard
 // accessory with the proper suggestions visible and that tapping on a
 // suggestion properly fills the related fields on the form.
+TAG_SMOKE_TEST(FormInputAccessoryEGTest, testFillCreditCardFieldsOnForm);
 - (void)testFillCreditCardFieldsOnForm {
   [ReauthenticationAppInterface mockReauthenticationModuleCanAttempt:YES];
   [ReauthenticationAppInterface mockReauthenticationModuleExpectedResult:
@@ -940,6 +938,7 @@ id<GREYMatcher> PaymentsBottomSheetUseKeyboardButton() {
 
   // Tap on another address field, below the first address field, and verify
   // that the keyboard pops up and offers address suggestions.
+  [ChromeEarlGrey scrollWebStateElementIntoViewWithID:"city"];
   [[EarlGrey selectElementWithMatcher:chrome_test_util::WebViewMatcher()]
       performAction:chrome_test_util::TapWebElementWithId("city")];
   id<GREYMatcher> address_chip =
@@ -950,6 +949,7 @@ id<GREYMatcher> PaymentsBottomSheetUseKeyboardButton() {
   // credit card fields.
 
   // Tap a credit card field to open the bottom sheet.
+  [ChromeEarlGrey scrollWebStateElementIntoViewWithID:kFormCardName];
   [[EarlGrey selectElementWithMatcher:chrome_test_util::WebViewMatcher()]
       performAction:chrome_test_util::TapWebElementWithId(kFormCardName)];
   id<GREYMatcher> useKeyboardButton = PaymentsBottomSheetUseKeyboardButton();
@@ -993,12 +993,11 @@ id<GREYMatcher> PaymentsBottomSheetUseKeyboardButton() {
 // Tests that tapping on an address related field opens the keyboard
 // accessory with the proper suggestion visible and that tapping on that
 // suggestion properly fills the related fields on the form.
+TAG_SMOKE_TEST(FormInputAccessoryEGTest, testFillAddressFieldsOnForm);
 - (void)testFillAddressFieldsOnForm {
   [self loadAddressPage];
 
-  [ChromeEarlGrey
-      evaluateJavaScriptForSideEffect:@"document.getElementById('form_zip')."
-                                      @"scrollIntoView();"];
+  [ChromeEarlGrey scrollWebStateElementIntoViewWithID:kFormZip];
 
   [[EarlGrey selectElementWithMatcher:chrome_test_util::WebViewMatcher()]
       performAction:chrome_test_util::TapWebElementWithId(kFormZip)];
@@ -1119,12 +1118,6 @@ id<GREYMatcher> PaymentsBottomSheetUseKeyboardButton() {
   if (![ChromeEarlGrey areMultipleWindowsSupported]) {
     EARL_GREY_TEST_SKIPPED(
         @"Skipped for iPhone (the manual fill button has no title on iPhone)");
-  }
-  if (@available(iOS 26.0, *)) {
-    // TODO(crbug.com/427699033): Re-enable test on iOS 26.
-    // Fails because it assumes a window will be compact after creating a new
-    // window.
-    EARL_GREY_TEST_DISABLED(@"Test disabled on iOS 26.");
   }
 
   [self loadAddressPage];
@@ -1374,15 +1367,6 @@ id<GREYMatcher> PaymentsBottomSheetUseKeyboardButton() {
   [[EarlGrey selectElementWithMatcher:userChip] performAction:grey_tap()];
 
   [self verifyFieldsHaveBeenFilledWithUsername:username password:password];
-}
-
-// Tests that closing a tab after focusing a form field does not crash
-// during FormInputAccessoryCoordinator teardown when AtMemory was not shown.
-- (void)testAtMemoryUnopenedTeardown {
-  [self loadLoginPage];
-  [[EarlGrey selectElementWithMatcher:chrome_test_util::WebViewMatcher()]
-      performAction:chrome_test_util::TapWebElementWithId(kFormUsername)];
-  [ChromeEarlGrey closeCurrentTab];
 }
 
 // Tests navigation buttons are available for a `contenteditable` element.

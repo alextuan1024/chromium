@@ -49,6 +49,7 @@
 #include "net/http/http_status_code.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/blink/public/common/manifest/manifest.h"
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "ui/gfx/image/image_unittest_util.h"
@@ -194,13 +195,13 @@ class InstallFromSyncTest : public WebAppTest {
         provider()->web_contents_manager());
   }
 
-  blink::mojom::ManifestPtr CreateManifest(GURL start_url,
-                                           webapps::ManifestId manifest_id,
-                                           bool icons) {
-    blink::mojom::ManifestPtr manifest = blink::mojom::Manifest::New();
-    manifest->name = kManifestName;
-    manifest->start_url = start_url;
-    manifest->id = manifest_id.value();
+  blink::Manifest CreateManifest(GURL start_url,
+                                 webapps::ManifestId manifest_id,
+                                 bool icons) {
+    auto builder =
+        blink::Manifest::Builder(start_url, manifest_id.value(),
+                                 blink::Manifest::GetDefaultScope(start_url));
+    builder.SetName(kManifestName);
     if (icons) {
       blink::Manifest::ImageResource primary_icon;
       primary_icon.type = u"image/png";
@@ -208,9 +209,9 @@ class InstallFromSyncTest : public WebAppTest {
       primary_icon.purpose.push_back(
           blink::mojom::ManifestImageResource_Purpose::ANY);
       primary_icon.src = GURL(kManifestIconUrl);
-      manifest->icons.push_back(primary_icon);
+      builder.SetIcons({primary_icon});
     }
-    return manifest;
+    return builder.BuildChecked();
   }
 
   std::u16string GetAppName(const webapps::AppId& app_id) {
@@ -255,7 +256,7 @@ TEST_F(InstallFromSyncTest, MigrationFromSourceApp) {
   fake_page_state.opt_metadata =
       FakeWebContentsManager::CreateMetadataWithIconAndTitle(
           kDocumentTitle, kDocumentIconUrl, kIconSize);
-  fake_page_state.manifest_before_default_processing =
+  fake_page_state.opt_manifest =
       CreateManifest(kWebAppStartUrl, kWebAppManifestId, /*icons=*/true);
 
   // Icons
@@ -311,7 +312,7 @@ TEST_F(InstallFromSyncTest, MigrationFromSourceAppNotInstalledLocally) {
   fake_page_state.opt_metadata =
       FakeWebContentsManager::CreateMetadataWithIconAndTitle(
           kDocumentTitle, kDocumentIconUrl, kIconSize);
-  fake_page_state.manifest_before_default_processing =
+  fake_page_state.opt_manifest =
       CreateManifest(kWebAppStartUrl, kWebAppManifestId, /*icons=*/true);
 
   // Icons
@@ -345,7 +346,7 @@ TEST_F(InstallFromSyncTest, SuccessWithManifest) {
   fake_page_state.opt_metadata =
       FakeWebContentsManager::CreateMetadataWithIconAndTitle(
           kDocumentTitle, kDocumentIconUrl, kIconSize);
-  fake_page_state.manifest_before_default_processing =
+  fake_page_state.opt_manifest =
       CreateManifest(kWebAppStartUrl, kWebAppManifestId, /*icons=*/true);
 
   // Icon state.
@@ -446,7 +447,7 @@ TEST_F(InstallFromSyncTest, SuccessManifestNoIcons) {
   fake_page_state.opt_metadata =
       FakeWebContentsManager::CreateMetadataWithIconAndTitle(
           kDocumentTitle, kDocumentIconUrl, kIconSize);
-  fake_page_state.manifest_before_default_processing =
+  fake_page_state.opt_manifest =
       CreateManifest(kWebAppStartUrl, kWebAppManifestId, /*icons=*/false);
 
   // Document icon state.
@@ -612,10 +613,8 @@ TEST_F(InstallFromSyncTest, FallbackManifestIdMismatch) {
   fake_page_state.opt_metadata =
       FakeWebContentsManager::CreateMetadataWithIconAndTitle(
           kDocumentTitle, kDocumentIconUrl, kIconSize);
-  fake_page_state.manifest_before_default_processing =
-      CreateManifest(kWebAppStartUrl, kWebAppManifestId, /*icons=*/true);
-  fake_page_state.manifest_before_default_processing->id =
-      kOtherWebAppManifestId.value();
+  fake_page_state.opt_manifest =
+      CreateManifest(kWebAppStartUrl, kOtherWebAppManifestId, /*icons=*/true);
 
   // Icon state.
   web_contents_manager().GetOrCreateIconState(kDocumentIconUrl).bitmaps = {
@@ -790,7 +789,7 @@ TEST_F(InstallFromSyncTest, Shutdown) {
   fake_page_state.opt_metadata =
       FakeWebContentsManager::CreateMetadataWithIconAndTitle(
           kDocumentTitle, kDocumentIconUrl, kIconSize);
-  fake_page_state.manifest_before_default_processing =
+  fake_page_state.opt_manifest =
       CreateManifest(kWebAppStartUrl, kWebAppManifestId, /*icons=*/true);
   fake_page_state.on_manifest_fetch =
       base::BindLambdaForTesting([&]() { command_manager().Shutdown(); });
@@ -826,7 +825,7 @@ TEST_F(InstallFromSyncTest, TrustedIconInstallsFromFallback) {
   fake_page_state.opt_metadata =
       FakeWebContentsManager::CreateMetadataWithIconAndTitle(
           kDocumentTitle, kDocumentIconUrl, kIconSize);
-  fake_page_state.manifest_before_default_processing =
+  fake_page_state.opt_manifest =
       CreateManifest(kWebAppStartUrl, kWebAppManifestId, /*icons=*/true);
 
   // Set all icon states.
@@ -872,6 +871,41 @@ TEST_F(InstallFromSyncTest, TrustedIconInstallsFromFallback) {
                 ElementsAre(apps::IconInfo(kManifestIconUrl, kIconSize)));
     EXPECT_THAT(icon_color, Eq(kManifestIconColor));
   }
+}
+
+TEST_F(InstallFromSyncTest, FallbackWithEmptyParamsTitleUsesStartUrl) {
+  const webapps::AppId app_id = GenerateAppIdFromManifestId(kWebAppManifestId);
+
+  // Page redirects so fallback install path is always used.
+  auto& fake_page_state =
+      web_contents_manager().GetOrCreatePageState(kWebAppStartUrl);
+  fake_page_state.url_load_result =
+      webapps::WebAppUrlLoaderResult::kRedirectedUrlLoaded;
+
+  web_contents_manager().GetOrCreateIconState(kFallbackIconUrl).bitmaps = {
+      gfx::test::CreateBitmap(kIconSize, kFallbackIconColor)};
+  if (UseFallbackModeForTrustedInstalls()) {
+    web_contents_manager().GetOrCreateIconState(kTrustedIconUrl).bitmaps = {
+        gfx::test::CreateBitmap(kTrustedIconSize, kTrustedIconColor)};
+  }
+
+  InstallFromSyncCommand::Params params(
+      app_id, kWebAppManifestId, kWebAppStartUrl, /*title=*/"",
+      kWebAppStartUrl.GetWithoutFilename(), /*theme_color=*/std::nullopt,
+      mojom::UserDisplayMode::kStandalone,
+      /*manifest_icons=*/{apps::IconInfo(kFallbackIconUrl, kIconSize)},
+      /*trusted_icons=*/{apps::IconInfo(kTrustedIconUrl, kTrustedIconSize)},
+      /*migrated_from_manifest_id=*/std::nullopt);
+
+  base::test::TestFuture<const webapps::AppId&, webapps::InstallResultCode>
+      future;
+  command_manager().ScheduleCommand(std::make_unique<InstallFromSyncCommand>(
+      profile(), params, future.GetCallback()));
+  ASSERT_TRUE(future.Wait());
+  EXPECT_EQ(future.Get<webapps::InstallResultCode>(),
+            webapps::InstallResultCode::kSuccessNewInstall);
+  EXPECT_EQ(future.Get<webapps::AppId>(), app_id);
+  EXPECT_EQ(registrar().GetAppShortName(app_id), kWebAppStartUrl.spec());
 }
 
 }  // namespace

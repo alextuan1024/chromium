@@ -39,7 +39,7 @@ constexpr char kTranslateUrl[] =
     "https://translation.googleapis.com/language/translate/v2?key=%s";
 constexpr char kUploadContentType[] = "application/json";
 constexpr char kHttpErrorMessageTemplate[] =
-    "Failed to recieve response, got errror: %s";
+    "Failed to receive response, got error: %s";
 
 // Response constants.
 constexpr char kDataKey[] = "data";
@@ -120,6 +120,7 @@ void GoogleApiTranslationDispatcher::GetTranslation(
           data: "Captions to be translated by Google's Cloud Translate web "
             "service."
           destination: GOOGLE_OWNED_SERVICE
+          api_service_name: "translation.googleapis.com"
           internal {
             contacts {
               email: "evanliu@google.com"
@@ -215,7 +216,7 @@ void GoogleApiTranslationDispatcher::OnURLLoadComplete(
         kTranslationDispatcherLoadResultHistogram,
         TranslationDispatcherLoadResult::kEmptyResponse);
     EmitError(std::move(callback),
-              "Error parsing response: Translation dispatcher recieved a 2XX "
+              "Error parsing response: Translation dispatcher received a 2XX "
               "response, but the body was empty");
     return;
   }

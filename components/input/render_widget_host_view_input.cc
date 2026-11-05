@@ -4,6 +4,8 @@
 
 #include "components/input/render_widget_host_view_input.h"
 
+#include <optional>
+
 #include "base/notreached.h"
 #include "components/input/render_widget_host_input_event_router.h"
 #include "ui/gfx/geometry/dip_util.h"
@@ -12,6 +14,14 @@ namespace input {
 
 RenderWidgetHostViewInput::RenderWidgetHostViewInput() = default;
 RenderWidgetHostViewInput::~RenderWidgetHostViewInput() = default;
+
+#if BUILDFLAG(IS_WIN)
+std::optional<ui::StylusHandwritingPropertiesWin>
+RenderWidgetHostViewInput::TakeStylusHandwritingProperties(
+    uint32_t touch_start_event_id) {
+  return std::nullopt;
+}
+#endif
 
 void RenderWidgetHostViewInput::NotifyObserversAboutShutdown() {
   // Note: RenderWidgetHostInputEventRouter is an observer, and uses the
@@ -33,6 +43,10 @@ viz::FrameSinkId RenderWidgetHostViewInput::GetRootFrameSinkId() {
   return viz::FrameSinkId();
 }
 
+RenderWidgetHostViewInput* RenderWidgetHostViewInput::GetPinchZoomTarget() {
+  return GetRootView();
+}
+
 bool RenderWidgetHostViewInput::ScreenRectIsUnstableFor(
     const blink::WebInputEvent& event) {
   return false;
@@ -49,6 +63,12 @@ gfx::PointF RenderWidgetHostViewInput::TransformPointToRootCoordSpaceF(
 }
 
 gfx::PointF RenderWidgetHostViewInput::TransformRootPointToViewCoordSpace(
+    const gfx::PointF& point) {
+  return point;
+}
+
+std::optional<gfx::PointF>
+RenderWidgetHostViewInput::TryTransformRootPointToViewCoordSpace(
     const gfx::PointF& point) {
   return point;
 }
@@ -184,6 +204,13 @@ void RenderWidgetHostViewInput::GestureEventAck(
     const blink::WebGestureEvent& event,
     blink::mojom::InputEventResultSource ack_source,
     blink::mojom::InputEventResultState ack_result) {}
+
+void RenderWidgetHostViewInput::ProcessTouchpadZoomEventAck(
+    const blink::WebGestureEvent& event,
+    blink::mojom::InputEventResultState ack_result) {
+  RenderWidgetHostViewInput::ForwardTouchpadZoomEventIfNecessary(event,
+                                                                 ack_result);
+}
 
 void RenderWidgetHostViewInput::ChildDidAckGestureEvent(
     const blink::WebGestureEvent& event,
@@ -352,8 +379,10 @@ bool RenderWidgetHostViewInput::TransformPointToTargetCoordSpace(
   // HitTestQuery requires |point_in_pixels| to be in the coordinate space of
   // the root surface. See crbug.com/41460959 for context.
   gfx::Transform transform_root_to_original;
-  query->GetTransformToTarget(original_view->GetFrameSinkId(),
-                              &transform_root_to_original);
+  if (!query->GetTransformToTarget(original_view->GetFrameSinkId(),
+                                   &transform_root_to_original)) {
+    return false;
+  }
   const std::optional<gfx::PointF> point_in_pixels =
       transform_root_to_original.InverseMapPoint(
           gfx::ConvertPointToPixels(point, device_scale_factor));

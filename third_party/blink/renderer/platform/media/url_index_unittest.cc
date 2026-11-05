@@ -13,6 +13,7 @@
 #include "base/run_loop.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/task/single_thread_task_runner.h"
+#include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
 #include "media/base/media_switches.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -22,14 +23,15 @@ namespace blink {
 class UrlIndexTest : public testing::Test {
  public:
   UrlIndexTest()
-      : url_index_(std::make_unique<UrlIndex>(
+      : feature_list_(media::kDisallowMixedOpaqueMediaResponses),
+        url_index_(std::make_unique<UrlIndex>(
             nullptr,
             task_environment_.GetMainThreadTaskRunner())) {}
 
   scoped_refptr<UrlData> GetByUrl(const KURL& url,
                                   UrlData::CorsMode cors_mode) {
-    scoped_refptr<UrlData> ret =
-        url_index_->GetByUrl(url, cors_mode, UrlData::kNormal);
+    scoped_refptr<UrlData> ret = url_index_->GetByUrl(
+        url, cors_mode, UrlData::kNormal, security_origin_);
     EXPECT_EQ(ret->url(), url);
     EXPECT_EQ(ret->cors_mode(), cors_mode);
     return ret;
@@ -37,6 +39,9 @@ class UrlIndexTest : public testing::Test {
 
  protected:
   base::test::SingleThreadTaskEnvironment task_environment_;
+  base::test::ScopedFeatureList feature_list_;
+  scoped_refptr<const SecurityOrigin> security_origin_ =
+      SecurityOrigin::CreateUniqueOpaque();
   std::unique_ptr<UrlIndex> url_index_;
 };
 
@@ -118,6 +123,14 @@ TEST_F(UrlIndexTest, TryInsert) {
   KURL url("http://foo.bar.com");
   scoped_refptr<UrlData> a = GetByUrl(url, UrlData::CORS_UNSPECIFIED);
   scoped_refptr<UrlData> c = GetByUrl(url, UrlData::CORS_UNSPECIFIED);
+  scoped_refptr<UrlData> invalid_entry =
+      GetByUrl(url, UrlData::CORS_UNSPECIFIED);
+  scoped_refptr<UrlData> mismatched_origin =
+      GetByUrl(url, UrlData::CORS_UNSPECIFIED);
+  scoped_refptr<UrlData> mismatched_opaque =
+      GetByUrl(url, UrlData::CORS_UNSPECIFIED);
+  scoped_refptr<UrlData> mismatched_length =
+      GetByUrl(url, UrlData::CORS_UNSPECIFIED);
   EXPECT_NE(a, c);
   EXPECT_FALSE(a->Valid());
   base::Time now = base::Time::Now();
@@ -149,6 +162,7 @@ TEST_F(UrlIndexTest, TryInsert) {
   b->set_range_supported();
   b->set_valid_until(valid_until);
   b->set_last_modified(last_modified);
+  b->SetDataOrigin(url, /*is_cors_cross_origin=*/false);
   EXPECT_TRUE(b->Valid());
 
   EXPECT_EQ(b, url_index_->TryInsert(b));
@@ -157,11 +171,51 @@ TEST_F(UrlIndexTest, TryInsert) {
   c->set_range_supported();
   c->set_valid_until(valid_until);
   c->set_last_modified(last_modified);
+  c->SetDataOrigin(url, /*is_cors_cross_origin=*/false);
   EXPECT_TRUE(c->Valid());
 
   // B is still valid, so it should be preferred over C.
   EXPECT_EQ(b, url_index_->TryInsert(c));
   EXPECT_EQ(b, GetByUrl(url, UrlData::CORS_UNSPECIFIED));
+
+  // If a new entry is not valid, TryInsert should return it rather than the
+  // existing indexed entry.
+  EXPECT_FALSE(invalid_entry->Valid());
+  EXPECT_EQ(invalid_entry, url_index_->TryInsert(invalid_entry));
+
+  // If a new valid entry has a mismatched data origin, MergeFrom fails and
+  // TryInsert should return the new entry rather than the incompatible indexed
+  // entry.
+  mismatched_origin->set_range_supported();
+  mismatched_origin->set_valid_until(valid_until);
+  mismatched_origin->set_last_modified(last_modified);
+  mismatched_origin->SetDataOrigin(KURL(), /*is_cors_cross_origin=*/false);
+  EXPECT_TRUE(mismatched_origin->Valid());
+  EXPECT_EQ(mismatched_origin, url_index_->TryInsert(mismatched_origin));
+
+  // If a new valid entry has a mismatched CORS cross-origin taint state,
+  // MergeFrom fails and TryInsert should return the new entry rather than
+  // tainting the indexed non-opaque entry.
+  mismatched_opaque->set_range_supported();
+  mismatched_opaque->set_valid_until(valid_until);
+  mismatched_opaque->set_last_modified(last_modified);
+  mismatched_opaque->SetDataOrigin(url, /*is_cors_cross_origin=*/true);
+  EXPECT_TRUE(mismatched_opaque->Valid());
+  EXPECT_EQ(mismatched_opaque, url_index_->TryInsert(mismatched_opaque));
+  EXPECT_FALSE(b->is_cors_cross_origin());
+
+  // If a new valid entry has a mismatched length, MergeFrom fails and
+  // TryInsert should return the new entry rather than overwriting the indexed
+  // entry's length.
+  b->set_length(1000);
+  mismatched_length->set_range_supported();
+  mismatched_length->set_valid_until(valid_until);
+  mismatched_length->set_last_modified(last_modified);
+  mismatched_length->SetDataOrigin(url, /*is_cors_cross_origin=*/false);
+  mismatched_length->set_length(500);
+  EXPECT_TRUE(mismatched_length->Valid());
+  EXPECT_EQ(mismatched_length, url_index_->TryInsert(mismatched_length));
+  EXPECT_EQ(b->length(), 1000);
 }
 
 TEST_F(UrlIndexTest, GetByUrlCacheDisabled) {
@@ -169,25 +223,107 @@ TEST_F(UrlIndexTest, GetByUrlCacheDisabled) {
   UrlData::CorsMode cors = UrlData::CORS_UNSPECIFIED;
 
   scoped_refptr<UrlData> url_data =
-      url_index_->GetByUrl(url, cors, UrlData::kNormal);
+      url_index_->GetByUrl(url, cors, UrlData::kNormal, security_origin_);
   url_data->Use();
   url_data->set_range_supported();
   EXPECT_TRUE(url_data->Valid());
   url_index_->TryInsert(url_data);
 
-  EXPECT_EQ(url_data, url_index_->GetByUrl(url, cors, UrlData::kNormal));
-  EXPECT_NE(url_data, url_index_->GetByUrl(url, cors, UrlData::kCacheDisabled));
+  EXPECT_EQ(url_data, url_index_->GetByUrl(url, cors, UrlData::kNormal,
+                                           security_origin_));
+  EXPECT_NE(url_data, url_index_->GetByUrl(url, cors, UrlData::kCacheDisabled,
+                                           security_origin_));
 }
 
-TEST_F(UrlIndexTest, ValidateDataOrigin) {
+TEST_F(UrlIndexTest, CanAcceptDataFrom) {
   KURL url("http://foo.bar.com");
   KURL data_url;
   scoped_refptr<UrlData> a = GetByUrl(url, UrlData::CORS_UNSPECIFIED);
-  EXPECT_TRUE(a->ValidateDataOrigin(data_url));
+  EXPECT_FALSE(a->has_cross_origin_redirect());
+  EXPECT_TRUE(a->CanAcceptDataFrom(data_url, /*is_cors_cross_origin=*/false));
+  EXPECT_TRUE(a->CanAcceptDataFrom(url, /*is_cors_cross_origin=*/true));
 
-  // First call assigns the data origin, second call will assert them are the
-  // same.
-  EXPECT_TRUE(a->ValidateDataOrigin(data_url));
+  // Setting the data origin pins the origin, opacity, and (in no-cors mode)
+  // cross-origin redirect state.
+  a->SetDataOrigin(data_url, /*is_cors_cross_origin=*/false,
+                   /*has_cross_origin_redirect=*/false);
+  EXPECT_FALSE(a->has_cross_origin_redirect());
+  EXPECT_TRUE(a->CanAcceptDataFrom(data_url, /*is_cors_cross_origin=*/false,
+                                   /*has_cross_origin_redirect=*/false));
+  EXPECT_FALSE(a->CanAcceptDataFrom(url, /*is_cors_cross_origin=*/false,
+                                    /*has_cross_origin_redirect=*/false));
+  EXPECT_FALSE(a->CanAcceptDataFrom(data_url, /*is_cors_cross_origin=*/true,
+                                    /*has_cross_origin_redirect=*/false));
+  EXPECT_FALSE(a->CanAcceptDataFrom(data_url, /*is_cors_cross_origin=*/false,
+                                    /*has_cross_origin_redirect=*/true));
+
+  // A pre-response CrossOriginFail() latches `is_cors_cross_origin()` while
+  // `data_origin_` is still unset; `CanAcceptDataFrom()` must reject a
+  // subsequent non-opaque response before `SetDataOrigin()` is called.
+  scoped_refptr<UrlData> cross_origin_failed =
+      GetByUrl(url, UrlData::CORS_UNSPECIFIED);
+  cross_origin_failed->CrossOriginFail();
+  EXPECT_TRUE(cross_origin_failed->is_cors_cross_origin());
+  EXPECT_FALSE(cross_origin_failed->CanAcceptDataFrom(
+      url, /*is_cors_cross_origin=*/false));
+  EXPECT_TRUE(cross_origin_failed->CanAcceptDataFrom(
+      url, /*is_cors_cross_origin=*/true));
+
+  // Identical URLs with opaque origins (such as `blob:null/...` after
+  // `URL.revokeObjectURL()` or `data:` URLs) must remain compatible with
+  // themselves even when `kDisallowMixedOpaqueMediaResponses` is disabled.
+  {
+    base::test::ScopedFeatureList disable_mixed_opaque;
+    disable_mixed_opaque.InitAndDisableFeature(
+        media::kDisallowMixedOpaqueMediaResponses);
+    const KURL revoked_null_blob_url(
+        "blob:null/12345678-1234-1234-1234-123456789abc");
+    const KURL other_null_blob_url(
+        "blob:null/87654321-4321-4321-4321-cba987654321");
+    scoped_refptr<UrlData> blob_data =
+        GetByUrl(revoked_null_blob_url, UrlData::CORS_UNSPECIFIED);
+    blob_data->SetDataOrigin(revoked_null_blob_url,
+                             /*is_cors_cross_origin=*/false);
+    EXPECT_TRUE(blob_data->CanAcceptDataFrom(revoked_null_blob_url,
+                                             /*is_cors_cross_origin=*/false));
+    EXPECT_FALSE(blob_data->CanAcceptDataFrom(other_null_blob_url,
+                                              /*is_cors_cross_origin=*/false));
+    EXPECT_FALSE(blob_data->CanAcceptDataFrom(KURL(),
+                                              /*is_cors_cross_origin=*/false));
+  }
+
+  // Merging two entries via `TryInsert()` before either has a `data_origin_`
+  // must not falsely pin `data_origin_` to `KURL()`.
+  const KURL unpinned_url("http://unpinned.example/v.mp4");
+  scoped_refptr<UrlData> unpinned1 =
+      GetByUrl(unpinned_url, UrlData::CORS_UNSPECIFIED);
+  scoped_refptr<UrlData> unpinned2 =
+      GetByUrl(unpinned_url, UrlData::CORS_UNSPECIFIED);
+  unpinned1->Use();
+  unpinned1->set_range_supported();
+  EXPECT_EQ(unpinned1, url_index_->TryInsert(unpinned1));
+  unpinned2->Use();
+  unpinned2->set_range_supported();
+  EXPECT_EQ(unpinned1, url_index_->TryInsert(unpinned2));
+  EXPECT_TRUE(unpinned1->CanAcceptDataFrom(unpinned_url,
+                                           /*is_cors_cross_origin=*/false));
+
+  // In CORS mode, CORS-validated responses may mix direct and cross-origin
+  // redirected range responses as long as CORS opacity matches, and
+  // `SetDataOrigin()` latches `has_cross_origin_redirect()` monotonically.
+  scoped_refptr<UrlData> cors_data = GetByUrl(url, UrlData::CORS_ANONYMOUS);
+  cors_data->SetDataOrigin(url, /*is_cors_cross_origin=*/false,
+                           /*has_cross_origin_redirect=*/false);
+  EXPECT_TRUE(cors_data->CanAcceptDataFrom(KURL("http://other.bar.com"),
+                                           /*is_cors_cross_origin=*/false,
+                                           /*has_cross_origin_redirect=*/true));
+  cors_data->SetDataOrigin(KURL("http://other.bar.com"),
+                           /*is_cors_cross_origin=*/false,
+                           /*has_cross_origin_redirect=*/true);
+  EXPECT_TRUE(cors_data->has_cross_origin_redirect());
+  cors_data->SetDataOrigin(url, /*is_cors_cross_origin=*/false,
+                           /*has_cross_origin_redirect=*/false);
+  EXPECT_TRUE(cors_data->has_cross_origin_redirect());
 }
 
 TEST_F(UrlIndexTest, DestructionWithOrphanedUrlData) {
@@ -206,6 +342,8 @@ TEST_F(UrlIndexTest, DestructionWithOrphanedUrlData) {
 
   EXPECT_FALSE(a->url_index());
   EXPECT_FALSE(b->url_index());
+  EXPECT_TRUE(a->HasFailed());
+  EXPECT_FALSE(a->Valid());
 }
 
 TEST_F(UrlIndexTest, RedirectToPreservesCrossOrigin) {
@@ -216,21 +354,35 @@ TEST_F(UrlIndexTest, RedirectToPreservesCrossOrigin) {
 
   EXPECT_FALSE(a->is_cors_cross_origin());
   EXPECT_FALSE(b->is_cors_cross_origin());
+  EXPECT_FALSE(a->has_cross_origin_redirect());
+  EXPECT_FALSE(b->has_cross_origin_redirect());
+  EXPECT_FALSE(a->passed_timing_allow_origin_check());
+  EXPECT_FALSE(b->passed_timing_allow_origin_check());
 
-  a->set_is_cors_cross_origin(true);
+  a->SetDataOrigin(url1, /*is_cors_cross_origin=*/true,
+                   /*has_cross_origin_redirect=*/true);
+  a->set_passed_timing_allow_origin_check(false);
+  b->set_passed_timing_allow_origin_check(true);
+  EXPECT_TRUE(b->passed_timing_allow_origin_check());
   a->RedirectTo(b);
 
   EXPECT_TRUE(a->is_cors_cross_origin());
   EXPECT_TRUE(b->is_cors_cross_origin());
+  EXPECT_TRUE(a->has_cross_origin_redirect());
+  EXPECT_TRUE(b->has_cross_origin_redirect());
+  // A TAO failure on `a` latches onto `b` across `RedirectTo()`.
+  EXPECT_FALSE(b->passed_timing_allow_origin_check());
+  b->set_passed_timing_allow_origin_check(true);
+  EXPECT_FALSE(b->passed_timing_allow_origin_check());
 }
 
 TEST_F(UrlIndexTest, AllowGzip) {
   KURL url("http://foo.bar.com");
 
   // 1. Get UrlData with kAllowGzip and insert it into index.
-  scoped_refptr<UrlData> a =
-      url_index_->GetByUrl(url, UrlData::CORS_UNSPECIFIED, UrlData::kNormal,
-                           media::DataSource::EncodingMode::kAllowGzip);
+  scoped_refptr<UrlData> a = url_index_->GetByUrl(
+      url, UrlData::CORS_UNSPECIFIED, UrlData::kNormal, security_origin_,
+      media::DataSource::EncodingMode::kAllowGzip);
   EXPECT_EQ(a->encoding_mode(), media::DataSource::EncodingMode::kAllowGzip);
   a->Use();
   a->set_range_supported();
@@ -238,16 +390,16 @@ TEST_F(UrlIndexTest, AllowGzip) {
   EXPECT_EQ(a, url_index_->TryInsert(a));
 
   // 2. Get UrlData with kIdentity (should be a cache miss / new instance).
-  scoped_refptr<UrlData> b =
-      url_index_->GetByUrl(url, UrlData::CORS_UNSPECIFIED, UrlData::kNormal,
-                           media::DataSource::EncodingMode::kIdentity);
+  scoped_refptr<UrlData> b = url_index_->GetByUrl(
+      url, UrlData::CORS_UNSPECIFIED, UrlData::kNormal, security_origin_,
+      media::DataSource::EncodingMode::kIdentity);
   EXPECT_EQ(b->encoding_mode(), media::DataSource::EncodingMode::kIdentity);
   EXPECT_NE(a, b);
 
   // 3. Get UrlData with kAllowGzip again (should be a cache hit, returns 'a').
-  scoped_refptr<UrlData> c =
-      url_index_->GetByUrl(url, UrlData::CORS_UNSPECIFIED, UrlData::kNormal,
-                           media::DataSource::EncodingMode::kAllowGzip);
+  scoped_refptr<UrlData> c = url_index_->GetByUrl(
+      url, UrlData::CORS_UNSPECIFIED, UrlData::kNormal, security_origin_,
+      media::DataSource::EncodingMode::kAllowGzip);
   EXPECT_EQ(a, c);
 
   // 4. Insert 'b' (kIdentity) into the index.
@@ -257,10 +409,412 @@ TEST_F(UrlIndexTest, AllowGzip) {
   EXPECT_EQ(b, url_index_->TryInsert(b));
 
   // 5. Get UrlData with kIdentity again (should be a cache hit, returns 'b').
-  scoped_refptr<UrlData> d =
-      url_index_->GetByUrl(url, UrlData::CORS_UNSPECIFIED, UrlData::kNormal,
-                           media::DataSource::EncodingMode::kIdentity);
+  scoped_refptr<UrlData> d = url_index_->GetByUrl(
+      url, UrlData::CORS_UNSPECIFIED, UrlData::kNormal, security_origin_,
+      media::DataSource::EncodingMode::kIdentity);
   EXPECT_EQ(b, d);
+}
+
+TEST_F(UrlIndexTest, SecurityOriginIsolation) {
+  KURL url("http://foo.bar.com/video.mp4");
+  auto origin1 = SecurityOrigin::CreateFromString("http://foo.bar.com");
+  auto origin2 = SecurityOrigin::CreateFromString("http://attacker.com");
+
+  scoped_refptr<UrlData> a = url_index_->GetByUrl(url, UrlData::CORS_ANONYMOUS,
+                                                  UrlData::kNormal, origin1);
+  a->Use();
+  a->set_range_supported();
+  a->SetDataOrigin(url, /*is_cors_cross_origin=*/false);
+  EXPECT_TRUE(a->Valid());
+  EXPECT_EQ(a, url_index_->TryInsert(a));
+
+  // Same-origin lookup hits the cached entry.
+  EXPECT_EQ(a, url_index_->GetByUrl(
+                   url, UrlData::CORS_ANONYMOUS, UrlData::kNormal,
+                   SecurityOrigin::CreateFromString("http://foo.bar.com")));
+
+  // Cross-origin lookup does not reuse the cached entry from origin1.
+  scoped_refptr<UrlData> b = url_index_->GetByUrl(url, UrlData::CORS_ANONYMOUS,
+                                                  UrlData::kNormal, origin2);
+  EXPECT_NE(a, b);
+
+  // Inserting `b` does not merge into or overwrite `a`.
+  b->Use();
+  b->set_range_supported();
+  b->SetDataOrigin(url, /*is_cors_cross_origin=*/true);
+  EXPECT_TRUE(b->Valid());
+  EXPECT_EQ(b, url_index_->TryInsert(b));
+  EXPECT_EQ(a, url_index_->GetByUrl(url, UrlData::CORS_ANONYMOUS,
+                                    UrlData::kNormal, origin1));
+  EXPECT_FALSE(a->is_cors_cross_origin());
+  EXPECT_EQ(b, url_index_->GetByUrl(url, UrlData::CORS_ANONYMOUS,
+                                    UrlData::kNormal, origin2));
+  EXPECT_TRUE(b->is_cors_cross_origin());
+
+  // Distinct opaque origins also do not reuse each other's cached entries.
+  auto opaque1 = SecurityOrigin::CreateUniqueOpaque();
+  auto opaque2 = SecurityOrigin::CreateUniqueOpaque();
+  scoped_refptr<UrlData> c = url_index_->GetByUrl(url, UrlData::CORS_ANONYMOUS,
+                                                  UrlData::kNormal, opaque1);
+  c->Use();
+  c->set_range_supported();
+  EXPECT_EQ(c, url_index_->TryInsert(c));
+  EXPECT_EQ(c, url_index_->GetByUrl(url, UrlData::CORS_ANONYMOUS,
+                                    UrlData::kNormal, opaque1));
+  EXPECT_NE(c, url_index_->GetByUrl(url, UrlData::CORS_ANONYMOUS,
+                                    UrlData::kNormal, opaque2));
+}
+
+TEST_F(UrlIndexTest, ServiceWorkerModeIsolation) {
+  KURL url("http://foo.bar.com/video.mp4");
+
+  scoped_refptr<UrlData> allow_sw = url_index_->GetByUrl(
+      url, UrlData::CORS_UNSPECIFIED, UrlData::kNormal, security_origin_,
+      media::DataSource::EncodingMode::kIdentity,
+      UrlData::ServiceWorkerMode::kAllow);
+  EXPECT_EQ(allow_sw->service_worker_mode(),
+            UrlData::ServiceWorkerMode::kAllow);
+  allow_sw->Use();
+  allow_sw->set_range_supported();
+  allow_sw->SetDataOrigin(KURL(), /*is_cors_cross_origin=*/false);
+  EXPECT_EQ(allow_sw, url_index_->TryInsert(allow_sw));
+
+  // A network-redirected lookup (`kSkip`) must not collide with an offline
+  // Service Worker-cached entry (`kAllow`), matching
+  // `ResourceFetcher::GetCacheIdentifier`.
+  scoped_refptr<UrlData> skip_sw = url_index_->GetByUrl(
+      url, UrlData::CORS_UNSPECIFIED, UrlData::kNormal, security_origin_,
+      media::DataSource::EncodingMode::kIdentity,
+      UrlData::ServiceWorkerMode::kSkip);
+  scoped_refptr<UrlData> skip_sw2 = url_index_->GetByUrl(
+      url, UrlData::CORS_UNSPECIFIED, UrlData::kNormal, security_origin_,
+      media::DataSource::EncodingMode::kIdentity,
+      UrlData::ServiceWorkerMode::kSkip);
+  EXPECT_EQ(skip_sw->service_worker_mode(), UrlData::ServiceWorkerMode::kSkip);
+  EXPECT_NE(allow_sw, skip_sw);
+  EXPECT_NE(skip_sw, skip_sw2);
+
+  skip_sw->Use();
+  skip_sw->set_range_supported();
+  skip_sw->SetDataOrigin(url, /*is_cors_cross_origin=*/true);
+  EXPECT_EQ(skip_sw, url_index_->TryInsert(skip_sw));
+
+  // Both entries coexist under their respective `ServiceWorkerMode` keys, and a
+  // second `kSkip` entry merges into `skip_sw`.
+  EXPECT_EQ(allow_sw,
+            url_index_->GetByUrl(url, UrlData::CORS_UNSPECIFIED,
+                                 UrlData::kNormal, security_origin_,
+                                 media::DataSource::EncodingMode::kIdentity,
+                                 UrlData::ServiceWorkerMode::kAllow));
+  EXPECT_EQ(skip_sw,
+            url_index_->GetByUrl(url, UrlData::CORS_UNSPECIFIED,
+                                 UrlData::kNormal, security_origin_,
+                                 media::DataSource::EncodingMode::kIdentity,
+                                 UrlData::ServiceWorkerMode::kSkip));
+
+  skip_sw2->Use();
+  skip_sw2->set_range_supported();
+  skip_sw2->SetDataOrigin(url, /*is_cors_cross_origin=*/true);
+  skip_sw2->set_passed_timing_allow_origin_check(false);
+  skip_sw->set_passed_timing_allow_origin_check(true);
+  EXPECT_EQ(skip_sw, url_index_->TryInsert(skip_sw2));
+  // Merging `skip_sw2` latches TAO failure onto `skip_sw`.
+  EXPECT_FALSE(skip_sw->passed_timing_allow_origin_check());
+}
+
+TEST_F(UrlIndexTest, UnindexedBounceBackNeverIndexedOrMerged) {
+  KURL start_url("http://attacker.com/bounce");
+  KURL target_url("http://foo.bar.com/video.mp4");
+
+  scoped_refptr<UrlData> direct =
+      GetByUrl(target_url, UrlData::CORS_UNSPECIFIED);
+  direct->Use();
+  direct->set_range_supported();
+  direct->SetDataOrigin(target_url, /*is_cors_cross_origin=*/false);
+  EXPECT_EQ(direct, url_index_->TryInsert(direct));
+
+  scoped_refptr<UrlData> bounced = url_index_->NewUnindexedUrlData(
+      target_url, UrlData::CORS_UNSPECIFIED, UrlData::kNormal, security_origin_,
+      media::DataSource::EncodingMode::kIdentity,
+      UrlData::ServiceWorkerMode::kAllow, start_url);
+  EXPECT_EQ(bounced->url(), target_url);
+  EXPECT_EQ(bounced->request_url(), start_url);
+  EXPECT_TRUE(bounced->has_original_request_url());
+
+  bounced->Use();
+  bounced->set_range_supported();
+  bounced->SetDataOrigin(target_url, /*is_cors_cross_origin=*/true,
+                         /*has_cross_origin_redirect=*/true);
+  EXPECT_TRUE(bounced->Valid());
+
+  // `TryInsert` returns `bounced` without indexing it or merging it into
+  // `direct`.
+  EXPECT_EQ(bounced, url_index_->TryInsert(bounced));
+  EXPECT_EQ(direct, GetByUrl(target_url, UrlData::CORS_UNSPECIFIED));
+  EXPECT_FALSE(direct->is_cors_cross_origin());
+  EXPECT_NE(bounced, GetByUrl(start_url, UrlData::CORS_UNSPECIFIED));
+}
+
+TEST_F(UrlIndexTest, KeyRemovalAndSlotReuse) {
+  KURL url("http://foo.bar.com/reusable.mp4");
+  scoped_refptr<UrlData> first = GetByUrl(url, UrlData::CORS_UNSPECIFIED);
+  first->Use();
+  first->set_range_supported();
+  first->SetDataOrigin(url, /*is_cors_cross_origin=*/false);
+  EXPECT_EQ(first, url_index_->TryInsert(first));
+  EXPECT_EQ(first, GetByUrl(url, UrlData::CORS_UNSPECIFIED));
+
+  // Evicting an empty `UrlData` removes its `UrlData::Key` from `indexed_data_`
+  // (leaving a deleted slot in the underlying `HashMap`), and subsequent
+  // lookups and re-insertions cleanly reuse the table.
+  first->multibuffer()->OnEmpty();
+
+  scoped_refptr<UrlData> second = GetByUrl(url, UrlData::CORS_UNSPECIFIED);
+  EXPECT_NE(first, second);
+  second->Use();
+  second->set_range_supported();
+  second->SetDataOrigin(url, /*is_cors_cross_origin=*/false);
+  EXPECT_EQ(second, url_index_->TryInsert(second));
+  EXPECT_EQ(second, GetByUrl(url, UrlData::CORS_UNSPECIFIED));
+}
+
+TEST_F(UrlIndexTest, FailRemovesUrlDataFromUrlIndex) {
+  KURL url("http://foo.bar.com/video.mp4");
+  scoped_refptr<UrlData> a = GetByUrl(url, UrlData::CORS_UNSPECIFIED);
+  a->Use();
+  a->set_range_supported();
+  a->set_length(2345);
+  EXPECT_TRUE(a->Valid());
+  EXPECT_EQ(a, url_index_->TryInsert(a));
+  EXPECT_EQ(a, GetByUrl(url, UrlData::CORS_UNSPECIFIED));
+
+  a->Fail();
+  EXPECT_FALSE(a->Valid());
+  EXPECT_NE(a, GetByUrl(url, UrlData::CORS_UNSPECIFIED));
+}
+
+TEST_F(UrlIndexTest, OpaqueServiceWorkerOriginRequiresExactUrlMatch) {
+  KURL req_url("https://attacker.example/audio.mp3");
+  KURL secret_url("https://victim.example/secret");
+  KURL probe_url("https://victim.example/probe?len=100");
+  KURL cdn_edge1("https://cdn.example/video.mp4?token=1");
+  KURL cdn_edge2("https://cdn.example/video.mp4?token=2");
+
+  // Native opaque responses allow same-origin URL changes across redirects
+  // (e.g. CDN token/edge redirects).
+  scoped_refptr<UrlData> native_opaque =
+      GetByUrl(cdn_edge1, UrlData::CORS_UNSPECIFIED);
+  native_opaque->SetDataOrigin(cdn_edge1, /*is_cors_cross_origin=*/true);
+  EXPECT_TRUE(native_opaque->CanAcceptDataFrom(cdn_edge2,
+                                               /*is_cors_cross_origin=*/true));
+  // A service worker opaque response for the same URL cannot be mixed onto a
+  // native opaque UrlData (e.g. if the worker re-fetches the same URL with
+  // different credentials).
+  EXPECT_FALSE(native_opaque->CanAcceptDataFrom(
+      cdn_edge1, /*is_cors_cross_origin=*/true,
+      /*has_cross_origin_redirect=*/false,
+      /*was_fetched_via_service_worker=*/true));
+
+  // Even when `kDisallowMixedOpaqueMediaResponses` is disabled, an incoming
+  // opaque service worker response with a different same-origin URL must still
+  // be rejected on a natively-established opaque UrlData.
+  {
+    base::test::ScopedFeatureList disable_mixed_opaque;
+    disable_mixed_opaque.InitAndDisableFeature(
+        media::kDisallowMixedOpaqueMediaResponses);
+    EXPECT_FALSE(native_opaque->CanAcceptDataFrom(
+        cdn_edge2, /*is_cors_cross_origin=*/true,
+        /*has_cross_origin_redirect=*/false,
+        /*was_fetched_via_service_worker=*/true));
+  }
+
+  // When an opaque response was fetched via a service worker, exact response
+  // URL equality and matching service worker provenance are required.
+  scoped_refptr<UrlData> sw_opaque =
+      GetByUrl(req_url, UrlData::CORS_UNSPECIFIED);
+  sw_opaque->SetDataOrigin(secret_url, /*is_cors_cross_origin=*/true,
+                           /*has_cross_origin_redirect=*/false,
+                           /*was_fetched_via_service_worker=*/true);
+  EXPECT_TRUE(
+      sw_opaque->CanAcceptDataFrom(secret_url, /*is_cors_cross_origin=*/true,
+                                   /*has_cross_origin_redirect=*/false,
+                                   /*was_fetched_via_service_worker=*/true));
+  EXPECT_FALSE(
+      sw_opaque->CanAcceptDataFrom(probe_url, /*is_cors_cross_origin=*/true,
+                                   /*has_cross_origin_redirect=*/false,
+                                   /*was_fetched_via_service_worker=*/true));
+  EXPECT_FALSE(
+      sw_opaque->CanAcceptDataFrom(secret_url, /*is_cors_cross_origin=*/true,
+                                   /*has_cross_origin_redirect=*/false,
+                                   /*was_fetched_via_service_worker=*/false));
+
+  // Non-opaque service worker responses continue to use same-origin matching.
+  KURL same_origin_1("https://attacker.example/part1");
+  KURL same_origin_2("https://attacker.example/part2");
+  scoped_refptr<UrlData> sw_non_opaque =
+      GetByUrl(req_url, UrlData::CORS_UNSPECIFIED);
+  sw_non_opaque->SetDataOrigin(same_origin_1, /*is_cors_cross_origin=*/false,
+                               /*has_cross_origin_redirect=*/false,
+                               /*was_fetched_via_service_worker=*/true);
+  EXPECT_TRUE(sw_non_opaque->CanAcceptDataFrom(
+      same_origin_2, /*is_cors_cross_origin=*/false,
+      /*has_cross_origin_redirect=*/false,
+      /*was_fetched_via_service_worker=*/true));
+}
+
+TEST_F(UrlIndexTest, OpaqueServiceWorkerOriginNotIndexedOrMerged) {
+  KURL req_url("https://attacker.example/audio.mp3");
+  KURL secret_url("https://victim.example/secret");
+
+  // Opaque responses fetched via a service worker must not be inserted into
+  // UrlIndex, even when the service worker re-requests the exact same URL
+  // `req_url` (e.g. with modified credentials).
+  scoped_refptr<UrlData> sw_opaque =
+      GetByUrl(req_url, UrlData::CORS_UNSPECIFIED);
+  sw_opaque->Use();
+  sw_opaque->set_range_supported();
+  sw_opaque->set_length(2345);
+  sw_opaque->SetDataOrigin(req_url, /*is_cors_cross_origin=*/true,
+                           /*has_cross_origin_redirect=*/false,
+                           /*was_fetched_via_service_worker=*/true);
+  EXPECT_TRUE(sw_opaque->Valid());
+  EXPECT_EQ(sw_opaque, url_index_->TryInsert(sw_opaque));
+  EXPECT_NE(sw_opaque, GetByUrl(req_url, UrlData::CORS_UNSPECIFIED));
+
+  // If a native opaque entry is indexed for `req_url`, attempting to insert an
+  // opaque service worker entry for the same key must neither merge with nor
+  // replace the indexed native entry.
+  scoped_refptr<UrlData> native_opaque =
+      GetByUrl(req_url, UrlData::CORS_UNSPECIFIED);
+  native_opaque->Use();
+  native_opaque->set_range_supported();
+  native_opaque->set_length(1000);
+  native_opaque->SetDataOrigin(req_url, /*is_cors_cross_origin=*/true);
+  EXPECT_TRUE(native_opaque->Valid());
+  EXPECT_EQ(native_opaque, url_index_->TryInsert(native_opaque));
+  EXPECT_EQ(native_opaque, GetByUrl(req_url, UrlData::CORS_UNSPECIFIED));
+
+  EXPECT_EQ(sw_opaque, url_index_->TryInsert(sw_opaque));
+  EXPECT_EQ(native_opaque, GetByUrl(req_url, UrlData::CORS_UNSPECIFIED));
+  EXPECT_EQ(native_opaque->length(), 1000);
+
+  // A native opaque response whose `data_origin()` was upgraded in-place from
+  // HTTP to HTTPS (without a service worker) is still indexed normally.
+  KURL http_media_url("http://cdn.example/media.mp4");
+  KURL https_media_url("https://cdn.example/media.mp4");
+  scoped_refptr<UrlData> upgraded_opaque =
+      GetByUrl(http_media_url, UrlData::CORS_UNSPECIFIED);
+  upgraded_opaque->Use();
+  upgraded_opaque->set_range_supported();
+  upgraded_opaque->SetDataOrigin(https_media_url,
+                                 /*is_cors_cross_origin=*/true);
+  EXPECT_TRUE(upgraded_opaque->Valid());
+  EXPECT_EQ(upgraded_opaque, url_index_->TryInsert(upgraded_opaque));
+  EXPECT_EQ(upgraded_opaque,
+            GetByUrl(http_media_url, UrlData::CORS_UNSPECIFIED));
+
+  // Non-opaque service worker entries are still indexed and shared.
+  KURL same_origin_url("https://example.com/media.mp4");
+  KURL same_origin_sw_url("https://example.com/cached_media.mp4");
+  scoped_refptr<UrlData> sw_non_opaque =
+      GetByUrl(same_origin_url, UrlData::CORS_UNSPECIFIED);
+  sw_non_opaque->Use();
+  sw_non_opaque->set_range_supported();
+  sw_non_opaque->SetDataOrigin(same_origin_sw_url,
+                               /*is_cors_cross_origin=*/false,
+                               /*has_cross_origin_redirect=*/false,
+                               /*was_fetched_via_service_worker=*/true);
+  EXPECT_TRUE(sw_non_opaque->Valid());
+  EXPECT_EQ(sw_non_opaque, url_index_->TryInsert(sw_non_opaque));
+  EXPECT_EQ(sw_non_opaque,
+            GetByUrl(same_origin_url, UrlData::CORS_UNSPECIFIED));
+}
+
+TEST_F(UrlIndexTest, RedirectToPropagatesLength) {
+  KURL url1("http://foo.bar.com/part1.mp4");
+  KURL url2("http://foo.bar.com/part2.mp4");
+  scoped_refptr<UrlData> a = GetByUrl(url1, UrlData::CORS_UNSPECIFIED);
+  scoped_refptr<UrlData> b = GetByUrl(url2, UrlData::CORS_UNSPECIFIED);
+
+  a->set_length(4096);
+  EXPECT_EQ(b->length(), kPositionNotSpecified);
+
+  a->RedirectTo(b);
+  EXPECT_EQ(b->length(), 4096);
+}
+
+TEST_F(UrlIndexTest,
+       NonOpaqueServiceWorkerPlusNativeOpaqueDoesNotSynthesizeOpaqueSwState) {
+  base::test::ScopedFeatureList disable_mixed_opaque;
+  disable_mixed_opaque.InitAndDisableFeature(
+      media::kDisallowMixedOpaqueMediaResponses);
+
+  KURL req_url("https://example.com/a.mp4");
+  KURL sw_url("https://example.com/b.mp4");
+
+  // A non-opaque service worker response
+  // (`was_fetched_via_service_worker=true`, `is_cors_cross_origin=false`)
+  // followed by a native opaque response when the kill-switch is disabled must
+  // not synthesize `HasOpaqueServiceWorkerResponse() == true` out of separate
+  // responses.
+  scoped_refptr<UrlData> sw_non_opaque =
+      GetByUrl(req_url, UrlData::CORS_UNSPECIFIED);
+  sw_non_opaque->Use();
+  sw_non_opaque->set_range_supported();
+  sw_non_opaque->set_length(1024);
+  sw_non_opaque->SetDataOrigin(sw_url, /*is_cors_cross_origin=*/false,
+                               /*has_cross_origin_redirect=*/false,
+                               /*was_fetched_via_service_worker=*/true);
+  EXPECT_FALSE(sw_non_opaque->HasOpaqueServiceWorkerResponse());
+  ASSERT_EQ(sw_non_opaque, url_index_->TryInsert(sw_non_opaque));
+
+  scoped_refptr<UrlData> native_opaque =
+      url_index_->GetByUrl(req_url, UrlData::CORS_UNSPECIFIED,
+                           UrlData::kCacheDisabled, security_origin_);
+  native_opaque->Use();
+  native_opaque->set_range_supported();
+  native_opaque->set_length(1024);
+  native_opaque->SetDataOrigin(req_url, /*is_cors_cross_origin=*/true,
+                               /*has_cross_origin_redirect=*/false,
+                               /*was_fetched_via_service_worker=*/false);
+  EXPECT_FALSE(native_opaque->HasOpaqueServiceWorkerResponse());
+
+  // Merging `native_opaque` into `sw_non_opaque` via `TryInsert()` (once lookup
+  // mode is normal) must not trip `SetDataOrigin()`'s or `DidReceiveResponse`'s
+  // post-`TryInsert()` `CanAcceptDataFrom()` invariant.
+  scoped_refptr<UrlData> merge_candidate = url_index_->GetByUrl(
+      KURL("https://example.com/other_temp.mp4"), UrlData::CORS_UNSPECIFIED,
+      UrlData::kNormal, security_origin_);
+  merge_candidate->SetDataOrigin(req_url, /*is_cors_cross_origin=*/true,
+                                 /*has_cross_origin_redirect=*/false,
+                                 /*was_fetched_via_service_worker=*/false);
+  merge_candidate->set_length(1024);
+  EXPECT_TRUE(sw_non_opaque->CanAcceptDataFrom(
+      req_url, /*is_cors_cross_origin=*/true,
+      /*has_cross_origin_redirect=*/false,
+      /*was_fetched_via_service_worker=*/false));
+  sw_non_opaque->SetDataOrigin(req_url, /*is_cors_cross_origin=*/true,
+                               /*has_cross_origin_redirect=*/false,
+                               /*was_fetched_via_service_worker=*/false);
+  EXPECT_FALSE(sw_non_opaque->HasOpaqueServiceWorkerResponse());
+  EXPECT_TRUE(sw_non_opaque->CanAcceptDataFrom(
+      req_url, /*is_cors_cross_origin=*/true,
+      /*has_cross_origin_redirect=*/false,
+      /*was_fetched_via_service_worker=*/false));
+
+  // RedirectTo() propagates `HasOpaqueServiceWorkerResponse()` when the source
+  // actually received an opaque service worker response.
+  scoped_refptr<UrlData> actual_opaque_sw =
+      GetByUrl(KURL("https://cdn.example/src.mp4"), UrlData::CORS_UNSPECIFIED);
+  actual_opaque_sw->SetDataOrigin(KURL("https://cdn.example/src.mp4"),
+                                  /*is_cors_cross_origin=*/true,
+                                  /*has_cross_origin_redirect=*/false,
+                                  /*was_fetched_via_service_worker=*/true);
+  EXPECT_TRUE(actual_opaque_sw->HasOpaqueServiceWorkerResponse());
+  scoped_refptr<UrlData> redirect_dest =
+      GetByUrl(KURL("https://cdn.example/dst.mp4"), UrlData::CORS_UNSPECIFIED);
+  actual_opaque_sw->RedirectTo(redirect_dest);
+  EXPECT_TRUE(redirect_dest->HasOpaqueServiceWorkerResponse());
 }
 
 }  // namespace blink

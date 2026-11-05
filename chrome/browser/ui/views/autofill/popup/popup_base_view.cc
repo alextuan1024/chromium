@@ -4,6 +4,7 @@
 
 #include "chrome/browser/ui/views/autofill/popup/popup_base_view.h"
 
+#include <algorithm>
 #include <memory>
 #include <string_view>
 #include <utility>
@@ -31,6 +32,7 @@
 #include "ui/color/color_id.h"
 #include "ui/display/screen.h"
 #include "ui/events/base_event_utils.h"
+#include "ui/gfx/geometry/insets.h"
 #include "ui/gfx/geometry/skia_conversions.h"
 #include "ui/gfx/scrollbar_size.h"
 #include "ui/views/accessibility/view_accessibility.h"
@@ -113,16 +115,33 @@ class PopupBaseView::Widget : public views::Widget {
     params.opacity = views::Widget::InitParams::WindowOpacity::kTranslucent;
     params.shadow_type = views::Widget::InitParams::ShadowType::kNone;
     params.activatable = activatable;
+#if BUILDFLAG(IS_OZONE)
+    // On Ozone platforms (particularly Wayland on Linux and ChromeOS), popups
+    // with desktop-level native widgets (accelerated widgets) are backed by
+    // Wayland subsurfaces or popup xdg surfaces. Wayland compositors (such as
+    // GNOME Mutter) do not deliver frame callbacks or dispatch continuous
+    // paint/animation events to subsurfaces when the parent window does not
+    // continuously commit new frames, causing interactive controls and
+    // animations (e.g. `views::Throbber`) in activatable popups to freeze.
+    // Setting `use_accelerated_widget_override = false` forces the widget to be
+    // hosted as an in-tree `NativeWidgetAura` composited directly within the
+    // browser window's main compositor tree, ensuring reliable event dispatch
+    // and smooth animations.
+    if (activatable == views::Widget::InitParams::Activatable::kYes) {
+      params.use_accelerated_widget_override = false;
+    }
+#endif
 
     // `kSecuritySurface` makes the popup display on top of all other windows
     // (including system ones, but the support among different OS, versions
     // and setups is not consistent). This is not required for regular
     // Autofill popup use, but it makes certain attacks (those based on the
     // popup being obscured) less practical.
-    if constexpr (BUILDFLAG(IS_CHROMEOS)) {
-      // On ChromeOS, `Activatable::kYes` and `kSecuritySurface` are
-      // incompatible because `kSecuritySurface` windows are assigned to the
-      // DragImageAndTooltipContainer, which does not support activation.
+    if constexpr (BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_LINUX)) {
+      // On ChromeOS and Linux, `Activatable::kYes` and `kSecuritySurface` are
+      // incompatible because `kSecuritySurface` windows force accelerated
+      // desktop-level widgets (subsurfaces) which do not support reliable
+      // activation and repainting on Wayland compositors like Mutter.
       params.z_order =
           activatable == views::Widget::InitParams::Activatable::kYes
               ? ui::ZOrderLevel::kFloatingUIElement
@@ -423,8 +442,8 @@ void PopupBaseView::NotifyAXSelection(views::View& selected_view) {
        "PopupSeparatorView", "PopupWarningView", "PopupBaseView",
        "PasswordGenerationPopupViewViews::GeneratedPasswordBox", "PopupRowView",
        "PopupRowWithButtonView", "PopupRowContentView", "MdTextButton",
-       "PopupBnplFootnoteView", "PopupAtMemoryAiDisclosureView",
-       "PopupNoticeView"});
+       "PopupBnplFootnoteView", "PopupFooterWithLinkView", "PopupNoticeView",
+       "LinkFragment"});
   DCHECK(kDerivedClasses.contains(selected_view.GetClassName()))
       << "If you add a new derived class from AutofillPopupRowView, add it "
          "here and to onSelection(evt) in "
@@ -511,20 +530,40 @@ gfx::Rect PopupBaseView::GetTopWindowBounds() const {
   return gfx::Rect();
 }
 
+gfx::Rect PopupBaseView::GetVisibleContentAreaBounds() const {
+  return IntersectWithDisplayBounds(GetWebContents(), GetContentAreaBounds());
+}
+
+gfx::Rect PopupBaseView::GetMaxPopupBounds() const {
+  const gfx::Rect content_area_bounds = GetContentAreaBounds();
+  if (!PopupMayExceedContentAreaBounds(GetWebContents())) {
+    return IntersectWithDisplayBounds(GetWebContents(), content_area_bounds);
+  }
+  // TODO(crbug.com/40799454): Once popups can render outside the main window on
+  // Linux, use the screen bounds.
+  gfx::Rect max_bounds_for_popup = GetTopWindowBounds();
+  // Prevent the popup from extending above the top of the `WebContents` into
+  // the browser's top chrome (toolbar/omnibox and tab strip).
+  max_bounds_for_popup.Inset(gfx::Insets::TLBR(
+      std::max(0, content_area_bounds.y() - max_bounds_for_popup.y()), 0, 0,
+      0));
+  return IntersectWithDisplayBounds(GetWebContents(), max_bounds_for_popup);
+}
+
 gfx::Rect PopupBaseView::GetOptimalPositionAndPlaceArrowOnPopup(
     const gfx::Rect& element_bounds,
-    const gfx::Rect& visible_content_area_bounds,
+    const gfx::Rect& max_bounds_for_popup,
     const gfx::Size& preferred_size,
     base::span<const views::BubbleArrowSide> preferred_popup_sides) {
   views::BubbleBorder* border = static_cast<views::BubbleBorder*>(
       GetWidget()->GetRootView()->GetBorder());
-  DCHECK(border);
+  CHECK(border, base::NotFatalUntil::M162);
 
   gfx::Rect popup_bounds;
 
   // Deduce the arrow and the position.
   views::BubbleBorder::Arrow arrow = GetOptimalPopupPlacement(
-      /*visible_content_area_bounds=*/visible_content_area_bounds,
+      /*max_bounds_for_popup=*/max_bounds_for_popup,
       /*element_bounds=*/element_bounds,
       /*popup_preferred_size=*/preferred_size,
       /*right_to_left=*/delegate_->GetElementTextDirection() ==
@@ -539,15 +578,15 @@ gfx::Rect PopupBaseView::GetOptimalPositionAndPlaceArrowOnPopup(
 
   // Those values are not supported for adding an arrow.
   // Currently, they can not be returned by GetOptimalPopupPlacement().
-  DCHECK(arrow != views::BubbleBorder::Arrow::NONE);
-  DCHECK(arrow != views::BubbleBorder::Arrow::FLOAT);
+  CHECK(arrow != views::BubbleBorder::Arrow::NONE, base::NotFatalUntil::M162);
+  CHECK(arrow != views::BubbleBorder::Arrow::FLOAT, base::NotFatalUntil::M162);
 
   if (show_arrow_pointer_) {
     // Set the arrow position to the border.
     border->set_arrow(arrow);
     border->AddArrowToBubbleCornerAndPointTowardsAnchor(
         element_bounds, popup_bounds,
-        visible_content_area_bounds.y() - kMaxPopupWebContentsTopYOverflow);
+        max_bounds_for_popup.y() - kMaxPopupWebContentsTopYOverflow);
   }
 
   return popup_bounds;
@@ -555,18 +594,8 @@ gfx::Rect PopupBaseView::GetOptimalPositionAndPlaceArrowOnPopup(
 
 bool PopupBaseView::DoUpdateBoundsAndRedrawPopup() {
   gfx::Size preferred_size = GetPreferredSize();
-  const gfx::Rect content_area_bounds = GetContentAreaBounds();
-  // TODO(crbug.com/40799454) Once popups can render outside the main window on
-  // Linux, use the screen bounds.
-  const gfx::Rect top_window_bounds = GetTopWindowBounds();
-  const gfx::Rect& max_bounds_for_popup =
-      PopupMayExceedContentAreaBounds(GetWebContents()) ? top_window_bounds
-                                                        : content_area_bounds;
-
-  // Intersect with the current monitor's work area to avoid showing popups
-  // outside the screen.
-  gfx::Rect visible_content_area_bounds =
-      IntersectWithDisplayBounds(GetWebContents(), max_bounds_for_popup);
+  const gfx::Rect visible_content_area_bounds = GetVisibleContentAreaBounds();
+  const gfx::Rect max_bounds_for_popup = GetMaxPopupBounds();
 
   gfx::Rect element_bounds = gfx::ToEnclosingRect(delegate_->element_bounds());
 
@@ -596,14 +625,13 @@ bool PopupBaseView::DoUpdateBoundsAndRedrawPopup() {
   // That function checks whether the popup element has enough place to render
   // either to the top of the focused element or to the bottom of the focused
   // element.
-  if (!CanShowDropdownHere(item_height, visible_content_area_bounds,
-                           element_bounds)) {
+  if (!CanShowDropdownHere(item_height, max_bounds_for_popup, element_bounds)) {
     HideController(SuggestionHidingReason::kInsufficientSpace);
     return false;
   }
 
   gfx::Rect popup_bounds = GetOptimalPositionAndPlaceArrowOnPopup(
-      element_bounds, visible_content_area_bounds, preferred_size,
+      element_bounds, max_bounds_for_popup, preferred_size,
       kDefaultPreferredPopupSides);
 
   if (OverlapsWithAnotherPrompt(popup_bounds)) {
@@ -644,11 +672,8 @@ bool PopupBaseView::OverlapsWithAnotherPrompt(
     return true;
   }
 
-  if (base::FeatureList::IsEnabled(
-          features::kAutofillPopupCheckHtmlFormPopupOverlap)) {
-    if (BoundsOverlapWithHtmlFormPopup(popup_bounds, web_contents)) {
-      return true;
-    }
+  if (BoundsOverlapWithHtmlFormPopup(popup_bounds, web_contents)) {
+    return true;
   }
 
   return false;

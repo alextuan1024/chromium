@@ -12,10 +12,10 @@
 #include "base/strings/strcat.h"
 #include "chrome/browser/ash/app_mode/kiosk_chrome_app_manager.h"
 #include "chrome/browser/ash/app_mode/kiosk_controller.h"
+#include "chrome/browser/ash/app_mode/kiosk_settings_navigation_throttle.h"
 #include "chrome/browser/ash/app_mode/kiosk_system_session.h"
 #include "chrome/browser/ash/app_mode/test/kiosk_mixin.h"
 #include "chrome/browser/ash/app_mode/test/kiosk_test_utils.h"
-#include "chrome/browser/chromeos/app_mode/kiosk_settings_navigation_throttle.h"
 #include "chrome/browser/ui/ash/login/login_display_host.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/navigator/browser_navigator.h"
@@ -31,8 +31,8 @@
 #include "extensions/browser/app_window/app_window_registry.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/base_window.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/base/page_transition_types.h"
-#include "ui/base/window_open_disposition.h"
 
 namespace ash {
 
@@ -54,8 +54,9 @@ content::WebContents& ActiveWebContents(BrowserDelegate& browser) {
   return CHECK_DEREF(browser.GetActiveWebContents());
 }
 
-NavigateParams NavigateAndReturnParams(const GURL& url,
-                                       WindowOpenDisposition disposition) {
+NavigateParams NavigateAndReturnParams(
+    const GURL& url,
+    ui::mojom::WindowOpenDisposition disposition) {
   auto& profile = CurrentProfile();
   NavigateParams params(&profile, url, ui::PAGE_TRANSITION_AUTO_BOOKMARK);
   params.disposition = disposition;
@@ -66,14 +67,14 @@ NavigateParams NavigateAndReturnParams(const GURL& url,
 
 // Opens a popup at `url` and returns true if the window wasn't force closed.
 bool OpenPopup(const GURL& url) {
-  NavigateAndReturnParams(url, WindowOpenDisposition::NEW_POPUP);
+  NavigateAndReturnParams(url, ui::mojom::WindowOpenDisposition::kNewPopup);
   return !DidKioskCloseNewWindow();
 }
 
 // Navigates to `url` in the current tab, and returns the browser.
 BrowserWindowInterface& NavigateInCurrentTab(const GURL& url) {
-  auto params =
-      NavigateAndReturnParams(url, WindowOpenDisposition::CURRENT_TAB);
+  auto params = NavigateAndReturnParams(
+      url, ui::mojom::WindowOpenDisposition::kCurrentTab);
   CHECK(params.browser);
   return *params.browser;
 }
@@ -343,11 +344,11 @@ IN_PROC_BROWSER_TEST_P(KioskSettingsTest, CanRefocusSettings) {
       CHECK_DEREF(session.GetSettingsBrowserForTesting());
 
   // The settings browser is focused.
-  EXPECT_TRUE(settings.GetWindow()->IsActive());
+  EXPECT_TRUE(settings.GetWindow().IsActive());
 
   // Simulate a focus switch.
-  settings.GetWindow()->Deactivate();
-  EXPECT_FALSE(settings.GetWindow()->IsActive());
+  settings.GetWindow().Deactivate();
+  EXPECT_FALSE(settings.GetWindow().IsActive());
 
   // Verify focus can switch to another settings page.
   {
@@ -367,7 +368,7 @@ IN_PROC_BROWSER_TEST_P(KioskSettingsTest, CanRefocusSettings) {
     EXPECT_EQ(web_contents.GetLastCommittedURL(), other_settings_page);
 
     // The settings browser should be focused again.
-    EXPECT_TRUE(settings.GetWindow()->IsActive());
+    EXPECT_TRUE(settings.GetWindow().IsActive());
   }
 }
 

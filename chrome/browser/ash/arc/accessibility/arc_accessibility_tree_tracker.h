@@ -16,7 +16,7 @@
 #include "base/scoped_observation.h"
 #include "chrome/browser/ash/app_list/arc/arc_app_list_prefs.h"
 #include "chrome/browser/ash/arc/accessibility/accessibility_helper_instance_remote_proxy.h"
-#include "chrome/common/extensions/api/accessibility_private.h"
+#include "chromeos/ash/experiences/extensions/common/api/accessibility_private.h"
 #include "services/accessibility/android/ax_tree_source_android.h"
 #include "ui/aura/client/focus_change_observer.h"
 #include "ui/aura/env.h"
@@ -31,6 +31,10 @@ class WindowTracker;
 namespace ash {
 class ArcNotificationSurface;
 }
+
+namespace content {
+class BrowserContext;
+}  // namespace content
 
 namespace arc {
 
@@ -53,7 +57,7 @@ class ArcAccessibilityTreeTracker : public aura::EnvObserver {
 
   ArcAccessibilityTreeTracker(
       ax::android::AXTreeSourceAndroid::Delegate* tree_source_delegate_,
-      Profile* const profile,
+      content::BrowserContext* const browser_context,
       const AccessibilityHelperInstanceRemoteProxy&
           accessibility_helper_instance,
       ArcBridgeService* const arc_bridge_service);
@@ -166,7 +170,7 @@ class ArcAccessibilityTreeTracker : public aura::EnvObserver {
   virtual void DispatchCustomSpokenFeedbackToggled(bool enabled);
   virtual aura::Window* GetFocusedArcWindow() const;
 
-  const raw_ptr<Profile> profile_;
+  const raw_ptr<content::BrowserContext> browser_context_;
   raw_ptr<ax::android::AXTreeSourceAndroid::Delegate> tree_source_delegate_;
   const raw_ref<const AccessibilityHelperInstanceRemoteProxy>
       accessibility_helper_instance_;

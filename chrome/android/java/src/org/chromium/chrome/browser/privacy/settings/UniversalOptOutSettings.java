@@ -9,6 +9,7 @@ import android.os.Bundle;
 
 import androidx.annotation.VisibleForTesting;
 
+import org.chromium.base.metrics.RecordUserAction;
 import org.chromium.base.supplier.MonotonicObservableSupplier;
 import org.chromium.base.supplier.ObservableSuppliers;
 import org.chromium.base.supplier.SettableMonotonicObservableSupplier;
@@ -62,6 +63,11 @@ public class UniversalOptOutSettings extends ChromeBaseSettingsFragment {
         universalOptOutSwitch.setOnPreferenceChangeListener(
                 (preference, newValue) -> {
                     prefService.setBoolean(Pref.UNIVERSAL_OPT_OUT_ENABLED, (boolean) newValue);
+                    if ((boolean) newValue) {
+                        RecordUserAction.record("Privacy.UniversalOptOut.SettingsToggleOn");
+                    } else {
+                        RecordUserAction.record("Privacy.UniversalOptOut.SettingsToggleOff");
+                    }
                     return true;
                 });
 
@@ -100,7 +106,7 @@ public class UniversalOptOutSettings extends ChromeBaseSettingsFragment {
 
         PrefService userPrefs = UserPrefs.get(profile);
         return userPrefs.getBoolean(Pref.UNIVERSAL_OPT_OUT_ENABLED)
-                || userPrefs.getBoolean(Pref.UNIVERSAL_OPT_OUT_ELIGIBLE);
+                || PrivacyPreferencesManagerImpl.getInstance().isUniversalOptOutEligible(profile);
     }
 
     public static final ChromeBaseSearchIndexProvider SEARCH_INDEX_DATA_PROVIDER =

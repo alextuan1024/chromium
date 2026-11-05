@@ -32,7 +32,6 @@
 #include "net/spdy/spdy_session_key.h"
 #include "net/spdy/spdy_session_pool.h"
 #include "net/ssl/ssl_config.h"
-#include "url/gurl.h"
 #include "url/scheme_host_port.h"
 
 namespace net {
@@ -119,6 +118,11 @@ class HttpStreamFactory::Job
     // before the handshake is complete, and provides the delegate an
     // early chance to handle any errors.
     virtual void OnConnectionInitialized(Job* job, int rv) = 0;
+
+    // Invoked when a QUIC connection attempt of `job` fails with `rv` after
+    // OnConnectionInitialized() was called, while `job` keeps trying other
+    // endpoints.
+    virtual void OnQuicAttemptFailed(Job* job, int rv) = 0;
 
     // Return false if |job| can advance to the next state. Otherwise, |job|
     // will wait for Job::Resume() to be called before advancing.
@@ -307,6 +311,11 @@ class HttpStreamFactory::Job
   // created. It's called with the result of either failed session creation or
   // an attempted crypto connection.
   void OnQuicSessionCreated(int result);
+
+  // For a QUIC job, called when a connection attempt fails after
+  // OnQuicHostResolution() or OnQuicSessionCreated() reported the connection as
+  // in flight, while the QUIC job keeps trying other endpoints.
+  void OnQuicAttemptFailed(int result);
 
   // Invoked when the underlying connection fails on the default network.
   void OnFailedOnDefaultNetwork(int result);
@@ -505,6 +514,9 @@ class HttpStreamFactory::Job
 
   // The time when the connection setup attempt has started.
   std::optional<base::TimeTicks> init_connection_time_;
+
+  // The time when this job started waiting for other job(s).
+  std::optional<base::TimeTicks> wait_start_time_;
 
   // Keeps track of the connection management config.
   std::optional<ConnectionManagementConfig> management_config_;

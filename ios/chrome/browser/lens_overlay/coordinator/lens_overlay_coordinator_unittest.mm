@@ -25,7 +25,6 @@
 #import "ios/chrome/browser/shared/coordinator/scene/state/lens_overlay_state_notifier.h"
 #import "ios/chrome/browser/shared/coordinator/scene/test/fake_scene_state.h"
 #import "ios/chrome/browser/shared/model/application_context/application_context.h"
-#import "ios/chrome/browser/shared/model/browser/browser_provider.h"
 #import "ios/chrome/browser/shared/model/browser/browser_provider_interface.h"
 #import "ios/chrome/browser/shared/model/browser/test/test_browser.h"
 #import "ios/chrome/browser/shared/model/prefs/pref_names.h"
@@ -39,6 +38,7 @@
 #import "ios/chrome/browser/shared/public/commands/help_commands.h"
 #import "ios/chrome/browser/shared/public/commands/lens_commands.h"
 #import "ios/chrome/browser/shared/public/commands/lens_overlay_commands.h"
+#import "ios/chrome/browser/shared/public/commands/open_new_tab_command.h"
 #import "ios/chrome/browser/shared/public/commands/qr_scanner_commands.h"
 #import "ios/chrome/browser/shared/public/commands/quick_delete_commands.h"
 #import "ios/chrome/browser/shared/public/commands/scene_commands.h"
@@ -70,6 +70,7 @@
 #import "testing/gtest_mac.h"
 #import "testing/platform_test.h"
 #import "third_party/ocmock/OCMock/OCMock.h"
+#import "third_party/ocmock/gtest_support.h"
 #import "ui/base/device_form_factor.h"
 #import "ui/base/test/ios/ui_image_test_utils.h"
 
@@ -81,6 +82,7 @@ using base::test::ios::WaitUntilConditionOrTimeout;
 - (BOOL)isLensOverlayVisible;
 - (void)loadResultsURL:(GURL)url
            httpHeaders:(NSDictionary<NSString*, NSString*>*)httpHeaders;
+- (void)openURLInNewTab:(GURL)URL;
 @end
 
 namespace {
@@ -126,8 +128,7 @@ class LensOverlayCoordinatorTest : public PlatformTest {
     scene_state_ = [[FakeSceneState alloc] initWithProfile:profile_.get()];
     scene_state_.window = scoped_window_.Get();
     scene_state_.profileState = profile_state_;
-    Browser* browser =
-        scene_state_.browserProviderInterface.mainBrowserProvider.browser;
+    Browser* browser = scene_state_.browserProviderInterface.mainBrowser;
 
     id mockLayoutGuideSceneAgent = OCMClassMock([LayoutGuideSceneAgent class]);
     OCMStub(
@@ -704,6 +705,68 @@ TEST_F(LensOverlayCoordinatorTest, CameraSearchUserActionRecorded) {
   [lens_overlay_handler
       destroyLensUI:NO
              reason:lens::LensOverlayDismissalSource::kOverlayCloseButton];
+}
+
+// Test that stopping the coordinator and destroying the Browser while an
+// animated exit is in progress does not access `self.browser` after stop.
+TEST_F(LensOverlayCoordinatorTest, StopDuringAnimatedExit) {
+  [coordinator_ start];
+
+  id<LensOverlayCommands> lens_overlay_handler =
+      HandlerForProtocol(dispatcher_, LensOverlayCommands);
+
+  __block BOOL presentation_success = NO;
+  [lens_overlay_handler createAndShowLensUI:NO
+                                 entrypoint:LensOverlayEntrypoint::kLocationBar
+                                 completion:^(BOOL success) {
+                                   presentation_success = success;
+                                   run_loop_.Quit();
+                                 }];
+  run_loop_.Run();
+  ASSERT_TRUE(presentation_success);
+
+  __weak UIViewController* weak_container_vc = nil;
+  @autoreleasepool {
+    weak_container_vc = coordinator_.viewController;
+    ASSERT_TRUE(weak_container_vc);
+
+    // Start an animated exit, then immediately stop the coordinator and shut
+    // down the scene (destroying the Browser) before the animation completes.
+    [lens_overlay_handler
+        destroyLensUI:YES
+               reason:lens::LensOverlayDismissalSource::kOverlayCloseButton];
+    [coordinator_ stop];
+    tab_helper_ = nullptr;
+    [scene_state_ shutdown];
+  }
+
+  // Wait for the container view controller and any pending UIKit exit
+  // animation blocks to be cleaned up.
+  EXPECT_TRUE(WaitUntilConditionOrTimeout(kWaitForUIElementTimeout, ^bool {
+    return weak_container_vc == nil;
+  }));
+  EXPECT_FALSE([coordinator_ isUICreated]);
+}
+
+// Test that openURLInNewTab creates an OpenNewTabCommand with fromChrome set
+// to NO.
+TEST_F(LensOverlayCoordinatorTest, OpenURLInNewTabHasFromChromeNo) {
+  [coordinator_ start];
+
+  GURL test_url("https://www.example.com");
+  OCMExpect([application_handler_
+      openURLInNewTab:[OCMArg checkWithBlock:^BOOL(OpenNewTabCommand* command) {
+        EXPECT_EQ(command.URL, test_url);
+        EXPECT_FALSE(command.fromChrome);
+        EXPECT_FALSE(command.inIncognito);
+        EXPECT_FALSE(command.inBackground);
+        EXPECT_EQ(command.appendTo, OpenPosition::kLastTab);
+        return YES;
+      }]]);
+
+  [coordinator_ openURLInNewTab:test_url];
+
+  EXPECT_OCMOCK_VERIFY((id)application_handler_);
 }
 
 }  // namespace

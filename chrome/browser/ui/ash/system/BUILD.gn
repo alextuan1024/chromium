@@ -10,10 +10,7 @@ static_library("system") {
     "system_tray_client_impl.h",
   ]
 
-  public_deps = [
-    "//chrome/browser:browser_public_dependencies",
-    "//chrome/browser/upgrade_detector",
-  ]
+  public_deps = [ "//chrome/browser/upgrade_detector" ]
 
   deps = [
     "//ash/constants",
@@ -32,29 +29,32 @@ static_library("system") {
     "//chrome/browser/ash/system_web_apps/apps/help_app",
     "//chrome/browser/chromeos/extensions/vpn_provider",
     "//chrome/browser/enterprise/browser_management:management_identity",
+    "//chrome/browser/profiles:profile",
     "//chrome/browser/ui:chrome_pages",
     "//chrome/browser/ui:managed_ui",
     "//chrome/browser/ui:scoped_tabbed_browser_displayer",
-    "//chrome/browser/ui:singleton_tabs",
     "//chrome/browser/ui/ash/login",
     "//chrome/browser/ui/ash/system_web_apps",
-    "//chrome/browser/ui/navigator",
     "//chrome/browser/ui/webui/access_code_cast",
     "//chrome/browser/ui/webui/ash/bluetooth",
     "//chrome/browser/ui/webui/ash/internet",
     "//chrome/browser/ui/webui/ash/multidevice_setup",
     "//chrome/browser/ui/webui/ash/set_time",
     "//chrome/browser/web_applications",
-    "//chrome/common",
     "//chromeos/ash/components/browser_context_helper",
+    "//chromeos/ash/components/browser_delegate",
     "//chromeos/ash/components/dbus/session_manager",
     "//chromeos/ash/components/network",
     "//chromeos/ash/components/phonehub",
     "//chromeos/ash/experiences/settings_ui",
     "//components/access_code_cast/common:metrics",
+    "//components/account_id",
     "//components/prefs",
+    "//components/services/app_service",
     "//components/session_manager/core",
     "//components/user_manager",
+    "//content/public/browser",
+    "//ui/base",
     "//ui/events",
     "//url",
   ]
@@ -81,10 +81,11 @@ source_set("unit_tests") {
     "//base",
     "//base/test:test_support",
     "//chrome/browser:browser_process_platform_part",
-    "//chrome/browser/ui",
     "//chrome/browser/ui:settings_window_manager_chromeos",
     "//chrome/browser/ui/ash/new_window",
     "//chrome/test:test_support",
+    "//chrome/test/base:browser_with_test_window_test",
+    "//chrome/test/base:testing_browser_process",
     "//url",
   ]
 }
@@ -122,7 +123,6 @@ source_set("browser_tests") {
     "//chrome/browser/ash/settings",
     "//chrome/browser/ash/settings:test_support",
     "//chrome/browser/media/router/discovery/access_code:access_code_cast_feature",
-    "//chrome/browser/ui",
     "//chrome/browser/ui:chrome_pages",
     "//chrome/browser/ui/ash/cast_config",
     "//chrome/browser/ui/ash/login",

@@ -4,8 +4,7 @@
 
 #include "chrome/browser/ui/views/toolbar/toolbar_glic_actor_task_icon.h"
 
-#include "chrome/browser/actor/resources/grit/actor_browser_resources.h"
-#include "chrome/browser/glic/browser_ui/glic_vector_icon_manager.h"
+#include "chrome/app/vector_icons/vector_icons.h"
 #include "chrome/browser/glic/public/features.h"
 #include "chrome/browser/ui/color/chrome_color_id.h"
 #include "chrome/browser/ui/layout_constants.h"
@@ -21,6 +20,7 @@ ToolbarGlicActorTaskIcon::ToolbarGlicActorTaskIcon(
     : GlicActorTaskIcon<ToolbarButton>(browser_window_interface,
                                        pressed_callback) {
   SetImageLabelSpacing(0);
+  SetVectorIcon(kCursorSparkIcon);
   SetTaskIconToDefault();
 
   // The task icon will only ever be shown with the GlicButton, so can always
@@ -38,7 +38,9 @@ void ToolbarGlicActorTaskIcon::AddedToWidget() {
   SetLeftRightCornerRadii(kSplitLeftEdgeRadius, GetSplitRoundedEdgeRadius());
 
   SetDefaultBackgroundColorId(kColorToolbarGlicButtonBackgroundDefault);
-  UpdateIconsWithStandardColors(GetGlicActorTaskIcon());
+  if (GetColorProvider()) {
+    UpdateIcon();
+  }
   GlicActorTaskIcon<ToolbarButton>::AddedToWidget();
 }
 
@@ -77,15 +79,16 @@ void ToolbarGlicActorTaskIcon::UpdateColorsAndInsets() {
   label()->SetBorder(nullptr);
 }
 
+bool ToolbarGlicActorTaskIcon::GetIsShowingNudge() const {
+  return is_showing_nudge_;
+}
+
 void ToolbarGlicActorTaskIcon::SetIsShowingNudge(bool is_showing) {
-  GlicActorTaskIcon<ToolbarButton>::SetIsShowingNudge(is_showing);
-  if (is_showing) {
-    SetFocusBehavior(FocusBehavior::ALWAYS);
-    SetCloseButtonFocusBehavior(FocusBehavior::ALWAYS);
-  } else {
-    SetFocusBehavior(FocusBehavior::NEVER);
-    SetCloseButtonFocusBehavior(FocusBehavior::NEVER);
+  if (!is_showing) {
+    SetTaskIconToDefault();
   }
+  GlicActorTaskIcon<ToolbarButton>::SetIsShowingNudge(is_showing);
+  PreferredSizeChanged();
 }
 
 void ToolbarGlicActorTaskIcon::SetLeftRightCornerRadii(int left, int right) {

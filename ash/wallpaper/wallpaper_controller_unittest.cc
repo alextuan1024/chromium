@@ -2567,7 +2567,8 @@ TEST_P(WallpaperControllerTest, ConfirmSetSeaPenWallpaperInTabletMode) {
 
 TEST_P(WallpaperControllerTest, SetSeaPenWallpaperForPublicAccount) {
   const auto account_id = SimulateUserLogin(
-      {"public_session", user_manager::UserType::kPublicAccount});
+      {.account_id = AccountId::FromUserEmail("public_session"),
+       .user_type = user_manager::UserType::kPublicAccount});
 
   gfx::ImageSkia expected_image;
   SetSeaPenWallpaper(account_id, SK_ColorBLUE, 12345u, /*preview_mode=*/false,
@@ -2689,8 +2690,8 @@ TEST_P(WallpaperControllerTest, SetDefaultWallpaperForRegularAccount) {
 }
 
 TEST_P(WallpaperControllerTest, SetDefaultWallpaperForChildAccount) {
-  SimulateUserLogin({.user_type = user_manager::UserType::kChild},
-                    kChildAccountId);
+  SimulateUserLogin({.account_id = kChildAccountId,
+                     .user_type = user_manager::UserType::kChild});
 
   // Verify the large child wallpaper is set successfully with the correct file
   // path.
@@ -2795,7 +2796,8 @@ TEST_P(WallpaperControllerTest, SetDefaultWallpaperForGuestSessionAndPreview) {
   const AccountId guest_id =
       AccountId::FromUserEmail(user_manager::kGuestUserName);
   controller_->ShowUserWallpaper(guest_id);
-  SimulateUserLogin({.user_type = user_manager::UserType::kGuest}, guest_id);
+  SimulateUserLogin(
+      {.account_id = guest_id, .user_type = user_manager::UserType::kGuest});
   WallpaperInfo wallpaper_info;
   EXPECT_TRUE(pref_manager_->GetUserWallpaperInfo(guest_id, &wallpaper_info));
   EXPECT_EQ(wallpaper_info.type, WallpaperType::kDefault);
@@ -2878,7 +2880,8 @@ TEST_P(WallpaperControllerTest, SetDefaultWallpaperCallbackTiming) {
 
 TEST_P(WallpaperControllerTest, IgnoreWallpaperRequestInKioskMode) {
   gfx::ImageSkia image = CreateImage(640, 480, kWallpaperColor);
-  SimulateUserLogin({"kiosk", user_manager::UserType::kKioskChromeApp});
+  SimulateUserLogin({.account_id = AccountId::FromUserEmail("kiosk"),
+                     .user_type = user_manager::UserType::kKioskChromeApp});
 
   // Verify that |SetDecodedCustomWallpaper| doesn't set wallpaper in kiosk
   // mode, and |kAccountId1|'s wallpaper info is not updated.
@@ -3075,7 +3078,7 @@ TEST_P(WallpaperControllerTest, VerifyWallpaperCache) {
 
   // After |kUser2| is logged in, |user1|'s wallpaper cache should still be kept
   // (crbug.com/339576). Note the active user is still |user1|.
-  SimulateUserLogin({kUser2});
+  SimulateUserLogin(AccountId::FromUserEmail(kUser2));
   SwitchActiveUser(kAccountId1);
   EXPECT_TRUE(
       controller_->GetWallpaperFromCache(kAccountId1, &cached_wallpaper));
@@ -3453,8 +3456,8 @@ TEST_P(WallpaperControllerTest,
       kAccountId1, user_manager::UserType::kPublicAccount,
       CreateEncodedImageForTesting(gfx::Size(10, 10)));
   ClearWallpaperCount();
-  SimulateUserLogin({.user_type = user_manager::UserType::kPublicAccount},
-                    kAccountId1);
+  SimulateUserLogin({.account_id = kAccountId1,
+                     .user_type = user_manager::UserType::kPublicAccount});
   RunAllTasksUntilIdle();
   EXPECT_TRUE(controller_->IsWallpaperControlledByPolicy(kAccountId1));
 
@@ -3601,6 +3604,35 @@ TEST_P(WallpaperControllerTest, DontLeakShieldView) {
   SetSessionState(SessionState::ACTIVE);
   EXPECT_EQ(nullptr, wallpaper_view()->shield_view_for_testing());
   EXPECT_EQ(nullptr, view_tracker.view());
+}
+
+// Verifies that painting an unblurred wallpaper skips populating small_image_,
+// and that locking the session populates it once blur is applied.
+TEST_P(WallpaperControllerTest, SkipDownsampleWhenWallpaperIsClear) {
+  SimulateUserLogin(kAccountId1);
+  gfx::ImageSkia image = CreateImage(600, 400, kWallpaperColor);
+  controller_->ShowWallpaperImage(
+      image, CreateWallpaperInfo(WALLPAPER_LAYOUT_CENTER_CROPPED),
+      /*preview_mode=*/false, /*is_override=*/false);
+
+  // In an active session, blur is kClear so painting should draw directly
+  // without downsampling into small_image_.
+  ASSERT_EQ(wallpaper_constants::kClear, wallpaper_view()->blur_sigma());
+  ASSERT_FALSE(wallpaper_view()->bounds().IsEmpty());
+  gfx::Canvas clear_canvas(wallpaper_view()->bounds().size(),
+                           /*image_scale=*/1.0f, /*is_opaque=*/true);
+  wallpaper_view()->OnPaint(&clear_canvas);
+  EXPECT_FALSE(wallpaper_view()->small_image_for_testing().has_value());
+  EXPECT_EQ(kWallpaperColor, clear_canvas.GetBitmap().getColor(0, 0));
+
+  // Locking the session blurs the wallpaper and populates small_image_.
+  SetSessionState(SessionState::LOCKED);
+  ASSERT_EQ(wallpaper_constants::kLockLoginBlur,
+            wallpaper_view()->blur_sigma());
+  gfx::Canvas blurred_canvas(wallpaper_view()->bounds().size(),
+                             /*image_scale=*/1.0f, /*is_opaque=*/true);
+  wallpaper_view()->OnPaint(&blurred_canvas);
+  EXPECT_TRUE(wallpaper_view()->small_image_for_testing().has_value());
 }
 
 TEST_P(WallpaperControllerTest, OnlyShowDevicePolicyWallpaperOnLoginScreen) {
@@ -4401,8 +4433,9 @@ TEST_P(WallpaperControllerEphemeralTest, ShowWallpaperForEphemeralUser) {
 
   // Add an ephemeral user session and simulate login.
   auto user_type = std::get<1>(GetParam());
-  SimulateUserLogin({.user_type = user_type, .is_ephemeral = true},
-                    kAccountId1);
+  SimulateUserLogin({.account_id = kAccountId1,
+                     .user_type = user_type,
+                     .is_ephemeral = true});
 
   // The user doesn't have wallpaper cache in the beginning.
   gfx::ImageSkia cached_wallpaper;

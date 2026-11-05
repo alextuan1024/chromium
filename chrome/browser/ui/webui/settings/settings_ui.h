@@ -5,9 +5,13 @@
 #ifndef CHROME_BROWSER_UI_WEBUI_SETTINGS_SETTINGS_UI_H_
 #define CHROME_BROWSER_UI_WEBUI_SETTINGS_SETTINGS_UI_H_
 
+#include <memory>
+#include <vector>
+
 #include "base/callback_list.h"
 #include "build/build_config.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/ui/webui/settings/search/mojom/settings_search.mojom.h"
 #include "chrome/common/buildflags.h"
 #include "chrome/common/webui_url_constants.h"
 #include "components/user_education/webui/help_bubble_handler.h"
@@ -42,6 +46,13 @@ class SigninUtilsHandler;
 class BatchUploadPromoHandler;
 
 class CustomizeColorSchemeModeHandler;
+
+namespace settings_search {
+class SettingsSearchHandler;
+class SettingsSearchRegistry;
+class SettingsSection;
+}  // namespace settings_search
+
 namespace settings {
 
 class SettingsUI;
@@ -58,7 +69,8 @@ class SettingsUI
     : public ui::MojoWebUIController,
       public help_bubble::mojom::HelpBubbleHandlerFactory,
       public customize_color_scheme_mode::mojom::
-          CustomizeColorSchemeModeHandlerFactory
+          CustomizeColorSchemeModeHandlerFactory,
+      public settings_search::mojom::SettingsSearchHandlerFactory
 #if !BUILDFLAG(IS_CHROMEOS)
     ,
       // chrome://settings/manageProfile which only exists on !IS_CHROMEOS
@@ -115,6 +127,12 @@ class SettingsUI
                                 CustomizeColorSchemeModeHandlerFactory>
           pending_receiver);
 
+  // Binds the native settings search handler factory when the feature is
+  // enabled.
+  void BindInterface(mojo::PendingReceiver<
+                     settings_search::mojom::SettingsSearchHandlerFactory>
+                         pending_receiver);
+
  private:
   void AddSettingsPageUIHandler(
       std::unique_ptr<content::WebUIMessageHandler> handler);
@@ -123,9 +141,8 @@ class SettingsUI
   void TryShowHatsSurveyWithTimeout();
 
   // Updates, based on account and profile state, the loadTimeData values that
-  // control whether the glic settings page should be shown. Returns the enabled
-  // value.
-  void UpdateShowGlicState();
+  // control whichever AI settings section applies.
+  void UpdateAiSettingsSection();
 
 #if !BUILDFLAG(IS_CHROMEOS)
   // theme_color_picker::mojom::ThemeColorPickerHandlerFactory:
@@ -181,6 +198,22 @@ class SettingsUI
   mojo::Receiver<customize_color_scheme_mode::mojom::
                      CustomizeColorSchemeModeHandlerFactory>
       customize_color_scheme_mode_handler_factory_receiver_{this};
+
+  // settings_search::mojom::SettingsSearchHandlerFactory:
+  void CreateSettingsSearchHandler(
+      mojo::PendingReceiver<settings_search::mojom::SettingsSearchHandler>
+          handler) override;
+
+  // Declared in this order so that the handler and sections are destroyed
+  // before the registry they use.
+  std::unique_ptr<settings_search::SettingsSearchRegistry>
+      settings_search_registry_;
+  std::vector<std::unique_ptr<settings_search::SettingsSection>>
+      settings_sections_;
+  std::unique_ptr<settings_search::SettingsSearchHandler>
+      settings_search_handler_;
+  mojo::Receiver<settings_search::mojom::SettingsSearchHandlerFactory>
+      settings_search_handler_factory_receiver_{this};
 
   base::CallbackListSubscription glic_settings_state_subscription_;
 

@@ -16,6 +16,7 @@
 #import "components/autofill/core/common/field_data_manager.h"
 #import "components/autofill/core/common/form_data.h"
 #import "components/autofill/core/common/form_field_data.h"
+#import "components/autofill/core/common/signatures.h"
 #import "components/autofill/core/common/unique_ids.h"
 #import "components/autofill/ios/common/features.h"
 #import "testing/gmock/include/gmock/gmock.h"
@@ -67,6 +68,11 @@ TEST_F(AutofillUtilTest, ExtractFormData_FullUrl) {
 
   ASSERT_TRUE(result.has_value());
   EXPECT_EQ(result.value().full_url(), GURL("https://example.com/foo?bar=baz"));
+  ASSERT_EQ(result.value().fields().size(), 1u);
+  EXPECT_EQ(result.value().fields()[0].host_form_signature(),
+            CalculateFormSignature(result.value()));
+  EXPECT_EQ(result.value().fields()[0].host_form_structural_signature(),
+            CalculateStructuralFormSignature(result.value()));
 }
 
 TEST_F(AutofillUtilTest, ExtractFormData_NoFullUrlWhenDisabled) {
@@ -198,6 +204,8 @@ TEST_F(AutofillUtilTest, ExtractFormFieldData_PropertiesMask) {
   FormFieldData field_data;
   ExtractFormFieldData(field, *field_data_manager, &field_data);
 
+  EXPECT_EQ(FieldRendererId(1), field_data.renderer_id());
+  EXPECT_EQ(1, field_data.form_control_ax_id());
   EXPECT_EQ(u"my@mail", field_data.user_input());
   EXPECT_EQ(FieldPropertiesFlags::kUserTyped, field_data.properties_mask());
 }

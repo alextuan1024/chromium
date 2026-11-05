@@ -109,12 +109,6 @@ BASE_FEATURE(kDefaultPassthroughCommandDecoder,
              base::FEATURE_ENABLED_BY_DEFAULT);
 #endif  // BUILDFLAG(ENABLE_VALIDATING_COMMAND_DECODER)
 
-#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_CHROMEOS)
-// Controls whether the GPU process falls back to software if GLES3 is not
-// supported.
-BASE_FEATURE(kFallbackToSWIfGLES3NotSupported,
-             base::FEATURE_ENABLED_BY_DEFAULT);
-#endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_CHROMEOS)
 
 #if BUILDFLAG(IS_WIN)
 // If true, VsyncThreadWin will use the compositor clock
@@ -127,6 +121,11 @@ bool UseCompositorClockVSyncInterval() {
          base::FeatureList::IsEnabled(
              features::kUseCompositorClockVSyncInterval);
 }
+
+// Killswitch to enables the use of `IDCompositionBrush` and DComp visual layout
+// APIs where supported. This API is used for solid color overlays and to reduce
+// jank when resizing Media Foundation videos.
+BASE_FEATURE(kDCompBrushes, base::FEATURE_DISABLED_BY_DEFAULT);
 
 // Enables DirectComposition textures backed by D3D12 resources.
 // When this feature is enabled, the GPU pipeline may create and present DComp-
@@ -252,6 +251,10 @@ bool IsANGLEPassthroughShadersAllowed() {
   return base::FeatureList::IsEnabled(kAllowANGLEPassthroughShaders);
 }
 
+#if BUILDFLAG(IS_APPLE)
+BASE_FEATURE(kANGLEPurgeableBufferPool, base::FEATURE_DISABLED_BY_DEFAULT);
+#endif  // BUILDFLAG(IS_APPLE)
+
 void GetANGLEFeaturesFromCommandLineAndFinch(
     const base::CommandLine* command_line,
     std::vector<std::string>& enabled_angle_features,
@@ -269,24 +272,23 @@ void GetANGLEFeaturesFromCommandLineAndFinch(
     SplitAndAppendANGLEFeatureList(kForcedANGLEDisabledFeaturesFP.Get(),
                                    disabled_angle_features);
   }
+
+#if BUILDFLAG(IS_APPLE)
+  if (base::FeatureList::IsEnabled(kANGLEPurgeableBufferPool)) {
+    enabled_angle_features.push_back("purgeableBufferPool");
+  }
+#endif
 }
 
-bool ShouldFallbackToSWIfGLES3NotSupported() {
-#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_CHROMEOS)
-  return base::FeatureList::IsEnabled(kFallbackToSWIfGLES3NotSupported);
-#else   // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_CHROMEOS)
-  return true;
-#endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_CHROMEOS)
-}
 
 #if BUILDFLAG(ENABLE_SWIFTSHADER)
 #if BUILDFLAG(IS_FUCHSIA)
 // SwiftShader is always used on Fuchsia, sometimes at the system level.
-bool IsSwiftShaderAllowedByCommandLine(const base::CommandLine* command_line) {
+bool IsSwiftShaderAllowed(const base::CommandLine* command_line) {
   return true;
 }
 #else
-bool IsSwiftShaderAllowedByCommandLine(const base::CommandLine* command_line) {
+bool IsSwiftShaderAllowed(const base::CommandLine* command_line) {
   // If the switch to opt-into unsafe SwiftShader is present, always allow
   // SwiftShader.
   if (command_line->HasSwitch(switches::kEnableUnsafeSwiftShader)) {
@@ -315,20 +317,8 @@ bool IsSwiftShaderUsedForWebGLByCommandLine(
          gl::kANGLEImplementationSwiftShaderForWebGLName;
 }
 #endif
-
-// Allow fallback to SwfitShader without command line flags during the
-// deprecation period.
-BASE_FEATURE(kAllowSwiftShaderFallback, base::FEATURE_DISABLED_BY_DEFAULT);
-
-bool IsSwiftShaderAllowedByFeature() {
-  return base::FeatureList::IsEnabled(kAllowSwiftShaderFallback);
-}
 #else
-bool IsSwiftShaderAllowedByCommandLine(const base::CommandLine*) {
-  return false;
-}
-
-bool IsSwiftShaderAllowedByFeature() {
+bool IsSwiftShaderAllowed(const base::CommandLine*) {
   return false;
 }
 
@@ -336,11 +326,6 @@ bool IsSwiftShaderUsedForWebGLByCommandLine(const base::CommandLine*) {
   return false;
 }
 #endif
-
-bool IsSwiftShaderAllowed(const base::CommandLine* command_line) {
-  return IsSwiftShaderAllowedByCommandLine(command_line) ||
-         IsSwiftShaderAllowedByFeature();
-}
 
 #if BUILDFLAG(IS_WIN)
 BASE_FEATURE(kAllowD3D11WarpFallback, base::FEATURE_ENABLED_BY_DEFAULT);
@@ -378,7 +363,7 @@ BASE_FEATURE(kAndroidLimitRgb565DisplayToApi32,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kAndroidSurfaceControlPartialDamage,
-             base::FEATURE_DISABLED_BY_DEFAULT);
+             base::FEATURE_ENABLED_BY_DEFAULT);
 
 bool PreferRGB565ResourcesForDisplay() {
   return base::SysInfo::AmountOfTotalPhysicalMemory().InMiB() <= 512 &&

@@ -23,6 +23,7 @@ static_assert(BUILDFLAG(IS_MAC));
 #include "content/browser/media/capture/native_screen_capture_picker.h"
 #include "content/public/browser/desktop_capture.h"
 #include "content/public/browser/desktop_media_id.h"
+#include "content/public/browser/screenlock_observer.h"
 #include "third_party/abseil-cpp/absl/container/flat_hash_map.h"
 #include "third_party/abseil-cpp/absl/container/flat_hash_set.h"
 #include "third_party/webrtc/modules/desktop_capture/desktop_capturer.h"
@@ -50,7 +51,8 @@ CONTENT_EXPORT void CaptureScreenshotFromMacNativePicker(
 #if defined(__OBJC__)
 
 class API_AVAILABLE(macos(14.0)) CONTENT_EXPORT NativeScreenCapturePickerMac
-    : public NativeScreenCapturePicker {
+    : public NativeScreenCapturePicker,
+      public ScreenlockObserver {
  public:
   using PickerUpdateCallback =
       base::RepeatingCallback<void(SCContentFilter*, SCStream*)>;
@@ -82,12 +84,12 @@ class API_AVAILABLE(macos(14.0)) CONTENT_EXPORT NativeScreenCapturePickerMac
   std::unique_ptr<media::VideoCaptureDevice> CreateDevice(
       const DesktopMediaID& source) override;
 
-  base::WeakPtr<NativeScreenCapturePicker> GetWeakPtr() override;
-
   static void SetGetWindowOwnerPidForTesting(
       GetWindowOwnerPidCallback callback);
 
  private:
+  friend class NativeScreenCapturePickerMacTest;
+
   struct CaptureSession {
     CaptureSession();
     ~CaptureSession();
@@ -108,6 +110,9 @@ class API_AVAILABLE(macos(14.0)) CONTENT_EXPORT NativeScreenCapturePickerMac
     bool application_audio_requested_logged = false;
   };
 
+  // ScreenlockObserver:
+  void OnScreenLocked() override;
+
   // Callbacks called by PickerObserver when it receives an event from the OS.
   void OnPickerObserverUpdated(SCContentFilter* filter, SCStream* stream);
   void OnPickerObserverCancelled(SCStream* stream);
@@ -122,6 +127,8 @@ class API_AVAILABLE(macos(14.0)) CONTENT_EXPORT NativeScreenCapturePickerMac
 
   // Callback called by `ScreenCaptureKitDeviceMac` on creating a new stream.
   void UpdateStreamMap(DesktopMediaID::Id id, SCStream* stream);
+  // Drops every `stream_to_id_map_` entry for `id`, releasing those streams.
+  void EraseStreamsForSession(DesktopMediaID::Id id);
 
   void CaptureScreenshotInternal(
       DesktopMediaID::Id session_id,
@@ -144,9 +151,9 @@ class API_AVAILABLE(macos(14.0)) CONTENT_EXPORT NativeScreenCapturePickerMac
 
   // On every new getDisplayMedia request, we increment
   // `active_picker_source_id_` and assign `active_picker_type_` the type of the
-  // request. Since while making a selection of the capture surface the rest of
-  // the UI becomes non-interactive, it is ensured that the callbacks are called
-  // for the right selection.
+  // request. Only one pending request is tracked at a time; Open() rejects new
+  // requests while a selection is in progress so the callbacks above always
+  // belong to the request that opened the system picker.
   DesktopMediaID::Id active_picker_source_id_ = 0;
   DesktopMediaID::Type active_picker_type_;
 

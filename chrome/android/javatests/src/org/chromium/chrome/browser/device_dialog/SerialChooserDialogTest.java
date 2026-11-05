@@ -8,7 +8,6 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 import android.Manifest;
-import android.app.Activity;
 import android.app.Dialog;
 import android.content.Intent;
 import android.content.pm.PackageManager;
@@ -21,6 +20,8 @@ import android.widget.ListView;
 import androidx.test.filters.SmallTest;
 
 import org.hamcrest.Matchers;
+import org.jni_zero.JniPtr;
+import org.jni_zero.JniRawPtr;
 import org.junit.After;
 import org.junit.Assert;
 import org.junit.Before;
@@ -29,13 +30,12 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 
 import org.chromium.base.ThreadUtils;
-import org.chromium.base.test.util.CommandLineFlags;
+import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.Criteria;
 import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.base.test.util.DisabledTest;
 import org.chromium.base.test.util.MaxAndroidSdkLevel;
 import org.chromium.chrome.R;
-import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.profiles.ProfileManager;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.chrome.test.transit.AutoResetCtaTransitTestRule;
@@ -56,8 +56,7 @@ import java.util.Arrays;
 
 /** Tests for the SerialChooserDialog class. */
 @RunWith(ChromeJUnit4ClassRunner.class)
-@CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
-// TODO(crbug.com/344665244): Failing when batched, batch this again.
+@Batch(Batch.PER_CLASS)
 public class SerialChooserDialogTest {
     @Rule
     public final AutoResetCtaTransitTestRule mActivityTestRule =
@@ -73,26 +72,32 @@ public class SerialChooserDialogTest {
 
     private class TestSerialChooserDialogJni implements SerialChooserDialog.Natives {
         @Override
-        public void listDevices(long nativeSerialChooserDialogAndroid) {
+        public void listDevices(JniPtr<SerialChooserDialog.NativeSerialChooserDialogAndroid> self) {
             mListDevicesCount++;
         }
 
         @Override
-        public void onItemSelected(long nativeSerialChooserDialogAndroid, String deviceId) {
+        public void onItemSelected(
+                JniPtr<SerialChooserDialog.NativeSerialChooserDialogAndroid> self,
+                String deviceId) {
             mSelectedDeviceId = deviceId;
         }
 
         @Override
-        public void onDialogCancelled(long nativeSerialChooserDialogAndroid) {}
+        public void onDialogCancelled(
+                JniPtr<SerialChooserDialog.NativeSerialChooserDialogAndroid> self) {}
 
         @Override
-        public void openSerialHelpPage(long nativeSerialChooserDialogAndroid) {}
+        public void openSerialHelpPage(
+                JniPtr<SerialChooserDialog.NativeSerialChooserDialogAndroid> self) {}
 
         @Override
-        public void openAdapterOffHelpPage(long nativeSerialChooserDialogAndroid) {}
+        public void openAdapterOffHelpPage(
+                JniPtr<SerialChooserDialog.NativeSerialChooserDialogAndroid> self) {}
 
         @Override
-        public void openBluetoothPermissionHelpPage(long nativeSerialChooserDialogAndroid) {}
+        public void openBluetoothPermissionHelpPage(
+                JniPtr<SerialChooserDialog.NativeSerialChooserDialogAndroid> self) {}
     }
 
     @Before
@@ -106,6 +111,18 @@ public class SerialChooserDialogTest {
     @After
     public void tearDown() {
         LocationUtils.setFactory(null);
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    if (mChooserDialog != null) {
+                        if (mChooserDialog.mNativeSerialChooserDialogPtr != null) {
+                            mChooserDialog.mNativeSerialChooserDialogPtr.release();
+                            mChooserDialog.mNativeSerialChooserDialogPtr = null;
+                        }
+                        if (mChooserDialog.mItemChooserDialog != null) {
+                            mChooserDialog.mItemChooserDialog.dismiss();
+                        }
+                    }
+                });
     }
 
     private SerialChooserDialog createDialog() {
@@ -115,7 +132,7 @@ public class SerialChooserDialogTest {
                     SerialChooserDialog dialog =
                             new SerialChooserDialog(
                                     mWindowAndroid,
-                                    /* nativeSerialChooserDialogPtr= */ 42,
+                                    JniRawPtr.createForTesting(42L),
                                     ProfileManager.getLastUsedRegularProfile());
                     dialog.show(
                             mActivityTestRule.getActivity(),
@@ -434,9 +451,9 @@ public class SerialChooserDialogTest {
                 .thenReturn(true);
         when(mockModalDialogManager.isSuspended(ModalDialogManager.ModalDialogType.TAB))
                 .thenReturn(true);
-        Activity mockActivity = mock(Activity.class);
         WindowAndroid mockWindowAndroid = mock(WindowAndroid.class);
-        when(mockWindowAndroid.getActivity()).thenReturn(new WeakReference<>(mockActivity));
+        when(mockWindowAndroid.getActivity())
+                .thenReturn(new WeakReference<>(mActivityTestRule.getActivity()));
         when(mockWindowAndroid.getModalDialogManager()).thenReturn(mockModalDialogManager);
         when(mockWindowAndroid.hasPermission(Manifest.permission.BLUETOOTH_SCAN)).thenReturn(true);
         when(mockWindowAndroid.hasPermission(Manifest.permission.BLUETOOTH_CONNECT))
@@ -453,7 +470,7 @@ public class SerialChooserDialogTest {
                                     "https://origin.example.com/",
                                     ConnectionSecurityLevel.SECURE,
                                     ProfileManager.getLastUsedRegularProfile(),
-                                    /* nativeSerialChooserDialogPtr= */ 42);
+                                    JniRawPtr.createForTesting(42L));
                         });
         Assert.assertNull(dialog);
     }

@@ -95,7 +95,8 @@ shared_gpu.ci.linux_builder(
             "gpu_tests",
             "android_builder",
             "release_builder",
-            "try_builder",
+            "dcheck_always_on",
+            "minimal_symbols",
             "remoteexec",
             "arm64",
             "static_angle",
@@ -152,7 +153,8 @@ shared_gpu.ci.linux_builder(
         configs = [
             "gpu_tests",
             "release_builder",
-            "try_builder",
+            "dcheck_always_on",
+            "minimal_symbols",
             "remoteexec",
             "linux",
             "x64",
@@ -231,7 +233,8 @@ shared_gpu.ci.mac_builder(
         configs = [
             "gpu_tests",
             "release_builder",
-            "try_builder",
+            "dcheck_always_on",
+            "minimal_symbols",
             "remoteexec",
             "x64",
             "mac",
@@ -309,7 +312,8 @@ shared_gpu.ci.mac_builder(
         configs = [
             "gpu_tests",
             "release_builder",
-            "try_builder",
+            "dcheck_always_on",
+            "minimal_symbols",
             "remoteexec",
             "arm64",
             "mac",
@@ -351,7 +355,8 @@ shared_gpu.ci.windows_builder(
         configs = [
             "gpu_tests",
             "release_builder",
-            "try_builder",
+            "dcheck_always_on",
+            "minimal_symbols",
             "remoteexec",
             "resource_allowlisting",
             "win",
@@ -666,6 +671,7 @@ ci.thin_tester(
         browser_config = targets.browser_config.RELEASE,
         os_type = targets.os_type.MAC,
     ),
+    gardener_rotations = args.ignore_default(None),
     console_view_entry = consoles.console_view_entry(
         category = "Mac|AMD",
         short_name = "rel",

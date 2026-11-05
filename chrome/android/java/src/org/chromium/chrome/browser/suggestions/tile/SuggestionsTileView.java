@@ -11,6 +11,7 @@ import android.util.AttributeSet;
 import org.chromium.build.annotations.Initializer;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.chrome.R;
+import org.chromium.chrome.browser.ntp.NewTabPageUtils;
 import org.chromium.chrome.browser.ntp.TitleUtil;
 import org.chromium.chrome.browser.suggestions.SiteSuggestion;
 import org.chromium.components.browser_ui.widget.tile.TileView;
@@ -30,10 +31,25 @@ public class SuggestionsTileView extends TileView {
         super(context, attrs);
     }
 
+    @Override
+    protected void onFinishInflate() {
+        super.onFinishInflate();
+
+        // For NTP Aurora V2, use a 16dp rounded square background and ripple. This is done during
+        // inflation so it applies to all tiles, including the "Add new" button (which skips
+        // #initialize(Tile, int)).
+        if (NewTabPageUtils.isNtpAuroraV2Enabled()) {
+            mIconBackgroundView.setBackgroundResource(
+                    R.drawable.tile_view_icon_background_modern_rounded);
+            findViewById(R.id.tile_view_highlight)
+                    .setBackgroundResource(R.drawable.tile_view_highlight_rounded);
+        }
+    }
+
     // TileView override.
     @Override
     public boolean isDraggable() {
-        return mData.source == TileSource.CUSTOM_LINKS;
+        return getData().isCustomLink() || getData().isAiMode();
     }
 
     /**
@@ -45,7 +61,7 @@ public class SuggestionsTileView extends TileView {
      */
     @Initializer
     public void initialize(Tile tile, int titleLines) {
-        boolean showPinnedShortcutBadge = tile.getSource() == TileSource.CUSTOM_LINKS;
+        boolean showPinnedShortcutBadge = tile.isCustomLink() || tile.isAiMode();
         super.initialize(
                 TitleUtil.getTitleForDisplay(tile.getTitle(), tile.getUrl()),
                 tile.isOfflineAvailable(),

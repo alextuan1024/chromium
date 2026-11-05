@@ -8,9 +8,11 @@ import static org.chromium.build.NullUtil.assumeNonNull;
 
 import android.os.Build;
 
+import org.jni_zero.CalledByNative;
 import org.jni_zero.JniType;
 import org.jni_zero.NativeMethods;
 
+import org.chromium.base.CommandLine;
 import org.chromium.base.DeviceInfo;
 import org.chromium.base.FeatureList;
 import org.chromium.base.FeatureOverrides;
@@ -22,6 +24,7 @@ import org.chromium.build.BuildConfig;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
+import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.profiles.OtrProfileId;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.profiles.ProfileKey;
@@ -105,6 +108,7 @@ public class IncognitoUtils {
     /**
      * @return Whether incognito tabs should open in a separate window.
      */
+    @CalledByNative
     public static boolean shouldOpenIncognitoAsWindow() {
         if (!ChromeFeatureList.sAndroidOpenIncognitoAsWindow.isEnabled()) {
             return false;
@@ -112,6 +116,9 @@ public class IncognitoUtils {
         // Honor test override first. This is needed by Unit Test.
         if (sShouldOpenIncognitoAsWindowForTesting != null) {
             return sShouldOpenIncognitoAsWindowForTesting;
+        }
+        if (CommandLine.getInstance().hasSwitch(ChromeSwitches.OPEN_INCOGNITO_AS_WINDOW)) {
+            return true;
         }
         // Automotive is currently restricted to a single window.
         // The form factor check must happen before the display size check; because Automotive and
@@ -159,13 +166,6 @@ public class IncognitoUtils {
     public static void setShouldOpenIncognitoAsWindowForTesting(Boolean enabled) {
         sShouldOpenIncognitoAsWindowForTesting = enabled;
         ResettersForTesting.register(() -> sShouldOpenIncognitoAsWindowForTesting = null);
-    }
-
-    /**
-     * @return Whether incognito theme overlay is enabled for testing on current window.
-     */
-    public static boolean isIncognitoThemeOverlayEnabledForTesting() {
-        return ChromeFeatureList.sIncognitoThemeOverlayTesting.isEnabled();
     }
 
     @NativeMethods

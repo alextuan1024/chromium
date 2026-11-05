@@ -440,6 +440,8 @@ namespace autofillPrivate {
     boolean? storedInWallet;
     // Whether the entity is read only.
     boolean? isReadOnly;
+    // The context token for upserting a pass to Google Wallet.
+    DOMString? contextToken;
   };
 
   // Contains the minimum amount of information needed to display an entity
@@ -484,6 +486,41 @@ namespace autofillPrivate {
     DOMString? imageSrcDark;
   };
 
+  // A Google Wallet loyalty card which can be displayed in the autofill
+  // section of the settings UI.
+  dictionary LoyaltyCardEntry {
+    // Unique identifier for the loyalty card.
+    DOMString id;
+
+    // The name of the merchant that issued the loyalty card.
+    DOMString merchantName;
+
+    // The loyalty card number.
+    DOMString loyaltyCardNumber;
+
+    // URL of the page managing the loyalty card on the Google Wallet website.
+    DOMString walletUrl;
+  };
+
+  // A link inside a legal message line.
+  dictionary LegalMessageLink {
+    long start;
+    long end;
+    DOMString url;
+  };
+
+  // A line of legal message text with embedded links.
+  dictionary LegalMessageLine {
+    DOMString text;
+    LegalMessageLink[] links;
+  };
+
+  // Details returned by GetDetailsForUpsertPass RPC for public pass disclosure.
+  dictionary UpsertPassDetails {
+    LegalMessageLine[] legalMessageLines;
+    DOMString contextToken;
+  };
+
   callback VoidCallback = void();
   callback GetAccountInfoCallback = void(optional AccountInfo accountInfo);
   callback GetCountryListCallback = void(CountryEntry[] countries);
@@ -503,8 +540,10 @@ namespace autofillPrivate {
   callback GetWalletablePassDetectionOptInStatusCallback = void(boolean optedIn);
   callback SetWalletablePassDetectionOptInStatusCallback = void(boolean success);
   callback GetPayOverTimeIssuerListCallback = void(PayOverTimeIssuerEntry[] entries);
+  callback GetLoyaltyCardListCallback = void(LoyaltyCardEntry[] entries);
   callback AuthenticateUserBeforeViewingEntityDataCallback = void(boolean success);
   callback UserDataProcessingConsentCallback = void(UserDataProcessingConsentStates states);
+  callback GetDetailsForUpsertPassCallback = void(optional UpsertPassDetails details);
 
   interface Functions {
     // Gets currently signed-in user profile info, no value is returned if
@@ -597,6 +636,11 @@ namespace autofillPrivate {
     static void getPayOverTimeIssuerList(
         GetPayOverTimeIssuerListCallback callback);
 
+    // Gets the list of Google Wallet loyalty cards.
+    // |callback|: Callback which will be called with the list of loyalty
+    //             cards.
+    static void getLoyaltyCardList(GetLoyaltyCardListCallback callback);
+
     // Authenticates the user via device authentication and if successful, it
     // will then flip the mandatory auth toggle.
     static void authenticateUserAndFlipMandatoryAuthToggle();
@@ -683,6 +727,16 @@ namespace autofillPrivate {
     // Gets the user data processing consent states for the current user.
     static void fetchUserDataProcessingConsent(
       UserDataProcessingConsentCallback callback);
+
+    // Fetches legal disclosure lines and context token for upserting a
+    // public pass.
+    static void getDetailsForUpsertPass(
+      long entityTypeName,
+      GetDetailsForUpsertPassCallback callback);
+
+    // Preloads legal disclosure lines and context token for upserting a
+    // public pass.
+    static void preloadDetailsForUpsertPass(long entityTypeName);
   };
 
   interface Events {
@@ -703,5 +757,9 @@ namespace autofillPrivate {
     // removals).
     static void onEntityInstancesChanged(
         EntityInstanceWithLabels[] entityInstancesWithLabels);
+
+    // Fired when the user's Google Wallet loyalty cards have changed.
+    // `loyaltyCards`: the updated list of loyalty cards.
+    static void onLoyaltyCardsChanged(LoyaltyCardEntry[] loyaltyCards);
   };
 };

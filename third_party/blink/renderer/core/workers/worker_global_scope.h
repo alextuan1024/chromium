@@ -72,6 +72,7 @@ class FontFaceSet;
 struct GlobalScopeCreationParams;
 class InstalledScriptsManager;
 class OffscreenFontSelector;
+class SystemClipboard;
 class WorkerResourceTimingNotifier;
 class TrustedTypePolicyFactory;
 class V8UnionTrustedScriptURLOrUSVString;
@@ -102,7 +103,8 @@ class CORE_EXPORT WorkerGlobalScope
   // for Dedicated / Shared workers too so we can benefit from code caches.
   virtual CachedMetadataHandler* CreateWorkerScriptCachedMetadataHandler(
       const KURL& script_url,
-      std::unique_ptr<Vector<uint8_t>> meta_data) {
+      std::unique_ptr<Vector<uint8_t>> meta_data,
+      TextEncoding encoding) {
     return nullptr;
   }
 
@@ -124,6 +126,7 @@ class CORE_EXPORT WorkerGlobalScope
   WorkerGlobalScope* self() { return this; }
   WorkerLocation* location() const;
   WorkerNavigator* navigator() const override;
+  SystemClipboard* GetSystemClipboard() const;
   void close();
 
   String origin() const;
@@ -185,11 +188,13 @@ class CORE_EXPORT WorkerGlobalScope
 
   // These methods should be called in the scope of a pausable
   // task runner. ie. They should not be called when the context
-  // is paused.
+  // is paused. `encoding` is used only for `CachedMetadataHandler` as
+  // `source_code` is already decoded.
   void EvaluateClassicScript(const KURL& script_url,
                              String source_code,
                              std::unique_ptr<Vector<uint8_t>> cached_meta_data,
-                             const v8_inspector::V8StackTraceId& stack_id);
+                             const v8_inspector::V8StackTraceId& stack_id,
+                             TextEncoding encoding);
 
   // Should be called (in all successful cases) when the worker top-level
   // script fetch is finished.
@@ -260,10 +265,6 @@ class CORE_EXPORT WorkerGlobalScope
   // under trustedTypes/
   TrustedTypePolicyFactory* GetTrustedTypes() const override;
 
-  // TODO(https://crbug.com/835717): Remove this function after dedicated
-  // workers support off-the-main-thread script fetch by default.
-  virtual bool IsOffMainThreadScriptFetchDisabled() { return false; }
-
   // Takes the ownership of the parameters used to load the worker main module
   // script in renderer process.
   std::unique_ptr<WorkerMainScriptLoadParameters>
@@ -301,7 +302,7 @@ class CORE_EXPORT WorkerGlobalScope
                     bool is_service_worker_global_scope);
 
   // ExecutionContext
-  void ExceptionThrown(ErrorEvent*) override;
+  void ExceptionThrown(ErrorEvent*, SanitizeScriptErrors) override;
   void RemoveURLFromMemoryCache(const KURL&) final;
 
   void FetchClassicScript(
@@ -325,13 +326,17 @@ class CORE_EXPORT WorkerGlobalScope
       const Vector<String>* response_origin_trial_tokens,
       const String& source_code,
       std::unique_ptr<Vector<uint8_t>> cached_meta_data,
-      const v8_inspector::V8StackTraceId&);
+      const v8_inspector::V8StackTraceId&,
+      TextEncoding encoding);
 
+  // `out_response_encoding` should be used only for V8 code cache as
+  // `*out_source_code` is already decoded.
   virtual bool FetchClassicImportedScript(
       const KURL& script_url,
       KURL* out_response_url,
       String* out_source_code,
-      std::unique_ptr<Vector<uint8_t>>* out_cached_meta_data);
+      std::unique_ptr<Vector<uint8_t>>* out_cached_meta_data,
+      TextEncoding* out_response_encoding);
 
   // Notifies that the top-level worker script is ready to evaluate.
   // Worker top-level script is evaluated after it is fetched and
@@ -376,6 +381,7 @@ class CORE_EXPORT WorkerGlobalScope
 
   mutable Member<WorkerLocation> location_;
   mutable Member<WorkerNavigator> navigator_;
+  mutable Member<SystemClipboard> system_clipboard_;
   mutable Member<TrustedTypePolicyFactory> trusted_types_;
 
   raw_ptr<WorkerThread, UnprotectedInRelease | DanglingUntriaged> thread_;

@@ -6,17 +6,20 @@
 
 #include <optional>
 #include <string>
+#include <utility>
 
 #include "base/auto_reset.h"
 #include "base/functional/callback.h"
 #include "base/types/expected.h"
 #include "net/base/url_util.h"
+#include "net/http/http_response_headers.h"
 #include "net/traffic_annotation/network_traffic_annotation.h"
 #include "net/url_request/redirect_info.h"
 #include "services/network/public/cpp/resource_request.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "services/network/public/cpp/simple_url_loader.h"
 #include "services/network/public/mojom/url_response_head.mojom.h"
+#include "third_party/blink/public/common/mime_util/mime_util.h"
 #include "url/gurl.h"
 #include "url/url_constants.h"
 
@@ -33,11 +36,13 @@ size_t g_max_manifest_length = kMaxManifestLength;
 
 WebInstallManifestFetcher::WebInstallManifestFetcher(
     GURL manifest_url,
-    url::Origin initiator_origin,
-    scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory)
+    scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
+    std::optional<url::Origin> initiator_origin,
+    network::mojom::ClientSecurityStatePtr client_security_state)
     : manifest_url_(std::move(manifest_url)),
+      url_loader_factory_(std::move(url_loader_factory)),
       initiator_origin_(std::move(initiator_origin)),
-      url_loader_factory_(std::move(url_loader_factory)) {
+      client_security_state_(std::move(client_security_state)) {
   CHECK(manifest_url_.SchemeIs(url::kHttpsScheme) ||
         (manifest_url_.SchemeIs(url::kHttpScheme) &&
          net::IsLocalhost(manifest_url_)));
@@ -93,10 +98,17 @@ void WebInstallManifestFetcher::Fetch(FetchCallback callback) {
 
   auto resource_request = std::make_unique<network::ResourceRequest>();
   resource_request->url = manifest_url_;
-  resource_request->request_initiator = initiator_origin_;
   resource_request->method = "GET";
   // Cookies are not allowed.
   resource_request->credentials_mode = network::mojom::CredentialsMode::kOmit;
+  if (initiator_origin_) {
+    resource_request->request_initiator = *initiator_origin_;
+  }
+  if (client_security_state_) {
+    resource_request->trusted_params.emplace();
+    resource_request->trusted_params->client_security_state =
+        client_security_state_.Clone();
+  }
 
   simple_url_loader_ = network::SimpleURLLoader::Create(
       std::move(resource_request), traffic_annotation);
@@ -131,11 +143,23 @@ void WebInstallManifestFetcher::OnRedirect(
 void WebInstallManifestFetcher::OnManifestDownloaded(
     std::optional<std::string> manifest_content) {
   // TODO(crbug.com/525409692): Include manifest URL telemetry.
+  auto response_head = simple_url_loader_->TakeResponseInfo();
   simple_url_loader_.reset();
 
   if (!manifest_content) {
     std::move(fetch_callback_)
         .Run(base::unexpected(WebInstallManifestFetchError::kDownloadFailed));
+    return;
+  }
+
+  std::string mime_type;
+  // Require HTTP metadata, not a MIME type inferred from the response body.
+  if (!response_head || !response_head->headers ||
+      !response_head->headers->GetMimeType(&mime_type) ||
+      !blink::IsJSONMimeType(mime_type)) {
+    std::move(fetch_callback_)
+        .Run(base::unexpected(
+            WebInstallManifestFetchError::kInvalidContentType));
     return;
   }
 

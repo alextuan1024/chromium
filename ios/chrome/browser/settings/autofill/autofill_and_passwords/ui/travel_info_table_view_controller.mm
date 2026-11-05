@@ -73,6 +73,7 @@ enum class ItemType {
 - (instancetype)init {
   self = [super initWithStyle:ChromeTableViewStyle()];
   if (self) {
+    self.title = l10n_util::GetNSString(IDS_AUTOFILL_TRAVEL_TITLE);
     _travelInfoToggleEnabled = YES;
     _travelInfoToggleManaged = NO;
   }
@@ -82,7 +83,6 @@ enum class ItemType {
 - (void)viewDidLoad {
   [super viewDidLoad];
   self.tableView.allowsMultipleSelectionDuringEditing = YES;
-  self.title = l10n_util::GetNSString(IDS_AUTOFILL_TRAVEL_TITLE);
   [self updateUIForEditState];
   [self loadModel];
 }
@@ -301,7 +301,6 @@ enum class ItemType {
   _addButtonInToolbar.target = nil;
   _addButtonInToolbar.menu = [AutofillAIAddEntitiesMenuBuilder
       buildMenuWithTypes:_writableEntityTypes
-          profileEnabled:NO
          entitiesEnabled:_travelInfoEnabled && _travelInfoToggleEnabled &&
                          !_travelInfoToggleManaged
                 delegate:self];
@@ -311,10 +310,6 @@ enum class ItemType {
 }
 
 #pragma mark - AutofillAIAddEntitiesMenuDelegate
-
-- (void)didSelectAddAutofillProfile {
-  NOTREACHED();
-}
 
 - (void)didSelectAddEntityWithType:(autofill::EntityType)type {
   [self.mutator didSelectAddEntityWithType:type];
@@ -340,6 +335,14 @@ enum class ItemType {
 
 // Override.
 - (void)deleteItems:(NSArray<NSIndexPath*>*)indexPaths {
+  [self showDeleteConfirmationForIndexPaths:indexPaths sourceView:nil];
+}
+
+// Presents the deletion confirmation action sheet for `indexPaths`, anchored
+// to `sourceView` when provided (e.g. swipe-to-delete) or `self.deleteButton`
+// otherwise.
+- (void)showDeleteConfirmationForIndexPaths:(NSArray<NSIndexPath*>*)indexPaths
+                                 sourceView:(UIView*)sourceView {
   NSMutableArray<TableViewItem*>* items =
       [NSMutableArray arrayWithCapacity:indexPaths.count];
   for (NSIndexPath* indexPath in indexPaths) {
@@ -350,7 +353,7 @@ enum class ItemType {
   }
 
   NSString* deletionConfirmationString =
-      GetDeletionConfirmationStringWithEntities(false, std::u16string());
+      l10n_util::GetNSString(IDS_IOS_SETTINGS_AUTOFILL_DELETE_TITLE_LOCAL);
 
   UIAlertControllerStyle preferredStyle = UIAlertControllerStyleActionSheet;
   if (UIContentSizeCategoryIsAccessibilityCategory(
@@ -363,10 +366,15 @@ enum class ItemType {
                                           message:nil
                                    preferredStyle:preferredStyle];
 
-  alertController.popoverPresentationController.barButtonItem =
-      self.deleteButton;
-  alertController.popoverPresentationController.permittedArrowDirections =
-      UIPopoverArrowDirectionAny;
+  UIPopoverPresentationController* popover =
+      alertController.popoverPresentationController;
+  if (sourceView) {
+    popover.sourceView = sourceView;
+    popover.sourceRect = sourceView.bounds;
+  } else {
+    popover.barButtonItem = self.deleteButton;
+  }
+  popover.permittedArrowDirections = UIPopoverArrowDirectionAny;
 
   __weak __typeof(self) weakSelf = self;
 
@@ -470,7 +478,10 @@ enum class ItemType {
       _settingsAreDismissed) {
     return;
   }
-  [self deleteItems:@[ indexPath ]];
+  UITableViewCell* cell = [tableView cellForRowAtIndexPath:indexPath];
+  UIView* sourceView = cell.window ? cell : tableView;
+  [self showDeleteConfirmationForIndexPaths:@[ indexPath ]
+                                 sourceView:sourceView];
 }
 
 - (UITableViewCell*)tableView:(UITableView*)tableView

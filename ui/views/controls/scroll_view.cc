@@ -33,6 +33,7 @@
 #include "ui/views/background.h"
 #include "ui/views/border.h"
 #include "ui/views/controls/focus_ring.h"
+#include "ui/views/deprecated_layout_immediately_pass_key.h"
 #include "ui/views/metadata/type_conversion.h"
 #include "ui/views/property_effects.h"
 #include "ui/views/style/platform_style.h"
@@ -115,9 +116,9 @@ void ConstrainScrollToBounds(View* viewport,
   const bool scrolls_with_layers =
       scroll_with_layers_enabled && viewport->layer() != nullptr;
   if (scrolls_with_layers) {
-    DCHECK(view->layer());
-    DCHECK_EQ(0, view->x());
-    DCHECK_EQ(0, view->y());
+    CHECK(view->layer(), base::NotFatalUntil::M163);
+    CHECK_EQ(0, view->x(), base::NotFatalUntil::M163);
+    CHECK_EQ(0, view->y(), base::NotFatalUntil::M163);
   }
   gfx::PointF offset = scrolls_with_layers
                            ? view->layer()->CurrentScrollOffset()
@@ -193,8 +194,8 @@ class ScrollView::Viewport : public View {
     if (scroll_view_->ScrollsWithLayers()) {
       // With layer scrolling, there's no need to "undo" the offset done in the
       // child's View::ScrollRectToVisible() before it calls this.
-      DCHECK_EQ(0, contents->x());
-      DCHECK_EQ(0, contents->y());
+      CHECK_EQ(0, contents->x(), base::NotFatalUntil::M163);
+      CHECK_EQ(0, contents->y(), base::NotFatalUntil::M163);
     } else {
       scroll_rect.Offset(-contents->x(), -contents->y());
     }
@@ -241,6 +242,7 @@ class ScrollView::Viewport : public View {
     bool layer_needs_update = layer()->type() != new_layer_type;
     if (layer_needs_update) {
       SetContentsViewportLayer(new_layer_type);
+      scroll_view_->UpdateBackground();
     }
   }
 
@@ -280,8 +282,8 @@ class ScrollView::Viewport : public View {
   void SetContentsViewportLayer(ui::LayerType layer_type) {
     // Only LAYER_NOT_DRAWN and LAYER_TEXTURED are allowed since
     // contents_viewport is a container view.
-    DCHECK(layer_type == ui::LAYER_TEXTURED ||
-           layer_type == ui::LAYER_NOT_DRAWN);
+    CHECK(layer_type == ui::LAYER_TEXTURED || layer_type == ui::LAYER_NOT_DRAWN,
+          base::NotFatalUntil::M163);
 
     SetPaintToLayer(layer_type);
   }
@@ -393,13 +395,12 @@ ScrollView* ScrollView::GetScrollViewForContents(View* contents) {
   }
 
   auto* scroll_view = static_cast<ScrollView*>(grandparent);
-  DCHECK_EQ(contents, scroll_view->contents());
-  return scroll_view;
+  return contents == scroll_view->contents() ? scroll_view : nullptr;
 }
 
 void ScrollView::SetContentsImpl(std::unique_ptr<View> a_view) {
   // Protect against clients passing a contents view that has its own Layer.
-  DCHECK(!a_view || !a_view->layer());
+  CHECK(!a_view || !a_view->layer(), base::NotFatalUntil::M163);
 
   if (a_view && ScrollsWithLayers()) {
     a_view->SetPaintToLayer(layer_type_);
@@ -420,12 +421,13 @@ void ScrollView::SetContents(std::nullptr_t) {
 void ScrollView::SetContentsLayerType(ui::LayerType layer_type) {
   // This function should only be called when scroll with layers is enabled and
   // before `contents_` is set.
-  DCHECK(ScrollsWithLayers());
-  DCHECK(!contents_);
+  CHECK(ScrollsWithLayers(), base::NotFatalUntil::M163);
+  CHECK(!contents_, base::NotFatalUntil::M163);
 
   // Currently only allow LAYER_TEXTURED and LAYER_NOT_DRAWN. If other types of
   // layer are needed, consult with the owner.
-  DCHECK(layer_type == ui::LAYER_TEXTURED || layer_type == ui::LAYER_NOT_DRAWN);
+  CHECK(layer_type == ui::LAYER_TEXTURED || layer_type == ui::LAYER_NOT_DRAWN,
+        base::NotFatalUntil::M163);
 
   if (layer_type_ == layer_type) {
     return;
@@ -515,8 +517,9 @@ void ScrollView::SetVerticalScrollBarMode(
 
   // Enabling vertical scrolling is incompatible with all scrolling being
   // interpreted as horizontal.
-  DCHECK(!treat_all_scroll_events_as_horizontal_ ||
-         vertical_scroll_bar_mode == ScrollBarMode::kDisabled);
+  CHECK(!treat_all_scroll_events_as_horizontal_ ||
+            vertical_scroll_bar_mode == ScrollBarMode::kDisabled,
+        base::NotFatalUntil::M163);
 
   vertical_scroll_bar_mode_ = vertical_scroll_bar_mode;
   OnPropertyChanged(&vertical_scroll_bar_mode_, PropertyEffects::kPaint);
@@ -737,7 +740,7 @@ ScrollBar* ScrollView::SetHorizontalScrollBar(
 
 ScrollBar* ScrollView::SetVerticalScrollBar(
     std::unique_ptr<ScrollBar> vert_sb) {
-  DCHECK(vert_sb);
+  CHECK(vert_sb, base::NotFatalUntil::M163);
   vert_sb->SetVisible(vert_sb_->GetVisible());
   vert_sb->set_controller(this);
   RemoveChildViewT(vert_sb_.ExtractAsDangling());
@@ -759,11 +762,11 @@ void ScrollView::SetHasFocusIndicator(bool has_focus_indicator) {
 }
 
 bool ScrollView::IsHorizontalContentOverflowing() const {
-  return contents_->width() > contents_viewport_->width();
+  return contents_ && contents_->width() > contents_viewport_->width();
 }
 
 bool ScrollView::IsVerticalContentOverflowing() const {
-  return contents_->height() > contents_viewport_->height();
+  return contents_ && contents_->height() > contents_viewport_->height();
 }
 
 base::CallbackListSubscription ScrollView::AddContentsScrolledCallback(
@@ -803,11 +806,13 @@ void ScrollView::Layout(PassKey) {
       return;
     }
 #endif
-    DCHECK_EQ(horiz_sb_->OverlapsContent(), vert_sb_->OverlapsContent());
+    CHECK_EQ(horiz_sb_->OverlapsContent(), vert_sb_->OverlapsContent(),
+             base::NotFatalUntil::M163);
   }
 
   if (views::FocusRing::Get(this)) {
-    views::FocusRing::Get(this)->DeprecatedLayoutImmediately();
+    views::FocusRing::Get(this)->DeprecatedLayoutImmediately(
+        DeprecatedLayoutImmediatelyPassKey());
   }
 
   gfx::Rect available_rect = GetContentsBounds();
@@ -844,7 +849,8 @@ void ScrollView::Layout(PassKey) {
     // otherwise be unaware of changes to its bounds or visibility status.
     contents_viewport_->SetBoundsRect(viewport_bounds);
     if (contents_) {
-      contents_->DeprecatedLayoutImmediately();
+      contents_->DeprecatedLayoutImmediately(
+          DeprecatedLayoutImmediatelyPassKey());
     }
     return;
   }
@@ -878,7 +884,8 @@ void ScrollView::Layout(PassKey) {
   // Give |contents_| a chance to update its bounds if it depends on the
   // viewport.
   if (contents_) {
-    contents_->DeprecatedLayoutImmediately();
+    contents_->DeprecatedLayoutImmediately(
+        DeprecatedLayoutImmediatelyPassKey());
   }
 
   bool should_layout_contents = false;
@@ -948,7 +955,8 @@ void ScrollView::Layout(PassKey) {
   // Update to the real client size with the visible scrollbars.
   contents_viewport_->SetBoundsRect(viewport_bounds);
   if (should_layout_contents && contents_) {
-    contents_->DeprecatedLayoutImmediately();
+    contents_->DeprecatedLayoutImmediately(
+        DeprecatedLayoutImmediatelyPassKey());
   }
 
   // Even when |contents_| needs to scroll, it can still be narrower or wider
@@ -992,7 +1000,7 @@ void ScrollView::Layout(PassKey) {
   header_viewport_->SetBounds(contents_x, contents_y, viewport_bounds.width(),
                               header_height);
   if (header_) {
-    header_->DeprecatedLayoutImmediately();
+    header_->DeprecatedLayoutImmediately(DeprecatedLayoutImmediatelyPassKey());
   }
 
   ConstrainScrollToBounds(header_viewport_, header_,
@@ -1010,22 +1018,6 @@ void ScrollView::Layout(PassKey) {
     // TODO(tluk): Consider adding a CHECK on needs_layout() once layout
     // invalidation issues with overflow indicators have been resolved.
     post_layout_callback_.Run(this);
-  }
-
-  if (next_successful_frame_post_layout_callback_) {
-    // Layout should only occur to Widget parented Views.
-    views::Widget* const widget = GetWidget();
-    CHECK(widget);
-    widget->GetCompositor()->RequestSuccessfulPresentationTimeForNextFrame(
-        base::BindOnce(
-            [](base::WeakPtr<ScrollView> self, base::OnceClosure callback,
-               const viz::FrameTimingDetails& frame_timing_details) {
-              if (self) {
-                std::move(callback).Run();
-              }
-            },
-            weak_ptr_factory_.GetWeakPtr(),
-            std::move(next_successful_frame_post_layout_callback_)));
   }
 }
 
@@ -1094,7 +1086,7 @@ void ScrollView::OnScrollEvent(ui::ScrollEvent* event) {
   ui::ScrollInputHandler* compositor_scroller =
       GetWidget()->GetCompositor()->scroll_input_handler();
   if (compositor_scroller && scroll_synchronizer_count_ == 0) {
-    DCHECK(scroll_with_layers_enabled_);
+    CHECK(scroll_with_layers_enabled_, base::NotFatalUntil::M163);
     if (compositor_scroller->OnScrollEvent(e, contents_->layer())) {
       e.SetHandled();
       e.StopPropagation();
@@ -1233,6 +1225,7 @@ void ScrollView::UpdateViewportLayerForClipping() {
     EnableViewportLayer();
   } else {
     contents_viewport_->DestroyLayer();
+    UpdateBackground();
   }
 }
 
@@ -1521,10 +1514,6 @@ void ScrollView::UpdateBorder() {
 }
 
 void ScrollView::UpdateBackground() {
-  if (!GetWidget()) {
-    return;
-  }
-
   const std::optional<ui::ColorVariant> background_color = GetBackgroundColor();
 
   auto create_background = [background_color]() {
@@ -1534,9 +1523,14 @@ void ScrollView::UpdateBackground() {
 
   SetBackground(create_background());
   // In addition to setting the background of |this|, set the background on
-  // the viewport as well. This way if the viewport has a layer
+  // the viewport as well when it has a textured layer so that
   // SetFillsBoundsOpaquely() is honored.
-  contents_viewport_->SetBackground(create_background());
+  if (contents_viewport_->layer() &&
+      contents_viewport_->layer()->type() == ui::LAYER_TEXTURED) {
+    contents_viewport_->SetBackground(create_background());
+  } else {
+    contents_viewport_->SetBackground(nullptr);
+  }
   if (contents_ && ScrollsWithLayers()) {
     contents_->SetBackground(create_background());
     // Contents views may not be aware they need to fill their entire bounds -
@@ -1619,11 +1613,6 @@ void ScrollView::UpdateOverflowIndicatorVisibility(const gfx::PointF& offset) {
 void ScrollView::RegisterPostLayoutCallback(
     base::RepeatingCallback<void(ScrollView*)> post_layout_callback) {
   post_layout_callback_ = post_layout_callback;
-}
-
-void ScrollView::RegisterNextSuccessfulFramePostLayoutCallback(
-    base::OnceClosure callback) {
-  next_successful_frame_post_layout_callback_ = std::move(callback);
 }
 
 View* ScrollView::GetContentsViewportForTest() const {
@@ -1723,7 +1712,7 @@ FixedRowHeightScrollHelper::FixedRowHeightScrollHelper(int top_margin,
     : VariableRowHeightScrollHelper(nullptr),
       top_margin_(top_margin),
       row_height_(row_height) {
-  DCHECK_GT(row_height, 0);
+  CHECK_GT(row_height, 0, base::NotFatalUntil::M163);
 }
 
 VariableRowHeightScrollHelper::RowInfo FixedRowHeightScrollHelper::GetRowInfo(

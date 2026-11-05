@@ -17,6 +17,7 @@ Googlers: go/chrome-bisect
 import abc
 import argparse
 import base64
+import concurrent.futures
 import copy
 import functools
 import glob
@@ -460,6 +461,18 @@ TRICHROME64_APK_FILENAMES = {
   'webview': 'TrichromeWebViewGoogle64.apks',
 }
 
+# Standalone Chrome started being used in production in M152. From then on,
+# STANDALONE_CHROME_APK_FILENAMES are used instead of Trichrome.
+MIN_STANDALONE_CHROME_MILESTONE = 152
+
+STANDALONE_CHROME_APK_FILENAMES = {
+  'chrome': 'Chrome.apks',
+  'chrome_beta': 'ChromeBeta.apks',
+  'chrome_canary': 'ChromeCanary.apks',
+  'chrome_dev': 'ChromeDev.apks',
+  'chrome_stable': 'ChromeStable.apks',
+}
+
 TRICHROME_LIBRARY_FILENAMES = {
   'chrome': 'TrichromeLibraryGoogle.apk',
   'chrome_beta': 'TrichromeLibraryGoogleBeta.apk',
@@ -658,7 +671,7 @@ class ArchiveBuild(abc.ABC):
   @property
   @abc.abstractmethod
   def build_type(self):
-    raise NotImplemented()
+    raise NotImplementedError()
 
   @abc.abstractmethod
   def _get_rev_list(self, min_rev=None, max_rev=None):
@@ -676,7 +689,7 @@ class ArchiveBuild(abc.ABC):
     The return value of revisions in the list should match the type of
     good_revision and bad_revision, and should be comparable.
     """
-    raise NotImplemented()
+    raise NotImplementedError()
 
   @property
   def _rev_list_cache_filename(self):
@@ -689,7 +702,7 @@ class ArchiveBuild(abc.ABC):
   def _rev_list_cache_key(self):
     """Returns the cache key for archive build. The cache key should be able to
     distinguish like build_type, platform."""
-    raise NotImplemented()
+    raise NotImplementedError()
 
   def _load_rev_list_cache(self):
     if not self.use_local_cache:
@@ -814,7 +827,7 @@ class ArchiveBuild(abc.ABC):
   @abc.abstractmethod
   def get_download_url(self, revision):
     """Gets the download URL for the specific revision."""
-    raise NotImplemented()
+    raise NotImplementedError()
 
   def get_download_job(self, revision, name=None):
     """Gets as a DownloadJob that download the specific revision in threads."""
@@ -962,42 +975,54 @@ class ReleaseBuild(ArchiveBuild):
     return RELEASE_BASE_URL
 
   def _get_rev_list(self, min_rev=None, max_rev=None):
-    # Get all build numbers in the build bucket.
+    # Get all build numbers in the build bucket. Listing the whole bucket takes
+    # minutes, so only list the milestones in range (in parallel) when known.
+    bucket = self._get_release_bucket()
+    listings = [[bucket]]
+    if min_rev and max_rev:
+      milestones = range(min_rev.version[0], max_rev.version[0] + 1)
+      listings = [['-d', f'{bucket}/{m}.*'] for m in milestones]
     build_numbers = []
     revision_re = re.compile(r'(\d+\.\d\.\d{4}\.\d+)')
-    for path in GsutilList(self._get_release_bucket()):
-      match = revision_re.search(path)
-      if match:
-        build_numbers.append(ChromiumVersion(match[1]))
+    with concurrent.futures.ThreadPoolExecutor(16) as executor:
+      for paths in executor.map(
+        lambda urls: GsutilList(*urls, ignore_fail=True), listings
+      ):
+        for path in paths:
+          match = revision_re.search(path)
+          if match:
+            build_numbers.append(ChromiumVersion(match[1]))
     # Filter the versions between min_rev and max_rev.
     build_numbers = [
       x
       for x in build_numbers
       if (not min_rev or min_rev <= x) and (not max_rev or x <= max_rev)
     ]
-    # Check if target archive build exists in batches.
-    # batch size is limited by maximum length for the command line. Which is
-    # 32,768 characters on Windows, which should be enough up to 400 files.
-    batch_size = 100
-    final_list = []
-    for batch in (
+    # Check if target archive build exists in batches. gsutil checks each path
+    # sequentially, so run small batches in parallel.
+    batch_size = 25
+    batches = [
       build_numbers[i : i + batch_size]
       for i in range(0, len(build_numbers), batch_size)
-    ):
-      sys.stdout.write('\rFetching revisions at marker %s\n' % batch[0])
-      sys.stdout.flush()
-      # List the files that exists with listing_platform_dir and archive_name.
-      # Gsutil could fail because some of the path not exists. It's safe to
-      # ignore them.
-      for path in GsutilList(
-        *[self._get_archive_path(x) for x in batch], ignore_fail=True
+    ]
+    print('Checking %d versions' % len(build_numbers))
+    final_list = []
+    # List the files that exists with listing_platform_dir and archive_name.
+    # Gsutil could fail because some of the path not exists. It's safe to
+    # ignore them.
+    with concurrent.futures.ThreadPoolExecutor(16) as executor:
+      for paths in executor.map(
+        lambda batch: GsutilList(
+          *[self._get_archive_path(x) for x in batch], ignore_fail=True
+        ),
+        batches,
       ):
-        match = revision_re.search(path)
-        if match:
-          final_list.append(ChromiumVersion(match[1]))
-    sys.stdout.write('\r')
-    sys.stdout.flush()
-    return final_list
+        for path in paths:
+          match = revision_re.search(path)
+          if match:
+            final_list.append(ChromiumVersion(match[1]))
+    # gsutil.py re-runs failed commands, which can list a path twice.
+    return sorted(set(final_list))
 
   def _get_listing_url(self):
     return self._get_release_bucket()
@@ -1350,8 +1375,34 @@ class AndroidBuildMixin:
     if not self.device:
       raise BisectException('Failed to initialize device.')
     self.binary_name = self._get_apk_filename()
-    if 'Trichrome' in self.binary_name:
-      self.library_binary_name = self._get_library_filename()
+    # On Android Q+, builds before MIN_STANDALONE_CHROME_MILESTONE used
+    # Trichrome, and a bisect range can span both periods. Whether a given
+    # revision needs Trichrome is only known once the revision is picked
+    # (_use_trichrome), so both sets of filenames are kept.
+    self.trichrome_binary_name = None
+    self.trichrome_library_name = None
+    if self._supports_trichrome():
+      self.trichrome_binary_name = self._get_trichrome_apk_filename()
+      self.trichrome_library_name = self._get_library_filename()
+
+  def _supports_trichrome(self):
+    """Whether Trichrome is an option at all for this device and --apk."""
+    return (
+      self.apk in TRICHROME_APK_FILENAMES
+      and self.device.build_version_sdk >= version_codes.Q
+    )
+
+  def _min_standalone_chrome_revision(self):
+    """The first revision whose archive contains standalone Chrome."""
+    return ChromiumVersion(str(MIN_STANDALONE_CHROME_MILESTONE))
+
+  def _use_trichrome(self, revision):
+    """Whether |revision| must be installed as Trichrome rather than standalone
+    Chrome. Unlike _supports_trichrome, this depends on the revision."""
+    return (
+      self._supports_trichrome()
+      and revision < self._min_standalone_chrome_revision()
+    )
 
   def _get_apk_mapping(self, prefer_64bit=True):
     if self.apk == 'webview':
@@ -1359,15 +1410,7 @@ class AndroidBuildMixin:
 
     sdk = self.device.build_version_sdk
     if sdk >= version_codes.Q:
-      if self.platform in self._pure_64bit_platforms and prefer_64bit:
-        mapping = TRICHROME64_APK_FILENAMES
-      elif self.platform in self._64bit_platforms and prefer_64bit:
-        mapping = TRICHROME64_32_APK_FILENAMES
-      else:
-        mapping = TRICHROME_APK_FILENAMES
-      if self.apk in mapping:
-        return mapping
-      raise BisectException(f'SDK {sdk} requires Trichrome.')
+      return STANDALONE_CHROME_APK_FILENAMES
 
     # Need these logic to bisect very old build. Release binaries are stored
     # forever and occasionally there are requests to bisect issues introduced
@@ -1387,6 +1430,16 @@ class AndroidBuildMixin:
       )
     return apk_mapping[self.apk]
 
+  def _get_trichrome_apk_mapping(self, prefer_64bit=True):
+    if self.platform in self._pure_64bit_platforms and prefer_64bit:
+      return TRICHROME64_APK_FILENAMES
+    if self.platform in self._64bit_platforms and prefer_64bit:
+      return TRICHROME64_32_APK_FILENAMES
+    return TRICHROME_APK_FILENAMES
+
+  def _get_trichrome_apk_filename(self, prefer_64bit=True):
+    return self._get_trichrome_apk_mapping(prefer_64bit)[self.apk]
+
   def _get_library_filename(self, prefer_64bit=True):
     apk_mapping = None
     if self.platform in self._pure_64bit_platforms and prefer_64bit:
@@ -1403,7 +1456,12 @@ class AndroidBuildMixin:
     """glob and show available apks for the path."""
     available_apks = []
     all_apks = []
-    reversed_apk_mapping = {v: k for k, v in self._get_apk_mapping().items()}
+    mappings = [self._get_apk_mapping()]
+    if self._supports_trichrome():
+      mappings.append(self._get_trichrome_apk_mapping())
+    reversed_apk_mapping = {
+      v: k for mapping in mappings for k, v in mapping.items()
+    }
     for apk_path in glob.glob(self._get_extract_binary_glob(tempdir, "*")):
       apk_name = os.path.basename(apk_path)
       if not re.search(r'\.apks?$', apk_name):
@@ -1431,28 +1489,34 @@ class AndroidBuildMixin:
         f'{self.binary_name} is not a known WebView APK filename.'
       )
 
-  def _install_revision(self, download, tempdir):
-    UnzipFilenameToDir(download, tempdir)
-    if 'Trichrome' in self.binary_name:
-      trichrome_library_filename = self._get_library_filename()
-      trichrome_library_path = glob.glob(
-        f'{tempdir}/*/apks/{trichrome_library_filename}'
+  def _install_trichrome_revision(self, tempdir):
+    trichrome_library_path = glob.glob(
+      self._get_extract_binary_glob(tempdir, self.trichrome_library_name)
+    )
+    if len(trichrome_library_path) == 0:
+      self._show_available_apks(tempdir)
+      raise BisectException(
+        f'Can not find {self.trichrome_library_name} from {tempdir}'
       )
-      if len(trichrome_library_path) == 0:
-        self._show_available_apks(tempdir)
-        raise BisectException(
-          f'Can not find {trichrome_library_filename} from {tempdir}'
-        )
-      trichrome_filename = self._get_apk_filename()
-      trichrome_path = glob.glob(f'{tempdir}/*/apks/{trichrome_filename}')
-      if len(trichrome_path) == 0:
-        self._show_available_apks(tempdir)
-        raise BisectException(
-          f'Can not find {trichrome_filename} from {tempdir}'
-        )
-      InstallOnAndroid(self.device, trichrome_library_path[0])
-      InstallOnAndroid(self.device, trichrome_path[0])
+    trichrome_path = glob.glob(
+      self._get_extract_binary_glob(tempdir, self.trichrome_binary_name)
+    )
+    if len(trichrome_path) == 0:
+      self._show_available_apks(tempdir)
+      raise BisectException(
+        f'Can not find {self.trichrome_binary_name} from {tempdir}'
+      )
+    InstallOnAndroid(self.device, trichrome_library_path[0])
+    InstallOnAndroid(self.device, trichrome_path[0])
+
+  def _install_revision(self, download, tempdir):
+    # get_download_url() decides per revision between Trichrome and standalone
+    # Chrome, and marks a Trichrome download with a dict (see _use_trichrome).
+    if isinstance(download, dict):
+      UnzipFilenameToDir(download['trichrome'], tempdir)
+      self._install_trichrome_revision(tempdir)
       return
+    UnzipFilenameToDir(download, tempdir)
     apk_path = glob.glob(self._get_extract_binary_glob(tempdir))
     if len(apk_path) == 0:
       if self.apk == 'webview':
@@ -1524,21 +1588,24 @@ class AndroidReleaseBuild(AndroidBuildMixin, ReleaseBuild):
 
   def _get_archive_path(self, build_number, archive_name=None):
     if archive_name is None:
-      archive_name = self.binary_name
+      if self._use_trichrome(build_number):
+        archive_name = self.trichrome_binary_name
+      else:
+        archive_name = self.binary_name
     platform_dir = self.listing_platform_dir.rstrip('/')
     return f'{self.base_url}/{build_number}/{platform_dir}/{archive_name}'
 
   def get_download_url(self, revision):
-    if 'Trichrome' in self.binary_name:
+    if self._use_trichrome(revision):
       if not isinstance(revision, ChromiumVersion):
         rev_ver = ChromiumVersion(revision)
       else:
         rev_ver = revision
       if rev_ver >= ChromiumVersion('112'):
-        trichrome = self.binary_name
-        trichrome_library = self.library_binary_name
+        trichrome = self.trichrome_binary_name
+        trichrome_library = self.trichrome_library_name
       else:
-        trichrome = self._get_apk_filename(prefer_64bit=False)
+        trichrome = self._get_trichrome_apk_filename(prefer_64bit=False)
         trichrome_library = self._get_library_filename(prefer_64bit=False)
       return {
         'trichrome': self._get_archive_path(revision, trichrome),
@@ -1558,18 +1625,31 @@ class AndroidReleaseBuild(AndroidBuildMixin, ReleaseBuild):
 
   def _install_revision(self, download, tempdir):
     # AndroidRelease build downloads the apks directly from GCS bucket.
-    if 'Trichrome' in self.binary_name:
-      if not isinstance(download, dict):
-        raise Exception("Trichrome should download multiple files from GCS.")
+    # get_download_url() decides per revision between Trichrome (two files)
+    # and standalone Chrome (one file), see _use_trichrome.
+    if isinstance(download, dict):
       InstallOnAndroid(self.device, download['trichrome_library'])
       InstallOnAndroid(self.device, download['trichrome'])
     else:
       InstallOnAndroid(self.device, download)
 
+  @property
+  def _rev_list_cache_key(self):
+    # The base class passes '**' as the build number, which _get_archive_path
+    # can't compare against MIN_STANDALONE_CHROME_MILESTONE; the key only needs
+    # to be unique per platform and apk, so name the archive explicitly.
+    return self._get_archive_path('**', self.binary_name)
 
+
+# android-desktop release APKs have a different naming scheme:
+# http://shortn/_LC4UqvdoeC.
 class AndroidDesktopReleaseBuild(AndroidReleaseBuild):
   def _get_apk_filename(self, *args, **kwargs):
     apk_filename = super()._get_apk_filename(*args, **kwargs)
+    return apk_filename.replace('Chrome', 'ChromeDesktop', 1)
+
+  def _get_trichrome_apk_filename(self, *args, **kwargs):
+    apk_filename = super()._get_trichrome_apk_filename(*args, **kwargs)
     return apk_filename.replace('Google64', 'GoogleDesktop64')
 
   def _get_library_filename(self, prefer_64bit=True):
@@ -1579,8 +1659,6 @@ class AndroidDesktopReleaseBuild(AndroidReleaseBuild):
       )
     library_filename = super()._get_library_filename(prefer_64bit)
     if library_filename:
-      # android-desktop release APKs have a different naming scheme:
-      # http://shortn/_LC4UqvdoeC.
       return library_filename.replace('Google64', 'GoogleDesktop64')
     return None
 
@@ -1596,8 +1674,31 @@ class LinuxReleaseBuild(ReleaseBuild):
 
 class AndroidOfficialBuild(AndroidBuildMixin, OfficialBuild):
   def _get_apk_mapping(self, prefer_64bit=True):
-    mapping = super()._get_apk_mapping(prefer_64bit)
+    return self._to_minimal_apks(super()._get_apk_mapping(prefer_64bit))
+
+  def _get_trichrome_apk_mapping(self, prefer_64bit=True):
+    return self._to_minimal_apks(
+      super()._get_trichrome_apk_mapping(prefer_64bit)
+    )
+
+  @staticmethod
+  def _to_minimal_apks(mapping):
     return {k: v.replace(".apks", ".minimal.apks") for k, v in mapping.items()}
+
+  def get_download_url(self, revision):
+    url = super().get_download_url(revision)
+    if self._use_trichrome(revision):
+      # Tells AndroidBuildMixin._install_revision() to install Trichrome.
+      return {'trichrome': url}
+    return url
+
+  def _min_standalone_chrome_revision(self):
+    # Official builds (-o) bisect per commit rather than per release version.
+    # The only per-commit official Android archives are the perf builders',
+    # which are installable because they also archive *.minimal.apks for
+    # binary size tracking. Those builders kept archiving only Trichrome after
+    # production moved to standalone Chrome, until crrev.com/c/8550553.
+    return 1716322
 
 
 class AndroidSnapshotBuild(AndroidBuildMixin, SnapshotBuild):
@@ -1894,7 +1995,6 @@ def EvaluateRevision(archive_build, download, revision, args, evaluate):
 # The arguments release_builds, status, stdout and stderr are unused.
 # They are present here because this function is passed to Bisect which then
 # calls it with 5 arguments.
-# pylint: disable=W0613
 def AskIsGoodBuild(rev, exit_status, stdout, stderr):
   """Asks the user whether build |rev| is good or bad."""
   # Loop until we get a response that we can parse.
@@ -2721,6 +2821,7 @@ Tip: add "-- --no-first-run" to bypass the first run prompts.
       CHROME_MODERN_APK_FILENAMES,
       MONOCHROME_APK_FILENAMES,
       WEBVIEW_APK_FILENAMES,
+      STANDALONE_CHROME_APK_FILENAMES,
       TRICHROME_APK_FILENAMES,
       TRICHROME64_32_APK_FILENAMES,
       TRICHROME64_APK_FILENAMES,

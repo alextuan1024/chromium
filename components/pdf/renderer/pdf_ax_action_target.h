@@ -5,6 +5,8 @@
 #ifndef COMPONENTS_PDF_RENDERER_PDF_AX_ACTION_TARGET_H_
 #define COMPONENTS_PDF_RENDERER_PDF_AX_ACTION_TARGET_H_
 
+#include <optional>
+
 #include "base/memory/raw_ptr.h"
 #include "base/memory/raw_ref.h"
 #include "ui/accessibility/ax_action_target.h"
@@ -39,11 +41,17 @@ class PdfAXActionTarget : public ui::AXActionTarget {
   gfx::Point MinimumScrollOffset() const override;
   gfx::Point MaximumScrollOffset() const override;
   void SetScrollOffset(const gfx::Point& point) const override;
-  bool SetSelection(const ui::AXActionTarget* anchor_object,
-                    int anchor_offset,
-                    const ui::AXActionTarget* focus_object,
-                    int focus_offset) const override;
-  bool ScrollToMakeVisible() const override;
+  bool SetSelection(
+      const ui::AXActionTarget* anchor_object,
+      int anchor_offset,
+      std::optional<ax::mojom::OffsetType> anchor_offset_type,
+      const ui::AXActionTarget* focus_object,
+      int focus_offset,
+      std::optional<ax::mojom::OffsetType> focus_offset_type) const override;
+  bool ScrollToMakeVisible(
+      ax::mojom::ScrollAlignment horizontal_scroll_alignment,
+      ax::mojom::ScrollAlignment vertical_scroll_alignment,
+      ax::mojom::ScrollBehavior scroll_behavior) const override;
   bool ScrollToMakeVisibleWithSubFocus(
       const gfx::Rect& rect,
       ax::mojom::ScrollAlignment horizontal_scroll_alignment,

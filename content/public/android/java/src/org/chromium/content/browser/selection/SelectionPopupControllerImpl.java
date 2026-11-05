@@ -17,6 +17,7 @@ import android.content.pm.PackageManager;
 import android.graphics.Rect;
 import android.os.Build;
 import android.os.Handler;
+import android.os.LocaleList;
 import android.os.SystemClock;
 import android.text.TextUtils;
 import android.util.LongSparseArray;
@@ -41,6 +42,7 @@ import org.jni_zero.JNINamespace;
 import org.jni_zero.JniType;
 import org.jni_zero.NativeMethods;
 
+import org.chromium.base.AconfigFlaggedApiDelegate;
 import org.chromium.base.ApiCompatibilityUtils;
 import org.chromium.base.ContextUtils;
 import org.chromium.base.Log;
@@ -53,6 +55,7 @@ import org.chromium.base.metrics.RecordUserAction;
 import org.chromium.base.supplier.NonNullObservableSupplier;
 import org.chromium.base.supplier.ObservableSuppliers;
 import org.chromium.base.supplier.SettableNonNullObservableSupplier;
+import org.chromium.blink_public.common.BlinkFeatures;
 import org.chromium.build.annotations.EnsuresNonNullIf;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
@@ -179,6 +182,9 @@ public class SelectionPopupControllerImpl extends ActionModeCallbackHelper
     private @Nullable View mView;
     private @Nullable ViewAndroidDelegate mLastViewDelegate;
     private @Nullable ActionMode mActionMode;
+    // Tracks the ActionMode instance on which delegate.setTextSelection() was called so that
+    // clearTextSelection() is paired 1:1 on teardown regardless of subsequent menu state changes.
+    private @Nullable ActionMode mTextSelectionActionMode;
 
     // Supplier of whether action bar is showing now.
     private final SettableNonNullObservableSupplier<Boolean> mIsActionBarShowingSupplier =
@@ -406,6 +412,7 @@ public class SelectionPopupControllerImpl extends ActionModeCallbackHelper
     private void reset() {
         dropFocus();
         mSelectionMenuCachedResult = null;
+        resetMagnifierAnimator();
         mContext = null;
         mWindowAndroid = null;
     }
@@ -431,7 +438,7 @@ public class SelectionPopupControllerImpl extends ActionModeCallbackHelper
 
         if (containerView != null) containerView.setClickable(true);
         mView = containerView;
-        mMagnifierAnimator = null;
+        resetMagnifierAnimator();
     }
 
     private void ensureView() {
@@ -537,14 +544,19 @@ public class SelectionPopupControllerImpl extends ActionModeCallbackHelper
     }
 
     /**
-     * Returns true if a dropdown menu should be used based on the current state (i.e. mouse was
-     * used to invoke text selection menu).
+     * Returns true if a dropdown menu should be used based on the current state (i.e. mouse or
+     * keyboard was used to invoke text selection menu).
      */
     private boolean shouldUseDropdownMenu() {
         ensureView();
+        boolean isMouseOrKeyboardSource =
+                mMenuSourceType == MenuSourceType.MOUSE
+                        || (mMenuSourceType == MenuSourceType.KEYBOARD
+                                && ContentFeatureMap.isEnabled(
+                                        BlinkFeatures.ANDROID_KEYBOARD_CONTEXT_MENU));
         return mView != null
                 && mDropdownMenuDelegate != null
-                && mMenuSourceType == MenuSourceType.MOUSE
+                && isMouseOrKeyboardSource
                 && isWindowOnTablet();
     }
 
@@ -581,9 +593,6 @@ public class SelectionPopupControllerImpl extends ActionModeCallbackHelper
         ensureView();
         mShowMenuStartTimeMs = SystemClock.elapsedRealtime();
         mMenuModelBridge = menuModelBridge;
-        RecordHistogram.recordEnumeratedHistogram(
-                "Android.ShowSelectionMenuSourceType", sourceType, MenuSourceType.MAX_VALUE + 1);
-
         int offsetBottom = bottom;
         offsetBottom += handleHeight;
         mXDip = xDip;
@@ -815,7 +824,7 @@ public class SelectionPopupControllerImpl extends ActionModeCallbackHelper
         final int y =
                 ((int)
                         ((mYDip * deviceScaleFactor)
-                                + mWebContents.getRenderCoordinates().getContentOffsetYPix()));
+                                + mWebContents.getRenderCoordinates().getContentOffsetTopPix()));
 
         MVCListAdapter.ModelList items = getDropdownItems();
         if (mMenuModelBridge != null) {
@@ -921,6 +930,7 @@ public class SelectionPopupControllerImpl extends ActionModeCallbackHelper
         if (isActionModeValid()) {
             mActionMode.finish();
             // Should be nulled out in case #onDestroyActionMode() is not invoked in response.
+            clearTextSelectionIfNeeded();
             setActionMode(null);
         }
     }
@@ -980,7 +990,7 @@ public class SelectionPopupControllerImpl extends ActionModeCallbackHelper
 
         mWindowAndroid = newWindowAndroid;
         mContext = mWebContents.getContext();
-        mMagnifierAnimator = null;
+        resetMagnifierAnimator();
         destroySelectActionMode();
     }
 
@@ -1073,7 +1083,81 @@ public class SelectionPopupControllerImpl extends ActionModeCallbackHelper
         assumeNonNull(mContext);
         PendingSelectionMenu pendingMenu = getPendingSelectionMenu(MenuType.FLOATING);
         pendingMenu.getMenuAsActionMode(menu);
+        maybeSetTextSelection(mode);
         return true;
+    }
+
+    static boolean shouldForwardTextSelectionToSystemUi(
+            @Nullable SelectionPopupControllerImpl controller,
+            @Nullable TextClassifier customTextClassifier) {
+        if (customTextClassifier != null) {
+            return false;
+        }
+        if (controller != null) {
+            if (controller.getMenuType() != SelectionMenuType.ACTION_MODE) {
+                return false;
+            }
+            if (controller.mSelectionClient != null
+                    && controller.mSelectionClient.getCustomTextClassifier() != null) {
+                return false;
+            }
+        }
+        AconfigFlaggedApiDelegate delegate = AconfigFlaggedApiDelegate.getInstance();
+        return delegate != null && delegate.isForwardTextSelectionToSystemUiEnabled();
+    }
+
+    private boolean shouldForwardTextSelectionToSystemUi() {
+        return shouldForwardTextSelectionToSystemUi(this, /* customTextClassifier= */ null);
+    }
+
+    private void maybeSetTextSelection(ActionMode mode) {
+        if (!shouldForwardTextSelectionToSystemUi()
+                || !hasSelection()
+                || isSelectionPassword()
+                || isIncognito()) {
+            clearTextSelectionIfNeeded();
+            return;
+        }
+        AconfigFlaggedApiDelegate delegate = AconfigFlaggedApiDelegate.getInstance();
+        if (delegate == null) {
+            return;
+        }
+        if (mTextSelectionActionMode != null && mTextSelectionActionMode != mode) {
+            clearTextSelectionIfNeeded();
+        }
+        if (mClassificationResult != null
+                && mClassificationResult.text != null
+                && mClassificationResult.start >= 0
+                && mClassificationResult.end <= mClassificationResult.text.length()
+                && mClassificationResult.start <= mClassificationResult.end
+                && TextUtils.equals(
+                        getSelectedText(),
+                        mClassificationResult.text.substring(
+                                mClassificationResult.start, mClassificationResult.end))) {
+            delegate.setTextSelection(
+                    mode,
+                    mClassificationResult.text,
+                    mClassificationResult.start,
+                    mClassificationResult.end,
+                    LocaleList.getAdjustedDefault());
+        } else {
+            String selectedText = getSelectedText();
+            delegate.setTextSelection(
+                    mode, selectedText, 0, selectedText.length(), LocaleList.getAdjustedDefault());
+        }
+        mTextSelectionActionMode = mode;
+    }
+
+    private void clearTextSelectionIfNeeded() {
+        if (mTextSelectionActionMode == null) {
+            return;
+        }
+        ActionMode mode = mTextSelectionActionMode;
+        mTextSelectionActionMode = null;
+        AconfigFlaggedApiDelegate delegate = AconfigFlaggedApiDelegate.getInstance();
+        if (delegate != null) {
+            delegate.clearTextSelection(mode);
+        }
     }
 
     @VisibleForTesting
@@ -1177,20 +1261,17 @@ public class SelectionPopupControllerImpl extends ActionModeCallbackHelper
         }
         assert mContext != null;
 
-        List<SelectionMenuItem> textProcessingItems =
-                SelectActionMenuHelper.getTextProcessingItems(
-                        mContext,
-                        MenuType.FLOATING,
-                        false,
-                        false,
-                        "test",
-                        true,
-                        mSelectionActionMenuDelegate);
-        if (textProcessingItems != null && !textProcessingItems.isEmpty()) {
-            PendingSelectionMenu pendingMenu = new PendingSelectionMenu(mContext);
-            pendingMenu.addAll(textProcessingItems);
-            pendingMenu.getMenuAsActionMode(menu);
-        }
+        PendingSelectionMenu pendingMenu = new PendingSelectionMenu(mContext);
+        SelectActionMenuHelper.addTextProcessingItems(
+                pendingMenu,
+                mContext,
+                MenuType.FLOATING,
+                false,
+                false,
+                "test",
+                true,
+                mSelectionActionMenuDelegate);
+        pendingMenu.getMenuAsActionMode(menu);
     }
 
     @Override
@@ -1320,6 +1401,7 @@ public class SelectionPopupControllerImpl extends ActionModeCallbackHelper
 
     @Override
     public void onDestroyActionMode() {
+        clearTextSelectionIfNeeded();
         setActionMode(null);
         if (mUnselectAllOnDismiss) {
             clearSelection();
@@ -1365,7 +1447,7 @@ public class SelectionPopupControllerImpl extends ActionModeCallbackHelper
         // The selection coordinates are relative to the content viewport, but we need
         // coordinates relative to the containing View.
         viewSelectionRect.offset(
-                0, (int) mWebContents.getRenderCoordinates().getContentOffsetYPix());
+                0, (int) mWebContents.getRenderCoordinates().getContentOffsetTopPix());
         return viewSelectionRect;
     }
 
@@ -1765,9 +1847,10 @@ public class SelectionPopupControllerImpl extends ActionModeCallbackHelper
         float deviceScale = mWebContents.getRenderCoordinates().getDeviceScaleFactor();
 
         Rect startHandleRect = getScaledRect(start, deviceScale);
-        startHandleRect.offset(0, (int) mWebContents.getRenderCoordinates().getContentOffsetYPix());
+        startHandleRect.offset(
+                0, (int) mWebContents.getRenderCoordinates().getContentOffsetTopPix());
         Rect endHandleRect = getScaledRect(end, deviceScale);
-        endHandleRect.offset(0, (int) mWebContents.getRenderCoordinates().getContentOffsetYPix());
+        endHandleRect.offset(0, (int) mWebContents.getRenderCoordinates().getContentOffsetTopPix());
 
         List<Rect> rects = new ArrayList<>();
         rects.add(startHandleRect);
@@ -1808,8 +1891,8 @@ public class SelectionPopupControllerImpl extends ActionModeCallbackHelper
             final float deviceScale = getDeviceScaleFactor();
             x *= deviceScale;
             // The selection coordinates are relative to the content viewport, but we need
-            // coordinates relative to the containing View, so adding getContentOffsetYPix().
-            y = y * deviceScale + mWebContents.getRenderCoordinates().getContentOffsetYPix();
+            // coordinates relative to the containing View, so adding getContentOffsetTopPix().
+            y = y * deviceScale + mWebContents.getRenderCoordinates().getContentOffsetTopPix();
             getMagnifierAnimator(/* createIfNull= */ true).handleDragStartedOrMoved(x, y);
         }
     }
@@ -1914,6 +1997,13 @@ public class SelectionPopupControllerImpl extends ActionModeCallbackHelper
         }
         mMagnifierAnimator = new MagnifierAnimator(magnifier);
         return mMagnifierAnimator;
+    }
+
+    private void resetMagnifierAnimator() {
+        if (mMagnifierAnimator != null) {
+            mMagnifierAnimator.handleDragStopped();
+            mMagnifierAnimator = null;
+        }
     }
 
     @CalledByNative
@@ -2027,8 +2117,9 @@ public class SelectionPopupControllerImpl extends ActionModeCallbackHelper
     private class SmartSelectionCallback implements SelectionClient.ResultCallback {
         @Override
         public void onClassified(SelectionClient.Result result) {
-            // If the selection does not exist any more, discard |result|.
-            if (!hasSelection()) {
+            // If the selection does not exist any more or the WebContents has been destroyed,
+            // discard |result|.
+            if (!hasSelection() || mWebContents.isDestroyed() || mContext == null) {
                 mClassificationResult = null;
                 return;
             }
@@ -2070,8 +2161,9 @@ public class SelectionPopupControllerImpl extends ActionModeCallbackHelper
 
         @Override
         public void onClassifiedLate(SelectionClient.Result result) {
-            // If the selection does not exist any more, discard |result|.
-            if (!hasSelection()) {
+            // If the selection does not exist any more or the WebContents has been destroyed,
+            // discard |result|.
+            if (!hasSelection() || mWebContents.isDestroyed() || mContext == null) {
                 mClassificationResult = null;
                 return;
             }
@@ -2157,6 +2249,9 @@ public class SelectionPopupControllerImpl extends ActionModeCallbackHelper
         assert oldValue != null;
         assert oldValue.get() == this;
         mNativeSelectionPopupController = 0;
+        resetMagnifierAnimator();
+        mHasSelection = false;
+        mClassificationResult = null;
     }
 
     @CalledByNative

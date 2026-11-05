@@ -62,8 +62,8 @@ CredentialsItemView::CredentialsItemView(
   image_view_->SetCanProcessEventsWithinSubtree(false);
   gfx::Image image = ui::ResourceBundle::GetSharedInstance().GetImageNamed(
       IDR_PROFILE_AVATAR_PLACEHOLDER_LARGE);
-  DCHECK(image.Width() >= kAvatarImageSize &&
-         image.Height() >= kAvatarImageSize);
+  CHECK(image.Width() >= kAvatarImageSize && image.Height() >= kAvatarImageSize,
+        base::NotFatalUntil::M162);
   UpdateAvatar(image.AsImageSkia());
   if (form->icon_url.is_valid()) {
     // Fetch the actual avatar.
@@ -73,8 +73,6 @@ CredentialsItemView::CredentialsItemView(
   }
   AddChildView(std::move(image_view));
 
-  // TODO(tapted): Check these (and the STYLE_ values below) against the spec on
-  // http://crbug.com/41278269.
   const int kLabelContext = CONTEXT_DIALOG_BODY_TEXT_SMALL;
 
   views::View* text_container = nullptr;

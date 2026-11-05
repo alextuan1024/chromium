@@ -15,6 +15,7 @@
 #include "chrome/test/base/testing_profile.h"
 #include "components/javascript_dialogs/tab_modal_dialog_manager.h"
 #include "content/public/browser/javascript_dialog_manager.h"
+#include "content/public/browser/page_navigator.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/storage_partition_config.h"
 #include "content/public/browser/web_contents.h"
@@ -26,8 +27,8 @@
 #include "content/public/test/test_utils.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/mojom/window_features/window_features.mojom.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "ui/base/page_transition_types.h"
-#include "ui/base/window_open_disposition.h"
 #include "url/gurl.h"
 
 namespace tabs {
@@ -134,6 +135,31 @@ TEST_F(TabWebContentsDestroyerTest, CloseContentsTriggersDeferredDestruction) {
   EXPECT_TRUE(watcher.IsDestroyed());
 }
 
+// A closed tab must not receive input while it is shutting down. Input is
+// suppressed for the whole graceful-shutdown period, and suppression is
+// released before the WebContents is destroyed.
+TEST_F(TabWebContentsDestroyerTest, InputIgnoredDuringGracefulShutdown) {
+  std::unique_ptr<content::WebContents> web_contents = CreateTestWebContents();
+  content::WebContents* raw_web_contents = web_contents.get();
+  content::NavigationSimulator::NavigateAndCommitFromBrowser(
+      raw_web_contents, GURL("https://example.com"));
+  content::WebContentsDestroyedWatcher watcher(raw_web_contents);
+  ASSERT_FALSE(raw_web_contents->ShouldIgnoreInputEventsForTesting());
+
+  TabWebContentsDestroyer::DestroyWebContents(std::move(web_contents));
+  EXPECT_FALSE(watcher.IsDestroyed());
+  EXPECT_TRUE(raw_web_contents->ShouldIgnoreInputEventsForTesting());
+
+  // Still suppressed partway through the shutdown period.
+  task_environment()->FastForwardBy(base::Milliseconds(250));
+  ASSERT_FALSE(watcher.IsDestroyed());
+  EXPECT_TRUE(raw_web_contents->ShouldIgnoreInputEventsForTesting());
+
+  // Destruction completes cleanly with suppression held until the end.
+  task_environment()->FastForwardBy(base::Seconds(2));
+  EXPECT_TRUE(watcher.IsDestroyed());
+}
+
 TEST_F(TabWebContentsDestroyerTest, RenderProcessCrash) {
   std::unique_ptr<content::WebContents> web_contents = CreateTestWebContents();
   content::WebContents* raw_web_contents = web_contents.get();
@@ -220,10 +246,13 @@ TEST_F(TabWebContentsDestroyerTest, NavigationSuppressionAndInterception) {
   ASSERT_NE(nullptr, delegate);
 
   // OpenURLFromTab should be suppressed (return nullptr).
-  content::OpenURLParams params(
-      GURL("https://example.com"), content::Referrer(),
-      WindowOpenDisposition::CURRENT_TAB, ui::PAGE_TRANSITION_LINK,
-      /*is_renderer_initiated=*/true);
+  content::OpenURLParams params =
+      content::OpenURLParams::CreateRendererInitiated(
+          GURL("https://example.com"),
+          ui::mojom::WindowOpenDisposition::kCurrentTab,
+          ui::PAGE_TRANSITION_LINK, content::Referrer(),
+          raw_web_contents->GetPrimaryMainFrame()
+              ->GetCurrentInitiatorNavigationState());
   EXPECT_EQ(nullptr, delegate->OpenURLFromTab(raw_web_contents, params,
                                               base::DoNothing()));
 
@@ -268,7 +297,7 @@ TEST_F(TabWebContentsDestroyerTest, WindowCreationSuppression) {
                 raw_web_contents->GetPrimaryMainFrame()->GetSiteInstance(),
                 /*is_new_browsing_instance=*/true, GURL("https://example.com"),
                 "test_frame", GURL("https://target.example.com"),
-                WindowOpenDisposition::NEW_POPUP, window_features,
+                ui::mojom::WindowOpenDisposition::kNewPopup, window_features,
                 partition_config, /*session_storage_namespace=*/nullptr));
 
   task_environment()->FastForwardBy(base::Seconds(2));

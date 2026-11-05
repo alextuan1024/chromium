@@ -12,7 +12,6 @@
 #include <utility>
 
 #include "base/compiler_specific.h"
-#include "base/cpu.h"
 #include "base/files/file_enumerator.h"
 #include "base/files/file_util.h"
 #include "base/files/scoped_file.h"
@@ -24,7 +23,6 @@
 #include "base/no_destructor.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
-#include "base/system/sys_info.h"
 #include "base/task/thread_pool.h"
 #include "base/threading/scoped_blocking_call.h"
 #include "base/threading/thread_restrictions.h"
@@ -274,16 +272,16 @@ struct ArcSystemStatCollector::SystemReadersContext {
         continue;
       }
 
-      if (UNSAFE_TODO(context->system_readers[reader]).is_valid()) {
+      if (context->system_readers[reader].is_valid()) {
         LOG(ERROR) << "Found duplicate power counter " << domain_name << " in "
                    << domain_file_path.value();
         continue;
       }
 
       const base::FilePath counter_file_path = dir.Append(component);
-      UNSAFE_TODO(context->system_readers[reader])
-          .reset(open(counter_file_path.value().c_str(), O_RDONLY));
-      if (!UNSAFE_TODO(context->system_readers[reader]).is_valid()) {
+      context->system_readers[reader].reset(
+          open(counter_file_path.value().c_str(), O_RDONLY));
+      if (!context->system_readers[reader].is_valid()) {
         // TODO(b/182801299): Some intel-rapl files may not be opened from user
         // process by design. Add support to access through debugd as root.
         LOG(ERROR) << "Failed to open power counter: " << domain_name << " as "
@@ -309,23 +307,15 @@ struct ArcSystemStatCollector::SystemReadersContext {
       LOG(ERROR) << "Failed to open mem info file: " << kMemoryInfoPath;
     }
 
-    // Reading i915_gem_objects on Intel platform with kernel 5.4 is slow and is
-    // prohibited. Also it changes reporting format.
-    // TODO(b/170397975): Update if i915_gem_objects reading time is improved.
-    const bool is_newer_kernel =
-        base::StartsWith(base::SysInfo::KernelVersion(), "5.");
-    const bool is_intel_cpu = base::CPU().vendor_name() == "GenuineIntel";
-
-    if (!is_newer_kernel || !is_intel_cpu) {
-      context->system_readers[SystemReader::kGemInfo].reset(
-          open(kGemInfoPath, O_RDONLY));
-      if (!context->system_readers[SystemReader::kGemInfo].is_valid()) {
-        LOG(ERROR) << "Failed to open gem info file: " << kGemInfoPath;
-      }
-    } else {
-      LOG(ERROR) << "Reading gem info from: " << kGemInfoPath
-                 << " is disabled.";
+#if defined(ARCH_CPU_ARM_FAMILY)
+    context->system_readers[SystemReader::kGemInfo].reset(
+        open(kGemInfoPath, O_RDONLY));
+    if (!context->system_readers[SystemReader::kGemInfo].is_valid()) {
+      LOG(ERROR) << "Failed to open gem info file: " << kGemInfoPath;
     }
+#else
+    LOG(ERROR) << "Reading gem info from: " << kGemInfoPath << " is disabled.";
+#endif
 
     const base::FilePath& cpu_temp_path = GetCpuTemperaturePathOnFileThread();
     context->system_readers[SystemReader::kCpuTemperature].reset(
@@ -353,7 +343,7 @@ struct ArcSystemStatCollector::SystemReadersContext {
     context.reset();
   }
 
-  base::ScopedFD system_readers[SystemReader::kTotal];
+  std::array<base::ScopedFD, SystemReader::kTotal> system_readers;
   RuntimeFrame current_frame;
 };
 
@@ -692,7 +682,7 @@ ArcSystemStatCollector::ReadSystemStatOnBackgroundThread(
     }
   }
 
-  OneValueReaderInfo one_value_readers[] = {
+  const auto one_value_readers = std::to_array<OneValueReaderInfo>({
       {SystemReader::kCpuTemperature, &context->current_frame.cpu_temperature,
        std::numeric_limits<int>::min()},
       {SystemReader::kCpuFrequency, &context->current_frame.cpu_frequency, 0},
@@ -701,26 +691,23 @@ ArcSystemStatCollector::ReadSystemStatOnBackgroundThread(
       {SystemReader::kCpuEnergy, &context->current_frame.cpu_energy, 0},
       {SystemReader::kGpuEnergy, &context->current_frame.gpu_energy, 0},
       {SystemReader::kMemoryEnergy, &context->current_frame.memory_energy, 0},
-  };
+  });
 
-  static bool one_value_readers_error_reported[std::size(one_value_readers)] = {
-      false};
+  static std::array<bool, one_value_readers.size()>
+      one_value_readers_error_reported = {};
 
-  for (size_t i = 0; i < std::size(one_value_readers); ++i) {
-    if (!UNSAFE_TODO(context->system_readers[one_value_readers[i].reader])
-             .is_valid() ||
+  for (size_t i = 0; i < one_value_readers.size(); ++i) {
+    if (!context->system_readers[one_value_readers[i].reader].is_valid() ||
         !ParseStatFile(
-            UNSAFE_TODO(
-                context->system_readers[one_value_readers[i].reader].get()),
-            kOneValueColumns, UNSAFE_TODO(one_value_readers[i].value))) {
-      UNSAFE_TODO(*one_value_readers[i].value =
-                      one_value_readers[i].default_value);
-      if (UNSAFE_TODO(one_value_readers_error_reported[i])) {
+            context->system_readers[one_value_readers[i].reader].get(),
+            kOneValueColumns, one_value_readers[i].value)) {
+      *one_value_readers[i].value = one_value_readers[i].default_value;
+      if (one_value_readers_error_reported[i]) {
         continue;
       }
       LOG(ERROR) << "Failed to read one value system stat: "
-                 << UNSAFE_TODO(one_value_readers[i].reader);
-      UNSAFE_TODO(one_value_readers_error_reported[i] = true);
+                 << one_value_readers[i].reader;
+      one_value_readers_error_reported[i] = true;
     }
   }
 
@@ -789,17 +776,17 @@ void ArcSystemStatCollector::UpdateSystemStatOnUiThread(
 ArcSystemStatCollector::RuntimeFrame::RuntimeFrame() = default;
 
 bool ParseStatFile(int fd, const int* columns, int64_t* output) {
-  char buffer[128];
+  std::array<char, 128> buffer;
   if (lseek(fd, 0, SEEK_SET)) {
     return false;
   }
-  const int read_bytes = read(fd, buffer, sizeof(buffer) - 1);
+  const int read_bytes = read(fd, buffer.data(), buffer.size() - 1);
   if (read_bytes < 0) {
     return false;
   }
-  UNSAFE_TODO(buffer[read_bytes]) = 0;
+  buffer[read_bytes] = 0;
   int column_index = 0;
-  const char* scan = buffer;
+  const char* scan = buffer.data();
   while (true) {
     // Skip whitespace.
     while (IsWhitespace(*scan)) {

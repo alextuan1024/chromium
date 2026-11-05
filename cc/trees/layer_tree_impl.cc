@@ -11,6 +11,7 @@
 #include <iterator>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <set>
 #include <utility>
 
@@ -33,7 +34,7 @@
 #include "cc/base/histograms.h"
 #include "cc/base/math_util.h"
 #include "cc/base/synced_property.h"
-#include "cc/input/browser_controls_offset_manager.h"
+#include "cc/input/browser_controls_offset_manager_interface.h"
 #include "cc/input/page_scale_animation.h"
 #include "cc/input/scrollbar_animation_controller.h"
 #include "cc/layers/effect_tree_layer_list_iterator.h"
@@ -292,6 +293,35 @@ void LayerTreeImpl::DidUpdateScrollOffset(
   }
 }
 
+bool LayerTreeImpl::SetTargetSnapAreaElementIds(
+    ElementId scroll_element_id,
+    TargetSnapAreaElementIds snap_target_ids) {
+  ScrollNode* scroll_node =
+      property_trees()->scroll_tree_mutable().MutableFindNodeFromElementId(
+          scroll_element_id);
+  if (!scroll_node || !scroll_node->snap_container_data.has_value()) {
+    // A commit may have removed the scroller, or its snap container data, from
+    // the sync tree. E.g. the pending tree may no longer contain a scroller
+    // that's still on the active tree.
+    return false;
+  }
+  bool changed = scroll_node->snap_container_data->SetTargetSnapAreaElementIds(
+      snap_target_ids);
+  if (IsActiveTree()) {
+    // Keep the pending tree in sync. If there isn't one, update the recycle
+    // tree instead, since it's reused as the next pending tree.
+    if (host_impl_->pending_tree()) {
+      host_impl_->pending_tree()->SetTargetSnapAreaElementIds(scroll_element_id,
+                                                              snap_target_ids);
+    }
+    if (host_impl_->recycle_tree()) {
+      host_impl_->recycle_tree()->SetTargetSnapAreaElementIds(scroll_element_id,
+                                                              snap_target_ids);
+    }
+  }
+  return changed;
+}
+
 void LayerTreeImpl::UpdateAllScrollbarGeometries() {
   if (!IsActiveTree())
     return;
@@ -473,8 +503,19 @@ void LayerTreeImpl::UpdateViewportContainerSizes() {
     return;
   }
 
-  ViewportAnchor anchor(inner_viewport_scroll_node, outer_viewport_scroll_node,
-                        this);
+  // A Viz display tree mirrors the client's compositor state. The client runs
+  // this same anchoring logic and sends the resulting inner and outer viewport
+  // scroll offsets, so re-running it here applies the correction a second
+  // time, possibly against intermediate state (e.g. SetBrowserControlsParams()
+  // runs this with the new params but the old shown ratio). Any offset change
+  // made here is never corrected, because the client only sends scroll updates
+  // when its own offsets change. Viz has no authority over these offsets, so
+  // don't anchor at all.
+  std::optional<ViewportAnchor> anchor;
+  if (!settings().trees_in_viz_in_viz_process) {
+    anchor.emplace(inner_viewport_scroll_node, outer_viewport_scroll_node,
+                   this);
+  }
   const float top_controls_shown_ratio =
       top_controls_shown_ratio_->Current(IsActiveTree());
   const float bottom_controls_shown_ratio =
@@ -570,7 +611,9 @@ void LayerTreeImpl::UpdateViewportContainerSizes() {
     }
   }
 
-  anchor.ResetViewportToAnchoredPosition();
+  if (anchor) {
+    anchor->ResetViewportToAnchoredPosition();
+  }
 
   property_trees->clip_tree_mutable().set_needs_update(true);
   property_trees->set_full_tree_damaged(true);
@@ -1054,6 +1097,7 @@ void LayerTreeImpl::PushPropertiesTo(LayerTreeImpl* target_tree) {
   target_tree->set_source_frame_number(source_frame_number());
   target_tree->set_trace_id(trace_id());
   target_tree->set_background_color(background_color());
+  target_tree->SetDeferredValues(deferred_values_);
   target_tree->set_have_scroll_event_handlers(have_scroll_event_handlers());
   target_tree->did_raster_inducing_scroll_ = did_raster_inducing_scroll_;
   target_tree->set_event_listener_properties(
@@ -1623,8 +1667,7 @@ void LayerTreeImpl::DidUpdatePageScale() {
     if (host_impl_->recycle_tree())
       host_impl_->recycle_tree()->DidUpdatePageScale();
 
-    if (settings().scrollbar_flash_once_after_scroll_update ||
-        settings().scrollbar_flash_after_any_scroll_update) {
+    if (settings().scrollbar_flash_once_after_scroll_update) {
       host_impl_->OnPageScaleUpdated();
     } else if (auto* scroll_node = host_impl_->OuterViewportScrollNode()) {
       if (ScrollbarAnimationController* controller =
@@ -1888,12 +1931,13 @@ bool LayerTreeImpl::UpdateDrawProperties(
   occlusion_tracker.set_minimum_tracking_size(
       settings().minimum_occlusion_tracking_size);
 
-  for (EffectTreeLayerListIterator it(this);
-       it.state() != EffectTreeLayerListIterator::State::kEnd; ++it) {
-    occlusion_tracker.EnterLayer(it);
+  for (EffectTreeLayerListIterator it(*this);
+       it.state() != EffectTreeLayerListIterator::State::kEnd;
+       it.Advance(*this)) {
+    occlusion_tracker.EnterLayer(it, *this);
 
     if (it.state() == EffectTreeLayerListIterator::State::kLayer) {
-      LayerImpl* layer = it.current_layer();
+      LayerImpl* layer = it.CurrentLayer(*this);
       layer->draw_properties().occlusion_in_content_space =
           occlusion_tracker.GetCurrentOcclusionForLayer(layer->DrawTransform());
     }
@@ -1905,7 +1949,7 @@ bool LayerTreeImpl::UpdateDrawProperties(
       const RenderSurfaceImpl* occlusion_surface =
           occlusion_tracker.OcclusionSurfaceForContributingSurface();
       gfx::Transform draw_transform;
-      RenderSurfaceImpl* render_surface = it.current_render_surface();
+      RenderSurfaceImpl* render_surface = it.CurrentRenderSurface(*this);
       if (occlusion_surface) {
         // We are calculating transform between two render surfaces. So, we
         // need to apply the surface contents scale at target and remove the
@@ -1927,7 +1971,7 @@ bool LayerTreeImpl::UpdateDrawProperties(
       render_surface->set_occlusion_in_content_space(occlusion);
     }
 
-    occlusion_tracker.LeaveLayer(it);
+    occlusion_tracker.LeaveLayer(it, *this);
   }
 
   unoccluded_screen_space_region_ =
@@ -2267,8 +2311,9 @@ void LayerTreeImpl::AsValueInto(base::trace_event::TracedValue* state) const {
 
   state->BeginArray("render_surface_layer_list");
   for (auto* layer : base::Reversed(*this)) {
-    if (layer->contributes_to_drawn_render_surface())
+    if (!layer->contributes_to_drawn_render_surface()) {
       continue;
+    }
     viz::TracedValue::AppendIDRef(viz::TracedValue::Id(layer), state);
   }
   state->EndArray();
@@ -2980,11 +3025,12 @@ static void FindClosestMatchingLayerForAttribution(
     const gfx::PointF& screen_space_point,
     const LayerImpl* root_layer,
     FindClosestMatchingLayerState* state) {
-  absl::flat_hash_set<ElementId, ElementIdHash> hit_visible_frame_element_ids;
+  absl::flat_hash_set<ElementId> hit_visible_frame_element_ids;
   // We want to iterate from front to back when hit testing.
   for (auto* layer : base::Reversed(*root_layer->layer_tree_impl())) {
-    if (!layer->HitTestable())
+    if (!layer->HitTestable()) {
       continue;
+    }
 
     float distance_to_intersection = 0.f;
     bool hit = false;
@@ -3344,13 +3390,6 @@ bool LayerTreeImpl::IsAnimatingHUDContents() const {
 base::flat_set<blink::ViewTransitionToken>
 LayerTreeImpl::GetCaptureViewTransitionTokens() const {
   base::flat_set<blink::ViewTransitionToken> result;
-  // This effectively disables the new mode, since none of the capture tokens
-  // will apply.
-  if (!base::FeatureList::IsEnabled(
-          features::kViewTransitionCaptureAndDisplay)) {
-    return result;
-  }
-
   for (const auto& request : view_transition_requests_) {
     if (request->type() == ViewTransitionRequest::Type::kSave) {
       result.insert(request->token());

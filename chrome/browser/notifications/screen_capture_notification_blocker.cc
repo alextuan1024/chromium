@@ -33,7 +33,7 @@ const char kMuteNotificationId[] = "notifications_muted";
 ScreenCaptureNotificationBlocker::ScreenCaptureNotificationBlocker(
     NotificationDisplayService* notification_display_service)
     : notification_display_service_(notification_display_service) {
-  DCHECK(notification_display_service_);
+  CHECK(notification_display_service_, base::NotFatalUntil::M161);
   observation_.Observe(MediaCaptureDevicesDispatcher::GetInstance()
                            ->GetMediaStreamCaptureIndicator()
                            .get());
@@ -82,6 +82,8 @@ void ScreenCaptureNotificationBlocker::OnClosedNotification(
 
 void ScreenCaptureNotificationBlocker::OnAction(
     MutedNotificationHandler::Action action) {
+  // TODO(crbug.com/584661832): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
   DCHECK(state_ == NotifyState::kNotifyMuted);
   CloseMuteNotification();
 

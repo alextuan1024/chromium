@@ -4,18 +4,37 @@
 
 #include "chrome/browser/ui/webui/ai_overlay_dialog/page_context_monitor.h"
 
+#include <memory>
+#include <optional>
+#include <string>
+#include <string_view>
+#include <utility>
+#include <vector>
+
+#include "base/feature_list.h"
 #include "base/files/file_util.h"
-#include "base/notreached.h"
+#include "base/functional/bind.h"
+#include "base/functional/callback_helpers.h"
+#include "base/hash/hash.h"
+#include "base/json/json_reader.h"
+#include "base/logging.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/task/sequenced_task_runner.h"
+#include "base/time/time.h"
 #include "chrome/browser/page_content_annotations/page_content_screenshot_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/ui_features.h"
+#include "chrome/browser/ui/webui/ai_overlay_dialog/ai_overlay_dialog_page_handler.h"
+#include "components/optimization_guide/content/browser/page_content_proto_provider.h"
 #include "components/optimization_guide/content/browser/page_content_proto_util.h"
-#include "components/tabs/public/tab_interface.h"
+#include "components/optimization_guide/proto/features/common_quality_data.pb.h"
+#include "content/public/browser/browser_context.h"
+#include "content/public/browser/navigation_handle.h"
+#include "content/public/browser/page.h"
 #include "content/public/browser/web_contents.h"
 #include "third_party/blink/public/mojom/content_extraction/ai_page_content.mojom.h"
-#include "third_party/re2/src/re2/re2.h"
+#include "url/gurl.h"
 
 namespace ttc {
 
@@ -167,6 +186,18 @@ void ConvertContentNodesToMojo(
         const auto& ii = attrs.interaction_info();
         if (ii.clickability_reasons_size() > 0 || ii.is_clickable()) {
           mojo_node->is_interactive = true;
+          if (mojo_node->role == ai_overlay_dialog::mojom::NodeRole::kNone) {
+            mojo_node->role = ai_overlay_dialog::mojom::NodeRole::kButton;
+          }
+          if (mojo_node->text.empty()) {
+            std::string label = attrs.has_text_data()
+                                    ? attrs.text_data().text_content()
+                                    : attrs.label();
+            if (label.empty()) {
+              label = FindFirstTextInSubtree(proto_node);
+            }
+            mojo_node->text = label;
+          }
         }
       }
     }
@@ -233,24 +264,53 @@ std::string FindUrlByUrlHash(const optimization_guide::proto::ContentNode& node,
 
 }  // namespace
 
+CachedWebMcpTool::CachedWebMcpTool() = default;
+CachedWebMcpTool::CachedWebMcpTool(CachedWebMcpTool&&) = default;
+CachedWebMcpTool& CachedWebMcpTool::operator=(CachedWebMcpTool&&) = default;
+CachedWebMcpTool::~CachedWebMcpTool() = default;
+
 PageContextMonitor::PageContextMonitor(BrowserWindowInterface& window,
                                        AiOverlayDialogPageHandler& page_handler)
-    : window_(window), page_handler_(page_handler) {
-#if !BUILDFLAG(IS_ANDROID)
-  active_tab_subscription_ =
-      window.RegisterActiveTabDidChange(base::BindRepeating(
-          &PageContextMonitor::OnActiveTabChanged, base::Unretained(this)));
-  OnActiveTabChanged(&window);
-#endif
-}
+    : window_(window), page_handler_(page_handler) {}
 
 PageContextMonitor::~PageContextMonitor() = default;
 
-void PageContextMonitor::PrimaryPageChanged(content::Page& page) {
+const CachedWebMcpTool* PageContextMonitor::GetWebMcpTool(
+    const std::string& name) const {
+  auto it = webmcp_tools_map_.find(name);
+  if (it == webmcp_tools_map_.end()) {
+    return nullptr;
+  }
+  return &it->second;
+}
+
+void PageContextMonitor::ResetPageContextState() {
   last_page_content_.reset();
+  active_document_id_ = base::UnguessableToken();
+  webmcp_tools_map_.clear();
+}
+
+void PageContextMonitor::PrimaryPageChanged(content::Page& page) {
+  ResetPageContextState();
   page_handler_->DidChangePage(web_contents()->GetLastCommittedURL(),
                                web_contents()->GetTitle(), std::nullopt);
   did_retry_first_fetch_ = false;
+  StartNewFetch();
+}
+
+void PageContextMonitor::DidFinishNavigation(
+    content::NavigationHandle* navigation_handle) {
+  if (!navigation_handle->IsInPrimaryMainFrame() ||
+      !navigation_handle->HasCommitted() ||
+      !navigation_handle->IsSameDocument()) {
+    return;
+  }
+
+  // Same-document navigation occurred (e.g. client-side routing in SPAs like
+  // Google Chat). Notify page handler and fetch updated page context.
+  last_page_content_.reset();
+  page_handler_->DidChangePage(navigation_handle->GetURL(),
+                               web_contents()->GetTitle(), std::nullopt);
   StartNewFetch();
 }
 
@@ -260,24 +320,22 @@ void PageContextMonitor::DidStopLoading() {
   }
 }
 
-void PageContextMonitor::OnActiveTabChanged(BrowserWindowInterface* window) {
-#if BUILDFLAG(IS_ANDROID)
-  NOTREACHED();
-#else
-  CHECK_EQ(window, &window_.get());
+void PageContextMonitor::OnActiveWebContentsChanged(
+    content::WebContents* contents) {
+  if (contents == web_contents()) {
+    return;
+  }
 
-  tabs::TabInterface* active_tab = window_->GetActiveTabInterface();
-  Observe(active_tab ? active_tab->GetContents() : nullptr);
-  last_page_content_.reset();
+  Observe(contents);
+  ResetPageContextState();
 
-  if (!active_tab) {
+  if (!contents) {
     return;
   }
 
   page_handler_->DidChangePage(web_contents()->GetLastCommittedURL(),
                                web_contents()->GetTitle(), std::nullopt);
   StartNewFetch();
-#endif
 }
 
 void PageContextMonitor::StartNewFetch() {
@@ -299,7 +357,8 @@ void PageContextMonitor::StartNewFetch() {
         return PageContentScreenshotServiceFactory::GetForProfile(
             Profile::FromBrowserContext(context));
       }),
-      /*progress_listener=*/nullptr);
+      /*progress_listener=*/nullptr,
+      /*fetch_pdf_content_callback=*/base::NullCallback());
 
   page_content_annotations::FetchPageContextOptions options;
   options.annotated_page_content_options =
@@ -351,8 +410,62 @@ void PageContextMonitor::OnFetchComplete(
           kEmptyPageRetryDelay);
     }
 
+    // 1. Record the current main frame's DocumentIdentifier token for TOCTOU
+    // validation.
+    if (web_contents() && web_contents()->GetPrimaryMainFrame()) {
+      active_document_id_ = optimization_guide::DocumentIdentifierUserData::
+                                GetOrCreateForCurrentDocument(
+                                    web_contents()->GetPrimaryMainFrame())
+                                    ->token();
+    } else {
+      active_document_id_ = base::UnguessableToken();
+    }
+
+    // 2. Extract WebMCP ScriptTools from apc.main_frame_data().script_tools().
+    webmcp_tools_map_.clear();
+    std::vector<ai_overlay_dialog::mojom::WebMcpToolDefinitionPtr> mojom_tools;
+
+    if (features::kAiOverlayDialogPageTools.Get() &&
+        last_page_content_->has_main_frame_data()) {
+      for (const auto& script_tool :
+           last_page_content_->main_frame_data().script_tools()) {
+        if (script_tool.name().empty() || script_tool.description().empty()) {
+          continue;
+        }
+        const bool read_only = script_tool.has_annotations() &&
+                               script_tool.annotations().read_only();
+        const bool consequential = !read_only;
+
+        base::Value schema_val(base::Value::Type::DICT);
+        if (!script_tool.input_schema().empty()) {
+          if (auto parsed = base::JSONReader::Read(
+                  script_tool.input_schema(),
+                  base::JSON_PARSE_CHROMIUM_EXTENSIONS)) {
+            schema_val = std::move(*parsed);
+          }
+        }
+
+        CachedWebMcpTool cached;
+        cached.name = script_tool.name();
+        cached.description = script_tool.description();
+        cached.input_schema = schema_val.Clone();
+        cached.read_only = read_only;
+        cached.consequential = consequential;
+        webmcp_tools_map_.emplace(script_tool.name(), std::move(cached));
+
+        auto mojom_tool = ai_overlay_dialog::mojom::WebMcpToolDefinition::New();
+        mojom_tool->name = script_tool.name();
+        mojom_tool->description = script_tool.description();
+        mojom_tool->input_schema = std::move(schema_val);
+        mojom_tool->read_only = read_only;
+        mojom_tool->consequential = consequential;
+        mojom_tools.push_back(std::move(mojom_tool));
+      }
+    }
+
     page_handler_->UpdateCurrentPageContext(web_contents()->GetTitle(),
-                                            std::move(root_mojo_node));
+                                            std::move(root_mojo_node),
+                                            std::move(mojom_tools));
   }
 }
 

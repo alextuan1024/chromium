@@ -23,10 +23,9 @@
 #include "chrome/test/interaction/interactive_browser_test.h"
 #include "chrome/test/interaction/webcontents_interaction_test_util.h"
 #include "components/keyed_service/content/browser_context_dependency_manager.h"
-#include "components/optimization_guide/core/model_execution/feature_keys.h"
+#include "components/optimization_guide/core/feature_registry/feature_keys.h"
 #include "components/optimization_guide/core/model_execution/model_execution_features.h"
 #include "components/optimization_guide/core/optimization_guide_features.h"
-#include "components/optimization_guide/core/optimization_guide_prefs.h"
 #include "components/optimization_guide/proto/model_quality_service.pb.h"
 #include "components/prefs/pref_service.h"
 #include "components/search/ntp_features.h"
@@ -253,7 +252,7 @@ class WallpaperSearchOptimizationGuideInteractiveTest
       const ui::ElementIdentifier& contents_id,
       const DeepQuery& element) {
     return Steps(WaitForElementToRender(contents_id, element),
-                 MoveMouseTo(contents_id, element), ClickMouse());
+                 ExecuteJsAt(contents_id, element, "(el) => el.click()"));
   }
 
   InteractiveTestApi::MultiStep OpenNewTabPage() {
@@ -556,6 +555,7 @@ IN_PROC_BROWSER_TEST_F(WallpaperSearchOptimizationGuideInteractiveTest,
       // 1. Open Wallpaper Search.
       Steps(OpenNewTabPage(), OpenWallpaperSearchAt(kCustomizeChromeElementId)),
       // 2. Show feedback buttons.
+      WaitForElementExists(kCustomizeChromeElementId, kFeedbackButtons, true),
       ExecuteJsAt(kCustomizeChromeElementId, kFeedbackButtons,
                   "(el) => el.hidden = false"),
       // 3. Click thumbs down button.

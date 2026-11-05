@@ -73,7 +73,6 @@ class FakeAppListModelUpdater : public AppListModelUpdater {
 
   // For SearchModel:
   bool SearchEngineIsGoogle() override;
-  void RecalculateWouldTriggerLauncherSearchIph() override;
   const std::vector<raw_ptr<ChromeSearchResult, VectorExperimental>>&
   search_results() const {
     return search_results_;
@@ -99,11 +98,6 @@ class FakeAppListModelUpdater : public AppListModelUpdater {
   size_t update_image_count_ = 0;
   size_t expected_update_image_count_ = 0;
   base::OnceClosure icon_updated_callback_;
-
-  void FindOrCreateOemFolder(
-      const std::string& oem_folder_name,
-      const syncer::StringOrdinal& preferred_oem_position);
-  syncer::StringOrdinal GetOemFolderPos();
 };
 
 #endif  // CHROME_BROWSER_ASH_APP_LIST_TEST_FAKE_APP_LIST_MODEL_UPDATER_H_

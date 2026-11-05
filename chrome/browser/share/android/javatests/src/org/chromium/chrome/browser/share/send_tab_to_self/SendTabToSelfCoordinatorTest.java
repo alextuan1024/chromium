@@ -73,7 +73,6 @@ import org.chromium.chrome.R;
 import org.chromium.chrome.browser.ChromeTabbedActivity;
 import org.chromium.chrome.browser.document.ChromeLauncherActivity;
 import org.chromium.chrome.browser.feature_engagement.TrackerFactory;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.profiles.ProfileManager;
 import org.chromium.chrome.browser.signin.SigninAndHistorySyncActivityLauncherImpl;
@@ -92,6 +91,7 @@ import org.chromium.components.feature_engagement.EventConstants;
 import org.chromium.components.feature_engagement.Tracker;
 import org.chromium.components.signin.SigninFeatures;
 import org.chromium.components.signin.test.util.TestAccounts;
+import org.chromium.components.sync_device_info.RemoteDeviceInfo;
 import org.chromium.ui.base.DeviceFormFactor;
 import org.chromium.ui.base.WindowAndroid;
 import org.chromium.ui.test.util.BlankUiTestActivity;
@@ -194,10 +194,7 @@ public class SendTabToSelfCoordinatorTest {
     @Test
     @LargeTest
     @DisabledTest(message = "https://crbug.com/40215923")
-    @DisableFeatures({
-        SigninFeatures.ENABLE_SEAMLESS_SIGNIN,
-        SigninFeatures.ENABLE_ACTIVITYLESS_SIGNIN_ALL_ENTRY_POINT
-    })
+    @DisableFeatures({SigninFeatures.ENABLE_ACTIVITYLESS_SIGNIN_ALL_ENTRY_POINT})
     // TODO(crbug.com/448227402): Remove this test once the migration to the activity-less sign-in
     // flow is complete.
     public void testShowDeviceListIfSignedIn() {
@@ -212,18 +209,12 @@ public class SendTabToSelfCoordinatorTest {
 
         buildAndShowCoordinator();
 
-        waitForViewShown(R.id.device_picker_list);
+        waitForViewShown(R.id.sheet_item_list);
     }
 
     @Test
     @LargeTest
-    @EnableFeatures({
-        SigninFeatures.ENABLE_SEAMLESS_SIGNIN,
-        SigninFeatures.ENABLE_ACTIVITYLESS_SIGNIN_ALL_ENTRY_POINT
-    })
-    // This test asserts the old bottom sheet UI and must run with the enhanced
-    // bottom sheet feature disabled.
-    @DisableFeatures({ChromeFeatureList.SEND_TAB_TO_SELF_ENHANCED_BOTTOMSHEET})
+    @EnableFeatures({SigninFeatures.ENABLE_ACTIVITYLESS_SIGNIN_ALL_ENTRY_POINT})
     public void testShowDeviceListIfSignedIn_activitylessSignin() {
         // Sign in and wait for the device list to be downloaded.
         mSyncTestRule.setUpAccountAndSignInForTesting();
@@ -242,7 +233,7 @@ public class SendTabToSelfCoordinatorTest {
 
         buildAndShowCoordinator();
 
-        onView(withId(R.id.device_picker_list)).check(matches(isDisplayed()));
+        onView(withId(R.id.sheet_item_list)).check(matches(isDisplayed()));
         histogramWatcher.assertExpected();
     }
 
@@ -250,13 +241,7 @@ public class SendTabToSelfCoordinatorTest {
     @LargeTest
     // TODO(crbug.com/40825119): Flaky on Nexus 5x (bullhead).
     @DisableIf.Build(hardware_is = "bullhead")
-    // This test asserts the old bottom sheet UI and must run with the enhanced
-    // bottom sheet feature disabled.
-    @DisableFeatures({
-        SigninFeatures.ENABLE_SEAMLESS_SIGNIN,
-        SigninFeatures.ENABLE_ACTIVITYLESS_SIGNIN_ALL_ENTRY_POINT,
-        ChromeFeatureList.SEND_TAB_TO_SELF_ENHANCED_BOTTOMSHEET
-    })
+    @DisableFeatures({SigninFeatures.ENABLE_ACTIVITYLESS_SIGNIN_ALL_ENTRY_POINT})
     // TODO(crbug.com/448227402): Remove this test once the migration to the activity-less sign-in
     // flow is complete.
     @Restriction(DeviceFormFactor.PHONE)
@@ -275,18 +260,12 @@ public class SendTabToSelfCoordinatorTest {
                             .performClick();
                 });
 
-        waitForViewShown(R.id.device_picker_list);
+        waitForViewShown(R.id.sheet_item_list);
     }
 
     @Test
     @LargeTest
-    @EnableFeatures({
-        SigninFeatures.ENABLE_SEAMLESS_SIGNIN,
-        SigninFeatures.ENABLE_ACTIVITYLESS_SIGNIN_ALL_ENTRY_POINT
-    })
-    // This test asserts the old bottom sheet UI and must run with the enhanced
-    // bottom sheet feature disabled.
-    @DisableFeatures({ChromeFeatureList.SEND_TAB_TO_SELF_ENHANCED_BOTTOMSHEET})
+    @EnableFeatures({SigninFeatures.ENABLE_ACTIVITYLESS_SIGNIN_ALL_ENTRY_POINT})
     @DisabledTest(message = "crbug.com/555079457")
     public void testShowSigninPromoIfSignedOut_activitylessSignin() {
         // An account must be added to the device so the promo is offered.
@@ -312,17 +291,13 @@ public class SendTabToSelfCoordinatorTest {
                                 withParent(withId(R.id.account_picker_state_collapsed))))
                 .perform(click());
 
-        onView(withId(R.id.device_picker_list)).check(matches(isDisplayed()));
+        onView(withId(R.id.sheet_item_list)).check(matches(isDisplayed()));
         histogramWatcher.assertExpected();
     }
 
     @Test
     @LargeTest
-    @EnableFeatures({
-        SigninFeatures.ENABLE_SEAMLESS_SIGNIN,
-        SigninFeatures.ENABLE_ACTIVITYLESS_SIGNIN_ALL_ENTRY_POINT,
-        ChromeFeatureList.SEND_TAB_TO_SELF_ENHANCED_BOTTOMSHEET
-    })
+    @EnableFeatures({SigninFeatures.ENABLE_ACTIVITYLESS_SIGNIN_ALL_ENTRY_POINT})
     @DisabledTest(message = "crbug.com/555079457")
     public void testShowEnhancedDeviceListIfSignedIn_activitylessSignin() {
         // Sign in and wait for the device list to be downloaded.
@@ -350,11 +325,7 @@ public class SendTabToSelfCoordinatorTest {
 
     @Test
     @LargeTest
-    @EnableFeatures({
-        SigninFeatures.ENABLE_SEAMLESS_SIGNIN,
-        SigninFeatures.ENABLE_ACTIVITYLESS_SIGNIN_ALL_ENTRY_POINT,
-        ChromeFeatureList.SEND_TAB_TO_SELF_ENHANCED_BOTTOMSHEET
-    })
+    @EnableFeatures({SigninFeatures.ENABLE_ACTIVITYLESS_SIGNIN_ALL_ENTRY_POINT})
     @DisabledTest(message = "crbug.com/555079457")
     public void testEnhancedDevicePicker_multipleDevicesSelection() {
         // Inject two more devices (in addition to the one in setUp) with an older timestamp,
@@ -419,11 +390,7 @@ public class SendTabToSelfCoordinatorTest {
      */
     @Test
     @LargeTest
-    @EnableFeatures({
-        SigninFeatures.ENABLE_SEAMLESS_SIGNIN,
-        SigninFeatures.ENABLE_ACTIVITYLESS_SIGNIN_ALL_ENTRY_POINT,
-        ChromeFeatureList.SEND_TAB_TO_SELF_ENHANCED_BOTTOMSHEET
-    })
+    @EnableFeatures({SigninFeatures.ENABLE_ACTIVITYLESS_SIGNIN_ALL_ENTRY_POINT})
     @DisabledTest(message = "crbug.com/555079457")
     public void testEnhancedDevicePicker_halfStateOverflowWithManyDevices() {
         // Inject 6 more devices (in addition to the one in setUp) with an older timestamp,
@@ -463,11 +430,7 @@ public class SendTabToSelfCoordinatorTest {
      */
     @Test
     @LargeTest
-    @EnableFeatures({
-        SigninFeatures.ENABLE_SEAMLESS_SIGNIN,
-        SigninFeatures.ENABLE_ACTIVITYLESS_SIGNIN_ALL_ENTRY_POINT,
-        ChromeFeatureList.SEND_TAB_TO_SELF_ENHANCED_BOTTOMSHEET
-    })
+    @EnableFeatures({SigninFeatures.ENABLE_ACTIVITYLESS_SIGNIN_ALL_ENTRY_POINT})
     @DisabledTest(message = "crbug.com/555079457")
     public void testEnhancedDevicePicker_exactlyFourDevicesOverflowBoundary() {
         for (int i = 1; i <= 3; i++) {
@@ -503,11 +466,7 @@ public class SendTabToSelfCoordinatorTest {
      */
     @Test
     @LargeTest
-    @EnableFeatures({
-        SigninFeatures.ENABLE_SEAMLESS_SIGNIN,
-        SigninFeatures.ENABLE_ACTIVITYLESS_SIGNIN_ALL_ENTRY_POINT,
-        ChromeFeatureList.SEND_TAB_TO_SELF_ENHANCED_BOTTOMSHEET
-    })
+    @EnableFeatures({SigninFeatures.ENABLE_ACTIVITYLESS_SIGNIN_ALL_ENTRY_POINT})
     @DisabledTest(message = "crbug.com/555079457")
     public void testEnhancedDevicePicker_overflowTransitionToFullState() {
         for (int i = 1; i <= 5; i++) {
@@ -550,11 +509,7 @@ public class SendTabToSelfCoordinatorTest {
     /** Tests fallback to manage account devices link when zero target devices are available. */
     @Test
     @LargeTest
-    @EnableFeatures({
-        SigninFeatures.ENABLE_SEAMLESS_SIGNIN,
-        SigninFeatures.ENABLE_ACTIVITYLESS_SIGNIN_ALL_ENTRY_POINT,
-        ChromeFeatureList.SEND_TAB_TO_SELF_ENHANCED_BOTTOMSHEET
-    })
+    @EnableFeatures({SigninFeatures.ENABLE_ACTIVITYLESS_SIGNIN_ALL_ENTRY_POINT})
     public void testEnhancedDevicePicker_emptyListFallback() {
         mSyncTestRule.setUpAccountAndSignInForTesting();
         SendTabToSelfAndroidBridge.Natives nativeMock =
@@ -564,7 +519,7 @@ public class SendTabToSelfCoordinatorTest {
             doReturn(EntryPointDisplayReason.INFORM_NO_TARGET_DEVICE)
                     .when(nativeMock)
                     .getEntryPointDisplayReason(any(), any());
-            doReturn(new java.util.ArrayList<TargetDeviceInfo>())
+            doReturn(new java.util.ArrayList<RemoteDeviceInfo>())
                     .when(nativeMock)
                     .getAllTargetDeviceInfos(any());
 
@@ -578,11 +533,7 @@ public class SendTabToSelfCoordinatorTest {
 
     @Test
     @LargeTest
-    @EnableFeatures({
-        SigninFeatures.ENABLE_SEAMLESS_SIGNIN,
-        SigninFeatures.ENABLE_ACTIVITYLESS_SIGNIN_ALL_ENTRY_POINT,
-        ChromeFeatureList.SEND_TAB_TO_SELF_ENHANCED_BOTTOMSHEET
-    })
+    @EnableFeatures({SigninFeatures.ENABLE_ACTIVITYLESS_SIGNIN_ALL_ENTRY_POINT})
     @DisabledTest(message = "crbug.com/555079457")
     public void testEnhancedDevicePicker_manageDevicesClick() {
         mSyncTestRule.setUpAccountAndSignInForTesting();
@@ -690,14 +641,11 @@ public class SendTabToSelfCoordinatorTest {
                 hasDescendant(allOf(withId(R.id.device_name), withText(deviceName))));
     }
 
+    // Verifies that sending a tab from the device picker bottom sheet displays the post-send
+    // snackbar and records the snackbar shown histogram.
     @Test
     @LargeTest
-    @EnableFeatures({
-        SigninFeatures.ENABLE_SEAMLESS_SIGNIN,
-        SigninFeatures.ENABLE_ACTIVITYLESS_SIGNIN_ALL_ENTRY_POINT,
-        ChromeFeatureList.SEND_TAB_TO_SELF_ENHANCED_BOTTOMSHEET,
-        ChromeFeatureList.SEND_TAB_TO_SELF_POST_SEND_TOAST
-    })
+    @EnableFeatures({SigninFeatures.ENABLE_ACTIVITYLESS_SIGNIN_ALL_ENTRY_POINT})
     @DisabledTest(message = "crbug.com/555079457")
     public void testSnackbarShownAfterSend() {
         // Sign in and wait for the device list to be downloaded.
@@ -745,13 +693,11 @@ public class SendTabToSelfCoordinatorTest {
         histogramWatcher.assertExpected();
     }
 
+    // Verifies that sending a tab when `WebContents` is null displays the post-send snackbar on the
+    // focused activity.
     @Test
     @LargeTest
-    @EnableFeatures({
-        SigninFeatures.ENABLE_SEAMLESS_SIGNIN,
-        SigninFeatures.ENABLE_ACTIVITYLESS_SIGNIN_ALL_ENTRY_POINT,
-        ChromeFeatureList.SEND_TAB_TO_SELF_POST_SEND_TOAST
-    })
+    @EnableFeatures({SigninFeatures.ENABLE_ACTIVITYLESS_SIGNIN_ALL_ENTRY_POINT})
     public void testSnackbarShownAfterSend_WebContentsNull() {
         // Sign in and wait for the device list to be downloaded.
         mSyncTestRule.setUpAccountAndSignInForTesting();
@@ -795,15 +741,12 @@ public class SendTabToSelfCoordinatorTest {
                 });
     }
 
+    // Verifies that a fallback `Toast` is displayed when no `SnackbarManager` is available.
     @Test
     @LargeTest
     // On Automotive, the way this test detects the Toast (via a11y APIs) doesn't work.
     @Restriction(DeviceRestriction.RESTRICTION_TYPE_NON_AUTO)
-    @EnableFeatures({
-        SigninFeatures.ENABLE_SEAMLESS_SIGNIN,
-        SigninFeatures.ENABLE_ACTIVITYLESS_SIGNIN_ALL_ENTRY_POINT,
-        ChromeFeatureList.SEND_TAB_TO_SELF_POST_SEND_TOAST
-    })
+    @EnableFeatures({SigninFeatures.ENABLE_ACTIVITYLESS_SIGNIN_ALL_ENTRY_POINT})
     public void testToastShownAfterSend_SnackbarManagerUnavailable() {
         // Sign in and wait for the device list to be downloaded.
         mSyncTestRule.setUpAccountAndSignInForTesting();
@@ -911,11 +854,7 @@ public class SendTabToSelfCoordinatorTest {
     @Test
     @LargeTest
     @DisableIf.Device(DeviceFormFactor.DESKTOP) // https://crbug.com/543459081
-    @EnableFeatures({
-        SigninFeatures.ENABLE_SEAMLESS_SIGNIN,
-        SigninFeatures.ENABLE_ACTIVITYLESS_SIGNIN_ALL_ENTRY_POINT,
-        ChromeFeatureList.SEND_TAB_TO_SELF_ENHANCED_BOTTOMSHEET
-    })
+    @EnableFeatures({SigninFeatures.ENABLE_ACTIVITYLESS_SIGNIN_ALL_ENTRY_POINT})
     public void testEnhancedDevicePicker_fullStateOverflowWithManyDevices() {
         for (int i = 1; i <= 20; i++) {
             long olderTime = mSetUpTimeMs - i * 1000;
@@ -944,19 +883,15 @@ public class SendTabToSelfCoordinatorTest {
      * with all target devices, the `send_button`, and the `manage_devices_link` visible and
      * accessible.
      *
-     * In landscape orientation on phones, `BottomSheet.isSmallScreen()` evaluates to `true`
-     * because the vertical screen clearance between half and full states is less than 160dp
-     * (`(1 - HALF_HEIGHT_RATIO) * mContainerHeight < 160dp`). This disables `SheetState.HALF` and
-     * forces the sheet to open directly in `SheetState.FULL`.
+     * <p>In landscape orientation on phones, `BottomSheet.isSmallScreen()` evaluates to `true`
+     * because the vertical screen clearance between half and full states is less than 160dp (`(1 -
+     * HALF_HEIGHT_RATIO) * mContainerHeight < 160dp`). This disables `SheetState.HALF` and forces
+     * the sheet to open directly in `SheetState.FULL`.
      */
     @Test
     @LargeTest
     @Restriction(DeviceFormFactor.PHONE)
-    @EnableFeatures({
-        SigninFeatures.ENABLE_SEAMLESS_SIGNIN,
-        SigninFeatures.ENABLE_ACTIVITYLESS_SIGNIN_ALL_ENTRY_POINT,
-        ChromeFeatureList.SEND_TAB_TO_SELF_ENHANCED_BOTTOMSHEET
-    })
+    @EnableFeatures({SigninFeatures.ENABLE_ACTIVITYLESS_SIGNIN_ALL_ENTRY_POINT})
     public void testEnhancedDevicePicker_landscapeMode() {
         mSyncTestRule
                 .getFakeServerHelper()
@@ -984,18 +919,14 @@ public class SendTabToSelfCoordinatorTest {
      * allow scrolling while keeping the `send_button` and `manage_devices_link` visible and
      * accessible.
      *
-     * In landscape orientation on phones, `BottomSheet.isSmallScreen()` evaluates to `true`
+     * <p>In landscape orientation on phones, `BottomSheet.isSmallScreen()` evaluates to `true`
      * because vertical clearance between half and full states is less than 160dp. This disables
      * `SheetState.HALF` and forces the sheet to open directly in `SheetState.FULL`.
      */
     @Test
     @LargeTest
     @Restriction(DeviceFormFactor.PHONE)
-    @EnableFeatures({
-        SigninFeatures.ENABLE_SEAMLESS_SIGNIN,
-        SigninFeatures.ENABLE_ACTIVITYLESS_SIGNIN_ALL_ENTRY_POINT,
-        ChromeFeatureList.SEND_TAB_TO_SELF_ENHANCED_BOTTOMSHEET
-    })
+    @EnableFeatures({SigninFeatures.ENABLE_ACTIVITYLESS_SIGNIN_ALL_ENTRY_POINT})
     public void testEnhancedDevicePicker_landscapeModeOverflowWithManyDevices() {
         injectFakeDevices(20);
 
@@ -1025,18 +956,14 @@ public class SendTabToSelfCoordinatorTest {
      * Tests that rotating a phone from portrait to landscape while the enhanced device picker is
      * shown keeps the `send_button` and `manage_devices_link` visible and accessible.
      *
-     * When rotating a phone to landscape, `BottomSheet.isSmallScreen()` evaluates to `true`
+     * <p>When rotating a phone to landscape, `BottomSheet.isSmallScreen()` evaluates to `true`
      * because vertical clearance between half and full states is less than 160dp. This disables
      * `SheetState.HALF` and forces the sheet into `SheetState.FULL`.
      */
     @Test
     @LargeTest
     @Restriction(DeviceFormFactor.PHONE)
-    @EnableFeatures({
-        SigninFeatures.ENABLE_SEAMLESS_SIGNIN,
-        SigninFeatures.ENABLE_ACTIVITYLESS_SIGNIN_ALL_ENTRY_POINT,
-        ChromeFeatureList.SEND_TAB_TO_SELF_ENHANCED_BOTTOMSHEET
-    })
+    @EnableFeatures({SigninFeatures.ENABLE_ACTIVITYLESS_SIGNIN_ALL_ENTRY_POINT})
     public void testEnhancedDevicePicker_rotationMaintainsControlsVisibility() {
         injectFakeDevices(20);
 
@@ -1061,18 +988,14 @@ public class SendTabToSelfCoordinatorTest {
      * where the manage devices link is hidden, and reveals the manage devices link when expanded to
      * full state.
      *
-     * In landscape orientation on tablets, `BottomSheet.isSmallScreen()` evaluates to `false`
+     * <p>In landscape orientation on tablets, `BottomSheet.isSmallScreen()` evaluates to `false`
      * because the vertical screen clearance is large (distance between half and full states exceeds
      * 160dp). Consequently, `SheetState.HALF` remains enabled and the sheet opens in half-state.
      */
     @Test
     @LargeTest
     @Restriction(DeviceFormFactor.ONLY_TABLET)
-    @EnableFeatures({
-        SigninFeatures.ENABLE_SEAMLESS_SIGNIN,
-        SigninFeatures.ENABLE_ACTIVITYLESS_SIGNIN_ALL_ENTRY_POINT,
-        ChromeFeatureList.SEND_TAB_TO_SELF_ENHANCED_BOTTOMSHEET
-    })
+    @EnableFeatures({SigninFeatures.ENABLE_ACTIVITYLESS_SIGNIN_ALL_ENTRY_POINT})
     public void testEnhancedDevicePicker_tabletLandscapeMode() {
         mSyncTestRule
                 .getFakeServerHelper()
@@ -1108,11 +1031,7 @@ public class SendTabToSelfCoordinatorTest {
     @Test
     @LargeTest
     @Restriction(DeviceFormFactor.ONLY_TABLET)
-    @EnableFeatures({
-        SigninFeatures.ENABLE_SEAMLESS_SIGNIN,
-        SigninFeatures.ENABLE_ACTIVITYLESS_SIGNIN_ALL_ENTRY_POINT,
-        ChromeFeatureList.SEND_TAB_TO_SELF_ENHANCED_BOTTOMSHEET
-    })
+    @EnableFeatures({SigninFeatures.ENABLE_ACTIVITYLESS_SIGNIN_ALL_ENTRY_POINT})
     public void testEnhancedDevicePicker_tabletLandscapeModeOverflowWithManyDevices() {
         injectFakeDevices(20);
 
@@ -1145,17 +1064,13 @@ public class SendTabToSelfCoordinatorTest {
     }
 
     /**
-     * Tests that rotating a tablet from portrait to landscape maintains sheet stability and
-     * allows expanding to full state with all action controls visible.
+     * Tests that rotating a tablet from portrait to landscape maintains sheet stability and allows
+     * expanding to full state with all action controls visible.
      */
     @Test
     @LargeTest
     @Restriction(DeviceFormFactor.ONLY_TABLET)
-    @EnableFeatures({
-        SigninFeatures.ENABLE_SEAMLESS_SIGNIN,
-        SigninFeatures.ENABLE_ACTIVITYLESS_SIGNIN_ALL_ENTRY_POINT,
-        ChromeFeatureList.SEND_TAB_TO_SELF_ENHANCED_BOTTOMSHEET
-    })
+    @EnableFeatures({SigninFeatures.ENABLE_ACTIVITYLESS_SIGNIN_ALL_ENTRY_POINT})
     public void testEnhancedDevicePicker_tabletRotationMaintainsControlsVisibility() {
         injectFakeDevices(20);
 
@@ -1181,7 +1096,6 @@ public class SendTabToSelfCoordinatorTest {
 
     @Test
     @LargeTest
-    @EnableFeatures(ChromeFeatureList.SEND_TAB_TO_SELF_EXTRA_ENTRY_POINTS)
     public void testSendTabToSelfOmniboxUsedEventRecorded() {
         mSyncTestRule.setUpAccountAndSignInForTesting();
 

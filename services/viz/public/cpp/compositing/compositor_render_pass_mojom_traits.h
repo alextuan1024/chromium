@@ -46,21 +46,6 @@ struct StructTraits<viz::mojom::CompositorRenderPassDataView,
     return input->transform_to_root_target;
   }
 
-  static const cc::FilterOperations& filters(
-      const std::unique_ptr<viz::CompositorRenderPass>& input) {
-    return input->filters;
-  }
-
-  static const cc::FilterOperations& backdrop_filters(
-      const std::unique_ptr<viz::CompositorRenderPass>& input) {
-    return input->backdrop_filters;
-  }
-
-  static const std::optional<SkPath>& backdrop_filter_bounds(
-      const std::unique_ptr<viz::CompositorRenderPass>& input) {
-    return input->backdrop_filter_bounds;
-  }
-
   static viz::SubtreeCaptureId subtree_capture_id(
       const std::unique_ptr<viz::CompositorRenderPass>& input) {
     DCHECK_LE(input->subtree_size.width(), input->output_rect.size().width());
@@ -100,11 +85,6 @@ struct StructTraits<viz::mojom::CompositorRenderPassDataView,
   static bool has_damage_from_contributing_content(
       const std::unique_ptr<viz::CompositorRenderPass>& input) {
     return input->has_damage_from_contributing_content;
-  }
-
-  static bool generate_mipmap(
-      const std::unique_ptr<viz::CompositorRenderPass>& input) {
-    return input->generate_mipmap;
   }
 
   static const std::vector<std::unique_ptr<viz::CopyOutputRequest>>&

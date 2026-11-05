@@ -50,6 +50,11 @@ struct ConditionalImpl<false> {
 template <bool B, class T, class F>
 using ConditionalT = ConditionalImpl<B>::template type<T, F>;
 
+// This file intentionally uses the iterator-based algorithms instead of the
+// `std::ranges::` ones: checking the constraints of a `std::ranges::` algorithm
+// costs several milliseconds of compile time for every new combination of
+// container and comparator, and flat_tree is used with a lot of them.
+
 // Helper functions used in DCHECKs below to make sure that inputs tagged with
 // sorted_unique are indeed sorted and unique.
 template <typename Range, typename Comp>
@@ -57,8 +62,8 @@ constexpr bool is_sorted_and_unique(const Range& range, Comp comp) {
   // Being unique implies that there are no adjacent elements that
   // compare equal. So this checks that each element is strictly less
   // than the element after it.
-  return std::ranges::adjacent_find(range, std::not_fn(comp)) ==
-         std::ranges::end(range);
+  return std::adjacent_find(std::ranges::begin(range), std::ranges::end(range),
+                            std::not_fn(comp)) == std::ranges::end(range);
 }
 
 // Helper inspired by C++20's std::to_array to convert a C-style array to a
@@ -239,7 +244,7 @@ class flat_tree {
   //
   // clear() leaves the capacity() of the flat_tree unchanged.
 
-  void clear();
+  REINITIALIZES_AFTER_MOVE void clear();
 
   constexpr size_type size() const;
   constexpr size_type max_size() const;
@@ -311,7 +316,7 @@ class flat_tree {
 
   // Replaces the container_type with `body`. Expects that `body` is sorted
   // and has no repeated elements with regard to value_comp().
-  void replace(container_type&& body);
+  REINITIALIZES_AFTER_MOVE void replace(container_type&& body);
 
   // --------------------------------------------------------------------------
   // Erase operations.
@@ -379,7 +384,7 @@ class flat_tree {
   // and lexicographical_compare(). If the underlying container type is changed,
   // this code may need to be modified.
 
-  void swap(flat_tree& other) noexcept;
+  REINITIALIZES_AFTER_MOVE void swap(flat_tree& other) noexcept;
 
   friend bool operator==(const flat_tree& lhs, const flat_tree& rhs) {
     return lhs.body_ == rhs.body_;
@@ -529,9 +534,41 @@ class flat_tree {
     return {position, false};
   }
 
+  // Custom in-place merge and stable sort to avoid the large binary size
+  // overhead of std::stable_sort and std::inplace_merge.
+  void inplace_merge(iterator first, iterator mid, iterator last) {
+    auto left_len = std::distance(first, mid);
+    if (left_len == 0 || mid == last) {
+      return;
+    }
+    if (left_len == 1) {
+      std::rotate(first, mid,
+                  std::lower_bound(mid, last, GetKeyFromValue()(*first),
+                                   KeyValueCompare(comp_)));
+      return;
+    }
+    iterator first_cut = std::next(first, left_len / 2);
+    iterator second_cut = std::lower_bound(
+        mid, last, GetKeyFromValue()(*first_cut), KeyValueCompare(comp_));
+    iterator new_mid = std::rotate(first_cut, mid, second_cut);
+    inplace_merge(first, first_cut, new_mid);
+    inplace_merge(new_mid, second_cut, last);
+  }
+
+  void stable_sort(iterator first, iterator last) {
+    auto len = std::distance(first, last);
+    if (len <= 1) {
+      return;
+    }
+    iterator mid = std::next(first, len / 2);
+    stable_sort(first, mid);
+    stable_sort(mid, last);
+    inplace_merge(first, mid, last);
+  }
+
   void sort_and_unique(iterator first, iterator last) {
     // Preserve stability for the unique code below.
-    std::stable_sort(first, last, value_comp());
+    stable_sort(first, last);
 
     // lhs is already <= rhs due to sort, therefore !(lhs < rhs) <=> lhs == rhs.
     auto equal_comp = std::not_fn(value_comp());
@@ -861,8 +898,7 @@ constexpr void flat_tree<Key, GetKeyFromValue, KeyCompare, Container>::insert(
   // the just inserted elements and merge them with the rest, inserting them at
   // the previously found spot.
   sort_and_unique(prior_end(), end());
-  std::inplace_merge(std::next(begin(), pos_first_new), prior_end(), end(),
-                     value_comp());
+  inplace_merge(std::next(begin(), pos_first_new), prior_end(), end());
 }
 
 template <class Key, class GetKeyFromValue, class KeyCompare, class Container>
@@ -1026,7 +1062,7 @@ template <typename K>
 constexpr auto
 flat_tree<Key, GetKeyFromValue, KeyCompare, Container>::lower_bound(
     const KeyT<K>& key) const -> const_iterator {
-  return std::ranges::lower_bound(*this, key, KeyValueCompare(comp_));
+  return std::lower_bound(begin(), end(), key, KeyValueCompare(comp_));
 }
 
 template <class Key, class GetKeyFromValue, class KeyCompare, class Container>
@@ -1042,7 +1078,7 @@ template <typename K>
 constexpr auto
 flat_tree<Key, GetKeyFromValue, KeyCompare, Container>::upper_bound(
     const KeyT<K>& key) const -> const_iterator {
-  return std::ranges::upper_bound(*this, key, KeyValueCompare(comp_));
+  return std::upper_bound(begin(), end(), key, KeyValueCompare(comp_));
 }
 
 // ----------------------------------------------------------------------------
@@ -1111,9 +1147,9 @@ size_t EraseIf(
     base::internal::flat_tree<Key, GetKeyFromValue, KeyCompare, Container>&
         container,
     Predicate pred) {
-  auto removed = std::ranges::remove_if(container, pred);
-  size_t num_removed = removed.size();
-  container.erase(removed.begin(), removed.end());
+  auto removed = std::remove_if(container.begin(), container.end(), pred);
+  size_t num_removed = static_cast<size_t>(container.end() - removed);
+  container.erase(removed, container.end());
   return num_removed;
 }
 

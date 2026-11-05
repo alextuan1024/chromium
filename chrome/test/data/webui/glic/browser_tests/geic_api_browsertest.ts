@@ -5,9 +5,9 @@
 // cc_file_path: chrome/browser/glic/gemini_enterprise/geic_api_browsertest.cc
 
 import type {GeicBrowserHost} from '/glic/glic_api/glic_api.js';
-import {CloseSignInTabResult, OpenSignInTabResult} from '/glic/glic_api/glic_api.js';
+import {AuthTabPurpose, CloseAuthTabResult, CloseSignInTabResult, OpenAuthTabResult, OpenSignInTabResult} from '/glic/glic_api/glic_api.js';
 
-import {ApiTestFixtureBase, assertDefined, assertEquals, testMain} from './browser_test_base.js';
+import {ApiTestFixtureBase, assertDefined, assertEquals, assertFalse, assertTrue, observeSequence, testMain} from './browser_test_base.js';
 
 class GlicGeicApiBrowserTest extends ApiTestFixtureBase {
   override async setUpTest() {
@@ -19,6 +19,32 @@ class GlicGeicApiBrowserTest extends ApiTestFixtureBase {
     const geic = this.host.getGeicClient();
     assertDefined(geic);
     return geic;
+  }
+
+  async testGeicSetOnboardingCompleted() {
+    assertDefined(this.host.isOnboardingCompleted);
+    assertDefined(this.host.setOnboardingCompleted);
+    const completedSequence =
+        observeSequence<boolean>(this.host.isOnboardingCompleted());
+    assertFalse(await completedSequence.next());
+
+    // Let the browser check that the GEiC FRE isn't completed yet.
+    await this.advanceToNextStep();
+
+    this.host.setOnboardingCompleted();
+    assertTrue(await completedSequence.next());
+  }
+
+  // GEiC doesn't use the Chrome primary account, so the host API keeps working
+  // after Chrome sign-in is paused.
+  async testSignInPauseStateGeic() {
+    assertDefined(this.host.getUserProfileInfo);
+    const profileInfo = await this.host.getUserProfileInfo();
+    assertEquals('Glic Testing', profileInfo.displayName);
+    // Chrome sign-in is paused before the next step.
+    await this.advanceToNextStep();
+    const profileInfoAfterPause = await this.host.getUserProfileInfo();
+    assertEquals(profileInfo.displayName, profileInfoAfterPause.displayName);
   }
 
   async testGeicSignInTab() {
@@ -47,6 +73,90 @@ class GlicGeicApiBrowserTest extends ApiTestFixtureBase {
     // Calling closeSignInTab again returns NO_SIGN_IN_TAB.
     const secondResult = await this.geic.closeSignInTab();
     assertEquals(secondResult, CloseSignInTabResult.NO_SIGN_IN_TAB);
+  }
+
+  async testGeicAuthTab() {
+    const geic = this.geic;
+    assertDefined(geic.openAuthTab);
+    assertDefined(geic.closeAuthTab);
+    const purpose = AuthTabPurpose.CONNECTOR_OAUTH;
+
+    // Closing before opening any tab returns NO_AUTH_TAB.
+    assertEquals(
+        (await geic.closeAuthTab({purpose})).result,
+        CloseAuthTabResult.NO_AUTH_TAB);
+
+    // An unknown purpose is rejected.
+    assertEquals(
+        (await geic.openAuthTab({
+          purpose: AuthTabPurpose.UNKNOWN,
+          url: 'https://accounts.google.com/signin',
+        })).result,
+        OpenAuthTabResult.ERROR_INVALID_PURPOSE);
+
+    // Calling openAuthTab without a URL returns ERROR_NO_URL.
+    assertEquals(
+        (await geic.openAuthTab({purpose})).result,
+        OpenAuthTabResult.ERROR_NO_URL);
+
+    // A 3P provider URL must go through the GE redirector.
+    assertEquals(
+        (await geic.openAuthTab(
+             {purpose, url: 'https://login.example.com/authorize'}))
+            .result,
+        OpenAuthTabResult.ERROR_DISALLOWED_URL);
+
+    // The GE redirector URL is allowed.
+    assertEquals(
+        (await geic.openAuthTab({
+          purpose,
+          url: 'https://vertexaisearch.cloud.google.com/oauth-redirect' +
+              '?continue_uri=https%3A%2F%2Flogin.example.com%2Fauthorize',
+        })).result,
+        OpenAuthTabResult.SUCCESS);
+
+    // Closing the sign-in purpose does not affect the connector OAuth tab.
+    assertEquals(
+        (await geic.closeAuthTab({purpose: AuthTabPurpose.SIGN_IN})).result,
+        CloseAuthTabResult.NO_AUTH_TAB);
+
+    // Close the connector OAuth tab.
+    assertEquals(
+        (await geic.closeAuthTab({purpose})).result,
+        CloseAuthTabResult.CLOSED_ACTIVE);
+
+    // Calling closeAuthTab again returns NO_AUTH_TAB.
+    assertEquals(
+        (await geic.closeAuthTab({purpose})).result,
+        CloseAuthTabResult.NO_AUTH_TAB);
+  }
+
+  // `window.open()` from the GEiC guest opens a plain tab that the web client
+  // can't reach: it returns no window handle, so a popup-based auth flow can't
+  // observe or close it. Auth flows must use `openAuthTab()`, whose tab Chrome
+  // tracks and can close on the client's behalf.
+  async testGeicWindowOpenReturnsNullButAuthTabIsTracked() {
+    const popup = window.open('https://www.chromium.org', '_blank');
+    assertTrue(popup === null, 'window.open() should return null');
+    // Let the browser check that `window.open()` still opened an untracked
+    // tab.
+    await this.advanceToNextStep();
+
+    const geic = this.geic;
+    assertDefined(geic.openAuthTab);
+    assertDefined(geic.closeAuthTab);
+    const purpose = AuthTabPurpose.SIGN_IN;
+    assertEquals(
+        (await geic.openAuthTab(
+             {purpose, url: 'https://accounts.google.com/signin'}))
+            .result,
+        OpenAuthTabResult.SUCCESS);
+    // Let the browser check that the auth tab opened.
+    await this.advanceToNextStep();
+
+    assertEquals(
+        (await geic.closeAuthTab({purpose})).result,
+        CloseAuthTabResult.CLOSED_ACTIVE);
   }
 }
 

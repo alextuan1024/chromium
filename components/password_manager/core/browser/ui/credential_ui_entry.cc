@@ -4,6 +4,8 @@
 
 #include "components/password_manager/core/browser/ui/credential_ui_entry.h"
 
+#include <algorithm>
+
 #include "base/i18n/time_formatting.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_split.h"
@@ -91,16 +93,11 @@ CredentialFacet& CredentialFacet::operator=(CredentialFacet&& other) = default;
 
 // CredentialUIEntry
 
-bool CredentialUIEntry::Less::operator()(const CredentialUIEntry& lhs,
-                                         const CredentialUIEntry& rhs) const {
-  return CreateCredentialSortKey(lhs) < CreateCredentialSortKey(rhs);
-}
-
 CredentialUIEntry::CredentialUIEntry() = default;
 
 CredentialUIEntry::CredentialUIEntry(const StoredCredential& credential)
     : username(credential.username_value),
-      password(credential.password_value.value()),
+      password(credential.password_value),
       federation_origin(credential.federation_origin),
       creation_time(credential.date_created),
       password_issues(credential.password_issues),
@@ -133,7 +130,7 @@ CredentialUIEntry::CredentialUIEntry(
   CHECK(!credentials.empty());
 
   username = credentials[0].username_value;
-  password = credentials[0].password_value.value();
+  password = credentials[0].password_value;
   federation_origin = credentials[0].federation_origin;
   password_issues = credentials[0].password_issues;
   blocked_by_user = credentials[0].blocked_by_user;
@@ -156,7 +153,9 @@ CredentialUIEntry::CredentialUIEntry(
     facet.signon_realm = credential.signon_realm;
     facet.affiliated_web_realm = credential.affiliated_web_realm;
 
-    facets.push_back(std::move(facet));
+    if (!std::ranges::contains(facets, facet)) {
+      facets.push_back(std::move(facet));
+    }
 
     if (credential.IsUsingAccountStore()) {
       stored_in.insert(PasswordForm::Store::kAccountStore);
@@ -182,12 +181,14 @@ CredentialUIEntry::CredentialUIEntry(const std::vector<PasswordForm>& forms)
     : CredentialUIEntry(FromPasswordForms(forms)) {}
 
 CredentialUIEntry::CredentialUIEntry(const PasskeyCredential& passkey)
-    : passkey_credential_id(passkey.credential_id()),
-      username(base::UTF8ToUTF16(passkey.username())),
-      user_display_name(base::UTF8ToUTF16(passkey.display_name())),
-      creation_time(passkey.creation_time()),
-      hidden(passkey.hidden()),
-      rp_id(passkey.rp_id()) {
+    : username(base::UTF8ToUTF16(passkey.username())),
+      passkey_info(PasskeyInfo{
+          .credential_id = passkey.credential_id(),
+          .user_display_name = base::UTF8ToUTF16(passkey.display_name()),
+          .hidden = passkey.hidden(),
+          .rp_id = passkey.rp_id(),
+      }),
+      creation_time(passkey.creation_time()) {
   CHECK(!passkey.credential_id().empty());
   CredentialFacet facet;
   facet.url = GURL(base::StrCat(
@@ -224,6 +225,14 @@ CredentialUIEntry& CredentialUIEntry::operator=(
     const CredentialUIEntry& other) = default;
 CredentialUIEntry& CredentialUIEntry::operator=(CredentialUIEntry&& other) =
     default;
+
+bool CredentialUIEntry::IsPasskey() const {
+  if (!passkey_info.has_value()) {
+    return false;
+  }
+  CHECK(!passkey_info->credential_id.empty());
+  return true;
+}
 
 bool CredentialUIEntry::IsLeaked() const {
   return password_issues.contains(InsecureType::kLeaked);
@@ -333,9 +342,9 @@ CredentialSortKey CreateCredentialSortKey(const CredentialUIEntry& credential) {
       credential.GetFirstSignonRealm(), credential.GetURL(),
       credential.blocked_by_user, credential.username,
       credential.federation_origin);
-  if (!credential.passkey_credential_id.empty()) {
-    key.passkey_display_name = credential.user_display_name;
-    key.passkey_credential_id = credential.passkey_credential_id;
+  if (credential.IsPasskey()) {
+    key.passkey_display_name = credential.passkey_info->user_display_name;
+    key.passkey_credential_id = credential.passkey_info->credential_id;
   }
   return key;
 }
@@ -346,17 +355,12 @@ CredentialSortKey CreateCredentialSortKey(const StoredCredential& credential) {
       credential.username_value, credential.federation_origin);
 }
 
-bool operator==(const CredentialUIEntry& lhs, const CredentialUIEntry& rhs) {
+bool AreCredentialsEquivalent(const CredentialUIEntry& lhs,
+                              const CredentialUIEntry& rhs) {
+  // Checking `lhs.blocked_by_user` alone is symmetric because `blocked_by_user`
+  // is part of `CredentialSortKey`, so `lhs` and `rhs` already match on it.
   return CreateCredentialSortKey(lhs) == CreateCredentialSortKey(rhs) &&
          (lhs.blocked_by_user || lhs.password == rhs.password);
-}
-
-bool operator<(const CredentialUIEntry& lhs, const CredentialUIEntry& rhs) {
-  // Intentionally does not include password. While it would be trivial to do
-  // now, a follow up CL will change |password| to a |PasswordString| object,
-  // which uses base::ProcessBoundString to encrypt the password in memory and
-  // thus doesn't expose a |operator<|.
-  return CreateCredentialSortKey(lhs) < CreateCredentialSortKey(rhs);
 }
 
 bool IsCompromised(const CredentialUIEntry& credential) {

@@ -5,13 +5,14 @@
 #include "chrome/browser/glic/public/glic_keyed_service.h"
 
 #include <memory>
+#include <string_view>
 
 #include "base/check.h"
 #include "base/command_line.h"
 #include "base/containers/flat_set.h"
 #include "base/feature_list.h"
+#include "base/functional/callback_helpers.h"
 #include "base/location.h"
-#include "base/metrics/histogram_functions.h"
 #include "base/notimplemented.h"
 #include "base/notreached.h"
 #include "base/rand_util.h"
@@ -24,7 +25,6 @@
 #include "chrome/browser/actor/actor_task_metadata.h"
 #include "chrome/browser/actor/tools/tool_request.h"
 #include "chrome/browser/actor/ui/actor_ui_state_manager_interface.h"
-#include "chrome/browser/browser_actuator/browser_actuator_service_factory.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/glic/actor/glic_actor_policy_checker.h"
 #include "chrome/browser/glic/common/application_hotkey_delegate.h"
@@ -44,13 +44,20 @@
 #include "chrome/browser/glic/host/context/glic_tab_data_observer.h"
 #include "chrome/browser/glic/host/context/glic_tab_favicon_observer.h"
 #include "chrome/browser/glic/host/glic.mojom.h"
+#include "chrome/browser/glic/host/glic_client_data_storage.h"
 #include "chrome/browser/glic/host/glic_local_storage_migration.h"
 #include "chrome/browser/glic/host/glic_web_client_access.h"
 #include "chrome/browser/glic/host/glic_web_contents_manager.h"
 #include "chrome/browser/glic/host/host.h"
 #include "chrome/browser/glic/public/features.h"
 #include "chrome/browser/glic/public/glic_enabling.h"
+#include "chrome/browser/glic/public/glic_feature.h"
+#include "chrome/browser/glic/public/glic_fre_store.h"
 #include "chrome/browser/glic/public/glic_keyed_service_factory.h"
+#include "chrome/browser/glic/public/glic_provider_metrics.h"
+#include "chrome/browser/glic/public/glic_provider_spec.h"
+#include "chrome/browser/glic/public/service/glic_activity_manager.h"
+#include "chrome/browser/glic/public/service/legacy_glic_activity_manager.h"
 #include "chrome/browser/glic/service/glic_instance_coordinator_impl.h"
 #include "chrome/browser/glic/suggestions/contextual_cueing_service.h"
 #include "chrome/browser/glic/suggestions/contextual_cueing_service_factory.h"
@@ -59,6 +66,7 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_attributes_storage.h"
 #include "chrome/browser/profiles/profile_manager.h"
+#include "chrome/browser/stream_transport/transport_service_factory.h"
 #include "chrome/browser/sync/device_info_sync_service_factory.h"
 #include "chrome/browser/tab_list/tab_list_interface.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
@@ -69,13 +77,13 @@
 #include "chrome/common/chrome_features.h"
 #include "chrome/common/chrome_switches.h"
 #include "components/actor/core/journal_details_builder.h"
-#include "components/browser_actuator/public/browser_actuator_service.h"
 #include "components/browser_actuator/public/features.h"
-#include "components/browser_actuator/public/transport_channel.h"
-#include "components/browser_actuator/public/transport_handler_factory_registry.h"
 #include "components/optimization_guide/proto/features/actions_data.pb.h"
 #include "components/optimization_guide/proto/features/common_quality_data.pb.h"
 #include "components/prefs/pref_service.h"
+#include "components/stream_transport/public/transport_channel.h"
+#include "components/stream_transport/public/transport_handler_factory_registry.h"
+#include "components/stream_transport/public/transport_service.h"
 #include "components/sync_device_info/device_info_sync_service.h"
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/browser_context.h"
@@ -89,12 +97,13 @@
 #include "third_party/abseil-cpp/absl/container/flat_hash_set.h"
 #include "third_party/abseil-cpp/absl/strings/str_format.h"
 #include "third_party/blink/public/common/web_preferences/web_preferences.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "ui/base/page_transition_types.h"
-#include "ui/base/window_open_disposition.h"
 #include "ui/views/widget/widget.h"
 #include "url/gurl.h"
 
 #if BUILDFLAG(IS_ANDROID)
+#include "chrome/browser/glic/android/glic_helper_android.h"
 #include "chrome/browser/glic/android/glic_keyed_service_android.h"
 #include "chrome/browser/glic/browser_ui/glic_nudge_controller.h"
 #include "chrome/browser/glic/browser_ui/glic_split_button_controller.h"
@@ -117,14 +126,19 @@ std::string_view GlicWarmingTriggerToString(GlicWarmingTrigger trigger) {
       return "Nudge";
     case GlicWarmingTrigger::kIph:
       return "Iph";
+    case GlicWarmingTrigger::kSelectionOverlay:
+      return "SelectionOverlay";
+    case GlicWarmingTrigger::kGeminiWeb:
+      return "GeminiWeb";
   }
 }
 
-void RecordPrewarmingChecksResult(GlicWarmingTrigger trigger,
+void RecordPrewarmingChecksResult(Profile* profile,
+                                  GlicWarmingTrigger trigger,
                                   GlicPrewarmingChecksResult result) {
-  base::UmaHistogramEnumeration(
-      base::StrCat({"Glic.Prewarming.ChecksResult.",
-                    GlicWarmingTriggerToString(trigger)}),
+  GlicMetricReporter(profile).RecordEnumeration(
+      base::StrCat(
+          {"Prewarming.ChecksResult.", GlicWarmingTriggerToString(trigger)}),
       result);
 }
 
@@ -149,6 +163,11 @@ void SetupGuestUrlPresetPrefs() {
                              prefs::kGlicGuestUrlPresetProd);
 }
 
+BrowserWindowInterface* ResolveBrowser(Profile* profile,
+                                       BrowserWindowInterface* bwi) {
+  return bwi ? bwi : GetActiveGlicEligibleBrowser(profile);
+}
+
 }  // namespace
 
 GlicKeyedService::GlicKeyedService(
@@ -166,18 +185,36 @@ GlicKeyedService::GlicKeyedService(
       enabling_(std::make_unique<GlicEnabling>(
           base::PassKey<GlicKeyedService>(),
           profile,
-          &profile_manager->GetProfileAttributesStorage())),
+          &profile_manager->GetProfileAttributesStorage(),
+          actor_policy_checker_.get())),
       metrics_(std::make_unique<GlicMetrics>(profile, enabling_.get())),
       opt_in_controller_(
           std::make_unique<GlicExperimentalOptInController>(profile)),
+      client_data_storage_(std::make_unique<GlicClientDataStorage>(
+          profile->GetPrefs(),
+          provider_spec().GetGuestUrlKey())),
       instance_coordinator_(std::make_unique<GlicInstanceCoordinatorImpl>(
           profile,
           identity_manager,
           this,
           enabling_.get(),
           contextual_cueing_service)),
+      activity_manager_(
+          base::FeatureList::IsEnabled(features::kGlicActivityHub)
+              ? std::make_unique<GlicActivityManager>(profile_,
+                                                      *instance_coordinator_)
+              : nullptr),
+      legacy_activity_manager_(
+          base::FeatureList::IsEnabled(features::kGlicActivityHub)
+              ? nullptr
+              : std::make_unique<LegacyGlicActivityManager>(
+                    profile_,
+                    actor_keyed_service)),
+      is_no_webview_enabled_(
+          base::FeatureList::IsEnabled(features::kGlicNoWebview) ||
+          provider_spec().RequiresNoWebview()),
       auth_controller_(
-          features::IsGlicNoWebviewEnabled()
+          is_no_webview_enabled_
               ? nullptr
               : std::make_unique<AuthController>(profile, identity_manager)),
       cold_warming_scheduler_(GlicWarmingScheduler::Options{
@@ -185,29 +222,23 @@ GlicKeyedService::GlicKeyedService(
               features::kGlicColdWarmingUsePerformanceManager),
           .delay = base::Milliseconds(features::kGlicWarmingDelayMs.Get()),
       }),
+      gemini_web_warming_scheduler_(GlicWarmingScheduler::Options{
+          .use_performance_manager = true,
+      }),
       tab_data_observer_(std::make_unique<GlicTabDataObserver>(profile)),
       tab_favicon_observer_(std::make_unique<GlicTabFaviconObserver>(profile)) {
   CHECK(GlicEnabling::IsProfileEligible(Profile::FromBrowserContext(profile)));
 
-  // TODO(crbug.com/450026474): Consider not constructing this metrics
-  // instance for multi-instance
-  metrics_->ClearControllers();
+  GlicEnabling::RegisterDefaultHotkeyScopeSyntheticTrial(profile);
+
   metrics_->RecordGlicProfilePreferences();
 
   if (base::FeatureList::IsEnabled(features::kGlicShareImage)) {
     share_image_handler_ = std::make_unique<GlicShareImageHandler>(*this);
   }
 
-  // If `--glic-always-open-fre` is present, unset this pref to ensure the FRE
-  // is shown for testing convenience.
-  auto* command_line = base::CommandLine::ForCurrentProcess();
-  if (command_line->HasSwitch(::switches::kGlicAlwaysOpenFre)) {
-    enabling_->SetCompletedFre(prefs::FreStatus::kNotStarted);
-    // or if automation is enabled, skip FRE
-  } else if (command_line->HasSwitch(::switches::kGlicAutomation) ||
-             command_line->HasSwitch(::switches::kGlicAlwaysSkipFre)) {
-    enabling_->SetCompletedFre(prefs::FreStatus::kCompleted);
-  }
+  // Developer switches for the profile's FRE, e.g. `--glic-always-open-fre`.
+  provider_spec().GetFreStore().ApplyDevSwitches(profile_);
 
   // Sets up prefs storing manually configured glic guest URLs. Intended for
   // manual testing only.
@@ -220,6 +251,10 @@ GlicKeyedService::GlicKeyedService(
     TryPreload(GlicWarmingTrigger::kStartup);
   }
 
+#if !BUILDFLAG(IS_ANDROID)
+  GlicMediaIntegration::EnsurePeerConnectionTrackerInitialized(profile_);
+#endif
+
   base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
       FROM_HERE, base::BindOnce(&GlicKeyedService::InitializeAfterConstruction,
                                 GetWeakPtr()));
@@ -230,18 +265,18 @@ GlicKeyedService::GlicKeyedService(
               &GlicKeyedService::OnExperimentalTriggeringStateChanged,
               base::Unretained(this)));
 
-  if (base::FeatureList::IsEnabled(browser_actuator::kBrowserActuator) &&
+  if (provider_spec().SupportsFeature(GlicFeature::kExperimentalTriggering) &&
+      base::FeatureList::IsEnabled(browser_actuator::kBrowserActuator) &&
       base::FeatureList::IsEnabled(
           browser_actuator::
               kEnableBrowserActuatorForGlicExperimentalTriggering)) {
-    browser_actuator::BrowserActuatorService* actuator_service =
-        browser_actuator::BrowserActuatorServiceFactory::GetForProfile(
-            profile_);
-    if (actuator_service && actuator_service->GetChannel()) {
+    stream_transport::TransportService* transport_service =
+        stream_transport::TransportServiceFactory::GetForProfile(profile_);
+    if (transport_service && transport_service->GetChannel()) {
       experimental_triggering_transport_handler_factory_ =
           std::make_unique<GlicExperimentalTriggeringTransportHandlerFactory>(
               profile_);
-      actuator_service->GetChannel()
+      transport_service->GetChannel()
           ->GetHandlerFactoryRegistry()
           ->RegisterFactory(
               experimental_triggering_transport_handler_factory_.get());
@@ -255,26 +290,45 @@ void GlicKeyedService::InitializeAfterConstruction() {
     GlicMediaIntegration::GetFor(profile_);
   }
 #endif
-  MaybeMigrateGlicLocalStorage(profile_);
+  MaybeMigrateGlicLocalStorage(profile_, client_data_storage_.get());
 }
 
-GlicKeyedService::~GlicKeyedService() {
-  metrics_->ClearControllers();
-}
+GlicKeyedService::~GlicKeyedService() = default;
 
 // static
 GlicKeyedService* GlicKeyedService::Get(content::BrowserContext* context) {
   return GlicKeyedServiceFactory::GetGlicKeyedService(context);
 }
 
+// static
+bool GlicKeyedService::IsNoWebviewEnabled(content::BrowserContext* context) {
+  if (!context) {
+    return false;
+  }
+  if (auto* service = GlicKeyedService::Get(context)) {
+    return service->IsNoWebviewEnabled();
+  }
+  // In unit tests (e.g. GlicGuestObserverTest, GlicLocalStorageMigrationTest,
+  // GuestUtilMultiInstanceTest), a TestingProfile may not instantiate
+  // GlicKeyedService; fall back to checking the feature flag for regular
+  // profiles.
+  Profile* profile = Profile::FromBrowserContext(context);
+  return profile && profile->IsRegularProfile() &&
+         base::FeatureList::IsEnabled(features::kGlicNoWebview);
+}
+
+bool GlicKeyedService::IsNoWebviewEnabled() const {
+  return is_no_webview_enabled_;
+}
+
 void GlicKeyedService::Shutdown() {
   cold_warming_scheduler_.Cancel();
+  gemini_web_warming_scheduler_.Cancel();
   if (experimental_triggering_transport_handler_factory_) {
-    browser_actuator::BrowserActuatorService* actuator_service =
-        browser_actuator::BrowserActuatorServiceFactory::GetForProfile(
-            profile_);
-    if (actuator_service && actuator_service->GetChannel()) {
-      actuator_service->GetChannel()
+    stream_transport::TransportService* transport_service =
+        stream_transport::TransportServiceFactory::GetForProfile(profile_);
+    if (transport_service && transport_service->GetChannel()) {
+      transport_service->GetChannel()
           ->GetHandlerFactoryRegistry()
           ->UnregisterFactory(
               experimental_triggering_transport_handler_factory_.get());
@@ -282,21 +336,40 @@ void GlicKeyedService::Shutdown() {
     experimental_triggering_transport_handler_factory_.reset();
   }
   experimental_triggering_state_subscription_ = {};
+  if (activity_manager_) {
+    activity_manager_->Shutdown();
+  }
   instance_coordinator().Shutdown();
+  if (legacy_activity_manager_) {
+    legacy_activity_manager_->Shutdown();
+  }
+  client_data_storage_->Flush();
+}
+
+GlicActivityManager& GlicKeyedService::activity_manager() {
+  CHECK(activity_manager_);
+  return *activity_manager_;
+}
+
+LegacyGlicActivityManager& GlicKeyedService::legacy_activity_manager() {
+  CHECK(legacy_activity_manager_);
+  return *legacy_activity_manager_;
 }
 
 void GlicKeyedService::ShowUI(BrowserWindowInterface* bwi,
                               mojom::InvocationSource source) {
-  instance_coordinator().Show(
-      bwi ? bwi : GetActiveGlicEligibleBrowser(profile_), source);
+  instance_coordinator().Show(ResolveBrowser(profile_, bwi), source);
 }
 
 void GlicKeyedService::ToggleUI(BrowserWindowInterface* bwi,
                                 bool prevent_close,
                                 mojom::InvocationSource source) {
-  instance_coordinator().Toggle(
-      bwi ? bwi : GetActiveGlicEligibleBrowser(profile_), prevent_close,
-      source);
+  instance_coordinator().Toggle(ResolveBrowser(profile_, bwi), prevent_close,
+                                source);
+}
+
+bool GlicKeyedService::WouldToggleUIClose(BrowserWindowInterface* bwi) const {
+  return instance_coordinator().WouldToggleClose(ResolveBrowser(profile_, bwi));
 }
 
 base::WeakPtr<GlicInstance> GlicKeyedService::InvokeWithAutoSubmit(
@@ -328,10 +401,6 @@ void GlicKeyedService::CloseAndShutdown(
   instance_coordinator().CloseAndShutdownInstanceWithFrame(render_frame_host);
 }
 
-void GlicKeyedService::CloseFloatingPanel() {
-  instance_coordinator().Close({});
-}
-
 GlicInstanceCoordinator& GlicKeyedService::instance_coordinator() const {
   CHECK(instance_coordinator_);
   return *instance_coordinator_.get();
@@ -350,10 +419,6 @@ GlicKeyedService::active_instance_sharing_manager() {
 bool GlicKeyedService::IsPanelShowingForBrowser(
     const BrowserWindowInterface& bwi) const {
   return instance_coordinator().IsPanelShowingForBrowser(bwi);
-}
-
-bool GlicKeyedService::IsWindowDetached() const {
-  return instance_coordinator().IsDetached();
 }
 
 base::CallbackListSubscription
@@ -405,9 +470,9 @@ tabs::TabInterface* GlicKeyedService::CreateTab(
         profile_, url, ui::PAGE_TRANSITION_AUTO_TOPLEVEL);
   }
 
-  params->disposition = open_in_background
-                            ? WindowOpenDisposition::NEW_BACKGROUND_TAB
-                            : WindowOpenDisposition::NEW_FOREGROUND_TAB;
+  params->disposition =
+      open_in_background ? ui::mojom::WindowOpenDisposition::kNewBackgroundTab
+                         : ui::mojom::WindowOpenDisposition::kNewForegroundTab;
   // Set navigation as renderer initiated to open links in their app/PWA (if
   // installed).
   params->is_renderer_initiated = true;
@@ -480,6 +545,11 @@ void GlicKeyedService::TryPreload(GlicWarmingTrigger trigger) {
         &GlicKeyedService::TryPreloadAfterDelay, GetWeakPtr(), trigger));
     return;
   }
+  if (trigger == GlicWarmingTrigger::kGeminiWeb) {
+    gemini_web_warming_scheduler_.Schedule(base::BindOnce(
+        &GlicKeyedService::TryPreloadAfterDelay, GetWeakPtr(), trigger));
+    return;
+  }
 
   ShouldPreloadForProfile(
       profile_, trigger,
@@ -508,7 +578,7 @@ void GlicKeyedService::FinishPreload(GlicWarmingTrigger trigger,
     }
   }
 
-  RecordPrewarmingChecksResult(trigger, result);
+  RecordPrewarmingChecksResult(profile_, trigger, result);
   if (preload_callback_) {
     base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
         FROM_HERE, base::BindOnce(std::move(preload_callback_)));
@@ -529,11 +599,6 @@ GlicInstance* GlicKeyedService::GetInstanceForActiveTab(
     return nullptr;
   }
   return instance_coordinator().GetInstanceForTab(tab_list->GetActiveTab());
-}
-
-void GlicKeyedService::Close(
-    content::RenderFrameHost* outermost_render_frame_host) {
-  instance_coordinator().CloseInstanceWithFrame(outermost_render_frame_host);
 }
 
 void GlicKeyedService::Archive(
@@ -560,6 +625,18 @@ void GlicKeyedService::OnExperimentalTriggeringStateChanged() {
 }
 
 #if BUILDFLAG(IS_ANDROID)
+MicPermissionUi& GlicKeyedService::GetMicPermissionUi() {
+  if (!mic_permission_ui_) {
+    mic_permission_ui_ = std::make_unique<MicPermissionUi>();
+  }
+  return *mic_permission_ui_;
+}
+
+void GlicKeyedService::SetMicPermissionUiForTesting(
+    std::unique_ptr<MicPermissionUi> mic_permission_ui) {
+  mic_permission_ui_ = std::move(mic_permission_ui);
+}
+
 // TODO(crbug.com/484037810): Once a window features object (similar to tab
 // features) is supported on Android, move ownership of the nudge controller to
 // it (accessed via unowned user data and ::From methods), matching Desktop,
@@ -597,6 +674,10 @@ void GlicKeyedService::ShowExperimentalOptInDialogForTesting(
     return;
   }
   opt_in_controller().ShowDialog(web_contents, base::DoNothing());
+}
+
+const GlicProviderSpec& GlicKeyedService::provider_spec() const {
+  return GetGlicProviderSpec(profile_);
 }
 
 }  // namespace glic

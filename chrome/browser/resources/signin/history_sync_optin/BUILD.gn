@@ -15,16 +15,16 @@ build_webui("build") {
     "history_sync_optin_refresh.html",
     "images/avatar_surrounding_illustration_dark.svg",
     "images/avatar_surrounding_illustration_light.svg",
+    "sync_loading_confirmation.html",
   ]
 
   ts_files = [
-    "browser_proxy.ts",
     "history_sync_optin.ts",
-    "history_sync_optin_refresh.ts",
     "history_sync_optin_app.html.ts",
-    "history_sync_optin_app_refresh.html.ts",
     "history_sync_optin_app.ts",
+    "history_sync_optin_app_refresh.html.ts",
     "history_sync_optin_app_refresh.ts",
+    "history_sync_optin_refresh.ts",
   ]
 
   css_files = [

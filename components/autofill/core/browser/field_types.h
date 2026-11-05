@@ -168,10 +168,11 @@ enum FieldType {
   ADDRESS_HOME_CITY = 33,
   ADDRESS_HOME_STATE = 34,
   ADDRESS_HOME_ZIP = 35,
-  // TODO(crbug.com/40264633): Autofill stores country codes. When
-  // ADDRESS_HOME_COUNTRY is accessed through `AutofillProfile::GetRawInfo()`, a
-  // country code is returned. When retrieved using
-  // `AutofillProfile::GetInfo()`, the country name is returned.
+  // Internally, Autofill uses ISO 3166-1 country codes.
+  // `AutofillProfile::GetRawInfo(ADDRESS_HOME_COUNTRY)` returns
+  // the profile's country code while
+  // `AutofillProfile::GetInfo(ADDRESS_HOME_COUNTRY)` returns the localized
+  // country name for filling.
   ADDRESS_HOME_COUNTRY = 36,
 
   // ADDRESS_BILLING values [37, 43] are deprecated.
@@ -935,21 +936,22 @@ constexpr FieldTypeGroup GroupTypeOfFieldType(FieldType field_type) {
 }
 
 namespace internal {
-consteval std::array<FieldTypeSet,
-                     std::to_underlying(FieldTypeGroup::kMaxValue) + 1>
-FieldTypesByGroupHelper() {
-  constexpr auto kMaxValue = std::to_underlying(FieldTypeGroup::kMaxValue);
-  std::array<FieldTypeSet, kMaxValue + 1> map{};
-  for (FieldType field_type : FieldTypeSet::all()) {
-    auto index = std::to_underlying(GroupTypeOfFieldType(field_type));
-    map[index].insert(field_type);
-  }
-  return map;
-}
+inline constexpr std::array<FieldTypeSet,
+                            std::to_underlying(FieldTypeGroup::kMaxValue) + 1>
+    kFieldTypesByGroup = []() consteval {
+      std::array<FieldTypeSet,
+                 std::to_underlying(FieldTypeGroup::kMaxValue) + 1>
+          map{};
+      for (const FieldType field_type : FieldTypeSet::all()) {
+        map[std::to_underlying(GroupTypeOfFieldType(field_type))].insert(
+            field_type);
+      }
+      return map;
+    }();
 }  // namespace internal
 
 constexpr FieldTypeSet FieldTypesOfGroup(FieldTypeGroup group) {
-  return internal::FieldTypesByGroupHelper()[std::to_underlying(group)];
+  return internal::kFieldTypesByGroup[std::to_underlying(group)];
 }
 
 }  // namespace autofill

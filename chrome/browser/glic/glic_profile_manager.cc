@@ -90,8 +90,11 @@ Profile* GlicProfileManager::GetProfileForLaunch() const {
   }
 
   // If the glic window is currently showing detached use that profile. This
-  // profile is the one where a detached instance was most recently used.
-  if (current_detached_glic_) {
+  // profile is the one where a detached instance was most recently used. It is
+  // skipped if it can't be launched from OS-level entry points (e.g. Gemini
+  // Enterprise), in which case another profile's panel will replace it.
+  if (current_detached_glic_ && GlicEnabling::IsOsEntryPointEnabledForProfile(
+                                    current_detached_glic_->profile())) {
     return current_detached_glic_->profile();
   }
 
@@ -99,7 +102,7 @@ Profile* GlicProfileManager::GetProfileForLaunch() const {
   Profile* profile_from_browser_window = nullptr;
   ForEachCurrentBrowserWindowInterfaceOrderedByActivation(
       [&](BrowserWindowInterface* browser) {
-        if (GlicEnabling::IsEnabledAndConsentForProfile(
+        if (GlicEnabling::IsOsEntryPointEnabledForProfile(
                 browser->GetProfile())) {
           profile_from_browser_window = browser->GetProfile();
           return false;  // stop iterating
@@ -116,7 +119,7 @@ Profile* GlicProfileManager::GetProfileForLaunch() const {
   if (g_browser_process->profile_manager()) {
     for (Profile* profile :
          g_browser_process->profile_manager()->GetLoadedProfiles()) {
-      if (GlicEnabling::IsEnabledAndConsentForProfile(profile)) {
+      if (GlicEnabling::IsOsEntryPointEnabledForProfile(profile)) {
         return profile;
       }
     }
@@ -132,7 +135,7 @@ void GlicProfileManager::SetCurrentDetachedGlic(Profile* profile) {
     return;
   }
   if (current_detached_glic_ && current_detached_glic_->profile() != profile) {
-    current_detached_glic_->instance_coordinator().Close({});
+    current_detached_glic_->instance_coordinator().CloseFloatingPanel();
   }
   current_detached_glic_ = GlicKeyedService::Get(profile)->GetWeakPtr();
 }
@@ -160,7 +163,7 @@ void GlicProfileManager::ShowProfilePicker() {
       &GlicProfileManager::DidSelectProfile, weak_ptr_factory_.GetWeakPtr());
   // If the panel is not closed it will be on top of the profile picker.
   if (current_detached_glic_) {
-    current_detached_glic_->instance_coordinator().Close({});
+    current_detached_glic_->instance_coordinator().CloseFloatingPanel();
   }
 
   // TODO(crbug.com/450679848): Profile Picker doesn't make sense on ChromeOS.

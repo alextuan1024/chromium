@@ -18,6 +18,7 @@
 #include "base/containers/adapters.h"
 #include "base/logging.h"
 #include "base/memory/scoped_refptr.h"
+#include "base/no_destructor.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/timer/elapsed_timer.h"
 #include "build/build_config.h"
@@ -206,8 +207,9 @@ String AVIFImageDecoder::FilenameExtension() const {
 }
 
 const AtomicString& AVIFImageDecoder::MimeType() const {
-  DEFINE_STATIC_LOCAL(const AtomicString, avif_mime_type, ("image/avif"));
-  return avif_mime_type;
+  static const base::NoDestructor<AtomicString> avif_mime_type(
+      AtomicString::FromLiteral<"image/avif">());
+  return *avif_mime_type;
 }
 
 bool AVIFImageDecoder::ImageIsHighBitDepth() {
@@ -268,8 +270,8 @@ wtf_size_t AVIFImageDecoder::DecodedYUVWidthBytes(cc::YUVIndex index) const {
   //
   // The comments for Dav1dPicAllocator in dav1d/picture.h require the pixel
   // width be padded to a multiple of 128 pixels.
-  wtf_size_t aligned_width = static_cast<wtf_size_t>(
-      base::bits::AlignUpDeprecatedDoNotUse(Size().width(), 128));
+  wtf_size_t aligned_width = (base::bits::AlignUp(
+      base::checked_cast<wtf_size_t>(Size().width()), wtf_size_t{128}));
   if (index == cc::YUVIndex::kU || index == cc::YUVIndex::kV) {
     aligned_width >>= chroma_shift_x_;
   }

@@ -53,7 +53,6 @@ class ASH_EXPORT ImeMenuTray : public TrayBackgroundView,
   bool ShouldShowKeyboardToggle() const;
 
   // TrayBackgroundView:
-  void OnThemeChanged() override;
   void HandleLocaleChange() override;
   void HideBubbleWithView(const TrayBubbleView* bubble_view) override;
   void ClickedOutsideBubble(const ui::LocatedEvent& event) override;
@@ -91,8 +90,8 @@ class ASH_EXPORT ImeMenuTray : public TrayBackgroundView,
 
   // Updates the text of the label on the tray.
   void UpdateTrayLabel();
-  void CreateLabel();
-  void CreateImageView();
+  void ShowLabel();
+  void ShowImageView();
 
   // Updates the color of `image_view_` if `is_image` is true or the color of
   // `label_` otherwise.
@@ -104,7 +103,7 @@ class ASH_EXPORT ImeMenuTray : public TrayBackgroundView,
   std::unique_ptr<TrayBubbleWrapper> bubble_;
   raw_ptr<ImeListView> ime_list_view_;
 
-  // Only one of |label_| and |image_view_| can be non null at the same time.
+  // Only one of |label_| and |image_view_| can be visible at the same time.
   raw_ptr<views::Label> label_;
   raw_ptr<views::ImageView> image_view_;
 

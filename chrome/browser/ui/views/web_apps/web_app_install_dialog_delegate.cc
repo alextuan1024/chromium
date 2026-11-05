@@ -16,13 +16,13 @@
 #include "base/observer_list.h"
 #include "base/strings/string_util.h"
 #include "base/task/sequenced_task_runner.h"
+#include "build/build_config.h"
 #include "chrome/browser/feature_engagement/tracker_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/actions/chrome_action_id.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/page_action/page_action_controller.h"
 #include "chrome/browser/ui/page_action/page_action_icon_type.h"
-#include "chrome/browser/ui/tabs/public/tab_features.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/toolbar_button_provider.h"
 #include "chrome/browser/ui/views/page_action/page_action_view.h"
@@ -78,10 +78,11 @@ NewPageActionHighlight(content::WebContents& web_contents) {
     return std::nullopt;
   }
 
-  tabs::TabFeatures* tab_features = tab->GetTabFeatures();
-  CHECK(tab_features);
+  page_actions::PageActionController* page_action_controller =
+      page_actions::PageActionController::From(tab);
+  CHECK(page_action_controller);
 
-  return tab_features->page_action_controller()->AddActivity(kActionInstallPwa);
+  return page_action_controller->AddActivity(kActionInstallPwa);
 }
 
 }  // namespace
@@ -114,6 +115,16 @@ bool IsWidgetCurrentSizeSmallerThanPreferredSize(
     views::Widget* widget,
     MaxAllowedShrinkage shrinkage) {
   CHECK(widget);
+#if BUILDFLAG(IS_MAC)
+  // TODO(crbug.com/567218109): Remove this workaround when the
+  // MaxAllowedShrinkage-based origin visibility protection is removed.
+  // The app shim can asynchronously report this initial placeholder after the
+  // dialog is sized. It mirrors ui::kWindowSizeDeterminedLater, which cannot be
+  // included here because it requires Objective-C++.
+  if (widget->GetWindowBoundsInScreen() == gfx::Rect(0, 0, 1, 1)) {
+    return false;
+  }
+#endif
   views::View* contents_view = widget->GetContentsView();
   CHECK(contents_view);
 

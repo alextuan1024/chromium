@@ -10,6 +10,7 @@
 
 #include "base/check_deref.h"
 #include "base/check_op.h"
+#include "base/containers/extend.h"
 #include "base/containers/flat_set.h"
 #include "base/containers/map_util.h"
 #include "base/feature_list.h"
@@ -189,6 +190,10 @@ void WebAppIconDownloader::DidDownloadFavicon(
                            http_status_code);
 
   if (http_status_code != 0) {
+    // CHECK-exclusion: `http_status_code` is returned by a remote web server
+    // over the network when fetching web app icons or favicons. The network
+    // stack permits non-standard or out-of-range HTTP response codes (outside
+    // [100, 600)).
     DCHECK_LE(100, http_status_code);
     DCHECK_GT(600, http_status_code);
     icons_http_results_[icon_urls_with_sizes] = http_status_code;
@@ -202,9 +207,7 @@ void WebAppIconDownloader::DidDownloadFavicon(
     return;
   }
 
-  // TODO(b/319669415 : Support adding onto existing bitmaps array instead of
-  // overwriting. Helpful for downloading multiple bitmaps from the same URL.
-  icons_map_[image_url] = bitmaps;
+  base::Extend(icons_map_[image_url], bitmaps);
 
   MaybeCompleteCallback();
 }
@@ -246,7 +249,8 @@ void WebAppIconDownloader::CancelDownloads(
   if (!IsRunning()) {
     return;
   }
-  DCHECK_NE(result, IconsDownloadedResult::kCompleted);
+  CHECK_NE(result, IconsDownloadedResult::kCompleted,
+           base::NotFatalUntil::M162);
 
   weak_ptr_factory_.InvalidateWeakPtrs();
   in_progress_requests_.clear();

@@ -28,7 +28,7 @@ import org.chromium.chrome.browser.compositor.overlays.strip.StripLayoutHelperMa
 import org.chromium.chrome.browser.compositor.overlays.strip.StripLayoutHelperManager.TabModelStartupInfo;
 import org.chromium.chrome.browser.data_sharing.DataSharingTabManager;
 import org.chromium.chrome.browser.device.DeviceClassManager;
-import org.chromium.chrome.browser.glic.GlicButtonDelegate;
+import org.chromium.chrome.browser.glic.toolbar_button.GlicButtonDelegate;
 import org.chromium.chrome.browser.hub.HubLayoutDependencyHolder;
 import org.chromium.chrome.browser.layouts.LayoutType;
 import org.chromium.chrome.browser.lifecycle.ActivityLifecycleDispatcher;
@@ -42,6 +42,7 @@ import org.chromium.chrome.browser.tab_ui.TabContentManager;
 import org.chromium.chrome.browser.tab_ui.TabSwitcher;
 import org.chromium.chrome.browser.tabmodel.TabCreatorManager;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
+import org.chromium.chrome.browser.tabwindow.TabWindowManager;
 import org.chromium.chrome.browser.theme.ToolbarThemeColorProvider;
 import org.chromium.chrome.browser.toolbar.ControlContainer;
 import org.chromium.chrome.browser.toolbar.ToolbarManager;
@@ -50,6 +51,7 @@ import org.chromium.chrome.browser.ui.side_ui.SideUiStateProvider;
 import org.chromium.chrome.browser.ui.vertical_tabs.VerticalTabUtils;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
 import org.chromium.components.browser_ui.desktop_windowing.DesktopWindowStateManager;
+import org.chromium.components.browser_ui.widget.MenuOrKeyboardActionController;
 import org.chromium.ui.base.ActivityResultTracker;
 import org.chromium.ui.base.ActivityWindowAndroid;
 import org.chromium.ui.dragdrop.DragAndDropDelegate;
@@ -97,6 +99,7 @@ public class LayoutManagerChromeTablet extends LayoutManagerChrome {
      *     tab drag and drop.
      * @param controlContainerView View passed to StripLayoutHelper to support tab drag and drop.
      * @param tabHoverCardViewStub The ViewStub representing the strip tab hover card.
+     * @param tabGroupHoverCardViewStub The ViewStub representing the strip tab group hover card.
      * @param windowAndroid The @{@link WindowAndroid} instance to access Activity.
      * @param toolbarManager The ToolbarManager instance.
      * @param desktopWindowStateManager The DesktopWindowStateManager for the app header.
@@ -118,11 +121,16 @@ public class LayoutManagerChromeTablet extends LayoutManagerChrome {
      * @param tabObscuringHandler The {@link TabObscuringHandler} to manage tab obscuring.
      * @param canActivateTabLayoutToggleMenuSupplier Supplier indicating if tab layout toggle can be
      *     activated.
+     * @param menuOrKeyboardActionController The {@link MenuOrKeyboardActionController} for
+     *     registering menu or keyboard action handlers.
+     * @param activityCreationUptimeMs The {@link android.os.SystemClock#uptimeMillis()} timestamp
+     *     when the hosting activity was created, or 0 if unavailable.
+     * @param tabWindowManagerSupplier Supplier for the {@link TabWindowManager}.
      */
     public LayoutManagerChromeTablet(
             LayoutManagerHost host,
             ViewGroup contentContainer,
-            Supplier<TabSwitcher> tabSwitcherSupplier,
+            Supplier<@Nullable TabSwitcher> tabSwitcherSupplier,
             Supplier<TabModelSelector> tabModelSelectorSupplier,
             BrowserControlsStateProvider browserControlsStateProvider,
             MonotonicObservableSupplier<TabContentManager> tabContentManagerSupplier,
@@ -134,6 +142,7 @@ public class LayoutManagerChromeTablet extends LayoutManagerChrome {
             DragAndDropDelegate dragAndDropDelegate,
             View controlContainerView,
             ViewStub tabHoverCardViewStub,
+            ViewStub tabGroupHoverCardViewStub,
             ActivityWindowAndroid windowAndroid,
             ToolbarManager toolbarManager,
             @Nullable DesktopWindowStateManager desktopWindowStateManager,
@@ -151,7 +160,10 @@ public class LayoutManagerChromeTablet extends LayoutManagerChrome {
             LeadingButtonDelegate leadingButtonDelegate,
             OneshotSupplier<SideUiStateProvider> sideUiStateProviderSupplier,
             TabObscuringHandler tabObscuringHandler,
-            @Nullable BooleanSupplier canActivateTabLayoutToggleMenuSupplier) {
+            @Nullable BooleanSupplier canActivateTabLayoutToggleMenuSupplier,
+            MenuOrKeyboardActionController menuOrKeyboardActionController,
+            long activityCreationUptimeMs,
+            Supplier<TabWindowManager> tabWindowManagerSupplier) {
         super(
                 host,
                 contentContainer,
@@ -180,6 +192,7 @@ public class LayoutManagerChromeTablet extends LayoutManagerChrome {
                         dragAndDropDelegate,
                         controlContainerView,
                         tabHoverCardViewStub,
+                        tabGroupHoverCardViewStub,
                         tabContentManagerSupplier,
                         browserControlsStateProvider,
                         windowAndroid,
@@ -199,7 +212,10 @@ public class LayoutManagerChromeTablet extends LayoutManagerChrome {
                         leadingButtonDelegate,
                         sideUiStateProviderSupplier,
                         tabObscuringHandler,
-                        canActivateTabLayoutToggleMenuSupplier);
+                        canActivateTabLayoutToggleMenuSupplier,
+                        menuOrKeyboardActionController,
+                        activityCreationUptimeMs,
+                        tabWindowManagerSupplier);
         addSceneOverlay(mTabStripLayoutHelperManager);
         addObserver(mTabStripLayoutHelperManager.getTabSwitcherObserver());
         mDesktopWindowStateManager = desktopWindowStateManager;

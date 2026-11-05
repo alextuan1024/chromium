@@ -11,4 +11,14 @@ found in the LICENSE file.
     <dimen name="download_dialog_checkbox_margin_start">-5dp</dimen>
     <dimen name="download_dialog_checkbox_margin_top">16dp</dimen>
     <dimen name="download_dialog_location_space_margin_start">49dp</dimen>
+
+    <!-- Download toolbar button tray. Icon size and row height match the Downloads page rows; the
+         popup width matches desktop's download bubble (views::DISTANCE_BUBBLE_PREFERRED_WIDTH). -->
+    <dimen name="download_tray_popup_width">320dp</dimen>
+    <dimen name="download_tray_list_max_height">450dp</dimen>
+    <dimen name="download_tray_header_padding_end">4dp</dimen>
+    <dimen name="download_tray_item_min_height">64dp</dimen>
+    <dimen name="download_tray_item_icon_size">36dp</dimen>
+    <dimen name="download_tray_item_icon_margin_end">16dp</dimen>
+    <dimen name="download_tray_item_padding_horizontal">16dp</dimen>
 </resources>

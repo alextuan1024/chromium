@@ -34,6 +34,8 @@ DeferredClientWrapper::DeferredClientWrapper(ClientFactory client_factory,
   // On non-android platforms we can only be running in full browser mode. In
   // full browser mode, FullBrowserTransitionManager synchronously calls the
   // callback when it is registered.
+  // TODO(crbug.com/584089758): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
   DCHECK(wrapped_client_);
 #endif
 }
@@ -123,6 +125,10 @@ void DeferredClientWrapper::GetUploadData(
   RunDeferredClosures(true /*force_inflate*/);
 }
 
+bool DeferredClientWrapper::RequiresCustomRequestParameters() const {
+  return wrapped_client_ && wrapped_client_->RequiresCustomRequestParameters();
+}
+
 void DeferredClientWrapper::ForwardOnServiceInitialized(
     bool state_lost,
     const std::vector<DownloadMetaData>& downloads) {
@@ -191,7 +197,7 @@ void DeferredClientWrapper::RunDeferredClosures(bool force_inflate) {
 }
 
 void DeferredClientWrapper::DoRunDeferredClosures() {
-  DCHECK(wrapped_client_);
+  CHECK(wrapped_client_, base::NotFatalUntil::M161);
   auto deferred_closures = std::move(deferred_closures_);
   for (auto& closure : deferred_closures) {
     std::move(closure).Run();
@@ -199,8 +205,8 @@ void DeferredClientWrapper::DoRunDeferredClosures() {
 }
 
 void DeferredClientWrapper::InflateClient(Profile* profile) {
-  DCHECK(profile);
-  DCHECK(client_factory_);
+  CHECK(profile, base::NotFatalUntil::M161);
+  CHECK(client_factory_, base::NotFatalUntil::M161);
   wrapped_client_ = std::move(client_factory_).Run(profile);
   DoRunDeferredClosures();
 }

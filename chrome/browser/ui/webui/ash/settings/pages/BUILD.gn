@@ -22,9 +22,8 @@ static_library("pages") {
 
   deps = [
     "//ash/constants",
+    "//ash/strings",
     "//build:branding_buildflags",
-    "//chrome/app:generated_resources",
-    "//chrome/browser:browser_public_dependencies",
     "//chrome/browser/apps/app_service",
     "//chrome/browser/profiles:profile",
     "//chrome/browser/ui/webui/ash/settings/pages/a11y",

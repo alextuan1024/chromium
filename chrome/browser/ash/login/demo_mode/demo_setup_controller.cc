@@ -16,6 +16,7 @@
 #include "base/command_line.h"
 #include "base/containers/flat_map.h"
 #include "base/containers/span.h"
+#include "base/files/file_path.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/logging.h"
@@ -39,7 +40,6 @@
 #include "chromeos/ash/components/growth/campaigns_manager.h"
 #include "chromeos/ash/components/install_attributes/install_attributes.h"
 #include "chromeos/ash/experiences/arc/arc_util.h"
-#include "chromeos/constants/chromeos_features.h"
 #include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/pref_service.h"
 #include "google_apis/gaia/google_service_auth_error.h"
@@ -447,11 +447,6 @@ std::string DemoSetupController::GetSubOrganizationEmail(
   // Exclude US as it is the default country.
   if (std::ranges::contains(demo_mode::kSupportedCountries,
                             country_uppercase)) {
-    if (chromeos::features::IsCloudGamingDeviceEnabled()) {
-      return base::StringPrintf("admin-%s-blazey@%s", country_lowercase.c_str(),
-                                policy::kDemoModeDomain);
-    }
-
     return "admin-" + country_lowercase + "@" + policy::kDemoModeDomain;
   }
   return std::string();

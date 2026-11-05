@@ -9,17 +9,14 @@
 #include <vector>
 
 #include "base/containers/flat_map.h"
+#include "base/files/file_path.h"
+#include "base/memory/raw_ptr.h"
 #include "base/memory/raw_ref.h"
 #include "base/memory/weak_ptr.h"
 #include "base/scoped_observation.h"
-#include "components/gcm_driver/gcm_connection_observer.h"
 #include "components/sync/base/data_type.h"
 #include "components/sync/protocol/sync_invalidations_payload.pb.h"
 #include "components/sync/test/fake_server.h"
-
-namespace net {
-class IPEndPoint;
-}  // namespace net
 
 namespace instance_id {
 class FakeGCMDriverForInstanceID;
@@ -30,16 +27,12 @@ namespace fake_server {
 // This class is observing changes to the fake server, and sends invalidations
 // to clients upon commits. Sent invalidation follows the same format expected
 // by the sync invalidations framework (i.e. SyncInvalidationsService).
-class FakeServerSyncInvalidationSender : public FakeServer::Observer,
-                                         public gcm::GCMConnectionObserver {
+class FakeServerSyncInvalidationSender : public FakeServer::Observer {
  public:
-  // This has the same value as in
-  // components/sync/invalidations/sync_invalidations_service_impl.cc.
-  static constexpr char kSyncInvalidationsAppId[] =
-      "com.google.chrome.sync.invalidations";
-
   // `fake_server` must not be nullptr, and must outlive this object.
-  explicit FakeServerSyncInvalidationSender(FakeServer* fake_server);
+  // Persists undelivered invalidations to `storage_dir` across PRE_ tests.
+  FakeServerSyncInvalidationSender(FakeServer* fake_server,
+                                   const base::FilePath& storage_dir);
   ~FakeServerSyncInvalidationSender() override;
   FakeServerSyncInvalidationSender(const FakeServerSyncInvalidationSender&) =
       delete;
@@ -54,12 +47,17 @@ class FakeServerSyncInvalidationSender : public FakeServer::Observer,
   void RemoveFakeGCMDriver(
       instance_id::FakeGCMDriverForInstanceID* fake_gcm_driver);
 
+  // Simulates going offline/online for all clients. While offline,
+  // invalidations are queued in `invalidations_to_deliver_` and persisted to
+  // disk instead of being delivered to handlers. Going back online delivers
+  // any queued invalidations immediately.
+  void SetOfflineAllClients(bool offline);
+
+  base::WeakPtr<FakeServerSyncInvalidationSender> GetWeakPtr();
+
   // FakeServer::Observer implementation.
   void OnWillCommit() override;
   void OnCommit(syncer::DataTypeSet committed_data_types) override;
-
-  // gcm::GCMConnectionObserver implementation.
-  void OnConnected(const net::IPEndPoint& ip_endpoint) override;
 
  private:
   instance_id::FakeGCMDriverForInstanceID* GetFakeGCMDriverByToken(
@@ -72,7 +70,12 @@ class FakeServerSyncInvalidationSender : public FakeServer::Observer,
   // Updates `token_to_interested_data_types_` from DeviceInfo data type.
   void UpdateTokenToInterestedDataTypesMap();
 
+  void LoadFakeStateFromDisk();
+  void WriteFakeStateToDisk() const;
+
   const base::raw_ref<FakeServer> fake_server_;
+  const base::FilePath fake_state_file_path_;
+  bool offline_ = false;
 
   base::ScopedObservation<FakeServer, FakeServer::Observer>
       fake_server_observation_{this};
@@ -89,10 +92,11 @@ class FakeServerSyncInvalidationSender : public FakeServer::Observer,
   base::flat_map<std::string, syncer::DataTypeSet>
       token_to_interested_data_types_;
 
-  // TODO(crbug.com/539790080): Remove base::WeakPtr usage once it is figured
-  // out why the invalidation sender doesn't remove Fake GCM server in tests.
-  std::vector<base::WeakPtr<instance_id::FakeGCMDriverForInstanceID>>
+  std::vector<raw_ptr<instance_id::FakeGCMDriverForInstanceID>>
       fake_gcm_drivers_;
+
+  base::WeakPtrFactory<FakeServerSyncInvalidationSender> weak_ptr_factory_{
+      this};
 };
 
 }  // namespace fake_server

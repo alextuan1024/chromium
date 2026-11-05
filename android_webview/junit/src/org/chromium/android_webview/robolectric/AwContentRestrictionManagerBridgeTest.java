@@ -14,8 +14,6 @@ import android.net.Uri;
 import android.os.Bundle;
 import android.os.ParcelFileDescriptor;
 
-import androidx.test.filters.SmallTest;
-
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Rule;
@@ -29,6 +27,7 @@ import org.robolectric.RuntimeEnvironment;
 import org.robolectric.shadows.ShadowLooper;
 
 import org.chromium.android_webview.AwContentRestrictionManagerBridge;
+import org.chromium.android_webview.ContentRestrictionFailureFallbackReason;
 import org.chromium.android_webview.ManifestMetadataUtil;
 import org.chromium.android_webview.common.AwFeatures;
 import org.chromium.android_webview.test.util.ManifestMetadataMockApplicationContext;
@@ -40,6 +39,7 @@ import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.Feature;
 import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.Features.EnableFeatures;
+import org.chromium.base.test.util.HistogramWatcher;
 
 /** Unit tests for the AwContentRestrictionManagerBridge. */
 @RunWith(BaseRobolectricTestRunner.class)
@@ -74,10 +74,10 @@ public class AwContentRestrictionManagerBridgeTest {
     @Before
     public void setUp() throws Exception {
         mCallbackResult = null;
-        mContext = new ManifestMetadataMockApplicationContext(RuntimeEnvironment.application);
+        mContext = new ManifestMetadataMockApplicationContext(RuntimeEnvironment.getApplication());
         mMetadataServiceName = new ComponentName(mContext, METADATA_HOLDER_SERVICE_NAME);
         ContextUtils.initApplicationContextForTests(mContext);
-        AconfigFlaggedApiDelegate.setInstanceForTesting(mFlaggedApiDelegate);
+        AwContentRestrictionManagerBridge.setDelegateForTesting(mFlaggedApiDelegate);
         setEnableContentRestrictionMetadata(true);
 
         // Stub out ParcelFileDescriptor.createPipe() to prevent crashes on detachFd().
@@ -98,7 +98,6 @@ public class AwContentRestrictionManagerBridgeTest {
     }
 
     @Test
-    @SmallTest
     @Feature({"AndroidWebView"})
     @DisableFeatures({AwFeatures.WEBVIEW_CONTENT_RESTRICTION_SUPPORT})
     public void testIsContentRestrictionEnabled_featureDisabled() {
@@ -107,7 +106,6 @@ public class AwContentRestrictionManagerBridgeTest {
     }
 
     @Test
-    @SmallTest
     @Feature({"AndroidWebView"})
     @EnableFeatures({AwFeatures.WEBVIEW_CONTENT_RESTRICTION_SUPPORT})
     public void testIsContentRestrictionEnabled_featureEnabled() {
@@ -121,7 +119,6 @@ public class AwContentRestrictionManagerBridgeTest {
     }
 
     @Test
-    @SmallTest
     @Feature({"AndroidWebView"})
     @EnableFeatures({AwFeatures.WEBVIEW_CONTENT_RESTRICTION_SUPPORT})
     public void testIsContentRestrictionEnabled_appOptOut() {
@@ -131,7 +128,6 @@ public class AwContentRestrictionManagerBridgeTest {
     }
 
     @Test
-    @SmallTest
     @Feature({"AndroidWebView"})
     @EnableFeatures({AwFeatures.WEBVIEW_CONTENT_RESTRICTION_SUPPORT})
     public void testRequestContentClassification_invalidUrl() {
@@ -142,11 +138,10 @@ public class AwContentRestrictionManagerBridgeTest {
     }
 
     @Test
-    @SmallTest
     @Feature({"AndroidWebView"})
     @EnableFeatures({AwFeatures.WEBVIEW_CONTENT_RESTRICTION_SUPPORT})
     public void testRequestContentClassification_delegateMissing() {
-        AconfigFlaggedApiDelegate.setInstanceForTesting(null);
+        AwContentRestrictionManagerBridge.setDelegateForTesting(null);
         mBridge.requestContentClassification(
                 TEST_NAVIGATION_ID, TEST_URL, TEST_MIME_TYPE, mMockCallback);
         ShadowLooper.runUiThreadTasksIncludingDelayedTasks();
@@ -156,7 +151,6 @@ public class AwContentRestrictionManagerBridgeTest {
     }
 
     @Test
-    @SmallTest
     @Feature({"AndroidWebView"})
     @EnableFeatures({AwFeatures.WEBVIEW_CONTENT_RESTRICTION_SUPPORT})
     public void testRequestContentClassification_allowed() {
@@ -175,7 +169,6 @@ public class AwContentRestrictionManagerBridgeTest {
     }
 
     @Test
-    @SmallTest
     @Feature({"AndroidWebView"})
     @EnableFeatures({AwFeatures.WEBVIEW_CONTENT_RESTRICTION_SUPPORT})
     public void testRequestContentClassification_blocked() {
@@ -194,7 +187,6 @@ public class AwContentRestrictionManagerBridgeTest {
     }
 
     @Test
-    @SmallTest
     @Feature({"AndroidWebView"})
     @EnableFeatures({AwFeatures.WEBVIEW_CONTENT_RESTRICTION_SUPPORT})
     public void testRequestContentClassification_exception() {
@@ -214,7 +206,6 @@ public class AwContentRestrictionManagerBridgeTest {
     }
 
     @Test
-    @SmallTest
     @Feature({"AndroidWebView"})
     @EnableFeatures({AwFeatures.WEBVIEW_CONTENT_RESTRICTION_SUPPORT})
     public void testRequestContentClassification_withRequestBody() {
@@ -234,7 +225,6 @@ public class AwContentRestrictionManagerBridgeTest {
     }
 
     @Test
-    @SmallTest
     @Feature({"AndroidWebView"})
     @EnableFeatures({AwFeatures.WEBVIEW_CONTENT_RESTRICTION_SUPPORT})
     public void testDestroyCleansUpReadFileDescriptorMap() {
@@ -258,7 +248,6 @@ public class AwContentRestrictionManagerBridgeTest {
     }
 
     @Test
-    @SmallTest
     @Feature({"AndroidWebView"})
     @EnableFeatures({AwFeatures.WEBVIEW_CONTENT_RESTRICTION_SUPPORT})
     public void testSendShowRestrictedContentIntent_invalidUrl() {
@@ -267,17 +256,15 @@ public class AwContentRestrictionManagerBridgeTest {
     }
 
     @Test
-    @SmallTest
     @Feature({"AndroidWebView"})
     @EnableFeatures({AwFeatures.WEBVIEW_CONTENT_RESTRICTION_SUPPORT})
     public void testSendShowRestrictedContentIntent_delegateMissing() {
-        AconfigFlaggedApiDelegate.setInstanceForTesting(null);
+        AwContentRestrictionManagerBridge.setDelegateForTesting(null);
         Assert.assertFalse(mBridge.sendShowRestrictedContentIntent(TEST_URL));
         verifyNoInteractions(mFlaggedApiDelegate);
     }
 
     @Test
-    @SmallTest
     @Feature({"AndroidWebView"})
     @EnableFeatures({AwFeatures.WEBVIEW_CONTENT_RESTRICTION_SUPPORT})
     public void testSendShowRestrictedContentIntent_success() {
@@ -289,7 +276,6 @@ public class AwContentRestrictionManagerBridgeTest {
     }
 
     @Test
-    @SmallTest
     @Feature({"AndroidWebView"})
     @EnableFeatures({AwFeatures.WEBVIEW_CONTENT_RESTRICTION_SUPPORT})
     public void testSendShowRestrictedContentIntent_failure() {
@@ -298,5 +284,81 @@ public class AwContentRestrictionManagerBridgeTest {
                 .thenReturn(false);
         Assert.assertFalse(mBridge.sendShowRestrictedContentIntent(TEST_URL));
         verify(mFlaggedApiDelegate).sendShowRestrictedContentIntent(Mockito.eq(testUri));
+    }
+
+    @Test
+    @Feature({"AndroidWebView"})
+    @EnableFeatures({AwFeatures.WEBVIEW_CONTENT_RESTRICTION_SUPPORT})
+    public void testRecordAppOptIn() {
+        setEnableContentRestrictionMetadata(true);
+        when(mFlaggedApiDelegate.isContentRestrictionEnabled()).thenReturn(true);
+        try (HistogramWatcher watcher =
+                HistogramWatcher.newSingleRecordWatcher(
+                        "Android.WebView.ContentRestriction.AppOptIn", true)) {
+            mBridge.isContentRestrictionEnabled();
+        }
+    }
+
+    @Test
+    @Feature({"AndroidWebView"})
+    @EnableFeatures({AwFeatures.WEBVIEW_CONTENT_RESTRICTION_SUPPORT})
+    public void testRecordAppOptOut() {
+        setEnableContentRestrictionMetadata(false);
+        try (HistogramWatcher watcher =
+                HistogramWatcher.newSingleRecordWatcher(
+                        "Android.WebView.ContentRestriction.AppOptIn", false)) {
+            mBridge.isContentRestrictionEnabled();
+        }
+    }
+
+    @Test
+    @Feature({"AndroidWebView"})
+    @EnableFeatures({AwFeatures.WEBVIEW_CONTENT_RESTRICTION_SUPPORT})
+    public void testRecordFailureFallbackReason_invalidUrl() {
+        try (HistogramWatcher watcher =
+                HistogramWatcher.newSingleRecordWatcher(
+                        "Android.WebView.ContentRestriction.FailureFallbackReason",
+                        ContentRestrictionFailureFallbackReason.INVALID_URL)) {
+            mBridge.requestContentClassification(
+                    TEST_NAVIGATION_ID, /* url= */ null, TEST_MIME_TYPE, mMockCallback);
+        }
+    }
+
+    @Test
+    @Feature({"AndroidWebView"})
+    @EnableFeatures({AwFeatures.WEBVIEW_CONTENT_RESTRICTION_SUPPORT})
+    public void testRecordFailureFallbackReason_aconfigFlaggedApiDelegateMissing() {
+        AwContentRestrictionManagerBridge.setDelegateForTesting(null);
+        try (HistogramWatcher watcher =
+                HistogramWatcher.newSingleRecordWatcher(
+                        "Android.WebView.ContentRestriction.FailureFallbackReason",
+                        ContentRestrictionFailureFallbackReason
+                                .ACONFIG_FLAGGED_API_DELEGATE_MISSING)) {
+            mBridge.requestContentClassification(
+                    TEST_NAVIGATION_ID, TEST_URL, TEST_MIME_TYPE, mMockCallback);
+            ShadowLooper.runUiThreadTasksIncludingDelayedTasks();
+        }
+    }
+
+    @Test
+    @Feature({"AndroidWebView"})
+    @EnableFeatures({AwFeatures.WEBVIEW_CONTENT_RESTRICTION_SUPPORT})
+    public void testRecordFailureFallbackReason_classificationError() {
+        Promise<Boolean> promise = new Promise<>();
+        when(mFlaggedApiDelegate.requestContentRestrictionClassification(
+                        /* uri= */ Mockito.any(),
+                        /* requestBody= */ Mockito.eq(null),
+                        /* mimeType= */ Mockito.eq(TEST_MIME_TYPE),
+                        /* executor= */ Mockito.any()))
+                .thenReturn(promise);
+        try (HistogramWatcher watcher =
+                HistogramWatcher.newSingleRecordWatcher(
+                        "Android.WebView.ContentRestriction.FailureFallbackReason",
+                        ContentRestrictionFailureFallbackReason.CLASSIFICATION_ERROR)) {
+            mBridge.requestContentClassification(
+                    TEST_NAVIGATION_ID, TEST_URL, TEST_MIME_TYPE, mMockCallback);
+            promise.reject(new Exception("Mock Platform Exception"));
+            ShadowLooper.runUiThreadTasksIncludingDelayedTasks();
+        }
     }
 }

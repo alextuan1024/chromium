@@ -28,11 +28,11 @@ import org.chromium.chrome.browser.share.ShareDelegate;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabObserver;
 import org.chromium.chrome.browser.tab_ui.TabContentManager;
+import org.chromium.chrome.browser.tab_ui.undo_tab_close_snackbar.UndoBarThrottle;
 import org.chromium.chrome.browser.tabmodel.TabCreatorManager;
 import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
 import org.chromium.chrome.browser.theme.ThemeColorProvider;
-import org.chromium.chrome.browser.undo_tab_close_snackbar.UndoBarThrottle;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
 import org.chromium.components.browser_ui.widget.scrim.ScrimManager;
 import org.chromium.ui.modaldialog.ModalDialogManager;
@@ -132,16 +132,17 @@ public class TabGroupUiOneshotSupplier extends OneshotSupplierImpl<TabGroupUi> {
      * @param scrimManager The {@link ScrimManager} to control scrim view.
      * @param omniboxFocusStateSupplier Supplier to access the focus state of the omnibox.
      * @param bottomSheetController The {@link BottomSheetController} for the current activity.
-     * @param dataSharingTabManager The {@link} DataSharingTabManager managing communication between
+     * @param dataSharingTabManager The {@link DataSharingTabManager} managing communication between
      *     UI and DataSharing services.
      * @param tabContentManager Gives access to the tab content.
      * @param tabCreatorManager Manages creation of tabs.
      * @param layoutStateProviderSupplier Supplies the {@link LayoutStateProvider}.
      * @param modalDialogManager Used to show confirmation dialogs.
+     * @param themeColorProvider Used to provide the theme.
      * @param undoBarThrottle Used to suppress the undo bar.
+     * @param tabBookmarkerSupplier Supplier of {@link TabBookmarker} for bookmarking a given tab.
      * @param shareDelegateSupplier Supplies the {@link ShareDelegate} that will be used to share
      *     the tab's URL when the user selects the "Share" option.
-     * @param tabBookmarkerSupplier Supplier of {@link TabBookmarker} for bookmarking a given tab.
      */
     public TabGroupUiOneshotSupplier(
             ActivityTabProvider activityTabProvider,
@@ -160,28 +161,27 @@ public class TabGroupUiOneshotSupplier extends OneshotSupplierImpl<TabGroupUi> {
             ThemeColorProvider themeColorProvider,
             UndoBarThrottle undoBarThrottle,
             MonotonicObservableSupplier<TabBookmarker> tabBookmarkerSupplier,
-            Supplier<@Nullable ShareDelegate> shareDelegateSupplier) {
+            Supplier<ShareDelegate> shareDelegateSupplier) {
         Runnable setter =
                 () -> {
                     var tabGroupUi =
-                            TabManagementDelegateProvider.getDelegate()
-                                    .createTabGroupUi(
-                                            activity,
-                                            parentView,
-                                            browserControlsStateProvider,
-                                            scrimManager,
-                                            omniboxFocusStateSupplier,
-                                            bottomSheetController,
-                                            dataSharingTabManager,
-                                            tabModelSelector,
-                                            tabContentManager,
-                                            tabCreatorManager,
-                                            layoutStateProviderSupplier,
-                                            modalDialogManager,
-                                            themeColorProvider,
-                                            undoBarThrottle,
-                                            tabBookmarkerSupplier,
-                                            shareDelegateSupplier);
+                            TabGroupUiFactory.createTabGroupUi(
+                                    activity,
+                                    parentView,
+                                    browserControlsStateProvider,
+                                    scrimManager,
+                                    omniboxFocusStateSupplier,
+                                    bottomSheetController,
+                                    dataSharingTabManager,
+                                    tabModelSelector,
+                                    tabContentManager,
+                                    tabCreatorManager,
+                                    layoutStateProviderSupplier,
+                                    modalDialogManager,
+                                    themeColorProvider,
+                                    undoBarThrottle,
+                                    tabBookmarkerSupplier,
+                                    shareDelegateSupplier);
                     set(tabGroupUi);
                     maybeDestroyTabGroupUiCreationController();
                 };

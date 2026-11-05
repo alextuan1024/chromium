@@ -48,6 +48,8 @@
 
 #if BUILDFLAG(IS_WIN)
 #include "base/base_paths_win.h"
+#include "base/strings/strcat.h"
+#include "chrome/browser/ui/omnibox/omnibox_everywhere/omnibox_everywhere_shortcut_win.h"
 #endif
 
 namespace {
@@ -229,12 +231,44 @@ TEST_F(OmniboxEverywhereControllerTest, OnInvokeEphemeralModeToggling) {
   controller.OnInvoke(omnibox_everywhere::InvocationSource::kGlobalHotkey,
                       profile_.get(), GetContext());
   EXPECT_TRUE(controller.IsVisible());
+  EXPECT_TRUE(profile_->GetPrefs()->GetBoolean(
+      omnibox_everywhere::prefs::kNtpPromoCompleted));
 
   controller.OnInvoke(omnibox_everywhere::InvocationSource::kGlobalHotkey,
                       profile_.get(), GetContext());
   EXPECT_FALSE(controller.IsVisible());
 
   controller.OnInvoke(omnibox_everywhere::InvocationSource::kGlobalHotkey,
+                      profile_.get(), GetContext());
+  EXPECT_TRUE(controller.IsVisible());
+}
+
+TEST_F(OmniboxEverywhereControllerTest,
+       OnInvokeNtpPromoShowsWidgetWithoutMarkingUsed) {
+  TestingBrowserProcess::GetGlobal()->GetTestingLocalState()->SetBoolean(
+      omnibox_everywhere::prefs::kOmniboxEverywhereEphemeralModel, true);
+
+  FakeGlobalAcceleratorListener fake_listener;
+  omnibox_everywhere::OmniboxEverywhereController controller(
+      base::BindRepeating(
+          [](Profile* profile) -> std::unique_ptr<WebUIContentsWrapper> {
+            return std::make_unique<TestWebUIContentsWrapper>(profile);
+          }),
+      &fake_listener);
+
+  EXPECT_FALSE(controller.IsVisible());
+  EXPECT_FALSE(profile_->GetPrefs()->GetBoolean(
+      omnibox_everywhere::prefs::kNtpPromoCompleted));
+
+  controller.OnInvoke(omnibox_everywhere::InvocationSource::kNtpPromo,
+                      profile_.get(), GetContext());
+  EXPECT_TRUE(controller.IsVisible());
+  EXPECT_FALSE(profile_->GetPrefs()->GetBoolean(
+      omnibox_everywhere::prefs::kNtpPromoCompleted));
+
+  // Invoking again from the NTP promo keeps the widget visible instead of
+  // toggling it closed.
+  controller.OnInvoke(omnibox_everywhere::InvocationSource::kNtpPromo,
                       profile_.get(), GetContext());
   EXPECT_TRUE(controller.IsVisible());
 }
@@ -881,10 +915,15 @@ TEST_F(OmniboxEverywhereControllerTest, MAYBE_OnInvokeCommandLineShowsUI) {
             return std::make_unique<TestWebUIContentsWrapper>(profile);
           }));
 
+  EXPECT_FALSE(profile_->GetPrefs()->GetBoolean(
+      omnibox_everywhere::prefs::kNtpPromoCompleted));
+
   controller.OnInvoke(omnibox_everywhere::InvocationSource::kCommandLine,
                       profile_.get(), GetContext());
   EXPECT_EQ(profile_.get(), controller.target_profile());
   EXPECT_TRUE(controller.IsVisible());
+  EXPECT_TRUE(profile_->GetPrefs()->GetBoolean(
+      omnibox_everywhere::prefs::kNtpPromoCompleted));
 
   // Repeated kCommandLine invocation should keep the widget open (not
   // toggle-closed).
@@ -986,10 +1025,22 @@ TEST_F(OmniboxEverywhereControllerTest,
 
 
 TEST_F(OmniboxEverywhereControllerTest, PinToTaskbar) {
+  base::HistogramTester histogram_tester;
   omnibox_everywhere::OmniboxEverywhereController controller;
   base::test::TestFuture<bool> future;
   controller.OfferPinToTaskbar(future.GetCallback());
+#if BUILDFLAG(IS_WIN)
+  // The pin result depends on the OS, so only the Start Menu shortcut that
+  // pinning requires and the attempt on the Omnibox Everywhere channel are
+  // verified.
+  EXPECT_TRUE(future.Wait());
+  EXPECT_TRUE(base::PathExists(temp_start_menu_dir_.GetPath().Append(
+      base::StrCat({omnibox_everywhere::GetDisplayName(), L".lnk"}))));
+  histogram_tester.ExpectTotalCount(
+      "Windows.TaskbarPinResult.OmniboxEverywhere", 1);
+#else
   EXPECT_FALSE(future.Get());
+#endif
 }
 
 TEST_F(OmniboxEverywhereControllerTest,

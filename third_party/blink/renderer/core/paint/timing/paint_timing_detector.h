@@ -6,6 +6,7 @@
 #define THIRD_PARTY_BLINK_RENDERER_CORE_PAINT_TIMING_PAINT_TIMING_DETECTOR_H_
 
 #include "base/auto_reset.h"
+#include "base/check.h"
 #include "base/gtest_prod_util.h"
 #include "base/time/time.h"
 #include "third_party/blink/renderer/core/core_export.h"
@@ -27,7 +28,6 @@ class ImageResourceContent;
 class LayoutBoxModelObject;
 class LayoutObject;
 class MediaTiming;
-class Node;
 class PaintTiming;
 class PropertyTreeStateOrAlias;
 class StyleFetchedImage;
@@ -55,7 +55,7 @@ class CORE_EXPORT PaintTimingDetector
   // Callback from the paint layer when a background image has been painted.
   // Updates paint timing state for the element if needed.
   static void NotifyBackgroundImagePaint(
-      Node&,
+      const LayoutObject& image_layout_object,
       const Image&,
       const StyleImage&,
       const PropertyTreeStateOrAlias& current_paint_chunk_properties,
@@ -65,7 +65,7 @@ class CORE_EXPORT PaintTimingDetector
   // poster image) has been painted. Updates paint timing state for the element
   // if needed.
   static void NotifyImagePaint(
-      const LayoutObject&,
+      const LayoutObject& image_layout_object,
       const gfx::Size& intrinsic_size,
       const MediaTiming& media_timing,
       const PropertyTreeStateOrAlias& current_paint_chunk_properties,
@@ -96,6 +96,7 @@ class CORE_EXPORT PaintTimingDetector
   void NotifyImageFinished(const LayoutObject&, const MediaTiming*);
   void NotifyBackgroundImageFinished(const StyleFetchedImage*);
   void NotifyImageRemoved(const LayoutObject&, const ImageResourceContent*);
+  void NotifyWillPaint();
   void NotifyPaintFinished();
 
   void DidChangePerformanceTiming();
@@ -118,15 +119,15 @@ class CORE_EXPORT PaintTimingDetector
   }
   PaintTiming& GetPaintTiming() { return *paint_timing_; }
 
-  // Reports the largest image and text candidates painted under non-nested 0
-  // opacity layer.
-  void ReportIgnoredContent();
-
   PaintTimingVisualizer* Visualizer() { return visualizer_.get(); }
 
  private:
   FRIEND_TEST_ALL_PREFIXES(ImagePaintTimingDetectorTest,
                            LargestImagePaint_Detached_Frame);
+
+  // Reports the largest image and text candidates painted under non-nested 0
+  // opacity layer.
+  void ReportIgnoredContent();
 
   // Returns the `LocalDOMWindow` associated with the relevant document, or
   // nullptr if the associated frame is detached.
@@ -167,8 +168,8 @@ class ScopedPaintTimingDetectorBlockPaintHook {
 
  public:
   // This constructor does nothing by itself. It will only set relevant
-  // variables when EmplaceIfNeeded() is called successfully. The lifetime of
-  // the object helps keeping the lifetime of |reset_top_| and |data_| to the
+  // variables when EmplaceIfNeeded() or ResetTop() is called. The lifetime of
+  // the object helps keeping the lifetime of `reset_top_` and `data_` to the
   // appropriate scope.
   ScopedPaintTimingDetectorBlockPaintHook() {}
   ScopedPaintTimingDetectorBlockPaintHook(
@@ -178,6 +179,12 @@ class ScopedPaintTimingDetectorBlockPaintHook {
 
   void EmplaceIfNeeded(const LayoutBoxModelObject&,
                        const PropertyTreeStateOrAlias&);
+  // Resets `top_` to nullptr for the lifetime of this hook, restoring the
+  // previous `top_` when this object goes out of scope.
+  void ResetTop() {
+    CHECK(!reset_top_);
+    reset_top_.emplace(&top_, nullptr);
+  }
   ~ScopedPaintTimingDetectorBlockPaintHook();
 
  private:

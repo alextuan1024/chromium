@@ -18,6 +18,7 @@
 #include "content/public/browser/web_contents.h"
 #include "ui/base/accelerators/accelerator.h"
 #include "ui/base/interaction/element_tracker.h"
+#include "ui/base/mojom/window_open_disposition.mojom-forward.h"
 #include "ui/base/unowned_user_data/scoped_unowned_user_data.h"
 #include "ui/color/color_provider_key.h"
 #include "ui/color/color_provider_source.h"
@@ -93,6 +94,7 @@ class WebUIBrowserWindow : public BrowserWindow,
   autofill::AutofillBubbleHandler* GetAutofillBubbleHandler() override;
   LocationBar* GetLocationBar() const override;
   ui::AcceleratorProvider* GetAcceleratorProvider() override;
+  PinnedToolbarActions* GetPinnedToolbarActions() override;
   void SetFocusToLocationBar(bool is_user_initiated) override;
   void UpdateReloadStopState(bool is_loading, bool force) override;
   void UpdateToolbar(content::WebContents* contents) override;
@@ -102,7 +104,8 @@ class WebUIBrowserWindow : public BrowserWindow,
   void FocusToolbar() override;
   void ToolbarSizeChanged(bool is_animating) override;
   void TabDraggingStatusChanged(bool is_dragging) override;
-  void LinkOpeningFromGesture(WindowOpenDisposition disposition) override;
+  void LinkOpeningFromGesture(
+      ui::mojom::WindowOpenDisposition disposition) override;
   void FocusAppMenu() override;
   void OnFocusBookmarksToolbar() override;
   bool IsTabStripEditable() const override;
@@ -149,8 +152,6 @@ class WebUIBrowserWindow : public BrowserWindow,
   web_modal::WebContentsModalDialogHost* GetWebContentsModalDialogHostFor(
       content::WebContents* web_contents) override;
   void ShowAvatarBubbleFromAvatarButton(bool is_source_accelerator) override;
-  void MaybeShowProfileSwitchIPH() override;
-  void MaybeShowSupervisedUserProfileSignInIPH() override;
   void ShowHatsDialog(
       const std::string& site_id,
       const std::optional<std::string>& hats_histogram_name,

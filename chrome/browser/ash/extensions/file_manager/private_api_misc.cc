@@ -14,8 +14,6 @@
 #include "ash/constants/ash_extension_constants.h"
 #include "ash/constants/ash_features.h"
 #include "ash/constants/ash_pref_names.h"
-#include "ash/multi_user/multi_user_window_manager.h"
-#include "ash/shell.h"
 #include "ash/webui/settings/public/constants/routes_util.h"
 #include "base/check_deref.h"
 #include "base/command_line.h"
@@ -54,16 +52,13 @@
 #include "chrome/browser/ash/policy/skyvault/policy_utils.h"
 #include "chrome/browser/ash/profiles/profile_helper.h"
 #include "chrome/browser/browser_process.h"
-#include "chrome/browser/chromeos/upload_office_to_cloud/upload_office_to_cloud.h"
 #include "chrome/browser/devtools/devtools_window.h"
 #include "chrome/browser/download/download_dir_util.h"
 #include "chrome/browser/extensions/devtools_util.h"
 #include "chrome/browser/feedback/show_feedback_page.h"
-#include "chrome/browser/net/system_network_context_manager.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/profiles/profiles_state.h"
-#include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/ui/ash/multi_user/multi_user_util.h"
 #include "chrome/browser/ui/ash/system_web_apps/system_web_app_ui_utils.h"
 #include "chrome/browser/ui/chrome_pages.h"
@@ -86,8 +81,6 @@
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/page_zoom.h"
 #include "extensions/browser/api/file_handlers/mime_util.h"
-#include "extensions/browser/app_window/app_window.h"
-#include "extensions/browser/app_window/app_window_registry.h"
 #include "storage/common/file_system/file_system_types.h"
 #include "storage/common/file_system/file_system_util.h"
 #include "ui/base/webui/web_ui_util.h"
@@ -111,14 +104,6 @@ constexpr base::TimeDelta kMountCrostiniSlowOperationThreshold =
 constexpr base::TimeDelta kMountCrostiniVerySlowOperationThreshold =
     base::Seconds(30);
 
-// Obtains the current app window.
-AppWindow* GetCurrentAppWindow(ExtensionFunction* function) {
-  content::WebContents* const contents = function->GetSenderWebContents();
-  return contents ? AppWindowRegistry::Get(function->browser_context())
-                        ->GetAppWindowForWebContents(contents)
-                  : nullptr;
-}
-
 std::vector<ProfileInfo> GetLoggedInProfileInfoList() {
   CHECK(user_manager::UserManager::IsInitialized(), base::NotFatalUntil::M160);
   const std::vector<Profile*>& profiles =
@@ -141,8 +126,7 @@ std::vector<ProfileInfo> GetLoggedInProfileInfoList() {
 
     // Make a ProfileInfo.
     ProfileInfo profile_info;
-    profile_info.profile_id =
-        multi_user_util::GetAccountIdFromProfile(profile).GetUserEmail();
+    profile_info.profile_id = user->GetAccountId().GetUserEmail();
     profile_info.display_name = base::UTF16ToUTF8(user->GetDisplayName());
     // TODO(hirono): Remove the property from the profile_info.
     profile_info.is_current_profile = true;
@@ -432,22 +416,6 @@ ExtensionFunction::ResponseAction FileManagerPrivateZoomFunction::Run() {
 ExtensionFunction::ResponseAction FileManagerPrivateGetProfilesFunction::Run() {
   fmp::ProfilesResponse response;
   response.profiles = GetLoggedInProfileInfoList();
-
-  // Obtains the display profile ID.
-  AppWindow* const app_window = GetCurrentAppWindow(this);
-  auto* const window_manager = ash::Shell::Get()->multi_user_window_manager();
-  const AccountId current_profile_id = multi_user_util::GetAccountIdFromProfile(
-      Profile::FromBrowserContext(browser_context()));
-  const AccountId display_profile_id =
-      window_manager && app_window ? window_manager->GetUserPresentingWindow(
-                                         app_window->GetNativeWindow())
-                                   : EmptyAccountId();
-
-  response.current_profile_id = current_profile_id.GetUserEmail();
-  response.displayed_profile_id = display_profile_id.is_valid()
-                                      ? display_profile_id.GetUserEmail()
-                                      : current_profile_id.GetUserEmail();
-
   return RespondNow(WithArguments(response.ToValue()));
 }
 
@@ -714,8 +682,9 @@ FileManagerPrivateMountCrostiniFunction::Run() {
   // files into Linux files should still work.
   Profile* profile =
       Profile::FromBrowserContext(browser_context())->GetOriginalProfile();
-  CHECK(crostini::CrostiniFeatures::Get()->IsEnabled(profile),
-        base::NotFatalUntil::M160);
+  // TODO(crbug.com/568472035): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
+  DCHECK(crostini::CrostiniFeatures::Get()->IsEnabled(profile));
   crostini::CrostiniManager::GetForProfile(profile)->RestartCrostini(
       crostini::DefaultContainerId(),
       base::BindOnce(&FileManagerPrivateMountCrostiniFunction::RestartCallback,

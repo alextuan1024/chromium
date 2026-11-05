@@ -52,11 +52,6 @@ void TruncateStringToSize(base::FilePath::StringType* string, size_t size) {
 
 namespace ui {
 
-void SelectFileDialog::Listener::MultiFilesSelected(
-    const std::vector<SelectedFileInfo>& files) {
-  NOTREACHED();
-}
-
 SelectFileDialog::FileTypeInfo::FileTypeInfo() = default;
 
 SelectFileDialog::FileTypeInfo::FileTypeInfo(const FileTypeInfo& other) =
@@ -85,6 +80,17 @@ void SelectFileDialog::SetFactory(
     std::unique_ptr<ui::SelectFileDialogFactory> factory) {
   delete dialog_factory_;
   dialog_factory_ = factory.release();
+}
+
+ScopedSetSelectFileDialogFactory::ScopedSetSelectFileDialogFactory(
+    std::unique_ptr<SelectFileDialogFactory> factory)
+    : previous_factory_(dialog_factory_) {
+  dialog_factory_ = factory.release();
+}
+
+ScopedSetSelectFileDialogFactory::~ScopedSetSelectFileDialogFactory() {
+  delete dialog_factory_;
+  dialog_factory_ = previous_factory_.release();
 }
 
 // static
@@ -134,7 +140,7 @@ void SelectFileDialog::SelectFile(
     const base::FilePath::StringType& default_extension,
     gfx::NativeWindow owning_window,
     const GURL* caller) {
-  DCHECK(listener_);
+  CHECK(listener_, base::NotFatalUntil::M163);
 
   if (select_file_policy_.get() &&
       !select_file_policy_->CanOpenSelectFileDialog()) {
@@ -163,7 +169,7 @@ bool SelectFileDialog::HasMultipleFileTypeChoices() {
 SelectFileDialog::SelectFileDialog(Listener* listener,
                                    std::unique_ptr<ui::SelectFilePolicy> policy)
     : listener_(listener), select_file_policy_(std::move(policy)) {
-  DCHECK(listener_);
+  CHECK(listener_, base::NotFatalUntil::M163);
 }
 
 SelectFileDialog::~SelectFileDialog() {}

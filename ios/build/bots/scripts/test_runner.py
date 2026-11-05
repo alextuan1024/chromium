@@ -9,7 +9,7 @@ import signal
 import sys
 
 import collections
-import json
+import json  # noqa: F401
 import logging
 import os
 import psutil
@@ -17,7 +17,7 @@ import shutil
 import subprocess
 import threading
 import time
-from typing import List, Optional
+from typing import List, Optional  # noqa: F401
 
 import constants
 import exception_utils
@@ -25,7 +25,7 @@ import file_util
 import gtest_utils
 import mac_util
 import iossim_util
-import shard_util
+import shard_util  # noqa: F401
 import test_apps
 from test_result_util import ResultCollection, TestResult, TestStatus
 import test_runner_errors
@@ -38,7 +38,7 @@ CHROMIUM_SRC_DIR = os.path.abspath(os.path.join(THIS_DIR, '../../../..'))
 sys.path.append(
   os.path.abspath(os.path.join(CHROMIUM_SRC_DIR, 'build/util/lib/proto'))
 )
-import measures
+import measures  # noqa: E402
 
 LOGGER = logging.getLogger(__name__)
 DERIVED_DATA = os.path.expanduser('~/Library/Developer/Xcode/DerivedData')
@@ -110,11 +110,11 @@ class PlugInsNotFoundError(TestRunnerError):
 
 
 class SimulatorNotFoundError(TestRunnerError):
-  """The given simulator binary was not found."""
+  """The given simulator was not found."""
 
-  def __init__(self, iossim_path):
+  def __init__(self, message):
     super(SimulatorNotFoundError, self).__init__(
-      f'Simulator does not exist: {iossim_path}'
+      f'Simulator does not exist: {message}'
     )
 
 
@@ -677,7 +677,7 @@ class TestRunner(object):
       )
     elif isinstance(self, DeviceTestRunner):
       # Pull the file from device first before parsing.
-      if parser.compiled_tests_file_path != None:
+      if parser.compiled_tests_file_path != None:  # noqa: E711
         LOGGER.info('Pulling test location file from iOS device Documents...')
         file_name = os.path.split(parser.compiled_tests_file_path)[1]
         pull_cmd = [
@@ -703,6 +703,127 @@ class TestRunner(object):
 
     return parser.GetResultCollection()
 
+  def _list_runnable_gtests(self, destination: str) -> List[str]:
+    """Runs the test binary with --gtest_list_tests to get all runnable tests.
+
+    Args:
+      destination: (str) Destination of the running device/simulator.
+
+    Returns:
+      Ordered list of runnable full test names ('Suite.Test').
+    """
+    list_test_app = self.get_launch_test_app()
+    list_test_app.remove_gtest_sharding_env_vars()
+    list_test_app.repeat_count = 1
+    if '--gtest_list_tests' not in list_test_app.test_args:
+      list_test_app.test_args.append('--gtest_list_tests')
+    list_out_dir = os.path.join(
+      self.out_dir, f'gtest_list_tests_{int(time.time())}'
+    )
+    cmd = self.get_launch_command(list_test_app, list_out_dir, destination)
+    proc = self.start_proc(cmd)
+    old_handler = self.set_sigterm_handler(
+      lambda _signum, _frame: self.handle_sigterm(proc)
+    )
+    out = print_process_output(
+      proc, 'xcodebuild', timeout=self.readline_timeout
+    )
+    proc.wait()
+    self.set_sigterm_handler(old_handler)
+    sys.stdout.flush()
+    also_run_disabled = (
+      '--gtest_also_run_disabled_tests' in list_test_app.test_args
+    )
+    return gtest_utils.parse_gtest_list_tests(
+      out, also_run_disabled=also_run_disabled
+    )
+
+  def _configure_crash_resume_test_app(
+    self,
+    test_app: 'test_apps.GTestsApp',
+    overall_result: ResultCollection,
+    crashed_tests: List[str],
+    destination: str,
+  ) -> bool:
+    """Configures |test_app| filters and env vars to resume after a crash.
+
+    When sharding is enabled (GTEST_TOTAL_SHARDS > 1), GoogleTest evaluates
+    --gtest_filter before assigning tests to shards (i % total_shards ==
+    shard_index). To keep GTEST_SHARD_INDEX and GTEST_TOTAL_SHARDS intact
+    without shifting post-filter runnable test indices across shards, this
+    method excludes a prefix of runnable tests whose length is an exact
+    multiple of total_shards.
+
+    Returns:
+      True if the suite should be relaunched to run remaining tests, or False
+      if no tests remain in the current shard after the crash.
+    """
+    try:
+      total_shards = int(test_app.env_vars.get('GTEST_TOTAL_SHARDS') or 1)
+    except (TypeError, ValueError):
+      total_shards = 1
+
+    crashed_idx = None
+    if total_shards > 1:
+      if self._all_runnable_tests is None:
+        self._all_runnable_tests = self._list_runnable_gtests(destination)
+        self._runnable_test_indices = {
+          t: i for i, t in enumerate(self._all_runnable_tests)
+        }
+      crashed_idx = max(
+        (
+          self._runnable_test_indices[t]
+          for t in crashed_tests
+          if t in self._runnable_test_indices
+        ),
+        default=None,
+      )
+      if crashed_idx is None:
+        LOGGER.warning(
+          'Could not locate crashed test %s in --gtest_list_tests '
+          'output; falling back to unsharded crash resume.',
+          crashed_tests,
+        )
+    if crashed_idx is not None:
+      # GoogleTest's round-robin sharding (index % total_shards == shard_index)
+      # partitions runnable tests into contiguous blocks of size total_shards,
+      # with at most one test per shard in each block. Because GoogleTest
+      # evaluates --gtest_filter *before* computing (index % total_shards),
+      # we must exclude a prefix whose length is an exact multiple of
+      # total_shards so that all remaining un-excluded tests keep their
+      # original (index % total_shards) modulo.
+      #
+      # Padding from (crashed_idx + 1) up to excluded_prefix_len only excludes
+      # the remaining tests in the crashed test's block, all of which belong
+      # to *other* shards (never to the current shard). This restores
+      # (index % total_shards == 0) alignment at the start of the next block
+      # so the current shard resumes at its very next test.
+      excluded_prefix_len = ((crashed_idx // total_shards) + 1) * total_shards
+      if excluded_prefix_len >= len(self._all_runnable_tests):
+        LOGGER.info(
+          'No remaining tests in shard after %s; skipping suite '
+          'resume and proceeding to individual test retries.',
+          crashed_tests,
+        )
+        return False
+      test_app.excluded_tests = self._all_runnable_tests[:excluded_prefix_len]
+      # test_apps.get_gtest_filter() uses |crashed_tests| to identify suites
+      # that must not be collapsed into a "Suite.*" wildcard when
+      # len(excluded_tests) > MAX_GTEST_FILTER_LENGTH. Because tests in each
+      # suite are contiguous in --gtest_list_tests, the suite at the boundary
+      # of the excluded prefix (excluded_prefix_len - 1) is the only suite
+      # that may be partially excluded; collapsing it to "Suite.*" would
+      # exclude the rest of that suite and break modulo alignment.
+      test_app.crashed_tests = [
+        self._all_runnable_tests[excluded_prefix_len - 1]
+      ]
+      return True
+
+    test_app.excluded_tests = list(overall_result.all_test_names())
+    test_app.crashed_tests = crashed_tests
+    test_app.remove_gtest_sharding_env_vars()
+    return True
+
   def launch(self):
     """Launches the test app."""
     self.set_up()
@@ -711,6 +832,8 @@ class TestRunner(object):
     overall_result = ResultCollection()
     destination = 'id=%s' % self.udid
     test_app = self.get_launch_test_app()
+    self._all_runnable_tests = None
+    self._runnable_test_indices = {}
     out_dir = os.path.join(self.out_dir, 'TestResults')
     cmd = self.get_launch_command(test_app, out_dir, destination, self.clones)
 
@@ -767,16 +890,13 @@ class TestRunner(object):
           # If the app crashes during a specific test case, then resume at the
           # next test case. This is achieved by filtering out every test case
           # which has already run.
-          LOGGER.warning(
-            'Crashed during %s, resuming...\n', list(result.crashed_tests())
-          )
-          test_app.excluded_tests = list(overall_result.all_test_names())
-          test_app.crashed_tests = list(result.crashed_tests())
-          # Changing test filter will change selected gtests in this shard.
-          # Thus, sharding env vars have to be cleared to ensure needed tests
-          # are run. This means there might be duplicate same tests across
-          # the shards.
-          test_app.remove_gtest_sharding_env_vars()
+          crashed_tests = list(result.crashed_tests())
+          LOGGER.warning('Crashed during %s, resuming...\n', crashed_tests)
+          if not self._configure_crash_resume_test_app(
+            test_app, overall_result, crashed_tests, destination
+          ):
+            overall_result.crashed = False
+            break
           retry_out_dir = os.path.join(
             self.out_dir, f'retry_after_crash_{int(time.time())}'
           )
@@ -796,6 +916,7 @@ class TestRunner(object):
 
       # Retry failed test cases.
       test_app.excluded_tests = []
+      test_app.crashed_tests = []
       never_expected_tests = overall_result.never_expected_tests()
       if (
         self.retries
@@ -853,20 +974,15 @@ class TestRunner(object):
 
 
 class SimulatorTestRunner(TestRunner):
-  """Class for running tests on iossim."""
+  """Class for running tests on iOS simulator."""
 
-  def __init__(
-    self, app_path, iossim_path, platform, version, out_dir, **kwargs
-  ):
+  def __init__(self, app_path, platform, version, out_dir, **kwargs):
     """Initializes a new instance of this class.
 
     Args:
       app_path: Path to the compiled .app or .ipa to run.
-      iossim_path: Path to the compiled iossim binary to use.
-      platform: Name of the platform to simulate. Supported values can be found
-        by running "iossim -l". e.g. "iPhone 5s", "iPad Retina".
-      version: Version of iOS the platform should be running. Supported values
-        can be found by running "iossim -l". e.g. "9.3", "8.2", "7.1".
+      platform: Name of the platform to simulate. e.g. "iPhone 15", "iPad Air".
+      version: Version of iOS the platform should be running. e.g. "17.0".
       out_dir: Directory to emit test data into.
       (Following are potential args in **kwargs)
       env_vars: List of environment variables to pass to the test itself.
@@ -889,16 +1005,18 @@ class SimulatorTestRunner(TestRunner):
     """
     super(SimulatorTestRunner, self).__init__(app_path, out_dir, **kwargs)
 
-    iossim_path = os.path.abspath(iossim_path)
-    if not os.path.exists(iossim_path):
-      raise SimulatorNotFoundError(iossim_path)
-
     self.homedir = ''
-    self.iossim_path = iossim_path
     self.platform = platform
     self.start_time = None
     self.version = version
     self.clones = kwargs.get('clones') or 1
+    if self.platform and 'duo' in self.platform.lower() and self.clones > 1:
+      LOGGER.info(
+        'Forcing clones=1 for %s because parallel simulator clones interfere '
+        'with vendor HID posture and orientation events.',
+        self.platform,
+      )
+      self.clones = 1
     self.use_simulator_cache = kwargs.get('use_simulator_cache') or False
     self.udid = iossim_util.get_simulator(
       self.platform, self.version, self.out_dir, self.use_simulator_cache
@@ -958,15 +1076,17 @@ class SimulatorTestRunner(TestRunner):
     # we can compare and fetch crash reports from this run later on.
     self.start_time = time.strftime('%Y-%m-%d-%H%M%S', time.localtime())
 
-  def extract_test_data(self):
+  def extract_test_data(self, bundle_id: str | None = None):
     """Extracts data emitted by the test."""
     if hasattr(self, 'use_clang_coverage') and self.use_clang_coverage:
       file_util.move_raw_coverage_data(self.udid, self.out_dir)
 
+    target_bundle_id = bundle_id or self.cfbundleid
+    homedir = self.homedir or self.get_home_directory()
     # Find the Documents directory of the test app. The app directory names
     # don't correspond with any known information, so we have to examine them
     # all until we find one with a matching CFBundleIdentifier.
-    apps_dir = os.path.join(self.homedir, 'Containers', 'Data', 'Application')
+    apps_dir = os.path.join(homedir, 'Containers', 'Data', 'Application')
     if os.path.exists(apps_dir):
       for appid_dir in os.listdir(apps_dir):
         docs_dir = os.path.join(apps_dir, appid_dir, 'Documents')
@@ -988,8 +1108,12 @@ class SimulatorTestRunner(TestRunner):
             .decode('utf-8')
             .rstrip()
           )
-          if cfbundleid == self.cfbundleid:
-            shutil.copytree(docs_dir, os.path.join(self.out_dir, 'Documents'))
+          if cfbundleid == target_bundle_id:
+            shutil.copytree(
+              docs_dir,
+              os.path.join(self.out_dir, 'Documents'),
+              dirs_exist_ok=True,
+            )
             return
 
   def retrieve_crash_reports(self):
@@ -1192,14 +1316,15 @@ class DeviceTestRunner(TestRunner):
     self.wipe_derived_data()
     self.install_app()
 
-  def extract_test_data(self):
+  def extract_test_data(self, bundle_id: str | None = None):
     """Extracts data emitted by the test."""
+    target_bundle_id = bundle_id or self.cfbundleid
     cmd = [
       'idevicefs',
       '--udid',
       self.udid,
       'pull',
-      f'@{self.cfbundleid}/Documents',
+      f'@{target_bundle_id}/Documents',
       os.path.join(self.out_dir, 'Documents'),
     ]
     try:

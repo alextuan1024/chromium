@@ -35,6 +35,7 @@
 
 #if BUILDFLAG(IS_ANDROID)
 #include "base/android/input_hint_checker.h"
+#include "base/android/yield_to_looper_checker.h"
 #endif
 
 #if BUILDFLAG(IS_WIN)
@@ -43,7 +44,20 @@
 
 namespace base::features {
 
+namespace {
+
+// State of the `kI18nOptimizations` feature, to be updated after the feature
+// list is available. All operations use `std::memory_order_relaxed` because
+// there are no dependent memory accesses.
+std::atomic_bool g_i18n_optimizations{true};
+
+}  // namespace
+
 // Alphabetical:
+
+// Use Rust base64 (simd) for base::Base64Encode() and
+// base::Base64EncodeAppend().
+BASE_FEATURE(kBase64SimdBase64Encode, base::FEATURE_DISABLED_BY_DEFAULT);
 
 // Controls caching within BASE_FEATURE_PARAM(). This is feature-controlled
 // so that ScopedFeatureList can disable it to turn off caching.
@@ -56,6 +70,10 @@ BASE_FEATURE(kFastFilePathIsParent, FEATURE_ENABLED_BY_DEFAULT);
 
 // Enables residency tagging in the heap profiler.
 BASE_FEATURE(kHeapProfilerIncludeResidency, FEATURE_DISABLED_BY_DEFAULT);
+
+// Enables optimizations in //base/i18n (e.g. fast-pathing TimeFormatAsIso8601
+// and avoiding ICU resource bundle lookups for TimeZone::GMT/Unknown).
+BASE_FEATURE(kI18nOptimizations, FEATURE_ENABLED_BY_DEFAULT);
 
 // Use non default low memory device threshold.
 // Value should be given via |LowMemoryDeviceThresholdMB|.
@@ -93,9 +111,6 @@ BASE_FEATURE_PARAM(std::string,
 // as the thread pool.
 BASE_FEATURE(kScopedBestEffortExecutionFenceForTaskQueue,
              base::FEATURE_DISABLED_BY_DEFAULT);
-
-// Use simdutf for base::Base64Encode() and base::Base64EncodeAppend().
-BASE_FEATURE(kSimdutfBase64Encode, base::FEATURE_DISABLED_BY_DEFAULT);
 
 // Whether to restrict the max gap between the frame pointer and the stack end
 // for stack scanning. If the gap is beyond the given gap threshold, the stack
@@ -158,6 +173,10 @@ BASE_FEATURE(kRebindingChildServiceConnectionController,
 // Use a batch API to rebind service connections.
 BASE_FEATURE(kRebindServiceBatchApi, FEATURE_DISABLED_BY_DEFAULT);
 
+// Kill switch for checking IME visibility directly in split-screen mode when
+// the bottom IME inset is 0.
+BASE_FEATURE(kSplitScreenImeInsetVisibility, FEATURE_DISABLED_BY_DEFAULT);
+
 // Use shared service connection to rebind a service binding to update the LRU
 // in the ProcessList of OomAdjuster.
 BASE_FEATURE(kUseSharedRebindServiceConnection, FEATURE_ENABLED_BY_DEFAULT);
@@ -201,7 +220,7 @@ BASE_FEATURE(kUseTerminationStatusMemoryExhaustion, FEATURE_ENABLED_BY_DEFAULT);
 
 // Optimize text decoding by using FindFirstNonASCII to find and copy ASCII
 // content.
-BASE_FEATURE(kUtfConversionAsciiFastPath, FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kUtfConversionAsciiFastPath, FEATURE_ENABLED_BY_DEFAULT);
 
 #if BUILDFLAG(IS_WIN)
 // When enabled, use ABOVE_NORMAL_PRIORITY_CLASS for Priority::kUserBlocking on
@@ -213,11 +232,15 @@ BASE_FEATURE(kUserBlockingAboveNormalPriority, FEATURE_DISABLED_BY_DEFAULT);
 // last error code.
 BASE_FEATURE(kRetryCreateFileMappingOnCommitLimit, FEATURE_DISABLED_BY_DEFAULT);
 
-
 // Prevents base::DeletePathRecursively on Windows from traversing NTFS reparse
 // points (such as directory junctions). This protects against TOCTOU
 // vulnerabilities and prevents deleting files outside the target directory.
 BASE_FEATURE(kPreventReparsePointTraversal, FEATURE_ENABLED_BY_DEFAULT);
+
+// When enabled, FilePersistentMemoryAllocator calls ::FlushFileBuffers() on the
+// underlying file handle during synchronous flushes to commit the cache buffers
+// to physical storage.
+BASE_FEATURE(kFlushFileBuffersOnSyncFlush, FEATURE_DISABLED_BY_DEFAULT);
 #endif  // BUILDFLAG(IS_WIN)
 
 #if BUILDFLAG(IS_POSIX)
@@ -233,7 +256,13 @@ BASE_FEATURE_PARAM(int, kSpinCountArm, &kBaseLockTrySpin, "spin_count_arm", 0);
 #endif  // defined(ARCH_CPU_X86_FAMILY)
 #endif  // BUILDFLAG(IS_POSIX)
 
+bool IsI18nOptimizationsEnabled() {
+  return g_i18n_optimizations.load(std::memory_order_relaxed);
+}
+
 void Init() {
+  g_i18n_optimizations.store(FeatureList::IsEnabled(kI18nOptimizations),
+                             std::memory_order_relaxed);
   strings_internal::InitializeUtfStringConversionsFeatures();
 #if BUILDFLAG(IS_POSIX)
   base::Lock::InitializeFeatures();
@@ -267,6 +296,7 @@ void Init() {
 
 #if BUILDFLAG(IS_ANDROID)
   android::InputHintChecker::InitializeFeatures();
+  android::YieldToLooperChecker::GetInstance().InitializeFeatures();
 #endif
 
 #if BUILDFLAG(IS_WIN)

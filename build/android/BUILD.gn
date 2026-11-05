@@ -21,6 +21,7 @@ if (enable_java_templates) {
 
   generate_build_config_srcjar("build_config_for_robolectric_srcjar") {
     testonly = true
+    is_robolectric = true
   }
 
   write_native_libraries_java("native_libraries_gen") {
@@ -94,14 +95,10 @@ if (enable_java_templates) {
     robolectric_binary("build_junit_tests") {
       # Test has no JNI, so skip JNI Generator step.
       resources_package = "org.chromium.build"
-      sources = [
-        "junit/src/org/chromium/build/AndroidAssetsTest.java",
-        "junit/src/org/chromium/build/IncrementalJavacTest.java",
-      ]
+      sources = [ "junit/src/org/chromium/build/AndroidAssetsTest.java" ]
       deps = [
         ":junit_test_assets",
         ":junit_test_resources",
-        "//build/android/test/incremental_javac_gn:no_signature_change_prebuilt_java",
         "//third_party/junit",
       ]
     }
@@ -248,6 +245,30 @@ group("test_runner_device_support") {
 
 python_library("logdog_wrapper_py") {
   pydeps_file = "test_wrapper/logdog_wrapper.pydeps"
+}
+
+python_binary("compile_kt") {
+  script = "gyp/compile_kt.py"
+}
+
+python_binary("create_r_java") {
+  script = "gyp/create_r_java.py"
+}
+
+python_binary("dex") {
+  script = "gyp/dex.py"
+}
+
+python_binary("errorprone") {
+  script = "gyp/errorprone.py"
+}
+
+python_binary("turbine") {
+  script = "gyp/turbine.py"
+}
+
+python_binary("write_build_config") {
+  script = "gyp/write_build_config.py"
 }
 
 python_library("resource_sizes_py") {

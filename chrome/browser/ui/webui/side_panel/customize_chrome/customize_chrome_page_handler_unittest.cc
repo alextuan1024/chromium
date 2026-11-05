@@ -13,6 +13,7 @@
 
 #include "base/files/file.h"
 #include "base/files/file_path.h"
+#include "base/i18n/tag_converters.h"
 #include "base/memory/raw_ptr.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/bind.h"
@@ -43,8 +44,8 @@
 #include "chrome/test/base/testing_profile.h"
 #include "components/application_locale_storage/application_locale_storage.h"
 #include "components/keyed_service/core/keyed_service.h"
+#include "components/ntp_tiles/enterprise/enterprise_shortcuts_pref_names.h"
 #include "components/ntp_tiles/features.h"
-#include "components/ntp_tiles/pref_names.h"
 #include "components/ntp_tiles/tile_type.h"
 #include "components/optimization_guide/core/optimization_guide_features.h"
 #include "components/search/ntp_features.h"
@@ -314,7 +315,8 @@ class CustomizeChromePageHandlerTest : public testing::Test {
     EXPECT_EQ(handler_.get(), ntp_background_service_observer_);
     EXPECT_EQ(handler_.get(), ntp_custom_background_service_observer_);
 
-    application_locale_storage_->Set("foo");
+    application_locale_storage_->SetTag(
+        base::i18n::GetLanguageTagFromString("foo").value());
 
     scoped_feature_list_.Reset();
     task_environment_.RunUntilIdle();

@@ -45,6 +45,7 @@
 #include "third_party/blink/public/mojom/browser_interface_broker.mojom-blink.h"
 #include "third_party/blink/public/mojom/frame/reporting_observer.mojom-blink-forward.h"
 #include "third_party/blink/public/mojom/script/script_type.mojom-blink.h"
+#include "third_party/blink/public/mojom/security_context/outside_context_csp_violation_reporter.mojom-blink.h"
 #include "third_party/blink/public/mojom/user_agent/user_agent_metadata.mojom-blink.h"
 #include "third_party/blink/public/mojom/worker/shared_worker_host.mojom-blink.h"
 #include "third_party/blink/public/mojom/worker/worker_content_settings_proxy.mojom-blink.h"
@@ -118,6 +119,9 @@ class CORE_EXPORT WebSharedWorkerImpl final : public WebSharedWorker {
       const blink::UserAgentMetadata& ua_metadata,
       const std::vector<WebContentSecurityPolicy>& content_security_policies,
       const WebFetchClientSettingsObject& outside_fetch_client_settings_object,
+      CrossVariantMojoRemote<
+          mojom::blink::OutsideContextCSPViolationReporterInterfaceBase>
+          outside_settings_reporter,
       const base::UnguessableToken& devtools_worker_token,
       CrossVariantMojoRemote<
           mojom::blink::WorkerContentSettingsProxyInterfaceBase>
@@ -135,7 +139,8 @@ class CORE_EXPORT WebSharedWorkerImpl final : public WebSharedWorker {
           coep_reporting_observer,
       CrossVariantMojoReceiver<mojom::blink::ReportingObserverInterfaceBase>
           dip_reporting_observer,
-      bool is_cross_origin_isolated);
+      bool is_cross_origin_isolated,
+      const network::PermissionsPolicyFeaturesBitset& permissions_policy);
 
   void DispatchPendingConnections();
   void ConnectToChannel(int connection_request_id,

@@ -25,6 +25,7 @@
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/task_traits.h"
 #include "base/test/bind.h"
+#include "base/test/metrics/histogram_tester.h"
 #include "base/test/values_test_util.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
@@ -80,20 +81,6 @@ using ::testing::Pointee;
 // timestamp).
 const int kV8CacheTimeStampDataSize =
     sizeof(uint32_t) + sizeof(uint32_t) + sizeof(double);
-
-size_t BlobSideDataLength(blink::mojom::Blob* actual_blob) {
-  size_t result = 0;
-  base::RunLoop run_loop;
-  actual_blob->ReadSideData(base::BindOnce(
-      [](size_t* result, base::OnceClosure continuation,
-         const std::optional<mojo_base::BigBuffer> data) {
-        *result = data ? data->size() : 0;
-        std::move(continuation).Run();
-      },
-      &result, run_loop.QuitClosure()));
-  run_loop.Run();
-  return result;
-}
 
 struct FetchResult {
   blink::ServiceWorkerStatusCode status;
@@ -1691,8 +1678,11 @@ class CacheStorageEagerReadingTest : public ServiceWorkerVersionBrowserTest {
     EXPECT_EQ(storage::BlobToString(blob.get()).length(), 1075u);
 
     // Since this js response was stored in the install event it should have
-    // code cache stored in the blob side data.
-    EXPECT_GT(BlobSideDataLength(blob.get()),
+    // code cache stored in the cached metadata blob.
+    ASSERT_TRUE(response->cached_metadata);
+    mojo::Remote<blink::mojom::Blob> cached_metadata(
+        std::move(response->cached_metadata->blob));
+    EXPECT_GT(storage::BlobToString(cached_metadata.get()).size(),
               static_cast<size_t>(kV8CacheTimeStampDataSize));
   }
 
@@ -1706,14 +1696,15 @@ class CacheStorageEagerReadingTest : public ServiceWorkerVersionBrowserTest {
     // surfaced here in this test.
     EXPECT_FALSE(response->blob);
 
-    // An eagerly read response should still have a side_data_blob, though.
+    // An eagerly read response should still have cached_metadata, though.
     // This is provided so that js resources can still load code cache.
-    mojo::Remote<blink::mojom::Blob> side_data_blob(
-        std::move(response->side_data_blob->blob));
+    ASSERT_TRUE(response->cached_metadata);
+    mojo::Remote<blink::mojom::Blob> cached_metadata(
+        std::move(response->cached_metadata->blob));
 
     // Since this js response was stored in the install event it should have
-    // code cache stored in the blob side data.
-    EXPECT_GT(BlobSideDataLength(side_data_blob.get()),
+    // code cache stored in the cached metadata blob.
+    EXPECT_GT(storage::BlobToString(cached_metadata.get()).size(),
               static_cast<size_t>(kV8CacheTimeStampDataSize));
   }
 
